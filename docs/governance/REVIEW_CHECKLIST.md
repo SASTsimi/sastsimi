@@ -5,12 +5,14 @@
 ## 파트 리뷰
 
 - [ ] 담당 역할, 범위와 비목표가 명확합니다.
+- [ ] 역할 담당자 이름·GitHub 계정·Issue 번호가 `OWNERSHIP.md`, tracker와 실제 GitHub에서 일치합니다.
+- [ ] Issue 상단만 읽어도 한 줄 설명, 이번에 할 일과 완료 산출물을 이해할 수 있습니다.
 - [ ] 입력과 출력 record/state의 생산자·소비자가 명확합니다.
 - [ ] 역할이 가질 수 없는 권한이 명시되었습니다.
 - [ ] 오류, 미지원, timeout과 budget 소진을 FALSE와 구분합니다.
 - [ ] 같은 RepositorySnapshot을 유지합니다.
 - [ ] upstream·downstream 필수 리뷰를 받았습니다.
-- [ ] 담당 역할 Issue(#2~#9)를 PR 본문의 `Closes` 또는 `Refs`로 연결했습니다.
+- [ ] 담당 역할 Issue(#2–#9)를 PR 본문의 `Closes` 또는 `Refs`로 연결했습니다.
 - [ ] Wiki와 Mermaid 영향을 확인했습니다.
 - [ ] Blocker/High가 0입니다.
 - [ ] 남은 Medium/Low에 owner와 후속 계획이 있습니다.

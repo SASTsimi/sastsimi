@@ -4,11 +4,11 @@
 
 ## Blocker
 
-1. 팀 역할과 GitHub username 매핑
-   - 필요한 결정: 8개 역할 owner, 대체 reviewer, independent final reviewer
-   - 현재 owner: `@taehyeon-git`이 계정 목록 수집
+1. 대체 reviewer와 GitHub 권한 매핑
+   - 완료된 내용: 8개 역할의 담당자와 GitHub username 매핑
+   - 필요한 결정: `@v1sion`, `@meow`, `@kimhr8465`, `@UltraPaechKeen`의 저장소 assignee 선택 가능 여부, 역할별 대체 reviewer, 중앙 계약 승인 가능 여부, branch merge 권한
    - 처리 Issue: [R4 #5](https://github.com/SASTsimi/sastsimi/issues/5)
-   - 제약: 확정 전 CODEOWNERS 및 실제 assignee 자동화 불가
+   - 제약: 확인 전 일부 Issue의 실제 assignee 배정, CODEOWNERS와 필수 승인 규칙 자동화 불가
 2. Independent final reviewer 지정
    - 필요한 결정: 작성자·design review coordinator와 다른 승인자 GitHub username
    - 처리 Issue: [Final #10](https://github.com/SASTsimi/sastsimi/issues/10)

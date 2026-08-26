@@ -4,7 +4,7 @@
 
 전체 설계 초안은 `main`에 유지하고, 모든 파트 변경은 별도 브랜치와 PR로 검토합니다.
 
-1. [실제 Issue tracker](./docs/review/ISSUE_TRACKER.md)에서 담당 역할 Issue를 확인하고 GitHub에서 claim합니다.
+1. [실제 Issue tracker](./docs/review/ISSUE_TRACKER.md)에서 담당 역할과 GitHub Issue 배정 상태를 확인합니다. assignee 선택이 불가능한 계정은 저장소 접근 권한 또는 username을 coordinator와 확인합니다.
 2. 파트 담당자는 최신 `main`에서 자신의 브랜치를 생성합니다.
 3. 브랜치 이름은 `review/<domain>` 형식을 사용합니다.
 4. PR base는 `main`으로 지정합니다.

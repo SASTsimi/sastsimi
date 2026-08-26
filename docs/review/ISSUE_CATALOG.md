@@ -1,6 +1,6 @@
 # Architecture v5 역할별 Issue 카탈로그
 
-이 카탈로그는 GitHub에 생성한 Parent Epic, 8개 역할별 설계 리뷰 Issue와 최종 교차 시나리오 Issue의 기준 본문이다. 생성된 Issue와 배정 현황은 [ISSUE_TRACKER.md](./ISSUE_TRACKER.md)에서 확인한다. 현재 단계는 **설계 검토**이며 runtime 구현은 범위 밖이다. GitHub username이 확인되지 않은 역할은 역할 소유권만 배정하고 assignee는 비워 둔다.
+이 카탈로그는 GitHub에 생성한 Parent Epic, 8개 역할별 설계 리뷰 Issue와 최종 교차 시나리오 Issue의 기준 본문이다. 생성된 Issue와 배정 현황은 [ISSUE_TRACKER.md](./ISSUE_TRACKER.md)에서 확인한다. 현재 단계는 **설계 검토**이며 runtime 구현은 범위 밖이다. 역할과 GitHub username은 매핑했으며, Issue 선택기에 나타나지 않는 계정은 본문에 먼저 연결하고 저장소 접근 권한 또는 username을 확인한 뒤 실제 assignee로 추가한다. Independent final reviewer는 지정 전까지 비워 둔다.
 
 ## 공통 작업 방식
 
@@ -21,6 +21,11 @@
 ## Parent Epic — Architecture v5 candidate baseline 검토와 승인
 
 - Live Issue: [#1](https://github.com/SASTsimi/sastsimi/issues/1)
+- Coordinators: 김태현 `@taehyeon-git`, 윤희섭 `@v1sion`
+
+### 쉽게 말하면
+
+팀원별 설계 검토가 따로 놀지 않도록 R1–R8의 작업, 교차 리뷰와 마지막 전체 검토를 한곳에서 관리한다. 이 Epic이 끝나야 구현을 시작할 설계 기준을 확정할 수 있다.
 
 ### 목적
 
@@ -44,7 +49,7 @@
 
 ### 완료 조건
 
-- [ ] R1~R8 역할 Issue가 모두 완료되고 관련 PR이 `main`에 merge됨
+- [ ] R1–R8 역할 Issue가 모두 완료되고 관련 PR이 `main`에 merge됨
 - [ ] 23단계 각각에 owner, 입력, 출력, 오류와 금지 권한이 있음
 - [ ] 모든 핵심 artifact가 run/snapshot/hypothesis/attempt와 추적 가능함
 - [ ] 오류·timeout·auth·sandbox setup 실패가 `FALSE`로 변환되지 않음
@@ -60,12 +65,16 @@
 
 - Live Issue: [#2](https://github.com/SASTsimi/sastsimi/issues/2)
 
+### 쉽게 말하면
+
+정적 분석이 모은 코드 사실을 보고 LLM이 **검증할 취약점 후보 목록**을 만드는 방법을 정한다. 이미 확인된 취약점들이 서로 연결될 가능성이 있으면 바로 확정하지 않고 새로운 연계 가설로 다시 검증하게 만든다.
+
 ### 역할 소유권
 
 - Owner role: LLM 탐색·체이닝
-- GitHub assignee: `UNASSIGNED` — 역할 담당자가 claim
+- 담당자: 배승원 `@baeseungwon1010`
 - Primary branch: `review/hypothesis-research`
-- Pipeline: 6~7, 14~16, 22
+- 관련 흐름: 정적 사실 묶음 → 취약점 가설 목록 → 검증 결과에서 연계 조건 추출 → 새 가설 반환
 
 ### 검토 문서
 
@@ -111,12 +120,16 @@
 
 - Live Issue: [#3](https://github.com/SASTsimi/sastsimi/issues/3)
 
+### 쉽게 말하면
+
+AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 위치, 함수, 호출 흐름과 source/sink 중심의 사실 묶음**으로 정리한다. 분석 도중 코드가 더 필요할 때 같은 저장소 버전에서 필요한 부분만 안전하게 가져오게 한다.
+
 ### 역할 소유권
 
 - Owner role: 정적분석·컨텍스트
-- GitHub assignee: `UNASSIGNED` — 역할 담당자가 claim
+- 담당자: 김나연 `@meow`
 - Primary branch: `review/static-context`
-- Pipeline: 2~4, 9
+- 관련 흐름: 저장소 버전 고정 → AST/SAST 병렬 실행 → 사실 묶음 생성 → 필요한 코드 위치 조회
 
 ### 검토 문서
 
@@ -161,12 +174,16 @@
 
 - Live Issue: [#4](https://github.com/SASTsimi/sastsimi/issues/4)
 
+### 쉽게 말하면
+
+각 파트의 설계가 실제 코드 모듈로 이어질 수 있는지 확인하고, 모듈 사이의 입력·출력과 오류가 서로 맞는지 테스트 계획을 만든다. 현재는 설계 검토 단계이므로 전체 코드를 구현하는 것이 아니라 **구현 가능한 설계인지 확인하는 작업**이다.
+
 ### 역할 소유권
 
-- Owner role: 통합·구현 개발
-- GitHub assignee: `UNASSIGNED` — 역할 담당자가 claim
+- Owner role: 단독 구현·통합 개발
+- 담당자: 김태현 `@taehyeon-git`, 윤희섭 `@v1sion`
 - Primary branch: `review/integration-feasibility`
-- Pipeline: 1~23 전체 구현 가능성
+- 관련 흐름: 저장소 입력부터 사람의 최종 검토까지 전체 흐름의 모듈·저장·복구·테스트 연결
 
 ### 검토 문서
 
@@ -207,12 +224,16 @@
 
 - Live Issue: [#5](https://github.com/SASTsimi/sastsimi/issues/5)
 
+### 쉽게 말하면
+
+전체 파트가 같은 상태 이름과 데이터 형식을 사용하도록 중앙 기준을 정한다. 어떤 작업을 병렬로 돌릴지, 오류나 재시도를 어떻게 기록할지, LLM이 제안만 하고 프로그램과 사람이 최종 통제해야 하는 경계를 관리한다.
+
 ### 역할 소유권
 
 - Owner role: PM·아키텍처·워크플로
-- GitHub assignee: `@taehyeon-git` (repository steward가 초기 coordination 담당)
+- 담당자: 김태현 `@taehyeon-git`, 윤희섭 `@v1sion`
 - Primary branch: `review/control-plane`
-- Pipeline: 1~23 중앙 통합
+- 관련 흐름: 전체 분석 흐름의 공통 계약, 상태 전이, 병렬·직렬 실행, 오류 정책과 사람·LLM 권한 경계
 
 ### 검토 문서
 
@@ -254,12 +275,16 @@
 
 - Live Issue: [#6](https://github.com/SASTsimi/sastsimi/issues/6)
 
+### 쉽게 말하면
+
+검증 결과의 근거가 코드·동적 재현과 제대로 연결됐는지 확인하고, 공식 정책 범위 안에서 보고 가능한지 검토한다. 조건을 통과한 결과만 Finding과 보고서 초안으로 정리하며 **취약점 판정을 바꾸거나 외부 공개를 결정하지는 않는다**.
+
 ### 역할 소유권
 
 - Owner role: Gate·Finding·보고서
-- GitHub assignee: `UNASSIGNED` — 역할 담당자가 claim
+- 담당자: 김혜령 `@kimhr8465`
 - Primary branch: `review/gate-reporting`
-- Pipeline: 17~21, 23
+- 관련 흐름: CWE 라벨링 → 기술 근거 검토 → 공식 정책·영향 검토 → 보고서 초안 → 사람 검토용 자료 저장
 
 ### 검토 문서
 
@@ -305,12 +330,16 @@
 
 - Live Issue: [#7](https://github.com/SASTsimi/sastsimi/issues/7)
 
+### 쉽게 말하면
+
+가설마다 찬성 근거와 반대 근거를 따로 모으고, 부족하면 추가 코드나 동적 재현을 요청한다. 모든 근거를 종합해 `TRUE`, `FALSE`, `HOLD` 중 하나로 판정하는 기준과 취약점 유형별 검증 절차를 만든다.
+
 ### 역할 소유권
 
 - Owner role: 검증·반박·플레이북
-- GitHub assignee: `UNASSIGNED` — 역할 담당자가 claim
+- 담당자: 임채민 `@UltraPaechKeen`
 - Primary branch: `review/verification`
-- Pipeline: 8~13, Technical REVISE 환류
+- 관련 흐름: 가설별 검증 시작 → 찬성·반대 근거 수집 → 필요 시 동적 재현 → 최종 판정 → 근거 보완 요청 처리
 
 ### 검토 문서
 
@@ -355,12 +384,16 @@
 
 - Live Issue: [#8](https://github.com/SASTsimi/sastsimi/issues/8)
 
+### 쉽게 말하면
+
+정적 근거만으로 부족한 가설을 격리된 Docker 환경에서 제한적으로 재현한다. 실행 명령, 환경, 관찰 결과와 정리된 PoC를 남기되 host·실서비스·비밀정보에 접근하지 못하도록 안전 경계를 정한다.
+
 ### 역할 소유권
 
 - Owner role: 동적검증·Sandbox
-- GitHub assignee: `UNASSIGNED` — 역할 담당자가 claim
+- 담당자: 조근석 `@Potatonion`
 - Primary branch: `review/dynamic-sandbox`
-- Pipeline: 12~13
+- 관련 흐름: 재현 필요성 결정 → 승인된 Docker 실행 → 관찰 결과·PoC 반환 → Verification 근거로 사용
 
 ### 검토 문서
 
@@ -403,12 +436,16 @@
 
 - Live Issue: [#9](https://github.com/SASTsimi/sastsimi/issues/9)
 
+### 쉽게 말하면
+
+각 Agent와 분석 단계가 실제로 잘 동작하는지 같은 평가 데이터로 비교할 기준을 만든다. 정확도뿐 아니라 token, 시간, 재시도, chaining과 sandbox 자원 제한을 정하고 변경 전후 품질이 나빠지지 않았는지 확인한다.
+
 ### 역할 소유권
 
 - Owner role: 데이터·평가·예산
-- GitHub assignee: `UNASSIGNED` — 역할 담당자가 claim
+- 담당자: 성병찬 `@gitterable`
 - Primary branch: `review/data-evaluation`
-- Pipeline: 전 단계의 평가와 예산
+- 관련 흐름: 전체 단계의 실행 기록 수집 → 품질·비용 평가 → 예산 초과 처리 → 같은 corpus로 회귀 비교
 
 ### 검토 문서
 
@@ -452,11 +489,16 @@
 
 - Live Issue: [#10](https://github.com/SASTsimi/sastsimi/issues/10)
 
+### 쉽게 말하면
+
+각 파트 문서를 따로 읽는 데서 끝내지 않고 실제 분석 한 건이 처음부터 마지막까지 모순 없이 흐르는지 팀 전체가 확인한다. 검토할 commit을 고정한 뒤 독립 검토자가 최신 상태를 승인해야 최종 승인 PR로 넘어갈 수 있다.
+
 ### 역할 소유권
 
 - Owner role: independent final reviewer
 - GitHub assignee: `UNASSIGNED`
-- 전제: R1~R8 완료, 열린 Blocker/High 0, 최종 승인 PR에 freeze SHA 게시
+- 필수 참여자: `@baeseungwon1010`, `@meow`, `@taehyeon-git`, `@v1sion`, `@kimhr8465`, `@UltraPaechKeen`, `@Potatonion`, `@gitterable`
+- 전제: R1–R8 완료, 열린 Blocker/High 0, 최종 승인 PR에 freeze SHA 게시
 
 ### 필수 시나리오
 
@@ -487,7 +529,7 @@
 - [ ] 모든 핵심 claim을 원본 artifact와 decision PR에 추적 가능함
 - [ ] `FINDINGS.md`의 Blocker/High가 0이고 Medium deferral이 적절함
 - [ ] freeze SHA 이후 unreviewed commit이 없음
-- [ ] R1~R8 lead 및 independent reviewer의 최신 승인 기록이 있음
+- [ ] R1–R8 lead 및 independent reviewer의 최신 승인 기록이 있음
 - [ ] 상태 변경은 별도 승인 PR로 수행함
 
 ## 역할별 의존 관계
@@ -502,5 +544,5 @@ R4 + R8 ──────────────> R7 Sandbox
 R6 + R7 ──────────────> R1-B Research/Primitive
 R6 + R7 + R1-B + R4 ──> R5 Gates/report/human handoff
 R3는 모든 계약의 구현 가능성과 종단 조립을 교차 검토
-R1~R8 완료 ───────────> Final cross-scenario review
+R1–R8 완료 ───────────> Final cross-scenario review
 ```
