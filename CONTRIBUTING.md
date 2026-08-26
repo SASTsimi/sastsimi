@@ -4,12 +4,14 @@
 
 전체 설계 초안은 `main`에 유지하고, 모든 파트 변경은 별도 브랜치와 PR로 검토합니다.
 
-1. 파트 담당자는 최신 `main`에서 자신의 브랜치를 생성합니다.
-2. 브랜치 이름은 `review/<domain>` 형식을 사용합니다.
-3. PR base는 `main`으로 지정합니다.
-4. `main`에 직접 push하지 않습니다.
-5. 하나의 파트 PR에는 하나의 역할 또는 하나의 명확한 설계 결정을 담습니다.
-6. 모든 파트 검토가 끝난 뒤 상태 변경만을 위한 최종 승인 PR을 별도로 엽니다.
+1. [실제 Issue tracker](./docs/review/ISSUE_TRACKER.md)에서 담당 역할 Issue를 확인하고 GitHub에서 claim합니다.
+2. 파트 담당자는 최신 `main`에서 자신의 브랜치를 생성합니다.
+3. 브랜치 이름은 `review/<domain>` 형식을 사용합니다.
+4. PR base는 `main`으로 지정합니다.
+5. `main`에 직접 push하지 않습니다.
+6. 하나의 파트 PR에는 하나의 역할 또는 하나의 명확한 설계 결정을 담습니다.
+7. PR 본문에 `Closes #<역할 Issue 번호>` 또는 `Refs #<역할 Issue 번호>`를 적습니다.
+8. 모든 파트 검토가 끝난 뒤 [최종 교차 검토 Issue #10](https://github.com/SASTsimi/sastsimi/issues/10)를 거쳐 상태 변경만을 위한 최종 승인 PR을 별도로 엽니다.
 
 예시:
 

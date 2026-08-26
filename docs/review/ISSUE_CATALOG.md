@@ -1,6 +1,6 @@
 # Architecture v5 역할별 Issue 카탈로그
 
-이 카탈로그는 GitHub에 생성할 Parent Epic, 8개 역할별 설계 리뷰 Issue와 최종 교차 시나리오 Issue의 기준 본문이다. 현재 단계는 **설계 검토**이며 runtime 구현은 범위 밖이다. GitHub username이 확인되지 않은 역할은 역할 소유권만 배정하고 assignee는 비워 둔다.
+이 카탈로그는 GitHub에 생성한 Parent Epic, 8개 역할별 설계 리뷰 Issue와 최종 교차 시나리오 Issue의 기준 본문이다. 생성된 Issue와 배정 현황은 [ISSUE_TRACKER.md](./ISSUE_TRACKER.md)에서 확인한다. 현재 단계는 **설계 검토**이며 runtime 구현은 범위 밖이다. GitHub username이 확인되지 않은 역할은 역할 소유권만 배정하고 assignee는 비워 둔다.
 
 ## 공통 작업 방식
 
@@ -19,6 +19,8 @@
 ---
 
 ## Parent Epic — Architecture v5 candidate baseline 검토와 승인
+
+- Live Issue: [#1](https://github.com/SASTsimi/sastsimi/issues/1)
 
 ### 목적
 
@@ -55,6 +57,8 @@
 ---
 
 ## R1 — 제약형 가설 생성·Research/Primitive chaining·LLM 효율화
+
+- Live Issue: [#2](https://github.com/SASTsimi/sastsimi/issues/2)
 
 ### 역할 소유권
 
@@ -105,6 +109,8 @@
 
 ## R2 — 정적 사실 계층·동일 snapshot 위치 기반 Context Retrieval
 
+- Live Issue: [#3](https://github.com/SASTsimi/sastsimi/issues/3)
+
 ### 역할 소유권
 
 - Owner role: 정적분석·컨텍스트
@@ -153,6 +159,8 @@
 
 ## R3 — 통합 구현 가능성·계약 준수 테스트·모듈 조립 검토
 
+- Live Issue: [#4](https://github.com/SASTsimi/sastsimi/issues/4)
+
 ### 역할 소유권
 
 - Owner role: 통합·구현 개발
@@ -196,6 +204,8 @@
 ---
 
 ## R4 — PM·Control Plane·I/O 계약·워크플로·Human/LLM 경계
+
+- Live Issue: [#5](https://github.com/SASTsimi/sastsimi/issues/5)
 
 ### 역할 소유권
 
@@ -241,6 +251,8 @@
 ---
 
 ## R5 — 이중 Gate·FindingCandidate/ReportDraft·Human handoff
+
+- Live Issue: [#6](https://github.com/SASTsimi/sastsimi/issues/6)
 
 ### 역할 소유권
 
@@ -291,6 +303,8 @@
 
 ## R6 — Verification 판정·독립 Pro/Con 근거·검증 플레이북
 
+- Live Issue: [#7](https://github.com/SASTsimi/sastsimi/issues/7)
+
 ### 역할 소유권
 
 - Owner role: 검증·반박·플레이북
@@ -339,6 +353,8 @@
 
 ## R7 — 승인된 Docker 동적 재현·Sandbox evidence
 
+- Live Issue: [#8](https://github.com/SASTsimi/sastsimi/issues/8)
+
 ### 역할 소유권
 
 - Owner role: 동적검증·Sandbox
@@ -384,6 +400,8 @@
 ---
 
 ## R8 — 평가 코퍼스·품질/관측 지표·자원 예산
+
+- Live Issue: [#9](https://github.com/SASTsimi/sastsimi/issues/9)
 
 ### 역할 소유권
 
@@ -431,6 +449,8 @@
 ---
 
 ## Final — 전체 교차 시나리오·Freeze SHA·승인 검토
+
+- Live Issue: [#10](https://github.com/SASTsimi/sastsimi/issues/10)
 
 ### 역할 소유권
 

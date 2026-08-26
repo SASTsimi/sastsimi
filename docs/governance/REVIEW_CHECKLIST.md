@@ -1,5 +1,7 @@
 # Architecture v5 설계 리뷰 체크리스트
 
+전체 검토 현황은 [Parent Epic #1](https://github.com/SASTsimi/sastsimi/issues/1)과 [실제 Issue tracker](../review/ISSUE_TRACKER.md)에서 추적하고, 마지막 종단 검토는 [Final Issue #10](https://github.com/SASTsimi/sastsimi/issues/10)에서 수행합니다.
+
 ## 파트 리뷰
 
 - [ ] 담당 역할, 범위와 비목표가 명확합니다.
@@ -8,6 +10,7 @@
 - [ ] 오류, 미지원, timeout과 budget 소진을 FALSE와 구분합니다.
 - [ ] 같은 RepositorySnapshot을 유지합니다.
 - [ ] upstream·downstream 필수 리뷰를 받았습니다.
+- [ ] 담당 역할 Issue(#2~#9)를 PR 본문의 `Closes` 또는 `Refs`로 연결했습니다.
 - [ ] Wiki와 Mermaid 영향을 확인했습니다.
 - [ ] Blocker/High가 0입니다.
 - [ ] 남은 Medium/Low에 owner와 후속 계획이 있습니다.
@@ -28,19 +31,20 @@
 
 ## 전체 시나리오
 
-- [ ] named falsification으로 FALSE가 되는 가설
-- [ ] HOLD restriction과 TRUE capability가 새 chain 가설을 만드는 흐름
-- [ ] Docker FULL_REPRO와 PoC가 현재 가설에 연결되는 TRUE
-- [ ] TRUE지만 공식 정책이 없어 Rule Scope Gate가 보고를 차단하는 흐름
-- [ ] Technical Gate REVISE가 Verification/Research로 돌아가는 흐름
-- [ ] provider 인증 실패가 FALSE로 변환되지 않는 흐름
+- [ ] 미리 정한 반증 조건이 실제 코드에서 확인되었을 때만 `FALSE`가 됩니다.
+- [ ] 판단을 보류한 가설의 부족 조건을 다른 `TRUE` 결과가 채우면, 바로 합치지 않고 새로운 연계 가설로 다시 검증합니다.
+- [ ] Docker 전체 재현과 PoC가 어떤 가설·코드 위치·관찰 결과를 뒷받침하는지 추적됩니다.
+- [ ] 기술적으로 `TRUE`여도 공식 정책을 확인할 수 없으면 보고서 전달을 허용하지 않습니다.
+- [ ] 기술 검토에서 보완이 필요하면 구체적인 요청과 함께 검증 또는 추가 탐색 단계로 돌아갑니다.
+- [ ] LLM 로그인·인증 실패를 취약점이 아니라는 뜻의 `FALSE`로 바꾸지 않고 별도 오류로 남깁니다.
+- [ ] [Final Issue #10](https://github.com/SASTsimi/sastsimi/issues/10)의 전체 종단 시나리오를 통과합니다.
 
 ## 최종 통합
 
 - [ ] 정본 23단계가 README, overview, Wiki와 Mermaid에서 일치합니다.
 - [ ] 정본/Wiki Mermaid가 동일하며 실제 렌더링됩니다.
 - [ ] broken local link와 Markdown fence 오류가 0입니다.
-- [ ] 모든 역할 Issue와 `main` 대상 파트 PR이 최종 승인 Issue/PR에 연결됩니다.
+- [ ] [Parent Epic #1](https://github.com/SASTsimi/sastsimi/issues/1)의 모든 역할 Issue와 `main` 대상 파트 PR이 [Final Issue #10](https://github.com/SASTsimi/sastsimi/issues/10)에 연결됩니다.
 - [ ] 모든 Blocker/High가 닫혔습니다.
 - [ ] Medium은 해결되었거나 owner·근거·목표 시점과 함께 연기되었습니다.
 - [ ] 최종 review freeze commit SHA를 PR에 기록했습니다.

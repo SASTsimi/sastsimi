@@ -80,7 +80,7 @@ main  ← Architecture v5 candidate baseline
 
 전체 절차는 [CONTRIBUTING.md](./CONTRIBUTING.md)를 따릅니다.
 
-검토 현황과 역할별 작업은 [review 문서](./docs/review/ISSUE_CATALOG.md)와 연결된 GitHub Issue에서 추적합니다. Blocker/High가 모두 닫히고 Medium이 해결되거나 근거와 owner를 갖고 명시적으로 연기된 뒤에만 candidate baseline의 최종 승인 PR을 엽니다.
+검토 현황과 역할별 작업은 [Parent Epic #1](https://github.com/SASTsimi/sastsimi/issues/1), [실제 Issue tracker](./docs/review/ISSUE_TRACKER.md), [역할별 Issue 카탈로그](./docs/review/ISSUE_CATALOG.md)에서 추적합니다. Blocker/High가 모두 닫히고 Medium이 해결되거나 근거와 owner를 갖고 명시적으로 연기된 뒤에만 candidate baseline의 최종 승인 PR을 엽니다.
 
 ## 담당 영역
 
@@ -103,6 +103,8 @@ Architecture v5 candidate baseline과 파생 Wiki는 `main`에서 확인하고 �
 
 - [Architecture v5 design hub](./docs/architecture-v5/README.md)
 - [역할별 검토 Issue 구조](./docs/review/ISSUE_CATALOG.md)
+- [실제 Issue 배정·진행 현황](./docs/review/ISSUE_TRACKER.md)
+- [GitHub Parent Epic #1](https://github.com/SASTsimi/sastsimi/issues/1)
 
 ## 안전 원칙
 

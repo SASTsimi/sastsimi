@@ -1,18 +1,21 @@
 # Architecture v5 미결정 사항
 
-이 문서는 현재 열린 질문의 색인입니다. 실제 토론·owner·기한·결정은 GitHub Issue에서 관리하고, 결정된 결과는 관련 정본 문서와 PR에 반영합니다.
+이 문서는 현재 열린 질문의 색인입니다. 실제 토론·owner·기한·결정은 [Parent Epic #1](https://github.com/SASTsimi/sastsimi/issues/1)과 [실제 Issue tracker](../review/ISSUE_TRACKER.md)에서 관리하고, 결정된 결과는 관련 정본 문서와 PR에 반영합니다.
 
 ## Blocker
 
 1. 팀 역할과 GitHub username 매핑
    - 필요한 결정: 8개 역할 owner, 대체 reviewer, independent final reviewer
    - 현재 owner: `@taehyeon-git`이 계정 목록 수집
+   - 처리 Issue: [R4 #5](https://github.com/SASTsimi/sastsimi/issues/5)
    - 제약: 확정 전 CODEOWNERS 및 실제 assignee 자동화 불가
 2. Independent final reviewer 지정
    - 필요한 결정: 작성자·design review coordinator와 다른 승인자 GitHub username
+   - 처리 Issue: [Final #10](https://github.com/SASTsimi/sastsimi/issues/10)
    - 제약: 지정 전 candidate baseline의 최종 승인 PR을 Ready로 전환할 수 없음
 3. 저장소 라이선스와 외부 기여 범위
    - 필요한 결정: 공개 열람만 허용할지, 외부 수정·재사용을 어떤 license로 허용할지
+   - 처리 Issue: [R4 #5](https://github.com/SASTsimi/sastsimi/issues/5)
    - 제약: 결정 전 외부 기여를 적극 모집하지 않음
 
 ## 구현 전 필수 결정
@@ -35,6 +38,18 @@
 16. Membership adapter의 공식 지원·약관·동시성·session/log 가용성 검증과 실험 종료 조건
 17. Docker daemon/image/build provenance와 policy source 인증·freshness를 위한 별도 threat model/ADR
 18. 조건부 debate, 독립 session, 두 LLM Gate와 provider/model 선택을 검증할 versioned corpus·지표·합격 임계값
+
+## Issue routing
+
+| 결정 영역 | 담당 Issue |
+|---|---|
+| provider/model, membership/session, 상태 저장·복구 | [R3 #4](https://github.com/SASTsimi/sastsimi/issues/4), [R4 #5](https://github.com/SASTsimi/sastsimi/issues/5) |
+| Hypothesis, Primitive, Research와 chaining 한도 | [R1 #2](https://github.com/SASTsimi/sastsimi/issues/2) |
+| snapshot, static fact, location/context retrieval | [R2 #3](https://github.com/SASTsimi/sastsimi/issues/3) |
+| Verification, debate와 falsification | [R6 #7](https://github.com/SASTsimi/sastsimi/issues/7) |
+| Docker sandbox와 동적 재현 | [R7 #8](https://github.com/SASTsimi/sastsimi/issues/8) |
+| Gate, 공식 정책과 보고서 전달 | [R5 #6](https://github.com/SASTsimi/sastsimi/issues/6) |
+| corpus, 지표, 합격 기준과 자원 예산 | [R8 #9](https://github.com/SASTsimi/sastsimi/issues/9) |
 
 ## 결정 기록 형식
 
