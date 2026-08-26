@@ -1,6 +1,6 @@
 # Architecture v5 역할별 Issue 카탈로그
 
-이 문서는 역할별 상위 Issue에서 무엇을 검토하고 어떤 세부 하위 Issue를 만들지 안내합니다. 실제 Issue와 담당자 상태는 [Issue 현황](./ISSUE_TRACKER.md)에서 확인합니다. 현재 단계는 **설계 검토**이며 실행 코드(`runtime`) 구현은 범위 밖입니다. 역할 담당자는 모두 정해졌습니다. GitHub 담당자 선택 목록에 나타나지 않는 계정은 저장소 접근 권한이나 정확한 사용자명을 확인한 뒤 실제 담당자로 추가합니다. 독립 최종 검토자는 지정 전까지 비워 둡니다.
+이 문서는 역할별 상위 Issue에서 무엇을 검토하고 어떤 세부 하위 Issue를 만들지 안내합니다. 실제 Issue와 담당자 상태는 [Issue 현황](./ISSUE_TRACKER.md)에서 확인합니다. 현재 단계는 **설계 검토**이며 실행 코드(`runtime`) 구현은 범위 밖입니다. 역할 담당자는 모두 정해졌습니다. 다만 #3·#6·#7은 팀이 알려 준 계정과 실제 지정된 사용자명이 달라 PM 확인이 필요하고, 독립 최종 검토자는 지정 전까지 비워 둡니다. 모르는 기술 용어는 [쉬운 용어집](../GLOSSARY.md)에서 확인합니다.
 
 ## 공통 작업 방식
 
@@ -26,10 +26,10 @@
 
 ---
 
-## Parent Epic — Architecture v5 candidate baseline 검토와 승인
+## 전체 관리 Issue — Architecture v5 검토 중 설계 초안 승인 준비
 
-- Live Issue: [#1](https://github.com/SASTsimi/sastsimi/issues/1)
-- Coordinators: 김태현 `@taehyeon-git`, 윤희섭 `@v1sion`
+- 실제 Issue: [#1](https://github.com/SASTsimi/sastsimi/issues/1)
+- 진행 담당: 김태현 `@taehyeon-git`, 윤희섭 `@v1sion`
 
 ### 쉽게 말하면
 
@@ -37,7 +37,7 @@
 
 ### 목적
 
-23단계 LLM 중심 파이프라인을 역할, 입출력 계약, 오류, 예산, 보안 경계와 human handoff 관점에서 검토하여 구현 가능한 승인 baseline을 만든다.
+23단계 LLM 중심 흐름을 역할, 입출력 약속, 오류, 예산, 보안 경계와 사람에게 전달하는 단계(`human handoff`) 관점에서 검토하여 구현을 시작할 수 있는 설계 기준을 만든다.
 
 ### 범위
 
@@ -61,7 +61,7 @@
 - [ ] 23단계 각각에 owner, 입력, 출력, 오류와 금지 권한이 있음
 - [ ] 모든 핵심 artifact가 run/snapshot/hypothesis/attempt와 추적 가능함
 - [ ] 오류·timeout·auth·sandbox setup 실패가 `FALSE`로 변환되지 않음
-- [ ] 두 Gate와 Reporter의 순서·전제조건이 분리되고 runtime validator가 강제함
+- [ ] 두 Gate와 보고서 Agent의 순서·전제조건을 프로그램 내부 규칙 검사기(`runtime validator`)가 강제함
 - [ ] 새 Research/Primitive claim이 새 가설로 전체 검증됨
 - [ ] 모든 Blocker/High가 닫히고 Medium은 명시적으로 처리됨
 - [ ] freeze commit SHA와 independent final reviewer 승인 기록이 있음
@@ -71,7 +71,7 @@
 
 ## R1 — 제약형 가설 생성·Research/Primitive chaining·LLM 효율화
 
-- Live Issue: [#2](https://github.com/SASTsimi/sastsimi/issues/2)
+- 실제 Issue: [#2](https://github.com/SASTsimi/sastsimi/issues/2)
 
 ### 쉽게 말하면
 
@@ -85,9 +85,9 @@
 
 ### 역할 소유권
 
-- Owner role: LLM 탐색·체이닝
+- 담당 역할: LLM 탐색·체이닝
 - 담당자: 배승원 `@baeseungwon1010`
-- Primary branch: `review/hypothesis-research`
+- 주요 작업 브랜치: `review/hypothesis-research`
 - 관련 흐름: 정적 사실 묶음 → 취약점 가설 목록 → 검증 결과에서 연계 조건 추출 → 새 가설 반환
 
 ### 검토 문서
@@ -132,7 +132,7 @@
 
 ## R2 — 정적 사실 계층·동일 snapshot 위치 기반 Context Retrieval
 
-- Live Issue: [#3](https://github.com/SASTsimi/sastsimi/issues/3)
+- 실제 Issue: [#3](https://github.com/SASTsimi/sastsimi/issues/3)
 
 ### 쉽게 말하면
 
@@ -146,9 +146,9 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 역할 소유권
 
-- Owner role: 정적분석·컨텍스트
+- 담당 역할: 정적분석·컨텍스트
 - 담당자: 김나연 `@meow`
-- Primary branch: `review/static-context`
+- 주요 작업 브랜치: `review/static-context`
 - 관련 흐름: 저장소 버전 고정 → AST/SAST 병렬 실행 → 사실 묶음 생성 → 필요한 코드 위치 조회
 
 ### 검토 문서
@@ -192,7 +192,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ## R3 — 통합 구현 가능성·계약 준수 테스트·모듈 조립 검토
 
-- Live Issue: [#4](https://github.com/SASTsimi/sastsimi/issues/4)
+- 실제 Issue: [#4](https://github.com/SASTsimi/sastsimi/issues/4)
 
 ### 쉽게 말하면
 
@@ -206,9 +206,9 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 역할 소유권
 
-- Owner role: 단독 구현·통합 개발
+- 담당 역할: 단독 구현·통합 개발
 - 담당자: 김태현 `@taehyeon-git`, 윤희섭 `@v1sion`
-- Primary branch: `review/integration-feasibility`
+- 주요 작업 브랜치: `review/integration-feasibility`
 - 관련 흐름: 저장소 입력부터 사람의 최종 검토까지 전체 흐름의 모듈·저장·복구·테스트 연결
 
 ### 검토 문서
@@ -248,7 +248,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ## R4 — PM·Control Plane·I/O 계약·워크플로·Human/LLM 경계
 
-- Live Issue: [#5](https://github.com/SASTsimi/sastsimi/issues/5)
+- 실제 Issue: [#5](https://github.com/SASTsimi/sastsimi/issues/5)
 
 ### 쉽게 말하면
 
@@ -263,9 +263,9 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 역할 소유권
 
-- Owner role: PM·아키텍처·워크플로
+- 담당 역할: PM·아키텍처·워크플로
 - 담당자: 김태현 `@taehyeon-git`, 윤희섭 `@v1sion`
-- Primary branch: `review/control-plane`
+- 주요 작업 브랜치: `review/control-plane`
 - 관련 흐름: 전체 분석 흐름의 공통 계약, 상태 전이, 병렬·직렬 실행, 오류 정책과 사람·LLM 권한 경계
 
 ### 검토 문서
@@ -281,7 +281,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 확인할 권한 경계
 
-- LLM Orchestration은 action을 제안·조정하며 비-LLM runtime validator가 enforcement한다.
+- LLM 오케스트레이션은 다음 행동을 제안·조정하며, LLM이 아닌 프로그램 내부 규칙 검사기(`runtime validator`)가 규칙 준수를 강제한다.
 - PM/Orchestration은 verdict, CWE, Gate result, 공식 정책 또는 공개 결정을 대신하지 않는다.
 - silent provider/model failover와 repository prompt에 의한 policy 변경을 금지한다.
 
@@ -306,7 +306,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ## R5 — 이중 Gate·FindingCandidate/ReportDraft·Human handoff
 
-- Live Issue: [#6](https://github.com/SASTsimi/sastsimi/issues/6)
+- 실제 Issue: [#6](https://github.com/SASTsimi/sastsimi/issues/6)
 
 ### 쉽게 말하면
 
@@ -321,9 +321,9 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 역할 소유권
 
-- Owner role: Gate·Finding·보고서
+- 담당 역할: Gate·Finding·보고서
 - 담당자: 김혜령 `@kimhr8465`
-- Primary branch: `review/gate-reporting`
+- 주요 작업 브랜치: `review/gate-reporting`
 - 관련 흐름: CWE 라벨링 → 기술 근거 검토 → 공식 정책·영향 검토 → 보고서 초안 → 사람 검토용 자료 저장
 
 ### 검토 문서
@@ -360,7 +360,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] REVISE는 구체적인 새 evidence/revision을 요구하며 무한 재투표가 아님
 - [ ] policy source 인증·freshness·parser failure threat model/ADR 요구가 있음
 - [ ] 모순된 `ALLOW` 출력은 semantic `INVALID_OUTPUT`이며 Reporter가 차단됨
-- [ ] Reporter 조건 `TRUE + ACCEPT + PASS + PASS + PASS + SUFFICIENT + ALLOW`가 runtime validator에서 강제됨
+- [ ] 보고서 Agent 호출 조건 `TRUE + ACCEPT + PASS + PASS + PASS + SUFFICIENT + ALLOW`를 프로그램 내부 규칙 검사기(`runtime validator`)가 강제함
 - [ ] 핵심 report claim이 evidence/PoC/Gate/policy artifact로 추적됨
 - [ ] secret·PII·hidden chain-of-thought가 report와 trace에 포함되지 않음
 
@@ -368,7 +368,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ## R6 — Verification 판정·독립 Pro/Con 근거·검증 플레이북
 
-- Live Issue: [#7](https://github.com/SASTsimi/sastsimi/issues/7)
+- 실제 Issue: [#7](https://github.com/SASTsimi/sastsimi/issues/7)
 
 ### 쉽게 말하면
 
@@ -382,9 +382,9 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 역할 소유권
 
-- Owner role: 검증·반박·플레이북
+- 담당 역할: 검증·반박·플레이북
 - 담당자: 임채민 `@UltraPaechKeen`
-- Primary branch: `review/verification`
+- 주요 작업 브랜치: `review/verification`
 - 관련 흐름: 가설별 검증 시작 → 찬성·반대 근거 수집 → 필요 시 동적 재현 → 최종 판정 → 근거 보완 요청 처리
 
 ### 검토 문서
@@ -428,7 +428,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ## R7 — 승인된 Docker 동적 재현·Sandbox evidence
 
-- Live Issue: [#8](https://github.com/SASTsimi/sastsimi/issues/8)
+- 실제 Issue: [#8](https://github.com/SASTsimi/sastsimi/issues/8)
 
 ### 쉽게 말하면
 
@@ -442,9 +442,9 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 역할 소유권
 
-- Owner role: 동적검증·Sandbox
+- 담당 역할: 동적검증·Sandbox
 - 담당자: 조근석 `@Potatonion`
-- Primary branch: `review/dynamic-sandbox`
+- 주요 작업 브랜치: `review/dynamic-sandbox`
 - 관련 흐름: 재현 필요성 결정 → 승인된 Docker 실행 → 관찰 결과·PoC 반환 → Verification 근거로 사용
 
 ### 검토 문서
@@ -486,7 +486,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ## R8 — 평가 코퍼스·품질/관측 지표·자원 예산
 
-- Live Issue: [#9](https://github.com/SASTsimi/sastsimi/issues/9)
+- 실제 Issue: [#9](https://github.com/SASTsimi/sastsimi/issues/9)
 
 ### 쉽게 말하면
 
@@ -501,9 +501,9 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 역할 소유권
 
-- Owner role: 데이터·평가·예산
+- 담당 역할: 데이터·평가·예산
 - 담당자: 성병찬 `@gitterable`
-- Primary branch: `review/data-evaluation`
+- 주요 작업 브랜치: `review/data-evaluation`
 - 관련 흐름: 전체 단계의 실행 기록 수집 → 품질·비용 평가 → 예산 초과 처리 → 같은 corpus로 회귀 비교
 
 ### 검토 문서
@@ -546,7 +546,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ## Final — 전체 교차 시나리오·Freeze SHA·승인 검토
 
-- Live Issue: [#10](https://github.com/SASTsimi/sastsimi/issues/10)
+- 실제 Issue: [#10](https://github.com/SASTsimi/sastsimi/issues/10)
 
 ### 쉽게 말하면
 
@@ -554,8 +554,8 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 역할 소유권
 
-- Owner role: independent final reviewer
-- GitHub assignee: `UNASSIGNED`
+- 담당 역할: 독립 최종 검토자
+- GitHub 담당자: 아직 정하지 않음
 - 필수 참여자: `@baeseungwon1010`, `@meow`, `@taehyeon-git`, `@v1sion`, `@kimhr8465`, `@UltraPaechKeen`, `@Potatonion`, `@gitterable`
 - 전제: R1–R8 완료, 열린 Blocker/High 0, 최종 승인 PR에 freeze SHA 게시
 
@@ -601,7 +601,7 @@ R2 + R4 + R8 ───────┴─> R1-A Hypothesis
 R1-A + R2 + R4 + R8 ──> R6 Verification
 R4 + R8 ──────────────> R7 Sandbox
 R6 + R7 ──────────────> R1-B Research/Primitive
-R6 + R7 + R1-B + R4 ──> R5 Gates/report/human handoff
+R6 + R7 + R1-B + R4 ──> R5 Gate·보고서·사람 검토 전달
 R3는 모든 계약의 구현 가능성과 종단 조립을 교차 검토
 R1–R8 완료 ───────────> Final cross-scenario review
 ```

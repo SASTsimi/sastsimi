@@ -11,7 +11,7 @@
 
 | ID | 상태 | 쉽게 말하면 | 정확한 문제 | 처리·완료 조건 | 담당 역할 | Issue |
 |---|---|---|---|---|---|---|
-| B-001 | IN_PROGRESS | 역할은 정했지만 일부 계정을 GitHub 담당자로 선택할 수 없고 대체 검토자·승인 권한도 정하지 못했습니다. | 4개 계정은 Issue assignee 선택 불가이며 대체 reviewer·승인·merge 권한도 미확정 | 계정 접근 권한과 사용자명, 대체 검토자와 권한을 확인하고 assignee, `CODEOWNERS`, 필수 검토 규칙에 반영 | PM·아키텍처·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
+| B-001 | IN_PROGRESS | 역할은 정했지만 #3·#6·#7의 실제 담당자 계정이 팀이 알려 준 계정과 다르고, `@v1sion`은 공동 담당자로 지정되지 않았습니다. | 계정 관계와 공동 담당 여부, 대체 검토자·승인·병합 권한 미확정 | 실제 계정 관계와 접근 권한, 대체 검토자와 권한을 확인하고 GitHub 담당자, `CODEOWNERS`, 필수 검토 규칙에 반영 | PM·아키텍처·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
 | B-002 | OPEN | 최종 설계를 독립적으로 확인할 사람이 아직 없습니다. | 독립 최종 검토자 미지정 | 작성자·설계 검토 진행 담당과 다른 검토자를 지정하고 고정된 최신 commit을 승인 | 저장소 관리 담당 | [#10](https://github.com/SASTsimi/sastsimi/issues/10) |
 | B-003 | OPEN | 외부 사람이 이 저장소를 수정·재사용해도 되는 범위가 없습니다. | 공개 저장소의 라이선스와 외부 기여 정책 미결정 | 허용 범위를 결정하고 `LICENSE`와 `CONTRIBUTING.md`에 반영 | 저장소 관리 담당 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
 | B-004 | RESOLVED | 가져온 원본이 commit에 없었기 때문에 특정 commit에서 나온 파일이라고 말할 수 없습니다. | 원본이 commit되지 않은 작업 폴더라 commit 출처를 주장할 수 없음 | [가져온 출처 기록](./PROVENANCE.md)에 원본 상태와 파일 해시를 기록 | PM·아키텍처·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
