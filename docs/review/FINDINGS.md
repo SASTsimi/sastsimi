@@ -36,7 +36,7 @@
 
 1. 열린 Blocker와 High가 0이다.
 2. Medium은 해결되거나 owner·근거·목표 시점과 함께 명시적으로 연기된다.
-3. integration PR에 freeze commit SHA를 기록한다.
+3. 최종 승인 PR에 freeze commit SHA를 기록한다.
 4. freeze 이후 변경은 기존 승인을 무효화하고 재검토한다.
 5. independent reviewer가 최신 SHA를 승인한다.
 6. 별도 승인 PR에서만 상태를 변경한다.

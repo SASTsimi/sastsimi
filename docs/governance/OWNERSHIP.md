@@ -4,7 +4,7 @@
 
 GitHub에서 확인 가능한 repository steward는 `@taehyeon-git`입니다. 나머지 팀원의 GitHub username과 역할 매핑은 아직 확인되지 않았으므로 추측해서 assignee 또는 CODEOWNERS로 등록하지 않습니다.
 
-- Repository steward / integration coordinator: `@taehyeon-git`
+- Repository steward / design review coordinator: `@taehyeon-git`
 - Independent final reviewer: `UNASSIGNED`
 - Domain owner GitHub usernames: `UNASSIGNED`
 - `.github/CODEOWNERS`: 실제 계정 매핑 확정 후 추가
@@ -37,7 +37,7 @@ Issue 본문에는 담당 역할을 미리 배정하고, 해당 역할의 팀원
 - `docs/architecture-v5/13-architecture-diagrams.md`
 - `docs/architecture-v5/wiki/diagrams.md`
 
-변경을 제안한 생산자 역할과 해당 데이터를 소비하는 역할이 의미를 승인한 후 integration coordinator가 반영합니다.
+변경을 제안한 생산자 역할과 해당 데이터를 소비하는 역할이 의미를 승인한 후 design review coordinator가 `main` 대상 PR을 병합합니다.
 
 ## 권한 분리
 
@@ -58,4 +58,4 @@ Issue 본문에는 담당 역할을 미리 배정하고, 해당 역할의 팀원
 4. 중앙 계약 승인 가능 여부
 5. branch merge 권한 여부
 
-독립 reviewer가 지정되기 전에는 전체 Draft PR을 Ready로 전환하지 않습니다.
+독립 reviewer가 지정되기 전에는 candidate baseline의 최종 승인 PR을 Ready로 전환하지 않습니다.

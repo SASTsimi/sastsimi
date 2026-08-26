@@ -2,19 +2,20 @@
 
 ## 1. 브랜치와 PR
 
-전체 설계 초안의 통합 브랜치는 `docs/architecture-v5-review`입니다.
+전체 설계 초안은 `main`에 유지하고, 모든 파트 변경은 별도 브랜치와 PR로 검토합니다.
 
-1. 파트 담당자는 통합 브랜치에서 자신의 브랜치를 생성합니다.
+1. 파트 담당자는 최신 `main`에서 자신의 브랜치를 생성합니다.
 2. 브랜치 이름은 `review/<domain>` 형식을 사용합니다.
-3. PR base는 `main`이 아니라 `docs/architecture-v5-review`로 지정합니다.
-4. 통합 브랜치와 `main`에 직접 push하지 않습니다.
-5. 전체 Draft PR만 최종 검토 후 `main`으로 병합합니다.
+3. PR base는 `main`으로 지정합니다.
+4. `main`에 직접 push하지 않습니다.
+5. 하나의 파트 PR에는 하나의 역할 또는 하나의 명확한 설계 결정을 담습니다.
+6. 모든 파트 검토가 끝난 뒤 상태 변경만을 위한 최종 승인 PR을 별도로 엽니다.
 
 예시:
 
 ```bash
 git fetch origin
-git switch docs/architecture-v5-review
+git switch main
 git pull --ff-only
 git switch -c review/static-context
 ```

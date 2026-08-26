@@ -9,8 +9,8 @@
    - 현재 owner: `@taehyeon-git`이 계정 목록 수집
    - 제약: 확정 전 CODEOWNERS 및 실제 assignee 자동화 불가
 2. Independent final reviewer 지정
-   - 필요한 결정: 작성자·integration coordinator와 다른 승인자 GitHub username
-   - 제약: 지정 전 integration Draft PR을 Ready로 전환할 수 없음
+   - 필요한 결정: 작성자·design review coordinator와 다른 승인자 GitHub username
+   - 제약: 지정 전 candidate baseline의 최종 승인 PR을 Ready로 전환할 수 없음
 3. 저장소 라이선스와 외부 기여 범위
    - 필요한 결정: 공개 열람만 허용할지, 외부 수정·재사용을 어떤 license로 허용할지
    - 제약: 결정 전 외부 기여를 적극 모집하지 않음

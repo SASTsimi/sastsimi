@@ -42,7 +42,7 @@
 
 ### 완료 조건
 
-- [ ] R1~R8 역할 Issue가 모두 완료되고 관련 PR이 integration branch에 merge됨
+- [ ] R1~R8 역할 Issue가 모두 완료되고 관련 PR이 `main`에 merge됨
 - [ ] 23단계 각각에 owner, 입력, 출력, 오류와 금지 권한이 있음
 - [ ] 모든 핵심 artifact가 run/snapshot/hypothesis/attempt와 추적 가능함
 - [ ] 오류·timeout·auth·sandbox setup 실패가 `FALSE`로 변환되지 않음
@@ -436,7 +436,7 @@
 
 - Owner role: independent final reviewer
 - GitHub assignee: `UNASSIGNED`
-- 전제: R1~R8 완료, 열린 Blocker/High 0, integration freeze SHA 게시
+- 전제: R1~R8 완료, 열린 Blocker/High 0, 최종 승인 PR에 freeze SHA 게시
 
 ### 필수 시나리오
 

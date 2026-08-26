@@ -57,31 +57,30 @@ LLM Agent의 출력은 모두 비신뢰 입력입니다. 예산, 상태 전이, 
 
 ## 설계 검토 운영 방식
 
-이 프로젝트는 **통합 브랜치 + 파트별 PR** 방식으로 설계를 완성합니다.
+이 프로젝트는 **main의 공개 초안 + 파트별 PR** 방식으로 설계를 완성합니다.
 
 ```text
-main
-└─ docs/architecture-v5-review
-   ├─ review/static-context
-   ├─ review/hypothesis-research
-   ├─ review/integration-feasibility
-   ├─ review/control-plane
-   ├─ review/verification
-   ├─ review/dynamic-sandbox
-   ├─ review/gate-reporting
-   └─ review/data-evaluation
+main  ← Architecture v5 candidate baseline
+├─ review/static-context
+├─ review/hypothesis-research
+├─ review/integration-feasibility
+├─ review/control-plane
+├─ review/verification
+├─ review/dynamic-sandbox
+├─ review/gate-reporting
+└─ review/data-evaluation
 ```
 
-- 전체 설계 초안은 `docs/architecture-v5-review` 브랜치의 Draft PR에서 관리합니다.
-- 각 담당자는 통합 브랜치에서 파트 브랜치를 만들고 통합 브랜치 대상으로 PR을 엽니다.
+- 전체 설계 초안은 `main`에서 누구나 확인할 수 있게 유지합니다.
+- 각 담당자는 최신 `main`에서 파트 브랜치를 만들고 `main` 대상으로 PR을 엽니다.
 - 하나의 파트 PR은 담당 영역과 필요한 인접 계약만 수정합니다.
 - 입력을 제공하는 파트와 결과를 소비하는 파트의 교차 리뷰를 받습니다.
 - Blocker/High가 0이 된 뒤 전체 시나리오 검토를 수행합니다.
-- 최종 통합 검토 전에는 Draft PR을 Ready로 전환하지 않습니다.
+- 설계 상태 변경은 모든 파트 검토가 끝난 뒤 별도의 최종 승인 PR에서 수행합니다.
 
 전체 절차는 [CONTRIBUTING.md](./CONTRIBUTING.md)를 따릅니다.
 
-검토 현황과 역할별 작업은 [review 문서](https://github.com/SASTsimi/sastsimi/tree/docs/architecture-v5-review/docs/review)와 연결된 GitHub Issue에서 추적합니다. Blocker/High가 모두 닫히고 Medium이 해결되거나 근거와 owner를 갖고 명시적으로 연기된 뒤에만 candidate baseline 승인 PR을 Ready로 전환합니다.
+검토 현황과 역할별 작업은 [review 문서](./docs/review/ISSUE_CATALOG.md)와 연결된 GitHub Issue에서 추적합니다. Blocker/High가 모두 닫히고 Medium이 해결되거나 근거와 owner를 갖고 명시적으로 연기된 뒤에만 candidate baseline의 최종 승인 PR을 엽니다.
 
 ## 담당 영역
 
@@ -100,10 +99,10 @@ Gate는 Verification verdict를 변경하거나 공개를 승인하지 않습니
 
 ## 설계 초안
 
-Architecture v5 candidate baseline과 파생 Wiki는 통합 브랜치에서 검토합니다.
+Architecture v5 candidate baseline과 파생 Wiki는 `main`에서 확인하고 파트별 PR로 검토합니다.
 
-- [Architecture v5 review branch](https://github.com/SASTsimi/sastsimi/tree/docs/architecture-v5-review)
-- [Architecture v5 design hub](https://github.com/SASTsimi/sastsimi/tree/docs/architecture-v5-review/docs/architecture-v5)
+- [Architecture v5 design hub](./docs/architecture-v5/README.md)
+- [역할별 검토 Issue 구조](./docs/review/ISSUE_CATALOG.md)
 
 ## 안전 원칙
 
