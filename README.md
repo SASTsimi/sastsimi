@@ -12,7 +12,7 @@ REVIEW_REQUIRED
 NOT_IMPLEMENTED
 ```
 
-- v5 설계 초안은 작성되었습니다.
+- v5 설계 초안은 별도 작업 트리에서 가져온 **검토 대상 candidate baseline**입니다.
 - 각 파트 담당자가 자신의 영역과 인접 계약을 검토하는 단계입니다.
 - 설계 검토가 끝나기 전에는 Architecture PASS, 구현 완료 또는 runtime-ready를 주장하지 않습니다.
 - 자동 분석 결과를 외부에 제출하거나 공개하지 않습니다. 최종 공개 여부는 사람이 결정합니다.
@@ -27,6 +27,8 @@ NOT_IMPLEMENTED
 4. Membership/API provider, session, logging과 비용·평가 정책을 구현 가능한 수준으로 구체화합니다.
 5. 파트 간 모순과 Blocker/High 이슈를 제거한 뒤 전체 설계를 승인합니다.
 6. 승인된 설계를 기준으로 구현 계획과 검증 계획을 별도 수립합니다.
+
+가져온 원본은 커밋에 포함되지 않은 작업 트리였으므로 특정 소스 커밋의 산출물이라고 주장하지 않습니다. 원본 상태와 파일별 SHA-256은 [PROVENANCE.md](./docs/review/PROVENANCE.md)에 기록하며, 이 저장소에서 승인된 snapshot만 명시적인 동기화 PR을 통해 구현 저장소로 전달합니다.
 
 ## Architecture v5 개요
 
@@ -51,52 +53,56 @@ Repository input
 
 정적 분석 도구는 취약점 최종 판정자가 아니라 entity, 위치, source/sink, 호출·데이터 흐름, 인증·인가와 같은 사실 정보를 제공하는 계층입니다. Hypothesis·Research 결과는 Finding이 아니며, 새 공격 주장은 전체 검증 흐름을 다시 거칩니다.
 
+LLM Agent의 출력은 모두 비신뢰 입력입니다. 예산, 상태 전이, sandbox 정책, provider/session 정책, Gate 순서와 Reporter 호출 조건은 Agent의 자연어 판단이 아니라 신뢰 경계 안의 runtime validator가 강제해야 합니다.
+
 ## 설계 검토 운영 방식
 
-이 프로젝트는 **통합 브랜치 + 파트별 PR** 방식으로 설계를 완성합니다.
+이 프로젝트는 **main의 공개 초안 + 파트별 PR** 방식으로 설계를 완성합니다.
 
 ```text
-main
-└─ docs/architecture-v5-review
-   ├─ review/static-context
-   ├─ review/hypothesis-research
-   ├─ review/verification
-   ├─ review/dynamic-sandbox
-   ├─ review/gate-reporting
-   ├─ review/provider-integration
-   └─ review/data-evaluation
+main  ← Architecture v5 candidate baseline
+├─ review/static-context
+├─ review/hypothesis-research
+├─ review/integration-feasibility
+├─ review/control-plane
+├─ review/verification
+├─ review/dynamic-sandbox
+├─ review/gate-reporting
+└─ review/data-evaluation
 ```
 
-- 전체 설계 초안은 `docs/architecture-v5-review` 브랜치의 Draft PR에서 관리합니다.
-- 각 담당자는 통합 브랜치에서 파트 브랜치를 만들고 통합 브랜치 대상으로 PR을 엽니다.
+- 전체 설계 초안은 `main`에서 누구나 확인할 수 있게 유지합니다.
+- 각 담당자는 최신 `main`에서 파트 브랜치를 만들고 `main` 대상으로 PR을 엽니다.
 - 하나의 파트 PR은 담당 영역과 필요한 인접 계약만 수정합니다.
 - 입력을 제공하는 파트와 결과를 소비하는 파트의 교차 리뷰를 받습니다.
 - Blocker/High가 0이 된 뒤 전체 시나리오 검토를 수행합니다.
-- 최종 통합 검토 전에는 Draft PR을 Ready로 전환하지 않습니다.
+- 설계 상태 변경은 모든 파트 검토가 끝난 뒤 별도의 최종 승인 PR에서 수행합니다.
 
 전체 절차는 [CONTRIBUTING.md](./CONTRIBUTING.md)를 따릅니다.
+
+검토 현황과 역할별 작업은 [review 문서](./docs/review/ISSUE_CATALOG.md)와 연결된 GitHub Issue에서 추적합니다. Blocker/High가 모두 닫히고 Medium이 해결되거나 근거와 owner를 갖고 명시적으로 연기된 뒤에만 candidate baseline의 최종 승인 PR을 엽니다.
 
 ## 담당 영역
 
 | 역할 | 핵심 책임 |
 |---|---|
-| LLM 탐색·체이닝 | 가설 후보, 탐색 방식, Research·Primitive chaining, token 최적화 |
-| 정적분석·컨텍스트 | AST, CodeQL/OpenGrep, 정규화, 정적 사실과 위치 기반 context |
-| 통합·구현 개발 | provider/runtime 경계, 구현 가능성, 테스트와 모듈 통합 |
-| PM·아키텍처·워크플로 | 전체 흐름, 중앙 계약, 사람·LLM 경계, 병렬/직렬, 오류 정책 |
-| Gate·Finding·보고서 | Technical/Rule-Scope Gate, FindingCandidate, ReportDraft, 사람 검토 |
-| 검증·반박·플레이북 | Verification, Pro/Con, 근거 부족 판정, 검증 절차 |
-| 동적검증·Sandbox | Docker 재현, PoC, sandbox와 동적 결과 연결 |
-| 데이터·평가·예산 | 평가셋, 품질 지표, token/time/retry/chain budget |
+| LLM 탐색·체이닝 | 제약형 가설 후보, Research·Primitive chaining, token 최적화 |
+| 정적분석·컨텍스트 | 정적 사실 계층과 동일 snapshot 위치 기반 context |
+| 통합·구현 개발 | 통합 구현 가능성, 계약 준수 테스트와 모듈 조립 검토 |
+| PM·아키텍처·워크플로 | Control Plane, 중앙 계약, 사람·LLM 경계, 오류 정책 |
+| Gate·Finding·보고서 | 이중 Gate, 내부 FindingCandidate/ReportDraft, human handoff |
+| 검증·반박·플레이북 | Verification 판정, 독립 Pro/Con 근거와 검증 절차 |
+| 동적검증·Sandbox | 승인된 Docker 재현, PoC와 sandbox evidence |
+| 데이터·평가·예산 | 평가 corpus, 품질·관측 지표와 자원 budget |
 
 Gate는 Verification verdict를 변경하거나 공개를 승인하지 않습니다. Reporter는 보고서 초안만 작성하며, 사람만 최종 공개를 결정합니다.
 
 ## 설계 초안
 
-Architecture v5 정본과 Wiki는 통합 브랜치에서 검토합니다.
+Architecture v5 candidate baseline과 파생 Wiki는 `main`에서 확인하고 파트별 PR로 검토합니다.
 
-- [Architecture v5 review branch](https://github.com/SASTsimi/sastsimi/tree/docs/architecture-v5-review)
-- [Architecture v5 design hub](https://github.com/SASTsimi/sastsimi/tree/docs/architecture-v5-review/docs/architecture-v5)
+- [Architecture v5 design hub](./docs/architecture-v5/README.md)
+- [역할별 검토 Issue 구조](./docs/review/ISSUE_CATALOG.md)
 
 ## 안전 원칙
 

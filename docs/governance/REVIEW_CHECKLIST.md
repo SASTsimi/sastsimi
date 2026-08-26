@@ -40,7 +40,7 @@
 - [ ] 정본 23단계가 README, overview, Wiki와 Mermaid에서 일치합니다.
 - [ ] 정본/Wiki Mermaid가 동일하며 실제 렌더링됩니다.
 - [ ] broken local link와 Markdown fence 오류가 0입니다.
-- [ ] 모든 역할 Issue와 PR이 integration Draft PR에 연결됩니다.
+- [ ] 모든 역할 Issue와 `main` 대상 파트 PR이 최종 승인 Issue/PR에 연결됩니다.
 - [ ] 모든 Blocker/High가 닫혔습니다.
 - [ ] Medium은 해결되었거나 owner·근거·목표 시점과 함께 연기되었습니다.
 - [ ] 최종 review freeze commit SHA를 PR에 기록했습니다.

@@ -1,0 +1,18 @@
+:root {
+  --theme-color: #155eef;
+  --base-font-size: 16px;
+  --content-max-width: 1040px;
+}
+
+body {
+  color: #172b4d;
+}
+
+.markdown-section code {
+  border-radius: 4px;
+}
+
+.markdown-section table {
+  display: table;
+  width: 100%;
+}

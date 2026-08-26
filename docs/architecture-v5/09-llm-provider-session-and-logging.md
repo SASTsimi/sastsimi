@@ -1,0 +1,118 @@
+# 09. LLM provider, session과 logging
+
+> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+
+## 목표
+
+Agent 역할을 특정 로그인 방식이나 API에 결합하지 않고, provider별 인증을 공통 invocation 경계 뒤에 둔다. API provider는 공식 API/SDK 경계이며, membership session은 공식 지원·이용약관·동시성·session/log 가용성 검토를 통과해야 채택할 수 있는 **optional experimental adapter**다. 어느 방식도 아직 구현·검증 완료 또는 기본 provider로 선언하지 않는다.
+
+## 연결 구조
+
+```text
+Agent Runtime
+→ LLM Logging Proxy
+→ LLMProviderAdapter
+   ├─ MembershipSessionAdapter
+   └─ APIProviderAdapter
+```
+
+Agent Runtime은 역할·structured-output 요구·context reference·budget·session policy를 요청한다. Adapter는 provider별 인증·호출·오류·usage를 공통 결과로 정규화한다. Logging Proxy는 양쪽에서 노출된 요청·응답·tool trace와 실제 선택을 `LLMInvocationLog`로 연결한다.
+
+## 공통 adapter 책임
+
+- provider profile과 model을 명시적으로 선택
+- `LLMInvocationRequest`를 provider 호출로 변환
+- structured response와 status를 공통 결과로 정규화
+- timeout, cancellation, rate limit와 auth-required 전달
+- provider가 공개한 usage만 출처와 함께 기록
+- credential을 Agent prompt/result/log에서 제외
+- retry와 failover를 새 invocation으로 식별
+
+provider/model을 조용히 바꾸는 failover는 금지한다. 허용된 fallback이 있더라도 원래 실패, 새 provider/model, 이유, 새 session과 결과를 별도 invocation으로 남긴다.
+
+## MembershipSessionAdapter
+
+현재 상태는 `EXPERIMENTAL / FEASIBILITY_REQUIRED`다. 아래 조건을 만족하기 전에는 supported runtime path로 표시하거나 운영 기본값으로 선택하지 않는다.
+
+- 사용자가 공식적으로 로그인한 client/session을 사용할 수 있는 구현 경계
+- password를 받거나 session credential을 Agent에 전달하지 않음
+- session 만료·재인증 필요를 `AUTH_REQUIRED`로 반환
+- provider client가 공개하는 범위에서 response와 usage 정규화
+- 공식 지원·이용약관·조직 정책·동시성 제한을 구현 전에 확인
+
+UI 자동화나 session 재사용이 공식 지원 범위 밖이라면 구현 완료로 표시하지 않는다. raw cookie, token, browser profile path를 결과에 포함하지 않는다.
+
+## APIProviderAdapter
+
+- 공식 API/SDK를 통한 호출 경계
+- API key, service credential과 organization identifier는 secret manager 또는 승인된 실행 환경에서만 주입
+- repository, fixture, prompt, report와 일반 log에 secret을 저장하지 않음
+- provider/model/version, request id, 공개 usage와 rate-limit 상태 정규화
+- key 부재는 membership adapter 선택과 별개의 configuration 상태
+
+API 방식이 허용되어도 특정 provider를 기본값으로 확정하는 것은 별도 ADR 대상이다.
+
+## SessionPolicy
+
+각 invocation은 `NEW | RESUME | AUTO` 중 하나를 요청한다.
+
+- `NEW`: 이전 대화 문맥을 상속하지 않는 새 session
+- `RESUME`: 명시한 parent session을 계속 사용; adapter가 지원하지 않으면 오류 또는 명시적 새 호출로 처리
+- `AUTO`: 역할·가설·작업 관계를 바탕으로 runtime policy가 선택
+
+### AUTO 기본 규칙
+
+| 관계 | 기본 결정 |
+|---|---|
+| 같은 역할·같은 가설의 추가 retrieval | `RESUME` 가능 |
+| 같은 Verification의 Technical Gate revision 대응 | `RESUME` 가능 |
+| 서로 다른 hypothesis | `NEW` |
+| Pro와 Con | 각각 `NEW` |
+| Verification과 Technical Gate | `NEW` |
+| Technical Gate와 Rule Scope Impact Gate | `NEW` |
+| Verification과 Research | `NEW` |
+| Gate와 Reporter | `NEW` |
+
+정책은 설정 가능하며 실제 결정, 이유, parent session reference를 기록한다. session reuse는 반복 context token을 줄일 수 있지만 confirmation bias와 prompt contamination을 키울 수 있으므로 품질·비용 평가 없이 광범위하게 적용하지 않는다.
+
+## 역할별 모델 선택
+
+- Hypothesis Agent에는 저비용 모델 profile을 구성할 수 있다.
+- Verification, Research와 두 Gate에는 과업 위험도에 맞는 별도 profile을 구성할 수 있다.
+- 특정 역할의 가격 등급이 정확도를 보장하지 않는다.
+- 모델·provider 변경은 versioned configuration과 evaluation 대상으로 관리한다.
+
+## Logging Proxy와 fallback parser
+
+Logging Proxy는 다음만 기록한다.
+
+- exposed request/response artifact reference
+- provider/model/role/session metadata
+- 실제 전달된 context와 retrieved code locations
+- exposed tool-call trace
+- parsed output, schema error와 repair attempt
+- status, 공개 usage, elapsed, retry/failover relation
+- redaction 결과
+
+membership client에 proxy를 안정적으로 배치할 수 없으면 `raw session log → provider-specific parser → redaction → normalized LLMInvocationLog` fallback을 사용한다. raw log 접근 권한과 보존기간을 최소화하고 parser 버전·누락·실패를 기록한다.
+
+hidden chain-of-thought를 요구·수집·복원하지 않는다. 사용자에게 노출된 응답과 tool trace만 저장 대상으로 삼는다.
+
+## 인증·오류 lifecycle
+
+1. Runtime이 adapter capability와 인증 사용 가능 여부를 확인한다.
+2. 호출할 수 없으면 `AUTH_REQUIRED` 또는 명시적 provider error를 반환한다.
+3. Orchestration은 이를 가설 `FALSE`로 바꾸지 않는다.
+4. 제한 retry, 사용자 재인증 또는 구성된 explicit fallback을 선택한다.
+5. 모든 시도는 독립 invocation/attempt로 저장한다.
+
+동시성·rate limit의 backpressure도 취약점 판정과 분리한다.
+
+## 구현 전 검토 항목
+
+- provider별 공식 지원과 이용약관
+- membership/API credential 저장·회전·폐기 방식
+- session resume 지원 여부와 session identifier 민감도
+- structured-output/tool-call 차이
+- raw log parser의 안정성·redaction·retention
+- 역할별 비용/정확도, session reuse와 debate 정책의 실험 결과
