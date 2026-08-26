@@ -89,6 +89,8 @@ root README의 역할별 검토 안내에서 Parent Epic과 Issue tracker를 직
 
 ### Task 3: 문서 검증과 Draft PR
 
+**Live Draft PR:** [#11](https://github.com/SASTsimi/sastsimi/pull/11)
+
 **Files:**
 - Verify: 모든 Markdown과 `docs/architecture-v5/13-architecture-diagrams.md`
 - Commit: Task 1~2 문서 변경
@@ -105,14 +107,14 @@ root README의 역할별 검토 안내에서 Parent Epic과 Issue tracker를 직
 
 정본/Wiki 다이어그램이 동일하고 Mermaid 블록이 8개인지 확인한다. 상태 표현은 계속 `REVIEW_REQUIRED / NOT_IMPLEMENTED`여야 한다.
 
-- [ ] **Step 3: Commit과 push**
+- [x] **Step 3: Commit과 push**
 
 `docs: link Architecture v5 role review issues` 메시지로 commit하고 `docs/role-review-governance` 브랜치를 push한다.
 
-- [ ] **Step 4: Draft PR 생성**
+- [x] **Step 4: Draft PR 생성**
 
 `main` 대상으로 `[Draft] Architecture v5 역할별 Issue와 governance 연결` PR을 만들고, 생성된 Parent Epic과 R1~R8, Final Issue를 본문에 링크한다. 이 PR은 governance 연결 검토용이며 Architecture 승인이나 구현 완료를 뜻하지 않는다고 명시한다.
 
-- [ ] **Step 5: 원격 검증**
+- [x] **Step 5: 원격 검증**
 
 Issue 10개, Draft PR 1개, 브랜치 HEAD, PR base/head와 문서 링크가 실제 GitHub에서 일치하는지 확인한다.
