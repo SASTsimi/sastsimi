@@ -1,6 +1,14 @@
 # Agent 역할
 
-| Agent | 핵심 책임 | 직접 할 수 없는 일 |
+## 쉽게 말하면
+
+각 LLM Agent가 맡는 일과 직접 결정하면 안 되는 일을 한눈에 보여 줍니다. 프로그램 규칙 검사기와 사람의 최종 결정을 LLM Agent가 대신하지 않습니다.
+
+**상세 기준:** [03. Agent 역할과 오케스트레이션](../03-agent-roles-and-orchestration.md)
+
+모르는 단어는 [쉬운 용어집](../../GLOSSARY.md)에서 확인하세요.
+
+| Agent | 쉽게 말한 핵심 책임 | 직접 할 수 없는 일 |
 |---|---|---|
 | Orchestration | run·가설 lifecycle과 다음 action 제안·조정 | runtime enforcement, Finding·공개 결정 |
 | Hypothesis | schema-valid `HYPOTHESIS_ONLY` 제안 생성 | verdict, Finding, exploitability 확정 |

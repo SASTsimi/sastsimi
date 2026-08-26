@@ -1,47 +1,51 @@
 # Architecture v5 미결정 사항
 
-이 문서는 현재 열린 질문의 색인입니다. 실제 토론·owner·기한·결정은 [Parent Epic #1](https://github.com/SASTsimi/sastsimi/issues/1)과 [실제 Issue tracker](../review/ISSUE_TRACKER.md)에서 관리하고, 결정된 결과는 관련 정본 문서와 PR에 반영합니다.
+이 문서는 아직 팀이 결정하지 못한 내용을 모아 둡니다. 실제 토론, 담당자, 기한과 결정 결과는 [PM 전체 관리 Issue #1](https://github.com/SASTsimi/sastsimi/issues/1)과 [실제 Issue 현황](../review/ISSUE_TRACKER.md)에서 관리합니다. 결정한 내용은 관련 기준 문서와 PR에 반영해야 합니다.
+
+각 항목은 ‘무엇을 정해야 하는가’, ‘정하지 않으면 어떤 문제가 생기는가’, ‘누가 어느 Issue에서 다루는가’ 순서로 읽으면 됩니다.
 
 ## Blocker
 
-1. 대체 reviewer와 GitHub 권한 매핑
-   - 완료된 내용: 8개 역할의 담당자와 GitHub username 매핑
-   - 필요한 결정: `@v1sion`, `@meow`, `@kimhr8465`, `@UltraPaechKeen`의 저장소 assignee 선택 가능 여부, 역할별 대체 reviewer, 중앙 계약 승인 가능 여부, branch merge 권한
-   - 처리 Issue: [R4 #5](https://github.com/SASTsimi/sastsimi/issues/5)
-   - 제약: 확인 전 일부 Issue의 실제 assignee 배정, CODEOWNERS와 필수 승인 규칙 자동화 불가
-2. Independent final reviewer 지정
-   - 필요한 결정: 작성자·design review coordinator와 다른 승인자 GitHub username
-   - 처리 Issue: [Final #10](https://github.com/SASTsimi/sastsimi/issues/10)
-   - 제약: 지정 전 candidate baseline의 최종 승인 PR을 Ready로 전환할 수 없음
+1. 대체 검토자와 GitHub 권한
+   - 확정된 내용: 8개 역할의 담당자와 GitHub 사용자명은 모두 정했습니다.
+   - 무엇을 정해야 하나: `@v1sion`, `@meow`, `@kimhr8465`, `@UltraPaechKeen`을 실제 GitHub 담당자로 선택할 수 있는지, 역할별 대체 검토자는 누구인지, 중앙 문서 승인과 브랜치 병합 권한은 누구에게 있는지 정해야 합니다.
+   - 정하지 않으면 생기는 문제: 일부 Issue의 실제 담당자 지정과 `CODEOWNERS` 기반 자동 검토 요청을 설정할 수 없습니다.
+   - 담당 역할과 Issue: PM·아키텍처·워크플로, [#5](https://github.com/SASTsimi/sastsimi/issues/5)
+2. 독립 최종 검토자 지정
+   - 무엇을 정해야 하나: 문서 작성자와 설계 검토 진행 담당이 아닌 최종 검토자의 GitHub 사용자명을 정해야 합니다.
+   - 정하지 않으면 생기는 문제: 검토 중인 설계 초안을 최종 승인 단계로 바꿀 수 없습니다.
+   - 담당 역할과 Issue: 저장소 관리 담당, [#10](https://github.com/SASTsimi/sastsimi/issues/10)
 3. 저장소 라이선스와 외부 기여 범위
-   - 필요한 결정: 공개 열람만 허용할지, 외부 수정·재사용을 어떤 license로 허용할지
-   - 처리 Issue: [R4 #5](https://github.com/SASTsimi/sastsimi/issues/5)
-   - 제약: 결정 전 외부 기여를 적극 모집하지 않음
+   - 무엇을 정해야 하나: 공개 열람만 허용할지, 외부 수정과 재사용을 어떤 라이선스로 허용할지 정해야 합니다.
+   - 정하지 않으면 생기는 문제: 외부 기여자에게 허용되는 사용 범위를 명확하게 안내할 수 없습니다.
+   - 담당 역할과 Issue: 저장소 관리 담당, [#5](https://github.com/SASTsimi/sastsimi/issues/5)
 
 ## 구현 전 필수 결정
 
-1. 역할별 provider/model profile과 공식 지원 범위
-2. Membership/API credential와 session 저장 경계
-3. `NEW | RESUME | AUTO` 평가 방법과 기본 limit
-4. Hypothesis schema repair 횟수와 confidence 평가 기준
-5. Context retrieval depth/token/request 제한
-6. CONDITIONAL_DEBATE trigger와 비용·정확도 비교 corpus
-7. Primitive vocabulary와 scope/capability matching 규칙
-8. Research/chain depth·count·token·time·duplicate 제한
-9. Docker image, network, resource와 cleanup 정책
-10. ProgramPolicySnapshot 공식 source 수집·freshness·실패 처리
-11. 두 Gate prompt, revision limit와 평가 dataset
-12. LLM logging proxy/parser, redaction, retention과 접근통제
-13. serialization, schema versioning과 result storage
-14. `RepositorySnapshot`, `ArtifactRef`, `LocationRef`, `EntityRef`의 식별자·불변성·submodule/LFS/generated dependency 계약
-15. 병렬 가설, retry와 Gate revision의 원자적 상태 전이·idempotency·crash resume 규칙
-16. Membership adapter의 공식 지원·약관·동시성·session/log 가용성 검증과 실험 종료 조건
-17. Docker daemon/image/build provenance와 policy source 인증·freshness를 위한 별도 threat model/ADR
-18. 조건부 debate, 독립 session, 두 LLM Gate와 provider/model 선택을 검증할 versioned corpus·지표·합격 임계값
+| 번호 | 쉽게 말하면 무엇을 정해야 하나 | 정확한 기술 항목 |
+|---|---|---|
+| 1 | 역할별로 어떤 LLM 서비스와 모델을 쓸지 정합니다. | provider/model profile과 공식 지원 범위 |
+| 2 | 회원 로그인·API 인증정보와 로그인 상태를 어디까지 저장할지 정합니다. | Membership/API credential와 session 저장 경계 |
+| 3 | 새 대화, 이어서 대화, 자동 선택을 어떻게 비교하고 기본 한도를 얼마로 할지 정합니다. | `NEW / RESUME / AUTO` 평가와 기본 limit |
+| 4 | LLM이 잘못된 형식으로 답했을 때 몇 번 고치게 할지와 신뢰도 평가 방법을 정합니다. | Hypothesis schema repair 횟수와 confidence 기준 |
+| 5 | 필요한 코드를 얼마나 깊고 많이 가져올 수 있는지 정합니다. | Context retrieval depth/token/request 제한 |
+| 6 | 찬성·반대 검증을 언제 실행할지와 효과를 비교할 예제 모음을 정합니다. | `CONDITIONAL_DEBATE` trigger와 비교 corpus |
+| 7 | 연계 공격의 필요 조건과 확인된 능력을 어떤 단어로 기록하고 연결할지 정합니다. | Primitive vocabulary와 scope/capability matching |
+| 8 | 연계 탐색이 끝없이 늘어나지 않도록 한도를 정합니다. | Research/chain depth·count·token·time·duplicate 제한 |
+| 9 | Docker 이미지, 네트워크, 자원과 종료 후 정리 방법을 정합니다. | image/network/resource/cleanup 정책 |
+| 10 | 공식 프로그램 정책을 어디서 가져오고 최신 여부와 실패를 어떻게 처리할지 정합니다. | `ProgramPolicySnapshot` source·freshness·failure |
+| 11 | 두 Gate가 사용할 질문, 보완 반복 횟수와 평가 자료를 정합니다. | Gate prompt, revision limit와 dataset |
+| 12 | LLM 호출 기록에서 비밀정보를 가리고 얼마나 보관할지 정합니다. | logging proxy/parser, redaction, retention, access control |
+| 13 | 데이터를 저장하고 버전을 바꿀 때 호환성을 어떻게 지킬지 정합니다. | serialization, schema versioning, result storage |
+| 14 | 저장소·파일·코드 위치를 같은 분석 시점에 묶는 식별 규칙을 정합니다. | `RepositorySnapshot`, `ArtifactRef`, `LocationRef`, `EntityRef`, submodule/LFS/generated dependency 계약 |
+| 15 | 병렬 실행·재시도·중단 복구 중 같은 작업이 중복 처리되지 않도록 정합니다. | atomic state transition, idempotency, crash resume |
+| 16 | 회원제 LLM 연결이 공식적으로 허용되고 안정적으로 동작하는지 확인할 종료 조건을 정합니다. | Membership adapter 지원·약관·동시성·session/log 검증 |
+| 17 | Docker 실행과 공식 정책 수집에서 생길 위협과 대응을 별도 결정 기록으로 남깁니다. | daemon/image/build provenance, policy 인증·freshness threat model/ADR |
+| 18 | 세션·Gate·모델 선택이 실제 품질을 높이는지 같은 예제로 비교할 합격선을 정합니다. | versioned corpus, 지표와 acceptance threshold |
 
-## Issue routing
+## 어느 Issue에서 결정하나요?
 
-| 결정 영역 | 담당 Issue |
+| 결정 영역 | 담당 역할별 상위 Issue |
 |---|---|
 | provider/model, membership/session, 상태 저장·복구 | [R3 #4](https://github.com/SASTsimi/sastsimi/issues/4), [R4 #5](https://github.com/SASTsimi/sastsimi/issues/5) |
 | Hypothesis, Primitive, Research와 chaining 한도 | [R1 #2](https://github.com/SASTsimi/sastsimi/issues/2) |
@@ -51,15 +55,15 @@
 | Gate, 공식 정책과 보고서 전달 | [R5 #6](https://github.com/SASTsimi/sastsimi/issues/6) |
 | corpus, 지표, 합격 기준과 자원 예산 | [R8 #9](https://github.com/SASTsimi/sastsimi/issues/9) |
 
-## 결정 기록 형식
+## 결정을 남기는 형식
 
 각 결정 Issue는 다음을 포함합니다.
 
-- Context
-- 선택 가능한 Options
-- Security/quality/cost trade-off
-- Decision owner
-- Required reviewers
-- Target date
-- Outcome
-- 반영한 PR/commit
+- 현재 상황과 문제(`Context`)
+- 선택할 수 있는 방법(`Options`)
+- 보안·품질·비용의 장단점(`trade-off`)
+- 결정 담당자
+- 반드시 확인할 검토자
+- 목표 날짜
+- 최종 결정과 근거
+- 반영한 PR과 commit
