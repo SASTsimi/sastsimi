@@ -1,0 +1,19 @@
+# 결과와 디버깅
+
+`AnalysisRunResult`는 다음을 함께 찾을 수 있게 한다.
+
+- repository/commit/snapshot과 시작·종료·총 실행 시간
+- initial/derived/chained/invalid 가설 수와 verdict별 개수
+- 위치 기반 context 요청·응답과 실제 조회 location
+- Verification, debate mode/trigger/skip, restriction와 capability
+- Docker 결과, redacted PoC와 cleanup
+- Primitive match, Research 후보와 재검증 여부
+- Technical 및 Rule Scope Impact Gate와 공식 policy snapshot
+- 보고서 초안과 사람 검토 상태
+- 역할/provider/model/session별 LLM invocation log
+- AST/SAST·LLM·sandbox 자원과 모든 오류
+- 상태와 artifact reference를 연결한 debug trace
+
+Proxy가 어려운 membership 호출은 raw session log → provider parser → redaction 경로를 쓴다. 사용자에게 노출된 request/response/tool trace만 기록하고 hidden chain-of-thought와 credential은 저장하지 않는다. 오류는 `FALSE`와 구분한다.
+
+상세 내용은 [결과 저장과 관측성](../07-results-and-observability.md)을 따른다.
