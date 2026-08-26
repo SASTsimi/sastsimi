@@ -1,0 +1,88 @@
+name: Architecture v5 파트 리뷰
+description: 담당 영역의 역할·계약·오류·보안 경계를 검토하고 수정합니다.
+title: "[Architecture v5][파트] "
+labels:
+  - documentation
+body:
+  - type: dropdown
+    id: owner_role
+    attributes:
+      label: 담당 역할
+      options:
+        - LLM 탐색·체이닝
+        - 정적분석·컨텍스트
+        - 통합·구현 개발
+        - PM·아키텍처·워크플로
+        - Gate·Finding·보고서
+        - 검증·반박·플레이북
+        - 동적검증·Sandbox
+        - 데이터·평가·예산
+    validations:
+      required: true
+  - type: textarea
+    id: purpose
+    attributes:
+      label: 목적과 검토 범위
+      description: 이 파트가 전체 pipeline에서 책임지는 범위와 비목표를 작성합니다.
+    validations:
+      required: true
+  - type: input
+    id: pipeline_steps
+    attributes:
+      label: 영향받는 pipeline 단계
+      placeholder: "예: 3-4, 9, 18"
+    validations:
+      required: true
+  - type: textarea
+    id: owned_docs
+    attributes:
+      label: 담당 문서와 코드 경계
+      description: 직접 수정할 문서와 중앙 통합을 요청할 문서를 구분합니다.
+    validations:
+      required: true
+  - type: textarea
+    id: contracts
+    attributes:
+      label: 입력·출력 계약
+      description: 입력 record/state, 출력 record/state, 생산자와 소비자를 작성합니다.
+    validations:
+      required: true
+  - type: textarea
+    id: authority
+    attributes:
+      label: 권한과 금지 경계
+      description: 이 역할이 결정할 수 있는 것, 할 수 없는 것과 Human-only 결정을 작성합니다.
+    validations:
+      required: true
+  - type: textarea
+    id: failure_budget_security
+    attributes:
+      label: 오류·예산·보안
+      description: 오류/HOLD/timeout, token/time/retry/chain, credential/sandbox/disclosure 경계를 작성합니다.
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: 의존 파트와 필수 리뷰어
+      description: upstream, downstream, 공동 계약과 필요한 역할 리뷰어를 작성합니다.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 완료 조건
+      description: 검토 가능한 명시적 acceptance criteria를 작성합니다.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 공통 체크리스트
+      options:
+        - label: 새 Research/bypass/impact 주장은 새 가설로 재검증됩니다.
+        - label: Reporter 이전에 Technical Gate와 Rule Scope Impact Gate가 모두 존재합니다.
+        - label: 공식 정책이 없으면 UNCERTAIN + DENY입니다.
+        - label: 오류와 미지원 상태를 FALSE로 변환하지 않습니다.
+        - label: 사람만 최종 공개를 결정합니다.
+        - label: Blocker/High를 해결하고 Medium/Low를 기록합니다.
