@@ -11,12 +11,13 @@
 
 | ID | 상태 | 쉽게 말하면 | 정확한 문제 | 처리·완료 조건 | 담당 역할 | Issue |
 |---|---|---|---|---|---|---|
-| B-001 | IN_PROGRESS | 역할은 정했지만 #3·#6·#7의 실제 담당자 계정이 팀이 알려 준 계정과 다르고, `@v1sion`은 공동 담당자로 지정되지 않았습니다. | 계정 관계와 공동 담당 여부, 대체 검토자·승인·병합 권한 미확정 | 실제 계정 관계와 접근 권한, 대체 검토자와 권한을 확인하고 GitHub 담당자, `CODEOWNERS`, 필수 검토 규칙에 반영 | PM·아키텍처·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
-| B-002 | OPEN | 최종 설계를 독립적으로 확인할 사람이 아직 없습니다. | 독립 최종 검토자 미지정 | 작성자·설계 검토 진행 담당과 다른 검토자를 지정하고 고정된 최신 commit을 승인 | 저장소 관리 담당 | [#10](https://github.com/SASTsimi/sastsimi/issues/10) |
-| B-003 | OPEN | 외부 사람이 이 저장소를 수정·재사용해도 되는 범위가 없습니다. | 공개 저장소의 라이선스와 외부 기여 정책 미결정 | 허용 범위를 결정하고 `LICENSE`와 `CONTRIBUTING.md`에 반영 | 저장소 관리 담당 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
+| B-001 | RESOLVED | 역할 담당자와 실제 GitHub 계정을 확정했습니다. | #3 `@zv9uvr`, #6 `@kimhr8463`, #7 `@UltraPeachKeen`을 실제 계정으로 확정했고 `@v1sion`의 역할과 assignee 상태를 분리함 | 역할표·Issue·tracker를 실제 계정으로 통일하고 CODEOWNERS는 후속 개선으로 관리 | PM·아키텍처·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
+| B-002 | RESOLVED | 최종 결과를 확인하고 승인 준비를 관리할 담당자를 정했습니다. | 최종 검토·승인 담당자 미지정 | 김태현 `@taehyeon-git`을 지정하고, 파트 간 교차 검토 후 전체 검토를 수행하는 절차를 문서화 | 저장소 관리 담당 | [#10](https://github.com/SASTsimi/sastsimi/issues/10) |
 | B-004 | RESOLVED | 가져온 원본이 commit에 없었기 때문에 특정 commit에서 나온 파일이라고 말할 수 없습니다. | 원본이 commit되지 않은 작업 폴더라 commit 출처를 주장할 수 없음 | [가져온 출처 기록](./PROVENANCE.md)에 원본 상태와 파일 해시를 기록 | PM·아키텍처·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
 | B-005 | RESOLVED | 검토 중인 초안이 승인된 최종 설계처럼 보였습니다. | candidate가 승인된 기준 문서처럼 표현됨 | root/v5/Wiki에 검토 중인 설계 초안과 승인·동기화 경계를 명시 | PM·아키텍처·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
 | B-006 | RESOLVED | LLM이 보안 규칙을 마음대로 바꿀 수 있는 것처럼 읽힐 수 있었습니다. | LLM Orchestration이 보안 강제 권한을 가진 것으로 해석될 수 있음 | 비-LLM 프로그램 규칙 검사기와 모든 LLM 출력의 비신뢰 경계를 명시 | PM·아키텍처·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
+
+현재 열린 Blocker는 0개입니다.
 
 ## High
 
@@ -31,6 +32,7 @@
 
 ## Medium/Low backlog
 
+- B-003에서 제기한 저장소 라이선스와 외부 기여 범위는 설계·개발의 Blocker가 아니므로 공개 배포 또는 외부 기여를 받기 전 결정사항으로 재분류했다. 결정 전에는 `LICENSE`를 추가하지 않으며, 공개 방침을 정할 때 라이선스 후보와 `CONTRIBUTING.md` 범위를 함께 확정한다.
 - Wiki는 사용자 요구에 따라 포함했으나 파생·비규범적으로 유지한다. 장기적으로 번호 문서에서 생성·검증하는 방식을 결정한다.
 - `11-migration-from-v4.md`는 비규범적 설계 계보로 전환했으며 로컬 v4 경로 주장을 제거했다.
 - Primitive 입력은 `TRUE`의 PROVIDED와 `HOLD`의 REQUIRED로 명확화했다. `FALSE`를 chaining 근거로 승격하지 않는다.
@@ -43,5 +45,5 @@
 2. Medium은 해결되거나 담당자·근거·목표 시점과 함께 명시적으로 연기된다.
 3. [최종 Issue #10](https://github.com/SASTsimi/sastsimi/issues/10)과 최종 승인 PR에 검토 대상을 고정한 commit SHA를 기록한다.
 4. 검토 대상을 고정한 뒤 변경이 생기면 기존 승인을 무효화하고 재검토한다.
-5. 독립 최종 검토자가 최신 SHA를 승인한다.
+5. 각 파트의 교차 검토 기록을 확인한 뒤 최종 검토·승인 담당자 김태현 `@taehyeon-git`이 최신 SHA를 확인한다.
 6. 별도 승인 PR에서만 상태를 변경한다.

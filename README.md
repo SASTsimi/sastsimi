@@ -128,11 +128,11 @@ main  ← Architecture v5 candidate baseline
 | 역할 | 담당자 | 핵심 책임 |
 |---|---|---|
 | LLM 탐색·체이닝 | 배승원 ([@baeseungwon1010](https://github.com/baeseungwon1010)) | 검증할 취약점 후보 생성, 탐색 방식, 취약점 연결과 token 최적화 |
-| 정적분석·컨텍스트 | 김나연 ([@meow](https://github.com/meow)) | AST·CodeQL·OpenGrep 결과 정리, 코드 위치·호출 흐름과 LLM용 context 조립 |
+| 정적분석·컨텍스트 | 김나연 ([@zv9uvr](https://github.com/zv9uvr)) | AST·CodeQL·OpenGrep 결과 정리, 코드 위치·호출 흐름과 LLM용 context 조립 |
 | 단독 구현·통합 개발 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@v1sion](https://github.com/v1sion)) | 전체 모듈의 구현 가능성, 계약 준수 테스트와 통합 계획 검토 |
 | PM·아키텍처·워크플로 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@v1sion](https://github.com/v1sion)) | 전체 구조, 공통 입출력 계약, 사람·LLM 경계, 병렬·직렬 흐름과 오류 정책 |
-| Gate·Finding·보고서 | 김혜령 ([@kimhr8465](https://github.com/kimhr8465)) | 검증 근거·정책 범위 검토, 내부 Finding과 보고서 초안, 사람 검토 전달 준비 |
-| 검증·반박·플레이북 | 임채민 ([@UltraPaechKeen](https://github.com/UltraPaechKeen)) | 찬성·반대 근거 종합, `TRUE/FALSE/HOLD` 판정과 취약점별 검증 절차 |
+| Gate·Finding·보고서 | 김혜령 ([@kimhr8463](https://github.com/kimhr8463)) | 검증 근거·정책 범위 검토, 내부 Finding과 보고서 초안, 사람 검토 전달 준비 |
+| 검증·반박·플레이북 | 임채민 ([@UltraPeachKeen](https://github.com/UltraPeachKeen)) | 찬성·반대 근거 종합, `TRUE/FALSE/HOLD` 판정과 취약점별 검증 절차 |
 | 동적검증·Sandbox | 조근석 ([@Potatonion](https://github.com/Potatonion)) | Docker 기반 제한 재현, PoC와 sandbox 실행 결과 검증 |
 | 데이터·평가·예산 | 성병찬 ([@gitterable](https://github.com/gitterable)) | 평가 데이터와 품질 지표, token·시간·재시도·반복 제한 |
 

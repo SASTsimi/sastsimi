@@ -1,6 +1,6 @@
 # Architecture v5 역할별 Issue 카탈로그
 
-이 문서는 역할별 상위 Issue에서 무엇을 검토하고 어떤 세부 하위 Issue를 만들지 안내합니다. 실제 Issue와 담당자 상태는 [Issue 현황](./ISSUE_TRACKER.md)에서 확인합니다. 현재 단계는 **설계 검토**이며 실행 코드(`runtime`) 구현은 범위 밖입니다. 역할 담당자는 모두 정해졌습니다. 다만 #3·#6·#7은 팀이 알려 준 계정과 실제 지정된 사용자명이 달라 PM 확인이 필요하고, 독립 최종 검토자는 지정 전까지 비워 둡니다. 모르는 기술 용어는 [쉬운 용어집](../GLOSSARY.md)에서 확인합니다.
+이 문서는 역할별 상위 Issue에서 무엇을 검토하고 어떤 세부 하위 Issue를 만들지 안내합니다. 실제 Issue와 담당자 상태는 [Issue 현황](./ISSUE_TRACKER.md)에서 확인합니다. 현재 단계는 **설계 검토**이며 실행 코드(`runtime`) 구현은 범위 밖입니다. 역할 담당자와 실제 GitHub 계정, 최종 검토·승인 담당자는 모두 정해졌습니다. 모르는 기술 용어는 [쉬운 용어집](../GLOSSARY.md)에서 확인합니다.
 
 ## 공통 작업 방식
 
@@ -147,7 +147,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 역할 소유권
 
 - 담당 역할: 정적분석·컨텍스트
-- 담당자: 김나연 `@meow`
+- 담당자: 김나연 `@zv9uvr`
 - 주요 작업 브랜치: `review/static-context`
 - 관련 흐름: 저장소 버전 고정 → AST/SAST 병렬 실행 → 사실 묶음 생성 → 필요한 코드 위치 조회
 
@@ -299,7 +299,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] retry/failover가 새 attempt/invocation이며 이력을 보존함
 - [ ] chain/repair/Gate revision/sandbox/token/time 한도의 enforcement owner가 비-LLM runtime으로 명시됨
 - [ ] persistence/recovery/atomicity/idempotency 계약이 합의됨
-- [ ] team username, 대체 reviewer와 independent reviewer가 매핑됨
+- [ ] 실제 GitHub 계정과 최종 검토·승인 담당자가 문서와 Issue에서 일치함
 - [ ] conflict resolution, freeze SHA와 승인·구현 저장소 동기화 규칙이 확정됨
 
 ---
@@ -322,7 +322,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 역할 소유권
 
 - 담당 역할: Gate·Finding·보고서
-- 담당자: 김혜령 `@kimhr8465`
+- 담당자: 김혜령 `@kimhr8463`
 - 주요 작업 브랜치: `review/gate-reporting`
 - 관련 흐름: CWE 라벨링 → 기술 근거 검토 → 공식 정책·영향 검토 → 보고서 초안 → 사람 검토용 자료 저장
 
@@ -383,7 +383,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 역할 소유권
 
 - 담당 역할: 검증·반박·플레이북
-- 담당자: 임채민 `@UltraPaechKeen`
+- 담당자: 임채민 `@UltraPeachKeen`
 - 주요 작업 브랜치: `review/verification`
 - 관련 흐름: 가설별 검증 시작 → 찬성·반대 근거 수집 → 필요 시 동적 재현 → 최종 판정 → 근거 보완 요청 처리
 
@@ -550,13 +550,13 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 쉽게 말하면
 
-각 파트 문서를 따로 읽는 데서 끝내지 않고 실제 분석 한 건이 처음부터 마지막까지 모순 없이 흐르는지 팀 전체가 확인한다. 검토할 commit을 고정한 뒤 독립 검토자가 최신 상태를 승인해야 최종 승인 PR로 넘어갈 수 있다.
+각 파트 문서를 따로 읽는 데서 끝내지 않고 실제 분석 한 건이 처음부터 마지막까지 모순 없이 흐르는지 팀 전체가 확인한다. 각 파트가 서로 교차 검토하고, 검토할 commit을 고정한 뒤 최종 검토·승인 담당자가 최신 상태를 확인해야 최종 승인 PR로 넘어갈 수 있다.
 
 ### 역할 소유권
 
-- 담당 역할: 독립 최종 검토자
-- GitHub 담당자: 아직 정하지 않음
-- 필수 참여자: `@baeseungwon1010`, `@meow`, `@taehyeon-git`, `@v1sion`, `@kimhr8465`, `@UltraPaechKeen`, `@Potatonion`, `@gitterable`
+- 담당 역할: 최종 검토·승인 담당자
+- GitHub 담당자: 김태현 `@taehyeon-git`
+- 필수 참여자: `@baeseungwon1010`, `@zv9uvr`, `@taehyeon-git`, `@v1sion`, `@kimhr8463`, `@UltraPeachKeen`, `@Potatonion`, `@gitterable`
 - 전제: R1–R8 완료, 열린 Blocker/High 0, 최종 승인 PR에 freeze SHA 게시
 
 ### 필수 시나리오
@@ -588,7 +588,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] 모든 핵심 claim을 원본 artifact와 decision PR에 추적 가능함
 - [ ] `FINDINGS.md`의 Blocker/High가 0이고 Medium deferral이 적절함
 - [ ] freeze SHA 이후 unreviewed commit이 없음
-- [ ] R1–R8 lead 및 independent reviewer의 최신 승인 기록이 있음
+- [ ] R1–R8 담당자의 교차 검토와 김태현 `@taehyeon-git`의 최신 확인 기록이 있음
 - [ ] 상태 변경은 별도 승인 PR로 수행함
 
 ## 역할별 의존 관계
