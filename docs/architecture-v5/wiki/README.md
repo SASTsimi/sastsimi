@@ -1,10 +1,12 @@
 # SASTSIMI Architecture v5 Wiki
 
-이 Wiki는 Architecture v5 candidate baseline을 빠르게 탐색하는 **파생·비규범적 설명 계층**이다. 상세 기준은 [v5 설계 허브](../README.md)와 번호 문서를 따르며, Wiki 단독 변경으로 계약·상태·승인 결정을 만들 수 없다.
+이 Wiki는 Architecture v5의 **검토 중인 설계 초안(`candidate baseline`)을 쉽게 이해하기 위한 요약**입니다. 실제 기준은 [v5 설계 허브](../README.md)와 번호 문서를 따릅니다. Wiki만 수정해서 새로운 입출력 약속, 상태나 승인 결정을 만들 수 없습니다.
+
+모르는 단어는 [쉬운 용어집](../../GLOSSARY.md)에서 확인하세요.
 
 ## 한 문장으로
 
-AST와 SAST가 사실 정보를 만들면 constrained Hypothesis Agent가 가설만 제안하고, 가설별 Verification Agent가 위치 기반 문맥·조건부 Pro/Con·필요한 Docker 재현을 종합해 `TRUE | FALSE | HOLD`를 판정한다. Research 후보는 새 가설로 재검증하고, Technical Evidence Gate와 Rule Scope Impact Gate를 모두 통과한 결과만 Reporter가 초안으로 만들며 사람이 공개를 결정한다.
+AST와 SAST가 코드 사실을 모으면 LLM이 취약점 가능성을 제안합니다. 검증 Agent는 코드·찬성·반대·Docker 재현 근거를 모아 `TRUE / FALSE / HOLD`를 판정합니다. 새 공격 주장은 새 가설로 다시 검증합니다. 기술 근거와 공식 정책을 모두 확인한 결과만 보고서 초안으로 만들며, 사람만 공개를 결정합니다.
 
 ## 먼저 볼 문서
 

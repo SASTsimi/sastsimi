@@ -1,5 +1,11 @@
 # 08. 경량 데이터 계약
 
+- **이 문서는 무엇을 설명하나요?** 각 파트가 주고받는 데이터 묶음과 정확한 필드 이름을 정의합니다.
+- **누가 읽어야 하나요?** 모든 설계·구현 담당자와 파트 사이의 연결을 검토하는 사람이 읽습니다.
+- **읽은 뒤 무엇을 확인하거나 결정하나요?** 누가 어떤 데이터를 만들고 받는지, 필수 필드와 상태값이 서로 맞는지 확인합니다.
+
+`contract`는 파트 사이의 입출력 약속이고 `record`는 정해진 형식의 데이터 묶음입니다. 이 문서의 데이터 이름과 필드명은 구현에서 정확히 유지해야 합니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
+
 > 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
 
 ## 범위
@@ -23,6 +29,8 @@ Scope:
 
 ## 1. StaticFactBundle
 
+정적분석 계층이 만들고 가설 생성·검증 단계가 사용하는 코드 사실 묶음입니다.
+
 ```yaml
 StaticFactBundle:
   scope: Scope without hypothesis/attempt
@@ -41,6 +49,8 @@ StaticFactBundle:
 SAST severity와 tool message는 verdict가 아니다.
 
 ## 2. HypothesisProposal과 VulnerabilityHypothesis
+
+가설 생성 Agent가 제안한 후보와, 프로그램이 형식을 확인한 뒤 검증 대상으로 등록한 가설을 구분합니다.
 
 ```yaml
 HypothesisProposal:
@@ -67,6 +77,8 @@ HypothesisProposal:
 schema validation과 semantic validation을 통과한 proposal만 stable `hypothesis_id`가 있는 `VulnerabilityHypothesis`로 등록한다. 금지된 확정 assertion, 잘못된 enum, 필수 field/location 누락은 제한된 repair retry 뒤 `INVALID_OUTPUT`이다. confidence는 scheduling hint이지 verdict가 아니다.
 
 ## 3. CodeContextRequest/Response
+
+검증 단계가 필요한 코드 위치를 요청하고 정적분석 계층이 같은 저장소 사본에서 코드를 돌려주는 형식입니다.
 
 ```yaml
 CodeContextRequest:
@@ -97,6 +109,8 @@ snapshot mismatch response는 근거에 사용하지 않는다. empty/truncated/
 
 ## 4. VerificationResult
 
+검증 Agent가 찬성·반대·동적 근거를 모아 `TRUE / FALSE / HOLD` 판정과 남은 조건을 기록하는 결과입니다.
+
 ```yaml
 VerificationResult:
   scope: Scope
@@ -124,6 +138,8 @@ VerificationResult:
 `FALSE`는 named falsification에 연결한다. `HOLD`는 unresolved condition 또는 누락 환경을 포함한다. 오류만으로 `FALSE`를 만들지 않는다.
 
 ## 5. Primitive DB records
+
+연계 공격 탐색을 위해 보류된 가설의 필요 조건과 확인된 공격 능력을 저장하는 데이터입니다.
 
 ```yaml
 Primitive:
@@ -166,6 +182,8 @@ match는 snapshot·asset·entity·privilege·attack order compatibility와 evide
 
 ## 6. ResearchResult
 
+추가 탐색 Agent가 우회·영향 확대·연계 가능성과 새로 검증할 가설 후보를 반환하는 결과입니다.
+
 ```yaml
 ResearchResult:
   scope: Scope
@@ -184,6 +202,8 @@ ResearchResult:
 이 record는 기존 verdict, CWE, Gate 또는 Finding을 변경하지 않는다. material candidate는 새 proposal로 재검증한다.
 
 ## 7. CWELabel과 DynamicReproductionResult
+
+취약점 유형 분류와 Docker 재현의 환경·실행 단계·관찰 결과를 각각 기록합니다.
 
 ```yaml
 CWELabel:
@@ -215,6 +235,8 @@ DynamicReproductionResult:
 
 ## 8. TechnicalEvidenceReview
 
+첫 번째 Gate가 검증 판정과 코드·실행 근거의 연결을 확인하고 승인·보완·거절을 기록하는 결과입니다.
+
 ```yaml
 TechnicalEvidenceReview:
   scope: Scope
@@ -233,6 +255,8 @@ TechnicalEvidenceReview:
 Technical review는 `VerificationResult.verdict`를 덮어쓰지 않는다.
 
 ## 9. ProgramPolicySnapshot과 RuleScopeImpactReview
+
+공식 프로그램 정책을 고정해 저장한 자료와, 두 번째 Gate가 정책 범위·규칙·실제 영향을 검토한 결과입니다.
 
 ```yaml
 ProgramPolicySnapshot:
@@ -268,6 +292,8 @@ RuleScopeImpactReview:
 공식 정책 snapshot 부재 시 `rule_compliance`, `scope_compliance`, `review_status`는 `UNCERTAIN`, permission은 `DENY`다. 이 불변조건을 만족하지 않는 출력은 invalid다.
 
 ## 10. LLM invocation records
+
+각 LLM 호출의 요청, 응답, 모델·세션 정보, 사용량과 오류를 다시 확인할 수 있게 남기는 기록입니다.
 
 ```yaml
 LLMInvocationRequest:
@@ -334,6 +360,8 @@ LLMInvocationLog:
 hidden chain-of-thought와 credential은 이 계약의 대상이 아니며 저장하지 않는다.
 
 ## 11. ReportDraft와 AnalysisRunResult
+
+모든 전달 조건을 통과한 보고서 초안과, 분석 한 건의 결과·자원·오류·디버깅 정보를 모은 최종 묶음입니다.
 
 ```yaml
 ReportDraft:

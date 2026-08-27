@@ -1,5 +1,13 @@
 # 13. 아키텍처 다이어그램
 
+## 쉽게 말하면
+
+Architecture v5의 전체 처리 순서와 역할·데이터 관계를 그림으로 보여 줍니다. Mermaid 안의 영문 이름은 기준 문서와 정확히 맞추기 위해 유지합니다.
+
+**상세 기준:** [13. 아키텍처 다이어그램](../13-architecture-diagrams.md)
+
+모르는 이름은 [쉬운 용어집](../../GLOSSARY.md)에서 확인하세요.
+
 > 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
 
 ## 1. 정본 23단계 파이프라인

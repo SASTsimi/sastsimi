@@ -1,5 +1,11 @@
 # 03. Agent 역할과 오케스트레이션
 
+- **이 문서는 무엇을 설명하나요?** 각 LLM Agent의 역할과 여러 Agent의 실행 순서를 조정하는 방법을 설명합니다.
+- **누가 읽어야 하나요?** LLM 탐색·체이닝, 검증, PM과 통합 개발 담당자가 읽습니다.
+- **읽은 뒤 무엇을 확인하거나 결정하나요?** 각 Agent가 만들 수 있는 결과와 가질 수 없는 권한, 호출·실패 처리 순서를 확인합니다.
+
+`Orchestration`은 여러 Agent의 호출 순서와 상태를 조정하는 기능입니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
+
 > 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
 
 ## Orchestration Agent

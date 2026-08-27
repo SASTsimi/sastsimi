@@ -1,6 +1,14 @@
 # Provider, session과 logging
 
-## Provider abstraction
+## 쉽게 말하면
+
+LLM을 회원 로그인이나 API로 연결하는 공통 방법, 새 대화·이어가기 규칙과 호출·오류 기록 방법을 설명합니다.
+
+**상세 기준:** [09. LLM provider, session과 logging](../09-llm-provider-session-and-logging.md)
+
+`provider`는 LLM 연결 방식, `session`은 로그인·대화 상태, `logging`은 실행 기록입니다. 자세한 용어는 [쉬운 용어집](../../GLOSSARY.md)을 따릅니다.
+
+## LLM 연결 공통 구조
 
 ```text
 Agent Runtime
