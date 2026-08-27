@@ -42,7 +42,7 @@
 | [`docs/review/ISSUE_TRACKER.md`](./review/ISSUE_TRACKER.md) | 실제 GitHub Issue 번호, 담당자, 브랜치와 진행 상태를 한눈에 보여 줍니다. | PM·모든 역할 담당자 | 쉬운 요약 |
 | [`docs/review/ISSUE_CATALOG.md`](./review/ISSUE_CATALOG.md) | 역할별 상위 Issue에서 무엇을 검토하고 어떤 하위 Issue를 만들지 자세히 설명합니다. | 역할 담당자 | 기준 문서 |
 | [`docs/review/FINDINGS.md`](./review/FINDINGS.md) | 현재 설계에서 발견된 큰 문제와 해결 조건을 정리합니다. | PM·문제 담당자 | 기준 문서 |
-| [`docs/review/PROVENANCE.md`](./review/PROVENANCE.md) | Architecture v5 파일을 어디에서 가져왔는지와 원본 해시를 기록합니다. | PM·독립 검토자 | 기준 기록 |
+| [`docs/review/PROVENANCE.md`](./review/PROVENANCE.md) | Architecture v5 파일을 어디에서 가져왔는지와 원본 해시를 기록합니다. | PM·최종 검토 담당자 | 기준 기록 |
 | [`docs/review/decisions/README.md`](./review/decisions/README.md) | 팀이 확정한 중요한 설계 결정과 근거를 기록하는 방법을 설명합니다. | 결정 담당자·검토자 | 기준 문서 |
 
 ## Architecture v5 기술 기준 문서

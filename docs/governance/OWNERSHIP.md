@@ -1,6 +1,6 @@
 # Architecture v5 역할 및 소유권
 
-이 문서는 누가 어떤 영역을 맡고, 어떤 문서를 검토하며, 누구의 확인을 받아야 하는지 설명합니다. 역할은 모두 정해졌지만 일부 GitHub 계정은 저장소의 담당자 선택 목록에 아직 나타나지 않습니다.
+이 문서는 누가 어떤 영역을 맡고, 어떤 문서를 검토하며, 누구의 확인을 받아야 하는지 설명합니다. 역할과 실제 GitHub 계정은 모두 정해졌습니다.
 
 ## 현재 상태
 
@@ -8,9 +8,9 @@
 
 - 저장소 관리 담당: 김태현 `@taehyeon-git`
 - 설계 검토 진행 담당: 김태현 `@taehyeon-git`, 윤희섭 `@v1sion`
-- 독립 최종 검토자: 아직 정하지 않음 — [전체 최종 검토 Issue #10](https://github.com/SASTsimi/sastsimi/issues/10)에서 지정
+- 최종 검토·승인 담당자: 김태현 `@taehyeon-git` — [전체 최종 검토 Issue #10](https://github.com/SASTsimi/sastsimi/issues/10) 관리
 - 역할 담당자: 아래 표의 8개 역할 모두 확정
-- `.github/CODEOWNERS`: 대체 검토자와 중앙 문서 승인·병합 권한을 정한 뒤 별도 PR로 추가
+- `.github/CODEOWNERS`: 대체 검토자와 자동 검토 요청이 필요해질 때 별도 PR로 추가하는 후속 개선이며 현재 작업의 Blocker가 아님
 
 각 역할별 상위 Issue는 아래 담당자가 관리합니다. 담당자는 필요한 세부 작업을 직접 하위 Issue로 만듭니다. 담당자가 같더라도 통합 개발과 PM·아키텍처 Issue는 결과물과 승인 권한이 다르므로 별도로 유지합니다.
 
@@ -19,11 +19,11 @@
 | 담당 역할 | 담당자 | 주요 담당 영역 | 우선 검토할 문서 | 반드시 함께 검토할 역할 | 역할별 상위 Issue |
 |---|---|---|---|---|---|
 | LLM 탐색·체이닝 | 배승원 `@baeseungwon1010` | 취약점 가설, 추가 탐색, 연계 공격과 token 최적화 | `03`, `06` | 정적분석, 검증, 데이터·평가 | [#2](https://github.com/SASTsimi/sastsimi/issues/2) |
-| 정적분석·컨텍스트 | 김나연 `@meow` | AST/SAST 결과 정리, 코드 사실 묶음과 필요한 코드 조회 | `02` | LLM 탐색, 검증 | [#3](https://github.com/SASTsimi/sastsimi/issues/3) |
+| 정적분석·컨텍스트 | 김나연 `@zv9uvr` | AST/SAST 결과 정리, 코드 사실 묶음과 필요한 코드 조회 | `02` | LLM 탐색, 검증 | [#3](https://github.com/SASTsimi/sastsimi/issues/3) |
 | 단독 구현·통합 개발 | 김태현 `@taehyeon-git`, 윤희섭 `@v1sion` | LLM 연결과 실행 경계, 구현 가능성, 테스트·모듈 통합 | `09`, 구현 가능성 검토 | PM, 데이터·평가, 동적검증 | [#4](https://github.com/SASTsimi/sastsimi/issues/4) |
 | PM·아키텍처·워크플로 | 김태현 `@taehyeon-git`, 윤희섭 `@v1sion` | 전체 분석 흐름, 공통 입출력 약속, 사람·LLM 경계, 오류·병렬 처리 | root README, `01`, `08`, `11`, `13`, Wiki 통합 | 전체 파트 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
-| Gate·Finding·보고서 | 김혜령 `@kimhr8465` | 기술 근거·공식 정책 검토, 취약점 결과와 보고서 초안 | `05`, `12` | 검증, PM, 데이터·평가 | [#6](https://github.com/SASTsimi/sastsimi/issues/6) |
-| 검증·반박·플레이북 | 임채민 `@UltraPaechKeen` | 찬성·반대 근거, 기술 판정과 우회 가능성 검증 | `04` 검증 영역 | LLM 탐색, 동적검증, Gate | [#7](https://github.com/SASTsimi/sastsimi/issues/7) |
+| Gate·Finding·보고서 | 김혜령 `@kimhr8463` | 기술 근거·공식 정책 검토, 취약점 결과와 보고서 초안 | `05`, `12` | 검증, PM, 데이터·평가 | [#6](https://github.com/SASTsimi/sastsimi/issues/6) |
+| 검증·반박·플레이북 | 임채민 `@UltraPeachKeen` | 찬성·반대 근거, 기술 판정과 우회 가능성 검증 | `04` 검증 영역 | LLM 탐색, 동적검증, Gate | [#7](https://github.com/SASTsimi/sastsimi/issues/7) |
 | 동적검증·Sandbox | 조근석 `@Potatonion` | 제한·전체 재현, PoC, Docker 실행 근거 | `04` 동적 영역, `10` 격리 실행 영역 | 검증, PM, 통합 개발 | [#8](https://github.com/SASTsimi/sastsimi/issues/8) |
 | 데이터·평가·예산 | 성병찬 `@gitterable` | 평가 자료, 품질 지표, LLM 실행 기록과 자원 한도 | `07`, `08/09` 관련 지표 | 전체 LLM 역할, PM | [#9](https://github.com/SASTsimi/sastsimi/issues/9) |
 
@@ -31,14 +31,9 @@
 
 ## 역할 배정과 GitHub 담당자 지정 상태
 
-역할 담당은 8개 모두 확정되었습니다. 아래 목록은 역할 배정과 별개로, 2026-08-27에 GitHub Issue 화면에서 확인한 실제 담당자 지정 상태입니다.
+역할 담당은 8개 모두 확정되었습니다. 2026-08-27에 확인한 실제 GitHub 계정을 기준으로 #3은 `@zv9uvr`, #6은 `@kimhr8463`, #7은 `@UltraPeachKeen`으로 확정했습니다. #1·#4·#5의 윤희섭 `@v1sion`은 공동 역할 담당자이며, GitHub 공동 담당자(assignee) 지정 여부와 역할 배정은 별개입니다.
 
-- 팀이 알려 준 계정과 실제 담당자가 일치: `@taehyeon-git`(#1, #4, #5), `@baeseungwon1010`(#2), `@Potatonion`(#8), `@gitterable`(#9)
-- 팀이 알려 준 계정과 다른 사용자명이 실제 담당자로 지정됨: #3 `@zv9uvr`, #6 `@kimhr8463`, #7 `@UltraPeachKeen`
-- 역할은 연결했지만 공동 담당자로 지정되지 않음: `@v1sion`(#1, #4, #5)
-- 의도적 미배정: [최종 #10](https://github.com/SASTsimi/sastsimi/issues/10)의 독립 최종 검토자
-
-#3·#6·#7의 실제 담당자가 각각 김나연·김혜령·임채민의 계정인지는 이 문서에서 추정하지 않습니다. PM이 팀이 알려 준 `@meow`, `@kimhr8465`, `@UltraPaechKeen`과 현재 지정된 계정의 관계를 확인해야 합니다. 확인 전까지 역할표는 팀이 알려 준 계정을 유지하고, GitHub 실제 상태는 위 목록처럼 따로 표시합니다.
+[최종 #10](https://github.com/SASTsimi/sastsimi/issues/10)은 최종 검토·승인 담당자인 김태현 `@taehyeon-git`에게 배정합니다. 김태현은 PM과 문서 통합도 맡으므로 `독립 검토자`라는 표현은 사용하지 않습니다. 대신 각 파트의 다른 역할 담당자가 교차 검토한 기록을 먼저 남기고, 김태현이 마지막 전체 흐름과 완료 조건을 확인합니다.
 
 ## 담당자가 하위 Issue를 관리하는 방법
 
@@ -72,12 +67,12 @@ PM은 하위 Issue를 대신 세세하게 작성하지 않습니다. PM은 역�
 - Reporter는 내부 초안만 만듭니다.
 - 사람만 최종 공개를 승인합니다.
 
-## 아직 필요한 GitHub 협업·승인 규칙 결정
+## 후속 GitHub 협업 자동화
 
-역할과 GitHub 계정은 매핑했습니다. 다음 항목을 정한 뒤 CODEOWNERS를 추가합니다.
+역할과 GitHub 계정, 최종 검토 담당자는 확정했습니다. 다음 항목은 필요해질 때 정하고 CODEOWNERS를 추가합니다. 현재 설계 검토와 개발 착수의 Blocker는 아닙니다.
 
 1. 각 역할의 대체 검토자
 2. 중앙 계약 승인 가능 여부
 3. 브랜치 병합 권한 여부
 
-독립 최종 검토자가 정해지기 전에는 검토 중인 설계 초안의 최종 승인 PR을 ‘검토 준비 완료’ 상태로 바꾸지 않습니다.
+최종 승인 전에는 각 파트의 교차 검토 기록과 김태현 `@taehyeon-git`의 최신 검토 대상 commit 확인이 모두 있어야 합니다.
