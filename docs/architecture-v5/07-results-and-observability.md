@@ -106,34 +106,42 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 
 ## AnalysisRunResult
 
-최종 분석 결과에는 repository, `commit_id`, `workspace_id`, 시작·종료·총 시간, 초기·파생·chain·invalid hypothesis 수, verdict별 수, 두 Gate별 수, PoC/report refs, 공식 정책 상태, Research/Primitive 요약, LLM·static·sandbox 자원, 모든 오류와 debug trace를 포함한다.
+최종 분석 결과에는 repository, `commit_id`, `workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, 초기·파생·chain·invalid hypothesis 수, verdict별 수, 두 Gate별 수, PoC/report refs, 공식 정책 상태, Research/Primitive 요약, LLM·static·sandbox 자원, 모든 오류와 debug trace를 포함한다.
 
 일부 가설이 실패해도 나머지는 계속할 수 있고 분석은 `PARTIAL`로 끝날 수 있다. clone 또는 checkout에 실패하거나 작업공간이 바뀌어 코드 기준을 잃으면 전체 분석은 `FAILED`다. Agent·sandbox·policy fetch 오류는 `FALSE`로 변환하지 않는다.
 
-## 오류 분류
+## DataGap과 오류 분류
 
-- `INPUT_ERROR`
-- `CLONE_FAILED`
-- `CHECKOUT_FAILED`
-- `WORKSPACE_MISMATCH`
-- `WORKSPACE_CHANGED`
-- `WORKSPACE_MISSING`
-- `STATIC_TOOL_ERROR`
-- `CONTEXT_RETRIEVAL_ERROR`
-- `INVALID_OUTPUT`
-- `AGENT_ERROR`
-- `PROVIDER_ERROR`
-- `AUTH_REQUIRED`
-- `SANDBOX_ERROR`
-- `RESEARCH_ERROR`
-- `TECHNICAL_GATE_ERROR`
-- `POLICY_FETCH_ERROR`
-- `RULE_SCOPE_GATE_ERROR`
-- `REPORT_ERROR`
-- `BUDGET_EXCEEDED`
-- `CANCELLED`
+`DataGap`은 분석하지 못한 범위이고 `AnalysisError`는 실행 실패 사건이다. 둘 다 `created_at`을 UTC RFC 3339로 기록하며 자동으로 취약점 `FALSE`가 되지 않는다.
 
-`AnalysisError`에는 stage, code, retryable 여부, safe message, related record와 발생 시각을 남긴다.
+| code | 주 생산자 | 실행·상태에 미치는 영향 | 기본 복구 방향 |
+|---|---|---|---|
+| `INPUT_ERROR` | 입력 검증기 | 분석 시작 전 `FAILED` | 입력 수정 뒤 새 분석 |
+| `CLONE_FAILED` | Repository Loader | 분석 `FAILED`, AST/SAST 미실행 | 네트워크·권한 확인 뒤 새 분석 |
+| `CHECKOUT_FAILED` | Repository Loader | 분석 `FAILED`, AST/SAST 미실행 | 유효한 commit 확인 뒤 새 분석 |
+| `WORKSPACE_MISMATCH` | runtime validator | 해당 record 사용 금지 | 올바른 workspace·commit 결과 재요청 |
+| `WORKSPACE_CHANGED` | Repository Loader·validator | 분석 `FAILED`, 변경 뒤 결과 사용 금지 | 새 작업공간에서 새 분석 |
+| `WORKSPACE_MISSING` | 코드 조회·runtime | 해당 작업 실패 | 보존 결과로 판단하거나 새 분석 |
+| `STATIC_TOOL_ERROR` | AST/SAST runner | 사용 가능한 결과가 있으면 분석 `PARTIAL` 가능 | 제한 retry 또는 gap 보존 |
+| `CONTEXT_RETRIEVAL_ERROR` | Context Retrieval Service | 검증 보완 필요, `HOLD` 가능 | 범위·요청을 고쳐 제한 retry |
+| `INVALID_OUTPUT` | Agent Runtime | 해당 LLM 출력 사용 금지 | 제한 repair 뒤 종료 |
+| `AGENT_ERROR` | Agent Runtime | 해당 Agent 작업 실패 | 새 `attempt_id`로 제한 retry |
+| `PROVIDER_ERROR` | provider adapter | LLM 호출 실패 | 명시적 retry·fallback |
+| `AUTH_REQUIRED` | provider adapter | LLM 호출 중단 | 사용자 재인증 뒤 새 시도 |
+| `RATE_LIMITED` | provider adapter | LLM 호출 지연·중단 | backoff 또는 명시적 fallback |
+| `TIMED_OUT` | 각 runtime | 해당 작업 시간 초과 | 예산 안에서 새 시도 또는 중단 |
+| `SANDBOX_ERROR` | Sandbox runtime | 동적 재현 `FAILED` | 안전 조건 확인 뒤 제한 retry |
+| `RESEARCH_ERROR` | Research runtime | Research 실패, 부모 verdict 유지 | 제한 retry 또는 결과 없음 기록 |
+| `TECHNICAL_GATE_ERROR` | Technical Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
+| `POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 Gate `UNCERTAIN + DENY` | 공식 출처 재확인 |
+| `RULE_SCOPE_GATE_ERROR` | 정책·영향 Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
+| `REPORT_ERROR` | Reporter runtime | 초안 `FAILED`, 기술 판정 유지 | 조건 보존 후 초안 재작성 |
+| `BUDGET_EXCEEDED` | Orchestration runtime | 작업 중단, 분석 `PARTIAL` 또는 가설 `HOLD` 가능 | 예산 결정 뒤 새 시도 |
+| `CANCELLED` | 사용자·runtime | 해당 작업 또는 분석 `CANCELLED` | 자동 재시도 금지 |
+| `SCHEMA_UNSUPPORTED` | schema validator | 해당 record 사용 금지 | 지원 schema로 다시 생성 |
+| `RECORD_REVISION_MISMATCH` | record validator | revision 자동 병합 금지 | 올바른 이전 revision에서 재생성 |
+
+모든 `AnalysisError`에는 stage, code, retryable 여부, 민감정보가 제거된 safe message, related record와 `created_at`을 남긴다. 표의 어떤 오류도 가설 `FALSE`를 직접 만들지 않는다.
 
 ## Debug trace와 보존
 

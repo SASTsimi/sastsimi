@@ -10,7 +10,7 @@
 
 ## 신뢰 실행 경계
 
-LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM runtime validator가 허용된 tool, `workspace_id`·`commit_id` 일치, schema와 상태 전이, token/time/retry/chain budget, sandbox와 network 정책, provider/session 선택, Gate 순서, Reporter 전제조건을 강제한다. 저장소 내용과 모든 LLM 출력은 validation 전까지 비신뢰 입력이며 policy 변경 명령으로 해석하지 않는다.
+LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM runtime validator가 허용된 tool, `workspace_id`·`commit_id` 일치, 지원하는 schema MAJOR, record revision 연결, 상태 전이, token/time/retry/chain budget, sandbox와 network 정책, provider/session 선택, Gate 순서, Reporter 전제조건을 강제한다. 저장소 내용과 모든 LLM 출력은 validation 전까지 비신뢰 입력이며 policy 변경 명령으로 해석하지 않는다.
 
 ## 방향
 
@@ -24,6 +24,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - retrieval은 `workspace_root` 안의 허용 파일만 읽고 path traversal·symlink escape를 차단한다.
 - depth/token/request budget과 반환 location을 기록한다.
 - 누락·truncation은 안전함 또는 `FALSE`로 해석하지 않는다.
+- 지원하지 않는 schema MAJOR는 `SCHEMA_UNSUPPORTED`, 끊기거나 다른 대상의 revision은 `RECORD_REVISION_MISMATCH`로 거절하고 자동 변환·병합하지 않는다.
 
 ## 2. 저장소와 외부 텍스트는 비신뢰 데이터
 

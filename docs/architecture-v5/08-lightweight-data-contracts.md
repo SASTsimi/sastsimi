@@ -112,11 +112,14 @@ StoredDataRef:
 
 DataGap:
   gap_id: string
-  stage: CLONE | STATIC_ANALYSIS | CONTEXT | DYNAMIC | POLICY
+  stage: REPOSITORY | STATIC_ANALYSIS | CONTEXT | DYNAMIC | POLICY
+  code: string
   reason: MISSING | FAILED | TRUNCATED | UNSUPPORTED | BLOCKED | TIMEOUT
   description: string
   affected_locations: [CodeLocation]
   retryable: boolean
+  related_record_ids: [string]
+  created_at: timestamp
 
 AnalysisError:
   error_id: string
@@ -129,6 +132,30 @@ AnalysisError:
 ```
 
 `file_path`는 `workspace_root` 기준 상대 경로이고 줄과 열은 1부터 시작한다. `symbol_id`는 같은 `workspace_id` 안에서 유일하다. `StoredDataRef`는 내부 저장 경로 대신 결과 번호와 내용 hash만 전달한다. `DataGap`은 분석하지 못한 범위이고 `AnalysisError`는 실행 중 발생한 오류다. 둘 다 취약점 `FALSE`를 뜻하지 않는다.
+
+### DataGap 생산자와 소비자
+
+| `stage` | 주 생산자 | 대표 `code` | 주 소비자 |
+|---|---|---|---|
+| `REPOSITORY` | Repository Loader | `SUBMODULE_UNAVAILABLE`, `LFS_POINTER_ONLY`, `GENERATED_FILE_UNAVAILABLE` | 정적 분석, Hypothesis, Verification |
+| `STATIC_ANALYSIS` | AST/SAST runner와 normalizer | `STATIC_COVERAGE_PARTIAL`, `LANGUAGE_UNSUPPORTED` | Hypothesis, Verification, 결과 집계 |
+| `CONTEXT` | Context Retrieval Service | `CONTEXT_TRUNCATED`, `SYMBOL_UNRESOLVED` | Verification, Pro/Con, Research, Technical Gate |
+| `DYNAMIC` | Sandbox runtime | `DYNAMIC_OBSERVATION_MISSING`, `DEPENDENCY_UNAVAILABLE` | Verification, Technical Gate, 사람 검토 |
+| `POLICY` | 정책 수집 계층 | `POLICY_SOURCE_MISSING`, `POLICY_SOURCE_STALE` | Rule Scope Impact Gate, Reporter runtime |
+
+`code`는 정확한 누락 종류, `reason`은 공통 원인 범주다. 빈 결과를 숨기지 않으며 소비자는 gap을 안전함이나 반증으로 해석하지 않는다.
+
+### 계약 버전과 revision 규칙
+
+`schema_version`은 `MAJOR.MINOR.PATCH` 형식이다.
+
+- `MAJOR`: 필드 삭제·이름 변경·의미 변경·기존 enum 의미 변경처럼 호환되지 않는 변경
+- `MINOR`: 기존 의미를 바꾸지 않는 선택 필드 추가
+- `PATCH`: 데이터 해석이 바뀌지 않는 설명·예시·검증 규칙 명확화
+
+소비자는 지원하지 않는 MAJOR를 추정해서 읽지 않고 `SCHEMA_UNSUPPORTED`를 기록한다. 알 수 없는 선택 필드는 보존하거나 무시할 수 있지만 새 의미를 만들지 않는다. schema 변경을 이유로 기존 record를 덮어쓰지 않고 새 `record_id`, `created_at`과 증가한 `revision_number`를 만든다.
+
+`previous_record_id`는 같은 `record_type`, `analysis_id`, `workspace_id`, `commit_id`, `hypothesis_id`의 바로 이전 revision만 가리킨다. revision이 연속되지 않거나 이 항목 중 하나라도 다르면 `RECORD_REVISION_MISMATCH`로 거절하고 자동 병합하지 않는다. schema version 변경과 record revision 증가는 서로 다른 개념이다.
 
 ## 1. StaticFactBundle
 
@@ -522,7 +549,9 @@ AnalysisRunResult:
   llm_invocation_log_refs: [StoredDataRef]
   errors: [AnalysisError]
   resources: map
-  timing: map
+  started_at: timestamp
+  finished_at: timestamp | null
+  elapsed_ms: integer
   debug_trace_ref: StoredDataRef
 ```
 
