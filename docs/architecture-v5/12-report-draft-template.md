@@ -199,4 +199,4 @@ hidden chain-of-thought와 secret은 포함하지 않는다.
 
 ---
 
-사람의 결정은 이 초안 안에 쓰지 않고 별도 `HumanReviewDecision`에 기록한다. Reporter Agent는 그 결정을 만들거나 외부 제출을 수행하지 않는다. 사람은 Finding·근거·PoC·두 Gate·공식 정책·비용·오류·남은 보류 조건을 포함한 `HumanReviewPacket`을 확인한 뒤 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`을 결정한다.
+사람의 결정은 이 초안 안에 쓰지 않고 별도 `HumanReviewDecision`에 기록한다. Reporter Agent는 그 결정을 만들거나 외부 제출을 수행하지 않는다. 사람은 `HumanReviewState`가 가리키는 current `HumanReviewPacket`을 확인한 뒤 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`을 결정한다. 새 packet generation이 생기면 이전 결정은 공개에 사용할 수 없다.

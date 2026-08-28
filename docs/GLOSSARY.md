@@ -42,7 +42,8 @@
 | `crash-resume` | 프로그램 중단 뒤 마지막으로 확정 저장한 지점에서 다시 시작하는 절차 | 이미 끝난 작업을 중복 반영하지 않습니다. |
 | `ActionRequest` | Agent나 service가 프로그램에 “이 일을 실행해 달라”고 적는 요청 | 요청 자체에는 실행 권한이 없습니다. |
 | `ActionCheck` | 실행 전에 확인하는 권한·상태·예산·도구 같은 검사 하나 | action마다 필요한 검사를 빠뜨리지 않습니다. |
-| `ActionDecision` | 프로그램 검사기가 action을 허용하거나 막은 결과 | exact action과 state version에 한 번만 사용합니다. |
+| `ActionDecision` | 프로그램 검사기가 action을 허용하거나 막은 결과 | 요청 하나당 logical decision 하나이며 exact action과 state version에 한 번만 사용합니다. |
+| `LLMCallSpec` | 실제 LLM 호출에 쓸 model·prompt·context·형식·예산·시간을 묶은 수정 불가 명세 | 허가 뒤 호출 내용을 바꾸지 못하게 합니다. |
 
 ## 가설과 검증
 
@@ -92,6 +93,7 @@
 | `Reporter` | 통과한 결과를 사람이 읽을 보고서 초안으로 정리하는 Agent | 외부 제출과 공개는 하지 않습니다. |
 | `human handoff` | 사람이 최종 검토할 자료를 전달하는 단계 | 외부 공개 여부는 사람이 결정합니다. |
 | `HumanReviewPacket` | 사람이 볼 Finding·근거·PoC·Gate·비용·오류·보류 조건을 모은 자료 묶음 | exact AnalysisRunResult 수정본에서 빠짐없이 만듭니다. |
+| `HumanReviewState` | 지금 검토해야 할 최신 packet과 현재 사람 결정을 가리키는 상태 | 새 packet이 생기면 이전 결정을 공개에 쓰지 못하게 합니다. |
 | `HumanReviewDecision` | 사람이 자료 묶음을 읽고 남긴 최종 결정 기록 | `DISCLOSE`, `REVISE`, `WITHHOLD`, `NEED_MORE_VALIDATION` 중 하나이며 ReportDraft와 분리합니다. |
 
 ## 실행·보안·평가

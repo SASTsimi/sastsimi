@@ -49,6 +49,8 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - 하나라도 실패하면 `ActionDecision=DENY`와 오류를 저장하고 실행하지 않는다.
 - `ALLOW` decision은 인증된 requester identity, exact action·state version·입력·설정 revision과 `valid_until`에만 유효하다. 실행 직전에 허가 시간이 지나거나 권한·상태·예산·입력·설정이 달라지면 runtime은 `UNUSED -> EXPIRED`로 바꾸고 거절한다. 그대로인 decision만 `UNUSED -> USED`로 compare-and-set claim해 한 번 실행한다.
 - claim 뒤 중단됐으면 기존 decision을 다시 사용하지 않는다. 중단 오류와 실행 outcome 유무를 기록하고 새 action을 요청한다.
+- 한 `ActionRequest`에는 하나의 logical `ActionDecision`만 만들고 concurrent validator는 unique action-ref 제약으로 같은 decision을 반환한다.
+- 실제 LLM call은 검사한 immutable `LLMCallSpec`과 field-by-field 같아야 한다. Gate와 Reporter는 자기 stage action이 호출까지 허가하며 별도 `CALL_LLM`으로 우회하지 않는다.
 - Orchestration은 계획·호출을 제안할 수 있지만 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 저장할 권한이 없다.
 - Runtime Validator는 역할과 실행 전제를 검사하지만 취약점 진위·CWE 적절성·정책 의미를 대신 판단하지 않는다.
 
@@ -115,7 +117,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 
 Research, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출을 승인한다.
 
-사람에게는 exact `AnalysisRunResult`, Finding·Verification, 두 Gate, CWE·정책, dynamic·redacted PoC, ReportDraft 또는 차단 사유, 자원, 오류·DataGap·HOLD 조건을 포함한 `HumanReviewPacket`을 제공한다. `HumanReviewDecision` 저장은 인증된 사람 identity와 exact packet을 검사한 `SAVE_HUMAN_DECISION` ALLOW action만 허용한다. 외부 disclosure action은 Human Reviewer가 같은 packet revision에 `HumanReviewDecision=DISCLOSE`를 남겼고 `report_ready=true`이며 실제 공개할 `approved_report_refs`와 `disclosure_targets`를 명시했을 때만 허용한다. 승인 목록 밖 report, 다른 packet·과거 revision·Agent 결정은 `DISCLOSURE_DENIED`다.
+사람에게는 exact `AnalysisRunResult`, Finding·Verification, 두 Gate, CWE·정책, dynamic·redacted PoC, ReportDraft 또는 차단 사유, 자원, 오류·DataGap·HOLD 조건을 포함한 `HumanReviewPacket`을 제공한다. `HumanReviewState`는 current packet generation과 current decision pointer를 CAS로 관리한다. `HumanReviewDecision` 저장은 인증된 사람 identity와 exact current packet·state version을 검사한 `SAVE_HUMAN_DECISION` ALLOW action만 허용한다. 외부 disclosure action은 current state가 가리키는 Human Reviewer의 `DISCLOSE`, `report_ready=true`, exact approved report와 target이 있을 때만 허용한다. 새 packet이 생긴 뒤 과거 packet·결정, 승인 목록 밖 report와 Agent 결정은 `DISCLOSURE_DENIED`다.
 
 ## 위협과 최소 대응
 
@@ -175,8 +177,11 @@ Research, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출�
 | Reporter가 새 공격 경로를 확정 | report claim refs와 verified hypothesis | invalid output, 새 hypothesis 검증 전 사용 금지 |
 | LLM이 `HumanReviewDecision` 형식의 승인을 출력 | `SAVE_HUMAN_DECISION` requester와 사람 identity | `AUTHORITY_DENIED`, 사람 결정 record 생성 금지 |
 | Agent가 외부 공개 action을 요청 | requester와 HumanReviewDecision | `DISCLOSURE_DENIED` |
-| 사람이 다른 packet·과거 revision의 승인을 재사용 | exact packet·decision record ID와 hash | `DISCLOSURE_DENIED` |
+| 사람이 다른 packet·과거 revision의 승인을 재사용 | current packet generation·state version·decision record ID와 hash | `DISCLOSURE_DENIED` |
 | redaction 실패 PoC를 사람 또는 외부로 전달 | redaction result와 artifact class | action `DENY`, 제한 저장소에 격리 |
+| 같은 ActionRequest를 동시에 두 번 검사 | unique `action_ref.record_id -> decision_id` | 기존 decision 반환, action 한 번만 claim |
+| Gate 또는 Reporter가 별도 CALL_LLM으로 우회 | requester 역할과 stage action·call spec | `ACTION_NOT_ALLOWED`, stage action부터 새로 요청 |
+| 사람 결정 뒤 새 HumanReviewPacket 생성 | current packet generation·state version·decision pointer | 이전 결정 superseded, `DISCLOSURE_DENIED` |
 
 ## 남는 위험
 

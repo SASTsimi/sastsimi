@@ -50,6 +50,8 @@ CWE 후보는 final verdict 뒤에 작성한다. primary·alternative CWE, taxon
 
 ```yaml
 technical_evidence_review:
+  action_decision_ref: StoredDataRef
+  llm_invocation_log_ref: StoredDataRef
   verification_result_ref:
     stored_data_id: data-verification-001
     data_kind: verification_result
@@ -109,6 +111,8 @@ technical_evidence_review:
 
 ```yaml
 rule_scope_impact_review:
+  action_decision_ref: StoredDataRef
+  llm_invocation_log_ref: StoredDataRef
   verification_result_ref: StoredDataRef
   technical_review_ref: StoredDataRef
   cwe_label_ref: StoredDataRef
@@ -144,7 +148,7 @@ AND report_permission == ALLOW
 
 조건이 하나라도 충족되지 않거나 Gate reference 연결이 맞지 않으면 결과와 검토 사유는 저장하지만 Reporter를 호출하지 않는다. LLM이 모순되는 `ALLOW`를 출력하면 schema/semantic validation 오류로 처리한다. 이는 취약점 판정 규칙이 아니라 권한 없는 보고 생성을 막는 호출 전제다.
 
-Reporter 호출도 `CREATE_REPORT_DRAFT` `ActionRequest`로 요청한다. Runtime Validator는 위 일곱 조건, exact `record_id`·hash·workspace·commit·hypothesis, current state version과 redaction 전제를 `REPORT_READY` check로 확인한다. 하나라도 맞지 않으면 `REPORT_NOT_READY`로 차단한다. Reporter Agent의 자연어 요청이나 Orchestration Agent의 일정 판단만으로 이 check를 건너뛸 수 없다.
+Gate와 Reporter의 stage action은 exact `LLMCallSpec`까지 포함해 실제 LLM 호출을 직접 허가한다. 이 세 역할이 별도 `CALL_LLM` action으로 stage 검사를 우회하는 것은 허용하지 않는다. Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로 요청하고 Runtime Validator는 위 일곱 조건, exact `record_id`·hash·workspace·commit·hypothesis, current state version, provider·session·budget과 redaction 전제를 확인한다. 하나라도 맞지 않으면 `REPORT_NOT_READY`로 차단한다. 실제 invocation request의 model·prompt·context·schema·budget·timeout은 검사한 call spec과 모두 같아야 한다.
 
 ## Reporter Agent
 
@@ -176,6 +180,6 @@ packet에는 다음을 빠뜨리지 않는다.
 - 모든 실행 오류·DataGap·남은 HOLD 조건
 - LLM 호출·action decision·work state·work attempt·transition commit와 debug trace reference
 
-사람은 이 packet의 정확한 revision을 읽고 별도 `HumanReviewDecision`에 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`을 기록한다. 결정 저장은 인증된 사람 identity와 exact packet을 확인하는 `SAVE_HUMAN_DECISION` action을 거친다. `ReportDraft` 안의 field를 바꾸거나 LLM output을 사람 결정으로 저장하지 않는다.
+사람은 현재 `HumanReviewState`가 가리키는 packet의 정확한 generation·revision을 읽고 별도 `HumanReviewDecision`에 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`을 기록한다. 결정 저장은 인증된 사람 identity와 current packet·state version을 확인하는 `SAVE_HUMAN_DECISION` action을 거친다. `ReportDraft` 안의 field를 바꾸거나 LLM output을 사람 결정으로 저장하지 않는다.
 
-시스템의 외부 disclosure action은 Human Reviewer가 만든 exact `HumanReviewDecision=DISCLOSE`, `report_ready=true`인 packet, packet 안의 `approved_report_refs`와 명시된 `disclosure_targets`가 있을 때만 허용한다. Agent·Gate·Reporter가 만든 결정, 승인 목록 밖 report, 다른 packet이나 수정 전 revision의 결정은 `DISCLOSURE_DENIED`다. 어떤 Agent도 외부 제출·공개 권한을 갖지 않으며 실제 자동 제출 integration은 이 설계 범위 밖이다.
+시스템의 외부 disclosure action은 Human Reviewer가 만든 exact current `HumanReviewDecision=DISCLOSE`, `report_ready=true`인 current packet, packet 안의 `approved_report_refs`와 명시된 `disclosure_targets`가 있을 때만 허용한다. 새 packet generation이 생기면 이전 packet과 결정은 즉시 superseded된다. Agent·Gate·Reporter가 만든 결정, 승인 목록 밖 report, 과거 packet·결정은 `DISCLOSURE_DENIED`다. 어떤 Agent도 외부 제출·공개 권한을 갖지 않으며 실제 자동 제출 integration은 이 설계 범위 밖이다.

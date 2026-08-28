@@ -80,7 +80,7 @@ Agent 또는 서비스가 부작용이 있는 실행을 원할 때 만드는 요
 
 `REGISTER_WORK | CHANGE_WORK_STATE | START_ATTEMPT | CANCEL_WORK | READ_CODE | RUN_TOOL | CALL_LLM | FETCH_POLICY | RUN_SANDBOX | SAVE_RESULT | CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT | PREPARE_HUMAN_REVIEW | SAVE_HUMAN_DECISION | EXTERNAL_DISCLOSURE`
 
-`requester_identity_ref`는 LLM이 주장한 역할을 복사하지 않는다. 신뢰 runtime이 현재 인증된 호출자에서 만들며 그 identity의 등록 역할과 `requested_by`가 같아야 한다. action별로 쓰지 않는 필드는 `null` 또는 빈 배열이어야 한다. 예를 들어 `CALL_LLM`에는 provider profile과 session mode가 필요하고, `RUN_SANDBOX`에는 sandbox profile·image digest·network target이 필요하다. `EXTERNAL_DISCLOSURE`는 Human Reviewer만 요청할 수 있고 exact `HumanReviewDecision`과 승인 report를 입력으로 가져야 하며 action의 공개 대상 목록도 사람 결정과 같아야 한다. 한 번이라도 `ActionDecision`이 저장된 요청은 수정하지 않는다. 범위를 바꾸거나 다시 시도하려면 새 `action_id`를 사용한다.
+`requester_identity_ref`는 LLM이 주장한 역할을 복사하지 않는다. 신뢰 runtime이 현재 인증된 호출자에서 만들며 그 identity의 등록 역할과 `requested_by`가 같아야 한다. 실제 LLM을 실행하는 action에는 immutable `LLMCallSpec`이 필요하다. 일반 역할은 `CALL_LLM`, 두 Gate와 Reporter는 자기 stage action이 LLM 호출까지 직접 허가하며 별도 `CALL_LLM`으로 우회하지 않는다. `RUN_SANDBOX`에는 sandbox profile·image digest·network target이 필요하다. `EXTERNAL_DISCLOSURE`는 Human Reviewer만 요청할 수 있고 current `HumanReviewState`가 가리키는 exact 결정·packet·report·target을 사용해야 한다. 한 번이라도 `ActionDecision`이 저장된 요청은 수정하지 않는다. 범위를 바꾸거나 다시 시도하려면 새 `action_id`를 사용한다.
 
 ### ActionDecision
 
@@ -97,6 +97,8 @@ runtime validator의 검사 결과다.
 - `decided_at`
 
 `ActionCheck`는 `check_type`, `result: PASS | FAIL`, `reason_code`, 민감정보가 제거된 `safe_message`를 갖는다. 각 action type의 필수 check는 모두 한 번씩 있어야 하고, 하나라도 `FAIL`이면 decision은 `DENY`다. `ALLOW`는 exact action과 state version에만 유효하며 다른 action·retry·revision에 재사용할 수 없다.
+
+한 `action_ref.record_id`에는 logical decision 하나만 허용한다. concurrent validator는 unique constraint와 atomic create-or-read로 같은 decision을 반환한다. 다시 검사하려면 새 action을 만든다.
 
 결정 내용과 검사 결과, `valid_until`은 이후 revision에서 바꾸지 않는다. 실행 직전에 허가 시간이 지나거나 requester 권한·state·budget·input·configuration이 달라졌으면 `UNUSED -> EXPIRED`로 바꾸고 실행을 거절한다. 그대로이면 compare-and-set으로 `UNUSED -> USED`를 먼저 저장한 뒤 exact action을 한 번만 실행한다. `USED`, `NOT_USED`, `EXPIRED`는 다시 사용할 수 없다.
 
@@ -143,12 +145,12 @@ runtime validator가 할 수 없는 일은 다음과 같다.
 | `FETCH_POLICY` | SCHEMA, AUTHORITY, BUDGET, TOOL, REDACTION | 승인된 공식 source만 정책 후보로 저장 |
 | `RUN_SANDBOX` | SCHEMA, AUTHORITY, REVISION, STATE, BUDGET, TOOL, FILE_PATH, SANDBOX | default-deny network, resource·cleanup 고정 |
 | `SAVE_RESULT` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION | 생산 권한, exact input, atomic commit |
-| `CALL_TECHNICAL_GATE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, GATE_ORDER | final Verification+CWE COMMITTED 필요 |
-| `CALL_RULE_SCOPE_GATE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, GATE_ORDER | TRUE+Technical ACCEPT exact refs 필요 |
-| `CREATE_REPORT_DRAFT` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, REPORT_READY, REDACTION | PASS/PASS/PASS/SUFFICIENT/ALLOW 필요 |
+| `CALL_TECHNICAL_GATE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, GATE_ORDER, REDACTION | final Verification+CWE와 exact LLM call spec 필요 |
+| `CALL_RULE_SCOPE_GATE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, GATE_ORDER, REDACTION | TRUE+Technical ACCEPT와 exact LLM call spec 필요 |
+| `CREATE_REPORT_DRAFT` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, REPORT_READY, REDACTION | PASS/PASS/PASS/SUFFICIENT/ALLOW와 exact LLM call spec 필요 |
 | `PREPARE_HUMAN_REVIEW` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION | 분석 종료·오류·누락·비용 포함 |
-| `SAVE_HUMAN_DECISION` | SCHEMA, AUTHORITY, IDENTITY, REVISION, REDACTION | 인증된 Human Reviewer와 exact packet 필요 |
-| `EXTERNAL_DISCLOSURE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, DISCLOSURE, REDACTION | exact HumanReviewDecision=DISCLOSE 필요 |
+| `SAVE_HUMAN_DECISION` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION | 인증된 Human Reviewer와 current packet generation 필요 |
+| `EXTERNAL_DISCLOSURE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, DISCLOSURE, REDACTION | current HumanReviewDecision=DISCLOSE 필요 |
 
 ## 비신뢰 입력 경계
 
@@ -199,7 +201,7 @@ runtime validator가 할 수 없는 일은 다음과 같다.
 
 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`
 
-사람 결정 저장 자체도 `SAVE_HUMAN_DECISION` action을 거친다. 인증된 사람 identity와 exact packet을 확인한 뒤에만 `HumanReviewDecision` record를 만들 수 있다. `DISCLOSE`는 `report_ready=true`이고 사람이 `approved_report_refs`와 `disclosure_targets`에 실제 공개 범위를 명시했을 때만 시스템의 외부 disclosure action에 사용할 수 있다. 승인 report는 모두 packet 안에 있고 두 Gate의 통과 조건을 만족해야 한다. Agent가 만든 결정, 다른 packet의 결정, 수정 전 revision의 결정은 사용할 수 없다. 실제 자동 제출 integration은 이 설계 범위 밖이다.
+사람 결정 저장 자체도 `SAVE_HUMAN_DECISION` action을 거친다. `HumanReviewState`가 current packet generation과 current decision을 가리키며, 인증된 사람 identity와 exact state version을 확인한 뒤에만 decision을 저장한다. 새 packet이 생기면 이전 decision은 superseded된다. `DISCLOSE`는 current packet의 `report_ready=true`이고 사람이 exact report와 target을 명시했을 때만 외부 disclosure action에 사용할 수 있다. 실제 자동 제출 integration은 이 설계 범위 밖이다.
 
 ## 오류와 verdict 분리
 

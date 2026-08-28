@@ -52,7 +52,7 @@ Agent 또는 service의 제안
 - Reporter를 부를 일곱 조건
 - 비밀정보 제거와 사람 결정 전 외부 공개 차단
 
-하나라도 실패하면 실행하지 않고 오류를 남깁니다. ALLOW 결과는 exact 요청에 한 번만 쓰며 retry나 다른 수정본에 재사용하지 않습니다. 허가 시간이 지나거나 호출자 권한·상태·예산·입력·설정이 바뀌면 `EXPIRED`(사용 전 만료)로 기록하고 새 요청부터 다시 검사합니다. 이미 검사한 요청이나 결정 내용을 고쳐 쓰지 않습니다.
+하나라도 실패하면 실행하지 않고 오류를 남깁니다. 한 요청에는 decision 하나만 만들고 ALLOW 결과는 exact 요청에 한 번만 씁니다. 허가 시간이 지나거나 호출자 권한·상태·예산·입력·설정이 바뀌면 `EXPIRED`(사용 전 만료)로 기록하고 새 요청부터 다시 검사합니다. 실제 LLM 호출의 model·prompt·context·예산도 검사한 `LLMCallSpec`과 같아야 합니다. Gate와 Reporter는 자기 stage action을 건너뛰고 별도 LLM 호출을 만들 수 없습니다.
 
 ## 저장소와 LLM 출력은 명령이 아닙니다
 
@@ -92,7 +92,7 @@ Agent 또는 service의 제안
 
 사람은 별도 `HumanReviewDecision`에 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`을 기록합니다. ReportDraft 안의 값을 바꾸어 승인하지 않습니다.
 
-사람 결정 record를 저장할 때도 로그인한 실제 검토자와 exact packet을 프로그램이 확인합니다. LLM이 사람 결정처럼 생긴 출력을 만들어도 승인으로 저장하지 않습니다.
+사람 결정 record를 저장할 때도 로그인한 실제 검토자와 `HumanReviewState`가 가리키는 current packet generation을 프로그램이 확인합니다. 새 packet이 만들어지면 이전 packet의 결정은 즉시 만료됩니다. LLM이 사람 결정처럼 생긴 출력을 만들어도 승인으로 저장하지 않습니다.
 
 `DISCLOSE`를 선택하면 실제로 승인한 ReportDraft 수정본과 공개 대상·채널도 함께 적습니다. packet에 없거나 수정된 보고서에는 이전 승인을 재사용할 수 없습니다.
 

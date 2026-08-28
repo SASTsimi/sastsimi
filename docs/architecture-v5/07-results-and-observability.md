@@ -51,6 +51,7 @@ raw log는 최소 권한과 짧은 보존 기간으로 다루며 parser 실패�
 최소 추적 항목은 다음과 같다.
 
 - `llm_call_id`, `analysis_id`, `hypothesis_id`, `attempt_id`와 역할
+- exact action decision과 immutable `LLMCallSpec` reference
 - provider profile, adapter와 model identifier
 - `NEW | RESUME | AUTO` 요청값, 실제 결정과 parent session reference
 - prompt template/version과 exposed request/response artifact refs
@@ -172,7 +173,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 
 최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, 초기·파생·chain·invalid hypothesis 수, verdict별 수, 두 Gate별 수, PoC/report refs, 공식 정책 상태, Research/Primitive 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
 
-분석 종료 뒤 review packet assembler가 exact `AnalysisRunResult`에서 `HumanReviewPacket`을 만든다. packet은 Finding·Verification, 두 Gate, 정책·CWE, dynamic·redacted PoC, report 또는 차단 이유, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. `HumanReviewDecision`은 이 packet과 별도 record이며 ReportDraft를 수정하지 않는다.
+분석 종료 뒤 review packet assembler가 exact `AnalysisRunResult`에서 `HumanReviewPacket`을 만든다. packet은 Finding·Verification, 두 Gate, 정책·CWE, dynamic·redacted PoC, report 또는 차단 이유, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. `HumanReviewState`는 current packet generation과 current 사람 decision을 가리킨다. 새 packet이 생기면 이전 packet과 결정은 감사 기록으로만 남고 공개에는 사용할 수 없다. `HumanReviewDecision`은 packet과 별도 record이며 ReportDraft를 수정하지 않는다.
 
 | 최종 상태 | 저장 조건 |
 |---|---|

@@ -194,7 +194,9 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    AGENT[Agent proposed invocation] --> TRUST[Trusted Runtime Validator]
+    AGENT[Agent proposed invocation] --> ACTION[CALL LLM or Gate Reporter stage action]
+    SPEC[Immutable LLMCallSpec] --> ACTION
+    ACTION --> TRUST[Trusted Runtime Validator]
     TRUST --> REQ[LLMInvocationRequest]
     REQ --> POLICY{SessionPolicy NEW RESUME AUTO}
     POLICY --> LOGPROXY[LLM Logging Proxy]
@@ -208,7 +210,7 @@ flowchart LR
     PARSER --> REDACT[Redaction]
     REDACT --> LOG
     LOG --> OBS[Invocation and resource store]
-    FAIL[Explicit retry or failover] --> REQ
+    FAIL[Explicit retry or failover] --> ACTION
 ```
 
 provider/model과 실제 session 결정은 기록한다. trusted runtime이 허용 profile·budget·session policy를 검증하며 silent failover, credential logging과 hidden chain-of-thought 수집은 허용하지 않는다.
@@ -319,8 +321,12 @@ flowchart LR
 flowchart LR
     INPUT[Repository LLM provider or sandbox output] --> UNTRUSTED[Untrusted data]
     AGENT[Agent or service proposal] --> REQUEST[ActionRequest]
+    STAGE[Gate or Reporter stage action includes LLM call] --> REQUEST
     UNTRUSTED --> REQUEST
-    REQUEST --> CHECK{Runtime Validator required checks}
+    SPEC[Exact LLMCallSpec for every LLM action] --> REQUEST
+    REQUEST --> UNIQUE{Decision already exists for action ref}
+    UNIQUE -->|Yes| EXISTING[Return existing ActionDecision]
+    UNIQUE -->|No| CHECK{Runtime Validator required checks}
     CHECK -->|Any FAIL| DENY[ActionDecision DENY]
     DENY --> ERROR[AnalysisError and no execution]
     ERROR --> KEEP[Do not change domain verdict]
@@ -344,19 +350,21 @@ flowchart TB
     DYNAMIC[Dynamic results and redacted PoC] --> PACKET
     RESOURCE[Resources errors gaps and HOLD] --> PACKET
     REPORT[ReportDrafts or blocked reasons] --> PACKET
-    PACKET --> HUMAN[Human Reviewer]
+    PACKET --> CURRENT[HumanReviewState current packet generation]
+    CURRENT --> HUMAN[Human Reviewer]
     HUMAN --> SAVE[Validated SAVE HUMAN DECISION action]
     SAVE --> DECISION[HumanReviewDecision]
-    DECISION --> KIND{DISCLOSE REVISE WITHHOLD or MORE VALIDATION}
+    DECISION --> STATE[CAS current decision into HumanReviewState]
+    STATE --> KIND{DISCLOSE REVISE WITHHOLD or MORE VALIDATION}
     KIND -->|REVISE or MORE VALIDATION| RETURN[Return to allowed analysis stage]
     KIND -->|WITHHOLD| STOP[Keep internal]
-    KIND -->|DISCLOSE| DISCLOSE{Exact packet and report ready}
+    KIND -->|DISCLOSE| DISCLOSE{Still current packet decision and report ready}
     DISCLOSE -->|No| BLOCK[DISCLOSURE DENIED]
     DISCLOSE -->|Yes| BOUNDARY[External disclosure action boundary]
     AGENT[Agent Gate or Reporter] -->|Cannot save human decision or disclose| BLOCK
 ```
 
-사람 결정은 ReportDraft와 분리한다. 실제 자동 제출 integration은 이 설계에 포함하지 않으며, 향후 추가해도 exact `DISCLOSE` 결정과 redaction 검사를 건너뛸 수 없다.
+사람 결정은 ReportDraft와 분리한다. 새 packet generation은 이전 결정을 supersede한다. 실제 자동 제출 integration은 이 설계에 포함하지 않으며, 향후 추가해도 current `DISCLOSE` 결정과 redaction 검사를 건너뛸 수 없다.
 
 ## Rendering check
 

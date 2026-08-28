@@ -79,7 +79,7 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 | `transition_id` | 상태 변경을 승인하는 runtime | 전체 시스템 | `StateTransition`과 debug trace | 승인된 상태 변경마다 새 값 |
 | `transition_commit_id` | 결과와 상태를 함께 확정하는 저장 runtime | 전체 시스템 | `TransitionCommit` journal | atomic 저장 시도마다 새 값 |
 | `action_id` | 실행 요청을 저장하는 runtime | 전체 시스템 | `ActionRequest`, `ActionDecision`과 실행 trace | 요청마다 새 값, retry에서 재사용 금지 |
-| `decision_id` | action을 검사한 runtime validator | 전체 시스템 | `ActionDecision`과 실행 trace | 검사 결과마다 새 값 |
+| `decision_id` | action을 검사한 runtime validator | 전체 시스템 | `ActionDecision`과 실행 trace | 한 `action_ref.record_id`당 하나이며 모든 decision revision에서 유지 |
 | `review_packet_id` | 사람 검토 자료를 조립하는 runtime | 전체 시스템 | `HumanReviewPacket` | 분석 결과 revision마다 새 값 |
 | `review_decision_id` | 사람의 결정을 저장하는 runtime | 전체 시스템 | `HumanReviewDecision` | 사람 결정마다 새 값 |
 | `llm_call_id` | LLM 호출 직전 Agent Runtime | 전체 시스템 | `invocations` | retry·failover마다 새 값 |
@@ -123,7 +123,8 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 | 기술 Gate | `TechnicalEvidenceReview.status` | `ACCEPT | REVISE | REJECT` | Technical Evidence Gate Agent | Verification verdict를 변경하지 않음 |
 | 정책·영향 Gate | `RuleScopeImpactReview.review_status`, `report_permission` | `PASS | FAIL | UNCERTAIN`, `ALLOW | DENY` | Rule Scope Impact Gate Agent | 기술 판정과 분리 |
 | 보고서 초안 | `ReportProcessState.status` | `NOT_REQUESTED | DRAFTED | FAILED` | Reporter runtime | 공개 승인 상태가 아님 |
-| 사람 검토 | `HumanReviewDecision.decision` | `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION` | Human Reviewer | Agent·Gate·Reporter가 대신 결정할 수 없음 |
+| 사람 검토 준비 | `HumanReviewState.status` | `EMPTY | PACKET_READY | DECIDED` | review packet runtime | 현재 packet·결정 pointer를 한 곳에서 관리 |
+| 사람 결정 | `HumanReviewDecision.decision` | `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION` | Human Reviewer | Agent·Gate·Reporter가 대신 결정할 수 없음 |
 
 진행 중인 상태도 저장할 수 있도록 아래 최소 상태 record를 사용한다. 종료 결과 record는 상세 근거를 담고, 상태 record는 현재 진행 위치를 나타낸다.
 
@@ -137,6 +138,15 @@ AnalysisRunState:
   started_at: timestamp
   finished_at: timestamp | null
   elapsed_ms: integer
+
+HumanReviewState:
+  meta: RunMeta
+  state_version: integer
+  packet_generation: integer
+  status: EMPTY | PACKET_READY | DECIDED
+  current_packet_ref: RunStoredDataRef | null
+  current_decision_ref: RunStoredDataRef | null
+  updated_at: timestamp
 
 ProposalProcessState:
   meta: RecordMeta without hypothesis/attempt
@@ -175,6 +185,8 @@ ReportProcessState:
 `AnalysisRunState`는 처음에는 `workspace_id: null`, `commit_id: null`일 수 있다. Repository Loader가 작업공간을 만들면 `workspace_id`를 기록하고, checkout을 확인하면 `commit_id`를 기록한다. 한 번 기록된 값은 같은 분석에서 바꾸지 않는다. `COMPLETE`와 `PARTIAL`은 두 값이 모두 필요하고, clone·checkout 전 `FAILED | CANCELLED`는 둘 중 하나 또는 모두가 `null`일 수 있다. 코드 근거 record는 두 값이 모두 있고 `CodeWorkspace.status=READY`일 때만 만들 수 있다.
 
 `AnalysisRunState.status=RUNNING`이면 `analysis_result_ref=null`이다. `COMPLETE | PARTIAL | FAILED | CANCELLED`이면 `analysis_result_ref`가 필수이고 같은 `analysis_id`의 정확한 `AnalysisRunResult`를 가리킨다. 최종 상태와 결과는 atomic transition으로 함께 확정한다.
+
+분석마다 `HumanReviewState` logical record는 하나다. 처음에는 `state_version=0`, `packet_generation=0`, `status=EMPTY`이고 두 pointer가 `null`이다. `PREPARE_HUMAN_REVIEW`가 새 packet을 만들 때 compare-and-set으로 version과 generation을 각각 1 증가시키고 `status=PACKET_READY`, `current_packet_ref=새 packet`, `current_decision_ref=null`을 같은 atomic transition에 저장한다. `SAVE_HUMAN_DECISION`은 exact current packet·generation·state version을 확인한 뒤 `status=DECIDED`와 새 `current_decision_ref`를 atomic 저장한다. 새 packet generation이 생기면 이전 packet과 결정은 감사 기록으로 남지만 즉시 superseded되어 공개에 사용할 수 없다.
 
 `ProposalProcessState`의 모든 revision은 `meta.hypothesis_id: null`을 유지한다. `SCHEMA_VALID` proposal을 가설로 등록할 때 새 `hypothesis_id`를 발급하고, 별도 `logical_record_id`의 `HypothesisProcessState.status=REGISTERED`를 만든다. 두 상태 record는 같은 `proposal_ref`로 연결하며 서로의 revision으로 취급하지 않는다.
 
@@ -347,6 +359,7 @@ ActionRequest:
   work_ref: RunStoredDataRef | StoredDataRef | null
   expected_state_version: integer | null
   input_refs: [RunStoredDataRef | StoredDataRef]
+  llm_call_spec_ref: StoredDataRef | null
   tool_name: string | null
   file_paths: [string]
   provider_profile_ref: RunStoredDataRef | StoredDataRef | null
@@ -388,6 +401,8 @@ ActionDecision:
 
 action type별 `required_checks`는 아래 표와 정확히 같아야 한다. `check_results`에는 각 필수 check가 중복 없이 한 번씩 있어야 한다. 하나라도 `FAIL`이면 `decision=DENY`, `valid_until=null`, `use_status=NOT_USED`와 하나 이상의 `error_ids`가 필요하다. 모두 `PASS`일 때만 `ALLOW`이며 최초 revision은 `valid_until>decided_at`, `use_status=UNUSED`, `used_at=null`, `expired_at=null`, `expire_reason=null`, 빈 `outcome_refs`와 빈 `error_ids`를 사용한다. `valid_until`의 최대 길이는 action·provider·Sandbox별 versioned runtime policy에서 제한한다.
 
+한 `action_ref.record_id`에는 정확히 하나의 `decision_id`와 하나의 `ActionDecision.logical_record_id`만 허용한다. validator는 unique constraint와 atomic create-or-read로 이 연결을 저장한다. 같은 request를 동시에 검사하면 새 decision을 만들지 않고 이미 저장된 exact decision을 반환한다. 이후 상태 변화는 그 logical decision의 revision으로만 기록한다. 다시 검사하거나 retry하려면 새 `action_id`의 `ActionRequest`를 만든다.
+
 | `use_status` | 필수 값 | 금지 값 |
 |---|---|---|
 | `UNUSED` | `decision=ALLOW`, 미래의 `valid_until` | `used_at`, `expired_at`, `expire_reason`, `outcome_refs` |
@@ -411,12 +426,12 @@ action type별 `required_checks`는 아래 표와 정확히 같아야 한다. `c
 | `FETCH_POLICY` | SCHEMA, AUTHORITY, BUDGET, TOOL, REDACTION | 승인된 공식 source만 정책 후보로 저장 |
 | `RUN_SANDBOX` | SCHEMA, AUTHORITY, REVISION, STATE, BUDGET, TOOL, FILE_PATH, SANDBOX | image digest, default-deny network, resource·cleanup 고정 |
 | `SAVE_RESULT` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION | 역할별 생산 권한, exact input, atomic commit |
-| `CALL_TECHNICAL_GATE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, GATE_ORDER | final Verification+CWE의 COMMITTED revision 필요 |
-| `CALL_RULE_SCOPE_GATE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, GATE_ORDER | `TRUE`+Technical `ACCEPT` exact refs 필요 |
-| `CREATE_REPORT_DRAFT` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, REPORT_READY, REDACTION | PASS/PASS/PASS/SUFFICIENT/ALLOW 필요 |
+| `CALL_TECHNICAL_GATE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, GATE_ORDER, REDACTION | final Verification+CWE의 COMMITTED revision과 exact LLM call spec 필요 |
+| `CALL_RULE_SCOPE_GATE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, GATE_ORDER, REDACTION | `TRUE`+Technical `ACCEPT` exact refs와 exact LLM call spec 필요 |
+| `CREATE_REPORT_DRAFT` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, REPORT_READY, REDACTION | PASS/PASS/PASS/SUFFICIENT/ALLOW와 exact LLM call spec 필요 |
 | `PREPARE_HUMAN_REVIEW` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION | 분석 종료와 오류·누락·비용 포함 |
-| `SAVE_HUMAN_DECISION` | SCHEMA, AUTHORITY, IDENTITY, REVISION, REDACTION | 인증된 Human Reviewer와 exact packet 필요 |
-| `EXTERNAL_DISCLOSURE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, DISCLOSURE, REDACTION | Human Reviewer의 exact `DISCLOSE` 결정과 같은 report·target 필요 |
+| `SAVE_HUMAN_DECISION` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION | 인증된 Human Reviewer와 current packet·generation 필요 |
+| `EXTERNAL_DISCLOSURE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, DISCLOSURE, REDACTION | current packet·decision의 exact `DISCLOSE`와 같은 report·target 필요 |
 
 `requested_by`와 action의 허용 조합은 다음 표를 따른다.
 
@@ -428,7 +443,7 @@ action type별 `required_checks`는 아래 표와 정확히 같아야 한다. `c
 | `CANCEL_WORK` | ORCHESTRATION, RECOVERY, HUMAN_REVIEWER |
 | `READ_CODE` | HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, RESEARCH, TECHNICAL_GATE |
 | `RUN_TOOL` | REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR |
-| `CALL_LLM` | HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, RESEARCH, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER |
+| `CALL_LLM` | HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, RESEARCH |
 | `FETCH_POLICY` | POLICY_COLLECTOR |
 | `RUN_SANDBOX` | VERIFICATION |
 | `SAVE_RESULT` | ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, RESEARCH, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, SANDBOX, RECOVERY |
@@ -441,7 +456,7 @@ action type별 `required_checks`는 아래 표와 정확히 같아야 한다. `c
 
 Orchestration은 작업·호출을 제안할 수 있지만 Verification verdict, CWE, 두 Gate 결과, 정책 해석, ReportDraft 내용과 사람 결정을 생산하지 못한다. 각 전문 결과는 위 표의 `SAVE_RESULT` 허용 역할 중에서도 해당 result kind를 소유한 역할만 저장한다. 예를 들어 `VerificationResult`는 VERIFICATION, `TechnicalEvidenceReview`는 TECHNICAL_GATE, `RuleScopeImpactReview`는 RULE_SCOPE_GATE, `ReportDraft`는 REPORTER만 생산한다. runtime validator는 값의 생산자·schema·선행 reference를 확인하지만 취약점 진위·CWE 적절성·정책 의미를 대신 판정하지 않는다.
 
-action type에서 쓰지 않는 선택 field는 `null` 또는 빈 배열이어야 하고 `reason`은 비어 있지 않아야 한다. `READ_CODE`는 하나 이상의 `file_paths`, `RUN_TOOL`은 `tool_name`과 필요한 file path, `CALL_LLM`은 `provider_profile_ref`·`session_mode`·work state, `RUN_SANDBOX`는 `sandbox_profile_ref`·`image_digest`·`resource_limits`가 필수다. network를 쓰지 않는 Sandbox는 빈 `network_targets`를 사용하며 빈 목록은 default-deny를 뜻한다. `SAVE_HUMAN_DECISION`의 `input_refs`에는 exact packet과 사람 identity record가 있어야 한다. `EXTERNAL_DISCLOSURE`에는 exact HumanReviewDecision과 승인한 ReportDraft가 모두 있어야 하고, action의 `disclosure_targets`는 결정의 목록과 set-equal해야 한다.
+action type에서 쓰지 않는 선택 field는 `null` 또는 빈 배열이어야 하고 `reason`은 비어 있지 않아야 한다. `READ_CODE`는 하나 이상의 `file_paths`, `RUN_TOOL`은 `tool_name`과 필요한 file path가 필수다. 실제 LLM을 실행하는 `CALL_LLM | CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT`는 exact `llm_call_spec_ref`, `provider_profile_ref`, `session_mode`와 work state가 필요하며 action의 provider·session 값은 spec과 같아야 한다. Gate와 Reporter는 별도 `CALL_LLM`을 우회 호출하지 않고 각 stage action이 LLM 호출까지 직접 허가한다. `RUN_SANDBOX`는 `sandbox_profile_ref`·`image_digest`·`resource_limits`가 필수다. network를 쓰지 않는 Sandbox는 빈 `network_targets`를 사용하며 빈 목록은 default-deny를 뜻한다. `PREPARE_HUMAN_REVIEW`는 `work_ref`로 current `HumanReviewState`, `expected_state_version`으로 현재 version을 가리키고 `input_refs`에 exact `AnalysisRunResult`를 넣는다. `SAVE_HUMAN_DECISION`도 current state/version을 가리키고 `input_refs`에 exact current packet과 사람 identity record를 넣는다. `EXTERNAL_DISCLOSURE` 역시 current state/version을 가리키며 exact current HumanReviewDecision과 승인한 ReportDraft를 입력으로 가져야 한다. action의 `disclosure_targets`는 current 결정의 목록과 set-equal해야 한다.
 
 ```yaml
 CodeLocation:
@@ -925,6 +940,8 @@ DynamicReproductionResult:
 ```yaml
 TechnicalEvidenceReview:
   meta: RecordMeta
+  action_decision_ref: StoredDataRef
+  llm_invocation_log_ref: StoredDataRef
   verification_result_ref: StoredDataRef
   cwe_label_ref: StoredDataRef
   status: ACCEPT | REVISE | REJECT
@@ -939,7 +956,7 @@ TechnicalEvidenceReview:
   rationale: string
 ```
 
-`verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 필수이며 각각 정확히 한 `VerificationResult`와 `CWELabel` revision을 가리킨다. runtime은 두 대상의 `record_id`, `workspace_id`, `commit_id`, `hypothesis_id`와 `content_hash`가 서로와 현재 Technical review에 일치하는지 확인한다. Verification 또는 CWELabel이 새 revision으로 바뀌면 이전 `TechnicalEvidenceReview`를 재사용할 수 없고 Gate를 새로 호출해야 한다. Technical review는 `VerificationResult.verdict`나 `CWELabel`을 덮어쓰지 않는다.
+`action_decision_ref.record_id`는 `CALL_TECHNICAL_GATE`를 허가하고 `USED`로 claim한 decision을 가리킨다. `llm_invocation_log_ref`는 그 decision과 같은 call spec을 실행한 `TECHNICAL_GATE` invocation이며 `parsed_output_ref.record_id`는 현재 review를 가리킨다. `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 필수이며 각각 정확히 한 `VerificationResult`와 `CWELabel` revision을 가리킨다. runtime은 두 대상의 `record_id`, `workspace_id`, `commit_id`, `hypothesis_id`와 `content_hash`가 서로와 현재 Technical review에 일치하는지 확인한다. Verification 또는 CWELabel이 새 revision으로 바뀌면 이전 `TechnicalEvidenceReview`를 재사용할 수 없고 Gate를 새로 호출해야 한다. Technical review는 `VerificationResult.verdict`나 `CWELabel`을 덮어쓰지 않는다.
 
 ## 9. ProgramPolicyRecord과 RuleScopeImpactReview
 
@@ -981,6 +998,8 @@ ProgramPolicyRecord:
 ```yaml
 RuleScopeImpactReview:
   meta: RecordMeta
+  action_decision_ref: StoredDataRef
+  llm_invocation_log_ref: StoredDataRef
   verification_result_ref: StoredDataRef
   technical_review_ref: StoredDataRef
   cwe_label_ref: StoredDataRef
@@ -994,7 +1013,7 @@ RuleScopeImpactReview:
   missing_information: [string]
 ```
 
-`verification_result_ref.record_id`, `technical_review_ref.record_id`와 `cwe_label_ref.record_id`는 필수다. `technical_review_ref` 대상은 `status=ACCEPT`이고, 그 대상의 Verification과 CWE reference `record_id`는 Rule Scope review가 직접 가리키는 두 `record_id`와 각각 같아야 한다. runtime은 각 reference의 `workspace_id`, `commit_id`, `content_hash`가 실제 대상 record와 일치하고, Verification·CWELabel·Technical 대상 `RecordMeta.hypothesis_id`가 현재 Rule Scope review의 가설과 같은지 확인한다. `policy_record_ref`가 있으면 그 `record_id`도 필수이며 실제 `ProgramPolicyRecord`와 일치해야 한다. 어느 입력 revision이든 바뀌면 이전 Rule Scope review를 재사용하지 않는다.
+`action_decision_ref.record_id`는 `CALL_RULE_SCOPE_GATE`를 허가하고 `USED`로 claim한 decision을 가리킨다. `llm_invocation_log_ref`는 그 decision과 같은 call spec을 실행한 `RULE_SCOPE_GATE` invocation이며 `parsed_output_ref.record_id`는 현재 review를 가리킨다. `verification_result_ref.record_id`, `technical_review_ref.record_id`와 `cwe_label_ref.record_id`는 필수다. `technical_review_ref` 대상은 `status=ACCEPT`이고, 그 대상의 Verification과 CWE reference `record_id`는 Rule Scope review가 직접 가리키는 두 `record_id`와 각각 같아야 한다. runtime은 각 reference의 `workspace_id`, `commit_id`, `content_hash`가 실제 대상 record와 일치하고, Verification·CWELabel·Technical 대상 `RecordMeta.hypothesis_id`가 현재 Rule Scope review의 가설과 같은지 확인한다. `policy_record_ref`가 있으면 그 `record_id`도 필수이며 실제 `ProgramPolicyRecord`와 일치해야 한다. 어느 입력 revision이든 바뀌면 이전 Rule Scope review를 재사용하지 않는다.
 
 공식 `ProgramPolicyRecord`가 없으면 `policy_record_ref=null`이다. 정책 record가 없거나 핵심 출처가 누락되면 `rule_compliance`, `scope_compliance`, `review_status`는 `UNCERTAIN`, permission은 `DENY`다. 불완전한 정책 record 자체가 있으면 그 reference는 보존하고 `missing_information`에 누락 내용을 기록한다. 이 불변조건을 만족하지 않는 출력은 invalid다.
 
@@ -1003,11 +1022,27 @@ RuleScopeImpactReview:
 각 LLM 호출의 요청, 응답, 모델·세션 정보, 사용량과 오류를 다시 확인할 수 있게 남기는 기록입니다.
 
 ```yaml
+LLMCallSpec:
+  meta: RecordMeta
+  llm_call_id: string
+  agent_role: HYPOTHESIS | VERIFICATION | PRO | CON | CWE_LABELING | RESEARCH | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER
+  provider_profile_ref: StoredDataRef
+  model: string
+  session_policy: NEW | RESUME | AUTO
+  parent_session_ref: string | null
+  context_refs: [StoredDataRef]
+  prompt_template_version: string
+  prompt_payload_ref: StoredDataRef
+  output_schema: string
+  token_budget: integer
+  timeout_ms: integer
+
 LLMInvocationRequest:
   meta: RecordMeta
   llm_call_id: string
   action_decision_ref: StoredDataRef
-  agent_role: HYPOTHESIS | VERIFICATION | PRO | CON | RESEARCH | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER
+  call_spec_ref: StoredDataRef
+  agent_role: HYPOTHESIS | VERIFICATION | PRO | CON | CWE_LABELING | RESEARCH | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER
   provider_profile_ref: StoredDataRef
   model: string
   session_policy: NEW | RESUME | AUTO
@@ -1020,7 +1055,9 @@ LLMInvocationRequest:
   timeout_ms: integer
 ```
 
-`action_decision_ref.record_id`는 `CALL_LLM` action을 `ALLOW`하고 `USED`로 claim한 exact decision revision을 가리킨다. `timeout_ms`는 monotonic clock으로 계산하는 0보다 큰 밀리초 실행 예산이다.
+`call_spec_ref.record_id`는 수정할 수 없는 exact `LLMCallSpec` revision을 가리킨다. `action_decision_ref.record_id`는 일반 Agent이면 `CALL_LLM`, Gate이면 해당 `CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE`, Reporter이면 `CREATE_REPORT_DRAFT` action을 `ALLOW`하고 `USED`로 claim한 exact decision revision을 가리킨다. 그 action의 `llm_call_spec_ref.record_id`는 `call_spec_ref.record_id`와 같아야 한다. request의 `llm_call_id`, role, provider profile, model, session, parent session, context, prompt template/payload, output schema, token budget와 timeout은 spec과 field-by-field exact equality를 만족해야 하며 runtime은 이 equality를 provider 호출 직전에 다시 확인한다. 다르면 decision을 `EXPIRED`로 바꾸고 호출하지 않는다. `timeout_ms`는 monotonic clock으로 계산하는 0보다 큰 밀리초 실행 예산이다.
+
+`LLMCallSpec`은 이를 입력으로 가진 첫 `ActionDecision`이 저장된 뒤 수정하지 않는다. action `input_refs`에는 spec 자체와 spec의 `prompt_payload_ref`, 모든 `context_refs`를 포함하고 `REVISION`·`REDACTION` check를 적용한다. `CALL_LLM`에서는 spec role이 `requested_by`와 같아야 한다. `CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT`에서는 각각 `TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER`여야 한다. retry와 failover는 새 `llm_call_id`, spec, action과 decision을 만든다.
 
 ```yaml
 LLMInvocationResult:
@@ -1044,6 +1081,8 @@ LLMInvocationResult:
 LLMInvocationLog:
   meta: RecordMeta
   llm_call_id: string
+  action_decision_ref: StoredDataRef
+  call_spec_ref: StoredDataRef
   agent_role: string
   provider_profile_ref: StoredDataRef
   provider: string
@@ -1072,6 +1111,8 @@ LLMInvocationLog:
   redaction_result: APPLIED | NOT_REQUIRED | FAILED
 ```
 
+`LLMInvocationLog.action_decision_ref`와 `call_spec_ref`는 request와 같아야 한다. log의 role·profile·model·session·prompt template·context는 request와 spec에서 바뀌지 않으며 실제 adapter가 선택한 값과 차이가 있으면 호출을 실패 처리한다. Gate와 Reporter output의 `llm_invocation_log_ref`는 이 log를 가리키고 log의 `parsed_output_ref.record_id`는 exact Gate review 또는 ReportDraft revision을 가리킨다. stage action decision의 `outcome_refs`에는 invocation log와 그 final output을 모두 포함한다.
+
 새로운 독립 호출은 `retry_count=0`이고 두 선행 호출 reference가 모두 `null`이다. 같은 provider/model에서 일반 retry를 실행하면 `retry_of_llm_call_id`가 바로 앞의 허용된 실패 호출을 가리키고 `failover_from_llm_call_id=null`이다. provider 또는 model을 바꾸는 failover이면 반대로 `failover_from_llm_call_id`만 바로 앞의 허용된 실패 호출을 가리킨다. 두 필드는 동시에 값을 가질 수 없다.
 
 일반 retry의 선행 status는 `FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED`만 허용한다. `INVALID_OUTPUT`은 제한된 repair가 끝난 뒤, `RATE_LIMITED`는 정한 backoff 뒤, `AUTH_REQUIRED`는 사용자 또는 승인된 운영자가 재인증을 완료한 뒤에만 후속 호출을 시작한다. failover의 선행 status는 `FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED`만 허용하며, 사전에 허용된 fallback profile과 전환 이유를 기록해야 한다. `AUTH_REQUIRED`에서 failover하려면 대상 provider의 유효한 인증이 별도로 준비되어 있어야 한다.
@@ -1088,6 +1129,7 @@ hidden chain-of-thought와 credential은 이 계약의 대상이 아니며 저�
 ReportDraft:
   meta: RecordMeta
   action_decision_ref: StoredDataRef
+  llm_invocation_log_ref: StoredDataRef
   verification_result_ref: StoredDataRef
   technical_review_ref: StoredDataRef
   rule_scope_impact_review_ref: StoredDataRef
@@ -1097,7 +1139,7 @@ ReportDraft:
   draft_status: DRAFTED
 ```
 
-`action_decision_ref.record_id`는 `CREATE_REPORT_DRAFT` action의 report 조건과 redaction을 모두 통과한 `USED` decision revision을 가리킨다. `verification_result_ref`, `technical_review_ref`, `rule_scope_impact_review_ref`, `cwe_label_ref`와 `policy_record_ref`는 저장된 record를 가리키므로 각 `StoredDataRef.record_id`가 필수다. Reporter runtime은 다음 연결을 모두 확인하고 하나라도 다르면 초안을 만들지 않는다.
+`action_decision_ref.record_id`는 `CREATE_REPORT_DRAFT` action의 report 조건, exact LLM call spec과 redaction을 모두 통과한 `USED` decision revision을 가리킨다. `llm_invocation_log_ref`는 그 decision과 같은 call spec을 실행한 `REPORTER` invocation이며 `parsed_output_ref.record_id`는 현재 draft를 가리킨다. `verification_result_ref`, `technical_review_ref`, `rule_scope_impact_review_ref`, `cwe_label_ref`와 `policy_record_ref`는 저장된 record를 가리므로 각 `StoredDataRef.record_id`가 필수다. Reporter runtime은 다음 연결을 모두 확인하고 하나라도 다르면 초안을 만들지 않는다.
 
 - Technical review와 Rule Scope review가 모두 ReportDraft의 같은 Verification `record_id`를 가리킨다.
 - Rule Scope review의 `technical_review_ref.record_id`가 ReportDraft의 `technical_review_ref.record_id`와 같다.
@@ -1111,6 +1153,7 @@ ReportDraft:
 HumanReviewPacket:
   meta: RunMeta
   review_packet_id: string
+  review_generation: integer
   action_decision_ref: RunStoredDataRef
   analysis_result_ref: RunStoredDataRef
   finding_refs: [StoredDataRef]
@@ -1139,6 +1182,7 @@ HumanReviewPacket:
 HumanReviewDecision:
   meta: RunMeta
   review_decision_id: string
+  review_generation: integer
   action_decision_ref: RunStoredDataRef
   packet_ref: RunStoredDataRef
   decision: DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION
@@ -1149,11 +1193,11 @@ HumanReviewDecision:
   decided_at: timestamp
 ```
 
-`action_decision_ref.record_id`는 분석 종료·exact refs·redaction·필수 검토 자료를 확인한 `PREPARE_HUMAN_REVIEW` ALLOW decision의 `USED` revision을 가리킨다. `analysis_result_ref.record_id`와 `packet_ref.record_id`는 필수다. packet은 한 `AnalysisRunResult` revision에서 조립한다. finding, verification, CWE, 두 Gate, 정책, dynamic, PoC, report, LLM log, action decision, work state, work attempt, transition commit와 debug trace reference는 `AnalysisRunResult`의 해당 값과 set-equal해야 하며 임의로 빼거나 더하지 않는다. `resource_summary`는 `AnalysisRunResult.resources`, `error_ids`는 `errors[].error_id`, `gap_ids`는 `gaps[].gap_id`에서 만든다. `report_ready=true`는 하나 이상의 ReportDraft가 있고 각 초안이 `TRUE + Technical ACCEPT + Rule Scope PASS/PASS/PASS/SUFFICIENT/ALLOW`의 exact revision을 가리킬 때만 허용한다. 보고서가 차단됐으면 빈 `report_draft_refs`, `report_ready=false`와 구체적인 `blocked_reasons`를 사용한다.
+`action_decision_ref.record_id`는 분석 종료·exact refs·redaction·필수 검토 자료를 확인한 `PREPARE_HUMAN_REVIEW` ALLOW decision의 `USED` revision을 가리킨다. `analysis_result_ref.record_id`는 필수다. packet은 한 `AnalysisRunResult` revision에서 조립하고 새 packet의 `review_generation`은 직전 `HumanReviewState.packet_generation+1`이다. finding, verification, CWE, 두 Gate, 정책, dynamic, PoC, report, LLM log, action decision, work state, work attempt, transition commit와 debug trace reference는 `AnalysisRunResult`의 해당 값과 set-equal해야 하며 임의로 빼거나 더하지 않는다. `resource_summary`는 `AnalysisRunResult.resources`, `error_ids`는 `errors[].error_id`, `gap_ids`는 `gaps[].gap_id`에서 만든다. `report_ready=true`는 하나 이상의 ReportDraft가 있고 각 초안이 `TRUE + Technical ACCEPT + Rule Scope PASS/PASS/PASS/SUFFICIENT/ALLOW`의 exact revision을 가리킬 때만 허용한다. 보고서가 차단됐으면 빈 `report_draft_refs`, `report_ready=false`와 구체적인 `blocked_reasons`를 사용한다.
 
 `FindingCandidate` 본문과 품질 기준은 R5가 소유한다. R4-03은 이미 저장된 Finding revision을 `finding_refs`로 전달할 뿐 새 Finding claim을 만들거나 빠진 Finding을 추정하지 않는다. Finding이 아직 없으면 두 `finding_refs` 목록을 모두 비우고 그 사유를 `blocked_reasons`에 남긴다.
 
-`HumanReviewDecision.action_decision_ref.record_id`는 인증된 Human Reviewer와 exact packet을 검사한 `SAVE_HUMAN_DECISION` ALLOW decision의 `USED` revision을 가리킨다. `reviewer_identity_ref`는 비밀 session이나 credential이 아닌 내부의 제한된 사람 identity 증명 record를 가리킨다. `HumanReviewDecision`은 exact packet revision과 실제 승인한 ReportDraft 수정본을 기록한다. `DISCLOSE`는 `report_ready=true`, 하나 이상의 `approved_report_refs`와 하나 이상의 `disclosure_targets`가 필요하다. 공개 대상은 versioned destination allowlist의 불투명 ID이며 URL query, credential 또는 실행 명령을 담지 않는다. 승인 report는 모두 packet의 `report_draft_refs`에 포함되고 report-ready 불변조건을 만족해야 한다. 다른 세 decision은 두 목록을 비운다. Agent가 생성한 결정, 다른 packet·수정 전 packet·승인 목록 밖 report의 결정은 `DISCLOSURE_DENIED`다. 이 계약은 자동 제출 integration을 구현하거나 허용한다는 뜻이 아니다.
+`HumanReviewDecision.action_decision_ref.record_id`는 인증된 Human Reviewer와 exact current packet을 검사한 `SAVE_HUMAN_DECISION` ALLOW decision의 `USED` revision을 가리킨다. `packet_ref.record_id`는 action이 검사한 `HumanReviewState.current_packet_ref.record_id`와 같고 decision의 `review_generation`도 current state·packet과 같아야 한다. `reviewer_identity_ref`는 비밀 session이나 credential이 아닌 내부의 제한된 사람 identity 증명 record를 가리킨다. `DISCLOSE`는 current packet의 `report_ready=true`, 하나 이상의 `approved_report_refs`와 하나 이상의 `disclosure_targets`가 필요하다. 공개 대상은 versioned destination allowlist의 불투명 ID이며 URL query, credential 또는 실행 명령을 담지 않는다. 승인 report는 모두 current packet의 `report_draft_refs`에 포함되고 report-ready 불변조건을 만족해야 한다. 다른 세 decision은 두 목록을 비운다. Agent가 생성한 결정, superseded packet·결정, 승인 목록 밖 report는 `DISCLOSURE_DENIED`다. 외부 공개 직전에도 `HumanReviewState.status=DECIDED`, exact current packet·decision·generation·state version을 다시 검사한다. 이 계약은 자동 제출 integration을 구현하거나 허용한다는 뜻이 아니다.
 
 ```yaml
 AnalysisRunResult:

@@ -26,10 +26,10 @@ Agent Runtime은 역할·structured-output 요구·context reference·budget·se
 
 ## provider 호출 전 권한 검사
 
-Agent Runtime은 provider를 직접 호출하지 않고 `CALL_LLM` `ActionRequest`를 만든다. 비-LLM Runtime Validator는 다음 `ActionCheck`를 모두 수행한다.
+일반 Agent Runtime은 provider를 직접 호출하지 않고 `CALL_LLM` `ActionRequest`를 만든다. Technical Gate, Rule Scope Gate와 Reporter의 호출은 각각 `CALL_TECHNICAL_GATE`, `CALL_RULE_SCOPE_GATE`, `CREATE_REPORT_DRAFT` action이 LLM 실행까지 직접 허가하며 별도 `CALL_LLM`으로 우회하지 않는다. 모든 LLM 실행 action은 수정할 수 없는 exact `LLMCallSpec`을 입력으로 갖고 비-LLM Runtime Validator가 다음 `ActionCheck`를 수행한다.
 
 - `SCHEMA`: 요청 형식, output schema와 필수 필드
-- `AUTHORITY`: 요청 역할과 LLM 역할 일치
+- `AUTHORITY`: 신뢰 runtime이 붙인 실제 호출자 identity·등록 역할·요청 LLM 역할 일치
 - `IDENTITY`·`REVISION`: analysis·hypothesis·workspace·commit·input record 일치
 - `STATE`: current work, active attempt와 state version
 - `BUDGET`: token·시간·retry·repair 한도
@@ -37,7 +37,7 @@ Agent Runtime은 provider를 직접 호출하지 않고 `CALL_LLM` `ActionReques
 - `SESSION`: NEW/RESUME/AUTO, parent session, retry/failover 선행 호출
 - `REDACTION`: prompt와 context에 credential·절대 경로·금지 정보가 없는지
 
-모든 check가 `PASS`인 `ActionDecision=ALLOW`를 runtime이 `USED`로 claim한 뒤에만 `LLMInvocationRequest`를 만든다. 요청의 `action_decision_ref`는 그 exact claim revision, `provider_profile_ref`는 검사한 versioned provider profile revision을 가리킨다. `LLMInvocationLog`도 같은 profile ref를 보존한다. 다른 action, 이전 state version, retry 또는 failover에 같은 decision을 재사용하지 않는다.
+모든 check가 `PASS`인 `ActionDecision=ALLOW`를 runtime이 `USED`로 claim한 뒤에만 `LLMInvocationRequest`를 만든다. 요청의 `action_decision_ref`는 그 exact claim revision, `call_spec_ref`와 `provider_profile_ref`는 검사한 exact spec과 versioned provider profile revision을 가리킨다. runtime은 provider 호출 직전에 role·model·session·context·prompt·output schema·token budget·timeout이 spec과 모두 같은지 다시 검사한다. `LLMInvocationLog`도 같은 action decision·spec·profile ref를 보존한다. 다른 action, 이전 state version, retry 또는 failover에 같은 decision을 재사용하지 않는다.
 
 저장소 텍스트나 LLM output이 provider·model·session mode·fallback·budget을 바꾸라고 요구해도 configuration 변경으로 해석하지 않는다. 요청된 값이 versioned provider policy와 다르면 `PROVIDER_PROFILE_DENIED` 또는 `UNTRUSTED_INSTRUCTION`으로 호출하지 않는다.
 
@@ -53,7 +53,7 @@ Agent Runtime은 provider를 직접 호출하지 않고 `CALL_LLM` `ActionReques
 
 provider/model을 조용히 바꾸는 failover는 금지한다. 허용된 fallback이 있더라도 원래 실패, 새 provider/model, 이유, 새 session과 결과를 별도 `llm_call_id`로 남긴다. 같은 provider/model의 일반 retry는 `retry_of_llm_call_id`, provider/model을 바꾸는 failover는 `failover_from_llm_call_id`로 바로 앞의 허용된 실패 호출을 가리킨다. 두 reference를 동시에 사용하지 않는다.
 
-retry와 failover마다 새 `ActionRequest`, `ActionDecision`, `attempt_id`와 `llm_call_id`가 필요하다. 이전 ALLOW decision이나 이전 provider 요청을 그대로 다시 보내는 것은 `ACTION_NOT_ALLOWED`다.
+retry와 failover마다 새 `llm_call_id`의 `LLMCallSpec`, `ActionRequest`, `ActionDecision`과 `attempt_id`가 필요하다. 이전 ALLOW decision, spec 또는 provider 요청을 그대로 다시 보내는 것은 `ACTION_NOT_ALLOWED`다.
 
 선행 호출 status는 다음과 같이 제한한다.
 
