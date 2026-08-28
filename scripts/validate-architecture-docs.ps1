@@ -96,6 +96,18 @@ foreach ($name in $requiredContractNames) {
     }
 }
 
+$transitionCommitBlock = [regex]::Match($contractText, '(?ms)^TransitionCommit:\s*(.*?)^```').Groups[1].Value
+$requiredTransitionCommitFields = @(
+    'output_refs:',
+    'gap_ids:',
+    'error_ids:'
+)
+foreach ($field in $requiredTransitionCommitFields) {
+    if (-not $transitionCommitBlock.Contains($field)) {
+        Add-Failure "missing TransitionCommit atomic field: $field"
+    }
+}
+
 $requiredStateRows = @(
     '| `PENDING` | `READY`, `CANCELLED` |',
     '| `READY` | `RUNNING`, `BLOCKED`, `CANCELLED` |',
@@ -153,7 +165,8 @@ $negativeScenarioMarkers = @(
     'crash 뒤 같은 요청이 다시 들어옴',
     'retry·Gate `REVISE`·chaining이 한도를 넘음',
     '`PARTIAL` 결과에 gap·오류 설명이 없음',
-    '분석 종료 시 `RUNNING` work나 `PREPARED` journal이 남음'
+    '분석 종료 시 `RUNNING` work나 `PREPARED` journal이 남음',
+    '`COMMITTED` marker 투영 전에 취소·retry 전이가 경쟁'
 )
 foreach ($marker in $negativeScenarioMarkers) {
     if (-not $securityText.Contains($marker)) {
@@ -173,6 +186,7 @@ if ($gitCheckExitCode -ne 0) {
 Write-Output "Markdown files: $($markdownFiles.Count)"
 Write-Output "Mermaid blocks: $($diagramBlocks.Count) canonical / $($wikiDiagramBlocks.Count) Wiki"
 Write-Output "R4-02 required contract names: $($requiredContractNames.Count)"
+Write-Output "R4-02 TransitionCommit atomic fields: $($requiredTransitionCommitFields.Count)"
 Write-Output "R4-02 exact output bindings: $($requiredBindingRules.Count)"
 Write-Output "R4-02 required error codes: $($requiredErrorCodes.Count)"
 Write-Output "R4-02 negative scenarios: $($negativeScenarioMarkers.Count)"

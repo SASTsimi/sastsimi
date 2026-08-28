@@ -120,12 +120,14 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 작업 결과를 저장했다는 사실과 다음 단계가 그 결과를 사용할 수 있다는 사실은 다르다. 다음 단계는 `TransitionCommit.state=COMMITTED`이고 `WorkExecutionState.last_transition_commit_ref.record_id`가 그 COMMITTED revision을 가리키며 `output_refs`가 같은 결과 revision을 가리킬 때만 읽는다.
 
 1. worker가 결과 record와 목표 상태를 제출한다.
-2. runtime이 active attempt, `state_version`, `input_hash`, workspace·commit·hypothesis와 결과 reference를 확인한다.
+2. runtime이 active attempt, `state_version`, `input_hash`, workspace·commit·hypothesis와 결과·gap·오류 reference를 확인한다.
 3. 단일 transaction을 지원하면 결과·`StateTransition`·상태 pointer를 함께 확정한다.
 4. 단일 transaction을 지원하지 않으면 `TransitionCommit=PREPARED`로 결과를 격리하고 현재 version·attempt·입력을 다시 검사한다.
 5. state store가 현재 version·active attempt가 그대로라는 조건을 compare-and-set으로 확인하면서 unique `(work_id, target_state_version)` key의 `COMMITTED` marker를 append한다. 경쟁 중 하나만 성공하며, 그 뒤 marker 내용을 `WorkExecutionState`와 전문 상태 pointer에 투영한다.
-6. 소비자는 COMMITTED marker와 pointer가 같은 output을 가리킬 때만 진행한다. marker 뒤 projection 전에 중단되면 recovery가 marker를 재적용한다.
+6. 소비자는 COMMITTED marker와 pointer가 같은 output·gap·오류를 가리킬 때만 진행한다. marker 뒤 projection 전에 중단되면 recovery가 marker를 재적용한다.
 7. version 충돌·취소·검증 실패는 `ABORTED`로 남기고 output을 최신 상태에 연결하지 않는다.
+
+새 전이를 승인하기 전에는 같은 work의 다음 version에 남은 journal을 먼저 정리한다. `COMMITTED` marker가 있으면 이를 재투영하고 경쟁 요청은 version conflict로 거절한다. `PREPARED`가 있으면 복구 또는 `ABORTED`가 끝날 때까지 새 전이를 시작하지 않는다.
 
 Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 final `VerificationResult.record_id`는 같은 atomic transition에 묶인다. Reporter work의 `SUCCEEDED`, `ReportProcessState.status=DRAFTED`와 `ReportDraft.record_id`도 같은 방식으로 묶인다. 두 Gate work는 각각 정확히 하나인 `TechnicalEvidenceReview`와 `RuleScopeImpactReview` revision을 output으로 가리킨다. 상태만 종료되었거나 결과만 저장된 경우에는 다음 단계와 분석 종료를 차단한다.
 
@@ -148,6 +150,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 | `RUNNING` attempt가 남고 commit 없음 | `INTERRUPTED` 오류와 실패 attempt 기록; 허용되면 새 attempt |
 | `PREPARED` journal과 현재 version·attempt·input이 일치 | compare-and-set 조건의 unique `COMMITTED` marker append 후 pointer projection |
 | `COMMITTED` marker는 있지만 pointer projection이 덜 됨 | 같은 marker를 멱등하게 다시 투영 |
+| 미완료 journal이 있는데 새 전이가 요청됨 | 기존 journal을 먼저 복구·중단 처리하고 새 요청은 재평가 |
 | `PREPARED` journal이 오래되었거나 취소됨 | `ABORTED`, output 격리 |
 | 종료 상태지만 output ref가 없거나 존재하지 않음 | `TRANSITION_INCOMPLETE`, 다음 단계 차단 |
 | output만 있고 상태 pointer가 없음 | journal로 복구하거나 `TRANSITION_INCOMPLETE`로 차단 |

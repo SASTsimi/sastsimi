@@ -248,6 +248,8 @@ TransitionCommit:
   attempt_id: string | null
   target_status: BLOCKED | SUCCEEDED | PARTIAL | FAILED | CANCELLED
   output_refs: [RunStoredDataRef | StoredDataRef]
+  gap_ids: [string]
+  error_ids: [string]
   state: PREPARED | COMMITTED | ABORTED
   prepared_at: timestamp
   committed_at: timestamp | null
@@ -258,7 +260,7 @@ TransitionCommit:
 
 `last_transition_ref`는 현재 상태를 만든 정확한 `StateTransition` revision을 가리키며 최초 `PENDING` record에서는 `null`이다. 결과를 함께 확정한 상태이면 `last_transition_commit_ref`가 그 atomic 저장의 `COMMITTED` `TransitionCommit` revision을 가리켜야 한다. `READY | RUNNING`처럼 결과를 확정하지 않는 전이는 `last_transition_commit_ref=null`일 수 있다. 두 reference는 저장 record를 가리키므로 `record_id`가 필수다.
 
-`StateTransition.from_status`는 저장된 현재 상태와 같고 `new_state_version=expected_state_version+1`이어야 한다. `TransitionCommit.transition_ref.record_id`는 그 전이의 저장 revision을 가리키고, `work_id`, expected/target version, attempt, target status와 output refs가 `StateTransition`과 같아야 한다. `PREPARED`, `COMMITTED` 또는 `ABORTED`로 바뀔 때마다 같은 `logical_record_id`·`transition_commit_id`를 유지하고 새 `record_id`와 증가한 revision을 만든다. `PREPARED`는 `committed_at=null`, `abort_reason=null`, `COMMITTED`는 `committed_at`이 필수이고 `abort_reason=null`, `ABORTED`는 `abort_reason`이 필수다. `COMMITTED` 또는 `ABORTED` revision이 생기면 다시 다른 상태로 바꾸지 않는다.
+`StateTransition.from_status`는 저장된 현재 상태와 같고 `new_state_version=expected_state_version+1`이어야 한다. `TransitionCommit.transition_ref.record_id`는 그 전이의 저장 revision을 가리키고, `work_id`, expected/target version, attempt, target status, output refs, `gap_ids`와 `error_ids`가 `StateTransition`과 같아야 한다. `PREPARED`, `COMMITTED` 또는 `ABORTED`로 바뀔 때마다 같은 `logical_record_id`·`transition_commit_id`를 유지하고 새 `record_id`와 증가한 revision을 만든다. `PREPARED`는 `committed_at=null`, `abort_reason=null`, `COMMITTED`는 `committed_at`이 필수이고 `abort_reason=null`, `ABORTED`는 `abort_reason`이 필수다. `COMMITTED` 또는 `ABORTED` revision이 생기면 다시 다른 상태로 바꾸지 않는다.
 
 허용 전이는 다음 표가 전부다. 표에 없는 전이는 `STATE_TRANSITION_INVALID`다.
 
@@ -310,6 +312,8 @@ TransitionCommit:
 작업 모듈과 Agent는 등록 또는 상태 변경을 요청할 뿐 직접 확정하지 않는다. 모든 행의 `StateTransition` 승인과 저장은 신뢰 경계 안의 state transition validator와 state store가 담당한다. Orchestration Agent의 자연어 출력은 상태 변경 명령으로 직접 실행하지 않는다.
 
 결과 record, `StateTransition`과 그 결과를 가리키는 종료 상태는 하나의 논리적 atomic transition으로 확정한다. 저장 제품이 한 transaction을 지원하면 같은 transaction에서 처리한다. 지원하지 않으면 `TransitionCommit` journal을 사용한다. `PREPARED` 출력은 격리 상태이며 다음 단계가 읽을 수 없다. state store는 현재 version·active attempt·입력이 그대로라는 조건을 compare-and-set으로 확인하면서 unique `(work_id, target_state_version)` key의 `COMMITTED` revision을 append한다. 경쟁 중 하나만 성공하며 이 marker가 논리적 확정점이다. runtime은 marker를 `WorkExecutionState`와 전문 상태 pointer에 투영한다. 소비자는 COMMITTED marker와 두 pointer가 모두 같은 output을 가리킬 때만 진행한다. marker 뒤 projection 전에 중단되면 recovery가 marker를 재적용한다. version 충돌, 취소 또는 검증 실패는 `ABORTED`이며 output을 최신 상태에 연결하지 않는다.
+
+state store는 새 전이를 승인하기 전에 `(work_id, current_state_version+1)`의 미완료 journal을 먼저 확인한다. `COMMITTED` marker가 있으면 기존 marker를 상태와 전문 pointer에 재투영하고 경쟁 요청을 `STATE_VERSION_CONFLICT`로 거절한다. `PREPARED`가 있으면 복구 또는 `ABORTED` 처리를 끝내기 전까지 새 전이를 받지 않는다. 따라서 marker와 pointer 사이의 짧은 중단 구간을 이용해 취소·retry·다른 결과가 같은 version을 차지할 수 없다.
 
 다음 output binding은 필수다.
 

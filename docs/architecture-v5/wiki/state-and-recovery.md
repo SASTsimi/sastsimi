@@ -59,7 +59,9 @@
 - final `VerificationResult`의 정확한 `record_id`
 - `HypothesisProcessState.status=TERMINAL`과 위 결과를 가리키는 reference
 
-한쪽만 저장되면 다음 Gate를 호출하지 않습니다. 저장 제품이 한 번에 처리할 수 없으면 `TransitionCommit`의 `PREPARED → COMMITTED` 절차를 사용합니다. `COMMITTED` 전의 결과는 다른 단계가 읽을 수 없습니다.
+한쪽만 저장되면 다음 Gate를 호출하지 않습니다. 저장 제품이 한 번에 처리할 수 없으면 결과를 `PREPARED`로 격리한 뒤, 같은 상태 version에서 하나만 만들 수 있는 `COMMITTED` marker(저장이 확정됐다는 표시)를 먼저 남기고 상태가 그 결과를 가리키게 합니다. marker와 상태가 같은 결과·누락·오류를 가리킬 때만 다른 단계가 읽습니다.
+
+marker를 남긴 직후 프로그램이 꺼졌다면 재시작할 때 기존 marker를 상태에 다시 반영합니다. 이 복구가 끝나기 전에는 취소·재시도 같은 새 상태 변경도 받지 않습니다.
 
 같은 규칙을 Technical Gate, Rule Scope Gate와 `ReportDraft`에도 적용합니다.
 
@@ -80,7 +82,8 @@
 
 - 완전히 저장된 결과: 재사용하고 다시 실행하지 않음
 - 실행 중이었지만 저장되지 않은 attempt: 중단 오류를 남기고 허용된 경우만 새 attempt
-- `PREPARED` 상태: 현재 version과 입력이 맞으면 저장을 마무리하고, 아니면 취소·격리
+- `PREPARED` 상태: 현재 version과 입력이 맞으면 확정 marker와 상태 연결을 마무리하고, 아니면 취소·격리
+- `COMMITTED` marker만 있고 상태 연결이 덜 됨: 기존 marker를 다시 반영하고 새 상태 변경은 그 뒤 재평가
 - 결과와 상태가 맞지 않음: 다음 단계 차단
 - 안전하게 판단할 수 없음: `RECOVERY_FAILED`로 중단하고 사람 확인
 

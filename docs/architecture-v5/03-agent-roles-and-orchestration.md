@@ -120,7 +120,7 @@ Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니�
 - 재시도 가능한 오류는 work를 `BLOCKED`로 두고 `waiting_for`에 `RETRY | AUTH | APPROVAL | INPUT | BUDGET | DEPENDENCY` 중 실제 조건을 기록한다.
 - 사용자가 개별 가설을 취소하면 그 가설의 새 downstream 작업을 만들지 않고 늦은 결과를 `STALE_RESULT`로 거절한다.
 - 전체 분석을 취소하면 새 work 등록을 중단하고 실행 중 attempt에 취소를 전달하되 이미 저장된 결과와 오류는 보존한다.
-- 재개 시 마지막 `COMMITTED` transition만 신뢰한다. 완료 결과는 다시 실행하지 않고, 중단된 attempt만 허용된 새 attempt로 재시도한다.
+- 재개 시 마지막 `COMMITTED` marker와 그 marker에서 투영된 상태 pointer만 신뢰한다. 완료 결과는 다시 실행하지 않고, 중단된 attempt만 허용된 새 attempt로 재시도한다.
 - `PREPARED` journal과 종료 상태/output pointer 불일치는 runtime 복구가 끝나기 전까지 Gate·Reporter·최종 종료를 막는다.
 
 ## Agent 역할과 출력 권한

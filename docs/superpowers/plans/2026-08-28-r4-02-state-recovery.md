@@ -209,7 +209,7 @@ Issue #14의 12개 작업 항목과 negative scenario를 독립 체크리스트�
 
 Blocker/High/Medium/Low로 분류하고 Blocker/High를 모두 수정한다.
 
-- [ ] **Step 5: commit 후 두 번째 diff review**
+- [x] **Step 5: commit 후 두 번째 diff review**
 
 `git diff origin/main...HEAD`를 새로 읽어 범위 이탈·중복·모순을 확인하고 필요한 수정은 별도 commit으로 남긴다.
 
@@ -220,3 +220,11 @@ Blocker/High/Medium/Low로 분류하고 Blocker/High를 모두 수정한다.
 - [ ] **Step 7: 원격 PR diff 재검증**
 
 GitHub의 PR head SHA, 변경 파일, checks와 실제 diff를 다시 확인한다.
+
+## 검증 기록
+
+- 문서 검사: Markdown 52개, canonical/Wiki Mermaid 각각 11개, 상대 링크·fence·mirror·금지 표현·R4-02 필수 계약 검사 실패 0건
+- 실제 Mermaid 렌더링: Chrome 기반 `mmdc`로 11/11 SVG 생성, parse error 0건
+- 첫 검토 보완: `work_generation`, exact transition reference, metadata의 attempt 의미와 non-transaction 저장 순서를 명확화
+- 두 번째 검토 보완: `TransitionCommit`에 gap·오류를 원자적으로 포함하고, COMMITTED marker 투영 전 경쟁 전이를 차단
+- 남은 단계: branch push, PR 생성, GitHub 원격 diff와 checks 재확인
