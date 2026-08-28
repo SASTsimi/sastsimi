@@ -20,6 +20,8 @@
 
 clone 전에는 아직 `workspace_id`나 `commit_id`가 없을 수 있습니다. 이때는 `analysis_id`만 필수인 `RunMeta`를 사용합니다. checkout이 끝나 코드가 준비된 뒤의 근거에는 `workspace_id`와 `commit_id`가 모두 있어야 합니다. 외부 버그바운티 프로그램 ID는 출처가 다르면 겹칠 수 있으므로 `(program_namespace, external_program_id)`로 구분하고, 내부에서는 전역 `program_id`로 연결합니다.
 
+`CodeWorkspace`는 준비 중 `PREPARING`, 분석 가능하면 `READY`, 준비 실패 시 `FAILED`, 로컬 폴더 정리 뒤 `REMOVED`입니다. 정적 분석은 `READY`에서만 시작합니다.
+
 clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로 가리킵니다. 이 참조에는 `analysis_id`만 필요합니다. 코드 근거·PoC·보고서 자료는 반드시 `workspace_id + commit_id`가 있는 `StoredDataRef`를 사용합니다.
 
 ## 가설끼리는 어떻게 연결하나요?
@@ -61,6 +63,8 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 - `AnalysisError`: 작업이 정상적으로 끝나지 못한 사건입니다. 예: clone 실패, provider 인증 실패, sandbox 오류.
 
 둘 다 자동으로 `FALSE`가 되지 않습니다. `FALSE`는 미리 정한 반증 질문과 실제 반증 근거가 연결될 때만 가능합니다.
+
+정적 분석과 코드 조회 결과는 사용할 수 있는 사실뿐 아니라 도구별 실행 상태, 분석·제외 범위, `DataGap`, `AnalysisError`를 함께 전달합니다. `DataGap`은 영향받은 path·language·코드 위치를 가능한 범위에서 적습니다. 결과가 비어 있거나 일부 도구가 실패했다는 이유로 안전하다고 판단하지 않습니다.
 
 ## 동적 재현 실패와 반증은 다릅니다
 

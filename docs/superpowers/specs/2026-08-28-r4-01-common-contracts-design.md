@@ -36,6 +36,8 @@
 | `attempt_id` | 재시도 가능한 작업을 시작하는 runtime | 전체 시스템 | 시도마다 새 값 | 해당 결과와 debug trace |
 | `llm_call_id` | LLM 호출 직전 Agent Runtime | 전체 시스템 | 호출·retry·failover마다 새 값 | `invocations` |
 | `symbol_id` | AST·SAST 정규화 계층 | 같은 `workspace_id + commit_id` | 같은 코드 버전의 한 symbol만 가리킴 | `CodeSymbol` |
+| `fact_id` | AST·SAST 정규화 계층 | 같은 `workspace_id + commit_id` | 같은 코드 사실에 재사용하고 다른 사실에 재사용 금지 | `CodeFact` |
+| `relation_id` | AST·SAST 정규화 계층 | 같은 `workspace_id + commit_id` | 같은 코드 관계에 재사용하고 다른 관계에 재사용 금지 | `CodeRelation` |
 | `gap_id` | gap을 발견한 runtime | 전체 시스템 | gap마다 새 값 | `DataGap` |
 | `error_id` | 오류를 기록한 runtime | 전체 시스템 | 오류 사건마다 새 값 | `AnalysisError` |
 | `proposal_id` | proposal 출력 검증 runtime | 전체 시스템 | proposal마다 새 값 | `HypothesisProposal` |
@@ -49,6 +51,12 @@
 시스템이 만든 ID는 다른 대상에 재사용하지 않는다. `commit_id`와 `external_program_id`는 외부 대상을 가리키므로 같은 대상을 여러 분석에서 다시 참조할 수 있다. 외부 프로그램은 `(program_namespace, external_program_id)`로 구분하고 내부의 전역 `program_id`에 매핑한다. `root_hypothesis_id`, 부모·source·target 가설 ID와 failover 호출 ID는 기존 ID를 가리키는 참조 필드다. 로컬 코드 폴더가 삭제돼도 성공한 `workspace_id → repository_url + commit_id` 연결 정보는 남긴다.
 
 분석 시작·clone 실패처럼 코드가 아직 준비되지 않은 실행 record는 `analysis_id`만 필수인 `RunMeta`를 쓴다. `AnalysisRunState`와 `AnalysisRunResult`의 `workspace_id`, `commit_id`는 준비 전 `null`일 수 있고 실제 값이 기록된 뒤에는 바꾸지 않는다. 코드 근거를 담는 record는 두 값이 필수인 `RecordMeta`를 사용하며 `CodeWorkspace.status=READY`인 같은 commit만 참조한다.
+
+`CodeWorkspace.status`는 `PREPARING | READY | FAILED | REMOVED`다. clone·checkout 진행 중에는 `PREPARING`과 `commit_id=null`, 분석 가능한 상태는 `READY`와 확인된 `commit_id`를 사용한다.
+
+R2 교차 검토에 따라 정적 결과는 `CodeFact`, `CodeRelation`, `ToolRunResult`로 구성한다. 각 사실·관계는 producer와 원본 `StoredDataRef`, 정규화된 `CodeLocation`으로 역추적할 수 있어야 한다. `ToolRunResult`는 도구별 상태와 실제 분석·제외 path/language, gap, error를 함께 기록한다. `StaticFactBundle`과 `CodeContextResponse`는 `DataGap`과 `AnalysisError`를 모두 전달한다.
+
+`CodeLocation.file_path`는 `/` 구분자를 사용하는 Git 상대 경로다. 줄은 1부터 시작하고 시작·끝 줄을 포함한다. column은 알 수 없으면 둘 다 `null`이며, 값이 있으면 1-based Unicode code point 단위로 시작 column은 포함하고 끝 column은 제외한다. Context 조회는 depth·fragment·byte·token·요청 횟수·timeout 한도를 모두 적용한다.
 
 실행 자료 참조도 분리한다. `RunStoredDataRef`는 `analysis_id`로 입력 검증, clone·checkout 오류와 전체 debug trace를 가리키며 commit이 없어도 된다. `StoredDataRef`는 `workspace_id + commit_id`가 있는 코드 근거·PoC·보고서용 자료만 가리킨다. `RunStoredDataRef`를 코드 주장 근거로 사용할 수 없다.
 
@@ -101,7 +109,7 @@ proposal 검증 상태의 `meta.hypothesis_id`는 항상 `null`이다. `SCHEMA_V
 
 - 생산자: Repository Loader, 정적 분석, 코드 조회, sandbox, 정책 수집
 - 소비자: Hypothesis, Verification, Research, Gate, 결과 집계
-- 필수 정보: `gap_id`, `stage`, `code`, `reason`, 설명, 영향 위치, retry 가능 여부
+- 필수 정보: `gap_id`, `stage`, `code`, `reason`, 설명, 영향 path·language·위치, retry 가능 여부
 - 대표 code: `SUBMODULE_UNAVAILABLE`, `LFS_POINTER_ONLY`, `GENERATED_FILE_UNAVAILABLE`, `STATIC_COVERAGE_PARTIAL`, `CONTEXT_TRUNCATED`, `POLICY_SOURCE_MISSING`
 
 ### AnalysisError

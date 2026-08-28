@@ -22,12 +22,12 @@ CodeWorkspace:
   analysis_id: string
   repository_url: string
   commit_id: string | null
-  status: READY | FAILED | REMOVED
+  status: PREPARING | READY | FAILED | REMOVED
   created_at: timestamp
 ```
 
 실제 로컬 절대 경로는 runtime 내부에서만 관리하며 Agent, Finding과 보고서에 전달하지 않는다.
-`workspace_id`는 재사용하지 않는다. clone 또는 checkout이 끝나기 전에는 `commit_id`가 `null`일 수 있다. `status=READY`이면 `commit_id`가 반드시 있어야 하며, 코드 분석은 이때만 시작한다. 로컬 폴더를 정리하면 `status=REMOVED`로 바꾸되, 성공한 작업공간의 `workspace_id`와 `repository_url`·`commit_id` 연결 정보는 결과 추적을 위해 보존한다.
+`workspace_id`는 재사용하지 않는다. clone 또는 checkout이 진행 중이면 `status=PREPARING`, `commit_id=null`이다. 준비 작업이 실패하면 `status=FAILED`이며 `commit_id`는 checkout 확인 여부에 따라 값이 있거나 `null`일 수 있다. `status=READY`이면 `commit_id`가 반드시 있어야 하며, 코드 분석은 이때만 시작한다. 로컬 폴더를 정리하면 `status=REMOVED`로 바꾸되, 성공한 작업공간의 `workspace_id`와 `repository_url`·`commit_id` 연결 정보는 결과 추적을 위해 보존한다.
 
 분석을 시작했지만 아직 코드 작업공간이나 commit이 준비되지 않은 상태는 `RunMeta`를 사용한다.
 
@@ -77,6 +77,8 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 | `attempt_id` | 재시도 가능한 작업을 시작하는 runtime | 전체 시스템 | 해당 결과와 debug trace | 시도마다 새 값 |
 | `llm_call_id` | LLM 호출 직전 Agent Runtime | 전체 시스템 | `invocations` | retry·failover마다 새 값 |
 | `symbol_id` | AST·SAST 정규화 계층 | 같은 `workspace_id + commit_id` | `CodeSymbol`과 코드 근거 record | 같은 코드 버전 안에서 한 symbol만 가리킴 |
+| `fact_id` | AST·SAST 정규화 계층 | 같은 `workspace_id + commit_id` | `CodeFact`와 이를 사용하는 결과 | 같은 코드 사실에 재사용하고 다른 사실에 재사용 금지 |
+| `relation_id` | AST·SAST 정규화 계층 | 같은 `workspace_id + commit_id` | `CodeRelation`과 이를 사용하는 결과 | 같은 코드 관계에 재사용하고 다른 관계에 재사용 금지 |
 | `gap_id` | gap을 처음 발견한 runtime | 전체 시스템 | `DataGap`과 이를 포함한 결과 | gap마다 새 값 |
 | `error_id` | 오류를 기록하는 runtime | 전체 시스템 | `AnalysisError`, 실행 결과와 debug trace | 오류 사건마다 새 값 |
 | `proposal_id` | Hypothesis Agent 출력 검증 runtime | 전체 시스템 | `HypothesisProposal` | proposal마다 새 값. `hypothesis_id`와 같지 않음 |
@@ -169,13 +171,14 @@ CodeLocation:
   commit_id: string
   file_path: string
   start_line: integer
-  start_column: integer
+  start_column: integer | null
   end_line: integer
-  end_column: integer
+  end_column: integer | null
 
 CodeSymbol:
   symbol_id: string
-  symbol_kind: FILE | CLASS | FUNCTION | METHOD | VARIABLE | ROUTE
+  symbol_kind: FILE | MODULE | TYPE | CALLABLE | DATA | ROUTE | CONFIG
+  native_kind: string | null
   name: string
   location: CodeLocation
 
@@ -198,6 +201,8 @@ DataGap:
   code: string
   reason: MISSING | FAILED | TRUNCATED | UNSUPPORTED | BLOCKED | TIMEOUT
   description: string
+  affected_paths: [string]
+  affected_languages: [string]
   affected_locations: [CodeLocation]
   retryable: boolean
   related_record_ids: [string]
@@ -211,9 +216,63 @@ AnalysisError:
   retryable: boolean
   related_record_ids: [string]
   created_at: timestamp
+
+ToolSource:
+  tool_name: string
+  tool_version: string
+  rule_id: string | null
+  raw_result_ref: StoredDataRef
+
+CodeFact:
+  fact_id: string
+  fact_kind: SOURCE | SINK | SANITIZER | VALIDATOR | AUTH_CHECK | PERMISSION_CHECK | OTHER
+  symbol_id: string | null
+  location: CodeLocation
+  producer: ToolSource
+
+CodeRelation:
+  relation_id: string
+  relation_kind: CALL | DATA_FLOW | IMPORT | INHERITANCE | ROUTE_BINDING | OTHER
+  from_symbol_id: string | null
+  from_location: CodeLocation
+  to_symbol_id: string | null
+  to_location: CodeLocation
+  producer: ToolSource
+
+ToolCoverage:
+  analyzed_paths: [string]
+  skipped_paths: [string]
+  analyzed_languages: [string]
+  skipped_languages: [string]
+  notes: [string]
+
+ToolRunResult:
+  attempt_id: string
+  tool_name: string
+  tool_version: string
+  status: SUCCEEDED | PARTIAL | FAILED | SKIPPED
+  coverage: ToolCoverage
+  raw_result_ref: StoredDataRef | null
+  gaps: [DataGap]
+  errors: [AnalysisError]
+  started_at: timestamp
+  finished_at: timestamp
+  elapsed_ms: integer
+
+ContextRetrievalLimits:
+  max_depth: integer
+  max_fragments: integer
+  max_bytes: integer
+  token_budget: integer
+  max_requests_per_hypothesis: integer
+  timeout_ms: integer
 ```
 
-`file_path`는 `workspace_root` 기준 상대 경로이고 줄과 열은 1부터 시작한다. `symbol_id`는 같은 `workspace_id + commit_id` 안에서 유일하다. `StoredDataRef`는 준비된 코드와 연결된 결과에만 사용한다. `RunStoredDataRef`는 입력 검증, clone·checkout, 실행 오류와 debug trace처럼 commit 준비 전에도 생기는 실행 자료에만 사용하며 코드 근거·PoC·Finding·보고서 주장의 근거로 사용할 수 없다. 두 참조 모두 내부 저장 경로 대신 결과 번호와 내용 hash만 전달한다. `DataGap`은 분석하지 못한 범위이고 `AnalysisError`는 실행 중 발생한 오류다. 둘 다 취약점 `FALSE`를 뜻하지 않는다.
+`file_path`는 `workspace_root` 기준의 정규화된 Git 상대 경로다. 구분자는 운영체제와 관계없이 `/`를 사용하고 빈 경로, 절대 경로, drive prefix, `.`·`..` segment를 허용하지 않는다. Git에 저장된 경로의 대소문자를 그대로 보존하며 symlink를 해석한 실제 읽기 대상은 `workspace_root` 안에 있어야 한다. 줄은 1부터 시작하고 `start_line`과 `end_line`은 범위에 포함된다. 열 정보가 있는 경우 두 열 모두 1부터 시작하고 Unicode code point 단위이며 `start_column`은 포함, `end_column`은 제외한다. 도구가 줄만 제공하면 두 column을 모두 `null`로 두고 임의의 열 정밀도를 만들지 않는다.
+
+`symbol_kind`는 여러 언어에서 공통으로 쓸 수 있는 큰 범주다. `TYPE`에는 class·interface·enum·struct, `CALLABLE`에는 function·method·constructor·lambda, `DATA`에는 variable·field·property·parameter가 들어간다. 원래 parser나 SAST 도구가 사용한 세부 종류는 `native_kind`에 그대로 남긴다. `symbol_id`, `fact_id`, `relation_id`는 같은 `workspace_id + commit_id` 안에서 유일하다. `CodeFact`와 `CodeRelation`의 `producer.raw_result_ref`는 사실·관계를 만든 도구의 원본 결과를 가리켜야 한다.
+
+`StoredDataRef`는 준비된 코드와 연결된 결과에만 사용한다. `RunStoredDataRef`는 입력 검증, clone·checkout, 실행 오류와 debug trace처럼 commit 준비 전에도 생기는 실행 자료에만 사용하며 코드 근거·PoC·Finding·보고서 주장의 근거로 사용할 수 없다. 두 참조 모두 내부 저장 경로 대신 결과 번호와 내용 hash만 전달한다. `DataGap`은 분석하지 못한 범위이고 `AnalysisError`는 실행 중 발생한 오류다. 둘 다 취약점 `FALSE`를 뜻하지 않는다. `DataGap`의 세 affected 목록은 빈 목록일 수 있지만, `REPOSITORY | STATIC_ANALYSIS | CONTEXT` gap은 가능한 범위에서 path·language·location 중 하나 이상을 채운다. 전체 작업공간에 영향을 주거나 정확한 범위를 모르면 그 사실을 `description`에 명시하고 관련 결과를 `related_record_ids`로 연결한다.
 
 ### DataGap 생산자와 소비자
 
@@ -266,14 +325,15 @@ StaticFactBundle:
   meta: RecordMeta without hypothesis/attempt
   entities: [CodeSymbol]
   locations: [CodeLocation]
-  source_candidates: [FactRef]
-  sink_candidates: [FactRef]
-  call_edges: [RelationRef]
-  data_flow_candidates: [RelationRef]
-  auth_and_permission_checks: [FactRef]
-  route_bindings: [RelationRef]
-  tool_observations: [ToolObservationRef]
+  source_candidates: [CodeFact]
+  sink_candidates: [CodeFact]
+  call_edges: [CodeRelation]
+  data_flow_candidates: [CodeRelation]
+  auth_and_permission_checks: [CodeFact]
+  route_bindings: [CodeRelation]
+  tool_runs: [ToolRunResult]
   gaps: [DataGap]
+  errors: [AnalysisError]
 ```
 
 SAST severity와 tool message는 verdict가 아니다.
@@ -292,8 +352,8 @@ HypothesisProposal:
   vulnerability_type_candidates: [string]
   target_entities: [CodeSymbol]
   target_locations: [CodeLocation]
-  suspected_path: [RelationOrCodeLocation]
-  observed_facts: [FactRef]
+  suspected_path: [CodeRelation | CodeLocation]
+  observed_facts: [CodeFact]
   assumptions: [string]
   restrictions: [string]
   missing_information: [string]
@@ -318,7 +378,7 @@ VulnerabilityHypothesis:
   statement: string
   target_entities: [CodeSymbol]
   target_locations: [CodeLocation]
-  suspected_path: [RelationOrCodeLocation]
+  suspected_path: [CodeRelation | CodeLocation]
   falsification_questions: [string]
   required_validation: [string]
 ```
@@ -337,8 +397,7 @@ CodeContextRequest:
   requested_locations: [CodeLocation]
   relation_query: [CALLERS | CALLEES | DATA_FLOW_NEIGHBORS | AUTH_GUARDS | ROUTE_BINDINGS]
   reason: string
-  max_depth: integer
-  token_budget: integer
+  limits: ContextRetrievalLimits
 ```
 
 ```yaml
@@ -348,13 +407,16 @@ CodeContextResponse:
   entities: [CodeSymbol]
   locations: [CodeLocation]
   code_fragment_refs: [StoredDataRef]
-  discovered_relations: [RelationRef]
+  discovered_relations: [CodeRelation]
   gaps: [DataGap]
+  errors: [AnalysisError]
   truncated: boolean
+  returned_fragment_count: integer
+  returned_bytes: integer
   consumed_token_estimate: integer | null
 ```
 
-요청과 응답의 `meta.workspace_id` 또는 `meta.commit_id`가 다르거나, 이 값이 `CodeWorkspace`와 일치하지 않으면 `WORKSPACE_MISMATCH`로 기록하고 근거에 사용하지 않는다. empty/truncated/gap은 안전함 또는 `FALSE`를 뜻하지 않는다.
+요청과 응답의 `meta.workspace_id` 또는 `meta.commit_id`가 다르거나, 이 값이 `CodeWorkspace`와 일치하지 않으면 `WORKSPACE_MISMATCH`로 기록하고 근거에 사용하지 않는다. 모든 limit은 0보다 커야 한다. `max_requests_per_hypothesis`는 같은 가설의 누적 요청 한도이며 Orchestration runtime이 `code_request_id` 수로 강제한다. empty/truncated/gap/error는 안전함 또는 `FALSE`를 뜻하지 않는다. `truncated=true`이면 `CONTEXT_TRUNCATED` gap이 반드시 있어야 한다.
 
 ## 4. VerificationResult
 

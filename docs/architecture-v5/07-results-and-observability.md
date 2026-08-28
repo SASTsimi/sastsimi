@@ -16,7 +16,7 @@
 
 | 영역 | 내용 |
 |---|---|
-| `facts` | `StaticFactBundle`, 원본 AST/SAST artifact refs와 gaps |
+| `facts` | `StaticFactBundle`, `ToolRunResult`, 원본 AST/SAST refs, coverage, gaps와 errors |
 | `hypotheses` | initial/child/chained proposal, validation state와 parent 관계 |
 | `contexts` | `CodeContextRequest/Response`, 실제 반환·열람 위치 |
 | `verifications` | Pro/Con, initial/final verdict, restriction/capability, CWE |
@@ -99,7 +99,7 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 ### Resources
 
 - 역할·provider·model별 invocation, token/동등 usage와 elapsed time
-- AST/SAST 성공·부분 성공·실패와 coverage
+- AST/SAST별 `SUCCEEDED | PARTIAL | FAILED | SKIPPED`, 실제 분석·제외 path/language와 coverage
 - sandbox mode별 CPU/memory/disk/network/time와 cleanup
 
 provider가 token이나 비용을 제공하지 않으면 추정치를 확정값처럼 표시하지 않고 metric source와 unavailable reason을 남긴다.
