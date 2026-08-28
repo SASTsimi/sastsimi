@@ -21,17 +21,32 @@ CodeWorkspace:
   workspace_id: string
   analysis_id: string
   repository_url: string
-  commit_id: string
+  commit_id: string | null
   status: READY | FAILED | REMOVED
   created_at: timestamp
 ```
 
 실제 로컬 절대 경로는 runtime 내부에서만 관리하며 Agent, Finding과 보고서에 전달하지 않는다.
-`workspace_id`는 재사용하지 않는다. 로컬 폴더를 정리하면 `status=REMOVED`로 바꾸되, `workspace_id`와 `repository_url`·`commit_id`의 연결 정보는 결과 추적을 위해 보존한다.
+`workspace_id`는 재사용하지 않는다. clone 또는 checkout이 끝나기 전에는 `commit_id`가 `null`일 수 있다. `status=READY`이면 `commit_id`가 반드시 있어야 하며, 코드 분석은 이때만 시작한다. 로컬 폴더를 정리하면 `status=REMOVED`로 바꾸되, 성공한 작업공간의 `workspace_id`와 `repository_url`·`commit_id` 연결 정보는 결과 추적을 위해 보존한다.
+
+분석을 시작했지만 아직 코드 작업공간이나 commit이 준비되지 않은 상태는 `RunMeta`를 사용한다.
+
+```yaml
+RunMeta:
+  record_id: string
+  logical_record_id: string
+  record_type: string
+  schema_version: string
+  analysis_id: string
+  revision_number: integer
+  previous_record_id: string | null
+  created_at: timestamp
+```
 
 ```yaml
 RecordMeta:
   record_id: string
+  logical_record_id: string
   record_type: string
   schema_version: string
   analysis_id: string
@@ -44,7 +59,7 @@ RecordMeta:
   created_at: timestamp
 ```
 
-모든 핵심 결과는 `meta: RecordMeta`를 갖는다. `analysis_id`, `workspace_id`와 `commit_id`는 필수다. runtime은 `workspace_id`가 가리키는 `CodeWorkspace.commit_id`와 `RecordMeta.commit_id`가 같은지 확인한다. 가설별 결과는 `hypothesis_id`, 재시도 가능한 작업은 `attempt_id`가 필수다. 첫 결과의 `revision_number`는 `1`, `previous_record_id`는 `null`이다. 결과를 수정할 때 덮어쓰지 않고 새 `record_id`와 증가한 revision을 만든다.
+코드 근거를 포함하는 모든 핵심 결과는 `meta: RecordMeta`를 갖는다. `analysis_id`, `workspace_id`와 `commit_id`는 필수다. runtime은 `workspace_id`가 가리키는 `CodeWorkspace.status`가 `READY`이고 그 `commit_id`가 `RecordMeta.commit_id`와 같은지 확인한다. 가설별 결과는 `hypothesis_id`, 재시도 가능한 작업은 `attempt_id`가 필수다. 분석 시작·clone 실패처럼 코드에 아직 묶이지 않은 실행 상태와 최종 실행 결과는 `RunMeta`를 사용하고 nullable `workspace_id`, `commit_id`를 record 본문에 둔다. `logical_record_id`는 같은 논리 결과의 모든 수정본에서 유지한다. 첫 결과의 `revision_number`는 `1`, `previous_record_id`는 `null`이다. 결과를 수정할 때 덮어쓰지 않고 새 `record_id`와 증가한 revision을 만든다.
 
 ### 식별자 생성·저장·참조 기준
 
@@ -52,16 +67,27 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 
 | 식별자 | 누가 만드나요? | 어디까지 유일한가요? | 어디에 저장하나요? | 변경·재사용 규칙 |
 |---|---|---|---|---|
-| `analysis_id` | Orchestration runtime | 전체 시스템 | `runs`와 모든 `RecordMeta` | 변경·재사용 금지 |
+| `analysis_id` | Orchestration runtime | 전체 시스템 | `runs`, 모든 `RunMeta`와 `RecordMeta` | 변경·재사용 금지 |
 | `workspace_id` | Repository Loader | 전체 시스템 | `CodeWorkspace`, `runs`, 코드 근거 record | 변경·재사용 금지 |
-| `stored_data_id` | 결과 저장 계층 | 전체 시스템 | 해당 논리 저장 영역과 `StoredDataRef` | 변경·재사용 금지 |
-| `record_id` | record 저장 직전 runtime | 전체 시스템 | 각 `RecordMeta` | revision마다 새 값 |
+| `commit_id` | Git에서 checkout한 commit을 Repository Loader가 확인 | `repository_url`이 가리키는 Git 저장소 | `CodeWorkspace`, `CodeLocation`, `StoredDataRef`, `RecordMeta` | 외부 Git 객체 ID다. 같은 commit은 여러 분석에서 다시 참조할 수 있으나 값은 변경 금지 |
+| `stored_data_id` | 결과 저장 계층 | 전체 시스템 | 해당 논리 저장 영역과 `RunStoredDataRef` 또는 `StoredDataRef` | 변경·재사용 금지 |
+| `record_id` | record 저장 직전 runtime | 전체 시스템 | 각 `RunMeta`와 `RecordMeta` | revision마다 새 값 |
+| `logical_record_id` | 논리 결과를 처음 저장하는 runtime | 전체 시스템 | 각 `RunMeta`와 `RecordMeta` | 같은 논리 결과의 모든 revision에서 같은 값 유지 |
 | `hypothesis_id` | proposal 검증을 통과시킨 runtime | 전체 시스템 | `hypotheses`와 가설별 `RecordMeta` | 변경·재사용 금지 |
 | `attempt_id` | 재시도 가능한 작업을 시작하는 runtime | 전체 시스템 | 해당 결과와 debug trace | 시도마다 새 값 |
 | `llm_call_id` | LLM 호출 직전 Agent Runtime | 전체 시스템 | `invocations` | retry·failover마다 새 값 |
-| `revision_number` | 새 revision을 저장하는 runtime | 같은 논리 결과 | `RecordMeta` | 1부터 1씩 증가 |
+| `symbol_id` | AST·SAST 정규화 계층 | 같은 `workspace_id + commit_id` | `CodeSymbol`과 코드 근거 record | 같은 코드 버전 안에서 한 symbol만 가리킴 |
+| `gap_id` | gap을 처음 발견한 runtime | 전체 시스템 | `DataGap`과 이를 포함한 결과 | gap마다 새 값 |
+| `error_id` | 오류를 기록하는 runtime | 전체 시스템 | `AnalysisError`, 실행 결과와 debug trace | 오류 사건마다 새 값 |
+| `proposal_id` | Hypothesis Agent 출력 검증 runtime | 전체 시스템 | `HypothesisProposal` | proposal마다 새 값. `hypothesis_id`와 같지 않음 |
+| `code_request_id` | 코드 문맥을 요청하는 Agent Runtime | 전체 시스템 | `CodeContextRequest`와 해당 `CodeContextResponse` | 요청·응답 한 쌍에서 같은 값 유지 |
+| `primitive_id` | 검증 결과를 primitive로 저장하는 runtime | 전체 시스템 | `Primitive`와 체이닝 후보 | primitive마다 새 값 |
+| `policy_record_id` | 공식 정책 수집 결과를 저장하는 runtime | 전체 시스템 | `ProgramPolicyRecord` | 정책 수집본마다 새 값 |
+| `program_id` | 내부 Program Catalog | 전체 시스템 | `ProgramPolicyRecord`와 정책 조회 입력 | 같은 프로그램은 여러 분석에서 같은 값을 재사용 |
+| `external_program_id` | 외부 버그바운티 플랫폼 | 같은 `program_namespace` | `ProgramPolicyRecord` | 같은 외부 프로그램을 다시 참조할 수 있으며 namespace 없이 단독 사용 금지 |
+| `revision_number` | 새 revision을 저장하는 runtime | 같은 논리 결과 | `RunMeta`와 `RecordMeta` | 1부터 1씩 증가 |
 
-로컬 폴더를 정리해도 `workspace_id → repository_url + commit_id` 연결 정보는 삭제하지 않는다. `workspace_id`, `hypothesis_id`, `attempt_id`와 `llm_call_id`는 서로 대신 사용할 수 없으며, 소비자는 필요한 ID를 `RecordMeta`와 전문 record 양쪽에서 검사한다.
+`root_hypothesis_id`, `parent_hypothesis_ids`, `source_hypothesis_id`, `target_hypothesis_id`와 `failover_from_llm_call_id`는 새 종류의 ID가 아니라 각각 기존 `hypothesis_id` 또는 `llm_call_id`를 가리키는 참조 필드다. 로컬 폴더를 정리해도 성공한 `workspace_id → repository_url + commit_id` 연결 정보는 삭제하지 않는다. 시스템이 직접 만든 ID는 다른 대상에 재사용하지 않는다. 외부 ID인 `commit_id`와 `external_program_id`는 같은 대상을 다시 가리킬 수 있다. 서로 다른 종류의 ID는 대신 사용할 수 없으며, 소비자는 필요한 ID를 `RecordMeta`와 전문 record 양쪽에서 검사한다.
 
 ### 공통 시간 규칙
 
@@ -75,17 +101,67 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 
 같은 `status`라는 필드명을 쓰더라도 record 종류가 다르면 의미가 다르다. runtime은 아래 계층을 하나의 enum으로 합치거나 한 계층의 실패를 다른 계층의 판정으로 변환하지 않는다.
 
-| 상태 계층 | 허용 값 | 상태를 만드는 주체 | 반드시 분리할 의미 |
-|---|---|---|---|
-| 분석 실행 | `RUNNING | COMPLETE | PARTIAL | FAILED | CANCELLED` | Orchestration runtime | 가설 verdict가 아님 |
-| 가설 처리 | `PROPOSED | SCHEMA_VALID | ASSIGNED | VERIFYING | TERMINAL | INVALID_OUTPUT | CANCELLED` | Orchestration runtime | `TRUE | FALSE | HOLD`와 분리 |
-| 기술 판정 | `TRUE | FALSE | HOLD` | Verification Agent | 오류·정보 부족 상태와 분리 |
-| 동적 재현 | `NOT_REQUESTED | RUNNING | SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED` | Sandbox runtime | `FAILED`만으로 가설 반증 금지 |
-| LLM 호출 | `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED | CANCELLED` | Agent Runtime과 provider adapter | 가설 verdict로 변환 금지 |
-| 기술 Gate | `ACCEPT | REVISE | REJECT` | Technical Evidence Gate Agent | Verification verdict를 변경하지 않음 |
-| 정책·영향 Gate | `PASS | FAIL | UNCERTAIN`과 `ALLOW | DENY` | Rule Scope Impact Gate Agent | 기술 판정과 분리 |
-| 보고서 초안 | `NOT_REQUESTED | DRAFTED | FAILED` | Reporter runtime | 공개 승인 상태가 아님 |
-| 사람 검토 | `PENDING | APPROVED | REJECTED` | Human Reviewer | 최종 공개 여부만 사람이 결정 |
+| 상태 계층 | 소유 record와 field | 허용 값 | 상태를 만드는 주체 | 반드시 분리할 의미 |
+|---|---|---|---|---|
+| 분석 실행 | `AnalysisRunState.status` | `RUNNING | COMPLETE | PARTIAL | FAILED | CANCELLED` | Orchestration runtime | 가설 verdict가 아님 |
+| proposal 검증 | `ProposalProcessState.status` | `PROPOSED | SCHEMA_VALID | INVALID_OUTPUT | CANCELLED` | 출력 검증 runtime | 아직 `hypothesis_id`가 없는 상태 |
+| 등록 가설 처리 | `HypothesisProcessState.status` | `REGISTERED | ASSIGNED | VERIFYING | TERMINAL | CANCELLED` | Orchestration runtime | `TRUE | FALSE | HOLD`와 분리 |
+| 기술 판정 | `VerificationResult.verdict` | `TRUE | FALSE | HOLD` | Verification Agent | 오류·정보 부족 상태와 분리 |
+| 동적 재현 | `DynamicReproductionState.status` | `NOT_REQUESTED | RUNNING | SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED` | Sandbox runtime | `FAILED`만으로 가설 반증 금지 |
+| LLM 호출 | `LLMInvocationResult.status` | `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED | CANCELLED` | Agent Runtime과 provider adapter | 가설 verdict로 변환 금지 |
+| 기술 Gate | `TechnicalEvidenceReview.status` | `ACCEPT | REVISE | REJECT` | Technical Evidence Gate Agent | Verification verdict를 변경하지 않음 |
+| 정책·영향 Gate | `RuleScopeImpactReview.review_status`, `report_permission` | `PASS | FAIL | UNCERTAIN`, `ALLOW | DENY` | Rule Scope Impact Gate Agent | 기술 판정과 분리 |
+| 보고서 초안 | `ReportProcessState.status` | `NOT_REQUESTED | DRAFTED | FAILED` | Reporter runtime | 공개 승인 상태가 아님 |
+| 사람 검토 | `ReportDraft.human_review_state` | `PENDING | APPROVED | REJECTED` | Human Reviewer | 최종 공개 여부만 사람이 결정 |
+
+진행 중인 상태도 저장할 수 있도록 아래 최소 상태 record를 사용한다. 종료 결과 record는 상세 근거를 담고, 상태 record는 현재 진행 위치를 나타낸다.
+
+```yaml
+AnalysisRunState:
+  meta: RunMeta
+  workspace_id: string | null
+  commit_id: string | null
+  status: RUNNING | COMPLETE | PARTIAL | FAILED | CANCELLED
+  started_at: timestamp
+  finished_at: timestamp | null
+  elapsed_ms: integer
+
+ProposalProcessState:
+  meta: RecordMeta without hypothesis/attempt
+  proposal_ref: StoredDataRef
+  status: PROPOSED | SCHEMA_VALID | INVALID_OUTPUT | CANCELLED
+  started_at: timestamp
+  finished_at: timestamp | null
+  elapsed_ms: integer
+
+HypothesisProcessState:
+  meta: RecordMeta with hypothesis
+  proposal_ref: StoredDataRef
+  status: REGISTERED | ASSIGNED | VERIFYING | TERMINAL | CANCELLED
+  started_at: timestamp
+  finished_at: timestamp | null
+  elapsed_ms: integer
+
+DynamicReproductionState:
+  meta: RecordMeta
+  status: NOT_REQUESTED | RUNNING | SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED
+  started_at: timestamp | null
+  finished_at: timestamp | null
+  elapsed_ms: integer
+
+ReportProcessState:
+  meta: RecordMeta
+  status: NOT_REQUESTED | DRAFTED | FAILED
+  started_at: timestamp | null
+  finished_at: timestamp | null
+  elapsed_ms: integer
+```
+
+`AnalysisRunState`는 처음에는 `workspace_id: null`, `commit_id: null`일 수 있다. Repository Loader가 작업공간을 만들면 `workspace_id`를 기록하고, checkout을 확인하면 `commit_id`를 기록한다. 한 번 기록된 값은 같은 분석에서 바꾸지 않는다. `COMPLETE`와 `PARTIAL`은 두 값이 모두 필요하고, clone·checkout 전 `FAILED | CANCELLED`는 둘 중 하나 또는 모두가 `null`일 수 있다. 코드 근거 record는 두 값이 모두 있고 `CodeWorkspace.status=READY`일 때만 만들 수 있다.
+
+`ProposalProcessState`의 모든 revision은 `meta.hypothesis_id: null`을 유지한다. `SCHEMA_VALID` proposal을 가설로 등록할 때 새 `hypothesis_id`를 발급하고, 별도 `logical_record_id`의 `HypothesisProcessState.status=REGISTERED`를 만든다. 두 상태 record는 같은 `proposal_ref`로 연결하며 서로의 revision으로 취급하지 않는다.
+
+진행 중인 상태는 `finished_at: null`이다. 종료 상태는 `finished_at`이 필수이며 `elapsed_ms`는 시작부터 종료까지 monotonic clock으로 계산한다. `NOT_REQUESTED`는 `started_at: null`, `finished_at: null`, `elapsed_ms: 0`이다. 상세 결과 record에 나열된 상태는 모두 종료 상태이므로 그 `finished_at`은 `null`일 수 없다.
 
 ```yaml
 CodeLocation:
@@ -110,6 +186,12 @@ StoredDataRef:
   workspace_id: string
   commit_id: string
 
+RunStoredDataRef:
+  stored_data_id: string
+  data_kind: string
+  content_hash: string
+  analysis_id: string
+
 DataGap:
   gap_id: string
   stage: REPOSITORY | STATIC_ANALYSIS | CONTEXT | DYNAMIC | POLICY
@@ -123,7 +205,7 @@ DataGap:
 
 AnalysisError:
   error_id: string
-  stage: REPOSITORY | STATIC_ANALYSIS | AGENT | PROVIDER | SANDBOX | POLICY | GATE | REPORT
+  stage: INPUT | REPOSITORY | STATIC_ANALYSIS | CONTEXT | ORCHESTRATION | AGENT | PROVIDER | SANDBOX | POLICY | GATE | REPORT
   code: string
   message: string
   retryable: boolean
@@ -131,7 +213,7 @@ AnalysisError:
   created_at: timestamp
 ```
 
-`file_path`는 `workspace_root` 기준 상대 경로이고 줄과 열은 1부터 시작한다. `symbol_id`는 같은 `workspace_id` 안에서 유일하다. `StoredDataRef`는 내부 저장 경로 대신 결과 번호와 내용 hash만 전달한다. `DataGap`은 분석하지 못한 범위이고 `AnalysisError`는 실행 중 발생한 오류다. 둘 다 취약점 `FALSE`를 뜻하지 않는다.
+`file_path`는 `workspace_root` 기준 상대 경로이고 줄과 열은 1부터 시작한다. `symbol_id`는 같은 `workspace_id + commit_id` 안에서 유일하다. `StoredDataRef`는 준비된 코드와 연결된 결과에만 사용한다. `RunStoredDataRef`는 입력 검증, clone·checkout, 실행 오류와 debug trace처럼 commit 준비 전에도 생기는 실행 자료에만 사용하며 코드 근거·PoC·Finding·보고서 주장의 근거로 사용할 수 없다. 두 참조 모두 내부 저장 경로 대신 결과 번호와 내용 hash만 전달한다. `DataGap`은 분석하지 못한 범위이고 `AnalysisError`는 실행 중 발생한 오류다. 둘 다 취약점 `FALSE`를 뜻하지 않는다.
 
 ### DataGap 생산자와 소비자
 
@@ -145,17 +227,35 @@ AnalysisError:
 
 `code`는 정확한 누락 종류, `reason`은 공통 원인 범주다. 빈 결과를 숨기지 않으며 소비자는 gap을 안전함이나 반증으로 해석하지 않는다.
 
+### AnalysisError 생산자와 전달 규칙
+
+| `stage` | 주 생산자 | 반드시 받는 소비자 | 기본 전달·처리 규칙 |
+|---|---|---|---|
+| `INPUT` | 입력 validator | Orchestration runtime, `AnalysisRunResult` | 분석 시작 전 거절 사유를 저장하고 verdict를 만들지 않음 |
+| `REPOSITORY` | Repository Loader | Orchestration runtime, `AnalysisRunResult` | clone·checkout 실패는 실행 상태에 반영하고 가설 verdict를 만들지 않음 |
+| `STATIC_ANALYSIS` | AST/SAST runner와 normalizer | Orchestration runtime, 정적 결과, `AnalysisRunResult` | 사용 가능한 결과와 오류를 함께 전달하고 필요하면 실행을 `PARTIAL`로 표시 |
+| `CONTEXT` | Context Retrieval Service | 요청 Agent, 관련 검증 결과, `AnalysisRunResult` | 잘림·조회 실패를 숨기지 않고 HOLD 또는 추가 조회 판단에 전달 |
+| `ORCHESTRATION` | Orchestration runtime | `AnalysisRunResult`, 운영 debug trace | 예산·순서·할당 실패를 기록하고 이미 존재하는 verdict를 바꾸지 않음 |
+| `AGENT` | Agent Runtime | Orchestration runtime, 해당 Agent 결과, `AnalysisRunResult` | invalid output과 Agent 실행 실패를 별도 기록하고 자동 FALSE 금지 |
+| `PROVIDER` | LLM provider adapter | Agent Runtime, 해당 invocation, `AnalysisRunResult` | 인증·rate limit·timeout을 호출 상태로 전달하고 자동 FALSE 금지 |
+| `SANDBOX` | Sandbox runtime | Verification, 동적 결과, Technical Gate, `AnalysisRunResult` | 실행 실패와 실제 반증을 분리해 전달 |
+| `POLICY` | 정책 수집 계층 | Rule Scope Impact Gate, `AnalysisRunResult` | 공식 정책 부족 시 `UNCERTAIN + DENY` 판단에 전달 |
+| `GATE` | 두 Gate runtime | Orchestration runtime, 해당 Gate 결과, `AnalysisRunResult` | Gate 실패 시 Reporter 호출을 막고 Verification verdict는 유지 |
+| `REPORT` | Reporter runtime | Orchestration runtime, `ReportProcessState`, `AnalysisRunResult` | 초안 실패를 저장하고 공개 상태를 만들지 않음 |
+
+모든 `AnalysisError`는 `AnalysisRunResult.errors`와 운영 debug trace에 전달한다. 특정 가설·호출·동적 실행과 관련된 오류는 해당 전문 결과에도 포함하거나 `related_record_ids`로 연결한다. 오류를 누락하거나 성공 상태로 바꾸어 전달하지 않는다.
+
 ### 계약 버전과 revision 규칙
 
 `schema_version`은 `MAJOR.MINOR.PATCH` 형식이다.
 
-- `MAJOR`: 필드 삭제·이름 변경·의미 변경·기존 enum 의미 변경처럼 호환되지 않는 변경
+- `MAJOR`: 필드 삭제·이름 변경·의미 변경, enum 값의 추가·삭제·이름 변경·의미 변경처럼 호환되지 않는 변경
 - `MINOR`: 기존 의미를 바꾸지 않는 선택 필드 추가
 - `PATCH`: 데이터 해석이 바뀌지 않는 설명·예시·검증 규칙 명확화
 
-소비자는 지원하지 않는 MAJOR를 추정해서 읽지 않고 `SCHEMA_UNSUPPORTED`를 기록한다. 알 수 없는 선택 필드는 보존하거나 무시할 수 있지만 새 의미를 만들지 않는다. schema 변경을 이유로 기존 record를 덮어쓰지 않고 새 `record_id`, `created_at`과 증가한 `revision_number`를 만든다.
+이 문서에 나열한 enum은 모두 닫힌 enum이다. 따라서 소비자는 목록에 없는 값을 추정해서 처리하지 않는다. 소비자는 지원하지 않는 MAJOR를 추정해서 읽지 않고 `SCHEMA_UNSUPPORTED`를 기록한다. 알 수 없는 선택 필드는 보존하거나 무시할 수 있지만 새 의미를 만들지 않는다. schema 변경을 이유로 기존 record를 덮어쓰지 않고 같은 `logical_record_id` 아래 새 `record_id`, `created_at`과 증가한 `revision_number`를 만든다.
 
-`previous_record_id`는 같은 `record_type`, `analysis_id`, `workspace_id`, `commit_id`, `hypothesis_id`의 바로 이전 revision만 가리킨다. revision이 연속되지 않거나 이 항목 중 하나라도 다르면 `RECORD_REVISION_MISMATCH`로 거절하고 자동 병합하지 않는다. schema version 변경과 record revision 증가는 서로 다른 개념이다.
+저장소에서 revision의 유일 키는 `(logical_record_id, revision_number)`다. `previous_record_id`는 같은 `logical_record_id`를 가진 바로 이전 `revision_number`의 `record_id`만 가리킨다. 모든 revision에서 `record_type`과 `analysis_id`가 같아야 한다. `RecordMeta`는 `workspace_id`, `commit_id`, `hypothesis_id`도 이전 revision과 같아야 한다. `RunMeta` 기반 record의 `workspace_id`와 `commit_id`는 준비 과정에서만 `null`에서 실제 값으로 바뀔 수 있고, 실제 값이 기록된 뒤에는 바꿀 수 없다. revision이 연속되지 않거나 이 조건을 어기면 `RECORD_REVISION_MISMATCH`로 거절하고 자동 병합하지 않는다. schema version 변경과 record revision 증가는 서로 다른 개념이다.
 
 ## 1. StaticFactBundle
 
@@ -215,7 +315,6 @@ VulnerabilityHypothesis:
   parent_hypothesis_ids: [string]
   root_hypothesis_id: string
   chain_depth: integer
-  lifecycle_state: SCHEMA_VALID | ASSIGNED | VERIFYING | TERMINAL | CANCELLED
   statement: string
   target_entities: [CodeSymbol]
   target_locations: [CodeLocation]
@@ -382,7 +481,7 @@ DynamicReproductionResult:
   limitations: [string]
   cleanup_status: SUCCEEDED | FAILED
   started_at: timestamp
-  finished_at: timestamp | null
+  finished_at: timestamp
   elapsed_ms: integer
 ```
 
@@ -418,6 +517,8 @@ ProgramPolicyRecord:
   meta: RecordMeta without hypothesis/attempt
   policy_record_id: string
   program_id: string
+  program_namespace: string
+  external_program_id: string
   policy_version: string
   fetched_at: timestamp
   in_scope_assets: [PolicyItem]
@@ -431,6 +532,8 @@ ProgramPolicyRecord:
   missing_information: [string]
   freshness_warning: string | null
 ```
+
+`program_id`는 내부 Program Catalog가 발급한 전역 ID다. `program_namespace`는 외부 플랫폼이나 catalog 출처를 나타내며, `external_program_id`는 그 출처 안의 프로그램 ID다. 외부 프로그램의 유일 키는 `(program_namespace, external_program_id)`이고, 내부 catalog는 이 쌍을 하나의 `program_id`에 매핑한다. namespace가 다른 같은 외부 ID를 자동 병합하지 않는다.
 
 ```yaml
 RuleScopeImpactReview:
@@ -465,8 +568,10 @@ LLMInvocationRequest:
   prompt_payload_ref: StoredDataRef
   output_schema: string
   token_budget: integer
-  timeout: duration
+  timeout_ms: integer
 ```
+
+`timeout_ms`는 monotonic clock으로 계산하는 0보다 큰 밀리초 실행 예산이다.
 
 ```yaml
 LLMInvocationResult:
@@ -481,7 +586,7 @@ LLMInvocationResult:
   parsed_output_ref: StoredDataRef | null
   usage: map | null
   started_at: timestamp
-  finished_at: timestamp | null
+  finished_at: timestamp
   elapsed_ms: integer
   safe_error: string | null
 ```
@@ -505,10 +610,10 @@ LLMInvocationLog:
   tool_calls: [StoredDataRef]
   usage: map | null
   started_at: timestamp
-  finished_at: timestamp | null
+  finished_at: timestamp
   elapsed_ms: integer
   retry_count: integer
-  status: string
+  status: SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED | CANCELLED
   safe_error: string | null
   validation_errors: [string]
   repair_attempts: integer
@@ -536,8 +641,10 @@ ReportDraft:
 
 ```yaml
 AnalysisRunResult:
-  meta: RecordMeta without hypothesis/attempt
+  meta: RunMeta
   repository_url: string
+  workspace_id: string | null
+  commit_id: string | null
   status: COMPLETE | PARTIAL | FAILED | CANCELLED
   hypothesis_counts: map
   verdict_counts: map
@@ -550,9 +657,9 @@ AnalysisRunResult:
   errors: [AnalysisError]
   resources: map
   started_at: timestamp
-  finished_at: timestamp | null
+  finished_at: timestamp
   elapsed_ms: integer
-  debug_trace_ref: StoredDataRef
+  debug_trace_ref: RunStoredDataRef
 ```
 
 Reporter 호출은 `TRUE + Technical ACCEPT + Rule Scope Impact review_status PASS + rule_compliance PASS + scope_compliance PASS + security_impact SUFFICIENT + ALLOW`인 경우만 유효하다.

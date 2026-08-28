@@ -79,7 +79,7 @@ CodeWorkspace:
   workspace_id: string
   analysis_id: string
   repository_url: string
-  commit_id: string
+  commit_id: string | null
   status: READY | FAILED | REMOVED
   created_at: timestamp
 ```
@@ -99,6 +99,7 @@ CodeWorkspace:
 ```yaml
 RecordMeta:
   record_id: string
+  logical_record_id: string
   record_type: string
   schema_version: string
   analysis_id: string
@@ -111,9 +112,9 @@ RecordMeta:
   created_at: timestamp
 ```
 
-모든 주요 저장 결과는 `meta: RecordMeta`를 사용한다. `analysis_id`, `workspace_id`와 `commit_id`는 항상 필요하다. 가설별 결과는 `hypothesis_id`, 재시도 가능한 실행 결과는 `attempt_id`가 반드시 필요하다.
+코드 근거를 포함하는 주요 저장 결과는 `meta: RecordMeta`를 사용하며 `analysis_id`, `workspace_id`와 `commit_id`가 항상 필요하다. clone 전 실행 상태와 clone 실패 결과는 현재 정본의 `RunMeta`를 사용한다. 가설별 결과는 `hypothesis_id`, 재시도 가능한 실행 결과는 `attempt_id`가 반드시 필요하다.
 
-결과를 수정할 때 기존 결과를 덮어쓰지 않는다. 새 `record_id`와 증가한 `revision_number`를 만들고 `previous_record_id`로 이전 결과를 연결한다.
+결과를 수정할 때 기존 결과를 덮어쓰지 않는다. 같은 `logical_record_id` 아래 새 `record_id`와 증가한 `revision_number`를 만들고 `previous_record_id`로 이전 결과를 연결한다. 세부 revision 규칙은 현재 정본인 [경량 데이터 계약](../../architecture-v5/08-lightweight-data-contracts.md)을 따른다.
 
 ### 이름 변경표
 

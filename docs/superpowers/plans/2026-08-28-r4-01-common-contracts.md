@@ -28,32 +28,32 @@
 - Modify: `docs/architecture-v5/03-agent-roles-and-orchestration.md`
 
 **Interfaces:**
-- Consumes: 기존 `CodeWorkspace`, `RecordMeta`, `HypothesisProposal`
-- Produces: 식별자 책임표, UTC 시간 규칙, `VulnerabilityHypothesis`, 부모·root·depth 관계
+- Consumes: 기존 `CodeWorkspace`, `RunMeta`, `RecordMeta`, `HypothesisProposal`
+- Produces: 식별자 책임표, 코드 binding 전후 `RunMeta`·`RecordMeta` 및 저장 참조 분리, UTC 시간 규칙, `VulnerabilityHypothesis`, 부모·root·depth 관계
 
-- [ ] **Step 1: 현재 식별자와 관계 필드 목록 확인**
+- [x] **Step 1: 현재 식별자와 관계 필드 목록 확인**
 
 Run:
 
 ```powershell
-rg -n "analysis_id|workspace_id|stored_data_id|record_id|hypothesis_id|attempt_id|llm_call_id|revision_number|parent_hypothesis_ids" docs/architecture-v5
+rg -n "analysis_id|workspace_id|stored_data_id|record_id|logical_record_id|hypothesis_id|attempt_id|llm_call_id|external_program_id|revision_number|parent_hypothesis_ids" docs/architecture-v5
 ```
 
 Expected: 모든 기존 사용 위치가 출력되고 서로 다른 대체 이름이 있으면 수정 목록에 포함된다.
 
-- [ ] **Step 2: 생성 주체·유일 범위·재사용·저장 위치 표 추가**
+- [x] **Step 2: 생성 주체·유일 범위·재사용·저장 위치 표 추가**
 
 `08`에 spec 3장의 식별자 표를 추가하고 ID 값은 불투명 문자열임을 명시한다.
 
-- [ ] **Step 3: 시간 규칙 추가**
+- [x] **Step 3: 시간 규칙 추가**
 
 `created_at`, `started_at`, `finished_at`, `elapsed_ms`를 spec 5장과 동일하게 정의한다.
 
-- [ ] **Step 4: 가설 관계 계약 추가**
+- [x] **Step 4: 가설 관계 계약 추가**
 
 `VulnerabilityHypothesis` schema에 `origin`, `parent_hypothesis_ids`, `root_hypothesis_id`, `chain_depth`를 추가하고 부모 결과 불변 규칙을 `03`과 맞춘다.
 
-- [ ] **Step 5: 계약 이름 검사**
+- [x] **Step 5: 계약 이름 검사**
 
 Run:
 
@@ -63,7 +63,7 @@ rg -n "root_hypothesis_id|parent_hypothesis_ids|created_at|started_at|finished_a
 
 Expected: 정본 schema와 lifecycle 설명에 같은 이름이 존재한다.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add docs/architecture-v5/03-agent-roles-and-orchestration.md docs/architecture-v5/08-lightweight-data-contracts.md
@@ -83,19 +83,19 @@ git commit -m "docs: define common identity and time contracts"
 - Consumes: Verification, sandbox, provider와 Gate의 기존 상태
 - Produces: 계층별 enum·소유 주체 표, 동적 실패와 반증 분리 규칙
 
-- [ ] **Step 1: 상태 계층 표 추가**
+- [x] **Step 1: 상태 계층 표 추가**
 
-spec 6장의 8개 상태 계층을 `08`에 추가한다. 각 상태가 어느 record에 속하는지와 다른 계층을 덮어쓰지 않는다는 규칙을 명시한다.
+spec 6장의 분리된 상태 계층을 `08`에 추가한다. proposal 검증과 등록된 hypothesis 처리를 나누고, 각 상태가 어느 record에 속하는지와 다른 계층을 덮어쓰지 않는다는 규칙을 명시한다.
 
-- [ ] **Step 2: 동적 결과 계약 보강**
+- [x] **Step 2: 동적 결과 계약 보강**
 
-`DynamicReproductionResult`에 `disproof_evidence_refs`를 추가하고 `outcome=FAILED`만으로 `hypothesis_disproved=true`가 될 수 없음을 `04`와 `08`에 같은 표현으로 적는다.
+`DynamicReproductionResult`에 `disproof_evidence_refs`를 추가하고 `status=FAILED`만으로 `hypothesis_disproved=true`가 될 수 없음을 `04`와 `08`에 같은 표현으로 적는다.
 
-- [ ] **Step 3: LLM 오류 lifecycle 정렬**
+- [x] **Step 3: LLM 오류 lifecycle 정렬**
 
 `09`에서 `AUTH_REQUIRED`, `RATE_LIMITED`, `TIMED_OUT`, `INVALID_OUTPUT`, `CANCELLED`가 기술 판정과 별개임을 상태표로 요약한다.
 
-- [ ] **Step 4: 상태 enum 검사**
+- [x] **Step 4: 상태 enum 검사**
 
 Run:
 
@@ -105,7 +105,7 @@ rg -n "RUNNING \| COMPLETE \| PARTIAL|PROPOSED \| SCHEMA_VALID|hypothesis_dispro
 
 Expected: 각 상태가 자기 계층 문서에 있고 자동 `FALSE` 금지 문장이 존재한다.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add docs/architecture-v5/04-verification-and-dynamic-reproduction.md docs/architecture-v5/08-lightweight-data-contracts.md docs/architecture-v5/09-llm-provider-session-and-logging.md
@@ -125,23 +125,23 @@ git commit -m "docs: separate workflow states from verdicts"
 - Consumes: 기존 error code와 `DataGap`, `AnalysisError`, `RecordMeta`
 - Produces: 생산자·소비자 표, 실패 시나리오 표, schema version/revision 규칙
 
-- [ ] **Step 1: DataGap 구조 보강**
+- [x] **Step 1: DataGap 구조 보강**
 
 `DataGap.stage`를 공통 단계명으로 정렬하고 `code`를 추가한다. submodule·LFS·생성 파일·부분 정적분석·잘린 문맥·정책 누락 대표 code를 문서화한다.
 
-- [ ] **Step 2: 오류 분류표 작성**
+- [x] **Step 2: 오류 분류표 작성**
 
 `07`의 단순 목록을 `code / 생산자 / 영향을 받는 상태 / 기본 retry / 자동 FALSE 금지` 표로 바꾼다.
 
-- [ ] **Step 3: 계약 버전 규칙 추가**
+- [x] **Step 3: 계약 버전 규칙 추가**
 
 `08`에 `MAJOR.MINOR.PATCH`, `SCHEMA_UNSUPPORTED`, revision 연결 불변조건과 `RECORD_REVISION_MISMATCH`를 추가한다.
 
-- [ ] **Step 4: 보안 검사 규칙 연결**
+- [x] **Step 4: 보안 검사 규칙 연결**
 
 `10` runtime validator 항목에 schema major, record revision, workspace·commit 검사를 함께 적는다.
 
-- [ ] **Step 5: 시나리오 검사**
+- [x] **Step 5: 시나리오 검사**
 
 Run:
 
@@ -151,7 +151,7 @@ rg -n "SUBMODULE_UNAVAILABLE|LFS_POINTER_ONLY|CONTEXT_TRUNCATED|SCHEMA_UNSUPPORT
 
 Expected: 각 code의 의미와 취약점 판정 비연결 규칙이 확인된다.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add docs/architecture-v5/07-results-and-observability.md docs/architecture-v5/08-lightweight-data-contracts.md docs/architecture-v5/10-security-boundaries.md
@@ -174,19 +174,19 @@ git commit -m "docs: define gap error and schema version rules"
 - Consumes: Task 1–3의 정본 계약
 - Produces: 쉬운 Wiki 요약, 식별자 추적 Mermaid, H-002 교차 검토 대기 상태
 
-- [ ] **Step 1: H-002 상태 설명 갱신**
+- [x] **Step 1: H-002 상태 설명 갱신**
 
 계약 작성은 완료됐지만 실제 역할별 검토가 남았다고 기록하고 상태는 `IN_PROGRESS`로 유지한다.
 
-- [ ] **Step 2: Wiki 요약 추가**
+- [x] **Step 2: Wiki 요약 추가**
 
 ID, 상태, gap/error, 실패와 반증, 버전 규칙을 쉬운 한국어로 한 페이지에 정리하고 sidebar/README에서 연결한다.
 
-- [ ] **Step 3: Mermaid 식별자 흐름 추가**
+- [x] **Step 3: Mermaid 식별자 흐름 추가**
 
-Repository Loader부터 최종 결과까지 `analysis_id`, `workspace_id + commit_id`, `hypothesis_id`, `attempt_id`, `record_id + revision`의 관계를 한 diagram으로 추가하고 main/wiki diagram을 동일하게 유지한다.
+Repository Loader부터 최종 결과까지 `RunMeta`, `analysis_id`, `workspace_id + commit_id`, `hypothesis_id`, `attempt_id`, `logical_record_id`, `record_id + revision`의 관계를 한 diagram으로 추가하고 main/wiki diagram을 동일하게 유지한다.
 
-- [ ] **Step 4: Markdown과 Mermaid 동기화 검사**
+- [x] **Step 4: Markdown과 Mermaid 동기화 검사**
 
 Run:
 
@@ -196,7 +196,7 @@ rg -n "common-contracts|H-002|analysis_id|workspace_id|revision_number" docs/arc
 
 Expected: Wiki 탐색 경로와 H-002 남은 조건이 확인된다.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add docs/review/FINDINGS.md docs/architecture-v5/13-architecture-diagrams.md docs/architecture-v5/wiki
@@ -214,7 +214,7 @@ git commit -m "docs: publish R4-01 contract review guide"
 - Consumes: 전체 R4-01 문서 변경
 - Produces: 검증 증거, PR, Issue #13 진행 기록, 실제 담당자 검토 요청
 
-- [ ] **Step 1: 금지·필수 이름 검사**
+- [x] **Step 1: 금지·필수 이름 검사**
 
 ```powershell
 rg -n "failure_class|falsification_observed|snapshot_id|RepositorySnapshot" docs/architecture-v5 docs/review
@@ -223,11 +223,11 @@ rg -n "failure_reason|hypothesis_disproved|disproof_evidence_refs|DataGap|Analys
 
 Expected: 첫 명령은 0건, 두 번째는 정본·전문·Wiki 문서에서 확인된다.
 
-- [ ] **Step 2: Markdown link·fence와 Mermaid 검사**
+- [x] **Step 2: Markdown link·fence와 Mermaid 검사**
 
 모든 Markdown 상대 링크와 code fence를 검사하고, main/wiki Mermaid block이 같으며 각 block이 Mermaid parser를 통과하는지 확인한다.
 
-- [ ] **Step 3: 독립 문서 리뷰**
+- [x] **Step 3: 독립 문서 리뷰**
 
 Issue #13 완료 조건을 기준으로 Critical/Important/Minor를 분류한다. Critical/Important는 PR 전에 수정하고 재검토한다.
 

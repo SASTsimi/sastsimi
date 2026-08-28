@@ -10,7 +10,7 @@
 
 ## 목표
 
-결론뿐 아니라 어떤 `workspace_id`·`commit_id`·문맥·provider·session·도구·근거가 결론에 사용되었고 어디서 실패했는지를 `analysis_id`와 `hypothesis_id` 단위로 재구성할 수 있어야 한다. 저장 계층은 판정을 생성하지 않는다.
+결론뿐 아니라 코드 준비가 성공했다면 어떤 `workspace_id`·`commit_id`·문맥·provider·session·도구·근거가 결론에 사용되었고, 준비 전 실패라면 어느 `analysis_id`에서 실패했는지를 재구성할 수 있어야 한다. 저장 계층은 판정을 생성하지 않는다.
 
 ## 논리 저장 영역
 
@@ -106,7 +106,7 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 
 ## AnalysisRunResult
 
-최종 분석 결과에는 repository, `commit_id`, `workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, 초기·파생·chain·invalid hypothesis 수, verdict별 수, 두 Gate별 수, PoC/report refs, 공식 정책 상태, Research/Primitive 요약, LLM·static·sandbox 자원, 모든 오류와 debug trace를 포함한다.
+최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, 초기·파생·chain·invalid hypothesis 수, verdict별 수, 두 Gate별 수, PoC/report refs, 공식 정책 상태, Research/Primitive 요약, LLM·static·sandbox 자원, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
 
 일부 가설이 실패해도 나머지는 계속할 수 있고 분석은 `PARTIAL`로 끝날 수 있다. clone 또는 checkout에 실패하거나 작업공간이 바뀌어 코드 기준을 잃으면 전체 분석은 `FAILED`다. Agent·sandbox·policy fetch 오류는 `FALSE`로 변환하지 않는다.
 
@@ -145,4 +145,4 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 
 ## Debug trace와 보존
 
-trace는 상태 전이, 공개 가능한 rationale, `StoredDataRef`, tool event와 자원 사용을 시간순으로 연결한다. raw source·prompt·response·PoC는 민감도와 재현 필요성에 따라 별도 접근통제와 보존기간을 적용한다. 코드 전체 대신 저장소 상대 `CodeLocation`을 우선하고, 실제 credential·개인정보·session secret은 redaction 또는 저장 제외한다.
+trace는 상태 전이, 공개 가능한 rationale, `RunStoredDataRef`·`StoredDataRef`, tool event와 자원 사용을 시간순으로 연결한다. run 참조는 코드 근거로 승격하지 않는다. raw source·prompt·response·PoC는 민감도와 재현 필요성에 따라 별도 접근통제와 보존기간을 적용한다. 코드 전체 대신 저장소 상대 `CodeLocation`을 우선하고, 실제 credential·개인정보·session secret은 redaction 또는 저장 제외한다.

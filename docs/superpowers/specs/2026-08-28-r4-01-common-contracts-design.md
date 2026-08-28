@@ -28,14 +28,29 @@
 |---|---|---|---|---|
 | `analysis_id` | Orchestration runtime | 전체 시스템 | 변경·재사용 금지 | `runs` |
 | `workspace_id` | Repository Loader | 전체 시스템 | 변경·재사용 금지 | `CodeWorkspace`와 `runs` |
+| `commit_id` | checkout 뒤 Repository Loader가 확인 | Git 저장소 | 같은 commit을 여러 분석에서 참조 가능, 값 변경 금지 | `CodeWorkspace`, 코드 위치와 모든 핵심 결과 |
 | `stored_data_id` | 결과 저장 계층 | 전체 시스템 | 변경·재사용 금지 | 각 논리 저장 영역 |
 | `record_id` | record 저장 직전의 runtime | 전체 시스템 | revision마다 새 값 | 각 record |
+| `logical_record_id` | 논리 결과를 처음 저장하는 runtime | 전체 시스템 | 같은 결과의 revision에서 유지 | `RunMeta`와 `RecordMeta` |
 | `hypothesis_id` | proposal 검증을 통과시킨 runtime | 전체 시스템 | 변경·재사용 금지 | `hypotheses` |
 | `attempt_id` | 재시도 가능한 작업을 시작하는 runtime | 전체 시스템 | 시도마다 새 값 | 해당 결과와 debug trace |
 | `llm_call_id` | LLM 호출 직전 Agent Runtime | 전체 시스템 | 호출·retry·failover마다 새 값 | `invocations` |
-| `revision_number` | 새 revision을 저장하는 runtime | 같은 논리 결과 | 1부터 1씩 증가 | `RecordMeta` |
+| `symbol_id` | AST·SAST 정규화 계층 | 같은 `workspace_id + commit_id` | 같은 코드 버전의 한 symbol만 가리킴 | `CodeSymbol` |
+| `gap_id` | gap을 발견한 runtime | 전체 시스템 | gap마다 새 값 | `DataGap` |
+| `error_id` | 오류를 기록한 runtime | 전체 시스템 | 오류 사건마다 새 값 | `AnalysisError` |
+| `proposal_id` | proposal 출력 검증 runtime | 전체 시스템 | proposal마다 새 값 | `HypothesisProposal` |
+| `code_request_id` | Agent Runtime | 전체 시스템 | 요청·응답 한 쌍에서 유지 | `CodeContextRequest/Response` |
+| `primitive_id` | primitive 저장 runtime | 전체 시스템 | primitive마다 새 값 | `Primitive` |
+| `policy_record_id` | 정책 수집 결과 저장 runtime | 전체 시스템 | 정책 수집본마다 새 값 | `ProgramPolicyRecord` |
+| `program_id` | 내부 Program Catalog | 전체 시스템 | 같은 프로그램을 여러 분석에서 재사용 | `ProgramPolicyRecord` |
+| `external_program_id` | 외부 플랫폼 | 같은 `program_namespace` | 같은 외부 프로그램을 재참조 가능 | `ProgramPolicyRecord` |
+| `revision_number` | 새 revision을 저장하는 runtime | 같은 논리 결과 | 1부터 1씩 증가 | `RunMeta`와 `RecordMeta` |
 
-모든 ID는 생성 뒤 바꾸지 않는다. 로컬 코드 폴더가 삭제돼도 `workspace_id → repository_url + commit_id` 연결 정보는 남긴다. `CodeLocation`, `StoredDataRef`와 모든 핵심 `RecordMeta`는 `workspace_id`와 `commit_id`를 함께 사용한다.
+시스템이 만든 ID는 다른 대상에 재사용하지 않는다. `commit_id`와 `external_program_id`는 외부 대상을 가리키므로 같은 대상을 여러 분석에서 다시 참조할 수 있다. 외부 프로그램은 `(program_namespace, external_program_id)`로 구분하고 내부의 전역 `program_id`에 매핑한다. `root_hypothesis_id`, 부모·source·target 가설 ID와 failover 호출 ID는 기존 ID를 가리키는 참조 필드다. 로컬 코드 폴더가 삭제돼도 성공한 `workspace_id → repository_url + commit_id` 연결 정보는 남긴다.
+
+분석 시작·clone 실패처럼 코드가 아직 준비되지 않은 실행 record는 `analysis_id`만 필수인 `RunMeta`를 쓴다. `AnalysisRunState`와 `AnalysisRunResult`의 `workspace_id`, `commit_id`는 준비 전 `null`일 수 있고 실제 값이 기록된 뒤에는 바꾸지 않는다. 코드 근거를 담는 record는 두 값이 필수인 `RecordMeta`를 사용하며 `CodeWorkspace.status=READY`인 같은 commit만 참조한다.
+
+실행 자료 참조도 분리한다. `RunStoredDataRef`는 `analysis_id`로 입력 검증, clone·checkout 오류와 전체 debug trace를 가리키며 commit이 없어도 된다. `StoredDataRef`는 `workspace_id + commit_id`가 있는 코드 근거·PoC·보고서용 자료만 가리킨다. `RunStoredDataRef`를 코드 주장 근거로 사용할 수 없다.
 
 ## 4. 가설 관계 결정
 
@@ -56,22 +71,27 @@
 - 끝나지 않은 작업의 `finished_at`은 `null`이다.
 - `elapsed_ms`는 monotonic clock으로 계산한 밀리초이며, 벽시계 시각 차이를 비용·timeout 판단의 정본으로 사용하지 않는다.
 - revision은 새 `created_at`을 갖고 이전 record의 시각을 덮어쓰지 않는다.
+- 상태 record에는 `started_at`, `finished_at`, `elapsed_ms`를 둔다. `NOT_REQUESTED`는 두 시각이 `null`이고 `elapsed_ms=0`이다.
+- 상세 결과 record는 종료 결과이므로 `finished_at`이 필수다.
 
 ## 6. 상태 계층 결정
 
-| 계층 | 정본 상태 | 소유 주체 | 다른 계층에 미치는 영향 |
-|---|---|---|---|
-| 분석 실행 | `RUNNING | COMPLETE | PARTIAL | FAILED | CANCELLED` | Orchestration runtime | 가설 verdict를 직접 만들지 않음 |
-| 가설 처리 | `PROPOSED | SCHEMA_VALID | ASSIGNED | VERIFYING | TERMINAL | INVALID_OUTPUT | CANCELLED` | Orchestration runtime | 기술 판정과 분리 |
-| 기술 판정 | `TRUE | FALSE | HOLD` | Verification Agent | 오류 상태와 분리 |
-| 동적 재현 | `NOT_REQUESTED | RUNNING | SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED` | Sandbox runtime | `FAILED`만으로 `FALSE` 금지 |
-| LLM 호출 | `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED | CANCELLED` | Agent Runtime과 provider adapter | 가설 verdict로 변환 금지 |
-| 기술 Gate | `ACCEPT | REVISE | REJECT` | Technical Gate Agent | Verification verdict를 변경하지 않음 |
-| 정책·영향 Gate | `PASS | FAIL | UNCERTAIN`과 `ALLOW | DENY` | Rule Scope Impact Gate Agent | 기술 판정과 분리 |
-| 보고서 초안 | `NOT_REQUESTED | DRAFTED | FAILED` | Reporter runtime | 공개를 승인하지 않음 |
-| 사람 검토 | `PENDING | APPROVED | REJECTED` | Human Reviewer | 최종 공개 여부 결정 |
+| 계층 | 정본 record.field | 정본 상태 | 소유 주체 | 다른 계층에 미치는 영향 |
+|---|---|---|---|---|
+| 분석 실행 | `AnalysisRunState.status` | `RUNNING | COMPLETE | PARTIAL | FAILED | CANCELLED` | Orchestration runtime | 가설 verdict를 직접 만들지 않음 |
+| proposal 검증 | `ProposalProcessState.status` | `PROPOSED | SCHEMA_VALID | INVALID_OUTPUT | CANCELLED` | 출력 검증 runtime | 아직 `hypothesis_id`가 없음 |
+| 등록 가설 처리 | `HypothesisProcessState.status` | `REGISTERED | ASSIGNED | VERIFYING | TERMINAL | CANCELLED` | Orchestration runtime | 기술 판정과 분리 |
+| 기술 판정 | `VerificationResult.verdict` | `TRUE | FALSE | HOLD` | Verification Agent | 오류 상태와 분리 |
+| 동적 재현 | `DynamicReproductionState.status` | `NOT_REQUESTED | RUNNING | SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED` | Sandbox runtime | `FAILED`만으로 `FALSE` 금지 |
+| LLM 호출 | `LLMInvocationResult.status` | `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED | CANCELLED` | Agent Runtime과 provider adapter | 가설 verdict로 변환 금지 |
+| 기술 Gate | `TechnicalEvidenceReview.status` | `ACCEPT | REVISE | REJECT` | Technical Gate Agent | Verification verdict를 변경하지 않음 |
+| 정책·영향 Gate | `RuleScopeImpactReview.review_status`, `report_permission` | `PASS | FAIL | UNCERTAIN`, `ALLOW | DENY` | Rule Scope Impact Gate Agent | 기술 판정과 분리 |
+| 보고서 초안 | `ReportProcessState.status` | `NOT_REQUESTED | DRAFTED | FAILED` | Reporter runtime | 공개를 승인하지 않음 |
+| 사람 검토 | `ReportDraft.human_review_state` | `PENDING | APPROVED | REJECTED` | Human Reviewer | 최종 공개 여부 결정 |
 
 하나의 필드에서 여러 계층을 표현하지 않는다. 예를 들어 sandbox `FAILED`, provider `AUTH_REQUIRED`와 분석 실행 `FAILED`는 이름이 비슷해도 서로 다른 record의 상태다.
+
+proposal 검증 상태의 `meta.hypothesis_id`는 항상 `null`이다. `SCHEMA_VALID` 뒤 새 `hypothesis_id`를 발급하고 별도 `logical_record_id`의 등록 가설 상태를 `REGISTERED`로 만든다. 두 record는 같은 `proposal_ref`로 연결하며 revision 관계로 취급하지 않는다.
 
 ## 7. DataGap과 AnalysisError 결정
 
@@ -90,12 +110,14 @@
 - 소비자: Orchestration runtime, 결과 집계, 운영자·사람 검토
 - 필수 정보: `error_id`, `stage`, `code`, 안전한 메시지, retry 가능 여부, 관련 record, 발생 시각
 - credential, 절대 로컬 경로와 민감한 원문은 메시지에 넣지 않는다.
+- 모든 오류는 `AnalysisRunResult.errors`와 debug trace에 전달한다. 특정 가설·호출·동적 실행 오류는 해당 전문 결과에도 포함하거나 `related_record_ids`로 연결한다.
+- Gate 오류는 보고서 전달을 막고, provider·sandbox·context 오류는 기존 verdict를 자동으로 바꾸지 않는다.
 
 `DataGap`과 `AnalysisError`는 자동으로 `FALSE`가 되지 않는다. `FALSE`는 가설에 이름 붙인 반증 질문과 실제 반증 근거가 연결될 때만 가능하다.
 
 ## 8. 동적 실패와 실제 반증
 
-`DynamicReproductionResult.outcome=FAILED`는 환경 준비, 실행 또는 관측에 실패했다는 뜻이다. 실제 반증은 별도 `hypothesis_disproved=true`와 `disproof_evidence_refs`가 필요하다.
+`DynamicReproductionResult.status=FAILED`는 환경 준비, 실행 또는 관측에 실패했다는 뜻이다. 실제 반증은 별도 `hypothesis_disproved=true`와 `disproof_evidence_refs`가 필요하다.
 
 - `failure_reason`: 재현 작업이 실패하거나 막힌 이유
 - `hypothesis_disproved`: 가설이 실제 관측으로 반증됐는지 여부
@@ -107,11 +129,11 @@
 
 `schema_version`은 `MAJOR.MINOR.PATCH` 형식이다.
 
-- MAJOR: 필드 삭제·이름 변경·의미 변경·기존 enum 의미 변경처럼 호환되지 않는 변경
+- MAJOR: 필드 삭제·이름 변경·의미 변경과 enum 값의 추가·삭제·이름 변경·의미 변경처럼 호환되지 않는 변경
 - MINOR: 기존 의미를 바꾸지 않는 선택 필드 추가
 - PATCH: 설명·예시·검증 규칙의 명확화처럼 데이터 해석이 바뀌지 않는 변경
 
-소비자는 지원하지 않는 MAJOR를 거절하고 `SCHEMA_UNSUPPORTED`를 기록한다. 알 수 없는 선택 필드는 보존하거나 무시할 수 있지만 의미를 추정하지 않는다. 기존 record를 새 schema 의미로 덮어쓰지 않고 새 `record_id`와 `revision_number`를 만든다. `previous_record_id`는 같은 `record_type`, `analysis_id`, `workspace_id`, `commit_id`, `hypothesis_id`의 바로 이전 revision만 가리킨다.
+명시된 enum은 모두 닫힌 enum이므로 목록에 없는 값을 추정해 처리하지 않는다. 소비자는 지원하지 않는 MAJOR를 거절하고 `SCHEMA_UNSUPPORTED`를 기록한다. 알 수 없는 선택 필드는 보존하거나 무시할 수 있지만 의미를 추정하지 않는다. 기존 record를 새 schema 의미로 덮어쓰지 않고 같은 `logical_record_id` 아래 새 `record_id`와 `revision_number`를 만든다. revision의 유일 키는 `(logical_record_id, revision_number)`이며 `previous_record_id`는 같은 논리 결과의 바로 이전 revision만 가리킨다. 모든 revision은 같은 `record_type`, `analysis_id`를 유지하고, 코드에 묶인 `RecordMeta`는 `workspace_id`, `commit_id`, `hypothesis_id`도 유지한다. `RunMeta` 기반 record의 workspace·commit은 `null`에서 실제 값으로 한 번만 묶을 수 있다.
 
 ## 10. 필수 실패 시나리오
 

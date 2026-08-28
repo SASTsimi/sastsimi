@@ -10,7 +10,7 @@
 
 ## 신뢰 실행 경계
 
-LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM runtime validator가 허용된 tool, `workspace_id`·`commit_id` 일치, 지원하는 schema MAJOR, record revision 연결, 상태 전이, token/time/retry/chain budget, sandbox와 network 정책, provider/session 선택, Gate 순서, Reporter 전제조건을 강제한다. 저장소 내용과 모든 LLM 출력은 validation 전까지 비신뢰 입력이며 policy 변경 명령으로 해석하지 않는다.
+LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM runtime validator가 허용된 tool, 코드 근거의 `workspace_id`·`commit_id` 일치, 지원하는 schema MAJOR, `(logical_record_id, revision_number)` 연결, 상태 전이, token/time/retry/chain budget, sandbox와 network 정책, provider/session 선택, Gate 순서, Reporter 전제조건을 강제한다. 저장소 내용과 모든 LLM 출력은 validation 전까지 비신뢰 입력이며 policy 변경 명령으로 해석하지 않는다.
 
 ## 방향
 
@@ -24,7 +24,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - retrieval은 `workspace_root` 안의 허용 파일만 읽고 path traversal·symlink escape를 차단한다.
 - depth/token/request budget과 반환 location을 기록한다.
 - 누락·truncation은 안전함 또는 `FALSE`로 해석하지 않는다.
-- 지원하지 않는 schema MAJOR는 `SCHEMA_UNSUPPORTED`, 끊기거나 다른 대상의 revision은 `RECORD_REVISION_MISMATCH`로 거절하고 자동 변환·병합하지 않는다.
+- 지원하지 않는 schema MAJOR는 `SCHEMA_UNSUPPORTED`로 거절한다. 같은 `logical_record_id`가 아니거나 바로 이전 revision과 이어지지 않는 수정본은 `RECORD_REVISION_MISMATCH`로 거절하고 자동 변환·병합하지 않는다. `RunMeta`의 workspace·commit은 `null`에서 실제 값으로만 바인딩할 수 있고, 코드 근거 `RecordMeta`에서는 두 값이 필수·불변이다.
 
 ## 2. 저장소와 외부 텍스트는 비신뢰 데이터
 

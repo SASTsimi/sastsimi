@@ -57,15 +57,17 @@ confidence는 verdict, exploitability 또는 Finding 확률로 해석하지 않�
 ## 가설 lifecycle
 
 ```text
-PROPOSED -> SCHEMA_VALID -> ASSIGNED -> VERIFYING
-          \-> INVALID_OUTPUT
+ProposalProcessState: PROPOSED -> SCHEMA_VALID
+                      \-> INVALID_OUTPUT
 
-VERIFYING -> TRUE | FALSE | HOLD
-TRUE/HOLD -> Primitive + Research
+SCHEMA_VALID -> register new hypothesis_id
+HypothesisProcessState: REGISTERED -> ASSIGNED -> VERIFYING -> TERMINAL
+VerificationResult.verdict -> TRUE | FALSE | HOLD
+TRUE/HOLD verdict -> Primitive + Research
 Research material claim -> PROPOSED child hypothesis
 ```
 
-parent 가설의 결과와 child 가설은 독립된 lifecycle을 갖는다. Research 후보가 존재한다는 이유만으로 parent verdict나 impact를 강화하지 않는다.
+`ProposalProcessState.status`는 `hypothesis_id`를 발급하기 전의 출력 검증 상태를 기록한다. 검증을 통과하면 새 `hypothesis_id`와 별도 `HypothesisProcessState`를 만들고 같은 `proposal_ref`로 연결한다. `HypothesisProcessState.status`가 등록 뒤 처리 진행 상태를 기록하고 `VerificationResult.verdict`가 기술 판정을 기록한다. `TERMINAL`은 검증 처리가 끝났다는 뜻일 뿐 `TRUE`, `FALSE`, `HOLD` 중 어느 판정인지 대신 말하지 않는다. parent 가설의 결과와 child 가설은 독립된 lifecycle을 갖는다. Research 후보가 존재한다는 이유만으로 parent verdict나 impact를 강화하지 않는다.
 초기 가설은 자기 자신을 `root_hypothesis_id`로 사용하고 `chain_depth=0`이다. Research·체이닝 proposal은 직접 부모 ID를 보존하고 검증을 통과할 때 새 `hypothesis_id`를 받는다. 여러 `TRUE`를 연결하는 경우도 기존 가설을 수정하지 않고 새 child 가설로 등록한다.
 
 ## Agent 역할과 출력 권한

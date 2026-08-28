@@ -73,12 +73,13 @@ CodeWorkspace:
   workspace_id: string
   analysis_id: string
   repository_url: string
-  commit_id: string
+  commit_id: string | null
   status: READY | FAILED | REMOVED
   created_at: timestamp
 
 RecordMeta:
   record_id: string
+  logical_record_id: string
   record_type: string
   schema_version: string
   analysis_id: string
@@ -91,7 +92,7 @@ RecordMeta:
   created_at: timestamp
 ```
 
-기존 `Scope`와 `snapshot_id` 사용 예시를 제거한다. `CodeLocation`, `CodeSymbol`, `StoredDataRef`도 `workspace_id`와 `commit_id`를 사용하도록 맞춘다.
+기존 `Scope`와 `snapshot_id` 사용 예시를 제거한다. `CodeLocation`, `CodeSymbol`, `StoredDataRef`도 `workspace_id`와 `commit_id`를 사용하도록 맞춘다. clone 전 실행 상태와 clone 실패 결과는 현재 정본의 `RunMeta`를 사용한다.
 `workspace_id`는 재사용하지 않고, 로컬 폴더를 정리한 뒤에도 repository·commit 연결 정보는 보존하도록 명시한다.
 
 - [ ] **Step 5: 핵심 문서 단위 검사**
