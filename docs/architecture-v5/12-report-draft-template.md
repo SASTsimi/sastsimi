@@ -101,13 +101,22 @@ Verification TRUE
 
 `{TRUE 이유, 충족된 전제와 남은 restriction}`
 
+### 반증 질문 결과
+
+| question_id | 질문 | 결과 | 근거 |
+|---|---|---|---|
+| `{question id}` | `{필수 조건을 반증하기 위한 질문}` | `{DISPROVED | NOT_DISPROVED | INCONCLUSIVE}` | `{evidence refs or unresolved reason}` |
+
+`FALSE` 초안은 적어도 하나의 근거 있는 `DISPROVED` 결과와 판정의 연결을 표시한다. `NOT_DISPROVED`를 취약점 성립 증거로 표현하지 않는다.
+
 ## 7. 동적 재현과 PoC
 
 - 모드: `{NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO}`
 - Docker 환경: `{image digest and relevant configuration}`
 - 전제: `{account, data, route or build condition}`
-- 결과: `{success, partial or not run}`
-- 가설 연결: `{관측이 지지하는 정확한 claim}`
+- 실행 상태: `{SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED}`
+- 관측 결과: `{SUPPORTED | DISPROVED | INCONCLUSIVE}`
+- 가설 연결: `{hypothesis evidence refs와 관측이 지지·반증하는 정확한 claim}`
 - 환경 차이/제한: `{limitations}`
 
 ### 재현 단계
@@ -126,6 +135,7 @@ Verification TRUE
 
 ## 8. CWE
 
+- 검토한 CWELabel revision: `{cwe_label_ref.record_id}`
 - primary: `{CWE-ID and name}`
 - taxonomy version: `{version}`
 - 선택 이유와 evidence: `{rationale and refs}`
@@ -144,16 +154,24 @@ Verification TRUE
 ### Technical Evidence Gate
 
 - 상태: `ACCEPT`
+- 검토한 Verification revision: `{verification_result_ref.record_id}`
+- 검토한 CWELabel revision: `{cwe_label_ref.record_id}`
 - verdict-evidence/코드 흐름/동적 연결: `{assessment}`
 - CWE/restriction/handoff: `{assessment}`
 - revision 이력: `{history or none}`
 
 ### Rule Scope Impact Gate
 
+- 검토한 Verification revision: `{verification_result_ref.record_id}`
+- 검토한 Technical review revision: `{technical_review_ref.record_id}`
+- 검토한 CWELabel revision: `{cwe_label_ref.record_id}`
+- 검토한 정책 revision: `{policy_record_ref.record_id}`
 - overall/rule/scope: `PASS / PASS / PASS`
 - impact: `SUFFICIENT`
 - 정책 근거와 판단 이유: `{policy refs and rationale}`
 - report permission: `ALLOW`
+
+위 세 위치의 `cwe_label_ref.record_id`는 같아야 한다. CWELabel이 수정되면 기존 Gate 결과와 보고서 초안을 재사용하지 않는다.
 
 ## 11. LLM invocation trace와 오류
 

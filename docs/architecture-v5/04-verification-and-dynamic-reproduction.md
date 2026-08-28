@@ -16,7 +16,7 @@ Verification Agent는 가설이 실제 코드 흐름과 실행 조건에서 성�
 
 1. 가설의 `workspace_id`, 연결된 `commit_id`, entity, location과 suspected path를 확인한다.
 2. `CodeContextRequest`로 caller/callee, data flow, auth guard와 route 문맥을 필요한 만큼 조회한다.
-3. observed fact와 assumption을 분리하고 falsification question을 확인한다.
+3. observed fact와 assumption을 분리하고 각 `FalsificationQuestion.question_id`를 확인한다.
 4. BASIC 또는 debate 모드로 supporting/counter evidence를 수집한다.
 5. initial verdict와 unresolved condition을 만든다.
 6. 정적 근거만으로 부족하고 안전하게 재현할 가치가 있으면 동적 재현을 요청한다.
@@ -77,10 +77,12 @@ Pro와 Con은 context contamination을 막기 위해 서로 다른 NEW session�
 ## 판정 의미
 
 - `TRUE`: 현재 가설의 핵심 exploit path와 필요한 조건이 evidence로 지지된다. restriction이 있으면 그대로 보존한다.
-- `FALSE`: 명시된 가설이 반증되었다. 다른 path 가능성까지 부정하지 않는다.
+- `FALSE`: 가설의 필수 조건을 묻는 named falsification 하나 이상이 실제 근거로 `DISPROVED`되었다. 다른 path 가능성까지 부정하지 않는다.
 - `HOLD`: 핵심 정보·환경·재현 조건이 부족하거나 상충해 현재 증거로 결론을 낼 수 없다.
 
 `HOLD`는 실패가 아니다. 누락 정보, 필요한 capability와 다음 validation을 구조화해 Primitive DB와 Research에 전달한다.
+
+최종 결과는 등록 가설의 모든 반증 질문에 `DISPROVED | NOT_DISPROVED | INCONCLUSIVE` 중 하나를 기록한다. `DISPROVED`에는 실제 `evidence_refs`가 필요하고, `NOT_DISPROVED`는 가설이 참이라는 증거로 승격하지 않는다. `FALSE`는 적어도 하나의 근거 있는 `DISPROVED` 결과와 그 `question_id`를 설명하는 판정 이유가 있을 때만 허용한다. 오류·timeout·누락만으로는 `DISPROVED`나 `FALSE`를 만들지 않는다.
 
 ## Docker 동적 재현
 
@@ -107,6 +109,20 @@ Pro와 Con은 context contamination을 막기 위해 서로 다른 NEW session�
 - 동적 결과의 exit code, stdout/stderr reference, artifact hash와 hypothesis 연결 저장
 - 환경 구축 실패와 취약점 반증을 구분
 
+### 동적 재현 상태와 실제 반증
+
+동적 재현 상태는 `NOT_REQUESTED | RUNNING | SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED`다. 실행이 끝난 결과는 `DynamicReproductionResult.status`에 `SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED` 중 하나를 기록한다.
+
+- 필수 환경을 만들지 못해 대상 애플리케이션이나 관련 공격 경로를 실행하지 못하면 `FAILED + ENVIRONMENT_SETUP`이다.
+- 공격 경로를 일부 실행하고 신뢰할 수 있는 관측을 하나 이상 얻었지만 운영환경 차이 등으로 전체 확인이 부족하면 `PARTIAL + NONE`이다. 이때 `hypothesis_outcome=INCONCLUSIVE`이고 `hypothesis_evidence_refs`와 `limitations`가 각각 하나 이상 있어야 한다.
+- `SUCCEEDED`는 계획한 필수 단계와 관측을 끝냈다는 실행 상태다. 관측이 가설을 지지했는지, 반증했는지, 결론을 주지 못했는지는 `hypothesis_outcome`에 따로 기록한다.
+- `hypothesis_outcome`은 `SUPPORTED | DISPROVED | INCONCLUSIVE`이며 Verification verdict가 아니다. `SUPPORTED | DISPROVED`는 실제 관측을 가리키는 `hypothesis_evidence_refs`가 필요하다.
+- `DISPROVED`일 때만 `hypothesis_disproved=true`와 비어 있지 않은 `disproof_evidence_refs`를 사용한다. 반증 근거는 일반 가설 근거 목록에도 포함한다.
+- `FAILED | BLOCKED | CANCELLED`, 실행하지 못함, 빈 출력과 exit code만으로는 `DISPROVED`, `hypothesis_disproved=true` 또는 `FALSE`를 만들 수 없다.
+- Sandbox는 outcome까지만 기록한다. Verification Agent가 limitations와 정적·동적·찬반 근거를 함께 보고 최종 `TRUE | FALSE | HOLD`를 결정한다.
+
 ## VerificationResult에 남길 정보
 
-최종 결과는 verdict뿐 아니라 supporting/counter evidence, restrictions, bypass candidates, required/provided capabilities, impact escalation candidates, unresolved conditions, debate 지표와 동적 재현 reference를 포함한다. 이 정보가 Primitive DB, Research, CWE와 두 Gate의 입력이 된다.
+최종 결과는 verdict뿐 아니라 질문별 `FalsificationResult`, supporting/counter evidence, restrictions, bypass candidates, required/provided capabilities, impact escalation candidates, unresolved conditions, debate 지표와 동적 재현 reference를 포함한다. 이 정보가 Primitive DB, Research, CWE와 두 Gate의 입력이 된다.
+
+supporting/counter evidence는 자유 형식 문자열이 아니라 `EvidenceClaim`으로 기록한다. 각 claim은 작성 역할, 실제 저장 근거와 코드 주장에 필요한 현재 workspace·commit의 위치를 포함한다. 우회·대체 경로·영향 확대 후보는 `CandidateRef(candidate_state=UNVALIDATED)`로 구분하고 새 material claim이면 별도 가설로 재검증한다. debate token·시간과 판정 변화는 `VerificationMetrics`에 저장하며 provider가 token을 제공하지 않으면 값을 추정하지 않고 `null`로 둔다.

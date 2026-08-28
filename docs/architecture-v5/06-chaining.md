@@ -57,7 +57,7 @@ REQUIRED와 PROVIDED의 문자열이 같다는 이유만으로 연결하지 않�
 - restriction이 결합 후에도 유지되는지
 - 기존 chain과 normalized fingerprint가 중복되지 않는지
 
-match 결과는 `PrimitiveMatchCandidate`이며 새 `ChainedHypothesisProposal`을 만드는 입력이다. match 자체는 verdict, Finding 또는 impact 확정이 아니다.
+match 결과는 `PrimitiveMatchCandidate`이며 `origin=CHAINING`인 새 `HypothesisProposal`을 만드는 입력이다. 이 후보는 REQUIRED/PROVIDED primitive ID, 같은 `workspace_id + commit_id`, asset·entity·privilege·attack order·restriction의 `PASS | UNCERTAIN`, 실제 근거, 미확인 조건과 중복 검사용 fingerprint를 기록한다. 호환되지 않는 항목이 있으면 후보를 만들지 않고, `UNCERTAIN`이 있으면 확인할 조건을 반드시 남긴다. match 자체는 verdict, Finding 또는 impact 확정이 아니다.
 
 ## Research Agent
 

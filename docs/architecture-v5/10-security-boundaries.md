@@ -10,7 +10,7 @@
 
 ## 신뢰 실행 경계
 
-LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM runtime validator가 허용된 tool, `workspace_id`·`commit_id` 일치, schema와 상태 전이, token/time/retry/chain budget, sandbox와 network 정책, provider/session 선택, Gate 순서, Reporter 전제조건을 강제한다. 저장소 내용과 모든 LLM 출력은 validation 전까지 비신뢰 입력이며 policy 변경 명령으로 해석하지 않는다.
+LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM runtime validator가 허용된 tool, 코드 근거의 `workspace_id`·`commit_id` 일치, 지원하는 schema MAJOR, `(logical_record_id, revision_number)` 연결, 상태 전이, retry/failover 선행 status와 token/time/retry/chain budget, sandbox와 network 정책, provider/session 선택, Gate가 읽은 Verification·CWELabel·정책 revision, Reporter 전제조건을 강제한다. 저장소 내용과 모든 LLM 출력은 validation 전까지 비신뢰 입력이며 policy 변경 명령으로 해석하지 않는다.
 
 ## 방향
 
@@ -22,8 +22,12 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - `Repository Loader`는 실행별 폴더에 clone하고 지정한 commit을 checkout한 뒤 HEAD를 확인한다.
 - 분석 중 HEAD나 추적 파일이 바뀌면 `WORKSPACE_CHANGED`로 중단하고 기존 결과에 섞지 않는다.
 - retrieval은 `workspace_root` 안의 허용 파일만 읽고 path traversal·symlink escape를 차단한다.
+- `CodeLocation.file_path`는 `/` 구분자의 Git 상대 경로로 정규화하며 절대 경로, drive prefix와 `.`·`..` segment를 거절한다. symlink를 해석한 실제 대상도 `workspace_root` 안이어야 한다.
+- 도구별 line·column 표현은 정본 `CodeLocation` 규칙으로 변환하고 원래 위치와 tool message는 원본 결과 reference에 보존한다.
 - depth/token/request budget과 반환 location을 기록한다.
 - 누락·truncation은 안전함 또는 `FALSE`로 해석하지 않는다.
+- 지원하지 않는 schema MAJOR는 `SCHEMA_UNSUPPORTED`로 거절한다. 같은 `logical_record_id`가 아니거나 바로 이전 revision과 이어지지 않는 수정본은 `RECORD_REVISION_MISMATCH`로 거절하고 자동 변환·병합하지 않는다. `RunMeta`의 workspace·commit은 `null`에서 실제 값으로만 바인딩할 수 있고, 코드 근거 `RecordMeta`에서는 두 값이 필수·불변이다.
+- 저장된 record를 가리키는 `StoredDataRef.record_id`는 참조 대상 revision의 workspace·commit·내용 hash와 일치해야 하고, 가설별 대상 record의 `RecordMeta.hypothesis_id`도 현재 가설과 같아야 한다. Technical Gate가 검토한 Verification revision이나 Rule Scope Gate가 검토한 Verification·Technical·정책 revision이 바뀌면 이전 Gate 결과를 재사용하지 않는다.
 
 ## 2. 저장소와 외부 텍스트는 비신뢰 데이터
 
@@ -47,6 +51,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - raw membership session log는 제한된 접근·짧은 보존·provider parser·redaction을 거친다.
 - redaction 실패 artifact는 일반 관측 저장소로 전달하지 않고 오류로 격리한다.
 - session reference 자체가 재사용 가능한 secret이면 hash/opaque handle로 대체한다.
+- `AnalysisError.safe_message`에는 credential, 개인정보, session secret, authorization header와 절대 로컬 경로를 넣지 않는다. 원본 오류는 별도 접근 통제와 redaction을 거친 artifact로만 보관한다.
 
 ## 5. Docker sandbox
 
@@ -71,14 +76,15 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 다음 연결을 보존한다.
 
 - tool observation → 현재 `workspace_id`의 `CodeLocation`
-- hypothesis claim → observed fact/assumption/falsification
+- hypothesis claim → observed fact/assumption과 `question_id`가 있는 falsification
 - retrieved context → request와 실제 location
+- `FALSE` verdict → `DISPROVED` falsification question과 실제 evidence
 - verdict → Pro/Con/dynamic evidence와 restriction
 - Primitive/Research candidate → source result와 아직 검증되지 않은 상태
-- CWE → evidence와 uncertainty
-- Technical review → 정확한 Verification revision
-- Rule/Scope review → 정확한 `ProgramPolicyRecord`
-- report claim → 통과한 result와 두 Gate
+- CWE → 정확한 `CWELabel` revision, evidence와 uncertainty
+- Technical review → 정확한 Verification·CWELabel revision
+- Rule/Scope review → 정확한 Verification·Technical review·CWELabel과 `ProgramPolicyRecord` revision
+- report claim → 통과한 result, 두 Gate와 두 Gate가 공통으로 검토한 CWELabel revision
 
 Research, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출을 승인한다.
 

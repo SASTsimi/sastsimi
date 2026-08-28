@@ -10,18 +10,19 @@
 
 `AnalysisRunResult`는 다음을 함께 찾을 수 있게 한다.
 
-- repository, `commit_id`, `workspace_id`와 시작·종료·총 실행 시간
+- repository, `commit_id`, `workspace_id`, `started_at`, `finished_at`, `elapsed_ms`
 - initial/derived/chained/invalid 가설 수와 verdict별 개수
 - 위치 기반 context 요청·응답과 실제 조회 location
 - Verification, debate mode/trigger/skip, restriction와 capability
 - Docker 결과, redacted PoC와 cleanup
 - Primitive match, Research 후보와 재검증 여부
-- Technical 및 Rule Scope Impact Gate와 공식 `ProgramPolicyRecord`
+- `CWELabel`, Technical 및 Rule Scope Impact Gate, 공식 `ProgramPolicyRecord`과 두 Gate·보고서가 사용한 정확한 revision reference
 - 보고서 초안과 사람 검토 상태
 - 역할/provider/model/session별 LLM invocation log
 - AST/SAST·LLM·sandbox 자원과 모든 오류
 - 상태와 artifact reference를 연결한 debug trace
 
-Proxy가 어려운 membership 호출은 raw session log → provider parser → redaction 경로를 쓴다. 사용자에게 노출된 request/response/tool trace만 기록하고 hidden chain-of-thought와 credential은 저장하지 않는다. 오류는 `FALSE`와 구분한다.
+Proxy가 어려운 membership 호출은 raw session log → provider parser → redaction 경로를 쓴다. 사용자에게 노출된 request/response/tool trace만 기록하고 hidden chain-of-thought와 credential은 저장하지 않는다. 일반 결과에는 credential, 개인정보, 인증 헤더, 로컬 절대 경로가 없는 `AnalysisError.safe_message`만 넣는다. 꼭 필요한 원본 오류는 별도의 접근 제한·민감정보 제거 저장소에 두며 일반 결과와 분리한다. 오류는 `FALSE`와 구분한다.
 
 상세 내용은 [결과 저장과 관측성](../07-results-and-observability.md)을 따른다.
+ID 생성 주체, 상태 계층과 gap/error 차이는 [공통 ID·상태·오류](common-contracts.md)에서 쉽게 확인할 수 있다.

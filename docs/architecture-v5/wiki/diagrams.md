@@ -229,6 +229,33 @@ flowchart LR
     RUN --> HUMAN[Human review]
 ```
 
+## 9. 공통 식별자와 revision 추적
+
+```mermaid
+flowchart TB
+    INPUT[Analysis request] --> ORCH[Orchestration Runtime]
+    ORCH --> ANA[analysis_id]
+    ANA --> RUNMETA[RunMeta before code binding]
+    ANA --> LOADER[Repository Loader]
+    LOADER -->|READY| WORK[workspace_id plus commit_id]
+    ANA --> HYP[hypothesis_id]
+    HYP --> REL[parent IDs root ID chain depth]
+    HYP --> ATT[attempt_id]
+    ATT --> CALL[llm_call_id]
+    WORK --> META
+    HYP --> META
+    ATT --> META
+    RUNMETA --> LOGICAL[logical_record_id]
+    META[RecordMeta for code bound records] --> LOGICAL
+    LOGICAL --> REC[record_id plus schema_version]
+    REC --> REV[revision_number plus previous_record_id]
+    REC --> DATA[stored_data_id plus content_hash]
+    REV --> RUN[AnalysisRunResult]
+    DATA --> RUN
+```
+
+clone 전 실행 기록은 `RunMeta`, 준비된 코드 근거는 `RecordMeta`를 사용한다. 시스템이 생성한 ID는 다른 대상에 재사용하지 않는다. 외부 Git ID인 `commit_id`는 같은 commit을 여러 분석에서 참조할 수 있다. 새 revision은 `logical_record_id`를 유지하고 새 `record_id`로 연결하며, chain 가설은 새 `hypothesis_id`를 사용한다.
+
 ## Rendering check
 
-이 문서는 Mermaid 블록 8개를 포함한다. Wiki diagrams 페이지는 이 파일과 동일한 Mermaid 블록을 사용하며 최종 검증에서 8개 SVG와 parse error 0개를 확인한다.
+이 문서는 Mermaid 블록 9개를 포함한다. Wiki diagrams 페이지는 이 파일과 동일한 Mermaid 블록을 사용하며 최종 검증에서 9개 SVG와 parse error 0개를 확인한다.

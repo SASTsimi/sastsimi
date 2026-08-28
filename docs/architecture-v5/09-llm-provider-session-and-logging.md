@@ -32,9 +32,23 @@ Agent Runtime은 역할·structured-output 요구·context reference·budget·se
 - timeout, cancellation, rate limit와 auth-required 전달
 - provider가 공개한 usage만 출처와 함께 기록
 - credential을 Agent prompt/result/log에서 제외
-- retry와 failover를 새 `llm_call_id`로 식별
+- retry와 failover를 새 `llm_call_id`로 식별하고 바로 앞의 허용된 실패 호출을 reference로 연결
 
-provider/model을 조용히 바꾸는 failover는 금지한다. 허용된 fallback이 있더라도 원래 실패, 새 provider/model, 이유, 새 session과 결과를 별도 `llm_call_id`로 남긴다.
+provider/model을 조용히 바꾸는 failover는 금지한다. 허용된 fallback이 있더라도 원래 실패, 새 provider/model, 이유, 새 session과 결과를 별도 `llm_call_id`로 남긴다. 같은 provider/model의 일반 retry는 `retry_of_llm_call_id`, provider/model을 바꾸는 failover는 `failover_from_llm_call_id`로 바로 앞의 허용된 실패 호출을 가리킨다. 두 reference를 동시에 사용하지 않는다.
+
+선행 호출 status는 다음과 같이 제한한다.
+
+| 선행 status | 같은 provider/model retry | provider/model failover | 추가 조건 |
+|---|---|---|---|
+| `FAILED` | 허용 | 허용 | 오류와 전환 이유 기록 |
+| `INVALID_OUTPUT` | 허용 | 허용 | 제한된 schema/semantic repair가 끝난 뒤 |
+| `TIMED_OUT` | 허용 | 허용 | 남은 시간·시도 예산 확인 |
+| `RATE_LIMITED` | 허용 | 허용 | retry는 backoff 뒤, failover는 허용된 fallback만 사용 |
+| `AUTH_REQUIRED` | 재인증 뒤 허용 | 조건부 허용 | failover 대상 provider의 유효한 인증이 별도로 준비되어 있어야 함 |
+| `SUCCEEDED` | 금지 | 금지 | 정상 결과 뒤의 새 작업은 독립 호출 |
+| `CANCELLED` | 금지 | 금지 | 사용자가 다시 요청하면 독립 호출 |
+
+retry/failover 선행 호출은 같은 분석·가설·역할의 바로 앞 호출이어야 한다. `SUCCEEDED`, `CANCELLED`, 존재하지 않는 호출, 더 이전 호출, 자기 자신과 이후 호출을 연결하면 `INVOCATION_CHAIN_INVALID`다.
 
 ## MembershipSessionAdapter
 
@@ -106,11 +120,24 @@ hidden chain-of-thought를 요구·수집·복원하지 않는다. 사용자에�
 
 ## 인증·오류 lifecycle
 
+LLM 호출 상태는 `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED | CANCELLED`다. 이 상태는 provider 호출의 결과이며 취약점 가설의 `TRUE | FALSE | HOLD`와 별개다.
+
+| 호출 상태 | 쉬운 의미 | Orchestration 처리 |
+|---|---|---|
+| `SUCCEEDED` | 호출과 공통 형식 변환이 끝남 | schema·semantic 검증 후 다음 단계 진행 |
+| `FAILED` | provider 또는 adapter가 호출을 끝내지 못함 | 오류 저장, 허용된 retry 검토 |
+| `INVALID_OUTPUT` | 응답은 왔지만 요구한 형식·의미 검사를 통과하지 못함 | 제한 repair 뒤에도 실패하면 해당 출력 사용 금지 |
+| `TIMED_OUT` | 정해진 시간 안에 끝나지 않음 | 새 `attempt_id`의 retry 또는 중단 |
+| `RATE_LIMITED` | provider 호출량 제한에 걸림 | backoff 또는 명시적 fallback |
+| `AUTH_REQUIRED` | 로그인·키·session이 없거나 만료됨 | 재인증 필요 상태로 반환 |
+| `CANCELLED` | 사용자 또는 runtime이 취소함 | 취소 기록 후 실행 종료 |
+
 1. Runtime이 adapter capability와 인증 사용 가능 여부를 확인한다.
 2. 호출할 수 없으면 `AUTH_REQUIRED` 또는 명시적 provider error를 반환한다.
-3. Orchestration은 이를 가설 `FALSE`로 바꾸지 않는다.
+3. Orchestration은 어떤 LLM 호출 상태도 가설 `FALSE`로 바꾸지 않는다.
 4. 제한 retry, 사용자 재인증 또는 구성된 explicit fallback을 선택한다.
 5. 모든 시도는 독립 `llm_call_id`와 `attempt_id`로 저장한다.
+6. 후속 호출은 위 표에서 허용한 바로 앞의 실패 호출 reference와 1씩 증가하는 `retry_count`를 저장하며, runtime은 status·같은 분석·가설·역할·호출 순서와 순환이 없는지 검사한다.
 
 동시성·rate limit의 backpressure도 취약점 판정과 분리한다.
 

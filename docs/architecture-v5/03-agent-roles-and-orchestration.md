@@ -14,7 +14,8 @@ Orchestration Agent는 분석 계획과 다음 작업을 제안·조정하는 co
 
 주요 책임은 다음과 같다.
 
-- `analysis_id`·`hypothesis_id`·parent/child correlation id 부여
+- `analysis_id` 부여와 proposal 검증 뒤 `hypothesis_id` 등록
+- `parent_hypothesis_ids`·`root_hypothesis_id`·`chain_depth` 관계 검증
 - 가설 schema 검증과 제한된 repair retry
 - 독립 가설 병렬 처리와 hypothesis별 resource budget
 - session policy와 provider profile을 Agent Runtime에 전달
@@ -37,7 +38,7 @@ Hypothesis Agent에는 비용 효율적인 모델을 배치할 수 있지만, �
 - observed facts와 assumptions의 분리
 - 현재 restriction
 - missing information
-- 구체적인 falsification questions
+- `question_id`가 붙은 구체적인 falsification questions
 - required validation
 - 우선순위용 confidence
 
@@ -46,7 +47,7 @@ confidence는 verdict, exploitability 또는 Finding 확률로 해석하지 않�
 ## 출력 검증과 실패 처리
 
 1. 구조 parser가 JSON/YAML syntax와 schema를 검증한다.
-2. enum, 필수 field, `workspace_id`·`commit_id`·`CodeLocation`과 금지 assertion을 검사한다.
+2. enum, 필수 field, `workspace_id`·`commit_id`·`CodeLocation`, 반증 질문과 금지 assertion을 검사한다. 유효한 proposal의 각 반증 질문에는 출력 검증 runtime이 전역 `question_id`를 붙인다.
 3. 실패하면 원래 의미를 바꾸지 않는 범위에서 제한 횟수의 repair prompt를 새 invocation으로 실행한다.
 4. 재시도 후에도 유효하지 않으면 해당 호출을 `INVALID_OUTPUT`으로 저장한다.
 5. invalid proposal은 Verification Agent에 전달하지 않는다.
@@ -56,15 +57,18 @@ confidence는 verdict, exploitability 또는 Finding 확률로 해석하지 않�
 ## 가설 lifecycle
 
 ```text
-PROPOSED -> SCHEMA_VALID -> ASSIGNED -> VERIFYING
-          \-> INVALID_OUTPUT
+ProposalProcessState: PROPOSED -> SCHEMA_VALID
+                      \-> INVALID_OUTPUT
 
-VERIFYING -> TRUE | FALSE | HOLD
-TRUE/HOLD -> Primitive + Research
+SCHEMA_VALID -> register new hypothesis_id
+HypothesisProcessState: REGISTERED -> ASSIGNED -> VERIFYING -> TERMINAL
+VerificationResult.verdict -> TRUE | FALSE | HOLD
+TRUE/HOLD verdict -> Primitive + Research
 Research material claim -> PROPOSED child hypothesis
 ```
 
-parent 가설의 결과와 child 가설은 독립된 lifecycle을 갖는다. Research 후보가 존재한다는 이유만으로 parent verdict나 impact를 강화하지 않는다.
+`ProposalProcessState.status`는 `hypothesis_id`를 발급하기 전의 출력 검증 상태를 기록한다. 검증을 통과하면 새 `hypothesis_id`와 별도 `HypothesisProcessState`를 만들고 같은 `proposal_ref`로 연결한다. `HypothesisProcessState.status`가 등록 뒤 처리 진행 상태를 기록하고 `VerificationResult.verdict`가 기술 판정을 기록한다. `TERMINAL`은 검증 처리가 끝났다는 뜻일 뿐 `TRUE`, `FALSE`, `HOLD` 중 어느 판정인지 대신 말하지 않는다. parent 가설의 결과와 child 가설은 독립된 lifecycle을 갖는다. Research 후보가 존재한다는 이유만으로 parent verdict나 impact를 강화하지 않는다.
+초기 가설은 자기 자신을 `root_hypothesis_id`로 사용하고 `chain_depth=0`이다. Research·체이닝 proposal은 직접 부모 ID를 보존하고 검증을 통과할 때 새 `hypothesis_id`를 받는다. 여러 `TRUE`를 연결하는 경우도 기존 가설을 수정하지 않고 새 child 가설로 등록한다.
 
 ## Agent 역할과 출력 권한
 

@@ -10,21 +10,21 @@
 
 ## 목표
 
-결론뿐 아니라 어떤 `workspace_id`·`commit_id`·문맥·provider·session·도구·근거가 결론에 사용되었고 어디서 실패했는지를 `analysis_id`와 `hypothesis_id` 단위로 재구성할 수 있어야 한다. 저장 계층은 판정을 생성하지 않는다.
+결론뿐 아니라 코드 준비가 성공했다면 어떤 `workspace_id`·`commit_id`·문맥·provider·session·도구·근거가 결론에 사용되었고, 준비 전 실패라면 어느 `analysis_id`에서 실패했는지를 재구성할 수 있어야 한다. 저장 계층은 판정을 생성하지 않는다.
 
 ## 논리 저장 영역
 
 | 영역 | 내용 |
 |---|---|
-| `facts` | `StaticFactBundle`, 원본 AST/SAST artifact refs와 gaps |
+| `facts` | `StaticFactBundle`, `ToolRunResult`, 원본 AST/SAST refs, coverage, gaps와 errors |
 | `hypotheses` | initial/child/chained proposal, validation state와 parent 관계 |
 | `contexts` | `CodeContextRequest/Response`, 실제 반환·열람 위치 |
 | `verifications` | Pro/Con, initial/final verdict, restriction/capability, CWE |
 | `primitives` | HeldHypothesis, ConfirmedCapability와 match candidates |
 | `research` | `ResearchResult`, new claim과 validation state |
-| `gates` | Technical 및 Rule Scope Impact review와 revision |
+| `gates` | Technical 및 Rule Scope Impact review와 Verification·CWELabel·정책 input revision refs |
 | `policies` | 공식 `ProgramPolicyRecord`과 source refs |
-| `reports` | 허용된 `ReportDraft`와 human state |
+| `reports` | 허용된 `ReportDraft`, 두 Gate와 같은 CWELabel revision ref와 human state |
 | `invocations` | normalized `LLMInvocationLog`와 safe provider/session metadata |
 | `dynamic` | sandbox 실행, PoC, output refs와 cleanup |
 | `runs` | 전체 요약·자원·오류·시간·debug event |
@@ -57,8 +57,10 @@ raw log는 최소 권한과 짧은 보존 기간으로 다루며 parser 실패�
 - schema validation error와 repair attempt
 - status, timeout, rate limit, auth requirement와 safe error
 - provider가 공개한 token/usage 또는 `unavailable`
-- elapsed time, retry와 explicit failover relation
+- elapsed time, 일반 retry의 `retry_of_llm_call_id`와 provider/model 전환의 `failover_from_llm_call_id`
 - redaction 적용·실패 결과
+
+retry/failover reference는 바로 앞 호출의 status가 `FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED`일 때만 유효하다. `SUCCEEDED | CANCELLED`를 선행 호출로 연결하거나 재인증·backoff·repair 같은 상태별 조건을 건너뛴 관계는 `INVOCATION_CHAIN_INVALID`로 기록하고 사용하지 않는다.
 
 credential, cookie, reusable authorization header, 전체 browser profile, hidden reasoning과 불필요한 전체 코드 원문은 저장하지 않는다.
 
@@ -99,42 +101,51 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 ### Resources
 
 - 역할·provider·model별 invocation, token/동등 usage와 elapsed time
-- AST/SAST 성공·부분 성공·실패와 coverage
+- AST/SAST별 `SUCCEEDED | PARTIAL | FAILED | SKIPPED`, 실제 분석·제외 path/language와 coverage
 - sandbox mode별 CPU/memory/disk/network/time와 cleanup
 
 provider가 token이나 비용을 제공하지 않으면 추정치를 확정값처럼 표시하지 않고 metric source와 unavailable reason을 남긴다.
 
 ## AnalysisRunResult
 
-최종 분석 결과에는 repository, `commit_id`, `workspace_id`, 시작·종료·총 시간, 초기·파생·chain·invalid hypothesis 수, verdict별 수, 두 Gate별 수, PoC/report refs, 공식 정책 상태, Research/Primitive 요약, LLM·static·sandbox 자원, 모든 오류와 debug trace를 포함한다.
+최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, 초기·파생·chain·invalid hypothesis 수, verdict별 수, 두 Gate별 수, PoC/report refs, 공식 정책 상태, Research/Primitive 요약, LLM·static·sandbox 자원, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
 
 일부 가설이 실패해도 나머지는 계속할 수 있고 분석은 `PARTIAL`로 끝날 수 있다. clone 또는 checkout에 실패하거나 작업공간이 바뀌어 코드 기준을 잃으면 전체 분석은 `FAILED`다. Agent·sandbox·policy fetch 오류는 `FALSE`로 변환하지 않는다.
 
-## 오류 분류
+## DataGap과 오류 분류
 
-- `INPUT_ERROR`
-- `CLONE_FAILED`
-- `CHECKOUT_FAILED`
-- `WORKSPACE_MISMATCH`
-- `WORKSPACE_CHANGED`
-- `WORKSPACE_MISSING`
-- `STATIC_TOOL_ERROR`
-- `CONTEXT_RETRIEVAL_ERROR`
-- `INVALID_OUTPUT`
-- `AGENT_ERROR`
-- `PROVIDER_ERROR`
-- `AUTH_REQUIRED`
-- `SANDBOX_ERROR`
-- `RESEARCH_ERROR`
-- `TECHNICAL_GATE_ERROR`
-- `POLICY_FETCH_ERROR`
-- `RULE_SCOPE_GATE_ERROR`
-- `REPORT_ERROR`
-- `BUDGET_EXCEEDED`
-- `CANCELLED`
+`DataGap`은 분석하지 못한 범위이고 `AnalysisError`는 실행 실패 사건이다. 둘 다 `created_at`을 UTC RFC 3339로 기록하며 자동으로 취약점 `FALSE`가 되지 않는다.
 
-`AnalysisError`에는 stage, code, retryable 여부, safe message, related record와 발생 시각을 남긴다.
+| code | 주 생산자 | 실행·상태에 미치는 영향 | 기본 복구 방향 |
+|---|---|---|---|
+| `INPUT_ERROR` | 입력 검증기 | 분석 시작 전 `FAILED` | 입력 수정 뒤 새 분석 |
+| `CLONE_FAILED` | Repository Loader | 분석 `FAILED`, AST/SAST 미실행 | 네트워크·권한 확인 뒤 새 분석 |
+| `CHECKOUT_FAILED` | Repository Loader | 분석 `FAILED`, AST/SAST 미실행 | 유효한 commit 확인 뒤 새 분석 |
+| `WORKSPACE_MISMATCH` | runtime validator | 해당 record 사용 금지 | 올바른 workspace·commit 결과 재요청 |
+| `WORKSPACE_CHANGED` | Repository Loader·validator | 분석 `FAILED`, 변경 뒤 결과 사용 금지 | 새 작업공간에서 새 분석 |
+| `WORKSPACE_MISSING` | 코드 조회·runtime | 해당 작업 실패 | 보존 결과로 판단하거나 새 분석 |
+| `STATIC_TOOL_ERROR` | AST/SAST runner | 사용 가능한 결과가 있으면 분석 `PARTIAL` 가능 | 제한 retry 또는 gap 보존 |
+| `CONTEXT_RETRIEVAL_ERROR` | Context Retrieval Service | 오류와 누락 범위를 Verification에 전달 | 범위·요청을 고쳐 제한 retry; Verification Agent가 다른 근거와 함께 `HOLD` 여부 결정 |
+| `INVALID_OUTPUT` | Agent Runtime | 해당 LLM 출력 사용 금지 | 제한 repair 뒤 종료 |
+| `INVOCATION_CHAIN_INVALID` | Agent Runtime·log validator | retry/failover 관계 record 사용 금지 | 유효한 바로 앞 호출을 연결하거나 새 독립 호출로 다시 시작 |
+| `AGENT_ERROR` | Agent Runtime | 해당 Agent 작업 실패 | 새 `attempt_id`로 제한 retry |
+| `PROVIDER_ERROR` | provider adapter | LLM 호출 실패 | 명시적 retry·fallback |
+| `AUTH_REQUIRED` | provider adapter | LLM 호출 중단 | 사용자 재인증 뒤 새 시도 |
+| `RATE_LIMITED` | provider adapter | LLM 호출 지연·중단 | backoff 또는 명시적 fallback |
+| `TIMED_OUT` | 각 runtime | 해당 작업 시간 초과 | 예산 안에서 새 시도 또는 중단 |
+| `SANDBOX_ERROR` | Sandbox runtime | 동적 재현 `FAILED` | 안전 조건 확인 뒤 제한 retry |
+| `RESEARCH_ERROR` | Research runtime | Research 실패, 부모 verdict 유지 | 제한 retry 또는 결과 없음 기록 |
+| `TECHNICAL_GATE_ERROR` | Technical Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
+| `POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 Gate `UNCERTAIN + DENY` | 공식 출처 재확인 |
+| `RULE_SCOPE_GATE_ERROR` | 정책·영향 Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
+| `REPORT_ERROR` | Reporter runtime | 초안 `FAILED`, 기술 판정 유지 | 조건 보존 후 초안 재작성 |
+| `BUDGET_EXCEEDED` | Orchestration runtime | 작업 중단과 남은 검증 조건을 Verification에 전달; 분석은 `PARTIAL` 가능 | Verification Agent가 근거와 함께 가설 `HOLD` 여부를 결정하고, 새 예산 승인 뒤에만 재시도 |
+| `CANCELLED` | 사용자·runtime | 해당 작업 또는 분석 `CANCELLED` | 자동 재시도 금지 |
+| `SCHEMA_UNSUPPORTED` | schema validator | 해당 record 사용 금지 | 지원 schema로 다시 생성 |
+| `RECORD_REVISION_MISMATCH` | record validator | revision 자동 병합 금지 | 올바른 이전 revision에서 재생성 |
+
+모든 `AnalysisError`에는 `stage`, `code`, `retryable`, 민감정보가 제거된 `safe_message`, `related_record_ids`와 `created_at`을 남긴다. 원본 오류는 일반 record에 복사하지 않고 별도 접근 통제·redaction·보존 정책이 적용된 결과로 분리한다. 표의 어떤 오류도 가설 `FALSE`를 직접 만들지 않는다.
 
 ## Debug trace와 보존
 
-trace는 상태 전이, 공개 가능한 rationale, `StoredDataRef`, tool event와 자원 사용을 시간순으로 연결한다. raw source·prompt·response·PoC는 민감도와 재현 필요성에 따라 별도 접근통제와 보존기간을 적용한다. 코드 전체 대신 저장소 상대 `CodeLocation`을 우선하고, 실제 credential·개인정보·session secret은 redaction 또는 저장 제외한다.
+trace는 상태 전이, 공개 가능한 rationale, `RunStoredDataRef`·`StoredDataRef`, tool event와 자원 사용을 시간순으로 연결한다. run 참조는 코드 근거로 승격하지 않는다. raw source·prompt·response·PoC는 민감도와 재현 필요성에 따라 별도 접근통제와 보존기간을 적용한다. 코드 전체 대신 저장소 상대 `CodeLocation`을 우선하고, 실제 credential·개인정보·session secret은 redaction 또는 저장 제외한다.
