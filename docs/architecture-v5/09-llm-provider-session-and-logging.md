@@ -32,9 +32,9 @@ Agent Runtime은 역할·structured-output 요구·context reference·budget·se
 - timeout, cancellation, rate limit와 auth-required 전달
 - provider가 공개한 usage만 출처와 함께 기록
 - credential을 Agent prompt/result/log에서 제외
-- retry와 failover를 새 invocation으로 식별
+- retry와 failover를 새 `llm_call_id`로 식별
 
-provider/model을 조용히 바꾸는 failover는 금지한다. 허용된 fallback이 있더라도 원래 실패, 새 provider/model, 이유, 새 session과 결과를 별도 invocation으로 남긴다.
+provider/model을 조용히 바꾸는 failover는 금지한다. 허용된 fallback이 있더라도 원래 실패, 새 provider/model, 이유, 새 session과 결과를 별도 `llm_call_id`로 남긴다.
 
 ## MembershipSessionAdapter
 
@@ -110,7 +110,7 @@ hidden chain-of-thought를 요구·수집·복원하지 않는다. 사용자에�
 2. 호출할 수 없으면 `AUTH_REQUIRED` 또는 명시적 provider error를 반환한다.
 3. Orchestration은 이를 가설 `FALSE`로 바꾸지 않는다.
 4. 제한 retry, 사용자 재인증 또는 구성된 explicit fallback을 선택한다.
-5. 모든 시도는 독립 invocation/attempt로 저장한다.
+5. 모든 시도는 독립 `llm_call_id`와 `attempt_id`로 저장한다.
 
 동시성·rate limit의 backpressure도 취약점 판정과 분리한다.
 
