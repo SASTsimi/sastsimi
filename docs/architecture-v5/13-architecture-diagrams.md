@@ -263,6 +263,55 @@ flowchart TB
 
 clone 전 실행 기록은 `RunMeta`, 준비된 코드 근거는 `RecordMeta`를 사용한다. 시스템이 생성한 ID는 다른 대상에 재사용하지 않는다. 외부 Git ID인 `commit_id`는 같은 commit을 여러 분석에서 참조할 수 있다. 새 revision은 `logical_record_id`를 유지하고 새 `record_id`로 연결하며, chain 가설은 새 `hypothesis_id`를 사용한다.
 
+## 10. 공통 실행 상태
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING
+    PENDING --> READY: dependencies ready
+    PENDING --> CANCELLED: cancelled
+    READY --> RUNNING: start new attempt
+    READY --> BLOCKED: prerequisite missing
+    READY --> CANCELLED: cancelled
+    RUNNING --> BLOCKED: retryable attempt failure
+    RUNNING --> SUCCEEDED: full output committed
+    RUNNING --> PARTIAL: partial output committed
+    RUNNING --> FAILED: terminal failure
+    RUNNING --> CANCELLED: cancelled
+    BLOCKED --> READY: waiting condition resolved
+    BLOCKED --> FAILED: cannot continue
+    BLOCKED --> CANCELLED: cancelled
+    SUCCEEDED --> [*]
+    PARTIAL --> [*]
+    FAILED --> [*]
+    CANCELLED --> [*]
+```
+
+작업 상태는 전문 판정과 분리한다. retry 가능한 attempt 실패는 work를 `BLOCKED`로 두고, 조건을 해결한 뒤 새 `attempt_id`로 다시 시작한다. `SUCCEEDED | PARTIAL | FAILED | CANCELLED`는 되돌리지 않는다.
+
+## 11. 중복 방지와 atomic 저장·복구
+
+```mermaid
+flowchart LR
+    REQUEST[Work request] --> DEDUPE{Same dedupe key exists}
+    DEDUPE -->|Yes| EXISTING[Return existing work and state]
+    DEDUPE -->|No| READY[Create READY work]
+    READY --> ATTEMPT[Start one active attempt]
+    ATTEMPT --> RESULT[Worker submits result]
+    RESULT --> VALIDATE{Attempt version input workspace commit match}
+    VALIDATE -->|No| STALE[Reject and quarantine stale result]
+    VALIDATE -->|Yes| PREPARED[TransitionCommit PREPARED]
+    PREPARED --> POINTER[Bind output ref and target state]
+    POINTER --> COMMITTED[TransitionCommit COMMITTED]
+    COMMITTED --> NEXT[Allow downstream consumer]
+    PREPARED -->|Version conflict or cancel| ABORTED[ABORTED and quarantine output]
+    CRASH[Process restart] --> RECOVER[Read last COMMITTED transition]
+    RECOVER -->|Valid PREPARED| POINTER
+    RECOVER -->|Unsafe or inconsistent| STOP[TRANSITION INCOMPLETE or RECOVERY FAILED]
+```
+
+다음 단계는 `COMMITTED` output만 읽는다. Verification `TERMINAL`, 두 Gate 완료와 Report `DRAFTED`는 각각 정확한 결과 `record_id`에 atomic하게 연결되어야 한다.
+
 ## Rendering check
 
-이 문서는 Mermaid 블록 9개를 포함한다. Wiki diagrams 페이지는 이 파일과 동일한 Mermaid 블록을 사용하며 최종 검증에서 9개 SVG와 parse error 0개를 확인한다.
+이 문서는 Mermaid 블록 11개를 포함한다. Wiki diagrams 페이지는 이 파일과 동일한 Mermaid 블록을 사용하며 최종 검증에서 11개 SVG와 parse error 0개를 확인한다.

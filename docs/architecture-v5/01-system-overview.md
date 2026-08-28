@@ -102,9 +102,22 @@ Orchestration Agent는 분석 계획과 다음 작업을 제안·조정하지만
 
 ## 병렬성과 종료 조건
 
-- AST와 복수 SAST 실행은 병렬화할 수 있다.
-- 서로 독립된 가설의 Verification은 예산 범위에서 병렬화할 수 있다.
-- 한 가설의 Pro/Con은 조건이 충족될 때 서로 독립된 NEW session으로 병렬화할 수 있다.
-- 같은 가설의 `workspace_id`와 `commit_id`, initial verdict 전후, 두 Gate의 순서와 Reporter 조건은 의존성을 지킨다.
-- 모든 초기·파생 가설이 종료 상태에 도달하고 저장이 끝나면 Orchestration run을 닫는다.
+- AST와 복수 SAST 실행은 tool별 `work_id`와 `attempt_id`로 병렬화할 수 있다. 정규화는 모든 기대 작업의 종료 상태를 확인하고, 일부 실패면 `DataGap`과 오류를 포함한 `PARTIAL` 여부를 명시한다.
+- 서로 독립된 가설의 Verification은 가설별 예산 범위에서 병렬화할 수 있다. 한 가설의 실패가 다른 가설을 자동 취소하지 않는다.
+- 한 가설의 Pro/Con은 조건이 충족될 때 서로 다른 work와 NEW session으로 병렬화하고, Verification이 두 결과 또는 명시된 skip·실패 상태를 확인해 합류한다.
+- 같은 가설의 `workspace_id`와 `commit_id`, final Verification·CWELabel, Technical Gate, Rule Scope Gate와 Reporter 순서는 의존성을 지킨다.
+- 실행 상태는 `WorkExecutionState`가 관리하고 가설 판정·Gate 결과·보고서·사람 검토 상태와 분리한다. 같은 `dedupe_key` 요청은 한 `work_id`로만 반영한다.
+- 결과와 종료 상태 pointer가 `COMMITTED`된 뒤에만 다음 단계를 호출한다. `PREPARED`, 취소된 attempt, 오래된 revision과 늦은 결과는 다음 단계에서 읽지 않는다.
+- 모든 초기·파생 가설이 종료 상태에 도달하고 atomic 저장·복구가 끝나면 Orchestration run을 닫는다.
 - chaining은 깊이·개수·토큰·시간·중복 fingerprint 제한을 넘으면 새 가설을 만들지 않고 중단 이유를 기록한다.
+
+최종 분석 상태는 다음 의미를 갖는다.
+
+| 상태 | 의미 |
+|---|---|
+| `COMPLETE` | 필요한 작업이 모두 확정 종료되고 최종 결과 묶음을 만들 수 있음 |
+| `PARTIAL` | 신뢰할 수 있는 결과가 하나 이상 있지만 일부 도구·가설·보완 작업이 실패·제한되어 누락과 오류를 함께 저장함 |
+| `FAILED` | clone/checkout 실패, workspace 기준 상실 또는 복구 실패로 신뢰 가능한 분석 결과를 만들 수 없음 |
+| `CANCELLED` | 사용자가 전체 분석을 중단했고 새 작업 생성을 멈춤 |
+
+어떤 실행 상태도 취약점 `FALSE`를 직접 만들지 않는다.

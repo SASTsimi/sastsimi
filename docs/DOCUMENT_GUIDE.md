@@ -18,6 +18,7 @@
 | [Issue 작성 양식](../.github/ISSUE_TEMPLATE/architecture-review.yml) | GitHub에서 설계 검토 Issue를 만들 때 필요한 입력 칸을 정의합니다. | Issue 작성자 | 보조 파일 |
 | [Issue 화면 설정](../.github/ISSUE_TEMPLATE/config.yml) | GitHub Issue 작성 화면의 선택 항목을 설정합니다. | 저장소 관리 담당 | 보조 파일 |
 | [PR 작성 양식](../.github/PULL_REQUEST_TEMPLATE.md) | PR에 목적·영향·검증 내용을 빠뜨리지 않도록 기본 양식을 제공합니다. | PR 작성자·검토자 | 보조 파일 |
+| [`scripts/validate-architecture-docs.ps1`](../scripts/validate-architecture-docs.ps1) | Markdown 링크·Mermaid 사본과 R4 상태·복구 핵심 계약 누락을 한 번에 검사합니다. | 문서 작성자·검토자 | 검증 도구 |
 
 ## 문서 안내와 공통 용어
 
@@ -80,6 +81,7 @@ Wiki는 번호 문서의 쉬운 요약입니다. Wiki만 수정해 새로운 규
 | [`wiki/chaining.md`](./architecture-v5/wiki/chaining.md) | 여러 취약점의 조건을 연결하는 방법과 중단 조건을 요약합니다. | 탐색·체이닝 담당 | 쉬운 요약 |
 | [`wiki/providers-and-logging.md`](./architecture-v5/wiki/providers-and-logging.md) | LLM 연결 방식, 로그인 상태와 기록 방법을 요약합니다. | 통합·데이터 담당 | 쉬운 요약 |
 | [`wiki/common-contracts.md`](./architecture-v5/wiki/common-contracts.md) | 공통 ID, 시간, 상태, 분석 공백·오류와 계약 변경 규칙을 쉽게 설명합니다. | 모든 구현·검토 담당 | 쉬운 요약 |
+| [`wiki/state-and-recovery.md`](./architecture-v5/wiki/state-and-recovery.md) | 병렬 작업, 중복 방지, 재시도와 중단 후 안전한 재개 규칙을 쉽게 설명합니다. | PM·통합·모든 역할 담당 | 쉬운 요약 |
 | [`wiki/results.md`](./architecture-v5/wiki/results.md) | 최종 저장 결과와 디버깅 정보를 요약합니다. | 데이터·평가·통합 담당 | 쉬운 요약 |
 | [`wiki/diagrams.md`](./architecture-v5/wiki/diagrams.md) | 기준 다이어그램을 Wiki에서 그대로 보여 줍니다. | 모든 팀원 | 쉬운 요약 사본 |
 | [`wiki/index.html`](./architecture-v5/wiki/index.html) | 로컬 Wiki 화면을 여는 HTML 파일입니다. | Wiki 관리 담당 | 보조 파일 |
@@ -101,6 +103,8 @@ Wiki는 번호 문서의 쉬운 요약입니다. Wiki만 수정해 새로운 규
 | [`2026-08-28-remove-repository-snapshot.md`](./superpowers/plans/2026-08-28-remove-repository-snapshot.md) | 로컬 코드 작업공간 전환을 문서와 Issue에 적용한 순서입니다. | 작업 기록 |
 | [`2026-08-28-r4-01-common-contracts-design.md`](./superpowers/specs/2026-08-28-r4-01-common-contracts-design.md) | R4-01 공통 ID·시간·상태·오류·버전 계약 결정입니다. | 작업 기록 |
 | [`2026-08-28-r4-01-common-contracts.md`](./superpowers/plans/2026-08-28-r4-01-common-contracts.md) | R4-01 계약을 정본·Wiki·검토 문서에 적용하는 작업 순서입니다. | 작업 기록 |
+| [`2026-08-28-r4-02-state-recovery-design.md`](./superpowers/specs/2026-08-28-r4-02-state-recovery-design.md) | R4-02 상태 전이·중복 방지·atomic 저장·복구 설계 결정입니다. | 작업 기록 |
+| [`2026-08-28-r4-02-state-recovery.md`](./superpowers/plans/2026-08-28-r4-02-state-recovery.md) | R4-02 설계를 정본·Wiki·Mermaid에 적용하고 검증하는 작업 순서입니다. | 작업 기록 |
 
 ## 무엇부터 읽으면 되나요?
 

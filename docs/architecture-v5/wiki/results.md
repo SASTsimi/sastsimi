@@ -20,9 +20,11 @@
 - 보고서 초안과 사람 검토 상태
 - 역할/provider/model/session별 LLM invocation log
 - AST/SAST·LLM·sandbox 자원과 모든 오류
-- 상태와 artifact reference를 연결한 debug trace
+- `work_id`, attempt 이력, 상태 전이, 중복 요청과 중단 후 복구 결과
+- retry·Gate 보완·chaining·예산 제한으로 멈춘 이유
+- `COMMITTED` 상태와 artifact reference를 연결한 debug trace
 
 Proxy가 어려운 membership 호출은 raw session log → provider parser → redaction 경로를 쓴다. 사용자에게 노출된 request/response/tool trace만 기록하고 hidden chain-of-thought와 credential은 저장하지 않는다. 일반 결과에는 credential, 개인정보, 인증 헤더, 로컬 절대 경로가 없는 `AnalysisError.safe_message`만 넣는다. 꼭 필요한 원본 오류는 별도의 접근 제한·민감정보 제거 저장소에 두며 일반 결과와 분리한다. 오류는 `FALSE`와 구분한다.
 
 상세 내용은 [결과 저장과 관측성](../07-results-and-observability.md)을 따른다.
-ID 생성 주체, 상태 계층과 gap/error 차이는 [공통 ID·상태·오류](common-contracts.md)에서 쉽게 확인할 수 있다.
+ID 생성 주체, 상태 계층과 gap/error 차이는 [공통 ID·상태·오류](common-contracts.md)에서 쉽게 확인할 수 있다. 병렬 합류, 재시도, 늦은 결과와 crash-resume은 [상태·병렬 실행·재시도·복구](state-and-recovery.md)를 따른다.

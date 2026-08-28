@@ -18,6 +18,7 @@ AST와 SAST가 코드 사실을 모으면 LLM이 취약점 가능성을 제안�
 - [Primitive DB와 Research](chaining.md)
 - [Provider, session과 logging](providers-and-logging.md)
 - [공통 ID·상태·오류](common-contracts.md)
+- [상태·병렬 실행·재시도·복구](state-and-recovery.md)
 - [결과와 디버깅](results.md)
 - [Mermaid 다이어그램](diagrams.md)
 

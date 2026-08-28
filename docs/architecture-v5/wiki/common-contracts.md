@@ -10,6 +10,7 @@
 | `workspace_id` | 로컬에서 분석하는 코드 폴더 번호 | Repository Loader |
 | `commit_id` | 분석한 Git commit | Repository Loader가 checkout 뒤 확인 |
 | `hypothesis_id` | 검증할 취약점 가설 번호 | proposal 검증을 통과시킨 runtime |
+| `work_id` | 같은 논리 작업을 처음부터 끝까지 묶는 번호 | Orchestration runtime |
 | `attempt_id` | 재시도 가능한 작업 한 번의 번호 | 작업을 시작하는 runtime |
 | `llm_call_id` | LLM 호출 한 번의 번호 | Agent Runtime |
 | `record_id` | 저장한 결과 한 개의 번호 | 결과를 저장하는 runtime |
@@ -22,7 +23,7 @@ clone 전에는 아직 `workspace_id`나 `commit_id`가 없을 수 있습니다.
 
 `CodeWorkspace`는 준비 중 `PREPARING`, 분석 가능하면 `READY`, 준비 실패 시 `FAILED`, 로컬 폴더 정리 뒤 `REMOVED`입니다. 정적 분석은 `READY`에서만 시작합니다.
 
-clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로 가리킵니다. 이 참조에는 `analysis_id`만 필요합니다. 코드 근거·PoC·보고서 자료는 반드시 `workspace_id + commit_id`가 있는 `StoredDataRef`를 사용합니다. raw 결과나 코드 조각은 `record_id: null`, 저장된 결과의 정확한 수정본을 가리킬 때는 그 수정본의 `record_id`를 넣습니다.
+clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로 가리킵니다. 이 참조에는 `analysis_id`가 필요합니다. raw 실행 자료는 `record_id: null`, `RunMeta`를 가진 저장 결과의 정확한 수정본을 가리킬 때는 그 `record_id`를 넣습니다. 코드 근거·PoC·보고서 자료는 반드시 `workspace_id + commit_id`가 있는 `StoredDataRef`를 사용합니다. raw 결과나 코드 조각은 `record_id: null`, 저장된 결과의 정확한 수정본을 가리킬 때는 그 수정본의 `record_id`를 넣습니다.
 
 ## 가설끼리는 어떻게 연결하나요?
 
@@ -47,6 +48,7 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 | 구분 | 예시 | 취약점 판정인가요? |
 |---|---|---|
 | 전체 분석 상태 | `COMPLETE`, `PARTIAL`, `FAILED` | 아니요 |
+| 공통 실행 작업 상태 | `PENDING`, `READY`, `RUNNING`, `BLOCKED`, `SUCCEEDED`, `PARTIAL`, `FAILED`, `CANCELLED` | 아니요 |
 | proposal 검증 상태 | `PROPOSED`, `SCHEMA_VALID`, `INVALID_OUTPUT` | 아니요. 아직 가설 번호가 없을 수 있음 |
 | 등록된 가설 처리 상태 | `REGISTERED`, `ASSIGNED`, `VERIFYING`, `TERMINAL` | 아니요 |
 | 기술 판정 | `TRUE`, `FALSE`, `HOLD` | 예 |
@@ -103,4 +105,4 @@ Technical Gate는 `verification_result_ref.record_id`와 `cwe_label_ref.record_i
 
 ## 현재 검토 상태
 
-계약 문서는 작성됐지만 R2·R6·R7·R3 담당자의 실제 교차 검토 기록이 남아야 Issue #13과 H-002를 완료할 수 있습니다. 그 전까지는 `IN_PROGRESS`입니다.
+R4-01의 공통 ID·상태·오류 계약은 PR #18 병합과 Issue #13 완료 처리로 기준 초안에 반영되었습니다. R4-02는 이 계약을 사용해 병렬 실행·중복 방지·재시도와 복구 의미를 추가합니다. 자세한 쉬운 설명은 [상태·병렬 실행·재시도·복구](state-and-recovery.md)를 확인하세요.
