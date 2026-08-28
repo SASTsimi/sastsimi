@@ -271,6 +271,6 @@ PR #18의 최신 R3 리뷰가 지적한 네 계약 결함과 R4-02 연결 조건
 - [x] `af66100` — 일반 retry와 provider/model failover의 바로 앞 실패 호출 reference, 순서·비순환 검사와 오류 code 추가
 - [x] 실제 Issue #14에 상태/결과 일부 저장 복구, `TERMINAL/DRAFTED` 결과 `record_id`, 오래되거나 취소된 결과 거절 완료 조건 추가
 - [x] 전체 Markdown·Mermaid·계약 불변조건 검사를 다시 통과
-- [ ] Draft PR #18에 수정 커밋을 push하고 원격 head를 확인
+- [x] Draft PR #18에 수정 커밋을 push하고 원격 head를 확인
 
 R3 의견을 반영했지만 최신 SHA에 대한 재검토가 끝나기 전에는 H-002와 PR #18을 완료 처리하지 않는다.
