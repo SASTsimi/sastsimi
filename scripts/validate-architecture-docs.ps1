@@ -238,6 +238,56 @@ foreach ($actionType in $requiredActionTypes) {
     }
 }
 
+$requiredActionCheckBindings = [ordered]@{
+    REGISTER_WORK = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET'
+    CHANGE_WORK_STATE = 'SCHEMA, AUTHORITY, IDENTITY, STATE'
+    START_ATTEMPT = 'SCHEMA, AUTHORITY, STATE, BUDGET'
+    CANCEL_WORK = 'SCHEMA, AUTHORITY, IDENTITY, STATE'
+    READ_CODE = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, BUDGET, FILE_PATH'
+    RUN_TOOL = 'SCHEMA, AUTHORITY, REVISION, BUDGET, TOOL, FILE_PATH'
+    CALL_LLM = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, REDACTION'
+    FETCH_POLICY = 'SCHEMA, AUTHORITY, BUDGET, TOOL, REDACTION'
+    RUN_SANDBOX = 'SCHEMA, AUTHORITY, REVISION, STATE, BUDGET, TOOL, FILE_PATH, SANDBOX'
+    SAVE_RESULT = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION'
+    CALL_TECHNICAL_GATE = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, GATE_ORDER'
+    CALL_RULE_SCOPE_GATE = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, GATE_ORDER'
+    CREATE_REPORT_DRAFT = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, REPORT_READY, REDACTION'
+    PREPARE_HUMAN_REVIEW = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION'
+    SAVE_HUMAN_DECISION = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, REDACTION'
+    EXTERNAL_DISCLOSURE = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, DISCLOSURE, REDACTION'
+}
+foreach ($binding in $requiredActionCheckBindings.GetEnumerator()) {
+    $rowPattern = '(?m)^\| `' + [regex]::Escape($binding.Key) + '`\s*\|\s*' + [regex]::Escape($binding.Value) + '\s*\|'
+    if (-not [regex]::IsMatch($contractText, $rowPattern)) {
+        Add-Failure "wrong R4-03 required checks for action: $($binding.Key)"
+    }
+}
+
+$requiredActionRequesterBindings = [ordered]@{
+    REGISTER_WORK = 'ORCHESTRATION, RECOVERY'
+    CHANGE_WORK_STATE = 'ORCHESTRATION, RECOVERY'
+    START_ATTEMPT = 'ORCHESTRATION, RECOVERY'
+    CANCEL_WORK = 'ORCHESTRATION, RECOVERY, HUMAN_REVIEWER'
+    READ_CODE = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, RESEARCH, TECHNICAL_GATE'
+    RUN_TOOL = 'REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR'
+    CALL_LLM = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, RESEARCH, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER'
+    FETCH_POLICY = 'POLICY_COLLECTOR'
+    RUN_SANDBOX = 'VERIFICATION'
+    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, RESEARCH, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, SANDBOX, RECOVERY'
+    CALL_TECHNICAL_GATE = 'ORCHESTRATION'
+    CALL_RULE_SCOPE_GATE = 'ORCHESTRATION'
+    CREATE_REPORT_DRAFT = 'ORCHESTRATION'
+    PREPARE_HUMAN_REVIEW = 'ORCHESTRATION'
+    SAVE_HUMAN_DECISION = 'HUMAN_REVIEWER'
+    EXTERNAL_DISCLOSURE = 'HUMAN_REVIEWER'
+}
+foreach ($binding in $requiredActionRequesterBindings.GetEnumerator()) {
+    $rowPattern = '(?m)^\| `' + [regex]::Escape($binding.Key) + '`\s*\|\s*' + [regex]::Escape($binding.Value) + '\s*\|\s*$'
+    if (-not [regex]::IsMatch($contractText, $rowPattern)) {
+        Add-Failure "wrong R4-03 requester authority for action: $($binding.Key)"
+    }
+}
+
 $requiredActionChecks = @(
     'SCHEMA',
     'AUTHORITY',
@@ -259,6 +309,26 @@ $actionCheckBlock = [regex]::Match($contractText, '(?ms)^ActionCheck:\s*(.*?)^Ac
 foreach ($check in $requiredActionChecks) {
     if (-not $actionCheckBlock.Contains($check)) {
         Add-Failure "missing R4-03 ActionCheck: $check"
+    }
+}
+
+$actionDecisionBlock = [regex]::Match($contractText, '(?ms)^ActionDecision:\s*(.*?)^```').Groups[1].Value
+$requiredActionDecisionFields = @('action_ref:', 'required_checks:', 'check_results:', 'checked_state_version:', 'checked_config_refs:', 'valid_until:', 'use_status:', 'used_at:', 'expired_at:', 'expire_reason:', 'outcome_refs:')
+foreach ($field in $requiredActionDecisionFields) {
+    if (-not $actionDecisionBlock.Contains($field)) {
+        Add-Failure "missing R4-03 ActionDecision field: $field"
+    }
+}
+
+$humanPacketBlock = [regex]::Match($contractText, '(?ms)^HumanReviewPacket:\s*(.*?)^HumanReviewDecision:').Groups[1].Value
+$analysisRunResultBlock = [regex]::Match($contractText, '(?ms)^AnalysisRunResult:\s*(.*?)^```').Groups[1].Value
+$requiredSharedReviewFields = @('finding_refs:', 'verification_refs:', 'cwe_label_refs:', 'technical_review_refs:', 'rule_scope_review_refs:', 'policy_record_refs:', 'dynamic_result_refs:', 'poc_refs:', 'report_draft_refs:', 'llm_invocation_log_refs:', 'action_decision_refs:', 'work_state_refs:', 'work_attempt_refs:', 'transition_commit_refs:', 'debug_trace_ref:')
+foreach ($field in $requiredSharedReviewFields) {
+    if (-not $humanPacketBlock.Contains($field)) {
+        Add-Failure "missing HumanReviewPacket field: $field"
+    }
+    if (-not $analysisRunResultBlock.Contains($field)) {
+        Add-Failure "missing AnalysisRunResult review field: $field"
     }
 }
 
@@ -346,7 +416,10 @@ Write-Output "R4-02 required error codes: $($requiredErrorCodes.Count)"
 Write-Output "R4-02 negative scenarios: $($negativeScenarioMarkers.Count)"
 Write-Output "R4-03 required contract names: $($requiredR403ContractNames.Count)"
 Write-Output "R4-03 action types: $($requiredActionTypes.Count)"
+Write-Output "R4-03 exact action check bindings: $($requiredActionCheckBindings.Count)"
+Write-Output "R4-03 exact requester bindings: $($requiredActionRequesterBindings.Count)"
 Write-Output "R4-03 ActionCheck types: $($requiredActionChecks.Count)"
+Write-Output "R4-03 shared human review fields: $($requiredSharedReviewFields.Count)"
 Write-Output "R4-03 authority errors: $($requiredAuthorityErrors.Count)"
 Write-Output "R4-03 authority scenarios: $($authorityScenarioMarkers.Count)"
 Write-Output "R4-03 authority rules: $($requiredAuthorityRules.Count)"
