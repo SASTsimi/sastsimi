@@ -51,7 +51,6 @@ CWE 후보는 final verdict 뒤에 작성한다. primary·alternative CWE, taxon
 ```yaml
 technical_evidence_review:
   action_decision_ref: StoredDataRef
-  llm_invocation_log_ref: StoredDataRef
   verification_result_ref:
     stored_data_id: data-verification-001
     data_kind: verification_result
@@ -112,7 +111,6 @@ technical_evidence_review:
 ```yaml
 rule_scope_impact_review:
   action_decision_ref: StoredDataRef
-  llm_invocation_log_ref: StoredDataRef
   verification_result_ref: StoredDataRef
   technical_review_ref: StoredDataRef
   cwe_label_ref: StoredDataRef

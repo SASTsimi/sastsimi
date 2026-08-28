@@ -414,6 +414,8 @@ action type별 `required_checks`는 아래 표와 정확히 같아야 한다. `c
 
 실행 runtime은 부작용 직전에 현재 시각이 `valid_until`을 넘지 않았는지, requester identity와 권한이 아직 유효한지, 현재 state version·남은 budget·exact input refs·checked config refs가 아직 같은지 다시 확인한다. 하나라도 달라졌으면 compare-and-set으로 `UNUSED -> EXPIRED` revision을 만들고 `expired_at`, `expire_reason`을 기록한 뒤 실행하지 않는다. 모두 같으면 compare-and-set으로 `UNUSED -> USED`로 바꾼다. claim revision에는 새 `record_id`와 `used_at`을 기록하고 `outcome_refs`는 아직 비어 있을 수 있다. 실행 결과가 생기면 `USED`를 유지한 다음 revision에 exact outcome refs를 추가한다. `USED`, `NOT_USED`, `EXPIRED`는 되돌리지 않는다. 따라서 `ALLOW`는 같은 `action_id`, action `record_id`, state version, 입력·설정 revision에서 한 번만 사용할 수 있고 retry·다른 action·새 revision에 재사용하지 않는다. claim 뒤 실행이 시작되지 않았거나 outcome 저장 전에 중단되면 오류를 남기고 새 action을 요청하며 기존 결정을 다시 쓰지 않는다.
 
+action이 만든 output의 `action_decision_ref.record_id`는 `UNUSED -> USED`를 처음 claim했고 아직 `outcome_refs`가 비어 있는 revision을 가리킨다. output이 저장된 뒤 만드는 다음 decision revision만 log와 output refs를 append한다. output은 그 후속 decision revision을 역참조하지 않는다. 이 단방향 순서로 content hash 순환을 막는다.
+
 | `action_type` | `required_checks` | 핵심 조건 |
 |---|---|---|
 | `REGISTER_WORK` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET | 같은 `dedupe_key`면 기존 work 반환 |
@@ -941,7 +943,6 @@ DynamicReproductionResult:
 TechnicalEvidenceReview:
   meta: RecordMeta
   action_decision_ref: StoredDataRef
-  llm_invocation_log_ref: StoredDataRef
   verification_result_ref: StoredDataRef
   cwe_label_ref: StoredDataRef
   status: ACCEPT | REVISE | REJECT
@@ -956,7 +957,7 @@ TechnicalEvidenceReview:
   rationale: string
 ```
 
-`action_decision_ref.record_id`는 `CALL_TECHNICAL_GATE`를 허가하고 `USED`로 claim한 decision을 가리킨다. `llm_invocation_log_ref`는 그 decision과 같은 call spec을 실행한 `TECHNICAL_GATE` invocation이며 `parsed_output_ref.record_id`는 현재 review를 가리킨다. `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 필수이며 각각 정확히 한 `VerificationResult`와 `CWELabel` revision을 가리킨다. runtime은 두 대상의 `record_id`, `workspace_id`, `commit_id`, `hypothesis_id`와 `content_hash`가 서로와 현재 Technical review에 일치하는지 확인한다. Verification 또는 CWELabel이 새 revision으로 바뀌면 이전 `TechnicalEvidenceReview`를 재사용할 수 없고 Gate를 새로 호출해야 한다. Technical review는 `VerificationResult.verdict`나 `CWELabel`을 덮어쓰지 않는다.
+`action_decision_ref.record_id`는 `CALL_TECHNICAL_GATE`를 허가하고 `USED`로 claim한 decision revision을 가리킨다. 실행 결과를 기록한 이후 decision revision의 `outcome_refs`에는 같은 call spec을 실행한 `TECHNICAL_GATE` `LLMInvocationLog`와 현재 review가 각각 한 번 포함되고, log의 `parsed_output_ref.record_id`가 현재 review를 가리켜야 한다. review는 log를 역참조하지 않아 content hash 순환을 만들지 않는다. `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 필수이며 각각 정확히 한 `VerificationResult`와 `CWELabel` revision을 가리킨다. runtime은 두 대상의 `record_id`, `workspace_id`, `commit_id`, `hypothesis_id`와 `content_hash`가 서로와 현재 Technical review에 일치하는지 확인한다. Verification 또는 CWELabel이 새 revision으로 바뀌면 이전 `TechnicalEvidenceReview`를 재사용할 수 없고 Gate를 새로 호출해야 한다. Technical review는 `VerificationResult.verdict`나 `CWELabel`을 덮어쓰지 않는다.
 
 ## 9. ProgramPolicyRecord과 RuleScopeImpactReview
 
@@ -999,7 +1000,6 @@ ProgramPolicyRecord:
 RuleScopeImpactReview:
   meta: RecordMeta
   action_decision_ref: StoredDataRef
-  llm_invocation_log_ref: StoredDataRef
   verification_result_ref: StoredDataRef
   technical_review_ref: StoredDataRef
   cwe_label_ref: StoredDataRef
@@ -1013,7 +1013,7 @@ RuleScopeImpactReview:
   missing_information: [string]
 ```
 
-`action_decision_ref.record_id`는 `CALL_RULE_SCOPE_GATE`를 허가하고 `USED`로 claim한 decision을 가리킨다. `llm_invocation_log_ref`는 그 decision과 같은 call spec을 실행한 `RULE_SCOPE_GATE` invocation이며 `parsed_output_ref.record_id`는 현재 review를 가리킨다. `verification_result_ref.record_id`, `technical_review_ref.record_id`와 `cwe_label_ref.record_id`는 필수다. `technical_review_ref` 대상은 `status=ACCEPT`이고, 그 대상의 Verification과 CWE reference `record_id`는 Rule Scope review가 직접 가리키는 두 `record_id`와 각각 같아야 한다. runtime은 각 reference의 `workspace_id`, `commit_id`, `content_hash`가 실제 대상 record와 일치하고, Verification·CWELabel·Technical 대상 `RecordMeta.hypothesis_id`가 현재 Rule Scope review의 가설과 같은지 확인한다. `policy_record_ref`가 있으면 그 `record_id`도 필수이며 실제 `ProgramPolicyRecord`와 일치해야 한다. 어느 입력 revision이든 바뀌면 이전 Rule Scope review를 재사용하지 않는다.
+`action_decision_ref.record_id`는 `CALL_RULE_SCOPE_GATE`를 허가하고 `USED`로 claim한 decision revision을 가리킨다. 이후 decision revision의 `outcome_refs`에는 같은 call spec을 실행한 `RULE_SCOPE_GATE` log와 현재 review가 각각 한 번 포함되고, log의 `parsed_output_ref.record_id`가 현재 review를 가리켜야 한다. review는 log를 역참조하지 않는다. `verification_result_ref.record_id`, `technical_review_ref.record_id`와 `cwe_label_ref.record_id`는 필수다. `technical_review_ref` 대상은 `status=ACCEPT`이고, 그 대상의 Verification과 CWE reference `record_id`는 Rule Scope review가 직접 가리키는 두 `record_id`와 각각 같아야 한다. runtime은 각 reference의 `workspace_id`, `commit_id`, `content_hash`가 실제 대상 record와 일치하고, Verification·CWELabel·Technical 대상 `RecordMeta.hypothesis_id`가 현재 Rule Scope review의 가설과 같은지 확인한다. `policy_record_ref`가 있으면 그 `record_id`도 필수이며 실제 `ProgramPolicyRecord`와 일치해야 한다. 어느 입력 revision이든 바뀌면 이전 Rule Scope review를 재사용하지 않는다.
 
 공식 `ProgramPolicyRecord`가 없으면 `policy_record_ref=null`이다. 정책 record가 없거나 핵심 출처가 누락되면 `rule_compliance`, `scope_compliance`, `review_status`는 `UNCERTAIN`, permission은 `DENY`다. 불완전한 정책 record 자체가 있으면 그 reference는 보존하고 `missing_information`에 누락 내용을 기록한다. 이 불변조건을 만족하지 않는 출력은 invalid다.
 
@@ -1111,7 +1111,7 @@ LLMInvocationLog:
   redaction_result: APPLIED | NOT_REQUIRED | FAILED
 ```
 
-`LLMInvocationLog.action_decision_ref`와 `call_spec_ref`는 request와 같아야 한다. log의 role·profile·model·session·prompt template·context는 request와 spec에서 바뀌지 않으며 실제 adapter가 선택한 값과 차이가 있으면 호출을 실패 처리한다. Gate와 Reporter output의 `llm_invocation_log_ref`는 이 log를 가리키고 log의 `parsed_output_ref.record_id`는 exact Gate review 또는 ReportDraft revision을 가리킨다. stage action decision의 `outcome_refs`에는 invocation log와 그 final output을 모두 포함한다.
+`LLMInvocationLog.action_decision_ref`와 `call_spec_ref`는 request와 같아야 한다. log의 role·profile·model·session·prompt template·context는 request와 spec에서 바뀌지 않으며 실제 adapter가 선택한 값과 차이가 있으면 호출을 실패 처리한다. log의 `parsed_output_ref.record_id`는 exact Gate review 또는 ReportDraft revision을 가리킨다. output은 log를 역참조하지 않는다. stage action decision의 후속 revision `outcome_refs`에 log와 final output을 각각 한 번 포함해 두 record를 같은 실행에 연결한다.
 
 새로운 독립 호출은 `retry_count=0`이고 두 선행 호출 reference가 모두 `null`이다. 같은 provider/model에서 일반 retry를 실행하면 `retry_of_llm_call_id`가 바로 앞의 허용된 실패 호출을 가리키고 `failover_from_llm_call_id=null`이다. provider 또는 model을 바꾸는 failover이면 반대로 `failover_from_llm_call_id`만 바로 앞의 허용된 실패 호출을 가리킨다. 두 필드는 동시에 값을 가질 수 없다.
 
@@ -1129,7 +1129,6 @@ hidden chain-of-thought와 credential은 이 계약의 대상이 아니며 저�
 ReportDraft:
   meta: RecordMeta
   action_decision_ref: StoredDataRef
-  llm_invocation_log_ref: StoredDataRef
   verification_result_ref: StoredDataRef
   technical_review_ref: StoredDataRef
   rule_scope_impact_review_ref: StoredDataRef
@@ -1139,7 +1138,7 @@ ReportDraft:
   draft_status: DRAFTED
 ```
 
-`action_decision_ref.record_id`는 `CREATE_REPORT_DRAFT` action의 report 조건, exact LLM call spec과 redaction을 모두 통과한 `USED` decision revision을 가리킨다. `llm_invocation_log_ref`는 그 decision과 같은 call spec을 실행한 `REPORTER` invocation이며 `parsed_output_ref.record_id`는 현재 draft를 가리킨다. `verification_result_ref`, `technical_review_ref`, `rule_scope_impact_review_ref`, `cwe_label_ref`와 `policy_record_ref`는 저장된 record를 가리므로 각 `StoredDataRef.record_id`가 필수다. Reporter runtime은 다음 연결을 모두 확인하고 하나라도 다르면 초안을 만들지 않는다.
+`action_decision_ref.record_id`는 `CREATE_REPORT_DRAFT` action의 report 조건, exact LLM call spec과 redaction을 모두 통과한 `USED` decision revision을 가리킨다. 이후 decision revision의 `outcome_refs`에는 같은 call spec을 실행한 `REPORTER` log와 현재 draft가 각각 한 번 포함되고, log의 `parsed_output_ref.record_id`가 현재 draft를 가리켜야 한다. draft는 log를 역참조하지 않는다. `verification_result_ref`, `technical_review_ref`, `rule_scope_impact_review_ref`, `cwe_label_ref`와 `policy_record_ref`는 저장된 record를 가리므로 각 `StoredDataRef.record_id`가 필수다. Reporter runtime은 다음 연결을 모두 확인하고 하나라도 다르면 초안을 만들지 않는다.
 
 - Technical review와 Rule Scope review가 모두 ReportDraft의 같은 Verification `record_id`를 가리킨다.
 - Rule Scope review의 `technical_review_ref.record_id`가 ReportDraft의 `technical_review_ref.record_id`와 같다.

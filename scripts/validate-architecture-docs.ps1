@@ -338,6 +338,24 @@ foreach ($block in @($llmSpecBlock, $llmRequestBlock)) {
 if (-not $llmRequestBlock.Contains('call_spec_ref:')) {
     Add-Failure 'LLMInvocationRequest missing call_spec_ref'
 }
+$llmLogBlock = [regex]::Match($contractText, '(?ms)^LLMInvocationLog:\s*(.*?)^```').Groups[1].Value
+if (-not $llmLogBlock.Contains('parsed_output_ref:')) {
+    Add-Failure 'LLMInvocationLog missing parsed_output_ref'
+}
+foreach ($pair in @(
+    @{ Name = 'TechnicalEvidenceReview'; End = '## 9.' },
+    @{ Name = 'RuleScopeImpactReview'; End = '```' },
+    @{ Name = 'ReportDraft'; End = '```' }
+)) {
+    $outputPattern = '(?ms)^' + [regex]::Escape($pair.Name) + ':\s*(.*?)^' + [regex]::Escape($pair.End)
+    $outputBlock = [regex]::Match($contractText, $outputPattern).Groups[1].Value
+    if (-not $outputBlock.Contains('action_decision_ref:')) {
+        Add-Failure "$($pair.Name) missing action_decision_ref"
+    }
+    if ($outputBlock.Contains('llm_invocation_log_ref:')) {
+        Add-Failure "$($pair.Name) must not reverse-reference LLMInvocationLog"
+    }
+}
 
 $humanPacketBlock = [regex]::Match($contractText, '(?ms)^HumanReviewPacket:\s*(.*?)^HumanReviewDecision:').Groups[1].Value
 $humanDecisionBlock = [regex]::Match($contractText, '(?ms)^HumanReviewDecision:\s*(.*?)^```').Groups[1].Value
@@ -425,6 +443,8 @@ $requiredAuthorityRules = @(
     '한 `action_ref.record_id`에는 정확히 하나의 `decision_id`',
     'llm_call_spec_ref',
     'current_packet_ref',
+    'output은 log를 역참조하지 않는다',
+    '아직 `outcome_refs`가 비어 있는 revision',
     'SAVE_HUMAN_DECISION'
 )
 foreach ($rule in $requiredAuthorityRules) {
