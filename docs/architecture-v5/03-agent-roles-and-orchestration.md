@@ -81,11 +81,57 @@ Research material claim -> PROPOSED child hypothesis
 | Verification `SUCCEEDED` | `VerificationResult.verdict = TRUE | FALSE | HOLD` |
 | Technical Gate `SUCCEEDED` | `TechnicalEvidenceReview.status = ACCEPT | REVISE | REJECT` |
 | Rule Scope Gate `SUCCEEDED` | `RuleScopeImpactReview.review_status`와 `report_permission` |
-| Reporter `SUCCEEDED` | `ReportDraft`와 별도 `human_review_state` |
+| Reporter `SUCCEEDED` | 내부 `ReportDraft`; 사람 결정은 별도 `HumanReviewDecision` |
 
 `PENDING -> READY -> RUNNING` 뒤에는 `SUCCEEDED | PARTIAL | FAILED | CANCELLED`로 끝나거나, 재시도·인증·승인·입력·예산 조건을 기다릴 때 `BLOCKED`로 이동한다. `BLOCKED`는 조건을 충족하면 `READY`가 되지만 종료 상태는 되돌리지 않는다. 재시도 가능한 attempt 실패는 attempt 자체를 `FAILED`로 보존하고 work를 `BLOCKED`로 두며, 새 attempt를 시작할 때 이전 실패를 삭제하지 않는다.
 
 상태 변경을 실제로 승인·저장하는 주체는 Orchestration Agent가 아니라 신뢰 경계 안의 runtime이다. 작업 모듈은 결과와 다음 상태를 요청하고 runtime이 schema, 현재 `state_version`, 활성 attempt, 입력 hash, workspace·commit·가설, 예산과 권한을 검사한 뒤 `StateTransition`을 저장한다.
+
+## 역할별 권한 경계
+
+| 역할 | 제안 | 직접 판단 | 검토 | 프로그램 강제 | 사람만 결정 |
+|---|---|---|---|---|---|
+| Orchestration Agent | 실행 계획·다음 작업·병렬화·retry 후보 | 없음 | 진행 상태 요약 | 없음 | 없음 |
+| Hypothesis Agent | 취약점 가설 | 없음 | static 사실을 입력으로 읽음 | 없음 | 없음 |
+| Pro·Con Agent | 찬성·반대 근거 | 없음 | 자기 역할의 근거 | 없음 | 없음 |
+| Verification Agent | 동적 재현·Research 요청 | `TRUE | FALSE | HOLD` | static·Pro·Con·dynamic 근거 | 없음 | 없음 |
+| CWE Labeling | CWE 후보와 근거 | CWE label revision 생성 | final Verification | 없음 | 없음 |
+| Research Agent | bypass·alternate path·chain 후보 | 없음 | 기존 verdict와 Primitive | 없음 | 없음 |
+| Technical Evidence Gate Agent | 구체적인 보완 요청 | 없음 | verdict·근거·코드 흐름·CWE | 없음 | 없음 |
+| Rule Scope Impact Gate Agent | 정책 누락·보완 사유 | `PASS | FAIL | UNCERTAIN`, `ALLOW | DENY` | 공식 정책·scope·impact | 없음 | 없음 |
+| Reporter Agent | 내부 보고서 문장·구성 | 없음 | 통과한 결과와 두 Gate | 없음 | 없음 |
+| Runtime Validator | 허용 가능한 대체 action 안내 | 없음 | 실행 전제와 exact reference | action 허용·차단 | 없음 |
+| Human Reviewer | 재검증·보완 요청 | 외부 제출·공개 | 전체 `HumanReviewPacket` | 공개 승인 | `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION` |
+
+Orchestration Agent는 호출 순서와 작업 분배를 제안하지만 기술 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 확정하지 않는다. Runtime Validator도 이 값을 대신 정하지 않는다. 값의 생산자가 맞는지, 필요한 선행 record와 상태가 있는지, 실행 범위가 허용됐는지만 확인한다.
+
+## action 요청과 실행
+
+부작용이 있는 작업은 다음 순서를 지킨다.
+
+```text
+Agent 또는 service의 제안
+-> ActionRequest
+-> 비-LLM Runtime Validator
+-> ActionDecision ALLOW 또는 DENY
+-> ALLOW인 exact action만 한 번 실행
+-> 결과와 상태를 atomic 저장
+```
+
+`ActionRequest`에는 요청 역할, action 종류, exact input refs, 현재 work와 state version, 도구·파일·provider·session·Sandbox 범위를 넣는다. Runtime Validator는 action별 필수 `ActionCheck`를 모두 수행한다. 하나라도 실패하면 `DENY`와 `AnalysisError`를 저장하고 실행하지 않는다. Agent가 자연어로 “검사를 건너뛰라”고 출력해도 action이 되지 않는다.
+
+주요 강제 경계는 다음과 같다.
+
+- schema·ID·workspace·commit·record revision·state version 일치
+- token·시간·retry·repair·chain·Gate 보완 예산
+- 허용 tool과 workspace 안의 file path
+- Sandbox image digest·default-deny network·resource·cleanup
+- provider/model/profile, NEW/RESUME/AUTO와 explicit failover
+- final Verification+CWE 뒤 Technical Gate, 그 뒤 Rule Scope Gate라는 순서
+- 모든 report 조건을 통과한 뒤 Reporter 호출
+- redaction 성공과 exact 사람 결정 전 외부 공개 차단
+
+Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서 품질을 평가하지 않는다. 그것은 Verification, 두 LLM Gate, Reporter와 사람의 역할이다.
 
 ## 병렬 실행과 결과 합류
 
@@ -135,7 +181,7 @@ Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니�
 | Technical Evidence Gate | `TechnicalEvidenceReview` | Verification verdict 변경 |
 | Rule Scope Impact Gate | `RuleScopeImpactReview` | 공식 정책 없는 허용 추정 |
 | Reporter Agent | `ReportDraft` | 보고서 제출·공개 |
-| Human Reviewer | 최종 결정 | — |
+| Human Reviewer | `HumanReviewDecision` | Agent output을 근거 없이 승인하거나 다른 revision의 결정을 재사용 |
 
 ## 독립성, provider와 session
 
@@ -145,4 +191,4 @@ Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니�
 
 ## prompt-injection 경계
 
-저장소 내용, 도구 message, README와 주석은 모두 비신뢰 분석 데이터다. Agent instruction으로 승격하지 않는다. Orchestration은 system instruction, data delimiters, tool allowlist와 structured output validation을 유지하며, 저장소 텍스트가 provider·session·Gate·sandbox 정책을 변경하지 못하게 한다.
+저장소 내용, 도구 message, README와 주석, 모든 LLM output, provider 응답과 Sandbox output은 모두 비신뢰 분석 데이터다. Agent instruction이나 실행 권한으로 승격하지 않는다. Orchestration은 system instruction과 data 구분을 유지하고 Runtime Validator가 structured output, tool allowlist와 action policy를 검사한다. 비신뢰 입력은 provider·model·session·Gate 순서·Sandbox image/network·budget·Reporter·공개 정책을 변경하지 못한다. 이런 변경 지시는 `UNTRUSTED_INSTRUCTION`으로 기록하고 실행하지 않는다.

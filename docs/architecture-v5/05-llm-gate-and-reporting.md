@@ -18,6 +18,8 @@ v5에는 책임이 다른 두 LLM 검토 Agent가 있다.
 
 두 Gate는 점수 합산식이나 취약점 진위를 새로 판정하는 규칙 엔진이 아니다. 각자의 자료를 읽고 근거가 있는 검토 결과를 생성하는 LLM Agent이며 Verification verdict를 직접 변경할 수 없다.
 
+비-LLM Runtime Validator는 Gate의 결론을 대신 만들지 않는다. `ActionRequest`의 역할·schema·exact input revision·상태·예산과 Gate 순서만 검사한다. Technical Gate 호출에는 final Verification과 CWELabel의 `COMMITTED` revision이 필요하고, Rule Scope Gate 호출에는 같은 Verification이 `TRUE`이며 Technical review가 `ACCEPT`라는 exact reference가 필요하다. 조건이 맞지 않으면 `GATE_ORDER_INVALID`로 호출 자체를 막는다.
+
 ## CWE 라벨링
 
 CWE 후보는 final verdict 뒤에 작성한다. primary·alternative CWE, taxonomy version, 선택 이유와 evidence reference를 포함한다. `HOLD`나 `FALSE`에도 분석 기록용 후보를 남길 수 있지만 보고 가능한 취약점 라벨이라는 뜻은 아니다. 구분 근거가 부족하면 억지로 단일 CWE를 확정하지 않는다.
@@ -122,6 +124,8 @@ rule_scope_impact_review:
 
 공식 정책 자료가 없으면 최소한 `rule_compliance=UNCERTAIN`, `scope_compliance=UNCERTAIN`, `review_status=UNCERTAIN`, `report_permission=DENY`와 `missing_information`을 반환한다. impact도 검토할 근거가 부족하면 `security_impact=UNCERTAIN`이다.
 
+Runtime Validator는 공식 정책 문장을 대신 해석하지 않는다. 다만 `policy_record_ref=null`이거나 핵심 공식 source가 누락된 출력에서 `ALLOW`·`PASS`가 함께 나타나는 구조적 모순은 invalid output으로 거절한다. 제한된 repair 뒤에도 불변조건이 맞지 않으면 Rule Scope Gate work를 실패 처리하고 Reporter를 차단한다. 이 오류는 Verification verdict를 바꾸지 않는다.
+
 `verification_result_ref`, `technical_review_ref`, `cwe_label_ref`와 존재하는 `policy_record_ref`에는 정확한 저장 revision의 `record_id`가 필요하다. runtime은 Technical review가 `ACCEPT`이고, Technical review와 Rule Scope review가 같은 Verification과 CWELabel `record_id`를 각각 가리키는지 확인한다. 각 reference의 `workspace_id`, `commit_id`, `content_hash`는 대상 record와 일치해야 하며, Verification·CWELabel·Technical 대상의 `meta.hypothesis_id`는 Rule Scope review의 가설과 같아야 한다. 정책이 있으면 Rule Scope review가 가리킨 정책 record와 Reporter가 사용할 정책 record도 같아야 한다. 입력 revision이 하나라도 달라지면 기존 Rule Scope 결과를 재사용하지 않는다.
 
 ## Reporter 호출 조건
@@ -139,6 +143,8 @@ AND report_permission == ALLOW
 ```
 
 조건이 하나라도 충족되지 않거나 Gate reference 연결이 맞지 않으면 결과와 검토 사유는 저장하지만 Reporter를 호출하지 않는다. LLM이 모순되는 `ALLOW`를 출력하면 schema/semantic validation 오류로 처리한다. 이는 취약점 판정 규칙이 아니라 권한 없는 보고 생성을 막는 호출 전제다.
+
+Reporter 호출도 `CREATE_REPORT_DRAFT` `ActionRequest`로 요청한다. Runtime Validator는 위 일곱 조건, exact `record_id`·hash·workspace·commit·hypothesis, current state version과 redaction 전제를 `REPORT_READY` check로 확인한다. 하나라도 맞지 않으면 `REPORT_NOT_READY`로 차단한다. Reporter Agent의 자연어 요청이나 Orchestration Agent의 일정 판단만으로 이 check를 건너뛸 수 없다.
 
 ## Reporter Agent
 
@@ -158,4 +164,17 @@ Reporter는 새로운 공격 경로를 확정하거나 미검증 Research 후보
 
 ## 사람의 최종 결정
 
-자동 산출물은 내부 `FindingCandidate`와 `ReportDraft`다. 사람은 원문 근거, 두 Gate, 공식 `ProgramPolicyRecord`, PoC, 오류와 자원 제한을 함께 검토해 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`을 결정한다. 어떤 Agent도 외부 제출·공개 권한을 갖지 않는다.
+자동 산출물은 내부 `FindingCandidate`와 `ReportDraft`다. 사람에게는 별도 `HumanReviewPacket`을 전달한다.
+
+packet에는 다음을 빠뜨리지 않는다.
+
+- exact `AnalysisRunResult`, Finding 후보와 final Verification
+- Technical·Rule Scope Gate와 CWE·공식 정책 reference
+- dynamic reproduction과 redacted PoC
+- ReportDraft 또는 보고서가 차단된 구체적인 이유
+- token·시간·Sandbox 등 자원 사용량
+- 모든 실행 오류·DataGap·남은 HOLD 조건
+
+사람은 이 packet의 정확한 revision을 읽고 별도 `HumanReviewDecision`에 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`을 기록한다. 결정 저장은 인증된 사람 identity와 exact packet을 확인하는 `SAVE_HUMAN_DECISION` action을 거친다. `ReportDraft` 안의 field를 바꾸거나 LLM output을 사람 결정으로 저장하지 않는다.
+
+시스템의 외부 disclosure action은 Human Reviewer가 만든 exact `HumanReviewDecision=DISCLOSE`, `report_ready=true`인 packet, packet 안의 `approved_report_refs`와 명시된 `disclosure_targets`가 있을 때만 허용한다. Agent·Gate·Reporter가 만든 결정, 승인 목록 밖 report, 다른 packet이나 수정 전 revision의 결정은 `DISCLOSURE_DENIED`다. 어떤 Agent도 외부 제출·공개 권한을 갖지 않으며 실제 자동 제출 integration은 이 설계 범위 밖이다.

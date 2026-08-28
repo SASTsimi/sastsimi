@@ -85,6 +85,7 @@ Orchestration Agent는 분석 계획과 다음 작업을 제안·조정하지만
 | Technical Evidence Gate | 기술적 연결성과 handoff 품질 검토 | Verification verdict 직접 변경 |
 | Rule Scope Impact Gate | 공식 정책·scope·실질 impact·전달 권한 검토 | 공식 자료 없는 추정 승인 |
 | Reporter Agent | 통과한 결과의 보고서 초안 작성 | 공개 또는 제출 |
+| Runtime Validator | action의 schema·권한·순서·예산·실행 범위 검사 | 취약점·CWE·정책 의미 판단 |
 | Result Stores | 결과·로그·PoC·오류·debug 저장 | secret와 불필요한 전체 코드 저장 |
 | Human Reviewer | 최종 수정·보류·공개 결정 | — |
 
@@ -96,9 +97,11 @@ Orchestration Agent는 분석 계획과 다음 작업을 제안·조정하지만
 - impact: `SUFFICIENT | INSUFFICIENT | UNCERTAIN`
 - report permission: `ALLOW | DENY`
 - 보고서 생성: `ReportProcessState.status = NOT_REQUESTED | DRAFTED | FAILED`
-- 사람 검토: `ReportDraft.human_review_state = PENDING | APPROVED | REJECTED`
+- 사람 검토: `HumanReviewDecision.decision = DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`
 
 한 축의 값으로 다른 축을 암묵적으로 추론하지 않는다. 예를 들어 기술적으로 `TRUE`여도 out-of-scope이거나 실질 영향이 부족하면 Reporter를 호출하지 않는다.
+
+Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제안한다. 비-LLM Runtime Validator가 역할·schema·exact revision·상태·예산·도구·Sandbox·provider·두 Gate 순서·보고·공개 조건을 검사해 `ActionDecision=ALLOW | DENY`를 저장한다. 이 검사는 취약점 판정이나 정책 해석을 대신하지 않는다.
 
 ## 병렬성과 종료 조건
 
