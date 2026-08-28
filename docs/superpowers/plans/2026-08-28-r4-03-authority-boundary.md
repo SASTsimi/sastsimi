@@ -133,8 +133,21 @@
 - 독립 1차 검토의 Critical 2개·Important 3개와 2차 검토의 Critical 1개를 모두 수정
 - 최종 독립 재검토 결과 Critical 0, Important 0, Minor 0
 
-- [ ] **Step 6: branch push와 PR 생성**
+- [x] **Step 6: branch push와 PR 생성**
 
 PR은 `review/r4-02-state-recovery`를 base로 시작하고 `Closes #15`, `Refs #5`, R4-02 PR 의존성을 기록한다.
 
-- [ ] **Step 7: 원격 PR head·파일·diff·checks 재검증**
+- PR: [#27](https://github.com/SASTsimi/sastsimi/pull/27)
+- Base: `review/r4-02-state-recovery`
+- Head: `review/r4-03-authority-boundary`
+- 실제 GitHub 교차 검토 요청: `kimhr8463`, `Potatonion`, `gitterable`, `UltraPeachKeen`
+- `v1sion`은 저장소 collaborator가 아니어서 GitHub review request API가 HTTP 422로 거부했다. 권한이 추가되면 다시 요청한다.
+
+- [x] **Step 7: 원격 PR head·파일·diff·checks 재검증**
+
+원격 확인 기록:
+
+- 상태 `OPEN`, merge 상태 `CLEAN`, `MERGEABLE`
+- 원격 head SHA가 로컬 commit과 일치
+- stacked diff는 R4-03 관련 26개 파일
+- GitHub에 등록된 자동 check는 없음
