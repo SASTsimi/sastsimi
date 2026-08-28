@@ -61,7 +61,7 @@ R2 교차 검토에 따라 정적 결과는 `CodeFact`, `CodeRelation`, `ToolRun
 
 실행 자료 참조도 분리한다. `RunStoredDataRef`는 `analysis_id`로 입력 검증, clone·checkout 오류와 전체 debug trace를 가리키며 commit이 없어도 된다. `StoredDataRef`는 `workspace_id + commit_id`가 있는 코드 근거·PoC·보고서용 자료만 가리킨다. `RunStoredDataRef`를 코드 주장 근거로 사용할 수 없다.
 
-저장된 record revision을 가리키는 `StoredDataRef`는 전역 `record_id`를 포함한다. raw 도구 결과나 코드 조각처럼 독립 artifact이면 `record_id=null`이다. Technical Gate의 `verification_result_ref.record_id`는 필수이며 Gate가 읽은 정확한 `VerificationResult` revision을 고정한다. Verification이 수정되면 이전 Gate 결과를 재사용하지 않는다.
+저장된 record revision을 가리키는 `StoredDataRef`는 전역 `record_id`를 포함한다. raw 도구 결과나 코드 조각처럼 독립 artifact이면 `record_id=null`이다. Technical Gate의 `verification_result_ref.record_id`는 필수이며 Gate가 읽은 정확한 `VerificationResult` revision을 고정한다. Rule Scope Gate도 `verification_result_ref`, `technical_review_ref`와 nullable `policy_record_ref`로 자신이 읽은 입력 revision을 고정한다. 입력 revision이 수정되면 이전 Gate 결과를 재사용하지 않고, Reporter는 자신이 참조한 네 결과와 두 Gate 내부 참조가 모두 같은 revision chain인지 확인한다.
 
 ## 4. 가설 관계 결정
 

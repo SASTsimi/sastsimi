@@ -628,6 +628,8 @@ ProgramPolicyRecord:
 ```yaml
 RuleScopeImpactReview:
   meta: RecordMeta
+  verification_result_ref: StoredDataRef
+  technical_review_ref: StoredDataRef
   policy_record_ref: StoredDataRef | null
   review_status: PASS | FAIL | UNCERTAIN
   rule_compliance: PASS | FAIL | UNCERTAIN
@@ -638,7 +640,9 @@ RuleScopeImpactReview:
   missing_information: [string]
 ```
 
-공식 `ProgramPolicyRecord`가 없거나 핵심 출처가 누락되면 `rule_compliance`, `scope_compliance`, `review_status`는 `UNCERTAIN`, permission은 `DENY`다. 이 불변조건을 만족하지 않는 출력은 invalid다.
+`verification_result_ref.record_id`와 `technical_review_ref.record_id`는 필수다. `technical_review_ref` 대상은 `status=ACCEPT`이고, 그 대상의 `verification_result_ref.record_id`는 Rule Scope review의 `verification_result_ref.record_id`와 같아야 한다. runtime은 두 참조의 `workspace_id`, `commit_id`, `hypothesis_id`가 현재 Rule Scope review와 같고 각 `content_hash`가 실제 대상 record와 일치하는지 확인한다. `policy_record_ref`가 있으면 그 `record_id`도 필수이며 실제 `ProgramPolicyRecord`와 일치해야 한다. 어느 입력 revision이든 바뀌면 이전 Rule Scope review를 재사용하지 않는다.
+
+공식 `ProgramPolicyRecord`가 없으면 `policy_record_ref=null`이다. 정책 record가 없거나 핵심 출처가 누락되면 `rule_compliance`, `scope_compliance`, `review_status`는 `UNCERTAIN`, permission은 `DENY`다. 불완전한 정책 record 자체가 있으면 그 reference는 보존하고 `missing_information`에 누락 내용을 기록한다. 이 불변조건을 만족하지 않는 출력은 invalid다.
 
 ## 10. LLM invocation records
 
@@ -729,7 +733,12 @@ ReportDraft:
   human_review_state: PENDING | APPROVED | REJECTED
 ```
 
-`verification_result_ref`, `technical_review_ref`, `rule_scope_impact_review_ref`와 `policy_record_ref`는 저장된 record를 가리키므로 각 `StoredDataRef.record_id`가 필수다. Reporter runtime은 Technical review가 가리킨 Verification `record_id`와 ReportDraft의 `verification_result_ref.record_id`가 같은지 확인한다.
+`verification_result_ref`, `technical_review_ref`, `rule_scope_impact_review_ref`와 `policy_record_ref`는 저장된 record를 가리키므로 각 `StoredDataRef.record_id`가 필수다. Reporter runtime은 다음 연결을 모두 확인하고 하나라도 다르면 초안을 만들지 않는다.
+
+- Technical review와 Rule Scope review가 모두 ReportDraft의 같은 Verification `record_id`를 가리킨다.
+- Rule Scope review의 `technical_review_ref.record_id`가 ReportDraft의 `technical_review_ref.record_id`와 같다.
+- Rule Scope review의 `policy_record_ref.record_id`가 ReportDraft의 `policy_record_ref.record_id`와 같다.
+- 각 참조의 `workspace_id`, `commit_id`, `hypothesis_id`와 `content_hash`가 실제 대상 record와 일치한다.
 
 ```yaml
 AnalysisRunResult:

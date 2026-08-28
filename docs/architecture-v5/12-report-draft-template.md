@@ -160,6 +160,9 @@ Verification TRUE
 
 ### Rule Scope Impact Gate
 
+- 검토한 Verification revision: `{verification_result_ref.record_id}`
+- 검토한 Technical review revision: `{technical_review_ref.record_id}`
+- 검토한 정책 revision: `{policy_record_ref.record_id}`
 - overall/rule/scope: `PASS / PASS / PASS`
 - impact: `SUFFICIENT`
 - 정책 근거와 판단 이유: `{policy refs and rationale}`

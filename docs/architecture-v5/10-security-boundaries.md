@@ -27,7 +27,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - depth/token/request budget과 반환 location을 기록한다.
 - 누락·truncation은 안전함 또는 `FALSE`로 해석하지 않는다.
 - 지원하지 않는 schema MAJOR는 `SCHEMA_UNSUPPORTED`로 거절한다. 같은 `logical_record_id`가 아니거나 바로 이전 revision과 이어지지 않는 수정본은 `RECORD_REVISION_MISMATCH`로 거절하고 자동 변환·병합하지 않는다. `RunMeta`의 workspace·commit은 `null`에서 실제 값으로만 바인딩할 수 있고, 코드 근거 `RecordMeta`에서는 두 값이 필수·불변이다.
-- 저장된 record를 가리키는 `StoredDataRef.record_id`는 참조 대상 revision의 workspace·commit·hypothesis·내용 hash와 모두 일치해야 한다. Technical Gate가 검토한 Verification revision이 바뀌면 이전 Gate 결과를 재사용하지 않는다.
+- 저장된 record를 가리키는 `StoredDataRef.record_id`는 참조 대상 revision의 workspace·commit·hypothesis·내용 hash와 모두 일치해야 한다. Technical Gate가 검토한 Verification revision이나 Rule Scope Gate가 검토한 Verification·Technical·정책 revision이 바뀌면 이전 Gate 결과를 재사용하지 않는다.
 
 ## 2. 저장소와 외부 텍스트는 비신뢰 데이터
 
@@ -83,7 +83,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - Primitive/Research candidate → source result와 아직 검증되지 않은 상태
 - CWE → evidence와 uncertainty
 - Technical review → 정확한 Verification revision
-- Rule/Scope review → 정확한 `ProgramPolicyRecord`
+- Rule/Scope review → 정확한 Verification·Technical review와 `ProgramPolicyRecord` revision
 - report claim → 통과한 result와 두 Gate
 
 Research, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출을 승인한다.

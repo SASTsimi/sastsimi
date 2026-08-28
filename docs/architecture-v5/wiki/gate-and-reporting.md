@@ -14,7 +14,7 @@ final `VerificationResult`의 verdict와 찬반 근거, 실제 코드·호출·�
 
 ## 2. 공식 정책·범위·영향 검토(`Rule Scope Impact Gate`)
 
-Technical `ACCEPT`인 `TRUE`만 공식 `ProgramPolicyRecord`과 함께 검토한다.
+Technical `ACCEPT`인 `TRUE`만 공식 `ProgramPolicyRecord`과 함께 검토한다. Rule Scope 결과에는 자신이 읽은 Verification, Technical review와 정책의 정확한 `record_id`를 남긴다. 이 중 하나라도 수정되면 이전 Rule Scope 결과를 재사용하지 않는다.
 
 - rule_compliance: `PASS | FAIL | UNCERTAIN`
 - scope_compliance: `PASS | FAIL | UNCERTAIN`
@@ -35,6 +35,6 @@ TRUE
 + permission ALLOW
 ```
 
-Reporter는 위 조건을 모두 만족한 내부 보고서 초안만 만든다. 두 Gate와 Reporter 모두 외부 제출 권한이 없고 사람만 최종 공개를 결정한다.
+Reporter는 위 조건을 모두 만족하고 ReportDraft가 가리킨 Verification·Technical review·Rule Scope review·정책 revision이 서로 맞을 때만 내부 보고서 초안을 만든다. 두 Gate와 Reporter 모두 외부 제출 권한이 없고 사람만 최종 공개를 결정한다.
 
 상세 내용은 [이중 LLM Gate와 보고](../05-llm-gate-and-reporting.md)을 따른다.
