@@ -215,6 +215,18 @@ $requiredActionTypes = @(
     'EXTERNAL_DISCLOSURE'
 )
 $actionRequestBlock = [regex]::Match($contractText, '(?ms)^ActionRequest:\s*(.*?)^ActionCheck:').Groups[1].Value
+$requiredActionRequestFields = @(
+    'requester_identity_ref:',
+    'input_refs:',
+    'provider_profile_ref:',
+    'sandbox_profile_ref:',
+    'disclosure_targets:'
+)
+foreach ($field in $requiredActionRequestFields) {
+    if (-not $actionRequestBlock.Contains($field)) {
+        Add-Failure "missing R4-03 ActionRequest field: $field"
+    }
+}
 foreach ($actionType in $requiredActionTypes) {
     if (-not $actionRequestBlock.Contains($actionType)) {
         Add-Failure "missing R4-03 action type: $actionType"
@@ -305,6 +317,9 @@ $requiredAuthorityRules = @(
     'HumanReviewDecision',
     'UNUSED -> USED',
     'UNUSED -> EXPIRED',
+    'requester_identity_ref',
+    'valid_until',
+    'work_attempt_refs',
     'SAVE_HUMAN_DECISION'
 )
 foreach ($rule in $requiredAuthorityRules) {

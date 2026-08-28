@@ -67,18 +67,20 @@ Agent 또는 서비스가 부작용이 있는 실행을 원할 때 만드는 요
 
 - `action_id`: 요청 하나의 ID
 - `requested_by`: 요청한 역할
+- `requester_identity_ref`: 신뢰 runtime이 붙인 실제 Agent service 또는 사람 identity
 - `action_type`: 수행하려는 일
 - `work_ref`: 연결된 현재 work와 state version
 - `input_refs`: 실제로 읽을 record revision
 - `tool_name`, `file_paths`, `network_targets`: 필요한 실행 범위
 - `provider_profile_ref`, `session_mode`: LLM 호출 조건
+- `disclosure_targets`: 사람이 승인한 외부 공개 대상과 정확히 같은 목록
 - `reason`, `requested_at`
 
 허용 action은 다음으로 제한한다.
 
 `REGISTER_WORK | CHANGE_WORK_STATE | START_ATTEMPT | CANCEL_WORK | READ_CODE | RUN_TOOL | CALL_LLM | FETCH_POLICY | RUN_SANDBOX | SAVE_RESULT | CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT | PREPARE_HUMAN_REVIEW | SAVE_HUMAN_DECISION | EXTERNAL_DISCLOSURE`
 
-action별로 쓰지 않는 필드는 `null` 또는 빈 배열이어야 한다. 예를 들어 `CALL_LLM`에는 provider profile과 session mode가 필요하고, `RUN_SANDBOX`에는 sandbox profile·image digest·network target이 필요하다. `EXTERNAL_DISCLOSURE`는 Human Reviewer만 요청할 수 있고 exact `HumanReviewDecision`을 입력으로 가져야 한다. 한 번이라도 `ActionDecision`이 저장된 요청은 수정하지 않는다. 범위를 바꾸거나 다시 시도하려면 새 `action_id`를 사용한다.
+`requester_identity_ref`는 LLM이 주장한 역할을 복사하지 않는다. 신뢰 runtime이 현재 인증된 호출자에서 만들며 그 identity의 등록 역할과 `requested_by`가 같아야 한다. action별로 쓰지 않는 필드는 `null` 또는 빈 배열이어야 한다. 예를 들어 `CALL_LLM`에는 provider profile과 session mode가 필요하고, `RUN_SANDBOX`에는 sandbox profile·image digest·network target이 필요하다. `EXTERNAL_DISCLOSURE`는 Human Reviewer만 요청할 수 있고 exact `HumanReviewDecision`과 승인 report를 입력으로 가져야 하며 action의 공개 대상 목록도 사람 결정과 같아야 한다. 한 번이라도 `ActionDecision`이 저장된 요청은 수정하지 않는다. 범위를 바꾸거나 다시 시도하려면 새 `action_id`를 사용한다.
 
 ### ActionDecision
 
@@ -91,18 +93,19 @@ runtime validator의 검사 결과다.
 - `error_ids`
 - 검사한 `state_version`, 설정과 정책 revision
 - `use_status: UNUSED | USED | NOT_USED | EXPIRED`
+- `valid_until`, `used_at`, `expired_at`, `expire_reason`
 - `decided_at`
 
 `ActionCheck`는 `check_type`, `result: PASS | FAIL`, `reason_code`, 민감정보가 제거된 `safe_message`를 갖는다. 각 action type의 필수 check는 모두 한 번씩 있어야 하고, 하나라도 `FAIL`이면 decision은 `DENY`다. `ALLOW`는 exact action과 state version에만 유효하며 다른 action·retry·revision에 재사용할 수 없다.
 
-결정 내용과 검사 결과는 이후 revision에서 바꾸지 않는다. 실행 직전에 state·input·configuration이 달라졌으면 `UNUSED -> EXPIRED`로 바꾸고 실행을 거절한다. 그대로이면 compare-and-set으로 `UNUSED -> USED`를 먼저 저장한 뒤 exact action을 한 번만 실행한다. `USED`, `NOT_USED`, `EXPIRED`는 다시 사용할 수 없다.
+결정 내용과 검사 결과, `valid_until`은 이후 revision에서 바꾸지 않는다. 실행 직전에 허가 시간이 지나거나 requester 권한·state·budget·input·configuration이 달라졌으면 `UNUSED -> EXPIRED`로 바꾸고 실행을 거절한다. 그대로이면 compare-and-set으로 `UNUSED -> USED`를 먼저 저장한 뒤 exact action을 한 번만 실행한다. `USED`, `NOT_USED`, `EXPIRED`는 다시 사용할 수 없다.
 
 ## runtime validator가 강제할 항목
 
 | check | 쉽게 말하면 | 검사 대상 |
 |---|---|---|
 | `SCHEMA` | 필요한 필드와 enum이 맞는가 | 모든 action과 결과 |
-| `AUTHORITY` | 이 역할이 이 action을 요청할 수 있는가 | 모든 action |
+| `AUTHORITY` | 인증된 실제 호출자의 역할과 요청 역할이 같고 이 action을 요청할 수 있는가 | 모든 action |
 | `IDENTITY` | analysis·work·hypothesis ID가 같은 대상을 가리키는가 | 모든 action |
 | `REVISION` | workspace·commit·record ID·hash가 정확한가 | code-bound action과 결과 |
 | `STATE` | 현재 상태와 version에서 허용되는 전이인가 | work 시작·저장·retry·취소 |

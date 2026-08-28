@@ -41,7 +41,7 @@ Agent 또는 service의 제안
 
 검사 항목은 action마다 다릅니다.
 
-- 데이터 형식과 역할 권한
+- 데이터 형식, 인증된 실제 호출자와 역할 권한
 - analysis·work·hypothesis ID와 정확한 수정본
 - `workspace_id`, `commit_id`, state version
 - token·시간·retry·chain·Gate 보완 예산
@@ -52,7 +52,7 @@ Agent 또는 service의 제안
 - Reporter를 부를 일곱 조건
 - 비밀정보 제거와 사람 결정 전 외부 공개 차단
 
-하나라도 실패하면 실행하지 않고 오류를 남깁니다. ALLOW 결과는 exact 요청에 한 번만 쓰며 retry나 다른 수정본에 재사용하지 않습니다. 허가 뒤 상태·입력·설정이 바뀌면 `EXPIRED`(사용 전 만료)로 기록하고 새 요청부터 다시 검사합니다. 이미 검사한 요청이나 결정 내용을 고쳐 쓰지 않습니다.
+하나라도 실패하면 실행하지 않고 오류를 남깁니다. ALLOW 결과는 exact 요청에 한 번만 쓰며 retry나 다른 수정본에 재사용하지 않습니다. 허가 시간이 지나거나 호출자 권한·상태·예산·입력·설정이 바뀌면 `EXPIRED`(사용 전 만료)로 기록하고 새 요청부터 다시 검사합니다. 이미 검사한 요청이나 결정 내용을 고쳐 쓰지 않습니다.
 
 ## 저장소와 LLM 출력은 명령이 아닙니다
 
@@ -88,7 +88,7 @@ Agent 또는 service의 제안
 - ReportDraft 또는 보고서가 막힌 이유
 - token·시간·Sandbox 자원
 - 모든 오류·분석 공백·남은 HOLD 조건
-- LLM 호출·action 검사·work 상태와 debug trace
+- LLM 호출·action 검사·work 상태·실행 시도와 debug trace
 
 사람은 별도 `HumanReviewDecision`에 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`을 기록합니다. ReportDraft 안의 값을 바꾸어 승인하지 않습니다.
 

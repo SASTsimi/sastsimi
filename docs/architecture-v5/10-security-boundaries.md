@@ -47,7 +47,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - Agent·service의 자연어 출력이나 tool call 제안은 실행 권한이 아니다. 부작용 action은 `ActionRequest`로 정규화한다.
 - 비-LLM Runtime Validator는 action type별 `SCHEMA | AUTHORITY | IDENTITY | REVISION | STATE | BUDGET | TOOL | FILE_PATH | SANDBOX | PROVIDER | SESSION | GATE_ORDER | REPORT_READY | REDACTION | DISCLOSURE` 중 필수 check를 모두 수행한다.
 - 하나라도 실패하면 `ActionDecision=DENY`와 오류를 저장하고 실행하지 않는다.
-- `ALLOW` decision은 exact action·state version·입력·설정 revision에만 유효하다. runtime이 `UNUSED -> USED`를 compare-and-set으로 claim한 decision만 한 번 실행한다.
+- `ALLOW` decision은 인증된 requester identity, exact action·state version·입력·설정 revision과 `valid_until`에만 유효하다. 실행 직전에 허가 시간이 지나거나 권한·상태·예산·입력·설정이 달라지면 runtime은 `UNUSED -> EXPIRED`로 바꾸고 거절한다. 그대로인 decision만 `UNUSED -> USED`로 compare-and-set claim해 한 번 실행한다.
 - claim 뒤 중단됐으면 기존 decision을 다시 사용하지 않는다. 중단 오류와 실행 outcome 유무를 기록하고 새 action을 요청한다.
 - Orchestration은 계획·호출을 제안할 수 있지만 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 저장할 권한이 없다.
 - Runtime Validator는 역할과 실행 전제를 검사하지만 취약점 진위·CWE 적절성·정책 의미를 대신 판단하지 않는다.
@@ -137,7 +137,7 @@ Research, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출�
 | credential·코드 유출 | adapter secret boundary, 최소 context, redaction |
 | 정책 환각 | 공식 `ProgramPolicyRecord`가 없으면 `UNCERTAIN + DENY` |
 | 자동 오공개 | Reporter 초안 한정, human-only disclosure |
-| ALLOW decision replay | exact action·state version binding, `UNUSED -> USED` 일회성 claim |
+| 역할 위조, ALLOW replay 또는 stale 허가 사용 | trusted requester identity와 exact action·state·input·config·`valid_until` binding, stale이면 `UNUSED -> EXPIRED`, 유효하면 `UNUSED -> USED` 일회성 claim |
 | 권한 없는 domain 결과 저장 | 역할별 `SAVE_RESULT` authority와 선행 exact ref 검사 |
 
 ## 상태·복구 부정 시나리오

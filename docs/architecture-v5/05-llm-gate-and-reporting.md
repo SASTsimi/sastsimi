@@ -174,7 +174,7 @@ packet에는 다음을 빠뜨리지 않는다.
 - ReportDraft 또는 보고서가 차단된 구체적인 이유
 - token·시간·Sandbox 등 자원 사용량
 - 모든 실행 오류·DataGap·남은 HOLD 조건
-- LLM 호출·action decision·work state·transition commit와 debug trace reference
+- LLM 호출·action decision·work state·work attempt·transition commit와 debug trace reference
 
 사람은 이 packet의 정확한 revision을 읽고 별도 `HumanReviewDecision`에 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`을 기록한다. 결정 저장은 인증된 사람 identity와 exact packet을 확인하는 `SAVE_HUMAN_DECISION` action을 거친다. `ReportDraft` 안의 field를 바꾸거나 LLM output을 사람 결정으로 저장하지 않는다.
 
