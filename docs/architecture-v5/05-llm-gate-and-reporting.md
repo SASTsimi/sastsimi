@@ -12,7 +12,7 @@
 
 v5에는 책임이 다른 두 LLM 검토 Agent가 있다.
 
-1. `CWELabel`을 포함한 final `VerificationResult`의 정확한 `record_id` revision을 Technical Evidence Gate Agent가 검토한다.
+1. final `VerificationResult`와 별도 `CWELabel`의 정확한 `record_id` revision을 Technical Evidence Gate Agent가 함께 검토한다.
 2. Technical 결과가 `ACCEPT`이고 Verification verdict가 `TRUE`일 때만 Rule Scope Impact Gate Agent를 호출한다.
 3. 두 Gate와 impact·permission 조건을 모두 통과했을 때만 Reporter Agent를 호출한다.
 
@@ -31,7 +31,7 @@ CWE 후보는 final verdict 뒤에 작성한다. primary·alternative CWE, taxon
 - Pro/Con evidence와 debate mode/trigger
 - 실제 code/entity/location/path reference
 - `DynamicReproductionResult`와 PoC reference
-- CWE 후보와 근거
+- `CWELabel`의 정확한 `record_id`가 있는 `StoredDataRef`와 근거
 - restriction, bypass candidate, unresolved condition
 - 관련 Research proposal 중 재검증 완료 여부
 
@@ -55,6 +55,7 @@ technical_evidence_review:
     workspace_id: ws-001
     commit_id: 7f3a2c1
     record_id: rec-verification-003
+  cwe_label_ref: StoredDataRef
   status: ACCEPT | REVISE | REJECT
   evidence_verdict_alignment: explanation
   code_flow_linkage: explanation
@@ -71,7 +72,7 @@ technical_evidence_review:
 - `REVISE`: Verification 또는 Research가 구체적인 누락·restriction·재현·CWE 설명을 보완해야 한다.
 - `REJECT`: 현재 자료를 신뢰 가능한 기술 기록이나 다음 단계 입력으로 사용할 수 없다.
 
-`verification_result_ref.record_id`는 Gate가 실제로 읽은 한 `VerificationResult` revision을 고정한다. runtime은 Gate와 Verification의 `workspace_id`, `commit_id`, `hypothesis_id`, `record_id`, `content_hash`를 확인한다. Verification이 수정되면 이전 `ACCEPT`를 새 revision에 재사용하지 않고 Gate를 새로 호출한다.
+`verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 Gate가 실제로 읽은 `VerificationResult`와 `CWELabel` revision을 각각 고정한다. runtime은 Gate와 두 대상의 `workspace_id`, `commit_id`, `hypothesis_id`, `record_id`, `content_hash`를 확인한다. Verification 또는 CWELabel이 수정되면 이전 `ACCEPT`를 새 revision에 재사용하지 않고 Gate를 새로 호출한다.
 
 `REVISE`는 동일 입력 재투표가 아니다. Orchestration Agent가 요청을 Verification 또는 Research에 보내고 새 근거·설명·revision이 생긴 뒤 다시 호출한다. 횟수·token·시간 한도 도달 시 보고를 차단하고 미해결 사유를 저장한다.
 
@@ -108,6 +109,7 @@ technical_evidence_review:
 rule_scope_impact_review:
   verification_result_ref: StoredDataRef
   technical_review_ref: StoredDataRef
+  cwe_label_ref: StoredDataRef
   review_status: PASS | FAIL | UNCERTAIN
   rule_compliance: PASS | FAIL | UNCERTAIN
   scope_compliance: PASS | FAIL | UNCERTAIN
@@ -120,7 +122,7 @@ rule_scope_impact_review:
 
 공식 정책 자료가 없으면 최소한 `rule_compliance=UNCERTAIN`, `scope_compliance=UNCERTAIN`, `review_status=UNCERTAIN`, `report_permission=DENY`와 `missing_information`을 반환한다. impact도 검토할 근거가 부족하면 `security_impact=UNCERTAIN`이다.
 
-`verification_result_ref`, `technical_review_ref`와 존재하는 `policy_record_ref`에는 정확한 저장 revision의 `record_id`가 필요하다. runtime은 Technical review가 `ACCEPT`이고, Technical review와 Rule Scope review가 같은 Verification `record_id`를 가리키는지 확인한다. 각 reference의 `workspace_id`, `commit_id`, `content_hash`는 대상 record와 일치해야 하며, Verification·Technical 대상의 `meta.hypothesis_id`는 Rule Scope review의 가설과 같아야 한다. 정책이 있으면 Rule Scope review가 가리킨 정책 record와 Reporter가 사용할 정책 record도 같아야 한다. 입력 revision이 하나라도 달라지면 기존 Rule Scope 결과를 재사용하지 않는다.
+`verification_result_ref`, `technical_review_ref`, `cwe_label_ref`와 존재하는 `policy_record_ref`에는 정확한 저장 revision의 `record_id`가 필요하다. runtime은 Technical review가 `ACCEPT`이고, Technical review와 Rule Scope review가 같은 Verification과 CWELabel `record_id`를 각각 가리키는지 확인한다. 각 reference의 `workspace_id`, `commit_id`, `content_hash`는 대상 record와 일치해야 하며, Verification·CWELabel·Technical 대상의 `meta.hypothesis_id`는 Rule Scope review의 가설과 같아야 한다. 정책이 있으면 Rule Scope review가 가리킨 정책 record와 Reporter가 사용할 정책 record도 같아야 한다. 입력 revision이 하나라도 달라지면 기존 Rule Scope 결과를 재사용하지 않는다.
 
 ## Reporter 호출 조건
 
@@ -146,13 +148,13 @@ Reporter는 통과한 근거를 읽기 쉬운 내부 초안으로 구성한다.
 - entity·코드 위치와 source → propagation/call → sink
 - restriction, bypass 검토와 반박 처리
 - 동적 재현과 redacted PoC
-- CWE와 선택 이유
+- 두 Gate가 검토한 같은 `CWELabel` revision과 선택 이유
 - 두 Gate 결과와 `ProgramPolicyRecord` reference
 - Research 후보의 재검증 여부
 - 완화와 회귀 테스트 제안
 - invocation trace와 남은 불확실성
 
-Reporter는 새로운 공격 경로를 확정하거나 미검증 Research 후보를 실제 영향으로 쓰지 않는다. 초안의 핵심 주장은 Verification/PoC/Gate artifact에 연결한다.
+Reporter는 새로운 공격 경로를 확정하거나 미검증 Research 후보를 실제 영향으로 쓰지 않는다. 초안의 핵심 주장은 Verification/PoC/Gate artifact에 연결한다. `ReportDraft.cwe_label_ref.record_id`는 Technical review와 Rule Scope review가 공통으로 가리킨 CWELabel `record_id`와 같아야 하며, CWELabel이 수정되면 두 Gate를 다시 통과하기 전에는 초안을 만들지 않는다.
 
 ## 사람의 최종 결정
 

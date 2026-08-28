@@ -32,9 +32,23 @@ Agent Runtime은 역할·structured-output 요구·context reference·budget·se
 - timeout, cancellation, rate limit와 auth-required 전달
 - provider가 공개한 usage만 출처와 함께 기록
 - credential을 Agent prompt/result/log에서 제외
-- retry와 failover를 새 `llm_call_id`로 식별하고 바로 앞 실패 호출을 reference로 연결
+- retry와 failover를 새 `llm_call_id`로 식별하고 바로 앞의 허용된 실패 호출을 reference로 연결
 
-provider/model을 조용히 바꾸는 failover는 금지한다. 허용된 fallback이 있더라도 원래 실패, 새 provider/model, 이유, 새 session과 결과를 별도 `llm_call_id`로 남긴다. 같은 provider/model의 일반 retry는 `retry_of_llm_call_id`, provider/model을 바꾸는 failover는 `failover_from_llm_call_id`로 바로 앞 실패 호출을 가리킨다. 두 reference를 동시에 사용하지 않는다.
+provider/model을 조용히 바꾸는 failover는 금지한다. 허용된 fallback이 있더라도 원래 실패, 새 provider/model, 이유, 새 session과 결과를 별도 `llm_call_id`로 남긴다. 같은 provider/model의 일반 retry는 `retry_of_llm_call_id`, provider/model을 바꾸는 failover는 `failover_from_llm_call_id`로 바로 앞의 허용된 실패 호출을 가리킨다. 두 reference를 동시에 사용하지 않는다.
+
+선행 호출 status는 다음과 같이 제한한다.
+
+| 선행 status | 같은 provider/model retry | provider/model failover | 추가 조건 |
+|---|---|---|---|
+| `FAILED` | 허용 | 허용 | 오류와 전환 이유 기록 |
+| `INVALID_OUTPUT` | 허용 | 허용 | 제한된 schema/semantic repair가 끝난 뒤 |
+| `TIMED_OUT` | 허용 | 허용 | 남은 시간·시도 예산 확인 |
+| `RATE_LIMITED` | 허용 | 허용 | retry는 backoff 뒤, failover는 허용된 fallback만 사용 |
+| `AUTH_REQUIRED` | 재인증 뒤 허용 | 조건부 허용 | failover 대상 provider의 유효한 인증이 별도로 준비되어 있어야 함 |
+| `SUCCEEDED` | 금지 | 금지 | 정상 결과 뒤의 새 작업은 독립 호출 |
+| `CANCELLED` | 금지 | 금지 | 사용자가 다시 요청하면 독립 호출 |
+
+retry/failover 선행 호출은 같은 분석·가설·역할의 바로 앞 호출이어야 한다. `SUCCEEDED`, `CANCELLED`, 존재하지 않는 호출, 더 이전 호출, 자기 자신과 이후 호출을 연결하면 `INVOCATION_CHAIN_INVALID`다.
 
 ## MembershipSessionAdapter
 
@@ -123,7 +137,7 @@ LLM 호출 상태는 `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIM
 3. Orchestration은 어떤 LLM 호출 상태도 가설 `FALSE`로 바꾸지 않는다.
 4. 제한 retry, 사용자 재인증 또는 구성된 explicit fallback을 선택한다.
 5. 모든 시도는 독립 `llm_call_id`와 `attempt_id`로 저장한다.
-6. 후속 호출은 바로 앞 실패 호출 reference와 1씩 증가하는 `retry_count`를 저장하며, runtime은 같은 분석·가설·역할인지와 순환이 없는지 검사한다.
+6. 후속 호출은 위 표에서 허용한 바로 앞의 실패 호출 reference와 1씩 증가하는 `retry_count`를 저장하며, runtime은 status·같은 분석·가설·역할·호출 순서와 순환이 없는지 검사한다.
 
 동시성·rate limit의 backpressure도 취약점 판정과 분리한다.
 

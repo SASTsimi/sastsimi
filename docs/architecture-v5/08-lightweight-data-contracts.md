@@ -431,6 +431,37 @@ CodeContextResponse:
 검증 Agent가 찬성·반대·동적 근거를 모아 `TRUE / FALSE / HOLD` 판정과 남은 조건을 기록하는 결과입니다.
 
 ```yaml
+EvidenceClaim:
+  claim_id: string
+  statement: string
+  source_role: VERIFICATION | PRO | CON
+  evidence_refs: [StoredDataRef]
+  code_locations: [CodeLocation]
+  limitations: [string]
+
+CandidateRef:
+  candidate_id: string
+  candidate_type: BYPASS | ALTERNATE_PATH | IMPACT_ESCALATION
+  statement: string
+  source_hypothesis_ids: [string]
+  target_entities: [CodeSymbol]
+  target_locations: [CodeLocation]
+  evidence_refs: [StoredDataRef]
+  missing_information: [string]
+  candidate_state: UNVALIDATED
+
+VerificationMetrics:
+  pro_tokens: integer | null
+  con_tokens: integer | null
+  synthesis_tokens: integer | null
+  elapsed_ms: integer
+  verdict_changed_after_debate: boolean
+  hold_resolved: boolean
+  false_positive_reduction_candidate: boolean
+  new_bypass_count: integer
+  new_restriction_count: integer
+  new_falsification_count: integer
+
 FalsificationResult:
   question_id: string
   outcome: DISPROVED | NOT_DISPROVED | INCONCLUSIVE
@@ -460,6 +491,12 @@ VerificationResult:
   metrics: VerificationMetrics
   errors: [AnalysisError]
 ```
+
+`EvidenceClaim.claim_id`는 한 `VerificationResult` 안에서 유일하다. 각 claim은 실제 저장 근거를 가리키는 `evidence_refs`를 하나 이상 가져야 하며, 코드 주장이라면 현재 `workspace_id + commit_id`의 `code_locations`도 하나 이상 가져야 한다. `source_role`은 claim을 작성한 역할이며 근거의 출처를 대신하지 않는다. supporting 목록에는 `VERIFICATION | PRO`, counter 목록에는 `VERIFICATION | CON`만 허용한다.
+
+`CandidateRef`는 아직 검증되지 않은 우회·대체 경로·영향 확대 후보다. `candidate_id`는 한 결과 안에서 유일하고 `candidate_state`는 항상 `UNVALIDATED`다. 현재 가설을 `source_hypothesis_ids`에 포함하며, 실제 근거가 있으면 `evidence_refs`, 아직 필요한 사실은 `missing_information`에 넣는다. 후보가 새로운 endpoint·sink·권한 경계·공격 단계 또는 영향을 주장하면 새 `HypothesisProposal`로 등록해 전체 검증을 거치기 전까지 verdict, CWE, Gate 또는 보고서의 확정 주장으로 사용할 수 없다.
+
+`VerificationMetrics`의 token 값은 provider가 값을 제공하지 않으면 `null`이고, 나머지 정수는 모두 0 이상이어야 한다. debate를 실행하지 않았으면 `pro_tokens`와 `con_tokens`는 `null`, `verdict_changed_after_debate=false`다. `hold_resolved=true`는 `initial_verdict=HOLD`이고 final `verdict`가 `TRUE | FALSE`일 때만 허용한다.
 
 최종 `VerificationResult`는 등록 가설의 모든 `question_id`를 중복 없이 정확히 한 번씩 평가한다. `DISPROVED`는 해당 질문이 확인하려는 가설의 필수 조건이 실제 근거로 반증됐다는 뜻이며 `evidence_refs`가 하나 이상이어야 한다. `NOT_DISPROVED`는 반증하지 못했다는 뜻일 뿐 가설을 증명하지 않는다. 확인하지 못한 질문은 `INCONCLUSIVE`로 남긴다. `verdict=FALSE`는 적어도 하나의 `DISPROVED` 결과가 있고 `verdict_rationale`이 그 `question_id`와 근거를 설명할 때만 허용한다. `TRUE | HOLD`에는 `DISPROVED` 결과가 있을 수 없다. 오류만으로 `FALSE`를 만들지 않는다.
 
@@ -505,7 +542,25 @@ ConfirmedCapability:
   evidence_refs: [StoredDataRef]
 ```
 
-match는 `workspace_id`·`commit_id`·asset·entity·privilege·attack order compatibility와 evidence를 포함한 `PrimitiveMatchCandidate`다. 저장 항목은 queue message가 아니다.
+```yaml
+PrimitiveMatchCandidate:
+  primitive_match_id: string
+  required_primitive_id: string
+  provided_primitive_id: string
+  workspace_id: string
+  commit_id: string
+  asset_check: PASS | UNCERTAIN
+  entity_check: PASS | UNCERTAIN
+  privilege_check: PASS | UNCERTAIN
+  attack_order_check: PASS | UNCERTAIN
+  restriction_check: PASS | UNCERTAIN
+  normalized_fingerprint: string
+  evidence_refs: [StoredDataRef]
+  unresolved_conditions: [string]
+  candidate_state: UNVALIDATED
+```
+
+`PrimitiveMatchCandidate`는 같은 `workspace_id + commit_id`의 REQUIRED 하나와 PROVIDED 하나를 연결한다. 두 primitive ID는 서로 달라야 하고 실제 `Primitive`를 가리켜야 한다. 다섯 check 중 하나라도 호환되지 않으면 후보를 만들지 않는다. 모두 `PASS`면 `unresolved_conditions`는 비어 있어야 하고, 하나라도 `UNCERTAIN`이면 확인할 조건을 반드시 기록한다. `evidence_refs`는 하나 이상이며 각 reference도 같은 workspace·commit을 가리킨다. 같은 `normalized_fingerprint`를 같은 분석에서 중복 저장하지 않는다. match는 queue message, verdict, Finding 또는 impact 확정이 아니다.
 
 ## 6. ResearchResult
 
@@ -519,7 +574,7 @@ ResearchResult:
   bypass_candidates: [CandidateRef]
   alternate_paths: [CandidateRef]
   impact_escalation_candidates: [CandidateRef]
-  primitive_matches: [CandidateRef]
+  primitive_matches: [PrimitiveMatchCandidate]
   chained_hypothesis_proposals: [HypothesisProposal]
   additional_validation_requests: [string]
   no_material_extension_reason: string | null
@@ -584,6 +639,7 @@ DynamicReproductionResult:
 TechnicalEvidenceReview:
   meta: RecordMeta
   verification_result_ref: StoredDataRef
+  cwe_label_ref: StoredDataRef
   status: ACCEPT | REVISE | REJECT
   evidence_verdict_alignment: string
   code_flow_linkage: string
@@ -596,13 +652,21 @@ TechnicalEvidenceReview:
   rationale: string
 ```
 
-`verification_result_ref.record_id`는 필수이며 정확히 한 `VerificationResult` revision을 가리킨다. runtime은 참조 대상의 `record_id`, `workspace_id`, `commit_id`, `hypothesis_id`와 `content_hash`가 일치하는지 확인한다. Verification이 새 revision으로 바뀌면 이전 `TechnicalEvidenceReview`를 재사용할 수 없고 Gate를 새로 호출해야 한다. Technical review는 `VerificationResult.verdict`를 덮어쓰지 않는다.
+`verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 필수이며 각각 정확히 한 `VerificationResult`와 `CWELabel` revision을 가리킨다. runtime은 두 대상의 `record_id`, `workspace_id`, `commit_id`, `hypothesis_id`와 `content_hash`가 서로와 현재 Technical review에 일치하는지 확인한다. Verification 또는 CWELabel이 새 revision으로 바뀌면 이전 `TechnicalEvidenceReview`를 재사용할 수 없고 Gate를 새로 호출해야 한다. Technical review는 `VerificationResult.verdict`나 `CWELabel`을 덮어쓰지 않는다.
 
 ## 9. ProgramPolicyRecord과 RuleScopeImpactReview
 
 공식 프로그램 정책을 확인해 저장한 기록과, 두 번째 Gate가 정책 범위·규칙·실제 영향을 검토한 결과입니다.
 
 ```yaml
+PolicyItem:
+  policy_item_id: string
+  value: string
+  description: string
+  conditions: [string]
+  source_ref: StoredDataRef
+  source_locator: string
+
 ProgramPolicyRecord:
   meta: RecordMeta without hypothesis/attempt
   policy_record_id: string
@@ -623,6 +687,8 @@ ProgramPolicyRecord:
   freshness_warning: string | null
 ```
 
+`PolicyItem.policy_item_id`는 한 `ProgramPolicyRecord` 안에서 유일하다. `value`에는 비교할 asset·취약점 분류·제한·기준 값을, `conditions`에는 그 값이 적용되는 조건을 넣는다. `source_ref`는 `ProgramPolicyRecord.source_refs`에도 포함된 공식 자료를 가리키고 `source_locator`는 문서 안에서 해당 항목을 다시 찾을 수 있는 절·anchor·페이지 정보다. 출처와 연결되지 않은 항목은 공식 정책 사실로 사용하지 않고 `missing_information`에 남긴다.
+
 `program_id`는 내부 Program Catalog가 발급한 전역 ID다. `program_namespace`는 외부 플랫폼이나 catalog 출처를 나타내며, `external_program_id`는 그 출처 안의 프로그램 ID다. 외부 프로그램의 유일 키는 `(program_namespace, external_program_id)`이고, 내부 catalog는 이 쌍을 하나의 `program_id`에 매핑한다. namespace가 다른 같은 외부 ID를 자동 병합하지 않는다.
 
 ```yaml
@@ -630,6 +696,7 @@ RuleScopeImpactReview:
   meta: RecordMeta
   verification_result_ref: StoredDataRef
   technical_review_ref: StoredDataRef
+  cwe_label_ref: StoredDataRef
   policy_record_ref: StoredDataRef | null
   review_status: PASS | FAIL | UNCERTAIN
   rule_compliance: PASS | FAIL | UNCERTAIN
@@ -640,7 +707,7 @@ RuleScopeImpactReview:
   missing_information: [string]
 ```
 
-`verification_result_ref.record_id`와 `technical_review_ref.record_id`는 필수다. `technical_review_ref` 대상은 `status=ACCEPT`이고, 그 대상의 `verification_result_ref.record_id`는 Rule Scope review의 `verification_result_ref.record_id`와 같아야 한다. runtime은 각 reference의 `workspace_id`, `commit_id`, `content_hash`가 실제 대상 record와 일치하고, Verification·Technical 대상 `RecordMeta.hypothesis_id`가 현재 Rule Scope review의 가설과 같은지 확인한다. `policy_record_ref`가 있으면 그 `record_id`도 필수이며 실제 `ProgramPolicyRecord`와 일치해야 한다. 어느 입력 revision이든 바뀌면 이전 Rule Scope review를 재사용하지 않는다.
+`verification_result_ref.record_id`, `technical_review_ref.record_id`와 `cwe_label_ref.record_id`는 필수다. `technical_review_ref` 대상은 `status=ACCEPT`이고, 그 대상의 Verification과 CWE reference `record_id`는 Rule Scope review가 직접 가리키는 두 `record_id`와 각각 같아야 한다. runtime은 각 reference의 `workspace_id`, `commit_id`, `content_hash`가 실제 대상 record와 일치하고, Verification·CWELabel·Technical 대상 `RecordMeta.hypothesis_id`가 현재 Rule Scope review의 가설과 같은지 확인한다. `policy_record_ref`가 있으면 그 `record_id`도 필수이며 실제 `ProgramPolicyRecord`와 일치해야 한다. 어느 입력 revision이든 바뀌면 이전 Rule Scope review를 재사용하지 않는다.
 
 공식 `ProgramPolicyRecord`가 없으면 `policy_record_ref=null`이다. 정책 record가 없거나 핵심 출처가 누락되면 `rule_compliance`, `scope_compliance`, `review_status`는 `UNCERTAIN`, permission은 `DENY`다. 불완전한 정책 record 자체가 있으면 그 reference는 보존하고 `missing_information`에 누락 내용을 기록한다. 이 불변조건을 만족하지 않는 출력은 invalid다.
 
@@ -716,9 +783,11 @@ LLMInvocationLog:
   redaction_result: APPLIED | NOT_REQUIRED | FAILED
 ```
 
-새로운 독립 호출은 `retry_count=0`이고 두 선행 호출 reference가 모두 `null`이다. 같은 provider/model에서 일반 retry를 실행하면 `retry_of_llm_call_id`가 바로 앞의 실패 호출을 가리키고 `failover_from_llm_call_id=null`이다. provider 또는 model을 바꾸는 failover이면 반대로 `failover_from_llm_call_id`만 바로 앞 호출을 가리킨다. 두 필드는 동시에 값을 가질 수 없다.
+새로운 독립 호출은 `retry_count=0`이고 두 선행 호출 reference가 모두 `null`이다. 같은 provider/model에서 일반 retry를 실행하면 `retry_of_llm_call_id`가 바로 앞의 허용된 실패 호출을 가리키고 `failover_from_llm_call_id=null`이다. provider 또는 model을 바꾸는 failover이면 반대로 `failover_from_llm_call_id`만 바로 앞의 허용된 실패 호출을 가리킨다. 두 필드는 동시에 값을 가질 수 없다.
 
-선행 호출은 같은 `analysis_id`, `hypothesis_id`, `agent_role`의 이미 종료된 호출이어야 하고 현재 호출 자신이나 이후 호출을 가리킬 수 없다. 후속 호출의 `retry_count`는 바로 앞 호출보다 정확히 1 커야 한다. runtime은 존재하지 않는 predecessor, 순환 reference와 순서가 맞지 않는 chain을 `INVOCATION_CHAIN_INVALID`로 거절한다. 이 규칙으로 최초 실패 → 일반 retry → provider/model failover의 순서와 원인을 각 `llm_call_id`를 따라 복원한다.
+일반 retry의 선행 status는 `FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED`만 허용한다. `INVALID_OUTPUT`은 제한된 repair가 끝난 뒤, `RATE_LIMITED`는 정한 backoff 뒤, `AUTH_REQUIRED`는 사용자 또는 승인된 운영자가 재인증을 완료한 뒤에만 후속 호출을 시작한다. failover의 선행 status는 `FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED`만 허용하며, 사전에 허용된 fallback profile과 전환 이유를 기록해야 한다. `AUTH_REQUIRED`에서 failover하려면 대상 provider의 유효한 인증이 별도로 준비되어 있어야 한다.
+
+`SUCCEEDED`는 retry나 failover의 선행 호출로 사용할 수 없다. `CANCELLED`도 같은 chain에서 후속 호출을 허용하지 않으며, 사용자가 새 작업을 요청하면 선행 reference가 없는 독립 호출로 시작한다. 선행 호출은 같은 `analysis_id`, `hypothesis_id`, `agent_role`의 바로 앞 호출이어야 하고 현재 호출 자신이나 이후 호출을 가리킬 수 없다. 후속 호출의 `retry_count`는 바로 앞 호출보다 정확히 1 커야 한다. runtime은 허용되지 않은 predecessor status, 존재하지 않는 predecessor, 순환 reference와 순서가 맞지 않는 chain을 `INVOCATION_CHAIN_INVALID`로 거절한다. 이 규칙으로 최초 실패 → 일반 retry → provider/model failover의 순서와 원인을 각 `llm_call_id`를 따라 복원한다.
 
 hidden chain-of-thought와 credential은 이 계약의 대상이 아니며 저장하지 않는다.
 
@@ -732,18 +801,20 @@ ReportDraft:
   verification_result_ref: StoredDataRef
   technical_review_ref: StoredDataRef
   rule_scope_impact_review_ref: StoredDataRef
+  cwe_label_ref: StoredDataRef
   policy_record_ref: StoredDataRef
   content_ref: StoredDataRef
   draft_status: DRAFTED
   human_review_state: PENDING | APPROVED | REJECTED
 ```
 
-`verification_result_ref`, `technical_review_ref`, `rule_scope_impact_review_ref`와 `policy_record_ref`는 저장된 record를 가리키므로 각 `StoredDataRef.record_id`가 필수다. Reporter runtime은 다음 연결을 모두 확인하고 하나라도 다르면 초안을 만들지 않는다.
+`verification_result_ref`, `technical_review_ref`, `rule_scope_impact_review_ref`, `cwe_label_ref`와 `policy_record_ref`는 저장된 record를 가리키므로 각 `StoredDataRef.record_id`가 필수다. Reporter runtime은 다음 연결을 모두 확인하고 하나라도 다르면 초안을 만들지 않는다.
 
 - Technical review와 Rule Scope review가 모두 ReportDraft의 같은 Verification `record_id`를 가리킨다.
 - Rule Scope review의 `technical_review_ref.record_id`가 ReportDraft의 `technical_review_ref.record_id`와 같다.
+- Technical review와 Rule Scope review가 모두 ReportDraft의 같은 CWELabel `record_id`를 가리킨다.
 - Rule Scope review의 `policy_record_ref.record_id`가 ReportDraft의 `policy_record_ref.record_id`와 같다.
-- 각 reference의 `workspace_id`, `commit_id`, `content_hash`가 실제 대상 record와 일치하고, 가설별 대상 record의 `meta.hypothesis_id`가 ReportDraft와 같다.
+- 각 reference의 `workspace_id`, `commit_id`, `content_hash`가 실제 대상 record와 일치하고, 가설별 대상 record의 `meta.hypothesis_id`가 ReportDraft와 같다. CWELabel이 새 revision으로 바뀌면 두 Gate와 ReportDraft를 모두 새 revision 기준으로 다시 생성한다.
 
 ```yaml
 AnalysisRunResult:

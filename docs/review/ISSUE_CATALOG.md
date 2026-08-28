@@ -358,7 +358,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 완료 조건
 
 - [ ] Technical Gate가 verdict/evidence, code flow, dynamic, CWE, restriction과 handoff readiness를 검토함
-- [ ] `verification_result_ref.record_id`로 실제 검토한 Verification revision을 고정하고 다른 revision에 Gate 결과를 재사용하지 않음
+- [ ] `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 실제 검토한 Verification·CWELabel revision을 고정하고, 두 Gate와 ReportDraft가 같은 revision을 사용함
 - [ ] REVISE는 구체적인 새 evidence/revision을 요구하며 무한 재투표가 아님
 - [ ] policy source 인증·freshness·parser failure threat model/ADR 요구가 있음
 - [ ] 모순된 `ALLOW` 출력은 semantic `INVALID_OUTPUT`이며 Reporter가 차단됨

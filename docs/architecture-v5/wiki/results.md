@@ -16,7 +16,7 @@
 - Verification, debate mode/trigger/skip, restriction와 capability
 - Docker 결과, redacted PoC와 cleanup
 - Primitive match, Research 후보와 재검증 여부
-- Technical 및 Rule Scope Impact Gate와 공식 `ProgramPolicyRecord`
+- `CWELabel`, Technical 및 Rule Scope Impact Gate, 공식 `ProgramPolicyRecord`과 두 Gate·보고서가 사용한 정확한 revision reference
 - 보고서 초안과 사람 검토 상태
 - 역할/provider/model/session별 LLM invocation log
 - AST/SAST·LLM·sandbox 자원과 모든 오류

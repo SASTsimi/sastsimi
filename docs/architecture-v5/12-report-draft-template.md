@@ -135,6 +135,7 @@ Verification TRUE
 
 ## 8. CWE
 
+- 검토한 CWELabel revision: `{cwe_label_ref.record_id}`
 - primary: `{CWE-ID and name}`
 - taxonomy version: `{version}`
 - 선택 이유와 evidence: `{rationale and refs}`
@@ -154,6 +155,7 @@ Verification TRUE
 
 - 상태: `ACCEPT`
 - 검토한 Verification revision: `{verification_result_ref.record_id}`
+- 검토한 CWELabel revision: `{cwe_label_ref.record_id}`
 - verdict-evidence/코드 흐름/동적 연결: `{assessment}`
 - CWE/restriction/handoff: `{assessment}`
 - revision 이력: `{history or none}`
@@ -162,11 +164,14 @@ Verification TRUE
 
 - 검토한 Verification revision: `{verification_result_ref.record_id}`
 - 검토한 Technical review revision: `{technical_review_ref.record_id}`
+- 검토한 CWELabel revision: `{cwe_label_ref.record_id}`
 - 검토한 정책 revision: `{policy_record_ref.record_id}`
 - overall/rule/scope: `PASS / PASS / PASS`
 - impact: `SUFFICIENT`
 - 정책 근거와 판단 이유: `{policy refs and rationale}`
 - report permission: `ALLOW`
+
+위 세 위치의 `cwe_label_ref.record_id`는 같아야 한다. CWELabel이 수정되면 기존 Gate 결과와 보고서 초안을 재사용하지 않는다.
 
 ## 11. LLM invocation trace와 오류
 

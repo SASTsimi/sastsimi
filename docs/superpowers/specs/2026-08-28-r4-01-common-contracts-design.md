@@ -49,7 +49,7 @@
 | `external_program_id` | 외부 플랫폼 | 같은 `program_namespace` | 같은 외부 프로그램을 재참조 가능 | `ProgramPolicyRecord` |
 | `revision_number` | 새 revision을 저장하는 runtime | 같은 논리 결과 | 1부터 1씩 증가 | `RunMeta`와 `RecordMeta` |
 
-시스템이 만든 ID는 다른 대상에 재사용하지 않는다. `commit_id`와 `external_program_id`는 외부 대상을 가리키므로 같은 대상을 여러 분석에서 다시 참조할 수 있다. 외부 프로그램은 `(program_namespace, external_program_id)`로 구분하고 내부의 전역 `program_id`에 매핑한다. `root_hypothesis_id`, 부모·source·target 가설 ID와 retry/failover 호출 ID는 기존 ID를 가리키는 참조 필드다. 일반 retry는 `retry_of_llm_call_id`, provider/model 전환은 `failover_from_llm_call_id`로 바로 앞 실패 호출을 가리키며 두 필드는 상호 배타적이다. 로컬 코드 폴더가 삭제돼도 성공한 `workspace_id → repository_url + commit_id` 연결 정보는 남긴다.
+시스템이 만든 ID는 다른 대상에 재사용하지 않는다. `commit_id`와 `external_program_id`는 외부 대상을 가리키므로 같은 대상을 여러 분석에서 다시 참조할 수 있다. 외부 프로그램은 `(program_namespace, external_program_id)`로 구분하고 내부의 전역 `program_id`에 매핑한다. `root_hypothesis_id`, 부모·source·target 가설 ID와 retry/failover 호출 ID는 기존 ID를 가리키는 참조 필드다. 일반 retry는 `retry_of_llm_call_id`, provider/model 전환은 `failover_from_llm_call_id`로 바로 앞의 허용된 실패 호출을 가리키며 두 필드는 상호 배타적이다. 로컬 코드 폴더가 삭제돼도 성공한 `workspace_id → repository_url + commit_id` 연결 정보는 남긴다.
 
 분석 시작·clone 실패처럼 코드가 아직 준비되지 않은 실행 record는 `analysis_id`만 필수인 `RunMeta`를 쓴다. `AnalysisRunState`와 `AnalysisRunResult`의 `workspace_id`, `commit_id`는 준비 전 `null`일 수 있고 실제 값이 기록된 뒤에는 바꾸지 않는다. 코드 근거를 담는 record는 두 값이 필수인 `RecordMeta`를 사용하며 `CodeWorkspace.status=READY`인 같은 commit만 참조한다.
 
@@ -61,7 +61,7 @@ R2 교차 검토에 따라 정적 결과는 `CodeFact`, `CodeRelation`, `ToolRun
 
 실행 자료 참조도 분리한다. `RunStoredDataRef`는 `analysis_id`로 입력 검증, clone·checkout 오류와 전체 debug trace를 가리키며 commit이 없어도 된다. `StoredDataRef`는 `workspace_id + commit_id`가 있는 코드 근거·PoC·보고서용 자료만 가리킨다. `RunStoredDataRef`를 코드 주장 근거로 사용할 수 없다.
 
-저장된 record revision을 가리키는 `StoredDataRef`는 전역 `record_id`를 포함한다. raw 도구 결과나 코드 조각처럼 독립 artifact이면 `record_id=null`이다. Technical Gate의 `verification_result_ref.record_id`는 필수이며 Gate가 읽은 정확한 `VerificationResult` revision을 고정한다. Rule Scope Gate도 `verification_result_ref`, `technical_review_ref`와 nullable `policy_record_ref`로 자신이 읽은 입력 revision을 고정한다. 입력 revision이 수정되면 이전 Gate 결과를 재사용하지 않고, Reporter는 자신이 참조한 네 결과와 두 Gate 내부 참조가 모두 같은 revision chain인지 확인한다.
+저장된 record revision을 가리키는 `StoredDataRef`는 전역 `record_id`를 포함한다. raw 도구 결과나 코드 조각처럼 독립 artifact이면 `record_id=null`이다. Technical Gate의 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 필수이며 Gate가 읽은 정확한 Verification과 CWELabel revision을 고정한다. Rule Scope Gate도 `verification_result_ref`, `technical_review_ref`, `cwe_label_ref`와 nullable `policy_record_ref`로 자신이 읽은 입력 revision을 고정한다. 입력 revision이 수정되면 이전 Gate 결과를 재사용하지 않고, Reporter는 자신이 참조한 Verification·Technical review·Rule Scope review·CWELabel·정책과 두 Gate 내부 참조가 모두 같은 revision chain인지 확인한다.
 
 ## 4. 가설 관계 결정
 
@@ -140,7 +140,19 @@ proposal 검증 상태의 `meta.hypothesis_id`는 항상 `null`이다. `SCHEMA_V
 
 필수 환경이나 공격 경로를 실행하지 못하면 `FAILED + ENVIRONMENT_SETUP`이다. 유효한 관측이 하나 이상 있지만 환경 차이로 전체 확인이 부족하면 `PARTIAL + NONE + INCONCLUSIVE`이며 evidence와 limitations가 각각 하나 이상 필요하다. `DISPROVED`일 때만 `hypothesis_disproved=true`와 비어 있지 않은 `disproof_evidence_refs`를 사용한다. 실행하지 못함, timeout, 정책 차단, 빈 stdout과 exit code만으로는 반증이 될 수 없다.
 
-## 9. 계약 버전과 revision 결정
+## 9. 세부 공통 타입과 revision 연결 결정
+
+- `EvidenceClaim`은 한 Verification 안에서 유일한 `claim_id`, 작성 역할, 실제 `StoredDataRef`, 코드 주장에 필요한 현재 workspace·commit의 위치와 limitation을 가진다.
+- `CandidateRef`는 우회·대체 경로·영향 확대의 `UNVALIDATED` 후보이며 material claim이면 새 가설로 재검증하기 전까지 확정 결과로 사용할 수 없다.
+- `VerificationMetrics`는 debate token·시간·판정 변화와 새 발견 수를 기록한다. provider가 제공하지 않은 token은 `null`로 남긴다.
+- `PolicyItem`은 정책 값·조건과 `ProgramPolicyRecord.source_refs`에 포함된 공식 출처·원문 위치를 연결한다.
+- `PrimitiveMatchCandidate`는 같은 workspace·commit의 REQUIRED/PROVIDED primitive를 asset·entity·privilege·attack order·restriction check와 근거로 연결한다. 호환 실패 항목이 있으면 만들지 않고 모든 후보는 `UNVALIDATED`다.
+
+Technical review, Rule Scope review와 ReportDraft는 모두 정확한 `cwe_label_ref.record_id`를 가진다. Technical review와 Rule Scope review가 가리킨 CWELabel이 같아야 하고, ReportDraft도 같은 revision을 사용한다. CWELabel이 수정되면 두 Gate와 보고서 초안을 다시 생성한다.
+
+LLM retry와 failover는 바로 앞 호출의 status가 `FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED`일 때만 허용한다. `INVALID_OUTPUT`은 repair, `RATE_LIMITED`는 backoff, `AUTH_REQUIRED`는 재인증 또는 별도 인증된 fallback 조건을 충족해야 한다. `SUCCEEDED | CANCELLED` 뒤에는 같은 chain을 잇지 않는다.
+
+## 10. 계약 버전과 revision 결정
 
 `schema_version`은 `MAJOR.MINOR.PATCH` 형식이다.
 
@@ -150,7 +162,7 @@ proposal 검증 상태의 `meta.hypothesis_id`는 항상 `null`이다. `SCHEMA_V
 
 명시된 enum은 모두 닫힌 enum이므로 목록에 없는 값을 추정해 처리하지 않는다. 소비자는 지원하지 않는 MAJOR를 거절하고 `SCHEMA_UNSUPPORTED`를 기록한다. 알 수 없는 선택 필드는 보존하거나 무시할 수 있지만 의미를 추정하지 않는다. 기존 record를 새 schema 의미로 덮어쓰지 않고 같은 `logical_record_id` 아래 새 `record_id`와 `revision_number`를 만든다. revision의 유일 키는 `(logical_record_id, revision_number)`이며 `previous_record_id`는 같은 논리 결과의 바로 이전 revision만 가리킨다. 모든 revision은 같은 `record_type`, `analysis_id`를 유지하고, 코드에 묶인 `RecordMeta`는 `workspace_id`, `commit_id`, `hypothesis_id`도 유지한다. `RunMeta` 기반 record의 workspace·commit은 `null`에서 실제 값으로 한 번만 묶을 수 있다.
 
-## 10. 필수 실패 시나리오
+## 11. 필수 실패 시나리오
 
 1. clone 실패: 분석 실행 `FAILED`, `CLONE_FAILED`, 가설 verdict 없음
 2. 일부 SAST 실패: 사용 가능한 사실과 `DataGap`, 분석 실행은 `PARTIAL` 가능
@@ -162,7 +174,9 @@ proposal 검증 상태의 `meta.hypothesis_id`는 항상 `null`이다. `SCHEMA_V
 8. workspace·commit 불일치: `WORKSPACE_MISMATCH`, 해당 근거 사용 금지
 9. revision 불일치: `RECORD_REVISION_MISMATCH`, 자동 병합 금지
 10. schema MAJOR 미지원: `SCHEMA_UNSUPPORTED`, 새 의미 추정 금지
+11. 성공 호출 뒤 retry/failover 연결: `INVOCATION_CHAIN_INVALID`, 같은 chain 사용 금지
+12. CWELabel revision 불일치: 두 Gate와 Reporter 결과 재사용 금지
 
-## 11. 완료와 교차 검토
+## 12. 완료와 교차 검토
 
 문서 작성과 자동 검증이 끝나도 R4-01은 바로 완료되지 않는다. R2·R6·R7·R3 담당자가 각자 생산·소비하는 필드 의미를 확인한 기록이 있어야 Issue #13의 교차 검토 조건을 충족한다. 그 전까지 H-002는 `IN_PROGRESS`이며 “계약 작성 완료, 교차 검토 대기”로 표시한다.

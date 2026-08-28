@@ -22,9 +22,9 @@
 | `verifications` | Pro/Con, initial/final verdict, restriction/capability, CWE |
 | `primitives` | HeldHypothesis, ConfirmedCapability와 match candidates |
 | `research` | `ResearchResult`, new claim과 validation state |
-| `gates` | Technical 및 Rule Scope Impact review와 revision |
+| `gates` | Technical 및 Rule Scope Impact review와 Verification·CWELabel·정책 input revision refs |
 | `policies` | 공식 `ProgramPolicyRecord`과 source refs |
-| `reports` | 허용된 `ReportDraft`와 human state |
+| `reports` | 허용된 `ReportDraft`, 두 Gate와 같은 CWELabel revision ref와 human state |
 | `invocations` | normalized `LLMInvocationLog`와 safe provider/session metadata |
 | `dynamic` | sandbox 실행, PoC, output refs와 cleanup |
 | `runs` | 전체 요약·자원·오류·시간·debug event |
@@ -59,6 +59,8 @@ raw log는 최소 권한과 짧은 보존 기간으로 다루며 parser 실패�
 - provider가 공개한 token/usage 또는 `unavailable`
 - elapsed time, 일반 retry의 `retry_of_llm_call_id`와 provider/model 전환의 `failover_from_llm_call_id`
 - redaction 적용·실패 결과
+
+retry/failover reference는 바로 앞 호출의 status가 `FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED`일 때만 유효하다. `SUCCEEDED | CANCELLED`를 선행 호출로 연결하거나 재인증·backoff·repair 같은 상태별 조건을 건너뛴 관계는 `INVOCATION_CHAIN_INVALID`로 기록하고 사용하지 않는다.
 
 credential, cookie, reusable authorization header, 전체 browser profile, hidden reasoning과 불필요한 전체 코드 원문은 저장하지 않는다.
 

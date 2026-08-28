@@ -10,7 +10,7 @@
 
 ## 신뢰 실행 경계
 
-LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM runtime validator가 허용된 tool, 코드 근거의 `workspace_id`·`commit_id` 일치, 지원하는 schema MAJOR, `(logical_record_id, revision_number)` 연결, 상태 전이, token/time/retry/chain budget, sandbox와 network 정책, provider/session 선택, Gate 순서, Reporter 전제조건을 강제한다. 저장소 내용과 모든 LLM 출력은 validation 전까지 비신뢰 입력이며 policy 변경 명령으로 해석하지 않는다.
+LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM runtime validator가 허용된 tool, 코드 근거의 `workspace_id`·`commit_id` 일치, 지원하는 schema MAJOR, `(logical_record_id, revision_number)` 연결, 상태 전이, retry/failover 선행 status와 token/time/retry/chain budget, sandbox와 network 정책, provider/session 선택, Gate가 읽은 Verification·CWELabel·정책 revision, Reporter 전제조건을 강제한다. 저장소 내용과 모든 LLM 출력은 validation 전까지 비신뢰 입력이며 policy 변경 명령으로 해석하지 않는다.
 
 ## 방향
 
@@ -81,10 +81,10 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - `FALSE` verdict → `DISPROVED` falsification question과 실제 evidence
 - verdict → Pro/Con/dynamic evidence와 restriction
 - Primitive/Research candidate → source result와 아직 검증되지 않은 상태
-- CWE → evidence와 uncertainty
-- Technical review → 정확한 Verification revision
-- Rule/Scope review → 정확한 Verification·Technical review와 `ProgramPolicyRecord` revision
-- report claim → 통과한 result와 두 Gate
+- CWE → 정확한 `CWELabel` revision, evidence와 uncertainty
+- Technical review → 정확한 Verification·CWELabel revision
+- Rule/Scope review → 정확한 Verification·Technical review·CWELabel과 `ProgramPolicyRecord` revision
+- report claim → 통과한 result, 두 Gate와 두 Gate가 공통으로 검토한 CWELabel revision
 
 Research, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출을 승인한다.
 

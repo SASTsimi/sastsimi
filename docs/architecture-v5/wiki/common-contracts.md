@@ -81,7 +81,15 @@ Docker 환경을 만들지 못했거나 실행이 timeout된 것은 재현 실�
 
 빈 출력, exit code와 `FAILED | BLOCKED | CANCELLED`만으로는 가설을 `FALSE`로 바꿀 수 없습니다.
 
-Technical Gate는 `verification_result_ref.record_id`로 자신이 읽은 Verification 수정본을 정확히 기록합니다. Verification이 수정되면 이전 Gate 승인을 새 수정본에 재사용하지 않습니다. `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
+Technical Gate는 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 자신이 읽은 Verification과 CWELabel 수정본을 정확히 기록합니다. 둘 중 하나가 수정되면 이전 Gate 승인을 새 수정본에 재사용하지 않습니다. Rule Scope Gate와 보고서 초안도 같은 CWELabel `record_id`를 사용해야 합니다. `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
+
+## 자주 쓰는 작은 데이터 구조
+
+- `EvidenceClaim`: 찬성·반대 주장, 작성 역할, 실제 근거와 코드 위치를 한 묶음으로 저장합니다.
+- `CandidateRef`: 아직 검증되지 않은 우회·대체 경로·영향 확대 후보입니다. 새 주장이면 별도 가설로 검증하기 전까지 확정 결과로 쓰지 않습니다.
+- `VerificationMetrics`: debate의 token·시간·판정 변화와 새로 발견한 항목 수를 저장합니다. 제공되지 않은 token은 `null`입니다.
+- `PolicyItem`: 공식 정책의 항목 하나와 원문을 다시 찾을 수 있는 출처 위치를 연결합니다.
+- `PrimitiveMatchCandidate`: REQUIRED와 PROVIDED 능력의 자산·코드 대상·권한·공격 순서·제한 조건 호환성을 기록한 미검증 연결 후보입니다.
 
 ## 계약이 바뀌면 어떻게 하나요?
 
