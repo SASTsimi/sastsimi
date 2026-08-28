@@ -14,7 +14,7 @@ Verification Agent는 가설이 실제 코드 흐름과 실행 조건에서 성�
 
 ## 기본 검증 순서
 
-1. 가설의 snapshot, entity, location과 suspected path를 확인한다.
+1. 가설의 `workspace_id`, 연결된 `commit_id`, entity, location과 suspected path를 확인한다.
 2. `CodeContextRequest`로 caller/callee, data flow, auth guard와 route 문맥을 필요한 만큼 조회한다.
 3. observed fact와 assumption을 분리하고 falsification question을 확인한다.
 4. BASIC 또는 debate 모드로 supporting/counter evidence를 수집한다.
@@ -59,7 +59,7 @@ Verification Agent는 가설이 실제 코드 흐름과 실행 조건에서 성�
 
 named falsification으로 빠르게 반증되었거나, 명확한 duplicate/unsupported hypothesis이고, 추가 독립 검토의 예상 가치가 낮으며 예산이 부족할 때는 생략 사유를 기록하고 BASIC으로 종료할 수 있다.
 
-Pro와 Con은 context contamination을 막기 위해 서로 다른 NEW session에서 시작한다. 동일한 snapshot과 가설을 받지만 상대 Agent의 결론은 입력받지 않는다. Verification Agent가 두 결과와 직접 확인한 사실을 종합한다.
+Pro와 Con은 context contamination을 막기 위해 서로 다른 NEW session에서 시작한다. 동일한 `workspace_id`·`commit_id`와 가설을 받지만 상대 Agent의 결론은 입력받지 않는다. Verification Agent가 두 결과와 직접 확인한 사실을 종합한다.
 
 ## Debate 효과 측정
 
@@ -100,7 +100,8 @@ Pro와 Con은 context contamination을 막기 위해 서로 다른 NEW session�
 
 ### 실행 경계
 
-- 고정 snapshot과 승인된 Docker image/digest 사용
+- 같은 `workspace_id`와 `commit_id`, 승인된 Docker image/digest 사용
+- Docker build와 실행은 분석용 `CodeWorkspace`를 직접 수정하지 않고 sandbox 내부 복사본에서 수행
 - 기본 network deny, resource/time/process 제한, non-root와 read-only mount 우선
 - host socket, host secret, production credential과 범위 밖 target 접근 금지
 - 동적 결과의 exit code, stdout/stderr reference, artifact hash와 hypothesis 연결 저장

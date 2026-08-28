@@ -20,8 +20,8 @@ Primitive는 공격 경로에서 필요하거나 제공되는 최소 능력을 �
 primitive:
   primitive_id: prim-001
   primitive_type: object_identifier_read
-  scope:
-    snapshot_id: sha256:...
+  target:
+    workspace_id: sha256:...
     asset: order-service
     entity_refs: [entity:OrderController.update]
     privilege_level: authenticated_user
@@ -48,7 +48,7 @@ Primitive DB는 worker가 항목을 꺼내 실행하는 queue가 아니다. hypo
 
 REQUIRED와 PROVIDED의 문자열이 같다는 이유만으로 연결하지 않는다. 최소한 다음을 확인한다.
 
-- 동일하거나 명시적으로 호환되는 snapshot
+- 동일한 `workspace_id`와 `commit_id`
 - 같은 asset 또는 설명 가능한 asset 간 이동
 - entity/endpoint와 데이터 형식의 호환성
 - provided privilege가 required privilege를 충족하는지
