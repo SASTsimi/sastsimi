@@ -39,13 +39,13 @@ NOT_IMPLEMENTED
 5. 파트 간 모순과 Blocker/High 이슈를 제거한 뒤 전체 설계를 승인합니다.
 6. 승인된 설계를 기준으로 구현 계획과 검증 계획을 별도 수립합니다.
 
-가져온 원본은 commit에 포함되지 않은 작업 폴더의 파일이었습니다. 따라서 특정 commit에서 나온 파일이라고 주장하지 않습니다. 원본 상태와 파일별 SHA-256은 [가져온 출처 기록](./docs/review/PROVENANCE.md)에 남깁니다. 이 저장소에서 승인된 저장소 사본(`snapshot`)만 별도 PR을 통해 구현 저장소로 전달합니다.
+가져온 원본은 commit에 포함되지 않은 작업 폴더의 파일이었습니다. 따라서 특정 commit에서 나온 파일이라고 주장하지 않습니다. 원본 상태와 파일별 SHA-256은 [가져온 출처 기록](./docs/review/PROVENANCE.md)에 남깁니다. 이 저장소에서 승인된 설계 commit만 별도 PR을 통해 구현 저장소로 전달합니다.
 
 ## 전체 분석 흐름
 
 쉽게 나누면 다음과 같습니다.
 
-1. **코드 사실 수집**: 저장소 시점을 고정하고 AST와 SAST를 함께 실행합니다.
+1. **코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다.
 2. **가설 생성과 검증**: LLM이 취약점 가능성을 제안하고 찬성·반대 근거를 확인합니다.
 3. **필요한 경우 재현**: Docker 격리 환경에서 제한적으로 공격 흐름을 재현합니다.
 4. **연계 가능성 탐색**: 확인된 조건과 능력을 연결해 새 가설을 만듭니다.
@@ -56,7 +56,8 @@ NOT_IMPLEMENTED
 
 ```text
 Repository input
-→ RepositorySnapshot 고정
+→ Repository Loader가 git clone과 commit checkout
+→ CodeWorkspace 준비
 → AST parse와 SAST 병렬 실행
 → StaticFactBundle
 → constrained HypothesisProposal

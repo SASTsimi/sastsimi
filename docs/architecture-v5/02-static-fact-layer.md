@@ -10,7 +10,7 @@
 
 ## 정적 분석의 역할
 
-AST parser와 SAST 도구는 취약점 판정기가 아니라 LLM Agent가 확인할 사실 후보의 공급자다. 같은 `RepositorySnapshot`에서 병렬 실행하고 다음 정보를 공통 형식으로 정규화한다.
+AST parser와 SAST 도구는 취약점 판정기가 아니라 LLM Agent가 확인할 사실 후보의 공급자다. 같은 `CodeWorkspace`에서 병렬 실행하고 다음 정보를 공통 형식으로 정규화한다.
 
 - source, sink, sanitizer와 validator 후보
 - 함수·메서드·클래스·route·configuration 등 entity
@@ -28,7 +28,7 @@ SAST rule hit와 불완전한 경로는 관찰된 사실 후보이지 취약점 
 
 ```yaml
 static_fact_bundle:
-  snapshot_id: sha256:...
+  workspace_id: sha256:...
   entities: []
   locations: []
   source_candidates: []
@@ -41,7 +41,7 @@ static_fact_bundle:
   gaps: []
 ```
 
-각 항목은 가능한 경우 `snapshot_id`, `entity_ref`, `location_ref`, producer와 원본 artifact reference를 갖는다. 정규화 계층은 서로 다른 도구 결과를 병합하되 충돌이나 불확실성을 지우지 않는다.
+각 항목은 가능한 경우 `workspace_id`, `entity_ref`, `location_ref`, producer와 원본 artifact reference를 갖는다. 정규화 계층은 서로 다른 도구 결과를 병합하되 충돌이나 불확실성을 지우지 않는다.
 
 ## 위치 기반 on-demand retrieval
 
@@ -49,7 +49,7 @@ Hypothesis Agent는 전체 코드가 아니라 entity, location과 suspected pat
 
 1. 가설의 `entity_ref`, `location_ref`, `suspected_path`에서 시작한다.
 2. 분석 목적에 맞는 관계를 명시한다.
-3. Context Retrieval Service가 동일 snapshot 여부와 budget을 검증한다.
+3. Context Retrieval Service가 동일한 `workspace_id`와 연결된 `commit_id`인지, 요청이 budget 안인지 검증한다.
 4. 허용된 깊이까지 필요한 fragment와 관계만 조회한다.
 5. `CodeContextResponse`에 반환 위치·관계·gap을 기록한다.
 6. 실제 LLM 호출이 열람한 location reference를 `LLMInvocationLog`에 남긴다.
@@ -66,9 +66,9 @@ Hypothesis Agent는 전체 코드가 아니라 entity, location과 suspected pat
 
 ```yaml
 code_context_request:
-  request_id: ctxreq-001
+  code_code_request_id: ctxreq-001
   hypothesis_id: hyp-001
-  snapshot_id: sha256:...
+  workspace_id: sha256:...
   requested_entities: [entity:OrderController.update]
   requested_locations: [loc:src/order.ts:41]
   relation_query: [CALLERS, AUTH_GUARDS]
@@ -79,8 +79,8 @@ code_context_request:
 
 ```yaml
 code_context_response:
-  request_id: ctxreq-001
-  snapshot_id: sha256:...
+  code_code_request_id: ctxreq-001
+  workspace_id: sha256:...
   entities: []
   locations: []
   code_fragment_refs: []
@@ -92,10 +92,12 @@ code_context_response:
 
 ## 일관성·예산·보안 규칙
 
-- 응답의 `snapshot_id`가 가설의 snapshot과 다르면 사용하지 않고 오류로 기록한다.
+- 응답의 `workspace_id`가 가설과 다르거나 작업공간의 `commit_id`가 분석 대상과 다르면 사용하지 않고 `WORKSPACE_MISMATCH`로 기록한다.
 - `max_depth`, fragment 수, byte/token budget, 요청 횟수와 wall-clock limit을 적용한다.
 - 반복 요청은 normalized request fingerprint로 탐지한다.
-- symlink escape, submodule drift와 path traversal을 차단하고 snapshot root 안의 파일만 읽는다.
+- symlink escape, submodule drift와 path traversal을 차단하고 `workspace_root` 안의 파일만 읽는다.
+- `file_path`는 `workspace_root` 기준 상대 경로이고 줄과 열 번호는 1부터 시작한다.
+- 분석 중 HEAD 또는 추적 파일이 바뀌면 `WORKSPACE_CHANGED`로 기록하고 해당 작업공간의 새 결과를 사용하지 않는다.
 - 민감 파일과 생성물 제외 정책을 적용하되 제외 사실은 gap으로 남긴다.
 - LLM log에는 전달된 위치와 artifact reference를 우선 저장하고 전체 코드 원문 복제를 기본값으로 삼지 않는다.
 - truncation이나 unresolved symbol은 숨기지 않고 `gaps`와 `truncated`에 표시한다.
