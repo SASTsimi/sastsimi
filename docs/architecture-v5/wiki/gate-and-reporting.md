@@ -10,7 +10,7 @@ Gate는 검증 판정을 직접 바꾸지 않고 Reporter는 외부 공개를 �
 
 ## 1. 기술 근거 검토(`Technical Evidence Gate`)
 
-final `VerificationResult`의 verdict와 찬반 근거, 실제 코드·호출·데이터 흐름, 동적 결과, CWE, restriction와 HOLD 표현을 검토한다. 출력은 `ACCEPT | REVISE | REJECT`이며 verdict를 직접 바꾸지 않는다. `REVISE`는 Verification 또는 Research가 실제 보완한 뒤 재검토한다.
+final `VerificationResult`의 verdict와 찬반 근거, 실제 코드·호출·데이터 흐름, 동적 결과, CWE, restriction와 HOLD 표현을 검토한다. 이때 `verification_result_ref.record_id`로 정확히 어느 검증 결과 버전을 검토했는지 고정한다. 검증 결과가 수정되면 기존 Gate 결과를 재사용하지 않고 다시 검토한다. 출력은 `ACCEPT | REVISE | REJECT`이며 verdict를 직접 바꾸지 않는다. `REVISE`는 Verification 또는 Research가 실제 보완한 뒤 재검토한다.
 
 ## 2. 공식 정책·범위·영향 검토(`Rule Scope Impact Gate`)
 

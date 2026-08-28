@@ -30,7 +30,7 @@
 | `workspace_id` | Repository Loader | 전체 시스템 | 변경·재사용 금지 | `CodeWorkspace`와 `runs` |
 | `commit_id` | checkout 뒤 Repository Loader가 확인 | Git 저장소 | 같은 commit을 여러 분석에서 참조 가능, 값 변경 금지 | `CodeWorkspace`, 코드 위치와 모든 핵심 결과 |
 | `stored_data_id` | 결과 저장 계층 | 전체 시스템 | 변경·재사용 금지 | 각 논리 저장 영역 |
-| `record_id` | record 저장 직전의 runtime | 전체 시스템 | revision마다 새 값 | 각 record |
+| `record_id` | record 저장 직전의 runtime | 전체 시스템 | revision마다 새 값 | 각 record와 정확한 revision을 가리키는 `StoredDataRef` |
 | `logical_record_id` | 논리 결과를 처음 저장하는 runtime | 전체 시스템 | 같은 결과의 revision에서 유지 | `RunMeta`와 `RecordMeta` |
 | `hypothesis_id` | proposal 검증을 통과시킨 runtime | 전체 시스템 | 변경·재사용 금지 | `hypotheses` |
 | `attempt_id` | 재시도 가능한 작업을 시작하는 runtime | 전체 시스템 | 시도마다 새 값 | 해당 결과와 debug trace |
@@ -41,6 +41,7 @@
 | `gap_id` | gap을 발견한 runtime | 전체 시스템 | gap마다 새 값 | `DataGap` |
 | `error_id` | 오류를 기록한 runtime | 전체 시스템 | 오류 사건마다 새 값 | `AnalysisError` |
 | `proposal_id` | proposal 출력 검증 runtime | 전체 시스템 | proposal마다 새 값 | `HypothesisProposal` |
+| `question_id` | proposal 출력 검증 runtime | 전체 시스템 | proposal에서 등록 가설로 유지하고 다른 질문에 재사용 금지 | `FalsificationQuestion/Result` |
 | `code_request_id` | Agent Runtime | 전체 시스템 | 요청·응답 한 쌍에서 유지 | `CodeContextRequest/Response` |
 | `primitive_id` | primitive 저장 runtime | 전체 시스템 | primitive마다 새 값 | `Primitive` |
 | `policy_record_id` | 정책 수집 결과 저장 runtime | 전체 시스템 | 정책 수집본마다 새 값 | `ProgramPolicyRecord` |
@@ -60,6 +61,8 @@ R2 교차 검토에 따라 정적 결과는 `CodeFact`, `CodeRelation`, `ToolRun
 
 실행 자료 참조도 분리한다. `RunStoredDataRef`는 `analysis_id`로 입력 검증, clone·checkout 오류와 전체 debug trace를 가리키며 commit이 없어도 된다. `StoredDataRef`는 `workspace_id + commit_id`가 있는 코드 근거·PoC·보고서용 자료만 가리킨다. `RunStoredDataRef`를 코드 주장 근거로 사용할 수 없다.
 
+저장된 record revision을 가리키는 `StoredDataRef`는 전역 `record_id`를 포함한다. raw 도구 결과나 코드 조각처럼 독립 artifact이면 `record_id=null`이다. Technical Gate의 `verification_result_ref.record_id`는 필수이며 Gate가 읽은 정확한 `VerificationResult` revision을 고정한다. Verification이 수정되면 이전 Gate 결과를 재사용하지 않는다.
+
 ## 4. 가설 관계 결정
 
 초기·Research·체이닝 가설은 모두 독립 `hypothesis_id`를 가진다.
@@ -70,6 +73,8 @@ R2 교차 검토에 따라 정적 결과는 `CodeFact`, `CodeRelation`, `ToolRun
 - `chain_depth`: 초기 가설은 `0`, 자식은 부모의 최대 깊이보다 `1` 크다.
 
 부모 verdict와 자식 verdict는 서로 덮어쓰지 않는다. `TRUE + TRUE` 결합도 새 가설을 만들며 부모 결과를 수정하지 않는다.
+
+proposal 출력 검증 runtime은 각 named falsification 질문에 전역 `question_id`를 부여하고 등록 가설까지 유지한다. 최종 `VerificationResult`는 모든 질문을 `DISPROVED | NOT_DISPROVED | INCONCLUSIVE` 중 하나로 평가한다. `DISPROVED`에는 실제 evidence가 필요하다. `FALSE`는 적어도 하나의 근거 있는 `DISPROVED`와 그 질문을 설명하는 판정 이유가 있을 때만 허용한다. `NOT_DISPROVED`는 가설 성립 증거가 아니다.
 
 ## 5. 시간 결정
 
@@ -116,8 +121,8 @@ proposal 검증 상태의 `meta.hypothesis_id`는 항상 `null`이다. `SCHEMA_V
 
 - 생산자: 모든 runtime·adapter·sandbox·Gate·Reporter
 - 소비자: Orchestration runtime, 결과 집계, 운영자·사람 검토
-- 필수 정보: `error_id`, `stage`, `code`, 안전한 메시지, retry 가능 여부, 관련 record, 발생 시각
-- credential, 절대 로컬 경로와 민감한 원문은 메시지에 넣지 않는다.
+- 필수 정보: `error_id`, `stage`, `code`, `safe_message`, retry 가능 여부, 관련 record, 발생 시각
+- `safe_message`에는 credential, 절대 로컬 경로, 개인정보와 session secret을 넣지 않는다. 원본 오류는 별도 접근 통제·redaction·보존 정책이 적용된 artifact로 분리한다.
 - 모든 오류는 `AnalysisRunResult.errors`와 debug trace에 전달한다. 특정 가설·호출·동적 실행 오류는 해당 전문 결과에도 포함하거나 `related_record_ids`로 연결한다.
 - Gate 오류는 보고서 전달을 막고, provider·sandbox·context 오류는 기존 verdict를 자동으로 바꾸지 않는다.
 

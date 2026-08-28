@@ -27,6 +27,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - depth/token/request budget과 반환 location을 기록한다.
 - 누락·truncation은 안전함 또는 `FALSE`로 해석하지 않는다.
 - 지원하지 않는 schema MAJOR는 `SCHEMA_UNSUPPORTED`로 거절한다. 같은 `logical_record_id`가 아니거나 바로 이전 revision과 이어지지 않는 수정본은 `RECORD_REVISION_MISMATCH`로 거절하고 자동 변환·병합하지 않는다. `RunMeta`의 workspace·commit은 `null`에서 실제 값으로만 바인딩할 수 있고, 코드 근거 `RecordMeta`에서는 두 값이 필수·불변이다.
+- 저장된 record를 가리키는 `StoredDataRef.record_id`는 참조 대상 revision의 workspace·commit·hypothesis·내용 hash와 모두 일치해야 한다. Technical Gate가 검토한 Verification revision이 바뀌면 이전 Gate 결과를 재사용하지 않는다.
 
 ## 2. 저장소와 외부 텍스트는 비신뢰 데이터
 
@@ -50,6 +51,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - raw membership session log는 제한된 접근·짧은 보존·provider parser·redaction을 거친다.
 - redaction 실패 artifact는 일반 관측 저장소로 전달하지 않고 오류로 격리한다.
 - session reference 자체가 재사용 가능한 secret이면 hash/opaque handle로 대체한다.
+- `AnalysisError.safe_message`에는 credential, 개인정보, session secret, authorization header와 절대 로컬 경로를 넣지 않는다. 원본 오류는 별도 접근 통제와 redaction을 거친 artifact로만 보관한다.
 
 ## 5. Docker sandbox
 
@@ -74,8 +76,9 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 다음 연결을 보존한다.
 
 - tool observation → 현재 `workspace_id`의 `CodeLocation`
-- hypothesis claim → observed fact/assumption/falsification
+- hypothesis claim → observed fact/assumption과 `question_id`가 있는 falsification
 - retrieved context → request와 실제 location
+- `FALSE` verdict → `DISPROVED` falsification question과 실제 evidence
 - verdict → Pro/Con/dynamic evidence와 restriction
 - Primitive/Research candidate → source result와 아직 검증되지 않은 상태
 - CWE → evidence와 uncertainty

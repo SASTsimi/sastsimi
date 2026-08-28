@@ -28,6 +28,8 @@ Pro와 Con은 서로의 결과를 받지 않는 별도 NEW session이다. trigge
 - `FALSE`: named falsification이 가설을 반증함
 - `HOLD`: 핵심 문맥·환경·조건이 부족하거나 충돌함
 
+각 반증 질문에는 `question_id`가 있습니다. 검증 결과는 질문마다 `DISPROVED`, `NOT_DISPROVED`, `INCONCLUSIVE` 중 하나와 근거를 남깁니다. 실제 근거가 있는 `DISPROVED`가 하나 이상일 때만 `FALSE`가 가능합니다. `NOT_DISPROVED`는 반증하지 못했다는 뜻일 뿐 가설을 증명하지 않습니다.
+
 | 모드 | 목적 |
 |---|---|
 | `NOT_REQUIRED` | 정적 근거로 현재 판정 가능 |

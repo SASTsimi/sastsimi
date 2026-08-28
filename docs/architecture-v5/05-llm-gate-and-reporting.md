@@ -12,7 +12,7 @@
 
 v5에는 책임이 다른 두 LLM 검토 Agent가 있다.
 
-1. `CWELabel`을 포함한 final `VerificationResult`를 Technical Evidence Gate Agent가 검토한다.
+1. `CWELabel`을 포함한 final `VerificationResult`의 정확한 `record_id` revision을 Technical Evidence Gate Agent가 검토한다.
 2. Technical 결과가 `ACCEPT`이고 Verification verdict가 `TRUE`일 때만 Rule Scope Impact Gate Agent를 호출한다.
 3. 두 Gate와 impact·permission 조건을 모두 통과했을 때만 Reporter Agent를 호출한다.
 
@@ -27,7 +27,7 @@ CWE 후보는 final verdict 뒤에 작성한다. primary·alternative CWE, taxon
 ### 입력
 
 - `VulnerabilityHypothesis`
-- final `VerificationResult`와 revision history
+- final `VerificationResult`의 정확한 `record_id`가 있는 `StoredDataRef`와 revision history
 - Pro/Con evidence와 debate mode/trigger
 - 실제 code/entity/location/path reference
 - `DynamicReproductionResult`와 PoC reference
@@ -48,6 +48,13 @@ CWE 후보는 final verdict 뒤에 작성한다. primary·alternative CWE, taxon
 
 ```yaml
 technical_evidence_review:
+  verification_result_ref:
+    stored_data_id: data-verification-001
+    data_kind: verification_result
+    content_hash: sha256:example
+    workspace_id: ws-001
+    commit_id: 7f3a2c1
+    record_id: rec-verification-003
   status: ACCEPT | REVISE | REJECT
   evidence_verdict_alignment: explanation
   code_flow_linkage: explanation
@@ -63,6 +70,8 @@ technical_evidence_review:
 - `ACCEPT`: 현재 verdict와 기술 설명이 검토 가능한 근거에 연결되어 있다. `TRUE` 또는 정책상 보고 가능하다는 뜻은 아니다.
 - `REVISE`: Verification 또는 Research가 구체적인 누락·restriction·재현·CWE 설명을 보완해야 한다.
 - `REJECT`: 현재 자료를 신뢰 가능한 기술 기록이나 다음 단계 입력으로 사용할 수 없다.
+
+`verification_result_ref.record_id`는 Gate가 실제로 읽은 한 `VerificationResult` revision을 고정한다. runtime은 Gate와 Verification의 `workspace_id`, `commit_id`, `hypothesis_id`, `record_id`, `content_hash`를 확인한다. Verification이 수정되면 이전 `ACCEPT`를 새 revision에 재사용하지 않고 Gate를 새로 호출한다.
 
 `REVISE`는 동일 입력 재투표가 아니다. Orchestration Agent가 요청을 Verification 또는 Research에 보내고 새 근거·설명·revision이 생긴 뒤 다시 호출한다. 횟수·token·시간 한도 도달 시 보고를 차단하고 미해결 사유를 저장한다.
 

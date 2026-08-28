@@ -38,7 +38,7 @@ Hypothesis Agent에는 비용 효율적인 모델을 배치할 수 있지만, �
 - observed facts와 assumptions의 분리
 - 현재 restriction
 - missing information
-- 구체적인 falsification questions
+- `question_id`가 붙은 구체적인 falsification questions
 - required validation
 - 우선순위용 confidence
 
@@ -47,7 +47,7 @@ confidence는 verdict, exploitability 또는 Finding 확률로 해석하지 않�
 ## 출력 검증과 실패 처리
 
 1. 구조 parser가 JSON/YAML syntax와 schema를 검증한다.
-2. enum, 필수 field, `workspace_id`·`commit_id`·`CodeLocation`과 금지 assertion을 검사한다.
+2. enum, 필수 field, `workspace_id`·`commit_id`·`CodeLocation`, 반증 질문과 금지 assertion을 검사한다. 유효한 proposal의 각 반증 질문에는 출력 검증 runtime이 전역 `question_id`를 붙인다.
 3. 실패하면 원래 의미를 바꾸지 않는 범위에서 제한 횟수의 repair prompt를 새 invocation으로 실행한다.
 4. 재시도 후에도 유효하지 않으면 해당 호출을 `INVALID_OUTPUT`으로 저장한다.
 5. invalid proposal은 Verification Agent에 전달하지 않는다.

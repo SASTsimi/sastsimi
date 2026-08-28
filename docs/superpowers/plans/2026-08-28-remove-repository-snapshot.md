@@ -74,7 +74,7 @@ CodeWorkspace:
   analysis_id: string
   repository_url: string
   commit_id: string | null
-  status: READY | FAILED | REMOVED
+  status: PREPARING | READY | FAILED | REMOVED
   created_at: timestamp
 
 RecordMeta:

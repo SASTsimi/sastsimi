@@ -80,7 +80,7 @@ CodeWorkspace:
   analysis_id: string
   repository_url: string
   commit_id: string | null
-  status: READY | FAILED | REMOVED
+  status: PREPARING | READY | FAILED | REMOVED
   created_at: timestamp
 ```
 
@@ -88,7 +88,7 @@ CodeWorkspace:
 - `analysis_id`: 전체 분석 실행 번호
 - `repository_url`: clone한 원격 저장소 주소
 - `commit_id`: 분석 대상 Git commit 번호
-- `status`: 사용할 수 있음, 준비 실패 또는 정리됨 상태
+- `status`: 준비 중, 분석 가능, 준비 실패 또는 정리됨 상태
 - `created_at`: 작업공간이 생성된 UTC 시각
 
 실제 로컬 경로는 runtime 내부 값으로만 관리한다. Agent 입력, 보고서와 외부 결과에는 로컬 절대 경로를 전달하지 않는다.
@@ -139,25 +139,26 @@ CodeLocation:
   commit_id: string
   file_path: string
   start_line: integer
-  start_column: integer
+  start_column: integer | null
   end_line: integer
-  end_column: integer
+  end_column: integer | null
 ```
 
-- `file_path`는 `workspace_root` 기준 상대 경로다.
-- 줄과 열은 1부터 시작한다.
+- `file_path`는 `/` 구분자를 사용하는 `workspace_root` 기준 Git 상대 경로다.
+- 줄은 1부터 시작하며 시작·끝 줄을 포함한다. 열을 알면 1-based Unicode code point 단위로 시작 열은 포함하고 끝 열은 제외하며, 모르면 두 열을 모두 `null`로 둔다.
 - `..` 경로 이동, 작업공간 밖 symlink 접근과 절대 경로 입력을 거절한다.
 - 같은 근거 묶음에서 서로 다른 `workspace_id` 또는 `commit_id`를 섞지 않는다.
 
 ```yaml
 CodeSymbol:
   symbol_id: string
-  symbol_kind: FILE | CLASS | FUNCTION | METHOD | VARIABLE | ROUTE
+  symbol_kind: FILE | MODULE | TYPE | CALLABLE | DATA | ROUTE | CONFIG
+  native_kind: string | null
   name: string
   location: CodeLocation
 ```
 
-`symbol_id`는 같은 `workspace_id` 안에서 유일하다.
+`symbol_id`는 같은 `workspace_id + commit_id` 안에서 유일하다.
 
 ```yaml
 StoredDataRef:
@@ -166,9 +167,10 @@ StoredDataRef:
   content_hash: string
   workspace_id: string
   commit_id: string
+  record_id: string | null
 ```
 
-내부 저장 경로나 URI를 파트 사이 계약으로 전달하지 않는다. 소비자는 `stored_data_id`로 결과를 요청하고 `content_hash`로 내용 변경 여부를 확인한다.
+내부 저장 경로나 URI를 파트 사이 계약으로 전달하지 않는다. 소비자는 `stored_data_id`로 결과를 요청하고 `content_hash`로 내용 변경 여부를 확인한다. raw artifact는 `record_id=null`, 저장된 record revision을 가리키는 참조는 해당 전역 `record_id`를 사용한다.
 
 ## 7. 작업공간 변경 방지
 

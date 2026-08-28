@@ -357,6 +357,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 완료 조건
 
 - [ ] Technical Gate가 verdict/evidence, code flow, dynamic, CWE, restriction과 handoff readiness를 검토함
+- [ ] `verification_result_ref.record_id`로 실제 검토한 Verification revision을 고정하고 다른 revision에 Gate 결과를 재사용하지 않음
 - [ ] REVISE는 구체적인 새 evidence/revision을 요구하며 무한 재투표가 아님
 - [ ] policy source 인증·freshness·parser failure threat model/ADR 요구가 있음
 - [ ] 모순된 `ALLOW` 출력은 semantic `INVALID_OUTPUT`이며 Reporter가 차단됨
@@ -396,7 +397,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 검토할 입력·출력
 
 - 입력: VulnerabilityHypothesis, 같은 workspace/commit의 context, debate trigger/budget, Pro/Con, DynamicReproductionResult, revision request
-- 출력: supporting/counter evidence, initial/final verdict, dynamic decision, restrictions, capabilities, material child proposal
+- 출력: supporting/counter evidence, 질문별 `FalsificationResult`, initial/final verdict, dynamic decision, restrictions, capabilities, material child proposal
 
 ### 확인할 권한 경계
 
@@ -418,9 +419,9 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 - [ ] BASIC/CONDITIONAL_DEBATE/ALWAYS_DEBATE와 기본값·trigger·skip reason이 정의됨
 - [ ] Pro/Con은 상대 결론을 받지 않는 독립 NEW session임
-- [ ] `TRUE`는 핵심 path evidence, `FALSE`는 named falsification, `HOLD`는 unresolved condition을 요구함
+- [ ] `TRUE`는 핵심 path evidence, `FALSE`는 `question_id`와 실제 근거가 있는 `DISPROVED`, `HOLD`는 unresolved condition을 요구함
 - [ ] initial/final verdict와 revision history가 분리됨
-- [ ] dynamic `FAILED`와 `hypothesis_disproved`가 구분됨
+- [ ] dynamic 실행 `status`, 관측 `hypothesis_outcome`, `hypothesis_disproved`와 Verification verdict가 구분됨
 - [ ] material new claim과 같은 가설의 작은 validation subtask 경계가 있음
 - [ ] Technical REVISE가 새 evidence 또는 설명 revision을 남김
 
@@ -456,7 +457,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 검토할 입력·출력
 
 - 입력: hypothesis-linked reproduction request, `workspace_id`/`commit_id`, image digest, steps, approved target/network/resource policy
-- 출력: DynamicReproductionResult, environment/step/observation refs, redacted PoC, limitation/cleanup/error
+- 출력: DynamicReproductionResult, 실행 status, `hypothesis_outcome`, environment/step/observation refs, redacted PoC, limitation/cleanup/error
 
 ### 확인할 권한 경계
 
@@ -479,6 +480,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] image/build provenance, daemon isolation과 writable mount 정책 threat model이 있음
 - [ ] LIMITED와 FULL의 선택 조건과 observable effect 차이가 명확함
 - [ ] setup/execution/observation/policy/timeout failure와 반증이 다른 상태임
+- [ ] 필수 환경·공격 경로 미실행은 `FAILED + ENVIRONMENT_SETUP`, 유효한 일부 관측과 환경 차이는 `PARTIAL + NONE + INCONCLUSIVE`로 구분됨
 - [ ] workspace/commit, command, input, observation과 cleanup이 hypothesis에 추적됨
 - [ ] escape/socket/secret/out-of-scope network negative scenario가 있음
 

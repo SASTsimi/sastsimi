@@ -141,7 +141,7 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 | `SCHEMA_UNSUPPORTED` | schema validator | 해당 record 사용 금지 | 지원 schema로 다시 생성 |
 | `RECORD_REVISION_MISMATCH` | record validator | revision 자동 병합 금지 | 올바른 이전 revision에서 재생성 |
 
-모든 `AnalysisError`에는 stage, code, retryable 여부, 민감정보가 제거된 safe message, related record와 `created_at`을 남긴다. 표의 어떤 오류도 가설 `FALSE`를 직접 만들지 않는다.
+모든 `AnalysisError`에는 `stage`, `code`, `retryable`, 민감정보가 제거된 `safe_message`, `related_record_ids`와 `created_at`을 남긴다. 원본 오류는 일반 record에 복사하지 않고 별도 접근 통제·redaction·보존 정책이 적용된 결과로 분리한다. 표의 어떤 오류도 가설 `FALSE`를 직접 만들지 않는다.
 
 ## Debug trace와 보존
 

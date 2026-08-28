@@ -71,7 +71,7 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 | `workspace_id` | Repository Loader | 전체 시스템 | `CodeWorkspace`, `runs`, 코드 근거 record | 변경·재사용 금지 |
 | `commit_id` | Git에서 checkout한 commit을 Repository Loader가 확인 | `repository_url`이 가리키는 Git 저장소 | `CodeWorkspace`, `CodeLocation`, `StoredDataRef`, `RecordMeta` | 외부 Git 객체 ID다. 같은 commit은 여러 분석에서 다시 참조할 수 있으나 값은 변경 금지 |
 | `stored_data_id` | 결과 저장 계층 | 전체 시스템 | 해당 논리 저장 영역과 `RunStoredDataRef` 또는 `StoredDataRef` | 변경·재사용 금지 |
-| `record_id` | record 저장 직전 runtime | 전체 시스템 | 각 `RunMeta`와 `RecordMeta` | revision마다 새 값 |
+| `record_id` | record 저장 직전 runtime | 전체 시스템 | 각 `RunMeta`·`RecordMeta`와 정확한 revision을 가리키는 `StoredDataRef` | revision마다 새 값 |
 | `logical_record_id` | 논리 결과를 처음 저장하는 runtime | 전체 시스템 | 각 `RunMeta`와 `RecordMeta` | 같은 논리 결과의 모든 revision에서 같은 값 유지 |
 | `hypothesis_id` | proposal 검증을 통과시킨 runtime | 전체 시스템 | `hypotheses`와 가설별 `RecordMeta` | 변경·재사용 금지 |
 | `attempt_id` | 재시도 가능한 작업을 시작하는 runtime | 전체 시스템 | 해당 결과와 debug trace | 시도마다 새 값 |
@@ -82,6 +82,7 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 | `gap_id` | gap을 처음 발견한 runtime | 전체 시스템 | `DataGap`과 이를 포함한 결과 | gap마다 새 값 |
 | `error_id` | 오류를 기록하는 runtime | 전체 시스템 | `AnalysisError`, 실행 결과와 debug trace | 오류 사건마다 새 값 |
 | `proposal_id` | Hypothesis Agent 출력 검증 runtime | 전체 시스템 | `HypothesisProposal` | proposal마다 새 값. `hypothesis_id`와 같지 않음 |
+| `question_id` | proposal 출력 검증 runtime | 전체 시스템 | `FalsificationQuestion`과 `FalsificationResult` | proposal에서 등록 가설로 그대로 유지하고 다른 질문에 재사용 금지 |
 | `code_request_id` | 코드 문맥을 요청하는 Agent Runtime | 전체 시스템 | `CodeContextRequest`와 해당 `CodeContextResponse` | 요청·응답 한 쌍에서 같은 값 유지 |
 | `primitive_id` | 검증 결과를 primitive로 저장하는 runtime | 전체 시스템 | `Primitive`와 체이닝 후보 | primitive마다 새 값 |
 | `policy_record_id` | 공식 정책 수집 결과를 저장하는 runtime | 전체 시스템 | `ProgramPolicyRecord` | 정책 수집본마다 새 값 |
@@ -188,6 +189,7 @@ StoredDataRef:
   content_hash: string
   workspace_id: string
   commit_id: string
+  record_id: string | null
 
 RunStoredDataRef:
   stored_data_id: string
@@ -212,7 +214,7 @@ AnalysisError:
   error_id: string
   stage: INPUT | REPOSITORY | STATIC_ANALYSIS | CONTEXT | ORCHESTRATION | AGENT | PROVIDER | SANDBOX | POLICY | GATE | REPORT
   code: string
-  message: string
+  safe_message: string
   retryable: boolean
   related_record_ids: [string]
   created_at: timestamp
@@ -272,7 +274,9 @@ ContextRetrievalLimits:
 
 `symbol_kind`는 여러 언어에서 공통으로 쓸 수 있는 큰 범주다. `TYPE`에는 class·interface·enum·struct, `CALLABLE`에는 function·method·constructor·lambda, `DATA`에는 variable·field·property·parameter가 들어간다. 원래 parser나 SAST 도구가 사용한 세부 종류는 `native_kind`에 그대로 남긴다. `symbol_id`, `fact_id`, `relation_id`는 같은 `workspace_id + commit_id` 안에서 유일하다. `CodeFact`와 `CodeRelation`의 `producer.raw_result_ref`는 사실·관계를 만든 도구의 원본 결과를 가리켜야 한다.
 
-`StoredDataRef`는 준비된 코드와 연결된 결과에만 사용한다. `RunStoredDataRef`는 입력 검증, clone·checkout, 실행 오류와 debug trace처럼 commit 준비 전에도 생기는 실행 자료에만 사용하며 코드 근거·PoC·Finding·보고서 주장의 근거로 사용할 수 없다. 두 참조 모두 내부 저장 경로 대신 결과 번호와 내용 hash만 전달한다. `DataGap`은 분석하지 못한 범위이고 `AnalysisError`는 실행 중 발생한 오류다. 둘 다 취약점 `FALSE`를 뜻하지 않는다. `DataGap`의 세 affected 목록은 빈 목록일 수 있지만, `REPOSITORY | STATIC_ANALYSIS | CONTEXT` gap은 가능한 범위에서 path·language·location 중 하나 이상을 채운다. 전체 작업공간에 영향을 주거나 정확한 범위를 모르면 그 사실을 `description`에 명시하고 관련 결과를 `related_record_ids`로 연결한다.
+`StoredDataRef`는 준비된 코드와 연결된 결과에만 사용한다. raw 도구 출력·코드 조각처럼 독립 artifact이면 `record_id=null`이다. 저장된 record의 정확한 revision을 가리키는 참조는 해당 revision의 전역 `record_id`를 반드시 넣고, runtime은 참조의 `workspace_id`, `commit_id`, `content_hash`가 그 record와 일치하는지 확인한다. `RunStoredDataRef`는 입력 검증, clone·checkout, 실행 오류와 debug trace처럼 commit 준비 전에도 생기는 실행 자료에만 사용하며 코드 근거·PoC·Finding·보고서 주장의 근거로 사용할 수 없다. 두 참조 모두 내부 저장 경로 대신 결과 번호와 내용 hash만 전달한다.
+
+`DataGap`은 분석하지 못한 범위이고 `AnalysisError`는 실행 중 발생한 오류다. 둘 다 취약점 `FALSE`를 뜻하지 않는다. `AnalysisError.safe_message`에는 credential, 개인정보, session secret, authorization header와 절대 로컬 경로를 넣지 않는다. 원본 오류가 필요하면 일반 오류 record에 복사하지 않고 별도 접근 통제·redaction·보존 정책이 적용된 artifact로 저장한다. `DataGap`의 세 affected 목록은 빈 목록일 수 있지만, `REPOSITORY | STATIC_ANALYSIS | CONTEXT` gap은 가능한 범위에서 path·language·location 중 하나 이상을 채운다. 전체 작업공간에 영향을 주거나 정확한 범위를 모르면 그 사실을 `description`에 명시하고 관련 결과를 `related_record_ids`로 연결한다.
 
 ### DataGap 생산자와 소비자
 
@@ -343,6 +347,10 @@ SAST severity와 tool message는 verdict가 아니다.
 가설 생성 Agent가 제안한 후보와, 프로그램이 형식을 확인한 뒤 검증 대상으로 등록한 가설을 구분합니다.
 
 ```yaml
+FalsificationQuestion:
+  question_id: string
+  question: string
+
 HypothesisProposal:
   proposal_id: string
   meta: RecordMeta
@@ -357,7 +365,7 @@ HypothesisProposal:
   assumptions: [string]
   restrictions: [string]
   missing_information: [string]
-  falsification_questions: [string]
+  falsification_questions: [FalsificationQuestion]
   required_validation: [string]
   confidence: LOW | MEDIUM | HIGH
   parent_hypothesis_ids: [string]
@@ -379,11 +387,11 @@ VulnerabilityHypothesis:
   target_entities: [CodeSymbol]
   target_locations: [CodeLocation]
   suspected_path: [CodeRelation | CodeLocation]
-  falsification_questions: [string]
+  falsification_questions: [FalsificationQuestion]
   required_validation: [string]
 ```
 
-초기 가설의 `root_hypothesis_id`는 자기 `hypothesis_id`다. 자식 가설은 직접 원인이 된 부모만 `parent_hypothesis_ids`에 넣고, 부모 중 가장 큰 `chain_depth + 1`을 사용한다. 부모와 자식의 lifecycle·verdict는 독립이며 `TRUE + TRUE` 결합도 새 `hypothesis_id`를 만든다. 금지된 확정 assertion, 잘못된 enum, 필수 field/location 누락은 제한된 repair retry 뒤 `INVALID_OUTPUT`이다. confidence는 scheduling hint이지 verdict가 아니다.
+초기 가설의 `root_hypothesis_id`는 자기 `hypothesis_id`다. 자식 가설은 직접 원인이 된 부모만 `parent_hypothesis_ids`에 넣고, 부모 중 가장 큰 `chain_depth + 1`을 사용한다. 부모와 자식의 lifecycle·verdict는 독립이며 `TRUE + TRUE` 결합도 새 `hypothesis_id`를 만든다. proposal 출력 검증 runtime은 각 반증 질문에 전역 `question_id`를 부여하고 등록 가설까지 그대로 유지한다. 질문은 가설의 필수 조건 하나를 실제 근거로 반증할 수 있게 구체적으로 작성한다. 금지된 확정 assertion, 잘못된 enum, 필수 field/location·반증 질문 누락은 제한된 repair retry 뒤 `INVALID_OUTPUT`이다. confidence는 scheduling hint이지 verdict가 아니다.
 
 ## 3. CodeContextRequest/Response
 
@@ -423,6 +431,12 @@ CodeContextResponse:
 검증 Agent가 찬성·반대·동적 근거를 모아 `TRUE / FALSE / HOLD` 판정과 남은 조건을 기록하는 결과입니다.
 
 ```yaml
+FalsificationResult:
+  question_id: string
+  outcome: DISPROVED | NOT_DISPROVED | INCONCLUSIVE
+  evidence_refs: [StoredDataRef]
+  rationale: string
+
 VerificationResult:
   meta: RecordMeta
   verification_mode: BASIC | CONDITIONAL_DEBATE | ALWAYS_DEBATE
@@ -430,6 +444,7 @@ VerificationResult:
   debate_skip_reason: string | null
   supporting_evidence: [EvidenceClaim]
   counter_evidence: [EvidenceClaim]
+  falsification_results: [FalsificationResult]
   initial_verdict: TRUE | FALSE | HOLD
   dynamic_decision: NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO
   dynamic_result_ref: StoredDataRef | null
@@ -446,7 +461,7 @@ VerificationResult:
   errors: [AnalysisError]
 ```
 
-`FALSE`는 named falsification에 연결한다. `HOLD`는 unresolved condition 또는 누락 환경을 포함한다. 오류만으로 `FALSE`를 만들지 않는다.
+최종 `VerificationResult`는 등록 가설의 모든 `question_id`를 중복 없이 정확히 한 번씩 평가한다. `DISPROVED`는 해당 질문이 확인하려는 가설의 필수 조건이 실제 근거로 반증됐다는 뜻이며 `evidence_refs`가 하나 이상이어야 한다. `NOT_DISPROVED`는 반증하지 못했다는 뜻일 뿐 가설을 증명하지 않는다. 확인하지 못한 질문은 `INCONCLUSIVE`로 남긴다. `verdict=FALSE`는 적어도 하나의 `DISPROVED` 결과가 있고 `verdict_rationale`이 그 `question_id`와 근거를 설명할 때만 허용한다. `TRUE | HOLD`에는 `DISPROVED` 결과가 있을 수 없다. 오류만으로 `FALSE`를 만들지 않는다.
 
 ## 5. Primitive DB records
 
@@ -568,6 +583,7 @@ DynamicReproductionResult:
 ```yaml
 TechnicalEvidenceReview:
   meta: RecordMeta
+  verification_result_ref: StoredDataRef
   status: ACCEPT | REVISE | REJECT
   evidence_verdict_alignment: string
   code_flow_linkage: string
@@ -580,7 +596,7 @@ TechnicalEvidenceReview:
   rationale: string
 ```
 
-Technical review는 `VerificationResult.verdict`를 덮어쓰지 않는다.
+`verification_result_ref.record_id`는 필수이며 정확히 한 `VerificationResult` revision을 가리킨다. runtime은 참조 대상의 `record_id`, `workspace_id`, `commit_id`, `hypothesis_id`와 `content_hash`가 일치하는지 확인한다. Verification이 새 revision으로 바뀌면 이전 `TechnicalEvidenceReview`를 재사용할 수 없고 Gate를 새로 호출해야 한다. Technical review는 `VerificationResult.verdict`를 덮어쓰지 않는다.
 
 ## 9. ProgramPolicyRecord과 RuleScopeImpactReview
 
@@ -712,6 +728,8 @@ ReportDraft:
   draft_status: DRAFTED
   human_review_state: PENDING | APPROVED | REJECTED
 ```
+
+`verification_result_ref`, `technical_review_ref`, `rule_scope_impact_review_ref`와 `policy_record_ref`는 저장된 record를 가리키므로 각 `StoredDataRef.record_id`가 필수다. Reporter runtime은 Technical review가 가리킨 Verification `record_id`와 ReportDraft의 `verification_result_ref.record_id`가 같은지 확인한다.
 
 ```yaml
 AnalysisRunResult:

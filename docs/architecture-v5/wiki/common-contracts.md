@@ -22,7 +22,7 @@ clone 전에는 아직 `workspace_id`나 `commit_id`가 없을 수 있습니다.
 
 `CodeWorkspace`는 준비 중 `PREPARING`, 분석 가능하면 `READY`, 준비 실패 시 `FAILED`, 로컬 폴더 정리 뒤 `REMOVED`입니다. 정적 분석은 `READY`에서만 시작합니다.
 
-clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로 가리킵니다. 이 참조에는 `analysis_id`만 필요합니다. 코드 근거·PoC·보고서 자료는 반드시 `workspace_id + commit_id`가 있는 `StoredDataRef`를 사용합니다.
+clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로 가리킵니다. 이 참조에는 `analysis_id`만 필요합니다. 코드 근거·PoC·보고서 자료는 반드시 `workspace_id + commit_id`가 있는 `StoredDataRef`를 사용합니다. raw 결과나 코드 조각은 `record_id: null`, 저장된 결과의 정확한 수정본을 가리킬 때는 그 수정본의 `record_id`를 넣습니다.
 
 ## 가설끼리는 어떻게 연결하나요?
 
@@ -64,6 +64,8 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 
 둘 다 자동으로 `FALSE`가 되지 않습니다. `FALSE`는 미리 정한 반증 질문과 실제 반증 근거가 연결될 때만 가능합니다.
 
+각 반증 질문에는 `question_id`를 붙입니다. 최종 검증은 모든 질문에 결과를 남기며, 실제 근거가 있는 `DISPROVED` 질문이 하나 이상일 때만 `FALSE`를 허용합니다. `NOT_DISPROVED`는 질문으로 반증하지 못했다는 뜻이며 취약점이 증명됐다는 뜻이 아닙니다.
+
 정적 분석과 코드 조회 결과는 사용할 수 있는 사실뿐 아니라 도구별 실행 상태, 분석·제외 범위, `DataGap`, `AnalysisError`를 함께 전달합니다. `DataGap`은 영향받은 path·language·코드 위치를 가능한 범위에서 적습니다. 결과가 비어 있거나 일부 도구가 실패했다는 이유로 안전하다고 판단하지 않습니다.
 
 ## 동적 재현 실패와 반증은 다릅니다
@@ -78,6 +80,8 @@ Docker 환경을 만들지 못했거나 실행이 timeout된 것은 재현 실�
 4. 그중 반증 관측을 가리키는 `disproof_evidence_refs`
 
 빈 출력, exit code와 `FAILED | BLOCKED | CANCELLED`만으로는 가설을 `FALSE`로 바꿀 수 없습니다.
+
+Technical Gate는 `verification_result_ref.record_id`로 자신이 읽은 Verification 수정본을 정확히 기록합니다. Verification이 수정되면 이전 Gate 승인을 새 수정본에 재사용하지 않습니다. `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
 
 ## 계약이 바뀌면 어떻게 하나요?
 

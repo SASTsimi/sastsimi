@@ -149,6 +149,7 @@ code_context_response:
       content_hash: sha256:example
       workspace_id: ws-001
       commit_id: 7f3a2c1
+      record_id: null
   discovered_relations: []
   gaps: []
   errors: []

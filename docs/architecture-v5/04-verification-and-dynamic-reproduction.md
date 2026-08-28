@@ -16,7 +16,7 @@ Verification Agent는 가설이 실제 코드 흐름과 실행 조건에서 성�
 
 1. 가설의 `workspace_id`, 연결된 `commit_id`, entity, location과 suspected path를 확인한다.
 2. `CodeContextRequest`로 caller/callee, data flow, auth guard와 route 문맥을 필요한 만큼 조회한다.
-3. observed fact와 assumption을 분리하고 falsification question을 확인한다.
+3. observed fact와 assumption을 분리하고 각 `FalsificationQuestion.question_id`를 확인한다.
 4. BASIC 또는 debate 모드로 supporting/counter evidence를 수집한다.
 5. initial verdict와 unresolved condition을 만든다.
 6. 정적 근거만으로 부족하고 안전하게 재현할 가치가 있으면 동적 재현을 요청한다.
@@ -77,10 +77,12 @@ Pro와 Con은 context contamination을 막기 위해 서로 다른 NEW session�
 ## 판정 의미
 
 - `TRUE`: 현재 가설의 핵심 exploit path와 필요한 조건이 evidence로 지지된다. restriction이 있으면 그대로 보존한다.
-- `FALSE`: 명시된 가설이 반증되었다. 다른 path 가능성까지 부정하지 않는다.
+- `FALSE`: 가설의 필수 조건을 묻는 named falsification 하나 이상이 실제 근거로 `DISPROVED`되었다. 다른 path 가능성까지 부정하지 않는다.
 - `HOLD`: 핵심 정보·환경·재현 조건이 부족하거나 상충해 현재 증거로 결론을 낼 수 없다.
 
 `HOLD`는 실패가 아니다. 누락 정보, 필요한 capability와 다음 validation을 구조화해 Primitive DB와 Research에 전달한다.
+
+최종 결과는 등록 가설의 모든 반증 질문에 `DISPROVED | NOT_DISPROVED | INCONCLUSIVE` 중 하나를 기록한다. `DISPROVED`에는 실제 `evidence_refs`가 필요하고, `NOT_DISPROVED`는 가설이 참이라는 증거로 승격하지 않는다. `FALSE`는 적어도 하나의 근거 있는 `DISPROVED` 결과와 그 `question_id`를 설명하는 판정 이유가 있을 때만 허용한다. 오류·timeout·누락만으로는 `DISPROVED`나 `FALSE`를 만들지 않는다.
 
 ## Docker 동적 재현
 
@@ -121,4 +123,4 @@ Pro와 Con은 context contamination을 막기 위해 서로 다른 NEW session�
 
 ## VerificationResult에 남길 정보
 
-최종 결과는 verdict뿐 아니라 supporting/counter evidence, restrictions, bypass candidates, required/provided capabilities, impact escalation candidates, unresolved conditions, debate 지표와 동적 재현 reference를 포함한다. 이 정보가 Primitive DB, Research, CWE와 두 Gate의 입력이 된다.
+최종 결과는 verdict뿐 아니라 질문별 `FalsificationResult`, supporting/counter evidence, restrictions, bypass candidates, required/provided capabilities, impact escalation candidates, unresolved conditions, debate 지표와 동적 재현 reference를 포함한다. 이 정보가 Primitive DB, Research, CWE와 두 Gate의 입력이 된다.
