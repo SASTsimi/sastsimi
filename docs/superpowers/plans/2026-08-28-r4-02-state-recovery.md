@@ -213,11 +213,11 @@ Blocker/High/Medium/Low로 분류하고 Blocker/High를 모두 수정한다.
 
 `git diff origin/main...HEAD`를 새로 읽어 범위 이탈·중복·모순을 확인하고 필요한 수정은 별도 commit으로 남긴다.
 
-- [ ] **Step 6: push와 PR 생성**
+- [x] **Step 6: push와 PR 생성**
 
 브랜치 `review/r4-02-state-recovery`를 push하고 `Closes #14`, `Refs #5`와 검증 결과를 포함한 PR을 `main` 대상으로 만든다.
 
-- [ ] **Step 7: 원격 PR diff 재검증**
+- [x] **Step 7: 원격 PR diff 재검증**
 
 GitHub의 PR head SHA, 변경 파일, checks와 실제 diff를 다시 확인한다.
 
@@ -227,4 +227,5 @@ GitHub의 PR head SHA, 변경 파일, checks와 실제 diff를 다시 확인한�
 - 실제 Mermaid 렌더링: Chrome 기반 `mmdc`로 11/11 SVG 생성, parse error 0건
 - 첫 검토 보완: `work_generation`, exact transition reference, metadata의 attempt 의미와 non-transaction 저장 순서를 명확화
 - 두 번째 검토 보완: `TransitionCommit`에 gap·오류를 원자적으로 포함하고, COMMITTED marker 투영 전 경쟁 전이를 차단
-- 남은 단계: branch push, PR 생성, GitHub 원격 diff와 checks 재확인
+- 원격 확인: [PR #26](https://github.com/SASTsimi/sastsimi/pull/26), base `main`, 변경 파일 22개, `Closes #14`, mergeable `MERGEABLE`, merge state `CLEAN`
+- GitHub checks: 저장소에 보고된 자동 check 없음. 로컬 검증 결과를 PR 본문에 기록함
