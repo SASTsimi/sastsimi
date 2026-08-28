@@ -74,7 +74,7 @@ Orchestration Agent는 분석 계획과 다음 작업을 제안·조정하지만
 | Repository Loader | 실행별 `git clone`, `commit_id` checkout과 HEAD 확인 | 실행 중 작업공간 변경 또는 다른 commit 혼합 |
 | AST/SAST runners | 구조·규칙 일치·경로 후보 수집 | 취약점 최종 판정 |
 | Static Fact Normalizer | 공통 entity/location/path 표현 생성 | 증거가 없는 의미 확정 |
-| Context Retrieval Service | 같은 `workspace_id`에서 제한된 추가 문맥 조회 | 작업공간 밖 무제한 repository dump |
+| Context Retrieval Service | 같은 `workspace_id`와 `commit_id`에서 제한된 추가 문맥 조회 | 작업공간 밖 무제한 repository dump |
 | Orchestration Agent | 가설 lifecycle, 병렬성, 예산과 loop 관리 | Finding 공개 결정 |
 | Hypothesis Agent | schema-constrained 가설 후보 생성 | verdict·Finding·exploitability 확정 |
 | Verification Agent | 증거 종합, 판정, restriction/capability 기록 | 새 주장의 무검증 승격 |

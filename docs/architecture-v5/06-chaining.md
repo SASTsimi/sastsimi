@@ -22,6 +22,7 @@ primitive:
   primitive_type: object_identifier_read
   target:
     workspace_id: ws-001
+    commit_id: 7f3a2c1
     asset: order-service
     entity_refs: [entity:OrderController.update]
     privilege_level: authenticated_user

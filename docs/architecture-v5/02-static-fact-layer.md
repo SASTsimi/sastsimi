@@ -28,7 +28,11 @@ SAST rule hit와 불완전한 경로는 관찰된 사실 후보이지 취약점 
 
 ```yaml
 static_fact_bundle:
-  workspace_id: ws-001
+  meta:
+    analysis_id: analysis-001
+    workspace_id: ws-001
+    commit_id: 7f3a2c1
+    hypothesis_id: null
   entities: []
   locations: []
   source_candidates: []
@@ -42,6 +46,13 @@ static_fact_bundle:
 ```
 
 각 항목은 가능한 경우 `workspace_id`, `entity_ref`, `location_ref`, producer와 원본 artifact reference를 갖는다. 정규화 계층은 서로 다른 도구 결과를 병합하되 충돌이나 불확실성을 지우지 않는다.
+
+## submodule, Git LFS와 생성 파일
+
+- 분석 범위에 submodule이 필요하면 `Repository Loader`가 명시적으로 초기화한다. 실패한 submodule과 영향 범위는 `DataGap`으로 남긴다.
+- Git LFS 파일이 실제 내용이 아닌 pointer로 남아 있으면 코드로 해석하지 않고 `DataGap`으로 남긴다.
+- build·설치 과정에서 생긴 생성 파일은 원본 저장소 코드와 구분한다. 생성 도구, 입력과 생성 시각을 별도 결과에 기록한다.
+- submodule, LFS 또는 생성 파일이 부족하다는 이유만으로 가설을 `FALSE`로 바꾸지 않는다.
 
 ## 위치 기반 on-demand retrieval
 
@@ -67,8 +78,11 @@ Hypothesis Agent는 전체 코드가 아니라 entity, location과 suspected pat
 ```yaml
 code_context_request:
   code_request_id: ctxreq-001
-  hypothesis_id: hyp-001
-  workspace_id: ws-001
+  meta:
+    analysis_id: analysis-001
+    workspace_id: ws-001
+    commit_id: 7f3a2c1
+    hypothesis_id: hyp-001
   requested_entities: [entity:OrderController.update]
   requested_locations: [loc:src/order.ts:41]
   relation_query: [CALLERS, AUTH_GUARDS]
@@ -80,7 +94,11 @@ code_context_request:
 ```yaml
 code_context_response:
   code_request_id: ctxreq-001
-  workspace_id: ws-001
+  meta:
+    analysis_id: analysis-001
+    workspace_id: ws-001
+    commit_id: 7f3a2c1
+    hypothesis_id: hyp-001
   entities: []
   locations: []
   code_fragment_refs: []
@@ -90,9 +108,11 @@ code_context_response:
   consumed_token_estimate: 2400
 ```
 
+위 예시는 읽기 쉽도록 `RecordMeta`의 일부 공통 metadata 필드를 생략했다. 실제 저장 record는 [경량 데이터 계약](./08-lightweight-data-contracts.md)의 전체 `RecordMeta`를 사용한다.
+
 ## 일관성·예산·보안 규칙
 
-- 응답의 `workspace_id`가 가설과 다르거나 작업공간의 `commit_id`가 분석 대상과 다르면 사용하지 않고 `WORKSPACE_MISMATCH`로 기록한다.
+- 응답의 `meta.workspace_id` 또는 `meta.commit_id`가 요청·가설·`CodeWorkspace`와 다르면 사용하지 않고 `WORKSPACE_MISMATCH`로 기록한다.
 - `max_depth`, fragment 수, byte/token budget, 요청 횟수와 wall-clock limit을 적용한다.
 - 반복 요청은 normalized request fingerprint로 탐지한다.
 - symlink escape, submodule drift와 path traversal을 차단하고 `workspace_root` 안의 파일만 읽는다.

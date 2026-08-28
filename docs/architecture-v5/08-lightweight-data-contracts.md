@@ -27,6 +27,7 @@ CodeWorkspace:
 ```
 
 실제 로컬 절대 경로는 runtime 내부에서만 관리하며 Agent, Finding과 보고서에 전달하지 않는다.
+`workspace_id`는 재사용하지 않는다. 로컬 폴더를 정리하면 `status=REMOVED`로 바꾸되, `workspace_id`와 `repository_url`·`commit_id`의 연결 정보는 결과 추적을 위해 보존한다.
 
 ```yaml
 RecordMeta:
@@ -35,6 +36,7 @@ RecordMeta:
   schema_version: string
   analysis_id: string
   workspace_id: string
+  commit_id: string
   hypothesis_id: string | null
   attempt_id: string | null
   revision_number: integer
@@ -42,11 +44,12 @@ RecordMeta:
   created_at: timestamp
 ```
 
-모든 핵심 결과는 `meta: RecordMeta`를 갖는다. `analysis_id`와 `workspace_id`는 필수다. 가설별 결과는 `hypothesis_id`, 재시도 가능한 작업은 `attempt_id`가 필수다. 첫 결과의 `revision_number`는 `1`, `previous_record_id`는 `null`이다. 결과를 수정할 때 덮어쓰지 않고 새 `record_id`와 증가한 revision을 만든다.
+모든 핵심 결과는 `meta: RecordMeta`를 갖는다. `analysis_id`, `workspace_id`와 `commit_id`는 필수다. runtime은 `workspace_id`가 가리키는 `CodeWorkspace.commit_id`와 `RecordMeta.commit_id`가 같은지 확인한다. 가설별 결과는 `hypothesis_id`, 재시도 가능한 작업은 `attempt_id`가 필수다. 첫 결과의 `revision_number`는 `1`, `previous_record_id`는 `null`이다. 결과를 수정할 때 덮어쓰지 않고 새 `record_id`와 증가한 revision을 만든다.
 
 ```yaml
 CodeLocation:
   workspace_id: string
+  commit_id: string
   file_path: string
   start_line: integer
   start_column: integer
@@ -64,6 +67,7 @@ StoredDataRef:
   data_kind: string
   content_hash: string
   workspace_id: string
+  commit_id: string
 
 DataGap:
   gap_id: string
@@ -153,7 +157,7 @@ CodeContextRequest:
 ```yaml
 CodeContextResponse:
   code_request_id: string
-  workspace_id: string
+  meta: RecordMeta
   entities: [CodeSymbol]
   locations: [CodeLocation]
   code_fragment_refs: [StoredDataRef]
@@ -163,7 +167,7 @@ CodeContextResponse:
   consumed_token_estimate: integer | null
 ```
 
-`workspace_id` 또는 연결된 `commit_id`가 다른 응답은 `WORKSPACE_MISMATCH`로 기록하고 근거에 사용하지 않는다. empty/truncated/gap은 안전함 또는 `FALSE`를 뜻하지 않는다.
+요청과 응답의 `meta.workspace_id` 또는 `meta.commit_id`가 다르거나, 이 값이 `CodeWorkspace`와 일치하지 않으면 `WORKSPACE_MISMATCH`로 기록하고 근거에 사용하지 않는다. empty/truncated/gap은 안전함 또는 `FALSE`를 뜻하지 않는다.
 
 ## 4. VerificationResult
 
@@ -205,6 +209,7 @@ Primitive:
   primitive_type: string
   target:
     workspace_id: string
+    commit_id: string
     asset: string
     entity_refs: [CodeSymbol]
     privilege_level: string
@@ -435,6 +440,7 @@ ReportDraft:
 ```yaml
 AnalysisRunResult:
   meta: RecordMeta without hypothesis/attempt
+  repository_url: string
   status: COMPLETE | PARTIAL | FAILED | CANCELLED
   hypothesis_counts: map
   verdict_counts: map

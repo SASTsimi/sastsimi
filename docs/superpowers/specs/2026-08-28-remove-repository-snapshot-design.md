@@ -4,7 +4,7 @@
 
 - 결정 상태: 승인됨
 - 적용 대상: Architecture v5 설계 초안, Wiki, Mermaid, governance/review 문서, GitHub Issue
-- 구현 상태: 문서와 Issue 수정 전
+- 구현 상태: 문서와 Issue 반영 완료 / runtime 미구현
 - 결정일: 2026-08-28
 
 ## 1. 결정 요약
@@ -92,6 +92,7 @@ CodeWorkspace:
 - `created_at`: 작업공간이 생성된 UTC 시각
 
 실제 로컬 경로는 runtime 내부 값으로만 관리한다. Agent 입력, 보고서와 외부 결과에는 로컬 절대 경로를 전달하지 않는다.
+`workspace_id`는 재사용하지 않는다. 로컬 폴더 정리 뒤에도 `workspace_id`와 `repository_url`·`commit_id`의 연결 정보는 보존하고 상태만 `REMOVED`로 바꾼다.
 
 ## 5. 공통 식별자 변경
 
@@ -102,6 +103,7 @@ RecordMeta:
   schema_version: string
   analysis_id: string
   workspace_id: string
+  commit_id: string
   hypothesis_id: string | null
   attempt_id: string | null
   revision_number: integer
@@ -109,7 +111,7 @@ RecordMeta:
   created_at: timestamp
 ```
 
-모든 주요 저장 결과는 `meta: RecordMeta`를 사용한다. `analysis_id`와 `workspace_id`는 항상 필요하다. 가설별 결과는 `hypothesis_id`, 재시도 가능한 실행 결과는 `attempt_id`가 반드시 필요하다.
+모든 주요 저장 결과는 `meta: RecordMeta`를 사용한다. `analysis_id`, `workspace_id`와 `commit_id`는 항상 필요하다. 가설별 결과는 `hypothesis_id`, 재시도 가능한 실행 결과는 `attempt_id`가 반드시 필요하다.
 
 결과를 수정할 때 기존 결과를 덮어쓰지 않는다. 새 `record_id`와 증가한 `revision_number`를 만들고 `previous_record_id`로 이전 결과를 연결한다.
 
@@ -133,6 +135,7 @@ RecordMeta:
 ```yaml
 CodeLocation:
   workspace_id: string
+  commit_id: string
   file_path: string
   start_line: integer
   start_column: integer
@@ -161,6 +164,7 @@ StoredDataRef:
   data_kind: string
   content_hash: string
   workspace_id: string
+  commit_id: string
 ```
 
 내부 저장 경로나 URI를 파트 사이 계약으로 전달하지 않는다. 소비자는 `stored_data_id`로 결과를 요청하고 `content_hash`로 내용 변경 여부를 확인한다.

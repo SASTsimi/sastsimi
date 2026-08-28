@@ -148,7 +148,7 @@ flowchart TB
     PROVIDED --> RESEARCH[Research Agent]
     REQUIRED --> PDB
     REQUIRED --> RESEARCH
-    PDB --> MATCH{Workspace asset capability and attack order match}
+    PDB --> MATCH{Workspace commit asset capability and attack order match}
     MATCH -->|No| RESEARCH[Research Agent]
     MATCH -->|Yes| RESEARCH
     TGREV[Technical Gate revision request] --> RESEARCH
