@@ -259,3 +259,18 @@ R2 대행 검토와 PR #18의 R6·R7 리뷰를 다음 독립 커밋으로 반영
 - [x] Draft PR #18에 수정 커밋을 push하고 원격 head를 확인
 
 H-002는 수정 완료만으로 닫지 않는다. R2 대행 검토 반영 확인, R6·R7 재검토와 R3 통합 검토가 PR 또는 Issue에 기록될 때까지 `IN_PROGRESS`로 유지한다.
+
+---
+
+### Task 7: R3 통합 리뷰 반영
+
+PR #18의 최신 R3 리뷰가 지적한 네 계약 결함과 R4-02 연결 조건을 검토했다. 모두 실제 문서에서 재현되고 기존 역할 경계와 일치해 다음과 같이 수정했다.
+
+- [x] `d0b1442` — Rule Scope review가 Verification·Technical review·정책의 정확한 revision을 가리키고 Reporter가 같은 revision chain만 사용하도록 수정
+- [x] `7c66aec` — 보고서 생성 상태와 사람 검토 상태를 분리하고 오류가 직접 `HOLD`를 만드는 것처럼 보이는 문구 수정
+- [x] `af66100` — 일반 retry와 provider/model failover의 바로 앞 실패 호출 reference, 순서·비순환 검사와 오류 code 추가
+- [x] 실제 Issue #14에 상태/결과 일부 저장 복구, `TERMINAL/DRAFTED` 결과 `record_id`, 오래되거나 취소된 결과 거절 완료 조건 추가
+- [x] 전체 Markdown·Mermaid·계약 불변조건 검사를 다시 통과
+- [ ] Draft PR #18에 수정 커밋을 push하고 원격 head를 확인
+
+R3 의견을 반영했지만 최신 SHA에 대한 재검토가 끝나기 전에는 H-002와 PR #18을 완료 처리하지 않는다.
