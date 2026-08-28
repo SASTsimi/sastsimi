@@ -46,6 +46,31 @@ RecordMeta:
 
 모든 핵심 결과는 `meta: RecordMeta`를 갖는다. `analysis_id`, `workspace_id`와 `commit_id`는 필수다. runtime은 `workspace_id`가 가리키는 `CodeWorkspace.commit_id`와 `RecordMeta.commit_id`가 같은지 확인한다. 가설별 결과는 `hypothesis_id`, 재시도 가능한 작업은 `attempt_id`가 필수다. 첫 결과의 `revision_number`는 `1`, `previous_record_id`는 `null`이다. 결과를 수정할 때 덮어쓰지 않고 새 `record_id`와 증가한 revision을 만든다.
 
+### 식별자 생성·저장·참조 기준
+
+ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_`, `hyp_` 같은 접두사는 로그 가독성을 위한 예시이며, 프로그램은 접두사에서 상태·소유자·시간을 추론하지 않는다.
+
+| 식별자 | 누가 만드나요? | 어디까지 유일한가요? | 어디에 저장하나요? | 변경·재사용 규칙 |
+|---|---|---|---|---|
+| `analysis_id` | Orchestration runtime | 전체 시스템 | `runs`와 모든 `RecordMeta` | 변경·재사용 금지 |
+| `workspace_id` | Repository Loader | 전체 시스템 | `CodeWorkspace`, `runs`, 코드 근거 record | 변경·재사용 금지 |
+| `stored_data_id` | 결과 저장 계층 | 전체 시스템 | 해당 논리 저장 영역과 `StoredDataRef` | 변경·재사용 금지 |
+| `record_id` | record 저장 직전 runtime | 전체 시스템 | 각 `RecordMeta` | revision마다 새 값 |
+| `hypothesis_id` | proposal 검증을 통과시킨 runtime | 전체 시스템 | `hypotheses`와 가설별 `RecordMeta` | 변경·재사용 금지 |
+| `attempt_id` | 재시도 가능한 작업을 시작하는 runtime | 전체 시스템 | 해당 결과와 debug trace | 시도마다 새 값 |
+| `llm_call_id` | LLM 호출 직전 Agent Runtime | 전체 시스템 | `invocations` | retry·failover마다 새 값 |
+| `revision_number` | 새 revision을 저장하는 runtime | 같은 논리 결과 | `RecordMeta` | 1부터 1씩 증가 |
+
+로컬 폴더를 정리해도 `workspace_id → repository_url + commit_id` 연결 정보는 삭제하지 않는다. `workspace_id`, `hypothesis_id`, `attempt_id`와 `llm_call_id`는 서로 대신 사용할 수 없으며, 소비자는 필요한 ID를 `RecordMeta`와 전문 record 양쪽에서 검사한다.
+
+### 공통 시간 규칙
+
+- 모든 시각은 UTC RFC 3339 형식이다. 예: `2026-08-28T12:34:56.123Z`.
+- `created_at`은 해당 record가 처음 저장된 불변 시각이다.
+- 실행 작업은 `started_at`과 `finished_at`을 사용한다. 아직 끝나지 않았으면 `finished_at: null`이다.
+- `elapsed_ms`는 monotonic clock으로 계산한 0 이상의 밀리초다. 벽시계 시각 차이를 timeout이나 비용 계산의 정본으로 사용하지 않는다.
+- 새 revision은 새 `created_at`을 갖고 이전 record의 시각을 덮어쓰지 않는다.
+
 ```yaml
 CodeLocation:
   workspace_id: string
@@ -133,10 +158,30 @@ HypothesisProposal:
   required_validation: [string]
   confidence: LOW | MEDIUM | HIGH
   parent_hypothesis_ids: [string]
+  root_hypothesis_id: string | null
   chain_depth: integer
 ```
 
-schema validation과 semantic validation을 통과한 proposal만 stable `hypothesis_id`가 있는 `VulnerabilityHypothesis`로 등록한다. 금지된 확정 assertion, 잘못된 enum, 필수 field/location 누락은 제한된 repair retry 뒤 `INVALID_OUTPUT`이다. confidence는 scheduling hint이지 verdict가 아니다.
+초기 proposal은 `parent_hypothesis_ids: []`, `root_hypothesis_id: null`, `chain_depth: 0`이다. schema validation과 semantic validation을 통과한 proposal만 stable `hypothesis_id`가 있는 `VulnerabilityHypothesis`로 등록한다.
+
+```yaml
+VulnerabilityHypothesis:
+  meta: RecordMeta
+  proposal_ref: StoredDataRef
+  origin: INITIAL | RESEARCH | CHAINING
+  parent_hypothesis_ids: [string]
+  root_hypothesis_id: string
+  chain_depth: integer
+  lifecycle_state: SCHEMA_VALID | ASSIGNED | VERIFYING | TERMINAL | CANCELLED
+  statement: string
+  target_entities: [CodeSymbol]
+  target_locations: [CodeLocation]
+  suspected_path: [RelationOrCodeLocation]
+  falsification_questions: [string]
+  required_validation: [string]
+```
+
+초기 가설의 `root_hypothesis_id`는 자기 `hypothesis_id`다. 자식 가설은 직접 원인이 된 부모만 `parent_hypothesis_ids`에 넣고, 부모 중 가장 큰 `chain_depth + 1`을 사용한다. 부모와 자식의 lifecycle·verdict는 독립이며 `TRUE + TRUE` 결합도 새 `hypothesis_id`를 만든다. 금지된 확정 assertion, 잘못된 enum, 필수 field/location 누락은 제한된 repair retry 뒤 `INVALID_OUTPUT`이다. confidence는 scheduling hint이지 verdict가 아니다.
 
 ## 3. CodeContextRequest/Response
 

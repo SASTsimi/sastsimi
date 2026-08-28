@@ -14,7 +14,8 @@ Orchestration Agent는 분석 계획과 다음 작업을 제안·조정하는 co
 
 주요 책임은 다음과 같다.
 
-- `analysis_id`·`hypothesis_id`·parent/child correlation id 부여
+- `analysis_id` 부여와 proposal 검증 뒤 `hypothesis_id` 등록
+- `parent_hypothesis_ids`·`root_hypothesis_id`·`chain_depth` 관계 검증
 - 가설 schema 검증과 제한된 repair retry
 - 독립 가설 병렬 처리와 hypothesis별 resource budget
 - session policy와 provider profile을 Agent Runtime에 전달
@@ -65,6 +66,7 @@ Research material claim -> PROPOSED child hypothesis
 ```
 
 parent 가설의 결과와 child 가설은 독립된 lifecycle을 갖는다. Research 후보가 존재한다는 이유만으로 parent verdict나 impact를 강화하지 않는다.
+초기 가설은 자기 자신을 `root_hypothesis_id`로 사용하고 `chain_depth=0`이다. Research·체이닝 proposal은 직접 부모 ID를 보존하고 검증을 통과할 때 새 `hypothesis_id`를 받는다. 여러 `TRUE`를 연결하는 경우도 기존 가설을 수정하지 않고 새 child 가설로 등록한다.
 
 ## Agent 역할과 출력 권한
 
