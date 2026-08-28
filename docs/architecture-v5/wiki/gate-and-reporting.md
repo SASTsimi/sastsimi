@@ -37,4 +37,6 @@ TRUE
 
 Reporter는 위 조건을 모두 만족하고 ReportDraft가 가리킨 Verification·Technical review·Rule Scope review·CWELabel·정책 revision이 서로 맞을 때만 내부 보고서 초안을 만든다. 두 Gate가 검토한 CWELabel과 보고서 초안의 `cwe_label_ref.record_id`가 다르면 초안을 만들지 않는다. 두 Gate와 Reporter 모두 외부 제출 권한이 없고 사람만 최종 공개를 결정한다.
 
+프로그램 검사기는 Gate 결론을 대신 내리지 않습니다. Technical 다음 Rule Scope라는 순서와 정확한 입력 수정본, Reporter 조건만 검사합니다. 사람에게는 보고서뿐 아니라 근거·PoC·비용·오류·HOLD 조건을 담은 `HumanReviewPacket`을 전달하고, 최종 결정은 별도 `HumanReviewDecision`에 기록합니다.
+
 상세 내용은 [이중 LLM Gate와 보고](../05-llm-gate-and-reporting.md)을 따른다.

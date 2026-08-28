@@ -66,6 +66,9 @@ PM은 하위 Issue를 대신 세세하게 작성하지 않습니다. PM은 역�
 - Technical Evidence Gate와 Rule Scope Impact Gate는 verdict를 직접 변경하지 않습니다.
 - Reporter는 내부 초안만 만듭니다.
 - 사람만 최종 공개를 승인합니다.
+- Agent와 service는 실행을 `ActionRequest`로 제안하고 비-LLM Runtime Validator가 실행 범위만 허용·차단합니다.
+- Runtime Validator는 verdict·CWE·공식 정책 의미를 판단하지 않으며 `ActionDecision`은 exact action에 한 번만 사용합니다.
+- 사람의 결정은 ReportDraft 안이 아니라 exact `HumanReviewPacket`을 가리키는 별도 `HumanReviewDecision`에 기록합니다.
 
 ## 후속 GitHub 협업 자동화
 

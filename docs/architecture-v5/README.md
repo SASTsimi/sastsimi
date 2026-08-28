@@ -60,6 +60,8 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 - Membership session과 API provider는 공통 adapter 경계를 사용한다. Membership path는 feasibility/security 검토 전 experimental이며, provider 전환은 명시적으로 기록하고 조용한 failover는 금지한다.
 - Reporter는 초안 작성자이고, 사람만 최종 공개 여부를 결정한다.
 - 모든 LLM 출력은 비신뢰 입력이다. 신뢰 경계 안의 runtime validator가 schema·상태 전이·예산·sandbox·provider/session·Gate 순서·Reporter 전제조건을 강제한다.
+- Agent와 service는 실행을 `ActionRequest`로 제안하고 runtime validator가 `ActionDecision=ALLOW | DENY`를 만든다. ALLOW는 exact action과 state version에 한 번만 사용하며 runtime은 취약점·CWE·정책 의미를 대신 판단하지 않는다.
+- 사람에게는 Finding·근거·PoC·두 Gate·자원·오류·HOLD 조건을 포함한 `HumanReviewPacket`을 제공하고, 외부 공개 결정은 별도 `HumanReviewDecision`에만 기록한다.
 - 분석 공백, 실행 오류, LLM·sandbox 실패와 취소는 기술 판정 `FALSE`와 분리한다. 공통 ID·시간·상태·오류 기준은 [경량 데이터 계약](./08-lightweight-data-contracts.md)을 따른다.
 - 같은 논리 요청은 `dedupe_key`로 한 번만 반영하고, 한 작업에는 활성 attempt를 하나만 둔다. 결과와 종료 상태는 atomic하게 연결하며 `COMMITTED` output만 다음 단계가 읽는다.
 - retry는 새 `attempt_id`로 실행하고 이전 실패를 보존한다. 취소·입력 변경·오래된 revision 뒤 도착한 결과는 격리하며, 중단 후에는 마지막으로 확정 저장된 상태에서 재개한다.

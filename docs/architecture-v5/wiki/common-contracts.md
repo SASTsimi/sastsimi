@@ -57,7 +57,7 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 | 기술 Gate | `ACCEPT`, `REVISE`, `REJECT` | 판정을 검토하지만 바꾸지 않음 |
 | 정책·영향 Gate | `PASS`, `FAIL`, `UNCERTAIN`, `ALLOW`, `DENY` | 보고서 전달 조건 |
 | 보고서 초안 상태 | `NOT_REQUESTED`, `DRAFTED`, `FAILED` | 아니요. 내부 초안 진행 상태 |
-| 사람 검토 | `PENDING`, `APPROVED`, `REJECTED` | 최종 공개 결정 |
+| 사람 검토 | `DISCLOSE`, `REVISE`, `WITHHOLD`, `NEED_MORE_VALIDATION` | 별도 `HumanReviewDecision`에 기록하는 최종 공개 결정 |
 
 ## DataGap과 AnalysisError의 차이
 

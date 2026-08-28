@@ -40,6 +40,9 @@
 | `TransitionCommit` | 한 번에 저장하기 어려울 때 결과와 상태를 안전하게 묶는 기록 | `COMMITTED` 전의 결과는 다른 단계가 사용하지 않습니다. |
 | `stale result` | 취소·재시도·입력 변경 뒤 늦게 도착한 오래된 결과 | 최신 결과를 덮어쓰지 못하게 격리합니다. |
 | `crash-resume` | 프로그램 중단 뒤 마지막으로 확정 저장한 지점에서 다시 시작하는 절차 | 이미 끝난 작업을 중복 반영하지 않습니다. |
+| `ActionRequest` | Agent나 service가 프로그램에 “이 일을 실행해 달라”고 적는 요청 | 요청 자체에는 실행 권한이 없습니다. |
+| `ActionCheck` | 실행 전에 확인하는 권한·상태·예산·도구 같은 검사 하나 | action마다 필요한 검사를 빠뜨리지 않습니다. |
+| `ActionDecision` | 프로그램 검사기가 action을 허용하거나 막은 결과 | exact action과 state version에 한 번만 사용합니다. |
 
 ## 가설과 검증
 
@@ -88,13 +91,15 @@
 | `UNCERTAIN + DENY` | 공식 정책을 확인하지 못해 결론과 보고서 전달을 허용하지 않는 상태 | LLM의 기억으로 정책을 채우지 않습니다. |
 | `Reporter` | 통과한 결과를 사람이 읽을 보고서 초안으로 정리하는 Agent | 외부 제출과 공개는 하지 않습니다. |
 | `human handoff` | 사람이 최종 검토할 자료를 전달하는 단계 | 외부 공개 여부는 사람이 결정합니다. |
+| `HumanReviewPacket` | 사람이 볼 Finding·근거·PoC·Gate·비용·오류·보류 조건을 모은 자료 묶음 | exact AnalysisRunResult 수정본에서 빠짐없이 만듭니다. |
+| `HumanReviewDecision` | 사람이 자료 묶음을 읽고 남긴 최종 결정 기록 | `DISCLOSE`, `REVISE`, `WITHHOLD`, `NEED_MORE_VALIDATION` 중 하나이며 ReportDraft와 분리합니다. |
 
 ## 실행·보안·평가
 
 | 용어 | 쉽게 말하면 | 사용할 때 주의할 점 |
 |---|---|---|
 | `runtime` | 설계가 실제로 실행되는 프로그램 부분 | 현재 저장소에는 구현되어 있지 않습니다. |
-| `runtime validator` | 프로그램 내부 규칙 검사기 | 데이터 형식, 상태 순서, 예산과 권한을 강제합니다. |
+| `runtime validator` | 프로그램 내부 실행 범위 검사기 | 데이터 형식, 상태 순서, 예산과 권한을 강제하지만 취약점·CWE·정책 의미는 판단하지 않습니다. |
 | `sandbox` | 다른 시스템과 격리해 안전하게 코드를 실행하는 환경 | host, 비밀정보와 범위 밖 네트워크 접근을 막습니다. |
 | `provider` | LLM을 제공하는 서비스나 연결 방식 | API 방식과 회원 로그인 방식을 같은 경계에서 관리합니다. |
 | `session` | LLM 서비스와 이어지는 로그인 또는 대화 상태 | 인증정보와 session 비밀값을 일반 로그에 남기지 않습니다. |

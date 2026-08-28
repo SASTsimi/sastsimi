@@ -8,6 +8,7 @@
 - [LLM 연결과 기록](providers-and-logging.md)
 - [공통 ID·상태·오류](common-contracts.md)
 - [상태·병렬 실행·복구](state-and-recovery.md)
+- [LLM·프로그램·사람 권한](authority-boundaries.md)
 - [결과와 디버깅](results.md)
 - [다이어그램](diagrams.md)
 - [상세 v5 기준 문서](../README.md)

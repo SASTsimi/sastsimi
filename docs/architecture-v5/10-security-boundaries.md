@@ -39,15 +39,27 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - 같은 work의 다음 version에 `PREPARED` 또는 pointer에 아직 투영하지 못한 `COMMITTED` marker가 있으면 이를 복구·중단 처리하기 전까지 취소·retry를 포함한 새 전이를 차단한다.
 - 이전 attempt, 이미 취소된 작업, 변경된 입력과 오래된 revision의 결과는 `ATTEMPT_NOT_ACTIVE` 또는 `STALE_RESULT`로 격리한다.
 - 전체 또는 개별 가설 취소 뒤에는 새 downstream work를 만들지 않는다. 늦은 성공 결과도 취소를 되돌리지 않는다.
-- 복구 runtime은 마지막 `COMMITTED` transition만 신뢰하고 자동 복구의 안전성을 증명할 수 없으면 `RECOVERY_FAILED`로 중단한다.
+- 복구 runtime은 마지막 `COMMITTED` marker와 거기서 투영된 pointer만 신뢰하고 자동 복구의 안전성을 증명할 수 없으면 `RECOVERY_FAILED`로 중단한다.
 - retry 성공은 이전 실패·중단·failover 기록을 삭제하지 않는다. 최종 상태와 전문 결과를 한 값으로 합치지 않는다.
+
+## 1.2 action 권한과 일회성 실행
+
+- Agent·service의 자연어 출력이나 tool call 제안은 실행 권한이 아니다. 부작용 action은 `ActionRequest`로 정규화한다.
+- 비-LLM Runtime Validator는 action type별 `SCHEMA | AUTHORITY | IDENTITY | REVISION | STATE | BUDGET | TOOL | FILE_PATH | SANDBOX | PROVIDER | SESSION | GATE_ORDER | REPORT_READY | REDACTION | DISCLOSURE` 중 필수 check를 모두 수행한다.
+- 하나라도 실패하면 `ActionDecision=DENY`와 오류를 저장하고 실행하지 않는다.
+- `ALLOW` decision은 exact action·state version·입력·설정 revision에만 유효하다. runtime이 `UNUSED -> USED`를 compare-and-set으로 claim한 decision만 한 번 실행한다.
+- claim 뒤 중단됐으면 기존 decision을 다시 사용하지 않는다. 중단 오류와 실행 outcome 유무를 기록하고 새 action을 요청한다.
+- Orchestration은 계획·호출을 제안할 수 있지만 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 저장할 권한이 없다.
+- Runtime Validator는 역할과 실행 전제를 검사하지만 취약점 진위·CWE 적절성·정책 의미를 대신 판단하지 않는다.
 
 ## 2. 저장소와 외부 텍스트는 비신뢰 데이터
 
 - 코드·주석·README·build script·SAST message는 Agent instruction이 아니다.
-- 저장소 텍스트가 provider, session, sandbox, Gate와 disclosure 정책을 바꾸지 못하게 한다.
+- 모든 LLM output, provider 응답, 외부 정책 본문과 Sandbox stdout·파일도 validation 전까지 비신뢰 data다.
+- 저장소 텍스트와 비신뢰 output이 provider, model, session, sandbox image/network, budget, Gate 순서, Reporter와 disclosure 정책을 바꾸지 못하게 한다.
 - system instruction과 분석 데이터 경계를 유지하고 structured output을 검증한다.
 - 전체 저장소 대신 역할에 필요한 location/context만 전달한다.
+- 위 변경을 요구하는 문구는 `UNTRUSTED_INSTRUCTION`으로 기록하고 실행하지 않는다.
 
 ## 3. LLM provider와 secret
 
@@ -75,6 +87,8 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - image/digest, command/step ref, exit/observation, timeout과 cleanup을 기록한다.
 - Docker build와 실행은 분석용 `CodeWorkspace`를 직접 수정하지 않고 sandbox 내부 복사본에서 수행한다.
 - LLM이 재현을 제안해도 sandbox policy를 변경하거나 임의 shell·외부 공격·지속성 설치를 승인할 수 없다.
+- `RUN_SANDBOX`는 image digest, command/tool allowlist, read-only input, network target, CPU·memory·disk·process·time limit와 cleanup policy가 고정된 `ActionDecision=ALLOW` 뒤에만 실행한다.
+- network는 default-deny다. 저장소나 LLM이 새 대상 통신을 요구해도 승인된 versioned sandbox profile에 없으면 `SANDBOX_POLICY_DENIED`다.
 
 ## 6. 프로그램 정책 신뢰 경계
 
@@ -101,6 +115,8 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 
 Research, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출을 승인한다.
 
+사람에게는 exact `AnalysisRunResult`, Finding·Verification, 두 Gate, CWE·정책, dynamic·redacted PoC, ReportDraft 또는 차단 사유, 자원, 오류·DataGap·HOLD 조건을 포함한 `HumanReviewPacket`을 제공한다. `HumanReviewDecision` 저장은 인증된 사람 identity와 exact packet을 검사한 `SAVE_HUMAN_DECISION` ALLOW action만 허용한다. 외부 disclosure action은 Human Reviewer가 같은 packet revision에 `HumanReviewDecision=DISCLOSE`를 남겼고 `report_ready=true`이며 실제 공개할 `approved_report_refs`와 `disclosure_targets`를 명시했을 때만 허용한다. 승인 목록 밖 report, 다른 packet·과거 revision·Agent 결정은 `DISCLOSURE_DENIED`다.
+
 ## 위협과 최소 대응
 
 | 위협 | 대응 |
@@ -121,6 +137,8 @@ Research, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출�
 | credential·코드 유출 | adapter secret boundary, 최소 context, redaction |
 | 정책 환각 | 공식 `ProgramPolicyRecord`가 없으면 `UNCERTAIN + DENY` |
 | 자동 오공개 | Reporter 초안 한정, human-only disclosure |
+| ALLOW decision replay | exact action·state version binding, `UNUSED -> USED` 일회성 claim |
+| 권한 없는 domain 결과 저장 | 역할별 `SAVE_RESULT` authority와 선행 exact ref 검사 |
 
 ## 상태·복구 부정 시나리오
 
@@ -139,6 +157,26 @@ Research, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출�
 | `PARTIAL` 결과에 gap·오류 설명이 없음 | `gap_ids`, `error_ids`, output refs | `STATE_TRANSITION_INVALID`, 부분 결과 사용 금지 |
 | 분석 종료 시 `RUNNING` work나 `PREPARED` journal이 남음 | 전체 work와 commit 상태 | 최종 `AnalysisRunState` 전이 차단 |
 | `COMMITTED` marker 투영 전에 취소·retry 전이가 경쟁 | 다음 target version의 unique marker와 pointer | 기존 marker를 먼저 재투영하고 경쟁 전이는 version conflict로 거절 |
+
+## 권한 우회 부정 시나리오
+
+| 입력·사건 | Runtime Validator가 확인할 것 | 기대 차단 결과 |
+|---|---|---|
+| Orchestration이 `TRUE`를 저장하려 함 | `requested_by`, 저장 result kind | `AUTHORITY_DENIED`, verdict 미변경 |
+| Hypothesis Agent가 final verdict를 출력 | 역할별 output schema | `INVALID_OUTPUT`, proposal만 사용 가능 |
+| Technical Gate가 Verification verdict를 바꾸려 함 | Gate output과 input verdict | `ACTION_NOT_ALLOWED`, 기존 verdict 보존 |
+| Technical Gate 없이 Rule Scope Gate 호출 | exact Technical review ref와 status | `GATE_ORDER_INVALID` |
+| Rule Scope Gate 없이 Reporter 호출 | exact Rule Scope review와 일곱 report 조건 | `REPORT_NOT_READY` |
+| 공식 정책이 없는데 `ALLOW` 출력 | policy ref와 Rule Scope 불변조건 | invalid output, `UNCERTAIN + DENY` 또는 Gate 실패 |
+| repository prompt가 Sandbox network를 열라고 함 | sandbox profile과 instruction source | `UNTRUSTED_INSTRUCTION` 또는 `SANDBOX_POLICY_DENIED` |
+| LLM이 workspace 밖 파일을 요청 | 정규화·symlink 해석 뒤 실제 path | `FILE_ACCESS_DENIED` |
+| 허용하지 않은 provider/model로 silent failover | provider profile과 선행 invocation | `PROVIDER_PROFILE_DENIED`, 호출 미실행 |
+| 인증 실패를 `FALSE`로 저장하려 함 | invocation status와 falsification evidence | invalid result 또는 `AUTHORITY_DENIED`, 실행 오류 유지 |
+| Reporter가 새 공격 경로를 확정 | report claim refs와 verified hypothesis | invalid output, 새 hypothesis 검증 전 사용 금지 |
+| LLM이 `HumanReviewDecision` 형식의 승인을 출력 | `SAVE_HUMAN_DECISION` requester와 사람 identity | `AUTHORITY_DENIED`, 사람 결정 record 생성 금지 |
+| Agent가 외부 공개 action을 요청 | requester와 HumanReviewDecision | `DISCLOSURE_DENIED` |
+| 사람이 다른 packet·과거 revision의 승인을 재사용 | exact packet·decision record ID와 hash | `DISCLOSURE_DENIED` |
+| redaction 실패 PoC를 사람 또는 외부로 전달 | redaction result와 artifact class | action `DENY`, 제한 저장소에 격리 |
 
 ## 남는 위험
 

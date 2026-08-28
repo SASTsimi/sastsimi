@@ -82,6 +82,7 @@ Wiki는 번호 문서의 쉬운 요약입니다. Wiki만 수정해 새로운 규
 | [`wiki/providers-and-logging.md`](./architecture-v5/wiki/providers-and-logging.md) | LLM 연결 방식, 로그인 상태와 기록 방법을 요약합니다. | 통합·데이터 담당 | 쉬운 요약 |
 | [`wiki/common-contracts.md`](./architecture-v5/wiki/common-contracts.md) | 공통 ID, 시간, 상태, 분석 공백·오류와 계약 변경 규칙을 쉽게 설명합니다. | 모든 구현·검토 담당 | 쉬운 요약 |
 | [`wiki/state-and-recovery.md`](./architecture-v5/wiki/state-and-recovery.md) | 병렬 작업, 중복 방지, 재시도와 중단 후 안전한 재개 규칙을 쉽게 설명합니다. | PM·통합·모든 역할 담당 | 쉬운 요약 |
+| [`wiki/authority-boundaries.md`](./architecture-v5/wiki/authority-boundaries.md) | LLM이 제안할 일, 프로그램이 검사할 일과 사람이 결정할 일을 쉽게 설명합니다. | 모든 역할 담당·보안 검토자 | 쉬운 요약 |
 | [`wiki/results.md`](./architecture-v5/wiki/results.md) | 최종 저장 결과와 디버깅 정보를 요약합니다. | 데이터·평가·통합 담당 | 쉬운 요약 |
 | [`wiki/diagrams.md`](./architecture-v5/wiki/diagrams.md) | 기준 다이어그램을 Wiki에서 그대로 보여 줍니다. | 모든 팀원 | 쉬운 요약 사본 |
 | [`wiki/index.html`](./architecture-v5/wiki/index.html) | 로컬 Wiki 화면을 여는 HTML 파일입니다. | Wiki 관리 담당 | 보조 파일 |
@@ -105,6 +106,8 @@ Wiki는 번호 문서의 쉬운 요약입니다. Wiki만 수정해 새로운 규
 | [`2026-08-28-r4-01-common-contracts.md`](./superpowers/plans/2026-08-28-r4-01-common-contracts.md) | R4-01 계약을 정본·Wiki·검토 문서에 적용하는 작업 순서입니다. | 작업 기록 |
 | [`2026-08-28-r4-02-state-recovery-design.md`](./superpowers/specs/2026-08-28-r4-02-state-recovery-design.md) | R4-02 상태 전이·중복 방지·atomic 저장·복구 설계 결정입니다. | 작업 기록 |
 | [`2026-08-28-r4-02-state-recovery.md`](./superpowers/plans/2026-08-28-r4-02-state-recovery.md) | R4-02 설계를 정본·Wiki·Mermaid에 적용하고 검증하는 작업 순서입니다. | 작업 기록 |
+| [`2026-08-28-r4-03-authority-boundary-design.md`](./superpowers/specs/2026-08-28-r4-03-authority-boundary-design.md) | R4-03 LLM·프로그램·사람 권한 경계와 action 검사 설계 결정입니다. | 작업 기록 |
+| [`2026-08-28-r4-03-authority-boundary.md`](./superpowers/plans/2026-08-28-r4-03-authority-boundary.md) | R4-03 권한 경계를 정본·Wiki·Mermaid에 적용하고 검증하는 작업 순서입니다. | 작업 기록 |
 
 ## 무엇부터 읽으면 되나요?
 

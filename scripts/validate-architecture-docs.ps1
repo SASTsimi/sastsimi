@@ -62,7 +62,7 @@ $activeContractPaths = @(
     (Join-Path $repoRoot 'docs/architecture-v5'),
     (Join-Path $repoRoot 'docs/review')
 )
-$forbiddenPatterns = @('RepositorySnapshot', 'snapshot_id', 'deterministic Gate', 'Gate는 규칙 기반 서비스')
+$forbiddenPatterns = @('RepositorySnapshot', 'snapshot_id', 'deterministic Gate', 'Gate는 규칙 기반 서비스', 'ReportDraft.human_review_state', 'human_review_state:')
 foreach ($path in $activeContractPaths) {
     $files = Get-ChildItem -LiteralPath $path -Recurse -File -Filter '*.md'
     foreach ($file in $files) {
@@ -174,6 +174,137 @@ foreach ($marker in $negativeScenarioMarkers) {
     }
 }
 
+$requiredR403ContractNames = @(
+    'ActionRequest:',
+    'ActionCheck:',
+    'ActionDecision:',
+    'action_id:',
+    'decision_id:',
+    'action_decision_ref:',
+    'use_status:',
+    'HumanReviewPacket:',
+    'HumanReviewDecision:',
+    'review_packet_id:',
+    'review_decision_id:',
+    'reviewer_identity_ref:',
+    'approved_report_refs:',
+    'disclosure_targets:'
+)
+foreach ($name in $requiredR403ContractNames) {
+    if (-not $contractText.Contains($name)) {
+        Add-Failure "missing R4-03 contract name: $name"
+    }
+}
+
+$requiredActionTypes = @(
+    'REGISTER_WORK',
+    'CHANGE_WORK_STATE',
+    'START_ATTEMPT',
+    'CANCEL_WORK',
+    'READ_CODE',
+    'RUN_TOOL',
+    'CALL_LLM',
+    'FETCH_POLICY',
+    'RUN_SANDBOX',
+    'SAVE_RESULT',
+    'CALL_TECHNICAL_GATE',
+    'CALL_RULE_SCOPE_GATE',
+    'CREATE_REPORT_DRAFT',
+    'PREPARE_HUMAN_REVIEW',
+    'SAVE_HUMAN_DECISION',
+    'EXTERNAL_DISCLOSURE'
+)
+$actionRequestBlock = [regex]::Match($contractText, '(?ms)^ActionRequest:\s*(.*?)^ActionCheck:').Groups[1].Value
+foreach ($actionType in $requiredActionTypes) {
+    if (-not $actionRequestBlock.Contains($actionType)) {
+        Add-Failure "missing R4-03 action type: $actionType"
+    }
+}
+
+$requiredActionChecks = @(
+    'SCHEMA',
+    'AUTHORITY',
+    'IDENTITY',
+    'REVISION',
+    'STATE',
+    'BUDGET',
+    'TOOL',
+    'FILE_PATH',
+    'SANDBOX',
+    'PROVIDER',
+    'SESSION',
+    'GATE_ORDER',
+    'REPORT_READY',
+    'REDACTION',
+    'DISCLOSURE'
+)
+$actionCheckBlock = [regex]::Match($contractText, '(?ms)^ActionCheck:\s*(.*?)^ActionDecision:').Groups[1].Value
+foreach ($check in $requiredActionChecks) {
+    if (-not $actionCheckBlock.Contains($check)) {
+        Add-Failure "missing R4-03 ActionCheck: $check"
+    }
+}
+
+$requiredAuthorityErrors = @(
+    'AUTHORITY_DENIED',
+    'ACTION_NOT_ALLOWED',
+    'GATE_ORDER_INVALID',
+    'REPORT_NOT_READY',
+    'TOOL_NOT_ALLOWED',
+    'FILE_ACCESS_DENIED',
+    'SANDBOX_POLICY_DENIED',
+    'PROVIDER_PROFILE_DENIED',
+    'DISCLOSURE_DENIED',
+    'UNTRUSTED_INSTRUCTION'
+)
+foreach ($code in $requiredAuthorityErrors) {
+    if (-not $resultText.Contains($code)) {
+        Add-Failure "missing R4-03 authority error code: $code"
+    }
+}
+
+$authorityScenarioMarkers = @(
+    'Orchestration이 `TRUE`를 저장하려 함',
+    'Hypothesis Agent가 final verdict를 출력',
+    'Technical Gate가 Verification verdict를 바꾸려 함',
+    'Technical Gate 없이 Rule Scope Gate 호출',
+    'Rule Scope Gate 없이 Reporter 호출',
+    '공식 정책이 없는데 `ALLOW` 출력',
+    'repository prompt가 Sandbox network를 열라고 함',
+    'LLM이 workspace 밖 파일을 요청',
+    '허용하지 않은 provider/model로 silent failover',
+    '인증 실패를 `FALSE`로 저장하려 함',
+    'Reporter가 새 공격 경로를 확정',
+    'LLM이 `HumanReviewDecision` 형식의 승인을 출력',
+    'Agent가 외부 공개 action을 요청',
+    '사람이 다른 packet·과거 revision의 승인을 재사용',
+    'redaction 실패 PoC를 사람 또는 외부로 전달'
+)
+foreach ($marker in $authorityScenarioMarkers) {
+    if (-not $securityText.Contains($marker)) {
+        Add-Failure "missing R4-03 authority scenario: $marker"
+    }
+}
+
+$orchestrationPath = Join-Path $repoRoot 'docs/architecture-v5/03-agent-roles-and-orchestration.md'
+$orchestrationText = Get-Content -Raw -LiteralPath $orchestrationPath
+$gatePath = Join-Path $repoRoot 'docs/architecture-v5/05-llm-gate-and-reporting.md'
+$gateText = Get-Content -Raw -LiteralPath $gatePath
+$requiredAuthorityRules = @(
+    '## 역할별 권한 경계',
+    '## action 요청과 실행',
+    'final VerificationResult + CWELabel',
+    '-> Technical Evidence Gate',
+    '-> Rule Scope Impact Gate',
+    'HumanReviewPacket',
+    'HumanReviewDecision'
+)
+foreach ($rule in $requiredAuthorityRules) {
+    if (-not ($orchestrationText.Contains($rule) -or $gateText.Contains($rule) -or $contractText.Contains($rule))) {
+        Add-Failure "missing R4-03 authority rule: $rule"
+    }
+}
+
 $savedErrorAction = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 $gitCheck = & git -C $repoRoot diff --check 2>&1
@@ -190,6 +321,12 @@ Write-Output "R4-02 TransitionCommit atomic fields: $($requiredTransitionCommitF
 Write-Output "R4-02 exact output bindings: $($requiredBindingRules.Count)"
 Write-Output "R4-02 required error codes: $($requiredErrorCodes.Count)"
 Write-Output "R4-02 negative scenarios: $($negativeScenarioMarkers.Count)"
+Write-Output "R4-03 required contract names: $($requiredR403ContractNames.Count)"
+Write-Output "R4-03 action types: $($requiredActionTypes.Count)"
+Write-Output "R4-03 ActionCheck types: $($requiredActionChecks.Count)"
+Write-Output "R4-03 authority errors: $($requiredAuthorityErrors.Count)"
+Write-Output "R4-03 authority scenarios: $($authorityScenarioMarkers.Count)"
+Write-Output "R4-03 authority rules: $($requiredAuthorityRules.Count)"
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {

@@ -24,6 +24,23 @@ Agent Runtime
 
 Agent Runtime은 역할·structured-output 요구·context reference·budget·session policy를 요청한다. Adapter는 provider별 인증·호출·오류·usage를 공통 결과로 정규화한다. Logging Proxy는 양쪽에서 노출된 요청·응답·tool trace와 실제 선택을 `LLMInvocationLog`로 연결한다.
 
+## provider 호출 전 권한 검사
+
+Agent Runtime은 provider를 직접 호출하지 않고 `CALL_LLM` `ActionRequest`를 만든다. 비-LLM Runtime Validator는 다음 `ActionCheck`를 모두 수행한다.
+
+- `SCHEMA`: 요청 형식, output schema와 필수 필드
+- `AUTHORITY`: 요청 역할과 LLM 역할 일치
+- `IDENTITY`·`REVISION`: analysis·hypothesis·workspace·commit·input record 일치
+- `STATE`: current work, active attempt와 state version
+- `BUDGET`: token·시간·retry·repair 한도
+- `PROVIDER`: 허용 provider/model/profile과 adapter capability
+- `SESSION`: NEW/RESUME/AUTO, parent session, retry/failover 선행 호출
+- `REDACTION`: prompt와 context에 credential·절대 경로·금지 정보가 없는지
+
+모든 check가 `PASS`인 `ActionDecision=ALLOW`를 runtime이 `USED`로 claim한 뒤에만 `LLMInvocationRequest`를 만든다. 요청의 `action_decision_ref`는 그 exact claim revision을 가리킨다. 다른 action, 이전 state version, retry 또는 failover에 같은 decision을 재사용하지 않는다.
+
+저장소 텍스트나 LLM output이 provider·model·session mode·fallback·budget을 바꾸라고 요구해도 configuration 변경으로 해석하지 않는다. 요청된 값이 versioned provider policy와 다르면 `PROVIDER_PROFILE_DENIED` 또는 `UNTRUSTED_INSTRUCTION`으로 호출하지 않는다.
+
 ## 공통 adapter 책임
 
 - provider profile과 model을 명시적으로 선택
@@ -35,6 +52,8 @@ Agent Runtime은 역할·structured-output 요구·context reference·budget·se
 - retry와 failover를 새 `llm_call_id`로 식별하고 바로 앞의 허용된 실패 호출을 reference로 연결
 
 provider/model을 조용히 바꾸는 failover는 금지한다. 허용된 fallback이 있더라도 원래 실패, 새 provider/model, 이유, 새 session과 결과를 별도 `llm_call_id`로 남긴다. 같은 provider/model의 일반 retry는 `retry_of_llm_call_id`, provider/model을 바꾸는 failover는 `failover_from_llm_call_id`로 바로 앞의 허용된 실패 호출을 가리킨다. 두 reference를 동시에 사용하지 않는다.
+
+retry와 failover마다 새 `ActionRequest`, `ActionDecision`, `attempt_id`와 `llm_call_id`가 필요하다. 이전 ALLOW decision이나 이전 provider 요청을 그대로 다시 보내는 것은 `ACTION_NOT_ALLOWED`다.
 
 선행 호출 status는 다음과 같이 제한한다.
 
@@ -142,6 +161,8 @@ LLM 호출 상태는 `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIM
 6. retry 가능한 실패는 work를 `BLOCKED`로 두고 `FAILED` attempt와 오류를 보존한다. `AUTH_REQUIRED`는 재인증, `RATE_LIMITED`는 backoff, `INVALID_OUTPUT`은 제한된 repair 조건을 `waiting_for`와 함께 기록한다.
 7. 조건을 충족하면 work를 `READY`로 전환하고 새 `attempt_id`에서 후속 호출을 시작한다. 후속 호출은 위 표에서 허용한 바로 앞의 실패 호출 reference와 1씩 증가하는 `retry_count`를 저장하며, runtime은 status·같은 분석·가설·역할·호출 순서와 순환이 없는지 검사한다.
 8. work나 분석이 `CANCELLED`이면 도착한 응답을 `STALE_RESULT`로 격리하고 output pointer, Gate와 Reporter 입력에 연결하지 않는다.
+
+인증·rate limit·형식·provider 오류가 발생한 `LLMInvocationResult`는 실행 오류다. 그 호출만을 이유로 `SAVE_RESULT` action이 `VerificationResult.verdict=FALSE`를 만들려고 하면 Runtime Validator가 거절한다. `FALSE`는 final Verification의 named falsification과 실제 `DISPROVED` 근거가 있을 때만 별도로 저장할 수 있다.
 
 동시성·rate limit의 backpressure도 취약점 판정과 분리한다.
 

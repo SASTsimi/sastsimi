@@ -277,13 +277,15 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 검토할 입력·출력
 
 - 입력: 모든 전문 역할 contract 요구, budget/eval 결과, provider/sandbox/storage 제한, human review 요구
-- 출력: versioned RecordMeta/state/error contract, `WorkExecutionState`·attempt·transition commit, orchestration state machine, RACI, review map, ADR와 run closure 기준
+- 출력: versioned RecordMeta/state/error contract, `WorkExecutionState`·attempt·transition commit, `ActionRequest`·`ActionDecision`, `HumanReviewPacket`·`HumanReviewDecision`, orchestration state machine, RACI, review map, ADR와 run closure 기준
 
 ### 확인할 권한 경계
 
 - LLM 오케스트레이션은 다음 행동을 제안·조정하며, LLM이 아닌 프로그램 내부 규칙 검사기(`runtime validator`)가 규칙 준수를 강제한다.
 - PM/Orchestration은 verdict, CWE, Gate result, 공식 정책 또는 공개 결정을 대신하지 않는다.
 - silent provider/model failover와 repository prompt에 의한 policy 변경을 금지한다.
+- Runtime Validator는 action의 실행 범위만 강제하며 verdict·CWE·정책 의미를 대신 판단하지 않는다.
+- Reporter는 내부 초안만 만들고 exact 사람 결정 없이는 외부 disclosure action을 허용하지 않는다.
 
 ### 필수 교차 리뷰
 
@@ -303,6 +305,9 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] persistence/recovery/atomicity/idempotency 계약이 합의되고 `TERMINAL`·`DRAFTED` 상태가 정확한 결과 `record_id`를 가리킴
 - [ ] 결과 record 저장과 종료 상태 변경 중 하나만 성공했을 때의 crash-resume 복구와 오래되거나 취소된 결과의 연결 거절 규칙이 있음
 - [ ] `TransitionCommit`이 `COMMITTED`된 결과만 downstream과 최종 결과에서 사용함
+- [ ] 역할별 `ActionRequest`가 필수 check를 모두 통과한 `ActionDecision`에서만 한 번 실행됨
+- [ ] 두 LLM Gate 순서, Reporter 조건, 공식 정책 부재 `UNCERTAIN + DENY`와 외부 공개 차단을 runtime이 검사함
+- [ ] `ReportDraft`와 `HumanReviewDecision`이 분리되고 사람 packet에 근거·PoC·자원·오류·HOLD가 포함됨
 - [ ] 실제 GitHub 계정과 최종 검토·승인 담당자가 문서와 Issue에서 일치함
 - [ ] conflict resolution, freeze SHA와 승인·구현 저장소 동기화 규칙이 확정됨
 

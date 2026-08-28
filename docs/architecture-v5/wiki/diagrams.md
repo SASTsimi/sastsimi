@@ -298,7 +298,7 @@ flowchart LR
     COMMITTED --> POINTER[Project output ref and target state]
     POINTER --> NEXT[Allow downstream consumer]
     PREPARED -->|Version conflict or cancel| ABORTED[ABORTED and quarantine output]
-    CRASH[Process restart] --> RECOVER[Read last COMMITTED transition]
+    CRASH[Process restart] --> RECOVER[Read last COMMITTED marker and pointer]
     RECOVER -->|Valid PREPARED| COMMITTED
     RECOVER -->|Committed marker missing projection| POINTER
     RECOVER -->|Unsafe or inconsistent| STOP[TRANSITION INCOMPLETE or RECOVERY FAILED]
@@ -306,6 +306,51 @@ flowchart LR
 
 다음 단계는 `COMMITTED` marker와 상태 pointer가 같은 output을 가리킬 때만 읽는다. Verification `TERMINAL`, 두 Gate 완료와 Report `DRAFTED`는 각각 정확한 결과 `record_id`에 atomic하게 연결되어야 한다.
 
+## 12. LLM 제안과 프로그램 실행 권한
+
+```mermaid
+flowchart LR
+    INPUT[Repository LLM provider or sandbox output] --> UNTRUSTED[Untrusted data]
+    AGENT[Agent or service proposal] --> REQUEST[ActionRequest]
+    UNTRUSTED --> REQUEST
+    REQUEST --> CHECK{Runtime Validator required checks}
+    CHECK -->|Any FAIL| DENY[ActionDecision DENY]
+    DENY --> ERROR[AnalysisError and no execution]
+    ERROR --> KEEP[Do not change domain verdict]
+    CHECK -->|All PASS| ALLOW[ActionDecision ALLOW UNUSED]
+    ALLOW --> CLAIM{CAS claim UNUSED to USED}
+    CLAIM -->|Conflict or stale| REJECT[Reject replay or stale action]
+    CLAIM -->|Claimed| EXECUTE[Execute exact action once]
+    EXECUTE --> OUTCOME[Store outcome refs and state transition]
+    DOMAIN[Verification Gates Reporter Human keep domain decisions] -. not decided by validator .-> CHECK
+```
+
+Runtime Validator는 schema·권한·ID·revision·상태·예산·도구·경로·Sandbox·provider·Gate 순서·Reporter·redaction·공개 전제를 검사한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
+
+## 13. 사람 검토와 외부 공개 경계
+
+```mermaid
+flowchart TB
+    RUN[Final AnalysisRunResult] --> PACKET[HumanReviewPacket]
+    FIND[Findings verification and evidence] --> PACKET
+    GATES[Technical and Rule Scope Gate refs] --> PACKET
+    DYNAMIC[Dynamic results and redacted PoC] --> PACKET
+    RESOURCE[Resources errors gaps and HOLD] --> PACKET
+    REPORT[ReportDrafts or blocked reasons] --> PACKET
+    PACKET --> HUMAN[Human Reviewer]
+    HUMAN --> SAVE[Validated SAVE HUMAN DECISION action]
+    SAVE --> DECISION[HumanReviewDecision]
+    DECISION --> KIND{DISCLOSE REVISE WITHHOLD or MORE VALIDATION}
+    KIND -->|REVISE or MORE VALIDATION| RETURN[Return to allowed analysis stage]
+    KIND -->|WITHHOLD| STOP[Keep internal]
+    KIND -->|DISCLOSE| DISCLOSE{Exact packet and report ready}
+    DISCLOSE -->|No| BLOCK[DISCLOSURE DENIED]
+    DISCLOSE -->|Yes| BOUNDARY[External disclosure action boundary]
+    AGENT[Agent Gate or Reporter] -->|Cannot save human decision or disclose| BLOCK
+```
+
+사람 결정은 ReportDraft와 분리한다. 실제 자동 제출 integration은 이 설계에 포함하지 않으며, 향후 추가해도 exact `DISCLOSE` 결정과 redaction 검사를 건너뛸 수 없다.
+
 ## Rendering check
 
-이 문서는 Mermaid 블록 11개를 포함한다. Wiki diagrams 페이지는 이 파일과 동일한 Mermaid 블록을 사용하며 최종 검증에서 11개 SVG와 parse error 0개를 확인한다.
+이 문서는 Mermaid 블록 13개를 포함한다. Wiki diagrams 페이지는 이 파일과 동일한 Mermaid 블록을 사용하며 최종 검증에서 13개 SVG와 parse error 0개를 확인한다.

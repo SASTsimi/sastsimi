@@ -24,7 +24,9 @@
 | `research` | `ResearchResult`, new claim과 validation state |
 | `gates` | Technical 및 Rule Scope Impact review와 Verification·CWELabel·정책 input revision refs |
 | `policies` | 공식 `ProgramPolicyRecord`과 source refs |
-| `reports` | 허용된 `ReportDraft`, 두 Gate와 같은 CWELabel revision ref와 human state |
+| `reports` | 허용된 내부 `ReportDraft`와 두 Gate가 공통으로 본 CWELabel revision ref |
+| `human_reviews` | `HumanReviewPacket`, 사람의 `HumanReviewDecision`과 외부 공개 action 기록 |
+| `actions` | `ActionRequest`, validator의 `ActionDecision`, check와 일회성 사용·outcome refs |
 | `invocations` | normalized `LLMInvocationLog`와 safe provider/session metadata |
 | `dynamic` | sandbox 실행, PoC, output refs와 cleanup |
 | `runs` | 전체 요약, `WorkExecutionState`·attempt·transition commit, 자원·오류·시간·debug event |
@@ -115,6 +117,14 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 - `TransitionCommit`의 `PREPARED | COMMITTED | ABORTED` 수와 복구 시간
 - 중단 뒤 재사용한 committed 결과, 다시 실행한 attempt와 `RECOVERY_FAILED` 수
 
+### 권한·사람 검토 지표
+
+- action type·요청 역할별 `ALLOW | DENY` 수와 실패한 `ActionCheck.reason_code`
+- `ALLOW` decision의 `UNUSED | USED`, outcome 누락과 replay 거절 수
+- `AUTHORITY_DENIED`, Gate 순서·Reporter·Sandbox·provider·file·disclosure 차단 수
+- HumanReviewPacket의 report-ready/blocked 수와 누락된 policy·PoC·오류·HOLD 조건
+- `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION` 사람 결정 수
+
 ## 상태와 결과를 함께 저장하는 경계
 
 작업 결과를 저장했다는 사실과 다음 단계가 그 결과를 사용할 수 있다는 사실은 다르다. 다음 단계는 `TransitionCommit.state=COMMITTED`이고 `WorkExecutionState.last_transition_commit_ref.record_id`가 그 COMMITTED revision을 가리키며 `output_refs`가 같은 결과 revision을 가리킬 때만 읽는다.
@@ -160,7 +170,9 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 
 ## AnalysisRunResult
 
-최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, 초기·파생·chain·invalid hypothesis 수, verdict별 수, 두 Gate별 수, PoC/report refs, 공식 정책 상태, Research/Primitive 요약, LLM·static·sandbox 자원, work state·attempt·transition commit refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
+최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, 초기·파생·chain·invalid hypothesis 수, verdict별 수, 두 Gate별 수, PoC/report refs, 공식 정책 상태, Research/Primitive 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
+
+분석 종료 뒤 review packet assembler가 exact `AnalysisRunResult`에서 `HumanReviewPacket`을 만든다. packet은 Finding·Verification, 두 Gate, 정책·CWE, dynamic·redacted PoC, report 또는 차단 이유, 자원, 오류·DataGap·HOLD 조건을 함께 보존한다. `HumanReviewDecision`은 이 packet과 별도 record이며 ReportDraft를 수정하지 않는다.
 
 | 최종 상태 | 저장 조건 |
 |---|---|
@@ -227,10 +239,20 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 | `TRANSITION_INCOMPLETE` | recovery runtime | 결과와 종료 상태 중 하나만 있는 상태를 다음 단계에서 차단 | journal과 pointer를 복구하거나 abort |
 | `RECOVERY_FAILED` | recovery runtime | 안전한 자동 복구가 불가능한 범위 중단 | 사람 확인 뒤 새 분석 또는 명시적 복구 |
 | `INTERRUPTED` | recovery runtime | commit되지 않은 실행 attempt 실패 기록 | retryable·예산·취소 상태 확인 뒤 새 attempt |
+| `AUTHORITY_DENIED` | runtime validator | 역할이 생산·호출할 수 없는 action 거절 | 허용 역할에서 새 action 요청 |
+| `ACTION_NOT_ALLOWED` | runtime validator | action과 현재 전제 불일치로 실행 금지 | 요구 상태·입력·권한을 고쳐 새 요청 |
+| `GATE_ORDER_INVALID` | runtime validator | 두 Gate 순서 또는 선행 exact ref가 맞지 않아 호출 금지 | Verification·CWE·Technical 결과 확정 뒤 새 요청 |
+| `REPORT_NOT_READY` | runtime validator | Reporter 호출 금지, 기술 verdict 유지 | Rule Scope와 report 조건 보완 |
+| `TOOL_NOT_ALLOWED` | tool validator | tool·command 실행 금지 | allowlist의 안전한 도구로 새 요청 |
+| `FILE_ACCESS_DENIED` | path validator | workspace 밖 파일 접근 금지 | workspace 상대 허용 경로로 새 요청 |
+| `SANDBOX_POLICY_DENIED` | Sandbox policy validator | 동적 실행 또는 network 변경 금지 | 승인된 image·network·resource profile 사용 |
+| `PROVIDER_PROFILE_DENIED` | provider policy validator | LLM 호출·silent failover 금지 | 허용 profile과 explicit 새 action 사용 |
+| `DISCLOSURE_DENIED` | disclosure validator | 외부 제출·공개 action 금지 | exact 사람 결정과 report-ready packet 확인 |
+| `UNTRUSTED_INSTRUCTION` | prompt/action validator | 저장소·LLM 지시를 policy 변경으로 실행하지 않음 | data로 격리하고 승인된 설정만 사용 |
 
 모든 `AnalysisError`에는 `stage`, `code`, `retryable`, 민감정보가 제거된 `safe_message`, 관련된 `work_id`·`attempt_id`, `related_record_ids`와 `created_at`을 남긴다. 실행 작업과 무관하면 두 실행 식별자는 `null`이다. 원본 오류는 일반 record에 복사하지 않고 별도 접근 통제·redaction·보존 정책이 적용된 결과로 분리한다. 표의 어떤 오류도 가설 `FALSE`를 직접 만들지 않는다.
 
-상태 전이·version·active attempt 오류는 `stage=STATE`, 결과와 pointer 일부 저장은 `stage=STORAGE`, 재시작·journal 정리는 `stage=RECOVERY`로 기록한다.
+상태 전이·version·active attempt 오류는 `stage=STATE`, 결과와 pointer 일부 저장은 `stage=STORAGE`, 재시작·journal 정리는 `stage=RECOVERY`, action 권한·실행 범위·공개 차단은 `stage=AUTHORITY`로 기록한다.
 
 ## Debug trace와 보존
 

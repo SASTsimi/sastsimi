@@ -19,6 +19,7 @@
 - [ ] Issue 상단만 읽어도 한 줄 설명, 이번에 할 일과 완료 산출물을 이해할 수 있습니다.
 - [ ] 입력과 출력 데이터 묶음·상태(`record/state`)를 만드는 역할과 받는 역할이 명확합니다.
 - [ ] 역할이 가질 수 없는 권한이 명시되었습니다.
+- [ ] action을 요청한 역할, Runtime Validator의 필수 검사와 허용·차단 결과가 추적됩니다.
 - [ ] 오류, 미지원, 시간 초과(`timeout`)와 자원 한도(`budget`) 소진을 `FALSE`와 구분합니다.
 - [ ] AST·SAST·코드 조회·동적 근거가 같은 `workspace_id`와 `commit_id`를 사용합니다.
 - [ ] 앞 단계와 뒤 단계(`upstream/downstream`)의 필수 검토를 받았습니다.
@@ -40,6 +41,8 @@
 - [ ] 공식 정책이 없으면 판단과 보고서 전달을 허용하지 않는 `UNCERTAIN + DENY`입니다.
 - [ ] Reporter의 모든 선행 조건이 명시됩니다.
 - [ ] 사람만 최종 공개를 결정합니다.
+- [ ] Runtime Validator는 취약점·CWE·정책 의미를 판단하는 세 번째 Gate가 아닙니다.
+- [ ] 사람 검토 자료에는 Finding·근거·PoC·두 Gate·비용·오류·HOLD 조건이 포함되며 결정은 ReportDraft와 분리됩니다.
 
 ## 전체 시나리오
 

@@ -26,6 +26,8 @@ provider/model failover는 조용히 수행하지 않는다. 모든 retry와 fal
 
 LLM 호출 상태는 `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED | CANCELLED`다. 호출 실패·인증 필요·rate limit·timeout은 취약점 `FALSE`가 아니다.
 
+모든 provider 호출은 먼저 `CALL_LLM` `ActionRequest`로 만들고, 프로그램 검사기가 역할·입력 수정본·상태·예산·허용 provider/model·session·redaction을 모두 통과시킨 exact `ActionDecision`이 있을 때만 실행합니다. retry와 failover도 새 action과 새 decision이 필요합니다.
+
 LLM 호출은 상위 `work_id`의 한 attempt로 실행한다. 재시도 가능한 호출 실패는 실패 attempt를 보존하고 작업을 `BLOCKED`로 둔다. 재인증·backoff·repair 같은 조건이 해결되면 새 `attempt_id`와 `llm_call_id`로 시작한다. 취소되었거나 이전 attempt에서 늦게 도착한 응답은 최신 결과에 연결하지 않는다.
 
 ## SessionPolicy
