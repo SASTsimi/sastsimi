@@ -28,7 +28,7 @@ SAST rule hit와 불완전한 경로는 관찰된 사실 후보이지 취약점 
 
 ```yaml
 static_fact_bundle:
-  workspace_id: sha256:...
+  workspace_id: ws-001
   entities: []
   locations: []
   source_candidates: []
@@ -66,9 +66,9 @@ Hypothesis Agent는 전체 코드가 아니라 entity, location과 suspected pat
 
 ```yaml
 code_context_request:
-  code_code_request_id: ctxreq-001
+  code_request_id: ctxreq-001
   hypothesis_id: hyp-001
-  workspace_id: sha256:...
+  workspace_id: ws-001
   requested_entities: [entity:OrderController.update]
   requested_locations: [loc:src/order.ts:41]
   relation_query: [CALLERS, AUTH_GUARDS]
@@ -79,8 +79,8 @@ code_context_request:
 
 ```yaml
 code_context_response:
-  code_code_request_id: ctxreq-001
-  workspace_id: sha256:...
+  code_request_id: ctxreq-001
+  workspace_id: ws-001
   entities: []
   locations: []
   code_fragment_refs: []

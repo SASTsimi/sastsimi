@@ -21,7 +21,7 @@ primitive:
   primitive_id: prim-001
   primitive_type: object_identifier_read
   target:
-    workspace_id: sha256:...
+    workspace_id: ws-001
     asset: order-service
     entity_refs: [entity:OrderController.update]
     privilege_level: authenticated_user
