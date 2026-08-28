@@ -95,7 +95,8 @@ Orchestration Agent는 분석 계획과 다음 작업을 제안·조정하지만
 - Rule/Scope: `PASS | FAIL | UNCERTAIN`
 - impact: `SUFFICIENT | INSUFFICIENT | UNCERTAIN`
 - report permission: `ALLOW | DENY`
-- 보고서: `NOT_REQUESTED | DRAFTED | HUMAN_REVIEWED`
+- 보고서 생성: `ReportProcessState.status = NOT_REQUESTED | DRAFTED | FAILED`
+- 사람 검토: `ReportDraft.human_review_state = PENDING | APPROVED | REJECTED`
 
 한 축의 값으로 다른 축을 암묵적으로 추론하지 않는다. 예를 들어 기술적으로 `TRUE`여도 out-of-scope이거나 실질 영향이 부족하면 Reporter를 호출하지 않는다.
 

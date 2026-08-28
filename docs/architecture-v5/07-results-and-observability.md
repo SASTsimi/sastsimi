@@ -123,7 +123,7 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 | `WORKSPACE_CHANGED` | Repository Loader·validator | 분석 `FAILED`, 변경 뒤 결과 사용 금지 | 새 작업공간에서 새 분석 |
 | `WORKSPACE_MISSING` | 코드 조회·runtime | 해당 작업 실패 | 보존 결과로 판단하거나 새 분석 |
 | `STATIC_TOOL_ERROR` | AST/SAST runner | 사용 가능한 결과가 있으면 분석 `PARTIAL` 가능 | 제한 retry 또는 gap 보존 |
-| `CONTEXT_RETRIEVAL_ERROR` | Context Retrieval Service | 검증 보완 필요, `HOLD` 가능 | 범위·요청을 고쳐 제한 retry |
+| `CONTEXT_RETRIEVAL_ERROR` | Context Retrieval Service | 오류와 누락 범위를 Verification에 전달 | 범위·요청을 고쳐 제한 retry; Verification Agent가 다른 근거와 함께 `HOLD` 여부 결정 |
 | `INVALID_OUTPUT` | Agent Runtime | 해당 LLM 출력 사용 금지 | 제한 repair 뒤 종료 |
 | `AGENT_ERROR` | Agent Runtime | 해당 Agent 작업 실패 | 새 `attempt_id`로 제한 retry |
 | `PROVIDER_ERROR` | provider adapter | LLM 호출 실패 | 명시적 retry·fallback |
@@ -136,7 +136,7 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 | `POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 Gate `UNCERTAIN + DENY` | 공식 출처 재확인 |
 | `RULE_SCOPE_GATE_ERROR` | 정책·영향 Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
 | `REPORT_ERROR` | Reporter runtime | 초안 `FAILED`, 기술 판정 유지 | 조건 보존 후 초안 재작성 |
-| `BUDGET_EXCEEDED` | Orchestration runtime | 작업 중단, 분석 `PARTIAL` 또는 가설 `HOLD` 가능 | 예산 결정 뒤 새 시도 |
+| `BUDGET_EXCEEDED` | Orchestration runtime | 작업 중단과 남은 검증 조건을 Verification에 전달; 분석은 `PARTIAL` 가능 | Verification Agent가 근거와 함께 가설 `HOLD` 여부를 결정하고, 새 예산 승인 뒤에만 재시도 |
 | `CANCELLED` | 사용자·runtime | 해당 작업 또는 분석 `CANCELLED` | 자동 재시도 금지 |
 | `SCHEMA_UNSUPPORTED` | schema validator | 해당 record 사용 금지 | 지원 schema로 다시 생성 |
 | `RECORD_REVISION_MISMATCH` | record validator | revision 자동 병합 금지 | 올바른 이전 revision에서 재생성 |
