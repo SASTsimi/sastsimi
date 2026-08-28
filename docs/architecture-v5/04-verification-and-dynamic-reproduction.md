@@ -107,6 +107,16 @@ Pro와 Con은 context contamination을 막기 위해 서로 다른 NEW session�
 - 동적 결과의 exit code, stdout/stderr reference, artifact hash와 hypothesis 연결 저장
 - 환경 구축 실패와 취약점 반증을 구분
 
+### 동적 재현 상태와 실제 반증
+
+동적 재현 상태는 `NOT_REQUESTED | RUNNING | SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED`다. 실행이 끝난 결과는 `DynamicReproductionResult.status`에 `SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED` 중 하나를 기록한다.
+
+- `failure_reason`은 환경 준비·실행·관측·정책·timeout 중 재현 작업이 실패하거나 막힌 이유다.
+- `hypothesis_disproved`는 가설이 실제 관측으로 반증됐는지 나타낸다.
+- `disproof_evidence_refs`는 어떤 관측이 반증했는지 가리킨다.
+- `FAILED`, `BLOCKED`, `CANCELLED`, 실행하지 못함, 빈 출력과 exit code만으로는 `hypothesis_disproved=true`가 될 수 없다.
+- 반증으로 `FALSE`를 제안하려면 플레이북의 기대 관측과 직접 연결된 `disproof_evidence_refs`가 있어야 한다.
+
 ## VerificationResult에 남길 정보
 
 최종 결과는 verdict뿐 아니라 supporting/counter evidence, restrictions, bypass candidates, required/provided capabilities, impact escalation candidates, unresolved conditions, debate 지표와 동적 재현 reference를 포함한다. 이 정보가 Primitive DB, Research, CWE와 두 Gate의 입력이 된다.

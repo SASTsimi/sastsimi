@@ -71,6 +71,22 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 - `elapsed_ms`는 monotonic clock으로 계산한 0 이상의 밀리초다. 벽시계 시각 차이를 timeout이나 비용 계산의 정본으로 사용하지 않는다.
 - 새 revision은 새 `created_at`을 갖고 이전 record의 시각을 덮어쓰지 않는다.
 
+### 상태 계층과 소유 주체
+
+같은 `status`라는 필드명을 쓰더라도 record 종류가 다르면 의미가 다르다. runtime은 아래 계층을 하나의 enum으로 합치거나 한 계층의 실패를 다른 계층의 판정으로 변환하지 않는다.
+
+| 상태 계층 | 허용 값 | 상태를 만드는 주체 | 반드시 분리할 의미 |
+|---|---|---|---|
+| 분석 실행 | `RUNNING | COMPLETE | PARTIAL | FAILED | CANCELLED` | Orchestration runtime | 가설 verdict가 아님 |
+| 가설 처리 | `PROPOSED | SCHEMA_VALID | ASSIGNED | VERIFYING | TERMINAL | INVALID_OUTPUT | CANCELLED` | Orchestration runtime | `TRUE | FALSE | HOLD`와 분리 |
+| 기술 판정 | `TRUE | FALSE | HOLD` | Verification Agent | 오류·정보 부족 상태와 분리 |
+| 동적 재현 | `NOT_REQUESTED | RUNNING | SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED` | Sandbox runtime | `FAILED`만으로 가설 반증 금지 |
+| LLM 호출 | `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED | CANCELLED` | Agent Runtime과 provider adapter | 가설 verdict로 변환 금지 |
+| 기술 Gate | `ACCEPT | REVISE | REJECT` | Technical Evidence Gate Agent | Verification verdict를 변경하지 않음 |
+| 정책·영향 Gate | `PASS | FAIL | UNCERTAIN`과 `ALLOW | DENY` | Rule Scope Impact Gate Agent | 기술 판정과 분리 |
+| 보고서 초안 | `NOT_REQUESTED | DRAFTED | FAILED` | Reporter runtime | 공개 승인 상태가 아님 |
+| 사람 검토 | `PENDING | APPROVED | REJECTED` | Human Reviewer | 최종 공개 여부만 사람이 결정 |
+
 ```yaml
 CodeLocation:
   workspace_id: string
@@ -331,15 +347,19 @@ DynamicReproductionResult:
   environment_ref: StoredDataRef
   steps_ref: StoredDataRef
   observation_refs: [StoredDataRef]
-  outcome: SUCCEEDED | PARTIAL | FAILED
+  status: SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED
   failure_reason: NONE | ENVIRONMENT_SETUP | EXECUTION | OBSERVATION | POLICY_BLOCKED | TIMEOUT
   hypothesis_disproved: boolean
+  disproof_evidence_refs: [StoredDataRef]
   hypothesis_linkage: string
   limitations: [string]
   cleanup_status: SUCCEEDED | FAILED
+  started_at: timestamp
+  finished_at: timestamp | null
+  elapsed_ms: integer
 ```
 
-재현 환경 구축·실행·관측 실패는 `failure_reason`으로 가설 반증과 구분한다. `outcome: FAILED`만으로 `hypothesis_disproved: true`를 만들 수 없으며, 반증은 재현 플레이북에 정의된 관측과 evidence reference를 요구한다.
+재현 환경 구축·실행·관측 실패는 `failure_reason`으로 가설 반증과 구분한다. `status: FAILED | BLOCKED | CANCELLED`, 빈 stdout이나 exit code만으로 `hypothesis_disproved: true`를 만들 수 없다. 반증은 재현 플레이북의 기대 관측과 직접 연결된 `disproof_evidence_refs`를 요구한다. `hypothesis_disproved: false`이면 `disproof_evidence_refs`는 빈 목록이어야 한다.
 
 ## 8. TechnicalEvidenceReview
 
@@ -433,7 +453,9 @@ LLMInvocationResult:
   response_ref: StoredDataRef | null
   parsed_output_ref: StoredDataRef | null
   usage: map | null
-  elapsed: duration
+  started_at: timestamp
+  finished_at: timestamp | null
+  elapsed_ms: integer
   safe_error: string | null
 ```
 
@@ -455,7 +477,9 @@ LLMInvocationLog:
   parsed_output_ref: StoredDataRef | null
   tool_calls: [StoredDataRef]
   usage: map | null
-  elapsed: duration
+  started_at: timestamp
+  finished_at: timestamp | null
+  elapsed_ms: integer
   retry_count: integer
   status: string
   safe_error: string | null
@@ -479,7 +503,8 @@ ReportDraft:
   rule_scope_impact_review_ref: StoredDataRef
   policy_record_ref: StoredDataRef
   content_ref: StoredDataRef
-  human_review_state: PENDING | REVIEWED
+  draft_status: DRAFTED
+  human_review_state: PENDING | APPROVED | REJECTED
 ```
 
 ```yaml

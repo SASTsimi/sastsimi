@@ -106,9 +106,21 @@ hidden chain-of-thought를 요구·수집·복원하지 않는다. 사용자에�
 
 ## 인증·오류 lifecycle
 
+LLM 호출 상태는 `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED | CANCELLED`다. 이 상태는 provider 호출의 결과이며 취약점 가설의 `TRUE | FALSE | HOLD`와 별개다.
+
+| 호출 상태 | 쉬운 의미 | Orchestration 처리 |
+|---|---|---|
+| `SUCCEEDED` | 호출과 공통 형식 변환이 끝남 | schema·semantic 검증 후 다음 단계 진행 |
+| `FAILED` | provider 또는 adapter가 호출을 끝내지 못함 | 오류 저장, 허용된 retry 검토 |
+| `INVALID_OUTPUT` | 응답은 왔지만 요구한 형식·의미 검사를 통과하지 못함 | 제한 repair 뒤에도 실패하면 해당 출력 사용 금지 |
+| `TIMED_OUT` | 정해진 시간 안에 끝나지 않음 | 새 `attempt_id`의 retry 또는 중단 |
+| `RATE_LIMITED` | provider 호출량 제한에 걸림 | backoff 또는 명시적 fallback |
+| `AUTH_REQUIRED` | 로그인·키·session이 없거나 만료됨 | 재인증 필요 상태로 반환 |
+| `CANCELLED` | 사용자 또는 runtime이 취소함 | 취소 기록 후 실행 종료 |
+
 1. Runtime이 adapter capability와 인증 사용 가능 여부를 확인한다.
 2. 호출할 수 없으면 `AUTH_REQUIRED` 또는 명시적 provider error를 반환한다.
-3. Orchestration은 이를 가설 `FALSE`로 바꾸지 않는다.
+3. Orchestration은 어떤 LLM 호출 상태도 가설 `FALSE`로 바꾸지 않는다.
 4. 제한 retry, 사용자 재인증 또는 구성된 explicit fallback을 선택한다.
 5. 모든 시도는 독립 `llm_call_id`와 `attempt_id`로 저장한다.
 
