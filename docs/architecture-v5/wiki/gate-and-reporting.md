@@ -14,7 +14,7 @@ final `VerificationResult`의 verdict와 찬반 근거, 실제 코드·호출·�
 
 ## 2. 공식 정책·범위·영향 검토(`Rule Scope Impact Gate`)
 
-Technical `ACCEPT`인 `TRUE`만 공식 `ProgramPolicySnapshot`과 함께 검토한다.
+Technical `ACCEPT`인 `TRUE`만 공식 `ProgramPolicyRecord`과 함께 검토한다.
 
 - rule_compliance: `PASS | FAIL | UNCERTAIN`
 - scope_compliance: `PASS | FAIL | UNCERTAIN`

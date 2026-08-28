@@ -12,7 +12,7 @@
 
 - `HOLD`의 미충족 조건은 REQUIRED Primitive로 저장한다.
 - `TRUE`가 제공하는 검증된 능력은 PROVIDED Primitive로 저장한다.
-- match는 snapshot, asset, entity, privilege와 공격 순서가 호환될 때만 후보가 된다.
+- match는 `workspace_id`, `commit_id`, asset, entity, privilege와 공격 순서가 맞을 때만 후보가 된다.
 - DB는 queue가 아니며 match는 Finding이 아니라 새 가설 후보다.
 
 ## 추가 탐색(`Research`) Agent
