@@ -41,11 +41,11 @@
 | 7 | 연계 공격의 필요 조건과 확인된 능력을 어떤 단어로 기록하고 연결할지 정합니다. | Primitive vocabulary와 scope/capability matching |
 | 8 | 연계 탐색이 끝없이 늘어나지 않도록 한도를 정합니다. | Research/chain depth·count·token·time·duplicate 제한 |
 | 9 | Docker 이미지, 네트워크, 자원과 종료 후 정리 방법을 정합니다. | image/network/resource/cleanup 정책 |
-| 10 | 공식 프로그램 정책을 어디서 가져오고 최신 여부와 실패를 어떻게 처리할지 정합니다. | `ProgramPolicySnapshot` source·freshness·failure |
+| 10 | 공식 프로그램 정책을 어디서 가져오고 최신 여부와 실패를 어떻게 처리할지 정합니다. | `ProgramPolicyRecord` source·freshness·failure |
 | 11 | 두 Gate가 사용할 질문, 보완 반복 횟수와 평가 자료를 정합니다. | Gate prompt, revision limit와 dataset |
 | 12 | LLM 호출 기록에서 비밀정보를 가리고 얼마나 보관할지 정합니다. | logging proxy/parser, redaction, retention, access control |
 | 13 | 데이터를 저장하고 버전을 바꿀 때 호환성을 어떻게 지킬지 정합니다. | serialization, schema versioning, result storage |
-| 14 | 저장소·파일·코드 위치를 같은 분석 시점에 묶는 식별 규칙을 정합니다. | `RepositorySnapshot`, `ArtifactRef`, `LocationRef`, `EntityRef`, submodule/LFS/generated dependency 계약 |
+| 14 | clone한 코드 폴더·파일·코드 위치를 같은 분석과 commit에 묶는 식별 규칙을 정합니다. | `CodeWorkspace`, `workspace_id`, `commit_id`, `StoredDataRef`, `CodeLocation`, `CodeSymbol` 계약 |
 | 15 | 병렬 실행·재시도·중단 복구 중 같은 작업이 중복 처리되지 않도록 정합니다. | atomic state transition, idempotency, crash resume |
 | 16 | 회원제 LLM 연결이 공식적으로 허용되고 안정적으로 동작하는지 확인할 종료 조건을 정합니다. | Membership adapter 지원·약관·동시성·session/log 검증 |
 | 17 | Docker 실행과 공식 정책 수집에서 생길 위협과 대응을 별도 결정 기록으로 남깁니다. | daemon/image/build provenance, policy 인증·freshness threat model/ADR |
@@ -57,7 +57,7 @@
 |---|---|
 | provider/model, membership/session, 상태 저장·복구 | [R3 #4](https://github.com/SASTsimi/sastsimi/issues/4), [R4 #5](https://github.com/SASTsimi/sastsimi/issues/5) |
 | Hypothesis, Primitive, Research와 chaining 한도 | [R1 #2](https://github.com/SASTsimi/sastsimi/issues/2) |
-| snapshot, static fact, location/context retrieval | [R2 #3](https://github.com/SASTsimi/sastsimi/issues/3) |
+| clone·checkout, static fact, location/context retrieval | [R2 #3](https://github.com/SASTsimi/sastsimi/issues/3) |
 | Verification, debate와 falsification | [R6 #7](https://github.com/SASTsimi/sastsimi/issues/7) |
 | Docker sandbox와 동적 재현 | [R7 #8](https://github.com/SASTsimi/sastsimi/issues/8) |
 | Gate, 공식 정책과 보고서 전달 | [R5 #6](https://github.com/SASTsimi/sastsimi/issues/6) |

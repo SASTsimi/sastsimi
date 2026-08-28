@@ -41,10 +41,10 @@
 
 ### 범위
 
-- RepositorySnapshot부터 human disclosure decision까지의 23단계
+- Repository input과 `CodeWorkspace` 준비부터 human disclosure decision까지의 23단계
 - 정적 사실, 가설, retrieval, Verification, sandbox, Primitive/Research, 두 Gate, report 계약
 - provider/session/logging과 resource budget
-- snapshot, prompt injection, credential, sandbox, official policy trust boundary
+- local workspace, prompt injection, credential, sandbox, official policy trust boundary
 - 역할 간 producer/consumer 계약과 종단 실패 시나리오
 
 ### 비범위
@@ -59,12 +59,12 @@
 
 - [ ] R1–R8 역할 Issue가 모두 완료되고 관련 PR이 `main`에 merge됨
 - [ ] 23단계 각각에 owner, 입력, 출력, 오류와 금지 권한이 있음
-- [ ] 모든 핵심 artifact가 run/snapshot/hypothesis/attempt와 추적 가능함
+- [ ] 모든 핵심 결과가 `analysis_id`, `workspace_id`, `hypothesis_id`, `attempt_id`와 추적 가능함
 - [ ] 오류·timeout·auth·sandbox setup 실패가 `FALSE`로 변환되지 않음
 - [ ] 두 Gate와 보고서 Agent의 순서·전제조건을 프로그램 내부 규칙 검사기(`runtime validator`)가 강제함
 - [ ] 새 Research/Primitive claim이 새 가설로 전체 검증됨
 - [ ] 모든 Blocker/High가 닫히고 Medium은 명시적으로 처리됨
-- [ ] freeze commit SHA와 independent final reviewer 승인 기록이 있음
+- [ ] freeze commit SHA, 역할 간 교차 검토와 최종 검토·승인 담당자의 최신 확인 기록이 있음
 - [ ] 별도 승인 PR 전까지 `REVIEW_REQUIRED / NOT_IMPLEMENTED`를 유지함
 
 ---
@@ -100,7 +100,7 @@
 
 ### 검토할 입력·출력
 
-- 입력: `StaticFactBundle` refs, 최소 code context, Scope, budget, final VerificationResult, Technical revision, Primitive match
+- 입력: `StaticFactBundle` refs, 최소 code context, RecordMeta, budget, final VerificationResult, Technical revision, Primitive match
 - 출력: schema-valid `HypothesisProposal[]`, `INVALID_OUTPUT`, `Primitive`, `ResearchResult`, child/chained proposal, bounded-stop reason
 
 ### 확인할 권한 경계
@@ -108,7 +108,7 @@
 - proposal은 `HYPOTHESIS_ONLY / NON_FINAL`이며 verdict·Finding·CWE·Gate·report를 확정하지 않는다.
 - confidence는 scheduling hint이며 진위 확률이나 verdict가 아니다.
 - `TRUE`는 PROVIDED, `HOLD`는 REQUIRED Primitive 후보를 만든다. `FALSE`는 chaining 근거로 승격하지 않는다.
-- 문자열 일치만으로 chain을 확정하지 않고 snapshot·asset·entity·privilege·attack order·restriction을 확인한다.
+- 문자열 일치만으로 chain을 확정하지 않고 `workspace_id`·`commit_id`·asset·entity·privilege·attack order·restriction을 확인한다.
 - 새 endpoint, sink, 권한 경계, 공격 단계나 impact는 새 가설로 반환한다.
 
 ### 필수 교차 리뷰
@@ -130,7 +130,7 @@
 
 ---
 
-## R2 — 정적 사실 계층·동일 snapshot 위치 기반 Context Retrieval
+## R2 — 정적 사실 계층·동일 workspace와 commit 기반 Context Retrieval
 
 - 실제 Issue: [#3](https://github.com/SASTsimi/sastsimi/issues/3)
 
@@ -149,43 +149,43 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - 담당 역할: 정적분석·컨텍스트
 - 담당자: 김나연 `@zv9uvr`
 - 주요 작업 브랜치: `review/static-context`
-- 관련 흐름: 저장소 버전 고정 → AST/SAST 병렬 실행 → 사실 묶음 생성 → 필요한 코드 위치 조회
+- 관련 흐름: `git clone`과 commit checkout → `CodeWorkspace` → AST/SAST 병렬 실행 → 사실 묶음 생성 → 필요한 코드 위치 조회
 
 ### 검토 문서
 
 - `02-static-fact-layer.md`
 - `08-lightweight-data-contracts.md`의 StaticFactBundle/Context 계약
 - `07-results-and-observability.md`의 static/retrieval metric
-- `10-security-boundaries.md`의 snapshot/retrieval 경계
+- `10-security-boundaries.md`의 workspace/retrieval 경계
 - `13-architecture-diagrams.md`의 정적 분석 흐름
 
 ### 검토할 입력·출력
 
-- 입력: 고정 `RepositorySnapshot`, AST/SAST raw artifact, exclusion policy, `CodeContextRequest`, budget
-- 출력: `StaticFactBundle`, entity/location/relation refs, `AnalysisGap`, `CodeContextResponse`, tool/coverage 상태
+- 입력: `CodeWorkspace`, AST/SAST raw result, exclusion policy, `CodeContextRequest`, budget
+- 출력: `StaticFactBundle`, `CodeSymbol`/`CodeLocation`/relation refs, `DataGap`, `CodeContextResponse`, tool/coverage 상태
 
 ### 확인할 권한 경계
 
 - AST/SAST severity와 rule hit은 verdict가 아니다.
 - empty/truncated/unresolved 결과를 안전 또는 `FALSE`로 해석하지 않는다.
-- 서로 다른 snapshot/submodule revision을 혼합하지 않는다.
-- path traversal, symlink escape, snapshot root 밖 조회와 무제한 repository dump를 금지한다.
+- 서로 다른 `workspace_id` 또는 `commit_id`를 혼합하지 않는다.
+- path traversal, symlink escape, `workspace_root` 밖 조회와 무제한 repository dump를 금지한다.
 
 ### 필수 교차 리뷰
 
 - LLM 탐색·체이닝: Hypothesis 입력의 충분성과 최소성
 - 검증·반박·플레이북: evidence/gap 표현
-- PM·아키텍처·워크플로: identity·Scope·error 계약
+- PM·아키텍처·워크플로: identity·RecordMeta·error 계약
 - 통합·구현 개발: parser/runner/normalizer/retrieval feasibility
 
 ### 완료 조건
 
-- [ ] `RepositorySnapshot`, Entity/Location/Artifact ref의 정체성과 불변성이 정의됨
-- [ ] submodule, LFS, generated dependency와 분석 범위 고정 규칙이 있음
-- [ ] 모든 사실을 producer/raw artifact/location/snapshot으로 역추적할 수 있음
+- [ ] `CodeWorkspace`, `StoredDataRef`, `CodeLocation`, `CodeSymbol`의 식별자와 생성 주체가 정의됨
+- [ ] clone/checkout, submodule, LFS와 generated dependency의 gap 처리 규칙이 있음
+- [ ] 모든 사실을 producer, `StoredDataRef`, `CodeLocation`, `workspace_id`로 역추적할 수 있음
 - [ ] AST/SAST 부분 실패와 충돌·불확실성이 gap/error로 보존됨
 - [ ] relation query와 depth/fragment/byte/token/request/time 제한이 정의됨
-- [ ] snapshot mismatch와 path/symlink negative scenario가 문서화됨
+- [ ] `WORKSPACE_MISMATCH`, `WORKSPACE_CHANGED`와 path/symlink negative scenario가 문서화됨
 - [ ] `gaps` 이름과 소비자 의미가 일관됨
 
 ---
@@ -237,10 +237,10 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 완료 조건
 
 - [ ] 23단계가 예상 module/entry point/contract/store/test에 매핑됨
-- [ ] run/hypothesis/parent-child/attempt correlation과 revision binding을 재구성할 수 있음
+- [ ] analysis/hypothesis/parent-child/attempt correlation과 record revision을 재구성할 수 있음
 - [ ] 병렬·직렬 지점과 atomic transition/idempotency/crash-resume 요구가 정의됨
 - [ ] partial/failed/cancelled/auth/rate-limit/sandbox/policy 오류의 전파가 명확함
-- [ ] cross-snapshot, Research 오승격, Reporter bypass negative test plan이 있음
+- [ ] 다른 workspace/commit 혼합, Research 오승격, Reporter bypass negative test plan이 있음
 - [ ] Membership adapter를 검증 전 optional experiment로 취급하고 feasibility 종료 조건을 정의함
 - [ ] 구현 상태 변경에 필요한 증거 기준이 문서화됨
 
@@ -277,7 +277,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 검토할 입력·출력
 
 - 입력: 모든 전문 역할 contract 요구, budget/eval 결과, provider/sandbox/storage 제한, human review 요구
-- 출력: versioned Scope/state/error contract, orchestration state machine, RACI, review map, ADR와 run closure 기준
+- 출력: versioned RecordMeta/state/error contract, orchestration state machine, RACI, review map, ADR와 run closure 기준
 
 ### 확인할 권한 경계
 
@@ -336,7 +336,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 검토할 입력·출력
 
-- 입력: final VerificationResult, evidence, dynamic/PoC, CWE, restrictions, official ProgramPolicySnapshot
+- 입력: final VerificationResult, evidence, dynamic/PoC, CWE, restrictions, official ProgramPolicyRecord
 - 출력: TechnicalEvidenceReview, RuleScopeImpactReview, revision requests, ReportDraft, human review packet
 
 ### 확인할 권한 경계
@@ -395,7 +395,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 검토할 입력·출력
 
-- 입력: VulnerabilityHypothesis, same-snapshot context, debate trigger/budget, Pro/Con, DynamicReproductionResult, revision request
+- 입력: VulnerabilityHypothesis, 같은 workspace/commit의 context, debate trigger/budget, Pro/Con, DynamicReproductionResult, revision request
 - 출력: supporting/counter evidence, initial/final verdict, dynamic decision, restrictions, capabilities, material child proposal
 
 ### 확인할 권한 경계
@@ -420,7 +420,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] Pro/Con은 상대 결론을 받지 않는 독립 NEW session임
 - [ ] `TRUE`는 핵심 path evidence, `FALSE`는 named falsification, `HOLD`는 unresolved condition을 요구함
 - [ ] initial/final verdict와 revision history가 분리됨
-- [ ] dynamic `FAILED`와 `falsification_observed`가 구분됨
+- [ ] dynamic `FAILED`와 `hypothesis_disproved`가 구분됨
 - [ ] material new claim과 같은 가설의 작은 validation subtask 경계가 있음
 - [ ] Technical REVISE가 새 evidence 또는 설명 revision을 남김
 
@@ -455,7 +455,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 검토할 입력·출력
 
-- 입력: hypothesis-linked reproduction request, snapshot/image digest, steps, approved target/network/resource policy
+- 입력: hypothesis-linked reproduction request, `workspace_id`/`commit_id`, image digest, steps, approved target/network/resource policy
 - 출력: DynamicReproductionResult, environment/step/observation refs, redacted PoC, limitation/cleanup/error
 
 ### 확인할 권한 경계
@@ -479,7 +479,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] image/build provenance, daemon isolation과 writable mount 정책 threat model이 있음
 - [ ] LIMITED와 FULL의 선택 조건과 observable effect 차이가 명확함
 - [ ] setup/execution/observation/policy/timeout failure와 반증이 다른 상태임
-- [ ] snapshot/command/input/observation/cleanup이 hypothesis에 추적됨
+- [ ] workspace/commit, command, input, observation과 cleanup이 hypothesis에 추적됨
 - [ ] escape/socket/secret/out-of-scope network negative scenario가 있음
 
 ---
@@ -535,7 +535,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 완료 조건
 
 - [ ] corpus가 TRUE/FALSE/HOLD, gap, conflicting evidence, Research child, policy absence, sandbox failure를 포함함
-- [ ] schema validity/repair, retrieval gap/snapshot mismatch, debate 전후 품질, chaining 중단, Gate-human 차이를 측정함
+- [ ] schema validity/repair, retrieval gap/`WORKSPACE_MISMATCH`, debate 전후 품질, chaining 중단, Gate-human 차이를 측정함
 - [ ] conditional debate, 독립 session, 두 Gate와 provider/model 선택에 acceptance threshold가 있음
 - [ ] adversarial prompt-injection, contradictory Gate, redaction failure case가 있음
 - [ ] role별 token/time/retry/chain/sandbox budget과 `BUDGET_EXCEEDED` 의미가 있음
@@ -567,7 +567,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 | 정책 없는 TRUE | Gate2 `UNCERTAIN + DENY`; Reporter 미호출 |
 | schema repair 실패 | `INVALID_OUTPUT`; Verification 미할당 |
 | empty/truncated context | gap 또는 HOLD 가능; 자동 FALSE 금지 |
-| snapshot mismatch | context/dynamic evidence 폐기와 오류 기록 |
+| workspace 또는 commit 불일치 | context/dynamic evidence 폐기와 `WORKSPACE_MISMATCH` 기록 |
 | 상충 Pro/Con | 독립 NEW session과 근거 기반 verdict/HOLD |
 | sandbox setup 실패 | explicit dynamic failure; vulnerability FALSE 금지 |
 | Research 새 claim | child hypothesis로 8단계부터 재검증; parent 불변 |
@@ -577,7 +577,8 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 | 모순된 ALLOW | semantic invalid; Reporter 차단 |
 | provider auth/rate-limit | explicit attempt/fallback; silent failover/FALSE 금지 |
 | AST/SAST 일부 실패 | gap 포함 PARTIAL 가능 |
-| snapshot 고정 실패 | run FAILED |
+| clone 또는 checkout 실패 | 분석 `FAILED`; AST/SAST 미실행 |
+| 분석 중 코드 변경 | `WORKSPACE_CHANGED`; 변경 뒤 결과 사용 금지 |
 | repository prompt injection | provider/session/Gate/sandbox/disclosure 정책 불변 |
 | secret/redaction 실패 | 일반 log/report 전달 차단 |
 | human review | Agent가 disclose 결정을 생성하지 않음 |
@@ -596,7 +597,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ```text
 R8 평가/예산 기준 ─┐
                     ├─> R4 중앙 계약·runtime enforcement
-R4 ─────────────────┼─> R2 snapshot/static/context
+R4 ─────────────────┼─> R2 workspace/static/context
 R2 + R4 + R8 ───────┴─> R1-A Hypothesis
 R1-A + R2 + R4 + R8 ──> R6 Verification
 R4 + R8 ──────────────> R7 Sandbox

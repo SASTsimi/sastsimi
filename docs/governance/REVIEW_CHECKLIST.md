@@ -20,7 +20,7 @@
 - [ ] 입력과 출력 데이터 묶음·상태(`record/state`)를 만드는 역할과 받는 역할이 명확합니다.
 - [ ] 역할이 가질 수 없는 권한이 명시되었습니다.
 - [ ] 오류, 미지원, 시간 초과(`timeout`)와 자원 한도(`budget`) 소진을 `FALSE`와 구분합니다.
-- [ ] 같은 시점으로 고정한 저장소 사본(`RepositorySnapshot`)을 유지합니다.
+- [ ] AST·SAST·코드 조회·동적 근거가 같은 `workspace_id`와 `commit_id`를 사용합니다.
 - [ ] 앞 단계와 뒤 단계(`upstream/downstream`)의 필수 검토를 받았습니다.
 - [ ] 담당 하위 Issue와 역할별 상위 Issue(#2–#9)를 PR에 연결했습니다.
 - [ ] Wiki와 Mermaid 영향을 확인했습니다.
