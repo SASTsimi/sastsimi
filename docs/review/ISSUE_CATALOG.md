@@ -296,9 +296,10 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 - [ ] 23단계별 호출 조건, 성공/partial/retry/terminal 상태가 명확함
 - [ ] verdict, Gate, rule/scope, impact, permission, report와 human state가 분리됨
-- [ ] retry/failover가 새 attempt/invocation이며 이력을 보존함
+- [ ] retry/failover가 새 attempt/invocation이며, 바로 앞 실패 호출 reference로 순서와 원인을 복원할 수 있음
 - [ ] chain/repair/Gate revision/sandbox/token/time 한도의 enforcement owner가 비-LLM runtime으로 명시됨
-- [ ] persistence/recovery/atomicity/idempotency 계약이 합의됨
+- [ ] persistence/recovery/atomicity/idempotency 계약이 합의되고 `TERMINAL`·`DRAFTED` 상태가 정확한 결과 `record_id`를 가리킴
+- [ ] 결과 record 저장과 종료 상태 변경 중 하나만 성공했을 때의 crash-resume 복구와 오래되거나 취소된 결과의 연결 거절 규칙이 있음
 - [ ] 실제 GitHub 계정과 최종 검토·승인 담당자가 문서와 Issue에서 일치함
 - [ ] conflict resolution, freeze SHA와 승인·구현 저장소 동기화 규칙이 확정됨
 

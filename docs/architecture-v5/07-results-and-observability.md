@@ -57,7 +57,7 @@ raw log는 최소 권한과 짧은 보존 기간으로 다루며 parser 실패�
 - schema validation error와 repair attempt
 - status, timeout, rate limit, auth requirement와 safe error
 - provider가 공개한 token/usage 또는 `unavailable`
-- elapsed time, retry와 explicit failover relation
+- elapsed time, 일반 retry의 `retry_of_llm_call_id`와 provider/model 전환의 `failover_from_llm_call_id`
 - redaction 적용·실패 결과
 
 credential, cookie, reusable authorization header, 전체 browser profile, hidden reasoning과 불필요한 전체 코드 원문은 저장하지 않는다.
@@ -125,6 +125,7 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 | `STATIC_TOOL_ERROR` | AST/SAST runner | 사용 가능한 결과가 있으면 분석 `PARTIAL` 가능 | 제한 retry 또는 gap 보존 |
 | `CONTEXT_RETRIEVAL_ERROR` | Context Retrieval Service | 오류와 누락 범위를 Verification에 전달 | 범위·요청을 고쳐 제한 retry; Verification Agent가 다른 근거와 함께 `HOLD` 여부 결정 |
 | `INVALID_OUTPUT` | Agent Runtime | 해당 LLM 출력 사용 금지 | 제한 repair 뒤 종료 |
+| `INVOCATION_CHAIN_INVALID` | Agent Runtime·log validator | retry/failover 관계 record 사용 금지 | 유효한 바로 앞 호출을 연결하거나 새 독립 호출로 다시 시작 |
 | `AGENT_ERROR` | Agent Runtime | 해당 Agent 작업 실패 | 새 `attempt_id`로 제한 retry |
 | `PROVIDER_ERROR` | provider adapter | LLM 호출 실패 | 명시적 retry·fallback |
 | `AUTH_REQUIRED` | provider adapter | LLM 호출 중단 | 사용자 재인증 뒤 새 시도 |

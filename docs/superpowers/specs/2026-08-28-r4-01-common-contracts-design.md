@@ -49,7 +49,7 @@
 | `external_program_id` | 외부 플랫폼 | 같은 `program_namespace` | 같은 외부 프로그램을 재참조 가능 | `ProgramPolicyRecord` |
 | `revision_number` | 새 revision을 저장하는 runtime | 같은 논리 결과 | 1부터 1씩 증가 | `RunMeta`와 `RecordMeta` |
 
-시스템이 만든 ID는 다른 대상에 재사용하지 않는다. `commit_id`와 `external_program_id`는 외부 대상을 가리키므로 같은 대상을 여러 분석에서 다시 참조할 수 있다. 외부 프로그램은 `(program_namespace, external_program_id)`로 구분하고 내부의 전역 `program_id`에 매핑한다. `root_hypothesis_id`, 부모·source·target 가설 ID와 failover 호출 ID는 기존 ID를 가리키는 참조 필드다. 로컬 코드 폴더가 삭제돼도 성공한 `workspace_id → repository_url + commit_id` 연결 정보는 남긴다.
+시스템이 만든 ID는 다른 대상에 재사용하지 않는다. `commit_id`와 `external_program_id`는 외부 대상을 가리키므로 같은 대상을 여러 분석에서 다시 참조할 수 있다. 외부 프로그램은 `(program_namespace, external_program_id)`로 구분하고 내부의 전역 `program_id`에 매핑한다. `root_hypothesis_id`, 부모·source·target 가설 ID와 retry/failover 호출 ID는 기존 ID를 가리키는 참조 필드다. 일반 retry는 `retry_of_llm_call_id`, provider/model 전환은 `failover_from_llm_call_id`로 바로 앞 실패 호출을 가리키며 두 필드는 상호 배타적이다. 로컬 코드 폴더가 삭제돼도 성공한 `workspace_id → repository_url + commit_id` 연결 정보는 남긴다.
 
 분석 시작·clone 실패처럼 코드가 아직 준비되지 않은 실행 record는 `analysis_id`만 필수인 `RunMeta`를 쓴다. `AnalysisRunState`와 `AnalysisRunResult`의 `workspace_id`, `commit_id`는 준비 전 `null`일 수 있고 실제 값이 기록된 뒤에는 바꾸지 않는다. 코드 근거를 담는 record는 두 값이 필수인 `RecordMeta`를 사용하며 `CodeWorkspace.status=READY`인 같은 commit만 참조한다.
 

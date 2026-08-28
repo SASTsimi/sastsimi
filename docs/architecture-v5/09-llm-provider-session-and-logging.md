@@ -32,9 +32,9 @@ Agent Runtime은 역할·structured-output 요구·context reference·budget·se
 - timeout, cancellation, rate limit와 auth-required 전달
 - provider가 공개한 usage만 출처와 함께 기록
 - credential을 Agent prompt/result/log에서 제외
-- retry와 failover를 새 `llm_call_id`로 식별
+- retry와 failover를 새 `llm_call_id`로 식별하고 바로 앞 실패 호출을 reference로 연결
 
-provider/model을 조용히 바꾸는 failover는 금지한다. 허용된 fallback이 있더라도 원래 실패, 새 provider/model, 이유, 새 session과 결과를 별도 `llm_call_id`로 남긴다.
+provider/model을 조용히 바꾸는 failover는 금지한다. 허용된 fallback이 있더라도 원래 실패, 새 provider/model, 이유, 새 session과 결과를 별도 `llm_call_id`로 남긴다. 같은 provider/model의 일반 retry는 `retry_of_llm_call_id`, provider/model을 바꾸는 failover는 `failover_from_llm_call_id`로 바로 앞 실패 호출을 가리킨다. 두 reference를 동시에 사용하지 않는다.
 
 ## MembershipSessionAdapter
 
@@ -123,6 +123,7 @@ LLM 호출 상태는 `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIM
 3. Orchestration은 어떤 LLM 호출 상태도 가설 `FALSE`로 바꾸지 않는다.
 4. 제한 retry, 사용자 재인증 또는 구성된 explicit fallback을 선택한다.
 5. 모든 시도는 독립 `llm_call_id`와 `attempt_id`로 저장한다.
+6. 후속 호출은 바로 앞 실패 호출 reference와 1씩 증가하는 `retry_count`를 저장하며, runtime은 같은 분석·가설·역할인지와 순환이 없는지 검사한다.
 
 동시성·rate limit의 backpressure도 취약점 판정과 분리한다.
 

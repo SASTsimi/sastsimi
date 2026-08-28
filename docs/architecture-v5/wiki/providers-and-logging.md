@@ -20,7 +20,7 @@ Agent Runtime
 
 API provider는 공식 API/SDK 경계다. Membership session은 공식 지원·약관·동시성·session/log 가용성 검토를 통과해야 채택할 수 있는 `EXPERIMENTAL / FEASIBILITY_REQUIRED` adapter다. 어느 하나도 아직 기본·검증 완료 방식으로 확정하지 않는다. API key와 membership credential은 각 adapter의 secret boundary 안에 두며 Agent와 일반 log에 노출하지 않는다.
 
-provider/model failover는 조용히 수행하지 않는다. 실패한 호출과 fallback 호출을 서로 연결된 별도 invocation으로 기록한다.
+provider/model failover는 조용히 수행하지 않는다. 모든 retry와 fallback 호출은 새 `llm_call_id`를 사용한다. 일반 retry는 `retry_of_llm_call_id`, provider/model 전환은 `failover_from_llm_call_id`로 바로 앞 실패 호출을 가리킨다. 두 필드를 동시에 사용하지 않으며 이 연결을 따라 최초 실패부터 마지막 결과까지 순서와 원인을 확인할 수 있어야 한다.
 
 LLM 호출 상태는 `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED | CANCELLED`다. 호출 실패·인증 필요·rate limit·timeout은 취약점 `FALSE`가 아니다.
 

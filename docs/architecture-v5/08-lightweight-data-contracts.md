@@ -90,7 +90,7 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 | `external_program_id` | 외부 버그바운티 플랫폼 | 같은 `program_namespace` | `ProgramPolicyRecord` | 같은 외부 프로그램을 다시 참조할 수 있으며 namespace 없이 단독 사용 금지 |
 | `revision_number` | 새 revision을 저장하는 runtime | 같은 논리 결과 | `RunMeta`와 `RecordMeta` | 1부터 1씩 증가 |
 
-`root_hypothesis_id`, `parent_hypothesis_ids`, `source_hypothesis_id`, `target_hypothesis_id`와 `failover_from_llm_call_id`는 새 종류의 ID가 아니라 각각 기존 `hypothesis_id` 또는 `llm_call_id`를 가리키는 참조 필드다. 로컬 폴더를 정리해도 성공한 `workspace_id → repository_url + commit_id` 연결 정보는 삭제하지 않는다. 시스템이 직접 만든 ID는 다른 대상에 재사용하지 않는다. 외부 ID인 `commit_id`와 `external_program_id`는 같은 대상을 다시 가리킬 수 있다. 서로 다른 종류의 ID는 대신 사용할 수 없으며, 소비자는 필요한 ID를 `RecordMeta`와 전문 record 양쪽에서 검사한다.
+`root_hypothesis_id`, `parent_hypothesis_ids`, `source_hypothesis_id`, `target_hypothesis_id`, `retry_of_llm_call_id`와 `failover_from_llm_call_id`는 새 종류의 ID가 아니라 각각 기존 `hypothesis_id` 또는 `llm_call_id`를 가리키는 참조 필드다. 로컬 폴더를 정리해도 성공한 `workspace_id → repository_url + commit_id` 연결 정보는 삭제하지 않는다. 시스템이 직접 만든 ID는 다른 대상에 재사용하지 않는다. 외부 ID인 `commit_id`와 `external_program_id`는 같은 대상을 다시 가리킬 수 있다. 서로 다른 종류의 ID는 대신 사용할 수 없으며, 소비자는 필요한 ID를 `RecordMeta`와 전문 record 양쪽에서 검사한다.
 
 ### 공통 시간 규칙
 
@@ -711,9 +711,14 @@ LLMInvocationLog:
   safe_error: string | null
   validation_errors: [string]
   repair_attempts: integer
+  retry_of_llm_call_id: string | null
   failover_from_llm_call_id: string | null
   redaction_result: APPLIED | NOT_REQUIRED | FAILED
 ```
+
+새로운 독립 호출은 `retry_count=0`이고 두 선행 호출 reference가 모두 `null`이다. 같은 provider/model에서 일반 retry를 실행하면 `retry_of_llm_call_id`가 바로 앞의 실패 호출을 가리키고 `failover_from_llm_call_id=null`이다. provider 또는 model을 바꾸는 failover이면 반대로 `failover_from_llm_call_id`만 바로 앞 호출을 가리킨다. 두 필드는 동시에 값을 가질 수 없다.
+
+선행 호출은 같은 `analysis_id`, `hypothesis_id`, `agent_role`의 이미 종료된 호출이어야 하고 현재 호출 자신이나 이후 호출을 가리킬 수 없다. 후속 호출의 `retry_count`는 바로 앞 호출보다 정확히 1 커야 한다. runtime은 존재하지 않는 predecessor, 순환 reference와 순서가 맞지 않는 chain을 `INVOCATION_CHAIN_INVALID`로 거절한다. 이 규칙으로 최초 실패 → 일반 retry → provider/model failover의 순서와 원인을 각 `llm_call_id`를 따라 복원한다.
 
 hidden chain-of-thought와 credential은 이 계약의 대상이 아니며 저장하지 않는다.
 
