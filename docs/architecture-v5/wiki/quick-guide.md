@@ -12,7 +12,7 @@
 
 - 정적 분석은 취약점 판단기가 아니라 LLM이 사용할 사실 수집 계층이다.
 - 저비용 가설 Agent는 ‘아직 최종 결과가 아님’을 뜻하는 `HYPOTHESIS_ONLY / NON_FINAL` 형식만 출력한다.
-- 필요한 코드는 같은 시점의 저장소 사본(`snapshot`)에서 코드 요소·위치·경로를 기준으로 조회한다.
+- 필요한 코드는 같은 `workspace_id`와 `commit_id`에서 코드 요소·위치·경로를 기준으로 조회한다.
 - 검증(`Verification`)은 공격 제한 조건, 우회, 필요·제공 능력과 영향 후보까지 확인한다.
 - 기본값은 `CONDITIONAL_DEBATE`이며 Pro/Con은 필요할 때 독립 NEW session으로 실행한다.
 - `TRUE/HOLD`의 조건과 능력은 연계 탐색용 조건 저장소(`Primitive DB`)에서 연결하고 추가 탐색(`Research`) Agent가 새 가설 후보를 만든다.
@@ -24,7 +24,7 @@
 ## 핵심 흐름
 
 ```text
-Repository → Snapshot → AST and SAST → StaticFactBundle
+Repository → Repository Loader → CodeWorkspace → AST and SAST → StaticFactBundle
 → constrained hypotheses → per-hypothesis Verification
 → on-demand context → BASIC or conditional Pro/Con → optional Docker
 → TRUE/FALSE/HOLD → Primitive DB and Research → new hypothesis loop

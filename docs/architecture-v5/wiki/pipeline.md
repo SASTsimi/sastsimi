@@ -2,14 +2,14 @@
 
 ## 쉽게 말하면
 
-저장소 시점을 고정해 코드 사실을 모으고, 가설별로 검증·재현·연계 탐색을 수행한 뒤, 근거와 공식 정책을 확인해 사람에게 전달하는 전체 순서입니다.
+저장소를 로컬에 clone하고 분석할 commit을 checkout해 코드 사실을 모은 뒤, 가설별 검증·재현·연계 탐색과 근거·공식 정책 검토를 거쳐 사람에게 전달하는 전체 순서입니다.
 
 **상세 기준:** [01. 시스템 개요](../01-system-overview.md)
 
 아래 목록은 데이터 형식과 구현 순서를 맞추기 위해 정확한 이름을 사용합니다. 뜻은 [쉬운 용어집](../../GLOSSARY.md)에서 확인하세요.
 
 1. 저장소 입력
-2. `RepositorySnapshot` 고정
+2. `Repository Loader`가 `git clone`과 `commit_id` checkout으로 `CodeWorkspace` 준비
 3. AST parse와 SAST 도구 병렬 실행
 4. `StaticFactBundle` 생성
 5. Orchestration Agent 시작

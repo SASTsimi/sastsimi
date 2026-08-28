@@ -21,9 +21,10 @@
 
 ```mermaid
 flowchart TB
-    S01[1 Repository input] --> S02[2 Fix RepositorySnapshot]
-    S02 --> S03A[3 AST parse]
-    S02 --> S03B[3 SAST tools]
+    S01[1 Repository input] --> S02[2 Repository Loader git clone and commit checkout]
+    S02 --> WORK[CodeWorkspace READY]
+    WORK --> S03A[3 AST parse]
+    WORK --> S03B[3 SAST tools]
     S03A --> S04[4 StaticFactBundle]
     S03B --> S04
     S04 --> S05[5 Orchestration Agent plans]
@@ -59,22 +60,23 @@ flowchart TB
     S22 -->|No| S23[23 Human review and disclosure decision]
 ```
 
-가설들은 예산 범위에서 병렬화할 수 있지만, 한 가설 안의 snapshot·판정·Gate 순서와 Reporter 전제는 유지한다.
+가설들은 예산 범위에서 병렬화할 수 있지만, 한 가설 안의 `workspace_id`·`commit_id`·판정·Gate 순서와 Reporter 전제는 유지한다.
 
 ## 2. 정적 사실과 위치 기반 조회
 
 ```mermaid
 flowchart LR
-    SNAP[Fixed RepositorySnapshot] --> AST[AST Parser]
-    SNAP --> SAST1[SAST Tool 1]
-    SNAP --> SASTN[SAST Tool N]
+    LOAD[Repository Loader] --> WORK[CodeWorkspace]
+    WORK --> AST[AST Parser]
+    WORK --> SAST1[SAST Tool 1]
+    WORK --> SASTN[SAST Tool N]
     AST --> NORMAL[Static Fact Normalizer]
     SAST1 --> NORMAL
     SASTN --> NORMAL
     NORMAL --> FACTS[StaticFactBundle]
     FACTS --> HYP[Hypothesis anchor entity location path]
     HYP --> REQ[CodeContextRequest]
-    REQ --> CHECK{Same snapshot and within budget}
+    REQ --> CHECK{Same workspace and commit within budget}
     CHECK -->|No| GAP[Error or explicit gap]
     CHECK -->|Yes| RET[Context Retrieval Service]
     RET --> REL[Callers Callees Data flow Auth guards Routes]
@@ -146,7 +148,7 @@ flowchart TB
     PROVIDED --> RESEARCH[Research Agent]
     REQUIRED --> PDB
     REQUIRED --> RESEARCH
-    PDB --> MATCH{Scope capability and attack order match}
+    PDB --> MATCH{Workspace commit asset capability and attack order match}
     MATCH -->|No| RESEARCH[Research Agent]
     MATCH -->|Yes| RESEARCH
     TGREV[Technical Gate revision request] --> RESEARCH
@@ -173,7 +175,7 @@ flowchart TB
     TS -->|REJECT| BLOCK[Report blocked]
     TS -->|ACCEPT but not TRUE| INTERNAL[Internal terminal record]
     TS -->|ACCEPT and TRUE| RULE[Rule Scope Impact Gate Agent]
-    POLICY[Official ProgramPolicySnapshot] --> RULE
+    POLICY[Official ProgramPolicyRecord] --> RULE
     NOPOL[Missing official policy] --> UNCERTAIN[Rule and scope UNCERTAIN permission DENY]
     UNCERTAIN --> BLOCK
     RULE --> READY{Review PASS Rule PASS Scope PASS Impact SUFFICIENT Permission ALLOW}

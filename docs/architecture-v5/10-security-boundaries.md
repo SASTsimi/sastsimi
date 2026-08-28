@@ -10,17 +10,18 @@
 
 ## 신뢰 실행 경계
 
-LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM runtime validator가 허용된 tool, snapshot binding, schema와 상태 전이, token/time/retry/chain budget, sandbox와 network 정책, provider/session 선택, Gate 순서, Reporter 전제조건을 강제한다. 저장소 내용과 모든 LLM 출력은 validation 전까지 비신뢰 입력이며 policy 변경 명령으로 해석하지 않는다.
+LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM runtime validator가 허용된 tool, `workspace_id`·`commit_id` 일치, schema와 상태 전이, token/time/retry/chain budget, sandbox와 network 정책, provider/session 선택, Gate 순서, Reporter 전제조건을 강제한다. 저장소 내용과 모든 LLM 출력은 validation 전까지 비신뢰 입력이며 policy 변경 명령으로 해석하지 않는다.
 
 ## 방향
 
 v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대하지 않는다. 그러나 비신뢰 저장소, LLM provider, 공식 프로그램 정책과 동적 실행을 다루므로 아래 실행 경계는 필수다.
 
-## 1. snapshot과 코드 조회
+## 1. 로컬 작업공간과 코드 조회
 
-- 모든 사실·가설·문맥·PoC는 동일한 `RepositorySnapshot`에 연결한다.
-- 분석 중 변경된 파일과 다른 submodule revision을 기존 결과에 섞지 않는다.
-- retrieval은 snapshot root 안의 허용 파일만 읽고 path traversal·symlink escape를 차단한다.
+- 모든 사실·가설·문맥·PoC는 동일한 `workspace_id`와 연결된 `commit_id`에 연결한다.
+- `Repository Loader`는 실행별 폴더에 clone하고 지정한 commit을 checkout한 뒤 HEAD를 확인한다.
+- 분석 중 HEAD나 추적 파일이 바뀌면 `WORKSPACE_CHANGED`로 중단하고 기존 결과에 섞지 않는다.
+- retrieval은 `workspace_root` 안의 허용 파일만 읽고 path traversal·symlink escape를 차단한다.
 - depth/token/request budget과 반환 location을 기록한다.
 - 누락·truncation은 안전함 또는 `FALSE`로 해석하지 않는다.
 
@@ -42,7 +43,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 ## 4. LLM log와 redaction
 
 - 사용자에게 노출된 request/response와 tool trace만 기록하고 hidden chain-of-thought는 수집하지 않는다.
-- code는 전체 원문 복제보다 snapshot location/artifact reference를 우선한다.
+- code는 전체 원문 복제보다 저장소 상대 `CodeLocation`과 `StoredDataRef`를 우선한다.
 - raw membership session log는 제한된 접근·짧은 보존·provider parser·redaction을 거친다.
 - redaction 실패 artifact는 일반 관측 저장소로 전달하지 않고 오류로 격리한다.
 - session reference 자체가 재사용 가능한 secret이면 hash/opaque handle로 대체한다.
@@ -54,13 +55,14 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - network default-deny를 사용하고 승인된 범위만 제한적으로 연다.
 - production credential, 실제 개인정보와 범위 밖 target을 사용하지 않는다.
 - image/digest, command/step ref, exit/observation, timeout과 cleanup을 기록한다.
+- Docker build와 실행은 분석용 `CodeWorkspace`를 직접 수정하지 않고 sandbox 내부 복사본에서 수행한다.
 - LLM이 재현을 제안해도 sandbox policy를 변경하거나 임의 shell·외부 공격·지속성 설치를 승인할 수 없다.
 
 ## 6. 프로그램 정책 신뢰 경계
 
-- Rule Scope Impact Gate는 capture된 공식 source만 `ProgramPolicySnapshot`으로 사용한다.
+- Rule Scope Impact Gate는 확인 가능한 공식 source만 `ProgramPolicyRecord`로 사용한다.
 - 저장소 문서, 검색 snippet, 오래된 모델 지식과 비공식 요약을 공식 rule로 승격하지 않는다.
-- source URL/reference, capture time, 누락과 freshness warning을 보존한다.
+- source URL/reference, 수집 시각, 누락과 freshness warning을 보존한다.
 - 공식 자료가 없거나 신뢰할 수 없으면 `UNCERTAIN + DENY`다.
 - 정책 수집기가 향후 추가되면 외부 fetch, parser, provenance와 변경 탐지에 별도 보안 검토가 필요하다.
 
@@ -68,14 +70,14 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 
 다음 연결을 보존한다.
 
-- tool observation → snapshot location
+- tool observation → 현재 `workspace_id`의 `CodeLocation`
 - hypothesis claim → observed fact/assumption/falsification
 - retrieved context → request와 실제 location
 - verdict → Pro/Con/dynamic evidence와 restriction
 - Primitive/Research candidate → source result와 아직 검증되지 않은 상태
 - CWE → evidence와 uncertainty
 - Technical review → 정확한 Verification revision
-- Rule/Scope review → 정확한 official policy snapshot
+- Rule/Scope review → 정확한 `ProgramPolicyRecord`
 - report claim → 통과한 result와 두 Gate
 
 Research, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출을 승인한다.
@@ -94,7 +96,7 @@ Research, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출�
 | chain 폭증 | depth/count/token/time/duplicate/cycle 제한 |
 | 위험한 PoC | sandbox default-deny와 resource limit |
 | credential·코드 유출 | adapter secret boundary, 최소 context, redaction |
-| 정책 환각 | official snapshot 없으면 `UNCERTAIN + DENY` |
+| 정책 환각 | 공식 `ProgramPolicyRecord`가 없으면 `UNCERTAIN + DENY` |
 | 자동 오공개 | Reporter 초안 한정, human-only disclosure |
 
 ## 남는 위험

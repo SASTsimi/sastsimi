@@ -122,7 +122,7 @@ Gate 담당은 검증 담당자의 `TRUE / FALSE / HOLD` 판정을 임의로 바
 |---|---|
 | candidate baseline | 검토 중인 설계 초안(`candidate baseline`) |
 | contract | 입출력 약속(`contract`) |
-| snapshot | 분석 시점을 고정한 저장소 사본(`snapshot`) |
+| CodeWorkspace | AST와 SAST가 읽는 실행별 로컬 코드 폴더(`workspace_id`와 `commit_id`로 구분) |
 | artifact | 도구가 만든 결과 파일이나 기록(`artifact`) |
 | record | 정해진 형식의 데이터 묶음(`record`) |
 | runtime validator | 프로그램 내부 규칙 검사기(`runtime validator`) |

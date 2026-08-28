@@ -38,8 +38,8 @@ CWE 후보는 final verdict 뒤에 작성한다. primary·alternative CWE, taxon
 ### 검토 항목
 
 - `TRUE | FALSE | HOLD`와 찬성·반대 근거의 일치
-- 핵심 주장이 실제 snapshot의 코드 위치와 호출·데이터 흐름에 연결되는지
-- 동적 관측이 현재 가설·snapshot·실행 조건에 연결되는지
+- 핵심 주장이 현재 `workspace_id`와 `commit_id`의 코드 위치·호출·데이터 흐름에 연결되는지
+- 동적 관측이 현재 가설·`workspace_id`·실행 조건에 연결되는지
 - CWE 선택이 취약점 유형과 근거에 적절한지
 - restriction·반박·HOLD 조건이 정확히 표현되었는지
 - 기술 검토 결과를 다음 단계 또는 내부 종결 기록으로 전달할 수 있는지
@@ -70,9 +70,9 @@ technical_evidence_review:
 
 이 Gate는 Technical `ACCEPT`인 `TRUE`만 받는다. 취약점 기술 성립과 bug-bounty 프로그램의 보고 가능성을 분리한다.
 
-### ProgramPolicySnapshot
+### ProgramPolicyRecord
 
-입력 정책은 분석 시점에 고정된 공식 자료여야 한다.
+입력 정책은 Gate가 확인할 수 있는 공식 자료를 수집한 기록이어야 한다.
 
 - program identifier, policy version과 fetch timestamp
 - 공식 rule, eligibility와 severity/impact 기준
@@ -82,7 +82,7 @@ technical_evidence_review:
 - 각 항목의 official source reference
 - 수집하지 못한 자료와 freshness warning
 
-저장소 문서나 모델 기억을 공식 정책으로 자동 승격하지 않는다. 공식 `ProgramPolicySnapshot`이 없거나 핵심 자료가 누락되면 추측하지 않는다.
+저장소 문서나 모델 기억을 공식 정책으로 자동 승격하지 않는다. 공식 `ProgramPolicyRecord`가 없거나 핵심 자료가 누락되면 추측하지 않는다.
 
 ### 검토 항목
 
@@ -102,7 +102,7 @@ rule_scope_impact_review:
   scope_compliance: PASS | FAIL | UNCERTAIN
   security_impact: SUFFICIENT | INSUFFICIENT | UNCERTAIN
   report_permission: ALLOW | DENY
-  policy_snapshot_ref: string | null
+  policy_record_ref: string | null
   reasons: []
   missing_information: []
 ```
@@ -134,7 +134,7 @@ Reporter는 통과한 근거를 읽기 쉬운 내부 초안으로 구성한다.
 - restriction, bypass 검토와 반박 처리
 - 동적 재현과 redacted PoC
 - CWE와 선택 이유
-- 두 Gate 결과와 `ProgramPolicySnapshot` reference
+- 두 Gate 결과와 `ProgramPolicyRecord` reference
 - Research 후보의 재검증 여부
 - 완화와 회귀 테스트 제안
 - invocation trace와 남은 불확실성
@@ -143,4 +143,4 @@ Reporter는 새로운 공격 경로를 확정하거나 미검증 Research 후보
 
 ## 사람의 최종 결정
 
-자동 산출물은 내부 `FindingCandidate`와 `ReportDraft`다. 사람은 원문 근거, 두 Gate, 공식 정책 snapshot, PoC, 오류와 자원 제한을 함께 검토해 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`을 결정한다. 어떤 Agent도 외부 제출·공개 권한을 갖지 않는다.
+자동 산출물은 내부 `FindingCandidate`와 `ReportDraft`다. 사람은 원문 근거, 두 Gate, 공식 `ProgramPolicyRecord`, PoC, 오류와 자원 제한을 함께 검토해 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`을 결정한다. 어떤 Agent도 외부 제출·공개 권한을 갖지 않는다.

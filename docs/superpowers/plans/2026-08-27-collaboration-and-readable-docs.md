@@ -35,7 +35,7 @@
 
 - [x] **Step 1: 공통 용어집 작성**
 
-`docs/GLOSSARY.md`에 용어, 쉬운 설명, 정확한 사용 기준을 표로 작성한다. 최소 항목은 `candidate baseline`, `contract`, `snapshot`, `artifact`, `record`, `runtime validator`, `upstream/downstream`, `owner/reviewer`, `Finding`, `Gate`, `human handoff`, `provenance`, `corpus`, `observability`, `TRUE/FALSE/HOLD`, `PoC`, `CWE`, `Primitive`, `Research`, `sandbox`, `provider/session`이다.
+`docs/GLOSSARY.md`에 용어, 쉬운 설명, 정확한 사용 기준을 표로 작성한다. 최소 항목은 `candidate baseline`, `contract`, `CodeWorkspace`, `StoredDataRef`, `record`, `runtime validator`, `upstream/downstream`, `owner/reviewer`, `Finding`, `Gate`, `human handoff`, `provenance`, `corpus`, `observability`, `TRUE/FALSE/HOLD`, `PoC`, `CWE`, `Primitive`, `Research`, `sandbox`, `provider/session`이다.
 
 - [x] **Step 2: 저장소 전체 문서 지도 작성**
 

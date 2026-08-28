@@ -10,14 +10,14 @@
 
 ## 목표와 경계
 
-SASTSIMI v5는 고정된 저장소 snapshot에서 정적 사실을 수집하고, LLM Agent가 가설 생성·검증·기술 검토·프로그램 정책 검토·보고서 초안을 단계적으로 수행하는 분석 시스템이다. 정적 분석 도구와 LLM 출력 모두 단독으로 Finding이 되지 않으며, 공개 결정은 사람에게 남는다.
+SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git commit을 checkout한 뒤 정적 사실을 수집한다. 이후 LLM Agent가 가설 생성·검증·기술 검토·프로그램 정책 검토·보고서 초안을 단계적으로 수행한다. 정적 분석 도구와 LLM 출력 모두 단독으로 Finding이 되지 않으며, 공개 결정은 사람에게 남는다.
 
 ## 정본 23단계
 
 | 단계 | 처리 | 주 산출물 또는 조건 |
 |---:|---|---|
 | 1 | 저장소 입력 | repository reference |
-| 2 | 분석 시점 고정 | `RepositorySnapshot` |
+| 2 | 저장소 clone과 commit checkout | `CodeWorkspace` |
 | 3 | AST parse와 SAST 도구 병렬 실행 | raw AST/SAST outputs |
 | 4 | 정적 사실 정규화 | `StaticFactBundle` |
 | 5 | 분석 실행 시작 | Orchestration run |
@@ -43,7 +43,7 @@ SASTSIMI v5는 고정된 저장소 snapshot에서 정적 사실을 수집하고,
 ## 주요 실행 흐름
 
 ```text
-RepositorySnapshot
+Repository Loader -> CodeWorkspace
   ├─ AST Parser ─┐
   └─ SAST Tools ─┴─> StaticFactBundle
                            │
@@ -71,10 +71,10 @@ Orchestration Agent는 분석 계획과 다음 작업을 제안·조정하지만
 
 | 구성 요소 | 책임 | 금지 경계 |
 |---|---|---|
-| Snapshot Manager | commit·submodule·분석 범위 고정 | 실행 중 다른 revision 혼합 |
+| Repository Loader | 실행별 `git clone`, `commit_id` checkout과 HEAD 확인 | 실행 중 작업공간 변경 또는 다른 commit 혼합 |
 | AST/SAST runners | 구조·규칙 일치·경로 후보 수집 | 취약점 최종 판정 |
 | Static Fact Normalizer | 공통 entity/location/path 표현 생성 | 증거가 없는 의미 확정 |
-| Context Retrieval Service | 고정 snapshot에서 제한된 추가 문맥 조회 | 범위 밖 무제한 repository dump |
+| Context Retrieval Service | 같은 `workspace_id`와 `commit_id`에서 제한된 추가 문맥 조회 | 작업공간 밖 무제한 repository dump |
 | Orchestration Agent | 가설 lifecycle, 병렬성, 예산과 loop 관리 | Finding 공개 결정 |
 | Hypothesis Agent | schema-constrained 가설 후보 생성 | verdict·Finding·exploitability 확정 |
 | Verification Agent | 증거 종합, 판정, restriction/capability 기록 | 새 주장의 무검증 승격 |
@@ -104,6 +104,6 @@ Orchestration Agent는 분석 계획과 다음 작업을 제안·조정하지만
 - AST와 복수 SAST 실행은 병렬화할 수 있다.
 - 서로 독립된 가설의 Verification은 예산 범위에서 병렬화할 수 있다.
 - 한 가설의 Pro/Con은 조건이 충족될 때 서로 독립된 NEW session으로 병렬화할 수 있다.
-- 같은 가설의 snapshot 고정, initial verdict 전후, 두 Gate의 순서와 Reporter 조건은 의존성을 지킨다.
+- 같은 가설의 `workspace_id`와 `commit_id`, initial verdict 전후, 두 Gate의 순서와 Reporter 조건은 의존성을 지킨다.
 - 모든 초기·파생 가설이 종료 상태에 도달하고 저장이 끝나면 Orchestration run을 닫는다.
 - chaining은 깊이·개수·토큰·시간·중복 fingerprint 제한을 넘으면 새 가설을 만들지 않고 중단 이유를 기록한다.

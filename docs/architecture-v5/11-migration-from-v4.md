@@ -18,7 +18,7 @@
 
 | 유지할 의미 | v5 적용 |
 |---|---|
-| repository snapshot 고정 | facts, context, verdict, PoC를 같은 commit에 연결 |
+| 같은 코드 버전 연결 | 실행별 clone과 `commit_id`로 facts, context, verdict, PoC 연결 |
 | AST/SAST 정규화 | LLM이 사용할 entity/location/path/auth 사실 계층 |
 | 역할 분리된 LLM 분석 | Hypothesis, Verification, Pro/Con, Research, 두 Gate, Reporter |
 | 격리된 동적 검증 | Docker `LIMITED_REPRO | FULL_REPRO` |
@@ -46,7 +46,7 @@
 |---|---|
 | 자유 형식 Exploration | constrained low-cost Hypothesis Agent |
 | Analyst/Skeptic quorum | Verification + 조건부 독립 Pro/Con |
-| 선택 code fragment 전달 | same-snapshot on-demand location retrieval |
+| 선택 code fragment 전달 | 같은 workspace와 commit의 on-demand location retrieval |
 | Semantic Judge/Synthesis | bypass-aware Verification Agent |
 | Proof Router/Resolver | VerificationResult의 evidence/gap/restriction |
 | confirmed/held 목록 | REQUIRED/PROVIDED Primitive DB records |
@@ -72,7 +72,7 @@ v4 TRUE | FALSE | PENDING
   + report_permission ALLOW | DENY
 ```
 
-과거 결과는 자동 변환하지 않는다. 같은 snapshot과 원문 근거를 확인해 새 record로 재검토해야 한다.
+과거 결과는 자동 변환하지 않는다. 같은 commit의 원문 근거를 확인해 새 record로 재검토해야 한다.
 
 ## 문서 경로 변경
 
@@ -85,14 +85,14 @@ v4 TRUE | FALSE | PENDING
 
 ## 구현 migration 순서 제안
 
-1. snapshot, AST/SAST와 `StaticFactBundle`
+1. `Repository Loader`, `CodeWorkspace`, AST/SAST와 `StaticFactBundle`
 2. Context Retrieval Service와 location audit
 3. constrained Hypothesis output validation
 4. Verification과 BASIC/CONDITIONAL debate
 5. Docker LIMITED/FULL reproduction
 6. Primitive DB와 Research loop
 7. CWE와 Technical Evidence Gate
-8. official `ProgramPolicySnapshot` 수집 경계와 Rule Scope Impact Gate
+8. official `ProgramPolicyRecord` 수집 경계와 Rule Scope Impact Gate
 9. provider adapters, session policy와 Logging Proxy/parser
 10. Reporter, result stores와 human review UI
 

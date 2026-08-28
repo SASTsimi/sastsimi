@@ -28,7 +28,7 @@ Verification TRUE
 
 ## 1. 요약
 
-- 대상 snapshot: `{repository}@{commit} / {snapshot_id}`
+- 대상 코드: `{repository}@{commit_id} / {workspace_id}`
 - 취약점 유형: `{vulnerability type}`
 - CWE: `{primary CWE}`
 - 영향 entity/endpoint: `{entity or endpoint}`
@@ -41,7 +41,7 @@ Verification TRUE
 
 ## 2. 공식 프로그램 정책과 범위
 
-- ProgramPolicySnapshot: `{policy snapshot ref}`
+- ProgramPolicyRecord: `{policy_record_ref}`
 - 공식 source: `{official source refs}`
 - capture 시각/freshness: `{timestamp and warning}`
 - 적용 rule: `{rule and eligibility}`
@@ -79,7 +79,7 @@ Verification TRUE
 → {sink}
 ```
 
-`{각 단계가 동일 snapshot에서 연결되는 근거와 location reference}`
+`{각 단계가 동일 workspace_id와 commit_id에서 연결되는 근거와 CodeLocation}`
 
 ## 6. 검증 근거
 

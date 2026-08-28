@@ -12,20 +12,82 @@
 
 이 문서는 Agent 경계에서 의미가 달라지지 않도록 최소 record와 enum을 정의한다. 완전한 구현 schema, 모든 내부 event, 서명 체계나 대규모 policy registry를 미리 고정하지 않는다. sandbox 요청, provider 호출, 저장 경계 등 실제 위험·호환성 경계에서만 구현 단계의 강한 validation을 추가한다.
 
-## 공통 scope
+## 공통 식별자와 참조
+
+`CodeWorkspace`는 별도 저장소 복사본이 아니라 `Repository Loader`가 실행별로 clone하고 지정한 commit을 checkout한 로컬 분석 폴더다.
 
 ```yaml
-Scope:
-  run_id: string
-  snapshot_id: string
-  repository_ref: string
-  commit: string
-  hypothesis_id: string | null
-  attempt_id: string | null
+CodeWorkspace:
+  workspace_id: string
+  analysis_id: string
+  repository_url: string
+  commit_id: string
+  status: READY | FAILED | REMOVED
   created_at: timestamp
 ```
 
-모든 핵심 artifact는 `scope`와 생성 시각을 갖는다. 다른 snapshot의 코드·동적 결과·정책을 조용히 혼합하지 않으며 재시도는 새 `attempt_id`로 보존한다.
+실제 로컬 절대 경로는 runtime 내부에서만 관리하며 Agent, Finding과 보고서에 전달하지 않는다.
+`workspace_id`는 재사용하지 않는다. 로컬 폴더를 정리하면 `status=REMOVED`로 바꾸되, `workspace_id`와 `repository_url`·`commit_id`의 연결 정보는 결과 추적을 위해 보존한다.
+
+```yaml
+RecordMeta:
+  record_id: string
+  record_type: string
+  schema_version: string
+  analysis_id: string
+  workspace_id: string
+  commit_id: string
+  hypothesis_id: string | null
+  attempt_id: string | null
+  revision_number: integer
+  previous_record_id: string | null
+  created_at: timestamp
+```
+
+모든 핵심 결과는 `meta: RecordMeta`를 갖는다. `analysis_id`, `workspace_id`와 `commit_id`는 필수다. runtime은 `workspace_id`가 가리키는 `CodeWorkspace.commit_id`와 `RecordMeta.commit_id`가 같은지 확인한다. 가설별 결과는 `hypothesis_id`, 재시도 가능한 작업은 `attempt_id`가 필수다. 첫 결과의 `revision_number`는 `1`, `previous_record_id`는 `null`이다. 결과를 수정할 때 덮어쓰지 않고 새 `record_id`와 증가한 revision을 만든다.
+
+```yaml
+CodeLocation:
+  workspace_id: string
+  commit_id: string
+  file_path: string
+  start_line: integer
+  start_column: integer
+  end_line: integer
+  end_column: integer
+
+CodeSymbol:
+  symbol_id: string
+  symbol_kind: FILE | CLASS | FUNCTION | METHOD | VARIABLE | ROUTE
+  name: string
+  location: CodeLocation
+
+StoredDataRef:
+  stored_data_id: string
+  data_kind: string
+  content_hash: string
+  workspace_id: string
+  commit_id: string
+
+DataGap:
+  gap_id: string
+  stage: CLONE | STATIC_ANALYSIS | CONTEXT | DYNAMIC | POLICY
+  reason: MISSING | FAILED | TRUNCATED | UNSUPPORTED | BLOCKED | TIMEOUT
+  description: string
+  affected_locations: [CodeLocation]
+  retryable: boolean
+
+AnalysisError:
+  error_id: string
+  stage: REPOSITORY | STATIC_ANALYSIS | AGENT | PROVIDER | SANDBOX | POLICY | GATE | REPORT
+  code: string
+  message: string
+  retryable: boolean
+  related_record_ids: [string]
+  created_at: timestamp
+```
+
+`file_path`는 `workspace_root` 기준 상대 경로이고 줄과 열은 1부터 시작한다. `symbol_id`는 같은 `workspace_id` 안에서 유일하다. `StoredDataRef`는 내부 저장 경로 대신 결과 번호와 내용 hash만 전달한다. `DataGap`은 분석하지 못한 범위이고 `AnalysisError`는 실행 중 발생한 오류다. 둘 다 취약점 `FALSE`를 뜻하지 않는다.
 
 ## 1. StaticFactBundle
 
@@ -33,9 +95,9 @@ Scope:
 
 ```yaml
 StaticFactBundle:
-  scope: Scope without hypothesis/attempt
-  entities: [EntityRef]
-  locations: [LocationRef]
+  meta: RecordMeta without hypothesis/attempt
+  entities: [CodeSymbol]
+  locations: [CodeLocation]
   source_candidates: [FactRef]
   sink_candidates: [FactRef]
   call_edges: [RelationRef]
@@ -43,7 +105,7 @@ StaticFactBundle:
   auth_and_permission_checks: [FactRef]
   route_bindings: [RelationRef]
   tool_observations: [ToolObservationRef]
-  gaps: [AnalysisGap]
+  gaps: [DataGap]
 ```
 
 SAST severity와 tool message는 verdict가 아니다.
@@ -55,14 +117,14 @@ SAST severity와 tool message는 verdict가 아니다.
 ```yaml
 HypothesisProposal:
   proposal_id: string
-  scope: Scope
+  meta: RecordMeta
   proposal_state: HYPOTHESIS_ONLY
   assertion_mode: NON_FINAL
   origin: INITIAL | RESEARCH | CHAINING
   vulnerability_type_candidates: [string]
-  target_entities: [EntityRef]
-  target_locations: [LocationRef]
-  suspected_path: [RelationOrLocationRef]
+  target_entities: [CodeSymbol]
+  target_locations: [CodeLocation]
+  suspected_path: [RelationOrCodeLocation]
   observed_facts: [FactRef]
   assumptions: [string]
   restrictions: [string]
@@ -78,14 +140,14 @@ schema validation과 semantic validation을 통과한 proposal만 stable `hypoth
 
 ## 3. CodeContextRequest/Response
 
-검증 단계가 필요한 코드 위치를 요청하고 정적분석 계층이 같은 저장소 사본에서 코드를 돌려주는 형식입니다.
+검증 단계가 필요한 코드 위치를 요청하고 정적분석 계층이 같은 `workspace_id`와 `commit_id`에서 코드를 돌려주는 형식입니다.
 
 ```yaml
 CodeContextRequest:
-  request_id: string
-  scope: Scope
-  requested_entities: [EntityRef]
-  requested_locations: [LocationRef]
+  code_request_id: string
+  meta: RecordMeta
+  requested_entities: [CodeSymbol]
+  requested_locations: [CodeLocation]
   relation_query: [CALLERS | CALLEES | DATA_FLOW_NEIGHBORS | AUTH_GUARDS | ROUTE_BINDINGS]
   reason: string
   max_depth: integer
@@ -94,18 +156,18 @@ CodeContextRequest:
 
 ```yaml
 CodeContextResponse:
-  request_id: string
-  snapshot_id: string
-  entities: [EntityRef]
-  locations: [LocationRef]
-  code_fragment_refs: [ArtifactRef]
+  code_request_id: string
+  meta: RecordMeta
+  entities: [CodeSymbol]
+  locations: [CodeLocation]
+  code_fragment_refs: [StoredDataRef]
   discovered_relations: [RelationRef]
-  gaps: [AnalysisGap]
+  gaps: [DataGap]
   truncated: boolean
   consumed_token_estimate: integer | null
 ```
 
-snapshot mismatch response는 근거에 사용하지 않는다. empty/truncated/gap은 안전함 또는 `FALSE`를 뜻하지 않는다.
+요청과 응답의 `meta.workspace_id` 또는 `meta.commit_id`가 다르거나, 이 값이 `CodeWorkspace`와 일치하지 않으면 `WORKSPACE_MISMATCH`로 기록하고 근거에 사용하지 않는다. empty/truncated/gap은 안전함 또는 `FALSE`를 뜻하지 않는다.
 
 ## 4. VerificationResult
 
@@ -113,7 +175,7 @@ snapshot mismatch response는 근거에 사용하지 않는다. empty/truncated/
 
 ```yaml
 VerificationResult:
-  scope: Scope
+  meta: RecordMeta
   verification_mode: BASIC | CONDITIONAL_DEBATE | ALWAYS_DEBATE
   debate_triggers: [string]
   debate_skip_reason: string | null
@@ -121,8 +183,8 @@ VerificationResult:
   counter_evidence: [EvidenceClaim]
   initial_verdict: TRUE | FALSE | HOLD
   dynamic_decision: NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO
-  dynamic_result_ref: ArtifactRef | null
-  poc_ref: ArtifactRef | null
+  dynamic_result_ref: StoredDataRef | null
+  poc_ref: StoredDataRef | null
   verdict: TRUE | FALSE | HOLD
   verdict_rationale: string
   restrictions: [string]
@@ -132,7 +194,7 @@ VerificationResult:
   impact_escalation_candidates: [CandidateRef]
   unresolved_conditions: [string]
   metrics: VerificationMetrics
-  errors: [Error]
+  errors: [AnalysisError]
 ```
 
 `FALSE`는 named falsification에 연결한다. `HOLD`는 unresolved condition 또는 누락 환경을 포함한다. 오류만으로 `FALSE`를 만들지 않는다.
@@ -145,14 +207,15 @@ VerificationResult:
 Primitive:
   primitive_id: string
   primitive_type: string
-  scope:
-    snapshot_id: string
+  target:
+    workspace_id: string
+    commit_id: string
     asset: string
-    entity_refs: [EntityRef]
+    entity_refs: [CodeSymbol]
     privilege_level: string
   status: REQUIRED | PROVIDED
   source_hypothesis_id: string
-  evidence_refs: [ArtifactRef]
+  evidence_refs: [StoredDataRef]
   confidence: LOW | MEDIUM | HIGH
   description: string
 ```
@@ -164,7 +227,7 @@ HeldHypothesis:
   restrictions: [string]
   required_primitives: [Primitive]
   unresolved_conditions: [string]
-  related_entities: [EntityRef]
+  related_entities: [CodeSymbol]
   chain_depth: integer
 ```
 
@@ -173,12 +236,12 @@ ConfirmedCapability:
   hypothesis_id: string
   verdict: TRUE
   provided_primitives: [Primitive]
-  affected_entities: [EntityRef]
+  affected_entities: [CodeSymbol]
   privilege_level: string
-  evidence_refs: [ArtifactRef]
+  evidence_refs: [StoredDataRef]
 ```
 
-match는 snapshot·asset·entity·privilege·attack order compatibility와 evidence를 포함한 `PrimitiveMatchCandidate`다. 저장 항목은 queue message가 아니다.
+match는 `workspace_id`·`commit_id`·asset·entity·privilege·attack order compatibility와 evidence를 포함한 `PrimitiveMatchCandidate`다. 저장 항목은 queue message가 아니다.
 
 ## 6. ResearchResult
 
@@ -186,7 +249,7 @@ match는 snapshot·asset·entity·privilege·attack order compatibility와 evide
 
 ```yaml
 ResearchResult:
-  scope: Scope
+  meta: RecordMeta
   target_hypothesis_id: string
   trigger: TRUE_RESULT | HOLD_RESULT | TECHNICAL_REVISION | LOW_IMPACT_EXTENSION | PRIMITIVE_MATCH
   bypass_candidates: [CandidateRef]
@@ -196,7 +259,7 @@ ResearchResult:
   chained_hypothesis_proposals: [HypothesisProposal]
   additional_validation_requests: [string]
   no_material_extension_reason: string | null
-  errors: [Error]
+  errors: [AnalysisError]
 ```
 
 이 record는 기존 verdict, CWE, Gate 또는 Finding을 변경하지 않는다. material candidate는 새 proposal로 재검증한다.
@@ -207,31 +270,31 @@ ResearchResult:
 
 ```yaml
 CWELabel:
-  scope: Scope
+  meta: RecordMeta
   primary: string | null
   alternatives: [string]
   taxonomy_version: string
   rationale: string
-  evidence_refs: [ArtifactRef]
+  evidence_refs: [StoredDataRef]
   uncertainty: string | null
 ```
 
 ```yaml
 DynamicReproductionResult:
-  scope: Scope
+  meta: RecordMeta
   mode: LIMITED_REPRO | FULL_REPRO
-  environment_ref: ArtifactRef
-  steps_ref: ArtifactRef
-  observation_refs: [ArtifactRef]
+  environment_ref: StoredDataRef
+  steps_ref: StoredDataRef
+  observation_refs: [StoredDataRef]
   outcome: SUCCEEDED | PARTIAL | FAILED
-  failure_class: NONE | ENVIRONMENT_SETUP | EXECUTION | OBSERVATION | POLICY_BLOCKED | TIMEOUT
-  falsification_observed: boolean
+  failure_reason: NONE | ENVIRONMENT_SETUP | EXECUTION | OBSERVATION | POLICY_BLOCKED | TIMEOUT
+  hypothesis_disproved: boolean
   hypothesis_linkage: string
   limitations: [string]
   cleanup_status: SUCCEEDED | FAILED
 ```
 
-재현 환경 구축·실행·관측 실패는 `failure_class`로 가설 반증과 구분한다. `outcome: FAILED`만으로 `falsification_observed: true`를 만들 수 없으며, 반증은 재현 플레이북에 정의된 관측과 evidence reference를 요구한다.
+재현 환경 구축·실행·관측 실패는 `failure_reason`으로 가설 반증과 구분한다. `outcome: FAILED`만으로 `hypothesis_disproved: true`를 만들 수 없으며, 반증은 재현 플레이북에 정의된 관측과 evidence reference를 요구한다.
 
 ## 8. TechnicalEvidenceReview
 
@@ -239,7 +302,7 @@ DynamicReproductionResult:
 
 ```yaml
 TechnicalEvidenceReview:
-  scope: Scope
+  meta: RecordMeta
   status: ACCEPT | REVISE | REJECT
   evidence_verdict_alignment: string
   code_flow_linkage: string
@@ -254,13 +317,14 @@ TechnicalEvidenceReview:
 
 Technical review는 `VerificationResult.verdict`를 덮어쓰지 않는다.
 
-## 9. ProgramPolicySnapshot과 RuleScopeImpactReview
+## 9. ProgramPolicyRecord과 RuleScopeImpactReview
 
-공식 프로그램 정책을 고정해 저장한 자료와, 두 번째 Gate가 정책 범위·규칙·실제 영향을 검토한 결과입니다.
+공식 프로그램 정책을 확인해 저장한 기록과, 두 번째 Gate가 정책 범위·규칙·실제 영향을 검토한 결과입니다.
 
 ```yaml
-ProgramPolicySnapshot:
-  policy_snapshot_id: string
+ProgramPolicyRecord:
+  meta: RecordMeta without hypothesis/attempt
+  policy_record_id: string
   program_id: string
   policy_version: string
   fetched_at: timestamp
@@ -271,15 +335,15 @@ ProgramPolicySnapshot:
   testing_restrictions: [PolicyItem]
   impact_criteria: [PolicyItem]
   disclosure_requirements: [PolicyItem]
-  source_refs: [ArtifactRef]
+  source_refs: [StoredDataRef]
   missing_information: [string]
   freshness_warning: string | null
 ```
 
 ```yaml
 RuleScopeImpactReview:
-  scope: Scope
-  policy_snapshot_ref: ArtifactRef | null
+  meta: RecordMeta
+  policy_record_ref: StoredDataRef | null
   review_status: PASS | FAIL | UNCERTAIN
   rule_compliance: PASS | FAIL | UNCERTAIN
   scope_compliance: PASS | FAIL | UNCERTAIN
@@ -289,7 +353,7 @@ RuleScopeImpactReview:
   missing_information: [string]
 ```
 
-공식 정책 snapshot 부재 시 `rule_compliance`, `scope_compliance`, `review_status`는 `UNCERTAIN`, permission은 `DENY`다. 이 불변조건을 만족하지 않는 출력은 invalid다.
+공식 `ProgramPolicyRecord`가 없거나 핵심 출처가 누락되면 `rule_compliance`, `scope_compliance`, `review_status`는 `UNCERTAIN`, permission은 `DENY`다. 이 불변조건을 만족하지 않는 출력은 invalid다.
 
 ## 10. LLM invocation records
 
@@ -297,17 +361,16 @@ RuleScopeImpactReview:
 
 ```yaml
 LLMInvocationRequest:
-  invocation_id: string
-  run_id: string
-  hypothesis_id: string | null
+  meta: RecordMeta
+  llm_call_id: string
   agent_role: HYPOTHESIS | VERIFICATION | PRO | CON | RESEARCH | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER
   provider_profile: string
   model: string
   session_policy: NEW | RESUME | AUTO
   parent_session_ref: string | null
-  context_refs: [ArtifactRef]
+  context_refs: [StoredDataRef]
   prompt_template_version: string
-  prompt_payload_ref: ArtifactRef
+  prompt_payload_ref: StoredDataRef
   output_schema: string
   token_budget: integer
   timeout: duration
@@ -315,14 +378,15 @@ LLMInvocationRequest:
 
 ```yaml
 LLMInvocationResult:
-  invocation_id: string
+  meta: RecordMeta
+  llm_call_id: string
   status: SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED | CANCELLED
   provider: string
   model: string
   actual_session_mode: NEW | RESUMED
   session_ref: string | null
-  response_ref: ArtifactRef | null
-  parsed_output_ref: ArtifactRef | null
+  response_ref: StoredDataRef | null
+  parsed_output_ref: StoredDataRef | null
   usage: map | null
   elapsed: duration
   safe_error: string | null
@@ -330,9 +394,8 @@ LLMInvocationResult:
 
 ```yaml
 LLMInvocationLog:
-  run_id: string
-  hypothesis_id: string | null
-  attempt_id: string
+  meta: RecordMeta
+  llm_call_id: string
   agent_role: string
   provider: string
   model: string
@@ -340,12 +403,12 @@ LLMInvocationLog:
   session_ref: string | null
   parent_session_ref: string | null
   prompt_template_version: string
-  context_refs: [ArtifactRef]
-  retrieved_code_locations: [LocationRef]
-  exposed_request_ref: ArtifactRef
-  exposed_response_ref: ArtifactRef | null
-  parsed_output_ref: ArtifactRef | null
-  tool_calls: [ArtifactRef]
+  context_refs: [StoredDataRef]
+  retrieved_code_locations: [CodeLocation]
+  exposed_request_ref: StoredDataRef
+  exposed_response_ref: StoredDataRef | null
+  parsed_output_ref: StoredDataRef | null
+  tool_calls: [StoredDataRef]
   usage: map | null
   elapsed: duration
   retry_count: integer
@@ -353,7 +416,7 @@ LLMInvocationLog:
   safe_error: string | null
   validation_errors: [string]
   repair_attempts: integer
-  failover_from_invocation_id: string | null
+  failover_from_llm_call_id: string | null
   redaction_result: APPLIED | NOT_REQUIRED | FAILED
 ```
 
@@ -365,31 +428,32 @@ hidden chain-of-thought와 credential은 이 계약의 대상이 아니며 저�
 
 ```yaml
 ReportDraft:
-  scope: Scope
-  verification_result_ref: ArtifactRef
-  technical_review_ref: ArtifactRef
-  rule_scope_impact_review_ref: ArtifactRef
-  policy_snapshot_ref: ArtifactRef
-  content_ref: ArtifactRef
+  meta: RecordMeta
+  verification_result_ref: StoredDataRef
+  technical_review_ref: StoredDataRef
+  rule_scope_impact_review_ref: StoredDataRef
+  policy_record_ref: StoredDataRef
+  content_ref: StoredDataRef
   human_review_state: PENDING | REVIEWED
 ```
 
 ```yaml
 AnalysisRunResult:
-  scope: Scope without hypothesis/attempt
+  meta: RecordMeta without hypothesis/attempt
+  repository_url: string
   status: COMPLETE | PARTIAL | FAILED | CANCELLED
   hypothesis_counts: map
   verdict_counts: map
   gate_counts: map
-  verification_refs: [ArtifactRef]
-  primitive_and_research_refs: [ArtifactRef]
-  poc_refs: [ArtifactRef]
-  report_draft_refs: [ArtifactRef]
-  llm_invocation_log_refs: [ArtifactRef]
-  errors: [Error]
+  verification_refs: [StoredDataRef]
+  primitive_and_research_refs: [StoredDataRef]
+  poc_refs: [StoredDataRef]
+  report_draft_refs: [StoredDataRef]
+  llm_invocation_log_refs: [StoredDataRef]
+  errors: [AnalysisError]
   resources: map
   timing: map
-  debug_trace_ref: ArtifactRef
+  debug_trace_ref: StoredDataRef
 ```
 
 Reporter 호출은 `TRUE + Technical ACCEPT + Rule Scope Impact review_status PASS + rule_compliance PASS + scope_compliance PASS + security_impact SUFFICIENT + ALLOW`인 경우만 유효하다.

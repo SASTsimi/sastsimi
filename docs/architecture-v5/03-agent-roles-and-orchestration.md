@@ -10,11 +10,11 @@
 
 ## Orchestration Agent
 
-Orchestration Agent는 분석 계획과 다음 작업을 제안·조정하는 control-plane 역할이다. 다만 보안 경계를 실제로 강제하는 주체는 Agent가 아니라 신뢰 경계 안의 비-LLM runtime validator다. runtime은 snapshot과 budget 고정, Hypothesis output validation, 가설별 Verification 할당, Research 환류, 두 Gate의 순서, 결과 저장과 종료 조건을 검증·집행한다. Orchestration Agent는 각 단계의 전문 판정이나 runtime enforcement를 대신하지 않는다.
+Orchestration Agent는 분석 계획과 다음 작업을 제안·조정하는 control-plane 역할이다. 다만 보안 경계를 실제로 강제하는 주체는 Agent가 아니라 신뢰 경계 안의 비-LLM runtime validator다. runtime은 `workspace_id`·`commit_id` 일치, budget, Hypothesis output validation, 가설별 Verification 할당, Research 환류, 두 Gate의 순서, 결과 저장과 종료 조건을 검증·집행한다. Orchestration Agent는 각 단계의 전문 판정이나 runtime enforcement를 대신하지 않는다.
 
 주요 책임은 다음과 같다.
 
-- run·hypothesis·parent/child correlation id 부여
+- `analysis_id`·`hypothesis_id`·parent/child correlation id 부여
 - 가설 schema 검증과 제한된 repair retry
 - 독립 가설 병렬 처리와 hypothesis별 resource budget
 - session policy와 provider profile을 Agent Runtime에 전달
@@ -46,7 +46,7 @@ confidence는 verdict, exploitability 또는 Finding 확률로 해석하지 않�
 ## 출력 검증과 실패 처리
 
 1. 구조 parser가 JSON/YAML syntax와 schema를 검증한다.
-2. enum, 필수 field, snapshot/location reference와 금지 assertion을 검사한다.
+2. enum, 필수 field, `workspace_id`·`commit_id`·`CodeLocation`과 금지 assertion을 검사한다.
 3. 실패하면 원래 의미를 바꾸지 않는 범위에서 제한 횟수의 repair prompt를 새 invocation으로 실행한다.
 4. 재시도 후에도 유효하지 않으면 해당 호출을 `INVALID_OUTPUT`으로 저장한다.
 5. invalid proposal은 Verification Agent에 전달하지 않는다.
