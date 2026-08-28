@@ -74,7 +74,10 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 | `record_id` | record 저장 직전 runtime | 전체 시스템 | 각 `RunMeta`·`RecordMeta`와 정확한 revision을 가리키는 `StoredDataRef` | revision마다 새 값 |
 | `logical_record_id` | 논리 결과를 처음 저장하는 runtime | 전체 시스템 | 각 `RunMeta`와 `RecordMeta` | 같은 논리 결과의 모든 revision에서 같은 값 유지 |
 | `hypothesis_id` | proposal 검증을 통과시킨 runtime | 전체 시스템 | `hypotheses`와 가설별 `RecordMeta` | 변경·재사용 금지 |
+| `work_id` | 논리 작업을 등록하는 Orchestration runtime | 전체 시스템 | `WorkExecutionState`, 모든 `WorkAttempt`와 `StateTransition` | 같은 입력의 retry에서는 유지하고 입력 revision이 달라지면 새 값 |
 | `attempt_id` | 재시도 가능한 작업을 시작하는 runtime | 전체 시스템 | 해당 결과와 debug trace | 시도마다 새 값 |
+| `transition_id` | 상태 변경을 승인하는 runtime | 전체 시스템 | `StateTransition`과 debug trace | 승인된 상태 변경마다 새 값 |
+| `transition_commit_id` | 결과와 상태를 함께 확정하는 저장 runtime | 전체 시스템 | `TransitionCommit` journal | atomic 저장 시도마다 새 값 |
 | `llm_call_id` | LLM 호출 직전 Agent Runtime | 전체 시스템 | `invocations` | retry·failover마다 새 값 |
 | `symbol_id` | AST·SAST 정규화 계층 | 같은 `workspace_id + commit_id` | `CodeSymbol`과 코드 근거 record | 같은 코드 버전 안에서 한 symbol만 가리킴 |
 | `fact_id` | AST·SAST 정규화 계층 | 같은 `workspace_id + commit_id` | `CodeFact`와 이를 사용하는 결과 | 같은 코드 사실에 재사용하고 다른 사실에 재사용 금지 |
@@ -107,6 +110,7 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 | 상태 계층 | 소유 record와 field | 허용 값 | 상태를 만드는 주체 | 반드시 분리할 의미 |
 |---|---|---|---|---|
 | 분석 실행 | `AnalysisRunState.status` | `RUNNING | COMPLETE | PARTIAL | FAILED | CANCELLED` | Orchestration runtime | 가설 verdict가 아님 |
+| 공통 실행 작업 | `WorkExecutionState.status` | `PENDING | READY | RUNNING | BLOCKED | SUCCEEDED | PARTIAL | FAILED | CANCELLED` | 신뢰 경계 안의 runtime | 전문 결과·가설 verdict와 분리 |
 | proposal 검증 | `ProposalProcessState.status` | `PROPOSED | SCHEMA_VALID | INVALID_OUTPUT | CANCELLED` | 출력 검증 runtime | 아직 `hypothesis_id`가 없는 상태 |
 | 등록 가설 처리 | `HypothesisProcessState.status` | `REGISTERED | ASSIGNED | VERIFYING | TERMINAL | CANCELLED` | Orchestration runtime | `TRUE | FALSE | HOLD`와 분리 |
 | 기술 판정 | `VerificationResult.verdict` | `TRUE | FALSE | HOLD` | Verification Agent | 오류·정보 부족 상태와 분리 |
@@ -125,6 +129,7 @@ AnalysisRunState:
   workspace_id: string | null
   commit_id: string | null
   status: RUNNING | COMPLETE | PARTIAL | FAILED | CANCELLED
+  analysis_result_ref: RunStoredDataRef | null
   started_at: timestamp
   finished_at: timestamp | null
   elapsed_ms: integer
@@ -141,6 +146,7 @@ HypothesisProcessState:
   meta: RecordMeta with hypothesis
   proposal_ref: StoredDataRef
   status: REGISTERED | ASSIGNED | VERIFYING | TERMINAL | CANCELLED
+  verification_result_ref: StoredDataRef | null
   started_at: timestamp
   finished_at: timestamp | null
   elapsed_ms: integer
@@ -148,6 +154,7 @@ HypothesisProcessState:
 DynamicReproductionState:
   meta: RecordMeta
   status: NOT_REQUESTED | RUNNING | SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED
+  dynamic_result_ref: StoredDataRef | null
   started_at: timestamp | null
   finished_at: timestamp | null
   elapsed_ms: integer
@@ -155,6 +162,7 @@ DynamicReproductionState:
 ReportProcessState:
   meta: RecordMeta
   status: NOT_REQUESTED | DRAFTED | FAILED
+  report_draft_ref: StoredDataRef | null
   started_at: timestamp | null
   finished_at: timestamp | null
   elapsed_ms: integer
@@ -162,9 +170,157 @@ ReportProcessState:
 
 `AnalysisRunState`는 처음에는 `workspace_id: null`, `commit_id: null`일 수 있다. Repository Loader가 작업공간을 만들면 `workspace_id`를 기록하고, checkout을 확인하면 `commit_id`를 기록한다. 한 번 기록된 값은 같은 분석에서 바꾸지 않는다. `COMPLETE`와 `PARTIAL`은 두 값이 모두 필요하고, clone·checkout 전 `FAILED | CANCELLED`는 둘 중 하나 또는 모두가 `null`일 수 있다. 코드 근거 record는 두 값이 모두 있고 `CodeWorkspace.status=READY`일 때만 만들 수 있다.
 
+`AnalysisRunState.status=RUNNING`이면 `analysis_result_ref=null`이다. `COMPLETE | PARTIAL | FAILED | CANCELLED`이면 `analysis_result_ref`가 필수이고 같은 `analysis_id`의 정확한 `AnalysisRunResult`를 가리킨다. 최종 상태와 결과는 atomic transition으로 함께 확정한다.
+
 `ProposalProcessState`의 모든 revision은 `meta.hypothesis_id: null`을 유지한다. `SCHEMA_VALID` proposal을 가설로 등록할 때 새 `hypothesis_id`를 발급하고, 별도 `logical_record_id`의 `HypothesisProcessState.status=REGISTERED`를 만든다. 두 상태 record는 같은 `proposal_ref`로 연결하며 서로의 revision으로 취급하지 않는다.
 
 진행 중인 상태는 `finished_at: null`이다. 종료 상태는 `finished_at`이 필수이며 `elapsed_ms`는 시작부터 종료까지 monotonic clock으로 계산한다. `NOT_REQUESTED`는 `started_at: null`, `finished_at: null`, `elapsed_ms: 0`이다. 상세 결과 record에 나열된 상태는 모두 종료 상태이므로 그 `finished_at`은 `null`일 수 없다.
+
+`HypothesisProcessState.status=TERMINAL`이면 `verification_result_ref.record_id`가 필수이고 현재 가설의 정확히 하나인 final `VerificationResult` revision을 가리켜야 한다. 그 밖의 상태에서는 `verification_result_ref=null`이다. `DynamicReproductionState.status=SUCCEEDED | PARTIAL | FAILED`이면 `dynamic_result_ref.record_id`가 필수이고 해당 attempt의 `DynamicReproductionResult`를 가리킨다. `ReportProcessState.status=DRAFTED`이면 `report_draft_ref.record_id`가 필수이며 정확히 하나인 `ReportDraft` revision을 가리키고, `NOT_REQUESTED | FAILED`이면 `report_draft_ref=null`이다.
+
+### 공통 실행 상태와 상태 변경
+
+`WorkExecutionState`는 프로그램이 실행 순서와 복구를 관리하기 위한 상태다. 전문 결과의 의미를 대신하지 않는다. 예를 들어 `work_type=VERIFICATION` 작업이 `SUCCEEDED`라는 사실만으로 가설을 `TRUE`라고 판단할 수 없고, 반드시 그 작업이 가리키는 `VerificationResult.verdict`를 읽어야 한다.
+
+```yaml
+WorkExecutionState:
+  meta: RunMeta | RecordMeta
+  work_id: string
+  work_type: WORKSPACE_PREP | STATIC_TOOL | STATIC_NORMALIZE | HYPOTHESIS_PROPOSAL | CONTEXT_RETRIEVAL | PRO_EVIDENCE | CON_EVIDENCE | VERIFICATION | DYNAMIC_REPRO | PRIMITIVE_UPDATE | RESEARCH | CWE_LABEL | POLICY_FETCH | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORT_DRAFT
+  subject_type: ANALYSIS | PROPOSAL | HYPOTHESIS | REPORT
+  subject_id: string
+  work_generation: integer
+  status: PENDING | READY | RUNNING | BLOCKED | SUCCEEDED | PARTIAL | FAILED | CANCELLED
+  state_version: integer
+  last_transition_id: string | null
+  last_transition_commit_id: string | null
+  active_attempt_id: string | null
+  input_hash: string
+  dedupe_key: string
+  input_refs: [RunStoredDataRef | StoredDataRef]
+  output_refs: [RunStoredDataRef | StoredDataRef]
+  gap_ids: [string]
+  error_ids: [string]
+  waiting_for: [RETRY | AUTH | APPROVAL | INPUT | BUDGET | DEPENDENCY]
+  stop_reason: string | null
+  started_at: timestamp | null
+  finished_at: timestamp | null
+  elapsed_ms: integer
+
+WorkAttempt:
+  meta: RunMeta | RecordMeta
+  work_id: string
+  attempt_id: string
+  attempt_number: integer
+  trigger: INITIAL | RETRY | RESUME
+  input_hash: string
+  status: RUNNING | SUCCEEDED | PARTIAL | FAILED | CANCELLED
+  output_refs: [RunStoredDataRef | StoredDataRef]
+  gap_ids: [string]
+  error_ids: [string]
+  started_at: timestamp
+  finished_at: timestamp | null
+  elapsed_ms: integer
+
+StateTransition:
+  meta: RunMeta | RecordMeta
+  transition_id: string
+  work_id: string
+  from_status: PENDING | READY | RUNNING | BLOCKED | SUCCEEDED | PARTIAL | FAILED | CANCELLED
+  to_status: READY | RUNNING | BLOCKED | SUCCEEDED | PARTIAL | FAILED | CANCELLED
+  expected_state_version: integer
+  new_state_version: integer
+  attempt_id: string | null
+  cause: string
+  output_refs: [RunStoredDataRef | StoredDataRef]
+  gap_ids: [string]
+  error_ids: [string]
+  dedupe_key: string
+  created_at: timestamp
+
+TransitionCommit:
+  meta: RunMeta | RecordMeta
+  transition_commit_id: string
+  work_id: string
+  transition_ref: RunStoredDataRef | StoredDataRef
+  expected_state_version: integer
+  target_state_version: integer
+  attempt_id: string | null
+  target_status: BLOCKED | SUCCEEDED | PARTIAL | FAILED | CANCELLED
+  output_refs: [RunStoredDataRef | StoredDataRef]
+  state: PREPARED | COMMITTED | ABORTED
+  prepared_at: timestamp
+  committed_at: timestamp | null
+  abort_reason: string | null
+```
+
+`state_version`은 `1`부터 시작하고 승인된 전이마다 정확히 1 증가한다. runtime은 저장된 현재 version이 `expected_state_version`과 같을 때만 전이를 승인한다. 다르면 `STATE_VERSION_CONFLICT`로 거절하고 최신 상태를 다시 읽는다. `active_attempt_id`는 `RUNNING`일 때만 값이 있고 해당 작업의 현재 `WorkAttempt.attempt_id`와 같아야 한다. 한 `work_id`에는 활성 attempt가 하나만 존재한다.
+
+`last_transition_id`는 현재 상태를 만든 `StateTransition.transition_id`이고 최초 `PENDING` record에서는 `null`이다. 결과를 함께 확정한 상태이면 `last_transition_commit_id`가 그 atomic 저장의 `TransitionCommit.transition_commit_id`와 같아야 한다. `READY | RUNNING`처럼 결과를 확정하지 않는 전이는 `last_transition_commit_id=null`일 수 있다.
+
+`StateTransition.from_status`는 저장된 현재 상태와 같고 `new_state_version=expected_state_version+1`이어야 한다. `TransitionCommit.transition_ref.record_id`는 그 전이의 저장 revision을 가리키고, `work_id`, expected/target version, attempt, target status와 output refs가 `StateTransition`과 같아야 한다. `PREPARED`는 `committed_at=null`, `abort_reason=null`, `COMMITTED`는 `committed_at`이 필수이고 `abort_reason=null`, `ABORTED`는 `abort_reason`이 필수다. 한 commit이 `COMMITTED`와 `ABORTED` 사이를 오갈 수 없다.
+
+허용 전이는 다음 표가 전부다. 표에 없는 전이는 `STATE_TRANSITION_INVALID`다.
+
+| 현재 상태 | 허용되는 다음 상태 | 조건 |
+|---|---|---|
+| `PENDING` | `READY`, `CANCELLED` | 앞 단계와 입력이 준비되거나 취소됨 |
+| `READY` | `RUNNING`, `BLOCKED`, `CANCELLED` | 실행 전 검사를 통과하거나 외부 조건이 부족함 |
+| `RUNNING` | `BLOCKED`, `SUCCEEDED`, `PARTIAL`, `FAILED`, `CANCELLED` | attempt 결과와 atomic transition이 있음 |
+| `BLOCKED` | `READY`, `FAILED`, `CANCELLED` | 대기 조건을 충족하거나 더 진행할 수 없음 |
+| `SUCCEEDED`, `PARTIAL`, `FAILED`, `CANCELLED` | 없음 | 종료 상태를 되돌리지 않음 |
+
+상태별 필드 조건은 다음과 같다.
+
+- `PENDING | READY`는 `active_attempt_id=null`, 빈 `output_refs`와 빈 `waiting_for`를 사용한다.
+- `RUNNING`은 `active_attempt_id`, `started_at`이 필수이고 `finished_at=null`이다.
+- `BLOCKED`는 `active_attempt_id=null`, 하나 이상의 `waiting_for`와 구체적인 `stop_reason`이 필요하다.
+- `SUCCEEDED | PARTIAL | FAILED | CANCELLED`는 `active_attempt_id=null`, `finished_at`과 `stop_reason`이 필요하다. 정상 `SUCCEEDED`의 `stop_reason`은 `COMPLETED`다.
+- `PARTIAL`은 `STATIC_TOOL | STATIC_NORMALIZE | CONTEXT_RETRIEVAL | DYNAMIC_REPRO`에서만 허용하고, 하나 이상의 신뢰 가능한 `output_refs`와 누락을 설명하는 `error_ids` 또는 `gap_ids`가 필요하다.
+- `FAILED`는 하나 이상의 `error_ids`가 필요하다. 전문 schema가 실패 결과 record를 정의한 `DYNAMIC_REPRO` 같은 작업은 그 실패 record를 `output_refs`에 포함할 수 있지만 성공 결과로 해석하지 않는다.
+- `CANCELLED` 뒤 도착한 output은 현재 상태에 연결하지 않는다.
+- `WorkExecutionState.elapsed_ms`는 완료된 `WorkAttempt.elapsed_ms`의 합이다. block 대기 시간과 프로세스가 꺼진 시간은 별도 상태 체류 지표로 기록하며 실행 시간에 더하지 않는다.
+- `WorkAttempt.attempt_number`는 한 `work_id` 안에서 1부터 1씩 증가하고, `WorkAttempt.input_hash`는 그 attempt를 시작할 때의 `WorkExecutionState.input_hash`와 같다. `RecordMeta`를 쓰면 `meta.attempt_id`도 `WorkAttempt.attempt_id`와 같아야 한다.
+
+재시도 가능한 attempt 실패는 `WorkAttempt.status=FAILED`와 오류를 보존하고 작업을 `BLOCKED`로 전환한다. 재인증·backoff·repair·예산 승인처럼 `waiting_for` 조건을 충족하면 `READY`로 이동하고 `attempt_number`가 1 증가한 새 `attempt_id`를 발급한다. 재시도할 수 없거나 한도를 사용한 때만 작업을 최종 `FAILED`로 끝낸다. 종료된 작업을 되돌리지 않는다. 사람이 같은 입력으로 새 논리 실행을 명시적으로 승인하면 이전 값보다 1 큰 `work_generation`과 새 `work_id`를 만들고, 두 작업을 restart 관계로 debug trace에 연결한다.
+
+`work_generation`은 같은 분석·작업 종류·대상·입력에서 1부터 시작한다. 일반 retry와 resume에서는 바꾸지 않고, 종료 상태 뒤 사람이 승인한 명시적 restart에서만 1 증가한다. `dedupe_key`는 `analysis_id`, `work_type`, `subject_id`, `work_generation`, 정렬된 입력의 `record_id + content_hash`, 적용한 설정·정책 revision을 canonical JSON으로 만든 SHA-256 값이다. `attempt_id`, 시각과 worker 이름은 넣지 않는다. 같은 generation과 key의 요청이 다시 오면 새 작업을 만들지 않고 기존 `work_id`와 현재 상태를 반환한다. 입력 revision·적용 설정·승인된 generation이 바뀌면 새 `dedupe_key`와 새 `work_id`를 만든다.
+
+| `work_type` | 등록 요청 주체 | 실행·출력 생산자 | `SUCCEEDED` 또는 `PARTIAL`이 가리키는 결과 |
+|---|---|---|---|
+| `WORKSPACE_PREP` | 분석 입력 runtime | Repository Loader | 준비된 `CodeWorkspace` |
+| `STATIC_TOOL` | Orchestration runtime | AST/SAST runner | `ToolRunResult` |
+| `STATIC_NORMALIZE` | Orchestration runtime | Static Fact Normalizer | `StaticFactBundle` |
+| `HYPOTHESIS_PROPOSAL` | Orchestration runtime | Hypothesis Agent와 출력 검증 runtime | schema-valid `HypothesisProposal[]` |
+| `CONTEXT_RETRIEVAL` | 허용된 Agent Runtime | Context Retrieval Service | `CodeContextResponse` |
+| `PRO_EVIDENCE` | Verification runtime | Pro Agent | supporting `EvidenceClaim[]` |
+| `CON_EVIDENCE` | Verification runtime | Con Agent | counter `EvidenceClaim[]` |
+| `VERIFICATION` | Orchestration runtime | Verification runtime | final `VerificationResult` |
+| `DYNAMIC_REPRO` | Verification의 제안 뒤 runtime validator | Sandbox runtime | `DynamicReproductionResult` |
+| `PRIMITIVE_UPDATE` | Orchestration runtime | Primitive 저장 runtime | 새 `Primitive` revision |
+| `RESEARCH` | Orchestration runtime | Research runtime | `ResearchResult` |
+| `CWE_LABEL` | Orchestration runtime | CWE labeling runtime | `CWELabel` |
+| `POLICY_FETCH` | Rule Scope Gate 준비 runtime | 공식 정책 수집 runtime | `ProgramPolicyRecord` |
+| `TECHNICAL_GATE` | Orchestration runtime | Technical Gate runtime | `TechnicalEvidenceReview` |
+| `RULE_SCOPE_GATE` | Orchestration runtime | Rule Scope Gate runtime | `RuleScopeImpactReview` |
+| `REPORT_DRAFT` | Reporter 조건 검사 runtime | Reporter runtime | `ReportDraft` |
+
+작업 모듈과 Agent는 등록 또는 상태 변경을 요청할 뿐 직접 확정하지 않는다. 모든 행의 `StateTransition` 승인과 저장은 신뢰 경계 안의 state transition validator와 state store가 담당한다. Orchestration Agent의 자연어 출력은 상태 변경 명령으로 직접 실행하지 않는다.
+
+결과 record, `StateTransition`과 그 결과를 가리키는 종료 상태는 하나의 atomic transition으로 확정한다. 저장 제품이 한 transaction을 지원하면 같은 transaction에서 처리한다. 지원하지 않으면 `TransitionCommit` journal을 사용한다. `PREPARED` 출력은 격리 상태이며 다음 단계가 읽을 수 없다. 상태 pointer와 output reference가 함께 확정된 뒤 `COMMITTED`로 바꾸고 그때만 소비를 허용한다. version 충돌, 취소 또는 검증 실패는 `ABORTED`이며 output을 최신 상태에 연결하지 않는다.
+
+다음 output binding은 필수다.
+
+- `VERIFICATION`의 `SUCCEEDED`와 `HypothesisProcessState.status=TERMINAL`은 같은 final `VerificationResult.record_id`를 가리킨다.
+- `TECHNICAL_GATE`의 `SUCCEEDED`는 정확히 하나의 `TechnicalEvidenceReview.record_id`를 가리킨다.
+- `RULE_SCOPE_GATE`의 `SUCCEEDED`는 정확히 하나의 `RuleScopeImpactReview.record_id`를 가리킨다.
+- `REPORT_DRAFT`의 `SUCCEEDED`와 `ReportProcessState.status=DRAFTED`는 같은 `ReportDraft.record_id`를 가리킨다.
+- 분석 종료 transition과 `AnalysisRunState.analysis_result_ref`는 같은 `AnalysisRunResult`를 가리킨다.
+- 각 reference의 workspace, commit, hypothesis, `record_id`와 `content_hash`는 실제 record와 일치한다.
+
+분석을 `COMPLETE | PARTIAL | FAILED | CANCELLED`로 닫기 전에 runtime은 해당 `analysis_id`에 `RUNNING` work, 복구되지 않은 `PREPARED` journal과 output pointer가 없는 종료 상태가 없는지 확인한다. `PENDING | READY | BLOCKED` work는 각각 완료, 명시적 실패 또는 취소로 정리하고 그 이유를 `AnalysisRunResult`에 포함한다.
+
+결과를 반영할 때 runtime은 작업이 `RUNNING`이고 결과의 `attempt_id`가 `active_attempt_id`이며, `expected_state_version`, `input_hash`, workspace, commit과 hypothesis가 현재 작업과 같은지 확인한다. 늦은 이전 attempt 결과는 `ATTEMPT_NOT_ACTIVE`, 취소·입력 변경·revision 변경 뒤 도착한 결과는 `STALE_RESULT`로 거절한다. 디버깅용으로 격리할 수는 있지만 Gate, Reporter와 최신 결과 pointer에 연결하지 않는다.
 
 ```yaml
 CodeLocation:
@@ -196,6 +352,7 @@ RunStoredDataRef:
   data_kind: string
   content_hash: string
   analysis_id: string
+  record_id: string | null
 
 DataGap:
   gap_id: string
@@ -212,10 +369,12 @@ DataGap:
 
 AnalysisError:
   error_id: string
-  stage: INPUT | REPOSITORY | STATIC_ANALYSIS | CONTEXT | ORCHESTRATION | AGENT | PROVIDER | SANDBOX | POLICY | GATE | REPORT
+  stage: INPUT | REPOSITORY | STATIC_ANALYSIS | CONTEXT | ORCHESTRATION | AGENT | PROVIDER | SANDBOX | POLICY | GATE | REPORT | STATE | STORAGE | RECOVERY
   code: string
   safe_message: string
   retryable: boolean
+  work_id: string | null
+  attempt_id: string | null
   related_record_ids: [string]
   created_at: timestamp
 
@@ -274,7 +433,7 @@ ContextRetrievalLimits:
 
 `symbol_kind`는 여러 언어에서 공통으로 쓸 수 있는 큰 범주다. `TYPE`에는 class·interface·enum·struct, `CALLABLE`에는 function·method·constructor·lambda, `DATA`에는 variable·field·property·parameter가 들어간다. 원래 parser나 SAST 도구가 사용한 세부 종류는 `native_kind`에 그대로 남긴다. `symbol_id`, `fact_id`, `relation_id`는 같은 `workspace_id + commit_id` 안에서 유일하다. `CodeFact`와 `CodeRelation`의 `producer.raw_result_ref`는 사실·관계를 만든 도구의 원본 결과를 가리켜야 한다.
 
-`StoredDataRef`는 준비된 코드와 연결된 결과에만 사용한다. raw 도구 출력·코드 조각처럼 독립 artifact이면 `record_id=null`이다. 저장된 record의 정확한 revision을 가리키는 참조는 해당 revision의 전역 `record_id`를 반드시 넣고, runtime은 참조의 `workspace_id`, `commit_id`, `content_hash`가 그 record와 일치하는지 확인한다. `RunStoredDataRef`는 입력 검증, clone·checkout, 실행 오류와 debug trace처럼 commit 준비 전에도 생기는 실행 자료에만 사용하며 코드 근거·PoC·Finding·보고서 주장의 근거로 사용할 수 없다. 두 참조 모두 내부 저장 경로 대신 결과 번호와 내용 hash만 전달한다.
+`StoredDataRef`는 준비된 코드와 연결된 결과에만 사용한다. raw 도구 출력·코드 조각처럼 독립 artifact이면 `record_id=null`이다. 저장된 record의 정확한 revision을 가리키는 참조는 해당 revision의 전역 `record_id`를 반드시 넣고, runtime은 참조의 `workspace_id`, `commit_id`, `content_hash`가 그 record와 일치하는지 확인한다. `RunStoredDataRef`는 입력 검증, clone·checkout, 실행 오류와 debug trace처럼 commit 준비 전에도 생기는 실행 자료에만 사용하며 코드 근거·PoC·Finding·보고서 주장의 근거로 사용할 수 없다. raw 실행 artifact이면 `record_id=null`, `RunMeta`를 가진 저장 record의 정확한 revision을 가리키면 그 `record_id`가 필수이며 `analysis_id`와 `content_hash`가 대상과 일치해야 한다. 두 참조 모두 내부 저장 경로 대신 결과 번호와 내용 hash만 전달한다.
 
 `DataGap`은 분석하지 못한 범위이고 `AnalysisError`는 실행 중 발생한 오류다. 둘 다 취약점 `FALSE`를 뜻하지 않는다. `AnalysisError.safe_message`에는 credential, 개인정보, session secret, authorization header와 절대 로컬 경로를 넣지 않는다. 원본 오류가 필요하면 일반 오류 record에 복사하지 않고 별도 접근 통제·redaction·보존 정책이 적용된 artifact로 저장한다. `DataGap`의 세 affected 목록은 빈 목록일 수 있지만, `REPOSITORY | STATIC_ANALYSIS | CONTEXT` gap은 가능한 범위에서 path·language·location 중 하나 이상을 채운다. 전체 작업공간에 영향을 주거나 정확한 범위를 모르면 그 사실을 `description`에 명시하고 관련 결과를 `related_record_ids`로 연결한다.
 
@@ -831,6 +990,10 @@ AnalysisRunResult:
   poc_refs: [StoredDataRef]
   report_draft_refs: [StoredDataRef]
   llm_invocation_log_refs: [StoredDataRef]
+  work_state_refs: [RunStoredDataRef | StoredDataRef]
+  work_attempt_refs: [RunStoredDataRef | StoredDataRef]
+  transition_commit_refs: [RunStoredDataRef | StoredDataRef]
+  stop_reasons: [string]
   errors: [AnalysisError]
   resources: map
   started_at: timestamp

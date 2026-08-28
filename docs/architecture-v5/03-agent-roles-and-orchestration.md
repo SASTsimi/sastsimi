@@ -18,6 +18,8 @@ Orchestration Agent는 분석 계획과 다음 작업을 제안·조정하는 co
 - `parent_hypothesis_ids`·`root_hypothesis_id`·`chain_depth` 관계 검증
 - 가설 schema 검증과 제한된 repair retry
 - 독립 가설 병렬 처리와 hypothesis별 resource budget
+- 논리 작업별 `work_id`·`dedupe_key` 등록과 활성 `attempt_id` 하나 유지
+- `state_version` compare-and-set과 atomic output binding을 runtime에 요청
 - session policy와 provider profile을 Agent Runtime에 전달
 - 동적 재현·Research·Gate 호출 조건 적용
 - chain depth/count/token/time/duplicate 제한 적용
@@ -69,6 +71,57 @@ Research material claim -> PROPOSED child hypothesis
 
 `ProposalProcessState.status`는 `hypothesis_id`를 발급하기 전의 출력 검증 상태를 기록한다. 검증을 통과하면 새 `hypothesis_id`와 별도 `HypothesisProcessState`를 만들고 같은 `proposal_ref`로 연결한다. `HypothesisProcessState.status`가 등록 뒤 처리 진행 상태를 기록하고 `VerificationResult.verdict`가 기술 판정을 기록한다. `TERMINAL`은 검증 처리가 끝났다는 뜻일 뿐 `TRUE`, `FALSE`, `HOLD` 중 어느 판정인지 대신 말하지 않는다. parent 가설의 결과와 child 가설은 독립된 lifecycle을 갖는다. Research 후보가 존재한다는 이유만으로 parent verdict나 impact를 강화하지 않는다.
 초기 가설은 자기 자신을 `root_hypothesis_id`로 사용하고 `chain_depth=0`이다. Research·체이닝 proposal은 직접 부모 ID를 보존하고 검증을 통과할 때 새 `hypothesis_id`를 받는다. 여러 `TRUE`를 연결하는 경우도 기존 가설을 수정하지 않고 새 child 가설로 등록한다.
+
+## 공통 실행 상태와 전문 결과의 분리
+
+모든 실행 가능한 단계는 `WorkExecutionState`로 관리한다. 이 상태는 작업이 준비·실행·종료되었는지를 나타낼 뿐 전문 판정을 대신하지 않는다.
+
+| 실행 작업 | 실행 종료 뒤 읽어야 하는 전문 결과 |
+|---|---|
+| Verification `SUCCEEDED` | `VerificationResult.verdict = TRUE | FALSE | HOLD` |
+| Technical Gate `SUCCEEDED` | `TechnicalEvidenceReview.status = ACCEPT | REVISE | REJECT` |
+| Rule Scope Gate `SUCCEEDED` | `RuleScopeImpactReview.review_status`와 `report_permission` |
+| Reporter `SUCCEEDED` | `ReportDraft`와 별도 `human_review_state` |
+
+`PENDING -> READY -> RUNNING` 뒤에는 `SUCCEEDED | PARTIAL | FAILED | CANCELLED`로 끝나거나, 재시도·인증·승인·입력·예산 조건을 기다릴 때 `BLOCKED`로 이동한다. `BLOCKED`는 조건을 충족하면 `READY`가 되지만 종료 상태는 되돌리지 않는다. 재시도 가능한 attempt 실패는 attempt 자체를 `FAILED`로 보존하고 work를 `BLOCKED`로 두며, 새 attempt를 시작할 때 이전 실패를 삭제하지 않는다.
+
+상태 변경을 실제로 승인·저장하는 주체는 Orchestration Agent가 아니라 신뢰 경계 안의 runtime이다. 작업 모듈은 결과와 다음 상태를 요청하고 runtime이 schema, 현재 `state_version`, 활성 attempt, 입력 hash, workspace·commit·가설, 예산과 권한을 검사한 뒤 `StateTransition`을 저장한다.
+
+## 병렬 실행과 결과 합류
+
+| 병렬 구간 | 분리 단위 | 합류 조건 | 일부 실패 처리 |
+|---|---|---|---|
+| AST와 SAST | tool별 `work_id` | 기대한 tool의 종료 상태와 output/error 확인 | 하나 이상의 신뢰 결과가 있으면 `DataGap`을 포함한 `PARTIAL` 정규화 가능 |
+| 가설 검증 | `hypothesis_id`별 work | 각 가설은 자기 final Verification까지 독립 | 한 가설 오류가 다른 가설을 취소하지 않으며 분석은 `PARTIAL` 가능 |
+| Pro와 Con | 같은 가설의 역할별 work·NEW session | 필요한 두 결과 또는 명시된 skip/실패·예산 상태 확인 | 누락을 반증으로 바꾸지 않고 unresolved condition으로 전달 |
+| chaining 후보 | child proposal별 work | 중복·cycle·depth·예산 검사를 통과한 proposal만 등록 | 거절 사유를 저장하고 부모 verdict 유지 |
+
+같은 가설과 같은 `work_type`에는 활성 `attempt_id`를 하나만 허용한다. 중복 요청의 `dedupe_key`가 같으면 기존 `work_id`를 반환한다. 이미 합류가 끝난 뒤 늦게 도착한 tool·Pro·Con 결과는 기존 결과를 덮어쓰지 않는다. 새로운 근거로 사용할 필요가 있으면 입력 revision을 바꾼 새 논리 작업과 새 downstream revision을 만든다.
+
+## 바꿀 수 없는 직렬 순서
+
+한 가설의 다음 구간은 병렬화하지 않는다.
+
+```text
+final VerificationResult + CWELabel
+-> Technical Evidence Gate
+-> Technical ACCEPT와 TRUE 확인
+-> Rule Scope Impact Gate
+-> PASS/PASS/PASS/SUFFICIENT/ALLOW와 exact revision 확인
+-> Reporter
+-> Human Reviewer
+```
+
+Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니다. Verification 또는 Research에서 새 근거·설명·revision을 만든 뒤 새 Gate attempt를 시작한다. Rule Scope Gate와 Reporter는 앞 단계의 `COMMITTED` output reference만 읽는다. `PREPARED`, 취소된 attempt, 오래된 input hash와 다른 workspace/commit 결과는 다음 단계로 전달하지 않는다.
+
+## retry·취소·중단 후 재개
+
+- 일반 retry와 provider/model failover는 새 `attempt_id`를 사용하고, LLM 호출이면 새 `llm_call_id`도 사용한다.
+- 재시도 가능한 오류는 work를 `BLOCKED`로 두고 `waiting_for`에 `RETRY | AUTH | APPROVAL | INPUT | BUDGET | DEPENDENCY` 중 실제 조건을 기록한다.
+- 사용자가 개별 가설을 취소하면 그 가설의 새 downstream 작업을 만들지 않고 늦은 결과를 `STALE_RESULT`로 거절한다.
+- 전체 분석을 취소하면 새 work 등록을 중단하고 실행 중 attempt에 취소를 전달하되 이미 저장된 결과와 오류는 보존한다.
+- 재개 시 마지막 `COMMITTED` transition만 신뢰한다. 완료 결과는 다시 실행하지 않고, 중단된 attempt만 허용된 새 attempt로 재시도한다.
+- `PREPARED` journal과 종료 상태/output pointer 불일치는 runtime 복구가 끝나기 전까지 Gate·Reporter·최종 종료를 막는다.
 
 ## Agent 역할과 출력 권한
 
