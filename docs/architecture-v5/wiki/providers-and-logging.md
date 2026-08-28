@@ -22,6 +22,8 @@ API provider는 공식 API/SDK 경계다. Membership session은 공식 지원·�
 
 provider/model failover는 조용히 수행하지 않는다. 실패한 호출과 fallback 호출을 서로 연결된 별도 invocation으로 기록한다.
 
+LLM 호출 상태는 `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED | CANCELLED`다. 호출 실패·인증 필요·rate limit·timeout은 취약점 `FALSE`가 아니다.
+
 ## SessionPolicy
 
 - `NEW`: 독립 새 session

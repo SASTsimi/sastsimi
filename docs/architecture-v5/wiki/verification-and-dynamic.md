@@ -34,4 +34,4 @@ Pro와 Con은 서로의 결과를 받지 않는 별도 NEW session이다. trigge
 | `LIMITED_REPRO` | guard, sink, 권한 조건 등 작은 질문 확인 |
 | `FULL_REPRO` | 안전한 end-to-end 재현과 PoC |
 
-Docker는 ephemeral/non-root, network default-deny와 자원·시간 제한을 사용한다. 실행 환경 실패를 `FALSE`로 바꾸지 않는다. 상세 내용은 [검증과 동적 재현](../04-verification-and-dynamic-reproduction.md)을 따른다.
+Docker는 ephemeral/non-root, network default-deny와 자원·시간 제한을 사용한다. 동적 상태 `FAILED | BLOCKED | CANCELLED`는 가설 반증이 아니다. 실제 반증은 `hypothesis_disproved: true`와 관측 근거 `disproof_evidence_refs`가 함께 있어야 한다. 상세 내용은 [검증과 동적 재현](../04-verification-and-dynamic-reproduction.md)을 따른다.

@@ -6,6 +6,7 @@
 - [두 검토 단계와 보고](gate-and-reporting.md)
 - [연계 공격 탐색](chaining.md)
 - [LLM 연결과 기록](providers-and-logging.md)
+- [공통 ID·상태·오류](common-contracts.md)
 - [결과와 디버깅](results.md)
 - [다이어그램](diagrams.md)
 - [상세 v5 기준 문서](../README.md)

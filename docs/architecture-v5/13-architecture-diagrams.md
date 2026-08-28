@@ -238,4 +238,31 @@ flowchart LR
 
 ## Rendering check
 
-이 문서는 Mermaid 블록 8개를 포함한다. Wiki diagrams 페이지는 이 파일과 동일한 Mermaid 블록을 사용하며 최종 검증에서 8개 SVG와 parse error 0개를 확인한다.
+## 9. 공통 식별자와 revision 추적
+
+```mermaid
+flowchart TB
+    INPUT[Analysis request] --> ORCH[Orchestration Runtime]
+    ORCH --> ANA[analysis_id]
+    ANA --> LOADER[Repository Loader]
+    LOADER --> WORK[workspace_id plus commit_id]
+    ANA --> HYP[hypothesis_id]
+    HYP --> REL[parent IDs root ID chain depth]
+    HYP --> ATT[attempt_id]
+    ATT --> CALL[llm_call_id]
+    ANA --> META[RecordMeta]
+    WORK --> META
+    HYP --> META
+    ATT --> META
+    META --> REC[record_id plus schema_version]
+    REC --> REV[revision_number plus previous_record_id]
+    REC --> DATA[stored_data_id plus content_hash]
+    REV --> RUN[AnalysisRunResult]
+    DATA --> RUN
+```
+
+각 ID는 재사용하지 않는다. 새 revision과 chain 가설은 기존 결과를 덮어쓰지 않고 새 ID로 연결한다.
+
+## Rendering check
+
+이 문서는 Mermaid 블록 9개를 포함한다. Wiki diagrams 페이지는 이 파일과 동일한 Mermaid 블록을 사용하며 최종 검증에서 9개 SVG와 parse error 0개를 확인한다.

@@ -60,6 +60,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 - Membership session과 API provider는 공통 adapter 경계를 사용한다. Membership path는 feasibility/security 검토 전 experimental이며, provider 전환은 명시적으로 기록하고 조용한 failover는 금지한다.
 - Reporter는 초안 작성자이고, 사람만 최종 공개 여부를 결정한다.
 - 모든 LLM 출력은 비신뢰 입력이다. 신뢰 경계 안의 runtime validator가 schema·상태 전이·예산·sandbox·provider/session·Gate 순서·Reporter 전제조건을 강제한다.
+- 분석 공백, 실행 오류, LLM·sandbox 실패와 취소는 기술 판정 `FALSE`와 분리한다. 공통 ID·시간·상태·오류 기준은 [경량 데이터 계약](./08-lightweight-data-contracts.md)을 따른다.
 
 ## 문서 지도
 

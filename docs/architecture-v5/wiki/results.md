@@ -10,7 +10,7 @@
 
 `AnalysisRunResult`는 다음을 함께 찾을 수 있게 한다.
 
-- repository, `commit_id`, `workspace_id`와 시작·종료·총 실행 시간
+- repository, `commit_id`, `workspace_id`, `started_at`, `finished_at`, `elapsed_ms`
 - initial/derived/chained/invalid 가설 수와 verdict별 개수
 - 위치 기반 context 요청·응답과 실제 조회 location
 - Verification, debate mode/trigger/skip, restriction와 capability
@@ -25,3 +25,4 @@
 Proxy가 어려운 membership 호출은 raw session log → provider parser → redaction 경로를 쓴다. 사용자에게 노출된 request/response/tool trace만 기록하고 hidden chain-of-thought와 credential은 저장하지 않는다. 오류는 `FALSE`와 구분한다.
 
 상세 내용은 [결과 저장과 관측성](../07-results-and-observability.md)을 따른다.
+ID 생성 주체, 상태 계층과 gap/error 차이는 [공통 ID·상태·오류](common-contracts.md)에서 쉽게 확인할 수 있다.
