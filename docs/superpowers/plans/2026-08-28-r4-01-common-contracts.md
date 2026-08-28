@@ -244,3 +244,18 @@ Issue #13에 변경 문서, 검증 결과와 남은 R2·R6·R7·R3 교차 검토
 실제 교차 검토가 모두 기록되면 H-002와 Issue #13을 완료 후보로 바꾼다. 검토가 남아 있으면 PR과 Issue를 열린 상태로 유지하고 부족한 승인만 명시한다.
 
 판정 결과: Draft PR #18과 Issue #13을 열어 두고 H-002를 `IN_PROGRESS`로 유지한다. R2·R6·R7에는 GitHub review를 요청했다. R3 `@v1sion`은 repository collaborator가 아니라 정식 review request가 거절되어 Issue 멘션 검토와 권한 추가가 남아 있다.
+
+---
+
+### Task 6: PR #18 파트 리뷰 반영
+
+R2 대행 검토와 PR #18의 R6·R7 리뷰를 다음 독립 커밋으로 반영했다.
+
+- [x] R2: `008234f` — 위치·symbol·정적 사실·도구 coverage·gap·context 조회 계약 보완
+- [x] R7: `e747ef0` — `FAILED`/`PARTIAL` 경계와 동적 관측 결과 계약 보완
+- [x] R6: `05efeb6` — 질문별 반증, 정확한 Verification revision, 안전한 오류 저장 계약 보완
+- [x] 정본 문서, 역할별 전문 문서, Wiki, 보고서 양식과 Issue 완료 조건을 같은 의미로 동기화
+- [x] 전체 Markdown·Mermaid·금지 이름 검사를 다시 통과
+- [ ] Draft PR #18에 수정 커밋을 push하고 원격 head를 확인
+
+H-002는 수정 완료만으로 닫지 않는다. R2 대행 검토 반영 확인, R6·R7 재검토와 R3 통합 검토가 PR 또는 Issue에 기록될 때까지 `IN_PROGRESS`로 유지한다.
