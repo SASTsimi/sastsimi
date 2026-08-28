@@ -256,6 +256,6 @@ R2 대행 검토와 PR #18의 R6·R7 리뷰를 다음 독립 커밋으로 반영
 - [x] R6: `05efeb6` — 질문별 반증, 정확한 Verification revision, 안전한 오류 저장 계약 보완
 - [x] 정본 문서, 역할별 전문 문서, Wiki, 보고서 양식과 Issue 완료 조건을 같은 의미로 동기화
 - [x] 전체 Markdown·Mermaid·금지 이름 검사를 다시 통과
-- [ ] Draft PR #18에 수정 커밋을 push하고 원격 head를 확인
+- [x] Draft PR #18에 수정 커밋을 push하고 원격 head를 확인
 
 H-002는 수정 완료만으로 닫지 않는다. R2 대행 검토 반영 확인, R6·R7 재검토와 R3 통합 검토가 PR 또는 Issue에 기록될 때까지 `IN_PROGRESS`로 유지한다.

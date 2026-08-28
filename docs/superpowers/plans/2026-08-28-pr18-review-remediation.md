@@ -192,7 +192,7 @@ git add docs/review/FINDINGS.md docs/superpowers/plans
 git commit -m "docs: record PR 18 review remediation"
 ```
 
-- [ ] **Step 4: Push**
+- [x] **Step 4: Push**
 
 ```powershell
 git push origin review/r4-01-common-contracts
