@@ -107,7 +107,7 @@ Orchestration Agent는 분석 계획과 다음 작업을 제안·조정하지만
 - 한 가설의 Pro/Con은 조건이 충족될 때 서로 다른 work와 NEW session으로 병렬화하고, Verification이 두 결과 또는 명시된 skip·실패 상태를 확인해 합류한다.
 - 같은 가설의 `workspace_id`와 `commit_id`, final Verification·CWELabel, Technical Gate, Rule Scope Gate와 Reporter 순서는 의존성을 지킨다.
 - 실행 상태는 `WorkExecutionState`가 관리하고 가설 판정·Gate 결과·보고서·사람 검토 상태와 분리한다. 같은 `dedupe_key` 요청은 한 `work_id`로만 반영한다.
-- 결과와 종료 상태 pointer가 `COMMITTED`된 뒤에만 다음 단계를 호출한다. `PREPARED`, 취소된 attempt, 오래된 revision과 늦은 결과는 다음 단계에서 읽지 않는다.
+- `COMMITTED` marker와 종료 상태 pointer가 같은 결과를 가리킨 뒤에만 다음 단계를 호출한다. `PREPARED`, 취소된 attempt, 오래된 revision과 늦은 결과는 다음 단계에서 읽지 않는다.
 - 모든 초기·파생 가설이 종료 상태에 도달하고 atomic 저장·복구가 끝나면 Orchestration run을 닫는다.
 - chaining은 깊이·개수·토큰·시간·중복 fingerprint 제한을 넘으면 새 가설을 만들지 않고 중단 이유를 기록한다.
 

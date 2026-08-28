@@ -294,16 +294,17 @@ flowchart LR
     RESULT --> VALIDATE{Attempt version input workspace commit match}
     VALIDATE -->|No| STALE[Reject and quarantine stale result]
     VALIDATE -->|Yes| PREPARED[TransitionCommit PREPARED]
-    PREPARED --> POINTER[Bind output ref and target state]
-    POINTER --> COMMITTED[TransitionCommit COMMITTED]
-    COMMITTED --> NEXT[Allow downstream consumer]
+    PREPARED --> COMMITTED[CAS append unique COMMITTED marker]
+    COMMITTED --> POINTER[Project output ref and target state]
+    POINTER --> NEXT[Allow downstream consumer]
     PREPARED -->|Version conflict or cancel| ABORTED[ABORTED and quarantine output]
     CRASH[Process restart] --> RECOVER[Read last COMMITTED transition]
-    RECOVER -->|Valid PREPARED| POINTER
+    RECOVER -->|Valid PREPARED| COMMITTED
+    RECOVER -->|Committed marker missing projection| POINTER
     RECOVER -->|Unsafe or inconsistent| STOP[TRANSITION INCOMPLETE or RECOVERY FAILED]
 ```
 
-다음 단계는 `COMMITTED` output만 읽는다. Verification `TERMINAL`, 두 Gate 완료와 Report `DRAFTED`는 각각 정확한 결과 `record_id`에 atomic하게 연결되어야 한다.
+다음 단계는 `COMMITTED` marker와 상태 pointer가 같은 output을 가리킬 때만 읽는다. Verification `TERMINAL`, 두 Gate 완료와 Report `DRAFTED`는 각각 정확한 결과 `record_id`에 atomic하게 연결되어야 한다.
 
 ## Rendering check
 

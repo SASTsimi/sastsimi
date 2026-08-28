@@ -65,7 +65,7 @@ runtime 구현, 저장 제품, 분산 합의 알고리즘과 성능 수치는 �
 - `subject_id`: 작업 대상 analysis, hypothesis 또는 report ID
 - `work_generation`: 같은 입력을 사람이 명시적으로 다시 시작한 순서; retry에서는 유지
 - `status`와 증가하는 `state_version`
-- 현재 상태를 만든 `last_transition_id`와 결과 commit이 있으면 `last_transition_commit_id`
+- 현재 상태를 만든 정확한 `last_transition_ref`와 결과 commit이 있으면 `last_transition_commit_ref`
 - 현재 실행 중인 `active_attempt_id`
 - 정확한 입력과 출력 `StoredDataRef`
 - 입력 record ID·hash·설정 revision으로 만든 `input_hash`
@@ -90,10 +90,10 @@ runtime 구현, 저장 제품, 분산 합의 알고리즘과 성능 수치는 �
 
 runtime은 현재 `state_version`이 `expected_state_version`과 같을 때만 전이를 승인한다. 다르면 `STATE_VERSION_CONFLICT`로 거절하고 최신 상태를 다시 읽는다. 이 compare-and-set 규칙으로 두 worker가 같은 작업을 동시에 종료시키지 못하게 한다.
 
-결과 record와 그 결과를 가리키는 종료 상태는 하나의 atomic transition으로 확정한다. 저장소가 단일 transaction을 지원하면 같은 transaction에서 처리한다. 지원하지 않으면 `TransitionCommit` journal의 `PREPARED -> COMMITTED | ABORTED` 절차를 사용하며, `COMMITTED`가 아닌 출력은 다음 단계에서 읽을 수 없다.
+결과 record와 그 결과를 가리키는 종료 상태는 하나의 논리적 atomic transition으로 확정한다. 저장소가 단일 transaction을 지원하면 같은 transaction에서 처리한다. 지원하지 않으면 `TransitionCommit` journal을 사용한다. `PREPARED` 출력은 격리하고, state store가 현재 version·active attempt·입력이 그대로라는 조건을 compare-and-set으로 확인하면서 unique `(work_id, target_state_version)` key의 `COMMITTED` revision을 append한다. 경쟁 중 하나만 성공하며 이 marker가 논리적 확정점이다. runtime은 marker를 `WorkExecutionState`와 전문 상태 pointer에 투영하며, 소비자는 COMMITTED marker와 두 pointer가 모두 같은 output을 가리킬 때만 진행한다.
 
 - `PREPARED`: 결과 record와 목표 상태를 기록했지만 소비자에게 보이지 않음
-- `COMMITTED`: 상태 pointer와 결과 reference가 함께 확정되어 소비 가능
+- `COMMITTED`: 한 번만 생성되는 논리적 확정 marker. marker와 상태 pointer가 같은 결과를 가리킬 때 소비 가능
 - `ABORTED`: 버전 충돌, 취소 또는 검증 실패로 결과를 격리함
 
 `HypothesisProcessState.status=TERMINAL`은 정확히 하나의 final `VerificationResult.record_id`를 가리켜야 한다. `ReportProcessState.status=DRAFTED`는 정확히 하나의 `ReportDraft.record_id`를 가리켜야 한다. Technical·Rule Scope Gate의 완료 상태도 각각 정확한 review `record_id`를 가리킨다.
@@ -146,10 +146,11 @@ Technical `REVISE`는 Verification 또는 Research의 새 evidence/revision을 �
 
 ## 중단 후 재개
 
-재개 시 runtime은 마지막 `COMMITTED` transition만 신뢰한다.
+재개 시 runtime은 마지막 `COMMITTED` marker와 그 marker에서 투영된 pointer만 신뢰한다.
 
 - `RUNNING`이지만 commit되지 않은 attempt는 `INTERRUPTED` 오류와 함께 실패 처리 후보가 된다.
-- `PREPARED` journal은 현재 version·active attempt·입력 hash가 맞으면 commit을 끝내고, 아니면 `ABORTED`로 격리한다.
+- `PREPARED` journal은 현재 version·active attempt·입력 hash가 맞으면 compare-and-set 조건으로 unique `COMMITTED` marker를 append하고 pointer를 투영한다. 맞지 않거나 경쟁 전이가 먼저 확정됐으면 `ABORTED`로 격리한다.
+- `COMMITTED` marker는 있지만 pointer 투영 전에 중단된 경우에는 같은 marker를 다시 만들지 않고 기존 marker를 상태에 재투영한다.
 - 종료 상태와 output pointer가 서로 다르면 다음 단계 호출을 막고 `TRANSITION_INCOMPLETE`를 기록한다.
 - 자동 복구가 안전하지 않으면 `RECOVERY_FAILED`로 분석 또는 해당 가설을 멈추며 사람에게 필요한 조치를 전달한다.
 - 재개가 허용된 작업만 새 attempt로 실행한다. 이미 `COMMITTED`된 결과는 다시 실행하지 않는다.

@@ -87,8 +87,8 @@ $requiredContractNames = @(
     'dedupe_key:',
     'state_version:',
     'active_attempt_id:',
-    'last_transition_id:',
-    'last_transition_commit_id:'
+    'last_transition_ref:',
+    'last_transition_commit_ref:'
 )
 foreach ($name in $requiredContractNames) {
     if (-not $contractText.Contains($name)) {

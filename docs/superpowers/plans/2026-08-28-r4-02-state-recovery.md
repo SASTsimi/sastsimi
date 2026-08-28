@@ -31,23 +31,23 @@
 - Consumes: R4-01 `RunMeta`, `RecordMeta`, `StoredDataRef`, `attempt_id`, revision 계약
 - Produces: `WorkExecutionState`, `StateTransition`, `TransitionCommit`, 허용 전이표
 
-- [ ] **Step 1: 공통 실행 상태를 정본 계약에 추가**
+- [x] **Step 1: 공통 실행 상태를 정본 계약에 추가**
 
 `PENDING | READY | RUNNING | BLOCKED | SUCCEEDED | PARTIAL | FAILED | CANCELLED`의 의미, 허용 다음 상태와 종료 상태 불변성을 표로 작성한다.
 
-- [ ] **Step 2: 실행 상태 구조를 추가**
+- [x] **Step 2: 실행 상태 구조를 추가**
 
 `work_id`, `work_type`, `subject_id`, `state_version`, `active_attempt_id`, `input_hash`, `dedupe_key`, input/output/error refs와 시각을 포함한다.
 
-- [ ] **Step 3: 상태 전이와 저장 commit 구조를 추가**
+- [x] **Step 3: 상태 전이와 저장 commit 구조를 추가**
 
 compare-and-set용 `expected_state_version`, 정확한 result refs와 `PREPARED | COMMITTED | ABORTED` journal 의미를 작성한다.
 
-- [ ] **Step 4: orchestration 흐름과 전문 상태 분리를 동기화**
+- [x] **Step 4: orchestration 흐름과 전문 상태 분리를 동기화**
 
 실행 `SUCCEEDED`와 취약점 `TRUE`, Gate 결과, 보고서 상태가 서로 다른 축임을 `03`에 반영한다.
 
-- [ ] **Step 5: diff와 이름 검사**
+- [x] **Step 5: diff와 이름 검사**
 
 Run: `rg -n "WorkExecutionState|StateTransition|TransitionCommit|state_version|dedupe_key|active_attempt_id" docs/architecture-v5/03-agent-roles-and-orchestration.md docs/architecture-v5/08-lightweight-data-contracts.md`
 
@@ -64,23 +64,23 @@ Expected: 모든 새 이름이 정본 정의와 소비 설명에 나타난다.
 - Consumes: Task 1 실행 상태와 R4-01 invocation chain
 - Produces: fan-out/join, 직렬 Gate/Reporter, retry/failover, stale result 검사
 
-- [ ] **Step 1: AST/SAST와 가설별 fan-out/join 규칙 작성**
+- [x] **Step 1: AST/SAST와 가설별 fan-out/join 규칙 작성**
 
 부분 성공, `DataGap`, 같은 가설의 활성 attempt 하나, Pro/Con 독립 합류 조건을 명시한다.
 
-- [ ] **Step 2: 두 Gate와 Reporter 직렬 순서 고정**
+- [x] **Step 2: 두 Gate와 Reporter 직렬 순서 고정**
 
 정확한 Verification·CWE·정책 revision과 Technical `ACCEPT` 없이는 뒤 단계를 시작하지 못하게 한다.
 
-- [ ] **Step 3: retry와 failover 작업 상태 연결**
+- [x] **Step 3: retry와 failover 작업 상태 연결**
 
 새 attempt, 허용된 바로 앞 실패 호출, 재인증·backoff·repair와 취소 뒤 retry 금지를 명시한다.
 
-- [ ] **Step 4: 늦은 결과 수락 조건 작성**
+- [x] **Step 4: 늦은 결과 수락 조건 작성**
 
 active attempt, state version, input hash, workspace/commit/hypothesis 일치 조건과 거절 오류를 정한다.
 
-- [ ] **Step 5: 순서 검사**
+- [x] **Step 5: 순서 검사**
 
 Run: `rg -n "fan-out|합류|STALE_RESULT|ATTEMPT_NOT_ACTIVE|STATE_VERSION_CONFLICT|Technical.*Rule Scope.*Reporter" docs/architecture-v5`
 
@@ -97,23 +97,23 @@ Expected: 병렬 합류와 직렬 순서, 늦은 결과 차단 근거를 찾을 
 - Consumes: `TransitionCommit`, `AnalysisError`, `AnalysisRunResult`
 - Produces: atomic transition, crash-resume, failure propagation와 negative cases
 
-- [ ] **Step 1: 결과와 종료 상태의 atomic binding 작성**
+- [x] **Step 1: 결과와 종료 상태의 atomic binding 작성**
 
 Verification `TERMINAL`, Gate 완료와 Report `DRAFTED`가 정확한 output `record_id`를 가리키게 한다.
 
-- [ ] **Step 2: crash-resume 표 작성**
+- [x] **Step 2: crash-resume 표 작성**
 
 마지막 `COMMITTED`, 남은 `PREPARED`, 중단된 `RUNNING`, pointer 누락과 안전하지 않은 복구를 구분한다.
 
-- [ ] **Step 3: 오류·취소·부분 성공 전파표 작성**
+- [x] **Step 3: 오류·취소·부분 성공 전파표 작성**
 
 clone, static, Agent, auth, Sandbox, policy, Gate, report, budget와 사용자 취소가 가설·분석에 미치는 영향을 정한다.
 
-- [ ] **Step 4: 보안 차단 조건 작성**
+- [x] **Step 4: 보안 차단 조건 작성**
 
 오래된·취소된·다른 workspace/commit 결과와 uncommitted output을 다음 단계에서 읽지 못하게 한다.
 
-- [ ] **Step 5: 오류 이름 검사**
+- [x] **Step 5: 오류 이름 검사**
 
 Run: `rg -n "STATE_TRANSITION_INVALID|STATE_VERSION_CONFLICT|ATTEMPT_NOT_ACTIVE|STALE_RESULT|TRANSITION_INCOMPLETE|RECOVERY_FAILED" docs/architecture-v5`
 
@@ -135,23 +135,23 @@ Expected: 각 오류의 생성 주체, 영향과 복구가 정본과 관측 문�
 - Consumes: Tasks 1–3의 정본
 - Produces: 상태도, 저장·복구 흐름, 비전문가용 요약
 
-- [ ] **Step 1: 실행 상태 Mermaid 추가**
+- [x] **Step 1: 실행 상태 Mermaid 추가**
 
 허용 전이와 retry가 기존 종료 상태를 되돌리지 않는다는 흐름을 그린다.
 
-- [ ] **Step 2: atomic 저장·stale result Mermaid 추가**
+- [x] **Step 2: atomic 저장·stale result Mermaid 추가**
 
 결과 검증, atomic commit, 다음 단계 전달과 거절·격리 경로를 그린다.
 
-- [ ] **Step 3: Wiki 요약과 메뉴 추가**
+- [x] **Step 3: Wiki 요약과 메뉴 추가**
 
 중복 방지, 재시도, 중단 후 재개를 쉬운 한국어로 설명하고 정본 링크를 제공한다.
 
-- [ ] **Step 4: 용어집과 문서 안내 갱신**
+- [x] **Step 4: 용어집과 문서 안내 갱신**
 
 `work_id`, `dedupe_key`, `state_version`, atomic transition, stale result와 crash-resume을 설명한다.
 
-- [ ] **Step 5: Mermaid mirror 검사**
+- [x] **Step 5: Mermaid mirror 검사**
 
 Run: PowerShell로 `13-architecture-diagrams.md`와 `wiki/diagrams.md`의 Mermaid block 개수와 내용을 비교한다.
 
@@ -168,19 +168,19 @@ Expected: 두 파일의 모든 Mermaid block이 같은 순서와 내용이다.
 - Consumes: Issue #14, H-002, H-006과 Tasks 1–4
 - Produces: 추적 가능한 해결 근거와 남은 구현 결정
 
-- [ ] **Step 1: H-006 해결 근거 갱신**
+- [x] **Step 1: H-006 해결 근거 갱신**
 
 중복·누락·late result·부분 저장·복구 설계가 어느 문서에 있는지 기록한다.
 
-- [ ] **Step 2: H-002 상태 전파 부분 갱신**
+- [x] **Step 2: H-002 상태 전파 부분 갱신**
 
 오류 상태가 verdict와 분리되며 retry/terminal 의미가 일치하는지 기록한다.
 
-- [ ] **Step 3: Issue #14 완료 조건 대조**
+- [x] **Step 3: Issue #14 완료 조건 대조**
 
 각 체크 항목을 문서 절과 연결하고 누락이 있으면 정본에 보완한다.
 
-- [ ] **Step 4: 계획 체크리스트 갱신**
+- [x] **Step 4: 계획 체크리스트 갱신**
 
 실제 수행한 항목만 `[x]`로 바꾸고 미완료는 이유를 적는다.
 
@@ -193,19 +193,19 @@ Expected: 두 파일의 모든 Mermaid block이 같은 순서와 내용이다.
 - Consumes: 전체 R4-02 변경
 - Produces: 검증 증거, 분리된 commit과 GitHub PR
 
-- [ ] **Step 1: Markdown·링크·fence 검사**
+- [x] **Step 1: Markdown·링크·fence 검사**
 
 모든 Markdown 상대 링크가 존재하고 code fence 수가 짝수인지 확인한다.
 
-- [ ] **Step 2: 계약 일관성 검사**
+- [x] **Step 2: 계약 일관성 검사**
 
 정의되지 않은 구조 이름, 서로 다른 enum, output pointer 누락과 금지된 repository snapshot 표현을 검사한다.
 
-- [ ] **Step 3: 부정 시나리오 재검토**
+- [x] **Step 3: 부정 시나리오 재검토**
 
 Issue #14의 12개 작업 항목과 negative scenario를 독립 체크리스트로 다시 대조한다.
 
-- [ ] **Step 4: 첫 번째 self-review와 수정**
+- [x] **Step 4: 첫 번째 self-review와 수정**
 
 Blocker/High/Medium/Low로 분류하고 Blocker/High를 모두 수정한다.
 
