@@ -119,7 +119,19 @@
 
 - [x] **Step 4: 첫 번째 전체 self-review와 Blocker/High 수정**
 
-- [ ] **Step 5: commit 후 두 번째 stacked diff review**
+- [x] **Step 5: commit 후 두 번째 stacked diff review**
+
+검증 기록:
+
+- Markdown 55개 검사 통과
+- Mermaid 정본 13개와 Wiki 사본 13개 일치, 실제 SVG 렌더링 13개 통과
+- R4-02 선행 계약 이름 11개, 원자적 전이 field 3개, output binding 5개 유지
+- R4-03 계약 이름 16개, action type 16개, action별 exact check 16개, requester binding 16개 검사 통과
+- `ActionCheck` type 15개, 사람 검토 공통 field 15개, 실제 LLM 호출 경계 2개 검사 통과
+- 권한 오류 10개, 부정 시나리오 18개, 권한 규칙 18개 검사 통과
+- 전체 자동 검사 `Failures: 0`, `git diff --check` 통과
+- 독립 1차 검토의 Critical 2개·Important 3개와 2차 검토의 Critical 1개를 모두 수정
+- 최종 독립 재검토 결과 Critical 0, Important 0, Minor 0
 
 - [ ] **Step 6: branch push와 PR 생성**
 
