@@ -231,14 +231,16 @@ Expected: 첫 명령은 0건, 두 번째는 정본·전문·Wiki 문서에서 �
 
 Issue #13 완료 조건을 기준으로 Critical/Important/Minor를 분류한다. Critical/Important는 PR 전에 수정하고 재검토한다.
 
-- [ ] **Step 4: Push와 Draft PR 생성**
+- [x] **Step 4: Push와 Draft PR 생성**
 
 브랜치 `review/r4-01-common-contracts`를 push하고 `Refs #13`, `Refs #5`를 포함한 Draft PR을 만든다. 실제 교차 검토 전에는 `Closes #13`을 쓰지 않는다.
 
-- [ ] **Step 5: GitHub Issue 진행 기록**
+- [x] **Step 5: GitHub Issue 진행 기록**
 
 Issue #13에 변경 문서, 검증 결과와 남은 R2·R6·R7·R3 교차 검토를 쉬운 한국어로 남긴다. 담당 검토자에게 PR review를 요청한다.
 
-- [ ] **Step 6: 완료 조건 판정**
+- [x] **Step 6: 완료 조건 판정**
 
 실제 교차 검토가 모두 기록되면 H-002와 Issue #13을 완료 후보로 바꾼다. 검토가 남아 있으면 PR과 Issue를 열린 상태로 유지하고 부족한 승인만 명시한다.
+
+판정 결과: Draft PR #18과 Issue #13을 열어 두고 H-002를 `IN_PROGRESS`로 유지한다. R2·R6·R7에는 GitHub review를 요청했다. R3 `@v1sion`은 repository collaborator가 아니라 정식 review request가 거절되어 Issue 멘션 검토와 권한 추가가 남아 있다.
