@@ -68,10 +68,14 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 
 ## 동적 재현 실패와 반증은 다릅니다
 
-Docker 환경을 만들지 못했거나 실행이 timeout된 것은 재현 실패입니다. 가설을 반증하려면 다음 두 가지가 함께 있어야 합니다.
+Docker 환경을 만들지 못했거나 실행이 timeout된 것은 재현 실패입니다. `status`는 실행 완료 정도이고 `hypothesis_outcome`은 관측이 가설을 지지했는지, 반증했는지, 결론을 주지 못했는지 나타냅니다. 둘 다 최종 판정이 아닙니다.
 
-1. `hypothesis_disproved: true`
-2. 실제 반증 관측을 가리키는 `disproof_evidence_refs`
+가설을 반증하려면 다음 네 가지가 함께 있어야 합니다.
+
+1. `hypothesis_outcome: DISPROVED`
+2. `hypothesis_disproved: true`
+3. 실제 관측을 가리키는 `hypothesis_evidence_refs`
+4. 그중 반증 관측을 가리키는 `disproof_evidence_refs`
 
 빈 출력, exit code와 `FAILED | BLOCKED | CANCELLED`만으로는 가설을 `FALSE`로 바꿀 수 없습니다.
 

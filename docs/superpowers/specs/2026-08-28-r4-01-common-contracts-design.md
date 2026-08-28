@@ -125,13 +125,15 @@ proposal 검증 상태의 `meta.hypothesis_id`는 항상 `null`이다. `SCHEMA_V
 
 ## 8. 동적 실패와 실제 반증
 
-`DynamicReproductionResult.status=FAILED`는 환경 준비, 실행 또는 관측에 실패했다는 뜻이다. 실제 반증은 별도 `hypothesis_disproved=true`와 `disproof_evidence_refs`가 필요하다.
+`DynamicReproductionResult.status`는 재현 작업의 완료 정도이고 `hypothesis_outcome: SUPPORTED | DISPROVED | INCONCLUSIVE`은 유효한 관측과 가설의 관계다. 둘 다 Verification verdict가 아니다.
 
 - `failure_reason`: 재현 작업이 실패하거나 막힌 이유
+- `hypothesis_outcome`: 관측이 가설을 지지·반증하는지 또는 결론을 주지 못하는지
+- `hypothesis_evidence_refs`: outcome을 판단한 실제 관측
 - `hypothesis_disproved`: 가설이 실제 관측으로 반증됐는지 여부
 - `disproof_evidence_refs`: 어떤 관측이 반증했는지 가리키는 근거
 
-실행하지 못함, timeout, 정책 차단, 빈 stdout과 exit code만으로는 `hypothesis_disproved=true`가 될 수 없다.
+필수 환경이나 공격 경로를 실행하지 못하면 `FAILED + ENVIRONMENT_SETUP`이다. 유효한 관측이 하나 이상 있지만 환경 차이로 전체 확인이 부족하면 `PARTIAL + NONE + INCONCLUSIVE`이며 evidence와 limitations가 각각 하나 이상 필요하다. `DISPROVED`일 때만 `hypothesis_disproved=true`와 비어 있지 않은 `disproof_evidence_refs`를 사용한다. 실행하지 못함, timeout, 정책 차단, 빈 stdout과 exit code만으로는 반증이 될 수 없다.
 
 ## 9. 계약 버전과 revision 결정
 
@@ -149,8 +151,8 @@ proposal 검증 상태의 `meta.hypothesis_id`는 항상 `null`이다. `SCHEMA_V
 2. 일부 SAST 실패: 사용 가능한 사실과 `DataGap`, 분석 실행은 `PARTIAL` 가능
 3. 코드 조회 잘림: `CONTEXT_TRUNCATED`, Verification은 `HOLD` 또는 추가 조회 가능
 4. provider 인증 실패: `AUTH_REQUIRED`, 가설 verdict 유지
-5. sandbox 준비 실패: 동적 `FAILED`, `failure_reason=ENVIRONMENT_SETUP`, 자동 `FALSE` 금지
-6. 실제 반증 성공: `hypothesis_disproved=true`와 반증 근거가 있을 때만 `FALSE` 후보
+5. sandbox 준비 실패: 동적 `FAILED`, `failure_reason=ENVIRONMENT_SETUP`, `hypothesis_outcome=INCONCLUSIVE`, 자동 `FALSE` 금지
+6. 실제 반증 성공: `hypothesis_outcome=DISPROVED`, `hypothesis_disproved=true`와 반증 근거가 있을 때만 `FALSE` 후보
 7. 정책 조회 실패: `POLICY_FETCH_ERROR`, 정책 Gate `UNCERTAIN + DENY`
 8. workspace·commit 불일치: `WORKSPACE_MISMATCH`, 해당 근거 사용 금지
 9. revision 불일치: `RECORD_REVISION_MISMATCH`, 자동 병합 금지

@@ -111,11 +111,13 @@ Pro와 Con은 context contamination을 막기 위해 서로 다른 NEW session�
 
 동적 재현 상태는 `NOT_REQUESTED | RUNNING | SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED`다. 실행이 끝난 결과는 `DynamicReproductionResult.status`에 `SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED` 중 하나를 기록한다.
 
-- `failure_reason`은 환경 준비·실행·관측·정책·timeout 중 재현 작업이 실패하거나 막힌 이유다.
-- `hypothesis_disproved`는 가설이 실제 관측으로 반증됐는지 나타낸다.
-- `disproof_evidence_refs`는 어떤 관측이 반증했는지 가리킨다.
-- `FAILED`, `BLOCKED`, `CANCELLED`, 실행하지 못함, 빈 출력과 exit code만으로는 `hypothesis_disproved=true`가 될 수 없다.
-- 반증으로 `FALSE`를 제안하려면 플레이북의 기대 관측과 직접 연결된 `disproof_evidence_refs`가 있어야 한다.
+- 필수 환경을 만들지 못해 대상 애플리케이션이나 관련 공격 경로를 실행하지 못하면 `FAILED + ENVIRONMENT_SETUP`이다.
+- 공격 경로를 일부 실행하고 신뢰할 수 있는 관측을 하나 이상 얻었지만 운영환경 차이 등으로 전체 확인이 부족하면 `PARTIAL + NONE`이다. 이때 `hypothesis_outcome=INCONCLUSIVE`이고 `hypothesis_evidence_refs`와 `limitations`가 각각 하나 이상 있어야 한다.
+- `SUCCEEDED`는 계획한 필수 단계와 관측을 끝냈다는 실행 상태다. 관측이 가설을 지지했는지, 반증했는지, 결론을 주지 못했는지는 `hypothesis_outcome`에 따로 기록한다.
+- `hypothesis_outcome`은 `SUPPORTED | DISPROVED | INCONCLUSIVE`이며 Verification verdict가 아니다. `SUPPORTED | DISPROVED`는 실제 관측을 가리키는 `hypothesis_evidence_refs`가 필요하다.
+- `DISPROVED`일 때만 `hypothesis_disproved=true`와 비어 있지 않은 `disproof_evidence_refs`를 사용한다. 반증 근거는 일반 가설 근거 목록에도 포함한다.
+- `FAILED | BLOCKED | CANCELLED`, 실행하지 못함, 빈 출력과 exit code만으로는 `DISPROVED`, `hypothesis_disproved=true` 또는 `FALSE`를 만들 수 없다.
+- Sandbox는 outcome까지만 기록한다. Verification Agent가 limitations와 정적·동적·찬반 근거를 함께 보고 최종 `TRUE | FALSE | HOLD`를 결정한다.
 
 ## VerificationResult에 남길 정보
 

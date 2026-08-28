@@ -537,6 +537,8 @@ DynamicReproductionResult:
   observation_refs: [StoredDataRef]
   status: SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED
   failure_reason: NONE | ENVIRONMENT_SETUP | EXECUTION | OBSERVATION | POLICY_BLOCKED | TIMEOUT
+  hypothesis_outcome: SUPPORTED | DISPROVED | INCONCLUSIVE
+  hypothesis_evidence_refs: [StoredDataRef]
   hypothesis_disproved: boolean
   disproof_evidence_refs: [StoredDataRef]
   hypothesis_linkage: string
@@ -547,7 +549,17 @@ DynamicReproductionResult:
   elapsed_ms: integer
 ```
 
-재현 환경 구축·실행·관측 실패는 `failure_reason`으로 가설 반증과 구분한다. `status: FAILED | BLOCKED | CANCELLED`, 빈 stdout이나 exit code만으로 `hypothesis_disproved: true`를 만들 수 없다. 반증은 재현 플레이북의 기대 관측과 직접 연결된 `disproof_evidence_refs`를 요구한다. `hypothesis_disproved: false`이면 `disproof_evidence_refs`는 빈 목록이어야 한다.
+`status`는 재현 작업을 얼마나 실행했는지, `hypothesis_outcome`은 유효한 관측이 가설과 어떤 관계인지 나타내며 둘 다 Verification verdict가 아니다. 다음 조합만 허용한다.
+
+| `status` | `failure_reason` | 필수 의미 |
+|---|---|---|
+| `SUCCEEDED` | `NONE` | 계획한 필수 단계와 관측을 끝냄. outcome은 관측에 따라 세 값 모두 가능 |
+| `PARTIAL` | `NONE` | 공격 경로를 일부 실행해 신뢰할 수 있는 관측이 하나 이상 있지만 전체 확인은 부족함. `hypothesis_outcome=INCONCLUSIVE`, evidence와 `limitations`가 각각 하나 이상 필요 |
+| `FAILED` | `ENVIRONMENT_SETUP | EXECUTION | OBSERVATION | TIMEOUT` | 필수 환경·공격 경로·관측을 완료하지 못함. `hypothesis_outcome=INCONCLUSIVE` |
+| `BLOCKED` | `POLICY_BLOCKED` | sandbox 정책 때문에 실행하지 못함. `hypothesis_outcome=INCONCLUSIVE` |
+| `CANCELLED` | `NONE` | 사용자나 runtime이 중단함. `hypothesis_outcome=INCONCLUSIVE` |
+
+필수 환경을 구성하지 못해 대상 애플리케이션이나 관련 공격 경로를 실행하지 못했다면 `FAILED + ENVIRONMENT_SETUP`이다. 단순 환경 구성 실패를 `PARTIAL`로 기록하지 않는다. `SUPPORTED | DISPROVED`는 `hypothesis_evidence_refs`가 하나 이상 있어야 한다. `DISPROVED`이면 `hypothesis_disproved=true`이고 `disproof_evidence_refs`가 하나 이상이며 모두 `hypothesis_evidence_refs`에도 포함되어야 한다. 나머지 outcome은 `hypothesis_disproved=false`와 빈 `disproof_evidence_refs`를 사용한다. 빈 stdout, exit code, 실행 실패만으로 `DISPROVED`나 `FALSE`를 만들 수 없다. 최종 `TRUE | FALSE | HOLD`는 Verification Agent가 이 결과와 정적·찬반 근거를 함께 보고 결정한다.
 
 ## 8. TechnicalEvidenceReview
 
