@@ -326,7 +326,7 @@ flowchart LR
     ERROR --> KEEP[Do not change domain verdict]
     CHECK -->|All PASS| ALLOW[ActionDecision ALLOW UNUSED]
     ALLOW --> CLAIM{CAS claim UNUSED to USED}
-    CLAIM -->|Conflict or stale| REJECT[Reject replay or stale action]
+    CLAIM -->|Conflict or stale| REJECT[Expire and reject replay or stale action]
     CLAIM -->|Claimed| EXECUTE[Execute exact action once]
     EXECUTE --> OUTCOME[Store outcome refs and state transition]
     DOMAIN[Verification Gates Reporter Human keep domain decisions] -. not decided by validator .-> CHECK

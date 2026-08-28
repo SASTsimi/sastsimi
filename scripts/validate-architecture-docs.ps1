@@ -219,6 +219,11 @@ foreach ($actionType in $requiredActionTypes) {
     if (-not $actionRequestBlock.Contains($actionType)) {
         Add-Failure "missing R4-03 action type: $actionType"
     }
+    $tableRowPattern = '(?m)^\| `' + [regex]::Escape($actionType) + '`\s*\|'
+    $tableRowCount = [regex]::Matches($contractText, $tableRowPattern).Count
+    if ($tableRowCount -lt 2) {
+        Add-Failure "R4-03 action type must appear in required-check and requester tables: $actionType"
+    }
 }
 
 $requiredActionChecks = @(
@@ -297,7 +302,10 @@ $requiredAuthorityRules = @(
     '-> Technical Evidence Gate',
     '-> Rule Scope Impact Gate',
     'HumanReviewPacket',
-    'HumanReviewDecision'
+    'HumanReviewDecision',
+    'UNUSED -> USED',
+    'UNUSED -> EXPIRED',
+    'SAVE_HUMAN_DECISION'
 )
 foreach ($rule in $requiredAuthorityRules) {
     if (-not ($orchestrationText.Contains($rule) -or $gateText.Contains($rule) -or $contractText.Contains($rule))) {

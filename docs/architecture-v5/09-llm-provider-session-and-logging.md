@@ -37,7 +37,7 @@ Agent Runtime은 provider를 직접 호출하지 않고 `CALL_LLM` `ActionReques
 - `SESSION`: NEW/RESUME/AUTO, parent session, retry/failover 선행 호출
 - `REDACTION`: prompt와 context에 credential·절대 경로·금지 정보가 없는지
 
-모든 check가 `PASS`인 `ActionDecision=ALLOW`를 runtime이 `USED`로 claim한 뒤에만 `LLMInvocationRequest`를 만든다. 요청의 `action_decision_ref`는 그 exact claim revision을 가리킨다. 다른 action, 이전 state version, retry 또는 failover에 같은 decision을 재사용하지 않는다.
+모든 check가 `PASS`인 `ActionDecision=ALLOW`를 runtime이 `USED`로 claim한 뒤에만 `LLMInvocationRequest`를 만든다. 요청의 `action_decision_ref`는 그 exact claim revision, `provider_profile_ref`는 검사한 versioned provider profile revision을 가리킨다. `LLMInvocationLog`도 같은 profile ref를 보존한다. 다른 action, 이전 state version, retry 또는 failover에 같은 decision을 재사용하지 않는다.
 
 저장소 텍스트나 LLM output이 provider·model·session mode·fallback·budget을 바꾸라고 요구해도 configuration 변경으로 해석하지 않는다. 요청된 값이 versioned provider policy와 다르면 `PROVIDER_PROFILE_DENIED` 또는 `UNTRUSTED_INSTRUCTION`으로 호출하지 않는다.
 
