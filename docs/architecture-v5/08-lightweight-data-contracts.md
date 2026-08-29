@@ -370,6 +370,8 @@ ActionRequest:
   work_ref: RunStoredDataRef | StoredDataRef | null
   expected_state_version: integer | null
   input_refs: [RunStoredDataRef | StoredDataRef]
+  result_kind: string | null
+  candidate_result_ref: RunStoredDataRef | StoredDataRef | null
   llm_call_spec_ref: StoredDataRef | null
   tool_name: string | null
   file_paths: [string]
@@ -479,7 +481,17 @@ Technical Gate가 `REVISE`를 확정하면 그 Gate action과 decision은 이미
 
 Orchestration은 작업·호출을 제안할 수 있지만 Verification verdict, CWE, 두 Gate 결과, 정책 해석, ReportDraft 내용과 사람 결정을 생산하지 못한다. 각 전문 결과는 위 표의 `SAVE_RESULT` 허용 역할 중에서도 해당 result kind를 소유한 역할만 저장한다. 예를 들어 `VerificationResult`는 VERIFICATION, `TechnicalEvidenceReview`는 TECHNICAL_GATE, `RuleScopeImpactReview`는 RULE_SCOPE_GATE, `ReportDraft`는 REPORTER만 생산한다. runtime validator는 값의 생산자·schema·선행 reference를 확인하지만 취약점 진위·CWE 적절성·정책 의미를 대신 판정하지 않는다.
 
-action type에서 쓰지 않는 선택 field는 `null` 또는 빈 배열이어야 하고 `reason`은 비어 있지 않아야 한다. `READ_CODE`는 하나 이상의 `file_paths`, `RUN_TOOL`은 `tool_name`과 필요한 file path가 필수다. 실제 LLM을 실행하는 `CALL_LLM | CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT`는 exact `llm_call_spec_ref`, `provider_profile_ref`, `session_mode`와 work state가 필요하며 action의 provider·session 값은 spec과 같아야 한다. Gate와 Reporter는 별도 `CALL_LLM`을 우회 호출하지 않고 각 stage action이 LLM 호출까지 직접 허가한다. `RUN_SANDBOX`는 `sandbox_profile_ref`·`image_digest`·`resource_limits`가 필수다. network를 쓰지 않는 Sandbox는 빈 `network_targets`를 사용하며 빈 목록은 default-deny를 뜻한다. `PREPARE_HUMAN_REVIEW`는 `work_ref`로 current `HumanReviewState`, `expected_state_version`으로 현재 version을 가리키고 `input_refs`에 exact `AnalysisRunResult`를 넣는다. `SAVE_HUMAN_DECISION`도 current state/version을 가리키고 `input_refs`에 exact current packet과 사람 identity record를 넣는다. `EXTERNAL_DISCLOSURE` 역시 current state/version을 가리키며 exact current HumanReviewDecision과 승인한 ReportDraft를 입력으로 가져야 한다. action의 `disclosure_targets`는 current 결정의 목록과 set-equal해야 한다.
+`SAVE_RESULT`는 검사할 결과 후보를 action에 정확히 고정한다.
+
+- `result_kind`와 `candidate_result_ref`는 `SAVE_RESULT`에서 필수이고 다른 action에서는 `null`이다. `candidate_result_ref.data_kind`는 `result_kind`와 같고 `candidate_result_ref.record_id`에는 저장 runtime이 미리 발급한 결과 revision ID가 있어야 한다.
+- `candidate_result_ref.content_hash`는 미리 발급한 ID를 포함해 canonical serialization한 결과 후보 전체의 hash다. 후보 record는 read-only staging 영역에 두며 action decision이 생긴 뒤 수정하거나 같은 `stored_data_id`·`record_id`에 다른 bytes를 넣지 않는다. candidate ref도 action `input_refs`에 정확히 한 번 포함한다. staging record는 `TransitionCommit.state=COMMITTED` 전에는 일반 결과 조회나 다음 단계에서 보이지 않는다.
+- `SCHEMA`는 result kind에 맞는 schema와 필수 필드를, `AUTHORITY`는 result kind의 등록된 생산 역할과 `requested_by`를 검사한다. `IDENTITY`·`REVISION`·`STATE`는 모든 candidate의 analysis, current `work_ref`·active attempt·input refs와 hash를 검사하고, `RecordMeta` candidate이면 workspace·commit·hypothesis·`meta.attempt_id`까지 정확히 일치하는지 검사한다.
+- 핵심 결과 생산 역할은 `VerificationResult -> VERIFICATION`, `CWELabel -> CWE_LABELING`, `TechnicalEvidenceReview -> TECHNICAL_GATE`, `RuleScopeImpactReview -> RULE_SCOPE_GATE`, `ReportDraft -> REPORTER`다. 다른 result kind도 versioned result-owner registry에 정확히 한 생산 역할을 등록해야 하며, broad requester 표만으로 저장 권한을 얻지 않는다.
+- `VerificationResult.verdict=FALSE`이면 `falsification_results`에 실제 `question_id`, `outcome=DISPROVED`, 하나 이상의 `evidence_refs`가 있는 항목이 필수이고 `verdict_rationale`이 그 질문과 근거를 연결해야 한다. 오류·timeout·빈 출력만 있는 후보는 `SCHEMA` check를 `FAIL`로 만들어 저장하지 않으며 runtime이 다른 verdict를 만들어 주지 않는다.
+- 저장 runtime은 claim한 action의 candidate bytes와 hash를 다시 확인한다. 확정된 result ref는 candidate와 `stored_data_id`·`data_kind`·`content_hash`·`record_id`가 모두 같아야 한다. 결과 ref, 종료 `StateTransition`과 `TransitionCommit`은 같은 output을 가리켜야 하며 `TransitionCommit.state=COMMITTED`가 된 뒤에만 소비할 수 있다. 후속 `ActionDecision.outcome_refs`에는 그 exact result ref와 COMMITTED commit ref를 각각 한 번 넣는다.
+- check 뒤 candidate bytes·hash, active attempt, work input 또는 state version이 달라지면 decision을 `EXPIRED`로 만들거나 save를 `DENY`하고 `STALE_RESULT | RECORD_REVISION_MISMATCH | STATE_VERSION_CONFLICT` 중 실제 원인을 기록한다. 변한 후보를 저장하거나 이미 `USED`인 action으로 다시 저장하지 않는다.
+
+action type에서 쓰지 않는 선택 field는 `null` 또는 빈 배열이어야 하고 `reason`은 비어 있지 않아야 한다. `READ_CODE`는 하나 이상의 `file_paths`, `RUN_TOOL`은 `tool_name`과 필요한 file path가 필수다. 실제 LLM을 실행하는 `CALL_LLM | CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT`는 exact `llm_call_spec_ref`, `provider_profile_ref`, `session_mode`와 work state가 필요하며 action의 provider·session 값은 spec과 같아야 한다. `SAVE_RESULT`만 `result_kind`와 `candidate_result_ref`를 사용한다. Gate와 Reporter는 별도 `CALL_LLM`을 우회 호출하지 않고 각 stage action이 LLM 호출까지 직접 허가한다. `RUN_SANDBOX`는 `sandbox_profile_ref`·`image_digest`·`resource_limits`가 필수다. network를 쓰지 않는 Sandbox는 빈 `network_targets`를 사용하며 빈 목록은 default-deny를 뜻한다. `PREPARE_HUMAN_REVIEW`는 `work_ref`로 current `HumanReviewState`, `expected_state_version`으로 현재 version을 가리키고 `input_refs`에 exact `AnalysisRunResult`를 넣는다. `SAVE_HUMAN_DECISION`도 current state/version을 가리키고 `input_refs`에 exact current packet과 사람 identity record를 넣는다. `EXTERNAL_DISCLOSURE` 역시 current state/version을 가리키며 exact current HumanReviewDecision과 승인한 ReportDraft를 입력으로 가져야 한다. action의 `disclosure_targets`는 current 결정의 목록과 set-equal해야 한다.
 
 ```yaml
 CodeLocation:
@@ -1079,6 +1091,10 @@ LLMInvocationRequest:
 `call_spec_ref.record_id`는 수정할 수 없는 exact `LLMCallSpec` revision을 가리킨다. `action_decision_ref.record_id`는 일반 Agent이면 `CALL_LLM`, Gate이면 해당 `CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE`, Reporter이면 `CREATE_REPORT_DRAFT` action을 `ALLOW`하고 `USED`로 claim한 exact decision revision을 가리킨다. 그 action의 `llm_call_spec_ref.record_id`는 `call_spec_ref.record_id`와 같아야 한다. request의 `llm_call_id`, role, provider profile, model, session, parent session, context, prompt template/payload, output schema, token budget와 timeout은 spec과 field-by-field exact equality를 만족해야 하며 runtime은 이 equality를 provider 호출 직전에 다시 확인한다. 다르면 decision을 `EXPIRED`로 바꾸고 호출하지 않는다. `timeout_ms`는 monotonic clock으로 계산하는 0보다 큰 밀리초 실행 예산이다.
 
 `LLMCallSpec`은 이를 입력으로 가진 첫 `ActionDecision`이 저장된 뒤 수정하지 않는다. action `input_refs`에는 spec 자체와 spec의 `prompt_payload_ref`, 모든 `context_refs`를 포함하고 `REVISION`·`REDACTION` check를 적용한다. `CALL_LLM`에서는 spec role이 `requested_by`와 같아야 한다. `CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT`에서는 각각 `TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER`여야 한다. retry와 failover는 새 `llm_call_id`, spec, action과 decision을 만든다.
+
+Pro와 Con의 `SESSION` check는 독립성을 선택값이 아닌 필수 불변조건으로 검사한다. `requested_by=PRO | CON`인 `CALL_LLM` action은 `session_mode=NEW`, exact `LLMCallSpec.agent_role`이 같은 역할, `LLMCallSpec.session_policy=NEW`, `parent_session_ref=null`이어야 한다. Pro와 Con은 서로 다른 `llm_call_id`, `LLMCallSpec`, `ActionRequest`, `ActionDecision`과 실제 `session_ref`를 가져야 한다. provider가 session ID를 주지 않아도 adapter가 호출마다 서로 다른 불투명 local `session_ref`를 발급한다. 공통 가설·코드 fact는 각각의 `context_refs`에 넣을 수 있지만 상대 역할의 output·결론·session을 parent 또는 context로 넣을 수 없다.
+
+Pro/Con retry와 failover도 역할 경계를 넘지 않는다. 선행 호출은 같은 역할의 바로 앞 실패 호출일 수 있지만 후속 호출도 `NEW` session과 새 `llm_call_id`·spec·action·decision을 사용하고 `parent_session_ref=null`을 유지한다. 상대 역할의 predecessor, session, parsed output 또는 action decision을 연결하면 `SESSION` check를 `FAIL`로 만들고 `INVOCATION_CHAIN_INVALID` 또는 `ACTION_NOT_ALLOWED`를 기록한다.
 
 ```yaml
 LLMInvocationResult:

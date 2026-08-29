@@ -30,6 +30,10 @@ Pro와 Con은 서로의 결과를 받지 않는 별도 NEW session이다. trigge
 
 각 반증 질문에는 `question_id`가 있습니다. 검증 결과는 질문마다 `DISPROVED`, `NOT_DISPROVED`, `INCONCLUSIVE` 중 하나와 근거를 남깁니다. 실제 근거가 있는 `DISPROVED`가 하나 이상일 때만 `FALSE`가 가능합니다. `NOT_DISPROVED`는 반증하지 못했다는 뜻일 뿐 가설을 증명하지 않습니다.
 
+Pro와 Con은 항상 별도의 새 대화에서 실행합니다. 상대 역할의 결론이나 대화를 이어받지 않으며, 실패 후 재시도나 provider 변경도 같은 역할의 새 대화로 시작합니다. Verification Agent만 두 결과를 함께 읽고 최종 판정을 만듭니다.
+
+결과를 저장하기 전에는 결과 종류, 저장 담당 역할, 정확한 작업·시도·코드 버전과 후보 내용 hash를 한 요청에 묶어 검사합니다. 검사 뒤 후보가 바뀌면 저장하지 않습니다. `FALSE` 후보는 실제 `question_id`와 근거가 연결된 `DISPROVED`가 있어야 하며 오류만으로는 저장할 수 없습니다.
+
 | 모드 | 목적 |
 |---|---|
 | `NOT_REQUIRED` | 정적 근거로 현재 판정 가능 |

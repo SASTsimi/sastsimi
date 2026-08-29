@@ -71,6 +71,7 @@ Agent 또는 서비스가 부작용이 있는 실행을 원할 때 만드는 요
 - `action_type`: 수행하려는 일
 - `work_ref`: 연결된 현재 work와 state version
 - `input_refs`: 실제로 읽을 record revision
+- `result_kind`, `candidate_result_ref`: `SAVE_RESULT`에서만 사용하는 결과 종류와 변경할 수 없는 저장 후보
 - `tool_name`, `file_paths`, `network_targets`: 필요한 실행 범위
 - `provider_profile_ref`, `session_mode`: LLM 호출 조건
 - `disclosure_targets`: 사람이 승인한 외부 공개 대상과 정확히 같은 목록
@@ -101,6 +102,8 @@ runtime validator의 검사 결과다.
 한 `action_ref.record_id`에는 logical decision 하나만 허용한다. concurrent validator는 unique constraint와 atomic create-or-read로 같은 decision을 반환한다. 다시 검사하려면 새 action을 만든다.
 
 결정 내용과 검사 결과, `valid_until`은 이후 revision에서 바꾸지 않는다. 실행 직전에 허가 시간이 지나거나 requester 권한·state·budget·input·configuration이 달라졌으면 `UNUSED -> EXPIRED`로 바꾸고 실행을 거절한다. 그대로이면 compare-and-set으로 `UNUSED -> USED`를 먼저 저장한 뒤 exact action을 한 번만 실행한다. `USED`, `NOT_USED`, `EXPIRED`는 다시 사용할 수 없다.
+
+`SAVE_RESULT` action은 쉬운 영문 필드 `result_kind`와 `candidate_result_ref`로 검사 대상을 고정한다. candidate ref에는 미리 발급한 `record_id`와 결과 후보 전체의 `content_hash`가 있고, 확정된 결과도 같은 exact ref를 사용한다. runtime은 result-owner, work·attempt·workspace·commit·hypothesis와 named falsification 구조를 검사하고, 같은 후보를 `COMMITTED` transition에 원자적으로 연결한다. 검사 뒤 후보가 바뀌거나 오류만으로 `FALSE`를 만들려 하면 저장하지 않는다.
 
 ## runtime validator가 강제할 항목
 
@@ -180,6 +183,8 @@ runtime validator가 할 수 없는 일은 다음과 같다.
 Technical action의 `REVISION`은 exact Verification+CWE, `GATE_ORDER`는 final `COMMITTED` 상태를 검사한다. Rule Scope action의 `REVISION`은 같은 Verification+CWE+Technical review, `GATE_ORDER`는 `TRUE`+`ACCEPT`를 검사한다. Reporter의 `REVISION`은 두 Gate가 실제로 검토한 같은 revision 집합, `REPORT_READY`는 보고 조건을 검사한다. runtime은 이 내용을 허가 시점과 LLM 호출 직전에 다시 확인한다.
 
 Technical `REVISE` 뒤 같은 input revision이나 domain input hash로 새 투표를 요청할 수 없다. 보완된 Verification 또는 CWE revision으로 새 work·spec·action·decision을 만든다. provider·형식 오류의 제한 retry는 같은 domain input에서 새 invocation action을 만드는 별도 흐름이다.
+
+Pro와 Con 호출은 모두 명시적 `NEW` session이며 `parent_session_ref=null`이다. 두 역할은 서로 다른 call ID·session·action·decision을 사용하고 retry·failover에서도 상대 역할의 session·output·decision을 연결하지 않는다.
 
 ## 사람 검토 경계
 

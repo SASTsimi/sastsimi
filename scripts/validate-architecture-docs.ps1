@@ -245,6 +245,8 @@ $actionRequestBlock = [regex]::Match($contractText, '(?ms)^ActionRequest:\s*(.*?
 $requiredActionRequestFields = @(
     'requester_identity_ref:',
     'input_refs:',
+    'result_kind:',
+    'candidate_result_ref:',
     'llm_call_spec_ref:',
     'provider_profile_ref:',
     'sandbox_profile_ref:',
@@ -443,7 +445,11 @@ $authorityScenarioMarkers = @(
     '사람 결정 뒤 새 HumanReviewPacket 생성',
     'Technical Gate `REVISE` 뒤 같은 입력으로 재투표',
     'action 허가 뒤 Gate 입력 revision이 바뀜',
-    'Runtime Validator가 공식 정책 의미를 다시 판단'
+    'Runtime Validator가 공식 정책 의미를 다시 판단',
+    'Pro와 Con이 같은 session 또는 parent를 공유',
+    '`SAVE_RESULT` 검사 뒤 candidate bytes를 바꿈',
+    '실행 오류만 든 `FALSE` 후보를 저장',
+    '다른 역할이 만든 결과 후보를 저장'
 )
 foreach ($marker in $authorityScenarioMarkers) {
     if (-not $securityText.Contains($marker)) {
@@ -477,7 +483,11 @@ $requiredAuthorityRules = @(
     'Technical action의 `REVISION`은 exact Verification+CWE',
     '같은 Verification·CWE revision 또는 같은 domain input hash',
     '오류 층은 섞어 기록하지 않는다',
-    '정책 문장이나 정책의 의미를 대신 해석하지 않는다'
+    '정책 문장이나 정책의 의미를 대신 해석하지 않는다',
+    'Pro와 Con의 `SESSION` check는 독립성을 선택값이 아닌 필수 불변조건으로 검사한다',
+    '`candidate_result_ref.record_id`에는 저장 runtime이 미리 발급한 결과 revision ID',
+    '`VerificationResult.verdict=FALSE`이면 `falsification_results`',
+    '`TransitionCommit.state=COMMITTED`가 된 뒤에만 소비할 수 있다'
 )
 foreach ($rule in $requiredAuthorityRules) {
     if (-not ($orchestrationText.Contains($rule) -or $gateText.Contains($rule) -or $contractText.Contains($rule) -or $resultText.Contains($rule))) {

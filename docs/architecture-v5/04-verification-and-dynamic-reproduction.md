@@ -59,7 +59,7 @@ Verification Agent는 가설이 실제 코드 흐름과 실행 조건에서 성�
 
 named falsification으로 빠르게 반증되었거나, 명확한 duplicate/unsupported hypothesis이고, 추가 독립 검토의 예상 가치가 낮으며 예산이 부족할 때는 생략 사유를 기록하고 BASIC으로 종료할 수 있다.
 
-Pro와 Con은 context contamination을 막기 위해 서로 다른 NEW session에서 시작한다. 동일한 `workspace_id`·`commit_id`와 가설을 받지만 상대 Agent의 결론은 입력받지 않는다. Verification Agent가 두 결과와 직접 확인한 사실을 종합한다.
+Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` session에서 시작한다. 각 호출은 `requested_by=PRO | CON`, 같은 역할의 `LLMCallSpec.agent_role`, `session_mode=NEW`, `session_policy=NEW`, `parent_session_ref=null`과 서로 다른 `llm_call_id`·action·decision·실제 session을 사용한다. retry와 failover도 상대 역할의 session·output·decision을 이어받지 않고 같은 역할의 새 `NEW` session으로 실행한다. 동일한 `workspace_id`·`commit_id`와 가설·공통 코드 fact는 받지만 상대 Agent의 결론은 입력받지 않는다. Verification Agent만 두 결과와 직접 확인한 사실을 종합한다.
 
 ## Debate 효과 측정
 

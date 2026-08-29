@@ -108,13 +108,15 @@ API 방식이 허용되어도 특정 provider를 기본값으로 확정하는 �
 | 같은 역할·같은 가설의 추가 retrieval | `RESUME` 가능 |
 | 같은 Verification의 Technical Gate revision 대응 | `RESUME` 가능 |
 | 서로 다른 hypothesis | `NEW` |
-| Pro와 Con | 각각 `NEW` |
+| Pro와 Con | `AUTO` 사용 금지, 각각 명시적 `NEW` |
 | Verification과 Technical Gate | `NEW` |
 | Technical Gate와 Rule Scope Impact Gate | `NEW` |
 | Verification과 Research | `NEW` |
 | Gate와 Reporter | `NEW` |
 
 정책은 설정 가능하며 실제 결정, 이유, parent session reference를 기록한다. session reuse는 반복 context token을 줄일 수 있지만 confirmation bias와 prompt contamination을 키울 수 있으므로 품질·비용 평가 없이 광범위하게 적용하지 않는다.
+
+Pro/Con 독립성은 설정으로 완화할 수 없는 예외다. 두 역할의 `CALL_LLM` action은 `requested_by`, call spec role과 일치해야 하고 action `session_mode=NEW`, spec `session_policy=NEW`, `parent_session_ref=null`이어야 `SESSION` check를 통과한다. 두 호출은 서로 다른 `llm_call_id`와 실제 `session_ref`, 각자의 action·decision을 사용한다. provider가 session ID를 노출하지 않아도 adapter가 호출별로 서로 다른 불투명 local `session_ref`를 만든다. retry·repair·failover도 같은 역할의 새 `NEW` session으로 만들고 상대 역할의 session·output·decision을 predecessor, parent 또는 context로 사용하지 않는다.
 
 ## 역할별 모델 선택
 

@@ -186,6 +186,10 @@ Research, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출�
 | Technical Gate `REVISE` 뒤 같은 입력으로 재투표 | Verification·CWE `record_id`와 domain input hash, 이전 decision 사용 상태 | `ACTION_NOT_ALLOWED`, 보완된 upstream revision으로 새 work·action 요구 |
 | action 허가 뒤 Gate 입력 revision이 바뀜 | provider 호출 직전 exact refs·current state 재검사 | `UNUSED -> EXPIRED`, 호출 금지와 새 action 요구 |
 | Runtime Validator가 공식 정책 의미를 다시 판단 | Rule Scope output의 생산 역할과 validator 검사 범위 | 정책 해석 금지, Gate의 `UNCERTAIN + DENY` 구조만 확인하고 Reporter 차단 |
+| Pro와 Con이 같은 session 또는 parent를 공유 | 역할별 `SESSION`, `NEW`, `parent_session_ref=null`, 서로 다른 call/session ID | `ACTION_NOT_ALLOWED` 또는 `INVOCATION_CHAIN_INVALID`, 두 호출 모두 독립 action으로 다시 요청 |
+| `SAVE_RESULT` 검사 뒤 candidate bytes를 바꿈 | `candidate_result_ref.stored_data_id`와 `content_hash`, current attempt·state | decision `EXPIRED` 또는 save `DENY`, 변조 후보 미저장 |
+| 실행 오류만 든 `FALSE` 후보를 저장 | `result_kind`, VERIFICATION 생산자, named `DISPROVED`의 `question_id`·`evidence_refs` | `SAVE_RESULT` 거절, 오류 상태 유지와 verdict 자동 생성 금지 |
+| 다른 역할이 만든 결과 후보를 저장 | result-owner registry와 `requested_by`, candidate meta | `AUTHORITY_DENIED`, candidate 격리와 최신 pointer 미연결 |
 
 ## 남는 위험
 

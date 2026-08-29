@@ -26,6 +26,8 @@ provider/model failover는 조용히 수행하지 않는다. 모든 retry와 fal
 
 LLM 호출 상태는 `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED | CANCELLED`다. 호출 실패·인증 필요·rate limit·timeout은 취약점 `FALSE`가 아니다.
 
+Pro와 Con은 항상 서로 다른 새 대화에서 시작합니다. 두 호출 모두 `NEW`, `parent_session_ref=null`이고 서로 다른 call ID·session·action·decision을 사용합니다. 재시도나 provider 변경 때도 상대 역할의 대화나 결론을 이어받지 않습니다. 두 역할이 공통으로 읽어도 되는 것은 같은 가설과 검증된 코드 사실뿐입니다.
+
 일반 Agent의 provider 호출은 `CALL_LLM` action을 사용합니다. 두 Gate와 Reporter는 각각 자기 stage action이 LLM 호출까지 직접 허가하므로 별도 `CALL_LLM`으로 우회하지 않습니다. 모든 호출은 model·prompt·context·출력 형식·예산·시간을 적은 immutable `LLMCallSpec`과 실제 요청이 정확히 같을 때만 실행합니다. retry와 failover도 새 spec·action·decision이 필요합니다.
 
 LLM 호출은 상위 `work_id`의 한 attempt로 실행한다. 재시도 가능한 호출 실패는 실패 attempt를 보존하고 작업을 `BLOCKED`로 둔다. 재인증·backoff·repair 같은 조건이 해결되면 새 `attempt_id`와 `llm_call_id`로 시작한다. 취소되었거나 이전 attempt에서 늦게 도착한 응답은 최신 결과에 연결하지 않는다.
