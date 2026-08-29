@@ -230,6 +230,8 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 
 모든 `AnalysisError`에는 `stage`, `code`, `retryable`, 민감정보가 제거된 `safe_message`, 관련된 `work_id`·`attempt_id`, `related_record_ids`와 `created_at`을 남긴다. 실행 작업과 무관하면 두 실행 식별자는 `null`이다. 원본 오류는 일반 record에 복사하지 않고 별도 접근 통제·redaction·보존 정책이 적용된 결과로 분리한다. 표의 어떤 오류도 가설 `FALSE`를 직접 만들지 않는다.
 
+Gate가 모순된 `ALLOW` 또는 서로 다른 input revision을 출력하면 `LLMInvocationResult.status=INVALID_OUTPUT`과 `AnalysisError(stage=GATE, code=INVALID_OUTPUT)`을 함께 기록한다. `INVALID_OUTPUT`은 LLM 호출·출력 검증 결과이고, `STATE_TRANSITION_INVALID` 등 R4-02 상태 전이 오류와 다른 축이다. invalid Gate output은 전문 Gate 결과나 `COMMITTED` output으로 사용하지 않으며 Reporter를 호출하지 않는다.
+
 상태 전이·version·active attempt 오류는 `stage=STATE`, 결과와 pointer 일부 저장은 `stage=STORAGE`, 재시작·journal 정리는 `stage=RECOVERY`로 기록한다.
 
 ## Debug trace와 보존

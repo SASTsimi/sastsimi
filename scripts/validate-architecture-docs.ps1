@@ -134,6 +134,20 @@ foreach ($rule in $requiredBindingRules) {
     }
 }
 
+$requiredReviewRemediationRules = @(
+    'Gate domain input set',
+    '`REVISE`는 일반 retry나 resume이 아니다',
+    '`attempt_number=1`, `trigger=INITIAL`',
+    '`LLMInvocationResult.status=INVALID_OUTPUT`',
+    '`AnalysisError.stage=GATE`, `AnalysisError.code=INVALID_OUTPUT`',
+    '`RuleScopeImpactReview`를 `COMMITTED`하지 않는다'
+)
+foreach ($rule in $requiredReviewRemediationRules) {
+    if (-not $contractText.Contains($rule)) {
+        Add-Failure "missing PR #26 review remediation rule: $rule"
+    }
+}
+
 $resultPath = Join-Path $repoRoot 'docs/architecture-v5/07-results-and-observability.md'
 $resultText = Get-Content -Raw -LiteralPath $resultPath
 $requiredErrorCodes = @(
@@ -167,6 +181,7 @@ $negativeScenarioMarkers = @(
     '`PARTIAL` 결과에 gap·오류 설명이 없음',
     '분석 종료 시 `RUNNING` work나 `PREPARED` journal이 남음',
     '`COMMITTED` marker 투영 전에 취소·retry 전이가 경쟁'
+    '모순된 `ALLOW`가 Reporter 호출을 요청'
 )
 foreach ($marker in $negativeScenarioMarkers) {
     if (-not $securityText.Contains($marker)) {
@@ -188,6 +203,7 @@ Write-Output "Mermaid blocks: $($diagramBlocks.Count) canonical / $($wikiDiagram
 Write-Output "R4-02 required contract names: $($requiredContractNames.Count)"
 Write-Output "R4-02 TransitionCommit atomic fields: $($requiredTransitionCommitFields.Count)"
 Write-Output "R4-02 exact output bindings: $($requiredBindingRules.Count)"
+Write-Output "R4-02 review remediation rules: $($requiredReviewRemediationRules.Count)"
 Write-Output "R4-02 required error codes: $($requiredErrorCodes.Count)"
 Write-Output "R4-02 negative scenarios: $($negativeScenarioMarkers.Count)"
 Write-Output "Failures: $($failures.Count)"

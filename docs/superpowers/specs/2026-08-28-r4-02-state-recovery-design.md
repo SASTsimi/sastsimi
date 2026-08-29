@@ -123,7 +123,7 @@ runtime은 현재 `state_version`이 `expected_state_version`과 같을 때만 �
 
 `final VerificationResult + CWELabel -> TechnicalEvidenceReview ACCEPT -> RuleScopeImpactReview -> Reporter 조건 검사 -> ReportDraft`
 
-Technical `REVISE`는 Verification 또는 Research의 새 evidence/revision을 요구한다. 같은 입력으로 재투표하지 않는다. Rule Scope Gate는 Technical `ACCEPT`와 `TRUE`가 아니면 실행하지 않는다. Reporter는 두 Gate와 공식 정책·영향·권한 조건 및 exact revision 연결이 모두 맞을 때만 실행한다.
+Technical `REVISE`는 Verification 또는 Research의 새 evidence/revision을 요구한다. 기존 Gate work는 `REVISE` 결과와 함께 종료하고, Verification이 보완된 `VerificationResult` 또는 `CWELabel` revision을 만든 뒤 새 `input_hash`·`dedupe_key`·`work_id`, `attempt_number=1`, `trigger=INITIAL`로 다시 등록한다. Research evidence도 새 Verification revision에 반영한다. 같은 입력의 retry attempt로 재투표하지 않는다. Rule Scope Gate는 Technical `ACCEPT`와 `TRUE`가 아니면 실행하지 않는다. Reporter는 두 Gate와 공식 정책·영향·권한 조건 및 exact revision 연결이 모두 맞을 때만 실행한다. 모순된 `ALLOW`는 `LLMInvocationResult.status=INVALID_OUTPUT`과 `AnalysisError(stage=GATE, code=INVALID_OUTPUT)`을 기록하고 Gate output commit과 Reporter 호출을 금지한다.
 
 ## retry와 failover
 

@@ -65,6 +65,8 @@ marker를 남긴 직후 프로그램이 꺼졌다면 재시작할 때 기존 mar
 
 같은 규칙을 Technical Gate, Rule Scope Gate와 `ReportDraft`에도 적용합니다.
 
+Gate 작업은 시작할 때 읽은 Verification, CWE, 앞 Gate와 정책의 정확한 수정본을 `input_refs`와 `input_hash`로 고정합니다. Gate 결과 안의 reference가 이 입력과 다르면 저장을 취소하고 다음 단계로 넘기지 않습니다.
+
 ## retry는 실패를 지우지 않습니다
 
 재시도할 수 있는 attempt가 실패하면 작업은 `BLOCKED`가 됩니다.
@@ -75,6 +77,8 @@ marker를 남긴 직후 프로그램이 꺼졌다면 재시작할 때 기존 mar
 - 예산 부족: 새 예산 승인 대기
 
 조건이 해결되면 `READY`에서 새 `attempt_id`로 다시 시작합니다. 재시도할 수 없거나 한도를 모두 사용하면 최종 `FAILED`가 됩니다. 취소된 작업은 자동 재시도하지 않습니다.
+
+Technical Gate의 `REVISE`는 이 retry와 다릅니다. `REVISE` 작업은 결과를 저장하고 끝낸 뒤, Verification이 보완 내용을 새 Verification 또는 CWE 수정본으로 확정해야 합니다. Research가 새 근거를 만들었다면 새 Verification 수정본에서 그 근거를 채택·반박·보류한 결과를 연결합니다. 그 다음 새 `input_hash`, `dedupe_key`, `work_id`와 첫 attempt로 Gate를 다시 시작합니다. 같은 입력에 attempt만 추가해 다시 투표하지 않습니다.
 
 ## 프로그램이 중단되면
 

@@ -10,7 +10,7 @@ Gate는 검증 판정을 직접 바꾸지 않고 Reporter는 외부 공개를 �
 
 ## 1. 기술 근거 검토(`Technical Evidence Gate`)
 
-final `VerificationResult`의 verdict와 찬반 근거, 실제 코드·호출·데이터 흐름, 동적 결과, CWE, restriction와 HOLD 표현을 검토한다. 이때 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 정확히 어느 검증 결과와 CWE 수정본을 검토했는지 고정한다. 둘 중 하나가 수정되면 기존 Gate 결과를 재사용하지 않고 다시 검토한다. 출력은 `ACCEPT | REVISE | REJECT`이며 verdict를 직접 바꾸지 않는다. `REVISE`는 Verification 또는 Research가 실제 보완한 뒤 재검토한다.
+final `VerificationResult`의 verdict와 찬반 근거, 실제 코드·호출·데이터 흐름, 동적 결과, CWE, restriction와 HOLD 표현을 검토한다. 이때 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 정확히 어느 검증 결과와 CWE 수정본을 검토했는지 고정한다. 둘 중 하나가 수정되면 기존 Gate 결과를 재사용하지 않고 다시 검토한다. 출력은 `ACCEPT | REVISE | REJECT`이며 verdict를 직접 바꾸지 않는다. `REVISE`는 현재 Gate 작업을 종료한 뒤 Verification이 실제 보완 내용을 새 Verification 또는 CWE 수정본으로 확정하고, 새 `work_id`와 첫 attempt로 다시 검토한다. Research 근거도 이 새 Verification 수정본에 연결해야 한다. 같은 입력의 retry attempt만 늘려 재투표하지 않는다.
 
 ## 2. 공식 정책·범위·영향 검토(`Rule Scope Impact Gate`)
 
@@ -36,5 +36,7 @@ TRUE
 ```
 
 Reporter는 위 조건을 모두 만족하고 ReportDraft가 가리킨 Verification·Technical review·Rule Scope review·CWELabel·정책 revision이 서로 맞을 때만 내부 보고서 초안을 만든다. 두 Gate가 검토한 CWELabel과 보고서 초안의 `cwe_label_ref.record_id`가 다르면 초안을 만들지 않는다. 두 Gate와 Reporter 모두 외부 제출 권한이 없고 사람만 최종 공개를 결정한다.
+
+`ALLOW`가 PASS·scope·impact 조건과 모순되거나 Gate가 현재 작업과 다른 input revision을 가리키면 유효한 Gate 결과가 아니다. LLM 호출을 `INVALID_OUTPUT`, 오류를 `GATE/INVALID_OUTPUT`으로 기록하고 Reporter를 호출하지 않는다.
 
 상세 내용은 [이중 LLM Gate와 보고](../05-llm-gate-and-reporting.md)을 따른다.
