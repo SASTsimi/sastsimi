@@ -229,3 +229,7 @@ GitHub의 PR head SHA, 변경 파일, checks와 실제 diff를 다시 확인한�
 - 두 번째 검토 보완: `TransitionCommit`에 gap·오류를 원자적으로 포함하고, COMMITTED marker 투영 전 경쟁 전이를 차단
 - 원격 확인: [PR #26](https://github.com/SASTsimi/sastsimi/pull/26), base `main`, 변경 파일 22개, `Closes #14`, mergeable `MERGEABLE`, merge state `CLEAN`
 - GitHub checks: 저장소에 보고된 자동 check 없음. 로컬 검증 결과를 PR 본문에 기록함
+- PR #26 R5 리뷰 보완: Gate 결과와 frozen domain input revision의 atomic exact binding, Technical `REVISE`와 일반 retry의 `work_id`·`attempt_id` 분리, 모순된 `ALLOW`의 `INVALID_OUTPUT`·Reporter 차단 계약을 정본·Wiki·보안 시나리오에 반영
+- 회귀 검사 보완: 단순 문자열 존재 검사를 4개 순서 기반 regex 계약 검사로 강화하고, 핵심 절을 약화한 4개 mutation이 모두 탐지되는지 확인
+- 보완 후 검사: R4-02 review remediation rule 4개, negative scenario 14개, 전체 `Failures: 0`, `git diff --check` 통과
+- 독립 최종 재검토: Critical 0, Important 0, Minor 0, 외부 리뷰 요청 3개 모두 해결 판정
