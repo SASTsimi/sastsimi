@@ -128,7 +128,7 @@
 - R4-02 선행 계약 이름 11개, 원자적 전이 field 3개, output binding 5개 유지
 - R4-03 계약 이름 16개, action type 16개, action별 exact check 16개, requester binding 16개 검사 통과
 - `ActionCheck` type 15개, 사람 검토 공통 field 15개, 실제 LLM 호출 경계 2개 검사 통과
-- 권한 오류 10개, 부정 시나리오 18개, 권한 규칙 18개 검사 통과
+- 권한 오류 10개, 부정 시나리오 25개, 권한 규칙 26개 검사 통과
 - 전체 자동 검사 `Failures: 0`, `git diff --check` 통과
 - 독립 1차 검토의 Critical 2개·Important 3개와 2차 검토의 Critical 1개를 모두 수정
 - 최종 독립 재검토 결과 Critical 0, Important 0, Minor 0
@@ -151,3 +151,25 @@ PR은 `review/r4-02-state-recovery`를 base로 시작하고 `Closes #15`, `Refs 
 - 원격 head SHA가 로컬 commit과 일치
 - stacked diff는 R4-03 관련 26개 파일
 - GitHub에 등록된 자동 check는 없음
+
+### PR #27 외부 리뷰 반영
+
+- [x] R5 리뷰 1: Technical·Rule Scope·Reporter 호출의 exact revision을 `REVISION`·`GATE_ORDER`·`REPORT_READY`에 연결하고 호출 직전 재검사
+- [x] R5 리뷰 2: Technical `REVISE` 뒤 같은 input revision·domain input hash 재투표를 action 권한 단계에서 차단
+- [x] R5 리뷰 3: semantic `INVALID_OUTPUT`, action 권한 오류, stale state/revision 오류의 기록 층 분리
+- [x] R5 리뷰 4: 공식 정책 의미는 Rule Scope Gate가 판단하고 Runtime Validator는 구조·reference 확인과 Reporter 차단만 집행
+- [x] R6 리뷰 1: Pro/Con의 명시적 독립 `NEW` session과 retry·failover의 역할·session 분리 강제
+- [x] R6 리뷰 2: `SAVE_RESULT.result_kind`·`candidate_result_ref`, 생산 역할, exact candidate, named falsification, 오류 분리와 `COMMITTED` 연결 강제
+
+리뷰 반영 커밋:
+
+- `740ac6a` `docs: enforce gate action review boundaries`
+- `55d8351` `docs: bind debate sessions and result saves`
+
+재검증 결과:
+
+- Markdown 55개, 정본/Wiki Mermaid 13쌍 검사 통과
+- R4-02 review rule 4개와 부정 시나리오 14개 유지
+- R4-03 action type/check/requester binding 각 16개, ActionCheck 15개 유지
+- R4-03 권한 오류 10개, 부정 시나리오 25개, 권한 규칙 26개 검사 통과
+- `Failures: 0`, `git diff --check` 통과

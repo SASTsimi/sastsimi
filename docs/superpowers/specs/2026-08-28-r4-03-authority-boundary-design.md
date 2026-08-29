@@ -180,7 +180,7 @@ runtime validator가 할 수 없는 일은 다음과 같다.
 - Reporter는 모든 report 조건을 통과한 exact revision만 읽어 내부 초안을 만든다.
 - Reporter는 새 취약점 주장, Gate 우회, 자동 제출을 할 수 없다.
 
-Technical action의 `REVISION`은 exact Verification+CWE, `GATE_ORDER`는 final `COMMITTED` 상태를 검사한다. Rule Scope action의 `REVISION`은 같은 Verification+CWE+Technical review, `GATE_ORDER`는 `TRUE`+`ACCEPT`를 검사한다. Reporter의 `REVISION`은 두 Gate가 실제로 검토한 같은 revision 집합, `REPORT_READY`는 보고 조건을 검사한다. runtime은 이 내용을 허가 시점과 LLM 호출 직전에 다시 확인한다.
+Technical action의 `REVISION`은 exact Verification+CWE, `GATE_ORDER`는 final `COMMITTED` 상태를 검사한다. Rule Scope action의 `REVISION`은 같은 Verification+CWE와 `technical_review_ref`가 가리키는 exact Technical review, `GATE_ORDER`는 `TRUE`+`ACCEPT`를 검사한다. Reporter의 `REVISION`은 두 Gate가 실제로 검토한 같은 revision 집합, `REPORT_READY`는 보고 조건을 검사한다. runtime은 이 내용을 허가 시점과 LLM 호출 직전에 다시 확인한다.
 
 Technical `REVISE` 뒤 같은 input revision이나 domain input hash로 새 투표를 요청할 수 없다. 보완된 Verification 또는 CWE revision으로 새 work·spec·action·decision을 만든다. provider·형식 오류의 제한 retry는 같은 domain input에서 새 invocation action을 만드는 별도 흐름이다.
 
@@ -260,4 +260,4 @@ R4-03에서 추가하는 주요 오류는 다음과 같다.
 
 ## 완료 판정
 
-Issue #15의 완료 조건을 정본·Wiki·Mermaid에서 모두 추적할 수 있어야 한다. 자동 검증은 새 계약 이름, 역할 권한표, 필수 action check, 오류 코드, 두 Gate 순서, HumanReviewPacket·Decision, 15개 부정 시나리오와 canonical/Wiki Mermaid mirror를 검사한다. 구현 제품이나 성능 수치는 별도 구현 단계로 남기고 R4-03 완료를 막지 않는다.
+Issue #15의 완료 조건을 정본·Wiki·Mermaid에서 모두 추적할 수 있어야 한다. 자동 검증은 새 계약 이름, 역할 권한표, 필수 action check, 오류 코드, 두 Gate 순서, HumanReviewPacket·Decision, 권한 우회 부정 시나리오와 canonical/Wiki Mermaid mirror를 검사한다. 구현 제품이나 성능 수치는 별도 구현 단계로 남기고 R4-03 완료를 막지 않는다.
