@@ -23,6 +23,8 @@ Technical `ACCEPT`인 `TRUE`만 공식 `ProgramPolicyRecord`과 함께 검토한
 
 공식 정책 자료가 없으면 rule/scope는 `UNCERTAIN`이고 permission은 `DENY`다. 저장소 문서나 모델 기억으로 공식 정책을 추정하지 않는다.
 
+이 판단은 Rule Scope Gate가 내립니다. 프로그램 검사기는 정책 문장의 뜻을 다시 판단하지 않고 결과 형식과 공식 출처 연결을 확인합니다. 정상적인 `UNCERTAIN + DENY`는 그대로 저장하고 Reporter만 부르지 않습니다.
+
 ## Reporter 조건
 
 ```text
@@ -40,5 +42,7 @@ Reporter는 위 조건을 모두 만족하고 ReportDraft가 가리킨 Verificat
 프로그램 검사기는 Gate 결론을 대신 내리지 않습니다. Technical 다음 Rule Scope라는 순서, 정확한 입력·LLM call spec과 Reporter 조건만 검사합니다. 사람에게는 보고서뿐 아니라 근거·PoC·비용·오류·HOLD 조건을 담은 `HumanReviewPacket`을 전달합니다. `HumanReviewState`가 최신 packet과 결정을 가리키므로 새 packet이 생기면 이전 결정은 공개에 쓸 수 없습니다.
 
 `ALLOW`가 PASS·scope·impact 조건과 모순되거나 Gate가 현재 작업과 다른 input revision을 가리키면 유효한 Gate 결과가 아니다. LLM 호출을 `INVALID_OUTPUT`, 오류를 `GATE/INVALID_OUTPUT`으로 기록하고 Reporter를 호출하지 않는다.
+
+각 Gate와 Reporter는 action 허가 시점과 실제 LLM 호출 직전에 같은 입력 수정본을 다시 확인합니다. `REVISE` 뒤에는 같은 입력으로 재투표할 수 없고, 보완된 Verification 또는 CWE 수정본으로 새 Gate 작업과 새 action을 만들어야 합니다.
 
 상세 내용은 [이중 LLM Gate와 보고](../05-llm-gate-and-reporting.md)을 따른다.

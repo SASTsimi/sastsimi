@@ -72,6 +72,12 @@ Agent 또는 service의 제안
 
 프로그램 검사기는 이 두 Gate의 순서와 입력 수정본만 확인합니다. Gate 결론은 LLM Gate가 만듭니다. 공식 정책이 없으면 Rule Scope 결과는 `UNCERTAIN + DENY`이며 Reporter를 부르지 않습니다.
 
+Gate를 실제 호출하기 직전에도 검사한 입력 수정본이 그대로인지 다시 확인합니다. Technical Gate는 같은 Verification·CWE를, Rule Scope Gate는 여기에 같은 Technical 검토를, Reporter는 두 Gate가 검토한 동일한 결과 묶음을 사용해야 합니다. 중간에 하나라도 바뀌면 기존 허가는 만료되고 새 요청이 필요합니다.
+
+Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아닙니다. Verification 또는 CWE가 실제로 보완된 새 수정본이 생겨야 새 Gate 작업을 시작할 수 있습니다. 로그인 실패나 잘못된 출력의 제한 재시도와 이 보완 재검토는 별개입니다.
+
+공식 정책의 뜻과 `UNCERTAIN + DENY` 판단은 Rule Scope Gate가 담당합니다. 프로그램 검사기는 그 판단을 대신하지 않고 필수 항목과 정확한 출처 연결만 확인한 뒤 Reporter 호출을 막습니다.
+
 ## 오류는 FALSE가 아닙니다
 
 로그인 만료, rate limit, timeout, 잘못된 응답 형식, provider 장애, Sandbox 실패와 예산 소진은 실행 오류입니다. 이 오류만으로 취약점 `FALSE`를 만들 수 없습니다.

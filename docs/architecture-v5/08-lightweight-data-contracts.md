@@ -446,6 +446,16 @@ action이 만든 output의 `action_decision_ref.record_id`는 `UNUSED -> USED`�
 | `SAVE_HUMAN_DECISION` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION | 인증된 Human Reviewer와 current packet·generation 필요 |
 | `EXTERNAL_DISCLOSURE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, DISCLOSURE, REDACTION | current packet·decision의 exact `DISCLOSE`와 같은 report·target 필요 |
 
+Gate와 Reporter action의 기존 check는 다음 exact revision을 검사한다. 검사는 `ActionDecision`을 만들 때와 실제 provider 호출 직전에 같은 기준으로 다시 수행한다.
+
+- Technical Gate의 `REVISION`은 action `input_refs`와 call spec context가 final `VerificationResult.verification_result_ref`와 `CWELabel.cwe_label_ref`의 정확한 `record_id`·`content_hash`를 가리키는지 검사한다. `GATE_ORDER`는 두 결과가 현재 work에서 `COMMITTED`됐고 final인지 검사한다.
+- Rule Scope Gate의 `REVISION`은 같은 Verification·CWE revision과 exact `TechnicalEvidenceReview.technical_review_ref`를 검사한다. `GATE_ORDER`는 Technical review가 그 두 revision을 검토한 `ACCEPT`이고 Verification verdict가 `TRUE`인지 검사한다.
+- Reporter의 `REVISION`은 Reporter action, call spec과 context가 두 Gate가 실제로 검토한 같은 Verification·CWE revision, exact Technical·Rule Scope review와 존재하는 정책 revision을 가리키는지 검사한다. `REPORT_READY`는 그 exact 결과가 보고 조건을 모두 통과했는지 검사한다.
+
+provider 호출 직전 exact reference, current state 또는 final pointer가 달라지면 runtime은 해당 `ActionDecision`을 `UNUSED -> EXPIRED`로 바꾸고 호출하지 않는다. 수정된 upstream revision을 입력으로 새 `LLMCallSpec`, `ActionRequest`, `ActionDecision`을 만들어야 한다. 과거 action이나 decision을 새 revision에 재사용할 수 없다.
+
+Technical Gate가 `REVISE`를 확정하면 그 Gate action과 decision은 이미 사용을 마친 것이다. 같은 Verification·CWE revision 또는 같은 domain input hash로 `REVISE`를 다시 투표하려는 action은 `ACTION_NOT_ALLOWED`로 거절한다. Verification 또는 CWE가 보완된 새 revision으로 바뀐 뒤에만 새 Gate work와 새 action을 허가한다. provider 오류나 `INVALID_OUTPUT`의 제한 retry는 같은 domain input을 사용할 수 있지만 새 `llm_call_id`·call spec·action·decision과 `trigger=RETRY`가 필요하며, 이는 `REVISE` 보완 재검토와 구분한다.
+
 `requested_by`와 action의 허용 조합은 다음 표를 따른다.
 
 | `action_type` | 허용 `requested_by` |

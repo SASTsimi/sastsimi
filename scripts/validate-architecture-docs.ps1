@@ -440,7 +440,10 @@ $authorityScenarioMarkers = @(
     'redaction 실패 PoC를 사람 또는 외부로 전달',
     '같은 ActionRequest를 동시에 두 번 검사',
     'Gate 또는 Reporter가 별도 CALL_LLM으로 우회',
-    '사람 결정 뒤 새 HumanReviewPacket 생성'
+    '사람 결정 뒤 새 HumanReviewPacket 생성',
+    'Technical Gate `REVISE` 뒤 같은 입력으로 재투표',
+    'action 허가 뒤 Gate 입력 revision이 바뀜',
+    'Runtime Validator가 공식 정책 의미를 다시 판단'
 )
 foreach ($marker in $authorityScenarioMarkers) {
     if (-not $securityText.Contains($marker)) {
@@ -470,10 +473,14 @@ $requiredAuthorityRules = @(
     'current_packet_ref',
     'output은 log를 역참조하지 않는다',
     '아직 `outcome_refs`가 비어 있는 revision',
-    'SAVE_HUMAN_DECISION'
+    'SAVE_HUMAN_DECISION',
+    'Technical action의 `REVISION`은 exact Verification+CWE',
+    '같은 Verification·CWE revision 또는 같은 domain input hash',
+    '오류 층은 섞어 기록하지 않는다',
+    '정책 문장이나 정책의 의미를 대신 해석하지 않는다'
 )
 foreach ($rule in $requiredAuthorityRules) {
-    if (-not ($orchestrationText.Contains($rule) -or $gateText.Contains($rule) -or $contractText.Contains($rule))) {
+    if (-not ($orchestrationText.Contains($rule) -or $gateText.Contains($rule) -or $contractText.Contains($rule) -or $resultText.Contains($rule))) {
         Add-Failure "missing R4-03 authority rule: $rule"
     }
 }

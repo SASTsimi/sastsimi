@@ -177,6 +177,10 @@ runtime validator가 할 수 없는 일은 다음과 같다.
 - Reporter는 모든 report 조건을 통과한 exact revision만 읽어 내부 초안을 만든다.
 - Reporter는 새 취약점 주장, Gate 우회, 자동 제출을 할 수 없다.
 
+Technical action의 `REVISION`은 exact Verification+CWE, `GATE_ORDER`는 final `COMMITTED` 상태를 검사한다. Rule Scope action의 `REVISION`은 같은 Verification+CWE+Technical review, `GATE_ORDER`는 `TRUE`+`ACCEPT`를 검사한다. Reporter의 `REVISION`은 두 Gate가 실제로 검토한 같은 revision 집합, `REPORT_READY`는 보고 조건을 검사한다. runtime은 이 내용을 허가 시점과 LLM 호출 직전에 다시 확인한다.
+
+Technical `REVISE` 뒤 같은 input revision이나 domain input hash로 새 투표를 요청할 수 없다. 보완된 Verification 또는 CWE revision으로 새 work·spec·action·decision을 만든다. provider·형식 오류의 제한 retry는 같은 domain input에서 새 invocation action을 만드는 별도 흐름이다.
+
 ## 사람 검토 경계
 
 `ReportDraft` 안에 사람 결정을 섞지 않는다. 다음 두 record로 분리한다.

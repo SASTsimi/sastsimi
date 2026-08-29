@@ -255,6 +255,14 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 
 Gate가 모순된 `ALLOW` 또는 서로 다른 input revision을 출력하면 `LLMInvocationResult.status=INVALID_OUTPUT`과 `AnalysisError(stage=GATE, code=INVALID_OUTPUT)`을 함께 기록한다. `INVALID_OUTPUT`은 LLM 호출·출력 검증 결과이고, `STATE_TRANSITION_INVALID` 등 R4-02 상태 전이 오류와 다른 축이다. invalid Gate output은 전문 Gate 결과나 `COMMITTED` output으로 사용하지 않으며 Reporter를 호출하지 않는다.
 
+오류 층은 섞어 기록하지 않는다.
+
+- LLM 호출은 수행됐지만 schema·semantic 검사를 통과하지 못하면 `LLMInvocationResult.status=INVALID_OUTPUT`과 해당 단계의 `AnalysisError.code=INVALID_OUTPUT`을 기록한다. 이것은 LLM 출력 오류다.
+- action 권한·요청 역할·도구·경로·provider profile·Gate 순서가 호출 전에 맞지 않으면 `ActionDecision=DENY`와 R4-03의 `AUTHORITY_DENIED | ACTION_NOT_ALLOWED | GATE_ORDER_INVALID | REPORT_NOT_READY | ...`를 기록한다. provider 호출이 없으므로 이 사건에 대한 `LLMInvocationResult`를 만들지 않는다.
+- exact revision이나 current state가 action 허가 뒤 달라졌으면 decision을 `EXPIRED`로 바꾸고 `RECORD_REVISION_MISMATCH | STALE_RESULT | STATE_VERSION_CONFLICT` 중 실제 원인에 맞는 오류를 기록한다. 이를 `INVALID_OUTPUT`으로 바꾸지 않는다.
+
+하나의 사건이 여러 층에 걸치면 각 record가 맡은 사실만 연결한다. 예를 들어 호출 후 Gate output의 reference가 다르면 invocation은 `INVALID_OUTPUT`, 그 output의 저장 action은 별도 `DENY`가 될 수 있지만 서로의 오류 코드를 대체하지 않는다.
+
 상태 전이·version·active attempt 오류는 `stage=STATE`, 결과와 pointer 일부 저장은 `stage=STORAGE`, 재시작·journal 정리는 `stage=RECOVERY`, action 권한·실행 범위·공개 차단은 `stage=AUTHORITY`로 기록한다.
 
 ## Debug trace와 보존
