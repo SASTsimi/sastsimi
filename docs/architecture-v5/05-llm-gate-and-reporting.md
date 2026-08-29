@@ -77,7 +77,7 @@ technical_evidence_review:
 
 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 Gate가 실제로 읽은 `VerificationResult`와 `CWELabel` revision을 각각 고정한다. runtime은 Gate와 두 대상의 `workspace_id`, `commit_id`, `hypothesis_id`, `record_id`, `content_hash`를 확인한다. Verification 또는 CWELabel이 수정되면 이전 `ACCEPT`를 새 revision에 재사용하지 않고 Gate를 새로 호출한다.
 
-`REVISE`는 동일 입력 재투표가 아니다. Orchestration Agent가 요청을 Verification 또는 Research에 보내고 새 근거·설명·revision이 생긴 뒤 다시 호출한다. 횟수·token·시간 한도 도달 시 보고를 차단하고 미해결 사유를 저장한다.
+`REVISE`는 동일 입력 재투표나 provider retry가 아니다. 현재 Gate work는 `REVISE` review를 exact output으로 확정하고 종료한다. Orchestration Agent가 요청을 Verification 또는 Research에 보내고, Verification이 보완 결과를 새 `VerificationResult` 또는 `CWELabel` revision으로 확정한 뒤 변경된 exact input reference로 새 Gate work를 등록한다. Research가 만든 근거도 새 Verification revision에 반영되어야 한다. 새 work는 새 `input_hash`·`dedupe_key`·`work_id`와 `attempt_number=1`, `trigger=INITIAL`을 사용한다. 입력이 바뀌지 않은 호출 실패만 같은 work 안에서 `trigger=RETRY`인 새 attempt를 사용할 수 있다. 횟수·token·시간 한도 도달 시 보고를 차단하고 미해결 사유를 저장한다.
 
 ## Gate 2: Rule Scope Impact Gate Agent
 
@@ -144,7 +144,7 @@ AND security_impact == SUFFICIENT
 AND report_permission == ALLOW
 ```
 
-조건이 하나라도 충족되지 않거나 Gate reference 연결이 맞지 않으면 결과와 검토 사유는 저장하지만 Reporter를 호출하지 않는다. LLM이 모순되는 `ALLOW`를 출력하면 schema/semantic validation 오류로 처리한다. 이는 취약점 판정 규칙이 아니라 권한 없는 보고 생성을 막는 호출 전제다.
+조건이 하나라도 충족되지 않거나 Gate reference 연결이 맞지 않으면 결과와 검토 사유는 저장하지만 Reporter를 호출하지 않는다. LLM이 `review_status`, rule, scope 또는 impact 조건과 모순되는 `ALLOW`를 출력하면 semantic validation 실패다. 이 호출은 `LLMInvocationResult.status=INVALID_OUTPUT`, `AnalysisError.stage=GATE`, `AnalysisError.code=INVALID_OUTPUT`으로 기록하며 invalid output을 `RuleScopeImpactReview`로 commit하지 않는다. 제한된 repair가 남아 있을 때만 같은 입력의 새 invocation attempt를 허용하고, 한도를 소진하면 Gate work를 `FAILED`로 끝낸다. 어느 경우에도 Reporter를 호출하거나 Verification verdict를 변경하지 않는다. 이는 취약점 판정 규칙이 아니라 권한 없는 보고 생성을 막는 호출 전제다.
 
 Gate와 Reporter의 stage action은 exact `LLMCallSpec`까지 포함해 실제 LLM 호출을 직접 허가한다. 이 세 역할이 별도 `CALL_LLM` action으로 stage 검사를 우회하는 것은 허용하지 않는다. Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로 요청하고 Runtime Validator는 위 일곱 조건, exact `record_id`·hash·workspace·commit·hypothesis, current state version, provider·session·budget과 redaction 전제를 확인한다. 하나라도 맞지 않으면 `REPORT_NOT_READY`로 차단한다. 실제 invocation request의 model·prompt·context·schema·budget·timeout은 검사한 call spec과 모두 같아야 한다.
 

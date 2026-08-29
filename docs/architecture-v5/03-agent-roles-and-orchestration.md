@@ -160,7 +160,7 @@ final VerificationResult + CWELabel
 -> Human Reviewer
 ```
 
-Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니다. Verification 또는 Research에서 새 근거·설명·revision을 만든 뒤 새 Gate attempt를 시작한다. Rule Scope Gate와 Reporter는 앞 단계의 `COMMITTED` output reference만 읽는다. `PREPARED`, 취소된 attempt, 오래된 input hash와 다른 workspace/commit 결과는 다음 단계로 전달하지 않는다.
+Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니다. 현재 Technical Gate work는 `TechnicalEvidenceReview.status=REVISE`를 exact output으로 atomic commit하고 `SUCCEEDED`로 끝낸다. Verification이 보완된 새 `VerificationResult` 또는 `CWELabel` revision을 만들고, Research 근거가 있다면 그 근거를 새 Verification revision에 반영한 뒤, 바뀐 `input_hash`·`dedupe_key`와 새 `work_id`로 Technical Gate를 다시 등록한다. 이 새 논리 작업의 첫 attempt는 `attempt_number=1`, `trigger=INITIAL`이다. provider timeout처럼 입력이 그대로인 일반 retry만 같은 `work_id`에서 새 `attempt_id`, `trigger=RETRY`를 사용한다. Rule Scope Gate와 Reporter는 앞 단계의 `COMMITTED` output reference만 읽는다. `PREPARED`, 취소된 attempt, 오래된 input hash와 다른 workspace/commit 결과는 다음 단계로 전달하지 않는다.
 
 ## retry·취소·중단 후 재개
 

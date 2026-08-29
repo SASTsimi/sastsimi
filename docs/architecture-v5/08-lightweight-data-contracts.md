@@ -307,6 +307,8 @@ TransitionCommit:
 
 `work_generation`은 같은 분석·작업 종류·대상·입력에서 1부터 시작한다. 일반 retry와 resume에서는 바꾸지 않고, 종료 상태 뒤 사람이 승인한 명시적 restart에서만 1 증가한다. `dedupe_key`는 `analysis_id`, `work_type`, `subject_id`, `work_generation`, 정렬된 입력의 `record_id + content_hash`, 적용한 설정·정책 revision을 canonical JSON으로 만든 SHA-256 값이다. `attempt_id`, 시각과 worker 이름은 넣지 않는다. 같은 generation과 key의 요청이 다시 오면 새 작업을 만들지 않고 기존 `work_id`와 현재 상태를 반환한다. 입력 revision·적용 설정·승인된 generation이 바뀌면 새 `dedupe_key`와 새 `work_id`를 만든다.
 
+`REVISE`는 일반 retry나 resume이 아니다. Technical Gate가 유효한 `TechnicalEvidenceReview.status=REVISE`를 확정하면 기존 Gate work는 `SUCCEEDED`로 종료한다. Verification이 요청된 보완을 반영한 새 `VerificationResult` 또는 `CWELabel` revision을 만든 뒤에만 새 Technical Gate work를 등록한다. Research가 새 근거를 만들었다면 Verification이 그 근거를 채택·반박·보류한 새 `VerificationResult` revision에 연결해야 한다. 새 작업은 달라진 `input_refs`, `input_hash`, `dedupe_key`, `work_id`를 사용하고 첫 `WorkAttempt`는 새 `attempt_id`, `attempt_number=1`, `trigger=INITIAL`을 사용한다. 이전 Gate review와 새 review는 `RecordMeta.previous_record_id`로 이어지는 같은 논리 record의 revision chain에 남긴다. 반대로 provider timeout이나 일시 오류처럼 domain input이 바뀌지 않은 일반 retry는 같은 `work_id`·`dedupe_key`·`input_hash`를 유지하고 새 `attempt_id`와 `trigger=RETRY`를 사용한다. 동일 입력의 새 attempt만 만들어 `REVISE`를 다시 투표하는 것은 금지한다.
+
 | `work_type` | 등록 요청 주체 | 실행·출력 생산자 | `SUCCEEDED` 또는 `PARTIAL`이 가리키는 결과 |
 |---|---|---|---|
 | `WORKSPACE_PREP` | 분석 입력 runtime | Repository Loader | 준비된 `CodeWorkspace` |
@@ -340,6 +342,15 @@ state store는 새 전이를 승인하기 전에 `(work_id, current_state_versio
 - `REPORT_DRAFT`의 `SUCCEEDED`와 `ReportProcessState.status=DRAFTED`는 같은 `ReportDraft.record_id`를 가리킨다.
 - 분석 종료 transition과 `AnalysisRunState.analysis_result_ref`는 같은 `AnalysisRunResult`를 가리킨다.
 - 각 reference의 workspace, commit, hypothesis, `record_id`와 `content_hash`는 실제 record와 일치한다.
+
+Gate domain input set은 Gate가 판단 대상으로 읽는 저장 record의 정확한 revision 집합이다. `TECHNICAL_GATE`에서는 `VerificationResult`와 `CWELabel` reference가 정확한 domain input set이고, `RULE_SCOPE_GATE`에서는 `VerificationResult`, `TechnicalEvidenceReview`, `CWELabel`과 존재하는 `ProgramPolicyRecord` reference가 정확한 domain input set이다. prompt·provider·실행 설정 reference는 전체 `WorkExecutionState.input_refs`에 추가할 수 있지만 domain input으로 가장하거나 domain input을 대신할 수 없다.
+
+Gate work를 등록할 때 runtime은 전체 `input_refs`를 정렬해 `input_hash`와 `dedupe_key`를 만들고 해당 `work_id`가 끝날 때까지 바꾸지 않는다. Gate 결과를 확정할 때는 다음을 같은 atomic transition에서 확인한다.
+
+- `TechnicalEvidenceReview` 안의 `verification_result_ref`와 `cwe_label_ref`는 Technical Gate work의 domain input 두 개와 각각 exact match여야 한다.
+- `RuleScopeImpactReview` 안의 `verification_result_ref`, `technical_review_ref`, `cwe_label_ref`, `policy_record_ref`는 Rule Scope Gate work의 domain input set과 exact match여야 한다.
+- `TransitionCommit`이 가리키는 `work_id`, target state version과 output `record_id`가 확정되는 동안 현재 work의 `input_hash`가 등록 시 값과 같아야 한다.
+- input revision이 바뀌거나 결과 안의 reference가 다르면 `RECORD_REVISION_MISMATCH` 또는 `STALE_RESULT`로 `ABORTED`하고, 이전 Gate 결과를 교체·재사용하거나 다음 단계에 전달하지 않는다.
 
 분석을 `COMPLETE | PARTIAL | FAILED | CANCELLED`로 닫기 전에 runtime은 해당 `analysis_id`에 `RUNNING` work, 복구되지 않은 `PREPARED` journal과 output pointer가 없는 종료 상태가 없는지 확인한다. `PENDING | READY | BLOCKED` work는 각각 완료, 명시적 실패 또는 취소로 정리하고 그 이유를 `AnalysisRunResult`에 포함한다.
 
@@ -1076,6 +1087,8 @@ LLMInvocationResult:
   elapsed_ms: integer
   safe_error: string | null
 ```
+
+Gate LLM 출력이 schema를 통과했더라도 `report_permission=ALLOW`와 필수 `PASS | SUFFICIENT` 조건이 모순되거나 exact input reference가 맞지 않으면 semantic validation 실패다. 이 호출은 `LLMInvocationResult.status=INVALID_OUTPUT`과 하나 이상의 `LLMInvocationLog.validation_errors`를 기록하고, `AnalysisError.stage=GATE`, `AnalysisError.code=INVALID_OUTPUT`으로 같은 `work_id`·`attempt_id`에 연결한다. 해당 `WorkAttempt.status=FAILED`를 보존하고, 제한된 repair가 남아 있으면 Gate work를 `BLOCKED`, 더 시도할 수 없으면 `FAILED`로 전환한다. 이 경우 `RuleScopeImpactReview`를 `COMMITTED`하지 않는다. Reporter 호출과 가설 verdict 변경도 금지한다. 여기서 `INVALID_OUTPUT`은 invocation status이면서 동일 문자열의 `AnalysisError.code`이고, R4-02의 상태 전이 오류 7개를 대체하거나 그 목록에 추가되는 상태값이 아니다.
 
 ```yaml
 LLMInvocationLog:

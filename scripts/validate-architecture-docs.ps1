@@ -134,6 +134,30 @@ foreach ($rule in $requiredBindingRules) {
     }
 }
 
+$reviewRemediationPatterns = @(
+    @{
+        Name = 'exact Technical and Rule Scope domain input sets'
+        Pattern = '(?s)Gate domain input set.*?`TECHNICAL_GATE`에서는 `VerificationResult`와 `CWELabel` reference가 정확한 domain input set.*?`RULE_SCOPE_GATE`에서는 `VerificationResult`, `TechnicalEvidenceReview`, `CWELabel`과 존재하는 `ProgramPolicyRecord` reference가 정확한 domain input set'
+    },
+    @{
+        Name = 'Gate result references match the frozen work inputs'
+        Pattern = '(?s)`TechnicalEvidenceReview` 안의 `verification_result_ref`와 `cwe_label_ref`.*?Technical Gate work의 domain input 두 개와 각각 exact match.*?`RuleScopeImpactReview` 안의 `verification_result_ref`, `technical_review_ref`, `cwe_label_ref`, `policy_record_ref`.*?Rule Scope Gate work의 domain input set과 exact match'
+    },
+    @{
+        Name = 'REVISE creates a new work while retry keeps the same work'
+        Pattern = '(?s)`REVISE`는 일반 retry나 resume이 아니다\..*?새 `VerificationResult` 또는 `CWELabel` revision.*?(?:새 작업은 )?달라진 `input_refs`, `input_hash`, `dedupe_key`, `work_id`.*?`attempt_number=1`, `trigger=INITIAL`.*?일반 retry.*?같은 `work_id`.*?`trigger=RETRY`'
+    },
+    @{
+        Name = 'contradictory ALLOW becomes INVALID_OUTPUT and blocks Reporter'
+        Pattern = '(?s)Gate LLM 출력.*?`LLMInvocationResult.status=INVALID_OUTPUT`.*?`AnalysisError.stage=GATE`, `AnalysisError.code=INVALID_OUTPUT`.*?`WorkAttempt.status=FAILED`.*?`RuleScopeImpactReview`를 `COMMITTED`하지 않는다.*?Reporter 호출.*?금지'
+    }
+)
+foreach ($rule in $reviewRemediationPatterns) {
+    if (-not [regex]::IsMatch($contractText, $rule.Pattern)) {
+        Add-Failure "missing or weakened PR #26 review remediation rule: $($rule.Name)"
+    }
+}
+
 $resultPath = Join-Path $repoRoot 'docs/architecture-v5/07-results-and-observability.md'
 $resultText = Get-Content -Raw -LiteralPath $resultPath
 $requiredErrorCodes = @(
@@ -167,6 +191,7 @@ $negativeScenarioMarkers = @(
     '`PARTIAL` 결과에 gap·오류 설명이 없음',
     '분석 종료 시 `RUNNING` work나 `PREPARED` journal이 남음',
     '`COMMITTED` marker 투영 전에 취소·retry 전이가 경쟁'
+    '모순된 `ALLOW`가 Reporter 호출을 요청'
 )
 foreach ($marker in $negativeScenarioMarkers) {
     if (-not $securityText.Contains($marker)) {
@@ -467,6 +492,7 @@ Write-Output "Mermaid blocks: $($diagramBlocks.Count) canonical / $($wikiDiagram
 Write-Output "R4-02 required contract names: $($requiredContractNames.Count)"
 Write-Output "R4-02 TransitionCommit atomic fields: $($requiredTransitionCommitFields.Count)"
 Write-Output "R4-02 exact output bindings: $($requiredBindingRules.Count)"
+Write-Output "R4-02 review remediation rules: $($reviewRemediationPatterns.Count)"
 Write-Output "R4-02 required error codes: $($requiredErrorCodes.Count)"
 Write-Output "R4-02 negative scenarios: $($negativeScenarioMarkers.Count)"
 Write-Output "R4-03 required contract names: $($requiredR403ContractNames.Count)"
