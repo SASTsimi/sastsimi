@@ -10,7 +10,7 @@ Gate는 검증 판정을 직접 바꾸지 않고 Reporter는 외부 공개를 �
 
 ## 1. 기술 근거 검토(`Technical Evidence Gate`)
 
-final TRUE `VerificationResult`의 찬반 근거, 실제 코드·호출·데이터 흐름, 동적 결과, CWE와 restriction을 검토한다. FALSE와 HOLD는 이 Gate를 호출하지 않는다. `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 정확히 어느 수정본을 검토했는지 고정하며 둘 중 하나가 수정되면 기존 Gate 결과를 재사용하지 않는다. 출력은 `ACCEPT | REVISE | REJECT`이며 verdict를 직접 바꾸지 않는다. `REVISE`는 Orchestration이 목적지를 고르지 않고 같은 hypothesis의 Verification owner에게 직접 돌아간다. Verification이 새 근거와 Verification/CWE 수정본을 만든 뒤 새 `work_id`와 첫 attempt로 다시 검토한다. 같은 입력의 retry attempt만 늘려 재투표하지 않는다.
+final TRUE `VerificationResult`의 찬반 근거, 실제 코드·호출·데이터 흐름, 동적 결과와 PoC, CWE, restriction·unresolved condition을 검토한다. FALSE와 HOLD는 이 Gate를 호출하지 않는다. `verification_result_ref.record_id`와 `cwe_label_ref.record_id`, Verification 안의 Evidence·Dynamic·PoC reference/hash로 실제 검토한 exact input chain을 고정하며 어느 입력이 바뀌어도 기존 Gate 결과를 다음 Gate, Reporter 또는 PROVIDED 자격에 재사용하지 않는다. 출력은 `ACCEPT + READY | REVISE + NOT_READY | REJECT + NOT_READY`이며 verdict를 직접 바꾸지 않는다. `ACCEPT`와 `READY`만으로 정책상 보고, Reporter 실행 또는 PROVIDED admission이 허용되지는 않는다. `REVISE`는 Orchestration이 목적지를 고르지 않고 같은 hypothesis의 ACTIVE Verification owner에게 직접 돌아가 새 generation, `TERMINAL -> VERIFYING`, 새 Verification/CWE revision과 새 Gate work를 만든다. 동일 입력 재투표는 금지하며 provider·`INVALID_OUTPUT` retry와 구분한다. schema·semantic·reference·stale·provider/runtime 오류는 `REJECT`가 아니라 공통 오류로 처리한다.
 
 ## 2. 공식 정책·범위·영향 검토(`Rule Scope Impact Gate`)
 

@@ -39,6 +39,22 @@ CWE 후보는 final TRUE 뒤에 Gate 입력으로 작성한다. primary·alterna
 - restriction, bypass candidate, unresolved condition
 - 같은 Verification에서 분리한 material child proposal 중 재검증 완료 여부
 
+Gate의 기준 입력은 `verification_result_ref`가 고정한 final `VerificationResult` revision과
+`cwe_label_ref`가 고정한 `CWELabel` revision이다. supporting/counter Evidence,
+`DynamicReproductionResult`, PoC는 별도의 최상위 Gate reference를 새로 만들지 않고,
+그 `VerificationResult` revision 안의 `supporting_evidence[].evidence_refs`,
+`counter_evidence[].evidence_refs`, `dynamic_result_ref`, `poc_ref`를 따라 검토한다.
+따라서 Gate가 검토한 입력 집합은 두 직접 reference와 그 revision이 실제로 가리키는
+전이적 reference 집합이다. `VulnerabilityHypothesis`, code/entity/location/path와 restriction,
+unresolved condition도 같은 `hypothesis_id`, `workspace_id`, `commit_id`의 현재 검증 chain에
+속해야 한다. revision history는 변경 이유를 이해하기 위한 문맥이지, 서로 다른 revision의
+근거를 골라 합치는 권한을 주지 않는다.
+
+`StoredDataRef.record_id`가 있는 Evidence·Dynamic 결과는 정확한 저장 record revision을,
+`record_id=null`인 raw observation·code fragment·PoC artifact는 `stored_data_id`,
+`content_hash`, `workspace_id`, `commit_id`로 불변 내용을 가리킨다. PoC도 현재 검증 결과의 `poc_ref`로
+도달할 수 있어야 하며, reference 없이 별도로 전달된 자료는 Gate 근거로 승격하지 않는다.
+
 ### 검토 항목
 
 - final `TRUE`와 찬성·반대 근거의 일치
@@ -47,6 +63,62 @@ CWE 후보는 final TRUE 뒤에 Gate 입력으로 작성한다. primary·alterna
 - CWE 선택이 취약점 유형과 근거에 적절한지
 - restriction·반박·HOLD 조건이 정확히 표현되었는지
 - 기술 검토 결과를 다음 단계 또는 내부 종결 기록으로 전달할 수 있는지
+
+#### Evidence와 verdict 정렬
+
+Gate는 verdict를 다시 판정하지 않고, Verification Agent가 남긴 판정과 설명이 그 record의
+근거로 실제 뒷받침되는지만 검토한다.
+
+- `TRUE`는 핵심 exploit path와 필수 조건을 설명하는 supporting claim이 실제 evidence와
+  code location에 연결되어야 한다. 단순한 source·sink 존재나 `NOT_DISPROVED`만을 지지
+  근거로 표현하면 정렬되지 않은 것이다.
+- `FALSE`는 `VerificationResult` 계약대로 근거 있는 `DISPROVED` 질문과 rationale의 연결을
+  확인한다. Gate가 별도의 반증을 만들거나 다른 path까지 부정하지 않는다.
+- `HOLD`는 unresolved condition, 상충 근거와 미검증 범위를 확정된 취약점처럼 표현하지
+  않아야 한다.
+- 모든 verdict에서 관련 counter evidence와 falsification 결과를 설명이 누락·축소하지
+  않아야 하며, supporting/counter claim의 statement, evidence, limitation이 서로 모순되면
+  그 위치를 특정한다.
+- 다른 `hypothesis_id`, `workspace_id`, `commit_id` 또는 현재 reference와 다른 content/revision의
+  evidence는 현재 verdict의 근거로 사용할 수 없다.
+
+#### 코드 연결
+
+- `CodeLocation`의 Git 상대 경로와 line/column 범위가 현재 commit에서 검토한 코드 조각을
+  실제로 가리키고, `CodeSymbol`의 entity·symbol·route/endpoint 종류와 이름이 그 위치와
+  일치하는지 확인한다.
+- source → propagation/call → sink 또는 source → security check 관계가 기존 `CodeFact`,
+  `CodeRelation`, context/Evidence reference로 이어지는지, 설명된 방향·순서·guard 적용 여부가
+  그 연결과 같은지 확인한다.
+- 모든 location, symbol, fact, relation과 이를 담은 Evidence가 같은 `workspace_id + commit_id`에
+  속하고 현재 가설을 가리키는지 확인한다.
+- 누락된 edge를 추론해 채우거나 새 data-flow·endpoint·공격 경로를 만들지 않는다. 새 material
+  claim이 필요하면 Gate 판정 근거로 쓰지 않고 기존 proposal/재검증 경계를 따른다.
+
+#### 동적 재현과 PoC 연결
+
+- `dynamic_decision`과 `dynamic_result_ref`의 존재가 일치하고, Dynamic 결과의
+  `meta.hypothesis_id`, workspace·commit, `hypothesis_linkage`가 현재 가설과 일치하는지 확인한다.
+- `environment_ref`, `steps_ref`, observation과 실행 전제(권한·설정·입력·버전)가 기술 설명의
+  공격 조건과 같은지 확인한다. 다른 환경에서의 결과를 현재 대상으로 일반화하지 않는다.
+- `status`, `failure_reason`, `hypothesis_outcome`, evidence와 limitations의 허용 조합을 공통
+  계약대로 확인한다. `FAILED | BLOCKED | CANCELLED`, `PARTIAL`, 미수행 결과를 성공·반증으로
+  표현하거나 그 제한을 누락하면 정렬되지 않은 것이다.
+- PoC는 `poc_ref`가 가리키는 실행·관측과 재현된 impact 범위까지만 설명해야 한다. PoC가
+  더 큰 권한·asset·endpoint·영향을 주장하거나 현재 환경/commit과 연결되지 않으면 보완 또는
+  거절 대상이다.
+- Gate는 동적 결과나 PoC를 새로 해석해 새 취약점·공격 경로를 만들지 않는다.
+
+#### CWE와 제한 조건 정렬
+
+- `CWELabel.primary`, alternatives, taxonomy version, rationale, evidence와 uncertainty가 현재
+  Verification에서 실제 검증된 동작과 구분 수준에 맞는지 확인한다. 미검증 impact나 후보
+  경로를 CWE 선택 근거로 사용해서는 안 된다.
+- Gate가 새 CWE를 자유롭게 선택하거나 기존 label을 덮어쓰지 않는다. 불일치하면 어느
+  검증 동작·근거와 맞지 않는지와 새 `CWELabel` revision 필요 여부를 요청한다.
+- Verification/Evidence/Dynamic/PoC의 권한·설정·환경·미검증 flow·제한된 impact,
+  `restrictions`, `unresolved_conditions`, claim/dynamic limitations와 관련 gap/error가 기술
+  설명에서 보존되어야 한다. 이를 확정적·일반적 취약점으로 과장하면 통과시키지 않는다.
 
 ### 출력과 의미
 
@@ -77,11 +149,25 @@ technical_evidence_review:
 - `REVISE`: 같은 hypothesis의 Verification owner가 구체적인 누락·restriction·재현·CWE 설명을 보완해야 한다.
 - `REJECT`: 현재 자료를 신뢰 가능한 기술 기록이나 다음 단계 입력으로 사용할 수 없다.
 
-`verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 Gate가 실제로 읽은 `VerificationResult`와 `CWELabel` revision을 각각 고정한다. runtime은 Gate와 두 대상의 `workspace_id`, `commit_id`, `hypothesis_id`, `record_id`, `content_hash`를 확인한다. Verification 또는 CWELabel이 수정되면 이전 `ACCEPT`를 새 revision에 재사용하지 않고 Gate를 새로 호출한다.
+`handoff_readiness`는 현재 Technical review가 고정한 revision chain을 다음 소비자가 기술
+근거를 재구성하지 않고 사용할 수 있는지만 뜻한다. 허용 조합은 `ACCEPT + READY`,
+`REVISE + NOT_READY`, `REJECT + NOT_READY`뿐이다. `READY`는 Gate 2의 정책·scope·impact 판정,
+Reporter 호출 또는 외부 보고 허용을 뜻하지 않는다. Gate 2의 구체적인 호출 조건과 상태
+전이는 별도 workflow 책임이다.
+
+`ACCEPT`는 final TRUE의 모든 핵심 claim과 반대 근거, 코드·동적·PoC·CWE·제한 reference가 현재 revision chain에 정렬되고 다음 소비자가 누락된 기술 근거를 새로 구성할 필요가 없을 때만 사용한다. 이는 정책상 보고 가능성, Reporter 실행 권한 또는 PROVIDED Primitive 자격을 단독으로 부여하지 않는다.
+
+`REJECT`는 핵심 Evidence가 다른 hypothesis/commit을 가리키는 등 근본 provenance 불일치나 핵심 주장과 evidence가 명백히 다른 대상을 설명해 현재 전달 묶음을 단순 보완의 기반으로도 신뢰할 수 없을 때 사용한다. 이는 Verification verdict를 `FALSE`로 바꾸지 않는다. schema·semantic validation 실패, invalid reference, stale revision, LLM/provider/runtime 오류와 `INVALID_OUTPUT`은 `REJECT`로 바꾸지 않고 공통 오류 계약에 따라 Gate 결과의 사용과 handoff를 차단한다.
 
 `REVISE`는 동일 입력 재투표나 provider retry가 아니다. 현재 Gate work는 `REVISE` review를 exact output으로 확정하고 종료한다. 그 review는 Orchestration을 경유해 목적지를 다시 선택하지 않고 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 전달한다. runtime은 이전 종료 work를 되돌리지 않고 새 generation의 VERIFICATION work를 등록하며 hypothesis 상태를 `TERMINAL -> VERIFYING`으로 CAS 전환한다. Verification은 필요한 Context·Pro/Con·정적 근거·동적 재현·PoC 연결·restriction을 보완하고, 새 result·work 종료·hypothesis current pointer를 atomic commit하며, 필요하면 CWE producer와 새 label revision을 조정한다. 그 뒤 새 `VerificationResult` 및 필요한 `CWELabel` revision을 가리키는 새 Gate work를 요청한다. 새 Gate work는 새 `input_hash`·`dedupe_key`·`work_id`와 `attempt_number=1`, `trigger=INITIAL`을 사용한다. 입력이 바뀌지 않은 호출 실패만 같은 work 안에서 `trigger=RETRY`인 새 attempt를 사용할 수 있다. 횟수·token·시간 한도 도달 시 보고와 TRUE 체이닝을 차단하고 미해결 사유를 저장한다.
 
 Runtime Validator는 `REVISE`를 만든 기존 action·decision을 다시 사용하지 못하게 하고, 같은 Verification·CWE revision 또는 같은 domain input hash로 새 Gate 투표를 요청하면 `ACTION_NOT_ALLOWED`로 차단한다. 보완된 upstream revision을 가리키는 새 work·call spec·action·decision이 모두 있어야 한다. 반대로 provider 실패나 `INVALID_OUTPUT` repair는 Gate 판단을 다시 요구한 것이 아니므로, 허용된 횟수 안에서 같은 domain input과 새 invocation 식별자·action을 사용하는 `RETRY`로만 처리한다.
+
+`verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 Gate가 실제로 읽은 exact revision을 고정한다. runtime은 두 직접 reference와 Verification이 가리키는 supporting/counter Evidence, Dynamic result, PoC, restriction·unresolved condition 및 CWELabel의 전이적 reference/hash를 공통 validator로 확인한다. 어느 직접·전이적 입력 revision이나 hash가 바뀌어도 기존 `TechnicalEvidenceReview`는 다음 Gate, Reporter 또는 PROVIDED eligibility에 재사용할 수 없다.
+
+### 권한 경계
+
+Technical Evidence Gate는 Verification verdict, CWELabel, Evidence, data-flow, 공격 경로, Dynamic 결과 또는 PoC를 생성·수정하지 않는다. 공식 프로그램 정책을 추정하거나 scope, 보고 가능성, Primitive admission, ReportDraft, 외부 제출·공개를 결정하지 않는다. 고정된 final TRUE 묶음의 기술적 정렬과 handoff 가능성만 검토한다.
 
 ## Gate 2: Rule Scope Impact Gate Agent
 

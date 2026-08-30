@@ -1121,6 +1121,28 @@ TechnicalEvidenceReview:
 
 `action_decision_ref.record_id`는 `CALL_TECHNICAL_GATE`를 허가하고 `USED`로 claim한 decision revision을 가리킨다. 실행 결과를 기록한 이후 decision revision의 `outcome_refs`에는 같은 call spec을 실행한 `TECHNICAL_GATE` `LLMInvocationLog`와 현재 review가 각각 한 번 포함되고, log의 `parsed_output_ref.record_id`가 현재 review를 가리켜야 한다. review는 log를 역참조하지 않아 content hash 순환을 만들지 않는다. `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 필수이며 각각 정확히 한 `VerificationResult`와 `CWELabel` revision을 가리킨다. runtime은 두 대상의 `record_id`, `workspace_id`, `commit_id`, `hypothesis_id`와 `content_hash`가 서로와 현재 Technical review에 일치하는지 확인한다. Verification 또는 CWELabel이 새 revision으로 바뀌면 이전 `TechnicalEvidenceReview`를 재사용할 수 없고 Gate를 새로 호출해야 한다. Technical review는 `VerificationResult.verdict`나 `CWELabel`을 덮어쓰지 않는다.
 
+Evidence, Dynamic 결과와 PoC는 `verification_result_ref` 대상의
+`supporting_evidence[].evidence_refs`, `counter_evidence[].evidence_refs`,
+`dynamic_result_ref`, `poc_ref`로 고정한다. 별도 최상위 reference field를 추가하지 않는다.
+runtime은 이 전이적 reference에도 공통 `StoredDataRef`의 record·workspace·commit·hash 검사를
+적용한다. 그 대상이 바뀌면 변경은 공통 revision/reference 계약에 따라 새로운 검토 입력으로
+고정되어야 하며, 이전 Technical review를 변경된 chain에 재사용하지 않는다. 어떤 parent
+Technical `REVISE`는 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 직접 전달하며, runtime은 이전 terminated work를 수정하거나 되살리지 않고 새 VERIFICATION generation과 `TERMINAL -> VERIFYING` 전이를 만든다. Verification owner가 보완 결과를 새 `VerificationResult` revision으로 확정하고 필요한 경우 새 `CWELabel` revision과 정렬한 뒤, 새 exact input chain을 대상으로 새 Gate work를 요청한다.
+
+`status`와 `handoff_readiness`의 허용 조합은 `ACCEPT + READY`, `REVISE + NOT_READY`,
+`REJECT + NOT_READY`다. `READY`는 기술 근거를 재구성하지 않고 다음 소비자에게 전달할 수
+있다는 뜻일 뿐 정책 Gate 통과나 보고 허용이 아니다. `revision_requests`의 각 항목은 대상
+역할/단계, 현재 artifact/revision, 구체적 결함, 필요한 Evidence 또는 새 revision과 완료 기준을
+식별한다. `REVISE` 재검토에는 요청 대상 upstream 변경이 공통 계약에 따른 새로운 검토
+입력으로 고정되어야 하며 동일 direct·transitive reference/hash 조합의 재투표를 허용하지
+않는다. parent revision 생성, 반환 경로와 retry budget은 공통 계약과 orchestration/runtime
+정책의 책임이다.
+
+`REJECT`는 현재 기술 자료를 보완의 기반으로도 신뢰할 수 없는 근본 provenance·핵심 linkage
+불일치에만 사용한다. schema 오류, LLM/provider/runtime 실패는 `REJECT`가 아니라 공통
+`AnalysisError`로 처리한다. Technical review는 새 Evidence·code-flow·공격 경로·동적 해석·CWE를
+만들지 않으며 Verification verdict, 정책·scope·보고 가능성을 판정하지 않는다.
+
 ## 9. ProgramPolicyRecord과 RuleScopeImpactReview
 
 공식 프로그램 정책을 확인해 저장한 기록과, 두 번째 Gate가 정책 범위·규칙·실제 영향을 검토한 결과입니다.
