@@ -12,7 +12,7 @@
 
 1. 담당자 계정
    - #3 김나연은 `@zv9uvr`, #6 김혜령은 `@kimhr8463`, #7 임채민은 `@UltraPeachKeen`을 실제 GitHub 계정으로 사용합니다.
-   - 윤희섭 `@v1sion`은 #1·#4·#5의 공동 역할 담당자입니다. GitHub 공동 담당자(assignee) 지정 여부는 역할 확정이나 작업 시작을 막지 않습니다.
+   - 윤희섭 `@YHS-Sec`은 #1·#4·#5의 공동 역할 담당자입니다. GitHub 공동 담당자(assignee) 지정 여부는 역할 확정이나 작업 시작을 막지 않습니다.
    - 대체 검토자와 `CODEOWNERS`(파일별 자동 검토 요청 설정)는 협업 자동화를 위한 후속 개선으로 관리하며 현재 설계 검토의 Blocker로 보지 않습니다.
 2. 최종 검토·승인 담당자
    - 김태현 `@taehyeon-git`이 [전체 최종 검토 Issue #10](https://github.com/SASTsimi/sastsimi/issues/10)을 관리하고 최종 결과를 확인합니다.

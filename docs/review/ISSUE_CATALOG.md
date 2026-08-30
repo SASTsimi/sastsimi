@@ -29,7 +29,7 @@
 ## 전체 관리 Issue — Architecture v5 검토 중 설계 초안 승인 준비
 
 - 실제 Issue: [#1](https://github.com/SASTsimi/sastsimi/issues/1)
-- 진행 담당: 김태현 `@taehyeon-git`, 윤희섭 `@v1sion`
+- 진행 담당: 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec`
 
 ### 쉽게 말하면
 
@@ -209,7 +209,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 역할 소유권
 
 - 담당 역할: 단독 구현·통합 개발
-- 담당자: 김태현 `@taehyeon-git`, 윤희섭 `@v1sion`
+- 담당자: 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec`
 - 주요 작업 브랜치: `review/integration-feasibility`
 - 관련 흐름: 저장소 입력부터 사람의 최종 검토까지 전체 흐름의 모듈·저장·복구·테스트 연결
 
@@ -266,7 +266,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 역할 소유권
 
 - 담당 역할: PM·아키텍처·워크플로
-- 담당자: 김태현 `@taehyeon-git`, 윤희섭 `@v1sion`
+- 담당자: 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec`
 - 주요 작업 브랜치: `review/control-plane`
 - 관련 흐름: 전체 분석 흐름의 공통 계약, 상태 전이, 병렬·직렬 실행, 오류 정책과 사람·LLM 권한 경계
 
@@ -575,7 +575,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 - 담당 역할: 최종 검토·승인 담당자
 - GitHub 담당자: 김태현 `@taehyeon-git`
-- 필수 참여자: `@baeseungwon1010`, `@zv9uvr`, `@taehyeon-git`, `@v1sion`, `@kimhr8463`, `@UltraPeachKeen`, `@Potatonion`, `@gitterable`
+- 필수 참여자: `@baeseungwon1010`, `@zv9uvr`, `@taehyeon-git`, `@YHS-Sec`, `@kimhr8463`, `@UltraPeachKeen`, `@Potatonion`, `@gitterable`
 - 전제: R1–R8 완료, 열린 Blocker/High 0, 최종 승인 PR에 freeze SHA 게시
 
 ### 필수 시나리오

@@ -41,7 +41,7 @@ PR #47은 문서 자동 검사와 기술 검토를 통과했지만 GitHub 교차
 |---|---|---|---|---|
 | R1 LLM 탐색·체이닝 | `@baeseungwon1010` | 가설 생성, HOLD·TRUE+TRUE 체이닝 입력과 새 가설 재검증 조건 | `WAITING` | — |
 | R2 정적분석·컨텍스트 | `@zv9uvr` | AST/SAST 사실, 코드 위치, 호출 경로와 공통 식별자 연결 | `WAITING` | — |
-| R3 통합 구현 | `@v1sion` | 상태 전이, 재시도·복구, 계약을 실제 코드로 구현할 수 있는지 | `WAITING` | — |
+| R3 통합 구현 | `@YHS-Sec` | 상태 전이, 재시도·복구, 계약을 실제 코드로 구현할 수 있는지 | `WAITING` | — |
 | R4 PM·아키텍처 | `@taehyeon-git` | 다른 역할의 검토 증거, 최종 commit과 완료 조건 확인 | `WAITING` | — |
 | R5 Gate·Finding·보고서 | `@kimhr8463` | 두 Gate 순서, REVISE, Reporter 호출과 사람 전달 조건 | `WAITING` | — |
 | R6 검증·반박 | `@UltraPeachKeen` | Pro/Con 독립성, TRUE/FALSE/HOLD와 REVISE 재검증 경계 | `WAITING` | — |

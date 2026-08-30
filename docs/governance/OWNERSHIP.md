@@ -7,7 +7,7 @@
 팀이 제공한 역할표를 기준으로 8개 역할의 담당자와 GitHub 계정을 연결했습니다. 전체 검토는 [PM 전체 관리 Issue #1](https://github.com/SASTsimi/sastsimi/issues/1)에서 확인합니다.
 
 - 저장소 관리 담당: 김태현 `@taehyeon-git`
-- 설계 검토 진행 담당: 김태현 `@taehyeon-git`, 윤희섭 `@v1sion`
+- 설계 검토 진행 담당: 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec`
 - 최종 검토·승인 담당자: 김태현 `@taehyeon-git` — [전체 최종 검토 Issue #10](https://github.com/SASTsimi/sastsimi/issues/10) 관리
 - 역할 담당자: 아래 표의 8개 역할 모두 확정
 - `.github/CODEOWNERS`: 대체 검토자와 자동 검토 요청이 필요해질 때 별도 PR로 추가하는 후속 개선이며 현재 작업의 Blocker가 아님
@@ -20,8 +20,8 @@
 |---|---|---|---|---|---|
 | LLM 탐색·체이닝 | 배승원 `@baeseungwon1010` | 취약점 가설, 추가 탐색, 연계 공격과 token 최적화 | `03`, `06` | 정적분석, 검증, 데이터·평가 | [#2](https://github.com/SASTsimi/sastsimi/issues/2) |
 | 정적분석·컨텍스트 | 김나연 `@zv9uvr` | AST/SAST 결과 정리, 코드 사실 묶음과 필요한 코드 조회 | `02` | LLM 탐색, 검증 | [#3](https://github.com/SASTsimi/sastsimi/issues/3) |
-| 단독 구현·통합 개발 | 김태현 `@taehyeon-git`, 윤희섭 `@v1sion` | LLM 연결과 실행 경계, 구현 가능성, 테스트·모듈 통합 | `09`, 구현 가능성 검토 | PM, 데이터·평가, 동적검증 | [#4](https://github.com/SASTsimi/sastsimi/issues/4) |
-| PM·아키텍처·워크플로 | 김태현 `@taehyeon-git`, 윤희섭 `@v1sion` | 전체 분석 흐름, 공통 입출력 약속, 사람·LLM 경계, 오류·병렬 처리 | root README, `01`, `08`, `11`, `13`, Wiki 통합 | 전체 파트 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
+| 단독 구현·통합 개발 | 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec` | LLM 연결과 실행 경계, 구현 가능성, 테스트·모듈 통합 | `09`, 구현 가능성 검토 | PM, 데이터·평가, 동적검증 | [#4](https://github.com/SASTsimi/sastsimi/issues/4) |
+| PM·아키텍처·워크플로 | 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec` | 전체 분석 흐름, 공통 입출력 약속, 사람·LLM 경계, 오류·병렬 처리 | root README, `01`, `08`, `11`, `13`, Wiki 통합 | 전체 파트 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
 | Gate·Finding·보고서 | 김혜령 `@kimhr8463` | 기술 근거·공식 정책 검토, 취약점 결과와 보고서 초안 | `05`, `12` | 검증, PM, 데이터·평가 | [#6](https://github.com/SASTsimi/sastsimi/issues/6) |
 | 검증·반박·플레이북 | 임채민 `@UltraPeachKeen` | 찬성·반대 근거, 기술 판정과 우회 가능성 검증 | `04` 검증 영역 | LLM 탐색, 동적검증, Gate | [#7](https://github.com/SASTsimi/sastsimi/issues/7) |
 | 동적검증·Sandbox | 조근석 `@Potatonion` | 제한·전체 재현, PoC, Docker 실행 근거 | `04` 동적 영역, `10` 격리 실행 영역 | 검증, PM, 통합 개발 | [#8](https://github.com/SASTsimi/sastsimi/issues/8) |
@@ -31,7 +31,7 @@
 
 ## 역할 배정과 GitHub 담당자 지정 상태
 
-역할 담당은 8개 모두 확정되었습니다. 2026-08-27에 확인한 실제 GitHub 계정을 기준으로 #3은 `@zv9uvr`, #6은 `@kimhr8463`, #7은 `@UltraPeachKeen`으로 확정했습니다. #1·#4·#5의 윤희섭 `@v1sion`은 공동 역할 담당자이며, GitHub 공동 담당자(assignee) 지정 여부와 역할 배정은 별개입니다.
+역할 담당은 8개 모두 확정되었습니다. 실제 GitHub 계정을 기준으로 #3은 `@zv9uvr`, #6은 `@kimhr8463`, #7은 `@UltraPeachKeen`으로 확정했습니다. #1·#4·#5의 윤희섭 `@YHS-Sec`은 공동 역할 담당자이며, GitHub 공동 담당자(assignee) 지정 여부와 역할 배정은 별개입니다.
 
 [최종 #10](https://github.com/SASTsimi/sastsimi/issues/10)은 최종 검토·승인 담당자인 김태현 `@taehyeon-git`에게 배정합니다. 김태현은 PM과 문서 통합도 맡으므로 `독립 검토자`라는 표현은 사용하지 않습니다. 대신 각 파트의 다른 역할 담당자가 교차 검토한 기록을 먼저 남기고, 김태현이 마지막 전체 흐름과 완료 조건을 확인합니다.
 

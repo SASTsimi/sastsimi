@@ -141,7 +141,7 @@ PR은 `review/r4-02-state-recovery`를 base로 시작하고 `Closes #15`, `Refs 
 - Base: `review/r4-02-state-recovery`
 - Head: `review/r4-03-authority-boundary`
 - 실제 GitHub 교차 검토 요청: `kimhr8463`, `Potatonion`, `gitterable`, `UltraPeachKeen`
-- `v1sion`은 저장소 collaborator가 아니어서 GitHub review request API가 HTTP 422로 거부했다. 권한이 추가되면 다시 요청한다.
+- R3 통합 구현 검토는 `@YHS-Sec`에게 요청한다.
 
 - [x] **Step 7: 원격 PR head·파일·diff·checks 재검증**
 

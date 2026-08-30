@@ -130,8 +130,8 @@ main  ← Architecture v5 candidate baseline
 |---|---|---|
 | LLM 탐색·체이닝 | 배승원 ([@baeseungwon1010](https://github.com/baeseungwon1010)) | 최초 취약점 후보 생성, TRUE+HOLD 및 앞 TRUE 능력→뒤 TRUE 선행 조건 matching과 token 최적화 |
 | 정적분석·컨텍스트 | 김나연 ([@zv9uvr](https://github.com/zv9uvr)) | AST·CodeQL·OpenGrep 결과 정리, 코드 위치·호출 흐름과 LLM용 context 조립 |
-| 단독 구현·통합 개발 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@v1sion](https://github.com/v1sion)) | 전체 모듈의 구현 가능성, 계약 준수 테스트와 통합 계획 검토 |
-| PM·아키텍처·워크플로 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@v1sion](https://github.com/v1sion)) | 전체 구조, 공통 입출력 계약, 사람·LLM 경계, 병렬·직렬 흐름과 오류 정책 |
+| 단독 구현·통합 개발 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 모듈의 구현 가능성, 계약 준수 테스트와 통합 계획 검토 |
+| PM·아키텍처·워크플로 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 구조, 공통 입출력 계약, 사람·LLM 경계, 병렬·직렬 흐름과 오류 정책 |
 | Gate·Finding·보고서 | 김혜령 ([@kimhr8463](https://github.com/kimhr8463)) | 검증 근거·정책 범위 검토, 내부 Finding과 보고서 초안, 사람 검토 전달 준비 |
 | 검증·반박·플레이북 | 임채민 ([@UltraPeachKeen](https://github.com/UltraPeachKeen)) | 가설 내부 Context·찬반·동적 재현·판정·Gate 보완·새 material claim 흐름과 검증 절차 |
 | 동적검증·Sandbox | 조근석 ([@Potatonion](https://github.com/Potatonion)) | Docker 기반 제한 재현, PoC와 sandbox 실행 결과 검증 |
