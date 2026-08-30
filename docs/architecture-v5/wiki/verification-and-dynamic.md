@@ -16,9 +16,11 @@
 
 ## Debate 모드
 
-- `BASIC`: Verification이 직접 찬반을 검토
-- `CONDITIONAL_DEBATE`: 충돌·고영향·HOLD·우회·근거 편향·Gate 요청 때 Pro/Con 호출; 기본값
-- `ALWAYS_DEBATE`: 비교 평가나 별도 운영 profile
+- `BASIC`: Verification이 직접 찬반을 검토하는 격리된 평가 전용 모드
+- `CONDITIONAL_DEBATE`: trigger가 있을 때 Pro/Con을 부르는 격리된 평가 전용 모드
+- `ALWAYS_DEBATE`: 모든 유효 가설에 Pro/Con을 부르는 운영의 유일한 허용 모드
+
+운영에서는 예산 부족을 이유로 Pro/Con을 생략하지 않습니다. `BUDGET_EXCEEDED`로 현재 검증 작업을 중단하고, 새 예산이 승인된 작업에서 다시 진행합니다. 평가 모드의 BASIC·조건부 결과는 Gate, Primitive 또는 보고서 입력으로 사용하지 않습니다.
 
 Pro와 Con은 서로의 결과를 받지 않는 별도 NEW session이다. trigger/skip reason, token·시간, verdict 변화, HOLD 해소, 오탐 감소 후보와 bypass 발견을 기록한다.
 

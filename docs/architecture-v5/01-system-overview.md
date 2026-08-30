@@ -25,7 +25,7 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 | 7 | 출력 검증과 전역 등록 | schema-valid `HypothesisProposal(origin=INITIAL)` 또는 `INVALID_OUTPUT` |
 | 8 | 가설별 Verification owner 할당 | `VulnerabilityHypothesis` + ACTIVE `VerificationAssignment` |
 | 9 | Verification이 위치 기반 코드 문맥 조회 | `CodeContextRequest/Response` |
-| 10 | Verification이 BASIC 또는 조건부 Pro/Con 실행 | supporting/counter evidence |
+| 10 | 운영 Verification이 Pro/Con을 독립 병렬 실행 | supporting/counter evidence |
 | 11 | 초기 판정 | `TRUE | FALSE | HOLD` |
 | 12 | Verification 판단에 따라 제한/전체 동적 재현 | `LIMITED_REPRO | FULL_REPRO`, PoC evidence |
 | 13 | 최종 판정과 material claim 분리 | final `VerificationResult`, optional `origin=VERIFICATION` proposal |
@@ -117,7 +117,7 @@ Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제�
 
 - AST와 복수 SAST 실행은 tool별 `work_id`와 `attempt_id`로 병렬화할 수 있다. 정규화는 모든 기대 작업의 종료 상태를 확인하고, 일부 실패면 `DataGap`과 오류를 포함한 `PARTIAL` 여부를 명시한다.
 - 서로 독립된 가설의 Verification은 가설별 예산 범위에서 병렬화할 수 있다. 한 가설의 실패가 다른 가설을 자동 취소하지 않는다.
-- 한 가설의 Pro/Con은 조건이 충족될 때 서로 다른 work와 NEW session으로 병렬화하고, Verification이 두 결과 또는 명시된 skip·실패 상태를 확인해 합류한다.
+- 운영(`PRODUCTION`)에서는 한 가설의 Pro/Con을 서로 다른 work와 NEW session으로 항상 병렬화하고 Verification이 두 결과를 확인해 합류한다. 예산 부족이나 실행 오류로 한쪽이 없으면 final verdict를 만들지 않고 work를 중단한다. `BASIC | CONDITIONAL_DEBATE`와 skip은 격리된 평가(`EVALUATION`)에서만 허용한다.
 - 같은 가설의 `workspace_id`와 `commit_id`, final Verification·CWELabel, Technical Gate, Rule Scope Gate와 Reporter 순서는 의존성을 지킨다.
 - 실행 상태는 `WorkExecutionState`가 관리하고 가설 판정·Gate 결과·보고서·사람 검토 상태와 분리한다. 같은 `dedupe_key` 요청은 한 `work_id`로만 반영한다.
 - `COMMITTED` marker와 종료 상태 pointer가 같은 결과를 가리킨 뒤에만 다음 단계를 호출한다. `PREPARED`, 취소된 attempt, 오래된 revision과 늦은 결과는 다음 단계에서 읽지 않는다.

@@ -33,7 +33,7 @@ flowchart TB
     S06 --> S07[7 Validate and register INITIAL proposals]
     S07 --> S08[8 Runtime stores ACTIVE VerificationAssignment]
     S08 --> S09[9 Verification requests on-demand context]
-    S09 --> S10[10 Verification runs BASIC or Pro and Con]
+    S09 --> S10[10 Production Verification runs independent Pro and Con]
     S10 --> S11[11 Initial TRUE FALSE HOLD]
     S11 --> S12{12 Dynamic reproduction needed}
     S12 -->|No| S13[13 Final verdict and material claim split]
@@ -114,15 +114,19 @@ flowchart TB
 
 proposal은 facts와 assumptions, restrictions, missing information, falsification questions와 required validation을 분리한다. confidence는 우선순위 힌트일 뿐 verdict가 아니다.
 
-## 4. 조건부 검증과 Docker 재현
+## 4. 운영 상시 찬반 검증과 평가 모드
 
 ```mermaid
 flowchart TB
     HYP[VulnerabilityHypothesis plus ACTIVE assignment] --> CTX[On-demand context]
-    CTX --> MODE{Verification mode}
-    MODE -->|BASIC| BASIC[Verification direct evidence]
+    CTX --> PURPOSE{Analysis purpose}
+    PURPOSE -->|PRODUCTION| BUDGET{Pro and Con budget available}
+    BUDGET -->|No| STOP[BUDGET_EXCEEDED no final verdict]
+    BUDGET -->|Yes ALWAYS_DEBATE| FORK[Independent NEW sessions]
+    PURPOSE -->|EVALUATION only| MODE{Comparison mode}
+    MODE -->|BASIC| BASIC[Verification direct evidence evaluation only]
     MODE -->|CONDITIONAL_DEBATE| TRIGGER{Debate trigger present}
-    MODE -->|ALWAYS_DEBATE| FORK[Independent NEW sessions]
+    MODE -->|ALWAYS_DEBATE| FORK
     TRIGGER -->|No and skip recorded| BASIC
     TRIGGER -->|Yes| FORK
     FORK --> PRO[Pro Agent]
@@ -130,6 +134,7 @@ flowchart TB
     PRO --> SYN[Verification synthesis]
     CON --> SYN
     BASIC --> SYN
+    BASIC -. no Gate Primitive or Reporter .-> METRICS[Evaluation metrics only]
     SYN --> INITIAL[Initial TRUE FALSE HOLD]
     INITIAL --> DYN{Dynamic evidence needed}
     DYN -->|No| FINAL[Final VerificationResult]

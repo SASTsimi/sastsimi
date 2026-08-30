@@ -37,7 +37,7 @@
 | 3 | 새 대화, 이어서 대화, 자동 선택을 어떻게 비교하고 기본 한도를 얼마로 할지 정합니다. | `NEW / RESUME / AUTO` 평가와 기본 limit |
 | 4 | LLM이 잘못된 형식으로 답했을 때 몇 번 고치게 할지와 신뢰도 평가 방법을 정합니다. | Hypothesis schema repair 횟수와 confidence 기준 |
 | 5 | 필요한 코드를 얼마나 깊고 많이 가져올 수 있는지 정합니다. | Context retrieval depth/token/request 제한 |
-| 6 | 찬성·반대 검증을 언제 실행할지와 효과를 비교할 예제 모음을 정합니다. | `CONDITIONAL_DEBATE` trigger와 비교 corpus |
+| 6 | 운영은 항상 찬성·반대 검증을 실행합니다. BASIC·조건부 방식의 비용·효과를 비교할 평가 자료와 운영 전환 합격선만 정합니다. | `ALWAYS_DEBATE` 운영 고정, BASIC/CONDITIONAL 비교 corpus와 acceptance threshold |
 | 7 | 연계 공격의 필요 조건과 확인된 능력을 어떤 단어로 기록하고 연결할지 정합니다. | Primitive vocabulary와 scope/capability matching |
 | 8 | 연계 탐색이 끝없이 늘어나지 않도록 한도를 정합니다. | Chaining depth·count·primitive 조합·token·time·duplicate 제한 |
 | 9 | Docker 이미지, 네트워크, 자원과 종료 후 정리 방법을 정합니다. | image/network/resource/cleanup 정책 |

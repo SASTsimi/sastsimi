@@ -62,7 +62,7 @@ Repository input
 → StaticFactBundle
 → constrained HypothesisProposal
 → Orchestration이 가설을 등록하고 가설별 Verification owner를 배정
-→ Verification이 on-demand context, BASIC 또는 conditional Pro/Con 관리
+→ Verification이 on-demand context와 운영 기본 Pro/Con 병렬 검증 관리
 → 필요 시 Verification이 Docker LIMITED_REPRO / FULL_REPRO 요청
 → final TRUE / FALSE / HOLD
 → FALSE는 terminal

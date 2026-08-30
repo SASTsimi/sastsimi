@@ -412,7 +412,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 검토할 입력·출력
 
-- 입력: VulnerabilityHypothesis, 같은 workspace/commit의 context, debate trigger/budget, Pro/Con, DynamicReproductionResult, revision request
+- 입력: VulnerabilityHypothesis, 같은 workspace/commit의 context, 운영 Pro/Con budget, 평가용 debate trigger, DynamicReproductionResult, revision request
 - 출력: supporting/counter evidence, 질문별 `FalsificationResult`, initial/final verdict, dynamic decision, restrictions, PrimitiveDraft, `origin=VERIFICATION` material child proposal와 Gate revision coordination
 
 ### 확인할 권한 경계
@@ -433,7 +433,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 완료 조건
 
-- [ ] BASIC/CONDITIONAL_DEBATE/ALWAYS_DEBATE와 기본값·trigger·skip reason이 정의됨
+- [ ] 운영은 ALWAYS_DEBATE만 허용하고 BASIC/CONDITIONAL_DEBATE는 Gate·Primitive·Reporter로 전달하지 않는 격리 평가 전용임
 - [ ] Pro/Con은 상대 결론을 받지 않는 독립 NEW session임
 - [ ] `TRUE`는 핵심 path evidence, `FALSE`는 `question_id`와 실제 근거가 있는 `DISPROVED`, `HOLD`는 unresolved condition을 요구함
 - [ ] initial/final verdict와 revision history가 분리됨

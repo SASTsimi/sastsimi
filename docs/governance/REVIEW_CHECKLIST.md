@@ -32,7 +32,7 @@
 
 - [ ] HypothesisProposal은 `HYPOTHESIS_ONLY / NON_FINAL`입니다.
 - [ ] 필요한 코드는 위치를 기준으로 필요할 때만 조회(`on-demand retrieval`)합니다.
-- [ ] 기본 검증 모드는 필요할 때 찬성·반대 근거를 따로 모으는 `CONDITIONAL_DEBATE`입니다.
+- [ ] 운영 기본 검증 모드는 모든 유효 가설에서 찬성·반대 근거를 독립적으로 모으는 `ALWAYS_DEBATE`입니다. `BASIC | CONDITIONAL_DEBATE`는 격리된 평가 전용입니다.
 - [ ] Pro와 Con은 독립 NEW session을 사용합니다.
 - [ ] 새 우회·영향·연계 공격(`bypass/impact/chain`) 주장은 새 가설로 재검증합니다.
 - [ ] Primitive DB는 queue 또는 Finding 저장소가 아닙니다.

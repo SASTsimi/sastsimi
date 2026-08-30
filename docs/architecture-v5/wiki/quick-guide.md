@@ -15,7 +15,7 @@
 - 필요한 코드는 같은 `workspace_id`와 `commit_id`에서 코드 요소·위치·경로를 기준으로 조회한다.
 - Orchestration은 가설을 검증·등록하고 Verification에 배정하는 데서 가설별 역할이 끝난다.
 - 검증(`Verification`)은 한 가설의 Context·찬반·동적 재현·판정·Gate 보완·연계 handoff를 관리한다.
-- 기본값은 `CONDITIONAL_DEBATE`이며 Pro/Con은 필요할 때 독립 NEW session으로 실행한다.
+- 운영 기본값은 `ALWAYS_DEBATE`이며 모든 유효 가설에서 Pro/Con을 독립 NEW session으로 실행한다. BASIC과 조건부 debate는 격리된 평가 전용이다.
 - HOLD의 필요 조건은 즉시 REQUIRED가 된다. TRUE는 두 Gate를 정상 통과한 exact revision만 PROVIDED가 된다. TRUE+TRUE는 앞 PROVIDED가 뒤 TRUE의 exact 선행 조건을 충족할 때만 연결한다.
 - 기술 근거 검토와 공식 정책·영향 검토를 분리한다.
 - 공식 프로그램 정책이 없으면 rule/scope는 `UNCERTAIN`, report permission은 `DENY`다.

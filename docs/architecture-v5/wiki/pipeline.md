@@ -17,7 +17,7 @@
 7. schema-valid INITIAL proposal 검증·전역 등록
 8. 가설별 ACTIVE VerificationAssignment 저장과 owner 할당
 9. Verification의 코드 위치 기반 on-demand retrieval
-10. Verification의 `BASIC` 또는 조건부 Pro/Con 검증
+10. 운영 Verification의 독립 Pro/Con 병렬 검증
 11. initial `TRUE | FALSE | HOLD`
 12. 필요 시 Docker `LIMITED_REPRO | FULL_REPRO`
 13. final `TRUE | FALSE | HOLD`

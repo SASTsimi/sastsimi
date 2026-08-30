@@ -77,6 +77,18 @@ foreach ($path in $activeContractPaths) {
 
 $contractPath = Join-Path $repoRoot 'docs/architecture-v5/08-lightweight-data-contracts.md'
 $contractText = Get-Content -Raw -LiteralPath $contractPath
+$overviewPath = Join-Path $repoRoot 'docs/architecture-v5/01-system-overview.md'
+$overviewText = Get-Content -Raw -LiteralPath $overviewPath
+$verificationPath = Join-Path $repoRoot 'docs/architecture-v5/04-verification-and-dynamic-reproduction.md'
+$verificationText = Get-Content -Raw -LiteralPath $verificationPath
+$activeDebateFiles = @(
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'README.md'))
+) + @(
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5') -Recurse -File -Filter '*.md'
+) + @(
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/governance') -Recurse -File -Filter '*.md'
+)
+$activeDebateText = ($activeDebateFiles | ForEach-Object { Get-Content -Raw -LiteralPath $_.FullName }) -join "`n"
 $requiredContractNames = @(
     'WorkExecutionState:',
     'WorkAttempt:',
@@ -628,7 +640,9 @@ $verificationChainingScenarioMarkers = @(
     '| N12 | chained child가 FALSE |',
     '| N13 | Verification이 budget·Sandbox·Gate 순서를 우회하려 함 |',
     '| N13-A | 같은 역할이지만 배정되지 않은 Verification identity가 Gate·Reporter·새 verification work를 요청 |',
-    '| N14 | Chaining Agent가 Primitive match 없는 bypass·impact·dynamic 요청을 출력 |'
+    '| N14 | Chaining Agent가 Primitive match 없는 bypass·impact·dynamic 요청을 출력 |',
+    '| N15 | `purpose=PRODUCTION`인데 `verification_mode=BASIC | CONDITIONAL_DEBATE`를 요청 |',
+    '| N16 | 운영 Pro/Con 중 하나를 실행할 예산이 부족 |'
 )
 foreach ($marker in $verificationChainingScenarioMarkers) {
     if (-not $securityText.Contains($marker)) {
@@ -653,6 +667,29 @@ $requiredVerificationChainingRules = @(
 foreach ($rule in $requiredVerificationChainingRules) {
     if (-not ($orchestrationText.Contains($rule) -or $gateText.Contains($rule) -or $contractText.Contains($rule) -or $securityText.Contains($rule) -or $diagramText.Contains($rule))) {
         Add-Failure "missing Verification/Chaining rule: $rule"
+    }
+}
+
+$requiredDebatePolicyRules = @(
+    'purpose: PRODUCTION | EVALUATION',
+    'PRODUCTION에서는 `verification_mode=ALWAYS_DEBATE`만 허용한다.',
+    'EVALUATION의 `BASIC | CONDITIONAL_DEBATE` 결과는 Gate·Primitive admission·Reporter 입력으로 사용할 수 없다.',
+    '예산이 부족하면 `BUDGET_EXCEEDED`로 현재 Verification work를 중단하며 Pro/Con을 생략한 final verdict를 만들지 않는다.'
+)
+foreach ($rule in $requiredDebatePolicyRules) {
+    if (-not ($overviewText.Contains($rule) -or $verificationText.Contains($rule) -or $contractText.Contains($rule) -or $securityText.Contains($rule))) {
+        Add-Failure "missing production debate rule: $rule"
+    }
+}
+
+$obsoleteDebatePolicyPhrases = @(
+    '기본 검증 모드는 `CONDITIONAL_DEBATE`다.',
+    '| `CONDITIONAL_DEBATE` | trigger 충족 시 Pro/Con을 독립 병렬 호출 | 기본값 |',
+    '예산이 부족할 때는 생략 사유를 기록하고 BASIC으로 종료할 수 있다.'
+)
+foreach ($phrase in $obsoleteDebatePolicyPhrases) {
+    if ($activeDebateText.Contains($phrase)) {
+        Add-Failure "obsolete production debate rule remains: $phrase"
     }
 }
 
@@ -687,6 +724,7 @@ Write-Output "R4-03 Sandbox review rules: $($sandboxReviewPatterns.Count)"
 Write-Output "Verification/Chaining contract markers: $($requiredVerificationChainingContracts.Count)"
 Write-Output "Verification/Chaining scenarios: $($verificationChainingScenarioMarkers.Count)"
 Write-Output "Verification/Chaining semantic rules: $($requiredVerificationChainingRules.Count)"
+Write-Output "Production debate policy rules: $($requiredDebatePolicyRules.Count)"
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {
