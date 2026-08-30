@@ -17,7 +17,7 @@ GitHub가 실제 상태, 담당자와 토론의 기준입니다. 이 문서는 �
 | R1 | 최초 가설 생성·Primitive Chaining | [#2](https://github.com/SASTsimi/sastsimi/issues/2) | 배승원 `@baeseungwon1010` | `review/hypothesis-research` | `03`, `06`, `08`, `09`, `13` | R2, R6, R4, R8 | OPEN |
 | R2 | AST/SAST 정적 사실·위치 기반 분석 정보 | [#3](https://github.com/SASTsimi/sastsimi/issues/3) | 김나연 `@zv9uvr` | `review/static-context` | `02`, `07`, `08`, `10`, `13` | R1, R6, R4, R3 | OPEN |
 | R3 | 통합 구현 가능성·계약 준수 테스트 | [#4](https://github.com/SASTsimi/sastsimi/issues/4) | 김태현 `@taehyeon-git` 배정, 윤희섭 `@v1sion` 본문 연결 | `review/integration-feasibility` | `01`, `03`, `08`, `09`, `10`, `11`, `13` | R4, 변경 영향 역할, R8 | OPEN |
-| R4 | PM·Control Plane·중앙 계약·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) | 김태현 `@taehyeon-git` 배정, 윤희섭 `@v1sion` 본문 연결 | `review/control-plane` | root README, `01`, `03`, `08`, `09`, `10`, `11`, `13`, governance/review | 전체 역할 | CLOSED — #47 |
+| R4 | PM·Control Plane·중앙 계약·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) | 김태현 `@taehyeon-git` 배정, 윤희섭 `@v1sion` 본문 연결 | `review/r4-04-governance-audit` | root README, `01`, `03`, `08`, `09`, `10`, `11`, `13`, governance/review | 전체 역할 | IN REVIEW — R4-01~03 완료, [R4-04 #16](https://github.com/SASTsimi/sastsimi/issues/16) 교차 검토 중 |
 | R5 | 두 Gate·취약점 결과 후보·보고서 초안 | [#6](https://github.com/SASTsimi/sastsimi/issues/6) | 김혜령 `@kimhr8463` | `review/gate-reporting` | `05`, `07`, `08`, `10`, `12`, `13` | R6, R2, R7, R4, R8 | OPEN |
 | R6 | 검증·독립 찬성/반대 근거·판정 | [#7](https://github.com/SASTsimi/sastsimi/issues/7) | 임채민 `@UltraPeachKeen` | `review/verification` | `03`, `04`, `07`, `08`, `13` | R2, R7, R1, R4, R5, R8 | OPEN |
 | R7 | Docker LIMITED/FULL 재현·Sandbox | [#8](https://github.com/SASTsimi/sastsimi/issues/8) | 조근석 `@Potatonion` | `review/dynamic-sandbox` | `04`, `07`, `08`, `10`, `13` | R6, R4, R8, R3, R5 | OPEN |
@@ -25,6 +25,8 @@ GitHub가 실제 상태, 담당자와 토론의 기준입니다. 이 문서는 �
 | 최종 | 전체 교차 시나리오·고정 commit SHA·최종 승인 | [#10](https://github.com/SASTsimi/sastsimi/issues/10) | 최종 검토·승인 담당자 김태현 `@taehyeon-git` | — | 전체 기준 문서·Wiki·Mermaid·발견사항 | R1–R8 담당자 전원, 김태현 `@taehyeon-git` | OPEN |
 
 번호 문서는 `docs/architecture-v5/` 아래 파일을 뜻합니다. 세부 입력·출력, 금지 권한과 완료 조건은 [ISSUE_CATALOG.md](./ISSUE_CATALOG.md)에 있습니다.
+
+R4-04의 역할별 확인 범위, 승인으로 인정하는 기록과 병합 조건은 [R4-04 교차 검토 기록](./R4-04_CROSS_REVIEW.md)에서 확인합니다.
 
 ## 역할 담당자의 작업 순서
 

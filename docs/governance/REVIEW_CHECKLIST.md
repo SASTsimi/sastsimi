@@ -4,6 +4,8 @@
 
 전체 검토 현황은 [PM 전체 관리 Issue #1](https://github.com/SASTsimi/sastsimi/issues/1)과 [실제 Issue 현황](../review/ISSUE_TRACKER.md)에서 확인하고, 마지막 전체 흐름 검토는 [최종 Issue #10](https://github.com/SASTsimi/sastsimi/issues/10)에서 수행합니다.
 
+R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않습니다. [R4-04 교차 검토 기록](../review/R4-04_CROSS_REVIEW.md)에 연결된 실제 GitHub 승인과 마지막 검토 commit을 확인한 뒤에만 Issue #16과 상위 Issue #5를 닫습니다.
+
 ## Issue와 PR 준비
 
 - [ ] 담당자는 자신의 역할별 상위 Issue(#2–#9)를 확인했습니다.
