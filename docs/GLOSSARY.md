@@ -50,7 +50,7 @@
 | 용어 | 쉽게 말하면 | 사용할 때 주의할 점 |
 |---|---|---|
 | `Hypothesis` | 검증이 필요한 취약점 가능성 | 아직 확정 취약점이나 Finding이 아닙니다. |
-| `Verification` | 코드와 실행 근거를 모아 가설을 확인하는 과정 | 정책 검토나 공개 결정을 대신하지 않습니다. |
+| `Verification` | 배정된 가설 안에서 코드·찬반·동적 근거와 보완 흐름을 관리해 판정하는 과정 | 다음 작업은 선택하지만 Runtime Validator의 실행 검사를 우회하거나 공개를 결정하지 않습니다. |
 | `verdict` | 검증 Agent가 내린 기술 판정 | `TRUE`, `FALSE`, `HOLD` 중 하나입니다. |
 | `TRUE` | 현재 근거로 취약점이 성립한다고 판단한 상태 | 사람의 공개 결정과는 다릅니다. |
 | `FALSE` | 미리 정한 반증 조건이 실제 근거로 확인된 상태 | 도구 실패나 정보 부족을 `FALSE`로 바꾸면 안 됩니다. |
@@ -72,23 +72,28 @@
 | 용어 | 쉽게 말하면 | 사용할 때 주의할 점 |
 |---|---|---|
 | `Agent` | 한 가지 분석 역할을 맡는 LLM 작업 단위 | 프로그램의 강제 규칙이나 사람의 결정을 대신하지 않습니다. |
-| `Orchestration` | 여러 Agent의 호출 순서와 작업 상태를 조정하는 기능 | 취약점 판정이나 공개 결정을 직접 만들지 않습니다. |
-| `Primitive` | 연계 공격을 확인하기 위해 저장하는 ‘필요 조건’ 또는 ‘확인된 능력’ | 확정 취약점 목록이나 작업 대기열이 아닙니다. |
-| `PrimitiveMatchCandidate` | 필요한 능력과 확인된 능력이 연결될 수 있는지 검사한 미검증 후보 | 자산·코드 대상·권한·공격 순서·제한 조건이 맞는지 기록하고 새 가설로 다시 검증합니다. |
-| `Research` | 우회 방법, 영향 확대와 연계 가능성을 추가로 조사하는 작업 | 새로운 공격 주장은 새 가설로 다시 검증합니다. |
-| `chaining` | 여러 취약점의 조건과 능력을 연결해 새 공격 가능성을 찾는 과정 | 깊이, 횟수, token, 시간과 중복 제한을 둡니다. |
+| `Orchestration` | 가설 제안을 확인·등록하고 각 가설에 Verification을 배정하는 전역 조정 기능 | 배정 뒤 가설 내부 Pro/Con·동적 재현·Gate·Chaining을 결정하지 않습니다. |
+| `Primitive` | 연계 공격에서 필요한 조건(`REQUIRED`) 또는 제공되는 능력(`PROVIDED`) | HOLD만 REQUIRED가 되고, TRUE는 두 Gate를 정상 통과한 정확한 revision만 PROVIDED가 됩니다. TRUE PROVIDED에는 해당 취약점의 악용 선행 조건도 함께 고정합니다. |
+| `PrimitiveIndexState` | 가설마다 현재 사용할 수 있는 Primitive 수정본을 가리키는 인덱스 상태 | 탐색 중 새 Verification이 생기면 version이 바뀌어 오래된 Chaining 결과의 저장을 막습니다. |
+| `PrimitiveMatchCandidate` | TRUE+HOLD 또는 TRUE+TRUE의 조건·능력이 연결될 수 있는지 검사한 미검증 후보 | TRUE+TRUE는 앞 PROVIDED와 뒤 TRUE의 exact 선행 조건을 방향성 있게 비교하고 current index·revision도 확인합니다. |
+| `Chaining Agent` | ACTIVE Primitive의 TRUE+HOLD와 TRUE+TRUE 조합만 찾는 Agent | 일반 취약점·우회·영향 탐색, 동적 재현, Gate 보완과 판정은 하지 않습니다. |
+| `chaining` | Gate-qualified TRUE의 능력과 HOLD 조건 또는 다른 Gate-qualified TRUE 능력을 연결해 새 공격 가설을 만드는 과정 | 깊이, 횟수, token, 시간, 중복과 순환 제한을 둡니다. |
+| `Gate-qualified TRUE` | 같은 TRUE revision이 Technical `ACCEPT`와 Rule Scope 정상 통과를 모두 받은 상태 | Gate 전 TRUE, Technical만 통과한 TRUE와 오래된 Gate 승인은 현재 체이닝에 사용할 수 없습니다. |
+| `origin=VERIFICATION` | Verification이 검증 중 발견한 별도 material claim에서 나온 새 가설 | trusted validation과 새 가설 등록 뒤 처음부터 검증합니다. |
+| `origin=CHAINING` | Chaining Agent의 Primitive match에서 나온 새 가설 | 부모 판정을 바꾸지 않고 별도 lifecycle로 검증합니다. |
 | `material claim` | 기존 가설과 구분해 따로 검증해야 할 새로운 공격 주장 | 기존 판정에 바로 합치지 않고 새 가설로 만듭니다. |
 
 ## 검토와 보고
 
 | 용어 | 쉽게 말하면 | 사용할 때 주의할 점 |
 |---|---|---|
-| `Finding` | 사람이 검토할 수 있게 정리한 취약점 결과 | Hypothesis나 Research 후보와 구분합니다. |
+| `Finding` | 사람이 검토할 수 있게 정리한 취약점 결과 | Hypothesis, Verification-origin 또는 Chaining-origin 후보와 구분합니다. |
 | `Gate` | 다음 단계로 보내도 되는지 확인하는 검토 단계 | Verification 판정을 직접 바꾸지 않습니다. |
 | `Technical Evidence Gate` | 판정과 코드·실행 근거가 서로 맞는지 확인하는 기술 검토 | 부족하면 `REVISE`로 보완을 요청할 수 있습니다. |
 | `Rule Scope Impact Gate` | 공식 정책 범위와 실제 영향을 확인하는 검토 | 공식 정책이 없으면 추측하지 않습니다. |
 | `PolicyItem` | 공식 정책에서 뽑은 항목 하나와 원문 위치를 묶은 데이터 | 반드시 공식 출처 기록으로 다시 확인할 수 있어야 합니다. |
-| `REVISE` | 부족한 근거를 보완한 뒤 다시 검토하라는 결과 | 보완할 항목과 반복 한도를 기록합니다. |
+| `VerificationAssignment` | 한 가설의 내부 검증 흐름을 맡은 논리 owner의 저장 기록 | 같은 역할의 다른 Agent가 아니라 ACTIVE assignment와 일치하는 owner만 Gate·보완·보고 요청을 제안할 수 있습니다. |
+| `REVISE` | 부족한 근거를 같은 Verification owner가 새 Verification work에서 보완한 뒤 새 revision으로 다시 검토하라는 결과 | provider retry나 동일 입력 재투표가 아니며 오래된 Gate 결과를 재사용하지 않습니다. |
 | `UNCERTAIN + DENY` | 공식 정책을 확인하지 못해 결론과 보고서 전달을 허용하지 않는 상태 | LLM의 기억으로 정책을 채우지 않습니다. |
 | `Reporter` | 통과한 결과를 사람이 읽을 보고서 초안으로 정리하는 Agent | 외부 제출과 공개는 하지 않습니다. |
 | `human handoff` | 사람이 최종 검토할 자료를 전달하는 단계 | 외부 공개 여부는 사람이 결정합니다. |

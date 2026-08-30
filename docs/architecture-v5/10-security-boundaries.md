@@ -51,7 +51,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - claim 뒤 중단됐으면 기존 decision을 다시 사용하지 않는다. 중단 오류와 실행 outcome 유무를 기록하고 새 action을 요청한다.
 - 한 `ActionRequest`에는 하나의 logical `ActionDecision`만 만들고 concurrent validator는 unique action-ref 제약으로 같은 decision을 반환한다.
 - 실제 LLM call은 검사한 immutable `LLMCallSpec`과 field-by-field 같아야 한다. Gate와 Reporter는 자기 stage action이 호출까지 허가하며 별도 `CALL_LLM`으로 우회하지 않는다.
-- Orchestration은 계획·호출을 제안할 수 있지만 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 저장할 권한이 없다.
+- Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 있지만 가설 내부 호출, verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 저장할 권한이 없다. Verification이 가설 내부 다음 작업을 선택해도 모든 action은 같은 Runtime Validator 검사를 통과해야 한다.
 - Runtime Validator는 역할과 실행 전제를 검사하지만 취약점 진위·CWE 적절성·정책 의미를 대신 판단하지 않는다.
 
 ## 2. 저장소와 외부 텍스트는 비신뢰 데이터
@@ -109,13 +109,15 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - retrieved context → request와 실제 location
 - `FALSE` verdict → `DISPROVED` falsification question과 실제 evidence
 - verdict → Pro/Con/dynamic evidence와 restriction
-- Primitive/Research candidate → source result와 아직 검증되지 않은 상태
+- HOLD REQUIRED Primitive → exact final HOLD Verification revision
+- TRUE PROVIDED Primitive → exact final TRUE + Technical ACCEPT + Rule Scope 정상 통과 revision
+- Chaining candidate → ACTIVE Primitive refs, match kind와 아직 검증되지 않은 상태
 - CWE → 정확한 `CWELabel` revision, evidence와 uncertainty
 - Technical review → 정확한 Verification·CWELabel revision
 - Rule/Scope review → 정확한 Verification·Technical review·CWELabel과 `ProgramPolicyRecord` revision
 - report claim → 통과한 result, 두 Gate와 두 Gate가 공통으로 검토한 CWELabel revision
 
-Research, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출을 승인한다.
+Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출을 승인한다.
 
 사람에게는 exact `AnalysisRunResult`, Finding·Verification, 두 Gate, CWE·정책, dynamic·redacted PoC, ReportDraft 또는 차단 사유, 자원, 오류·DataGap·HOLD 조건을 포함한 `HumanReviewPacket`을 제공한다. `HumanReviewState`는 current packet generation과 current decision pointer를 CAS로 관리한다. `HumanReviewDecision` 저장은 인증된 사람 identity와 exact current packet·state version을 검사한 `SAVE_HUMAN_DECISION` ALLOW action만 허용한다. 외부 disclosure action은 current state가 가리키는 Human Reviewer의 `DISCLOSE`, `report_ready=true`, exact approved report와 target이 있을 때만 허용한다. 새 packet이 생긴 뒤 과거 packet·결정, 승인 목록 밖 report와 Agent 결정은 `DISCLOSURE_DENIED`다.
 
@@ -129,7 +131,10 @@ Research, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출�
 | LLM 확증 편향 | 조건부 독립 Pro/Con, 역할 간 NEW session, 두 Gate |
 | session contamination | `NEW/RESUME/AUTO` policy와 결정 logging |
 | 잘못된 path 연결 | location retrieval와 Technical Gate linkage 검토 |
-| Research 후보의 오승격 | 새 hypothesis로 전체 재검증 |
+| Verification/Chaining 후보의 오승격 | origin을 구분한 새 hypothesis로 전체 재검증 |
+| Gate 전 TRUE의 체이닝 오염 | 두 Gate 정상 통과 전 PROVIDED admission 금지 |
+| 오래된 Gate 승인 재사용 | exact Verification revision binding과 이전 Primitive `SUPERSEDED` |
+| Chaining Agent의 일반 research 확장 | ChainingResult schema와 result-owner validation으로 matching 외 출력 거절 |
 | chain 폭증 | depth/count/token/time/duplicate/cycle 제한 |
 | 같은 작업의 중복 반영 | canonical `dedupe_key`, 한 active attempt, state version compare-and-set |
 | 취소·retry 뒤 늦은 결과 오염 | active attempt/input hash 검사와 `STALE_RESULT` 격리 |
@@ -196,6 +201,27 @@ Research, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출�
 | Sandbox가 계획에 없는 command·공격 입력을 실행하려 함 | exact `ReproductionPlan`과 실행할 step·input refs | `SANDBOX_POLICY_DENIED`, 실행 금지와 오류 기록 |
 | 동적 결과의 step log·공격 입력·cleanup 정책이 승인 계획과 다름 | `RUN_SANDBOX` USED decision, plan closure, `SandboxStepLog`, 결과 candidate | `SAVE_RESULT` 거절, 결과 `COMMITTED`·Verification 전달 금지 |
 | Verification이 `DynamicReproductionResult`를 직접 저장 | `dynamic_reproduction_result`의 result-owner와 `requested_by` | `AUTHORITY_DENIED`, Sandbox 생산 후보만 허용 |
+
+## Verification ownership과 Chaining admission 시나리오
+
+| ID | 입력·사건 | 기대 결과 |
+|---|---|---|
+| N1 | final HOLD | 두 Gate 없이 REQUIRED Primitive 저장과 Chaining 조회 허용 |
+| N2 | final FALSE | terminal internal result; Primitive와 Chaining work 생성 금지 |
+| N3 | final TRUE, Gate 미실행 | PROVIDED admission과 Chaining 금지 |
+| N4 | TRUE + Technical `ACCEPT`, Rule Scope 미실행 | PROVIDED admission과 Chaining 금지 |
+| N5 | TRUE + Technical `ACCEPT` + Rule Scope `FAIL | UNCERTAIN | DENY` | PROVIDED admission과 Chaining 금지 |
+| N6 | TRUE + Technical `ACCEPT` + Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW` | exact revision PROVIDED admission과 Chaining 허용 |
+| N7 | Gate-qualified TRUE PROVIDED + HOLD REQUIRED | TRUE_HOLD match가 있으면 `origin=CHAINING` proposal을 새로 등록·검증 |
+| N8 | 서로 다른 Gate-qualified TRUE PROVIDED 둘 | 앞 PROVIDED가 뒤 PROVIDED의 exact Verification에서 복사한 `required_preconditions` 한 항목을 충족하고 양쪽 parent revision이 유효할 때만 TRUE_TRUE proposal 허용 |
+| N9 | TRUE_TRUE 입력 중 한 부모가 Gate 전 또는 비정상 Gate 결과 | match 저장과 proposal 등록 거절 |
+| N10 | Verification N은 Gate-qualified지만 N+1이 새로 생성됨 | N 기록은 보존하되 current Primitive는 `SUPERSEDED`; N+1은 두 Gate 전까지 자격 없음 |
+| N10-A | Chaining이 N의 ACTIVE Primitive를 읽은 뒤 commit 전에 새 Verification generation/index revision 생성 | commit-time index CAS에서 `STALE_RESULT`; ChainingResult와 child proposal 등록 금지 |
+| N11 | Verification이 새 endpoint·sink·권한 경계를 발견 | Chaining을 거치지 않고 `HypothesisProposal(origin=VERIFICATION)`로 전역 등록 후 새 Verification |
+| N12 | chained child가 FALSE | 두 parent의 기존 verdict와 Gate record 불변 |
+| N13 | Verification이 budget·Sandbox·Gate 순서를 우회하려 함 | Runtime Validator가 `DENY`; hypothesis-local ownership은 enforcement 권한이 아님 |
+| N13-A | 같은 역할이지만 배정되지 않은 Verification identity가 Gate·Reporter·새 verification work를 요청 | ACTIVE `VerificationAssignment.owner_identity_ref` 불일치로 `AUTHORITY_DENIED` |
+| N14 | Chaining Agent가 Primitive match 없는 bypass·impact·dynamic 요청을 출력 | schema/result-owner validation에서 invalid로 거절 |
 
 ## 남는 위험
 

@@ -12,26 +12,26 @@
 2. `Repository Loader`가 `git clone`과 `commit_id` checkout으로 `CodeWorkspace` 준비
 3. AST parse와 SAST 도구 병렬 실행
 4. `StaticFactBundle` 생성
-5. Orchestration Agent 시작
+5. Orchestration Agent가 초기 가설 생성 시작
 6. 저비용 Hypothesis Agent 호출
-7. schema-valid `HypothesisProposal[]` 생성
-8. 가설별 Verification Agent 할당
-9. 코드 위치 기반 on-demand retrieval
-10. `BASIC` 또는 조건부 Pro/Con 검증
+7. schema-valid INITIAL proposal 검증·전역 등록
+8. 가설별 ACTIVE VerificationAssignment 저장과 owner 할당
+9. Verification의 코드 위치 기반 on-demand retrieval
+10. Verification의 `BASIC` 또는 조건부 Pro/Con 검증
 11. initial `TRUE | FALSE | HOLD`
 12. 필요 시 Docker `LIMITED_REPRO | FULL_REPRO`
 13. final `TRUE | FALSE | HOLD`
-14. `TRUE`의 PROVIDED 또는 `HOLD`의 REQUIRED Primitive DB 갱신
-15. `TRUE | HOLD`, Technical revision 또는 Primitive match 조건에서 Research Agent의 bypass·impact·chain 탐색
-16. 새 주장을 `VulnerabilityHypothesis`로 Orchestration Agent에 반환
-17. CWE labeling
-18. Technical Evidence Gate Agent 검토
-19. Technical `ACCEPT`인 `TRUE`에 Rule Scope Impact Gate Agent 검토
-20. 모든 전달 조건을 만족한 결과에 Reporter Agent 호출
-21. 결과·자원·LLM log·PoC·오류·debug 정보 저장
-22. 모든 초기·파생·체이닝 가설에 반복
+14. FALSE terminal / HOLD REQUIRED 즉시 admission / TRUE CWE 분기
+15. final TRUE를 Technical Evidence Gate Agent가 검토
+16. `REVISE`이면 같은 Verification owner가 새 Verification/CWE revision 생성 후 재제출
+17. Technical `ACCEPT`인 TRUE를 Rule Scope Impact Gate Agent가 검토
+18. 두 Gate를 정상 통과한 exact TRUE만 PROVIDED Primitive admission
+19. Chaining Agent가 current ACTIVE Primitive만 matching; TRUE+TRUE는 앞 PROVIDED가 뒤 TRUE의 exact 선행 조건을 충족해야 함
+20. Verification-origin 또는 Chaining-origin 새 주장을 trusted validation·전역 등록하고 새 Verification 배정
+21. 모든 전달 조건을 만족한 결과에 Reporter Agent 호출
+22. 결과·자원·LLM log·PoC·오류·debug 정보를 저장하고 모든 가설에 반복
 23. 사람이 최종 검토 및 공개 여부 결정
 
-Technical Gate의 `REVISE`는 Verification 또는 Research로 돌아갈 수 있다. Research의 material claim은 16단계에서 새 가설이 되며 기존 verdict에 직접 합쳐지지 않는다. 독립 가설은 예산 범위에서 병렬 처리할 수 있다.
+Technical Gate의 `REVISE`는 같은 hypothesis의 Verification owner에게 직접 돌아간다. HOLD는 Gate 없이 Chaining에 들어가지만 TRUE는 두 Gate를 정상 통과하기 전에는 Chaining에 들어갈 수 없다. Verification과 Chaining의 material claim은 새 가설이 되며 기존 verdict에 직접 합쳐지지 않는다. 독립 가설은 예산 범위에서 병렬 처리할 수 있다.
 
 상세 책임과 종료 조건은 [시스템 개요](../01-system-overview.md)를 따른다.

@@ -27,7 +27,7 @@ Runtime Validator는 취약점이 맞는지 새로 판단하는 Gate가 아닙�
 | 실행 허용·차단 | Runtime Validator | 취약점·CWE·정책 의미 판단 |
 | 외부 공개 | Human Reviewer | Agent가 자동 승인 |
 
-Orchestration Agent는 전체 흐름을 조정하지만 verdict, CWE, Gate 결과, 정책 해석, 보고 가능 여부와 공개 여부를 정하지 않습니다.
+Orchestration Agent는 proposal 검증·전역 등록·Verification 배정을 조정하지만 배정 뒤 가설 내부 Context·Pro/Con·dynamic·Gate·Chaining, verdict, CWE, 정책 해석, 보고 가능 여부와 공개 여부를 정하지 않습니다. Verification이 가설 내부 다음 작업을 정해도 프로그램 검사를 우회할 수 없습니다.
 
 ## 실행 전에는 action 검사를 합니다
 
@@ -74,7 +74,7 @@ Agent 또는 service의 제안
 
 Gate를 실제 호출하기 직전에도 검사한 입력 수정본이 그대로인지 다시 확인합니다. Technical Gate는 같은 Verification·CWE를, Rule Scope Gate는 여기에 같은 Technical 검토를, Reporter는 두 Gate가 검토한 동일한 결과 묶음을 사용해야 합니다. 중간에 하나라도 바뀌면 기존 허가는 만료되고 새 요청이 필요합니다.
 
-Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아닙니다. Verification 또는 CWE가 실제로 보완된 새 수정본이 생겨야 새 Gate 작업을 시작할 수 있습니다. 로그인 실패나 잘못된 출력의 제한 재시도와 이 보완 재검토는 별개입니다.
+Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아닙니다. 같은 가설의 Verification owner가 직접 받고, Verification 또는 CWE가 실제로 보완된 새 수정본이 생겨야 새 Gate 작업을 시작할 수 있습니다. Orchestration이나 Chaining이 목적지를 다시 고르지 않습니다. 로그인 실패나 잘못된 출력의 제한 재시도와 이 보완 재검토는 별개입니다.
 
 공식 정책의 뜻과 `UNCERTAIN + DENY` 판단은 Rule Scope Gate가 담당합니다. 프로그램 검사기는 그 판단을 대신하지 않고 필수 항목과 정확한 출처 연결만 확인한 뒤 Reporter 호출을 막습니다.
 

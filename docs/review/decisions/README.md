@@ -1,6 +1,6 @@
 # Architecture v5 설계 결정 기록
 
-이 문서는 전체 흐름, 데이터 형식, 역할 권한이나 안전 규칙에 영향을 주는 중요한 설계 결정을 기록합니다. 중요한 결정(`material decision`)은 GitHub Issue에서 선택지와 영향을 논의하고, 한 가지 결정에 집중한 PR로 번호 문서에 반영합니다. 아래 목록에는 병합이 끝난 결정만 기록합니다.
+이 문서는 전체 흐름, 데이터 형식, 역할 권한이나 안전 규칙에 영향을 주는 중요한 설계 결정을 기록합니다. 중요한 결정(`material decision`)은 GitHub Issue에서 선택지와 영향을 논의하고, 한 가지 결정에 집중한 브랜치와 PR로 번호 문서에 반영합니다. 아래 목록에는 검토 중인 제안과 병합이 끝난 결정을 상태와 함께 기록합니다.
 
 ## 언제 기록해야 하나요?
 
@@ -34,4 +34,4 @@
 
 | ID | 제목 | 상태 | Issue | 반영 PR/commit |
 |---|---|---|---|---|
-| — | 아직 승인된 중요한 설계 결정 없음 | — | — | — |
+| [ADR-001](./ADR-001-verification-owned-chaining-admission.md) | Verification 중심 제어권과 Gate-qualified Chaining | PROPOSED | #1, #2, #4–#7, #9, #10 | `review/verification-owned-chaining-flow` |

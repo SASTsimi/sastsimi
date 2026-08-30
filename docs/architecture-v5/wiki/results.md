@@ -11,17 +11,17 @@
 `AnalysisRunResult`는 다음을 함께 찾을 수 있게 한다.
 
 - repository, `commit_id`, `workspace_id`, `started_at`, `finished_at`, `elapsed_ms`
-- initial/derived/chained/invalid 가설 수와 verdict별 개수
+- INITIAL/VERIFICATION/CHAINING/invalid 가설 수와 verdict별 개수
 - 위치 기반 context 요청·응답과 실제 조회 location
 - Verification, debate mode/trigger/skip, restriction와 capability
 - Docker 결과, redacted PoC와 cleanup
-- Primitive match, Research 후보와 재검증 여부
+- HOLD REQUIRED, Gate-qualified TRUE PROVIDED, TRUE+HOLD·TRUE+TRUE Chaining match와 재검증 여부
 - `CWELabel`, Technical 및 Rule Scope Impact Gate, 공식 `ProgramPolicyRecord`과 두 Gate·보고서가 사용한 정확한 revision reference
 - 보고서 초안과 사람 검토 상태
 - 역할/provider/model/session별 LLM invocation log
 - AST/SAST·LLM·sandbox 자원과 모든 오류
 - `work_id`, attempt 이력, 상태 전이, 중복 요청과 중단 후 복구 결과
-- retry·Gate 보완·chaining·예산 제한으로 멈춘 이유
+- retry·같은 Verification의 Gate 보완·Chaining no-match/제한·예산으로 멈춘 이유
 - `COMMITTED` 상태와 artifact reference를 연결한 debug trace
 
 Proxy가 어려운 membership 호출은 raw session log → provider parser → redaction 경로를 쓴다. 사용자에게 노출된 request/response/tool trace만 기록하고 hidden chain-of-thought와 credential은 저장하지 않는다. 일반 결과에는 credential, 개인정보, 인증 헤더, 로컬 절대 경로가 없는 `AnalysisError.safe_message`만 넣는다. 꼭 필요한 원본 오류는 별도의 접근 제한·민감정보 제거 저장소에 두며 일반 결과와 분리한다. 오류는 `FALSE`와 구분한다.

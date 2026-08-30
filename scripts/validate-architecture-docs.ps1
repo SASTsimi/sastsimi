@@ -162,7 +162,7 @@ $reviewRemediationPatterns = @(
     },
     @{
         Name = 'REVISE creates a new work while retry keeps the same work'
-        Pattern = '(?s)`REVISE`는 일반 retry나 resume이 아니다\..*?새 `VerificationResult` 또는 `CWELabel` revision.*?(?:새 작업은 )?달라진 `input_refs`, `input_hash`, `dedupe_key`, `work_id`.*?`attempt_number=1`, `trigger=INITIAL`.*?일반 retry.*?같은 `work_id`.*?`trigger=RETRY`'
+        Pattern = '(?s)`REVISE`는 일반 retry나 resume이 아니다\..*?같은 hypothesis의 ACTIVE `VerificationAssignment` owner.*?새 `WorkExecutionState\(work_type=VERIFICATION\)`.*?새 `VerificationResult`.*?새 `CWELabel` revision.*?(?:새 Gate 작업은 )?달라진 `input_refs`, `input_hash`, `dedupe_key`, `work_id`.*?`attempt_number=1`, `trigger=INITIAL`.*?일반 retry.*?같은 `work_id`.*?`trigger=RETRY`'
     },
     @{
         Name = 'contradictory ALLOW becomes INVALID_OUTPUT and blocks Reporter'
@@ -341,19 +341,19 @@ foreach ($binding in $requiredActionCheckBindings.GetEnumerator()) {
 }
 
 $requiredActionRequesterBindings = [ordered]@{
-    REGISTER_WORK = 'ORCHESTRATION, RECOVERY'
-    CHANGE_WORK_STATE = 'ORCHESTRATION, RECOVERY'
-    START_ATTEMPT = 'ORCHESTRATION, RECOVERY'
-    CANCEL_WORK = 'ORCHESTRATION, RECOVERY, HUMAN_REVIEWER'
-    READ_CODE = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, RESEARCH, TECHNICAL_GATE'
+    REGISTER_WORK = 'ORCHESTRATION, VERIFICATION, RECOVERY'
+    CHANGE_WORK_STATE = 'ORCHESTRATION, VERIFICATION, RECOVERY'
+    START_ATTEMPT = 'ORCHESTRATION, VERIFICATION, RECOVERY'
+    CANCEL_WORK = 'ORCHESTRATION, VERIFICATION, RECOVERY, HUMAN_REVIEWER'
+    READ_CODE = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, TECHNICAL_GATE'
     RUN_TOOL = 'REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR'
-    CALL_LLM = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, RESEARCH'
+    CALL_LLM = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING'
     FETCH_POLICY = 'POLICY_COLLECTOR'
     RUN_SANDBOX = 'VERIFICATION'
-    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, RESEARCH, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, SANDBOX, RECOVERY'
-    CALL_TECHNICAL_GATE = 'ORCHESTRATION'
-    CALL_RULE_SCOPE_GATE = 'ORCHESTRATION'
-    CREATE_REPORT_DRAFT = 'ORCHESTRATION'
+    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, SANDBOX, RECOVERY'
+    CALL_TECHNICAL_GATE = 'VERIFICATION'
+    CALL_RULE_SCOPE_GATE = 'VERIFICATION'
+    CREATE_REPORT_DRAFT = 'VERIFICATION'
     PREPARE_HUMAN_REVIEW = 'ORCHESTRATION'
     SAVE_HUMAN_DECISION = 'HUMAN_REVIEWER'
     EXTERNAL_DISCLOSURE = 'HUMAN_REVIEWER'
@@ -407,6 +407,9 @@ foreach ($block in @($llmSpecBlock, $llmRequestBlock)) {
     }
     if (-not $block.Contains('CWE_LABELING')) {
         Add-Failure 'CWE_LABELING missing from LLM call role enum'
+    }
+    if (-not $block.Contains('CHAINING')) {
+        Add-Failure 'CHAINING missing from LLM call role enum'
     }
 }
 if (-not $llmRequestBlock.Contains('call_spec_ref:')) {
@@ -574,6 +577,85 @@ foreach ($rule in $requiredAuthorityRules) {
     }
 }
 
+$requiredVerificationChainingContracts = @(
+    'VerificationAssignment:',
+    'verification_assignment_ref:',
+    'ChainingResult:',
+    'trigger: HOLD_MATCH | TRUE_HOLD_MATCH | TRUE_TRUE_MATCH',
+    'source_result_refs:',
+    'input_primitive_refs:',
+    'input_primitive_index_refs:',
+    'primitive_match_candidates:',
+    'chained_hypothesis_proposals:',
+    'no_match_reasons:',
+    'bounded_stop_reason:',
+    'origin: INITIAL | VERIFICATION | CHAINING',
+    'material_child_proposals:',
+    'source_verification_ref:',
+    'technical_review_ref:',
+    'rule_scope_review_ref:',
+    'required_preconditions:',
+    'PrimitiveIndexState:',
+    'eligibility: ACTIVE | SUPERSEDED',
+    'superseded_by_verification_ref:',
+    'primitive_and_chaining_refs:'
+)
+foreach ($marker in $requiredVerificationChainingContracts) {
+    if (-not $contractText.Contains($marker)) {
+        Add-Failure "missing Verification/Chaining contract: $marker"
+    }
+}
+
+foreach ($forbidden in @('ResearchResult:', 'origin: INITIAL | RESEARCH | CHAINING', 'work_type: WORKSPACE_PREP | STATIC_TOOL | STATIC_NORMALIZE | HYPOTHESIS_PROPOSAL | CONTEXT_RETRIEVAL | PRO_EVIDENCE | CON_EVIDENCE | VERIFICATION | DYNAMIC_REPRO | PRIMITIVE_UPDATE | RESEARCH', 'research_requests:')) {
+    if ($contractText.Contains($forbidden)) {
+        Add-Failure "obsolete active Research contract remains: $forbidden"
+    }
+}
+
+$verificationChainingScenarioMarkers = @(
+    '| N1 | final HOLD |',
+    '| N2 | final FALSE |',
+    '| N3 | final TRUE, Gate 미실행 |',
+    '| N4 | TRUE + Technical `ACCEPT`, Rule Scope 미실행 |',
+    '| N5 | TRUE + Technical `ACCEPT` + Rule Scope `FAIL | UNCERTAIN | DENY` |',
+    '| N6 | TRUE + Technical `ACCEPT` + Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW` |',
+    '| N7 | Gate-qualified TRUE PROVIDED + HOLD REQUIRED |',
+    '| N8 | 서로 다른 Gate-qualified TRUE PROVIDED 둘 |',
+    '| N9 | TRUE_TRUE 입력 중 한 부모가 Gate 전 또는 비정상 Gate 결과 |',
+    '| N10 | Verification N은 Gate-qualified지만 N+1이 새로 생성됨 |',
+    '| N10-A | Chaining이 N의 ACTIVE Primitive를 읽은 뒤 commit 전에 새 Verification generation/index revision 생성 |',
+    '| N11 | Verification이 새 endpoint·sink·권한 경계를 발견 |',
+    '| N12 | chained child가 FALSE |',
+    '| N13 | Verification이 budget·Sandbox·Gate 순서를 우회하려 함 |',
+    '| N13-A | 같은 역할이지만 배정되지 않은 Verification identity가 Gate·Reporter·새 verification work를 요청 |',
+    '| N14 | Chaining Agent가 Primitive match 없는 bypass·impact·dynamic 요청을 출력 |'
+)
+foreach ($marker in $verificationChainingScenarioMarkers) {
+    if (-not $securityText.Contains($marker)) {
+        Add-Failure "missing Verification/Chaining scenario: $marker"
+    }
+}
+
+$requiredVerificationChainingRules = @(
+    'Orchestration Agent는 한 가설 안에서 Pro/Con·동적 재현·두 Gate·Reporter·Chaining의 호출 여부나 Technical `REVISE` 목적지를 결정하지 않는다.',
+    '같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 전달',
+    'Gate 전 TRUE와 오래된 Gate revision은 ACTIVE PROVIDED가 될 수 없다.',
+    'origin=VERIFICATION',
+    'origin=CHAINING',
+    'TRUE_HOLD',
+    'TRUE_TRUE',
+    '앞 TRUE의 제공 능력이 뒤 TRUE를 악용하기 위해 exact Verification에서 명시한 선행 조건을 충족',
+    'HypothesisProcessState.status=TERMINAL',
+    'VerificationAssignment.owner_identity_ref',
+    'commit-time CAS 검사가 최종 강제 경계',
+    'child가 FALSE여도 부모 판정은 바뀌지 않는다'
+)
+foreach ($rule in $requiredVerificationChainingRules) {
+    if (-not ($orchestrationText.Contains($rule) -or $gateText.Contains($rule) -or $contractText.Contains($rule) -or $securityText.Contains($rule) -or $diagramText.Contains($rule))) {
+        Add-Failure "missing Verification/Chaining rule: $rule"
+    }
+}
+
 $savedErrorAction = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 $gitCheck = & git -C $repoRoot diff --check 2>&1
@@ -602,9 +684,13 @@ Write-Output "R4-03 authority errors: $($requiredAuthorityErrors.Count)"
 Write-Output "R4-03 authority scenarios: $($authorityScenarioMarkers.Count)"
 Write-Output "R4-03 authority rules: $($requiredAuthorityRules.Count)"
 Write-Output "R4-03 Sandbox review rules: $($sandboxReviewPatterns.Count)"
+Write-Output "Verification/Chaining contract markers: $($requiredVerificationChainingContracts.Count)"
+Write-Output "Verification/Chaining scenarios: $($verificationChainingScenarioMarkers.Count)"
+Write-Output "Verification/Chaining semantic rules: $($requiredVerificationChainingRules.Count)"
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {
+    $failures | ForEach-Object { Write-Output "FAIL: $_" }
     $failures | ForEach-Object { Write-Error $_ }
     exit 1
 }

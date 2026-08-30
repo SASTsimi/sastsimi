@@ -20,8 +20,8 @@
 | `hypotheses` | initial/child/chained proposal, validation state와 parent 관계 |
 | `contexts` | `CodeContextRequest/Response`, 실제 반환·열람 위치 |
 | `verifications` | Pro/Con, initial/final verdict, restriction/capability, CWE |
-| `primitives` | HeldHypothesis, ConfirmedCapability와 match candidates |
-| `research` | `ResearchResult`, new claim과 validation state |
+| `primitives` | HeldHypothesis, Gate-qualified ConfirmedCapability와 exact admission provenance |
+| `chaining` | `ChainingResult`, TRUE+HOLD·TRUE+TRUE match와 child proposal validation state |
 | `gates` | Technical 및 Rule Scope Impact review와 Verification·CWELabel·정책 input revision refs |
 | `policies` | 공식 `ProgramPolicyRecord`과 source refs |
 | `reports` | 허용된 내부 `ReportDraft`와 두 Gate가 공통으로 본 CWELabel revision ref |
@@ -88,10 +88,11 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 - debate 전후 verdict 변화
 - HOLD 해소, false-positive 감소 후보와 bypass 발견
 
-### Research/chaining
+### Verification-owned exploration/chaining
 
-- 호출·skip 이유, new claim 수와 재검증 결과
-- REQUIRED/PROVIDED primitive와 match 수
+- Verification-origin material claim 수와 재검증 결과
+- ACTIVE VerificationAssignment, HOLD REQUIRED, Gate-qualified TRUE PROVIDED, PrimitiveIndexState version과 TRUE+HOLD·TRUE+TRUE match·stale 거절 수
+- Gate 전·stale TRUE admission 차단 수와 no-match reason
 - chain depth·duplicate·budget 제한 도달
 
 ### Gates/reporting
@@ -172,7 +173,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 
 ## AnalysisRunResult
 
-최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, 초기·파생·chain·invalid hypothesis 수, verdict별 수, 두 Gate별 수, PoC/report refs, 공식 정책 상태, Research/Primitive 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
+최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, INITIAL·VERIFICATION·CHAINING·invalid hypothesis 수, verdict별 수, 두 Gate별 수, PoC/report refs, 공식 정책 상태, Primitive/Chaining 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
 
 분석 종료 뒤 review packet assembler가 exact `AnalysisRunResult`에서 `HumanReviewPacket`을 만든다. packet은 Finding·Verification, 두 Gate, 정책·CWE, dynamic·redacted PoC, report 또는 차단 이유, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. `HumanReviewState`는 current packet generation과 current 사람 decision을 가리킨다. 새 packet이 생기면 이전 packet과 결정은 감사 기록으로만 남고 공개에는 사용할 수 없다. `HumanReviewDecision`은 packet과 별도 record이며 ReportDraft를 수정하지 않는다.
 
@@ -229,7 +230,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 | `RATE_LIMITED` | provider adapter | LLM 호출 지연·중단 | backoff 또는 명시적 fallback |
 | `TIMED_OUT` | 각 runtime | 해당 작업 시간 초과 | 예산 안에서 새 시도 또는 중단 |
 | `SANDBOX_ERROR` | Sandbox runtime | 동적 재현 `FAILED` | 안전 조건 확인 뒤 제한 retry |
-| `RESEARCH_ERROR` | Research runtime | Research 실패, 부모 verdict 유지 | 제한 retry 또는 결과 없음 기록 |
+| `CHAINING_ERROR` | Chaining runtime | matching 실패, 부모 verdict 유지 | 제한 retry 또는 no-match/실패 기록 |
 | `TECHNICAL_GATE_ERROR` | Technical Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
 | `POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 Gate `UNCERTAIN + DENY` | 공식 출처 재확인 |
 | `RULE_SCOPE_GATE_ERROR` | 정책·영향 Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |

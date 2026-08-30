@@ -87,7 +87,7 @@ Gate 작업은 시작할 때 읽은 Verification, CWE, 앞 Gate와 정책의 정
 
 조건이 해결되면 `READY`에서 새 `attempt_id`로 다시 시작합니다. 재시도할 수 없거나 한도를 모두 사용하면 최종 `FAILED`가 됩니다. 취소된 작업은 자동 재시도하지 않습니다.
 
-Technical Gate의 `REVISE`는 이 retry와 다릅니다. `REVISE` 작업은 결과를 저장하고 끝낸 뒤, Verification이 보완 내용을 새 Verification 또는 CWE 수정본으로 확정해야 합니다. Research가 새 근거를 만들었다면 새 Verification 수정본에서 그 근거를 채택·반박·보류한 결과를 연결합니다. 그 다음 새 `input_hash`, `dedupe_key`, `work_id`와 첫 attempt로 Gate를 다시 시작합니다. 같은 입력에 attempt만 추가해 다시 투표하지 않습니다.
+Technical Gate의 `REVISE`는 이 retry와 다릅니다. `REVISE` 작업은 결과를 저장하고 끝낸 뒤 같은 ACTIVE `VerificationAssignment` owner에게 직접 전달합니다. 프로그램은 종료된 기존 Verification work를 되돌리지 않고 새 generation의 Verification work를 만들며, 가설 상태와 새 work pointer를 한 번에 `TERMINAL -> VERIFYING`으로 바꿉니다. 새 결과·work 종료·가설의 current result pointer도 함께 확정한 다음 새 `input_hash`, `dedupe_key`, `work_id`와 첫 attempt로 Gate를 다시 시작합니다. 같은 입력에 attempt만 추가해 다시 투표하거나 오래된 Gate 결과를 새 Verification revision에 재사용하지 않습니다.
 
 ## 프로그램이 중단되면
 

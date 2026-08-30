@@ -27,37 +27,44 @@ flowchart TB
     WORK --> S03B[3 SAST tools]
     S03A --> S04[4 StaticFactBundle]
     S03B --> S04
-    S04 --> S05[5 Orchestration Agent plans]
+    S04 --> S05[5 Orchestration starts initial hypothesis work]
     S05 --> RUNTIME[[Trusted Runtime Validator]]
     RUNTIME --> S06[6 Low-cost Hypothesis Agent]
-    S06 --> S07[7 Schema-valid HypothesisProposal list]
-    S07 --> S08[8 Verification Agent per hypothesis]
-    S08 --> S09[9 On-demand code retrieval]
-    S09 --> S10[10 BASIC or conditional Pro and Con]
+    S06 --> S07[7 Validate and register INITIAL proposals]
+    S07 --> S08[8 Runtime stores ACTIVE VerificationAssignment]
+    S08 --> S09[9 Verification requests on-demand context]
+    S09 --> S10[10 Verification runs BASIC or Pro and Con]
     S10 --> S11[11 Initial TRUE FALSE HOLD]
     S11 --> S12{12 Dynamic reproduction needed}
-    S12 -->|No| S13[13 Final TRUE FALSE HOLD]
+    S12 -->|No| S13[13 Final verdict and material claim split]
     S12 -->|LIMITED| DL[Docker LIMITED_REPRO]
     S12 -->|FULL| DF[Docker FULL_REPRO and PoC]
     DL --> S13
     DF --> S13
-    S13 --> S14[14 Update Primitive DB]
-    S14 --> RC{TRUE HOLD or Research trigger}
-    RC -->|Yes| S15[15 Research bypass impact chain]
-    RC -->|No| S17
-    S15 --> S16{16 New material claim}
-    S16 -->|Yes| S05
-    S16 -->|No| S17[17 CWE labeling]
-    S17 --> S18[18 Technical Evidence Gate]
-    S18 -->|REVISE| S08
-    S18 -->|ACCEPT and TRUE| S19[19 Rule Scope Impact Gate]
-    S18 -->|Other| S21[21 Store results logs PoC errors debug]
-    S19 -->|All report conditions| S20[20 Reporter draft]
-    S19 -->|Blocked| S21
-    S20 --> S21
-    S21 --> S22{22 More hypotheses}
-    S22 -->|Yes| S08
-    S22 -->|No| S23[23 Human review and disclosure decision]
+    S13 --> S14{14 Final verdict}
+    S14 -->|FALSE| CLOSED[Terminal internal result]
+    S14 -->|HOLD| REQUIRED[HOLD REQUIRED Primitive admitted]
+    S14 -->|TRUE| CWE[14 CWE labeling for TRUE]
+    CWE --> S15[15 Technical Evidence Gate]
+    S15 -->|REVISE| S16[16 Same assignment starts new Verification work and revision]
+    S16 --> S13
+    S15 -->|REJECT| S22[22 Store results logs PoC errors debug]
+    S15 -->|ACCEPT| S17[17 Rule Scope Impact Gate]
+    S17 -->|FAIL UNCERTAIN or DENY| S22
+    S17 -->|Normal pass| S18[18 Gate-qualified TRUE PROVIDED admitted]
+    REQUIRED --> S19[19 Chaining with current index and directional requirement]
+    S18 --> S19
+    S17 -->|All report conditions| RREQ[Verification requests Reporter]
+    RREQ --> S21[21 Reporter draft]
+    S19 -->|Match| S20[20 Validate child proposal and assign new Verification]
+    S19 -->|No match or bounded stop| S22
+    S20 --> S08
+    S13 -. origin VERIFICATION material claim .-> S20
+    S21 --> S22
+    CLOSED --> S22
+    S22 --> MORE{22 More hypotheses}
+    MORE -->|Yes| S08
+    MORE -->|No| S23[23 Human review and disclosure decision]
 ```
 
 가설들은 예산 범위에서 병렬화할 수 있지만, 한 가설 안의 `workspace_id`·`commit_id`·판정·Gate 순서와 Reporter 전제는 유지한다.
@@ -81,7 +88,7 @@ flowchart LR
     CHECK -->|Yes| RET[Context Retrieval Service]
     RET --> REL[Callers Callees Data flow Auth guards Routes]
     REL --> RESP[CodeContextResponse]
-    RESP --> AGENT[Verification Pro Con Research or Technical Gate]
+    RESP --> AGENT[Verification Pro Con or Technical Gate]
     AGENT --> LOG[Log retrieved locations]
 ```
 
@@ -111,7 +118,7 @@ proposal은 facts와 assumptions, restrictions, missing information, falsificati
 
 ```mermaid
 flowchart TB
-    HYP[VulnerabilityHypothesis] --> CTX[On-demand context]
+    HYP[VulnerabilityHypothesis plus ACTIVE assignment] --> CTX[On-demand context]
     CTX --> MODE{Verification mode}
     MODE -->|BASIC| BASIC[Verification direct evidence]
     MODE -->|CONDITIONAL_DEBATE| TRIGGER{Debate trigger present}
@@ -131,38 +138,43 @@ flowchart TB
     LIMITED --> SYN2[Re-synthesize evidence]
     FULL --> SYN2
     SYN2 --> FINAL
-    FINAL --> OUT[Restrictions bypass candidates required and provided capabilities impact candidates]
+    FINAL --> OUT[Restrictions candidates PrimitiveDraft and VERIFICATION origin child proposals]
 ```
 
 별도 endpoint·sink·권한 경계·impact 주장은 같은 verdict에 합치지 않고 새 가설로 보낸다.
 
-## 5. Primitive DB와 Research loop
+## 5. Primitive DB와 Chaining admission
 
 ```mermaid
 flowchart TB
     VR[Final VerificationResult] --> KIND{Verdict}
-    KIND -->|FALSE| CLOSED[Store terminal result]
-    KIND -->|TRUE| PROVIDED[ConfirmedCapability PROVIDED]
-    KIND -->|HOLD| REQUIRED[HeldHypothesis REQUIRED]
-    PROVIDED --> PDB[(Primitive DB)]
-    PROVIDED --> RESEARCH[Research Agent]
-    REQUIRED --> PDB
-    REQUIRED --> RESEARCH
-    PDB --> MATCH{Workspace commit asset capability and attack order match}
-    MATCH -->|No| RESEARCH[Research Agent]
-    MATCH -->|Yes| RESEARCH
-    TGREV[Technical Gate revision request] --> RESEARCH
-    RESEARCH --> CAND[Bypass alternate path impact and chain candidates]
-    CAND --> MATERIAL{Material new claim}
-    MATERIAL -->|No| RECORD[Record no material extension or validation request]
-    MATERIAL -->|Yes| NEW[Chained or child HypothesisProposal]
-    NEW --> LIMIT{Depth count token time duplicate limits}
-    LIMIT -->|Within limits| ORCH[Orchestration Agent]
-    LIMIT -->|Exceeded| STOP[Record bounded stop]
-    ORCH --> VERIFY[Full verification pipeline]
+    KIND -->|FALSE| CLOSED[Terminal no Primitive no Chaining]
+    KIND -->|HOLD| REQUIRED[Immediate REQUIRED with exact Verification ref]
+    KIND -->|TRUE| CWE[CWE labeling]
+    CWE --> TECH[Technical Evidence Gate]
+    TECH -->|REVISE| SAME[Same assignment new Verification work and revision]
+    SAME --> VR
+    TECH -->|REJECT| NOCHAIN[No Chaining]
+    TECH -->|ACCEPT| RULE[Rule Scope Impact Gate]
+    RULE -->|FAIL UNCERTAIN DENY| NOCHAIN
+    RULE -->|PASS PASS PASS SUFFICIENT ALLOW| PROVIDED[PROVIDED with exact Gate refs]
+    REQUIRED --> PDB[(Primitive records)]
+    PROVIDED --> PDB
+    PDB --> INDEX[Current PrimitiveIndexState]
+    INDEX --> MATCH{Upstream PROVIDED satisfies downstream requirement}
+    MATCH -->|No| RECORD[ChainingResult no match or bounded stop]
+    MATCH -->|Yes| CHAIN[Chaining Agent matching only]
+    CHAIN --> NEW[HypothesisProposal origin CHAINING]
+    NEW --> LIMIT{Runtime validation depth budget duplicate cycle}
+    LIMIT -->|Pass| REGISTER[Global registration]
+    LIMIT -->|Fail| STOP[Reject or bounded stop]
+    REGISTER --> ORCH[Orchestration assigns Verification]
+    ORCH --> VERIFY[Full Verification pipeline]
+    VMAT[Verification material claim] --> VNEW[HypothesisProposal origin VERIFICATION]
+    VNEW --> LIMIT
 ```
 
-Primitive DB는 queue가 아니며 Research·match 결과는 Finding이 아니다.
+Primitive DB는 queue가 아니며 Chaining match와 child proposal은 Finding이 아니다. Gate 전 TRUE와 오래된 Gate revision은 ACTIVE PROVIDED가 될 수 없다.
 
 ## 6. 이중 LLM Gate와 사람 결정
 
@@ -170,20 +182,19 @@ Primitive DB는 queue가 아니며 Research·match 결과는 Finding이 아니�
 flowchart TB
     VR[Final VerificationResult plus CWE] --> TECH[Technical Evidence Gate Agent]
     TECH --> TS{ACCEPT REVISE REJECT}
-    TS -->|REVISE| BACK[Verification or Research revision]
+    TS -->|REVISE| BACK[Same hypothesis Verification owner]
     BACK --> VR
     TS -->|REJECT| BLOCK[Report blocked]
-    TS -->|ACCEPT but not TRUE| INTERNAL[Internal terminal record]
-    TS -->|ACCEPT and TRUE| RULE[Rule Scope Impact Gate Agent]
+    TS -->|ACCEPT| RULE[Rule Scope Impact Gate Agent]
     POLICY[Official ProgramPolicyRecord] --> RULE
     NOPOL[Missing official policy] --> UNCERTAIN[Rule and scope UNCERTAIN permission DENY]
     UNCERTAIN --> BLOCK
     RULE --> READY{Review PASS Rule PASS Scope PASS Impact SUFFICIENT Permission ALLOW}
     READY -->|No| BLOCK
-    READY -->|Yes| REPORTER[Reporter Agent]
+    READY -->|Yes| RREQ[Verification requests Reporter]
+    RREQ --> REPORTER[Reporter Agent]
     REPORTER --> DRAFT[Internal ReportDraft]
     BLOCK --> HUMAN[Human Reviewer]
-    INTERNAL --> HUMAN
     DRAFT --> HUMAN
     HUMAN --> DECIDE[Disclose Revise Withhold or More validation]
 ```
@@ -223,7 +234,7 @@ flowchart LR
     CONTEXT[Context retrieval] --> CONTEXTS[(contexts)]
     AGENTS[Hypothesis Verification Pro Con] --> RESULTS[(hypotheses and verifications)]
     DYNAMIC[Docker and PoC] --> DYNSTORE[(dynamic artifacts)]
-    PR[Primitive and Research] --> PRSTORE[(primitives and research)]
+    PR[Primitive and Chaining] --> PRSTORE[(primitives and chaining)]
     GATES[Technical and Rule Scope Gates] --> GATESTORE[(gates and policies)]
     REPORT[Reporter] --> REPORTS[(report drafts)]
     LLM[Logging Proxy or parser] --> INV[(invocation logs)]

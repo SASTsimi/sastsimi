@@ -31,7 +31,7 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 - `root_hypothesis_id`: 이 가설 계보의 첫 가설
 - `chain_depth`: 첫 가설은 0, 한 단계 이어질 때마다 1 증가
 
-`TRUE + TRUE`를 연결해 더 큰 공격 가능성을 찾아도 기존 두 결과를 수정하지 않습니다. 새로운 `hypothesis_id`를 만들고 전체 검증을 다시 거칩니다.
+`TRUE + TRUE`를 연결해 더 큰 공격 가능성을 찾아도 기존 두 결과를 수정하지 않습니다. 양쪽 TRUE가 모두 두 Gate를 통과한 exact revision인지 확인한 뒤 새로운 `origin=CHAINING` proposal과 `hypothesis_id`를 만들고 전체 검증을 다시 거칩니다. Verification이 별도 endpoint·sink·권한 경계를 발견한 경우에는 `origin=VERIFICATION` proposal을 사용합니다.
 
 ## 시간은 어떻게 적나요?
 
@@ -86,13 +86,15 @@ Docker 환경을 만들지 못했거나 실행이 timeout된 것은 재현 실�
 
 Technical Gate는 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 자신이 읽은 Verification과 CWELabel 수정본을 정확히 기록합니다. 둘 중 하나가 수정되면 이전 Gate 승인을 새 수정본에 재사용하지 않습니다. Rule Scope Gate와 보고서 초안도 같은 CWELabel `record_id`를 사용해야 합니다. `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
 
+Primitive도 exact revision을 사용합니다. HOLD는 final Verification ref가 붙은 REQUIRED를 Gate 없이 만들고, TRUE는 Technical `ACCEPT`와 Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`가 같은 Verification revision을 가리킬 때만 PROVIDED를 만듭니다. TRUE의 PROVIDED에는 그 취약점을 악용하기 위한 exact Verification의 `required_preconditions`도 함께 고정합니다. 가설별 `PrimitiveIndexState`가 current ACTIVE 항목을 가리키며 새 Verification/index revision이 생기면 과거 항목과 진행 중인 오래된 Chaining 결과를 commit 시 거절합니다.
+
 ## 자주 쓰는 작은 데이터 구조
 
 - `EvidenceClaim`: 찬성·반대 주장, 작성 역할, 실제 근거와 코드 위치를 한 묶음으로 저장합니다.
 - `CandidateRef`: 아직 검증되지 않은 우회·대체 경로·영향 확대 후보입니다. 새 주장이면 별도 가설로 검증하기 전까지 확정 결과로 쓰지 않습니다.
 - `VerificationMetrics`: debate의 token·시간·판정 변화와 새로 발견한 항목 수를 저장합니다. 제공되지 않은 token은 `null`입니다.
 - `PolicyItem`: 공식 정책의 항목 하나와 원문을 다시 찾을 수 있는 출처 위치를 연결합니다.
-- `PrimitiveMatchCandidate`: REQUIRED와 PROVIDED 능력의 자산·코드 대상·권한·공격 순서·제한 조건 호환성을 기록한 미검증 연결 후보입니다.
+- `PrimitiveMatchCandidate`: TRUE+HOLD에서는 PROVIDED와 HOLD REQUIRED를, TRUE+TRUE에서는 앞 PROVIDED와 뒤 TRUE의 exact `required_preconditions`를 방향성 있게 비교하고 current index·revision 호환성을 기록한 미검증 연결 후보입니다.
 
 ## 계약이 바뀌면 어떻게 하나요?
 

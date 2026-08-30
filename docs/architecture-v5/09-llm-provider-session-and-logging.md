@@ -111,7 +111,7 @@ API 방식이 허용되어도 특정 provider를 기본값으로 확정하는 �
 | Pro와 Con | `AUTO` 사용 금지, 각각 명시적 `NEW` |
 | Verification과 Technical Gate | `NEW` |
 | Technical Gate와 Rule Scope Impact Gate | `NEW` |
-| Verification과 Research | `NEW` |
+| Verification과 Chaining | `NEW` |
 | Gate와 Reporter | `NEW` |
 
 정책은 설정 가능하며 실제 결정, 이유, parent session reference를 기록한다. session reuse는 반복 context token을 줄일 수 있지만 confirmation bias와 prompt contamination을 키울 수 있으므로 품질·비용 평가 없이 광범위하게 적용하지 않는다.
@@ -121,7 +121,7 @@ Pro/Con 독립성은 설정으로 완화할 수 없는 예외다. 두 역할의 
 ## 역할별 모델 선택
 
 - Hypothesis Agent에는 저비용 모델 profile을 구성할 수 있다.
-- Verification, Research와 두 Gate에는 과업 위험도에 맞는 별도 profile을 구성할 수 있다.
+- Verification, Chaining과 두 Gate에는 과업 위험도에 맞는 별도 profile을 구성할 수 있다.
 - 특정 역할의 가격 등급이 정확도를 보장하지 않는다.
 - 모델·provider 변경은 versioned configuration과 evaluation 대상으로 관리한다.
 

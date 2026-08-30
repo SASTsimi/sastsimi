@@ -10,21 +10,28 @@
 
 ## Orchestration Agent
 
-Orchestration Agent는 분석 계획과 다음 작업을 제안·조정하는 control-plane 역할이다. 다만 보안 경계를 실제로 강제하는 주체는 Agent가 아니라 신뢰 경계 안의 비-LLM runtime validator다. runtime은 `workspace_id`·`commit_id` 일치, budget, Hypothesis output validation, 가설별 Verification 할당, Research 환류, 두 Gate의 순서, 결과 저장과 종료 조건을 검증·집행한다. Orchestration Agent는 각 단계의 전문 판정이나 runtime enforcement를 대신하지 않는다.
+Orchestration Agent는 분석 전체와 가설 목록을 관리하는 global control-plane이다. 한 가설에 대한 책임은 proposal 검증·전역 등록·Verification 배정에서 끝난다. 배정 뒤 Context, Pro/Con, 동적 재현, 판정, Gate `REVISE`와 Chaining handoff를 선택하는 주체는 그 가설의 Verification owner다.
 
-주요 책임은 다음과 같다.
+```text
+HypothesisProposal validation
+-> VulnerabilityHypothesis registration
+-> Verification Agent assignment
+-> hypothesis-local control transfers to Verification
+```
 
-- `analysis_id` 부여와 proposal 검증 뒤 `hypothesis_id` 등록
-- `parent_hypothesis_ids`·`root_hypothesis_id`·`chain_depth` 관계 검증
-- 가설 schema 검증과 제한된 repair retry
-- 독립 가설 병렬 처리와 hypothesis별 resource budget
-- 논리 작업별 `work_id`·`dedupe_key` 등록과 활성 `attempt_id` 하나 유지
-- `state_version` compare-and-set과 atomic output binding을 runtime에 요청
-- session policy와 provider profile을 Agent Runtime에 전달
-- 동적 재현·Research·Gate 호출 조건 적용
-- chain depth/count/token/time/duplicate 제한 적용
-- 실패와 `INVALID_OUTPUT`을 숨기지 않고 종료 상태로 저장
-- 모든 LLM 출력을 비신뢰 입력으로 취급하고 schema·semantic·authority validation을 통과한 action만 실행
+Orchestration Agent의 주요 책임은 다음과 같다.
+
+- `analysis_id`와 전역 분석 계획 관리
+- INITIAL·VERIFICATION·CHAINING proposal의 schema/semantic validation 요청
+- 검증된 proposal의 `hypothesis_id` 등록
+- `parent_hypothesis_ids`·`root_hypothesis_id`·`chain_depth` 관계 검증 요청
+- 독립 가설의 병렬 배정과 hypothesis별 resource budget 배분
+- 등록된 각 가설에 정확히 한 Verification owner를 배정하고 trusted runtime이 ACTIVE `VerificationAssignment`로 저장
+- 전체 가설의 진행 상태·종료 상태·오류 집계
+- chain depth/count/token/time/duplicate 전역 제한 적용 요청
+- 실패와 `INVALID_OUTPUT`을 숨기지 않고 분석 결과에 보존
+
+Orchestration Agent는 한 가설 안에서 Pro/Con·동적 재현·두 Gate·Reporter·Chaining의 호출 여부나 Technical `REVISE` 목적지를 결정하지 않는다. 논리 작업의 상태, `work_id`·`dedupe_key`, 활성 attempt, compare-and-set, atomic output binding과 실제 action 허가는 신뢰 경계 안의 비-LLM runtime이 관리한다.
 
 ## 저비용 Hypothesis Agent
 
@@ -64,13 +71,17 @@ ProposalProcessState: PROPOSED -> SCHEMA_VALID
 
 SCHEMA_VALID -> register new hypothesis_id
 HypothesisProcessState: REGISTERED -> ASSIGNED -> VERIFYING -> TERMINAL
+Technical REVISE: TERMINAL -> same assignment + new VERIFICATION work -> VERIFYING
 VerificationResult.verdict -> TRUE | FALSE | HOLD
-TRUE/HOLD verdict -> Primitive + Research
-Research material claim -> PROPOSED child hypothesis
+HOLD -> REQUIRED Primitive -> Chaining eligible
+TRUE -> two Gates pass -> PROVIDED Primitive -> Chaining eligible
+Verification material claim -> PROPOSED child hypothesis origin VERIFICATION
+Chaining match -> PROPOSED child hypothesis origin CHAINING
 ```
 
-`ProposalProcessState.status`는 `hypothesis_id`를 발급하기 전의 출력 검증 상태를 기록한다. 검증을 통과하면 새 `hypothesis_id`와 별도 `HypothesisProcessState`를 만들고 같은 `proposal_ref`로 연결한다. `HypothesisProcessState.status`가 등록 뒤 처리 진행 상태를 기록하고 `VerificationResult.verdict`가 기술 판정을 기록한다. `TERMINAL`은 검증 처리가 끝났다는 뜻일 뿐 `TRUE`, `FALSE`, `HOLD` 중 어느 판정인지 대신 말하지 않는다. parent 가설의 결과와 child 가설은 독립된 lifecycle을 갖는다. Research 후보가 존재한다는 이유만으로 parent verdict나 impact를 강화하지 않는다.
-초기 가설은 자기 자신을 `root_hypothesis_id`로 사용하고 `chain_depth=0`이다. Research·체이닝 proposal은 직접 부모 ID를 보존하고 검증을 통과할 때 새 `hypothesis_id`를 받는다. 여러 `TRUE`를 연결하는 경우도 기존 가설을 수정하지 않고 새 child 가설로 등록한다.
+`ProposalProcessState.status`는 `hypothesis_id`를 발급하기 전의 출력 검증 상태를 기록한다. 검증을 통과하면 새 `hypothesis_id`와 별도 `HypothesisProcessState`를 만들고 같은 `proposal_ref`로 연결한다. `HypothesisProcessState.status`가 등록 뒤 처리 진행 상태를 기록하고 `VerificationResult.verdict`가 기술 판정을 기록한다. `TERMINAL`은 검증 처리가 끝났다는 뜻일 뿐 `TRUE`, `FALSE`, `HOLD` 중 어느 판정인지 대신 말하지 않는다. parent 가설의 결과와 child 가설은 독립된 lifecycle을 갖고 child 결과가 parent verdict를 바꾸지 않는다.
+
+초기 가설은 자기 자신을 `root_hypothesis_id`로 사용하고 `chain_depth=0`이다. Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하고 trusted validation을 통과할 때만 새 `hypothesis_id`를 받는다. 새 endpoint·sink·권한 경계·공격 단계·독립 impact는 Verification이 `origin=VERIFICATION` proposal로 분리한다. TRUE+HOLD는 PROVIDED가 HOLD REQUIRED를, TRUE+TRUE는 앞 TRUE의 PROVIDED가 뒤 TRUE의 exact Verification에 기록된 선행 조건을 충족할 때만 Chaining Agent가 `origin=CHAINING` proposal로 만든다. 어느 경로도 기존 가설을 수정하거나 child를 자동 TRUE로 만들지 않는다. child가 FALSE여도 부모 판정은 바뀌지 않는다.
 
 ## 공통 실행 상태와 전문 결과의 분리
 
@@ -91,19 +102,19 @@ Research material claim -> PROPOSED child hypothesis
 
 | 역할 | 제안 | 직접 판단 | 검토 | 프로그램 강제 | 사람만 결정 |
 |---|---|---|---|---|---|
-| Orchestration Agent | 실행 계획·다음 작업·병렬화·retry 후보 | 없음 | 진행 상태 요약 | 없음 | 없음 |
+| Orchestration Agent | 전역 분석 계획·proposal 등록·가설 배정·가설 간 병렬화 | 없음 | 전체 진행 상태 요약 | 없음 | 없음 |
 | Hypothesis Agent | 취약점 가설 | 없음 | static 사실을 입력으로 읽음 | 없음 | 없음 |
 | Pro·Con Agent | 찬성·반대 근거 | 없음 | 자기 역할의 근거 | 없음 | 없음 |
-| Verification Agent | 동적 재현·Research 요청 | `TRUE | FALSE | HOLD` | static·Pro·Con·dynamic 근거 | 없음 | 없음 |
+| Verification Agent | Context·Pro/Con·동적 재현·두 Gate·Reporter·Chaining 요청, material child proposal | `TRUE | FALSE | HOLD` | static·Pro·Con·dynamic 근거와 Gate 보완 요청 | 없음 | 없음 |
 | CWE Labeling | CWE 후보와 근거 | CWE label revision 생성 | final Verification | 없음 | 없음 |
-| Research Agent | bypass·alternate path·chain 후보 | 없음 | 기존 verdict와 Primitive | 없음 | 없음 |
+| Chaining Agent | TRUE+HOLD·TRUE+TRUE Primitive match와 chained proposal | 없음 | ACTIVE Primitive와 exact Gate provenance | 없음 | 없음 |
 | Technical Evidence Gate Agent | 구체적인 보완 요청 | 없음 | verdict·근거·코드 흐름·CWE | 없음 | 없음 |
 | Rule Scope Impact Gate Agent | 정책 누락·보완 사유 | `PASS | FAIL | UNCERTAIN`, `ALLOW | DENY` | 공식 정책·scope·impact | 없음 | 없음 |
 | Reporter Agent | 내부 보고서 문장·구성 | 없음 | 통과한 결과와 두 Gate | 없음 | 없음 |
 | Runtime Validator | 허용 가능한 대체 action 안내 | 없음 | 실행 전제와 exact reference | action 허용·차단 | 없음 |
 | Human Reviewer | 재검증·보완 요청 | 외부 제출·공개 | 전체 `HumanReviewPacket` | 공개 승인 | `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION` |
 
-Orchestration Agent는 호출 순서와 작업 분배를 제안하지만 기술 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 확정하지 않는다. Runtime Validator도 이 값을 대신 정하지 않는다. 값의 생산자가 맞는지, 필요한 선행 record와 상태가 있는지, 실행 범위가 허용됐는지만 확인한다.
+Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 호출 순서, 기술 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 확정하지 않는다. Verification Agent는 hypothesis-local 다음 작업을 선택하지만 프로그램 enforcement를 우회하지 못한다. Runtime Validator는 값의 생산자가 맞는지, 필요한 선행 record와 상태가 있는지, 실행 범위가 허용됐는지만 확인하며 domain 값을 대신 만들지 않는다.
 
 ## action 요청과 실행
 
@@ -160,7 +171,9 @@ final VerificationResult + CWELabel
 -> Human Reviewer
 ```
 
-Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니다. 현재 Technical Gate work는 `TechnicalEvidenceReview.status=REVISE`를 exact output으로 atomic commit하고 `SUCCEEDED`로 끝낸다. Verification이 보완된 새 `VerificationResult` 또는 `CWELabel` revision을 만들고, Research 근거가 있다면 그 근거를 새 Verification revision에 반영한 뒤, 바뀐 `input_hash`·`dedupe_key`와 새 `work_id`로 Technical Gate를 다시 등록한다. 이 새 논리 작업의 첫 attempt는 `attempt_number=1`, `trigger=INITIAL`이다. provider timeout처럼 입력이 그대로인 일반 retry만 같은 `work_id`에서 새 `attempt_id`, `trigger=RETRY`를 사용한다. Rule Scope Gate와 Reporter는 앞 단계의 `COMMITTED` output reference만 읽는다. `PREPARED`, 취소된 attempt, 오래된 input hash와 다른 workspace/commit 결과는 다음 단계로 전달하지 않는다.
+Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니다. 현재 Technical Gate work는 `TechnicalEvidenceReview.status=REVISE`를 exact output으로 atomic commit하고 `SUCCEEDED`로 끝낸 뒤 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 직접 전달한다. runtime은 기존 종료 VERIFICATION work를 되돌리지 않고 증가한 generation의 새 VERIFICATION work를 등록하며, 같은 CAS transition에서 `HypothesisProcessState`를 `TERMINAL -> VERIFYING`으로 바꾸고 새 work를 가리킨다. Verification은 새 근거를 반영한 `VerificationResult`와 새 work 종료·hypothesis `TERMINAL`·current result pointer를 atomic commit하고, 필요하면 기존 CWE producer가 만든 새 `CWELabel` revision을 조정한다. 그 뒤 바뀐 `input_hash`·`dedupe_key`와 새 `work_id`로 Technical Gate를 다시 요청한다. 이 새 논리 작업의 첫 attempt는 `attempt_number=1`, `trigger=INITIAL`이다. provider timeout처럼 입력이 그대로인 일반 retry만 같은 `work_id`에서 새 `attempt_id`, `trigger=RETRY`를 사용한다. Rule Scope Gate와 Reporter는 앞 단계의 `COMMITTED` output reference만 읽는다. `PREPARED`, 취소된 attempt, 오래된 input hash와 다른 workspace/commit 결과는 다음 단계로 전달하지 않는다.
+
+Chaining work는 각 parent의 current `PrimitiveIndexState` revision을 input으로 고정한다. 결과와 child proposal commit 직전에 index head와 current final Verification을 다시 검사하며, 탐색 중 새 Verification generation이 생겼다면 이전 Primitive record의 표면상 `ACTIVE` 값과 무관하게 `STALE_RESULT`로 거절한다.
 
 ## retry·취소·중단 후 재개
 
@@ -179,7 +192,7 @@ Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니�
 | Verification Agent | `VerificationResult` | 새 claim의 무검증 승격, 공개 |
 | Pro Agent | supporting evidence candidate | 최종 verdict |
 | Con Agent | counterexample·restriction candidate | 최종 verdict |
-| Research Agent | `ResearchResult` | verdict/CWE/Gate/Finding/report 확정 |
+| Chaining Agent | `ChainingResult`, `origin=CHAINING` proposal | 일반 research, verdict/CWE/Gate/Finding/report 확정 |
 | Technical Evidence Gate | `TechnicalEvidenceReview` | Verification verdict 변경 |
 | Rule Scope Impact Gate | `RuleScopeImpactReview` | 공식 정책 없는 허용 추정 |
 | Reporter Agent | `ReportDraft` | 보고서 제출·공개 |
@@ -187,7 +200,7 @@ Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니�
 
 ## 독립성, provider와 session
 
-역할은 특정 LLM 공급 방식에 묶지 않는다. Agent Runtime은 `LLMProviderAdapter`를 통해 membership session 또는 API provider를 명시적으로 선택한다. 서로 반대되는 판단의 독립성을 위해 Pro와 Con, Verification과 Gate, 두 Gate, Verification과 Research, Reporter는 기본적으로 NEW session을 사용한다. 같은 역할·가설에서 추가 문맥을 조회하거나 같은 Verification의 Gate revision을 처리할 때만 `AUTO` 정책이 제한적으로 RESUME을 선택할 수 있다.
+역할은 특정 LLM 공급 방식에 묶지 않는다. Agent Runtime은 `LLMProviderAdapter`를 통해 membership session 또는 API provider를 명시적으로 선택한다. 서로 반대되는 판단의 독립성을 위해 Pro와 Con, Verification과 Gate, 두 Gate, Verification과 Chaining, Reporter는 기본적으로 NEW session을 사용한다. 같은 역할·가설에서 추가 문맥을 조회하거나 같은 Verification이 Gate revision을 보완할 때만 `AUTO` 정책이 제한적으로 RESUME을 선택할 수 있다.
 
 세션 재사용은 token 절감 가능성이 있지만 confirmation bias와 prompt contamination 위험이 있다. 실제 정책은 설정 가능해야 하고 선택 결과와 비교 지표를 로그에 남긴다.
 

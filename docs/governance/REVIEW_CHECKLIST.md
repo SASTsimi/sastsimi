@@ -36,7 +36,12 @@
 - [ ] Pro와 Con은 독립 NEW session을 사용합니다.
 - [ ] 새 우회·영향·연계 공격(`bypass/impact/chain`) 주장은 새 가설로 재검증합니다.
 - [ ] Primitive DB는 queue 또는 Finding 저장소가 아닙니다.
-- [ ] Research Agent가 verdict·CWE·Gate·Report를 확정하지 않습니다.
+- [ ] Orchestration은 proposal 검증·등록·Verification 배정 뒤 가설 내부 호출을 결정하지 않습니다.
+- [ ] Verification이 Context·Pro/Con·동적 재현·판정·Technical `REVISE`·Gate 제출과 Chaining handoff를 소유합니다.
+- [ ] Chaining Agent는 TRUE+HOLD 또는 앞 TRUE PROVIDED→뒤 TRUE exact 선행 조건 matching만 수행하고 일반 research·동적 재현·Gate 보완을 하지 않습니다.
+- [ ] HOLD는 Gate 없이 REQUIRED Primitive가 되고, FALSE는 Primitive나 Chaining으로 들어가지 않습니다.
+- [ ] TRUE는 두 Gate를 정상 통과한 exact revision만 PROVIDED Primitive가 됩니다.
+- [ ] 새 Verification generation/revision에는 오래된 Gate 결과나 Primitive 자격을 재사용하지 않고, 진행 중 Chaining도 commit-time index CAS로 거절합니다.
 - [ ] Technical Evidence Gate와 Rule Scope Impact Gate가 분리됩니다.
 - [ ] 공식 정책이 없으면 판단과 보고서 전달을 허용하지 않는 `UNCERTAIN + DENY`입니다.
 - [ ] Reporter의 모든 선행 조건이 명시됩니다.
@@ -47,10 +52,11 @@
 ## 전체 시나리오
 
 - [ ] 미리 정한 반증 조건이 실제 코드에서 확인되었을 때만 `FALSE`가 됩니다.
-- [ ] 판단을 보류한 가설의 부족 조건을 다른 `TRUE` 결과가 채우면, 바로 합치지 않고 새로운 연계 가설로 다시 검증합니다.
+- [ ] 판단을 보류한 가설의 부족 조건은 Gate-qualified `TRUE`의 능력이 채울 때만, 바로 합치지 않고 새로운 연계 가설로 다시 검증합니다.
+- [ ] Gate-qualified TRUE 두 개를 결합할 때 양쪽 exact parent revision을 확인하고 새 가설로 검증합니다.
 - [ ] Docker 전체 재현과 PoC가 어떤 가설·코드 위치·관찰 결과를 뒷받침하는지 추적됩니다.
 - [ ] 기술적으로 `TRUE`여도 공식 정책을 확인할 수 없으면 보고서 전달을 허용하지 않습니다.
-- [ ] 기술 검토에서 보완이 필요하면 구체적인 요청과 함께 검증 또는 추가 탐색 단계로 돌아갑니다.
+- [ ] 기술 검토에서 보완이 필요하면 같은 ACTIVE `VerificationAssignment` owner에게 직접 돌아가 새 VERIFICATION work와 `TERMINAL -> VERIFYING` 전이를 만든 뒤 새 revision을 확정합니다.
 - [ ] LLM 로그인·인증 실패를 취약점이 아니라는 뜻의 `FALSE`로 바꾸지 않고 별도 오류로 남깁니다.
 - [ ] [Final Issue #10](https://github.com/SASTsimi/sastsimi/issues/10)의 전체 종단 시나리오를 통과합니다.
 

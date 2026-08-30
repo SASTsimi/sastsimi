@@ -12,17 +12,19 @@
 
 v5에는 책임이 다른 두 LLM 검토 Agent가 있다.
 
-1. final `VerificationResult`와 별도 `CWELabel`의 정확한 `record_id` revision을 Technical Evidence Gate Agent가 함께 검토한다.
-2. Technical 결과가 `ACCEPT`이고 Verification verdict가 `TRUE`일 때만 Rule Scope Impact Gate Agent를 호출한다.
-3. 두 Gate와 impact·permission 조건을 모두 통과했을 때만 Reporter Agent를 호출한다.
+1. final `VerificationResult.verdict=TRUE`와 별도 `CWELabel`의 정확한 `record_id` revision을 Technical Evidence Gate Agent가 함께 검토한다. FALSE와 HOLD는 이 Gate를 호출하지 않는다.
+2. Technical 결과가 `ACCEPT`일 때만 Rule Scope Impact Gate Agent를 호출한다.
+3. 두 Gate와 impact·permission 조건을 모두 통과했을 때만 같은 Verification owner가 Reporter Agent 호출을 요청한다.
+
+가설 내부의 Gate 제출 시점은 같은 가설의 Verification owner가 정한다. Verification은 `CALL_TECHNICAL_GATE`와, Technical `ACCEPT` 뒤의 `CALL_RULE_SCOPE_GATE`, 모든 보고 조건을 통과한 뒤의 `CREATE_REPORT_DRAFT`를 제안한다. 실제 호출 가능 여부와 순서는 비-LLM Runtime Validator가 강제한다. Orchestration Agent가 `REVISE` 목적지를 선택하거나 Verification 대신 Gate 보완 내용을 조정하지 않는다.
 
 두 Gate는 점수 합산식이나 취약점 진위를 새로 판정하는 규칙 엔진이 아니다. 각자의 자료를 읽고 근거가 있는 검토 결과를 생성하는 LLM Agent이며 Verification verdict를 직접 변경할 수 없다.
 
-비-LLM Runtime Validator는 Gate의 결론을 대신 만들지 않는다. `ActionRequest`의 역할·schema·exact input revision·상태·예산과 Gate 순서만 검사한다. Technical Gate 호출에는 final Verification과 CWELabel의 `COMMITTED` revision이 필요하고, Rule Scope Gate 호출에는 같은 Verification이 `TRUE`이며 Technical review가 `ACCEPT`라는 exact reference가 필요하다. 조건이 맞지 않으면 `GATE_ORDER_INVALID`로 호출 자체를 막는다. 이 exact reference 검사는 action 허가 시점과 실제 LLM 호출 직전에 다시 수행한다.
+비-LLM Runtime Validator는 Gate의 결론을 대신 만들지 않는다. `ActionRequest`의 역할·schema·exact input revision·상태·예산과 Gate 순서만 검사한다. Technical Gate 호출에는 final TRUE Verification과 CWELabel의 `COMMITTED` revision이 필요하고, Rule Scope Gate 호출에는 같은 Verification이 `TRUE`이며 Technical review가 `ACCEPT`라는 exact reference가 필요하다. 조건이 맞지 않으면 `GATE_ORDER_INVALID`로 호출 자체를 막는다. 이 exact reference 검사는 action 허가 시점과 실제 LLM 호출 직전에 다시 수행한다.
 
 ## CWE 라벨링
 
-CWE 후보는 final verdict 뒤에 작성한다. primary·alternative CWE, taxonomy version, 선택 이유와 evidence reference를 포함한다. `HOLD`나 `FALSE`에도 분석 기록용 후보를 남길 수 있지만 보고 가능한 취약점 라벨이라는 뜻은 아니다. 구분 근거가 부족하면 억지로 단일 CWE를 확정하지 않는다.
+CWE 후보는 final TRUE 뒤에 Gate 입력으로 작성한다. primary·alternative CWE, taxonomy version, 선택 이유와 evidence reference를 포함한다. `HOLD`나 `FALSE`에 분석용 분류 메모를 남길 수는 있지만 Gate 입력 `CWELabel`이나 보고 가능한 취약점 라벨로 승격하지 않는다. 구분 근거가 부족하면 억지로 단일 CWE를 확정하지 않는다.
 
 ## Gate 1: Technical Evidence Gate Agent
 
@@ -35,11 +37,11 @@ CWE 후보는 final verdict 뒤에 작성한다. primary·alternative CWE, taxon
 - `DynamicReproductionResult`와 PoC reference
 - `CWELabel`의 정확한 `record_id`가 있는 `StoredDataRef`와 근거
 - restriction, bypass candidate, unresolved condition
-- 관련 Research proposal 중 재검증 완료 여부
+- 같은 Verification에서 분리한 material child proposal 중 재검증 완료 여부
 
 ### 검토 항목
 
-- `TRUE | FALSE | HOLD`와 찬성·반대 근거의 일치
+- final `TRUE`와 찬성·반대 근거의 일치
 - 핵심 주장이 현재 `workspace_id`와 `commit_id`의 코드 위치·호출·데이터 흐름에 연결되는지
 - 동적 관측이 현재 가설·`workspace_id`·실행 조건에 연결되는지
 - CWE 선택이 취약점 유형과 근거에 적절한지
@@ -67,17 +69,17 @@ technical_evidence_review:
   restriction_assessment: explanation
   handoff_readiness: READY | NOT_READY
   revision_requests: []
-  research_requests: []
+  verification_requests: []
   rationale: explanation
 ```
 
-- `ACCEPT`: 현재 verdict와 기술 설명이 검토 가능한 근거에 연결되어 있다. `TRUE` 또는 정책상 보고 가능하다는 뜻은 아니다.
-- `REVISE`: Verification 또는 Research가 구체적인 누락·restriction·재현·CWE 설명을 보완해야 한다.
+- `ACCEPT`: 현재 TRUE 판정과 기술 설명이 검토 가능한 근거에 연결되어 있다. 정책상 보고 가능하다는 뜻은 아니다.
+- `REVISE`: 같은 hypothesis의 Verification owner가 구체적인 누락·restriction·재현·CWE 설명을 보완해야 한다.
 - `REJECT`: 현재 자료를 신뢰 가능한 기술 기록이나 다음 단계 입력으로 사용할 수 없다.
 
 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 Gate가 실제로 읽은 `VerificationResult`와 `CWELabel` revision을 각각 고정한다. runtime은 Gate와 두 대상의 `workspace_id`, `commit_id`, `hypothesis_id`, `record_id`, `content_hash`를 확인한다. Verification 또는 CWELabel이 수정되면 이전 `ACCEPT`를 새 revision에 재사용하지 않고 Gate를 새로 호출한다.
 
-`REVISE`는 동일 입력 재투표나 provider retry가 아니다. 현재 Gate work는 `REVISE` review를 exact output으로 확정하고 종료한다. Orchestration Agent가 요청을 Verification 또는 Research에 보내고, Verification이 보완 결과를 새 `VerificationResult` 또는 `CWELabel` revision으로 확정한 뒤 변경된 exact input reference로 새 Gate work를 등록한다. Research가 만든 근거도 새 Verification revision에 반영되어야 한다. 새 work는 새 `input_hash`·`dedupe_key`·`work_id`와 `attempt_number=1`, `trigger=INITIAL`을 사용한다. 입력이 바뀌지 않은 호출 실패만 같은 work 안에서 `trigger=RETRY`인 새 attempt를 사용할 수 있다. 횟수·token·시간 한도 도달 시 보고를 차단하고 미해결 사유를 저장한다.
+`REVISE`는 동일 입력 재투표나 provider retry가 아니다. 현재 Gate work는 `REVISE` review를 exact output으로 확정하고 종료한다. 그 review는 Orchestration을 경유해 목적지를 다시 선택하지 않고 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 전달한다. runtime은 이전 종료 work를 되돌리지 않고 새 generation의 VERIFICATION work를 등록하며 hypothesis 상태를 `TERMINAL -> VERIFYING`으로 CAS 전환한다. Verification은 필요한 Context·Pro/Con·정적 근거·동적 재현·PoC 연결·restriction을 보완하고, 새 result·work 종료·hypothesis current pointer를 atomic commit하며, 필요하면 CWE producer와 새 label revision을 조정한다. 그 뒤 새 `VerificationResult` 및 필요한 `CWELabel` revision을 가리키는 새 Gate work를 요청한다. 새 Gate work는 새 `input_hash`·`dedupe_key`·`work_id`와 `attempt_number=1`, `trigger=INITIAL`을 사용한다. 입력이 바뀌지 않은 호출 실패만 같은 work 안에서 `trigger=RETRY`인 새 attempt를 사용할 수 있다. 횟수·token·시간 한도 도달 시 보고와 TRUE 체이닝을 차단하고 미해결 사유를 저장한다.
 
 Runtime Validator는 `REVISE`를 만든 기존 action·decision을 다시 사용하지 못하게 하고, 같은 Verification·CWE revision 또는 같은 domain input hash로 새 Gate 투표를 요청하면 `ACTION_NOT_ALLOWED`로 차단한다. 보완된 upstream revision을 가리키는 새 work·call spec·action·decision이 모두 있어야 한다. 반대로 provider 실패나 `INVALID_OUTPUT` repair는 Gate 판단을 다시 요구한 것이 아니므로, 허용된 횟수 안에서 같은 domain input과 새 invocation 식별자·action을 사용하는 `RETRY`로만 처리한다.
 
@@ -105,7 +107,7 @@ Runtime Validator는 `REVISE`를 만든 기존 action·decision을 다시 사용
 - 대상 asset과 vulnerability class의 scope
 - 수행한 재현이 금지 조건과 충돌하는지
 - 검증된 실제 impact가 프로그램 기준에 충분한지
-- restriction, alternate path와 미검증 Research 후보의 표현이 정확한지
+- restriction, alternate path와 미검증 Verification-origin 또는 Chaining-origin child의 표현이 정확한지
 - 보고서 초안을 작성할 수 있는지
 
 ### 출력
@@ -131,6 +133,12 @@ rule_scope_impact_review:
 Runtime Validator는 공식 정책 문장이나 정책의 의미를 대신 해석하지 않는다. Rule Scope Gate가 판단한 `UNCERTAIN + DENY`의 필수 필드, exact 정책 reference와 구조적 불변조건만 검사한다. `policy_record_ref=null`이거나 핵심 공식 source가 누락된 출력에서 `ALLOW`·`PASS`가 함께 나타나면 semantic `INVALID_OUTPUT`으로 거절하고, 정상적인 `UNCERTAIN + DENY`이면 `REPORT_READY` check로 Reporter만 프로그램적으로 차단한다. 제한된 repair 뒤에도 불변조건이 맞지 않으면 Rule Scope Gate work를 실패 처리한다. 두 경우 모두 Verification verdict를 바꾸지 않는다.
 
 `verification_result_ref`, `technical_review_ref`, `cwe_label_ref`와 존재하는 `policy_record_ref`에는 정확한 저장 revision의 `record_id`가 필요하다. runtime은 Technical review가 `ACCEPT`이고, Technical review와 Rule Scope review가 같은 Verification과 CWELabel `record_id`를 각각 가리키는지 확인한다. 각 reference의 `workspace_id`, `commit_id`, `content_hash`는 대상 record와 일치해야 하며, Verification·CWELabel·Technical 대상의 `meta.hypothesis_id`는 Rule Scope review의 가설과 같아야 한다. 정책이 있으면 Rule Scope review가 가리킨 정책 record와 Reporter가 사용할 정책 record도 같아야 한다. 입력 revision이 하나라도 달라지면 기존 Rule Scope 결과를 재사용하지 않는다.
+
+## Gate-qualified TRUE와 PROVIDED admission
+
+TRUE가 Chaining에 쓰이려면 Reporter 호출 조건과 같은 Rule Scope 정상 통과 의미를 재사용한다. 즉 final TRUE, Technical `ACCEPT`, `review_status/rule/scope=PASS`, `security_impact=SUFFICIENT`, `report_permission=ALLOW`가 exact 같은 Verification·CWE revision에 연결되어야 한다. 이 조건을 모두 통과한 뒤에만 runtime이 `PROVIDED` Primitive admission을 허가한다.
+
+Technical `ACCEPT`만 받은 결과, `FAIL | UNCERTAIN | DENY` 결과와 Gate 전 TRUE는 내부 기록으로 보존하지만 PROVIDED나 Chaining input이 아니다. 새 Verification generation 또는 revision이 생기면 과거 두 Gate reference는 새 revision의 자격을 증명하지 못하며 이전 Primitive는 current `PrimitiveIndexState`에서 제외된다. 진행 중 Chaining result도 commit 직전 index head와 current final Verification을 다시 검사하므로 오래된 ACTIVE record로 proposal을 등록할 수 없다. HOLD는 이 절차를 사용하지 않고 final HOLD에서 REQUIRED Primitive로 즉시 Chaining에 들어간다.
 
 ## Reporter 호출 조건
 
@@ -160,11 +168,11 @@ Reporter는 통과한 근거를 읽기 쉬운 내부 초안으로 구성한다.
 - 동적 재현과 redacted PoC
 - 두 Gate가 검토한 같은 `CWELabel` revision과 선택 이유
 - 두 Gate 결과와 `ProgramPolicyRecord` reference
-- Research 후보의 재검증 여부
+- Verification-origin 및 Chaining-origin child proposal의 재검증 여부
 - 완화와 회귀 테스트 제안
 - invocation trace와 남은 불확실성
 
-Reporter는 새로운 공격 경로를 확정하거나 미검증 Research 후보를 실제 영향으로 쓰지 않는다. 초안의 핵심 주장은 Verification/PoC/Gate artifact에 연결한다. `ReportDraft.cwe_label_ref.record_id`는 Technical review와 Rule Scope review가 공통으로 가리킨 CWELabel `record_id`와 같아야 하며, CWELabel이 수정되면 두 Gate를 다시 통과하기 전에는 초안을 만들지 않는다.
+Reporter는 새로운 공격 경로를 확정하거나 미검증 material child 또는 Chaining 후보를 실제 영향으로 쓰지 않는다. 초안의 핵심 주장은 Verification/PoC/Gate artifact에 연결한다. `ReportDraft.cwe_label_ref.record_id`는 Technical review와 Rule Scope review가 공통으로 가리킨 CWELabel `record_id`와 같아야 하며, CWELabel이 수정되면 두 Gate를 다시 통과하기 전에는 초안을 만들지 않는다.
 
 ## 사람의 최종 결정
 
