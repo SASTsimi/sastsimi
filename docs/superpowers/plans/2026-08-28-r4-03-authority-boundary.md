@@ -166,6 +166,8 @@ PR은 `review/r4-02-state-recovery`를 base로 시작하고 `Closes #15`, `Refs 
 
 - `740ac6a` `docs: enforce gate action review boundaries`
 - `55d8351` `docs: bind debate sessions and result saves`
+- `486af02` `merge: synchronize R4-02 dynamic state fixes`
+- `a1023e4` `docs: bind sandbox results to authorized plans`
 
 재검증 결과:
 
