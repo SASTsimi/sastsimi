@@ -194,6 +194,9 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 | provider 인증 필요 | `BLOCKED`, `waiting_for=AUTH` | 재인증 또는 승인된 failover 전까지 대기, verdict 변경 금지 |
 | rate limit·timeout | retry 가능하면 `BLOCKED`, 아니면 `FAILED` | backoff·예산 확인 뒤 새 attempt, 이전 실패 보존 |
 | Sandbox 환경·실행 실패 | `FAILED`와 실패 `DynamicReproductionResult` 가능 | 동적 반증이 아님, Verification이 남은 근거로 unresolved condition을 판단 |
+| Sandbox 부분 실행 | `PARTIAL`, 신뢰 결과와 `limitations` 저장 | 실제 오류가 없으면 `error_ids`·`gap_ids`를 만들지 않고 Verification이 한계와 관측을 함께 판단 |
+| Sandbox 정책 차단 결과 | 공통 work `SUCCEEDED`, 동적 결과 `BLOCKED + POLICY_BLOCKED` | 요청 처리 완료와 재현 성공을 구분하고 `INCONCLUSIVE` 결과를 Verification에 전달 |
+| Sandbox 실행 취소 | 공통 work와 동적 결과 `CANCELLED` | 취소 결과를 같은 atomic transition에서 저장하고 이후 늦은 결과는 격리 |
 | 정책 조회 실패 | policy work `FAILED` | 기술 verdict 유지, Rule Scope `UNCERTAIN + DENY`, Reporter 차단 |
 | Technical Gate 실행 오류·보완 한도 초과 | Gate work `FAILED` | 기술 verdict 유지, Rule Scope Gate와 Reporter 차단 |
 | Rule Scope Gate 실행 오류 | Gate work `FAILED` | 기술 verdict 유지, Reporter 차단 |

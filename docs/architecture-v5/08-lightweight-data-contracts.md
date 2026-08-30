@@ -192,7 +192,7 @@ ReportProcessState:
 
 진행 중인 상태는 `finished_at: null`이다. 종료 상태는 `finished_at`이 필수이며 `elapsed_ms`는 시작부터 종료까지 monotonic clock으로 계산한다. `NOT_REQUESTED`는 `started_at: null`, `finished_at: null`, `elapsed_ms: 0`이다. 상세 결과 record에 나열된 상태는 모두 종료 상태이므로 그 `finished_at`은 `null`일 수 없다.
 
-`HypothesisProcessState.status=TERMINAL`이면 `verification_result_ref.record_id`가 필수이고 현재 가설의 정확히 하나인 final `VerificationResult` revision을 가리켜야 한다. 그 밖의 상태에서는 `verification_result_ref=null`이다. `DynamicReproductionState.status=SUCCEEDED | PARTIAL | FAILED`이면 `dynamic_result_ref.record_id`가 필수이고 해당 attempt의 `DynamicReproductionResult`를 가리킨다. `ReportProcessState.status=DRAFTED`이면 `report_draft_ref.record_id`가 필수이며 정확히 하나인 `ReportDraft` revision을 가리키고, `NOT_REQUESTED | FAILED`이면 `report_draft_ref=null`이다.
+`HypothesisProcessState.status=TERMINAL`이면 `verification_result_ref.record_id`가 필수이고 현재 가설의 정확히 하나인 final `VerificationResult` revision을 가리켜야 한다. 그 밖의 상태에서는 `verification_result_ref=null`이다. `DynamicReproductionState.status=SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED`이면 `dynamic_result_ref.record_id`가 필수이고 해당 attempt의 `DynamicReproductionResult`를 가리킨다. `NOT_REQUESTED | RUNNING`에서는 `dynamic_result_ref=null`이다. `ReportProcessState.status=DRAFTED`이면 `report_draft_ref.record_id`가 필수이며 정확히 하나인 `ReportDraft` revision을 가리키고, `NOT_REQUESTED | FAILED`이면 `report_draft_ref=null`이다.
 
 ### 공통 실행 상태와 상태 변경
 
@@ -295,9 +295,9 @@ TransitionCommit:
 - `RUNNING`은 `active_attempt_id`, `started_at`이 필수이고 `finished_at=null`이다.
 - `BLOCKED`는 `active_attempt_id=null`, 하나 이상의 `waiting_for`와 구체적인 `stop_reason`이 필요하다.
 - `SUCCEEDED | PARTIAL | FAILED | CANCELLED`는 `active_attempt_id=null`, `finished_at`과 `stop_reason`이 필요하다. 정상 `SUCCEEDED`의 `stop_reason`은 `COMPLETED`다.
-- `PARTIAL`은 `STATIC_TOOL | STATIC_NORMALIZE | CONTEXT_RETRIEVAL | DYNAMIC_REPRO`에서만 허용하고, 하나 이상의 신뢰 가능한 `output_refs`와 누락을 설명하는 `error_ids` 또는 `gap_ids`가 필요하다.
+- `PARTIAL`은 `STATIC_TOOL | STATIC_NORMALIZE | CONTEXT_RETRIEVAL | DYNAMIC_REPRO`에서만 허용하고 하나 이상의 신뢰 가능한 `output_refs`가 필요하다. static·context 작업은 누락을 설명하는 `error_ids` 또는 `gap_ids`가 필요하다. `DYNAMIC_REPRO`는 정확히 하나의 `DynamicReproductionResult(status=PARTIAL, failure_reason=NONE)`를 가리키고 그 결과의 `hypothesis_evidence_refs`와 `limitations`가 각각 하나 이상이면 이 구조화된 `limitations`가 부분 실행의 누락 설명을 대신한다. 실제 오류나 `DataGap`이 없는데 동적 재현의 정상적인 환경 한계를 억지로 `error_ids`나 `gap_ids`로 만들지 않는다.
 - `FAILED`는 하나 이상의 `error_ids`가 필요하다. 전문 schema가 실패 결과 record를 정의한 `DYNAMIC_REPRO` 같은 작업은 그 실패 record를 `output_refs`에 포함할 수 있지만 성공 결과로 해석하지 않는다.
-- `CANCELLED` 뒤 도착한 output은 현재 상태에 연결하지 않는다.
+- `DYNAMIC_REPRO` 취소 전이는 현재 활성 attempt가 만든 `DynamicReproductionResult(status=CANCELLED)`를 같은 atomic transition에서 확정할 수 있다. 이미 `CANCELLED`가 확정된 뒤 늦게 도착한 output은 현재 상태에 연결하지 않는다.
 - `WorkExecutionState.elapsed_ms`는 완료된 `WorkAttempt.elapsed_ms`의 합이다. block 대기 시간과 프로세스가 꺼진 시간은 별도 상태 체류 지표로 기록하며 실행 시간에 더하지 않는다.
 - `WorkAttempt.attempt_number`는 한 `work_id` 안에서 1부터 1씩 증가하고, `WorkAttempt.input_hash`는 그 attempt를 시작할 때의 `WorkExecutionState.input_hash`와 같다. `RecordMeta`를 쓰면 `meta.attempt_id`도 `WorkAttempt.attempt_id`와 같아야 한다.
 
@@ -328,6 +328,18 @@ TransitionCommit:
 | `RULE_SCOPE_GATE` | Orchestration runtime | Rule Scope Gate runtime | `RuleScopeImpactReview` |
 | `REPORT_DRAFT` | Reporter 조건 검사 runtime | Reporter runtime | `ReportDraft` |
 
+`DYNAMIC_REPRO`는 공통 작업 상태와 전문 결과 상태를 다음처럼 연결한다. 공통 상태는 “Sandbox 요청 처리가 끝났는가”를 나타내고 전문 상태는 “재현이 얼마나 수행되었는가”를 나타낸다.
+
+| `DynamicReproductionResult.status` | `WorkExecutionState.status` | 저장 조건과 다음 처리 |
+|---|---|---|
+| `SUCCEEDED` | `SUCCEEDED` | 계획한 실행과 관측을 끝낸 결과를 저장한다. 가설 지지 여부는 `hypothesis_outcome`을 읽는다. |
+| `PARTIAL` | `PARTIAL` | 신뢰 관측과 `limitations`가 있는 부분 실행 결과를 저장한다. 오류나 `DataGap`을 억지로 만들지 않는다. |
+| `FAILED` | `FAILED` | 실패 결과와 하나 이상의 `error_ids`를 함께 저장한다. 실패 자체는 가설 반증이 아니다. |
+| `BLOCKED` + `POLICY_BLOCKED` | `SUCCEEDED` | Sandbox가 정책 차단 여부를 정상적으로 판단·기록한 것이므로 공통 작업 처리는 끝난다. 이는 재현 성공이 아니며 Verification은 전문 결과의 `BLOCKED`를 `INCONCLUSIVE`로 읽는다. |
+| `CANCELLED` | `CANCELLED` | 취소 이유와 취소 결과를 같은 transition에서 저장한다. 취소 확정 뒤 늦은 결과는 격리한다. |
+
+공통 `WorkExecutionState.status=BLOCKED`는 retry, 인증, 승인 또는 입력처럼 다음 조건을 기다리는 비종료 상태에만 사용한다. 따라서 이미 확정된 `DynamicReproductionResult(status=BLOCKED, failure_reason=POLICY_BLOCKED)`를 공통 `BLOCKED`에 연결하지 않는다. 정책이나 승인 변경 뒤 재현을 다시 시도하려면 기존 결과를 덮어쓰지 않고 새 `work_generation`, `work_id`와 attempt를 만든다.
+
 작업 모듈과 Agent는 등록 또는 상태 변경을 요청할 뿐 직접 확정하지 않는다. 모든 행의 `StateTransition` 승인과 저장은 신뢰 경계 안의 state transition validator와 state store가 담당한다. Orchestration Agent의 자연어 출력은 상태 변경 명령으로 직접 실행하지 않는다.
 
 결과 record, `StateTransition`과 그 결과를 가리키는 종료 상태는 하나의 논리적 atomic transition으로 확정한다. 저장 제품이 한 transaction을 지원하면 같은 transaction에서 처리한다. 지원하지 않으면 `TransitionCommit` journal을 사용한다. `PREPARED` 출력은 격리 상태이며 다음 단계가 읽을 수 없다. state store는 현재 version·active attempt·입력이 그대로라는 조건을 compare-and-set으로 확인하면서 unique `(work_id, target_state_version)` key의 `COMMITTED` revision을 append한다. 경쟁 중 하나만 성공하며 이 marker가 논리적 확정점이다. runtime은 marker를 `WorkExecutionState`와 전문 상태 pointer에 투영한다. 소비자는 COMMITTED marker와 두 pointer가 모두 같은 output을 가리킬 때만 진행한다. marker 뒤 projection 전에 중단되면 recovery가 marker를 재적용한다. version 충돌, 취소 또는 검증 실패는 `ABORTED`이며 output을 최신 상태에 연결하지 않는다.
@@ -337,6 +349,7 @@ state store는 새 전이를 승인하기 전에 `(work_id, current_state_versio
 다음 output binding은 필수다.
 
 - `VERIFICATION`의 `SUCCEEDED`와 `HypothesisProcessState.status=TERMINAL`은 같은 final `VerificationResult.record_id`를 가리킨다.
+- `DYNAMIC_REPRO`의 종료 transition은 위 매핑을 만족해야 하며 `WorkExecutionState.output_refs`, `TransitionCommit.output_refs`와 `DynamicReproductionState.dynamic_result_ref`가 같은 `DynamicReproductionResult.record_id`를 가리킨다. Verification은 `COMMITTED` marker와 세 reference가 모두 맞을 때만 이 결과를 읽는다.
 - `TECHNICAL_GATE`의 `SUCCEEDED`는 정확히 하나의 `TechnicalEvidenceReview.record_id`를 가리킨다.
 - `RULE_SCOPE_GATE`의 `SUCCEEDED`는 정확히 하나의 `RuleScopeImpactReview.record_id`를 가리킨다.
 - `REPORT_DRAFT`의 `SUCCEEDED`와 `ReportProcessState.status=DRAFTED`는 같은 `ReportDraft.record_id`를 가리킨다.

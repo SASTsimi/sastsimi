@@ -233,3 +233,6 @@ GitHub의 PR head SHA, 변경 파일, checks와 실제 diff를 다시 확인한�
 - 회귀 검사 보완: 단순 문자열 존재 검사를 4개 순서 기반 regex 계약 검사로 강화하고, 핵심 절을 약화한 4개 mutation이 모두 탐지되는지 확인
 - 보완 후 검사: R4-02 review remediation rule 4개, negative scenario 14개, 전체 `Failures: 0`, `git diff --check` 통과
 - 독립 최종 재검토: Critical 0, Important 0, Minor 0, 외부 리뷰 요청 3개 모두 해결 판정
+- PR #26 R7 추가 리뷰 보완: 동적 `PARTIAL`은 신뢰 관측과 구조화된 `limitations`로 누락 범위를 설명해 가짜 오류·`DataGap`을 만들지 않으며, 동적 `BLOCKED + POLICY_BLOCKED`는 공통 작업 `SUCCEEDED`, 동적 `CANCELLED`는 공통 작업 `CANCELLED`로 매핑함
+- 동적 결과 연결 보완: `SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED` 전체에 `dynamic_result_ref`를 요구하고 `TransitionCommit`, work output, 전문 상태 pointer가 같은 결과 revision을 가리킬 때만 Verification 전달
+- R7 보완 후 검사: exact output binding 6개, review remediation rule 8개, negative scenario 16개, 전체 `Failures: 0`, `git diff --check` 통과
