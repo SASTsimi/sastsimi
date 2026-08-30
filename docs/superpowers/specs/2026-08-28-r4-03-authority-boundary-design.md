@@ -71,6 +71,7 @@ Agent 또는 서비스가 부작용이 있는 실행을 원할 때 만드는 요
 - `action_type`: 수행하려는 일
 - `work_ref`: 연결된 현재 work와 state version
 - `input_refs`: 실제로 읽을 record revision
+- `reproduction_plan_ref`: `RUN_SANDBOX`에서 실행할 exact 재현 계획
 - `result_kind`, `candidate_result_ref`: `SAVE_RESULT`에서만 사용하는 결과 종류와 변경할 수 없는 저장 후보
 - `tool_name`, `file_paths`, `network_targets`: 필요한 실행 범위
 - `provider_profile_ref`, `session_mode`: LLM 호출 조건
@@ -81,7 +82,7 @@ Agent 또는 서비스가 부작용이 있는 실행을 원할 때 만드는 요
 
 `REGISTER_WORK | CHANGE_WORK_STATE | START_ATTEMPT | CANCEL_WORK | READ_CODE | RUN_TOOL | CALL_LLM | FETCH_POLICY | RUN_SANDBOX | SAVE_RESULT | CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT | PREPARE_HUMAN_REVIEW | SAVE_HUMAN_DECISION | EXTERNAL_DISCLOSURE`
 
-`requester_identity_ref`는 LLM이 주장한 역할을 복사하지 않는다. 신뢰 runtime이 현재 인증된 호출자에서 만들며 그 identity의 등록 역할과 `requested_by`가 같아야 한다. 실제 LLM을 실행하는 action에는 immutable `LLMCallSpec`이 필요하다. 일반 역할은 `CALL_LLM`, 두 Gate와 Reporter는 자기 stage action이 LLM 호출까지 직접 허가하며 별도 `CALL_LLM`으로 우회하지 않는다. `RUN_SANDBOX`에는 sandbox profile·image digest·network target이 필요하다. `EXTERNAL_DISCLOSURE`는 Human Reviewer만 요청할 수 있고 current `HumanReviewState`가 가리키는 exact 결정·packet·report·target을 사용해야 한다. 한 번이라도 `ActionDecision`이 저장된 요청은 수정하지 않는다. 범위를 바꾸거나 다시 시도하려면 새 `action_id`를 사용한다.
+`requester_identity_ref`는 LLM이 주장한 역할을 복사하지 않는다. 신뢰 runtime이 현재 인증된 호출자에서 만들며 그 identity의 등록 역할과 `requested_by`가 같아야 한다. 실제 LLM을 실행하는 action에는 immutable `LLMCallSpec`이 필요하다. 일반 역할은 `CALL_LLM`, 두 Gate와 Reporter는 자기 stage action이 LLM 호출까지 직접 허가하며 별도 `CALL_LLM`으로 우회하지 않는다. `RUN_SANDBOX`에는 exact `ReproductionPlan`, sandbox profile·image digest·network target이 필요하다. `input_refs`는 계획과 그 안의 hypothesis, 모든 step command·공격 입력, cleanup 정책 reference를 포함한다. `EXTERNAL_DISCLOSURE`는 Human Reviewer만 요청할 수 있고 current `HumanReviewState`가 가리키는 exact 결정·packet·report·target을 사용해야 한다. 한 번이라도 `ActionDecision`이 저장된 요청은 수정하지 않는다. 범위를 바꾸거나 다시 시도하려면 새 `action_id`를 사용한다.
 
 ### ActionDecision
 
@@ -105,6 +106,8 @@ runtime validator의 검사 결과다.
 
 `SAVE_RESULT` action은 쉬운 영문 필드 `result_kind`와 `candidate_result_ref`로 검사 대상을 고정한다. candidate ref에는 미리 발급한 `record_id`와 결과 후보 전체의 `content_hash`가 있고, 확정된 결과도 같은 exact ref를 사용한다. runtime은 result-owner, work·attempt·workspace·commit·hypothesis와 named falsification 구조를 검사하고, 같은 후보를 `COMMITTED` transition에 원자적으로 연결한다. 검사 뒤 후보가 바뀌거나 오류만으로 `FALSE`를 만들려 하면 저장하지 않는다.
 
+동적 재현은 Verification이 `SAVE_RESULT(result_kind=reproduction_plan)`로 exact `ReproductionPlan`을 생산하고 `RUN_SANDBOX`를 요청하지만, Sandbox runtime만 `SandboxStepLog`와 `DynamicReproductionResult`를 생산한다. 계획에는 mode, hypothesis, 순서가 있는 step의 command·공격 입력 reference와 cleanup 정책 reference가 들어간다. Sandbox는 실행 직전에 action·계획 closure를 다시 검사하고 실제 step ID·command·공격 입력을 append-only log에 남긴 뒤 immutable artifact로 확정한다. `SAVE_RESULT(requested_by=SANDBOX, result_kind=dynamic_reproduction_result)`는 candidate, USED 실행 decision, 계획 closure와 step log를 입력으로 받아 plan·mode·command·attack input·cleanup policy가 exact match인지 다시 검사한다. Verification은 `COMMITTED` 결과만 소비한다.
+
 ## runtime validator가 강제할 항목
 
 | check | 쉽게 말하면 | 검사 대상 |
@@ -117,7 +120,7 @@ runtime validator의 검사 결과다.
 | `BUDGET` | token·시간·retry·repair·chain·Gate 보완 한도 안인가 | LLM·Research·Gate·Sandbox |
 | `TOOL` | 허용 도구와 명령인가 | static·retrieval·Sandbox |
 | `FILE_PATH` | 로컬 workspace 밖을 읽거나 쓰지 않는가 | 코드·파일 접근 |
-| `SANDBOX` | image·network·resource·cleanup 제한이 맞는가 | 동적 재현 |
+| `SANDBOX` | 재현 계획·step·공격 입력·cleanup과 image·network·resource 제한이 맞는가 | 동적 재현 |
 | `PROVIDER` | 허용 provider/model/profile인가 | LLM 호출 |
 | `SESSION` | NEW/RESUME/AUTO와 failover 선행 호출이 맞는가 | LLM 호출 |
 | `GATE_ORDER` | Technical 다음 Rule Scope 순서인가 | 두 Gate 호출 |
@@ -146,8 +149,8 @@ runtime validator가 할 수 없는 일은 다음과 같다.
 | `RUN_TOOL` | SCHEMA, AUTHORITY, REVISION, BUDGET, TOOL, FILE_PATH | allowlist tool만 실행 |
 | `CALL_LLM` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, REDACTION | 새 `llm_call_id`, explicit retry/failover |
 | `FETCH_POLICY` | SCHEMA, AUTHORITY, BUDGET, TOOL, REDACTION | 승인된 공식 source만 정책 후보로 저장 |
-| `RUN_SANDBOX` | SCHEMA, AUTHORITY, REVISION, STATE, BUDGET, TOOL, FILE_PATH, SANDBOX | default-deny network, resource·cleanup 고정 |
-| `SAVE_RESULT` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION | 생산 권한, exact input, atomic commit |
+| `RUN_SANDBOX` | SCHEMA, AUTHORITY, REVISION, STATE, BUDGET, TOOL, FILE_PATH, SANDBOX | exact 계획 closure, default-deny network, resource·cleanup 고정 |
+| `SAVE_RESULT` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION | 생산 권한, exact input, 동적 계획·실행 log 재검사, atomic commit |
 | `CALL_TECHNICAL_GATE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, GATE_ORDER, REDACTION | final Verification+CWE와 exact LLM call spec 필요 |
 | `CALL_RULE_SCOPE_GATE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, GATE_ORDER, REDACTION | TRUE+Technical ACCEPT와 exact LLM call spec 필요 |
 | `CREATE_REPORT_DRAFT` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, REPORT_READY, REDACTION | PASS/PASS/PASS/SUFFICIENT/ALLOW와 exact LLM call spec 필요 |
@@ -245,6 +248,10 @@ R4-03에서 추가하는 주요 오류는 다음과 같다.
 | Agent가 외부 공개를 요청 | `DISCLOSURE_DENIED` |
 | 사람이 다른 revision의 승인 결정을 재사용 | `DISCLOSURE_DENIED` |
 | redaction 실패 PoC를 사람·외부로 전달 | action `DENY`, 제한 저장소에 격리 |
+| 허가 뒤 재현 계획·공격 입력·cleanup revision이 바뀜 | 기존 decision `EXPIRED`, 새 계획·action 필요 |
+| Sandbox가 계획에 없는 command·공격 입력을 실행하려 함 | `SANDBOX_POLICY_DENIED`, 실행 금지 |
+| 동적 결과의 step log와 승인 계획이 다름 | `SAVE_RESULT` 거절, 결과 `COMMITTED` 금지 |
+| Verification이 `DynamicReproductionResult`를 직접 저장 | `AUTHORITY_DENIED`, Sandbox 생산 결과만 허용 |
 
 ## 문서 배치
 

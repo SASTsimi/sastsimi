@@ -222,6 +222,8 @@ $requiredR403ContractNames = @(
     'ActionRequest:',
     'ActionCheck:',
     'ActionDecision:',
+    'ReproductionPlan:',
+    'SandboxStepLog:',
     'LLMCallSpec:',
     'HumanReviewState:',
     'action_id:',
@@ -264,6 +266,7 @@ $actionRequestBlock = [regex]::Match($contractText, '(?ms)^ActionRequest:\s*(.*?
 $requiredActionRequestFields = @(
     'requester_identity_ref:',
     'input_refs:',
+    'reproduction_plan_ref:',
     'result_kind:',
     'candidate_result_ref:',
     'llm_call_spec_ref:',
@@ -274,6 +277,31 @@ $requiredActionRequestFields = @(
 foreach ($field in $requiredActionRequestFields) {
     if (-not $actionRequestBlock.Contains($field)) {
         Add-Failure "missing R4-03 ActionRequest field: $field"
+    }
+}
+
+$reproductionStepBlock = [regex]::Match($contractText, '(?ms)^ReproductionStep:\s*(.*?)^ReproductionPlan:').Groups[1].Value
+$reproductionPlanBlock = [regex]::Match($contractText, '(?ms)^ReproductionPlan:\s*(.*?)^SandboxStepEntry:').Groups[1].Value
+$sandboxStepLogBlock = [regex]::Match($contractText, '(?ms)^SandboxStepLog:\s*(.*?)^DynamicReproductionResult:').Groups[1].Value
+$dynamicResultBlock = [regex]::Match($contractText, '(?ms)^DynamicReproductionResult:\s*(.*?)^```').Groups[1].Value
+foreach ($field in @('step_id:', 'command_ref:', 'attack_input_refs:', 'required:')) {
+    if (-not $reproductionStepBlock.Contains($field)) {
+        Add-Failure "missing ReproductionStep field: $field"
+    }
+}
+foreach ($field in @('mode:', 'hypothesis_ref:', 'sandbox_profile_ref:', 'steps:', 'cleanup_policy_ref:')) {
+    if (-not $reproductionPlanBlock.Contains($field)) {
+        Add-Failure "missing ReproductionPlan field: $field"
+    }
+}
+foreach ($field in @('reproduction_plan_ref:', 'entries:')) {
+    if (-not $sandboxStepLogBlock.Contains($field)) {
+        Add-Failure "missing SandboxStepLog field: $field"
+    }
+}
+foreach ($field in @('action_decision_ref:', 'reproduction_plan_ref:', 'mode:', 'steps_ref:', 'attack_input_refs:', 'cleanup_policy_ref:')) {
+    if (-not $dynamicResultBlock.Contains($field)) {
+        Add-Failure "missing DynamicReproductionResult authorization field: $field"
     }
 }
 foreach ($actionType in $requiredActionTypes) {
@@ -469,10 +497,42 @@ $authorityScenarioMarkers = @(
     '`SAVE_RESULT` 검사 뒤 candidate bytes를 바꿈',
     '실행 오류만 든 `FALSE` 후보를 저장',
     '다른 역할이 만든 결과 후보를 저장'
+    '`RUN_SANDBOX` 허가 뒤 재현 계획·공격 입력·cleanup revision이 바뀜'
+    'Sandbox가 계획에 없는 command·공격 입력을 실행하려 함'
+    '동적 결과의 step log·공격 입력·cleanup 정책이 승인 계획과 다름'
+    'Verification이 `DynamicReproductionResult`를 직접 저장'
 )
 foreach ($marker in $authorityScenarioMarkers) {
     if (-not $securityText.Contains($marker)) {
         Add-Failure "missing R4-03 authority scenario: $marker"
+    }
+}
+
+$sandboxReviewPatterns = @(
+    @{
+        Name = 'RUN_SANDBOX freezes the complete reproduction plan closure'
+        Pattern = '(?s)`RUN_SANDBOX`만 `reproduction_plan_ref`를 사용.*?`input_refs`에는 exact `ReproductionPlan`.*?`hypothesis_ref`.*?`sandbox_profile_ref`.*?`command_ref`.*?`attack_input_refs`.*?`cleanup_policy_ref`'
+    },
+    @{
+        Name = 'sandbox execution log exactly matches the authorized plan'
+        Pattern = '(?s)`steps_ref`의 `stored_data_id`·`content_hash`는 같은 `reproduction_plan_ref`를 가진 exact `SandboxStepLog` artifact.*?`step_id`, `command_ref`, `attack_input_refs`.*?field-by-field exact match.*?계획에 없는 entry를 허용하지 않는다'
+    },
+    @{
+        Name = 'dynamic result save repeats plan and execution checks'
+        Pattern = '(?s)`SAVE_RESULT\(requested_by=SANDBOX, result_kind=dynamic_reproduction_result\)`.*?`SCHEMA`.*?`AUTHORITY`.*?`IDENTITY`.*?`REVISION`.*?`STATE`.*?`REDACTION`.*?계획.*?실제 log.*?`COMMITTED`하지 않는다'
+    },
+    @{
+        Name = 'Sandbox produces and Verification only consumes dynamic results'
+        Pattern = '(?s)Sandbox runtime만 `SandboxStepLog`와 `DynamicReproductionResult`를 생산.*?Verification은.*?경우에만 이를 읽으며 `DynamicReproductionResult`를 직접 만들거나 수정하지 않는다'
+    },
+    @{
+        Name = 'Verification owns plans while Sandbox owns dynamic results'
+        Pattern = '(?s)`reproduction_plan -> ReproductionPlan -> VERIFICATION`.*?`dynamic_reproduction_result -> DynamicReproductionResult -> SANDBOX`.*?`SAVE_RESULT\(result_kind=reproduction_plan\)`'
+    }
+)
+foreach ($rule in $sandboxReviewPatterns) {
+    if (-not [regex]::IsMatch($contractText, $rule.Pattern)) {
+        Add-Failure "missing or weakened PR #27 Sandbox review rule: $($rule.Name)"
     }
 }
 
@@ -541,6 +601,7 @@ Write-Output 'R4-03 exact LLM call blocks: 2'
 Write-Output "R4-03 authority errors: $($requiredAuthorityErrors.Count)"
 Write-Output "R4-03 authority scenarios: $($authorityScenarioMarkers.Count)"
 Write-Output "R4-03 authority rules: $($requiredAuthorityRules.Count)"
+Write-Output "R4-03 Sandbox review rules: $($sandboxReviewPatterns.Count)"
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {

@@ -46,7 +46,7 @@ Agent 또는 service의 제안
 - `workspace_id`, `commit_id`, state version
 - token·시간·retry·chain·Gate 보완 예산
 - 허용 도구와 workspace 안의 파일 경로
-- Sandbox image·network·resource·cleanup
+- Sandbox 재현 계획·단계·공격 입력·cleanup(실행 후 정리)과 image·network·resource
 - provider·model·session과 explicit failover
 - Technical Gate 다음 Rule Scope Gate라는 순서
 - Reporter를 부를 일곱 조건
@@ -85,6 +85,8 @@ Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아
 `FALSE`는 미리 적어 둔 반증 질문이 실제 근거로 `DISPROVED`됐을 때만 Verification Agent가 만듭니다.
 
 결과 저장 요청에는 결과 종류와 검사할 후보 파일의 정확한 hash를 함께 넣습니다. 프로그램 검사기는 그 결과를 만들 권한이 있는 역할인지, 현재 작업·시도·코드 버전과 같은지 확인합니다. 검사 뒤 후보 내용이 바뀌거나 다른 역할이 저장하려 하면 거절합니다. 저장이 완료된 결과와 작업 종료 기록이 같은 `COMMITTED` 전이에 연결된 뒤에만 다음 단계가 읽습니다.
+
+동적 재현 전에는 `ReproductionPlan`(어떤 단계와 공격 입력을 실행하고 어떻게 정리할지 적은 계획)의 정확한 수정본을 고정합니다. 실행 허가에는 이 계획, 단계별 명령과 공격 입력, Sandbox 설정과 정리 정책을 모두 넣습니다. Sandbox는 각 실행 단계를 계획의 `step_id`와 reference로 기록합니다. 실행 직전과 결과 저장 시 두 번 대조하며 계획에 없던 명령·공격 입력은 실행하거나 저장하지 않습니다. Sandbox만 `DynamicReproductionResult`를 만들고 Verification은 저장이 확정된 결과를 읽어 판정합니다.
 
 ## 사람이 받는 자료
 

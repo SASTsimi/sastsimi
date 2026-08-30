@@ -192,6 +192,10 @@ Research, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출�
 | `SAVE_RESULT` 검사 뒤 candidate bytes를 바꿈 | `candidate_result_ref.stored_data_id`와 `content_hash`, current attempt·state | decision `EXPIRED` 또는 save `DENY`, 변조 후보 미저장 |
 | 실행 오류만 든 `FALSE` 후보를 저장 | `result_kind`, VERIFICATION 생산자, named `DISPROVED`의 `question_id`·`evidence_refs` | `SAVE_RESULT` 거절, 오류 상태 유지와 verdict 자동 생성 금지 |
 | 다른 역할이 만든 결과 후보를 저장 | result-owner registry와 `requested_by`, candidate meta | `AUTHORITY_DENIED`, candidate 격리와 최신 pointer 미연결 |
+| `RUN_SANDBOX` 허가 뒤 재현 계획·공격 입력·cleanup revision이 바뀜 | 실행 직전 action `input_refs`, plan closure와 current state | 기존 decision `UNUSED -> EXPIRED`, 새 계획·action 요구 |
+| Sandbox가 계획에 없는 command·공격 입력을 실행하려 함 | exact `ReproductionPlan`과 실행할 step·input refs | `SANDBOX_POLICY_DENIED`, 실행 금지와 오류 기록 |
+| 동적 결과의 step log·공격 입력·cleanup 정책이 승인 계획과 다름 | `RUN_SANDBOX` USED decision, plan closure, `SandboxStepLog`, 결과 candidate | `SAVE_RESULT` 거절, 결과 `COMMITTED`·Verification 전달 금지 |
+| Verification이 `DynamicReproductionResult`를 직접 저장 | `dynamic_reproduction_result`의 result-owner와 `requested_by` | `AUTHORITY_DENIED`, Sandbox 생산 후보만 허용 |
 
 ## 남는 위험
 

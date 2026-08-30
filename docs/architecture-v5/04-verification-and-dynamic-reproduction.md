@@ -103,10 +103,12 @@ Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` 
 ### 실행 경계
 
 - 같은 `workspace_id`와 `commit_id`, 승인된 Docker image/digest 사용
+- `ReproductionPlan`에 mode, exact 가설, 단계별 command·공격 입력과 정리 정책 reference를 고정하고 `RUN_SANDBOX.input_refs`에 전체 계획 closure를 포함
 - Docker build와 실행은 분석용 `CodeWorkspace`를 직접 수정하지 않고 sandbox 내부 복사본에서 수행
 - 기본 network deny, resource/time/process 제한, non-root와 read-only mount 우선
 - host socket, host secret, production credential과 범위 밖 target 접근 금지
 - 동적 결과의 exit code, stdout/stderr reference, artifact hash와 hypothesis 연결 저장
+- Sandbox 실행 log는 실제 `step_id`·command·공격 입력 reference를 승인 계획과 연결하고 계획에 없는 단계나 입력을 실행하지 않음
 - 환경 구축 실패와 취약점 반증을 구분
 
 ### 동적 재현 상태와 실제 반증
@@ -123,7 +125,7 @@ Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` 
 동적 결과 상태와 공통 실행 상태는 뜻이 다르다. `DYNAMIC_REPRO`의 `PARTIAL`은 신뢰 관측과 `limitations`를 가진 `DynamicReproductionResult` 자체가 누락 범위를 설명하므로 실제 오류가 없으면 `AnalysisError`나 `DataGap`을 만들지 않는다. `BLOCKED + POLICY_BLOCKED`는 정책에 막힌 사실을 Sandbox가 정상적으로 기록한 종료 결과이므로 공통 `WorkExecutionState`는 `SUCCEEDED`로 끝난다. 여기서 `SUCCEEDED`는 요청 처리가 완료되었다는 뜻일 뿐 재현 성공이나 가설 지지를 뜻하지 않는다. retry·승인·입력을 기다리는 경우에만 공통 상태 `BLOCKED`를 사용한다. `CANCELLED`는 취소 결과와 공통 취소 상태를 같은 atomic transition에서 저장하고, 취소 뒤 늦게 도착한 결과는 격리한다.
 
 모든 종료 결과는 `DynamicReproductionState.dynamic_result_ref`, `WorkExecutionState.output_refs`와 `TransitionCommit.output_refs`가 같은 `DynamicReproductionResult.record_id`를 가리킬 때만 Verification에 전달한다. Verification Agent는 이 결과를 정적·찬반 근거와 함께 읽어 최종 `TRUE | FALSE | HOLD`를 결정한다.
-- Sandbox는 outcome까지만 기록한다. Verification Agent가 limitations와 정적·동적·찬반 근거를 함께 보고 최종 `TRUE | FALSE | HOLD`를 결정한다.
+- Sandbox는 exact 승인 계획을 실행하고 `SandboxStepLog`와 `DynamicReproductionResult`를 생산한다. 결과 저장 전 `SAVE_RESULT`가 계획·실제 단계·공격 입력·정리 정책을 다시 대조하며, Verification Agent는 `COMMITTED`된 결과를 소비할 뿐 동적 결과를 직접 생산하지 않는다. Sandbox는 outcome까지만 기록하고 Verification Agent가 limitations와 정적·동적·찬반 근거를 함께 보고 최종 `TRUE | FALSE | HOLD`를 결정한다.
 
 ## VerificationResult에 남길 정보
 

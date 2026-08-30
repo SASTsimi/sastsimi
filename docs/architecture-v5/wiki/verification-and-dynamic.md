@@ -42,6 +42,8 @@ Pro와 Con은 항상 별도의 새 대화에서 실행합니다. 상대 역할�
 
 Docker는 ephemeral/non-root, network default-deny와 자원·시간 제한을 사용합니다. 필수 환경이나 공격 경로를 실행하지 못하면 `FAILED + ENVIRONMENT_SETUP`입니다. 공격 경로를 일부 실행해 믿을 수 있는 관측은 얻었지만 환경 차이 때문에 전체 확인이 부족하면 `PARTIAL + NONE`이며, 관측과 한계를 함께 남깁니다.
 
+실행 전에 `ReproductionPlan`에 LIMITED/FULL mode, 가설, 순서가 있는 단계, 각 단계의 명령·공격 입력과 cleanup 정책의 정확한 reference를 고정합니다. `RUN_SANDBOX` 허가와 실행 직전 검사가 같은 계획을 확인합니다. Sandbox는 실제 단계·명령·공격 입력을 `SandboxStepLog`에 남기고, 결과 저장 때 계획과 다시 대조합니다. Sandbox만 동적 결과를 만들며 Verification은 `COMMITTED`된 결과만 읽어 최종 판정에 사용합니다.
+
 `status`는 실행 완료 정도이고 `hypothesis_outcome: SUPPORTED | DISPROVED | INCONCLUSIVE`은 관측과 가설의 관계입니다. 둘 다 최종 판정이 아닙니다. `FAILED | BLOCKED | CANCELLED`는 `INCONCLUSIVE`이며 가설 반증이 아닙니다. 실제 반증은 `DISPROVED`, `hypothesis_disproved: true`, 관측 근거 `hypothesis_evidence_refs`와 `disproof_evidence_refs`가 함께 있어야 합니다. Verification Agent가 이 정보와 다른 근거를 종합해 `TRUE | FALSE | HOLD`를 결정합니다. 상세 내용은 [검증과 동적 재현](../04-verification-and-dynamic-reproduction.md)을 따릅니다.
 
 공통 작업 상태와 동적 결과 상태는 다르게 읽습니다. 부분 실행은 결과의 `limitations`로 한계를 설명하며 실제 오류가 없으면 오류 record를 만들지 않습니다. 정책 차단 결과 `BLOCKED + POLICY_BLOCKED`는 Sandbox가 요청을 처리해 만든 종료 결과이므로 공통 작업은 `SUCCEEDED`로 닫지만, 재현 성공은 아닙니다. 공통 작업의 `BLOCKED`는 승인이나 입력을 기다리는 비종료 상태에만 사용합니다. 취소 결과는 공통 `CANCELLED`와 함께 저장하며, 저장 확정 marker와 모든 결과 reference가 일치할 때만 Verification이 읽습니다.

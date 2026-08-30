@@ -160,6 +160,7 @@ PR은 `review/r4-02-state-recovery`를 base로 시작하고 `Closes #15`, `Refs 
 - [x] R5 리뷰 4: 공식 정책 의미는 Rule Scope Gate가 판단하고 Runtime Validator는 구조·reference 확인과 Reporter 차단만 집행
 - [x] R6 리뷰 1: Pro/Con의 명시적 독립 `NEW` session과 retry·failover의 역할·session 분리 강제
 - [x] R6 리뷰 2: `SAVE_RESULT.result_kind`·`candidate_result_ref`, 생산 역할, exact candidate, named falsification, 오류 분리와 `COMMITTED` 연결 강제
+- [x] R7 추가 리뷰: exact `ReproductionPlan`·단계별 command·공격 입력·cleanup 정책을 실행 전과 결과 저장 시 대조하고 Sandbox 생산·Verification 소비 경계를 고정
 
 리뷰 반영 커밋:
 
@@ -173,3 +174,6 @@ PR은 `review/r4-02-state-recovery`를 base로 시작하고 `Closes #15`, `Refs 
 - R4-03 action type/check/requester binding 각 16개, ActionCheck 15개 유지
 - R4-03 권한 오류 10개, 부정 시나리오 25개, 권한 규칙 26개 검사 통과
 - `Failures: 0`, `git diff --check` 통과
+- PR #26 동기화: merge commit `486af02`로 동적 `PARTIAL | BLOCKED | CANCELLED` 매핑과 exact output binding 보완을 선행 반영
+- PR #27 R7 추가 리뷰 보완: `ReproductionPlan`, `SandboxStepLog`, 동적 결과의 plan·step·attack input·cleanup exact binding, Sandbox 생산·Verification 소비 경계를 정본·Wiki·보안 시나리오에 반영
+- 추가 리뷰 후 검사: R4-02 review rule 8개·부정 시나리오 16개, R4-03 계약 이름 18개·권한 시나리오 29개·Sandbox review rule 5개, 전체 `Failures: 0`, `git diff --check` 통과

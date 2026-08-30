@@ -123,6 +123,7 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 - action type·요청 역할별 `ALLOW | DENY` 수와 실패한 `ActionCheck.reason_code`
 - `ALLOW` decision의 `UNUSED | USED`, outcome 누락과 replay 거절 수
 - `AUTHORITY_DENIED`, Gate 순서·Reporter·Sandbox·provider·file·disclosure 차단 수
+- Sandbox 계획 revision 변경, 계획 밖 step·공격 입력, 결과 log·cleanup 불일치와 동적 결과 생산 역할 위반 수
 - HumanReviewPacket의 report-ready/blocked 수와 누락된 policy·PoC·오류·HOLD 조건
 - `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION` 사람 결정 수
 
@@ -197,6 +198,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 | Sandbox 부분 실행 | `PARTIAL`, 신뢰 결과와 `limitations` 저장 | 실제 오류가 없으면 `error_ids`·`gap_ids`를 만들지 않고 Verification이 한계와 관측을 함께 판단 |
 | Sandbox 정책 차단 결과 | 공통 work `SUCCEEDED`, 동적 결과 `BLOCKED + POLICY_BLOCKED` | 요청 처리 완료와 재현 성공을 구분하고 `INCONCLUSIVE` 결과를 Verification에 전달 |
 | Sandbox 실행 취소 | 공통 work와 동적 결과 `CANCELLED` | 취소 결과를 같은 atomic transition에서 저장하고 이후 늦은 결과는 격리 |
+| Sandbox 계획·실행 log 불일치 | 결과 저장 action `DENY` | 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
 | 정책 조회 실패 | policy work `FAILED` | 기술 verdict 유지, Rule Scope `UNCERTAIN + DENY`, Reporter 차단 |
 | Technical Gate 실행 오류·보완 한도 초과 | Gate work `FAILED` | 기술 verdict 유지, Rule Scope Gate와 Reporter 차단 |
 | Rule Scope Gate 실행 오류 | Gate work `FAILED` | 기술 verdict 유지, Reporter 차단 |
