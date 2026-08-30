@@ -44,9 +44,11 @@ Pro와 Con은 항상 별도의 새 대화에서 실행합니다. 상대 역할�
 | `LIMITED_REPRO` | guard, sink, 권한 조건 등 작은 질문 확인 |
 | `FULL_REPRO` | 안전한 end-to-end 재현과 PoC |
 
+Verification Agent가 세 모드 중 하나를 결정합니다. 동적 재현이 필요하면 Verification이 exact `ReproductionPlan`을 만들고, trusted runtime이 계획·reference·권한·예산을 검사해 확정합니다. Sandbox는 모드를 다시 선택하거나 계획을 수정하지 않습니다.
+
 Docker는 ephemeral/non-root, network default-deny와 자원·시간 제한을 사용합니다. 필수 환경이나 공격 경로를 실행하지 못하면 `FAILED + ENVIRONMENT_SETUP`입니다. 공격 경로를 일부 실행해 믿을 수 있는 관측은 얻었지만 환경 차이 때문에 전체 확인이 부족하면 `PARTIAL + NONE`이며, 관측과 한계를 함께 남깁니다.
 
-실행 전에 `ReproductionPlan`에 LIMITED/FULL mode, 가설, 순서가 있는 단계, 각 단계의 명령·공격 입력과 cleanup 정책의 정확한 reference를 고정합니다. `RUN_SANDBOX` 허가와 실행 직전 검사가 같은 계획을 확인합니다. Sandbox는 실제 단계·명령·공격 입력을 `SandboxStepLog`에 남기고, 결과 저장 때 계획과 다시 대조합니다. Sandbox만 동적 결과를 만들며 Verification은 `COMMITTED`된 결과만 읽어 최종 판정에 사용합니다.
+실행 전에 Verification이 만든 `ReproductionPlan`에 LIMITED/FULL mode, 가설, 순서가 있는 단계, 각 단계의 명령·공격 입력과 cleanup 정책의 정확한 reference를 고정합니다. `RUN_SANDBOX` 허가와 실행 직전 검사가 같은 계획을 확인합니다. Sandbox는 실제 단계·명령·공격 입력을 `SandboxStepLog`에 남기고, 결과 저장 때 계획과 다시 대조합니다. Sandbox만 동적 결과를 만들며 Verification은 `COMMITTED`된 결과만 읽어 최종 판정에 사용합니다. 계획 변경이 필요하면 Sandbox가 이유를 반환하고 Verification이 새 계획과 새 실행 요청을 만듭니다.
 
 Technical Gate가 `REVISE`를 반환하면 같은 ACTIVE `VerificationAssignment` owner가 직접 받습니다. 프로그램은 새 generation의 Verification work와 `TERMINAL -> VERIFYING` 전이를 먼저 원자적으로 만들고, 필요한 Context·Pro/Con·정적·동적 근거와 설명을 보완해 새 Verification revision·work 종료·current pointer를 함께 확정합니다. CWE 보완이 있으면 기존 CWE producer와 새 revision을 조정한 뒤 새 Gate work를 요청합니다. 이는 provider retry나 동일 입력 재투표가 아닙니다.
 

@@ -12,7 +12,8 @@
 |---|---|---|
 | Orchestration | proposal 검증·전역 가설 등록·Verification 배정 제안 | 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정, runtime enforcement, Finding·공개 결정 |
 | Hypothesis | schema-valid `HYPOTHESIS_ONLY` 제안 생성 | verdict, Finding, exploitability 확정 |
-| Verification | 한 가설의 Context·Pro/Con·동적 재현·판정·Gate 보완·Chaining handoff와 material child 제안 | runtime 검사 우회, 새 claim 무검증 승격 |
+| Verification | 한 가설의 Context·Pro/Con, 동적 모드·`ReproductionPlan`, 판정·Gate 보완·Chaining handoff와 material child 제안 | Sandbox 직접 실행·동적 결과 생산, runtime 검사 우회, 새 claim 무검증 승격 |
+| Sandbox Runtime | 승인된 exact `ReproductionPlan` 실행, step log·동적 결과·PoC 생산 | 재현 필요성·모드·계획·최종 verdict 변경 |
 | Pro | 가설 성립 근거 탐색 | 최종 verdict |
 | Con | 반증·보호·도달 불가·restriction 탐색 | 최종 verdict |
 | Chaining | Gate-qualified TRUE+HOLD·TRUE+TRUE Primitive matching과 새 가설 제안 | 일반 research, dynamic, REVISE, verdict/CWE/Gate/Finding/report 확정 |
@@ -23,7 +24,9 @@
 
 ```text
 Orchestration → Hypothesis proposal validation and registration → assign Verification
-Verification → context → optional Pro and Con → optional Docker → final verdict
+Verification → context → Pro and Con → dynamic mode and ReproductionPlan
+Trusted Runtime → commit plan and allow RUN_SANDBOX
+Sandbox Runtime → execute exact plan and return result → Verification final verdict
 HOLD → REQUIRED Primitive → Chaining
 TRUE → CWE → Technical Gate → Rule Scope Impact Gate
 Gate-qualified TRUE → PROVIDED Primitive → Chaining
