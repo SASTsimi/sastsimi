@@ -35,12 +35,14 @@ flowchart TB
     S08 --> S09[9 Verification requests on-demand context]
     S09 --> S10[10 Production Verification runs independent Pro and Con]
     S10 --> S11[11 Initial TRUE FALSE HOLD]
-    S11 --> S12{12 Dynamic reproduction needed}
+    S11 --> S12{12 Verification chooses dynamic mode}
     S12 -->|No| S13[13 Final verdict and material claim split]
-    S12 -->|LIMITED| DL[Docker LIMITED_REPRO]
-    S12 -->|FULL| DF[Docker FULL_REPRO and PoC]
-    DL --> S13
-    DF --> S13
+    S12 -->|LIMITED| DL[Verification LIMITED ReproductionPlan]
+    S12 -->|FULL| DF[Verification FULL ReproductionPlan]
+    DL --> DA[Runtime COMMITTED plan and RUN_SANDBOX ALLOW]
+    DF --> DA
+    DA --> DR[R7 Sandbox exact execution and dynamic result]
+    DR --> S13
     S13 --> S14{14 Final verdict}
     S14 -->|FALSE| CLOSED[Terminal internal result]
     S14 -->|HOLD| REQUIRED[HOLD REQUIRED Primitive admitted]
@@ -136,12 +138,14 @@ flowchart TB
     BASIC --> SYN
     BASIC -. no Gate Primitive or Reporter .-> METRICS[Evaluation metrics only]
     SYN --> INITIAL[Initial TRUE FALSE HOLD]
-    INITIAL --> DYN{Dynamic evidence needed}
+    INITIAL --> DYN{Verification chooses dynamic mode}
     DYN -->|No| FINAL[Final VerificationResult]
-    DYN -->|Small question| LIMITED[Docker LIMITED_REPRO]
-    DYN -->|End to end| FULL[Docker FULL_REPRO and PoC]
-    LIMITED --> SYN2[Re-synthesize evidence]
-    FULL --> SYN2
+    DYN -->|Small question| LIMITED[Verification LIMITED ReproductionPlan]
+    DYN -->|End to end| FULL[Verification FULL ReproductionPlan]
+    LIMITED --> AUTH[Runtime commits plan and allows Sandbox]
+    FULL --> AUTH
+    AUTH --> EXEC[R7 executes exact plan and returns dynamic result]
+    EXEC --> SYN2[Verification re-synthesizes evidence]
     SYN2 --> FINAL
     FINAL --> OUT[Restrictions candidates PrimitiveDraft and VERIFICATION origin child proposals]
 ```

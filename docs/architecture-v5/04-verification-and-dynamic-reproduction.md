@@ -97,6 +97,8 @@ Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` 
 
 동적 검증은 정적 판단을 대체하지 않고 특정 가설의 조건을 제한된 환경에서 확인한다.
 
+Verification Agent가 `NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO`를 결정한다. 동적 재현이 필요하면 Verification이 mode·가설·단계·명령·공격 입력·cleanup 정책을 고정한 exact `ReproductionPlan` 후보를 생산하고, trusted runtime이 `SAVE_RESULT(result_kind=reproduction_plan)`로 schema·reference·권한·예산을 검사해 `COMMITTED`한다. R7 Sandbox는 mode를 다시 선택하거나 계획을 수정하지 않고, 허가된 계획만 실행해 결과를 반환한다.
+
 ### LIMITED_REPRO
 
 - 한 sanitizer, auth guard, sink 도달 또는 작은 함수 경로 확인
@@ -112,13 +114,14 @@ Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` 
 ### 실행 경계
 
 - 같은 `workspace_id`와 `commit_id`, 승인된 Docker image/digest 사용
-- `ReproductionPlan`에 mode, exact 가설, 단계별 command·공격 입력과 정리 정책 reference를 고정하고 `RUN_SANDBOX.input_refs`에 전체 계획 closure를 포함
+- Verification이 생산하고 runtime이 `COMMITTED`한 `ReproductionPlan`에 mode, exact 가설, 단계별 command·공격 입력과 정리 정책 reference를 고정하고 `RUN_SANDBOX.input_refs`에 전체 계획 closure를 포함
 - Docker build와 실행은 분석용 `CodeWorkspace`를 직접 수정하지 않고 sandbox 내부 복사본에서 수행
 - 기본 network deny, resource/time/process 제한, non-root와 read-only mount 우선
 - host socket, host secret, production credential과 범위 밖 target 접근 금지
 - 동적 결과의 exit code, stdout/stderr reference, artifact hash와 hypothesis 연결 저장
 - Sandbox 실행 log는 실제 `step_id`·command·공격 입력 reference를 승인 계획과 연결하고 계획에 없는 단계나 입력을 실행하지 않음
 - 환경 구축 실패와 취약점 반증을 구분
+- 실행 불가능·정책 차단·계획 변경이 필요하면 R7이 상태와 이유를 반환하고, R6가 필요성을 다시 판단해 새 plan revision과 새 실행 요청을 만든다.
 
 ### 동적 재현 상태와 실제 반증
 

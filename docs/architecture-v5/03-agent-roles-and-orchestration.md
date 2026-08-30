@@ -105,7 +105,8 @@ Chaining match -> PROPOSED child hypothesis origin CHAINING
 | Orchestration Agent | 전역 분석 계획·proposal 등록·가설 배정·가설 간 병렬화 | 없음 | 전체 진행 상태 요약 | 없음 | 없음 |
 | Hypothesis Agent | 취약점 가설 | 없음 | static 사실을 입력으로 읽음 | 없음 | 없음 |
 | Pro·Con Agent | 찬성·반대 근거 | 없음 | 자기 역할의 근거 | 없음 | 없음 |
-| Verification Agent | Context·Pro/Con·동적 재현·두 Gate·Reporter·Chaining 요청, material child proposal | `TRUE | FALSE | HOLD` | static·Pro·Con·dynamic 근거와 Gate 보완 요청 | 없음 | 없음 |
+| Verification Agent | Context·Pro/Con, 동적 모드·`ReproductionPlan`, 두 Gate·Reporter·Chaining 요청, material child proposal | `TRUE | FALSE | HOLD` | static·Pro·Con·COMMITTED dynamic 근거와 Gate 보완 요청 | 없음 | 없음 |
+| Sandbox Runtime | 없음 | 없음 | 승인된 exact `ReproductionPlan` 실행, `SandboxStepLog`·`DynamicReproductionResult`·PoC 생산 | 계획 밖 command·입력 및 Sandbox 정책 위반 차단 | 없음 |
 | CWE Labeling | CWE 후보와 근거 | CWE label revision 생성 | final Verification | 없음 | 없음 |
 | Chaining Agent | TRUE+HOLD·TRUE+TRUE Primitive match와 chained proposal | 없음 | ACTIVE Primitive와 exact Gate provenance | 없음 | 없음 |
 | Technical Evidence Gate Agent | 구체적인 보완 요청 | 없음 | verdict·근거·코드 흐름·CWE | 없음 | 없음 |
@@ -114,7 +115,7 @@ Chaining match -> PROPOSED child hypothesis origin CHAINING
 | Runtime Validator | 허용 가능한 대체 action 안내 | 없음 | 실행 전제와 exact reference | action 허용·차단 | 없음 |
 | Human Reviewer | 재검증·보완 요청 | 외부 제출·공개 | 전체 `HumanReviewPacket` | 공개 승인 | `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION` |
 
-Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 호출 순서, 기술 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 확정하지 않는다. Verification Agent는 hypothesis-local 다음 작업을 선택하지만 프로그램 enforcement를 우회하지 못한다. Runtime Validator는 값의 생산자가 맞는지, 필요한 선행 record와 상태가 있는지, 실행 범위가 허용됐는지만 확인하며 domain 값을 대신 만들지 않는다.
+Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 호출 순서, 기술 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 확정하지 않는다. Verification Agent는 hypothesis-local 다음 작업과 동적 재현 모드를 선택하고 exact `ReproductionPlan`을 생산하지만 프로그램 enforcement를 우회하거나 Sandbox를 직접 실행하지 못한다. Sandbox Runtime은 승인된 계획만 실행하고 결과를 생산하며 모드·계획·최종 verdict를 바꾸지 않는다. Runtime Validator는 값의 생산자가 맞는지, 필요한 선행 record와 상태가 있는지, 실행 범위가 허용됐는지만 확인하며 domain 값을 대신 만들지 않는다.
 
 ## action 요청과 실행
 

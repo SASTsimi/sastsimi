@@ -27,7 +27,7 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 | 9 | Verification이 위치 기반 코드 문맥 조회 | `CodeContextRequest/Response` |
 | 10 | 운영 Verification이 Pro/Con을 독립 병렬 실행 | supporting/counter evidence |
 | 11 | 초기 판정 | `TRUE | FALSE | HOLD` |
-| 12 | Verification 판단에 따라 제한/전체 동적 재현 | `LIMITED_REPRO | FULL_REPRO`, PoC evidence |
+| 12 | Verification이 모드·`ReproductionPlan`을 결정하고 runtime 허가 뒤 R7 Sandbox가 exact plan 실행 | `COMMITTED ReproductionPlan`, `SandboxStepLog`, `DynamicReproductionResult`, PoC evidence |
 | 13 | 최종 판정과 material claim 분리 | final `VerificationResult`, optional `origin=VERIFICATION` proposal |
 | 14 | 판정별 분기 | FALSE terminal / HOLD REQUIRED 즉시 admission / TRUE CWE 진행 |
 | 15 | TRUE 기술 근거 검토 | `TechnicalEvidenceReview` |
@@ -87,9 +87,9 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | Context Retrieval Service | 같은 `workspace_id`와 `commit_id`에서 제한된 추가 문맥 조회 | 작업공간 밖 무제한 repository dump |
 | Orchestration Agent | proposal 검증·전역 가설 등록·Verification 배정·가설 간 병렬성 | 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정 또는 Finding 공개 |
 | Hypothesis Agent | schema-constrained 가설 후보 생성 | verdict·Finding·exploitability 확정 |
-| Verification Agent | 가설 내부 Context·Pro/Con·dynamic·판정·REVISE·Gate·Chaining 흐름과 material child proposal | runtime 검사 우회 또는 새 주장의 무검증 승격 |
+| Verification Agent | 가설 내부 Context·Pro/Con, 동적 모드·`ReproductionPlan`, 판정·REVISE·Gate·Chaining 흐름과 material child proposal | Sandbox 직접 실행·동적 결과 생산, runtime 검사 우회 또는 새 주장의 무검증 승격 |
 | Pro/Con Agents | 독립적인 성립·반박 근거 조사 | 동일 session 공유 |
-| Sandbox Controller | 승인된 Docker 제한/전체 재현 | host 또는 허용 범위 밖 실행 |
+| Sandbox Controller | 승인된 exact `ReproductionPlan`의 Docker 실행과 log·동적 결과·PoC 생산 | 모드·계획·최종 verdict 변경, host 또는 허용 범위 밖 실행 |
 | Primitive DB | HOLD REQUIRED와 Gate-qualified TRUE PROVIDED의 ACTIVE exact revision 검색 | 작업 queue, Gate 전 TRUE admission 또는 자동 Finding 생성 |
 | Chaining Agent | TRUE+HOLD·TRUE+TRUE Primitive matching과 chained proposal | 일반 research, dynamic, Gate, verdict, CWE, report 확정 |
 | Technical Evidence Gate | 기술적 연결성과 handoff 품질 검토 | Verification verdict 직접 변경 |
