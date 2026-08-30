@@ -128,11 +128,7 @@ flowchart TB
     DYN -->|No| FINAL[Final VerificationResult]
     DYN -->|Small question| LIMITED[Docker LIMITED_REPRO]
     DYN -->|End to end| FULL[Docker FULL_REPRO and PoC]
-    LIMITED --> LOBS{Observation goal answered}
-    LOBS -->|Yes| SYN2[Re-synthesize evidence]
-    LOBS -->|No| ESC{FULL safe scoped and budgeted}
-    ESC -->|Yes new plan| FULL
-    ESC -->|No return limits| SYN2
+    LIMITED --> SYN2[Re-synthesize evidence]
     FULL --> SYN2
     SYN2 --> FINAL
     FINAL --> OUT[Restrictions bypass candidates required and provided capabilities impact candidates]
