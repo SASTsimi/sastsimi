@@ -11,6 +11,7 @@
 - 진행 상태: **교차 검토 중(`IN_REVIEW`)**
 - 완료된 범위: R4-01, R4-02, R4-03의 기술 설계와 문서 반영
 - 남은 범위: 현재 문서 전체에 대한 역할별 교차 검토, 최종 확인, R4-04 PR 병합
+- 교차 검토 PR: [#48](https://github.com/SASTsimi/sastsimi/pull/48)
 - 검토 시작 기준: `main`의 `fb39435593f6af3bdab41b84c2543f2a6cc71611`
 - 최종 검토 기준(`review freeze SHA`): R4-04 PR의 마지막 수정 commit을 PR 본문에 기록합니다.
 
