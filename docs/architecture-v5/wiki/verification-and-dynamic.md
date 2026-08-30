@@ -58,8 +58,8 @@ Technical Gate가 `REVISE`를 반환하면 같은 ACTIVE `VerificationAssignment
 
 ## 재현 환경 구성
 
-R7은 Verification이 선택한 mode와 `ReproductionPlan`을 받아 같은 workspace·commit의 실행환경을 준비합니다. 기존 Dockerfile·Compose를 Sandbox 복사본에서 우선 사용하고, 없거나 안전하게 실행할 수 없으면 원본 코드를 수정하지 않는 일회성 overlay를 만듭니다. LIMITED는 plan에 필요한 작은 runtime·fixture·관측 지점만 준비하고, FULL은 HTTP·routing·middleware·인증·handler·DB 또는 sink까지 이어지는 최소 E2E component만 구성합니다.
+R7은 Verification이 선택한 mode와 `ReproductionPlan`을 받아 같은 workspace·commit의 실행환경을 준비합니다. 기존 Dockerfile·Compose를 Sandbox 복사본에서 우선 사용하고, 없거나 안전하게 실행할 수 없으면 원본 Repository 밖의 Sandbox 작업영역에 일회성 실행 설정(overlay)을 만듭니다. 이는 실행에 필요한 Dockerfile·Compose 설정을 Sandbox에만 덧붙이는 방식입니다. LIMITED는 plan에 필요한 작은 runtime·fixture·관측 지점만 준비하고, FULL은 HTTP·routing·middleware·인증·handler·DB 또는 sink까지 이어지는 최소 E2E component만 구성합니다.
 
 SQLite·PostgreSQL·MySQL은 Django settings와 dependency에서 engine을 탐지해 격리된 DB·migration·test record를 준비합니다. 권한별 테스트 계정과 소유 객체는 최소 fixture로 만들고 Redis·Celery는 필요할 때만 격리 실행합니다. OAuth·외부 API·SSRF target은 plan의 관측 목표를 유지하는 승인된 Mock으로만 대체하며 production credential·운영 DB·실제 개인정보를 사용하지 않습니다. R7이 plan의 공격 의미를 바꾸는 대체를 임의로 선택하지 않습니다.
 
-환경은 build, dependency 설치, DB·service 시작, migration, fixture, application start, Health Check 순서로 준비합니다. Health Check는 plan 실행 준비 확인일 뿐 취약점 성공 신호가 아닙니다. 필수 환경이나 공격 경로를 실행하지 못하면 `FAILED + ENVIRONMENT_SETUP`이고, 공격 경로 일부의 신뢰 관측이 있을 때만 `PARTIAL + limitations`를 사용합니다. 환경 Artifact의 hash·redaction·저장 형식은 Evidence 규칙이, 실제 격리·자원 제한은 Sandbox policy가 담당합니다.
+환경은 build, dependency 설치, DB·service 시작, migration, fixture, application start, Health Check 순서로 준비합니다. Health Check는 plan 실행 준비 확인일 뿐 취약점 성공 신호가 아닙니다. 필수 환경이나 공격 경로를 실행하지 못하면 `FAILED + ENVIRONMENT_SETUP`입니다. `PARTIAL`은 애플리케이션 실행만 성공한 경우가 아니라 공격 경로 일부를 실제 실행해 신뢰 관측을 얻었지만 환경 차이로 전체 확인이 부족한 경우에만 사용합니다. 환경 Artifact의 hash·redaction·저장 형식은 Evidence 규칙이, 실제 격리·자원 제한은 Sandbox policy가 담당합니다.

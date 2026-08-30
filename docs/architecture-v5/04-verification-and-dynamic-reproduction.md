@@ -117,9 +117,9 @@ Verification Agent가 선택한 mode와 `ReproductionPlan`을 기준으로 R7이
 
 1. Repository에 Dockerfile·Compose가 있으면 원본을 수정하지 않고 Sandbox 내부 복사본에서 우선 사용한다.
 2. 기존 설정에 production credential·운영 endpoint·host mount 등 금지 조건이 있으면 값을 임의로 사용하지 않는다. plan의 관측 목표를 유지하고 승인 범위에 포함된 격리 test 설정이나 Mock만 사용하며, 안전한 대체가 없으면 환경 한계로 반환한다.
-3. Docker 설정이 없거나 안전하게 실행할 수 없으면 CodeWorkspace 밖의 Sandbox 작업영역에 일회성 Dockerfile·Compose overlay를 만든다.
-4. overlay는 탐지한 runtime·dependency·entrypoint와 plan에 필요한 service만 포함하고 원본 source tree에 commit하지 않는다. plan의 실행 단계·공격 입력을 추가하거나 바꿀 수 없으며 결과 image digest는 `RUN_SANDBOX` 허가 값과 일치해야 한다.
-5. 기존 설정과 overlay 모두 적용 근거, dependency·service, image digest, 환경 차이와 폐기 결과를 환경 관측으로 남긴다. 구체적인 Artifact hash·redaction·저장 형식은 R7 Evidence 규칙을 따른다.
+3. Docker 설정이 없거나 안전하게 실행할 수 없으면 CodeWorkspace 밖의 Sandbox 작업영역에 일회성 실행 설정(overlay)을 만든다. 이는 원본 Repository를 수정하지 않고 실행에 필요한 Dockerfile·Compose 설정을 Sandbox에만 덧붙이는 방식이다.
+4. 일회성 실행 설정은 탐지한 runtime·dependency·entrypoint와 plan에 필요한 service만 포함하고 원본 source tree에 commit하지 않는다. plan의 실행 단계·공격 입력을 추가하거나 바꿀 수 없으며 결과 image digest는 `RUN_SANDBOX` 허가 값과 일치해야 한다.
+5. 기존 설정과 일회성 실행 설정 모두 적용 근거, dependency·service, image digest, 환경 차이와 폐기 결과를 환경 관측으로 남긴다. 구체적인 Artifact hash·redaction·저장 형식은 R7 Evidence 규칙을 따른다.
 
 mode는 환경 범위를 제한하는 입력이다.
 
@@ -138,7 +138,7 @@ DB와 테스트 상태는 다음 원칙을 따른다.
 
 환경 구성 수명주기는 `build -> dependency 설치 -> DB·보조 service 시작 -> migration -> fixture·계정 준비 -> application start -> Health Check -> plan 실행 준비` 순서다. 각 단계는 시작·종료·exit code·timeout·환경 차이를 관측하며, build·migration·Health Check와 retry의 실제 한도는 R8 budget profile을 적용한다. container 권한·network·resource·mount 제한의 실제 enforcement는 Sandbox policy가 담당한다.
 
-Health Check 성공은 애플리케이션이 plan 실행 준비 상태라는 뜻일 뿐 취약점 재현 성공이 아니다. dependency 설치, DB 시작, migration, application start 또는 필수 Health Check 실패로 공격 경로를 실행하지 못하면 `FAILED + ENVIRONMENT_SETUP`이다. 애플리케이션만 실행되고 공격 경로를 실행하지 못한 경우도 `PARTIAL`이 아니다. 공격 경로 일부를 실제 실행해 신뢰 가능한 관측을 얻었지만 환경 차이로 전체 확인이 부족한 경우에만 `PARTIAL + NONE + INCONCLUSIVE`와 limitation을 사용한다.
+Health Check 성공은 애플리케이션이 plan 실행 준비 상태라는 뜻일 뿐 취약점 재현 성공이 아니다. dependency 설치, DB 시작, migration, application start 또는 필수 Health Check 실패로 공격 경로를 실행하지 못하면 `FAILED + ENVIRONMENT_SETUP`이다. `PARTIAL`은 애플리케이션이 단순히 실행된 상태가 아니라, 공격 경로 일부까지 실제로 실행해 신뢰 가능한 관측을 얻었지만 환경 차이로 전체 확인이 부족한 경우에만 `PARTIAL + NONE + INCONCLUSIVE`와 limitation을 사용한다. 따라서 Health Check를 통과했더라도 환경 문제로 공격 경로에 진입하지 못했다면 `PARTIAL`로 기록하지 않는다.
 
 ### LIMITED_REPRO
 
