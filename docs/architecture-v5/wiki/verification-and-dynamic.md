@@ -30,11 +30,17 @@ Pro와 Con은 서로의 결과를 받지 않는 별도 NEW session이다. trigge
 
 각 반증 질문에는 `question_id`가 있습니다. 검증 결과는 질문마다 `DISPROVED`, `NOT_DISPROVED`, `INCONCLUSIVE` 중 하나와 근거를 남깁니다. 실제 근거가 있는 `DISPROVED`가 하나 이상일 때만 `FALSE`가 가능합니다. `NOT_DISPROVED`는 반증하지 못했다는 뜻일 뿐 가설을 증명하지 않습니다.
 
+Verification Agent가 확인할 질문과 관측 목표를 정하면 R7의 Planner가 안전한 실행 범위를 제안합니다. Environment Builder는 같은 commit의 최소 환경을 준비하고, Sandbox Runner는 프로그램이 허가한 Action만 실행하며, Evidence Collector가 실제 관측과 PoC를 저장합니다. Planner 출력만으로 임의 명령을 실행하거나 network·resource 정책을 완화할 수 없습니다.
+
 | 모드 | 목적 |
 |---|---|
 | `NOT_REQUIRED` | 정적 근거로 현재 판정 가능 |
 | `LIMITED_REPRO` | guard, sink, 권한 조건 등 작은 질문 확인 |
 | `FULL_REPRO` | 안전한 end-to-end 재현과 PoC |
+
+LIMITED와 FULL은 반드시 순서대로 실행하지 않습니다. 작은 실행 사실로 질문에 답할 수 있으면 LIMITED를 사용하고, 실제 route·인증·DB·상태 변화를 연결해야 하면 처음부터 FULL을 사용할 수 있습니다. LIMITED에서 유효한 관측을 얻었지만 실제 영향이 남아 `INCONCLUSIVE`이면, FULL이 해결할 미확인 조건과 예상 비용을 설명하고 policy·budget 검사를 통과한 뒤 새 FULL 계획으로 확대합니다.
+
+각 Sandbox 실행은 새 `attempt_id`를 사용합니다. 같은 입력의 일시 오류를 다시 실행하는 것만 retry이며, LIMITED→FULL은 범위와 입력이 달라지는 새 계획입니다. 이전 LIMITED 결과와 오류는 덮어쓰지 않고 후속 FULL 입력과 최종 Verification 근거에 함께 연결합니다. 정책 차단·timeout·cleanup 실패와 예산 소진은 자동 retry하거나 반증으로 바꾸지 않습니다.
 
 Docker는 ephemeral/non-root, network default-deny와 자원·시간 제한을 사용합니다. 필수 환경이나 공격 경로를 실행하지 못하면 `FAILED + ENVIRONMENT_SETUP`입니다. 공격 경로를 일부 실행해 믿을 수 있는 관측은 얻었지만 환경 차이 때문에 전체 확인이 부족하면 `PARTIAL + NONE`이며, 관측과 한계를 함께 남깁니다.
 

@@ -88,6 +88,54 @@ Pro와 Con은 context contamination을 막기 위해 서로 다른 NEW session�
 
 동적 검증은 정적 판단을 대체하지 않고 특정 가설의 조건을 제한된 환경에서 확인한다.
 
+### Verification 요청과 R7의 책임
+
+Verification Agent는 동적 재현이 필요한 이유와 확인할 반증 질문·관측 목표를 정한다. R7은 그 목표를 안전하게 확인할 수 있는 실행 범위를 계획하고 Docker sandbox에서 실행 사실을 수집한다. R7의 실행 상태와 관측 결과는 최종 `TRUE | FALSE | HOLD`가 아니며 Verification Agent가 다시 종합한다.
+
+| 구성 요소 | 책임 | 직접 할 수 없는 일 |
+|---|---|---|
+| Reproduction Planner | 가설·기존 근거·관측 목표를 읽고 LIMITED/FULL 범위, 환경 요구와 허용 Action 계획을 제안 | 최종 verdict 결정, 임의 shell 실행, 정책·예산 완화 |
+| Environment Builder | 같은 commit의 sandbox 복사본에 필요한 의존성·fixture·계정·격리 서비스를 준비 | 다른 commit 사용, 운영 credential·실서비스 사용 |
+| Sandbox Runner | runtime이 허가한 image·step·target·network·resource 범위만 실행 | Planner 자연어 출력을 명령으로 직접 실행, host 권한 사용 |
+| Evidence Collector | 요청·응답·로그·DB·파일·callback 등 실제 관측과 PoC artifact를 저장 | 실행 실패를 반증이나 `FALSE`로 변환 |
+
+Planner 출력은 실행 권한이 없는 구조화된 제안이다. 신뢰 경계 안의 runtime이 같은 `workspace_id`·`commit_id`, 허용된 target·tool·file·network·resource·time policy와 남은 예산을 확인한 뒤 Sandbox Runner에 전달한다. 정책 검사를 통과하지 못한 계획은 실행하지 않고 차단 이유를 기록한다.
+
+### Planner가 받는 최소 입력
+
+- 현재 `VulnerabilityHypothesis`, Candidate의 source→propagation→sink 또는 권한 경로와 관련 `CodeLocation`
+- 같은 `workspace_id`·`commit_id`와 정적·LLM·Pro/Con evidence reference
+- R6 플레이북이 제공하는 `question_id`, 확인할 런타임 사실과 기대 관측 종류
+- 승인된 target·tool·file·network·resource·time policy와 R8 budget profile
+- 이미 수행한 동적 재현이 있으면 이전 `DynamicReproductionResult` reference와 남은 미확인 조건
+
+취약점별로 어떤 관측이 성공·반증을 뜻하는지는 R6 플레이북이 소유한다. R7은 그 관측을 만들고 수집하는 실행 계획을 세우며, 플레이북이 없거나 관측 목표가 모호하면 의미를 추측하지 않고 Verification에 보완을 요청한다.
+
+### Planner가 내는 최소 출력
+
+- 선택한 `LIMITED_REPRO | FULL_REPRO`와 선택 이유
+- 연결된 `question_id`, 관측 목표, 완료·중단 조건
+- 필요한 runtime·DB·fixture·테스트 계정·격리 서비스의 요구사항
+- 순서가 있는 허용 Action 제안과 각 단계에서 수집할 관측 종류
+- 적용할 sandbox policy·R8 budget profile reference와 예상 자원·시간 사용량
+- 실패 시 재시도 가능한 조건, 확대 시 해결할 미확인 조건과 선행 결과 reference
+
+이 출력은 Environment Builder·Sandbox Runner·Evidence Collector가 같은 목표와 범위를 공유하기 위한 실행 계획이다. 구체적인 환경 탐지·구성 방식은 R7-02, 실제 권한·network·resource 제한값과 enforcement는 R7-03에서 정한다.
+
+### LIMITED/FULL 선택과 확대
+
+LIMITED와 FULL은 반드시 차례대로 실행하는 고정 단계가 아니라 확인 범위와 비용이 다른 모드다.
+
+| 경로 | 선택 조건 | 다음 처리 |
+|---|---|---|
+| LIMITED 직접 진입 | sanitizer·auth guard·middleware 호출·sink 도달처럼 하나의 작은 실행 사실로 핵심 질문을 확인할 수 있음 | 최소 환경과 관측 지점만 계획 |
+| FULL 직접 진입 | 실제 HTTP route·인증·권한·상태 변화·DB·외부 의존성을 연결해야만 질문에 답할 수 있음 | 처음부터 최소 E2E 환경과 PoC 계획 준비 |
+| LIMITED 후 종료 | 계획한 런타임 사실을 신뢰 가능한 evidence로 관측하여 현재 질문에 답했음 | 결과를 Verification에 반환; R7이 verdict를 결정하지 않음 |
+| LIMITED→FULL 확대 | LIMITED에서 유효한 관측은 얻었지만 실제 요청 흐름·영향·상태 변화가 남아 `hypothesis_outcome=INCONCLUSIVE`이고, FULL이 안전·scope·budget 조건을 만족함 | 이전 LIMITED 결과를 입력에 포함한 새 FULL 계획 요청 |
+| 확대 없이 반환 | 정책 차단, cleanup 실패, 예산 소진, 안전한 환경 구성 불가 또는 FULL이 승인 scope 밖임 | 실패·제한·미확인 조건을 Verification에 반환 |
+
+LIMITED 결과가 `status=PARTIAL`, `hypothesis_outcome=INCONCLUSIVE`라는 이유만으로 자동 확대하지 않는다. Planner는 FULL이 어떤 미확인 조건을 추가로 해결하는지, 필요한 환경과 예상 비용, 새 관측 목표를 설명한다. Verification이 요청한 범위와 runtime policy·budget 검사를 통과한 경우에만 새 FULL 실행을 시작한다. `FAILED | BLOCKED | CANCELLED`는 확대 근거 또는 반증이 아니며 먼저 실패 원인과 재시도 가능성을 분리한다.
+
 ### LIMITED_REPRO
 
 - 한 sanitizer, auth guard, sink 도달 또는 작은 함수 경로 확인
@@ -99,6 +147,26 @@ Pro와 Con은 context contamination을 막기 위해 서로 다른 NEW session�
 - 해당 취약점 유형이 end-to-end 재현을 요구하고 안전한 환경이 준비된 경우
 - container 내부에 대상과 의존성을 구성하고 공격 입력부터 observable effect까지 재현
 - 재현 명령·환경·입력·관찰 결과·제한을 PoC artifact로 정리
+
+### attempt 연결과 재시도
+
+- 실제 Sandbox 실행마다 새 `attempt_id`를 사용하고 같은 가설의 결과는 동일한 `hypothesis_id`, `workspace_id`, `commit_id`에 연결한다.
+- 같은 입력과 관측 목표의 일시적 실패를 다시 실행하는 경우만 retry다. 이전 attempt와 오류를 보존하고 결과를 덮어쓰지 않는다.
+- LIMITED→FULL은 실행 범위·입력·환경이 바뀌므로 retry가 아니라 새 계획과 새 attempt다. FULL 계획은 선행 LIMITED 결과 reference와 아직 확인하지 못한 조건을 입력으로 보존한다.
+- 처음부터 FULL로 진입한 경우에는 선행 LIMITED 결과를 만들지 않는다.
+- 최종 Verification은 같은 가설에 연결된 LIMITED/FULL 결과를 함께 읽고, 어떤 결과를 판정 근거로 사용했는지 reference로 남긴다.
+
+정확한 work·attempt·상태 전이와 실행 허가 reference는 R4 공통 계약을 따르며 R7이 별도 필드나 enum을 만들지 않는다.
+
+| 결과·원인 | 허용되는 다음 행동 | 금지 행동 |
+|---|---|---|
+| PoC 입력·fixture·계정·환경 설정 보완 가능 | 같은 관측 목표와 승인 범위 안에서 수정하고 새 attempt 요청 | 다른 commit·운영 credential로 우회 |
+| 실행 또는 관측 설정의 일시 오류 | R8 retry budget 안에서 새 attempt 요청 | 이전 실패 삭제, attempt ID 재사용 |
+| `PARTIAL + NONE + INCONCLUSIVE` | FULL이 남은 질문을 해결하고 policy·budget을 만족하면 확대 제안 | 자동 성공·반증 처리 |
+| `BLOCKED + POLICY_BLOCKED` | 차단 사유를 반환하고 승인된 policy revision이 생긴 뒤에만 새 요청 | Agent가 network·resource·mount 제한 완화 |
+| `FAILED + TIMEOUT` 또는 budget 소진 | 사용량과 중단 지점을 기록하고 R8 정책에 따라 종료·승인 대기 | 숨은 추가 실행 또는 무제한 retry |
+| 실제 관측에 의한 `DISPROVED` | 반증 evidence를 Verification에 반환 | 성공 결과를 만들기 위한 반복 실행 |
+| cleanup 실패 | 잔여 container·volume·network 상태를 기록하고 후속 실행 차단 | 정리 성공으로 표시하고 다음 attempt 실행 |
 
 ### 실행 경계
 

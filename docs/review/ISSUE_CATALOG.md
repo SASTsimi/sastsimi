@@ -462,6 +462,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 확인할 권한 경계
 
+- Verification은 반증 질문·관측 목표와 최종 `TRUE/FALSE/HOLD`를 소유하고, R7은 승인된 범위의 실행 계획과 관측 evidence만 만든다.
 - sandbox는 evidence만 생산하며 verdict를 결정하지 않는다.
 - host root/home, Docker socket, host process namespace, host secret, production credential와 범위 밖 target 접근을 금지한다.
 - LLM 요청만으로 network/resource policy를 완화하지 않는다.
@@ -480,6 +481,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] network default-deny이며 예외 승인·scope·log가 정의됨
 - [ ] image/build provenance, daemon isolation과 writable mount 정책 threat model이 있음
 - [ ] LIMITED와 FULL의 선택 조건과 observable effect 차이가 명확함
+- [ ] LIMITED 종료·FULL 직접 진입·LIMITED→FULL 새 계획과 attempt 연결이 구분됨
 - [ ] setup/execution/observation/policy/timeout failure와 반증이 다른 상태임
 - [ ] 필수 환경·공격 경로 미실행은 `FAILED + ENVIRONMENT_SETUP`, 유효한 일부 관측과 환경 차이는 `PARTIAL + NONE + INCONCLUSIVE`로 구분됨
 - [ ] workspace/commit, command, input, observation과 cleanup이 hypothesis에 추적됨
