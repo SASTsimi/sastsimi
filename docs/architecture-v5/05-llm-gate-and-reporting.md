@@ -40,15 +40,21 @@ CWE 후보는 final TRUE 뒤에 Gate 입력으로 작성한다. primary·alterna
 - 같은 Verification에서 분리한 material child proposal 중 재검증 완료 여부
 
 Gate의 기준 입력은 `verification_result_ref`가 고정한 final `VerificationResult` revision과
-`cwe_label_ref`가 고정한 `CWELabel` revision이다. supporting/counter Evidence,
+`cwe_label_ref`가 고정한 `CWELabel` revision이다. 정확한 가설 revision은 Verification의
+필수 `hypothesis_ref`로 고정한다. `VulnerabilityHypothesis`는 공통 revision 계약상 같은
+`hypothesis_id` 안에서도 새 revision을 가질 수 있으므로 ID만으로 고정하지 않는다. supporting/counter Evidence,
 `DynamicReproductionResult`, PoC는 별도의 최상위 Gate reference를 새로 만들지 않고,
-그 `VerificationResult` revision 안의 `supporting_evidence[].evidence_refs`,
+그 `VerificationResult` revision 안의 `hypothesis_ref`, `supporting_evidence[].evidence_refs`,
 `counter_evidence[].evidence_refs`, `dynamic_result_ref`, `poc_ref`를 따라 검토한다.
+`CWELabel.evidence_refs`도 `cwe_label_ref`에서 따라가는 전이적 입력이다.
 따라서 Gate가 검토한 입력 집합은 두 직접 reference와 그 revision이 실제로 가리키는
-전이적 reference 집합이다. `VulnerabilityHypothesis`, code/entity/location/path와 restriction,
-unresolved condition도 같은 `hypothesis_id`, `workspace_id`, `commit_id`의 현재 검증 chain에
-속해야 한다. revision history는 변경 이유를 이해하기 위한 문맥이지, 서로 다른 revision의
+전이적 reference 집합이다. revision history는 변경 이유를 이해하기 위한 문맥이지, 서로 다른 revision의
 근거를 골라 합치는 권한을 주지 않는다.
+
+검사는 record 종류별로 분리한다.
+
+- shared static evidence인 `CodeLocation`, `CodeSymbol`, `CodeFact`, `CodeRelation`, `StaticFactBundle`은 현재 분석의 `workspace_id + commit_id`, Verification/Evidence가 사용한 exact reference·revision과 hash를 확인한다. 직접적인 `hypothesis_id`는 요구하지 않으며 같은 commit의 여러 가설이 재사용할 수 있다.
+- hypothesis-scoped record인 `VulnerabilityHypothesis`, `VerificationResult`, `DynamicReproductionResult`, `CWELabel`, `TechnicalEvidenceReview`와 기타 가설별 artifact는 `hypothesis_id`, workspace·commit, exact `record_id`와 `content_hash`를 확인한다. 내장 `EvidenceClaim`은 이를 소유한 Verification의 가설 범위로 검사한다. revision chain은 별도의 공통 revision 계약으로 검증하며, 다른 가설의 Verification·Dynamic 결과 혼입은 invalid input이다.
 
 `StoredDataRef.record_id`가 있는 Evidence·Dynamic 결과는 정확한 저장 record revision을,
 `record_id=null`인 raw observation·code fragment·PoC artifact는 `stored_data_id`,
@@ -79,8 +85,7 @@ Gate는 verdict를 다시 판정하지 않고, Verification Agent가 남긴 판�
 - 모든 verdict에서 관련 counter evidence와 falsification 결과를 설명이 누락·축소하지
   않아야 하며, supporting/counter claim의 statement, evidence, limitation이 서로 모순되면
   그 위치를 특정한다.
-- 다른 `hypothesis_id`, `workspace_id`, `commit_id` 또는 현재 reference와 다른 content/revision의
-  evidence는 현재 verdict의 근거로 사용할 수 없다.
+- hypothesis-scoped evidence가 다른 `hypothesis_id`를 가리키거나, 어떤 evidence든 다른 workspace·commit 또는 현재 reference와 다른 content/revision이면 현재 verdict의 근거로 사용할 수 없다.
 
 #### 코드 연결
 
@@ -90,8 +95,7 @@ Gate는 verdict를 다시 판정하지 않고, Verification Agent가 남긴 판�
 - source → propagation/call → sink 또는 source → security check 관계가 기존 `CodeFact`,
   `CodeRelation`, context/Evidence reference로 이어지는지, 설명된 방향·순서·guard 적용 여부가
   그 연결과 같은지 확인한다.
-- 모든 location, symbol, fact, relation과 이를 담은 Evidence가 같은 `workspace_id + commit_id`에
-  속하고 현재 가설을 가리키는지 확인한다.
+- 모든 location, symbol, fact, relation과 이를 담은 Evidence가 같은 `workspace_id + commit_id`에 속하고 exact reference로 연결되는지 확인한다. shared static record 자체에는 현재 `hypothesis_id`를 요구하지 않고, 이를 현재 주장에 연결하는 hypothesis-scoped Evidence에 가설 일치를 요구한다.
 - 누락된 edge를 추론해 채우거나 새 data-flow·endpoint·공격 경로를 만들지 않는다. 새 material
   claim이 필요하면 Gate 판정 근거로 쓰지 않고 기존 proposal/재검증 경계를 따른다.
 
@@ -108,6 +112,8 @@ Gate는 verdict를 다시 판정하지 않고, Verification Agent가 남긴 판�
   더 큰 권한·asset·endpoint·영향을 주장하거나 현재 환경/commit과 연결되지 않으면 보완 또는
   거절 대상이다.
 - Gate는 동적 결과나 PoC를 새로 해석해 새 취약점·공격 경로를 만들지 않는다.
+
+decision/result/status/PoC의 정본 compatibility matrix는 [경량 데이터 계약](08-lightweight-data-contracts.md#dynamic-decisionresultpoc-compatibility)을 따른다. 구조 불변조건 위반은 Gate 전에 invalid output으로 차단한다. PoC 허용·필수성처럼 아직 미결정인 R7 정책은 Gate가 확정하지 않으며, 저장된 ref의 정합성과 실패·부분 결과가 과장되지 않았는지만 검토한다.
 
 #### CWE와 제한 조건 정렬
 
@@ -158,6 +164,8 @@ Reporter 호출 또는 외부 보고 허용을 뜻하지 않는다. Gate 2의 �
 `ACCEPT`는 final TRUE의 모든 핵심 claim과 반대 근거, 코드·동적·PoC·CWE·제한 reference가 현재 revision chain에 정렬되고 다음 소비자가 누락된 기술 근거를 새로 구성할 필요가 없을 때만 사용한다. 이는 정책상 보고 가능성, Reporter 실행 권한 또는 PROVIDED Primitive 자격을 단독으로 부여하지 않는다.
 
 `REJECT`는 핵심 Evidence가 다른 hypothesis/commit을 가리키는 등 근본 provenance 불일치나 핵심 주장과 evidence가 명백히 다른 대상을 설명해 현재 전달 묶음을 단순 보완의 기반으로도 신뢰할 수 없을 때 사용한다. 이는 Verification verdict를 `FALSE`로 바꾸지 않는다. schema·semantic validation 실패, invalid reference, stale revision, LLM/provider/runtime 오류와 `INVALID_OUTPUT`은 `REJECT`로 바꾸지 않고 공통 오류 계약에 따라 Gate 결과의 사용과 handoff를 차단한다.
+
+`revision_requests`와 `verification_requests`는 부족하거나 모순된 claim/location/condition, 현재 artifact reference/hash, 필요한 Evidence 또는 새 revision, 완료 확인 기준을 구체적으로 기록한다. 이 요청은 목적지 routing 권한이 아니며 같은 Verification owner가 보완 범위를 정한다. 새 material claim이나 미검증 child proposal은 현재 Gate 근거로 승격하지 않고 trusted registration 뒤 별도 hypothesis의 전체 Verification lifecycle을 거친다.
 
 `REVISE`는 동일 입력 재투표나 provider retry가 아니다. 현재 Gate work는 `REVISE` review를 exact output으로 확정하고 종료한다. 그 review는 Orchestration을 경유해 목적지를 다시 선택하지 않고 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 전달한다. runtime은 이전 종료 work를 되돌리지 않고 새 generation의 VERIFICATION work를 등록하며 hypothesis 상태를 `TERMINAL -> VERIFYING`으로 CAS 전환한다. Verification은 필요한 Context·Pro/Con·정적 근거·동적 재현·PoC 연결·restriction을 보완하고, 새 result·work 종료·hypothesis current pointer를 atomic commit하며, 필요하면 CWE producer와 새 label revision을 조정한다. 그 뒤 새 `VerificationResult` 및 필요한 `CWELabel` revision을 가리키는 새 Gate work를 요청한다. 새 Gate work는 새 `input_hash`·`dedupe_key`·`work_id`와 `attempt_number=1`, `trigger=INITIAL`을 사용한다. 입력이 바뀌지 않은 호출 실패만 같은 work 안에서 `trigger=RETRY`인 새 attempt를 사용할 수 있다. 횟수·token·시간 한도 도달 시 보고와 TRUE 체이닝을 차단하고 미해결 사유를 저장한다.
 

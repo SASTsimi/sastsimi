@@ -84,7 +84,7 @@ Docker 환경을 만들지 못했거나 실행이 timeout된 것은 재현 실�
 
 빈 출력, exit code와 `FAILED | BLOCKED | CANCELLED`만으로는 가설을 `FALSE`로 바꿀 수 없습니다.
 
-Technical Gate는 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 자신이 읽은 Verification과 CWELabel 수정본을 정확히 기록합니다. 둘 중 하나가 수정되면 이전 Gate 승인을 새 수정본에 재사용하지 않습니다. Rule Scope Gate와 보고서 초안도 같은 CWELabel `record_id`를 사용해야 합니다. `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
+Technical Gate는 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 직접 입력을, Verification의 `hypothesis_ref`·Evidence·Dynamic·PoC와 `CWELabel.evidence_refs`로 전이적 입력을 고정합니다. `VulnerabilityHypothesis`는 같은 가설 ID 안에서도 revision될 수 있으므로 exact `hypothesis_ref`가 필요합니다. 가설·CWE 근거를 포함해 어느 입력 revision이든 수정되면 이전 Gate 승인을 재사용하지 않습니다. shared static evidence는 같은 workspace·commit에서 여러 가설이 재사용할 수 있고 직접 가설 ID 일치를 요구하지 않습니다. Rule Scope Gate와 보고서 초안도 같은 CWELabel `record_id`를 사용해야 합니다. `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
 
 Primitive도 exact revision을 사용합니다. HOLD는 final Verification ref가 붙은 REQUIRED를 Gate 없이 만들고, TRUE는 Technical `ACCEPT`와 Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`가 같은 Verification revision을 가리킬 때만 PROVIDED를 만듭니다. TRUE의 PROVIDED에는 그 취약점을 악용하기 위한 exact Verification의 `required_preconditions`도 함께 고정합니다. 가설별 `PrimitiveIndexState`가 current ACTIVE 항목을 가리키며 새 Verification/index revision이 생기면 과거 항목과 진행 중인 오래된 Chaining 결과를 commit 시 거절합니다.
 

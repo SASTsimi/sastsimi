@@ -857,6 +857,7 @@ FalsificationResult:
 
 VerificationResult:
   meta: RecordMeta
+  hypothesis_ref: StoredDataRef
   verification_mode: BASIC | CONDITIONAL_DEBATE | ALWAYS_DEBATE
   debate_triggers: [string]
   debate_skip_reason: string | null
@@ -881,6 +882,8 @@ VerificationResult:
 ```
 
 `EvidenceClaim.claim_id`는 한 `VerificationResult` 안에서 유일하다. 각 claim은 실제 저장 근거를 가리키는 `evidence_refs`를 하나 이상 가져야 하며, 코드 주장이라면 현재 `workspace_id + commit_id`의 `code_locations`도 하나 이상 가져야 한다. `source_role`은 claim을 작성한 역할이며 근거의 출처를 대신하지 않는다. supporting 목록에는 `VERIFICATION | PRO`, counter 목록에는 `VERIFICATION | CON`만 허용한다.
+
+`VulnerabilityHypothesis`는 `RecordMeta` 기반 record이므로 공통 revision 계약에 따라 같은 `hypothesis_id` 안에서도 새 `record_id` revision을 만들 수 있다. 따라서 `hypothesis_id`만으로는 검증한 가설 내용을 고정할 수 없다. `hypothesis_ref.record_id`는 검증에 사용한 정확한 `VulnerabilityHypothesis` revision을 가리키며 필수다. runtime은 공통 `StoredDataRef` 검사와 대상 `meta.hypothesis_id`가 Verification의 가설과 같은지 확인한다. 가설 revision이 바뀌면 기존 Verification과 downstream Gate review를 재사용하지 않는다.
 
 `CandidateRef`는 아직 검증되지 않은 우회·대체 경로·영향 확대 후보다. `candidate_id`는 한 결과 안에서 유일하고 `candidate_state`는 항상 `UNVALIDATED`다. 현재 가설을 `source_hypothesis_ids`에 포함하며, 실제 근거가 있으면 `evidence_refs`, 아직 필요한 사실은 `missing_information`에 넣는다. 후보가 새로운 endpoint·sink·권한 경계·공격 단계 또는 영향을 주장하면 `material_child_proposals`에 `origin=VERIFICATION`인 새 `HypothesisProposal`을 넣는다. trusted validation과 전역 등록 뒤 전체 검증을 거치기 전까지 verdict, CWE, Gate 또는 보고서의 확정 주장으로 사용할 수 없다.
 
@@ -1097,6 +1100,22 @@ Sandbox Controller는 실행 직전 `RUN_SANDBOX` decision의 exact plan referen
 
 필수 환경을 구성하지 못해 대상 애플리케이션이나 관련 공격 경로를 실행하지 못했다면 `FAILED + ENVIRONMENT_SETUP`이다. 단순 환경 구성 실패를 `PARTIAL`로 기록하지 않는다. `SUPPORTED | DISPROVED`는 `hypothesis_evidence_refs`가 하나 이상 있어야 한다. `DISPROVED`이면 `hypothesis_disproved=true`이고 `disproof_evidence_refs`가 하나 이상이며 모두 `hypothesis_evidence_refs`에도 포함되어야 한다. 나머지 outcome은 `hypothesis_disproved=false`와 빈 `disproof_evidence_refs`를 사용한다. 빈 stdout, exit code, 실행 실패만으로 `DISPROVED`나 `FALSE`를 만들 수 없다. 최종 `TRUE | FALSE | HOLD`는 Verification Agent가 이 결과와 정적·찬반 근거를 함께 보고 결정한다.
 
+### Dynamic decision/result/PoC compatibility
+
+final `VerificationResult`에서 `NOT_REQUIRED`는 실행을 요청하지 않았다는 뜻이므로 `dynamic_result_ref=null`이어야 한다. 이때 기존 또는 별도 경로의 `poc_ref`를 허용할지는 현재 계약으로 결정하지 않는다. `LIMITED_REPRO | FULL_REPRO` 실행이 종료됐다면 `dynamic_result_ref`는 필수이고 대상 `mode`가 decision과 같아야 한다. 실행 중 상태는 final 결과가 아니라 `DynamicReproductionState`로 관리한다.
+
+| decision | 결과 status | 구조 계약 | 의미 및 Gate 처리 |
+|---|---|---|---|
+| `NOT_REQUIRED` | 실행 없음 | `dynamic_result_ref=null` 필수. `poc_ref` 허용 여부 미결정 | 동적 결과 ref가 있으면 invalid output으로 Gate 전에 차단. PoC ref 존재만으로는 R5-01이 invalid로 판정하지 않음 |
+| `LIMITED_REPRO` | `SUCCEEDED` | 결과 ref 필수, PoC 허용 여부 미결정 | 관찰과 outcome 연결을 정상 검토 |
+| `LIMITED_REPRO` | `PARTIAL` | 결과 ref 필수, PoC 허용 여부 미결정 | `INCONCLUSIVE`와 limitations 필수. 과장하면 `REVISE` |
+| `LIMITED_REPRO` | `FAILED`, `BLOCKED`, `CANCELLED` | 결과 ref 필수, PoC 허용 여부 미결정 | 실패는 성공·반증 근거가 아니며 과장하면 `REVISE` |
+| `FULL_REPRO` | `SUCCEEDED` | 결과 ref 필수, PoC 필수 여부 미결정 | 관찰·outcome·존재하는 PoC 연결을 정상 검토 |
+| `FULL_REPRO` | `PARTIAL` | 결과 ref 필수, 부분 PoC 허용 여부 미결정 | `INCONCLUSIVE`와 limitations 필수. 완전 재현으로 과장하면 `REVISE` |
+| `FULL_REPRO` | `FAILED`, `BLOCKED`, `CANCELLED` | 결과 ref 필수, PoC 처리 정책 미결정 | 성공·반증으로 해석할 수 없으며 과장하면 `REVISE` |
+
+PoC 생성·보존·필수성은 nullable `poc_ref`만 둔 현재 계약으로 결정할 수 없으며 R7과 공통 계약 담당자가 정한다. R5-01은 저장된 PoC가 있으면 exact reference와 결과 의미의 정합성을 검증하고, 없으면 미확정 필수성을 추정하지 않는다. 구조 불변조건 위반은 Gate 판정이 아니라 invalid output이다.
+
 ## 8. TechnicalEvidenceReview
 
 첫 번째 Gate가 검증 판정과 코드·실행 근거의 연결을 확인하고 승인·보완·거절을 기록하는 결과입니다.
@@ -1121,22 +1140,25 @@ TechnicalEvidenceReview:
 
 `action_decision_ref.record_id`는 `CALL_TECHNICAL_GATE`를 허가하고 `USED`로 claim한 decision revision을 가리킨다. 실행 결과를 기록한 이후 decision revision의 `outcome_refs`에는 같은 call spec을 실행한 `TECHNICAL_GATE` `LLMInvocationLog`와 현재 review가 각각 한 번 포함되고, log의 `parsed_output_ref.record_id`가 현재 review를 가리켜야 한다. review는 log를 역참조하지 않아 content hash 순환을 만들지 않는다. `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 필수이며 각각 정확히 한 `VerificationResult`와 `CWELabel` revision을 가리킨다. runtime은 두 대상의 `record_id`, `workspace_id`, `commit_id`, `hypothesis_id`와 `content_hash`가 서로와 현재 Technical review에 일치하는지 확인한다. Verification 또는 CWELabel이 새 revision으로 바뀌면 이전 `TechnicalEvidenceReview`를 재사용할 수 없고 Gate를 새로 호출해야 한다. Technical review는 `VerificationResult.verdict`나 `CWELabel`을 덮어쓰지 않는다.
 
-Evidence, Dynamic 결과와 PoC는 `verification_result_ref` 대상의
+가설, Evidence, Dynamic 결과와 PoC는 `verification_result_ref` 대상의
+`hypothesis_ref`,
 `supporting_evidence[].evidence_refs`, `counter_evidence[].evidence_refs`,
 `dynamic_result_ref`, `poc_ref`로 고정한다. 별도 최상위 reference field를 추가하지 않는다.
-runtime은 이 전이적 reference에도 공통 `StoredDataRef`의 record·workspace·commit·hash 검사를
-적용한다. 그 대상이 바뀌면 변경은 공통 revision/reference 계약에 따라 새로운 검토 입력으로
+`CWELabel.evidence_refs`도 `cwe_label_ref` 대상에서 고정되는 전이적 Gate 입력이다. runtime은 모든 전이적 `StoredDataRef`에 대상 record 존재, exact `record_id`, workspace·commit과 `content_hash`가 대상 record와 일치하는지 검사한다. 별도로 공통 revision 계약에 따라 `(logical_record_id, revision_number)` 연속성과 `previous_record_id` 연결을 검증한다. 직접 또는 전이적 Gate input의 대상 revision이 바뀌면 새로운 검토 입력으로
 고정되어야 하며, 이전 Technical review를 변경된 chain에 재사용하지 않는다. 어떤 parent
 Technical `REVISE`는 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 직접 전달하며, runtime은 이전 terminated work를 수정하거나 되살리지 않고 새 VERIFICATION generation과 `TERMINAL -> VERIFYING` 전이를 만든다. Verification owner가 보완 결과를 새 `VerificationResult` revision으로 확정하고 필요한 경우 새 `CWELabel` revision과 정렬한 뒤, 새 exact input chain을 대상으로 새 Gate work를 요청한다.
 
+`CodeLocation`, `CodeSymbol`, `CodeFact`, `CodeRelation`, `StaticFactBundle`은 shared static evidence다. 현재 분석의 `workspace_id + commit_id`, exact reference와 hash를 검사하지만 직접적인 `hypothesis_id` 일치는 요구하지 않으며 같은 commit의 여러 가설이 재사용할 수 있다. `VerificationResult`, `VulnerabilityHypothesis`, `DynamicReproductionResult`, `CWELabel`, `TechnicalEvidenceReview`와 기타 hypothesis-specific artifact는 hypothesis-scoped record다. 내장된 `EvidenceClaim`도 이를 소유한 Verification의 가설 범위에 속한다. 이들은 위 검사에 더해 현재 `hypothesis_id` 일치를 요구한다. 모든 record의 revision chain은 공통 revision 계약으로 검증하며, 다른 가설의 Verification·Dynamic 결과는 invalid input이다. 가설 또는 CWE 근거가 바뀌면 기존 Technical review를 재사용하지 않는다.
+
 `status`와 `handoff_readiness`의 허용 조합은 `ACCEPT + READY`, `REVISE + NOT_READY`,
 `REJECT + NOT_READY`다. `READY`는 기술 근거를 재구성하지 않고 다음 소비자에게 전달할 수
-있다는 뜻일 뿐 정책 Gate 통과나 보고 허용이 아니다. `revision_requests`의 각 항목은 대상
-역할/단계, 현재 artifact/revision, 구체적 결함, 필요한 Evidence 또는 새 revision과 완료 기준을
-식별한다. `REVISE` 재검토에는 요청 대상 upstream 변경이 공통 계약에 따른 새로운 검토
-입력으로 고정되어야 하며 동일 direct·transitive reference/hash 조합의 재투표를 허용하지
-않는다. parent revision 생성, 반환 경로와 retry budget은 공통 계약과 orchestration/runtime
-정책의 책임이다.
+있다는 뜻일 뿐 정책 Gate 통과나 보고 허용이 아니다. `revision_requests`의 각 항목은 현재
+artifact/revision, 구체적 결함, 필요한 Evidence 또는 새 revision과 완료 기준을 식별한다. 현재
+Gate work는 `REVISE` 결과를 확정하고 종료한 뒤 같은 ACTIVE Verification owner에게 직접 전달한다.
+owner는 필요한 정적·동적 근거, Pro/Con, PoC, restriction과 설명을 보완해 새 Verification revision을
+만들고 필요한 경우 새 CWELabel revision과 정렬한다. 새 exact direct·transitive reference/hash를
+가진 새 Gate work만 재검토할 수 있으며 동일 입력의 재투표는 허용하지 않는다. provider 실패나
+`INVALID_OUTPUT` repair는 이 lifecycle과 구분해 공통 invocation retry 계약을 따른다.
 
 `REJECT`는 현재 기술 자료를 보완의 기반으로도 신뢰할 수 없는 근본 provenance·핵심 linkage
 불일치에만 사용한다. schema 오류, LLM/provider/runtime 실패는 `REJECT`가 아니라 공통
