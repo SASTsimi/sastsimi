@@ -136,7 +136,9 @@ Research, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출�
 | 허용되지 않은 provider/model failover | 바로 앞 호출 status와 fallback profile | `INVOCATION_CHAIN_INVALID`, 결과 사용 금지 |
 | crash 뒤 같은 요청이 다시 들어옴 | 마지막 `COMMITTED`, `dedupe_key` | 완료 결과 재사용 또는 허용된 새 attempt, 중복 반영 금지 |
 | retry·Gate `REVISE`·chaining이 한도를 넘음 | 횟수·token·시간·cycle·duplicate budget | 중단 이유 저장, Reporter 차단, verdict 자동 변경 금지 |
-| `PARTIAL` 결과에 gap·오류 설명이 없음 | `gap_ids`, `error_ids`, output refs | `STATE_TRANSITION_INVALID`, 부분 결과 사용 금지 |
+| `PARTIAL` 결과에 누락 설명이 없음 | static/context의 `gap_ids`·`error_ids` 또는 dynamic 결과의 `limitations`, output refs | `STATE_TRANSITION_INVALID`, 부분 결과 사용 금지 |
+| 동적 `BLOCKED + POLICY_BLOCKED` 결과를 공통 work `BLOCKED`에 연결 | 전문 결과 status와 공통 실행 status 매핑 | 종료 결과를 비종료 대기 상태에 연결하지 않고 `STATE_TRANSITION_INVALID` |
+| 동적 종료 결과와 work·전문 상태 pointer가 다름 | `TransitionCommit`, `WorkExecutionState.output_refs`, `dynamic_result_ref` | `TRANSITION_INCOMPLETE`, Verification 전달 차단 |
 | 분석 종료 시 `RUNNING` work나 `PREPARED` journal이 남음 | 전체 work와 commit 상태 | 최종 `AnalysisRunState` 전이 차단 |
 | `COMMITTED` marker 투영 전에 취소·retry 전이가 경쟁 | 다음 target version의 unique marker와 pointer | 기존 marker를 먼저 재투영하고 경쟁 전이는 version conflict로 거절 |
 | 모순된 `ALLOW`가 Reporter 호출을 요청 | Gate 조건·exact input refs·semantic validation | `INVALID_OUTPUT`과 `GATE/INVALID_OUTPUT` 오류 기록, Gate output commit·Reporter 호출 금지 |

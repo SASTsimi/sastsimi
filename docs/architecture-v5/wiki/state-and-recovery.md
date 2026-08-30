@@ -65,6 +65,15 @@ marker를 남긴 직후 프로그램이 꺼졌다면 재시작할 때 기존 mar
 
 같은 규칙을 Technical Gate, Rule Scope Gate와 `ReportDraft`에도 적용합니다.
 
+동적 재현은 같은 단어의 뜻을 구분해야 합니다.
+
+- 동적 결과 `PARTIAL`: 일부 공격 단계를 실행해 믿을 수 있는 관측을 얻었지만 환경 차이 같은 한계가 남은 상태입니다. 결과의 `limitations`가 빠진 범위를 설명하므로 실제 오류가 없다면 오류나 `DataGap`을 억지로 만들지 않습니다.
+- 동적 결과 `BLOCKED`: Sandbox 정책 때문에 실행하지 못했다는 종료 결과입니다. 요청을 정상 처리해 이 결과를 만들었으므로 공통 작업은 `SUCCEEDED`로 끝나지만, 재현 성공을 뜻하지는 않습니다.
+- 공통 작업 `BLOCKED`: 재시도·인증·승인·입력을 기다리는 중이며 아직 끝나지 않은 상태입니다.
+- 동적 결과 `CANCELLED`: 공통 취소 상태와 함께 저장합니다. 취소 확정 뒤 도착한 결과는 사용하지 않습니다.
+
+동적 결과를 Verification에 넘기려면 저장 확정 marker, 공통 작업의 출력 reference와 동적 상태의 `dynamic_result_ref`가 모두 같은 결과 수정본을 가리켜야 합니다.
+
 Gate 작업은 시작할 때 읽은 Verification, CWE, 앞 Gate와 정책의 정확한 수정본을 `input_refs`와 `input_hash`로 고정합니다. Gate 결과 안의 reference가 이 입력과 다르면 저장을 취소하고 다음 단계로 넘기지 않습니다.
 
 ## retry는 실패를 지우지 않습니다

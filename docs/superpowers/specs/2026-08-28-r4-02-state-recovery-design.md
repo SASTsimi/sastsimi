@@ -107,6 +107,7 @@ runtime은 현재 `state_version`이 `expected_state_version`과 같을 때만 �
 - AST와 각 SAST tool은 서로 다른 `work_id`로 병렬 실행한다.
 - 정규화 단계는 기대한 tool 목록과 각 상태를 확인한 뒤 시작한다.
 - 하나 이상의 신뢰 가능한 결과가 있고 실패 범위가 `DataGap`과 `AnalysisError`로 기록되면 `PARTIAL` 정규화를 허용한다.
+- `DYNAMIC_REPRO`의 부분 실행은 정확한 `DynamicReproductionResult(status=PARTIAL, failure_reason=NONE)`와 비어 있지 않은 신뢰 관측·`limitations`로 누락 범위를 설명한다. 실제 오류가 없으면 `DataGap`이나 `AnalysisError`를 만들지 않는다.
 - 성공 결과가 하나도 없거나 workspace 기준을 잃으면 `FAILED`다.
 - 이미 확정된 `StaticFactBundle`을 늦은 tool 결과로 덮어쓰지 않는다. 받아들일 필요가 있으면 새 bundle revision과 새 downstream 작업을 만든다.
 
@@ -166,6 +167,9 @@ Technical `REVISE`는 Verification 또는 Research의 새 evidence/revision을 �
 | 한 가설의 Agent 오류 | `FAILED` | 다른 가설 계속, 분석 `PARTIAL` 가능 |
 | 인증 필요 | `BLOCKED` | 자동 `FALSE` 금지, 재인증 또는 승인된 failover 대기 |
 | Sandbox 실행 실패 | `FAILED` | 동적 반증 아님, Verification이 남은 근거로 `HOLD` 여부 판단 |
+| Sandbox 부분 실행 | `PARTIAL` | 신뢰 관측과 `limitations`를 전달하며 실제 오류 record를 강제하지 않음 |
+| Sandbox 정책 차단 결과 | 공통 `SUCCEEDED`, 동적 결과 `BLOCKED` | 완료된 정책 차단 결과를 `INCONCLUSIVE`로 Verification에 전달; 공통 `BLOCKED`와 구분 |
+| Sandbox 실행 취소 | 공통·동적 `CANCELLED` | 취소 결과를 atomic 저장하고 뒤늦은 결과는 격리 |
 | 정책 조회 실패 | `FAILED` 또는 Gate 입력 부족 | 기술 verdict 유지, `UNCERTAIN + DENY`, Reporter 차단 |
 | Gate 보완 한도 초과 | `FAILED` | 기술 verdict 유지, Reporter 차단, 미해결 조건 저장 |
 | 보고서 작성 실패 | `FAILED` | 기술·Gate 결과 유지, 보고서만 실패 |
@@ -191,7 +195,9 @@ retry, Gate `REVISE`, Research, chaining은 각각 횟수·token·시간 한도�
 | 허용하지 않은 provider failover | `INVOCATION_CHAIN_INVALID`, 결과 사용 금지 |
 | crash 뒤 같은 작업 재요청 | committed 결과 재사용 또는 새 attempt; 결과 중복 반영 금지 |
 | 예산을 넘긴 무한 Gate/chaining 반복 | 중단 이유 저장, Reporter 차단, `FALSE` 변환 금지 |
-| `PARTIAL` 결과에 누락·오류 설명이 없음 | `STATE_TRANSITION_INVALID`, 부분 결과 사용 금지 |
+| `PARTIAL` 결과에 static/context gap·오류 또는 dynamic `limitations`가 없음 | `STATE_TRANSITION_INVALID`, 부분 결과 사용 금지 |
+| 동적 `BLOCKED + POLICY_BLOCKED`를 공통 `BLOCKED`에 연결 | `STATE_TRANSITION_INVALID`, 종료 결과와 대기 상태를 분리 |
+| 동적 결과·work output·전문 상태 pointer가 다름 | `TRANSITION_INCOMPLETE`, Verification 전달 차단 |
 | 분석 종료 시 실행 중 work나 `PREPARED` journal이 남음 | 최종 분석 상태 전이 차단 |
 | `COMMITTED` marker 투영 전에 취소·retry가 경쟁 | 기존 marker를 먼저 재투영하고 경쟁 전이는 version conflict로 거절 |
 

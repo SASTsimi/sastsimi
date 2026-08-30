@@ -123,6 +123,7 @@ foreach ($row in $requiredStateRows) {
 
 $requiredBindingRules = @(
     '`VERIFICATION`의 `SUCCEEDED`와 `HypothesisProcessState.status=TERMINAL`',
+    '`DYNAMIC_REPRO`의 종료 transition',
     '`TECHNICAL_GATE`의 `SUCCEEDED`',
     '`RULE_SCOPE_GATE`의 `SUCCEEDED`',
     '`REPORT_DRAFT`의 `SUCCEEDED`와 `ReportProcessState.status=DRAFTED`',
@@ -135,6 +136,22 @@ foreach ($rule in $requiredBindingRules) {
 }
 
 $reviewRemediationPatterns = @(
+    @{
+        Name = 'all terminal dynamic states require the exact result pointer'
+        Pattern = '(?s)`DynamicReproductionState.status=SUCCEEDED \| PARTIAL \| FAILED \| BLOCKED \| CANCELLED`.*?`dynamic_result_ref.record_id`가 필수.*?`NOT_REQUESTED \| RUNNING`에서는 `dynamic_result_ref=null`'
+    },
+    @{
+        Name = 'dynamic PARTIAL uses structured limitations without fake errors'
+        Pattern = '(?s)`DYNAMIC_REPRO`는 정확히 하나의 `DynamicReproductionResult\(status=PARTIAL, failure_reason=NONE\)`.*?`hypothesis_evidence_refs`와 `limitations`가 각각 하나 이상.*?억지로 `error_ids`나 `gap_ids`로 만들지 않는다'
+    },
+    @{
+        Name = 'terminal dynamic BLOCKED maps to completed common work'
+        Pattern = '(?s)`BLOCKED` \+ `POLICY_BLOCKED` \| `SUCCEEDED`.*?공통 `WorkExecutionState.status=BLOCKED`는.*?비종료 상태에만 사용'
+    },
+    @{
+        Name = 'dynamic cancellation result is atomically bound and late output is stale'
+        Pattern = '(?s)`DYNAMIC_REPRO` 취소 전이.*?`DynamicReproductionResult\(status=CANCELLED\)`.*?같은 atomic transition.*?이미 `CANCELLED`가 확정된 뒤 늦게 도착한 output.*?연결하지 않는다'
+    },
     @{
         Name = 'exact Technical and Rule Scope domain input sets'
         Pattern = '(?s)Gate domain input set.*?`TECHNICAL_GATE`에서는 `VerificationResult`와 `CWELabel` reference가 정확한 domain input set.*?`RULE_SCOPE_GATE`에서는 `VerificationResult`, `TechnicalEvidenceReview`, `CWELabel`과 존재하는 `ProgramPolicyRecord` reference가 정확한 domain input set'
@@ -188,7 +205,9 @@ $negativeScenarioMarkers = @(
     '허용되지 않은 provider/model failover',
     'crash 뒤 같은 요청이 다시 들어옴',
     'retry·Gate `REVISE`·chaining이 한도를 넘음',
-    '`PARTIAL` 결과에 gap·오류 설명이 없음',
+    '`PARTIAL` 결과에 누락 설명이 없음',
+    '동적 `BLOCKED + POLICY_BLOCKED` 결과를 공통 work `BLOCKED`에 연결',
+    '동적 종료 결과와 work·전문 상태 pointer가 다름',
     '분석 종료 시 `RUNNING` work나 `PREPARED` journal이 남음',
     '`COMMITTED` marker 투영 전에 취소·retry 전이가 경쟁'
     '모순된 `ALLOW`가 Reporter 호출을 요청'
