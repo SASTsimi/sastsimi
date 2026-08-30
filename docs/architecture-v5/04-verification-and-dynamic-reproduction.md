@@ -99,6 +99,47 @@ Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` 
 
 Verification Agent가 `NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO`를 결정한다. 동적 재현이 필요하면 Verification이 mode·가설·단계·명령·공격 입력·cleanup 정책을 고정한 exact `ReproductionPlan` 후보를 생산하고, trusted runtime이 `SAVE_RESULT(result_kind=reproduction_plan)`로 schema·reference·권한·예산을 검사해 `COMMITTED`한다. R7 Sandbox는 mode를 다시 선택하거나 계획을 수정하지 않고, 허가된 계획만 실행해 결과를 반환한다.
 
+### 재현 환경 탐지와 구성
+
+Verification Agent가 선택한 mode와 `ReproductionPlan`을 기준으로 R7이 같은 `workspace_id`·`commit_id`의 실행환경을 구성한다. R7은 mode나 공격 단계를 새로 결정하지 않고 plan 실행에 필요한 component만 준비한다. 운영환경 전체를 복제하거나 대상 애플리케이션을 다시 구현하지 않는다.
+
+환경 구성 전에 다음 항목을 읽기 전용으로 탐지한다.
+
+| 영역 | 탐지 항목 |
+|---|---|
+| Python·dependency | Python version 선언, `requirements.txt`, `pyproject.toml`, lockfile과 설치 방식 |
+| Django 실행점 | `manage.py`, settings module, WSGI/ASGI entrypoint, URL routing, middleware와 필요한 환경변수 이름 |
+| container 설정 | Dockerfile, Compose file, base image, build context, entrypoint, healthcheck와 service dependency |
+| DB | Django `DATABASES`, DB driver dependency, SQLite file 또는 PostgreSQL·MySQL service와 migration 상태 |
+| 보조 서비스 | cache·queue·worker·OAuth·외부 API·browser·callback 중 plan 경로에 실제 필요한 항목 |
+
+기존 실행 설정과 자동 구성은 다음 순서로 선택한다.
+
+1. Repository에 Dockerfile·Compose가 있으면 원본을 수정하지 않고 Sandbox 내부 복사본에서 우선 사용한다.
+2. 기존 설정에 production credential·운영 endpoint·host mount 등 금지 조건이 있으면 값을 임의로 사용하지 않는다. plan의 관측 목표를 유지하고 승인 범위에 포함된 격리 test 설정이나 Mock만 사용하며, 안전한 대체가 없으면 환경 한계로 반환한다.
+3. Docker 설정이 없거나 안전하게 실행할 수 없으면 CodeWorkspace 밖의 Sandbox 작업영역에 일회성 Dockerfile·Compose overlay를 만든다.
+4. overlay는 탐지한 runtime·dependency·entrypoint와 plan에 필요한 service만 포함하고 원본 source tree에 commit하지 않는다. plan의 실행 단계·공격 입력을 추가하거나 바꿀 수 없으며 결과 image digest는 `RUN_SANDBOX` 허가 값과 일치해야 한다.
+5. 기존 설정과 overlay 모두 적용 근거, dependency·service, image digest, 환경 차이와 폐기 결과를 환경 관측으로 남긴다. 구체적인 Artifact hash·redaction·저장 형식은 R7 Evidence 규칙을 따른다.
+
+mode는 환경 범위를 제한하는 입력이다.
+
+| mode | 구성 범위 |
+|---|---|
+| `LIMITED_REPRO` | plan의 작은 실행 사실에 필요한 runtime·dependency·fixture·관측 지점만 준비하고 관계없는 HTTP·DB·service는 시작하지 않음 |
+| `FULL_REPRO` | plan에 명시된 HTTP 요청부터 routing·middleware·인증·권한·handler/view·DB 또는 sink·observable effect까지 연결하는 최소 E2E component를 준비 |
+
+DB와 테스트 상태는 다음 원칙을 따른다.
+
+- SQLite는 원본 DB 파일이나 사용자 데이터를 직접 사용하지 않고 격리된 writable 영역에 migration과 test record를 준비한다.
+- PostgreSQL·MySQL은 settings와 driver에서 engine을 탐지하고 Sandbox 내부의 일회성 service에 schema·migration·test record를 구성한다.
+- version을 확인할 수 있으면 선언된 version을 사용하고 확인할 수 없으면 선택 근거와 차이를 limitation으로 남긴다.
+- fixture, 권한별 테스트 계정, 소유 객체와 로그인 세션은 plan 경로에 필요한 최소 데이터만 만들고 실행마다 격리한다.
+- Redis·Celery 같은 로컬 의존성은 plan에 필요할 때만 격리 실행한다. OAuth·외부 API·SSRF target은 plan의 관측 목표를 유지하는 승인된 Sandbox 내부 Mock으로 대체하고 production credential·운영 DB·실제 개인정보를 사용하지 않는다. Mock이 공격 경로의 의미를 바꾸거나 plan에 포함되지 않았다면 R7이 조용히 대체하지 않는다.
+
+환경 구성 수명주기는 `build -> dependency 설치 -> DB·보조 service 시작 -> migration -> fixture·계정 준비 -> application start -> Health Check -> plan 실행 준비` 순서다. 각 단계는 시작·종료·exit code·timeout·환경 차이를 관측하며, build·migration·Health Check와 retry의 실제 한도는 R8 budget profile을 적용한다. container 권한·network·resource·mount 제한의 실제 enforcement는 Sandbox policy가 담당한다.
+
+Health Check 성공은 애플리케이션이 plan 실행 준비 상태라는 뜻일 뿐 취약점 재현 성공이 아니다. dependency 설치, DB 시작, migration, application start 또는 필수 Health Check 실패로 공격 경로를 실행하지 못하면 `FAILED + ENVIRONMENT_SETUP`이다. 애플리케이션만 실행되고 공격 경로를 실행하지 못한 경우도 `PARTIAL`이 아니다. 공격 경로 일부를 실제 실행해 신뢰 가능한 관측을 얻었지만 환경 차이로 전체 확인이 부족한 경우에만 `PARTIAL + NONE + INCONCLUSIVE`와 limitation을 사용한다.
+
 ### LIMITED_REPRO
 
 - 한 sanitizer, auth guard, sink 도달 또는 작은 함수 경로 확인
