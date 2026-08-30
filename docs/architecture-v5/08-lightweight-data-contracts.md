@@ -131,6 +131,7 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 ```yaml
 AnalysisRunState:
   meta: RunMeta
+  purpose: PRODUCTION | EVALUATION
   workspace_id: string | null
   commit_id: string | null
   status: RUNNING | COMPLETE | PARTIAL | FAILED | CANCELLED
@@ -195,6 +196,8 @@ ReportProcessState:
 ```
 
 `AnalysisRunState`는 처음에는 `workspace_id: null`, `commit_id: null`일 수 있다. Repository Loader가 작업공간을 만들면 `workspace_id`를 기록하고, checkout을 확인하면 `commit_id`를 기록한다. 한 번 기록된 값은 같은 분석에서 바꾸지 않는다. `COMPLETE`와 `PARTIAL`은 두 값이 모두 필요하고, clone·checkout 전 `FAILED | CANCELLED`는 둘 중 하나 또는 모두가 `null`일 수 있다. 코드 근거 record는 두 값이 모두 있고 `CodeWorkspace.status=READY`일 때만 만들 수 있다.
+
+`purpose`는 분석 시작 때 고정하며 같은 `analysis_id`에서 바꾸지 않는다. PRODUCTION에서는 `verification_mode=ALWAYS_DEBATE`만 허용한다. EVALUATION의 `BASIC | CONDITIONAL_DEBATE` 결과는 Gate·Primitive admission·Reporter 입력으로 사용할 수 없다. 예산이 부족하면 `BUDGET_EXCEEDED`로 현재 Verification work를 중단하며 Pro/Con을 생략한 final verdict를 만들지 않는다.
 
 `AnalysisRunState.status=RUNNING`이면 `analysis_result_ref=null`이다. `COMPLETE | PARTIAL | FAILED | CANCELLED`이면 `analysis_result_ref`가 필수이고 같은 `analysis_id`의 정확한 `AnalysisRunResult`를 가리킨다. 최종 상태와 결과는 atomic transition으로 함께 확정한다.
 
@@ -512,6 +515,8 @@ Technical Gate가 `REVISE`를 확정하면 그 Gate action과 decision은 이미
 | `EXTERNAL_DISCLOSURE` | HUMAN_REVIEWER |
 
 Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 있지만 hypothesis-local 작업, Verification verdict, CWE, 두 Gate 결과, 정책 해석, ReportDraft 내용과 사람 결정을 생산하지 못한다. Verification은 hypothesis-local 작업을 제안하지만 실제 실행·저장 권한은 Runtime Validator를 통과해야 한다. 각 전문 결과는 위 표의 `SAVE_RESULT` 허용 역할 중에서도 해당 result kind를 소유한 역할만 저장한다. 예를 들어 `VerificationResult`는 VERIFICATION, `ChainingResult`는 CHAINING, `TechnicalEvidenceReview`는 TECHNICAL_GATE, `RuleScopeImpactReview`는 RULE_SCOPE_GATE, `ReportDraft`는 REPORTER만 생산한다. runtime validator는 값의 생산자·schema·선행 reference를 확인하지만 취약점 진위·CWE 적절성·정책 의미를 대신 판정하지 않는다.
+
+`ActionCheck.check_type=BUDGET` 실패는 `AnalysisError(stage=ORCHESTRATION, code=BUDGET_EXCEEDED)`로 기록한다. 가설 verdict나 LLM `INVALID_OUTPUT`으로 바꾸지 않으며, 운영 Verification의 Pro/Con 중 하나라도 실행할 예산이 없으면 두 호출과 final result 저장을 시작하지 않는다.
 
 `SAVE_RESULT`는 검사할 결과 후보를 action에 정확히 고정한다.
 
@@ -1362,6 +1367,7 @@ HumanReviewDecision:
 ```yaml
 AnalysisRunResult:
   meta: RunMeta
+  purpose: PRODUCTION | EVALUATION
   repository_url: string
   workspace_id: string | null
   commit_id: string | null

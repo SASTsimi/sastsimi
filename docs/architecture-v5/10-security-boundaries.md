@@ -128,7 +128,7 @@ Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 �
 | repository prompt injection | instruction/data 분리, 최소 context, output validation |
 | SAST hit 자동 승격 | fact-only 정규화, Verification |
 | 저비용 모델의 과도한 확정 | fixed hypothesis schema, 금지 assertion, `INVALID_OUTPUT` |
-| LLM 확증 편향 | 조건부 독립 Pro/Con, 역할 간 NEW session, 두 Gate |
+| LLM 확증 편향 | 운영상 항상 실행하는 독립 Pro/Con, 역할 간 NEW session, 두 Gate |
 | session contamination | `NEW/RESUME/AUTO` policy와 결정 logging |
 | 잘못된 path 연결 | location retrieval와 Technical Gate linkage 검토 |
 | Verification/Chaining 후보의 오승격 | origin을 구분한 새 hypothesis로 전체 재검증 |
@@ -222,6 +222,8 @@ Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 �
 | N13 | Verification이 budget·Sandbox·Gate 순서를 우회하려 함 | Runtime Validator가 `DENY`; hypothesis-local ownership은 enforcement 권한이 아님 |
 | N13-A | 같은 역할이지만 배정되지 않은 Verification identity가 Gate·Reporter·새 verification work를 요청 | ACTIVE `VerificationAssignment.owner_identity_ref` 불일치로 `AUTHORITY_DENIED` |
 | N14 | Chaining Agent가 Primitive match 없는 bypass·impact·dynamic 요청을 출력 | schema/result-owner validation에서 invalid로 거절 |
+| N15 | `purpose=PRODUCTION`인데 `verification_mode=BASIC | CONDITIONAL_DEBATE`를 요청 | Runtime Validator가 `ACTION_NOT_ALLOWED`; 운영 결과·Gate·Primitive·Reporter 생성 금지 |
+| N16 | 운영 Pro/Con 중 하나를 실행할 예산이 부족 | `BUDGET_EXCEEDED`로 Verification work 중단; skip·BASIC fallback·final verdict 생성 금지 |
 
 ## 남는 위험
 

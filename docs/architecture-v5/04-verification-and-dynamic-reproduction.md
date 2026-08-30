@@ -19,7 +19,7 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 1. 배정된 가설의 `workspace_id`, `commit_id`, entity, location과 suspected path를 확인한다.
 2. `CodeContextRequest`로 caller/callee, data flow, auth guard와 route 문맥을 필요한 만큼 조회한다.
 3. observed fact와 assumption을 분리하고 각 `FalsificationQuestion.question_id`를 확인한다.
-4. BASIC 또는 debate 모드를 선택하고 필요한 Pro/Con Agent를 호출해 supporting/counter evidence를 수집한다.
+4. 운영 분석이면 Pro/Con Agent를 서로 독립된 NEW session으로 병렬 호출해 supporting/counter evidence를 모두 수집한다. BASIC 또는 조건부 debate는 격리된 평가 실행에서만 선택한다.
 5. initial verdict와 unresolved condition을 만든다.
 6. 정적 근거만으로 부족하고 안전하게 재현할 가치가 있으면 `LIMITED_REPRO | FULL_REPRO`를 요청한다.
 7. 정적·찬반·동적 결과를 종합해 final verdict를 만든다.
@@ -48,9 +48,11 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 
 | 모드 | 동작 | 용도 |
 |---|---|---|
-| `BASIC` | Verification Agent가 직접 찬반 근거를 수집 | 명확하고 영향이 제한적인 가설, 예산 절감 실험 |
-| `CONDITIONAL_DEBATE` | trigger 충족 시 Pro/Con을 독립 병렬 호출 | 기본값 |
-| `ALWAYS_DEBATE` | 모든 유효 가설에 Pro/Con 호출 | 비교 평가 또는 고위험 운영 프로필 |
+| `BASIC` | Verification Agent가 직접 찬반 근거를 수집 | 격리된 비교 평가 전용 |
+| `CONDITIONAL_DEBATE` | trigger 충족 시 Pro/Con을 독립 병렬 호출 | 격리된 비교 평가 전용 |
+| `ALWAYS_DEBATE` | 모든 유효 가설에 Pro/Con 호출 | 운영(`PRODUCTION`)의 유일한 허용값 |
+
+`AnalysisRunState.purpose=PRODUCTION`에서는 `verification_mode=ALWAYS_DEBATE`만 허용한다. `purpose=EVALUATION`에서만 `BASIC | CONDITIONAL_DEBATE`를 사용할 수 있으며, 그 결과는 품질·비용 비교 자료일 뿐 Gate·Primitive admission·Reporter 입력으로 사용할 수 없다.
 
 조건부 debate trigger 예시는 다음과 같다.
 
@@ -62,7 +64,7 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 - Technical Gate가 반박 또는 restriction 보강을 요구
 - 같은 Verification의 이전 검토나 Technical `REVISE`가 의미 있는 alternate path 확인을 요구
 
-named falsification으로 빠르게 반증되었거나, 명확한 duplicate/unsupported hypothesis이고, 추가 독립 검토의 예상 가치가 낮으며 예산이 부족할 때는 생략 사유를 기록하고 BASIC으로 종료할 수 있다.
+운영 분석에서는 named falsification으로 빠르게 반증될 가능성이 있거나 duplicate/unsupported 후보여도 Pro/Con을 생략하지 않는다. 예산이 부족하면 `BUDGET_EXCEEDED`로 현재 Verification work를 중단하며 Pro/Con을 생략한 final verdict를 만들지 않는다. 새 예산이 승인된 새 work에서만 이어서 검증한다.
 
 Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` session에서 시작한다. 각 호출은 `requested_by=PRO | CON`, 같은 역할의 `LLMCallSpec.agent_role`, `session_mode=NEW`, `session_policy=NEW`, `parent_session_ref=null`과 서로 다른 `llm_call_id`·action·decision·실제 session을 사용한다. retry와 failover도 상대 역할의 session·output·decision을 이어받지 않고 같은 역할의 새 `NEW` session으로 실행한다. 동일한 `workspace_id`·`commit_id`와 가설·공통 코드 fact는 받지만 상대 Agent의 결론은 입력받지 않는다. Verification Agent만 두 결과와 직접 확인한 사실을 종합한다.
 
@@ -77,7 +79,7 @@ Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` 
 - false-positive 감소 후보
 - 새 bypass·restriction·falsification 발견 여부
 
-이는 조건부 debate가 항상 더 정확하거나 저렴하다는 주장이 아니다. 동일 corpus에 대한 비교 평가가 있기 전까지 기본 정책은 검토 대상이다.
+`BASIC | CONDITIONAL_DEBATE`가 더 정확하거나 저렴한지는 동일 corpus의 격리된 평가에서만 측정한다. 평가 결과가 운영 기본 변경의 합격선을 통과하고 별도 설계 결정을 남기기 전까지 운영은 `ALWAYS_DEBATE`를 유지한다.
 
 ## 판정 의미
 

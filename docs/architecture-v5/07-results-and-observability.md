@@ -83,7 +83,7 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 
 ### Verification/debate
 
-- BASIC/CONDITIONAL/ALWAYS 사용 수와 trigger/skip reason
+- 운영 ALWAYS 사용 수, 평가 BASIC/CONDITIONAL/ALWAYS 사용 수와 trigger/skip reason
 - Pro/Con 및 종합 token·시간
 - debate 전후 verdict 변화
 - HOLD 해소, false-positive 감소 후보와 bypass 발견

@@ -31,7 +31,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 7. schema-valid `HypothesisProposal(origin=INITIAL)`을 전역 등록한다.
 8. 각 등록 가설에 Verification owner를 할당하고 가설 내부 제어권을 넘긴다.
 9. Verification이 entity·위치·경로를 기준으로 필요한 코드 문맥을 조회한다.
-10. Verification이 `BASIC` 또는 조건부 Pro/Con 검증을 수행한다.
+10. 운영 분석의 Verification이 Pro/Con을 독립 NEW session으로 병렬 실행한다.
 11. 초기 `TRUE | FALSE | HOLD` 판정을 만든다.
 12. Verification 판단에 따라 Docker sandbox에서 `LIMITED_REPRO | FULL_REPRO`를 수행한다.
 13. 최종 `TRUE | FALSE | HOLD`와 별도 material claim을 확정한다.
@@ -52,7 +52,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 - Hypothesis Agent는 항상 `HYPOTHESIS_ONLY / NON_FINAL` 제안만 만들며 Finding이나 확정 판정을 만들 수 없다.
 - 코드 문맥은 같은 `workspace_id`와 `commit_id`에서 위치 기반으로 필요할 때 조회하고, 조회 범위와 반환 위치를 기록한다.
 - Verification은 가설 내부 Context·Pro/Con·동적 재현·판정·Technical `REVISE`·Gate 제출과 Chaining handoff를 소유한다. 실행 허가는 Runtime Validator가 강제한다.
-- 기본 검증 모드는 `CONDITIONAL_DEBATE`다. Pro와 Con은 필요한 경우에만 독립 세션으로 실행한다.
+- 운영(`PRODUCTION`) 기본 검증 모드는 `ALWAYS_DEBATE`다. 모든 유효 가설에서 Pro와 Con을 독립 NEW session으로 실행한다. `BASIC | CONDITIONAL_DEBATE`는 격리된 평가(`EVALUATION`)에서만 비교한다.
 - Primitive DB는 queue가 아니라 HOLD REQUIRED와 Gate-qualified TRUE PROVIDED를 연결하는 인덱스다. Gate 전 TRUE, FALSE와 오래된 revision은 현재 matching에 사용할 수 없다.
 - Chaining Agent는 TRUE+HOLD와 방향성 있는 TRUE+TRUE 선행 조건 matching만 수행하며 일반 취약점·우회·impact research, 동적 재현, Gate 보완이나 verdict를 수행할 수 없다.
 - Verification과 Chaining이 발견한 새 material claim은 각각 `origin=VERIFICATION | CHAINING`인 새 가설로 등록되어 처음부터 검증된다. 부모 판정은 바뀌지 않는다.

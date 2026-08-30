@@ -14,6 +14,7 @@
 | `StoredDataRef` | 도구가 만든 결과 파일이나 기록을 가리키는 번호 | 내부 저장 경로 대신 결과 번호와 내용 hash를 사용합니다. 저장된 결과 수정본을 가리킬 때는 `record_id`도 넣습니다. |
 | `RecordMeta` | 결과마다 붙는 공통 식별 정보 | 분석·작업공간·가설·재시도·수정본을 연결합니다. |
 | `RunMeta` | 코드 준비 전에도 쓸 수 있는 분석 실행 식별 정보 | `analysis_id`로 실행을 추적하며 clone 성공 전에는 workspace·commit을 요구하지 않습니다. |
+| `AnalysisRunState.purpose` | 분석 실행이 실제 결과를 만드는 운영인지 방식 비교를 위한 평가인지 표시 | `PRODUCTION`은 운영, `EVALUATION`은 격리 평가이며 실행 중 바꾸지 않습니다. |
 | `RunStoredDataRef` | commit 준비 전에도 생기는 실행 로그·결과 참조 | `analysis_id`로 찾고 저장 record의 정확한 수정본이면 `record_id`도 넣습니다. 코드 근거에는 쓰지 않습니다. |
 | `CodeLocation` | 저장소 안의 파일과 줄·열 위치 | `/` 구분자의 저장소 상대 경로를 사용하고, 도구가 열을 모르면 임의 값 대신 `null`로 둡니다. |
 | `CodeSymbol` | 함수·클래스·변수처럼 분석 대상이 되는 코드 요소 | 이름뿐 아니라 `CodeLocation`과 연결합니다. |
@@ -60,7 +61,7 @@
 | `falsification` | 확인되면 가설이 틀렸다고 볼 수 있는 구체적 질문 | 각 질문에 `question_id`를 붙이고 실제 근거가 있는 `DISPROVED` 결과가 있어야 `FALSE`가 됩니다. |
 | `hypothesis_outcome` | Docker 관측이 가설을 지지·반증하는지 또는 결론을 주지 못하는지 표시 | `SUPPORTED`, `DISPROVED`, `INCONCLUSIVE` 중 하나이며 최종 verdict는 아닙니다. |
 | `Pro / Con` | 가설에 찬성하는 근거와 반대하는 근거 | 서로의 결론을 보지 않는 독립 실행을 기본으로 합니다. |
-| `debate` | 찬성·반대 근거를 따로 모아 비교하는 검증 방법 | 모든 가설에 무조건 실행하지 않고 정한 조건과 예산을 따릅니다. |
+| `debate` | 찬성·반대 근거를 따로 모아 비교하는 검증 방법 | 운영에서는 모든 유효 가설에 Pro/Con을 실행합니다. BASIC·조건부 방식은 격리 평가에서만 사용합니다. |
 | `EvidenceClaim` | 주장 하나와 그 주장을 확인할 실제 근거·코드 위치를 묶은 데이터 | 근거가 없는 설명을 찬성·반대 근거로 저장하지 않습니다. |
 | `CandidateRef` | 아직 검증되지 않은 우회·대체 경로·영향 확대 후보 | 새 공격 주장이면 별도 가설로 검증하기 전까지 확정 사실로 쓰지 않습니다. |
 | `VerificationMetrics` | 검증에 사용한 token·시간과 판정 변화 기록 | provider가 알려 주지 않은 token을 임의로 추정하지 않습니다. |
