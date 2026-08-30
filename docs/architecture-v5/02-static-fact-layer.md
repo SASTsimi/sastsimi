@@ -67,7 +67,7 @@ static_fact_bundle:
 
 ## 위치 기반 on-demand retrieval
 
-Hypothesis Agent는 전체 코드가 아니라 entity, location과 suspected path를 제안한다. Verification·Pro·Con·Research·Technical Gate는 필요한 추가 문맥을 `CodeContextRequest`로 요청한다.
+Hypothesis Agent는 전체 코드가 아니라 entity, location과 suspected path를 제안한다. Verification·Pro·Con·Technical Gate는 필요한 추가 문맥을 `CodeContextRequest`로 요청한다. Chaining Agent는 코드 문맥을 새로 탐색하지 않고 저장된 ACTIVE Primitive와 provenance만 읽는다.
 
 1. 가설의 `CodeSymbol`, `CodeLocation`, `suspected_path`에서 시작한다.
 2. 분석 목적에 맞는 관계를 명시한다.

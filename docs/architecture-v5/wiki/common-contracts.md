@@ -10,6 +10,7 @@
 | `workspace_id` | 로컬에서 분석하는 코드 폴더 번호 | Repository Loader |
 | `commit_id` | 분석한 Git commit | Repository Loader가 checkout 뒤 확인 |
 | `hypothesis_id` | 검증할 취약점 가설 번호 | proposal 검증을 통과시킨 runtime |
+| `work_id` | 같은 논리 작업을 처음부터 끝까지 묶는 번호 | Orchestration runtime |
 | `attempt_id` | 재시도 가능한 작업 한 번의 번호 | 작업을 시작하는 runtime |
 | `llm_call_id` | LLM 호출 한 번의 번호 | Agent Runtime |
 | `record_id` | 저장한 결과 한 개의 번호 | 결과를 저장하는 runtime |
@@ -22,7 +23,7 @@ clone 전에는 아직 `workspace_id`나 `commit_id`가 없을 수 있습니다.
 
 `CodeWorkspace`는 준비 중 `PREPARING`, 분석 가능하면 `READY`, 준비 실패 시 `FAILED`, 로컬 폴더 정리 뒤 `REMOVED`입니다. 정적 분석은 `READY`에서만 시작합니다.
 
-clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로 가리킵니다. 이 참조에는 `analysis_id`만 필요합니다. 코드 근거·PoC·보고서 자료는 반드시 `workspace_id + commit_id`가 있는 `StoredDataRef`를 사용합니다. raw 결과나 코드 조각은 `record_id: null`, 저장된 결과의 정확한 수정본을 가리킬 때는 그 수정본의 `record_id`를 넣습니다.
+clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로 가리킵니다. 이 참조에는 `analysis_id`가 필요합니다. raw 실행 자료는 `record_id: null`, `RunMeta`를 가진 저장 결과의 정확한 수정본을 가리킬 때는 그 `record_id`를 넣습니다. 코드 근거·PoC·보고서 자료는 반드시 `workspace_id + commit_id`가 있는 `StoredDataRef`를 사용합니다. raw 결과나 코드 조각은 `record_id: null`, 저장된 결과의 정확한 수정본을 가리킬 때는 그 수정본의 `record_id`를 넣습니다.
 
 ## 가설끼리는 어떻게 연결하나요?
 
@@ -30,7 +31,7 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 - `root_hypothesis_id`: 이 가설 계보의 첫 가설
 - `chain_depth`: 첫 가설은 0, 한 단계 이어질 때마다 1 증가
 
-`TRUE + TRUE`를 연결해 더 큰 공격 가능성을 찾아도 기존 두 결과를 수정하지 않습니다. 새로운 `hypothesis_id`를 만들고 전체 검증을 다시 거칩니다.
+`TRUE + TRUE`를 연결해 더 큰 공격 가능성을 찾아도 기존 두 결과를 수정하지 않습니다. 양쪽 TRUE가 모두 두 Gate를 통과한 exact revision인지 확인한 뒤 새로운 `origin=CHAINING` proposal과 `hypothesis_id`를 만들고 전체 검증을 다시 거칩니다. Verification이 별도 endpoint·sink·권한 경계를 발견한 경우에는 `origin=VERIFICATION` proposal을 사용합니다.
 
 ## 시간은 어떻게 적나요?
 
@@ -47,6 +48,7 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 | 구분 | 예시 | 취약점 판정인가요? |
 |---|---|---|
 | 전체 분석 상태 | `COMPLETE`, `PARTIAL`, `FAILED` | 아니요 |
+| 공통 실행 작업 상태 | `PENDING`, `READY`, `RUNNING`, `BLOCKED`, `SUCCEEDED`, `PARTIAL`, `FAILED`, `CANCELLED` | 아니요 |
 | proposal 검증 상태 | `PROPOSED`, `SCHEMA_VALID`, `INVALID_OUTPUT` | 아니요. 아직 가설 번호가 없을 수 있음 |
 | 등록된 가설 처리 상태 | `REGISTERED`, `ASSIGNED`, `VERIFYING`, `TERMINAL` | 아니요 |
 | 기술 판정 | `TRUE`, `FALSE`, `HOLD` | 예 |
@@ -55,7 +57,8 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 | 기술 Gate | `ACCEPT`, `REVISE`, `REJECT` | 판정을 검토하지만 바꾸지 않음 |
 | 정책·영향 Gate | `PASS`, `FAIL`, `UNCERTAIN`, `ALLOW`, `DENY` | 보고서 전달 조건 |
 | 보고서 초안 상태 | `NOT_REQUESTED`, `DRAFTED`, `FAILED` | 아니요. 내부 초안 진행 상태 |
-| 사람 검토 | `PENDING`, `APPROVED`, `REJECTED` | 최종 공개 결정 |
+| 사람 검토 준비 상태 | `EMPTY`, `PACKET_READY`, `DECIDED` | 아니요. 최신 packet·결정 pointer 상태 |
+| 사람 검토 | `DISCLOSE`, `REVISE`, `WITHHOLD`, `NEED_MORE_VALIDATION` | 별도 `HumanReviewDecision`에 기록하는 최종 공개 결정 |
 
 ## DataGap과 AnalysisError의 차이
 
@@ -83,13 +86,15 @@ Docker 환경을 만들지 못했거나 실행이 timeout된 것은 재현 실�
 
 Technical Gate는 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 자신이 읽은 Verification과 CWELabel 수정본을 정확히 기록합니다. 둘 중 하나가 수정되면 이전 Gate 승인을 새 수정본에 재사용하지 않습니다. Rule Scope Gate와 보고서 초안도 같은 CWELabel `record_id`를 사용해야 합니다. `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
 
+Primitive도 exact revision을 사용합니다. HOLD는 final Verification ref가 붙은 REQUIRED를 Gate 없이 만들고, TRUE는 Technical `ACCEPT`와 Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`가 같은 Verification revision을 가리킬 때만 PROVIDED를 만듭니다. TRUE의 PROVIDED에는 그 취약점을 악용하기 위한 exact Verification의 `required_preconditions`도 함께 고정합니다. 가설별 `PrimitiveIndexState`가 current ACTIVE 항목을 가리키며 새 Verification/index revision이 생기면 과거 항목과 진행 중인 오래된 Chaining 결과를 commit 시 거절합니다.
+
 ## 자주 쓰는 작은 데이터 구조
 
 - `EvidenceClaim`: 찬성·반대 주장, 작성 역할, 실제 근거와 코드 위치를 한 묶음으로 저장합니다.
 - `CandidateRef`: 아직 검증되지 않은 우회·대체 경로·영향 확대 후보입니다. 새 주장이면 별도 가설로 검증하기 전까지 확정 결과로 쓰지 않습니다.
 - `VerificationMetrics`: debate의 token·시간·판정 변화와 새로 발견한 항목 수를 저장합니다. 제공되지 않은 token은 `null`입니다.
 - `PolicyItem`: 공식 정책의 항목 하나와 원문을 다시 찾을 수 있는 출처 위치를 연결합니다.
-- `PrimitiveMatchCandidate`: REQUIRED와 PROVIDED 능력의 자산·코드 대상·권한·공격 순서·제한 조건 호환성을 기록한 미검증 연결 후보입니다.
+- `PrimitiveMatchCandidate`: TRUE+HOLD에서는 PROVIDED와 HOLD REQUIRED를, TRUE+TRUE에서는 앞 PROVIDED와 뒤 TRUE의 exact `required_preconditions`를 방향성 있게 비교하고 current index·revision 호환성을 기록한 미검증 연결 후보입니다.
 
 ## 계약이 바뀌면 어떻게 하나요?
 
@@ -103,4 +108,4 @@ Technical Gate는 `verification_result_ref.record_id`와 `cwe_label_ref.record_i
 
 ## 현재 검토 상태
 
-계약 문서는 작성됐지만 R2·R6·R7·R3 담당자의 실제 교차 검토 기록이 남아야 Issue #13과 H-002를 완료할 수 있습니다. 그 전까지는 `IN_PROGRESS`입니다.
+R4-01의 공통 ID·상태·오류 계약은 PR #18 병합과 Issue #13 완료 처리로 기준 초안에 반영되었습니다. R4-02는 이 계약을 사용해 병렬 실행·중복 방지·재시도와 복구 의미를 추가합니다. 자세한 쉬운 설명은 [상태·병렬 실행·재시도·복구](state-and-recovery.md)를 확인하세요.

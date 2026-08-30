@@ -39,7 +39,7 @@
 | 5 | 필요한 코드를 얼마나 깊고 많이 가져올 수 있는지 정합니다. | Context retrieval depth/token/request 제한 |
 | 6 | 찬성·반대 검증을 언제 실행할지와 효과를 비교할 예제 모음을 정합니다. | `CONDITIONAL_DEBATE` trigger와 비교 corpus |
 | 7 | 연계 공격의 필요 조건과 확인된 능력을 어떤 단어로 기록하고 연결할지 정합니다. | Primitive vocabulary와 scope/capability matching |
-| 8 | 연계 탐색이 끝없이 늘어나지 않도록 한도를 정합니다. | Research/chain depth·count·token·time·duplicate 제한 |
+| 8 | 연계 탐색이 끝없이 늘어나지 않도록 한도를 정합니다. | Chaining depth·count·primitive 조합·token·time·duplicate 제한 |
 | 9 | Docker 이미지, 네트워크, 자원과 종료 후 정리 방법을 정합니다. | image/network/resource/cleanup 정책 |
 | 10 | 공식 프로그램 정책을 어디서 가져오고 최신 여부와 실패를 어떻게 처리할지 정합니다. | `ProgramPolicyRecord` source·freshness·failure |
 | 11 | 두 Gate가 사용할 질문, 보완 반복 횟수와 평가 자료를 정합니다. | Gate prompt, revision limit와 dataset |
@@ -56,7 +56,7 @@
 | 결정 영역 | 담당 역할별 상위 Issue |
 |---|---|
 | provider/model, membership/session, 상태 저장·복구 | [R3 #4](https://github.com/SASTsimi/sastsimi/issues/4), [R4 #5](https://github.com/SASTsimi/sastsimi/issues/5) |
-| Hypothesis, Primitive, Research와 chaining 한도 | [R1 #2](https://github.com/SASTsimi/sastsimi/issues/2) |
+| Hypothesis, Primitive와 Chaining 한도 | [R1 #2](https://github.com/SASTsimi/sastsimi/issues/2) |
 | clone·checkout, static fact, location/context retrieval | [R2 #3](https://github.com/SASTsimi/sastsimi/issues/3) |
 | Verification, debate와 falsification | [R6 #7](https://github.com/SASTsimi/sastsimi/issues/7) |
 | Docker sandbox와 동적 재현 | [R7 #8](https://github.com/SASTsimi/sastsimi/issues/8) |

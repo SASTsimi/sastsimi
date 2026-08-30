@@ -10,7 +10,7 @@ Gate는 검증 판정을 직접 바꾸지 않고 Reporter는 외부 공개를 �
 
 ## 1. 기술 근거 검토(`Technical Evidence Gate`)
 
-final `VerificationResult`의 verdict와 찬반 근거, 실제 코드·호출·데이터 흐름, 동적 결과, CWE, restriction와 HOLD 표현을 검토한다. 이때 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 정확히 어느 검증 결과와 CWE 수정본을 검토했는지 고정한다. 둘 중 하나가 수정되면 기존 Gate 결과를 재사용하지 않고 다시 검토한다. 출력은 `ACCEPT | REVISE | REJECT`이며 verdict를 직접 바꾸지 않는다. `REVISE`는 Verification 또는 Research가 실제 보완한 뒤 재검토한다.
+final TRUE `VerificationResult`의 찬반 근거, 실제 코드·호출·데이터 흐름, 동적 결과, CWE와 restriction을 검토한다. FALSE와 HOLD는 이 Gate를 호출하지 않는다. `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 정확히 어느 수정본을 검토했는지 고정하며 둘 중 하나가 수정되면 기존 Gate 결과를 재사용하지 않는다. 출력은 `ACCEPT | REVISE | REJECT`이며 verdict를 직접 바꾸지 않는다. `REVISE`는 Orchestration이 목적지를 고르지 않고 같은 hypothesis의 Verification owner에게 직접 돌아간다. Verification이 새 근거와 Verification/CWE 수정본을 만든 뒤 새 `work_id`와 첫 attempt로 다시 검토한다. 같은 입력의 retry attempt만 늘려 재투표하지 않는다.
 
 ## 2. 공식 정책·범위·영향 검토(`Rule Scope Impact Gate`)
 
@@ -22,6 +22,10 @@ Technical `ACCEPT`인 `TRUE`만 공식 `ProgramPolicyRecord`과 함께 검토한
 - report permission: `ALLOW | DENY`
 
 공식 정책 자료가 없으면 rule/scope는 `UNCERTAIN`이고 permission은 `DENY`다. 저장소 문서나 모델 기억으로 공식 정책을 추정하지 않는다.
+
+두 Gate가 같은 TRUE revision에 대해 `Technical ACCEPT`와 `review/rule/scope PASS`, `impact SUFFICIENT`, `permission ALLOW`를 모두 만들었을 때만 그 TRUE의 PROVIDED Primitive를 저장해 Chaining에 사용할 수 있다. 같은 Verification owner가 Reporter 호출도 요청하며 프로그램 검사를 통과해야 실제 초안 작성을 시작한다. Technical만 통과했거나 Gate2가 `FAIL | UNCERTAIN | DENY`이면 보고서와 Chaining을 모두 막는다. 새 Verification revision에는 과거 Gate 결과를 재사용하지 않는다. HOLD는 Gate를 거치지 않고 REQUIRED Primitive로 Chaining에 들어간다.
+
+이 판단은 Rule Scope Gate가 내립니다. 프로그램 검사기는 정책 문장의 뜻을 다시 판단하지 않고 결과 형식과 공식 출처 연결을 확인합니다. 정상적인 `UNCERTAIN + DENY`는 그대로 저장하고 Reporter만 부르지 않습니다.
 
 ## Reporter 조건
 
@@ -36,5 +40,11 @@ TRUE
 ```
 
 Reporter는 위 조건을 모두 만족하고 ReportDraft가 가리킨 Verification·Technical review·Rule Scope review·CWELabel·정책 revision이 서로 맞을 때만 내부 보고서 초안을 만든다. 두 Gate가 검토한 CWELabel과 보고서 초안의 `cwe_label_ref.record_id`가 다르면 초안을 만들지 않는다. 두 Gate와 Reporter 모두 외부 제출 권한이 없고 사람만 최종 공개를 결정한다.
+
+프로그램 검사기는 Gate 결론을 대신 내리지 않습니다. Verification이 Gate 호출을 제안하더라도 Technical 다음 Rule Scope라는 순서, 정확한 입력·LLM call spec, PROVIDED admission과 Reporter 조건을 검사합니다. 사람에게는 보고서뿐 아니라 근거·PoC·비용·오류·HOLD 조건을 담은 `HumanReviewPacket`을 전달합니다. `HumanReviewState`가 최신 packet과 결정을 가리키므로 새 packet이 생기면 이전 결정은 공개에 쓸 수 없습니다.
+
+`ALLOW`가 PASS·scope·impact 조건과 모순되거나 Gate가 현재 작업과 다른 input revision을 가리키면 유효한 Gate 결과가 아니다. LLM 호출을 `INVALID_OUTPUT`, 오류를 `GATE/INVALID_OUTPUT`으로 기록하고 Reporter를 호출하지 않는다.
+
+각 Gate와 Reporter는 action 허가 시점과 실제 LLM 호출 직전에 같은 입력 수정본을 다시 확인합니다. `REVISE` 뒤에는 같은 입력으로 재투표할 수 없고, 보완된 Verification 또는 CWE 수정본으로 새 Gate 작업과 새 action을 만들어야 합니다.
 
 상세 내용은 [이중 LLM Gate와 보고](../05-llm-gate-and-reporting.md)을 따른다.

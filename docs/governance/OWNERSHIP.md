@@ -61,11 +61,15 @@ PM은 하위 Issue를 대신 세세하게 작성하지 않습니다. PM은 역�
 ## 권한 분리
 
 - Hypothesis Agent는 verdict·Finding을 만들지 않습니다.
-- Verification Agent가 기술 verdict를 생성하지만 외부 공개를 결정하지 않습니다.
-- Research Agent와 Primitive match는 새 가설만 제안합니다.
+- Orchestration Agent는 proposal을 검증·등록하고 Verification 배정을 제안하지만 가설 내부 작업을 선택하지 않습니다. 실제 owner는 trusted runtime의 ACTIVE `VerificationAssignment`로 저장합니다.
+- Verification Agent가 가설 내부 Context·찬반·동적 재현·Gate 보완 흐름과 기술 verdict를 소유하지만 Runtime Validator를 우회하거나 외부 공개를 결정하지 않습니다. `REVISE`도 같은 assignment owner의 새 VERIFICATION work로 처리합니다.
+- Chaining Agent는 Gate-qualified TRUE+HOLD 또는 앞 TRUE 능력→뒤 TRUE exact 선행 조건 match와 새 가설만 제안합니다. current Primitive index가 바뀐 결과는 저장할 수 없습니다.
 - Technical Evidence Gate와 Rule Scope Impact Gate는 verdict를 직접 변경하지 않습니다.
 - Reporter는 내부 초안만 만듭니다.
 - 사람만 최종 공개를 승인합니다.
+- Agent와 service는 실행을 `ActionRequest`로 제안하고 비-LLM Runtime Validator가 실행 범위만 허용·차단합니다.
+- Runtime Validator는 verdict·CWE·공식 정책 의미를 판단하지 않으며 `ActionDecision`은 exact action에 한 번만 사용합니다.
+- 사람의 결정은 ReportDraft 안이 아니라 exact `HumanReviewPacket`을 가리키는 별도 `HumanReviewDecision`에 기록합니다.
 
 ## 후속 GitHub 협업 자동화
 

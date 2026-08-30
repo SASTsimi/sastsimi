@@ -20,7 +20,9 @@ Verification TRUE
 + report_permission ALLOW
 ```
 
-중괄호 값은 검증된 artifact에서 채우며 미검증 Research 후보를 확정 사실로 표현하지 않는다.
+Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비-LLM Runtime Validator가 위 조건, exact input revision, 현재 state version과 redaction을 확인해 `ALLOW`한 요청만 실행한다. Reporter나 Orchestration의 자연어 출력은 이 조건을 바꾸지 못한다.
+
+중괄호 값은 검증된 artifact에서 채우며 미검증 Verification-origin 또는 Chaining-origin 후보를 확정 사실로 표현하지 않는다.
 
 ---
 
@@ -141,13 +143,15 @@ Verification TRUE
 - 선택 이유와 evidence: `{rationale and refs}`
 - alternatives/uncertainty: `{alternatives or none}`
 
-## 9. Research와 chaining
+## 9. Verification 확장 조사와 Chaining
 
-- Research 호출 이유: `{trigger or skipped}`
-- 제안된 bypass/alternate/impact/primitive match: `{candidate refs}`
-- 새 가설로 재검증 완료: `{validated child hypotheses and results}`
+- Verification이 조사한 bypass/alternate/impact: `{validated outcomes or none}`
+- Verification-origin 새 가설: `{proposal and validated child refs or none}`
+- Gate-qualified PROVIDED Primitive: `{primitive refs and exact Gate provenance}`
+- Chaining 조합: `{TRUE_HOLD | TRUE_TRUE, upstream PROVIDED, downstream requirement/precondition, current PrimitiveIndexState refs, match refs or skipped}`
+- Chaining-origin 새 가설: `{proposal and validated child refs or none}`
 - 아직 미검증: `{candidate refs; report claim으로 사용하지 않음}`
-- material extension 없음: `{reason if applicable}`
+- match 없음 또는 제한 중단: `{no-match/bounded-stop reason if applicable}`
 
 ## 10. 두 Gate 검토
 
@@ -175,7 +179,7 @@ Verification TRUE
 
 ## 11. LLM invocation trace와 오류
 
-- 역할별 invocation refs: `{Hypothesis, Verification, Pro/Con, Research, Gates, Reporter}`
+- 역할별 invocation refs: `{Hypothesis, Verification, Pro/Con, Chaining, Gates, Reporter}`
 - provider/model/session mode: `{safe metadata}`
 - retrieved code locations: `{location refs}`
 - schema repair/failover: `{attempt refs or none}`
@@ -189,13 +193,12 @@ hidden chain-of-thought와 secret은 포함하지 않는다.
 - `{authorization/validation/control remediation}`
 - `{regression test recommendation}`
 
-## 13. 사람 최종 검토
+## 13. 사람 검토로 넘길 연결 정보
 
-- 결정: `{DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION}`
-- 검토자: `{authorized reviewer}`
-- 의견: `{decision rationale}`
-- 승인한 공개 범위와 채널: `{target or none}`
+- ReportDraft record: `{report_draft_ref.record_id}`
+- 함께 검토할 AnalysisRunResult: `{analysis_result_ref.record_id}`
+- 남은 오류·DataGap·HOLD 조건: `{refs or none}`
 
 ---
 
-Reporter Agent는 13절을 채우거나 외부 제출을 수행하지 않는다.
+사람의 결정은 이 초안 안에 쓰지 않고 별도 `HumanReviewDecision`에 기록한다. Reporter Agent는 그 결정을 만들거나 외부 제출을 수행하지 않는다. 사람은 `HumanReviewState`가 가리키는 current `HumanReviewPacket`을 확인한 뒤 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`을 결정한다. 새 packet generation이 생기면 이전 결정은 공개에 사용할 수 없다.

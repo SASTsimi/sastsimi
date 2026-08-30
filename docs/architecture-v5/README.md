@@ -15,8 +15,8 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 ## 전체 흐름을 쉽게 나누면
 
 1. **입력과 코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다.
-2. **가설과 검증**: LLM이 취약점 가능성을 제안하고 검증 Agent가 코드·찬성·반대 근거를 확인합니다.
-3. **동적 재현과 연계 탐색**: 필요하면 Docker에서 재현하고 확인된 조건을 연결해 새 가설을 만듭니다.
+2. **가설과 검증**: LLM이 취약점 가능성을 제안하고, Orchestration이 등록·배정한 뒤 Verification Agent가 가설 내부 코드·찬성·반대·동적 흐름을 관리합니다.
+3. **동적 재현과 연계 탐색**: 필요하면 Docker에서 재현합니다. HOLD는 즉시, TRUE는 두 Gate 통과 뒤에만 Primitive matching에 사용합니다.
 4. **최종 검토와 보고서 초안**: 취약점 종류를 붙이고 기술 근거와 공식 정책을 차례로 검토합니다.
 5. **사람의 결정**: 사람이 모든 결과와 디버깅 정보를 보고 외부 공개 여부를 결정합니다.
 
@@ -26,24 +26,24 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 2. `Repository Loader`가 저장소를 `git clone`하고 분석할 `commit_id`를 checkout해 `CodeWorkspace`를 준비한다.
 3. AST parse와 SAST 도구를 병렬 실행한다.
 4. 결과를 `StaticFactBundle`로 정규화한다.
-5. Orchestration Agent가 분석 실행을 시작한다.
+5. Orchestration Agent가 초기 가설 생성 실행을 시작한다.
 6. 저비용 Hypothesis Agent를 호출한다.
-7. schema-valid `HypothesisProposal[]`을 생성한다.
-8. 각 가설에 Verification Agent를 할당한다.
-9. 가설의 entity·위치·경로를 기준으로 필요한 코드 문맥을 조회한다.
-10. `BASIC` 또는 조건부 Pro/Con 검증을 수행한다.
+7. schema-valid `HypothesisProposal(origin=INITIAL)`을 전역 등록한다.
+8. 각 등록 가설에 Verification owner를 할당하고 가설 내부 제어권을 넘긴다.
+9. Verification이 entity·위치·경로를 기준으로 필요한 코드 문맥을 조회한다.
+10. Verification이 `BASIC` 또는 조건부 Pro/Con 검증을 수행한다.
 11. 초기 `TRUE | FALSE | HOLD` 판정을 만든다.
-12. 필요하면 Docker sandbox에서 `LIMITED_REPRO | FULL_REPRO`를 수행한다.
-13. 최종 `TRUE | FALSE | HOLD` 판정을 확정한다.
-14. `TRUE`의 PROVIDED 또는 `HOLD`의 REQUIRED Primitive를 Primitive DB에 반영한다. `FALSE`는 Primitive/Research 입력으로 승격하지 않는다.
-15. `TRUE | HOLD` 또는 명시적인 Technical revision/Primitive match 조건에서 Research Agent가 우회·영향 확대·연계 가능성을 조사한다.
-16. 새 material claim은 새 `VulnerabilityHypothesis`로 Orchestration Agent에 반환한다.
-17. 검증된 취약점 유형에 CWE를 라벨링한다.
-18. Technical Evidence Gate Agent가 기술 근거와 판정의 연결성을 검토한다.
-19. Technical `ACCEPT`인 `TRUE`만 Rule Scope Impact Gate Agent가 공식 정책·범위·실질 영향을 검토한다.
-20. 모든 전달 조건을 만족한 결과에만 Reporter Agent가 보고서 초안을 작성한다.
-21. 결과·자원·LLM 호출 기록·PoC·오류·디버깅 정보를 저장한다.
-22. 초기·파생·체이닝 가설 모두에 8–21단계를 반복한다.
+12. Verification 판단에 따라 Docker sandbox에서 `LIMITED_REPRO | FULL_REPRO`를 수행한다.
+13. 최종 `TRUE | FALSE | HOLD`와 별도 material claim을 확정한다.
+14. `FALSE`는 terminal로 끝내고, `HOLD`는 REQUIRED Primitive를 즉시 저장해 Chaining 자격을 준다. TRUE는 CWE 단계로 간다.
+15. final TRUE와 CWE를 Technical Evidence Gate Agent가 검토한다.
+16. `REVISE`이면 같은 Verification owner가 근거를 보완해 새 Verification/CWE revision으로 다시 제출한다.
+17. Technical `ACCEPT`인 TRUE만 Rule Scope Impact Gate Agent가 공식 정책·범위·실질 영향을 검토한다.
+18. 두 Gate를 정상 통과한 exact TRUE revision만 PROVIDED Primitive로 저장한다.
+19. Chaining Agent가 current Primitive index에서 TRUE+HOLD를 연결하거나, 앞 TRUE의 능력이 뒤 TRUE의 exact 선행 조건을 충족하는지 방향성 있게 matching한다.
+20. Verification-origin 또는 Chaining-origin material claim은 trusted validation 뒤 새 가설로 등록하고 새 Verification을 배정한다.
+21. 모든 전달 조건을 만족한 결과에만 Reporter Agent가 보고서 초안을 작성한다.
+22. 결과·자원·LLM 호출 기록·PoC·오류·디버깅 정보를 저장하고 초기·파생 가설에 8–21단계를 반복한다.
 23. 사람이 Finding과 디버깅 정보를 검토하고 최종 공개 여부를 결정한다.
 
 ## 핵심 원칙
@@ -51,16 +51,21 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 - AST와 SAST는 source, sink, entity, 위치, 호출·데이터 흐름, 인증·인가와 같은 사실 후보를 제공한다.
 - Hypothesis Agent는 항상 `HYPOTHESIS_ONLY / NON_FINAL` 제안만 만들며 Finding이나 확정 판정을 만들 수 없다.
 - 코드 문맥은 같은 `workspace_id`와 `commit_id`에서 위치 기반으로 필요할 때 조회하고, 조회 범위와 반환 위치를 기록한다.
-- Verification은 제한 조건과 우회 가능성을 함께 조사한다. 새 공격 주장은 새 가설로 다시 검증한다.
+- Verification은 가설 내부 Context·Pro/Con·동적 재현·판정·Technical `REVISE`·Gate 제출과 Chaining handoff를 소유한다. 실행 허가는 Runtime Validator가 강제한다.
 - 기본 검증 모드는 `CONDITIONAL_DEBATE`다. Pro와 Con은 필요한 경우에만 독립 세션으로 실행한다.
-- Primitive DB는 queue가 아니라 제한 조건과 검증된 능력을 연결하는 인덱스다. match는 새 가설만 만든다.
-- Research Agent는 후보를 제안할 뿐 verdict, Finding, CWE, Gate 결과나 공개 결정을 확정할 수 없다.
+- Primitive DB는 queue가 아니라 HOLD REQUIRED와 Gate-qualified TRUE PROVIDED를 연결하는 인덱스다. Gate 전 TRUE, FALSE와 오래된 revision은 현재 matching에 사용할 수 없다.
+- Chaining Agent는 TRUE+HOLD와 방향성 있는 TRUE+TRUE 선행 조건 matching만 수행하며 일반 취약점·우회·impact research, 동적 재현, Gate 보완이나 verdict를 수행할 수 없다.
+- Verification과 Chaining이 발견한 새 material claim은 각각 `origin=VERIFICATION | CHAINING`인 새 가설로 등록되어 처음부터 검증된다. 부모 판정은 바뀌지 않는다.
 - Technical Evidence Gate와 Rule Scope Impact Gate는 서로 다른 LLM 검토 단계다. 어느 Gate도 Verification verdict를 직접 바꾸지 않는다.
 - 공식 프로그램 정책이 없으면 rule/scope를 추정하지 않으며 보고서 전달 권한은 `DENY`다.
 - Membership session과 API provider는 공통 adapter 경계를 사용한다. Membership path는 feasibility/security 검토 전 experimental이며, provider 전환은 명시적으로 기록하고 조용한 failover는 금지한다.
 - Reporter는 초안 작성자이고, 사람만 최종 공개 여부를 결정한다.
 - 모든 LLM 출력은 비신뢰 입력이다. 신뢰 경계 안의 runtime validator가 schema·상태 전이·예산·sandbox·provider/session·Gate 순서·Reporter 전제조건을 강제한다.
+- Agent와 service는 실행을 `ActionRequest`로 제안하고 runtime validator가 요청당 하나의 `ActionDecision=ALLOW | DENY`를 만든다. 실제 LLM 호출은 검사한 `LLMCallSpec`과 같아야 하며 ALLOW는 exact action과 state version에 한 번만 사용한다.
+- 사람에게는 Finding·근거·PoC·두 Gate·자원·오류·HOLD 조건을 포함한 `HumanReviewPacket`을 제공한다. `HumanReviewState`가 최신 packet과 사람 결정을 가리키며 새 packet이 생기면 이전 공개 승인은 무효다.
 - 분석 공백, 실행 오류, LLM·sandbox 실패와 취소는 기술 판정 `FALSE`와 분리한다. 공통 ID·시간·상태·오류 기준은 [경량 데이터 계약](./08-lightweight-data-contracts.md)을 따른다.
+- 같은 논리 요청은 `dedupe_key`로 한 번만 반영하고, 한 작업에는 활성 attempt를 하나만 둔다. 결과와 종료 상태는 atomic하게 연결하며 `COMMITTED` output만 다음 단계가 읽는다.
+- retry는 새 `attempt_id`로 실행하고 이전 실패를 보존한다. 취소·입력 변경·오래된 revision 뒤 도착한 결과는 격리하며, 중단 후에는 마지막으로 확정 저장된 상태에서 재개한다.
 
 ## 문서 지도
 
@@ -69,7 +74,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 3. [Agent 역할과 오케스트레이션](./03-agent-roles-and-orchestration.md)
 4. [검증과 동적 재현](./04-verification-and-dynamic-reproduction.md)
 5. [이중 LLM Gate와 보고](./05-llm-gate-and-reporting.md)
-6. [Primitive DB, Research와 chaining](./06-chaining.md)
+6. [Primitive DB와 Chaining](./06-chaining.md)
 7. [결과 저장과 관측성](./07-results-and-observability.md)
 8. [경량 데이터 계약](./08-lightweight-data-contracts.md)
 9. [LLM provider, session과 logging](./09-llm-provider-session-and-logging.md)

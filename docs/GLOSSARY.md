@@ -14,7 +14,7 @@
 | `StoredDataRef` | 도구가 만든 결과 파일이나 기록을 가리키는 번호 | 내부 저장 경로 대신 결과 번호와 내용 hash를 사용합니다. 저장된 결과 수정본을 가리킬 때는 `record_id`도 넣습니다. |
 | `RecordMeta` | 결과마다 붙는 공통 식별 정보 | 분석·작업공간·가설·재시도·수정본을 연결합니다. |
 | `RunMeta` | 코드 준비 전에도 쓸 수 있는 분석 실행 식별 정보 | `analysis_id`로 실행을 추적하며 clone 성공 전에는 workspace·commit을 요구하지 않습니다. |
-| `RunStoredDataRef` | commit 준비 전에도 생기는 실행 로그 참조 | 입력·clone 오류와 전체 debug trace를 `analysis_id`로 찾습니다. 코드 근거에는 쓰지 않습니다. |
+| `RunStoredDataRef` | commit 준비 전에도 생기는 실행 로그·결과 참조 | `analysis_id`로 찾고 저장 record의 정확한 수정본이면 `record_id`도 넣습니다. 코드 근거에는 쓰지 않습니다. |
 | `CodeLocation` | 저장소 안의 파일과 줄·열 위치 | `/` 구분자의 저장소 상대 경로를 사용하고, 도구가 열을 모르면 임의 값 대신 `null`로 둡니다. |
 | `CodeSymbol` | 함수·클래스·변수처럼 분석 대상이 되는 코드 요소 | 이름뿐 아니라 `CodeLocation`과 연결합니다. |
 | `DataGap` | 분석하지 못했거나 정보가 부족한 범위 | 안전함이나 `FALSE`를 뜻하지 않습니다. |
@@ -32,13 +32,25 @@
 | `context` | 판단에 필요한 주변 코드와 관련 정보 | 원본 위치와 조회 범위를 함께 기록합니다. |
 | `schema` | 데이터에 어떤 항목이 있어야 하는지 정한 형식 | 형식에 맞지 않는 LLM 출력은 그대로 사용하지 않습니다. |
 | `state transition` | 작업 상태가 다음 상태로 바뀌는 규칙 | 허용된 순서와 실패 상태를 프로그램이 검사합니다. |
+| `work_id` | 같은 논리 작업을 처음부터 끝까지 묶는 번호 | retry해도 유지하며 입력 revision이 달라지면 새 번호를 만듭니다. |
+| `work_generation` | 같은 입력의 작업을 사람이 새로 다시 시작한 순서 | 일반 retry에는 바꾸지 않고 종료 뒤 명시적으로 restart할 때만 증가합니다. |
+| `dedupe_key` | 같은 요청이 이미 들어왔는지 확인하는 hash 값 | attempt·시각은 빼고 실제 입력 record와 설정으로 만듭니다. |
+| `state_version` | 작업 상태가 몇 번 바뀌었는지 나타내는 번호 | 동시에 들어온 오래된 상태 변경을 거절하는 데 사용합니다. |
+| `atomic transition` | 결과와 그 결과를 가리키는 종료 상태를 함께 확정하는 저장 | 한쪽만 저장되면 다음 단계를 호출하지 않습니다. |
+| `TransitionCommit` | 한 번에 저장하기 어려울 때 결과와 상태를 안전하게 묶는 기록 | `COMMITTED` 전의 결과는 다른 단계가 사용하지 않습니다. |
+| `stale result` | 취소·재시도·입력 변경 뒤 늦게 도착한 오래된 결과 | 최신 결과를 덮어쓰지 못하게 격리합니다. |
+| `crash-resume` | 프로그램 중단 뒤 마지막으로 확정 저장한 지점에서 다시 시작하는 절차 | 이미 끝난 작업을 중복 반영하지 않습니다. |
+| `ActionRequest` | Agent나 service가 프로그램에 “이 일을 실행해 달라”고 적는 요청 | 요청 자체에는 실행 권한이 없습니다. |
+| `ActionCheck` | 실행 전에 확인하는 권한·상태·예산·도구 같은 검사 하나 | action마다 필요한 검사를 빠뜨리지 않습니다. |
+| `ActionDecision` | 프로그램 검사기가 action을 허용하거나 막은 결과 | 요청 하나당 logical decision 하나이며 exact action과 state version에 한 번만 사용합니다. |
+| `LLMCallSpec` | 실제 LLM 호출에 쓸 model·prompt·context·형식·예산·시간을 묶은 수정 불가 명세 | 허가 뒤 호출 내용을 바꾸지 못하게 합니다. |
 
 ## 가설과 검증
 
 | 용어 | 쉽게 말하면 | 사용할 때 주의할 점 |
 |---|---|---|
 | `Hypothesis` | 검증이 필요한 취약점 가능성 | 아직 확정 취약점이나 Finding이 아닙니다. |
-| `Verification` | 코드와 실행 근거를 모아 가설을 확인하는 과정 | 정책 검토나 공개 결정을 대신하지 않습니다. |
+| `Verification` | 배정된 가설 안에서 코드·찬반·동적 근거와 보완 흐름을 관리해 판정하는 과정 | 다음 작업은 선택하지만 Runtime Validator의 실행 검사를 우회하거나 공개를 결정하지 않습니다. |
 | `verdict` | 검증 Agent가 내린 기술 판정 | `TRUE`, `FALSE`, `HOLD` 중 하나입니다. |
 | `TRUE` | 현재 근거로 취약점이 성립한다고 판단한 상태 | 사람의 공개 결정과는 다릅니다. |
 | `FALSE` | 미리 정한 반증 조건이 실제 근거로 확인된 상태 | 도구 실패나 정보 부족을 `FALSE`로 바꾸면 안 됩니다. |
@@ -60,33 +72,41 @@
 | 용어 | 쉽게 말하면 | 사용할 때 주의할 점 |
 |---|---|---|
 | `Agent` | 한 가지 분석 역할을 맡는 LLM 작업 단위 | 프로그램의 강제 규칙이나 사람의 결정을 대신하지 않습니다. |
-| `Orchestration` | 여러 Agent의 호출 순서와 작업 상태를 조정하는 기능 | 취약점 판정이나 공개 결정을 직접 만들지 않습니다. |
-| `Primitive` | 연계 공격을 확인하기 위해 저장하는 ‘필요 조건’ 또는 ‘확인된 능력’ | 확정 취약점 목록이나 작업 대기열이 아닙니다. |
-| `PrimitiveMatchCandidate` | 필요한 능력과 확인된 능력이 연결될 수 있는지 검사한 미검증 후보 | 자산·코드 대상·권한·공격 순서·제한 조건이 맞는지 기록하고 새 가설로 다시 검증합니다. |
-| `Research` | 우회 방법, 영향 확대와 연계 가능성을 추가로 조사하는 작업 | 새로운 공격 주장은 새 가설로 다시 검증합니다. |
-| `chaining` | 여러 취약점의 조건과 능력을 연결해 새 공격 가능성을 찾는 과정 | 깊이, 횟수, token, 시간과 중복 제한을 둡니다. |
+| `Orchestration` | 가설 제안을 확인·등록하고 각 가설에 Verification을 배정하는 전역 조정 기능 | 배정 뒤 가설 내부 Pro/Con·동적 재현·Gate·Chaining을 결정하지 않습니다. |
+| `Primitive` | 연계 공격에서 필요한 조건(`REQUIRED`) 또는 제공되는 능력(`PROVIDED`) | HOLD만 REQUIRED가 되고, TRUE는 두 Gate를 정상 통과한 정확한 revision만 PROVIDED가 됩니다. TRUE PROVIDED에는 해당 취약점의 악용 선행 조건도 함께 고정합니다. |
+| `PrimitiveIndexState` | 가설마다 현재 사용할 수 있는 Primitive 수정본을 가리키는 인덱스 상태 | 탐색 중 새 Verification이 생기면 version이 바뀌어 오래된 Chaining 결과의 저장을 막습니다. |
+| `PrimitiveMatchCandidate` | TRUE+HOLD 또는 TRUE+TRUE의 조건·능력이 연결될 수 있는지 검사한 미검증 후보 | TRUE+TRUE는 앞 PROVIDED와 뒤 TRUE의 exact 선행 조건을 방향성 있게 비교하고 current index·revision도 확인합니다. |
+| `Chaining Agent` | ACTIVE Primitive의 TRUE+HOLD와 TRUE+TRUE 조합만 찾는 Agent | 일반 취약점·우회·영향 탐색, 동적 재현, Gate 보완과 판정은 하지 않습니다. |
+| `chaining` | Gate-qualified TRUE의 능력과 HOLD 조건 또는 다른 Gate-qualified TRUE 능력을 연결해 새 공격 가설을 만드는 과정 | 깊이, 횟수, token, 시간, 중복과 순환 제한을 둡니다. |
+| `Gate-qualified TRUE` | 같은 TRUE revision이 Technical `ACCEPT`와 Rule Scope 정상 통과를 모두 받은 상태 | Gate 전 TRUE, Technical만 통과한 TRUE와 오래된 Gate 승인은 현재 체이닝에 사용할 수 없습니다. |
+| `origin=VERIFICATION` | Verification이 검증 중 발견한 별도 material claim에서 나온 새 가설 | trusted validation과 새 가설 등록 뒤 처음부터 검증합니다. |
+| `origin=CHAINING` | Chaining Agent의 Primitive match에서 나온 새 가설 | 부모 판정을 바꾸지 않고 별도 lifecycle로 검증합니다. |
 | `material claim` | 기존 가설과 구분해 따로 검증해야 할 새로운 공격 주장 | 기존 판정에 바로 합치지 않고 새 가설로 만듭니다. |
 
 ## 검토와 보고
 
 | 용어 | 쉽게 말하면 | 사용할 때 주의할 점 |
 |---|---|---|
-| `Finding` | 사람이 검토할 수 있게 정리한 취약점 결과 | Hypothesis나 Research 후보와 구분합니다. |
+| `Finding` | 사람이 검토할 수 있게 정리한 취약점 결과 | Hypothesis, Verification-origin 또는 Chaining-origin 후보와 구분합니다. |
 | `Gate` | 다음 단계로 보내도 되는지 확인하는 검토 단계 | Verification 판정을 직접 바꾸지 않습니다. |
 | `Technical Evidence Gate` | 판정과 코드·실행 근거가 서로 맞는지 확인하는 기술 검토 | 부족하면 `REVISE`로 보완을 요청할 수 있습니다. |
 | `Rule Scope Impact Gate` | 공식 정책 범위와 실제 영향을 확인하는 검토 | 공식 정책이 없으면 추측하지 않습니다. |
 | `PolicyItem` | 공식 정책에서 뽑은 항목 하나와 원문 위치를 묶은 데이터 | 반드시 공식 출처 기록으로 다시 확인할 수 있어야 합니다. |
-| `REVISE` | 부족한 근거를 보완한 뒤 다시 검토하라는 결과 | 보완할 항목과 반복 한도를 기록합니다. |
+| `VerificationAssignment` | 한 가설의 내부 검증 흐름을 맡은 논리 owner의 저장 기록 | 같은 역할의 다른 Agent가 아니라 ACTIVE assignment와 일치하는 owner만 Gate·보완·보고 요청을 제안할 수 있습니다. |
+| `REVISE` | 부족한 근거를 같은 Verification owner가 새 Verification work에서 보완한 뒤 새 revision으로 다시 검토하라는 결과 | provider retry나 동일 입력 재투표가 아니며 오래된 Gate 결과를 재사용하지 않습니다. |
 | `UNCERTAIN + DENY` | 공식 정책을 확인하지 못해 결론과 보고서 전달을 허용하지 않는 상태 | LLM의 기억으로 정책을 채우지 않습니다. |
 | `Reporter` | 통과한 결과를 사람이 읽을 보고서 초안으로 정리하는 Agent | 외부 제출과 공개는 하지 않습니다. |
 | `human handoff` | 사람이 최종 검토할 자료를 전달하는 단계 | 외부 공개 여부는 사람이 결정합니다. |
+| `HumanReviewPacket` | 사람이 볼 Finding·근거·PoC·Gate·비용·오류·보류 조건을 모은 자료 묶음 | exact AnalysisRunResult 수정본에서 빠짐없이 만듭니다. |
+| `HumanReviewState` | 지금 검토해야 할 최신 packet과 현재 사람 결정을 가리키는 상태 | 새 packet이 생기면 이전 결정을 공개에 쓰지 못하게 합니다. |
+| `HumanReviewDecision` | 사람이 자료 묶음을 읽고 남긴 최종 결정 기록 | `DISCLOSE`, `REVISE`, `WITHHOLD`, `NEED_MORE_VALIDATION` 중 하나이며 ReportDraft와 분리합니다. |
 
 ## 실행·보안·평가
 
 | 용어 | 쉽게 말하면 | 사용할 때 주의할 점 |
 |---|---|---|
 | `runtime` | 설계가 실제로 실행되는 프로그램 부분 | 현재 저장소에는 구현되어 있지 않습니다. |
-| `runtime validator` | 프로그램 내부 규칙 검사기 | 데이터 형식, 상태 순서, 예산과 권한을 강제합니다. |
+| `runtime validator` | 프로그램 내부 실행 범위 검사기 | 데이터 형식, 상태 순서, 예산과 권한을 강제하지만 취약점·CWE·정책 의미는 판단하지 않습니다. |
 | `sandbox` | 다른 시스템과 격리해 안전하게 코드를 실행하는 환경 | host, 비밀정보와 범위 밖 네트워크 접근을 막습니다. |
 | `provider` | LLM을 제공하는 서비스나 연결 방식 | API 방식과 회원 로그인 방식을 같은 경계에서 관리합니다. |
 | `session` | LLM 서비스와 이어지는 로그인 또는 대화 상태 | 인증정보와 session 비밀값을 일반 로그에 남기지 않습니다. |

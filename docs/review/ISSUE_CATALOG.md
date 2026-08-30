@@ -42,7 +42,7 @@
 ### 범위
 
 - Repository input과 `CodeWorkspace` 준비부터 human disclosure decision까지의 23단계
-- 정적 사실, 가설, retrieval, Verification, sandbox, Primitive/Research, 두 Gate, report 계약
+- 정적 사실, 가설, Verification-owned workflow, sandbox, Primitive/Chaining, 두 Gate, report 계약
 - provider/session/logging과 resource budget
 - local workspace, prompt injection, credential, sandbox, official policy trust boundary
 - 역할 간 producer/consumer 계약과 종단 실패 시나리오
@@ -62,14 +62,15 @@
 - [ ] 모든 핵심 결과가 `analysis_id`, `workspace_id`, `hypothesis_id`, `attempt_id`와 추적 가능함
 - [ ] 오류·timeout·auth·sandbox setup 실패가 `FALSE`로 변환되지 않음
 - [ ] 두 Gate와 보고서 Agent의 순서·전제조건을 프로그램 내부 규칙 검사기(`runtime validator`)가 강제함
-- [ ] 새 Research/Primitive claim이 새 가설로 전체 검증됨
+- [ ] Verification-origin과 Chaining-origin material claim이 새 가설로 전체 검증됨
+- [ ] HOLD는 즉시 REQUIRED, TRUE는 두 Gate 정상 통과 뒤 PROVIDED가 되며 FALSE는 체이닝되지 않음
 - [ ] 모든 Blocker/High가 닫히고 Medium은 명시적으로 처리됨
 - [ ] freeze commit SHA, 역할 간 교차 검토와 최종 검토·승인 담당자의 최신 확인 기록이 있음
 - [ ] 별도 승인 PR 전까지 `REVIEW_REQUIRED / NOT_IMPLEMENTED`를 유지함
 
 ---
 
-## R1 — 제약형 가설 생성·Research/Primitive chaining·LLM 효율화
+## R1 — 제약형 가설 생성·Primitive Chaining·LLM 효율화
 
 - 실제 Issue: [#2](https://github.com/SASTsimi/sastsimi/issues/2)
 
@@ -88,28 +89,29 @@
 - 담당 역할: LLM 탐색·체이닝
 - 담당자: 배승원 `@baeseungwon1010`
 - 주요 작업 브랜치: `review/hypothesis-research`
-- 관련 흐름: 정적 사실 묶음 → 취약점 가설 목록 → 검증 결과에서 연계 조건 추출 → 새 가설 반환
+- 관련 흐름: 정적 사실 묶음 → 최초 취약점 가설 목록, 그리고 current ACTIVE Primitive의 TRUE+HOLD 또는 앞 TRUE 능력→뒤 TRUE exact 선행 조건 matching → 새 가설 반환
 
 ### 검토 문서
 
 - `03-agent-roles-and-orchestration.md`
 - `06-chaining.md`
-- `08-lightweight-data-contracts.md`의 Hypothesis/Primitive/Research 계약
+- `08-lightweight-data-contracts.md`의 Hypothesis/Primitive/Chaining 계약
 - `09-llm-provider-session-and-logging.md`의 역할별 profile
 - `13-architecture-diagrams.md`의 관련 흐름
 
 ### 검토할 입력·출력
 
-- 입력: `StaticFactBundle` refs, 최소 code context, RecordMeta, budget, final VerificationResult, Technical revision, Primitive match
-- 출력: schema-valid `HypothesisProposal[]`, `INVALID_OUTPUT`, `Primitive`, `ResearchResult`, child/chained proposal, bounded-stop reason
+- 입력: 최초 가설용 `StaticFactBundle` refs, RecordMeta, budget, HOLD REQUIRED와 Gate-qualified TRUE PROVIDED refs
+- 출력: schema-valid `HypothesisProposal[]`, `INVALID_OUTPUT`, `PrimitiveMatchCandidate`, `ChainingResult`, chained proposal, no-match/bounded-stop reason
 
 ### 확인할 권한 경계
 
 - proposal은 `HYPOTHESIS_ONLY / NON_FINAL`이며 verdict·Finding·CWE·Gate·report를 확정하지 않는다.
 - confidence는 scheduling hint이며 진위 확률이나 verdict가 아니다.
-- `TRUE`는 PROVIDED, `HOLD`는 REQUIRED Primitive 후보를 만든다. `FALSE`는 chaining 근거로 승격하지 않는다.
-- 문자열 일치만으로 chain을 확정하지 않고 `workspace_id`·`commit_id`·asset·entity·privilege·attack order·restriction을 확인한다.
-- 새 endpoint, sink, 권한 경계, 공격 단계나 impact는 새 가설로 반환한다.
+- HOLD의 REQUIRED는 즉시 matching 가능하지만 TRUE는 두 Gate를 정상 통과한 exact revision만 PROVIDED가 된다. FALSE는 chaining 근거로 승격하지 않는다.
+- 문자열 일치만으로 chain을 확정하지 않고 `workspace_id`·`commit_id`·asset·entity·endpoint·privilege·data·attack order·restriction을 확인한다.
+- Chaining Agent는 TRUE+HOLD와 방향성 있는 TRUE+TRUE 선행 조건 matching만 하며 일반 bypass·alternate path·impact·Technical revision을 조사하지 않는다.
+- chained proposal은 `origin=CHAINING`이며 새 가설로 전체 검증한다.
 
 ### 필수 교차 리뷰
 
@@ -123,8 +125,8 @@
 - [ ] proposal 필수 field, semantic validation, repair retry와 `INVALID_OUTPUT`이 명확함
 - [ ] facts와 assumptions, restriction, missing information, falsification question이 구분됨
 - [ ] Primitive match compatibility와 duplicate/cycle 규칙이 문서화됨
-- [ ] depth/count/token/time/research/sandbox 한도와 중단 이유가 정의됨
-- [ ] Research skip/no-material-extension도 관측 가능함
+- [ ] depth/count/token/time/chaining 조합 한도와 중단 이유가 정의됨
+- [ ] no-match와 bounded-stop도 관측 가능함
 - [ ] token 최적화가 동일 corpus의 품질 저하 여부와 함께 평가됨
 - [ ] Wiki/Mermaid 및 인접 계약이 일치함
 
@@ -240,7 +242,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] analysis/hypothesis/parent-child/attempt correlation과 record revision을 재구성할 수 있음
 - [ ] 병렬·직렬 지점과 atomic transition/idempotency/crash-resume 요구가 정의됨
 - [ ] partial/failed/cancelled/auth/rate-limit/sandbox/policy 오류의 전파가 명확함
-- [ ] 다른 workspace/commit 혼합, Research 오승격, Reporter bypass negative test plan이 있음
+- [ ] 다른 workspace/commit 혼합, Gate 전·stale TRUE Primitive admission, Chaining 일반 research, Reporter bypass negative test plan이 있음
 - [ ] Membership adapter를 검증 전 optional experiment로 취급하고 feasibility 종료 조건을 정의함
 - [ ] 구현 상태 변경에 필요한 증거 기준이 문서화됨
 
@@ -252,7 +254,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 쉽게 말하면
 
-전체 파트가 같은 상태 이름과 데이터 형식을 사용하도록 중앙 기준을 정한다. 어떤 작업을 병렬로 돌릴지, 오류나 재시도를 어떻게 기록할지, LLM이 제안만 하고 프로그램과 사람이 최종 통제해야 하는 경계를 관리한다.
+전체 파트가 같은 상태 이름과 데이터 형식을 사용하도록 중앙 기준을 정한다. Orchestration의 전역 등록·배정과 Verification의 가설 내부 제어권을 나누고, 오류나 재시도를 어떻게 기록할지, LLM이 제안만 하고 프로그램과 사람이 최종 통제해야 하는 경계를 관리한다.
 
 ### 담당자가 나눌 수 있는 하위 Issue 예시
 
@@ -277,13 +279,16 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 검토할 입력·출력
 
 - 입력: 모든 전문 역할 contract 요구, budget/eval 결과, provider/sandbox/storage 제한, human review 요구
-- 출력: versioned RecordMeta/state/error contract, orchestration state machine, RACI, review map, ADR와 run closure 기준
+- 출력: versioned RecordMeta/state/error contract, `WorkExecutionState`·attempt·transition commit, `ActionRequest`·`ActionDecision`, `HumanReviewPacket`·`HumanReviewDecision`, orchestration state machine, RACI, review map, ADR와 run closure 기준
 
 ### 확인할 권한 경계
 
-- LLM 오케스트레이션은 다음 행동을 제안·조정하며, LLM이 아닌 프로그램 내부 규칙 검사기(`runtime validator`)가 규칙 준수를 강제한다.
-- PM/Orchestration은 verdict, CWE, Gate result, 공식 정책 또는 공개 결정을 대신하지 않는다.
+- Orchestration은 proposal 검증·전역 등록·Verification 배정까지만 담당하고, 가설 내부 다음 행동은 Verification이 제안·조정한다.
+- Verification ownership과 관계없이 LLM이 아닌 프로그램 내부 규칙 검사기(`runtime validator`)가 action 규칙 준수를 강제한다.
+- PM/Orchestration은 가설 내부 Pro/Con·dynamic·Gate·Chaining, verdict, CWE, Gate result, 공식 정책 또는 공개 결정을 대신하지 않는다.
 - silent provider/model failover와 repository prompt에 의한 policy 변경을 금지한다.
+- Runtime Validator는 action의 실행 범위만 강제하며 verdict·CWE·정책 의미를 대신 판단하지 않는다.
+- Reporter는 내부 초안만 만들고 exact 사람 결정 없이는 외부 disclosure action을 허용하지 않는다.
 
 ### 필수 교차 리뷰
 
@@ -297,9 +302,17 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] 23단계별 호출 조건, 성공/partial/retry/terminal 상태가 명확함
 - [ ] verdict, Gate, rule/scope, impact, permission, report와 human state가 분리됨
 - [ ] retry/failover가 새 attempt/invocation이며, 바로 앞 실패 호출 reference로 순서와 원인을 복원할 수 있음
+- [ ] 같은 요청은 canonical `dedupe_key`로 기존 `work_id`를 재사용하고 한 work에는 active attempt가 하나임
+- [ ] 상태 변경은 `state_version` compare-and-set을 사용하고 stale·취소·다른 workspace/commit 결과를 거절함
 - [ ] chain/repair/Gate revision/sandbox/token/time 한도의 enforcement owner가 비-LLM runtime으로 명시됨
+- [ ] Technical `REVISE`가 Orchestration을 경유해 재배정되지 않고 같은 ACTIVE VerificationAssignment owner의 새 VERIFICATION work로 돌아감
+- [ ] HOLD REQUIRED와 Gate-qualified TRUE PROVIDED의 exact revision admission·supersede 규칙이 있음
 - [ ] persistence/recovery/atomicity/idempotency 계약이 합의되고 `TERMINAL`·`DRAFTED` 상태가 정확한 결과 `record_id`를 가리킴
 - [ ] 결과 record 저장과 종료 상태 변경 중 하나만 성공했을 때의 crash-resume 복구와 오래되거나 취소된 결과의 연결 거절 규칙이 있음
+- [ ] `TransitionCommit`이 `COMMITTED`된 결과만 downstream과 최종 결과에서 사용함
+- [ ] 역할별 `ActionRequest`가 필수 check를 모두 통과한 `ActionDecision`에서만 한 번 실행됨
+- [ ] 두 LLM Gate 순서, Reporter 조건, 공식 정책 부재 `UNCERTAIN + DENY`와 외부 공개 차단을 runtime이 검사함
+- [ ] `ReportDraft`와 `HumanReviewDecision`이 분리되고 사람 packet에 근거·PoC·자원·오류·HOLD가 포함됨
 - [ ] 실제 GitHub 계정과 최종 검토·승인 담당자가 문서와 Issue에서 일치함
 - [ ] conflict resolution, freeze SHA와 승인·구현 저장소 동기화 규칙이 확정됨
 
@@ -343,7 +356,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 확인할 권한 경계
 
 - Gate는 Verification verdict를 변경하지 않는다.
-- Gate 2는 final `TRUE + Technical ACCEPT`에서만 호출한다.
+- Gate 1은 final TRUE에서만, Gate 2는 같은 `TRUE + Technical ACCEPT`에서만 호출한다.
 - 공식 정책이 없거나 핵심 정보가 누락되면 `UNCERTAIN + DENY`다.
 - Reporter는 새 공격 주장을 만들거나 외부 제출·공개·human decision을 수행하지 않는다.
 
@@ -360,6 +373,8 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] Technical Gate가 verdict/evidence, code flow, dynamic, CWE, restriction과 handoff readiness를 검토함
 - [ ] `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 실제 검토한 Verification·CWELabel revision을 고정하고, 두 Gate와 ReportDraft가 같은 revision을 사용함
 - [ ] REVISE는 구체적인 새 evidence/revision을 요구하며 무한 재투표가 아님
+- [ ] REVISE는 같은 ACTIVE VerificationAssignment owner에게 직접 전달되고 새 VERIFICATION work·Verification/CWE revision 전에는 재호출되지 않음
+- [ ] 두 Gate 정상 통과는 exact TRUE의 PROVIDED admission 조건과 Reporter 조건에 같은 의미로 적용됨
 - [ ] policy source 인증·freshness·parser failure threat model/ADR 요구가 있음
 - [ ] 모순된 `ALLOW` 출력은 semantic `INVALID_OUTPUT`이며 Reporter가 차단됨
 - [ ] 보고서 Agent 호출 조건 `TRUE + ACCEPT + PASS + PASS + PASS + SUFFICIENT + ALLOW`를 프로그램 내부 규칙 검사기(`runtime validator`)가 강제함
@@ -374,7 +389,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 쉽게 말하면
 
-가설마다 찬성 근거와 반대 근거를 따로 모으고, 부족하면 추가 코드나 동적 재현을 요청한다. 모든 근거를 종합해 `TRUE`, `FALSE`, `HOLD` 중 하나로 판정하는 기준과 취약점 유형별 검증 절차를 만든다.
+배정받은 가설마다 Context·찬성·반대·동적 근거와 Gate 보완 흐름을 직접 관리한다. 모든 근거를 종합해 `TRUE`, `FALSE`, `HOLD` 중 하나로 판정하고 새 material claim을 별도 가설로 분리하는 기준과 취약점 유형별 검증 절차를 만든다.
 
 ### 담당자가 나눌 수 있는 하위 Issue 예시
 
@@ -387,7 +402,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - 담당 역할: 검증·반박·플레이북
 - 담당자: 임채민 `@UltraPeachKeen`
 - 주요 작업 브랜치: `review/verification`
-- 관련 흐름: 가설별 검증 시작 → 찬성·반대 근거 수집 → 필요 시 동적 재현 → 최종 판정 → 근거 보완 요청 처리
+- 관련 흐름: 가설별 검증 시작 → Context·찬성·반대 근거 → 필요 시 동적 재현 → 최종 판정 → CWE/Gate 요청 → REVISE 직접 보완 → 조건부 Chaining handoff
 
 ### 검토 문서
 
@@ -398,14 +413,14 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 검토할 입력·출력
 
 - 입력: VulnerabilityHypothesis, 같은 workspace/commit의 context, debate trigger/budget, Pro/Con, DynamicReproductionResult, revision request
-- 출력: supporting/counter evidence, 질문별 `FalsificationResult`, initial/final verdict, dynamic decision, restrictions, capabilities, material child proposal
+- 출력: supporting/counter evidence, 질문별 `FalsificationResult`, initial/final verdict, dynamic decision, restrictions, PrimitiveDraft, `origin=VERIFICATION` material child proposal와 Gate revision coordination
 
 ### 확인할 권한 경계
 
 - Pro/Con은 독립 근거를 만들고 Verification만 `TRUE/FALSE/HOLD`를 합성한다.
 - 오류, empty retrieval와 sandbox setup failure를 `FALSE`로 만들지 않는다.
 - 별도 endpoint/sink/권한/impact를 기존 verdict에 몰래 합치지 않는다.
-- 정책, Gate, report와 disclosure 결정을 수행하지 않는다.
+- Gate 결과·정책 의미·공개 결정을 대신 만들지 않는다. Gate·Reporter 호출을 제안해도 Runtime Validator 검사를 우회하지 않는다.
 
 ### 필수 교차 리뷰
 
@@ -424,7 +439,8 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] initial/final verdict와 revision history가 분리됨
 - [ ] dynamic 실행 `status`, 관측 `hypothesis_outcome`, `hypothesis_disproved`와 Verification verdict가 구분됨
 - [ ] material new claim과 같은 가설의 작은 validation subtask 경계가 있음
-- [ ] Technical REVISE가 새 evidence 또는 설명 revision을 남김
+- [ ] material new claim은 `origin=VERIFICATION` proposal로 trusted registration 뒤 새 Verification을 받음
+- [ ] Technical REVISE를 같은 ACTIVE VerificationAssignment owner가 새 VERIFICATION work에서 받고 새 evidence 또는 설명 revision을 남김
 
 ---
 
@@ -537,8 +553,8 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 완료 조건
 
-- [ ] corpus가 TRUE/FALSE/HOLD, gap, conflicting evidence, Research child, policy absence, sandbox failure를 포함함
-- [ ] schema validity/repair, retrieval gap/`WORKSPACE_MISMATCH`, debate 전후 품질, chaining 중단, Gate-human 차이를 측정함
+- [ ] corpus가 TRUE/FALSE/HOLD, gap, conflicting evidence, Verification-origin child, Chaining-origin child, policy absence, sandbox failure를 포함함
+- [ ] schema validity/repair, retrieval gap/`WORKSPACE_MISMATCH`, debate 전후 품질, HOLD 즉시 chaining, Gate-qualified TRUE admission과 chaining 중단을 측정함
 - [ ] conditional debate, 독립 session, 두 Gate와 provider/model 선택에 acceptance threshold가 있음
 - [ ] adversarial prompt-injection, contradictory Gate, redaction failure case가 있음
 - [ ] role별 token/time/retry/chain/sandbox budget과 `BUDGET_EXCEEDED` 의미가 있음
@@ -573,10 +589,19 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 | workspace 또는 commit 불일치 | context/dynamic evidence 폐기와 `WORKSPACE_MISMATCH` 기록 |
 | 상충 Pro/Con | 독립 NEW session과 근거 기반 verdict/HOLD |
 | sandbox setup 실패 | explicit dynamic failure; vulnerability FALSE 금지 |
-| Research 새 claim | child hypothesis로 8단계부터 재검증; parent 불변 |
+| HOLD | Gate 없이 REQUIRED Primitive 저장과 Chaining 조회; PROVIDED 승격 금지 |
+| FALSE | terminal internal result; Primitive/Chaining 금지 |
+| Gate 전 TRUE | PROVIDED admission과 Chaining 금지 |
+| Technical ACCEPT만 받은 TRUE | Gate2 정상 통과 전 PROVIDED/Chaining 금지 |
+| Verification 새 claim | `origin=VERIFICATION` child hypothesis로 8단계부터 재검증; parent 불변 |
+| TRUE+HOLD | TRUE parent가 exact Gate-qualified일 때만 `origin=CHAINING` child 생성 |
+| TRUE+TRUE | 양쪽 TRUE parent가 exact Gate-qualified이고 앞 PROVIDED가 뒤 TRUE의 exact required precondition을 충족할 때만 새 chain hypothesis 생성 |
+| stale Gate revision | 새 Verification revision에 과거 Gate/Primitive 자격 재사용 금지 |
 | Primitive scope 불일치 | match 거절/후보 유지 |
 | chain budget/cycle | bounded stop reason; FALSE 금지 |
-| Technical REVISE | 새 evidence/revision 전 Gate2/Reporter 차단 |
+| Technical REVISE | 같은 ACTIVE VerificationAssignment owner의 새 VERIFICATION work로 직접 반환; 새 evidence/revision 전 Gate2/PROVIDED/Reporter 차단 |
+| Chaining 중 parent revision 변경 | current PrimitiveIndexState commit-time CAS 실패로 결과·child proposal을 `STALE_RESULT` 처리 |
+| Chaining의 일반 research 출력 | invalid output; bypass·impact·dynamic·Gate 보완은 Verification 책임 |
 | 모순된 ALLOW | semantic invalid; Reporter 차단 |
 | provider auth/rate-limit | explicit attempt/fallback; silent failover/FALSE 금지 |
 | AST/SAST 일부 실패 | gap 포함 PARTIAL 가능 |
@@ -604,8 +629,9 @@ R4 ─────────────────┼─> R2 workspace/stati
 R2 + R4 + R8 ───────┴─> R1-A Hypothesis
 R1-A + R2 + R4 + R8 ──> R6 Verification
 R4 + R8 ──────────────> R7 Sandbox
-R6 + R7 ──────────────> R1-B Research/Primitive
-R6 + R7 + R1-B + R4 ──> R5 Gate·보고서·사람 검토 전달
+R6 + R7 ──────────────> R5 Technical/Rule Scope Gate
+R5 정상 통과 + R6 HOLD ─> R1-B Primitive Chaining
+R6 + R7 + R1-B + R4 + R5 ─> 보고서·사람 검토 전달
 R3는 모든 계약의 구현 가능성과 종단 조립을 교차 검토
 R1–R8 완료 ───────────> Final cross-scenario review
 ```
