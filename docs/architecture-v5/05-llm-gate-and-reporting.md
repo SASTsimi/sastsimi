@@ -67,22 +67,18 @@ Gate의 기준 입력은 `verification_result_ref`가 고정한 final `Verificat
 - 핵심 주장이 현재 `workspace_id`와 `commit_id`의 코드 위치·호출·데이터 흐름에 연결되는지
 - 동적 관측이 현재 가설·`workspace_id`·실행 조건에 연결되는지
 - CWE 선택이 취약점 유형과 근거에 적절한지
-- restriction·반박·HOLD 조건이 정확히 표현되었는지
+- restriction·unresolved condition·반박과 limitation이 정확히 표현되었는지
 - 기술 검토 결과를 다음 단계 또는 내부 종결 기록으로 전달할 수 있는지
 
 #### Evidence와 verdict 정렬
 
-Gate는 verdict를 다시 판정하지 않고, Verification Agent가 남긴 판정과 설명이 그 record의
-근거로 실제 뒷받침되는지만 검토한다.
+Gate는 final `TRUE` verdict를 다시 판정하지 않고, Verification Agent가 남긴 판정과 설명이
+그 exact revision의 근거로 실제 뒷받침되는지만 검토한다. `FALSE | HOLD`는 이 검토의 입력이 아니다.
 
 - `TRUE`는 핵심 exploit path와 필수 조건을 설명하는 supporting claim이 실제 evidence와
   code location에 연결되어야 한다. 단순한 source·sink 존재나 `NOT_DISPROVED`만을 지지
   근거로 표현하면 정렬되지 않은 것이다.
-- `FALSE`는 `VerificationResult` 계약대로 근거 있는 `DISPROVED` 질문과 rationale의 연결을
-  확인한다. Gate가 별도의 반증을 만들거나 다른 path까지 부정하지 않는다.
-- `HOLD`는 unresolved condition, 상충 근거와 미검증 범위를 확정된 취약점처럼 표현하지
-  않아야 한다.
-- 모든 verdict에서 관련 counter evidence와 falsification 결과를 설명이 누락·축소하지
+- final `TRUE`에서도 관련 counter evidence, falsification 결과와 limitation을 설명이 누락·축소하지
   않아야 하며, supporting/counter claim의 statement, evidence, limitation이 서로 모순되면
   그 위치를 특정한다.
 - hypothesis-scoped evidence가 다른 `hypothesis_id`를 가리키거나, 어떤 evidence든 다른 workspace·commit 또는 현재 reference와 다른 content/revision이면 현재 verdict의 근거로 사용할 수 없다.
