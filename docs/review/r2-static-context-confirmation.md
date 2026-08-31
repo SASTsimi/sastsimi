@@ -99,3 +99,23 @@ flowchart LR
 - R2-03(`DataGap` 규칙) → #2, #7뿐 아니라 Gate·Finding·보고서(#6)도 영향(gap이 verdict 판정에 영향 주면 안 됨)
 - R5-03(Reporter/ReportDraft 생성 조건)이 R2 관점에서 이미 교차 검토됨 — `docs/review/r5-03-r2-cross-review.md` 참고. 이 문서에서 `ReportDraft.content_ref`에 실제로 적힌 `path:line`이 upstream `EvidenceClaim.code_locations`와 일치하는지 검사하는 규칙이 아직 명시돼 있지 않다는 점을 R5-03의 output contract validation 범위에 추가할 것을 제안함
 - 선행 조건: 명시된 건 없지만, `CodeWorkspace` 식별 규칙(R2-01)이 다른 모든 하위 Issue와 다른 역할의 전제가 됨
+
+## 5. R5 관점 교차 리뷰 반영 (2026-08-31)
+
+김혜령(R5, Gate·Finding·보고서 담당)이 #32~35에 R5 관점 리뷰를 남겼습니다. 결론은 R2-01~04
+계약이 R5의 Technical Evidence Gate·Reporter 요구사항과 정합하며 blocking 이슈는 없다는
+것이었고, 아래 두 가지 downstream 소비 경계를 명확히 해달라는 제안이 있었습니다. R2는 이
+제안을 수용합니다.
+
+1. **`DataGap`이 claim에 영향을 줄 때 Technical Gate가 무시하면 안 됨** — 현재 Verification
+   claim이 의존하는 code path/auth·permission check/data-flow 영역과 겹치는 `DataGap`을
+   Technical Gate가 evidence-verdict alignment 판단에서 조용히 무시해서는 안 된다. `DataGap`
+   존재 자체가 자동 `REVISE`를 뜻하지는 않는다.
+2. **`CodeContextResponse.truncated=true`를 "확인됨"으로 가정하면 안 됨** — Technical Gate는
+   조회되지 않은 영역을 확인된 것으로 가정해 claim strength를 높이거나 `ACCEPT`해서는 안 된다.
+   이미 확보된 독립적인 Evidence/Verification만으로 claim이 충분히 입증된 경우에는 truncation이
+   있어도 `ACCEPT`가 가능하다.
+
+`05-llm-gate-and-reporting.md`는 `docs/governance/OWNERSHIP.md` 기준 R5(김혜령, `@kimhr8463`)
+소유 문서이므로, 위 두 invariant의 실제 문서 반영은 R2가 직접 하지 않고 R5에 제안으로 전달합니다
+(GitHub 리뷰 답글 참고).
