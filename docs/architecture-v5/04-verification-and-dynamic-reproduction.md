@@ -17,16 +17,16 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 ## 기본 검증 순서
 
 1. 배정된 가설의 `workspace_id`, `commit_id`, entity, location과 suspected path를 확인한다.
-2. `CodeContextRequest`로 caller/callee, data flow, auth guard와 route 문맥을 필요한 만큼 조회한다.
-3. observed fact와 assumption을 분리하고 각 `FalsificationQuestion.question_id`를 확인한다.
-4. 운영 분석이면 Pro/Con Agent를 서로 독립된 NEW session으로 병렬 호출해 supporting/counter evidence를 모두 수집한다. BASIC 또는 조건부 debate는 격리된 평가 실행에서만 선택한다.
-5. initial verdict와 unresolved condition을 만든다.
-6. 정적 근거만으로 부족하고 안전하게 재현할 가치가 있으면 `LIMITED_REPRO | FULL_REPRO`를 요청한다.
-7. 정적·찬반·동적 결과를 종합해 final verdict를 만든다.
-8. HOLD면 REQUIRED Primitive 후보를, TRUE면 Gate 통과 뒤 등록할 PROVIDED Primitive 후보를 기록한다. FALSE는 Primitive 후보를 만들지 않는다.
-9. 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 발견하면 `HypothesisProposal(origin=VERIFICATION)`으로 분리한다.
-10. TRUE의 CWE labeling을 조정하고 Technical Evidence Gate를 요청한다. `REVISE`면 같은 Verification owner가 보완한 새 revision으로 다시 제출한다.
-11. HOLD는 즉시 Chaining으로 넘길 수 있고, TRUE는 두 Gate를 정상 통과한 exact revision만 Chaining으로 넘길 수 있다.
+2. `CodeContextRequest`로 caller/callee, data flow, auth guard와 route 문맥을 필요한 만큼 조회한다. 추가 Context 요청은 현재 가설과 같은 `workspace_id`·`commit_id`를 사용해야 한다. 응답이 비어 있거나 다른 workspace·commit을 가리키면 판정 근거로 사용하지 않는다. 허용된 요청과 예산을 모두 사용한 뒤에도 핵심 경로를 확인할 수 없으면 미해결 조건을 기록하고 `HOLD`로 판정하거나 명시적인 오류 상태로 종료한다. Context 부족이나 조회 실패를 `DISPROVED` 또는 `FALSE`로 변환하지 않는다.
+4. observed fact와 assumption을 분리하고 각 `FalsificationQuestion.question_id`를 확인한다.
+5. 운영 분석이면 Pro/Con Agent를 서로 독립된 NEW session으로 병렬 호출해 supporting/counter evidence를 모두 수집한다. BASIC 또는 조건부 debate는 격리된 평가 실행에서만 선택한다.
+6. initial verdict와 unresolved condition을 만든다.
+7. 정적 근거만으로 부족하고 안전하게 재현할 가치가 있으면 `LIMITED_REPRO | FULL_REPRO`를 요청한다.
+8. 정적·찬반·동적 결과를 종합해 final verdict를 만든다.
+9. HOLD면 REQUIRED Primitive 후보를, TRUE면 Gate 통과 뒤 등록할 PROVIDED Primitive 후보를 기록한다. FALSE는 Primitive 후보를 만들지 않는다.
+10. 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 발견하면 `HypothesisProposal(origin=VERIFICATION)`으로 분리한다.
+11. TRUE의 CWE labeling을 조정하고 Technical Evidence Gate를 요청한다. `REVISE`면 같은 Verification owner가 보완한 새 revision으로 다시 제출한다.
+12. HOLD는 즉시 Chaining으로 넘길 수 있고, TRUE는 두 Gate를 정상 통과한 exact revision만 Chaining으로 넘길 수 있다.
 
 ## 우회 인지 검증
 
@@ -92,6 +92,41 @@ Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` 
 `TRUE`도 판정 직후에는 Chaining 입력이 아니다. 현재 revision이 Technical `ACCEPT`와 Rule Scope의 정상 통과 조건을 모두 만족한 뒤에만 PROVIDED Primitive가 된다. `FALSE`는 terminal internal result이며 REQUIRED/PROVIDED Primitive와 Chaining work를 만들지 않는다.
 
 최종 결과는 등록 가설의 모든 반증 질문에 `DISPROVED | NOT_DISPROVED | INCONCLUSIVE` 중 하나를 기록한다. `DISPROVED`에는 실제 `evidence_refs`가 필요하고, `NOT_DISPROVED`는 가설이 참이라는 증거로 승격하지 않는다. `FALSE`는 적어도 하나의 근거 있는 `DISPROVED` 결과와 그 `question_id`를 설명하는 판정 이유가 있을 때만 허용한다. 오류·timeout·누락만으로는 `DISPROVED`나 `FALSE`를 만들지 않는다.
+| 판정 | 최소 필수 근거 | 허용하지 않는 판정 이유 |
+|---|---|---|
+| `TRUE` | 현재 가설의 핵심 exploit path와 필요한 조건을 지지하는 실제 evidence | 단순 추측, `NOT_DISPROVED`, 일부 경로만 확인한 결과 |
+| `FALSE` | named falsification의 `question_id`, `outcome=DISPROVED`, 하나 이상의 실제 `evidence_refs`와 이를 연결하는 판정 이유 | 오류, timeout, 빈 Context, 예산 초과, Sandbox 실패 |
+| `HOLD` | 아직 해결되지 않은 조건과 필요한 추가 Context·환경·capability | 취약점이 아니라는 의미로 사용하거나 PROVIDED 능력으로 승격 |
+
+### Initial verdict와 final verdict
+
+`initial_verdict`는 기본 Context와 Verification Agent가 직접 확인한 사실을 바탕으로 만든 중간 판단이다. 운영 분석에서는 독립 Pro/Con과 필요한 동적 재현이 끝나기 전의 initial verdict를 Gate·Primitive·Reporter 입력으로 사용할 수 없다.
+
+final `verdict`는 필요한 Pro/Con과 동적 결과를 포함해 현재 work에서 사용할 수 있는 모든 근거를 종합한 최종 판단이다. initial verdict와 final verdict가 다르면 `verdict_rationale`과 `VerificationMetrics.verdict_changed_after_debate`에 변경 여부와 근거를 남긴다.
+
+새 evidence나 Technical `REVISE`로 결과가 바뀌면 기존 record를 수정하지 않고 새 `VerificationResult` revision을 만든다. 과거 revision을 검토한 Gate 결과는 새 revision에 재사용하지 않는다.
+
+## 취약점 유형별 검증 플레이북
+
+각 지원 취약점 유형은 같은 이름으로 식별 가능한 검증 플레이북을 가진다. 플레이북은 Agent에게 자유로운 결론을 요구하는 prompt가 아니라, 해당 유형에서 빠뜨리면 안 되는 확인 항목과 반증 질문을 정의한 실행 가능한 검증 절차다.
+
+각 플레이북에는 최소한 다음 항목을 기록한다.
+
+| 항목 | 설명 |
+|---|---|
+| `vulnerability_type` | 플레이북이 다루는 취약점 유형 |
+| 사전 조건 | 공격자가 먼저 만족해야 하는 권한·입력·환경 |
+| source | 공격자 입력이나 제어 값이 시작되는 위치 |
+| sink | 위험 동작 또는 영향이 발생하는 위치 |
+| 경로 확인 | source에서 sink까지 이어지는 호출·데이터 흐름 |
+| 방어 확인 | validator, sanitizer, canonicalization, 인증·인가와 권한 검사 |
+| 반증 질문 | 무엇이 실제 근거로 확인되면 가설이 반증되는지 |
+| 정적 evidence | 필요한 코드 위치·호출 관계·도구 결과 |
+| 동적 evidence | 실행으로 확인해야 하는 조건과 observable effect |
+| restriction | 공격이 가능한 범위를 제한하는 조건 |
+| HOLD 조건 | 아직 해결되지 않으면 최종 판단을 보류해야 하는 조건 |
+
+지원 목록에 없는 취약점 유형을 기존 플레이북에 억지로 맞추지 않는다. 필요한 검증 항목을 확정할 수 없으면 `HOLD` 또는 후속 Issue로 기록한다. 새로운 endpoint·sink·권한 경계·공격 단계·독립 impact가 발견되면 현재 verdict에 합치지 않고 material child proposal로 분리한다.
 
 ## Docker 동적 재현
 
