@@ -1155,6 +1155,8 @@ Technical `REVISE`는 같은 hypothesis의 ACTIVE `VerificationAssignment` owner
 
 `CodeLocation`, `CodeSymbol`, `CodeFact`, `CodeRelation`, `StaticFactBundle`은 shared static evidence다. 현재 분석의 `workspace_id + commit_id`, exact reference와 hash를 검사하지만 직접적인 `hypothesis_id` 일치는 요구하지 않으며 같은 commit의 여러 가설이 재사용할 수 있다. `VerificationResult`, `VulnerabilityHypothesis`, `DynamicReproductionResult`, `CWELabel`, `TechnicalEvidenceReview`와 기타 hypothesis-specific artifact는 hypothesis-scoped record다. 내장된 `EvidenceClaim`도 이를 소유한 Verification의 가설 범위에 속한다. 이들은 위 검사에 더해 현재 `hypothesis_id` 일치를 요구한다. 모든 record의 revision chain은 공통 revision 계약으로 검증하며, 다른 가설의 Verification·Dynamic 결과는 invalid input이다. 가설 또는 CWE 근거가 바뀌면 기존 Technical review를 재사용하지 않는다.
 
+Technical Gate가 `CodeContextResponse`를 근거로 사용할 때에는 claim이 의존하는 code path, auth/permission check와 data-flow에 겹치는 `DataGap`의 기존 영향 범위와 `truncated`를 evidence-verdict alignment·code-flow linkage·restriction 판단에 반영한다. 조회·반환되지 않은 코드는 확인된 근거나 verified evidence가 아니며, 불완전한 context로 upstream에서 검증된 수준보다 claim을 강화하거나 그것만으로 `ACCEPT`할 수 없다. 다만 gap 또는 `truncated=true` 자체는 자동 `REVISE | REJECT` 조건이 아니고, 독립적인 기존 Evidence/Verification만으로 claim이 충분하면 `ACCEPT`할 수 있다. 상세 소비 규칙은 [이중 LLM Gate와 보고](05-llm-gate-and-reporting.md#불완전한-코드-문맥과-datagap)를 따른다.
+
 `status`와 `handoff_readiness`의 허용 조합은 `ACCEPT + READY`, `REVISE + NOT_READY`,
 `REJECT + NOT_READY`다. `READY`는 기술 근거를 재구성하지 않고 다음 소비자에게 전달할 수
 있다는 뜻일 뿐 정책 Gate 통과나 보고 허용이 아니다. `revision_requests`의 각 항목은 현재

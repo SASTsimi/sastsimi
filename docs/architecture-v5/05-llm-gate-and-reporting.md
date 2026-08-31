@@ -92,6 +92,28 @@ Gate는 final `TRUE` verdict를 다시 판정하지 않고, Verification Agent�
 - 누락된 edge를 추론해 채우거나 새 data-flow·endpoint·공격 경로를 만들지 않는다. 새 material
   claim이 필요하면 Gate 판정 근거로 쓰지 않고 기존 proposal/재검증 경계를 따른다.
 
+#### 불완전한 코드 문맥과 DataGap
+
+Gate가 `CodeContextResponse`를 근거로 사용할 때에는 R2가 정의한 `DataGap.affected_locations`,
+`affected_paths` 등 기존 영향 범위를 현재 Verification claim이 의존하는 code path,
+auth/permission check와 data-flow 영역에 대조한다. claim과 겹치는 gap은 evidence-verdict alignment와
+code-flow linkage 판단에서 무시할 수 없으며, 해결되지 않았다면 기존 restriction·unresolved condition의
+표현이 충분한지 검토하고 필요한 경우 `revision_requests`에 구체적인 보완 범위를 기록한다. 다만
+`DataGap`의 존재 자체는 자동 `REVISE | REJECT` 조건이 아니다.
+
+`CodeContextResponse.truncated=true`이거나 claim 관련 `DataGap`이 있으면 조회되지 않은 영역을
+확인된 것으로 가정하거나 반환되지 않은 코드까지 검증된 것으로 해석하지 않으며, 그 불완전한 문맥으로
+claim strength를 높이거나 그것만을 근거로 `ACCEPT`하지 않는다. 확인되지 않은 코드 영역은 verified
+evidence로 승격할 수 없고, Gate는 upstream Verification과 Evidence가 실제로 검증한 수준보다 강한
+claim을 승인할 수 없다. 이는 Gate가 새 claim을 만들거나 Verification verdict를 변경한다는 뜻이 아니다.
+
+반대로 이미 확보된 독립적인 Evidence/Verification만으로 현재 claim이 충분히 입증되었다면
+`truncated=true` 또는 관련 gap의 존재만으로 `ACCEPT`를 금지하지 않는다. 따라서 Gate는 gap이나
+truncation의 존재 여부만으로 status를 정하지 않고, 누락 범위가 현재 claim의 근거 충분성에 실제로
+영향을 주는지를 기존 evidence-verdict alignment, code-flow linkage, restriction과
+`ACCEPT | REVISE | REJECT` 기준 안에서 판단한다. 누락된 영역을 안전하거나 문제가 없는 영역으로
+간주해서는 안 된다.
+
 #### 동적 재현과 PoC 연결
 
 - `dynamic_decision`과 `dynamic_result_ref`의 존재가 일치하고, Dynamic 결과의
