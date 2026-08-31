@@ -30,10 +30,14 @@ flowchart TB
     S10 --> S11[11 Initial TRUE FALSE HOLD]
     S11 --> S12{12 Dynamic reproduction needed}
     S12 -->|No| S13[13 Final verdict and material claim split]
-    S12 -->|LIMITED| DL[Docker LIMITED_REPRO]
-    S12 -->|FULL| DF[Docker FULL_REPRO and PoC]
-    DL --> S13
-    DF --> S13
+    S12 -->|LIMITED| DL[LIMITED ReproductionPlan]
+    S12 -->|FULL| DF[FULL ReproductionPlan and PoC draft]
+    DL --> DAUTH[Runtime Validator call authorization]
+    DF --> DAUTH
+    DAUTH --> DCTRL[Sandbox Controller policy check]
+    DCTRL -->|Pass| DRUN[Sandbox Runner Docker execution]
+    DCTRL -->|Policy blocked| S13
+    DRUN --> S13
     S13 --> S14{14 Final verdict}
     S14 -->|FALSE| CLOSED[Terminal internal result]
     S14 -->|HOLD| REQUIRED[HOLD REQUIRED Primitive admitted]
@@ -131,10 +135,14 @@ flowchart TB
     SYN --> INITIAL[Initial TRUE FALSE HOLD]
     INITIAL --> DYN{Dynamic evidence needed}
     DYN -->|No| FINAL[Final VerificationResult]
-    DYN -->|Small question| LIMITED[Docker LIMITED_REPRO]
-    DYN -->|End to end| FULL[Docker FULL_REPRO and PoC]
-    LIMITED --> SYN2[Re-synthesize evidence]
-    FULL --> SYN2
+    DYN -->|Small question| LIMITED[LIMITED ReproductionPlan]
+    DYN -->|End to end| FULL[FULL ReproductionPlan and PoC draft]
+    LIMITED --> AUTH[Runtime Validator call authorization]
+    FULL --> AUTH
+    AUTH --> CTRL[Sandbox Controller policy check]
+    CTRL -->|Pass| RUNNER[Sandbox Runner Docker execution]
+    CTRL -->|Policy blocked| SYN2[Re-synthesize evidence]
+    RUNNER --> SYN2
     SYN2 --> FINAL
     FINAL --> OUT[Restrictions candidates PrimitiveDraft and VERIFICATION origin child proposals]
 ```
@@ -347,7 +355,7 @@ flowchart LR
     DOMAIN[Verification Gates Reporter Human keep domain decisions] -. not decided by validator .-> CHECK
 ```
 
-Runtime Validator는 schema·권한·ID·revision·상태·예산·도구·경로·Sandbox·provider·Gate 순서·Reporter·redaction·공개 전제를 검사한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
+Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter·redaction·공개 전제를 검사한다. `RUN_SANDBOX`에서는 호출 권한·상태·예산·exact plan reference까지만 확인하고, image·command·file·network·resource·cleanup 정책은 Sandbox Controller가 검사한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
 
 ## 13. 사람 검토와 외부 공개 경계
 

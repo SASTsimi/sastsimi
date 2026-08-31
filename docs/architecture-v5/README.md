@@ -60,7 +60,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 - 공식 프로그램 정책이 없으면 rule/scope를 추정하지 않으며 보고서 전달 권한은 `DENY`다.
 - Membership session과 API provider는 공통 adapter 경계를 사용한다. Membership path는 feasibility/security 검토 전 experimental이며, provider 전환은 명시적으로 기록하고 조용한 failover는 금지한다.
 - Reporter는 초안 작성자이고, 사람만 최종 공개 여부를 결정한다.
-- 모든 LLM 출력은 비신뢰 입력이다. 신뢰 경계 안의 runtime validator가 schema·상태 전이·예산·sandbox·provider/session·Gate 순서·Reporter 전제조건을 강제한다.
+- 모든 LLM 출력은 비신뢰 입력이다. 신뢰 경계 안의 Runtime Validator가 schema·호출 권한·상태 전이·예산·provider/session·Gate 순서·Reporter 전제조건을 강제하고, Sandbox Controller가 image·command·file·network·resource·cleanup 정책을 전담한다.
 - Agent와 service는 실행을 `ActionRequest`로 제안하고 runtime validator가 요청당 하나의 `ActionDecision=ALLOW | DENY`를 만든다. 실제 LLM 호출은 검사한 `LLMCallSpec`과 같아야 하며 ALLOW는 exact action과 state version에 한 번만 사용한다.
 - 사람에게는 Finding·근거·PoC·두 Gate·자원·오류·HOLD 조건을 포함한 `HumanReviewPacket`을 제공한다. `HumanReviewState`가 최신 packet과 사람 결정을 가리키며 새 packet이 생기면 이전 공개 승인은 무효다.
 - 분석 공백, 실행 오류, LLM·sandbox 실패와 취소는 기술 판정 `FALSE`와 분리한다. 공통 ID·시간·상태·오류 기준은 [경량 데이터 계약](./08-lightweight-data-contracts.md)을 따른다.

@@ -33,6 +33,6 @@ all report conditions → Reporter → Human
 
 각 역할은 공통 `LLMProviderAdapter`를 사용하며 역할 독립성이 필요한 조합은 NEW session을 기본으로 한다. 상세 경계는 [Agent 역할과 오케스트레이션](../03-agent-roles-and-orchestration.md)을 따른다.
 
-모든 LLM 출력은 비신뢰 입력이다. 비-LLM trusted runtime validator가 schema·상태 전이·예산·sandbox·provider/session·Gate/Reporter 순서를 실제로 강제한다.
+모든 LLM 출력은 비신뢰 입력이다. 비-LLM Runtime Validator가 schema·호출 권한·상태 전이·예산·provider/session·Gate/Reporter 순서를 강제하고, Sandbox Controller가 image·command·file·network·resource·cleanup 정책을 전담한다.
 
 배정은 ACTIVE `VerificationAssignment`로 저장한다. 같은 역할의 다른 Agent가 아니라 그 assignment의 논리 owner만 가설 내부 action과 `REVISE` 보완을 요청할 수 있다.

@@ -336,7 +336,7 @@ $requiredActionCheckBindings = [ordered]@{
     RUN_TOOL = 'SCHEMA, AUTHORITY, REVISION, BUDGET, TOOL, FILE_PATH'
     CALL_LLM = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, REDACTION'
     FETCH_POLICY = 'SCHEMA, AUTHORITY, BUDGET, TOOL, REDACTION'
-    RUN_SANDBOX = 'SCHEMA, AUTHORITY, REVISION, STATE, BUDGET, TOOL, FILE_PATH, SANDBOX'
+    RUN_SANDBOX = 'SCHEMA, AUTHORITY, REVISION, STATE, BUDGET'
     SAVE_RESULT = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION'
     CALL_TECHNICAL_GATE = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, GATE_ORDER, REDACTION'
     CALL_RULE_SCOPE_GATE = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, GATE_ORDER, REDACTION'
@@ -386,7 +386,6 @@ $requiredActionChecks = @(
     'BUDGET',
     'TOOL',
     'FILE_PATH',
-    'SANDBOX',
     'PROVIDER',
     'SESSION',
     'GATE_ORDER',
@@ -525,6 +524,10 @@ foreach ($marker in $authorityScenarioMarkers) {
 
 $sandboxReviewPatterns = @(
     @{
+        Name = 'Runtime Validator authorizes Sandbox calls without duplicating detailed policy checks'
+        Pattern = '(?s)`RUN_SANDBOX`의 `ActionDecision=ALLOW`.*?Runtime Validator.*?권한.*?상태.*?예산.*?exact `ReproductionPlan` reference까지만 검사.*?Sandbox Controller.*?image digest.*?command/tool allowlist.*?network target.*?CPU·memory·disk·process·time limit.*?cleanup 정책을 전담 검사'
+    },
+    @{
         Name = 'RUN_SANDBOX freezes the complete reproduction plan closure'
         Pattern = '(?s)`RUN_SANDBOX`만 `reproduction_plan_ref`를 사용.*?`input_refs`에는 exact `ReproductionPlan`.*?`hypothesis_ref`.*?`sandbox_profile_ref`.*?`command_ref`.*?`attack_input_refs`.*?`cleanup_policy_ref`'
     },
@@ -538,7 +541,7 @@ $sandboxReviewPatterns = @(
     },
     @{
         Name = 'Sandbox produces and Verification only consumes dynamic results'
-        Pattern = '(?s)Sandbox runtime만 `SandboxStepLog`와 `DynamicReproductionResult`를 생산.*?Verification은.*?경우에만 이를 읽으며 `DynamicReproductionResult`를 직접 만들거나 수정하지 않는다'
+        Pattern = '(?s)Sandbox Controller와 Runner로 구성된 Sandbox runtime만 `SandboxStepLog`와 `DynamicReproductionResult`를 생산.*?Verification은.*?경우에만 이를 읽으며 `DynamicReproductionResult`를 직접 만들거나 수정하지 않는다'
     },
     @{
         Name = 'Verification owns plans while Sandbox owns dynamic results'
