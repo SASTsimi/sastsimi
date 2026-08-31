@@ -377,9 +377,10 @@ state store는 새 전이를 승인하기 전에 `(work_id, current_state_versio
 
 Gate domain input set은 Gate가 판단 대상으로 읽는 저장 record의 정확한 revision 집합이다. `TECHNICAL_GATE`에서는 `VerificationResult`와 `CWELabel` reference가 정확한 domain input set이고, `RULE_SCOPE_GATE`에서는 `VerificationResult`, `TechnicalEvidenceReview`, `CWELabel`과 존재하는 `ProgramPolicyRecord` reference가 정확한 domain input set이다. prompt·provider·실행 설정 reference는 전체 `WorkExecutionState.input_refs`에 추가할 수 있지만 domain input으로 가장하거나 domain input을 대신할 수 없다.
 
-Gate work를 등록할 때 runtime은 전체 `input_refs`를 정렬해 `input_hash`와 `dedupe_key`를 만들고 해당 `work_id`가 끝날 때까지 바꾸지 않는다. Gate 결과를 확정할 때는 다음을 같은 atomic transition에서 확인한다.
+Gate work를 등록할 때 runtime은 전체 `input_refs`를 정렬해 `input_hash`와 `dedupe_key`를 만들고 해당 `work_id`가 끝날 때까지 바꾸지 않는다. `TECHNICAL_GATE`의 top-level domain input은 `VerificationResult`와 `CWELabel` 두 개뿐이지만, `input_refs`에는 두 direct input에서 도달 가능한 Gate-relevant `hypothesis_ref`, supporting/counter Evidence, Dynamic result, PoC, `CWELabel.evidence_refs`와 기타 전이적 dependency의 exact reference도 중복 없이 포함한다. 따라서 기존 canonical 계산이 사용하는 정렬된 `record_id + content_hash` identity에 direct input과 Gate 결과 유효성에 영향을 주는 전체 transitive closure가 반영된다. 별도 hash나 dedupe 알고리즘은 만들지 않는다. Gate 결과를 확정할 때는 다음을 같은 atomic transition에서 확인한다.
 
 - `TechnicalEvidenceReview` 안의 `verification_result_ref`와 `cwe_label_ref`는 Technical Gate work의 domain input 두 개와 각각 exact match여야 한다.
+- Technical Gate의 두 direct input에서 다시 계산한 transitive closure는 등록 시 `input_refs`와 set-equal해야 하고 각 reference의 exact revision/content identity가 현재 대상과 같아야 한다.
 - `RuleScopeImpactReview` 안의 `verification_result_ref`, `technical_review_ref`, `cwe_label_ref`, `policy_record_ref`는 Rule Scope Gate work의 domain input set과 exact match여야 한다.
 - `TransitionCommit`이 가리키는 `work_id`, target state version과 output `record_id`가 확정되는 동안 현재 work의 `input_hash`가 등록 시 값과 같아야 한다.
 - input revision이 바뀌거나 결과 안의 reference가 다르면 `RECORD_REVISION_MISMATCH` 또는 `STALE_RESULT`로 `ABORTED`하고, 이전 Gate 결과를 교체·재사용하거나 다음 단계에 전달하지 않는다.
@@ -485,7 +486,7 @@ Gate와 Reporter action의 기존 check는 다음 exact revision을 검사한다
 
 `RUN_SANDBOX`의 `ActionDecision=ALLOW`는 Docker 실행 성공이나 Sandbox 정책 통과를 뜻하지 않는다. Runtime Validator는 요청자의 권한, 현재 상태와 예산, 변경되지 않은 exact `ReproductionPlan` reference까지만 검사한다. 이후 Sandbox Controller가 plan closure의 image digest, command/tool allowlist, mount·file path, network target, CPU·memory·disk·process·time limit, non-root와 cleanup 정책을 전담 검사한다. 정책을 통과한 계획만 Sandbox Runner가 실행하며, 정책 거절은 `DynamicReproductionResult(status=BLOCKED, failure_reason=POLICY_BLOCKED)`로 기록한다.
 
-- Technical Gate의 `REVISION`은 action `input_refs`와 call spec context가 final `VerificationResult(verdict=TRUE)`와 `CWELabel`의 정확한 `record_id`·`content_hash`를 가리키는지 검사한다. Gate 출력의 `TechnicalEvidenceReview.verification_result_ref`와 `cwe_label_ref`도 바로 이 두 record를 가리켜야 한다. `GATE_ORDER`는 두 결과가 현재 work에서 `COMMITTED`됐고 final인지 검사한다. HOLD와 FALSE는 Technical Gate action을 만들 수 없다.
+- Technical Gate의 `REVISION`은 action `input_refs`와 call spec context가 final `VerificationResult(verdict=TRUE)`와 `CWELabel`의 정확한 `record_id`·`content_hash`를 direct input으로 가리키고, 두 대상에서 도달 가능한 Gate-relevant transitive closure가 work의 `input_refs`와 일치하는지 검사한다. 각 direct/transitive reference는 대상 존재, exact revision, workspace·commit, hypothesis-scoped artifact의 `hypothesis_id`, `content_hash`를 공통 계약으로 검증한다. Gate 출력의 `TechnicalEvidenceReview.verification_result_ref`와 `cwe_label_ref`도 바로 이 두 direct record를 가리켜야 한다. `GATE_ORDER`는 두 결과가 현재 work에서 `COMMITTED`됐고 final인지 검사한다. HOLD와 FALSE는 Technical Gate action을 만들 수 없다.
 - Rule Scope Gate의 `REVISION`은 같은 Verification·CWE revision과 `RuleScopeImpactReview.technical_review_ref`가 가리킬 exact `TechnicalEvidenceReview` record를 검사한다. `GATE_ORDER`는 Technical review가 그 두 revision을 검토한 `ACCEPT`이고 Verification verdict가 `TRUE`인지 검사한다.
 - Reporter의 `REVISION`은 Reporter action, call spec과 context가 두 Gate가 실제로 검토한 같은 Verification·CWE revision, exact Technical·Rule Scope review와 존재하는 정책 revision을 가리키는지 검사한다. `REPORT_READY`는 그 exact 결과가 보고 조건을 모두 통과했는지 검사한다.
 
@@ -766,6 +767,8 @@ VulnerabilityHypothesis:
 
 초기 가설의 `root_hypothesis_id`는 자기 `hypothesis_id`다. `origin=VERIFICATION`은 Verification이 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 분리한 proposal이고, `origin=CHAINING`은 TRUE+HOLD 또는 TRUE+TRUE Primitive match가 만든 proposal이다. 자식 가설은 직접 원인이 된 부모만 `parent_hypothesis_ids`에 넣고, 부모 중 가장 큰 `chain_depth + 1`을 사용한다. 부모와 자식의 lifecycle·verdict는 독립이며 child 결과로 parent verdict를 바꾸지 않는다. proposal 출력 검증 runtime은 각 반증 질문에 전역 `question_id`를 부여하고 등록 가설까지 그대로 유지한다. 질문은 가설의 필수 조건 하나를 실제 근거로 반증할 수 있게 구체적으로 작성한다. 금지된 확정 assertion, 잘못된 enum, 필수 field/location·반증 질문 누락은 제한된 repair retry 뒤 `INVALID_OUTPUT`이다. confidence는 scheduling hint이지 verdict가 아니다.
 
+등록이 완료된 `VulnerabilityHypothesis`의 material content인 `origin`, parent/root 연결, `statement`, target, suspected path, falsification question과 required validation은 수정하지 않는다. 이 의미가 달라지면 같은 `hypothesis_id`나 logical record의 새 revision으로 고치지 않고 `HypothesisProposal`을 새로 검증·등록해 새 `hypothesis_id`와 독립된 `HypothesisProcessState`, `VerificationAssignment`, 최초 VERIFICATION generation을 만든다. 기존 가설의 Verification·Gate·Primitive·Chaining 결과는 그 기존 가설의 기록으로 보존되며 새 가설의 자격이나 입력으로 승계되지 않는다. 이 type-specific 불변조건은 공통 record revision 형식을 없애는 것이 아니라, `VulnerabilityHypothesis` material field를 그 revision으로 변경하는 것을 금지한다.
+
 ## 3. CodeContextRequest/Response
 
 검증 단계가 필요한 코드 위치를 요청하고 정적분석 계층이 같은 `workspace_id`와 `commit_id`에서 코드를 돌려주는 형식입니다.
@@ -883,7 +886,9 @@ VerificationResult:
 
 `EvidenceClaim.claim_id`는 한 `VerificationResult` 안에서 유일하다. 각 claim은 실제 저장 근거를 가리키는 `evidence_refs`를 하나 이상 가져야 하며, 코드 주장이라면 현재 `workspace_id + commit_id`의 `code_locations`도 하나 이상 가져야 한다. `source_role`은 claim을 작성한 역할이며 근거의 출처를 대신하지 않는다. supporting 목록에는 `VERIFICATION | PRO`, counter 목록에는 `VERIFICATION | CON`만 허용한다.
 
-`VulnerabilityHypothesis`는 `RecordMeta` 기반 record이므로 공통 revision 계약에 따라 같은 `hypothesis_id` 안에서도 새 `record_id` revision을 만들 수 있다. 따라서 `hypothesis_id`만으로는 검증한 가설 내용을 고정할 수 없다. `hypothesis_ref.record_id`는 검증에 사용한 정확한 `VulnerabilityHypothesis` revision을 가리키며 필수다. runtime은 공통 `StoredDataRef` 검사와 대상 `meta.hypothesis_id`가 Verification의 가설과 같은지 확인한다. 가설 revision이 바뀌면 기존 Verification과 downstream Gate review를 재사용하지 않는다.
+`hypothesis_ref.record_id`는 검증에 사용한 등록 완료 `VulnerabilityHypothesis` record를 가리키며 필수다. runtime은 공통 `StoredDataRef` 검사와 대상 `meta.hypothesis_id`가 Verification의 가설과 같은지 확인한다. material 변경은 같은 가설의 새 revision이 아니라 새 hypothesis 등록이므로 기존 Verification과 downstream Gate·Primitive·Chaining 결과를 새 `hypothesis_id`에 재사용하지 않는다.
+
+`VerificationResult.hypothesis_ref`는 최신 main의 기존 schema에는 없던 필수 field다. 필수 field 추가는 위 compatibility 규칙상 호환되지 않는 변경이므로 공통 schema MAJOR 결정과 migration 없이 기존 schema version에 소급 적용할 수 없다. R5-01은 임의의 `schema_version` 값을 정하지 않으며, 이 field를 활성화할 target MAJOR와 기존 record migration/reader 지원 범위는 공통 계약 결정으로 남긴다.
 
 `CandidateRef`는 아직 검증되지 않은 우회·대체 경로·영향 확대 후보다. `candidate_id`는 한 결과 안에서 유일하고 `candidate_state`는 항상 `UNVALIDATED`다. 현재 가설을 `source_hypothesis_ids`에 포함하며, 실제 근거가 있으면 `evidence_refs`, 아직 필요한 사실은 `missing_information`에 넣는다. 후보가 새로운 endpoint·sink·권한 경계·공격 단계 또는 영향을 주장하면 `material_child_proposals`에 `origin=VERIFICATION`인 새 `HypothesisProposal`을 넣는다. trusted validation과 전역 등록 뒤 전체 검증을 거치기 전까지 verdict, CWE, Gate 또는 보고서의 확정 주장으로 사용할 수 없다.
 
@@ -1138,14 +1143,14 @@ TechnicalEvidenceReview:
   rationale: string
 ```
 
-`action_decision_ref.record_id`는 `CALL_TECHNICAL_GATE`를 허가하고 `USED`로 claim한 decision revision을 가리킨다. 실행 결과를 기록한 이후 decision revision의 `outcome_refs`에는 같은 call spec을 실행한 `TECHNICAL_GATE` `LLMInvocationLog`와 현재 review가 각각 한 번 포함되고, log의 `parsed_output_ref.record_id`가 현재 review를 가리켜야 한다. review는 log를 역참조하지 않아 content hash 순환을 만들지 않는다. `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 필수이며 각각 정확히 한 `VerificationResult`와 `CWELabel` revision을 가리킨다. runtime은 두 대상의 `record_id`, `workspace_id`, `commit_id`, `hypothesis_id`와 `content_hash`가 서로와 현재 Technical review에 일치하는지 확인한다. Verification 또는 CWELabel이 새 revision으로 바뀌면 이전 `TechnicalEvidenceReview`를 재사용할 수 없고 Gate를 새로 호출해야 한다. Technical review는 `VerificationResult.verdict`나 `CWELabel`을 덮어쓰지 않는다.
+`action_decision_ref.record_id`는 `CALL_TECHNICAL_GATE`를 허가하고 `USED`로 claim한 decision revision을 가리킨다. 실행 결과를 기록한 이후 decision revision의 `outcome_refs`에는 같은 call spec을 실행한 `TECHNICAL_GATE` `LLMInvocationLog`와 현재 review가 각각 한 번 포함되고, log의 `parsed_output_ref.record_id`가 현재 review를 가리켜야 한다. review는 log를 역참조하지 않아 content hash 순환을 만들지 않는다. `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 필수이며 각각 정확히 한 `VerificationResult`와 `CWELabel` revision을 가리킨다. runtime은 Gate 호출 직전뿐 아니라 `TechnicalEvidenceReview` 저장 직전과 downstream 사용 직전에도 두 direct input과 전이적 closure의 대상 존재, `record_id`, workspace·commit, hypothesis-scoped artifact의 `hypothesis_id`, `content_hash`, work `input_refs`·`input_hash` 정합성을 확인한다. 하나라도 달라지면 기존 `RECORD_REVISION_MISMATCH | STALE_RESULT | SCHEMA_UNSUPPORTED` 등 해당 공통 오류로 저장·사용을 차단하며 `TechnicalEvidenceReview.status=REJECT`를 만들지 않는다. Verification, CWELabel 또는 transitive dependency가 새 revision/content로 바뀌면 이전 `TechnicalEvidenceReview`를 재사용할 수 없고 Gate를 새로 호출해야 한다. Technical review는 `VerificationResult.verdict`나 `CWELabel`을 덮어쓰지 않는다.
 
 가설, Evidence, Dynamic 결과와 PoC는 `verification_result_ref` 대상의
 `hypothesis_ref`,
 `supporting_evidence[].evidence_refs`, `counter_evidence[].evidence_refs`,
 `dynamic_result_ref`, `poc_ref`로 고정한다. 별도 최상위 reference field를 추가하지 않는다.
 `CWELabel.evidence_refs`도 `cwe_label_ref` 대상에서 고정되는 전이적 Gate 입력이다. runtime은 모든 전이적 `StoredDataRef`에 대상 record 존재, exact `record_id`, workspace·commit과 `content_hash`가 대상 record와 일치하는지 검사한다. 별도로 공통 revision 계약에 따라 `(logical_record_id, revision_number)` 연속성과 `previous_record_id` 연결을 검증한다. 직접 또는 전이적 Gate input의 대상 revision이 바뀌면 새로운 검토 입력으로
-고정되어야 하며, 이전 Technical review를 변경된 chain에 재사용하지 않는다. 어떤 parent
+고정되어야 하며, 이전 Technical review를 변경된 chain에 재사용하지 않는다.
 Technical `REVISE`는 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 직접 전달하며, runtime은 이전 terminated work를 수정하거나 되살리지 않고 새 VERIFICATION generation과 `TERMINAL -> VERIFYING` 전이를 만든다. Verification owner가 보완 결과를 새 `VerificationResult` revision으로 확정하고 필요한 경우 새 `CWELabel` revision과 정렬한 뒤, 새 exact input chain을 대상으로 새 Gate work를 요청한다.
 
 `CodeLocation`, `CodeSymbol`, `CodeFact`, `CodeRelation`, `StaticFactBundle`은 shared static evidence다. 현재 분석의 `workspace_id + commit_id`, exact reference와 hash를 검사하지만 직접적인 `hypothesis_id` 일치는 요구하지 않으며 같은 commit의 여러 가설이 재사용할 수 있다. `VerificationResult`, `VulnerabilityHypothesis`, `DynamicReproductionResult`, `CWELabel`, `TechnicalEvidenceReview`와 기타 hypothesis-specific artifact는 hypothesis-scoped record다. 내장된 `EvidenceClaim`도 이를 소유한 Verification의 가설 범위에 속한다. 이들은 위 검사에 더해 현재 `hypothesis_id` 일치를 요구한다. 모든 record의 revision chain은 공통 revision 계약으로 검증하며, 다른 가설의 Verification·Dynamic 결과는 invalid input이다. 가설 또는 CWE 근거가 바뀌면 기존 Technical review를 재사용하지 않는다.
@@ -1160,9 +1165,7 @@ owner는 필요한 정적·동적 근거, Pro/Con, PoC, restriction과 설명을
 가진 새 Gate work만 재검토할 수 있으며 동일 입력의 재투표는 허용하지 않는다. provider 실패나
 `INVALID_OUTPUT` repair는 이 lifecycle과 구분해 공통 invocation retry 계약을 따른다.
 
-`REJECT`는 현재 기술 자료를 보완의 기반으로도 신뢰할 수 없는 근본 provenance·핵심 linkage
-불일치에만 사용한다. schema 오류, LLM/provider/runtime 실패는 `REJECT`가 아니라 공통
-`AnalysisError`로 처리한다. Technical review는 새 Evidence·code-flow·공격 경로·동적 해석·CWE를
+`REJECT`는 direct/transitive reference와 provenance 검사를 모두 통과했지만 현재 기술 자료의 핵심 claim과 Evidence·code-flow·동적 설명 사이의 의미 linkage가 근본적으로 맞지 않아 보완의 기반으로도 신뢰할 수 없을 때만 사용한다. 다른 workspace·commit·hypothesis, 존재하지 않거나 stale인 record/revision, content hash mismatch, schema 오류와 LLM/provider/runtime 실패는 Gate 호출 또는 결과 저장·사용 전에 공통 오류로 차단하며 `REJECT`를 생성하지 않는다. Technical review는 새 Evidence·code-flow·공격 경로·동적 해석·CWE를
 만들지 않으며 Verification verdict, 정책·scope·보고 가능성을 판정하지 않는다.
 
 ## 9. ProgramPolicyRecord과 RuleScopeImpactReview

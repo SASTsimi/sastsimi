@@ -28,6 +28,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - 누락·truncation은 안전함 또는 `FALSE`로 해석하지 않는다.
 - 지원하지 않는 schema MAJOR는 `SCHEMA_UNSUPPORTED`로 거절한다. 같은 `logical_record_id`가 아니거나 바로 이전 revision과 이어지지 않는 수정본은 `RECORD_REVISION_MISMATCH`로 거절하고 자동 변환·병합하지 않는다. `RunMeta`의 workspace·commit은 `null`에서 실제 값으로만 바인딩할 수 있고, 코드 근거 `RecordMeta`에서는 두 값이 필수·불변이다.
 - 저장된 record를 가리키는 `StoredDataRef.record_id`는 참조 대상 revision의 workspace·commit·내용 hash와 일치해야 한다. `CodeLocation`, `CodeSymbol`, `CodeFact`, `CodeRelation`, `StaticFactBundle` 같은 shared static evidence에는 직접적인 가설 일치를 요구하지 않고 같은 workspace·commit의 exact reference를 확인한다. Verification, 가설, Evidence, Dynamic 결과, CWELabel과 Gate review 같은 hypothesis-scoped record만 `RecordMeta.hypothesis_id`가 현재 가설과 같아야 한다. Technical Gate가 검토한 가설·Verification·CWELabel 또는 그 Evidence·Dynamic·PoC·CWE evidence revision이 바뀌면 이전 Gate 결과를 재사용하지 않는다.
+- Technical Gate의 direct input이나 여기서 도달하는 transitive reference가 존재하지 않거나 workspace·commit·hypothesis·revision·content hash·schema 불변조건을 어기면 Runtime Validator가 호출 전에 차단한다. 호출 뒤 저장·사용 직전 변경도 기존 `RECORD_REVISION_MISMATCH | STALE_RESULT | SCHEMA_UNSUPPORTED` 등 해당 공통 오류로 차단하며 이를 Technical `REJECT`로 변환하지 않는다.
 
 ## 1.1 상태·동시성·복구 경계
 
