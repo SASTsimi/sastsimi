@@ -31,11 +31,13 @@ flowchart TB
     S11 --> S12{12 Verification chooses dynamic mode}
     S12 -->|No| S13[13 Final verdict and material claim split]
     S12 -->|LIMITED| DL[Verification LIMITED ReproductionPlan]
-    S12 -->|FULL| DF[Verification FULL ReproductionPlan]
-    DL --> DA[Runtime COMMITTED plan and RUN_SANDBOX ALLOW]
-    DF --> DA
-    DA --> DR[R7 Sandbox exact execution and dynamic result]
-    DR --> S13
+    S12 -->|FULL| DF[Verification FULL ReproductionPlan and PoC draft]
+    DL --> DAUTH[Runtime Validator call authorization]
+    DF --> DAUTH
+    DAUTH --> DCTRL[Sandbox Controller policy check]
+    DCTRL -->|Pass| DRUN[Sandbox Runner exact Docker execution]
+    DCTRL -->|Policy blocked| S13
+    DRUN --> S13
     S13 --> S14{14 Final verdict}
     S14 -->|FALSE| CLOSED[Terminal internal result]
     S14 -->|HOLD| REQUIRED[HOLD REQUIRED Primitive admitted]
@@ -134,11 +136,13 @@ flowchart TB
     INITIAL --> DYN{Verification chooses dynamic mode}
     DYN -->|No| FINAL[Final VerificationResult]
     DYN -->|Small question| LIMITED[Verification LIMITED ReproductionPlan]
-    DYN -->|End to end| FULL[Verification FULL ReproductionPlan]
-    LIMITED --> AUTH[Runtime commits plan and allows Sandbox]
+    DYN -->|End to end| FULL[Verification FULL ReproductionPlan and PoC draft]
+    LIMITED --> AUTH[Runtime Validator call authorization]
     FULL --> AUTH
-    AUTH --> EXEC[R7 executes exact plan and returns dynamic result]
-    EXEC --> SYN2[Verification re-synthesizes evidence]
+    AUTH --> CTRL[Sandbox Controller policy check]
+    CTRL -->|Pass| RUNNER[Sandbox Runner exact Docker execution]
+    CTRL -->|Policy blocked| SYN2[Verification re-synthesizes evidence]
+    RUNNER --> SYN2
     SYN2 --> FINAL
     FINAL --> OUT[Restrictions candidates PrimitiveDraft and VERIFICATION origin child proposals]
 ```
@@ -351,7 +355,7 @@ flowchart LR
     DOMAIN[Verification Gates Reporter Human keep domain decisions] -. not decided by validator .-> CHECK
 ```
 
-Runtime Validator는 schema·권한·ID·revision·상태·예산·도구·경로·Sandbox·provider·Gate 순서·Reporter·redaction·공개 전제를 검사한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
+Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter·redaction·공개 전제를 검사한다. `RUN_SANDBOX`에서는 호출 권한·상태·예산·exact plan reference까지만 확인하고, image·command·file·network·resource·cleanup 정책은 Sandbox Controller가 검사한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
 
 ## 13. 사람 검토와 외부 공개 경계
 

@@ -24,7 +24,9 @@ Runtime Validator는 취약점이 맞는지 새로 판단하는 Gate가 아닙�
 | 기술 근거 검토 | Technical Evidence Gate | Verification verdict 변경 |
 | 공식 정책·scope·impact·report permission | Rule Scope Impact Gate | 정책 없는 `ALLOW` 추정 |
 | 내부 보고서 초안 | Reporter Agent | Gate 우회·외부 제출 |
-| 실행 허용·차단 | Runtime Validator | 취약점·CWE·정책 의미 판단 |
+| 일반 실행 허용·차단과 Sandbox 호출 전제 확인 | Runtime Validator | 취약점·CWE·정책 의미 또는 Sandbox 세부 정책 판단 |
+| Sandbox 세부 안전 정책 검사 | Sandbox Controller | 재현 모드·계획·취약점 판정 변경 |
+| 승인된 Sandbox 계획 실행 | Sandbox Runner | 정책 변경 또는 계획 밖 명령 실행 |
 | 외부 공개 | Human Reviewer | Agent가 자동 승인 |
 
 Orchestration Agent는 proposal 검증·전역 등록·Verification 배정을 조정하지만 배정 뒤 가설 내부 Context·Pro/Con·dynamic·Gate·Chaining, verdict, CWE, 정책 해석, 보고 가능 여부와 공개 여부를 정하지 않습니다. Verification이 가설 내부 다음 작업을 정해도 프로그램 검사를 우회할 수 없습니다.
@@ -86,7 +88,7 @@ Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아
 
 결과 저장 요청에는 결과 종류와 검사할 후보 파일의 정확한 hash를 함께 넣습니다. 프로그램 검사기는 그 결과를 만들 권한이 있는 역할인지, 현재 작업·시도·코드 버전과 같은지 확인합니다. 검사 뒤 후보 내용이 바뀌거나 다른 역할이 저장하려 하면 거절합니다. 저장이 완료된 결과와 작업 종료 기록이 같은 `COMMITTED` 전이에 연결된 뒤에만 다음 단계가 읽습니다.
 
-동적 재현 전에는 Verification이 `ReproductionPlan`(어떤 단계와 공격 입력을 실행하고 어떻게 정리할지 적은 계획)을 만들고 정확한 수정본을 고정합니다. 실행 허가에는 이 계획, 단계별 명령과 공격 입력, Sandbox 설정과 정리 정책을 모두 넣습니다. Sandbox는 모드를 다시 고르거나 계획을 바꾸지 않고 각 실행 단계를 계획의 `step_id`와 reference로 기록합니다. 실행 직전과 결과 저장 시 두 번 대조하며 계획에 없던 명령·공격 입력은 실행하거나 저장하지 않습니다. Sandbox만 `DynamicReproductionResult`를 만들고 Verification은 저장이 확정된 결과를 읽어 판정합니다.
+동적 재현 전에는 Verification이 `ReproductionPlan`(어떤 단계와 공격 입력을 실행하고 어떻게 정리할지 적은 계획)을 만들고 정확한 수정본을 고정합니다. Runtime Validator는 요청자·상태·예산과 exact 계획 reference를 확인해 Sandbox 호출만 허가합니다. Sandbox Controller는 실행 직전에 image·명령·파일·네트워크·자원·정리 정책을 한 번 검사하고, 통과한 계획만 Sandbox Runner가 실행합니다. Runner는 각 실행 단계를 계획의 `step_id`와 reference로 기록합니다. 결과 저장 때는 승인 계획과 실제 로그가 같은지만 대조하며 정책을 다시 판단하지 않습니다. 계획에 없던 명령·공격 입력은 실행하거나 저장하지 않습니다. Sandbox만 `DynamicReproductionResult`를 만들고 Verification은 저장이 확정된 결과를 읽어 판정합니다.
 
 ## 사람이 받는 자료
 

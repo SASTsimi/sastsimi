@@ -77,7 +77,7 @@ Technical Evidence Gate의 `REVISE`는 같은 가설의 Verification owner에게
 
 ## 구성 요소와 책임
 
-Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배정을 제안·조정하지만 가설 내부 다음 작업이나 enforcement authority를 갖지 않는다. 가설 내부 다음 작업은 Verification owner가 선택한다. 신뢰 경계 안의 비-LLM runtime validator가 schema, 상태 전이, 예산, 병렬성, sandbox 정책, provider/session 정책, Gate 순서와 Reporter 호출 전제조건을 강제한다. 모든 LLM 출력은 validation 전까지 비신뢰 입력이다.
+Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배정을 제안·조정하지만 가설 내부 다음 작업이나 enforcement authority를 갖지 않는다. 가설 내부 다음 작업은 Verification owner가 선택한다. 신뢰 경계 안의 비-LLM Runtime Validator가 schema, 호출 권한, 상태 전이, 예산, 병렬성, provider/session 정책, Gate 순서와 Reporter 호출 전제조건을 강제한다. Sandbox의 image·command·file·network·resource·cleanup 세부 정책은 Sandbox Controller가 한곳에서 검사한다. 모든 LLM 출력은 validation 전까지 비신뢰 입력이다.
 
 | 구성 요소 | 책임 | 금지 경계 |
 |---|---|---|
@@ -89,7 +89,8 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | Hypothesis Agent | schema-constrained 가설 후보 생성 | verdict·Finding·exploitability 확정 |
 | Verification Agent | 가설 내부 Context·Pro/Con, 동적 모드·`ReproductionPlan`, 판정·REVISE·Gate·Chaining 흐름과 material child proposal | Sandbox 직접 실행·동적 결과 생산, runtime 검사 우회 또는 새 주장의 무검증 승격 |
 | Pro/Con Agents | 독립적인 성립·반박 근거 조사 | 동일 session 공유 |
-| Sandbox Controller | 승인된 exact `ReproductionPlan`의 Docker 실행과 log·동적 결과·PoC 생산 | 모드·계획·최종 verdict 변경, host 또는 허용 범위 밖 실행 |
+| Sandbox Controller | Verification이 만든 exact `ReproductionPlan`의 image·command·file·network·resource·cleanup 정책 검사와 실행 환경 통제 | 동적 모드·계획·최종 verdict 변경 또는 정책 미검사 실행 |
+| Sandbox Runner | Controller가 승인한 exact 계획을 Docker 안에서 실행하고 log·동적 결과·PoC 생산 | 정책 변경, 계획 밖 명령 실행 또는 최종 verdict 판단 |
 | Primitive DB | HOLD REQUIRED와 Gate-qualified TRUE PROVIDED의 ACTIVE exact revision 검색 | 작업 queue, Gate 전 TRUE admission 또는 자동 Finding 생성 |
 | Chaining Agent | TRUE+HOLD·TRUE+TRUE Primitive matching과 chained proposal | 일반 research, dynamic, Gate, verdict, CWE, report 확정 |
 | Technical Evidence Gate | 기술적 연결성과 handoff 품질 검토 | Verification verdict 직접 변경 |
@@ -111,7 +112,7 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 
 한 축의 값으로 다른 축을 암묵적으로 추론하지 않는다. 예를 들어 기술적으로 `TRUE`여도 out-of-scope이거나 실질 영향이 부족하면 Reporter를 호출하지 않는다.
 
-Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제안한다. 비-LLM Runtime Validator가 역할·schema·exact revision·상태·예산·도구·Sandbox·provider·두 Gate 순서·보고·공개 조건을 검사해 `ActionDecision=ALLOW | DENY`를 저장한다. 이 검사는 취약점 판정이나 정책 해석을 대신하지 않는다.
+Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제안한다. 비-LLM Runtime Validator가 역할·schema·exact revision·상태·예산·일반 도구·경로·provider·두 Gate 순서·보고·공개 조건을 검사해 `ActionDecision=ALLOW | DENY`를 저장한다. `RUN_SANDBOX`의 ALLOW는 Sandbox Controller 호출을 허가한다는 뜻이며 Docker 세부 정책 통과나 재현 성공을 뜻하지 않는다. Controller가 Sandbox 정책을 통과시킨 exact 계획만 Runner가 실행한다. 이 검사는 취약점 판정이나 정책 해석을 대신하지 않는다.
 
 ## 병렬성과 종료 조건
 

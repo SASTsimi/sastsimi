@@ -252,7 +252,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 | `REPORT_NOT_READY` | runtime validator | Reporter 호출 금지, 기술 verdict 유지 | Rule Scope와 report 조건 보완 |
 | `TOOL_NOT_ALLOWED` | tool validator | tool·command 실행 금지 | allowlist의 안전한 도구로 새 요청 |
 | `FILE_ACCESS_DENIED` | path validator | workspace 밖 파일 접근 금지 | workspace 상대 허용 경로로 새 요청 |
-| `SANDBOX_POLICY_DENIED` | Sandbox policy validator | 동적 실행 또는 network 변경 금지 | 승인된 image·network·resource profile 사용 |
+| `SANDBOX_POLICY_DENIED` | Sandbox Controller policy validator | 동적 실행 또는 network 변경 금지 | 승인된 image·network·resource profile 사용 |
 | `PROVIDER_PROFILE_DENIED` | provider policy validator | LLM 호출·silent failover 금지 | 허용 profile과 explicit 새 action 사용 |
 | `DISCLOSURE_DENIED` | disclosure validator | 외부 제출·공개 action 금지 | exact 사람 결정과 report-ready packet 확인 |
 | `UNTRUSTED_INSTRUCTION` | prompt/action validator | 저장소·LLM 지시를 policy 변경으로 실행하지 않음 | data로 격리하고 승인된 설정만 사용 |

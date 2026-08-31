@@ -287,7 +287,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - Verification ownership과 관계없이 LLM이 아닌 프로그램 내부 규칙 검사기(`runtime validator`)가 action 규칙 준수를 강제한다.
 - PM/Orchestration은 가설 내부 Pro/Con·dynamic·Gate·Chaining, verdict, CWE, Gate result, 공식 정책 또는 공개 결정을 대신하지 않는다.
 - silent provider/model failover와 repository prompt에 의한 policy 변경을 금지한다.
-- Runtime Validator는 action의 실행 범위만 강제하며 verdict·CWE·정책 의미를 대신 판단하지 않는다.
+- Runtime Validator는 action의 호출 권한·상태·예산·reference 범위를 강제하며 verdict·CWE·정책 의미를 대신 판단하지 않는다. Sandbox의 image·command·file·network·resource·cleanup 세부 정책은 R7의 Sandbox Controller가 전담한다.
 - Reporter는 내부 초안만 만들고 exact 사람 결정 없이는 외부 disclosure action을 허용하지 않는다.
 
 ### 필수 교차 리뷰
@@ -304,7 +304,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] retry/failover가 새 attempt/invocation이며, 바로 앞 실패 호출 reference로 순서와 원인을 복원할 수 있음
 - [ ] 같은 요청은 canonical `dedupe_key`로 기존 `work_id`를 재사용하고 한 work에는 active attempt가 하나임
 - [ ] 상태 변경은 `state_version` compare-and-set을 사용하고 stale·취소·다른 workspace/commit 결과를 거절함
-- [ ] chain/repair/Gate revision/sandbox/token/time 한도의 enforcement owner가 비-LLM runtime으로 명시됨
+- [ ] chain/repair/Gate revision/token/time 한도의 enforcement owner가 비-LLM Runtime Validator로, Sandbox 세부 정책의 enforcement owner가 Sandbox Controller로 명시됨
 - [ ] Technical `REVISE`가 Orchestration을 경유해 재배정되지 않고 같은 ACTIVE VerificationAssignment owner의 새 VERIFICATION work로 돌아감
 - [ ] HOLD REQUIRED와 Gate-qualified TRUE PROVIDED의 exact revision admission·supersede 규칙이 있음
 - [ ] persistence/recovery/atomicity/idempotency 계약이 합의되고 `TERMINAL`·`DRAFTED` 상태가 정확한 결과 `record_id`를 가리킴
@@ -484,6 +484,8 @@ R6가 만든 `COMMITTED ReproductionPlan`과 trusted runtime의 exact 실행 허
 
 - sandbox는 evidence만 생산하며 verdict를 결정하지 않는다.
 - R7은 재현 필요성이나 LIMITED/FULL 모드를 고르지 않고 `ReproductionPlan`을 생산·수정하지 않는다. 계획 변경이 필요하면 R6의 새 plan과 새 실행 허가를 기다린다.
+- Runtime Validator는 `RUN_SANDBOX` 호출 권한·상태·예산·exact plan reference까지만 검사하고, Sandbox Controller가 image·command·file·network·resource·cleanup 정책을 전담한다.
+- Sandbox Runner는 Controller가 승인한 exact 계획만 실행한다.
 - host root/home, Docker socket, host process namespace, host secret, production credential와 범위 밖 target 접근을 금지한다.
 - LLM 요청만으로 network/resource policy를 완화하지 않는다.
 

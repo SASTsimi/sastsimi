@@ -13,7 +13,8 @@
 | Orchestration | proposal 검증·전역 가설 등록·Verification 배정 제안 | 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정, runtime enforcement, Finding·공개 결정 |
 | Hypothesis | schema-valid `HYPOTHESIS_ONLY` 제안 생성 | verdict, Finding, exploitability 확정 |
 | Verification | 한 가설의 Context·Pro/Con, 동적 모드·`ReproductionPlan`, 판정·Gate 보완·Chaining handoff와 material child 제안 | Sandbox 직접 실행·동적 결과 생산, runtime 검사 우회, 새 claim 무검증 승격 |
-| Sandbox Runtime | 승인된 exact `ReproductionPlan` 실행, step log·동적 결과·PoC 생산 | 재현 필요성·모드·계획·최종 verdict 변경 |
+| Sandbox Controller | exact `ReproductionPlan`의 image·명령·파일·네트워크·자원·정리 정책 검사 | 재현 필요성·모드·계획·최종 verdict 변경 또는 정책 미검사 실행 |
+| Sandbox Runner | Controller가 승인한 exact 계획 실행, step log·동적 결과·PoC 생산 | 정책 변경, 계획 밖 명령 실행 또는 최종 verdict 판단 |
 | Pro | 가설 성립 근거 탐색 | 최종 verdict |
 | Con | 반증·보호·도달 불가·restriction 탐색 | 최종 verdict |
 | Chaining | Gate-qualified TRUE+HOLD·TRUE+TRUE Primitive matching과 새 가설 제안 | 일반 research, dynamic, REVISE, verdict/CWE/Gate/Finding/report 확정 |
@@ -25,8 +26,9 @@
 ```text
 Orchestration → Hypothesis proposal validation and registration → assign Verification
 Verification → context → Pro and Con → dynamic mode and ReproductionPlan
-Trusted Runtime → commit plan and allow RUN_SANDBOX
-Sandbox Runtime → execute exact plan and return result → Verification final verdict
+Runtime Validator → commit plan and authorize Sandbox call
+Sandbox Controller → check detailed policy → Sandbox Runner executes exact plan
+Sandbox Runner → return result → Verification final verdict
 HOLD → REQUIRED Primitive → Chaining
 TRUE → CWE → Technical Gate → Rule Scope Impact Gate
 Gate-qualified TRUE → PROVIDED Primitive → Chaining
@@ -36,6 +38,6 @@ all report conditions → Reporter → Human
 
 각 역할은 공통 `LLMProviderAdapter`를 사용하며 역할 독립성이 필요한 조합은 NEW session을 기본으로 한다. 상세 경계는 [Agent 역할과 오케스트레이션](../03-agent-roles-and-orchestration.md)을 따른다.
 
-모든 LLM 출력은 비신뢰 입력이다. 비-LLM trusted runtime validator가 schema·상태 전이·예산·sandbox·provider/session·Gate/Reporter 순서를 실제로 강제한다.
+모든 LLM 출력은 비신뢰 입력이다. 비-LLM Runtime Validator가 schema·호출 권한·상태 전이·예산·provider/session·Gate/Reporter 순서를 강제하고, Sandbox Controller가 image·command·file·network·resource·cleanup 정책을 전담한다.
 
 배정은 ACTIVE `VerificationAssignment`로 저장한다. 같은 역할의 다른 Agent가 아니라 그 assignment의 논리 owner만 가설 내부 action과 `REVISE` 보완을 요청할 수 있다.

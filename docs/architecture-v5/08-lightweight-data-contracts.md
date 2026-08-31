@@ -338,7 +338,7 @@ TransitionCommit:
 | `PRO_EVIDENCE` | Verification runtime | Pro Agent | supporting `EvidenceClaim[]` |
 | `CON_EVIDENCE` | Verification runtime | Con Agent | counter `EvidenceClaim[]` |
 | `VERIFICATION` | Orchestration의 배정 뒤 Verification runtime | Verification runtime | final `VerificationResult` |
-| `DYNAMIC_REPRO` | Verification의 제안 뒤 runtime validator | Sandbox runtime | `DynamicReproductionResult` |
+| `DYNAMIC_REPRO` | Verification의 제안 뒤 Runtime Validator가 호출을 허가하고 Sandbox Controller가 정책을 승인 | Sandbox Controller·Runner runtime | `DynamicReproductionResult` |
 | `PRIMITIVE_UPDATE` | Verification 또는 Gate-qualified admission runtime | Primitive 저장 runtime | 새 `Primitive` revision |
 | `CHAINING` | Verification handoff 뒤 Chaining runtime | Chaining runtime | `ChainingResult` |
 | `CWE_LABEL` | Verification workflow의 요청 뒤 CWE labeling runtime | CWE labeling runtime | `CWELabel` |
@@ -419,7 +419,7 @@ ActionRequest:
   requested_at: timestamp
 
 ActionCheck:
-  check_type: SCHEMA | AUTHORITY | IDENTITY | REVISION | STATE | BUDGET | TOOL | FILE_PATH | SANDBOX | PROVIDER | SESSION | GATE_ORDER | REPORT_READY | REDACTION | DISCLOSURE
+  check_type: SCHEMA | AUTHORITY | IDENTITY | REVISION | STATE | BUDGET | TOOL | FILE_PATH | PROVIDER | SESSION | GATE_ORDER | REPORT_READY | REDACTION | DISCLOSURE
   result: PASS | FAIL
   reason_code: string
   safe_message: string
@@ -429,7 +429,7 @@ ActionDecision:
   decision_id: string
   action_ref: RunStoredDataRef | StoredDataRef
   decision: ALLOW | DENY
-  required_checks: [SCHEMA | AUTHORITY | IDENTITY | REVISION | STATE | BUDGET | TOOL | FILE_PATH | SANDBOX | PROVIDER | SESSION | GATE_ORDER | REPORT_READY | REDACTION | DISCLOSURE]
+  required_checks: [SCHEMA | AUTHORITY | IDENTITY | REVISION | STATE | BUDGET | TOOL | FILE_PATH | PROVIDER | SESSION | GATE_ORDER | REPORT_READY | REDACTION | DISCLOSURE]
   check_results: [ActionCheck]
   checked_state_version: integer | null
   checked_config_refs: [RunStoredDataRef | StoredDataRef]
@@ -472,7 +472,7 @@ action이 만든 output의 `action_decision_ref.record_id`는 `UNUSED -> USED`�
 | `RUN_TOOL` | SCHEMA, AUTHORITY, REVISION, BUDGET, TOOL, FILE_PATH | allowlist tool만 실행 |
 | `CALL_LLM` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, REDACTION | 새 `llm_call_id`, explicit retry/failover |
 | `FETCH_POLICY` | SCHEMA, AUTHORITY, BUDGET, TOOL, REDACTION | 승인된 공식 source만 정책 후보로 저장 |
-| `RUN_SANDBOX` | SCHEMA, AUTHORITY, REVISION, STATE, BUDGET, TOOL, FILE_PATH, SANDBOX | exact 재현 계획·단계·공격 입력·정리 정책, image digest, default-deny network와 resource 고정 |
+| `RUN_SANDBOX` | SCHEMA, AUTHORITY, REVISION, STATE, BUDGET | 요청자·현재 work·예산과 exact `ReproductionPlan` reference를 확인해 Sandbox Controller 호출만 허가 |
 | `SAVE_RESULT` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION | 역할별 생산 권한, exact input, 동적 결과의 승인 계획·실행 log 일치, atomic commit |
 | `CALL_TECHNICAL_GATE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, GATE_ORDER, REDACTION | final TRUE Verification+CWE의 COMMITTED revision과 exact LLM call spec 필요 |
 | `CALL_RULE_SCOPE_GATE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, GATE_ORDER, REDACTION | `TRUE`+Technical `ACCEPT` exact refs와 exact LLM call spec 필요 |
@@ -482,6 +482,8 @@ action이 만든 output의 `action_decision_ref.record_id`는 `UNUSED -> USED`�
 | `EXTERNAL_DISCLOSURE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, DISCLOSURE, REDACTION | current packet·decision의 exact `DISCLOSE`와 같은 report·target 필요 |
 
 Gate와 Reporter action의 기존 check는 다음 exact revision을 검사한다. 검사는 `ActionDecision`을 만들 때와 실제 provider 호출 직전에 같은 기준으로 다시 수행한다.
+
+`RUN_SANDBOX`의 `ActionDecision=ALLOW`는 Docker 실행 성공이나 Sandbox 정책 통과를 뜻하지 않는다. Runtime Validator는 요청자의 권한, 현재 상태와 예산, 변경되지 않은 exact `ReproductionPlan` reference까지만 검사한다. 이후 Sandbox Controller가 plan closure의 image digest, command/tool allowlist, mount·file path, network target, CPU·memory·disk·process·time limit, non-root와 cleanup 정책을 전담 검사한다. 정책을 통과한 계획만 Sandbox Runner가 실행하며, 정책 거절은 `DynamicReproductionResult(status=BLOCKED, failure_reason=POLICY_BLOCKED)`로 기록한다.
 
 - Technical Gate의 `REVISION`은 action `input_refs`와 call spec context가 final `VerificationResult(verdict=TRUE)`와 `CWELabel`의 정확한 `record_id`·`content_hash`를 가리키는지 검사한다. Gate 출력의 `TechnicalEvidenceReview.verification_result_ref`와 `cwe_label_ref`도 바로 이 두 record를 가리켜야 한다. `GATE_ORDER`는 두 결과가 현재 work에서 `COMMITTED`됐고 final인지 검사한다. HOLD와 FALSE는 Technical Gate action을 만들 수 없다.
 - Rule Scope Gate의 `REVISION`은 같은 Verification·CWE revision과 `RuleScopeImpactReview.technical_review_ref`가 가리킬 exact `TechnicalEvidenceReview` record를 검사한다. `GATE_ORDER`는 Technical review가 그 두 revision을 검토한 `ACCEPT`이고 Verification verdict가 `TRUE`인지 검사한다.
@@ -531,7 +533,7 @@ Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 
 - `result_kind=dynamic_reproduction_result`이면 `SAVE_RESULT.input_refs`에 candidate뿐 아니라 exact `RUN_SANDBOX` USED decision, `ReproductionPlan`과 그 계획 closure, `SandboxStepLog`를 넣는다. `REVISION` check는 결과의 plan·mode·공격 입력·정리 정책과 실제 step log가 승인 당시와 같은지 다시 검사한다.
 - check 뒤 candidate bytes·hash, active attempt, work input 또는 state version이 달라지면 decision을 `EXPIRED`로 만들거나 save를 `DENY`하고 `STALE_RESULT | RECORD_REVISION_MISMATCH | STATE_VERSION_CONFLICT` 중 실제 원인을 기록한다. 변한 후보를 저장하거나 이미 `USED`인 action으로 다시 저장하지 않는다.
 
-action type에서 쓰지 않는 선택 field는 `null` 또는 빈 배열이어야 하고 `reason`은 비어 있지 않아야 한다. `READ_CODE`는 하나 이상의 `file_paths`, `RUN_TOOL`은 `tool_name`과 필요한 file path가 필수다. 실제 LLM을 실행하는 `CALL_LLM | CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT`는 exact `llm_call_spec_ref`, `provider_profile_ref`, `session_mode`와 work state가 필요하며 action의 provider·session 값은 spec과 같아야 한다. `SAVE_RESULT`만 `result_kind`와 `candidate_result_ref`를 사용한다. Gate와 Reporter는 별도 `CALL_LLM`을 우회 호출하지 않고 각 stage action이 LLM 호출까지 직접 허가한다. `RUN_SANDBOX`만 `reproduction_plan_ref`를 사용하며 `sandbox_profile_ref`·`image_digest`·`resource_limits`도 필수다. action `input_refs`에는 exact `ReproductionPlan`, 그 계획의 `hypothesis_ref`·`sandbox_profile_ref`·모든 step `command_ref`·`attack_input_refs`·`cleanup_policy_ref`를 중복 없이 포함한다. action의 `sandbox_profile_ref`는 계획 안의 같은 field와 exact match여야 한다. network를 쓰지 않는 Sandbox는 빈 `network_targets`를 사용하며 빈 목록은 default-deny를 뜻한다. `PREPARE_HUMAN_REVIEW`는 `work_ref`로 current `HumanReviewState`, `expected_state_version`으로 현재 version을 가리키고 `input_refs`에 exact `AnalysisRunResult`를 넣는다. `SAVE_HUMAN_DECISION`도 current state/version을 가리키고 `input_refs`에 exact current packet과 사람 identity record를 넣는다. `EXTERNAL_DISCLOSURE` 역시 current state/version을 가리키며 exact current HumanReviewDecision과 승인한 ReportDraft를 입력으로 가져야 한다. action의 `disclosure_targets`는 current 결정의 목록과 set-equal해야 한다.
+action type에서 쓰지 않는 선택 field는 `null` 또는 빈 배열이어야 하고 `reason`은 비어 있지 않아야 한다. `READ_CODE`는 하나 이상의 `file_paths`, `RUN_TOOL`은 `tool_name`과 필요한 file path가 필수다. 실제 LLM을 실행하는 `CALL_LLM | CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT`는 exact `llm_call_spec_ref`, `provider_profile_ref`, `session_mode`와 work state가 필요하며 action의 provider·session 값은 spec과 같아야 한다. `SAVE_RESULT`만 `result_kind`와 `candidate_result_ref`를 사용한다. Gate와 Reporter는 별도 `CALL_LLM`을 우회 호출하지 않고 각 stage action이 LLM 호출까지 직접 허가한다. `RUN_SANDBOX`만 `reproduction_plan_ref`를 사용하며 Controller가 검사할 `sandbox_profile_ref`·`image_digest`·`resource_limits`도 필수다. action `input_refs`에는 exact `ReproductionPlan`, 그 계획의 `hypothesis_ref`·`sandbox_profile_ref`·모든 step `command_ref`·`attack_input_refs`·`cleanup_policy_ref`를 중복 없이 포함한다. Runtime Validator의 `SCHEMA`·`REVISION`은 이 reference 집합의 존재와 고정 여부만 확인하고 Sandbox 정책 의미를 판단하지 않는다. Sandbox Controller는 action의 `sandbox_profile_ref`와 계획 값을 exact 비교하고, 빈 `network_targets`를 default-deny로 해석해 세부 정책을 검사한다. `PREPARE_HUMAN_REVIEW`는 `work_ref`로 current `HumanReviewState`, `expected_state_version`으로 현재 version을 가리키고 `input_refs`에 exact `AnalysisRunResult`를 넣는다. `SAVE_HUMAN_DECISION`도 current state/version을 가리키고 `input_refs`에 exact current packet과 사람 identity record를 넣는다. `EXTERNAL_DISCLOSURE` 역시 current state/version을 가리키며 exact current HumanReviewDecision과 승인한 ReportDraft를 입력으로 가져야 한다. action의 `disclosure_targets`는 current 결정의 목록과 set-equal해야 한다.
 
 ```yaml
 CodeLocation:
@@ -675,7 +677,7 @@ ContextRetrievalLimits:
 | `POLICY` | 정책 수집 계층 | Rule Scope Impact Gate, `AnalysisRunResult` | 공식 정책 부족 시 `UNCERTAIN + DENY` 판단에 전달 |
 | `GATE` | 두 Gate runtime | Orchestration runtime, 해당 Gate 결과, `AnalysisRunResult` | Gate 실패 시 Reporter 호출을 막고 Verification verdict는 유지 |
 | `REPORT` | Reporter runtime | Orchestration runtime, `ReportProcessState`, `AnalysisRunResult` | 초안 실패를 저장하고 공개 상태를 만들지 않음 |
-| `AUTHORITY` | Runtime Validator와 disclosure validator | 요청 주체, `AnalysisRunResult`, debug trace, 사람 검토 | 권한·도구·경로·provider·Sandbox·Gate·Reporter·공개 차단을 기록하고 domain 판단은 바꾸지 않음 |
+| `AUTHORITY` | Runtime Validator·Sandbox Controller·disclosure validator | 요청 주체, `AnalysisRunResult`, debug trace, 사람 검토 | Runtime 권한·provider·Gate·Reporter·공개 차단과 Controller의 Sandbox 정책 차단을 구분해 기록하고 domain 판단은 바꾸지 않음 |
 
 모든 `AnalysisError`는 `AnalysisRunResult.errors`와 운영 debug trace에 전달한다. 특정 가설·호출·동적 실행과 관련된 오류는 해당 전문 결과에도 포함하거나 `related_record_ids`로 연결한다. 오류를 누락하거나 성공 상태로 바꾸어 전달하지 않는다.
 
@@ -1079,11 +1081,11 @@ DynamicReproductionResult:
 
 `ReproductionPlan`은 Verification이 `SAVE_RESULT(result_kind=reproduction_plan)`로 생산하고 신뢰 runtime이 schema와 reference를 확인해 `COMMITTED`하는 실행 계획이다. `steps`는 실행 순서대로 나열하며 `step_id`는 계획 안에서 유일하다. `command_ref`는 실행할 명령 정의의 exact revision이고 `attack_input_refs`는 그 단계에서 사용할 공격 입력이다. `cleanup_policy_ref`는 실행 종료·실패·취소 때 적용할 정리 규칙의 exact revision이다. 계획을 바꾸면 기존 record를 수정하지 않고 새 `ReproductionPlan.record_id`와 새 `RUN_SANDBOX` action을 만든다.
 
-`action_decision_ref.record_id`는 이 동적 재현의 exact `ReproductionPlan`, image·tool·file·network·resource·cleanup 조건을 검사한 `RUN_SANDBOX` ALLOW decision의 `USED` revision을 가리킨다. 다른 가설·attempt·plan·sandbox profile의 decision은 재사용하지 않는다. Sandbox executor는 해당 decision이 가리키는 계획만 입력으로 받고, 각 실행 단계의 `step_id`, `command_ref`, 실제 사용한 `attack_input_refs`와 관측을 `SandboxStepLog`에 append-only로 기록한다. 계획에 없는 command나 공격 입력은 실행 전에 `SANDBOX` check로 거절한다.
+`action_decision_ref.record_id`는 요청자의 권한·상태·예산과 exact `ReproductionPlan` reference를 확인해 Sandbox Controller 호출을 허가한 `RUN_SANDBOX` ALLOW decision의 `USED` revision을 가리킨다. 이 decision은 image·tool·file·network·resource·cleanup 정책 통과를 뜻하지 않으며 다른 가설·attempt·plan·sandbox profile에 재사용하지 않는다. Sandbox Controller는 decision이 가리키는 plan closure의 세부 정책을 검사하고, 통과한 계획만 Sandbox Runner에 전달한다. Runner는 각 실행 단계의 `step_id`, `command_ref`, 실제 사용한 `attack_input_refs`와 관측을 `SandboxStepLog`에 append-only로 기록한다. 계획에 없거나 Controller가 승인하지 않은 command·공격 입력은 실행하지 않는다.
 
-Sandbox runtime만 `SandboxStepLog`와 `DynamicReproductionResult`를 생산한다. step log는 실행 중 append-only로 만들고 종료 시 immutable artifact로 확정한다. 결과의 `mode`는 계획과 같고 `steps_ref`의 `stored_data_id`·`content_hash`는 같은 `reproduction_plan_ref`를 가진 exact `SandboxStepLog` artifact를 가리킨다. 각 log entry의 `step_id`, `command_ref`, `attack_input_refs`는 계획의 같은 단계와 field-by-field exact match여야 하고 계획에 없는 entry를 허용하지 않는다. 실행하지 못한 required step은 결과 상태와 `limitations` 또는 실패 이유에 반영한다. 결과의 `attack_input_refs`는 log에서 실제 사용한 입력 reference의 중복 없는 합집합이고 `cleanup_policy_ref`는 계획 값과 같아야 한다.
+Sandbox Controller와 Runner로 구성된 Sandbox runtime만 `SandboxStepLog`와 `DynamicReproductionResult`를 생산한다. step log는 실행 중 append-only로 만들고 종료 시 immutable artifact로 확정한다. 결과의 `mode`는 계획과 같고 `steps_ref`의 `stored_data_id`·`content_hash`는 같은 `reproduction_plan_ref`를 가진 exact `SandboxStepLog` artifact를 가리킨다. 각 log entry의 `step_id`, `command_ref`, `attack_input_refs`는 계획의 같은 단계와 field-by-field exact match여야 하고 계획에 없는 entry를 허용하지 않는다. 실행하지 못한 required step은 결과 상태와 `limitations` 또는 실패 이유에 반영한다. 결과의 `attack_input_refs`는 log에서 실제 사용한 입력 reference의 중복 없는 합집합이고 `cleanup_policy_ref`는 계획 값과 같아야 한다.
 
-Sandbox는 실행 직전 `RUN_SANDBOX` decision의 `REVISION`·`SANDBOX` 검사로 계획 closure를 다시 확인하고, 결과를 저장할 때 `SAVE_RESULT(requested_by=SANDBOX, result_kind=dynamic_reproduction_result)`의 `SCHEMA`·`AUTHORITY`·`IDENTITY`·`REVISION`·`STATE`·`REDACTION` 검사로 같은 비교를 반복한다. 계획·명령·공격 입력·정리 정책·work state 중 하나라도 바뀌거나 실제 log가 계획과 다르면 결과를 `COMMITTED`하지 않는다. Verification은 `DynamicReproductionState.dynamic_result_ref`, work output과 commit이 같은 결과를 가리키는 경우에만 이를 읽으며 `DynamicReproductionResult`를 직접 만들거나 수정하지 않는다.
+Sandbox Controller는 실행 직전 `RUN_SANDBOX` decision의 exact plan reference와 현재 plan closure를 비교한 뒤 image·command·file·network·resource·cleanup 정책을 한 번 검사한다. 통과하면 Runner를 실행하고, 거절하면 Runner를 호출하지 않은 채 정책 차단 결과를 만든다. 결과를 저장할 때는 `SAVE_RESULT(requested_by=SANDBOX, result_kind=dynamic_reproduction_result)`의 `SCHEMA`·`AUTHORITY`·`IDENTITY`·`REVISION`·`STATE`·`REDACTION` 검사로 승인 계획과 실제 log의 일치 여부를 다시 확인한다. 이는 정책을 다시 판단하는 검사가 아니라 실행 결과 무결성 검사다. 계획·명령·공격 입력·정리 정책·work state 중 하나라도 바뀌거나 실제 log가 계획과 다르면 결과를 `COMMITTED`하지 않는다. Verification은 `DynamicReproductionState.dynamic_result_ref`, work output과 commit이 같은 결과를 가리키는 경우에만 이를 읽으며 `DynamicReproductionResult`를 직접 만들거나 수정하지 않는다.
 
 | `status` | `failure_reason` | 필수 의미 |
 |---|---|---|
