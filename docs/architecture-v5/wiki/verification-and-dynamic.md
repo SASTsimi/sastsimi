@@ -58,8 +58,12 @@ Technical Gate가 `REVISE`를 반환하면 같은 ACTIVE `VerificationAssignment
 
 ## 재현 환경 구성
 
-R7은 Verification이 선택한 mode와 `ReproductionPlan`을 받아 같은 workspace·commit의 실행환경을 준비합니다. 기존 Dockerfile·Compose를 Sandbox 복사본에서 우선 사용하고, 없거나 안전하게 실행할 수 없으면 원본 Repository 밖의 Sandbox 작업영역에 일회성 실행 설정(overlay)을 만듭니다. 이는 실행에 필요한 Dockerfile·Compose 설정을 Sandbox에만 덧붙이는 방식입니다. LIMITED는 plan에 필요한 작은 runtime·fixture·관측 지점만 준비하고, FULL은 HTTP·routing·middleware·인증·handler·DB 또는 sink까지 이어지는 최소 E2E component만 구성합니다.
+R7은 설계·구현 담당 역할이며 실제 환경은 Sandbox Environment Builder가 준비합니다. Verification Agent는 mode와 계정·권한·데이터·서비스·Mock 조건을 `ReproductionPlan` closure의 기존 exact reference에 고정하고, Builder는 같은 workspace·commit에서 그 조건을 바꾸지 않고 최소 환경을 만듭니다. R7-02가 plan 계약에 새 필드를 추가하지 않습니다. 기존 Dockerfile·Compose도 비신뢰 입력으로 읽기 전용 분석과 Sandbox Controller 정책 검사를 거칩니다. 없거나 안전하게 실행할 수 없으면 원본 밖의 Sandbox 작업영역에 일회성 실행 설정을 만들고 원본·생성 설정 hash와 차이를 남깁니다.
 
-SQLite·PostgreSQL·MySQL은 Django settings와 dependency에서 engine을 탐지해 격리된 DB·migration·test record를 준비합니다. 권한별 테스트 계정과 소유 객체는 최소 fixture로 만들고 Redis·Celery는 필요할 때만 격리 실행합니다. OAuth·외부 API·SSRF target은 plan의 관측 목표를 유지하는 승인된 Mock으로만 대체하며 production credential·운영 DB·실제 개인정보를 사용하지 않습니다. R7이 plan의 공격 의미를 바꾸는 대체를 임의로 선택하지 않습니다.
+환경 설정과 image를 먼저 build해 immutable 환경 artifact와 실제 image digest를 확정한 뒤, exact plan·환경 reference·digest를 포함한 실제 재현용 `RUN_SANDBOX`를 요청합니다. 따라서 image를 만들기 전에 digest를 가정해 실행을 승인하지 않습니다. LIMITED는 plan에 필요한 작은 runtime·fixture·관측 지점만 준비하고, FULL은 HTTP·routing·middleware·인증·handler·DB 또는 sink까지 이어지는 최소 E2E component만 구성합니다.
 
-환경은 build, dependency 설치, DB·service 시작, migration, fixture, application start, Health Check 순서로 준비합니다. Health Check는 plan 실행 준비 확인일 뿐 취약점 성공 신호가 아닙니다. 필수 환경이나 공격 경로를 실행하지 못하면 `FAILED + ENVIRONMENT_SETUP`입니다. `PARTIAL`은 애플리케이션 실행만 성공한 경우가 아니라 공격 경로 일부를 실제 실행해 신뢰 관측을 얻었지만 환경 차이로 전체 확인이 부족한 경우에만 사용합니다. 환경 Artifact의 hash·redaction·저장 형식은 Evidence 규칙이, 실제 격리·자원 제한은 Sandbox policy가 담당합니다.
+SQLite·PostgreSQL·MySQL은 Django settings와 dependency에서 engine을 탐지해 격리된 DB·migration·test record를 준비합니다. 계정·fixture·Mock이 plan 조건과 달라지면 차이와 판정 영향을 limitations에 남기며 미재현을 `FALSE`로 바꾸지 않습니다. runtime version은 lock/version file, Docker 설정, CI, project metadata, framework 설정, 승인된 기본 version 순으로 선택하고 근거와 fallback을 기록합니다.
+
+Health Check에는 command 또는 URL, 예상 status·응답, 필수 service·DB 조건, 최대 대기·주기·확인 횟수, 실패 log와 성공 판정식을 미리 고정합니다. 프로세스가 살아 있다는 사실만으로 성공하지 않으며 Health Check는 취약점 성공 신호가 아닙니다. 환경 준비 실패는 `FAILED + ENVIRONMENT_SETUP`, 정책 차단은 `BLOCKED + POLICY_BLOCKED`, time limit은 `FAILED + TIMEOUT`으로 구분합니다. budget 소진은 새 failure reason을 만들지 않고 공통 `BUDGET_EXCEEDED` 오류로 남깁니다. retry는 기존 log를 보존한 새 attempt에서만 수행합니다.
+
+종료 뒤 container·image·volume·network·fixture·credential을 정리합니다. cleanup 실패는 별도 상태로 남기고 환경을 격리해 재사용하지 않으며 재현 관측과 자동으로 합치지 않습니다. 환경 artifact 저장은 #21, Sandbox enforcement는 #22, 숫자 예산은 R8, build action 공통 계약은 R4·R3와 확정합니다.

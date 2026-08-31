@@ -101,7 +101,48 @@ Verification Agent가 `NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO`를 결정한�
 
 ### 재현 환경 탐지와 구성
 
-Verification Agent가 선택한 mode와 `ReproductionPlan`을 기준으로 R7이 같은 `workspace_id`·`commit_id`의 실행환경을 구성한다. R7은 mode나 공격 단계를 새로 결정하지 않고 plan 실행에 필요한 component만 준비한다. 운영환경 전체를 복제하거나 대상 애플리케이션을 다시 구현하지 않는다.
+R7은 이 영역을 설계·구현하는 팀 역할이고 직접 Docker를 실행하는 시스템 주체가 아니다. 실제 책임은 다음처럼 나눈다.
+
+- Verification Agent는 mode와 `ReproductionPlan`을 생산하고, 필요한 사용자 역할·권한·데이터 상태·인증 여부·외부 서비스·Mock 허용 범위·실제 동작이 필요한 대상·판정 영향 설정을 plan closure의 기존 `sandbox_profile_ref`·`command_ref`·`attack_input_refs`·`cleanup_policy_ref`에 고정한다. R7-02가 `ReproductionPlan`에 새 필드를 추가하지 않는다.
+- Sandbox Environment Builder는 같은 `workspace_id`·`commit_id`에서 plan 실행에 필요한 설정과 fixture를 준비하고 image를 빌드한다.
+- Runtime Validator는 실행 요청의 requester·상태·예산과 exact input reference를 검사한다.
+- Sandbox Controller는 기존·생성 설정과 image·command·file·network·resource·cleanup 정책을 검사한다.
+- Sandbox Runner는 Controller를 통과한 exact image와 plan만 실행한다.
+- Sandbox runtime은 환경·실행 log와 `DynamicReproductionResult`를 만든다.
+
+Environment Builder는 mode나 공격 단계를 새로 결정하지 않고 plan 실행에 필요한 component만 준비한다. 운영환경 전체를 복제하거나 대상 애플리케이션을 다시 구현하지 않는다.
+
+#### 환경 설정 고정과 image 승인 순서
+
+이 설계는 `ReproductionPlan` schema에 새 필드를 넣지 않고 별도의 immutable 환경 설정 artifact를 만드는 방식을 선택한다. 실행 성공·실패 결과의 `DynamicReproductionResult.environment_ref`는 이 exact artifact를 가리키며, 실제 재현을 위한 `RUN_SANDBOX.input_refs`에도 같은 reference와 확정된 image digest를 포함한다. 환경 artifact의 구체 schema·hash·redaction·저장 형식은 #21에서 확정하지만, R7-02가 요구하는 최소 의미는 다음과 같다.
+
+- 환경 설정 식별자(identity), schema version, revision, 생성 시각과 생성 주체
+- exact `ReproductionPlan`, `workspace_id`, `commit_id` reference
+- 원본 Dockerfile·Compose hash, 생성하거나 수정한 설정 hash와 build context hash
+- runtime·package manager·lockfile·주요 dependency version과 선택 근거
+- builder base image digest와 빌드된 application image digest
+- 적용한 R8 budget profile reference와 단계별 time·retry limit
+- DB·service·fixture·테스트 계정·Mock 구성과 원래 plan 조건과의 차이
+- Health Check 입력과 관측 결과
+- fallback 사용 여부, limitations와 입력 변경 시 무효화 기준
+- 환경 구성 단계별 상태·log reference와 cleanup 결과
+
+trusted 저장 runtime은 환경 설정 candidate의 필수 reference와 hash가 모두 결정되고 image build가 끝난 뒤에만 atomic commit한다. 중간 실패 candidate를 실행 준비가 끝난 artifact로 승격하지 않는다. 실패 결과의 `environment_ref`는 완료된 단계와 실패 log를 보존한 exact 환경 관측 artifact를 가리키며, 성공한 image처럼 재사용하지 않는다.
+
+환경 build와 실제 취약점 재현 실행은 다음 순서로 분리한다.
+
+1. Verification Agent가 exact `ReproductionPlan`을 `COMMITTED`한다.
+2. Environment Builder가 Repository 설정을 읽기 전용으로 탐지하고 환경 설정 candidate를 만든다.
+3. Sandbox Controller가 원본·생성 Docker 설정, build context와 builder 정책을 검사한다.
+4. 통과한 설정만 격리된 builder에서 image로 빌드한다.
+5. Environment Builder가 application image digest와 환경 설정 candidate를 반환하고 trusted 저장 runtime이 atomic하게 확정한다.
+6. Verification Agent가 exact plan·환경 artifact·application image digest를 입력으로 실제 재현용 `RUN_SANDBOX`를 요청한다.
+7. Runtime Validator가 requester·상태·예산·exact reference를 검사하고, Sandbox Controller가 실행 정책을 검사한다.
+8. 통과한 image만 Sandbox Runner가 실행해 PoC·관측 단계를 수행한다.
+
+따라서 application image가 만들어지기 전에 그 digest를 가정해 실제 재현용 `RUN_SANDBOX`를 허가하지 않는다. 별도 환경 build work/action의 공통 이름·권한과 atomic 저장 계약은 R4·R3와 확정하기 전까지 자동 build를 허용하지 않는다.
+
+#### 탐지와 version 선택
 
 환경 구성 전에 다음 항목을 읽기 전용으로 탐지한다.
 
@@ -113,13 +154,30 @@ Verification Agent가 선택한 mode와 `ReproductionPlan`을 기준으로 R7이
 | DB | Django `DATABASES`, DB driver dependency, SQLite file 또는 PostgreSQL·MySQL service와 migration 상태 |
 | 보조 서비스 | cache·queue·worker·OAuth·외부 API·browser·callback 중 plan 경로에 실제 필요한 항목 |
 
-기존 실행 설정과 자동 구성은 다음 순서로 선택한다.
+runtime과 dependency version은 다음 우선순위로 선택한다.
 
-1. Repository에 Dockerfile·Compose가 있으면 원본을 수정하지 않고 Sandbox 내부 복사본에서 우선 사용한다.
-2. 기존 설정에 production credential·운영 endpoint·host mount 등 금지 조건이 있으면 값을 임의로 사용하지 않는다. plan의 관측 목표를 유지하고 승인 범위에 포함된 격리 test 설정이나 Mock만 사용하며, 안전한 대체가 없으면 환경 한계로 반환한다.
+1. lockfile과 `.python-version`, runtime version 고정 파일
+2. Repository의 Dockerfile·Compose
+3. CI 설정
+4. `pyproject.toml`, package metadata 등 프로젝트 선언
+5. 공식 framework 설정
+6. versioned Sandbox profile의 승인된 기본 version
+
+선택 결과에는 runtime·package manager·주요 dependency version, lockfile hash, base image digest, 선택 근거와 fallback 여부를 기록한다. 상위 근거와 충돌하면 임의로 병합하지 않고 환경 설정을 실패 처리하거나 차이를 limitation으로 남긴다. 승인된 기본 version을 사용했거나 실제 환경과의 차이가 가설 결과에 영향을 줄 수 있으면 실패·미재현을 `DISPROVED`나 `FALSE`로 바꾸지 않는다.
+
+#### 기존 설정과 자동 구성의 안전 경계
+
+Repository의 Dockerfile·Compose도 비신뢰 입력으로 취급하며 다음 순서로 처리한다.
+
+1. 원본 설정과 build context를 읽기 전용으로 분석하고 hash를 기록한다.
+2. Sandbox Controller가 base image digest, command/tool, mount·file path, network target, resource와 cleanup 정책을 검사한다.
 3. Docker 설정이 없거나 안전하게 실행할 수 없으면 CodeWorkspace 밖의 Sandbox 작업영역에 일회성 실행 설정(overlay)을 만든다. 이는 원본 Repository를 수정하지 않고 실행에 필요한 Dockerfile·Compose 설정을 Sandbox에만 덧붙이는 방식이다.
 4. 일회성 실행 설정은 탐지한 runtime·dependency·entrypoint와 plan에 필요한 service만 포함하고 원본 source tree에 commit하지 않는다. plan의 실행 단계·공격 입력을 추가하거나 바꿀 수 없으며 결과 image digest는 `RUN_SANDBOX` 허가 값과 일치해야 한다.
-5. 기존 설정과 일회성 실행 설정 모두 적용 근거, dependency·service, image digest, 환경 차이와 폐기 결과를 환경 관측으로 남긴다. 구체적인 Artifact hash·redaction·저장 형식은 R7 Evidence 규칙을 따른다.
+5. build context는 정규화한 workspace 내부 allowlist 경로로 제한하고 symlink escape를 거절한다. Docker socket·host secret·host 환경변수 전달, `privileged`, 임의 capability, 승인되지 않은 host mount와 운영 endpoint는 금지한다. network는 default-deny이고 승인된 목적지만 열며 CPU·memory·disk·process·time limit를 적용한다.
+6. 기존 설정을 안전하게 변환하면 원본과 변환본 hash, 변경 이유와 의미 차이를 모두 남긴다. 안전한 대체가 없으면 환경 한계로 반환하고 정책을 완화하지 않는다.
+7. 기존 설정과 일회성 설정 모두 적용 근거, dependency·service, image digest, 환경 차이와 폐기 결과를 환경 artifact에 남긴다.
+
+#### mode별 범위와 테스트 상태
 
 mode는 환경 범위를 제한하는 입력이다.
 
@@ -132,13 +190,58 @@ DB와 테스트 상태는 다음 원칙을 따른다.
 
 - SQLite는 원본 DB 파일이나 사용자 데이터를 직접 사용하지 않고 격리된 writable 영역에 migration과 test record를 준비한다.
 - PostgreSQL·MySQL은 settings와 driver에서 engine을 탐지하고 Sandbox 내부의 일회성 service에 schema·migration·test record를 구성한다.
-- version을 확인할 수 있으면 선언된 version을 사용하고 확인할 수 없으면 선택 근거와 차이를 limitation으로 남긴다.
-- fixture, 권한별 테스트 계정, 소유 객체와 로그인 세션은 plan 경로에 필요한 최소 데이터만 만들고 실행마다 격리한다.
-- Redis·Celery 같은 로컬 의존성은 plan에 필요할 때만 격리 실행한다. OAuth·외부 API·SSRF target은 plan의 관측 목표를 유지하는 승인된 Sandbox 내부 Mock으로 대체하고 production credential·운영 DB·실제 개인정보를 사용하지 않는다. Mock이 공격 경로의 의미를 바꾸거나 plan에 포함되지 않았다면 R7이 조용히 대체하지 않는다.
+- fixture, 권한별 테스트 계정, 소유 객체와 로그인 세션은 plan에 고정된 역할·권한·인증·데이터 전제조건을 그대로 만족하는 최소 데이터만 만들고 실행마다 격리한다.
+- Redis·Celery 같은 로컬 의존성은 plan에 필요할 때만 격리 실행한다. OAuth·외부 API·SSRF target은 plan이 허용하고 관측 목표를 유지하는 Sandbox 내부 Mock으로만 대체하며 production credential·운영 DB·실제 개인정보를 사용하지 않는다.
+- Environment Builder가 다른 계정·권한·fixture·Mock을 임의로 선택하지 않는다. 대체가 불가피하면 변경 내용·이유·원래 조건과의 차이·판정 영향을 환경 artifact와 `limitations`에 남긴다. 공격 의미가 달라지면 결과는 `INCONCLUSIVE`이며 미재현을 `FALSE`로 확정하지 않는다.
+
+#### Health Check
+
+Health Check 설정은 실행 중 추측하지 않고 `ReproductionPlan`의 환경 요구 또는 확정 전 환경 설정 candidate에 고정한다. 최소 입력은 다음과 같다.
+
+- 확인 방식과 exact command reference 또는 격리된 요청 URL
+- 예상 상태 코드와 필요한 응답 내용
+- R8 budget profile이 정한 최대 대기 시간·확인 주기·최대 확인 횟수
+- 반드시 실행 중이어야 하는 application·DB·보조 service 목록
+- DB connection·migration·필수 schema 준비 조건
+- 실패 시 수집할 application·service·DB log reference
+- 모든 필수 조건을 만족해야 한다는 성공 판정식
+
+프로세스가 살아 있거나 port가 열렸다는 사실만으로 성공 처리하지 않는다. 고정된 주기의 반복 확인은 한 attempt 안의 Health Check 관측이며 숨은 재시도가 아니다. 최대 대기 시간이나 확인 횟수를 넘기면 Health Check는 실패하고, 공격 경로를 실행하지 못한 결과는 `FAILED + ENVIRONMENT_SETUP`이다. Health Check 성공은 plan 실행 준비 상태일 뿐 취약점 재현 성공 신호가 아니다.
+
+#### 단계별 실패와 재시도
 
 환경 구성 수명주기는 `build -> dependency 설치 -> DB·보조 service 시작 -> migration -> fixture·계정 준비 -> application start -> Health Check -> plan 실행 준비` 순서다. 각 단계는 시작·종료·exit code·timeout·환경 차이를 관측하며, build·migration·Health Check와 retry의 실제 한도는 R8 budget profile을 적용한다. container 권한·network·resource·mount 제한의 실제 enforcement는 Sandbox policy가 담당한다.
 
-Health Check 성공은 애플리케이션이 plan 실행 준비 상태라는 뜻일 뿐 취약점 재현 성공이 아니다. dependency 설치, DB 시작, migration, application start 또는 필수 Health Check 실패로 공격 경로를 실행하지 못하면 `FAILED + ENVIRONMENT_SETUP`이다. `PARTIAL`은 애플리케이션이 단순히 실행된 상태가 아니라, 공격 경로 일부까지 실제로 실행해 신뢰 가능한 관측을 얻었지만 환경 차이로 전체 확인이 부족한 경우에만 `PARTIAL + NONE + INCONCLUSIVE`와 limitation을 사용한다. 따라서 Health Check를 통과했더라도 환경 문제로 공격 경로에 진입하지 못했다면 `PARTIAL`로 기록하지 않는다.
+| 상황 | 전문 결과 기록 | retry와 판정 경계 |
+|---|---|---|
+| build·dependency·DB·migration·application start·Health Check 실패 | `FAILED + ENVIRONMENT_SETUP` | transient이고 R8 한도 안이면 같은 입력의 새 attempt. 반증으로 사용하지 않음 |
+| 준비 완료 뒤 application·PoC step 실행 실패 | `FAILED + EXECUTION` | 실제 실패 단계와 log를 보존하고 새 attempt 여부 판단 |
+| 실행했지만 필요한 관측을 읽지 못함 | `FAILED + OBSERVATION` | 관측 채널을 임의 변경하지 않고 새 plan 필요 여부를 Verification이 판단 |
+| Sandbox 정책 거절 | `BLOCKED + POLICY_BLOCKED` | 정책을 완화하지 않음. 정책·입력이 바뀌면 새 work·action 필요 |
+| 단계별 time limit 초과 | `FAILED + TIMEOUT` | timeout 위치와 사용 예산을 기록하고 R8 한도 안에서만 새 attempt |
+| 사용자·runtime 취소 | `CANCELLED + NONE` | 자동 retry 금지, 늦은 결과는 stale로 격리 |
+| 전체 budget 소진 | 공통 `AnalysisError=BUDGET_EXCEEDED`와 work 상태로 기록 | `DynamicReproductionResult.failure_reason`에 새 enum을 만들지 않으며 새 예산 승인 전 retry 금지 |
+
+한 attempt 안에서 build·migration·실행을 몰래 다시 시작하지 않는다. Health Check의 고정된 polling만 같은 attempt 안에서 수행한다. 같은 input hash의 transient 실패는 기존 attempt·log를 보존하고 attempt number가 증가한 새 attempt로 재시도한다. plan·환경 설정·image digest·fixture·Mock·Health Check 조건이 바뀌면 새 input hash, 환경 artifact와 action이 필요하다. 종료된 work를 다시 시작하거나 정책 차단 뒤 정책을 바꾸는 경우에는 공통 계약에 따라 새 work generation을 만든다. 최대 시간과 retry 횟수는 R8 profile을 참조하며 Environment Builder나 Agent가 늘릴 수 없다.
+
+`PARTIAL`은 애플리케이션이 단순히 실행된 상태가 아니라, 공격 경로 일부까지 실제로 실행해 신뢰 가능한 관측을 얻었지만 환경 차이로 전체 확인이 부족한 경우에만 `PARTIAL + NONE + INCONCLUSIVE`와 limitation을 사용한다. 따라서 Health Check를 통과했더라도 환경 문제로 공격 경로에 진입하지 못했다면 `PARTIAL`로 기록하지 않는다.
+
+#### 정리와 재사용 금지
+
+성공·실패·timeout·취소 뒤에는 exact cleanup policy에 따라 container, 임시 image·volume·network·file, fixture·테스트 계정·생성 credential과 민감 log를 정리하거나 보존 정책에 맞게 redaction한다. 정리 결과는 환경 artifact와 `DynamicReproductionResult.cleanup_status`에 연결한다.
+
+cleanup이 실패하면 오류와 남은 자원을 기록하고 해당 환경·image·volume을 재사용하지 않으며 격리한다. Recovery runtime에 후속 강제 정리를 요청하고 필요한 운영 알림을 남긴다. cleanup 실패는 재현의 가설 관측과 별개이므로 `cleanup_status=FAILED`로 보존하되 재현 상태나 `hypothesis_outcome`을 임의로 바꾸지 않는다. 결과의 유효성 영향은 Verification Agent가 limitations와 관측을 함께 보고 판단한다.
+
+#### 관련 Issue와 계약 경계
+
+- #21은 환경 artifact의 concrete schema·hash·redaction·불변 저장과 `environment_ref` 연결을 확정한다.
+- #22는 Sandbox Controller의 image·command·file·network·resource·cleanup 정책 enforcement를 확정한다.
+- R8은 build·migration·Health Check·retry의 숫자 예산과 상한을 확정한다.
+- R3는 Environment Builder·Controller·Runner의 실제 모듈 통합 가능성을 검증한다.
+- R6는 Verification Agent가 plan에 환경 전제조건을 넣고 결과를 해석하는 경계를 검토한다.
+- R4는 별도 환경 build work/action의 공통 ID·revision·authority·atomic commit 계약을 확정한다.
+
+이 의존 계약과 교차 검토가 끝나기 전에는 #20을 완료로 닫지 않는다.
 
 ### LIMITED_REPRO
 
