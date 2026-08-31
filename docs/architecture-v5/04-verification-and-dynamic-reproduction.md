@@ -103,7 +103,7 @@ Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` 
 
 `initial_verdict`는 기본 Context와 Verification Agent가 직접 확인한 사실을 바탕으로 만든 중간 판단이다. 운영 분석에서는 독립 Pro/Con과 필요한 동적 재현이 끝나기 전의 initial verdict를 Gate·Primitive·Reporter 입력으로 사용할 수 없다.
 
-final `verdict`는 필요한 Pro/Con과 동적 결과를 포함해 현재 work에서 사용할 수 있는 모든 근거를 종합한 최종 판단이다. initial verdict와 final verdict가 다르면 `verdict_rationale`에 변경 이유를 남긴다. 이 변화가 Debate로 인한 것이면 VerificationMetrics.verdict_changed_after_debate=true`로 기록한다.
+final `verdict`는 필요한 Pro/Con과 동적 결과를 포함해 현재 work에서 사용할 수 있는 모든 근거를 종합한 최종 판단이다. initial verdict와 final verdict가 다르면 `verdict_rationale`에 변경 이유를 남긴다. 이 변화가 Debate로 인한 것이면 `VerificationMetrics.verdict_changed_after_debate=true`로 기록한다.
 
 새 evidence나 Technical `REVISE`로 결과가 바뀌면 기존 record를 수정하지 않고 새 `VerificationResult` revision을 만든다. 과거 revision을 검토한 Gate 결과는 새 revision에 재사용하지 않는다.
 
