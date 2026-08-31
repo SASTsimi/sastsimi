@@ -63,6 +63,12 @@ confidence는 verdict, exploitability 또는 Finding 확률로 해석하지 않�
 
 원문·validation error·repair 횟수·최종 parsed output reference는 `LLMInvocationLog`로 추적한다. 코드나 자격 증명의 불필요한 원문 저장은 피한다.
 
+### repair retry 메커니즘
+
+`HypothesisProposal` 출력 검증 실패(금지된 확정 assertion, 잘못된 enum, 필수 field/location·반증 질문 누락)에 대해 제한된 횟수의 repair retry를 허용하고, 한도를 넘기면 `INVALID_OUTPUT`으로 확정한다.
+
+각 repair는 단순히 반복 횟수만 세는 내부 루프가 아니라, LLM 호출 자체가 새로 인가된다. 매번 새 `llm_call_id`와 새 `attempt_id`(`WorkAttempt.attempt_number` +1)를 받고, `retry_of_llm_call_id`로 직전 실패 호출을 가리킨다. 이전에 받은 허가는 재사용할 수 없다(`ACTION_NOT_ALLOWED`). session은 `NEW`를 쓴다 — 이전 시도의 대화 맥락을 이어받으면 같은 실수에 anchoring될 위험이 있기 때문이다. `bounded_stop_reason`(Chaining Agent의 확장 중단, R1-04)과는 다른 개념이다.
+
 ## 가설 lifecycle
 
 ```text

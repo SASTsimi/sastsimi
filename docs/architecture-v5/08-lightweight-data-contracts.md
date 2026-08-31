@@ -766,6 +766,64 @@ VulnerabilityHypothesis:
 
 초기 가설의 `root_hypothesis_id`는 자기 `hypothesis_id`다. `origin=VERIFICATION`은 Verification이 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 분리한 proposal이고, `origin=CHAINING`은 TRUE+HOLD 또는 TRUE+TRUE Primitive match가 만든 proposal이다. 자식 가설은 직접 원인이 된 부모만 `parent_hypothesis_ids`에 넣고, 부모 중 가장 큰 `chain_depth + 1`을 사용한다. 부모와 자식의 lifecycle·verdict는 독립이며 child 결과로 parent verdict를 바꾸지 않는다. proposal 출력 검증 runtime은 각 반증 질문에 전역 `question_id`를 부여하고 등록 가설까지 그대로 유지한다. 질문은 가설의 필수 조건 하나를 실제 근거로 반증할 수 있게 구체적으로 작성한다. 금지된 확정 assertion, 잘못된 enum, 필수 field/location·반증 질문 누락은 제한된 repair retry 뒤 `INVALID_OUTPUT`이다. confidence는 scheduling hint이지 verdict가 아니다.
 
+### HypothesisProposal 필드 판별 기준
+
+`observed_facts`/`restrictions`/`assumptions`/`missing_information`은 "이 사실을 누가·어떻게 확인했는가"로 가른다.
+
+| 필드 | 채우는 기준 |
+|---|---|
+| `observed_facts` | `CodeFact`로 직접 뒷받침되는 사실만(정적 분석 도구나 코드 조회가 실제로 관측한 것). 관계·흐름 증거는 `suspected_path`(`CodeRelation`)에 담는다 |
+| `restrictions` | `observed_facts` 중 `fact_kind`가 `AUTH_CHECK`/`PERMISSION_CHECK`/`VALIDATOR`/`SANITIZER`인 `CodeFact`를 요약한 문자열(위치+판정 근거). `restrictions`는 `[string]`이라 `CodeFact` 객체가 아니라 그 사실을 가리키는 설명 문자열이 들어가며, `fact_kind` 분류 자체는 R2가 이미 정한 값을 그대로 참조 |
+| `assumptions` | 코드로 직접 관측되지 않았지만 가설 성립에 필요해서 임시로 참으로 두는 것. 나중에 `CodeContextRequest`나 Verification에서 반증 대상이 된다 |
+| `missing_information` | 가설을 판정하는 데 필요한데 지금 근거가 아예 없는 것 |
+
+판별 순서: 코드에서 직접 관측됐는가(→ observed_facts 또는 restrictions) → 관측 안 됐지만 가설 진행을 위해 참으로 둘 수 있는가(→ assumptions) → 참으로 둘 수 없고 반드시 확인해야 하는가(→ missing_information).
+
+`confidence`는 이 네 필드 판별과 별개로 scheduling hint로만 쓴다. 네 필드 판별 자체는 verdict가 아니다.
+
+### suspected_path 원소별 역할
+
+`suspected_path: [CodeRelation | CodeLocation]`의 각 원소가 경로에서 맡는 역할(source/경유/sink)을 표시한다. `CodeRelation`/`CodeLocation` 자체는 `CodeFact.location`·`DataGap.affected_locations` 등 다른 곳에서도 재사용되는 공유 타입이므로, 그 타입에 필드를 추가하지 않고 전용 래퍼로 감싼다.
+
+- `CodeLocation` 원소: `{ role: SOURCE | PROPAGATION | SINK, location: CodeLocation }`
+- `CodeRelation` 원소: `{ from_role: SOURCE | PROPAGATION | SINK, to_role: SOURCE | PROPAGATION | SINK, relation: CodeRelation }` — `from_location`/`to_location` 두 지점이 각각 역할을 가지므로 role을 둘로 나눈다.
+
+역할은 `suspected_path`를 만드는 Hypothesis Agent가 채운다. 관측된 `CodeFact.fact_kind`가 `SOURCE`/`SINK`인 위치는 그 값을 그대로 쓰고, 그 외는 `PROPAGATION`으로 채운다. role은 구조적 위치 표시일 뿐 취약점 성립 여부의 판정이 아니다.
+
+### confidence 산정 축
+
+`confidence: LOW | MEDIUM | HIGH`는 검증 자원 우선순위를 나타내는 scheduling hint이며 진위 확률이 아니다. 다음 세 축의 조합으로 산정한다.
+
+- `observed_facts` 개수와 sink 도달 직접성(`suspected_path`에서 `role=SINK`까지의 hop 수 — 적을수록 직접적)
+- `missing_information` 개수
+- `restrictions` 존재 여부와 대응하는 우회 근거 참조 여부(우회 근거 없으면 confidence를 낮춤)
+
+세 단계 매핑(`HIGH`/`MEDIUM`/`LOW`)의 정확한 개수 임계값은 corpus 실측 후 R8(데이터·평가·예산)과 조율해 별도 revision으로 확정한다. 이 문서에는 판정 축과 각 축의 계산 방법만 고정한다.
+
+### falsification_questions 최소 요건
+
+- **개수**: 최소 1개 이상.
+- **구체성**: 질문 안에 최소 하나의 `target_entities`/`target_locations`/`suspected_path` 요소를 구체적으로 언급해야 하며, 답이 `DISPROVED`/`NOT_DISPROVED`/`INCONCLUSIVE` 중 하나로 명확히 갈릴 수 있는 형태여야 한다. 추상적인 질문("이게 안전한가?")은 무효다.
+- **중복 금지**: 같은 필수 조건을 다른 표현으로 두 번 묻지 않는다.
+
+이 요건을 만족 못 하면 제한된 repair retry 대상이다.
+
+### vulnerability_type_candidates 값 형식·개수 기준
+
+`vulnerability_type_candidates: [string]`은 자유 텍스트 문자열이다. 고정 vocabulary(예: CWE 카테고리 목록)는 두지 않는다. 최소 1개이며, 확실하지 않으면 배제하지 못한 후보를 모두 나열한다(상한 없음 — 대신 관측된 `observed_facts`와 무관한 후보는 나열하지 않는다).
+
+### required_validation 판별 기준
+
+`required_validation: [string]`은 가설을 최종 판정하기 전에 반드시 거쳐야 할 **검증 활동의 종류**를 적는다. `missing_information`(확인 안 된 개별 사실), `falsification_questions`(반증 가능한 구체적 질문)와 다음처럼 구분한다.
+
+| 필드 | 담는 것 | 형태 |
+|---|---|---|
+| `missing_information` | 확인 안 된 개별 사실 | 사실 단위 문자열 |
+| `falsification_questions` | 반증 가능한 구체적 질문 | `DISPROVED`/`NOT_DISPROVED`/`INCONCLUSIVE`로 답 가능 |
+| `required_validation` | 판정에 필요한 검증 활동의 종류 | 예: "동적 재현으로 실제 실행 흐름 확인 필요" |
+
+Verification의 `dynamic_decision` 판단에 힌트로 쓰일 수 있지만 Hypothesis Agent가 동적 재현을 강제하지는 않는다. 강제 최소 개수는 0개이며, 있다면 `falsification_questions`와 내용이 겹치지 않아야 한다.
+
 ## 3. CodeContextRequest/Response
 
 검증 단계가 필요한 코드 위치를 요청하고 정적분석 계층이 같은 `workspace_id`와 `commit_id`에서 코드를 돌려주는 형식입니다.
