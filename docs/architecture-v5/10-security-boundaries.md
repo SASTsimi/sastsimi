@@ -82,15 +82,42 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 
 ## 5. Docker sandbox
 
-- ephemeral container, non-root, read-only mount와 resource/time/process 제한을 사용한다.
-- host root/home, Docker socket, host process namespace와 광범위한 write mount를 제공하지 않는다.
-- network default-deny를 사용하고 승인된 범위만 제한적으로 연다.
-- production credential, 실제 개인정보와 범위 밖 target을 사용하지 않는다.
-- image/digest, command/step ref, exit/observation, timeout과 cleanup을 기록한다.
-- Docker build와 실행은 분석용 `CodeWorkspace`를 직접 수정하지 않고 sandbox 내부 복사본에서 수행한다.
-- LLM이 재현을 제안해도 sandbox policy를 변경하거나 임의 shell·외부 공격·지속성 설치를 승인할 수 없다.
-- `RUN_SANDBOX`는 image digest, command/tool allowlist, read-only input, network target, CPU·memory·disk·process·time limit와 cleanup policy가 고정된 `ActionDecision=ALLOW` 뒤에만 실행한다.
-- network는 default-deny다. 저장소나 LLM이 새 대상 통신을 요구해도 승인된 versioned sandbox profile에 없으면 `SANDBOX_POLICY_DENIED`다.
+Sandbox Runner는 Verification이 생산하고 runtime이 `COMMITTED`한 exact `ReproductionPlan`과 일회성 `RUN_SANDBOX ALLOW`만 입력으로 받는다. Runner는 raw Docker option이나 정책 완화 요청을 Agent·저장소에서 직접 받지 않고, 허가에 고정된 `sandbox_profile_ref`, image digest, tool·command, file·mount, network, resource와 cleanup 조건으로 실행 option을 결정한다. 실행 직전 값이 달라지면 기존 허가를 `EXPIRED`로 만들고 container를 시작하지 않는다.
+
+### Container와 filesystem
+
+- 실행마다 새 container·volume·network를 만들고 다른 analysis·hypothesis·attempt와 재사용하지 않는다.
+- 고정된 non-root UID/GID, read-only root filesystem, `no-new-privileges`, capability 전체 제거를 기본으로 한다. privileged mode, device 전달과 host PID·IPC·user·network namespace 공유는 금지한다.
+- seccomp 기본 차단 profile을 적용하고 지원하는 host에서는 AppArmor 또는 SELinux profile을 함께 적용한다. 필요한 보호 기능을 적용할 수 없는 실행 backend는 자동으로 완화하지 않고 정책 차단으로 종료한다.
+- 분석용 `CodeWorkspace`는 read-only 입력으로 제공하고 build·migration·fixture·upload처럼 쓰기가 필요한 경로만 attempt 전용 volume이나 크기가 제한된 `tmpfs`로 분리한다.
+- host root/home, Docker socket·daemon API, credential store, 운영 secret과 광범위한 bind mount를 제공하지 않는다. source와 destination path를 정규화하고 symlink를 해석한 뒤 허용 root 밖으로 나가면 mount를 거절한다.
+- core dump와 권한 상승 bit를 비활성화하고 환경변수는 허용 목록만 전달한다. 계획 안의 command가 container 실행 option이나 host 경로를 바꾸는 별도 제어 경로가 되어서는 안 된다.
+
+### Network와 build 경계
+
+- 실제 재현 runtime은 network default-deny다. 애플리케이션·DB·Mock Server·필요한 보조 service는 attempt 전용 internal network에만 연결하고 서비스별 alias·protocol·port를 승인 목록으로 제한한다.
+- host gateway, cloud metadata, loopback을 통한 host service, 사설망과 범위 밖 실제 target으로 가는 route를 제공하지 않는다. SSRF 관측 target은 같은 internal network의 승인된 Mock Server로 대체한다.
+- dependency 설치를 위한 build 통신은 재현 runtime network와 분리한다. 필요할 때만 digest로 고정한 builder가 승인된 package mirror·registry와 정해진 protocol·port로 통신하며, build 허가를 runtime 외부 통신 허가로 재사용하지 않는다.
+- network 예외에는 대상·protocol·port·scope·유효 시간·요청자·승인 근거를 고정하고 연결 시도와 허용·차단 결과를 기록한다. 저장소나 LLM이 새 대상 통신을 요구해도 승인된 versioned profile에 없으면 `SANDBOX_POLICY_DENIED`다.
+
+### Resource와 종료
+
+- R8이 정한 versioned resource profile에는 **Docker Sandbox에 사용되는 CPU·memory·ephemeral disk·PID/process·wall-clock time**의 기본값과 상한이 각각 있어야 한다. R7은 항목과 enforcement 지점을 정의하지만 합의되지 않은 수치를 임의로 만들거나 실행별로 완화하지 않는다.
+- Runner는 container 생성 시 CPU quota, memory·swap, writable layer·volume quota, PID limit와 필요한 `ulimit`을 적용하고 실행 중 실제 사용량과 limit 도달 원인을 관측한다.
+- 요청값이 profile 상한을 넘으면 실행 전에 `BLOCKED + POLICY_BLOCKED`로 기록한다. 실행 중 OOM·disk·PID limit 때문에 필수 단계가 실패하면 실제 원인을 보존한 실행 실패이며, wall-clock limit 도달은 `FAILED + TIMEOUT`이다. 어느 경우도 가설 반증이나 `FALSE`가 아니다.
+- timeout·취소·실패 시 새 process 생성을 막고 정해진 종료 유예 시간 뒤 남은 process를 강제 종료한다. stdout·stderr·artifact 크기도 제한해 disk와 log 수집 경계를 우회하지 못하게 한다.
+
+### Image·daemon과 provenance
+
+- base image는 tag만 신뢰하지 않고 registry·digest로 고정한다. 사용한 base digest, Dockerfile 또는 일회성 실행 설정, lockfile·dependency source, build result digest와 적용한 Sandbox profile revision을 기록한다.
+- build와 실행은 분석용 `CodeWorkspace`를 직접 수정하지 않고 Sandbox 내부 복사본에서 수행한다. Sandbox container에는 Docker socket을 mount하지 않으며 image build 권한과 실행 권한을 분리한다.
+- 저장소의 Dockerfile·entrypoint·build script와 image content는 비신뢰 입력이다. 정책이 허용하지 않은 daemon option, host mount, network 또는 secret 요구를 발견하면 build·실행을 중단한다.
+
+### Cleanup
+
+- 성공·부분·실패·정책 차단·timeout·취소와 관계없이 `finally` 경로에서 process, container, volume, internal network와 임시 파일을 정리한다.
+- cleanup은 exact `cleanup_policy_ref`에 따라 수행하고 각 대상의 삭제 시도와 결과를 기록한다. 정리가 끝나지 않으면 `cleanup_status=FAILED`와 별도 운영 오류를 남기며, 관련 자원을 다른 attempt에 재사용하지 않고 격리된 janitor 대상에 등록한다.
+- cleanup 실패가 이미 수집한 관측을 취약점 지지·반증으로 바꾸지는 않는다. 결과 소비자는 cleanup 상태와 남은 제한을 함께 확인한다.
 
 ## 6. 프로그램 정책 신뢰 경계
 
@@ -201,6 +228,11 @@ Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 �
 | Sandbox가 계획에 없는 command·공격 입력을 실행하려 함 | exact `ReproductionPlan`과 실행할 step·input refs | `SANDBOX_POLICY_DENIED`, 실행 금지와 오류 기록 |
 | 동적 결과의 step log·공격 입력·cleanup 정책이 승인 계획과 다름 | `RUN_SANDBOX` USED decision, plan closure, `SandboxStepLog`, 결과 candidate | `SAVE_RESULT` 거절, 결과 `COMMITTED`·Verification 전달 금지 |
 | Verification이 `DynamicReproductionResult`를 직접 저장 | `dynamic_reproduction_result`의 result-owner와 `requested_by` | `AUTHORITY_DENIED`, Sandbox 생산 후보만 허용 |
+| Sandbox가 privileged·capability·device·host namespace 또는 Docker socket을 요구 | versioned Sandbox profile과 실제 container create option | `SANDBOX_POLICY_DENIED`, container 미생성 |
+| writable mount가 허용 root 밖이나 symlink를 통해 host path로 탈출 | 정규화·symlink 해석된 source/destination과 mount allowlist | `FILE_ACCESS_DENIED`, mount·실행 금지 |
+| runtime code가 외부 실제 target·host gateway·cloud metadata로 통신 | attempt internal network, target·protocol·port allowlist | packet 차단과 접속 시도 기록, 필수 단계가 정책상 불가능하면 `BLOCKED + POLICY_BLOCKED` |
+| fork bomb·memory·disk exhaustion 또는 wall-clock timeout 발생 | 적용한 PID·memory·disk·time limit와 runtime event | 제한에서 process 종료, 자원 고갈은 `FAILED + EXECUTION`, 시간 초과는 `FAILED + TIMEOUT`, 가설 반증 금지 |
+| 종료 뒤 container·volume·network·임시 파일 일부가 남음 | `cleanup_policy_ref`, 대상별 cleanup 결과와 재조회 | `cleanup_status=FAILED`, 자원 재사용 금지와 janitor 격리 |
 
 ## Verification ownership과 Chaining admission 시나리오
 

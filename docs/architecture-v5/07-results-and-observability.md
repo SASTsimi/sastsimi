@@ -106,7 +106,10 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 
 - 역할·provider·model별 invocation, token/동등 usage와 elapsed time
 - AST/SAST별 `SUCCEEDED | PARTIAL | FAILED | SKIPPED`, 실제 분석·제외 path/language와 coverage
-- sandbox mode별 CPU/memory/disk/network/time와 cleanup
+- sandbox mode, exact `sandbox_profile_ref` revision, base·build·실행 image digest와 build dependency source
+- **Docker Sandbox에 사용되는 CPU·memory·ephemeral disk·PID/process·wall-clock time**의 승인값·실제 peak·limit 도달 원인
+- attempt internal network의 service·protocol·port 허용 목록과 실제 허용·차단 연결 시도
+- read-only input·writable volume·`tmpfs` mount manifest, container·volume·network·임시 파일별 cleanup 결과
 
 provider가 token이나 비용을 제공하지 않으면 추정치를 확정값처럼 표시하지 않고 metric source와 unavailable reason을 남긴다.
 
@@ -124,7 +127,10 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 - action type·요청 역할별 `ALLOW | DENY` 수와 실패한 `ActionCheck.reason_code`
 - `ALLOW` decision의 `UNUSED | USED`, outcome 누락과 replay 거절 수
 - `AUTHORITY_DENIED`, Gate 순서·Reporter·Sandbox·provider·file·disclosure 차단 수
+- privileged·capability·host namespace·Docker socket·mount path escape와 범위 밖 network 요청의 차단 수
+- CPU·memory·disk·PID limit, OOM·timeout·강제 종료 수와 적용 profile별 사용량
 - Sandbox 계획 revision 변경, 계획 밖 step·공격 입력, 결과 log·cleanup 불일치와 동적 결과 생산 역할 위반 수
+- cleanup 실패, janitor 격리·재시도와 attempt 간 자원 재사용 차단 수
 - HumanReviewPacket의 report-ready/blocked 수와 누락된 policy·PoC·오류·HOLD 조건
 - `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION` 사람 결정 수
 
