@@ -781,6 +781,11 @@ VulnerabilityHypothesis:
 
 `confidence`는 이 네 필드 판별과 별개로 scheduling hint로만 쓴다. 네 필드 판별 자체는 verdict가 아니다.
 
+**`missing_information` 강제 등재 규칙**: 다음 경우는 판단을 미루지 않고 강제로 `missing_information`에 등재한다.
+
+- `target_locations`/`suspected_path`와 위치가 겹치는 `DataGap`이 있는 경우(내용은 `DataGap.reason`을 해석하지 않고 `DataGap.description`을 그대로 인용한다)
+- 경로상 인증·권한이 관련된 지점인데 `restrictions`에 해당 `AUTH_CHECK`/`PERMISSION_CHECK` 근거가 없는 경우
+
 ### suspected_path 원소별 역할
 
 `suspected_path: [CodeRelation | CodeLocation]`의 각 원소가 경로에서 맡는 역할(source/경유/sink)을 표시한다. `CodeRelation`/`CodeLocation` 자체는 `CodeFact.location`·`DataGap.affected_locations` 등 다른 곳에서도 재사용되는 공유 타입이므로, 그 타입에 필드를 추가하지 않고 전용 래퍼로 감싼다.
@@ -811,6 +816,8 @@ VulnerabilityHypothesis:
 ### vulnerability_type_candidates 값 형식·개수 기준
 
 `vulnerability_type_candidates: [string]`은 자유 텍스트 문자열이다. 고정 vocabulary(예: CWE 카테고리 목록)는 두지 않는다. 최소 1개이며, 확실하지 않으면 배제하지 못한 후보를 모두 나열한다(상한 없음 — 대신 관측된 `observed_facts`와 무관한 후보는 나열하지 않는다).
+
+여러 후보가 있어도 하나로 좁히지 않는다. Verification에는 확정된 분류가 아니라 "탐색 시작점"이라는 라벨로 전달해, 이후 판정이 특정 후보 하나에 anchoring되지 않도록 한다. `falsification_questions`가 후보들의 공통 필수 조건을 겨냥한다는 원칙(위 절 참고)도 같은 이유다.
 
 ### required_validation 판별 기준
 
