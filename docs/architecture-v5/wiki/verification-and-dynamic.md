@@ -30,6 +30,14 @@ Pro와 Con은 서로의 결과를 받지 않는 별도 NEW session이다. trigge
 - `FALSE`: named falsification이 가설을 반증함
 - `HOLD`: 핵심 문맥·환경·조건이 부족하거나 충돌함
 
+판정에는 최소 근거가 필요합니다. TRUE는 핵심 공격 경로와 필요한 조건을 지지하는 근거가 있어야 합니다. FALSE는 이름이 있는 반증 질문이 실제 근거로 `DISPROVED`된 경우에만 가능합니다. 오류·timeout·정보 부족·Sandbox 실패는 FALSE 근거가 아닙니다. HOLD는 판단에 필요한 조건이나 환경이 아직 부족하다는 뜻입니다.
+
+기본 Context가 부족하면 검증 Agent가 같은 workspace·commit을 기준으로 추가 Context를 요청합니다. 추가 조회 뒤에도 핵심 경로를 확인하지 못하면 미해결 조건을 남기고 HOLD 또는 명시적인 오류로 처리합니다.
+
+`initial_verdict`는 중간 판단이며 운영 Gate·Primitive·보고서 입력으로 사용할 수 없습니다. final verdict는 독립 Pro/Con과 필요한 동적 결과를 종합한 최종 판단입니다.
+
+지원하는 취약점 유형마다 source, sink, 방어 로직, 반증 질문, 필요한 정적·동적 근거와 HOLD 조건을 담은 검증 플레이북을 사용합니다.
+
 판정 뒤 흐름도 다릅니다. FALSE는 terminal이며 Primitive와 Chaining으로 가지 않습니다. HOLD는 Gate 없이 REQUIRED Primitive를 즉시 저장합니다. TRUE는 CWE와 두 Gate를 정상 통과한 exact revision만 PROVIDED Primitive가 됩니다.
 
 각 반증 질문에는 `question_id`가 있습니다. 검증 결과는 질문마다 `DISPROVED`, `NOT_DISPROVED`, `INCONCLUSIVE` 중 하나와 근거를 남깁니다. 실제 근거가 있는 `DISPROVED`가 하나 이상일 때만 `FALSE`가 가능합니다. `NOT_DISPROVED`는 반증하지 못했다는 뜻일 뿐 가설을 증명하지 않습니다.
