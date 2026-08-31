@@ -23,6 +23,7 @@ Issue #3의 완료 조건 7개와 관련된 기존 설계 문서상의 근거를
 - `entities`, `locations`, `source_candidates`, `sink_candidates`, `call_edges`, `data_flow_candidates`, `auth_and_permission_checks`, `route_bindings`, `tool_runs` 스키마 — `08-lightweight-data-contracts.md` L701-713 (`StaticFactBundle`)
 - `ToolSource`(`tool_name`, `tool_version`, `rule_id`, `raw_result_ref`) — `08-lightweight-data-contracts.md` L594-598
 - `CodeFact.producer`/`CodeRelation.producer`로 각 fact/relation이 어떤 도구 결과에서 왔는지 역추적 가능 — `08-lightweight-data-contracts.md` L605(`CodeFact.producer`), L614(`CodeRelation.producer`)
+- "SAST rule hit와 불완전한 경로는 관찰된 사실 후보이지 취약점 확정이 아니다"는 표현으로 SAST severity/rule hit을 verdict로 승격하지 않는다는 제약이 명시됨 — `02-static-fact-layer.md` L24 (R2-02 초안이 인용한 `L343`은 이 파일이 179줄이라 존재하지 않는 줄번호였음을 확인해 제외함)
 
 ## 4. AST/SAST 부분 실패·충돌·불확실성이 `DataGap`/`AnalysisError`로 보존
 
