@@ -1362,7 +1362,32 @@ HumanReviewDecision:
 
 `action_decision_ref.record_id`는 분석 종료·exact refs·redaction·필수 검토 자료를 확인한 `PREPARE_HUMAN_REVIEW` ALLOW decision의 `USED` revision을 가리킨다. `analysis_result_ref.record_id`는 필수다. packet은 한 `AnalysisRunResult` revision에서 조립하고 새 packet의 `review_generation`은 직전 `HumanReviewState.packet_generation+1`이다. finding, verification, CWE, 두 Gate, 정책, dynamic, PoC, report, LLM log, action decision, work state, work attempt, transition commit와 debug trace reference는 `AnalysisRunResult`의 해당 값과 set-equal해야 하며 임의로 빼거나 더하지 않는다. `resource_summary`는 `AnalysisRunResult.resources`, `error_ids`는 `errors[].error_id`, `gap_ids`는 `gaps[].gap_id`에서 만든다. `report_ready=true`는 하나 이상의 ReportDraft가 있고 각 초안이 `TRUE + Technical ACCEPT + Rule Scope PASS/PASS/PASS/SUFFICIENT/ALLOW`의 exact revision을 가리킬 때만 허용한다. 보고서가 차단됐으면 빈 `report_draft_refs`, `report_ready=false`와 구체적인 `blocked_reasons`를 사용한다.
 
-`FindingCandidate` 본문과 품질 기준은 R5가 소유한다. R4-03은 이미 저장된 Finding revision을 `finding_refs`로 전달할 뿐 새 Finding claim을 만들거나 빠진 Finding을 추정하지 않는다. Finding이 아직 없으면 두 `finding_refs` 목록을 모두 비우고 그 사유를 `blocked_reasons`에 남긴다.
+`PREPARE_HUMAN_REVIEW`의 reference 검사는 목록의 set equality에 더해 report claim의 연결 가능성을
+확인한다. material confirmed claim은 current final Verification에서 supporting/counter Evidence와
+적용 가능한 Dynamic/PoC까지, policy claim은 Rule Scope review에서 exact `ProgramPolicyRecord`와
+official source까지 따라갈 수 있어야 한다. verified Evidence/Verification이 아닌
+`origin=VERIFICATION | CHAINING` proposal이나 `CandidateRef`는 candidate/unresolved 정보로만
+전달하며 confirmed provenance가 될 수 없다. restriction, unresolved counter/verification condition,
+reproduction·environment limitation과 Gate failure/revision reason을 해당 claim에서 숨기거나
+upstream보다 강한 표현으로 바꾼 draft는 `report_ready=true`로 만들지 않는다.
+
+이 연결 가능성은 기존 `ReportDraft`와 authoritative upstream reference graph를 따라 확인하는
+semantic invariant이며 `HumanReviewPacket`의 새 field나 별도 claim-mapping schema를 요구하지
+않는다. 기존 schema만으로 강제하는 공통 방식은 R4/R8의 schema/reference validator 계약을 따르며
+R5-04가 확장하지 않는다.
+
+새 Verification, Gate, CWE, Policy 또는 AnalysisRunResult revision이 current pointer를 바꾸면 공통
+generation·state-version·CAS 규칙이 과거 packet과 decision의 재사용을 차단한다. R5는 별도 stale
+flag, validator, error enum을 추가하지 않는다. schema/reference/provenance/redaction 검사 실패는
+`PREPARE_HUMAN_REVIEW`를 `DENY`하고 기존 `RECORD_REVISION_MISMATCH | STALE_RESULT |
+INVALID_OUTPUT | DISCLOSURE_DENIED`와 적용 가능한 `AnalysisError`를 사용한다.
+
+`FindingCandidate` 본문과 품질 기준은 R5가 소유한다. R4-03은 활성화되어 이미 저장된 Finding revision만 `finding_refs`로 전달할 뿐 새 Finding claim을 만들거나 빠진 Finding을 추정하지 않는다. 현재 독립 Finding record가 활성화되지 않았거나 존재하지 않으면 `HumanReviewPacket`과 `AnalysisRunResult`의 `finding_refs`는 비어 있을 수 있다. 빈 `finding_refs` 자체는 `report_ready=false`, Human Review 차단 또는 `blocked_reasons` 생성 조건이 아니다. `blocked_reasons`에는 stale/mismatched revision, 필수 provenance·restriction·unresolved condition 누락, schema/reference 또는 redaction 실패처럼 기존 공통 계약상 실제 handoff/report 차단 사유만 기록한다. 향후 Finding activation과 두 목록의 set-equality 의미는 R4/R8 공통 계약이 정하며 R5-04는 Finding schema나 activation rule을 추가하지 않는다.
+
+`PREPARE_HUMAN_REVIEW`가 `DENY`되어도 이미 저장된 `ReportDraft` record와 그 생성 이력은 삭제하거나
+존재하지 않았던 것으로 바꾸지 않는다. 다만 invalid·stale·redaction-failed draft는 current packet의
+`report_ready=true` 근거로 승격할 수 없다. `report_ready`의 owner와 lifecycle은 기존 R4/R8
+`HumanReviewPacket`·action·state 계약을 그대로 따른다.
 
 `HumanReviewDecision.action_decision_ref.record_id`는 인증된 Human Reviewer와 exact current packet을 검사한 `SAVE_HUMAN_DECISION` ALLOW decision의 `USED` revision을 가리킨다. `packet_ref.record_id`는 action이 검사한 `HumanReviewState.current_packet_ref.record_id`와 같고 decision의 `review_generation`도 current state·packet과 같아야 한다. `reviewer_identity_ref`는 비밀 session이나 credential이 아닌 내부의 제한된 사람 identity 증명 record를 가리킨다. `DISCLOSE`는 current packet의 `report_ready=true`, 하나 이상의 `approved_report_refs`와 하나 이상의 `disclosure_targets`가 필요하다. 공개 대상은 versioned destination allowlist의 불투명 ID이며 URL query, credential 또는 실행 명령을 담지 않는다. 승인 report는 모두 current packet의 `report_draft_refs`에 포함되고 report-ready 불변조건을 만족해야 한다. 다른 세 decision은 두 목록을 비운다. Agent가 생성한 결정, superseded packet·결정, 승인 목록 밖 report는 `DISCLOSURE_DENIED`다. 외부 공개 직전에도 `HumanReviewState.status=DECIDED`, exact current packet·decision·generation·state version을 다시 검사한다. 이 계약은 자동 제출 integration을 구현하거나 허용한다는 뜻이 아니다.
 

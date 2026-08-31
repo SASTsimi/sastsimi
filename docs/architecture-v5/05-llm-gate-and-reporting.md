@@ -176,6 +176,48 @@ Reporter는 새로운 공격 경로를 확정하거나 미검증 material child 
 
 ## 사람의 최종 결정
 
+### Human Review safe handoff readiness
+
+Human handoff의 canonical artifact는 R4/R8 공통 계약의 `HumanReviewPacket`이며, R5는 별도
+handoff record나 상태를 만들지 않는다. Packet은 exact `AnalysisRunResult`에서 조립되지만 단순한
+reference 목록만으로 준비 완료가 되지는 않는다. Human Reviewer가 각 material report claim에서
+`ReportDraft` → final `VerificationResult` → `TechnicalEvidenceReview` →
+`RuleScopeImpactReview` → supporting/counter Evidence와, 필요한 경우
+`DynamicReproductionResult`/redacted PoC까지 역추적할 수 있어야 한다. 정책 claim은 exact
+`CWELabel`, `ProgramPolicyRecord`와 official source locator까지 이어져야 한다.
+
+이는 기존 `ReportDraft`와 authoritative upstream artifact가 이미 가진 reference를 따라 claim을
+역추적할 수 있어야 한다는 semantic invariant다. R5-04는 `HumanReviewPacket`에 `claim_refs` 같은
+field, claim mapping record 또는 별도 provenance schema를 추가하지 않는다. 기존 공통 packet
+schema와 reference graph만으로 이 invariant를 강제하는 방식이 충분한지는 R4/R8 공통 validator
+계약의 검토 대상이며, R5가 임의로 schema를 확장하지 않는다.
+
+confirmed claim의 provenance에는 검증을 끝낸 Evidence와 final Verification만 사용할 수 있다.
+`origin=VERIFICATION | CHAINING` proposal, `CandidateRef`, speculative attack path와 아직 검증되지
+않은 child result는 candidate 또는 unresolved item으로만 전달하고 confirmed claim의 근거로
+승격하지 않는다. 이 규칙은 독립 `Research Agent`나 `ResearchResult`를 전제하지 않는다.
+
+Verification/Gate가 기록한 testing·policy restriction, reproduction/environment limitation,
+unresolved counter evidence·verification condition과 Gate failure/revision reason은 관련 claim과
+함께 보존한다. 이를 누락하거나 upstream보다 강한 claim으로 바꾼 draft는 `report_ready=true`인
+packet에 넣을 수 없다. schema/reference 검증, exact current revision, 필수 Evidence·Policy
+provenance 또는 redaction이 실패해도 `PREPARE_HUMAN_REVIEW`를 허용하지 않는다. 구체적 stale 판정과
+invalidation은 R4/R8의 current-pointer·generation·CAS 계약을 재사용하며 R5 전용 validator나
+lifecycle을 추가하지 않는다.
+
+Packet, ReportDraft와 일반 trace에는 secret·credential·불필요한 PII, hidden chain-of-thought 또는
+raw private reasoning을 넣지 않는다. Reviewer에게는 decision, concise evidence-based rationale,
+reference, restriction, unresolved condition과 공개 가능한 failure/revision reason만 제공한다.
+민감 원본이 필요하면 기존 접근 제한 artifact를 reference로 조회하고 packet에 복제하지 않는다.
+R5-04는 이를 safe-handoff eligibility로만 정의한다. redaction 수행 service·secret storage·validator
+구현·오류 enum과 lifecycle은 R4/R8 runtime 및 기존 security/redaction 공통 계약을 재사용한다.
+
+`report_permission=ALLOW`는 `CREATE_REPORT_DRAFT`의 한 전제이고 `report_ready=true`는 current
+packet에 exact valid draft가 있다는 뜻이다. 둘 다 사람 결정이 아니다. 사람 결정은 current
+`HumanReviewPacket`을 가리키는 별도 `HumanReviewDecision`에만 기록한다. `DISCLOSE`도 external
+submission/publication 자체가 아니며, 실제 외부 action은 R4 공통 authority 검사와 사람의 명시적
+action을 별도로 거쳐야 한다.
+
 자동 산출물은 내부 `FindingCandidate`와 `ReportDraft`다. 사람에게는 별도 `HumanReviewPacket`을 전달한다.
 
 packet에는 다음을 빠뜨리지 않는다.

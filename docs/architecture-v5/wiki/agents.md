@@ -21,7 +21,7 @@
 | Technical Evidence Gate | verdict-evidence·코드/동적 연결·CWE·restriction 검토 | verdict 변경 |
 | Rule Scope Impact Gate | 공식 rule/scope·금지 테스트·실제 impact·report permission 검토 | 공식 자료 없는 추정 승인 |
 | Reporter | 통과한 근거로 내부 보고서 초안 작성 | 새 근거 확정, 제출·공개 |
-| Human Reviewer | 수정·추가 검증·보류·공개 결정 | — |
+| Human Reviewer | current `HumanReviewPacket`의 exact provenance를 검토하고 별도 결정을 기록 | Agent 결정 승인, 과거 packet 결정 재사용, 자동화에 외부 제출·공개 권한 위임 |
 
 ```text
 Orchestration → Hypothesis proposal validation and registration → assign Verification
@@ -35,6 +35,8 @@ Gate-qualified TRUE → PROVIDED Primitive → Chaining
 Verification or Chaining material claim → new hypothesis → new Verification
 all report conditions → Reporter → Human
 ```
+
+Human Review 자료의 canonical record는 공통 `HumanReviewPacket`이다. Packet은 `ReportDraft`와 exact upstream reference graph를 담아 주요 claim의 verified Evidence, final Verification, 두 Gate, CWE·official policy, Dynamic/PoC, restriction과 unresolved condition을 역추적하게 한다. 이는 새 claim-mapping field가 아니라 기존 reference graph의 semantic invariant다. 미검증 proposal은 confirmed provenance가 아니며 secret·불필요한 PII·hidden private reasoning 또는 stale reference가 있으면 packet 준비를 차단한다. 빈 `finding_refs` 자체는 차단 사유가 아니다. Gate `ALLOW` → 내부 ReportDraft, `report_ready` → current packet의 draft 준비 여부, `HumanReviewDecision=DISCLOSE` → 사람 결정이며 실제 외부 action은 별도 권한 검사라는 경계를 유지한다.
 
 각 역할은 공통 `LLMProviderAdapter`를 사용하며 역할 독립성이 필요한 조합은 NEW session을 기본으로 한다. 상세 경계는 [Agent 역할과 오케스트레이션](../03-agent-roles-and-orchestration.md)을 따른다.
 

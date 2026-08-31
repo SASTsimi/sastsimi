@@ -121,6 +121,12 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 
 ### 권한·사람 검토 지표
 
+Human handoff 관측 정보에는 packet이 사용한 exact AnalysisRunResult·ReportDraft·Verification·두
+Gate·CWELabel·ProgramPolicyRecord revision과 provenance/restriction/redaction 차단 사유를 남긴다.
+공개 가능한 structured reason과 record ID만 기록하며 hidden chain-of-thought, raw private reasoning,
+secret·credential 또는 불필요한 PII를 trace·evaluation corpus·packet에 복제하지 않는다. 검증에
+필요한 민감 원본은 기존 접근 제한 저장 경계를 reference로만 연결한다.
+
 - action type·요청 역할별 `ALLOW | DENY` 수와 실패한 `ActionCheck.reason_code`
 - `ALLOW` decision의 `UNUSED | USED`, outcome 누락과 replay 거절 수
 - `AUTHORITY_DENIED`, Gate 순서·Reporter·Sandbox·provider·file·disclosure 차단 수

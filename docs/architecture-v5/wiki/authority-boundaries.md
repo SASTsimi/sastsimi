@@ -102,6 +102,19 @@ Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아
 - 모든 오류·분석 공백·남은 HOLD 조건
 - LLM 호출·action 검사·work 상태·실행 시도와 debug trace
 
+각 material confirmed claim은 verified Evidence와 final Verification에서 두 Gate·CWE를 거쳐
+ReportDraft까지 exact revision으로 연결되어야 합니다. policy claim은 공식
+`ProgramPolicyRecord` source까지, 재현 claim은 적용 가능한 Dynamic result와 redacted PoC까지
+추적합니다. 미검증 Verification-origin/Chaining-origin proposal은 candidate 또는 unresolved
+정보일 뿐 confirmed provenance가 아닙니다. restriction·counter evidence·재현/환경 limitation을
+누락하거나 secret·불필요한 PII·hidden reasoning·stale reference가 있으면 packet 준비를 허용하지
+않습니다.
+
+이 검사는 기존 ReportDraft와 upstream reference graph의 semantic invariant이며 새 packet field나
+claim mapping schema를 뜻하지 않습니다. 독립 Finding record가 활성화되지 않아 `finding_refs`가
+비어 있는 것만으로는 packet이나 report를 차단하지 않습니다. R5는 redaction eligibility만 정하고
+redaction service·validator·secret storage는 기존 runtime/security 계약을 사용합니다.
+
 사람은 별도 `HumanReviewDecision`에 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`을 기록합니다. ReportDraft 안의 값을 바꾸어 승인하지 않습니다.
 
 사람 결정 record를 저장할 때도 로그인한 실제 검토자와 `HumanReviewState`가 가리키는 current packet generation을 프로그램이 확인합니다. 새 packet이 만들어지면 이전 packet의 결정은 즉시 만료됩니다. LLM이 사람 결정처럼 생긴 출력을 만들어도 승인으로 저장하지 않습니다.

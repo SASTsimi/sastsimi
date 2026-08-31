@@ -197,7 +197,17 @@ hidden chain-of-thought와 secret은 포함하지 않는다.
 
 - ReportDraft record: `{report_draft_ref.record_id}`
 - 함께 검토할 AnalysisRunResult: `{analysis_result_ref.record_id}`
+- final Verification과 두 Gate의 exact revision: `{verification and Gate refs}`
+- CWELabel과 ProgramPolicyRecord의 exact revision·official source: `{CWE/policy refs and locator}`
+- material claim → supporting/counter Evidence → Dynamic/PoC: `{claim provenance refs}`
+- restriction·unresolved counter/verification condition·재현/환경 limitation: `{refs and concise summary}`
 - 남은 오류·DataGap·HOLD 조건: `{refs or none}`
+- safe handoff redaction 결과: `{APPLIED | NOT_REQUIRED; FAILED이면 packet 준비 차단}`
+
+confirmed claim에는 verified Evidence와 final Verification provenance만 연결한다. 미검증
+Verification-origin/Chaining-origin proposal, `CandidateRef`와 speculative path는 candidate 또는
+unresolved item으로만 표시한다. secret·credential·cookie·authorization 값은 `<REDACTED>`로
+대체하고 불필요한 PII, hidden chain-of-thought와 raw private reasoning은 포함하지 않는다.
 
 ---
 

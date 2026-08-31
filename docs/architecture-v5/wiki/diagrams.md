@@ -200,12 +200,15 @@ flowchart TB
     READY -->|Yes| RREQ[Verification requests Reporter]
     RREQ --> REPORTER[Reporter Agent]
     REPORTER --> DRAFT[Internal ReportDraft]
-    BLOCK --> HUMAN[Human Reviewer]
-    DRAFT --> HUMAN
-    HUMAN --> DECIDE[Disclose Revise Withhold or More validation]
+    BLOCK --> PACKET[HumanReviewPacket with blocked reasons]
+    DRAFT --> SAFE{Exact provenance restrictions and redaction valid}
+    SAFE -->|No| BLOCK
+    SAFE -->|Yes| PACKET[HumanReviewPacket current generation]
+    PACKET --> HUMAN[Human Reviewer]
+    HUMAN --> DECIDE[Separate HumanReviewDecision]
 ```
 
-두 Gate 모두 LLM 검토 Agent이고 Verification verdict를 직접 바꾸지 않는다. 공식 정책이 없으면 Reporter 경로는 닫힌다.
+두 Gate 모두 LLM 검토 Agent이고 Verification verdict를 직접 바꾸지 않는다. 공식 정책이 없으면 Reporter 경로는 닫힌다. `ALLOW`와 `report_ready`는 사람 결정이 아니며, current packet의 `DISCLOSE` 결정도 외부 action 자체가 아니다.
 
 ## 7. Provider, session과 logging
 

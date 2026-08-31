@@ -122,6 +122,34 @@ Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 �
 
 사람에게는 exact `AnalysisRunResult`, Finding·Verification, 두 Gate, CWE·정책, dynamic·redacted PoC, ReportDraft 또는 차단 사유, 자원, 오류·DataGap·HOLD 조건을 포함한 `HumanReviewPacket`을 제공한다. `HumanReviewState`는 current packet generation과 current decision pointer를 CAS로 관리한다. `HumanReviewDecision` 저장은 인증된 사람 identity와 exact current packet·state version을 검사한 `SAVE_HUMAN_DECISION` ALLOW action만 허용한다. 외부 disclosure action은 current state가 가리키는 Human Reviewer의 `DISCLOSE`, `report_ready=true`, exact approved report와 target이 있을 때만 허용한다. 새 packet이 생긴 뒤 과거 packet·결정, 승인 목록 밖 report와 Agent 결정은 `DISCLOSURE_DENIED`다.
 
+## 8. Human Review와 safe handoff 경계
+
+정상 Human handoff는 공통 `HumanReviewPacket` record와 그 안의 `ReportDraft`·authoritative
+upstream reference graph다. Human Reviewer는 material claim에서 Verification/Gate와 Evidence/Dynamic/PoC로, policy
+claim에서 Rule Scope review·ProgramPolicyRecord·official source로 역추적할 수 있어야 한다.
+restriction, unresolved condition, counter evidence 처리와 reproduction limitation을 함께 보존한다.
+
+ReportDraft·handoff·일반 trace/evaluation에는 API key, access/refresh/session token, password,
+private key, credential, cookie·Authorization secret, 내부 환경 secret과 hidden chain-of-thought/raw
+private reasoning을 포함하지 않는다. Human Review에 불필요한 PII는 제거하고, claim 검증에 필요한
+식별 정보도 최소화·redact한다. 민감 원본이 필요하면 기존 보호 artifact를 reference로만 조회하며
+일반 handoff에 복제하지 않는다.
+
+redaction 실패, 불필요한 PII·secret·hidden reasoning 포함, 필수 provenance/restriction 누락,
+schema/reference 실패 또는 stale/mismatched revision은 정상 handoff를 차단한다. 기존 공통 validator,
+redaction 경계, `INVALID_OUTPUT`, `AnalysisError`와 `REPORT_ERROR`를 재사용하며 새 validator·secret
+storage·handoff 상태를 정의하지 않는다.
+
+R5-04의 책임은 이 조건을 safe-handoff eligibility로 정의하는 데 한정된다. 실제 redaction 수행
+service, secret storage, validator 구현, 오류 enum과 lifecycle의 owner는 기존 Runtime Validator와
+security/redaction 공통 계약이며 R5가 새로 소유하거나 정의하지 않는다.
+
+`report_permission=ALLOW`는 내부 ReportDraft 생성의 한 전제이고 `report_ready=true`는 current
+packet에 exact valid draft가 있다는 뜻이다. 사람의 `HumanReviewDecision=DISCLOSE`도 외부 제출·공개·
+maintainer 연락·CVE/GHSA 요청의 실행 완료를 의미하지 않는다. 외부 action은 current packet·decision·
+approved report·target과 redaction을 다시 검사하는 R4 공통 authority 경계를 통과해야 하며, 실제
+자동 제출 integration은 현재 설계 범위 밖이다.
+
 ## 위협과 최소 대응
 
 | 위협 | 대응 |
