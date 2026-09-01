@@ -733,7 +733,7 @@ HypothesisProposal:
   vulnerability_type_candidates: [string]
   target_entities: [CodeSymbol]
   target_locations: [CodeLocation]
-  suspected_path: [CodeRelation | CodeLocation]
+  suspected_path: [PathRoleLocation | PathRoleRelation]
   observed_facts: [CodeFact]
   assumptions: [string]
   restrictions: [string]
@@ -759,7 +759,7 @@ VulnerabilityHypothesis:
   statement: string
   target_entities: [CodeSymbol]
   target_locations: [CodeLocation]
-  suspected_path: [CodeRelation | CodeLocation]
+  suspected_path: [PathRoleLocation | PathRoleRelation]
   falsification_questions: [FalsificationQuestion]
   required_validation: [string]
 ```
@@ -772,7 +772,7 @@ VulnerabilityHypothesis:
 
 | 필드 | 채우는 기준 |
 |---|---|
-| `observed_facts` | `CodeFact`로 직접 뒷받침되는 사실만(정적 분석 도구나 코드 조회가 실제로 관측한 것). 관계·흐름 증거는 `suspected_path`(`CodeRelation`)에 담는다 |
+| `observed_facts` | `CodeFact`로 직접 뒷받침되는 사실만(정적 분석 도구나 코드 조회가 실제로 관측한 것). 관계·흐름 증거는 `suspected_path`(`PathRoleRelation`)에 담는다 |
 | `restrictions` | `observed_facts` 중 `fact_kind`가 `AUTH_CHECK`/`PERMISSION_CHECK`/`VALIDATOR`/`SANITIZER`인 `CodeFact`를 요약한 문자열(위치+판정 근거). `restrictions`는 `[string]`이라 `CodeFact` 객체가 아니라 그 사실을 가리키는 설명 문자열이 들어가며, `fact_kind` 분류 자체는 R2가 이미 정한 값을 그대로 참조 |
 | `assumptions` | 코드로 직접 관측되지 않았지만 가설 성립에 필요해서 임시로 참으로 두는 것. 나중에 `CodeContextRequest`나 Verification에서 반증 대상이 된다 |
 | `missing_information` | 가설을 판정하는 데 필요한데 지금 근거가 아예 없는 것 |
@@ -783,23 +783,35 @@ VulnerabilityHypothesis:
 
 **`missing_information` 강제 등재 규칙**: 다음 경우는 판단을 미루지 않고 강제로 `missing_information`에 등재한다.
 
-- `target_locations`/`suspected_path`와 위치가 겹치는 `DataGap`이 있는 경우(내용은 `DataGap.reason`을 해석하지 않고 `DataGap.description`을 그대로 인용한다)
+- `target_locations`/`suspected_path`와 위치가 겹치는 `DataGap`이 있는 경우. `affected_locations`가 있으면 `CodeLocation`으로 직접 비교한다. 비어 있으면 `CodeLocation.file_path`와 `affected_paths`를 비교하고, 그래도 없으면 `file_path` 확장자로 추정한 언어와 `affected_languages`를 비교한다(`LANGUAGE_UNSUPPORTED` 등 언어 단위 gap도 놓치지 않기 위해서). 확장자로 언어를 특정할 수 없으면 겹치는 것으로 간주한다(놓치는 것보다 과다 등재가 안전하다). `suspected_path`의 `PathRoleRelation` 원소는 `relation.from_location`/`relation.to_location` 중 하나만 겹쳐도 등재 대상에 포함한다(둘 다 겹칠 필요 없음). 내용은 `DataGap.reason`을 해석하지 않고 `DataGap.description`을 그대로 인용한다.
 - 경로상 인증·권한이 관련된 지점인데 `restrictions`에 해당 `AUTH_CHECK`/`PERMISSION_CHECK` 근거가 없는 경우
 
 ### suspected_path 원소별 역할
 
-`suspected_path: [CodeRelation | CodeLocation]`의 각 원소가 경로에서 맡는 역할(source/경유/sink)을 표시한다. `CodeRelation`/`CodeLocation` 자체는 `CodeFact.location`·`DataGap.affected_locations` 등 다른 곳에서도 재사용되는 공유 타입이므로, 그 타입에 필드를 추가하지 않고 전용 래퍼로 감싼다.
+`suspected_path`의 각 원소가 경로에서 맡는 역할(source/경유/sink)을 표시한다. `CodeRelation`/`CodeLocation` 자체는 `CodeFact.location`·`DataGap.affected_locations` 등 다른 곳에서도 재사용되는 공유 타입이므로, 그 타입에 직접 필드를 추가하지 않고 전용 타입으로 감싼다. 이 wrapper가 `suspected_path`의 실제 저장 타입이다(내부 파생값이 아니다).
 
-- `CodeLocation` 원소: `{ role: SOURCE | PROPAGATION | SINK, location: CodeLocation }`
-- `CodeRelation` 원소: `{ from_role: SOURCE | PROPAGATION | SINK, to_role: SOURCE | PROPAGATION | SINK, relation: CodeRelation }` — `from_location`/`to_location` 두 지점이 각각 역할을 가지므로 role을 둘로 나눈다.
+```yaml
+PathRoleLocation:
+  role: SOURCE | PROPAGATION | SINK
+  location: CodeLocation
+
+PathRoleRelation:
+  from_role: SOURCE | PROPAGATION | SINK
+  to_role: SOURCE | PROPAGATION | SINK
+  relation: CodeRelation
+```
+
+`PathRoleRelation`이 `from_role`/`to_role` 둘로 나뉘는 이유는 `CodeRelation.from_location`/`to_location`이 각각 다른 지점이라 역할이 다를 수 있기 때문이다.
 
 역할은 `suspected_path`를 만드는 Hypothesis Agent가 채운다. 관측된 `CodeFact.fact_kind`가 `SOURCE`/`SINK`인 위치는 그 값을 그대로 쓰고, 그 외는 `PROPAGATION`으로 채운다. role은 구조적 위치 표시일 뿐 취약점 성립 여부의 판정이 아니다.
+
+`suspected_path`를 시드로 쓰는 on-demand retrieval(`02-static-fact-layer.md`)은 `PathRoleLocation.location`은 그대로, `PathRoleRelation.relation`은 `from_location`/`to_location`(및 있으면 `from_symbol_id`/`to_symbol_id`)으로 풀어서 시드로 사용한다.
 
 ### confidence 산정 축
 
 `confidence: LOW | MEDIUM | HIGH`는 검증 자원 우선순위를 나타내는 scheduling hint이며 진위 확률이 아니다. 다음 세 축의 조합으로 산정한다.
 
-- `observed_facts` 개수와 sink 도달 직접성(`suspected_path`에서 `role=SINK`까지의 hop 수 — 적을수록 직접적)
+- `observed_facts` 개수와 sink 도달 직접성(`suspected_path`에서 `role` 또는 `to_role`이 `SINK`인 지점까지의 hop 수 — 적을수록 직접적)
 - `missing_information` 개수
 - `restrictions` 존재 여부와 대응하는 우회 근거 참조 여부(우회 근거 없으면 confidence를 낮춤)
 
