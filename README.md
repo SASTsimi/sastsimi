@@ -63,11 +63,11 @@ Repository input
 → constrained HypothesisProposal
 → Orchestration이 가설을 등록하고 가설별 Verification owner를 배정
 → Verification이 on-demand context와 운영 기본 Pro/Con 병렬 검증 관리
-→ 필요 시 Verification이 LIMITED_REPRO / FULL_REPRO를 선택하고 ReproductionPlan 생성
-→ Runtime Validator가 계획 reference·호출 권한·상태·예산을 확인해 Sandbox 호출 허가
+→ 필요 시 Verification이 환경 요구사항과 LIMITED_REPRO / FULL_REPRO ReproductionPlan 생성
+→ Runtime Validator가 exact 요구사항·계획 reference, 호출 권한·상태·예산을 확인해 Sandbox 호출 허가
 → Sandbox Controller가 세부 안전 정책을 한 번 검사
-→ Sandbox Runner가 통과한 exact 계획만 실행
-→ Sandbox Result Assembler가 같은 시도의 정책·환경·로그·PoC·정리 참조를 결과로 묶어 반환
+→ Sandbox Runner가 실제 환경·Health Check를 요구사항과 비교하고 필수 항목이 맞을 때만 공격 단계 실행
+→ Sandbox Result Assembler가 exact R6 계획 묶음과 같은 R7 실행 시도의 정책·환경 비교·로그·PoC·정리 참조를 결과로 묶어 반환
 → final TRUE / FALSE / HOLD
 → FALSE는 terminal
 → HOLD는 REQUIRED Primitive로 즉시 Chaining
@@ -137,13 +137,13 @@ main  ← Architecture v5 candidate baseline
 | 단독 구현·통합 개발 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 모듈의 구현 가능성, 계약 준수 테스트와 통합 계획 검토 |
 | PM·아키텍처·워크플로 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 구조, 공통 입출력 계약, 사람·LLM 경계, 병렬·직렬 흐름과 오류 정책 |
 | Gate·Finding·보고서 | 김혜령 ([@kimhr8463](https://github.com/kimhr8463)) | 검증 근거·정책 범위 검토, 내부 Finding과 보고서 초안, 사람 검토 전달 준비 |
-| 검증·반박·플레이북 | 임채민 ([@UltraPeachKeen](https://github.com/UltraPeachKeen)) | 가설별 Context·찬반, 동적 재현 필요성·LIMITED/FULL 선택과 `ReproductionPlan`, 최종 판정·Gate 보완 |
-| 동적검증·Sandbox | 조근석 ([@Potatonion](https://github.com/Potatonion)) | Controller 정책 판정, Runner의 exact 계획 실행, 환경·log·PoC 상세 artifact와 result 조립 |
+| 검증·반박·플레이북 | 임채민 ([@UltraPeachKeen](https://github.com/UltraPeachKeen)) | 가설별 Context·찬반, 환경 요구사항·LIMITED/FULL `ReproductionPlan`, 환경 차이 수용 여부, 최종 판정·Gate 보완 |
+| 동적검증·Sandbox | 조근석 ([@Potatonion](https://github.com/Potatonion)) | Controller 정책 판정, Runner의 환경 구성·요구사항 비교·exact 계획 실행, Health Check·log·PoC 상세 artifact와 result 조립 |
 | 데이터·평가·예산 | 성병찬 ([@gitterable](https://github.com/gitterable)) | 평가 데이터·품질 지표와 예산 profile 설계; 실제 예산 강제는 trusted runtime 담당 |
 
 Gate는 Verification verdict를 변경하거나 공개를 승인하지 않습니다. Reporter는 보고서 초안만 작성하며, 사람만 최종 공개를 결정합니다.
 
-동적 재현의 역할 연결은 `R6 Verification의 모드·계획 결정 → R4 Runtime Validator의 호출 전제 확인 → R7 Sandbox Controller의 세부 정책 검사·판정 저장 → R7 Sandbox Runner의 exact plan 실행 → 비-LLM Result Assembler의 exact reference 조립 → R6의 최종 판정`입니다. R7은 실행 불가능·정책 차단·환경 실패를 기록할 수 있지만 모드를 바꾸거나 최종 verdict를 만들지 않습니다.
+동적 재현의 역할 연결은 `R6 Verification의 환경 요구사항·모드·계획 결정 → R4 Runtime Validator의 exact reference·호출 전제 확인 → R7 Sandbox Controller의 세부 정책 검사·판정 저장 → R7 Sandbox Runner의 실제 환경 비교 → 필수 항목 일치 시 exact plan 공격 단계 실행 → 비-LLM Result Assembler의 exact reference 조립 → R6의 최종 판정`입니다. R7은 환경 차이·실행 불가능·정책 차단을 기록하지만 요구사항·허용 대체값·모드·계획·최종 verdict를 바꾸지 않습니다.
 
 ## 설계 초안
 

@@ -234,7 +234,9 @@ $requiredR403ContractNames = @(
     'ActionRequest:',
     'ActionCheck:',
     'ActionDecision:',
+    'EnvironmentRequirements:',
     'ReproductionPlan:',
+    'SandboxEnvironment:',
     'SandboxStepLog:',
     'LLMCallSpec:',
     'HumanReviewState:',
@@ -292,18 +294,68 @@ foreach ($field in $requiredActionRequestFields) {
     }
 }
 
+$environmentRequirementBlock = [regex]::Match($contractText, '(?ms)^EnvironmentRequirement:\s*(.*?)^EnvironmentRequirements:').Groups[1].Value
+$environmentRequirementsBlock = [regex]::Match($contractText, '(?ms)^EnvironmentRequirements:\s*(.*?)^ReproductionStep:').Groups[1].Value
 $reproductionStepBlock = [regex]::Match($contractText, '(?ms)^ReproductionStep:\s*(.*?)^ReproductionPlan:').Groups[1].Value
-$reproductionPlanBlock = [regex]::Match($contractText, '(?ms)^ReproductionPlan:\s*(.*?)^SandboxStepEntry:').Groups[1].Value
+$reproductionPlanBlock = [regex]::Match($contractText, '(?ms)^ReproductionPlan:\s*(.*?)^EnvironmentCheck:').Groups[1].Value
+$environmentCheckBlock = [regex]::Match($contractText, '(?ms)^EnvironmentCheck:\s*(.*?)^SandboxEnvironment:').Groups[1].Value
+$sandboxEnvironmentBlock = [regex]::Match($contractText, '(?ms)^SandboxEnvironment:\s*(.*?)^SandboxStepEntry:').Groups[1].Value
 $sandboxStepLogBlock = [regex]::Match($contractText, '(?ms)^SandboxStepLog:\s*(.*?)^DynamicReproductionResult:').Groups[1].Value
 $dynamicResultBlock = [regex]::Match($contractText, '(?ms)^DynamicReproductionResult:\s*(.*?)^```').Groups[1].Value
+foreach ($fieldPattern in @(
+    'requirement_id:\s*string',
+    'kind:\s*APP_ROLE \| AUTH \| DATA \| DATABASE \| SERVICE \| FIXTURE \| MOCK \| VERSION \| HEALTH_CHECK',
+    'name:\s*string',
+    'required:\s*boolean',
+    'expected:\s*string \| null',
+    'expected_ref:\s*StoredDataRef \| null',
+    'alternatives:\s*\[string\]',
+    'check_ref:\s*StoredDataRef \| null',
+    'secret_ref:\s*StoredDataRef \| null',
+    'source_refs:\s*\[StoredDataRef\]'
+)) {
+    if (-not [regex]::IsMatch($environmentRequirementBlock, $fieldPattern)) {
+        Add-Failure "missing or invalid EnvironmentRequirement field: $fieldPattern"
+    }
+}
+foreach ($fieldPattern in @('meta:\s*RecordMeta', 'items:\s*\[EnvironmentRequirement\]')) {
+    if (-not [regex]::IsMatch($environmentRequirementsBlock, $fieldPattern)) {
+        Add-Failure "missing or invalid EnvironmentRequirements field: $fieldPattern"
+    }
+}
 foreach ($field in @('step_id:', 'command_ref:', 'attack_input_refs:', 'required:')) {
     if (-not $reproductionStepBlock.Contains($field)) {
         Add-Failure "missing ReproductionStep field: $field"
     }
 }
-foreach ($field in @('mode:', 'hypothesis_ref:', 'sandbox_profile_ref:', 'steps:', 'cleanup_policy_ref:')) {
+foreach ($field in @('mode:', 'hypothesis_ref:', 'environment_requirements_ref:', 'sandbox_profile_ref:', 'steps:', 'cleanup_policy_ref:')) {
     if (-not $reproductionPlanBlock.Contains($field)) {
         Add-Failure "missing ReproductionPlan field: $field"
+    }
+}
+foreach ($fieldPattern in @(
+    'requirement_id:\s*string',
+    'status:\s*MATCH \| MISMATCH \| NOT_CHECKED \| ERROR',
+    'actual:\s*string \| null',
+    'actual_ref:\s*StoredDataRef \| null',
+    'difference:\s*string \| null',
+    'evidence_refs:\s*\[StoredDataRef\]',
+    'check_result_ref:\s*StoredDataRef \| null'
+)) {
+    if (-not [regex]::IsMatch($environmentCheckBlock, $fieldPattern)) {
+        Add-Failure "missing or invalid EnvironmentCheck field: $fieldPattern"
+    }
+}
+foreach ($fieldPattern in @(
+    'meta:\s*RecordMeta',
+    'reproduction_plan_ref:\s*StoredDataRef',
+    'requirements_ref:\s*StoredDataRef',
+    'status:\s*READY \| MISMATCH \| ERROR',
+    'checks:\s*\[EnvironmentCheck\]',
+    'created_at:\s*timestamp'
+)) {
+    if (-not [regex]::IsMatch($sandboxEnvironmentBlock, $fieldPattern)) {
+        Add-Failure "missing or invalid SandboxEnvironment field: $fieldPattern"
     }
 }
 foreach ($field in @('meta:', 'reproduction_plan_ref:', 'entries:')) {
@@ -329,6 +381,9 @@ foreach ($fieldPattern in @(
     if (-not [regex]::IsMatch($dynamicResultBlock, $fieldPattern)) {
         Add-Failure "missing or invalid DynamicReproductionResult field: $fieldPattern"
     }
+}
+if ($dynamicResultBlock.Contains('environment_requirements_ref:')) {
+    Add-Failure 'DynamicReproductionResult must not duplicate environment_requirements_ref; follow reproduction_plan_ref and environment_ref instead'
 }
 foreach ($actionType in $requiredActionTypes) {
     if (-not $actionRequestBlock.Contains($actionType)) {
@@ -525,7 +580,7 @@ $authorityScenarioMarkers = @(
     '`SAVE_RESULT` 검사 뒤 candidate bytes를 바꿈',
     '실행 오류만 든 `FALSE` 후보를 저장',
     '다른 역할이 만든 결과 후보를 저장'
-    '`RUN_SANDBOX` 허가 뒤 재현 계획·공격 입력·cleanup revision이 바뀜'
+    '`RUN_SANDBOX` 허가 뒤 재현 계획·requirements·공격 입력·cleanup revision이 바뀜'
     'Sandbox가 계획에 없는 command·공격 입력을 실행하려 함'
     '동적 결과의 step log·공격 입력·cleanup 정책이 승인 계획과 다름'
     'Verification이 `DynamicReproductionResult`를 직접 저장'
@@ -539,11 +594,11 @@ foreach ($marker in $authorityScenarioMarkers) {
 $sandboxReviewPatterns = @(
     @{
         Name = 'Runtime Validator authorizes Sandbox calls without duplicating detailed policy checks'
-        Pattern = '(?s)`RUN_SANDBOX`의 `ActionDecision=ALLOW`.*?Runtime Validator.*?권한.*?상태.*?예산.*?exact `ReproductionPlan` reference까지만 검사.*?Sandbox Controller.*?image digest.*?command/tool allowlist.*?network target.*?CPU·memory·disk·process·time limit.*?cleanup 정책을 전담 검사'
+        Pattern = '(?s)`RUN_SANDBOX`의 `ActionDecision=ALLOW`.*?Runtime Validator.*?권한.*?상태.*?예산.*?exact `ReproductionPlan`.*?current `EnvironmentRequirements` reference.*?Sandbox Controller.*?image digest.*?command/tool allowlist.*?network target.*?CPU·memory·disk·process·time limit.*?cleanup 정책을 전담 검사'
     },
     @{
         Name = 'RUN_SANDBOX freezes the complete reproduction plan closure'
-        Pattern = '(?s)`RUN_SANDBOX`만 `reproduction_plan_ref`를 사용.*?`input_refs`에는 exact `ReproductionPlan`.*?`hypothesis_ref`.*?`sandbox_profile_ref`.*?`command_ref`.*?`attack_input_refs`.*?`cleanup_policy_ref`'
+        Pattern = '(?s)`RUN_SANDBOX`만 `reproduction_plan_ref`를 사용.*?`input_refs`에는 exact `ReproductionPlan`.*?`hypothesis_ref`.*?`environment_requirements_ref`.*?`sandbox_profile_ref`.*?`command_ref`.*?`attack_input_refs`.*?`cleanup_policy_ref`'
     },
     @{
         Name = 'invoked sandbox execution log exactly matches the authorized plan'
@@ -581,6 +636,68 @@ $sandboxReviewPatterns = @(
 foreach ($rule in $sandboxReviewPatterns) {
     if (-not [regex]::IsMatch($contractText, $rule.Pattern)) {
         Add-Failure "missing or weakened PR #27 Sandbox review rule: $($rule.Name)"
+    }
+}
+
+$environmentHandoffPatterns = @(
+    @{
+        Name = 'R6 owns immutable environment requirements'
+        Pattern = '(?s)`EnvironmentRequirements`는 R6 Verification이.*?불변 요구사항 record.*?R7은 이 record를 만들거나 수정할 수 없다'
+    },
+    @{
+        Name = 'reproduction plan binds current exact requirements'
+        Pattern = '(?s)`ReproductionPlan`.*?`environment_requirements_ref`.*?current exact `EnvironmentRequirements` revision.*?`sandbox_profile_ref`와 다른 의미'
+    },
+    @{
+        Name = 'RUN_SANDBOX closure includes requirements'
+        Pattern = '(?s)action `input_refs`에는 exact `ReproductionPlan`.*?`environment_requirements_ref`.*?current exact `EnvironmentRequirements` revision'
+    },
+    @{
+        Name = 'actual environment compares every requirement'
+        Pattern = '(?s)EnvironmentCheck:.*?status: MATCH \| MISMATCH \| NOT_CHECKED \| ERROR.*?SandboxEnvironment:.*?requirements_ref: StoredDataRef.*?checks: \[EnvironmentCheck\].*?모든 `requirement_id`를 정확히 한 번씩 포함'
+    },
+    @{
+        Name = 'required mismatch stops attack execution'
+        Pattern = '(?s)필수 item.*?`MISMATCH \| NOT_CHECKED \| ERROR`.*?공격 단계를 시작하지 않는다.*?`entries=\[\]`.*?모든 entry가 `SKIPPED`'
+    },
+    @{
+        Name = 'requirements are not duplicated in dynamic result'
+        Pattern = '(?s)`DynamicReproductionResult`에는 `environment_requirements_ref`를 중복 저장하지 않고 plan과 environment의 두 경로를 대조한다'
+    },
+    @{
+        Name = 'R6 revision cannot bypass sandbox policy'
+        Pattern = '(?s)R6가 차이를 허용.*?환경 조건.*?새 `EnvironmentRequirements`.*?새 `ReproductionPlan`.*?Runtime Validator와 Sandbox Controller 검사를 다시'
+    },
+    @{
+        Name = 'environment secrets use opaque handles only'
+        Pattern = '(?s)credential·cookie·token·password.*?저장하지 않는다.*?`secret_ref\(data_kind=secret_handle\)`'
+    },
+    @{
+        Name = 'reproduction plan has a new major schema'
+        Pattern = '(?s)`environment_requirements_ref` 추가.*?`ReproductionPlan`의 새 MAJOR schema'
+    }
+)
+foreach ($rule in $environmentHandoffPatterns) {
+    if (-not [regex]::IsMatch($contractText, $rule.Pattern)) {
+        Add-Failure "missing or weakened R6-R7 environment handoff rule: $($rule.Name)"
+    }
+}
+
+$environmentNegativeMarkers = @(
+    'ReproductionPlan에 `environment_requirements_ref`가 없음',
+    'R7이 EnvironmentRequirements를 만들거나 수정함',
+    'plan과 실제 환경이 다른 requirements revision을 가리킴',
+    '필수 환경 차이가 있는데 공격 단계를 실행함',
+    '허용 목록에 없는 version fallback을 자동 적용함',
+    '오래된 EnvironmentRequirements revision을 재사용함',
+    '환경 구성 실패나 차이를 `DISPROVED | FALSE`로 변환함',
+    '환경 요구사항·실제 값에 credential·token 원문을 저장함',
+    'R6의 차이 수용만으로 Sandbox 정책 재검사를 생략함'
+)
+foreach ($marker in $environmentNegativeMarkers) {
+    $rowPattern = '(?m)^\|\s*' + [regex]::Escape($marker) + '\s*\|'
+    if ([regex]::Matches($securityText, $rowPattern).Count -ne 1) {
+        Add-Failure "missing R6-R7 environment negative scenario: $marker"
     }
 }
 
@@ -799,6 +916,8 @@ Write-Output "R4-03 authority errors: $($requiredAuthorityErrors.Count)"
 Write-Output "R4-03 authority scenarios: $($authorityScenarioMarkers.Count)"
 Write-Output "R4-03 authority rules: $($requiredAuthorityRules.Count)"
 Write-Output "R4-03 Sandbox review rules: $($sandboxReviewPatterns.Count)"
+Write-Output "R6-R7 environment handoff rules: $($environmentHandoffPatterns.Count)"
+Write-Output "R6-R7 environment negative scenarios: $($environmentNegativeMarkers.Count)"
 Write-Output "Verification/Chaining contract markers: $($requiredVerificationChainingContracts.Count)"
 Write-Output "Verification/Chaining scenarios: $($verificationChainingScenarioMarkers.Count)"
 Write-Output "Verification/Chaining semantic rules: $($requiredVerificationChainingRules.Count)"

@@ -141,7 +141,7 @@ PR은 `review/r4-02-state-recovery`를 base로 시작하고 `Closes #15`, `Refs 
 - Base: `review/r4-02-state-recovery`
 - Head: `review/r4-03-authority-boundary`
 - 실제 GitHub 교차 검토 요청: `kimhr8463`, `Potatonion`, `gitterable`, `UltraPeachKeen`
-- R3 통합 구현 검토는 `@YHS-Sec`에게 요청한다.
+- R3 윤희섭 `@YHS-Sec`의 교차 검토는 역할 담당자 검토 항목으로 관리한다.
 
 - [x] **Step 7: 원격 PR head·파일·diff·checks 재검증**
 
