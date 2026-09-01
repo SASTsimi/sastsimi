@@ -189,6 +189,8 @@ foreach ($rule in $reviewRemediationPatterns) {
 
 $resultPath = Join-Path $repoRoot 'docs/architecture-v5/07-results-and-observability.md'
 $resultText = Get-Content -Raw -LiteralPath $resultPath
+$commonWikiPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/common-contracts.md'
+$commonWikiText = Get-Content -Raw -LiteralPath $commonWikiPath
 $requiredErrorCodes = @(
     'STATE_TRANSITION_INVALID',
     'STATE_VERSION_CONFLICT',
@@ -705,6 +707,8 @@ $orchestrationPath = Join-Path $repoRoot 'docs/architecture-v5/03-agent-roles-an
 $orchestrationText = Get-Content -Raw -LiteralPath $orchestrationPath
 $gatePath = Join-Path $repoRoot 'docs/architecture-v5/05-llm-gate-and-reporting.md'
 $gateText = Get-Content -Raw -LiteralPath $gatePath
+$gateWikiPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/gate-and-reporting.md'
+$gateWikiText = Get-Content -Raw -LiteralPath $gateWikiPath
 $requiredAuthorityRules = @(
     '## 역할별 권한 경계',
     '## action 요청과 실행',
@@ -736,6 +740,49 @@ $requiredAuthorityRules = @(
 foreach ($rule in $requiredAuthorityRules) {
     if (-not ($orchestrationText.Contains($rule) -or $gateText.Contains($rule) -or $contractText.Contains($rule) -or $resultText.Contains($rule))) {
         Add-Failure "missing R4-03 authority rule: $rule"
+    }
+}
+
+$requiredR504CrossReviewRules = @(
+    @{
+        Name = 'Technical Gate status fixes handoff readiness'
+        Text = $contractText
+        Marker = '`status=ACCEPT`는 `handoff_readiness=READY`, `status=REVISE | REJECT`는 `handoff_readiness=NOT_READY`만 허용한다.'
+    },
+    @{
+        Name = 'policy-blocked dynamic reproduction is not automatic rejection or falsification'
+        Text = $contractText
+        Marker = '`DynamicReproductionResult(status=BLOCKED, failure_reason=POLICY_BLOCKED)`는 자동 `REJECT` 조건이 아니다.'
+    },
+    @{
+        Name = 'policy freshness is explicit in the shared contract'
+        Text = $contractText
+        Marker = 'freshness_status: CURRENT | STALE | UNVERIFIED'
+    },
+    @{
+        Name = 'stale or unverified policy blocks report permission'
+        Text = $contractText
+        Marker = '`freshness_status=STALE | UNVERIFIED`이면 `rule_compliance`, `scope_compliance`, `review_status`는 `UNCERTAIN`, permission은 `DENY`다.'
+    },
+    @{
+        Name = 'changed upstream revisions supersede report drafts'
+        Text = $contractText
+        Marker = '오래된 draft는 current `HumanReviewPacket.report_draft_refs`와 `approved_report_refs`에 넣을 수 없다.'
+    },
+    @{
+        Name = 'missing Finding creates a non-disclosable blocked packet'
+        Text = $contractText
+        Marker = '`blocked_reasons`에 `FINDING_NOT_CREATED`를 남긴다.'
+    },
+    @{
+        Name = 'Wiki exposes Technical Gate handoff readiness'
+        Text = $gateWikiText
+        Marker = '`handoff_readiness: READY | NOT_READY`'
+    }
+)
+foreach ($rule in $requiredR504CrossReviewRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing or weakened PR #48 cross-review rule: $($rule.Name)"
     }
 }
 
@@ -792,7 +839,10 @@ $verificationChainingScenarioMarkers = @(
     '| N13-A | 같은 역할이지만 배정되지 않은 Verification identity가 Gate·Reporter·새 verification work를 요청 |',
     '| N14 | Chaining Agent가 Primitive match 없는 bypass·impact·dynamic 요청을 출력 |',
     '| N15 | `purpose=PRODUCTION`인데 `verification_mode=BASIC | CONDITIONAL_DEBATE`를 요청 |',
-    '| N16 | 운영 Pro/Con 중 하나를 실행할 예산이 부족 |'
+    '| N16 | 운영 Pro/Con 중 하나를 실행할 예산이 부족 |',
+    '| N17 | Context 조회 실패·timeout·권한 오류만으로 `HOLD`를 저장하려 함 |',
+    '| N18 | 일부 Context 조회는 실패했지만 대체 조회·다른 정상 근거와 운영 Pro/Con으로 필수 검증을 완료 |',
+    '| N19 | 필수 Context 또는 운영 Pro/Con을 확보하지 못했는데 final `VerificationResult`를 저장하려 함 |'
 )
 foreach ($marker in $verificationChainingScenarioMarkers) {
     if (-not $securityText.Contains($marker)) {
@@ -843,6 +893,112 @@ foreach ($phrase in $obsoleteDebatePolicyPhrases) {
     }
 }
 
+$requiredContextFailureRules = @(
+    @{
+        Name = 'Context errors and affected gaps are both recorded'
+        Text = $contractText
+        Marker = '실패 사건은 `AnalysisError(stage=CONTEXT)`로, 그 때문에 확인하지 못한 코드 범위는 `DataGap(stage=CONTEXT)`으로 각각 기록한다.'
+    },
+    @{
+        Name = 'Context errors and gaps are not verdict evidence'
+        Text = $resultText
+        Marker = '`AnalysisError`와 `DataGap` 자체는 supporting evidence, counter evidence 또는 falsification evidence가 아니다.'
+    },
+    @{
+        Name = 'Partial Context failure may still allow a final verdict after required validation'
+        Text = $contractText
+        Marker = '일부 요청이 실패했어도 제한 retry·대체 조회 또는 다른 정상 근거로 가설의 모든 `validation_checks`, 모든 반증 질문과 운영 Pro/Con을 완료했다면 Verification은 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있다.'
+    },
+    @{
+        Name = 'Missing required Context or production debate blocks the final VerificationResult'
+        Text = $contractText
+        Marker = '필수 Context나 운영 Pro/Con을 확보하지 못해 검증 절차 자체를 완료하지 못했다면 final `VerificationResult`를 만들지 않는다.'
+    },
+    @{
+        Name = 'Retryable and exhausted Context failures map to BLOCKED and FAILED'
+        Text = $contractText
+        Marker = '재시도할 수 있으면 해당 Verification work를 `BLOCKED`로 두고 `HypothesisProcessState.status=VERIFYING`을 유지한다. 허용된 재시도를 소진했거나 복구할 수 없으면 같은 atomic transition에서 work와 가설 처리 상태를 `FAILED`로 남긴다.'
+    },
+    @{
+        Name = 'Simple Wiki explains that a Context error alone is not HOLD'
+        Text = $commonWikiText
+        Marker = '단순 조회 오류만으로 `HOLD`를 만들지 않습니다.'
+    },
+    @{
+        Name = 'Canonical Context diagram has the no-final-verdict failure branch'
+        Text = $diagramText
+        Marker = 'FAIL[Atomic work FAILED plus hypothesis FAILED no final result]'
+    }
+)
+foreach ($rule in $requiredContextFailureRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing or weakened Context failure contract: $($rule.Name)"
+    }
+}
+
+$requiredVerificationCompletionRules = @(
+    'ValidationCheck:',
+    'validation_id: string',
+    'instruction: string',
+    'ValidationCheckResult:',
+    'completion: COMPLETE | INCOMPLETE',
+    'validation_checks: [ValidationCheck]',
+    'validation_results: [ValidationCheckResult]'
+)
+foreach ($marker in $requiredVerificationCompletionRules) {
+    if (-not $contractText.Contains($marker)) {
+        Add-Failure "missing enforceable validation completion contract: $marker"
+    }
+}
+
+$requiredVerificationCompletionSemantics = @(
+    '가설의 모든 `ValidationCheck.validation_id`와 candidate의 `ValidationCheckResult.validation_id`가 중복 없이 set-equal',
+    '모든 `ValidationCheckResult.completion=COMPLETE`',
+    '각 결과의 `evidence_refs`가 하나 이상',
+    '`INCOMPLETE` 항목이 하나라도 있으면 final candidate를 `COMMITTED`하지 않는다.'
+)
+foreach ($marker in $requiredVerificationCompletionSemantics) {
+    if (-not $contractText.Contains($marker)) {
+        Add-Failure "missing structural validation completion rule: $marker"
+    }
+}
+
+$requiredHypothesisFailureRules = @(
+    'status: REGISTERED | ASSIGNED | VERIFYING | TERMINAL | FAILED | CANCELLED',
+    '`HypothesisProcessState.status=FAILED`',
+    '`verification_result_ref=null`',
+    '같은 `VERIFICATION` work의 `FAILED` revision',
+    '`VERIFICATION`의 `FAILED`와 `HypothesisProcessState.status=FAILED`',
+    '`failed_hypothesis_count`'
+)
+foreach ($marker in $requiredHypothesisFailureRules) {
+    if (-not ($contractText.Contains($marker) -or $resultText.Contains($marker) -or $orchestrationText.Contains($marker) -or $commonWikiText.Contains($marker))) {
+        Add-Failure "missing no-verdict hypothesis failure contract: $marker"
+    }
+}
+
+$requiredTechnicalGateScopeRules = @(
+    'final `TRUE` 근거의 의미적 충분성과 코드·실행 근거 연결은 Technical Evidence Gate가 exact final TRUE revision을 대상으로 별도로 검토한다.',
+    '`FALSE | HOLD`는 Technical Gate 입력이 아니며, 구조 검사를 통과했다는 사실이 Gate 승인을 의미하지 않는다.'
+)
+foreach ($marker in $requiredTechnicalGateScopeRules) {
+    if (-not $contractText.Contains($marker)) {
+        Add-Failure "missing exact Technical Gate TRUE-only scope rule: $marker"
+    }
+}
+
+$obsoleteContextFailurePhrases = @(
+    '잘림·조회 실패를 숨기지 않고 HOLD 또는 추가 조회 판단에 전달',
+    'Verification Agent가 다른 근거와 함께 `HOLD` 여부 결정',
+    'required_validation:',
+    '근거가 verdict를 의미상 충분히 지지하는지는 Technical Evidence Gate가 검토한다.'
+)
+foreach ($phrase in $obsoleteContextFailurePhrases) {
+    if ($activeDebateText.Contains($phrase)) {
+        Add-Failure "obsolete Context failure contract remains: $phrase"
+    }
+}
+
 $savedErrorAction = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 $gitCheck = & git -C $repoRoot diff --check 2>&1
@@ -877,6 +1033,12 @@ Write-Output "Verification/Chaining contract markers: $($requiredVerificationCha
 Write-Output "Verification/Chaining scenarios: $($verificationChainingScenarioMarkers.Count)"
 Write-Output "Verification/Chaining semantic rules: $($requiredVerificationChainingRules.Count)"
 Write-Output "Production debate policy rules: $($requiredDebatePolicyRules.Count)"
+Write-Output "Context failure contract rules: $($requiredContextFailureRules.Count)"
+Write-Output "Validation completion contract rules: $($requiredVerificationCompletionRules.Count)"
+Write-Output "Validation completion semantic rules: $($requiredVerificationCompletionSemantics.Count)"
+Write-Output "No-verdict hypothesis failure rules: $($requiredHypothesisFailureRules.Count)"
+Write-Output "Technical Gate TRUE-only scope rules: $($requiredTechnicalGateScopeRules.Count)"
+Write-Output "Obsolete Context failure phrases: $($obsoleteContextFailurePhrases.Count)"
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {
