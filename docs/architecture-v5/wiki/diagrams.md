@@ -92,15 +92,20 @@ flowchart LR
     FACTS --> HYP[Hypothesis anchor entity location path]
     HYP --> REQ[CodeContextRequest]
     REQ --> CHECK{Same workspace and commit within budget}
-    CHECK -->|No| GAP[Error or explicit gap]
+    CHECK -->|No| ERROR[AnalysisError plus affected DataGap]
     CHECK -->|Yes| RET[Context Retrieval Service]
     RET --> REL[Callers Callees Data flow Auth guards Routes]
     REL --> RESP[CodeContextResponse]
-    RESP --> AGENT[Verification Pro Con or Technical Gate]
+    RET -->|Failure timeout denied| ERROR
+    RESP --> COMPLETE{Can required verification finish with valid evidence}
+    ERROR --> COMPLETE
+    COMPLETE -->|Retry or alternate lookup| REQ
+    COMPLETE -->|Required input still missing| STOP[BLOCKED if retryable else FAILED no final verdict]
+    COMPLETE -->|Yes| AGENT[Verification Pro Con or Technical Gate]
     AGENT --> LOG[Log retrieved locations]
 ```
 
-empty, truncated와 unresolved response는 안전함 또는 `FALSE`로 자동 변환하지 않는다.
+empty, truncated, gap와 error는 `TRUE | FALSE | HOLD`의 근거로 자동 변환하지 않는다. 일부 조회 실패가 있어도 정상 근거로 필수 검증을 완료하면 판정할 수 있지만, 필수 입력이 끝내 없으면 final `VerificationResult`를 만들지 않는다.
 
 ## 3. 저비용 가설 생성과 출력 통제
 

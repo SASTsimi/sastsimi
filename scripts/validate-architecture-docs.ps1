@@ -189,6 +189,8 @@ foreach ($rule in $reviewRemediationPatterns) {
 
 $resultPath = Join-Path $repoRoot 'docs/architecture-v5/07-results-and-observability.md'
 $resultText = Get-Content -Raw -LiteralPath $resultPath
+$commonWikiPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/common-contracts.md'
+$commonWikiText = Get-Content -Raw -LiteralPath $commonWikiPath
 $requiredErrorCodes = @(
     'STATE_TRANSITION_INVALID',
     'STATE_VERSION_CONFLICT',
@@ -837,7 +839,10 @@ $verificationChainingScenarioMarkers = @(
     '| N13-A | 같은 역할이지만 배정되지 않은 Verification identity가 Gate·Reporter·새 verification work를 요청 |',
     '| N14 | Chaining Agent가 Primitive match 없는 bypass·impact·dynamic 요청을 출력 |',
     '| N15 | `purpose=PRODUCTION`인데 `verification_mode=BASIC | CONDITIONAL_DEBATE`를 요청 |',
-    '| N16 | 운영 Pro/Con 중 하나를 실행할 예산이 부족 |'
+    '| N16 | 운영 Pro/Con 중 하나를 실행할 예산이 부족 |',
+    '| N17 | Context 조회 실패·timeout·권한 오류만으로 `HOLD`를 저장하려 함 |',
+    '| N18 | 일부 Context 조회는 실패했지만 대체 조회·다른 정상 근거와 운영 Pro/Con으로 필수 검증을 완료 |',
+    '| N19 | 필수 Context 또는 운영 Pro/Con을 확보하지 못했는데 final `VerificationResult`를 저장하려 함 |'
 )
 foreach ($marker in $verificationChainingScenarioMarkers) {
     if (-not $securityText.Contains($marker)) {
@@ -888,6 +893,59 @@ foreach ($phrase in $obsoleteDebatePolicyPhrases) {
     }
 }
 
+$requiredContextFailureRules = @(
+    @{
+        Name = 'Context errors and affected gaps are both recorded'
+        Text = $contractText
+        Marker = '실패 사건은 `AnalysisError(stage=CONTEXT)`로, 그 때문에 확인하지 못한 코드 범위는 `DataGap(stage=CONTEXT)`으로 각각 기록한다.'
+    },
+    @{
+        Name = 'Context errors and gaps are not verdict evidence'
+        Text = $resultText
+        Marker = '`AnalysisError`와 `DataGap` 자체는 supporting evidence, counter evidence 또는 falsification evidence가 아니다.'
+    },
+    @{
+        Name = 'Partial Context failure may still allow a final verdict after required validation'
+        Text = $contractText
+        Marker = '일부 요청이 실패했어도 제한 retry·대체 조회 또는 다른 정상 근거로 가설의 `required_validation`, 모든 반증 질문과 운영 Pro/Con을 완료했다면 Verification은 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있다.'
+    },
+    @{
+        Name = 'Missing required Context or production debate blocks the final VerificationResult'
+        Text = $contractText
+        Marker = '필수 Context나 운영 Pro/Con을 확보하지 못해 검증 절차 자체를 완료하지 못했다면 final `VerificationResult`를 만들지 않는다.'
+    },
+    @{
+        Name = 'Retryable and exhausted Context failures map to BLOCKED and FAILED'
+        Text = $contractText
+        Marker = '재시도할 수 있으면 해당 Verification work를 `BLOCKED`, 허용된 재시도를 소진했거나 복구할 수 없으면 `FAILED`로 남긴다.'
+    },
+    @{
+        Name = 'Simple Wiki explains that a Context error alone is not HOLD'
+        Text = $commonWikiText
+        Marker = '단순 조회 오류만으로 `HOLD`를 만들지 않습니다.'
+    },
+    @{
+        Name = 'Canonical Context diagram has the no-final-verdict failure branch'
+        Text = $diagramText
+        Marker = 'STOP[BLOCKED if retryable else FAILED no final verdict]'
+    }
+)
+foreach ($rule in $requiredContextFailureRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing or weakened Context failure contract: $($rule.Name)"
+    }
+}
+
+$obsoleteContextFailurePhrases = @(
+    '잘림·조회 실패를 숨기지 않고 HOLD 또는 추가 조회 판단에 전달',
+    'Verification Agent가 다른 근거와 함께 `HOLD` 여부 결정'
+)
+foreach ($phrase in $obsoleteContextFailurePhrases) {
+    if ($activeDebateText.Contains($phrase)) {
+        Add-Failure "obsolete Context failure contract remains: $phrase"
+    }
+}
+
 $savedErrorAction = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 $gitCheck = & git -C $repoRoot diff --check 2>&1
@@ -922,6 +980,8 @@ Write-Output "Verification/Chaining contract markers: $($requiredVerificationCha
 Write-Output "Verification/Chaining scenarios: $($verificationChainingScenarioMarkers.Count)"
 Write-Output "Verification/Chaining semantic rules: $($requiredVerificationChainingRules.Count)"
 Write-Output "Production debate policy rules: $($requiredDebatePolicyRules.Count)"
+Write-Output "Context failure contract rules: $($requiredContextFailureRules.Count)"
+Write-Output "Obsolete Context failure phrases: $($obsoleteContextFailurePhrases.Count)"
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {

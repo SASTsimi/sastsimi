@@ -65,6 +65,8 @@ marker를 남긴 직후 프로그램이 꺼졌다면 재시작할 때 기존 mar
 
 같은 규칙을 Technical Gate, Rule Scope Gate와 `ReportDraft`에도 적용합니다.
 
+Context 조회 실패·timeout·권한 오류가 있어도 정상 근거로 필수 검증을 완료할 수 있으면 현재 Verification work를 계속합니다. 반대로 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증을 끝낼 수 없으면 final `VerificationResult`를 만들지 않습니다. retry·재인증·새 입력을 기다릴 수 있으면 work는 `BLOCKED`, 허용된 재시도를 모두 소진했거나 복구할 수 없으면 `FAILED`입니다. 단순 오류를 `HOLD`로 바꾸지 않습니다.
+
 동적 재현은 같은 단어의 뜻을 구분해야 합니다.
 
 - 동적 결과 `FAILED + ENVIRONMENT_SETUP`: 필수 환경이 다르거나 확인되지 않아 공격 단계를 시작하지 못한 상태입니다. 가설 반증이나 `PARTIAL`이 아니며, R6가 조건을 바꾸면 새 요구사항과 이를 가리키는 새 계획을 함께 만들어 다시 검사받습니다.

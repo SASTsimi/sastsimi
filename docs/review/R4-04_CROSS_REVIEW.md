@@ -40,11 +40,11 @@ PR #47은 문서 자동 검사와 기술 검토를 통과했지만 GitHub 교차
 | 역할 | 담당자 | 이번에 확인할 내용 | 현재 상태 | GitHub 증거 |
 |---|---|---|---|---|
 | R1 LLM 탐색·체이닝 | `@baeseungwon1010` | 가설 생성, HOLD·TRUE+TRUE 체이닝 입력과 새 가설 재검증 조건 | `RECHECK_REQUIRED` | [이전 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5476469510), Research 표현 정리 뒤 최종 SHA 재확인 필요 |
-| R2 정적분석·컨텍스트 | `@zv9uvr` | AST/SAST 사실, 코드 위치, 호출 경로와 공통 식별자 연결 | `APPROVED` | [승인 기록](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5477979652), 이번 수정은 R2 사실 계약을 바꾸지 않음 |
+| R2 정적분석·컨텍스트 | `@zv9uvr` | AST/SAST 사실, 코드 위치, 호출 경로, Context 오류·누락 범위와 공통 식별자 연결 | `RECHECK_REQUIRED` | [이전 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5477979652), Context 오류의 `AnalysisError`·`DataGap` 연결과 final verdict 조건 추가 뒤 재검토 필요 |
 | R3 통합 구현 | `@YHS-Sec` | 상태 전이, 재시도·복구, 계약을 실제 코드로 구현할 수 있는지 | `RECHECK_REQUIRED` | [수정 요청](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5486717955) 반영 뒤 최종 SHA 재검토 필요 |
 | R4 PM·아키텍처 | `@taehyeon-git` | 다른 역할의 검토 증거, 최신 main과 환경 계약 병합 결과, 최종 commit과 완료 조건 확인 | `RECHECK_REQUIRED` | 최신 main 동기화와 R6–R7 환경 계약 추가 뒤 최종 SHA 재확인 필요 |
 | R5 Gate·Finding·보고서 | `@kimhr8463` | 두 Gate 순서, REVISE, Reporter 호출과 사람 전달 조건 | `RECHECK_REQUIRED` | [수정 요청](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5476190803) 반영 뒤 최종 SHA 재검토 필요 |
-| R6 검증·반박 | `@UltraPeachKeen` | Pro/Con 독립성, TRUE/FALSE/HOLD, `EnvironmentRequirements`·plan revision과 환경 실패 `INCONCLUSIVE` 처리 | `RECHECK_REQUIRED` | 최신 main의 R6–R7 환경 계약을 포함한 최종 SHA 재검토 필요 |
+| R6 검증·반박 | `@UltraPeachKeen` | Pro/Con 독립성, Context 오류와 final verdict 구분, TRUE/FALSE/HOLD, `EnvironmentRequirements`·plan revision과 환경 실패 `INCONCLUSIVE` 처리 | `RECHECK_REQUIRED` | Context 오류만으로 HOLD 금지, 정상 근거로 필수 검증 완료 시 판정 허용, 필수 검증 미완료 시 final result 금지 기준 재검토 필요 |
 | R7 동적검증·Sandbox | `@Potatonion` | LIMITED/FULL_REPRO, exact 요구사항과 실제 환경 비교, PoC·log·sandbox 권한과 결과 연결 | `RECHECK_REQUIRED` | 최신 main의 실제 환경 비교 계약을 포함한 최종 SHA 재검토 필요 |
 | R8 데이터·평가·예산 | `@gitterable` | 운영 `ALWAYS_DEBATE`, 평가 모드 격리, 예산 초과 처리 | `WAITING` | — |
 
@@ -64,6 +64,9 @@ R4 담당자는 이 PR의 작성자이므로 자신의 확인만으로 교차 �
 - `handoff_readiness`를 정본과 Wiki에 함께 표시합니다.
 - Sandbox authority는 ADR-001에 누적하지 않고 ADR-002에서 별도로 검토합니다.
 - active Research 역할처럼 보이는 Issue template과 R3 Issue 표현을 현재 `INITIAL | VERIFICATION | CHAINING` 기준으로 정리합니다.
+- Context 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 함께 기록하며 오류 자체를 verdict 근거로 쓰지 않습니다.
+- 일부 조회가 실패해도 대체 조회·다른 정상 근거와 운영 Pro/Con으로 필수 검증을 완료하면 실제 근거에 따라 `TRUE | FALSE | HOLD`를 허용합니다.
+- 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증 절차를 완료하지 못하면 final `VerificationResult`를 만들지 않고, retry 가능 여부에 따라 work를 `BLOCKED | FAILED`로 남깁니다.
 
 최신 main 병합 commit `cb3aa9944f46f590d631cf3991dcaf44d0f0b00b`에서 위 계약을 보존했고, 문서 자동 검사 61개·Mermaid 정본 13개·Wiki 13개를 실패 0건으로 통과했습니다. 최종 `review freeze SHA`는 이 기록을 포함한 마지막 commit으로 PR 본문에서 다시 고정합니다.
 

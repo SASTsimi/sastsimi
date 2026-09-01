@@ -246,6 +246,9 @@ Finding이 없는 packet은 `FINDING_NOT_CREATED` 사유를 가진 내부 blocke
 | N14 | Chaining Agent가 Primitive match 없는 bypass·impact·dynamic 요청을 출력 | schema/result-owner validation에서 invalid로 거절 |
 | N15 | `purpose=PRODUCTION`인데 `verification_mode=BASIC | CONDITIONAL_DEBATE`를 요청 | Runtime Validator가 `ACTION_NOT_ALLOWED`; 운영 결과·Gate·Primitive·Reporter 생성 금지 |
 | N16 | 운영 Pro/Con 중 하나를 실행할 예산이 부족 | `BUDGET_EXCEEDED`로 Verification work 중단; skip·BASIC fallback·final verdict 생성 금지 |
+| N17 | Context 조회 실패·timeout·권한 오류만으로 `HOLD`를 저장하려 함 | 오류는 `AnalysisError`, 확인하지 못한 범위는 `DataGap`으로 기록; verdict evidence가 없으므로 `SAVE_RESULT` 거절 |
+| N18 | 일부 Context 조회는 실패했지만 대체 조회·다른 정상 근거와 운영 Pro/Con으로 필수 검증을 완료 | 오류·gap을 보존하고 실제 근거에 따라 `TRUE | FALSE | HOLD` 저장 허용 |
+| N19 | 필수 Context 또는 운영 Pro/Con을 확보하지 못했는데 final `VerificationResult`를 저장하려 함 | final 저장 거절; retry 가능이면 work `BLOCKED`, 허용된 재시도 소진·복구 불가이면 `FAILED` |
 
 ## 남는 위험
 

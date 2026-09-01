@@ -65,11 +65,13 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 - `DataGap`: 분석하지 못했거나 일부만 확인한 범위입니다. 예: Git LFS 실제 파일 없음, 일부 SAST 실패, 잘린 코드 조회.
 - `AnalysisError`: 작업이 정상적으로 끝나지 못한 사건입니다. 예: clone 실패, provider 인증 실패, sandbox 오류.
 
-둘 다 자동으로 `FALSE`가 되지 않습니다. `FALSE`는 미리 정한 반증 질문과 실제 반증 근거가 연결될 때만 가능합니다.
+둘 다 자동으로 `TRUE`, `FALSE`, `HOLD`가 되지 않습니다. 오류는 “작업이 실패했다”는 기록이고, 취약점 판정 근거가 아닙니다. `FALSE`는 미리 정한 반증 질문과 실제 반증 근거가 연결될 때만 가능합니다.
 
 각 반증 질문에는 `question_id`를 붙입니다. 최종 검증은 모든 질문에 결과를 남기며, 실제 근거가 있는 `DISPROVED` 질문이 하나 이상일 때만 `FALSE`를 허용합니다. `NOT_DISPROVED`는 질문으로 반증하지 못했다는 뜻이며 취약점이 증명됐다는 뜻이 아닙니다.
 
 정적 분석과 코드 조회 결과는 사용할 수 있는 사실뿐 아니라 도구별 실행 상태, 분석·제외 범위, `DataGap`, `AnalysisError`를 함께 전달합니다. `DataGap`은 영향받은 path·language·코드 위치를 가능한 범위에서 적습니다. 결과가 비어 있거나 일부 도구가 실패했다는 이유로 안전하다고 판단하지 않습니다.
+
+Context 조회가 실패·timeout·권한 오류로 끝나면 실패 사건은 `AnalysisError`, 그 때문에 확인하지 못한 코드 범위는 `DataGap`으로 함께 남깁니다. 일부 조회가 실패했더라도 재시도·대체 조회·다른 정상 근거로 필수 Context와 운영 Pro/Con을 포함한 검증 절차를 끝냈다면 실제 근거에 따라 `TRUE | FALSE | HOLD`를 저장할 수 있습니다. 필수 검증을 끝내지 못했다면 final `VerificationResult`를 만들지 않고, 다시 시도할 수 있으면 work를 `BLOCKED`, 더 시도할 수 없으면 `FAILED`로 남깁니다. 단순 조회 오류만으로 `HOLD`를 만들지 않습니다.
 
 ## 동적 재현 실패와 반증은 다릅니다
 

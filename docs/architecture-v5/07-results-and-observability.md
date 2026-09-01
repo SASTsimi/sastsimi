@@ -200,6 +200,7 @@ ReportDraft가 가리킨 Verification·CWE·두 Gate·정책 중 하나라도 �
 | 가설 Agent·Verification 오류 | retry 가능하면 `BLOCKED`, 아니면 `FAILED` | 다른 가설 계속, 해당 가설은 근거 없이 `FALSE`가 되지 않으며 분석 `PARTIAL` 가능 |
 | provider 인증 필요 | `BLOCKED`, `waiting_for=AUTH` | 재인증 또는 승인된 failover 전까지 대기, verdict 변경 금지 |
 | rate limit·timeout | retry 가능하면 `BLOCKED`, 아니면 `FAILED` | backoff·예산 확인 뒤 새 attempt, 이전 실패 보존 |
+| Context 조회 실패·timeout·권한 오류 | 필수 검증을 아직 완료하지 못했고 retry 가능하면 `BLOCKED`, 더 시도할 수 없으면 `FAILED`; 대체 조회·다른 정상 근거로 필수 검증을 완료할 수 있으면 현재 Verification 계속 | `AnalysisError`와 영향 범위 `DataGap`을 함께 남긴다. 오류 자체는 verdict 근거가 아니며, 필수 검증을 완료하지 못하면 final `VerificationResult`를 만들지 않음 |
 | Sandbox 환경 구성 실패 | `FAILED + ENVIRONMENT_SETUP` | 동적 반증이 아님, Verification이 남은 근거로 unresolved condition을 판단 |
 | 필수 환경 요구사항 차이·미확인·비교 오류 | `FAILED + ENVIRONMENT_SETUP`, `sandbox_environment=MISMATCH | ERROR` | 공격 단계를 시작하지 않고 exact 차이를 R6에 반환. 요구사항 변경이면 새 requirements와 이를 가리키는 새 plan, 단계 변경만이면 새 plan과 새 Sandbox 검사가 필요 |
 | Sandbox 부분 실행 | `PARTIAL`, 신뢰 결과와 `limitations` 저장 | 실제 오류가 없으면 `error_ids`·`gap_ids`를 만들지 않고 Verification이 한계와 관측을 함께 판단 |
@@ -216,7 +217,16 @@ ReportDraft가 가리킨 Verification·CWE·두 Gate·정책 중 하나라도 �
 
 ## DataGap과 오류 분류
 
-`DataGap`은 분석하지 못한 범위이고 `AnalysisError`는 실행 실패 사건이다. 둘 다 `created_at`을 UTC RFC 3339로 기록하며 자동으로 취약점 `FALSE`가 되지 않는다.
+`DataGap`은 분석하지 못한 범위이고 `AnalysisError`는 실행 실패 사건이다. 둘 다 `created_at`을 UTC RFC 3339로 기록하며 자동으로 취약점 `TRUE | FALSE | HOLD`가 되지 않는다.
+
+Context 조회 실패·timeout·권한 오류는 다음 기준으로 처리한다.
+
+1. 실패 사건은 `AnalysisError(stage=CONTEXT, code=CONTEXT_RETRIEVAL_ERROR)`로 기록한다. 그 오류 때문에 확인하지 못한 path·language·location은 `DataGap(stage=CONTEXT)`으로 기록한다. 두 항목의 `related_record_ids`는 가능한 범위에서 같은 `CodeContextRequest`·`CodeContextResponse`·Verification work record를 가리키고, `error_id`와 `gap_id`는 해당 attempt의 `TransitionCommit`과 최종 `AnalysisRunResult`에 보존한다.
+2. `AnalysisError`와 `DataGap` 자체는 supporting evidence, counter evidence 또는 falsification evidence가 아니다. 단순 조회 실패만으로 `TRUE | FALSE | HOLD`를 만들지 않는다.
+3. 일부 조회가 실패했어도 제한 retry, 대체 조회 또는 같은 `workspace_id + commit_id`의 다른 정상 근거로 가설의 `required_validation`, 모든 반증 질문과 운영 Pro/Con을 완료했다면 final verdict를 저장할 수 있다. 이때 실제 공격 경로가 충분히 지지되면 `TRUE`, named falsification이 실제 근거로 반증되면 `FALSE`, 유효한 근거로 확인한 범위와 결론을 막는 중요한 조건이 함께 남으면 `HOLD`다.
+4. 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증 절차 자체를 완료하지 못하면 final `VerificationResult`를 만들지 않는다. retry·재인증·새 입력을 기다릴 수 있으면 Verification work를 `BLOCKED`, 허용된 재시도를 모두 소진했거나 복구할 수 없으면 `FAILED`로 끝낸다.
+
+따라서 `HOLD`는 정상 근거를 검토한 뒤 남은 보안 조건을 나타내며, 실행 오류를 domain verdict로 바꾼 이름이 아니다.
 
 | code | 주 생산자 | 실행·상태에 미치는 영향 | 기본 복구 방향 |
 |---|---|---|---|
@@ -227,7 +237,7 @@ ReportDraft가 가리킨 Verification·CWE·두 Gate·정책 중 하나라도 �
 | `WORKSPACE_CHANGED` | Repository Loader·validator | 분석 `FAILED`, 변경 뒤 결과 사용 금지 | 새 작업공간에서 새 분석 |
 | `WORKSPACE_MISSING` | 코드 조회·runtime | 해당 작업 실패 | 보존 결과로 판단하거나 새 분석 |
 | `STATIC_TOOL_ERROR` | AST/SAST runner | 사용 가능한 결과가 있으면 분석 `PARTIAL` 가능 | 제한 retry 또는 gap 보존 |
-| `CONTEXT_RETRIEVAL_ERROR` | Context Retrieval Service | 오류와 누락 범위를 Verification에 전달 | 범위·요청을 고쳐 제한 retry; Verification Agent가 다른 근거와 함께 `HOLD` 여부 결정 |
+| `CONTEXT_RETRIEVAL_ERROR` | Context Retrieval Service | `AnalysisError`와 영향 범위 `DataGap`을 함께 전달; 오류 자체는 verdict 근거가 아님 | 제한 retry·대체 조회·정상 근거로 필수 검증을 완료하면 근거에 따라 final verdict 가능; 완료하지 못하면 retry 가능 시 `BLOCKED`, 아니면 `FAILED`이며 final verdict 없음 |
 | `INVALID_OUTPUT` | Agent Runtime | 해당 LLM 출력 사용 금지 | 제한 repair 뒤 종료 |
 | `INVOCATION_CHAIN_INVALID` | Agent Runtime·log validator | retry/failover 관계 record 사용 금지 | 유효한 바로 앞 호출을 연결하거나 새 독립 호출로 다시 시작 |
 | `AGENT_ERROR` | Agent Runtime | 해당 Agent 작업 실패 | 새 `attempt_id`로 제한 retry |
@@ -242,7 +252,7 @@ ReportDraft가 가리킨 Verification·CWE·두 Gate·정책 중 하나라도 �
 | `POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 Gate `UNCERTAIN + DENY` | 공식 출처 재확인 |
 | `RULE_SCOPE_GATE_ERROR` | 정책·영향 Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
 | `REPORT_ERROR` | Reporter runtime | 초안 `FAILED`, 기술 판정 유지 | 조건 보존 후 초안 재작성 |
-| `BUDGET_EXCEEDED` | Orchestration runtime | 작업 중단과 남은 검증 조건을 Verification에 전달; 분석은 `PARTIAL` 가능 | Verification Agent가 근거와 함께 가설 `HOLD` 여부를 결정하고, 새 예산 승인 뒤에만 재시도 |
+| `BUDGET_EXCEEDED` | Orchestration runtime | 작업 중단과 남은 검증 조건을 Verification에 전달; 분석은 `PARTIAL` 가능 | 운영 Pro/Con 등 필수 검증을 끝내지 못했다면 final verdict 없이 work를 중단하고, 새 예산 승인 뒤 새 attempt에서만 재시도 |
 | `CANCELLED` | 사용자·runtime | 해당 작업 또는 분석 `CANCELLED` | 자동 재시도 금지 |
 | `SCHEMA_UNSUPPORTED` | schema validator | 해당 record 사용 금지 | 지원 schema로 다시 생성 |
 | `RECORD_REVISION_MISMATCH` | record validator | revision 자동 병합 금지 | 올바른 이전 revision에서 재생성 |
