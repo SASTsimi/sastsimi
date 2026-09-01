@@ -90,7 +90,9 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - Docker build와 실행은 분석용 `CodeWorkspace`를 직접 수정하지 않고 sandbox 내부 복사본에서 수행한다.
 - LLM이 재현을 제안해도 sandbox policy를 변경하거나 임의 shell·외부 공격·지속성 설치를 승인할 수 없다.
 - `RUN_SANDBOX`는 Runtime Validator가 요청자·상태·예산과 exact `ReproductionPlan` reference를 확인한 `ActionDecision=ALLOW` 뒤 Sandbox Controller로 전달한다. 이 ALLOW는 Sandbox 정책 통과나 Docker 실행 성공을 뜻하지 않는다.
-- Sandbox Controller는 image digest, command/tool allowlist, read-only input, network target, CPU·memory·disk·process·time limit와 cleanup policy를 검사한다. 전부 통과한 exact 계획만 Sandbox Runner가 실행한다.
+- Sandbox Controller는 image digest, command/tool allowlist, read-only input, network target, CPU·memory·disk·process·time limit와 cleanup policy를 검사하고 exact `sandbox_policy_decision` record를 저장한다. 전부 통과한 exact 계획만 Sandbox Runner가 실행한다.
+- Runner가 호출되지 않았으면 step log를 만들지 않고, 호출됐으면 첫 단계 실패도 append-only log에 남긴다. 계획용 환경 설정과 실제 생성 환경 record를 분리하며 PoC·정책 판정·환경·log는 같은 analysis·workspace·commit·hypothesis·attempt에 속한 exact revision만 연결한다.
+- 정리 대상이 하나도 생기지 않았을 때만 `cleanup_status=NOT_REQUIRED`다. 정책 차단 전에 build·container·network·volume·임시 파일이 생겼다면 정리 성공 또는 실패를 기록하며 `NOT_REQUIRED`로 숨기지 않는다.
 - network는 default-deny다. 저장소나 LLM이 새 대상 통신을 요구해도 승인된 versioned sandbox profile에 없으면 `SANDBOX_POLICY_DENIED`다.
 
 ## 6. 프로그램 정책 신뢰 경계
@@ -202,6 +204,11 @@ Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 �
 | Sandbox가 계획에 없는 command·공격 입력을 실행하려 함 | exact `ReproductionPlan`과 실행할 step·input refs | `SANDBOX_POLICY_DENIED`, 실행 금지와 오류 기록 |
 | 동적 결과의 step log·공격 입력·cleanup 정책이 승인 계획과 다름 | `RUN_SANDBOX` USED decision, plan closure, `SandboxStepLog`, 결과 candidate | `SAVE_RESULT` 거절, 결과 `COMMITTED`·Verification 전달 금지 |
 | Verification이 `DynamicReproductionResult`를 직접 저장 | `dynamic_reproduction_result`의 result-owner와 `requested_by` | `AUTHORITY_DENIED`, Sandbox 생산 후보만 허용 |
+| Runner를 호출하지 않았는데 step log가 있거나 호출했는데 log가 없음 | `runner_invoked`와 `steps_ref` | `SAVE_RESULT`의 `SCHEMA` 검사 거절, 가설 판정 변경 금지 |
+| 정책 차단 결과에 Controller 판정 reference가 없음 | `POLICY_BLOCKED`와 `policy_decision_ref` | `SAVE_RESULT` 거절, Technical Gate 결과로 대신 채우기 금지 |
+| 실제 환경 생성 여부와 `environment_ref`가 다름 | `environment_created`와 exact `sandbox_environment` record | `SAVE_RESULT` 거절, 계획용 환경 설정으로 대체 금지 |
+| 정리 대상이 생겼는데 `NOT_REQUIRED`로 기록 | `cleanup_required`, 자원 생성 기록과 `cleanup_status` | `SAVE_RESULT` 거절, 남은 자원 격리와 운영 오류 기록 |
+| PoC 존재만으로 재현 성공을 주장하거나 최신 PoC를 다시 선택 | result의 exact `poc_ref`, step log와 content hash | `SAVE_RESULT` 또는 Gate 검토 거절, 생성본·실행본 혼합 금지 |
 
 ## Verification ownership과 Chaining admission 시나리오
 

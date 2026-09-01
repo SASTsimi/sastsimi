@@ -279,7 +279,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 검토할 입력·출력
 
 - 입력: 모든 전문 역할 contract 요구, budget/eval 결과, provider/sandbox/storage 제한, human review 요구
-- 출력: versioned RecordMeta/state/error contract, `WorkExecutionState`·attempt·transition commit, `ActionRequest`·`ActionDecision`, `HumanReviewPacket`·`HumanReviewDecision`, orchestration state machine, RACI, review map, ADR와 run closure 기준
+- 출력: versioned RecordMeta/state/error contract, `WorkExecutionState`·attempt·transition commit, `ActionRequest`·`ActionDecision`, 동적 결과의 공통 exact reference·null·상태 조합, `HumanReviewPacket`·`HumanReviewDecision`, orchestration state machine, RACI, review map, ADR와 run closure 기준
 
 ### 확인할 권한 경계
 
@@ -312,6 +312,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] `TransitionCommit`이 `COMMITTED`된 결과만 downstream과 최종 결과에서 사용함
 - [ ] 역할별 `ActionRequest`가 필수 check를 모두 통과한 `ActionDecision`에서만 한 번 실행됨
 - [ ] 두 LLM Gate 순서, Reporter 조건, 공식 정책 부재 `UNCERTAIN + DENY`와 외부 공개 차단을 runtime이 검사함
+- [ ] 동적 결과의 PoC·Controller 정책 판정·실제 환경·Runner log reference와 `NOT_REQUIRED` 조건이 같은 analysis·hypothesis·attempt에서 검증됨
 - [ ] `ReportDraft`와 `HumanReviewDecision`이 분리되고 사람 packet에 근거·PoC·자원·오류·HOLD가 포함됨
 - [ ] 실제 GitHub 계정과 최종 검토·승인 담당자가 문서와 Issue에서 일치함
 - [ ] conflict resolution, freeze SHA와 승인·구현 저장소 동기화 규칙이 확정됨
@@ -478,7 +479,7 @@ R6가 만든 `COMMITTED ReproductionPlan`과 trusted runtime의 exact 실행 허
 ### 검토할 입력·출력
 
 - 입력: R6가 생산하고 runtime이 확정한 exact `ReproductionPlan`, 같은 hypothesis/workspace/commit/work/attempt, USED `RUN_SANDBOX` decision, image digest와 승인된 target/network/resource policy
-- 출력: `SandboxStepLog`, `DynamicReproductionResult`, 실행 status, `hypothesis_outcome`, environment/step/observation refs, redacted PoC, limitation/cleanup/error
+- 출력: `SandboxStepLog`, `DynamicReproductionResult`, 실행 status, `hypothesis_outcome`, exact policy/environment/step/PoC refs, limitation/cleanup/error
 
 ### 확인할 권한 경계
 
@@ -486,6 +487,7 @@ R6가 만든 `COMMITTED ReproductionPlan`과 trusted runtime의 exact 실행 허
 - R7은 재현 필요성이나 LIMITED/FULL 모드를 고르지 않고 `ReproductionPlan`을 생산·수정하지 않는다. 계획 변경이 필요하면 R6의 새 plan과 새 실행 허가를 기다린다.
 - Runtime Validator는 `RUN_SANDBOX` 호출 권한·상태·예산·exact plan reference까지만 검사하고, Sandbox Controller가 image·command·file·network·resource·cleanup 정책을 전담한다.
 - Sandbox Runner는 Controller가 승인한 exact 계획만 실행한다.
+- R4는 `poc_ref`·`policy_decision_ref`·`environment_ref`·`steps_ref`, Runner·환경·cleanup 상태 조합을 확정하고, R7은 네 artifact의 상세 내용과 생성·정리 절차를 정의한다.
 - host root/home, Docker socket, host process namespace, host secret, production credential와 범위 밖 target 접근을 금지한다.
 - LLM 요청만으로 network/resource policy를 완화하지 않는다.
 
@@ -507,6 +509,8 @@ R6가 만든 `COMMITTED ReproductionPlan`과 trusted runtime의 exact 실행 허
 - [ ] setup/execution/observation/policy/timeout failure와 반증이 다른 상태임
 - [ ] 필수 환경·공격 경로 미실행은 `FAILED + ENVIRONMENT_SETUP`, 유효한 일부 관측과 환경 차이는 `PARTIAL + NONE + INCONCLUSIVE`로 구분됨
 - [ ] workspace/commit, command, input, observation과 cleanup이 hypothesis에 추적됨
+- [ ] Runner 미호출/호출, 실제 환경 미생성/생성, cleanup 불필요/필요 조합이 R4 nullable reference 계약과 일치함
+- [ ] PoC 생성본·실행본, Controller 정책 판정, 실제 환경과 step log의 R7 상세 artifact schema가 정의됨
 - [ ] escape/socket/secret/out-of-scope network negative scenario가 있음
 
 ---

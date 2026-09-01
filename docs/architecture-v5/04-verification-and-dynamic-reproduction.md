@@ -190,6 +190,8 @@ retry 여부와 새 plan 생성은 Verification Agent와 trusted runtime의 현�
 
 Controller는 정책 판정을, Runner runtime은 단계 log를 생산한다. Sandbox runtime은 실제 환경과 cleanup 결과를 기록하고, 승인된 PoC 생성 담당은 exact PoC 묶음을 만든다. 비-LLM Result Assembler만 이 reference와 상태를 결과로 조립한다. Verification Agent는 `COMMITTED` 결과를 정적·찬반 근거와 함께 읽어 최종 판정하며, artifact나 동적 결과를 직접 만들거나 수정하지 않는다.
 
+`DynamicReproductionState`, work output과 `TransitionCommit`이 같은 `COMMITTED` 결과를 가리킨 뒤 Verification Agent가 `dynamic_result_ref`와 exact `poc_ref`를 읽는다. Gate Agent는 Verification에 연결된 정책 판정·환경·step log·PoC와 outcome이 서로 맞는지 검토하고, Reporter는 두 Gate를 통과한 결과만 보고서 초안에 사용한다. Provider 오류, 정책 차단, setup·실행·관측 실패는 이 전달 과정에서 `FALSE`로 바뀌지 않는다.
+
 ### 정책 차단 결과
 
 Sandbox Controller가 정책을 거절하면 Runner를 호출하지 않으므로 실행 단계 log인 `SandboxStepLog`를 만들지 않는다. 이 경로의 `DynamicReproductionResult`는 다음 불변조건을 만족해야 한다.
