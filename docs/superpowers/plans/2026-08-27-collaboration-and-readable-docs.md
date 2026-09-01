@@ -108,7 +108,7 @@ Expected: Issue 계층, PM 책임과 담당자 책임이 두 문서에서 확인
 
 - [x] **Step 3: 역할 배정과 GitHub 권한 상태 분리**
 
-역할 담당은 8개 모두 확정됐다고 적는다. `@v1sion`, `@meow`, `@kimhr8465`, `@UltraPaechKeen`은 역할 미배정이 아니라 GitHub assignee 선택 문제라고 별도 표시한다.
+역할 담당은 8개 모두 확정됐다고 적는다. 윤희섭은 `@YHS-Sec`을 사용하며, GitHub 화면의 담당자 지정 상태와 역할 배정은 별도로 관리한다.
 
 - [x] **Step 4: OPEN_QUESTIONS를 쉬운 질문 형식으로 변경**
 

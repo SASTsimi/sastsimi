@@ -243,7 +243,7 @@ Issue #13에 변경 문서, 검증 결과와 남은 R2·R6·R7·R3 교차 검토
 
 실제 교차 검토가 모두 기록되면 H-002와 Issue #13을 완료 후보로 바꾼다. 검토가 남아 있으면 PR과 Issue를 열린 상태로 유지하고 부족한 승인만 명시한다.
 
-판정 결과: Draft PR #18과 Issue #13을 열어 두고 H-002를 `IN_PROGRESS`로 유지한다. R2·R6·R7에는 GitHub review를 요청했다. R3 `@v1sion`은 repository collaborator가 아니라 정식 review request가 거절되어 Issue 멘션 검토와 권한 추가가 남아 있다.
+판정 결과: Draft PR #18과 Issue #13을 열어 두고 H-002를 `IN_PROGRESS`로 유지한다. R2·R6·R7에는 GitHub review를 요청했고, R3 윤희섭 `@YHS-Sec`의 교차 검토도 역할 담당자 확인 항목으로 관리한다.
 
 ---
 

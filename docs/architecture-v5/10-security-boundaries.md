@@ -82,15 +82,17 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 
 ## 5. Docker sandbox
 
-`RUN_SANDBOX`는 Runtime Validator가 요청자·상태·예산과 exact `ReproductionPlan` reference를 확인한 일회성 `ActionDecision=ALLOW` 뒤 Sandbox Controller로 전달한다. 이 ALLOW는 Controller 호출 허가일 뿐 Sandbox 정책 통과나 Docker 실행 성공을 뜻하지 않는다. Controller 호출 직전 exact input·config reference가 달라졌으면 runtime은 `UNUSED -> EXPIRED`로 바꾸고 시작하지 않는다.
+`RUN_SANDBOX`는 Runtime Validator가 요청자·상태·예산, exact `ReproductionPlan`과 그 계획이 가리키는 current `EnvironmentRequirements` reference를 확인한 일회성 `ActionDecision=ALLOW` 뒤 Sandbox Controller로 전달한다. 이 ALLOW는 Controller 호출 허가일 뿐 환경 일치, Sandbox 정책 통과나 Docker 실행 성공을 뜻하지 않는다. Controller 호출 직전 exact input·config reference가 달라졌으면 Runtime Validator는 decision을 `UNUSED -> EXPIRED`로 바꾸고 시작하지 않는다.
 
-Sandbox Controller는 `COMMITTED` plan과 USED decision만 입력으로 받고 Agent·저장소의 raw Docker option이나 정책 완화 요청을 받지 않는다. Controller는 plan closure에 고정된 `sandbox_profile_ref`, image digest, tool·command, file·mount, network, resource와 cleanup 조건을 검사해 exact `sandbox_policy_decision` record를 저장한다. `DENY`이면 Runner를 호출하지 않고, `ALLOW`이면 record에 연결된 exact plan과 실행 option만 Sandbox Runner에 전달한다.
+Sandbox Controller는 `COMMITTED` plan·current requirements와 USED decision만 입력으로 받고 Agent·저장소의 raw Docker option이나 정책 완화 요청을 받지 않는다. Controller는 plan closure에 고정된 `sandbox_profile_ref`, image digest, tool·command, file·mount, network, resource와 cleanup 조건을 검사해 실제 Docker 허용 option과 exact `sandbox_policy_decision` record를 결정한다. 환경 요구사항을 만들거나 수정하고 실제 환경의 일치 여부를 대신 판정하지 않는다. `DENY`이면 Runner를 호출하지 않고, `ALLOW`이면 record에 연결된 exact plan·requirements와 승인한 exact 실행 option만 Sandbox Runner에 전달한다.
+
+Sandbox Runner는 Controller가 승인한 exact option을 그대로 적용해 환경 준비·요구사항 비교·실행을 수행하고 실제 적용값과 실행 사실을 기록한다. 이 문서의 R7은 이 Controller·Runner·Result Assembler를 설계·구현하는 팀 역할이며, 런타임에서 별도 정책 결정을 내리는 actor 이름이 아니다.
 
 ### Container와 filesystem
 
 - 실행마다 새 container·volume·network를 만들고 다른 analysis·hypothesis·attempt와 재사용하지 않는다.
 - 고정된 non-root UID/GID, read-only root filesystem, `no-new-privileges`, capability 전체 제거를 기본으로 한다. privileged mode, device 전달과 host PID·IPC·user·network namespace 공유는 금지한다.
-- seccomp 기본 차단 profile을 적용하고 지원하는 host에서는 AppArmor 또는 SELinux profile을 함께 적용한다. 필요한 보호 기능을 적용할 수 없는 실행 backend는 자동으로 완화하지 않고 정책 차단으로 종료한다.
+- seccomp 기본 차단 profile과 AppArmor 또는 SELinux profile을 적용한다. seccomp, AppArmor/SELinux, disk quota, non-root·capability 제거, PID·memory·wall-clock 제한 중 하나라도 backend가 적용·검증할 수 없으면 Controller는 자동 완화 없이 `DENY`를 기록하고 Runner를 호출하지 않는다.
 - 분석용 `CodeWorkspace`는 read-only 입력으로 제공하고 build·migration·fixture·upload처럼 쓰기가 필요한 경로만 attempt 전용 volume이나 크기가 제한된 `tmpfs`로 분리한다.
 - host root/home, Docker socket·daemon API, credential store, 운영 secret과 광범위한 bind mount를 제공하지 않는다. source와 destination path를 정규화하고 symlink를 해석한 뒤 허용 root 밖으로 나가면 mount를 거절한다.
 - core dump와 권한 상승 bit를 비활성화하고 환경변수는 허용 목록만 전달한다. 계획 안의 command가 container 실행 option이나 host 경로를 바꾸는 별도 제어 경로가 되어서는 안 된다.
@@ -105,6 +107,7 @@ Sandbox Controller는 `COMMITTED` plan과 USED decision만 입력으로 받고 A
 ### Resource와 종료
 
 - R8이 정한 versioned resource profile에는 **Docker Sandbox에 사용되는 CPU·memory·ephemeral disk·PID/process·wall-clock time**의 기본값과 상한이 각각 있어야 한다. R7은 항목과 enforcement 지점을 정의하지만 합의되지 않은 수치를 임의로 만들거나 실행별로 완화하지 않는다.
+- 실제 기본값·상한은 R8 계약이 확정될 때까지 미정이다. R7 문서와 구현은 versioned resource profile reference를 소비하며 임시 숫자를 공통 기본값처럼 고정하지 않는다.
 - Runner는 container 생성 시 CPU quota, memory·swap, writable layer·volume quota, PID limit와 필요한 `ulimit`을 적용하고 실행 중 실제 사용량과 limit 도달 원인을 관측한다.
 - 요청값이 profile 상한을 넘으면 실행 전에 `BLOCKED + POLICY_BLOCKED`로 기록한다. 실행 중 OOM·disk·PID limit 때문에 필수 단계가 실패하면 실제 원인을 보존한 실행 실패이며, wall-clock limit 도달은 `FAILED + TIMEOUT`이다. 어느 경우도 가설 반증이나 `FALSE`가 아니다.
 - timeout·취소·실패 시 새 process 생성을 막고 정해진 종료 유예 시간 뒤 남은 process를 강제 종료한다. stdout·stderr·artifact 크기도 제한해 disk와 log 수집 경계를 우회하지 못하게 한다.
@@ -123,10 +126,13 @@ Sandbox Controller는 `COMMITTED` plan과 USED decision만 입력으로 받고 A
 
 ### 실행 결과 artifact와 lifecycle
 
-- `runner_invoked=false`이면 `steps_ref=null`이고 실제 공격 입력도 비어 있어야 한다. `runner_invoked=true`이면 첫 단계 전에 실패해도 호출과 실패 지점을 append-only `SandboxStepLog`에 기록하고 exact `steps_ref`를 남긴다.
-- 계획용 환경 설정과 실제 생성 환경을 구분한다. `environment_created=false`이면 `environment_ref=null`, 실제 환경을 만들었으면 `environment_created=true`와 같은 attempt의 exact `sandbox_environment` reference가 필수다.
-- PoC·정책 판정·환경·log는 같은 analysis·workspace·commit·hypothesis·attempt의 exact revision만 연결한다. `poc_ref` 존재만으로 실행이나 재현 성공을 주장하지 않는다.
+- Runner는 실제 환경과 모든 requirement·Health Check를 기록하고 필수 항목이 모두 `MATCH`일 때만 승인된 공격 단계를 실행한다. 필수 `MISMATCH | NOT_CHECKED | ERROR`가 있으면 공격 단계 전에 멈추며, 요구사항 수정·임의 허용·허용 목록 밖 version fallback을 할 수 없다.
+- `runner_invoked=false`이면 `steps_ref=null`이고 실제 공격 입력도 비어 있어야 한다. `runner_invoked=true`이면 첫 공격 단계 전에 환경 차이로 멈추더라도 호출과 실패 지점을 append-only `SandboxStepLog`에 기록하고 exact `steps_ref`를 남긴다.
+- 계획용 환경 요구사항과 실제 생성 환경을 구분한다. `environment_created=false`이면 `environment_ref=null`, 실제 환경을 만들었으면 `environment_created=true`와 같은 R7 실행 attempt의 exact `sandbox_environment` reference가 필수다. plan의 `environment_requirements_ref`와 실제 환경의 `requirements_ref`는 exact match여야 한다.
+- R6의 plan·requirements와 R7 실행 artifact는 같은 analysis·workspace·commit·hypothesis에 속해야 한다. R6가 먼저 만든 plan·requirements의 attempt를 R7 실행 attempt와 같게 만들지 않고, 정책 판정·환경·step log·실행 PoC처럼 R7 실행 중 생긴 record만 같은 동적 실행 attempt의 exact revision을 연결한다. `poc_ref` 존재만으로 실행이나 재현 성공을 주장하지 않는다.
+- 환경 요구사항·실제 값·Health Check 기록에는 credential·cookie·token·password 원문을 넣지 않고, 필요한 비밀은 승인된 secret store의 불투명 handle만 연결한다.
 - 정리 대상이 하나도 생기지 않았을 때만 `cleanup_required=false`, `cleanup_status=NOT_REQUIRED`다. 정책 차단 전에 build·container·network·volume·임시 파일이 생겼다면 `cleanup_required=true`로 기록하고 정리 성공 또는 실패를 남긴다.
+- 비-LLM Result Assembler는 plan·requirements·정책 판정·환경·step log·PoC·cleanup의 exact reference와 상태 조합을 검증해 `DynamicReproductionResult`를 조립한다. EnvironmentRequirements의 의미나 최종 취약점 verdict를 다시 판단하지 않으며, 결과는 R6 Verification에 전달한다.
 
 ## 6. 프로그램 정책 신뢰 경계
 
@@ -233,7 +239,7 @@ Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 �
 | `SAVE_RESULT` 검사 뒤 candidate bytes를 바꿈 | `candidate_result_ref.stored_data_id`와 `content_hash`, current attempt·state | decision `EXPIRED` 또는 save `DENY`, 변조 후보 미저장 |
 | 실행 오류만 든 `FALSE` 후보를 저장 | `result_kind`, VERIFICATION 생산자, named `DISPROVED`의 `question_id`·`evidence_refs` | `SAVE_RESULT` 거절, 오류 상태 유지와 verdict 자동 생성 금지 |
 | 다른 역할이 만든 결과 후보를 저장 | result-owner registry와 `requested_by`, candidate meta | `AUTHORITY_DENIED`, candidate 격리와 최신 pointer 미연결 |
-| `RUN_SANDBOX` 허가 뒤 재현 계획·공격 입력·cleanup revision이 바뀜 | 실행 직전 action `input_refs`, plan closure와 current state | 기존 decision `UNUSED -> EXPIRED`, 새 계획·action 요구 |
+| `RUN_SANDBOX` 허가 뒤 재현 계획·requirements·공격 입력·cleanup revision이 바뀜 | 실행 직전 action `input_refs`, plan closure와 current state | 기존 decision `UNUSED -> EXPIRED`, 새 계획·action 요구 |
 | Sandbox가 계획에 없는 command·공격 입력을 실행하려 함 | exact `ReproductionPlan`과 실행할 step·input refs | `SANDBOX_POLICY_DENIED`, 실행 금지와 오류 기록 |
 | 동적 결과의 step log·공격 입력·cleanup 정책이 승인 계획과 다름 | `RUN_SANDBOX` USED decision, plan closure, `SandboxStepLog`, 결과 candidate | `SAVE_RESULT` 거절, 결과 `COMMITTED`·Verification 전달 금지 |
 | Verification이 `DynamicReproductionResult`를 직접 저장 | `dynamic_reproduction_result`의 result-owner와 `requested_by` | `AUTHORITY_DENIED`, Sandbox 생산 후보만 허용 |
@@ -245,6 +251,15 @@ Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 �
 | Runner를 호출하지 않았는데 step log가 있거나 호출했는데 log가 없음 | `runner_invoked`와 `steps_ref` | `SAVE_RESULT`의 `SCHEMA` 검사 거절, 가설 판정 변경 금지 |
 | 정책 차단 결과에 Controller 판정 reference가 없음 | `POLICY_BLOCKED`와 `policy_decision_ref` | `SAVE_RESULT` 거절, Technical Gate 결과로 대신 채우기 금지 |
 | 실제 환경 생성 여부와 `environment_ref`가 다름 | `environment_created`와 exact `sandbox_environment` record | `SAVE_RESULT` 거절, 계획용 환경 설정으로 대체 금지 |
+| ReproductionPlan에 `environment_requirements_ref`가 없음 | 새 MAJOR schema와 plan closure | `SAVE_RESULT` 또는 `RUN_SANDBOX` 거절, R6가 current 요구사항을 연결한 새 plan 생성 |
+| R7이 EnvironmentRequirements를 만들거나 수정함 | result-owner registry와 candidate producer | `AUTHORITY_DENIED`, 변경 후보 격리 |
+| plan과 실제 환경이 다른 requirements revision을 가리킴 | `plan.environment_requirements_ref`와 `sandbox_environment.requirements_ref` exact 비교 | `RECORD_REVISION_MISMATCH`, 동적 결과 저장·Verification 전달 금지 |
+| 필수 환경 차이가 있는데 공격 단계를 실행함 | requirement별 status, environment summary와 `SandboxStepLog.entries` | `SAVE_RESULT` 거절, 실행 격리와 R6 재검토 요구 |
+| 허용 목록에 없는 version fallback을 자동 적용함 | VERSION의 `expected | alternatives`와 실제 값 | `ENVIRONMENT_MISMATCH`, 공격 단계 금지 |
+| 오래된 EnvironmentRequirements revision을 재사용함 | logical record current head와 RUN_SANDBOX input ref | `STALE_RESULT`, current requirements와 이를 가리키는 새 plan·action 요구 |
+| 환경 구성 실패나 차이를 `DISPROVED | FALSE`로 변환함 | dynamic `ENVIRONMENT_SETUP`, outcome과 Verification falsification evidence | 결과 또는 Verification 저장 거절, `INCONCLUSIVE` 유지 |
+| 환경 요구사항·실제 값에 credential·token 원문을 저장함 | schema secret scan과 `secret_ref` data kind | `REDACTION` 실패, candidate 미저장 |
+| R6의 차이 수용만으로 Sandbox 정책 재검사를 생략함 | 새 plan의 RUN_SANDBOX action과 Controller decision | `ACTION_NOT_ALLOWED`, 새 정책 검사 전 실행 금지 |
 | 정리 대상이 생겼는데 `NOT_REQUIRED`로 기록 | `cleanup_required`, 자원 생성 기록과 `cleanup_status` | `SAVE_RESULT` 거절, 남은 자원 격리와 운영 오류 기록 |
 | PoC 존재만으로 재현 성공을 주장하거나 최신 PoC를 다시 선택 | result의 exact `poc_ref`, step log와 content hash | `SAVE_RESULT` 또는 Gate 검토 거절, 생성본·실행본 혼합 금지 |
 
