@@ -14,7 +14,7 @@
 - 저비용 가설 Agent는 ‘아직 최종 결과가 아님’을 뜻하는 `HYPOTHESIS_ONLY / NON_FINAL` 형식만 출력한다.
 - 필요한 코드는 같은 `workspace_id`와 `commit_id`에서 코드 요소·위치·경로를 기준으로 조회한다.
 - Orchestration은 가설을 검증·등록하고 Verification에 배정하는 데서 가설별 역할이 끝난다.
-- 검증(`Verification`)은 한 가설의 Context·찬반, 동적 재현 모드·`ReproductionPlan`, 판정·Gate 보완·연계 handoff를 관리한다. Runtime Validator는 Sandbox 호출 전제만 확인하고, R7 Controller가 세부 정책을 검사한 뒤 Runner가 통과한 계획만 실행해 결과를 반환한다.
+- 검증(`Verification`)은 한 가설의 Context·찬반, 환경 요구사항·동적 재현 모드·`ReproductionPlan`, 환경 차이 수용·판정·Gate 보완·연계 handoff를 관리한다. Runtime Validator는 exact requirements·plan과 Sandbox 호출 전제를 확인하고, R7 Controller가 세부 정책을 검사한다. Runner는 실제 환경을 요구사항과 비교하고 필수 항목이 맞을 때만 공격 단계를 실행해 결과를 반환한다.
 - 운영 기본값은 `ALWAYS_DEBATE`이며 모든 유효 가설에서 Pro/Con을 독립 NEW session으로 실행한다. BASIC과 조건부 debate는 격리된 평가 전용이다.
 - HOLD의 필요 조건은 즉시 REQUIRED가 된다. TRUE는 두 Gate를 정상 통과한 exact revision만 PROVIDED가 된다. TRUE+TRUE는 앞 PROVIDED가 뒤 TRUE의 exact 선행 조건을 충족할 때만 연결한다.
 - 기술 근거 검토와 공식 정책·영향 검토를 분리한다.
@@ -27,8 +27,8 @@
 ```text
 Repository → Repository Loader → CodeWorkspace → AST and SAST → StaticFactBundle
 → constrained hypotheses → trusted registration → Orchestration assigns Verification
-→ Verification owns context → Pro/Con → dynamic mode and ReproductionPlan
-→ runtime approval → R7 Sandbox exact execution → Verification TRUE/FALSE/HOLD
+→ Verification owns context → Pro/Con → EnvironmentRequirements and ReproductionPlan
+→ runtime approval → R7 environment comparison → exact attack execution → Verification TRUE/FALSE/HOLD
 → HOLD REQUIRED → Chaining
 → TRUE → CWE → Technical Gate → Rule Scope Impact Gate
 → gate-qualified TRUE PROVIDED → Chaining → new hypothesis loop

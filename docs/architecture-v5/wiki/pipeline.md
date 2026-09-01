@@ -19,7 +19,7 @@
 9. Verification의 코드 위치 기반 on-demand retrieval
 10. 운영 Verification의 독립 Pro/Con 병렬 검증
 11. initial `TRUE | FALSE | HOLD`
-12. Verification이 LIMITED/FULL과 `ReproductionPlan` 결정 → Runtime Validator가 호출 전제 확인 → R7 Sandbox Controller가 세부 정책 검사 → Runner가 exact plan 실행·결과 반환
+12. Verification이 `EnvironmentRequirements`와 LIMITED/FULL `ReproductionPlan` 결정 → Runtime Validator가 exact reference·호출 전제 확인 → R7 Sandbox Controller가 세부 정책 판정 저장 → Runner가 실제 환경·Health Check 비교 → 필수 항목 일치 시 exact 공격 단계 실행 → Result Assembler가 exact reference를 결과로 묶어 반환
 13. final `TRUE | FALSE | HOLD`
 14. FALSE terminal / HOLD REQUIRED 즉시 admission / TRUE CWE 분기
 15. final TRUE를 Technical Evidence Gate Agent가 검토
