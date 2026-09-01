@@ -32,18 +32,19 @@ Pro와 Con은 서로의 결과를 받지 않는 별도 NEW session이다. trigge
 
 판정에는 최소 근거가 필요합니다. TRUE는 핵심 공격 경로와 필요한 조건을 지지하는 근거가 있어야 합니다. FALSE는 이름이 있는 반증 질문이 실제 근거로 `DISPROVED`된 경우에만 가능합니다. 오류·timeout·정보 부족·Sandbox 실패는 FALSE 근거가 아닙니다. HOLD는 판단에 필요한 조건이나 환경이 아직 부족하다는 뜻입니다.
 
-기본 Context가 부족하면 검증 Agent가 같은 workspace·commit을 기준으로 추가 Context를 요청합니다. 추가 조회 뒤에도 핵심 경로를 확인하지 못하면 미해결 조건을 남기고 HOLD 또는 명시적인 오류로 처리합니다.
+기본 Context가 부족하면 검증 Agent가 같은 workspace·commit을 기준으로 추가 Context를 요청합니다. 조회가 정상적으로 끝났지만 정보가 부족하면 필수 검증을 계속하고, 검증 완료 후에도 부족한 조건이 남으면 `unresolved_conditions`와 `HOLD`를 기록합니다. 조회 자체가 실패·timeout·권한 오류로 끝나면 `AnalysisError`와 실행 상태만 기록하며 final verdict를 만들지 않습니다. 운영 Pro/Con 전에 예산이 부족한 경우도 `BUDGET_EXCEEDED`로 작업을 중단하고 final verdict를 저장하지 않습니다.
 
 `initial_verdict`는 중간 판단이며 운영 Gate·Primitive·보고서 입력으로 사용할 수 없습니다. final verdict는 독립 Pro/Con과 필요한 동적 결과를 종합한 최종 판단입니다.
 
-지원 취약점 유형 목록은 R8의 versioned evaluation corpus에서 확정합니다. 목록이 확정되기 전에는 source, sink, 방어 로직, 반증 질문, 필요한 정적·동적 근거와 HOLD 조건을 담는 공통 플레이북 구조를 먼저 사용합니다. 목록이 확정되면 같은 구조로 유형별 플레이북을 추가합니다.
-판정 뒤 흐름도 다릅니다. R6의 `TRUE`와 R5의 Technical `ACCEPT`는 서로 다른 결과입니다. TRUE는 공격 경로와 조건이 성립한다는 Verification 판정이고, ACCEPT는 그 final TRUE revision의 근거 연결과 충분성을 별도로 검토한 Gate 결과입니다. 따라서 TRUE가 Technical ACCEPT를 자동으로 보장하지 않으며 Gate도 기존 verdict를 직접 변경하지 않습니다. FALSE는 terminal이며 Primitive와 Chaining으로 가지 않습니다. HOLD는 Gate 없이 REQUIRED Primitive를 즉시 저장합니다. TRUE는 CWE와 두 Gate를 정상 통과한 exact revision만 PROVIDED Primitive가 됩니다.
+지원 취약점 유형 목록은 R8의 versioned evaluation corpus에서 확정합니다. 목록이 확정되기 전이나 미지원 유형을 검증할 때는 source, sink, 방어 로직, 반증 질문, 필요한 정적·동적 근거와 HOLD 조건을 담은 공통 플레이북의 exact revision을 사용합니다. 유형별 플레이북도 같은 구조로 작성하며 각 revision을 덮어쓰지 않습니다.
+
+최종 `VerificationResult.playbook_ref`는 실제 사용한 플레이북의 정확한 `record_id`와 `content_hash`를 가리킵니다. 같은 reference를 final Verification 합성 호출과 결과 저장 요청에도 사용합니다. 이후 플레이북이 변경되더라도 과거 판정은 당시 사용한 기존 플레이북 revision을 계속 가리킵니다.
 
 각 반증 질문에는 `question_id`가 있습니다. 검증 결과는 질문마다 `DISPROVED`, `NOT_DISPROVED`, `INCONCLUSIVE` 중 하나와 근거를 남깁니다. 실제 근거가 있는 `DISPROVED`가 하나 이상일 때만 `FALSE`가 가능합니다. `NOT_DISPROVED`는 반증하지 못했다는 뜻일 뿐 가설을 증명하지 않습니다.
 
 Pro와 Con은 항상 별도의 새 대화에서 실행합니다. 상대 역할의 결론이나 대화를 이어받지 않으며, 실패 후 재시도나 provider 변경도 같은 역할의 새 대화로 시작합니다. Verification Agent만 두 결과를 함께 읽고 최종 판정을 만듭니다.
 
-결과를 저장하기 전에는 결과 종류, 저장 담당 역할, 정확한 작업·시도·코드 버전과 후보 내용 hash를 한 요청에 묶어 검사합니다. 검사 뒤 후보가 바뀌면 저장하지 않습니다. `FALSE` 후보는 실제 `question_id`와 근거가 연결된 `DISPROVED`가 있어야 하며 오류만으로는 저장할 수 없습니다.
+결과를 저장하기 전에는 결과 종류, 저장 담당 역할, 정확한 작업·시도·코드 버전, 플레이북 revision과 후보 내용 hash를 함께 검사합니다. `TRUE`는 실제 근거 reference가 연결된 supporting evidence, `FALSE`는 근거가 있는 `DISPROVED`, `HOLD`는 하나 이상의 `unresolved_conditions`가 필요합니다. 오류·timeout·빈 Context·예산 초과 상태만으로 `TRUE`나 `FALSE`를 저장할 수 없습니다. Runtime Validator는 필드와 reference의 최소 구조만 검사하며, final TRUE 근거의 기술적 충분성은 Technical Evidence Gate가 별도로 검토합니다.
 
 | 모드 | 목적 |
 |---|---|
