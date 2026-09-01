@@ -1477,7 +1477,10 @@ R5-04가 단독으로 확장하지 않는다.
 새 Verification, Gate, CWE, Policy 또는 AnalysisRunResult revision이 current pointer를 바꾸면 새
 packet 생성 여부와 무관하게 `EXTERNAL_DISCLOSURE` 직전에 packet의 모든 upstream reference를 current
 pointer와 다시 비교한다. 하나라도 다르면 과거 packet과 decision의 재사용을 `DISCLOSURE_DENIED`로
-차단한다. R5는 별도 stale flag, validator, error enum을 추가하지 않는다. packet 자체의
+차단한다. `dynamic_result_refs`와 `poc_refs`는 exact AnalysisRunResult의 해당 목록과
+set-equal이므로 EnvironmentRequirements·ReproductionPlan·Dynamic observation·PoC가 변경되는 경우에도
+그 변경을 포함한 새 AnalysisRunResult closure를 통해 기존 current-pointer 검사를 적용한다.
+R5는 별도 stale flag, validator, error enum을 추가하지 않는다. packet 자체의
 schema/reference set·exact revision 또는 redaction 검사가 실패하면 `PREPARE_HUMAN_REVIEW`를 `DENY`하고
 기존 `RECORD_REVISION_MISMATCH | STALE_RESULT | INVALID_OUTPUT`과 적용 가능한 `AnalysisError`를 사용한다.
 

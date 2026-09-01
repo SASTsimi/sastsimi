@@ -188,6 +188,14 @@ reference 목록만으로 준비 완료가 되지는 않는다. Human Reviewer�
 `DynamicReproductionResult`/redacted PoC까지 역추적할 수 있어야 한다. 정책 claim은 exact
 `CWELabel`, `ProgramPolicyRecord`와 official source locator까지 이어져야 한다.
 
+Dynamic/PoC 경로는 기존 upstream reference graph를 그대로 사용한다.
+`DynamicReproductionResult.reproduction_plan_ref` → `ReproductionPlan.environment_requirements_ref`로
+요구 환경을 확인하고, 동일 Dynamic result의 `environment_ref`, `policy_decision_ref`,
+`steps_ref`, `observation_refs`, `poc_ref`, `limitations`로 실제 Sandbox 환경과 차이·Health Check,
+Controller 정책 판정, Runner 단계 log, observation, partial reproduction·PoC limitation을
+역추적한다. Human Reviewer는 이 제한이 초안에 정확히 반영되었는지 확인하지만,
+환경 적합성이나 final Verification verdict를 새로 판정하지 않는다.
+
 현재 schema에는 ReportDraft 문장별 claim ID와 evidence를 직접 연결하는 field가 없다. 따라서
 프로그램은 packet의 전체 reference set, exact current revision과 ReportDraft가 가리키는
 authoritative upstream closure까지만 검사한다. Human Reviewer가 각 material 문장과 그 supporting·

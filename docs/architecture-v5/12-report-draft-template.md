@@ -200,6 +200,9 @@ hidden chain-of-thought와 secret은 포함하지 않는다.
 - final Verification과 두 Gate의 exact revision: `{verification and Gate refs}`
 - CWELabel과 ProgramPolicyRecord의 exact revision·official source: `{CWE/policy refs and locator}`
 - material claim → supporting/counter Evidence → Dynamic/PoC: `{claim provenance refs}`
+  - Dynamic/PoC의 기존 upstream graph에서 exact `EnvironmentRequirements` → `ReproductionPlan` →
+    실제 `SandboxEnvironment`/Health Check → Controller 정책 판정 → Runner log → observation/PoC와
+    환경 차이·partial reproduction·PoC limitation을 역추적한다. 새 packet field를 추가하지 않는다.
 - restriction·unresolved counter/verification condition·재현/환경 limitation: `{refs and concise summary}`
 - 남은 오류·DataGap·HOLD 조건: `{refs or none}`
 - safe handoff redaction 결과: `{APPLIED | NOT_REQUIRED; FAILED이면 packet 준비 차단}`

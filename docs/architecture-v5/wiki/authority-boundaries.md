@@ -110,6 +110,12 @@ restriction·재현/환경 limitation의 실제 대응을 확인합니다. polic
 `ProgramPolicyRecord` source와 대조합니다. 미검증 Verification-origin/Chaining-origin proposal은
 candidate 또는 unresolved 정보일 뿐 confirmed provenance가 아닙니다.
 
+Dynamic/PoC는 정본의 기존 reference graph를 따릅니다. Reviewer는
+`DynamicReproductionResult` → `ReproductionPlan` → exact `EnvironmentRequirements`와,
+실제 Sandbox 환경·차이·Health Check·Controller 정책 판정·Runner log·observation·PoC·
+partial reproduction limitation을 역추적해 초안의 표현을 확인하며, Verification verdict를
+직접 변경하지 않습니다.
+
 현재 schema에는 문장별 claim mapping field가 없으므로 프로그램이 그 대응까지 자동 강제하지
 않습니다. 문장별 자동 검사는 R4/R8과 공통 schema·validator 계약을 추가로 확정해야 합니다.
 ReportDraft의 근거·restriction이 부족하면 draft를 제외하고 `report_ready=false`와 차단 사유를 안전한
