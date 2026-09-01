@@ -12,7 +12,7 @@
 - 완료된 범위: R4-01, R4-02, R4-03의 기술 설계와 문서 반영
 - 남은 범위: 현재 문서 전체에 대한 역할별 교차 검토, 최종 확인, R4-04 PR 병합
 - 교차 검토 PR: [#48](https://github.com/SASTsimi/sastsimi/pull/48)
-- 최신 `main` 반영 기준: `beabdedf4cc5014cd77b88c687d4017603f3a566`
+- 최신 `main` 반영 기준: `eb0076602736ea3821b95c0b81d9a77ba10695d2`
 - 최종 검토 기준(`review freeze SHA`): R4-04 PR의 마지막 수정 commit을 PR 본문에 기록합니다.
 
 PR #47은 문서 자동 검사와 기술 검토를 통과했지만 GitHub 교차 리뷰가 없었습니다. 따라서 PR #47과 위 시작 기준 commit은 R4-04의 최종 승인 증거가 아닙니다.
@@ -42,10 +42,10 @@ PR #47은 문서 자동 검사와 기술 검토를 통과했지만 GitHub 교차
 | R1 LLM 탐색·체이닝 | `@baeseungwon1010` | 가설 생성, HOLD·TRUE+TRUE 체이닝 입력과 새 가설 재검증 조건 | `RECHECK_REQUIRED` | [이전 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5476469510), Research 표현 정리 뒤 최종 SHA 재확인 필요 |
 | R2 정적분석·컨텍스트 | `@zv9uvr` | AST/SAST 사실, 코드 위치, 호출 경로와 공통 식별자 연결 | `APPROVED` | [승인 기록](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5477979652), 이번 수정은 R2 사실 계약을 바꾸지 않음 |
 | R3 통합 구현 | `@YHS-Sec` | 상태 전이, 재시도·복구, 계약을 실제 코드로 구현할 수 있는지 | `RECHECK_REQUIRED` | [수정 요청](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5486717955) 반영 뒤 최종 SHA 재검토 필요 |
-| R4 PM·아키텍처 | `@taehyeon-git` | 다른 역할의 검토 증거, 최종 commit과 완료 조건 확인 | `WAITING` | — |
+| R4 PM·아키텍처 | `@taehyeon-git` | 다른 역할의 검토 증거, 최신 main과 환경 계약 병합 결과, 최종 commit과 완료 조건 확인 | `RECHECK_REQUIRED` | 최신 main 동기화와 R6–R7 환경 계약 추가 뒤 최종 SHA 재확인 필요 |
 | R5 Gate·Finding·보고서 | `@kimhr8463` | 두 Gate 순서, REVISE, Reporter 호출과 사람 전달 조건 | `RECHECK_REQUIRED` | [수정 요청](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5476190803) 반영 뒤 최종 SHA 재검토 필요 |
-| R6 검증·반박 | `@UltraPeachKeen` | Pro/Con 독립성, TRUE/FALSE/HOLD와 REVISE 재검증 경계 | `RECHECK_REQUIRED` | [수정 요청](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5479073101) 반영 뒤 최종 SHA 재검토 필요 |
-| R7 동적검증·Sandbox | `@Potatonion` | LIMITED/FULL_REPRO, PoC, sandbox 권한과 결과 연결 | `WAITING` | — |
+| R6 검증·반박 | `@UltraPeachKeen` | Pro/Con 독립성, TRUE/FALSE/HOLD, `EnvironmentRequirements`·plan revision과 환경 실패 `INCONCLUSIVE` 처리 | `RECHECK_REQUIRED` | 최신 main의 R6–R7 환경 계약을 포함한 최종 SHA 재검토 필요 |
+| R7 동적검증·Sandbox | `@Potatonion` | LIMITED/FULL_REPRO, exact 요구사항과 실제 환경 비교, PoC·log·sandbox 권한과 결과 연결 | `RECHECK_REQUIRED` | 최신 main의 실제 환경 비교 계약을 포함한 최종 SHA 재검토 필요 |
 | R8 데이터·평가·예산 | `@gitterable` | 운영 `ALWAYS_DEBATE`, 평가 모드 격리, 예산 초과 처리 | `WAITING` | — |
 
 R4 담당자는 이 PR의 작성자이므로 자신의 확인만으로 교차 검토를 대신할 수 없습니다. R4의 최종 확인은 다른 필수 역할의 검토가 끝난 뒤에 수행합니다.
@@ -55,6 +55,8 @@ R4 담당자는 이 PR의 작성자이므로 자신의 확인만으로 교차 �
 ## 이번 수정 요청의 처리 방향
 
 - 최신 `main`을 병합해 충돌을 해결하고 R4의 exact Sandbox 정책·환경·로그·PoC 전달 계약을 사용합니다.
+- R6가 만든 `EnvironmentRequirements`와 plan의 `environment_requirements_ref`, R7의 `EnvironmentCheck`를 exact revision으로 연결합니다.
+- 필수 환경 불일치·구성 실패는 공격 전에 멈추고 `INCONCLUSIVE`로 R6에 반환하며 가설 `FALSE`로 바꾸지 않습니다.
 - 정책이 없거나 `STALE | UNVERIFIED`이면 Rule Scope Gate를 `UNCERTAIN + DENY`로 고정합니다.
 - `POLICY_BLOCKED`는 자동 `REJECT`가 아니며 Technical Gate가 근거 충분성에 따라 `ACCEPT | REVISE | REJECT`를 구분합니다.
 - Finding이 없는 packet은 내부 blocked packet으로는 허용하지만 `report_ready=false`와 공개 차단을 강제합니다.
@@ -62,6 +64,8 @@ R4 담당자는 이 PR의 작성자이므로 자신의 확인만으로 교차 �
 - `handoff_readiness`를 정본과 Wiki에 함께 표시합니다.
 - Sandbox authority는 ADR-001에 누적하지 않고 ADR-002에서 별도로 검토합니다.
 - active Research 역할처럼 보이는 Issue template과 R3 Issue 표현을 현재 `INITIAL | VERIFICATION | CHAINING` 기준으로 정리합니다.
+
+최신 main 병합 commit `cb3aa9944f46f590d631cf3991dcaf44d0f0b00b`에서 위 계약을 보존했고, 문서 자동 검사 61개·Mermaid 정본 13개·Wiki 13개를 실패 0건으로 통과했습니다. 최종 `review freeze SHA`는 이 기록을 포함한 마지막 commit으로 PR 본문에서 다시 고정합니다.
 
 ## 리뷰 중 수정이 생겼을 때
 
