@@ -19,14 +19,15 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 1. 배정된 가설의 `workspace_id`, `commit_id`, entity, location과 suspected path를 확인한다.
 2. `CodeContextRequest`로 caller/callee, data flow, auth guard와 route 문맥을 필요한 만큼 조회한다.
 3. observed fact와 assumption을 분리하고 각 `FalsificationQuestion.question_id`를 확인한다.
-4. 운영 분석이면 Pro/Con Agent를 서로 독립된 NEW session으로 병렬 호출해 supporting/counter evidence를 모두 수집한다. BASIC 또는 조건부 debate는 격리된 평가 실행에서만 선택한다.
-5. initial verdict와 unresolved condition을 만든다.
-6. 정적 근거만으로 부족하고 안전하게 재현할 가치가 있으면 `LIMITED_REPRO | FULL_REPRO`를 요청한다.
-7. 정적·찬반·동적 결과를 종합해 final verdict를 만든다.
-8. HOLD면 REQUIRED Primitive 후보를, TRUE면 Gate 통과 뒤 등록할 PROVIDED Primitive 후보를 기록한다. FALSE는 Primitive 후보를 만들지 않는다.
-9. 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 발견하면 `HypothesisProposal(origin=VERIFICATION)`으로 분리한다.
-10. TRUE의 CWE labeling을 조정하고 Technical Evidence Gate를 요청한다. `REVISE`면 같은 Verification owner가 보완한 새 revision으로 다시 제출한다.
-11. HOLD는 즉시 Chaining으로 넘길 수 있고, TRUE는 두 Gate를 정상 통과한 exact revision만 Chaining으로 넘길 수 있다.
+4. Hypothesis Agent가 제안한 `required_validation` 각 항목을 검토해 이 시점까지의 근거로 잠정 disposition(수행·대체·불필요·미해결)을 정한다. 이 제안은 비구속적이며 실제 수행 여부와 방법은 Verification이 결정한다.
+5. 운영 분석이면 Pro/Con Agent를 서로 독립된 NEW session으로 병렬 호출해 supporting/counter evidence를 모두 수집한다. BASIC 또는 조건부 debate는 격리된 평가 실행에서만 선택한다.
+6. initial verdict와 unresolved condition을 만든다.
+7. 정적 근거만으로 부족하고 안전하게 재현할 가치가 있으면 `LIMITED_REPRO | FULL_REPRO`를 요청한다.
+8. 정적·찬반·동적 결과를 종합해 final verdict를 만든다. 4번에서 정한 잠정 disposition을 Pro/Con·동적 재현 결과까지 반영해 최종 확정한다(예: 4번에서 `UNRESOLVED`였어도 이후 근거로 대체됐으면 `SUBSTITUTED`로 바꾼다). 최종 `required_validation_dispositions`에 `UNRESOLVED` 항목이 있으면 그 항목이 `unresolved_conditions`에 포함되지 않는 한 final verdict를 `TRUE | FALSE`로 만들 수 없다 — `HOLD`이거나 `unresolved_conditions`에 연결해야 한다.
+9. HOLD면 REQUIRED Primitive 후보를, TRUE면 Gate 통과 뒤 등록할 PROVIDED Primitive 후보를 기록한다. FALSE는 Primitive 후보를 만들지 않는다.
+10. 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 발견하면 `HypothesisProposal(origin=VERIFICATION)`으로 분리한다.
+11. TRUE의 CWE labeling을 조정하고 Technical Evidence Gate를 요청한다. `REVISE`면 같은 Verification owner가 보완한 새 revision으로 다시 제출한다.
+12. HOLD는 즉시 Chaining으로 넘길 수 있고, TRUE는 두 Gate를 정상 통과한 exact revision만 Chaining으로 넘길 수 있다.
 
 ## 우회 인지 검증
 
@@ -159,6 +160,6 @@ VerificationResult revision N
 
 ## VerificationResult에 남길 정보
 
-최종 결과는 verdict뿐 아니라 질문별 `FalsificationResult`, supporting/counter evidence, restrictions, bypass·alternate path·impact 후보, REQUIRED/PROVIDED Primitive 후보, `origin=VERIFICATION` material child proposal, unresolved conditions, debate 지표와 동적 재현 reference를 포함한다. HOLD의 REQUIRED 후보는 즉시 admission할 수 있다. TRUE의 REQUIRED 후보는 그 취약점의 악용 선행 조건으로만 보존되고, PROVIDED 후보가 두 Gate를 정상 통과해 admission될 때 `required_preconditions`에 복사된다. 이 정보가 CWE, 두 Gate, Primitive admission과 사람 검토의 입력이 된다.
+최종 결과는 verdict뿐 아니라 질문별 `FalsificationResult`, supporting/counter evidence, restrictions, bypass·alternate path·impact 후보, REQUIRED/PROVIDED Primitive 후보, `origin=VERIFICATION` material child proposal, `required_validation_dispositions`, unresolved conditions, debate 지표와 동적 재현 reference를 포함한다. HOLD의 REQUIRED 후보는 즉시 admission할 수 있다. TRUE의 REQUIRED 후보는 그 취약점의 악용 선행 조건으로만 보존되고, PROVIDED 후보가 두 Gate를 정상 통과해 admission될 때 `required_preconditions`에 복사된다. 이 정보가 CWE, 두 Gate, Primitive admission과 사람 검토의 입력이 된다.
 
 supporting/counter evidence는 자유 형식 문자열이 아니라 `EvidenceClaim`으로 기록한다. 각 claim은 작성 역할, 실제 저장 근거와 코드 주장에 필요한 현재 workspace·commit의 위치를 포함한다. 우회·대체 경로·영향 확대 후보는 `CandidateRef(candidate_state=UNVALIDATED)`로 구분하고 새 material claim이면 별도 가설로 재검증한다. debate token·시간과 판정 변화는 `VerificationMetrics`에 저장하며 provider가 token을 제공하지 않으면 값을 추정하지 않고 `null`로 둔다.

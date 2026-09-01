@@ -69,7 +69,7 @@ static_fact_bundle:
 
 Hypothesis Agent는 전체 코드가 아니라 entity, location과 suspected path를 제안한다. Verification·Pro·Con·Technical Gate는 필요한 추가 문맥을 `CodeContextRequest`로 요청한다. Chaining Agent는 코드 문맥을 새로 탐색하지 않고 저장된 ACTIVE Primitive와 provenance만 읽는다.
 
-1. 가설의 `CodeSymbol`, `CodeLocation`, `suspected_path`에서 시작한다.
+1. 가설의 `CodeSymbol`, `CodeLocation`, `suspected_path`에서 시작한다. `suspected_path` 원소가 `PathRoleLocation`이면 그 `location`을, `PathRoleRelation`이면 `relation`의 `from_location`/`to_location`(존재하면 `from_symbol_id`/`to_symbol_id`도 함께)을 꺼내 조회 시드로 쓴다.
 2. 분석 목적에 맞는 관계를 명시한다.
 3. Context Retrieval Service가 동일한 `workspace_id`와 연결된 `commit_id`인지, 요청이 budget 안인지 검증한다.
 4. 허용된 깊이까지 필요한 fragment와 관계만 조회한다.

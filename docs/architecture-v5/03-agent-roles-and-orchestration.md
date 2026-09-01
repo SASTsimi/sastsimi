@@ -65,9 +65,9 @@ confidence는 verdict, exploitability 또는 Finding 확률로 해석하지 않�
 
 ### repair retry 메커니즘
 
-`HypothesisProposal` 출력 검증 실패(금지된 확정 assertion, 잘못된 enum, 필수 field/location·반증 질문 누락)에 대해 제한된 횟수의 repair retry를 허용하고, 한도를 넘기면 `INVALID_OUTPUT`으로 확정한다.
+`HypothesisProposal` 출력 검증 실패(금지된 확정 assertion, 잘못된 enum, 필수 field/location·반증 질문 누락)에 대해 제한된 횟수의 repair retry를 허용하고, 한도를 넘기면 `INVALID_OUTPUT`으로 확정한다. 이 repair는 `08-lightweight-data-contracts.md`의 `LLMInvocationLog.repair_attempts` 메커니즘을 그대로 쓰는 것이며 별도 개념을 새로 만들지 않는다.
 
-각 repair는 단순히 반복 횟수만 세는 내부 루프가 아니라, LLM 호출 자체가 새로 인가된다. 매번 새 `llm_call_id`와 새 `attempt_id`(`WorkAttempt.attempt_number` +1)를 받고, `retry_of_llm_call_id`로 직전 실패 호출을 가리킨다. 이전에 받은 허가는 재사용할 수 없다(`ACTION_NOT_ALLOWED`). session은 `NEW`를 쓴다 — 이전 시도의 대화 맥락을 이어받으면 같은 실수에 anchoring될 위험이 있기 때문이다. `bounded_stop_reason`(Chaining Agent의 확장 중단, R1-04)과는 다른 개념이다.
+각 repair 라운드는 실제 LLM 호출을 새로 실행하지만, 같은 `llm_call_id`·같은 `attempt_id`(같은 `WorkAttempt`) 아래 `LLMInvocationLog.repair_attempts`만 1 증가시킨다 — 매 라운드마다 새 `attempt_id`나 새 `WorkAttempt`를 발급하지 않는다. session은 라운드마다 `NEW`를 쓴다 — 이전 시도의 대화 맥락을 이어받으면 같은 실수에 anchoring될 위험이 있기 때문이다. repair 한도를 다 쓰면 그 `LLMInvocationLog`를 `status=INVALID_OUTPUT`으로 확정하고 `attempt`도 `FAILED`로 끝낸다. 그 뒤 새 `llm_call_id`로 실행하는 일반 retry(`retry_of_llm_call_id`로 이 실패 호출을 가리킴, 새 `attempt_id` 사용)를 시작할지는 `09-llm-provider-session-and-logging.md`의 일반 retry 규칙(선행 status `INVALID_OUTPUT`은 제한된 repair가 끝난 뒤에만 허용)을 그대로 따르며, 이 절이 별도로 정의하지 않는다. `bounded_stop_reason`(Chaining Agent의 확장 중단, R1-04)과는 다른 개념이다.
 
 ## 가설 lifecycle
 

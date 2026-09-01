@@ -790,6 +790,8 @@ VulnerabilityHypothesis:
 
 `suspected_path`의 각 원소가 경로에서 맡는 역할(source/경유/sink)을 표시한다. `CodeRelation`/`CodeLocation` 자체는 `CodeFact.location`·`DataGap.affected_locations` 등 다른 곳에서도 재사용되는 공유 타입이므로, 그 타입에 직접 필드를 추가하지 않고 전용 타입으로 감싼다. 이 wrapper가 `suspected_path`의 실제 저장 타입이다(내부 파생값이 아니다).
 
+`suspected_path`의 원소 타입을 `[CodeRelation | CodeLocation]`에서 `[PathRoleLocation | PathRoleRelation]`으로 바꾸는 것은 기존 배열 원소 구조와 호환되지 않는다. `HypothesisProposal`과 `VulnerabilityHypothesis`는 이 변경으로 새 MAJOR schema를 사용하며, 이전 MAJOR의 `suspected_path`를 자동으로 추정 변환하지 않는다.
+
 ```yaml
 PathRoleLocation:
   role: SOURCE | PROPAGATION | SINK
@@ -833,15 +835,27 @@ PathRoleRelation:
 
 ### required_validation 판별 기준
 
-`required_validation: [string]`은 가설을 최종 판정하기 전에 반드시 거쳐야 할 **검증 활동의 종류**를 적는다. `missing_information`(확인 안 된 개별 사실), `falsification_questions`(반증 가능한 구체적 질문)와 다음처럼 구분한다.
+`required_validation: [string]`은 Hypothesis Agent가 제안하는 **비구속적 검증 활동 종류**를 적는다. `missing_information`(확인 안 된 개별 사실), `falsification_questions`(반증 가능한 구체적 질문)와 다음처럼 구분한다.
 
 | 필드 | 담는 것 | 형태 |
 |---|---|---|
 | `missing_information` | 확인 안 된 개별 사실 | 사실 단위 문자열 |
 | `falsification_questions` | 반증 가능한 구체적 질문 | `DISPROVED`/`NOT_DISPROVED`/`INCONCLUSIVE`로 답 가능 |
-| `required_validation` | 판정에 필요한 검증 활동의 종류 | 예: "동적 재현으로 실제 실행 흐름 확인 필요" |
+| `required_validation` | Hypothesis Agent가 제안하는 검증 활동 종류(비구속) | 예: "동적 재현으로 실제 실행 흐름 확인 필요" |
 
-Verification의 `dynamic_decision` 판단에 힌트로 쓰일 수 있지만 Hypothesis Agent가 동적 재현을 강제하지는 않는다. 강제 최소 개수는 0개이며, 있다면 `falsification_questions`와 내용이 겹치지 않아야 한다.
+Hypothesis Agent는 `HypothesisProposal.proposal_state=HYPOTHESIS_ONLY`이고 verdict·Finding·exploitability를 확정할 권한이 없으므로, 이 필드는 제안일 뿐 강제가 아니다. 실제 수행 여부·방법·대체 여부는 배정된 Verification Agent가 결정한다. Verification이 이 제안들을 어떻게 처리했는지는 `04-verification-and-dynamic-reproduction.md`의 처리 절차와 아래 `VerificationResult.required_validation_dispositions`를 따른다. 강제 최소 개수는 0개이며, 있다면 `falsification_questions`와 내용이 겹치지 않아야 한다.
+
+`VerificationResult`에는 `required_validation_dispositions: [RequiredValidationDisposition]`을 추가한다.
+
+```yaml
+RequiredValidationDisposition:
+  required_validation_item: string
+  disposition: PERFORMED | SUBSTITUTED | NOT_NEEDED | UNRESOLVED
+  rationale: string
+  evidence_refs: [StoredDataRef]
+```
+
+`hypothesis_id`가 등록될 때 받은 `required_validation` 각 항목마다 정확히 하나의 `RequiredValidationDisposition`을 남긴다. `PERFORMED`는 제안된 방식 그대로 수행했다는 뜻이고, `SUBSTITUTED`는 다른 정적·찬반·동적 근거로 대체했다는 뜻이며 `rationale`에 대체 근거를 설명한다. `NOT_NEEDED`는 Verification이 검토한 결과 그 검증이 판정에 불필요하다고 판단했다는 뜻이다. `UNRESOLVED`는 Verification도 필요하다고 인정했지만 완료하지 못했다는 뜻이며, 이 경우 final verdict는 `HOLD`이거나 해당 항목이 `unresolved_conditions`에도 포함돼야 한다 — `UNRESOLVED` 항목이 하나라도 있는데 최종 verdict가 `TRUE | FALSE`면 그 항목이 `unresolved_conditions`에 없는 한 invalid다. `required_validation`이 빈 배열이면 `required_validation_dispositions`도 빈 배열이다.
 
 ## 3. CodeContextRequest/Response
 
@@ -953,6 +967,7 @@ VerificationResult:
   impact_escalation_candidates: [CandidateRef]
   material_child_proposals: [HypothesisProposal]
   unresolved_conditions: [string]
+  required_validation_dispositions: [RequiredValidationDisposition]
   metrics: VerificationMetrics
   errors: [AnalysisError]
 ```
