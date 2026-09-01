@@ -37,7 +37,7 @@ Pro와 Con은 서로의 결과를 받지 않는 별도 NEW session이다. trigge
 `initial_verdict`는 중간 판단이며 운영 Gate·Primitive·보고서 입력으로 사용할 수 없습니다. final verdict는 독립 Pro/Con과 필요한 동적 결과를 종합한 최종 판단입니다.
 
 지원 취약점 유형 목록은 R8의 versioned evaluation corpus에서 확정합니다. 목록이 확정되기 전에는 source, sink, 방어 로직, 반증 질문, 필요한 정적·동적 근거와 HOLD 조건을 담는 공통 플레이북 구조를 먼저 사용합니다. 목록이 확정되면 같은 구조로 유형별 플레이북을 추가합니다.
-판정 뒤 흐름도 다릅니다. FALSE는 terminal이며 Primitive와 Chaining으로 가지 않습니다. HOLD는 Gate 없이 REQUIRED Primitive를 즉시 저장합니다. TRUE는 CWE와 두 Gate를 정상 통과한 exact revision만 PROVIDED Primitive가 됩니다.
+판정 뒤 흐름도 다릅니다. R6의 `TRUE`와 R5의 Technical `ACCEPT`는 서로 다른 결과입니다. TRUE는 공격 경로와 조건이 성립한다는 Verification 판정이고, ACCEPT는 그 final TRUE revision의 근거 연결과 충분성을 별도로 검토한 Gate 결과입니다. 따라서 TRUE가 Technical ACCEPT를 자동으로 보장하지 않으며 Gate도 기존 verdict를 직접 변경하지 않습니다. FALSE는 terminal이며 Primitive와 Chaining으로 가지 않습니다. HOLD는 Gate 없이 REQUIRED Primitive를 즉시 저장합니다. TRUE는 CWE와 두 Gate를 정상 통과한 exact revision만 PROVIDED Primitive가 됩니다.
 
 각 반증 질문에는 `question_id`가 있습니다. 검증 결과는 질문마다 `DISPROVED`, `NOT_DISPROVED`, `INCONCLUSIVE` 중 하나와 근거를 남깁니다. 실제 근거가 있는 `DISPROVED`가 하나 이상일 때만 `FALSE`가 가능합니다. `NOT_DISPROVED`는 반증하지 못했다는 뜻일 뿐 가설을 증명하지 않습니다.
 
