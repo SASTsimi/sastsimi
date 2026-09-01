@@ -243,7 +243,9 @@ provider·model·session을 바꿀 때는 **이름이 아니라 정확한 식별
 
 - 역할·provider·model별 invocation, token/동등 usage와 elapsed time
 - AST/SAST별 `SUCCEEDED | PARTIAL | FAILED | SKIPPED`, 실제 분석·제외 path/language와 coverage
-- sandbox mode별 CPU/memory/disk/process(PID)/network/time와 cleanup. 실행 예산 초과(`BUDGET_EXCEEDED`)와 정책 거절(`SANDBOX_POLICY_DENIED`)을 따로 셈
+- sandbox mode별 CPU/memory/disk/process(PID)/network/time, `runner_invoked`, 실제 환경 생성 여부, requirement `MATCH | MISMATCH | NOT_CHECKED | ERROR` 수와 cleanup. 실행 예산 초과(`BUDGET_EXCEEDED`)와 정책 거절(`SANDBOX_POLICY_DENIED`)을 따로 셈
+- exact `environment_requirements_ref`·`poc_ref`·`policy_decision_ref`·`environment_ref`·`steps_ref`의 data kind, record revision과 content hash
+- `cleanup_required`와 `SUCCEEDED | FAILED | NOT_REQUIRED`; 자원이 생겼는데 `NOT_REQUIRED`로 제출되어 거절된 횟수
 
 provider가 token이나 비용을 제공하지 않으면 추정치를 확정값처럼 표시하지 않고 metric source와 unavailable reason을 남긴다.
 
@@ -261,7 +263,8 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 - action type·요청 역할별 `ALLOW | DENY` 수와 실패한 `ActionCheck.reason_code`
 - `ALLOW` decision의 `UNUSED | USED`, outcome 누락과 replay 거절 수
 - `AUTHORITY_DENIED`, Gate 순서·Reporter·Sandbox·provider·file·disclosure 차단 수
-- Sandbox 계획 revision 변경, 계획 밖 step·공격 입력, 결과 log·cleanup 불일치와 동적 결과 생산 역할 위반 수
+- Sandbox 계획 revision 변경, 계획 밖 step·공격 입력, 결과 정책·환경·PoC·log·cleanup 불일치와 동적 결과 생산 역할 위반 수
+- Runner 미호출인데 step log가 있거나 Runner 호출 뒤 log가 없는 조합, 실제 환경·cleanup 상태와 reference가 어긋나 저장이 거절된 횟수
 - HumanReviewPacket의 report-ready/blocked 수와 누락된 policy·PoC·오류·HOLD 조건
 - `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION` 사람 결정 수
 
@@ -332,11 +335,12 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 | 가설 Agent·Verification 오류 | retry 가능하면 `BLOCKED`, 아니면 `FAILED` | 다른 가설 계속, 해당 가설은 근거 없이 `FALSE`가 되지 않으며 분석 `PARTIAL` 가능 |
 | provider 인증 필요 | `BLOCKED`, `waiting_for=AUTH` | 재인증 또는 승인된 failover 전까지 대기, verdict 변경 금지 |
 | rate limit·timeout | retry 가능하면 `BLOCKED`, 아니면 `FAILED` | backoff·예산 확인 뒤 새 attempt, 이전 실패 보존 |
-| Sandbox 환경·실행 실패 | `FAILED`와 실패 `DynamicReproductionResult` 가능 | 동적 반증이 아님, Verification이 남은 근거로 unresolved condition을 판단 |
+| Sandbox 환경 구성 실패 | `FAILED + ENVIRONMENT_SETUP` | 동적 반증이 아님, Verification이 남은 근거로 unresolved condition을 판단 |
+| 필수 환경 요구사항 차이·미확인·비교 오류 | `FAILED + ENVIRONMENT_SETUP`, `sandbox_environment=MISMATCH | ERROR` | 공격 단계를 시작하지 않고 exact 차이를 R6에 반환. 요구사항 변경이면 새 requirements와 이를 가리키는 새 plan, 단계 변경만이면 새 plan과 새 Sandbox 검사가 필요 |
 | Sandbox 부분 실행 | `PARTIAL`, 신뢰 결과와 `limitations` 저장 | 실제 오류가 없으면 `error_ids`·`gap_ids`를 만들지 않고 Verification이 한계와 관측을 함께 판단 |
-| Sandbox 정책 차단 결과 | 공통 work `SUCCEEDED`, 동적 결과 `BLOCKED + POLICY_BLOCKED` | 요청 처리 완료와 재현 성공을 구분하고 `INCONCLUSIVE` 결과를 Verification에 전달 |
+| Sandbox 정책 차단 결과 | 공통 work `SUCCEEDED`, 동적 결과 `BLOCKED + POLICY_BLOCKED` | exact `policy_decision_ref`를 요구한다. Runner가 호출되지 않았으면 `steps_ref=null`; PoC가 있어도 실행 성공이 아니며 `INCONCLUSIVE`로 Verification에 전달 |
 | Sandbox 실행 취소 | 공통 work와 동적 결과 `CANCELLED` | 취소 결과를 같은 atomic transition에서 저장하고 이후 늦은 결과는 격리 |
-| Sandbox 계획·실행 log 불일치 | 결과 저장 action `DENY` | 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
+| Sandbox 계획·요구사항·정책·환경·PoC·실행 log·cleanup 불일치 | 결과 저장 action `DENY` | requirements revision, 항목별 비교, nullable reference와 lifecycle 조합까지 검사해 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
 | 정책 조회 실패 | policy work `FAILED` | 기술 verdict 유지, Rule Scope `UNCERTAIN + DENY`, Reporter 차단 |
 | Technical Gate 실행 오류·보완 한도 초과 | Gate work `FAILED` | 기술 verdict 유지, Rule Scope Gate와 Reporter 차단 |
 | Rule Scope Gate 실행 오류 | Gate work `FAILED` | 기술 verdict 유지, Reporter 차단 |
@@ -367,6 +371,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 | `RATE_LIMITED` | provider adapter | LLM 호출 지연·중단 | backoff 또는 명시적 fallback |
 | `TIMED_OUT` | 각 runtime | 해당 작업 시간 초과 | 예산 안에서 새 시도 또는 중단 |
 | `SANDBOX_ERROR` | Sandbox runtime | 동적 재현 `FAILED` | 안전 조건 확인 뒤 제한 retry |
+| `ENVIRONMENT_MISMATCH` | R7 Sandbox 환경 비교기 | 필수 조건이 다르거나 확인되지 않아 공격 단계 금지 | R6가 exact 차이를 검토하고, 조건 변경이면 새 requirements와 이를 가리키는 새 plan을 함께 저장한 뒤 새 실행 요청 |
 | `CHAINING_ERROR` | Chaining runtime | matching 실패, 부모 verdict 유지 | 제한 retry 또는 no-match/실패 기록 |
 | `TECHNICAL_GATE_ERROR` | Technical Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
 | `POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 Gate `UNCERTAIN + DENY` | 공식 출처 재확인 |
