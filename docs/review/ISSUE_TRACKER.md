@@ -20,13 +20,13 @@ GitHub가 실제 상태, 담당자와 토론의 기준입니다. 이 문서는 �
 | R4 | PM·Control Plane·중앙 계약·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) | 김태현 `@taehyeon-git` 배정, 윤희섭 `@v1sion` 본문 연결 | `review/control-plane` | root README, `01`, `03`, `08`, `09`, `10`, `11`, `13`, governance/review | 전체 역할 | OPEN — R4 설계 완료 기록 유지 |
 | R5 | 두 Gate·같은 R6 owner REVISE·보고서 초안 | [#6](https://github.com/SASTsimi/sastsimi/issues/6) | 김혜령 `@kimhr8463` | `review/gate-reporting` | `05`, `07`, `08`, `10`, `12`, `13` | R6, R2, R7, R4, R8 | OPEN |
 | R6 | 찬반 근거·동적 모드와 `ReproductionPlan`·최종 판정 | [#7](https://github.com/SASTsimi/sastsimi/issues/7) | 임채민 `@UltraPeachKeen` | `review/verification` | `03`, `04`, `07`, `08`, `13` | R2, R7, R1, R4, R5, R8 | OPEN |
-| R7 | 승인된 exact 계획의 Docker 실행·동적 결과·PoC | [#8](https://github.com/SASTsimi/sastsimi/issues/8) | 조근석 `@Potatonion` | `review/dynamic-sandbox` | `04`, `07`, `08`, `10`, `13` | R6, R4, R8, R3, R5 | OPEN |
+| R7 | Controller 정책 판정·Runner exact 실행·환경/log/PoC 상세 artifact와 동적 결과 조립 | [#8](https://github.com/SASTsimi/sastsimi/issues/8) | 조근석 `@Potatonion` | `review/dynamic-sandbox` | `04`, `07`, `08`, `10`, `13` | R6, R4, R8, R3, R5 | OPEN |
 | R8 | 평가 corpus·지표·예산 profile | [#9](https://github.com/SASTsimi/sastsimi/issues/9) | 성병찬 `@gitterable` | `review/data-evaluation` | `04`, `06`, `07`, `08`, `09` | R4, 각 LLM 역할, R3 | OPEN |
 | 최종 | 전체 교차 시나리오·고정 commit SHA·최종 승인 | [#10](https://github.com/SASTsimi/sastsimi/issues/10) | 최종 검토·승인 담당자 김태현 `@taehyeon-git` | — | 전체 기준 문서·Wiki·Mermaid·발견사항 | R1–R8 담당자 전원, 김태현 `@taehyeon-git` | OPEN |
 
 번호 문서는 `docs/architecture-v5/` 아래 파일을 뜻합니다. 세부 입력·출력, 금지 권한과 완료 조건은 [ISSUE_CATALOG.md](./ISSUE_CATALOG.md)에 있습니다.
 
-R6가 동적 재현 모드와 계획을 결정하고, R4 trusted runtime이 계획·권한·예산을 검사하며, R7은 승인된 계획만 실행합니다. R8이 만든 예산 profile도 R4 runtime을 통해 강제됩니다. 연결 역할은 상대 역할의 전문 결정을 대신하지 않고 생산자·소비자 계약을 교차 검토합니다.
+R6가 동적 재현 모드와 계획을 결정하고, R4 trusted runtime이 계획 schema·reference·호출 권한·상태·예산을 검사합니다. R7의 Sandbox Controller는 세부 실행 정책을 검사하고 Runner는 승인된 exact 계획만 실행합니다. R8이 만든 예산 profile도 R4 runtime을 통해 강제됩니다. 연결 역할은 상대 역할의 전문 결정을 대신하지 않고 생산자·소비자 계약을 교차 검토합니다.
 
 ## 역할 담당자의 작업 순서
 

@@ -106,10 +106,12 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 
 - 역할·provider·model별 invocation, token/동등 usage와 elapsed time
 - AST/SAST별 `SUCCEEDED | PARTIAL | FAILED | SKIPPED`, 실제 분석·제외 path/language와 coverage
-- sandbox mode, exact `sandbox_profile_ref` revision, base·build·실행 image digest와 build dependency source
+- sandbox mode, exact `sandbox_profile_ref` revision, base·build·실행 image digest와 build dependency source, `runner_invoked`, 실제 환경 생성 여부와 cleanup
 - **Docker Sandbox에 사용되는 CPU·memory·ephemeral disk·PID/process·wall-clock time**의 승인값·실제 peak·limit 도달 원인
 - attempt internal network의 service·protocol·port 허용 목록과 실제 허용·차단 연결 시도
 - read-only input·writable volume·`tmpfs` mount manifest, container·volume·network·임시 파일별 cleanup 결과
+- exact `poc_ref`·`policy_decision_ref`·`environment_ref`·`steps_ref`의 data kind, record revision과 content hash
+- `cleanup_required`와 `SUCCEEDED | FAILED | NOT_REQUIRED`; 자원이 생겼는데 `NOT_REQUIRED`로 제출되어 거절된 횟수
 
 provider가 token이나 비용을 제공하지 않으면 추정치를 확정값처럼 표시하지 않고 metric source와 unavailable reason을 남긴다.
 
@@ -129,7 +131,8 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 - `AUTHORITY_DENIED`, Gate 순서·Reporter·Sandbox·provider·file·disclosure 차단 수
 - privileged·capability·host namespace·Docker socket·mount path escape와 범위 밖 network 요청의 차단 수
 - CPU·memory·disk·PID limit, OOM·timeout·강제 종료 수와 적용 profile별 사용량
-- Sandbox 계획 revision 변경, 계획 밖 step·공격 입력, 결과 log·cleanup 불일치와 동적 결과 생산 역할 위반 수
+- Sandbox 계획 revision 변경, 계획 밖 step·공격 입력, 결과 정책·환경·PoC·log·cleanup 불일치와 동적 결과 생산 역할 위반 수
+- Runner 미호출인데 step log가 있거나 Runner 호출 뒤 log가 없는 조합, 실제 환경·cleanup 상태와 reference가 어긋나 저장이 거절된 횟수
 - cleanup 실패, janitor 격리·재시도와 attempt 간 자원 재사용 차단 수
 - HumanReviewPacket의 report-ready/blocked 수와 누락된 policy·PoC·오류·HOLD 조건
 - `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION` 사람 결정 수
@@ -203,9 +206,9 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 | rate limit·timeout | retry 가능하면 `BLOCKED`, 아니면 `FAILED` | backoff·예산 확인 뒤 새 attempt, 이전 실패 보존 |
 | Sandbox 환경·실행 실패 | `FAILED`와 실패 `DynamicReproductionResult` 가능 | 동적 반증이 아님, Verification이 남은 근거로 unresolved condition을 판단 |
 | Sandbox 부분 실행 | `PARTIAL`, 신뢰 결과와 `limitations` 저장 | 실제 오류가 없으면 `error_ids`·`gap_ids`를 만들지 않고 Verification이 한계와 관측을 함께 판단 |
-| Sandbox 정책 차단 결과 | 공통 work `SUCCEEDED`, 동적 결과 `BLOCKED + POLICY_BLOCKED` | 요청 처리 완료와 재현 성공을 구분하고 `INCONCLUSIVE` 결과를 Verification에 전달 |
+| Sandbox 정책 차단 결과 | 공통 work `SUCCEEDED`, 동적 결과 `BLOCKED + POLICY_BLOCKED` | exact `policy_decision_ref`를 요구한다. Runner가 호출되지 않았으면 `steps_ref=null`; PoC가 있어도 실행 성공이 아니며 `INCONCLUSIVE`로 Verification에 전달 |
 | Sandbox 실행 취소 | 공통 work와 동적 결과 `CANCELLED` | 취소 결과를 같은 atomic transition에서 저장하고 이후 늦은 결과는 격리 |
-| Sandbox 계획·실행 log 불일치 | 결과 저장 action `DENY` | 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
+| Sandbox 계획·정책·환경·PoC·실행 log·cleanup 불일치 | 결과 저장 action `DENY` | nullable reference와 lifecycle 조합까지 검사해 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
 | 정책 조회 실패 | policy work `FAILED` | 기술 verdict 유지, Rule Scope `UNCERTAIN + DENY`, Reporter 차단 |
 | Technical Gate 실행 오류·보완 한도 초과 | Gate work `FAILED` | 기술 verdict 유지, Rule Scope Gate와 Reporter 차단 |
 | Rule Scope Gate 실행 오류 | Gate work `FAILED` | 기술 verdict 유지, Reporter 차단 |
@@ -258,7 +261,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 | `REPORT_NOT_READY` | runtime validator | Reporter 호출 금지, 기술 verdict 유지 | Rule Scope와 report 조건 보완 |
 | `TOOL_NOT_ALLOWED` | tool validator | tool·command 실행 금지 | allowlist의 안전한 도구로 새 요청 |
 | `FILE_ACCESS_DENIED` | path validator | workspace 밖 파일 접근 금지 | workspace 상대 허용 경로로 새 요청 |
-| `SANDBOX_POLICY_DENIED` | Sandbox policy validator | 동적 실행 또는 network 변경 금지 | 승인된 image·network·resource profile 사용 |
+| `SANDBOX_POLICY_DENIED` | Sandbox Controller policy validator | 동적 실행 또는 network 변경 금지 | 승인된 image·network·resource profile 사용 |
 | `PROVIDER_PROFILE_DENIED` | provider policy validator | LLM 호출·silent failover 금지 | 허용 profile과 explicit 새 action 사용 |
 | `DISCLOSURE_DENIED` | disclosure validator | 외부 제출·공개 action 금지 | exact 사람 결정과 report-ready packet 확인 |
 | `UNTRUSTED_INSTRUCTION` | prompt/action validator | 저장소·LLM 지시를 policy 변경으로 실행하지 않음 | data로 격리하고 승인된 설정만 사용 |

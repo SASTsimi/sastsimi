@@ -10,7 +10,7 @@
 
 ## 신뢰 실행 경계
 
-LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM runtime validator가 허용된 tool, 코드 근거의 `workspace_id`·`commit_id` 일치, 지원하는 schema MAJOR, `(logical_record_id, revision_number)` 연결, 상태 전이, retry/failover 선행 status와 token/time/retry/chain budget, sandbox와 network 정책, provider/session 선택, Gate가 읽은 Verification·CWELabel·정책 revision, Reporter 전제조건을 강제한다. 저장소 내용과 모든 LLM 출력은 validation 전까지 비신뢰 입력이며 policy 변경 명령으로 해석하지 않는다.
+LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM Runtime Validator가 코드 근거의 `workspace_id`·`commit_id` 일치, 지원하는 schema MAJOR, `(logical_record_id, revision_number)` 연결, 역할·호출 권한, 상태 전이, retry/failover 선행 status와 token/time/retry/chain budget, provider/session 선택, Gate가 읽은 Verification·CWELabel·정책 revision, Reporter 전제조건을 강제한다. Sandbox Controller는 image·command·file·network·resource·cleanup 정책을 별도로 전담한다. 저장소 내용과 모든 LLM 출력은 validation 전까지 비신뢰 입력이며 policy 변경 명령으로 해석하지 않는다.
 
 ## 방향
 
@@ -45,7 +45,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 ## 1.2 action 권한과 일회성 실행
 
 - Agent·service의 자연어 출력이나 tool call 제안은 실행 권한이 아니다. 부작용 action은 `ActionRequest`로 정규화한다.
-- 비-LLM Runtime Validator는 action type별 `SCHEMA | AUTHORITY | IDENTITY | REVISION | STATE | BUDGET | TOOL | FILE_PATH | SANDBOX | PROVIDER | SESSION | GATE_ORDER | REPORT_READY | REDACTION | DISCLOSURE` 중 필수 check를 모두 수행한다.
+- 비-LLM Runtime Validator는 action type별 `SCHEMA | AUTHORITY | IDENTITY | REVISION | STATE | BUDGET | TOOL | FILE_PATH | PROVIDER | SESSION | GATE_ORDER | REPORT_READY | REDACTION | DISCLOSURE` 중 필수 check를 모두 수행한다. `RUN_SANDBOX`의 세부 안전 정책은 이 목록에서 제외하고 Sandbox Controller가 한 번 검사한다.
 - 하나라도 실패하면 `ActionDecision=DENY`와 오류를 저장하고 실행하지 않는다.
 - `ALLOW` decision은 인증된 requester identity, exact action·state version·입력·설정 revision과 `valid_until`에만 유효하다. 실행 직전에 허가 시간이 지나거나 권한·상태·예산·입력·설정이 달라지면 runtime은 `UNUSED -> EXPIRED`로 바꾸고 거절한다. 그대로인 decision만 `UNUSED -> USED`로 compare-and-set claim해 한 번 실행한다.
 - claim 뒤 중단됐으면 기존 decision을 다시 사용하지 않는다. 중단 오류와 실행 outcome 유무를 기록하고 새 action을 요청한다.
@@ -82,7 +82,9 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 
 ## 5. Docker sandbox
 
-Sandbox Runner는 Verification이 생산하고 runtime이 `COMMITTED`한 exact `ReproductionPlan`과 일회성 `RUN_SANDBOX ALLOW`만 입력으로 받는다. Runner는 raw Docker option이나 정책 완화 요청을 Agent·저장소에서 직접 받지 않고, 허가에 고정된 `sandbox_profile_ref`, image digest, tool·command, file·mount, network, resource와 cleanup 조건으로 실행 option을 결정한다. 실행 직전 값이 달라지면 기존 허가를 `EXPIRED`로 만들고 container를 시작하지 않는다.
+`RUN_SANDBOX`는 Runtime Validator가 요청자·상태·예산과 exact `ReproductionPlan` reference를 확인한 일회성 `ActionDecision=ALLOW` 뒤 Sandbox Controller로 전달한다. 이 ALLOW는 Controller 호출 허가일 뿐 Sandbox 정책 통과나 Docker 실행 성공을 뜻하지 않는다. Controller 호출 직전 exact input·config reference가 달라졌으면 runtime은 `UNUSED -> EXPIRED`로 바꾸고 시작하지 않는다.
+
+Sandbox Controller는 `COMMITTED` plan과 USED decision만 입력으로 받고 Agent·저장소의 raw Docker option이나 정책 완화 요청을 받지 않는다. Controller는 plan closure에 고정된 `sandbox_profile_ref`, image digest, tool·command, file·mount, network, resource와 cleanup 조건을 검사해 exact `sandbox_policy_decision` record를 저장한다. `DENY`이면 Runner를 호출하지 않고, `ALLOW`이면 record에 연결된 exact plan과 실행 option만 Sandbox Runner에 전달한다.
 
 ### Container와 filesystem
 
@@ -118,6 +120,13 @@ Sandbox Runner는 Verification이 생산하고 runtime이 `COMMITTED`한 exact `
 - 성공·부분·실패·정책 차단·timeout·취소와 관계없이 `finally` 경로에서 process, container, volume, internal network와 임시 파일을 정리한다.
 - cleanup은 exact `cleanup_policy_ref`에 따라 수행하고 각 대상의 삭제 시도와 결과를 기록한다. 정리가 끝나지 않으면 `cleanup_status=FAILED`와 별도 운영 오류를 남기며, 관련 자원을 다른 attempt에 재사용하지 않고 격리된 janitor 대상에 등록한다.
 - cleanup 실패가 이미 수집한 관측을 취약점 지지·반증으로 바꾸지는 않는다. 결과 소비자는 cleanup 상태와 남은 제한을 함께 확인한다.
+
+### 실행 결과 artifact와 lifecycle
+
+- `runner_invoked=false`이면 `steps_ref=null`이고 실제 공격 입력도 비어 있어야 한다. `runner_invoked=true`이면 첫 단계 전에 실패해도 호출과 실패 지점을 append-only `SandboxStepLog`에 기록하고 exact `steps_ref`를 남긴다.
+- 계획용 환경 설정과 실제 생성 환경을 구분한다. `environment_created=false`이면 `environment_ref=null`, 실제 환경을 만들었으면 `environment_created=true`와 같은 attempt의 exact `sandbox_environment` reference가 필수다.
+- PoC·정책 판정·환경·log는 같은 analysis·workspace·commit·hypothesis·attempt의 exact revision만 연결한다. `poc_ref` 존재만으로 실행이나 재현 성공을 주장하지 않는다.
+- 정리 대상이 하나도 생기지 않았을 때만 `cleanup_required=false`, `cleanup_status=NOT_REQUIRED`다. 정책 차단 전에 build·container·network·volume·임시 파일이 생겼다면 `cleanup_required=true`로 기록하고 정리 성공 또는 실패를 남긴다.
 
 ## 6. 프로그램 정책 신뢰 경계
 
@@ -205,7 +214,7 @@ Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 �
 | Technical Gate 없이 Rule Scope Gate 호출 | exact Technical review ref와 status | `GATE_ORDER_INVALID` |
 | Rule Scope Gate 없이 Reporter 호출 | exact Rule Scope review와 일곱 report 조건 | `REPORT_NOT_READY` |
 | 공식 정책이 없는데 `ALLOW` 출력 | policy ref와 Rule Scope 불변조건 | invalid output, `UNCERTAIN + DENY` 또는 Gate 실패 |
-| repository prompt가 Sandbox network를 열라고 함 | sandbox profile과 instruction source | `UNTRUSTED_INSTRUCTION` 또는 `SANDBOX_POLICY_DENIED` |
+| repository prompt가 Sandbox network를 열라고 함 | Sandbox Controller가 versioned profile과 instruction source 확인 | `UNTRUSTED_INSTRUCTION` 또는 `SANDBOX_POLICY_DENIED` |
 | LLM이 workspace 밖 파일을 요청 | 정규화·symlink 해석 뒤 실제 path | `FILE_ACCESS_DENIED` |
 | 허용하지 않은 provider/model로 silent failover | provider profile과 선행 invocation | `PROVIDER_PROFILE_DENIED`, 호출 미실행 |
 | 인증 실패를 `FALSE`로 저장하려 함 | invocation status와 falsification evidence | invalid result 또는 `AUTHORITY_DENIED`, 실행 오류 유지 |
@@ -233,6 +242,11 @@ Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 �
 | runtime code가 외부 실제 target·host gateway·cloud metadata로 통신 | attempt internal network, target·protocol·port allowlist | packet 차단과 접속 시도 기록, 필수 단계가 정책상 불가능하면 `BLOCKED + POLICY_BLOCKED` |
 | fork bomb·memory·disk exhaustion 또는 wall-clock timeout 발생 | 적용한 PID·memory·disk·time limit와 runtime event | 제한에서 process 종료, 자원 고갈은 `FAILED + EXECUTION`, 시간 초과는 `FAILED + TIMEOUT`, 가설 반증 금지 |
 | 종료 뒤 container·volume·network·임시 파일 일부가 남음 | `cleanup_policy_ref`, 대상별 cleanup 결과와 재조회 | `cleanup_status=FAILED`, 자원 재사용 금지와 janitor 격리 |
+| Runner를 호출하지 않았는데 step log가 있거나 호출했는데 log가 없음 | `runner_invoked`와 `steps_ref` | `SAVE_RESULT`의 `SCHEMA` 검사 거절, 가설 판정 변경 금지 |
+| 정책 차단 결과에 Controller 판정 reference가 없음 | `POLICY_BLOCKED`와 `policy_decision_ref` | `SAVE_RESULT` 거절, Technical Gate 결과로 대신 채우기 금지 |
+| 실제 환경 생성 여부와 `environment_ref`가 다름 | `environment_created`와 exact `sandbox_environment` record | `SAVE_RESULT` 거절, 계획용 환경 설정으로 대체 금지 |
+| 정리 대상이 생겼는데 `NOT_REQUIRED`로 기록 | `cleanup_required`, 자원 생성 기록과 `cleanup_status` | `SAVE_RESULT` 거절, 남은 자원 격리와 운영 오류 기록 |
+| PoC 존재만으로 재현 성공을 주장하거나 최신 PoC를 다시 선택 | result의 exact `poc_ref`, step log와 content hash | `SAVE_RESULT` 또는 Gate 검토 거절, 생성본·실행본 혼합 금지 |
 
 ## Verification ownership과 Chaining admission 시나리오
 
@@ -251,7 +265,7 @@ Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 �
 | N10-A | Chaining이 N의 ACTIVE Primitive를 읽은 뒤 commit 전에 새 Verification generation/index revision 생성 | commit-time index CAS에서 `STALE_RESULT`; ChainingResult와 child proposal 등록 금지 |
 | N11 | Verification이 새 endpoint·sink·권한 경계를 발견 | Chaining을 거치지 않고 `HypothesisProposal(origin=VERIFICATION)`로 전역 등록 후 새 Verification |
 | N12 | chained child가 FALSE | 두 parent의 기존 verdict와 Gate record 불변 |
-| N13 | Verification이 budget·Sandbox·Gate 순서를 우회하려 함 | Runtime Validator가 `DENY`; hypothesis-local ownership은 enforcement 권한이 아님 |
+| N13 | Verification이 budget·Sandbox·Gate 순서를 우회하려 함 | Runtime Validator가 budget·Gate·호출 권한을, Sandbox Controller가 세부 Sandbox 정책을 `DENY`; hypothesis-local ownership은 enforcement 권한이 아님 |
 | N13-A | 같은 역할이지만 배정되지 않은 Verification identity가 Gate·Reporter·새 verification work를 요청 | ACTIVE `VerificationAssignment.owner_identity_ref` 불일치로 `AUTHORITY_DENIED` |
 | N14 | Chaining Agent가 Primitive match 없는 bypass·impact·dynamic 요청을 출력 | schema/result-owner validation에서 invalid로 거절 |
 | N15 | `purpose=PRODUCTION`인데 `verification_mode=BASIC | CONDITIONAL_DEBATE`를 요청 | Runtime Validator가 `ACTION_NOT_ALLOWED`; 운영 결과·Gate·Primitive·Reporter 생성 금지 |

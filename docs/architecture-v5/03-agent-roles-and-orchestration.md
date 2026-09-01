@@ -106,7 +106,9 @@ Chaining match -> PROPOSED child hypothesis origin CHAINING
 | Hypothesis Agent | 취약점 가설 | 없음 | static 사실을 입력으로 읽음 | 없음 | 없음 |
 | Pro·Con Agent | 찬성·반대 근거 | 없음 | 자기 역할의 근거 | 없음 | 없음 |
 | Verification Agent | Context·Pro/Con, 동적 모드·`ReproductionPlan`, 두 Gate·Reporter·Chaining 요청, material child proposal | `TRUE | FALSE | HOLD` | static·Pro·Con·COMMITTED dynamic 근거와 Gate 보완 요청 | 없음 | 없음 |
-| Sandbox Runtime | 없음 | 없음 | 승인된 exact `ReproductionPlan` 실행, `SandboxStepLog`·`DynamicReproductionResult`·PoC 생산 | 계획 밖 command·입력 및 Sandbox 정책 위반 차단 | 없음 |
+| Sandbox Controller | 없음 | 없음 | exact `ReproductionPlan`의 image·command·file·network·resource·cleanup 정책 검사와 exact 정책 판정 생산 | 정책 위반 계획 차단과 Runner 호출 통제 | 없음 |
+| Sandbox Runner | 없음 | 없음 | Controller가 승인한 exact 계획 실행, 실제 환경·`SandboxStepLog`와 PoC 실행 사실 생산 | 계획 밖 command·입력 실행 차단 | 없음 |
+| Sandbox Result Assembler | 없음 | 없음 | exact 정책·환경·step log·PoC·cleanup reference를 `DynamicReproductionResult`로 조립 | nullable·상태·identity 조합 위반 결과 저장 차단 | 없음 |
 | CWE Labeling | CWE 후보와 근거 | CWE label revision 생성 | final Verification | 없음 | 없음 |
 | Chaining Agent | TRUE+HOLD·TRUE+TRUE Primitive match와 chained proposal | 없음 | ACTIVE Primitive와 exact Gate provenance | 없음 | 없음 |
 | Technical Evidence Gate Agent | 구체적인 보완 요청 | 없음 | verdict·근거·코드 흐름·CWE | 없음 | 없음 |
@@ -115,7 +117,7 @@ Chaining match -> PROPOSED child hypothesis origin CHAINING
 | Runtime Validator | 허용 가능한 대체 action 안내 | 없음 | 실행 전제와 exact reference | action 허용·차단 | 없음 |
 | Human Reviewer | 재검증·보완 요청 | 외부 제출·공개 | 전체 `HumanReviewPacket` | 공개 승인 | `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION` |
 
-Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 호출 순서, 기술 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 확정하지 않는다. Verification Agent는 hypothesis-local 다음 작업과 동적 재현 모드를 선택하고 exact `ReproductionPlan`을 생산하지만 프로그램 enforcement를 우회하거나 Sandbox를 직접 실행하지 못한다. Sandbox Runtime은 승인된 계획만 실행하고 결과를 생산하며 모드·계획·최종 verdict를 바꾸지 않는다. Runtime Validator는 값의 생산자가 맞는지, 필요한 선행 record와 상태가 있는지, 실행 범위가 허용됐는지만 확인하며 domain 값을 대신 만들지 않는다.
+Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 호출 순서, 기술 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 확정하지 않는다. Verification Agent는 hypothesis-local 다음 작업과 동적 재현 모드를 선택하고 exact `ReproductionPlan`을 생산하지만 프로그램 enforcement를 우회하거나 Sandbox를 직접 실행하지 못한다. Sandbox Controller는 세부 실행 정책을 검사해 exact 판정을 만들고, Sandbox Runner는 통과한 계획만 실행해 환경·log·PoC 실행 사실을 생산한다. 비-LLM Sandbox Result Assembler가 같은 attempt의 exact reference만 동적 결과로 조립한다. 세 구성요소 모두 모드·계획·최종 verdict를 바꾸지 않는다. Runtime Validator는 값의 생산자가 맞는지, 필요한 선행 record와 상태가 있는지, 실행 범위가 허용됐는지만 확인하며 domain 값을 대신 만들지 않는다.
 
 ## action 요청과 실행
 
@@ -130,7 +132,7 @@ Agent 또는 service의 제안
 -> 결과와 상태를 atomic 저장
 ```
 
-`ActionRequest`에는 신뢰 runtime이 붙인 실제 호출자 identity, 요청 역할, action 종류, exact input refs, 현재 work와 state version, 도구·파일·provider·session·Sandbox 범위를 넣는다. LLM action은 model·prompt·context·schema·예산·시간이 고정된 `LLMCallSpec`도 포함한다. Runtime Validator는 실제 identity의 등록 역할과 요청 역할이 같은지부터 action별 필수 `ActionCheck`를 모두 수행한다. 하나라도 실패하면 `DENY`와 `AnalysisError`를 저장하고 실행하지 않는다. Agent가 자연어로 “검사를 건너뛰라”고 출력하거나 다른 역할을 주장해도 action이 되지 않는다.
+`ActionRequest`에는 신뢰 runtime이 붙인 실제 호출자 identity, 요청 역할, action 종류, exact input refs, 현재 work와 state version, 도구·파일·provider·session·Sandbox 범위를 넣는다. LLM action은 model·prompt·context·schema·예산·시간이 고정된 `LLMCallSpec`도 포함한다. Runtime Validator는 실제 identity의 등록 역할과 요청 역할이 같은지부터 action별 필수 `ActionCheck`를 수행한다. 하나라도 실패하면 `DENY`와 `AnalysisError`를 저장하고 실행하지 않는다. Agent가 자연어로 “검사를 건너뛰라”고 출력하거나 다른 역할을 주장해도 action이 되지 않는다. 단, `RUN_SANDBOX`의 image·command·file·network·resource·cleanup 의미 검사는 Runtime Validator가 중복 수행하지 않고 Sandbox Controller가 전담한다.
 
 한 ActionRequest에는 logical ActionDecision 하나만 허용한다. 두 Gate와 Reporter의 stage action은 LLM 호출까지 직접 허가하며 별도 `CALL_LLM`으로 순서·보고 조건을 우회할 수 없다.
 
@@ -138,14 +140,16 @@ Agent 또는 service의 제안
 
 - 인증된 실제 호출자·요청 역할, schema·ID·workspace·commit·record revision·state version 일치
 - token·시간·retry·repair·chain·Gate 보완 예산
-- 허용 tool과 workspace 안의 file path
-- Sandbox image digest·default-deny network·resource·cleanup
+- 일반 도구 action의 허용 tool과 workspace 안의 file path
+- `RUN_SANDBOX` 호출자의 권한·exact plan reference·상태·예산; Docker 세부 정책은 Sandbox Controller가 검사
 - provider/model/profile, NEW/RESUME/AUTO와 explicit failover
 - final Verification+CWE 뒤 Technical Gate, 그 뒤 Rule Scope Gate라는 순서
 - 모든 report 조건을 통과한 뒤 Reporter 호출
 - redaction 성공과 exact 사람 결정 전 외부 공개 차단
 
 Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서 품질을 평가하지 않는다. 그것은 Verification, 두 LLM Gate, Reporter와 사람의 역할이다.
+
+`RUN_SANDBOX`의 `ActionDecision=ALLOW`는 Controller에 exact `ReproductionPlan`을 전달할 권한만 부여한다. Sandbox Controller가 image digest, command/tool allowlist, mount와 file path, default-deny network, CPU·memory·disk·process·time limit, non-root와 cleanup을 한 번 검사한다. 통과한 계획만 Sandbox Runner가 실행한다. 실행 뒤 `SAVE_RESULT`는 승인 계획과 실제 `SandboxStepLog`의 일치 여부를 다시 대조한다. 마지막 대조는 정책을 재판단하는 중복 검사가 아니라 실행 결과 무결성 확인이다.
 
 ## 병렬 실행과 결과 합류
 
@@ -207,4 +211,4 @@ Chaining work는 각 parent의 current `PrimitiveIndexState` revision을 input�
 
 ## prompt-injection 경계
 
-저장소 내용, 도구 message, README와 주석, 모든 LLM output, provider 응답과 Sandbox output은 모두 비신뢰 분석 데이터다. Agent instruction이나 실행 권한으로 승격하지 않는다. Orchestration은 system instruction과 data 구분을 유지하고 Runtime Validator가 structured output, tool allowlist와 action policy를 검사한다. 비신뢰 입력은 provider·model·session·Gate 순서·Sandbox image/network·budget·Reporter·공개 정책을 변경하지 못한다. 이런 변경 지시는 `UNTRUSTED_INSTRUCTION`으로 기록하고 실행하지 않는다.
+저장소 내용, 도구 message, README와 주석, 모든 LLM output, provider 응답과 Sandbox output은 모두 비신뢰 분석 데이터다. Agent instruction이나 실행 권한으로 승격하지 않는다. Orchestration은 system instruction과 data 구분을 유지하고 Runtime Validator가 structured output과 action policy를 검사한다. Sandbox Controller는 비신뢰 입력이 image·command·file·network·resource·cleanup 정책을 바꾸지 못하게 한다. 비신뢰 입력은 provider·model·session·Gate 순서·budget·Reporter·공개 정책도 변경하지 못한다. 이런 변경 지시는 `UNTRUSTED_INSTRUCTION`으로 기록하고 실행하지 않는다.
