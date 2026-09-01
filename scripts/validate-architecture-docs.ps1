@@ -588,6 +588,8 @@ $orchestrationPath = Join-Path $repoRoot 'docs/architecture-v5/03-agent-roles-an
 $orchestrationText = Get-Content -Raw -LiteralPath $orchestrationPath
 $gatePath = Join-Path $repoRoot 'docs/architecture-v5/05-llm-gate-and-reporting.md'
 $gateText = Get-Content -Raw -LiteralPath $gatePath
+$gateWikiPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/gate-and-reporting.md'
+$gateWikiText = Get-Content -Raw -LiteralPath $gateWikiPath
 $requiredAuthorityRules = @(
     '## 역할별 권한 경계',
     '## action 요청과 실행',
@@ -619,6 +621,49 @@ $requiredAuthorityRules = @(
 foreach ($rule in $requiredAuthorityRules) {
     if (-not ($orchestrationText.Contains($rule) -or $gateText.Contains($rule) -or $contractText.Contains($rule) -or $resultText.Contains($rule))) {
         Add-Failure "missing R4-03 authority rule: $rule"
+    }
+}
+
+$requiredR504CrossReviewRules = @(
+    @{
+        Name = 'Technical Gate status fixes handoff readiness'
+        Text = $contractText
+        Marker = '`status=ACCEPT`는 `handoff_readiness=READY`, `status=REVISE | REJECT`는 `handoff_readiness=NOT_READY`만 허용한다.'
+    },
+    @{
+        Name = 'policy-blocked dynamic reproduction is not automatic rejection or falsification'
+        Text = $contractText
+        Marker = '`DynamicReproductionResult(status=BLOCKED, failure_reason=POLICY_BLOCKED)`는 자동 `REJECT` 조건이 아니다.'
+    },
+    @{
+        Name = 'policy freshness is explicit in the shared contract'
+        Text = $contractText
+        Marker = 'freshness_status: CURRENT | STALE | UNVERIFIED'
+    },
+    @{
+        Name = 'stale or unverified policy blocks report permission'
+        Text = $contractText
+        Marker = '`freshness_status=STALE | UNVERIFIED`이면 `rule_compliance`, `scope_compliance`, `review_status`는 `UNCERTAIN`, permission은 `DENY`다.'
+    },
+    @{
+        Name = 'changed upstream revisions supersede report drafts'
+        Text = $contractText
+        Marker = '오래된 draft는 current `HumanReviewPacket.report_draft_refs`와 `approved_report_refs`에 넣을 수 없다.'
+    },
+    @{
+        Name = 'missing Finding creates a non-disclosable blocked packet'
+        Text = $contractText
+        Marker = '`blocked_reasons`에 `FINDING_NOT_CREATED`를 남긴다.'
+    },
+    @{
+        Name = 'Wiki exposes Technical Gate handoff readiness'
+        Text = $gateWikiText
+        Marker = '`handoff_readiness: READY | NOT_READY`'
+    }
+)
+foreach ($rule in $requiredR504CrossReviewRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing or weakened PR #48 cross-review rule: $($rule.Name)"
     }
 }
 

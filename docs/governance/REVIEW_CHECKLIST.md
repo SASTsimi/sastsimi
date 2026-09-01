@@ -45,11 +45,14 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] TRUE는 두 Gate를 정상 통과한 exact revision만 PROVIDED Primitive가 됩니다.
 - [ ] 새 Verification generation/revision에는 오래된 Gate 결과나 Primitive 자격을 재사용하지 않고, 진행 중 Chaining도 commit-time index CAS로 거절합니다.
 - [ ] Technical Evidence Gate와 Rule Scope Impact Gate가 분리됩니다.
-- [ ] 공식 정책이 없으면 판단과 보고서 전달을 허용하지 않는 `UNCERTAIN + DENY`입니다.
+- [ ] 공식 정책이 없거나 `STALE | UNVERIFIED`이면 판단과 보고서 전달을 허용하지 않는 `UNCERTAIN + DENY`입니다.
+- [ ] Sandbox의 `POLICY_BLOCKED`는 자동 `REJECT`나 `FALSE`가 아니며, Technical Gate가 남은 근거와 미실행 제한을 함께 검토합니다.
 - [ ] Reporter의 모든 선행 조건이 명시됩니다.
+- [ ] Verification·CWE·두 Gate·정책 중 하나가 새 revision이면 기존 ReportDraft는 감사 이력으로만 남고 다시 생성합니다.
 - [ ] 사람만 최종 공개를 결정합니다.
 - [ ] Runtime Validator는 취약점·CWE·정책 의미를 판단하는 세 번째 Gate가 아닙니다.
 - [ ] 사람 검토 자료에는 Finding·근거·PoC·두 Gate·비용·오류·HOLD 조건이 포함되며 결정은 ReportDraft와 분리됩니다.
+- [ ] Finding이 없으면 `FINDING_NOT_CREATED` blocked packet만 만들고 `DISCLOSE`하지 않습니다.
 
 ## 전체 시나리오
 
@@ -58,7 +61,9 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] Gate-qualified TRUE 두 개를 결합할 때 양쪽 exact parent revision을 확인하고 새 가설로 검증합니다.
 - [ ] Docker 전체 재현과 PoC가 어떤 가설·코드 위치·관찰 결과를 뒷받침하는지 추적됩니다.
 - [ ] 동적 결과의 Runner 호출·실제 환경 생성·정리 필요 상태와 nullable log·환경·정책·PoC reference가 모순되지 않습니다.
+- [ ] Sandbox 정책 차단은 exact 정책 결정과 미실행 상태를 남기며, 그 사실만으로 Technical `REJECT`나 가설 `FALSE`가 되지 않습니다.
 - [ ] 기술적으로 `TRUE`여도 공식 정책을 확인할 수 없으면 보고서 전달을 허용하지 않습니다.
+- [ ] Finding이 아직 없거나 ReportDraft의 선행 revision이 바뀌면 사람이 볼 진행 자료만 만들고 공개는 차단합니다.
 - [ ] 기술 검토에서 보완이 필요하면 같은 ACTIVE `VerificationAssignment` owner에게 직접 돌아가 새 VERIFICATION work와 `TERMINAL -> VERIFYING` 전이를 만든 뒤 새 revision을 확정합니다.
 - [ ] LLM 로그인·인증 실패를 취약점이 아니라는 뜻의 `FALSE`로 바꾸지 않고 별도 오류로 남깁니다.
 - [ ] [Final Issue #10](https://github.com/SASTsimi/sastsimi/issues/10)의 전체 종단 시나리오를 통과합니다.

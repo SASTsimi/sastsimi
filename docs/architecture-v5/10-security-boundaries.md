@@ -100,7 +100,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - Rule Scope Impact Gate는 확인 가능한 공식 source만 `ProgramPolicyRecord`로 사용한다.
 - 저장소 문서, 검색 snippet, 오래된 모델 지식과 비공식 요약을 공식 rule로 승격하지 않는다.
 - source URL/reference, 수집 시각, 누락과 freshness warning을 보존한다.
-- 공식 자료가 없거나 신뢰할 수 없으면 `UNCERTAIN + DENY`다.
+- 공식 자료가 없거나 `ProgramPolicyRecord.freshness_status=STALE | UNVERIFIED`이면 `UNCERTAIN + DENY`다. 오래된 record는 감사용으로 보존할 수 있지만 `PASS | ALLOW` 근거로 사용하지 않는다.
 - 정책 수집기가 향후 추가되면 외부 fetch, parser, provenance와 변경 탐지에 별도 보안 검토가 필요하다.
 
 ## 7. 근거·권한 연결
@@ -124,6 +124,8 @@ Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 �
 
 사람에게는 exact `AnalysisRunResult`, Finding·Verification, 두 Gate, CWE·정책, dynamic·redacted PoC, ReportDraft 또는 차단 사유, 자원, 오류·DataGap·HOLD 조건을 포함한 `HumanReviewPacket`을 제공한다. `HumanReviewState`는 current packet generation과 current decision pointer를 CAS로 관리한다. `HumanReviewDecision` 저장은 인증된 사람 identity와 exact current packet·state version을 검사한 `SAVE_HUMAN_DECISION` ALLOW action만 허용한다. 외부 disclosure action은 current state가 가리키는 Human Reviewer의 `DISCLOSE`, `report_ready=true`, exact approved report와 target이 있을 때만 허용한다. 새 packet이 생긴 뒤 과거 packet·결정, 승인 목록 밖 report와 Agent 결정은 `DISCLOSURE_DENIED`다.
 
+Finding이 없는 packet은 `FINDING_NOT_CREATED` 사유를 가진 내부 blocked packet으로만 허용하고 `report_ready=false`와 공개 차단을 강제한다. ReportDraft가 참조한 Verification·CWE·두 Gate·정책 중 하나라도 새 revision으로 바뀌면 기존 draft와 이를 포함한 packet은 current 공개 자료가 아니며 새 Gate·Reporter·packet generation을 요구한다.
+
 ## 위협과 최소 대응
 
 | 위협 | 대응 |
@@ -146,6 +148,8 @@ Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 �
 | 위험한 PoC | sandbox default-deny와 resource limit |
 | credential·코드 유출 | adapter secret boundary, 최소 context, redaction |
 | 정책 환각 | 공식 `ProgramPolicyRecord`가 없으면 `UNCERTAIN + DENY` |
+| 오래되거나 최신성을 확인하지 못한 정책으로 보고 허용 | `freshness_status=STALE | UNVERIFIED`이면 `UNCERTAIN + DENY`, `PASS | ALLOW` 거절 |
+| Finding이 없는 packet 또는 오래된 ReportDraft 공개 | `report_ready=false`, `FINDING_NOT_CREATED`, exact current dependency와 packet generation 재검사 |
 | 자동 오공개 | Reporter 초안 한정, human-only disclosure |
 | 역할 위조, ALLOW replay 또는 stale 허가 사용 | trusted requester identity와 exact action·state·input·config·`valid_until` binding, stale이면 `UNUSED -> EXPIRED`, 유효하면 `UNUSED -> USED` 일회성 claim |
 | 권한 없는 domain 결과 저장 | 역할별 `SAVE_RESULT` authority와 선행 exact ref 검사 |

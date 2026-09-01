@@ -1167,6 +1167,8 @@ TechnicalEvidenceReview:
 
 `action_decision_ref.record_id`는 `CALL_TECHNICAL_GATE`를 허가하고 `USED`로 claim한 decision revision을 가리킨다. 실행 결과를 기록한 이후 decision revision의 `outcome_refs`에는 같은 call spec을 실행한 `TECHNICAL_GATE` `LLMInvocationLog`와 현재 review가 각각 한 번 포함되고, log의 `parsed_output_ref.record_id`가 현재 review를 가리켜야 한다. review는 log를 역참조하지 않아 content hash 순환을 만들지 않는다. `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 필수이며 각각 정확히 한 `VerificationResult`와 `CWELabel` revision을 가리킨다. runtime은 두 대상의 `record_id`, `workspace_id`, `commit_id`, `hypothesis_id`와 `content_hash`가 서로와 현재 Technical review에 일치하는지 확인한다. Verification 또는 CWELabel이 새 revision으로 바뀌면 이전 `TechnicalEvidenceReview`를 재사용할 수 없고 Gate를 새로 호출해야 한다. Technical review는 `VerificationResult.verdict`나 `CWELabel`을 덮어쓰지 않는다.
 
+`status=ACCEPT`는 `handoff_readiness=READY`, `status=REVISE | REJECT`는 `handoff_readiness=NOT_READY`만 허용한다. `DynamicReproductionResult(status=BLOCKED, failure_reason=POLICY_BLOCKED)`는 자동 `REJECT` 조건이 아니다. exact 정책 차단 근거와 미실행 제한을 보존하면서 정적·찬반 근거로 핵심 TRUE를 충분히 검토할 수 있으면 `ACCEPT`, 동적 근거가 핵심 주장에 필요하고 보완 가능하면 `REVISE`, 계약 위반·근거 모순으로 현재 기록을 신뢰할 수 없을 때만 `REJECT`다. 어떤 경우에도 정책 차단을 가설 `FALSE`로 변환하지 않는다.
+
 ## 9. ProgramPolicyRecord과 RuleScopeImpactReview
 
 공식 프로그램 정책을 확인해 저장한 기록과, 두 번째 Gate가 정책 범위·규칙·실제 영향을 검토한 결과입니다.
@@ -1188,6 +1190,8 @@ ProgramPolicyRecord:
   external_program_id: string
   policy_version: string
   fetched_at: timestamp
+  freshness_status: CURRENT | STALE | UNVERIFIED
+  freshness_checked_at: timestamp | null
   in_scope_assets: [PolicyItem]
   out_of_scope_assets: [PolicyItem]
   accepted_vulnerability_classes: [PolicyItem]
@@ -1201,6 +1205,8 @@ ProgramPolicyRecord:
 ```
 
 `PolicyItem.policy_item_id`는 한 `ProgramPolicyRecord` 안에서 유일하다. `value`에는 비교할 asset·취약점 분류·제한·기준 값을, `conditions`에는 그 값이 적용되는 조건을 넣는다. `source_ref`는 `ProgramPolicyRecord.source_refs`에도 포함된 공식 자료를 가리키고 `source_locator`는 문서 안에서 해당 항목을 다시 찾을 수 있는 절·anchor·페이지 정보다. 출처와 연결되지 않은 항목은 공식 정책 사실로 사용하지 않고 `missing_information`에 남긴다.
+
+`freshness_status=CURRENT`는 versioned freshness 기준으로 공식 출처를 확인했고 `freshness_checked_at`이 있을 때만 허용한다. 최대 허용 나이와 출처별 확인 방식은 R5가 정한다. 기준을 넘었으면 `STALE`, 확인 자체가 실패했거나 기준을 적용할 수 없으면 `UNVERIFIED`다. 두 상태 모두 `freshness_warning` 또는 `missing_information`에 이유가 있어야 하며 Gate의 `PASS | ALLOW` 근거로 사용할 수 없다. 이 필수 enum 추가는 `ProgramPolicyRecord`의 새 MAJOR schema로 배포한다.
 
 `program_id`는 내부 Program Catalog가 발급한 전역 ID다. `program_namespace`는 외부 플랫폼이나 catalog 출처를 나타내며, `external_program_id`는 그 출처 안의 프로그램 ID다. 외부 프로그램의 유일 키는 `(program_namespace, external_program_id)`이고, 내부 catalog는 이 쌍을 하나의 `program_id`에 매핑한다. namespace가 다른 같은 외부 ID를 자동 병합하지 않는다.
 
@@ -1223,7 +1229,7 @@ RuleScopeImpactReview:
 
 `action_decision_ref.record_id`는 `CALL_RULE_SCOPE_GATE`를 허가하고 `USED`로 claim한 decision revision을 가리킨다. 이후 decision revision의 `outcome_refs`에는 같은 call spec을 실행한 `RULE_SCOPE_GATE` log와 현재 review가 각각 한 번 포함되고, log의 `parsed_output_ref.record_id`가 현재 review를 가리켜야 한다. review는 log를 역참조하지 않는다. `verification_result_ref.record_id`, `technical_review_ref.record_id`와 `cwe_label_ref.record_id`는 필수다. `technical_review_ref` 대상은 `status=ACCEPT`이고, 그 대상의 Verification과 CWE reference `record_id`는 Rule Scope review가 직접 가리키는 두 `record_id`와 각각 같아야 한다. runtime은 각 reference의 `workspace_id`, `commit_id`, `content_hash`가 실제 대상 record와 일치하고, Verification·CWELabel·Technical 대상 `RecordMeta.hypothesis_id`가 현재 Rule Scope review의 가설과 같은지 확인한다. `policy_record_ref`가 있으면 그 `record_id`도 필수이며 실제 `ProgramPolicyRecord`와 일치해야 한다. 어느 입력 revision이든 바뀌면 이전 Rule Scope review를 재사용하지 않는다.
 
-공식 `ProgramPolicyRecord`가 없으면 `policy_record_ref=null`이다. 정책 record가 없거나 핵심 출처가 누락되면 `rule_compliance`, `scope_compliance`, `review_status`는 `UNCERTAIN`, permission은 `DENY`다. 불완전한 정책 record 자체가 있으면 그 reference는 보존하고 `missing_information`에 누락 내용을 기록한다. 이 불변조건을 만족하지 않는 출력은 invalid다.
+공식 `ProgramPolicyRecord`가 없으면 `policy_record_ref=null`이다. 정책 record가 없거나 핵심 출처가 누락되거나 `freshness_status=STALE | UNVERIFIED`이면 `rule_compliance`, `scope_compliance`, `review_status`는 `UNCERTAIN`, permission은 `DENY`다. 불완전하거나 오래된 정책 record 자체가 있으면 exact reference는 감사용으로 보존하고 `missing_information`에 누락·최신성 문제를 기록한다. 이 상태에서 `PASS | ALLOW`를 반환하거나 이 불변조건을 만족하지 않는 출력은 invalid다.
 
 ## 10. LLM invocation records
 
@@ -1360,6 +1366,8 @@ ReportDraft:
 - Rule Scope review의 `policy_record_ref.record_id`가 ReportDraft의 `policy_record_ref.record_id`와 같다.
 - 각 reference의 `workspace_id`, `commit_id`, `content_hash`가 실제 대상 record와 일치하고, 가설별 대상 record의 `meta.hypothesis_id`가 ReportDraft와 같다. CWELabel이 새 revision으로 바뀌면 두 Gate와 ReportDraft를 모두 새 revision 기준으로 다시 생성한다.
 
+ReportDraft가 참조한 Verification·CWELabel·Technical review·Rule Scope review·정책 중 하나라도 새 current revision으로 바뀌면 기존 draft record는 감사 이력으로 보존하되 current report로 사용할 수 없다. runtime은 기존 draft를 덮어쓰지 않고 새 dependency chain의 Gate·Reporter work와 새 `ReportDraft.record_id`를 만든다. 오래된 draft는 current `HumanReviewPacket.report_draft_refs`와 `approved_report_refs`에 넣을 수 없다.
+
 사람의 검토 상태는 `ReportDraft`를 수정하지 않고 별도 record로 저장한다.
 
 ```yaml
@@ -1408,7 +1416,7 @@ HumanReviewDecision:
 
 `action_decision_ref.record_id`는 분석 종료·exact refs·redaction·필수 검토 자료를 확인한 `PREPARE_HUMAN_REVIEW` ALLOW decision의 `USED` revision을 가리킨다. `analysis_result_ref.record_id`는 필수다. packet은 한 `AnalysisRunResult` revision에서 조립하고 새 packet의 `review_generation`은 직전 `HumanReviewState.packet_generation+1`이다. finding, verification, CWE, 두 Gate, 정책, dynamic, PoC, report, LLM log, action decision, work state, work attempt, transition commit와 debug trace reference는 `AnalysisRunResult`의 해당 값과 set-equal해야 하며 임의로 빼거나 더하지 않는다. `resource_summary`는 `AnalysisRunResult.resources`, `error_ids`는 `errors[].error_id`, `gap_ids`는 `gaps[].gap_id`에서 만든다. `report_ready=true`는 하나 이상의 ReportDraft가 있고 각 초안이 `TRUE + Technical ACCEPT + Rule Scope PASS/PASS/PASS/SUFFICIENT/ALLOW`의 exact revision을 가리킬 때만 허용한다. 보고서가 차단됐으면 빈 `report_draft_refs`, `report_ready=false`와 구체적인 `blocked_reasons`를 사용한다.
 
-`FindingCandidate` 본문과 품질 기준은 R5가 소유한다. R4-03은 이미 저장된 Finding revision을 `finding_refs`로 전달할 뿐 새 Finding claim을 만들거나 빠진 Finding을 추정하지 않는다. Finding이 아직 없으면 두 `finding_refs` 목록을 모두 비우고 그 사유를 `blocked_reasons`에 남긴다.
+`FindingCandidate` 본문과 품질 기준은 R5가 소유한다. R4-03은 이미 저장된 Finding revision을 `finding_refs`로 전달할 뿐 새 Finding claim을 만들거나 빠진 Finding을 추정하지 않는다. Finding이 아직 없으면 두 `finding_refs` 목록을 모두 비우고 `blocked_reasons`에 `FINDING_NOT_CREATED`를 남긴다. 이 blocked packet 자체는 사람에게 진행 상태를 보여 주는 정상 결과지만 반드시 `report_ready=false`이고 `DISCLOSE`할 수 없다. Finding이 생성되면 이전 packet을 수정하지 않고 새 `review_generation`의 packet을 만든다.
 
 `HumanReviewDecision.action_decision_ref.record_id`는 인증된 Human Reviewer와 exact current packet을 검사한 `SAVE_HUMAN_DECISION` ALLOW decision의 `USED` revision을 가리킨다. `packet_ref.record_id`는 action이 검사한 `HumanReviewState.current_packet_ref.record_id`와 같고 decision의 `review_generation`도 current state·packet과 같아야 한다. `reviewer_identity_ref`는 비밀 session이나 credential이 아닌 내부의 제한된 사람 identity 증명 record를 가리킨다. `DISCLOSE`는 current packet의 `report_ready=true`, 하나 이상의 `approved_report_refs`와 하나 이상의 `disclosure_targets`가 필요하다. 공개 대상은 versioned destination allowlist의 불투명 ID이며 URL query, credential 또는 실행 명령을 담지 않는다. 승인 report는 모두 current packet의 `report_draft_refs`에 포함되고 report-ready 불변조건을 만족해야 한다. 다른 세 decision은 두 목록을 비운다. Agent가 생성한 결정, superseded packet·결정, 승인 목록 밖 report는 `DISCLOSURE_DENIED`다. 외부 공개 직전에도 `HumanReviewState.status=DECIDED`, exact current packet·decision·generation·state version을 다시 검사한다. 이 계약은 자동 제출 integration을 구현하거나 허용한다는 뜻이 아니다.
 

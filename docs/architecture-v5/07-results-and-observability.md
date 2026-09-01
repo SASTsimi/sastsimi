@@ -178,7 +178,9 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 
 최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, INITIAL·VERIFICATION·CHAINING·invalid hypothesis 수, verdict별 수, 두 Gate별 수, PoC/report refs, 공식 정책 상태, Primitive/Chaining 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
 
-분석 종료 뒤 review packet assembler가 exact `AnalysisRunResult`에서 `HumanReviewPacket`을 만든다. packet은 Finding·Verification, 두 Gate, 정책·CWE, dynamic·redacted PoC, report 또는 차단 이유, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. `HumanReviewState`는 current packet generation과 current 사람 decision을 가리킨다. 새 packet이 생기면 이전 packet과 결정은 감사 기록으로만 남고 공개에는 사용할 수 없다. `HumanReviewDecision`은 packet과 별도 record이며 ReportDraft를 수정하지 않는다.
+분석 종료 뒤 review packet assembler가 exact `AnalysisRunResult`에서 `HumanReviewPacket`을 만든다. packet은 Finding·Verification, 두 Gate, 정책·CWE, dynamic·redacted PoC, report 또는 차단 이유, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. Finding이 아직 없으면 `finding_refs=[]`, `report_ready=false`, `blocked_reasons=FINDING_NOT_CREATED`인 blocked packet만 만들 수 있고 공개할 수 없다. `HumanReviewState`는 current packet generation과 current 사람 decision을 가리킨다. 새 packet이 생기면 이전 packet과 결정은 감사 기록으로만 남고 공개에는 사용할 수 없다. `HumanReviewDecision`은 packet과 별도 record이며 ReportDraft를 수정하지 않는다.
+
+ReportDraft가 가리킨 Verification·CWE·두 Gate·정책 중 하나라도 새 current revision으로 바뀌면 그 초안은 즉시 감사 이력으로만 남는다. 새 exact dependency chain으로 Gate와 Reporter를 다시 실행해 새 초안과 packet generation을 만들기 전에는 current packet이나 공개 판단에 사용할 수 없다.
 
 | 최종 상태 | 저장 조건 |
 |---|---|
@@ -203,7 +205,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 | Sandbox 정책 차단 결과 | 공통 work `SUCCEEDED`, 동적 결과 `BLOCKED + POLICY_BLOCKED` | exact `policy_decision_ref`를 요구한다. Runner가 호출되지 않았으면 `steps_ref=null`; PoC가 있어도 실행 성공이 아니며 `INCONCLUSIVE`로 Verification에 전달 |
 | Sandbox 실행 취소 | 공통 work와 동적 결과 `CANCELLED` | 취소 결과를 같은 atomic transition에서 저장하고 이후 늦은 결과는 격리 |
 | Sandbox 계획·정책·환경·PoC·실행 log·cleanup 불일치 | 결과 저장 action `DENY` | nullable reference와 lifecycle 조합까지 검사해 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
-| 정책 조회 실패 | policy work `FAILED` | 기술 verdict 유지, Rule Scope `UNCERTAIN + DENY`, Reporter 차단 |
+| 정책 조회 실패 또는 정책 최신성 `STALE | UNVERIFIED` | policy work `FAILED` 또는 현재 상태 기록 | 기술 verdict 유지, Rule Scope `UNCERTAIN + DENY`, Reporter 차단. 오래된 정책은 감사 자료로만 보존 |
 | Technical Gate 실행 오류·보완 한도 초과 | Gate work `FAILED` | 기술 verdict 유지, Rule Scope Gate와 Reporter 차단 |
 | Rule Scope Gate 실행 오류 | Gate work `FAILED` | 기술 verdict 유지, Reporter 차단 |
 | 보고서 작성 실패 | report work·`ReportProcessState` `FAILED` | Verification과 두 Gate 결과 유지, 초안만 실패 |

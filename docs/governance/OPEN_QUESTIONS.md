@@ -41,7 +41,7 @@
 | 7 | 연계 공격의 필요 조건과 확인된 능력을 어떤 단어로 기록하고 연결할지 정합니다. | Primitive vocabulary와 scope/capability matching |
 | 8 | 연계 탐색이 끝없이 늘어나지 않도록 한도를 정합니다. | Chaining depth·count·primitive 조합·token·time·duplicate 제한 |
 | 9 | Docker 이미지, 네트워크, 자원과 종료 후 정리 방법을 정합니다. | image/network/resource/cleanup 정책 |
-| 10 | 공식 프로그램 정책을 어디서 가져오고 최신 여부와 실패를 어떻게 처리할지 정합니다. | `ProgramPolicyRecord` source·freshness·failure |
+| 10 | 공식 정책의 출처별 최대 허용 나이와 확인 방법을 정합니다. 공통 처리 규칙은 이미 확정되어, 정책이 없거나 오래됐거나 최신성을 확인하지 못하면 `UNCERTAIN + DENY`입니다. | `ProgramPolicyRecord` source·freshness threshold·collector failure; `STALE | UNVERIFIED -> UNCERTAIN + DENY` 고정 |
 | 11 | 두 Gate가 사용할 질문, 보완 반복 횟수와 평가 자료를 정합니다. | Gate prompt, revision limit와 dataset |
 | 12 | LLM 호출 기록에서 비밀정보를 가리고 얼마나 보관할지 정합니다. | logging proxy/parser, redaction, retention, access control |
 | 13 | 데이터를 저장하고 버전을 바꿀 때 호환성을 어떻게 지킬지 정합니다. | serialization, schema versioning, result storage |

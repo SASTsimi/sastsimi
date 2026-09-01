@@ -11,6 +11,8 @@
 | `Repository Loader` | 저장소를 로컬로 가져오고 분석할 commit을 준비하는 프로그램 | 별도 저장소 복사본을 만들지 않습니다. |
 | `CodeWorkspace` | AST와 SAST가 읽는 실행별 로컬 코드 폴더 | `workspace_id`와 `commit_id`로 구분합니다. |
 | `ProgramPolicyRecord` | 공식 버그바운티 정책을 확인해 남긴 기록 | 저장소 코드 복사본이 아니며 공식 출처와 수집 시각을 기록합니다. |
+| `freshness_status` | 정책을 현재 자료로 믿을 수 있는지 나타내는 상태 | `STALE` 또는 `UNVERIFIED`이면 보고 허용에 쓰지 않고 `UNCERTAIN + DENY`로 처리합니다. |
+| `handoff_readiness` | Technical Gate 결과를 다음 단계에 전달해도 되는지 나타내는 값 | `ACCEPT`일 때만 `READY`이며 `REVISE | REJECT`는 `NOT_READY`입니다. |
 | `StoredDataRef` | 도구가 만든 결과 파일이나 기록을 가리키는 번호 | 내부 저장 경로 대신 결과 번호와 내용 hash를 사용합니다. 저장된 결과 수정본을 가리킬 때는 `record_id`도 넣습니다. |
 | `RecordMeta` | 결과마다 붙는 공통 식별 정보 | 분석·작업공간·가설·재시도·수정본을 연결합니다. |
 | `RunMeta` | 코드 준비 전에도 쓸 수 있는 분석 실행 식별 정보 | `analysis_id`로 실행을 추적하며 clone 성공 전에는 workspace·commit을 요구하지 않습니다. |
@@ -106,6 +108,7 @@
 | `HumanReviewPacket` | 사람이 볼 Finding·근거·PoC·Gate·비용·오류·보류 조건을 모은 자료 묶음 | exact AnalysisRunResult 수정본에서 빠짐없이 만듭니다. |
 | `HumanReviewState` | 지금 검토해야 할 최신 packet과 현재 사람 결정을 가리키는 상태 | 새 packet이 생기면 이전 결정을 공개에 쓰지 못하게 합니다. |
 | `HumanReviewDecision` | 사람이 자료 묶음을 읽고 남긴 최종 결정 기록 | `DISCLOSE`, `REVISE`, `WITHHOLD`, `NEED_MORE_VALIDATION` 중 하나이며 ReportDraft와 분리합니다. |
+| `FINDING_NOT_CREATED` | 아직 Finding이 만들어지지 않아 사람 검토 자료가 공개 준비 전이라는 차단 사유 | packet 자체는 볼 수 있지만 `report_ready=false`이며 공개할 수 없습니다. |
 
 ## 실행·보안·평가
 
