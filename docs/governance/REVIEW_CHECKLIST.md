@@ -38,6 +38,10 @@
 - [ ] Primitive DB는 queue 또는 Finding 저장소가 아닙니다.
 - [ ] Orchestration은 proposal 검증·등록·Verification 배정 뒤 가설 내부 호출을 결정하지 않습니다.
 - [ ] Verification이 Context·Pro/Con·동적 재현·판정·Technical `REVISE`·Gate 제출과 Chaining handoff를 소유합니다.
+- [ ] R6 Verification이 exact `EnvironmentRequirements`를 만들고 `ReproductionPlan.environment_requirements_ref`가 current revision을 가리킵니다.
+- [ ] `EnvironmentRequirements`는 애플리케이션 조건이고 `sandbox_profile_ref`는 Sandbox 보안 정책이며 서로 대신하지 않습니다.
+- [ ] R7은 실제 `sandbox_environment`에 같은 `requirements_ref`와 requirement별 `MATCH | MISMATCH | NOT_CHECKED | ERROR`, 실제 값·근거·Health Check 결과를 남깁니다.
+- [ ] R7은 요구사항·허용 대체값을 바꾸거나 환경 차이를 임의로 승인하지 않습니다.
 - [ ] Chaining Agent는 TRUE+HOLD 또는 앞 TRUE PROVIDED→뒤 TRUE exact 선행 조건 matching만 수행하고 일반 research·동적 재현·Gate 보완을 하지 않습니다.
 - [ ] HOLD는 Gate 없이 REQUIRED Primitive가 되고, FALSE는 Primitive나 Chaining으로 들어가지 않습니다.
 - [ ] TRUE는 두 Gate를 정상 통과한 exact revision만 PROVIDED Primitive가 됩니다.
@@ -55,6 +59,11 @@
 - [ ] 판단을 보류한 가설의 부족 조건은 Gate-qualified `TRUE`의 능력이 채울 때만, 바로 합치지 않고 새로운 연계 가설로 다시 검증합니다.
 - [ ] Gate-qualified TRUE 두 개를 결합할 때 양쪽 exact parent revision을 확인하고 새 가설로 검증합니다.
 - [ ] Docker 전체 재현과 PoC가 어떤 가설·코드 위치·관찰 결과를 뒷받침하는지 추적됩니다.
+- [ ] 동적 결과의 Runner 호출·실제 환경 생성·정리 필요 상태와 nullable log·환경·정책·PoC reference가 모순되지 않습니다.
+- [ ] 필수 환경 차이가 있으면 공격 단계 전에 멈추고 `FAILED + ENVIRONMENT_SETUP`과 exact 비교 결과를 R6에 반환합니다.
+- [ ] R6이 환경 조건을 바꾸면 새 요구사항과 이를 가리키는 새 계획을 함께 만들고, 단계만 바꾸면 새 계획만 만든 뒤 새 `RUN_SANDBOX`·Sandbox Controller 검사를 거칩니다.
+- [ ] 환경 구성 실패·차이·허용되지 않은 version fallback·오래된 requirements를 가설 `FALSE`로 바꾸지 않습니다.
+- [ ] 환경 요구사항·실제 값·Health Check·log에 credential·cookie·token·password 원문이 없습니다.
 - [ ] 기술적으로 `TRUE`여도 공식 정책을 확인할 수 없으면 보고서 전달을 허용하지 않습니다.
 - [ ] 기술 검토에서 보완이 필요하면 같은 ACTIVE `VerificationAssignment` owner에게 직접 돌아가 새 VERIFICATION work와 `TERMINAL -> VERIFYING` 전이를 만든 뒤 새 revision을 확정합니다.
 - [ ] LLM 로그인·인증 실패를 취약점이 아니라는 뜻의 `FALSE`로 바꾸지 않고 별도 오류로 남깁니다.

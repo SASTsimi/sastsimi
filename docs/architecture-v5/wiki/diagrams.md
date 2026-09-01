@@ -30,14 +30,25 @@ flowchart TB
     S10 --> S11[11 Initial TRUE FALSE HOLD]
     S11 --> S12{12 Verification chooses dynamic mode}
     S12 -->|No| S13[13 Final verdict and material claim split]
-    S12 -->|LIMITED| DL[Verification LIMITED ReproductionPlan]
-    S12 -->|FULL| DF[Verification FULL ReproductionPlan and PoC draft]
+    S12 -->|LIMITED| DL[Verification LIMITED Requirements and Plan]
+    S12 -->|FULL| DF[Verification FULL Requirements Plan and PoC draft]
     DL --> DAUTH[Runtime Validator call authorization]
     DF --> DAUTH
     DAUTH --> DCTRL[Sandbox Controller policy check]
-    DCTRL -->|Pass| DRUN[Sandbox Runner exact Docker execution]
-    DCTRL -->|Policy blocked| S13
-    DRUN --> S13
+    DCTRL --> DPD[Exact SandboxPolicyDecision]
+    DPD -->|Pass| DENV[Sandbox Runner prepares environment and Health Checks]
+    DPD -->|Policy blocked no Runner| DASM[Sandbox Result Assembler]
+    DENV --> DCHK{All required items MATCH}
+    DCHK -->|Yes| DRUN[Sandbox Runner executes exact attack steps]
+    DCHK -->|No| DFAIL[Stop before attack with ENVIRONMENT_SETUP]
+    DFAIL --> DASM
+    DRUN --> DASM
+    DASM --> DRES[Dynamic result with exact nullable refs]
+    DRES --> DMIS{Required environment mismatch}
+    DMIS -->|Yes| DRET[R6 reviews exact differences]
+    DMIS -->|No| S13
+    DRET -->|New requirements plus plan or plan-only revision| DAUTH
+    DRET -->|No retry| S13
     S13 --> S14{14 Final verdict}
     S14 -->|FALSE| CLOSED[Terminal internal result]
     S14 -->|HOLD| REQUIRED[HOLD REQUIRED Primitive admitted]
@@ -135,14 +146,25 @@ flowchart TB
     SYN --> INITIAL[Initial TRUE FALSE HOLD]
     INITIAL --> DYN{Verification chooses dynamic mode}
     DYN -->|No| FINAL[Final VerificationResult]
-    DYN -->|Small question| LIMITED[Verification LIMITED ReproductionPlan]
-    DYN -->|End to end| FULL[Verification FULL ReproductionPlan and PoC draft]
+    DYN -->|Small question| LIMITED[Verification LIMITED Requirements and Plan]
+    DYN -->|End to end| FULL[Verification FULL Requirements Plan and PoC draft]
     LIMITED --> AUTH[Runtime Validator call authorization]
     FULL --> AUTH
     AUTH --> CTRL[Sandbox Controller policy check]
-    CTRL -->|Pass| RUNNER[Sandbox Runner exact Docker execution]
-    CTRL -->|Policy blocked| SYN2[Verification re-synthesizes evidence]
-    RUNNER --> SYN2
+    CTRL --> PDEC[Exact SandboxPolicyDecision]
+    PDEC -->|Pass| ENV[Sandbox Runner prepares environment and Health Checks]
+    PDEC -->|Policy blocked no Runner| ASSEMBLER[Sandbox Result Assembler]
+    ENV --> CHECK{All required items MATCH}
+    CHECK -->|Yes| RUNNER[Sandbox Runner executes exact attack steps]
+    CHECK -->|No| EFAIL[Stop before attack with ENVIRONMENT_SETUP]
+    EFAIL --> ASSEMBLER
+    RUNNER --> ASSEMBLER
+    ASSEMBLER --> DRESULT[Dynamic result with exact nullable refs]
+    DRESULT --> EMIS{Required environment mismatch}
+    EMIS -->|Yes| EREVIEW[R6 reviews exact differences]
+    EMIS -->|No| SYN2[Verification re-synthesizes evidence]
+    EREVIEW -->|New requirements plus plan or plan-only revision| AUTH
+    EREVIEW -->|No retry| SYN2
     SYN2 --> FINAL
     FINAL --> OUT[Restrictions candidates PrimitiveDraft and VERIFICATION origin child proposals]
 ```

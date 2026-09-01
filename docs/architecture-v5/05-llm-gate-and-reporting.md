@@ -34,7 +34,7 @@ CWE 후보는 final TRUE 뒤에 Gate 입력으로 작성한다. primary·alterna
 - final `VerificationResult`의 정확한 `record_id`가 있는 `StoredDataRef`와 revision history
 - Pro/Con evidence와 debate mode/trigger
 - 실제 code/entity/location/path reference
-- `DynamicReproductionResult`와 PoC reference
+- `DynamicReproductionResult`와 exact `poc_ref`·`policy_decision_ref`·`environment_ref`·`steps_ref`
 - `CWELabel`의 정확한 `record_id`가 있는 `StoredDataRef`와 근거
 - restriction, bypass candidate, unresolved condition
 - 같은 Verification에서 분리한 material child proposal 중 재검증 완료 여부
@@ -44,6 +44,8 @@ CWE 후보는 final TRUE 뒤에 Gate 입력으로 작성한다. primary·alterna
 - final `TRUE`와 찬성·반대 근거의 일치
 - 핵심 주장이 현재 `workspace_id`와 `commit_id`의 코드 위치·호출·데이터 흐름에 연결되는지
 - 동적 관측이 현재 가설·`workspace_id`·실행 조건에 연결되는지
+- Runner 호출 여부와 step log, 실제 환경 생성 여부와 환경 reference, 정책 차단과 Controller 판정 reference, 정리 필요 여부와 상태가 공통 계약에 맞는지
+- PoC reference가 있다는 사실을 실행 또는 성공으로 오해하지 않고 실제 log·관측과 같은 revision인지
 - CWE 선택이 취약점 유형과 근거에 적절한지
 - restriction·반박·HOLD 조건이 정확히 표현되었는지
 - 기술 검토 결과를 다음 단계 또는 내부 종결 기록으로 전달할 수 있는지
@@ -165,14 +167,14 @@ Reporter는 통과한 근거를 읽기 쉬운 내부 초안으로 구성한다.
 - 취약점 요약, 공격 전제와 실제 영향
 - entity·코드 위치와 source → propagation/call → sink
 - restriction, bypass 검토와 반박 처리
-- 동적 재현과 redacted PoC
+- 동적 재현과 redacted PoC. 실행하지 않은 PoC나 정책 차단 자료는 그 상태를 숨기지 않음
 - 두 Gate가 검토한 같은 `CWELabel` revision과 선택 이유
 - 두 Gate 결과와 `ProgramPolicyRecord` reference
 - Verification-origin 및 Chaining-origin child proposal의 재검증 여부
 - 완화와 회귀 테스트 제안
 - invocation trace와 남은 불확실성
 
-Reporter는 새로운 공격 경로를 확정하거나 미검증 material child 또는 Chaining 후보를 실제 영향으로 쓰지 않는다. 초안의 핵심 주장은 Verification/PoC/Gate artifact에 연결한다. `ReportDraft.cwe_label_ref.record_id`는 Technical review와 Rule Scope review가 공통으로 가리킨 CWELabel `record_id`와 같아야 하며, CWELabel이 수정되면 두 Gate를 다시 통과하기 전에는 초안을 만들지 않는다.
+Reporter는 새로운 공격 경로를 확정하거나 미검증 material child 또는 Chaining 후보를 실제 영향으로 쓰지 않는다. 초안의 핵심 주장은 Verification/PoC/Gate artifact에 연결한다. `poc_ref`가 있어도 `runner_invoked=false`, `steps_ref=null` 또는 `status=BLOCKED`이면 실행·재현 성공으로 서술하지 않는다. `ReportDraft.cwe_label_ref.record_id`는 Technical review와 Rule Scope review가 공통으로 가리킨 CWELabel `record_id`와 같아야 하며, CWELabel이 수정되면 두 Gate를 다시 통과하기 전에는 초안을 만들지 않는다.
 
 ## 사람의 최종 결정
 
