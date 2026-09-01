@@ -35,9 +35,12 @@ flowchart TB
     DL --> DAUTH[Runtime Validator call authorization]
     DF --> DAUTH
     DAUTH --> DCTRL[Sandbox Controller policy check]
-    DCTRL -->|Pass| DRUN[Sandbox Runner exact Docker execution]
-    DCTRL -->|Policy blocked| S13
-    DRUN --> S13
+    DCTRL --> DPD[Exact SandboxPolicyDecision]
+    DPD -->|Pass| DRUN[Sandbox Runner exact Docker execution]
+    DPD -->|Policy blocked no Runner| DASM[Sandbox Result Assembler]
+    DRUN --> DASM
+    DASM --> DRES[Dynamic result with exact nullable refs]
+    DRES --> S13
     S13 --> S14{14 Final verdict}
     S14 -->|FALSE| CLOSED[Terminal internal result]
     S14 -->|HOLD| REQUIRED[HOLD REQUIRED Primitive admitted]
@@ -140,9 +143,12 @@ flowchart TB
     LIMITED --> AUTH[Runtime Validator call authorization]
     FULL --> AUTH
     AUTH --> CTRL[Sandbox Controller policy check]
-    CTRL -->|Pass| RUNNER[Sandbox Runner exact Docker execution]
-    CTRL -->|Policy blocked| SYN2[Verification re-synthesizes evidence]
-    RUNNER --> SYN2
+    CTRL --> PDEC[Exact SandboxPolicyDecision]
+    PDEC -->|Pass| RUNNER[Sandbox Runner exact Docker execution]
+    PDEC -->|Policy blocked no Runner| ASSEMBLER[Sandbox Result Assembler]
+    RUNNER --> ASSEMBLER
+    ASSEMBLER --> DRESULT[Dynamic result with exact nullable refs]
+    DRESULT --> SYN2[Verification re-synthesizes evidence]
     SYN2 --> FINAL
     FINAL --> OUT[Restrictions candidates PrimitiveDraft and VERIFICATION origin child proposals]
 ```

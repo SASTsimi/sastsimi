@@ -106,7 +106,9 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 
 - 역할·provider·model별 invocation, token/동등 usage와 elapsed time
 - AST/SAST별 `SUCCEEDED | PARTIAL | FAILED | SKIPPED`, 실제 분석·제외 path/language와 coverage
-- sandbox mode별 CPU/memory/disk/network/time와 cleanup
+- sandbox mode별 CPU/memory/disk/network/time, `runner_invoked`, 실제 환경 생성 여부와 cleanup
+- exact `poc_ref`·`policy_decision_ref`·`environment_ref`·`steps_ref`의 data kind, record revision과 content hash
+- `cleanup_required`와 `SUCCEEDED | FAILED | NOT_REQUIRED`; 자원이 생겼는데 `NOT_REQUIRED`로 제출되어 거절된 횟수
 
 provider가 token이나 비용을 제공하지 않으면 추정치를 확정값처럼 표시하지 않고 metric source와 unavailable reason을 남긴다.
 
@@ -124,7 +126,8 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 - action type·요청 역할별 `ALLOW | DENY` 수와 실패한 `ActionCheck.reason_code`
 - `ALLOW` decision의 `UNUSED | USED`, outcome 누락과 replay 거절 수
 - `AUTHORITY_DENIED`, Gate 순서·Reporter·Sandbox·provider·file·disclosure 차단 수
-- Sandbox 계획 revision 변경, 계획 밖 step·공격 입력, 결과 log·cleanup 불일치와 동적 결과 생산 역할 위반 수
+- Sandbox 계획 revision 변경, 계획 밖 step·공격 입력, 결과 정책·환경·PoC·log·cleanup 불일치와 동적 결과 생산 역할 위반 수
+- Runner 미호출인데 step log가 있거나 Runner 호출 뒤 log가 없는 조합, 실제 환경·cleanup 상태와 reference가 어긋나 저장이 거절된 횟수
 - HumanReviewPacket의 report-ready/blocked 수와 누락된 policy·PoC·오류·HOLD 조건
 - `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION` 사람 결정 수
 
@@ -197,9 +200,9 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 | rate limit·timeout | retry 가능하면 `BLOCKED`, 아니면 `FAILED` | backoff·예산 확인 뒤 새 attempt, 이전 실패 보존 |
 | Sandbox 환경·실행 실패 | `FAILED`와 실패 `DynamicReproductionResult` 가능 | 동적 반증이 아님, Verification이 남은 근거로 unresolved condition을 판단 |
 | Sandbox 부분 실행 | `PARTIAL`, 신뢰 결과와 `limitations` 저장 | 실제 오류가 없으면 `error_ids`·`gap_ids`를 만들지 않고 Verification이 한계와 관측을 함께 판단 |
-| Sandbox 정책 차단 결과 | 공통 work `SUCCEEDED`, 동적 결과 `BLOCKED + POLICY_BLOCKED` | 요청 처리 완료와 재현 성공을 구분하고 `INCONCLUSIVE` 결과를 Verification에 전달 |
+| Sandbox 정책 차단 결과 | 공통 work `SUCCEEDED`, 동적 결과 `BLOCKED + POLICY_BLOCKED` | exact `policy_decision_ref`를 요구한다. Runner가 호출되지 않았으면 `steps_ref=null`; PoC가 있어도 실행 성공이 아니며 `INCONCLUSIVE`로 Verification에 전달 |
 | Sandbox 실행 취소 | 공통 work와 동적 결과 `CANCELLED` | 취소 결과를 같은 atomic transition에서 저장하고 이후 늦은 결과는 격리 |
-| Sandbox 계획·실행 log 불일치 | 결과 저장 action `DENY` | 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
+| Sandbox 계획·정책·환경·PoC·실행 log·cleanup 불일치 | 결과 저장 action `DENY` | nullable reference와 lifecycle 조합까지 검사해 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
 | 정책 조회 실패 | policy work `FAILED` | 기술 verdict 유지, Rule Scope `UNCERTAIN + DENY`, Reporter 차단 |
 | Technical Gate 실행 오류·보완 한도 초과 | Gate work `FAILED` | 기술 verdict 유지, Rule Scope Gate와 Reporter 차단 |
 | Rule Scope Gate 실행 오류 | Gate work `FAILED` | 기술 verdict 유지, Reporter 차단 |

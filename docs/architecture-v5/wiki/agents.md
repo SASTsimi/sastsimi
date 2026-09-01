@@ -13,8 +13,9 @@
 | Orchestration | proposal 검증·전역 가설 등록·Verification 배정 제안 | 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정, runtime enforcement, Finding·공개 결정 |
 | Hypothesis | schema-valid `HYPOTHESIS_ONLY` 제안 생성 | verdict, Finding, exploitability 확정 |
 | Verification | 한 가설의 Context·Pro/Con, 동적 모드·`ReproductionPlan`, 판정·Gate 보완·Chaining handoff와 material child 제안 | Sandbox 직접 실행·동적 결과 생산, runtime 검사 우회, 새 claim 무검증 승격 |
-| Sandbox Controller | exact `ReproductionPlan`의 image·명령·파일·네트워크·자원·정리 정책 검사 | 재현 필요성·모드·계획·최종 verdict 변경 또는 정책 미검사 실행 |
-| Sandbox Runner | Controller가 승인한 exact 계획 실행, step log·동적 결과·PoC 생산 | 정책 변경, 계획 밖 명령 실행 또는 최종 verdict 판단 |
+| Sandbox Controller | exact `ReproductionPlan`의 정책을 검사하고 허용·차단 이유 저장 | 재현 필요성·모드·계획·최종 verdict 변경 또는 정책 미검사 실행 |
+| Sandbox Runner | Controller가 승인한 exact 계획 실행, 실제 환경·step log·PoC 실행 사실 생산 | 정책 변경, 계획 밖 명령 실행 또는 최종 verdict 판단 |
+| Sandbox Result Assembler | 같은 실행 시도의 정책·환경·log·PoC·정리 참조를 동적 결과로 조립 | reference 존재만으로 성공 판단, 다른 attempt 결과 혼합 |
 | Pro | 가설 성립 근거 탐색 | 최종 verdict |
 | Con | 반증·보호·도달 불가·restriction 탐색 | 최종 verdict |
 | Chaining | Gate-qualified TRUE+HOLD·TRUE+TRUE Primitive matching과 새 가설 제안 | 일반 research, dynamic, REVISE, verdict/CWE/Gate/Finding/report 확정 |
@@ -27,8 +28,8 @@
 Orchestration → Hypothesis proposal validation and registration → assign Verification
 Verification → context → Pro and Con → dynamic mode and ReproductionPlan
 Runtime Validator → commit plan and authorize Sandbox call
-Sandbox Controller → check detailed policy → Sandbox Runner executes exact plan
-Sandbox Runner → return result → Verification final verdict
+Sandbox Controller → store exact policy decision → Sandbox Runner executes exact plan
+Sandbox result assembler → connect exact nullable refs → Verification final verdict
 HOLD → REQUIRED Primitive → Chaining
 TRUE → CWE → Technical Gate → Rule Scope Impact Gate
 Gate-qualified TRUE → PROVIDED Primitive → Chaining

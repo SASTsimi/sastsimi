@@ -27,7 +27,7 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 | 9 | Verification이 위치 기반 코드 문맥 조회 | `CodeContextRequest/Response` |
 | 10 | 운영 Verification이 Pro/Con을 독립 병렬 실행 | supporting/counter evidence |
 | 11 | 초기 판정 | `TRUE | FALSE | HOLD` |
-| 12 | Verification이 모드·`ReproductionPlan`을 결정하고 runtime 허가 뒤 R7 Sandbox가 exact plan 실행 | `COMMITTED ReproductionPlan`, `SandboxStepLog`, `DynamicReproductionResult`, PoC evidence |
+| 12 | Verification이 모드·`ReproductionPlan`을 결정하고 runtime 허가 뒤 R7 Sandbox가 정책 판정·exact plan 실행·결과 조립 | `COMMITTED ReproductionPlan`, exact 정책·환경·`SandboxStepLog`·PoC refs가 연결된 `DynamicReproductionResult` |
 | 13 | 최종 판정과 material claim 분리 | final `VerificationResult`, optional `origin=VERIFICATION` proposal |
 | 14 | 판정별 분기 | FALSE terminal / HOLD REQUIRED 즉시 admission / TRUE CWE 진행 |
 | 15 | TRUE 기술 근거 검토 | `TechnicalEvidenceReview` |
@@ -89,8 +89,9 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | Hypothesis Agent | schema-constrained 가설 후보 생성 | verdict·Finding·exploitability 확정 |
 | Verification Agent | 가설 내부 Context·Pro/Con, 동적 모드·`ReproductionPlan`, 판정·REVISE·Gate·Chaining 흐름과 material child proposal | Sandbox 직접 실행·동적 결과 생산, runtime 검사 우회 또는 새 주장의 무검증 승격 |
 | Pro/Con Agents | 독립적인 성립·반박 근거 조사 | 동일 session 공유 |
-| Sandbox Controller | Verification이 만든 exact `ReproductionPlan`의 image·command·file·network·resource·cleanup 정책 검사와 실행 환경 통제 | 동적 모드·계획·최종 verdict 변경 또는 정책 미검사 실행 |
-| Sandbox Runner | Controller가 승인한 exact 계획을 Docker 안에서 실행하고 log·동적 결과·PoC 생산 | 정책 변경, 계획 밖 명령 실행 또는 최종 verdict 판단 |
+| Sandbox Controller | Verification이 만든 exact `ReproductionPlan`의 정책 검사와 exact 허용·차단 판정 생산 | 동적 모드·계획·최종 verdict 변경 또는 정책 미검사 실행 |
+| Sandbox Runner | Controller가 승인한 exact 계획을 Docker 안에서 실행하고 실제 환경·step log·PoC 실행 사실 생산 | 정책 변경, 계획 밖 명령 실행 또는 최종 verdict 판단 |
+| Sandbox Result Assembler | 같은 attempt의 정책·환경·log·PoC·cleanup reference를 `DynamicReproductionResult`로 조립 | 다른 attempt 혼합 또는 reference 존재만으로 성공 판단 |
 | Primitive DB | HOLD REQUIRED와 Gate-qualified TRUE PROVIDED의 ACTIVE exact revision 검색 | 작업 queue, Gate 전 TRUE admission 또는 자동 Finding 생성 |
 | Chaining Agent | TRUE+HOLD·TRUE+TRUE Primitive matching과 chained proposal | 일반 research, dynamic, Gate, verdict, CWE, report 확정 |
 | Technical Evidence Gate | 기술적 연결성과 handoff 품질 검토 | Verification verdict 직접 변경 |

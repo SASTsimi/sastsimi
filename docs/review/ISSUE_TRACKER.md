@@ -20,7 +20,7 @@ GitHub가 실제 상태, 담당자와 토론의 기준입니다. 이 문서는 �
 | R4 | PM·Control Plane·중앙 계약·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) | 김태현 `@taehyeon-git` 배정, 윤희섭 `@v1sion` 본문 연결 | `review/control-plane` | root README, `01`, `03`, `08`, `09`, `10`, `11`, `13`, governance/review | 전체 역할 | OPEN — R4 설계 완료 기록 유지 |
 | R5 | 두 Gate·같은 R6 owner REVISE·보고서 초안 | [#6](https://github.com/SASTsimi/sastsimi/issues/6) | 김혜령 `@kimhr8463` | `review/gate-reporting` | `05`, `07`, `08`, `10`, `12`, `13` | R6, R2, R7, R4, R8 | OPEN |
 | R6 | 찬반 근거·동적 모드와 `ReproductionPlan`·최종 판정 | [#7](https://github.com/SASTsimi/sastsimi/issues/7) | 임채민 `@UltraPeachKeen` | `review/verification` | `03`, `04`, `07`, `08`, `13` | R2, R7, R1, R4, R5, R8 | OPEN |
-| R7 | Sandbox Controller 정책 검사·승인된 exact 계획의 Runner 실행·동적 결과·PoC | [#8](https://github.com/SASTsimi/sastsimi/issues/8) | 조근석 `@Potatonion` | `review/dynamic-sandbox` | `04`, `07`, `08`, `10`, `13` | R6, R4, R8, R3, R5 | OPEN |
+| R7 | Controller 정책 판정·Runner exact 실행·환경/log/PoC 상세 artifact와 동적 결과 조립 | [#8](https://github.com/SASTsimi/sastsimi/issues/8) | 조근석 `@Potatonion` | `review/dynamic-sandbox` | `04`, `07`, `08`, `10`, `13` | R6, R4, R8, R3, R5 | OPEN |
 | R8 | 평가 corpus·지표·예산 profile | [#9](https://github.com/SASTsimi/sastsimi/issues/9) | 성병찬 `@gitterable` | `review/data-evaluation` | `04`, `06`, `07`, `08`, `09` | R4, 각 LLM 역할, R3 | OPEN |
 | 최종 | 전체 교차 시나리오·고정 commit SHA·최종 승인 | [#10](https://github.com/SASTsimi/sastsimi/issues/10) | 최종 검토·승인 담당자 김태현 `@taehyeon-git` | — | 전체 기준 문서·Wiki·Mermaid·발견사항 | R1–R8 담당자 전원, 김태현 `@taehyeon-git` | OPEN |
 
