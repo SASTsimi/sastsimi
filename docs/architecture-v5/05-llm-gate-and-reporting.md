@@ -186,11 +186,12 @@ reference 목록만으로 준비 완료가 되지는 않는다. Human Reviewer�
 `DynamicReproductionResult`/redacted PoC까지 역추적할 수 있어야 한다. 정책 claim은 exact
 `CWELabel`, `ProgramPolicyRecord`와 official source locator까지 이어져야 한다.
 
-이는 기존 `ReportDraft`와 authoritative upstream artifact가 이미 가진 reference를 따라 claim을
-역추적할 수 있어야 한다는 semantic invariant다. R5-04는 `HumanReviewPacket`에 `claim_refs` 같은
-field, claim mapping record 또는 별도 provenance schema를 추가하지 않는다. 기존 공통 packet
-schema와 reference graph만으로 이 invariant를 강제하는 방식이 충분한지는 R4/R8 공통 validator
-계약의 검토 대상이며, R5가 임의로 schema를 확장하지 않는다.
+현재 schema에는 ReportDraft 문장별 claim ID와 evidence를 직접 연결하는 field가 없다. 따라서
+프로그램은 packet의 전체 reference set, exact current revision과 ReportDraft가 가리키는
+authoritative upstream closure까지만 검사한다. Human Reviewer가 각 material 문장과 그 supporting·
+counter evidence, restriction의 실제 대응을 확인한다. R5-04는 `HumanReviewPacket`에 `claim_refs`
+같은 field, claim mapping record 또는 별도 provenance schema를 추가하지 않는다. 문장별 자동 검사를
+도입하려면 R4/R8과 함께 공통 schema·validator 계약을 별도로 확정해야 한다.
 
 confirmed claim의 provenance에는 검증을 끝낸 Evidence와 final Verification만 사용할 수 있다.
 `origin=VERIFICATION | CHAINING` proposal, `CandidateRef`, speculative attack path와 아직 검증되지
@@ -199,11 +200,11 @@ confirmed claim의 provenance에는 검증을 끝낸 Evidence와 final Verificat
 
 Verification/Gate가 기록한 testing·policy restriction, reproduction/environment limitation,
 unresolved counter evidence·verification condition과 Gate failure/revision reason은 관련 claim과
-함께 보존한다. 이를 누락하거나 upstream보다 강한 claim으로 바꾼 draft는 `report_ready=true`인
-packet에 넣을 수 없다. schema/reference 검증, exact current revision, 필수 Evidence·Policy
-provenance 또는 redaction이 실패해도 `PREPARE_HUMAN_REVIEW`를 허용하지 않는다. 구체적 stale 판정과
-invalidation은 R4/R8의 current-pointer·generation·CAS 계약을 재사용하며 R5 전용 validator나
-lifecycle을 추가하지 않는다.
+함께 보존한다. ReportDraft에서 이를 누락하거나 upstream보다 강한 claim으로 바꾸면 draft를 빼고
+`report_ready=false`와 구체적 `blocked_reasons`를 담은 안전한 packet을 사람에게 전달한다. 반면
+packet 자체의 schema/reference set·exact current revision 검사가 실패하거나 packet redaction이
+실패하면 `PREPARE_HUMAN_REVIEW`를 허용하지 않는다. 구체적 stale 판정과 invalidation은 R4/R8의
+current-pointer·generation·CAS 계약을 재사용하며 R5 전용 validator나 lifecycle을 추가하지 않는다.
 
 Packet, ReportDraft와 일반 trace에는 secret·credential·불필요한 PII, hidden chain-of-thought 또는
 raw private reasoning을 넣지 않는다. Reviewer에게는 decision, concise evidence-based rationale,
@@ -232,4 +233,4 @@ packet에는 다음을 빠뜨리지 않는다.
 
 사람은 현재 `HumanReviewState`가 가리키는 packet의 정확한 generation·revision을 읽고 별도 `HumanReviewDecision`에 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`을 기록한다. 결정 저장은 인증된 사람 identity와 current packet·state version을 확인하는 `SAVE_HUMAN_DECISION` action을 거친다. `ReportDraft` 안의 field를 바꾸거나 LLM output을 사람 결정으로 저장하지 않는다.
 
-시스템의 외부 disclosure action은 Human Reviewer가 만든 exact current `HumanReviewDecision=DISCLOSE`, `report_ready=true`인 current packet, packet 안의 `approved_report_refs`와 명시된 `disclosure_targets`가 있을 때만 허용한다. 새 packet generation이 생기면 이전 packet과 결정은 즉시 superseded된다. Agent·Gate·Reporter가 만든 결정, 승인 목록 밖 report, 과거 packet·결정은 `DISCLOSURE_DENIED`다. 어떤 Agent도 외부 제출·공개 권한을 갖지 않으며 실제 자동 제출 integration은 이 설계 범위 밖이다.
+시스템의 외부 disclosure action은 Human Reviewer가 만든 exact current `HumanReviewDecision=DISCLOSE`, `report_ready=true`인 current packet, packet 안의 `approved_report_refs`와 명시된 `disclosure_targets`가 있을 때만 허용한다. 실행 직전 packet의 AnalysisRunResult·Verification·두 Gate·CWE·Policy·ReportDraft reference가 여전히 각 current pointer와 exact revision인지 다시 검사한다. 하나라도 바뀌었으면 새 packet 생성 전이라도 기존 결정으로 공개하지 않고 `DISCLOSURE_DENIED`다. 새 packet generation이 생기면 이전 packet과 결정도 즉시 superseded된다. Agent·Gate·Reporter가 만든 결정, 승인 목록 밖 report, 과거 packet·결정은 `DISCLOSURE_DENIED`다. 어떤 Agent도 외부 제출·공개 권한을 갖지 않으며 실제 자동 제출 integration은 이 설계 범위 밖이다.

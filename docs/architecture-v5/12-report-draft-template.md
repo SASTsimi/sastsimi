@@ -204,6 +204,10 @@ hidden chain-of-thought와 secret은 포함하지 않는다.
 - 남은 오류·DataGap·HOLD 조건: `{refs or none}`
 - safe handoff redaction 결과: `{APPLIED | NOT_REQUIRED; FAILED이면 packet 준비 차단}`
 
+여기서 claim provenance refs는 새 문장별 claim-mapping schema가 아니라 현재 `ReportDraft`와 upstream
+record가 보존하는 draft-level reference graph를 뜻한다. 각 material 문장과 evidence/restriction의 실제
+대응은 Human Reviewer가 확인한다.
+
 confirmed claim에는 verified Evidence와 final Verification provenance만 연결한다. 미검증
 Verification-origin/Chaining-origin proposal, `CandidateRef`와 speculative path는 candidate 또는
 unresolved item으로만 표시한다. secret·credential·cookie·authorization 값은 `<REDACTED>`로

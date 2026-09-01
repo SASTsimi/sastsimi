@@ -120,7 +120,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 
 Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출을 승인한다.
 
-사람에게는 exact `AnalysisRunResult`, Finding·Verification, 두 Gate, CWE·정책, dynamic·redacted PoC, ReportDraft 또는 차단 사유, 자원, 오류·DataGap·HOLD 조건을 포함한 `HumanReviewPacket`을 제공한다. `HumanReviewState`는 current packet generation과 current decision pointer를 CAS로 관리한다. `HumanReviewDecision` 저장은 인증된 사람 identity와 exact current packet·state version을 검사한 `SAVE_HUMAN_DECISION` ALLOW action만 허용한다. 외부 disclosure action은 current state가 가리키는 Human Reviewer의 `DISCLOSE`, `report_ready=true`, exact approved report와 target이 있을 때만 허용한다. 새 packet이 생긴 뒤 과거 packet·결정, 승인 목록 밖 report와 Agent 결정은 `DISCLOSURE_DENIED`다.
+사람에게는 exact `AnalysisRunResult`, Finding·Verification, 두 Gate, CWE·정책, dynamic·redacted PoC, ReportDraft 또는 차단 사유, 자원, 오류·DataGap·HOLD 조건을 포함한 `HumanReviewPacket`을 제공한다. `HumanReviewState`는 current packet generation과 current decision pointer를 CAS로 관리한다. `HumanReviewDecision` 저장은 인증된 사람 identity와 exact current packet·state version을 검사한 `SAVE_HUMAN_DECISION` ALLOW action만 허용한다. 외부 disclosure action은 current state가 가리키는 Human Reviewer의 `DISCLOSE`, `report_ready=true`, exact approved report와 target이 있고 packet의 upstream reference도 여전히 current일 때만 허용한다. upstream이 바뀌었거나 새 packet이 생긴 뒤의 과거 packet·결정, 승인 목록 밖 report와 Agent 결정은 `DISCLOSURE_DENIED`다.
 
 ## 8. Human Review와 safe handoff 경계
 
@@ -135,10 +135,12 @@ private reasoning을 포함하지 않는다. Human Review에 불필요한 PII는
 식별 정보도 최소화·redact한다. 민감 원본이 필요하면 기존 보호 artifact를 reference로만 조회하며
 일반 handoff에 복제하지 않는다.
 
-redaction 실패, 불필요한 PII·secret·hidden reasoning 포함, 필수 provenance/restriction 누락,
-schema/reference 실패 또는 stale/mismatched revision은 정상 handoff를 차단한다. 기존 공통 validator,
-redaction 경계, `INVALID_OUTPUT`, `AnalysisError`와 `REPORT_ERROR`를 재사용하며 새 validator·secret
-storage·handoff 상태를 정의하지 않는다.
+ReportDraft의 필수 provenance/restriction 누락은 해당 draft를 제외하고 `report_ready=false`와 차단
+사유를 담은 안전한 packet으로 사람에게 전달한다. packet 자체의 redaction 실패, 불필요한
+PII·secret·hidden reasoning 포함, schema/reference 실패 또는 stale/mismatched revision은
+`PREPARE_HUMAN_REVIEW`를 차단한다. 기존 공통 validator, redaction 경계, `INVALID_OUTPUT`,
+`AnalysisError`와 `REPORT_ERROR`를 재사용하며 새 validator·secret storage·handoff 상태를 정의하지
+않는다.
 
 R5-04의 책임은 이 조건을 safe-handoff eligibility로 정의하는 데 한정된다. 실제 redaction 수행
 service, secret storage, validator 구현, 오류 enum과 lifecycle의 owner는 기존 Runtime Validator와
@@ -219,6 +221,7 @@ approved report·target과 redaction을 다시 검사하는 R4 공통 authority 
 | 같은 ActionRequest를 동시에 두 번 검사 | unique `action_ref.record_id -> decision_id` | 기존 decision 반환, action 한 번만 claim |
 | Gate 또는 Reporter가 별도 CALL_LLM으로 우회 | requester 역할과 stage action·call spec | `ACTION_NOT_ALLOWED`, stage action부터 새로 요청 |
 | 사람 결정 뒤 새 HumanReviewPacket 생성 | current packet generation·state version·decision pointer | 이전 결정 superseded, `DISCLOSURE_DENIED` |
+| DISCLOSE 결정 뒤 upstream Verification revision 변경, 새 packet은 아직 없음 | packet의 모든 upstream ref와 current pointer | 기존 결정 재사용 금지, `DISCLOSURE_DENIED` |
 | Technical Gate `REVISE` 뒤 같은 입력으로 재투표 | Verification·CWE `record_id`와 domain input hash, 이전 decision 사용 상태 | `ACTION_NOT_ALLOWED`, 보완된 upstream revision으로 새 work·action 요구 |
 | action 허가 뒤 Gate 입력 revision이 바뀜 | provider 호출 직전 exact refs·current state 재검사 | `UNUSED -> EXPIRED`, 호출 금지와 새 action 요구 |
 | Runtime Validator가 공식 정책 의미를 다시 판단 | Rule Scope output의 생산 역할과 validator 검사 범위 | 정책 해석 금지, Gate의 `UNCERTAIN + DENY` 구조만 확인하고 Reporter 차단 |

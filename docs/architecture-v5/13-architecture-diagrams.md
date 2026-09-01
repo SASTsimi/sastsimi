@@ -207,10 +207,12 @@ flowchart TB
     READY -->|Yes| RREQ[Verification requests Reporter]
     RREQ --> REPORTER[Reporter Agent]
     REPORTER --> DRAFT[Internal ReportDraft]
-    BLOCK --> PACKET[HumanReviewPacket with blocked reasons]
+    BLOCK --> SPACKET[Safe HumanReviewPacket report ready false with blocked reasons]
     DRAFT --> SAFE{Exact provenance restrictions and redaction valid}
-    SAFE -->|No| BLOCK
+    SAFE -->|Report content insufficient| BLOCK
+    SAFE -->|Packet schema refs stale or redaction invalid| DENY[PREPARE HUMAN REVIEW denied]
     SAFE -->|Yes| PACKET[HumanReviewPacket current generation]
+    SPACKET --> HUMAN
     PACKET --> HUMAN[Human Reviewer]
     HUMAN --> DECIDE[Separate HumanReviewDecision]
 ```
@@ -385,7 +387,7 @@ flowchart TB
     STATE --> KIND{DISCLOSE REVISE WITHHOLD or MORE VALIDATION}
     KIND -->|REVISE or MORE VALIDATION| RETURN[Return to allowed analysis stage]
     KIND -->|WITHHOLD| STOP[Keep internal]
-    KIND -->|DISCLOSE| DISCLOSE{Still current packet decision and report ready}
+    KIND -->|DISCLOSE| DISCLOSE{Still current packet decision report ready and upstream refs}
     DISCLOSE -->|No| BLOCK[DISCLOSURE DENIED]
     DISCLOSE -->|Yes| BOUNDARY[External disclosure action boundary]
     AGENT[Agent Gate or Reporter] -->|Cannot save human decision or disclose| BLOCK

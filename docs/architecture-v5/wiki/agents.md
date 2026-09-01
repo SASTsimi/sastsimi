@@ -36,7 +36,7 @@ Verification or Chaining material claim → new hypothesis → new Verification
 all report conditions → Reporter → Human
 ```
 
-Human Review 자료의 canonical record는 공통 `HumanReviewPacket`이다. Packet은 `ReportDraft`와 exact upstream reference graph를 담아 주요 claim의 verified Evidence, final Verification, 두 Gate, CWE·official policy, Dynamic/PoC, restriction과 unresolved condition을 역추적하게 한다. 이는 새 claim-mapping field가 아니라 기존 reference graph의 semantic invariant다. 미검증 proposal은 confirmed provenance가 아니며 secret·불필요한 PII·hidden private reasoning 또는 stale reference가 있으면 packet 준비를 차단한다. 빈 `finding_refs` 자체는 차단 사유가 아니다. Gate `ALLOW` → 내부 ReportDraft, `report_ready` → current packet의 draft 준비 여부, `HumanReviewDecision=DISCLOSE` → 사람 결정이며 실제 외부 action은 별도 권한 검사라는 경계를 유지한다.
+Human Review 자료의 canonical record는 공통 `HumanReviewPacket`이다. 프로그램은 Packet의 전체 reference set·exact current revision과 `ReportDraft`의 upstream closure를 검사하고, Human Reviewer는 주요 문장과 verified Evidence, restriction·counter evidence의 실제 대응을 확인한다. 현재 schema에는 문장별 claim mapping field가 없으므로 이를 자동 강제하지 않는다. 미검증 proposal은 confirmed provenance가 아니다. 보고서 근거가 부족하면 `report_ready=false`와 차단 사유를 안전한 packet에 담고, packet 자체에 secret·불필요한 PII·hidden private reasoning·stale reference가 있으면 준비를 거부한다. 빈 `finding_refs` 자체는 차단 사유가 아니다. Gate `ALLOW` → 내부 ReportDraft, `report_ready` → current packet의 draft 준비 여부, `HumanReviewDecision=DISCLOSE` → 사람 결정이며 실제 외부 action은 upstream current revision을 다시 확인하는 별도 권한 검사라는 경계를 유지한다.
 
 각 역할은 공통 `LLMProviderAdapter`를 사용하며 역할 독립성이 필요한 조합은 NEW session을 기본으로 한다. 상세 경계는 [Agent 역할과 오케스트레이션](../03-agent-roles-and-orchestration.md)을 따른다.
 

@@ -123,6 +123,8 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 
 Human handoff 관측 정보에는 packet이 사용한 exact AnalysisRunResult·ReportDraft·Verification·두
 Gate·CWELabel·ProgramPolicyRecord revision과 provenance/restriction/redaction 차단 사유를 남긴다.
+report content의 provenance/restriction 부족은 safe packet의 report-level `blocked_reasons`로 남기지만,
+packet 자체의 schema/reference/stale/redaction 검증 실패는 `PREPARE_HUMAN_REVIEW` `DENY`로 처리한다.
 공개 가능한 structured reason과 record ID만 기록하며 hidden chain-of-thought, raw private reasoning,
 secret·credential 또는 불필요한 PII를 trace·evaluation corpus·packet에 복제하지 않는다. 검증에
 필요한 민감 원본은 기존 접근 제한 저장 경계를 reference로만 연결한다.

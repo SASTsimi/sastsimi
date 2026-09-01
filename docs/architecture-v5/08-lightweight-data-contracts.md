@@ -479,7 +479,7 @@ action이 만든 output의 `action_decision_ref.record_id`는 `UNUSED -> USED`�
 | `CREATE_REPORT_DRAFT` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, REPORT_READY, REDACTION | PASS/PASS/PASS/SUFFICIENT/ALLOW와 exact LLM call spec 필요 |
 | `PREPARE_HUMAN_REVIEW` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION | 분석 종료와 오류·누락·비용 포함 |
 | `SAVE_HUMAN_DECISION` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION | 인증된 Human Reviewer와 current packet·generation 필요 |
-| `EXTERNAL_DISCLOSURE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, DISCLOSURE, REDACTION | current packet·decision의 exact `DISCLOSE`와 같은 report·target 필요 |
+| `EXTERNAL_DISCLOSURE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, DISCLOSURE, REDACTION | current packet·decision의 exact `DISCLOSE`, 같은 report·target과 packet upstream의 current revision 필요 |
 
 Gate와 Reporter action의 기존 check는 다음 exact revision을 검사한다. 검사는 `ActionDecision`을 만들 때와 실제 provider 호출 직전에 같은 기준으로 다시 수행한다.
 
@@ -533,7 +533,7 @@ Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 
 - `result_kind=dynamic_reproduction_result`이면 `SAVE_RESULT.input_refs`에 candidate뿐 아니라 exact `RUN_SANDBOX` USED decision, `ReproductionPlan`과 그 계획 closure, `SandboxStepLog`를 넣는다. `REVISION` check는 결과의 plan·mode·공격 입력·정리 정책과 실제 step log가 승인 당시와 같은지 다시 검사한다.
 - check 뒤 candidate bytes·hash, active attempt, work input 또는 state version이 달라지면 decision을 `EXPIRED`로 만들거나 save를 `DENY`하고 `STALE_RESULT | RECORD_REVISION_MISMATCH | STATE_VERSION_CONFLICT` 중 실제 원인을 기록한다. 변한 후보를 저장하거나 이미 `USED`인 action으로 다시 저장하지 않는다.
 
-action type에서 쓰지 않는 선택 field는 `null` 또는 빈 배열이어야 하고 `reason`은 비어 있지 않아야 한다. `READ_CODE`는 하나 이상의 `file_paths`, `RUN_TOOL`은 `tool_name`과 필요한 file path가 필수다. 실제 LLM을 실행하는 `CALL_LLM | CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT`는 exact `llm_call_spec_ref`, `provider_profile_ref`, `session_mode`와 work state가 필요하며 action의 provider·session 값은 spec과 같아야 한다. `SAVE_RESULT`만 `result_kind`와 `candidate_result_ref`를 사용한다. Gate와 Reporter는 별도 `CALL_LLM`을 우회 호출하지 않고 각 stage action이 LLM 호출까지 직접 허가한다. `RUN_SANDBOX`만 `reproduction_plan_ref`를 사용하며 Controller가 검사할 `sandbox_profile_ref`·`image_digest`·`resource_limits`도 필수다. action `input_refs`에는 exact `ReproductionPlan`, 그 계획의 `hypothesis_ref`·`sandbox_profile_ref`·모든 step `command_ref`·`attack_input_refs`·`cleanup_policy_ref`를 중복 없이 포함한다. Runtime Validator의 `SCHEMA`·`REVISION`은 이 reference 집합의 존재와 고정 여부만 확인하고 Sandbox 정책 의미를 판단하지 않는다. Sandbox Controller는 action의 `sandbox_profile_ref`와 계획 값을 exact 비교하고, 빈 `network_targets`를 default-deny로 해석해 세부 정책을 검사한다. `PREPARE_HUMAN_REVIEW`는 `work_ref`로 current `HumanReviewState`, `expected_state_version`으로 현재 version을 가리키고 `input_refs`에 exact `AnalysisRunResult`를 넣는다. `SAVE_HUMAN_DECISION`도 current state/version을 가리키고 `input_refs`에 exact current packet과 사람 identity record를 넣는다. `EXTERNAL_DISCLOSURE` 역시 current state/version을 가리키며 exact current HumanReviewDecision과 승인한 ReportDraft를 입력으로 가져야 한다. action의 `disclosure_targets`는 current 결정의 목록과 set-equal해야 한다.
+action type에서 쓰지 않는 선택 field는 `null` 또는 빈 배열이어야 하고 `reason`은 비어 있지 않아야 한다. `READ_CODE`는 하나 이상의 `file_paths`, `RUN_TOOL`은 `tool_name`과 필요한 file path가 필수다. 실제 LLM을 실행하는 `CALL_LLM | CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT`는 exact `llm_call_spec_ref`, `provider_profile_ref`, `session_mode`와 work state가 필요하며 action의 provider·session 값은 spec과 같아야 한다. `SAVE_RESULT`만 `result_kind`와 `candidate_result_ref`를 사용한다. Gate와 Reporter는 별도 `CALL_LLM`을 우회 호출하지 않고 각 stage action이 LLM 호출까지 직접 허가한다. `RUN_SANDBOX`만 `reproduction_plan_ref`를 사용하며 Controller가 검사할 `sandbox_profile_ref`·`image_digest`·`resource_limits`도 필수다. action `input_refs`에는 exact `ReproductionPlan`, 그 계획의 `hypothesis_ref`·`sandbox_profile_ref`·모든 step `command_ref`·`attack_input_refs`·`cleanup_policy_ref`를 중복 없이 포함한다. Runtime Validator의 `SCHEMA`·`REVISION`은 이 reference 집합의 존재와 고정 여부만 확인하고 Sandbox 정책 의미를 판단하지 않는다. Sandbox Controller는 action의 `sandbox_profile_ref`와 계획 값을 exact 비교하고, 빈 `network_targets`를 default-deny로 해석해 세부 정책을 검사한다. `PREPARE_HUMAN_REVIEW`는 `work_ref`로 current `HumanReviewState`, `expected_state_version`으로 현재 version을 가리키고 `input_refs`에 exact `AnalysisRunResult`를 넣는다. `SAVE_HUMAN_DECISION`도 current state/version을 가리키고 `input_refs`에 exact current packet과 사람 identity record를 넣는다. `EXTERNAL_DISCLOSURE` 역시 current state/version을 가리키며 exact current HumanReviewDecision과 승인한 ReportDraft를 입력으로 가져야 한다. action의 `disclosure_targets`는 current 결정의 목록과 set-equal해야 한다. 실행 직전 `REVISION` 검사는 decision이 가리키는 packet의 AnalysisRunResult·Verification·두 Gate·CWE·Policy·ReportDraft closure도 각 current pointer와 비교한다.
 
 ```yaml
 CodeLocation:
@@ -1362,34 +1362,36 @@ HumanReviewDecision:
 
 `action_decision_ref.record_id`는 분석 종료·exact refs·redaction·필수 검토 자료를 확인한 `PREPARE_HUMAN_REVIEW` ALLOW decision의 `USED` revision을 가리킨다. `analysis_result_ref.record_id`는 필수다. packet은 한 `AnalysisRunResult` revision에서 조립하고 새 packet의 `review_generation`은 직전 `HumanReviewState.packet_generation+1`이다. finding, verification, CWE, 두 Gate, 정책, dynamic, PoC, report, LLM log, action decision, work state, work attempt, transition commit와 debug trace reference는 `AnalysisRunResult`의 해당 값과 set-equal해야 하며 임의로 빼거나 더하지 않는다. `resource_summary`는 `AnalysisRunResult.resources`, `error_ids`는 `errors[].error_id`, `gap_ids`는 `gaps[].gap_id`에서 만든다. `report_ready=true`는 하나 이상의 ReportDraft가 있고 각 초안이 `TRUE + Technical ACCEPT + Rule Scope PASS/PASS/PASS/SUFFICIENT/ALLOW`의 exact revision을 가리킬 때만 허용한다. 보고서가 차단됐으면 빈 `report_draft_refs`, `report_ready=false`와 구체적인 `blocked_reasons`를 사용한다.
 
-`PREPARE_HUMAN_REVIEW`의 reference 검사는 목록의 set equality에 더해 report claim의 연결 가능성을
-확인한다. material confirmed claim은 current final Verification에서 supporting/counter Evidence와
-적용 가능한 Dynamic/PoC까지, policy claim은 Rule Scope review에서 exact `ProgramPolicyRecord`와
-official source까지 따라갈 수 있어야 한다. verified Evidence/Verification이 아닌
+`PREPARE_HUMAN_REVIEW`의 프로그램 검사는 목록의 set equality, exact current revision과 ReportDraft가
+가리키는 authoritative upstream reference closure를 확인한다. 현재 schema에는 ReportDraft 문장별
+claim ID와 evidence를 직접 연결하는 field가 없으므로, material 문장과 supporting/counter Evidence·
+restriction의 실제 대응은 Human Reviewer가 확인한다. policy 문장도 packet의 exact
+`ProgramPolicyRecord`와 official source를 사람이 대조한다. verified Evidence/Verification이 아닌
 `origin=VERIFICATION | CHAINING` proposal이나 `CandidateRef`는 candidate/unresolved 정보로만
 전달하며 confirmed provenance가 될 수 없다. restriction, unresolved counter/verification condition,
 reproduction·environment limitation과 Gate failure/revision reason을 해당 claim에서 숨기거나
-upstream보다 강한 표현으로 바꾼 draft는 `report_ready=true`로 만들지 않는다.
+upstream보다 강한 표현으로 바꾼 draft는 packet에서 빼고 `report_ready=false`와 구체적
+`blocked_reasons`로 사람에게 전달한다.
 
-이 연결 가능성은 기존 `ReportDraft`와 authoritative upstream reference graph를 따라 확인하는
-semantic invariant이며 `HumanReviewPacket`의 새 field나 별도 claim-mapping schema를 요구하지
-않는다. 기존 schema만으로 강제하는 공통 방식은 R4/R8의 schema/reference validator 계약을 따르며
-R5-04가 확장하지 않는다.
+문장별 자동 검사는 현재 reference graph만으로 강제하지 않는다. 이를 도입하려면
+`HumanReviewPacket`의 새 field나 별도 claim-mapping schema와 validator를 R4/R8과 함께 확정해야 하며
+R5-04가 단독으로 확장하지 않는다.
 
-새 Verification, Gate, CWE, Policy 또는 AnalysisRunResult revision이 current pointer를 바꾸면 공통
-generation·state-version·CAS 규칙이 과거 packet과 decision의 재사용을 차단한다. R5는 별도 stale
-flag, validator, error enum을 추가하지 않는다. schema/reference/provenance/redaction 검사 실패는
-`PREPARE_HUMAN_REVIEW`를 `DENY`하고 기존 `RECORD_REVISION_MISMATCH | STALE_RESULT |
-INVALID_OUTPUT | DISCLOSURE_DENIED`와 적용 가능한 `AnalysisError`를 사용한다.
+새 Verification, Gate, CWE, Policy 또는 AnalysisRunResult revision이 current pointer를 바꾸면 새
+packet 생성 여부와 무관하게 `EXTERNAL_DISCLOSURE` 직전에 packet의 모든 upstream reference를 current
+pointer와 다시 비교한다. 하나라도 다르면 과거 packet과 decision의 재사용을 `DISCLOSURE_DENIED`로
+차단한다. R5는 별도 stale flag, validator, error enum을 추가하지 않는다. packet 자체의
+schema/reference set·exact revision 또는 redaction 검사가 실패하면 `PREPARE_HUMAN_REVIEW`를 `DENY`하고
+기존 `RECORD_REVISION_MISMATCH | STALE_RESULT | INVALID_OUTPUT`과 적용 가능한 `AnalysisError`를 사용한다.
 
-`FindingCandidate` 본문과 품질 기준은 R5가 소유한다. R4-03은 활성화되어 이미 저장된 Finding revision만 `finding_refs`로 전달할 뿐 새 Finding claim을 만들거나 빠진 Finding을 추정하지 않는다. 현재 독립 Finding record가 활성화되지 않았거나 존재하지 않으면 `HumanReviewPacket`과 `AnalysisRunResult`의 `finding_refs`는 비어 있을 수 있다. 빈 `finding_refs` 자체는 `report_ready=false`, Human Review 차단 또는 `blocked_reasons` 생성 조건이 아니다. `blocked_reasons`에는 stale/mismatched revision, 필수 provenance·restriction·unresolved condition 누락, schema/reference 또는 redaction 실패처럼 기존 공통 계약상 실제 handoff/report 차단 사유만 기록한다. 향후 Finding activation과 두 목록의 set-equality 의미는 R4/R8 공통 계약이 정하며 R5-04는 Finding schema나 activation rule을 추가하지 않는다.
+`FindingCandidate` 본문과 품질 기준은 R5가 소유한다. R4-03은 활성화되어 이미 저장된 Finding revision만 `finding_refs`로 전달할 뿐 새 Finding claim을 만들거나 빠진 Finding을 추정하지 않는다. 현재 독립 Finding record가 활성화되지 않았거나 존재하지 않으면 `HumanReviewPacket`과 `AnalysisRunResult`의 `finding_refs`는 비어 있을 수 있다. 빈 `finding_refs` 자체는 `report_ready=false`, Human Review 차단 또는 `blocked_reasons` 생성 조건이 아니다. `blocked_reasons`에는 보고서 조건·provenance·restriction·unresolved condition 부족처럼 사람이 보완해야 할 report 차단 사유를 기록한다. packet 자체의 stale/mismatched revision, schema/reference set 또는 redaction 실패는 packet을 만들지 않고 `PREPARE_HUMAN_REVIEW`를 `DENY`한다. 향후 Finding activation과 두 목록의 set-equality 의미는 R4/R8 공통 계약이 정하며 R5-04는 Finding schema나 activation rule을 추가하지 않는다.
 
 `PREPARE_HUMAN_REVIEW`가 `DENY`되어도 이미 저장된 `ReportDraft` record와 그 생성 이력은 삭제하거나
 존재하지 않았던 것으로 바꾸지 않는다. 다만 invalid·stale·redaction-failed draft는 current packet의
 `report_ready=true` 근거로 승격할 수 없다. `report_ready`의 owner와 lifecycle은 기존 R4/R8
 `HumanReviewPacket`·action·state 계약을 그대로 따른다.
 
-`HumanReviewDecision.action_decision_ref.record_id`는 인증된 Human Reviewer와 exact current packet을 검사한 `SAVE_HUMAN_DECISION` ALLOW decision의 `USED` revision을 가리킨다. `packet_ref.record_id`는 action이 검사한 `HumanReviewState.current_packet_ref.record_id`와 같고 decision의 `review_generation`도 current state·packet과 같아야 한다. `reviewer_identity_ref`는 비밀 session이나 credential이 아닌 내부의 제한된 사람 identity 증명 record를 가리킨다. `DISCLOSE`는 current packet의 `report_ready=true`, 하나 이상의 `approved_report_refs`와 하나 이상의 `disclosure_targets`가 필요하다. 공개 대상은 versioned destination allowlist의 불투명 ID이며 URL query, credential 또는 실행 명령을 담지 않는다. 승인 report는 모두 current packet의 `report_draft_refs`에 포함되고 report-ready 불변조건을 만족해야 한다. 다른 세 decision은 두 목록을 비운다. Agent가 생성한 결정, superseded packet·결정, 승인 목록 밖 report는 `DISCLOSURE_DENIED`다. 외부 공개 직전에도 `HumanReviewState.status=DECIDED`, exact current packet·decision·generation·state version을 다시 검사한다. 이 계약은 자동 제출 integration을 구현하거나 허용한다는 뜻이 아니다.
+`HumanReviewDecision.action_decision_ref.record_id`는 인증된 Human Reviewer와 exact current packet을 검사한 `SAVE_HUMAN_DECISION` ALLOW decision의 `USED` revision을 가리킨다. `packet_ref.record_id`는 action이 검사한 `HumanReviewState.current_packet_ref.record_id`와 같고 decision의 `review_generation`도 current state·packet과 같아야 한다. `reviewer_identity_ref`는 비밀 session이나 credential이 아닌 내부의 제한된 사람 identity 증명 record를 가리킨다. `DISCLOSE`는 current packet의 `report_ready=true`, 하나 이상의 `approved_report_refs`와 하나 이상의 `disclosure_targets`가 필요하다. 공개 대상은 versioned destination allowlist의 불투명 ID이며 URL query, credential 또는 실행 명령을 담지 않는다. 승인 report는 모두 current packet의 `report_draft_refs`에 포함되고 report-ready 불변조건을 만족해야 한다. 다른 세 decision은 두 목록을 비운다. Agent가 생성한 결정, superseded packet·결정, 승인 목록 밖 report는 `DISCLOSURE_DENIED`다. 외부 공개 직전에도 `HumanReviewState.status=DECIDED`, exact current packet·decision·generation·state version과 packet의 모든 AnalysisRunResult·Verification·Gate·CWE·Policy·ReportDraft reference가 여전히 current인지 다시 검사한다. upstream revision이 바뀌었다면 새 packet이 아직 없어도 기존 결정의 외부 공개를 `DISCLOSURE_DENIED`로 거절한다. 이 계약은 자동 제출 integration을 구현하거나 허용한다는 뜻이 아니다.
 
 ```yaml
 AnalysisRunResult:
