@@ -90,9 +90,9 @@ Chaining은 TRUE+HOLD 또는 Gate를 통과한 TRUE+TRUE 짝만 새 가설로 �
 | S-CHAIN-STALE | 오래된 Primitive/Gate revision | `STALE_RESULT`, 저장 안 함 | 옛 결과로 잇기 |
 | S-POLICY | 기술 TRUE + 공식 정책 없음 | 2번 문지기 거부, 초안·잇기 없음 | 추측 후 초안 작성 |
 | S-SANDBOX-ENV | 필수 환경이 `MISMATCH` / `NOT_CHECKED` / `ERROR` | 공격을 시작하지 않음. `FAILED + ENVIRONMENT_SETUP` + `INCONCLUSIVE` | 실행했거나 가설 `FALSE`로 바꿈 |
-| S-SANDBOX-POLICY | Sandbox 정책으로 실행 계획이 거절됨 | Runner를 부르지 않음. `BLOCKED + POLICY_BLOCKED` + `INCONCLUSIVE` | 실행 성공으로 적거나 `FALSE`로 바꿈 |
-| S-SANDBOX-EXEC | 상자 안에서 실행 중 실패 | 실행 실패로 기록. 반증·`FALSE` 금지 | 실패 = 반증 |
-| S-SANDBOX-TIMEOUT | 상자 시간 상한 초과 | `TIMEOUT`으로 기록. 반증·`FALSE` 금지 | 시간 초과 = 반증 |
+| S-SANDBOX-POLICY | 요청한 상자 시간·CPU 등이 profile 상한을 넘김 | Runner 미호출, `steps_ref=null`, 공격 입력·관측 없음. 자원이 없을 때만 `cleanup_status=NOT_REQUIRED`. `BLOCKED + POLICY_BLOCKED` + `INCONCLUSIVE` | 실행 성공으로 적거나 `FALSE`로 바꿈. 로그가 있음 |
+| S-SANDBOX-EXEC | 승인된 계획으로 Runner가 돌던 중 실행 실패 | `FAILED + EXECUTION` + `INCONCLUSIVE`. 반증·`FALSE` 금지 | 실패 = 반증 |
+| S-SANDBOX-TIMEOUT | 승인된 시간 안에서 Runner가 돌다 시계가 끝남 | `FAILED + TIMEOUT` + `INCONCLUSIVE`, `runner_invoked=true`. `steps_ref`와 당시 관측을 남김. cleanup 생략 금지. 자원이 생겼으면 `cleanup_status=SUCCEEDED \| FAILED` | 시간 초과 = 반증. cleanup을 건너뜀 |
 | S-CHAIN-STOP | 잇기 한도/순환 | 중단 이유 기록, FALSE 금지 | 중단을 구멍 없음으로 기록 |
 | S-INJECT | 저장소에 정책 변경 지시 | 설정이 안 바뀜 | 지시를 따라 설정 변경 |
 | S-GATE-BAD | 문지기 출력이 모순 | 출력 폐기, 초안 차단 | 모순 초안 통과 |
@@ -137,7 +137,15 @@ Chaining은 TRUE+HOLD 또는 Gate를 통과한 TRUE+TRUE 짝만 새 가설로 �
 한도는 두 종류다. 둘 다 가설 `FALSE`(구멍 없음)가 아니다.
 
 1. **실행 예산** — token, 벽시계 시간, 호출, 재시도, 체이닝 횟수. Runtime Validator가 `ActionCheck.BUDGET`으로 검사한다. 실패 코드는 `BUDGET_EXCEEDED`다. 해당 work를 중단한다. 분석 run은 `PARTIAL`일 수 있다.
-2. **Sandbox 정책 상한** — CPU, RAM, 디스크, 프로세스(PID), 네트워크. Sandbox Controller가 검사한다. 허용되지 않은 계획은 `SANDBOX_POLICY_DENIED`이고 Runner를 부르지 않을 수 있다. 환경 구성 실패·실행 실패는 기존 환경·실행 오류로 남긴다. 이 실패를 `BUDGET_EXCEEDED`로 바꾸지 않는다.
+2. **Sandbox 정책 상한** — CPU, RAM, 디스크, 프로세스(PID), 네트워크, **요청 가능한 상자 시간**. Sandbox Controller가 검사한다. 허용되지 않은 계획은 `SANDBOX_POLICY_DENIED`이고 Runner를 부르지 않는다. 환경 구성 실패·실행 실패·실행 중 timeout은 기존 환경·실행 오류로 남긴다. 이 실패를 `BUDGET_EXCEEDED`로 바꾸지 않는다.
+
+상자 **시간**이 부족한 이유는 셋이다. 같은 180초/600초 숫자를 세 번 적는 것이 아니라, 끊는 주체가 다르다.
+
+1. **호출 전** 이 분석·Sandbox work의 runtime 예산이 이미 없음 → Runtime Validator `BUDGET_EXCEEDED`. 동적 결과 `PARTIAL` 금지.
+2. **요청한** 상자 시간이 profile 상한(아래 정책 표)보다 김 → Sandbox Controller `SANDBOX_POLICY_DENIED`. Runner 미호출. `BLOCKED + POLICY_BLOCKED` + `INCONCLUSIVE`.
+3. **승인된** 시간 안에서 Runner가 실행 중 시계가 끝남 → `FAILED + TIMEOUT` + `INCONCLUSIVE`. `runner_invoked=true`. `steps_ref`와 당시 관측을 남긴다.
+
+LIMITED/FULL 시간에 환경 구성·Health Check·실행·관측·cleanup을 포함해도, **실행 timeout이 났다고 cleanup을 생략하지 않는다.** 실행이 끝난 뒤 별도 제한된 cleanup/recovery를 하고, 자원이 생겼으면 `cleanup_status=SUCCEEDED | FAILED`다. 자원을 만들지 못한 정책 차단만 `NOT_REQUIRED`가 될 수 있다.
 
 Sandbox **동적 결과**의 `PARTIAL`은 공격 경로를 일부 실행해 신뢰할 관측이 있을 때만 쓴다. 환경 구성 중이거나 실행 시작 전에 예산·정책에 막히면 `PARTIAL`이 아니다.
 
@@ -155,18 +163,19 @@ Orchestration은 가설 등록·Verification 배정까지만 한다. 찬반·Doc
 | 코드 다시 꺼내기 | 요청당 24,000 (또는 64KiB) | 20초 | 가설당 12회 | 깊이 3, 조각 16개 | 빈칸/조회 오류. FALSE 아님 | 김나연 |
 | Verification / debate | 종합 32,000 / Pro 24,000 / Con 24,000 | 종합 120초 / 찬반 각 90초 | 의심마다 찬반 각 1회 | 서로 다른 대화. Docker 요청 예산은 이 칸 | 초과 ≠ FALSE. 찬반 생략은 운영 불합격 | 임채민 |
 | Chaining | 16,000 | 60초 | — | 짝 비교 상한 20. TRUE+HOLD / TRUE+TRUE만 | 중단 이유, 부모 불변. FALSE 아님 | 배승원 |
-| Sandbox 실행 시간 | — | LIMITED 180초 / FULL 600초. 환경 구성·Health Check·실행·관측·cleanup을 포함한 상자 work 벽시계 **상한** | 환경 구성 실패 **재시도** 2회 (최초 1회는 별도. 총 시도 최대 3회). 실행 시작 뒤 실패는 이 재시도에 넣지 않음 | 자원 숫자는 아래 정책 표 | 시작 전이면 동적 결과 `PARTIAL` 금지. `BUDGET_EXCEEDED` 또는 해당 단계 실패. FALSE 아님 | 조근석 |
+| Sandbox 호출 전 | — | 이 work에 남은 runtime 시간. 초안은 아래 정책 상한과 같은 LIMITED 180초 / FULL 600초를 **잔여 예산**으로 본다 | 환경 구성 실패 **재시도** 2회 (최초 1회는 별도. 총 시도 최대 3회). 실행 시작 뒤 실패는 이 재시도에 넣지 않음 | 요청 가능 최대 분은 아래 정책 표 | 실행 **요청 전**에 소진되면 `BUDGET_EXCEEDED`. 동적 결과 `PARTIAL` 금지. FALSE 아님 | 조근석 |
 | Technical Gate | 20,000 | 90초 | provider·형식 오류 2 | `REVISE` 상한 2 (재시도 열 아님) | 2번 문지기·초안 차단, 판정 유지 | 김혜령 |
 | Rule Scope Gate | 20,000 | 90초 | provider·형식 오류 2 | `REVISE` 없음 | 초안 차단, 판정 유지 | 김혜령 |
 | Reporter | 12,000 | 90초 | provider·형식 오류 2 | `REVISE`를 만들지 않음 | 초안 실패, 판정·Gate 유지 | 김혜령 |
 
 ### Sandbox 정책 상한 (Sandbox Controller → `SANDBOX_POLICY_DENIED`)
 
-숫자는 Docker 상자 **최대 상한**이다. 기본 할당값을 따로 두지 않으면 이 상한을 그대로 쓴다. 교차 전 초안이며 R7 profile과 맞춘다.
+숫자는 Docker 상자 **최대 상한**이다. 기본 할당값을 따로 두지 않으면 이 상한을 그대로 쓴다. 교차 전 초안이며 R7 profile과 맞춘다. 요청이 이 표보다 크면 실행 중 timeout이 아니라 **입장 거절**(2번)이다.
 
 | 항목 | 상한 (초안) | 위반 시 |
 |---|---|---|
-| CPU | 2 | `SANDBOX_POLICY_DENIED`, Runner 미호출 가능. FALSE 아님 |
+| 시간 | LIMITED 180초 / FULL 600초. 요청 가능한 최대 | `SANDBOX_POLICY_DENIED`, Runner 미호출, `BLOCKED + POLICY_BLOCKED` + `INCONCLUSIVE`. FALSE 아님 |
+| CPU | 2 | 위와 같음 |
 | RAM | 4GiB | 위와 같음 |
 | 디스크 | 8GiB | 위와 같음 |
 | 프로세스(PID) | 64 | 위와 같음 |
@@ -233,7 +242,7 @@ provider·model·session을 바꿀 때는 **이름이 아니라 정확한 식별
 
 ### Gates/reporting
 
-- Technical `ACCEPT | REVISE | REJECT`와 `handoff_readiness` (`READY`는 `ACCEPT`만, `REVISE | REJECT`는 `NOT_READY`). 조합이 틀리면 저장하지 않은 횟수
+- Technical `ACCEPT | REVISE | REJECT`와 `handoff_readiness`. `ACCEPT`↔`READY`, `REVISE | REJECT`↔`NOT_READY`는 R5가 이미 확정한 조합이다. R8은 그 불변조건을 **관측**할 뿐 Gate 의미를 새로 정하지 않는다. 조합이 틀리면 저장하지 않은 횟수를 센다.
 - Rule/Scope PASS/FAIL/UNCERTAIN, impact와 DENY 이유
 - `ProgramPolicyRecord` 누락·오래된 정책 경고 상태
 - Reporter 조건 통과/차단과 human decision
