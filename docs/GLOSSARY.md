@@ -11,6 +11,8 @@
 | `Repository Loader` | 저장소를 로컬로 가져오고 분석할 commit을 준비하는 프로그램 | 별도 저장소 복사본을 만들지 않습니다. |
 | `CodeWorkspace` | AST와 SAST가 읽는 실행별 로컬 코드 폴더 | `workspace_id`와 `commit_id`로 구분합니다. |
 | `ProgramPolicyRecord` | 공식 버그바운티 정책을 확인해 남긴 기록 | 저장소 코드 복사본이 아니며 공식 출처와 수집 시각을 기록합니다. |
+| `freshness_status` | 정책을 현재 자료로 믿을 수 있는지 나타내는 상태 | `STALE` 또는 `UNVERIFIED`이면 보고 허용에 쓰지 않고 `UNCERTAIN + DENY`로 처리합니다. |
+| `handoff_readiness` | Technical Gate 결과를 다음 단계에 전달해도 되는지 나타내는 값 | `ACCEPT`일 때만 `READY`이며 `REVISE | REJECT`는 `NOT_READY`입니다. |
 | `StoredDataRef` | 도구가 만든 결과 파일이나 기록을 가리키는 번호 | 내부 저장 경로 대신 결과 번호와 내용 hash를 사용합니다. 저장된 결과 수정본을 가리킬 때는 `record_id`도 넣습니다. |
 | `RecordMeta` | 결과마다 붙는 공통 식별 정보 | 분석·작업공간·가설·재시도·수정본을 연결합니다. |
 | `RunMeta` | 코드 준비 전에도 쓸 수 있는 분석 실행 식별 정보 | `analysis_id`로 실행을 추적하며 clone 성공 전에는 workspace·commit을 요구하지 않습니다. |
@@ -66,6 +68,16 @@
 | `CandidateRef` | 아직 검증되지 않은 우회·대체 경로·영향 확대 후보 | 새 공격 주장이면 별도 가설로 검증하기 전까지 확정 사실로 쓰지 않습니다. |
 | `VerificationMetrics` | 검증에 사용한 token·시간과 판정 변화 기록 | provider가 알려 주지 않은 token을 임의로 추정하지 않습니다. |
 | `PoC` | 취약점이 어떻게 재현되는지 보여 주는 절차와 증거 | 승인된 격리 환경에서 만든 자료만 사용합니다. |
+| `poc_ref` | 이번 동적 재현과 연결된 정확한 PoC 묶음 번호 | 값이 있어도 실행·성공을 뜻하지 않으며 상태와 단계 로그를 함께 봅니다. |
+| `runner_invoked` | Sandbox Runner를 실제로 호출했는지 나타내는 값 | 거짓이면 단계 로그가 없어야 하고 참이면 실패해도 호출 로그가 필요합니다. |
+| `EnvironmentRequirements` | R6가 동적 재현 전에 정하는 애플리케이션 환경 조건 묶음 | 역할·인증 방식·데이터·DB/service·fixture/mock·버전·Health Check를 근거와 함께 기록합니다. |
+| `environment_requirements_ref` | ReproductionPlan이 사용하는 정확한 환경 요구사항 수정본 번호 | 오래된 수정본이나 다른 계획의 요구사항을 재사용하지 않습니다. |
+| `EnvironmentCheck` | R7이 요구사항 하나와 실제 환경을 비교한 결과 | `MATCH`, `MISMATCH`, `NOT_CHECKED`, `ERROR` 중 하나와 실제 값·차이·근거를 남깁니다. |
+| `sandbox_profile_ref` | Sandbox에서 허용하는 image·명령·네트워크·자원 등의 보안 정책 번호 | 애플리케이션에 필요한 환경 조건을 뜻하지 않습니다. |
+| `environment_ref` | 이번 시도에서 실제 생성된 Sandbox 환경 기록 번호 | 실행 전 환경 설정이나 최신 환경을 가리키지 않습니다. |
+| `secret_ref` | 비밀값 원문 대신 secret store의 항목을 가리키는 불투명 번호 | credential·cookie·token·password를 요구사항이나 일반 log에 저장하지 않습니다. |
+| `policy_decision_ref` | Sandbox Controller가 허용·차단한 이유를 가리키는 번호 | Technical Gate 판정과 다른 기록이며 정책 차단이면 반드시 필요합니다. |
+| `cleanup_status` | 실행 뒤 자원 정리 결과 | `NOT_REQUIRED`는 정리할 자원이 하나도 생기지 않았을 때만 사용합니다. |
 | `CWE` | 취약점 유형을 나타내는 국제 분류 번호 | 실제 근거와 맞는지 Gate에서 다시 확인합니다. |
 
 ## 연계 공격과 Agent
@@ -101,6 +113,7 @@
 | `HumanReviewPacket` | 사람이 볼 Finding·근거·PoC·Gate·비용·오류·보류 조건을 모은 자료 묶음 | exact AnalysisRunResult 수정본에서 빠짐없이 만듭니다. |
 | `HumanReviewState` | 지금 검토해야 할 최신 packet과 현재 사람 결정을 가리키는 상태 | 새 packet이 생기면 이전 결정을 공개에 쓰지 못하게 합니다. |
 | `HumanReviewDecision` | 사람이 자료 묶음을 읽고 남긴 최종 결정 기록 | `DISCLOSE`, `REVISE`, `WITHHOLD`, `NEED_MORE_VALIDATION` 중 하나이며 ReportDraft와 분리합니다. |
+| `FINDING_NOT_CREATED` | 아직 Finding이 만들어지지 않아 사람 검토 자료가 공개 준비 전이라는 차단 사유 | packet 자체는 볼 수 있지만 `report_ready=false`이며 공개할 수 없습니다. |
 
 ## 실행·보안·평가
 
@@ -111,6 +124,7 @@
 | `sandbox` | 다른 시스템과 격리해 안전하게 코드를 실행하는 환경 | host, 비밀정보와 범위 밖 네트워크 접근을 막습니다. |
 | `Sandbox Controller` | 격리 실행의 안전 정책과 환경을 통제하는 모듈 | image·명령·파일·네트워크·자원·정리 정책을 한곳에서 검사하고 통과한 계획만 Runner에 전달합니다. |
 | `Sandbox Runner` | Controller가 승인한 계획을 Docker 안에서 실행하는 모듈 | 정책을 정하거나 바꾸지 않고 stdout·stderr·종료 코드와 단계별 관측을 수집합니다. |
+| `Sandbox Result Assembler` | 같은 재현 시도의 정책·환경·로그·PoC·정리 참조를 한 결과로 묶는 비-LLM 모듈 | 다른 시도의 자료를 섞거나 참조 존재만으로 성공을 판단하지 않습니다. |
 | `provider` | LLM을 제공하는 서비스나 연결 방식 | API 방식과 회원 로그인 방식을 같은 경계에서 관리합니다. |
 | `session` | LLM 서비스와 이어지는 로그인 또는 대화 상태 | 인증정보와 session 비밀값을 일반 로그에 남기지 않습니다. |
 | `token` | LLM이 입력과 출력을 처리할 때 쓰는 계산 단위 | 역할별·전체 실행별 한도를 둡니다. |

@@ -50,7 +50,7 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 | 전체 분석 상태 | `COMPLETE`, `PARTIAL`, `FAILED` | 아니요 |
 | 공통 실행 작업 상태 | `PENDING`, `READY`, `RUNNING`, `BLOCKED`, `SUCCEEDED`, `PARTIAL`, `FAILED`, `CANCELLED` | 아니요 |
 | proposal 검증 상태 | `PROPOSED`, `SCHEMA_VALID`, `INVALID_OUTPUT` | 아니요. 아직 가설 번호가 없을 수 있음 |
-| 등록된 가설 처리 상태 | `REGISTERED`, `ASSIGNED`, `VERIFYING`, `TERMINAL` | 아니요 |
+| 등록된 가설 처리 상태 | `REGISTERED`, `ASSIGNED`, `VERIFYING`, `TERMINAL`, `FAILED` | 아니요. `FAILED`는 final 판정 없이 검증 절차가 끝난 상태 |
 | 기술 판정 | `TRUE`, `FALSE`, `HOLD` | 예 |
 | 동적 재현 상태 | `SUCCEEDED`, `FAILED`, `BLOCKED` | 아니요 |
 | LLM 호출 상태 | `AUTH_REQUIRED`, `RATE_LIMITED`, `TIMED_OUT` | 아니요 |
@@ -65,7 +65,7 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 - `DataGap`: 분석하지 못했거나 일부만 확인한 범위입니다. 예: Git LFS 실제 파일 없음, 일부 SAST 실패, 잘린 코드 조회.
 - `AnalysisError`: 작업이 정상적으로 끝나지 못한 사건입니다. 예: clone 실패, provider 인증 실패, sandbox 오류.
 
-둘 다 자동으로 `FALSE`가 되지 않습니다. `FALSE`는 미리 정한 반증 질문과 실제 반증 근거가 연결될 때만 가능합니다.
+둘 다 자동으로 `TRUE`, `FALSE`, `HOLD`가 되지 않습니다. 오류는 “작업이 실패했다”는 기록이고, 취약점 판정 근거가 아닙니다. `FALSE`는 미리 정한 반증 질문과 실제 반증 근거가 연결될 때만 가능합니다.
 
 Context 조회가 정상적으로 끝났지만 정보가 부족한 경우에는 필수 검증을 마친 뒤 남은 조건을 기록하고 `HOLD`로 판정할 수 있습니다. 반면 조회 실패·timeout·권한 오류는 실행 오류이므로 자동 verdict를 만들지 않습니다. 운영 Pro/Con 전에 예산이 부족한 경우에도 `BUDGET_EXCEEDED`만 기록하고 final `VerificationResult`를 저장하지 않습니다.
 
@@ -76,6 +76,8 @@ Context 조회가 정상적으로 끝났지만 정보가 부족한 경우에는 
 검증 플레이북은 `logical_record_id`로 식별하고 내용이 바뀔 때마다 새 `record_id`, 증가한 `revision_number`와 새 `content_hash`를 만듭니다. `VerificationResult.playbook_ref`는 실제 사용한 exact 플레이북 revision을 가리키며 final Verification 합성 호출과 저장 요청도 같은 reference를 사용해야 합니다. 새 플레이북 revision이 생겨도 과거 판정의 reference는 바꾸지 않습니다.
 
 정적 분석과 코드 조회 결과는 사용할 수 있는 사실뿐 아니라 도구별 실행 상태, 분석·제외 범위, `DataGap`, `AnalysisError`를 함께 전달합니다. `DataGap`은 영향받은 path·language·코드 위치를 가능한 범위에서 적습니다. 결과가 비어 있거나 일부 도구가 실패했다는 이유로 안전하다고 판단하지 않습니다.
+
+Context 조회가 실패·timeout·권한 오류로 끝나면 실패 사건은 `AnalysisError`, 그 때문에 확인하지 못한 코드 범위는 `DataGap`으로 함께 남깁니다. 가설에는 해야 할 검증마다 고유 `validation_id`가 있고, 결과는 같은 ID로 완료 여부와 실제 근거를 답합니다. 일부 조회가 실패했더라도 재시도·대체 조회·다른 정상 근거로 모든 검증 항목과 운영 Pro/Con을 끝냈다면 실제 근거에 따라 `TRUE | FALSE | HOLD`를 저장할 수 있습니다. 하나라도 끝내지 못했다면 final `VerificationResult`를 만들지 않습니다. 다시 시도할 수 있으면 work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지합니다. 더 시도할 수 없으면 work와 가설 처리 상태를 한 번에 `FAILED`로 끝내고 결과 reference는 비워 둡니다. 단순 조회 오류만으로 `HOLD`를 만들지 않습니다.
 
 ## 동적 재현 실패와 반증은 다릅니다
 
@@ -90,7 +92,25 @@ Docker 환경을 만들지 못했거나 실행이 timeout된 것은 재현 실�
 
 빈 출력, exit code와 `FAILED | BLOCKED | CANCELLED`만으로는 가설을 `FALSE`로 바꿀 수 없습니다.
 
-Technical Gate는 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 자신이 읽은 Verification과 CWELabel 수정본을 정확히 기록합니다. 둘 중 하나가 수정되면 이전 Gate 승인을 새 수정본에 재사용하지 않습니다. Rule Scope Gate와 보고서 초안도 같은 CWELabel `record_id`를 사용해야 합니다. `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
+### 필요한 환경과 실제 환경을 어떻게 연결하나요?
+
+R6 Verification은 먼저 `EnvironmentRequirements`에 필요한 애플리케이션 역할·인증 방식·데이터·DB/service·fixture/mock·버전·Health Check를 적고 각 항목에 코드·설정 근거를 연결합니다. `ReproductionPlan.environment_requirements_ref`는 이 요구사항의 정확한 수정본을 가리킵니다. `sandbox_profile_ref`는 Docker의 image·명령·네트워크·자원 허용 정책이므로 요구사항을 대신하지 않습니다.
+
+R7은 실제 환경을 만든 뒤 `sandbox_environment.requirements_ref`에 같은 요구사항 수정본을 연결하고, 각 `requirement_id`에 `MATCH | MISMATCH | NOT_CHECKED | ERROR`, 실제 값 또는 artifact, 차이와 Health Check 결과를 기록합니다. 필수 항목이 모두 `MATCH`일 때만 공격 단계를 실행합니다. 차이를 허용하면서 환경 조건을 바꾸려면 R6가 새 요구사항과 이를 가리키는 새 계획을 함께 만들고, 단계만 바꾸면 새 계획만 만든 뒤 Runtime Validator와 Sandbox Controller 검사를 다시 받아야 합니다.
+
+credential·cookie·token·password 원문은 요구사항과 실제 값에 저장하지 않습니다. 필요한 비밀은 secret store의 불투명 `secret_ref`만 사용합니다.
+
+### 동적 결과의 참조는 언제 비어 있나요?
+
+- `poc_ref`: 이번 재현과 연결된 정확한 PoC 묶음입니다. PoC가 없으면 비어 있고, 값이 있어도 실행 성공을 뜻하지 않습니다.
+- `runner_invoked`: Runner를 실제 호출했는지 나타냅니다. 거짓이면 `steps_ref`는 비어 있어야 하고, 참이면 첫 단계에서 실패해도 로그가 있어야 합니다.
+- `environment_created`: 실제 환경이 만들어졌는지 나타냅니다. 거짓이면 `environment_ref`가 비어 있고, 참이면 실제 생성 환경과 요구사항별 비교 기록을 가리켜야 합니다. 실행 전 요구사항이나 Sandbox profile과는 다릅니다.
+- `policy_decision_ref`: Controller가 어떤 정책 버전으로 왜 허용·차단했는지 가리킵니다. `POLICY_BLOCKED`이면 반드시 필요하며 Technical Gate의 판정과 다릅니다.
+- `cleanup_required`: 정리할 자원이 생겼는지 나타냅니다. 거짓일 때만 `cleanup_status=NOT_REQUIRED`를 씁니다. 정책에 막혔더라도 임시 자원이 생겼다면 정리 결과를 성공 또는 실패로 남깁니다.
+
+이 참조들은 같은 분석·코드·가설과 정확한 record revision에 속해야 합니다. R6 requirements와 plan은 같은 Verification generation·attempt에서 연결하고, R7 정책·실제 환경·PoC·로그·정리 기록은 같은 동적 실행 attempt에서 연결합니다. plan의 `environment_requirements_ref`와 실제 환경의 `requirements_ref`가 다르거나 “가장 최신 결과”를 다시 찾거나 다른 R7 attempt의 PoC·환경·로그를 섞으면 저장을 거절합니다. R4는 이 공통 연결 규칙을 정하고, R6는 요구사항과 허용 차이를, R7은 실제 비교·PoC·환경·정책 판정·단계 로그의 세부 내용을 정합니다.
+
+Technical Gate는 final `TRUE`만 입력으로 받고 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 자신이 읽은 Verification과 CWELabel 수정본을 정확히 기록합니다. `FALSE | HOLD`와 검증 실패 가설은 Technical Gate로 보내지 않습니다. 둘 중 하나가 수정되면 이전 Gate 승인을 새 수정본에 재사용하지 않습니다. Rule Scope Gate와 보고서 초안도 같은 CWELabel `record_id`를 사용해야 합니다. `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
 
 Primitive도 exact revision을 사용합니다. HOLD는 final Verification ref가 붙은 REQUIRED를 Gate 없이 만들고, TRUE는 Technical `ACCEPT`와 Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`가 같은 Verification revision을 가리킬 때만 PROVIDED를 만듭니다. TRUE의 PROVIDED에는 그 취약점을 악용하기 위한 exact Verification의 `required_preconditions`도 함께 고정합니다. 가설별 `PrimitiveIndexState`가 current ACTIVE 항목을 가리키며 새 Verification/index revision이 생기면 과거 항목과 진행 중인 오래된 Chaining 결과를 commit 시 거절합니다.
 

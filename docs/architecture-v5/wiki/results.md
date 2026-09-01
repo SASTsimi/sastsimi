@@ -11,10 +11,10 @@
 `AnalysisRunResult`는 다음을 함께 찾을 수 있게 한다.
 
 - repository, `commit_id`, `workspace_id`, `started_at`, `finished_at`, `elapsed_ms`
-- INITIAL/VERIFICATION/CHAINING/invalid 가설 수와 verdict별 개수
+- INITIAL/VERIFICATION/CHAINING/invalid 가설 수, verdict별 개수와 final 판정 없이 끝난 `failed_hypothesis_count`
 - 위치 기반 context 요청·응답과 실제 조회 location
 - Verification, debate mode/trigger/skip, restriction와 capability
-- Docker 결과, redacted PoC와 cleanup
+- Docker 결과, exact Controller 정책 판정·실제 환경·Runner 단계 로그, redacted PoC와 cleanup
 - HOLD REQUIRED, Gate-qualified TRUE PROVIDED, TRUE+HOLD·TRUE+TRUE Chaining match와 재검증 여부
 - `CWELabel`, Technical 및 Rule Scope Impact Gate, 공식 `ProgramPolicyRecord`과 두 Gate·보고서가 사용한 정확한 revision reference
 - 보고서 초안과 사람 검토 상태
@@ -24,7 +24,11 @@
 - retry·같은 Verification의 Gate 보완·Chaining no-match/제한·예산으로 멈춘 이유
 - `COMMITTED` 상태와 artifact reference를 연결한 debug trace
 
-Proxy가 어려운 membership 호출은 raw session log → provider parser → redaction 경로를 쓴다. 사용자에게 노출된 request/response/tool trace만 기록하고 hidden chain-of-thought와 credential은 저장하지 않는다. 일반 결과에는 credential, 개인정보, 인증 헤더, 로컬 절대 경로가 없는 `AnalysisError.safe_message`만 넣는다. 꼭 필요한 원본 오류는 별도의 접근 제한·민감정보 제거 저장소에 두며 일반 결과와 분리한다. 오류는 `FALSE`와 구분한다.
+Proxy가 어려운 membership 호출은 raw session log → provider parser → redaction 경로를 쓴다. 사용자에게 노출된 request/response/tool trace만 기록하고 hidden chain-of-thought와 credential은 저장하지 않는다. 일반 결과에는 credential, 개인정보, 인증 헤더, 로컬 절대 경로가 없는 `AnalysisError.safe_message`만 넣는다. 꼭 필요한 원본 오류는 별도의 접근 제한·민감정보 제거 저장소에 두며 일반 결과와 분리한다. 오류는 `TRUE | FALSE | HOLD`와 구분한다.
+
+Context 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 함께 찾을 수 있어야 합니다. 일부 조회 실패가 있어도 모든 `validation_checks`를 실제 근거로 완료했다면 판정을 저장할 수 있습니다. 하나라도 완료하지 못했으면 final `VerificationResult`는 저장하지 않고, 재시도 가능 여부에 따라 가설을 `VERIFYING`으로 유지하거나 work와 함께 `FAILED`로 끝냅니다. 실패 가설 수는 verdict 수와 섞지 않고 `failed_hypothesis_count`로 따로 보입니다.
+
+동적 결과에서는 Runner 호출 여부와 step log, 실제 환경 생성 여부와 environment reference, 정리 대상 여부와 cleanup 상태가 서로 맞는지 확인합니다. 정책 차단이면 Controller 판정 reference가 필수입니다. PoC가 저장되어 있다는 사실만으로 실행 또는 재현 성공이라고 표시하지 않습니다.
 
 상세 내용은 [결과 저장과 관측성](../07-results-and-observability.md)을 따른다.
 ID 생성 주체, 상태 계층과 gap/error 차이는 [공통 ID·상태·오류](common-contracts.md)에서 쉽게 확인할 수 있다. 병렬 합류, 재시도, 늦은 결과와 crash-resume은 [상태·병렬 실행·재시도·복구](state-and-recovery.md)를 따른다.
