@@ -102,7 +102,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - Rule Scope Impact Gate는 확인 가능한 공식 source만 `ProgramPolicyRecord`로 사용한다.
 - 저장소 문서, 검색 snippet, 오래된 모델 지식과 비공식 요약을 공식 rule로 승격하지 않는다.
 - source URL/reference, 수집 시각, 누락과 freshness warning을 보존한다.
-- 공식 자료가 없거나 신뢰할 수 없으면 `UNCERTAIN + DENY`다.
+- 공식 자료가 없거나 `ProgramPolicyRecord.freshness_status=STALE | UNVERIFIED`이면 `UNCERTAIN + DENY`다. 오래된 record는 감사용으로 보존할 수 있지만 `PASS | ALLOW` 근거로 사용하지 않는다.
 - 정책 수집기가 향후 추가되면 외부 fetch, parser, provenance와 변경 탐지에 별도 보안 검토가 필요하다.
 
 ## 7. 근거·권한 연결
@@ -126,6 +126,8 @@ Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 �
 
 사람에게는 exact `AnalysisRunResult`, Finding·Verification, 두 Gate, CWE·정책, dynamic·redacted PoC, ReportDraft 또는 차단 사유, 자원, 오류·DataGap·HOLD 조건을 포함한 `HumanReviewPacket`을 제공한다. `HumanReviewState`는 current packet generation과 current decision pointer를 CAS로 관리한다. `HumanReviewDecision` 저장은 인증된 사람 identity와 exact current packet·state version을 검사한 `SAVE_HUMAN_DECISION` ALLOW action만 허용한다. 외부 disclosure action은 current state가 가리키는 Human Reviewer의 `DISCLOSE`, `report_ready=true`, exact approved report와 target이 있을 때만 허용한다. 새 packet이 생긴 뒤 과거 packet·결정, 승인 목록 밖 report와 Agent 결정은 `DISCLOSURE_DENIED`다.
 
+Finding이 없는 packet은 `FINDING_NOT_CREATED` 사유를 가진 내부 blocked packet으로만 허용하고 `report_ready=false`와 공개 차단을 강제한다. ReportDraft가 참조한 Verification·CWE·두 Gate·정책 중 하나라도 새 revision으로 바뀌면 기존 draft와 이를 포함한 packet은 current 공개 자료가 아니며 새 Gate·Reporter·packet generation을 요구한다.
+
 ## 위협과 최소 대응
 
 | 위협 | 대응 |
@@ -148,6 +150,8 @@ Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 �
 | 위험한 PoC | sandbox default-deny와 resource limit |
 | credential·코드 유출 | adapter secret boundary, 최소 context, redaction |
 | 정책 환각 | 공식 `ProgramPolicyRecord`가 없으면 `UNCERTAIN + DENY` |
+| 오래되거나 최신성을 확인하지 못한 정책으로 보고 허용 | `freshness_status=STALE | UNVERIFIED`이면 `UNCERTAIN + DENY`, `PASS | ALLOW` 거절 |
+| Finding이 없는 packet 또는 오래된 ReportDraft 공개 | `report_ready=false`, `FINDING_NOT_CREATED`, exact current dependency와 packet generation 재검사 |
 | 자동 오공개 | Reporter 초안 한정, human-only disclosure |
 | 역할 위조, ALLOW replay 또는 stale 허가 사용 | trusted requester identity와 exact action·state·input·config·`valid_until` binding, stale이면 `UNUSED -> EXPIRED`, 유효하면 `UNUSED -> USED` 일회성 claim |
 | 권한 없는 domain 결과 저장 | 역할별 `SAVE_RESULT` authority와 선행 exact ref 검사 |
@@ -243,6 +247,11 @@ Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 �
 | N14 | Chaining Agent가 Primitive match 없는 bypass·impact·dynamic 요청을 출력 | schema/result-owner validation에서 invalid로 거절 |
 | N15 | `purpose=PRODUCTION`인데 `verification_mode=BASIC | CONDITIONAL_DEBATE`를 요청 | Runtime Validator가 `ACTION_NOT_ALLOWED`; 운영 결과·Gate·Primitive·Reporter 생성 금지 |
 | N16 | 운영 Pro/Con 중 하나를 실행할 예산이 부족 | `BUDGET_EXCEEDED`로 Verification work 중단; skip·BASIC fallback·final verdict 생성 금지 |
+| N17 | Context 조회 실패·timeout·권한 오류만으로 `HOLD`를 저장하려 함 | 오류는 `AnalysisError`, 확인하지 못한 범위는 `DataGap`으로 기록; verdict evidence가 없으므로 `SAVE_RESULT` 거절 |
+| N18 | 일부 Context 조회는 실패했지만 대체 조회·다른 정상 근거와 운영 Pro/Con으로 필수 검증을 완료 | 오류·gap을 보존하고 실제 근거에 따라 `TRUE | FALSE | HOLD` 저장 허용 |
+| N19 | 필수 Context 또는 운영 Pro/Con을 확보하지 못했는데 final `VerificationResult`를 저장하려 함 | final 저장 거절; retry 가능이면 work `BLOCKED`, 허용된 재시도 소진·복구 불가이면 `FAILED` |
+| N20 | 가설의 검증 항목이 결과에서 빠지거나 중복되거나 `INCOMPLETE`인데 final `VerificationResult`를 저장하려 함 | `validation_id` 집합과 완료·근거 조건 불일치로 저장 거절; retry 가능이면 work `BLOCKED`, 아니면 가설까지 `FAILED` |
+| N21 | Verification work만 `FAILED`로 끝내고 가설을 계속 `VERIFYING`으로 두거나, 실패 가설에 과거 final result를 연결하려 함 | 같은 atomic transition에서 `HypothesisProcessState.status=FAILED`, exact failed work ref, `verification_result_ref=null` 강제; 불일치 상태는 분석 종료 차단 |
 
 ## 남는 위험
 
