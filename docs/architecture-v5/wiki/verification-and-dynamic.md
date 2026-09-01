@@ -54,7 +54,9 @@ Docker는 ephemeral/non-root, network default-deny와 자원·시간 제한을 �
 
 동적 결과는 정확한 PoC·Controller 정책 판정·실제 생성 환경·Runner 단계 로그를 reference로 전달합니다. 요구사항 reference는 결과에 중복 저장하지 않고 `reproduction_plan_ref → environment_requirements_ref`와 `environment_ref → requirements_ref`가 같은지 확인합니다. Runner가 호출되지 않았으면 단계 로그는 비어 있고, 호출됐다면 환경 차이로 첫 공격 단계 전에 멈춰도 로그가 필요합니다. 실제 환경이 없으면 환경 reference도 비어 있습니다. 정리할 자원이 전혀 없을 때만 `cleanup_status=NOT_REQUIRED`를 사용합니다. PoC reference가 있어도 정책에 막혀 실행되지 않았을 수 있으므로 상태와 로그를 함께 확인합니다. R4는 공통 필드·null·상태·reference 조합을, R6는 필요한 조건과 허용 차이를, R7은 실제 비교와 각 artifact의 상세 내용을 작성합니다.
 
-R7은 HTTP 요청·응답, application log, DB·파일 변화, command canary, Mock callback과 browser 관측을 실행 step과 연결합니다. raw payload는 제한 저장소에서 먼저 redaction하고, 성공한 exact artifact만 Verification에 전달합니다. PoC는 생성본과 실제 실행본을 구분하며 실행본 command·input digest가 Runner log와 일치해야 합니다. 환경 artifact에는 실제 image·service·fixture와 생성·cleanup 자원 ledger를 남깁니다.
+R7은 HTTP 요청·응답, application log, DB·파일 변화, command canary, Mock callback과 browser 관측을 실행 step과 연결합니다. raw payload는 제한 저장소에서 먼저 redaction하고, 성공한 exact artifact만 Verification에 전달합니다. PoC는 비-LLM Draft Builder의 안전한 생성본, Runner만 증명하는 실행 사실, 비-LLM Bundle Assembler의 최종 redaction·hash commit으로 책임을 나눕니다. `poc_ref`는 draft나 LLM 제안이 아니라 이 최종 bundle revision만 가리키며 실행본 command·input digest가 Runner log와 일치해야 합니다. 환경 artifact에는 실제 image·service·fixture와 생성·cleanup 자원 ledger를 남깁니다.
+
+Result Assembler는 Runner log seal, 관측 collector close, redaction 종료, 최종 PoC bundle, cleanup `SUCCEEDED | FAILED`가 모두 확정된 뒤에만 결과를 commit합니다. 늦게 도착한 관측은 기존 결과에 섞지 않고 필요하면 새 R6 Verification/dynamic attempt를 만듭니다. cleanup 실패 뒤 정리에 성공해도 과거 결과를 고치지 않고 recovery record를 추가합니다. 보존 만료·삭제로 필수 observation/PoC payload를 읽을 수 없으면 과거 Verification·Gate·Report·사람 승인 record는 감사 이력으로만 남고 현재 작업이나 재공개에 재사용하지 않습니다. 판정 근거가 사라졌으면 새 Verification과 Gate를 거치고, 보고 첨부물만 사라졌으면 Reporter/Human Review부터 새 revision을 만듭니다. payload 부재는 자동 `FALSE`가 아닙니다.
 
 공통 계약은 R6의 `EnvironmentRequirements`, plan의 `environment_requirements_ref`와 실제 환경의 `requirements_ref`를 exact revision으로 연결합니다. R7은 모든 `requirement_id`에 `MATCH | MISMATCH | NOT_CHECKED | ERROR`, 실제 값 또는 artifact, 차이와 Health Check 근거를 기록하며 필수 항목이 모두 `MATCH`일 때만 공격 단계를 실행합니다.
 

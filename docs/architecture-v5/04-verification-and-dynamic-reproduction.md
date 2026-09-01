@@ -140,9 +140,52 @@ R7은 PoC·환경·요구사항별 실제 값과 차이·Health Check·정책 �
 
 R7 artifact는 공통 `RecordMeta`와 `StoredDataRef` identity를 사용하며 모두 immutable이다. `record_id`·`content_hash`가 확정된 뒤 payload를 수정하지 않고, 보완·redaction 재처리·cleanup 후속 결과는 새 revision으로 저장한다. Result Assembler는 “latest”를 조회하지 않고 현재 attempt가 생산한 exact revision만 사용한다.
 
+아래 R7 상세 schema는 공통 계약을 확장하거나 공통 필드를 새로 요구하지 않는다. 공통 `sandbox_environment.checks[].actual_ref`, `sandbox_step_log.entries[].observation_refs`, `DynamicReproductionResult.policy_decision_ref | environment_ref | steps_ref | observation_refs | poc_ref`와 `TransitionCommit.output_refs`가 상세 artifact의 exact `StoredDataRef`를 연결한다. 모든 schema의 `meta`는 공통 `RecordMeta`이고 `schema_version`은 같은 major 안에서만 하위 호환한다.
+
+| `data_kind` | `schema_version` | 최종 producer | 완료 조건과 공통 연결 |
+|---|---|---|---|
+| `sandbox_policy_decision` | `r7.sandbox_policy_decision/1` | Sandbox Controller | 모든 검사 항목과 `ALLOW | DENY` 확정 후 immutable; `policy_decision_ref` |
+| `sandbox_environment_detail` | `r7.sandbox_environment_detail/1` | Sandbox Runner environment builder | 생성된 자원 snapshot과 모든 requirement 비교 종료; `EnvironmentCheck.actual_ref/evidence_refs` |
+| `sandbox_step_execution_detail` | `r7.sandbox_step_execution_detail/1` | Sandbox Runner | 실행 시도 종료 후 exit/signal·stream·resource usage 확정; `SandboxStepEntry.observation_refs` |
+| `dynamic_observation` | `r7.dynamic_observation/1` | Sandbox Runner 또는 승인된 Observation Collector | capture 종료와 redaction 최종 상태 확정; step/result `observation_refs` |
+| `sandbox_cleanup_record` | `r7.sandbox_cleanup_record/1` | Sandbox Cleanup Coordinator | 현재 cleanup 시도가 `SUCCEEDED | FAILED`로 종료; result assembly trace |
+| `poc_bundle` | `r7.poc_bundle/1` | PoC Bundle Assembler | draft·실행 증명·redaction manifest 검증 후 commit; `poc_ref` |
+| `sandbox_result_assembly_trace` | `r7.sandbox_result_assembly_trace/1` | Sandbox Result Assembler | 결과에 사용한 모든 exact input과 cleanup record를 고정; 결과와 같은 `TransitionCommit.output_refs` |
+
+R7 내부 producer 이름은 책임 경계를 뜻한다. Agent/LLM이 후보 입력이나 설명을 제안할 수는 있지만 Controller 정책 판정, Runner 실행 사실, Collector 관측 사실, cleanup 결과, PoC 최종 저장 및 Result 조립 record의 producer가 될 수 없다.
+
 #### Controller 정책 판정 `sandbox_policy_decision`
 
 Controller는 Runner 호출 전에 다음 내용을 구조화해 저장한다.
+
+```yaml
+SandboxPolicyDecision:
+  meta: RecordMeta
+  data_kind: sandbox_policy_decision
+  schema_version: r7.sandbox_policy_decision/1
+  producer: SANDBOX_CONTROLLER
+  reproduction_plan_ref: StoredDataRef
+  environment_requirements_ref: StoredDataRef
+  action_decision_ref: StoredDataRef
+  sandbox_profile_ref: StoredDataRef
+  policy_revision_ref: StoredDataRef
+  plan_closure_hash: string
+  checks: [SandboxPolicyCheck]
+  final_decision: ALLOW | DENY
+  runner_handoff_authorized: boolean
+  runner_handoff_plan_ref: StoredDataRef | null
+  runner_handoff_hash: string | null
+  evaluated_at: timestamp
+  completed_at: timestamp
+
+SandboxPolicyCheck:
+  check_id: string
+  domain: IMAGE | COMMAND_TOOL | FILE_MOUNT | NETWORK | RESOURCE | PROCESS | TIME | PRIVILEGE | CLEANUP
+  status: PASS | FAIL
+  reason_code: string | null
+  safe_detail: string | null
+  evidence_refs: [StoredDataRef]
+```
 
 - exact `ReproductionPlan`·`EnvironmentRequirements` reference와 전체 plan closure hash
 - Runtime Validator의 `RUN_SANDBOX` action decision reference
@@ -154,9 +197,69 @@ Controller는 Runner 호출 전에 다음 내용을 구조화해 저장한다.
 
 항목별 검사 결과가 하나라도 `FAIL`이면 최종 결과는 `DENY`다. policy/profile revision을 변경해 다시 실행하려면 기존 판정을 덮어쓰지 않고 Verification의 새 계획 또는 공통 계약이 허용하는 동일 closure의 새 attempt에서 새 action·정책 판정을 만든다.
 
+`ALLOW`는 모든 check가 `PASS`, `runner_handoff_authorized=true`, 두 handoff 필드가 non-null이고 handoff plan/hash가 검사한 exact plan closure와 같아야 한다. `DENY`는 하나 이상의 `FAIL`, `runner_handoff_authorized=false`, 두 handoff 필드가 `null`이어야 한다. 이는 Controller의 handoff 허가 사실이며 공통 결과의 `runner_invoked` 실제 실행 사실과 다르다. Controller는 최종 판정 뒤 같은 record를 수정하지 않는다.
+
 #### 실제 환경 `sandbox_environment`
 
 `sandbox_environment`는 계획용 설정이 아니라 해당 attempt에서 실제로 생성된 자원·실행 조건과 requirement 비교를 공격 단계 전에 확정한 immutable snapshot이다.
+
+```yaml
+SandboxEnvironmentDetail:
+  meta: RecordMeta
+  data_kind: sandbox_environment_detail
+  schema_version: r7.sandbox_environment_detail/1
+  producer: SANDBOX_RUNNER_ENVIRONMENT_BUILDER
+  reproduction_plan_ref: StoredDataRef
+  requirements_ref: StoredDataRef
+  policy_decision_ref: StoredDataRef
+  images: [ActualImage]
+  runtime_versions: [ActualVersion]
+  services: [ActualService]
+  fixtures_and_identities: [ActualFixtureIdentity]
+  mount_policy_ref: StoredDataRef
+  network_policy_ref: StoredDataRef
+  resource_limit_ref: StoredDataRef
+  generated_resources: [SandboxResourceEntry]
+  requirement_actuals: [RequirementActual]
+  captured_at: timestamp
+  completed_at: timestamp
+
+RequirementActual:
+  requirement_id: string
+  status: MATCH | MISMATCH | NOT_CHECKED | ERROR
+  actual_ref: StoredDataRef | null
+  evidence_refs: [StoredDataRef]
+  safe_difference: string | null
+
+SandboxResourceEntry:
+  resource_id: string
+  resource_type: CONTAINER | IMAGE | VOLUME | NETWORK | FILE | FIXTURE | ACCOUNT | CREDENTIAL
+  creation_ref: StoredDataRef
+
+ActualImage:
+  role: APPLICATION | BASE | SERVICE | MOCK
+  image_digest: string
+  build_provenance_ref: StoredDataRef
+
+ActualVersion:
+  component: string
+  version: string
+  lock_or_config_hash: string | null
+
+ActualService:
+  service_id: string
+  service_type: APPLICATION | DATABASE | CACHE | MOCK | SUPPORTING
+  image_digest: string | null
+  network_alias: string
+  health_observation_ref: StoredDataRef
+
+ActualFixtureIdentity:
+  logical_id: string
+  kind: FIXTURE | TEST_ACCOUNT | ROLE | DATA_STATE
+  privilege_summary: [string]
+  secret_handle_ref: StoredDataRef | null
+  creation_evidence_refs: [StoredDataRef]
+```
 
 - application/base image digest, runtime·package manager·주요 dependency version과 lock/config hash
 - 실제 service·DB·Mock 목록, 각 image digest·격리 network alias·health 결과
@@ -167,6 +270,8 @@ Controller는 Runner 호출 전에 다음 내용을 구조화해 저장한다.
 - 원본 plan·Controller 판정·workspace·commit·hypothesis·attempt의 exact linkage
 
 `requirements_ref`는 plan의 `environment_requirements_ref`가 가리키는 current exact `EnvironmentRequirements` revision과 같아야 한다. `checks`는 모든 `requirement_id`를 한 번씩 다루며 공통 `EnvironmentCheck.status=MATCH | MISMATCH | NOT_CHECKED | ERROR`를 사용한다. 각 check에는 비밀값을 제거한 actual 또는 exact `actual_ref`, difference, evidence와 Health Check 결과를 연결한다. 필수 항목이 모두 `MATCH`일 때만 environment status는 `READY`이고 공격 단계를 시작할 수 있다.
+
+공통 `SandboxEnvironment`가 먼저 자신의 exact detail을 가리키는 순환 구조를 만들지 않는다. environment builder는 detail을 저장한 뒤 각 공통 `EnvironmentCheck.actual_ref/evidence_refs`에 해당 detail 또는 하위 actual artifact의 exact reference를 연결하고 공통 environment snapshot을 commit한다. detail과 공통 snapshot은 같은 plan·requirements·policy·analysis·hypothesis·attempt identity로 결합한다. required requirement가 하나라도 `MISMATCH | NOT_CHECKED | ERROR`이면 공격 단계를 시작하지 않는다. `PARTIAL`에 허용되는 차이는 R6가 plan/requirements에 선택 항목 또는 허용 fallback으로 사전 명시한 차이뿐이다.
 
 #### Runner 단계 로그 `sandbox_step_log`
 
@@ -181,20 +286,98 @@ Runner가 호출되면 첫 단계 시작 전 append-only log를 열고 실패·t
 
 Runner가 호출되지 않으면 빈 로그를 만들지 않는다. 호출됐지만 환경 차이로 첫 공격 단계 전에 멈추면 공통 계약대로 `entries=[]` 또는 계획상 entry를 `SKIPPED`로 남긴 exact log를 저장하고 실제 공격 입력은 비운다. 계획에 없는 단계·command·입력은 기록 후 실행하는 것이 아니라 Controller/Runner 경계에서 차단한다.
 
+공통 `SandboxStepLog` schema 자체는 바꾸지 않는다. 실행 시각·exit/signal·stdout/stderr·resource usage 같은 상세 실행 정보는 다음 detail artifact로 저장하고 해당 `SandboxStepEntry.observation_refs`에 연결한다.
+
+```yaml
+SandboxStepExecutionDetail:
+  meta: RecordMeta
+  data_kind: sandbox_step_execution_detail
+  schema_version: r7.sandbox_step_execution_detail/1
+  producer: SANDBOX_RUNNER
+  reproduction_plan_ref: StoredDataRef
+  policy_decision_ref: StoredDataRef
+  environment_ref: StoredDataRef
+  step_id: string
+  sequence: integer
+  command_ref: StoredDataRef
+  attack_input_refs: [StoredDataRef]
+  status: SUCCEEDED | FAILED | CANCELLED
+  started_at: timestamp
+  finished_at: timestamp
+  exit_code: integer | null
+  signal: string | null
+  stop_reason: string | null
+  stdout_ref: StoredDataRef | null
+  stderr_ref: StoredDataRef | null
+  stdout_byte_count: integer
+  stderr_byte_count: integer
+  resource_usage_ref: StoredDataRef
+```
+
+실행된 entry에는 정확히 하나의 같은 `step_id`·sequence·command·input을 가진 execution detail이 필요하다. 정상 종료는 `exit_code`가 필수이고 `signal=null`, signal/timeout/cancel 종료는 `exit_code=null`과 safe `signal` 또는 `stop_reason`이 필수다. stdout/stderr가 없으면 reference는 `null`, byte count는 `0`이다. `SKIPPED` entry에는 execution detail을 만들지 않는다. HTTP·DB·파일 등 의미 관측은 별도 `dynamic_observation`으로 같은 entry에 추가한다.
+
 #### 자원·cleanup 기록
 
 환경 snapshot을 cleanup 뒤에 수정하지 않는다. R7 runtime은 같은 동적 실행 attempt의 append-only cleanup record에 다음 내용을 남기고 Result Assembler가 이를 집계해 공통 `cleanup_required`와 `cleanup_status`를 채운다.
+
+```yaml
+SandboxCleanupRecord:
+  meta: RecordMeta
+  data_kind: sandbox_cleanup_record
+  schema_version: r7.sandbox_cleanup_record/1
+  producer: SANDBOX_CLEANUP_COORDINATOR
+  reproduction_plan_ref: StoredDataRef
+  policy_decision_ref: StoredDataRef
+  environment_ref: StoredDataRef | null
+  cleanup_policy_ref: StoredDataRef
+  resources: [CleanupResourceResult]
+  status: SUCCEEDED | FAILED
+  recovery_work_ref: StoredDataRef | null
+  started_at: timestamp
+  finished_at: timestamp
+
+CleanupResourceResult:
+  resource_id: string
+  resource_type: CONTAINER | IMAGE | VOLUME | NETWORK | FILE | FIXTURE | ACCOUNT | CREDENTIAL
+  status: SUCCEEDED | FAILED
+  safe_reason: string | null
+  isolation_state: REMOVED | QUARANTINED | REMAINING
+```
 
 - exact cleanup policy와 nullable environment reference
 - 자원별 불투명 resource ID, `CONTAINER | IMAGE | VOLUME | NETWORK | FILE | FIXTURE | ACCOUNT | CREDENTIAL` 종류와 생성 근거
 - `SUCCEEDED | FAILED` 정리 결과, 시도 시각, safe reason과 남은 자원 격리 상태
 - 강제 정리가 필요한 경우 recovery work reference와 운영 알림 ID
 
-공통 `DynamicReproductionResult`에 새 `cleanup_ref`를 임의로 추가하지 않는다. 상세 cleanup record는 dynamic 운영 저장소에서 exact analysis·hypothesis·R7 attempt와 environment resource ID로 추적하고, Verification·Gate에는 공통 cleanup 상태와 필요한 limitation을 전달한다. Runner 미호출이나 `environment_ref=null`이어도 Controller 차단 전에 다른 임시 자원이 생겼다면 cleanup record와 `cleanup_required=true`가 필요하다.
+공통 `DynamicReproductionResult`에 새 `cleanup_ref`를 임의로 추가하지 않는다. 상세 cleanup record의 exact revision은 `SAVE_RESULT` 입력과 `sandbox_result_assembly_trace.cleanup_record_ref`에 고정하고, 그 trace와 결과를 같은 `TransitionCommit.output_refs`에서 atomic commit한다. Runner 미호출이나 `environment_ref=null`이어도 Controller 차단 전에 다른 임시 자원이 생겼다면 cleanup record와 `cleanup_required=true`가 필요하다. 자원이 전혀 없을 때만 cleanup record 없이 `cleanup_required=false`, `cleanup_status=NOT_REQUIRED`를 사용한다.
 
 #### 동적 관측 artifact
 
 각 `observation_ref`는 관측 종류, capture point, 수집 시각, producer, 관련 `step_id`·command·attack input, redaction 상태와 content hash를 가진다. 관측 종류별 최소 내용은 다음과 같다.
+
+```yaml
+DynamicObservation:
+  meta: RecordMeta
+  data_kind: dynamic_observation
+  schema_version: r7.dynamic_observation/1
+  producer: SANDBOX_RUNNER | SANDBOX_OBSERVATION_COLLECTOR
+  reproduction_plan_ref: StoredDataRef
+  policy_decision_ref: StoredDataRef
+  environment_ref: StoredDataRef | null
+  steps_ref: StoredDataRef | null
+  step_id: string | null
+  command_ref: StoredDataRef | null
+  attack_input_refs: [StoredDataRef]
+  observation_kind: STEP_EXECUTION | HTTP | LOG | DB_CHANGE | FILE_CHANGE | COMMAND_CANARY | MOCK_CALLBACK | HEADLESS_BROWSER
+  capture_point: string
+  payload_ref: StoredDataRef
+  redaction_status: SUCCEEDED | FAILED
+  content_hash: string
+  captured_at: timestamp
+  finalized_at: timestamp
+```
+
+일반 `observation_refs`로 승격되는 record는 `redaction_status=SUCCEEDED`만 허용한다. redaction 실패 record는 제한 저장소의 실패·감사 추적에만 남고 `payload_ref`를 일반 evidence closure에 포함하지 않는다. 환경 snapshot commit 전의 구성/Health Check 관측은 순환 참조를 피하기 위해 `environment_ref=null`, `steps_ref=null`, `step_id=null`, `command_ref=null`, `attack_input_refs=[]`일 수 있으며 plan·policy·attempt identity로 공통 environment check에 연결한다. 공격 단계 관측은 `environment_ref`와 `step_id`가 필수다.
 
 | 관측 | 최소 기록 |
 |---|---|
@@ -212,6 +395,34 @@ Runner가 호출되지 않으면 빈 로그를 만들지 않는다. 호출됐지
 
 PoC는 실행 전 생성본과 Runner가 실제 사용한 실행본을 구분한다.
 
+```yaml
+PoCBundle:
+  meta: RecordMeta
+  data_kind: poc_bundle
+  schema_version: r7.poc_bundle/1
+  producer: POC_BUNDLE_ASSEMBLER
+  reproduction_plan_ref: StoredDataRef
+  hypothesis_ref: StoredDataRef
+  draft_ref: StoredDataRef
+  execution_attestation_ref: StoredDataRef | null
+  policy_decision_ref: StoredDataRef
+  environment_ref: StoredDataRef | null
+  steps_ref: StoredDataRef | null
+  attack_input_refs: [StoredDataRef]
+  observation_refs: [StoredDataRef]
+  files: [PoCFileEntry]
+  execution_status: NOT_EXECUTED | EXECUTED | EXECUTION_FAILED
+  redaction_manifest_ref: StoredDataRef
+  limitations: [string]
+  committed_at: timestamp
+
+PoCFileEntry:
+  role: GENERATED | EXECUTED | SUPPORTING
+  media_type: string
+  content_ref: StoredDataRef
+  content_hash: string
+```
+
 - manifest schema/version, plan·hypothesis·workspace·commit·attempt reference
 - 안전한 사전 조건, fixture·계정·권한의 불투명 ID와 재실행 순서
 - 파일별 역할 `GENERATED | EXECUTED | SUPPORTING`, media type, redacted content reference와 hash
@@ -222,11 +433,60 @@ PoC는 실행 전 생성본과 Runner가 실제 사용한 실행본을 구분한
 
 정책 차단 전에 생성된 PoC는 `execution_status=NOT_EXECUTED`로 보존할 수 있지만 실행 성공이나 관측 근거가 아니다. 실제 실행을 주장하려면 PoC 실행본 digest가 `SandboxStepLog`의 command/input과 일치하고 관련 observation이 있어야 한다.
 
+PoC authority는 다음처럼 분리한다.
+
+1. 비-LLM `PoC Draft Builder`가 승인된 exact plan 안에서 후보 입력을 정규화·안전화해 immutable `poc_draft`를 저장한다. LLM 출력은 이 builder의 입력 후보일 뿐 저장 권한이나 실행 사실 권한이 없다.
+2. Runner만 실제 사용한 command/input digest, step 및 observation을 묶은 immutable `poc_execution_attestation`을 생성해 `EXECUTED | EXECUTION_FAILED`를 증명한다.
+3. 비-LLM `PoC Bundle Assembler`가 draft, Runner attestation, redaction 결과와 hash를 검증하고 최종 `poc_bundle` revision을 commit한다.
+4. 정책 차단으로 Runner가 호출되지 않으면 attestation 없이 Controller의 `DENY` exact reference를 사용해 `NOT_EXECUTED` bundle을 commit할 수 있다.
+5. 공통 `poc_ref`는 항상 이 최종 committed bundle revision을 가리키며 draft, LLM 제안 또는 처리 중 bundle을 가리키지 않는다.
+
 #### redaction·hash·보존
 
 raw stdout/stderr, request/response body, DB 값, screenshot과 PoC 파일은 먼저 제한 저장소에 격리하고 redaction 성공 후에만 일반 `StoredDataRef`로 승격한다. 일반 artifact에는 credential·cookie·authorization header·개인정보·host secret·전체 browser profile을 넣지 않는다. 일반 `content_hash`는 redacted bytes에 대해 계산하고, raw-to-redacted 대응과 raw hash는 접근 통제된 감사 metadata에만 둔다.
 
 redaction이 실패하면 raw artifact는 격리·짧은 보존·접근 감사 대상이며 `observation_refs`, `poc_ref`, Gate 또는 Reporter 입력으로 전달하지 않는다. 보존 만료나 삭제는 record identity를 재사용하지 않고 tombstone과 사유를 남긴다.
+
+#### Result finalization barrier와 늦은 결과
+
+Result Assembler는 다음 barrier가 모두 닫힌 뒤에만 `DynamicReproductionResult` 후보를 만든다.
+
+1. Runner가 step log를 seal하고 더 이상 entry를 추가하지 않는다.
+2. 승인된 Collector가 bounded drain deadline까지 수집을 끝내고 collection manifest를 `CLOSED`로 확정한다.
+3. 결과에 넣을 observation과 PoC payload의 redaction이 모두 `SUCCEEDED` 또는 제외 사유가 확정되어 처리 중 artifact가 없다.
+4. PoC Bundle Assembler가 최종 `EXECUTED | EXECUTION_FAILED | NOT_EXECUTED` revision을 commit한다.
+5. cleanup 대상이 있으면 현재 cleanup 시도가 `SUCCEEDED | FAILED`로 끝나고 exact cleanup record가 확정된다. 대상이 없으면 `NOT_REQUIRED` 조건을 검증한다.
+6. Result Assembler가 아래 trace를 만들고 `SAVE_RESULT`가 exact plan·policy·environment·steps·observation·PoC·cleanup 조합을 재검증한다.
+
+```yaml
+SandboxResultAssemblyTrace:
+  meta: RecordMeta
+  data_kind: sandbox_result_assembly_trace
+  schema_version: r7.sandbox_result_assembly_trace/1
+  producer: SANDBOX_RESULT_ASSEMBLER
+  reproduction_plan_ref: StoredDataRef
+  policy_decision_ref: StoredDataRef | null
+  environment_ref: StoredDataRef | null
+  steps_ref: StoredDataRef | null
+  observation_refs: [StoredDataRef]
+  poc_ref: StoredDataRef | null
+  cleanup_record_ref: StoredDataRef | null
+  dynamic_result_ref: StoredDataRef
+  collection_manifest_ref: StoredDataRef | null
+  finalized_at: timestamp
+```
+
+collection close 뒤 도착한 observation은 기존 결과나 같은 attempt의 새 revision에 끼워 넣지 않고 `LATE_ARTIFACT` 운영 추적으로 격리한다. 그 관측이 판정에 필요하면 R6가 새 Verification/dynamic attempt를 만든다. cleanup `FAILED` 결과 commit 뒤 운영 janitor가 정리에 성공해도 기존 결과를 수정하지 않고 원 cleanup record에 연결된 recovery record를 append한다. recovery는 현재 자원 안전 상태를 갱신하지만 과거 결과의 `cleanup_status=FAILED`를 성공으로 소급 변경하지 않는다.
+
+#### 보존 만료·tombstone과 downstream 재검증
+
+Technical Gate, Reporter, Human Review packet 준비 및 `DISCLOSE` 직전 Runtime Validator는 자신이 소비하는 exact observation·PoC payload의 availability와 hash를 다시 검사한다. `TOMBSTONED | CORRUPT | REDACTION_REVOKED`이면 과거 Verification·Gate·ReportDraft·HumanReviewPacket은 감사 이력으로는 남지만 새 작업이나 현재 공개에 재사용할 수 없다. 이미 수행한 외부 공개 이력을 지우지는 않되 같은 packet으로 재공개하지 않는다.
+
+- 누락 payload가 Verification verdict, impact 또는 Gate 판단의 필수 근거면 새 Verification generation에서 남은 근거와 limitation을 다시 평가하고 새 Gate 결과를 받아야 한다.
+- Verification/Gate의 필수 근거는 유지되고 보고서 첨부물만 만료됐다면 Verification을 다시 판정하지 않고 Reporter/Human Review/공개를 중단한 뒤 대체 artifact와 새 report/packet revision을 만든다.
+- 어느 경우에도 payload 부재를 취약점 반증, `hypothesis_outcome=DISPROVED` 또는 Verification `FALSE`로 자동 변환하지 않는다.
+
+R4 공통 stale/invalidation lifecycle이 확정되면 R7 runtime은 그 공통 상태·reason code를 사용한다. 그 전에도 fail-closed 원칙으로 downstream 호출을 막고, 삭제된 payload를 대신해 예전 Technical `ACCEPT`나 공개 승인을 current로 취급하지 않는다.
 
 Sandbox runtime의 비-LLM Result Assembler는 같은 analysis·workspace·commit·hypothesis에 속한 exact R6 plan closure와, `DynamicReproductionResult.meta.attempt_id`와 같은 R7 실행 attempt의 정책 판정·환경·step log·실행 PoC만 결과에 넣는다. R6가 먼저 만든 계획·요구사항의 `attempt_id`를 R7 실행 attempt와 억지로 같게 만들지 않는다. `DynamicReproductionResult`에 요구사항 reference를 중복 저장하지 않고 `reproduction_plan_ref -> environment_requirements_ref`와 `environment_ref -> requirements_ref`가 같은 record revision인지 검사한다. `DynamicReproductionState`, work output과 `TransitionCommit`이 같은 COMMITTED 결과를 가리킨 뒤 Verification Agent가 `dynamic_result_ref`, 환경 차이와 exact `poc_ref`를 읽는다. Technical Evidence Gate Agent는 Verification에 연결된 정책 판정·환경·step log·PoC와 outcome이 서로 맞는지 검토하고, Reporter는 두 Gate를 통과한 결과만 보고서 초안에 사용한다. Provider 오류, 정책 차단, setup·환경 차이·실행·관측 실패는 이 전달 과정에서 `FALSE`로 바뀌지 않는다.
 
@@ -235,7 +495,7 @@ Sandbox runtime의 비-LLM Result Assembler는 같은 analysis·workspace·commi
 동적 재현 상태는 `NOT_REQUESTED | RUNNING | SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED`다. 실행이 끝난 결과는 `DynamicReproductionResult.status`에 `SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED` 중 하나를 기록한다.
 
 - 필수 환경을 만들지 못하거나 필수 requirement가 `MISMATCH | NOT_CHECKED | ERROR`이면 공격 단계를 시작하지 않고 `FAILED + ENVIRONMENT_SETUP`으로 R6에 돌려보낸다.
-- 공격 경로를 일부 실행하고 신뢰할 수 있는 관측을 하나 이상 얻었지만 운영환경 차이 등으로 전체 확인이 부족하면 `PARTIAL + NONE`이다. 이때 `hypothesis_outcome=INCONCLUSIVE`이고 `hypothesis_evidence_refs`와 `limitations`가 각각 하나 이상 있어야 한다.
+- 공격 경로를 일부 실행하고 신뢰할 수 있는 관측을 하나 이상 얻었지만 R6가 requirements에서 선택 항목 또는 허용 fallback으로 사전 승인한 환경 차이 때문에 전체 확인이 부족하면 `PARTIAL + NONE`이다. required requirement 차이는 `PARTIAL`이 아니라 공격 미실행과 `FAILED + ENVIRONMENT_SETUP`이다. `PARTIAL`이면 `hypothesis_outcome=INCONCLUSIVE`이고 `hypothesis_evidence_refs`와 `limitations`가 각각 하나 이상 있어야 한다.
 - `SUCCEEDED`는 계획한 필수 단계와 관측을 끝냈다는 실행 상태다. 관측이 가설을 지지했는지, 반증했는지, 결론을 주지 못했는지는 `hypothesis_outcome`에 따로 기록한다.
 - `hypothesis_outcome`은 `SUPPORTED | DISPROVED | INCONCLUSIVE`이며 Verification verdict가 아니다. `SUPPORTED | DISPROVED`는 실제 관측을 가리키는 `hypothesis_evidence_refs`가 필요하다.
 - `DISPROVED`일 때만 `hypothesis_disproved=true`와 비어 있지 않은 `disproof_evidence_refs`를 사용한다. 반증 근거는 일반 가설 근거 목록에도 포함한다.
@@ -251,7 +511,7 @@ Sandbox runtime의 비-LLM Result Assembler는 같은 analysis·workspace·commi
 | 제한 시간 안에 필수 단계가 끝나지 않음 | `FAILED + TIMEOUT + INCONCLUSIVE`; timeout step과 당시 관측·cleanup 보존 |
 | Controller가 실행 전에 정책 거절, 자원 없음 | `BLOCKED + POLICY_BLOCKED + INCONCLUSIVE`; `policy_decision_ref` 필수, Runner·step·공격 입력·관측 없음, `cleanup_status=NOT_REQUIRED` |
 | Controller 차단 전 임시 자원이 생성됨 | `BLOCKED + POLICY_BLOCKED + INCONCLUSIVE`; Runner 미호출이면 `steps_ref=null`, 실제 환경과 자원 ledger·cleanup `SUCCEEDED | FAILED` 필수 |
-| 공격 경로 일부와 신뢰 관측은 있으나 환경 차이로 전체 확인 불가 | `PARTIAL + NONE + INCONCLUSIVE`; evidence와 limitation 각각 필수 |
+| 공격 경로 일부와 신뢰 관측은 있으나 사전 승인된 optional/fallback 환경 차이로 전체 확인 불가 | `PARTIAL + NONE + INCONCLUSIVE`; evidence와 limitation 각각 필수. required 차이면 공격 미실행과 `FAILED + ENVIRONMENT_SETUP` |
 | 계획한 경로를 정상 실행해 가설과 반대되는 관측 확보 | 실행 status와 별도로 `DISPROVED`; 정상 단계 log와 `hypothesis_evidence_refs`·`disproof_evidence_refs` 필수 |
 
 동적 결과 상태와 공통 실행 상태는 뜻이 다르다. `DYNAMIC_REPRO`의 `PARTIAL`은 신뢰 관측과 `limitations`를 가진 `DynamicReproductionResult` 자체가 누락 범위를 설명하므로 실제 오류가 없으면 `AnalysisError`나 `DataGap`을 만들지 않는다. `BLOCKED + POLICY_BLOCKED`는 정책에 막힌 사실을 Sandbox가 정상적으로 기록한 종료 결과이므로 공통 `WorkExecutionState`는 `SUCCEEDED`로 끝난다. 여기서 `SUCCEEDED`는 요청 처리가 완료되었다는 뜻일 뿐 재현 성공이나 가설 지지를 뜻하지 않는다. retry·승인·입력을 기다리는 경우에만 공통 상태 `BLOCKED`를 사용한다. `CANCELLED`는 취소 결과와 공통 취소 상태를 같은 atomic transition에서 저장하고, 취소 뒤 늦게 도착한 결과는 격리한다.

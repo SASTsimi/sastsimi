@@ -226,6 +226,10 @@ Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 �
 | DB·파일 관측에 host 절대 path나 실제 credential 포함 | sandbox 상대 locator와 secret scanner | artifact 승격 거절, secret incident와 cleanup 후속 처리 |
 | 관측이 없다는 사실만으로 반증 주장 | 정상 실행 step, expected capture channel과 actual evidence refs | `DISPROVED` 거절, `OBSERVATION` 실패 또는 `INCONCLUSIVE` 유지 |
 | cleanup 실패 환경의 artifact를 다음 attempt에서 재사용 | resource ledger, cleanup status와 attempt identity | 재사용 차단, 잔여 자원 격리와 후속 cleanup |
+| collection close 뒤 도착한 관측을 committed 결과에 추가 | collection manifest, result assembly trace와 attempt identity | `LATE_ARTIFACT`로 격리, 판정에 필요하면 새 Verification/dynamic attempt |
+| cleanup `FAILED` 결과를 후속 정리 성공으로 덮어씀 | cleanup record revision과 recovery linkage | 과거 결과 유지, 별도 recovery record로 현재 자원 상태만 갱신 |
+| 보존 만료된 observation·PoC를 근거로 기존 Technical `ACCEPT`·ReportDraft·HumanReviewPacket을 재사용 | exact payload availability/hash와 tombstone | downstream 중단, 필수 판정 근거면 새 Verification/Gate, 첨부물만 누락이면 새 report/packet |
+| 동적 payload 삭제를 취약점 반증으로 처리 | tombstone reason과 hypothesis evidence closure | `FALSE`·`DISPROVED` 자동 전환 금지, limitation과 재검토 필요 상태 유지 |
 
 ## Verification ownership과 Chaining admission 시나리오
 
