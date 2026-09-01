@@ -139,7 +139,7 @@ UNAUTHENTICATED < AUTHENTICATED < ELEVATED < ADMIN < SYSTEM
 
 ### vocabulary 확장 규칙
 
-`primitive_type`과 privilege 서열 모두, 목록에 없는 새 값을 강제로 매핑하거나 거부하지 않는다. 새 값은 그대로 기록에 남는다(원래 필드가 이미 값을 보존하므로 별도 로그 불필요). 이 규칙은 현재 수동 확인 절차다 — 반복 사용을 자동으로 탐지·집계하는 별도 도구는 없으며, R1이 필요시 Primitive 저장소를 직접 조회해 검토하고 vocabulary에 정식 추가하거나 기존 값에 매핑할지 결정한다.
+`primitive_type`과 privilege 서열 모두, 목록에 없는 새 값을 강제로 매핑하거나 거부하지 않고 원본 값 그대로 둔다(미분류로 취급). `primitive_type`은 매칭의 판정 기준이 아니라 1차 분류일 뿐이라 목록에 없어도 나머지 check는 정상 진행된다. 목록에 없는 `privilege_level`은 `privilege_check`가 명시적 근거 없이 PASS로 보지 않아 UNCERTAIN이 되지만, 그래도 후보 자체는 만들어지고 `unresolved_conditions`에 남는다. 이 vocabulary를 최신 상태로 유지하는 별도 절차는 두지 않는다.
 
 ### 출력
 
