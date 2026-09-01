@@ -180,20 +180,32 @@ ChainingResult:
 
 새 가설은 `HypothesisProposal(origin=CHAINING)`으로 만든다. trusted runtime이 schema·semantic·workspace·commit·exact Primitive eligibility·중복·깊이·예산을 검사한 뒤 새 `hypothesis_id`로 등록한다. Orchestration Agent는 등록된 가설에 새 Verification Agent를 배정한다. child는 전체 Verification 파이프라인을 처음부터 거친다.
 
+각 child proposal의 `source_primitive_match_id`는 자신을 만든 exact `PrimitiveMatchCandidate`를 가리킨다. `parent_hypothesis_ids`/`root_hypothesis_id`/`chain_depth`가 가설 사이의 계보를 보여준다면, `source_primitive_match_id`는 그 계보의 각 단계가 어느 Primitive 쌍과 7개 check 근거로 연결됐는지 보여준다.
+
+`TRUE_HOLD`/`TRUE_TRUE`는 부모가 둘이고 두 부모의 `root_hypothesis_id`가 서로 다를 수 있다(`TRUE_TRUE`는 두 부모 모두 독립적으로 Gate-qualified TRUE까지 간 별개 계보라 항상 다를 수 있다). child의 `root_hypothesis_id`는 `chain_depth`가 더 큰 부모, 같으면 `upstream_provided_ref` 쪽 부모의 값을 물려받는다 — 이건 단순 tie-break이며 물려받지 못한 부모 계보가 사라진다는 뜻이 아니다.
+
+따라서 한 가설에서 `source_primitive_match_id` → 그 candidate의 `parent_hypothesis_ids` → 그 부모의 `source_primitive_match_id`를 반복해서 거슬러 올라가는 것이 다단계 공격 순서를 재구성하는 방법이다. `root_hypothesis_id` 하나만 따라가면 매 merge 지점에서 물려받은 쪽 부모의 계보만 보이므로, 두 부모 계보를 모두 보려면 각 merge 지점마다 남은 부모에서 같은 walk를 별도로 반복해야 한다. `origin=VERIFICATION` 중간 세대는 `source_primitive_match_id=null`이라 그 세대는 Primitive match 근거 없이 `parent_hypothesis_ids`만으로 잇는다. 이 문서는 진행 상태나 순서 번호를 담는 별도 필드를 두지 않고, 이미 있는 계보 필드와 이 참조를 반복 조회하는 walk를 다단계 공격 순서의 기록 형식으로 정한다.
+
 ### 호출 시점과 trigger 의미
 
 `03-agent-roles-and-orchestration.md`는 Verification owner가 Primitive 후보 admission 여부를 결정하고, admission된 뒤 다른 hypothesis의 Primitive와 실제로 비교해 Chaining work를 등록하는 시점은 Primitive DB를 유지하는 trusted runtime이 admission 이벤트마다 자동으로 처리한다고 정한다. `08-lightweight-data-contracts.md`의 `REGISTER_WORK` 허용 `requested_by` 표에 이 trusted runtime 전용 identity인 `ADMISSION_RUNTIME`을 포함해 이 자동 등록만 허용하며, Chaining Agent는 `agent_role`에 없는 이 identity로 인증될 수 없어 스스로 `REGISTER_WORK`를 요청하지 못한다.
 
-Primitive가 새로 `ACTIVE`로 admission될 때마다(REQUIRED는 final HOLD commit, PROVIDED는 두 Gate 통과 admission) 즉시 반대편 `ACTIVE` Primitive 전체를 대상으로 Chaining work 등록을 시도한다(batch로 모아 두지 않는다). 이 절은 호출 *시점*(이벤트 기반 vs batch)만 정하며, 실제 호출 총량·조합 수 상한과 상한 도달 시 처리 방식은 "확장 제한과 순환 방지" 절의 한도를 따른다. 이벤트 기반 즉시 등록도 이 한도 검사를 우회하지 않는다 — 매 시도마다 그 절의 검사를 거치며, 한도 도달은 부모 가설의 `FALSE`나 매칭 실패로 기록하지 않는다.
+Primitive가 새로 `ACTIVE`로 admission될 때마다(REQUIRED는 final HOLD commit, PROVIDED는 두 Gate 통과 admission) 즉시 Chaining work 등록을 시도한다(batch로 모아 두지 않는다). 이 절은 호출 *시점*(이벤트 기반 vs batch)만 정하며, 실제 호출 총량·조합 수 상한과 상한 도달 시 처리 방식은 "확장 제한과 순환 방지" 절의 한도를 따른다. 이벤트 기반 즉시 등록도 이 한도 검사를 우회하지 않는다 — 매 시도마다 그 절의 검사를 거치며, 한도 도달은 부모 가설의 `FALSE`나 매칭 실패로 기록하지 않는다.
 
-admission 이벤트는 Primitive DB를 유지하는 같은 trusted runtime이 받는다. Chaining Agent나 Orchestration이 받는 게 아니다 — Primitive DB는 "출력과 의미" 절에서 이미 명시했듯 queue가 아니라 분석 인덱스이며, 이 인덱스를 갱신하는 runtime이 admission과 후속 work 등록을 함께 처리한다. 이 runtime은 admission된 Primitive와 반대편 후보 Primitive 각각의 exact `record_id` 조합으로 `work_type=CHAINING` work의 `dedupe_key`를 만든다. 같은 admission 이벤트가 재전달되거나 같은 조합이 중복 시도되면 기존 `08-lightweight-data-contracts.md`의 dedupe 규칙(같은 `dedupe_key`는 기존 `work_id`를 반환)에 따라 새 work를 만들지 않는다. 각 work는 그 admission 시점의 `PrimitiveIndexState` snapshot을 input으로 고정하며(위 "exact revision과 오래된 승인 차단" 절), 저장 직전 index head가 바뀌었으면 `STALE_RESULT`로 거절한다. 등록 자체가 예산 한도에 걸리면 work를 만들지 않고 "확장 제한과 순환 방지" 절의 `bounded_stop_reason`으로 기록한다.
+admission 이벤트는 Primitive DB를 유지하는 같은 trusted runtime이 받는다. Chaining Agent나 Orchestration이 받는 게 아니다 — Primitive DB는 "출력과 의미" 절에서 이미 명시했듯 queue가 아니라 분석 인덱스이며, 이 인덱스를 갱신하는 runtime이 admission과 후속 work 등록을 함께 처리한다. 이 runtime은 admission된 Primitive와 비교 대상 후보 Primitive(`HOLD_MATCH`/`TRUE_HOLD_MATCH`는 반대편, `TRUE_TRUE_MATCH`는 같은 PROVIDED 쪽) 각각의 exact `record_id` 조합으로 `work_type=CHAINING` work의 `dedupe_key`를 만든다. 같은 admission 이벤트가 재전달되거나 같은 조합이 중복 시도되면 기존 `08-lightweight-data-contracts.md`의 dedupe 규칙(같은 `dedupe_key`는 기존 `work_id`를 반환)에 따라 새 work를 만들지 않는다. 각 work는 그 admission 시점의 `PrimitiveIndexState` snapshot을 input으로 고정하며(위 "exact revision과 오래된 승인 차단" 절), 저장 직전 index head가 바뀌었으면 `STALE_RESULT`로 거절한다. 등록 자체가 예산 한도에 걸리면 work를 만들지 않고 "확장 제한과 순환 방지" 절의 `bounded_stop_reason`으로 기록한다.
 
 `trigger`는 방금 admission된 쪽을 가리킨다.
 
 - `HOLD_MATCH`: 새 `REQUIRED`(HOLD)가 admission되어 기존 `ACTIVE` `PROVIDED`와 비교
 - `TRUE_HOLD_MATCH`: 새 `PROVIDED`(TRUE)가 admission되어 기존 `ACTIVE` `REQUIRED`와 비교
+- `TRUE_TRUE_MATCH`: 새 `PROVIDED`(TRUE)가 admission되어 기존 `ACTIVE` `PROVIDED` 전체와 비교. HOLD_MATCH/TRUE_HOLD_MATCH가 REQUIRED-PROVIDED 반대편끼리 비교하는 것과 달리 같은 PROVIDED끼리 비교한다
 
-`TRUE_TRUE_MATCH`의 트리거(호출 이벤트·비교 대상)는 이 문서가 정의하지 않는다. `PrimitiveMatchCandidate`의 `match_kind=TRUE_TRUE` 판정 절차(위 7개 check)만 공유한다.
+새 `PROVIDED`가 admission되면 한 admission 이벤트에서 `TRUE_HOLD_MATCH`(기존 ACTIVE REQUIRED 대상)와 `TRUE_TRUE_MATCH`(기존 ACTIVE PROVIDED 대상)를 모두 시도한다. `TRUE_TRUE_MATCH`의 비교는 방향이 있어 두 경우를 모두 확인한다.
+
+- 새 PROVIDED가 upstream: 기존 ACTIVE PROVIDED 각각의 `required_preconditions` 중 새 PROVIDED가 충족하는 항목이 있는지
+- 새 PROVIDED가 downstream: 새 PROVIDED 자신의 `required_preconditions` 중 기존 ACTIVE PROVIDED가 충족하는 항목이 있는지
+
+두 경우 모두 앞 PROVIDED가 뒤 PROVIDED의 exact `required_preconditions` 한 항목을 충족해야 후보가 되며(기존 규칙), 같은 Primitive 쌍을 upstream/downstream 양쪽에서 중복 평가해 같은 `normalized_fingerprint`의 candidate를 두 번 만들지 않는다. REQUIRED admission은 `TRUE_TRUE_MATCH`를 만들지 않는다 — REQUIRED는 TRUE_TRUE 어느 쪽에도 참여하지 않는다.
 
 ### 금지 권한
 
