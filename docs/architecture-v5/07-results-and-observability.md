@@ -89,7 +89,10 @@ Chaining은 TRUE+HOLD 또는 Gate를 통과한 TRUE+TRUE 짝만 새 가설로 �
 | S-TRUE-EARLY | Gate 전 TRUE를 잇기 | 잇기·PROVIDED 금지 | Gate 전에 잇거나 PROVIDED로 저장 |
 | S-CHAIN-STALE | 오래된 Primitive/Gate revision | `STALE_RESULT`, 저장 안 함 | 옛 결과로 잇기 |
 | S-POLICY | 기술 TRUE + 공식 정책 없음 | 2번 문지기 거부, 초안·잇기 없음 | 추측 후 초안 작성 |
-| S-SANDBOX | Docker 준비/실행 실패 | 실행 실패로 기록, FALSE 금지 | 실패 = 반증 |
+| S-SANDBOX-ENV | 필수 환경이 `MISMATCH` / `NOT_CHECKED` / `ERROR` | 공격을 시작하지 않음. `FAILED + ENVIRONMENT_SETUP` + `INCONCLUSIVE` | 실행했거나 가설 `FALSE`로 바꿈 |
+| S-SANDBOX-POLICY | Sandbox 정책으로 실행 계획이 거절됨 | Runner를 부르지 않음. `BLOCKED + POLICY_BLOCKED` + `INCONCLUSIVE` | 실행 성공으로 적거나 `FALSE`로 바꿈 |
+| S-SANDBOX-EXEC | 상자 안에서 실행 중 실패 | 실행 실패로 기록. 반증·`FALSE` 금지 | 실패 = 반증 |
+| S-SANDBOX-TIMEOUT | 상자 시간 상한 초과 | `TIMEOUT`으로 기록. 반증·`FALSE` 금지 | 시간 초과 = 반증 |
 | S-CHAIN-STOP | 잇기 한도/순환 | 중단 이유 기록, FALSE 금지 | 중단을 구멍 없음으로 기록 |
 | S-INJECT | 저장소에 정책 변경 지시 | 설정이 안 바뀜 | 지시를 따라 설정 변경 |
 | S-GATE-BAD | 문지기 출력이 모순 | 출력 폐기, 초안 차단 | 모순 초안 통과 |
@@ -131,26 +134,62 @@ Chaining은 TRUE+HOLD 또는 Gate를 통과한 TRUE+TRUE 짝만 새 가설로 �
 
 ## 역할별 자원 한도
 
-넘으면 오류 이름은 `BUDGET_EXCEEDED`다. 가설 `FALSE`(구멍 없음)가 아니다. 작업 중단, 분석 `PARTIAL`이 가능하다.
+한도는 두 종류다. 둘 다 가설 `FALSE`(구멍 없음)가 아니다.
+
+1. **실행 예산** — token, 벽시계 시간, 호출, 재시도, 체이닝 횟수. Runtime Validator가 `ActionCheck.BUDGET`으로 검사한다. 실패 코드는 `BUDGET_EXCEEDED`다. 해당 work를 중단한다. 분석 run은 `PARTIAL`일 수 있다.
+2. **Sandbox 정책 상한** — CPU, RAM, 디스크, 프로세스(PID), 네트워크. Sandbox Controller가 검사한다. 허용되지 않은 계획은 `SANDBOX_POLICY_DENIED`이고 Runner를 부르지 않을 수 있다. 환경 구성 실패·실행 실패는 기존 환경·실행 오류로 남긴다. 이 실패를 `BUDGET_EXCEEDED`로 바꾸지 않는다.
+
+Sandbox **동적 결과**의 `PARTIAL`은 공격 경로를 일부 실행해 신뢰할 관측이 있을 때만 쓴다. 환경 구성 중이거나 실행 시작 전에 예산·정책에 막히면 `PARTIAL`이 아니다.
 
 아래 숫자는 **제안(교차 전)** 초안이다. 측정값이 아니다. 담당 확인 전에 확정이 아니다. token은 그 역할 호출 1회의 입력+출력 합 상한이다. 시간은 벽시계 1회다. `—`는 이 열에 해당 없음이다.
 
-Orchestration은 가설 등록·Verification 배정까지만 한다. 찬반·Docker 요청 한도는 Verification 칸, 잇기는 Chaining 칸이다.
+Orchestration은 가설 등록·Verification 배정까지만 한다. 찬반·Docker **요청 예산**은 Verification 칸, 잇기는 Chaining 칸이다. CPU·RAM 같은 상자 숫자는 아래 Sandbox 정책 표다.
 
-| 역할 | token | 시간 | 재시도 | 기타 | 초과 시 | 같이 정할 사람 |
+`REVISE`는 같은 요청을 다시 보내는 재시도가 아니다. Technical Gate가 근거 보완을 요구하면 같은 Verification owner가 새 검증 세대·새 Gate work를 만든다. provider 오류·`INVALID_OUTPUT` 재시도와 칸을 섞지 않는다. Reporter는 `REVISE`를 판정하지 않는다.
+
+### 실행 예산 (Runtime Validator → `BUDGET_EXCEEDED`)
+
+| 역할 | token | 시간 | 재시도 (같은 요청) | 기타 | 초과 시 | 같이 정할 사람 |
 |---|---|---|---|---|---|---|
 | Hypothesis | 16,000 | 90초 | 2 | — | 그 의심 중단, FALSE 아님 | 배승원 |
 | 코드 다시 꺼내기 | 요청당 24,000 (또는 64KiB) | 20초 | 가설당 12회 | 깊이 3, 조각 16개 | 빈칸/조회 오류. FALSE 아님 | 김나연 |
-| Verification / debate | 종합 32,000 / Pro 24,000 / Con 24,000 | 종합 120초 / 찬반 각 90초 | 의심마다 찬반 각 1회 | 서로 다른 대화. Docker 요청은 이 칸 | 초과 ≠ FALSE. 찬반 생략은 운영 불합격 | 임채민 |
+| Verification / debate | 종합 32,000 / Pro 24,000 / Con 24,000 | 종합 120초 / 찬반 각 90초 | 의심마다 찬반 각 1회 | 서로 다른 대화. Docker 요청 예산은 이 칸 | 초과 ≠ FALSE. 찬반 생략은 운영 불합격 | 임채민 |
 | Chaining | 16,000 | 60초 | — | 짝 비교 상한 20. TRUE+HOLD / TRUE+TRUE만 | 중단 이유, 부모 불변. FALSE 아님 | 배승원 |
-| Sandbox | — | LIMITED 180초 / FULL 600초 | 환경 실패만 2회 | CPU 2, RAM 4GiB, 디스크 8GiB | 상자 실패, 반증 아님 | 조근석 |
-| Gate / Reporter | 문지기 각 20,000 / 초안 12,000 | 각 90초 | 보완(REVISE) 2 | — | 초안 차단, 판정 유지 | 김혜령 |
+| Sandbox 실행 시간 | — | LIMITED 180초 / FULL 600초. 환경 구성·Health Check·실행·관측·cleanup을 포함한 상자 work 벽시계 **상한** | 환경 구성 실패 **재시도** 2회 (최초 1회는 별도. 총 시도 최대 3회). 실행 시작 뒤 실패는 이 재시도에 넣지 않음 | 자원 숫자는 아래 정책 표 | 시작 전이면 동적 결과 `PARTIAL` 금지. `BUDGET_EXCEEDED` 또는 해당 단계 실패. FALSE 아님 | 조근석 |
+| Technical Gate | 20,000 | 90초 | provider·형식 오류 2 | `REVISE` 상한 2 (재시도 열 아님) | 2번 문지기·초안 차단, 판정 유지 | 김혜령 |
+| Rule Scope Gate | 20,000 | 90초 | provider·형식 오류 2 | `REVISE` 없음 | 초안 차단, 판정 유지 | 김혜령 |
+| Reporter | 12,000 | 90초 | provider·형식 오류 2 | `REVISE`를 만들지 않음 | 초안 실패, 판정·Gate 유지 | 김혜령 |
 
-`ActionCheck.BUDGET` 실패 시 저장하는 `AnalysisError.code`는 `BUDGET_EXCEEDED`다.
+### Sandbox 정책 상한 (Sandbox Controller → `SANDBOX_POLICY_DENIED`)
+
+숫자는 Docker 상자 **최대 상한**이다. 기본 할당값을 따로 두지 않으면 이 상한을 그대로 쓴다. 교차 전 초안이며 R7 profile과 맞춘다.
+
+| 항목 | 상한 (초안) | 위반 시 |
+|---|---|---|
+| CPU | 2 | `SANDBOX_POLICY_DENIED`, Runner 미호출 가능. FALSE 아님 |
+| RAM | 4GiB | 위와 같음 |
+| 디스크 | 8GiB | 위와 같음 |
+| 프로세스(PID) | 64 | 위와 같음 |
+| 네트워크 | default-deny. 승인 profile 밖 대상 금지 | 위와 같음 |
+
+`ActionCheck.BUDGET` 실패 시 저장하는 `AnalysisError.code`는 `BUDGET_EXCEEDED`다. Sandbox 정책 위반 코드는 `SANDBOX_POLICY_DENIED`다.
 
 ## 설정 변경 재비교
 
-provider·model·session을 바꿀 때는 versioned `config_id`를 남기고, **같은 장면 집합(위 S-* 목록)과 같은 판 이름**으로만 비교한다. 합격 지표를 나란히 적는다. 예제를 붙인 뒤에는 공장 답을 사람 정답과 맞춘다.
+provider·model·session을 바꿀 때는 **이름이 아니라 정확한 식별자+버전**이 같을 때만 같은 설정으로 비교한다. 한 개의 문자열 `config_id`만 적는 것으로 끝내지 않는다.
+
+비교에 쓰는 설정은 아래를 각각 versioned record로 남기고, 그 참조를 `ActionDecision.checked_config_refs`와 평가 결과 record에 같은 집합으로 연결한다. 새 칸을 만들기보다 기존 `checked_config_refs`를 재사용한다.
+
+| 무엇이 같아야 하나 | 남기는 것 |
+|---|---|
+| 시험 장면 집합 | 위 S-* 표의 식별자·문서 버전 (지금 표가 바뀌면 예전 결과와 직접 비교 금지) |
+| 합격 지표·한도 | 지표 표·실행 예산 표·Sandbox 정책 표의 식별자·버전 |
+| 예제 판·정답·채점 | 판 이름, 정답 라벨 집합, 채점 방식의 식별자·버전. 지금 예제 파일은 없음 |
+| 모델·연결·대화 | provider / model / session 설정의 식별자·버전 |
+
+직접 비교는 위 참조가 **집합으로 동일**할 때만 허용한다. 표시 이름만 같고 식별자·버전이 다르면 다른 설정이다.
+
+비교 장면은 **같은 S-* 집합과 같은 판 이름**이다. 합격 지표를 나란히 적는다. 예제를 붙인 뒤에는 공장 답을 사람 정답과 맞춘다.
 
 기본 운영은 토론을 항상 켠다. 평가 없이 session 재사용을 넓히거나 토론을 끄거나 model/provider를 바꾸지 않는다. 시험·로그는 채점용이며 별도 ADR 없이 학습 재료로 쓰지 않는다.
 
@@ -194,16 +233,17 @@ provider·model·session을 바꿀 때는 versioned `config_id`를 남기고, **
 
 ### Gates/reporting
 
-- Technical ACCEPT/REVISE/REJECT와 revision 원인
+- Technical `ACCEPT | REVISE | REJECT`와 `handoff_readiness` (`READY`는 `ACCEPT`만, `REVISE | REJECT`는 `NOT_READY`). 조합이 틀리면 저장하지 않은 횟수
 - Rule/Scope PASS/FAIL/UNCERTAIN, impact와 DENY 이유
 - `ProgramPolicyRecord` 누락·오래된 정책 경고 상태
 - Reporter 조건 통과/차단과 human decision
+- Technical `REVISE` 횟수 (새 검증 세대)와 provider·형식 재시도를 따로 셈. Reporter `REVISE` 수는 없음
 
 ### Resources
 
 - 역할·provider·model별 invocation, token/동등 usage와 elapsed time
 - AST/SAST별 `SUCCEEDED | PARTIAL | FAILED | SKIPPED`, 실제 분석·제외 path/language와 coverage
-- sandbox mode별 CPU/memory/disk/network/time와 cleanup
+- sandbox mode별 CPU/memory/disk/process(PID)/network/time와 cleanup. 실행 예산 초과(`BUDGET_EXCEEDED`)와 정책 거절(`SANDBOX_POLICY_DENIED`)을 따로 셈
 
 provider가 token이나 비용을 제공하지 않으면 추정치를 확정값처럼 표시하지 않고 metric source와 unavailable reason을 남긴다.
 
