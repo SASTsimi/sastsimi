@@ -97,7 +97,7 @@ Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` 
 
 동적 검증은 정적 판단을 대체하지 않고 특정 가설의 조건을 제한된 환경에서 확인한다.
 
-Verification Agent가 `NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO`를 결정한다. 동적 재현이 필요하면 Verification이 mode·가설·단계·명령·공격 입력·cleanup 정책을 고정한 exact `ReproductionPlan` 후보를 생산하고, trusted runtime이 `SAVE_RESULT(result_kind=reproduction_plan)`로 schema·reference·권한·예산을 검사해 `COMMITTED`한다. R7의 Sandbox Controller·Runner·비-LLM Result Assembler는 mode를 다시 선택하거나 계획을 수정하지 않고, 허가된 계획의 정책 판정·실행·exact 결과 조립만 수행한다.
+Verification Agent가 `NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO`를 결정한다. 동적 재현이 필요하면 Verification이 필요한 역할·권한·인증 방식·데이터·DB/service·fixture/mock·버전·Health Check를 exact `EnvironmentRequirements`로 먼저 저장한다. 이어 mode·가설·요구사항·단계·명령·공격 입력·cleanup 정책을 고정한 exact `ReproductionPlan` 후보를 생산하고, trusted runtime이 두 `SAVE_RESULT`에서 schema·reference·권한·예산을 검사해 `COMMITTED`한다. R7의 Sandbox Controller·Runner·비-LLM Result Assembler는 요구사항·mode·계획을 다시 선택하거나 수정하지 않고, 허가된 계획의 정책 판정·환경 비교·실행·exact 결과 조립만 수행한다.
 
 ### LIMITED_REPRO
 
@@ -117,21 +117,22 @@ Verification Agent가 `LIMITED_REPRO | FULL_REPRO`를 선택하고 `Reproduction
 
 | 실행 입력 | 실행 전 확인할 조건 |
 |---|---|
-| `ReproductionPlan` | `COMMITTED`된 exact record이며 현재 가설·`workspace_id`·`commit_id`와 일치 |
-| `RUN_SANDBOX` ActionDecision | Runtime Validator가 요청자·현재 work·상태·예산·exact plan reference를 확인한 `ALLOW + UNUSED` decision |
+| `EnvironmentRequirements` | R6 Verification이 생산하고 `COMMITTED`된 current exact record이며 필요한 역할·인증·데이터·service·fixture/mock·버전·Health Check를 고정 |
+| `ReproductionPlan` | `COMMITTED`된 exact record이며 current `environment_requirements_ref`, 현재 가설·`workspace_id`·`commit_id`와 일치 |
+| `RUN_SANDBOX` ActionDecision | Runtime Validator가 요청자·현재 work·상태·예산·exact plan과 current requirements reference를 확인한 `ALLOW + UNUSED` decision |
 | sandbox profile과 image | 계획·action의 `sandbox_profile_ref`, image digest, tool·file·network·resource 범위가 고정되어 있으며 Sandbox Controller가 세부 정책을 검사 |
-| plan closure | `hypothesis_ref`, 모든 step의 `command_ref`·`attack_input_refs`, `cleanup_policy_ref`가 action input에 빠짐없이 포함 |
+| plan closure | `environment_requirements_ref`, `hypothesis_ref`, 모든 step의 `command_ref`·`attack_input_refs`, `cleanup_policy_ref`가 action input에 빠짐없이 포함 |
 
 실행은 다음 순서를 따른다.
 
-1. Runtime Validator가 요청자·현재 work·상태·예산·exact plan reference를 검사하고 `RUN_SANDBOX`의 `ALLOW + UNUSED` ActionDecision을 만든다. 이 허가는 Sandbox 정책 통과나 Docker 실행 성공을 뜻하지 않는다.
+1. Runtime Validator가 요청자·현재 work·상태·예산·exact plan과 그 plan의 current requirements reference를 검사하고 `RUN_SANDBOX`의 `ALLOW + UNUSED` ActionDecision을 만든다. 이 허가는 환경 일치, Sandbox 정책 통과나 Docker 실행 성공을 뜻하지 않는다.
 2. Sandbox Controller 호출 직전 trusted 실행 runtime이 requester identity·권한, state version, 남은 budget, exact input·config reference와 `valid_until`을 다시 확인한다. 하나라도 달라졌으면 decision을 `UNUSED -> EXPIRED`로 바꾸고 실행하지 않는다.
-3. 모두 그대로이면 runtime이 decision을 `UNUSED -> USED`로 compare-and-set claim한다. claim에 실패하면 실행하지 않으며, 성공한 exact USED decision revision과 계획만 Sandbox Controller에 전달한다.
-4. Sandbox Controller가 image·command·file·network·resource·cleanup 정책을 한 번 검사하고 exact `sandbox_policy_decision` record를 저장한다. `DENY`이면 Sandbox Runner를 호출하지 않고, `ALLOW`이면 record에 연결된 exact 계획만 Runner에 전달한다.
-5. Sandbox Runner는 `ReproductionPlan.steps` 순서와 계획에 있는 `command_ref`·`attack_input_refs`만 실행한다. Runner runtime은 실제 `step_id`·command·공격 입력·상태·관측을 append-only `SandboxStepLog`에 기록한다.
+3. 모두 그대로이면 runtime이 decision을 `UNUSED -> USED`로 compare-and-set claim한다. claim에 실패하면 실행하지 않으며, 성공한 exact USED decision revision과 plan·requirements reference만 Sandbox Controller에 전달한다.
+4. Sandbox Controller가 exact plan·requirements reference와 image·command·file·network·resource·cleanup 정책을 한 번 검사하고 exact `sandbox_policy_decision` record를 저장한다. 환경 요구사항의 의미나 실제 일치 여부를 대신 판단하지 않는다. `DENY`이면 Sandbox Runner를 호출하지 않고, `ALLOW`이면 record에 연결된 exact plan·requirements와 승인 option만 Runner에 전달한다.
+5. Sandbox Runner는 실제 환경과 모든 requirement·Health Check를 비교해 `SandboxEnvironment`에 기록한다. 필수 항목이 모두 `MATCH`일 때만 `ReproductionPlan.steps` 순서와 계획에 있는 `command_ref`·`attack_input_refs`를 실행한다. 필수 차이로 공격 전에 멈춘 경우를 포함해 Runner runtime은 실제 상태·단계·command·공격 입력·관측을 append-only `SandboxStepLog`에 기록한다.
 6. 성공·실패·취소 여부와 관계없이 Sandbox Runner가 exact `cleanup_policy_ref`에 따라 정리를 시도하고 Sandbox runtime이 결과를 기록한다.
-7. 비-LLM Result Assembler가 plan, 최초 USED claim decision revision, Controller 정책 판정, Runner 호출 여부, 실제 환경, step log, PoC, 관측과 cleanup을 같은 attempt의 exact reference로 연결한 `DynamicReproductionResult` 후보를 만든다.
-8. `SAVE_RESULT`가 실행 전 승인 내용과 정책 판정·실제 환경·Runner log·PoC·cleanup 조합을 다시 대조한다. 같은 결과를 가리키는 atomic commit이 완료된 뒤에만 Verification Agent가 결과를 읽는다.
+7. 비-LLM Result Assembler가 exact R6 plan·requirements closure, 최초 USED claim decision revision과 같은 R7 실행 attempt의 Controller 정책 판정·Runner 호출 여부·실제 환경·step log·PoC·관측·cleanup을 연결한 `DynamicReproductionResult` 후보를 만든다.
+8. `SAVE_RESULT`가 실행 전 승인 내용, plan과 실제 환경의 requirements revision, 정책 판정·Runner log·PoC·cleanup 조합을 다시 대조한다. 같은 결과를 가리키는 atomic commit이 완료된 뒤에만 Verification Agent가 결과를 읽는다.
 
 누락되거나 맞지 않는 reference를 Sandbox Controller나 Sandbox Runner가 추측해 채우거나, 계획 밖 command·공격 입력으로 대체해서는 안 된다. 실행 전 불일치는 실행하지 않고, 실행 뒤 불일치는 결과를 `COMMITTED`하지 않는다.
 
@@ -142,7 +143,7 @@ Verification Agent가 `LIMITED_REPRO | FULL_REPRO`를 선택하고 `Reproduction
 Controller 정책 판정 record는 최소한 다음 내용을 다시 검증할 수 있어야 한다.
 
 - 현재 analysis·workspace·commit·hypothesis·attempt identity와 exact `action_decision_ref`
-- 검사한 `ReproductionPlan`의 exact record reference·content hash와 전체 plan closure
+- 검사한 `ReproductionPlan`의 exact record reference·content hash, current `environment_requirements_ref`와 전체 plan closure
 - Sandbox profile exact revision, 적용한 policy revision과 image digest
 - command/tool, file/mount, network, resource/time/process, non-root와 cleanup 항목별 `ALLOW | DENY` 결과
 - secret·host path·내부 정책 내용을 노출하지 않는 안정적인 reason code와 redacted 거절 설명
@@ -153,44 +154,48 @@ Controller 정책 판정 record는 최소한 다음 내용을 다시 검증할 �
 ### 실행 경계
 
 - 같은 `workspace_id`와 `commit_id`, 승인된 Docker image/digest 사용
-- Verification이 생산하고 Runtime Validator가 schema·reference·호출 권한·상태·예산을 확인해 `COMMITTED`한 `ReproductionPlan`에 mode, exact 가설, 단계별 command·공격 입력과 정리 정책 reference를 고정하고 `RUN_SANDBOX.input_refs`에 전체 계획 closure를 포함
-- Runtime Validator는 `RUN_SANDBOX` 요청자의 권한·상태·예산과 exact 계획 reference만 확인하며 image·command·file·network·resource·cleanup 정책을 다시 판단하지 않음
-- Sandbox Controller가 image digest, command/tool allowlist, mount·file path, default-deny network, resource/time/process, non-root와 cleanup 정책을 검사해 exact 정책 판정을 저장하고 통과한 계획만 Runner에 전달
-- Sandbox Runner는 Controller의 `ALLOW` record에 연결된 exact 계획만 실행하고 임의로 정책·명령·입력을 바꾸지 않음
-- 비-LLM Result Assembler만 같은 attempt의 exact 정책 판정·환경·step log·PoC·cleanup reference를 `DynamicReproductionResult`로 조립
+- Verification이 생산하고 trusted runtime이 schema·reference·생산 권한·상태·예산을 확인해 `COMMITTED`한 current exact `EnvironmentRequirements`와 이를 가리키는 `ReproductionPlan`에 mode, exact 가설, 단계별 command·공격 입력과 정리 정책 reference를 고정하고 `RUN_SANDBOX.input_refs`에 전체 계획 closure를 포함
+- Runtime Validator는 `RUN_SANDBOX` 요청자의 권한·상태·예산, exact 계획과 current requirements revision만 확인하며 환경 조건이나 image·command·file·network·resource·cleanup 정책의 의미를 대신 판단하지 않음
+- Sandbox Controller가 exact plan·requirements reference와 image digest, command/tool allowlist, mount·file path, default-deny network, resource/time/process, non-root와 cleanup 정책을 검사해 exact 정책 판정을 저장하고 통과한 계획만 Runner에 전달
+- Sandbox Runner는 Controller의 `ALLOW` record에 연결된 exact 계획만 사용하고, 실제 환경과 모든 requirement·Health Check를 기록해 필수 항목이 모두 `MATCH`일 때만 공격 단계를 실행하며 요구사항·허용 대체값·정책·명령·입력을 임의로 바꾸지 않음
+- 비-LLM Result Assembler만 exact R6 plan·requirements closure와 같은 R7 실행 attempt의 정책 판정·환경 비교·step log·PoC·cleanup reference를 `DynamicReproductionResult`로 조립
 - Docker build와 실행은 분석용 `CodeWorkspace`를 직접 수정하지 않고 sandbox 내부 복사본에서 수행
 - 기본 network deny, resource/time/process 제한, non-root와 read-only mount 우선
 - host socket, host secret, production credential과 범위 밖 target 접근 금지
 - 동적 결과의 exit code, stdout/stderr reference, artifact hash와 hypothesis 연결 저장
 - Sandbox 실행 log는 실제 `step_id`·command·공격 입력 reference를 승인 계획과 연결하고 계획에 없는 단계나 입력을 실행하지 않음
-- 환경 구축 실패와 취약점 반증을 구분
-- 실행 불가능·정책 차단·계획 변경이 필요하면 Sandbox Controller나 Sandbox Runner가 상태와 이유를 반환하고, Verification Agent가 필요성을 다시 판단해 새 plan revision과 새 실행 요청을 만든다.
+- 환경 구축 실패·필수 요구사항 차이와 취약점 반증을 구분
+- 필수 차이·실행 불가능·정책 차단·계획 변경이 필요하면 Sandbox Controller나 Runner가 exact 상태와 이유를 반환한다. Verification Agent가 환경 조건이나 허용 대체값을 바꾸면 새 requirements와 이를 가리키는 새 plan을 함께 만들고, 단계만 바꾸면 새 plan만 만든다. 두 경우 모두 새 실행 요청이 필요하며 이 R6 판단은 Sandbox 정책 검사를 우회하지 않는다.
 
 ### 재실행과 stale 결과
 
 | 상황 | Sandbox 구성 요소와 runtime의 처리 | Verification에 전달 |
 |---|---|---|
-| 정상 실행 | current plan과 최초 USED claim decision revision의 exact 단계만 실행하고 log·cleanup·result를 atomic commit | `COMMITTED`된 결과만 전달 |
-| exact 실행 조건이 같은 일시 오류 | sandbox profile·policy revision, image digest, command/tool 허용 범위, file/mount/network 범위, resource/time/process limit, cleanup policy와 나머지 plan closure reference가 모두 동일한 일시적 runtime·Runner 오류일 때만 기존 plan을 재사용할 수 있다. 기존 attempt와 결과는 보존하고 새 attempt·새 `RUN_SANDBOX` action·decision·새 Controller 정책 판정으로 실행하며 이전 USED decision과 정책 판정은 재사용하지 않는다. | 새 attempt의 확정 결과만 전달 |
-| profile·policy·plan closure 변경 | 위 exact reference 중 하나라도 바뀌면 기존 plan을 재사용하거나 수정하지 않는다. 기존 실패·차단 결과를 보존하고 Verification이 변경 조건을 반영한 새 `ReproductionPlan`을 생산한다. trusted runtime이 새 plan을 `COMMITTED`한 뒤 새 work generation·attempt·`RUN_SANDBOX` action·decision을 만들고 Controller가 새 exact 정책 판정을 저장한다. | 새 plan과 그 실행·정책 승인에 연결된 `COMMITTED` 결과만 전달 |
-| 환경·실행·관측·timeout 실패 | 완료한 단계와 관측, 정확한 failure reason, limitations와 cleanup 상태를 기록 | 실패 사실을 전달하되 반증으로 변환하지 않음 |
+| 정상 실행 | current plan·requirements와 최초 USED claim decision revision을 사용하고, 필수 환경 check가 모두 `MATCH`인 경우에만 exact 공격 단계를 실행해 정책 판정·환경·log·cleanup·result를 atomic commit | `COMMITTED`된 결과만 전달 |
+| exact 실행 조건이 같은 일시 오류 | `EnvironmentRequirements` revision, sandbox profile·policy revision, image digest, command/tool 허용 범위, file/mount/network 범위, resource/time/process limit, cleanup policy와 나머지 plan closure reference가 모두 동일한 일시적 runtime·Runner 오류일 때만 기존 plan을 재사용할 수 있다. 기존 attempt와 결과는 보존하고 새 attempt·새 `RUN_SANDBOX` action·decision·새 Controller 정책 판정으로 실행하며 이전 USED decision과 정책 판정은 재사용하지 않는다. | 새 attempt의 확정 결과만 전달 |
+| 환경 요구사항 변경 또는 차이 수용 | 기존 환경 실패·비교 결과를 보존한다. Verification이 바뀐 조건·허용 대체값을 새 `EnvironmentRequirements`로 저장하고 이를 가리키는 새 `ReproductionPlan`을 생산한다. trusted runtime이 두 record를 `COMMITTED`한 뒤 새 work generation·attempt·action·decision과 Controller 정책 검사를 수행한다. | 새 requirements·plan과 그 실행에 연결된 `COMMITTED` 결과만 전달 |
+| profile·policy·그 밖의 plan closure 변경 | requirements가 그대로여도 sandbox profile·policy, image, command/tool, file/mount/network, resource/time/process, cleanup 또는 단계 reference 중 하나가 바뀌면 기존 plan을 재사용하거나 수정하지 않는다. Verification이 변경 조건을 반영한 새 `ReproductionPlan`을 만들고 새 work generation·attempt·action·decision과 Controller 정책 검사를 수행한다. | 새 plan과 그 실행·정책 승인에 연결된 `COMMITTED` 결과만 전달 |
+| 환경 비교·구성·실행·관측·timeout 실패 | 실제 requirement check, 완료한 단계와 관측, 정확한 failure reason, limitations와 cleanup 상태를 기록 | 실패·차이를 전달하되 반증으로 변환하지 않음 |
 | 취소·supersede·revision 불일치 | 실행 전이면 시작하지 않고, 실행 뒤 늦게 도착한 log·result는 `STALE_RESULT`로 commit을 거절 | 전달하지 않음 |
 
-retry 여부와 새 plan 생성은 Verification Agent와 trusted runtime의 현재 work·budget·policy 판단을 따른다. 정책 차단은 일시적 실행 오류로 취급해 자동 retry하지 않는다. 모든 attempt의 실패·차단·성공 결과와 Controller 정책 판정은 append-only로 보존하며 새 record로 이전 record를 덮어쓰지 않는다. Sandbox Controller와 Sandbox Runner는 숨은 추가 실행을 시작하거나 이전 ActionDecision·정책 판정을 다른 attempt에 재사용하지 않는다.
+retry 여부와 새 requirements·plan 생성은 Verification Agent와 trusted runtime의 현재 work·budget·policy 판단을 따른다. 정책 차단과 필수 환경 차이는 일시적 실행 오류로 취급해 자동 retry하지 않는다. 모든 attempt의 실패·차단·성공 결과, 환경 비교와 Controller 정책 판정은 append-only로 보존하며 새 record로 이전 record를 덮어쓰지 않는다. Sandbox Controller와 Sandbox Runner는 요구사항·계획을 수정하거나 숨은 추가 실행을 시작하고 이전 ActionDecision·정책 판정을 다른 attempt에 재사용하지 않는다.
 
 ### 동적 결과 artifact 연결과 역할
 
-`DynamicReproductionResult`의 artifact reference는 모두 같은 analysis·workspace·commit·hypothesis·attempt에 속한 exact `StoredDataRef`다. Result Assembler는 “latest”를 다시 조회하거나 다른 attempt의 artifact를 섞지 않는다.
+R7은 PoC·환경·요구사항별 실제 값과 차이·Health Check·정책 판정·단계 로그의 상세 파일 형식을 설계한다. R4 공통 계약은 `EnvironmentRequirements`, plan과 실제 `sandbox_environment`의 exact 연결 및 `DynamicReproductionResult`의 reference·상태 조합만 고정한다.
 
+Result Assembler는 같은 analysis·workspace·commit·hypothesis에 속한 exact R6 plan·requirements closure와 같은 R7 동적 실행 attempt에서 생산된 artifact만 연결하며 “latest”를 다시 조회하거나 다른 attempt의 artifact를 섞지 않는다. R6가 먼저 만든 계획·요구사항의 `attempt_id`를 R7 실행 attempt와 같게 강제하지 않는다.
+
+- plan의 `environment_requirements_ref`: current exact `EnvironmentRequirements`를 가리킨다. 결과에 중복 필드를 만들지 않고 실제 환경의 `requirements_ref`와 같은 record revision인지 확인한다.
 - `poc_ref`: 이번 재현과 연결된 exact `poc_bundle`. 없거나 필요하지 않으면 `null`이며 존재만으로 실행·성공을 뜻하지 않는다.
 - `policy_decision_ref`: Controller의 exact `sandbox_policy_decision`. Controller 판단 전에 취소된 경우를 제외하고 존재하며 `POLICY_BLOCKED`이면 필수다.
-- `runner_invoked`와 `steps_ref`: Runner 미호출이면 `false + null`, 호출했으면 첫 단계 전 실패를 포함해 `true + exact SandboxStepLog`다.
-- `environment_created`와 `environment_ref`: 실제 환경 미생성이면 `false + null`, 생성했으면 계획용 설정이 아닌 이번 attempt의 exact `sandbox_environment`를 가리킨다.
+- `runner_invoked`와 `steps_ref`: Runner 미호출이면 `false + null`, 호출했으면 첫 공격 단계 전 환경 차이로 멈춘 경우를 포함해 `true + exact SandboxStepLog`다.
+- `environment_created`와 `environment_ref`: 실제 환경 미생성이면 `false + null`, 생성했으면 계획용 요구사항이나 Sandbox profile이 아닌 이번 R7 실행 attempt의 exact `sandbox_environment`를 가리키고 requirement별 `MATCH | MISMATCH | NOT_CHECKED | ERROR`를 기록한다.
 - `cleanup_required`와 `cleanup_status`: 정리 대상이 없을 때만 `false + NOT_REQUIRED`이고, 하나라도 있으면 `true + SUCCEEDED | FAILED`다.
 
-Controller는 정책 판정을, Runner runtime은 단계 log를 생산한다. Sandbox runtime은 실제 환경과 cleanup 결과를 기록하고, 승인된 PoC 생성 담당은 exact PoC 묶음을 만든다. 비-LLM Result Assembler만 이 reference와 상태를 결과로 조립한다. Verification Agent는 `COMMITTED` 결과를 정적·찬반 근거와 함께 읽어 최종 판정하며, artifact나 동적 결과를 직접 만들거나 수정하지 않는다.
+Controller는 정책 판정을, Runner runtime은 환경 비교와 단계 log를 생산한다. Sandbox runtime은 실제 환경과 cleanup 결과를 기록하고, 승인된 PoC 생성 담당은 exact PoC 묶음을 만든다. 비-LLM Result Assembler만 이 reference와 상태를 결과로 조립한다. Verification Agent는 `COMMITTED` 결과를 정적·찬반 근거와 함께 읽어 최종 판정하며 요구사항 비교, artifact나 동적 결과를 직접 만들거나 수정하지 않는다.
 
-`DynamicReproductionState`, work output과 `TransitionCommit`이 같은 `COMMITTED` 결과를 가리킨 뒤 Verification Agent가 `dynamic_result_ref`와 exact `poc_ref`를 읽는다. Gate Agent는 Verification에 연결된 정책 판정·환경·step log·PoC와 outcome이 서로 맞는지 검토하고, Reporter는 두 Gate를 통과한 결과만 보고서 초안에 사용한다. Provider 오류, 정책 차단, setup·실행·관측 실패는 이 전달 과정에서 `FALSE`로 바뀌지 않는다.
+Result Assembler와 `SAVE_RESULT`는 `reproduction_plan_ref -> environment_requirements_ref`와 `environment_ref -> requirements_ref`가 같은 exact revision인지, 정책 판정·환경·step log·실행 PoC·cleanup이 같은 R7 실행 attempt인지 검사한다. `DynamicReproductionState`, work output과 `TransitionCommit`이 같은 `COMMITTED` 결과를 가리킨 뒤 Verification Agent가 `dynamic_result_ref`, 환경 차이와 exact `poc_ref`를 읽는다. Technical Evidence Gate Agent는 Verification에 연결된 정책 판정·환경·step log·PoC와 outcome이 서로 맞는지 검토하고, Reporter는 두 Gate를 통과한 결과만 보고서 초안에 사용한다. Provider 오류, 정책 차단, setup·환경 차이·실행·관측 실패는 이 전달 과정에서 `FALSE`로 바뀌지 않는다.
 
 ### 정책 차단 결과
 
@@ -200,18 +205,18 @@ Sandbox Controller가 정책을 거절하면 Runner를 호출하지 않으므로
 - exact `policy_decision_ref`가 필수이고 가리키는 final decision은 `DENY`
 - `runner_invoked=false`, `steps_ref=null`
 - 실제 공격 입력과 관측이 없으므로 `attack_input_refs=[]`, `observation_refs=[]`
-- 실제 환경을 만들지 않았으면 `environment_created=false`, `environment_ref=null`; 만들었으면 `true`와 exact `environment_ref`
+- 실제 환경을 만들지 않았으면 `environment_created=false`, `environment_ref=null`; 만들었으면 `true`와 exact `environment_ref`이고 그 `requirements_ref`는 plan과 일치
 - `hypothesis_outcome=INCONCLUSIVE`, `hypothesis_evidence_refs=[]`, `hypothesis_disproved=false`, `disproof_evidence_refs=[]`
 - Sandbox 자원을 만들지 않았다면 `cleanup_required=false`, `cleanup_status=NOT_REQUIRED`
 - 정책 검사 전에 생성된 PoC가 있으면 exact `poc_ref`를 남길 수 있지만 실행이나 재현 성공으로 해석하지 않음
 
-Controller가 정책 검사 준비 중 Sandbox 자원을 하나라도 만들었다면 exact `cleanup_policy_ref`에 따라 정리를 시도하고 `cleanup_required=true`, `cleanup_status=SUCCEEDED | FAILED`를 기록한다. Runner를 호출한 경우에는 정책 차단 경로가 아니라 실제 실행 경로이므로 `runner_invoked=true`와 exact `SandboxStepLog`를 남기고, 정리 대상이 있으면 cleanup을 수행한다. `SAVE_RESULT`는 `runner_invoked`·`environment_created`·`cleanup_required`와 nullable reference·cleanup 상태의 조합, `POLICY_BLOCKED`의 exact 정책 판정을 함께 확인한다.
+Controller가 정책 검사 준비 중 Sandbox 자원을 하나라도 만들었다면 exact `cleanup_policy_ref`에 따라 정리를 시도하고 `cleanup_required=true`, `cleanup_status=SUCCEEDED | FAILED`를 기록한다. Runner를 호출한 경우에는 정책 차단 경로가 아니라 실제 실행 경로이므로 `runner_invoked=true`와 exact `SandboxStepLog`를 남기고, 정리 대상이 있으면 cleanup을 수행한다. `SAVE_RESULT`는 plan·requirements·환경 비교, `runner_invoked`·`environment_created`·`cleanup_required`와 nullable reference·cleanup 상태의 조합, `POLICY_BLOCKED`의 exact 정책 판정을 함께 확인한다.
 
 ### 동적 재현 상태와 실제 반증
 
 동적 재현 상태는 `NOT_REQUESTED | RUNNING | SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED`다. 실행이 끝난 결과는 `DynamicReproductionResult.status`에 `SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED` 중 하나를 기록한다.
 
-- 필수 환경을 만들지 못해 대상 애플리케이션이나 관련 공격 경로를 실행하지 못하면 `FAILED + ENVIRONMENT_SETUP`이다.
+- 필수 환경을 만들지 못하거나 필수 requirement가 `MISMATCH | NOT_CHECKED | ERROR`이면 공격 단계를 시작하지 않고 `FAILED + ENVIRONMENT_SETUP`으로 R6에 돌려보낸다.
 - 공격 경로를 일부 실행하고 신뢰할 수 있는 관측을 하나 이상 얻었지만 운영환경 차이 등으로 전체 확인이 부족하면 `PARTIAL + NONE`이다. 이때 `hypothesis_outcome=INCONCLUSIVE`이고 `hypothesis_evidence_refs`와 `limitations`가 각각 하나 이상 있어야 한다.
 - `SUCCEEDED`는 계획한 필수 단계와 관측을 끝냈다는 실행 상태다. 관측이 가설을 지지했는지, 반증했는지, 결론을 주지 못했는지는 `hypothesis_outcome`에 따로 기록한다.
 - `hypothesis_outcome`은 `SUPPORTED | DISPROVED | INCONCLUSIVE`이며 Verification verdict가 아니다. `SUPPORTED | DISPROVED`는 실제 관측을 가리키는 `hypothesis_evidence_refs`가 필요하다.
@@ -221,7 +226,7 @@ Controller가 정책 검사 준비 중 Sandbox 자원을 하나라도 만들었�
 동적 결과 상태와 공통 실행 상태는 뜻이 다르다. `DYNAMIC_REPRO`의 `PARTIAL`은 신뢰 관측과 `limitations`를 가진 `DynamicReproductionResult` 자체가 누락 범위를 설명하므로 실제 오류가 없으면 `AnalysisError`나 `DataGap`을 만들지 않는다. `BLOCKED + POLICY_BLOCKED`는 정책에 막힌 사실을 Sandbox가 정상적으로 기록한 종료 결과이므로 공통 `WorkExecutionState`는 `SUCCEEDED`로 끝난다. 여기서 `SUCCEEDED`는 요청 처리가 완료되었다는 뜻일 뿐 재현 성공이나 가설 지지를 뜻하지 않는다. retry·승인·입력을 기다리는 경우에만 공통 상태 `BLOCKED`를 사용한다. `CANCELLED`는 취소 결과와 공통 취소 상태를 같은 atomic transition에서 저장하고, 취소 뒤 늦게 도착한 결과는 격리한다.
 
 모든 종료 결과는 `DynamicReproductionState.dynamic_result_ref`, `WorkExecutionState.output_refs`와 `TransitionCommit.output_refs`가 같은 `DynamicReproductionResult.record_id`를 가리킬 때만 Verification에 전달한다. Verification Agent는 이 결과를 정적·찬반 근거와 함께 읽어 최종 `TRUE | FALSE | HOLD`를 결정한다.
-- Sandbox Controller는 exact 정책 판정을 저장하고 `ALLOW`인 계획만 Runner에 전달한다. Runner runtime은 `SandboxStepLog`를 생산하고, 비-LLM Result Assembler는 정책 판정·Runner 호출·실제 환경·step log·PoC·cleanup을 `DynamicReproductionResult`로 조립한다. 결과 저장 전 `SAVE_RESULT`가 이 조합과 승인 계획을 다시 대조하며, Verification Agent는 `COMMITTED` 결과를 소비할 뿐 artifact나 동적 결과를 직접 생산하지 않는다. Sandbox는 outcome까지만 기록하고 Verification Agent가 limitations와 정적·동적·찬반 근거를 함께 보고 최종 `TRUE | FALSE | HOLD`를 결정한다.
+- Sandbox Controller는 exact 정책 판정을 저장하고 통과한 계획만 Runner에 전달한다. Runner는 exact 요구사항과 실제 환경·Health Check를 비교하고 필수 차이가 있으면 공격 단계 전에 멈춘다. 비-LLM Sandbox Result Assembler는 Runner 호출 여부와 실제 환경 비교·정리 여부를 포함한 `DynamicReproductionResult`를 조립한다. 결과 저장 전 `SAVE_RESULT`가 계획·requirements·정책 판정·실제 환경·단계·공격 입력·PoC·정리 조합을 다시 대조하며, Verification Agent는 `COMMITTED`된 결과를 소비할 뿐 요구사항 비교나 동적 결과를 직접 생산하지 않는다. Sandbox는 outcome까지만 기록한다. Verification Agent가 환경 차이를 허용해 환경 조건을 바꾸면 새 요구사항과 이를 가리키는 새 계획을 함께 만들고, 실행 단계만 바꾸면 새 계획만 만든 뒤 limitations와 정적·동적·찬반 근거를 함께 보고 최종 `TRUE | FALSE | HOLD`를 결정한다.
 
 ## Technical `REVISE` 처리
 

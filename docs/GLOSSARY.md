@@ -68,7 +68,12 @@
 | `PoC` | 취약점이 어떻게 재현되는지 보여 주는 절차와 증거 | 승인된 격리 환경에서 만든 자료만 사용합니다. |
 | `poc_ref` | 이번 동적 재현과 연결된 정확한 PoC 묶음 번호 | 값이 있어도 실행·성공을 뜻하지 않으며 상태와 단계 로그를 함께 봅니다. |
 | `runner_invoked` | Sandbox Runner를 실제로 호출했는지 나타내는 값 | 거짓이면 단계 로그가 없어야 하고 참이면 실패해도 호출 로그가 필요합니다. |
+| `EnvironmentRequirements` | R6가 동적 재현 전에 정하는 애플리케이션 환경 조건 묶음 | 역할·인증 방식·데이터·DB/service·fixture/mock·버전·Health Check를 근거와 함께 기록합니다. |
+| `environment_requirements_ref` | ReproductionPlan이 사용하는 정확한 환경 요구사항 수정본 번호 | 오래된 수정본이나 다른 계획의 요구사항을 재사용하지 않습니다. |
+| `EnvironmentCheck` | R7이 요구사항 하나와 실제 환경을 비교한 결과 | `MATCH`, `MISMATCH`, `NOT_CHECKED`, `ERROR` 중 하나와 실제 값·차이·근거를 남깁니다. |
+| `sandbox_profile_ref` | Sandbox에서 허용하는 image·명령·네트워크·자원 등의 보안 정책 번호 | 애플리케이션에 필요한 환경 조건을 뜻하지 않습니다. |
 | `environment_ref` | 이번 시도에서 실제 생성된 Sandbox 환경 기록 번호 | 실행 전 환경 설정이나 최신 환경을 가리키지 않습니다. |
+| `secret_ref` | 비밀값 원문 대신 secret store의 항목을 가리키는 불투명 번호 | credential·cookie·token·password를 요구사항이나 일반 log에 저장하지 않습니다. |
 | `policy_decision_ref` | Sandbox Controller가 허용·차단한 이유를 가리키는 번호 | Technical Gate 판정과 다른 기록이며 정책 차단이면 반드시 필요합니다. |
 | `cleanup_status` | 실행 뒤 자원 정리 결과 | `NOT_REQUIRED`는 정리할 자원이 하나도 생기지 않았을 때만 사용합니다. |
 | `CWE` | 취약점 유형을 나타내는 국제 분류 번호 | 실제 근거와 맞는지 Gate에서 다시 확인합니다. |
