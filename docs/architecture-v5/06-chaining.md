@@ -182,7 +182,7 @@ ChainingResult:
 
 ### 호출 시점과 trigger 의미
 
-`03-agent-roles-and-orchestration.md`는 Verification owner가 Primitive 후보 admission 여부를 결정하고, admission된 뒤 다른 hypothesis의 Primitive와 실제로 비교해 Chaining work를 등록하는 시점은 Primitive DB를 유지하는 trusted runtime이 admission 이벤트마다 자동으로 처리한다고 정한다. `08-lightweight-data-contracts.md`의 `REGISTER_WORK` 허용 `requested_by` 표에 이 trusted runtime 전용 identity인 `PRIMITIVE_DB`를 포함해 이 자동 등록만 허용하며, Chaining Agent는 `agent_role`에 없는 이 identity로 인증될 수 없어 스스로 `REGISTER_WORK`를 요청하지 못한다.
+`03-agent-roles-and-orchestration.md`는 Verification owner가 Primitive 후보 admission 여부를 결정하고, admission된 뒤 다른 hypothesis의 Primitive와 실제로 비교해 Chaining work를 등록하는 시점은 Primitive DB를 유지하는 trusted runtime이 admission 이벤트마다 자동으로 처리한다고 정한다. `08-lightweight-data-contracts.md`의 `REGISTER_WORK` 허용 `requested_by` 표에 이 trusted runtime 전용 identity인 `ADMISSION_RUNTIME`을 포함해 이 자동 등록만 허용하며, Chaining Agent는 `agent_role`에 없는 이 identity로 인증될 수 없어 스스로 `REGISTER_WORK`를 요청하지 못한다.
 
 Primitive가 새로 `ACTIVE`로 admission될 때마다(REQUIRED는 final HOLD commit, PROVIDED는 두 Gate 통과 admission) 즉시 반대편 `ACTIVE` Primitive 전체를 대상으로 Chaining work 등록을 시도한다(batch로 모아 두지 않는다). 이 절은 호출 *시점*(이벤트 기반 vs batch)만 정하며, 실제 호출 총량·조합 수 상한과 상한 도달 시 처리 방식은 "확장 제한과 순환 방지" 절의 한도를 따른다. 이벤트 기반 즉시 등록도 이 한도 검사를 우회하지 않는다 — 매 시도마다 그 절의 검사를 거치며, 한도 도달은 부모 가설의 `FALSE`나 매칭 실패로 기록하지 않는다.
 
@@ -205,7 +205,7 @@ Chaining Agent는 다음을 할 수 없다.
 - Technical `REVISE` 해결 또는 Gate 호출
 - ReportDraft 생성 또는 외부 공개
 - Primitive match가 없는 관련 없는 material claim 제안
-- `REGISTER_WORK` 요청. 이 요청은 Primitive DB를 유지하는 trusted runtime만 `requested_by=PRIMITIVE_DB`로 할 수 있다
+- `REGISTER_WORK` 요청. 이 요청은 Primitive DB를 유지하는 trusted runtime만 `requested_by=ADMISSION_RUNTIME`으로 할 수 있다
 
 이 금지 출력은 schema 또는 result-owner authority validation에서 `INVALID_OUTPUT` 또는 `AUTHORITY_DENIED`로 거절한다.
 

@@ -10,7 +10,7 @@
 
 ## Orchestration Agent
 
-Orchestration Agent는 분석 전체와 가설 목록을 관리하는 global control-plane이다. 한 가설에 대한 책임은 proposal 검증·전역 등록·Verification 배정에서 끝난다. 배정 뒤 Context, Pro/Con, 동적 재현, 판정, Gate `REVISE`와 Primitive 후보 admission 여부를 선택하는 주체는 그 가설의 Verification owner다. admission된 뒤 다른 Primitive와 실제로 비교해 Chaining work를 등록하는 시점은 Primitive DB를 유지하는 trusted runtime이 admission 이벤트마다 자동으로 처리하며, `REGISTER_WORK`를 요청할 수 있는 역할에 이 trusted runtime 전용 identity인 `PRIMITIVE_DB`를 포함한다. Chaining Agent 자신은 `REGISTER_WORK`를 요청하지 않는다. Verification owner는 admission 여부만 결정하고 그 뒤의 비교 시점에 매번 다시 관여하지 않는다.
+Orchestration Agent는 분석 전체와 가설 목록을 관리하는 global control-plane이다. 한 가설에 대한 책임은 proposal 검증·전역 등록·Verification 배정에서 끝난다. 배정 뒤 Context, Pro/Con, 동적 재현, 판정, Gate `REVISE`와 Primitive 후보 admission 여부를 선택하는 주체는 그 가설의 Verification owner다. admission된 뒤 다른 Primitive와 실제로 비교해 Chaining work를 등록하는 시점은 Primitive DB를 유지하는 trusted runtime이 admission 이벤트마다 자동으로 처리하며, `REGISTER_WORK`를 요청할 수 있는 역할에 이 trusted runtime 전용 identity인 `ADMISSION_RUNTIME`을 포함한다. Chaining Agent 자신은 `REGISTER_WORK`를 요청하지 않는다. Verification owner는 admission 여부만 결정하고 그 뒤의 비교 시점에 매번 다시 관여하지 않는다.
 
 ```text
 HypothesisProposal validation

@@ -396,7 +396,7 @@ LLM Agent와 실행 서비스는 상태·도구·Gate·보고서·공개를 직�
 ActionRequest:
   meta: RunMeta | RecordMeta
   action_id: string
-  requested_by: ORCHESTRATION | HYPOTHESIS | PRO | CON | VERIFICATION | CWE_LABELING | CHAINING | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER | REPOSITORY_LOADER | STATIC_ANALYSIS | POLICY_COLLECTOR | SANDBOX | RECOVERY | PRIMITIVE_DB | HUMAN_REVIEWER
+  requested_by: ORCHESTRATION | HYPOTHESIS | PRO | CON | VERIFICATION | CWE_LABELING | CHAINING | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER | REPOSITORY_LOADER | STATIC_ANALYSIS | POLICY_COLLECTOR | SANDBOX | RECOVERY | ADMISSION_RUNTIME | HUMAN_REVIEWER
   requester_identity_ref: RunStoredDataRef | StoredDataRef
   action_type: REGISTER_WORK | CHANGE_WORK_STATE | START_ATTEMPT | CANCEL_WORK | READ_CODE | RUN_TOOL | CALL_LLM | FETCH_POLICY | RUN_SANDBOX | SAVE_RESULT | CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT | PREPARE_HUMAN_REVIEW | SAVE_HUMAN_DECISION | EXTERNAL_DISCLOSURE
   work_ref: RunStoredDataRef | StoredDataRef | null
@@ -499,7 +499,7 @@ Technical Gate가 `REVISE`를 확정하면 그 Gate action과 decision은 이미
 
 | `action_type` | 허용 `requested_by` |
 |---|---|
-| `REGISTER_WORK` | ORCHESTRATION, VERIFICATION, RECOVERY, PRIMITIVE_DB |
+| `REGISTER_WORK` | ORCHESTRATION, VERIFICATION, RECOVERY, ADMISSION_RUNTIME |
 | `CHANGE_WORK_STATE` | ORCHESTRATION, VERIFICATION, RECOVERY |
 | `START_ATTEMPT` | ORCHESTRATION, VERIFICATION, RECOVERY |
 | `CANCEL_WORK` | ORCHESTRATION, VERIFICATION, RECOVERY, HUMAN_REVIEWER |
@@ -516,7 +516,7 @@ Technical Gate가 `REVISE`를 확정하면 그 Gate action과 decision은 이미
 | `SAVE_HUMAN_DECISION` | HUMAN_REVIEWER |
 | `EXTERNAL_DISCLOSURE` | HUMAN_REVIEWER |
 
-`requested_by=PRIMITIVE_DB`는 Primitive DB를 유지하는 trusted runtime 전용 identity다. `agent_role`(LLM 호출 역할) 목록에 없어 Chaining Agent를 포함한 어떤 LLM도 이 identity로 인증되지 않는다. `REGISTER_WORK`의 `requested_by=PRIMITIVE_DB`는 Primitive `ACTIVE` admission 이벤트를 받아 `work_type=CHAINING` work를 자동으로 등록할 때만 쓰며, Chaining Agent 자신은 `REGISTER_WORK`를 요청할 수 없다.
+`requested_by=ADMISSION_RUNTIME`은 Primitive DB를 유지하는 trusted runtime 전용 identity다. `agent_role`(LLM 호출 역할) 목록에 없어 Chaining Agent를 포함한 어떤 LLM도 이 identity로 인증되지 않는다. `REGISTER_WORK`의 `requested_by=ADMISSION_RUNTIME`은 Primitive `ACTIVE` admission 이벤트를 받아 `work_type=CHAINING` work를 자동으로 등록할 때만 쓰며, Chaining Agent 자신은 `REGISTER_WORK`를 요청할 수 없다.
 
 Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 있지만 hypothesis-local 작업, Verification verdict, CWE, 두 Gate 결과, 정책 해석, ReportDraft 내용과 사람 결정을 생산하지 못한다. Verification은 hypothesis-local 작업을 제안하지만 실제 실행·저장 권한은 Runtime Validator를 통과해야 한다. 각 전문 결과는 위 표의 `SAVE_RESULT` 허용 역할 중에서도 해당 result kind를 소유한 역할만 저장한다. 예를 들어 `VerificationResult`는 VERIFICATION, `ChainingResult`는 CHAINING, `TechnicalEvidenceReview`는 TECHNICAL_GATE, `RuleScopeImpactReview`는 RULE_SCOPE_GATE, `ReportDraft`는 REPORTER만 생산한다. runtime validator는 값의 생산자·schema·선행 reference를 확인하지만 취약점 진위·CWE 적절성·정책 의미를 대신 판정하지 않는다.
 
