@@ -109,15 +109,19 @@ Chaining이 비교하는 REQUIRED/PROVIDED의 `target.primitive_type`·`target.p
 
 ### 7개 check 판정 절차
 
-구조적으로 동일 여부는 결정론적으로 먼저 비교하고, `evidence_refs` 근거가 필요한 나머지 판정만 Chaining Agent(LLM)가 수행한다. 명백히 양립 불가하면 후보 자체를 만들지 않는다(기존 규칙). `entity_check`/`endpoint_check`는 `CodeRelation`(`CALLERS`/`CALLEES`/`DATA_FLOW_NEIGHBORS`)·`ROUTE_BINDING` 등 R2가 만드는 구조화된 사실로 뒷받침할 수 있다. 반면 `asset_check`/`data_check`는 R2 스키마에 "asset"·"data type" 개념이 없어 구조화된 사실로 뒷받침할 수 없고, `evidence_refs`가 코드 조각을 읽은 LLM의 서술적 판단(narrative)일 수밖에 없다 — 이 두 check는 R2 확인 전까지 잠정(provisional) 절차다.
+구조적으로 동일 여부는 결정론적으로 먼저 비교하고, `evidence_refs` 근거가 필요한 나머지 판정만 Chaining Agent(LLM)가 수행한다. 명백히 양립 불가하면 후보 자체를 만들지 않는다(기존 규칙). `entity_check`/`endpoint_check`는 `CodeRelation`(`CALLERS`/`CALLEES`/`DATA_FLOW_NEIGHBORS`)·`ROUTE_BINDING` 등 R2가 만드는 구조화된 사실로 뒷받침할 수 있다. 반면 `asset_check`/`data_check`는 R2 스키마에 "asset"·"data type" 개념이 없어 R2의 구조화된 사실로 뒷받침할 수 없다. 그래도 판정에 쓰는 `evidence_refs`는 여전히 Chaining Agent가 실제로 읽은 코드 조각·설정을 가리키는 저장 참조여야 하며, R2가 만드는 구조화된 사실이 아닐 뿐이다.
+
+모든 check의 `evidence_refs`는 Chaining Agent가 실제로 읽은 코드 조각·설정·관계를 가리키는 저장 참조여야 한다. LLM이 그 근거가 무엇을 뜻하는지 설명한 서술 자체는 근거가 아니며 `evidence_refs`를 대신하지 않는다. 가리킬 실제 저장 근거가 없으면 판정은 `PASS`가 아니라 `UNCERTAIN`이다.
+
+`endpoint`/`data_type`의 `null`은 그 개념이 대상에 애초에 적용되지 않는다는 뜻으로만 쓴다. 이 보장은 생산 단계, 즉 `PrimitiveDraft`를 채우는 Verification 쪽 책임이다(`08-lightweight-data-contracts.md`). Verification이 아직 확인하지 못했거나 도구가 값을 제공하지 못한 경우는 `null`로 남기지 않고 알아낸 값 또는 그 불확실성을 `description`에 남긴다. `endpoint_check`/`data_check`가 `null`을 근거 없이 `PASS`로 처리하는 것은 이 생산 단계 보장을 전제로 한다.
 
 | check | `PASS` 조건 | `UNCERTAIN` 조건 | 서열표 기준 명백한 실패 |
 |---|---|---|---|
-| `asset_check`(잠정) | `target.asset` 문자열이 같거나, 다르면 이동을 뒷받침하는 `evidence_refs`(서술적 근거 허용)가 있음 | 다른데 근거 없음 | 해당 없음 |
+| `asset_check` | `target.asset` 문자열이 같거나, 다르면 이동을 뒷받침하는 실제 근거(`evidence_refs`)가 있음 | 다른데 근거 없음 | 해당 없음 |
 | `entity_check` | `entity_refs`가 겹치거나 관련성을 뒷받침하는 근거가 있음 | 무관한데 근거 없음 | 해당 없음 |
-| `endpoint_check` | `endpoint`가 같거나, 한쪽이 `null`(해당 없음)이거나, 연결 근거가 있음 | 다른데 근거 없음 | 해당 없음 |
+| `endpoint_check` | `endpoint`가 같거나, 한쪽이 `null`(개념 자체가 적용되지 않음, 생산 단계에서 보장)이거나, 연결을 뒷받침하는 실제 근거가 있음 | 다른데 근거 없음 | 해당 없음 |
 | `privilege_check` | upstream이 제공하는 privilege 등급이 downstream이 요구하는 등급 이상(아래 서열표 기준) | 서열표에 없는 값이고 근거 없음 | 둘 다 서열표에 있고 upstream 등급이 낮음 → 후보 자체를 만들지 않음 |
-| `data_check`(잠정) | `data_type`이 같거나, 한쪽이 `null`이거나, 변환 근거(서술적 근거 허용)가 있음 | 다른데 근거 없음 | 해당 없음 |
+| `data_check` | `data_type`이 같거나, 한쪽이 `null`(개념 자체가 적용되지 않음, 생산 단계에서 보장)이거나, 변환을 뒷받침하는 실제 근거가 있음 | 다른데 근거 없음 | 해당 없음 |
 | `attack_order_check` | downstream의 요구 조건이 upstream이 제공하는 능력을 논리적으로 전제한다는 근거가 있음 | 순서 근거가 불명확함 | 순서가 반대라는 근거가 명확함 → 후보 자체를 만들지 않음 |
 | `restriction_check` | 결합 뒤에도 남는 restriction이 새 `HypothesisProposal`의 `restrictions`/`assumptions`로 정확히 승계됨 | 승계 여부가 불명확하거나 결합 논리와 충돌 가능성이 있음 | 해당 없음 |
 
@@ -178,11 +182,11 @@ ChainingResult:
 
 ### 호출 시점과 trigger 의미
 
-`03-agent-roles-and-orchestration.md`의 "Chaining handoff를 선택하는 주체는 Verification owner"는, Verification이 자기 결과에 `required_primitive_candidates`/`provided_primitive_candidates`를 채워 Primitive 후보로 만들지를 결정한다는 뜻이다. admission된 뒤 다른 hypothesis의 Primitive와 실제로 비교하는 시점은 Primitive DB가 admission 이벤트마다 자동으로 처리하는 후속 절차이며 Verification Agent가 매번 다시 관여하지 않는다.
+`03-agent-roles-and-orchestration.md`는 Verification owner가 Primitive 후보 admission 여부를 결정하고, admission된 뒤 다른 hypothesis의 Primitive와 실제로 비교해 Chaining work를 등록하는 시점은 Primitive DB를 유지하는 trusted runtime이 admission 이벤트마다 자동으로 처리한다고 정한다. `08-lightweight-data-contracts.md`의 `REGISTER_WORK` 허용 `requested_by` 표에 이 trusted runtime 전용 identity인 `PRIMITIVE_DB`를 포함해 이 자동 등록만 허용하며, Chaining Agent는 `agent_role`에 없는 이 identity로 인증될 수 없어 스스로 `REGISTER_WORK`를 요청하지 못한다.
 
 Primitive가 새로 `ACTIVE`로 admission될 때마다(REQUIRED는 final HOLD commit, PROVIDED는 두 Gate 통과 admission) 즉시 반대편 `ACTIVE` Primitive 전체를 대상으로 Chaining work 등록을 시도한다(batch로 모아 두지 않는다). 이 절은 호출 *시점*(이벤트 기반 vs batch)만 정하며, 실제 호출 총량·조합 수 상한과 상한 도달 시 처리 방식은 "확장 제한과 순환 방지" 절의 한도를 따른다. 이벤트 기반 즉시 등록도 이 한도 검사를 우회하지 않는다 — 매 시도마다 그 절의 검사를 거치며, 한도 도달은 부모 가설의 `FALSE`나 매칭 실패로 기록하지 않는다.
 
-admission 이벤트는 Primitive DB를 유지하는 같은 trusted runtime이 받는다(Chaining Agent나 Orchestration이 아니다 — Primitive DB는 "출력과 의미" 절에서 이미 명시했듯 queue가 아니라 분석 인덱스이며, 이 인덱스를 갱신하는 runtime이 admission과 후속 work 등록을 함께 처리한다). 이 runtime은 admission된 Primitive와 반대편 후보 Primitive 각각의 exact `record_id` 조합으로 `work_type=CHAINING` work의 `dedupe_key`를 만든다. 같은 admission 이벤트가 재전달되거나 같은 조합이 중복 시도되면 기존 `08-lightweight-data-contracts.md`의 dedupe 규칙(같은 `dedupe_key`는 기존 `work_id`를 반환)에 따라 새 work를 만들지 않는다. 각 work는 그 admission 시점의 `PrimitiveIndexState` snapshot을 input으로 고정하며(위 "exact revision과 오래된 승인 차단" 절), 저장 직전 index head가 바뀌었으면 `STALE_RESULT`로 거절한다. 등록 자체가 예산 한도에 걸리면 work를 만들지 않고 "확장 제한과 순환 방지" 절의 `bounded_stop_reason`으로 기록한다.
+admission 이벤트는 Primitive DB를 유지하는 같은 trusted runtime이 받는다. Chaining Agent나 Orchestration이 받는 게 아니다 — Primitive DB는 "출력과 의미" 절에서 이미 명시했듯 queue가 아니라 분석 인덱스이며, 이 인덱스를 갱신하는 runtime이 admission과 후속 work 등록을 함께 처리한다. 이 runtime은 admission된 Primitive와 반대편 후보 Primitive 각각의 exact `record_id` 조합으로 `work_type=CHAINING` work의 `dedupe_key`를 만든다. 같은 admission 이벤트가 재전달되거나 같은 조합이 중복 시도되면 기존 `08-lightweight-data-contracts.md`의 dedupe 규칙(같은 `dedupe_key`는 기존 `work_id`를 반환)에 따라 새 work를 만들지 않는다. 각 work는 그 admission 시점의 `PrimitiveIndexState` snapshot을 input으로 고정하며(위 "exact revision과 오래된 승인 차단" 절), 저장 직전 index head가 바뀌었으면 `STALE_RESULT`로 거절한다. 등록 자체가 예산 한도에 걸리면 work를 만들지 않고 "확장 제한과 순환 방지" 절의 `bounded_stop_reason`으로 기록한다.
 
 `trigger`는 방금 admission된 쪽을 가리킨다.
 
@@ -201,6 +205,7 @@ Chaining Agent는 다음을 할 수 없다.
 - Technical `REVISE` 해결 또는 Gate 호출
 - ReportDraft 생성 또는 외부 공개
 - Primitive match가 없는 관련 없는 material claim 제안
+- `REGISTER_WORK` 요청. 이 요청은 Primitive DB를 유지하는 trusted runtime만 `requested_by=PRIMITIVE_DB`로 할 수 있다
 
 이 금지 출력은 schema 또는 result-owner authority validation에서 `INVALID_OUTPUT` 또는 `AUTHORITY_DENIED`로 거절한다.
 

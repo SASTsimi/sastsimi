@@ -10,7 +10,7 @@
 
 ## Orchestration Agent
 
-Orchestration Agent는 분석 전체와 가설 목록을 관리하는 global control-plane이다. 한 가설에 대한 책임은 proposal 검증·전역 등록·Verification 배정에서 끝난다. 배정 뒤 Context, Pro/Con, 동적 재현, 판정, Gate `REVISE`와 Chaining handoff를 선택하는 주체는 그 가설의 Verification owner다.
+Orchestration Agent는 분석 전체와 가설 목록을 관리하는 global control-plane이다. 한 가설에 대한 책임은 proposal 검증·전역 등록·Verification 배정에서 끝난다. 배정 뒤 Context, Pro/Con, 동적 재현, 판정, Gate `REVISE`와 Primitive 후보 admission 여부를 선택하는 주체는 그 가설의 Verification owner다. admission된 뒤 다른 Primitive와 실제로 비교해 Chaining work를 등록하는 시점은 Primitive DB를 유지하는 trusted runtime이 admission 이벤트마다 자동으로 처리하며, `REGISTER_WORK`를 요청할 수 있는 역할에 이 trusted runtime 전용 identity인 `PRIMITIVE_DB`를 포함한다. Chaining Agent 자신은 `REGISTER_WORK`를 요청하지 않는다. Verification owner는 admission 여부만 결정하고 그 뒤의 비교 시점에 매번 다시 관여하지 않는다.
 
 ```text
 HypothesisProposal validation
@@ -105,7 +105,7 @@ Chaining match -> PROPOSED child hypothesis origin CHAINING
 | Orchestration Agent | 전역 분석 계획·proposal 등록·가설 배정·가설 간 병렬화 | 없음 | 전체 진행 상태 요약 | 없음 | 없음 |
 | Hypothesis Agent | 취약점 가설 | 없음 | static 사실을 입력으로 읽음 | 없음 | 없음 |
 | Pro·Con Agent | 찬성·반대 근거 | 없음 | 자기 역할의 근거 | 없음 | 없음 |
-| Verification Agent | Context·Pro/Con, 동적 모드·`ReproductionPlan`, 두 Gate·Reporter·Chaining 요청, material child proposal | `TRUE | FALSE | HOLD` | static·Pro·Con·COMMITTED dynamic 근거와 Gate 보완 요청 | 없음 | 없음 |
+| Verification Agent | Context·Pro/Con, 동적 모드·`ReproductionPlan`, 두 Gate·Reporter 요청, Primitive 후보 admission 여부 결정, material child proposal | `TRUE | FALSE | HOLD` | static·Pro·Con·COMMITTED dynamic 근거와 Gate 보완 요청 | 없음 | 없음 |
 | Sandbox Controller | 없음 | 없음 | exact `ReproductionPlan`의 image·command·file·network·resource·cleanup 정책 검사와 exact 정책 판정 생산 | 정책 위반 계획 차단과 Runner 호출 통제 | 없음 |
 | Sandbox Runner | 없음 | 없음 | Controller가 승인한 exact 계획 실행, 실제 환경·`SandboxStepLog`와 PoC 실행 사실 생산 | 계획 밖 command·입력 실행 차단 | 없음 |
 | Sandbox Result Assembler | 없음 | 없음 | exact 정책·환경·step log·PoC·cleanup reference를 `DynamicReproductionResult`로 조립 | nullable·상태·identity 조합 위반 결과 저장 차단 | 없음 |
