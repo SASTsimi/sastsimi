@@ -105,6 +105,42 @@ Chaining Agent는 final HOLD의 ACTIVE REQUIRED와 Gate-qualified TRUE의 ACTIVE
 
 문자열 `primitive_type`이 같다는 이유만으로 match를 만들지 않는다. 호환성 근거와 미확인 조건을 `PrimitiveMatchCandidate`에 남긴다.
 
+### 7개 check 판정 절차
+
+구조적으로 동일 여부는 결정론적으로 먼저 비교하고, `evidence_refs` 근거가 필요한 나머지 판정만 Chaining Agent(LLM)가 수행한다. 명백히 양립 불가하면 후보 자체를 만들지 않는다(기존 규칙). `entity_check`/`endpoint_check`는 `CodeRelation`(`CALLERS`/`CALLEES`/`DATA_FLOW_NEIGHBORS`)·`ROUTE_BINDING` 등 R2가 만드는 구조화된 사실로 뒷받침할 수 있다. 반면 `asset_check`/`data_check`는 R2 스키마에 "asset"·"data type" 개념이 없어 구조화된 사실로 뒷받침할 수 없고, `evidence_refs`가 코드 조각을 읽은 LLM의 서술적 판단(narrative)일 수밖에 없다 — 이 두 check는 R2 확인 전까지 잠정(provisional) 절차다.
+
+| check | `PASS` 조건 | `UNCERTAIN` 조건 | 서열표 기준 명백한 실패 |
+|---|---|---|---|
+| `asset_check`(잠정) | `target.asset` 문자열이 같거나, 다르면 이동을 뒷받침하는 `evidence_refs`(서술적 근거 허용)가 있음 | 다른데 근거 없음 | 해당 없음 |
+| `entity_check` | `entity_refs`가 겹치거나 관련성을 뒷받침하는 근거가 있음 | 무관한데 근거 없음 | 해당 없음 |
+| `endpoint_check` | `endpoint`가 같거나, 한쪽이 `null`(해당 없음)이거나, 연결 근거가 있음 | 다른데 근거 없음 | 해당 없음 |
+| `privilege_check` | upstream이 제공하는 privilege 등급이 downstream이 요구하는 등급 이상(아래 서열표 기준) | 서열표에 없는 값이고 근거 없음 | 둘 다 서열표에 있고 upstream 등급이 낮음 → 후보 자체를 만들지 않음 |
+| `data_check`(잠정) | `data_type`이 같거나, 한쪽이 `null`이거나, 변환 근거(서술적 근거 허용)가 있음 | 다른데 근거 없음 | 해당 없음 |
+| `attack_order_check` | downstream의 요구 조건이 upstream이 제공하는 능력을 논리적으로 전제한다는 근거가 있음 | 순서 근거가 불명확함 | 순서가 반대라는 근거가 명확함 → 후보 자체를 만들지 않음 |
+| `restriction_check` | 결합 뒤에도 남는 restriction이 새 `HypothesisProposal`의 `restrictions`/`assumptions`로 정확히 승계됨 | 승계 여부가 불명확하거나 결합 논리와 충돌 가능성이 있음 | 해당 없음 |
+
+### primitive_type vocabulary(작업용 제안값)
+
+`08-lightweight-data-contracts.md`는 Primitive vocabulary를 "구현 전 ADR과 평가 corpus로 확정"하도록 이미 정해뒀다. 아래 목록은 그 ADR이 나오기 전까지 Chaining Agent가 1차 분류에 쓰는 **작업용 제안값**이며, 이 문서가 최종 확정하지 않는다. `primitive_type`은 이 목록 중 하나이거나 목록에 없는 자유 문자열(`OTHER`로 강제 치환하지 않고 원래 값 유지)이다. 매칭의 유일한 기준이 아니라 후보를 걸러내는 1차 분류로만 쓴다.
+
+`ARBITRARY_FILE_READ | ARBITRARY_FILE_WRITE | CODE_EXECUTION | COMMAND_EXECUTION | SSRF_CAPABILITY | AUTH_BYPASS | PRIVILEGE_ESCALATION | CREDENTIAL_ACCESS | SENSITIVE_DATA_DISCLOSURE | DESERIALIZATION_TRIGGER | INJECTION_CAPABILITY | OPEN_REDIRECT | OTHER`
+
+하나의 능력이 여러 카테고리에 해당할 수 있으면, 가장 직접적으로 입증된 하나를 고르고 나머지는 강제하지 않는다(복수 `PrimitiveDraft` 작성 여부는 Verification의 재량이며 이 문서가 강제하지 않음).
+
+### privilege 서열표(작업용 제안값)
+
+같은 이유로 아래 서열표도 ADR 전까지의 작업용 제안값이다. `privilege_level`은 다음 서열을 기준으로 비교한다.
+
+```text
+UNAUTHENTICATED < AUTHENTICATED < ELEVATED < ADMIN < SYSTEM
+```
+
+앱 고유 role 이름(예: "repo-admin")도 `privilege_level`에 그대로 쓸 수 있지만, 이 서열표에 없으면 `privilege_check`는 명시적 근거(`evidence_refs`) 없이 `PASS`로 판정하지 않는다.
+
+### vocabulary 확장 규칙
+
+`primitive_type`과 privilege 서열 모두, 목록에 없는 새 값을 강제로 매핑하거나 거부하지 않는다. 새 값은 그대로 기록에 남는다(원래 필드가 이미 값을 보존하므로 별도 로그 불필요). 이 규칙은 현재 수동 확인 절차다 — 반복 사용을 자동으로 탐지·집계하는 별도 도구는 없으며, R1이 필요시 Primitive 저장소를 직접 조회해 검토하고 vocabulary에 정식 추가하거나 기존 값에 매핑할지 결정한다.
+
 ### 출력
 
 ```yaml
@@ -122,6 +158,19 @@ ChainingResult:
 ```
 
 새 가설은 `HypothesisProposal(origin=CHAINING)`으로 만든다. trusted runtime이 schema·semantic·workspace·commit·exact Primitive eligibility·중복·깊이·예산을 검사한 뒤 새 `hypothesis_id`로 등록한다. Orchestration Agent는 등록된 가설에 새 Verification Agent를 배정한다. child는 전체 Verification 파이프라인을 처음부터 거친다.
+
+### 호출 시점과 trigger 의미
+
+`03-agent-roles-and-orchestration.md`의 "Chaining handoff를 선택하는 주체는 Verification owner"는, Verification이 자기 결과에 `required_primitive_candidates`/`provided_primitive_candidates`를 채워 Primitive 후보로 만들지를 결정한다는 뜻이다. admission된 뒤 다른 hypothesis의 Primitive와 실제로 비교하는 시점은 Primitive DB가 admission 이벤트마다 자동으로 처리하는 후속 절차이며 Verification Agent가 매번 다시 관여하지 않는다.
+
+Primitive가 새로 `ACTIVE`로 admission될 때마다(REQUIRED는 final HOLD commit, PROVIDED는 두 Gate 통과 admission) 즉시 반대편 `ACTIVE` Primitive 전체를 대상으로 Chaining work 등록을 시도한다(batch로 모아 두지 않는다). 이 절은 호출 *시점*(이벤트 기반 vs batch)만 정하며, 실제 호출 총량·조합 수 상한과 상한 도달 시 처리 방식은 "확장 제한과 순환 방지" 절의 한도를 따른다.
+
+`trigger`는 방금 admission된 쪽을 가리킨다.
+
+- `HOLD_MATCH`: 새 `REQUIRED`(HOLD)가 admission되어 기존 `ACTIVE` `PROVIDED`와 비교
+- `TRUE_HOLD_MATCH`: 새 `PROVIDED`(TRUE)가 admission되어 기존 `ACTIVE` `REQUIRED`와 비교
+
+`TRUE_TRUE_MATCH`의 트리거(호출 이벤트·비교 대상)는 이 문서가 정의하지 않는다. `PrimitiveMatchCandidate`의 `match_kind=TRUE_TRUE` 판정 절차(위 7개 check)만 공유한다.
 
 ### 금지 권한
 
