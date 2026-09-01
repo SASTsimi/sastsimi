@@ -150,7 +150,7 @@ Technical Evidence Gate의 `ACCEPT`는 R5가 exact final TRUE revision을 대상
 | restriction | 공격이 가능한 범위를 제한하는 조건 |
 | HOLD 조건 | 아직 해결되지 않으면 최종 판단을 보류해야 하는 조건 |
 
-지원 목록이 확정되기 전에는 임의의 취약점 유형을 지원 대상으로 가정하지 않는다. 목록 확정 후에도 지원 목록에 없는 유형을 기존 플레이북에 억지로 맞추지 않는다. 필요한 검증 항목을 확정할 수 없으면 `HOLD` 또는 후속 Issue로 기록한다. 새로운 endpoint·sink·권한 경계·공격 단계·독립 impact가 발견되면 현재 verdict에 합치지 않고 material child proposal로 분리한다.
+지원 목록이 확정되기 전에는 임의의 취약점 유형을 지원 대상으로 가정하지 않는다. 목록 확정 후에도 지원 목록에 없는 유형을 기존 플레이북에 억지로 맞추지 않는다. 필요한 검증 항목을 확정할 수 없으면 공통 플레이북으로 현재 실행을 먼저 처리한다. 정상적으로 필수 검증을 완료했지만 정보가 부족하면 `unresolved_conditions`와 `HOLD`를 기록한 뒤 후속 Issue를 연결한다. 실행 자체가 실패했다면 verdict 없이 실행 오류를 기록한 뒤 후속 Issue를 연결한다. 새로운 endpoint·sink·권한 경계·공격 단계·독립 impact가 발견되면 현재 verdict에 합치지 않고 material child proposal로 분리한다.
 
 ## Docker 동적 재현
 
