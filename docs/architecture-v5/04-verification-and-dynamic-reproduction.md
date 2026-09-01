@@ -103,7 +103,7 @@ Verification Agent가 `NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO`를 결정한�
 
 R7은 이 영역을 설계·구현하는 팀 역할이고 직접 Docker를 실행하는 시스템 주체가 아니다. 실제 책임은 다음처럼 나눈다.
 
-- Verification Agent는 mode와 `ReproductionPlan`을 생산하고, 필요한 사용자 역할·권한·데이터 상태·인증 여부·외부 서비스·Mock 허용 범위·실제 동작이 필요한 대상·판정 영향 설정을 plan closure의 기존 `sandbox_profile_ref`·`command_ref`·`attack_input_refs`·`cleanup_policy_ref`에 고정한다. R7-02가 `ReproductionPlan`에 새 필드를 추가하지 않는다.
+- Verification Agent는 필요한 사용자 역할·권한·데이터 상태·인증 여부·외부 서비스·Mock 허용 범위·실제 동작이 필요한 대상·허용 version fallback·Health Check와 판정 영향 설정을 immutable `EnvironmentRequirements`에 고정한다. mode와 단계를 담은 `ReproductionPlan.environment_requirements_ref`는 그 current exact revision을 가리킨다.
 - Sandbox Environment Builder는 같은 `workspace_id`·`commit_id`에서 plan 실행에 필요한 설정과 fixture를 준비하고 image를 빌드한다.
 - Runtime Validator는 실행 요청의 requester·상태·예산과 exact input reference를 검사한다.
 - Sandbox Controller는 기존·생성 설정과 image·command·file·network·resource·cleanup 정책을 검사한다.
@@ -114,33 +114,35 @@ Environment Builder는 mode나 공격 단계를 새로 결정하지 않고 plan 
 
 #### 환경 설정 고정과 image 승인 순서
 
-이 설계는 `ReproductionPlan` schema에 새 필드를 넣지 않고 별도의 immutable 환경 설정 artifact를 만드는 방식을 선택한다. 실행 성공·실패 결과의 `DynamicReproductionResult.environment_ref`는 이 exact artifact를 가리키며, 실제 재현을 위한 `RUN_SANDBOX.input_refs`에도 같은 reference와 확정된 image digest를 포함한다. 환경 artifact의 구체 schema·hash·redaction·저장 형식은 #21에서 확정하지만, R7-02가 요구하는 최소 의미는 다음과 같다.
+환경 build 결과와 실제 Sandbox 환경은 서로 다른 artifact다. Environment Builder는 Docker 설정과 image를 고정한 immutable `EnvironmentBuildArtifact`를 만들고 `RUN_SANDBOX.input_refs`에 그 exact reference와 image digest를 포함한다. 공통 `DynamicReproductionResult.environment_ref`는 build 설정이 아니라 Runner가 실제 생성한 `SandboxEnvironment`를 가리킨다. 이 actual environment의 `requirements_ref`는 plan의 `environment_requirements_ref`와 같고 모든 `requirement_id`의 충족·차이를 연결한다. `EnvironmentBuildArtifact`가 보존할 최소 의미는 다음과 같다.
 
 - 환경 설정 식별자(identity), schema version, revision, 생성 시각과 생성 주체
-- exact `ReproductionPlan`, `workspace_id`, `commit_id` reference
+- exact `ReproductionPlan`, `EnvironmentRequirements`, `workspace_id`, `commit_id` reference
 - 원본 Dockerfile·Compose hash, 생성하거나 수정한 설정 hash와 build context hash
 - runtime·package manager·lockfile·주요 dependency version과 선택 근거
 - builder base image digest와 빌드된 application image digest
 - 적용한 R8 budget profile reference와 단계별 time·retry limit
-- DB·service·fixture·테스트 계정·Mock 구성과 원래 plan 조건과의 차이
-- Health Check 입력과 관측 결과
+- 계획한 DB·service·fixture·테스트 계정·Mock 구성과 요구사항 대비 예상 차이
+- `EnvironmentRequirements`에서 가져온 Health Check 입력
 - fallback 사용 여부, limitations와 입력 변경 시 무효화 기준
 - 환경 구성 단계별 상태·log reference와 cleanup 결과
 
-trusted 저장 runtime은 환경 설정 candidate의 필수 reference와 hash가 모두 결정되고 image build가 끝난 뒤에만 atomic commit한다. 중간 실패 candidate를 실행 준비가 끝난 artifact로 승격하지 않는다. 실패 결과의 `environment_ref`는 완료된 단계와 실패 log를 보존한 exact 환경 관측 artifact를 가리키며, 성공한 image처럼 재사용하지 않는다.
+trusted 저장 runtime은 build candidate의 필수 reference와 hash가 모두 결정되고 image build가 끝난 뒤에만 atomic commit한다. 중간 실패 candidate를 실행 준비가 끝난 artifact로 승격하지 않는다. build 단계에서 실제 Sandbox 환경이 만들어지지 않았다면 `environment_created=false`, `environment_ref=null`이고 실패 log는 build work output과 오류 record에 보존한다. Runner가 환경을 일부라도 만들었다면 그 actual snapshot만 `environment_ref`가 가리킨다.
 
 환경 build와 실제 취약점 재현 실행은 다음 순서로 분리한다.
 
-1. Verification Agent가 exact `ReproductionPlan`을 `COMMITTED`한다.
-2. Environment Builder가 Repository 설정을 읽기 전용으로 탐지하고 환경 설정 candidate를 만든다.
+1. Verification Agent가 exact `EnvironmentRequirements`와 이를 가리키는 `ReproductionPlan`을 각각 `COMMITTED`한다.
+2. Environment Builder가 Repository 설정을 읽기 전용으로 탐지하고 build candidate를 만든다. 요구사항을 만족할 수 없거나 허용 범위 밖 fallback이 필요하면 차이만 반환하고 임의 변경하지 않는다.
 3. Sandbox Controller가 원본·생성 Docker 설정, build context와 builder 정책을 검사한다.
 4. 통과한 설정만 격리된 builder에서 image로 빌드한다.
-5. Environment Builder가 application image digest와 환경 설정 candidate를 반환하고 trusted 저장 runtime이 atomic하게 확정한다.
-6. Verification Agent가 exact plan·환경 artifact·application image digest를 입력으로 실제 재현용 `RUN_SANDBOX`를 요청한다.
-7. Runtime Validator가 requester·상태·예산·exact reference를 검사하고, Sandbox Controller가 실행 정책을 검사한다.
-8. 통과한 image만 Sandbox Runner가 실행해 PoC·관측 단계를 수행한다.
+5. Environment Builder가 application image digest와 `EnvironmentBuildArtifact` candidate를 반환하고 trusted 저장 runtime이 schema·hash·exact plan/requirements reference를 검증해 atomic commit한다.
+6. Verification은 exact build artifact가 원 요구사항과 같거나 요구사항에 미리 허용된 fallback만 사용했는지 확인한다. 허용 범위 밖 차이면 실행하지 않고 필요에 따라 새 requirements와 plan을 만든다.
+7. 실제 재현용 `RUN_SANDBOX` action은 Verification이 확인한 exact plan·requirements·build artifact·application image digest를 입력으로 고정한다.
+8. Runtime Validator가 requester·상태·예산·identity·revision을 검사하고, Sandbox Controller가 exact image·command·file·network·resource·cleanup 실행 정책을 검사한다.
+9. Sandbox Runner가 actual `SandboxEnvironment`를 만들고 모든 requirement를 `MATCH | MISMATCH | NOT_CHECKED | ERROR`로 비교한다. required 항목이 모두 `MATCH`일 때만 PoC·공격 단계를 실행한다.
+10. required 차이가 있으면 공격을 실행하지 않고 `FAILED + ENVIRONMENT_SETUP + INCONCLUSIVE`와 actual comparison을 R6에 반환한다.
 
-따라서 application image가 만들어지기 전에 그 digest를 가정해 실제 재현용 `RUN_SANDBOX`를 허가하지 않는다. 별도 환경 build work/action의 공통 이름·권한과 atomic 저장 계약은 R4·R3와 확정하기 전까지 자동 build를 허용하지 않는다.
+따라서 application image가 만들어지기 전에 그 digest를 가정해 실제 재현용 `RUN_SANDBOX`를 허가하지 않는다. Verification의 build artifact 확인은 환경 차이의 보안 의미를 판단하는 경계이고, Sandbox 정책 허가를 대신하거나 우회하지 않는다. 별도 환경 build work/action의 공통 이름·권한과 atomic 저장 계약은 R4·R3와 확정하기 전까지 자동 build를 허용하지 않는다.
 
 #### 탐지와 version 선택
 
@@ -175,7 +177,7 @@ Repository의 Dockerfile·Compose도 비신뢰 입력으로 취급하며 다음 
 4. 일회성 실행 설정은 탐지한 runtime·dependency·entrypoint와 plan에 필요한 service만 포함하고 원본 source tree에 commit하지 않는다. plan의 실행 단계·공격 입력을 추가하거나 바꿀 수 없으며 결과 image digest는 `RUN_SANDBOX` 허가 값과 일치해야 한다.
 5. build context는 정규화한 workspace 내부 allowlist 경로로 제한하고 symlink escape를 거절한다. Docker socket·host secret·host 환경변수 전달, `privileged`, 임의 capability, 승인되지 않은 host mount와 운영 endpoint는 금지한다. network는 default-deny이고 승인된 목적지만 열며 CPU·memory·disk·process·time limit를 적용한다.
 6. 기존 설정을 안전하게 변환하면 원본과 변환본 hash, 변경 이유와 의미 차이를 모두 남긴다. 안전한 대체가 없으면 환경 한계로 반환하고 정책을 완화하지 않는다.
-7. 기존 설정과 일회성 설정 모두 적용 근거, dependency·service, image digest, 환경 차이와 폐기 결과를 환경 artifact에 남긴다.
+7. 기존 설정과 일회성 설정 모두 적용 근거, dependency·service, image digest, 예상 환경 차이와 폐기 결과를 `EnvironmentBuildArtifact`에 남긴다.
 
 #### mode별 범위와 테스트 상태
 
@@ -190,13 +192,13 @@ DB와 테스트 상태는 다음 원칙을 따른다.
 
 - SQLite는 원본 DB 파일이나 사용자 데이터를 직접 사용하지 않고 격리된 writable 영역에 migration과 test record를 준비한다.
 - PostgreSQL·MySQL은 settings와 driver에서 engine을 탐지하고 Sandbox 내부의 일회성 service에 schema·migration·test record를 구성한다.
-- fixture, 권한별 테스트 계정, 소유 객체와 로그인 세션은 plan에 고정된 역할·권한·인증·데이터 전제조건을 그대로 만족하는 최소 데이터만 만들고 실행마다 격리한다.
-- Redis·Celery 같은 로컬 의존성은 plan에 필요할 때만 격리 실행한다. OAuth·외부 API·SSRF target은 plan이 허용하고 관측 목표를 유지하는 Sandbox 내부 Mock으로만 대체하며 production credential·운영 DB·실제 개인정보를 사용하지 않는다.
-- Environment Builder가 다른 계정·권한·fixture·Mock을 임의로 선택하지 않는다. 대체가 불가피하면 변경 내용·이유·원래 조건과의 차이·판정 영향을 환경 artifact와 `limitations`에 남긴다. 공격 의미가 달라지면 결과는 `INCONCLUSIVE`이며 미재현을 `FALSE`로 확정하지 않는다.
+- fixture, 권한별 테스트 계정, 소유 객체와 로그인 세션은 `EnvironmentRequirements`에 고정된 역할·권한·인증·데이터 전제조건을 그대로 만족하는 최소 데이터만 만들고 실행마다 격리한다.
+- Redis·Celery 같은 로컬 의존성은 requirements와 plan에 필요할 때만 격리 실행한다. OAuth·외부 API·SSRF target은 requirements가 허용하고 관측 목표를 유지하는 Sandbox 내부 Mock으로만 대체하며 production credential·운영 DB·실제 개인정보를 사용하지 않는다.
+- Environment Builder는 다른 계정·권한·fixture·Mock을 임의로 선택하거나 차이를 수락하지 않는다. 대체가 필요하면 변경 내용·이유·원 요구사항과의 차이를 객관적으로 기록해 Verification에 반환한다. R6가 공격 의미가 달라진다고 판단하면 실행하지 않고 필요에 따라 `HOLD`를 검토하거나 새 requirements와 plan을 만든다.
 
 #### Health Check
 
-Health Check 설정은 실행 중 추측하지 않고 `ReproductionPlan`의 환경 요구 또는 확정 전 환경 설정 candidate에 고정한다. 최소 입력은 다음과 같다.
+Health Check 설정은 실행 중 추측하지 않고 Verification이 `EnvironmentRequirements.items[]`의 `kind=HEALTH_CHECK` 항목과 그 `expected | expected_ref | alternatives | check_ref`에 고정한다. Environment Builder와 Runner는 이 입력을 임의로 완화하거나 바꾸지 않는다. 최소 입력은 다음과 같다.
 
 - 확인 방식과 exact command reference 또는 격리된 요청 URL
 - 예상 상태 코드와 필요한 응답 내용
@@ -217,28 +219,30 @@ Health Check 설정은 실행 중 추측하지 않고 `ReproductionPlan`의 환�
 | build·dependency·DB·migration·application start·Health Check 실패 | `FAILED + ENVIRONMENT_SETUP` | transient이고 R8 한도 안이면 같은 입력의 새 attempt. 반증으로 사용하지 않음 |
 | 준비 완료 뒤 application·PoC step 실행 실패 | `FAILED + EXECUTION` | 실제 실패 단계와 log를 보존하고 새 attempt 여부 판단 |
 | 실행했지만 필요한 관측을 읽지 못함 | `FAILED + OBSERVATION` | 관측 채널을 임의 변경하지 않고 새 plan 필요 여부를 Verification이 판단 |
-| Sandbox 정책 거절 | `BLOCKED + POLICY_BLOCKED` | 정책을 완화하지 않음. 정책·입력이 바뀌면 새 work·action 필요 |
+| Sandbox 정책 거절 | `BLOCKED + POLICY_BLOCKED` | 정책을 완화하지 않음. profile/policy revision 또는 plan closure가 바뀌면 새 plan·work·action 필요 |
 | 단계별 time limit 초과 | `FAILED + TIMEOUT` | timeout 위치와 사용 예산을 기록하고 R8 한도 안에서만 새 attempt |
 | 사용자·runtime 취소 | `CANCELLED + NONE` | 자동 retry 금지, 늦은 결과는 stale로 격리 |
 | 전체 budget 소진 | 공통 `AnalysisError=BUDGET_EXCEEDED`와 work 상태로 기록 | `DynamicReproductionResult.failure_reason`에 새 enum을 만들지 않으며 새 예산 승인 전 retry 금지 |
 
-한 attempt 안에서 build·migration·실행을 몰래 다시 시작하지 않는다. Health Check의 고정된 polling만 같은 attempt 안에서 수행한다. 같은 input hash의 transient 실패는 기존 attempt·log를 보존하고 attempt number가 증가한 새 attempt로 재시도한다. plan·환경 설정·image digest·fixture·Mock·Health Check 조건이 바뀌면 새 input hash, 환경 artifact와 action이 필요하다. 종료된 work를 다시 시작하거나 정책 차단 뒤 정책을 바꾸는 경우에는 공통 계약에 따라 새 work generation을 만든다. 최대 시간과 retry 횟수는 R8 profile을 참조하며 Environment Builder나 Agent가 늘릴 수 없다.
+한 attempt 안에서 build·migration·실행을 몰래 다시 시작하지 않는다. Health Check의 고정된 polling만 같은 attempt 안에서 수행한다. 기존 plan을 재사용할 수 있는 경우는 requirements, Sandbox profile/policy revision, image digest, command/tool, file/mount/network, resource/time/process limit, cleanup policy와 나머지 plan closure exact reference가 모두 같고 build·dependency 설치 같은 일시적 실패만 발생한 때다. 이때도 기존 실패 log를 보존하고 새 attempt·action·decision을 만든다.
 
-`PARTIAL`은 애플리케이션이 단순히 실행된 상태가 아니라, 공격 경로 일부까지 실제로 실행해 신뢰 가능한 관측을 얻었지만 환경 차이로 전체 확인이 부족한 경우에만 `PARTIAL + NONE + INCONCLUSIVE`와 limitation을 사용한다. 따라서 Health Check를 통과했더라도 환경 문제로 공격 경로에 진입하지 못했다면 `PARTIAL`로 기록하지 않는다.
+역할·권한·인증·데이터·fixture·계정·Mock/실제 service·DB/schema/migration·보안 관련 Health Check·허용 fallback처럼 환경 전제조건이 바뀌면 Verification이 새 `EnvironmentRequirements`와 이를 가리키는 새 `ReproductionPlan`을 함께 만든다. 요구사항은 같아도 command·attack input·cleanup policy·Sandbox profile/policy revision 또는 다른 plan closure reference가 바뀌면 새 plan을 만든다. 기존 build artifact와 실패·차단 결과는 덮어쓰지 않고, 새 record의 trusted runtime commit 뒤 새 build work·attempt·`RUN_SANDBOX` action·Runtime decision·Controller decision을 거친 결과만 새 plan에 연결한다. 최대 시간과 retry 횟수는 R8 profile을 참조하며 Environment Builder나 Agent가 늘릴 수 없다.
+
+`PARTIAL`은 애플리케이션이 단순히 실행된 상태가 아니라, R6가 requirements에서 optional 또는 허용 fallback으로 미리 명시한 차이 안에서 공격 경로 일부까지 실제 실행해 신뢰 가능한 관측을 얻었지만 전체 확인이 부족한 경우에만 `PARTIAL + NONE + INCONCLUSIVE`와 limitation을 사용한다. required 차이면 공격을 시작하지 않고 `FAILED + ENVIRONMENT_SETUP`이다. Health Check를 통과했더라도 공격 경로에 진입하지 못했다면 `PARTIAL`로 기록하지 않는다.
 
 #### 정리와 재사용 금지
 
-성공·실패·timeout·취소 뒤에는 exact cleanup policy에 따라 container, 임시 image·volume·network·file, fixture·테스트 계정·생성 credential과 민감 log를 정리하거나 보존 정책에 맞게 redaction한다. 정리 결과는 환경 artifact와 `DynamicReproductionResult.cleanup_status`에 연결한다.
+성공·실패·timeout·취소 뒤에는 exact cleanup policy에 따라 container, 임시 image·volume·network·file, fixture·테스트 계정·생성 credential과 민감 log를 정리하거나 보존 정책에 맞게 redaction한다. 정리 결과는 actual `SandboxEnvironment`의 자원 ledger 및 `DynamicReproductionResult.cleanup_status`와 연결한다.
 
 cleanup이 실패하면 오류와 남은 자원을 기록하고 해당 환경·image·volume을 재사용하지 않으며 격리한다. Recovery runtime에 후속 강제 정리를 요청하고 필요한 운영 알림을 남긴다. cleanup 실패는 재현의 가설 관측과 별개이므로 `cleanup_status=FAILED`로 보존하되 재현 상태나 `hypothesis_outcome`을 임의로 바꾸지 않는다. 결과의 유효성 영향은 Verification Agent가 limitations와 관측을 함께 보고 판단한다.
 
 #### 관련 Issue와 계약 경계
 
-- #21은 환경 artifact의 concrete schema·hash·redaction·불변 저장과 `environment_ref` 연결을 확정한다.
+- #21은 actual `SandboxEnvironment`, 동적 관측·PoC·cleanup 상세 schema와 공통 `environment_ref` 연결을 관리한다.
 - #22는 Sandbox Controller의 image·command·file·network·resource·cleanup 정책 enforcement를 확정한다.
 - R8은 build·migration·Health Check·retry의 숫자 예산과 상한을 확정한다.
 - R3는 Environment Builder·Controller·Runner의 실제 모듈 통합 가능성을 검증한다.
-- R6는 Verification Agent가 plan에 환경 전제조건을 넣고 결과를 해석하는 경계를 검토한다.
+- R6는 `EnvironmentRequirements`, 허용 차이와 fallback을 생산하고 build/actual 차이의 공격 의미 및 결과를 해석한다.
 - R4는 별도 환경 build work/action의 공통 ID·revision·authority·atomic commit 계약을 확정한다.
 
 이 의존 계약과 교차 검토가 끝나기 전에는 #20을 완료로 닫지 않는다.
