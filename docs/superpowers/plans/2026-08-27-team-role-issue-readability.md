@@ -31,7 +31,7 @@
 - Modify: `docs/review/ISSUE_CATALOG.md`
 
 **Interfaces:**
-- Consumes: 김태현 `@taehyeon-git`, 윤희섭 `@v1sion`, 김나연 `@meow`, 배승원 `@baeseungwon1010`, 임채민 `@UltraPaechKeen`, 조근석 `@Potatonion`, 성병찬 `@gitterable`, 김혜령 `@kimhr8465`
+- Consumes: 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec`, 김나연 `@zv9uvr`, 배승원 `@baeseungwon1010`, 임채민 `@UltraPeachKeen`, 조근석 `@Potatonion`, 성병찬 `@gitterable`, 김혜령 `@kimhr8463`
 - Produces: 이름·GitHub 계정·역할·Issue가 일치하는 표와 역할별 쉬운 설명
 
 - [x] README 담당 영역 표에 이름과 GitHub 계정을 추가한다.
@@ -55,7 +55,7 @@
 - [x] #10은 전 팀 필수 검토자를 계정과 함께 적되 independent final reviewer assignee는 비워 둔다.
 - [x] 기존 금지 권한과 완료 조건이 쉬운 설명 과정에서 약화되지 않았는지 재검토한다.
 
-실제 assignee 배정 완료: `@taehyeon-git`, `@baeseungwon1010`, `@Potatonion`, `@gitterable`. GitHub 선택기에 나타나지 않아 본문 연결만 완료: `@v1sion`, `@meow`, `@kimhr8465`, `@UltraPaechKeen`.
+역할 문서에는 윤희섭의 확정 계정 `@YHS-Sec`을 사용한다. GitHub assignee 지정 상태는 역할 배정과 분리해 실제 Issue에서 관리한다.
 
 ### Task 3: 검증·커밋·Draft PR 갱신
 

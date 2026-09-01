@@ -44,13 +44,15 @@ Pro와 Con은 항상 별도의 새 대화에서 실행합니다. 상대 역할�
 | `LIMITED_REPRO` | guard, sink, 권한 조건 등 작은 질문 확인 |
 | `FULL_REPRO` | 안전한 end-to-end 재현과 PoC |
 
-Verification Agent가 세 모드 중 하나를 결정합니다. 동적 재현이 필요하면 Verification이 exact `ReproductionPlan`을 만들고, trusted runtime이 계획·reference·권한·예산을 검사해 확정합니다. Sandbox는 모드를 다시 선택하거나 계획을 수정하지 않습니다.
+Verification Agent가 세 모드 중 하나를 결정합니다. 동적 재현이 필요하면 Verification이 필요한 환경을 exact `EnvironmentRequirements`로 기록하고 이를 가리키는 `ReproductionPlan`을 만듭니다. trusted runtime은 두 record의 schema·reference·권한·예산을 검사해 확정합니다. Sandbox는 요구사항·허용 대체 버전·모드·계획을 다시 선택하거나 수정하지 않습니다.
 
-Docker는 ephemeral/non-root, network default-deny와 자원·시간 제한을 사용합니다. 필수 환경이나 공격 경로를 실행하지 못하면 `FAILED + ENVIRONMENT_SETUP`입니다. 공격 경로를 일부 실행해 믿을 수 있는 관측은 얻었지만 환경 차이 때문에 전체 확인이 부족하면 `PARTIAL + NONE`이며, 관측과 한계를 함께 남깁니다.
+Docker는 ephemeral/non-root, network default-deny와 자원·시간 제한을 사용합니다. R7은 실제 환경·Health Check를 requirement별로 비교합니다. 필수 항목이 `MISMATCH | NOT_CHECKED | ERROR`이면 공격 단계 전에 멈추고 `FAILED + ENVIRONMENT_SETUP`으로 R6에 돌려보냅니다. 공격 경로를 실제로 일부 실행해 믿을 수 있는 관측을 얻은 뒤 전체 확인이 부족한 경우에만 `PARTIAL + NONE`이며, 관측과 한계를 함께 남깁니다.
 
-실행 전에 Verification이 만든 `ReproductionPlan`에 LIMITED/FULL mode, 가설, 순서가 있는 단계, 각 단계의 명령·공격 입력과 cleanup 정책의 정확한 reference를 고정합니다. Runtime Validator의 `RUN_SANDBOX` 허가는 요청자·상태·예산과 exact 계획 reference만 확인합니다. Sandbox Controller가 image·명령·파일·네트워크·자원·cleanup 정책을 검사하고 exact 판정을 저장한 뒤, 통과한 계획만 Sandbox Runner가 실행합니다. Runner는 실제 단계·명령·공격 입력을 `SandboxStepLog`에 남깁니다. 비-LLM Result Assembler가 같은 attempt의 정책·환경·log·PoC·정리 reference를 동적 결과로 묶고 저장 때 조합을 다시 대조합니다. Verification은 `COMMITTED`된 결과만 읽어 최종 판정에 사용합니다. 계획 변경이 필요하면 Controller나 Runner가 이유를 반환하고 Verification이 새 계획과 새 실행 요청을 만듭니다.
+실행 전에 Verification이 `EnvironmentRequirements`에 애플리케이션 역할·인증 방식·데이터·DB/service·fixture/mock·필수/대체 버전·Health Check와 근거를 고정합니다. `ReproductionPlan`에는 그 exact reference와 LIMITED/FULL mode, 가설, 순서가 있는 단계, 각 단계의 명령·공격 입력, cleanup 정책을 고정합니다. Runtime Validator의 `RUN_SANDBOX` 허가는 요청자·상태·예산과 current 계획·requirements reference를 확인합니다. Sandbox Controller가 image·명령·파일·네트워크·자원·cleanup 정책을 검사하고 exact 판정을 저장한 뒤, 통과한 계획만 Sandbox Runner가 실행합니다. Runner는 환경 비교가 끝나기 전 공격 단계를 시작하지 않으며 실제 단계·명령·공격 입력을 `SandboxStepLog`에 남깁니다. 비-LLM Result Assembler는 같은 분석·가설의 exact R6 plan closure와 같은 R7 실행 attempt의 정책·환경 비교·log·PoC·정리 reference를 동적 결과로 묶고 저장 때 조합을 다시 대조합니다. Verification은 `COMMITTED`된 결과만 읽어 최종 판정에 사용합니다.
 
-동적 결과는 정확한 PoC·Controller 정책 판정·실제 생성 환경·Runner 단계 로그를 reference로 전달합니다. Runner가 호출되지 않았으면 단계 로그는 비어 있고, 호출됐다면 실패해도 로그가 필요합니다. 실제 환경이 없으면 환경 reference도 비어 있습니다. 정리할 자원이 전혀 없을 때만 `cleanup_status=NOT_REQUIRED`를 사용합니다. PoC reference가 있어도 정책에 막혀 실행되지 않았을 수 있으므로 상태와 로그를 함께 확인합니다. R4는 이 공통 필드·null·상태 조합을 정하고 R7은 각 artifact의 상세 내용을 작성합니다.
+필수 환경 차이가 생기면 R7은 요구사항을 고치거나 차이를 승인하지 않고 exact 비교 결과를 R6에 반환합니다. R6이 환경 조건이나 허용 대체값을 바꾸려면 기존 record를 덮어쓰지 않고 새 `EnvironmentRequirements`와 이를 가리키는 새 `ReproductionPlan`을 함께 만듭니다. 조건은 유지하고 실행 단계만 바꾸면 새 plan만 만듭니다. 두 경우 모두 Runtime Validator와 Sandbox Controller를 다시 통과해야 하며, R6의 수용은 Sandbox 보안 정책을 우회하지 않습니다.
+
+동적 결과는 정확한 PoC·Controller 정책 판정·실제 생성 환경·Runner 단계 로그를 reference로 전달합니다. 요구사항 reference는 결과에 중복 저장하지 않고 `reproduction_plan_ref → environment_requirements_ref`와 `environment_ref → requirements_ref`가 같은지 확인합니다. Runner가 호출되지 않았으면 단계 로그는 비어 있고, 호출됐다면 환경 차이로 첫 공격 단계 전에 멈춰도 로그가 필요합니다. 실제 환경이 없으면 환경 reference도 비어 있습니다. 정리할 자원이 전혀 없을 때만 `cleanup_status=NOT_REQUIRED`를 사용합니다. PoC reference가 있어도 정책에 막혀 실행되지 않았을 수 있으므로 상태와 로그를 함께 확인합니다. R4는 공통 필드·null·상태·reference 조합을, R6는 필요한 조건과 허용 차이를, R7은 실제 비교와 각 artifact의 상세 내용을 작성합니다.
 
 Technical Gate가 `REVISE`를 반환하면 같은 ACTIVE `VerificationAssignment` owner가 직접 받습니다. 프로그램은 새 generation의 Verification work와 `TERMINAL -> VERIFYING` 전이를 먼저 원자적으로 만들고, 필요한 Context·Pro/Con·정적·동적 근거와 설명을 보완해 새 Verification revision·work 종료·current pointer를 함께 확정합니다. CWE 보완이 있으면 기존 CWE producer와 새 revision을 조정한 뒤 새 Gate work를 요청합니다. 이는 provider retry나 동일 입력 재투표가 아닙니다.
 
