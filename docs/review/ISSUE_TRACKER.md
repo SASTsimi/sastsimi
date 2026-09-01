@@ -14,17 +14,19 @@ GitHub가 실제 상태, 담당자와 토론의 기준입니다. 이 문서는 �
 | 구분 | 역할·목적 | GitHub Issue | 역할 담당자 / GitHub 배정 상태 | 작업 브랜치 | 우선 검토할 문서 | 반드시 함께 검토할 역할 | 현재 상태 |
 |---|---|---|---|---|---|---|---|
 | 전체 관리 | Architecture v5 검토 중 설계 초안 전체 검토·승인 | [#1](https://github.com/SASTsimi/sastsimi/issues/1) | 김태현 `@taehyeon-git` 배정, 윤희섭 `@YHS-Sec` 공동 역할 담당 | — | `README.md`, `docs/architecture-v5/README.md`, 협업·검토 문서 | R1–R8, 최종 검토·승인 담당자 | OPEN |
-| R1 | 최초 가설 생성·Primitive Chaining | [#2](https://github.com/SASTsimi/sastsimi/issues/2) | 배승원 `@baeseungwon1010` | `review/hypothesis-research` | `03`, `06`, `08`, `09`, `13` | R2, R6, R4, R8 | OPEN |
+| R1 | 최초 가설·HOLD REQUIRED/Gate-qualified TRUE PROVIDED Chaining | [#2](https://github.com/SASTsimi/sastsimi/issues/2) | 배승원 `@baeseungwon1010` | `review/hypothesis-research` | `03`, `06`, `08`, `09`, `13` | R2, R6, R4, R8 | OPEN |
 | R2 | AST/SAST 정적 사실·위치 기반 분석 정보 | [#3](https://github.com/SASTsimi/sastsimi/issues/3) | 김나연 `@zv9uvr` | `review/static-context` | `02`, `07`, `08`, `10`, `13` | R1, R6, R4, R3 | OPEN |
 | R3 | 통합 구현 가능성·계약 준수 테스트 | [#4](https://github.com/SASTsimi/sastsimi/issues/4) | 김태현 `@taehyeon-git` 배정, 윤희섭 `@YHS-Sec` 공동 역할 담당 | `review/integration-feasibility` | `01`, `03`, `08`, `09`, `10`, `11`, `13` | R4, 변경 영향 역할, R8 | OPEN |
 | R4 | PM·Control Plane·중앙 계약·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) | 김태현 `@taehyeon-git` 배정, 윤희섭 `@YHS-Sec` 공동 역할 담당 | `review/r4-04-governance-audit` | root README, `01`, `03`, `08`, `09`, `10`, `11`, `13`, governance/review | 전체 역할 | IN REVIEW — R4-01~03 완료, [R4-04 PR #48](https://github.com/SASTsimi/sastsimi/pull/48) 교차 검토 중 |
-| R5 | 두 Gate·취약점 결과 후보·보고서 초안 | [#6](https://github.com/SASTsimi/sastsimi/issues/6) | 김혜령 `@kimhr8463` | `review/gate-reporting` | `05`, `07`, `08`, `10`, `12`, `13` | R6, R2, R7, R4, R8 | OPEN |
-| R6 | 검증·독립 찬성/반대 근거·판정 | [#7](https://github.com/SASTsimi/sastsimi/issues/7) | 임채민 `@UltraPeachKeen` | `review/verification` | `03`, `04`, `07`, `08`, `13` | R2, R7, R1, R4, R5, R8 | OPEN |
-| R7 | Docker LIMITED/FULL 재현·Sandbox | [#8](https://github.com/SASTsimi/sastsimi/issues/8) | 조근석 `@Potatonion` | `review/dynamic-sandbox` | `04`, `07`, `08`, `10`, `13` | R6, R4, R8, R3, R5 | OPEN |
-| R8 | 평가 corpus·지표·자원 예산 | [#9](https://github.com/SASTsimi/sastsimi/issues/9) | 성병찬 `@gitterable` | `review/data-evaluation` | `04`, `06`, `07`, `08`, `09` | R4, 각 LLM 역할, R3 | OPEN |
+| R5 | 두 Gate·같은 R6 owner REVISE·보고서 초안 | [#6](https://github.com/SASTsimi/sastsimi/issues/6) | 김혜령 `@kimhr8463` | `review/gate-reporting` | `05`, `07`, `08`, `10`, `12`, `13` | R6, R2, R7, R4, R8 | OPEN |
+| R6 | 찬반 근거·동적 모드와 `ReproductionPlan`·최종 판정 | [#7](https://github.com/SASTsimi/sastsimi/issues/7) | 임채민 `@UltraPeachKeen` | `review/verification` | `03`, `04`, `07`, `08`, `13` | R2, R7, R1, R4, R5, R8 | OPEN |
+| R7 | Controller 정책 판정·Runner exact 실행·환경/log/PoC 상세 artifact와 동적 결과 조립 | [#8](https://github.com/SASTsimi/sastsimi/issues/8) | 조근석 `@Potatonion` | `review/dynamic-sandbox` | `04`, `07`, `08`, `10`, `13` | R6, R4, R8, R3, R5 | OPEN |
+| R8 | 평가 corpus·지표·예산 profile | [#9](https://github.com/SASTsimi/sastsimi/issues/9) | 성병찬 `@gitterable` | `review/data-evaluation` | `04`, `06`, `07`, `08`, `09` | R4, 각 LLM 역할, R3 | OPEN |
 | 최종 | 전체 교차 시나리오·고정 commit SHA·최종 승인 | [#10](https://github.com/SASTsimi/sastsimi/issues/10) | 최종 검토·승인 담당자 김태현 `@taehyeon-git` | — | 전체 기준 문서·Wiki·Mermaid·발견사항 | R1–R8 담당자 전원, 김태현 `@taehyeon-git` | OPEN |
 
 번호 문서는 `docs/architecture-v5/` 아래 파일을 뜻합니다. 세부 입력·출력, 금지 권한과 완료 조건은 [ISSUE_CATALOG.md](./ISSUE_CATALOG.md)에 있습니다.
+
+R6가 동적 재현 모드와 계획을 결정하고, R4 trusted runtime이 계획 schema·reference·호출 권한·상태·예산을 검사합니다. R7의 Sandbox Controller는 세부 실행 정책을 검사하고 Runner는 승인된 exact 계획만 실행합니다. R8이 만든 예산 profile도 R4 runtime을 통해 강제됩니다. 연결 역할은 상대 역할의 전문 결정을 대신하지 않고 생산자·소비자 계약을 교차 검토합니다.
 
 R4-04의 역할별 확인 범위, 승인으로 인정하는 기록과 병합 조건은 [R4-04 교차 검토 기록](./R4-04_CROSS_REVIEW.md)에서 확인합니다.
 

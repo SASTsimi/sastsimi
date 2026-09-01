@@ -279,7 +279,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 검토할 입력·출력
 
 - 입력: 모든 전문 역할 contract 요구, budget/eval 결과, provider/sandbox/storage 제한, human review 요구
-- 출력: versioned RecordMeta/state/error contract, `WorkExecutionState`·attempt·transition commit, `ActionRequest`·`ActionDecision`, `HumanReviewPacket`·`HumanReviewDecision`, orchestration state machine, RACI, review map, ADR와 run closure 기준
+- 출력: versioned RecordMeta/state/error contract, `WorkExecutionState`·attempt·transition commit, `ActionRequest`·`ActionDecision`, 동적 결과의 공통 exact reference·null·상태 조합, `HumanReviewPacket`·`HumanReviewDecision`, orchestration state machine, RACI, review map, ADR와 run closure 기준
 
 ### 확인할 권한 경계
 
@@ -312,6 +312,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] `TransitionCommit`이 `COMMITTED`된 결과만 downstream과 최종 결과에서 사용함
 - [ ] 역할별 `ActionRequest`가 필수 check를 모두 통과한 `ActionDecision`에서만 한 번 실행됨
 - [ ] 두 LLM Gate 순서, Reporter 조건, 공식 정책 부재 `UNCERTAIN + DENY`와 외부 공개 차단을 runtime이 검사함
+- [ ] 동적 결과의 PoC·Controller 정책 판정·실제 환경·Runner log reference와 `NOT_REQUIRED` 조건이 같은 analysis·hypothesis·attempt에서 검증됨
 - [ ] `ReportDraft`와 `HumanReviewDecision`이 분리되고 사람 packet에 근거·PoC·자원·오류·HOLD가 포함됨
 - [ ] 실제 GitHub 계정과 최종 검토·승인 담당자가 문서와 Issue에서 일치함
 - [ ] conflict resolution, freeze SHA와 승인·구현 저장소 동기화 규칙이 확정됨
@@ -358,6 +359,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - Gate는 Verification verdict를 변경하지 않는다.
 - Gate 1은 final TRUE에서만, Gate 2는 같은 `TRUE + Technical ACCEPT`에서만 호출한다.
 - 공식 정책이 없거나 핵심 정보가 누락되면 `UNCERTAIN + DENY`다.
+- Technical `REVISE`는 Orchestration이나 R7이 목적지를 고르지 않고 같은 ACTIVE `VerificationAssignment`의 R6 owner에게 직접 돌아간다.
 - Reporter는 새 공격 주장을 만들거나 외부 제출·공개·human decision을 수행하지 않는다.
 
 ### 필수 교차 리뷰
@@ -389,7 +391,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 쉽게 말하면
 
-배정받은 가설마다 Context·찬성·반대·동적 근거와 Gate 보완 흐름을 직접 관리한다. 모든 근거를 종합해 `TRUE`, `FALSE`, `HOLD` 중 하나로 판정하고 새 material claim을 별도 가설로 분리하는 기준과 취약점 유형별 검증 절차를 만든다.
+배정받은 가설마다 Context·찬성·반대 근거를 관리하고 동적 재현 필요성과 `NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO`를 결정한다. 동적 재현이 필요하면 exact `ReproductionPlan`을 만들고, R7이 돌려준 `COMMITTED` 결과를 다른 근거와 종합해 `TRUE`, `FALSE`, `HOLD` 중 하나로 판정한다. 새 material claim은 별도 가설로 분리한다.
 
 ### 담당자가 나눌 수 있는 하위 Issue 예시
 
@@ -402,7 +404,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - 담당 역할: 검증·반박·플레이북
 - 담당자: 임채민 `@UltraPeachKeen`
 - 주요 작업 브랜치: `review/verification`
-- 관련 흐름: 가설별 검증 시작 → Context·찬성·반대 근거 → 필요 시 동적 재현 → 최종 판정 → CWE/Gate 요청 → REVISE 직접 보완 → 조건부 Chaining handoff
+- 관련 흐름: 가설별 검증 시작 → Context·찬성·반대 근거 → 동적 모드 선택·`ReproductionPlan` 생산 → runtime 검사·R7 실행 결과 소비 → 최종 판정 → CWE/Gate 요청 → REVISE 직접 보완 → 조건부 Chaining handoff
 
 ### 검토 문서
 
@@ -413,19 +415,20 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 검토할 입력·출력
 
 - 입력: VulnerabilityHypothesis, 같은 workspace/commit의 context, 운영 Pro/Con budget, 평가용 debate trigger, DynamicReproductionResult, revision request
-- 출력: supporting/counter evidence, 질문별 `FalsificationResult`, initial/final verdict, dynamic decision, restrictions, PrimitiveDraft, `origin=VERIFICATION` material child proposal와 Gate revision coordination
+- 출력: supporting/counter evidence, 질문별 `FalsificationResult`, initial/final verdict, 동적 모드 결정, `ReproductionPlan`, restrictions, PrimitiveDraft, `origin=VERIFICATION` material child proposal와 Gate revision coordination
 
 ### 확인할 권한 경계
 
 - Pro/Con은 독립 근거를 만들고 Verification만 `TRUE/FALSE/HOLD`를 합성한다.
 - 오류, empty retrieval와 sandbox setup failure를 `FALSE`로 만들지 않는다.
 - 별도 endpoint/sink/권한/impact를 기존 verdict에 몰래 합치지 않는다.
+- R6는 동적 재현 모드와 계획을 결정하지만 Sandbox를 직접 실행하거나 `DynamicReproductionResult`를 생산하지 않는다. R7의 `COMMITTED` 결과만 소비한다.
 - Gate 결과·정책 의미·공개 결정을 대신 만들지 않는다. Gate·Reporter 호출을 제안해도 Runtime Validator 검사를 우회하지 않는다.
 
 ### 필수 교차 리뷰
 
 - 정적분석: context/flow/gap
-- 동적검증: 재현 결정과 outcome 해석
+- 동적검증: 승인 계획의 실행 가능성, 실행 log·outcome·PoC 반환 계약
 - LLM 탐색·체이닝: material claim 환류
 - PM: lifecycle/session/error
 - Gate: handoff readiness
@@ -438,6 +441,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] `TRUE`는 핵심 path evidence, `FALSE`는 `question_id`와 실제 근거가 있는 `DISPROVED`, `HOLD`는 unresolved condition을 요구함
 - [ ] initial/final verdict와 revision history가 분리됨
 - [ ] dynamic 실행 `status`, 관측 `hypothesis_outcome`, `hypothesis_disproved`와 Verification verdict가 구분됨
+- [ ] R6가 `NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO`와 exact `ReproductionPlan`을 결정·생산하고 R7의 `COMMITTED` 결과만 소비함
 - [ ] material new claim과 같은 가설의 작은 validation subtask 경계가 있음
 - [ ] material new claim은 `origin=VERIFICATION` proposal로 trusted registration 뒤 새 Verification을 받음
 - [ ] Technical REVISE를 같은 ACTIVE VerificationAssignment owner가 새 VERIFICATION work에서 받고 새 evidence 또는 설명 revision을 남김
@@ -450,20 +454,21 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 쉽게 말하면
 
-정적 근거만으로 부족한 가설을 격리된 Docker 환경에서 제한적으로 재현한다. 실행 명령, 환경, 관찰 결과와 정리된 PoC를 남기되 host·실서비스·비밀정보에 접근하지 못하도록 안전 경계를 정한다.
+R6가 만든 `COMMITTED ReproductionPlan`과 trusted runtime의 exact 실행 허가를 받아 격리된 Docker 환경에서 그대로 실행한다. 실제 단계·환경·관찰 결과와 정리된 PoC를 남기되 host·실서비스·비밀정보에 접근하지 못하도록 안전 경계를 정한다.
 
 ### 담당자가 나눌 수 있는 하위 Issue 예시
 
-- `[R7-01] 제한 재현과 전체 재현을 선택하는 기준 확정`
-- `[R7-02] Docker 네트워크·자원·파일 접근 제한 확정`
-- `[R7-03] 실행 결과·PoC·정리 상태 기록 형식 확정`
+- `[#19 R7-01] 승인된 ReproductionPlan 실행·결과 반환 흐름 설계`
+- `[#20 R7-02] 공통 재현 환경·FULL_REPRO 최소 E2E 구성 설계`
+- `[#22 R7-03] Docker Sandbox 격리·네트워크·자원 제한 설계`
+- `[#21 R7-04] 동적 Evidence·PoC·실패 상태 기록 설계`
 
 ### 역할 소유권
 
 - 담당 역할: 동적검증·Sandbox
 - 담당자: 조근석 `@Potatonion`
 - 주요 작업 브랜치: `review/dynamic-sandbox`
-- 관련 흐름: 재현 필요성 결정 → 승인된 Docker 실행 → 관찰 결과·PoC 반환 → Verification 근거로 사용
+- 관련 흐름: R6의 `COMMITTED ReproductionPlan`·runtime `RUN_SANDBOX ALLOW` 수신 → exact Docker 실행 → `SandboxStepLog`·동적 결과·PoC 반환 → R6의 최종 판정 근거로 사용
 
 ### 검토 문서
 
@@ -473,14 +478,16 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 검토할 입력·출력
 
-- 입력: hypothesis-linked reproduction request, `workspace_id`/`commit_id`, image digest, steps, approved target/network/resource policy
-- 출력: DynamicReproductionResult, 실행 status, `hypothesis_outcome`, environment/step/observation refs, redacted PoC, limitation/cleanup/error
+- 입력: R6가 생산하고 runtime이 확정한 exact `ReproductionPlan`, 같은 hypothesis/workspace/commit/work/attempt, USED `RUN_SANDBOX` decision, image digest와 승인된 target/network/resource policy
+- 출력: `SandboxStepLog`, `DynamicReproductionResult`, 실행 status, `hypothesis_outcome`, exact policy/environment/step/PoC refs, limitation/cleanup/error
 
 ### 확인할 권한 경계
 
 - sandbox는 evidence만 생산하며 verdict를 결정하지 않는다.
+- R7은 재현 필요성이나 LIMITED/FULL 모드를 고르지 않고 `ReproductionPlan`을 생산·수정하지 않는다. 계획 변경이 필요하면 R6의 새 plan과 새 실행 허가를 기다린다.
 - Runtime Validator는 `RUN_SANDBOX` 호출 권한·상태·예산·exact plan reference까지만 검사하고, Sandbox Controller가 image·command·file·network·resource·cleanup 정책을 전담한다.
 - Sandbox Runner는 Controller가 승인한 exact 계획만 실행한다.
+- R4는 `poc_ref`·`policy_decision_ref`·`environment_ref`·`steps_ref`, Runner·환경·cleanup 상태 조합을 확정하고, R7은 네 artifact의 상세 내용과 생성·정리 절차를 정의한다.
 - host root/home, Docker socket, host process namespace, host secret, production credential와 범위 밖 target 접근을 금지한다.
 - LLM 요청만으로 network/resource policy를 완화하지 않는다.
 
@@ -497,10 +504,13 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] ephemeral non-root/read-only 우선, CPU/memory/disk/process/time 제한이 기본값임
 - [ ] network default-deny이며 예외 승인·scope·log가 정의됨
 - [ ] image/build provenance, daemon isolation과 writable mount 정책 threat model이 있음
-- [ ] LIMITED와 FULL의 선택 조건과 observable effect 차이가 명확함
+- [ ] R6가 선택한 LIMITED/FULL에 따라 R7이 준비할 실행 환경과 observable effect 차이가 명확함
+- [ ] exact plan/action/work/attempt가 일치하고 계획 밖 command·공격 입력을 실행하지 않음
 - [ ] setup/execution/observation/policy/timeout failure와 반증이 다른 상태임
 - [ ] 필수 환경·공격 경로 미실행은 `FAILED + ENVIRONMENT_SETUP`, 유효한 일부 관측과 환경 차이는 `PARTIAL + NONE + INCONCLUSIVE`로 구분됨
 - [ ] workspace/commit, command, input, observation과 cleanup이 hypothesis에 추적됨
+- [ ] Runner 미호출/호출, 실제 환경 미생성/생성, cleanup 불필요/필요 조합이 R4 nullable reference 계약과 일치함
+- [ ] PoC 생성본·실행본, Controller 정책 판정, 실제 환경과 step log의 R7 상세 artifact schema가 정의됨
 - [ ] escape/socket/secret/out-of-scope network negative scenario가 있음
 
 ---
@@ -511,7 +521,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 쉽게 말하면
 
-각 Agent와 분석 단계가 실제로 잘 동작하는지 같은 평가 데이터로 비교할 기준을 만든다. 정확도뿐 아니라 token, 시간, 재시도, chaining과 sandbox 자원 제한을 정하고 변경 전후 품질이 나빠지지 않았는지 확인한다.
+각 Agent와 분석 단계가 실제로 잘 동작하는지 같은 평가 데이터로 비교할 기준을 만든다. 각 전문 역할이 제공한 최소 품질·실행 요구와 함께 token, 시간, 재시도, chaining과 sandbox 예산 profile을 정한다. 실제 action 허용·차단은 R4 trusted runtime이 담당한다.
 
 ### 담당자가 나눌 수 있는 하위 Issue 예시
 
@@ -525,7 +535,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - 담당 역할: 데이터·평가·예산
 - 담당자: 성병찬 `@gitterable`
 - 주요 작업 브랜치: `review/data-evaluation`
-- 관련 흐름: 전체 단계의 실행 기록 수집 → 품질·비용 평가 → 예산 초과 처리 → 같은 corpus로 회귀 비교
+- 관련 흐름: 전문 역할의 최소 품질·실행 요구 수집 → 실행 기록과 품질·비용 평가 → 예산 profile 제안 → R4 runtime 강제 → 같은 corpus로 회귀 비교
 
 ### 검토 문서
 
@@ -542,6 +552,8 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 확인할 권한 경계
 
 - metric은 verdict/Gate/human decision을 대신하지 않는다.
+- R8은 budget profile과 합격 기준을 설계하지만 action 예산을 직접 허용·차단하지 않는다. R4 trusted runtime이 승인된 profile을 강제한다.
+- 전문 역할의 최소 품질·실행 요구 없이 예산만 줄여 debate·동적 재현·Gate 의미를 바꾸지 않는다.
 - unavailable usage를 추정 확정값으로 표시하지 않는다.
 - 평가 없이 session reuse, debate 생략 또는 model/provider 변경을 정당화하지 않는다.
 - credential, raw session secret와 hidden chain-of-thought를 수집하지 않는다.
@@ -591,6 +603,9 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 | workspace 또는 commit 불일치 | context/dynamic evidence 폐기와 `WORKSPACE_MISMATCH` 기록 |
 | 상충 Pro/Con | 독립 NEW session과 근거 기반 verdict/HOLD |
 | sandbox setup 실패 | explicit dynamic failure; vulnerability FALSE 금지 |
+| 동적 재현 계획 생성 | R6가 LIMITED/FULL과 exact `ReproductionPlan`을 생산하고 runtime이 COMMITTED·RUN_SANDBOX 허가; R7의 모드 재결정 금지 |
+| 동적 재현 실행·반환 | R7이 승인된 plan만 실행해 `SandboxStepLog`·`DynamicReproductionResult`·PoC를 만들고, R6가 COMMITTED 결과만 소비해 최종 판정 |
+| 동적 계획 변경·stale 실행 | 기존 action/result commit 거절; R6의 새 plan revision과 새 RUN_SANDBOX 허가 필요 |
 | HOLD | Gate 없이 REQUIRED Primitive 저장과 Chaining 조회; PROVIDED 승격 금지 |
 | FALSE | terminal internal result; Primitive/Chaining 금지 |
 | Gate 전 TRUE | PROVIDED admission과 Chaining 금지 |
@@ -630,8 +645,9 @@ R8 평가/예산 기준 ─┐
 R4 ─────────────────┼─> R2 workspace/static/context
 R2 + R4 + R8 ───────┴─> R1-A Hypothesis
 R1-A + R2 + R4 + R8 ──> R6 Verification
-R4 + R8 ──────────────> R7 Sandbox
-R6 + R7 ──────────────> R5 Technical/Rule Scope Gate
+R6 ReproductionPlan + R4 runtime + R8 budget ─> R7 Sandbox exact execution
+R7 COMMITTED dynamic result ──────────────────> R6 final Verification
+R6 final Verification ─────────────────────────> R5 Technical/Rule Scope Gate
 R5 정상 통과 + R6 HOLD ─> R1-B Primitive Chaining
 R6 + R7 + R1-B + R4 + R5 ─> 보고서·사람 검토 전달
 R3는 모든 계약의 구현 가능성과 종단 조립을 교차 검토

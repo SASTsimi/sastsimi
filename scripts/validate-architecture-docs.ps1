@@ -306,14 +306,28 @@ foreach ($field in @('mode:', 'hypothesis_ref:', 'sandbox_profile_ref:', 'steps:
         Add-Failure "missing ReproductionPlan field: $field"
     }
 }
-foreach ($field in @('reproduction_plan_ref:', 'entries:')) {
+foreach ($field in @('meta:', 'reproduction_plan_ref:', 'entries:')) {
     if (-not $sandboxStepLogBlock.Contains($field)) {
         Add-Failure "missing SandboxStepLog field: $field"
     }
 }
-foreach ($field in @('action_decision_ref:', 'reproduction_plan_ref:', 'mode:', 'steps_ref:', 'attack_input_refs:', 'cleanup_policy_ref:')) {
-    if (-not $dynamicResultBlock.Contains($field)) {
-        Add-Failure "missing DynamicReproductionResult authorization field: $field"
+foreach ($fieldPattern in @(
+    'action_decision_ref:\s*StoredDataRef',
+    'reproduction_plan_ref:\s*StoredDataRef',
+    'mode:\s*LIMITED_REPRO \| FULL_REPRO',
+    'policy_decision_ref:\s*StoredDataRef \| null',
+    'runner_invoked:\s*boolean',
+    'environment_created:\s*boolean',
+    'environment_ref:\s*StoredDataRef \| null',
+    'steps_ref:\s*StoredDataRef \| null',
+    'poc_ref:\s*StoredDataRef \| null',
+    'attack_input_refs:\s*\[StoredDataRef\]',
+    'cleanup_policy_ref:\s*StoredDataRef',
+    'cleanup_required:\s*boolean',
+    'cleanup_status:\s*SUCCEEDED \| FAILED \| NOT_REQUIRED'
+)) {
+    if (-not [regex]::IsMatch($dynamicResultBlock, $fieldPattern)) {
+        Add-Failure "missing or invalid DynamicReproductionResult field: $fieldPattern"
     }
 }
 foreach ($actionType in $requiredActionTypes) {
@@ -532,16 +546,32 @@ $sandboxReviewPatterns = @(
         Pattern = '(?s)`RUN_SANDBOX`만 `reproduction_plan_ref`를 사용.*?`input_refs`에는 exact `ReproductionPlan`.*?`hypothesis_ref`.*?`sandbox_profile_ref`.*?`command_ref`.*?`attack_input_refs`.*?`cleanup_policy_ref`'
     },
     @{
-        Name = 'sandbox execution log exactly matches the authorized plan'
-        Pattern = '(?s)`steps_ref`의 `stored_data_id`·`content_hash`는 같은 `reproduction_plan_ref`를 가진 exact `SandboxStepLog` artifact.*?`step_id`, `command_ref`, `attack_input_refs`.*?field-by-field exact match.*?계획에 없는 entry를 허용하지 않는다'
+        Name = 'invoked sandbox execution log exactly matches the authorized plan'
+        Pattern = '(?s)`runner_invoked=true`이면.*?exact `SandboxStepLog`를 가리키는 `steps_ref`가 필수.*?`step_id`, `command_ref`, `attack_input_refs`.*?field-by-field exact match.*?계획에 없는 entry를 허용하지 않는다'
     },
     @{
         Name = 'dynamic result save repeats plan and execution checks'
         Pattern = '(?s)`SAVE_RESULT\(requested_by=SANDBOX, result_kind=dynamic_reproduction_result\)`.*?`SCHEMA`.*?`AUTHORITY`.*?`IDENTITY`.*?`REVISION`.*?`STATE`.*?`REDACTION`.*?계획.*?실제 log.*?`COMMITTED`하지 않는다'
     },
     @{
-        Name = 'Sandbox produces and Verification only consumes dynamic results'
-        Pattern = '(?s)Sandbox Controller와 Runner로 구성된 Sandbox runtime만 `SandboxStepLog`와 `DynamicReproductionResult`를 생산.*?Verification은.*?경우에만 이를 읽으며 `DynamicReproductionResult`를 직접 만들거나 수정하지 않는다'
+        Name = 'Sandbox result assembler produces and Verification only consumes dynamic results'
+        Pattern = '(?s)Sandbox runtime의 비-LLM result assembler만 exact reference를 `DynamicReproductionResult`에 조립.*?Verification은.*?경우에만 이를 읽으며 `DynamicReproductionResult`를 직접 만들거나 수정하지 않는다'
+    },
+    @{
+        Name = 'dynamic result nullable references follow lifecycle facts'
+        Pattern = '(?s)`runner_invoked=false`이면 `steps_ref=null`.*?`runner_invoked=true`이면.*?`steps_ref`가 필수.*?`environment_created`.*?`false`이면 `environment_ref=null`.*?`true`이면 `environment_ref`가 필수'
+    },
+    @{
+        Name = 'cleanup NOT_REQUIRED is limited to attempts without cleanup targets'
+        Pattern = '(?s)`cleanup_required`.*?`false`이면 `cleanup_status=NOT_REQUIRED`.*?`true`이면 `cleanup_status=SUCCEEDED \| FAILED`만 허용.*?실제 자원이 있는데.*?계약 위반'
+    },
+    @{
+        Name = 'policy blocked result retains the exact Controller decision'
+        Pattern = '(?s)`failure_reason=POLICY_BLOCKED`이면.*?`policy_decision_ref`.*?반드시 존재.*?정책의 exact revision.*?`ALLOW \| DENY` 결과와 사유 코드'
+    },
+    @{
+        Name = 'PoC reference does not imply execution or success'
+        Pattern = '(?s)`poc_ref`.*?exact `poc_bundle`.*?존재 자체는 실행이나 재현 성공을 뜻하지 않는다.*?`poc_ref`와 `SandboxStepLog`.*?같은 revision 또는 digest'
     },
     @{
         Name = 'Verification owns plans while Sandbox owns dynamic results'

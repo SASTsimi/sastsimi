@@ -28,16 +28,19 @@ flowchart TB
     S08 --> S09[9 Verification requests on-demand context]
     S09 --> S10[10 Production Verification runs independent Pro and Con]
     S10 --> S11[11 Initial TRUE FALSE HOLD]
-    S11 --> S12{12 Dynamic reproduction needed}
+    S11 --> S12{12 Verification chooses dynamic mode}
     S12 -->|No| S13[13 Final verdict and material claim split]
-    S12 -->|LIMITED| DL[LIMITED ReproductionPlan]
-    S12 -->|FULL| DF[FULL ReproductionPlan and PoC draft]
+    S12 -->|LIMITED| DL[Verification LIMITED ReproductionPlan]
+    S12 -->|FULL| DF[Verification FULL ReproductionPlan and PoC draft]
     DL --> DAUTH[Runtime Validator call authorization]
     DF --> DAUTH
     DAUTH --> DCTRL[Sandbox Controller policy check]
-    DCTRL -->|Pass| DRUN[Sandbox Runner Docker execution]
-    DCTRL -->|Policy blocked| S13
-    DRUN --> S13
+    DCTRL --> DPD[Exact SandboxPolicyDecision]
+    DPD -->|Pass| DRUN[Sandbox Runner exact Docker execution]
+    DPD -->|Policy blocked no Runner| DASM[Sandbox Result Assembler]
+    DRUN --> DASM
+    DASM --> DRES[Dynamic result with exact nullable refs]
+    DRES --> S13
     S13 --> S14{14 Final verdict}
     S14 -->|FALSE| CLOSED[Terminal internal result]
     S14 -->|HOLD| REQUIRED[HOLD REQUIRED Primitive admitted]
@@ -133,16 +136,19 @@ flowchart TB
     BASIC --> SYN
     BASIC -. no Gate Primitive or Reporter .-> METRICS[Evaluation metrics only]
     SYN --> INITIAL[Initial TRUE FALSE HOLD]
-    INITIAL --> DYN{Dynamic evidence needed}
+    INITIAL --> DYN{Verification chooses dynamic mode}
     DYN -->|No| FINAL[Final VerificationResult]
-    DYN -->|Small question| LIMITED[LIMITED ReproductionPlan]
-    DYN -->|End to end| FULL[FULL ReproductionPlan and PoC draft]
+    DYN -->|Small question| LIMITED[Verification LIMITED ReproductionPlan]
+    DYN -->|End to end| FULL[Verification FULL ReproductionPlan and PoC draft]
     LIMITED --> AUTH[Runtime Validator call authorization]
     FULL --> AUTH
     AUTH --> CTRL[Sandbox Controller policy check]
-    CTRL -->|Pass| RUNNER[Sandbox Runner Docker execution]
-    CTRL -->|Policy blocked| SYN2[Re-synthesize evidence]
-    RUNNER --> SYN2
+    CTRL --> PDEC[Exact SandboxPolicyDecision]
+    PDEC -->|Pass| RUNNER[Sandbox Runner exact Docker execution]
+    PDEC -->|Policy blocked no Runner| ASSEMBLER[Sandbox Result Assembler]
+    RUNNER --> ASSEMBLER
+    ASSEMBLER --> DRESULT[Dynamic result with exact nullable refs]
+    DRESULT --> SYN2[Verification re-synthesizes evidence]
     SYN2 --> FINAL
     FINAL --> OUT[Restrictions candidates PrimitiveDraft and VERIFICATION origin child proposals]
 ```

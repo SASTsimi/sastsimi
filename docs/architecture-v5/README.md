@@ -15,8 +15,8 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 ## 전체 흐름을 쉽게 나누면
 
 1. **입력과 코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다.
-2. **가설과 검증**: LLM이 취약점 가능성을 제안하고, Orchestration이 등록·배정한 뒤 Verification Agent가 가설 내부 코드·찬성·반대·동적 흐름을 관리합니다.
-3. **동적 재현과 연계 탐색**: 필요하면 Docker에서 재현합니다. HOLD는 즉시, TRUE는 두 Gate 통과 뒤에만 Primitive matching에 사용합니다.
+2. **가설과 검증**: LLM이 취약점 가능성을 제안하고, Orchestration이 등록·배정한 뒤 Verification Agent가 가설 내부 코드·찬성·반대 근거와 동적 재현 모드·계획을 관리합니다.
+3. **동적 재현과 연계 탐색**: trusted runtime이 계획을 승인하면 R7 Sandbox가 exact plan을 Docker에서 실행해 결과를 돌려줍니다. HOLD는 즉시, TRUE는 두 Gate 통과 뒤에만 Primitive matching에 사용합니다.
 4. **최종 검토와 보고서 초안**: 취약점 종류를 붙이고 기술 근거와 공식 정책을 차례로 검토합니다.
 5. **사람의 결정**: 사람이 모든 결과와 디버깅 정보를 보고 외부 공개 여부를 결정합니다.
 
@@ -33,7 +33,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 9. Verification이 entity·위치·경로를 기준으로 필요한 코드 문맥을 조회한다.
 10. 운영 분석의 Verification이 Pro/Con을 독립 NEW session으로 병렬 실행한다.
 11. 초기 `TRUE | FALSE | HOLD` 판정을 만든다.
-12. Verification 판단에 따라 Docker sandbox에서 `LIMITED_REPRO | FULL_REPRO`를 수행한다.
+12. Verification이 `NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO`를 고르고 exact `ReproductionPlan`을 만든다. Runtime Validator가 호출 권한·상태·예산과 계획 reference를 확인하고, R7 Sandbox Controller가 세부 안전 정책 판정을 저장한 뒤 Runner가 통과한 계획만 실행한다. 비-LLM Result Assembler가 같은 시도의 exact 정책·환경·log·PoC·cleanup reference를 동적 결과로 묶어 반환한다.
 13. 최종 `TRUE | FALSE | HOLD`와 별도 material claim을 확정한다.
 14. `FALSE`는 terminal로 끝내고, `HOLD`는 REQUIRED Primitive를 즉시 저장해 Chaining 자격을 준다. TRUE는 CWE 단계로 간다.
 15. final TRUE와 CWE를 Technical Evidence Gate Agent가 검토한다.
@@ -51,7 +51,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 - AST와 SAST는 source, sink, entity, 위치, 호출·데이터 흐름, 인증·인가와 같은 사실 후보를 제공한다.
 - Hypothesis Agent는 항상 `HYPOTHESIS_ONLY / NON_FINAL` 제안만 만들며 Finding이나 확정 판정을 만들 수 없다.
 - 코드 문맥은 같은 `workspace_id`와 `commit_id`에서 위치 기반으로 필요할 때 조회하고, 조회 범위와 반환 위치를 기록한다.
-- Verification은 가설 내부 Context·Pro/Con·동적 재현·판정·Technical `REVISE`·Gate 제출과 Chaining handoff를 소유한다. 실행 허가는 Runtime Validator가 강제한다.
+- Verification은 가설 내부 Context·Pro/Con, 동적 재현 필요성·모드·`ReproductionPlan`, 판정·Technical `REVISE`·Gate 제출과 Chaining handoff를 소유한다. Runtime Validator는 Sandbox 호출 전제만 확인하고, R7 Sandbox Controller는 세부 안전 정책 판정을 저장하며 Runner는 통과한 계획만 실행한다. 비-LLM Result Assembler가 같은 attempt의 exact reference만 동적 결과로 조립한다.
 - 운영(`PRODUCTION`) 기본 검증 모드는 `ALWAYS_DEBATE`다. 모든 유효 가설에서 Pro와 Con을 독립 NEW session으로 실행한다. `BASIC | CONDITIONAL_DEBATE`는 격리된 평가(`EVALUATION`)에서만 비교한다.
 - Primitive DB는 queue가 아니라 HOLD REQUIRED와 Gate-qualified TRUE PROVIDED를 연결하는 인덱스다. Gate 전 TRUE, FALSE와 오래된 revision은 현재 matching에 사용할 수 없다.
 - Chaining Agent는 TRUE+HOLD와 방향성 있는 TRUE+TRUE 선행 조건 matching만 수행하며 일반 취약점·우회·impact research, 동적 재현, Gate 보완이나 verdict를 수행할 수 없다.

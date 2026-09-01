@@ -18,16 +18,24 @@
 
 | 담당 역할 | 담당자 | 주요 담당 영역 | 우선 검토할 문서 | 반드시 함께 검토할 역할 | 역할별 상위 Issue |
 |---|---|---|---|---|---|
-| LLM 탐색·체이닝 | 배승원 `@baeseungwon1010` | 취약점 가설, 추가 탐색, 연계 공격과 token 최적화 | `03`, `06` | 정적분석, 검증, 데이터·평가 | [#2](https://github.com/SASTsimi/sastsimi/issues/2) |
+| LLM 탐색·체이닝 | 배승원 `@baeseungwon1010` | 최초 가설과 HOLD REQUIRED·Gate-qualified TRUE PROVIDED의 방향성 연계 후보 | `03`, `06` | 정적분석, 검증, 데이터·평가 | [#2](https://github.com/SASTsimi/sastsimi/issues/2) |
 | 정적분석·컨텍스트 | 김나연 `@zv9uvr` | AST/SAST 결과 정리, 코드 사실 묶음과 필요한 코드 조회 | `02` | LLM 탐색, 검증 | [#3](https://github.com/SASTsimi/sastsimi/issues/3) |
 | 단독 구현·통합 개발 | 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec` | LLM 연결과 실행 경계, 구현 가능성, 테스트·모듈 통합 | `09`, 구현 가능성 검토 | PM, 데이터·평가, 동적검증 | [#4](https://github.com/SASTsimi/sastsimi/issues/4) |
 | PM·아키텍처·워크플로 | 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec` | 전체 분석 흐름, 공통 입출력 약속, 사람·LLM 경계, 오류·병렬 처리 | root README, `01`, `08`, `11`, `13`, Wiki 통합 | 전체 파트 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
-| Gate·Finding·보고서 | 김혜령 `@kimhr8463` | 기술 근거·공식 정책 검토, 취약점 결과와 보고서 초안 | `05`, `12` | 검증, PM, 데이터·평가 | [#6](https://github.com/SASTsimi/sastsimi/issues/6) |
-| 검증·반박·플레이북 | 임채민 `@UltraPeachKeen` | 찬성·반대 근거, 기술 판정과 우회 가능성 검증 | `04` 검증 영역 | LLM 탐색, 동적검증, Gate | [#7](https://github.com/SASTsimi/sastsimi/issues/7) |
-| 동적검증·Sandbox | 조근석 `@Potatonion` | 제한·전체 재현, PoC, Docker 실행 근거 | `04` 동적 영역, `10` 격리 실행 영역 | 검증, PM, 통합 개발 | [#8](https://github.com/SASTsimi/sastsimi/issues/8) |
-| 데이터·평가·예산 | 성병찬 `@gitterable` | 평가 자료, 품질 지표, LLM 실행 기록과 자원 한도 | `07`, `08/09` 관련 지표 | 전체 LLM 역할, PM | [#9](https://github.com/SASTsimi/sastsimi/issues/9) |
+| Gate·Finding·보고서 | 김혜령 `@kimhr8463` | 기술 근거·공식 정책 검토, 같은 Verification owner로의 REVISE와 보고서 초안 | `05`, `12` | 검증, PM, 데이터·평가 | [#6](https://github.com/SASTsimi/sastsimi/issues/6) |
+| 검증·반박·플레이북 | 임채민 `@UltraPeachKeen` | 찬성·반대 근거, 동적 재현 모드·`ReproductionPlan`, 최종 기술 판정과 보완 | `04` 검증 영역 | LLM 탐색, 동적검증, Gate | [#7](https://github.com/SASTsimi/sastsimi/issues/7) |
+| 동적검증·Sandbox | 조근석 `@Potatonion` | Controller 정책 판정, 승인된 exact 계획의 Runner 실행, 환경·log·PoC 상세 artifact와 result 조립 | `04` 동적 영역, `10` 격리 실행 영역 | 검증, PM, 통합 개발 | [#8](https://github.com/SASTsimi/sastsimi/issues/8) |
+| 데이터·평가·예산 | 성병찬 `@gitterable` | 평가 자료·품질 지표·예산 profile; 실제 action 예산은 runtime이 강제 | `07`, `08/09` 관련 지표 | 전체 LLM 역할, PM | [#9](https://github.com/SASTsimi/sastsimi/issues/9) |
 
 번호는 `docs/architecture-v5/` 아래 정본 문서를 의미합니다.
+
+## 역할 연결 기준
+
+- R6 Verification이 `NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO`를 고르고, 동적 재현이 필요하면 exact `ReproductionPlan`을 생산합니다.
+- R4의 trusted runtime은 계획의 schema·reference·호출 권한·상태·예산을 검사해 `COMMITTED`와 `RUN_SANDBOX ALLOW`를 확정합니다. image·command·file·network·resource·cleanup 세부 정책은 판단하지 않습니다.
+- R7의 Sandbox Controller는 세부 Sandbox 정책을 검사해 exact 판정을 저장하고, Sandbox Runner는 통과한 exact 계획을 바꾸지 않고 실행해 실제 환경·`SandboxStepLog`·PoC 실행 사실을 생산합니다. R7 비-LLM Result Assembler는 R4가 정한 nullable·상태·identity 규칙에 맞는 exact reference만 `DynamicReproductionResult`로 조립하며 R6가 `COMMITTED` 결과를 소비해 최종 판정을 만듭니다.
+- R8은 예산 profile과 회귀 기준을 설계하고 각 전문 역할은 최소 품질 요구를 제공합니다. 실제 예산 차단·허용은 R4 trusted runtime의 책임입니다.
+- Technical `REVISE`는 Orchestration이나 R7이 목적지를 고르지 않고 같은 ACTIVE `VerificationAssignment`의 R6 owner에게 돌아갑니다.
 
 ## 역할 배정과 GitHub 담당자 지정 상태
 

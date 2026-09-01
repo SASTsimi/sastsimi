@@ -57,6 +57,7 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] 판단을 보류한 가설의 부족 조건은 Gate-qualified `TRUE`의 능력이 채울 때만, 바로 합치지 않고 새로운 연계 가설로 다시 검증합니다.
 - [ ] Gate-qualified TRUE 두 개를 결합할 때 양쪽 exact parent revision을 확인하고 새 가설로 검증합니다.
 - [ ] Docker 전체 재현과 PoC가 어떤 가설·코드 위치·관찰 결과를 뒷받침하는지 추적됩니다.
+- [ ] 동적 결과의 Runner 호출·실제 환경 생성·정리 필요 상태와 nullable log·환경·정책·PoC reference가 모순되지 않습니다.
 - [ ] 기술적으로 `TRUE`여도 공식 정책을 확인할 수 없으면 보고서 전달을 허용하지 않습니다.
 - [ ] 기술 검토에서 보완이 필요하면 같은 ACTIVE `VerificationAssignment` owner에게 직접 돌아가 새 VERIFICATION work와 `TERMINAL -> VERIFYING` 전이를 만든 뒤 새 revision을 확정합니다.
 - [ ] LLM 로그인·인증 실패를 취약점이 아니라는 뜻의 `FALSE`로 바꾸지 않고 별도 오류로 남깁니다.

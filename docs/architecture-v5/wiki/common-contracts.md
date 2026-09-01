@@ -84,6 +84,16 @@ Docker 환경을 만들지 못했거나 실행이 timeout된 것은 재현 실�
 
 빈 출력, exit code와 `FAILED | BLOCKED | CANCELLED`만으로는 가설을 `FALSE`로 바꿀 수 없습니다.
 
+### 동적 결과의 참조는 언제 비어 있나요?
+
+- `poc_ref`: 이번 재현과 연결된 정확한 PoC 묶음입니다. PoC가 없으면 비어 있고, 값이 있어도 실행 성공을 뜻하지 않습니다.
+- `runner_invoked`: Runner를 실제 호출했는지 나타냅니다. 거짓이면 `steps_ref`는 비어 있어야 하고, 참이면 첫 단계에서 실패해도 로그가 있어야 합니다.
+- `environment_created`: 실제 환경이 만들어졌는지 나타냅니다. 거짓이면 `environment_ref`가 비어 있고, 참이면 실제 생성 환경 기록을 가리켜야 합니다. 실행 전 설정 문서와는 다릅니다.
+- `policy_decision_ref`: Controller가 어떤 정책 버전으로 왜 허용·차단했는지 가리킵니다. `POLICY_BLOCKED`이면 반드시 필요하며 Technical Gate의 판정과 다릅니다.
+- `cleanup_required`: 정리할 자원이 생겼는지 나타냅니다. 거짓일 때만 `cleanup_status=NOT_REQUIRED`를 씁니다. 정책에 막혔더라도 임시 자원이 생겼다면 정리 결과를 성공 또는 실패로 남깁니다.
+
+이 참조들은 같은 분석·코드·가설·실행 시도와 정확한 record revision에 속해야 합니다. “가장 최신 결과”를 다시 찾거나 다른 attempt의 PoC·환경·로그를 섞으면 저장을 거절합니다. R4는 이 공통 연결 규칙을 정하고, R7은 각 PoC·환경·정책 판정·단계 로그 안에 무엇을 기록할지 정합니다.
+
 Technical Gate는 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 자신이 읽은 Verification과 CWELabel 수정본을 정확히 기록합니다. 둘 중 하나가 수정되면 이전 Gate 승인을 새 수정본에 재사용하지 않습니다. Rule Scope Gate와 보고서 초안도 같은 CWELabel `record_id`를 사용해야 합니다. `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
 
 Primitive도 exact revision을 사용합니다. HOLD는 final Verification ref가 붙은 REQUIRED를 Gate 없이 만들고, TRUE는 Technical `ACCEPT`와 Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`가 같은 Verification revision을 가리킬 때만 PROVIDED를 만듭니다. TRUE의 PROVIDED에는 그 취약점을 악용하기 위한 exact Verification의 `required_preconditions`도 함께 고정합니다. 가설별 `PrimitiveIndexState`가 current ACTIVE 항목을 가리키며 새 Verification/index revision이 생기면 과거 항목과 진행 중인 오래된 Chaining 결과를 commit 시 거절합니다.
