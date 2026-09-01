@@ -37,4 +37,5 @@
 | ID | 제목 | 상태 | Issue | 반영 PR/commit |
 |---|---|---|---|---|
 | [ADR-001](./ADR-001-verification-owned-chaining-admission.md) | Verification 중심 제어권과 Gate-qualified Chaining | PROPOSED | #1, #2, #4–#7, #9, #10 | `review/verification-owned-chaining-flow` |
+| [ADR-002](./ADR-002-sandbox-policy-enforcement.md) | Sandbox 정책 판정·실행·결과 조립 권한 분리 | PROPOSED | #5, #7, #8, #16, #21 | PR #48 검토 후 확정 |
 | [ADR-003](./ADR-003-r6-r7-environment-requirements-handoff.md) | R6 환경 요구사항과 R7 실제 환경 비교 handoff | PROPOSED | #5, #7, #8 | `docs: define R6-R7 environment requirement handoff` |

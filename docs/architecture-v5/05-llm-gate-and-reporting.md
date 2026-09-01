@@ -79,6 +79,14 @@ technical_evidence_review:
 - `REVISE`: 같은 hypothesis의 Verification owner가 구체적인 누락·restriction·재현·CWE 설명을 보완해야 한다.
 - `REJECT`: 현재 자료를 신뢰 가능한 기술 기록이나 다음 단계 입력으로 사용할 수 없다.
 
+`ACCEPT`는 `handoff_readiness=READY`, `REVISE | REJECT`는 `handoff_readiness=NOT_READY`와 함께 사용한다. 이 조합이 맞지 않으면 Gate output을 저장하지 않는다.
+
+`DynamicReproductionResult(status=BLOCKED, failure_reason=POLICY_BLOCKED)`는 정책 때문에 실행하지 못했다는 뜻이지 가설 반증이 아니므로 그 사실만으로 `REJECT`하지 않는다.
+
+- 정적·찬반 근거만으로 final TRUE의 핵심 주장을 충분히 검토할 수 있고, 차단된 재현의 제한·미실행 사실·exact `policy_decision_ref`가 정확히 연결되면 `ACCEPT + READY`가 가능하다.
+- 보고서 핵심 주장에 동적 재현이 꼭 필요한데 정책 차단으로 근거가 부족하고, 범위 축소·안전한 대체 검증·추가 설명으로 보완할 수 있으면 `REVISE + NOT_READY`다.
+- reference 조합이 계약을 위반하거나 근거가 서로 모순되어 현재 기술 기록을 신뢰할 수 없을 때만 `REJECT + NOT_READY`다. 정책 차단 자체를 `FALSE` 또는 `REJECT` 근거로 바꾸지 않는다.
+
 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 Gate가 실제로 읽은 `VerificationResult`와 `CWELabel` revision을 각각 고정한다. runtime은 Gate와 두 대상의 `workspace_id`, `commit_id`, `hypothesis_id`, `record_id`, `content_hash`를 확인한다. Verification 또는 CWELabel이 수정되면 이전 `ACCEPT`를 새 revision에 재사용하지 않고 Gate를 새로 호출한다.
 
 `REVISE`는 동일 입력 재투표나 provider retry가 아니다. 현재 Gate work는 `REVISE` review를 exact output으로 확정하고 종료한다. 그 review는 Orchestration을 경유해 목적지를 다시 선택하지 않고 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 전달한다. runtime은 이전 종료 work를 되돌리지 않고 새 generation의 VERIFICATION work를 등록하며 hypothesis 상태를 `TERMINAL -> VERIFYING`으로 CAS 전환한다. Verification은 필요한 Context·Pro/Con·정적 근거·동적 재현·PoC 연결·restriction을 보완하고, 새 result·work 종료·hypothesis current pointer를 atomic commit하며, 필요하면 CWE producer와 새 label revision을 조정한다. 그 뒤 새 `VerificationResult` 및 필요한 `CWELabel` revision을 가리키는 새 Gate work를 요청한다. 새 Gate work는 새 `input_hash`·`dedupe_key`·`work_id`와 `attempt_number=1`, `trigger=INITIAL`을 사용한다. 입력이 바뀌지 않은 호출 실패만 같은 work 안에서 `trigger=RETRY`인 새 attempt를 사용할 수 있다. 횟수·token·시간 한도 도달 시 보고와 TRUE 체이닝을 차단하고 미해결 사유를 저장한다.
@@ -101,7 +109,7 @@ Runtime Validator는 `REVISE`를 만든 기존 action·decision을 다시 사용
 - 각 항목의 official source reference
 - 수집하지 못한 자료와 freshness warning
 
-저장소 문서나 모델 기억을 공식 정책으로 자동 승격하지 않는다. 공식 `ProgramPolicyRecord`가 없거나 핵심 자료가 누락되면 추측하지 않는다.
+저장소 문서나 모델 기억을 공식 정책으로 자동 승격하지 않는다. 공식 `ProgramPolicyRecord`가 없거나 핵심 자료가 누락되면 추측하지 않는다. 정책 record가 있어도 `freshness_status=STALE | UNVERIFIED`이면 최신 정책으로 취급하지 않는다. `CURRENT` 판정의 최대 허용 나이와 출처별 확인 방법은 R5 정책 수집 설계에서 정하지만, stale·미검증 상태의 Gate 결과는 항상 `UNCERTAIN + DENY`다.
 
 ### 검토 항목
 
@@ -130,7 +138,7 @@ rule_scope_impact_review:
   missing_information: []
 ```
 
-공식 정책 자료가 없으면 Rule Scope Gate Agent가 정책을 추정하지 않고 최소한 `rule_compliance=UNCERTAIN`, `scope_compliance=UNCERTAIN`, `review_status=UNCERTAIN`, `report_permission=DENY`와 `missing_information`을 판단해 반환한다. impact도 검토할 근거가 부족하면 `security_impact=UNCERTAIN`이다.
+공식 정책 자료가 없거나 `freshness_status=STALE | UNVERIFIED`이면 Rule Scope Gate Agent가 정책을 추정하지 않고 최소한 `rule_compliance=UNCERTAIN`, `scope_compliance=UNCERTAIN`, `review_status=UNCERTAIN`, `report_permission=DENY`와 `missing_information`을 판단해 반환한다. impact도 검토할 근거가 부족하면 `security_impact=UNCERTAIN`이다. stale record의 exact reference와 경고는 감사 기록으로 보존하지만 `PASS | ALLOW` 근거로 사용하지 않는다.
 
 Runtime Validator는 공식 정책 문장이나 정책의 의미를 대신 해석하지 않는다. Rule Scope Gate가 판단한 `UNCERTAIN + DENY`의 필수 필드, exact 정책 reference와 구조적 불변조건만 검사한다. `policy_record_ref=null`이거나 핵심 공식 source가 누락된 출력에서 `ALLOW`·`PASS`가 함께 나타나면 semantic `INVALID_OUTPUT`으로 거절하고, 정상적인 `UNCERTAIN + DENY`이면 `REPORT_READY` check로 Reporter만 프로그램적으로 차단한다. 제한된 repair 뒤에도 불변조건이 맞지 않으면 Rule Scope Gate work를 실패 처리한다. 두 경우 모두 Verification verdict를 바꾸지 않는다.
 
@@ -175,6 +183,8 @@ Reporter는 통과한 근거를 읽기 쉬운 내부 초안으로 구성한다.
 - invocation trace와 남은 불확실성
 
 Reporter는 새로운 공격 경로를 확정하거나 미검증 material child 또는 Chaining 후보를 실제 영향으로 쓰지 않는다. 초안의 핵심 주장은 Verification/PoC/Gate artifact에 연결한다. `poc_ref`가 있어도 `runner_invoked=false`, `steps_ref=null` 또는 `status=BLOCKED`이면 실행·재현 성공으로 서술하지 않는다. `ReportDraft.cwe_label_ref.record_id`는 Technical review와 Rule Scope review가 공통으로 가리킨 CWELabel `record_id`와 같아야 하며, CWELabel이 수정되면 두 Gate를 다시 통과하기 전에는 초안을 만들지 않는다.
+
+ReportDraft가 참조한 `VerificationResult`, `CWELabel`, `TechnicalEvidenceReview`, `RuleScopeImpactReview` 또는 `ProgramPolicyRecord` 중 하나라도 새 current revision으로 바뀌면 기존 초안은 감사 기록으로만 남고 current HumanReviewPacket이나 공개 판단에 사용할 수 없다. 새 exact dependency chain으로 Gate와 Reporter를 다시 실행해 새 ReportDraft와 새 packet generation을 만든다.
 
 ## 사람의 최종 결정
 
@@ -244,3 +254,6 @@ packet에는 다음을 빠뜨리지 않는다.
 사람은 현재 `HumanReviewState`가 가리키는 packet의 정확한 generation·revision을 읽고 별도 `HumanReviewDecision`에 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`을 기록한다. 결정 저장은 인증된 사람 identity와 current packet·state version을 확인하는 `SAVE_HUMAN_DECISION` action을 거친다. `ReportDraft` 안의 field를 바꾸거나 LLM output을 사람 결정으로 저장하지 않는다.
 
 시스템의 외부 disclosure action은 Human Reviewer가 만든 exact current `HumanReviewDecision=DISCLOSE`, `report_ready=true`인 current packet, packet 안의 `approved_report_refs`와 명시된 `disclosure_targets`가 있을 때만 허용한다. 실행 직전 packet의 AnalysisRunResult·Verification·두 Gate·CWE·Policy·ReportDraft reference가 여전히 각 current pointer와 exact revision인지 다시 검사한다. 하나라도 바뀌었으면 새 packet 생성 전이라도 기존 결정으로 공개하지 않고 `DISCLOSURE_DENIED`다. 새 packet generation이 생기면 이전 packet과 결정도 즉시 superseded된다. Agent·Gate·Reporter가 만든 결정, 승인 목록 밖 report, 과거 packet·결정은 `DISCLOSURE_DENIED`다. 어떤 Agent도 외부 제출·공개 권한을 갖지 않으며 실제 자동 제출 integration은 이 설계 범위 밖이다.
+`finding_refs=[]`인 packet은 Finding이 아직 만들어지지 않은 이유를 사람이 확인하기 위한 blocked packet으로는 정상이다. 이 경우 `report_ready=false`, `blocked_reasons`에 `FINDING_NOT_CREATED`를 포함하고 `DISCLOSE`를 금지한다. Finding이 생성되면 이전 packet을 수정하지 않고 새 packet generation을 만든다.
+
+시스템의 외부 disclosure action은 Human Reviewer가 만든 exact current `HumanReviewDecision=DISCLOSE`, `report_ready=true`인 current packet, packet 안의 `approved_report_refs`와 명시된 `disclosure_targets`가 있을 때만 허용한다. 새 packet generation이 생기면 이전 packet과 결정은 즉시 superseded된다. Agent·Gate·Reporter가 만든 결정, 승인 목록 밖 report, 과거 packet·결정은 `DISCLOSURE_DENIED`다. 어떤 Agent도 외부 제출·공개 권한을 갖지 않으며 실제 자동 제출 integration은 이 설계 범위 밖이다.

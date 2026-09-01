@@ -48,7 +48,7 @@ Hypothesis Agent에는 비용 효율적인 모델을 배치할 수 있지만, �
 - 현재 restriction
 - missing information
 - `question_id`가 붙은 구체적인 falsification questions
-- required validation
+- `validation_checks`(반드시 확인할 검증 항목과 고유 ID)
 - 우선순위용 confidence
 
 confidence는 verdict, exploitability 또는 Finding 확률로 해석하지 않는다. Hypothesis Agent는 `confirmed`, `verified`, `finding`, `exploitable`과 같은 확정 주장을 출력할 권한이 없다.
@@ -56,7 +56,7 @@ confidence는 verdict, exploitability 또는 Finding 확률로 해석하지 않�
 ## 출력 검증과 실패 처리
 
 1. 구조 parser가 JSON/YAML syntax와 schema를 검증한다.
-2. enum, 필수 field, `workspace_id`·`commit_id`·`CodeLocation`, 반증 질문과 금지 assertion을 검사한다. 유효한 proposal의 각 반증 질문에는 출력 검증 runtime이 전역 `question_id`를 붙인다.
+2. enum, 필수 field, `workspace_id`·`commit_id`·`CodeLocation`, 반증 질문, 검증 항목과 금지 assertion을 검사한다. 유효한 proposal의 각 반증 질문에는 전역 `question_id`, 각 검증 항목에는 전역 `validation_id`를 붙인다.
 3. 실패하면 원래 의미를 바꾸지 않는 범위에서 제한 횟수의 repair prompt를 새 invocation으로 실행한다.
 4. 재시도 후에도 유효하지 않으면 해당 호출을 `INVALID_OUTPUT`으로 저장한다.
 5. invalid proposal은 Verification Agent에 전달하지 않는다.
@@ -70,7 +70,9 @@ ProposalProcessState: PROPOSED -> SCHEMA_VALID
                       \-> INVALID_OUTPUT
 
 SCHEMA_VALID -> register new hypothesis_id
-HypothesisProcessState: REGISTERED -> ASSIGNED -> VERIFYING -> TERMINAL
+HypothesisProcessState: REGISTERED -> ASSIGNED -> VERIFYING
+                                               -> TERMINAL (final verdict)
+                                               -> FAILED (no final verdict)
 Technical REVISE: TERMINAL -> same assignment + new VERIFICATION work -> VERIFYING
 VerificationResult.verdict -> TRUE | FALSE | HOLD
 HOLD -> REQUIRED Primitive -> Chaining eligible
@@ -79,7 +81,7 @@ Verification material claim -> PROPOSED child hypothesis origin VERIFICATION
 Chaining match -> PROPOSED child hypothesis origin CHAINING
 ```
 
-`ProposalProcessState.status`는 `hypothesis_id`를 발급하기 전의 출력 검증 상태를 기록한다. 검증을 통과하면 새 `hypothesis_id`와 별도 `HypothesisProcessState`를 만들고 같은 `proposal_ref`로 연결한다. `HypothesisProcessState.status`가 등록 뒤 처리 진행 상태를 기록하고 `VerificationResult.verdict`가 기술 판정을 기록한다. `TERMINAL`은 검증 처리가 끝났다는 뜻일 뿐 `TRUE`, `FALSE`, `HOLD` 중 어느 판정인지 대신 말하지 않는다. parent 가설의 결과와 child 가설은 독립된 lifecycle을 갖고 child 결과가 parent verdict를 바꾸지 않는다.
+`ProposalProcessState.status`는 `hypothesis_id`를 발급하기 전의 출력 검증 상태를 기록한다. 검증을 통과하면 새 `hypothesis_id`와 별도 `HypothesisProcessState`를 만들고 같은 `proposal_ref`로 연결한다. `HypothesisProcessState.status`가 등록 뒤 처리 진행 상태를 기록하고 `VerificationResult.verdict`가 기술 판정을 기록한다. `TERMINAL`은 final `TRUE | FALSE | HOLD`가 연결된 정상 종료다. 반면 검증을 끝내지 못하고 재시도도 불가능하면 `FAILED`로 끝나며 final verdict를 만들지 않는다. retry 가능한 work가 `BLOCKED`일 때는 가설을 `VERIFYING`으로 유지한다. parent 가설의 결과와 child 가설은 독립된 lifecycle을 갖고 child 결과가 parent verdict를 바꾸지 않는다.
 
 초기 가설은 자기 자신을 `root_hypothesis_id`로 사용하고 `chain_depth=0`이다. Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하고 trusted validation을 통과할 때만 새 `hypothesis_id`를 받는다. 새 endpoint·sink·권한 경계·공격 단계·독립 impact는 Verification이 `origin=VERIFICATION` proposal로 분리한다. TRUE+HOLD는 PROVIDED가 HOLD REQUIRED를, TRUE+TRUE는 앞 TRUE의 PROVIDED가 뒤 TRUE의 exact Verification에 기록된 선행 조건을 충족할 때만 Chaining Agent가 `origin=CHAINING` proposal로 만든다. 어느 경로도 기존 가설을 수정하거나 child를 자동 TRUE로 만들지 않는다. child가 FALSE여도 부모 판정은 바뀌지 않는다.
 
@@ -143,7 +145,7 @@ Agent 또는 service의 제안
 - 일반 도구 action의 허용 tool과 workspace 안의 file path
 - `RUN_SANDBOX` 호출자의 권한·exact plan 및 current requirements reference·상태·예산; 애플리케이션 환경 값은 R6/R7이 비교하고 Docker 세부 정책은 Sandbox Controller가 검사
 - provider/model/profile, NEW/RESUME/AUTO와 explicit failover
-- final Verification+CWE 뒤 Technical Gate, 그 뒤 Rule Scope Gate라는 순서
+- final `TRUE` Verification+CWE 뒤 Technical Gate, 그 뒤 Rule Scope Gate라는 순서. `FALSE | HOLD`와 실패 가설은 Gate 입력이 아님
 - 모든 report 조건을 통과한 뒤 Reporter 호출
 - redaction 성공과 exact 사람 결정 전 외부 공개 차단
 
