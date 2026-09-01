@@ -61,11 +61,13 @@
 
 한쪽만 저장되면 다음 Gate를 호출하지 않습니다. 저장 제품이 한 번에 처리할 수 없으면 결과를 `PREPARED`로 격리한 뒤, 같은 상태 version에서 하나만 만들 수 있는 `COMMITTED` marker(저장이 확정됐다는 표시)를 먼저 남기고 상태가 그 결과를 가리키게 합니다. marker와 상태가 같은 결과·누락·오류를 가리킬 때만 다른 단계가 읽습니다.
 
+검증을 끝내지 못한 경우도 상태를 반쪽만 바꾸지 않습니다. 다시 시도할 수 있으면 work를 `BLOCKED`로 두고 가설은 계속 `VERIFYING`입니다. 더 시도할 수 없으면 failed work와 `HypothesisProcessState.status=FAILED`를 함께 확정하고 `verification_result_ref`는 비워 둡니다. 이 가설에는 `TRUE | FALSE | HOLD`가 없으며 Gate도 호출하지 않습니다.
+
 marker를 남긴 직후 프로그램이 꺼졌다면 재시작할 때 기존 marker를 상태에 다시 반영합니다. 이 복구가 끝나기 전에는 취소·재시도 같은 새 상태 변경도 받지 않습니다.
 
 같은 규칙을 Technical Gate, Rule Scope Gate와 `ReportDraft`에도 적용합니다.
 
-Context 조회 실패·timeout·권한 오류가 있어도 정상 근거로 필수 검증을 완료할 수 있으면 현재 Verification work를 계속합니다. 반대로 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증을 끝낼 수 없으면 final `VerificationResult`를 만들지 않습니다. retry·재인증·새 입력을 기다릴 수 있으면 work는 `BLOCKED`, 허용된 재시도를 모두 소진했거나 복구할 수 없으면 `FAILED`입니다. 단순 오류를 `HOLD`로 바꾸지 않습니다.
+Context 조회 실패·timeout·권한 오류가 있어도 정상 근거로 모든 `validation_checks`를 완료할 수 있으면 현재 Verification work를 계속합니다. 반대로 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증을 끝낼 수 없으면 final `VerificationResult`를 만들지 않습니다. retry·재인증·새 입력을 기다릴 수 있으면 work는 `BLOCKED`이고 가설은 `VERIFYING`, 허용된 재시도를 모두 소진했거나 복구할 수 없으면 work와 가설 모두 `FAILED`입니다. 단순 오류를 `HOLD`로 바꾸지 않습니다.
 
 동적 재현은 같은 단어의 뜻을 구분해야 합니다.
 

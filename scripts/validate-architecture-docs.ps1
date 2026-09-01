@@ -907,7 +907,7 @@ $requiredContextFailureRules = @(
     @{
         Name = 'Partial Context failure may still allow a final verdict after required validation'
         Text = $contractText
-        Marker = '일부 요청이 실패했어도 제한 retry·대체 조회 또는 다른 정상 근거로 가설의 `required_validation`, 모든 반증 질문과 운영 Pro/Con을 완료했다면 Verification은 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있다.'
+        Marker = '일부 요청이 실패했어도 제한 retry·대체 조회 또는 다른 정상 근거로 가설의 모든 `validation_checks`, 모든 반증 질문과 운영 Pro/Con을 완료했다면 Verification은 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있다.'
     },
     @{
         Name = 'Missing required Context or production debate blocks the final VerificationResult'
@@ -917,7 +917,7 @@ $requiredContextFailureRules = @(
     @{
         Name = 'Retryable and exhausted Context failures map to BLOCKED and FAILED'
         Text = $contractText
-        Marker = '재시도할 수 있으면 해당 Verification work를 `BLOCKED`, 허용된 재시도를 소진했거나 복구할 수 없으면 `FAILED`로 남긴다.'
+        Marker = '재시도할 수 있으면 해당 Verification work를 `BLOCKED`로 두고 `HypothesisProcessState.status=VERIFYING`을 유지한다. 허용된 재시도를 소진했거나 복구할 수 없으면 같은 atomic transition에서 work와 가설 처리 상태를 `FAILED`로 남긴다.'
     },
     @{
         Name = 'Simple Wiki explains that a Context error alone is not HOLD'
@@ -927,7 +927,7 @@ $requiredContextFailureRules = @(
     @{
         Name = 'Canonical Context diagram has the no-final-verdict failure branch'
         Text = $diagramText
-        Marker = 'STOP[BLOCKED if retryable else FAILED no final verdict]'
+        Marker = 'FAIL[Atomic work FAILED plus hypothesis FAILED no final result]'
     }
 )
 foreach ($rule in $requiredContextFailureRules) {
@@ -936,9 +936,62 @@ foreach ($rule in $requiredContextFailureRules) {
     }
 }
 
+$requiredVerificationCompletionRules = @(
+    'ValidationCheck:',
+    'validation_id: string',
+    'instruction: string',
+    'ValidationCheckResult:',
+    'completion: COMPLETE | INCOMPLETE',
+    'validation_checks: [ValidationCheck]',
+    'validation_results: [ValidationCheckResult]'
+)
+foreach ($marker in $requiredVerificationCompletionRules) {
+    if (-not $contractText.Contains($marker)) {
+        Add-Failure "missing enforceable validation completion contract: $marker"
+    }
+}
+
+$requiredVerificationCompletionSemantics = @(
+    '가설의 모든 `ValidationCheck.validation_id`와 candidate의 `ValidationCheckResult.validation_id`가 중복 없이 set-equal',
+    '모든 `ValidationCheckResult.completion=COMPLETE`',
+    '각 결과의 `evidence_refs`가 하나 이상',
+    '`INCOMPLETE` 항목이 하나라도 있으면 final candidate를 `COMMITTED`하지 않는다.'
+)
+foreach ($marker in $requiredVerificationCompletionSemantics) {
+    if (-not $contractText.Contains($marker)) {
+        Add-Failure "missing structural validation completion rule: $marker"
+    }
+}
+
+$requiredHypothesisFailureRules = @(
+    'status: REGISTERED | ASSIGNED | VERIFYING | TERMINAL | FAILED | CANCELLED',
+    '`HypothesisProcessState.status=FAILED`',
+    '`verification_result_ref=null`',
+    '같은 `VERIFICATION` work의 `FAILED` revision',
+    '`VERIFICATION`의 `FAILED`와 `HypothesisProcessState.status=FAILED`',
+    '`failed_hypothesis_count`'
+)
+foreach ($marker in $requiredHypothesisFailureRules) {
+    if (-not ($contractText.Contains($marker) -or $resultText.Contains($marker) -or $orchestrationText.Contains($marker) -or $commonWikiText.Contains($marker))) {
+        Add-Failure "missing no-verdict hypothesis failure contract: $marker"
+    }
+}
+
+$requiredTechnicalGateScopeRules = @(
+    'final `TRUE` 근거의 의미적 충분성과 코드·실행 근거 연결은 Technical Evidence Gate가 exact final TRUE revision을 대상으로 별도로 검토한다.',
+    '`FALSE | HOLD`는 Technical Gate 입력이 아니며, 구조 검사를 통과했다는 사실이 Gate 승인을 의미하지 않는다.'
+)
+foreach ($marker in $requiredTechnicalGateScopeRules) {
+    if (-not $contractText.Contains($marker)) {
+        Add-Failure "missing exact Technical Gate TRUE-only scope rule: $marker"
+    }
+}
+
 $obsoleteContextFailurePhrases = @(
     '잘림·조회 실패를 숨기지 않고 HOLD 또는 추가 조회 판단에 전달',
-    'Verification Agent가 다른 근거와 함께 `HOLD` 여부 결정'
+    'Verification Agent가 다른 근거와 함께 `HOLD` 여부 결정',
+    'required_validation:',
+    '근거가 verdict를 의미상 충분히 지지하는지는 Technical Evidence Gate가 검토한다.'
 )
 foreach ($phrase in $obsoleteContextFailurePhrases) {
     if ($activeDebateText.Contains($phrase)) {
@@ -981,6 +1034,10 @@ Write-Output "Verification/Chaining scenarios: $($verificationChainingScenarioMa
 Write-Output "Verification/Chaining semantic rules: $($requiredVerificationChainingRules.Count)"
 Write-Output "Production debate policy rules: $($requiredDebatePolicyRules.Count)"
 Write-Output "Context failure contract rules: $($requiredContextFailureRules.Count)"
+Write-Output "Validation completion contract rules: $($requiredVerificationCompletionRules.Count)"
+Write-Output "Validation completion semantic rules: $($requiredVerificationCompletionSemantics.Count)"
+Write-Output "No-verdict hypothesis failure rules: $($requiredHypothesisFailureRules.Count)"
+Write-Output "Technical Gate TRUE-only scope rules: $($requiredTechnicalGateScopeRules.Count)"
 Write-Output "Obsolete Context failure phrases: $($obsoleteContextFailurePhrases.Count)"
 Write-Output "Failures: $($failures.Count)"
 

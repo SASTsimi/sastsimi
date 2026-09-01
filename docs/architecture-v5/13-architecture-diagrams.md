@@ -104,15 +104,18 @@ flowchart LR
     RET --> REL[Callers Callees Data flow Auth guards Routes]
     REL --> RESP[CodeContextResponse]
     RET -->|Failure timeout denied| ERROR
-    RESP --> COMPLETE{Can required verification finish with valid evidence}
+    RESP --> COMPLETE{Can all validation checks finish with valid evidence}
     ERROR --> COMPLETE
     COMPLETE -->|Retry or alternate lookup| REQ
-    COMPLETE -->|Required input still missing| STOP[BLOCKED if retryable else FAILED no final verdict]
-    COMPLETE -->|Yes| AGENT[Verification Pro Con or Technical Gate]
+    COMPLETE -->|Required input missing| RETRYABLE{Can retry or wait for input}
+    RETRYABLE -->|Yes| BLOCK[Work BLOCKED hypothesis stays VERIFYING]
+    BLOCK -->|Condition resolved| REQ
+    RETRYABLE -->|No| FAIL[Atomic work FAILED plus hypothesis FAILED no final result]
+    COMPLETE -->|Yes| AGENT[Verification Pro and Con]
     AGENT --> LOG[Log retrieved locations]
 ```
 
-empty, truncated, gap와 error는 `TRUE | FALSE | HOLD`의 근거로 자동 변환하지 않는다. 일부 조회 실패가 있어도 정상 근거로 필수 검증을 완료하면 판정할 수 있지만, 필수 입력이 끝내 없으면 final `VerificationResult`를 만들지 않는다.
+empty, truncated, gap와 error는 `TRUE | FALSE | HOLD`의 근거로 자동 변환하지 않는다. 일부 조회 실패가 있어도 정상 근거로 모든 검증 항목을 완료하면 판정할 수 있다. 필수 입력이 없지만 다시 시도할 수 있으면 work만 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지한다. 더 시도할 수 없으면 work와 가설을 함께 `FAILED`로 끝내고 final `VerificationResult`를 만들지 않는다.
 
 ## 3. 저비용 가설 생성과 출력 통제
 
@@ -132,7 +135,7 @@ flowchart TB
     INVALID --> STORE[Store errors and invocation refs]
 ```
 
-proposal은 facts와 assumptions, restrictions, missing information, falsification questions와 required validation을 분리한다. confidence는 우선순위 힌트일 뿐 verdict가 아니다.
+proposal은 facts와 assumptions, restrictions, missing information, falsification questions, 고유 `validation_id`가 있는 `validation_checks`를 분리한다. confidence는 우선순위 힌트일 뿐 verdict가 아니다.
 
 ## 4. 운영 상시 찬반 검증과 평가 모드
 
@@ -220,7 +223,7 @@ Primitive DB는 queue가 아니며 Chaining match와 child proposal은 Finding�
 
 ```mermaid
 flowchart TB
-    VR[Final VerificationResult plus CWE] --> TECH[Technical Evidence Gate Agent]
+    VR[Final TRUE VerificationResult plus CWE] --> TECH[Technical Evidence Gate Agent]
     TECH --> TS{ACCEPT REVISE REJECT}
     TS -->|REVISE| BACK[Same hypothesis Verification owner]
     BACK --> VR
@@ -239,7 +242,7 @@ flowchart TB
     HUMAN --> DECIDE[Disclose Revise Withhold or More validation]
 ```
 
-두 Gate 모두 LLM 검토 Agent이고 Verification verdict를 직접 바꾸지 않는다. 공식 정책이 없으면 Reporter 경로는 닫힌다.
+두 Gate 모두 LLM 검토 Agent이고 Verification verdict를 직접 바꾸지 않는다. Technical Gate는 exact final `TRUE`만 검토하며 `FALSE | HOLD`와 실패 가설은 입력으로 받지 않는다. 공식 정책이 없으면 Reporter 경로는 닫힌다.
 
 ## 7. Provider, session과 logging
 

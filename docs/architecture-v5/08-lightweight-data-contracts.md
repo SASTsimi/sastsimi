@@ -116,7 +116,7 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 | 분석 실행 | `AnalysisRunState.status` | `RUNNING | COMPLETE | PARTIAL | FAILED | CANCELLED` | Orchestration runtime | 가설 verdict가 아님 |
 | 공통 실행 작업 | `WorkExecutionState.status` | `PENDING | READY | RUNNING | BLOCKED | SUCCEEDED | PARTIAL | FAILED | CANCELLED` | 신뢰 경계 안의 runtime | 전문 결과·가설 verdict와 분리 |
 | proposal 검증 | `ProposalProcessState.status` | `PROPOSED | SCHEMA_VALID | INVALID_OUTPUT | CANCELLED` | 출력 검증 runtime | 아직 `hypothesis_id`가 없는 상태 |
-| 등록 가설 처리 | `HypothesisProcessState.status` | `REGISTERED | ASSIGNED | VERIFYING | TERMINAL | CANCELLED` | Orchestration runtime | `TRUE | FALSE | HOLD`와 분리 |
+| 등록 가설 처리 | `HypothesisProcessState.status` | `REGISTERED | ASSIGNED | VERIFYING | TERMINAL | FAILED | CANCELLED` | Orchestration runtime | `TRUE | FALSE | HOLD`와 분리 |
 | 기술 판정 | `VerificationResult.verdict` | `TRUE | FALSE | HOLD` | Verification Agent | 오류·정보 부족 상태와 분리 |
 | 동적 재현 | `DynamicReproductionState.status` | `NOT_REQUESTED | RUNNING | SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED` | Sandbox runtime | `FAILED`만으로 가설 반증 금지 |
 | LLM 호출 | `LLMInvocationResult.status` | `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED | CANCELLED` | Agent Runtime과 provider adapter | 가설 verdict로 변환 금지 |
@@ -169,7 +169,7 @@ VerificationAssignment:
 HypothesisProcessState:
   meta: RecordMeta with hypothesis
   proposal_ref: StoredDataRef
-  status: REGISTERED | ASSIGNED | VERIFYING | TERMINAL | CANCELLED
+  status: REGISTERED | ASSIGNED | VERIFYING | TERMINAL | FAILED | CANCELLED
   verification_assignment_ref: StoredDataRef | null
   verification_generation: integer
   verification_work_ref: StoredDataRef | null
@@ -209,7 +209,7 @@ ReportProcessState:
 
 `VerificationAssignment`은 Orchestration의 배정 제안을 신뢰 runtime이 검사한 뒤 만드는 저장 record다. `owner_identity_ref`는 한 hypothesis-local workflow의 논리 owner를 가리키며 Agent가 자기 출력으로 만들 수 없다. 최초 배정은 `assignment_generation=1`, `status=ACTIVE`다. 운영상 owner 교체가 필요하면 trusted recovery 또는 사람 승인 절차가 이전 assignment를 `SUPERSEDED`로 만들고 새 generation을 원자적으로 활성화한다. Technical `REVISE` 자체는 owner 교체 사유가 아니며 같은 ACTIVE assignment를 유지한다.
 
-`HypothesisProcessState.status=REGISTERED`에서는 assignment·work·result reference가 `null`이고 `verification_generation=0`이다. `ASSIGNED | VERIFYING | TERMINAL`에는 ACTIVE `verification_assignment_ref`가 필수다. `VERIFYING`은 현재 generation의 `verification_work_ref`가 필수이며, 최초 검증 전 `verification_result_ref=null`, Technical `REVISE` 보완 중에는 직전 final result ref를 유지할 수 있다. `TERMINAL`이면 `verification_work_ref=null`이고 `verification_result_ref.record_id`가 현재 가설의 exact final `VerificationResult` revision을 가리켜야 한다. `DynamicReproductionState.status=SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED`이면 `dynamic_result_ref.record_id`가 필수이고 해당 attempt의 `DynamicReproductionResult`를 가리킨다. `NOT_REQUESTED | RUNNING`에서는 `dynamic_result_ref=null`이다. `ReportProcessState.status=DRAFTED`이면 `report_draft_ref.record_id`가 필수이며 정확히 하나인 `ReportDraft` revision을 가리키고, `NOT_REQUESTED | FAILED`이면 `report_draft_ref=null`이다.
+`HypothesisProcessState.status=REGISTERED`에서는 assignment·work·result reference가 `null`이고 `verification_generation=0`이다. `ASSIGNED | VERIFYING | TERMINAL | FAILED`에는 ACTIVE `verification_assignment_ref`가 필수다. `VERIFYING`은 현재 generation의 `verification_work_ref`가 필수이며, 최초 검증 전 `verification_result_ref=null`, Technical `REVISE` 보완 중에는 직전 final result ref를 유지할 수 있다. `TERMINAL`이면 `verification_work_ref=null`이고 `verification_result_ref.record_id`가 현재 가설의 exact final `VerificationResult` revision을 가리켜야 한다. `FAILED`는 검증 절차가 허용된 재시도를 소진했거나 복구 불가능한 오류로 끝나 final verdict를 만들지 못한 종료 상태다. 이때 `verification_work_ref`는 같은 `VERIFICATION` work의 `FAILED` revision을 가리키고 `verification_result_ref=null`이며, 오류와 미확인 범위는 해당 work·transition·최종 분석 결과에 보존한다. `DynamicReproductionState.status=SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED`이면 `dynamic_result_ref.record_id`가 필수이고 해당 attempt의 `DynamicReproductionResult`를 가리킨다. `NOT_REQUESTED | RUNNING`에서는 `dynamic_result_ref=null`이다. `ReportProcessState.status=DRAFTED`이면 `report_draft_ref.record_id`가 필수이며 정확히 하나인 `ReportDraft` revision을 가리키고, `NOT_REQUESTED | FAILED`이면 `report_draft_ref=null`이다.
 
 ### 공통 실행 상태와 상태 변경
 
@@ -368,6 +368,7 @@ state store는 새 전이를 승인하기 전에 `(work_id, current_state_versio
 다음 output binding은 필수다.
 
 - `VERIFICATION`의 `SUCCEEDED`와 `HypothesisProcessState.status=TERMINAL`은 같은 final `VerificationResult.record_id`를 가리킨다.
+- retry 가능한 `VERIFICATION` work가 `BLOCKED`이면 가설은 `VERIFYING`을 유지하고 `verification_work_ref`가 그 work revision을 가리킨다. 재시도를 소진했거나 복구 불가능한 경우에는 같은 atomic transition에서 `VERIFICATION`의 `FAILED`와 `HypothesisProcessState.status=FAILED`를 확정한다. 이때 가설의 `verification_work_ref`는 실패한 exact work revision, `verification_result_ref=null`이어야 하며 final verdict나 Gate 입력을 만들지 않는다.
 - `DYNAMIC_REPRO`의 종료 transition은 위 매핑을 만족해야 하며 `WorkExecutionState.output_refs`, `TransitionCommit.output_refs`와 `DynamicReproductionState.dynamic_result_ref`가 같은 `DynamicReproductionResult.record_id`를 가리킨다. Verification은 `COMMITTED` marker와 세 reference가 모두 맞을 때만 이 결과를 읽는다.
 - `TECHNICAL_GATE`의 `SUCCEEDED`는 정확히 하나의 `TechnicalEvidenceReview.record_id`를 가리킨다.
 - `RULE_SCOPE_GATE`의 `SUCCEEDED`는 정확히 하나의 `RuleScopeImpactReview.record_id`를 가리킨다.
@@ -526,7 +527,7 @@ Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 
 - `candidate_result_ref.content_hash`는 미리 발급한 ID를 포함해 canonical serialization한 결과 후보 전체의 hash다. 후보 record는 read-only staging 영역에 두며 action decision이 생긴 뒤 수정하거나 같은 `stored_data_id`·`record_id`에 다른 bytes를 넣지 않는다. candidate ref도 action `input_refs`에 정확히 한 번 포함한다. staging record는 `TransitionCommit.state=COMMITTED` 전에는 일반 결과 조회나 다음 단계에서 보이지 않는다.
 - `SCHEMA`는 result kind에 맞는 schema와 필수 필드를, `AUTHORITY`는 result kind의 등록된 생산 역할과 `requested_by`를 검사한다. `IDENTITY`·`REVISION`·`STATE`는 모든 candidate의 analysis, current `work_ref`·active attempt·input refs와 hash를 검사하고, `RecordMeta` candidate이면 workspace·commit·hypothesis·`meta.attempt_id`까지 정확히 일치하는지 검사한다.
 - 핵심 registry 항목은 `verification_result -> VerificationResult -> VERIFICATION`, `primitive -> Primitive -> VERIFICATION`, `chaining_result -> ChainingResult -> CHAINING`, `environment_requirements -> EnvironmentRequirements -> VERIFICATION`, `reproduction_plan -> ReproductionPlan -> VERIFICATION`, `dynamic_reproduction_result -> DynamicReproductionResult -> SANDBOX`, `cwe_label -> CWELabel -> CWE_LABELING`, `technical_evidence_review -> TechnicalEvidenceReview -> TECHNICAL_GATE`, `rule_scope_impact_review -> RuleScopeImpactReview -> RULE_SCOPE_GATE`, `report_draft -> ReportDraft -> REPORTER`다. 앞 값은 `result_kind`·`data_kind`, 가운데 값은 검사할 schema, 뒤 값은 유일한 생산 역할이다. 다른 result kind도 versioned result-owner registry에 정확히 한 schema와 생산 역할을 등록해야 하며, broad requester 표만으로 저장 권한을 얻지 않는다.
-- `result_kind=verification_result`이면 `SCHEMA | REVISION | STATE`는 가설의 `required_validation` 항목이 빠지지 않았고 모든 `FalsificationQuestion.question_id`가 정확히 한 번 처리됐으며, 사용한 근거가 현재 `workspace_id + commit_id`의 저장 record인지 구조적으로 확인한다. 운영 분석은 독립 Pro/Con work가 모두 정상 종료되어 exact output이 action `input_refs`에 있어야 한다. 일부 Context 조회 오류가 있어도 제한 retry·대체 조회·다른 정상 근거로 이 조건을 완료했다면 final candidate를 검사할 수 있지만, 필수 Context 또는 운영 Pro/Con을 확보하지 못했다면 final candidate를 `COMMITTED`하지 않는다. 이 경우 retry 가능 work는 `BLOCKED`, 더 시도할 수 없는 work는 `FAILED`로 끝내며 runtime이 `HOLD`를 대신 만들지 않는다. Runtime Validator는 구조·reference·완료 상태만 검사하고 근거가 verdict를 의미상 충분히 지지하는지는 Technical Evidence Gate가 검토한다.
+- `result_kind=verification_result`이면 `SCHEMA | REVISION | STATE`는 가설의 모든 `ValidationCheck.validation_id`와 candidate의 `ValidationCheckResult.validation_id`가 중복 없이 set-equal인지, 모든 `ValidationCheckResult.completion=COMPLETE`인지, 각 결과의 `evidence_refs`가 하나 이상인지 확인한다. `INCOMPLETE` 항목이 하나라도 있으면 final candidate를 `COMMITTED`하지 않는다. 모든 `FalsificationQuestion.question_id`도 정확히 한 번 처리되어야 하며 사용한 근거는 현재 `workspace_id + commit_id`의 저장 record여야 한다. 운영 분석은 독립 Pro/Con work가 모두 정상 종료되어 exact output이 action `input_refs`에 있어야 한다. 일부 Context 조회 오류가 있어도 제한 retry·대체 조회·다른 정상 근거로 이 조건을 완료했다면 final candidate를 검사할 수 있지만, 필수 Context 또는 운영 Pro/Con을 확보하지 못했다면 final candidate를 `COMMITTED`하지 않는다. 이 경우 retry 가능 work는 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지한다. 더 시도할 수 없으면 같은 atomic transition에서 work와 `HypothesisProcessState`를 `FAILED`로 끝내며 runtime이 `HOLD`를 대신 만들지 않는다. Runtime Validator는 구조·reference·완료 상태만 검사한다. final `TRUE` 근거의 의미적 충분성과 코드·실행 근거 연결은 Technical Evidence Gate가 exact final TRUE revision을 대상으로 별도로 검토한다. `FALSE | HOLD`는 Technical Gate 입력이 아니며, 구조 검사를 통과했다는 사실이 Gate 승인을 의미하지 않는다.
 - `VerificationResult.verdict=TRUE`이면 현재 가설의 핵심 공격 경로와 필요한 조건을 연결하는 하나 이상의 `supporting_evidence`가 필수다. 각 claim은 실제 저장 근거와 같은 `workspace_id + commit_id`의 코드 위치를 가져야 하며 오류·gap record를 근거로 사용할 수 없다.
 - `VerificationResult.verdict=FALSE`이면 `falsification_results`에 실제 `question_id`, `outcome=DISPROVED`, 하나 이상의 `evidence_refs`가 있는 항목이 필수이고 `verdict_rationale`이 그 질문과 근거를 연결해야 한다. 오류·timeout·빈 출력만 있는 후보는 `SCHEMA` check를 `FAIL`로 만들어 저장하지 않으며 runtime이 다른 verdict를 만들어 주지 않는다.
 - `VerificationResult.verdict=HOLD`이면 비어 있지 않은 `unresolved_conditions`와, 정상적으로 확인한 범위 및 결론을 막는 중요한 조건을 설명하는 `supporting_evidence[].evidence_refs | counter_evidence[].evidence_refs | falsification_results[].evidence_refs` 중 하나 이상의 실제 reference가 필요하다. `AnalysisError`, `DataGap`, timeout·권한 오류 또는 빈 Context만으로 만든 HOLD 후보는 `SCHEMA` check를 `FAIL`로 만들며 runtime이 다른 verdict를 만들어 주지 않는다.
@@ -730,6 +731,10 @@ FalsificationQuestion:
   question_id: string
   question: string
 
+ValidationCheck:
+  validation_id: string
+  instruction: string
+
 HypothesisProposal:
   proposal_id: string
   meta: RecordMeta
@@ -745,7 +750,7 @@ HypothesisProposal:
   restrictions: [string]
   missing_information: [string]
   falsification_questions: [FalsificationQuestion]
-  required_validation: [string]
+  validation_checks: [ValidationCheck]
   confidence: LOW | MEDIUM | HIGH
   parent_hypothesis_ids: [string]
   root_hypothesis_id: string | null
@@ -767,10 +772,10 @@ VulnerabilityHypothesis:
   target_locations: [CodeLocation]
   suspected_path: [CodeRelation | CodeLocation]
   falsification_questions: [FalsificationQuestion]
-  required_validation: [string]
+  validation_checks: [ValidationCheck]
 ```
 
-초기 가설의 `root_hypothesis_id`는 자기 `hypothesis_id`다. `origin=VERIFICATION`은 Verification이 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 분리한 proposal이고, `origin=CHAINING`은 TRUE+HOLD 또는 TRUE+TRUE Primitive match가 만든 proposal이다. 자식 가설은 직접 원인이 된 부모만 `parent_hypothesis_ids`에 넣고, 부모 중 가장 큰 `chain_depth + 1`을 사용한다. 부모와 자식의 lifecycle·verdict는 독립이며 child 결과로 parent verdict를 바꾸지 않는다. proposal 출력 검증 runtime은 각 반증 질문에 전역 `question_id`를 부여하고 등록 가설까지 그대로 유지한다. 질문은 가설의 필수 조건 하나를 실제 근거로 반증할 수 있게 구체적으로 작성한다. 금지된 확정 assertion, 잘못된 enum, 필수 field/location·반증 질문 누락은 제한된 repair retry 뒤 `INVALID_OUTPUT`이다. confidence는 scheduling hint이지 verdict가 아니다.
+초기 가설의 `root_hypothesis_id`는 자기 `hypothesis_id`다. `origin=VERIFICATION`은 Verification이 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 분리한 proposal이고, `origin=CHAINING`은 TRUE+HOLD 또는 TRUE+TRUE Primitive match가 만든 proposal이다. 자식 가설은 직접 원인이 된 부모만 `parent_hypothesis_ids`에 넣고, 부모 중 가장 큰 `chain_depth + 1`을 사용한다. 부모와 자식의 lifecycle·verdict는 독립이며 child 결과로 parent verdict를 바꾸지 않는다. proposal 출력 검증 runtime은 각 반증 질문에 전역 `question_id`, 각 필수 검증 항목에 전역 `validation_id`를 부여하고 등록 가설까지 그대로 유지한다. `instruction`은 무엇을 확인해야 완료되는지 짧게 설명한다. 질문은 가설의 필수 조건 하나를 실제 근거로 반증할 수 있게 구체적으로 작성한다. 금지된 확정 assertion, 잘못된 enum, 필수 field/location·반증 질문·검증 항목 누락 또는 중복 ID는 제한된 repair retry 뒤 `INVALID_OUTPUT`이다. confidence는 scheduling hint이지 verdict가 아니다.
 
 ## 3. CodeContextRequest/Response
 
@@ -808,7 +813,7 @@ CodeContextResponse:
 
 요청과 응답의 `meta.workspace_id` 또는 `meta.commit_id`가 다르거나, 이 값이 `CodeWorkspace`와 일치하지 않으면 `WORKSPACE_MISMATCH`로 기록하고 근거에 사용하지 않는다. 모든 limit은 0보다 커야 한다. `max_requests_per_hypothesis`는 같은 가설의 누적 요청 한도이며 Orchestration runtime이 `code_request_id` 수로 강제한다. empty/truncated/gap/error는 안전함 또는 `TRUE | FALSE | HOLD`를 뜻하지 않는다. `truncated=true`이면 `CONTEXT_TRUNCATED` gap이 반드시 있어야 한다. 조회 실패·timeout·권한 오류가 있으면 응답의 `errors`에 `AnalysisError(stage=CONTEXT)`를 넣고 그 오류 때문에 확인하지 못한 범위를 `gaps`의 `DataGap(stage=CONTEXT)`으로 함께 남긴다.
 
-일부 요청이 실패했어도 제한 retry·대체 조회 또는 다른 정상 근거로 가설의 `required_validation`, 모든 반증 질문과 운영 Pro/Con을 완료했다면 Verification은 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있다. 필수 Context나 운영 Pro/Con을 확보하지 못해 검증 절차 자체를 완료하지 못했다면 final `VerificationResult`를 만들지 않는다. 재시도할 수 있으면 해당 Verification work를 `BLOCKED`, 허용된 재시도를 소진했거나 복구할 수 없으면 `FAILED`로 남긴다.
+일부 요청이 실패했어도 제한 retry·대체 조회 또는 다른 정상 근거로 가설의 모든 `validation_checks`, 모든 반증 질문과 운영 Pro/Con을 완료했다면 Verification은 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있다. 필수 Context나 운영 Pro/Con을 확보하지 못해 검증 절차 자체를 완료하지 못했다면 final `VerificationResult`를 만들지 않는다. 재시도할 수 있으면 해당 Verification work를 `BLOCKED`로 두고 `HypothesisProcessState.status=VERIFYING`을 유지한다. 허용된 재시도를 소진했거나 복구할 수 없으면 같은 atomic transition에서 work와 가설 처리 상태를 `FAILED`로 남긴다.
 
 ## 4. VerificationResult
 
@@ -863,6 +868,12 @@ FalsificationResult:
   evidence_refs: [StoredDataRef]
   rationale: string
 
+ValidationCheckResult:
+  validation_id: string
+  completion: COMPLETE | INCOMPLETE
+  evidence_refs: [StoredDataRef]
+  summary: string
+
 VerificationResult:
   meta: RecordMeta
   verification_mode: BASIC | CONDITIONAL_DEBATE | ALWAYS_DEBATE
@@ -871,6 +882,7 @@ VerificationResult:
   supporting_evidence: [EvidenceClaim]
   counter_evidence: [EvidenceClaim]
   falsification_results: [FalsificationResult]
+  validation_results: [ValidationCheckResult]
   initial_verdict: TRUE | FALSE | HOLD
   dynamic_decision: NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO
   dynamic_result_ref: StoredDataRef | null
@@ -898,7 +910,7 @@ VerificationResult:
 
 `VerificationResult.dynamic_result_ref`가 있으면 같은 가설·workspace·commit의 COMMITTED `DynamicReproductionResult` exact revision을 가리킨다. 그 동적 결과의 `poc_ref`가 있으면 `VerificationResult.poc_ref`는 같은 `stored_data_id`, `record_id`, `content_hash`를 사용하고, 동적 결과의 `poc_ref=null`이면 Verification이 별도 PoC를 연결한 명확한 근거가 없는 한 `poc_ref=null`이다. Verification, Gate와 Reporter는 `poc_ref` 존재만으로 재현 성공을 주장하지 않고 동적 `status`, `runner_invoked`, `steps_ref`, `hypothesis_outcome`과 실제 evidence를 함께 읽는다.
 
-최종 `VerificationResult`는 등록 가설의 모든 `question_id`를 중복 없이 정확히 한 번씩 평가한다. `DISPROVED`는 해당 질문이 확인하려는 가설의 필수 조건이 실제 근거로 반증됐다는 뜻이며 `evidence_refs`가 하나 이상이어야 한다. `NOT_DISPROVED`는 반증하지 못했다는 뜻일 뿐 가설을 증명하지 않는다. 확인하지 못한 질문은 `INCONCLUSIVE`로 남긴다. `verdict=TRUE`는 실제 supporting evidence가 핵심 공격 경로와 필요한 조건을 연결할 때만 허용한다. `verdict=FALSE`는 적어도 하나의 `DISPROVED` 결과가 있고 `verdict_rationale`이 그 `question_id`와 근거를 설명할 때만 허용한다. `verdict=HOLD`는 정상 근거로 확인한 범위와 비어 있지 않은 `unresolved_conditions`가 결론을 막는 중요한 조건을 설명할 때만 허용한다. `TRUE | HOLD`에는 `DISPROVED` 결과가 있을 수 없다. `AnalysisError`, `DataGap`, timeout·권한 오류 또는 빈 Context만으로는 어느 verdict도 만들지 않는다.
+최종 `VerificationResult`는 등록 가설의 모든 `question_id`와 `validation_id`를 각각 중복 없이 정확히 한 번씩 평가한다. 가설의 모든 `ValidationCheck.validation_id`와 candidate의 `ValidationCheckResult.validation_id`가 중복 없이 set-equal해야 한다. 모든 `ValidationCheckResult.completion=COMPLETE`이고 각 결과의 `evidence_refs`가 하나 이상이어야 final 결과를 확정할 수 있다. 확인을 끝내지 못한 항목은 `INCOMPLETE`로 표현하되, `INCOMPLETE` 항목이 하나라도 있으면 final candidate를 `COMMITTED`하지 않는다. `DISPROVED`는 해당 질문이 확인하려는 가설의 필수 조건이 실제 근거로 반증됐다는 뜻이며 `evidence_refs`가 하나 이상이어야 한다. `NOT_DISPROVED`는 반증하지 못했다는 뜻일 뿐 가설을 증명하지 않는다. 확인하지 못한 질문은 `INCONCLUSIVE`로 남긴다. `verdict=TRUE`는 실제 supporting evidence가 핵심 공격 경로와 필요한 조건을 연결할 때만 허용한다. `verdict=FALSE`는 적어도 하나의 `DISPROVED` 결과가 있고 `verdict_rationale`이 그 `question_id`와 근거를 설명할 때만 허용한다. `verdict=HOLD`는 정상 근거로 확인한 범위와 비어 있지 않은 `unresolved_conditions`가 결론을 막는 중요한 조건을 설명할 때만 허용한다. `TRUE | HOLD`에는 `DISPROVED` 결과가 있을 수 없다. `AnalysisError`, `DataGap`, timeout·권한 오류 또는 빈 Context만으로는 어느 verdict도 만들지 않는다.
 
 ## 5. Primitive DB records
 
@@ -1223,7 +1235,7 @@ TechnicalEvidenceReview:
   rationale: string
 ```
 
-`action_decision_ref.record_id`는 `CALL_TECHNICAL_GATE`를 허가하고 `USED`로 claim한 decision revision을 가리킨다. 실행 결과를 기록한 이후 decision revision의 `outcome_refs`에는 같은 call spec을 실행한 `TECHNICAL_GATE` `LLMInvocationLog`와 현재 review가 각각 한 번 포함되고, log의 `parsed_output_ref.record_id`가 현재 review를 가리켜야 한다. review는 log를 역참조하지 않아 content hash 순환을 만들지 않는다. `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 필수이며 각각 정확히 한 `VerificationResult`와 `CWELabel` revision을 가리킨다. runtime은 두 대상의 `record_id`, `workspace_id`, `commit_id`, `hypothesis_id`와 `content_hash`가 서로와 현재 Technical review에 일치하는지 확인한다. Verification 또는 CWELabel이 새 revision으로 바뀌면 이전 `TechnicalEvidenceReview`를 재사용할 수 없고 Gate를 새로 호출해야 한다. Technical review는 `VerificationResult.verdict`나 `CWELabel`을 덮어쓰지 않는다.
+`action_decision_ref.record_id`는 `CALL_TECHNICAL_GATE`를 허가하고 `USED`로 claim한 decision revision을 가리킨다. 실행 결과를 기록한 이후 decision revision의 `outcome_refs`에는 같은 call spec을 실행한 `TECHNICAL_GATE` `LLMInvocationLog`와 현재 review가 각각 한 번 포함되고, log의 `parsed_output_ref.record_id`가 현재 review를 가리켜야 한다. review는 log를 역참조하지 않아 content hash 순환을 만들지 않는다. `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 필수이며 각각 정확히 한 final `VerificationResult(verdict=TRUE)`와 `CWELabel` revision을 가리킨다. `FALSE | HOLD` 또는 `HypothesisProcessState.status=FAILED`인 가설에는 Technical Gate work와 review를 만들 수 없다. runtime은 두 대상의 `record_id`, `workspace_id`, `commit_id`, `hypothesis_id`와 `content_hash`가 서로와 현재 Technical review에 일치하는지 확인한다. Verification 또는 CWELabel이 새 revision으로 바뀌면 이전 `TechnicalEvidenceReview`를 재사용할 수 없고 Gate를 새로 호출해야 한다. Technical review는 `VerificationResult.verdict`나 `CWELabel`을 덮어쓰지 않는다.
 
 `status=ACCEPT`는 `handoff_readiness=READY`, `status=REVISE | REJECT`는 `handoff_readiness=NOT_READY`만 허용한다. `DynamicReproductionResult(status=BLOCKED, failure_reason=POLICY_BLOCKED)`는 자동 `REJECT` 조건이 아니다. exact 정책 차단 근거와 미실행 제한을 보존하면서 정적·찬반 근거로 핵심 TRUE를 충분히 검토할 수 있으면 `ACCEPT`, 동적 근거가 핵심 주장에 필요하고 보완 가능하면 `REVISE`, 계약 위반·근거 모순으로 현재 기록을 신뢰할 수 없을 때만 `REJECT`다. 어떤 경우에도 정책 차단을 가설 `FALSE`로 변환하지 않는다.
 
@@ -1487,6 +1499,7 @@ AnalysisRunResult:
   commit_id: string | null
   status: COMPLETE | PARTIAL | FAILED | CANCELLED
   hypothesis_counts: map
+  failed_hypothesis_count: integer
   verdict_counts: map
   gate_counts: map
   finding_refs: [StoredDataRef]
@@ -1515,6 +1528,8 @@ AnalysisRunResult:
 ```
 
 Reporter 호출은 `TRUE + Technical ACCEPT + Rule Scope Impact review_status PASS + rule_compliance PASS + scope_compliance PASS + security_impact SUFFICIENT + ALLOW`인 경우만 유효하다.
+
+`failed_hypothesis_count`는 종료 시점에 `HypothesisProcessState.status=FAILED`인 가설 수와 정확히 같아야 하며 이 가설은 current `verdict_counts`에 포함하지 않는다. 최초 검증에서 실패했다면 current final `VerificationResult` 자체가 없다. Technical `REVISE` 뒤 보완 검증이 실패한 경우에는 이전 Verification·Gate revision을 `verification_refs`와 `technical_review_refs`에 감사 기록으로 보존할 수 있지만 superseded history일 뿐 current verdict·Gate·Primitive·Reporter 입력으로 집계하지 않는다. 연결된 실패 work·attempt·transition, `errors`와 `gaps`로 원인을 추적한다. 실패 가설이 하나라도 있으면 분석 전체를 성공으로 숨기지 않으며 완료된 다른 가설이 있더라도 `AnalysisRunResult.status=PARTIAL`로 기록한다.
 
 ## 구현 단계에서 결정할 것
 

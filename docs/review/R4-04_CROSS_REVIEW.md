@@ -39,14 +39,14 @@ PR #47은 문서 자동 검사와 기술 검토를 통과했지만 GitHub 교차
 
 | 역할 | 담당자 | 이번에 확인할 내용 | 현재 상태 | GitHub 증거 |
 |---|---|---|---|---|
-| R1 LLM 탐색·체이닝 | `@baeseungwon1010` | 가설 생성, HOLD·TRUE+TRUE 체이닝 입력과 새 가설 재검증 조건 | `RECHECK_REQUIRED` | [이전 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5476469510), Research 표현 정리 뒤 최종 SHA 재확인 필요 |
-| R2 정적분석·컨텍스트 | `@zv9uvr` | AST/SAST 사실, 코드 위치, 호출 경로, Context 오류·누락 범위와 공통 식별자 연결 | `RECHECK_REQUIRED` | [이전 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5477979652), Context 오류의 `AnalysisError`·`DataGap` 연결과 final verdict 조건 추가 뒤 재검토 필요 |
-| R3 통합 구현 | `@YHS-Sec` | 상태 전이, 재시도·복구, 계약을 실제 코드로 구현할 수 있는지 | `RECHECK_REQUIRED` | [수정 요청](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5486717955) 반영 뒤 최종 SHA 재검토 필요 |
+| R1 LLM 탐색·체이닝 | `@baeseungwon1010` | 가설 생성, HOLD·TRUE+TRUE 체이닝 입력과 새 가설 재검증 조건 | `RECHECK_REQUIRED` | [이전 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5489231154) 뒤 `validation_checks`의 stable ID 계약이 추가되어 최종 SHA 재검토 필요 |
+| R2 정적분석·컨텍스트 | `@zv9uvr` | AST/SAST 사실, 코드 위치, 호출 경로, Context 오류·누락 범위와 공통 식별자 연결 | `RECHECK_REQUIRED` | [b037bd3 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5495159036) 뒤 Context 완료 결과와 실패 상태 계약이 추가되어 최종 SHA 재검토 필요 |
+| R3 통합 구현 | `@YHS-Sec` | 상태 전이, 재시도·복구, 계약을 실제 코드로 구현할 수 있는지 | `RECHECK_REQUIRED` | [이전 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5494246304) 뒤 `ValidationCheckResult`와 가설 `FAILED` atomic transition이 추가되어 최종 SHA 재검토 필요 |
 | R4 PM·아키텍처 | `@taehyeon-git` | 다른 역할의 검토 증거, 최신 main과 환경 계약 병합 결과, 최종 commit과 완료 조건 확인 | `RECHECK_REQUIRED` | 최신 main 동기화와 R6–R7 환경 계약 추가 뒤 최종 SHA 재확인 필요 |
-| R5 Gate·Finding·보고서 | `@kimhr8463` | 두 Gate 순서, REVISE, Reporter 호출과 사람 전달 조건 | `RECHECK_REQUIRED` | [수정 요청](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5476190803) 반영 뒤 최종 SHA 재검토 필요 |
-| R6 검증·반박 | `@UltraPeachKeen` | Pro/Con 독립성, Context 오류와 final verdict 구분, TRUE/FALSE/HOLD, `EnvironmentRequirements`·plan revision과 환경 실패 `INCONCLUSIVE` 처리 | `RECHECK_REQUIRED` | Context 오류만으로 HOLD 금지, 정상 근거로 필수 검증 완료 시 판정 허용, 필수 검증 미완료 시 final result 금지 기준 재검토 필요 |
-| R7 동적검증·Sandbox | `@Potatonion` | LIMITED/FULL_REPRO, exact 요구사항과 실제 환경 비교, PoC·log·sandbox 권한과 결과 연결 | `RECHECK_REQUIRED` | 최신 main의 실제 환경 비교 계약을 포함한 최종 SHA 재검토 필요 |
-| R8 데이터·평가·예산 | `@gitterable` | 운영 `ALWAYS_DEBATE`, 평가 모드 격리, 예산 초과 처리 | `WAITING` | — |
+| R5 Gate·Finding·보고서 | `@kimhr8463` | 두 Gate 순서, REVISE, Reporter 호출과 사람 전달 조건 | `APPROVED` | [aff3106 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5491995886). 이후 변경은 이미 승인한 final TRUE 전용 Gate 범위를 더 명확히 했고 R5의 Gate 결과·순서·Reporter 계약은 바꾸지 않음 |
+| R6 검증·반박 | `@UltraPeachKeen` | Pro/Con 독립성, Context 오류와 final verdict 구분, TRUE/FALSE/HOLD, `EnvironmentRequirements`·plan revision과 환경 실패 `INCONCLUSIVE` 처리 | `RECHECK_REQUIRED` | [b037bd3 최종 리뷰](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5494941957)의 TRUE 전용 Technical Gate 문구와 검증 완료·실패 계약을 반영한 최종 SHA 재검토 필요 |
+| R7 동적검증·Sandbox | `@Potatonion` | LIMITED/FULL_REPRO, exact 요구사항과 실제 환경 비교, PoC·log·sandbox 권한과 결과 연결 | `APPROVED` | [aff3106 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5490971913). 이후 변경은 Sandbox plan·환경·PoC·log 계약을 바꾸지 않음 |
+| R8 데이터·평가·예산 | `@gitterable` | 운영 `ALWAYS_DEBATE`, 평가 모드 격리, 예산 초과 처리 | `APPROVED` | [aff3106 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5492356188). 이후 변경은 debate·평가·예산 계약을 바꾸지 않음 |
 
 R4 담당자는 이 PR의 작성자이므로 자신의 확인만으로 교차 검토를 대신할 수 없습니다. R4의 최종 확인은 다른 필수 역할의 검토가 끝난 뒤에 수행합니다.
 
@@ -67,8 +67,11 @@ R4 담당자는 이 PR의 작성자이므로 자신의 확인만으로 교차 �
 - Context 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 함께 기록하며 오류 자체를 verdict 근거로 쓰지 않습니다.
 - 일부 조회가 실패해도 대체 조회·다른 정상 근거와 운영 Pro/Con으로 필수 검증을 완료하면 실제 근거에 따라 `TRUE | FALSE | HOLD`를 허용합니다.
 - 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증 절차를 완료하지 못하면 final `VerificationResult`를 만들지 않고, retry 가능 여부에 따라 work를 `BLOCKED | FAILED`로 남깁니다.
+- 가설의 필수 검증 문장을 단순 문자열로 두지 않고 stable `validation_id`가 있는 `ValidationCheck`로 정의하며, final 결과는 같은 ID의 `ValidationCheckResult`가 모두 `COMPLETE`이고 실제 근거를 가리킬 때만 저장합니다.
+- retry 가능한 검증 실패는 가설을 `VERIFYING`으로 유지합니다. 재시도를 소진하거나 복구할 수 없으면 failed Verification work와 가설의 `FAILED` 상태를 원자적으로 묶고, final verdict와 Gate 입력을 만들지 않습니다.
+- Technical Evidence Gate는 exact final `TRUE`만 의미적으로 검토합니다. `FALSE | HOLD`와 검증 실패 가설은 Gate 입력이 아니며 Runtime Validator의 구조 검사 통과를 Gate 승인으로 해석하지 않습니다.
 
-최신 main 병합 commit `cb3aa9944f46f590d631cf3991dcaf44d0f0b00b`에서 위 계약을 보존했고, 문서 자동 검사 61개·Mermaid 정본 13개·Wiki 13개를 실패 0건으로 통과했습니다. 최종 `review freeze SHA`는 이 기록을 포함한 마지막 commit으로 PR 본문에서 다시 고정합니다.
+최신 `main` 기준 계약을 보존했고, 문서 자동 검사 61개·Mermaid 정본 13개·Wiki 13개를 실패 0건으로 통과했습니다. 최종 `review freeze SHA`는 이 기록을 포함한 마지막 commit으로 PR 본문에서 고정합니다.
 
 ## 리뷰 중 수정이 생겼을 때
 

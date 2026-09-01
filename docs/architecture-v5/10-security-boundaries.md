@@ -249,6 +249,8 @@ Finding이 없는 packet은 `FINDING_NOT_CREATED` 사유를 가진 내부 blocke
 | N17 | Context 조회 실패·timeout·권한 오류만으로 `HOLD`를 저장하려 함 | 오류는 `AnalysisError`, 확인하지 못한 범위는 `DataGap`으로 기록; verdict evidence가 없으므로 `SAVE_RESULT` 거절 |
 | N18 | 일부 Context 조회는 실패했지만 대체 조회·다른 정상 근거와 운영 Pro/Con으로 필수 검증을 완료 | 오류·gap을 보존하고 실제 근거에 따라 `TRUE | FALSE | HOLD` 저장 허용 |
 | N19 | 필수 Context 또는 운영 Pro/Con을 확보하지 못했는데 final `VerificationResult`를 저장하려 함 | final 저장 거절; retry 가능이면 work `BLOCKED`, 허용된 재시도 소진·복구 불가이면 `FAILED` |
+| N20 | 가설의 검증 항목이 결과에서 빠지거나 중복되거나 `INCOMPLETE`인데 final `VerificationResult`를 저장하려 함 | `validation_id` 집합과 완료·근거 조건 불일치로 저장 거절; retry 가능이면 work `BLOCKED`, 아니면 가설까지 `FAILED` |
+| N21 | Verification work만 `FAILED`로 끝내고 가설을 계속 `VERIFYING`으로 두거나, 실패 가설에 과거 final result를 연결하려 함 | 같은 atomic transition에서 `HypothesisProcessState.status=FAILED`, exact failed work ref, `verification_result_ref=null` 강제; 불일치 상태는 분석 종료 차단 |
 
 ## 남는 위험
 

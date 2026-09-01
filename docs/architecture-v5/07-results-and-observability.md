@@ -145,7 +145,7 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 
 새 전이를 승인하기 전에는 같은 work의 다음 version에 남은 journal을 먼저 정리한다. `COMMITTED` marker가 있으면 이를 재투영하고 경쟁 요청은 version conflict로 거절한다. `PREPARED`가 있으면 복구 또는 `ABORTED`가 끝날 때까지 새 전이를 시작하지 않는다.
 
-Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 final `VerificationResult.record_id`는 같은 atomic transition에 묶인다. Reporter work의 `SUCCEEDED`, `ReportProcessState.status=DRAFTED`와 `ReportDraft.record_id`도 같은 방식으로 묶인다. 두 Gate work는 각각 정확히 하나인 `TechnicalEvidenceReview`와 `RuleScopeImpactReview` revision을 output으로 가리킨다. 상태만 종료되었거나 결과만 저장된 경우에는 다음 단계와 분석 종료를 차단한다.
+Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 final `VerificationResult.record_id`는 같은 atomic transition에 묶인다. 검증을 끝내지 못하고 더 재시도할 수 없으면 Verification work의 `FAILED`와 `HypothesisProcessState.status=FAILED`도 같은 transition에 묶고, 가설은 exact failed work를 가리키되 `verification_result_ref=null`로 둔다. Reporter work의 `SUCCEEDED`, `ReportProcessState.status=DRAFTED`와 `ReportDraft.record_id`도 같은 방식으로 묶인다. 두 Gate work는 각각 정확히 하나인 `TechnicalEvidenceReview`와 `RuleScopeImpactReview` revision을 output으로 가리킨다. 상태만 종료되었거나 결과만 저장된 경우에는 다음 단계와 분석 종료를 차단한다.
 
 ## 중복·늦은 결과와 격리
 
@@ -176,7 +176,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 
 ## AnalysisRunResult
 
-최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, INITIAL·VERIFICATION·CHAINING·invalid hypothesis 수, verdict별 수, 두 Gate별 수, PoC/report refs, 공식 정책 상태, Primitive/Chaining 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
+최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, INITIAL·VERIFICATION·CHAINING·invalid hypothesis 수, verdict별 수, `failed_hypothesis_count`, 두 Gate별 수, PoC/report refs, 공식 정책 상태, Primitive/Chaining 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. `failed_hypothesis_count`는 final verdict 없이 `HypothesisProcessState.status=FAILED`로 끝난 가설 수이며 verdict별 수와 섞지 않는다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
 
 분석 종료 뒤 review packet assembler가 exact `AnalysisRunResult`에서 `HumanReviewPacket`을 만든다. packet은 Finding·Verification, 두 Gate, 정책·CWE, dynamic·redacted PoC, report 또는 차단 이유, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. Finding이 아직 없으면 `finding_refs=[]`, `report_ready=false`, `blocked_reasons=FINDING_NOT_CREATED`인 blocked packet만 만들 수 있고 공개할 수 없다. `HumanReviewState`는 current packet generation과 current 사람 decision을 가리킨다. 새 packet이 생기면 이전 packet과 결정은 감사 기록으로만 남고 공개에는 사용할 수 없다. `HumanReviewDecision`은 packet과 별도 record이며 ReportDraft를 수정하지 않는다.
 
@@ -197,10 +197,11 @@ ReportDraft가 가리킨 Verification·CWE·두 Gate·정책 중 하나라도 �
 |---|---|---|
 | clone·checkout 실패 | `FAILED` | 분석 `FAILED`, AST/SAST를 시작하지 않음 |
 | 일부 AST/SAST 실패 | tool `FAILED`, normalize `PARTIAL` 가능 | `DataGap`과 오류를 포함하고 가설 분석 계속 가능 |
-| 가설 Agent·Verification 오류 | retry 가능하면 `BLOCKED`, 아니면 `FAILED` | 다른 가설 계속, 해당 가설은 근거 없이 `FALSE`가 되지 않으며 분석 `PARTIAL` 가능 |
+| Hypothesis Agent 출력 오류 | repair 가능하면 work `BLOCKED`, 아니면 proposal `INVALID_OUTPUT`과 work `FAILED` | 등록 전이므로 `HypothesisProcessState`를 만들지 않음. 다른 proposal은 계속하고 분석은 `PARTIAL` 가능 |
+| Verification 오류 | retry 가능하면 work `BLOCKED`, 아니면 work와 가설 처리 상태 `FAILED` | retry 중 가설은 `VERIFYING` 유지. 최종 실패 가설은 `verification_result_ref=null`이며 다른 가설은 계속하고 분석은 `PARTIAL` 가능 |
 | provider 인증 필요 | `BLOCKED`, `waiting_for=AUTH` | 재인증 또는 승인된 failover 전까지 대기, verdict 변경 금지 |
 | rate limit·timeout | retry 가능하면 `BLOCKED`, 아니면 `FAILED` | backoff·예산 확인 뒤 새 attempt, 이전 실패 보존 |
-| Context 조회 실패·timeout·권한 오류 | 필수 검증을 아직 완료하지 못했고 retry 가능하면 `BLOCKED`, 더 시도할 수 없으면 `FAILED`; 대체 조회·다른 정상 근거로 필수 검증을 완료할 수 있으면 현재 Verification 계속 | `AnalysisError`와 영향 범위 `DataGap`을 함께 남긴다. 오류 자체는 verdict 근거가 아니며, 필수 검증을 완료하지 못하면 final `VerificationResult`를 만들지 않음 |
+| Context 조회 실패·timeout·권한 오류 | 필수 검증을 아직 완료하지 못했고 retry 가능하면 work `BLOCKED`와 가설 `VERIFYING`, 더 시도할 수 없으면 work·가설 `FAILED`; 대체 조회·다른 정상 근거로 필수 검증을 완료할 수 있으면 현재 Verification 계속 | `AnalysisError`와 영향 범위 `DataGap`을 함께 남긴다. 오류 자체는 verdict 근거가 아니며, 필수 검증을 완료하지 못하면 final `VerificationResult`를 만들지 않음 |
 | Sandbox 환경 구성 실패 | `FAILED + ENVIRONMENT_SETUP` | 동적 반증이 아님, Verification이 남은 근거로 unresolved condition을 판단 |
 | 필수 환경 요구사항 차이·미확인·비교 오류 | `FAILED + ENVIRONMENT_SETUP`, `sandbox_environment=MISMATCH | ERROR` | 공격 단계를 시작하지 않고 exact 차이를 R6에 반환. 요구사항 변경이면 새 requirements와 이를 가리키는 새 plan, 단계 변경만이면 새 plan과 새 Sandbox 검사가 필요 |
 | Sandbox 부분 실행 | `PARTIAL`, 신뢰 결과와 `limitations` 저장 | 실제 오류가 없으면 `error_ids`·`gap_ids`를 만들지 않고 Verification이 한계와 관측을 함께 판단 |
@@ -223,8 +224,8 @@ Context 조회 실패·timeout·권한 오류는 다음 기준으로 처리한�
 
 1. 실패 사건은 `AnalysisError(stage=CONTEXT, code=CONTEXT_RETRIEVAL_ERROR)`로 기록한다. 그 오류 때문에 확인하지 못한 path·language·location은 `DataGap(stage=CONTEXT)`으로 기록한다. 두 항목의 `related_record_ids`는 가능한 범위에서 같은 `CodeContextRequest`·`CodeContextResponse`·Verification work record를 가리키고, `error_id`와 `gap_id`는 해당 attempt의 `TransitionCommit`과 최종 `AnalysisRunResult`에 보존한다.
 2. `AnalysisError`와 `DataGap` 자체는 supporting evidence, counter evidence 또는 falsification evidence가 아니다. 단순 조회 실패만으로 `TRUE | FALSE | HOLD`를 만들지 않는다.
-3. 일부 조회가 실패했어도 제한 retry, 대체 조회 또는 같은 `workspace_id + commit_id`의 다른 정상 근거로 가설의 `required_validation`, 모든 반증 질문과 운영 Pro/Con을 완료했다면 final verdict를 저장할 수 있다. 이때 실제 공격 경로가 충분히 지지되면 `TRUE`, named falsification이 실제 근거로 반증되면 `FALSE`, 유효한 근거로 확인한 범위와 결론을 막는 중요한 조건이 함께 남으면 `HOLD`다.
-4. 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증 절차 자체를 완료하지 못하면 final `VerificationResult`를 만들지 않는다. retry·재인증·새 입력을 기다릴 수 있으면 Verification work를 `BLOCKED`, 허용된 재시도를 모두 소진했거나 복구할 수 없으면 `FAILED`로 끝낸다.
+3. 일부 조회가 실패했어도 제한 retry, 대체 조회 또는 같은 `workspace_id + commit_id`의 다른 정상 근거로 가설의 모든 `validation_checks`, 모든 반증 질문과 운영 Pro/Con을 완료했다면 final verdict를 저장할 수 있다. 이때 실제 공격 경로가 충분히 지지되면 `TRUE`, named falsification이 실제 근거로 반증되면 `FALSE`, 유효한 근거로 확인한 범위와 결론을 막는 중요한 조건이 함께 남으면 `HOLD`다.
+4. 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증 절차 자체를 완료하지 못하면 final `VerificationResult`를 만들지 않는다. retry·재인증·새 입력을 기다릴 수 있으면 Verification work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지한다. 허용된 재시도를 모두 소진했거나 복구할 수 없으면 같은 atomic transition에서 work와 가설 처리 상태를 `FAILED`로 끝내고 `verification_result_ref=null`로 둔다.
 
 따라서 `HOLD`는 정상 근거를 검토한 뒤 남은 보안 조건을 나타내며, 실행 오류를 domain verdict로 바꾼 이름이 아니다.
 
