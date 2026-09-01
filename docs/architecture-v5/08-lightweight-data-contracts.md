@@ -528,7 +528,8 @@ Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 
 - 핵심 registry 항목은 `verification_result -> VerificationResult -> VERIFICATION`, `primitive -> Primitive -> VERIFICATION`, `chaining_result -> ChainingResult -> CHAINING`, `reproduction_plan -> ReproductionPlan -> VERIFICATION`, `dynamic_reproduction_result -> DynamicReproductionResult -> SANDBOX`, `cwe_label -> CWELabel -> CWE_LABELING`, `technical_evidence_review -> TechnicalEvidenceReview -> TECHNICAL_GATE`, `rule_scope_impact_review -> RuleScopeImpactReview -> RULE_SCOPE_GATE`, `report_draft -> ReportDraft -> REPORTER`다. 앞 값은 `result_kind`·`data_kind`, 가운데 값은 검사할 schema, 뒤 값은 유일한 생산 역할이다. 다른 result kind도 versioned result-owner registry에 정확히 한 schema와 생산 역할을 등록해야 하며, broad requester 표만으로 저장 권한을 얻지 않는다.
 - `result_kind=verification_result`이면 `SCHEMA` check가 verdict별 최소 구조를 검사한다.
   - `TRUE`는 `supporting_evidence`가 하나 이상이어야 하고, 그중 하나 이상의 `EvidenceClaim`이 실제로 저장된 근거를 가리키는 `evidence_refs`를 하나 이상 가져야 한다.
-  - `VerificationResult.verdict=FALSE`이면 `falsification_results`에 실제 `question_id`, `outcome=DISPROVED`, 하나 이상의 `evidence_refs`가 있는 항목이 필요하고, `verdict_rationale`이 해당 질문과 근거를 연결해야 한다.  - `HOLD`는 해결되지 않은 조건을 설명하는 `unresolved_conditions`가 하나 이상이어야 한다.
+  - `VerificationResult.verdict=FALSE`이면 `falsification_results`에 실제 `question_id`, `outcome=DISPROVED`, 하나 이상의 `evidence_refs`가 있는 항목이 필요하고, `verdict_rationale`이 해당 질문과 근거를 연결해야 한다.
+  - `HOLD`는 해결되지 않은 조건을 설명하는 `unresolved_conditions`가 하나 이상이어야 한다.
   - 오류·timeout·빈 Context·예산 초과 상태 reference만으로 구성된 후보는 `TRUE` 또는 `FALSE`로 저장하지 않는다.
   - `TRUE | HOLD`에는 `outcome=DISPROVED`인 `FalsificationResult`가 있을 수 없다.
   - candidate의 `playbook_ref`는 `SAVE_RESULT.input_refs`에 포함된 exact `VerificationPlaybook` revision과 일치해야 한다. reference가 없거나 `record_id`·`content_hash`가 다르거나, final Verification 합성 호출이 다른 플레이북 revision을 사용했으면 저장을 거절한다.
