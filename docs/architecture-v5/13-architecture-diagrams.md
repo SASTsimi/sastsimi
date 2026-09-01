@@ -268,7 +268,12 @@ flowchart LR
     STATIC[AST SAST facts] --> FACTS[(facts)]
     CONTEXT[Context retrieval] --> CONTEXTS[(contexts)]
     AGENTS[Hypothesis Verification Pro Con] --> RESULTS[(hypotheses and verifications)]
-    DYNAMIC[Docker and PoC] --> DYNSTORE[(dynamic artifacts)]
+    CONTROLLER[Sandbox Controller policy decision] --> DYNSTORE[(dynamic artifacts)]
+    RUNNER[Sandbox Runner environment and step log] --> DYNSTORE
+    OBSERVE[Redacted observations and PoC bundle] --> DYNSTORE
+    CLEANUP[Cleanup resource record] --> DYNSTORE
+    DYNSTORE --> ASSEMBLER[Non LLM Result Assembler]
+    ASSEMBLER --> DYNRESULT[DynamicReproductionResult]
     PR[Primitive and Chaining] --> PRSTORE[(primitives and chaining)]
     GATES[Technical and Rule Scope Gates] --> GATESTORE[(gates and policies)]
     REPORT[Reporter] --> REPORTS[(report drafts)]
@@ -276,7 +281,7 @@ flowchart LR
     FACTS --> RUN[(AnalysisRunResult and debug trace)]
     CONTEXTS --> RUN
     RESULTS --> RUN
-    DYNSTORE --> RUN
+    DYNRESULT --> RUN
     PRSTORE --> RUN
     GATESTORE --> RUN
     REPORTS --> RUN

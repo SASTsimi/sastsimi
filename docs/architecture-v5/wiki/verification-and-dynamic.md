@@ -54,6 +54,10 @@ Docker는 ephemeral/non-root, network default-deny와 자원·시간 제한을 �
 
 동적 결과는 정확한 PoC·Controller 정책 판정·실제 생성 환경·Runner 단계 로그를 reference로 전달합니다. 요구사항 reference는 결과에 중복 저장하지 않고 `reproduction_plan_ref → environment_requirements_ref`와 `environment_ref → requirements_ref`가 같은지 확인합니다. Runner가 호출되지 않았으면 단계 로그는 비어 있고, 호출됐다면 환경 차이로 첫 공격 단계 전에 멈춰도 로그가 필요합니다. 실제 환경이 없으면 환경 reference도 비어 있습니다. 정리할 자원이 전혀 없을 때만 `cleanup_status=NOT_REQUIRED`를 사용합니다. PoC reference가 있어도 정책에 막혀 실행되지 않았을 수 있으므로 상태와 로그를 함께 확인합니다. R4는 공통 필드·null·상태·reference 조합을, R6는 필요한 조건과 허용 차이를, R7은 실제 비교와 각 artifact의 상세 내용을 작성합니다.
 
+R7은 HTTP 요청·응답, application log, DB·파일 변화, command canary, Mock callback과 browser 관측을 실행 step과 연결합니다. raw payload는 제한 저장소에서 먼저 redaction하고, 성공한 exact artifact만 Verification에 전달합니다. PoC는 생성본과 실제 실행본을 구분하며 실행본 command·input digest가 Runner log와 일치해야 합니다. 환경 artifact에는 실제 image·service·fixture와 생성·cleanup 자원 ledger를 남깁니다.
+
+공통 계약은 R6의 `EnvironmentRequirements`, plan의 `environment_requirements_ref`와 실제 환경의 `requirements_ref`를 exact revision으로 연결합니다. R7은 모든 `requirement_id`에 `MATCH | MISMATCH | NOT_CHECKED | ERROR`, 실제 값 또는 artifact, 차이와 Health Check 근거를 기록하며 필수 항목이 모두 `MATCH`일 때만 공격 단계를 실행합니다.
+
 Technical Gate가 `REVISE`를 반환하면 같은 ACTIVE `VerificationAssignment` owner가 직접 받습니다. 프로그램은 새 generation의 Verification work와 `TERMINAL -> VERIFYING` 전이를 먼저 원자적으로 만들고, 필요한 Context·Pro/Con·정적·동적 근거와 설명을 보완해 새 Verification revision·work 종료·current pointer를 함께 확정합니다. CWE 보완이 있으면 기존 CWE producer와 새 revision을 조정한 뒤 새 Gate work를 요청합니다. 이는 provider retry나 동일 입력 재투표가 아닙니다.
 
 `status`는 실행 완료 정도이고 `hypothesis_outcome: SUPPORTED | DISPROVED | INCONCLUSIVE`은 관측과 가설의 관계입니다. 둘 다 최종 판정이 아닙니다. `FAILED | BLOCKED | CANCELLED`는 `INCONCLUSIVE`이며 가설 반증이 아닙니다. 실제 반증은 `DISPROVED`, `hypothesis_disproved: true`, 관측 근거 `hypothesis_evidence_refs`와 `disproof_evidence_refs`가 함께 있어야 합니다. Verification Agent가 이 정보와 다른 근거를 종합해 `TRUE | FALSE | HOLD`를 결정합니다. 상세 내용은 [검증과 동적 재현](../04-verification-and-dynamic-reproduction.md)을 따릅니다.

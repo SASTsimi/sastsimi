@@ -33,6 +33,20 @@
 
 Primitive DB의 confirmed는 사람 승인 Finding이 아니며 held는 실행 queue가 아니다.
 
+## 동적 Evidence 수집과 저장
+
+동적 수집기는 Runner가 승인된 step을 실행하는 동안에만 활성화하며 각 event를 exact plan·policy decision·environment·step·attack input과 연결한다. HTTP, log, DB, file, command canary, Mock callback과 Headless Browser 관측은 공통 envelope 안에 종류별 payload를 두고 append-only로 수집한다. clock source와 correlation ID를 기록하되 timestamp만으로 서로 다른 event를 합치지 않는다.
+
+수집 pipeline은 `raw capture → 제한 저장소 격리 → 유형별 redaction → hash·schema 검증 → immutable observation commit` 순서다. raw와 redacted artifact는 서로 다른 identity를 사용한다. redaction 실패·payload 손상·hash 불일치가 있으면 일반 evidence store와 Gate/Reporter로 승격하지 않고 safe error와 격리 위치만 남긴다.
+
+| 보존 등급 | 예시 | 보존·접근 |
+|---|---|---|
+| 일반 Evidence | redacted header/body, safe log event, hash·canary | 분석 결과와 같은 정책, Verification·Gate의 exact reference 접근 |
+| 제한 Evidence | redaction 전 body/log/DB/screenshot/PoC | 최소 권한, 짧은 TTL, 접근 감사; 일반 packet·report 금지 |
+| 운영 metadata | resource usage, safe reason code, artifact identity·hash | 장기 감사 가능, payload 원문 포함 금지 |
+
+삭제·TTL 만료·법적 보존 변경은 기존 record를 다른 bytes로 바꾸지 않는다. payload가 없어져도 tombstone에 원래 identity·삭제 시각·정책 사유를 남기며, payload가 필요한 검증은 `HOLD` 또는 limitation 검토 대상이지 자동 `FALSE`가 아니다.
+
 ## LLM logging 경로
 
 일반 경로는 `Agent Runtime → LLM Logging Proxy → LLMProviderAdapter`다. Logging Proxy는 호출 전후의 공개 가능한 요청·응답·tool trace를 정규화한다. Proxy를 적용하기 어려운 membership client는 다음 fallback을 사용한다.

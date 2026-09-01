@@ -219,6 +219,13 @@ Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 �
 | R6의 차이 수용만으로 Sandbox 정책 재검사를 생략함 | 새 plan의 RUN_SANDBOX action과 Controller decision | `ACTION_NOT_ALLOWED`, 새 정책 검사 전 실행 금지 |
 | 정리 대상이 생겼는데 `NOT_REQUIRED`로 기록 | `cleanup_required`, 자원 생성 기록과 `cleanup_status` | `SAVE_RESULT` 거절, 남은 자원 격리와 운영 오류 기록 |
 | PoC 존재만으로 재현 성공을 주장하거나 최신 PoC를 다시 선택 | result의 exact `poc_ref`, step log와 content hash | `SAVE_RESULT` 또는 Gate 검토 거절, 생성본·실행본 혼합 금지 |
+| 생성 PoC를 실행 PoC로 표시 | `poc_bundle`의 파일 역할·실행 상태와 step log command/input digest | `SAVE_RESULT` 거절, 생성본은 `NOT_EXECUTED`로만 보존 |
+| 서로 다른 attempt의 관측·환경·PoC를 한 결과에 혼합 | 모든 target `RecordMeta`와 result identity | candidate 격리, `SAVE_RESULT`의 `IDENTITY | REVISION` 거절 |
+| redaction 실패 raw HTTP·DB·log·screenshot을 evidence로 전달 | redaction status, artifact class와 destination | 제한 저장소 격리, Verification·Gate·Reporter 전달 금지 |
+| redacted artifact hash를 만든 뒤 bytes를 교체 | stored bytes, `content_hash`, result candidate hash | 변조 후보 거절, 기존 committed revision 유지 |
+| DB·파일 관측에 host 절대 path나 실제 credential 포함 | sandbox 상대 locator와 secret scanner | artifact 승격 거절, secret incident와 cleanup 후속 처리 |
+| 관측이 없다는 사실만으로 반증 주장 | 정상 실행 step, expected capture channel과 actual evidence refs | `DISPROVED` 거절, `OBSERVATION` 실패 또는 `INCONCLUSIVE` 유지 |
+| cleanup 실패 환경의 artifact를 다음 attempt에서 재사용 | resource ledger, cleanup status와 attempt identity | 재사용 차단, 잔여 자원 격리와 후속 cleanup |
 
 ## Verification ownership과 Chaining admission 시나리오
 
