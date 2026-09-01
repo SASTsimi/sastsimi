@@ -67,7 +67,13 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 
 둘 다 자동으로 `FALSE`가 되지 않습니다. `FALSE`는 미리 정한 반증 질문과 실제 반증 근거가 연결될 때만 가능합니다.
 
+Context 조회가 정상적으로 끝났지만 정보가 부족한 경우에는 필수 검증을 마친 뒤 남은 조건을 기록하고 `HOLD`로 판정할 수 있습니다. 반면 조회 실패·timeout·권한 오류는 실행 오류이므로 자동 verdict를 만들지 않습니다. 운영 Pro/Con 전에 예산이 부족한 경우에도 `BUDGET_EXCEEDED`만 기록하고 final `VerificationResult`를 저장하지 않습니다.
+
 각 반증 질문에는 `question_id`를 붙입니다. 최종 검증은 모든 질문에 결과를 남기며, 실제 근거가 있는 `DISPROVED` 질문이 하나 이상일 때만 `FALSE`를 허용합니다. `NOT_DISPROVED`는 질문으로 반증하지 못했다는 뜻이며 취약점이 증명됐다는 뜻이 아닙니다.
+
+`SAVE_RESULT(result_kind=verification_result)`는 verdict별 최소 구조를 검사합니다. `TRUE`는 실제 reference가 연결된 supporting evidence, `FALSE`는 근거가 있는 `DISPROVED`, `HOLD`는 하나 이상의 `unresolved_conditions`가 필요합니다. 오류·timeout·빈 Context·예산 초과 기록만으로 `TRUE`나 `FALSE`를 저장할 수 없습니다. Runtime Validator는 이 구조와 reference 무결성만 검사하고 근거의 기술적 의미를 대신 판단하지 않습니다.
+
+검증 플레이북은 `logical_record_id`로 식별하고 내용이 바뀔 때마다 새 `record_id`, 증가한 `revision_number`와 새 `content_hash`를 만듭니다. `VerificationResult.playbook_ref`는 실제 사용한 exact 플레이북 revision을 가리키며 final Verification 합성 호출과 저장 요청도 같은 reference를 사용해야 합니다. 새 플레이북 revision이 생겨도 과거 판정의 reference는 바꾸지 않습니다.
 
 정적 분석과 코드 조회 결과는 사용할 수 있는 사실뿐 아니라 도구별 실행 상태, 분석·제외 범위, `DataGap`, `AnalysisError`를 함께 전달합니다. `DataGap`은 영향받은 path·language·코드 위치를 가능한 범위에서 적습니다. 결과가 비어 있거나 일부 도구가 실패했다는 이유로 안전하다고 판단하지 않습니다.
 
@@ -91,6 +97,7 @@ Primitive도 exact revision을 사용합니다. HOLD는 final Verification ref�
 ## 자주 쓰는 작은 데이터 구조
 
 - `EvidenceClaim`: 찬성·반대 주장, 작성 역할, 실제 근거와 코드 위치를 한 묶음으로 저장합니다.
+- `VerificationPlaybook`: 취약점 검증에 사용할 사전 조건, 경로·방어 확인, 반증 질문, 근거 요구사항과 HOLD 조건을 묶은 versioned 절차입니다.
 - `CandidateRef`: 아직 검증되지 않은 우회·대체 경로·영향 확대 후보입니다. 새 주장이면 별도 가설로 검증하기 전까지 확정 결과로 쓰지 않습니다.
 - `VerificationMetrics`: debate의 token·시간·판정 변화와 새로 발견한 항목 수를 저장합니다. 제공되지 않은 token은 `null`입니다.
 - `PolicyItem`: 공식 정책의 항목 하나와 원문을 다시 찾을 수 있는 출처 위치를 연결합니다.
