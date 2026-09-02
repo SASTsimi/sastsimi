@@ -643,7 +643,9 @@ $requiredVerificationChainingContracts = @(
     'PrimitiveIndexState:',
     'eligibility: ACTIVE | SUPERSEDED',
     'superseded_by_verification_ref:',
-    'primitive_and_chaining_refs:'
+    'primitive_and_chaining_refs:',
+    'source_primitive_match_id:',
+    'source_chaining_result_ref: StoredDataRef | null'
 )
 foreach ($marker in $requiredVerificationChainingContracts) {
     if (-not $contractText.Contains($marker)) {
@@ -695,7 +697,9 @@ $requiredVerificationChainingRules = @(
     'HypothesisProcessState.status=TERMINAL',
     'VerificationAssignment.owner_identity_ref',
     'commit-time CAS 검사가 최종 강제 경계',
-    'child가 FALSE여도 부모 판정은 바뀌지 않는다'
+    'child가 FALSE여도 부모 판정은 바뀌지 않는다',
+    '`origin=CHAINING`이면 `source_chaining_result_ref`와 `source_primitive_match_id`가 모두 non-null이고, `origin=INITIAL | VERIFICATION`이면 둘 다 `null`이다',
+    '그 candidate의 `parent_hypothesis_ids`가 등록하려는 가설의 `parent_hypothesis_ids`와 같다'
 )
 foreach ($rule in $requiredVerificationChainingRules) {
     if (-not ($orchestrationText.Contains($rule) -or $gateText.Contains($rule) -or $contractText.Contains($rule) -or $securityText.Contains($rule) -or $diagramText.Contains($rule))) {

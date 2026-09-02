@@ -92,12 +92,13 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 | `question_id` | proposal 출력 검증 runtime | 전체 시스템 | `FalsificationQuestion`과 `FalsificationResult` | proposal에서 등록 가설로 그대로 유지하고 다른 질문에 재사용 금지 |
 | `code_request_id` | 코드 문맥을 요청하는 Agent Runtime | 전체 시스템 | `CodeContextRequest`와 해당 `CodeContextResponse` | 요청·응답 한 쌍에서 같은 값 유지 |
 | `primitive_id` | 검증 결과를 primitive로 저장하는 runtime | 전체 시스템 | `Primitive`와 체이닝 후보 | primitive마다 새 값 |
+| `primitive_match_id` | Chaining 결과를 저장하는 runtime | 같은 `ChainingResult` revision 안 | `PrimitiveMatchCandidate`, `source_primitive_match_id` | 전체 시스템에서 유일하지 않음. 컨테이너 밖에서 exact하게 가리키려면 `source_chaining_result_ref`와 함께 있어야 함 |
 | `policy_record_id` | 공식 정책 수집 결과를 저장하는 runtime | 전체 시스템 | `ProgramPolicyRecord` | 정책 수집본마다 새 값 |
 | `program_id` | 내부 Program Catalog | 전체 시스템 | `ProgramPolicyRecord`와 정책 조회 입력 | 같은 프로그램은 여러 분석에서 같은 값을 재사용 |
 | `external_program_id` | 외부 버그바운티 플랫폼 | 같은 `program_namespace` | `ProgramPolicyRecord` | 같은 외부 프로그램을 다시 참조할 수 있으며 namespace 없이 단독 사용 금지 |
 | `revision_number` | 새 revision을 저장하는 runtime | 같은 논리 결과 | `RunMeta`와 `RecordMeta` | 1부터 1씩 증가 |
 
-`root_hypothesis_id`, `parent_hypothesis_ids`, `source_hypothesis_id`, `target_hypothesis_id`, `retry_of_llm_call_id`와 `failover_from_llm_call_id`는 새 종류의 ID가 아니라 각각 기존 `hypothesis_id` 또는 `llm_call_id`를 가리키는 참조 필드다. 로컬 폴더를 정리해도 성공한 `workspace_id → repository_url + commit_id` 연결 정보는 삭제하지 않는다. 시스템이 직접 만든 ID는 다른 대상에 재사용하지 않는다. 외부 ID인 `commit_id`와 `external_program_id`는 같은 대상을 다시 가리킬 수 있다. 서로 다른 종류의 ID는 대신 사용할 수 없으며, 소비자는 필요한 ID를 `RecordMeta`와 전문 record 양쪽에서 검사한다.
+`root_hypothesis_id`, `parent_hypothesis_ids`, `source_hypothesis_id`, `target_hypothesis_id`, `source_primitive_match_id`, `retry_of_llm_call_id`와 `failover_from_llm_call_id`는 새 종류의 ID가 아니라 각각 기존 `hypothesis_id`, `llm_call_id` 또는 `primitive_match_id`를 가리키는 참조 필드다. `primitive_match_id`는 `primitive_id`와 달리 전체 시스템에서 유일하지 않고 그 값을 담은 `ChainingResult` revision 안에서만 유일하다. 로컬 폴더를 정리해도 성공한 `workspace_id → repository_url + commit_id` 연결 정보는 삭제하지 않는다. 시스템이 직접 만든 ID는 다른 대상에 재사용하지 않는다. 외부 ID인 `commit_id`와 `external_program_id`는 같은 대상을 다시 가리킬 수 있다. 서로 다른 종류의 ID는 대신 사용할 수 없으며, 소비자는 필요한 ID를 `RecordMeta`와 전문 record 양쪽에서 검사한다.
 
 ### 공통 시간 규칙
 
@@ -760,6 +761,7 @@ VulnerabilityHypothesis:
   root_hypothesis_id: string
   chain_depth: integer
   source_primitive_match_id: string | null
+  source_chaining_result_ref: StoredDataRef | null
   statement: string
   target_entities: [CodeSymbol]
   target_locations: [CodeLocation]
@@ -768,9 +770,19 @@ VulnerabilityHypothesis:
   required_validation: [string]
 ```
 
-초기 가설의 `root_hypothesis_id`는 자기 `hypothesis_id`다. `origin=VERIFICATION`은 Verification이 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 분리한 proposal이고, `origin=CHAINING`은 TRUE+HOLD 또는 TRUE+TRUE Primitive match가 만든 proposal이다. 자식 가설은 직접 원인이 된 부모만 `parent_hypothesis_ids`에 넣고, 부모 중 가장 큰 `chain_depth + 1`을 사용한다. `TRUE_HOLD`는 부모 하나가 REQUIRED(HOLD) 계보, 다른 하나가 PROVIDED(TRUE) 계보라 대개 서로 다른 `root_hypothesis_id`를 가지고, `TRUE_TRUE`는 두 부모가 각각 독립적으로 Gate-qualified TRUE까지 간 별개의 계보라 항상 서로 다른 `root_hypothesis_id`를 가질 수 있다. `root_hypothesis_id`는 두 부모 중 `chain_depth`가 더 큰 쪽의 값을 물려받고, `chain_depth`가 같으면 `PrimitiveMatchCandidate.upstream_provided_ref`가 가리키는 부모(PROVIDED 쪽)의 값을 물려받는다. 이 선택은 결정론적 tie-break일 뿐 어느 부모 계보가 더 우선한다는 뜻이 아니다 — 물려받지 못한 부모의 계보는 삭제되지 않고 `parent_hypothesis_ids`와 그 부모 자신의 `root_hypothesis_id`/`chain_depth`/`source_primitive_match_id`로 계속 조회할 수 있다. 부모와 자식의 lifecycle·verdict는 독립이며 child 결과로 parent verdict를 바꾸지 않는다.
+초기 가설의 `root_hypothesis_id`는 자기 `hypothesis_id`다. `origin=VERIFICATION`은 Verification이 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 분리한 proposal이고, `origin=CHAINING`은 TRUE+HOLD 또는 TRUE+TRUE Primitive match가 만든 proposal이다. 자식 가설은 직접 원인이 된 부모만 `parent_hypothesis_ids`에 넣고, 부모 중 가장 큰 `chain_depth + 1`을 사용한다. `TRUE_HOLD`는 부모 하나가 REQUIRED(HOLD) 계보, 다른 하나가 PROVIDED(TRUE) 계보라 대개 서로 다른 `root_hypothesis_id`를 가지고, `TRUE_TRUE`는 두 부모가 각각 독립적으로 Gate-qualified TRUE까지 간 별개의 계보라 항상 서로 다른 `root_hypothesis_id`를 가질 수 있다. `root_hypothesis_id`는 두 부모 중 `chain_depth`가 더 큰 쪽의 값을 물려받고, `chain_depth`가 같으면 `PrimitiveMatchCandidate.upstream_provided_ref`가 가리키는 부모(PROVIDED 쪽)의 값을 물려받는다. 이 선택은 결정론적 tie-break일 뿐 어느 부모 계보가 더 우선한다는 뜻이 아니다 — 물려받지 못한 부모의 계보는 삭제되지 않고 `parent_hypothesis_ids`와 그 부모 자신의 `root_hypothesis_id`/`chain_depth`/`source_primitive_match_id`/`source_chaining_result_ref`로 계속 조회할 수 있다. 부모와 자식의 lifecycle·verdict는 독립이며 child 결과로 parent verdict를 바꾸지 않는다.
 
-`origin=CHAINING`인 proposal과 등록된 가설만 `source_primitive_match_id`를 채우며, 이 가설을 만든 `ChainingResult.primitive_match_candidates` 중 exact `PrimitiveMatchCandidate.primitive_match_id`를 가리킨다. `origin=INITIAL | VERIFICATION`은 `null`이어야 한다. trusted runtime은 이 값이 같은 `ChainingResult`의 실제 candidate를 가리키고 그 candidate의 `parent_hypothesis_ids`가 이 가설의 `parent_hypothesis_ids`와 일치하는지 확인한다. `parent_hypothesis_ids`/`root_hypothesis_id`/`chain_depth`는 가설 계보만 보여주고 그 계보를 만든 근거는 보여주지 않는다 — 한 가설에서 `source_primitive_match_id`를 따라 `parent_hypothesis_ids`로, 다시 그 부모의 `source_primitive_match_id`로 반복해서 거슬러 올라가면 그 가설까지 이어진 각 단계가 어느 Primitive 쌍과 어떤 check 근거로 연결됐는지 재구성할 수 있다. 부모가 둘인 `TRUE_HOLD`/`TRUE_TRUE` 단계에서는 이 walk가 한쪽 부모(그 단계의 `root_hypothesis_id`를 물려준 쪽)만 계속 따라가므로, 두 부모 계보를 모두 재구성하려면 각 merge 지점마다 그 `PrimitiveMatchCandidate.parent_hypothesis_ids`에 있는 나머지 부모에서 별도로 같은 walk를 반복해야 한다. `origin=VERIFICATION`인 중간 세대는 `source_primitive_match_id=null`이라 그 세대에서는 Primitive match 근거 대신 그 가설의 `parent_hypothesis_ids`만으로 계보를 잇는다. 다단계 공격 순서는 새 진행 상태나 순서 전용 필드 없이 이 walk 방식으로 기록하고 재구성한다. proposal 출력 검증 runtime은 각 반증 질문에 전역 `question_id`를 부여하고 등록 가설까지 그대로 유지한다. 질문은 가설의 필수 조건 하나를 실제 근거로 반증할 수 있게 구체적으로 작성한다. 금지된 확정 assertion, 잘못된 enum, 필수 field/location·반증 질문 누락은 제한된 repair retry 뒤 `INVALID_OUTPUT`이다. confidence는 scheduling hint이지 verdict가 아니다.
+`origin=CHAINING`인 proposal은 자신이 속한 `ChainingResult` 안에서만 유일한 `source_primitive_match_id`를 채운다. `primitive_match_id`는 `primitive_id`와 달리 전체 시스템에서 유일하지 않으므로, 컨테이너 밖에서 exact `PrimitiveMatchCandidate`를 가리키려면 그 결과 자체를 가리키는 참조가 함께 있어야 한다. `ChainingResult`가 저장되고 이 proposal이 `VulnerabilityHypothesis`로 등록되면, 이 가설은 `source_primitive_match_id`에 더해 그 exact `ChainingResult`를 가리키는 `source_chaining_result_ref: StoredDataRef`를 함께 보존한다. proposal 자신은 `source_chaining_result_ref`를 채우지 않는다 — 아직 저장되지 않은 자기 컨테이너의 `content_hash`를 미리 참조하는 순환을 피하기 위해서다. `origin=INITIAL | VERIFICATION`은 `source_primitive_match_id`와 `source_chaining_result_ref` 둘 다 `null`이어야 한다. 두 필드 모두 기존 의미를 바꾸지 않는 선택 필드 추가라 MINOR 변경이다.
+
+가설을 `VulnerabilityHypothesis`로 등록할 때 trusted runtime은 다음을 atomic하게 검사한다. 하나라도 어긋나면 `hypothesis_id`를 발급하지 않고 이 proposal의 `ProposalProcessState.status=INVALID_OUTPUT`으로 남긴다 — schema validation을 통과한 proposal도 이 semantic validation에서 걸리면 같은 `INVALID_OUTPUT` 상태를 쓴다.
+
+1. `origin=CHAINING`이면 `source_chaining_result_ref`와 `source_primitive_match_id`가 모두 non-null이고, `origin=INITIAL | VERIFICATION`이면 둘 다 `null`이다
+2. `source_chaining_result_ref`가 가리키는 exact `ChainingResult` revision의 `primitive_match_candidates`에 `source_primitive_match_id`와 같은 `primitive_match_id`를 가진 candidate가 정확히 하나 있다
+3. 그 candidate의 `parent_hypothesis_ids`가 등록하려는 가설의 `parent_hypothesis_ids`와 같다
+4. 그 candidate의 `workspace_id`/`commit_id`가 가설 `meta.workspace_id`/`meta.commit_id`와 같다
+5. `source_chaining_result_ref`가 가리키는 `ChainingResult` revision이 이미 `STALE_RESULT`로 거절됐거나 더 새 revision으로 superseded되지 않았다
+
+이 검사는 `ChainingResult` 저장 시점에 이미 하는 "같은 결과 안에서 candidate와 proposal의 parent_hypothesis_ids 일치" 확인(위 "6. ChainingResult" 절 SAVE_RESULT 검사)과 별도로, 가설을 전역 `hypothesis_id`로 등록하는 시점에 그 결과가 여전히 유효한 exact revision인지 다시 확인하는 절차다. `parent_hypothesis_ids`/`root_hypothesis_id`/`chain_depth`는 가설 계보만 보여주고 그 계보를 만든 근거는 보여주지 않는다 — 한 가설에서 `source_chaining_result_ref`로 exact `ChainingResult`를 찾고 그 안에서 `source_primitive_match_id`로 candidate를 찾은 뒤 그 candidate의 `parent_hypothesis_ids`로, 다시 그 부모의 `source_chaining_result_ref`/`source_primitive_match_id`로 반복해서 거슬러 올라가면 그 가설까지 이어진 각 단계가 어느 Primitive 쌍과 어떤 check 근거로 연결됐는지 재구성할 수 있다. 부모가 둘인 `TRUE_HOLD`/`TRUE_TRUE` 단계에서는 이 walk가 한쪽 부모(그 단계의 `root_hypothesis_id`를 물려준 쪽)만 계속 따라가므로, 두 부모 계보를 모두 재구성하려면 각 merge 지점마다 그 `PrimitiveMatchCandidate.parent_hypothesis_ids`에 있는 나머지 부모에서 별도로 같은 walk를 반복해야 한다. `origin=VERIFICATION`인 중간 세대는 `source_primitive_match_id=null`, `source_chaining_result_ref=null`이라 그 세대에서는 Primitive match 근거 대신 그 가설의 `parent_hypothesis_ids`만으로 계보를 잇는다. 다단계 공격 순서는 새 진행 상태나 순서 전용 필드 없이 이 walk 방식으로 기록하고 재구성한다. proposal 출력 검증 runtime은 각 반증 질문에 전역 `question_id`를 부여하고 등록 가설까지 그대로 유지한다. 질문은 가설의 필수 조건 하나를 실제 근거로 반증할 수 있게 구체적으로 작성한다. 금지된 확정 assertion, 잘못된 enum, 필수 field/location·반증 질문 누락은 제한된 repair retry 뒤 `INVALID_OUTPUT`이다. confidence는 scheduling hint이지 verdict가 아니다.
 
 ## 3. CodeContextRequest/Response
 

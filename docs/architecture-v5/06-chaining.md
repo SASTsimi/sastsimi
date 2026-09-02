@@ -180,11 +180,11 @@ ChainingResult:
 
 새 가설은 `HypothesisProposal(origin=CHAINING)`으로 만든다. trusted runtime이 schema·semantic·workspace·commit·exact Primitive eligibility·중복·깊이·예산을 검사한 뒤 새 `hypothesis_id`로 등록한다. Orchestration Agent는 등록된 가설에 새 Verification Agent를 배정한다. child는 전체 Verification 파이프라인을 처음부터 거친다.
 
-각 child proposal의 `source_primitive_match_id`는 자신을 만든 exact `PrimitiveMatchCandidate`를 가리킨다. `parent_hypothesis_ids`/`root_hypothesis_id`/`chain_depth`가 가설 사이의 계보를 보여준다면, `source_primitive_match_id`는 그 계보의 각 단계가 어느 Primitive 쌍과 7개 check 근거로 연결됐는지 보여준다.
+각 child proposal의 `source_primitive_match_id`는 자신을 만든 `PrimitiveMatchCandidate`를 가리키지만 `primitive_match_id`는 같은 `ChainingResult` 안에서만 유일하다. 그래서 `ChainingResult` 저장 뒤 등록되는 `VulnerabilityHypothesis`는 이 값에 더해 그 exact `ChainingResult`를 가리키는 `source_chaining_result_ref`도 함께 보존하며, 두 값이 있어야 컨테이너 밖에서도 exact `PrimitiveMatchCandidate`를 가리킬 수 있다(`08-lightweight-data-contracts.md`의 등록 검사 참고). `parent_hypothesis_ids`/`root_hypothesis_id`/`chain_depth`가 가설 사이의 계보를 보여준다면, `source_chaining_result_ref`와 `source_primitive_match_id`는 그 계보의 각 단계가 어느 Primitive 쌍과 7개 check 근거로 연결됐는지 보여준다.
 
 `TRUE_HOLD`/`TRUE_TRUE`는 부모가 둘이고 두 부모의 `root_hypothesis_id`가 서로 다를 수 있다(`TRUE_TRUE`는 두 부모 모두 독립적으로 Gate-qualified TRUE까지 간 별개 계보라 항상 다를 수 있다). child의 `root_hypothesis_id`는 `chain_depth`가 더 큰 부모, 같으면 `upstream_provided_ref` 쪽 부모의 값을 물려받는다 — 이건 단순 tie-break이며 물려받지 못한 부모 계보가 사라진다는 뜻이 아니다.
 
-따라서 한 가설에서 `source_primitive_match_id` → 그 candidate의 `parent_hypothesis_ids` → 그 부모의 `source_primitive_match_id`를 반복해서 거슬러 올라가는 것이 다단계 공격 순서를 재구성하는 방법이다. `root_hypothesis_id` 하나만 따라가면 매 merge 지점에서 물려받은 쪽 부모의 계보만 보이므로, 두 부모 계보를 모두 보려면 각 merge 지점마다 남은 부모에서 같은 walk를 별도로 반복해야 한다. `origin=VERIFICATION` 중간 세대는 `source_primitive_match_id=null`이라 그 세대는 Primitive match 근거 없이 `parent_hypothesis_ids`만으로 잇는다. 이 문서는 진행 상태나 순서 번호를 담는 별도 필드를 두지 않고, 이미 있는 계보 필드와 이 참조를 반복 조회하는 walk를 다단계 공격 순서의 기록 형식으로 정한다.
+따라서 한 가설에서 `source_chaining_result_ref`로 exact `ChainingResult`를 찾고 그 안에서 `source_primitive_match_id`로 candidate를 찾은 뒤, 그 candidate의 `parent_hypothesis_ids` → 그 부모의 `source_chaining_result_ref`/`source_primitive_match_id`를 반복해서 거슬러 올라가는 것이 다단계 공격 순서를 재구성하는 방법이다. `root_hypothesis_id` 하나만 따라가면 매 merge 지점에서 물려받은 쪽 부모의 계보만 보이므로, 두 부모 계보를 모두 보려면 각 merge 지점마다 남은 부모에서 같은 walk를 별도로 반복해야 한다. `origin=VERIFICATION` 중간 세대는 `source_primitive_match_id=null`, `source_chaining_result_ref=null`이라 그 세대는 Primitive match 근거 없이 `parent_hypothesis_ids`만으로 잇는다. 이 문서는 진행 상태나 순서 번호를 담는 별도 필드를 두지 않고, 이미 있는 계보 필드와 이 참조를 반복 조회하는 walk를 다단계 공격 순서의 기록 형식으로 정한다.
 
 ### 호출 시점과 trigger 의미
 
