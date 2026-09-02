@@ -22,7 +22,13 @@
 
 운영에서는 예산 부족을 이유로 Pro/Con을 생략하지 않습니다. `BUDGET_EXCEEDED`로 현재 검증 작업을 중단하고, 새 예산이 승인된 작업에서 다시 진행합니다. 평가 모드의 BASIC·조건부 결과는 Gate, Primitive 또는 보고서 입력으로 사용하지 않습니다.
 
-Pro와 Con은 서로의 결과를 받지 않는 별도 NEW session이다. trigger/skip reason, token·시간, verdict 변화, HOLD 해소, 오탐 감소 후보와 bypass 발견을 기록한다.
+평가용 `CONDITIONAL_DEBATE`는 versioned 설정의 `CONFLICTING_EVIDENCE | HIGH_IMPACT_OR_COST | INITIAL_HOLD | AUTH_OR_SANITIZER_BYPASS | ONE_SIDED_EVIDENCE | REVISE_ALTERNATE_PATH` trigger를 사용합니다. 충족된 code는 `debate_triggers`에 기록합니다. 아무 trigger도 충족하지 않으면 `debate_skip_reason=NO_TRIGGER_MATCH`, BASIC이면 `MODE_BASIC`을 기록합니다. 실제 Pro/Con을 실행하면 skip reason은 `null`입니다.
+
+Verification은 Pro와 Con을 부르기 전에 같은 가설·workspace·commit·Context·정적 근거·반증 질문·플레이북 revision을 공통 입력 snapshot으로 고정합니다. 두 Agent는 이 snapshot만 함께 사용하고, 서로의 결론·출력·session은 받지 않습니다. 각 Agent는 별도 work·call identity와 `parent_session_ref=null`인 독립 `NEW` session에서 병렬 실행됩니다.
+
+두 호출이 모두 성공하고 output schema·비어 있지 않은 결과·exact 입력 revision 검사를 통과해야 Verification이 두 근거를 합성합니다. 한쪽이 실패·timeout·인증 실패·빈 출력이면 다른 한쪽만으로 운영 final verdict를 만들지 않습니다. 같은 snapshot의 retry·failover는 실패한 역할의 새 identity·NEW session으로만 수행합니다. 공통 입력 revision이 바뀌면 이전 결과를 섞지 않고 두 역할을 다시 호출합니다. 허용된 시도 뒤에도 한쪽 근거가 없으면 final `VerificationResult` 없이 `BLOCKED | FAILED`로 처리하며, 실패 자체를 `FALSE | HOLD` 근거로 사용하지 않습니다.
+
+token과 전체 시간·판정 변화·HOLD 해소·새 후보 수는 `VerificationMetrics`에, 역할별 호출 수·상태·retry·failover·provider·session·실제 usage는 `LLMInvocationLog`에 기록합니다. R8은 이 기록을 비교 평가에 사용하지만 개별 실행이나 verdict를 결정하지 않습니다.
 
 ## 판정과 동적 재현
 
