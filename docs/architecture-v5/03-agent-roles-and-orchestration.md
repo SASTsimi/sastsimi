@@ -105,10 +105,10 @@ Chaining match -> PROPOSED child hypothesis origin CHAINING
 | Orchestration Agent | 전역 분석 계획·proposal 등록·가설 배정·가설 간 병렬화 | 없음 | 전체 진행 상태 요약 | 없음 | 없음 |
 | Hypothesis Agent | 취약점 가설 | 없음 | static 사실을 입력으로 읽음 | 없음 | 없음 |
 | Pro·Con Agent | 찬성·반대 근거 | 없음 | 자기 역할의 근거 | 없음 | 없음 |
-| Verification Agent | Context·Pro/Con, 동적 모드·`ReproductionPlan`, 두 Gate·Reporter 요청, Primitive 후보 admission 여부 결정, material child proposal | `TRUE | FALSE | HOLD` | static·Pro·Con·COMMITTED dynamic 근거와 Gate 보완 요청 | 없음 | 없음 |
-| Sandbox Controller | 없음 | 없음 | exact `ReproductionPlan`의 image·command·file·network·resource·cleanup 정책 검사와 exact 정책 판정 생산 | 정책 위반 계획 차단과 Runner 호출 통제 | 없음 |
-| Sandbox Runner | 없음 | 없음 | Controller가 승인한 exact 계획 실행, 실제 환경·`SandboxStepLog`와 PoC 실행 사실 생산 | 계획 밖 command·입력 실행 차단 | 없음 |
-| Sandbox Result Assembler | 없음 | 없음 | exact 정책·환경·step log·PoC·cleanup reference를 `DynamicReproductionResult`로 조립 | nullable·상태·identity 조합 위반 결과 저장 차단 | 없음 |
+| Verification Agent | Context·Pro/Con, 동적 모드·`EnvironmentRequirements`·`ReproductionPlan`, 두 Gate·Reporter 요청, Primitive 후보 admission 여부 결정, material child proposal | `TRUE | FALSE | HOLD` | static·Pro·Con·COMMITTED dynamic 근거와 환경 차이·Gate 보완 요청 | 없음 | 없음 |
+| Sandbox Controller | 없음 | 없음 | exact plan·requirements closure의 image·command·file·network·resource·cleanup 보안 정책 검사와 exact 정책 판정 생산 | 정책 위반 계획 차단과 Runner 호출 통제 | 없음 |
+| Sandbox Runner | 없음 | 없음 | Controller가 승인한 exact 계획의 환경 구성·요구사항 비교·Health Check 뒤 일치할 때만 공격 단계 실행, 실제 환경·`SandboxStepLog`와 PoC 실행 사실 생산 | 요구사항 변경·임의 차이 수용·허용되지 않은 fallback·계획 밖 command·입력 실행 차단 | 없음 |
+| Sandbox Result Assembler | 없음 | 없음 | exact R6 plan closure와 같은 R7 실행 attempt의 정책·환경 비교·step log·PoC·cleanup reference를 `DynamicReproductionResult`로 조립 | nullable·상태·identity·requirements 조합 위반 결과 저장 차단 | 없음 |
 | CWE Labeling | CWE 후보와 근거 | CWE label revision 생성 | final Verification | 없음 | 없음 |
 | Chaining Agent | TRUE+HOLD·TRUE+TRUE Primitive match와 chained proposal | 없음 | ACTIVE Primitive와 exact Gate provenance | 없음 | 없음 |
 | Technical Evidence Gate Agent | 구체적인 보완 요청 | 없음 | verdict·근거·코드 흐름·CWE | 없음 | 없음 |

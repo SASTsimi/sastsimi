@@ -155,12 +155,15 @@ vocabulary(위 `primitive_type` 목록·이 서열표)가 이후 개정되어도
 
 ### restriction_check 승계 규칙
 
-`restriction_check`는 두 parent의 exact `VerificationResult.restrictions`와 `unresolved_conditions`(문자열 목록)를 수집 대상으로 한다. 각 항목마다 다음 중 하나로 처리하고, 그 판단을 `PrimitiveMatchCandidate.evidence_refs`에 근거와 함께 남긴다.
+`restriction_check`는 두 parent의 exact `VerificationResult.restrictions`와 `unresolved_conditions`(문자열 목록)를 수집 대상으로 한다. Chaining Agent는 각 항목마다 정확히 하나의 `RestrictionDisposition`(`08-lightweight-data-contracts.md`)을 `PrimitiveMatchCandidate.restriction_dispositions`에 남긴다.
 
-- **승계**: 결합 뒤에도 적용되는 restriction은 새 `HypothesisProposal.restrictions`로, 적용되는 assumption은 `assumptions`로, 아직 확인 못 한 조건은 `missing_information` 또는 `required_validation`으로 그대로 옮긴다.
-- **제외**: 결합으로 그 조건이 해소됐다고 판단하면(예: 한 parent의 restriction이 다른 parent가 이미 충족한 조건이라 더 이상 제약이 아님) child proposal에 옮기지 않되, 제외 근거(exact evidence)와 이유를 `PrimitiveMatchCandidate.evidence_refs`에 남긴다.
+- **`INHERITED_AS_RESTRICTION`**: 결합 뒤에도 적용되는 restriction은 새 `HypothesisProposal.restrictions`로, 적용되는 assumption은 `assumptions`로 그대로 옮긴다. `target_field`에 옮긴 필드를 남긴다.
+- **`INHERITED_AS_OPEN`**: 아직 확인 못 한 조건은 `missing_information` 또는 `required_validation`으로 그대로 옮긴다. `target_field`에 옮긴 필드를 남긴다. 이 disposition은 조건을 누락 없이 보존했다는 뜻일 뿐 조건이 해결됐다는 뜻이 아니다.
+- **`EXCLUDED`**: 결합으로 그 조건이 해소됐다고 판단하면(예: 한 parent의 restriction이 다른 parent가 이미 충족한 조건이라 더 이상 제약이 아님) child proposal에 옮기지 않되, `evidence_refs`에 제외 근거(exact evidence)를, `rationale`에 이유를 남긴다.
 
-승계 대상인지 제외 대상인지 판단할 근거가 없는 항목은 `UNCERTAIN`으로 남기고 `missing_information` 또는 `required_validation`에 옮긴다. `restriction_check=PASS`는 두 parent의 모든 restriction·unresolved_condition이 위 세 목록(`restrictions`/`assumptions`/`missing_information`+`required_validation`) 중 하나로 승계됐거나, 명시적 근거와 함께 제외됐을 때만 허용한다. 하나라도 승계·제외 판단 없이 누락되면 `restriction_check=UNCERTAIN`이다. `SAVE_RESULT(result_kind=chaining_result)`는 저장 전 두 parent의 restrictions·unresolved_conditions 목록이 child proposal의 네 목록 합집합이나 제외 근거 목록에 모두 포함되는지 검사하고, 누락이 있으면 저장을 거절한다.
+`source_parent_verification_ref`는 그 조건이 나온 exact parent `VerificationResult`를 가리키고, `condition_kind`는 그 조건이 `restrictions` 항목이었는지 `unresolved_conditions` 항목이었는지 구분한다. `EXCLUDED`는 `evidence_refs`가 하나 이상이어야 하고, `INHERITED_AS_RESTRICTION`/`INHERITED_AS_OPEN`은 `target_field`가 필수다.
+
+`restriction_check=PASS`는 두 parent의 모든 restriction·unresolved_condition에 정확히 하나의 `RestrictionDisposition`이 있고, 그중 `INHERITED_AS_OPEN`이 하나도 없을 때만 허용한다 — 조건이 실제로 해결(승계 후 유지되는 제약으로 명시되거나 근거와 함께 제외)됐을 때만 `PASS`다. `INHERITED_AS_OPEN`이 하나라도 있으면 완결성(빠짐없이 보존됨)은 만족해도 그 조건 자체는 미해결이므로 `restriction_check=UNCERTAIN`이다. 원본 조건에 대응하는 `RestrictionDisposition`이 없으면(완결성 자체가 깨지면) `restriction_check=UNCERTAIN`이다. `SAVE_RESULT(result_kind=chaining_result)`는 저장 전 두 parent의 restrictions·unresolved_conditions 각 항목이 `restriction_dispositions`에 정확히 한 번씩 대응하는지, `EXCLUDED`가 비어 있지 않은 `evidence_refs`를 갖는지, `INHERITED_AS_RESTRICTION`/`INHERITED_AS_OPEN`이 `target_field`를 갖는지 구조적으로 검사하고, 위반하면 저장을 거절한다. 이 구조 검사는 완결성만 확인할 뿐, 각 조건이 실제로 해결됐는지에 대한 domain 판단(그래서 `restriction_check`가 `PASS`인지 `UNCERTAIN`인지)은 Chaining Agent의 판단대로 저장하며 runtime이 다시 판단하지 않는다.
 
 ### 출력
 

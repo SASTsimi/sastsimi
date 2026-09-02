@@ -961,6 +961,17 @@ ConfirmedCapability:
 ```
 
 ```yaml
+RestrictionDisposition:
+  source_parent_verification_ref: StoredDataRef
+  condition_kind: RESTRICTION | UNRESOLVED_CONDITION
+  original_condition: string
+  disposition: INHERITED_AS_RESTRICTION | INHERITED_AS_OPEN | EXCLUDED
+  target_field: RESTRICTIONS | ASSUMPTIONS | MISSING_INFORMATION | REQUIRED_VALIDATION | null
+  evidence_refs: [StoredDataRef]
+  rationale: string
+```
+
+```yaml
 PrimitiveMatchCandidate:
   primitive_match_id: string
   match_kind: TRUE_HOLD | TRUE_TRUE
@@ -980,11 +991,14 @@ PrimitiveMatchCandidate:
   data_check: PASS | UNCERTAIN
   attack_order_check: PASS | UNCERTAIN
   restriction_check: PASS | UNCERTAIN
+  restriction_dispositions: [RestrictionDisposition]
   normalized_fingerprint: string
   evidence_refs: [StoredDataRef]
   unresolved_conditions: [string]
   candidate_state: UNVALIDATED
 ```
+
+`restriction_dispositions`는 `PrimitiveMatchCandidate`에 새로 추가하는 필드다. 이 필드는 선택이 아니다 — `SAVE_RESULT(result_kind=chaining_result)`가 두 parent의 모든 restriction·unresolved_condition에 정확히 하나의 대응 항목을 요구하므로 유효한 저장을 위해 사실상 필수다. `ReproductionPlan.environment_requirements_ref` 추가와 같은 이유로 `PrimitiveMatchCandidate`의 새 MAJOR schema로 배포하며, 이전 MAJOR의 `PrimitiveMatchCandidate`를 자동으로 추정 변환하지 않는다. `source_parent_verification_ref`는 그 조건이 나온 exact parent `VerificationResult`를 가리키며 이 candidate의 `parent_verification_refs`에 포함된 값이어야 한다. `EXCLUDED`는 `evidence_refs`가 하나 이상이어야 하고, `INHERITED_AS_RESTRICTION`/`INHERITED_AS_OPEN`은 `target_field`가 non-null이어야 한다. `restriction_check`·`restriction_dispositions`의 관계와 `SAVE_RESULT` 검증 규칙은 `06-chaining.md`의 "restriction_check 승계 규칙" 절을 따른다.
 
 `REQUIRED` Primitive는 final HOLD의 exact `source_verification_ref`에서만 생성하며 두 Gate reference는 `null`, `required_preconditions=[]`여야 한다. `PROVIDED` Primitive는 final TRUE의 exact Verification과 같은 CWE를 검토한 Technical `ACCEPT`, 그리고 그 Technical review를 입력으로 받은 Rule Scope 정상 통과 결과를 모두 가리켜야 한다. 정상 통과는 `review_status/rule_compliance/scope_compliance=PASS`, `security_impact=SUFFICIENT`, `report_permission=ALLOW`다. PROVIDED의 `required_preconditions`는 그 exact VerificationResult의 `required_primitive_candidates`와 `draft_id`·내용·순서가 같아야 한다. 하나라도 없거나 reference가 다른 Verification revision을 가리키면 admission을 거절한다.
 
