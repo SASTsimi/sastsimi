@@ -137,6 +137,10 @@ Technical Evidence Gate의 `ACCEPT`는 R5가 exact final TRUE revision을 대상
 
 목록이 확정된 뒤 각 지원 취약점 유형은 같은 이름으로 식별 가능한 검증 플레이북을 가진다. 플레이북은 Agent에게 자유로운 결론을 요구하는 prompt가 아니라, 해당 유형에서 빠뜨리면 안 되는 확인 항목과 반증 질문을 정의한 실행 가능한 검증 절차다.
 
+플레이북 후보는 R6 검증·반박·플레이북 담당이 작성하고, trusted playbook registry runtime이 schema와 revision을 검사해 변경 불가능한 record로 등록한다. Verification work를 등록할 때 trusted runtime은 지원 유형과 일치하는 current exact `TYPE_SPECIFIC` revision을 선택하고, 적용 가능한 유형별 플레이북이 없으면 current exact `COMMON` revision을 선택해 `WorkExecutionState.input_refs`에 고정한다.
+
+Verification의 직접 검증, 독립 Pro/Con 실행, final 합성과 결과 저장은 모두 work에 고정된 동일한 플레이북 revision을 사용한다. 검증 도중 current revision이 변경돼도 진행 중인 work에는 새 revision을 섞지 않는다. 단순 retry는 기존 revision을 유지하고, 새 revision을 적용하려면 새 Verification work 또는 새 verification generation을 만들어야 한다.
+
 각 플레이북에는 최소한 다음 항목을 기록한다.
 
 | 항목 | 설명 |
