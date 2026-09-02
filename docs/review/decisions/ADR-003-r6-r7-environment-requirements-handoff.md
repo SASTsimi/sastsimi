@@ -1,5 +1,7 @@
 # ADR-003. R6 환경 요구사항과 R7 실제 환경 비교 handoff
 
+> `ADR-004`가 exact step 실행, mismatch 즉시 중단과 R6 재계획 부분을 일부 대체한다. R6가 `EnvironmentRequirements`를 생산하고 R7 환경이 exact revision을 참조한다는 결정은 유지한다.
+
 - 상태: `PROPOSED`
 - 결정 담당: R4 PM·아키텍처·공통 계약
 - 필수 검토: R6 검증·반박, R7 동적검증·Sandbox

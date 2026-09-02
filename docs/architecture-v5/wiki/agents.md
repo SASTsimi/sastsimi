@@ -12,10 +12,10 @@
 |---|---|---|
 | Orchestration | proposal 검증·전역 가설 등록·Verification 배정 제안 | 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정, runtime enforcement, Finding·공개 결정 |
 | Hypothesis | schema-valid `HYPOTHESIS_ONLY` 제안 생성 | verdict, Finding, exploitability 확정 |
-| Verification | 한 가설의 Context·Pro/Con, 환경 요구사항·동적 모드·`ReproductionPlan`, 환경 차이 수용·판정·Gate 보완·Chaining handoff와 material child 제안 | Sandbox 직접 실행·동적 결과 생산, runtime 검사 우회, 새 claim 무검증 승격 |
-| Sandbox Controller | exact plan·requirements closure의 보안 정책을 검사하고 허용·차단 이유 저장 | 환경 요구사항·재현 필요성·모드·계획·최종 verdict 변경 또는 정책 미검사 실행 |
-| Sandbox Runner | Controller가 승인한 exact 계획으로 환경 구성·요구사항 비교·Health Check 후 필수 일치 시 공격 단계 실행, 실제 환경·step log·PoC 사실 생산 | 환경 차이 임의 수용·허용되지 않은 fallback·정책 변경·계획 밖 명령 또는 최종 verdict 판단 |
-| Sandbox Result Assembler | exact R6 plan closure와 같은 R7 실행 시도의 정책·환경 비교·log·PoC·정리 참조를 동적 결과로 조립 | reference 존재만으로 성공 판단, 다른 plan·requirements·실행 attempt 결과 혼합 |
+| Verification | 한 가설의 Context·Pro/Con, 환경 요구사항·최소 `ReproductionPlan`, 판정·Gate 보완·Chaining handoff와 material child 제안 | Sandbox 직접 실행·동적 결과 생산, runtime 검사 우회, 새 claim 무검증 승격 |
+| R7 Sandbox Controller | host·Docker daemon·secret·egress·다른 workspace·자원·lifecycle의 Sandbox 외부 경계 적용 | 내부 명령별 사전 허가, 환경 요구사항·최종 verdict 변경 또는 경계 미적용 실행 |
+| Reproduction Agent | 격리 경계 내부에서 환경·package·계정/fixture/mock·PoC·명령·관찰·retry를 자율 수행하고 AgentLog와 동적 outcome 생산 | Sandbox 외부 접근, final `TRUE | FALSE | HOLD` 판단, 숨은 추론 기록 |
+| Dynamic Result Finalizer | trusted runtime fact를 채우고 같은 attempt의 recipe·AgentLog·실행 PoC·cleanup·digest·redaction 연결 검사 | 동적 의미 재판단, 다른 attempt 혼합 또는 참조만으로 성공 판단 |
 | Pro | 가설 성립 근거 탐색 | 최종 verdict |
 | Con | 반증·보호·도달 불가·restriction 탐색 | 최종 verdict |
 | Chaining | Gate-qualified TRUE+HOLD·TRUE+TRUE Primitive matching과 새 가설 제안 | 일반 research, dynamic, REVISE, verdict/CWE/Gate/Finding/report 확정 |
@@ -26,10 +26,10 @@
 
 ```text
 Orchestration → Hypothesis proposal validation and registration → assign Verification
-Verification → context → Pro and Con → EnvironmentRequirements and ReproductionPlan
-Runtime Validator → commit exact requirements and plan → authorize Sandbox call
-Sandbox Controller → store exact policy decision → Sandbox Runner compares actual environment
-required MATCH → execute exact attack steps → result assembler → Verification final verdict
+Verification → context → Pro and Con → EnvironmentRequirements and minimal ReproductionPlan
+Runtime Validator → commit current references → authorize R7 call
+R7 Controller → apply external boundary → Reproduction Agent works autonomously inside Sandbox
+EnvironmentRecipe and AgentLog → executed PoC and observations → finalizer → Verification final verdict
 HOLD → REQUIRED Primitive → Chaining
 TRUE → CWE → Technical Gate → Rule Scope Impact Gate
 Gate-qualified TRUE → PROVIDED Primitive → Chaining

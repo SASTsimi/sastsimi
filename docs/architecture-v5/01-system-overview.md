@@ -27,7 +27,7 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 | 9 | Verification이 위치 기반 코드 문맥 조회 | `CodeContextRequest/Response` |
 | 10 | 운영 Verification이 Pro/Con을 독립 병렬 실행 | supporting/counter evidence |
 | 11 | 초기 판정 | `TRUE | FALSE | HOLD` |
-| 12 | Verification이 환경 요구사항·모드·`ReproductionPlan`을 결정하고 runtime 허가 뒤 R7 Sandbox가 정책 판정·실제 환경 비교·일치 시 exact 공격 단계 실행·결과 조립 | `COMMITTED EnvironmentRequirements/ReproductionPlan`, exact 정책·환경 비교·`SandboxStepLog`·PoC refs가 연결된 `DynamicReproductionResult` |
+| 12 | Verification이 환경 요구사항과 최소 `ReproductionPlan`을 만들고 runtime 허가 뒤 R7이 외부 안전 경계를 적용하며 Reproduction Agent가 clean Sandbox 내부 재현을 자율 수행 | `COMMITTED EnvironmentRequirements/ReproductionPlan`, `EnvironmentRecipe`·`AgentLog`·실행 `PoCBundle`·`CleanupLog`가 연결된 `DynamicReproductionResult` |
 | 13 | 최종 판정과 material claim 분리 | final `VerificationResult`, optional `origin=VERIFICATION` proposal |
 | 14 | 판정별 분기 | FALSE terminal / HOLD REQUIRED 즉시 admission / TRUE CWE 진행 |
 | 15 | TRUE 기술 근거 검토 | `TechnicalEvidenceReview` |
@@ -77,7 +77,7 @@ Technical Evidence Gate의 `REVISE`는 같은 가설의 Verification owner에게
 
 ## 구성 요소와 책임
 
-Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배정을 제안·조정하지만 가설 내부 다음 작업이나 enforcement authority를 갖지 않는다. 가설 내부 다음 작업은 Verification owner가 선택한다. 신뢰 경계 안의 비-LLM Runtime Validator가 schema, 호출 권한, 상태 전이, 예산, 병렬성, provider/session 정책, Gate 순서와 Reporter 호출 전제조건을 강제한다. Sandbox의 image·command·file·network·resource·cleanup 세부 정책은 Sandbox Controller가 한곳에서 검사한다. 모든 LLM 출력은 validation 전까지 비신뢰 입력이다.
+Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배정을 제안·조정하지만 가설 내부 다음 작업이나 enforcement authority를 갖지 않는다. 가설 내부 다음 작업은 Verification owner가 선택한다. 신뢰 경계 안의 비-LLM Runtime Validator가 schema, 호출 권한, 상태 전이, 예산, 병렬성, provider/session 정책, Gate 순서와 Reporter 호출 전제조건을 강제한다. R7 Controller는 host·Docker daemon·secret·허용되지 않은 network egress·다른 workspace·R8 자원 profile·lifecycle의 Sandbox 외부 경계를 적용한다. Reproduction Agent는 이 경계 내부에서 환경·도구·PoC·명령·관찰·retry를 자율적으로 다룬다. 모든 LLM 출력은 validation 전까지 비신뢰 입력이다.
 
 | 구성 요소 | 책임 | 금지 경계 |
 |---|---|---|
@@ -87,11 +87,11 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | Context Retrieval Service | 같은 `workspace_id`와 `commit_id`에서 제한된 추가 문맥 조회 | 작업공간 밖 무제한 repository dump |
 | Orchestration Agent | proposal 검증·전역 가설 등록·Verification 배정·가설 간 병렬성 | 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정 또는 Finding 공개 |
 | Hypothesis Agent | schema-constrained 가설 후보 생성 | verdict·Finding·exploitability 확정 |
-| Verification Agent | 가설 내부 Context·Pro/Con, 환경 요구사항·동적 모드·`ReproductionPlan`, 환경 차이 수용·판정·REVISE·Gate·Chaining 흐름과 material child proposal | Sandbox 직접 실행·동적 결과 생산, runtime 검사 우회 또는 새 주장의 무검증 승격 |
+| Verification Agent | 가설 내부 Context·Pro/Con, 환경 요구사항·최소 `ReproductionPlan`, 판정·REVISE·Gate·Chaining 흐름과 material child proposal | Sandbox 직접 실행·동적 결과 생산, runtime 검사 우회 또는 새 주장의 무검증 승격 |
 | Pro/Con Agents | 독립적인 성립·반박 근거 조사 | 동일 session 공유 |
-| Sandbox Controller | Verification이 만든 exact plan·requirements closure의 보안 정책 검사와 exact 허용·차단 판정 생산 | 요구사항·동적 모드·계획·최종 verdict 변경 또는 정책 미검사 실행 |
-| Sandbox Runner | Controller가 승인한 exact 계획으로 환경 구성·요구사항 비교·Health Check를 수행하고 필수 일치 시 공격 단계·step log·PoC 실행 사실 생산 | 요구사항 변경·차이 임의 수용·허용되지 않은 fallback·계획 밖 명령 또는 최종 verdict 판단 |
-| Sandbox Result Assembler | 같은 분석·가설·계획 closure와 같은 R7 실행 attempt의 정책·환경 비교·log·PoC·cleanup reference를 `DynamicReproductionResult`로 조립 | 다른 계획·요구사항·실행 attempt 혼합 또는 reference 존재만으로 성공 판단 |
+| R7 Sandbox Controller | host·Docker daemon·secret·egress·다른 workspace·resource·lifecycle의 외부 경계를 검사하고 Sandbox 생성·폐기를 통제 | 내부 명령별 사전 allowlist, 최종 verdict 변경 또는 경계 미적용 실행 |
+| Reproduction Agent | 승인된 clean Sandbox 내부에서 recipe 선택·환경 구성·계정/fixture/mock·PoC 작성·실행·관찰·retry를 자율 수행하고 AgentLog와 동적 outcome 생산 | Sandbox 외부 접근, final `TRUE | FALSE | HOLD` 판단, 행동하지 않은 추론 과정 저장 |
+| Dynamic Result Finalizer | trusted runtime fact를 채우고 같은 attempt의 recipe·AgentLog·실행 PoC·cleanup·digest·redaction 불변식을 작은 결정적 검사기로 확인 | 동적 의미 재판단, 다른 attempt 혼합 또는 reference 존재만으로 성공 판단 |
 | Primitive DB | HOLD REQUIRED와 Gate-qualified TRUE PROVIDED의 ACTIVE exact revision 검색 | 작업 queue, Gate 전 TRUE admission 또는 자동 Finding 생성 |
 | Chaining Agent | TRUE+HOLD·TRUE+TRUE Primitive matching과 chained proposal | 일반 research, dynamic, Gate, verdict, CWE, report 확정 |
 | Technical Evidence Gate | 기술적 연결성과 handoff 품질 검토 | Verification verdict 직접 변경 |
@@ -113,7 +113,7 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 
 한 축의 값으로 다른 축을 암묵적으로 추론하지 않는다. 예를 들어 기술적으로 `TRUE`여도 out-of-scope이거나 실질 영향이 부족하면 Reporter를 호출하지 않는다.
 
-Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제안한다. 비-LLM Runtime Validator가 역할·schema·exact revision·상태·예산·일반 도구·경로·provider·두 Gate 순서·보고·공개 조건을 검사해 `ActionDecision=ALLOW | DENY`를 저장한다. `RUN_SANDBOX`의 ALLOW는 exact plan·current requirements를 Sandbox Controller에 전달할 수 있다는 뜻이며 환경 일치, Docker 세부 정책 통과나 재현 성공을 뜻하지 않는다. Controller가 Sandbox 정책을 통과시킨 exact 계획만 Runner가 받고, Runner는 필수 환경 조건이 맞을 때만 공격 단계를 실행한다. 이 검사는 환경 의미·취약점 판정이나 정책 해석을 대신하지 않는다.
+Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제안한다. 비-LLM Runtime Validator가 역할·schema·exact revision·상태·예산·일반 도구·경로·provider·두 Gate 순서·보고·공개 조건을 검사해 `ActionDecision=ALLOW | DENY`를 저장한다. `RUN_SANDBOX`의 ALLOW는 current plan·requirements를 R7 Controller에 전달할 수 있다는 뜻이며 Docker 외부 경계 통과나 재현 성공을 뜻하지 않는다. 경계를 통과하면 Reproduction Agent가 내부 실행 순서를 자율 결정하고, finalizer는 실제 runtime fact와 같은 attempt 연결을 검사한다. 이 검사는 환경 의미·취약점 최종 판정이나 정책 해석을 대신하지 않는다.
 
 ## 병렬성과 종료 조건
 

@@ -21,7 +21,7 @@
 | 같은 코드 버전 연결 | 실행별 clone과 `commit_id`로 facts, context, verdict, PoC 연결 |
 | AST/SAST 정규화 | LLM이 사용할 entity/location/path/auth 사실 계층 |
 | 역할 분리된 LLM 분석 | Hypothesis, Verification, Pro/Con, Chaining, 두 Gate, Reporter |
-| 격리된 동적 검증 | Docker `LIMITED_REPRO | FULL_REPRO` |
+| 격리된 동적 검증 | R7 외부 안전 경계와 자율 Reproduction Agent를 가진 Docker; LIMITED/FULL mode 계약 여부는 PL 검토 중 |
 | 조건부 연계 탐색 | Primitive DB match가 새 가설만 생성 |
 | 사람의 공개 승인 | 자동 결과는 FindingCandidate/ReportDraft에 머묾 |
 | 오류·근거·자원 보존 | normalized invocation과 run/debug records |

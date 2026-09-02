@@ -35,27 +35,23 @@ flowchart TB
     S08 --> S09[9 Verification requests on-demand context]
     S09 --> S10[10 Production Verification runs independent Pro and Con]
     S10 --> S11[11 Initial TRUE FALSE HOLD]
-    S11 --> S12{12 Verification chooses dynamic mode}
+    S11 --> S12{12 Dynamic reproduction requested}
     S12 -->|No| S13[13 Final verdict and material claim split]
-    S12 -->|LIMITED| DL[Verification LIMITED Requirements and Plan]
-    S12 -->|FULL| DF[Verification FULL Requirements Plan and PoC draft]
-    DL --> DAUTH[Runtime Validator call authorization]
-    DF --> DAUTH
-    DAUTH --> DCTRL[Sandbox Controller policy check]
-    DCTRL --> DPD[Exact SandboxPolicyDecision]
-    DPD -->|Pass| DENV[Sandbox Runner prepares environment and Health Checks]
-    DPD -->|Policy blocked no Runner| DASM[Sandbox Result Assembler]
-    DENV --> DCHK{All required items MATCH}
-    DCHK -->|Yes| DRUN[Sandbox Runner executes exact attack steps]
-    DCHK -->|No| DFAIL[Stop before attack with ENVIRONMENT_SETUP]
-    DFAIL --> DASM
-    DRUN --> DASM
-    DASM --> DRES[Dynamic result with exact nullable refs]
-    DRES --> DMIS{Required environment mismatch}
-    DMIS -->|Yes| DRET[R6 reviews exact differences]
-    DMIS -->|No| S13
-    DRET -->|New requirements plus plan or plan-only revision| DAUTH
-    DRET -->|No retry| S13
+    S12 -->|Yes| DPLAN[EnvironmentRequirements and minimal ReproductionPlan]
+    DPLAN --> DAUTH[Runtime Validator call authorization]
+    DAUTH --> DCTRL[R7 Controller applies external boundary]
+    DCTRL --> DPD{Boundary ready}
+    DPD -->|Blocked| DFINAL[Dynamic Result Finalizer]
+    DPD -->|Ready| DAI[Reproduction Agent autonomous inside Sandbox]
+    DAI --> DREC[Versioned EnvironmentRecipe and clean Sandbox]
+    DREC --> DACT[PoC execution observation and retry]
+    DACT --> DLOG[AgentLog PoCBundle and CleanupLog]
+    DLOG --> DFINAL
+    DFINAL --> DRES[DynamicReproductionResult]
+    DRES --> DREV{Plan needs R6 revision}
+    DREV -->|Yes| DRET[R6 writes new requirements or minimal plan]
+    DREV -->|No| S13
+    DRET --> DAUTH
     S13 --> S14{14 Final verdict}
     S14 -->|FALSE| CLOSED[Terminal internal result]
     S14 -->|HOLD| REQUIRED[HOLD REQUIRED Primitive admitted]
@@ -159,27 +155,23 @@ flowchart TB
     BASIC --> SYN
     BASIC -. no Gate Primitive or Reporter .-> METRICS[Evaluation metrics only]
     SYN --> INITIAL[Initial TRUE FALSE HOLD]
-    INITIAL --> DYN{Verification chooses dynamic mode}
+    INITIAL --> DYN{Dynamic reproduction requested}
     DYN -->|No| FINAL[Final VerificationResult]
-    DYN -->|Small question| LIMITED[Verification LIMITED Requirements and Plan]
-    DYN -->|End to end| FULL[Verification FULL Requirements Plan and PoC draft]
-    LIMITED --> AUTH[Runtime Validator call authorization]
-    FULL --> AUTH
-    AUTH --> CTRL[Sandbox Controller policy check]
-    CTRL --> PDEC[Exact SandboxPolicyDecision]
-    PDEC -->|Pass| ENV[Sandbox Runner prepares environment and Health Checks]
-    PDEC -->|Policy blocked no Runner| ASSEMBLER[Sandbox Result Assembler]
-    ENV --> CHECK{All required items MATCH}
-    CHECK -->|Yes| RUNNER[Sandbox Runner executes exact attack steps]
-    CHECK -->|No| EFAIL[Stop before attack with ENVIRONMENT_SETUP]
-    EFAIL --> ASSEMBLER
-    RUNNER --> ASSEMBLER
-    ASSEMBLER --> DRESULT[Dynamic result with exact nullable refs]
-    DRESULT --> EMIS{Required environment mismatch}
-    EMIS -->|Yes| EREVIEW[R6 reviews exact differences]
-    EMIS -->|No| SYN2[Verification re-synthesizes evidence]
-    EREVIEW -->|New requirements plus plan or plan-only revision| AUTH
-    EREVIEW -->|No retry| SYN2
+    DYN -->|Yes| PLAN[EnvironmentRequirements and minimal ReproductionPlan]
+    PLAN --> AUTH[Runtime Validator call authorization]
+    AUTH --> CTRL[R7 Controller applies external boundary]
+    CTRL --> PDEC{Boundary ready}
+    PDEC -->|Blocked| FINALIZER[Dynamic Result Finalizer]
+    PDEC -->|Ready| AGENT[Reproduction Agent autonomous inside Sandbox]
+    AGENT --> RECIPE[Versioned EnvironmentRecipe and clean Sandbox]
+    RECIPE --> ACTIONS[PoC execution observation and retry]
+    ACTIONS --> ALOG[AgentLog PoCBundle and CleanupLog]
+    ALOG --> FINALIZER
+    FINALIZER --> DRESULT[DynamicReproductionResult]
+    DRESULT --> ISSUE{Plan needs R6 revision}
+    ISSUE -->|Yes| EREVIEW[R6 writes new requirements or minimal plan]
+    ISSUE -->|No| SYN2[Verification re-synthesizes evidence]
+    EREVIEW --> AUTH
     SYN2 --> FINAL
     FINAL --> OUT[Restrictions candidates PrimitiveDraft and VERIFICATION origin child proposals]
 ```
@@ -392,7 +384,7 @@ flowchart LR
     DOMAIN[Verification Gates Reporter Human keep domain decisions] -. not decided by validator .-> CHECK
 ```
 
-Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter·redaction·공개 전제를 검사한다. `RUN_SANDBOX`에서는 호출 권한·상태·예산·exact plan reference까지만 확인하고, image·command·file·network·resource·cleanup 정책은 Sandbox Controller가 검사한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
+Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter·redaction·공개 전제를 검사한다. `RUN_SANDBOX`에서는 호출 권한·상태·예산·current plan·requirements·profile reference를 확인한다. R7 Controller는 host·Docker daemon·secret·egress·다른 workspace·resource·lifecycle의 외부 경계를 적용하고, Agent가 내부에서 선택한 command·package·PoC는 AgentLog와 artifact 무결성 검사 대상으로 남긴다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 runtime이 판단하지 않는다.
 
 ## 13. 사람 검토와 외부 공개 경계
 

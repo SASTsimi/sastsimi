@@ -71,7 +71,7 @@ Context 조회 실패·timeout·권한 오류가 있어도 정상 근거로 모�
 
 동적 재현은 같은 단어의 뜻을 구분해야 합니다.
 
-- 동적 결과 `FAILED + ENVIRONMENT_SETUP`: 필수 환경이 다르거나 확인되지 않아 공격 단계를 시작하지 못한 상태입니다. 가설 반증이나 `PARTIAL`이 아니며, R6가 조건을 바꾸면 새 요구사항과 이를 가리키는 새 계획을 함께 만들어 다시 검사받습니다.
+- 동적 결과 `FAILED + failure_category=ENVIRONMENT`: Agent의 제한 retry 뒤에도 필수 환경을 만들지 못한 상태입니다. 가설 반증이나 `PARTIAL`이 아니며 exact recipe·AgentLog·차이·자유 형식 `failure_reason`을 남깁니다.
 - 동적 결과 `PARTIAL`: 일부 공격 단계를 실행해 믿을 수 있는 관측을 얻었지만 환경 차이 같은 한계가 남은 상태입니다. 결과의 `limitations`가 빠진 범위를 설명하므로 실제 오류가 없다면 오류나 `DataGap`을 억지로 만들지 않습니다.
 - 동적 결과 `BLOCKED`: Sandbox 정책 때문에 실행하지 못했다는 종료 결과입니다. 요청을 정상 처리해 이 결과를 만들었으므로 공통 작업은 `SUCCEEDED`로 끝나지만, 재현 성공을 뜻하지는 않습니다.
 - 공통 작업 `BLOCKED`: 재시도·인증·승인·입력을 기다리는 중이며 아직 끝나지 않은 상태입니다.

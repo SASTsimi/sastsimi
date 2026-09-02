@@ -113,7 +113,7 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 
 ## 7. 동적 재현과 PoC
 
-- 모드: `{NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO}`
+- 재현 범위: `{실제로 수행한 범위와 한계; mode 계약 채택 시 optional mode}`
 - Docker 환경: `{image digest and relevant configuration}`
 - 전제: `{account, data, route or build condition}`
 - 실행 상태: `{SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED}`

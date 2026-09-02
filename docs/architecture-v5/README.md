@@ -15,8 +15,8 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 ## 전체 흐름을 쉽게 나누면
 
 1. **입력과 코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다.
-2. **가설과 검증**: LLM이 취약점 가능성을 제안하고, Orchestration이 등록·배정한 뒤 Verification Agent가 가설 내부 코드·찬성·반대 근거와 동적 재현 모드·계획을 관리합니다.
-3. **동적 재현과 연계 탐색**: trusted runtime이 계획을 승인하면 R7 Sandbox가 exact plan을 Docker에서 실행해 결과를 돌려줍니다. HOLD는 즉시, TRUE는 두 Gate 통과 뒤에만 Primitive matching에 사용합니다.
+2. **가설과 검증**: LLM이 취약점 가능성을 제안하고, Orchestration이 등록·배정한 뒤 Verification Agent가 가설 내부 코드·찬성·반대 근거와 동적 재현 요청을 관리합니다.
+3. **동적 재현과 연계 탐색**: trusted runtime이 최소 계획을 승인하면 R7 Controller가 Sandbox 외부 경계를 적용하고 Reproduction Agent가 내부 재현을 자율 수행해 실행 증거를 돌려줍니다. HOLD는 즉시, TRUE는 두 Gate 통과 뒤에만 Primitive matching에 사용합니다.
 4. **최종 검토와 보고서 초안**: 취약점 종류를 붙이고 기술 근거와 공식 정책을 차례로 검토합니다.
 5. **사람의 결정**: 사람이 모든 결과와 디버깅 정보를 보고 외부 공개 여부를 결정합니다.
 
@@ -33,7 +33,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 9. Verification이 entity·위치·경로를 기준으로 필요한 코드 문맥을 조회한다.
 10. 운영 분석의 Verification이 Pro/Con을 독립 NEW session으로 병렬 실행한다.
 11. 초기 `TRUE | FALSE | HOLD` 판정을 만든다.
-12. Verification이 `NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO`를 고른다. 동적 재현이면 exact `EnvironmentRequirements`와 이를 가리키는 `ReproductionPlan`을 만든다. Runtime Validator가 호출 권한·상태·예산과 current reference를 확인하고, R7 Sandbox Controller가 세부 안전 정책 판정을 저장한다. Runner는 실제 환경과 Health Check를 비교해 필수 항목이 맞을 때만 공격 단계를 실행한다. 비-LLM Result Assembler가 exact R6 plan closure와 같은 R7 실행 시도의 정책·환경 비교·log·PoC·cleanup reference를 동적 결과로 묶어 반환한다.
+12. 동적 재현이면 Verification이 exact `EnvironmentRequirements`와 재현 목표 중심의 최소 `ReproductionPlan`을 만든다. Runtime Validator가 호출 전제와 current reference를 확인하고 R7 Controller가 Sandbox 외부 경계와 R8 profile을 적용한다. `REPRODUCTION_AGENT`가 환경·PoC·실행·관찰·재시도를 자율적으로 수행하고 recipe·Agent Log·실행 PoC·동적 outcome·cleanup을 반환한다.
 13. 최종 `TRUE | FALSE | HOLD`와 별도 material claim을 확정한다.
 14. `FALSE`는 terminal로 끝내고, `HOLD`는 REQUIRED Primitive를 즉시 저장해 Chaining 자격을 준다. TRUE는 CWE 단계로 간다.
 15. final TRUE와 CWE를 Technical Evidence Gate Agent가 검토한다.
@@ -51,7 +51,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 - AST와 SAST는 source, sink, entity, 위치, 호출·데이터 흐름, 인증·인가와 같은 사실 후보를 제공한다.
 - Hypothesis Agent는 항상 `HYPOTHESIS_ONLY / NON_FINAL` 제안만 만들며 Finding이나 확정 판정을 만들 수 없다.
 - 코드 문맥은 같은 `workspace_id`와 `commit_id`에서 위치 기반으로 필요할 때 조회하고, 조회 범위와 반환 위치를 기록한다.
-- Verification은 가설 내부 Context·Pro/Con, 환경 요구사항·동적 재현 모드·`ReproductionPlan`, 환경 차이 수용·판정·Technical `REVISE`·Gate 제출과 Chaining handoff를 소유한다. Runtime Validator는 Sandbox 호출 전제와 exact revision만 확인하고, R7 Sandbox Controller는 세부 안전 정책 판정을 저장한다. Runner는 실제 환경을 requirement별로 비교하고 필수 항목이 맞을 때만 공격 단계를 실행한다. 비-LLM Result Assembler는 같은 R6 plan closure와 같은 R7 실행 attempt의 정책·환경·log·PoC·cleanup reference만 동적 결과로 조립한다.
+- Verification은 가설 내부 Context·Pro/Con, `EnvironmentRequirements`, 최소 `ReproductionPlan`, 최종 판정·Technical `REVISE`·Gate 제출과 Chaining handoff를 소유한다. R7 Controller는 외부 경계를 적용하고 Reproduction Agent는 내부에서 환경·PoC·실행·관찰·retry를 자율적으로 수행한다. 작은 finalizer가 recipe·환경·Agent Log·실행 PoC·cleanup의 같은 attempt 연결만 검사한다.
 - 운영(`PRODUCTION`) 기본 검증 모드는 `ALWAYS_DEBATE`다. 모든 유효 가설에서 Pro와 Con을 독립 NEW session으로 실행한다. `BASIC | CONDITIONAL_DEBATE`는 격리된 평가(`EVALUATION`)에서만 비교한다.
 - Primitive DB는 queue가 아니라 HOLD REQUIRED와 Gate-qualified TRUE PROVIDED를 연결하는 인덱스다. Gate 전 TRUE, FALSE와 오래된 revision은 현재 matching에 사용할 수 없다.
 - Chaining Agent는 TRUE+HOLD와 방향성 있는 TRUE+TRUE 선행 조건 matching만 수행하며 일반 취약점·우회·impact research, 동적 재현, Gate 보완이나 verdict를 수행할 수 없다.
@@ -60,7 +60,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 - 공식 프로그램 정책이 없으면 rule/scope를 추정하지 않으며 보고서 전달 권한은 `DENY`다.
 - Membership session과 API provider는 공통 adapter 경계를 사용한다. Membership path는 feasibility/security 검토 전 experimental이며, provider 전환은 명시적으로 기록하고 조용한 failover는 금지한다.
 - Reporter는 초안 작성자이고, 사람만 최종 공개 여부를 결정한다.
-- 모든 LLM 출력은 비신뢰 입력이다. 신뢰 경계 안의 Runtime Validator가 schema·호출 권한·상태 전이·예산·provider/session·Gate 순서·Reporter 전제조건을 강제하고, Sandbox Controller가 image·command·file·network·resource·cleanup 정책을 전담한다.
+- 모든 LLM 출력은 비신뢰 입력이다. Runtime Validator는 schema·호출 권한·상태·예산·provider/session·Gate/Reporter 전제를, R7 Controller는 host·Docker daemon·secret·network egress·R8 resource profile·lifecycle의 Sandbox 외부 경계를 강제한다.
 - Agent와 service는 실행을 `ActionRequest`로 제안하고 runtime validator가 요청당 하나의 `ActionDecision=ALLOW | DENY`를 만든다. 실제 LLM 호출은 검사한 `LLMCallSpec`과 같아야 하며 ALLOW는 exact action과 state version에 한 번만 사용한다.
 - 사람에게는 Finding·근거·PoC·두 Gate·자원·오류·HOLD 조건을 포함한 `HumanReviewPacket`을 제공한다. `HumanReviewState`가 최신 packet과 사람 결정을 가리키며 새 packet이 생기면 이전 공개 승인은 무효다.
 - 분석 공백, 실행 오류, LLM·sandbox 실패와 취소는 기술 판정 `FALSE`와 분리한다. 공통 ID·시간·상태·오류 기준은 [경량 데이터 계약](./08-lightweight-data-contracts.md)을 따른다.

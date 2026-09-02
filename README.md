@@ -63,11 +63,11 @@ Repository input
 → constrained HypothesisProposal
 → Orchestration이 가설을 등록하고 가설별 Verification owner를 배정
 → Verification이 on-demand context와 운영 기본 Pro/Con 병렬 검증 관리
-→ 필요 시 Verification이 환경 요구사항과 LIMITED_REPRO / FULL_REPRO ReproductionPlan 생성
-→ Runtime Validator가 exact 요구사항·계획 reference, 호출 권한·상태·예산을 확인해 Sandbox 호출 허가
-→ Sandbox Controller가 세부 안전 정책을 한 번 검사
-→ Sandbox Runner가 실제 환경·Health Check를 요구사항과 비교하고 필수 항목이 맞을 때만 공격 단계 실행
-→ Sandbox Result Assembler가 exact R6 계획 묶음과 같은 R7 실행 시도의 정책·환경 비교·로그·PoC·정리 참조를 결과로 묶어 반환
+→ 필요 시 Verification이 환경 요구사항과 최소 ReproductionPlan 생성
+→ Runtime Validator가 plan reference, 호출 권한·상태·예산을 확인해 R7 호출 허가
+→ R7 Controller가 host·Docker daemon·secret·egress·resource·lifecycle의 Sandbox 외부 경계를 적용
+→ Reproduction Agent가 격리된 Sandbox 내부에서 환경 구성·PoC 작성·실행·관찰·retry를 자율 수행
+→ 작은 Dynamic Result Finalizer가 EnvironmentRecipe·AgentLog·실행 PoC·cleanup과 같은 attempt 연결을 검사해 결과 반환
 → final TRUE / FALSE / HOLD
 → FALSE는 terminal
 → HOLD는 REQUIRED Primitive로 즉시 Chaining
@@ -80,7 +80,7 @@ Repository input
 
 정적 분석 도구는 취약점 최종 판정자가 아닙니다. 함수·클래스 같은 코드 요소(`entity`), 코드 위치, 입력 시작점(`source`), 위험 동작 지점(`sink`), 호출·데이터 흐름과 인증·권한 정보를 제공합니다. 가설(`Hypothesis`)과 체이닝 후보는 아직 사람이 검토할 취약점 결과(`Finding`)가 아닙니다. 새로운 공격 주장은 새 가설로 등록되어 전체 검증을 다시 거칩니다.
 
-LLM Agent의 출력은 그대로 믿지 않습니다. 프로그램 내부 규칙 검사기(`Runtime Validator`)는 token·시간 한도, 호출 권한, 상태가 바뀌는 순서, LLM 연결·로그인 정책, Gate 순서와 Reporter 호출 조건을 확인합니다. 격리 실행의 image·명령·파일·네트워크·자원·정리 정책은 Sandbox Controller가 전담하고, Sandbox Runner는 승인된 계획만 실행합니다.
+LLM Agent의 출력은 그대로 믿지 않습니다. 프로그램 내부 규칙 검사기(`Runtime Validator`)는 token·시간 한도, 호출 권한, 상태가 바뀌는 순서, LLM 연결·로그인 정책, Gate 순서와 Reporter 호출 조건을 확인합니다. R7 Controller는 host·Docker daemon·secret·허용되지 않은 egress·다른 workspace와 자원·lifecycle을 Sandbox 외부에서 차단하고, Reproduction Agent는 그 격리 경계 내부에서 재현 작업을 자율 수행합니다.
 
 ## 설계 검토 운영 방식
 
@@ -137,13 +137,13 @@ main  ← Architecture v5 candidate baseline
 | 단독 구현·통합 개발 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 모듈의 구현 가능성, 계약 준수 테스트와 통합 계획 검토 |
 | PM·아키텍처·워크플로 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 구조, 공통 입출력 계약, 사람·LLM 경계, 병렬·직렬 흐름과 오류 정책 |
 | Gate·Finding·보고서 | 김혜령 ([@kimhr8463](https://github.com/kimhr8463)) | 검증 근거·정책 범위 검토, 내부 Finding과 보고서 초안, 사람 검토 전달 준비 |
-| 검증·반박·플레이북 | 임채민 ([@UltraPeachKeen](https://github.com/UltraPeachKeen)) | 가설별 Context·찬반, 환경 요구사항·LIMITED/FULL `ReproductionPlan`, 환경 차이 수용 여부, 최종 판정·Gate 보완 |
-| 동적검증·Sandbox | 조근석 ([@Potatonion](https://github.com/Potatonion)) | Controller 정책 판정, Runner의 환경 구성·요구사항 비교·exact 계획 실행, Health Check·log·PoC 상세 artifact와 result 조립 |
+| 검증·반박·플레이북 | 임채민 ([@UltraPeachKeen](https://github.com/UltraPeachKeen)) | 가설별 Context·찬반, 환경 요구사항·최소 `ReproductionPlan`, 최종 판정·Gate 보완 |
+| 동적검증·Sandbox | 조근석 ([@Potatonion](https://github.com/Potatonion)) | Sandbox 외부 안전 경계, 자율 Reproduction Agent, versioned 환경 recipe·clean Sandbox·AgentLog·PoC·동적 결과 생산 |
 | 데이터·평가·예산 | 성병찬 ([@gitterable](https://github.com/gitterable)) | 평가 데이터·품질 지표와 예산 profile 설계; 실제 예산 강제는 trusted runtime 담당 |
 
 Gate는 Verification verdict를 변경하거나 공개를 승인하지 않습니다. Reporter는 보고서 초안만 작성하며, 사람만 최종 공개를 결정합니다.
 
-동적 재현의 역할 연결은 `R6 Verification의 환경 요구사항·모드·계획 결정 → R4 Runtime Validator의 exact reference·호출 전제 확인 → R7 Sandbox Controller의 세부 정책 검사·판정 저장 → R7 Sandbox Runner의 실제 환경 비교 → 필수 항목 일치 시 exact plan 공격 단계 실행 → 비-LLM Result Assembler의 exact reference 조립 → R6의 최종 판정`입니다. R7은 환경 차이·실행 불가능·정책 차단을 기록하지만 요구사항·허용 대체값·모드·계획·최종 verdict를 바꾸지 않습니다.
+동적 재현의 역할 연결은 `R6 Verification의 환경 요구사항·최소 계획 작성 → R4 Runtime Validator의 reference·호출 전제 확인 → R7 Controller의 Sandbox 외부 안전 경계 적용 → R7 Reproduction Agent의 내부 환경 구성·PoC 작성·실행·관찰·retry → 작은 finalizer의 recipe·AgentLog·실행 PoC·cleanup 연결 검사 → R6의 추가 판단`입니다. R7은 실행 증거를 `SUPPORTED | DISPROVED | INCONCLUSIVE`로 해석해 전달하지만 최종 `TRUE | FALSE | HOLD`를 만들거나 바꾸지 않습니다.
 
 ## 설계 초안
 

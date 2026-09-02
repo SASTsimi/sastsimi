@@ -98,21 +98,21 @@ Docker 환경을 만들지 못했거나 실행이 timeout된 것은 재현 실�
 
 ### 필요한 환경과 실제 환경을 어떻게 연결하나요?
 
-R6 Verification은 먼저 `EnvironmentRequirements`에 필요한 애플리케이션 역할·인증 방식·데이터·DB/service·fixture/mock·버전·Health Check를 적고 각 항목에 코드·설정 근거를 연결합니다. `ReproductionPlan.environment_requirements_ref`는 이 요구사항의 정확한 수정본을 가리킵니다. `sandbox_profile_ref`는 Docker의 image·명령·네트워크·자원 허용 정책이므로 요구사항을 대신하지 않습니다.
+R6 Verification은 먼저 `EnvironmentRequirements`에 필요한 애플리케이션 역할·인증 방식·데이터·DB/service·fixture/mock·버전·Health Check를 적고 각 항목에 코드·설정 근거를 연결합니다. `ReproductionPlan.environment_requirements_ref`는 이 요구사항의 정확한 수정본을 가리킵니다. `sandbox_profile_ref`는 R7 외부 안전 경계와 R8 자원·시간 값을 가리키며 요구사항을 대신하지 않습니다.
 
-R7은 실제 환경을 만든 뒤 `sandbox_environment.requirements_ref`에 같은 요구사항 수정본을 연결하고, 각 `requirement_id`에 `MATCH | MISMATCH | NOT_CHECKED | ERROR`, 실제 값 또는 artifact, 차이와 Health Check 결과를 기록합니다. 필수 항목이 모두 `MATCH`일 때만 공격 단계를 실행합니다. 차이를 허용하면서 환경 조건을 바꾸려면 R6가 새 요구사항과 이를 가리키는 새 계획을 함께 만들고, 단계만 바꾸면 새 계획만 만든 뒤 Runtime Validator와 Sandbox Controller 검사를 다시 받아야 합니다.
+R7 Agent는 versioned `EnvironmentRecipe`로 실제 환경을 만들고 `sandbox_environment.requirements_ref`에 같은 요구사항 수정본을 연결합니다. 각 `requirement_id`에는 `PASSED | FAILED | NOT_CHECKED`, 실제 값 또는 artifact, 차이와 Health Check 결과를 기록합니다. package·setup 문제는 예산 안에서 recipe를 갱신하고 새 image digest·clean Sandbox로 스스로 재시도합니다. 요구사항이나 필수 문맥 자체가 잘못돼 실행할 수 없으면 결과의 `plan_execution_status=NEEDS_REVISION`, `plan_issues`와 근거를 R6에 반환합니다.
 
 credential·cookie·token·password 원문은 요구사항과 실제 값에 저장하지 않습니다. 필요한 비밀은 secret store의 불투명 `secret_ref`만 사용합니다.
 
 ### 동적 결과의 참조는 언제 비어 있나요?
 
-- `poc_ref`: 이번 재현과 연결된 정확한 PoC 묶음입니다. PoC가 없으면 비어 있고, 값이 있어도 실행 성공을 뜻하지 않습니다.
-- `runner_invoked`: Runner를 실제 호출했는지 나타냅니다. 거짓이면 `steps_ref`는 비어 있어야 하고, 참이면 첫 단계에서 실패해도 로그가 있어야 합니다.
-- `environment_created`: 실제 환경이 만들어졌는지 나타냅니다. 거짓이면 `environment_ref`가 비어 있고, 참이면 실제 생성 환경과 요구사항별 비교 기록을 가리켜야 합니다. 실행 전 요구사항이나 Sandbox profile과는 다릅니다.
-- `policy_decision_ref`: Controller가 어떤 정책 버전으로 왜 허용·차단했는지 가리킵니다. `POLICY_BLOCKED`이면 반드시 필요하며 Technical Gate의 판정과 다릅니다.
-- `cleanup_required`: 정리할 자원이 생겼는지 나타냅니다. 거짓일 때만 `cleanup_status=NOT_REQUIRED`를 씁니다. 정책에 막혔더라도 임시 자원이 생겼다면 정리 결과를 성공 또는 실패로 남깁니다.
+- `poc_ref`: Agent가 실제 실행을 시작한 최종 `PoCBundle`입니다. draft-only PoC는 AgentLog에만 남기며, 값이 있어도 실행 성공을 뜻하지 않습니다.
+- `agent_invoked`: Reproduction Agent를 실제 호출했는지 나타냅니다. 거짓이면 `agent_log_ref`와 실제 attack input이 비어 있어야 하고, 참이면 종료 상태와 무관하게 exact AgentLog가 필요합니다.
+- `environment_created`: 실제 환경이 만들어졌는지 나타냅니다. 거짓이면 `environment_ref`가 비어 있고, 참이면 exact `EnvironmentRecipe`, image digest와 요구사항별 확인 기록을 가리켜야 합니다.
+- `policy_decision_ref`: Controller가 어떤 외부 경계 revision으로 왜 허용·차단했는지 가리킵니다. `failure_category=POLICY`이면 반드시 필요하며 Technical Gate 판정과 다릅니다.
+- `cleanup_required`: session ephemeral 자원이 생겼는지 나타냅니다. persistent baseline recipe/image는 `PRESERVED`, session 자원은 `SUCCEEDED | FAILED`로 구분하고, 정리 대상이 전혀 없을 때만 `NOT_REQUIRED`를 씁니다.
 
-이 참조들은 같은 분석·코드·가설과 정확한 record revision에 속해야 합니다. R6 requirements와 plan은 같은 Verification generation·attempt에서 연결하고, R7 정책·실제 환경·PoC·로그·정리 기록은 같은 동적 실행 attempt에서 연결합니다. plan의 `environment_requirements_ref`와 실제 환경의 `requirements_ref`가 다르거나 “가장 최신 결과”를 다시 찾거나 다른 R7 attempt의 PoC·환경·로그를 섞으면 저장을 거절합니다. R4는 이 공통 연결 규칙을 정하고, R6는 요구사항과 허용 차이를, R7은 실제 비교·PoC·환경·정책 판정·단계 로그의 세부 내용을 정합니다.
+이 참조들은 같은 분석·코드·가설과 정확한 record revision에 속해야 합니다. R6 requirements와 plan을 exact reference로 연결하고, R7 정책·recipe·실제 환경·AgentLog·실행 PoC·정리 기록은 같은 동적 실행 attempt에 속해야 합니다. plan의 `environment_requirements_ref`와 실제 환경의 `requirements_ref`가 다르거나 “가장 최신 결과”를 다시 찾거나 다른 R7 attempt 자료를 섞으면 저장을 거절합니다. R4는 공통 연결 규칙을, R6는 필요한 환경·목표와 최종 verdict를, R7은 recipe·Agent 행동·실제 환경·PoC·동적 outcome·cleanup을 맡습니다.
 
 Technical Gate는 final `TRUE`만 입력으로 받고 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 자신이 읽은 Verification과 CWELabel 수정본을 정확히 기록합니다. `FALSE | HOLD`와 검증 실패 가설은 Technical Gate로 보내지 않습니다. 둘 중 하나가 수정되면 이전 Gate 승인을 새 수정본에 재사용하지 않습니다. Rule Scope Gate와 보고서 초안도 같은 CWELabel `record_id`를 사용해야 합니다. `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
 

@@ -107,8 +107,10 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 
 - 역할·provider·model별 invocation, token/동등 usage와 elapsed time
 - AST/SAST별 `SUCCEEDED | PARTIAL | FAILED | SKIPPED`, 실제 분석·제외 path/language와 coverage
-- sandbox mode별 CPU/memory/disk/network/time, `runner_invoked`, 실제 환경 생성 여부, requirement `MATCH | MISMATCH | NOT_CHECKED | ERROR` 수와 cleanup
-- exact `environment_requirements_ref`·`poc_ref`·`policy_decision_ref`·`environment_ref`·`steps_ref`의 data kind, record revision과 content hash
+- R8 profile별 CPU/memory/disk/network/time, `agent_invoked`, 환경 생성 여부, recipe build/retry, requirement `PASSED | FAILED | NOT_CHECKED` 수와 cleanup
+- exact `environment_requirements_ref`·`environment_recipe_ref`·`agent_log_ref`·`poc_ref`·`policy_decision_ref`·`environment_ref`·`cleanup_log_ref`의 data kind, record revision과 content hash
+- Agent Log의 shell·file/environment change·image build·PoC create/update/execute·observation·retry·cleanup event 수와 실패·timeout 분포. 숨은 사고 과정은 수집하지 않음
+- `PERSISTENT_BASELINE` recipe/image 보존 수, `SESSION_EPHEMERAL` cleanup 성공·실패와 잔여 자원 수
 - `cleanup_required`와 `SUCCEEDED | FAILED | NOT_REQUIRED`; 자원이 생겼는데 `NOT_REQUIRED`로 제출되어 거절된 횟수
 
 provider가 token이나 비용을 제공하지 않으면 추정치를 확정값처럼 표시하지 않고 metric source와 unavailable reason을 남긴다.
@@ -207,12 +209,12 @@ ReportDraft가 가리킨 Verification·CWE·두 Gate·정책 중 하나라도 �
 | provider 인증 필요 | `BLOCKED`, `waiting_for=AUTH` | 재인증 또는 승인된 failover 전까지 대기, verdict 변경 금지 |
 | rate limit·timeout | retry 가능하면 `BLOCKED`, 아니면 `FAILED` | backoff·예산 확인 뒤 새 attempt, 이전 실패 보존 |
 | Context 조회 실패·timeout·권한 오류 | 필수 검증을 아직 완료하지 못했고 retry 가능하면 work `BLOCKED`와 가설 `VERIFYING`, 더 시도할 수 없으면 work·가설 `FAILED`; 대체 조회·다른 정상 근거로 필수 검증을 완료할 수 있으면 현재 Verification 계속 | `AnalysisError`와 영향 범위 `DataGap`을 함께 남긴다. 오류 자체는 verdict 근거가 아니며, 필수 검증을 완료하지 못하면 final `VerificationResult`를 만들지 않음 |
-| Sandbox 환경 구성 실패 | `FAILED + ENVIRONMENT_SETUP` | 동적 반증이 아님, Verification이 남은 근거로 unresolved condition을 판단 |
-| 필수 환경 요구사항 차이·미확인·비교 오류 | `FAILED + ENVIRONMENT_SETUP`, `sandbox_environment=MISMATCH | ERROR` | 공격 단계를 시작하지 않고 exact 차이를 R6에 반환. 요구사항 변경이면 새 requirements와 이를 가리키는 새 plan, 단계 변경만이면 새 plan과 새 Sandbox 검사가 필요 |
+| Sandbox 환경 구성 실패 | `FAILED + failure_category=ENVIRONMENT` | 동적 반증이 아님. exact recipe·AgentLog·실제 차이와 자유 형식 `failure_reason`을 R6에 반환 |
+| 필수 환경 요구사항을 만족하지 못함 | `FAILED + failure_category=ENVIRONMENT`, `environment_check=FAILED | NOT_CHECKED` | Agent의 제한 retry 뒤에도 만들지 못한 실제 차이를 R6에 반환. recipe를 보완하면 새 version·image digest와 clean Sandbox attempt를 만든다 |
 | Sandbox 부분 실행 | `PARTIAL`, 신뢰 결과와 `limitations` 저장 | 실제 오류가 없으면 `error_ids`·`gap_ids`를 만들지 않고 Verification이 한계와 관측을 함께 판단 |
-| Sandbox 정책 차단 결과 | 공통 work `SUCCEEDED`, 동적 결과 `BLOCKED + POLICY_BLOCKED` | exact `policy_decision_ref`를 요구한다. Runner가 호출되지 않았으면 `steps_ref=null`; PoC가 있어도 실행 성공이 아니며 `INCONCLUSIVE`로 Verification에 전달 |
+| Sandbox 외부 경계 차단 결과 | 공통 work `SUCCEEDED`, 동적 결과 `BLOCKED + failure_category=POLICY` | exact `policy_decision_ref`를 요구한다. Agent가 호출되지 않았으면 `agent_log_ref=null`, `poc_ref=null`; `INCONCLUSIVE`로 Verification에 전달 |
 | Sandbox 실행 취소 | 공통 work와 동적 결과 `CANCELLED` | 취소 결과를 같은 atomic transition에서 저장하고 이후 늦은 결과는 격리 |
-| Sandbox 계획·요구사항·정책·환경·PoC·실행 log·cleanup 불일치 | 결과 저장 action `DENY` | requirements revision, 항목별 비교, nullable reference와 lifecycle 조합까지 검사해 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
+| Sandbox plan·요구사항·정책·recipe·AgentLog·PoC·cleanup 불일치 | 결과 저장 action `DENY` | 같은 attempt·digest·nullable reference·lifecycle 조합을 검사해 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
 | 정책 조회 실패 또는 정책 최신성 `STALE | UNVERIFIED` | policy work `FAILED` 또는 현재 상태 기록 | 기술 verdict 유지, Rule Scope `UNCERTAIN + DENY`, Reporter 차단. 오래된 정책은 감사 자료로만 보존 |
 | Technical Gate 실행 오류·보완 한도 초과 | Gate work `FAILED` | 기술 verdict 유지, Rule Scope Gate와 Reporter 차단 |
 | Rule Scope Gate 실행 오류 | Gate work `FAILED` | 기술 verdict 유지, Reporter 차단 |

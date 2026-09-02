@@ -34,7 +34,7 @@ CWE 후보는 final TRUE 뒤에 Gate 입력으로 작성한다. primary·alterna
 - final `VerificationResult`의 정확한 `record_id`가 있는 `StoredDataRef`와 revision history
 - Pro/Con evidence와 debate mode/trigger
 - 실제 code/entity/location/path reference
-- `DynamicReproductionResult`와 exact `poc_ref`·`policy_decision_ref`·`environment_ref`·`steps_ref`
+- `DynamicReproductionResult`와 exact `environment_recipe_ref`·`agent_log_ref`·`poc_ref`·`policy_decision_ref`·`cleanup_log_ref`
 - `CWELabel`의 정확한 `record_id`가 있는 `StoredDataRef`와 근거
 - restriction, bypass candidate, unresolved condition
 - 같은 Verification에서 분리한 material child proposal 중 재검증 완료 여부
@@ -81,7 +81,7 @@ technical_evidence_review:
 
 `ACCEPT`는 `handoff_readiness=READY`, `REVISE | REJECT`는 `handoff_readiness=NOT_READY`와 함께 사용한다. 이 조합이 맞지 않으면 Gate output을 저장하지 않는다.
 
-`DynamicReproductionResult(status=BLOCKED, failure_reason=POLICY_BLOCKED)`는 정책 때문에 실행하지 못했다는 뜻이지 가설 반증이 아니므로 그 사실만으로 `REJECT`하지 않는다.
+`DynamicReproductionResult(status=BLOCKED, failure_category=POLICY)`는 외부 경계 때문에 실행하지 못했다는 뜻이지 가설 반증이 아니므로 그 사실만으로 `REJECT`하지 않는다.
 
 - 정적·찬반 근거만으로 final TRUE의 핵심 주장을 충분히 검토할 수 있고, 차단된 재현의 제한·미실행 사실·exact `policy_decision_ref`가 정확히 연결되면 `ACCEPT + READY`가 가능하다.
 - 보고서 핵심 주장에 동적 재현이 꼭 필요한데 정책 차단으로 근거가 부족하고, 범위 축소·안전한 대체 검증·추가 설명으로 보완할 수 있으면 `REVISE + NOT_READY`다.
@@ -182,7 +182,7 @@ Reporter는 통과한 근거를 읽기 쉬운 내부 초안으로 구성한다.
 - 완화와 회귀 테스트 제안
 - invocation trace와 남은 불확실성
 
-Reporter는 새로운 공격 경로를 확정하거나 미검증 material child 또는 Chaining 후보를 실제 영향으로 쓰지 않는다. 초안의 핵심 주장은 Verification/PoC/Gate artifact에 연결한다. `poc_ref`가 있어도 `runner_invoked=false`, `steps_ref=null` 또는 `status=BLOCKED`이면 실행·재현 성공으로 서술하지 않는다. `ReportDraft.cwe_label_ref.record_id`는 Technical review와 Rule Scope review가 공통으로 가리킨 CWELabel `record_id`와 같아야 하며, CWELabel이 수정되면 두 Gate를 다시 통과하기 전에는 초안을 만들지 않는다.
+Reporter는 새로운 공격 경로를 확정하거나 미검증 material child 또는 Chaining 후보를 실제 영향으로 쓰지 않는다. 초안의 핵심 주장은 Verification/PoC/Gate artifact에 연결한다. `poc_ref`가 있어도 Agent Log에 대응하는 `POC_EXECUTE` 시작 사건이 없거나 동적 `status=BLOCKED` 또는 관측이 `INCONCLUSIVE`이면 실행·재현 성공으로 서술하지 않는다. `ReportDraft.cwe_label_ref.record_id`는 Technical review와 Rule Scope review가 공통으로 가리킨 CWELabel `record_id`와 같아야 하며, CWELabel이 수정되면 두 Gate를 다시 통과하기 전에는 초안을 만들지 않는다.
 
 ReportDraft가 참조한 `VerificationResult`, `CWELabel`, `TechnicalEvidenceReview`, `RuleScopeImpactReview` 또는 `ProgramPolicyRecord` 중 하나라도 새 current revision으로 바뀌면 기존 초안은 감사 기록으로만 남고 current HumanReviewPacket이나 공개 판단에 사용할 수 없다. 새 exact dependency chain으로 Gate와 Reporter를 다시 실행해 새 ReportDraft와 새 packet generation을 만든다.
 
