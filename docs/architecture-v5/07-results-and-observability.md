@@ -56,7 +56,7 @@ raw log는 최소 권한과 짧은 보존 기간으로 다루며 parser 실패�
 - `NEW | RESUME | AUTO` 요청값, 실제 결정과 parent session reference
 - prompt template/version과 exposed request/response artifact refs
 - 전달된 context refs와 실제 retrieved code locations
-- 공개된 tool-call trace와 parsed structured output ref
+- 공개된 tool-call trace와 parsed structured output ref. Pro/Con이면 invocation result와 log가 각각 exact `EvidenceAgentResult(role=PRO | CON)`를 가리킴
 - schema validation error와 repair attempt
 - status, timeout, rate limit, auth requirement와 safe error
 - provider가 공개한 token/usage 또는 `unavailable`
@@ -85,6 +85,7 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 
 - 운영 ALWAYS 사용 수, 평가 BASIC/CONDITIONAL/ALWAYS 사용 수와 trigger/skip reason
 - Pro/Con 및 종합 token·시간
+- 같은 부모·generation·`debate_input_hash`로 정상 합류한 수, 한쪽 누락·stale·교차 입력으로 거절한 수
 - debate 전후 verdict 변화
 - HOLD 해소, false-positive 감소 후보와 bypass 발견
 
@@ -147,6 +148,8 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 
 Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 final `VerificationResult.record_id`는 같은 atomic transition에 묶인다. 검증을 끝내지 못하고 더 재시도할 수 없으면 Verification work의 `FAILED`와 `HypothesisProcessState.status=FAILED`도 같은 transition에 묶고, 가설은 exact failed work를 가리키되 `verification_result_ref=null`로 둔다. Reporter work의 `SUCCEEDED`, `ReportProcessState.status=DRAFTED`와 `ReportDraft.record_id`도 같은 방식으로 묶인다. 두 Gate work는 각각 정확히 하나인 `TechnicalEvidenceReview`와 `RuleScopeImpactReview` revision을 output으로 가리킨다. 상태만 종료되었거나 결과만 저장된 경우에는 다음 단계와 분석 종료를 차단한다.
 
+운영 Pro/Con child work는 각각 exact `EvidenceAgentResult` 하나를 output으로 `COMMITTED`한다. 부모 Verification은 같은 부모 work·generation·`debate_input_hash`를 가진 Pro와 Con 결과가 모두 있을 때만 final 합성을 시작하며, 그 두 reference를 final LLM 호출과 `VerificationResult`에 그대로 남긴다. 한쪽이 retry 가능한 `BLOCKED`이면 부모도 같은 실제 대기 이유로 `BLOCKED`이고 가설은 `VERIFYING`이다. 한쪽이 최종 실패하면 자식 `FAILED`를 먼저 `COMMITTED`해 부모 진행을 막고, 부모 Verification `FAILED`와 가설 `FAILED`를 함께 확정하며 `verification_result_ref=null`로 둔다. 중간에 중단되면 recovery가 이 전파를 마칠 때까지 부모를 실행하지 않는다.
+
 ## 중복·늦은 결과와 격리
 
 - 같은 `dedupe_key` 요청은 새 work를 만들지 않고 기존 `work_id`와 상태를 반환한다.
@@ -155,6 +158,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 - 현재 state version·input hash·workspace·commit·hypothesis·record revision과 다르면 `STALE_RESULT`다.
 - 취소 뒤 도착한 결과, 이미 합류가 끝난 이전 결과와 `ABORTED` output은 debug 격리 영역에 보존할 수 있지만 `facts`, `verifications`, `gates`, `reports`의 최신 pointer로 승격하지 않는다.
 - 이미 확정된 결과에 새 근거를 반영해야 하면 기존 record를 덮어쓰지 않고 새 input revision, `dedupe_key`, `work_id`와 downstream revision을 만든다.
+- Pro/Con 한쪽만 재시도할 때 성공한 다른 쪽 결과는 부모 work·generation·공통 입력·플레이북·Debate 설정·예산 profile이 모두 그대로일 때만 재사용한다. 하나라도 바뀌면 두 결과 모두 `STALE_RESULT`다.
 
 ## 중단 후 재개
 
@@ -199,6 +203,7 @@ ReportDraft가 가리킨 Verification·CWE·두 Gate·정책 중 하나라도 �
 | 일부 AST/SAST 실패 | tool `FAILED`, normalize `PARTIAL` 가능 | `DataGap`과 오류를 포함하고 가설 분석 계속 가능 |
 | Hypothesis Agent 출력 오류 | repair 가능하면 work `BLOCKED`, 아니면 proposal `INVALID_OUTPUT`과 work `FAILED` | 등록 전이므로 `HypothesisProcessState`를 만들지 않음. 다른 proposal은 계속하고 분석은 `PARTIAL` 가능 |
 | Verification 오류 | retry 가능하면 work `BLOCKED`, 아니면 work와 가설 처리 상태 `FAILED` | retry 중 가설은 `VERIFYING` 유지. 최종 실패 가설은 `verification_result_ref=null`이며 다른 가설은 계속하고 분석은 `PARTIAL` 가능 |
+| Pro/Con child 오류 | retry 가능하면 해당 child와 부모 Verification `BLOCKED`, 아니면 실패 child·부모·가설 `FAILED` | 성공한 다른 쪽은 같은 입력·generation일 때만 보존. 오류·누락을 `FALSE | HOLD`로 바꾸지 않고 final Verification과 Gate를 만들지 않음 |
 | provider 인증 필요 | `BLOCKED`, `waiting_for=AUTH` | 재인증 또는 승인된 failover 전까지 대기, verdict 변경 금지 |
 | rate limit·timeout | retry 가능하면 `BLOCKED`, 아니면 `FAILED` | backoff·예산 확인 뒤 새 attempt, 이전 실패 보존 |
 | Context 조회 실패·timeout·권한 오류 | 필수 검증을 아직 완료하지 못했고 retry 가능하면 work `BLOCKED`와 가설 `VERIFYING`, 더 시도할 수 없으면 work·가설 `FAILED`; 대체 조회·다른 정상 근거로 필수 검증을 완료할 수 있으면 현재 Verification 계속 | `AnalysisError`와 영향 범위 `DataGap`을 함께 남긴다. 오류 자체는 verdict 근거가 아니며, 필수 검증을 완료하지 못하면 final `VerificationResult`를 만들지 않음 |
@@ -241,6 +246,7 @@ Context 조회 실패·timeout·권한 오류는 다음 기준으로 처리한�
 | `CONTEXT_RETRIEVAL_ERROR` | Context Retrieval Service | `AnalysisError`와 영향 범위 `DataGap`을 함께 전달; 오류 자체는 verdict 근거가 아님 | 제한 retry·대체 조회·정상 근거로 필수 검증을 완료하면 근거에 따라 final verdict 가능; 완료하지 못하면 retry 가능 시 `BLOCKED`, 아니면 `FAILED`이며 final verdict 없음 |
 | `INVALID_OUTPUT` | Agent Runtime | 해당 LLM 출력 사용 금지 | 제한 repair 뒤 종료 |
 | `INVOCATION_CHAIN_INVALID` | Agent Runtime·log validator | retry/failover 관계 record 사용 금지 | 유효한 바로 앞 호출을 연결하거나 새 독립 호출로 다시 시작 |
+| `CROSS_ROLE_INPUT_DENIED` | prompt builder·runtime validator | Pro와 Con 사이의 prompt·context·session·조회·tool 결과 공유 금지 | 허용된 공통 입력만으로 역할별 새 prompt와 새 호출 생성 |
 | `AGENT_ERROR` | Agent Runtime | 해당 Agent 작업 실패 | 새 `attempt_id`로 제한 retry |
 | `PROVIDER_ERROR` | provider adapter | LLM 호출 실패 | 명시적 retry·fallback |
 | `AUTH_REQUIRED` | provider adapter | LLM 호출 중단 | 사용자 재인증 뒤 새 시도 |

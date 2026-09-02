@@ -73,6 +73,12 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 
 검증 플레이북은 `logical_record_id`로 식별하고 내용이 바뀔 때마다 새 `record_id`, 증가한 `revision_number`와 새 `content_hash`를 만듭니다. `VerificationResult.playbook_ref`는 실제 사용한 exact 플레이북 revision을 가리키며 final Verification 합성 호출과 저장 요청도 같은 reference를 사용해야 합니다. 새 플레이북 revision이 생겨도 과거 판정의 reference는 바꾸지 않습니다.
 
+운영 검증의 Pro와 Con은 각각 `EvidenceAgentResult`라는 독립 결과를 만듭니다. final `VerificationResult`는 `pro_evidence_ref`와 `con_evidence_ref`로 두 결과를 정확히 하나씩 가리키고, `debate_input_hash`로 두 역할이 같은 가설·코드 사실·플레이북·설정·예산 기준을 받았는지 확인합니다. 부모 Verification, generation 또는 공통 입력이 다르면 두 결과를 섞을 수 없습니다.
+
+운영 `ALWAYS_DEBATE`와 실제 Debate를 수행한 평가에서는 두 reference와 hash가 모두 필요합니다. 평가용 `BASIC` 또는 조건이 발생하지 않아 Debate를 생략한 평가에서는 세 값을 모두 비워 둡니다. 운영에서 한쪽 결과가 빠졌다면 `TRUE | FALSE | HOLD`를 만들지 않고, 다시 시도할 수 있으면 기다리고 그렇지 않으면 검증 실패로 끝냅니다.
+
+이 연결 규칙은 기존 운영 결과의 허용 조건을 바꾸므로 새 MAJOR schema로 적용합니다. 예전 형식의 결과는 기록으로 남길 수 있지만 새 운영 결과처럼 자동 보완하거나 Gate로 보내지 않습니다.
+
 정적 분석과 코드 조회 결과는 사용할 수 있는 사실뿐 아니라 도구별 실행 상태, 분석·제외 범위, `DataGap`, `AnalysisError`를 함께 전달합니다. `DataGap`은 영향받은 path·language·코드 위치를 가능한 범위에서 적습니다. 결과가 비어 있거나 일부 도구가 실패했다는 이유로 안전하다고 판단하지 않습니다.
 
 Context 조회가 실패·timeout·권한 오류로 끝나면 실패 사건은 `AnalysisError`, 그 때문에 확인하지 못한 코드 범위는 `DataGap`으로 함께 남깁니다. 가설에는 해야 할 검증마다 고유 `validation_id`가 있고, 결과는 같은 ID로 완료 여부와 실제 근거를 답합니다. 일부 조회가 실패했더라도 재시도·대체 조회·다른 정상 근거로 모든 검증 항목과 운영 Pro/Con을 끝냈다면 실제 근거에 따라 `TRUE | FALSE | HOLD`를 저장할 수 있습니다. 하나라도 끝내지 못했다면 final `VerificationResult`를 만들지 않습니다. 다시 시도할 수 있으면 work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지합니다. 더 시도할 수 없으면 work와 가설 처리 상태를 한 번에 `FAILED`로 끝내고 결과 reference는 비워 둡니다. 단순 조회 오류만으로 `HOLD`를 만들지 않습니다.
@@ -115,6 +121,7 @@ Primitive도 exact revision을 사용합니다. HOLD는 final Verification ref�
 ## 자주 쓰는 작은 데이터 구조
 
 - `EvidenceClaim`: 찬성·반대 주장, 작성 역할, 실제 근거와 코드 위치를 한 묶음으로 저장합니다.
+- `EvidenceAgentResult`: Pro 또는 Con 한쪽이 같은 공통 입력을 읽고 만든 독립 근거 결과입니다. 부모 Verification과 역할별 작업 ID를 함께 남깁니다.
 - `VerificationPlaybook`: 취약점 검증에 사용할 사전 조건, 경로·방어 확인, 반증 질문, 근거 요구사항과 HOLD 조건을 묶은 versioned 절차입니다.
 - `CandidateRef`: 아직 검증되지 않은 우회·대체 경로·영향 확대 후보입니다. 새 주장이면 별도 가설로 검증하기 전까지 확정 결과로 쓰지 않습니다.
 - `VerificationMetrics`: debate의 token·시간·판정 변화와 새로 발견한 항목 수를 저장합니다. 제공되지 않은 token은 `null`입니다.

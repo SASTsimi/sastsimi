@@ -219,6 +219,7 @@ ReportProcessState:
 WorkExecutionState:
   meta: RunMeta | RecordMeta
   work_id: string
+  parent_work_ref: RunStoredDataRef | StoredDataRef | null
   work_type: WORKSPACE_PREP | STATIC_TOOL | STATIC_NORMALIZE | HYPOTHESIS_PROPOSAL | CONTEXT_RETRIEVAL | PRO_EVIDENCE | CON_EVIDENCE | VERIFICATION | DYNAMIC_REPRO | PRIMITIVE_UPDATE | CHAINING | CWE_LABEL | POLICY_FETCH | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORT_DRAFT
   subject_type: ANALYSIS | PROPOSAL | HYPOTHESIS | REPORT
   subject_id: string
@@ -320,7 +321,13 @@ TransitionCommit:
 
 `WORKSPACE_PREP`과 commit 준비 전에 만든 실행 상태는 모든 revision에서 `RunMeta`를 유지한다. workspace·commit 준비 뒤 등록한 work는 모든 revision에서 `RecordMeta`를 유지한다. `WorkExecutionState`는 여러 attempt를 묶으므로 `RecordMeta`를 쓸 때도 `meta.attempt_id=null`이다. `WorkAttempt`·`StateTransition`·`TransitionCommit`이 `RecordMeta`를 쓰고 attempt가 원인이면 `meta.attempt_id`와 본문 `attempt_id`가 같아야 한다. `RunMeta`에는 attempt 필드가 없으므로 pre-workspace record는 본문 `attempt_id`로만 연결한다. dependency 준비·사람 취소처럼 attempt 밖에서 일어난 전이는 본문과, 존재하는 경우 `meta.attempt_id`를 모두 `null`로 둔다.
 
+`parent_work_ref`는 작업의 직접 부모를 가리키는 선택 필드다. `PRO_EVIDENCE | CON_EVIDENCE`에서는 필수이며, 같은 가설과 현재 `verification_generation`의 `VERIFICATION` work exact revision을 가리켜야 한다. 나머지 work type은 이 문서가 별도 부모 관계를 정하지 않는 한 `null`이다. 자식 work의 `subject_id`와 부모 Verification의 `subject_id`는 같은 `hypothesis_id`여야 하며, 부모가 교체되거나 generation이 바뀌면 기존 자식 결과를 새 부모에 연결하지 않는다.
+
 재시도 가능한 attempt 실패는 `WorkAttempt.status=FAILED`와 오류를 보존하고 작업을 `BLOCKED`로 전환한다. 재인증·backoff·repair·예산 승인처럼 `waiting_for` 조건을 충족하면 `READY`로 이동하고 `attempt_number`가 1 증가한 새 `attempt_id`를 발급한다. 재시도할 수 없거나 한도를 사용한 때만 작업을 최종 `FAILED`로 끝낸다. 종료된 작업을 되돌리지 않는다. 사람이 같은 입력으로 새 논리 실행을 명시적으로 승인하면 이전 값보다 1 큰 `work_generation`과 새 `work_id`를 만들고, 두 작업을 restart 관계로 debug trace에 연결한다.
+
+운영 Pro/Con 자식 중 하나가 재시도 가능한 오류로 `BLOCKED`가 되면 부모 `VERIFICATION` work도 `BLOCKED`가 되고 같은 실제 대기 이유를 `waiting_for`에 기록한다. 가설 상태는 `VERIFYING`을 유지하며 final `VerificationResult`를 만들지 않는다. 자식 `BLOCKED`가 먼저 보인 짧은 구간에도 runtime은 부모의 새 attempt·합성·결과 저장을 거절하고 recovery가 부모 상태를 맞춘다. 입력·부모 generation·Debate 설정이 그대로이면 성공한 다른 자식 결과는 보존할 수 있고 실패한 역할만 새 attempt와 새 `llm_call_id`, 새 `NEW` session으로 재시도한다. 하나라도 달라지면 기존 두 자식 결과를 모두 `STALE_RESULT`로 격리하고 Pro와 Con을 다시 실행한다.
+
+자식이 복구 불가능하거나 허용된 재시도를 모두 소진하면 먼저 그 자식 work의 `FAILED`를 자기 `COMMITTED` `TransitionCommit`으로 확정한다. 이 상태가 보이는 즉시 부모 `VERIFICATION`의 새 실행·합성·결과 저장은 금지한다. 이어서 부모 work의 `FAILED`와 `HypothesisProcessState.status=FAILED`를 기존 Verification 실패 atomic 경계로 함께 확정하고, 가설은 부모의 exact failed work를 가리키며 `verification_result_ref=null`을 유지한다. 두 번째 확정 전에 중단되면 recovery가 `parent_work_ref`와 실패 자식의 commit을 읽어 전파를 끝낼 때까지 부모를 진행시키지 않는다. 취소된 자식은 retry/failover 선행 호출로 사용할 수 없고, 부모가 취소·교체·종료된 뒤 도착한 결과는 `STALE_RESULT`로 격리한다. 어느 오류도 `FALSE | HOLD`로 바꾸지 않는다.
 
 `work_generation`은 같은 분석·작업 종류·대상·입력에서 1부터 시작한다. 일반 retry와 resume에서는 바꾸지 않고, 종료 상태 뒤 사람이 승인한 명시적 restart에서만 1 증가한다. `dedupe_key`는 `analysis_id`, `work_type`, `subject_id`, `work_generation`, 정렬된 입력의 `record_id + content_hash`, 적용한 설정·정책 revision을 canonical JSON으로 만든 SHA-256 값이다. `attempt_id`, 시각과 worker 이름은 넣지 않는다. 같은 generation과 key의 요청이 다시 오면 새 작업을 만들지 않고 기존 `work_id`와 현재 상태를 반환한다. 입력 revision·적용 설정·승인된 generation이 바뀌면 새 `dedupe_key`와 새 `work_id`를 만든다.
 
@@ -339,8 +346,8 @@ TransitionCommit:
 | `STATIC_NORMALIZE` | Orchestration runtime | Static Fact Normalizer | `StaticFactBundle` |
 | `HYPOTHESIS_PROPOSAL` | global registration runtime | Hypothesis·Verification·Chaining 출력 검증 runtime | schema-valid `HypothesisProposal[]` |
 | `CONTEXT_RETRIEVAL` | 허용된 Agent Runtime | Context Retrieval Service | `CodeContextResponse` |
-| `PRO_EVIDENCE` | Verification runtime | Pro Agent | supporting `EvidenceClaim[]` |
-| `CON_EVIDENCE` | Verification runtime | Con Agent | counter `EvidenceClaim[]` |
+| `PRO_EVIDENCE` | Verification runtime | Pro Agent | exact `EvidenceAgentResult(role=PRO)` |
+| `CON_EVIDENCE` | Verification runtime | Con Agent | exact `EvidenceAgentResult(role=CON)` |
 | `VERIFICATION` | Orchestration의 배정 뒤 Verification runtime | Verification runtime | final `VerificationResult` |
 | `DYNAMIC_REPRO` | Verification의 제안 뒤 Runtime Validator가 호출을 허가하고 Sandbox Controller가 정책을 승인 | Sandbox Controller·Runner runtime | 요구사항 비교가 연결된 `DynamicReproductionResult` |
 | `PRIMITIVE_UPDATE` | Verification 또는 Gate-qualified admission runtime | Primitive 저장 runtime | 새 `Primitive` revision |
@@ -530,7 +537,8 @@ Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 
 - `result_kind`와 `candidate_result_ref`는 `SAVE_RESULT`에서 필수이고 다른 action에서는 `null`이다. `candidate_result_ref.data_kind`는 `result_kind`와 같고 `candidate_result_ref.record_id`에는 저장 runtime이 미리 발급한 결과 revision ID가 있어야 한다.
 - `candidate_result_ref.content_hash`는 미리 발급한 ID를 포함해 canonical serialization한 결과 후보 전체의 hash다. 후보 record는 read-only staging 영역에 두며 action decision이 생긴 뒤 수정하거나 같은 `stored_data_id`·`record_id`에 다른 bytes를 넣지 않는다. candidate ref도 action `input_refs`에 정확히 한 번 포함한다. staging record는 `TransitionCommit.state=COMMITTED` 전에는 일반 결과 조회나 다음 단계에서 보이지 않는다.
 - `SCHEMA`는 result kind에 맞는 schema와 필수 필드를, `AUTHORITY`는 result kind의 등록된 생산 역할과 `requested_by`를 검사한다. `IDENTITY`·`REVISION`·`STATE`는 모든 candidate의 analysis, current `work_ref`·active attempt·input refs와 hash를 검사하고, `RecordMeta` candidate이면 workspace·commit·hypothesis·`meta.attempt_id`까지 정확히 일치하는지 검사한다.
-- 핵심 registry 항목은 `verification_result -> VerificationResult -> VERIFICATION`, `primitive -> Primitive -> VERIFICATION`, `chaining_result -> ChainingResult -> CHAINING`, `environment_requirements -> EnvironmentRequirements -> VERIFICATION`, `reproduction_plan -> ReproductionPlan -> VERIFICATION`, `dynamic_reproduction_result -> DynamicReproductionResult -> SANDBOX`, `cwe_label -> CWELabel -> CWE_LABELING`, `technical_evidence_review -> TechnicalEvidenceReview -> TECHNICAL_GATE`, `rule_scope_impact_review -> RuleScopeImpactReview -> RULE_SCOPE_GATE`, `report_draft -> ReportDraft -> REPORTER`다. 앞 값은 `result_kind`·`data_kind`, 가운데 값은 검사할 schema, 뒤 값은 유일한 생산 역할이다. 다른 result kind도 versioned result-owner registry에 정확히 한 schema와 생산 역할을 등록해야 하며, broad requester 표만으로 저장 권한을 얻지 않는다.
+- 핵심 registry 항목은 `pro_evidence_result -> EvidenceAgentResult(role=PRO) -> PRO`, `con_evidence_result -> EvidenceAgentResult(role=CON) -> CON`, `verification_result -> VerificationResult -> VERIFICATION`, `primitive -> Primitive -> VERIFICATION`, `chaining_result -> ChainingResult -> CHAINING`, `environment_requirements -> EnvironmentRequirements -> VERIFICATION`, `reproduction_plan -> ReproductionPlan -> VERIFICATION`, `dynamic_reproduction_result -> DynamicReproductionResult -> SANDBOX`, `cwe_label -> CWELabel -> CWE_LABELING`, `technical_evidence_review -> TechnicalEvidenceReview -> TECHNICAL_GATE`, `rule_scope_impact_review -> RuleScopeImpactReview -> RULE_SCOPE_GATE`, `report_draft -> ReportDraft -> REPORTER`다. 앞 값은 `result_kind`·`data_kind`, 가운데 값은 검사할 schema, 뒤 값은 유일한 생산 역할이다. 다른 result kind도 versioned result-owner registry에 정확히 한 schema와 생산 역할을 등록해야 하며, broad requester 표만으로 저장 권한을 얻지 않는다.
+- `result_kind=pro_evidence_result | con_evidence_result`이면 candidate의 role, `evidence_work_id`, `meta.attempt_id`, `llm_call_id`, `parent_work_id`, `verification_generation`, `debate_input_hash`가 current child work·성공 attempt·호출·부모 Verification과 정확히 일치해야 한다. 다른 역할의 claim이나 상대 역할 record가 입력 경로에 있으면 `AUTHORITY_DENIED` 또는 `CROSS_ROLE_INPUT_DENIED`로 저장하지 않는다.
 - `result_kind=verification_result`이면 `SCHEMA | REVISION | STATE`는 가설의 모든 `ValidationCheck.validation_id`와 candidate의 `ValidationCheckResult.validation_id`가 중복 없이 set-equal인지, 모든 `ValidationCheckResult.completion=COMPLETE`인지, 각 결과의 `evidence_refs`가 하나 이상인지 확인한다. `INCOMPLETE` 항목이 하나라도 있으면 final candidate를 `COMMITTED`하지 않는다. 모든 `FalsificationQuestion.question_id`도 정확히 한 번 처리되어야 하며 사용한 근거는 현재 `workspace_id + commit_id`의 저장 record여야 한다. 운영 분석은 독립 Pro/Con work가 모두 정상 종료되어 exact output이 action `input_refs`에 있어야 한다. 일부 Context 조회 오류가 있어도 제한 retry·대체 조회·다른 정상 근거로 이 조건을 완료했다면 final candidate를 검사할 수 있지만, 필수 Context 또는 운영 Pro/Con을 확보하지 못했다면 final candidate를 `COMMITTED`하지 않는다. 이 경우 retry 가능 work는 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지한다. 더 시도할 수 없으면 같은 atomic transition에서 work와 `HypothesisProcessState`를 `FAILED`로 끝내며 runtime이 `HOLD`를 대신 만들지 않는다. Runtime Validator는 구조·reference·완료 상태만 검사한다. final `TRUE` 근거의 의미적 충분성과 코드·실행 근거 연결은 Technical Evidence Gate가 exact final TRUE revision을 대상으로 별도로 검토한다. `FALSE | HOLD`는 Technical Gate 입력이 아니며, 구조 검사를 통과했다는 사실이 Gate 승인을 의미하지 않는다.
 - `VerificationResult.verdict=TRUE`이면 현재 가설의 핵심 공격 경로와 필요한 조건을 연결하는 하나 이상의 `supporting_evidence`가 필수다. 각 claim은 실제 저장 근거와 같은 `workspace_id + commit_id`의 코드 위치를 가져야 하며 오류·gap record를 근거로 사용할 수 없다.
 - `VerificationResult.verdict=FALSE`이면 `falsification_results`에 실제 `question_id`, `outcome=DISPROVED`, 하나 이상의 `evidence_refs`가 있는 항목이 필수이고 `verdict_rationale`이 그 질문과 근거를 연결해야 한다. 오류·timeout·빈 출력만 있는 후보는 `SCHEMA` check를 `FAIL`로 만들어 저장하지 않으며 runtime이 다른 verdict를 만들어 주지 않는다.
@@ -850,6 +858,18 @@ EvidenceClaim:
   code_locations: [CodeLocation]
   limitations: [string]
 
+EvidenceAgentResult:
+  meta: RecordMeta
+  role: PRO | CON
+  parent_work_id: string
+  evidence_work_id: string
+  verification_generation: integer
+  llm_call_id: string
+  debate_input_hash: string
+  evidence: [EvidenceClaim]
+  summary: string
+  limitations: [string]
+
 CandidateRef:
   candidate_id: string
   candidate_type: BYPASS | ALTERNATE_PATH | IMPACT_ESCALATION
@@ -902,6 +922,9 @@ VerificationResult:
   verification_mode: BASIC | CONDITIONAL_DEBATE | ALWAYS_DEBATE
   debate_triggers: [string]
   debate_skip_reason: string | null
+  debate_input_hash: string | null
+  pro_evidence_ref: StoredDataRef | null
+  con_evidence_ref: StoredDataRef | null
   supporting_evidence: [EvidenceClaim]
   counter_evidence: [EvidenceClaim]
   falsification_results: [FalsificationResult]
@@ -929,6 +952,16 @@ VerificationResult:
 플레이북 후보는 R6 검증·반박·플레이북 담당이 작성하고, trusted playbook registry runtime이 schema와 revision을 검사해 immutable record로 등록한다. Verification work를 등록하는 trusted runtime은 versioned 적용 규칙에 따라 지원 유형과 일치하는 current `TYPE_SPECIFIC` revision을 선택하고, 적용 가능한 유형별 플레이북이 없으면 current `COMMON` revision을 선택한다. Agent가 실행 도중 임의로 다른 revision을 선택할 수 없다.
 
 `VerificationResult.playbook_ref`는 실제 검증에 사용한 exact `VerificationPlaybook.record_id`와 `content_hash`를 가리킨다. Verification Agent의 직접 검증, `PRO_EVIDENCE`, `CON_EVIDENCE`, final Verification 합성 호출 및 `SAVE_RESULT(result_kind=verification_result)`는 모두 해당 Verification work에 고정된 동일한 `playbook_ref`를 사용해야 한다. Runtime Validator는 각 action의 `input_refs`, 각 LLM 호출의 `LLMCallSpec.context_refs`, 최종 `VerificationResult.playbook_ref` 및 `SAVE_RESULT.input_refs`가 work의 `WorkExecutionState.input_refs`에 고정된 reference와 동일한 `record_id`·`content_hash`를 사용하는지 검사한다. 이후 플레이북에 새 revision이 생겨도 과거 `VerificationResult`는 자신이 실제 사용한 기존 revision을 계속 가리킨다.
+
+`debate_input_hash`는 Pro와 Con이 함께 받은 공통 검증 입력을 canonical JSON으로 만든 SHA-256 값이다. 공통 입력에는 ACTIVE `VerificationAssignment`, exact 가설, 코드·Context·정적 근거 reference, 반증 질문, 검증 항목, exact 플레이북 revision, versioned Debate 설정과 예산 profile을 포함한다. 역할별 system instruction, 시각, worker 이름, `attempt_id`, `llm_call_id`와 session ID는 넣지 않는다. 따라서 두 역할의 prompt는 달라도 같은 사실·설정 묶음을 받았는지 비교할 수 있다.
+
+`EvidenceAgentResult`는 수정할 수 없는 역할별 결과 record다. `role=PRO`이면 `evidence`의 모든 `source_role`은 `PRO`, `role=CON`이면 모두 `CON`이어야 한다. 한 결과 안의 `claim_id`는 중복될 수 없고 `summary`는 비어 있을 수 없다. 찾은 근거가 없다면 빈 `evidence`와 그 사실·확인 범위를 설명하는 `summary`·`limitations`를 저장하며 근거를 만들어 내지 않는다. `parent_work_id`는 현재 generation의 부모 `VERIFICATION.work_id`, `evidence_work_id`는 결과를 확정한 역할별 자식 work ID, `verification_generation`은 부모가 속한 현재 가설 generation, `meta.attempt_id`는 그 자식의 성공 attempt ID와 같아야 한다. `llm_call_id`는 결과를 만든 성공 호출 하나와 같아야 한다. 자식 work의 일반 `input_hash`는 역할별 template까지 포함하므로 Pro와 Con이 다를 수 있지만, 두 결과의 `debate_input_hash`는 반드시 같다. 자식 work의 `output_refs`와 해당 `LLMInvocationResult.parsed_output_ref` 및 `LLMInvocationLog.parsed_output_ref`가 이 exact result revision을 단방향으로 가리킨다. 결과가 invocation record나 종료 work revision을 다시 가리키지 않으므로 content hash 순환을 만들지 않는다.
+
+운영 `purpose=PRODUCTION`은 항상 `verification_mode=ALWAYS_DEBATE`이며 `debate_input_hash`, `pro_evidence_ref`, `con_evidence_ref`가 모두 필수다. 평가 실행에서 실제 Debate를 수행한 `ALWAYS_DEBATE` 또는 trigger가 발생한 `CONDITIONAL_DEBATE`도 세 필드가 모두 필수다. 평가용 `BASIC` 또는 trigger가 발생하지 않은 `CONDITIONAL_DEBATE`는 세 필드를 모두 `null`로 두고, 후자는 비어 있지 않은 `debate_skip_reason`을 남긴다. 필수 reference 하나라도 없으면 final 결과를 저장하지 않는다.
+
+두 evidence reference는 각각 COMMITTED `EvidenceAgentResult(role=PRO)`와 `EvidenceAgentResult(role=CON)` exact revision을 가리켜야 한다. 두 결과는 같은 analysis·workspace·commit·hypothesis, 같은 부모 Verification `work_id`, 같은 `verification_generation`, 같은 `debate_input_hash`를 가져야 하며 서로 다른 `evidence_work_id`, `meta.attempt_id`, `llm_call_id`와 LLM log에 연결되어야 한다. final Verification 합성용 `LLMCallSpec.context_refs`와 `SAVE_RESULT.input_refs`에는 이 두 exact result reference를 각각 한 번 포함한다. final `supporting_evidence`와 `counter_evidence`는 이 두 결과와 Verification의 추가 근거를 출처별로 보존해 합성하며, 다른 generation·입력의 결과를 섞으면 `STALE_RESULT`, Pro/Con 입력에 상대 역할 결과가 섞이면 `CROSS_ROLE_INPUT_DENIED`로 거절한다.
+
+`EvidenceAgentResult`는 새 record schema다. `WorkExecutionState.parent_work_ref`를 Pro/Con에 필수로 만드는 변경과 `VerificationResult`의 세 Debate 연결 필드는 기존 운영 결과의 허용 조건을 바꾸므로 각 record의 새 MAJOR schema로 배포한다. 이전 MAJOR record는 감사 기록으로 보존할 수 있지만 새 운영 Gate·Primitive·Reporter 입력으로 자동 승격하거나 새 필드를 추정해 채우지 않는다.
 
 `EvidenceClaim.claim_id`는 한 `VerificationResult` 안에서 유일하다. 각 claim은 실제 저장 근거를 가리키는 `evidence_refs`를 하나 이상 가져야 하며, 코드 주장이라면 현재 `workspace_id + commit_id`의 `code_locations`도 하나 이상 가져야 한다. `source_role`은 claim을 작성한 역할이며 근거의 출처를 대신하지 않는다. supporting 목록에는 `VERIFICATION | PRO`, counter 목록에는 `VERIFICATION | CON`만 허용한다.
 
@@ -1375,6 +1408,8 @@ LLMInvocationRequest:
 
 Pro와 Con의 `SESSION` check는 독립성을 선택값이 아닌 필수 불변조건으로 검사한다. `requested_by=PRO | CON`인 `CALL_LLM` action은 `session_mode=NEW`, exact `LLMCallSpec.agent_role`이 같은 역할, `LLMCallSpec.session_policy=NEW`, `parent_session_ref=null`이어야 한다. Pro와 Con은 서로 다른 `llm_call_id`, `LLMCallSpec`, `ActionRequest`, `ActionDecision`과 실제 `session_ref`를 가져야 한다. provider가 session ID를 주지 않아도 adapter가 호출마다 서로 다른 불투명 local `session_ref`를 발급한다. 공통 가설·코드 fact는 각각의 `context_refs`에 넣을 수 있지만 상대 역할의 output·결론·session을 parent 또는 context로 넣을 수 없다.
 
+Pro/Con prompt는 trusted prompt builder가 역할별 template과 허용된 공통 입력 reference만으로 만든 immutable `prompt_payload_ref`를 사용한다. Agent가 prompt payload나 `context_refs`를 직접 늘릴 수 없다. 상대 역할의 output·결론·session·action/decision은 `context_refs`, `prompt_payload_ref`, predecessor/parent, result-store 조회, retrieval/tool 요청 또는 tool output 어느 경로로도 전달하지 않는다. runtime은 provider 호출 직전과 결과 저장 전에 이 경계를 검사하고 위반하면 `CROSS_ROLE_INPUT_DENIED`로 두 호출의 합류를 중단한다.
+
 Pro/Con retry와 failover도 역할 경계를 넘지 않는다. 선행 호출은 같은 역할의 바로 앞 실패 호출일 수 있지만 후속 호출도 `NEW` session과 새 `llm_call_id`·spec·action·decision을 사용하고 `parent_session_ref=null`을 유지한다. 상대 역할의 predecessor, session, parsed output 또는 action decision을 연결하면 `SESSION` check를 `FAIL`로 만들고 `INVOCATION_CHAIN_INVALID` 또는 `ACTION_NOT_ALLOWED`를 기록한다.
 
 ```yaml
@@ -1431,7 +1466,7 @@ LLMInvocationLog:
   redaction_result: APPLIED | NOT_REQUIRED | FAILED
 ```
 
-`LLMInvocationLog.action_decision_ref`와 `call_spec_ref`는 request와 같아야 한다. log의 role·profile·model·session·prompt template·context는 request와 spec에서 바뀌지 않으며 실제 adapter가 선택한 값과 차이가 있으면 호출을 실패 처리한다. log의 `parsed_output_ref.record_id`는 exact Gate review 또는 ReportDraft revision을 가리킨다. output은 log를 역참조하지 않는다. stage action decision의 후속 revision `outcome_refs`에 log와 final output을 각각 한 번 포함해 두 record를 같은 실행에 연결한다.
+`LLMInvocationLog.action_decision_ref`와 `call_spec_ref`는 request와 같아야 한다. log의 role·profile·model·session·prompt template·context는 request와 spec에서 바뀌지 않으며 실제 adapter가 선택한 값과 차이가 있으면 호출을 실패 처리한다. log의 `parsed_output_ref.record_id`는 역할이 만든 exact structured output revision을 가리킨다. Pro/Con은 각각 exact `EvidenceAgentResult`, Gate는 exact Gate review, Reporter는 exact `ReportDraft`를 가리킨다. output은 log를 역참조하지 않는다. 해당 action decision의 후속 revision `outcome_refs`에 log와 final output을 각각 한 번 포함해 두 record를 같은 실행에 연결한다.
 
 새로운 독립 호출은 `retry_count=0`이고 두 선행 호출 reference가 모두 `null`이다. 같은 provider/model에서 일반 retry를 실행하면 `retry_of_llm_call_id`가 바로 앞의 허용된 실패 호출을 가리키고 `failover_from_llm_call_id=null`이다. provider 또는 model을 바꾸는 failover이면 반대로 `failover_from_llm_call_id`만 바로 앞의 허용된 실패 호출을 가리킨다. 두 필드는 동시에 값을 가질 수 없다.
 

@@ -202,6 +202,12 @@ Finding이 없는 packet은 `FINDING_NOT_CREATED` 사유를 가진 내부 blocke
 | action 허가 뒤 Gate 입력 revision이 바뀜 | provider 호출 직전 exact refs·current state 재검사 | `UNUSED -> EXPIRED`, 호출 금지와 새 action 요구 |
 | Runtime Validator가 공식 정책 의미를 다시 판단 | Rule Scope output의 생산 역할과 validator 검사 범위 | 정책 해석 금지, Gate의 `UNCERTAIN + DENY` 구조만 확인하고 Reporter 차단 |
 | Pro와 Con이 같은 session 또는 parent를 공유 | 역할별 `SESSION`, `NEW`, `parent_session_ref=null`, 서로 다른 call/session ID | `ACTION_NOT_ALLOWED` 또는 `INVOCATION_CHAIN_INVALID`, 두 호출 모두 독립 action으로 다시 요청 |
+| Pro 또는 Con prompt·context·조회·tool 결과에 상대 역할 output을 넣음 | trusted prompt payload, context refs, predecessor/parent, result-store query와 tool trace | `CROSS_ROLE_INPUT_DENIED`, 호출·결과 저장·합류 금지 |
+| final Verification에 Pro 또는 Con exact result reference가 빠짐 | mode별 `debate_input_hash`, `pro_evidence_ref`, `con_evidence_ref` 조합 | `SAVE_RESULT` 거절, 부모 Verification 대기 또는 실패 처리 |
+| Pro·Con 결과의 부모·generation·공통 입력 hash가 서로 다름 | 두 `EvidenceAgentResult`와 current parent Verification exact 비교 | `STALE_RESULT`, 두 결과를 섞지 않고 current 입력으로 다시 실행 |
+| 입력이 바뀌었는데 이전에 성공한 Pro 또는 Con 결과를 재사용 | 가설·Context·코드·playbook·Debate·budget revision과 `debate_input_hash` | `STALE_RESULT`, 두 역할 모두 새 child work 또는 current generation 실행 요구 |
+| Pro/Con child가 `BLOCKED`인데 부모 Verification은 `RUNNING`으로 계속됨 | `parent_work_ref`, child와 parent state, `waiting_for` | 상태 변경 거절, 부모도 같은 실제 이유로 `BLOCKED`와 가설 `VERIFYING` 강제 |
+| Pro/Con child가 최종 실패했는데 부모나 가설을 계속 진행 | child·parent의 committed transition과 `HypothesisProcessState` | 자식 실패를 먼저 확정해 부모 진행 차단, 이어 부모와 가설 `FAILED`를 함께 확정; final result·Gate 금지 |
 | `SAVE_RESULT` 검사 뒤 candidate bytes를 바꿈 | `candidate_result_ref.stored_data_id`와 `content_hash`, current attempt·state | decision `EXPIRED` 또는 save `DENY`, 변조 후보 미저장 |
 | 실행 오류만 든 `FALSE` 후보를 저장 | `result_kind`, VERIFICATION 생산자, named `DISPROVED`의 `question_id`·`evidence_refs` | `SAVE_RESULT` 거절, 오류 상태 유지와 verdict 자동 생성 금지 |
 | 다른 역할이 만든 결과 후보를 저장 | result-owner registry와 `requested_by`, candidate meta | `AUTHORITY_DENIED`, candidate 격리와 최신 pointer 미연결 |
@@ -251,6 +257,11 @@ Finding이 없는 packet은 `FINDING_NOT_CREATED` 사유를 가진 내부 blocke
 | N19 | 필수 Context 또는 운영 Pro/Con을 확보하지 못했는데 final `VerificationResult`를 저장하려 함 | final 저장 거절; retry 가능이면 work `BLOCKED`, 허용된 재시도 소진·복구 불가이면 `FAILED` |
 | N20 | 가설의 검증 항목이 결과에서 빠지거나 중복되거나 `INCOMPLETE`인데 final `VerificationResult`를 저장하려 함 | `validation_id` 집합과 완료·근거 조건 불일치로 저장 거절; retry 가능이면 work `BLOCKED`, 아니면 가설까지 `FAILED` |
 | N21 | Verification work만 `FAILED`로 끝내고 가설을 계속 `VERIFYING`으로 두거나, 실패 가설에 과거 final result를 연결하려 함 | 같은 atomic transition에서 `HypothesisProcessState.status=FAILED`, exact failed work ref, `verification_result_ref=null` 강제; 불일치 상태는 분석 종료 차단 |
+| N22 | 운영 final Verification에 Pro 또는 Con result reference가 하나만 있거나 둘 다 없음 | `SAVE_RESULT` 거절; exact 두 결과를 모으기 전 verdict·Gate 생성 금지 |
+| N23 | 서로 다른 부모·generation·`debate_input_hash`의 Pro·Con 결과를 합침 | `STALE_RESULT`; current 입력으로 두 역할을 다시 실행 |
+| N24 | Pro가 Con output을, Con이 Pro output을 prompt·context·조회·tool 경로로 읽음 | `CROSS_ROLE_INPUT_DENIED`; 해당 호출과 결과를 합류에 사용하지 않음 |
+| N25 | 한 child가 retry 가능한 `BLOCKED`인데 부모 Verification이 계속 실행됨 | 부모도 같은 `waiting_for`로 `BLOCKED`, 가설은 `VERIFYING`; final 결과 없음 |
+| N26 | 한 child가 복구 불가능하게 실패했는데 부모·가설이 종료되지 않음 | 자식 `FAILED` commit이 부모 진행을 막고 recovery가 부모·가설 `FAILED` 확정을 완료; `verification_result_ref=null` |
 
 ## 남는 위험
 

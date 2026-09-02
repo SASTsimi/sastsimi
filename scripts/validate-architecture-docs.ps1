@@ -108,6 +108,79 @@ foreach ($name in $requiredContractNames) {
     }
 }
 
+$requiredDebateContractNames = @(
+    'EvidenceAgentResult:',
+    'parent_work_ref:',
+    'parent_work_id:',
+    'evidence_work_id:',
+    'verification_generation:',
+    'llm_call_id:',
+    'debate_input_hash:',
+    'pro_evidence_ref:',
+    'con_evidence_ref:'
+)
+foreach ($name in $requiredDebateContractNames) {
+    if (-not $contractText.Contains($name)) {
+        Add-Failure "missing R4 Pro/Con join contract name: $name"
+    }
+}
+
+$workExecutionBlock = [regex]::Match($contractText, '(?ms)^WorkExecutionState:\s*(.*?)^WorkAttempt:').Groups[1].Value
+if (-not $workExecutionBlock.Contains('parent_work_ref:')) {
+    Add-Failure 'WorkExecutionState is missing parent_work_ref'
+}
+
+$evidenceAgentResultBlock = [regex]::Match($contractText, '(?ms)^EvidenceAgentResult:\s*(.*?)^CandidateRef:').Groups[1].Value
+$requiredEvidenceAgentResultFields = @(
+    'role:',
+    'parent_work_id:',
+    'evidence_work_id:',
+    'verification_generation:',
+    'llm_call_id:',
+    'debate_input_hash:',
+    'evidence:',
+    'summary:',
+    'limitations:'
+)
+foreach ($field in $requiredEvidenceAgentResultFields) {
+    if (-not $evidenceAgentResultBlock.Contains($field)) {
+        Add-Failure "EvidenceAgentResult is missing field: $field"
+    }
+}
+
+$verificationResultBlock = [regex]::Match($contractText, '(?ms)^VerificationResult:\s*(.*?)^```').Groups[1].Value
+$requiredVerificationDebateFields = @(
+    'debate_input_hash:',
+    'pro_evidence_ref:',
+    'con_evidence_ref:'
+)
+foreach ($field in $requiredVerificationDebateFields) {
+    if (-not $verificationResultBlock.Contains($field)) {
+        Add-Failure "VerificationResult is missing Pro/Con join field: $field"
+    }
+}
+
+$requiredDebateContractMarkers = @(
+    '운영 `purpose=PRODUCTION`은 항상 `verification_mode=ALWAYS_DEBATE`이며 `debate_input_hash`, `pro_evidence_ref`, `con_evidence_ref`가 모두 필수다',
+    '평가용 `BASIC` 또는 trigger가 발생하지 않은 `CONDITIONAL_DEBATE`는 세 필드를 모두 `null`',
+    'final Verification 합성용 `LLMCallSpec.context_refs`와 `SAVE_RESULT.input_refs`에는 이 두 exact result reference를 각각 한 번 포함한다',
+    '`pro_evidence_result -> EvidenceAgentResult(role=PRO) -> PRO`',
+    '`con_evidence_result -> EvidenceAgentResult(role=CON) -> CON`',
+    '`result_kind=pro_evidence_result | con_evidence_result`',
+    '`LLMInvocationResult.parsed_output_ref` 및 `LLMInvocationLog.parsed_output_ref`',
+    '각 record의 새 MAJOR schema로 배포한다',
+    '운영 Pro/Con 자식 중 하나가 재시도 가능한 오류로 `BLOCKED`가 되면 부모 `VERIFICATION` work도 `BLOCKED`',
+    '먼저 그 자식 work의 `FAILED`를 자기 `COMMITTED` `TransitionCommit`으로 확정',
+    '부모 work의 `FAILED`와 `HypothesisProcessState.status=FAILED`를 기존 Verification 실패 atomic 경계로 함께 확정',
+    'trusted prompt builder',
+    '`CROSS_ROLE_INPUT_DENIED`'
+)
+foreach ($marker in $requiredDebateContractMarkers) {
+    if (-not $contractText.Contains($marker)) {
+        Add-Failure "missing or weakened R4 Pro/Con join rule: $marker"
+    }
+}
+
 $transitionCommitBlock = [regex]::Match($contractText, '(?ms)^TransitionCommit:\s*(.*?)^```').Groups[1].Value
 $requiredTransitionCommitFields = @(
     'output_refs:',
@@ -198,7 +271,8 @@ $requiredErrorCodes = @(
     'STALE_RESULT',
     'TRANSITION_INCOMPLETE',
     'RECOVERY_FAILED',
-    'INTERRUPTED'
+    'INTERRUPTED',
+    'CROSS_ROLE_INPUT_DENIED'
 )
 foreach ($code in $requiredErrorCodes) {
     if (-not $resultText.Contains($code)) {
@@ -223,8 +297,13 @@ $negativeScenarioMarkers = @(
     '동적 `BLOCKED + POLICY_BLOCKED` 결과를 공통 work `BLOCKED`에 연결',
     '동적 종료 결과와 work·전문 상태 pointer가 다름',
     '분석 종료 시 `RUNNING` work나 `PREPARED` journal이 남음',
-    '`COMMITTED` marker 투영 전에 취소·retry 전이가 경쟁'
-    '모순된 `ALLOW`가 Reporter 호출을 요청'
+    '`COMMITTED` marker 투영 전에 취소·retry 전이가 경쟁',
+    '모순된 `ALLOW`가 Reporter 호출을 요청',
+    'Pro 또는 Con prompt·context·조회·tool 결과에 상대 역할 output을 넣음',
+    'final Verification에 Pro 또는 Con exact result reference가 빠짐',
+    'Pro·Con 결과의 부모·generation·공통 입력 hash가 서로 다름',
+    'Pro/Con child가 `BLOCKED`인데 부모 Verification은 `RUNNING`으로 계속됨',
+    'Pro/Con child가 최종 실패했는데 부모나 가설을 계속 진행'
 )
 foreach ($marker in $negativeScenarioMarkers) {
     if (-not $securityText.Contains($marker)) {
@@ -1011,6 +1090,9 @@ if ($gitCheckExitCode -ne 0) {
 Write-Output "Markdown files: $($markdownFiles.Count)"
 Write-Output "Mermaid blocks: $($diagramBlocks.Count) canonical / $($wikiDiagramBlocks.Count) Wiki"
 Write-Output "R4-02 required contract names: $($requiredContractNames.Count)"
+Write-Output "R4 Pro/Con result fields: $($requiredEvidenceAgentResultFields.Count)"
+Write-Output "R4 Verification join fields: $($requiredVerificationDebateFields.Count)"
+Write-Output "R4 Pro/Con join rules: $($requiredDebateContractMarkers.Count)"
 Write-Output "R4-02 TransitionCommit atomic fields: $($requiredTransitionCommitFields.Count)"
 Write-Output "R4-02 exact output bindings: $($requiredBindingRules.Count)"
 Write-Output "R4-02 review remediation rules: $($reviewRemediationPatterns.Count)"
