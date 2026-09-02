@@ -42,7 +42,7 @@
 - Orchestration Agent는 proposal 검증·전역 가설 등록·Verification 배정까지만 담당한다.
 - trusted runtime은 배정 결과를 ACTIVE `VerificationAssignment`로 저장하며, 같은 역할의 다른 identity가 아니라 그 논리 owner만 가설 내부 action을 요청할 수 있다.
 - Verification Agent는 배정된 가설의 Context·Pro/Con·동적 재현·근거 종합·판정·material child·Technical Gate 제출·REVISE·Chaining handoff를 소유한다. REVISE는 같은 assignment의 새 VERIFICATION work와 `TERMINAL -> VERIFYING` 전이로 처리한다.
-- Runtime Validator는 action 권한, exact revision, 상태, 예산, provider/session과 Gate/Reporter 전제를 강제한다. Sandbox의 image·command·file·network·resource·cleanup 정책은 Sandbox Controller가 전담한다.
+- Runtime Validator는 action 권한, exact revision, 상태, 예산, provider/session과 Gate/Reporter 전제를 강제한다. Sandbox의 상세 enforcement 결정은 이 ADR의 결정 범위가 아니며 [ADR-002](./ADR-002-sandbox-policy-enforcement.md)에서 별도로 관리한다.
 
 ### 2. Research 제거와 Chaining 한정
 
@@ -62,7 +62,7 @@
 
 ## Security and operational consequences
 
-- Verification ownership은 실행 허가 권한이 아니므로 기존 `ActionRequest`·`ActionDecision`과 state/revision/budget 검사를 유지한다. `RUN_SANDBOX` 호출 허가 뒤에는 Sandbox Controller의 세부 정책 검사를 별도로 통과해야 한다.
+- Verification ownership은 실행 허가 권한이 아니므로 기존 `ActionRequest`·`ActionDecision`과 state/revision/budget 검사를 유지한다. `RUN_SANDBOX` 이후의 정책 판정·실행·결과 조립 경계는 ADR-002를 따른다.
 - Chaining child와 parent의 lifecycle·verdict는 독립이다.
 - Gate 전·비정상 Gate·오래된 revision TRUE가 chain ancestor가 되는 경로를 차단한다.
 - HOLD는 확인된 취약점이나 PROVIDED 능력으로 해석하지 않는다.
