@@ -58,6 +58,16 @@ static_fact_bundle:
 
 한 도구가 `FAILED | SKIPPED`여도 다른 도구의 사용 가능한 사실을 버리지 않는다. 이때 전체 묶음에는 해당 `ToolRunResult`, `DataGap`, 필요한 `AnalysisError`가 함께 있어야 한다.
 
+## source reachability 판단
+
+버그클래스(예: SQL Injection, Path Traversal)를 먼저 정해야 codeql·opengrep이 어떤 rule로 `source`/`sink` 후보(`CodeFact.fact_kind: SOURCE | SINK`)를 찾을지가 정해진다. rule을 정하지 않으면 후보 자체가 생기지 않는다.
+
+codeql·opengrep이 rule 매치로 만든 source 후보는 "이 위치에 이런 패턴이 있다"는 사실만 담을 뿐, 실제로 공격자가 조작 가능한 유저 입력에서 그 위치까지 도달 가능한 경로가 있는지는 담지 않는다. 이 경로는 AST가 만든 call·data-flow 그래프로 판단한다.
+
+- 요청 진입점(`ROUTE_BINDINGS`로 식별된 handler 파라미터 등)에서 source 후보까지 이어지는 `CodeRelation(relation_kind=DATA_FLOW)` 경로가 있으면 그 관계를 `StaticFactBundle.data_flow_candidates`에 근거로 남긴다.
+- 이 판단은 source 후보를 지우거나 걸러내지 않는다. 경로를 찾지 못해도 후보 자체는 유지하며, `data_flow_candidates`에 해당 근거가 없다는 사실이 "reachability 미확인"이라는 정보로 남는다. call graph는 dynamic dispatch·reflection 등으로 불완전할 수 있으므로 이를 "도달 불가능 확정"으로 자동 해석하지 않는다.
+- 이렇게 reachability 근거가 붙은(또는 붙지 않은) source 후보를 LLM 탐색·체이닝이 `HypothesisProposal`을 만들 때 반증·검증 근거로 사용한다.
+
 ## submodule, Git LFS와 생성 파일
 
 - 분석 범위에 submodule이 필요하면 `Repository Loader`가 명시적으로 초기화한다. 실패한 submodule과 영향 범위는 `DataGap`으로 남긴다.
