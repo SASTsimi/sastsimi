@@ -36,9 +36,11 @@ Pro와 Con은 서로의 결과를 받지 않는 별도 NEW session이다. trigge
 
 `initial_verdict`는 중간 판단이며 운영 Gate·Primitive·보고서 입력으로 사용할 수 없습니다. final verdict는 독립 Pro/Con과 필요한 동적 결과를 종합한 최종 판단입니다.
 
-지원 취약점 유형 목록은 R8의 versioned evaluation corpus에서 확정합니다. 목록이 확정되기 전이나 미지원 유형을 검증할 때는 source, sink, 방어 로직, 반증 질문, 필요한 정적·동적 근거와 HOLD 조건을 담은 공통 플레이북의 exact revision을 사용합니다. 유형별 플레이북도 같은 구조로 작성하며 각 revision을 덮어쓰지 않습니다.
+지원 취약점 유형 목록은 R8의 versioned evaluation corpus에서 확정합니다. 목록이 확정되기 전이나 적용 가능한 유형별 플레이북이 없는 경우에는 공통 플레이북을 사용합니다. 플레이북 후보는 R6 담당이 작성하고, 신뢰할 수 있는 runtime이 형식과 revision을 검사해 변경 불가능한 record로 등록합니다.
 
-최종 `VerificationResult.playbook_ref`는 실제 사용한 플레이북의 정확한 `record_id`와 `content_hash`를 가리킵니다. 같은 reference를 final Verification 합성 호출과 결과 저장 요청에도 사용합니다. 이후 플레이북이 변경되더라도 과거 판정은 당시 사용한 기존 플레이북 revision을 계속 가리킵니다.
+검증 작업을 등록할 때 trusted runtime이 사용할 정확한 플레이북 revision을 선택해 작업 입력에 고정합니다. 직접 검증, Pro 검토, Con 검토, 최종 판정과 결과 저장은 모두 처음 고정한 동일한 revision을 사용합니다. 최종 `VerificationResult.playbook_ref`에는 실제 사용한 플레이북의 정확한 `record_id`와 `content_hash`가 기록됩니다.
+
+검증 도중 새 플레이북 revision이 등록돼도 진행 중인 검증에는 섞지 않습니다. 단순 재시도는 처음 고정한 revision을 유지하며, 새 revision을 적용하려면 새로운 Verification work 또는 verification generation을 만들어야 합니다.
 
 각 반증 질문에는 `question_id`가 있습니다. 검증 결과는 질문마다 `DISPROVED`, `NOT_DISPROVED`, `INCONCLUSIVE` 중 하나와 근거를 남깁니다. 실제 근거가 있는 `DISPROVED`가 하나 이상일 때만 `FALSE`가 가능합니다. `NOT_DISPROVED`는 반증하지 못했다는 뜻일 뿐 가설을 증명하지 않습니다.
 
