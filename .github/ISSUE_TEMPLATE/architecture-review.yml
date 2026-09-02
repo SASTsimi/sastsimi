@@ -80,7 +80,7 @@ body:
     attributes:
       label: 공통 체크리스트
       options:
-        - label: 새 Research/bypass/impact 주장은 새 가설로 재검증됩니다.
+        - label: 새 우회·대체 경로·영향 확대 주장은 VERIFICATION 또는 CHAINING origin의 새 가설로 등록해 전체 검증을 다시 받습니다.
         - label: Reporter 이전에 Technical Gate와 Rule Scope Impact Gate가 모두 존재합니다.
         - label: 공식 정책이 없으면 UNCERTAIN + DENY입니다.
         - label: 오류와 미지원 상태를 FALSE로 변환하지 않습니다.

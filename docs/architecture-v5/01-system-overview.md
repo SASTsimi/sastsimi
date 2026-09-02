@@ -20,25 +20,25 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 | 2 | 저장소 clone과 commit checkout | `CodeWorkspace` |
 | 3 | AST parse와 SAST 도구 병렬 실행 | raw AST/SAST outputs |
 | 4 | 정적 사실 정규화 | `StaticFactBundle` |
-| 5 | 분석 실행 시작 | Orchestration run |
+| 5 | 초기 가설 생성 실행 | Orchestration이 Hypothesis work 시작 |
 | 6 | 저비용 가설 생성 모델 호출 | constrained invocation |
-| 7 | 출력 schema 검증 | `HypothesisProposal[]` 또는 `INVALID_OUTPUT` |
-| 8 | 가설별 검증 작업 할당 | `VulnerabilityHypothesis` + Verification Agent |
-| 9 | 위치 기반 코드 문맥 조회 | `CodeContextRequest/Response` |
-| 10 | BASIC 또는 조건부 Pro/Con | supporting/counter evidence |
+| 7 | 출력 검증과 전역 등록 | schema-valid `HypothesisProposal(origin=INITIAL)` 또는 `INVALID_OUTPUT` |
+| 8 | 가설별 Verification owner 할당 | `VulnerabilityHypothesis` + ACTIVE `VerificationAssignment` |
+| 9 | Verification이 위치 기반 코드 문맥 조회 | `CodeContextRequest/Response` |
+| 10 | 운영 Verification이 Pro/Con을 독립 병렬 실행 | supporting/counter evidence |
 | 11 | 초기 판정 | `TRUE | FALSE | HOLD` |
-| 12 | 필요 시 제한/전체 동적 재현 | `LIMITED_REPRO | FULL_REPRO`, PoC evidence |
-| 13 | 최종 판정 | final `VerificationResult` |
-| 14 | `TRUE/HOLD` Primitive DB 갱신 | TRUE의 PROVIDED / HOLD의 REQUIRED primitives |
-| 15 | 조건부 우회·영향·연계 조사 | `TRUE/HOLD`, Technical revision 또는 Primitive match 기반 `ResearchResult` |
-| 16 | 새 주장 환류 | new hypothesis proposal |
-| 17 | 취약점 유형 라벨링 | CWE candidate with evidence |
-| 18 | 기술 근거 검토 | `TechnicalEvidenceReview` |
-| 19 | 공식 규칙·범위·영향 검토 | `RuleScopeImpactReview` |
-| 20 | 조건 충족 시 보고서 작성 | `ReportDraft` |
-| 21 | 결과와 디버깅 정보 저장 | result/resource/log/PoC/error records |
-| 22 | 모든 가설에 반복 | bounded parallel hypothesis processing |
-| 23 | 사람의 최종 검토 | disclose, revise, hold, or close |
+| 12 | Verification이 환경 요구사항·모드·`ReproductionPlan`을 결정하고 runtime 허가 뒤 R7 Sandbox가 정책 판정·실제 환경 비교·일치 시 exact 공격 단계 실행·결과 조립 | `COMMITTED EnvironmentRequirements/ReproductionPlan`, exact 정책·환경 비교·`SandboxStepLog`·PoC refs가 연결된 `DynamicReproductionResult` |
+| 13 | 최종 판정과 material claim 분리 | final `VerificationResult`, optional `origin=VERIFICATION` proposal |
+| 14 | 판정별 분기 | FALSE terminal / HOLD REQUIRED 즉시 admission / TRUE CWE 진행 |
+| 15 | TRUE 기술 근거 검토 | `TechnicalEvidenceReview` |
+| 16 | Technical `REVISE` 보완 loop | same Verification, 새 Verification/CWE revision |
+| 17 | Technical `ACCEPT` TRUE의 공식 규칙·범위·영향 검토 | `RuleScopeImpactReview` |
+| 18 | Gate-qualified TRUE PROVIDED admission | exact Gate provenance를 가진 `Primitive` |
+| 19 | current HOLD 또는 Gate-qualified TRUE 체이닝 | `ChainingResult`; TRUE+TRUE는 앞 능력과 뒤 TRUE의 exact 선행 조건을 방향성 있게 연결 |
+| 20 | 체이닝·검증 중 새 주장 전역 등록 | `origin=CHAINING | VERIFICATION` proposal, 새 Verification 배정 |
+| 21 | 조건 충족 시 보고서 초안 작성 | `ReportDraft` |
+| 22 | 결과·디버깅 저장과 모든 가설 반복 | bounded parallel processing과 run records |
+| 23 | 사람의 최종 검토 | disclose, revise, withhold, or more validation |
 
 ## 주요 실행 흐름
 
@@ -48,26 +48,36 @@ Repository Loader -> CodeWorkspace
   └─ SAST Tools ─┴─> StaticFactBundle
                            │
                            v
-Orchestration -> Hypothesis Agent -> schema validation -> hypotheses
-                                                        │ per hypothesis
+Orchestration -> Hypothesis Agent -> trusted validation and registration
+                                                        │ assign only
                                                         v
-       on-demand context -> Verification -> optional dynamic reproduction
+       on-demand context -> Verification owner -> Pro/Con -> optional dynamic
                                       │
-                                      ├─> Primitive DB update
-                                      └─> Research -> new hypothesis -> Orchestration
-                                      │
-                                      v
-        CWE -> Technical Evidence Gate -> Rule Scope Impact Gate -> Reporter
-                                                                  │
-                                                                  v
-                                                         Result Stores -> Human
+                   ┌──────────────────┼────────────────────┐
+                   v                  v                    v
+                 FALSE               HOLD                 TRUE
+              terminal      REQUIRED -> Chaining     CWE -> Technical Gate
+                                                         │ REVISE
+                                                         └-> same Verification
+                                                         │ ACCEPT
+                                                         v
+                                                  Rule Scope Impact Gate
+                                                         │ normal pass
+                                                         v
+                                                PROVIDED -> Chaining
+
+Verification material claim -> origin=VERIFICATION proposal ┐
+Chaining match -> origin=CHAINING proposal ------------------┴-> trusted registration
+                                                               -> Orchestration assigns Verification
+
+Gate-qualified result -> Reporter -> Result Stores -> Human
 ```
 
-Technical Evidence Gate의 `REVISE`가 restriction, 누락 근거 또는 추가 재현을 요구하면 같은 가설의 Verification 또는 Research 단계로 돌아간다. Research와 Primitive match가 만든 새 material claim은 기존 결과에 붙여 확정하지 않고 8단계부터 전체 검증을 새로 거친다.
+Technical Evidence Gate의 `REVISE`는 같은 가설의 Verification owner에게 직접 돌아간다. Verification은 필요한 Context·Pro/Con·정적·동적 근거를 보완하고 새 `VerificationResult` 및 필요한 `CWELabel` revision으로 Gate를 다시 요청한다. Verification 또는 Chaining이 만든 새 material claim은 기존 결과에 붙여 확정하지 않고 trusted registration 뒤 8단계부터 전체 검증을 새로 거친다.
 
 ## 구성 요소와 책임
 
-Orchestration Agent는 분석 계획과 다음 작업을 제안·조정하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM runtime validator가 schema, 상태 전이, 예산, 병렬성, sandbox 정책, provider/session 정책, Gate 순서와 Reporter 호출 전제조건을 강제한다. 모든 LLM 출력은 validation 전까지 비신뢰 입력이다.
+Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배정을 제안·조정하지만 가설 내부 다음 작업이나 enforcement authority를 갖지 않는다. 가설 내부 다음 작업은 Verification owner가 선택한다. 신뢰 경계 안의 비-LLM Runtime Validator가 schema, 호출 권한, 상태 전이, 예산, 병렬성, provider/session 정책, Gate 순서와 Reporter 호출 전제조건을 강제한다. Sandbox의 image·command·file·network·resource·cleanup 세부 정책은 Sandbox Controller가 한곳에서 검사한다. 모든 LLM 출력은 validation 전까지 비신뢰 입력이다.
 
 | 구성 요소 | 책임 | 금지 경계 |
 |---|---|---|
@@ -75,16 +85,19 @@ Orchestration Agent는 분석 계획과 다음 작업을 제안·조정하지만
 | AST/SAST runners | 구조·규칙 일치·경로 후보 수집 | 취약점 최종 판정 |
 | Static Fact Normalizer | 공통 entity/location/path 표현 생성 | 증거가 없는 의미 확정 |
 | Context Retrieval Service | 같은 `workspace_id`와 `commit_id`에서 제한된 추가 문맥 조회 | 작업공간 밖 무제한 repository dump |
-| Orchestration Agent | 가설 lifecycle, 병렬성, 예산과 loop 관리 | Finding 공개 결정 |
+| Orchestration Agent | proposal 검증·전역 가설 등록·Verification 배정·가설 간 병렬성 | 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정 또는 Finding 공개 |
 | Hypothesis Agent | schema-constrained 가설 후보 생성 | verdict·Finding·exploitability 확정 |
-| Verification Agent | 증거 종합, 판정, restriction/capability 기록 | 새 주장의 무검증 승격 |
+| Verification Agent | 가설 내부 Context·Pro/Con, 환경 요구사항·동적 모드·`ReproductionPlan`, 환경 차이 수용·판정·REVISE·Gate·Chaining 흐름과 material child proposal | Sandbox 직접 실행·동적 결과 생산, runtime 검사 우회 또는 새 주장의 무검증 승격 |
 | Pro/Con Agents | 독립적인 성립·반박 근거 조사 | 동일 session 공유 |
-| Sandbox Controller | 승인된 Docker 제한/전체 재현 | host 또는 허용 범위 밖 실행 |
-| Primitive DB | REQUIRED와 PROVIDED 연결 | 작업 queue 또는 자동 Finding 생성 |
-| Research Agent | 우회·대체 경로·영향·chain 후보 제안 | verdict, CWE, Gate, report 확정 |
+| Sandbox Controller | Verification이 만든 exact plan·requirements closure의 보안 정책 검사와 exact 허용·차단 판정 생산 | 요구사항·동적 모드·계획·최종 verdict 변경 또는 정책 미검사 실행 |
+| Sandbox Runner | Controller가 승인한 exact 계획으로 환경 구성·요구사항 비교·Health Check를 수행하고 필수 일치 시 공격 단계·step log·PoC 실행 사실 생산 | 요구사항 변경·차이 임의 수용·허용되지 않은 fallback·계획 밖 명령 또는 최종 verdict 판단 |
+| Sandbox Result Assembler | 같은 분석·가설·계획 closure와 같은 R7 실행 attempt의 정책·환경 비교·log·PoC·cleanup reference를 `DynamicReproductionResult`로 조립 | 다른 계획·요구사항·실행 attempt 혼합 또는 reference 존재만으로 성공 판단 |
+| Primitive DB | HOLD REQUIRED와 Gate-qualified TRUE PROVIDED의 ACTIVE exact revision 검색 | 작업 queue, Gate 전 TRUE admission 또는 자동 Finding 생성 |
+| Chaining Agent | TRUE+HOLD·TRUE+TRUE Primitive matching과 chained proposal | 일반 research, dynamic, Gate, verdict, CWE, report 확정 |
 | Technical Evidence Gate | 기술적 연결성과 handoff 품질 검토 | Verification verdict 직접 변경 |
 | Rule Scope Impact Gate | 공식 정책·scope·실질 impact·전달 권한 검토 | 공식 자료 없는 추정 승인 |
 | Reporter Agent | 통과한 결과의 보고서 초안 작성 | 공개 또는 제출 |
+| Runtime Validator | action의 schema·권한·순서·예산·실행 범위 검사 | 취약점·CWE·정책 의미 판단 |
 | Result Stores | 결과·로그·PoC·오류·debug 저장 | secret와 불필요한 전체 코드 저장 |
 | Human Reviewer | 최종 수정·보류·공개 결정 | — |
 
@@ -96,15 +109,30 @@ Orchestration Agent는 분석 계획과 다음 작업을 제안·조정하지만
 - impact: `SUFFICIENT | INSUFFICIENT | UNCERTAIN`
 - report permission: `ALLOW | DENY`
 - 보고서 생성: `ReportProcessState.status = NOT_REQUESTED | DRAFTED | FAILED`
-- 사람 검토: `ReportDraft.human_review_state = PENDING | APPROVED | REJECTED`
+- 사람 검토: `HumanReviewDecision.decision = DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`
 
 한 축의 값으로 다른 축을 암묵적으로 추론하지 않는다. 예를 들어 기술적으로 `TRUE`여도 out-of-scope이거나 실질 영향이 부족하면 Reporter를 호출하지 않는다.
 
+Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제안한다. 비-LLM Runtime Validator가 역할·schema·exact revision·상태·예산·일반 도구·경로·provider·두 Gate 순서·보고·공개 조건을 검사해 `ActionDecision=ALLOW | DENY`를 저장한다. `RUN_SANDBOX`의 ALLOW는 exact plan·current requirements를 Sandbox Controller에 전달할 수 있다는 뜻이며 환경 일치, Docker 세부 정책 통과나 재현 성공을 뜻하지 않는다. Controller가 Sandbox 정책을 통과시킨 exact 계획만 Runner가 받고, Runner는 필수 환경 조건이 맞을 때만 공격 단계를 실행한다. 이 검사는 환경 의미·취약점 판정이나 정책 해석을 대신하지 않는다.
+
 ## 병렬성과 종료 조건
 
-- AST와 복수 SAST 실행은 병렬화할 수 있다.
-- 서로 독립된 가설의 Verification은 예산 범위에서 병렬화할 수 있다.
-- 한 가설의 Pro/Con은 조건이 충족될 때 서로 독립된 NEW session으로 병렬화할 수 있다.
-- 같은 가설의 `workspace_id`와 `commit_id`, initial verdict 전후, 두 Gate의 순서와 Reporter 조건은 의존성을 지킨다.
-- 모든 초기·파생 가설이 종료 상태에 도달하고 저장이 끝나면 Orchestration run을 닫는다.
+- AST와 복수 SAST 실행은 tool별 `work_id`와 `attempt_id`로 병렬화할 수 있다. 정규화는 모든 기대 작업의 종료 상태를 확인하고, 일부 실패면 `DataGap`과 오류를 포함한 `PARTIAL` 여부를 명시한다.
+- 서로 독립된 가설의 Verification은 가설별 예산 범위에서 병렬화할 수 있다. 한 가설의 실패가 다른 가설을 자동 취소하지 않는다.
+- 운영(`PRODUCTION`)에서는 한 가설의 Pro/Con을 서로 다른 work와 NEW session으로 항상 병렬화하고 Verification이 두 결과를 확인해 합류한다. 예산 부족이나 실행 오류로 한쪽이 없으면 final verdict를 만들지 않고 work를 중단한다. `BASIC | CONDITIONAL_DEBATE`와 skip은 격리된 평가(`EVALUATION`)에서만 허용한다.
+- 같은 가설의 `workspace_id`와 `commit_id`, final Verification·CWELabel, Technical Gate, Rule Scope Gate와 Reporter 순서는 의존성을 지킨다.
+- 실행 상태는 `WorkExecutionState`가 관리하고 가설 판정·Gate 결과·보고서·사람 검토 상태와 분리한다. 같은 `dedupe_key` 요청은 한 `work_id`로만 반영한다.
+- `COMMITTED` marker와 종료 상태 pointer가 같은 결과를 가리킨 뒤에만 다음 단계를 호출한다. `PREPARED`, 취소된 attempt, 오래된 revision과 늦은 결과는 다음 단계에서 읽지 않는다.
+- 모든 초기·파생 가설이 종료 상태에 도달하고 atomic 저장·복구가 끝나면 Orchestration run을 닫는다.
 - chaining은 깊이·개수·토큰·시간·중복 fingerprint 제한을 넘으면 새 가설을 만들지 않고 중단 이유를 기록한다.
+
+최종 분석 상태는 다음 의미를 갖는다.
+
+| 상태 | 의미 |
+|---|---|
+| `COMPLETE` | 필요한 작업이 모두 확정 종료되고 최종 결과 묶음을 만들 수 있음 |
+| `PARTIAL` | 신뢰할 수 있는 결과가 하나 이상 있지만 일부 도구·가설·보완 작업이 실패·제한되어 누락과 오류를 함께 저장함 |
+| `FAILED` | clone/checkout 실패, workspace 기준 상실 또는 복구 실패로 신뢰 가능한 분석 결과를 만들 수 없음 |
+| `CANCELLED` | 사용자가 전체 분석을 중단했고 새 작업 생성을 멈춤 |
+
+어떤 실행 상태도 취약점 `FALSE`를 직접 만들지 않는다.

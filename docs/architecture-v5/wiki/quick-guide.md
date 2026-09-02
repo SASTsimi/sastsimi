@@ -13,9 +13,10 @@
 - 정적 분석은 취약점 판단기가 아니라 LLM이 사용할 사실 수집 계층이다.
 - 저비용 가설 Agent는 ‘아직 최종 결과가 아님’을 뜻하는 `HYPOTHESIS_ONLY / NON_FINAL` 형식만 출력한다.
 - 필요한 코드는 같은 `workspace_id`와 `commit_id`에서 코드 요소·위치·경로를 기준으로 조회한다.
-- 검증(`Verification`)은 공격 제한 조건, 우회, 필요·제공 능력과 영향 후보까지 확인한다.
-- 기본값은 `CONDITIONAL_DEBATE`이며 Pro/Con은 필요할 때 독립 NEW session으로 실행한다.
-- `TRUE/HOLD`의 조건과 능력은 연계 탐색용 조건 저장소(`Primitive DB`)에서 연결하고 추가 탐색(`Research`) Agent가 새 가설 후보를 만든다.
+- Orchestration은 가설을 검증·등록하고 Verification에 배정하는 데서 가설별 역할이 끝난다.
+- 검증(`Verification`)은 한 가설의 Context·찬반, 환경 요구사항·동적 재현 모드·`ReproductionPlan`, 환경 차이 수용·판정·Gate 보완·연계 handoff를 관리한다. Runtime Validator는 exact requirements·plan과 Sandbox 호출 전제를 확인하고, R7 Controller가 세부 정책을 검사한다. Runner는 실제 환경을 요구사항과 비교하고 필수 항목이 맞을 때만 공격 단계를 실행해 결과를 반환한다.
+- 운영 기본값은 `ALWAYS_DEBATE`이며 모든 유효 가설에서 Pro/Con을 독립 NEW session으로 실행한다. BASIC과 조건부 debate는 격리된 평가 전용이다.
+- HOLD의 필요 조건은 즉시 REQUIRED가 된다. TRUE는 두 Gate를 정상 통과한 exact revision만 PROVIDED가 된다. TRUE+TRUE는 앞 PROVIDED가 뒤 TRUE의 exact 선행 조건을 충족할 때만 연결한다.
 - 기술 근거 검토와 공식 정책·영향 검토를 분리한다.
 - 공식 프로그램 정책이 없으면 rule/scope는 `UNCERTAIN`, report permission은 `DENY`다.
 - Membership session과 API는 공통 provider adapter의 선택지다.
@@ -25,10 +26,12 @@
 
 ```text
 Repository → Repository Loader → CodeWorkspace → AST and SAST → StaticFactBundle
-→ constrained hypotheses → per-hypothesis Verification
-→ on-demand context → BASIC or conditional Pro/Con → optional Docker
-→ TRUE/FALSE/HOLD → Primitive DB and Research → new hypothesis loop
-→ CWE → Technical Gate → Rule Scope Impact Gate
+→ constrained hypotheses → trusted registration → Orchestration assigns Verification
+→ Verification owns context → Pro/Con → EnvironmentRequirements and ReproductionPlan
+→ runtime approval → R7 environment comparison → exact attack execution → Verification TRUE/FALSE/HOLD
+→ HOLD REQUIRED → Chaining
+→ TRUE → CWE → Technical Gate → Rule Scope Impact Gate
+→ gate-qualified TRUE PROVIDED → Chaining → new hypothesis loop
 → ReportDraft when allowed → Human decision
 ```
 

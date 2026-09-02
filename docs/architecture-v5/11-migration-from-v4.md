@@ -20,7 +20,7 @@
 |---|---|
 | 같은 코드 버전 연결 | 실행별 clone과 `commit_id`로 facts, context, verdict, PoC 연결 |
 | AST/SAST 정규화 | LLM이 사용할 entity/location/path/auth 사실 계층 |
-| 역할 분리된 LLM 분석 | Hypothesis, Verification, Pro/Con, Research, 두 Gate, Reporter |
+| 역할 분리된 LLM 분석 | Hypothesis, Verification, Pro/Con, Chaining, 두 Gate, Reporter |
 | 격리된 동적 검증 | Docker `LIMITED_REPRO | FULL_REPRO` |
 | 조건부 연계 탐색 | Primitive DB match가 새 가설만 생성 |
 | 사람의 공개 승인 | 자동 결과는 FindingCandidate/ReportDraft에 머묾 |
@@ -49,8 +49,8 @@
 | 선택 code fragment 전달 | 같은 workspace와 commit의 on-demand location retrieval |
 | Semantic Judge/Synthesis | bypass-aware Verification Agent |
 | Proof Router/Resolver | VerificationResult의 evidence/gap/restriction |
-| confirmed/held 목록 | REQUIRED/PROVIDED Primitive DB records |
-| chaining 내부 탐색 | 별도 Research Agent + 새 가설 환류 |
+| confirmed/held 목록 | HOLD REQUIRED, Gate-qualified TRUE PROVIDED와 current `PrimitiveIndexState` records |
+| chaining 내부 탐색 | matching 전용 Chaining Agent + 새 가설 환류 |
 | 하나의 LLM Gate | Technical Evidence Gate + Rule Scope Impact Gate |
 | membership 중심 연결 | Membership/API 공통 `LLMProviderAdapter` |
 | 암묵적 대화 유지 | configurable `NEW | RESUME | AUTO` |
@@ -90,10 +90,11 @@ v4 TRUE | FALSE | PENDING
 3. constrained Hypothesis output validation
 4. Verification과 BASIC/CONDITIONAL debate
 5. Docker LIMITED/FULL reproduction
-6. Primitive DB와 Research loop
+6. ACTIVE `VerificationAssignment` 기반 material claim과 새 VERIFICATION work를 만드는 Technical `REVISE` loop
 7. CWE와 Technical Evidence Gate
-8. official `ProgramPolicyRecord` 수집 경계와 Rule Scope Impact Gate
-9. provider adapters, session policy와 Logging Proxy/parser
-10. Reporter, result stores와 human review UI
+8. official `ProgramPolicyRecord` 수집 경계, Rule Scope Impact Gate와 Gate-qualified PROVIDED admission
+9. Primitive DB와 TRUE+HOLD, 앞 TRUE PROVIDED→뒤 TRUE exact precondition Chaining loop
+10. provider adapters, session policy와 Logging Proxy/parser
+11. Reporter, result stores와 human review UI
 
 각 단계는 구현 위협 모델, 평가 corpus, resource budget과 rollback을 별도 승인받는다. 현재 문서는 runtime migration 완료를 주장하지 않는다.

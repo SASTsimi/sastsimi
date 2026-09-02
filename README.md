@@ -33,8 +33,8 @@ NOT_IMPLEMENTED
 첫 번째 목표는 코드를 바로 구현하는 것이 아니라 다음을 먼저 완성하는 것입니다.
 
 1. LLM 중심 분석 파이프라인의 단계와 역할 경계를 팀 전체가 동일하게 이해합니다.
-2. 정적 분석, 가설 생성, 검증, 동적 재현, 추가 탐색(`Research`), 두 검토 단계(`Gate`)와 보고 사이의 입출력 약속을 명확히 합니다.
-3. 보류된 가설의 부족 조건과 확인된 공격 능력을 연결하는 연계 탐색(`Primitive DB`와 `chaining`) 규칙을 검토합니다.
+2. 정적 분석, 가설 생성, Verification 중심 검증, 동적 재현, 두 검토 단계(`Gate`)와 보고 사이의 입출력 약속을 명확히 합니다.
+3. 보류된 가설의 부족 조건과 두 Gate를 통과한 공격 능력을 연결하는 연계 탐색(`Primitive DB`와 `Chaining Agent`) 규칙을 검토합니다.
 4. 회원 로그인·API 방식의 LLM 연결(`provider`), 로그인·대화 상태(`session`), 실행 기록(`logging`)과 비용·평가 정책을 구현 가능한 수준으로 구체화합니다.
 5. 파트 간 모순과 Blocker/High 이슈를 제거한 뒤 전체 설계를 승인합니다.
 6. 승인된 설계를 기준으로 구현 계획과 검증 계획을 별도 수립합니다.
@@ -46,9 +46,9 @@ NOT_IMPLEMENTED
 쉽게 나누면 다음과 같습니다.
 
 1. **코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다.
-2. **가설 생성과 검증**: LLM이 취약점 가능성을 제안하고 찬성·반대 근거를 확인합니다.
-3. **필요한 경우 재현**: Docker 격리 환경에서 제한적으로 공격 흐름을 재현합니다.
-4. **연계 가능성 탐색**: 확인된 조건과 능력을 연결해 새 가설을 만듭니다.
+2. **가설 생성과 검증**: Orchestration이 가설을 등록해 Verification에 배정하고, Verification이 찬성·반대 근거와 필요한 후속 작업을 관리합니다.
+3. **필요한 경우 재현**: Verification 판단에 따라 Docker 격리 환경에서 제한적으로 공격 흐름을 재현합니다.
+4. **판정별 연계 탐색**: HOLD의 필요 조건은 즉시, TRUE의 제공 능력은 두 Gate를 모두 통과한 뒤에만 연결해 새 가설을 만듭니다.
 5. **근거·정책 검토와 초안 작성**: 두 Gate를 통과한 결과만 보고서 초안으로 만듭니다.
 6. **사람의 최종 판단**: 사람이 결과와 디버깅 정보를 보고 공개 여부를 결정합니다.
 
@@ -61,22 +61,26 @@ Repository input
 → AST parse와 SAST 병렬 실행
 → StaticFactBundle
 → constrained HypothesisProposal
-→ 가설별 Verification과 on-demand code retrieval
-→ BASIC 또는 conditional Pro/Con
-→ 필요 시 Docker LIMITED_REPRO / FULL_REPRO
+→ Orchestration이 가설을 등록하고 가설별 Verification owner를 배정
+→ Verification이 on-demand context와 운영 기본 Pro/Con 병렬 검증 관리
+→ 필요 시 Verification이 환경 요구사항과 LIMITED_REPRO / FULL_REPRO ReproductionPlan 생성
+→ Runtime Validator가 exact 요구사항·계획 reference, 호출 권한·상태·예산을 확인해 Sandbox 호출 허가
+→ Sandbox Controller가 세부 안전 정책을 한 번 검사
+→ Sandbox Runner가 실제 환경·Health Check를 요구사항과 비교하고 필수 항목이 맞을 때만 공격 단계 실행
+→ Sandbox Result Assembler가 exact R6 계획 묶음과 같은 R7 실행 시도의 정책·환경 비교·로그·PoC·정리 참조를 결과로 묶어 반환
 → final TRUE / FALSE / HOLD
-→ Primitive DB와 Research Agent
-→ 새 material claim은 새 가설로 재검증
-→ CWE labeling
-→ Technical Evidence Gate
-→ Rule Scope Impact Gate
+→ FALSE는 terminal
+→ HOLD는 REQUIRED Primitive로 즉시 Chaining
+→ TRUE는 CWE → Technical Evidence Gate → Rule Scope Impact Gate
+→ 두 Gate를 정상 통과한 exact TRUE revision만 PROVIDED Primitive로 Chaining
+→ Verification 또는 Chaining의 새 material claim은 새 가설로 등록·재검증
 → 조건 충족 시 ReportDraft
 → Human final review and disclosure decision
 ```
 
-정적 분석 도구는 취약점 최종 판정자가 아닙니다. 함수·클래스 같은 코드 요소(`entity`), 코드 위치, 입력 시작점(`source`), 위험 동작 지점(`sink`), 호출·데이터 흐름과 인증·권한 정보를 제공합니다. 가설(`Hypothesis`)과 추가 탐색(`Research`) 결과는 아직 사람이 검토할 취약점 결과(`Finding`)가 아닙니다. 새로운 공격 주장은 전체 검증을 다시 거칩니다.
+정적 분석 도구는 취약점 최종 판정자가 아닙니다. 함수·클래스 같은 코드 요소(`entity`), 코드 위치, 입력 시작점(`source`), 위험 동작 지점(`sink`), 호출·데이터 흐름과 인증·권한 정보를 제공합니다. 가설(`Hypothesis`)과 체이닝 후보는 아직 사람이 검토할 취약점 결과(`Finding`)가 아닙니다. 새로운 공격 주장은 새 가설로 등록되어 전체 검증을 다시 거칩니다.
 
-LLM Agent의 출력은 그대로 믿지 않습니다. token·시간 한도, 상태가 바뀌는 순서, 격리 실행 정책, LLM 연결·로그인 정책, Gate 순서와 Reporter 호출 조건은 프로그램 내부 규칙 검사기(`runtime validator`)가 확인해야 합니다.
+LLM Agent의 출력은 그대로 믿지 않습니다. 프로그램 내부 규칙 검사기(`Runtime Validator`)는 token·시간 한도, 호출 권한, 상태가 바뀌는 순서, LLM 연결·로그인 정책, Gate 순서와 Reporter 호출 조건을 확인합니다. 격리 실행의 image·명령·파일·네트워크·자원·정리 정책은 Sandbox Controller가 전담하고, Sandbox Runner는 승인된 계획만 실행합니다.
 
 ## 설계 검토 운영 방식
 
@@ -128,16 +132,18 @@ main  ← Architecture v5 candidate baseline
 
 | 역할 | 담당자 | 핵심 책임 |
 |---|---|---|
-| LLM 탐색·체이닝 | 배승원 ([@baeseungwon1010](https://github.com/baeseungwon1010)) | 검증할 취약점 후보 생성, 탐색 방식, 취약점 연결과 token 최적화 |
+| LLM 탐색·체이닝 | 배승원 ([@baeseungwon1010](https://github.com/baeseungwon1010)) | 최초 취약점 후보 생성, HOLD REQUIRED 및 Gate-qualified TRUE PROVIDED의 방향성 matching과 token 최적화 |
 | 정적분석·컨텍스트 | 김나연 ([@zv9uvr](https://github.com/zv9uvr)) | AST·CodeQL·OpenGrep 결과 정리, 코드 위치·호출 흐름과 LLM용 context 조립 |
-| 단독 구현·통합 개발 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@v1sion](https://github.com/v1sion)) | 전체 모듈의 구현 가능성, 계약 준수 테스트와 통합 계획 검토 |
-| PM·아키텍처·워크플로 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@v1sion](https://github.com/v1sion)) | 전체 구조, 공통 입출력 계약, 사람·LLM 경계, 병렬·직렬 흐름과 오류 정책 |
+| 단독 구현·통합 개발 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 모듈의 구현 가능성, 계약 준수 테스트와 통합 계획 검토 |
+| PM·아키텍처·워크플로 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 구조, 공통 입출력 계약, 사람·LLM 경계, 병렬·직렬 흐름과 오류 정책 |
 | Gate·Finding·보고서 | 김혜령 ([@kimhr8463](https://github.com/kimhr8463)) | 검증 근거·정책 범위 검토, 내부 Finding과 보고서 초안, 사람 검토 전달 준비 |
-| 검증·반박·플레이북 | 임채민 ([@UltraPeachKeen](https://github.com/UltraPeachKeen)) | 찬성·반대 근거 종합, `TRUE/FALSE/HOLD` 판정과 취약점별 검증 절차 |
-| 동적검증·Sandbox | 조근석 ([@Potatonion](https://github.com/Potatonion)) | Docker 기반 제한 재현, PoC와 sandbox 실행 결과 검증 |
-| 데이터·평가·예산 | 성병찬 ([@gitterable](https://github.com/gitterable)) | 평가 데이터와 품질 지표, token·시간·재시도·반복 제한 |
+| 검증·반박·플레이북 | 임채민 ([@UltraPeachKeen](https://github.com/UltraPeachKeen)) | 가설별 Context·찬반, 환경 요구사항·LIMITED/FULL `ReproductionPlan`, 환경 차이 수용 여부, 최종 판정·Gate 보완 |
+| 동적검증·Sandbox | 조근석 ([@Potatonion](https://github.com/Potatonion)) | Controller 정책 판정, Runner의 환경 구성·요구사항 비교·exact 계획 실행, Health Check·log·PoC 상세 artifact와 result 조립 |
+| 데이터·평가·예산 | 성병찬 ([@gitterable](https://github.com/gitterable)) | 평가 데이터·품질 지표와 예산 profile 설계; 실제 예산 강제는 trusted runtime 담당 |
 
 Gate는 Verification verdict를 변경하거나 공개를 승인하지 않습니다. Reporter는 보고서 초안만 작성하며, 사람만 최종 공개를 결정합니다.
+
+동적 재현의 역할 연결은 `R6 Verification의 환경 요구사항·모드·계획 결정 → R4 Runtime Validator의 exact reference·호출 전제 확인 → R7 Sandbox Controller의 세부 정책 검사·판정 저장 → R7 Sandbox Runner의 실제 환경 비교 → 필수 항목 일치 시 exact plan 공격 단계 실행 → 비-LLM Result Assembler의 exact reference 조립 → R6의 최종 판정`입니다. R7은 환경 차이·실행 불가능·정책 차단을 기록하지만 요구사항·허용 대체값·모드·계획·최종 verdict를 바꾸지 않습니다.
 
 ## 설계 초안
 

@@ -12,7 +12,7 @@
 
 1. 담당자 계정
    - #3 김나연은 `@zv9uvr`, #6 김혜령은 `@kimhr8463`, #7 임채민은 `@UltraPeachKeen`을 실제 GitHub 계정으로 사용합니다.
-   - 윤희섭 `@v1sion`은 #1·#4·#5의 공동 역할 담당자입니다. GitHub 공동 담당자(assignee) 지정 여부는 역할 확정이나 작업 시작을 막지 않습니다.
+   - 윤희섭 `@YHS-Sec`은 #1·#4·#5의 공동 역할 담당자입니다. GitHub 공동 담당자(assignee) 지정 여부는 역할 확정이나 작업 시작을 막지 않습니다.
    - 대체 검토자와 `CODEOWNERS`(파일별 자동 검토 요청 설정)는 협업 자동화를 위한 후속 개선으로 관리하며 현재 설계 검토의 Blocker로 보지 않습니다.
 2. 최종 검토·승인 담당자
    - 김태현 `@taehyeon-git`이 [전체 최종 검토 Issue #10](https://github.com/SASTsimi/sastsimi/issues/10)을 관리하고 최종 결과를 확인합니다.
@@ -37,11 +37,11 @@
 | 3 | 새 대화, 이어서 대화, 자동 선택을 어떻게 비교하고 기본 한도를 얼마로 할지 정합니다. | `NEW / RESUME / AUTO` 평가와 기본 limit |
 | 4 | LLM이 잘못된 형식으로 답했을 때 몇 번 고치게 할지와 신뢰도 평가 방법을 정합니다. | Hypothesis schema repair 횟수와 confidence 기준 |
 | 5 | 필요한 코드를 얼마나 깊고 많이 가져올 수 있는지 정합니다. | Context retrieval depth/token/request 제한 |
-| 6 | 찬성·반대 검증을 언제 실행할지와 효과를 비교할 예제 모음을 정합니다. | `CONDITIONAL_DEBATE` trigger와 비교 corpus |
+| 6 | 운영은 항상 찬성·반대 검증을 실행합니다. BASIC·조건부 방식의 비용·효과를 비교할 평가 자료와 운영 전환 합격선만 정합니다. | `ALWAYS_DEBATE` 운영 고정, BASIC/CONDITIONAL 비교 corpus와 acceptance threshold |
 | 7 | 연계 공격의 필요 조건과 확인된 능력을 어떤 단어로 기록하고 연결할지 정합니다. | Primitive vocabulary와 scope/capability matching |
-| 8 | 연계 탐색이 끝없이 늘어나지 않도록 한도를 정합니다. | Research/chain depth·count·token·time·duplicate 제한 |
+| 8 | 연계 탐색이 끝없이 늘어나지 않도록 한도를 정합니다. | Chaining depth·count·primitive 조합·token·time·duplicate 제한 |
 | 9 | Docker 이미지, 네트워크, 자원과 종료 후 정리 방법을 정합니다. | image/network/resource/cleanup 정책 |
-| 10 | 공식 프로그램 정책을 어디서 가져오고 최신 여부와 실패를 어떻게 처리할지 정합니다. | `ProgramPolicyRecord` source·freshness·failure |
+| 10 | 공식 정책의 출처별 최대 허용 나이와 확인 방법을 정합니다. 공통 처리 규칙은 이미 확정되어, 정책이 없거나 오래됐거나 최신성을 확인하지 못하면 `UNCERTAIN + DENY`입니다. | `ProgramPolicyRecord` source·freshness threshold·collector failure; `STALE | UNVERIFIED -> UNCERTAIN + DENY` 고정 |
 | 11 | 두 Gate가 사용할 질문, 보완 반복 횟수와 평가 자료를 정합니다. | Gate prompt, revision limit와 dataset |
 | 12 | LLM 호출 기록에서 비밀정보를 가리고 얼마나 보관할지 정합니다. | logging proxy/parser, redaction, retention, access control |
 | 13 | 데이터를 저장하고 버전을 바꿀 때 호환성을 어떻게 지킬지 정합니다. | serialization, schema versioning, result storage |
@@ -56,7 +56,7 @@
 | 결정 영역 | 담당 역할별 상위 Issue |
 |---|---|
 | provider/model, membership/session, 상태 저장·복구 | [R3 #4](https://github.com/SASTsimi/sastsimi/issues/4), [R4 #5](https://github.com/SASTsimi/sastsimi/issues/5) |
-| Hypothesis, Primitive, Research와 chaining 한도 | [R1 #2](https://github.com/SASTsimi/sastsimi/issues/2) |
+| Hypothesis, Primitive와 Chaining 한도 | [R1 #2](https://github.com/SASTsimi/sastsimi/issues/2) |
 | clone·checkout, static fact, location/context retrieval | [R2 #3](https://github.com/SASTsimi/sastsimi/issues/3) |
 | Verification, debate와 falsification | [R6 #7](https://github.com/SASTsimi/sastsimi/issues/7) |
 | Docker sandbox와 동적 재현 | [R7 #8](https://github.com/SASTsimi/sastsimi/issues/8) |

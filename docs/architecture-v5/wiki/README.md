@@ -6,7 +6,7 @@
 
 ## 한 문장으로
 
-AST와 SAST가 코드 사실을 모으면 LLM이 취약점 가능성을 제안합니다. 검증 Agent는 코드·찬성·반대·Docker 재현 근거를 모아 `TRUE / FALSE / HOLD`를 판정합니다. 새 공격 주장은 새 가설로 다시 검증합니다. 기술 근거와 공식 정책을 모두 확인한 결과만 보고서 초안으로 만들며, 사람만 공개를 결정합니다.
+AST와 SAST가 코드 사실을 모으면 LLM이 취약점 가능성을 제안합니다. Orchestration은 가설을 등록해 Verification에 배정하고, Verification은 코드·찬성·반대·Docker 재현·Gate 보완을 관리해 `TRUE / FALSE / HOLD`를 판정합니다. HOLD는 즉시, TRUE는 두 Gate를 모두 통과한 뒤에만 Chaining에 사용합니다. 새 공격 주장은 새 가설로 다시 검증하며 사람만 공개를 결정합니다.
 
 ## 먼저 볼 문서
 
@@ -15,9 +15,11 @@ AST와 SAST가 코드 사실을 모으면 LLM이 취약점 가능성을 제안�
 - [Agent 역할](agents.md)
 - [검증과 동적 재현](verification-and-dynamic.md)
 - [이중 LLM Gate와 보고](gate-and-reporting.md)
-- [Primitive DB와 Research](chaining.md)
+- [Primitive DB와 Chaining](chaining.md)
 - [Provider, session과 logging](providers-and-logging.md)
 - [공통 ID·상태·오류](common-contracts.md)
+- [상태·병렬 실행·재시도·복구](state-and-recovery.md)
+- [LLM·프로그램·사람의 권한 경계](authority-boundaries.md)
 - [결과와 디버깅](results.md)
 - [Mermaid 다이어그램](diagrams.md)
 

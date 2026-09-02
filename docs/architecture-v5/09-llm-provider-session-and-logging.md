@@ -24,6 +24,23 @@ Agent Runtime
 
 Agent Runtime은 역할·structured-output 요구·context reference·budget·session policy를 요청한다. Adapter는 provider별 인증·호출·오류·usage를 공통 결과로 정규화한다. Logging Proxy는 양쪽에서 노출된 요청·응답·tool trace와 실제 선택을 `LLMInvocationLog`로 연결한다.
 
+## provider 호출 전 권한 검사
+
+일반 Agent Runtime은 provider를 직접 호출하지 않고 `CALL_LLM` `ActionRequest`를 만든다. Technical Gate, Rule Scope Gate와 Reporter의 호출은 각각 `CALL_TECHNICAL_GATE`, `CALL_RULE_SCOPE_GATE`, `CREATE_REPORT_DRAFT` action이 LLM 실행까지 직접 허가하며 별도 `CALL_LLM`으로 우회하지 않는다. 모든 LLM 실행 action은 수정할 수 없는 exact `LLMCallSpec`을 입력으로 갖고 비-LLM Runtime Validator가 다음 `ActionCheck`를 수행한다.
+
+- `SCHEMA`: 요청 형식, output schema와 필수 필드
+- `AUTHORITY`: 신뢰 runtime이 붙인 실제 호출자 identity·등록 역할·요청 LLM 역할 일치
+- `IDENTITY`·`REVISION`: analysis·hypothesis·workspace·commit·input record 일치
+- `STATE`: current work, active attempt와 state version
+- `BUDGET`: token·시간·retry·repair 한도
+- `PROVIDER`: 허용 provider/model/profile과 adapter capability
+- `SESSION`: NEW/RESUME/AUTO, parent session, retry/failover 선행 호출
+- `REDACTION`: prompt와 context에 credential·절대 경로·금지 정보가 없는지
+
+모든 check가 `PASS`인 `ActionDecision=ALLOW`를 runtime이 `USED`로 claim한 뒤에만 `LLMInvocationRequest`를 만든다. 요청의 `action_decision_ref`는 그 exact claim revision, `call_spec_ref`와 `provider_profile_ref`는 검사한 exact spec과 versioned provider profile revision을 가리킨다. runtime은 provider 호출 직전에 role·model·session·context·prompt·output schema·token budget·timeout이 spec과 모두 같은지 다시 검사한다. `LLMInvocationLog`도 같은 action decision·spec·profile ref를 보존한다. 다른 action, 이전 state version, retry 또는 failover에 같은 decision을 재사용하지 않는다.
+
+저장소 텍스트나 LLM output이 provider·model·session mode·fallback·budget을 바꾸라고 요구해도 configuration 변경으로 해석하지 않는다. 요청된 값이 versioned provider policy와 다르면 `PROVIDER_PROFILE_DENIED` 또는 `UNTRUSTED_INSTRUCTION`으로 호출하지 않는다.
+
 ## 공통 adapter 책임
 
 - provider profile과 model을 명시적으로 선택
@@ -35,6 +52,8 @@ Agent Runtime은 역할·structured-output 요구·context reference·budget·se
 - retry와 failover를 새 `llm_call_id`로 식별하고 바로 앞의 허용된 실패 호출을 reference로 연결
 
 provider/model을 조용히 바꾸는 failover는 금지한다. 허용된 fallback이 있더라도 원래 실패, 새 provider/model, 이유, 새 session과 결과를 별도 `llm_call_id`로 남긴다. 같은 provider/model의 일반 retry는 `retry_of_llm_call_id`, provider/model을 바꾸는 failover는 `failover_from_llm_call_id`로 바로 앞의 허용된 실패 호출을 가리킨다. 두 reference를 동시에 사용하지 않는다.
+
+retry와 failover마다 새 `llm_call_id`의 `LLMCallSpec`, `ActionRequest`, `ActionDecision`과 `attempt_id`가 필요하다. 이전 ALLOW decision, spec 또는 provider 요청을 그대로 다시 보내는 것은 `ACTION_NOT_ALLOWED`다.
 
 선행 호출 status는 다음과 같이 제한한다.
 
@@ -49,6 +68,8 @@ provider/model을 조용히 바꾸는 failover는 금지한다. 허용된 fallba
 | `CANCELLED` | 금지 | 금지 | 사용자가 다시 요청하면 독립 호출 |
 
 retry/failover 선행 호출은 같은 분석·가설·역할의 바로 앞 호출이어야 한다. `SUCCEEDED`, `CANCELLED`, 존재하지 않는 호출, 더 이전 호출, 자기 자신과 이후 호출을 연결하면 `INVOCATION_CHAIN_INVALID`다.
+
+LLM 호출은 상위 `WorkExecutionState`의 한 attempt 안에서 실행한다. 호출이 성공하면 runtime은 structured-output 검증과 output 저장을 끝낸 뒤에만 work를 `SUCCEEDED` 또는 다음 전문 상태로 확정한다. 재시도 가능한 호출 실패라면 `WorkAttempt.status=FAILED`와 `LLMInvocationLog`를 저장하고 work는 `BLOCKED`로 이동한다. `waiting_for` 조건을 충족한 뒤 `READY -> RUNNING`으로 새 `attempt_id`를 발급한다. 재시도할 수 없거나 한도를 모두 사용한 경우에만 work를 최종 `FAILED`로 끝낸다.
 
 ## MembershipSessionAdapter
 
@@ -87,18 +108,20 @@ API 방식이 허용되어도 특정 provider를 기본값으로 확정하는 �
 | 같은 역할·같은 가설의 추가 retrieval | `RESUME` 가능 |
 | 같은 Verification의 Technical Gate revision 대응 | `RESUME` 가능 |
 | 서로 다른 hypothesis | `NEW` |
-| Pro와 Con | 각각 `NEW` |
+| Pro와 Con | `AUTO` 사용 금지, 각각 명시적 `NEW` |
 | Verification과 Technical Gate | `NEW` |
 | Technical Gate와 Rule Scope Impact Gate | `NEW` |
-| Verification과 Research | `NEW` |
+| Verification과 Chaining | `NEW` |
 | Gate와 Reporter | `NEW` |
 
 정책은 설정 가능하며 실제 결정, 이유, parent session reference를 기록한다. session reuse는 반복 context token을 줄일 수 있지만 confirmation bias와 prompt contamination을 키울 수 있으므로 품질·비용 평가 없이 광범위하게 적용하지 않는다.
 
+Pro/Con 독립성은 설정으로 완화할 수 없는 예외다. 두 역할의 `CALL_LLM` action은 `requested_by`, call spec role과 일치해야 하고 action `session_mode=NEW`, spec `session_policy=NEW`, `parent_session_ref=null`이어야 `SESSION` check를 통과한다. 두 호출은 서로 다른 `llm_call_id`와 실제 `session_ref`, 각자의 action·decision을 사용한다. provider가 session ID를 노출하지 않아도 adapter가 호출별로 서로 다른 불투명 local `session_ref`를 만든다. retry·repair·failover도 같은 역할의 새 `NEW` session으로 만들고 상대 역할의 session·output·decision을 predecessor, parent 또는 context로 사용하지 않는다.
+
 ## 역할별 모델 선택
 
 - Hypothesis Agent에는 저비용 모델 profile을 구성할 수 있다.
-- Verification, Research와 두 Gate에는 과업 위험도에 맞는 별도 profile을 구성할 수 있다.
+- Verification, Chaining과 두 Gate에는 과업 위험도에 맞는 별도 profile을 구성할 수 있다.
 - 특정 역할의 가격 등급이 정확도를 보장하지 않는다.
 - 모델·provider 변경은 versioned configuration과 evaluation 대상으로 관리한다.
 
@@ -136,8 +159,12 @@ LLM 호출 상태는 `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIM
 2. 호출할 수 없으면 `AUTH_REQUIRED` 또는 명시적 provider error를 반환한다.
 3. Orchestration은 어떤 LLM 호출 상태도 가설 `FALSE`로 바꾸지 않는다.
 4. 제한 retry, 사용자 재인증 또는 구성된 explicit fallback을 선택한다.
-5. 모든 시도는 독립 `llm_call_id`와 `attempt_id`로 저장한다.
-6. 후속 호출은 위 표에서 허용한 바로 앞의 실패 호출 reference와 1씩 증가하는 `retry_count`를 저장하며, runtime은 status·같은 분석·가설·역할·호출 순서와 순환이 없는지 검사한다.
+5. 모든 시도는 독립 `llm_call_id`와 `attempt_id`로 저장하고 같은 논리 요청의 `work_id`·`dedupe_key`는 유지한다.
+6. retry 가능한 실패는 work를 `BLOCKED`로 두고 `FAILED` attempt와 오류를 보존한다. `AUTH_REQUIRED`는 재인증, `RATE_LIMITED`는 backoff, `INVALID_OUTPUT`은 제한된 repair 조건을 `waiting_for`와 함께 기록한다.
+7. 조건을 충족하면 work를 `READY`로 전환하고 새 `attempt_id`에서 후속 호출을 시작한다. 후속 호출은 위 표에서 허용한 바로 앞의 실패 호출 reference와 1씩 증가하는 `retry_count`를 저장하며, runtime은 status·같은 분석·가설·역할·호출 순서와 순환이 없는지 검사한다.
+8. work나 분석이 `CANCELLED`이면 도착한 응답을 `STALE_RESULT`로 격리하고 output pointer, Gate와 Reporter 입력에 연결하지 않는다.
+
+인증·rate limit·형식·provider 오류가 발생한 `LLMInvocationResult`는 실행 오류다. 그 호출만을 이유로 `SAVE_RESULT` action이 `VerificationResult.verdict=FALSE`를 만들려고 하면 Runtime Validator가 거절한다. `FALSE`는 final Verification의 named falsification과 실제 `DISPROVED` 근거가 있을 때만 별도로 저장할 수 있다.
 
 동시성·rate limit의 backpressure도 취약점 판정과 분리한다.
 

@@ -18,6 +18,7 @@
 | [Issue 작성 양식](../.github/ISSUE_TEMPLATE/architecture-review.yml) | GitHub에서 설계 검토 Issue를 만들 때 필요한 입력 칸을 정의합니다. | Issue 작성자 | 보조 파일 |
 | [Issue 화면 설정](../.github/ISSUE_TEMPLATE/config.yml) | GitHub Issue 작성 화면의 선택 항목을 설정합니다. | 저장소 관리 담당 | 보조 파일 |
 | [PR 작성 양식](../.github/PULL_REQUEST_TEMPLATE.md) | PR에 목적·영향·검증 내용을 빠뜨리지 않도록 기본 양식을 제공합니다. | PR 작성자·검토자 | 보조 파일 |
+| [`scripts/validate-architecture-docs.ps1`](../scripts/validate-architecture-docs.ps1) | Markdown 링크·Mermaid 사본, R4 상태·복구·권한 계약과 운영 Pro/Con 정책 누락을 한 번에 검사합니다. | 문서 작성자·검토자 | 검증 도구 |
 
 ## 문서 안내와 공통 용어
 
@@ -41,9 +42,12 @@
 |---|---|---|---|
 | [`docs/review/ISSUE_TRACKER.md`](./review/ISSUE_TRACKER.md) | 실제 GitHub Issue 번호, 담당자, 브랜치와 진행 상태를 한눈에 보여 줍니다. | PM·모든 역할 담당자 | 쉬운 요약 |
 | [`docs/review/ISSUE_CATALOG.md`](./review/ISSUE_CATALOG.md) | 역할별 상위 Issue에서 무엇을 검토하고 어떤 하위 Issue를 만들지 자세히 설명합니다. | 역할 담당자 | 기준 문서 |
+| [`docs/review/R4-04_CROSS_REVIEW.md`](./review/R4-04_CROSS_REVIEW.md) | R4-04에서 역할별로 무엇을 확인하고 어떤 GitHub 기록을 승인으로 인정하는지 설명합니다. | R1~R8 담당자·최종 검토 담당자 | 검토 기록 |
 | [`docs/review/FINDINGS.md`](./review/FINDINGS.md) | 현재 설계에서 발견된 큰 문제와 해결 조건을 정리합니다. | PM·문제 담당자 | 기준 문서 |
 | [`docs/review/PROVENANCE.md`](./review/PROVENANCE.md) | Architecture v5 파일을 어디에서 가져왔는지와 원본 해시를 기록합니다. | PM·최종 검토 담당자 | 기준 기록 |
 | [`docs/review/decisions/README.md`](./review/decisions/README.md) | 팀이 확정한 중요한 설계 결정과 근거를 기록하는 방법을 설명합니다. | 결정 담당자·검토자 | 기준 문서 |
+| [`ADR-001-verification-owned-chaining-admission.md`](./review/decisions/ADR-001-verification-owned-chaining-admission.md) | Verification 중심 제어권과 Gate를 통과한 결과만 연계 탐색에 쓰는 제안을 설명합니다. | R1·R4·R6·Gate 담당 | 검토 중 결정 |
+| [`ADR-003-r6-r7-environment-requirements-handoff.md`](./review/decisions/ADR-003-r6-r7-environment-requirements-handoff.md) | R6가 요청한 환경과 R7이 만든 실제 환경을 정확히 비교하는 제안을 설명합니다. | R4·R6·R7 담당 | 검토 중 결정 |
 
 ## Architecture v5 기술 기준 문서
 
@@ -52,10 +56,10 @@
 | [`docs/architecture-v5/README.md`](./architecture-v5/README.md) | Architecture v5 전체 흐름과 번호 문서의 읽는 순서를 소개합니다. | 모든 설계 참여자 | 기준 문서 |
 | [`01-system-overview.md`](./architecture-v5/01-system-overview.md) | 저장소 입력부터 사람의 최종 판단까지 전체 23단계를 설명합니다. | PM·모든 역할 담당자 | 기준 문서 |
 | [`02-static-fact-layer.md`](./architecture-v5/02-static-fact-layer.md) | AST와 SAST 결과를 LLM이 사용할 코드 사실로 정리하는 방법을 설명합니다. | 정적분석·탐색·검증 담당 | 기준 문서 |
-| [`03-agent-roles-and-orchestration.md`](./architecture-v5/03-agent-roles-and-orchestration.md) | 각 Agent가 하는 일과 전체 실행 순서를 조정하는 방법을 설명합니다. | PM·LLM 역할·통합 담당 | 기준 문서 |
-| [`04-verification-and-dynamic-reproduction.md`](./architecture-v5/04-verification-and-dynamic-reproduction.md) | 가설을 판단하고 필요할 때 Docker에서 재현하는 절차를 설명합니다. | 검증·동적검증 담당 | 기준 문서 |
+| [`03-agent-roles-and-orchestration.md`](./architecture-v5/03-agent-roles-and-orchestration.md) | Orchestration의 전역 등록·배정과 Verification의 가설 내부 제어권을 포함해 각 Agent 역할을 설명합니다. | PM·LLM 역할·통합 담당 | 기준 문서 |
+| [`04-verification-and-dynamic-reproduction.md`](./architecture-v5/04-verification-and-dynamic-reproduction.md) | Verification이 가설 내부 Context·찬반·동적 재현·판정·Gate 보완을 관리하는 절차를 설명합니다. | 검증·동적검증 담당 | 기준 문서 |
 | [`05-llm-gate-and-reporting.md`](./architecture-v5/05-llm-gate-and-reporting.md) | 기술 근거와 공식 정책을 검토하고 보고서 초안을 만드는 조건을 설명합니다. | Gate·검증·PM 담당 | 기준 문서 |
-| [`06-chaining.md`](./architecture-v5/06-chaining.md) | 확인된 조건과 능력을 연결해 새 공격 가설을 만드는 방법과 제한을 설명합니다. | 탐색·체이닝·검증 담당 | 기준 문서 |
+| [`06-chaining.md`](./architecture-v5/06-chaining.md) | HOLD REQUIRED와 Gate-qualified TRUE PROVIDED의 TRUE+HOLD·TRUE+TRUE matching 및 제한을 설명합니다. | 탐색·체이닝·검증 담당 | 기준 문서 |
 | [`07-results-and-observability.md`](./architecture-v5/07-results-and-observability.md) | 분석 결과, 오류, 비용과 디버깅 기록을 무엇을 저장할지 설명합니다. | 데이터·평가·통합 담당 | 기준 문서 |
 | [`08-lightweight-data-contracts.md`](./architecture-v5/08-lightweight-data-contracts.md) | 파트 사이에 주고받는 데이터 묶음과 필드 이름을 정의합니다. | 모든 구현·설계 담당자 | 기준 문서 |
 | [`09-llm-provider-session-and-logging.md`](./architecture-v5/09-llm-provider-session-and-logging.md) | 회원 로그인·API 연결, 대화 상태와 LLM 호출 기록 방법을 설명합니다. | 통합·PM·데이터 담당 | 기준 문서 |
@@ -80,6 +84,8 @@ Wiki는 번호 문서의 쉬운 요약입니다. Wiki만 수정해 새로운 규
 | [`wiki/chaining.md`](./architecture-v5/wiki/chaining.md) | 여러 취약점의 조건을 연결하는 방법과 중단 조건을 요약합니다. | 탐색·체이닝 담당 | 쉬운 요약 |
 | [`wiki/providers-and-logging.md`](./architecture-v5/wiki/providers-and-logging.md) | LLM 연결 방식, 로그인 상태와 기록 방법을 요약합니다. | 통합·데이터 담당 | 쉬운 요약 |
 | [`wiki/common-contracts.md`](./architecture-v5/wiki/common-contracts.md) | 공통 ID, 시간, 상태, 분석 공백·오류와 계약 변경 규칙을 쉽게 설명합니다. | 모든 구현·검토 담당 | 쉬운 요약 |
+| [`wiki/state-and-recovery.md`](./architecture-v5/wiki/state-and-recovery.md) | 병렬 작업, 중복 방지, 재시도와 중단 후 안전한 재개 규칙을 쉽게 설명합니다. | PM·통합·모든 역할 담당 | 쉬운 요약 |
+| [`wiki/authority-boundaries.md`](./architecture-v5/wiki/authority-boundaries.md) | LLM이 제안할 일, 프로그램이 검사할 일과 사람이 결정할 일을 쉽게 설명합니다. | 모든 역할 담당·보안 검토자 | 쉬운 요약 |
 | [`wiki/results.md`](./architecture-v5/wiki/results.md) | 최종 저장 결과와 디버깅 정보를 요약합니다. | 데이터·평가·통합 담당 | 쉬운 요약 |
 | [`wiki/diagrams.md`](./architecture-v5/wiki/diagrams.md) | 기준 다이어그램을 Wiki에서 그대로 보여 줍니다. | 모든 팀원 | 쉬운 요약 사본 |
 | [`wiki/index.html`](./architecture-v5/wiki/index.html) | 로컬 Wiki 화면을 여는 HTML 파일입니다. | Wiki 관리 담당 | 보조 파일 |
@@ -101,6 +107,10 @@ Wiki는 번호 문서의 쉬운 요약입니다. Wiki만 수정해 새로운 규
 | [`2026-08-28-remove-repository-snapshot.md`](./superpowers/plans/2026-08-28-remove-repository-snapshot.md) | 로컬 코드 작업공간 전환을 문서와 Issue에 적용한 순서입니다. | 작업 기록 |
 | [`2026-08-28-r4-01-common-contracts-design.md`](./superpowers/specs/2026-08-28-r4-01-common-contracts-design.md) | R4-01 공통 ID·시간·상태·오류·버전 계약 결정입니다. | 작업 기록 |
 | [`2026-08-28-r4-01-common-contracts.md`](./superpowers/plans/2026-08-28-r4-01-common-contracts.md) | R4-01 계약을 정본·Wiki·검토 문서에 적용하는 작업 순서입니다. | 작업 기록 |
+| [`2026-08-28-r4-02-state-recovery-design.md`](./superpowers/specs/2026-08-28-r4-02-state-recovery-design.md) | R4-02 상태 전이·중복 방지·atomic 저장·복구 설계 결정입니다. | 작업 기록 |
+| [`2026-08-28-r4-02-state-recovery.md`](./superpowers/plans/2026-08-28-r4-02-state-recovery.md) | R4-02 설계를 정본·Wiki·Mermaid에 적용하고 검증하는 작업 순서입니다. | 작업 기록 |
+| [`2026-08-28-r4-03-authority-boundary-design.md`](./superpowers/specs/2026-08-28-r4-03-authority-boundary-design.md) | R4-03 LLM·프로그램·사람 권한 경계와 action 검사 설계 결정입니다. | 작업 기록 |
+| [`2026-08-28-r4-03-authority-boundary.md`](./superpowers/plans/2026-08-28-r4-03-authority-boundary.md) | R4-03 권한 경계를 정본·Wiki·Mermaid에 적용하고 검증하는 작업 순서입니다. | 작업 기록 |
 
 ## 무엇부터 읽으면 되나요?
 
