@@ -67,11 +67,9 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 
 둘 다 자동으로 `TRUE`, `FALSE`, `HOLD`가 되지 않습니다. 오류는 “작업이 실패했다”는 기록이고, 취약점 판정 근거가 아닙니다. `FALSE`는 미리 정한 반증 질문과 실제 반증 근거가 연결될 때만 가능합니다.
 
-Context 조회가 정상적으로 끝났지만 정보가 부족한 경우에는 필수 검증을 마친 뒤 남은 조건을 기록하고 `HOLD`로 판정할 수 있습니다. 반면 조회 실패·timeout·권한 오류는 실행 오류이므로 자동 verdict를 만들지 않습니다. 운영 Pro/Con 전에 예산이 부족한 경우에도 `BUDGET_EXCEEDED`만 기록하고 final `VerificationResult`를 저장하지 않습니다.
-
 각 반증 질문에는 `question_id`를 붙입니다. 최종 검증은 모든 질문에 결과를 남기며, 실제 근거가 있는 `DISPROVED` 질문이 하나 이상일 때만 `FALSE`를 허용합니다. `NOT_DISPROVED`는 질문으로 반증하지 못했다는 뜻이며 취약점이 증명됐다는 뜻이 아닙니다.
 
-`SAVE_RESULT(result_kind=verification_result)`는 verdict별 최소 구조를 검사합니다. `TRUE`는 실제 reference가 연결된 supporting evidence, `FALSE`는 근거가 있는 `DISPROVED`, `HOLD`는 하나 이상의 `unresolved_conditions`가 필요합니다. 오류·timeout·빈 Context·예산 초과 기록만으로 `TRUE`나 `FALSE`를 저장할 수 없습니다. Runtime Validator는 이 구조와 reference 무결성만 검사하고 근거의 기술적 의미를 대신 판단하지 않습니다.
+`SAVE_RESULT(result_kind=verification_result)`는 verdict별 최소 구조를 검사합니다. `TRUE`는 실제 reference가 연결된 supporting evidence, `FALSE`는 근거가 있는 `DISPROVED`, `HOLD`는 하나 이상의 `unresolved_conditions`와 정상적으로 확인한 범위를 설명하는 실제 evidence reference가 필요합니다. 오류·timeout·빈 Context·예산 초과 기록만으로 어떤 final verdict도 저장할 수 없습니다. Runtime Validator는 구조·reference·완료 상태만 검사합니다. final `TRUE` 근거의 의미적 충분성은 Technical Evidence Gate가 exact final TRUE revision을 대상으로 검토하며, `FALSE | HOLD`는 Technical Gate 입력이 아닙니다.
 
 검증 플레이북은 `logical_record_id`로 식별하고 내용이 바뀔 때마다 새 `record_id`, 증가한 `revision_number`와 새 `content_hash`를 만듭니다. `VerificationResult.playbook_ref`는 실제 사용한 exact 플레이북 revision을 가리키며 final Verification 합성 호출과 저장 요청도 같은 reference를 사용해야 합니다. 새 플레이북 revision이 생겨도 과거 판정의 reference는 바꾸지 않습니다.
 
