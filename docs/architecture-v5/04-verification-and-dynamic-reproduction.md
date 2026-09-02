@@ -99,7 +99,7 @@ Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` 
 |---|---|---|
 | `TRUE` | 현재 가설의 핵심 exploit path와 필요한 조건을 지지하는 실제 evidence | 단순 추측, `NOT_DISPROVED`, 일부 동적 경로 확인 결과만을 정적·Pro/Con 근거와 종합하지 않고 단독으로 전체 취약점 성립 근거로 사용한 경우 |
 | `FALSE` | named falsification의 `question_id`, `outcome=DISPROVED`, 하나 이상의 실제 `evidence_refs`와 이를 연결하는 판정 이유 | 오류, timeout, 빈 Context, 예산 초과, Sandbox 실패 |
-| `HOLD` | 아직 해결되지 않은 조건과 필요한 추가 Context·환경·capability | 취약점이 아니라는 의미로 사용하거나 PROVIDED 능력으로 승격 |
+| `HOLD` | 하나 이상의 `unresolved_conditions`와 정상적으로 확인한 범위 및 결론을 막는 조건을 설명하는 실제 evidence reference | 취약점이 아니라는 의미로 사용하거나 PROVIDED 능력으로 승격 |
 
 ### HOLD와 실행 오류의 결정 기준
 
