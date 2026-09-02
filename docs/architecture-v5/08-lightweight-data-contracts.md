@@ -1008,7 +1008,7 @@ PrimitiveMatchCandidate:
 
 Chaining work를 등록할 때 각 parent의 exact current `PrimitiveIndexState` ref와 version을 input에 고정한다. ChainingResult와 child proposal을 commit하기 직전에 runtime은 index logical record의 현재 head, `HypothesisProcessState.verification_result_ref`, Primitive의 `source_verification_ref`와 ACTIVE 목록 포함 여부를 다시 검사한다. 그 사이 새 Verification generation이나 index revision이 생겼으면 과거 Primitive record 자체에 `ACTIVE`가 쓰여 있어도 `STALE_RESULT`로 저장·proposal 등록을 거절한다. runtime은 영향받은 PENDING/READY/RUNNING Chaining work를 만료 또는 취소할 수 있지만 commit-time CAS 검사가 최종 강제 경계다.
 
-`PrimitiveMatchCandidate`는 같은 `workspace_id + commit_id`의 정확히 두 current ACTIVE Primitive와 두 parent의 current index ref를 연결한다. `upstream_provided_ref`는 앞 단계가 제공하는 능력이다. `TRUE_HOLD`의 `downstream_input_ref`는 HOLD REQUIRED Primitive이고 `matched_requirement_id`는 그 `primitive_id`다. `TRUE_TRUE`의 `downstream_input_ref`는 뒤 단계의 Gate-qualified PROVIDED Primitive이며 `matched_requirement_id`는 그 안의 `required_preconditions.draft_id` 중 하나여야 한다. 즉 두 PROVIDED의 문자열을 단순 비교하지 않고, 앞 TRUE의 제공 능력이 뒤 TRUE를 악용하기 위해 exact Verification에서 명시한 선행 조건을 충족하는지 증명한다. `input_primitive_refs`는 upstream/downstream 두 ref와 set-equal이고 `input_primitive_index_refs`는 두 parent의 current index ref와 set-equal이어야 한다. 입력 ref와 `parent_verification_refs`는 exact admission provenance까지 가리켜야 한다. check 중 호환 불가가 있으면 후보를 만들지 않는다. 모두 `PASS`면 `unresolved_conditions`는 비어 있어야 하고, 하나라도 `UNCERTAIN`이면 확인할 조건을 반드시 기록한다. `evidence_refs`는 하나 이상이며 각 reference도 같은 workspace·commit을 가리킨다. 같은 `normalized_fingerprint`를 같은 분석에서 중복 저장하지 않는다. match는 queue message, verdict, Finding 또는 impact 확정이 아니다.
+`PrimitiveMatchCandidate`는 같은 `workspace_id + commit_id`의 정확히 두 current ACTIVE Primitive와 두 parent의 current index ref를 연결한다. `upstream_provided_ref`는 앞 단계가 제공하는 능력이다. `TRUE_HOLD`의 `downstream_input_ref`는 HOLD REQUIRED Primitive이고 `matched_requirement_id`는 그 `primitive_id`다. `TRUE_TRUE`의 `downstream_input_ref`는 뒤 단계의 Gate-qualified PROVIDED Primitive이며 `matched_requirement_id`는 그 안의 `required_preconditions.draft_id` 중 하나여야 한다. 즉 두 PROVIDED의 문자열을 단순 비교하지 않고, 앞 TRUE의 제공 능력이 뒤 TRUE를 악용하기 위해 exact Verification에서 명시한 선행 조건을 충족하는지 증명한다. `input_primitive_refs`는 upstream/downstream 두 ref와 set-equal이고 `input_primitive_index_refs`는 두 parent의 current index ref와 set-equal이어야 한다. 입력 ref와 `parent_verification_refs`는 exact admission provenance까지 가리켜야 한다. check 중 호환 불가가 있으면 후보를 만들지 않는다. 모두 `PASS`면 `unresolved_conditions`는 비어 있어야 하고, 하나라도 `UNCERTAIN`이면 확인할 조건을 반드시 기록한다. `evidence_refs`는 하나 이상이며 각 reference도 같은 workspace·commit을 가리킨다. 같은 `normalized_fingerprint`를 같은 분석에서 중복 저장하지 않는다. match는 queue message, verdict, Finding 또는 impact 확정이 아니다. `normalized_fingerprint`의 정규화 규칙, cycle 판정 규칙, run 전체 확장 한도와 `bounded_stop_reason` 각 값의 검사 시점·의미는 `06-chaining.md`의 "확장 제한과 순환 방지" 절이 정의한다.
 
 ## 6. ChainingResult
 
@@ -1024,11 +1024,13 @@ ChainingResult:
   primitive_match_candidates: [PrimitiveMatchCandidate]
   chained_hypothesis_proposals: [HypothesisProposal]
   no_match_reasons: [string]
-  bounded_stop_reason: string | null
+  bounded_stop_reason: DUPLICATE_FINGERPRINT | CYCLE_DETECTED | MAX_COMBINATIONS_PER_CALL | null
   errors: [AnalysisError]
 ```
 
-`HOLD_MATCH`는 final HOLD의 REQUIRED를 기준으로 호환 PROVIDED를 조회한 결과다. 실제 조합 proposal이 있으면 match kind는 `TRUE_HOLD`다. `TRUE_HOLD_MATCH`와 `TRUE_TRUE_MATCH`의 모든 TRUE parent는 exact Gate-qualified current ACTIVE PROVIDED여야 한다. TRUE_TRUE는 앞 PROVIDED와 뒤 PROVIDED의 exact `required_preconditions` 한 항목을 방향성 있게 연결해야 한다. `input_primitive_index_refs`는 commit 시점에도 current head여야 하며, `chained_hypothesis_proposals`는 모두 `origin=CHAINING`이고 입력 Primitive의 parent hypothesis를 보존한다.
+`bounded_stop_reason`을 여는 `string`에서 닫힌 enum으로 바꾸는 것은 기존 값 구조와 호환되지 않는 MAJOR 변경이다. `ChainingResult`는 아직 `NOT_IMPLEMENTED` 상태라 실제로 저장된 record는 없지만, 이후 구현이 이 필드를 먼저 `string`으로 구현했다면 그 값을 이 enum으로 자동 추정 변환하지 않는다는 원칙을 미리 남긴다.
+
+`bounded_stop_reason`은 호출이 실제로 일어난 뒤에만 알 수 있는 세 값만 쓴다. depth·전체/parent당 파생 가설 수·run 전체 Chaining Agent 호출 수·run 전체 조합 수·run 전체 누적 token·time 한도는 Chaining Agent를 부르기 전 `REGISTER_WORK` 시점에 걸리므로 work도 이 `ChainingResult`도 만들어지지 않고 `AnalysisError(stage=ORCHESTRATION, code=BUDGET_EXCEEDED)`로만 기록된다. `HOLD_MATCH`는 final HOLD의 REQUIRED를 기준으로 호환 PROVIDED를 조회한 결과다. 실제 조합 proposal이 있으면 match kind는 `TRUE_HOLD`다. `TRUE_HOLD_MATCH`와 `TRUE_TRUE_MATCH`의 모든 TRUE parent는 exact Gate-qualified current ACTIVE PROVIDED여야 한다. TRUE_TRUE는 앞 PROVIDED와 뒤 PROVIDED의 exact `required_preconditions` 한 항목을 방향성 있게 연결해야 한다. `input_primitive_index_refs`는 commit 시점에도 current head여야 하며, `chained_hypothesis_proposals`는 모두 `origin=CHAINING`이고 입력 Primitive의 parent hypothesis를 보존한다.
 
 ChainingResult는 bypass, alternate path, 새 sink, impact escalation, Technical revision, 일반 validation 또는 동적 재현 요청을 포함할 수 없다. 이런 주장은 Verification이 자기 흐름에서 조사하고 material하면 `origin=VERIFICATION` proposal로 분리한다. 이 record는 기존 verdict, CWE, Gate 또는 Finding을 변경하지 않는다.
 

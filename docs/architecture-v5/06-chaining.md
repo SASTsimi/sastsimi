@@ -174,7 +174,7 @@ ChainingResult:
   primitive_match_candidates: [PrimitiveMatchCandidate]
   chained_hypothesis_proposals: [HypothesisProposal]
   no_match_reasons: [string]
-  bounded_stop_reason: string | null
+  bounded_stop_reason: DUPLICATE_FINGERPRINT | CYCLE_DETECTED | MAX_COMBINATIONS_PER_CALL | null
   errors: [AnalysisError]
 ```
 
@@ -192,7 +192,7 @@ ChainingResult:
 
 Primitive가 새로 `ACTIVE`로 admission될 때마다(REQUIRED는 final HOLD commit, PROVIDED는 두 Gate 통과 admission) 즉시 Chaining work 등록을 시도한다(batch로 모아 두지 않는다). 이 절은 호출 *시점*(이벤트 기반 vs batch)만 정하며, 실제 호출 총량·조합 수 상한과 상한 도달 시 처리 방식은 "확장 제한과 순환 방지" 절의 한도를 따른다. 이벤트 기반 즉시 등록도 이 한도 검사를 우회하지 않는다 — 매 시도마다 그 절의 검사를 거치며, 한도 도달은 부모 가설의 `FALSE`나 매칭 실패로 기록하지 않는다.
 
-admission 이벤트는 Primitive DB를 유지하는 같은 trusted runtime이 받는다. Chaining Agent나 Orchestration이 받는 게 아니다 — Primitive DB는 "출력과 의미" 절에서 이미 명시했듯 queue가 아니라 분석 인덱스이며, 이 인덱스를 갱신하는 runtime이 admission과 후속 work 등록을 함께 처리한다. 이 runtime은 admission된 Primitive와 비교 대상 후보 Primitive(`HOLD_MATCH`/`TRUE_HOLD_MATCH`는 반대편, `TRUE_TRUE_MATCH`는 같은 PROVIDED 쪽) 각각의 exact `record_id` 조합으로 `work_type=CHAINING` work의 `dedupe_key`를 만든다. 같은 admission 이벤트가 재전달되거나 같은 조합이 중복 시도되면 기존 `08-lightweight-data-contracts.md`의 dedupe 규칙(같은 `dedupe_key`는 기존 `work_id`를 반환)에 따라 새 work를 만들지 않는다. 각 work는 그 admission 시점의 `PrimitiveIndexState` snapshot을 input으로 고정하며(위 "exact revision과 오래된 승인 차단" 절), 저장 직전 index head가 바뀌었으면 `STALE_RESULT`로 거절한다. 등록 자체가 예산 한도에 걸리면 work를 만들지 않고 "확장 제한과 순환 방지" 절의 `bounded_stop_reason`으로 기록한다.
+admission 이벤트는 Primitive DB를 유지하는 같은 trusted runtime이 받는다. Chaining Agent나 Orchestration이 받는 게 아니다 — Primitive DB는 "출력과 의미" 절에서 이미 명시했듯 queue가 아니라 분석 인덱스이며, 이 인덱스를 갱신하는 runtime이 admission과 후속 work 등록을 함께 처리한다. 이 runtime은 admission된 Primitive와 비교 대상 후보 Primitive(`HOLD_MATCH`/`TRUE_HOLD_MATCH`는 반대편, `TRUE_TRUE_MATCH`는 같은 PROVIDED 쪽) 각각의 exact `record_id` 조합으로 `work_type=CHAINING` work의 `dedupe_key`를 만든다. 같은 admission 이벤트가 재전달되거나 같은 조합이 중복 시도되면 기존 `08-lightweight-data-contracts.md`의 dedupe 규칙(같은 `dedupe_key`는 기존 `work_id`를 반환)에 따라 새 work를 만들지 않는다. 각 work는 그 admission 시점의 `PrimitiveIndexState` snapshot을 input으로 고정하며(위 "exact revision과 오래된 승인 차단" 절), 저장 직전 index head가 바뀌었으면 `STALE_RESULT`로 거절한다. 등록 자체가 "확장 제한과 순환 방지" 절의 run 전체 한도에 걸리면 work를 만들지 않고 `AnalysisError(stage=ORCHESTRATION, code=BUDGET_EXCEEDED)`로 기록한다. `bounded_stop_reason`은 work가 만들어지고 호출이 실제로 일어난 뒤에만 쓰는 값이다(아래 "확장 제한과 순환 방지" 절 참고).
 
 `trigger`는 방금 admission된 쪽을 가리킨다.
 
@@ -237,16 +237,45 @@ Verification은 proposal을 만들 수 있지만 `hypothesis_id`를 직접 발�
 
 ## 확장 제한과 순환 방지
 
-모든 run은 다음 제한을 설정한다.
+제한은 두 층이다. Chaining Agent 호출 하나 안의 자원 상한(token·time·호출당 비교 조합 수)은 `07-results-and-observability.md`의 역할별 자원 한도(R8-03, Chaining 행)가 정하며 이 절은 그 숫자를 다시 정의하지 않는다. 이 절은 admission 이벤트가 Chaining work를 등록하기 *전*에 거치는 분석 run 전체 단위의 한도를 정한다.
 
-- maximum chain depth
-- 전체 및 parent당 파생 가설 수
-- Chaining Agent 호출 수와 primitive 조합 수
-- 누적 LLM token과 wall-clock time
-- normalized hypothesis/primitive-match fingerprint 중복 횟수
-- 동일 ancestor/capability cycle
+### run 전체 한도 (제안, 교차 전)
 
-한도 도달은 `FALSE`가 아니다. 만들지 못한 후보, 적용한 제한과 `bounded_stop_reason`을 저장한다. 새 사실이나 capability 없이 `A -> B -> A`로 순환하는 후보와 이미 같은 조건으로 반증된 후보는 다시 생성하지 않는다.
+| 한도 | 제안값 | 검사 시점 |
+|---|---|---|
+| maximum chain depth | 4 | `REGISTER_WORK` |
+| 전체 파생 가설 수 (분석 run당 `origin=CHAINING`) | 200 | `REGISTER_WORK` |
+| parent당 파생 가설 수 | 10 | `REGISTER_WORK` |
+| Chaining Agent 호출 수 (분석 run 전체, `work_type=CHAINING` `WorkAttempt` 전체, 재시도 포함) | 500 | `REGISTER_WORK` |
+| primitive 조합 수 (분석 run 전체, 실제 candidate로 저장된 것만) | 1,000 | `REGISTER_WORK` |
+| 누적 Chaining LLM token (분석 run 전체, 이전 Chaining 호출들의 실제 usage 합) | 2,000,000 (R8 draft 초안, 미확정) | `REGISTER_WORK` |
+| 누적 Chaining elapsed time (분석 run 전체, 이전 Chaining 호출들의 실제 `elapsed_ms` 합) | 10,800,000ms(약 3시간, R8 draft 초안, 미확정) | `REGISTER_WORK` |
+
+숫자는 corpus 실측 전 제안이며 R8과 조율해 확정한다(아래 "R8과의 관계" 참고). 이 일곱 한도는 Chaining Agent를 부르기 전 `REGISTER_WORK` 시점에 걸리므로 work도 `ChainingResult`도 만들어지지 않는다 — `08-lightweight-data-contracts.md`가 이미 정한 `ActionCheck.BUDGET` 실패 처리를 그대로 따라 `AnalysisError(stage=ORCHESTRATION, code=BUDGET_EXCEEDED)`로 기록한다. 걸린 구체적 한도는 사람이 읽는 `safe_message`뿐 아니라 이미 있는 `ActionCheck.reason_code`에도 한도별 값(`CHAINING_DEPTH_LIMIT | CHAINING_TOTAL_HYPOTHESIS_LIMIT | CHAINING_PER_PARENT_HYPOTHESIS_LIMIT | CHAINING_CALL_COUNT_LIMIT | CHAINING_COMBINATION_COUNT_LIMIT | CHAINING_TOKEN_BUDGET | CHAINING_TIME_BUDGET`)으로 남겨, R8 텔레메트리가 일곱 한도 중 어떤 것이 걸렸는지 `safe_message` 문장을 파싱하지 않고 이 필드만으로 구분할 수 있게 한다. 한도 도달은 `FALSE`도 `INVALID_OUTPUT`도 아닌 별도 범주다.
+
+이 일곱 한도 검사와 `REGISTER_WORK` 커밋은 같은 `analysis_id` 안에서 직렬화한다 — 여러 admission 이벤트가 동시에 도착해도 한 번에 하나씩만 이 검사·등록을 통과시킨다. 값들이 여러 record를 실시간 집계해 얻는 파생값이라 단일 `state_version` 같은 CAS 대상이 없으므로, 이 문서의 다른 CAS 검사(index head, `ActionDecision` claim 등)와 달리 직렬화로 경쟁을 막는다. 직렬화하지 않으면 한도 근처에서 동시에 여러 admission이 통과해 실제 상한을 넘길 수 있다.
+
+누적 token·elapsed time 두 항목은 R8-03의 호출당 상한(현재 제안 16,000 token/60초, #60 미병합)과 다른 층이다. 호출당 상한은 한 번의 호출을 얼마나 크게 허용할지를 정하고, 이 두 항목은 그 호출을 몇 번이나 계속 허용할지를 이전 호출들의 실제 사용량 누계로 정한다. 호출 수 상한(500)만으로는 누적 token·elapsed time을 대신하지 못한다 — 호출마다 실제 사용량이 상한보다 훨씬 작을 수도, 재시도로 상한에 가깝게 반복될 수도 있어 호출 횟수와 실제 누적 사용량은 별도로 추적해야 한다. 시각 차이가 아니라 `08-lightweight-data-contracts.md`가 이미 정한 monotonic `elapsed_ms`의 합이므로 "wall-clock time"이라 부르지 않는다.
+
+이 두 누적값은 새 카운터 필드가 아니라 같은 `analysis_id`와 `agent_role=CHAINING`의 기존 `LLMInvocationLog`(`08-lightweight-data-contracts.md` "10. LLM invocation records") 전체(재시도 포함, 실제로 provider를 호출한 모든 기록)의 `usage`와 `elapsed_ms`를 합산한 값이다. `REGISTER_WORK`는 이 합을 실시간으로 계산해 검사하며, 합산 결과를 저장하는 별도 record는 두지 않는다. `usage=null`인 호출은 token 합계에서 제외한다 — 이 경우 token 누적 한도는 그 몫만큼 실제보다 낮게 계산되며, 이는 R8-02 지표("usage: token 숫자를 서비스가 안 줌")가 이미 다루는 한계다.
+
+### bounded_stop_reason
+
+`ChainingResult.bounded_stop_reason`은 호출이 실제로 일어난 뒤에만 알 수 있는 세 값만 쓴다: `DUPLICATE_FINGERPRINT | CYCLE_DETECTED | MAX_COMBINATIONS_PER_CALL`. `MAX_COMBINATIONS_PER_CALL`은 R8-03의 호출당 비교 상한(현재 제안 20)에 도달했을 때 쓰며 위 run 전체 한도와는 다른 값이다. 셋 다 candidate를 `SAVE_RESULT`로 저장하는 시점에 검사한다. 한도 도달은 `FALSE`가 아니다. 만들지 못한 후보와 적용한 제한을 저장한다.
+
+### normalized_fingerprint 정규화 규칙
+
+`PrimitiveMatchCandidate.normalized_fingerprint`는 `workspace_id`, `commit_id`, `trigger`, `upstream_provided_ref.record_id`, `downstream_input_ref.record_id`, `matched_requirement_id`를 이 여섯 필드를 key로 하는 JSON 객체(key 정렬, 값 순서는 그대로)로 만든 뒤 SHA-256 한 값이다. `trigger`는 `PrimitiveMatchCandidate` 자신의 필드가 아니라 그 candidate를 담는 `ChainingResult.trigger`이며, 이 hash를 계산할 때는 candidate가 속한 컨테이너의 이 값을 그대로 가져와 쓴다 — work `dedupe_key`가 여러 개의 동종 입력 목록을 정렬해 순서 무관하게 만드는 것과 달리, 여기서는 여섯 필드 각각의 값 자체는 순서를 바꾸지 않는다. 같은 분석에서 같은 값을 다시 저장하지 않는다. 양방향 `TRUE_TRUE_MATCH`에서 같은 Primitive 쌍을 upstream/downstream을 바꿔 같은 `matched_requirement_id`를 다시 평가하면 `trigger`가 같아도 참조 순서가 달라 fingerprint가 달라지므로, 저장 전 두 record_id를 오름차순으로 정렬한 값과 `matched_requirement_id`가 모두 같은 기존 candidate가 있는지 함께 비교해 있으면 새로 만들지 않는다. `matched_requirement_id`가 다르면 두 record_id가 같은 쌍이라도 서로 다른 전제조건을 충족하는 별개의 match이므로 이 규칙으로 걸러내지 않는다 — 같은 Primitive 쌍 사이에서도 upstream이 downstream의 조건 하나를 충족하는 match와 downstream이 upstream의 다른 조건을 충족하는 match는 각각 저장한다.
+
+### cycle 판정 규칙
+
+candidate를 만들기 전 `upstream_provided_ref`, `downstream_input_ref` 두 Primitive 각각의 `source_hypothesis_id`에서 시작해 그 가설의 `source_chaining_result_ref`/`source_primitive_match_id` → 그 candidate의 `parent_hypothesis_ids` → 각 부모 가설의 `source_chaining_result_ref`/`source_primitive_match_id`로 이어지는 walk(R1-03의 다단계 lineage 재구성 규칙)로 ancestor `hypothesis_id` 집합을 구한다. Primitive는 재검증될 때마다(`SUPERSEDED` 뒤 새 revision admission) 새 `record_id`를 받으므로, ancestor 식별은 Primitive `record_id`가 아니라 같은 revision 사이에서도 바뀌지 않는 `hypothesis_id` 기준으로 한다. 두 Primitive 모두에서 이 walk를 각각 실행해 두 ancestor `hypothesis_id` 집합을 만들고, 양쪽 방향을 모두 확인한다: upstream Primitive의 `source_hypothesis_id`가 downstream 쪽 ancestor 집합에 있는지, downstream Primitive의 `source_hypothesis_id`가 upstream 쪽 ancestor 집합에 있는지. 둘 중 하나라도 있으면(자기 자신을 가리키는 경우 포함) cycle로 판정하고 candidate를 만들지 않는다. 같은 가설의 Primitive가 재검증으로 새 `record_id`를 받아도 `hypothesis_id`는 그대로이므로 이 판정은 revision이 바뀐 뒤에도 그대로 적용된다. 새 사실이나 capability 없이 `A -> B -> A`로 돌아오는 조합과 이미 같은 조건으로 반증된 조합은 다시 생성하지 않는다.
+
+### R8과의 관계
+
+`OWNERSHIP.md`에 따라 예산 profile 숫자는 R8이 설계하고 각 전문 역할은 최소 요구를 제공한다. 이 절의 depth·전체/parent당 파생 가설 수·호출 수·조합 수(위 표의 다섯 행)와 dedup·cycle 규칙은 체이닝 확장 자체의 구조적 한도라 R1이 chaining 의미론의 일부로 제안하지만, 이 다섯 행과 두 예산 행 사이의 경계 자체도 R8 확인 전 R1의 제안이다 — 특히 호출 수·조합 수는 자원 소비량이라는 점에서 R8이 관할하는 예산 범주로 볼 수도 있어, 이 층 분리가 맞는지 자체를 아래 검토 요청에서 R8에게 확인받는다. 반면 누적 token·elapsed time(위 표의 두 행)은 R8-03의 호출당 상한과 같은 종류의 예산 수치이므로 R1은 여기서 초안만 제시하고, 최종 확정과 `07-results-and-observability.md`(R8-03, #60)의 역할별 자원 한도 표 반영은 R8이 한다. R8이 이 두 값을 다른 숫자로 확정하면 이 절의 표는 그 값을 따라 갱신한다.
+
+제안값을 그대로 대입하면 누적 token 2,000,000 ÷ 호출당 상한 16,000 = 약 125회, 누적 time 10,800,000ms ÷ 호출당 60초 = 180회로, 호출 수 상한 500회보다 훨씬 작다. 호출마다 실제 사용량이 매번 최대치에 가까우면 누적 예산이 500회 훨씬 전에 소진돼 호출 수 상한이 사실상 무의미해질 수 있다. 이 간극이 의도한 것인지(호출당 평균 사용량이 최대치보다 충분히 낮을 것으로 보는지), 아니면 누적 예산을 올리거나 호출 수 상한을 낮춰야 하는지도 R8 확인이 필요하다.
 
 ## 사람에게 보이는 결과
 
