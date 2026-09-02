@@ -17,7 +17,7 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 ## 기본 검증 순서
 
 1. 배정된 가설의 `workspace_id`, `commit_id`, entity, location과 suspected path를 확인한다.
-2. `CodeContextRequest`로 caller/callee, data flow, auth guard와 route 문맥을 필요한 만큼 조회한다.
+2. `CodeContextRequest`로 caller/callee, data flow, auth guard와 route 문맥을 필요한 만큼 조회한다. 추가 Context 요청은 현재 가설과 같은 `workspace_id`·`commit_id`를 사용해야 한다. 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 기록하며 오류 자체를 verdict 근거로 사용하지 않는다. 일부 조회가 실패했더라도 제한 retry·대체 조회·다른 정상 근거로 모든 `ValidationCheck`, 반증 질문과 운영 Pro/Con을 완료했다면 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있다. 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증이 하나라도 미완료이면 final `VerificationResult`를 저장하지 않는다. 재시도할 수 있으면 work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지하며, 더 시도할 수 없으면 work와 `HypothesisProcessState`를 원자적으로 `FAILED`로 끝낸다. 운영 Pro/Con 전에 예산이 부족한 경우에도 `BUDGET_EXCEEDED`로 작업을 중단하고 final verdict를 저장하지 않는다. Context 부족이나 조회 실패를 `DISPROVED` 또는 `FALSE`로 변환하지 않는다.
 3. observed fact와 assumption을 분리하고 각 `FalsificationQuestion.question_id`를 확인한다.
 4. 운영 분석이면 Pro/Con Agent를 서로 독립된 NEW session으로 병렬 호출해 supporting/counter evidence를 모두 수집한다. BASIC 또는 조건부 debate는 격리된 평가 실행에서만 선택한다.
 5. initial verdict와 unresolved condition을 만든다.
@@ -94,6 +94,70 @@ Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` 
 최종 결과는 등록 가설의 모든 반증 질문에 `DISPROVED | NOT_DISPROVED | INCONCLUSIVE` 중 하나를 기록한다. 또한 모든 `validation_checks`를 같은 `validation_id`의 `ValidationCheckResult`로 정확히 한 번씩 답하고, 각 항목을 `COMPLETE`와 실제 근거 reference로 마쳐야 한다. 하나라도 빠지거나 `INCOMPLETE`이면 final `VerificationResult`를 저장하지 않는다. `DISPROVED`에는 실제 `evidence_refs`가 필요하고, `NOT_DISPROVED`는 가설이 참이라는 증거로 승격하지 않는다. `FALSE`는 적어도 하나의 근거 있는 `DISPROVED` 결과와 그 `question_id`를 설명하는 판정 이유가 있을 때만 허용한다. 오류·timeout·누락만으로는 `DISPROVED`나 `FALSE`를 만들지 않는다.
 
 검증 절차를 끝내지 못했지만 재시도할 수 있으면 Verification work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지한다. 허용된 재시도를 소진했거나 복구할 수 없으면 failed work와 `HypothesisProcessState.status=FAILED`를 한 번에 확정하고 `verification_result_ref=null`로 둔다. 이 종료는 `HOLD`나 `FALSE`가 아니며 Gate로 보내지 않는다.
+
+| 판정 | 최소 필수 근거 | 허용하지 않는 판정 이유 |
+|---|---|---|
+| `TRUE` | 현재 가설의 핵심 exploit path와 필요한 조건을 지지하는 실제 evidence | 단순 추측, `NOT_DISPROVED`, 일부 동적 경로 확인 결과만을 정적·Pro/Con 근거와 종합하지 않고 단독으로 전체 취약점 성립 근거로 사용한 경우 |
+| `FALSE` | named falsification의 `question_id`, `outcome=DISPROVED`, 하나 이상의 실제 `evidence_refs`와 이를 연결하는 판정 이유 | 오류, timeout, 빈 Context, 예산 초과, Sandbox 실패 |
+| `HOLD` | 하나 이상의 `unresolved_conditions`와 정상적으로 확인한 범위 및 결론을 막는 조건을 설명하는 실제 evidence reference | 취약점이 아니라는 의미로 사용하거나 PROVIDED 능력으로 승격 |
+
+### HOLD와 실행 오류의 결정 기준
+
+| 상황 | 처리 | final `VerificationResult` 저장 |
+|---|---|---|
+| 같은 workspace·commit에서 Context 조회가 정상 종료됐지만 필요한 정보가 부족함 | 부족한 내용을 `unresolved_conditions`에 기록하고 필수 검증을 계속한다. 필수 검증을 완료한 뒤에도 조건이 남으면 `HOLD`로 판정한다. | 가능 |
+| 일부 Context 조회가 실패·timeout·권한 오류로 끝났지만 제한 retry·대체 조회·다른 정상 근거로 모든 필수 검증과 운영 Pro/Con을 완료함 | 실패 사건은 `AnalysisError`, 확인하지 못한 범위는 `DataGap`으로 남기고 오류가 아닌 실제 근거로 판정한다. | 가능 |
+| Context 조회 오류 때문에 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증이 하나라도 미완료됨 | final 결과를 만들지 않는다. 재시도 가능하면 work는 `BLOCKED`, 가설은 `VERIFYING`으로 유지하고, 더 시도할 수 없으면 work와 가설 처리 상태를 원자적으로 `FAILED`로 끝낸다. | 금지 |
+| 운영 Pro/Con을 시작하기 전에 예산이 부족함 | `BUDGET_EXCEEDED`로 현재 Verification work를 중단한다. Pro/Con을 생략한 final verdict를 만들지 않는다. | 금지 |
+| 운영 Pro/Con 등 필수 검증은 완료했지만 추가 환경·Context·capability가 부족함 | 남은 조건을 `unresolved_conditions`에 기록하고 `HOLD`로 판정할 수 있다. | 가능 |
+
+정상적으로 조회됐지만 결과가 비어 있거나 일부만 반환된 것은 정보 부족으로 처리한다. 요청 실패·timeout·권한 오류는 실행 오류지만, final 결과 허용 여부는 오류의 존재 자체가 아니라 모든 필수 검증의 완료 여부로 결정한다. Runtime은 오류를 verdict로 바꾸거나 미완료 검증 대신 `HOLD`를 만들지 않는다.
+
+미지원 취약점 유형도 후속 Issue만 생성하고 현재 실행을 끝내서는 안 된다. 공통 플레이북으로 수행할 수 있는 검증을 먼저 진행하고, 정상 검증 후 유형별 정보가 부족하면 `HOLD`, 실행 자체가 실패하면 실행 오류를 기록한다. 그 상태를 기록한 뒤 유형별 플레이북 추가 Issue를 연결한다. 후속 Issue는 현재 실행 상태나 verdict를 대신하지 않는다.
+
+### Initial verdict와 final verdict
+
+`initial_verdict`는 기본 Context와 Verification Agent가 직접 확인한 사실을 바탕으로 만든 중간 판단이다. 운영 분석에서는 독립 Pro/Con과 필요한 동적 재현이 끝나기 전의 initial verdict를 Gate·Primitive·Reporter 입력으로 사용할 수 없다.
+
+final `verdict`는 필요한 Pro/Con과 동적 결과를 포함해 현재 work에서 사용할 수 있는 모든 근거를 종합한 최종 판단이다. initial verdict와 final verdict가 다르면 `verdict_rationale`에 변경 이유를 남긴다. 이 변화가 Debate로 인한 것이면 `VerificationMetrics.verdict_changed_after_debate=true`로 기록한다.
+
+새 evidence나 Technical `REVISE`로 결과가 바뀌면 기존 record를 수정하지 않고 새 `VerificationResult` revision을 만든다. 과거 revision을 검토한 Gate 결과는 새 revision에 재사용하지 않는다.
+
+### Verification `TRUE`와 Technical `ACCEPT`의 경계
+
+Verification의 `TRUE`는 R6가 정적·Pro/Con·필요 시 동적 근거를 종합해 현재 가설의 핵심 공격 경로와 필요한 조건이 성립한다고 판정한 결과다.
+
+Technical Evidence Gate의 `ACCEPT`는 R5가 exact final TRUE revision을 대상으로 evidence와 코드 경로의 연결, 동적 재현·PoC와 restriction, CWE와 다음 단계 전달 준비 상태가 충분한지 별도로 검토한 결과다.
+
+따라서 R6가 `TRUE`를 만들었다고 해서 Technical `ACCEPT`가 자동으로 보장되지는 않는다. Technical Gate는 같은 verdict revision에 대해 `ACCEPT | REVISE | REJECT`를 반환할 수 있지만 기존 verdict를 직접 변경하지 않는다. `REVISE`가 반환되면 같은 ACTIVE Verification owner가 근거를 보완해 새 `VerificationResult` revision을 만든다.
+
+## 취약점 유형별 검증 플레이북
+
+지원 취약점 유형 목록은 R8의 versioned evaluation corpus에서 확정한다. 현재는 지원 목록이 확정되지 않았으므로 이번 설계에서는 모든 유형에 공통으로 적용할 플레이북 구조와 작성 규칙을 먼저 확정한다. 지원 목록이 확정되면 이 구조를 사용해 유형별 플레이북을 별도 revision으로 추가한다.
+
+목록이 확정된 뒤 각 지원 취약점 유형은 같은 이름으로 식별 가능한 검증 플레이북을 가진다. 플레이북은 Agent에게 자유로운 결론을 요구하는 prompt가 아니라, 해당 유형에서 빠뜨리면 안 되는 확인 항목과 반증 질문을 정의한 실행 가능한 검증 절차다.
+
+플레이북 후보는 R6 검증·반박·플레이북 담당이 작성하고, trusted playbook registry runtime이 schema와 revision을 검사해 변경 불가능한 record로 등록한다. Verification work를 등록할 때 trusted runtime은 지원 유형과 일치하는 current exact `TYPE_SPECIFIC` revision을 선택하고, 적용 가능한 유형별 플레이북이 없으면 current exact `COMMON` revision을 선택해 `WorkExecutionState.input_refs`에 고정한다.
+
+Verification의 직접 검증, 독립 Pro/Con 실행, final 합성과 결과 저장은 모두 work에 고정된 동일한 플레이북 revision을 사용한다. 검증 도중 current revision이 변경돼도 진행 중인 work에는 새 revision을 섞지 않는다. 단순 retry는 기존 revision을 유지하고, 새 revision을 적용하려면 새 Verification work 또는 새 verification generation을 만들어야 한다.
+
+각 플레이북에는 최소한 다음 항목을 기록한다.
+
+| 항목 | 설명 |
+|---|---|
+| `vulnerability_type` | 플레이북이 다루는 취약점 유형 |
+| 사전 조건 | 공격자가 먼저 만족해야 하는 권한·입력·환경 |
+| source | 공격자 입력이나 제어 값이 시작되는 위치 |
+| sink | 위험 동작 또는 영향이 발생하는 위치 |
+| 경로 확인 | source에서 sink까지 이어지는 호출·데이터 흐름 |
+| 방어 확인 | validator, sanitizer, canonicalization, 인증·인가와 권한 검사 |
+| 반증 질문 | 무엇이 실제 근거로 확인되면 가설이 반증되는지 |
+| 정적 evidence | 필요한 코드 위치·호출 관계·도구 결과 |
+| 동적 evidence | 실행으로 확인해야 하는 조건과 observable effect |
+| restriction | 공격이 가능한 범위를 제한하는 조건 |
+| HOLD 조건 | 아직 해결되지 않으면 최종 판단을 보류해야 하는 조건 |
+
+지원 목록이 확정되기 전에는 임의의 취약점 유형을 지원 대상으로 가정하지 않는다. 목록 확정 후에도 지원 목록에 없는 유형을 기존 플레이북에 억지로 맞추지 않는다. 필요한 검증 항목을 확정할 수 없으면 공통 플레이북으로 현재 실행을 먼저 처리한다. 정상적으로 필수 검증을 완료했지만 정보가 부족하면 `unresolved_conditions`와 `HOLD`를 기록한 뒤 후속 Issue를 연결한다. 실행 자체가 실패했다면 verdict 없이 실행 오류를 기록한 뒤 후속 Issue를 연결한다. 새로운 endpoint·sink·권한 경계·공격 단계·독립 impact가 발견되면 현재 verdict에 합치지 않고 material child proposal로 분리한다.
 
 ## Docker 동적 재현
 
@@ -176,3 +240,11 @@ VerificationResult revision N
 최종 결과는 verdict뿐 아니라 질문별 `FalsificationResult`, supporting/counter evidence, restrictions, bypass·alternate path·impact 후보, REQUIRED/PROVIDED Primitive 후보, `origin=VERIFICATION` material child proposal, unresolved conditions, debate 지표와 동적 재현 reference를 포함한다. HOLD의 REQUIRED 후보는 즉시 admission할 수 있다. TRUE의 REQUIRED 후보는 그 취약점의 악용 선행 조건으로만 보존되고, PROVIDED 후보가 두 Gate를 정상 통과해 admission될 때 `required_preconditions`에 복사된다. 이 정보가 CWE, 두 Gate, Primitive admission과 사람 검토의 입력이 된다.
 
 supporting/counter evidence는 자유 형식 문자열이 아니라 `EvidenceClaim`으로 기록한다. 각 claim은 작성 역할, 실제 저장 근거와 코드 주장에 필요한 현재 workspace·commit의 위치를 포함한다. 우회·대체 경로·영향 확대 후보는 `CandidateRef(candidate_state=UNVALIDATED)`로 구분하고 새 material claim이면 별도 가설로 재검증한다. debate token·시간과 판정 변화는 `VerificationMetrics`에 저장하며 provider가 token을 제공하지 않으면 값을 추정하지 않고 `null`로 둔다.
+
+### 저장 전 무결성 검사
+
+final `VerificationResult` 후보를 저장하기 전에 trusted runtime은 `SAVE_RESULT(result_kind=verification_result)` 요청에서 결과 생산 역할, 현재 `work_ref`·`attempt_id`, `workspace_id`·`commit_id`, candidate result reference와 candidate 전체의 `content_hash`를 함께 검사한다.
+
+검사 이후 candidate bytes·`content_hash`, 현재 work·attempt 또는 상태 revision이 변경되면 기존 저장 허가를 재사용하지 않는다. 해당 결과는 `STALE_RESULT | RECORD_REVISION_MISMATCH | STATE_VERSION_CONFLICT` 중 실제 원인을 기록하고 저장을 거절한다.
+
+결과 reference, 종료 상태 전이와 `TransitionCommit.output_refs`가 같은 `VerificationResult.record_id`를 가리키고 `TransitionCommit.state=COMMITTED`가 된 exact revision만 Technical Evidence Gate의 입력으로 사용할 수 있다.

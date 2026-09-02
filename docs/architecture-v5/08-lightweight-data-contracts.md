@@ -324,6 +324,10 @@ TransitionCommit:
 
 `work_generation`은 같은 분석·작업 종류·대상·입력에서 1부터 시작한다. 일반 retry와 resume에서는 바꾸지 않고, 종료 상태 뒤 사람이 승인한 명시적 restart에서만 1 증가한다. `dedupe_key`는 `analysis_id`, `work_type`, `subject_id`, `work_generation`, 정렬된 입력의 `record_id + content_hash`, 적용한 설정·정책 revision을 canonical JSON으로 만든 SHA-256 값이다. `attempt_id`, 시각과 worker 이름은 넣지 않는다. 같은 generation과 key의 요청이 다시 오면 새 작업을 만들지 않고 기존 `work_id`와 현재 상태를 반환한다. 입력 revision·적용 설정·승인된 generation이 바뀌면 새 `dedupe_key`와 새 `work_id`를 만든다.
 
+`REGISTER_WORK(work_type=VERIFICATION)` 시 trusted runtime은 해당 검증에 적용할 current exact `VerificationPlaybook` revision을 선택하고 그 `StoredDataRef`를 `WorkExecutionState.input_refs`에 포함한다. 해당 reference의 `record_id`와 `content_hash`는 work의 `input_hash`와 `dedupe_key`에도 반영한다.
+
+플레이북의 current revision이 검증 도중 변경되더라도 진행 중인 work의 입력을 새 revision으로 바꾸지 않는다. 기존 revision으로 계속 수행할 수 있으며, 새 revision을 적용하려면 기존 결과와 섞지 않고 새 Verification work 또는 새 verification generation을 만들어야 한다. 단순 retry는 기존 work에 고정된 playbook revision을 유지한다.
+
 `REVISE`는 일반 retry나 resume이 아니다. Technical Gate가 유효한 `TechnicalEvidenceReview.status=REVISE`를 확정하면 기존 Gate work는 `SUCCEEDED`로 종료하고 그 review를 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 전달한다. runtime은 `HypothesisProcessState.status=TERMINAL`, 그 상태의 `verification_result_ref`가 Gate가 검토한 exact revision, assignment가 여전히 ACTIVE인지 compare-and-set으로 확인한다. 그 뒤 종료된 기존 VERIFICATION work를 되돌리지 않고 `verification_generation + 1`인 새 `WorkExecutionState(work_type=VERIFICATION)`를 등록하며, 같은 atomic transition에서 hypothesis 상태를 `VERIFYING`, `finished_at=null`, `verification_work_ref=새 work`, `verification_result_ref=직전 final result`로 갱신한다. 새 work의 input에는 exact REVISE review와 직전 Verification/CWE reference가 들어간다.
 
 같은 owner가 새 work에서 보완을 마치면 새 `VerificationResult`와 새 VERIFICATION work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`, 새 `verification_result_ref`, `verification_work_ref=null`을 한 atomic commit으로 확정한다. CWE 보완이 필요하면 기존 CWE producer가 새 `CWELabel` revision을 만든 뒤에만 새 Technical Gate work를 등록한다. 새 Gate 작업은 달라진 `input_refs`, `input_hash`, `dedupe_key`, `work_id`를 사용하고 첫 `WorkAttempt`는 새 `attempt_id`, `attempt_number=1`, `trigger=INITIAL`을 사용한다. 이전 Gate review와 새 review는 `RecordMeta.previous_record_id`로 이어지는 같은 논리 record의 revision chain에 남긴다. 반대로 provider timeout이나 일시 오류처럼 domain input이 바뀌지 않은 일반 retry는 같은 `work_id`·`dedupe_key`·`input_hash`를 유지하고 새 `attempt_id`와 `trigger=RETRY`를 사용한다. 동일 입력의 새 attempt만 만들어 `REVISE`를 다시 투표하거나 과거 Gate reference를 새 Verification revision에 재사용하는 것은 금지한다.
@@ -531,12 +535,15 @@ Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 
 - `VerificationResult.verdict=TRUE`이면 현재 가설의 핵심 공격 경로와 필요한 조건을 연결하는 하나 이상의 `supporting_evidence`가 필수다. 각 claim은 실제 저장 근거와 같은 `workspace_id + commit_id`의 코드 위치를 가져야 하며 오류·gap record를 근거로 사용할 수 없다.
 - `VerificationResult.verdict=FALSE`이면 `falsification_results`에 실제 `question_id`, `outcome=DISPROVED`, 하나 이상의 `evidence_refs`가 있는 항목이 필수이고 `verdict_rationale`이 그 질문과 근거를 연결해야 한다. 오류·timeout·빈 출력만 있는 후보는 `SCHEMA` check를 `FAIL`로 만들어 저장하지 않으며 runtime이 다른 verdict를 만들어 주지 않는다.
 - `VerificationResult.verdict=HOLD`이면 비어 있지 않은 `unresolved_conditions`와, 정상적으로 확인한 범위 및 결론을 막는 중요한 조건을 설명하는 `supporting_evidence[].evidence_refs | counter_evidence[].evidence_refs | falsification_results[].evidence_refs` 중 하나 이상의 실제 reference가 필요하다. `AnalysisError`, `DataGap`, timeout·권한 오류 또는 빈 Context만으로 만든 HOLD 후보는 `SCHEMA` check를 `FAIL`로 만들며 runtime이 다른 verdict를 만들어 주지 않는다.
+- `TRUE | HOLD`에는 `outcome=DISPROVED`인 `FalsificationResult`가 있을 수 없다.
+- candidate의 `playbook_ref`는 `SAVE_RESULT.input_refs`에 포함된 exact `VerificationPlaybook` revision과 일치해야 한다. reference가 없거나 `record_id`·`content_hash`가 다르거나, final Verification 합성 호출이 다른 플레이북 revision을 사용했으면 저장을 거절한다.
 - `result_kind=primitive`이면 `SCHEMA`와 `REVISION`은 admission 종류를 구분한다. REQUIRED는 exact final HOLD `source_verification_ref`, `technical_review_ref=null`, `rule_scope_review_ref=null`, 빈 `required_preconditions`여야 한다. PROVIDED는 exact final TRUE, 같은 Verification+CWE를 검토한 Technical `ACCEPT`, 그 Technical review를 입력으로 한 Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`를 모두 가리키고 exact Verification의 필요 조건을 `required_preconditions`에 복사해야 한다. 새 Verification revision이 생긴 뒤 과거 Gate refs를 붙인 PROVIDED, `SUPERSEDED` 입력과 FALSE 기반 Primitive는 저장하지 않는다.
 - `result_kind=chaining_result`이면 입력 Primitive뿐 아니라 각 parent의 current `PrimitiveIndexState` exact revision을 요구한다. TRUE_HOLD는 Gate-qualified PROVIDED 하나와 HOLD REQUIRED 하나, TRUE_TRUE는 앞 PROVIDED가 뒤 PROVIDED의 exact `required_preconditions` 하나를 충족해야 한다. 저장 직전 index head와 current final Verification을 CAS 재검사하며, 하나라도 바뀌면 `STALE_RESULT`로 결과와 proposal 등록을 거절한다. ChainingResult에 일반 research·동적 재현·Gate 보완 요청이 있거나 proposal origin이 CHAINING이 아니면 저장을 거절한다.
 - 저장 runtime은 claim한 action의 candidate bytes와 hash를 다시 확인한다. 확정된 result ref는 candidate와 `stored_data_id`·`data_kind`·`content_hash`·`record_id`가 모두 같아야 한다. 결과 ref, 종료 `StateTransition`과 `TransitionCommit`은 같은 output을 가리켜야 하며 `TransitionCommit.state=COMMITTED`가 된 뒤에만 소비할 수 있다. 후속 `ActionDecision.outcome_refs`에는 그 exact result ref와 COMMITTED commit ref를 각각 한 번 넣는다.
 - `result_kind=environment_requirements`이면 VERIFICATION만 저장할 수 있다. `SCHEMA`는 고유 `requirement_id`, 허용 kind, 필수 여부, 하나 이상의 exact `source_refs`, 값·artifact·검사 조건 연결과 secret 금지를 검사한다. 기존 요구사항을 바꾸려면 같은 record를 덮어쓰지 않고 새 `record_id`를 만든다.
 - `result_kind=dynamic_reproduction_result`이면 `SAVE_RESULT.input_refs`에 candidate뿐 아니라 exact `RUN_SANDBOX` USED decision, `ReproductionPlan`, 그 계획의 exact `EnvironmentRequirements`와 나머지 closure를 넣는다. `policy_decision_ref`, `environment_ref`, `steps_ref`, `poc_ref`가 존재하면 각 exact target도 input에 넣는다. `runner_invoked=true`이면 `SandboxStepLog`가 필수이고 `false`이면 log를 요구하거나 추측해 만들지 않는다. `REVISION` check는 결과의 plan·mode·정책 판정·Runner 호출·공격 입력·PoC·실제 환경·정리 정책과 실제 step log가 승인 당시와 같은지 다시 검사한다. 실제 `sandbox_environment.requirements_ref`가 plan의 `environment_requirements_ref`와 다르거나 current가 아닌 요구사항 revision이면 저장을 거절한다. `SCHEMA` check는 요구사항별 비교 결과, `runner_invoked`, `environment_created`, `cleanup_required`와 nullable reference·`cleanup_status` 조합을 검사한다.
 - check 뒤 candidate bytes·hash, active attempt, work input 또는 state version이 달라지면 decision을 `EXPIRED`로 만들거나 save를 `DENY`하고 `STALE_RESULT | RECORD_REVISION_MISMATCH | STATE_VERSION_CONFLICT` 중 실제 원인을 기록한다. 변한 후보를 저장하거나 이미 `USED`인 action으로 다시 저장하지 않는다.
+Runtime Validator는 구조·reference·완료 상태만 검사한다. final `TRUE` 근거의 의미적 충분성과 코드·실행 근거 연결은 Technical Evidence Gate가 exact final TRUE revision을 대상으로 별도로 검토한다. `FALSE | HOLD`는 Technical Gate 입력이 아니며, 구조 검사를 통과했다는 사실이 Gate 승인을 의미하지 않는다.
 
 action type에서 쓰지 않는 선택 field는 `null` 또는 빈 배열이어야 하고 `reason`은 비어 있지 않아야 한다. `READ_CODE`는 하나 이상의 `file_paths`, `RUN_TOOL`은 `tool_name`과 필요한 file path가 필수다. 실제 LLM을 실행하는 `CALL_LLM | CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT`는 exact `llm_call_spec_ref`, `provider_profile_ref`, `session_mode`와 work state가 필요하며 action의 provider·session 값은 spec과 같아야 한다. `SAVE_RESULT`만 `result_kind`와 `candidate_result_ref`를 사용한다. Gate와 Reporter는 별도 `CALL_LLM`을 우회 호출하지 않고 각 stage action이 LLM 호출까지 직접 허가한다. `RUN_SANDBOX`만 `reproduction_plan_ref`를 사용하며 Controller가 검사할 `sandbox_profile_ref`·`image_digest`·`resource_limits`도 필수다. action `input_refs`에는 exact `ReproductionPlan`, 그 계획의 `hypothesis_ref`·`environment_requirements_ref`·`sandbox_profile_ref`·모든 step `command_ref`·`attack_input_refs`·`cleanup_policy_ref`를 중복 없이 포함한다. `environment_requirements_ref` target은 current exact `EnvironmentRequirements` revision이어야 한다. Runtime Validator의 `SCHEMA`·`REVISION`은 이 reference 집합의 존재와 고정 여부만 확인하고 환경 값이나 Sandbox 정책 의미를 판단하지 않는다. Sandbox Controller는 action의 `sandbox_profile_ref`와 계획 값을 exact 비교하고, 빈 `network_targets`를 default-deny로 해석해 세부 정책을 검사한다. `PREPARE_HUMAN_REVIEW`는 `work_ref`로 current `HumanReviewState`, `expected_state_version`으로 현재 version을 가리키고 `input_refs`에 exact `AnalysisRunResult`를 넣는다. `SAVE_HUMAN_DECISION`도 current state/version을 가리키고 `input_refs`에 exact current packet과 사람 identity record를 넣는다. `EXTERNAL_DISCLOSURE` 역시 current state/version을 가리키며 exact current HumanReviewDecision과 승인한 ReportDraft를 입력으로 가져야 한다. action의 `disclosure_targets`는 current 결정의 목록과 set-equal해야 한다.
 
@@ -820,6 +827,21 @@ CodeContextResponse:
 검증 Agent가 찬성·반대·동적 근거를 모아 `TRUE / FALSE / HOLD` 판정과 남은 조건을 기록하는 결과입니다.
 
 ```yaml
+VerificationPlaybook:
+  meta: RecordMeta with hypothesis_id null and attempt_id null
+  scope: COMMON | TYPE_SPECIFIC
+  vulnerability_type: string | null
+  prerequisites: [string]
+  source_checks: [string]
+  sink_checks: [string]
+  path_checks: [string]
+  defense_checks: [string]
+  falsification_question_templates: [string]
+  static_evidence_requirements: [string]
+  dynamic_evidence_requirements: [string]
+  restriction_checks: [string]
+  hold_conditions: [string]
+
 EvidenceClaim:
   claim_id: string
   statement: string
@@ -876,6 +898,7 @@ ValidationCheckResult:
 
 VerificationResult:
   meta: RecordMeta
+  playbook_ref: StoredDataRef
   verification_mode: BASIC | CONDITIONAL_DEBATE | ALWAYS_DEBATE
   debate_triggers: [string]
   debate_skip_reason: string | null
@@ -899,6 +922,13 @@ VerificationResult:
   metrics: VerificationMetrics
   errors: [AnalysisError]
 ```
+`VerificationPlaybook.meta.logical_record_id`는 플레이북 식별자이고 `meta.revision_number`는 내용 revision이다. `schema_version`은 플레이북 데이터 구조의 버전이므로 내용 revision과 구분한다. 플레이북 내용이 변경되면 기존 record를 수정하지 않고 새 `record_id`, 증가한 `revision_number`와 새 `content_hash`를 만든다.
+
+`scope=COMMON`이면 `vulnerability_type=null`, `scope=TYPE_SPECIFIC`이면 `vulnerability_type`이 필수다. 지원 유형 목록이 확정되기 전이나 미지원 유형을 검증할 때는 현재 저장된 공통 플레이북의 exact revision을 사용한다.
+
+플레이북 후보는 R6 검증·반박·플레이북 담당이 작성하고, trusted playbook registry runtime이 schema와 revision을 검사해 immutable record로 등록한다. Verification work를 등록하는 trusted runtime은 versioned 적용 규칙에 따라 지원 유형과 일치하는 current `TYPE_SPECIFIC` revision을 선택하고, 적용 가능한 유형별 플레이북이 없으면 current `COMMON` revision을 선택한다. Agent가 실행 도중 임의로 다른 revision을 선택할 수 없다.
+
+`VerificationResult.playbook_ref`는 실제 검증에 사용한 exact `VerificationPlaybook.record_id`와 `content_hash`를 가리킨다. Verification Agent의 직접 검증, `PRO_EVIDENCE`, `CON_EVIDENCE`, final Verification 합성 호출 및 `SAVE_RESULT(result_kind=verification_result)`는 모두 해당 Verification work에 고정된 동일한 `playbook_ref`를 사용해야 한다. Runtime Validator는 각 action의 `input_refs`, 각 LLM 호출의 `LLMCallSpec.context_refs`, 최종 `VerificationResult.playbook_ref` 및 `SAVE_RESULT.input_refs`가 work의 `WorkExecutionState.input_refs`에 고정된 reference와 동일한 `record_id`·`content_hash`를 사용하는지 검사한다. 이후 플레이북에 새 revision이 생겨도 과거 `VerificationResult`는 자신이 실제 사용한 기존 revision을 계속 가리킨다.
 
 `EvidenceClaim.claim_id`는 한 `VerificationResult` 안에서 유일하다. 각 claim은 실제 저장 근거를 가리키는 `evidence_refs`를 하나 이상 가져야 하며, 코드 주장이라면 현재 `workspace_id + commit_id`의 `code_locations`도 하나 이상 가져야 한다. `source_role`은 claim을 작성한 역할이며 근거의 출처를 대신하지 않는다. supporting 목록에는 `VERIFICATION | PRO`, counter 목록에는 `VERIFICATION | CON`만 허용한다.
 
