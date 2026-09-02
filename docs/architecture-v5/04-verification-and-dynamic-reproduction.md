@@ -54,32 +54,78 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 
 `AnalysisRunState.purpose=PRODUCTION`에서는 `verification_mode=ALWAYS_DEBATE`만 허용한다. `purpose=EVALUATION`에서만 `BASIC | CONDITIONAL_DEBATE`를 사용할 수 있으며, 그 결과는 품질·비용 비교 자료일 뿐 Gate·Primitive admission·Reporter 입력으로 사용할 수 없다.
 
-조건부 debate trigger 예시는 다음과 같다.
+mode와 실행·생략 기록은 다음 조합만 허용한다.
 
-- 상충하는 정적 근거 또는 도구 결과
-- 높은 impact나 높은 비용의 후속 조치
-- initial `HOLD` 가능성
-- 인증·인가·sanitizer 우회 확인 필요
-- evidence가 한쪽 주장에만 치우침
-- Technical Gate가 반박 또는 restriction 보강을 요구
-- 같은 Verification의 이전 검토나 Technical `REVISE`가 의미 있는 alternate path 확인을 요구
+| purpose | mode | Pro/Con 실행 | `debate_triggers` | `debate_skip_reason` |
+|---|---|---|---|---|
+| `PRODUCTION` | `ALWAYS_DEBATE` | 필수 | `[]` | `null` |
+| `EVALUATION` | `ALWAYS_DEBATE` | 필수 | `[]` | `null` |
+| `EVALUATION` | `CONDITIONAL_DEBATE` | trigger가 하나 이상 충족되면 실행 | 충족된 trigger code 목록 | 실행하면 `null`, 생략하면 `NO_TRIGGER_MATCH` |
+| `EVALUATION` | `BASIC` | 실행하지 않음 | `[]` | `MODE_BASIC` |
+
+평가용 조건부 Debate는 다음 versioned trigger code를 사용한다.
+
+| trigger code | 의미 |
+|---|---|
+| `CONFLICTING_EVIDENCE` | 정적 근거 또는 도구 결과가 서로 충돌함 |
+| `HIGH_IMPACT_OR_COST` | 예상 impact가 크거나 후속 검증 비용이 큼 |
+| `INITIAL_HOLD` | 기본 검토가 핵심 조건 부족으로 HOLD 가능성을 보임 |
+| `AUTH_OR_SANITIZER_BYPASS` | 인증·인가·sanitizer 우회 확인이 필요함 |
+| `ONE_SIDED_EVIDENCE` | 현재 근거가 찬성 또는 반대 한쪽에만 치우침 |
+| `REVISE_ALTERNATE_PATH` | Technical `REVISE` 또는 이전 검토가 alternate path 확인을 요구함 |
+
+`debate_triggers`에는 실제 충족된 code만 중복 없이 기록한다. trigger 집합과 판정 규칙은 versioned Debate 설정에서 읽으며 R6가 실행 중 임의로 추가·변경하지 않는다. `CONDITIONAL_DEBATE`에서 목록이 비어 있으면 Pro/Con을 호출하지 않고 `debate_skip_reason=NO_TRIGGER_MATCH`를 남긴다. 호출을 실행한 결과에 skip reason을 남기거나, 생략하면서 skip reason을 비워 두는 후보는 저장하지 않는다.
 
 운영 분석에서는 named falsification으로 빠르게 반증될 가능성이 있거나 duplicate/unsupported 후보여도 Pro/Con을 생략하지 않는다. 예산이 부족하면 `BUDGET_EXCEEDED`로 현재 Verification work를 중단하며 Pro/Con을 생략한 final verdict를 만들지 않는다. 새 예산이 승인된 새 work에서만 이어서 검증한다.
 
-Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` session에서 시작한다. 각 호출은 `requested_by=PRO | CON`, 같은 역할의 `LLMCallSpec.agent_role`, `session_mode=NEW`, `session_policy=NEW`, `parent_session_ref=null`과 서로 다른 `llm_call_id`·action·decision·실제 session을 사용한다. retry와 failover도 상대 역할의 session·output·decision을 이어받지 않고 같은 역할의 새 `NEW` session으로 실행한다. 동일한 `workspace_id`·`commit_id`와 가설·공통 코드 fact는 받지만 상대 Agent의 결론은 입력받지 않는다. Verification Agent만 두 결과와 직접 확인한 사실을 종합한다.
+### 공통 입력 snapshot과 독립 호출
+
+Verification은 호출 전에 current ACTIVE `VerificationAssignment`, exact `VulnerabilityHypothesis`, `workspace_id`, `commit_id`, Context·정적 근거 reference, 반증 질문, 사용한 exact `VerificationPlaybook` revision과 versioned Debate·budget 설정을 하나의 공통 입력 snapshot으로 고정한다. Pro와 Con의 `LLMCallSpec.context_refs`는 이 공통 reference 집합과 exact match여야 한다. 역할별 prompt payload와 output schema는 다를 수 있지만 입력 가설·코드·플레이북 revision은 같아야 한다.
+
+Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` session에서 시작한다. 각 호출은 `requested_by=PRO | CON`, 같은 역할의 `LLMCallSpec.agent_role`, `session_mode=NEW`, `session_policy=NEW`, `parent_session_ref=null`과 서로 다른 `work_id`·`attempt_id`·`llm_call_id`·spec·action·decision·실제 session을 사용한다. provider가 session ID를 주지 않으면 adapter가 호출마다 서로 다른 local `session_ref`를 발급한다. 상대 Agent의 output·결론·session·action decision을 context나 predecessor로 넣을 수 없다.
+
+### 병렬 실행과 join 조건
+
+운영 실행은 다음 순서를 따른다.
+
+| 순서 | 처리 | 다음 단계 조건 |
+|---|---|---|
+| 1. preflight | purpose·mode, assignment owner, exact 공통 입력, provider/session 정책과 R8 budget profile을 검사한다. | 운영에서는 두 최초 호출을 모두 시작할 예산과 권한이 있어야 한다. 하나라도 준비되지 않으면 어느 호출도 시작하지 않는다. |
+| 2. dispatch | Pro와 Con의 work·call spec·action을 각각 만들고 두 호출을 병렬 실행한다. | 두 호출은 같은 공통 입력 snapshot과 서로 다른 identity·NEW session을 사용한다. |
+| 3. collect | 각 호출의 `LLMInvocationResult`, log, parsed output과 오류를 독립적으로 저장한다. | 한쪽 결과를 다른 쪽 입력으로 전달하지 않는다. |
+| 4. join | 두 호출 모두 `SUCCEEDED`, output schema 통과, non-empty parsed output, exact input snapshot 일치를 확인한다. | 조건을 모두 만족한 두 output만 Verification 합성 입력으로 사용한다. |
+| 5. synthesize | Verification만 supporting/counter `EvidenceClaim`을 함께 읽고 initial/final 판정 작업을 계속한다. | Pro 또는 Con 단독 결과로 운영 final verdict를 만들지 않는다. |
+
+한쪽이 `FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED`이면 성공한 반대쪽 결과만으로 합성하지 않는다. 허용된 repair·retry·provider failover는 실패한 역할에서만 수행할 수 있고, 같은 공통 입력 snapshot을 유지하는 동안에는 먼저 성공한 반대쪽 결과를 보존할 수 있다. retry와 failover도 새 `llm_call_id`·spec·action·decision·`NEW` session을 만들고 같은 역할의 바로 앞 허용 실패만 predecessor로 연결한다.
+
+공통 입력의 가설·Context·코드·플레이북 revision 또는 Verification generation이 바뀌면 이전 Pro/Con output을 새 snapshot과 섞지 않는다. 기존 결과는 stale로 보존하고 새 Verification work에서 두 역할을 다시 호출한다. 허용된 retry·failover 뒤에도 한쪽의 유효 output을 확보하지 못하면 final `VerificationResult`를 만들지 않는다. 재인증·backoff·새 예산처럼 외부 조건을 기다릴 수 있으면 공통 상태 계약에 따라 work를 `BLOCKED`로 두고, 허용 시도를 소진했거나 복구할 수 없으면 work와 가설 처리 상태를 `FAILED`로 끝낸다. 어느 실패도 `FALSE | HOLD`의 근거가 아니다.
 
 ## Debate 효과 측정
 
-각 가설에 다음을 저장해 조건부 정책을 향후 평가할 수 있게 한다.
+각 가설에는 다음 자료를 연결해 조건부 정책을 향후 평가할 수 있게 한다.
 
-- 모드와 trigger/skip reason
-- Pro/Con 및 종합에 사용한 token과 wall-clock time
-- debate 전후 verdict와 confidence 변화
-- `HOLD` 해소 여부
-- false-positive 감소 후보
-- 새 bypass·restriction·falsification 발견 여부
+- `VerificationResult`: mode, 충족 trigger, skip reason과 `VerificationMetrics`
+- `VerificationMetrics`: Pro·Con·합성 token, 전체 elapsed time, Debate 전후 verdict 변화, `HOLD` 해소, false-positive 감소 후보와 새 bypass·restriction·falsification 수
+- 역할별 `LLMInvocationLog`: 고유 call 수, provider·model·session, status, elapsed time, 실제 usage, retry·failover predecessor와 오류
+
+Pro·Con 호출 횟수는 같은 Verification work와 역할에 속한 중복 없는 `llm_call_id` 수로 계산한다. retry 횟수와 failover 횟수는 각각 유효한 `retry_of_llm_call_id`와 `failover_from_llm_call_id`가 있는 log 수로 계산한다. provider가 token usage를 제공하지 않으면 추정값을 쓰지 않고 `null`과 unavailable 이유를 남긴다. R8은 이 exact log와 metric을 읽어 mode별 품질·비용을 비교하며 개별 호출이나 verdict를 변경하지 않는다.
 
 `BASIC | CONDITIONAL_DEBATE`가 더 정확하거나 저렴한지는 동일 corpus의 격리된 평가에서만 측정한다. 평가 결과가 운영 기본 변경의 합격선을 통과하고 별도 설계 결정을 남기기 전까지 운영은 `ALWAYS_DEBATE`를 유지한다.
+
+### Debate 계약 검증 시나리오
+
+| 시나리오 | 기대 결과 |
+|---|---|
+| 운영 `ALWAYS_DEBATE` | 같은 exact 입력으로 Pro와 Con이 각각 독립 `NEW` session에서 호출되고, 둘 다 유효하게 끝난 뒤에만 합성함 |
+| 평가 `BASIC` | Pro/Con 호출 없이 `debate_triggers=[]`, `debate_skip_reason=MODE_BASIC`을 기록하며 Gate·Primitive·Reporter 입력을 거절함 |
+| 평가 `CONDITIONAL_DEBATE`, trigger 충족 | 충족 code를 기록하고 두 Agent를 호출하며 `debate_skip_reason=null`임 |
+| 평가 `CONDITIONAL_DEBATE`, trigger 불충족 | Pro/Con 호출 없이 `debate_triggers=[]`, `debate_skip_reason=NO_TRIGGER_MATCH`를 기록함 |
+| session 독립성 위반 | 같은 session·call identity, non-null parent 또는 상대 output을 넣은 호출을 거절함 |
+| 한쪽 timeout 뒤 retry 성공 | timeout과 새 retry call을 모두 보존하고, 같은 snapshot의 유효한 Pro·Con 두 결과가 모인 뒤 합성함 |
+| 한쪽 실패 또는 빈 출력이 끝내 복구되지 않음 | 운영 final `VerificationResult`를 만들지 않고 공통 상태 계약에 따라 `BLOCKED | FAILED`로 처리함 |
+| 두 최초 호출을 시작할 budget 부족 | 어느 호출도 시작하지 않고 `BUDGET_EXCEEDED`를 기록하며 final verdict를 만들지 않음 |
+| retry 전 공통 입력 revision 변경 | 이전 성공·실패 output을 stale로 보존하고 새 work에서 Pro와 Con을 모두 다시 호출함 |
+| 평가 결과의 운영 승격 시도 | Technical Gate, Primitive admission과 Reporter action을 runtime이 거절함 |
 
 ## 판정 의미
 
