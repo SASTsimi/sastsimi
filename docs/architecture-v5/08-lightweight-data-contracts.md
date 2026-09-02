@@ -324,6 +324,10 @@ TransitionCommit:
 
 `work_generation`은 같은 분석·작업 종류·대상·입력에서 1부터 시작한다. 일반 retry와 resume에서는 바꾸지 않고, 종료 상태 뒤 사람이 승인한 명시적 restart에서만 1 증가한다. `dedupe_key`는 `analysis_id`, `work_type`, `subject_id`, `work_generation`, 정렬된 입력의 `record_id + content_hash`, 적용한 설정·정책 revision을 canonical JSON으로 만든 SHA-256 값이다. `attempt_id`, 시각과 worker 이름은 넣지 않는다. 같은 generation과 key의 요청이 다시 오면 새 작업을 만들지 않고 기존 `work_id`와 현재 상태를 반환한다. 입력 revision·적용 설정·승인된 generation이 바뀌면 새 `dedupe_key`와 새 `work_id`를 만든다.
 
+`REGISTER_WORK(work_type=VERIFICATION)` 시 trusted runtime은 해당 검증에 적용할 current exact `VerificationPlaybook` revision을 선택하고 그 `StoredDataRef`를 `WorkExecutionState.input_refs`에 포함한다. 해당 reference의 `record_id`와 `content_hash`는 work의 `input_hash`와 `dedupe_key`에도 반영한다.
+
+플레이북의 current revision이 검증 도중 변경되더라도 진행 중인 work의 입력을 새 revision으로 바꾸지 않는다. 기존 revision으로 계속 수행할 수 있으며, 새 revision을 적용하려면 기존 결과와 섞지 않고 새 Verification work 또는 새 verification generation을 만들어야 한다. 단순 retry는 기존 work에 고정된 playbook revision을 유지한다.
+
 `REVISE`는 일반 retry나 resume이 아니다. Technical Gate가 유효한 `TechnicalEvidenceReview.status=REVISE`를 확정하면 기존 Gate work는 `SUCCEEDED`로 종료하고 그 review를 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 전달한다. runtime은 `HypothesisProcessState.status=TERMINAL`, 그 상태의 `verification_result_ref`가 Gate가 검토한 exact revision, assignment가 여전히 ACTIVE인지 compare-and-set으로 확인한다. 그 뒤 종료된 기존 VERIFICATION work를 되돌리지 않고 `verification_generation + 1`인 새 `WorkExecutionState(work_type=VERIFICATION)`를 등록하며, 같은 atomic transition에서 hypothesis 상태를 `VERIFYING`, `finished_at=null`, `verification_work_ref=새 work`, `verification_result_ref=직전 final result`로 갱신한다. 새 work의 input에는 exact REVISE review와 직전 Verification/CWE reference가 들어간다.
 
 같은 owner가 새 work에서 보완을 마치면 새 `VerificationResult`와 새 VERIFICATION work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`, 새 `verification_result_ref`, `verification_work_ref=null`을 한 atomic commit으로 확정한다. CWE 보완이 필요하면 기존 CWE producer가 새 `CWELabel` revision을 만든 뒤에만 새 Technical Gate work를 등록한다. 새 Gate 작업은 달라진 `input_refs`, `input_hash`, `dedupe_key`, `work_id`를 사용하고 첫 `WorkAttempt`는 새 `attempt_id`, `attempt_number=1`, `trigger=INITIAL`을 사용한다. 이전 Gate review와 새 review는 `RecordMeta.previous_record_id`로 이어지는 같은 논리 record의 revision chain에 남긴다. 반대로 provider timeout이나 일시 오류처럼 domain input이 바뀌지 않은 일반 retry는 같은 `work_id`·`dedupe_key`·`input_hash`를 유지하고 새 `attempt_id`와 `trigger=RETRY`를 사용한다. 동일 입력의 새 attempt만 만들어 `REVISE`를 다시 투표하거나 과거 Gate reference를 새 Verification revision에 재사용하는 것은 금지한다.
@@ -922,7 +926,9 @@ VerificationResult:
 
 `scope=COMMON`이면 `vulnerability_type=null`, `scope=TYPE_SPECIFIC`이면 `vulnerability_type`이 필수다. 지원 유형 목록이 확정되기 전이나 미지원 유형을 검증할 때는 현재 저장된 공통 플레이북의 exact revision을 사용한다.
 
-`VerificationResult.playbook_ref`는 실제 검증에 사용한 exact `VerificationPlaybook.record_id`와 `content_hash`를 가리킨다. 같은 reference가 final Verification 합성 호출의 `LLMCallSpec.context_refs`와 `SAVE_RESULT.input_refs`에도 포함되어야 한다. Runtime은 세 reference의 exact equality를 검사한다. 이후 플레이북에 새 revision이 생겨도 과거 `VerificationResult`는 자신이 사용한 기존 revision을 계속 가리킨다.
+플레이북 후보는 R6 검증·반박·플레이북 담당이 작성하고, trusted playbook registry runtime이 schema와 revision을 검사해 immutable record로 등록한다. Verification work를 등록하는 trusted runtime은 versioned 적용 규칙에 따라 지원 유형과 일치하는 current `TYPE_SPECIFIC` revision을 선택하고, 적용 가능한 유형별 플레이북이 없으면 current `COMMON` revision을 선택한다. Agent가 실행 도중 임의로 다른 revision을 선택할 수 없다.
+
+`VerificationResult.playbook_ref`는 실제 검증에 사용한 exact `VerificationPlaybook.record_id`와 `content_hash`를 가리킨다. Verification Agent의 직접 검증, `PRO_EVIDENCE`, `CON_EVIDENCE`, final Verification 합성 호출 및 `SAVE_RESULT(result_kind=verification_result)`는 모두 해당 Verification work에 고정된 동일한 `playbook_ref`를 사용해야 한다. Runtime Validator는 각 action의 `input_refs`, 각 LLM 호출의 `LLMCallSpec.context_refs`, 최종 `VerificationResult.playbook_ref` 및 `SAVE_RESULT.input_refs`가 work의 `WorkExecutionState.input_refs`에 고정된 reference와 동일한 `record_id`·`content_hash`를 사용하는지 검사한다. 이후 플레이북에 새 revision이 생겨도 과거 `VerificationResult`는 자신이 실제 사용한 기존 revision을 계속 가리킨다.
 
 `EvidenceClaim.claim_id`는 한 `VerificationResult` 안에서 유일하다. 각 claim은 실제 저장 근거를 가리키는 `evidence_refs`를 하나 이상 가져야 하며, 코드 주장이라면 현재 `workspace_id + commit_id`의 `code_locations`도 하나 이상 가져야 한다. `source_role`은 claim을 작성한 역할이며 근거의 출처를 대신하지 않는다. supporting 목록에는 `VERIFICATION | PRO`, counter 목록에는 `VERIFICATION | CON`만 허용한다.
 
