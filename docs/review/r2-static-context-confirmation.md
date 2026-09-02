@@ -135,5 +135,10 @@ R4(taehyeon-git)가 PR #54 리뷰에서 이 반영 작업을 별도 후속 Issue
 담당자는 `05-llm-gate-and-reporting.md` 소유자인 R5(김혜령, `@kimhr8463`)이며, 완료 조건은
 "위 두 invariant(① `DataGap`이 claim에 영향을 줄 때 Technical Gate가 무시하면 안 됨, ②
 `CodeContextResponse.truncated=true`를 자동으로 '확인됨'으로 가정하면 안 됨)를
-`05-llm-gate-and-reporting.md`에 실제 문구로 반영"입니다. 후속 Issue는 생성 즉시 이 문서와
-PR #54 본문에 번호를 반영합니다.
+`05-llm-gate-and-reporting.md`에 실제 문구로 반영"입니다.
+
+**후속 Issue #67로 생성 완료**. PR #37(`review/r5-01-technical-gate`) 커밋 `56b8ada`("docs:
+clarify Technical Gate gap handling")에서 위 두 invariant가 정확한 필드명(`DataGap.affected_locations`/
+`affected_paths`, `CodeContextResponse.truncated`)으로 반영된 것을 R2 쪽에서 확인했습니다.
+PR #37이 main에 merge되면(PR 설명에 `Closes #67` 포함되어 있어 merge 시 이슈도 자동으로 닫힘)
+이 항목은 완전히 종료됩니다.
