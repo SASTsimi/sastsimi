@@ -17,7 +17,7 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 ## 기본 검증 순서
 
 1. 배정된 가설의 `workspace_id`, `commit_id`, entity, location과 suspected path를 확인한다.
-2. `CodeContextRequest`로 caller/callee, data flow, auth guard와 route 문맥을 필요한 만큼 조회한다. 추가 Context 요청은 현재 가설과 같은 `workspace_id`·`commit_id`를 사용해야 한다. 조회가 정상적으로 완료됐지만 반환된 정보가 비어 있거나 핵심 경로를 확인하기에 부족하면, 부족한 내용을 `unresolved_conditions`에 기록하고 필수 검증을 계속한다. 필수 검증 완료 후에도 조건이 해결되지 않으면 `HOLD`로 판정한다. 반면 응답이 다른 workspace·commit을 가리키거나 조회가 실패·timeout·권한 오류로 끝나면 `AnalysisError`와 실행 상태만 기록하고 final verdict를 저장하지 않는다. 운영 Pro/Con 전에 예산이 부족한 경우에도 `BUDGET_EXCEEDED`로 작업을 중단하고 final verdict를 저장하지 않는다. Context 부족이나 조회 실패를 `DISPROVED` 또는 `FALSE`로 변환하지 않는다.
+2. `CodeContextRequest`로 caller/callee, data flow, auth guard와 route 문맥을 필요한 만큼 조회한다. 추가 Context 요청은 현재 가설과 같은 `workspace_id`·`commit_id`를 사용해야 한다. 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 기록하며 오류 자체를 verdict 근거로 사용하지 않는다. 일부 조회가 실패했더라도 제한 retry·대체 조회·다른 정상 근거로 모든 `ValidationCheck`, 반증 질문과 운영 Pro/Con을 완료했다면 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있다. 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증이 하나라도 미완료이면 final `VerificationResult`를 저장하지 않는다. 재시도할 수 있으면 work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지하며, 더 시도할 수 없으면 work와 `HypothesisProcessState`를 원자적으로 `FAILED`로 끝낸다. 운영 Pro/Con 전에 예산이 부족한 경우에도 `BUDGET_EXCEEDED`로 작업을 중단하고 final verdict를 저장하지 않는다. Context 부족이나 조회 실패를 `DISPROVED` 또는 `FALSE`로 변환하지 않는다.
 3. observed fact와 assumption을 분리하고 각 `FalsificationQuestion.question_id`를 확인한다.
 4. 운영 분석이면 Pro/Con Agent를 서로 독립된 NEW session으로 병렬 호출해 supporting/counter evidence를 모두 수집한다. BASIC 또는 조건부 debate는 격리된 평가 실행에서만 선택한다.
 5. initial verdict와 unresolved condition을 만든다.
@@ -106,11 +106,11 @@ Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` 
 | 상황 | 처리 | final `VerificationResult` 저장 |
 |---|---|---|
 | 같은 workspace·commit에서 Context 조회가 정상 종료됐지만 필요한 정보가 부족함 | 부족한 내용을 `unresolved_conditions`에 기록하고 필수 검증을 계속한다. 필수 검증을 완료한 뒤에도 조건이 남으면 `HOLD`로 판정한다. | 가능 |
-| Context 조회 자체가 실패·timeout·권한 오류로 끝남 | 해당 `AnalysisError`와 실행 상태를 기록한다. 오류를 판정으로 변환하지 않는다. | 금지 |
-| 운영 Pro/Con을 시작하기 전에 예산이 부족함 | `BUDGET_EXCEEDED`로 현재 Verification work를 중단한다. Pro/Con을 생략한 final verdict를 만들지 않는다. | 금지 |
+| 일부 Context 조회가 실패·timeout·권한 오류로 끝났지만 제한 retry·대체 조회·다른 정상 근거로 모든 필수 검증과 운영 Pro/Con을 완료함 | 실패 사건은 `AnalysisError`, 확인하지 못한 범위는 `DataGap`으로 남기고 오류가 아닌 실제 근거로 판정한다. | 가능 |
+| Context 조회 오류 때문에 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증이 하나라도 미완료됨 | final 결과를 만들지 않는다. 재시도 가능하면 work는 `BLOCKED`, 가설은 `VERIFYING`으로 유지하고, 더 시도할 수 없으면 work와 가설 처리 상태를 원자적으로 `FAILED`로 끝낸다. | 금지 || 운영 Pro/Con을 시작하기 전에 예산이 부족함 | `BUDGET_EXCEEDED`로 현재 Verification work를 중단한다. Pro/Con을 생략한 final verdict를 만들지 않는다. | 금지 |
 | 운영 Pro/Con 등 필수 검증은 완료했지만 추가 환경·Context·capability가 부족함 | 남은 조건을 `unresolved_conditions`에 기록하고 `HOLD`로 판정할 수 있다. | 가능 |
 
-정상적으로 조회됐지만 결과가 비어 있거나 일부만 반환된 것은 정보 부족으로 처리한다. 반면 요청 실패·timeout·권한 오류는 실행 오류이며 자동으로 `TRUE | FALSE | HOLD`를 만들지 않는다.
+정상적으로 조회됐지만 결과가 비어 있거나 일부만 반환된 것은 정보 부족으로 처리한다. 요청 실패·timeout·권한 오류는 실행 오류지만, final 결과 허용 여부는 오류의 존재 자체가 아니라 모든 필수 검증의 완료 여부로 결정한다. Runtime은 오류를 verdict로 바꾸거나 미완료 검증 대신 `HOLD`를 만들지 않는다.
 
 미지원 취약점 유형도 후속 Issue만 생성하고 현재 실행을 끝내서는 안 된다. 공통 플레이북으로 수행할 수 있는 검증을 먼저 진행하고, 정상 검증 후 유형별 정보가 부족하면 `HOLD`, 실행 자체가 실패하면 실행 오류를 기록한다. 그 상태를 기록한 뒤 유형별 플레이북 추가 Issue를 연결한다. 후속 Issue는 현재 실행 상태나 verdict를 대신하지 않는다.
 
