@@ -131,6 +131,20 @@ LineageExclusion:
 
 proposal의 `restrictions`는 입력 Primitive 양쪽에 있는 Restriction 객체의 중복 없는 합집합이다. 같은 `restriction_id`는 canonical content가 완전히 같을 때 한 번만 유지하고, ID는 같은데 statement나 근거 reference가 다르면 계약 충돌로 거절한다. trusted runtime이 schema·semantic·workspace·commit·exact Primitive·중복·순환·예산을 검사한 뒤 새 `hypothesis_id`로 등록한다. Orchestration Agent는 등록된 가설에 새 Verification Agent를 배정하고 child는 전체 Verification 파이프라인을 처음부터 거친다.
 
+### 자식 가설의 내용
+
+Chaining input은 exact Primitive와 그 Primitive를 만든 source Verification·Technical review로 고정된다. 부모 가설의 proposal은 이 경계 밖이므로 참조하지 않는다. Chaining Agent는 추가 코드 조회·정적 검증·독립 탐색을 할 수 없으므로 자식 가설의 재료는 이 경계 안에서만 나온다. 다음 규칙으로 채운다.
+
+- 결과 서술은 저장하지 않고 `source_primitive_match_id` 링크로 읽는다. 자식 proposal에는 `result`·`statement` 필드가 없으므로 값을 복사할 자리도 없다.
+- `observed_facts`·`target_entities`·`target_locations`·`suspected_path`는 모두 비어 있을 수 있다. entity 정보는 `source_primitive_match_id` 계보(`PrimitiveMatchCandidate` → `upstream_result_ref`/`downstream_input_ref` → `Primitive.result`/`inputs` → `entity_refs`)를 따라가면 얻을 수 있어 Chaining Agent가 다시 계산해 싣지 않아도 된다. `suspected_path`는 부모 데이터에 관계(순서·연결) 정보 자체가 없어 흉내 내도 위치 집합일 뿐 실제 경로가 되지 않는다. 값을 채우는 경우에도 이 계보 밖의 entity·location·path를 임의로 추가하지 않는다. 계보를 복원할 수 없으면(부모 참조가 무효하거나 시작점을 하나도 못 얻으면) 자식 가설 등록과 Verification 배정을 거절한다.
+- `vulnerability_type_candidates`는 Chaining Agent가 이번 match가 정의한 노리는 능력에서 판단한다.
+- `restrictions`는 위에서 정한 대로 두 부모의 `Restriction` 합집합과 정확히 같다.
+- 이번 매칭으로 채워진 downstream input은 자식의 전제에서 빠지고, upstream의 남은 `inputs`와 downstream의 나머지 `inputs`가 자식이 아직 필요로 하는 조건으로 `assumptions`에 남는다. 남은 `PrimitiveDraft` 하나마다 그 `description`을 문자열 그대로 사용해 `assumptions`에 하나씩 담는다.
+
+승계는 다시 확인하지 않는다는 뜻이 아니다. 물려받은 사실이 결합 상황에서도 참인지는 자식 검증이 전부 다시 본다.
+
+자식 가설은 두 능력이 이어지는 지점을 겨냥한 반증 질문을 최소 하나 포함한다. `assumptions`에 남은 조건은 위 규칙으로 본문에 드러나므로 기존 반증 질문 요건이 이미 그 조건들을 잡지만, 결합 지점은 어느 쪽 부모의 조건도 아니고 자식이 새로 만든 것이라 그 요건이 잡지 못한다.
+
 ### 금지 권한
 
 Chaining Agent는 다음을 할 수 없다.
@@ -169,3 +183,7 @@ Verification은 proposal을 만들 수 있지만 `hypothesis_id`를 직접 발�
 ## 사람에게 보이는 결과
 
 사람은 result 없는 HOLD 조건, Technical-accepted TRUE 능력, 두 Primitive를 연결한 근거, 생성된 child hypothesis와 검증 여부를 구분해서 본다. match candidate와 미검증 child는 Finding, PoC 또는 실제 impact 주장에 섞이지 않는다.
+
+사슬에서 나온 Finding은 재료가 된 Finding 밑에 중첩해 저장하지 않는다. 한 부모가 여러 자식의 재료가 되고 부모 자신도 독립 Finding이라 중첩이 성립하지 않으며, HOLD 부모는 Finding이 없어 자리가 빈다. Finding은 평평하게 둔다.
+
+재료 계보는 별도 저장 필드가 아니라 기존 참조를 따라 복원한다. 자식의 `VulnerabilityHypothesis.parent_hypothesis_ids`와 `source_primitive_match_id`가 `PrimitiveMatchCandidate`를 거쳐 재료가 된 upstream Primitive와 그 `source_hypothesis_id`에 닿는다. TRUE 부모는 그 `hypothesis_id`로 자기 Finding에 이르고, HOLD 부모는 Finding이 없으므로 `hypothesis_id`와 exact `VerificationResult` reference에서 멈춘다. `FindingCandidate`에 이 계보를 직접 저장하는 새 reference field는 두지 않는다. 이 경로는 결과를 열람하거나 재분석할 때 쓰는 정보이며 `ReportDraft`에는 싣지 않는다.
