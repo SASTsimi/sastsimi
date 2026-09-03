@@ -26,9 +26,9 @@ Runtime Validator는 취약점이 맞는지 새로 판단하는 Gate가 아닙�
 | 공식 정책·scope·impact·report permission | Rule Scope Impact Gate | 정책 없는 `ALLOW` 추정 |
 | 내부 보고서 초안 | Reporter Agent | Gate 우회·외부 제출 |
 | 일반 실행 허용·차단과 current plan·requirements Sandbox 호출 전제 확인 | Runtime Validator | 환경 의미·취약점·CWE·정책 또는 R7 내부 전략 판단 |
-| Sandbox 외부 안전 경계 적용 | R7 Sandbox Controller | 내부 명령별 사전 허가, 환경 요구사항·최종 판정 변경 |
+| Sandbox 외부 안전 경계 정책 | Sandbox Controller | Sandbox 생성·Agent 호출·내부 명령별 사전 허가·환경 요구사항·최종 판정 변경 |
 | 내부 환경 구성·PoC·실행·관찰·retry | Reproduction Agent | host·Docker daemon·secret·허용되지 않은 egress 접근 또는 final verdict 판단 |
-| 동적 결과 불변식 검사 | Dynamic Result Finalizer | 다른 attempt 자료 혼합, 의미 재판단 또는 참조만으로 성공 판단 |
+| 동적 실행 기록·결과 문서화 | Reproduction Session Manager | Agent 호출·실행·retry·cleanup 개입, 다른 attempt 혼합 또는 의미 재판단 |
 
 Orchestration Agent는 proposal 검증·전역 등록·Verification 배정을 조정하지만 배정 뒤 가설 내부 Context·Pro/Con·dynamic·Gate·Chaining, verdict, CWE, 정책 해석, 보고 가능 여부와 공개 여부를 정하지 않습니다. Verification이 가설 내부 다음 작업을 정해도 프로그램 검사를 우회할 수 없습니다.
 
@@ -89,7 +89,7 @@ Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아
 
 결과 저장 요청에는 결과 종류와 검사할 후보 파일의 정확한 hash를 함께 넣습니다. 프로그램 검사기는 그 결과를 만들 권한이 있는 역할인지, 현재 작업·시도·코드 버전과 같은지 확인합니다. 검사 뒤 후보 내용이 바뀌거나 다른 역할이 저장하려 하면 거절합니다. 저장이 완료된 결과와 작업 종료 기록이 같은 `COMMITTED` 전이에 연결된 뒤에만 다음 단계가 읽습니다.
 
-동적 재현 전에는 R6 Verification이 `EnvironmentRequirements`와 이를 가리키는 목표 중심의 최소 `ReproductionPlan`을 고정합니다. exact step·command·payload·cleanup policy는 R6가 지정하지 않습니다. Runtime Validator는 요청자·상태·예산과 current plan·requirements·profile reference를 확인해 R7 호출만 허가합니다. R7 Controller는 host·Docker daemon·secret·허용되지 않은 egress·다른 workspace·R8 자원·lifecycle의 Sandbox 외부 경계를 적용합니다. 그 안에서 `REPRODUCTION_AGENT`가 versioned `EnvironmentRecipe`를 사용해 환경과 clean Sandbox를 만들고, package·계정·fixture/mock·PoC·명령·관찰·retry를 자율적으로 수행합니다. 실제 행동은 `AgentLog`에 남기고 실행을 시작한 최종 PoC만 `PoCBundle`로 결과에 연결합니다. 작은 finalizer가 같은 attempt의 recipe·환경·AgentLog·PoC·cleanup과 digest·redaction 불변식만 검사합니다. R7은 동적 증거를 `SUPPORTED | DISPROVED | INCONCLUSIVE`로 전달하고, R6가 다른 근거와 합쳐 final `TRUE | FALSE | HOLD`를 정합니다.
+동적 재현 전에는 R6 Verification이 `EnvironmentRequirements`와 이를 가리키는 목표 중심의 최소 `ReproductionPlan`을 고정합니다. exact step·command·payload·cleanup policy는 R6가 지정하지 않습니다. Runtime Validator는 요청자·상태·예산과 current plan·requirements·profile reference를 확인해 R7 호출만 허가합니다. Sandbox Controller는 host·Docker daemon·secret·허용되지 않은 egress·다른 workspace·R8 자원·lifecycle의 Sandbox 외부 경계 정책을 결정·강제하고 판정을 저장합니다. Controller는 Sandbox를 만들거나 Agent를 호출하지 않습니다. R7 Sandbox Setup Automation이 승인된 정책으로 clean Sandbox를 만들고, 그 안에서 `REPRODUCTION_AGENT`가 versioned `EnvironmentRecipe`를 사용해 package·계정·fixture/mock·PoC·명령·관찰·retry를 자율적으로 수행합니다. 기존 runtime/tool 계층이 실제 action event를 방출하면 Reproduction Session Manager가 Agent를 제어하지 않고 `AgentLog`로 수동 기록하며, 실행을 시작한 최종 `PoCBundle`과 같은 attempt의 사실을 최종 결과 문서로 확정합니다. R7은 동적 증거를 `SUPPORTED | DISPROVED | INCONCLUSIVE`로 전달하고, R6가 다른 근거와 합쳐 final `TRUE | FALSE | HOLD`를 정합니다.
 
 ## 자동화가 끝나는 지점
 

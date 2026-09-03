@@ -19,7 +19,7 @@
 9. Verification의 코드 위치 기반 on-demand retrieval
 10. 운영 Verification의 독립 Pro/Con 병렬 검증
 11. initial `TRUE | FALSE | HOLD`
-12. Verification이 `EnvironmentRequirements`와 최소 `ReproductionPlan` 작성 → Runtime Validator가 current reference·호출 전제 확인 → R7 Controller가 Sandbox 외부 경계 적용 → Reproduction Agent가 내부 환경·PoC·실행·관찰·retry 자율 수행 → finalizer가 recipe·AgentLog·실행 PoC·cleanup 연결을 검사해 동적 결과 반환
+12. Verification이 `EnvironmentRequirements`와 최소 `ReproductionPlan` 작성 → Runtime Validator가 current reference·호출 전제 확인 → Sandbox Controller가 외부 경계 정책 결정·강제 → R7 Sandbox Setup Automation이 clean Sandbox 생성 → Reproduction Agent가 내부 환경·PoC·실행·관찰·retry 자율 수행 → Reproduction Session Manager가 runtime/tool event 기록과 최종 동적 결과 문서화
 13. final `TRUE | FALSE | HOLD`
 14. FALSE terminal / HOLD REQUIRED 즉시 admission / TRUE CWE 분기
 15. final TRUE를 Technical Evidence Gate Agent가 검토

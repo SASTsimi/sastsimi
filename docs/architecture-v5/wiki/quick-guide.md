@@ -14,7 +14,7 @@
 - 저비용 가설 Agent는 ‘아직 최종 결과가 아님’을 뜻하는 `HYPOTHESIS_ONLY / NON_FINAL` 형식만 출력한다.
 - 필요한 코드는 같은 `workspace_id`와 `commit_id`에서 코드 요소·위치·경로를 기준으로 조회한다.
 - Orchestration은 가설을 검증·등록하고 Verification에 배정하는 데서 가설별 역할이 끝난다.
-- 검증(`Verification`)은 한 가설의 Context·찬반, 환경 요구사항·최소 `ReproductionPlan`, 판정·Gate 보완·연계 handoff를 관리한다. Runtime Validator는 current references와 R7 호출 전제를 확인하고, R7 Controller가 Sandbox 외부 경계를 적용한다. Reproduction Agent는 그 내부에서 환경·PoC·실행·관찰·retry를 자율 수행해 동적 증거를 반환한다.
+- 검증(`Verification`)은 한 가설의 Context·찬반, 환경 요구사항·최소 `ReproductionPlan`, 판정·Gate 보완·연계 handoff를 관리한다. Runtime Validator는 current references와 R7 호출 전제를 확인하고, Sandbox Controller는 Sandbox 외부 경계 정책을 결정·강제한다. R7 Sandbox Setup Automation이 clean Sandbox를 생성하고 Reproduction Agent는 그 내부에서 환경·PoC·실행·관찰·retry를 자율 수행한다. Reproduction Session Manager는 실행을 통제하지 않고 event 기록과 최종 동적 결과 문서화만 담당한다.
 - 운영 기본값은 `ALWAYS_DEBATE`이며 모든 유효 가설에서 Pro/Con을 독립 NEW session으로 실행한다. BASIC과 조건부 debate는 격리된 평가 전용이다.
 - HOLD의 필요 조건은 즉시 REQUIRED가 된다. TRUE는 두 Gate를 정상 통과한 exact revision만 PROVIDED가 된다. TRUE+TRUE는 앞 PROVIDED가 뒤 TRUE의 exact 선행 조건을 충족할 때만 연결한다.
 - 기술 근거 검토와 공식 정책·영향 검토를 분리한다.

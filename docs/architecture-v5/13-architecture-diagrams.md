@@ -39,15 +39,19 @@ flowchart TB
     S12 -->|No| S13[13 Final verdict and material claim split]
     S12 -->|Yes| DPLAN[EnvironmentRequirements and minimal ReproductionPlan]
     DPLAN --> DAUTH[Runtime Validator call authorization]
-    DAUTH --> DCTRL[R7 Controller applies external boundary]
-    DCTRL --> DPD{Boundary ready}
-    DPD -->|Blocked| DFINAL[Dynamic Result Finalizer]
-    DPD -->|Ready| DAI[Reproduction Agent autonomous inside Sandbox]
+    DAUTH --> DCTRL[Sandbox Controller decides external boundary policy]
+    DCTRL --> DPD{Boundary allowed}
+    DPD -->|Blocked| DSESSION[Reproduction Session Manager records result]
+    DPD -->|Allowed| DSETUP[R7 setup automation creates clean Sandbox]
+    DSETUP --> DAI[Reproduction Agent autonomous inside Sandbox]
     DAI --> DREC[Versioned EnvironmentRecipe and clean Sandbox]
     DREC --> DACT[PoC execution observation and retry]
-    DACT --> DLOG[AgentLog PoCBundle and CleanupLog]
-    DLOG --> DFINAL
-    DFINAL --> DRES[DynamicReproductionResult]
+    DACT --> DART[EnvironmentRecipe PoCBundle and observations]
+    DACT -. runtime and tool events .-> DSESSION
+    DSETUP -. lifecycle events .-> DSESSION
+    DAI -. semantic draft .-> DSESSION
+    DART --> DSESSION
+    DSESSION --> DRES[AgentLog CleanupLog and DynamicReproductionResult]
     DRES --> DREV{Plan needs R6 revision}
     DREV -->|Yes| DRET[R6 writes new requirements or minimal plan]
     DREV -->|No| S13
@@ -159,15 +163,19 @@ flowchart TB
     DYN -->|No| FINAL[Final VerificationResult]
     DYN -->|Yes| PLAN[EnvironmentRequirements and minimal ReproductionPlan]
     PLAN --> AUTH[Runtime Validator call authorization]
-    AUTH --> CTRL[R7 Controller applies external boundary]
-    CTRL --> PDEC{Boundary ready}
-    PDEC -->|Blocked| FINALIZER[Dynamic Result Finalizer]
-    PDEC -->|Ready| AGENT[Reproduction Agent autonomous inside Sandbox]
+    AUTH --> CTRL[Sandbox Controller decides external boundary policy]
+    CTRL --> PDEC{Boundary allowed}
+    PDEC -->|Blocked| SESSION[Reproduction Session Manager records result]
+    PDEC -->|Allowed| SETUP[R7 setup automation creates clean Sandbox]
+    SETUP --> AGENT[Reproduction Agent autonomous inside Sandbox]
     AGENT --> RECIPE[Versioned EnvironmentRecipe and clean Sandbox]
     RECIPE --> ACTIONS[PoC execution observation and retry]
-    ACTIONS --> ALOG[AgentLog PoCBundle and CleanupLog]
-    ALOG --> FINALIZER
-    FINALIZER --> DRESULT[DynamicReproductionResult]
+    ACTIONS --> ARTIFACTS[EnvironmentRecipe PoCBundle and observations]
+    ACTIONS -. runtime and tool events .-> SESSION
+    SETUP -. lifecycle events .-> SESSION
+    AGENT -. semantic draft .-> SESSION
+    ARTIFACTS --> SESSION
+    SESSION --> DRESULT[AgentLog CleanupLog and DynamicReproductionResult]
     DRESULT --> ISSUE{Plan needs R6 revision}
     ISSUE -->|Yes| EREVIEW[R6 writes new requirements or minimal plan]
     ISSUE -->|No| SYN2[Verification re-synthesizes evidence]
@@ -384,7 +392,7 @@ flowchart LR
     DOMAIN[Verification Gates and Reporter keep domain decisions] -. not decided by validator .-> CHECK
 ```
 
-Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `RUN_SANDBOX`에서는 호출 권한·상태·예산·current plan·requirements·profile reference를 확인한다. R7 Controller는 host·Docker daemon·secret·egress·다른 workspace·resource·lifecycle의 외부 경계를 적용하고, Agent가 내부에서 선택한 command·package·PoC는 AgentLog와 artifact 무결성 검사 대상으로 남긴다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 runtime이 판단하지 않는다.
+Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `RUN_SANDBOX`에서는 호출 권한·상태·예산·current plan·requirements·profile reference를 확인한다. Sandbox Controller는 host·Docker daemon·secret·egress·다른 workspace·resource·lifecycle의 외부 경계 정책만 결정·강제하고 R7 Sandbox Setup Automation이 clean Sandbox를 생성한다. Agent가 내부에서 선택한 command·package·PoC는 허용·거절 대상이 아니라 runtime/tool event 기록과 artifact 무결성 확인 대상으로 남긴다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 runtime이 판단하지 않는다.
 
 ## 13. ReportDraft와 Agent 자동화 종료 경계
 

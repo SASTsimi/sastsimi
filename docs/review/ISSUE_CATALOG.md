@@ -287,7 +287,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - Verification ownership과 관계없이 LLM이 아닌 프로그램 내부 규칙 검사기(`runtime validator`)가 action 규칙 준수를 강제한다.
 - PM/Orchestration은 가설 내부 Pro/Con·dynamic·Gate·Chaining, verdict, CWE, Gate result, 공식 정책 또는 공개 결정을 대신하지 않는다.
 - silent provider/model failover와 repository prompt에 의한 policy 변경을 금지한다.
-- Runtime Validator는 action의 호출 권한·상태·예산·reference 범위를 강제하며 verdict·CWE·정책 의미를 대신 판단하지 않는다. Sandbox의 image·command·file·network·resource·cleanup 세부 정책은 R7의 Sandbox Controller가 전담한다.
+- Runtime Validator는 action의 호출 권한·상태·예산·reference 범위를 강제하며 verdict·CWE·정책 의미를 대신 판단하지 않는다. Sandbox Controller는 host·Docker daemon·secret·network egress·resource·lifecycle의 외부 경계 정책만 전담한다. Sandbox 생성·cleanup은 R7 Sandbox Setup Automation이 수행한다.
 - Reporter는 안전 요구사항을 지킨 내부 초안만 만들고 이후 Agent action을 계속하지 않는다. 사람의 검토·수정·제출·공개는 자동화 밖이다.
 
 ### 필수 교차 리뷰
@@ -304,7 +304,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] retry/failover가 새 attempt/invocation이며, 바로 앞 실패 호출 reference로 순서와 원인을 복원할 수 있음
 - [ ] 같은 요청은 canonical `dedupe_key`로 기존 `work_id`를 재사용하고 한 work에는 active attempt가 하나임
 - [ ] 상태 변경은 `state_version` compare-and-set을 사용하고 stale·취소·다른 workspace/commit 결과를 거절함
-- [ ] chain/repair/Gate revision/token/time 한도의 enforcement owner가 비-LLM Runtime Validator로, Sandbox 세부 정책의 enforcement owner가 Sandbox Controller로 명시됨
+- [ ] chain/repair/Gate revision/token/time 한도의 enforcement owner가 비-LLM Runtime Validator로, Sandbox 외부 경계 정책의 enforcement owner가 Sandbox Controller로 명시됨
 - [ ] Technical `REVISE`가 Orchestration을 경유해 재배정되지 않고 같은 ACTIVE VerificationAssignment owner의 새 VERIFICATION work로 돌아감
 - [ ] HOLD REQUIRED와 Gate-qualified TRUE PROVIDED의 exact revision admission·supersede 규칙이 있음
 - [ ] persistence/recovery/atomicity/idempotency 계약이 합의되고 `TERMINAL`·`DRAFTED` 상태가 정확한 결과 `record_id`를 가리킴
@@ -312,7 +312,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] `TransitionCommit`이 `COMMITTED`된 결과만 downstream과 최종 결과에서 사용함
 - [ ] 역할별 `ActionRequest`가 필수 check를 모두 통과한 `ActionDecision`에서만 한 번 실행됨
 - [ ] 두 LLM Gate 순서, Reporter 조건과 공식 정책 부재 `UNCERTAIN + DENY`를 runtime이 검사함
-- [ ] R6 plan·requirements와 R7 동적 결과가 같은 analysis·workspace·commit·hypothesis에 묶이고, 정책 판정·실제 환경·Runner log·실행 PoC·cleanup만 같은 R7 실행 attempt로 검증됨
+- [ ] R6 plan·requirements와 R7 동적 결과가 같은 analysis·workspace·commit·hypothesis에 묶이고, 정책 판정·실제 환경·AgentLog·실행 PoC·cleanup만 같은 R7 실행 attempt로 검증됨
 - [ ] `ReportDraft`가 exact provenance, restriction·limitation·남은 불확실성과 redaction 결과를 보존하고 마지막 Agent 산출물로 종료됨
 - [ ] 실제 GitHub 계정과 최종 검토·승인 담당자가 문서와 Issue에서 일치함
 - [ ] conflict resolution, freeze SHA와 승인·구현 저장소 동기화 규칙이 확정됨
@@ -426,7 +426,7 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 - 오류, empty retrieval와 sandbox setup failure를 `FALSE`로 만들지 않는다.
 - 별도 endpoint/sink/권한/impact를 기존 verdict에 몰래 합치지 않는다.
 - R6는 환경 요구사항·재현 목표와 최소 계획을 결정하지만 exact step·command·payload·target·cleanup policy를 지정하거나 Sandbox를 직접 실행하지 않는다. R7의 `COMMITTED` 결과만 소비한다.
-- 요구사항이나 plan을 바꾸면 기존 record를 덮어쓰지 않고 새 revision과 새 실행 요청을 만든다. 이 판단만으로 Runtime Validator·R7 Controller 검사를 건너뛸 수 없다. `LIMITED_REPRO | FULL_REPRO` mode를 공통 계약에 유지할지는 PL 교차 검토에서 확정한다.
+- 요구사항이나 plan을 바꾸면 기존 record를 덮어쓰지 않고 새 revision과 새 실행 요청을 만든다. 이 판단만으로 Runtime Validator·Sandbox Controller 검사를 건너뛸 수 없다. `LIMITED_REPRO | FULL_REPRO` mode를 공통 계약에 유지할지는 PL 교차 검토에서 확정한다.
 - Gate 결과·정책 의미·공개 결정을 대신 만들지 않는다. Gate·Reporter 호출을 제안해도 Runtime Validator 검사를 우회하지 않는다.
 
 ### 필수 교차 리뷰
@@ -446,7 +446,7 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 - [ ] initial/final verdict와 revision history가 분리됨
 - [ ] dynamic 실행 `status`, 관측 `hypothesis_outcome`, `hypothesis_disproved`와 Verification verdict가 구분됨
 - [ ] R6가 exact `EnvironmentRequirements`와 목표 중심 최소 `ReproductionPlan`을 생산하고 R7의 `COMMITTED` 결과만 소비함
-- [ ] plan·requirements 변경은 새 revision과 새 `RUN_SANDBOX` action·Runtime Validator·R7 Controller 검사로만 이어지며, 실패·차이가 `FALSE`가 되지 않음
+- [ ] plan·requirements 변경은 새 revision과 새 `RUN_SANDBOX` action·Runtime Validator·Sandbox Controller 검사로만 이어지며, 실패·차이가 `FALSE`가 되지 않음
 - [ ] material new claim과 같은 가설의 작은 validation subtask 경계가 있음
 - [ ] material new claim은 `origin=VERIFICATION` proposal로 trusted registration 뒤 새 Verification을 받음
 - [ ] Technical REVISE를 같은 ACTIVE VerificationAssignment owner가 새 VERIFICATION work에서 받고 새 evidence 또는 설명 revision을 남김
@@ -459,7 +459,7 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 
 ### 쉽게 말하면
 
-R6가 만든 `COMMITTED EnvironmentRequirements`와 목표 중심 최소 `ReproductionPlan`을 받아, R7 Controller가 Sandbox 외부 안전 경계를 적용한다. 그 안에서 `REPRODUCTION_AGENT`가 환경 구성·package·계정/fixture/mock·PoC·명령·관찰·retry를 자율 수행한다. 같은 환경은 versioned `EnvironmentRecipe`로 다시 만들 수 있게 하고, 각 가설·attempt는 snapshot처럼 깨끗한 Sandbox에서 격리한다. 실제 행동·실행 PoC·동적 outcome·cleanup을 근거로 남기되 final `TRUE | FALSE | HOLD`는 R6가 결정한다.
+R6가 만든 `COMMITTED EnvironmentRequirements`와 목표 중심 최소 `ReproductionPlan`을 받아 Sandbox Controller가 외부 경계 정책을 결정·강제하고, R7 Sandbox Setup Automation이 그 정책으로 clean Sandbox를 생성한다. 그 안에서 `REPRODUCTION_AGENT`가 환경 구성·package·계정/fixture/mock·PoC·명령·관찰·retry를 자율 수행한다. 같은 환경은 versioned `EnvironmentRecipe`로 다시 만들 수 있게 하고, 각 가설·attempt는 snapshot처럼 깨끗한 Sandbox에서 격리한다. 실제 행동·실행 PoC·동적 outcome·cleanup을 근거로 남기되 final `TRUE | FALSE | HOLD`는 R6가 결정한다.
 
 ### 담당자가 나눌 수 있는 하위 Issue 예시
 
@@ -472,7 +472,7 @@ R6가 만든 `COMMITTED EnvironmentRequirements`와 목표 중심 최소 `Reprod
 - 담당 역할: 동적검증·Sandbox
 - 담당자: 조근석 `@Potatonion`
 - 주요 작업 브랜치: `docs/r7-autonomous-reproduction-redesign`
-- 관련 흐름: R6의 exact `EnvironmentRequirements`·최소 `ReproductionPlan`과 runtime `RUN_SANDBOX ALLOW` 수신 → R7 Controller 외부 경계 적용 → Agent가 versioned recipe·clean Sandbox에서 PoC·실행·관찰·retry 자율 수행 → finalizer가 같은 attempt의 recipe·AgentLog·실행 PoC·cleanup 연결 검사 → `DynamicReproductionResult` 반환 → R6가 다른 근거와 최종 판정
+- 관련 흐름: R6의 exact `EnvironmentRequirements`·최소 `ReproductionPlan`과 runtime `RUN_SANDBOX ALLOW` 수신 → Sandbox Controller의 외부 경계 정책 판정 → R7 Sandbox Setup Automation의 clean Sandbox 생성 → Agent의 PoC·실행·관찰·retry 자율 수행 → Reproduction Session Manager의 수동 event 기록·최종 결과 문서화 → R6가 다른 근거와 최종 판정
 
 ### 검토 문서
 
@@ -489,16 +489,16 @@ R6가 만든 `COMMITTED EnvironmentRequirements`와 목표 중심 최소 `Reprod
 
 - R7은 동적 실행 근거를 `SUPPORTED | DISPROVED | INCONCLUSIVE`로 해석하지만 final `TRUE | FALSE | HOLD`를 결정하지 않는다.
 - R7은 `EnvironmentRequirements`를 생산·수정하지 않는다. plan 자체가 모순되거나 필수 문맥이 없으면 결과의 `plan_execution_status`, 범용 string `plan_issues`와 evidence refs로 R6에 반환한다.
-- Runtime Validator는 `RUN_SANDBOX` 호출 권한·상태·예산·current references를 확인하고, R7 Controller는 host·Docker daemon·secret·egress·다른 workspace·R8 resource·lifecycle 외부 경계를 적용한다.
+- Runtime Validator는 `RUN_SANDBOX` 호출 권한·상태·예산·current references를 확인하고, Sandbox Controller는 host·Docker daemon·secret·egress·다른 workspace·R8 resource·lifecycle의 외부 경계 정책만 결정·강제하며 Sandbox를 생성하지 않는다.
 - Sandbox 내부의 command·payload·package·PoC는 명령별 사전 allowlist로 제한하지 않고 Agent 자율성과 실제 `AgentLog`·artifact 무결성으로 관리한다.
-- R4는 공통 필드·authority·null·status·reference 조합과 작은 finalizer 불변식을 확정하고, R7은 recipe·환경·Agent 행동·PoC·outcome·cleanup의 상세 내용을 정의한다.
+- R4는 공통 필드·authority·null·status·reference 조합을 확정하고, R7은 recipe·환경·Agent 행동·PoC·outcome·cleanup과 Reproduction Session Manager의 기록·문서화 규칙을 정의한다.
 - credential·cookie·token·password 원문과 숨은 chain-of-thought를 일반 log·artifact에 저장하지 않는다.
 - package download는 versioned baseline build 단계에서 수행한다. 검증된 baseline은 `PERSISTENT_BASELINE`, session 자원은 `SESSION_EPHEMERAL`로 구분한다.
 
 ### 필수 교차 리뷰
 
 - R6 검증·반박: 최소 plan·requirements·outcome/최종 verdict 경계와 plan issue 반환
-- R4 PM·아키텍처: producer authority·result finalizer·SAVE_RESULT·mode/requested evidence 계약
+- R4 PM·아키텍처: producer authority·Reproduction Session Manager·SAVE_RESULT·mode/requested evidence 계약
 - R8 데이터·평가: resource/time/retry budget 값과 지표
 - R3 통합 개발: Docker Controller·recipe/image lifecycle·cleanup 구현 가능성
 - R5 Gate·보고: AgentLog·실행 PoC·evidence와 Reporter 소비·redaction
@@ -508,14 +508,14 @@ R6가 만든 `COMMITTED EnvironmentRequirements`와 목표 중심 최소 `Reprod
 - [ ] host·Docker daemon·secret·egress·다른 workspace 외부 경계와 R8 CPU/memory/disk/PID/time 적용 책임이 명확함
 - [ ] Sandbox 내부에서 Agent의 package·계정·fixture/mock·PoC·command·관찰·retry 자율성이 명확함
 - [ ] Toolbox Image와 저장소별 versioned `EnvironmentRecipe`로 snapshot 같은 clean Sandbox를 한 번에 생성할 수 있음
-- [ ] 누락 package를 recipe와 새 image digest에 누적하고 실패·변경·재시도를 AgentLog에 남김
+- [ ] 누락 package를 새 recipe revision과 `built_image_digest`에 누적하고 실패·변경·재시도를 Session Manager가 runtime/tool event로 기록함
 - [ ] 가설/attempt writable state 격리와 `SESSION_EPHEMERAL | PERSISTENT_BASELINE` cleanup 경계가 명확함
 - [ ] setup/execution/observation/policy/timeout failure와 동적 반증, final verdict가 서로 다른 상태임
-- [ ] 실제 행동만 append-only AgentLog에 저장하며 chain-of-thought·secret은 저장하지 않음
+- [ ] Session Manager가 실제 runtime/tool event만 append-only AgentLog에 저장하며 chain-of-thought·secret은 저장하지 않음
 - [ ] 실행을 시작한 최종 PoC만 `poc_ref`로 연결하고 draft-only·실행 실패·실행 성공을 구분함
-- [ ] Agent semantic draft + trusted runtime facts + 작은 deterministic finalizer의 책임이 구분됨
+- [ ] Agent semantic draft와 Reproduction Session Manager의 수동 event 기록·최종 문서화 책임이 구분되고 Session Manager가 Agent에 개입하지 않음
 - [ ] plan issue는 결과 내부 `EXECUTABLE | EXECUTABLE_WITH_LIMITATIONS | NEEDS_REVISION`과 범용 string/evidence로 반환함
-- [ ] 같은 plan·attempt의 policy·recipe·environment·AgentLog·PoC·observation·cleanup reference/digest 불변식과 negative scenario가 있음
+- [ ] exact recipe revision·built image digest와 같은 plan·attempt의 policy·environment·AgentLog·PoC·observation·cleanup 불변식 및 negative scenario가 있음
 
 ---
 
@@ -608,7 +608,7 @@ R6가 만든 `COMMITTED EnvironmentRequirements`와 목표 중심 최소 `Reprod
 | 상충 Pro/Con | 독립 NEW session과 근거 기반 verdict/HOLD |
 | sandbox setup 실패 | explicit dynamic failure; vulnerability FALSE 금지 |
 | 동적 재현 계획 생성 | R6가 exact `EnvironmentRequirements`와 이를 가리키는 목표 중심 최소 `ReproductionPlan`을 생산하고 runtime이 COMMITTED·RUN_SANDBOX 허가; LIMITED/FULL mode 계약 여부는 PL 검토 전 열린 결정 |
-| 동적 재현 실행·반환 | R7 Controller가 외부 경계를 적용하고 Agent가 내부 환경·PoC·실행·관찰·retry를 자율 수행해 `EnvironmentRecipe`·`SandboxEnvironment`·`AgentLog`·실행 `PoCBundle`·`CleanupLog`·`DynamicReproductionResult`를 만들며, R6가 COMMITTED 결과만 소비해 최종 판정 |
+| 동적 재현 실행·반환 | Sandbox Controller가 외부 경계 정책을 결정·강제하고 R7 자동화가 clean Sandbox를 생성하며 Agent가 내부 환경·PoC·실행·관찰·retry를 자율 수행한다. Reproduction Session Manager는 실제 event와 최종 `DynamicReproductionResult` 문서만 기록하고 R6가 COMMITTED 결과를 소비해 최종 판정한다. |
 | 동적 계획 변경·stale 실행 | 기존 action/result commit 거절; R6의 새 plan revision과 새 RUN_SANDBOX 허가 필요 |
 | HOLD | Gate 없이 REQUIRED Primitive 저장과 Chaining 조회; PROVIDED 승격 금지 |
 | FALSE | terminal internal result; Primitive/Chaining 금지 |

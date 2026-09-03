@@ -66,9 +66,10 @@ Repository input
 → Verification이 on-demand context와 운영 기본 Pro/Con 병렬 검증 관리
 → 필요 시 Verification이 환경 요구사항과 최소 ReproductionPlan 생성
 → Runtime Validator가 plan reference, 호출 권한·상태·예산을 확인해 R7 호출 허가
-→ R7 Controller가 host·Docker daemon·secret·egress·resource·lifecycle의 Sandbox 외부 경계를 적용
+→ Sandbox Controller가 host·Docker daemon·secret·egress·resource·lifecycle의 Sandbox 외부 정책을 결정·강제
+→ R7 Sandbox Setup Automation이 승인된 경계로 clean Sandbox를 생성
 → Reproduction Agent가 격리된 Sandbox 내부에서 환경 구성·PoC 작성·실행·관찰·retry를 자율 수행
-→ 작은 Dynamic Result Finalizer가 EnvironmentRecipe·AgentLog·실행 PoC·cleanup과 같은 attempt 연결을 검사해 결과 반환
+→ Reproduction Session Manager가 runtime/tool event를 수동적으로 기록하고 최종 동적 결과 문서를 확정
 → final TRUE / FALSE / HOLD
 → FALSE는 terminal
 → HOLD는 REQUIRED Primitive로 즉시 Chaining
@@ -82,7 +83,7 @@ Repository input
 
 정적 분석 도구는 취약점 최종 판정자가 아닙니다. 함수·클래스 같은 코드 요소(`entity`), 코드 위치, 입력 시작점(`source`), 위험 동작 지점(`sink`), 호출·데이터 흐름과 인증·권한 정보를 제공합니다. 가설(`Hypothesis`)과 체이닝 후보는 아직 사람이 검토할 취약점 결과(`Finding`)가 아닙니다. 새로운 공격 주장은 새 가설로 등록되어 전체 검증을 다시 거칩니다.
 
-LLM Agent의 출력은 그대로 믿지 않습니다. 프로그램 내부 규칙 검사기(`Runtime Validator`)는 token·시간 한도, 호출 권한, 상태가 바뀌는 순서, LLM 연결·로그인 정책, Gate 순서와 Reporter 호출 조건을 확인합니다. R7 Controller는 host·Docker daemon·secret·허용되지 않은 egress·다른 workspace와 자원·lifecycle을 Sandbox 외부에서 차단하고, Reproduction Agent는 그 격리 경계 내부에서 재현 작업을 자율 수행합니다.
+LLM Agent의 출력은 그대로 믿지 않습니다. 프로그램 내부 규칙 검사기(`Runtime Validator`)는 token·시간 한도, 호출 권한, 상태가 바뀌는 순서, LLM 연결·로그인 정책, Gate 순서와 Reporter 호출 조건을 확인합니다. Sandbox Controller는 host·Docker daemon·secret·허용되지 않은 egress·다른 workspace와 자원·lifecycle의 외부 정책만 결정·강제하고, R7 Sandbox Setup Automation이 그 정책으로 clean Sandbox를 생성합니다. Reproduction Agent는 격리 경계 내부에서 재현 작업을 자율 수행하며, Reproduction Session Manager는 실제 event 기록과 최종 결과 문서화만 담당합니다.
 
 ## 설계 검토 운영 방식
 
@@ -145,7 +146,7 @@ main  ← Architecture v5 candidate baseline
 
 Gate는 Verification verdict를 변경하거나 공개를 승인하지 않습니다. Reporter는 보고서 초안만 작성하고 이후 Agent 자동화는 종료됩니다. 사람의 검토·수정·제출·공개는 이 자동화 밖에서 진행합니다.
 
-동적 재현의 역할 연결은 `R6 Verification의 환경 요구사항·최소 계획 작성 → R4 Runtime Validator의 reference·호출 전제 확인 → R7 Controller의 Sandbox 외부 안전 경계 적용 → R7 Reproduction Agent의 내부 환경 구성·PoC 작성·실행·관찰·retry → 작은 finalizer의 recipe·AgentLog·실행 PoC·cleanup 연결 검사 → R6의 추가 판단`입니다. R7은 실행 증거를 `SUPPORTED | DISPROVED | INCONCLUSIVE`로 해석해 전달하지만 최종 `TRUE | FALSE | HOLD`를 만들거나 바꾸지 않습니다.
+동적 재현의 역할 연결은 `R6 Verification의 환경 요구사항·최소 계획 작성 → R4 Runtime Validator의 reference·호출 전제 확인 → Sandbox Controller의 외부 경계 정책 결정·강제 → R7 Sandbox Setup Automation의 clean Sandbox 생성 → R7 Reproduction Agent의 내부 환경 구성·PoC 작성·실행·관찰·retry → Reproduction Session Manager의 수동적 event 기록·최종 결과 문서화 → R6의 추가 판단`입니다. R7은 실행 증거를 `SUPPORTED | DISPROVED | INCONCLUSIVE`로 해석해 전달하지만 최종 `TRUE | FALSE | HOLD`를 만들거나 바꾸지 않습니다.
 
 ## 설계 초안
 

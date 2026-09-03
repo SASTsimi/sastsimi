@@ -76,7 +76,7 @@ Technical Evidence Gate의 `REVISE`는 같은 가설의 Verification owner에게
 
 ## 구성 요소와 책임
 
-Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배정을 제안·조정하지만 가설 내부 다음 작업이나 enforcement authority를 갖지 않는다. 가설 내부 다음 작업은 Verification owner가 선택한다. 신뢰 경계 안의 비-LLM Runtime Validator가 schema, 호출 권한, 상태 전이, 예산, 병렬성, provider/session 정책, Gate 순서와 Reporter 호출 전제조건을 강제한다. R7 Controller는 host·Docker daemon·secret·허용되지 않은 network egress·다른 workspace·R8 자원 profile·lifecycle의 Sandbox 외부 경계를 적용한다. Reproduction Agent는 이 경계 내부에서 환경·도구·PoC·명령·관찰·retry를 자율적으로 다룬다. 모든 LLM 출력은 validation 전까지 비신뢰 입력이다.
+Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배정을 제안·조정하지만 가설 내부 다음 작업이나 enforcement authority를 갖지 않는다. 가설 내부 다음 작업은 Verification owner가 선택한다. 신뢰 경계 안의 비-LLM Runtime Validator가 schema, 호출 권한, 상태 전이, 예산, 병렬성, provider/session 정책, Gate 순서와 Reporter 호출 전제조건을 강제한다. Sandbox Controller는 host·Docker daemon·secret·허용되지 않은 network egress·다른 workspace·R8 자원 profile·lifecycle의 Sandbox 외부 경계 정책만 결정·강제하고, R7 Sandbox Setup Automation이 승인된 정책으로 clean Sandbox를 만든다. Reproduction Agent는 이 경계 내부에서 환경·도구·PoC·명령·관찰·retry를 자율적으로 다룬다. 모든 LLM 출력은 validation 전까지 비신뢰 입력이다.
 
 | 구성 요소 | 책임 | 금지 경계 |
 |---|---|---|
@@ -88,9 +88,9 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | Hypothesis Agent | schema-constrained 가설 후보 생성 | verdict·Finding·exploitability 확정 |
 | Verification Agent | 가설 내부 Context·Pro/Con, 환경 요구사항·최소 `ReproductionPlan`, 판정·REVISE·Gate·Chaining 흐름과 material child proposal | Sandbox 직접 실행·동적 결과 생산, runtime 검사 우회 또는 새 주장의 무검증 승격 |
 | Pro/Con Agents | 독립적인 성립·반박 근거 조사 | 동일 session 공유 |
-| R7 Sandbox Controller | host·Docker daemon·secret·egress·다른 workspace·resource·lifecycle의 외부 경계를 검사하고 Sandbox 생성·폐기를 통제 | 내부 명령별 사전 allowlist, 최종 verdict 변경 또는 경계 미적용 실행 |
-| Reproduction Agent | 승인된 clean Sandbox 내부에서 recipe 선택·환경 구성·계정/fixture/mock·PoC 작성·실행·관찰·retry를 자율 수행하고 AgentLog와 동적 outcome 생산 | Sandbox 외부 접근, final `TRUE | FALSE | HOLD` 판단, 행동하지 않은 추론 과정 저장 |
-| Dynamic Result Finalizer | trusted runtime fact를 채우고 같은 attempt의 recipe·AgentLog·실행 PoC·cleanup·digest·redaction 불변식을 작은 결정적 검사기로 확인 | 동적 의미 재판단, 다른 attempt 혼합 또는 reference 존재만으로 성공 판단 |
+| Sandbox Controller | host·Docker daemon·secret·egress·다른 workspace·resource·lifecycle의 외부 경계 정책 결정·강제와 정책 판정 기록 | Sandbox 생성·폐기, Agent 호출·명령별 사전 allowlist, 최종 verdict 변경 |
+| Reproduction Agent | 승인된 clean Sandbox 내부에서 recipe 선택·환경 구성·계정/fixture/mock·PoC 작성·실행·관찰·retry를 자율 수행하고 동적 outcome 초안 생산 | Sandbox 외부 접근, final `TRUE | FALSE | HOLD` 판단, 기록·결과 문서 조작 |
+| Reproduction Session Manager | runtime/tool event를 append-only로 수동 기록하고 Agent 의미 초안과 실행 사실을 최종 `DynamicReproductionResult` 문서로 확정 | Agent 호출·중단, command 허용·거절, 실행 순서·retry·cleanup 결정 또는 동적 의미 재판단 |
 | Primitive DB | HOLD REQUIRED와 Gate-qualified TRUE PROVIDED의 ACTIVE exact revision 검색 | 작업 queue, Gate 전 TRUE admission 또는 자동 Finding 생성 |
 | Chaining Agent | TRUE+HOLD·TRUE+TRUE Primitive matching과 chained proposal | 일반 research, dynamic, Gate, verdict, CWE, report 확정 |
 | Technical Evidence Gate | 기술적 연결성과 handoff 품질 검토 | Verification verdict 직접 변경 |
@@ -112,7 +112,7 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 
 한 축의 값으로 다른 축을 암묵적으로 추론하지 않는다. 예를 들어 기술적으로 `TRUE`여도 out-of-scope이거나 실질 영향이 부족하면 Reporter를 호출하지 않는다.
 
-Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제안한다. 비-LLM Runtime Validator가 역할·schema·exact revision·상태·예산·일반 도구·경로·provider·두 Gate 순서와 보고 조건을 검사해 `ActionDecision=ALLOW | DENY`를 저장한다. `RUN_SANDBOX`의 ALLOW는 current plan·requirements를 R7 Controller에 전달할 수 있다는 뜻이며 Docker 외부 경계 통과나 재현 성공을 뜻하지 않는다. 경계를 통과하면 Reproduction Agent가 내부 실행 순서를 자율 결정하고, finalizer는 실제 runtime fact와 같은 attempt 연결을 검사한다. 이 검사는 환경 의미·취약점 최종 판정이나 정책 해석을 대신하지 않는다.
+Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제안한다. 비-LLM Runtime Validator가 역할·schema·exact revision·상태·예산·일반 도구·경로·provider·두 Gate 순서와 보고 조건을 검사해 `ActionDecision=ALLOW | DENY`를 저장한다. `RUN_SANDBOX`의 ALLOW는 current plan·requirements로 외부 경계 정책 검사를 시작할 수 있다는 뜻이며 Docker 외부 경계 통과나 재현 성공을 뜻하지 않는다. 정책을 통과하면 R7 Sandbox Setup Automation이 clean Sandbox를 만들고 Reproduction Agent가 내부 실행 순서를 자율 결정한다. Reproduction Session Manager는 이 흐름을 제어하지 않고 runtime/tool event와 Agent 초안을 기록해 같은 attempt의 최종 결과 문서를 확정한다. 이 검사는 환경 의미·취약점 최종 판정이나 정책 해석을 대신하지 않는다.
 
 ## 병렬성과 종료 조건
 

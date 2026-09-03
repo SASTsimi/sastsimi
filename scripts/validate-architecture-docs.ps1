@@ -445,7 +445,7 @@ foreach ($forbiddenField in @('mode:', 'steps:', 'cleanup_policy_ref:', 'target_
         Add-Failure "ReproductionPlan must not prescribe R7 execution field: $forbiddenField"
     }
 }
-foreach ($field in @('meta:', 'requirements_ref:', 'base_image_digest:', 'dockerfile_ref:', 'package_manifest_refs:', 'setup_script_refs:', 'account_setup_refs:', 'fixture_refs:', 'mock_service_refs:', 'healthcheck_refs:', 'parent_recipe_ref:', 'change_summary:', 'recipe_digest:')) {
+foreach ($field in @('meta:', 'base_image_digest:', 'built_image_digest:', 'dockerfile_ref:', 'package_manifest_refs:', 'setup_script_refs:', 'account_setup_refs:', 'fixture_refs:', 'mock_service_refs:', 'healthcheck_refs:', 'parent_recipe_ref:', 'change_summary:', 'recipe_digest:')) {
     if (-not $environmentRecipeBlock.Contains($field)) {
         Add-Failure "missing EnvironmentRecipe field: $field"
     }
@@ -478,7 +478,7 @@ foreach ($fieldPattern in @(
         Add-Failure "missing or invalid SandboxEnvironment field: $fieldPattern"
     }
 }
-foreach ($field in @('event_id:', 'sequence:', 'timestamp:', 'action_type:', 'command_ref:', 'input_refs:', 'output_refs:', 'observation_refs:', 'execution_status:', 'exit_code:', 'error_ref:')) {
+foreach ($field in @('event_id:', 'action_id:', 'sequence:', 'timestamp:', 'action_type:', 'command_ref:', 'input_refs:', 'output_refs:', 'observation_refs:', 'execution_status:', 'exit_code:', 'error_ref:')) {
     if (-not $agentLogEntryBlock.Contains($field)) {
         Add-Failure "missing AgentLogEntry field: $field"
     }
@@ -488,7 +488,7 @@ foreach ($field in @('meta:', 'reproduction_plan_ref:', 'entries:')) {
         Add-Failure "missing AgentLog field: $field"
     }
 }
-foreach ($field in @('meta:', 'reproduction_plan_ref:', 'environment_recipe_ref:', 'file_refs:', 'entrypoint_ref:', 'execution_command_ref:', 'attack_input_refs:', 'bundle_digest:')) {
+foreach ($field in @('meta:', 'reproduction_plan_ref:', 'environment_recipe_ref:', 'sandbox_environment_ref:', 'file_refs:', 'entrypoint_ref:', 'execution_command_ref:', 'attack_input_refs:', 'bundle_digest:')) {
     if (-not $pocBundleBlock.Contains($field)) {
         Add-Failure "missing PoCBundle field: $field"
     }
@@ -574,7 +574,7 @@ $requiredActionRequesterBindings = [ordered]@{
     CALL_LLM = 'HYPOTHESIS, PRO, CON, VERIFICATION, REPRODUCTION_AGENT, CWE_LABELING, CHAINING'
     FETCH_POLICY = 'POLICY_COLLECTOR'
     RUN_SANDBOX = 'VERIFICATION'
-    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, REPRODUCTION_AGENT, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, SANDBOX, RECOVERY'
+    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, REPRODUCTION_AGENT, REPRODUCTION_SESSION_MANAGER, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, SANDBOX, RECOVERY'
     CALL_TECHNICAL_GATE = 'VERIFICATION'
     CALL_RULE_SCOPE_GATE = 'VERIFICATION'
     CREATE_REPORT_DRAFT = 'VERIFICATION'
@@ -711,8 +711,10 @@ $authorityScenarioMarkers = @(
     '다른 역할이 만든 결과 후보를 저장'
     '`RUN_SANDBOX` 허가 뒤 plan·requirements·profile revision이 바뀜'
     'Agent가 Sandbox 내부에서 plan에 없는 command·payload를 실행'
+    'Sandbox Controller가 image·container를 만들거나 Agent를 호출하려 함'
+    'Reproduction Session Manager가 command를 거절하거나 실행 순서·retry·cleanup을 바꾸려 함'
     '동적 결과의 recipe·environment·Agent Log·PoC digest가 서로 다름'
-    'Verification이 `DynamicReproductionResult`를 직접 저장'
+    'Verification 또는 Reproduction Agent가 `DynamicReproductionResult`를 직접 저장'
 )
 foreach ($marker in $authorityScenarioMarkers) {
     if (-not $securityText.Contains($marker)) {
@@ -722,24 +724,24 @@ foreach ($marker in $authorityScenarioMarkers) {
 
 $sandboxReviewPatterns = @(
     @{
-        Name = 'Runtime Validator authorizes current references while R7 Controller owns the external boundary'
-        Pattern = '(?s)`RUN_SANDBOX`의 `ActionDecision=ALLOW`.*?Runtime Validator.*?권한.*?상태와 예산.*?exact `ReproductionPlan`.*?current `EnvironmentRequirements`.*?Sandbox profile.*?Sandbox Controller.*?Docker daemon.*?network egress.*?resource profile.*?개별 command.*?사전 allowlist'
+        Name = 'Controller owns only external policy while setup automation creates the Sandbox'
+        Pattern = '(?s)`RUN_SANDBOX`의 `ActionDecision=ALLOW`.*?Runtime Validator.*?exact `ReproductionPlan`.*?current `EnvironmentRequirements`.*?Sandbox profile.*?Sandbox Controller.*?외부 경계 정책.*?Controller는 Sandbox 생성·폐기나 Agent 호출을 수행하지 않으며.*?R7 Sandbox Setup Automation.*?clean Sandbox.*?개별 command.*?사전 allowlist'
     },
     @{
         Name = 'RUN_SANDBOX freezes the minimal reproduction request closure'
         Pattern = '(?s)`RUN_SANDBOX`만 `reproduction_plan_ref`를 사용.*?action `input_refs`에는 exact `ReproductionPlan`.*?`hypothesis_ref`.*?`environment_requirements_ref`.*?`sandbox_profile_ref`.*?`context_refs`.*?Agent가 사용할 command·package·PoC를 요구하거나 의미 판단하지 않는다'
     },
     @{
-        Name = 'invoked reproduction agent always produces an exact AgentLog'
-        Pattern = '(?s)`agent_invoked=false`이면 `agent_log_ref=null`.*?`agent_invoked=true`이면.*?exact `AgentLog`가 필수.*?shell.*?PoC 생성·수정·실행.*?관찰.*?재시도.*?cleanup.*?chain-of-thought.*?저장하지 않는다'
+        Name = 'session manager durably records invoked agent actions without controlling them'
+        Pattern = '(?s)`agent_invoked=false`이면 `agent_log_ref=null`.*?`agent_invoked=true`이면.*?Reproduction Session Manager.*?exact `AgentLog`.*?실행을 허용·차단·변경하지 않고.*?durable append-only sink.*?`event_id`.*?`sequence`.*?`action_id`.*?Agent crash.*?새 attempt.*?chain-of-thought.*?저장하지 않는다'
     },
     @{
-        Name = 'dynamic result save uses the hybrid trusted finalizer'
-        Pattern = '(?s)`SAVE_RESULT\(requested_by=REPRODUCTION_AGENT, result_kind=dynamic_reproduction_result\)`.*?finalizer.*?plan, policy, recipe, environment, Agent Log, 실행 PoC, observation과 cleanup.*?attempt·digest.*?Verification은 `COMMITTED` 결과만 소비'
+        Name = 'session manager alone records the final dynamic result document'
+        Pattern = '(?s)`SAVE_RESULT\(requested_by=REPRODUCTION_SESSION_MANAGER, result_kind=dynamic_reproduction_result\)`.*?plan, policy, recipe, environment, Agent Log, 실행 PoC, observation과 cleanup.*?Agent 행동의 허용·거절에 관여하지 않으며.*?Verification은 `COMMITTED` 결과만 소비'
     },
     @{
-        Name = 'Reproduction Agent owns dynamic result semantics and Verification only consumes'
-        Pattern = '(?s)`dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_AGENT`.*?trusted finalizer.*?domain producer authority는 `REPRODUCTION_AGENT`.*?Verification은 `COMMITTED` 결과만 소비하며 R7 결과를 직접 만들거나 수정하지 않는다'
+        Name = 'session manager owns logs and final documents while agent owns semantic drafts'
+        Pattern = '(?s)`environment_recipe -> EnvironmentRecipe -> REPRODUCTION_AGENT`.*?`agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`.*?`poc_bundle -> PoCBundle -> REPRODUCTION_AGENT`.*?`cleanup_log -> CleanupLog -> REPRODUCTION_SESSION_MANAGER`.*?`dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`.*?Agent의 의미 초안을 바꾸지 않고'
     },
     @{
         Name = 'dynamic result nullable references follow lifecycle facts'
@@ -754,12 +756,12 @@ $sandboxReviewPatterns = @(
         Pattern = '(?s)`failure_category=POLICY`이면 `policy_decision_ref`가 필수.*?Controller 판단 전에 취소.*?`null`'
     },
     @{
-        Name = 'PoC reference points only to the final execution-started bundle'
-        Pattern = '(?s)`poc_ref`는 Agent가 실제 실행을 시작한 최종 exact `PoCBundle`만 가리킨다.*?만들기만 한 draft.*?결과의 `poc_ref`로 전달하지 않는다.*?PoC 실행이 실패.*?bundle.*?`POC_EXECUTE` event와 같아야 한다'
+        Name = 'PoC reference is inferred from the exact bundle and POC_EXECUTE event'
+        Pattern = '(?s)`poc_ref`는 Agent가 실제 실행을 시작한 최종 exact `PoCBundle`만 가리키며.*?만들기만 한 draft.*?결과의 `poc_ref`로 전달하지 않는다.*?PoC 실행이 실패.*?exact bundle.*?`POC_EXECUTE` event와 같아야 한다'
     },
     @{
-        Name = 'Verification owns minimal plans while Reproduction Agent owns dynamic artifacts'
-        Pattern = '(?s)`reproduction_plan -> ReproductionPlan -> VERIFICATION`.*?`environment_recipe -> EnvironmentRecipe -> REPRODUCTION_AGENT`.*?`agent_log -> AgentLog -> REPRODUCTION_AGENT`.*?`dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_AGENT`'
+        Name = 'Verification owns plans and session manager owns logs and final result'
+        Pattern = '(?s)`reproduction_plan -> ReproductionPlan -> VERIFICATION`.*?`environment_recipe -> EnvironmentRecipe -> REPRODUCTION_AGENT`.*?`agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`.*?`dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`'
     }
 )
 foreach ($rule in $sandboxReviewPatterns) {
@@ -787,7 +789,7 @@ $environmentHandoffPatterns = @(
     },
     @{
         Name = 'versioned environment recipe supports package repair and retry'
-        Pattern = '(?s)`EnvironmentRecipe`는 R7이.*?불변 build recipe.*?package 누락.*?Agent Log에 실패.*?Dockerfile·manifest·setup.*?새 baseline image와 recipe revision'
+        Pattern = '(?s)`EnvironmentRecipe`는 R7이.*?저장소·환경 범위의 불변 build recipe.*?base·built image digest.*?package 누락.*?Dockerfile·manifest·setup.*?새 baseline image와 recipe revision'
     },
     @{
         Name = 'environment failure is not falsification'
@@ -795,7 +797,7 @@ $environmentHandoffPatterns = @(
     },
     @{
         Name = 'R6 revision cannot bypass sandbox policy'
-        Pattern = '(?s)R6가 requirements나 최소 plan의 새 revision.*?새 `RUN_SANDBOX` action.*?R7 Controller 외부 경계 검사를 다시.*?이전 허가를 재사용할 수 없다'
+        Pattern = '(?s)R6가 requirements나 최소 plan의 새 revision.*?새 `RUN_SANDBOX` action.*?Sandbox Controller 외부 경계 검사를 다시.*?이전 허가를 재사용할 수 없다'
     },
     @{
         Name = 'environment secrets use opaque handles only'

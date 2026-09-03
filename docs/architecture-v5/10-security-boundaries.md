@@ -10,7 +10,7 @@
 
 ## 신뢰 실행 경계
 
-LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM Runtime Validator가 identity·schema·reference·state·budget·provider/session·Gate/Reporter 전제를 강제한다. R7 Sandbox Controller는 host·Docker daemon·mount·namespace·secret·network egress·R8 resource profile·lifecycle의 외부 경계를 전담한다. Reproduction Agent는 이 경계 안에서 command·파일·환경·PoC와 재시도를 자율적으로 선택한다. 저장소 내용과 모든 LLM 출력은 외부 경계를 바꾸는 policy 명령으로 해석하지 않는다.
+LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM Runtime Validator가 identity·schema·reference·state·budget·provider/session·Gate/Reporter 전제를 강제한다. Sandbox Controller는 host·Docker daemon·mount·namespace·secret·network egress·R8 resource profile·lifecycle의 외부 경계 정책만 전담한다. R7 Sandbox Setup Automation이 승인된 정책으로 clean Sandbox를 만들고 Reproduction Agent는 이 경계 안에서 command·파일·환경·PoC와 재시도를 자율적으로 선택한다. 저장소 내용과 모든 LLM 출력은 외부 경계를 바꾸는 policy 명령으로 해석하지 않는다.
 
 ## 방향
 
@@ -83,11 +83,11 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 ## 5. Docker sandbox
 
 - Agent에게 host root/home, Docker socket/daemon API, host process namespace, device, production secret와 다른 workspace를 제공하지 않는다.
-- trusted R7 Controller가 exact plan·requirements·profile로 Docker image와 격리 lifecycle을 만들고 R8의 CPU·memory·disk·PID·wall-clock 값을 적용한다.
+- Sandbox Controller는 exact plan·requirements·profile로 외부 경계 정책과 R8 값을 결정·강제할 뿐 Docker image·Sandbox를 생성하지 않는다. R7 Sandbox Setup Automation이 승인된 정책으로 image build, clean Sandbox 생성과 lifecycle cleanup을 수행한다.
 - Sandbox 내부 filesystem·process·service에는 재현을 위한 shell·파일·package·계정·fixture·mock·PoC 활동을 넓게 허용한다. 개별 command allowlist나 실행 직전 payload 검사를 두지 않는다.
 - 외부 network egress는 profile 경계 밖으로 나갈 수 없다. package download는 versioned baseline image build 단계에서 수행하고 runtime Agent의 임의 설치 상태를 최종 baseline으로 숨기지 않는다.
 - 실제 외부 통신이 취약점 재현에 본질적이면 versioned target/port/protocol 범위와 mock 대체 가능성을 별도로 검토한다. host gateway·cloud metadata·사설망·범위 밖 실제 target은 차단한다.
-- Toolbox Image와 저장소별 `EnvironmentRecipe`를 사용한다. package가 없으면 Agent Log에 실패를 기록하고 Dockerfile·manifest·setup을 수정해 새 recipe revision과 image digest를 만든 뒤 격리 실행을 다시 시작한다.
+- Toolbox Image와 저장소별 `EnvironmentRecipe`를 사용한다. package가 없으면 runtime/tool event로 실패를 기록하고 Dockerfile·manifest·setup을 수정해 새 recipe revision과 `built_image_digest`를 만든 뒤 격리 실행을 다시 시작한다.
 - 성공한 baseline image/recipe는 `PERSISTENT_BASELINE`으로 보존한다. 개별 session의 container·network·volume·tmp·임시 build는 `SESSION_EPHEMERAL`이며 성공·실패·차단·취소와 관계없이 cleanup한다.
 - 가설마다 반드시 새 container를 만들지는 PL 결정 후 확정한다. 어떤 lifecycle이든 서로 다른 가설·attempt의 writable state와 secret이 섞이면 안 된다.
 - Agent 행동은 command·file/environment change·image build·PoC create/update/execute·observation·retry·cleanup event를 `AgentLog`에 append-only로 남기고 종료 시 immutable artifact로 확정한다. 숨은 사고 과정은 저장하지 않는다.
@@ -211,8 +211,10 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | `RUN_SANDBOX` 허가 뒤 plan·requirements·profile revision이 바뀜 | 실행 직전 action refs와 current state | 기존 decision `UNUSED -> EXPIRED`, 새 action 요구 |
 | Agent가 Sandbox 내부에서 plan에 없는 command·payload를 실행 | 외부 경계와 Agent Log | 허용; 실제 event와 artifact를 기록하고 host·network·resource 경계만 강제 |
 | Agent가 Docker socket·host path·profile 밖 egress를 요청 | Controller boundary와 실제 option | `SANDBOX_POLICY_DENIED`, Agent 미호출 또는 해당 외부 action 차단 |
+| Sandbox Controller가 image·container를 만들거나 Agent를 호출하려 함 | Controller 권한과 R7 setup automation 경계 | `ACTION_NOT_ALLOWED`, Controller는 외부 정책 판정만 저장 |
+| Reproduction Session Manager가 command를 거절하거나 실행 순서·retry·cleanup을 바꾸려 함 | Session Manager의 수동 기록·문서화 권한 | `ACTION_NOT_ALLOWED`, Agent 실행은 그대로 두고 event·결과 문서만 기록 |
 | 동적 결과의 recipe·environment·Agent Log·PoC digest가 서로 다름 | 같은 plan·attempt의 exact refs와 hashes | `SAVE_RESULT` 거절, Verification 전달 금지 |
-| Verification이 `DynamicReproductionResult`를 직접 저장 | result-owner와 `requested_by` | `AUTHORITY_DENIED`, REPRODUCTION_AGENT 후보만 허용 |
+| Verification 또는 Reproduction Agent가 `DynamicReproductionResult`를 직접 저장 | result-owner와 `requested_by` | `AUTHORITY_DENIED`, REPRODUCTION_SESSION_MANAGER만 최종 결과 문서 저장 허용 |
 | Agent를 호출했는데 Agent Log가 없거나 반대 조합 | `agent_invoked`와 `agent_log_ref` | `SAVE_RESULT`의 `SCHEMA` 검사 거절, 가설 판정 변경 금지 |
 | 정책 차단 결과에 Controller 판정 reference가 없음 | `failure_category=POLICY`와 `policy_decision_ref` | `SAVE_RESULT` 거절, Technical Gate 결과로 대신 채우기 금지 |
 | 실제 환경 생성 여부와 `environment_ref`가 다름 | `environment_created`와 exact `sandbox_environment` record | `SAVE_RESULT` 거절, 계획용 환경 설정으로 대체 금지 |
@@ -244,7 +246,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N10-A | Chaining이 N의 ACTIVE Primitive를 읽은 뒤 commit 전에 새 Verification generation/index revision 생성 | commit-time index CAS에서 `STALE_RESULT`; ChainingResult와 child proposal 등록 금지 |
 | N11 | Verification이 새 endpoint·sink·권한 경계를 발견 | Chaining을 거치지 않고 `HypothesisProposal(origin=VERIFICATION)`로 전역 등록 후 새 Verification |
 | N12 | chained child가 FALSE | 두 parent의 기존 verdict와 Gate record 불변 |
-| N13 | Verification이 budget·Sandbox·Gate 순서를 우회하려 함 | Runtime Validator가 budget·Gate·호출 권한을, Sandbox Controller가 세부 Sandbox 정책을 `DENY`; hypothesis-local ownership은 enforcement 권한이 아님 |
+| N13 | Verification이 budget·Sandbox·Gate 순서를 우회하려 함 | Runtime Validator가 budget·Gate·호출 권한을, Sandbox Controller가 외부 경계 정책을 `DENY`; hypothesis-local ownership은 enforcement 권한이 아님 |
 | N13-A | 같은 역할이지만 배정되지 않은 Verification identity가 Gate·Reporter·새 verification work를 요청 | ACTIVE `VerificationAssignment.owner_identity_ref` 불일치로 `AUTHORITY_DENIED` |
 | N14 | Chaining Agent가 Primitive match 없는 bypass·impact·dynamic 요청을 출력 | schema/result-owner validation에서 invalid로 거절 |
 | N15 | `purpose=PRODUCTION`인데 `verification_mode=BASIC | CONDITIONAL_DEBATE`를 요청 | Runtime Validator가 `ACTION_NOT_ALLOWED`; 운영 결과·Gate·Primitive·Reporter 생성 금지 |

@@ -128,8 +128,8 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 - action type·요청 역할별 `ALLOW | DENY` 수와 실패한 `ActionCheck.reason_code`
 - `ALLOW` decision의 `UNUSED | USED`, outcome 누락과 replay 거절 수
 - `AUTHORITY_DENIED`, Gate 순서·Reporter·Sandbox·provider·file 차단 수
-- Sandbox 계획 revision 변경, 계획 밖 step·공격 입력, 결과 정책·환경·PoC·log·cleanup 불일치와 동적 결과 생산 역할 위반 수
-- Runner 미호출인데 step log가 있거나 Runner 호출 뒤 log가 없는 조합, 실제 환경·cleanup 상태와 reference가 어긋나 저장이 거절된 횟수
+- Sandbox 계획·환경 요구사항 revision 변경, 결과의 정책·환경·PoC·AgentLog·cleanup 불일치와 동적 결과 생산 역할 위반 수
+- Agent 미호출인데 AgentLog가 있거나 Agent 호출 뒤 log가 없는 조합, 실제 환경·cleanup 상태와 reference가 어긋나 저장이 거절된 횟수
 - ReportDraft의 exact provenance, restriction·limitation·unresolved condition과 redaction 검사 실패 수
 - ReportDraft 뒤 허용되지 않은 Agent action 요청과 오래된 draft의 current 결과 승격 차단 수
 
@@ -213,7 +213,7 @@ ReportDraft가 가리킨 Finding·Verification·CWE·두 Gate·정책 중 하나
 | Sandbox 부분 실행 | `PARTIAL`, 신뢰 결과와 `limitations` 저장 | 실제 오류가 없으면 `error_ids`·`gap_ids`를 만들지 않고 Verification이 한계와 관측을 함께 판단 |
 | Sandbox 외부 경계 차단 결과 | 공통 work `SUCCEEDED`, 동적 결과 `BLOCKED + failure_category=POLICY` | exact `policy_decision_ref`를 요구한다. Agent가 호출되지 않았으면 `agent_log_ref=null`, `poc_ref=null`; `INCONCLUSIVE`로 Verification에 전달 |
 | Sandbox 실행 취소 | 공통 work와 동적 결과 `CANCELLED` | 취소 결과를 같은 atomic transition에서 저장하고 이후 늦은 결과는 격리 |
-| Sandbox plan·요구사항·정책·recipe·AgentLog·PoC·cleanup 불일치 | 결과 저장 action `DENY` | 같은 attempt·digest·nullable reference·lifecycle 조합을 검사해 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
+| Sandbox plan·요구사항·정책·recipe·AgentLog·PoC·cleanup 불일치 | 결과 저장 action `DENY` | recipe의 exact revision·built image digest와 실행 artifact의 같은 attempt·nullable reference·lifecycle 조합을 검사해 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
 | 정책 조회 실패 또는 정책 최신성 `STALE | UNVERIFIED` | policy work `FAILED` 또는 현재 상태 기록 | 기술 verdict 유지, Rule Scope `UNCERTAIN + DENY`, Reporter 차단. 오래된 정책은 감사 자료로만 보존 |
 | Technical Gate 실행 오류·보완 한도 초과 | Gate work `FAILED` | 기술 verdict 유지, Rule Scope Gate와 Reporter 차단 |
 | Rule Scope Gate 실행 오류 | Gate work `FAILED` | 기술 verdict 유지, Reporter 차단 |
@@ -277,7 +277,7 @@ Context 조회 실패·timeout·권한 오류는 다음 기준으로 처리한�
 | `REPORT_NOT_READY` | runtime validator | Reporter 호출 금지, 기술 verdict 유지 | Rule Scope와 report 조건 보완 |
 | `TOOL_NOT_ALLOWED` | tool validator | tool·command 실행 금지 | allowlist의 안전한 도구로 새 요청 |
 | `FILE_ACCESS_DENIED` | path validator | workspace 밖 파일 접근 금지 | workspace 상대 허용 경로로 새 요청 |
-| `SANDBOX_POLICY_DENIED` | Sandbox Controller policy validator | 동적 실행 또는 network 변경 금지 | 승인된 image·network·resource profile 사용 |
+| `SANDBOX_POLICY_DENIED` | Sandbox Controller 외부 경계 정책 | 외부 경계를 벗어난 실행 또는 network 변경 금지 | 승인된 image·network·resource profile 사용 |
 | `PROVIDER_PROFILE_DENIED` | provider policy validator | LLM 호출·silent failover 금지 | 허용 profile과 explicit 새 action 사용 |
 | `UNTRUSTED_INSTRUCTION` | prompt/action validator | 저장소·LLM 지시를 policy 변경으로 실행하지 않음 | data로 격리하고 승인된 설정만 사용 |
 

@@ -24,7 +24,7 @@ Agent Runtime
 
 Agent Runtime은 역할·structured-output 요구·context reference·budget·session policy를 요청한다. Adapter는 provider별 인증·호출·오류·usage를 공통 결과로 정규화한다. Logging Proxy는 양쪽에서 노출된 요청·응답·tool trace와 실제 선택을 `LLMInvocationLog`로 연결한다.
 
-`REPRODUCTION_AGENT`도 같은 provider 경계를 사용하지만 두 종류의 log를 분리한다. `LLMInvocationLog`는 provider 호출·session·usage·노출된 tool trace를 기록하고, R7 `AgentLog`는 Sandbox 안에서 실제로 수행한 shell·파일/환경 변경·image build·PoC·관찰·retry·cleanup 사건을 기록한다. 어느 쪽도 hidden chain-of-thought를 요구하거나 복원하지 않는다.
+`REPRODUCTION_AGENT`도 같은 provider 경계를 사용하지만 두 종류의 log를 분리한다. `LLMInvocationLog`는 provider 호출·session·usage·노출된 tool trace를 기록하고, Reproduction Session Manager는 기존 runtime/tool 및 lifecycle event를 수동 수집해 R7 `AgentLog`에 실제 shell·파일/환경 변경·image build·PoC·관찰·retry·cleanup 사건을 기록한다. 어느 쪽도 hidden chain-of-thought를 요구하거나 복원하지 않는다.
 
 ## provider 호출 전 권한 검사
 
@@ -130,7 +130,7 @@ Pro/Con prompt는 trusted prompt builder가 역할별 template과 허용된 공�
 
 - Hypothesis Agent에는 저비용 모델 profile을 구성할 수 있다.
 - Verification, Reproduction, Chaining과 두 Gate에는 과업 위험도에 맞는 별도 상위 model profile을 구성할 수 있다.
-- Reproduction Agent profile은 shell·file·service·HTTP·DB·PoC tool 사용과 structured `DynamicReproductionResult` 초안을 지원해야 한다. Sandbox 외부 권한은 model profile이 아니라 R7 Controller가 강제한다.
+- Reproduction Agent profile은 shell·file·service·HTTP·DB·PoC tool 사용과 structured `DynamicReproductionResult` 초안을 지원해야 한다. Sandbox 외부 권한은 model profile이 아니라 Sandbox Controller가 강제한다.
 - 특정 역할의 가격 등급이 정확도를 보장하지 않는다.
 - 모델·provider 변경은 versioned configuration과 evaluation 대상으로 관리한다.
 

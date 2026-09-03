@@ -77,6 +77,8 @@ Context 조회 실패·timeout·권한 오류가 있어도 정상 근거로 모�
 - 공통 작업 `BLOCKED`: 재시도·인증·승인·입력을 기다리는 중이며 아직 끝나지 않은 상태입니다.
 - 동적 결과 `CANCELLED`: 공통 취소 상태와 함께 저장합니다. 취소 확정 뒤 도착한 결과는 사용하지 않습니다.
 
+Reproduction Session Manager는 Agent의 실행을 제어하지 않고 기존 runtime/tool event를 즉시 append-only로 기록합니다. 각 행동은 같은 `action_id`의 `STARTED`와 종료 event로 연결되고 sequence는 attempt 안에서 증가합니다. Agent가 crash하면 이미 저장된 event를 보존해 현재 attempt의 부분 결과 문서를 확정하며, retry는 새 attempt에서 시작합니다. 이전 attempt의 늦은 event는 현재 결과에 연결하지 않습니다.
+
 동적 결과를 Verification에 넘기려면 저장 확정 marker, 공통 작업의 출력 reference와 동적 상태의 `dynamic_result_ref`가 모두 같은 결과 수정본을 가리켜야 합니다.
 
 Gate 작업은 시작할 때 읽은 Verification, CWE, 앞 Gate와 정책의 정확한 수정본을 `input_refs`와 `input_hash`로 고정합니다. Gate 결과 안의 reference가 이 입력과 다르면 저장을 취소하고 다음 단계로 넘기지 않습니다.

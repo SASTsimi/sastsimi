@@ -38,9 +38,10 @@ R7의 목적은 가설의 최종 취약점 판정이 아니라, 격리 환경에
 - R7 `REPRODUCTION_AGENT`는 환경 recipe, package·계정·fixture·mock, PoC, command, 관찰과 retry를 자율적으로 결정한다.
 - R7은 동적 근거를 `SUPPORTED | DISPROVED | INCONCLUSIVE`로 판단한다. 최종 `TRUE | FALSE | HOLD`는 R6가 맡는다.
 - Runtime Validator는 schema·authority·identity·revision·state·budget과 exact input refs만 검사한다.
-- Sandbox Controller는 Docker socket/daemon, host mount/namespace, secret, network egress와 R8 resource profile을 강제한다. Agent command·payload 의미를 사전 allowlist로 검사하지 않는다.
-- 실제 행동은 `AgentLog`, 환경 build는 `EnvironmentRecipe`, 실행된 최종 PoC는 `PoCBundle`, 정리는 `CleanupLog`로 저장한다.
-- Agent가 result 의미 필드를 초안 작성하고 trusted code가 runtime 사실을 채운 뒤 작은 deterministic finalizer가 불변조건만 검사한다.
+- Sandbox Controller는 Docker socket/daemon, host mount/namespace, secret, network egress와 R8 resource profile의 외부 경계 정책만 결정·강제한다. Sandbox 생성·폐기나 Agent 호출을 수행하지 않고 Agent command·payload 의미를 사전 allowlist로 검사하지 않는다.
+- R7 Sandbox Setup Automation이 승인된 정책으로 image build, clean Sandbox 생성과 lifecycle cleanup을 수행한다.
+- 기존 Agent tool runtime과 lifecycle automation이 실제 action event를 방출하고 Reproduction Session Manager가 이를 append-only `AgentLog`와 `CleanupLog`로 수동 기록한다.
+- Agent가 result 의미 필드를 초안 작성하면 Session Manager가 runtime 사실과 결합해 최종 결과 문서를 확정한다. Session Manager는 Agent 실행·command·retry·cleanup에 개입하거나 의미를 다시 판단하지 않는다.
 
 ## Environment and package lifecycle
 
@@ -70,7 +71,7 @@ R7의 목적은 가설의 최종 취약점 판정이 아니라, 격리 환경에
 - Agent command가 plan에 없다는 이유로 차단하지 않음
 - Docker socket·host path·secret·profile 밖 egress 차단
 - R8 profile 적용과 실제 사용량·timeout 기록
-- recipe·image·environment·Agent Log·PoC·cleanup의 같은 attempt/digest 연결
+- 재사용 가능한 exact recipe revision·built image digest와 같은 attempt의 environment·Agent Log·PoC·cleanup 연결
 - 실행하지 않은 PoC draft를 결과에 연결하지 않음
 - persistent baseline과 ephemeral cleanup lifecycle 혼합 차단
 - Agent Log에 hidden chain-of-thought를 요구·저장하지 않음
@@ -81,4 +82,3 @@ R7의 목적은 가설의 최종 취약점 판정이 아니라, 격리 환경에
 
 - 상위 Issue: #8
 - 하위 Issue: #73, #74, #75
-

@@ -65,10 +65,10 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] 판단을 보류한 가설의 부족 조건은 Gate-qualified `TRUE`의 능력이 채울 때만, 바로 합치지 않고 새로운 연계 가설로 다시 검증합니다.
 - [ ] Gate-qualified TRUE 두 개를 결합할 때 양쪽 exact parent revision을 확인하고 새 가설로 검증합니다.
 - [ ] Docker 전체 재현과 PoC가 어떤 가설·코드 위치·관찰 결과를 뒷받침하는지 추적됩니다.
-- [ ] 동적 결과의 Runner 호출·실제 환경 생성·정리 필요 상태와 nullable log·환경·정책·PoC reference가 모순되지 않습니다.
+- [ ] 동적 결과의 Agent 호출·실제 환경 생성·정리 필요 상태와 nullable AgentLog·환경·정책·PoC reference가 모순되지 않습니다.
 - [ ] Sandbox 정책 차단은 exact 정책 결정과 미실행 상태를 남기며, 그 사실만으로 Technical `REJECT`나 가설 `FALSE`가 되지 않습니다.
-- [ ] 필수 환경 차이가 있으면 공격 단계 전에 멈추고 `FAILED + ENVIRONMENT_SETUP`과 exact 비교 결과를 R6에 반환합니다.
-- [ ] R6이 환경 조건을 바꾸면 새 요구사항과 이를 가리키는 새 계획을 함께 만들고, 단계만 바꾸면 새 계획만 만든 뒤 새 `RUN_SANDBOX`·Sandbox Controller 검사를 거칩니다.
+- [ ] Agent가 필수 환경을 끝내 구성하지 못하면 `FAILED + ENVIRONMENT`와 exact recipe·환경 비교·AgentLog를 R6에 반환합니다.
+- [ ] R6이 가설·환경 요구사항·최소 계획을 바꾸면 새 revision과 새 `RUN_SANDBOX`·Sandbox Controller 외부 경계 검사를 거칩니다.
 - [ ] 환경 구성 실패·차이·허용되지 않은 version fallback·오래된 requirements를 가설 `FALSE`로 바꾸지 않습니다.
 - [ ] 환경 요구사항·실제 값·Health Check·log에 credential·cookie·token·password 원문이 없습니다.
 - [ ] 기술적으로 `TRUE`여도 공식 정책을 확인할 수 없으면 보고서 전달을 허용하지 않습니다.

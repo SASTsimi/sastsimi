@@ -12,7 +12,7 @@
 
 Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 소유한다. 가설이 실제 코드 흐름과 실행 조건에서 성립하는지 검토하고 `TRUE | FALSE | HOLD`를 판정하며, 필요한 Context·Pro/Con·동적 재현·보완 작업과 Gate 제출 시점을 선택한다. 제한 조건·우회 후보·필요 능력·제공 가능 능력·실질 영향의 상승 가능성도 함께 기록한다.
 
-이 제어권은 실행 허가 권한이 아니다. Verification이 다음 작업을 제안하면 비-LLM Runtime Validator가 `ActionRequest`, exact revision, 역할, 상태, 예산과 provider/session을 확인한다. `RUN_SANDBOX`가 허가된 뒤에는 R7 Controller가 Sandbox 외부 안전 경계를 적용하고 `REPRODUCTION_AGENT`가 그 내부에서 재현 전략과 실행을 자율적으로 결정한다.
+이 제어권은 실행 허가 권한이 아니다. Verification이 다음 작업을 제안하면 비-LLM Runtime Validator가 `ActionRequest`, exact revision, 역할, 상태, 예산과 provider/session을 확인한다. `RUN_SANDBOX`가 허가된 뒤에는 Sandbox Controller가 Sandbox 외부 경계 정책을 결정·강제하고 R7 Sandbox Setup Automation이 clean Sandbox를 만든다. `REPRODUCTION_AGENT`는 그 내부에서 재현 전략과 실행을 자율적으로 결정한다.
 
 ## 기본 검증 순서
 
@@ -171,18 +171,18 @@ R7 `REPRODUCTION_AGENT`는 전달받은 가설을 다시 최종 판정하지 않
 
 - 같은 `workspace_id`와 `commit_id`, current plan·requirements·profile reference를 사용한다.
 - Runtime Validator는 requester·state·budget·reference만 검사하고 command·payload·package·재현 전략을 의미 검사하지 않는다.
-- R7 Controller가 Docker socket, host mount/namespace, production secret, 다른 workspace와 허용되지 않은 network egress를 차단하고 R8의 CPU·memory·disk·PID·wall-clock profile을 적용한다.
-- Agent에게 Docker daemon 권한을 주지 않는다. trusted R7 runtime이 image build와 Sandbox lifecycle을 수행한다.
+- Sandbox Controller가 Docker socket, host mount/namespace, production secret, 다른 workspace와 허용되지 않은 network egress 및 R8 profile의 외부 경계 정책을 결정·강제하고 판정을 기록한다. Controller는 Sandbox를 생성·폐기하거나 Agent를 호출하지 않는다.
+- R7 Sandbox Setup Automation이 승인된 정책을 사용해 image build, clean Sandbox 생성과 lifecycle cleanup을 수행한다. Agent에게 Docker daemon 권한을 주지 않는다.
 - Sandbox 내부 filesystem·process·service에서는 Agent의 환경 변경, command, PoC와 재시도를 넓게 허용한다.
 - 자주 쓰는 runtime·도구가 있는 Toolbox Image를 사용하고, 누락 package는 Dockerfile·manifest·setup script에 반영해 새 `EnvironmentRecipe`와 image digest로 build한다.
 - package download는 versioned baseline build 단계에서 수행하고 동적 재현 runtime의 임의 인터넷 설치 상태를 최종 환경으로 숨기지 않는다.
 - 성공한 baseline image/recipe는 보존하고 session container·network·volume·tmp와 임시 build만 cleanup한다.
-- Agent의 실제 command·파일·환경·PoC·관찰·재시도·cleanup은 append-only `AgentLog`에 기록한다. 숨은 사고 과정은 저장하지 않는다.
+- 기존 Agent tool runtime이 실제 command·파일·환경·PoC·관찰·재시도 event를 방출하고 Reproduction Session Manager가 이를 append-only `AgentLog`로 수동 기록한다. Sandbox lifecycle automation의 cleanup event도 같은 방식으로 기록하며 숨은 사고 과정은 저장하지 않는다.
 - 가설별 새 container 생성 여부는 PL 결정 전까지 고정하지 않지만 서로 다른 가설·attempt의 writable state가 섞이지 않아야 한다.
 
 ### 동적 결과를 Verification에 전달하는 방법
 
-R7은 `EnvironmentRecipe`, 실제 `SandboxEnvironment`, `AgentLog`, 실행된 `PoCBundle`, observation과 `CleanupLog`를 같은 attempt로 연결한다.
+R7은 재사용 가능한 exact `EnvironmentRecipe` revision을 참조하고, 실제 `SandboxEnvironment`, `AgentLog`, 실행된 `PoCBundle`, observation과 `CleanupLog`는 같은 attempt로 연결한다.
 
 - `environment_recipe_ref`: Dockerfile·package·setup/account/fixture/mock/healthcheck와 image digest의 exact revision
 - `agent_log_ref`: 실제 행동의 append-only 불변 기록
@@ -191,7 +191,7 @@ R7은 `EnvironmentRecipe`, 실제 `SandboxEnvironment`, `AgentLog`, 실행된 `P
 - `failure_category`와 자유 형식 `failure_reason`: 환경·실행·관찰·정책·timeout 원인을 범용적으로 설명
 - `cleanup_log_ref`: session ephemeral 정리와 persistent baseline 보존 결과
 
-Agent가 outcome, evidence 선택, plan issue, limitation, failure reason과 linkage를 초안 작성한다. trusted code가 실제 reference·시간·runtime 상태·cleanup·digest를 채우고 작은 deterministic finalizer가 schema·identity·revision·hash·redaction·상태 불변조건만 검사한다. 결과와 work/transition이 같은 COMMITTED record를 가리킬 때만 R6에 전달한다.
+Agent가 outcome, evidence 선택, plan issue, limitation, failure reason과 linkage를 초안 작성한다. Reproduction Session Manager는 runtime/tool event에서 실제 reference·시간·상태·cleanup·digest를 기록하고, 종료 시 schema·identity·revision·hash·redaction·상태 불변조건만 검사해 최종 결과 문서를 확정한다. Session Manager는 Agent 실행·명령·재시도·cleanup을 제어하거나 의미를 다시 판단하지 않는다. 결과와 work/transition이 같은 COMMITTED record를 가리킬 때만 R6에 전달한다.
 
 ### 동적 재현 상태와 실제 반증
 

@@ -44,7 +44,7 @@ CWE 후보는 final TRUE 뒤에 Gate 입력으로 작성한다. primary·alterna
 - final `TRUE`와 찬성·반대 근거의 일치
 - 핵심 주장이 현재 `workspace_id`와 `commit_id`의 코드 위치·호출·데이터 흐름에 연결되는지
 - 동적 관측이 현재 가설·`workspace_id`·실행 조건에 연결되는지
-- Runner 호출 여부와 step log, 실제 환경 생성 여부와 환경 reference, 정책 차단과 Controller 판정 reference, 정리 필요 여부와 상태가 공통 계약에 맞는지
+- Agent 호출 여부와 append-only AgentLog, 실제 환경 생성 여부와 환경 reference, 정책 차단과 Controller 판정 reference, 정리 필요 여부와 상태가 공통 계약에 맞는지
 - PoC reference가 있다는 사실을 실행 또는 성공으로 오해하지 않고 실제 log·관측과 같은 revision인지
 - CWE 선택이 취약점 유형과 근거에 적절한지
 - restriction·반박·HOLD 조건이 정확히 표현되었는지
