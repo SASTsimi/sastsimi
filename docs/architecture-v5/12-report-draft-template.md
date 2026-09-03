@@ -11,7 +11,10 @@
 Reporter Agent는 다음 조건이 모두 참일 때만 이 내부 초안을 작성한다.
 
 ```text
-Verification TRUE
+current final Verification TRUE
++ current Finding
++ current dynamic reproduction SUCCEEDED + SUPPORTED
++ current validated poc_ref
 + Technical Evidence Gate ACCEPT
 + Rule Scope Impact Gate review_status PASS
 + rule_compliance PASS
@@ -117,11 +120,14 @@ security impact는 exact upstream evidence보다 강하게 표현하지 않는�
 
 ## 7. 동적 재현과 PoC
 
-- 모드: `{NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO}`
+- 요청 목적: `{POC_CONFIRMATION | VERDICT_EVIDENCE}`
+- R7 실행 모드: `{LIMITED_REPRO | FULL_REPRO}`
 - Docker 환경: `{image digest and relevant configuration}`
 - 전제: `{account, data, route or build condition}`
 - 실행 상태: `{SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED}`
 - 관측 결과: `{SUPPORTED | DISPROVED | INCONCLUSIVE}`
+- PoC candidate reference: `{poc_candidate_ref.record_id}`
+- validated PoC reference: `{poc_ref.record_id; SUCCEEDED + SUPPORTED인 final TRUE에 필수}`
 - 가설 연결: `{hypothesis evidence refs와 관측이 지지·반증하는 정확한 claim}`
 - 환경 차이/제한: `{limitations}`
 
@@ -131,10 +137,10 @@ security impact는 exact upstream evidence보다 강하게 표현하지 않는�
 2. `{action}`
 3. `{observation}`
 
-### 입력 또는 요청
+### 검증된 PoC 입력
 
 ```text
-{redacted PoC input or request}
+{redacted input from the exact validated PoC}
 ```
 
 실제 credential, session cookie, API key와 개인정보를 포함하지 않는다.
@@ -153,11 +159,11 @@ runner가 실행되지 않았거나 step·observation이 부족하거나 상태�
 
 - Verification이 조사한 bypass/alternate/impact: `{validated outcomes or none}`
 - Verification-origin 새 가설: `{proposal and validated child refs or none}`
-- Gate-qualified PROVIDED Primitive: `{primitive refs and exact Gate provenance}`
-- Chaining 조합: `{TRUE_HOLD | TRUE_TRUE, upstream PROVIDED, downstream requirement/precondition, current PrimitiveIndexState refs, match refs or skipped}`
+- Chaining에 사용한 Primitive: `{primitive refs and exact Verification/Technical review provenance}`
+- Chaining 조합: `{upstream result Primitive, downstream input Primitive, matched_input_id, match refs or skipped}`
 - Chaining-origin 새 가설: `{proposal and validated child refs or none}`
 - 아직 미검증: `{candidate refs; report claim으로 사용하지 않음}`
-- match 없음 또는 제한 중단: `{no-match/bounded-stop reason if applicable}`
+- match 없음 또는 전역 예산 중단: `{no-match/global-budget reason if applicable}`
 
 ## 10. 두 Gate 검토
 
