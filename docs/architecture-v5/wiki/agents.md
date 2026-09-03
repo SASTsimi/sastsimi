@@ -2,7 +2,7 @@
 
 ## 쉽게 말하면
 
-각 LLM Agent가 맡는 일과 직접 결정하면 안 되는 일을 한눈에 보여 줍니다. 프로그램 규칙 검사기와 사람의 최종 결정을 LLM Agent가 대신하지 않습니다.
+각 LLM Agent가 맡는 일과 직접 결정하면 안 되는 일을 한눈에 보여 줍니다. 프로그램 규칙 검사기를 LLM Agent가 대신하지 않으며 자동화는 Reporter 초안 뒤에 끝납니다.
 
 **상세 기준:** [03. Agent 역할과 오케스트레이션](../03-agent-roles-and-orchestration.md)
 
@@ -12,30 +12,33 @@
 |---|---|---|
 | Orchestration | proposal 검증·전역 가설 등록·Verification 배정 제안 | 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정, runtime enforcement, Finding·공개 결정 |
 | Hypothesis | schema-valid `HYPOTHESIS_ONLY` 제안 생성 | verdict, Finding, exploitability 확정 |
-| Verification | 한 가설의 Context·Pro/Con, 환경 요구사항·동적 모드·`ReproductionPlan`, 환경 차이 수용·판정·Gate 보완·Chaining handoff와 material child 제안 | Sandbox 직접 실행·동적 결과 생산, runtime 검사 우회, 새 claim 무검증 승격 |
+| Verification | 한 가설의 Context·Pro/Con, 목적별 `DynamicReproductionRequest`, 반환 결과 소비·판정·Gate 보완·Chaining handoff와 material child 제안 | 환경 요구사항·실행 계획·PoC·동적 결과 생산, Sandbox 직접 실행, 새 claim 무검증 승격 |
+| R7 Dynamic Reproduction | exact 요청을 바탕으로 환경 요구사항·mode·실행 계획·PoC candidate·동적 결과 생산 | 최종 verdict 또는 요청 목적 변경 |
 | Sandbox Controller | exact plan·requirements closure의 보안 정책을 검사하고 허용·차단 이유 저장 | 환경 요구사항·재현 필요성·모드·계획·최종 verdict 변경 또는 정책 미검사 실행 |
 | Sandbox Runner | Controller가 승인한 exact 계획으로 환경 구성·요구사항 비교·Health Check 후 필수 일치 시 공격 단계 실행, 실제 환경·step log·PoC 사실 생산 | 환경 차이 임의 수용·허용되지 않은 fallback·정책 변경·계획 밖 명령 또는 최종 verdict 판단 |
-| Sandbox Result Assembler | exact R6 plan closure와 같은 R7 실행 시도의 정책·환경 비교·log·PoC·정리 참조를 동적 결과로 조립 | reference 존재만으로 성공 판단, 다른 plan·requirements·실행 attempt 결과 혼합 |
+| Sandbox Result Assembler | exact R7 plan closure와 같은 R7 실행 시도의 정책·환경 비교·log·PoC candidate·정리 참조를 동적 결과로 조립 | reference 존재만으로 성공 판단, 다른 request·plan·attempt 결과 혼합 |
 | Pro | 가설 성립 근거 탐색 | 최종 verdict |
 | Con | 반증·보호·도달 불가·restriction 탐색 | 최종 verdict |
-| Chaining | Gate-qualified TRUE+HOLD·TRUE+TRUE Primitive matching과 새 가설 제안 | 일반 research, dynamic, REVISE, verdict/CWE/Gate/Finding/report 확정 |
+| Chaining | upstream Primitive 결과→downstream Primitive 입력 matching과 새 가설 제안 | 일반 research, dynamic, REVISE, verdict/CWE/Gate/Finding/report 확정 |
 | Technical Evidence Gate | verdict-evidence·코드/동적 연결·CWE·restriction 검토 | verdict 변경 |
 | Rule Scope Impact Gate | 공식 rule/scope·금지 테스트·실제 impact·report permission 검토 | 공식 자료 없는 추정 승인 |
 | Reporter | 통과한 근거로 내부 보고서 초안 작성 | 새 근거 확정, 제출·공개 |
-| Human Reviewer | 수정·추가 검증·보류·공개 결정 | — |
 
 ```text
 Orchestration → Hypothesis proposal validation and registration → assign Verification
-Verification → context → Pro and Con → EnvironmentRequirements and ReproductionPlan
-Runtime Validator → commit exact requirements and plan → authorize Sandbox call
+Verification → context → Pro and Con → DynamicReproductionRequest
+R7 → EnvironmentRequirements and ReproductionPlan and PoC candidate
+Runtime Validator → enforce one dynamic work per generation → authorize Sandbox call
 Sandbox Controller → store exact policy decision → Sandbox Runner compares actual environment
-required MATCH → execute exact attack steps → result assembler → Verification final verdict
-HOLD → REQUIRED Primitive → Chaining
+required MATCH → execute exact attack steps → validated PoC on supported success → Verification final verdict
+HOLD → inputs plus null result Primitive → Chaining
 TRUE → CWE → Technical Gate → Rule Scope Impact Gate
-Gate-qualified TRUE → PROVIDED Primitive → Chaining
+Technical-accepted TRUE → result Primitive → Chaining
 Verification or Chaining material claim → new hypothesis → new Verification
-all report conditions → Reporter → Human
+all report conditions → Reporter → ReportDraft → AnalysisRunResult → Agent automation end
 ```
+
+자동화 종료 뒤의 검토·수정·제출·공개는 이 Agent 목록 밖에서 사람이 수행합니다.
 
 각 역할은 공통 `LLMProviderAdapter`를 사용하며 역할 독립성이 필요한 조합은 NEW session을 기본으로 한다. 상세 경계는 [Agent 역할과 오케스트레이션](../03-agent-roles-and-orchestration.md)을 따른다.
 
