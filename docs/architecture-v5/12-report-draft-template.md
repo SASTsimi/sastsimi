@@ -124,7 +124,7 @@ security impact는 exact upstream evidence보다 강하게 표현하지 않는�
 - 요청 목적: `{POC_CONFIRMATION | VERDICT_EVIDENCE}`
 - 전제: `{account, data, route or build condition}`
 - 실행 상태: `{SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED}`
-- 실패 분류: `{NONE | PLAN | ENVIRONMENT | EXECUTION | OBSERVATION | POLICY | TIMEOUT | RETRY_LIMIT | CANCELLED | OTHER}`
+- 실패 분류: `{NONE | POLICY_BLOCKED | EXTERNAL_CONFIGURATION | PLAN | ENVIRONMENT_SETUP | DEPENDENCY | AGENT | EXECUTION | OBSERVATION | TIMEOUT | RESOURCE_LIMIT | RETRY_LIMIT | INTERNAL}`
 - 실패 상세 사유: `{failure_reason string or null}`
 - Reproduction Agent 호출 여부: `{agent_invoked}`
 - AgentLog reference: `{agent_log_ref.record_id or null}`
