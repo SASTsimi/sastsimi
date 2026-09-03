@@ -16,7 +16,7 @@
 
 | 영역 | 내용 |
 |---|---|
-| `facts` | `StaticFactBundle`, `ToolRunResult`, 원본 AST/SAST refs, coverage, gaps와 errors |
+| `facts` | `StaticFactBundle`, `ToolRunResult`, `RuleExecutionRecord`, 원본 AST/SAST refs, coverage, gaps와 errors |
 | `hypotheses` | initial/child/chained proposal, validation state와 parent 관계 |
 | `contexts` | `CodeContextRequest/Response`, 실제 반환·열람 위치 |
 | `verifications` | Pro/Con, initial/final verdict, restriction/capability, CWE |
@@ -68,6 +68,16 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 
 ## 분석 및 비교 지표
 
+### Static analysis
+
+- 도구·버전·설정·규칙 catalog·attempt별 선택 규칙 수와 실제 실행 규칙 수
+- `EXECUTED + hit_count=0`, `NOT_EXECUTED`, `UNKNOWN` 규칙 수
+- 실행 coverage는 `SELECTED` 규칙 중 `EXECUTED` 비율, 계획 coverage는 catalog 규칙 중 `SELECTED` 비율로 따로 계산
+- 실패·timeout·기록 누락으로 실행 여부가 불명확한 규칙을 0건이나 미실행 확정으로 바꾸지 않은 수
+- retry별 독립 `RuleExecutionRecord`, stale attempt·설정 또는 catalog 불일치로 거절된 수
+
+두 coverage의 분모를 섞지 않는다. 계획에서 제외한 `NOT_SELECTED + NOT_EXECUTED`는 도구 실패가 아니고, `SELECTED + NOT_EXECUTED | UNKNOWN`은 실행 coverage의 누락이다. `hit_count`는 raw 도구 결과 수이며 정규화된 `CodeFact` 수와 같다고 추정하지 않는다. 이 지표는 정적분석 범위와 품질을 평가하기 위한 것이며 취약점 verdict나 안전성 지표가 아니다.
+
 ### Hypothesis output
 
 - 생성 proposal 수, schema-valid 비율
@@ -105,7 +115,7 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 ### Resources
 
 - 역할·provider·model별 invocation, token/동등 usage와 elapsed time
-- AST/SAST별 `SUCCEEDED | PARTIAL | FAILED | SKIPPED`, 실제 분석·제외 path/language와 coverage
+- AST/SAST별 `SUCCEEDED | PARTIAL | FAILED | SKIPPED`, 실제 분석·제외 path/language, exact 규칙 실행 record와 coverage
 - 목적별 `POC_CONFIRMATION | VERDICT_EVIDENCE` 요청 수, generation당 동적 work 수, 같은 work의 attempt 수
 - sandbox mode별 CPU/memory/disk/network/time, `runner_invoked`, 실제 환경 생성 여부, requirement `MATCH | MISMATCH | NOT_CHECKED | ERROR` 수와 cleanup
 - exact `dynamic_request_ref`·`environment_requirements_ref`·`poc_candidate_ref`·validated `poc_ref`·`policy_decision_ref`·`environment_ref`·`steps_ref`의 data kind, record revision과 content hash

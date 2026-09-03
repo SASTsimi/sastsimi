@@ -336,6 +336,8 @@ foreach ($rule in $reviewRemediationPatterns) {
 
 $resultPath = Join-Path $repoRoot 'docs/architecture-v5/07-results-and-observability.md'
 $resultText = Get-Content -Raw -LiteralPath $resultPath
+$staticPath = Join-Path $repoRoot 'docs/architecture-v5/02-static-fact-layer.md'
+$staticText = Get-Content -Raw -LiteralPath $staticPath
 $commonWikiPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/common-contracts.md'
 $commonWikiText = Get-Content -Raw -LiteralPath $commonWikiPath
 $requiredErrorCodes = @(
@@ -1298,6 +1300,93 @@ foreach ($phrase in $obsoleteContextFailurePhrases) {
     }
 }
 
+$ruleExecutionItemBlock = [regex]::Match($contractText, '(?ms)^RuleExecutionItem:\s*(.*?)^RuleExecutionRecord:').Groups[1].Value
+$requiredRuleExecutionItemFields = @(
+    'rule_id: string',
+    'selection_status: SELECTED | NOT_SELECTED',
+    'execution_status: EXECUTED | NOT_EXECUTED | UNKNOWN',
+    'hit_count: integer | null',
+    'reason: NOT_SELECTED | TOOL_FAILURE | UNSUPPORTED | CANCELLED | TELEMETRY_MISSING | OTHER | null',
+    'detail: string | null'
+)
+foreach ($field in $requiredRuleExecutionItemFields) {
+    if (-not $ruleExecutionItemBlock.Contains($field)) {
+        Add-Failure "RuleExecutionItem is missing field: $field"
+    }
+}
+
+$toolSourceBlock = [regex]::Match($contractText, '(?ms)^ToolSource:\s*(.*?)^CodeFact:').Groups[1].Value
+if (-not $toolSourceBlock.Contains('attempt_id: string')) {
+    Add-Failure 'ToolSource is missing attempt_id'
+}
+
+$ruleExecutionRecordBlock = [regex]::Match($contractText, '(?ms)^RuleExecutionRecord:\s*(.*?)^ToolRunResult:').Groups[1].Value
+$requiredRuleExecutionRecordFields = @(
+    'meta: RecordMeta without hypothesis, with attempt',
+    'tool_name: string',
+    'tool_version: string',
+    'analysis_config_ref: StoredDataRef',
+    'rule_catalog_ref: StoredDataRef',
+    'selected_rule_packs: [string]',
+    'rules: [RuleExecutionItem]'
+)
+foreach ($field in $requiredRuleExecutionRecordFields) {
+    if (-not $ruleExecutionRecordBlock.Contains($field)) {
+        Add-Failure "RuleExecutionRecord is missing field: $field"
+    }
+}
+
+$toolRunResultBlock = [regex]::Match($contractText, '(?ms)^ToolRunResult:\s*(.*?)^ContextRetrievalLimits:').Groups[1].Value
+foreach ($field in @('tool_kind: STRUCTURE | RULE_BASED', 'rule_execution_ref: StoredDataRef | null')) {
+    if (-not $toolRunResultBlock.Contains($field)) {
+        Add-Failure "ToolRunResult is missing field: $field"
+    }
+}
+
+$requiredRuleExecutionSemantics = @(
+    @{ Name = 'zero hit is an executed rule'; Text = $contractText; Marker = '`hit_count=0`만이 “규칙을 실행했지만 탐지 결과가 0건”이라는 뜻이다.' },
+    @{ Name = 'not executed and unknown never use zero'; Text = $contractText; Marker = '`NOT_EXECUTED | UNKNOWN`에서 `hit_count=0`을 쓰는 것도 금지한다.' },
+    @{ Name = 'other reason requires detail'; Text = $contractText; Marker = '`reason=OTHER`이면 사람이 이해할 수 있는 비어 있지 않은 `detail`이 필수다.' },
+    @{ Name = 'CodeFact is bound to a tool attempt'; Text = $contractText; Marker = '`CodeFact.producer.attempt_id`는 이 사실을 만든 exact `ToolRunResult.attempt_id`와 같아야 한다.' },
+    @{ Name = 'missing CodeFact does not prove zero'; Text = $staticText; Marker = '`CodeFact`가 없다는 사실만으로 규칙을 실행했거나 결과가 0건이었다고 추정하지 않는다.' },
+    @{ Name = 'retry keeps rule records separate'; Text = $contractText; Marker = '이전 attempt의 규칙 상태나 탐지 수를 합치지 않는다.' },
+    @{ Name = 'R8 separates plan and execution coverage'; Text = $resultText; Marker = '실행 coverage는 `SELECTED` 규칙 중 `EXECUTED` 비율, 계획 coverage는 catalog 규칙 중 `SELECTED` 비율로 따로 계산' },
+    @{ Name = 'security blocks zero-hit inference'; Text = $securityText; Marker = '`CodeFact`가 없다는 이유만으로 규칙 실행 0건을 기록' },
+    @{ Name = 'Wiki explains the three execution meanings'; Text = $commonWikiText; Marker = '`EXECUTED + hit_count=0`: 검사했지만 탐지 결과가 0건입니다.' },
+    @{ Name = 'result owner registry protects rule records'; Text = $contractText; Marker = '`rule_execution_record -> RuleExecutionRecord -> STATIC_ANALYSIS`' }
+)
+foreach ($rule in $requiredRuleExecutionSemantics) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing or weakened rule execution contract: $($rule.Name)"
+    }
+}
+
+$obsoleteRuleExecutionPhrases = @(
+    '어떤 rule/rule pack을 실제로 실행했는지 추적할 방법이 아직 없다.',
+    '이 계약은 이 PR에서 확정하지 않으므로 후속 **Issue #82**로 분리'
+)
+foreach ($phrase in $obsoleteRuleExecutionPhrases) {
+    if ($staticText.Contains($phrase)) {
+        Add-Failure "obsolete unresolved rule execution statement remains: $phrase"
+    }
+}
+
+$ruleExecutionDecisionPath = Join-Path $repoRoot 'docs/review/decisions/ADR-006-static-rule-execution-record.md'
+if (-not (Test-Path -LiteralPath $ruleExecutionDecisionPath)) {
+    Add-Failure 'missing ADR-006 static rule execution decision'
+} else {
+    $ruleExecutionDecisionText = Get-Content -Raw -LiteralPath $ruleExecutionDecisionPath
+    foreach ($marker in @('상태: `ACCEPTED`', 'RunMeta', 'RuleExecutionRecord', 'ToolRunResult.tool_kind', 'ToolSource.attempt_id', '새 MAJOR schema', 'R2:', 'R4:', 'R8:')) {
+        if (-not $ruleExecutionDecisionText.Contains($marker)) {
+            Add-Failure "ADR-006 is missing decision marker: $marker"
+        }
+    }
+}
+$decisionIndexText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/review/decisions/README.md')
+if (-not $decisionIndexText.Contains('[ADR-006](./ADR-006-static-rule-execution-record.md)')) {
+    Add-Failure 'decision index is missing ADR-006'
+}
+
 $savedErrorAction = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 $gitCheck = & git -C $repoRoot diff --check 2>&1
@@ -1345,6 +1434,10 @@ Write-Output "Technical Gate TRUE-only scope rules: $($requiredTechnicalGateScop
 Write-Output "Validated PoC contract markers: $($requiredValidatedPocContractMarkers.Count)"
 Write-Output "Validated PoC cross-document rules: $($requiredValidatedPocCrossDocumentMarkers.Count)"
 Write-Output "Obsolete Context failure phrases: $($obsoleteContextFailurePhrases.Count)"
+Write-Output "Rule execution item fields: $($requiredRuleExecutionItemFields.Count)"
+Write-Output "Rule execution record fields: $($requiredRuleExecutionRecordFields.Count)"
+Write-Output "Rule execution semantic rules: $($requiredRuleExecutionSemantics.Count)"
+Write-Output "Obsolete rule execution phrases: $($obsoleteRuleExecutionPhrases.Count)"
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {
