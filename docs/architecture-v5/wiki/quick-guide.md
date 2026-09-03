@@ -31,7 +31,8 @@ Repository → Repository Loader → CodeWorkspace → AST and SAST → StaticFa
 → R7 requirements and simple plan → external boundary approval → autonomous Sandbox reproduction and AgentLog
 → supported success and validated PoC → Verification TRUE; disproof or inconclusive → FALSE/HOLD
 → HOLD inputs plus null result Primitive → Chaining
-→ TRUE → CWE → Technical Gate → result Primitive → Chaining → new hypothesis loop
+→ TRUE → R5-01 CWE_LABELING이 exact Verification에 맞는 current CWELabel 생성
+→ Technical Gate → result Primitive → Chaining → new hypothesis loop
 → Technical ACCEPT → independent Rule Scope Impact Gate for report eligibility
 → ReportDraft when allowed → AnalysisRunResult → Agent automation end
 ```

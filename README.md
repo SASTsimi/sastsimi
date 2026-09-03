@@ -75,7 +75,7 @@ Repository input
 → final TRUE는 재현에 성공한 validated PoC가 있을 때만 저장하고 Technical Gate로 전달
 → FALSE는 terminal
 → HOLD는 inputs만 있고 result가 없는 Primitive로 즉시 Chaining
-→ TRUE는 CWE → Technical Evidence Gate
+→ TRUE는 R5-01 CWE_LABELING이 exact Verification에 맞는 current CWELabel 생성 → Technical Evidence Gate
 → Technical ACCEPT 뒤 result Primitive Chaining과 Rule Scope 보고 검토를 독립 진행
 → Verification 또는 Chaining의 새 material claim은 새 가설로 등록·재검증
 → 조건 충족 시 ReportDraft
@@ -141,12 +141,12 @@ main  ← Architecture v5 candidate baseline
 | 정적분석·컨텍스트 | 김나연 ([@zv9uvr](https://github.com/zv9uvr)) | AST·CodeQL·OpenGrep 결과 정리, 코드 위치·호출 흐름과 LLM용 context 조립 |
 | 단독 구현·통합 개발 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 모듈의 구현 가능성, 계약 준수 테스트와 통합 계획 검토 |
 | PM·아키텍처·워크플로 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 구조, 공통 입출력 계약, 사람·LLM 경계, 병렬·직렬 흐름과 오류 정책 |
-| Gate·Finding·보고서 | 김혜령 ([@kimhr8463](https://github.com/kimhr8463)) | 검증 근거·정책 범위 검토, 내부 Finding과 안전한 보고서 초안 작성 |
+| Gate·Finding·보고서 | 김혜령 ([@kimhr8463](https://github.com/kimhr8463)) | R5-01 CWE 분류와 기술 근거 검토, R5-02 정책 범위 검토, R5-03 내부 Finding과 안전한 보고서 초안 작성 |
 | 검증·반박·플레이북 | 임채민 ([@UltraPeachKeen](https://github.com/UltraPeachKeen)) | 가설별 Context·찬반, 동적 재현 목적·목표 요청, 반환 결과 소비, 최종 판정·Gate 보완 |
 | 동적검증·Sandbox | 조근석 ([@Potatonion](https://github.com/Potatonion)) | R7 Agent의 환경 요구사항·간단한 plan·자율 PoC 실행, Setup Automation의 Docker 환경·정리, Controller 외부 경계, Session Manager의 AgentLog·validated PoC·동적 결과 확정 |
 | 데이터·평가·예산 | 성병찬 ([@gitterable](https://github.com/gitterable)) | 평가 데이터·품질 지표와 예산 profile 설계; 실제 예산 강제는 trusted runtime 담당 |
 
-Gate는 Verification verdict를 변경하거나 공개를 승인하지 않습니다. Reporter는 보고서 초안만 작성하고 이후 Agent 자동화는 종료됩니다. 사람의 검토·수정·제출·공개는 이 자동화 밖에서 진행합니다.
+R5-01 `CWE_LABELING`은 final TRUE마다 exact Verification에 대응하는 current `CWELabel`을 만듭니다. 같은 CWE가 유지돼도 새 Verification이면 새 label revision이 필요합니다. Gate는 Verification verdict나 CWELabel을 변경하거나 공개를 승인하지 않습니다. Reporter는 보고서 초안만 작성하고 이후 Agent 자동화는 종료됩니다. 사람의 검토·수정·제출·공개는 이 자동화 밖에서 진행합니다.
 
 동적 재현의 역할 연결은 `R6의 목적별 DynamicReproductionRequest → R4 Runtime Validator의 generation별 단일 work 검사 → R7 Agent의 requirements·간단한 plan → Sandbox Controller의 외부 경계 검사 → Setup Automation과 Agent의 PoC candidate 생성·격리 실행 → Reproduction Session Manager의 AgentLog·validated PoC·동적 결과 확정 → R6의 최종 판정`입니다. R6는 R7 산출물을 대신 만들지 않고, R7은 가설 verdict를 결정하지 않습니다. validated PoC가 없는 TRUE는 저장하거나 Technical Gate로 보낼 수 없습니다.
 

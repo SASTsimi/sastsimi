@@ -99,6 +99,12 @@ CodeQL·OpenGrep은 규칙별 실행 이력을 `RuleExecutionRecord`에 저장�
 
 Context 조회가 실패·timeout·권한 오류로 끝나면 실패 사건은 `AnalysisError`, 그 때문에 확인하지 못한 코드 범위는 `DataGap`으로 함께 남깁니다. 가설에는 해야 할 검증마다 고유 `validation_id`가 있고, 결과는 같은 ID로 완료 여부와 실제 근거를 답합니다. 일부 조회가 실패했더라도 재시도·대체 조회·다른 정상 근거로 모든 검증 항목과 운영 Pro/Con을 끝냈다면 실제 근거에 따라 `TRUE | FALSE | HOLD`를 저장할 수 있습니다. 하나라도 끝내지 못했다면 final `VerificationResult`를 만들지 않습니다. 다시 시도할 수 있으면 work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지합니다. 더 시도할 수 없으면 work와 가설 처리 상태를 한 번에 `FAILED`로 끝내고 결과 reference는 비워 둡니다. 단순 조회 오류만으로 `HOLD`를 만들지 않습니다.
 
+## CWELabel은 어떤 Verification을 분류했는지 직접 가리킵니다
+
+final TRUE 뒤 R5-01 `CWE_LABELING`이 별도 `CWE_LABEL` 작업에서 current `CWELabel`을 만듭니다. label에는 exact `verification_result_ref`, `verification_generation`, `cwe_labeling_work_id`, `llm_call_id`가 있어야 합니다. 성공한 CWE work의 유일한 output만 current label이며, Technical Gate는 그 label이 직접 가리키는 같은 Verification과 함께 읽습니다.
+
+새 Verification revision이나 generation이 생기면 CWE 정렬을 다시 평가합니다. CWE 번호가 그대로여도 새 Verification을 가리키는 새 label revision을 만들고 과거 label은 기록으로만 보존합니다. CWE labeling 오류는 `FALSE | HOLD`가 아니며 current label이 없으면 Technical Gate를 호출하지 않습니다.
+
 ## 동적 재현 실패와 반증은 다릅니다
 
 Docker 환경을 만들지 못했거나 실행이 timeout된 것은 재현 실패입니다. `status`는 실행 완료 정도이고 `hypothesis_outcome`은 관측이 가설을 지지했는지, 반증했는지, 결론을 주지 못했는지 나타냅니다. 둘 다 최종 판정이 아닙니다.

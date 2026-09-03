@@ -16,7 +16,8 @@
 - Verification, debate mode/trigger/skip, restriction와 capability
 - 동적 재현 요청, R7 requirements·간단한 plan·recipe·PoC candidate, Controller 외부 경계 판정·실제 환경·append-only AgentLog, validated PoC와 cleanup
 - `result=null`인 HOLD Primitive, result가 있는 Technical-accepted TRUE Primitive, upstream result→downstream input match와 재검증 여부
-- `CWELabel`, Technical 및 Rule Scope Impact Gate, 공식 `ProgramPolicyRecord`과 두 Gate·보고서가 사용한 정확한 revision reference
+- R5-01 `CWE_LABELING` work와 `CWELabel`의 exact Verification·generation·work·호출 provenance, 과거/current label revision
+- Technical 및 Rule Scope Impact Gate, 공식 `ProgramPolicyRecord`과 두 Gate·보고서가 사용한 서로 일치하는 Verification·current CWELabel revision reference
 - current 보고서 초안, 오래된 초안 제외와 Agent 자동화 종료 상태
 - 역할/provider/model/session별 LLM invocation log
 - AST/SAST·LLM·sandbox 자원과 모든 오류

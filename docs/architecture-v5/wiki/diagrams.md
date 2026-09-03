@@ -57,7 +57,7 @@ flowchart TB
     S13 --> S14{14 Final verdict}
     S14 -->|FALSE| CLOSED[Terminal internal result]
     S14 -->|HOLD| REQUIRED[Result null Primitive with required inputs admitted]
-    S14 -->|TRUE with validated PoC| CWE[14 CWE labeling for TRUE]
+    S14 -->|TRUE with validated PoC| CWE[14 R5-01 CWE_LABELING creates current CWELabel bound to exact Verification]
     CWE --> S15[15 Technical Evidence Gate]
     S15 -->|REVISE| S16[16 Same assignment starts new Verification work and revision]
     S16 --> S09
@@ -206,7 +206,7 @@ flowchart TB
     VR[Final VerificationResult] --> KIND{Verdict}
     KIND -->|FALSE| CLOSED[Terminal no Primitive no Chaining]
     KIND -->|HOLD| REQUIRED[Primitive with inputs and null result]
-    KIND -->|TRUE with current validated PoC| CWE[CWE labeling]
+    KIND -->|TRUE with current validated PoC| CWE[R5-01 CWE_LABELING creates exact current CWELabel]
     CWE --> TECH[Technical Evidence Gate]
     TECH -->|REVISE| SAME[Same assignment new Verification work and revision]
     SAME --> VR
@@ -236,8 +236,9 @@ Primitive DB는 queue가 아니며 Chaining match와 child proposal은 Finding�
 
 ```mermaid
 flowchart TB
-    DYN[Current SUCCEEDED SUPPORTED dynamic result and validated PoC] --> VR[Final TRUE VerificationResult plus CWE]
-    VR --> TECH[Technical Evidence Gate Agent]
+    DYN[Current SUCCEEDED SUPPORTED dynamic result and validated PoC] --> VR[Final TRUE VerificationResult]
+    VR --> CWE[R5-01 CWE_LABELING creates current label for exact Verification]
+    CWE --> TECH[Technical Evidence Gate Agent]
     TECH --> TS{ACCEPT REVISE REJECT}
     TS -->|REVISE| BACK[Same hypothesis Verification owner]
     BACK --> NEWGEN[New Verification generation and new validated PoC]

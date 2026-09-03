@@ -25,7 +25,7 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 7. R7의 실행 결과를 종합해 final verdict를 만든다. final TRUE에는 현재 generation의 재현 성공과 validated `poc_ref`가 반드시 필요하다. 정적·Pro·Con만으로 충분한 FALSE 또는 HOLD는 동적 요청 없이 확정할 수 있다.
 8. HOLD면 Primitive `inputs`가 될 부족 조건을, TRUE면 Technical `ACCEPT` 뒤 Primitive `result`가 될 제공 능력을 기록한다. FALSE는 Primitive 후보를 만들지 않는다.
 9. 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 발견하면 `HypothesisProposal(origin=VERIFICATION)`으로 분리한다.
-10. TRUE의 CWE labeling을 조정하고 Technical Evidence Gate를 요청한다. `REVISE`면 같은 Verification owner가 보완한 새 revision으로 다시 제출한다.
+10. final TRUE를 확정하면 R5-01 `CWE_LABELING` work를 요청한다. R5-01이 exact Verification에 맞는 current `CWELabel`을 확정한 뒤 Technical Evidence Gate를 요청한다. `REVISE`면 같은 Verification owner가 새 Verification을 만들고 R5-01이 CWE 정렬을 다시 평가해 새 label revision을 만든 뒤 다시 제출한다.
 11. HOLD의 부족 조건은 result 없는 Primitive로 즉시 Chaining에 넘길 수 있고, TRUE는 exact Technical `ACCEPT`를 받은 뒤 result 있는 Primitive로 넘길 수 있다. Rule Scope 결과는 보고 경로에만 적용한다.
 
 ## 우회 인지 검증
@@ -247,7 +247,7 @@ Sandbox 안에서는 Agent가 환경 설정, 저장소에 필요한 package, 계
 
 ## Technical `REVISE` 처리
 
-Technical Evidence Gate의 `REVISE`는 Orchestration이나 Chaining Agent가 받을 작업이 아니다. 같은 hypothesis의 ACTIVE `VerificationAssignment` owner가 직접 받고 누락된 Context·Pro/Con·정적 근거·동적 재현·PoC 연결·restriction·설명을 보완한다. runtime은 종료된 기존 work를 되돌리지 않고 새 generation의 VERIFICATION work를 만들고 hypothesis 상태를 `TERMINAL -> VERIFYING`으로 원자 전환한다. 새 generation에서 final TRUE를 다시 만들려면 그 generation의 동적 재현 work와 validated PoC도 새로 연결해야 한다. CWE 보완이 필요하면 CWE producer와 새 label revision을 조정하되 CWE 소유권을 가져오지 않는다.
+Technical Evidence Gate의 `REVISE`는 Orchestration이나 Chaining Agent가 받을 작업이 아니다. 같은 hypothesis의 ACTIVE `VerificationAssignment` owner가 직접 받고 누락된 Context·Pro/Con·정적 근거·동적 재현·PoC 연결·restriction·설명을 보완한다. runtime은 종료된 기존 work를 되돌리지 않고 새 generation의 VERIFICATION work를 만들고 hypothesis 상태를 `TERMINAL -> VERIFYING`으로 원자 전환한다. 새 generation에서 final TRUE를 다시 만들려면 그 generation의 동적 재현 work와 validated PoC도 새로 연결해야 한다. 새 final TRUE가 확정되면 R5-01 `CWE_LABELING`이 CWE 정렬을 다시 평가하고, CWE 값이 같더라도 새 Verification을 직접 가리키는 새 `CWELabel` revision을 만든다. Verification은 CWE 생성·수정 권한을 가져오지 않는다.
 
 ```text
 VerificationResult revision N

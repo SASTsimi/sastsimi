@@ -223,8 +223,8 @@ $workExecutionBlock = [regex]::Match($contractText, '(?ms)^WorkExecutionState:\s
 if (-not $workExecutionBlock.Contains('parent_work_ref:')) {
     Add-Failure 'WorkExecutionState is missing parent_work_ref'
 }
-if (-not $contractText.Contains('`PRO_EVIDENCE | CON_EVIDENCE | DYNAMIC_REPRO`에서는 필수')) {
-    Add-Failure 'dynamic reproduction work is not bound to the current Verification parent'
+if (-not $contractText.Contains('`PRO_EVIDENCE | CON_EVIDENCE | DYNAMIC_REPRO | CWE_LABEL`에서는 필수')) {
+    Add-Failure 'Verification child work is not bound to the current Verification parent'
 }
 
 $evidenceAgentResultBlock = [regex]::Match($contractText, '(?ms)^EvidenceAgentResult:\s*(.*?)^CandidateRef:').Groups[1].Value
@@ -254,6 +254,46 @@ $requiredVerificationDebateFields = @(
 foreach ($field in $requiredVerificationDebateFields) {
     if (-not $verificationResultBlock.Contains($field)) {
         Add-Failure "VerificationResult is missing Pro/Con join field: $field"
+    }
+}
+
+$cweLabelBlock = [regex]::Match($contractText, '(?ms)^CWELabel:\s*(.*?)^```').Groups[1].Value
+$requiredCweLabelFields = @(
+    'verification_result_ref:',
+    'verification_generation:',
+    'cwe_labeling_work_id:',
+    'llm_call_id:',
+    'primary:',
+    'alternatives:',
+    'taxonomy_version:',
+    'rationale:',
+    'evidence_refs:',
+    'uncertainty:'
+)
+foreach ($field in $requiredCweLabelFields) {
+    if (-not $cweLabelBlock.Contains($field)) {
+        Add-Failure "CWELabel is missing field: $field"
+    }
+}
+
+$requiredCweLabelContractMarkers = @(
+    '`CWELabel`의 logical producer/runtime role은 `CWE_LABELING`, R1~R8 실제 업무 owner는 R5-01이다.',
+    '`CWE_LABEL`은 이 역할을 실행하는 `WorkExecutionState.work_type` 이름이다.',
+    'primary·alternatives가 그대로여도 새 Verification을 가리키는 새 revision이 필요하다.',
+    '과거 label은 overwrite하지 않고 감사 이력으로 보존하지만 새 `CWE_LABEL` work나 Gate의 current input으로 재사용하지 않는다.',
+    'current label은 current final TRUE를 input으로 가진 유일한 `CWE_LABEL` work가 `SUCCEEDED`이고 그 work의 유일한 `output_refs`가 가리키는 exact revision이다.',
+    '`CWELabel.verification_result_ref`와 exact match해야 한다.',
+    'CWE labeling 실패·timeout·provider 인증 오류는 Verification을 `FALSE | HOLD`로 바꾸지 않으며',
+    'Technical Gate는 CWE 정합성을 검토할 뿐 `CWELabel`을 생성·수정·덮어쓰지 않는다.',
+    '`CWE_LABEL`의 `SUCCEEDED`, exact `CWELabel` 저장과 그 하나뿐인 `output_refs`는 같은 `COMMITTED` `TransitionCommit`으로 확정한다.',
+    'R5-01 `CWE_LABELING`의 `CALL_LLM`은 current `CWE_LABEL` work의 active attempt에서만 허용한다.',
+    'R5-01 `CWE_LABELING`은 exact `CWELabel`',
+    '`CWELabel.llm_call_id`는 바로 이 성공한 CWE 호출의 `llm_call_id`와 같아야 한다.',
+    '`AnalysisRunResult.cwe_label_refs`에는 각 current final TRUE Verification에 대응하는 current `CWELabel`만 가설별로 하나씩 넣는다.'
+)
+foreach ($marker in $requiredCweLabelContractMarkers) {
+    if (-not $contractText.Contains($marker)) {
+        Add-Failure "missing or weakened R5-01 CWE labeling contract: $marker"
     }
 }
 
@@ -306,6 +346,7 @@ foreach ($row in $requiredStateRows) {
 $requiredBindingRules = @(
     '`VERIFICATION`의 `SUCCEEDED`와 `HypothesisProcessState.status=TERMINAL`',
     '`DYNAMIC_REPRO`의 종료 transition',
+    '`CWE_LABEL`의 `SUCCEEDED`, exact `CWELabel` 저장',
     '`TECHNICAL_GATE`의 `SUCCEEDED`',
     '`RULE_SCOPE_GATE`의 `SUCCEEDED`',
     '`REPORT_DRAFT`의 `SUCCEEDED`와 `ReportProcessState.status=DRAFTED`',
@@ -955,7 +996,8 @@ $gateWikiText = Get-Content -Raw -LiteralPath $gateWikiPath
 $requiredAuthorityRules = @(
     '## 역할별 권한 경계',
     '## action 요청과 실행',
-    'final VerificationResult + CWELabel',
+    'R5-01 CWE_LABELING work',
+    'current CWELabel bound to that exact Verification',
     '-> Technical Evidence Gate',
     '-> Rule Scope Impact Gate',
     '`ReportDraft`는 마지막 Agent 산출물',
@@ -969,8 +1011,8 @@ $requiredAuthorityRules = @(
     'llm_call_spec_ref',
     'output은 log를 역참조하지 않는다',
     '아직 `outcome_refs`가 비어 있는 revision',
-    'Technical action의 `REVISION`은 exact Verification+CWE',
-    '같은 Verification·CWE revision 또는 같은 domain input hash',
+    'Technical action의 `REVISION`은 exact Verification·current CWELabel pair',
+    '같은 Verification·CWELabel revision 또는 같은 domain input hash',
     '오류 층은 섞어 기록하지 않는다',
     '정책 문장이나 정책의 의미를 대신 해석하지 않는다',
     'Pro와 Con의 `SESSION` check는 독립성을 선택값이 아닌 필수 불변조건으로 검사한다',
@@ -1561,6 +1603,58 @@ $decisionIndexText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/re
 if (-not $decisionIndexText.Contains('[ADR-006](./ADR-006-static-rule-execution-record.md)')) {
     Add-Failure 'decision index is missing ADR-006'
 }
+$cweLabelDecisionPath = Join-Path $repoRoot 'docs/review/decisions/ADR-009-r5-01-cwe-labeling-provenance.md'
+if (-not (Test-Path -LiteralPath $cweLabelDecisionPath)) {
+    Add-Failure 'missing ADR-009 R5-01 CWE labeling provenance decision'
+} else {
+    $cweLabelDecisionText = Get-Content -Raw -LiteralPath $cweLabelDecisionPath
+    foreach ($marker in @('상태: `ACCEPTED`', 'R5-01', 'CWE_LABELING', 'verification_result_ref', 'verification_generation', 'cwe_labeling_work_id', 'llm_call_id', 'Technical Gate')) {
+        if (-not $cweLabelDecisionText.Contains($marker)) {
+            Add-Failure "ADR-009 is missing decision marker: $marker"
+        }
+    }
+}
+if (-not $decisionIndexText.Contains('[ADR-009](./ADR-009-r5-01-cwe-labeling-provenance.md)')) {
+    Add-Failure 'decision index is missing ADR-009'
+}
+
+$requiredCweLabelCrossDocumentRules = @(
+    @{
+        Name = 'overview fixes R5-01 between final TRUE and Technical Gate'
+        Text = $overviewText
+        Marker = 'R5-01 `CWE_LABELING`이 exact Verification에 맞는 current `CWELabel` 생성'
+    },
+    @{
+        Name = 'gate reviews an exact Verification and current CWELabel pair'
+        Text = $gateText
+        Marker = 'Technical Gate는 current label의 정합성만 검토하고 이를 생성·수정·덮어쓰지 않는다.'
+    },
+    @{
+        Name = 'security rejects stale labels on a new Verification'
+        Text = $securityText
+        Marker = '새 Verification에 같은 CWE 값의 과거 `CWELabel`을 재사용'
+    },
+    @{
+        Name = 'security rejects Gate ownership of CWE labels'
+        Text = $securityText
+        Marker = 'Technical Gate가 `CWELabel`을 생성·수정하거나 새 CWE를 저장하려 함'
+    },
+    @{
+        Name = 'canonical diagram names the R5-01 CWE stage'
+        Text = $diagramText
+        Marker = 'R5-01 CWE_LABELING creates current CWELabel bound to exact Verification'
+    },
+    @{
+        Name = 'Wiki quick guide names the exact R5-01 CWE stage'
+        Text = (Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/quick-guide.md'))
+        Marker = 'R5-01 CWE_LABELING이 exact Verification에 맞는 current CWELabel 생성'
+    }
+)
+foreach ($rule in $requiredCweLabelCrossDocumentRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing R5-01 CWE labeling cross-document rule: $($rule.Name)"
+    }
+}
 
 $savedErrorAction = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
@@ -1576,6 +1670,8 @@ Write-Output "Mermaid blocks: $($diagramBlocks.Count) canonical / $($wikiDiagram
 Write-Output "R4-02 required contract names: $($requiredContractNames.Count)"
 Write-Output "R4 Pro/Con result fields: $($requiredEvidenceAgentResultFields.Count)"
 Write-Output "R4 Verification join fields: $($requiredVerificationDebateFields.Count)"
+Write-Output "R5-01 CWELabel fields: $($requiredCweLabelFields.Count)"
+Write-Output "R5-01 CWELabel contract rules: $($requiredCweLabelContractMarkers.Count)"
 Write-Output "R4 Pro/Con join rules: $($requiredDebateContractMarkers.Count)"
 Write-Output "R4-02 TransitionCommit atomic fields: $($requiredTransitionCommitFields.Count)"
 Write-Output "R4-02 exact output bindings: $($requiredBindingRules.Count)"
@@ -1593,6 +1689,7 @@ Write-Output 'R4-03 exact LLM call blocks: 2'
 Write-Output "R4-03 authority errors: $($requiredAuthorityErrors.Count)"
 Write-Output "R4-03 authority scenarios: $($authorityScenarioMarkers.Count)"
 Write-Output "R4-03 authority rules: $($requiredAuthorityRules.Count)"
+Write-Output "R5-01 CWELabel cross-document rules: $($requiredCweLabelCrossDocumentRules.Count)"
 Write-Output "R5-03 automation boundary rules: $($requiredAutomationBoundaryRules.Count)"
 Write-Output "R4-03 Sandbox review rules: $($sandboxReviewPatterns.Count)"
 Write-Output "R6-R7 environment handoff rules: $($environmentHandoffPatterns.Count)"

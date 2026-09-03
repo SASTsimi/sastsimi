@@ -89,7 +89,10 @@
 | `secret_ref` | 비밀값 원문 대신 secret store의 항목을 가리키는 불투명 번호 | credential·cookie·token·password를 요구사항이나 일반 log에 저장하지 않습니다. |
 | `policy_decision_ref` | Sandbox Controller가 허용·차단한 이유를 가리키는 번호 | Technical Gate 판정과 다른 기록이며 정책 차단이면 반드시 필요합니다. |
 | `cleanup_status` | 실행 뒤 자원 정리 결과 | `NOT_REQUIRED`는 정리할 자원이 하나도 생기지 않았을 때만 사용합니다. |
-| `CWE` | 취약점 유형을 나타내는 국제 분류 번호 | 실제 근거와 맞는지 Gate에서 다시 확인합니다. |
+| `CWE` | 취약점 유형을 나타내는 국제 분류 번호 | R5-01이 final TRUE의 근거를 기준으로 분류하고 Technical Gate가 정합성을 확인합니다. |
+| `CWELabel` | 한 final TRUE Verification에 붙인 CWE 분류 기록 | `verification_result_ref`로 자신이 분류한 정확한 Verification 수정본을 가리킵니다. |
+| current `CWELabel` | 현재 Verification에 사용할 수 있는 CWELabel 수정본 | 해당 Verification으로 성공한 `CWE_LABEL` 작업의 유일한 결과입니다. 같은 CWE라도 새 Verification에는 새 수정본을 만듭니다. |
+| `CWE_LABELING` / `CWE_LABEL` | 앞은 R5-01 생산 역할, 뒤는 그 역할을 실행하는 작업 종류 | 역할과 작업 상태 이름을 구분합니다. |
 
 ## 연계 공격과 Agent
 

@@ -47,7 +47,7 @@ status는 따로 저장하지 않는다. `result=null`이면 HOLD에서 나온 �
 
 - final `HOLD`: `required_primitive_candidates`가 있을 때 Primitive 하나를 즉시 저장한다. 해당 목록은 `inputs`, `result=null`, `technical_review_ref=null`이며 restrictions를 그대로 보존한다.
 - final `FALSE`: Primitive와 Chaining work를 만들지 않는다.
-- final `TRUE`: 현재 generation의 성공한 동적 재현과 validated PoC가 있고, exact TRUE+CWE를 Technical Gate가 `ACCEPT`한 뒤에만 result가 있는 Primitive를 저장한다. 제공 능력이 여러 개면 능력마다 Primitive 하나를 만들고 각 record의 inputs에는 그 TRUE의 악용 전제조건을 복사한다.
+- final `TRUE`: 현재 generation의 성공한 동적 재현과 validated PoC가 있고, exact TRUE Verification과 이를 직접 가리키는 current `CWELabel`을 Technical Gate가 `ACCEPT`한 뒤에만 result가 있는 Primitive를 저장한다. 제공 능력이 여러 개면 능력마다 Primitive 하나를 만들고 각 record의 inputs에는 그 TRUE의 악용 전제조건을 복사한다.
 - Gate 전 TRUE와 Technical `REVISE | REJECT`: Primitive를 만들지 않는다.
 
 Technical `ACCEPT`은 체이닝 재료의 자격을 확정하고 Rule Scope는 보고 가능성만 판단한다. Rule Scope 결과는 이미 admission된 Primitive를 취소하지 않는다. 따라서 프로그램 정책 부족, 범위 밖, 중복 또는 보고 불가 판정은 Reporter를 막지만 코드에 실제로 존재하는 능력을 체이닝 재료에서 제거하지 않는다.

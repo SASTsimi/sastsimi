@@ -44,3 +44,4 @@
 | [ADR-006](./ADR-006-static-rule-execution-record.md) | 정적분석 규칙 실행 이력 분리 | ACCEPTED | #3, #5, #9, #82 | `docs: define static rule execution history contract` |
 | [ADR-007](./ADR-007-r7-autonomous-reproduction-session.md) | R7 자율 동적 재현과 Session Manager 결과 확정 | ACCEPTED | #5, #7, #8, #9 | `docs: align R7 autonomous reproduction contracts` |
 | [ADR-008](./ADR-008-hypothesis-restriction-duplicate-contract.md) | 가설 restriction 근거와 중복 판정 lifecycle | ACCEPTED | #2, #3, #5, #6, #9 | PR #81 + R4 공통 계약 보완 |
+| [ADR-009](./ADR-009-r5-01-cwe-labeling-provenance.md) | R5-01 CWE labeling 소유권과 Verification provenance | ACCEPTED | #5, #6, #7 | R4 공통 계약 보완 |

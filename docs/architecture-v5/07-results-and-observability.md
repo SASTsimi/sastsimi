@@ -19,10 +19,11 @@
 | `facts` | `StaticFactBundle`, `ToolRunResult`, `RuleExecutionRecord`, 원본 AST/SAST refs, coverage, gaps와 errors |
 | `hypotheses` | initial/child/chained proposal, validation state와 parent 관계 |
 | `contexts` | `CodeContextRequest/Response`, 실제 반환·열람 위치 |
-| `verifications` | Pro/Con, initial/final verdict, restriction/capability, CWE |
+| `verifications` | Pro/Con, initial/final verdict, restriction/capability와 exact final Verification revision |
+| `cwe_labels` | R5-01 `CWE_LABELING` work, exact Verification·generation·호출 provenance와 current/과거 `CWELabel` revision |
 | `primitives` | result 없는 HOLD 조건, Technical-accepted TRUE 능력과 exact Verification·Technical provenance |
 | `chaining` | `ChainingResult`, upstream result→downstream input match와 child proposal validation state |
-| `gates` | Technical 및 Rule Scope Impact review와 Verification·CWELabel·정책 input revision refs |
+| `gates` | Technical 및 Rule Scope Impact review와 서로 exact pair인 Verification·current CWELabel·정책 input revision refs |
 | `policies` | 공식 `ProgramPolicyRecord`과 source refs |
 | `reports` | 허용된 내부 `ReportDraft`와 두 Gate가 공통으로 본 CWELabel revision ref |
 | `actions` | `ActionRequest`, validator의 `ActionDecision`, check와 일회성 사용·outcome refs |
@@ -199,7 +200,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 
 Reporter가 마지막 Agent 산출물인 `ReportDraft`를 저장한 뒤, 신뢰 runtime이 exact `AnalysisRunResult`를 만든다. 이 결과에는 Finding·Verification, 두 Gate, 정책·CWE, 동적 재현 request·result·recipe·환경·AgentLog·PoC candidate·redacted validated PoC·cleanup, current ReportDraft, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. Finding이 아직 없으면 Reporter를 호출하지 않고 `finding_refs=[]`, `report_draft_refs=[]`와 관련 `REPORT_NOT_READY` 오류·상태를 보존한다. 결과와 `AnalysisRunState`를 atomic하게 확정하면 Agent 자동화가 끝난다.
 
-ReportDraft가 가리킨 Finding·Verification·CWE·두 Gate·정책 중 하나라도 새 current revision으로 바뀌면 그 초안은 즉시 감사 이력으로만 남고 `AnalysisRunResult.report_draft_refs`의 current 목록에서 제외한다. 새 exact dependency chain으로 Gate와 Reporter를 다시 실행해 새 초안을 만들기 전에는 current 결과로 사용할 수 없다. 자동화 종료 뒤 사람의 검토·수정·제출·공개는 이 저장 lifecycle 밖에서 수행하며, 자동 action이나 상태를 만들지 않는다.
+ReportDraft가 가리킨 Finding·Verification·CWELabel·두 Gate·정책 중 하나라도 새 current revision으로 바뀌면 그 초안은 즉시 감사 이력으로만 남고 `AnalysisRunResult.report_draft_refs`의 current 목록에서 제외한다. 새 exact dependency chain으로 Gate와 Reporter를 다시 실행해 새 초안을 만들기 전에는 current 결과로 사용할 수 없다. 자동화 종료 뒤 사람의 검토·수정·제출·공개는 이 저장 lifecycle 밖에서 수행하며, 자동 action이나 상태를 만들지 않는다.
 
 | 최종 상태 | 저장 조건 |
 |---|---|
@@ -290,7 +291,7 @@ Context 조회 실패·timeout·권한 오류는 다음 기준으로 처리한�
 | `INTERRUPTED` | recovery runtime | commit되지 않은 실행 attempt 실패 기록 | retryable·예산·취소 상태 확인 뒤 새 attempt |
 | `AUTHORITY_DENIED` | runtime validator | 역할이 생산·호출할 수 없는 action 거절 | 허용 역할에서 새 action 요청 |
 | `ACTION_NOT_ALLOWED` | runtime validator | action과 현재 전제 불일치로 실행 금지 | 요구 상태·입력·권한을 고쳐 새 요청 |
-| `GATE_ORDER_INVALID` | runtime validator | 두 Gate 순서 또는 선행 exact ref가 맞지 않아 호출 금지 | Verification·CWE·Technical 결과 확정 뒤 새 요청 |
+| `GATE_ORDER_INVALID` | runtime validator | 두 Gate 순서 또는 선행 exact ref가 맞지 않아 호출 금지 | Verification·current CWELabel·Technical 결과 확정 뒤 새 요청 |
 | `REPORT_NOT_READY` | runtime validator | Reporter 호출 금지, 기술 verdict 유지 | Rule Scope와 report 조건 보완 |
 | `TOOL_NOT_ALLOWED` | tool validator | tool·command 실행 금지 | allowlist의 안전한 도구로 새 요청 |
 | `FILE_ACCESS_DENIED` | path validator | workspace 밖 파일 접근 금지 | workspace 상대 허용 경로로 새 요청 |

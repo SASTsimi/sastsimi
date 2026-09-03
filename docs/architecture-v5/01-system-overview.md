@@ -29,9 +29,9 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 | 11 | 정적·Pro·Con 근거로 초기 판정 | initial `TRUE | FALSE | HOLD`; initial TRUE는 아직 최종 TRUE가 아님 |
 | 12 | Verification이 목적을 적은 동적 재현 요청을 만들고, R7 Agent가 환경 요구사항·간단한 plan을 만든다. 외부 경계를 통과하면 Setup Automation이 Sandbox를 준비하고 Agent가 PoC candidate·command·관찰·재시도를 자율 수행하며 Session Manager가 결과를 확정한다. | `DynamicReproductionRequest`, `EnvironmentRequirements`, `ReproductionPlan`, `EnvironmentRecipe`, `AgentLog`, `DynamicReproductionResult` |
 | 13 | 동적 결과를 반영해 최종 판정과 material claim 분리 | final TRUE에는 재현 성공을 가리키는 validated `poc_ref` 필수; optional `origin=VERIFICATION` proposal |
-| 14 | 판정별 분기 | FALSE terminal / HOLD는 inputs만 있고 result가 없는 Primitive 즉시 admission / TRUE CWE 진행 |
+| 14 | 판정별 분기와 CWE 분류 | FALSE terminal / HOLD는 inputs만 있고 result가 없는 Primitive 즉시 admission / TRUE는 R5-01 `CWE_LABELING`이 exact Verification에 맞는 current `CWELabel` 생성 |
 | 15 | TRUE 기술 근거 검토 | `TechnicalEvidenceReview` |
-| 16 | Technical `REVISE` 보완 loop | same Verification, 새 Verification/CWE revision |
+| 16 | Technical `REVISE` 보완 loop | same Verification owner, 새 Verification과 반드시 다시 평가한 새 CWELabel revision |
 | 17 | Technical `ACCEPT` TRUE의 기술 재료·보고 경로 분기 | result가 있는 `Primitive` admission과 Rule Scope 요청은 서로 독립 |
 | 18 | current Primitive 체이닝 | upstream result가 downstream input을 근거 있게 충족한 `ChainingResult` |
 | 19 | 공식 규칙·범위·영향 검토 | `RuleScopeImpactReview`; Primitive 자격은 변경하지 않음 |
@@ -61,7 +61,7 @@ Orchestration -> Hypothesis Agent -> trusted validation and registration
                    ┌──────────────────┼────────────────────┐
                    v                  v                    v
                  FALSE               HOLD                 TRUE
-              terminal      inputs, result null      CWE -> Technical Gate
+              terminal      inputs, result null      R5-01 CWE_LABELING -> current CWELabel -> Technical Gate
                                   -> Chaining                │ REVISE -> same Verification
                                                              │ ACCEPT
                                            ┌─────────────────┴─────────────────┐
@@ -78,7 +78,7 @@ Chaining match -> origin=CHAINING proposal ------------------┴-> trusted regis
 Reporter -> ReportDraft -> AnalysisRunResult -> Agent automation end
 ```
 
-Technical Evidence Gate의 `REVISE`는 같은 가설의 Verification owner에게 직접 돌아간다. Verification은 필요한 Context·Pro/Con·정적·동적 근거를 보완하고 새 `VerificationResult` 및 필요한 `CWELabel` revision으로 Gate를 다시 요청한다. Verification 또는 Chaining이 만든 새 material claim은 기존 결과에 붙여 확정하지 않고 trusted registration 뒤 8단계부터 전체 검증을 새로 거친다.
+Technical Evidence Gate의 `REVISE`는 같은 가설의 Verification owner에게 직접 돌아간다. Verification은 필요한 Context·Pro/Con·정적·동적 근거를 보완하고 새 `VerificationResult`를 확정한다. R5-01 `CWE_LABELING`은 CWE 값의 변경 여부와 관계없이 그 새 Verification에 맞는 새 `CWELabel` revision을 확정한 뒤 Gate를 다시 요청한다. Verification 또는 Chaining이 만든 새 material claim은 기존 결과에 붙여 확정하지 않고 trusted registration 뒤 8단계부터 전체 검증을 새로 거친다.
 
 모든 final `TRUE`에는 현재 Verification generation에서 성공한 동적 재현과 validated PoC가 필요하다. validated PoC가 없는 `TRUE`는 저장하거나 Technical Gate로 전달하지 않는다. PoC 작성·환경 구성·실행이 실패했다면 취약점 판정을 `FALSE`나 `HOLD`로 바꾸지 않고 같은 동적 재현 work를 `BLOCKED` 또는 `FAILED`로 끝낸다.
 
@@ -102,6 +102,7 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | Reproduction Session Manager | 실제 event를 append-only AgentLog로 저장하고 same-attempt validated PoC·동적 결과 확정 | Agent 호출·command·retry·cleanup 전략 결정 또는 다른 attempt 혼합 |
 | Primitive DB | HOLD의 inputs-only Primitive와 Technical-accepted TRUE의 result Primitive exact revision 검색 | 작업 queue, Gate 전 TRUE admission 또는 자동 Finding 생성 |
 | Chaining Agent | upstream Primitive `result`→downstream Primitive `input` matching과 chained proposal | 일반 research, dynamic, Gate, verdict, CWE, report 확정 |
+| R5-01 CWE Labeling | final TRUE의 root cause·Evidence·taxonomy를 평가해 exact Verification에 묶인 current `CWELabel` 생성 | Verification verdict 변경, 과거 label 재사용 또는 Technical Gate 결과 생성 |
 | Technical Evidence Gate | 기술적 연결성과 handoff 품질 검토 | Verification verdict 직접 변경 |
 | Rule Scope Impact Gate | 공식 정책·scope·실질 impact·전달 권한 검토 | 공식 자료 없는 추정 승인 |
 | Reporter Agent | 통과한 결과의 보고서 초안 작성 | 공개 또는 제출 |
@@ -128,7 +129,7 @@ Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제�
 - AST와 복수 SAST 실행은 tool별 `work_id`와 `attempt_id`로 병렬화할 수 있다. 정규화는 모든 기대 작업의 종료 상태를 확인하고, 일부 실패면 `DataGap`과 오류를 포함한 `PARTIAL` 여부를 명시한다.
 - 서로 독립된 가설의 Verification은 가설별 예산 범위에서 병렬화할 수 있다. 한 가설의 실패가 다른 가설을 자동 취소하지 않는다.
 - 운영(`PRODUCTION`)에서는 한 가설의 Pro/Con을 서로 다른 work와 NEW session으로 항상 병렬화하고 Verification이 두 결과를 확인해 합류한다. 예산 부족이나 실행 오류로 한쪽이 없으면 final verdict를 만들지 않고 work를 중단한다. `BASIC | CONDITIONAL_DEBATE`와 skip은 격리된 평가(`EVALUATION`)에서만 허용한다.
-- 같은 가설의 `workspace_id`와 `commit_id`, final Verification·CWELabel, Technical Gate, Rule Scope Gate와 Reporter 순서는 의존성을 지킨다.
+- 같은 가설의 `workspace_id`와 `commit_id`, final Verification, R5-01의 current CWELabel, Technical Gate, Rule Scope Gate와 Reporter 순서는 의존성을 지킨다. 새 Verification에는 값이 같아도 새 label revision이 필요하다.
 - 한 Verification generation에는 동적 재현 work를 하나만 만든다. 재시도는 같은 work의 새 `attempt_id`이고, Technical Gate의 `REVISE`로 새 generation이 시작된 경우에만 새 동적 재현 한도를 부여한다.
 - 실행 상태는 `WorkExecutionState`가 관리하고 가설 판정·Gate 결과·보고서 상태와 분리한다. 같은 `dedupe_key` 요청은 한 `work_id`로만 반영한다.
 - `COMMITTED` marker와 종료 상태 pointer가 같은 결과를 가리킨 뒤에만 다음 단계를 호출한다. `PREPARED`, 취소된 attempt, 오래된 revision과 늦은 결과는 다음 단계에서 읽지 않는다.

@@ -332,7 +332,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 담당자가 나눌 수 있는 하위 Issue 예시
 
-- `[R5-01] 기술 근거 Gate의 입력·출력과 보완 요청 기준 확정`
+- `[R5-01] CWE labeling과 기술 근거 Gate의 입력·출력·보완 요청 기준 확정`
 - `[R5-02] 공식 정책·범위·영향 검토 기준 확정`
 - `[R5-03] Finding과 안전한 보고서 초안 생성 및 자동화 종료 조건 확인`
 
@@ -343,7 +343,7 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 - 담당 역할: Gate·Finding·보고서
 - 담당자: 김혜령 `@kimhr8463`
 - 주요 작업 브랜치: `review/gate-reporting`
-- 관련 흐름: CWE 라벨링 → 기술 근거 검토 → 공식 정책·영향 검토 → 안전한 보고서 초안 → 결과 저장 → Agent 자동화 종료
+- 관련 흐름: final TRUE → R5-01 `CWE_LABELING` current label 생성 → 기술 근거 검토 → 공식 정책·영향 검토 → 안전한 보고서 초안 → 결과 저장 → Agent 자동화 종료
 
 ### 검토 문서
 
@@ -355,12 +355,14 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 
 ### 검토할 입력·출력
 
-- 입력: final VerificationResult, evidence, dynamic/PoC, CWE, restrictions, official ProgramPolicyRecord
-- 출력: TechnicalEvidenceReview, RuleScopeImpactReview, revision requests와 안전 요구사항을 충족한 ReportDraft
+- 입력: final VerificationResult, evidence, dynamic/PoC, restrictions, taxonomy와 official ProgramPolicyRecord
+- 출력: R5-01의 current CWELabel, TechnicalEvidenceReview, RuleScopeImpactReview, revision requests와 안전 요구사항을 충족한 ReportDraft
 
 ### 확인할 권한 경계
 
 - Gate는 Verification verdict를 변경하지 않는다.
+- R5-01 `CWE_LABELING`만 `CWELabel`을 생산하며 Technical Gate는 생성·수정하지 않는다.
+- 새 Verification에는 CWE 값이 같아도 exact Verification을 가리키는 새 label revision을 확정한다.
 - Gate 1은 final TRUE에서만, Gate 2는 같은 `TRUE + Technical ACCEPT`에서만 호출한다.
 - 공식 정책이 없거나 핵심 정보가 누락되면 `UNCERTAIN + DENY`다.
 - Technical `REVISE`는 Orchestration이나 R7이 목적지를 고르지 않고 같은 ACTIVE `VerificationAssignment`의 R6 owner에게 직접 돌아간다.
@@ -377,9 +379,11 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 ### 완료 조건
 
 - [ ] Technical Gate가 verdict/evidence, code flow, dynamic, CWE, restriction과 handoff readiness를 검토함
+- [ ] `CWELabel.verification_result_ref`, generation, CWE work·attempt·LLM invocation provenance가 current final TRUE와 일치함
+- [ ] 성공한 `CWE_LABEL` work의 유일한 output만 current label이며, 새 Verification에 과거 label을 재사용하지 않음
 - [ ] `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 실제 검토한 Verification·CWELabel revision을 고정하고, 두 Gate와 ReportDraft가 같은 revision을 사용함
 - [ ] REVISE는 구체적인 새 evidence/revision을 요구하며 무한 재투표가 아님
-- [ ] REVISE는 같은 ACTIVE VerificationAssignment owner에게 직접 전달되고 새 VERIFICATION work·Verification/CWE revision 전에는 재호출되지 않음
+- [ ] REVISE는 같은 ACTIVE VerificationAssignment owner에게 직접 전달되고 새 VERIFICATION work·Verification/CWELabel revision 전에는 재호출되지 않음
 - [ ] 두 Gate 정상 통과는 exact TRUE의 PROVIDED admission 조건과 Reporter 조건에 같은 의미로 적용됨
 - [ ] policy source 인증·freshness·parser failure threat model/ADR 요구가 있음
 - [ ] 모순된 `ALLOW` 출력은 semantic `INVALID_OUTPUT`이며 Reporter가 차단됨

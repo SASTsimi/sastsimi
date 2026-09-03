@@ -44,6 +44,10 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] `EnvironmentRequirements`는 애플리케이션 조건이고 `sandbox_profile_ref`는 Sandbox 보안 정책이며 서로 대신하지 않습니다.
 - [ ] 한 Verification generation에 동적 재현 work가 하나뿐이며, retry는 같은 work의 새 attempt입니다.
 - [ ] final TRUE에는 현재 generation의 `SUCCEEDED + SUPPORTED` 결과와 validated `poc_ref`가 필수이고, 없으면 저장과 Technical Gate 호출이 모두 차단됩니다.
+- [ ] final TRUE 뒤 R5-01 `CWE_LABELING`이 별도 `CWE_LABEL` work에서 exact Verification을 가리키는 current `CWELabel`을 하나 만듭니다.
+- [ ] `CWELabel`의 `verification_result_ref`, `verification_generation`, `cwe_labeling_work_id`, `llm_call_id`가 current work·attempt·성공 호출과 일치합니다.
+- [ ] 새 Verification revision 또는 generation에는 CWE 값을 유지해도 새 label revision을 만들며 과거 label은 history로만 보존합니다.
+- [ ] Technical Gate는 Verification과 이를 직접 가리키는 current CWELabel exact pair만 읽고 label을 생성·수정하지 않습니다.
 - [ ] `ReproductionPlan`에 mode·exact command·step·payload·cleanup allowlist가 없고 선택적 `requested_evidence`가 Agent의 추가 관찰을 막지 않습니다.
 - [ ] R7 Setup Automation은 recipe의 base/built image digest를 구분하고 실제 `sandbox_environment`에 container instance·생성/재사용 사유·requirement별 비교를 남깁니다.
 - [ ] Sandbox Controller는 host·Docker·mount/namespace·secret·egress·workspace·R8 resource/lifecycle 외부 경계만 검사하고 내부 command allowlist를 운영하지 않습니다.
@@ -51,15 +55,15 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] Chaining Agent는 upstream Primitive의 `result`→downstream Primitive의 특정 `input` matching만 수행하고 일반 research·동적 재현·Gate 보완을 하지 않습니다.
 - [ ] HOLD는 Gate 없이 `inputs`와 `result=null`인 Primitive가 되고, FALSE는 Primitive나 Chaining으로 들어가지 않습니다.
 - [ ] TRUE는 validated PoC와 Technical `ACCEPT`가 있는 exact revision만 `result`를 가진 Primitive가 됩니다. Rule Scope는 Reporter만 제어합니다.
-- [ ] 새 Verification generation/revision에는 오래된 Technical review나 Primitive를 재사용하지 않고, 공통 record revision과 원자적 current pointer 갱신으로 오래된 Chaining 결과를 거절합니다.
+- [ ] 새 Verification generation/revision에는 오래된 CWELabel·Technical review·Primitive를 재사용하지 않고, 공통 record revision과 원자적 current pointer 갱신으로 오래된 Gate·Chaining 결과를 거절합니다.
 - [ ] Technical Evidence Gate와 Rule Scope Impact Gate가 분리됩니다.
 - [ ] 공식 정책이 없거나 `STALE | UNVERIFIED`이면 판단과 보고서 전달을 허용하지 않는 `UNCERTAIN + DENY`입니다.
 - [ ] Sandbox의 `POLICY_BLOCKED`는 자동 `FALSE | HOLD`나 Technical `REJECT`가 아니며, validated PoC가 없으므로 final verdict와 Technical Gate 없이 `BLOCKED | FAILED`로 처리됩니다.
 - [ ] Reporter의 모든 선행 조건이 명시됩니다.
-- [ ] ReportDraft가 current Finding·Verification·CWE·두 Gate·정책 revision을 정확히 참조합니다.
+- [ ] ReportDraft가 current Finding·Verification·CWELabel·두 Gate·정책 revision을 정확히 참조합니다.
 - [ ] restriction·limitation·남은 불확실성과 redaction 결과가 ReportDraft에 보존됩니다.
 - [ ] Finding이 없으면 Reporter를 호출하지 않고 `AnalysisRunResult.report_draft_refs=[]`를 유지합니다.
-- [ ] Finding·Verification·CWE·두 Gate·정책 중 하나가 새 revision이면 기존 ReportDraft는 감사 이력으로만 남고 다시 생성합니다.
+- [ ] Finding·Verification·CWELabel·두 Gate·정책 중 하나가 새 revision이면 기존 ReportDraft는 감사 이력으로만 남고 다시 생성합니다.
 - [ ] ReportDraft 뒤 `AnalysisRunResult`를 확정하면 Agent 자동화가 끝나고, 이후 사람 주도 과정에는 자동 action·상태를 두지 않습니다.
 - [ ] Runtime Validator는 취약점·CWE·정책 의미를 판단하는 세 번째 Gate가 아닙니다.
 

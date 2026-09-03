@@ -38,7 +38,9 @@
 
 다음은 순서를 지켜야 합니다.
 
-`최종 검증 + CWE → Technical Gate → Rule Scope Gate → Reporter → ReportDraft → AnalysisRunResult → Agent 자동화 종료`
+`final TRUE Verification → R5-01 CWE_LABELING의 current CWELabel → Technical Gate → Rule Scope Gate → Reporter → ReportDraft → AnalysisRunResult → Agent 자동화 종료`
+
+새 Verification revision이나 generation이 생기면 CWE 값이 같더라도 R5-01이 다시 평가해 새 label revision을 만들어야 합니다. 과거 label은 기록으로만 남고 현재 Gate 입력으로 재사용하지 않습니다.
 
 ## 결과를 안전하게 합칩니다
 
@@ -81,7 +83,7 @@ Context 조회 실패·timeout·권한 오류가 있어도 정상 근거로 모�
 
 동적 결과를 Verification에 넘기려면 저장 확정 marker, 공통 작업의 출력 reference와 동적 상태의 `dynamic_result_ref`가 모두 같은 결과 수정본을 가리켜야 합니다. final TRUE에는 현재 generation의 `SUCCEEDED + SUPPORTED` 결과와 validated PoC가 반드시 필요합니다.
 
-Gate 작업은 시작할 때 읽은 Verification, CWE, 앞 Gate와 정책의 정확한 수정본을 `input_refs`와 `input_hash`로 고정합니다. Gate 결과 안의 reference가 이 입력과 다르면 저장을 취소하고 다음 단계로 넘기지 않습니다.
+Gate 작업은 시작할 때 읽은 Verification, current CWELabel, 앞 Gate와 정책의 정확한 수정본을 `input_refs`와 `input_hash`로 고정합니다. Gate 결과 안의 reference가 이 입력과 다르면 저장을 취소하고 다음 단계로 넘기지 않습니다.
 
 ## retry는 실패를 지우지 않습니다
 

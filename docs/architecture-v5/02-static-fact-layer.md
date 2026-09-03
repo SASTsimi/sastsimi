@@ -77,7 +77,7 @@ CodeQL·OpenGrep처럼 규칙을 실행하는 도구는 `ToolRunResult.tool_kind
 
 ## 위치 기반 on-demand retrieval
 
-Hypothesis Agent는 전체 코드가 아니라 entity, location과 suspected path를 제안한다. Verification·Pro·Con은 필요한 추가 문맥을 `CodeContextRequest`로 요청한다. Technical Gate는 별도 Context 조회를 시작하지 않고 exact final TRUE Verification이 가리키는 저장 근거와 CWE를 검토한다. Chaining Agent는 코드 문맥을 새로 탐색하지 않고 저장된 ACTIVE Primitive와 provenance만 읽는다.
+Hypothesis Agent는 전체 코드가 아니라 entity, location과 suspected path를 제안한다. Verification·Pro·Con은 필요한 추가 문맥을 `CodeContextRequest`로 요청한다. R5-01 `CWE_LABELING`은 exact final TRUE가 가리키는 저장 근거로 current `CWELabel`을 만들고, Technical Gate는 별도 Context 조회를 시작하지 않은 채 그 Verification·CWELabel exact pair를 검토한다. Chaining Agent는 코드 문맥을 새로 탐색하지 않고 저장된 ACTIVE Primitive와 provenance만 읽는다.
 
 1. 가설의 `CodeSymbol`, `CodeLocation`, `suspected_path`에서 시작한다.
 2. 분석 목적에 맞는 관계를 명시한다.
@@ -186,4 +186,4 @@ code_context_response:
 
 ## 품질 기준
 
-정적 사실은 원본 위치로 추적할 수 있어야 한다. Verification verdict, CWE와 Technical Gate 검토가 사용하는 핵심 주장은 적어도 하나의 실제 location 또는 동적 evidence에 연결되어야 하며, 연결되지 않는 추론은 assumption이나 unresolved condition으로 남긴다.
+정적 사실은 원본 위치로 추적할 수 있어야 한다. Verification verdict, `CWELabel`과 Technical Gate 검토가 사용하는 핵심 주장은 적어도 하나의 실제 location 또는 동적 evidence에 연결되어야 하며, 연결되지 않는 추론은 assumption이나 unresolved condition으로 남긴다.
