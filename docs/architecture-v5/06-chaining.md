@@ -53,7 +53,7 @@ Primitive:
 
 - final `HOLD`: exact final `VerificationResult`에서 `REQUIRED` Primitive를 즉시 저장한다. 두 Gate를 기다리지 않으며 `technical_review_ref`와 `rule_scope_review_ref`는 `null`이다.
 - final `FALSE`: Primitive를 만들지 않고 체이닝을 호출하지 않는다.
-- final `TRUE`: Verification 결과만으로 `PROVIDED`를 만들지 않는다. 같은 Verification revision과 CWE revision을 Technical Gate가 `ACCEPT`하고, Rule Scope Gate가 기존 정상 통과 조건을 모두 만족한 뒤에만 `PROVIDED`를 저장한다. 이 PROVIDED의 `required_preconditions`에는 exact Verification이 기록한 악용 전제조건을 복사한다.
+- final `TRUE`: Verification 결과만으로 `PROVIDED`를 만들지 않는다. 현재 generation의 성공한 동적 재현과 validated PoC가 연결되고, 같은 Verification revision과 CWE revision을 Technical Gate가 `ACCEPT`하고, Rule Scope Gate가 기존 정상 통과 조건을 모두 만족한 뒤에만 `PROVIDED`를 저장한다. 이 PROVIDED의 `required_preconditions`에는 exact Verification이 기록한 악용 전제조건을 복사한다.
 
 Rule Scope Gate의 정상 통과는 다음 기존 조건을 그대로 사용한다.
 
@@ -65,7 +65,7 @@ AND security_impact == SUFFICIENT
 AND report_permission == ALLOW
 ```
 
-따라서 `Technical ACCEPT`만 받은 TRUE, `FAIL | UNCERTAIN | DENY`인 TRUE와 Gate 전 TRUE는 체이닝 자격이 없다. PROVIDED의 세 provenance reference는 동일한 `workspace_id`, `commit_id`, `hypothesis_id`와 exact Verification revision을 가리켜야 한다.
+따라서 validated PoC가 없는 TRUE 후보, `Technical ACCEPT`만 받은 TRUE, `FAIL | UNCERTAIN | DENY`인 TRUE와 Gate 전 TRUE는 체이닝 자격이 없다. PROVIDED의 provenance reference는 동일한 `workspace_id`, `commit_id`, `hypothesis_id`와 exact Verification·동적 결과·PoC revision을 가리켜야 한다.
 
 ## exact revision과 오래된 승인 차단
 
