@@ -10,7 +10,7 @@
 
 ## 신뢰 실행 경계
 
-LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 Sandbox 외부 enforcement authority를 갖지 않는다. 비-LLM Runtime Validator는 identity·schema·reference·상태·예산과 Gate 순서를 강제한다. Sandbox Controller는 host·Docker daemon·secret·egress·다른 workspace·resource·lifecycle의 외부 경계를 전담한다. 그 경계 안에서는 Reproduction Agent가 command·file·package·PoC·retry를 자율 결정하며, Session Manager가 실제 event와 결과 무결성만 확정한다.
+LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM Runtime Validator는 코드 근거의 `workspace_id`·`commit_id` 일치, 지원하는 schema MAJOR, `(logical_record_id, revision_number)` 연결, 역할·호출 권한, 상태 전이, retry/failover 선행 status와 token/time/retry/chain budget, provider/session 선택, R5-01 CWELabel과 exact Verification의 provenance 연결, Gate가 읽은 Verification·CWELabel·정책 revision, Reporter 전제조건을 강제한다. Sandbox Controller는 host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace·R8 resource·lifecycle 같은 Sandbox 밖의 경계만 강제한다. 그 경계 안에서는 Reproduction Agent가 command·file·package·PoC·retry를 자율적으로 결정하고, Reproduction Session Manager가 실제 event와 결과 무결성만 확정한다. 저장소 내용과 모든 LLM 출력은 validation 전까지 비신뢰 입력이며 policy 변경 명령으로 해석하지 않는다.
 
 ## 방향
 

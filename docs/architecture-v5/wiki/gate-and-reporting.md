@@ -8,6 +8,12 @@
 
 Gate는 검증 판정을 직접 바꾸지 않고 Reporter는 외부 공개를 결정하지 않습니다. 모르는 단어는 [쉬운 용어집](../../GLOSSARY.md)에서 확인하세요.
 
+## 0. R5-01 CWE labeling
+
+final TRUE와 현재 generation의 validated PoC가 확정되면 R5-01 `CWE_LABELING`이 별도 `CWE_LABEL` work에서 current `CWELabel`을 만듭니다. label은 자신이 분류한 exact Verification revision·generation과 생산 work·LLM 호출을 직접 가리킵니다. 새 Verification에는 같은 CWE를 유지하더라도 새 label revision이 필요하며 과거 label은 history로만 남습니다.
+
+Technical Gate는 이 label이 Verification 근거와 맞는지 검토하지만 label을 만들거나 수정하지 않습니다. current label이 없거나 label이 다른 Verification을 가리키면 Gate를 호출하지 않습니다.
+
 ## 1. 기술 근거 검토(`Technical Evidence Gate`)
 
 final TRUE `VerificationResult`의 찬반 근거, 실제 코드·호출·데이터 흐름, 현재 generation의 `DynamicReproductionRequest`·성공한 동적 결과·validated PoC, CWE와 restriction을 검토한다. FALSE와 HOLD는 이 Gate를 호출하지 않는다. 각 exact revision을 고정하며 하나라도 수정되면 기존 Gate 결과를 재사용하지 않는다. 출력은 `ACCEPT | REVISE | REJECT`와 별도 `handoff_readiness: READY | NOT_READY`다. `ACCEPT`는 `READY`, 나머지는 `NOT_READY`만 허용하며 verdict를 직접 바꾸지 않는다. `REVISE`는 같은 Verification owner에게 직접 돌아가며, 새 generation에서 TRUE를 다시 만들려면 새 동적 결과와 validated PoC도 필요하다.
@@ -47,6 +53,6 @@ Reporter는 위 조건을 모두 만족하고 ReportDraft가 가리킨 current F
 
 `ALLOW`가 PASS·scope·impact 조건과 모순되거나 Gate가 현재 작업과 다른 input revision을 가리키면 유효한 Gate 결과가 아니다. LLM 호출을 `INVALID_OUTPUT`, 오류를 `GATE/INVALID_OUTPUT`으로 기록하고 Reporter를 호출하지 않는다.
 
-각 Gate와 Reporter는 action 허가 시점과 실제 LLM 호출 직전에 같은 입력 수정본을 다시 확인합니다. `REVISE` 뒤에는 같은 입력으로 재투표할 수 없고, 보완된 Verification 또는 CWE 수정본으로 새 Gate 작업과 새 action을 만들어야 합니다.
+각 Gate와 Reporter는 action 허가 시점과 실제 LLM 호출 직전에 같은 입력 수정본을 다시 확인합니다. `REVISE` 뒤에는 같은 입력으로 재투표할 수 없고, 보완된 Verification을 만든 뒤 R5-01이 CWE 정렬을 다시 평가해 새 label revision을 확정한 다음 새 Gate 작업과 새 action을 만들어야 합니다.
 
 상세 내용은 [이중 LLM Gate와 보고](../05-llm-gate-and-reporting.md)을 따른다.

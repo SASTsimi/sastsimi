@@ -30,6 +30,8 @@
 | `entity` | 함수·클래스·변수처럼 분석 대상이 되는 코드 요소 | 이름뿐 아니라 실제 코드 위치와 연결합니다. |
 | `source` | 외부 입력이 시작되는 곳 | 사용자 입력, 요청 값, 파일 값 등이 될 수 있습니다. |
 | `sink` | 위험한 동작이 실행될 수 있는 곳 | 명령 실행, DB 질의, 응답 출력 등이 될 수 있습니다. |
+| **Sanitizer candidate** | 위험할 수 있는 입력을 바꾸거나 정리하는 코드 후보 | 실제 공격 값을 안전하게 만드는지는 경로·순서·우회 가능성을 검증해야 합니다. |
+| **Validator candidate** | 입력이나 상태를 조건에 따라 허용·거절하는 코드 후보 | 후보가 존재한다는 이유만으로 안전 또는 `FALSE`로 판정하지 않습니다. |
 | `StaticFactBundle` | AST와 SAST가 찾은 코드 사실을 한데 모은 데이터 묶음 | 취약점 최종 판정이 아니라 LLM이 검토할 자료입니다. |
 | `RuleExecutionRecord` | SAST가 어떤 규칙을 선택하고 실제 실행했는지 남긴 기록 | 실행 0건, 미실행, 확인 불가를 구분하고 정확한 도구 시도와 연결합니다. |
 | `hit_count` | 한 규칙이 raw 도구 결과에서 만든 탐지 수 | `EXECUTED`일 때만 0 이상의 값을 쓰며 0은 미실행이 아닙니다. |
@@ -55,12 +57,13 @@
 | 용어 | 쉽게 말하면 | 사용할 때 주의할 점 |
 |---|---|---|
 | `Hypothesis` | 검증이 필요한 취약점 가능성 | 아직 확정 취약점이나 Finding이 아닙니다. |
+| `HypothesisDuplicateReview` | 새 가설 제안이 기존 등록 가설과 같은지 LLM이 비교해 남긴 결과 | 프로그램이 먼저 좁힌 exact 후보만 비교하며, 애매하거나 검토에 실패하면 탐지 누락을 막기 위해 새 가설로 등록합니다. |
 | `Verification` | 배정된 가설 안에서 코드·찬반·동적 근거와 보완 흐름을 관리해 판정하는 과정 | 다음 작업은 선택하지만 Runtime Validator의 실행 검사를 우회하거나 공개를 결정하지 않습니다. |
 | `verdict` | 검증 Agent가 내린 기술 판정 | `TRUE`, `FALSE`, `HOLD` 중 하나입니다. |
 | `TRUE` | 코드·찬반 근거와 실제 PoC 재현으로 취약점이 성립한다고 판단한 상태 | 모든 final TRUE에는 현재 검증 차수의 validated PoC가 필요하며 사람의 공개 결정과는 다릅니다. |
 | `FALSE` | 미리 정한 반증 조건이 실제 근거로 확인된 상태 | 도구 실패나 정보 부족을 `FALSE`로 바꾸면 안 됩니다. |
 | `HOLD` | 필요한 정보나 조건이 부족해 판단을 보류한 상태 | 무엇이 부족한지 함께 기록합니다. |
-| `restriction` | 공격을 막거나 제한하는 조건 | `HOLD`의 부족 조건과 연계 탐색에 사용합니다. |
+| `Restriction` | 공격을 막거나 제한하는 조건과 실제 코드·검증 근거를 함께 담은 객체 | `restriction_id`와 exact reference를 Verification·Primitive·Chaining·ReportDraft에서 그대로 보존합니다. |
 | `capability` | 다른 공격에 필요한 권한이나 접근 능력 | 검증된 범위 안에서만 연계 가능성을 확인합니다. |
 | `falsification` | 확인되면 가설이 틀렸다고 볼 수 있는 구체적 질문 | 각 질문에 `question_id`를 붙이고 실제 근거가 있는 `DISPROVED` 결과가 있어야 `FALSE`가 됩니다. |
 | `hypothesis_outcome` | Docker 관측이 가설을 지지·반증하는지 또는 결론을 주지 못하는지 표시 | `SUPPORTED`, `DISPROVED`, `INCONCLUSIVE` 중 하나이며 최종 verdict는 아닙니다. |
@@ -86,7 +89,10 @@
 | `secret_ref` | 비밀값 원문 대신 secret store의 항목을 가리키는 불투명 번호 | credential·cookie·token·password를 요구사항이나 일반 log에 저장하지 않습니다. |
 | `policy_decision_ref` | Sandbox Controller가 허용·차단한 이유를 가리키는 번호 | Technical Gate 판정과 다른 기록이며 정책 차단이면 반드시 필요합니다. |
 | `cleanup_status` | 실행 뒤 자원 정리 결과 | `NOT_REQUIRED`는 정리할 자원이 하나도 생기지 않았을 때만 사용합니다. |
-| `CWE` | 취약점 유형을 나타내는 국제 분류 번호 | 실제 근거와 맞는지 Gate에서 다시 확인합니다. |
+| `CWE` | 취약점 유형을 나타내는 국제 분류 번호 | R5-01이 final TRUE의 근거를 기준으로 분류하고 Technical Gate가 정합성을 확인합니다. |
+| `CWELabel` | 한 final TRUE Verification에 붙인 CWE 분류 기록 | `verification_result_ref`로 자신이 분류한 정확한 Verification 수정본을 가리킵니다. |
+| current `CWELabel` | 현재 Verification에 사용할 수 있는 CWELabel 수정본 | 해당 Verification으로 성공한 `CWE_LABEL` 작업의 유일한 결과입니다. 같은 CWE라도 새 Verification에는 새 수정본을 만듭니다. |
+| `CWE_LABELING` / `CWE_LABEL` | 앞은 R5-01 생산 역할, 뒤는 그 역할을 실행하는 작업 종류 | 역할과 작업 상태 이름을 구분합니다. |
 
 ## 연계 공격과 Agent
 

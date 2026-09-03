@@ -32,6 +32,14 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 
 한 Primitive의 `result`가 다른 Primitive의 특정 `input`을 충족해 더 큰 공격 가능성을 찾아도 기존 결과를 수정하지 않습니다. Technical `ACCEPT`을 받은 upstream TRUE revision, downstream Primitive와 `matched_input_id`를 확인한 뒤 새로운 `origin=CHAINING` proposal과 `hypothesis_id`를 만들고 전체 검증을 다시 거칩니다. 현재 가설의 부모와 source match를 따라 조상 Primitive를 계산해 현재 match 후보에서 제외하므로 별도 root ID나 depth 숫자를 저장하지 않습니다. Verification이 별도 endpoint·sink·권한 경계를 발견한 경우에는 `origin=VERIFICATION` proposal을 사용합니다.
 
+## 같은 가설인지 어떻게 확인하나요?
+
+프로그램은 먼저 같은 analysis·workspace·commit 안에서 코드 요소, 위치와 흐름이 겹치는 기존 가설만 비교 후보로 좁힙니다. 후보가 없으면 바로 새 가설을 등록합니다. 후보가 있으면 Hypothesis Agent가 exact proposal과 후보 목록을 보고 `UNIQUE | DUPLICATE | UNCERTAIN` 중 하나로 답한 `HypothesisDuplicateReview`를 남깁니다. `DUPLICATE`는 후보 목록 안의 정확한 기존 가설을 지목할 때만 새 등록을 막습니다. 애매하거나 호출·형식·대상 검사에 실패하면 기록을 남긴 채 새 가설로 등록하여 탐지 누락을 막습니다.
+
+## restriction 근거는 어떻게 남기나요?
+
+`Restriction`은 공격을 제한하는 조건의 쉬운 설명, `restriction_id`, 그리고 실제 코드 사실이나 검증 결과 reference를 함께 가진 객체입니다. 코드 사실은 exact `StaticFactBundle`과 그 안의 `fact_id`로 가리킵니다. 같은 사실을 `observed_facts`와 restriction 근거 양쪽에 중복해 넣지 않습니다. Verification, Primitive, Chaining과 ReportDraft는 문장만 복사하지 않고 `restriction_id`와 전체 `Restriction` 객체를 그대로 보존합니다.
+
 ## 시간은 어떻게 적나요?
 
 - 모든 시각은 UTC RFC 3339 형식입니다.
@@ -48,7 +56,7 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 |---|---|---|
 | 전체 분석 상태 | `COMPLETE`, `PARTIAL`, `FAILED` | 아니요 |
 | 공통 실행 작업 상태 | `PENDING`, `READY`, `RUNNING`, `BLOCKED`, `SUCCEEDED`, `PARTIAL`, `FAILED`, `CANCELLED` | 아니요 |
-| proposal 검증 상태 | `PROPOSED`, `SCHEMA_VALID`, `INVALID_OUTPUT` | 아니요. 아직 가설 번호가 없을 수 있음 |
+| proposal 검증 상태 | `PROPOSED`, `SCHEMA_VALID`, `DUPLICATE`, `INVALID_OUTPUT` | 아니요. 아직 가설 번호가 없을 수 있음. `DUPLICATE`는 새 가설 번호를 만들지 않음 |
 | 등록된 가설 처리 상태 | `REGISTERED`, `ASSIGNED`, `VERIFYING`, `TERMINAL`, `FAILED` | 아니요. `FAILED`는 final 판정 없이 검증 절차가 끝난 상태 |
 | 기술 판정 | `TRUE`, `FALSE`, `HOLD` | 예 |
 | 동적 재현 상태 | `SUCCEEDED`, `FAILED`, `BLOCKED` | 아니요 |
@@ -79,6 +87,12 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 
 정적 분석과 코드 조회 결과는 사용할 수 있는 사실뿐 아니라 도구별 실행 상태, 분석·제외 범위, `DataGap`, `AnalysisError`를 함께 전달합니다. `DataGap`은 영향받은 path·language·코드 위치를 가능한 범위에서 적습니다. 결과가 비어 있거나 일부 도구가 실패했다는 이유로 안전하다고 판단하지 않습니다.
 
+### sanitizer와 validator 후보는 어떻게 담나요?
+
+`StaticFactBundle`은 source, sink, sanitizer, validator, 인증·권한 검사와 기타 사실을 종류별 목록으로 나눕니다. `sanitizer_candidates`와 `validator_candidates`는 방어 로직의 **후보**이며, 존재한다고 바로 안전하거나 가설이 `FALSE`라는 뜻이 아닙니다. R6 Verification이 실제 경로에서 적용되는지, 호출 순서와 조건이 맞는지, 우회할 수 있는지를 확인합니다.
+
+후보가 없으면 목록을 생략하지 않고 `[]`로 기록합니다. 빈 목록도 안전하다는 증거가 아니므로 도구 실행 범위·누락·오류를 함께 확인합니다. 한 코드 위치가 두 역할을 하면 서로 다른 `fact_id`를 가진 두 사실로 기록하고, 같은 `fact_id`를 여러 목록에 중복해서 넣지 않습니다.
+
 ### 검사 결과 0건과 미실행을 어떻게 구분하나요?
 
 CodeQL·OpenGrep은 규칙별 실행 이력을 `RuleExecutionRecord`에 저장하고 `ToolRunResult`가 그 정확한 기록을 가리킵니다.
@@ -90,6 +104,12 @@ CodeQL·OpenGrep은 규칙별 실행 이력을 `RuleExecutionRecord`에 저장�
 도구 오류나 timeout을 0건으로 바꾸지 않습니다. 다시 실행하면 새 `attempt_id`와 새 기록을 만들며 이전 결과와 합치지 않습니다. R2는 실행 기록을 만들고, R4의 Runtime Validator는 형식·참조·상태 조합을 검사하며, R8은 exact 기록으로 실행률과 평가 지표를 계산합니다. LLM Agent는 이 실행 이력을 만들거나 수정하지 않습니다.
 
 Context 조회가 실패·timeout·권한 오류로 끝나면 실패 사건은 `AnalysisError`, 그 때문에 확인하지 못한 코드 범위는 `DataGap`으로 함께 남깁니다. 가설에는 해야 할 검증마다 고유 `validation_id`가 있고, 결과는 같은 ID로 완료 여부와 실제 근거를 답합니다. 일부 조회가 실패했더라도 재시도·대체 조회·다른 정상 근거로 모든 검증 항목과 운영 Pro/Con을 끝냈다면 실제 근거에 따라 `TRUE | FALSE | HOLD`를 저장할 수 있습니다. 하나라도 끝내지 못했다면 final `VerificationResult`를 만들지 않습니다. 다시 시도할 수 있으면 work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지합니다. 더 시도할 수 없으면 work와 가설 처리 상태를 한 번에 `FAILED`로 끝내고 결과 reference는 비워 둡니다. 단순 조회 오류만으로 `HOLD`를 만들지 않습니다.
+
+## CWELabel은 어떤 Verification을 분류했는지 직접 가리킵니다
+
+final TRUE 뒤 R5-01 `CWE_LABELING`이 별도 `CWE_LABEL` 작업에서 current `CWELabel`을 만듭니다. label에는 exact `verification_result_ref`, `verification_generation`, `cwe_labeling_work_id`, `llm_call_id`가 있어야 합니다. 성공한 CWE work의 유일한 output만 current label이며, Technical Gate는 그 label이 직접 가리키는 같은 Verification과 함께 읽습니다.
+
+새 Verification revision이나 generation이 생기면 CWE 정렬을 다시 평가합니다. CWE 번호가 그대로여도 새 Verification을 가리키는 새 label revision을 만들고 과거 label은 기록으로만 보존합니다. CWE labeling 오류는 `FALSE | HOLD`가 아니며 current label이 없으면 Technical Gate를 호출하지 않습니다.
 
 ## 동적 재현 실패와 반증은 다릅니다
 
@@ -125,11 +145,13 @@ credential·cookie·token·password 원문은 요구사항과 실제 값에 저�
 
 Technical Gate는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated PoC가 있는 final `TRUE`만 입력으로 받습니다. `FALSE | HOLD`와 검증 실패 가설은 보내지 않습니다. Verification·동적 결과·PoC·CWE 중 하나가 수정되면 이전 Gate 승인을 재사용하지 않습니다. Rule Scope Gate와 보고서 초안도 같은 exact revision을 사용해야 합니다. `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
 
-Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 부족 조건을 `inputs`에 넣고 `result=null`로 Gate 없이 저장합니다. TRUE는 validated PoC와 같은 revision을 검토한 Technical `ACCEPT` 뒤 제공 능력 하나마다 `result`가 있는 Primitive를 만들고, 그 TRUE의 입력 조건과 restrictions도 함께 보존합니다. Rule Scope 결과는 Reporter만 제어하며 Primitive admission을 취소하지 않습니다. `PrimitiveIndexState`는 current Verification과 Primitive refs만 가리키며 별도 전용 version은 두지 않습니다. 공통 `RecordMeta` revision과 원자적 current pointer 갱신으로 오래된 Chaining 결과를 거절합니다.
+Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 부족 조건을 `inputs`에 넣고 `result=null`로 Gate 없이 저장합니다. TRUE는 validated PoC와 같은 revision을 검토한 Technical `ACCEPT` 뒤 제공 능력 하나마다 `result`가 있는 Primitive를 만들고, 그 TRUE의 입력 조건과 `restriction_id`·근거 reference 전체도 함께 보존합니다. Rule Scope 결과는 Reporter만 제어하며 Primitive admission을 취소하지 않습니다. `PrimitiveIndexState`는 current Verification과 Primitive refs만 가리키며 별도 전용 version은 두지 않습니다. 공통 `RecordMeta` revision과 원자적 current pointer 갱신으로 오래된 Chaining 결과를 거절합니다.
 
 ## 자주 쓰는 작은 데이터 구조
 
 - `EvidenceClaim`: 찬성·반대 주장, 작성 역할, 실제 근거와 코드 위치를 한 묶음으로 저장합니다.
+- `HypothesisDuplicateReview`: 새 proposal과 좁혀진 기존 가설 후보를 비교한 LLM 판정과 정확한 대상을 저장합니다.
+- `Restriction`: 공격을 제한하는 조건과 그 조건을 확인한 코드 사실·검증 근거를 함께 저장합니다.
 - `EvidenceAgentResult`: Pro 또는 Con 한쪽이 같은 공통 입력을 읽고 만든 독립 근거 결과입니다. 부모 Verification과 역할별 작업 ID를 함께 남깁니다.
 - `VerificationPlaybook`: 취약점 검증에 사용할 사전 조건, 경로·방어 확인, 반증 질문, 근거 요구사항과 HOLD 조건을 묶은 versioned 절차입니다.
 - `CandidateRef`: 아직 검증되지 않은 우회·대체 경로·영향 확대 후보입니다. 새 주장이면 별도 가설로 검증하기 전까지 확정 결과로 쓰지 않습니다.

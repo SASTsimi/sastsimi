@@ -1,6 +1,7 @@
 # ADR-004. R6 동적 재현 요청과 R7 PoC 생산
 
-- 상태: `ACCEPTED`
+- 상태: `SUPERSEDED`
+- 대체 결정: [ADR-007. R7 자율 동적 재현과 Session Manager 결과 확정](./ADR-007-r7-autonomous-reproduction-session.md)
 - 결정일: 2026-09-03
 - 결정 담당: R4 PM·아키텍처·공통 계약
 - 요청 역할: R6 검증·반박
@@ -8,6 +9,8 @@
 - 대체 대상: [ADR-003](./ADR-003-r6-r7-environment-requirements-handoff.md)
 
 ## 쉽게 설명하면
+
+> 이 문서는 모든 TRUE에 validated PoC가 필요하다는 결정을 도입한 당시 기록입니다. 이 원칙은 유지되지만 mode·exact plan·Runner·result owner·retry 세부 계약은 ADR-007이 대체합니다.
 
 R6는 “무엇을 왜 재현할지” 요청합니다. R7은 그 요청을 바탕으로 환경·실행 계획·PoC 초안을 만들고 Docker에서 실행합니다. 실제로 취약점 재현에 성공한 PoC가 있어야 최종 `TRUE`와 Technical Gate 진행을 허용합니다.
 

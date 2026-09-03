@@ -46,6 +46,14 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] final TRUE에는 현재 generation의 `SUCCEEDED + SUPPORTED` 결과와 validated `poc_ref`가 필수이고, 없으면 저장과 Technical Gate 호출이 모두 차단됩니다.
 - [ ] R7은 실제 `sandbox_environment`에 같은 `requirements_ref`와 requirement별 `MATCH | MISMATCH | NOT_CHECKED | ERROR`, 실제 값·근거·Health Check 결과를 남깁니다.
 - [ ] R7은 요구사항·허용 대체값을 바꾸거나 환경 차이를 임의로 승인하지 않습니다.
+- [ ] final TRUE 뒤 R5-01 `CWE_LABELING`이 별도 `CWE_LABEL` work에서 exact Verification을 가리키는 current `CWELabel`을 하나 만듭니다.
+- [ ] `CWELabel`의 `verification_result_ref`, `verification_generation`, `cwe_labeling_work_id`, `llm_call_id`가 current work·attempt·성공 호출과 일치합니다.
+- [ ] 새 Verification revision 또는 generation에는 CWE 값을 유지해도 새 label revision을 만들며 과거 label은 history로만 보존합니다.
+- [ ] Technical Gate는 Verification과 이를 직접 가리키는 current CWELabel exact pair만 읽고 label을 생성·수정하지 않습니다.
+- [ ] `ReproductionPlan`에 mode·exact command·step·payload·cleanup allowlist가 없고 선택적 `requested_evidence`가 Agent의 추가 관찰을 막지 않습니다.
+- [ ] R7 Setup Automation은 recipe의 base/built image digest를 구분하고 실제 `sandbox_environment`에 container instance·생성/재사용 사유·requirement별 비교를 남깁니다.
+- [ ] Sandbox Controller는 host·Docker·mount/namespace·secret·egress·workspace·R8 resource/lifecycle 외부 경계만 검사하고 내부 command allowlist를 운영하지 않습니다.
+- [ ] Reproduction Session Manager만 append-only `AgentLog`, validated PoC와 `DynamicReproductionResult`를 확정합니다.
 - [ ] Chaining Agent는 upstream Primitive의 `result`→downstream Primitive의 특정 `input` matching만 수행하고 일반 research·동적 재현·Gate 보완을 하지 않습니다.
 - [ ] HOLD는 Gate 없이 `inputs`와 `result=null`인 Primitive가 되고, FALSE는 Primitive나 Chaining으로 들어가지 않습니다.
 - [ ] TRUE는 validated PoC와 Technical `ACCEPT`가 있는 exact revision만 `result`를 가진 Primitive가 됩니다. Rule Scope는 Reporter만 제어합니다.
