@@ -60,7 +60,7 @@
 - TRUE: exact 같은 revision이 Technical `ACCEPT`와 Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`를 모두 받은 뒤에만 PROVIDED Primitive가 된다.
 - 새 Verification revision이 생기면 과거 Gate 자격은 새 revision에 적용되지 않고 이전 Primitive는 current matching에서 `SUPERSEDED`된다.
 - TRUE+TRUE는 앞 PROVIDED가 뒤 TRUE의 exact Verification에 기록된 `required_preconditions`를 충족할 때만 허용한다.
-- 각 parent의 `PrimitiveIndexState`를 Chaining input에 고정하고 commit 직전에 current head를 재검사해 in-flight stale 결과를 차단한다.
+- work 등록 시 각 parent의 current `PrimitiveIndexState`와 그 안의 exact Primitive를 Chaining input에 고정한다. 저장 시 결과가 이 고정 집합과 같은지 검사하며, 등록 뒤 생긴 새 index revision은 기존 work를 무효화하지 않는다.
 
 ## Security and operational consequences
 

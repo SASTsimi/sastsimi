@@ -74,7 +74,7 @@ PM은 하위 Issue를 대신 세세하게 작성하지 않습니다. PM은 역�
 - Hypothesis Agent는 verdict·Finding을 만들지 않습니다.
 - Orchestration Agent는 proposal을 검증·등록하고 Verification 배정을 제안하지만 가설 내부 작업을 선택하지 않습니다. 실제 owner는 trusted runtime의 ACTIVE `VerificationAssignment`로 저장합니다.
 - Verification Agent가 가설 내부 Context·찬반·동적 재현·Gate 보완 흐름과 기술 verdict를 소유하지만 Runtime Validator를 우회하거나 외부 공개를 결정하지 않습니다. `REVISE`도 같은 assignment owner의 새 VERIFICATION work로 처리합니다.
-- Chaining Agent는 upstream Primitive의 `result`가 downstream Primitive의 특정 `input`을 충족하는 match와 새 가설만 제안합니다. 조상 계보의 Primitive를 현재 후보에서 제외하고, exact current record가 아닌 결과는 저장할 수 없습니다.
+- Chaining Agent는 upstream Primitive의 `result`가 downstream Primitive의 특정 `input`을 충족하는 match와 새 가설만 제안합니다. 조상 계보의 Primitive를 현재 후보에서 제외하고, work 시작 시 고정한 exact Primitive·index reference와 다른 결과는 저장할 수 없습니다. 시작 뒤 current index가 갱신된 사실만으로 진행 중 work를 무효화하지 않습니다.
 - R5-01 `CWE_LABELING`은 final TRUE마다 exact Verification revision을 직접 가리키는 current `CWELabel`을 만듭니다. 새 Verification에는 같은 CWE를 유지해도 새 label revision이 필요합니다.
 - Technical Evidence Gate와 Rule Scope Impact Gate는 verdict를 직접 변경하지 않습니다.
 - Reporter는 안전 요구사항을 지킨 내부 `ReportDraft`만 만들며 이 결과가 마지막 Agent 산출물입니다.

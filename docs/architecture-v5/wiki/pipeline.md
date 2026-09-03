@@ -25,7 +25,7 @@
 15. final TRUE와 그 Verification을 직접 가리키는 current CWELabel을 Technical Evidence Gate Agent가 검토
 16. `REVISE`이면 같은 Verification owner가 새 Verification을 만들고 R5-01이 CWE 정렬을 다시 평가해 새 label revision 생성 후 재제출
 17. Technical `ACCEPT` 뒤 exact TRUE를 result Primitive로 admission하고 Rule Scope 보고 검토를 독립 경로로 시작
-18. Chaining Agent가 exact current Primitive를 사용해 upstream result가 downstream의 특정 input을 충족하는지 matching
+18. Chaining Agent가 work 시작 시 고정한 exact Primitive를 사용해 upstream result가 downstream의 특정 input을 충족하는지 matching
 19. Rule Scope Impact Gate Agent가 공식 정책·범위·영향을 검토하되 Primitive 자격은 변경하지 않음
 20. Verification-origin 또는 Chaining-origin 새 주장을 trusted validation·전역 등록하고 새 Verification 배정
 21. 모든 전달 조건을 만족한 결과에 Reporter Agent 호출

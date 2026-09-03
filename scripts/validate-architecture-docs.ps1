@@ -1284,6 +1284,7 @@ $requiredChainingExclusionRules = @(
     '`considered_primitive_refs`는 Runtime이 `REGISTER_WORK(work_type=CHAINING)`에서 고정한 exact Primitive 입력 집합과 set-equal하다.',
     '고정 뒤 index에 새 revision이 생긴 사실만으로 진행 중인 work를 거절하지 않는다.',
     '`input_primitive_refs`는 `primitive_match_candidates`의 upstream/downstream exact reference 합집합과 set-equal하다.',
+    '`considered_primitive_refs`, `input_primitive_refs`, `source_result_refs`와 candidate별 `parent_hypothesis_ids`, `parent_verification_refs`는 각각 중복이 없어야 한다.',
     '`source_result_refs`는 `input_primitive_refs`가 가리키는 Primitive들의 `source_verification_ref`와 non-null `technical_review_ref` 합집합과 set-equal하고 모두 같은 `SAVE_RESULT.input_refs`에 포함되어야 한다.',
     '각 candidate의 `parent_hypothesis_ids`는 그 upstream/downstream Primitive의 `source_hypothesis_id` 합집합, `parent_verification_refs`는 두 Primitive의 `source_verification_ref` 합집합과 각각 set-equal해야 한다.',
     '`excluded_primitive_ref`는 `considered_primitive_refs`에 포함되고 `input_primitive_refs`와 모든 match candidate reference에는 포함되지 않아야 한다.',
@@ -1319,12 +1320,15 @@ if ($decisionText.Contains('lookup 시 ACTIVE 확인')) {
     Add-Failure 'Chaining ADR still uses obsolete ACTIVE-based Primitive lookup'
 }
 
+$activeDocumentationText = (($markdownFiles | Where-Object { $_.FullName -notmatch '[\\/]archive[\\/]' } | ForEach-Object { Get-Content -Raw -LiteralPath $_.FullName }) -join "`n")
 foreach ($obsoleteRule in @(
     'current pointer 갱신으로 오래된 Chaining 결과를 거절',
-    '원자적 current pointer 갱신 실패로 결과·child proposal을 `STALE_RESULT` 처리'
+    '원자적 current pointer 갱신 실패로 결과·child proposal을 `STALE_RESULT` 처리',
+    'commit 직전에 current head를 재검사해 in-flight stale 결과를 차단',
+    'exact current record가 아닌 결과는 저장할 수 없습니다.',
+    'exact current record를 저장 시 재확인'
 )) {
-    $activeArchitectureText = $markdownFiles | Where-Object { $_.FullName -notmatch '[\\/]archive[\\/]' } | ForEach-Object { Get-Content -Raw -LiteralPath $_.FullName }
-    if (($activeArchitectureText -join "`n").Contains($obsoleteRule)) {
+    if ($activeDocumentationText.Contains($obsoleteRule)) {
         Add-Failure "active documentation still contains obsolete Chaining invalidation rule: $obsoleteRule"
     }
 }
@@ -1363,6 +1367,7 @@ $verificationChainingScenarioMarkers = @(
     '| N10-D | exclusion pair가 중복되거나 reason code·analysis·workspace·commit이 다름 |',
     '| N10-E | CHAINING 자식이 `observed_facts`를 채우거나 부모 계보에서 검증 시작점을 복원할 수 없음 |',
     '| N10-F | `source_result_refs` 또는 match candidate의 parent 가설·Verification 목록이 실제 입력 Primitive와 다르거나 중복됨 |',
+    '| N10-G | `considered_primitive_refs` 또는 `input_primitive_refs`에 같은 exact reference가 중복됨 |',
     '| N11 | Verification이 새 endpoint·sink·권한 경계를 발견 |',
     '| N12 | chained child가 FALSE |',
     '| N13 | Verification이 budget·Sandbox·Gate 순서를 우회하려 함 |',

@@ -280,6 +280,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N10-D | exclusion pair가 중복되거나 reason code·analysis·workspace·commit이 다름 | `SCHEMA_INVALID | STALE_RESULT` 중 실제 원인으로 저장 거절; 값을 추정하거나 다른 work reference로 교체하지 않음 |
 | N10-E | CHAINING 자식이 `observed_facts`를 채우거나 부모 계보에서 검증 시작점을 복원할 수 없음 | proposal 등록과 Verification 배정 거절; `observed_facts=[]`로 고정하고 exact 부모 entity·location을 복원한 뒤 다시 제안 |
 | N10-F | `source_result_refs` 또는 match candidate의 parent 가설·Verification 목록이 실제 입력 Primitive와 다르거나 중복됨 | `SAVE_RESULT` 거절; 같은 work의 upstream/downstream Primitive가 직접 가리키는 source reference의 중복 없는 합집합으로 다시 생성 |
+| N10-G | `considered_primitive_refs` 또는 `input_primitive_refs`에 같은 exact reference가 중복됨 | 집합 내용이 같아도 `SCHEMA_INVALID`로 `SAVE_RESULT` 거절; work 입력과 실제 match 합집합을 각각 중복 없이 직렬화 |
 | N11 | Verification이 새 endpoint·sink·권한 경계를 발견 | Chaining을 거치지 않고 `HypothesisProposal(origin=VERIFICATION)`로 전역 등록 후 새 Verification |
 | N12 | chained child가 FALSE | 두 parent의 기존 verdict와 Gate record 불변 |
 | N13 | Verification이 budget·Sandbox·Gate 순서를 우회하려 함 | Runtime Validator가 budget·Gate·호출 권한을, Sandbox Controller가 세부 Sandbox 정책을 `DENY`; hypothesis-local ownership은 enforcement 권한이 아님 |
