@@ -115,8 +115,8 @@ flowchart LR
 
 - **필수 교차 리뷰**: LLM 탐색·체이닝(#2), 검증·반박(#7), PM·아키텍처(#5), 통합·구현 개발(#4)
 - R2-02(`StaticFactBundle` 스키마) → #2, #7이 실제로 이 스키마를 소비하므로 사전 합의 필요
-- R2-03(`DataGap` 규칙) → #2, #7뿐 아니라 Gate·Finding·보고서(#6)도 영향(gap이 verdict 판정에 영향 주면 안 됨)
-- R5-03(Reporter/ReportDraft 생성 조건)이 R2 관점에서 이미 교차 검토됨 — `docs/review/r5-03-r2-cross-review.md` 참고. 이 문서에서 `ReportDraft.content_ref`에 실제로 적힌 `path:line`이 upstream `EvidenceClaim.code_locations`와 일치하는지 검사하는 규칙이 아직 명시돼 있지 않다는 점을 R5-03의 output contract validation 범위에 추가할 것을 제안함
+- R2-03(`DataGap` 규칙) → #2, #7뿐 아니라 Gate·Finding·보고서(#6)도 영향 — claim과 겹치는 `DataGap`을 Technical Gate가 무시하면 안 되지만, `DataGap` 존재 자체가 자동으로 verdict를 바꾸지는 않음(아래 5번 invariant ①과 동일)
+- R5-03(Reporter/ReportDraft 생성 조건)이 R2 관점에서 이미 교차 검토됨 — [`docs/review/r5-03-r2-cross-review.md`](./r5-03-r2-cross-review.md) 참고. 이 문서에서 `ReportDraft.content_ref`에 실제로 적힌 `path:line`이 upstream `EvidenceClaim.code_locations`와 일치하는지 검사하는 규칙이 아직 명시돼 있지 않다는 점을 R5-03의 output contract validation 범위에 추가할 것을 제안함 — `review/r5-03-reporter` 브랜치(2026-09-03 확인)에도 아직 반영 안 됨, 열려 있는 항목
 - 선행 조건: 명시된 건 없지만, `CodeWorkspace` 식별 규칙(R2-01)이 다른 모든 하위 Issue와 다른 역할의 전제가 됨
 
 ## 5. R5 관점 교차 리뷰 반영 (2026-08-31)
