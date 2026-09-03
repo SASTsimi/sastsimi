@@ -75,13 +75,15 @@
 | `VerificationMetrics` | 검증에 사용한 token·시간과 판정 변화 기록 | provider가 알려 주지 않은 token을 임의로 추정하지 않습니다. |
 | `PoC` | 취약점이 어떻게 재현되는지 보여 주는 절차와 증거 | 승인된 격리 환경에서 만든 자료만 사용합니다. |
 | `DynamicReproductionRequest` | R6가 R7에 무엇을 왜 재현할지 전달하는 요청 | `POC_CONFIRMATION`은 initial TRUE 확인, `VERDICT_EVIDENCE`는 최종 판정에 필요한 실행 근거 확보입니다. |
-| `poc_candidate_ref` | R7이 실행 전에 만든 PoC 스크립트·입력 번호 | 실패한 시도에도 남을 수 있으며 검증된 PoC가 아닙니다. |
-| `poc_ref` | 실제 실행에 성공해 가설을 지지한 validated PoC 번호 | `SUCCEEDED + SUPPORTED`인 exact candidate에만 생기며 모든 final TRUE에 필수입니다. |
-| `runner_invoked` | Sandbox Runner를 실제로 호출했는지 나타내는 값 | 거짓이면 단계 로그가 없어야 하고 참이면 실패해도 호출 로그가 필요합니다. |
+| `poc_candidate_ref` | R7 Agent가 작성했거나 실행을 시도한 PoC 초안 번호 | 실패한 시도에도 남을 수 있으며 검증된 PoC가 아닙니다. |
+| `poc_ref` | 실제 실행에 성공해 가설을 지지한 validated PoC 번호 | 같은 attempt의 AgentLog가 exact candidate와 digest 실행을 입증할 때만 생기며 모든 final TRUE에 필수입니다. |
+| `agent_invoked` | 외부 경계 승인을 받은 뒤 Sandbox 안의 R7 Agent 실행 단계가 실제로 시작됐는지 나타내는 값 | 사전 requirements·plan 작성 호출과 구분하며 AgentLog의 `AGENT_STARTED` event와 반드시 일치해야 합니다. |
+| `AgentLog` | R7 Agent·도구·환경 구성 과정에서 실제로 일어난 일을 순서대로 남긴 기록 | 비-LLM Session Manager가 append-only로 저장해 이전 event를 지우거나 다른 attempt와 섞지 않습니다. |
+| `EnvironmentRecipe` | Docker 실행 환경을 다시 만들 수 있는 불변 build 방법 | 시작 image digest와 실제 완성 image digest를 구분하고 저장소가 선언한 의존성을 우선합니다. |
 | `EnvironmentRequirements` | R7이 R6 요청을 실제 환경 구성·검사 항목으로 구체화한 조건 묶음 | 역할·인증 방식·데이터·DB/service·fixture/mock·버전·Health Check를 근거와 함께 기록합니다. |
-| `environment_requirements_ref` | ReproductionPlan이 사용하는 정확한 환경 요구사항 수정본 번호 | 오래된 수정본이나 다른 계획의 요구사항을 재사용하지 않습니다. |
+| `environment_requirements_ref` | ReproductionPlan과 recipe가 사용하는 정확한 환경 요구사항 수정본 번호 | 오래된 수정본이나 다른 attempt의 요구사항을 재사용하지 않습니다. |
 | `EnvironmentCheck` | R7이 요구사항 하나와 실제 환경을 비교한 결과 | `MATCH`, `MISMATCH`, `NOT_CHECKED`, `ERROR` 중 하나와 실제 값·차이·근거를 남깁니다. |
-| `sandbox_profile_ref` | Sandbox에서 허용하는 image·명령·네트워크·자원 등의 보안 정책 번호 | 애플리케이션에 필요한 환경 조건을 뜻하지 않습니다. |
+| `sandbox_profile_ref` | Sandbox의 host·Docker·mount·secret·egress·resource/lifecycle 외부 경계를 정한 정책 번호 | 내부 command allowlist나 애플리케이션 환경 조건을 뜻하지 않습니다. |
 | `environment_ref` | 이번 시도에서 실제 생성된 Sandbox 환경 기록 번호 | 실행 전 환경 설정이나 최신 환경을 가리키지 않습니다. |
 | `secret_ref` | 비밀값 원문 대신 secret store의 항목을 가리키는 불투명 번호 | credential·cookie·token·password를 요구사항이나 일반 log에 저장하지 않습니다. |
 | `policy_decision_ref` | Sandbox Controller가 허용·차단한 이유를 가리키는 번호 | Technical Gate 판정과 다른 기록이며 정책 차단이면 반드시 필요합니다. |
@@ -126,9 +128,9 @@
 | `runtime` | 설계가 실제로 실행되는 프로그램 부분 | 현재 저장소에는 구현되어 있지 않습니다. |
 | `runtime validator` | 프로그램 내부 실행 범위 검사기 | 데이터 형식, 상태 순서, 예산과 권한을 강제하지만 취약점·CWE·정책 의미는 판단하지 않습니다. |
 | `sandbox` | 다른 시스템과 격리해 안전하게 코드를 실행하는 환경 | host, 비밀정보와 범위 밖 네트워크 접근을 막습니다. |
-| `Sandbox Controller` | 격리 실행의 안전 정책과 환경을 통제하는 모듈 | image·명령·파일·네트워크·자원·정리 정책을 한곳에서 검사하고 통과한 계획만 Runner에 전달합니다. |
-| `Sandbox Runner` | Controller가 승인한 계획을 Docker 안에서 실행하는 모듈 | 정책을 정하거나 바꾸지 않고 stdout·stderr·종료 코드와 단계별 관측을 수집합니다. |
-| `Sandbox Result Assembler` | 같은 재현 시도의 정책·환경·로그·PoC·정리 참조를 한 결과로 묶는 비-LLM 모듈 | 다른 시도의 자료를 섞거나 참조 존재만으로 성공을 판단하지 않습니다. |
+| `Sandbox Controller` | 격리 환경 밖의 안전 경계를 강제하는 모듈 | host·Docker daemon/socket·mount/namespace·secret·egress·workspace·resource/lifecycle을 검사하며 내부 command allowlist는 운영하지 않습니다. |
+| `R7 Setup Automation` | Docker image·container·환경 재생성과 정리를 실제 수행하는 비-LLM 모듈 | Agent가 Docker daemon을 직접 다루지 않도록 격리된 실행 통로를 제공합니다. |
+| `Reproduction Session Manager` | 한 동적 재현 attempt의 실제 event와 최종 결과를 확정하는 비-LLM 모듈 | AgentLog, validated PoC와 DynamicReproductionResult의 result owner이며 Agent의 실행 전략은 결정하지 않습니다. |
 | `provider` | LLM을 제공하는 서비스나 연결 방식 | API 방식과 회원 로그인 방식을 같은 경계에서 관리합니다. |
 | `session` | LLM 서비스와 이어지는 로그인 또는 대화 상태 | 인증정보와 session 비밀값을 일반 로그에 남기지 않습니다. |
 | `token` | LLM이 입력과 출력을 처리할 때 쓰는 계산 단위 | 역할별·전체 실행별 한도를 둡니다. |

@@ -20,13 +20,13 @@ GitHub가 실제 상태, 담당자와 토론의 기준입니다. 이 문서는 �
 | R4 | PM·Control Plane·중앙 계약·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) | 김태현 `@taehyeon-git` 배정, 윤희섭 `@YHS-Sec` 공동 역할 담당 | `review/r4-04-governance-audit` | root README, `01`, `03`, `08`, `09`, `10`, `11`, `13`, governance/review | 전체 역할 | IN REVIEW — R4-01~03 완료, [R4-04 PR #48](https://github.com/SASTsimi/sastsimi/pull/48) 교차 검토 중 |
 | R5 | 두 Gate·같은 R6 owner REVISE·보고서 초안 | [#6](https://github.com/SASTsimi/sastsimi/issues/6) | 김혜령 `@kimhr8463` | `review/gate-reporting` | `05`, `07`, `08`, `10`, `12`, `13` | R6, R2, R7, R4, R8 | OPEN |
 | R6 | 찬반 근거·목적별 `DynamicReproductionRequest`·반환 결과 소비·최종 판정 | [#7](https://github.com/SASTsimi/sastsimi/issues/7) | 임채민 `@UltraPeachKeen` | `review/verification` | `03`, `04`, `07`, `08`, `13` | R2, R7, R1, R4, R5, R8 | OPEN |
-| R7 | 환경 요구사항·실행 mode·plan·PoC candidate 생산, Controller 정책 판정·실제 실행·validated PoC와 결과 조립 | [#8](https://github.com/SASTsimi/sastsimi/issues/8) | 조근석 `@Potatonion` | `review/dynamic-sandbox` | `04`, `07`, `08`, `10`, `13` | R6, R4, R8, R3, R5 | OPEN |
+| R7 | Agent requirements·간단한 plan·PoC, Setup recipe·환경·정리, Controller 외부 경계, Session Manager AgentLog·validated PoC·결과 확정 | [#8](https://github.com/SASTsimi/sastsimi/issues/8) | 조근석 `@Potatonion` | `review/dynamic-sandbox` | `04`, `07`, `08`, `10`, `13` | R6, R4, R8, R3, R5 | OPEN |
 | R8 | 평가 corpus·지표·예산 profile | [#9](https://github.com/SASTsimi/sastsimi/issues/9) | 성병찬 `@gitterable` | `review/data-evaluation` | `04`, `06`, `07`, `08`, `09` | R4, 각 LLM 역할, R3 | OPEN |
 | 최종 | 전체 교차 시나리오·고정 commit SHA·최종 승인 | [#10](https://github.com/SASTsimi/sastsimi/issues/10) | 최종 검토·승인 담당자 김태현 `@taehyeon-git` | — | 전체 기준 문서·Wiki·Mermaid·발견사항 | R1–R8 담당자 전원, 김태현 `@taehyeon-git` | OPEN |
 
 번호 문서는 `docs/architecture-v5/` 아래 파일을 뜻합니다. 세부 입력·출력, 금지 권한과 완료 조건은 [ISSUE_CATALOG.md](./ISSUE_CATALOG.md)에 있습니다.
 
-R6가 동적 재현 목적·목표·필요 환경을 요청하고, R7이 환경 요구사항·mode·계획·PoC candidate를 만듭니다. R4 trusted runtime은 generation당 한 work와 exact reference·호출 권한·상태·예산을 검사합니다. R7의 Sandbox Controller와 Runner가 승인된 계획을 실행하며 성공한 `SUPPORTED` 결과만 validated PoC가 됩니다. 모든 final TRUE에는 이 PoC가 필요합니다.
+R6가 동적 재현 목적·목표·필요 환경을 요청하고, R7 Agent가 먼저 requirements·간단한 plan을 만듭니다. R4 trusted runtime은 generation당 한 work와 exact reference·호출 권한·상태·예산을 검사합니다. Controller는 외부 경계를 강제하고 Setup Automation이 환경을 만든 뒤 Agent가 PoC candidate와 재현을 수행하며, Session Manager가 same-attempt AgentLog와 결과를 확정합니다. 성공한 `SUPPORTED` 결과만 validated PoC가 되고 모든 final TRUE에는 이 PoC가 필요합니다.
 
 R4-04의 역할별 확인 범위, 승인으로 인정하는 기록과 병합 조건은 [R4-04 교차 검토 기록](./R4-04_CROSS_REVIEW.md)에서 확인합니다.
 

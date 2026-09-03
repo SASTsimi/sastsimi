@@ -40,12 +40,14 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] Primitive DB는 queue 또는 Finding 저장소가 아닙니다.
 - [ ] Orchestration은 proposal 검증·등록·Verification 배정 뒤 가설 내부 호출을 결정하지 않습니다.
 - [ ] Verification이 Context·Pro/Con·동적 재현·판정·Technical `REVISE`·Gate 제출과 Chaining handoff를 소유합니다.
-- [ ] R6 Verification은 목적·목표·필요 환경·Sandbox profile·근거 reference를 가진 exact `DynamicReproductionRequest`만 만들고, R7이 이를 가리키는 `EnvironmentRequirements`·mode·`ReproductionPlan`·PoC candidate를 만듭니다.
+- [ ] R6 Verification은 목적·목표·필요 환경·Sandbox profile·근거 reference를 가진 exact `DynamicReproductionRequest`만 만들고, R7 Agent가 외부 경계 검사 전에 이를 가리키는 `EnvironmentRequirements`·간단한 `ReproductionPlan`을 만듭니다. PoC candidate는 경계 승인 뒤 Sandbox 실행 단계에서 만듭니다.
 - [ ] `EnvironmentRequirements`는 애플리케이션 조건이고 `sandbox_profile_ref`는 Sandbox 보안 정책이며 서로 대신하지 않습니다.
 - [ ] 한 Verification generation에 동적 재현 work가 하나뿐이며, retry는 같은 work의 새 attempt입니다.
 - [ ] final TRUE에는 현재 generation의 `SUCCEEDED + SUPPORTED` 결과와 validated `poc_ref`가 필수이고, 없으면 저장과 Technical Gate 호출이 모두 차단됩니다.
-- [ ] R7은 실제 `sandbox_environment`에 같은 `requirements_ref`와 requirement별 `MATCH | MISMATCH | NOT_CHECKED | ERROR`, 실제 값·근거·Health Check 결과를 남깁니다.
-- [ ] R7은 요구사항·허용 대체값을 바꾸거나 환경 차이를 임의로 승인하지 않습니다.
+- [ ] `ReproductionPlan`에 mode·exact command·step·payload·cleanup allowlist가 없고 선택적 `requested_evidence`가 Agent의 추가 관찰을 막지 않습니다.
+- [ ] R7 Setup Automation은 recipe의 base/built image digest를 구분하고 실제 `sandbox_environment`에 container instance·생성/재사용 사유·requirement별 비교를 남깁니다.
+- [ ] Sandbox Controller는 host·Docker·mount/namespace·secret·egress·workspace·R8 resource/lifecycle 외부 경계만 검사하고 내부 command allowlist를 운영하지 않습니다.
+- [ ] Reproduction Session Manager만 append-only `AgentLog`, validated PoC와 `DynamicReproductionResult`를 확정합니다.
 - [ ] Chaining Agent는 upstream Primitive의 `result`→downstream Primitive의 특정 `input` matching만 수행하고 일반 research·동적 재현·Gate 보완을 하지 않습니다.
 - [ ] HOLD는 Gate 없이 `inputs`와 `result=null`인 Primitive가 되고, FALSE는 Primitive나 Chaining으로 들어가지 않습니다.
 - [ ] TRUE는 validated PoC와 Technical `ACCEPT`가 있는 exact revision만 `result`를 가진 Primitive가 됩니다. Rule Scope는 Reporter만 제어합니다.
@@ -68,13 +70,14 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] TRUE에서 나온 두 Primitive를 연결할 때 upstream 결과와 downstream의 특정 입력, 양쪽 exact parent revision을 확인하고 새 가설로 검증합니다.
 - [ ] 새 연계 가설의 부모 계보를 따라가 조상 Primitive를 현재 match 후보에서 제외하며, 체이닝 전용 임의 깊이 제한 대신 R8 전역 예산을 적용합니다.
 - [ ] PoC candidate와 재현 성공 뒤 validated PoC를 구분하고, validated PoC가 어떤 가설·코드 위치·관찰 결과를 뒷받침하는지 추적됩니다.
-- [ ] 동적 결과의 Runner 호출·실제 환경 생성·정리 필요 상태와 nullable log·환경·정책·PoC reference가 모순되지 않습니다.
+- [ ] 동적 결과의 Agent 호출·plan/recipe/환경 생성·정리 필요 상태와 nullable 환경·정책·PoC reference 및 필수 AgentLog가 모순되지 않습니다.
 - [ ] Sandbox 정책 차단은 exact 정책 결정과 미실행 상태를 남기며, 그 사실만으로 Technical `REJECT`나 가설 `FALSE`가 되지 않습니다.
-- [ ] 필수 환경 차이가 있으면 공격 단계 전에 멈추고 `FAILED + ENVIRONMENT_SETUP`과 exact 비교 결과를 R6에 반환합니다.
-- [ ] R7이 환경 조건이나 실행 단계를 고치면 같은 request·동적 work 안에서 새 requirements·plan·attempt를 만들고 새 `RUN_SANDBOX`·Sandbox Controller 검사를 거칩니다.
-- [ ] PoC 생성·환경 구성·실행 실패는 validated `poc_ref=null`이며 retry 가능 시 `BLOCKED`, 복구 불가능 시 verdict 없는 `FAILED`이고 `FALSE | HOLD`로 변환되지 않습니다.
+- [ ] 최초 attempt는 clean container이고 다른 가설은 writable container를 공유하지 않으며, reuse/recreate 사유와 이전·새 환경이 AgentLog에 연결됩니다.
+- [ ] R7 자율 retry는 외부 대기가 없으면 `BLOCKED`를 쓰지 않고, 외부 설정·정책·승인·resource profile 변경을 기다릴 때만 `BLOCKED`입니다.
+- [ ] PoC 생성·환경 구성·실행 실패는 validated `poc_ref=null`입니다. 내부에서 해결 가능하면 같은 work를 자동 retry하고, 외부 조건을 기다릴 때만 `BLOCKED`, 복구 불가능하거나 한도를 소진하면 verdict 없는 `FAILED`이며 `FALSE | HOLD`로 변환하지 않습니다.
 - [ ] 환경 구성 실패·차이·허용되지 않은 version fallback·오래된 requirements를 가설 `FALSE`로 바꾸지 않습니다.
-- [ ] 환경 요구사항·실제 값·Health Check·log에 credential·cookie·token·password 원문이 없습니다.
+- [ ] 환경 요구사항·실제 값·Health Check·AgentLog에 credential·cookie·token·password 원문이 없습니다.
+- [ ] candidate와 validated PoC를 구분하고, validated PoC의 request·plan·recipe·환경·AgentLog·digest가 모두 같은 attempt입니다.
 - [ ] 기술적으로 `TRUE`여도 공식 정책을 확인할 수 없으면 보고서 전달을 허용하지 않습니다.
 - [ ] Finding이 아직 없거나 ReportDraft의 선행 revision이 바뀌면 current 초안을 만들거나 재사용하지 않고 원인을 결과·오류 기록에 남깁니다.
 - [ ] 기술 검토에서 보완이 필요하면 같은 ACTIVE `VerificationAssignment` owner에게 직접 돌아가 새 VERIFICATION work와 `TERMINAL -> VERIFYING` 전이를 만든 뒤 새 revision을 확정합니다.
