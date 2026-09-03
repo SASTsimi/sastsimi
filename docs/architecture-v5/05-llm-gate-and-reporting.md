@@ -34,7 +34,7 @@ CWE 후보는 final TRUE 뒤에 Gate 입력으로 작성한다. primary·alterna
 - final `VerificationResult`의 정확한 `record_id`가 있는 `StoredDataRef`와 revision history
 - Pro/Con evidence와 debate mode/trigger
 - 실제 code/entity/location/path reference
-- 현재 generation의 `DynamicReproductionRequest`, `DynamicReproductionResult`와 exact validated `poc_ref`·`policy_decision_ref`·`environment_ref`·`steps_ref`
+- 현재 generation의 exact `DynamicReproductionRequest`, exact `ReproductionPlan`, 같은 attempt의 `DynamicReproductionResult`와 `agent_log_ref`가 가리키는 `AgentLog`, 존재하는 실제 환경·recipe·validated `poc_ref`·cleanup artifact
 - `CWELabel`의 정확한 `record_id`가 있는 `StoredDataRef`와 근거
 - restriction, bypass candidate, unresolved condition
 - 같은 Verification에서 분리한 material child proposal 중 재검증 완료 여부
@@ -44,8 +44,8 @@ CWE 후보는 final TRUE 뒤에 Gate 입력으로 작성한다. primary·alterna
 - final `TRUE`와 찬성·반대 근거의 일치
 - 핵심 주장이 현재 `workspace_id`와 `commit_id`의 코드 위치·호출·데이터 흐름에 연결되는지
 - 동적 관측이 현재 가설·`workspace_id`·실행 조건에 연결되는지
-- Runner 호출 여부와 step log, 실제 환경 생성 여부와 환경 reference, 정책 차단과 Controller 판정 reference, 정리 필요 여부와 상태가 공통 계약에 맞는지
-- `poc_ref`가 실제 실행된 `poc_candidate_ref`, 성공 log와 `SUCCEEDED + SUPPORTED` 관측의 같은 revision에 연결되는지
+- Reproduction Agent 호출 여부와 같은 attempt의 AgentLog, 실제 환경 생성 여부와 환경 reference, 정책 차단과 Controller 판정 reference, 정리 필요 여부와 상태가 공통 계약에 맞는지
+- `poc_ref`가 실제 실행된 `poc_candidate_ref`, AgentLog의 `POC_EXECUTE`와 `SUCCEEDED + SUPPORTED` 관측의 같은 revision 또는 digest에 연결되는지
 - 동적 근거가 승인된 Sandbox 정책 안에서 생성되었고 금지된 재현으로 오염되지 않았는지
 - CWE 선택이 취약점 유형과 근거에 적절한지
 - 실제 코드 경로, restriction·반박·HOLD 조건이 빠짐없이 정확하게 표현되었는지
@@ -178,7 +178,9 @@ Security Impact 검토에는 final Verification과 Technical `ACCEPT`의 동일 
 실제 근거로 검증된 impact만 사용한다. 미검증 child proposal, alternate path, 추가 exploitation
 가능성, `CandidateRef`와 현재 revision에서 확정되지 않은 조건은 impact를 높이는 근거가 아니다.
 
-정본은 R6 final `VerificationResult.verified_impacts`이며 Gate 2는 `verification_result_ref + verified_impact_ids`로 그 revision의 채택값을 고정한다. `impact_evidence_refs`는 선택된 impact의 exact evidence/dynamic/PoC closure와 set-equal해야 하므로 supporting claim이라는 이유만으로 임의 record를 추가할 수 없다. R6의 범용 unresolved condition 가운데 `gate_projections`가 선언된 Gate-relevant domain만 `(source_verification_ref, source_condition_id, domain)` projection을 정확히 하나씩 `missing_information`에 남긴다. 빈 projection을 가진 일반 HOLD/Chaining condition은 Gate 2에 넣지 않는다. multi-domain condition의 domain별 항목은 정상이며 같은 tuple 중복이나 선언 domain 누락만 invalid다. projection은 source condition의 evidence와 blocking 의미를 그대로 보존한다. IMPACT `blocking_for_sufficiency=true` projection은 `blocking=true`이고 관련 impact의 `SUFFICIENT`와 전체 `ALLOW`를 금지한다.
+Gate 2가 사용하는 R6-owned 검증 완료 impact는 exact final `VerificationResult`의 `supporting_evidence`, `verdict_rationale`, `required_primitive_candidates`·`provided_primitive_candidates`와 이들이 가리키는 evidence 중 현재 가설의 실제 impact를 뒷받침하는 내용이다. `impact_escalation_candidates`, `bypass_candidates`, `material_child_proposals`는 모두 미검증 후보이므로 impact를 높이는 입력이 아니다. Gate 2는 `verification_result_ref`에서 이 기존 필드와 transitive evidence closure를 읽으며, 별도 impact ID·evidence 목록을 복사하거나 새 impact record를 만들지 않는다.
+
+`unresolved_conditions`도 같은 exact `VerificationResult`에서 읽는다. final TRUE에 남아 있는 condition이나 `supporting_evidence`·`counter_evidence`의 limitation이 impact 범위 또는 policy/testing restriction 매핑을 불확실하게 하면 해당 component를 `UNCERTAIN`으로 하고 그 누락을 `missing_information`에 보존한다. 문자열 condition에 문서에 없는 ID·domain·blocking field를 덧붙여 projection하지 않는다. 근거 provenance는 `verification_result_ref`와 그 result가 실제로 가진 evidence/dynamic reference closure로 고정하며, 다른 Verification revision이나 generation의 condition·evidence로 보완하지 않는다.
 
 - `SUFFICIENT`: verified impact가 공식 정책의 최소 impact/eligibility 기준에 명시적으로 도달한다.
 - `INSUFFICIENT`: verified impact와 공식 기준을 모두 확정할 수 있고, 검증된 범위가 그 기준에
@@ -186,11 +188,11 @@ Security Impact 검토에는 final Verification과 Technical `ACCEPT`의 동일 
 - `UNCERTAIN`: verified impact의 범위 또는 공식 impact 기준·매핑 조건이 부족하거나 모호하다.
   possible impact만 존재하면 `SUFFICIENT`가 아니다.
 
-R7 Dynamic Reproduction/PoC의 testing restriction 검토는 R7이 실제 수행했다고 기록한 target, environment, method, automation, account/privilege, production 여부와 destructive action만 정책과 비교한다. provenance closure는 `EnvironmentRequirements -> ReproductionPlan.environment_requirements_ref -> RUN_SANDBOX action_decision_ref -> Sandbox Controller policy_decision_ref -> actual SandboxEnvironment(requirements_ref) -> requirement별 EnvironmentCheck -> runner_invoked -> steps_ref/SandboxStepLog -> observation/실제 실행된 PoC -> DynamicReproductionResult`다. Gate 2는 이 closure를 환경 적합성이나 Sandbox 정책 판정을 다시 심사하기 위해 읽지 않고 testing restriction과 비교할 execution fact의 identity만 확인한다.
+R7 Dynamic Reproduction/PoC의 testing restriction 검토는 R7이 실제 수행했다고 기록한 target, environment, command/method, network target, automation, account/privilege, production 여부, state change와 destructive action만 정책과 비교한다. current provenance는 `DynamicReproductionRequest -> EnvironmentRequirements -> ReproductionPlan -> Reproduction Agent -> AgentLog -> Reproduction Session Manager -> DynamicReproductionResult`다. Gate 2는 `VerificationResult.dynamic_request_ref`와 `dynamic_result_ref`에서 current-generation exact request와 result를 고정하고, result의 exact `reproduction_plan_ref`와 같은 attempt의 `agent_log_ref`, 실제 `environment_ref`·`environment_recipe_ref`, `attack_input_refs`·`observation_refs`, candidate/validated PoC와 cleanup reference를 따라 execution facts를 읽는다. `AgentLogEntry`의 action type, command/input/output/observation reference, status·exit code와 연결 artifact가 실제 명령·네트워크 대상·계정/권한·환경·상태 변경을 입증한다. Gate 2는 이 closure를 환경 적합성이나 R7 정책 판정을 다시 심사하기 위해 읽지 않고 testing restriction과 비교할 실제 수행 사실의 identity만 확인한다.
 
-`runner_invoked=false, steps_ref=null`인 정책 차단에서는 계획의 공격 단계를 수행 사실로 보지 않는다. 필수 requirement가 `MISMATCH | NOT_CHECKED | ERROR`여서 공격 전 중단된 경우에도 환경 setup/check와 실제 생성된 log만 사용하며 계획된 공격, 빈 stdout, 환경 차이를 공격 실패·`FALSE` 근거로 바꾸지 않는다. `poc_ref` 존재만으로 실행을 주장할 수 없고, current dynamic attempt의 exact PoC revision이 실행 step/log/observation 및 `DynamicReproductionResult` closure에 연결된 경우만 실제 PoC 행위다. plan·requirements·action/policy decision·environment·PoC·step log·dynamic result 중 다른 revision이나 attempt를 섞거나 latest lookup으로 보정하면 기존 공통 revision/error 계약으로 거절한다.
+`agent_invoked=false, agent_log_ref=null`인 사전 정책 차단에서는 계획이나 request의 목표를 수행 사실로 보지 않는다. Agent가 시작됐다면 성공·실패·취소와 관계없이 같은 attempt의 exact `AgentLog`가 필요하며, 실제 완료되거나 실패한 event와 생성된 artifact만 사용한다. `poc_ref` 존재만으로 실행을 주장할 수 없고, current dynamic attempt의 exact PoC bundle이 AgentLog의 `POC_EXECUTE`, observation과 `DynamicReproductionResult`에 같은 revision 또는 digest로 연결된 경우만 실제 PoC 행위다. request·requirements·plan·policy decision·recipe·environment·AgentLog·PoC·cleanup·dynamic result 중 다른 revision, generation 또는 attempt를 섞거나 latest lookup으로 보정하면 기존 공통 revision/error 계약으로 거절한다.
 
-`execution_fact_refs`는 전체 R7 graph의 복사본이 아니라 current `DynamicReproductionResult`와 같은 attempt에서 testing restriction 판단에 필요한 실제 수행 fact closure다. 정책 판단에 중요한 실제 행위를 선택적으로 빼 결과를 바꿀 수 없고, lifecycle상 존재하며 실제 수행된 fact는 complete해야 한다. 반대로 실행되지 않은 attack step, Runner 미호출 시 attack fact, observation 연결 없는 PoC는 넣지 않는다. policy block이나 environment precheck stop으로 생성되지 않은 artifact의 reference는 요구하지 않는다. Runtime Validator는 current result closure와 artifact 존재/lifecycle을 기준으로 completeness를 검사하고 정책 의미는 재판정하지 않는다.
+Gate 2 출력이나 `VerificationResult`에 실행 사실용 별도 목록 필드는 두지 않는다. testing restriction 판단에 필요한 actual execution facts는 exact `verification_result_ref -> dynamic_result_ref`의 canonical transitive closure로 전달된다. 정책 판단에 중요한 실제 행위를 선택적으로 빼 결과를 바꿀 수 없고, lifecycle상 존재하며 실제 수행된 fact는 complete해야 한다. 반대로 실행되지 않은 계획상 행동이나 생성되지 않은 artifact를 사실로 추정하지 않는다. Runtime Validator는 current generation과 same-attempt reference closure, artifact 존재와 lifecycle을 검사하고 정책 의미는 재판정하지 않는다.
 
 공통 계약, R4와 R8에는 혼합 component의 `review_status` 우선순위가 정의되어 있지 않다. 따라서
 아래 규칙은 R5-02가 Rule·Scope·Impact 결과를 하나의 Gate 2 `review_status`로 합성하기 위해
@@ -374,7 +376,7 @@ Reporter는 통과한 근거를 읽기 쉬운 내부 초안으로 구성한다.
 - 완화와 회귀 테스트 제안
 - invocation trace와 남은 불확실성
 
-Reporter는 새로운 공격 경로를 확정하거나 미검증 material child 또는 Chaining 후보를 실제 영향으로 쓰지 않는다. 초안의 핵심 주장은 current Finding, Verification, validated PoC와 두 Gate의 exact revision에 연결한다. 실패한 시도의 `poc_candidate_ref`는 validated `poc_ref`나 재현 성공으로 서술하지 않는다. `poc_ref`가 있어도 `runner_invoked=false`, `steps_ref=null`, `status=BLOCKED` 또는 current generation의 `SUCCEEDED + SUPPORTED` 결과와 연결되지 않으면 validated PoC나 실행·재현 성공으로 서술하지 않는다. `ReportDraft.cwe_label_ref.record_id`는 Technical review와 Rule Scope review가 공통으로 가리킨 CWELabel `record_id`와 같아야 하며, CWELabel이 수정되면 두 Gate를 다시 통과하기 전에는 초안을 만들지 않는다.
+Reporter는 새로운 공격 경로를 확정하거나 미검증 material child 또는 Chaining 후보를 실제 영향으로 쓰지 않는다. 초안의 핵심 주장은 current Finding, Verification, validated PoC와 두 Gate의 exact revision에 연결한다. 실패한 시도의 `poc_candidate_ref`는 validated `poc_ref`나 재현 성공으로 서술하지 않는다. `poc_ref`가 있어도 `agent_invoked=false`, `agent_log_ref=null`, `status=BLOCKED` 또는 current generation의 `SUCCEEDED + SUPPORTED` 결과 및 same-attempt `AgentLog`의 `POC_EXECUTE`와 연결되지 않으면 validated PoC나 실행·재현 성공으로 서술하지 않는다. `ReportDraft.cwe_label_ref.record_id`는 Technical review와 Rule Scope review가 공통으로 가리킨 CWELabel `record_id`와 같아야 하며, CWELabel이 수정되면 두 Gate를 다시 통과하기 전에는 초안을 만들지 않는다.
 
 Reporter는 Verification의 restriction과 unresolved condition, 정적·동적 검증 및 두 Gate의 limitation을 빠뜨리거나 완화하지 않는다. 저장 전 `REDACTION=PASS`를 요구하며 credential, session secret, 불필요한 개인정보와 비공개 원문을 제거한다. 이 값은 `ReportDraft.restrictions`, `limitations`, `unresolved_conditions`, `redaction_status=PASSED`로 확인할 수 있어야 한다.
 

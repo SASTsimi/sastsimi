@@ -109,10 +109,10 @@ Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하
 | Hypothesis Agent | 취약점 가설 | 없음 | static 사실을 입력으로 읽음 | 없음 | 없음 |
 | Pro·Con Agent | 찬성·반대 근거 | 없음 | 자기 역할의 근거 | 없음 | 없음 |
 | Verification Agent | Context·Pro/Con, 목적·목표·필요 환경을 담은 `DynamicReproductionRequest`, 두 Gate·Reporter·Chaining 요청, material child proposal | `TRUE | FALSE | HOLD` | static·Pro·Con·COMMITTED dynamic 근거와 Gate 보완 요청 | 없음 | 없음 |
-| R7 Dynamic Reproduction | `EnvironmentRequirements`·`ReproductionPlan`·PoC candidate 생산과 Sandbox 실행 요청 | 없음 | R6 요청, 실제 환경과 동적 관측 | 없음 | 없음 |
-| Sandbox Controller | 없음 | 없음 | exact plan·requirements closure의 image·command·file·network·resource·cleanup 보안 정책 검사와 exact 정책 판정 생산 | 정책 위반 계획 차단과 Runner 호출 통제 | 없음 |
-| Sandbox Runner | 없음 | 없음 | Controller가 승인한 exact 계획의 환경 구성·요구사항 비교·Health Check 뒤 일치할 때만 공격 단계 실행, 실제 환경·`SandboxStepLog`와 PoC 실행 사실 생산 | 요구사항 변경·임의 차이 수용·허용되지 않은 fallback·계획 밖 command·입력 실행 차단 | 없음 |
-| Sandbox Result Assembler | 없음 | 없음 | exact R7 plan closure와 같은 R7 실행 attempt의 정책·환경 비교·step log·PoC candidate·cleanup reference를 `DynamicReproductionResult`로 조립 | nullable·상태·identity·requirements 조합 위반 결과 저장 차단 | 없음 |
+| Reproduction Agent | `EnvironmentRequirements`·`ReproductionPlan`·recipe·PoC candidate와 환경·실행·관찰·retry 전략 | `SUPPORTED | DISPROVED | INCONCLUSIVE` 동적 outcome | R6 요청과 Sandbox 안의 실제 동적 근거 | 없음 | 없음 |
+| Sandbox Controller | 없음 | 없음 | host·Docker daemon·secret·egress·다른 workspace·resource·lifecycle 외부 경계 정책과 exact 판정 | 경계 위반 실행 차단 | 없음 |
+| R7 Sandbox Setup Automation | 없음 | 없음 | 승인된 경계로 image build·가설별 최초 clean Sandbox 생성·필요 시 baseline 재생성·lifecycle cleanup | 외부 경계 우회 차단 | 없음 |
+| Reproduction Session Manager | 없음 | 없음 | runtime/tool event의 durable AgentLog와 같은 attempt의 최종 `DynamicReproductionResult` 확정 | schema·authority·identity·revision·hash·redaction 불변조건 | 없음 |
 | CWE Labeling | CWE 후보와 근거 | CWE label revision 생성 | final Verification | 없음 | 없음 |
 | Chaining Agent | upstream Primitive `result`→downstream Primitive `input` match와 chained proposal | 없음 | exact Primitive, Verification·Technical provenance와 코드 근거 | 없음 | 없음 |
 | Technical Evidence Gate Agent | 구체적인 보완 요청 | 없음 | verdict·근거·코드 흐름·CWE | 없음 | 없음 |
@@ -120,7 +120,7 @@ Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하
 | Reporter Agent | 내부 보고서 문장·구성 | 없음 | 통과한 결과와 두 Gate | 없음 | 없음 |
 | Runtime Validator | 허용 가능한 대체 action 안내 | 없음 | 실행 전제와 exact reference | action 허용·차단 | 없음 |
 
-Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 호출 순서, 기술 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 확정하지 않는다. Verification Agent는 hypothesis-local 다음 작업을 선택하고 `DynamicReproductionRequest`와 최종 verdict를 생산하지만 프로그램 enforcement를 우회하거나 Sandbox를 직접 실행하지 못한다. R7은 그 요청을 바탕으로 exact `EnvironmentRequirements`, 실행 mode, `ReproductionPlan`과 PoC candidate를 생산한다. Sandbox Controller는 exact plan·requirements reference와 세부 실행 정책을 검사해 판정을 만들고, Sandbox Runner는 통과한 계획의 환경을 구성해 요구사항·Health Check를 비교한 뒤 필수 항목이 맞을 때만 공격 단계를 실행한다. 비-LLM Sandbox Result Assembler는 같은 분석·가설의 exact R7 plan closure와 같은 R7 실행 attempt에서 나온 정책·환경 비교·log·PoC candidate·cleanup만 동적 결과로 조립한다. R7 구성요소는 R6 요청 목적과 최종 verdict를 바꾸지 않는다. Runtime Validator는 값의 생산자가 맞는지, 필요한 선행 record와 상태가 있는지, exact revision과 실행 범위가 허용됐는지만 확인하며 환경 의미나 domain 값을 대신 만들지 않는다.
+Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 판정을 확정하지 않는다. Verification Agent는 `DynamicReproductionRequest`와 최종 verdict를 생산하고, R7 Agent는 exact `EnvironmentRequirements`·`ReproductionPlan`·recipe·PoC를 생산한다. Controller는 Sandbox 외부 경계를 검사하고 Setup Automation이 clean Sandbox를 만든다. Agent는 내부에서 환경·command·PoC·관찰·retry를 자율 수행한다. 비-LLM Session Manager는 실제 event와 같은 attempt의 artifact를 대조해 AgentLog와 최종 동적 결과만 확정한다. R7은 R6 요청 목적과 최종 verdict를 바꾸지 않는다.
 
 ReportDraft 이후의 검토·수정·제출·공개는 이 역할표와 Agent action lifecycle 밖에서 사람이 수행한다. 자동화는 사람 검토 상태나 공개 결정을 만들지 않는다.
 
@@ -157,7 +157,7 @@ Agent 또는 service의 제안
 
 Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서 품질을 평가하지 않는다. 그것은 Verification, 두 LLM Gate와 Reporter의 역할이다.
 
-`REQUEST_DYNAMIC_REPRO`의 `ActionDecision=ALLOW`는 현재 Verification generation에 하나의 `DYNAMIC_REPRO` work를 등록한다. `RUN_SANDBOX`의 `ActionDecision=ALLOW`는 Controller에 exact `ReproductionPlan`과 그 계획의 current `EnvironmentRequirements`를 전달할 권한만 부여한다. Sandbox Controller가 image digest, command/tool allowlist, mount와 file path, default-deny network, CPU·memory·disk·process·time limit, non-root와 cleanup을 한 번 검사한다. 통과한 계획만 Sandbox Runner가 받으며, Runner는 실제 환경·Health Check를 requirement별로 비교해 필수 항목이 모두 `MATCH`일 때만 공격 단계를 계속한다. 실행 뒤 `SAVE_RESULT`는 plan requirements, 실제 `sandbox_environment.requirements_ref`, 비교 결과와 `SandboxStepLog`의 일치 여부를 다시 대조한다. 마지막 대조는 환경 의미나 정책을 재판단하는 중복 검사가 아니라 실행 결과 무결성 확인이다.
+`REQUEST_DYNAMIC_REPRO`의 ALLOW는 generation당 하나의 동적 work를 등록하고, `RUN_SANDBOX`의 ALLOW는 exact plan·requirements·profile로 외부 경계 검사를 시작한다. Controller는 host·Docker daemon·secret·egress·다른 workspace·R8 resource·lifecycle을 제한하며 Agent 내부 명령을 사전 검사하지 않는다. Session Manager의 `SAVE_RESULT`는 plan requirements, 실제 environment·recipe image digest, AgentLog·candidate·validated PoC·cleanup의 동일 attempt 여부만 대조한다.
 
 ## 병렬 실행과 결과 합류
 
