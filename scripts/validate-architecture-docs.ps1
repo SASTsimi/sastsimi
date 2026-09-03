@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
@@ -301,7 +301,7 @@ $reviewRemediationPatterns = @(
     },
     @{
         Name = 'dynamic PARTIAL uses structured limitations without fake errors'
-        Pattern = '(?s)`DYNAMIC_REPRO`는 정확히 하나의 `DynamicReproductionResult\(status=PARTIAL, failure_reason=NONE\)`.*?`hypothesis_evidence_refs`와 `limitations`가 각각 하나 이상.*?억지로 `error_ids`나 `gap_ids`로 만들지 않는다'
+        Pattern = '(?s)`DYNAMIC_REPRO`는 정확히 하나의 `DynamicReproductionResult\(status=PARTIAL, failure_category=NONE\)`.*?`hypothesis_evidence_refs`와 `limitations`가 각각 하나 이상.*?억지로 `error_ids`나 `gap_ids`로 만들지 않는다'
     },
     @{
         Name = 'retryable dynamic failure remains the same blocked work'
@@ -394,8 +394,11 @@ $requiredR403ContractNames = @(
     'DynamicReproductionRequest:',
     'EnvironmentRequirements:',
     'ReproductionPlan:',
+    'EnvironmentRecipe:',
     'SandboxEnvironment:',
-    'SandboxStepLog:',
+    'AgentLog:',
+    'PoCBundle:',
+    'CleanupLog:',
     'LLMCallSpec:',
     'action_id:',
     'decision_id:',
@@ -445,12 +448,15 @@ foreach ($field in $requiredActionRequestFields) {
 $environmentNeedBlock = [regex]::Match($contractText, '(?ms)^EnvironmentNeed:\s*(.*?)^DynamicReproductionRequest:').Groups[1].Value
 $dynamicRequestBlock = [regex]::Match($contractText, '(?ms)^DynamicReproductionRequest:\s*(.*?)^EnvironmentRequirement:').Groups[1].Value
 $environmentRequirementBlock = [regex]::Match($contractText, '(?ms)^EnvironmentRequirement:\s*(.*?)^EnvironmentRequirements:').Groups[1].Value
-$environmentRequirementsBlock = [regex]::Match($contractText, '(?ms)^EnvironmentRequirements:\s*(.*?)^ReproductionStep:').Groups[1].Value
-$reproductionStepBlock = [regex]::Match($contractText, '(?ms)^ReproductionStep:\s*(.*?)^ReproductionPlan:').Groups[1].Value
-$reproductionPlanBlock = [regex]::Match($contractText, '(?ms)^ReproductionPlan:\s*(.*?)^EnvironmentCheck:').Groups[1].Value
+$environmentRequirementsBlock = [regex]::Match($contractText, '(?ms)^EnvironmentRequirements:\s*(.*?)^ReproductionPlan:').Groups[1].Value
+$reproductionPlanBlock = [regex]::Match($contractText, '(?ms)^ReproductionPlan:\s*(.*?)^EnvironmentRecipe:').Groups[1].Value
+$environmentRecipeBlock = [regex]::Match($contractText, '(?ms)^EnvironmentRecipe:\s*(.*?)^EnvironmentCheck:').Groups[1].Value
 $environmentCheckBlock = [regex]::Match($contractText, '(?ms)^EnvironmentCheck:\s*(.*?)^SandboxEnvironment:').Groups[1].Value
-$sandboxEnvironmentBlock = [regex]::Match($contractText, '(?ms)^SandboxEnvironment:\s*(.*?)^SandboxStepEntry:').Groups[1].Value
-$sandboxStepLogBlock = [regex]::Match($contractText, '(?ms)^SandboxStepLog:\s*(.*?)^DynamicReproductionResult:').Groups[1].Value
+$sandboxEnvironmentBlock = [regex]::Match($contractText, '(?ms)^SandboxEnvironment:\s*(.*?)^AgentLogEntry:').Groups[1].Value
+$agentLogEntryBlock = [regex]::Match($contractText, '(?ms)^AgentLogEntry:\s*(.*?)^AgentLog:').Groups[1].Value
+$agentLogBlock = [regex]::Match($contractText, '(?ms)^AgentLog:\s*(.*?)^PoCBundle:').Groups[1].Value
+$pocBundleBlock = [regex]::Match($contractText, '(?ms)^PoCBundle:\s*(.*?)^CleanupEntry:').Groups[1].Value
+$cleanupLogBlock = [regex]::Match($contractText, '(?ms)^CleanupLog:\s*(.*?)^DynamicReproductionResult:').Groups[1].Value
 $dynamicResultBlock = [regex]::Match($contractText, '(?ms)^DynamicReproductionResult:\s*(.*?)^```').Groups[1].Value
 foreach ($field in @('need_id:', 'kind:', 'description:', 'required:', 'source_refs:')) {
     if (-not $environmentNeedBlock.Contains($field)) {
@@ -465,12 +471,7 @@ foreach ($field in @('verification_assignment_ref:', 'verification_generation:',
 foreach ($fieldPattern in @(
     'requirement_id:\s*string',
     'kind:\s*APP_ROLE \| AUTH \| DATA \| DATABASE \| SERVICE \| FIXTURE \| MOCK \| VERSION \| HEALTH_CHECK',
-    'name:\s*string',
     'required:\s*boolean',
-    'expected:\s*string \| null',
-    'expected_ref:\s*StoredDataRef \| null',
-    'alternatives:\s*\[string\]',
-    'check_ref:\s*StoredDataRef \| null',
     'secret_ref:\s*StoredDataRef \| null',
     'source_refs:\s*\[StoredDataRef\]'
 )) {
@@ -483,63 +484,77 @@ foreach ($fieldPattern in @('meta:\s*RecordMeta', 'request_ref:\s*StoredDataRef'
         Add-Failure "missing or invalid EnvironmentRequirements field: $fieldPattern"
     }
 }
-foreach ($field in @('step_id:', 'command_ref:', 'attack_input_refs:', 'required:')) {
-    if (-not $reproductionStepBlock.Contains($field)) {
-        Add-Failure "missing ReproductionStep field: $field"
-    }
-}
-foreach ($field in @('request_ref:', 'purpose:', 'mode:', 'hypothesis_ref:', 'environment_requirements_ref:', 'sandbox_profile_ref:', 'poc_candidate_ref:', 'steps:', 'cleanup_policy_ref:')) {
+foreach ($field in @('request_ref:', 'purpose:', 'hypothesis_ref:', 'environment_requirements_ref:', 'sandbox_profile_ref:', 'reproduction_goal:', 'context_refs:', 'requested_evidence:')) {
     if (-not $reproductionPlanBlock.Contains($field)) {
         Add-Failure "missing ReproductionPlan field: $field"
+    }
+}
+foreach ($field in @('base_image_digest:', 'built_image_digest:', 'dockerfile_ref:', 'package_manifest_refs:', 'setup_script_refs:', 'account_setup_refs:', 'fixture_refs:', 'mock_service_refs:', 'healthcheck_refs:', 'parent_recipe_ref:', 'recipe_digest:')) {
+    if (-not $environmentRecipeBlock.Contains($field)) {
+        Add-Failure "missing EnvironmentRecipe field: $field"
     }
 }
 foreach ($fieldPattern in @(
     'requirement_id:\s*string',
     'status:\s*MATCH \| MISMATCH \| NOT_CHECKED \| ERROR',
     'actual:\s*string \| null',
-    'actual_ref:\s*StoredDataRef \| null',
-    'difference:\s*string \| null',
-    'evidence_refs:\s*\[StoredDataRef\]',
-    'check_result_ref:\s*StoredDataRef \| null'
+    'evidence_refs:\s*\[StoredDataRef\]'
 )) {
     if (-not [regex]::IsMatch($environmentCheckBlock, $fieldPattern)) {
         Add-Failure "missing or invalid EnvironmentCheck field: $fieldPattern"
     }
 }
 foreach ($fieldPattern in @(
-    'meta:\s*RecordMeta',
     'reproduction_plan_ref:\s*StoredDataRef',
     'requirements_ref:\s*StoredDataRef',
+    'environment_recipe_ref:\s*StoredDataRef',
+    'image_digest:\s*string',
+    'container_instance_id:\s*string',
+    'container_lifecycle:\s*CREATED \| REUSED',
+    'container_creation_reason:\s*INITIAL \| STATE_CHANGED \| CONFIG_CHANGED \| STATE_UNCERTAIN \| null',
     'status:\s*READY \| MISMATCH \| ERROR',
-    'checks:\s*\[EnvironmentCheck\]',
-    'created_at:\s*timestamp'
+    'checks:\s*\[EnvironmentCheck\]'
 )) {
     if (-not [regex]::IsMatch($sandboxEnvironmentBlock, $fieldPattern)) {
         Add-Failure "missing or invalid SandboxEnvironment field: $fieldPattern"
     }
 }
-foreach ($field in @('meta:', 'reproduction_plan_ref:', 'entries:')) {
-    if (-not $sandboxStepLogBlock.Contains($field)) {
-        Add-Failure "missing SandboxStepLog field: $field"
+foreach ($field in @('event_id:', 'action_id:', 'sequence:', 'action_type:', 'recreation_requested_by:', 'recreation_reason:', 'recreation_details:', 'execution_status:', 'input_refs:', 'output_refs:', 'observation_refs:')) {
+    if (-not $agentLogEntryBlock.Contains($field)) {
+        Add-Failure "missing AgentLogEntry field: $field"
     }
+}
+foreach ($field in @('meta:', 'reproduction_plan_ref:', 'entries:')) {
+    if (-not $agentLogBlock.Contains($field)) {
+        Add-Failure "missing AgentLog field: $field"
+    }
+}
+foreach ($field in @('reproduction_plan_ref:', 'environment_recipe_ref:', 'sandbox_environment_ref:', 'file_refs:', 'entrypoint_ref:', 'execution_command_ref:', 'attack_input_refs:', 'bundle_digest:')) {
+    if (-not $pocBundleBlock.Contains($field)) {
+        Add-Failure "missing PoCBundle field: $field"
+    }
+}
+if (-not $cleanupLogBlock.Contains('entries:')) {
+    Add-Failure 'missing CleanupLog entries field'
 }
 foreach ($fieldPattern in @(
     'action_decision_ref:\s*StoredDataRef',
     'request_ref:\s*StoredDataRef',
     'reproduction_plan_ref:\s*StoredDataRef',
     'purpose:\s*POC_CONFIRMATION \| VERDICT_EVIDENCE',
-    'mode:\s*LIMITED_REPRO \| FULL_REPRO',
     'policy_decision_ref:\s*StoredDataRef \| null',
-    'runner_invoked:\s*boolean',
+    'agent_invoked:\s*boolean',
     'environment_created:\s*boolean',
     'environment_ref:\s*StoredDataRef \| null',
-    'steps_ref:\s*StoredDataRef \| null',
+    'environment_recipe_ref:\s*StoredDataRef \| null',
+    'agent_log_ref:\s*StoredDataRef \| null',
     'poc_candidate_ref:\s*StoredDataRef \| null',
     'poc_ref:\s*StoredDataRef \| null',
-    'attack_input_refs:\s*\[StoredDataRef\]',
-    'cleanup_policy_ref:\s*StoredDataRef',
+    'failure_reason:\s*string \| null',
+    'plan_execution_status:\s*EXECUTABLE \| EXECUTABLE_WITH_LIMITATIONS \| NEEDS_REVISION',
     'cleanup_required:\s*boolean',
-    'cleanup_status:\s*SUCCEEDED \| FAILED \| NOT_REQUIRED'
+    'cleanup_status:\s*SUCCEEDED \| FAILED \| NOT_REQUIRED',
+    'cleanup_log_ref:\s*StoredDataRef \| null'
 )) {
     if (-not [regex]::IsMatch($dynamicResultBlock, $fieldPattern)) {
         Add-Failure "missing or invalid DynamicReproductionResult field: $fieldPattern"
@@ -584,16 +599,16 @@ foreach ($binding in $requiredActionCheckBindings.GetEnumerator()) {
 
 $requiredActionRequesterBindings = [ordered]@{
     REGISTER_WORK = 'ORCHESTRATION, VERIFICATION, RECOVERY'
-    CHANGE_WORK_STATE = 'ORCHESTRATION, VERIFICATION, SANDBOX, RECOVERY'
-    START_ATTEMPT = 'ORCHESTRATION, VERIFICATION, SANDBOX, RECOVERY'
-    CANCEL_WORK = 'ORCHESTRATION, VERIFICATION, SANDBOX, RECOVERY'
+    CHANGE_WORK_STATE = 'ORCHESTRATION, VERIFICATION, REPRODUCTION_SESSION_MANAGER, RECOVERY'
+    START_ATTEMPT = 'ORCHESTRATION, VERIFICATION, REPRODUCTION_SESSION_MANAGER, RECOVERY'
+    CANCEL_WORK = 'ORCHESTRATION, VERIFICATION, REPRODUCTION_SESSION_MANAGER, RECOVERY'
     READ_CODE = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, TECHNICAL_GATE'
     RUN_TOOL = 'REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR'
-    CALL_LLM = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, SANDBOX'
+    CALL_LLM = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, REPRODUCTION_AGENT'
     FETCH_POLICY = 'POLICY_COLLECTOR'
     REQUEST_DYNAMIC_REPRO = 'VERIFICATION'
-    RUN_SANDBOX = 'SANDBOX'
-    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, SANDBOX, RECOVERY'
+    RUN_SANDBOX = 'REPRODUCTION_AGENT'
+    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, REPRODUCTION_AGENT, REPRODUCTION_SESSION_MANAGER, RECOVERY'
     CALL_TECHNICAL_GATE = 'VERIFICATION'
     CALL_RULE_SCOPE_GATE = 'VERIFICATION'
     CREATE_REPORT_DRAFT = 'VERIFICATION'
@@ -679,11 +694,11 @@ foreach ($field in $requiredAnalysisResultFields) {
         Add-Failure "missing AnalysisRunResult handoff field: $field"
     }
 }
-if ($contractText -match 'POLICY_BLOCKED[^\r\n]*정적·찬반[^\r\n]*`ACCEPT`') {
-    Add-Failure 'POLICY_BLOCKED without a validated PoC must not reach Technical ACCEPT'
+if ($contractText -match 'failure_category=POLICY[^\r\n]*정적·찬반[^\r\n]*`ACCEPT`') {
+    Add-Failure 'policy-blocked dynamic reproduction without a validated PoC must not reach Technical ACCEPT'
 }
-if (-not $contractText.Contains('PoC candidate 생성 전에 실패하면 아직 실행할 plan과 `RUN_SANDBOX` decision이 없으므로 `ReproductionPlan`이나 `DynamicReproductionResult`를 억지로 만들지 않는다.')) {
-    Add-Failure 'pre-plan PoC generation failure handling is missing'
+if (-not $contractText.Contains('한도를 소진하면 `DynamicReproductionResult(status=FAILED, hypothesis_outcome=INCONCLUSIVE, poc_ref=null)`로 반환하며 R6가 후속 흐름을 결정한다.')) {
+    Add-Failure 'R7 retry exhaustion result handling is missing'
 }
 $reportDraftBlock = [regex]::Match($contractText, '(?ms)^ReportDraft:\s*(.*?)^```').Groups[1].Value
 foreach ($field in @('finding_ref:', 'dynamic_result_ref:', 'poc_ref:', 'restrictions:', 'limitations:', 'unresolved_conditions:', 'redaction_status: PASSED')) {
@@ -734,10 +749,10 @@ $authorityScenarioMarkers = @(
     '`SAVE_RESULT` 검사 뒤 candidate bytes를 바꿈',
     '실행 오류만 든 `FALSE` 후보를 저장',
     '다른 역할이 만든 결과 후보를 저장'
-    '`RUN_SANDBOX` 허가 뒤 재현 계획·requirements·공격 입력·cleanup revision이 바뀜'
-    'Sandbox가 계획에 없는 command·공격 입력을 실행하려 함'
-    '동적 결과의 step log·공격 입력·cleanup 정책이 승인 계획과 다름'
-    'Verification이 `DynamicReproductionResult`를 직접 저장'
+    '`RUN_SANDBOX` 허가 뒤 request·plan·requirements·profile revision이 바뀜'
+    'Agent가 Sandbox 외부 경계에 접근하려 함'
+    'AgentLog·환경·PoC·cleanup이 서로 다른 attempt를 가리킴'
+    'Verification 또는 Agent가 최종 `DynamicReproductionResult`를 직접 저장'
 )
 foreach ($marker in $authorityScenarioMarkers) {
     if (-not $securityText.Contains($marker)) {
@@ -747,44 +762,32 @@ foreach ($marker in $authorityScenarioMarkers) {
 
 $sandboxReviewPatterns = @(
     @{
-        Name = 'Runtime Validator authorizes Sandbox calls without duplicating detailed policy checks'
-        Pattern = '(?s)`RUN_SANDBOX`의 `ActionDecision=ALLOW`.*?Runtime Validator.*?R7 호출자의 권한.*?예산.*?exact request.*?`ReproductionPlan`.*?current `EnvironmentRequirements`.*?Sandbox Controller.*?image digest.*?command/tool allowlist.*?network target.*?CPU·memory·disk·process·time limit.*?cleanup 정책을 전담 검사'
+        Name = 'Sandbox Controller enforces only external boundaries'
+        Pattern = '(?s)`RUN_SANDBOX`의 ALLOW.*?Sandbox Controller.*?Docker socket.*?host mount.*?production secret.*?다른 workspace.*?외부 경계.*?개별 command.*?실행 순서를 사전 허가하지 않는다'
     },
     @{
-        Name = 'RUN_SANDBOX freezes the complete reproduction plan closure'
-        Pattern = '(?s)`REQUEST_DYNAMIC_REPRO`와 `RUN_SANDBOX`는 같은 exact `dynamic_request_ref`.*?`RUN_SANDBOX`만 `reproduction_plan_ref`.*?`input_refs`에는 exact request·`ReproductionPlan`.*?`hypothesis_ref`.*?`environment_requirements_ref`.*?`poc_candidate_ref`.*?`sandbox_profile_ref`.*?`command_ref`.*?`attack_input_refs`.*?`cleanup_policy_ref`'
+        Name = 'Setup Automation creates a clean Sandbox and Agent runs autonomously'
+        Pattern = '(?s)R7 Sandbox Setup Automation이 clean Sandbox를 만들고 Reproduction Agent가 내부 환경·PoC·command·관찰·재시도를 자율 수행'
     },
     @{
-        Name = 'invoked sandbox execution log exactly matches the authorized plan'
-        Pattern = '(?s)`runner_invoked=true`이면.*?exact `SandboxStepLog`를 가리키는 `steps_ref`가 필수.*?`step_id`, `command_ref`, `attack_input_refs`.*?field-by-field exact match.*?계획에 없는 entry를 허용하지 않는다'
+        Name = 'Session Manager finalizes pre-agent failures and requires AgentLog after invocation'
+        Pattern = '(?s)`agent_invoked=false`이면 `agent_log_ref=null`.*?Session Manager.*?실패·차단·취소 결과를 확정.*?`agent_invoked=true`이면.*?`AgentLog`가 필수'
     },
     @{
-        Name = 'dynamic result save repeats plan and execution checks'
-        Pattern = '(?s)`SAVE_RESULT\(requested_by=SANDBOX, result_kind=dynamic_reproduction_result\)`.*?request·purpose·plan·requirements·candidate·정책·실제 환경·Runner log·validated PoC·cleanup 조합을 다시 확인'
+        Name = 'AgentLog events are durable and attempt scoped'
+        Pattern = '(?s)`event_id`는 전역.*?`sequence`는 attempt 안에서 단조 증가.*?`action_id`.*?crash.*?이전 attempt event를 현재 결과에 연결하지 않는다'
     },
     @{
-        Name = 'Sandbox result assembler produces and Verification only consumes dynamic results'
-        Pattern = '(?s)Sandbox runtime의 비-LLM result assembler만 exact reference를 동적 결과에 조립.*?Verification은.*?같은 final 결과만 읽으며 `DynamicReproductionResult`를 직접 만들거나 수정하지 않는다'
-    },
-    @{
-        Name = 'dynamic result nullable references follow lifecycle facts'
-        Pattern = '(?s)`runner_invoked=false`이면 `steps_ref=null`.*?`runner_invoked=true`이면.*?`steps_ref`가 필수.*?`environment_created`.*?`false`이면 `environment_ref=null`.*?`true`이면 `environment_ref`가 필수'
-    },
-    @{
-        Name = 'cleanup NOT_REQUIRED is limited to attempts without cleanup targets'
-        Pattern = '(?s)`cleanup_required`.*?`false`이면 `cleanup_status=NOT_REQUIRED`.*?`true`이면 `cleanup_status=SUCCEEDED \| FAILED`만 허용.*?실제 자원이 있는데.*?계약 위반'
-    },
-    @{
-        Name = 'policy blocked result retains the exact Controller decision'
-        Pattern = '(?s)`failure_reason=POLICY_BLOCKED`이면.*?`policy_decision_ref`.*?반드시 존재.*?정책의 exact revision.*?`ALLOW \| DENY` 결과와 사유 코드'
+        Name = 'cleanup NOT_REQUIRED is limited to attempts without targets'
+        Pattern = '(?s)cleanup은 R6 요청이 아니라 R7 lifecycle 책임.*?`cleanup_required=true`.*?`cleanup_log_ref`.*?정리 대상이 전혀 없을 때만 `NOT_REQUIRED`'
     },
     @{
         Name = 'PoC candidate and validated PoC are distinct'
-        Pattern = '(?s)`poc_candidate_ref`.*?성공을 뜻하지 않는다.*?`poc_ref`는 실제 취약점 재현에 성공한 validated PoC.*?`status=SUCCEEDED`.*?`hypothesis_outcome=SUPPORTED`.*?exact candidate revision 또는 digest를 실제 실행'
+        Pattern = '(?s)`poc_candidate_ref`.*?성공을 뜻하지 않는다.*?`poc_ref`는 `SUCCEEDED \+ SUPPORTED`.*?같은 candidate digest.*?`poc_ref=null`'
     },
     @{
-        Name = 'Verification owns requests while Sandbox owns plans and dynamic results'
-        Pattern = '(?s)`dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`.*?`environment_requirements -> EnvironmentRequirements -> SANDBOX`.*?`reproduction_plan -> ReproductionPlan -> SANDBOX`.*?`dynamic_reproduction_result -> DynamicReproductionResult -> SANDBOX`'
+        Name = 'R7 producer authority is split between Agent and Session Manager'
+        Pattern = '(?s)`environment_requirements -> EnvironmentRequirements -> REPRODUCTION_AGENT`.*?`reproduction_plan -> ReproductionPlan -> REPRODUCTION_AGENT`.*?`agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`.*?`dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`'
     }
 )
 foreach ($rule in $sandboxReviewPatterns) {
@@ -795,40 +798,36 @@ foreach ($rule in $sandboxReviewPatterns) {
 
 $environmentHandoffPatterns = @(
     @{
-        Name = 'R6 owns the immutable request and R7 owns environment requirements'
-        Pattern = '(?s)`DynamicReproductionRequest`는 R6 Verification이.*?불변 record.*?`EnvironmentRequirements`는 R7이 exact request.*?불변 요구사항 record'
+        Name = 'R6 owns the immutable request and R7 Agent owns requirements and plan'
+        Pattern = '(?s)`DynamicReproductionRequest`는 R6 Verification.*?불변 record.*?`EnvironmentRequirements`와 `ReproductionPlan`은 R7 Reproduction Agent'
     },
     @{
-        Name = 'reproduction plan binds current exact requirements'
-        Pattern = '(?s)`ReproductionPlan`은 R7이.*?`environment_requirements_ref`는 같은 R7 work·attempt의 current requirements.*?`sandbox_profile_ref`는 request 값과 exact match'
+        Name = 'R7 plan binds the exact request and current requirements'
+        Pattern = '(?s)plan의 `request_ref`, `purpose`, `hypothesis_ref`와 `sandbox_profile_ref`는 request와 exact match.*?`environment_requirements_ref`는 같은 R7 work'
     },
     @{
-        Name = 'RUN_SANDBOX closure includes requirements'
-        Pattern = '(?s)action `input_refs`에는 exact request·`ReproductionPlan`.*?`environment_requirements_ref`.*?current exact `EnvironmentRequirements` revision'
+        Name = 'R7 uses one Sandbox path and plan does not prescribe exact commands'
+        Pattern = '(?s)exact command·payload·실행 순서·cleanup policy를 계약으로 고정하지 않는다.*?모든 동적 재현은 같은 Sandbox 실행 경로'
     },
     @{
-        Name = 'actual environment compares every requirement'
-        Pattern = '(?s)EnvironmentCheck:.*?status: MATCH \| MISMATCH \| NOT_CHECKED \| ERROR.*?SandboxEnvironment:.*?requirements_ref: StoredDataRef.*?checks: \[EnvironmentCheck\].*?모든 `requirement_id`를 정확히 한 번씩 포함'
+        Name = 'EnvironmentRecipe records base and built image digests'
+        Pattern = '(?s)`EnvironmentRecipe`.*?base·built image digest.*?`PERSISTENT_BASELINE`.*?writable container는 가설 work를 넘겨 재사용하지 않는다'
     },
     @{
-        Name = 'required mismatch stops attack execution'
-        Pattern = '(?s)필수 item.*?`MISMATCH \| NOT_CHECKED \| ERROR`.*?공격 단계를 시작하지 않는다.*?`entries=\[\]`.*?모든 entry가 `SKIPPED`'
+        Name = 'Sandbox reuse and recreation are auditable'
+        Pattern = '(?s)container_instance_id:\s*string.*?container_lifecycle:\s*CREATED \| REUSED.*?container_creation_reason:\s*INITIAL \| STATE_CHANGED \| CONFIG_CHANGED \| STATE_UNCERTAIN \| null.*?action_type:.*?SANDBOX_RECREATE.*?recreation_requested_by:\s*REPRODUCTION_AGENT \| R7_RUNTIME \| null.*?recreation_reason:\s*STATE_CHANGED \| CONFIG_CHANGED \| STATE_UNCERTAIN \| null'
     },
     @{
-        Name = 'requirements are not duplicated in dynamic result'
-        Pattern = '(?s)`DynamicReproductionResult`에는 `environment_requirements_ref`를 중복 저장하지 않고 plan과 environment의 두 경로를 대조한다'
-    },
-    @{
-        Name = 'R7 revision cannot bypass sandbox policy'
-        Pattern = '(?s)R7이 retry에서 새 requirements·plan·candidate revision을 만들더라도.*?R6의 request 목적·가설·profile을 바꾸거나 이 검사를 생략할 수 없다'
+        Name = 'actual environment is tied to the built recipe image'
+        Pattern = '(?s)`SandboxEnvironment`.*?`environment_recipe_ref`.*?`image_digest`.*?`built_image_digest`'
     },
     @{
         Name = 'environment secrets use opaque handles only'
         Pattern = '(?s)credential·cookie·token·password.*?저장하지 않는다.*?`secret_ref\(data_kind=secret_handle\)`'
     },
     @{
-        Name = 'dynamic request and production split use a new major schema'
-        Pattern = '(?s)`DynamicReproductionRequest`, `EnvironmentRequirements`, `ReproductionPlan`과 `DynamicReproductionResult` 변경은 새 MAJOR schema'
+        Name = 'autonomous execution contracts use a new major schema'
+        Pattern = '(?s)exact step/command 대리 실행 모델에서 자율 Agent artifact 모델로 바뀌므로 관련 계약은 새 MAJOR schema'
     }
 )
 foreach ($rule in $environmentHandoffPatterns) {
@@ -841,9 +840,10 @@ $environmentNegativeMarkers = @(
     'ReproductionPlan에 `request_ref` 또는 `environment_requirements_ref`가 없음',
     'R6가 EnvironmentRequirements를 만들거나 수정함',
     'plan과 실제 환경이 다른 requirements revision을 가리킴',
-    '필수 환경 차이가 있는데 공격 단계를 실행함',
-    '허용 목록에 없는 version fallback을 자동 적용함',
-    '오래된 EnvironmentRequirements revision을 재사용함',
+    'Agent가 Sandbox 외부 경계에 접근하려 함',
+    'AgentLog·환경·PoC·cleanup이 서로 다른 attempt를 가리킴',
+    'Verification 또는 Agent가 최종 `DynamicReproductionResult`를 직접 저장',
+    '필수 환경 차이를 숨기거나 `MATCH`로 조작함',
     'PoC 생성·환경 구성·실행 실패를 `FALSE | HOLD`로 변환함',
     '환경 요구사항·실제 값에 credential·token 원문을 저장함',
     'R7이 요구사항·계획을 바꾸고 Sandbox 정책 재검사를 생략함'
@@ -902,7 +902,7 @@ $requiredR504CrossReviewRules = @(
     @{
         Name = 'policy-blocked dynamic reproduction is not automatic rejection or falsification'
         Text = $contractText
-        Marker = '`DynamicReproductionResult(status=BLOCKED, failure_reason=POLICY_BLOCKED)`는 가설 반증이나 Technical `REJECT`가 아니다.'
+        Marker = '`DynamicReproductionResult(status=BLOCKED, failure_category=POLICY)`는 가설 반증이나 Technical `REJECT`가 아니다.'
     },
     @{
         Name = 'policy freshness is explicit in the shared contract'
@@ -1246,13 +1246,13 @@ $requiredValidatedPocContractMarkers = @(
     'request_ref: StoredDataRef',
     'poc_candidate_ref: StoredDataRef | null',
     '`dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`',
-    '`environment_requirements -> EnvironmentRequirements -> SANDBOX`',
-    '`reproduction_plan -> ReproductionPlan -> SANDBOX`',
+    '`environment_requirements -> EnvironmentRequirements -> REPRODUCTION_AGENT`',
+    '`reproduction_plan -> ReproductionPlan -> REPRODUCTION_AGENT`',
     'final `TRUE`에는 current Verification generation의 exact `DynamicReproductionRequest`',
     '`SUCCEEDED + SUPPORTED`',
     'validated `poc_ref`',
     '한 Verification generation에는 `DYNAMIC_REPRO` work를 최대 하나만',
-    'PoC 생성·실행 실패를 `FALSE | HOLD`로 변환하지 않는다'
+    'candidate 생성·환경 구성·실행 실패'
 )
 foreach ($marker in $requiredValidatedPocContractMarkers) {
     if (-not $contractText.Contains($marker)) {

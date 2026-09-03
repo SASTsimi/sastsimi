@@ -57,18 +57,14 @@ Pro와 Con은 항상 별도의 새 대화에서 실행합니다. 상대 역할�
 | `POC_CONFIRMATION` | 정적·Pro·Con으로 initial TRUE가 된 가설을 실제 PoC로 확인 |
 | `VERDICT_EVIDENCE` | 최종 판정에 꼭 필요한 실행 관측 확보 |
 
-R6는 목적·재현 목표·필요 환경·Sandbox profile·관련 근거를 `DynamicReproductionRequest`로 만듭니다. R7은 이 exact 요청에서 `EnvironmentRequirements`, `LIMITED_REPRO | FULL_REPRO` mode, `ReproductionPlan`과 PoC candidate를 생산합니다. 한 Verification generation에는 동적 work 하나만 허용하며 retry는 같은 work의 새 attempt입니다. Technical `REVISE`로 새 generation이 시작되면 한도를 새로 적용합니다.
+R6는 목적·재현 목표·필요 환경·Sandbox profile·관련 근거를 `DynamicReproductionRequest`로 만듭니다. R7 Agent는 exact 요청에서 `EnvironmentRequirements`와 `ReproductionPlan`을 생산합니다. 모든 동적 재현은 같은 Sandbox 실행 경로를 사용합니다. 한 generation에는 동적 work 하나만 허용하며 retry는 같은 work의 새 attempt입니다.
 
-Docker는 ephemeral/non-root, network default-deny와 자원·시간 제한을 사용합니다. Runtime Validator와 Sandbox Controller를 통과한 exact plan만 실행합니다. R7은 실제 환경·Health Check를 requirement별로 비교하고 필수 항목이 맞을 때만 공격 단계를 실행합니다.
+Controller는 host·Docker daemon·secret·egress·다른 workspace·R8 resource·lifecycle의 외부 경계를 강제하고 Setup Automation이 가설 work의 최초 clean Sandbox를 만듭니다. 같은 work에서는 상태가 호환되면 container를 재사용합니다. Agent가 상태 변경·설정 전환·상태 불확실을 이유로 요청하거나 crash·비정상 종료·Health Check 실패로 runtime이 상태를 신뢰할 수 없으면 같은 baseline에서 재생성합니다. Agent는 내부에서 package·계정·fixture·mock·PoC·command·관찰·retry를 자율 수행하며 Session Manager가 actual event와 결과를 확정합니다.
 
 `poc_candidate_ref`는 실행 전 스크립트·입력입니다. exact candidate 실행이 `SUCCEEDED + SUPPORTED`로 끝난 경우에만 validated `poc_ref`를 만듭니다. 생성 실패, 실행 실패, `DISPROVED | INCONCLUSIVE`에서는 `poc_ref=null`입니다. candidate와 실패 로그는 남겨도 최종 PoC로 부르지 않습니다.
 
 `POC_CONFIRMATION` 또는 `VERDICT_EVIDENCE`가 `SUPPORTED`이면 R6는 정적·Pro·Con·동적 근거와 validated PoC를 합쳐 final TRUE를 만듭니다. 실제 반증이면 FALSE, 정상 실행했지만 결론이 부족하면 HOLD가 될 수 있습니다. PoC 생성·환경 구성·정책·실행 자체가 실패했다면 final verdict를 만들지 않습니다. 다시 시도할 수 있으면 같은 work를 `BLOCKED`, 복구할 수 없거나 한도를 소진하면 `FAILED`로 끝내며 Gate를 호출하지 않습니다.
 
-Technical Gate가 `REVISE`를 반환하면 같은 ACTIVE `VerificationAssignment` owner가 직접 받습니다. 프로그램은 새 generation의 Verification work와 `TERMINAL -> VERIFYING` 전이를 먼저 원자적으로 만들고, 필요한 Context·Pro/Con·정적 근거와 설명을 보완합니다. final TRUE를 다시 만들려면 새 generation의 동적 work와 validated PoC도 필요합니다. 이전 CWELabel은 history/provenance로 보존하되 current input으로 재사용하지 않고, R5-01 `CWE_LABELING` work가 새 root cause·Evidence 정렬을 재평가해 동일 CWE 유지 또는 변경을 담은 current revision/provenance를 확정한 뒤 새 Gate work를 요청합니다. 이는 provider retry나 동일 입력 재투표가 아닙니다.
+Technical Gate가 `REVISE`를 반환하면 같은 ACTIVE `VerificationAssignment` owner가 직접 받습니다. 프로그램은 새 generation의 Verification work와 `TERMINAL -> VERIFYING` 전이를 먼저 원자적으로 만들고, 필요한 Context·Pro/Con·정적 근거와 설명을 보완합니다. final TRUE를 다시 만들려면 새 generation의 동적 work와 validated PoC도 필요합니다. CWE 보완이 있으면 기존 CWE producer와 새 revision을 조정한 뒤 새 Gate work를 요청합니다. 이는 provider retry나 동일 입력 재투표가 아닙니다.
 
-`status`는 실행 완료 정도이고 `hypothesis_outcome: SUPPORTED | DISPROVED | INCONCLUSIVE`은 관측과 가설의 관계입니다. 둘 다 최종 판정이 아닙니다. `FAILED | BLOCKED | CANCELLED`는 `INCONCLUSIVE`이며 가설 반증이 아닙니다. 실제 반증은 `DISPROVED`, `hypothesis_disproved: true`, 관측 근거 `hypothesis_evidence_refs`와 `disproof_evidence_refs`가 함께 있어야 합니다. 생성·환경·실행 실패는 관측 반증이 아니므로 `FALSE | HOLD`로 바꾸지 않습니다. Verification Agent는 정상 관측과 다른 근거를 종합하되, final TRUE에는 current generation의 request, `SUCCEEDED + SUPPORTED` 결과와 validated PoC를 반드시 포함합니다. 상세 내용은 [검증과 동적 재현](../04-verification-and-dynamic-reproduction.md)을 따릅니다.
-
-공통 작업 상태와 동적 결과 상태는 다르게 읽습니다. 부분 실행은 결과의 `limitations`로 한계를 설명하며 실제 오류가 없으면 오류 record를 만들지 않습니다. 정책 차단 결과 `BLOCKED + POLICY_BLOCKED`는 Sandbox가 요청을 처리해 만든 종료 결과이므로 공통 작업은 `SUCCEEDED`로 닫지만, 재현 성공은 아닙니다. 공통 작업의 `BLOCKED`는 승인이나 입력을 기다리는 비종료 상태에만 사용합니다. 취소 결과는 공통 `CANCELLED`와 함께 저장하며, 저장 확정 marker와 모든 결과 reference가 일치할 때만 Verification이 읽습니다.
-
-최종 Verification은 `hypothesis_ref`로 검토한 등록 완료 가설 record를 고정합니다. 등록 뒤 material content는 수정하지 않고 의미가 달라지면 새 proposal·새 `hypothesis_id`로 전체 Verification을 시작합니다. request/result/status/PoC 조합의 정본은 [경량 데이터 계약의 compatibility matrix](../08-lightweight-data-contracts.md#dynamic-requestresultpoc-compatibility)입니다. 저장 확정 marker와 current generation의 request·plan·result·PoC reference가 모두 일치할 때만 Verification이 읽습니다. 종료된 실행의 실패·부분·차단·취소 결과는 성공이나 반증으로 과장하지 않으며 `poc_candidate_ref`는 validated `poc_ref`로 취급하지 않습니다.
+`status`는 실행 완료 정도이고 `hypothesis_outcome: SUPPORTED | DISPROVED | INCONCLUSIVE`은 관측과 가설의 관계입니다. 둘 다 최종 판정이 아닙니다. 실제 반증은 `DISPROVED`, `hypothesis_disproved: true`, 관측 근거가 함께 있어야 합니다. 생성·환경·실행 실패는 관측 반증이 아니므로 `FALSE | HOLD`로 바꾸지 않습니다. 저장 확정 marker와 request·plan·result·PoC reference가 모두 일치할 때만 Verification이 읽습니다. 상세 내용은 [검증과 동적 재현](../04-verification-and-dynamic-reproduction.md)을 따릅니다.

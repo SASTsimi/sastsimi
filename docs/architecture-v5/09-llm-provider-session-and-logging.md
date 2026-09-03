@@ -24,6 +24,8 @@ Agent Runtime
 
 Agent Runtime은 역할·structured-output 요구·context reference·budget·session policy를 요청한다. Adapter는 provider별 인증·호출·오류·usage를 공통 결과로 정규화한다. Logging Proxy는 양쪽에서 노출된 요청·응답·tool trace와 실제 선택을 `LLMInvocationLog`로 연결한다.
 
+`REPRODUCTION_AGENT`도 같은 provider 경계를 사용하지만 두 종류의 log를 분리한다. `LLMInvocationLog`는 provider 호출·session·usage·노출된 tool trace를 기록하고, Reproduction Session Manager는 기존 runtime/tool 및 lifecycle event를 수동 수집해 R7 `AgentLog`에 실제 shell·파일/환경 변경·image build·PoC·관찰·retry·cleanup 사건을 기록한다. 어느 쪽도 hidden chain-of-thought를 요구하거나 복원하지 않는다.
+
 ## provider 호출 전 권한 검사
 
 일반 Agent Runtime은 provider를 직접 호출하지 않고 `CALL_LLM` `ActionRequest`를 만든다. Technical Gate, Rule Scope Gate와 Reporter의 호출은 각각 `CALL_TECHNICAL_GATE`, `CALL_RULE_SCOPE_GATE`, `CREATE_REPORT_DRAFT` action이 LLM 실행까지 직접 허가하며 별도 `CALL_LLM`으로 우회하지 않는다. 모든 LLM 실행 action은 수정할 수 없는 exact `LLMCallSpec`을 입력으로 갖고 비-LLM Runtime Validator가 다음 `ActionCheck`를 수행한다.
@@ -108,6 +110,8 @@ API 방식이 허용되어도 특정 provider를 기본값으로 확정하는 �
 | 같은 역할·같은 가설의 추가 retrieval | `RESUME` 가능 |
 | 같은 Verification의 Technical Gate revision 대응 | `RESUME` 가능 |
 | 서로 다른 hypothesis | `NEW` |
+| 같은 가설의 한 R7 동적 attempt 안에서 환경 수정·PoC 개선·재시도 | `RESUME` 가능 |
+| 서로 다른 R7 가설 또는 attempt | `NEW` |
 | Pro와 Con | `AUTO` 사용 금지, 각각 명시적 `NEW` |
 | Verification과 Technical Gate | `NEW` |
 | Technical Gate와 Rule Scope Impact Gate | `NEW` |
@@ -125,7 +129,8 @@ Pro/Con prompt는 trusted prompt builder가 역할별 template과 허용된 공�
 ## 역할별 모델 선택
 
 - Hypothesis Agent에는 저비용 모델 profile을 구성할 수 있다.
-- Verification, Chaining과 두 Gate에는 과업 위험도에 맞는 별도 profile을 구성할 수 있다.
+- Verification, Reproduction, Chaining과 두 Gate에는 과업 위험도에 맞는 별도 상위 model profile을 구성할 수 있다.
+- Reproduction Agent profile은 shell·file·service·HTTP·DB·PoC tool 사용과 structured `DynamicReproductionResult` 초안을 지원해야 한다. Sandbox 외부 권한은 model profile이 아니라 Sandbox Controller가 강제한다.
 - 특정 역할의 가격 등급이 정확도를 보장하지 않는다.
 - 모델·provider 변경은 versioned configuration과 evaluation 대상으로 관리한다.
 

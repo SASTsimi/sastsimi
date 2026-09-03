@@ -12,7 +12,7 @@
 | `CodeWorkspace` | AST와 SAST가 읽는 실행별 로컬 코드 폴더 | `workspace_id`와 `commit_id`로 구분합니다. |
 | `ProgramPolicyRecord` | 공식 버그바운티 정책을 확인해 남긴 기록 | 저장소 코드 복사본이 아니며 공식 출처와 수집 시각을 기록합니다. |
 | `freshness_status` | 정책을 현재 자료로 믿을 수 있는지 나타내는 상태 | `STALE` 또는 `UNVERIFIED`이면 보고 허용에 쓰지 않고 `UNCERTAIN + DENY`로 처리합니다. |
-| `handoff_readiness` | Technical Gate 결과를 다음 단계에 전달해도 되는지 나타내는 값 | `ACCEPT`일 때만 `READY`이며 `REVISE | REJECT`는 `NOT_READY`입니다. 현재 R5 pipeline의 다음 단계는 R5-02이며, 그 통과나 보고 허용을 뜻하지 않습니다. |
+| `handoff_readiness` | Technical Gate 결과를 다음 단계에 전달해도 되는지 나타내는 값 | `ACCEPT`일 때만 `READY`이며 `REVISE | REJECT`는 `NOT_READY`입니다. |
 | `StoredDataRef` | 도구가 만든 결과 파일이나 기록을 가리키는 번호 | 내부 저장 경로 대신 결과 번호와 내용 hash를 사용합니다. 저장된 결과 수정본을 가리킬 때는 `record_id`도 넣습니다. |
 | `RecordMeta` | 결과마다 붙는 공통 식별 정보 | 분석·작업공간·가설·재시도·수정본을 연결합니다. |
 | `RunMeta` | 코드 준비 전에도 쓸 수 있는 분석 실행 식별 정보 | `analysis_id`로 실행을 추적하며 clone 성공 전에는 workspace·commit을 요구하지 않습니다. |
@@ -77,7 +77,7 @@
 | `DynamicReproductionRequest` | R6가 R7에 무엇을 왜 재현할지 전달하는 요청 | `POC_CONFIRMATION`은 initial TRUE 확인, `VERDICT_EVIDENCE`는 최종 판정에 필요한 실행 근거 확보입니다. |
 | `poc_candidate_ref` | R7이 실행 전에 만든 PoC 스크립트·입력 번호 | 실패한 시도에도 남을 수 있으며 검증된 PoC가 아닙니다. |
 | `poc_ref` | 실제 실행에 성공해 가설을 지지한 validated PoC 번호 | `SUCCEEDED + SUPPORTED`인 exact candidate에만 생기며 모든 final TRUE에 필수입니다. |
-| `runner_invoked` | Sandbox Runner를 실제로 호출했는지 나타내는 값 | 거짓이면 단계 로그가 없어야 하고 참이면 실패해도 호출 로그가 필요합니다. |
+| `agent_invoked` | R7 Reproduction Agent가 실제로 시작됐는지 나타내는 값 | 거짓이어도 Session Manager는 정책 차단 결과를 확정할 수 있고, 참이면 실패해도 AgentLog가 필요합니다. |
 | `EnvironmentRequirements` | R7이 R6 요청을 실제 환경 구성·검사 항목으로 구체화한 조건 묶음 | 역할·인증 방식·데이터·DB/service·fixture/mock·버전·Health Check를 근거와 함께 기록합니다. |
 | `environment_requirements_ref` | ReproductionPlan이 사용하는 정확한 환경 요구사항 수정본 번호 | 오래된 수정본이나 다른 계획의 요구사항을 재사용하지 않습니다. |
 | `EnvironmentCheck` | R7이 요구사항 하나와 실제 환경을 비교한 결과 | `MATCH`, `MISMATCH`, `NOT_CHECKED`, `ERROR` 중 하나와 실제 값·차이·근거를 남깁니다. |
@@ -126,9 +126,9 @@
 | `runtime` | 설계가 실제로 실행되는 프로그램 부분 | 현재 저장소에는 구현되어 있지 않습니다. |
 | `runtime validator` | 프로그램 내부 실행 범위 검사기 | 데이터 형식, 상태 순서, 예산과 권한을 강제하지만 취약점·CWE·정책 의미는 판단하지 않습니다. |
 | `sandbox` | 다른 시스템과 격리해 안전하게 코드를 실행하는 환경 | host, 비밀정보와 범위 밖 네트워크 접근을 막습니다. |
-| `Sandbox Controller` | 격리 실행의 안전 정책과 환경을 통제하는 모듈 | image·명령·파일·네트워크·자원·정리 정책을 한곳에서 검사하고 통과한 계획만 Runner에 전달합니다. |
-| `Sandbox Runner` | Controller가 승인한 계획을 Docker 안에서 실행하는 모듈 | 정책을 정하거나 바꾸지 않고 stdout·stderr·종료 코드와 단계별 관측을 수집합니다. |
-| `Sandbox Result Assembler` | 같은 재현 시도의 정책·환경·로그·PoC·정리 참조를 한 결과로 묶는 비-LLM 모듈 | 다른 시도의 자료를 섞거나 참조 존재만으로 성공을 판단하지 않습니다. |
+| `Sandbox Controller` | Sandbox 외부 안전 경계를 통제하는 모듈 | host·Docker daemon·secret·egress·다른 workspace·자원·lifecycle을 제한하고 Agent 내부 명령은 정하지 않습니다. |
+| `Reproduction Agent` | clean Sandbox 안에서 환경 구성·PoC 작성·실행·관찰·retry를 자율 수행하는 Agent | R6 요청 목적이나 최종 취약점 판정을 바꾸지 않습니다. |
+| `Reproduction Session Manager` | 같은 재현 attempt의 실제 event와 최종 결과를 확정하는 비-LLM 구성요소 | Agent 행동을 허용·차단하거나 다른 attempt 자료를 섞지 않습니다. |
 | `provider` | LLM을 제공하는 서비스나 연결 방식 | API 방식과 회원 로그인 방식을 같은 경계에서 관리합니다. |
 | `session` | LLM 서비스와 이어지는 로그인 또는 대화 상태 | 인증정보와 session 비밀값을 일반 로그에 남기지 않습니다. |
 | `token` | LLM이 입력과 출력을 처리할 때 쓰는 계산 단위 | 역할별·전체 실행별 한도를 둡니다. |

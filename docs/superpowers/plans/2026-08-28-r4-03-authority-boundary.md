@@ -179,5 +179,5 @@ PR은 `review/r4-02-state-recovery`를 base로 시작하고 `Closes #15`, `Refs 
 - R4-03 권한 오류 10개, 부정 시나리오 25개, 권한 규칙 26개 검사 통과
 - `Failures: 0`, `git diff --check` 통과
 - PR #26 동기화: merge commit `486af02`로 동적 `PARTIAL | BLOCKED | CANCELLED` 매핑과 exact output binding 보완을 선행 반영
-- PR #27 R7 추가 리뷰 보완: `ReproductionPlan`, `SandboxStepLog`, 동적 결과의 plan·step·attack input·cleanup exact binding, Sandbox 생산·Verification 소비 경계를 정본·Wiki·보안 시나리오에 반영
+- PR #27 R7 추가 리뷰 보완: `ReproductionPlan`, 실행 log와 동적 결과의 plan·attack input·cleanup exact binding, R7 생산·Verification 소비 경계를 정본·Wiki·보안 시나리오에 반영
 - 추가 리뷰 후 검사: R4-02 review rule 8개·부정 시나리오 16개, R4-03 계약 이름 18개·권한 시나리오 29개·Sandbox review rule 5개, 전체 `Failures: 0`, `git diff --check` 통과

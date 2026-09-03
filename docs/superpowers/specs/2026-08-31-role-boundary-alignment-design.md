@@ -26,7 +26,7 @@ GitHub 상위 Issue `#1–#10`과 저장소의 역할 안내 문서가 Architect
 | R4 PM·아키텍처 | 공통 식별자·상태·오류·권한·실행 순서와 trusted runtime 강제 기준 | 공통 계약, 상태 전이, 권한·승인 규칙 | 모든 역할 | domain verdict·Gate·정책·공개 결정 |
 | R5 Gate·보고 | 기술 근거 검토, 공식 정책·영향 검토, 보고서 초안 조건 | 두 Gate 결과, revision request, `ReportDraft` | 같은 R6 owner, 사람 검토 | Verification verdict 변경, 외부 공개 결정 |
 | R6 Verification | 가설별 Context·Pro/Con, 동적 재현 필요성, `NOT_REQUIRED/LIMITED_REPRO/FULL_REPRO`, `ReproductionPlan`, 최종 `TRUE/FALSE/HOLD`, Technical `REVISE` 보완 | `ReproductionPlan`, `VerificationResult`, Verification-origin proposal | trusted runtime, R7, R5, R1 | Sandbox 직접 실행·동적 결과 생산, Gate·정책·공개 결정 |
-| R7 동적검증·Sandbox | 승인된 계획의 실행 방법, Sandbox 환경·안전 프로파일, 실행·관측·PoC 기록 기준 | `SandboxStepLog`, `DynamicReproductionResult`, redacted PoC | R6, R5, 관측 저장 계층 | 동적 재현 필요성·모드 선택, 계획 수정, 최종 verdict |
+| R7 동적검증·Sandbox | 외부 경계 정책, clean Sandbox 자동화, Agent의 자율 환경·PoC·실행과 수동 event 기록·최종 문서화 기준 | `EnvironmentRecipe`, `AgentLog`, `PoCBundle`, `CleanupLog`, `DynamicReproductionResult` | R6, R5, 관측 저장 계층 | 동적 재현 필요성·최종 verdict, Agent 내부 command에 대한 Session Manager 개입 |
 | R8 데이터·평가·예산 | 평가 corpus·지표·예산 profile·회귀 합격 기준 | versioned scenario matrix, metric, budget profile | R4 runtime, 각 역할, R3 | 예산을 직접 강제하거나 domain 의미·provider 설정을 조용히 변경 |
 
 ## 핵심 연결 흐름
@@ -35,13 +35,14 @@ GitHub 상위 Issue `#1–#10`과 저장소의 역할 안내 문서가 Architect
 
 ```text
 R6 Verification
-→ 재현 필요성 및 LIMITED/FULL 결정
-→ exact ReproductionPlan 후보 생산
+→ 재현 필요성과 환경 요구사항·최소 ReproductionPlan 후보 생산
 → trusted runtime이 SAVE_RESULT(result_kind=reproduction_plan) 검사·COMMITTED
 → exact RUN_SANDBOX 허가
-→ R7이 계획을 변경하지 않고 실행
-→ SandboxStepLog·DynamicReproductionResult·PoC 후보 생산
-→ trusted runtime이 계획·허가·실행 log·결과를 대조해 COMMITTED
+→ Sandbox Controller가 외부 경계 정책 판정·강제
+→ R7 Sandbox Setup Automation이 clean Sandbox 생성
+→ Reproduction Agent가 내부 환경·PoC·실행·관찰·재시도를 자율 수행
+→ Reproduction Session Manager가 runtime/tool event를 AgentLog로 수동 기록하고 최종 DynamicReproductionResult 문서 확정
+→ trusted runtime이 exact reference와 결과 불변조건을 대조해 COMMITTED
 → R6가 확정 결과를 다른 근거와 종합해 최종 verdict 결정
 ```
 

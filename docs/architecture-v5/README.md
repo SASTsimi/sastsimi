@@ -32,7 +32,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 9. Verification이 entity·위치·경로를 기준으로 필요한 코드 문맥을 조회한다.
 10. 운영 분석의 Verification이 Pro/Con을 독립 NEW session으로 병렬 실행한다.
 11. 초기 `TRUE | FALSE | HOLD` 판정을 만든다.
-12. Initial TRUE이면 R6가 `POC_CONFIRMATION`, 판정에 동적 근거가 필요하면 `VERDICT_EVIDENCE` 요청을 만든다. 한 Verification generation에는 동적 work가 최대 하나다. R7은 exact request를 바탕으로 `EnvironmentRequirements`, `LIMITED_REPRO | FULL_REPRO` 계획과 PoC candidate를 생산한다. Runtime Validator와 Sandbox Controller 검사를 통과한 candidate만 Runner가 실행하고, Result Assembler가 같은 request·plan·attempt의 validated PoC와 동적 결과를 반환한다.
+12. Initial TRUE이면 R6가 `POC_CONFIRMATION`, 판정에 동적 근거가 필요하면 `VERDICT_EVIDENCE` 요청을 만든다. R7 Agent가 exact requirements·plan·recipe·PoC를 생산하고 Controller 외부 경계를 통과한 clean Sandbox 안에서 자율 실행한다. Session Manager가 같은 attempt의 AgentLog·candidate·validated PoC와 동적 결과를 확정한다.
 13. 최종 `TRUE | FALSE | HOLD`와 별도 material claim을 확정한다.
 14. `FALSE`는 terminal로 끝내고, `HOLD`는 inputs만 있고 result가 없는 Primitive를 즉시 저장해 Chaining 자격을 준다. TRUE는 CWE 단계로 간다.
 15. validated PoC와 `SUCCEEDED + SUPPORTED` 동적 결과가 연결된 final TRUE와 CWE만 Technical Evidence Gate Agent가 검토한다.
@@ -51,7 +51,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 - AST와 SAST는 source, sink, entity, 위치, 호출·데이터 흐름, 인증·인가와 같은 사실 후보를 제공한다. 규칙 기반 SAST는 선택·실행 여부와 raw 탐지 수를 별도 record로 남기며 미실행·확인 불가를 탐지 0건으로 바꾸지 않는다.
 - Hypothesis Agent는 항상 `HYPOTHESIS_ONLY / NON_FINAL` 제안만 만들며 Finding이나 확정 판정을 만들 수 없다.
 - 코드 문맥은 같은 `workspace_id`와 `commit_id`에서 위치 기반으로 필요할 때 조회하고, 조회 범위와 반환 위치를 기록한다.
-- Verification은 가설 내부 Context·Pro/Con, 목적별 `DynamicReproductionRequest`, 반환 결과 소비, 최종 판정·Technical `REVISE`·Gate 제출과 Chaining handoff를 소유한다. R7은 `EnvironmentRequirements`, `ReproductionPlan`, PoC candidate, 정책·환경·log·validated PoC와 동적 결과를 생산한다. Runtime Validator는 generation별 동적 work 하나와 exact reference를 검사하고, Sandbox Controller는 세부 안전 정책을 검사한다.
+- Verification은 가설 내부 Context·Pro/Con, 목적별 `DynamicReproductionRequest`, 반환 결과 소비와 최종 판정을 소유한다. R7 Agent는 `EnvironmentRequirements`, `ReproductionPlan`, recipe·PoC·동적 outcome을 생산하고, Controller는 Sandbox 외부 경계를 강제하며, Session Manager는 AgentLog·cleanup·validated PoC와 최종 결과를 확정한다.
 - 운영(`PRODUCTION`) 기본 검증 모드는 `ALWAYS_DEBATE`다. 모든 유효 가설에서 Pro와 Con을 독립 NEW session으로 실행한다. `BASIC | CONDITIONAL_DEBATE`는 격리된 평가(`EVALUATION`)에서만 비교한다.
 - Primitive DB는 queue가 아니라 HOLD의 inputs-only Primitive와 Technical-accepted TRUE의 result Primitive를 연결하는 인덱스다. Gate 전 TRUE와 FALSE는 matching에 사용할 수 없다.
 - Chaining Agent는 upstream Primitive의 `result`가 downstream Primitive의 특정 `input`을 충족하는지 matching만 수행하며 일반 취약점·우회·impact research, 동적 재현, Gate 보완이나 verdict를 수행할 수 없다.

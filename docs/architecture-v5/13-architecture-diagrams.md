@@ -41,18 +41,15 @@ flowchart TB
     S12 -->|Execution evidence needed| DREQ2[Verification requests VERDICT_EVIDENCE]
     DREQ --> DWAUTH[Runtime allows one dynamic work per generation]
     DREQ2 --> DWAUTH
-    DWAUTH --> DR7[R7 creates Requirements Plan and PoC candidate]
+    DWAUTH --> DR7[R7 Agent creates Requirements and Plan]
     DR7 --> DAUTH[Runtime Validator Sandbox call authorization]
-    DAUTH --> DCTRL[Sandbox Controller policy check]
+    DAUTH --> DCTRL[Sandbox Controller external boundary check]
     DCTRL --> DPD[Exact SandboxPolicyDecision]
-    DPD -->|Pass| DENV[Sandbox Runner prepares environment and Health Checks]
-    DPD -->|Policy blocked| DSTOP[BLOCKED or FAILED no final verdict]
-    DENV --> DCHK{All required items MATCH}
-    DCHK -->|Yes| DRUN[Sandbox Runner executes exact attack steps]
-    DCHK -->|No| DFAIL[BLOCKED or FAILED ENVIRONMENT_SETUP]
-    DFAIL --> DSTOP
+    DPD -->|Pass| DENV[Setup Automation creates a clean Sandbox]
+    DPD -->|Policy blocked| DASM[Session Manager finalizes blocked result]
+    DENV --> DRUN[Agent builds environment PoC executes observes and retries]
     DRUN --> DASM
-    DASM --> DRES[Dynamic result with exact candidate and evidence refs]
+    DASM --> DRES[AgentLog result candidate and nullable validated PoC]
     DRES --> DOUT{Observed outcome}
     DOUT -->|SUPPORTED| POCOK{Validated PoC and supported result}
     POCOK -->|Yes| S13
@@ -170,18 +167,15 @@ flowchart TB
     DYN -->|Execution evidence needed| VREQ[R6 request VERDICT_EVIDENCE]
     CREQ --> ONE[Runtime allows one work per Verification generation]
     VREQ --> ONE
-    ONE --> R7PLAN[R7 Requirements mode Plan and PoC candidate]
+    ONE --> R7PLAN[R7 Agent creates Requirements and Plan]
     R7PLAN --> AUTH[Runtime Validator call authorization]
-    AUTH --> CTRL[Sandbox Controller policy check]
+    AUTH --> CTRL[Sandbox Controller external boundary check]
     CTRL --> PDEC[Exact SandboxPolicyDecision]
-    PDEC -->|Pass| ENV[Sandbox Runner prepares environment and Health Checks]
-    PDEC -->|Policy blocked| FAIL[BLOCKED or FAILED no final verdict]
-    ENV --> CHECK{All required items MATCH}
-    CHECK -->|Yes| RUNNER[Sandbox Runner executes exact attack steps]
-    CHECK -->|No| EFAIL[BLOCKED or FAILED ENVIRONMENT_SETUP]
-    EFAIL --> FAIL
+    PDEC -->|Pass| ENV[Setup Automation creates a clean Sandbox]
+    PDEC -->|Policy blocked| ASSEMBLER[Session Manager finalizes blocked result]
+    ENV --> RUNNER[Agent builds environment PoC executes observes and retries]
     RUNNER --> ASSEMBLER
-    ASSEMBLER --> DRESULT[Dynamic result with candidate evidence and nullable validated PoC]
+    ASSEMBLER --> DRESULT[AgentLog result candidate and nullable validated PoC]
     DRESULT --> OBS{Observed outcome}
     OBS -->|SUPPORTED with validated PoC| SYN2[Verification re-synthesizes evidence]
     OBS -->|DISPROVED or INCONCLUSIVE| SYN2
@@ -231,19 +225,16 @@ Primitive DB는 queue가 아니며 Chaining match와 child proposal은 Finding�
 
 ```mermaid
 flowchart TB
-    DYN[Current SUCCEEDED SUPPORTED dynamic result and validated PoC] --> VR[Final TRUE VerificationResult]
-    VR --> CW[R5-01 CWE_LABELING work]
-    CW --> CWE[Current CWELabel]
-    CWE --> TECH[R5-01 Technical Evidence Gate Agent]
+    DYN[Current SUCCEEDED SUPPORTED dynamic result and validated PoC] --> VR[Final TRUE VerificationResult plus CWE]
+    VR --> TECH[Technical Evidence Gate Agent]
     TECH --> TS{ACCEPT REVISE REJECT}
     TS -->|REVISE| BACK[Same hypothesis Verification owner]
     BACK --> NEWGEN[New Verification generation and new validated PoC]
     NEWGEN --> VR
     TS -->|REJECT| BLOCK[Report blocked]
     TS -->|ACCEPT| PRIMITIVE[Admit result Primitive for Chaining]
-    TS -->|ACCEPT plus READY| R502[R5-02 Rule Scope Impact Gate Agent]
-    R502 -->|Independent report review| RULE[Rule Scope Impact review]
-    POLICY[Official ProgramPolicyRecord] --> R502
+    TS -->|ACCEPT independent report review| RULE[Rule Scope Impact Gate Agent]
+    POLICY[Official ProgramPolicyRecord] --> RULE
     NOPOL[Missing official policy] --> UNCERTAIN[Rule and scope UNCERTAIN permission DENY]
     UNCERTAIN --> BLOCK
     RULE --> READY{Review PASS Rule PASS Scope PASS Impact SUFFICIENT Permission ALLOW}

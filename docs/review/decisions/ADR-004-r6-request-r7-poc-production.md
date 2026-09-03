@@ -14,7 +14,7 @@ R6는 “무엇을 왜 재현할지” 요청합니다. R7은 그 요청을 바�
 ## 결정
 
 1. R6는 `DynamicReproductionRequest`와 최종 `VerificationResult`만 생산합니다.
-2. R7은 `EnvironmentRequirements`, `ReproductionPlan`, `poc_candidate`, `DynamicReproductionResult`와 validated `poc_bundle`을 생산합니다.
+2. R7 Agent는 `EnvironmentRequirements`, `ReproductionPlan`, `EnvironmentRecipe`와 `poc_candidate`를 생산하고, R7 Session Manager는 `AgentLog`·cleanup·`DynamicReproductionResult`와 validated `poc_bundle`을 확정합니다.
 3. request purpose는 다음 둘뿐입니다.
    - `POC_CONFIRMATION`: 정적·Pro·Con 결과가 initial TRUE일 때 PoC로 확인
    - `VERDICT_EVIDENCE`: 최종 판정에 필요한 동적 근거 확보
@@ -37,10 +37,10 @@ initial TRUE를 확인하는 `POC_CONFIRMATION`도 같은 결과 규칙을 사�
 
 - R6는 request의 가설·목적·목표·환경 필요·Sandbox profile과 근거를 정합니다.
 - R7은 request를 약화하거나 다른 profile로 바꾸지 않고 실행 가능한 requirements·plan·candidate를 만듭니다.
-- R7은 plan mode를 `LIMITED_REPRO | FULL_REPRO` 중 선택할 수 있지만 verdict·CWE·Gate 결과를 만들 수 없습니다.
+- R7은 하나의 Sandbox 실행 경로에서 requirements·plan·candidate를 만들지만 verdict·CWE·Gate 결과를 만들 수 없습니다.
 - Runtime Validator는 생산자, exact revision, generation별 work 하나와 TRUE의 validated PoC 전제를 검사합니다.
-- Sandbox Controller는 image·command·file·network·resource·cleanup 정책을 검사합니다.
-- Sandbox Runner는 승인된 exact candidate와 plan만 실행합니다.
+- Sandbox Controller는 host·Docker daemon·secret·egress·다른 workspace·resource·lifecycle의 외부 경계를 검사하고 Agent 내부 command·package·payload·실행 순서는 정하지 않습니다.
+- Setup Automation이 clean Sandbox를 만들고 Reproduction Agent가 내부 환경·PoC·실행·관찰·retry를 자율 수행합니다. Session Manager는 actual event와 결과 무결성만 확정합니다.
 
 ## 실패와 복구
 
@@ -51,7 +51,7 @@ initial TRUE를 확인하는 `POC_CONFIRMATION`도 같은 결과 규칙을 사�
 
 ## 호환성
 
-`DynamicReproductionRequest`, `VerificationResult`, `EnvironmentRequirements`, `ReproductionPlan`, `DynamicReproductionResult`와 action/owner registry는 새 MAJOR schema로 배포합니다. ADR-003 기반 R6-owned requirements/plan을 새 schema로 자동 승격하지 않습니다.
+`DynamicReproductionRequest`, `VerificationResult`, `EnvironmentRequirements`, `ReproductionPlan`, `EnvironmentRecipe`, `AgentLog`, `PoCBundle`, `DynamicReproductionResult`와 action/owner registry는 새 MAJOR schema로 배포합니다. ADR-003 기반 R6-owned requirements/plan이나 이전 step log를 자동 승격하지 않습니다.
 
 ## 검증 조건
 

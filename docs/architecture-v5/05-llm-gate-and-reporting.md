@@ -61,7 +61,7 @@ Gate의 기준 입력은 `verification_result_ref`가 고정한 final `Verificat
 도달할 수 있어야 하며, reference 없이 별도로 전달된 자료는 Gate 근거로 승격하지 않는다.
 
 특히 current Verification generation의 `dynamic_request_ref`와 `DynamicReproductionResult(status=SUCCEEDED, hypothesis_outcome=SUPPORTED)`에서는 exact validated `poc_ref`·`policy_decision_ref`·`environment_ref`·
-`steps_ref`, `runner_invoked`, `environment_created`, `cleanup_required`·`cleanup_status`를 위
+`agent_log_ref`, `agent_invoked`, `environment_created`, `cleanup_required`·`cleanup_status`를 위
 transitive closure로 읽는다. restriction, bypass candidate, unresolved condition과 같은 Verification에서
 분리한 material child proposal의 재검증 여부도 해당 exact revision chain에서만 확인한다. `poc_candidate_ref`는 R7의 미검증 후보일 뿐이므로 final TRUE 또는 Gate 호출 근거로 승격하지 않는다.
 
@@ -70,7 +70,7 @@ transitive closure로 읽는다. restriction, bypass candidate, unresolved condi
 - final `TRUE`와 찬성·반대 근거의 일치
 - 핵심 주장이 현재 `workspace_id`와 `commit_id`의 코드 위치·호출·데이터 흐름에 연결되는지
 - 동적 관측이 현재 가설·`workspace_id`·실행 조건에 연결되는지
-- Runner 호출 여부와 step log, 실제 환경 생성 여부와 환경 reference, 정책 차단과 Controller 판정 reference, 정리 필요 여부와 상태가 공통 계약에 맞는지
+- `agent_invoked`로 실제 Reproduction Agent 호출을 확인할 수 있고 같은 attempt의 `agent_log_ref`로 실행 provenance를 추적할 수 있는지, 실제 환경 생성 여부와 환경 reference, 정책 차단과 Controller 판정 reference, 정리 필요 여부와 상태가 공통 계약에 맞는지
 - `poc_ref`가 실제 실행된 `poc_candidate_ref`, 성공 log와 `SUCCEEDED + SUPPORTED` 관측의 같은 revision에 연결되는지
 - 동적 근거가 승인된 Sandbox 정책 안에서 생성되었고 금지된 재현으로 오염되지 않았는지
 - CWE 선택이 취약점 유형과 근거에 적절한지
@@ -126,17 +126,17 @@ truncation의 존재 여부만으로 status를 정하지 않고, 누락 범위�
 
 #### 동적 재현과 PoC 연결
 
-- current generation의 `dynamic_request_ref`, `dynamic_result_ref`와 `reproduction_plan_ref`가 exact chain을 이루고, Dynamic 결과의 `meta.hypothesis_id`, workspace·commit, `hypothesis_linkage`가 현재 가설과 일치하는지 확인한다.
-- `policy_decision_ref`, `environment_ref`, `steps_ref`, observation과 실행 전제(권한·설정·입력·버전)가 기술 설명의
+- current generation의 exact `dynamic_request_ref`, 그 request에서 생성된 `dynamic_result_ref`와 `reproduction_plan_ref`가 exact chain을 이루고, Dynamic 결과의 `meta.hypothesis_id`, workspace·commit, verification generation, request·work·attempt linkage와 `hypothesis_linkage`가 현재 가설과 일치하는지 확인한다. 이전 generation 또는 서로 다른 generation·attempt의 request/result/PoC를 섞지 않는다.
+- `policy_decision_ref`, `environment_ref`, `agent_log_ref`, observation과 실행 전제(권한·설정·입력·버전)가 기술 설명의
   공격 조건과 같은지 확인한다. 다른 환경에서의 결과를 현재 대상으로 일반화하지 않는다.
-- `status`, `failure_reason`, `hypothesis_outcome`, `runner_invoked`, `environment_created`,
+- `status`, `failure_category`, `hypothesis_outcome`, `agent_invoked`, `environment_created`,
   `cleanup_required`, `cleanup_status`, evidence와 `limitations`의 허용 조합을 공통
   계약대로 확인한다. `FAILED | BLOCKED | CANCELLED`, `PARTIAL`, 미수행 결과를 성공·반증으로
   표현하거나 그 제한을 누락하면 정렬되지 않은 것이다.
 - `poc_ref`의 존재만으로 PoC 실행, 재현 성공 또는 impact 입증을 주장하지 않는다. 생성되었지만
-  실행되지 않은 PoC가 있을 수 있으며, 실행 PoC 주장은 Runner가 실제 사용한 command/input,
-  관련 step log와 observation에 같은 revision 또는 digest로 연결되어야 한다.
-- Dynamic 결과와 정책 판정·환경·step log·실행 PoC·cleanup 기록은 같은 hypothesis·workspace·commit 및
+  실행되지 않은 PoC가 있을 수 있으며, 실행 PoC 주장은 Reproduction Agent가 실제 실행한 exact candidate와
+  관련 AgentLog의 `POC_EXECUTE`·observation에 같은 revision 또는 digest로 연결되어야 한다.
+- Dynamic 결과와 정책 판정·환경·AgentLog·실행 PoC·cleanup 기록은 같은 hypothesis·workspace·commit 및
   같은 R7 Dynamic execution attempt에 속해야 한다. 서로 다른 attempt의 artifact를 섞거나 “latest”로
   다시 선택하지 않는다.
 - PoC는 `poc_ref`가 가리키는 실행·관측과 재현된 impact 범위까지만 설명해야 한다. PoC가
@@ -144,12 +144,12 @@ truncation의 존재 여부만으로 status를 정하지 않고, 누락 범위�
   거절 대상이다.
 - 필수 `EnvironmentRequirement`가 일치하지 않으면 R7이 조건을 완화하거나 공격 단계를 실행할 수 없다.
   환경 차이·구축 실패는 자동 `FALSE`나 `DISPROVED`가 아니며, 필요하면 같은 Verification owner가
-  새 requirements와 이를 가리키는 plan revision을 만든 뒤 새 동적 실행·Verification revision 흐름을 밟는다.
+  새 `DynamicReproductionRequest`를 만들고 R7이 새 requirements·plan·PoC와 동적 결과를 생산하는 재실행·Verification revision 흐름을 밟는다. R6나 Gate가 R7 artifact를 직접 만들거나 수정하지 않는다.
 - redaction에 실패한 raw observation·PoC는 일반 Verification → Gate → Reporter evidence closure에
   들어올 수 없다. Gate가 이를 정제하거나 대체 evidence로 만들지 않는다.
 - Gate는 동적 결과나 PoC를 새로 해석해 새 취약점·공격 경로를 만들지 않는다.
 
-request/result/status/PoC의 정본 compatibility matrix는 [경량 데이터 계약](08-lightweight-data-contracts.md#dynamic-requestresultpoc-compatibility)을 따른다. 구조 불변조건 위반은 Runtime Validator·schema·semantic validation에서 Gate 전에 invalid output으로 차단하며 Gate의 `REVISE | REJECT`로 처리하지 않는다. Dynamic/PoC의 생성·실행·상태·reference·redaction·attempt 정합성은 R7-04에서 확정된 공통 계약을 따른다. 모든 mode의 final TRUE에는 current generation의 실제 실행으로 검증된 `poc_ref`가 필수다. Technical Evidence Gate는 producer/schema 계약을 새로 정의하지 않고, 현재 Verification revision이 참조하는 exact Dynamic/PoC artifact가 그 계약에 맞게 연결되었고 기술 claim이 실제 관측 범위를 넘어가지 않는지만 검토한다.
+request/result/status/PoC의 정본 compatibility 규칙은 [경량 데이터 계약](08-lightweight-data-contracts.md#dynamic-requestresultpoc-compatibility)을 따른다. final `TRUE`와 Technical Gate 입력에는 current generation의 exact request, 그 request에 exact linkage된 `SUCCEEDED + SUPPORTED` 결과, validated `poc_ref`가 모두 필요하다. 정책 차단, environment/precheck·실행 실패, timeout, `DISPROVED | INCONCLUSIVE` 또는 validated PoC 부재에서는 `poc_ref=null`이며 final TRUE나 Gate 입력으로 소비하지 않는다. 구조 불변조건 위반은 Runtime Validator·schema·semantic validation에서 Gate 전에 fail-closed로 차단한다. 의미 검토 중 linkage·completeness·provenance 부족이 드러나면 `REVISE | REJECT + NOT_READY`로 처리하며 임의로 `ACCEPT`하지 않는다. Technical Evidence Gate는 producer/schema 계약이나 공격 사실을 새로 만들지 않고, 현재 Verification revision이 참조하는 exact artifact와 실제 관측 범위만 검토한다.
 
 #### CWE와 제한 조건 정렬
 
@@ -212,11 +212,11 @@ ReportDraft 생성 또는 외부 제출·공개 허용을 뜻하지 않는다.
 
 Runtime Validator는 `REVISE`를 만든 기존 action·decision을 다시 사용하지 못하게 하고, 같은 Verification·CWE revision 또는 같은 domain input hash로 새 Gate 투표를 요청하면 `ACTION_NOT_ALLOWED`로 차단한다. 보완된 upstream revision을 가리키는 새 work·call spec·action·decision이 모두 있어야 한다. 반대로 provider 실패나 `INVALID_OUTPUT` repair는 Gate 판단을 다시 요구한 것이 아니므로, 허용된 횟수 안에서 같은 domain input과 새 invocation 식별자·action을 사용하는 `RETRY`로만 처리한다.
 
-`verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 Gate가 실제로 읽은 exact revision을 고정한다. runtime은 두 direct reference에서 supporting/counter Evidence, Dynamic result, PoC, restriction·unresolved condition과 `CWELabel.evidence_refs`를 따라 transitive closure를 만들고 공통 validator로 대상 존재, exact revision, workspace·commit, hypothesis-scoped artifact의 `hypothesis_id`, `content_hash`를 확인한다. 정책 판정·실제 환경·step log·실행 PoC·cleanup처럼 같은 R7 실행에서 만들어진 dependency는 `DynamicReproductionResult.meta.attempt_id`와 같은 execution attempt인지도 확인한다. 이 검사는 `CALL_TECHNICAL_GATE` 실행 직전, `TechnicalEvidenceReview` 저장 직전과 R5-02 진입 직전에 반복한다. 어느 direct/transitive dependency가 바뀌어도 기존 review는 `RECORD_REVISION_MISMATCH` 또는 `STALE_RESULT` 등 기존 공통 오류로 차단하며 변경된 revision의 R5-02 진입 근거로 재사용할 수 없다. Reporter·ReportDraft·PROVIDED의 별도 stale 검사는 각 downstream 공통 계약이 소유한다.
+`verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 Gate가 실제로 읽은 exact revision을 고정한다. runtime은 두 direct reference에서 supporting/counter Evidence, Dynamic result, PoC, restriction·unresolved condition과 `CWELabel.evidence_refs`를 따라 transitive closure를 만들고 공통 validator로 대상 존재, exact revision, workspace·commit, hypothesis-scoped artifact의 `hypothesis_id`, `content_hash`를 확인한다. 정책 판정·실제 환경·AgentLog·실행 PoC·cleanup처럼 같은 R7 실행에서 만들어진 dependency는 `DynamicReproductionResult.meta.attempt_id`와 같은 execution attempt인지도 확인한다. 이 검사는 `CALL_TECHNICAL_GATE` 실행 직전, `TechnicalEvidenceReview` 저장 직전과 R5-02 진입 직전에 반복한다. 어느 direct/transitive dependency가 바뀌어도 기존 review는 `RECORD_REVISION_MISMATCH` 또는 `STALE_RESULT` 등 기존 공통 오류로 차단하며 변경된 revision의 R5-02 진입 근거로 재사용할 수 없다. Reporter·ReportDraft·PROVIDED의 별도 stale 검사는 각 downstream 공통 계약이 소유한다.
 
 ### 권한 경계
 
-Technical Evidence Gate는 Dynamic reproduction mode를 선택하거나 Sandbox를 실행하지 않고, `EnvironmentRequirements`·`ReproductionPlan`·PoC·Dynamic observation·Dynamic 결과를 생성·수정하지 않는다. 환경 mismatch의 허용 여부를 정하거나 R7 결과에서 새 vulnerability evidence를 만들지도 않는다. 또한 Verification verdict, CWELabel, Evidence, data-flow, 공격 경로를 생성·수정하지 않고 공식 프로그램 정책을 추정하거나 Rule·Scope·Impact 결과, `report_permission`, `REPORT_READY`, Primitive admission, Reporter 실행, ReportDraft, Human Review, disclosure 또는 외부 제출·공개를 결정하지 않는다. 고정된 final TRUE 묶음의 기술적 정렬과 동일 exact revision의 R5-02 진입 가능성만 검토한다.
+Technical Evidence Gate는 동적 재현 경로를 선택하거나 Reproduction Agent·Sandbox를 실행하지 않고, `DynamicReproductionRequest`·`EnvironmentRequirements`·`ReproductionPlan`·PoC·Dynamic observation·Dynamic 결과를 생성·수정하지 않는다. 새 실행이 필요하면 R6가 새 request만 생산하고, R7이 requirements·plan·PoC·동적 결과와 Agent log/session artifact를 생산한다. 환경 mismatch의 허용 여부를 정하거나 R7 결과에서 새 vulnerability evidence를 만들지도 않는다. 또한 Verification verdict, CWELabel, Evidence, data-flow, 공격 경로를 생성·수정하지 않고 공식 프로그램 정책을 추정하거나 Rule·Scope·Impact 결과, `report_permission`, `REPORT_READY`, Primitive admission, Reporter 실행, ReportDraft, Human Review, disclosure 또는 외부 제출·공개를 결정하지 않는다. 고정된 final TRUE 묶음의 기술적 정렬과 동일 exact revision의 R5-02 진입 가능성만 검토한다.
 
 ## Gate 2: Rule Scope Impact Gate Agent
 
