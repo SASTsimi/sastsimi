@@ -637,7 +637,7 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 | Primitive scope 불일치 | match 거절/후보 유지 |
 | chain budget/cycle | R8 전역 예산 중단 또는 ancestor cycle 제외; FALSE 금지 |
 | Technical REVISE | 같은 ACTIVE VerificationAssignment owner의 새 VERIFICATION work로 직접 반환; 새 evidence/revision 전 result Primitive·Rule Scope·Reporter 차단 |
-| Chaining 중 parent revision 변경 | exact current record 확인과 원자적 current pointer 갱신 실패로 결과·child proposal을 `STALE_RESULT` 처리 |
+| Chaining 시작 뒤 parent/index 새 revision 생성 | 진행 중인 work는 시작 시 고정한 exact reference로 계속 처리; 새 revision은 새 Chaining work에서 사용하고, 고정하지 않은 reference가 기존 결과에 섞인 경우만 `STALE_RESULT` 처리 |
 | Chaining의 일반 research 출력 | invalid output; bypass·impact·dynamic·Gate 보완은 Verification 책임 |
 | 모순된 ALLOW | semantic invalid; Reporter 차단 |
 | provider auth/rate-limit | explicit attempt/fallback; silent failover/FALSE 금지 |

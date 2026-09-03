@@ -1284,6 +1284,8 @@ $requiredChainingExclusionRules = @(
     '`considered_primitive_refs`는 Runtime이 `REGISTER_WORK(work_type=CHAINING)`에서 고정한 exact Primitive 입력 집합과 set-equal하다.',
     '고정 뒤 index에 새 revision이 생긴 사실만으로 진행 중인 work를 거절하지 않는다.',
     '`input_primitive_refs`는 `primitive_match_candidates`의 upstream/downstream exact reference 합집합과 set-equal하다.',
+    '`source_result_refs`는 `input_primitive_refs`가 가리키는 Primitive들의 `source_verification_ref`와 non-null `technical_review_ref` 합집합과 set-equal하고 모두 같은 `SAVE_RESULT.input_refs`에 포함되어야 한다.',
+    '각 candidate의 `parent_hypothesis_ids`는 그 upstream/downstream Primitive의 `source_hypothesis_id` 합집합, `parent_verification_refs`는 두 Primitive의 `source_verification_ref` 합집합과 각각 set-equal해야 한다.',
     '`excluded_primitive_ref`는 `considered_primitive_refs`에 포함되고 `input_primitive_refs`와 모든 match candidate reference에는 포함되지 않아야 한다.',
     '`excluded_by_ref`는 `considered_primitive_refs`에 포함되고 같은 결과의 `excluded_primitive_ref` 집합에는 포함되지 않아야 한다.',
     'Runtime은 §06의 계보 규칙으로 기대 제외 쌍을 다시 계산하고 `excluded_lineage_refs`와 set-equal한지 검사한다.',
@@ -1315,6 +1317,16 @@ if ($staticText.Contains('저장된 ACTIVE Primitive')) {
 $decisionText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/review/decisions/ADR-001-verification-owned-chaining-admission.md')
 if ($decisionText.Contains('lookup 시 ACTIVE 확인')) {
     Add-Failure 'Chaining ADR still uses obsolete ACTIVE-based Primitive lookup'
+}
+
+foreach ($obsoleteRule in @(
+    'current pointer 갱신으로 오래된 Chaining 결과를 거절',
+    '원자적 current pointer 갱신 실패로 결과·child proposal을 `STALE_RESULT` 처리'
+)) {
+    $activeArchitectureText = $markdownFiles | Where-Object { $_.FullName -notmatch '[\\/]archive[\\/]' } | ForEach-Object { Get-Content -Raw -LiteralPath $_.FullName }
+    if (($activeArchitectureText -join "`n").Contains($obsoleteRule)) {
+        Add-Failure "active documentation still contains obsolete Chaining invalidation rule: $obsoleteRule"
+    }
 }
 
 foreach ($record in @('HeldHypothesis:', 'ConfirmedCapability:')) {
@@ -1350,6 +1362,7 @@ $verificationChainingScenarioMarkers = @(
     '| N10-C | `excluded_by_ref`가 같은 work 입력이 아니거나 자신도 제외됐거나 계보가 제외 대상을 포함하지 않음 |',
     '| N10-D | exclusion pair가 중복되거나 reason code·analysis·workspace·commit이 다름 |',
     '| N10-E | CHAINING 자식이 `observed_facts`를 채우거나 부모 계보에서 검증 시작점을 복원할 수 없음 |',
+    '| N10-F | `source_result_refs` 또는 match candidate의 parent 가설·Verification 목록이 실제 입력 Primitive와 다르거나 중복됨 |',
     '| N11 | Verification이 새 endpoint·sink·권한 경계를 발견 |',
     '| N12 | chained child가 FALSE |',
     '| N13 | Verification이 budget·Sandbox·Gate 순서를 우회하려 함 |',

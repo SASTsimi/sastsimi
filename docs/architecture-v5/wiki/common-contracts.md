@@ -149,7 +149,7 @@ credential·cookie·token·password 원문은 요구사항과 실제 값에 저�
 
 Technical Gate는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated PoC가 있는 final `TRUE`만 입력으로 받습니다. `FALSE | HOLD`와 검증 실패 가설은 보내지 않습니다. Verification·동적 결과·PoC·CWE 중 하나가 수정되면 이전 Gate 승인을 재사용하지 않습니다. Rule Scope Gate와 보고서 초안도 같은 exact revision을 사용해야 합니다. `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
 
-Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 부족 조건을 `inputs`에 넣고 `result=null`로 Gate 없이 저장합니다. TRUE는 validated PoC와 같은 revision을 검토한 Technical `ACCEPT` 뒤 제공 능력 하나마다 `result`가 있는 Primitive를 만들고, 그 TRUE의 입력 조건과 `restriction_id`·근거 reference 전체도 함께 보존합니다. Rule Scope 결과는 Reporter만 제어하며 Primitive admission을 취소하지 않습니다. `PrimitiveIndexState`는 current Verification과 Primitive refs만 가리키며 별도 전용 version은 두지 않습니다. 공통 `RecordMeta` revision과 원자적 current pointer 갱신으로 오래된 Chaining 결과를 거절합니다.
+Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 부족 조건을 `inputs`에 넣고 `result=null`로 Gate 없이 저장합니다. TRUE는 validated PoC와 같은 revision을 검토한 Technical `ACCEPT` 뒤 제공 능력 하나마다 `result`가 있는 Primitive를 만들고, 그 TRUE의 입력 조건과 `restriction_id`·근거 reference 전체도 함께 보존합니다. Rule Scope 결과는 Reporter만 제어하며 Primitive admission을 취소하지 않습니다. `PrimitiveIndexState`는 current Verification과 Primitive refs만 가리키며 별도 전용 version은 두지 않습니다. Chaining work는 시작할 때 읽은 index와 Primitive exact reference를 고정합니다. 이후 current pointer가 갱신돼도 진행 중인 work를 무효화하지 않으며, 그 work에 고정하지 않은 reference가 결과에 섞였을 때만 `STALE_RESULT`로 거절합니다.
 
 ## 자주 쓰는 작은 데이터 구조
 
