@@ -2,7 +2,7 @@
 
 ## 쉽게 말하면
 
-코드 도구가 사실을 모으고, LLM이 취약점 가능성을 제안·검증하며, 필요한 경우 Docker에서 재현합니다. 근거와 공식 정책을 모두 확인한 결과만 보고서 초안으로 만들고 사람이 공개 여부를 결정합니다.
+코드 도구가 사실을 모으고, LLM이 취약점 가능성을 제안·검증하며, 필요한 경우 Docker에서 재현합니다. 근거와 공식 정책을 모두 확인한 결과만 보고서 초안으로 만들고 결과를 저장한 뒤 Agent 자동화를 끝냅니다.
 
 **상세 기준:** [Architecture v5 설계 허브](../README.md)와 [전체 시스템 개요](../01-system-overview.md)
 
@@ -20,7 +20,7 @@
 - 기술 근거 검토와 공식 정책·영향 검토를 분리한다.
 - 공식 프로그램 정책이 없으면 rule/scope는 `UNCERTAIN`, report permission은 `DENY`다.
 - Membership session과 API는 공통 provider adapter의 선택지다.
-- Reporter는 모든 조건을 통과한 내부 초안만 만들고 사람이 공개를 결정한다.
+- Reporter는 모든 조건을 통과한 내부 초안을 만드는 마지막 Agent이며, 이후 사람 주도 과정은 자동화 밖이다.
 
 ## 핵심 흐름
 
@@ -32,7 +32,7 @@ Repository → Repository Loader → CodeWorkspace → AST and SAST → StaticFa
 → HOLD REQUIRED → Chaining
 → TRUE → CWE → Technical Gate → Rule Scope Impact Gate
 → gate-qualified TRUE PROVIDED → Chaining → new hypothesis loop
-→ ReportDraft when allowed → Human decision
+→ ReportDraft when allowed → AnalysisRunResult → Agent automation end
 ```
 
 ## 분리된 상태
@@ -44,6 +44,6 @@ Repository → Repository Loader → CodeWorkspace → AST and SAST → StaticFa
 | 공식 rule/scope에 맞는가? | `PASS | FAIL | UNCERTAIN` |
 | 실제 영향이 충분한가? | `SUFFICIENT | INSUFFICIENT | UNCERTAIN` |
 | Reporter를 호출할 수 있는가? | `ALLOW | DENY` |
-| 외부에 공개할 것인가? | 사람이 결정 |
+| Agent 자동화는 어디서 끝나는가? | `ReportDraft`와 `AnalysisRunResult` 확정 뒤 종료 |
 
 상세 단계는 [전체 파이프라인](pipeline.md), 계약은 [경량 데이터 계약](../08-lightweight-data-contracts.md)을 따른다.

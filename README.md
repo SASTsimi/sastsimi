@@ -10,7 +10,7 @@ SASTSIMI는 정적 분석 도구가 모은 코드 정보를 LLM이 검토하고,
 - LLM Agent는 취약점 가능성을 제안하고 코드·실행 근거를 검토합니다.
 - Docker sandbox(다른 시스템과 격리된 실행 환경)는 필요한 경우에만 사용합니다.
 - Gate(다음 단계로 보내도 되는지 확인하는 검토 단계)는 근거와 공식 정책을 확인합니다.
-- Reporter는 보고서 초안만 작성합니다. 외부 공개 여부는 사람이 결정합니다.
+- Reporter의 `ReportDraft`가 마지막 Agent 산출물입니다. 결과 저장 뒤 자동화가 끝나며 외부 공개 여부는 사람이 결정합니다.
 - 지금은 **설계 검토 단계**이며 실행 코드는 아직 없습니다.
 
 모르는 용어는 [쉬운 용어집](./docs/GLOSSARY.md), 각 파일의 목적은 [전체 문서 지도](./docs/DOCUMENT_GUIDE.md)에서 확인할 수 있습니다.
@@ -49,8 +49,9 @@ NOT_IMPLEMENTED
 2. **가설 생성과 검증**: Orchestration이 가설을 등록해 Verification에 배정하고, Verification이 찬성·반대 근거와 필요한 후속 작업을 관리합니다.
 3. **필요한 경우 재현**: Verification 판단에 따라 Docker 격리 환경에서 제한적으로 공격 흐름을 재현합니다.
 4. **판정별 연계 탐색**: HOLD의 필요 조건은 즉시, TRUE의 제공 능력은 두 Gate를 모두 통과한 뒤에만 연결해 새 가설을 만듭니다.
-5. **근거·정책 검토와 초안 작성**: 두 Gate를 통과한 결과만 보고서 초안으로 만듭니다.
-6. **사람의 최종 판단**: 사람이 결과와 디버깅 정보를 보고 공개 여부를 결정합니다.
+5. **근거·정책 검토와 자동화 종료**: 두 Gate를 통과한 결과만 보고서 초안으로 만들고, 결과와 디버깅 정보를 저장한 뒤 Agent 자동화를 끝냅니다.
+
+그 이후의 검토·수정·제출·공개는 Agent 자동화와 공통 action 계약 밖에서 사람이 수행합니다.
 
 아래는 문서와 데이터 형식에서 사용하는 정확한 이름을 포함한 상세 흐름입니다.
 
@@ -75,7 +76,8 @@ Repository input
 → 두 Gate를 정상 통과한 exact TRUE revision만 PROVIDED Primitive로 Chaining
 → Verification 또는 Chaining의 새 material claim은 새 가설로 등록·재검증
 → 조건 충족 시 ReportDraft
-→ Human final review and disclosure decision
+→ AnalysisRunResult에 결과·로그 확정
+→ Agent automation end
 ```
 
 정적 분석 도구는 취약점 최종 판정자가 아닙니다. 함수·클래스 같은 코드 요소(`entity`), 코드 위치, 입력 시작점(`source`), 위험 동작 지점(`sink`), 호출·데이터 흐름과 인증·권한 정보를 제공합니다. 가설(`Hypothesis`)과 체이닝 후보는 아직 사람이 검토할 취약점 결과(`Finding`)가 아닙니다. 새로운 공격 주장은 새 가설로 등록되어 전체 검증을 다시 거칩니다.
@@ -136,12 +138,12 @@ main  ← Architecture v5 candidate baseline
 | 정적분석·컨텍스트 | 김나연 ([@zv9uvr](https://github.com/zv9uvr)) | AST·CodeQL·OpenGrep 결과 정리, 코드 위치·호출 흐름과 LLM용 context 조립 |
 | 단독 구현·통합 개발 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 모듈의 구현 가능성, 계약 준수 테스트와 통합 계획 검토 |
 | PM·아키텍처·워크플로 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 구조, 공통 입출력 계약, 사람·LLM 경계, 병렬·직렬 흐름과 오류 정책 |
-| Gate·Finding·보고서 | 김혜령 ([@kimhr8463](https://github.com/kimhr8463)) | 검증 근거·정책 범위 검토, 내부 Finding과 보고서 초안, 사람 검토 전달 준비 |
+| Gate·Finding·보고서 | 김혜령 ([@kimhr8463](https://github.com/kimhr8463)) | 검증 근거·정책 범위 검토, 내부 Finding과 안전한 보고서 초안 작성 |
 | 검증·반박·플레이북 | 임채민 ([@UltraPeachKeen](https://github.com/UltraPeachKeen)) | 가설별 Context·찬반, 환경 요구사항·최소 `ReproductionPlan`, 최종 판정·Gate 보완 |
 | 동적검증·Sandbox | 조근석 ([@Potatonion](https://github.com/Potatonion)) | Sandbox 외부 안전 경계, 자율 Reproduction Agent, versioned 환경 recipe·clean Sandbox·AgentLog·PoC·동적 결과 생산 |
 | 데이터·평가·예산 | 성병찬 ([@gitterable](https://github.com/gitterable)) | 평가 데이터·품질 지표와 예산 profile 설계; 실제 예산 강제는 trusted runtime 담당 |
 
-Gate는 Verification verdict를 변경하거나 공개를 승인하지 않습니다. Reporter는 보고서 초안만 작성하며, 사람만 최종 공개를 결정합니다.
+Gate는 Verification verdict를 변경하거나 공개를 승인하지 않습니다. Reporter는 보고서 초안만 작성하고 이후 Agent 자동화는 종료됩니다. 사람의 검토·수정·제출·공개는 이 자동화 밖에서 진행합니다.
 
 동적 재현의 역할 연결은 `R6 Verification의 환경 요구사항·최소 계획 작성 → R4 Runtime Validator의 reference·호출 전제 확인 → R7 Controller의 Sandbox 외부 안전 경계 적용 → R7 Reproduction Agent의 내부 환경 구성·PoC 작성·실행·관찰·retry → 작은 finalizer의 recipe·AgentLog·실행 PoC·cleanup 연결 검사 → R6의 추가 판단`입니다. R7은 실행 증거를 `SUPPORTED | DISPROVED | INCONCLUSIVE`로 해석해 전달하지만 최종 `TRUE | FALSE | HOLD`를 만들거나 바꾸지 않습니다.
 

@@ -166,13 +166,14 @@ AND report_permission == ALLOW
 
 조건이 하나라도 충족되지 않거나 Gate reference 연결이 맞지 않으면 결과와 검토 사유는 저장하지만 Reporter를 호출하지 않는다. LLM이 `review_status`, rule, scope 또는 impact 조건과 모순되는 `ALLOW`를 출력하면 semantic validation 실패다. 이 호출은 `LLMInvocationResult.status=INVALID_OUTPUT`, `AnalysisError.stage=GATE`, `AnalysisError.code=INVALID_OUTPUT`으로 기록하며 invalid output을 `RuleScopeImpactReview`로 commit하지 않는다. 제한된 repair가 남아 있을 때만 같은 입력의 새 invocation attempt를 허용하고, 한도를 소진하면 Gate work를 `FAILED`로 끝낸다. 어느 경우에도 Reporter를 호출하거나 Verification verdict를 변경하지 않는다. 이는 취약점 판정 규칙이 아니라 권한 없는 보고 생성을 막는 호출 전제다.
 
-Gate와 Reporter의 stage action은 exact `LLMCallSpec`까지 포함해 실제 LLM 호출을 직접 허가한다. 이 세 역할이 별도 `CALL_LLM` action으로 stage 검사를 우회하는 것은 허용하지 않는다. Technical action의 `REVISION`은 exact Verification+CWE를, `GATE_ORDER`는 두 revision의 final `COMMITTED` 상태를 검사한다. Rule Scope action의 `REVISION`은 같은 Verification+CWE와 exact Technical review를, `GATE_ORDER`는 `TRUE`+Technical `ACCEPT`를 검사한다. Reporter action의 `REVISION`은 두 Gate가 검토한 같은 Verification+CWE·Technical·Rule Scope·정책 revision을 검사하고 `REPORT_READY`는 위 일곱 조건을 검사한다. 하나라도 맞지 않으면 `REPORT_NOT_READY`로 차단한다. Runtime은 이 검사를 action 허가 때와 실제 provider 호출 직전에 반복하며, 달라졌으면 decision을 `EXPIRED`로 바꾸고 호출하지 않는다. 실제 invocation request의 model·prompt·context·schema·budget·timeout은 검사한 call spec과 모두 같아야 한다.
+Gate와 Reporter의 stage action은 exact `LLMCallSpec`까지 포함해 실제 LLM 호출을 직접 허가한다. 이 세 역할이 별도 `CALL_LLM` action으로 stage 검사를 우회하는 것은 허용하지 않는다. Technical action의 `REVISION`은 exact Verification+CWE를, `GATE_ORDER`는 두 revision의 final `COMMITTED` 상태를 검사한다. Rule Scope action의 `REVISION`은 같은 Verification+CWE와 exact Technical review를, `GATE_ORDER`는 `TRUE`+Technical `ACCEPT`를 검사한다. Reporter action의 `REVISION`은 current Finding과 두 Gate가 검토한 같은 Verification+CWE·Technical·Rule Scope·정책 revision을 검사하고 `REPORT_READY`는 Finding 존재와 위 일곱 조건을 검사한다. 하나라도 맞지 않으면 `REPORT_NOT_READY`로 차단한다. Runtime은 이 검사를 action 허가 때와 실제 provider 호출 직전에 반복하며, 달라졌으면 decision을 `EXPIRED`로 바꾸고 호출하지 않는다. 실제 invocation request의 model·prompt·context·schema·budget·timeout은 검사한 call spec과 모두 같아야 한다.
 
 ## Reporter Agent
 
 Reporter는 통과한 근거를 읽기 쉬운 내부 초안으로 구성한다.
 
 - 취약점 요약, 공격 전제와 실제 영향
+- current Finding과 final Verification의 exact reference
 - entity·코드 위치와 source → propagation/call → sink
 - restriction, bypass 검토와 반박 처리
 - 동적 재현과 redacted PoC. 실행하지 않은 PoC나 정책 차단 자료는 그 상태를 숨기지 않음
@@ -182,26 +183,22 @@ Reporter는 통과한 근거를 읽기 쉬운 내부 초안으로 구성한다.
 - 완화와 회귀 테스트 제안
 - invocation trace와 남은 불확실성
 
-Reporter는 새로운 공격 경로를 확정하거나 미검증 material child 또는 Chaining 후보를 실제 영향으로 쓰지 않는다. 초안의 핵심 주장은 Verification/PoC/Gate artifact에 연결한다. `poc_ref`가 있어도 Agent Log에 대응하는 `POC_EXECUTE` 시작 사건이 없거나 동적 `status=BLOCKED` 또는 관측이 `INCONCLUSIVE`이면 실행·재현 성공으로 서술하지 않는다. `ReportDraft.cwe_label_ref.record_id`는 Technical review와 Rule Scope review가 공통으로 가리킨 CWELabel `record_id`와 같아야 하며, CWELabel이 수정되면 두 Gate를 다시 통과하기 전에는 초안을 만들지 않는다.
+Reporter는 새로운 공격 경로를 확정하거나 미검증 material child 또는 Chaining 후보를 실제 영향으로 쓰지 않는다. 초안의 핵심 주장은 current Finding, Verification, 실행 PoC와 두 Gate의 exact revision에 연결한다. `poc_ref`가 있어도 Agent Log에 대응하는 `POC_EXECUTE` 시작 사건이 없거나 동적 `status=BLOCKED` 또는 관측이 `INCONCLUSIVE`이면 실행·재현 성공으로 서술하지 않는다. `ReportDraft.cwe_label_ref.record_id`는 Technical review와 Rule Scope review가 공통으로 가리킨 CWELabel `record_id`와 같아야 하며, CWELabel이 수정되면 두 Gate를 다시 통과하기 전에는 초안을 만들지 않는다.
 
-ReportDraft가 참조한 `VerificationResult`, `CWELabel`, `TechnicalEvidenceReview`, `RuleScopeImpactReview` 또는 `ProgramPolicyRecord` 중 하나라도 새 current revision으로 바뀌면 기존 초안은 감사 기록으로만 남고 current HumanReviewPacket이나 공개 판단에 사용할 수 없다. 새 exact dependency chain으로 Gate와 Reporter를 다시 실행해 새 ReportDraft와 새 packet generation을 만든다.
+Reporter는 Verification의 restriction과 unresolved condition, 정적·동적 검증 및 두 Gate의 limitation을 빠뜨리거나 완화하지 않는다. 저장 전 `REDACTION=PASS`를 요구하며 credential, session secret, 불필요한 개인정보와 비공개 원문을 제거한다. 이 값은 `ReportDraft.restrictions`, `limitations`, `unresolved_conditions`, `redaction_status=PASSED`로 확인할 수 있어야 한다.
 
-## 사람의 최종 결정
+ReportDraft가 참조한 `FindingCandidate`, `VerificationResult`, `CWELabel`, `TechnicalEvidenceReview`, `RuleScopeImpactReview` 또는 `ProgramPolicyRecord` 중 하나라도 새 current revision으로 바뀌면 기존 초안은 감사 기록으로만 남고 `AnalysisRunResult.report_draft_refs`의 current 결과로 사용할 수 없다. 새 exact dependency chain으로 Gate와 Reporter를 다시 실행해 새 ReportDraft를 만든다.
 
-자동 산출물은 내부 `FindingCandidate`와 `ReportDraft`다. 사람에게는 별도 `HumanReviewPacket`을 전달한다.
+## Agent 자동화 종료와 사람 주도 후속 과정
 
-packet에는 다음을 빠뜨리지 않는다.
+`ReportDraft`는 R5-03 Reporter와 전체 Agent 파이프라인의 마지막 Agent 산출물이다. Reporter work가 atomic하게 종료되면 신뢰 runtime은 다음 항목을 `AnalysisRunResult`에 묶는다.
 
-- exact `AnalysisRunResult`, Finding 후보와 final Verification
+- Finding 후보와 final Verification
 - Technical·Rule Scope Gate와 CWE·공식 정책 reference
 - dynamic reproduction과 redacted PoC
-- ReportDraft 또는 보고서가 차단된 구체적인 이유
+- current ReportDraft 또는 초안이 만들어지지 않은 구체적인 이유
 - token·시간·Sandbox 등 자원 사용량
 - 모든 실행 오류·DataGap·남은 HOLD 조건
 - LLM 호출·action decision·work state·work attempt·transition commit와 debug trace reference
 
-사람은 현재 `HumanReviewState`가 가리키는 packet의 정확한 generation·revision을 읽고 별도 `HumanReviewDecision`에 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`을 기록한다. 결정 저장은 인증된 사람 identity와 current packet·state version을 확인하는 `SAVE_HUMAN_DECISION` action을 거친다. `ReportDraft` 안의 field를 바꾸거나 LLM output을 사람 결정으로 저장하지 않는다.
-
-`finding_refs=[]`인 packet은 Finding이 아직 만들어지지 않은 이유를 사람이 확인하기 위한 blocked packet으로는 정상이다. 이 경우 `report_ready=false`, `blocked_reasons`에 `FINDING_NOT_CREATED`를 포함하고 `DISCLOSE`를 금지한다. Finding이 생성되면 이전 packet을 수정하지 않고 새 packet generation을 만든다.
-
-시스템의 외부 disclosure action은 Human Reviewer가 만든 exact current `HumanReviewDecision=DISCLOSE`, `report_ready=true`인 current packet, packet 안의 `approved_report_refs`와 명시된 `disclosure_targets`가 있을 때만 허용한다. 새 packet generation이 생기면 이전 packet과 결정은 즉시 superseded된다. Agent·Gate·Reporter가 만든 결정, 승인 목록 밖 report, 과거 packet·결정은 `DISCLOSURE_DENIED`다. 어떤 Agent도 외부 제출·공개 권한을 갖지 않으며 실제 자동 제출 integration은 이 설계 범위 밖이다.
+`AnalysisRunResult`와 `AnalysisRunState`를 함께 확정하면 Agent 자동화가 끝난다. Finding이 없으면 Reporter를 호출하지 않고 `report_draft_refs=[]`로 종료 원인을 보존한다. 이후 사람이 결과를 검토하거나 문서를 수정하고 외부에 제출·공개하는 과정은 Agent 자동화 밖이다. 현재 아키텍처는 이 사람 주도 과정의 schema, 상태, 결정 enum 또는 자동 action을 정의하지 않는다.

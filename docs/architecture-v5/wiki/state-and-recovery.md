@@ -38,7 +38,7 @@
 
 다음은 순서를 지켜야 합니다.
 
-`최종 검증 + CWE → Technical Gate → Rule Scope Gate → Reporter → 사람 검토`
+`최종 검증 + CWE → Technical Gate → Rule Scope Gate → Reporter → ReportDraft → AnalysisRunResult → Agent 자동화 종료`
 
 ## 결과를 안전하게 합칩니다
 

@@ -112,12 +112,8 @@
 | `VerificationAssignment` | 한 가설의 내부 검증 흐름을 맡은 논리 owner의 저장 기록 | 같은 역할의 다른 Agent가 아니라 ACTIVE assignment와 일치하는 owner만 Gate·보완·보고 요청을 제안할 수 있습니다. |
 | `REVISE` | 부족한 근거를 같은 Verification owner가 새 Verification work에서 보완한 뒤 새 revision으로 다시 검토하라는 결과 | provider retry나 동일 입력 재투표가 아니며 오래된 Gate 결과를 재사용하지 않습니다. |
 | `UNCERTAIN + DENY` | 공식 정책을 확인하지 못해 결론과 보고서 전달을 허용하지 않는 상태 | LLM의 기억으로 정책을 채우지 않습니다. |
-| `Reporter` | 통과한 결과를 사람이 읽을 보고서 초안으로 정리하는 Agent | 외부 제출과 공개는 하지 않습니다. |
-| `human handoff` | 사람이 최종 검토할 자료를 전달하는 단계 | 외부 공개 여부는 사람이 결정합니다. |
-| `HumanReviewPacket` | 사람이 볼 Finding·근거·PoC·Gate·비용·오류·보류 조건을 모은 자료 묶음 | exact AnalysisRunResult 수정본에서 빠짐없이 만듭니다. |
-| `HumanReviewState` | 지금 검토해야 할 최신 packet과 현재 사람 결정을 가리키는 상태 | 새 packet이 생기면 이전 결정을 공개에 쓰지 못하게 합니다. |
-| `HumanReviewDecision` | 사람이 자료 묶음을 읽고 남긴 최종 결정 기록 | `DISCLOSE`, `REVISE`, `WITHHOLD`, `NEED_MORE_VALIDATION` 중 하나이며 ReportDraft와 분리합니다. |
-| `FINDING_NOT_CREATED` | 아직 Finding이 만들어지지 않아 사람 검토 자료가 공개 준비 전이라는 차단 사유 | packet 자체는 볼 수 있지만 `report_ready=false`이며 공개할 수 없습니다. |
+| `Reporter` | 통과한 결과를 사람이 읽을 `ReportDraft`로 정리하는 마지막 Agent | 외부 제출과 공개는 하지 않습니다. |
+| `Agent automation end` | `ReportDraft`와 `AnalysisRunResult`를 확정한 뒤 Agent 작업을 끝내는 경계 | 이후 검토·수정·제출·공개는 시스템 밖에서 사람이 진행합니다. |
 
 ## 실행·보안·평가
 

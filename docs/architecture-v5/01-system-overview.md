@@ -1,6 +1,6 @@
 # 01. 시스템 개요
 
-- **이 문서는 무엇을 설명하나요?** 저장소 입력부터 사람의 최종 공개 판단까지 전체 23단계를 설명합니다.
+- **이 문서는 무엇을 설명하나요?** 저장소 입력부터 `ReportDraft`와 최종 결과 저장, Agent 자동화 종료까지 전체 22단계를 설명합니다.
 - **누가 읽어야 하나요?** PM·아키텍처 담당과 모든 역할 담당자가 읽습니다.
 - **읽은 뒤 무엇을 확인하거나 결정하나요?** 단계 순서, 각 역할의 책임과 어디에서 작업이 끝나는지 확인합니다.
 
@@ -10,9 +10,9 @@
 
 ## 목표와 경계
 
-SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git commit을 checkout한 뒤 정적 사실을 수집한다. 이후 LLM Agent가 가설 생성·검증·기술 검토·프로그램 정책 검토·보고서 초안을 단계적으로 수행한다. 정적 분석 도구와 LLM 출력 모두 단독으로 Finding이 되지 않으며, 공개 결정은 사람에게 남는다.
+SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git commit을 checkout한 뒤 정적 사실을 수집한다. 이후 LLM Agent가 가설 생성·검증·기술 검토·프로그램 정책 검토·보고서 초안을 단계적으로 수행한다. 정적 분석 도구와 LLM 출력 모두 단독으로 Finding이 되지 않는다. Agent 자동화는 `ReportDraft` 생성과 `AnalysisRunResult` 확정 뒤 끝나며, 그 이후 검토·수정·제출·공개는 시스템 밖에서 사람이 수행한다.
 
-## 정본 23단계
+## 정본 22단계
 
 | 단계 | 처리 | 주 산출물 또는 조건 |
 |---:|---|---|
@@ -37,8 +37,7 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 | 19 | current HOLD 또는 Gate-qualified TRUE 체이닝 | `ChainingResult`; TRUE+TRUE는 앞 능력과 뒤 TRUE의 exact 선행 조건을 방향성 있게 연결 |
 | 20 | 체이닝·검증 중 새 주장 전역 등록 | `origin=CHAINING | VERIFICATION` proposal, 새 Verification 배정 |
 | 21 | 조건 충족 시 보고서 초안 작성 | `ReportDraft` |
-| 22 | 결과·디버깅 저장과 모든 가설 반복 | bounded parallel processing과 run records |
-| 23 | 사람의 최종 검토 | disclose, revise, withhold, or more validation |
+| 22 | 결과·디버깅 저장, 모든 가설 반복과 자동화 종료 | `AnalysisRunResult`, bounded parallel processing과 run records |
 
 ## 주요 실행 흐름
 
@@ -70,7 +69,7 @@ Verification material claim -> origin=VERIFICATION proposal ┐
 Chaining match -> origin=CHAINING proposal ------------------┴-> trusted registration
                                                                -> Orchestration assigns Verification
 
-Gate-qualified result -> Reporter -> Result Stores -> Human
+Gate-qualified result -> Reporter -> ReportDraft -> AnalysisRunResult -> Agent automation end
 ```
 
 Technical Evidence Gate의 `REVISE`는 같은 가설의 Verification owner에게 직접 돌아간다. Verification은 필요한 Context·Pro/Con·정적·동적 근거를 보완하고 새 `VerificationResult` 및 필요한 `CWELabel` revision으로 Gate를 다시 요청한다. Verification 또는 Chaining이 만든 새 material claim은 기존 결과에 붙여 확정하지 않고 trusted registration 뒤 8단계부터 전체 검증을 새로 거친다.
@@ -99,7 +98,8 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | Reporter Agent | 통과한 결과의 보고서 초안 작성 | 공개 또는 제출 |
 | Runtime Validator | action의 schema·권한·순서·예산·실행 범위 검사 | 취약점·CWE·정책 의미 판단 |
 | Result Stores | 결과·로그·PoC·오류·debug 저장 | secret와 불필요한 전체 코드 저장 |
-| Human Reviewer | 최종 수정·보류·공개 결정 | — |
+
+사람의 검토·수정·제출·공개는 이 표의 Agent나 runtime 구성요소가 아니다. 사람은 자동화 종료 뒤 `AnalysisRunResult`와 current `ReportDraft`를 참고하며, 그 후속 과정은 현재 공통 action·상태 계약 밖에 있다.
 
 ## 상태 축은 분리한다
 
@@ -109,11 +109,10 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 - impact: `SUFFICIENT | INSUFFICIENT | UNCERTAIN`
 - report permission: `ALLOW | DENY`
 - 보고서 생성: `ReportProcessState.status = NOT_REQUESTED | DRAFTED | FAILED`
-- 사람 검토: `HumanReviewDecision.decision = DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`
 
 한 축의 값으로 다른 축을 암묵적으로 추론하지 않는다. 예를 들어 기술적으로 `TRUE`여도 out-of-scope이거나 실질 영향이 부족하면 Reporter를 호출하지 않는다.
 
-Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제안한다. 비-LLM Runtime Validator가 역할·schema·exact revision·상태·예산·일반 도구·경로·provider·두 Gate 순서·보고·공개 조건을 검사해 `ActionDecision=ALLOW | DENY`를 저장한다. `RUN_SANDBOX`의 ALLOW는 current plan·requirements를 R7 Controller에 전달할 수 있다는 뜻이며 Docker 외부 경계 통과나 재현 성공을 뜻하지 않는다. 경계를 통과하면 Reproduction Agent가 내부 실행 순서를 자율 결정하고, finalizer는 실제 runtime fact와 같은 attempt 연결을 검사한다. 이 검사는 환경 의미·취약점 최종 판정이나 정책 해석을 대신하지 않는다.
+Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제안한다. 비-LLM Runtime Validator가 역할·schema·exact revision·상태·예산·일반 도구·경로·provider·두 Gate 순서와 보고 조건을 검사해 `ActionDecision=ALLOW | DENY`를 저장한다. `RUN_SANDBOX`의 ALLOW는 current plan·requirements를 R7 Controller에 전달할 수 있다는 뜻이며 Docker 외부 경계 통과나 재현 성공을 뜻하지 않는다. 경계를 통과하면 Reproduction Agent가 내부 실행 순서를 자율 결정하고, finalizer는 실제 runtime fact와 같은 attempt 연결을 검사한다. 이 검사는 환경 의미·취약점 최종 판정이나 정책 해석을 대신하지 않는다.
 
 ## 병렬성과 종료 조건
 
@@ -121,7 +120,7 @@ Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제�
 - 서로 독립된 가설의 Verification은 가설별 예산 범위에서 병렬화할 수 있다. 한 가설의 실패가 다른 가설을 자동 취소하지 않는다.
 - 운영(`PRODUCTION`)에서는 한 가설의 Pro/Con을 서로 다른 work와 NEW session으로 항상 병렬화하고 Verification이 두 결과를 확인해 합류한다. 예산 부족이나 실행 오류로 한쪽이 없으면 final verdict를 만들지 않고 work를 중단한다. `BASIC | CONDITIONAL_DEBATE`와 skip은 격리된 평가(`EVALUATION`)에서만 허용한다.
 - 같은 가설의 `workspace_id`와 `commit_id`, final Verification·CWELabel, Technical Gate, Rule Scope Gate와 Reporter 순서는 의존성을 지킨다.
-- 실행 상태는 `WorkExecutionState`가 관리하고 가설 판정·Gate 결과·보고서·사람 검토 상태와 분리한다. 같은 `dedupe_key` 요청은 한 `work_id`로만 반영한다.
+- 실행 상태는 `WorkExecutionState`가 관리하고 가설 판정·Gate 결과·보고서 상태와 분리한다. 같은 `dedupe_key` 요청은 한 `work_id`로만 반영한다.
 - `COMMITTED` marker와 종료 상태 pointer가 같은 결과를 가리킨 뒤에만 다음 단계를 호출한다. `PREPARED`, 취소된 attempt, 오래된 revision과 늦은 결과는 다음 단계에서 읽지 않는다.
 - 모든 초기·파생 가설이 종료 상태에 도달하고 atomic 저장·복구가 끝나면 Orchestration run을 닫는다.
 - chaining은 깊이·개수·토큰·시간·중복 fingerprint 제한을 넘으면 새 가설을 만들지 않고 중단 이유를 기록한다.

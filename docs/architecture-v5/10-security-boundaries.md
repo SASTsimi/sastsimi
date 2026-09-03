@@ -117,13 +117,13 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - CWE → 정확한 `CWELabel` revision, evidence와 uncertainty
 - Technical review → 정확한 Verification·CWELabel revision
 - Rule/Scope review → 정확한 Verification·Technical review·CWELabel과 `ProgramPolicyRecord` revision
-- report claim → 통과한 result, 두 Gate와 두 Gate가 공통으로 검토한 CWELabel revision
+- report claim → current Finding, 통과한 result, 두 Gate와 두 Gate가 공통으로 검토한 CWELabel revision
 
-Verification, Chaining, Gate와 Reporter는 공개 권한이 없다. 사람만 외부 제출을 승인한다.
+Verification, Chaining, Gate와 Reporter는 제출·공개 권한이 없다. `ReportDraft`는 마지막 Agent 산출물이다.
 
-사람에게는 exact `AnalysisRunResult`, Finding·Verification, 두 Gate, CWE·정책, dynamic·redacted PoC, ReportDraft 또는 차단 사유, 자원, 오류·DataGap·HOLD 조건을 포함한 `HumanReviewPacket`을 제공한다. `HumanReviewState`는 current packet generation과 current decision pointer를 CAS로 관리한다. `HumanReviewDecision` 저장은 인증된 사람 identity와 exact current packet·state version을 검사한 `SAVE_HUMAN_DECISION` ALLOW action만 허용한다. 외부 disclosure action은 current state가 가리키는 Human Reviewer의 `DISCLOSE`, `report_ready=true`, exact approved report와 target이 있을 때만 허용한다. 새 packet이 생긴 뒤 과거 packet·결정, 승인 목록 밖 report와 Agent 결정은 `DISCLOSURE_DENIED`다.
+Reporter는 current Finding·Verification·CWE·두 Gate·정책의 exact revision을 사용하고 restriction, limitation, unresolved condition을 보존해야 한다. `CREATE_REPORT_DRAFT`의 redaction 검사가 실패하면 초안을 저장하지 않는다. 선행 revision이 바뀌면 기존 draft는 감사 이력으로만 남고 current `AnalysisRunResult.report_draft_refs`에 넣지 않는다.
 
-Finding이 없는 packet은 `FINDING_NOT_CREATED` 사유를 가진 내부 blocked packet으로만 허용하고 `report_ready=false`와 공개 차단을 강제한다. ReportDraft가 참조한 Verification·CWE·두 Gate·정책 중 하나라도 새 revision으로 바뀌면 기존 draft와 이를 포함한 packet은 current 공개 자료가 아니며 새 Gate·Reporter·packet generation을 요구한다.
+Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunResult`와 최종 실행 상태를 저장하고 Agent 자동화를 종료한다. Finding이 없으면 `REPORT_NOT_READY`로 Reporter를 호출하지 않는다. 이후 사람의 검토·수정·제출·공개에는 Agent action, 자동 상태 전이 또는 자동 권한을 제공하지 않는다.
 
 ## 위협과 최소 대응
 
@@ -148,8 +148,8 @@ Finding이 없는 packet은 `FINDING_NOT_CREATED` 사유를 가진 내부 blocke
 | credential·코드 유출 | adapter secret boundary, 최소 context, redaction |
 | 정책 환각 | 공식 `ProgramPolicyRecord`가 없으면 `UNCERTAIN + DENY` |
 | 오래되거나 최신성을 확인하지 못한 정책으로 보고 허용 | `freshness_status=STALE | UNVERIFIED`이면 `UNCERTAIN + DENY`, `PASS | ALLOW` 거절 |
-| Finding이 없는 packet 또는 오래된 ReportDraft 공개 | `report_ready=false`, `FINDING_NOT_CREATED`, exact current dependency와 packet generation 재검사 |
-| 자동 오공개 | Reporter 초안 한정, human-only disclosure |
+| Finding이 없거나 오래된 ReportDraft가 current 결과에 포함됨 | Reporter 입력의 exact current dependency 재검사, `REPORT_NOT_READY` 또는 `STALE_RESULT` |
+| Agent가 검토·제출·공개를 계속 자동화 | ReportDraft와 AnalysisRunResult 확정 뒤 Agent action이 없는 종료 경계 |
 | 역할 위조, ALLOW replay 또는 stale 허가 사용 | trusted requester identity와 exact action·state·input·config·`valid_until` binding, stale이면 `UNUSED -> EXPIRED`, 유효하면 `UNUSED -> USED` 일회성 claim |
 | 권한 없는 domain 결과 저장 | 역할별 `SAVE_RESULT` authority와 선행 exact ref 검사 |
 
@@ -189,13 +189,12 @@ Finding이 없는 packet은 `FINDING_NOT_CREATED` 사유를 가진 내부 blocke
 | 허용하지 않은 provider/model로 silent failover | provider profile과 선행 invocation | `PROVIDER_PROFILE_DENIED`, 호출 미실행 |
 | 인증 실패를 `FALSE`로 저장하려 함 | invocation status와 falsification evidence | invalid result 또는 `AUTHORITY_DENIED`, 실행 오류 유지 |
 | Reporter가 새 공격 경로를 확정 | report claim refs와 verified hypothesis | invalid output, 새 hypothesis 검증 전 사용 금지 |
-| LLM이 `HumanReviewDecision` 형식의 승인을 출력 | `SAVE_HUMAN_DECISION` requester와 사람 identity | `AUTHORITY_DENIED`, 사람 결정 record 생성 금지 |
-| Agent가 외부 공개 action을 요청 | requester와 HumanReviewDecision | `DISCLOSURE_DENIED` |
-| 사람이 다른 packet·과거 revision의 승인을 재사용 | current packet generation·state version·decision record ID와 hash | `DISCLOSURE_DENIED` |
-| redaction 실패 PoC를 사람 또는 외부로 전달 | redaction result와 artifact class | action `DENY`, 제한 저장소에 격리 |
+| ReportDraft 이후 Agent 자동화를 계속하려 함 | 현재 stage와 final `AnalysisRunState` | 후속 Agent action 미등록, 자동화 종료 |
+| Agent가 사람 검토·외부 제출·공개 action을 요청 | action registry와 요청 역할 | `ACTION_NOT_ALLOWED`, 해당 action 미실행 |
+| 선행 결과가 바뀐 오래된 ReportDraft를 current 결과로 사용 | Finding·Verification·CWE·두 Gate·정책 exact revision | `STALE_RESULT`, 새 Gate·Reporter work 요구 |
+| restriction·limitation 또는 redaction 상태가 빠진 초안을 저장 | ReportDraft 필수 필드와 `CREATE_REPORT_DRAFT` 검사 결과 | `SAVE_RESULT` 거절, 누락을 보존한 새 초안 요구 |
 | 같은 ActionRequest를 동시에 두 번 검사 | unique `action_ref.record_id -> decision_id` | 기존 decision 반환, action 한 번만 claim |
 | Gate 또는 Reporter가 별도 CALL_LLM으로 우회 | requester 역할과 stage action·call spec | `ACTION_NOT_ALLOWED`, stage action부터 새로 요청 |
-| 사람 결정 뒤 새 HumanReviewPacket 생성 | current packet generation·state version·decision pointer | 이전 결정 superseded, `DISCLOSURE_DENIED` |
 | Technical Gate `REVISE` 뒤 같은 입력으로 재투표 | Verification·CWE `record_id`와 domain input hash, 이전 decision 사용 상태 | `ACTION_NOT_ALLOWED`, 보완된 upstream revision으로 새 work·action 요구 |
 | action 허가 뒤 Gate 입력 revision이 바뀜 | provider 호출 직전 exact refs·current state 재검사 | `UNUSED -> EXPIRED`, 호출 금지와 새 action 요구 |
 | Runtime Validator가 공식 정책 의미를 다시 판단 | Rule Scope output의 생산 역할과 validator 검사 범위 | 정책 해석 금지, Gate의 `UNCERTAIN + DENY` 구조만 확인하고 Reporter 차단 |

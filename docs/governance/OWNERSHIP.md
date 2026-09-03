@@ -75,11 +75,10 @@ PM은 하위 Issue를 대신 세세하게 작성하지 않습니다. PM은 역�
 - Verification Agent가 가설 내부 Context·찬반·동적 재현·Gate 보완 흐름과 기술 verdict를 소유하지만 Runtime Validator를 우회하거나 외부 공개를 결정하지 않습니다. `REVISE`도 같은 assignment owner의 새 VERIFICATION work로 처리합니다.
 - Chaining Agent는 Gate-qualified TRUE+HOLD 또는 앞 TRUE 능력→뒤 TRUE exact 선행 조건 match와 새 가설만 제안합니다. current Primitive index가 바뀐 결과는 저장할 수 없습니다.
 - Technical Evidence Gate와 Rule Scope Impact Gate는 verdict를 직접 변경하지 않습니다.
-- Reporter는 내부 초안만 만듭니다.
-- 사람만 최종 공개를 승인합니다.
+- Reporter는 안전 요구사항을 지킨 내부 `ReportDraft`만 만들며 이 결과가 마지막 Agent 산출물입니다.
+- `AnalysisRunResult` 확정 뒤 Agent 자동화가 끝나며, 사람의 검토·수정·제출·공개는 이 자동화 밖에서 수행합니다.
 - Agent와 service는 실행을 `ActionRequest`로 제안하고 비-LLM Runtime Validator가 실행 범위만 허용·차단합니다.
 - Runtime Validator는 verdict·CWE·공식 정책 의미를 판단하지 않으며 `ActionDecision`은 exact action에 한 번만 사용합니다.
-- 사람의 결정은 ReportDraft 안이 아니라 exact `HumanReviewPacket`을 가리키는 별도 `HumanReviewDecision`에 기록합니다.
 
 ## 후속 GitHub 협업 자동화
 

@@ -1,5 +1,7 @@
 # R4-03 Authority Boundary Implementation Plan
 
+> **대체 안내(2026-09-03):** 이 계획의 Human Review 자동화 작업은 `2026-09-03-r5-04-removal.md`와 해당 설계 문서로 대체됐습니다. 이 파일은 완료 당시의 실행 기록입니다.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Architecture v5에서 LLM Agent의 제안·판단·검토, 비-LLM runtime의 실행 강제, 사람의 외부 공개 결정을 분리한다.

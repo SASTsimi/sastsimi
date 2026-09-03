@@ -41,9 +41,9 @@ TRUE
 + permission ALLOW
 ```
 
-Reporter는 위 조건을 모두 만족하고 ReportDraft가 가리킨 Verification·Technical review·Rule Scope review·CWELabel·정책 revision이 서로 맞을 때만 내부 보고서 초안을 만든다. 두 Gate가 검토한 CWELabel과 보고서 초안의 `cwe_label_ref.record_id`가 다르면 초안을 만들지 않는다. 이 upstream 중 하나가 새 revision으로 바뀌면 기존 초안은 감사 기록으로만 남고 새 Gate·Reporter 결과가 나오기 전까지 current packet이나 공개에 쓸 수 없다. 두 Gate와 Reporter 모두 외부 제출 권한이 없고 사람만 최종 공개를 결정한다.
+Reporter는 위 조건을 모두 만족하고 ReportDraft가 가리킨 current Finding·Verification·Technical review·Rule Scope review·CWELabel·정책 revision이 서로 맞을 때만 내부 보고서 초안을 만든다. 두 Gate가 검토한 CWELabel과 보고서 초안의 `cwe_label_ref.record_id`가 다르면 초안을 만들지 않는다. restriction·limitation·남은 불확실성과 redaction 통과 상태도 초안에 보존한다. 이 upstream 중 하나가 새 revision으로 바뀌면 기존 초안은 감사 기록으로만 남고 새 Gate·Reporter 결과가 나오기 전까지 current `AnalysisRunResult`에 쓸 수 없다.
 
-프로그램 검사기는 Gate 결론을 대신 내리지 않습니다. Verification이 Gate 호출을 제안하더라도 Technical 다음 Rule Scope라는 순서, 정확한 입력·LLM call spec, PROVIDED admission과 Reporter 조건을 검사합니다. 사람에게는 보고서뿐 아니라 근거·PoC·비용·오류·HOLD 조건을 담은 `HumanReviewPacket`을 전달합니다. Finding이 아직 없으면 `finding_refs=[]`, `report_ready=false`, `blocked_reasons=FINDING_NOT_CREATED`인 blocked packet으로 전달할 수 있지만 공개는 금지합니다. `HumanReviewState`가 최신 packet과 결정을 가리키므로 새 packet이 생기면 이전 결정은 공개에 쓸 수 없습니다.
+프로그램 검사기는 Gate 결론을 대신 내리지 않습니다. Verification이 Gate 호출을 제안하더라도 Technical 다음 Rule Scope라는 순서, 정확한 입력·LLM call spec, PROVIDED admission과 Reporter 조건을 검사합니다. Finding이 없으면 Reporter를 호출하지 않고 `report_draft_refs=[]`와 오류·상태 이유를 남깁니다. `ReportDraft`가 마지막 Agent 산출물이며 `AnalysisRunResult` 확정 뒤 자동화가 끝납니다. 이후 사람의 검토·수정·제출·공개는 Agent 계약 밖입니다.
 
 `ALLOW`가 PASS·scope·impact 조건과 모순되거나 Gate가 현재 작업과 다른 input revision을 가리키면 유효한 Gate 결과가 아니다. LLM 호출을 `INVALID_OUTPUT`, 오류를 `GATE/INVALID_OUTPUT`으로 기록하고 Reporter를 호출하지 않는다.
 

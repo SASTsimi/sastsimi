@@ -59,8 +59,9 @@ R4 담당자는 이 PR의 작성자이므로 자신의 확인만으로 교차 �
 - 필수 환경 불일치·구성 실패는 공격 전에 멈추고 `INCONCLUSIVE`로 R6에 반환하며 가설 `FALSE`로 바꾸지 않습니다.
 - 정책이 없거나 `STALE | UNVERIFIED`이면 Rule Scope Gate를 `UNCERTAIN + DENY`로 고정합니다.
 - `POLICY_BLOCKED`는 자동 `REJECT`가 아니며 Technical Gate가 근거 충분성에 따라 `ACCEPT | REVISE | REJECT`를 구분합니다.
-- Finding이 없는 packet은 내부 blocked packet으로는 허용하지만 `report_ready=false`와 공개 차단을 강제합니다.
-- upstream revision이 바뀐 ReportDraft는 current packet과 공개에 재사용하지 않습니다.
+- Finding이 없으면 Reporter를 호출하지 않고 `AnalysisRunResult.report_draft_refs=[]`와 `REPORT_NOT_READY` 원인을 보존합니다.
+- upstream revision이 바뀐 ReportDraft는 current `AnalysisRunResult`에 재사용하지 않습니다.
+- ReportDraft 생성 뒤 Agent 자동화는 끝나며 사람의 검토·수정·제출·공개는 자동화 밖에서 수행합니다.
 - `handoff_readiness`를 정본과 Wiki에 함께 표시합니다.
 - Sandbox authority는 ADR-001에 누적하지 않고 ADR-002에서 별도로 검토합니다.
 - active Research 역할처럼 보이는 Issue template과 R3 Issue 표현을 현재 `INITIAL | VERIFICATION | CHAINING` 기준으로 정리합니다.

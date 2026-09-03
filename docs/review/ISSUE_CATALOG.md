@@ -37,11 +37,11 @@
 
 ### 목적
 
-23단계 LLM 중심 흐름을 역할, 입출력 약속, 오류, 예산, 보안 경계와 사람에게 전달하는 단계(`human handoff`) 관점에서 검토하여 구현을 시작할 수 있는 설계 기준을 만든다.
+22단계 LLM 중심 흐름을 역할, 입출력 약속, 오류, 예산, 보안 경계와 Agent 자동화 종료 지점 관점에서 검토하여 구현을 시작할 수 있는 설계 기준을 만든다.
 
 ### 범위
 
-- Repository input과 `CodeWorkspace` 준비부터 human disclosure decision까지의 23단계
+- Repository input과 `CodeWorkspace` 준비부터 `ReportDraft`·`AnalysisRunResult` 확정 및 Agent 자동화 종료까지의 22단계
 - 정적 사실, 가설, Verification-owned workflow, sandbox, Primitive/Chaining, 두 Gate, report 계약
 - provider/session/logging과 resource budget
 - local workspace, prompt injection, credential, sandbox, official policy trust boundary
@@ -58,7 +58,7 @@
 ### 완료 조건
 
 - [ ] R1–R8 역할 Issue가 모두 완료되고 관련 PR이 `main`에 merge됨
-- [ ] 23단계 각각에 owner, 입력, 출력, 오류와 금지 권한이 있음
+- [ ] 22단계 각각에 owner, 입력, 출력, 오류와 금지 권한이 있음
 - [ ] 모든 핵심 결과가 `analysis_id`, `workspace_id`, `hypothesis_id`, `attempt_id`와 추적 가능함
 - [ ] 오류·timeout·auth·sandbox setup 실패가 `FALSE`로 변환되지 않음
 - [ ] 두 Gate와 보고서 Agent의 순서·전제조건을 프로그램 내부 규칙 검사기(`runtime validator`)가 강제함
@@ -211,7 +211,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - 담당 역할: 단독 구현·통합 개발
 - 담당자: 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec`
 - 주요 작업 브랜치: `review/integration-feasibility`
-- 관련 흐름: 저장소 입력부터 사람의 최종 검토까지 전체 흐름의 모듈·저장·복구·테스트 연결
+- 관련 흐름: 저장소 입력부터 `ReportDraft`·`AnalysisRunResult` 확정과 Agent 자동화 종료까지의 모듈·저장·복구·테스트 연결
 
 ### 검토 문서
 
@@ -238,7 +238,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 완료 조건
 
-- [ ] 23단계가 예상 module/entry point/contract/store/test에 매핑됨
+- [ ] 22단계와 Agent 자동화 종료 경계가 예상 module/entry point/contract/store/test에 매핑됨
 - [ ] analysis/hypothesis/parent-child/attempt correlation과 record revision을 재구성할 수 있음
 - [ ] 병렬·직렬 지점과 atomic transition/idempotency/crash-resume 요구가 정의됨
 - [ ] partial/failed/cancelled/auth/rate-limit/sandbox/policy 오류의 전파가 명확함
@@ -248,19 +248,19 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ---
 
-## R4 — PM·Control Plane·I/O 계약·워크플로·Human/LLM 경계
+## R4 — PM·Control Plane·I/O 계약·워크플로·Agent/Runtime 경계
 
 - 실제 Issue: [#5](https://github.com/SASTsimi/sastsimi/issues/5)
 
 ### 쉽게 말하면
 
-전체 파트가 같은 상태 이름과 데이터 형식을 사용하도록 중앙 기준을 정한다. Orchestration의 전역 등록·배정과 Verification의 가설 내부 제어권을 나누고, 오류나 재시도를 어떻게 기록할지, LLM이 제안만 하고 프로그램과 사람이 최종 통제해야 하는 경계를 관리한다.
+전체 파트가 같은 상태 이름과 데이터 형식을 사용하도록 중앙 기준을 정한다. Orchestration의 전역 등록·배정과 Verification의 가설 내부 제어권을 나누고, 오류나 재시도를 어떻게 기록할지, LLM 제안과 프로그램 강제 규칙 및 Agent 자동화 종료 경계를 관리한다.
 
 ### 담당자가 나눌 수 있는 하위 Issue 예시
 
 - `[R4-01] 전체 단계의 성공·보류·실패 상태 이름 통일`
 - `[R4-02] 병렬 실행과 재시도·복구 규칙 확정`
-- `[R4-03] 사람·LLM·프로그램의 권한 경계 최종 확인`
+- `[R4-03] Agent·프로그램의 권한과 자동화 종료 경계 최종 확인`
 - `[R4-04] 공통 문서 변경과 승인 절차 확정`
 
 ### 역할 소유권
@@ -268,7 +268,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - 담당 역할: PM·아키텍처·워크플로
 - 담당자: 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec`
 - 주요 작업 브랜치: `review/control-plane`
-- 관련 흐름: 전체 분석 흐름의 공통 계약, 상태 전이, 병렬·직렬 실행, 오류 정책과 사람·LLM 권한 경계
+- 관련 흐름: 전체 분석 흐름의 공통 계약, 상태 전이, 병렬·직렬 실행, 오류 정책과 Agent·Runtime 권한 경계
 
 ### 검토 문서
 
@@ -278,8 +278,8 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 검토할 입력·출력
 
-- 입력: 모든 전문 역할 contract 요구, budget/eval 결과, provider/sandbox/storage 제한, human review 요구
-- 출력: versioned RecordMeta/state/error contract, `WorkExecutionState`·attempt·transition commit, `ActionRequest`·`ActionDecision`, 동적 결과의 공통 exact reference·null·상태 조합, `HumanReviewPacket`·`HumanReviewDecision`, orchestration state machine, RACI, review map, ADR와 run closure 기준
+- 입력: 모든 전문 역할 contract 요구, budget/eval 결과와 provider/sandbox/storage 제한
+- 출력: versioned RecordMeta/state/error contract, `WorkExecutionState`·attempt·transition commit, `ActionRequest`·`ActionDecision`, 동적 결과의 공통 exact reference·null·상태 조합, `ReportDraft`·`AnalysisRunResult` 종료 경계, orchestration state machine, RACI, review map, ADR와 run closure 기준
 
 ### 확인할 권한 경계
 
@@ -288,19 +288,19 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - PM/Orchestration은 가설 내부 Pro/Con·dynamic·Gate·Chaining, verdict, CWE, Gate result, 공식 정책 또는 공개 결정을 대신하지 않는다.
 - silent provider/model failover와 repository prompt에 의한 policy 변경을 금지한다.
 - Runtime Validator는 action의 호출 권한·상태·예산·reference 범위를 강제하며 verdict·CWE·정책 의미를 대신 판단하지 않는다. Sandbox의 image·command·file·network·resource·cleanup 세부 정책은 R7의 Sandbox Controller가 전담한다.
-- Reporter는 내부 초안만 만들고 exact 사람 결정 없이는 외부 disclosure action을 허용하지 않는다.
+- Reporter는 안전 요구사항을 지킨 내부 초안만 만들고 이후 Agent action을 계속하지 않는다. 사람의 검토·수정·제출·공개는 자동화 밖이다.
 
 ### 필수 교차 리뷰
 
 - 통합·구현 개발: 구현 가능성
 - 데이터·평가·예산: 측정·예산 enforcement
 - 변경되는 전문 계약의 owner
-- report/human 경계는 Gate 담당, sandbox 경계는 동적검증 담당
+- ReportDraft와 자동화 종료 경계는 Gate 담당, sandbox 경계는 동적검증 담당
 
 ### 완료 조건
 
-- [ ] 23단계별 호출 조건, 성공/partial/retry/terminal 상태가 명확함
-- [ ] verdict, Gate, rule/scope, impact, permission, report와 human state가 분리됨
+- [ ] 22단계별 호출 조건, 성공/partial/retry/terminal 상태가 명확함
+- [ ] verdict, Gate, rule/scope, impact, permission과 report 상태가 분리됨
 - [ ] retry/failover가 새 attempt/invocation이며, 바로 앞 실패 호출 reference로 순서와 원인을 복원할 수 있음
 - [ ] 같은 요청은 canonical `dedupe_key`로 기존 `work_id`를 재사용하고 한 work에는 active attempt가 하나임
 - [ ] 상태 변경은 `state_version` compare-and-set을 사용하고 stale·취소·다른 workspace/commit 결과를 거절함
@@ -311,15 +311,15 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] 결과 record 저장과 종료 상태 변경 중 하나만 성공했을 때의 crash-resume 복구와 오래되거나 취소된 결과의 연결 거절 규칙이 있음
 - [ ] `TransitionCommit`이 `COMMITTED`된 결과만 downstream과 최종 결과에서 사용함
 - [ ] 역할별 `ActionRequest`가 필수 check를 모두 통과한 `ActionDecision`에서만 한 번 실행됨
-- [ ] 두 LLM Gate 순서, Reporter 조건, 공식 정책 부재 `UNCERTAIN + DENY`와 외부 공개 차단을 runtime이 검사함
+- [ ] 두 LLM Gate 순서, Reporter 조건과 공식 정책 부재 `UNCERTAIN + DENY`를 runtime이 검사함
 - [ ] R6 plan·requirements와 R7 동적 결과가 같은 analysis·workspace·commit·hypothesis에 묶이고, 정책 판정·실제 환경·Runner log·실행 PoC·cleanup만 같은 R7 실행 attempt로 검증됨
-- [ ] `ReportDraft`와 `HumanReviewDecision`이 분리되고 사람 packet에 근거·PoC·자원·오류·HOLD가 포함됨
+- [ ] `ReportDraft`가 exact provenance, restriction·limitation·남은 불확실성과 redaction 결과를 보존하고 마지막 Agent 산출물로 종료됨
 - [ ] 실제 GitHub 계정과 최종 검토·승인 담당자가 문서와 Issue에서 일치함
 - [ ] conflict resolution, freeze SHA와 승인·구현 저장소 동기화 규칙이 확정됨
 
 ---
 
-## R5 — 이중 Gate·FindingCandidate/ReportDraft·Human handoff
+## R5 — 이중 Gate·FindingCandidate·ReportDraft
 
 - 실제 Issue: [#6](https://github.com/SASTsimi/sastsimi/issues/6)
 
@@ -331,15 +331,16 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 - `[R5-01] 기술 근거 Gate의 입력·출력과 보완 요청 기준 확정`
 - `[R5-02] 공식 정책·범위·영향 검토 기준 확정`
-- `[R5-03] Finding과 보고서 초안 생성 조건 확인`
-- `[R5-04] 사람이 검토할 자료와 비밀정보 제거 기준 확정`
+- `[R5-03] Finding과 안전한 보고서 초안 생성 및 자동화 종료 조건 확인`
+
+R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다. 기존 사람 검토 자동화 작업은 제거했으며, 출처 추적·오래된 참조 차단·restriction/limitation 보존·민감정보 제거 요구는 R5-03에 포함한다.
 
 ### 역할 소유권
 
 - 담당 역할: Gate·Finding·보고서
 - 담당자: 김혜령 `@kimhr8463`
 - 주요 작업 브랜치: `review/gate-reporting`
-- 관련 흐름: CWE 라벨링 → 기술 근거 검토 → 공식 정책·영향 검토 → 보고서 초안 → 사람 검토용 자료 저장
+- 관련 흐름: CWE 라벨링 → 기술 근거 검토 → 공식 정책·영향 검토 → 안전한 보고서 초안 → 결과 저장 → Agent 자동화 종료
 
 ### 검토 문서
 
@@ -352,7 +353,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 검토할 입력·출력
 
 - 입력: final VerificationResult, evidence, dynamic/PoC, CWE, restrictions, official ProgramPolicyRecord
-- 출력: TechnicalEvidenceReview, RuleScopeImpactReview, revision requests, ReportDraft, human review packet
+- 출력: TechnicalEvidenceReview, RuleScopeImpactReview, revision requests와 안전 요구사항을 충족한 ReportDraft
 
 ### 확인할 권한 경계
 
@@ -360,7 +361,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - Gate 1은 final TRUE에서만, Gate 2는 같은 `TRUE + Technical ACCEPT`에서만 호출한다.
 - 공식 정책이 없거나 핵심 정보가 누락되면 `UNCERTAIN + DENY`다.
 - Technical `REVISE`는 Orchestration이나 R7이 목적지를 고르지 않고 같은 ACTIVE `VerificationAssignment`의 R6 owner에게 직접 돌아간다.
-- Reporter는 새 공격 주장을 만들거나 외부 제출·공개·human decision을 수행하지 않는다.
+- Reporter는 새 공격 주장을 만들거나 외부 제출·공개를 수행하지 않으며 ReportDraft 뒤 자동 Agent 작업을 만들지 않는다.
 
 ### 필수 교차 리뷰
 
@@ -381,7 +382,9 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] 모순된 `ALLOW` 출력은 semantic `INVALID_OUTPUT`이며 Reporter가 차단됨
 - [ ] 보고서 Agent 호출 조건 `TRUE + ACCEPT + PASS + PASS + PASS + SUFFICIENT + ALLOW`를 프로그램 내부 규칙 검사기(`runtime validator`)가 강제함
 - [ ] 핵심 report claim이 evidence/PoC/Gate/policy artifact로 추적됨
+- [ ] restriction·limitation·남은 불확실성이 초안에서 빠지거나 약화되지 않음
 - [ ] secret·PII·hidden chain-of-thought가 report와 trace에 포함되지 않음
+- [ ] ReportDraft가 마지막 Agent 산출물이며 이후 사람 주도 과정은 자동 action·상태 계약 밖에 있음
 
 ---
 
@@ -597,7 +600,7 @@ R6가 만든 `COMMITTED EnvironmentRequirements`와 목표 중심 최소 `Reprod
 
 | 시나리오 | 기대 상태와 금지 동작 |
 |---|---|
-| 정상 TRUE | `TRUE → Technical ACCEPT → Gate2 PASS/PASS/SUFFICIENT/ALLOW → ReportDraft`; human 전 외부 공개 없음 |
+| 정상 TRUE | `TRUE → Technical ACCEPT → Gate2 PASS/PASS/SUFFICIENT/ALLOW → ReportDraft → AnalysisRunResult → Agent 자동화 종료` |
 | 정책 없는 TRUE | Gate2 `UNCERTAIN + DENY`; Reporter 미호출 |
 | schema repair 실패 | `INVALID_OUTPUT`; Verification 미할당 |
 | empty/truncated context | gap 또는 HOLD 가능; 자동 FALSE 금지 |
@@ -625,13 +628,13 @@ R6가 만든 `COMMITTED EnvironmentRequirements`와 목표 중심 최소 `Reprod
 | AST/SAST 일부 실패 | gap 포함 PARTIAL 가능 |
 | clone 또는 checkout 실패 | 분석 `FAILED`; AST/SAST 미실행 |
 | 분석 중 코드 변경 | `WORKSPACE_CHANGED`; 변경 뒤 결과 사용 금지 |
-| repository prompt injection | provider/session/Gate/sandbox/disclosure 정책 불변 |
+| repository prompt injection | provider/session/Gate/Sandbox와 Agent 자동화 종료 경계 불변 |
 | secret/redaction 실패 | 일반 log/report 전달 차단 |
-| human review | Agent가 disclose 결정을 생성하지 않음 |
+| 자동화 종료 뒤 후속 과정 | Agent는 검토·수정·제출·공개 action을 생성하지 않음 |
 
 ### 완료 조건
 
-- [ ] 번호 문서, root/v5 README, Wiki와 Mermaid의 23단계 의미가 일치함
+- [ ] 번호 문서, root/v5 README, Wiki와 Mermaid의 22단계 의미와 자동화 종료 지점이 일치함
 - [ ] 모든 핵심 claim을 원본 artifact와 decision PR에 추적 가능함
 - [ ] `FINDINGS.md`의 Blocker/High가 0이고 Medium deferral이 적절함
 - [ ] freeze SHA 이후 unreviewed commit이 없음
@@ -650,7 +653,7 @@ R6 EnvironmentRequirements and ReproductionPlan + R4 runtime + R8 budget ─> R7
 R7 COMMITTED dynamic result ──────────────────> R6 final Verification
 R6 final Verification ─────────────────────────> R5 Technical/Rule Scope Gate
 R5 정상 통과 + R6 HOLD ─> R1-B Primitive Chaining
-R6 + R7 + R1-B + R4 + R5 ─> 보고서·사람 검토 전달
+R6 + R7 + R1-B + R4 + R5 ─> ReportDraft·AnalysisRunResult·Agent 자동화 종료
 R3는 모든 계약의 구현 가능성과 종단 조립을 교차 검토
 R1–R8 완료 ───────────> Final cross-scenario review
 ```

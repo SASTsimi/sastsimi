@@ -60,17 +60,51 @@ if (-not $wikiDiagramText.Contains($declaredCount)) {
 
 $activeContractPaths = @(
     (Join-Path $repoRoot 'docs/architecture-v5'),
-    (Join-Path $repoRoot 'docs/review')
+    (Join-Path $repoRoot 'docs/review'),
+    (Join-Path $repoRoot 'docs/governance')
 )
-$forbiddenPatterns = @('RepositorySnapshot', 'snapshot_id', 'deterministic Gate', 'Gate는 규칙 기반 서비스', 'ReportDraft.human_review_state', 'human_review_state:')
+$forbiddenPatterns = @(
+    'RepositorySnapshot',
+    'snapshot_id',
+    'deterministic Gate',
+    'Gate는 규칙 기반 서비스',
+    'ReportDraft.human_review_state',
+    'human_review_state:',
+    'HumanReviewPacket',
+    'HumanReviewState',
+    'HumanReviewDecision',
+    'HUMAN_REVIEWER',
+    'PREPARE_HUMAN_REVIEW',
+    'SAVE_HUMAN_DECISION',
+    'EXTERNAL_DISCLOSURE',
+    'PACKET_READY',
+    'DISCLOSURE_DENIED',
+    'review_packet_id',
+    'review_decision_id',
+    'reviewer_identity_ref',
+    'approved_report_refs',
+    'disclosure_targets',
+    'NEED_MORE_VALIDATION',
+    'WITHHOLD',
+    'decision: DISCLOSE',
+    'human_reviews'
+)
 foreach ($path in $activeContractPaths) {
     $files = Get-ChildItem -LiteralPath $path -Recurse -File -Filter '*.md'
     foreach ($file in $files) {
         $text = Get-Content -Raw -LiteralPath $file.FullName
         foreach ($pattern in $forbiddenPatterns) {
             if ($text.Contains($pattern)) {
-                Add-Failure "forbidden repository snapshot contract '$pattern': $($file.FullName)"
+                Add-Failure "forbidden obsolete active contract '$pattern': $($file.FullName)"
             }
+        }
+    }
+}
+foreach ($filePath in @((Join-Path $repoRoot 'README.md'), (Join-Path $repoRoot 'docs/GLOSSARY.md'))) {
+    $text = Get-Content -Raw -LiteralPath $filePath
+    foreach ($pattern in $forbiddenPatterns) {
+        if ($text.Contains($pattern)) {
+            Add-Failure "forbidden obsolete active contract '$pattern': $filePath"
         }
     }
 }
@@ -325,18 +359,10 @@ $requiredR403ContractNames = @(
     'CleanupEntry:',
     'CleanupLog:',
     'LLMCallSpec:',
-    'HumanReviewState:',
     'action_id:',
     'decision_id:',
     'action_decision_ref:',
-    'use_status:',
-    'HumanReviewPacket:',
-    'HumanReviewDecision:',
-    'review_packet_id:',
-    'review_decision_id:',
-    'reviewer_identity_ref:',
-    'approved_report_refs:',
-    'disclosure_targets:'
+    'use_status:'
 )
 foreach ($name in $requiredR403ContractNames) {
     if (-not $contractText.Contains($name)) {
@@ -357,10 +383,7 @@ $requiredActionTypes = @(
     'SAVE_RESULT',
     'CALL_TECHNICAL_GATE',
     'CALL_RULE_SCOPE_GATE',
-    'CREATE_REPORT_DRAFT',
-    'PREPARE_HUMAN_REVIEW',
-    'SAVE_HUMAN_DECISION',
-    'EXTERNAL_DISCLOSURE'
+    'CREATE_REPORT_DRAFT'
 )
 $actionRequestBlock = [regex]::Match($contractText, '(?ms)^ActionRequest:\s*(.*?)^ActionCheck:').Groups[1].Value
 $requiredActionRequestFields = @(
@@ -371,8 +394,7 @@ $requiredActionRequestFields = @(
     'candidate_result_ref:',
     'llm_call_spec_ref:',
     'provider_profile_ref:',
-    'sandbox_profile_ref:',
-    'disclosure_targets:'
+    'sandbox_profile_ref:'
 )
 foreach ($field in $requiredActionRequestFields) {
     if (-not $actionRequestBlock.Contains($field)) {
@@ -534,9 +556,6 @@ $requiredActionCheckBindings = [ordered]@{
     CALL_TECHNICAL_GATE = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, GATE_ORDER, REDACTION'
     CALL_RULE_SCOPE_GATE = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, GATE_ORDER, REDACTION'
     CREATE_REPORT_DRAFT = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, REPORT_READY, REDACTION'
-    PREPARE_HUMAN_REVIEW = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION'
-    SAVE_HUMAN_DECISION = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION'
-    EXTERNAL_DISCLOSURE = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, DISCLOSURE, REDACTION'
 }
 foreach ($binding in $requiredActionCheckBindings.GetEnumerator()) {
     $rowPattern = '(?m)^\| `' + [regex]::Escape($binding.Key) + '`\s*\|\s*' + [regex]::Escape($binding.Value) + '\s*\|'
@@ -549,7 +568,7 @@ $requiredActionRequesterBindings = [ordered]@{
     REGISTER_WORK = 'ORCHESTRATION, VERIFICATION, RECOVERY'
     CHANGE_WORK_STATE = 'ORCHESTRATION, VERIFICATION, RECOVERY'
     START_ATTEMPT = 'ORCHESTRATION, VERIFICATION, RECOVERY'
-    CANCEL_WORK = 'ORCHESTRATION, VERIFICATION, RECOVERY, HUMAN_REVIEWER'
+    CANCEL_WORK = 'ORCHESTRATION, VERIFICATION, RECOVERY'
     READ_CODE = 'HYPOTHESIS, PRO, CON, VERIFICATION, REPRODUCTION_AGENT, CWE_LABELING, TECHNICAL_GATE'
     RUN_TOOL = 'REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR'
     CALL_LLM = 'HYPOTHESIS, PRO, CON, VERIFICATION, REPRODUCTION_AGENT, CWE_LABELING, CHAINING'
@@ -559,9 +578,6 @@ $requiredActionRequesterBindings = [ordered]@{
     CALL_TECHNICAL_GATE = 'VERIFICATION'
     CALL_RULE_SCOPE_GATE = 'VERIFICATION'
     CREATE_REPORT_DRAFT = 'VERIFICATION'
-    PREPARE_HUMAN_REVIEW = 'ORCHESTRATION'
-    SAVE_HUMAN_DECISION = 'HUMAN_REVIEWER'
-    EXTERNAL_DISCLOSURE = 'HUMAN_REVIEWER'
 }
 foreach ($binding in $requiredActionRequesterBindings.GetEnumerator()) {
     $rowPattern = '(?m)^\| `' + [regex]::Escape($binding.Key) + '`\s*\|\s*' + [regex]::Escape($binding.Value) + '\s*\|\s*$'
@@ -583,8 +599,7 @@ $requiredActionChecks = @(
     'SESSION',
     'GATE_ORDER',
     'REPORT_READY',
-    'REDACTION',
-    'DISCLOSURE'
+    'REDACTION'
 )
 $actionCheckBlock = [regex]::Match($contractText, '(?ms)^ActionCheck:\s*(.*?)^ActionDecision:').Groups[1].Value
 foreach ($check in $requiredActionChecks) {
@@ -638,25 +653,17 @@ foreach ($pair in @(
     }
 }
 
-$humanPacketBlock = [regex]::Match($contractText, '(?ms)^HumanReviewPacket:\s*(.*?)^HumanReviewDecision:').Groups[1].Value
-$humanDecisionBlock = [regex]::Match($contractText, '(?ms)^HumanReviewDecision:\s*(.*?)^```').Groups[1].Value
 $analysisRunResultBlock = [regex]::Match($contractText, '(?ms)^AnalysisRunResult:\s*(.*?)^```').Groups[1].Value
-$requiredSharedReviewFields = @('finding_refs:', 'verification_refs:', 'cwe_label_refs:', 'technical_review_refs:', 'rule_scope_review_refs:', 'policy_record_refs:', 'dynamic_result_refs:', 'poc_refs:', 'report_draft_refs:', 'llm_invocation_log_refs:', 'action_decision_refs:', 'work_state_refs:', 'work_attempt_refs:', 'transition_commit_refs:', 'debug_trace_ref:')
-foreach ($field in $requiredSharedReviewFields) {
-    if (-not $humanPacketBlock.Contains($field)) {
-        Add-Failure "missing HumanReviewPacket field: $field"
-    }
+$requiredAnalysisResultFields = @('finding_refs:', 'verification_refs:', 'cwe_label_refs:', 'technical_review_refs:', 'rule_scope_review_refs:', 'policy_record_refs:', 'dynamic_result_refs:', 'poc_refs:', 'report_draft_refs:', 'llm_invocation_log_refs:', 'action_decision_refs:', 'work_state_refs:', 'work_attempt_refs:', 'transition_commit_refs:', 'debug_trace_ref:')
+foreach ($field in $requiredAnalysisResultFields) {
     if (-not $analysisRunResultBlock.Contains($field)) {
-        Add-Failure "missing AnalysisRunResult review field: $field"
+        Add-Failure "missing AnalysisRunResult handoff field: $field"
     }
 }
-if (-not $humanPacketBlock.Contains('review_generation:') -or -not $humanDecisionBlock.Contains('review_generation:')) {
-    Add-Failure 'Human review packet and decision must share review_generation'
-}
-$humanReviewStateBlock = [regex]::Match($contractText, '(?ms)^HumanReviewState:\s*(.*?)^ProposalProcessState:').Groups[1].Value
-foreach ($field in @('state_version:', 'packet_generation:', 'status:', 'current_packet_ref:', 'current_decision_ref:')) {
-    if (-not $humanReviewStateBlock.Contains($field)) {
-        Add-Failure "missing HumanReviewState field: $field"
+$reportDraftBlock = [regex]::Match($contractText, '(?ms)^ReportDraft:\s*(.*?)^```').Groups[1].Value
+foreach ($field in @('finding_ref:', 'dynamic_result_ref:', 'poc_ref:', 'restrictions:', 'limitations:', 'unresolved_conditions:', 'redaction_status: PASSED')) {
+    if (-not $reportDraftBlock.Contains($field)) {
+        Add-Failure "missing ReportDraft safety field: $field"
     }
 }
 
@@ -669,7 +676,6 @@ $requiredAuthorityErrors = @(
     'FILE_ACCESS_DENIED',
     'SANDBOX_POLICY_DENIED',
     'PROVIDER_PROFILE_DENIED',
-    'DISCLOSURE_DENIED',
     'UNTRUSTED_INSTRUCTION'
 )
 foreach ($code in $requiredAuthorityErrors) {
@@ -690,13 +696,12 @@ $authorityScenarioMarkers = @(
     '허용하지 않은 provider/model로 silent failover',
     '인증 실패를 `FALSE`로 저장하려 함',
     'Reporter가 새 공격 경로를 확정',
-    'LLM이 `HumanReviewDecision` 형식의 승인을 출력',
-    'Agent가 외부 공개 action을 요청',
-    '사람이 다른 packet·과거 revision의 승인을 재사용',
-    'redaction 실패 PoC를 사람 또는 외부로 전달',
+    'ReportDraft 이후 Agent 자동화를 계속하려 함',
+    'Agent가 사람 검토·외부 제출·공개 action을 요청',
+    '선행 결과가 바뀐 오래된 ReportDraft를 current 결과로 사용',
+    'restriction·limitation 또는 redaction 상태가 빠진 초안을 저장',
     '같은 ActionRequest를 동시에 두 번 검사',
     'Gate 또는 Reporter가 별도 CALL_LLM으로 우회',
-    '사람 결정 뒤 새 HumanReviewPacket 생성',
     'Technical Gate `REVISE` 뒤 같은 입력으로 재투표',
     'action 허가 뒤 Gate 입력 revision이 바뀜',
     'Runtime Validator가 공식 정책 의미를 다시 판단',
@@ -838,8 +843,8 @@ $requiredAuthorityRules = @(
     'final VerificationResult + CWELabel',
     '-> Technical Evidence Gate',
     '-> Rule Scope Impact Gate',
-    'HumanReviewPacket',
-    'HumanReviewDecision',
+    '`ReportDraft`는 마지막 Agent 산출물',
+    'Agent 자동화 밖에서 사람이 수행한다',
     'UNUSED -> USED',
     'UNUSED -> EXPIRED',
     'requester_identity_ref',
@@ -847,10 +852,8 @@ $requiredAuthorityRules = @(
     'work_attempt_refs',
     '한 `action_ref.record_id`에는 정확히 하나의 `decision_id`',
     'llm_call_spec_ref',
-    'current_packet_ref',
     'output은 log를 역참조하지 않는다',
     '아직 `outcome_refs`가 비어 있는 revision',
-    'SAVE_HUMAN_DECISION',
     'Technical action의 `REVISION`은 exact Verification+CWE',
     '같은 Verification·CWE revision 또는 같은 domain input hash',
     '오류 층은 섞어 기록하지 않는다',
@@ -890,12 +893,12 @@ $requiredR504CrossReviewRules = @(
     @{
         Name = 'changed upstream revisions supersede report drafts'
         Text = $contractText
-        Marker = '오래된 draft는 current `HumanReviewPacket.report_draft_refs`와 `approved_report_refs`에 넣을 수 없다.'
+        Marker = '오래된 draft는 `AnalysisRunResult.report_draft_refs`의 current 결과에 넣을 수 없다.'
     },
     @{
-        Name = 'missing Finding creates a non-disclosable blocked packet'
+        Name = 'missing Finding blocks ReportDraft creation'
         Text = $contractText
-        Marker = '`blocked_reasons`에 `FINDING_NOT_CREATED`를 남긴다.'
+        Marker = 'Finding이 없으면 `CREATE_REPORT_DRAFT`를 허용하지 않고 `AnalysisRunResult.report_draft_refs=[]`를 유지한다.'
     },
     @{
         Name = 'Wiki exposes Technical Gate handoff readiness'
@@ -906,6 +909,39 @@ $requiredR504CrossReviewRules = @(
 foreach ($rule in $requiredR504CrossReviewRules) {
     if (-not $rule.Text.Contains($rule.Marker)) {
         Add-Failure "missing or weakened PR #48 cross-review rule: $($rule.Name)"
+    }
+}
+
+$requiredAutomationBoundaryRules = @(
+    @{
+        Name = 'common contract ends Agent automation after ReportDraft and result finalization'
+        Text = $contractText
+        Marker = '`ReportDraft`는 마지막 Agent 산출물이고 `AnalysisRunResult` 확정은 새 판단을 생성하지 않는 저장 작업이다. 그 다음 Agent 자동화는 종료된다.'
+    },
+    @{
+        Name = 'Gate and reporting document assigns ReportDraft safety to R5-03'
+        Text = $gateText
+        Marker = '`ReportDraft`는 R5-03 Reporter와 전체 Agent 파이프라인의 마지막 Agent 산출물이다.'
+    },
+    @{
+        Name = 'overview canonical flow ends automation'
+        Text = $overviewText
+        Marker = 'Gate-qualified result -> Reporter -> ReportDraft -> AnalysisRunResult -> Agent automation end'
+    },
+    @{
+        Name = 'canonical Mermaid shows the Reporter boundary'
+        Text = $diagramText
+        Marker = 'REPORTER --> DRAFT[ReportDraft with restrictions limitations and redaction passed]'
+    },
+    @{
+        Name = 'Wiki reporting summary ends automation'
+        Text = $gateWikiText
+        Marker = '`ReportDraft`가 마지막 Agent 산출물이며 `AnalysisRunResult` 확정 뒤 자동화가 끝납니다.'
+    }
+)
+foreach ($rule in $requiredAutomationBoundaryRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing or weakened R5-03 automation boundary: $($rule.Name)"
     }
 }
 
@@ -1147,11 +1183,13 @@ Write-Output "R4-03 action types: $($requiredActionTypes.Count)"
 Write-Output "R4-03 exact action check bindings: $($requiredActionCheckBindings.Count)"
 Write-Output "R4-03 exact requester bindings: $($requiredActionRequesterBindings.Count)"
 Write-Output "R4-03 ActionCheck types: $($requiredActionChecks.Count)"
-Write-Output "R4-03 shared human review fields: $($requiredSharedReviewFields.Count)"
+Write-Output "R4-03 AnalysisRunResult handoff fields: $($requiredAnalysisResultFields.Count)"
+Write-Output 'R5-03 ReportDraft safety fields: 7'
 Write-Output 'R4-03 exact LLM call blocks: 2'
 Write-Output "R4-03 authority errors: $($requiredAuthorityErrors.Count)"
 Write-Output "R4-03 authority scenarios: $($authorityScenarioMarkers.Count)"
 Write-Output "R4-03 authority rules: $($requiredAuthorityRules.Count)"
+Write-Output "R5-03 automation boundary rules: $($requiredAutomationBoundaryRules.Count)"
 Write-Output "R4-03 Sandbox review rules: $($sandboxReviewPatterns.Count)"
 Write-Output "R6-R7 environment handoff rules: $($environmentHandoffPatterns.Count)"
 Write-Output "R6-R7 environment negative scenarios: $($environmentNegativeMarkers.Count)"
