@@ -17,7 +17,7 @@
 
 > 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
 
-## 1. 정본 23단계 파이프라인
+## 1. 정본 22단계 파이프라인
 
 ```mermaid
 flowchart TB
@@ -35,51 +35,56 @@ flowchart TB
     S08 --> S09[9 Verification requests on-demand context]
     S09 --> S10[10 Production Verification runs independent Pro and Con]
     S10 --> S11[11 Initial TRUE FALSE HOLD]
-    S11 --> S12{12 Verification chooses dynamic mode}
-    S12 -->|No| S13[13 Final verdict and material claim split]
-    S12 -->|LIMITED| DL[Verification LIMITED Requirements and Plan]
-    S12 -->|FULL| DF[Verification FULL Requirements Plan and PoC draft]
-    DL --> DAUTH[Runtime Validator call authorization]
-    DF --> DAUTH
+    S11 --> S12{12 Dynamic work required}
+    S12 -->|Complete static and debate FALSE or HOLD| S13[13 Final verdict and material claim split]
+    S12 -->|Initial TRUE| DREQ[Verification requests POC_CONFIRMATION]
+    S12 -->|Execution evidence needed| DREQ2[Verification requests VERDICT_EVIDENCE]
+    DREQ --> DWAUTH[Runtime allows one dynamic work per generation]
+    DREQ2 --> DWAUTH
+    DWAUTH --> DR7[R7 creates Requirements Plan and PoC candidate]
+    DR7 --> DAUTH[Runtime Validator Sandbox call authorization]
     DAUTH --> DCTRL[Sandbox Controller policy check]
     DCTRL --> DPD[Exact SandboxPolicyDecision]
     DPD -->|Pass| DENV[Sandbox Runner prepares environment and Health Checks]
-    DPD -->|Policy blocked no Runner| DASM[Sandbox Result Assembler]
+    DPD -->|Policy blocked| DSTOP[BLOCKED or FAILED no final verdict]
     DENV --> DCHK{All required items MATCH}
     DCHK -->|Yes| DRUN[Sandbox Runner executes exact attack steps]
-    DCHK -->|No| DFAIL[Stop before attack with ENVIRONMENT_SETUP]
-    DFAIL --> DASM
+    DCHK -->|No| DFAIL[BLOCKED or FAILED ENVIRONMENT_SETUP]
+    DFAIL --> DSTOP
     DRUN --> DASM
-    DASM --> DRES[Dynamic result with exact nullable refs]
-    DRES --> DMIS{Required environment mismatch}
-    DMIS -->|Yes| DRET[R6 reviews exact differences]
-    DMIS -->|No| S13
-    DRET -->|New requirements plus plan or plan-only revision| DAUTH
-    DRET -->|No retry| S13
+    DASM --> DRES[Dynamic result with exact candidate and evidence refs]
+    DRES --> DOUT{Observed outcome}
+    DOUT -->|SUPPORTED| POCOK{Validated PoC and supported result}
+    POCOK -->|Yes| S13
+    DOUT -->|DISPROVED or INCONCLUSIVE| S13
+    DOUT -->|Execution failure| DSTOP
+    DSTOP -->|Retryable same work new attempt| DR7
+    DSTOP -->|Unrecoverable| S22
     S13 --> S14{14 Final verdict}
     S14 -->|FALSE| CLOSED[Terminal internal result]
-    S14 -->|HOLD| REQUIRED[HOLD REQUIRED Primitive admitted]
-    S14 -->|TRUE| CWE[14 CWE labeling for TRUE]
+    S14 -->|HOLD| REQUIRED[Result null Primitive with required inputs admitted]
+    S14 -->|TRUE with validated PoC| CWE[14 CWE labeling for TRUE]
     CWE --> S15[15 Technical Evidence Gate]
     S15 -->|REVISE| S16[16 Same assignment starts new Verification work and revision]
-    S16 --> S13
+    S16 --> S09
     S15 -->|REJECT| S22[22 Store results logs PoC errors debug]
-    S15 -->|ACCEPT| S17[17 Rule Scope Impact Gate]
-    S17 -->|FAIL UNCERTAIN or DENY| S22
-    S17 -->|Normal pass| S18[18 Gate-qualified TRUE PROVIDED admitted]
-    REQUIRED --> S19[19 Chaining with current index and directional requirement]
-    S18 --> S19
-    S17 -->|All report conditions| RREQ[Verification requests Reporter]
+    S15 -->|ACCEPT| S17{17 Independent technical material and report review paths}
+    S17 --> PADMIT[Result Primitive admitted]
+    S17 --> S19[19 Rule Scope Impact Gate]
+    S19 -->|FAIL UNCERTAIN or DENY| S22
+    REQUIRED --> S18[18 Chaining upstream result to downstream input]
+    PADMIT --> S18
+    S19 -->|All report conditions| RREQ[Verification requests Reporter]
     RREQ --> S21[21 Reporter draft]
-    S19 -->|Match| S20[20 Validate child proposal and assign new Verification]
-    S19 -->|No match or bounded stop| S22
+    S18 -->|Match| S20[20 Validate child proposal and assign new Verification]
+    S18 -->|No match or global budget stop| S22
     S20 --> S08
     S13 -. origin VERIFICATION material claim .-> S20
     S21 --> S22
     CLOSED --> S22
     S22 --> MORE{22 More hypotheses}
     MORE -->|Yes| S08
-    MORE -->|No| S23[23 Human review and disclosure decision]
+    MORE -->|No| END[22 Finalize AnalysisRunResult and end Agent automation]
 ```
 
 가설들은 예산 범위에서 병렬화할 수 있지만, 한 가설 안의 `workspace_id`·`commit_id`·판정·Gate 순서와 Reporter 전제는 유지한다.
@@ -99,15 +104,23 @@ flowchart LR
     FACTS --> HYP[Hypothesis anchor entity location path]
     HYP --> REQ[CodeContextRequest]
     REQ --> CHECK{Same workspace and commit within budget}
-    CHECK -->|No| GAP[Error or explicit gap]
+    CHECK -->|No| ERROR[AnalysisError plus affected DataGap]
     CHECK -->|Yes| RET[Context Retrieval Service]
     RET --> REL[Callers Callees Data flow Auth guards Routes]
     REL --> RESP[CodeContextResponse]
-    RESP --> AGENT[Verification Pro Con or Technical Gate]
+    RET -->|Failure timeout denied| ERROR
+    RESP --> COMPLETE{Can all validation checks finish with valid evidence}
+    ERROR --> COMPLETE
+    COMPLETE -->|Retry or alternate lookup| REQ
+    COMPLETE -->|Required input missing| RETRYABLE{Can retry or wait for input}
+    RETRYABLE -->|Yes| BLOCK[Work BLOCKED hypothesis stays VERIFYING]
+    BLOCK -->|Condition resolved| REQ
+    RETRYABLE -->|No| FAIL[Atomic work FAILED plus hypothesis FAILED no final result]
+    COMPLETE -->|Yes| AGENT[Verification Pro and Con]
     AGENT --> LOG[Log retrieved locations]
 ```
 
-empty, truncated와 unresolved response는 안전함 또는 `FALSE`로 자동 변환하지 않는다.
+empty, truncated, gap와 error는 `TRUE | FALSE | HOLD`의 근거로 자동 변환하지 않는다. 일부 조회 실패가 있어도 정상 근거로 모든 검증 항목을 완료하면 판정할 수 있다. 필수 입력이 없지만 다시 시도할 수 있으면 work만 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지한다. 더 시도할 수 없으면 work와 가설을 함께 `FAILED`로 끝내고 final `VerificationResult`를 만들지 않는다.
 
 ## 3. 저비용 가설 생성과 출력 통제
 
@@ -127,7 +140,7 @@ flowchart TB
     INVALID --> STORE[Store errors and invocation refs]
 ```
 
-proposal은 facts와 assumptions, restrictions, missing information, falsification questions와 required validation을 분리한다. confidence는 우선순위 힌트일 뿐 verdict가 아니다.
+proposal은 facts와 assumptions, restrictions, missing information, falsification questions, 고유 `validation_id`가 있는 `validation_checks`를 분리한다. confidence는 우선순위 힌트일 뿐 verdict가 아니다.
 
 ## 4. 운영 상시 찬반 검증과 평가 모드
 
@@ -151,27 +164,30 @@ flowchart TB
     BASIC --> SYN
     BASIC -. no Gate Primitive or Reporter .-> METRICS[Evaluation metrics only]
     SYN --> INITIAL[Initial TRUE FALSE HOLD]
-    INITIAL --> DYN{Verification chooses dynamic mode}
-    DYN -->|No| FINAL[Final VerificationResult]
-    DYN -->|Small question| LIMITED[Verification LIMITED Requirements and Plan]
-    DYN -->|End to end| FULL[Verification FULL Requirements Plan and PoC draft]
-    LIMITED --> AUTH[Runtime Validator call authorization]
-    FULL --> AUTH
+    INITIAL --> DYN{Dynamic work required}
+    DYN -->|Complete static and debate FALSE or HOLD| FINAL[Final VerificationResult]
+    DYN -->|Initial TRUE| CREQ[R6 request POC_CONFIRMATION]
+    DYN -->|Execution evidence needed| VREQ[R6 request VERDICT_EVIDENCE]
+    CREQ --> ONE[Runtime allows one work per Verification generation]
+    VREQ --> ONE
+    ONE --> R7PLAN[R7 Requirements mode Plan and PoC candidate]
+    R7PLAN --> AUTH[Runtime Validator call authorization]
     AUTH --> CTRL[Sandbox Controller policy check]
     CTRL --> PDEC[Exact SandboxPolicyDecision]
     PDEC -->|Pass| ENV[Sandbox Runner prepares environment and Health Checks]
-    PDEC -->|Policy blocked no Runner| ASSEMBLER[Sandbox Result Assembler]
+    PDEC -->|Policy blocked| FAIL[BLOCKED or FAILED no final verdict]
     ENV --> CHECK{All required items MATCH}
     CHECK -->|Yes| RUNNER[Sandbox Runner executes exact attack steps]
-    CHECK -->|No| EFAIL[Stop before attack with ENVIRONMENT_SETUP]
-    EFAIL --> ASSEMBLER
+    CHECK -->|No| EFAIL[BLOCKED or FAILED ENVIRONMENT_SETUP]
+    EFAIL --> FAIL
     RUNNER --> ASSEMBLER
-    ASSEMBLER --> DRESULT[Dynamic result with exact nullable refs]
-    DRESULT --> EMIS{Required environment mismatch}
-    EMIS -->|Yes| EREVIEW[R6 reviews exact differences]
-    EMIS -->|No| SYN2[Verification re-synthesizes evidence]
-    EREVIEW -->|New requirements plus plan or plan-only revision| AUTH
-    EREVIEW -->|No retry| SYN2
+    ASSEMBLER --> DRESULT[Dynamic result with candidate evidence and nullable validated PoC]
+    DRESULT --> OBS{Observed outcome}
+    OBS -->|SUPPORTED with validated PoC| SYN2[Verification re-synthesizes evidence]
+    OBS -->|DISPROVED or INCONCLUSIVE| SYN2
+    OBS -->|Execution failure| FAIL
+    FAIL -->|Retryable same work new attempt| R7PLAN
+    FAIL -->|Unrecoverable| NOFINAL[No final verdict and no Gate]
     SYN2 --> FINAL
     FINAL --> OUT[Restrictions candidates PrimitiveDraft and VERIFICATION origin child proposals]
 ```
@@ -184,43 +200,46 @@ flowchart TB
 flowchart TB
     VR[Final VerificationResult] --> KIND{Verdict}
     KIND -->|FALSE| CLOSED[Terminal no Primitive no Chaining]
-    KIND -->|HOLD| REQUIRED[Immediate REQUIRED with exact Verification ref]
-    KIND -->|TRUE| CWE[CWE labeling]
+    KIND -->|HOLD| REQUIRED[Primitive with inputs and null result]
+    KIND -->|TRUE with current validated PoC| CWE[CWE labeling]
     CWE --> TECH[Technical Evidence Gate]
     TECH -->|REVISE| SAME[Same assignment new Verification work and revision]
     SAME --> VR
     TECH -->|REJECT| NOCHAIN[No Chaining]
-    TECH -->|ACCEPT| RULE[Rule Scope Impact Gate]
-    RULE -->|FAIL UNCERTAIN DENY| NOCHAIN
-    RULE -->|PASS PASS PASS SUFFICIENT ALLOW| PROVIDED[PROVIDED with exact Gate refs]
+    TECH -->|ACCEPT| PROVIDED[Primitive with inputs and one result]
+    TECH -->|ACCEPT independent report review| RULE[Rule Scope Impact Gate]
+    RULE -->|FAIL UNCERTAIN DENY| REPORTBLOCK[Report blocked but Primitive remains usable]
+    RULE -->|PASS PASS PASS SUFFICIENT ALLOW| REPORTOK[Reporter eligibility may continue]
     REQUIRED --> PDB[(Primitive records)]
     PROVIDED --> PDB
-    PDB --> INDEX[Current PrimitiveIndexState]
-    INDEX --> MATCH{Upstream PROVIDED satisfies downstream requirement}
-    MATCH -->|No| RECORD[ChainingResult no match or bounded stop]
+    PDB --> MATCH{Upstream result satisfies downstream input}
+    MATCH -->|No| RECORD[ChainingResult with no material candidate]
     MATCH -->|Yes| CHAIN[Chaining Agent matching only]
     CHAIN --> NEW[HypothesisProposal origin CHAINING]
-    NEW --> LIMIT{Runtime validation depth budget duplicate cycle}
+    NEW --> LIMIT{Runtime validation duplicate ancestor cycle and global budget}
     LIMIT -->|Pass| REGISTER[Global registration]
-    LIMIT -->|Fail| STOP[Reject or bounded stop]
+    LIMIT -->|Fail| STOP[Reject or global budget stop]
     REGISTER --> ORCH[Orchestration assigns Verification]
     ORCH --> VERIFY[Full Verification pipeline]
     VMAT[Verification material claim] --> VNEW[HypothesisProposal origin VERIFICATION]
     VNEW --> LIMIT
 ```
 
-Primitive DB는 queue가 아니며 Chaining match와 child proposal은 Finding이 아니다. Gate 전 TRUE와 오래된 Gate revision은 ACTIVE PROVIDED가 될 수 없다.
+Primitive DB는 queue가 아니며 Chaining match와 child proposal은 Finding이 아니다. Gate 전 TRUE와 오래된 Technical review revision은 result가 있는 Primitive가 될 수 없다. Rule Scope 결과는 보고 가능성만 바꾸며 이미 admission된 Primitive를 취소하지 않는다.
 
-## 6. 이중 LLM Gate와 사람 결정
+## 6. 이중 LLM Gate와 Agent 자동화 종료
 
 ```mermaid
 flowchart TB
-    VR[Final VerificationResult plus CWE] --> TECH[Technical Evidence Gate Agent]
+    DYN[Current SUCCEEDED SUPPORTED dynamic result and validated PoC] --> VR[Final TRUE VerificationResult plus CWE]
+    VR --> TECH[Technical Evidence Gate Agent]
     TECH --> TS{ACCEPT REVISE REJECT}
     TS -->|REVISE| BACK[Same hypothesis Verification owner]
-    BACK --> VR
+    BACK --> NEWGEN[New Verification generation and new validated PoC]
+    NEWGEN --> VR
     TS -->|REJECT| BLOCK[Report blocked]
-    TS -->|ACCEPT| RULE[Rule Scope Impact Gate Agent]
+    TS -->|ACCEPT| PRIMITIVE[Admit result Primitive for Chaining]
+    TS -->|ACCEPT independent report review| RULE[Rule Scope Impact Gate Agent]
     POLICY[Official ProgramPolicyRecord] --> RULE
     NOPOL[Missing official policy] --> UNCERTAIN[Rule and scope UNCERTAIN permission DENY]
     UNCERTAIN --> BLOCK
@@ -229,12 +248,12 @@ flowchart TB
     READY -->|Yes| RREQ[Verification requests Reporter]
     RREQ --> REPORTER[Reporter Agent]
     REPORTER --> DRAFT[Internal ReportDraft]
-    BLOCK --> HUMAN[Human Reviewer]
-    DRAFT --> HUMAN
-    HUMAN --> DECIDE[Disclose Revise Withhold or More validation]
+    BLOCK --> FINAL[Finalize AnalysisRunResult]
+    DRAFT --> FINAL
+    FINAL --> END[Agent automation end]
 ```
 
-두 Gate 모두 LLM 검토 Agent이고 Verification verdict를 직접 바꾸지 않는다. 공식 정책이 없으면 Reporter 경로는 닫힌다.
+두 Gate 모두 LLM 검토 Agent이고 Verification verdict를 직접 바꾸지 않는다. Technical Gate는 current generation의 `SUCCEEDED + SUPPORTED` 결과와 validated PoC를 가진 exact final `TRUE`만 검토하며 `FALSE | HOLD`와 실패 가설은 입력으로 받지 않는다. 공식 정책이 없으면 Reporter 경로는 닫힌다.
 
 ## 7. Provider, session과 logging
 
@@ -281,7 +300,7 @@ flowchart LR
     GATESTORE --> RUN
     REPORTS --> RUN
     INV --> RUN
-    RUN --> HUMAN[Human review]
+    RUN --> END[Agent automation end]
 ```
 
 ## 9. 공통 식별자와 revision 추적
@@ -294,7 +313,7 @@ flowchart TB
     ANA --> LOADER[Repository Loader]
     LOADER -->|READY| WORK[workspace_id plus commit_id]
     ANA --> HYP[hypothesis_id]
-    HYP --> REL[parent IDs root ID chain depth]
+    HYP --> REL[parent IDs and source Primitive match ID]
     HYP --> ATT[attempt_id]
     ATT --> CALL[llm_call_id]
     WORK --> META
@@ -381,36 +400,28 @@ flowchart LR
     CLAIM -->|Conflict or stale| REJECT[Expire and reject replay or stale action]
     CLAIM -->|Claimed| EXECUTE[Execute exact action once]
     EXECUTE --> OUTCOME[Store outcome refs and state transition]
-    DOMAIN[Verification Gates Reporter Human keep domain decisions] -. not decided by validator .-> CHECK
+    DOMAIN[Verification Gates and Reporter keep domain decisions] -. not decided by validator .-> CHECK
 ```
 
-Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter·redaction·공개 전제를 검사한다. `RUN_SANDBOX`에서는 호출 권한·상태·예산·exact plan reference까지만 확인하고, image·command·file·network·resource·cleanup 정책은 Sandbox Controller가 검사한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
+Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 호출 권한·상태·예산·exact plan reference를 확인한다. image·command·file·network·resource·cleanup 정책은 Sandbox Controller가 검사한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
 
-## 13. 사람 검토와 외부 공개 경계
+## 13. ReportDraft와 Agent 자동화 종료 경계
 
 ```mermaid
-flowchart TB
-    RUN[Final AnalysisRunResult] --> PACKET[HumanReviewPacket]
-    FIND[Findings verification and evidence] --> PACKET
-    GATES[Technical and Rule Scope Gate refs] --> PACKET
-    DYNAMIC[Dynamic results and redacted PoC] --> PACKET
-    RESOURCE[Resources errors gaps and HOLD] --> PACKET
-    REPORT[ReportDrafts or blocked reasons] --> PACKET
-    PACKET --> CURRENT[HumanReviewState current packet generation]
-    CURRENT --> HUMAN[Human Reviewer]
-    HUMAN --> SAVE[Validated SAVE HUMAN DECISION action]
-    SAVE --> DECISION[HumanReviewDecision]
-    DECISION --> STATE[CAS current decision into HumanReviewState]
-    STATE --> KIND{DISCLOSE REVISE WITHHOLD or MORE VALIDATION}
-    KIND -->|REVISE or MORE VALIDATION| RETURN[Return to allowed analysis stage]
-    KIND -->|WITHHOLD| STOP[Keep internal]
-    KIND -->|DISCLOSE| DISCLOSE{Still current packet decision and report ready}
-    DISCLOSE -->|No| BLOCK[DISCLOSURE DENIED]
-    DISCLOSE -->|Yes| BOUNDARY[External disclosure action boundary]
-    AGENT[Agent Gate or Reporter] -->|Cannot save human decision or disclose| BLOCK
+flowchart LR
+    FIND[Current Finding] --> REPORTER[R5-03 Reporter]
+    VERIFY[Final Verification and CWE] --> REPORTER
+    GATES[Technical and Rule Scope reviews] --> REPORTER
+    POLICY[Current policy record] --> REPORTER
+    DYNAMIC[Current supported dynamic evidence and redacted validated PoC] --> REPORTER
+    REPORTER --> DRAFT[ReportDraft with restrictions limitations and redaction passed]
+    DRAFT --> FINAL[Trusted runtime finalizes AnalysisRunResult and logs]
+    BLOCKED[No report-ready Finding] --> FINAL
+    FINAL --> END[Agent automation end]
+    END -. outside Agent automation .-> HUMAN[Person-led review edit submit or disclose]
 ```
 
-사람 결정은 ReportDraft와 분리한다. 새 packet generation은 이전 결정을 supersede한다. 실제 자동 제출 integration은 이 설계에 포함하지 않으며, 향후 추가해도 current `DISCLOSE` 결정과 redaction 검사를 건너뛸 수 없다.
+ReportDraft는 마지막 Agent 산출물이다. `AnalysisRunResult` 확정은 기존 결과와 로그를 묶는 신뢰 runtime 작업이며 새 LLM 판단이 아니다. 점선 뒤의 사람 검토·수정·제출·공개는 Agent action과 상태 계약 밖이다.
 
 ## Rendering check
 

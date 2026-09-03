@@ -11,7 +11,7 @@
 
 | ID | 상태 | 쉽게 말하면 | 정확한 문제 | 처리·완료 조건 | 담당 역할 | Issue |
 |---|---|---|---|---|---|---|
-| B-001 | RESOLVED | 역할 담당자와 실제 GitHub 계정을 확정했습니다. | #1·#4·#5 `@YHS-Sec`, #3 `@zv9uvr`, #6 `@kimhr8463`, #7 `@UltraPeachKeen`을 실제 계정으로 확정함 | 역할표·Issue·tracker를 실제 계정으로 통일하고 CODEOWNERS는 후속 개선으로 관리 | PM·아키텍처·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
+| B-001 | RESOLVED | 역할 담당자와 실제 GitHub 계정을 확정했습니다. | #1·#4·#5 `@YHS-Sec`, #3 `@zv9uvr`, #6 `@kimhr8463`, #7 `@UltraPeachKeen`을 실제 계정으로 확정하고 역할과 assignee 상태를 분리함 | 역할표·Issue·tracker를 실제 계정으로 통일하고 CODEOWNERS는 후속 개선으로 관리 | PM·아키텍처·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
 | B-002 | RESOLVED | 최종 결과를 확인하고 승인 준비를 관리할 담당자를 정했습니다. | 최종 검토·승인 담당자 미지정 | 김태현 `@taehyeon-git`을 지정하고, 파트 간 교차 검토 후 전체 검토를 수행하는 절차를 문서화 | 저장소 관리 담당 | [#10](https://github.com/SASTsimi/sastsimi/issues/10) |
 | B-004 | RESOLVED | 가져온 원본이 commit에 없었기 때문에 특정 commit에서 나온 파일이라고 말할 수 없습니다. | 원본이 commit되지 않은 작업 폴더라 commit 출처를 주장할 수 없음 | [가져온 출처 기록](./PROVENANCE.md)에 원본 상태와 파일 해시를 기록 | PM·아키텍처·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
 | B-005 | RESOLVED | 검토 중인 초안이 승인된 최종 설계처럼 보였습니다. | candidate가 승인된 기준 문서처럼 표현됨 | root/v5/Wiki에 검토 중인 설계 초안과 승인·동기화 경계를 명시 | PM·아키텍처·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
@@ -28,14 +28,14 @@
 | H-004 | OPEN | 회원 로그인 방식의 LLM 연결이 공식적으로 허용되고 안정적인지 확인되지 않았습니다. | Membership adapter의 지원·약관·동시성·log 가용성 미검증 | R4-03에서 허용 provider/profile·session·explicit failover와 일회성 action 경계는 정의함. 구현 가능성과 보안을 확인하기 전 선택 실험으로 제한하고 중단·성공 조건은 R3가 확정 | 단독 구현·통합 개발 | [#4](https://github.com/SASTsimi/sastsimi/issues/4), [#15](https://github.com/SASTsimi/sastsimi/issues/15) |
 | H-005 | OPEN | Docker 재현과 공식 정책 수집의 안전 설계가 아직 요구사항 수준입니다. | Docker reproduction과 policy capture의 threat model/ADR 미완료 | R4는 PoC·Controller 정책 판정·실제 환경·Runner log의 exact reference, nullable 조건과 cleanup 상태 조합을 정의함. daemon·image 공급망·외부 통신·자원별 정리와 네 artifact 상세 schema는 R7이, 정책 출처 인증·최신성 ADR은 R5가 확정 | 동적검증·Sandbox + Gate | [#6](https://github.com/SASTsimi/sastsimi/issues/6), [#8](https://github.com/SASTsimi/sastsimi/issues/8), [#21](https://github.com/SASTsimi/sastsimi/issues/21), [#22](https://github.com/SASTsimi/sastsimi/issues/22) |
 | H-006 | RESOLVED | 병렬 실행·retry·중단 뒤에도 같은 작업과 결과를 한 번만 반영하도록 설계했습니다. | 공통 `WorkExecutionState`·attempt·state version·dedupe·atomic output binding·journal recovery와 stale result 차단 규칙이 필요했음 | `03`, `07`, `08`, `10`, `13`과 Wiki에 허용 전이, `dedupe_key`, compare-and-set, `TransitionCommit`, exact output pointer, crash-resume와 16개 상태·복구 부정 시나리오를 정의함. 실제 저장 제품·성능 검증은 R3 구현 단계에서 확인 | PM + 통합 개발 | [#14](https://github.com/SASTsimi/sastsimi/issues/14), [#4](https://github.com/SASTsimi/sastsimi/issues/4), [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
-| H-007 | RESOLVED | TRUE+TRUE 방향, 같은 검증 담당자, REVISE 재진입과 오래된 체이닝 결과 차단을 계약으로 고정했습니다. | 두 PROVIDED만 비교하면 뒤 TRUE의 선행 조건을 증명하지 못하고, assignment·새 Verification work·commit-time Primitive index 검사가 없으면 다른 owner나 stale 결과가 반영될 수 있었음 | `VerificationAssignment`, 새 VERIFICATION generation의 `TERMINAL -> VERIFYING`, PROVIDED `required_preconditions`, `PrimitiveIndexState`와 commit-time CAS를 정본·Wiki·검증 시나리오에 추가 | PM + LLM 탐색·체이닝 + 검증·통합 | [#2](https://github.com/SASTsimi/sastsimi/issues/2), [#5](https://github.com/SASTsimi/sastsimi/issues/5), [#7](https://github.com/SASTsimi/sastsimi/issues/7) |
+| H-007 | RESOLVED | 연계 방향, 같은 검증 담당자, REVISE 재진입과 오래된 체이닝 결과 차단을 계약으로 고정했습니다. | 연결 방향·부모 revision·새 Verification work 확인이 없으면 다른 owner의 결과나 오래된 결과가 반영될 수 있었음 | `VerificationAssignment`, 새 VERIFICATION generation의 `TERMINAL -> VERIFYING`, 통합 Primitive의 upstream `result`→downstream `input`, 공통 record revision과 원자적 current pointer 갱신을 정본·Wiki·검증 시나리오에 반영 | PM + LLM 탐색·체이닝 + 검증·통합 | [#2](https://github.com/SASTsimi/sastsimi/issues/2), [#5](https://github.com/SASTsimi/sastsimi/issues/5), [#7](https://github.com/SASTsimi/sastsimi/issues/7) |
 
 ## Medium/Low backlog
 
 - B-003에서 제기한 저장소 라이선스와 외부 기여 범위는 설계·개발의 Blocker가 아니므로 공개 배포 또는 외부 기여를 받기 전 결정사항으로 재분류했다. 결정 전에는 `LICENSE`를 추가하지 않으며, 공개 방침을 정할 때 라이선스 후보와 `CONTRIBUTING.md` 범위를 함께 확정한다.
 - Wiki는 사용자 요구에 따라 포함했으나 파생·비규범적으로 유지한다. 장기적으로 번호 문서에서 생성·검증하는 방식을 결정한다.
 - `11-migration-from-v4.md`는 비규범적 설계 계보로 전환했으며 로컬 v4 경로 주장을 제거했다.
-- Primitive 입력은 final HOLD의 REQUIRED와 두 Gate를 정상 통과한 exact TRUE revision의 PROVIDED로 명확화했다. TRUE+TRUE는 앞 PROVIDED와 뒤 TRUE의 exact 선행 조건을 방향성 있게 비교하고 current index를 commit 시 재확인한다. `FALSE`, Gate 전 TRUE와 오래된 Gate revision을 chaining 근거로 승격하지 않는다.
+- Primitive는 final HOLD의 `inputs + result=null`과 validated PoC·Technical `ACCEPT`를 받은 TRUE의 `inputs + result`를 같은 형식으로 표현한다. upstream `result`와 downstream의 특정 `input`을 방향성 있게 비교하고 exact current record를 저장 시 재확인한다. `FALSE`, Gate 전 TRUE와 오래된 Technical review revision을 chaining 근거로 승격하지 않는다. Rule Scope는 보고 가능성만 판단한다.
 - Docsify가 사용하는 외부 CDN dependency의 version pinning과 offline rendering 정책은 별도 결정한다.
 - 표현·예시·문서 미세 보정은 Blocker/High 검토보다 후순위다.
 
