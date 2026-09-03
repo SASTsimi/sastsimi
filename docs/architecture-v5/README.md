@@ -16,7 +16,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 
 1. **입력과 코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다. 규칙 기반 SAST는 검사 0건·미실행·확인 불가를 구분해 기록합니다.
 2. **가설과 검증**: LLM이 취약점 가능성을 제안하고, Orchestration이 등록·배정한 뒤 Verification Agent가 코드·찬성·반대 근거를 검토하고 필요한 동적 재현 목적을 R7에 요청합니다.
-3. **동적 재현과 연계 탐색**: R7이 환경·계획·PoC candidate를 만들고 Docker에서 실행합니다. 모든 final TRUE에는 validated PoC가 필요하며, HOLD는 즉시, TRUE는 Technical `ACCEPT` 뒤에 Primitive matching에 사용합니다.
+3. **동적 재현과 연계 탐색**: R7 Reproduction Agent가 환경·계획·PoC candidate를 만들고 clean Sandbox에서 실행합니다. 모든 final TRUE에는 validated PoC가 필요하며, HOLD는 즉시, TRUE는 Technical `ACCEPT` 뒤에 Primitive matching에 사용합니다.
 4. **최종 검토와 자동화 종료**: 취약점 종류를 붙이고 기술 근거와 공식 정책을 차례로 검토한 뒤, Reporter가 내부 초안을 만들고 결과를 저장하면 Agent 자동화가 끝납니다.
 
 ## 정확한 22단계 기준 흐름
@@ -32,7 +32,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 9. Verification이 entity·위치·경로를 기준으로 필요한 코드 문맥을 조회한다.
 10. 운영 분석의 Verification이 Pro/Con을 독립 NEW session으로 병렬 실행한다.
 11. 초기 `TRUE | FALSE | HOLD` 판정을 만든다.
-12. Initial TRUE이면 R6가 `POC_CONFIRMATION`, 판정에 동적 근거가 필요하면 `VERDICT_EVIDENCE` 요청을 만든다. R7 Agent가 exact requirements·plan·recipe·PoC를 생산하고 Controller 외부 경계를 통과한 clean Sandbox 안에서 자율 실행한다. Session Manager가 같은 attempt의 AgentLog·candidate·validated PoC와 동적 결과를 확정한다.
+12. Initial TRUE이면 R6가 `POC_CONFIRMATION`, 판정에 동적 근거가 필요하면 `VERDICT_EVIDENCE` 요청을 만든다. R7 Agent가 current request에 연결된 exact requirements·plan·recipe·PoC references를 생산하고 Controller 외부 경계가 확인된 clean Sandbox 안에서 자율 실행한다. Session Manager가 같은 attempt의 AgentLog·candidate·validated PoC와 동적 결과를 확정한다.
 13. 최종 `TRUE | FALSE | HOLD`와 별도 material claim을 확정한다.
 14. `FALSE`는 terminal로 끝내고, `HOLD`는 inputs만 있고 result가 없는 Primitive를 즉시 저장해 Chaining 자격을 준다. TRUE는 CWE 단계로 간다.
 15. validated PoC와 `SUCCEEDED + SUPPORTED` 동적 결과가 연결된 final TRUE와 CWE만 Technical Evidence Gate Agent가 검토한다.
@@ -60,7 +60,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 - 공식 프로그램 정책이 없으면 rule/scope를 추정하지 않으며 보고서 전달 권한은 `DENY`다.
 - Membership session과 API provider는 공통 adapter 경계를 사용한다. Membership path는 feasibility/security 검토 전 experimental이며, provider 전환은 명시적으로 기록하고 조용한 failover는 금지한다.
 - Reporter는 `ReportDraft`를 만드는 마지막 Agent다. 이후 신뢰 runtime이 `AnalysisRunResult`를 확정하면 자동화가 끝난다.
-- 모든 LLM 출력은 비신뢰 입력이다. 신뢰 경계 안의 Runtime Validator가 schema·호출 권한·상태 전이·예산·provider/session·Gate 순서·Reporter 전제조건을 강제하고, Sandbox Controller가 image·command·file·network·resource·cleanup 정책을 전담한다.
+- 모든 LLM 출력은 비신뢰 입력이다. 신뢰 경계 안의 Runtime Validator가 schema·호출 권한·상태 전이·예산·provider/session·Gate 순서·Reporter 전제조건을 강제하고, Sandbox Controller가 host·daemon/socket·mount/namespace·secret·egress·workspace·resource/lifecycle 같은 외부 경계만 전담한다.
 - Agent와 service는 실행을 `ActionRequest`로 제안하고 runtime validator가 요청당 하나의 `ActionDecision=ALLOW | DENY`를 만든다. 실제 LLM 호출은 검사한 `LLMCallSpec`과 같아야 하며 ALLOW는 exact action과 state version에 한 번만 사용한다.
 - `ReportDraft`는 current Finding·Verification·CWE·두 Gate·정책 revision을 정확히 참조하고 restriction·limitation·남은 불확실성과 redaction 결과를 보존한다. 오래된 초안은 current `AnalysisRunResult`에 넣지 않는다.
 - 분석 공백, 실행 오류, LLM·sandbox 실패와 취소는 기술 판정 `FALSE`와 분리한다. 공통 ID·시간·상태·오류 기준은 [경량 데이터 계약](./08-lightweight-data-contracts.md)을 따른다.

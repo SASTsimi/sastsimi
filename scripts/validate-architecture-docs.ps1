@@ -748,10 +748,10 @@ $authorityScenarioMarkers = @(
     'Pro와 Con이 같은 session 또는 parent를 공유',
     '`SAVE_RESULT` 검사 뒤 candidate bytes를 바꿈',
     '실행 오류만 든 `FALSE` 후보를 저장',
-    '다른 역할이 만든 결과 후보를 저장'
-    '`RUN_SANDBOX` 허가 뒤 request·plan·requirements·profile revision이 바뀜'
-    'Agent가 Sandbox 외부 경계에 접근하려 함'
-    'AgentLog·환경·PoC·cleanup이 서로 다른 attempt를 가리킴'
+    '다른 역할이 만든 결과 후보를 저장',
+    '`RUN_SANDBOX` 허가 뒤 request·plan·requirements·profile revision이 바뀜',
+    'Agent가 Sandbox 외부 경계에 접근하려 함',
+    'AgentLog·환경·PoC·cleanup이 서로 다른 attempt를 가리킴',
     'Verification 또는 Agent가 최종 `DynamicReproductionResult`를 직접 저장'
 )
 foreach ($marker in $authorityScenarioMarkers) {
@@ -763,7 +763,7 @@ foreach ($marker in $authorityScenarioMarkers) {
 $sandboxReviewPatterns = @(
     @{
         Name = 'Sandbox Controller enforces only external boundaries'
-        Pattern = '(?s)`RUN_SANDBOX`의 ALLOW.*?Sandbox Controller.*?Docker socket.*?host mount.*?production secret.*?다른 workspace.*?외부 경계.*?개별 command.*?실행 순서를 사전 허가하지 않는다'
+        Pattern = '(?s)`RUN_SANDBOX`의 ALLOW.*?Sandbox Controller.*?Docker socket.*?host mount.*?production secret.*?다른 workspace.*?외부 경계.*?개별 command.*?실행 순서는 사전 허가 대상이 아니다'
     },
     @{
         Name = 'Setup Automation creates a clean Sandbox and Agent runs autonomously'
@@ -807,7 +807,7 @@ $environmentHandoffPatterns = @(
     },
     @{
         Name = 'R7 uses one Sandbox path and plan does not prescribe exact commands'
-        Pattern = '(?s)exact command·payload·실행 순서·cleanup policy를 계약으로 고정하지 않는다.*?모든 동적 재현은 같은 Sandbox 실행 경로'
+        Pattern = '(?s)실행 세부\(command·payload·순서·cleanup\)는 계약상 고정하지 않는다.*?모든 동적 재현은 같은 Sandbox 실행 경로'
     },
     @{
         Name = 'EnvironmentRecipe records base and built image digests'
@@ -827,7 +827,7 @@ $environmentHandoffPatterns = @(
     },
     @{
         Name = 'autonomous execution contracts use a new major schema'
-        Pattern = '(?s)exact step/command 대리 실행 모델에서 자율 Agent artifact 모델로 바뀌므로 관련 계약은 새 MAJOR schema'
+        Pattern = '(?s)대리 실행기 중심 모델에서 자율 Agent artifact 모델로 바뀌므로 관련 계약은 새 MAJOR schema'
     }
 )
 foreach ($rule in $environmentHandoffPatterns) {

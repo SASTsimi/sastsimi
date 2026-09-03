@@ -47,7 +47,7 @@ NOT_IMPLEMENTED
 
 1. **코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다. SAST 규칙별로 검사 0건·미실행·확인 불가를 구분합니다.
 2. **가설 생성과 검증**: Orchestration이 가설을 등록해 Verification에 배정하고, Verification이 찬성·반대 근거와 필요한 후속 작업을 관리합니다.
-3. **필요한 경우 재현**: Verification 판단에 따라 Docker 격리 환경에서 제한적으로 공격 흐름을 재현합니다.
+3. **동적 재현**: Verification 판단에 따라 R7 Reproduction Agent가 Docker 격리 환경에서 자율적으로 공격 흐름을 재현합니다.
 4. **판정별 연계 탐색**: HOLD의 필요 조건은 즉시, TRUE의 제공 능력은 validated PoC와 Technical `ACCEPT` 뒤 연결해 새 가설을 만듭니다. Rule Scope는 보고 가능성만 판단합니다.
 5. **근거·정책 검토와 자동화 종료**: 두 Gate를 통과한 결과만 보고서 초안으로 만들고, 결과와 디버깅 정보를 저장한 뒤 Agent 자동화를 끝냅니다.
 
@@ -67,7 +67,7 @@ Repository input
 → Verification이 on-demand context와 운영 기본 Pro/Con 병렬 검증 관리
 → initial TRUE면 POC_CONFIRMATION, 판정 근거가 필요하면 VERDICT_EVIDENCE 요청을 R6가 생성
 → Runtime Validator가 같은 Verification generation의 동적 work가 하나인지 확인
-→ R7이 EnvironmentRequirements·ReproductionPlan·PoC candidate 생성
+→ R7 Agent가 EnvironmentRequirements·ReproductionPlan·PoC candidate 생성
 → Sandbox Controller가 외부 안전 경계를 검사하고 R7 Setup Automation이 clean Sandbox 생성
 → Reproduction Agent가 내부에서 환경 구성·PoC 작성·실행·관찰·retry를 자율 수행
 → Reproduction Session Manager가 event·candidate·validated PoC와 최종 결과를 같은 attempt로 확정

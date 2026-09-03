@@ -86,14 +86,14 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - host root/home, Docker socket, host process namespace와 광범위한 write mount를 제공하지 않는다.
 - network default-deny를 사용하고 승인된 범위만 제한적으로 연다.
 - production credential, 실제 개인정보와 범위 밖 target을 사용하지 않는다. 환경 요구사항·실제 값·Health Check 기록에도 credential·cookie·token·password 원문을 넣지 않고 필요한 경우 secret store의 불투명 handle만 연결한다.
-- image/digest, command/step ref, exit/observation, timeout과 cleanup을 기록한다.
+- image/digest, AgentLog의 실행 event, exit/observation, timeout과 cleanup을 기록한다.
 - Docker build와 실행은 분석용 `CodeWorkspace`를 직접 수정하지 않고 sandbox 내부 복사본에서 수행한다.
 - LLM은 Sandbox 외부 policy를 바꾸거나 host shell·외부 공격·지속성 설치를 승인할 수 없다. 격리 경계 내부의 shell·package·PoC 작업은 Reproduction Agent가 자율 수행한다.
 - R6의 `REQUEST_DYNAMIC_REPRO`는 Runtime Validator가 현재 Verification generation, exact request, 권한·상태·예산과 generation당 하나의 동적 work 제한을 확인한 뒤 R7에 전달한다.
-- `RUN_SANDBOX`는 Runtime Validator가 R7 요청자·상태·예산과 exact `ReproductionPlan` 및 current `EnvironmentRequirements` reference를 확인한 `ActionDecision=ALLOW` 뒤 Sandbox Controller로 전달한다. 이 ALLOW는 환경 일치, Sandbox 정책 통과나 Docker 실행 성공을 뜻하지 않는다.
-- Sandbox Controller는 exact plan·requirements·profile에서 image, mount·namespace, Docker socket, host·secret·다른 workspace 접근, egress와 R8 resource·lifecycle을 검사하고 exact `sandbox_policy_decision`을 저장한다. 개별 command·tool·package·payload·실행 순서는 검사하지 않는다.
-- 통과 뒤 R7 Sandbox Setup Automation이 가설 work의 최초 clean Sandbox를 만들고, Reproduction Agent가 환경·Health Check·PoC·관찰·retry를 자율 수행한다. 같은 work에서는 영향 있는 상태·설정 변화가 없으면 container를 재사용한다. Agent가 `STATE_CHANGED | CONFIG_CHANGED | STATE_UNCERTAIN`으로 요청하거나 crash·비정상 종료·사후 Health Check 실패로 runtime이 상태를 신뢰할 수 없으면 Setup Automation이 같은 baseline에서 새 container를 만든다. 실제 environment·instance identity·재생성 event·recipe와 모든 action event는 같은 request·plan·attempt로 연결한다.
-- Reproduction Session Manager는 Agent가 시작되지 않은 정책 차단도 결과로 확정하고, Agent가 시작됐으면 durable `AgentLog`를 요구한다. request·plan·requirements·recipe·environment·candidate·validated PoC·cleanup은 같은 analysis·workspace·commit·hypothesis·work·attempt의 exact revision만 연결한다.
+- `RUN_SANDBOX`는 Runtime Validator가 R7 요청자·상태·예산과 current generation의 exact `DynamicReproductionRequest`·`EnvironmentRequirements`·`sandbox_profile_ref` 및 same-work `ReproductionPlan` reference 연결을 확인한 `ActionDecision=ALLOW` 뒤 Sandbox Controller로 전달한다. 이 ALLOW는 환경 일치, Sandbox 정책 통과나 Docker 실행 성공을 뜻하지 않는다.
+- Sandbox Controller는 Sandbox profile과 setup 입력을 기준으로 image, mount·namespace, Docker socket, host·secret·다른 workspace 접근, egress와 R8 resource·lifecycle 같은 외부 경계만 검사하고 `sandbox_policy_decision`을 저장한다. 개별 command·tool·package·payload·실행 순서는 검사하지 않는다.
+- 통과 뒤 R7 Sandbox Setup Automation이 가설 work의 최초 clean Sandbox를 만들고, Reproduction Agent가 환경·Health Check·PoC·관찰·retry를 자율 수행한다. 같은 work에서는 영향 있는 상태·설정 변화가 없으면 container를 재사용한다. Agent가 `STATE_CHANGED | CONFIG_CHANGED | STATE_UNCERTAIN`으로 요청하거나 crash·비정상 종료·사후 Health Check 실패로 runtime이 상태를 신뢰할 수 없으면 Setup Automation이 같은 baseline에서 새 container를 만든다. 실제 environment·instance identity·재생성 event·recipe와 모든 AgentLog event는 같은 request·work·attempt로 연결한다.
+- Reproduction Session Manager는 Agent가 시작되지 않은 정책 차단도 결과로 확정하고, Agent가 시작됐으면 durable `AgentLog`를 요구한다. request·plan·requirements·recipe·environment·candidate·validated PoC·cleanup은 같은 analysis·workspace·commit·hypothesis·work·attempt의 exact revision·record references만 연결한다.
 - validated PoC 없이 `TRUE` 저장 또는 Technical Gate 호출을 요청하면 Runtime Validator가 거절한다. validated `poc_ref`는 현재 generation의 exact candidate가 `SUCCEEDED + SUPPORTED`로 실행된 경우에만 허용한다.
 - 정리 대상이 하나도 생기지 않았을 때만 `cleanup_status=NOT_REQUIRED`다. 정책 차단 전에 build·container·network·volume·임시 파일이 생겼다면 정리 성공 또는 실패를 기록하며 `NOT_REQUIRED`로 숨기지 않는다.
 - network는 default-deny다. 저장소나 LLM이 새 대상 통신을 요구해도 승인된 versioned sandbox profile에 없으면 `SANDBOX_POLICY_DENIED`다.

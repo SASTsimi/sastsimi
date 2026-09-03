@@ -166,8 +166,8 @@ flowchart TB
     CTRL --> PDEC[Exact SandboxPolicyDecision]
     PDEC -->|Pass| ENV[Setup Automation creates a clean Sandbox]
     PDEC -->|Policy blocked| ASSEMBLER[Session Manager finalizes blocked result]
-    ENV --> RUNNER[Agent builds environment PoC executes observes and retries]
-    RUNNER --> ASSEMBLER
+    ENV --> AGENT[Agent builds environment PoC executes observes and retries]
+    AGENT --> ASSEMBLER
     ASSEMBLER --> DRESULT[AgentLog result candidate and nullable validated PoC]
     DRESULT --> OBS{Observed outcome}
     OBS -->|SUPPORTED with validated PoC| SYN2[Verification re-synthesizes evidence]
@@ -390,7 +390,7 @@ flowchart LR
     DOMAIN[Verification Gates and Reporter keep domain decisions] -. not decided by validator .-> CHECK
 ```
 
-Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 호출 권한·상태·예산·exact plan reference를 확인한다. image·command·file·network·resource·cleanup 정책은 Sandbox Controller가 검사한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
+Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 호출 권한·상태·예산과 current generation의 exact request·requirements·sandbox_profile_ref 및 same-work ReproductionPlan reference 연결을 확인한다. Sandbox Controller는 host·daemon/socket·mount/namespace·secret·egress·workspace·resource/lifecycle 외부 경계만 검사하고 Agent 내부 command·package·payload·실행 순서는 사전 검사하지 않는다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
 
 ## 13. ReportDraft와 Agent 자동화 종료 경계
 

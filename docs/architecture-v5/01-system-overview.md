@@ -27,7 +27,7 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 | 9 | Verification이 위치 기반 코드 문맥 조회 | `CodeContextRequest/Response` |
 | 10 | 운영 Verification이 Pro/Con을 독립 병렬 실행 | supporting/counter evidence |
 | 11 | 정적·Pro·Con 근거로 초기 판정 | initial `TRUE | FALSE | HOLD`; initial TRUE는 아직 최종 TRUE가 아님 |
-| 12 | Verification이 목적을 적은 동적 재현 요청을 만들고, R7이 환경 요구사항·실행 계획·PoC candidate를 만든 뒤 승인된 Sandbox에서 한 work로 실행 | `DynamicReproductionRequest`, `EnvironmentRequirements`, `ReproductionPlan`, `DynamicReproductionResult` |
+| 12 | Verification이 목적을 적은 동적 재현 요청을 만들고, R7 Agent가 환경 요구사항·재현 계획·PoC candidate를 만든 뒤 외부 경계가 확인된 clean Sandbox에서 한 work로 자율 실행 | `DynamicReproductionRequest`, `EnvironmentRequirements`, `ReproductionPlan`, `DynamicReproductionResult` |
 | 13 | 동적 결과를 반영해 최종 판정과 material claim 분리 | final TRUE에는 재현 성공을 가리키는 validated `poc_ref` 필수; optional `origin=VERIFICATION` proposal |
 | 14 | 판정별 분기 | FALSE terminal / HOLD는 inputs만 있고 result가 없는 Primitive 즉시 admission / TRUE CWE 진행 |
 | 15 | TRUE 기술 근거 검토 | `TechnicalEvidenceReview` |
@@ -54,7 +54,7 @@ Orchestration -> Hypothesis Agent -> trusted validation and registration
                                                 │ initial TRUE or dynamic evidence needed
                                                 v
                          DynamicReproductionRequest -> R7 plan/PoC candidate
-                                                -> approved Sandbox execution
+                                                -> external boundary check -> clean Sandbox autonomous execution
                                                 -> DynamicReproductionResult
                                       │
                    ┌──────────────────┼────────────────────┐
@@ -79,7 +79,7 @@ Reporter -> ReportDraft -> AnalysisRunResult -> Agent automation end
 
 Technical Evidence Gate의 `REVISE`는 같은 가설의 Verification owner에게 직접 돌아간다. Verification은 필요한 Context·Pro/Con·정적·동적 근거를 보완하고 새 `VerificationResult` 및 필요한 `CWELabel` revision으로 Gate를 다시 요청한다. Verification 또는 Chaining이 만든 새 material claim은 기존 결과에 붙여 확정하지 않고 trusted registration 뒤 8단계부터 전체 검증을 새로 거친다.
 
-모든 final `TRUE`에는 현재 Verification generation에서 성공한 동적 재현과 validated PoC가 필요하다. validated PoC가 없는 `TRUE`는 저장하거나 Technical Gate로 전달하지 않는다. PoC 작성·환경 구성·실행이 실패했다면 취약점 판정을 `FALSE`나 `HOLD`로 바꾸지 않고 같은 동적 재현 work를 `BLOCKED` 또는 `FAILED`로 끝낸다.
+모든 final `TRUE`에는 현재 Verification generation에서 성공한 동적 재현과 validated PoC가 필요하다. validated PoC가 없는 `TRUE`는 저장하거나 Technical Gate로 전달하지 않는다. PoC 작성·환경 구성·실행이 실패하면 `failure_category`와 사람이 읽을 수 있는 `failure_reason`을 가진 attempt 결과를 기록할 수 있지만, 그 결과를 R6의 final verdict 근거로 소비하지 않는다. 재시도 가능하면 같은 동적 재현 work를 `BLOCKED`, 복구 불가능하거나 한도를 소진하면 `FAILED`로 끝낸다.
 
 ## 구성 요소와 책임
 
@@ -96,8 +96,8 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | Verification Agent | 가설 내부 Context·Pro/Con, 동적 재현 목적·목표·필요 환경을 담은 `DynamicReproductionRequest`, 최종 판정·REVISE·Gate·Chaining 흐름과 material child proposal | `EnvironmentRequirements`·`ReproductionPlan`·PoC·동적 결과 직접 생산, Sandbox 실행 또는 새 주장의 무검증 승격 |
 | Pro/Con Agents | 독립적인 성립·반박 근거 조사 | 동일 session 공유 |
 | Reproduction Agent | R6 요청을 바탕으로 `EnvironmentRequirements`·`ReproductionPlan`·recipe·PoC를 만들고 clean Sandbox 안에서 환경 구성·실행·관찰·retry를 자율 수행 | R6 요청 목적·필수 조건·profile 변경 또는 최종 취약점 판정 |
-| Sandbox Controller | exact request·plan·requirements의 host·Docker daemon·secret·egress·다른 workspace·자원·lifecycle 외부 경계 판정 | Agent 내부 command·payload·package·실행 순서 결정 |
-| R7 Sandbox Setup Automation | 승인된 경계로 image build·가설별 최초 clean Sandbox 생성·요청 또는 강제 조건에 따른 baseline 재생성·lifecycle cleanup 수행 | 최종 verdict 판단 또는 Agent 전략 개입 |
+| Sandbox Controller | current generation의 exact request·EnvironmentRequirements·sandbox profile reference와 setup 입력에 따른 host·Docker daemon·secret·egress·다른 workspace·자원·lifecycle 외부 경계 판정 | Agent 내부 command·payload·package·실행 순서 결정 |
+| R7 Sandbox Setup Automation | 외부 경계 정책으로 image build·가설별 최초 clean Sandbox 생성·요청 또는 강제 조건에 따른 baseline 재생성·lifecycle cleanup 수행 | 최종 verdict 판단 또는 Agent 전략 개입 |
 | Reproduction Session Manager | runtime/tool event를 durable AgentLog로 기록하고 같은 attempt의 policy·recipe·환경·candidate·validated PoC·cleanup을 `DynamicReproductionResult`로 확정 | Agent 호출·허용·차단·retry 결정 또는 다른 attempt 혼합 |
 | Primitive DB | HOLD의 inputs-only Primitive와 Technical-accepted TRUE의 result Primitive exact revision 검색 | 작업 queue, Gate 전 TRUE admission 또는 자동 Finding 생성 |
 | Chaining Agent | upstream Primitive `result`→downstream Primitive `input` matching과 chained proposal | 일반 research, dynamic, Gate, verdict, CWE, report 확정 |
@@ -120,7 +120,7 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 
 한 축의 값으로 다른 축을 암묵적으로 추론하지 않는다. 예를 들어 기술적으로 `TRUE`여도 out-of-scope이거나 실질 영향이 부족하면 Reporter를 호출하지 않는다.
 
-Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제안한다. 비-LLM Runtime Validator가 역할·schema·exact revision·상태·예산·일반 도구·경로·provider·두 Gate 순서와 보고 조건을 검사해 `ActionDecision=ALLOW | DENY`를 저장한다. `REQUEST_DYNAMIC_REPRO`는 Verification의 요청을 R7 work로 등록하는 허가이고, `RUN_SANDBOX`는 R7이 확정한 exact plan·current requirements를 Sandbox Controller에 전달하는 허가다. 어느 허가도 환경 일치나 재현 성공을 뜻하지 않는다. Controller가 외부 안전 경계를 통과시키면 R7 Sandbox Setup Automation이 clean Sandbox를 준비하고, Reproduction Agent가 내부 환경 구성·PoC·command·관찰·retry를 자율 수행한다. Reproduction Session Manager는 실제 runtime/tool event를 durable AgentLog로 기록하고 같은 attempt의 `DynamicReproductionResult`를 확정한다. 이 검사는 환경 의미·취약점 판정이나 정책 해석을 대신하지 않는다.
+Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제안한다. 비-LLM Runtime Validator가 역할·schema·current generation의 exact request·requirements·sandbox profile references·상태·예산·일반 도구·경로·provider·두 Gate 순서와 보고 조건을 검사해 `ActionDecision=ALLOW | DENY`를 저장한다. `REQUEST_DYNAMIC_REPRO`는 Verification의 요청을 R7 work로 등록하는 허가이고, `RUN_SANDBOX`는 R7 Agent의 current work와 exact 환경 reference 연결을 확인해 Sandbox Controller의 외부 경계 검사를 시작하는 허가다. 어느 허가도 환경 일치나 재현 성공을 뜻하지 않는다. Controller가 외부 안전 경계를 통과시키면 R7 Sandbox Setup Automation이 clean Sandbox를 준비하고, Reproduction Agent가 내부 환경 구성·PoC·command·관찰·retry를 자율 수행한다. Reproduction Session Manager는 실제 runtime/tool event를 durable AgentLog로 기록하고 같은 attempt의 `DynamicReproductionResult`를 확정한다. 이 검사는 환경 의미·취약점 판정이나 정책 해석을 대신하지 않는다.
 
 ## 병렬성과 종료 조건
 

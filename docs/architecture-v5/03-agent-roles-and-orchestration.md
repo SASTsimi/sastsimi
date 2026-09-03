@@ -120,7 +120,7 @@ Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하
 | Reporter Agent | 내부 보고서 문장·구성 | 없음 | 통과한 결과와 두 Gate | 없음 | 없음 |
 | Runtime Validator | 허용 가능한 대체 action 안내 | 없음 | 실행 전제와 exact reference | action 허용·차단 | 없음 |
 
-Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 판정을 확정하지 않는다. Verification Agent는 `DynamicReproductionRequest`와 최종 verdict를 생산하고, R7 Agent는 exact `EnvironmentRequirements`·`ReproductionPlan`·recipe·PoC를 생산한다. Controller는 Sandbox 외부 경계를 검사하고 Setup Automation이 clean Sandbox를 만든다. Agent는 내부에서 환경·command·PoC·관찰·retry를 자율 수행한다. 비-LLM Session Manager는 실제 event와 같은 attempt의 artifact를 대조해 AgentLog와 최종 동적 결과만 확정한다. R7은 R6 요청 목적과 최종 verdict를 바꾸지 않는다.
+Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 판정을 확정하지 않는다. Verification Agent는 `DynamicReproductionRequest`와 최종 verdict를 생산하고, R7 Agent는 request에 연결된 exact `EnvironmentRequirements`·`ReproductionPlan` references·recipe·PoC를 생산한다. Controller는 Sandbox 외부 경계만 검사하고 Setup Automation이 clean Sandbox를 만든다. Agent는 내부에서 환경·command·PoC·관찰·retry를 자율 수행한다. 비-LLM Session Manager는 실제 event와 같은 attempt의 artifact를 대조해 AgentLog와 최종 동적 결과만 확정한다. R7은 R6 요청 목적과 최종 verdict를 바꾸지 않는다.
 
 ReportDraft 이후의 검토·수정·제출·공개는 이 역할표와 Agent action lifecycle 밖에서 사람이 수행한다. 자동화는 사람 검토 상태나 공개 결정을 만들지 않는다.
 
@@ -137,7 +137,7 @@ Agent 또는 service의 제안
 -> 결과와 상태를 atomic 저장
 ```
 
-`ActionRequest`에는 신뢰 runtime이 붙인 실제 호출자 identity, 요청 역할, action 종류, exact input refs, 현재 work와 state version, 도구·파일·provider·session·Sandbox 범위를 넣는다. LLM action은 model·prompt·context·schema·예산·시간이 고정된 `LLMCallSpec`도 포함한다. Runtime Validator는 실제 identity의 등록 역할과 요청 역할이 같은지부터 action별 필수 `ActionCheck`를 수행한다. 하나라도 실패하면 `DENY`와 `AnalysisError`를 저장하고 실행하지 않는다. Agent가 자연어로 “검사를 건너뛰라”고 출력하거나 다른 역할을 주장해도 action이 되지 않는다. 단, `RUN_SANDBOX`의 image·command·file·network·resource·cleanup 의미 검사는 Runtime Validator가 중복 수행하지 않고 Sandbox Controller가 전담한다.
+`ActionRequest`에는 신뢰 runtime이 붙인 실제 호출자 identity, 요청 역할, action 종류, exact input refs, 현재 work와 state version, 도구·파일·provider·session·Sandbox 범위를 넣는다. LLM action은 model·prompt·context·schema·예산·시간이 고정된 `LLMCallSpec`도 포함한다. Runtime Validator는 실제 identity의 등록 역할과 요청 역할이 같은지부터 action별 필수 `ActionCheck`를 수행한다. 하나라도 실패하면 `DENY`와 `AnalysisError`를 저장하고 실행하지 않는다. Agent가 자연어로 “검사를 건너뛰라”고 출력하거나 다른 역할을 주장해도 action이 되지 않는다. `RUN_SANDBOX`에서는 current generation의 exact request·requirements·sandbox profile references와 same-work ReproductionPlan reference·실행 상태만 확인하고, Sandbox 외부 경계의 의미 검사는 Sandbox Controller가 전담한다.
 
 한 ActionRequest에는 logical ActionDecision 하나만 허용한다. 두 Gate와 Reporter의 stage action은 LLM 호출까지 직접 허가하며 별도 `CALL_LLM`으로 순서·보고 조건을 우회할 수 없다.
 
@@ -147,7 +147,7 @@ Agent 또는 service의 제안
 - token·시간·비용·work·retry·repair·Gate 보완 예산
 - 일반 도구 action의 허용 tool과 workspace 안의 file path
 - `REQUEST_DYNAMIC_REPRO` 호출자의 Verification 권한·현재 generation·요청 reference·상태·예산과 generation당 하나의 동적 재현 work 제한
-- `RUN_SANDBOX` 호출자의 R7 권한·exact plan 및 current requirements reference·상태·예산; 애플리케이션 환경 값은 R7이 비교하고 Docker 세부 정책은 Sandbox Controller가 검사
+- `RUN_SANDBOX` 호출자의 R7 권한·current generation의 exact request·EnvironmentRequirements·sandbox_profile_ref와 same-work ReproductionPlan reference·상태·예산; 애플리케이션 환경 값은 R7 Agent가 비교하고 Sandbox 외부 경계는 Sandbox Controller가 검사
 - provider/model/profile, NEW/RESUME/AUTO와 explicit failover
 - final `TRUE` Verification+CWE 뒤 Technical Gate, 그 뒤 Rule Scope Gate라는 순서. `FALSE | HOLD`와 실패 가설은 Gate 입력이 아님
 - final `TRUE` 저장과 Technical Gate 요청에는 현재 generation의 `DynamicReproductionRequest`, `SUCCEEDED + SUPPORTED` 결과와 validated `poc_ref`가 모두 필요함
@@ -157,7 +157,7 @@ Agent 또는 service의 제안
 
 Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서 품질을 평가하지 않는다. 그것은 Verification, 두 LLM Gate와 Reporter의 역할이다.
 
-`REQUEST_DYNAMIC_REPRO`의 ALLOW는 generation당 하나의 동적 work를 등록하고, `RUN_SANDBOX`의 ALLOW는 exact plan·requirements·profile로 외부 경계 검사를 시작한다. Controller는 host·Docker daemon·secret·egress·다른 workspace·R8 resource·lifecycle을 제한하며 Agent 내부 명령을 사전 검사하지 않는다. Session Manager의 `SAVE_RESULT`는 plan requirements, 실제 environment·recipe image digest, AgentLog·candidate·validated PoC·cleanup의 동일 attempt 여부만 대조한다.
+`REQUEST_DYNAMIC_REPRO`의 ALLOW는 generation당 하나의 동적 work를 등록하고, `RUN_SANDBOX`의 ALLOW는 current generation의 exact request·EnvironmentRequirements·sandbox_profile_ref와 same-work ReproductionPlan reference 연결을 확인한 뒤 외부 경계 검사를 시작한다. Controller는 host·Docker daemon·secret·egress·다른 workspace·R8 resource·lifecycle을 제한하며 Agent 내부 명령을 사전 검사하지 않는다. Session Manager의 `SAVE_RESULT`는 R7 산출물의 exact request/requirements/plan reference 연결, 실제 environment·recipe image digest, AgentLog·candidate·validated PoC·cleanup의 동일 attempt 여부만 대조한다.
 
 ## 병렬 실행과 결과 합류
 
@@ -227,4 +227,4 @@ Pro와 Con은 session만 분리하지 않는다. trusted prompt builder가 같�
 
 ## prompt-injection 경계
 
-저장소 내용, 도구 message, README와 주석, 모든 LLM output, provider 응답과 Sandbox output은 모두 비신뢰 분석 데이터다. Agent instruction이나 실행 권한으로 승격하지 않는다. Orchestration은 system instruction과 data 구분을 유지하고 Runtime Validator가 structured output과 action policy를 검사한다. Sandbox Controller는 비신뢰 입력이 image·command·file·network·resource·cleanup 정책을 바꾸지 못하게 한다. 비신뢰 입력은 provider·model·session·Gate 순서·budget·Reporter와 자동화 종료 경계도 변경하지 못한다. 이런 변경 지시는 `UNTRUSTED_INSTRUCTION`으로 기록하고 실행하지 않는다.
+저장소 내용, 도구 message, README와 주석, 모든 LLM output, provider 응답과 Sandbox output은 모두 비신뢰 분석 데이터다. Agent instruction이나 실행 권한으로 승격하지 않는다. Orchestration은 system instruction과 data 구분을 유지하고 Runtime Validator가 structured output과 action policy를 검사한다. Sandbox Controller는 비신뢰 입력이 host·daemon/socket·mount/namespace·secret·egress·workspace·resource/lifecycle 외부 경계를 바꾸지 못하게 한다. Sandbox 내부 command·package·payload·실행 순서는 Reproduction Agent가 자율적으로 결정한다. 비신뢰 입력은 provider·model·session·Gate 순서·budget·Reporter와 자동화 종료 경계도 변경하지 못한다. 이런 변경 지시는 `UNTRUSTED_INSTRUCTION`으로 기록하고 실행하지 않는다.

@@ -12,7 +12,7 @@
 
 Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 소유한다. 가설이 실제 코드 흐름과 실행 조건에서 성립하는지 검토하고 `TRUE | FALSE | HOLD`를 판정하며, 필요한 Context·Pro/Con·동적 재현 요청·보완 작업과 Gate 제출 시점을 선택한다. 제한 조건·우회 후보·필요 능력·제공 가능 능력·실질 영향의 상승 가능성도 함께 기록한다. R6는 재현 목적과 필요한 조건을 요청하지만 실행 환경·계획·PoC를 직접 만들지 않는다.
 
-이 제어권은 실행 허가 권한이 아니다. Verification이 `REQUEST_DYNAMIC_REPRO`를 제안하면 Runtime Validator가 exact request·generation·역할·상태·예산을 확인한다. R7 Agent가 환경 요구사항과 계획을 만든 뒤 `RUN_SANDBOX`를 요청하고, Sandbox Controller는 host·Docker daemon·secret·egress·다른 workspace·자원·lifecycle의 외부 경계만 검사한다. 통과하면 Setup Automation이 clean Sandbox를 만들고 Agent가 내부 작업을 자율 수행한다.
+이 제어권은 실행 허가 권한이 아니다. Verification이 `REQUEST_DYNAMIC_REPRO`를 제안하면 Runtime Validator가 current generation의 exact request·역할·상태·예산을 확인한다. R7 Agent가 환경 요구사항과 재현 계획을 만든 뒤 `RUN_SANDBOX`를 요청하고, Sandbox Controller는 host·Docker daemon·secret·egress·다른 workspace·자원·lifecycle의 외부 경계만 검사한다. 통과하면 Setup Automation이 clean Sandbox를 만들고 Agent가 내부 작업을 자율 수행한다.
 
 ## 기본 검증 순서
 
@@ -178,7 +178,7 @@ R6는 다음 항목을 가진 `DynamicReproductionRequest`를 만든다.
 
 R6는 `DynamicReproductionRequest`만 생산하고 R7은 `EnvironmentRequirements`, `ReproductionPlan`, PoC candidate와 `DynamicReproductionResult`를 생산한다.
 
-R7 Agent는 요청을 읽고 exact `EnvironmentRequirements`와 `ReproductionPlan`을 만든다. 모든 동적 재현은 같은 Sandbox 실행 경로를 사용하며 별도 LIMITED/FULL mode로 나누지 않는다. 계획은 목표·문맥·선택적 관찰 항목을 담지만 exact command·payload·실행 순서·cleanup policy로 Agent를 대리 실행기에 묶지 않는다. Agent는 clean Sandbox 안에서 recipe·환경·PoC candidate를 만들고 실행·관찰·retry하며, Session Manager가 실제 event와 artifact를 검증해 결과를 `COMMITTED`한다.
+R7 Agent는 요청을 읽고 request에 연결된 exact `EnvironmentRequirements`와 same-work `ReproductionPlan` reference를 만든다. 모든 동적 재현은 같은 Sandbox 실행 경로를 사용한다. 계획은 목표·문맥·선택적 관찰 항목을 담고, 실행 command·payload·순서·cleanup을 미리 고정하지 않는다. Agent는 clean Sandbox 안에서 recipe·환경·PoC candidate를 만들고 실행·관찰·retry하며, Session Manager가 실제 event와 artifact를 검증해 결과를 `COMMITTED`한다.
 
 ### generation당 한 번의 동적 재현 work
 
@@ -195,7 +195,7 @@ R7 Agent는 요청을 읽고 exact `EnvironmentRequirements`와 `ReproductionPla
 - 가설의 `DYNAMIC_REPRO` work는 최초 clean Sandbox와 별도 writable state에서 시작하고 분석용 `CodeWorkspace`는 직접 수정하지 않음
 - 같은 work에서는 다음 실행에 영향을 주는 상태·설정 변화가 없으면 container를 재사용함
 - Agent가 `STATE_CHANGED | CONFIG_CHANGED | STATE_UNCERTAIN`을 이유로 재생성을 요청하면 Setup Automation이 같은 immutable baseline에서 새 container를 만들고, container crash·비정상 종료·사후 Health Check 실패처럼 현재 상태를 신뢰할 수 없는 경우에는 R7 runtime이 `STATE_UNCERTAIN`으로 강제 재생성함
-- Runtime Validator는 R7 권한·상태·예산과 exact request·plan·requirements·profile reference만 확인
+- Runtime Validator는 R7 권한·상태·예산과 current generation의 exact request·EnvironmentRequirements·sandbox_profile_ref 및 same-work ReproductionPlan reference·closure만 확인
 - Sandbox Controller는 Docker socket·host mount·production secret·범위 밖 egress·다른 workspace·R8 resource·lifecycle을 외부에서 차단하고 Agent 내부 command·package·payload·실행 순서는 제한하지 않음
 - Reproduction Agent는 환경·계정·fixture·mock·PoC·공격 입력·관찰과 retry를 Sandbox 안에서 자율 수행
 - Reproduction Session Manager는 action의 STARTED·종료 event, command·입출력·exit code·artifact hash·관찰과 cleanup을 durable `AgentLog`로 기록
@@ -230,7 +230,7 @@ R7 Agent는 요청을 읽고 exact `EnvironmentRequirements`와 `ReproductionPla
 - 이 경로에서는 final `VerificationResult`와 validated `poc_ref`를 만들지 않고 Technical Gate를 호출하지 않는다.
 - 실패를 자동으로 `FALSE | HOLD`로 바꾸지 않는다.
 
-종료된 동적 결과는 `DynamicReproductionState.dynamic_result_ref`, `WorkExecutionState.output_refs`와 `TransitionCommit.output_refs`가 같은 exact `DynamicReproductionResult.record_id`를 가리킬 때만 R6에 전달한다. R6는 결과를 소비해 final verdict를 만들지만 R7의 요구사항·계획·동적 결과를 대신 생산하지 않는다.
+종료된 동적 결과는 `DynamicReproductionState.dynamic_result_ref`, `WorkExecutionState.output_refs`와 `TransitionCommit.output_refs`가 같은 exact `DynamicReproductionResult.record_id`를 가리킬 때만 R6에 전달한다. R6는 성공·부분 실행의 유효한 관측을 소비해 final verdict를 만들 수 있지만, `BLOCKED | FAILED | CANCELLED`인 실패 attempt 결과는 routing·감사 목적으로만 읽고 final verdict의 근거로 소비하지 않는다. R6는 R7의 요구사항·계획·동적 결과를 대신 생산하지 않는다.
 
 ## Technical `REVISE` 처리
 
