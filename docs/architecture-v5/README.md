@@ -14,18 +14,17 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 
 ## 전체 흐름을 쉽게 나누면
 
-1. **입력과 코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다.
-2. **가설과 검증**: LLM이 취약점 가능성을 제안하고, Orchestration이 등록·배정한 뒤 Verification Agent가 가설 내부 코드·찬성·반대 근거와 동적 재현 모드·계획을 관리합니다.
-3. **동적 재현과 연계 탐색**: trusted runtime이 계획을 승인하면 R7 Sandbox가 exact plan을 Docker에서 실행해 결과를 돌려줍니다. HOLD는 즉시, TRUE는 두 Gate 통과 뒤에만 Primitive matching에 사용합니다.
-4. **최종 검토와 보고서 초안**: 취약점 종류를 붙이고 기술 근거와 공식 정책을 차례로 검토합니다.
-5. **사람의 결정**: 사람이 모든 결과와 디버깅 정보를 보고 외부 공개 여부를 결정합니다.
+1. **입력과 코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다. 규칙 기반 SAST는 검사 0건·미실행·확인 불가를 구분해 기록합니다.
+2. **가설과 검증**: LLM이 취약점 가능성을 제안하고, Orchestration이 등록·배정한 뒤 Verification Agent가 코드·찬성·반대 근거를 검토하고 필요한 동적 재현 목적을 R7에 요청합니다.
+3. **동적 재현과 연계 탐색**: R7이 환경·계획·PoC candidate를 만들고 Docker에서 실행합니다. 모든 final TRUE에는 validated PoC가 필요하며, HOLD는 즉시, TRUE는 Technical `ACCEPT` 뒤에 Primitive matching에 사용합니다.
+4. **최종 검토와 자동화 종료**: 취약점 종류를 붙이고 기술 근거와 공식 정책을 차례로 검토한 뒤, Reporter가 내부 초안을 만들고 결과를 저장하면 Agent 자동화가 끝납니다.
 
-## 정확한 23단계 기준 흐름
+## 정확한 22단계 기준 흐름
 
 1. 저장소를 입력받는다.
 2. `Repository Loader`가 저장소를 `git clone`하고 분석할 `commit_id`를 checkout해 `CodeWorkspace`를 준비한다.
-3. AST parse와 SAST 도구를 병렬 실행한다.
-4. 결과를 `StaticFactBundle`로 정규화한다.
+3. AST parse와 SAST 도구를 병렬 실행하고 `ToolRunResult`와 규칙 기반 도구의 `RuleExecutionRecord`를 저장한다.
+4. 결과를 exact 규칙 실행 기록이 연결된 `StaticFactBundle`로 정규화한다.
 5. Orchestration Agent가 초기 가설 생성 실행을 시작한다.
 6. 저비용 Hypothesis Agent를 호출한다.
 7. schema-valid `HypothesisProposal(origin=INITIAL)`을 전역 등록한다.
@@ -33,36 +32,37 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 9. Verification이 entity·위치·경로를 기준으로 필요한 코드 문맥을 조회한다.
 10. 운영 분석의 Verification이 Pro/Con을 독립 NEW session으로 병렬 실행한다.
 11. 초기 `TRUE | FALSE | HOLD` 판정을 만든다.
-12. Verification이 `NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO`를 고른다. 동적 재현이면 exact `EnvironmentRequirements`와 이를 가리키는 `ReproductionPlan`을 만든다. Runtime Validator가 호출 권한·상태·예산과 current reference를 확인하고, R7 Sandbox Controller가 세부 안전 정책 판정을 저장한다. Runner는 실제 환경과 Health Check를 비교해 필수 항목이 맞을 때만 공격 단계를 실행한다. 비-LLM Result Assembler가 exact R6 plan closure와 같은 R7 실행 시도의 정책·환경 비교·log·PoC·cleanup reference를 동적 결과로 묶어 반환한다.
+12. Initial TRUE이면 R6가 `POC_CONFIRMATION`, 판정에 동적 근거가 필요하면 `VERDICT_EVIDENCE` 요청을 만든다. 한 Verification generation에는 동적 work가 최대 하나다. R7은 exact request를 바탕으로 `EnvironmentRequirements`, `LIMITED_REPRO | FULL_REPRO` 계획과 PoC candidate를 생산한다. Runtime Validator와 Sandbox Controller 검사를 통과한 candidate만 Runner가 실행하고, Result Assembler가 같은 request·plan·attempt의 validated PoC와 동적 결과를 반환한다.
 13. 최종 `TRUE | FALSE | HOLD`와 별도 material claim을 확정한다.
-14. `FALSE`는 terminal로 끝내고, `HOLD`는 REQUIRED Primitive를 즉시 저장해 Chaining 자격을 준다. TRUE는 CWE 단계로 간다.
-15. final TRUE와 CWE를 Technical Evidence Gate Agent가 검토한다.
+14. `FALSE`는 terminal로 끝내고, `HOLD`는 inputs만 있고 result가 없는 Primitive를 즉시 저장해 Chaining 자격을 준다. TRUE는 CWE 단계로 간다.
+15. validated PoC와 `SUCCEEDED + SUPPORTED` 동적 결과가 연결된 final TRUE와 CWE만 Technical Evidence Gate Agent가 검토한다.
 16. `REVISE`이면 같은 Verification owner가 근거를 보완해 새 Verification/CWE revision으로 다시 제출한다.
-17. Technical `ACCEPT`인 TRUE만 Rule Scope Impact Gate Agent가 공식 정책·범위·실질 영향을 검토한다.
-18. 두 Gate를 정상 통과한 exact TRUE revision만 PROVIDED Primitive로 저장한다.
-19. Chaining Agent가 current Primitive index에서 TRUE+HOLD를 연결하거나, 앞 TRUE의 능력이 뒤 TRUE의 exact 선행 조건을 충족하는지 방향성 있게 matching한다.
+17. Technical `ACCEPT`인 exact TRUE는 제공 능력을 result로 가진 Primitive로 저장한다. 동시에 Rule Scope Impact Gate 요청을 시작할 수 있으며 두 경로는 서로 독립이다.
+18. Chaining Agent가 upstream result가 downstream input을 실제 코드 근거로 충족하는지 방향성 있게 matching한다.
+19. Rule Scope Impact Gate Agent가 공식 정책·범위·실질 영향을 검토하지만 이미 저장된 Primitive 자격은 바꾸지 않는다.
 20. Verification-origin 또는 Chaining-origin material claim은 trusted validation 뒤 새 가설로 등록하고 새 Verification을 배정한다.
 21. 모든 전달 조건을 만족한 결과에만 Reporter Agent가 보고서 초안을 작성한다.
-22. 결과·자원·LLM 호출 기록·PoC·오류·디버깅 정보를 저장하고 초기·파생 가설에 8–21단계를 반복한다.
-23. 사람이 Finding과 디버깅 정보를 검토하고 최종 공개 여부를 결정한다.
+22. 결과·자원·LLM 호출 기록·PoC·오류·디버깅 정보를 `AnalysisRunResult`에 저장하고 초기·파생 가설에 8–21단계를 반복한 뒤 Agent 자동화를 종료한다.
+
+자동화 종료 뒤 사람이 `AnalysisRunResult`와 current `ReportDraft`를 검토·수정하거나 외부에 제출·공개하는 과정은 Agent 공통 계약과 action lifecycle 밖에 있습니다.
 
 ## 핵심 원칙
 
-- AST와 SAST는 source, sink, entity, 위치, 호출·데이터 흐름, 인증·인가와 같은 사실 후보를 제공한다.
+- AST와 SAST는 source, sink, entity, 위치, 호출·데이터 흐름, 인증·인가와 같은 사실 후보를 제공한다. 규칙 기반 SAST는 선택·실행 여부와 raw 탐지 수를 별도 record로 남기며 미실행·확인 불가를 탐지 0건으로 바꾸지 않는다.
 - Hypothesis Agent는 항상 `HYPOTHESIS_ONLY / NON_FINAL` 제안만 만들며 Finding이나 확정 판정을 만들 수 없다.
 - 코드 문맥은 같은 `workspace_id`와 `commit_id`에서 위치 기반으로 필요할 때 조회하고, 조회 범위와 반환 위치를 기록한다.
-- Verification은 가설 내부 Context·Pro/Con, 환경 요구사항·동적 재현 모드·`ReproductionPlan`, 환경 차이 수용·판정·Technical `REVISE`·Gate 제출과 Chaining handoff를 소유한다. Runtime Validator는 Sandbox 호출 전제와 exact revision만 확인하고, R7 Sandbox Controller는 세부 안전 정책 판정을 저장한다. Runner는 실제 환경을 requirement별로 비교하고 필수 항목이 맞을 때만 공격 단계를 실행한다. 비-LLM Result Assembler는 같은 R6 plan closure와 같은 R7 실행 attempt의 정책·환경·log·PoC·cleanup reference만 동적 결과로 조립한다.
+- Verification은 가설 내부 Context·Pro/Con, 목적별 `DynamicReproductionRequest`, 반환 결과 소비, 최종 판정·Technical `REVISE`·Gate 제출과 Chaining handoff를 소유한다. R7은 `EnvironmentRequirements`, `ReproductionPlan`, PoC candidate, 정책·환경·log·validated PoC와 동적 결과를 생산한다. Runtime Validator는 generation별 동적 work 하나와 exact reference를 검사하고, Sandbox Controller는 세부 안전 정책을 검사한다.
 - 운영(`PRODUCTION`) 기본 검증 모드는 `ALWAYS_DEBATE`다. 모든 유효 가설에서 Pro와 Con을 독립 NEW session으로 실행한다. `BASIC | CONDITIONAL_DEBATE`는 격리된 평가(`EVALUATION`)에서만 비교한다.
-- Primitive DB는 queue가 아니라 HOLD REQUIRED와 Gate-qualified TRUE PROVIDED를 연결하는 인덱스다. Gate 전 TRUE, FALSE와 오래된 revision은 현재 matching에 사용할 수 없다.
-- Chaining Agent는 TRUE+HOLD와 방향성 있는 TRUE+TRUE 선행 조건 matching만 수행하며 일반 취약점·우회·impact research, 동적 재현, Gate 보완이나 verdict를 수행할 수 없다.
+- Primitive DB는 queue가 아니라 HOLD의 inputs-only Primitive와 Technical-accepted TRUE의 result Primitive를 연결하는 인덱스다. Gate 전 TRUE와 FALSE는 matching에 사용할 수 없다.
+- Chaining Agent는 upstream Primitive의 `result`가 downstream Primitive의 특정 `input`을 충족하는지 matching만 수행하며 일반 취약점·우회·impact research, 동적 재현, Gate 보완이나 verdict를 수행할 수 없다.
 - Verification과 Chaining이 발견한 새 material claim은 각각 `origin=VERIFICATION | CHAINING`인 새 가설로 등록되어 처음부터 검증된다. 부모 판정은 바뀌지 않는다.
 - Technical Evidence Gate와 Rule Scope Impact Gate는 서로 다른 LLM 검토 단계다. 어느 Gate도 Verification verdict를 직접 바꾸지 않는다.
 - 공식 프로그램 정책이 없으면 rule/scope를 추정하지 않으며 보고서 전달 권한은 `DENY`다.
 - Membership session과 API provider는 공통 adapter 경계를 사용한다. Membership path는 feasibility/security 검토 전 experimental이며, provider 전환은 명시적으로 기록하고 조용한 failover는 금지한다.
-- Reporter는 초안 작성자이고, 사람만 최종 공개 여부를 결정한다.
+- Reporter는 `ReportDraft`를 만드는 마지막 Agent다. 이후 신뢰 runtime이 `AnalysisRunResult`를 확정하면 자동화가 끝난다.
 - 모든 LLM 출력은 비신뢰 입력이다. 신뢰 경계 안의 Runtime Validator가 schema·호출 권한·상태 전이·예산·provider/session·Gate 순서·Reporter 전제조건을 강제하고, Sandbox Controller가 image·command·file·network·resource·cleanup 정책을 전담한다.
 - Agent와 service는 실행을 `ActionRequest`로 제안하고 runtime validator가 요청당 하나의 `ActionDecision=ALLOW | DENY`를 만든다. 실제 LLM 호출은 검사한 `LLMCallSpec`과 같아야 하며 ALLOW는 exact action과 state version에 한 번만 사용한다.
-- 사람에게는 Finding·근거·PoC·두 Gate·자원·오류·HOLD 조건을 포함한 `HumanReviewPacket`을 제공한다. `HumanReviewState`가 최신 packet과 사람 결정을 가리키며 새 packet이 생기면 이전 공개 승인은 무효다.
+- `ReportDraft`는 current Finding·Verification·CWE·두 Gate·정책 revision을 정확히 참조하고 restriction·limitation·남은 불확실성과 redaction 결과를 보존한다. 오래된 초안은 current `AnalysisRunResult`에 넣지 않는다.
 - 분석 공백, 실행 오류, LLM·sandbox 실패와 취소는 기술 판정 `FALSE`와 분리한다. 공통 ID·시간·상태·오류 기준은 [경량 데이터 계약](./08-lightweight-data-contracts.md)을 따른다.
 - 같은 논리 요청은 `dedupe_key`로 한 번만 반영하고, 한 작업에는 활성 attempt를 하나만 둔다. 결과와 종료 상태는 atomic하게 연결하며 `COMMITTED` output만 다음 단계가 읽는다.
 - retry는 새 `attempt_id`로 실행하고 이전 실패를 보존한다. 취소·입력 변경·오래된 revision 뒤 도착한 결과는 격리하며, 중단 후에는 마지막으로 확정 저장된 상태에서 재개한다.

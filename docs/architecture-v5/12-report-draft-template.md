@@ -4,7 +4,7 @@
 - **누가 읽어야 하나요?** Gate·Finding·보고서 담당과 최종 사람 검토자가 읽습니다.
 - **읽은 뒤 무엇을 확인하거나 결정하나요?** 어떤 근거·정책·영향·재현 정보가 있어야 초안을 만들 수 있는지 확인합니다.
 
-`Finding`은 사람이 검토할 수 있게 정리한 취약점 결과이고 `human handoff`는 사람이 검토할 자료를 전달하는 단계입니다. 이 양식은 자동 외부 제출을 허용하지 않습니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
+`Finding`은 검증된 취약점 결과이고 `ReportDraft`는 Reporter가 만드는 내부 초안입니다. 이 초안이 마지막 Agent 산출물이며 자동 외부 제출을 허용하지 않습니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
 
 > 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
 
@@ -38,6 +38,8 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 - Technical Evidence Gate: `ACCEPT`
 - Rule/Scope/Impact: `rule_compliance PASS / scope_compliance PASS / security_impact SUFFICIENT`
 - 보고서 전달 권한: `ALLOW`
+- Finding ref: `{finding_ref.record_id}`
+- ReportDraft redaction: `PASSED`
 
 `{공격 전제, 검증된 동작과 실제 보안 영향을 한 문단으로 설명}`
 
@@ -113,11 +115,14 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 
 ## 7. 동적 재현과 PoC
 
-- 모드: `{NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO}`
+- 요청 목적: `{POC_CONFIRMATION | VERDICT_EVIDENCE}`
+- R7 실행 모드: `{LIMITED_REPRO | FULL_REPRO}`
 - Docker 환경: `{image digest and relevant configuration}`
 - 전제: `{account, data, route or build condition}`
 - 실행 상태: `{SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED}`
 - 관측 결과: `{SUPPORTED | DISPROVED | INCONCLUSIVE}`
+- PoC candidate reference: `{poc_candidate_ref.record_id}`
+- validated PoC reference: `{poc_ref.record_id; SUCCEEDED + SUPPORTED인 final TRUE에 필수}`
 - 가설 연결: `{hypothesis evidence refs와 관측이 지지·반증하는 정확한 claim}`
 - 환경 차이/제한: `{limitations}`
 
@@ -127,10 +132,10 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 2. `{action}`
 3. `{observation}`
 
-### 입력 또는 요청
+### 검증된 PoC 입력
 
 ```text
-{redacted PoC input or request}
+{redacted input from the exact validated PoC}
 ```
 
 실제 credential, session cookie, API key와 개인정보를 포함하지 않는다.
@@ -147,11 +152,11 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 
 - Verification이 조사한 bypass/alternate/impact: `{validated outcomes or none}`
 - Verification-origin 새 가설: `{proposal and validated child refs or none}`
-- Gate-qualified PROVIDED Primitive: `{primitive refs and exact Gate provenance}`
-- Chaining 조합: `{TRUE_HOLD | TRUE_TRUE, upstream PROVIDED, downstream requirement/precondition, current PrimitiveIndexState refs, match refs or skipped}`
+- Chaining에 사용한 Primitive: `{primitive refs and exact Verification/Technical review provenance}`
+- Chaining 조합: `{upstream result Primitive, downstream input Primitive, matched_input_id, match refs or skipped}`
 - Chaining-origin 새 가설: `{proposal and validated child refs or none}`
 - 아직 미검증: `{candidate refs; report claim으로 사용하지 않음}`
-- match 없음 또는 제한 중단: `{no-match/bounded-stop reason if applicable}`
+- match 없음 또는 전역 예산 중단: `{no-match/global-budget reason if applicable}`
 
 ## 10. 두 Gate 검토
 
@@ -193,7 +198,7 @@ hidden chain-of-thought와 secret은 포함하지 않는다.
 - `{authorization/validation/control remediation}`
 - `{regression test recommendation}`
 
-## 13. 사람 검토로 넘길 연결 정보
+## 13. 자동화 종료 연결 정보
 
 - ReportDraft record: `{report_draft_ref.record_id}`
 - 함께 검토할 AnalysisRunResult: `{analysis_result_ref.record_id}`
@@ -201,4 +206,4 @@ hidden chain-of-thought와 secret은 포함하지 않는다.
 
 ---
 
-사람의 결정은 이 초안 안에 쓰지 않고 별도 `HumanReviewDecision`에 기록한다. Reporter Agent는 그 결정을 만들거나 외부 제출을 수행하지 않는다. 사람은 `HumanReviewState`가 가리키는 current `HumanReviewPacket`을 확인한 뒤 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`을 결정한다. 새 packet generation이 생기면 이전 결정은 공개에 사용할 수 없다.
+Reporter Agent는 이 초안을 만든 뒤 추가 검토·수정·제출·공개를 수행하지 않는다. 신뢰 runtime이 current 결과와 이 초안을 `AnalysisRunResult`에 확정하면 Agent 자동화가 끝난다. 이후 과정은 사람이 시스템 밖에서 주도하며, 이 템플릿은 사람의 결정 상태나 자동 공개 action을 정의하지 않는다.
