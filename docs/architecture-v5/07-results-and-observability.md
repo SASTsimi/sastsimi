@@ -16,7 +16,7 @@
 
 | 영역 | 내용 |
 |---|---|
-| `facts` | `StaticFactBundle`, `ToolRunResult`, `RuleExecutionRecord`, 원본 AST/SAST refs, coverage, gaps와 errors |
+| `facts` | 종류별 `CodeFact` 목록을 가진 `StaticFactBundle`, `ToolRunResult`, `RuleExecutionRecord`, 원본 AST/SAST refs, coverage, gaps와 errors |
 | `hypotheses` | initial/child/chained proposal, validation state와 parent 관계 |
 | `contexts` | `CodeContextRequest/Response`, 실제 반환·열람 위치 |
 | `verifications` | Pro/Con, initial/final verdict, restriction/capability와 exact final Verification revision |
@@ -71,13 +71,15 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 
 ### Static analysis
 
+- `fact_kind`별 후보 수: `SOURCE`, `SINK`, `SANITIZER`, `VALIDATOR`, `AUTH_CHECK`, `PERMISSION_CHECK`, `OTHER`
+- 종류와 다른 목록에 들어간 사실, 여섯 목록 사이의 중복 `fact_id`, current 도구 attempt와 출처가 맞지 않아 저장이 거절된 수
 - 도구·버전·설정·규칙 catalog·attempt별 선택 규칙 수와 실제 실행 규칙 수
 - `EXECUTED + hit_count=0`, `NOT_EXECUTED`, `UNKNOWN` 규칙 수
 - 실행 coverage는 `SELECTED` 규칙 중 `EXECUTED` 비율, 계획 coverage는 catalog 규칙 중 `SELECTED` 비율로 따로 계산
 - 실패·timeout·기록 누락으로 실행 여부가 불명확한 규칙을 0건이나 미실행 확정으로 바꾸지 않은 수
 - retry별 독립 `RuleExecutionRecord`, stale attempt·설정 또는 catalog 불일치로 거절된 수
 
-두 coverage의 분모를 섞지 않는다. 계획에서 제외한 `NOT_SELECTED + NOT_EXECUTED`는 도구 실패가 아니고, `SELECTED + NOT_EXECUTED | UNKNOWN`은 실행 coverage의 누락이다. `hit_count`는 raw 도구 결과 수이며 정규화된 `CodeFact` 수와 같다고 추정하지 않는다. 이 지표는 정적분석 범위와 품질을 평가하기 위한 것이며 취약점 verdict나 안전성 지표가 아니다.
+두 coverage의 분모를 섞지 않는다. 계획에서 제외한 `NOT_SELECTED + NOT_EXECUTED`는 도구 실패가 아니고, `SELECTED + NOT_EXECUTED | UNKNOWN`은 실행 coverage의 누락이다. `hit_count`는 raw 도구 결과 수이며 정규화된 `CodeFact` 수와 같다고 추정하지 않는다. sanitizer·validator 후보 수가 많거나 0개라는 사실도 안전성 지표가 아니다. 이 지표는 정적분석 범위와 품질을 평가하기 위한 것이며 취약점 verdict나 안전성 지표가 아니다.
 
 ### Hypothesis output
 

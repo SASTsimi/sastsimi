@@ -174,6 +174,9 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | 선택한 규칙이 미실행·확인 불가인데 `ToolRunResult.status=SUCCEEDED` | selected 규칙 전체와 ToolRunResult status | 성공 상태 거절, 실제 결과에 따라 `PARTIAL | FAILED | SKIPPED`와 gap·error 기록 |
 | 다른 attempt·도구 버전·설정·catalog의 규칙 실행 record를 연결 | `rule_execution_ref`, `meta.attempt_id`, 도구·버전·workspace·commit과 exact refs | `ATTEMPT_NOT_ACTIVE | STALE_RESULT | RECORD_REVISION_MISMATCH`, 정적 사실 묶음에 연결 금지 |
 | retry 뒤 이전 규칙 실행 수와 새 실행 수를 합침 | `work_id`, attempt별 record와 active attempt | attempt별 기록 유지, 현재 결과에는 current attempt만 연결 |
+| `fact_kind`와 다른 후보 목록에 저장하거나 여섯 목록에서 같은 `fact_id`를 중복 사용 | 종류별 목록 대응, 전체 `fact_id` 유일성, current 도구 출처 | `SCHEMA_INVALID`, `StaticFactBundle` 저장과 다음 단계 전달 금지 |
+| `SANITIZER | VALIDATOR` 후보만으로 안전함·경로 차단·`FALSE`를 확정 | 실제 호출·data-flow, 적용 순서·조건, 우회 가능성과 Verification 근거 | 후보를 판정으로 승격하지 않고 R6 Verification에서 검증 |
+| 후보 목록이 비었다는 이유로 해당 방어 또는 위험 요소가 없다고 확정 | `tool_runs`, 규칙 실행 범위, `gaps`, `errors` | 빈 배열을 관찰 결과로만 보존하고 안전성 추정 금지 |
 
 ## 상태·복구 부정 시나리오
 

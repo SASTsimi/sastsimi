@@ -140,7 +140,7 @@
 
 ### 쉽게 말하면
 
-AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 위치, 함수, 호출 흐름과 source/sink 중심의 사실 묶음**으로 정리한다. 분석 도중 코드가 더 필요할 때 같은 저장소 버전에서 필요한 부분만 안전하게 가져오게 한다.
+AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 위치, 함수, 호출 흐름과 source/sink/방어 로직 후보 중심의 사실 묶음**으로 정리한다. 분석 도중 코드가 더 필요할 때 같은 저장소 버전에서 필요한 부분만 안전하게 가져오게 한다.
 
 ### 담당자가 나눌 수 있는 하위 Issue 예시
 
@@ -166,7 +166,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 ### 검토할 입력·출력
 
 - 입력: `CodeWorkspace`, AST/SAST raw result, exclusion policy, `CodeContextRequest`, budget
-- 출력: `StaticFactBundle`, `CodeSymbol`/`CodeLocation`/relation refs, `DataGap`, `CodeContextResponse`, tool/coverage 상태
+- 출력: `StaticFactBundle`의 `source_candidates | sink_candidates | sanitizer_candidates | validator_candidates | auth_and_permission_checks | other_facts`, `CodeSymbol`/`CodeLocation`/relation refs, `DataGap`, `CodeContextResponse`, tool/coverage 상태
 
 ### 확인할 권한 경계
 
@@ -187,6 +187,9 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] `CodeWorkspace`, `StoredDataRef`, `CodeLocation`, `CodeSymbol`의 식별자와 생성 주체가 정의됨
 - [ ] clone/checkout, submodule, LFS와 generated dependency의 gap 처리 규칙이 있음
 - [ ] 모든 사실을 producer, `StoredDataRef`, `CodeLocation`, `workspace_id`로 역추적할 수 있음
+- [ ] 여섯 사실 목록이 `CodeFact.fact_kind`를 빠짐없이 나누고 전체 `fact_id`가 중복되지 않음
+- [ ] sanitizer·validator는 방어 로직 후보로만 전달하며 실제 적용·순서·우회 가능성은 R6가 검증함
+- [ ] 후보가 없는 목록도 `[]`로 전달하고 빈 배열을 안전함이나 검사 완료로 해석하지 않음
 - [ ] AST/SAST 부분 실패와 충돌·불확실성이 gap/error로 보존됨
 - [ ] relation query와 depth/fragment/byte/token/request/time 제한이 정의됨
 - [ ] `WORKSPACE_MISMATCH`, `WORKSPACE_CHANGED`와 path/symlink negative scenario가 문서화됨

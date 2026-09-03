@@ -39,14 +39,21 @@ static_fact_bundle:
   locations: []
   source_candidates: []
   sink_candidates: []
+  sanitizer_candidates: []
+  validator_candidates: []
+  auth_and_permission_checks: []
+  other_facts: []
   call_edges: []
   data_flow_candidates: []
-  auth_and_permission_checks: []
   route_bindings: []
   tool_runs: []
   gaps: []
   errors: []
 ```
+
+여섯 `CodeFact` 목록은 사실 종류별로 나눈다. `source_candidates`에는 `SOURCE`, `sink_candidates`에는 `SINK`, `sanitizer_candidates`에는 `SANITIZER`, `validator_candidates`에는 `VALIDATOR`, `auth_and_permission_checks`에는 `AUTH_CHECK | PERMISSION_CHECK`, `other_facts`에는 `OTHER`만 넣는다. 후보가 없더라도 필드를 생략하지 않고 빈 배열을 쓴다. 다만 빈 배열은 도구가 확인한 현재 결과일 뿐 안전함이나 검증 완료를 뜻하지 않으므로 `tool_runs`, `gaps`, `errors`를 함께 읽는다.
+
+sanitizer와 validator는 입력을 정리하거나 거절할 가능성이 있는 **방어 로직 후보**다. 후보가 있다는 이유만으로 공격 경로가 차단되거나 가설이 `FALSE`라고 판단하지 않는다. Verification이 실제 호출 경로, 적용 순서·조건과 우회 가능성을 확인한다. 같은 코드 위치가 두 역할을 하면 역할별 `CodeFact`를 따로 만들고 서로 다른 `fact_id`를 사용한다.
 
 `CodeFact`와 `CodeRelation`은 같은 `workspace_id + commit_id`의 `CodeLocation`, producer와 원본 `StoredDataRef`를 갖는다. `ToolRunResult`는 도구별 상태·coverage·gap·error를 함께 기록한다. 정규화 계층은 서로 다른 도구 결과를 병합하되 충돌이나 불확실성을 지우지 않는다. `StaticFactBundle.errors`가 비었다는 사실만으로 도구가 성공했다고 추정하지 않고 각 `tool_runs.status`를 확인한다.
 
@@ -90,7 +97,7 @@ Hypothesis Agent는 전체 코드가 아니라 entity, location과 suspected pat
 
 - `CALLERS`: 현재 entity를 호출하는 위치
 - `CALLEES`: 현재 entity가 호출하는 위치
-- `DATA_FLOW_NEIGHBORS`: 인접 source, transform, sanitizer, sink 후보
+- `DATA_FLOW_NEIGHBORS`: 인접 source, transform, sanitizer, validator, sink 후보
 - `AUTH_GUARDS`: 인증·인가·역할·소유권 검사의 적용 위치
 - `ROUTE_BINDINGS`: 외부 endpoint와 handler 연결
 

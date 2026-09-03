@@ -1603,6 +1603,73 @@ $decisionIndexText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/re
 if (-not $decisionIndexText.Contains('[ADR-006](./ADR-006-static-rule-execution-record.md)')) {
     Add-Failure 'decision index is missing ADR-006'
 }
+
+$staticFactBundleBlock = [regex]::Match($contractText, '(?ms)^StaticFactBundle:\s*(.*?)^```').Groups[1].Value
+$requiredStaticFactBundleFields = @(
+    'source_candidates: [CodeFact]',
+    'sink_candidates: [CodeFact]',
+    'sanitizer_candidates: [CodeFact]',
+    'validator_candidates: [CodeFact]',
+    'auth_and_permission_checks: [CodeFact]',
+    'other_facts: [CodeFact]'
+)
+foreach ($field in $requiredStaticFactBundleFields) {
+    if (-not $staticFactBundleBlock.Contains($field)) {
+        Add-Failure "StaticFactBundle is missing fact-kind list: $field"
+    }
+}
+
+$requiredStaticFactBundleSemantics = @(
+    @{ Name = 'closed fact-kind mapping'; Marker = '`source_candidates -> SOURCE`, `sink_candidates -> SINK`, `sanitizer_candidates -> SANITIZER`, `validator_candidates -> VALIDATOR`, `auth_and_permission_checks -> AUTH_CHECK | PERMISSION_CHECK`, `other_facts -> OTHER`' },
+    @{ Name = 'global fact id uniqueness'; Marker = '여섯 목록의 합집합에서 `fact_id`는 정확히 한 번만 나타나야 한다.' },
+    @{ Name = 'empty candidate list is not safety proof'; Marker = '빈 배열은 후보가 없다는 현재 관찰일 뿐, 안전함이나 검증 완료를 증명하지 않는다.' },
+    @{ Name = 'one location can have multiple fact roles'; Marker = '같은 코드 위치가 둘 이상의 역할을 가지면 역할마다 별도 `CodeFact`와 서로 다른 `fact_id`를 만든다.' },
+    @{ Name = 'defense candidates are not verdicts'; Marker = '`SANITIZER`와 `VALIDATOR`는 방어 로직 후보이며 안전함, 경로 차단 또는 `FALSE`의 자동 근거가 아니다.' },
+    @{ Name = 'exact bundle identity and tool provenance'; Marker = '모든 `CodeFact`는 bundle의 `analysis_id` 범위에만 속하고 `location.workspace_id | commit_id`가 bundle과 같아야 한다. `producer.attempt_id`는 current `ToolRunResult`를, 규칙 기반 사실의 `producer.rule_id`는 같은 attempt의 `RuleExecutionRecord.rules[]` 항목을 가리켜야 한다.' },
+    @{ Name = 'normalizer uses the static analysis identity'; Marker = '`Static Fact Normalizer`는 result-owner registry의 `STATIC_ANALYSIS` 신뢰 identity로 실행되는 정규화 component이며 별도 권한 역할이 아니다.' },
+    @{ Name = 'static bundle result owner'; Marker = '`static_fact_bundle -> StaticFactBundle -> STATIC_ANALYSIS`' },
+    @{ Name = 'static bundle save validation'; Marker = '`result_kind=static_fact_bundle`' },
+    @{ Name = 'static bundle major schema migration'; Marker = 'StaticFactBundle 새 MAJOR schema' }
+)
+foreach ($rule in $requiredStaticFactBundleSemantics) {
+    if (-not $contractText.Contains($rule.Marker)) {
+        Add-Failure "missing StaticFactBundle contract rule: $($rule.Name)"
+    }
+}
+
+$glossaryText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/GLOSSARY.md')
+$reviewChecklistText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/governance/REVIEW_CHECKLIST.md')
+$issueCatalogText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/review/ISSUE_CATALOG.md')
+$requiredStaticFactBundleCrossDocumentRules = @(
+    @{ Name = 'static layer declares sanitizer list'; Text = $staticText; Marker = 'sanitizer_candidates: []' },
+    @{ Name = 'static layer declares validator list'; Text = $staticText; Marker = 'validator_candidates: []' },
+    @{ Name = 'static layer declares other facts list'; Text = $staticText; Marker = 'other_facts: []' },
+    @{ Name = 'results document measures fact kinds'; Text = $resultText; Marker = '`fact_kind`별 후보 수' },
+    @{ Name = 'security rejects mismatched fact lists'; Text = $securityText; Marker = '`fact_kind`와 다른 후보 목록에 저장하거나 여섯 목록에서 같은 `fact_id`를 중복 사용' },
+    @{ Name = 'security rejects defense candidate as a verdict'; Text = $securityText; Marker = '`SANITIZER | VALIDATOR` 후보만으로 안전함·경로 차단·`FALSE`를 확정' },
+    @{ Name = 'Wiki explains defense candidates'; Text = $commonWikiText; Marker = '`sanitizer_candidates`와 `validator_candidates`는 방어 로직의 **후보**' },
+    @{ Name = 'glossary explains sanitizer candidate'; Text = $glossaryText; Marker = '**Sanitizer candidate**' },
+    @{ Name = 'glossary explains validator candidate'; Text = $glossaryText; Marker = '**Validator candidate**' },
+    @{ Name = 'governance checks kind partition'; Text = $reviewChecklistText; Marker = '`StaticFactBundle`의 여섯 `CodeFact` 목록' },
+    @{ Name = 'R2 issue catalog owns the mapping'; Text = $issueCatalogText; Marker = '`source_candidates | sink_candidates | sanitizer_candidates | validator_candidates | auth_and_permission_checks | other_facts`' }
+)
+foreach ($rule in $requiredStaticFactBundleCrossDocumentRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing StaticFactBundle cross-document rule: $($rule.Name)"
+    }
+}
+
+$staticFactDecisionPath = Join-Path $repoRoot 'docs/review/decisions/ADR-010-static-fact-kind-partition.md'
+if (-not (Test-Path -LiteralPath $staticFactDecisionPath)) {
+    Add-Failure 'missing ADR-010 StaticFactBundle fact-kind partition decision'
+} else {
+    $staticFactDecisionText = Get-Content -Raw -LiteralPath $staticFactDecisionPath
+    foreach ($marker in @('상태: `ACCEPTED`', 'sanitizer_candidates', 'validator_candidates', 'other_facts', '새 MAJOR schema', 'R2:', 'R4:', 'R6:')) {
+        if (-not $staticFactDecisionText.Contains($marker)) {
+            Add-Failure "ADR-010 is missing decision marker: $marker"
+        }
+    }
+}
 $cweLabelDecisionPath = Join-Path $repoRoot 'docs/review/decisions/ADR-009-r5-01-cwe-labeling-provenance.md'
 if (-not (Test-Path -LiteralPath $cweLabelDecisionPath)) {
     Add-Failure 'missing ADR-009 R5-01 CWE labeling provenance decision'
@@ -1616,6 +1683,9 @@ if (-not (Test-Path -LiteralPath $cweLabelDecisionPath)) {
 }
 if (-not $decisionIndexText.Contains('[ADR-009](./ADR-009-r5-01-cwe-labeling-provenance.md)')) {
     Add-Failure 'decision index is missing ADR-009'
+}
+if (-not $decisionIndexText.Contains('[ADR-010](./ADR-010-static-fact-kind-partition.md)')) {
+    Add-Failure 'decision index is missing ADR-010'
 }
 
 $requiredCweLabelCrossDocumentRules = @(
@@ -1715,6 +1785,9 @@ Write-Output "Rule execution item fields: $($requiredRuleExecutionItemFields.Cou
 Write-Output "Rule execution record fields: $($requiredRuleExecutionRecordFields.Count)"
 Write-Output "Rule execution semantic rules: $($requiredRuleExecutionSemantics.Count)"
 Write-Output "Obsolete rule execution phrases: $($obsoleteRuleExecutionPhrases.Count)"
+Write-Output "StaticFactBundle fact-kind fields: $($requiredStaticFactBundleFields.Count)"
+Write-Output "StaticFactBundle semantic rules: $($requiredStaticFactBundleSemantics.Count)"
+Write-Output "StaticFactBundle cross-document rules: $($requiredStaticFactBundleCrossDocumentRules.Count)"
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {

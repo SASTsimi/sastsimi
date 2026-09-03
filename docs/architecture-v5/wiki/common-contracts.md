@@ -87,6 +87,12 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 
 정적 분석과 코드 조회 결과는 사용할 수 있는 사실뿐 아니라 도구별 실행 상태, 분석·제외 범위, `DataGap`, `AnalysisError`를 함께 전달합니다. `DataGap`은 영향받은 path·language·코드 위치를 가능한 범위에서 적습니다. 결과가 비어 있거나 일부 도구가 실패했다는 이유로 안전하다고 판단하지 않습니다.
 
+### sanitizer와 validator 후보는 어떻게 담나요?
+
+`StaticFactBundle`은 source, sink, sanitizer, validator, 인증·권한 검사와 기타 사실을 종류별 목록으로 나눕니다. `sanitizer_candidates`와 `validator_candidates`는 방어 로직의 **후보**이며, 존재한다고 바로 안전하거나 가설이 `FALSE`라는 뜻이 아닙니다. R6 Verification이 실제 경로에서 적용되는지, 호출 순서와 조건이 맞는지, 우회할 수 있는지를 확인합니다.
+
+후보가 없으면 목록을 생략하지 않고 `[]`로 기록합니다. 빈 목록도 안전하다는 증거가 아니므로 도구 실행 범위·누락·오류를 함께 확인합니다. 한 코드 위치가 두 역할을 하면 서로 다른 `fact_id`를 가진 두 사실로 기록하고, 같은 `fact_id`를 여러 목록에 중복해서 넣지 않습니다.
+
 ### 검사 결과 0건과 미실행을 어떻게 구분하나요?
 
 CodeQL·OpenGrep은 규칙별 실행 이력을 `RuleExecutionRecord`에 저장하고 `ToolRunResult`가 그 정확한 기록을 가리킵니다.

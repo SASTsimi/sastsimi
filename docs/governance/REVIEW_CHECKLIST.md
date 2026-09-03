@@ -34,6 +34,8 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 
 - [ ] HypothesisProposal은 `HYPOTHESIS_ONLY / NON_FINAL`입니다.
 - [ ] 필요한 코드는 위치를 기준으로 필요할 때만 조회(`on-demand retrieval`)합니다.
+- [ ] `StaticFactBundle`의 여섯 `CodeFact` 목록이 모든 닫힌 `fact_kind`를 빠짐없이 나누며, 한 `fact_id`가 정확히 한 목록에만 있습니다.
+- [ ] sanitizer·validator 후보와 빈 후보 목록을 안전함·경로 차단·`FALSE`의 자동 근거로 사용하지 않습니다.
 - [ ] 운영 기본 검증 모드는 모든 유효 가설에서 찬성·반대 근거를 독립적으로 모으는 `ALWAYS_DEBATE`입니다. `BASIC | CONDITIONAL_DEBATE`는 격리된 평가 전용입니다.
 - [ ] Pro와 Con은 독립 NEW session을 사용합니다.
 - [ ] 새 우회·영향·연계 공격(`bypass/impact/chain`) 주장은 새 가설로 재검증합니다.
