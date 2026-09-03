@@ -82,7 +82,7 @@ technical_evidence_review:
 
 `ACCEPT`는 `handoff_readiness=READY`, `REVISE | REJECT`는 `handoff_readiness=NOT_READY`와 함께 사용한다. 이 조합이 맞지 않으면 Gate output을 저장하지 않는다.
 
-`DynamicReproductionResult(status=BLOCKED, failure_category=POLICY)`는 정책 때문에 현재 attempt를 진행하지 못했다는 뜻이지 가설 반증이 아니다. 그러나 validated PoC가 없으므로 final TRUE를 저장하거나 Technical Gate를 호출할 수 없다. 이 경우 Verification과 동적 work를 `BLOCKED`로 유지하거나 복구 불가능하면 verdict 없이 `FAILED`로 끝낸다. 정책 차단 자체를 `FALSE | HOLD` 또는 Gate의 `REJECT` 근거로 바꾸지 않는다.
+`DynamicReproductionResult(status=BLOCKED, failure_category=POLICY)`는 정책 때문에 현재 attempt를 진행하지 못했다는 뜻이지 가설 반증이 아니다. 재시도 또는 정책·환경 수정으로 복구 가능하면 동적 work를 `BLOCKED`로 유지한다. 복구 불가능하거나 retry 한도를 소진하면 `DynamicReproductionResult(status=FAILED, failure_category=POLICY)`와 동적 work `FAILED`로 종료할 수 있다. `BLOCKED | FAILED + POLICY` 모두 exact `policy_decision_ref`가 필수이며 validated `poc_ref`는 `null`, `hypothesis_outcome=INCONCLUSIVE`이어야 한다. 어떤 경우에도 정책 차단을 `FALSE | HOLD` 또는 Technical Gate의 `REJECT` 근거로 변환하지 않는다.
 
 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 Gate가 실제로 읽은 `VerificationResult`와 `CWELabel` revision을 각각 고정한다. runtime은 Gate와 두 대상의 `workspace_id`, `commit_id`, `hypothesis_id`, `record_id`, `content_hash`를 확인한다. Verification 또는 CWELabel이 수정되면 이전 `ACCEPT`를 새 revision에 재사용하지 않고 Gate를 새로 호출한다.
 

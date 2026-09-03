@@ -67,7 +67,7 @@ Repository input
 → Verification이 on-demand context와 운영 기본 Pro/Con 병렬 검증 관리
 → initial TRUE면 POC_CONFIRMATION, 판정 근거가 필요하면 VERDICT_EVIDENCE 요청을 R6가 생성
 → Runtime Validator가 같은 Verification generation의 동적 work가 하나인지 확인
-→ R7이 EnvironmentRequirements·LIMITED/FULL ReproductionPlan·PoC candidate 생성
+→ R7이 EnvironmentRequirements·ReproductionPlan·PoC candidate 생성
 → Sandbox Controller가 외부 안전 경계를 검사하고 R7 Setup Automation이 clean Sandbox 생성
 → Reproduction Agent가 내부에서 환경 구성·PoC 작성·실행·관찰·retry를 자율 수행
 → Reproduction Session Manager가 event·candidate·validated PoC와 최종 결과를 같은 attempt로 확정

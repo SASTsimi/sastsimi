@@ -1316,13 +1316,14 @@ Agent가 outcome·evidence·plan issue·limitation·`failure_category` 후보와
 |---|---|---|
 | `SUCCEEDED` | `NONE` | 목표에 필요한 실행과 관찰을 끝냄 |
 | `PARTIAL` | `NONE | OBSERVATION` | 신뢰 관측은 있으나 전체 확인은 부족함. `INCONCLUSIVE` |
-| `FAILED` | `PLAN | ENVIRONMENT | EXECUTION | OBSERVATION | TIMEOUT | RETRY_LIMIT | OTHER` | 자체 재시도 한도를 소진했거나 복구 불가능함. final verdict 없음 |
+| `FAILED` | `PLAN | ENVIRONMENT | EXECUTION | POLICY | OBSERVATION | TIMEOUT | RETRY_LIMIT | OTHER` | 자체 재시도 한도를 소진했거나 복구 불가능함. final verdict 없음 |
 | `BLOCKED` | `PLAN | ENVIRONMENT | EXECUTION | OBSERVATION | POLICY | TIMEOUT | OTHER` | 현재 attempt를 진행할 수 없지만 같은 work에서 조건 수정·backoff·재구성·retry가 가능함 |
 | `CANCELLED` | `CANCELLED` | 사용자나 runtime이 중단함 |
 
 | 상황 | 필수 조합 |
 |---|---|
 | Agent와 자원을 만들기 전에 차단 | `BLOCKED + POLICY`, `agent_invoked=false`, `agent_log_ref=null`, 환경·candidate·validated PoC 없음, 정책 판정 필수 |
+| 복구 불가능한 정책 차단 또는 retry 한도 소진 | `FAILED + POLICY`, exact `policy_decision_ref` 필수, `hypothesis_outcome=INCONCLUSIVE`, `poc_ref=null` |
 | Agent 호출 뒤 실패 | `agent_invoked=true`와 `agent_log_ref` 필수. candidate는 보존하되 `poc_ref=null` |
 | 동적 재현 성공과 가설 지지 | `SUCCEEDED + SUPPORTED`, recipe·built image·Agent Log·환경·candidate·validated PoC·관측이 같은 request·plan·attempt |
 | 자원을 만든 뒤 오류·차단 | `cleanup_required=true`, exact cleanup log와 `SUCCEEDED | FAILED` |
