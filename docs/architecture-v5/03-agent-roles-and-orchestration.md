@@ -50,6 +50,8 @@ Hypothesis Agent에는 비용 효율적인 모델을 배치할 수 있지만, �
 
 세 갈래는 관측 여부와 가설이 그것에 의존하는지로 나눈다. 구분 기준은 `08-lightweight-data-contracts.md`에 있다.
 
+가설 생성 work는 `STATIC_NORMALIZE`가 최종 상태에 도달한 뒤에만 시작한다. 최종 상태가 `PARTIAL`이면 그 bundle로 진행하고 빠진 범위는 `gaps`로 전달된다.
+
 등록된 가설은 전수 검증한다. 점수로 미리 선별하거나 검증 순서를 매기지 않는다. Hypothesis Agent는 `confirmed`, `verified`, `finding`, `exploitable`과 같은 확정 주장을 출력할 권한이 없다.
 
 ## 출력 검증과 실패 처리

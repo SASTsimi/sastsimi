@@ -805,10 +805,10 @@ HypothesisProposal:
 `observed_facts`, `restrictions`, `assumptions`는 다음 기준으로 나눈다.
 
 - `observed_facts`: `StaticFactBundle`의 실제 `CodeFact`를 가리키는 관측 결과다.
-- `restrictions`: 관측된 것 중 공격을 제한하는 검사·경계다.
+- `restrictions`: 관측된 것 중 공격을 제한하는 검사·경계다. 근거가 된 `CodeFact`는 `observed_facts`에 함께 넣지 않는다. 하나의 관측 사실은 근거이거나 제약이다.
 - `assumptions`: 관측으로 확인하지 못했지만 가설이 성립하려면 참이어야 하는 명제다.
 
-확인하지 못한 것 중 가설이 의존하지 않는 공백은 가설에 넣지 않는다. 분석 수준의 공백은 `StaticFactBundle.gaps`의 `DataGap`이 담는다. 가설 하나가 결과나 필요 조건을 여러 개 가질 수 있으며 가설의 단위는 규칙으로 강제하지 않는다. 등록된 `VulnerabilityHypothesis`는 이 세 갈래를 자기 필드로 복사하지 않는다. 소비자는 `proposal_ref`가 가리키는 exact `HypothesisProposal` revision에서 읽는다.
+확인하지 못한 것 중 가설이 의존하지 않는 공백은 가설에 넣지 않는다. 가설이 확인해야 할 미확인 조건은 `assumptions`와 `falsification_questions`가 담는다. `StaticFactBundle.gaps`의 `DataGap`은 도구·조회가 실패해 데이터를 얻지 못한 범위이며 가설의 미확인 조건과 다른 것이다. 가설 하나가 결과나 필요 조건을 여러 개 가질 수 있으며 가설의 단위는 규칙으로 강제하지 않는다. 등록된 `VulnerabilityHypothesis`는 이 세 갈래를 자기 필드로 복사하지 않는다. 소비자는 `proposal_ref`가 가리키는 exact `HypothesisProposal` revision에서 읽는다.
 
 ```yaml
 VulnerabilityHypothesis:
