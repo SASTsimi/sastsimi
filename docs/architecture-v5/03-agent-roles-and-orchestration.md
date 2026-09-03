@@ -111,7 +111,7 @@ Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하
 | Verification Agent | Context·Pro/Con, 목적·목표·필요 환경을 담은 `DynamicReproductionRequest`, 두 Gate·Reporter·Chaining 요청, material child proposal | `TRUE | FALSE | HOLD` | static·Pro·Con·COMMITTED dynamic 근거와 Gate 보완 요청 | 없음 | 없음 |
 | Reproduction Agent | `EnvironmentRequirements`·`ReproductionPlan`·recipe·PoC candidate와 환경·실행·관찰·retry 전략 | `SUPPORTED | DISPROVED | INCONCLUSIVE` 동적 outcome | R6 요청과 Sandbox 안의 실제 동적 근거 | 없음 | 없음 |
 | Sandbox Controller | 없음 | 없음 | host·Docker daemon·secret·egress·다른 workspace·resource·lifecycle 외부 경계 정책과 exact 판정 | 경계 위반 실행 차단 | 없음 |
-| R7 Sandbox Setup Automation | 없음 | 없음 | 승인된 경계로 image build·가설별 clean Sandbox 생성·lifecycle cleanup | 외부 경계 우회 차단 | 없음 |
+| R7 Sandbox Setup Automation | 없음 | 없음 | 승인된 경계로 image build·가설별 최초 clean Sandbox 생성·필요 시 baseline 재생성·lifecycle cleanup | 외부 경계 우회 차단 | 없음 |
 | Reproduction Session Manager | 없음 | 없음 | runtime/tool event의 durable AgentLog와 같은 attempt의 최종 `DynamicReproductionResult` 확정 | schema·authority·identity·revision·hash·redaction 불변조건 | 없음 |
 | CWE Labeling | CWE 후보와 근거 | CWE label revision 생성 | final Verification | 없음 | 없음 |
 | Chaining Agent | upstream Primitive `result`→downstream Primitive `input` match와 chained proposal | 없음 | exact Primitive, Verification·Technical provenance와 코드 근거 | 없음 | 없음 |
@@ -120,7 +120,7 @@ Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하
 | Reporter Agent | 내부 보고서 문장·구성 | 없음 | 통과한 결과와 두 Gate | 없음 | 없음 |
 | Runtime Validator | 허용 가능한 대체 action 안내 | 없음 | 실행 전제와 exact reference | action 허용·차단 | 없음 |
 
-Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 판정을 확정하지 않는다. Verification Agent는 `DynamicReproductionRequest`와 최종 verdict를 생산하고, R7 Agent는 exact `EnvironmentRequirements`·mode·`ReproductionPlan`·recipe·PoC를 생산한다. Controller는 Sandbox 외부 경계를 검사하고 Setup Automation이 clean Sandbox를 만든다. Agent는 내부에서 환경·command·PoC·관찰·retry를 자율 수행한다. 비-LLM Session Manager는 실제 event와 같은 attempt의 artifact를 대조해 AgentLog와 최종 동적 결과만 확정한다. R7은 R6 요청 목적과 최종 verdict를 바꾸지 않는다.
+Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 판정을 확정하지 않는다. Verification Agent는 `DynamicReproductionRequest`와 최종 verdict를 생산하고, R7 Agent는 exact `EnvironmentRequirements`·`ReproductionPlan`·recipe·PoC를 생산한다. Controller는 Sandbox 외부 경계를 검사하고 Setup Automation이 clean Sandbox를 만든다. Agent는 내부에서 환경·command·PoC·관찰·retry를 자율 수행한다. 비-LLM Session Manager는 실제 event와 같은 attempt의 artifact를 대조해 AgentLog와 최종 동적 결과만 확정한다. R7은 R6 요청 목적과 최종 verdict를 바꾸지 않는다.
 
 ReportDraft 이후의 검토·수정·제출·공개는 이 역할표와 Agent action lifecycle 밖에서 사람이 수행한다. 자동화는 사람 검토 상태나 공개 결정을 만들지 않는다.
 

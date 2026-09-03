@@ -482,7 +482,7 @@ foreach ($fieldPattern in @('meta:\s*RecordMeta', 'request_ref:\s*StoredDataRef'
         Add-Failure "missing or invalid EnvironmentRequirements field: $fieldPattern"
     }
 }
-foreach ($field in @('request_ref:', 'purpose:', 'mode:', 'hypothesis_ref:', 'environment_requirements_ref:', 'sandbox_profile_ref:', 'reproduction_goal:', 'context_refs:', 'requested_evidence:')) {
+foreach ($field in @('request_ref:', 'purpose:', 'hypothesis_ref:', 'environment_requirements_ref:', 'sandbox_profile_ref:', 'reproduction_goal:', 'context_refs:', 'requested_evidence:')) {
     if (-not $reproductionPlanBlock.Contains($field)) {
         Add-Failure "missing ReproductionPlan field: $field"
     }
@@ -507,6 +507,9 @@ foreach ($fieldPattern in @(
     'requirements_ref:\s*StoredDataRef',
     'environment_recipe_ref:\s*StoredDataRef',
     'image_digest:\s*string',
+    'container_instance_id:\s*string',
+    'container_lifecycle:\s*CREATED \| REUSED',
+    'container_creation_reason:\s*INITIAL \| STATE_CHANGED \| CONFIG_CHANGED \| STATE_UNCERTAIN \| null',
     'status:\s*READY \| MISMATCH \| ERROR',
     'checks:\s*\[EnvironmentCheck\]'
 )) {
@@ -514,7 +517,7 @@ foreach ($fieldPattern in @(
         Add-Failure "missing or invalid SandboxEnvironment field: $fieldPattern"
     }
 }
-foreach ($field in @('event_id:', 'action_id:', 'sequence:', 'action_type:', 'execution_status:', 'input_refs:', 'output_refs:', 'observation_refs:')) {
+foreach ($field in @('event_id:', 'action_id:', 'sequence:', 'action_type:', 'recreation_requested_by:', 'recreation_reason:', 'recreation_details:', 'execution_status:', 'input_refs:', 'output_refs:', 'observation_refs:')) {
     if (-not $agentLogEntryBlock.Contains($field)) {
         Add-Failure "missing AgentLogEntry field: $field"
     }
@@ -537,7 +540,6 @@ foreach ($fieldPattern in @(
     'request_ref:\s*StoredDataRef',
     'reproduction_plan_ref:\s*StoredDataRef',
     'purpose:\s*POC_CONFIRMATION \| VERDICT_EVIDENCE',
-    'mode:\s*LIMITED_REPRO \| FULL_REPRO',
     'policy_decision_ref:\s*StoredDataRef \| null',
     'agent_invoked:\s*boolean',
     'environment_created:\s*boolean',
@@ -802,12 +804,16 @@ $environmentHandoffPatterns = @(
         Pattern = '(?s)plan의 `request_ref`, `purpose`, `hypothesis_ref`와 `sandbox_profile_ref`는 request와 exact match.*?`environment_requirements_ref`는 같은 R7 work'
     },
     @{
-        Name = 'R7 plan does not prescribe exact commands'
-        Pattern = '(?s)`LIMITED_REPRO \| FULL_REPRO` mode.*?exact command·payload·실행 순서·cleanup policy를 계약으로 고정하지 않는다'
+        Name = 'R7 uses one Sandbox path and plan does not prescribe exact commands'
+        Pattern = '(?s)exact command·payload·실행 순서·cleanup policy를 계약으로 고정하지 않는다.*?모든 동적 재현은 같은 Sandbox 실행 경로'
     },
     @{
         Name = 'EnvironmentRecipe records base and built image digests'
-        Pattern = '(?s)`EnvironmentRecipe`.*?base·built image digest.*?`PERSISTENT_BASELINE`.*?가설마다 별도의 clean Sandbox'
+        Pattern = '(?s)`EnvironmentRecipe`.*?base·built image digest.*?`PERSISTENT_BASELINE`.*?writable container는 가설 work를 넘겨 재사용하지 않는다'
+    },
+    @{
+        Name = 'Sandbox reuse and recreation are auditable'
+        Pattern = '(?s)container_instance_id:\s*string.*?container_lifecycle:\s*CREATED \| REUSED.*?container_creation_reason:\s*INITIAL \| STATE_CHANGED \| CONFIG_CHANGED \| STATE_UNCERTAIN \| null.*?action_type:.*?SANDBOX_RECREATE.*?recreation_requested_by:\s*REPRODUCTION_AGENT \| R7_RUNTIME \| null.*?recreation_reason:\s*STATE_CHANGED \| CONFIG_CHANGED \| STATE_UNCERTAIN \| null'
     },
     @{
         Name = 'actual environment is tied to the built recipe image'

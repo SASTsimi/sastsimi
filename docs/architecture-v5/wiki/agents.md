@@ -13,7 +13,7 @@
 | Orchestration | proposal 검증·전역 가설 등록·Verification 배정 제안 | 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정, runtime enforcement, Finding·공개 결정 |
 | Hypothesis | schema-valid `HYPOTHESIS_ONLY` 제안 생성 | verdict, Finding, exploitability 확정 |
 | Verification | 한 가설의 Context·Pro/Con, 목적별 `DynamicReproductionRequest`, 반환 결과 소비·판정·Gate 보완·Chaining handoff와 material child 제안 | 환경 요구사항·실행 계획·PoC·동적 결과 생산, Sandbox 직접 실행, 새 claim 무검증 승격 |
-| Reproduction Agent | exact 요청으로 requirements·mode·plan·recipe·PoC를 만들고 clean Sandbox 내부 환경·실행·관찰·retry 자율 수행 | 최종 verdict 또는 요청 목적·외부 경계 변경 |
+| Reproduction Agent | exact 요청으로 requirements·plan·recipe·PoC를 만들고 clean Sandbox 내부 환경·실행·관찰·retry 자율 수행 | 최종 verdict 또는 요청 목적·외부 경계 변경 |
 | Sandbox Controller | host·Docker daemon·secret·egress·다른 workspace·자원·lifecycle 외부 경계 판정 | Agent 내부 command·package·payload·실행 순서 결정 |
 | R7 Sandbox Setup Automation | 승인된 경계로 image build·clean Sandbox 생성·cleanup | Agent 전략이나 최종 verdict 판단 |
 | Reproduction Session Manager | actual event의 durable AgentLog와 같은 attempt의 최종 동적 결과 확정 | Agent 허용·차단·retry 결정 또는 다른 attempt 혼합 |

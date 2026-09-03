@@ -57,9 +57,9 @@ Pro와 Con은 항상 별도의 새 대화에서 실행합니다. 상대 역할�
 | `POC_CONFIRMATION` | 정적·Pro·Con으로 initial TRUE가 된 가설을 실제 PoC로 확인 |
 | `VERDICT_EVIDENCE` | 최종 판정에 꼭 필요한 실행 관측 확보 |
 
-R6는 목적·재현 목표·필요 환경·Sandbox profile·관련 근거를 `DynamicReproductionRequest`로 만듭니다. R7 Agent는 exact 요청에서 `EnvironmentRequirements`, `LIMITED_REPRO | FULL_REPRO` mode와 `ReproductionPlan`을 생산합니다. 한 generation에는 동적 work 하나만 허용하며 retry는 같은 work의 새 attempt입니다.
+R6는 목적·재현 목표·필요 환경·Sandbox profile·관련 근거를 `DynamicReproductionRequest`로 만듭니다. R7 Agent는 exact 요청에서 `EnvironmentRequirements`와 `ReproductionPlan`을 생산합니다. 모든 동적 재현은 같은 Sandbox 실행 경로를 사용합니다. 한 generation에는 동적 work 하나만 허용하며 retry는 같은 work의 새 attempt입니다.
 
-Controller는 host·Docker daemon·secret·egress·다른 workspace·R8 resource·lifecycle의 외부 경계를 강제하고 Setup Automation이 가설마다 clean Sandbox를 만듭니다. Agent는 내부에서 package·계정·fixture·mock·PoC·command·관찰·retry를 자율 수행하며 Session Manager가 actual event와 결과를 확정합니다.
+Controller는 host·Docker daemon·secret·egress·다른 workspace·R8 resource·lifecycle의 외부 경계를 강제하고 Setup Automation이 가설 work의 최초 clean Sandbox를 만듭니다. 같은 work에서는 상태가 호환되면 container를 재사용합니다. Agent가 상태 변경·설정 전환·상태 불확실을 이유로 요청하거나 crash·비정상 종료·Health Check 실패로 runtime이 상태를 신뢰할 수 없으면 같은 baseline에서 재생성합니다. Agent는 내부에서 package·계정·fixture·mock·PoC·command·관찰·retry를 자율 수행하며 Session Manager가 actual event와 결과를 확정합니다.
 
 `poc_candidate_ref`는 실행 전 스크립트·입력입니다. exact candidate 실행이 `SUCCEEDED + SUPPORTED`로 끝난 경우에만 validated `poc_ref`를 만듭니다. 생성 실패, 실행 실패, `DISPROVED | INCONCLUSIVE`에서는 `poc_ref=null`입니다. candidate와 실패 로그는 남겨도 최종 PoC로 부르지 않습니다.
 

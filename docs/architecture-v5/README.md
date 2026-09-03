@@ -32,7 +32,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 9. Verification이 entity·위치·경로를 기준으로 필요한 코드 문맥을 조회한다.
 10. 운영 분석의 Verification이 Pro/Con을 독립 NEW session으로 병렬 실행한다.
 11. 초기 `TRUE | FALSE | HOLD` 판정을 만든다.
-12. Initial TRUE이면 R6가 `POC_CONFIRMATION`, 판정에 동적 근거가 필요하면 `VERDICT_EVIDENCE` 요청을 만든다. R7 Agent가 exact requirements·mode·plan·recipe·PoC를 생산하고 Controller 외부 경계를 통과한 clean Sandbox 안에서 자율 실행한다. Session Manager가 같은 attempt의 AgentLog·candidate·validated PoC와 동적 결과를 확정한다.
+12. Initial TRUE이면 R6가 `POC_CONFIRMATION`, 판정에 동적 근거가 필요하면 `VERDICT_EVIDENCE` 요청을 만든다. R7 Agent가 exact requirements·plan·recipe·PoC를 생산하고 Controller 외부 경계를 통과한 clean Sandbox 안에서 자율 실행한다. Session Manager가 같은 attempt의 AgentLog·candidate·validated PoC와 동적 결과를 확정한다.
 13. 최종 `TRUE | FALSE | HOLD`와 별도 material claim을 확정한다.
 14. `FALSE`는 terminal로 끝내고, `HOLD`는 inputs만 있고 result가 없는 Primitive를 즉시 저장해 Chaining 자격을 준다. TRUE는 CWE 단계로 간다.
 15. validated PoC와 `SUCCEEDED + SUPPORTED` 동적 결과가 연결된 final TRUE와 CWE만 Technical Evidence Gate Agent가 검토한다.

@@ -160,7 +160,7 @@ flowchart TB
     DYN -->|Execution evidence needed| VREQ[R6 request VERDICT_EVIDENCE]
     CREQ --> ONE[Runtime allows one work per Verification generation]
     VREQ --> ONE
-    ONE --> R7PLAN[R7 Agent creates Requirements mode and Plan]
+    ONE --> R7PLAN[R7 Agent creates Requirements and Plan]
     R7PLAN --> AUTH[Runtime Validator call authorization]
     AUTH --> CTRL[Sandbox Controller external boundary check]
     CTRL --> PDEC[Exact SandboxPolicyDecision]

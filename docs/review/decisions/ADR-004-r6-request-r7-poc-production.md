@@ -37,7 +37,7 @@ initial TRUE를 확인하는 `POC_CONFIRMATION`도 같은 결과 규칙을 사�
 
 - R6는 request의 가설·목적·목표·환경 필요·Sandbox profile과 근거를 정합니다.
 - R7은 request를 약화하거나 다른 profile로 바꾸지 않고 실행 가능한 requirements·plan·candidate를 만듭니다.
-- R7은 plan mode를 `LIMITED_REPRO | FULL_REPRO` 중 선택할 수 있지만 verdict·CWE·Gate 결과를 만들 수 없습니다.
+- R7은 하나의 Sandbox 실행 경로에서 requirements·plan·candidate를 만들지만 verdict·CWE·Gate 결과를 만들 수 없습니다.
 - Runtime Validator는 생산자, exact revision, generation별 work 하나와 TRUE의 validated PoC 전제를 검사합니다.
 - Sandbox Controller는 host·Docker daemon·secret·egress·다른 workspace·resource·lifecycle의 외부 경계를 검사하고 Agent 내부 command·package·payload·실행 순서는 정하지 않습니다.
 - Setup Automation이 clean Sandbox를 만들고 Reproduction Agent가 내부 환경·PoC·실행·관찰·retry를 자율 수행합니다. Session Manager는 actual event와 결과 무결성만 확정합니다.

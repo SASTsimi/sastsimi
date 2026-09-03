@@ -90,7 +90,7 @@ Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아
 
 결과 저장 요청에는 결과 종류와 검사할 후보 파일의 정확한 hash를 함께 넣습니다. 프로그램 검사기는 그 결과를 만들 권한이 있는 역할인지, 현재 작업·시도·코드 버전과 같은지 확인합니다. 검사 뒤 후보 내용이 바뀌거나 다른 역할이 저장하려 하면 거절합니다. 저장이 완료된 결과와 작업 종료 기록이 같은 `COMMITTED` 전이에 연결된 뒤에만 다음 단계가 읽습니다.
 
-R6 Verification은 목적·목표·필요 환경·profile·근거를 `DynamicReproductionRequest`로 고정합니다. R7 Agent는 exact 요청에서 requirements·mode·plan을 만들고, Controller 외부 경계를 통과한 clean Sandbox 안에서 recipe·환경·PoC·관찰·retry를 자율 수행합니다. Session Manager는 actual event, candidate와 같은 attempt의 artifact만 연결합니다. `SUCCEEDED + SUPPORTED` 실행만 validated `poc_ref`를 만들며, 모든 final TRUE와 Technical Gate 요청에 필요합니다. 실패는 candidate·AgentLog와 함께 `BLOCKED | FAILED`로 반환하고 `FALSE | HOLD`로 자동 변환하지 않습니다.
+R6 Verification은 목적·목표·필요 환경·profile·근거를 `DynamicReproductionRequest`로 고정합니다. R7 Agent는 exact 요청에서 requirements·plan을 만들고, Controller 외부 경계를 통과한 clean Sandbox 안에서 recipe·환경·PoC·관찰·retry를 자율 수행합니다. Session Manager는 actual event, candidate와 같은 attempt의 artifact만 연결합니다. `SUCCEEDED + SUPPORTED` 실행만 validated `poc_ref`를 만들며, 모든 final TRUE와 Technical Gate 요청에 필요합니다. 실패는 candidate·AgentLog와 함께 `BLOCKED | FAILED`로 반환하고 `FALSE | HOLD`로 자동 변환하지 않습니다.
 
 ## 자동화가 끝나는 지점
 

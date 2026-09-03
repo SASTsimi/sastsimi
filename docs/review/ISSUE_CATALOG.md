@@ -464,7 +464,7 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 
 ### 쉽게 말하면
 
-R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 exact `EnvironmentRequirements`와 `ReproductionPlan`을 만든다. Sandbox Controller가 외부 경계를 강제하고 Setup Automation이 가설마다 clean Sandbox를 생성하면, Agent가 내부에서 환경·package·계정·fixture/mock·PoC·명령·관찰·retry를 자율 수행한다. Session Manager가 실제 event·candidate·validated PoC·cleanup과 최종 결과를 같은 attempt로 확정하고, final `TRUE | FALSE | HOLD`는 R6가 결정한다.
+R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 exact `EnvironmentRequirements`와 `ReproductionPlan`을 만든다. Sandbox Controller가 외부 경계를 강제하고 Setup Automation이 가설 work의 최초 clean Sandbox를 생성하면, Agent가 내부에서 환경·package·계정·fixture/mock·PoC·명령·관찰·retry를 자율 수행한다. 같은 work에서는 상태가 호환되면 container를 재사용하고 Agent 요청 또는 runtime 강제 조건에서 baseline으로 재생성한다. Session Manager가 실제 event·candidate·validated PoC·cleanup과 최종 결과를 같은 attempt로 확정하고, final `TRUE | FALSE | HOLD`는 R6가 결정한다.
 
 ### 하위 Issue
 
@@ -477,7 +477,7 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 exact `EnvironmentRequi
 - 담당 역할: 동적검증·Sandbox
 - 담당자: 조근석 `@Potatonion`
 - 주요 작업 브랜치: `docs/r7-autonomous-reproduction-redesign`
-- 관련 흐름: R6 exact request → R7 requirements·mode·plan → Runtime Validator·Controller 외부 경계 검사 → Setup Automation clean Sandbox → Agent 자율 환경·PoC·실행·관찰·retry → Session Manager actual event·최종 결과 확정 → R6 최종 판정
+- 관련 흐름: R6 exact request → R7 requirements·plan → Runtime Validator·Controller 외부 경계 검사 → Setup Automation clean Sandbox → Agent 자율 환경·PoC·실행·관찰·retry → Session Manager actual event·최종 결과 확정 → R6 최종 판정
 
 ### 검토 문서
 
@@ -509,10 +509,11 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 exact `EnvironmentRequi
 
 ### 완료 조건
 
-- [ ] R6 request와 R7 requirements·mode·plan·PoC 생산 권한이 분리됨
+- [ ] R6 request와 R7 requirements·plan·PoC 생산 권한이 분리됨
 - [ ] host·Docker daemon·secret·egress·다른 workspace 외부 경계와 R8 자원 한도 적용 책임이 명확함
-- [ ] 가설마다 clean Sandbox를 생성하고 내부에서 Agent의 환경·PoC·command·관찰·retry 자율성이 보장됨
-- [ ] Toolbox Image와 versioned `EnvironmentRecipe`에 base·built image digest와 package/setup 변경이 누적됨
+- [ ] 가설 work의 최초 clean Sandbox를 생성하고 같은 work의 재사용·재생성 사유와 instance identity를 기록함
+- [ ] Agent 판단과 runtime 강제 재생성 조건이 구분되고 내부 환경·PoC·command·관찰·retry 자율성이 보장됨
+- [ ] 저장소 선언 의존성과 versioned `EnvironmentRecipe`에 base·built image digest와 package/setup 변경이 누적됨
 - [ ] `AgentLog` event ID·sequence·STARTED/terminal·crash·stale attempt 규칙이 있음
 - [ ] `agent_invoked=false` 정책 차단도 Session Manager가 결과로 확정할 수 있음
 - [ ] 실패한 PoC는 candidate로만 남고 `SUCCEEDED + SUPPORTED` exact 실행만 validated `poc_ref`가 됨

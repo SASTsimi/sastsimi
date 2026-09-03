@@ -40,7 +40,7 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] Primitive DB는 queue 또는 Finding 저장소가 아닙니다.
 - [ ] Orchestration은 proposal 검증·등록·Verification 배정 뒤 가설 내부 호출을 결정하지 않습니다.
 - [ ] Verification이 Context·Pro/Con·동적 재현·판정·Technical `REVISE`·Gate 제출과 Chaining handoff를 소유합니다.
-- [ ] R6 Verification은 목적·목표·필요 환경·Sandbox profile·근거 reference를 가진 exact `DynamicReproductionRequest`만 만들고, R7이 이를 가리키는 `EnvironmentRequirements`·mode·`ReproductionPlan`·PoC candidate를 만듭니다.
+- [ ] R6 Verification은 목적·목표·필요 환경·Sandbox profile·근거 reference를 가진 exact `DynamicReproductionRequest`만 만들고, R7이 이를 가리키는 `EnvironmentRequirements`·`ReproductionPlan`·PoC candidate를 만듭니다.
 - [ ] `EnvironmentRequirements`는 애플리케이션 조건이고 `sandbox_profile_ref`는 Sandbox 보안 정책이며 서로 대신하지 않습니다.
 - [ ] 한 Verification generation에 동적 재현 work가 하나뿐이며, retry는 같은 work의 새 attempt입니다.
 - [ ] final TRUE에는 현재 generation의 `SUCCEEDED + SUPPORTED` 결과와 validated `poc_ref`가 필수이고, 없으면 저장과 Technical Gate 호출이 모두 차단됩니다.

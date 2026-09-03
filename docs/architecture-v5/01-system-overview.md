@@ -97,7 +97,7 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | Pro/Con Agents | 독립적인 성립·반박 근거 조사 | 동일 session 공유 |
 | Reproduction Agent | R6 요청을 바탕으로 `EnvironmentRequirements`·`ReproductionPlan`·recipe·PoC를 만들고 clean Sandbox 안에서 환경 구성·실행·관찰·retry를 자율 수행 | R6 요청 목적·필수 조건·profile 변경 또는 최종 취약점 판정 |
 | Sandbox Controller | exact request·plan·requirements의 host·Docker daemon·secret·egress·다른 workspace·자원·lifecycle 외부 경계 판정 | Agent 내부 command·payload·package·실행 순서 결정 |
-| R7 Sandbox Setup Automation | 승인된 경계로 image build와 가설별 clean Sandbox 생성·lifecycle cleanup 수행 | 최종 verdict 판단 또는 Agent 전략 개입 |
+| R7 Sandbox Setup Automation | 승인된 경계로 image build·가설별 최초 clean Sandbox 생성·요청 또는 강제 조건에 따른 baseline 재생성·lifecycle cleanup 수행 | 최종 verdict 판단 또는 Agent 전략 개입 |
 | Reproduction Session Manager | runtime/tool event를 durable AgentLog로 기록하고 같은 attempt의 policy·recipe·환경·candidate·validated PoC·cleanup을 `DynamicReproductionResult`로 확정 | Agent 호출·허용·차단·retry 결정 또는 다른 attempt 혼합 |
 | Primitive DB | HOLD의 inputs-only Primitive와 Technical-accepted TRUE의 result Primitive exact revision 검색 | 작업 queue, Gate 전 TRUE admission 또는 자동 Finding 생성 |
 | Chaining Agent | upstream Primitive `result`→downstream Primitive `input` matching과 chained proposal | 일반 research, dynamic, Gate, verdict, CWE, report 확정 |

@@ -34,7 +34,7 @@ R7의 목적은 가설의 최종 취약점 판정이 아니라, 격리 환경에
 후보 결정은 C다.
 
 - R6는 가설·purpose·goal·필수 환경·Sandbox profile과 근거를 불변 `DynamicReproductionRequest`로 전달한다.
-- R7 `REPRODUCTION_AGENT`가 exact `EnvironmentRequirements`, `LIMITED_REPRO | FULL_REPRO` mode와 `ReproductionPlan`을 생산한다. plan은 exact step·command·payload·cleanup policy를 강제하지 않는다.
+- R7 `REPRODUCTION_AGENT`가 exact `EnvironmentRequirements`와 `ReproductionPlan`을 생산한다. 별도 LIMITED/FULL mode 없이 모든 동적 재현이 같은 Sandbox 실행 경로를 사용하고, plan은 exact step·command·payload·cleanup policy를 강제하지 않는다.
 - R7 Agent는 환경 recipe, package·계정·fixture·mock, PoC candidate, command, 관찰과 retry를 자율적으로 결정한다.
 - R7은 동적 근거를 `SUPPORTED | DISPROVED | INCONCLUSIVE`로 판단한다. 최종 `TRUE | FALSE | HOLD`는 R6가 맡는다.
 - Runtime Validator는 schema·authority·identity·revision·state·budget과 exact input refs만 검사한다.
@@ -46,6 +46,7 @@ R7의 목적은 가설의 최종 취약점 판정이 아니라, 격리 환경에
 ## Environment and package lifecycle
 
 - 풍부한 공통 Toolbox Image와 저장소/환경별 versioned `EnvironmentRecipe`를 사용한다.
+- 별도 Dependency Scanner나 R2 package prefetch 연동 없이 저장소의 Dockerfile·README·package manifest 등 선언된 의존성을 우선 사용한다.
 - package 누락을 발견하면 실패를 Agent Log에 남기고 Dockerfile·manifest·setup을 수정해 새 recipe revision과 image digest를 만든다.
 - package download는 baseline image build 단계에서 수행한다.
 - 성공한 recipe/image는 `PERSISTENT_BASELINE`, 개별 실행의 container·network·volume·tmp·임시 build는 `SESSION_EPHEMERAL`로 구분한다.
@@ -59,9 +60,9 @@ R7의 목적은 가설의 최종 취약점 판정이 아니라, 격리 환경에
 - 넓은 `failure_category`와 자유 형식 `failure_reason`을 사용한다.
 - 환경·실행·정책·timeout 실패와 빈 출력만으로 `DISPROVED` 또는 최종 `FALSE`를 만들지 않는다.
 
-## Open decision
+## PL review decisions
 
-정적 Dependency Scanner와 사전 package prefetch를 R2와 연동할지는 별도 협의한다. mode는 R7이 선택하는 `LIMITED_REPRO | FULL_REPRO`로 유지하고, 가설마다 별도의 clean Sandbox와 writable state를 생성하며, `requested_evidence`는 Agent를 편향시키지 않는 선택 필드로 둔다.
+`LIMITED_REPRO | FULL_REPRO` mode와 별도 Dependency Scanner는 두지 않는다. 가설 work는 최초 clean Sandbox와 별도 writable state에서 시작하고, 같은 work에서는 상태가 호환되면 container를 재사용한다. Agent가 `STATE_CHANGED | CONFIG_CHANGED | STATE_UNCERTAIN`으로 요청하거나 crash·비정상 종료·사후 Health Check 실패로 runtime이 상태를 신뢰할 수 없으면 Setup Automation이 같은 immutable baseline에서 재생성한다. `requested_evidence`는 Agent를 편향시키지 않는 선택 필드로 둔다.
 
 ## Validation before acceptance
 

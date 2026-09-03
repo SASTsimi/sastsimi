@@ -21,7 +21,7 @@
 | 같은 코드 버전 연결 | 실행별 clone과 `commit_id`로 facts, context, verdict, PoC 연결 |
 | AST/SAST 정규화 | LLM이 사용할 entity/location/path/auth 사실 계층 |
 | 역할 분리된 LLM 분석 | Hypothesis, Verification, Pro/Con, Chaining, 두 Gate, Reporter |
-| 격리된 동적 검증 | R6 목적별 요청 → R7 `LIMITED_REPRO | FULL_REPRO` 실행; 모든 final TRUE에 validated PoC 필수 |
+| 격리된 동적 검증 | R6 목적별 요청 → R7의 단일 Sandbox 실행 경로; 모든 final TRUE에 validated PoC 필수 |
 | 조건부 연계 탐색 | Primitive DB match가 새 가설만 생성 |
 | 자동화와 사람 과정의 분리 | 자동화는 ReportDraft·AnalysisRunResult에서 끝나고 이후 검토·제출·공개는 사람이 수행 |
 | 오류·근거·자원 보존 | normalized invocation과 run/debug records |

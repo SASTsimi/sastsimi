@@ -96,7 +96,7 @@ Docker 환경을 만들지 못했거나 실행이 timeout된 것은 재현 실�
 
 ### 필요한 환경과 실제 환경을 어떻게 연결하나요?
 
-R6 Verification은 `DynamicReproductionRequest`에 목적, 목표·필요 환경·`sandbox_profile_ref`와 근거를 적습니다. R7 Agent는 이 요청을 가리키는 `EnvironmentRequirements`, mode와 `ReproductionPlan`을 만든 뒤 clean Sandbox 안에서 recipe·환경·PoC를 구성합니다. `sandbox_profile_ref`는 외부 격리 정책이며 애플리케이션 환경 요구사항을 대신하지 않습니다.
+R6 Verification은 `DynamicReproductionRequest`에 목적, 목표·필요 환경·`sandbox_profile_ref`와 근거를 적습니다. R7 Agent는 이 요청을 가리키는 `EnvironmentRequirements`와 `ReproductionPlan`을 만든 뒤 clean Sandbox 안에서 recipe·환경·PoC를 구성합니다. `sandbox_profile_ref`는 외부 격리 정책이며 애플리케이션 환경 요구사항을 대신하지 않습니다.
 
 R7은 실제 환경의 requirements·recipe·built image digest와 각 requirement의 비교·Health Check를 기록합니다. 환경이나 계획을 고치면 같은 request·work의 새 attempt와 immutable revision을 만들고 외부 경계 검사를 다시 받습니다. 차이·미확인·오류는 숨기지 않으며 그 자체로 `DISPROVED`가 아닙니다.
 
