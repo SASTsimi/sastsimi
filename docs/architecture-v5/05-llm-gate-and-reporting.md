@@ -34,7 +34,7 @@ CWE 후보는 final TRUE 뒤에 Gate 입력으로 작성한다. primary·alterna
 - final `VerificationResult`의 정확한 `record_id`가 있는 `StoredDataRef`와 revision history
 - Pro/Con evidence와 debate mode/trigger
 - 실제 code/entity/location/path reference
-- 현재 generation의 `DynamicReproductionRequest`, `DynamicReproductionResult`와 exact validated `poc_ref`·`policy_decision_ref`·`environment_ref`·`steps_ref`
+- 현재 generation의 `DynamicReproductionRequest`, `DynamicReproductionResult`와 exact validated `poc_ref`·`policy_decision_ref`·`environment_ref`·`agent_log_ref`
 - `CWELabel`의 정확한 `record_id`가 있는 `StoredDataRef`와 근거
 - restriction, bypass candidate, unresolved condition
 - 같은 Verification에서 분리한 material child proposal 중 재검증 완료 여부
@@ -44,7 +44,7 @@ CWE 후보는 final TRUE 뒤에 Gate 입력으로 작성한다. primary·alterna
 - final `TRUE`와 찬성·반대 근거의 일치
 - 핵심 주장이 현재 `workspace_id`와 `commit_id`의 코드 위치·호출·데이터 흐름에 연결되는지
 - 동적 관측이 현재 가설·`workspace_id`·실행 조건에 연결되는지
-- Runner 호출 여부와 step log, 실제 환경 생성 여부와 환경 reference, 정책 차단과 Controller 판정 reference, 정리 필요 여부와 상태가 공통 계약에 맞는지
+- `agent_invoked`와 같은 attempt의 `agent_log_ref`, 실제 환경 생성 여부와 `environment_ref`, 정책 차단과 Controller의 `policy_decision_ref`, cleanup 필요 여부·상태가 공통 계약에 맞는지
 - `poc_ref`가 실제 실행된 `poc_candidate_ref`, 성공 log와 `SUCCEEDED + SUPPORTED` 관측의 같은 revision에 연결되는지
 - 동적 근거가 승인된 Sandbox 정책 안에서 생성되었고 금지된 재현으로 오염되지 않았는지
 - CWE 선택이 취약점 유형과 근거에 적절한지
@@ -82,7 +82,7 @@ technical_evidence_review:
 
 `ACCEPT`는 `handoff_readiness=READY`, `REVISE | REJECT`는 `handoff_readiness=NOT_READY`와 함께 사용한다. 이 조합이 맞지 않으면 Gate output을 저장하지 않는다.
 
-`DynamicReproductionResult(status=BLOCKED, failure_reason=POLICY_BLOCKED)`는 정책 때문에 실행하지 못했다는 뜻이지 가설 반증이 아니다. 그러나 validated PoC가 없으므로 final TRUE를 저장하거나 Technical Gate를 호출할 수 없다. 이 경우 Verification과 동적 work를 `BLOCKED`로 유지하거나 복구 불가능하면 verdict 없이 `FAILED`로 끝낸다. 정책 차단 자체를 `FALSE | HOLD` 또는 Gate의 `REJECT` 근거로 바꾸지 않는다.
+`DynamicReproductionResult(status=BLOCKED, failure_category=POLICY)`는 정책 때문에 현재 attempt를 진행하지 못했다는 뜻이지 가설 반증이 아니다. 재시도 또는 정책·환경 수정으로 복구 가능하면 동적 work를 `BLOCKED`로 유지한다. 복구 불가능하거나 retry 한도를 소진하면 `DynamicReproductionResult(status=FAILED, failure_category=POLICY)`와 동적 work `FAILED`로 종료할 수 있다. `BLOCKED | FAILED + POLICY` 모두 exact `policy_decision_ref`가 필수이며 validated `poc_ref`는 `null`, `hypothesis_outcome=INCONCLUSIVE`이어야 한다. 사람이 읽을 수 있는 상세 원인은 자유 형식 `failure_reason`에 보존한다. 어떤 경우에도 정책 차단을 `FALSE | HOLD` 또는 Technical Gate의 `REJECT` 근거로 변환하지 않는다.
 
 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 Gate가 실제로 읽은 `VerificationResult`와 `CWELabel` revision을 각각 고정한다. runtime은 Gate와 두 대상의 `workspace_id`, `commit_id`, `hypothesis_id`, `record_id`, `content_hash`를 확인한다. Verification 또는 CWELabel이 수정되면 이전 `ACCEPT`를 새 revision에 재사용하지 않고 Gate를 새로 호출한다.
 
@@ -201,8 +201,19 @@ runtime은 같은 workspace·commit·hypothesis, `record_id`, `content_hash`와 
 Reporter가 저장소에서 가장 최신처럼 보이는 별도 결과를 다시 검색해 연결하거나 서로 다른 revision의
 유리한 근거를 조합해서는 안 된다.
 
-PoC runner가 실제 실행되지 않았거나 필요한 step이 없거나, Dynamic/PoC가 `BLOCKED`이거나 환경
-restriction 때문에 실행하지 못했거나, 실제 observation이 부족하면 재현 성공으로 서술하지 않는다.
+Reporter는 R7이 이미 확정한 `DynamicReproductionResult`의 request·plan·requirements 연결과 존재하는
+policy·environment·`AgentLog`·PoC candidate·validated PoC·cleanup provenance만 그대로 소비한다.
+서로 다른 attempt의 artifact를 섞거나 누락된 reference를 다른 실행에서 보충하지 않으며, 이 무결성을
+새로 판정하거나 `poc_candidate_ref`를 validated PoC로 승격하지 않는다. validated `poc_ref`는 R7에서
+exact `poc_candidate_ref`와 같은 bundle revision/digest, `AgentLog`의 실제 `POC_EXECUTE`, 지지
+observation 및 `SUCCEEDED + SUPPORTED`가 연결되어 확정된 reference라는 의미로만 표시한다.
+
+`environment_created=false`와 `agent_invoked=false`는 서로 다른 실행 사실로 각각 표시한다.
+`agent_invoked=false`이거나, `agent_invoked=true`인데 같은 attempt의 exact `agent_log_ref`와 `AgentLog`
+event가 실제 PoC 실행·관측을 뒷받침하지 않거나, Dynamic/PoC가 `BLOCKED`이거나 환경 restriction 때문에
+실행하지 못했거나 실제 observation이 부족하면 재현 성공으로 서술하지 않는다. 실행 사실과 관측은
+`agent_log_ref`, `observation_refs` 및 결과에 연결된 exact environment·policy·PoC·cleanup provenance를
+함께 따라 표현한다.
 동적 검증 실패·환경 실패는 취약점이 존재하지 않는다는 뜻으로 바꾸지 않는다. ReportDraft는 실제
 실행 여부, 관측 범위와 환경·실행 limitation을 원래 상태 그대로 표시한다.
 

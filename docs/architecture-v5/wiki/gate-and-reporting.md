@@ -46,17 +46,20 @@ Reporter는 위 조건을 모두 만족하고 ReportDraft가 가리킨 current F
 Reporter는 검증된 사실을 합성·표현할 뿐 새 vulnerability fact, attack path, reproduction/PoC 성공,
 policy·scope 판단이나 upstream보다 강한 severity·exploitability·security impact를 만들지 않습니다.
 주요 claim은 current Finding과 두 Gate가 실제 검토한 exact Verification·CWE·정책·Dynamic/PoC revision으로
-추적해야 하며, 별도로 최신 결과를 검색해 연결하지 않습니다. Verification restriction과 unresolved
-condition, 정적·동적·Gate limitation을 빠짐없이 보존하고 실행·환경 실패를 취약점 부재로 바꾸지
-않습니다. 저장 전 secret·불필요한 PII·private/raw reasoning을 제거한 `REDACTION=PASS`가 필요합니다.
+추적해야 하며, 별도로 최신 결과를 검색해 연결하지 않습니다. Dynamic/PoC 표시는 Verification의 exact
+`dynamic_result_ref`와 R7에서 이미 validated된 `poc_ref`만 소비하고, request·plan·requirements와 존재하는
+policy·environment·AgentLog·PoC·cleanup을 다른 attempt와 섞지 않습니다. Reporter는 이 무결성이나 실행
+성공을 새로 판정하지 않습니다. Verification restriction과 unresolved condition, 정적·동적·Gate
+limitation을 빠짐없이 보존하고 실행·환경 실패를 취약점 부재로 바꾸지 않습니다. 저장 전
+secret·불필요한 PII·private/raw reasoning을 제거한 `REDACTION=PASS`가 필요합니다.
 
 프로그램 검사기는 Gate 결론을 대신 내리지 않습니다. Verification이 Gate 호출을 제안하더라도 정확한
 입력·LLM call spec, Technical-accepted result Primitive admission과 Reporter 조건을 검사합니다. Rule
 Scope는 Technical `ACCEPT` 이후의 독립된 보고 경로이며 이미 확정된 Primitive·Chaining 자격을 다시
 판정하거나 취소하지 않습니다. Finding이 없으면 Reporter를 호출하지 않고 `report_draft_refs=[]`와
-오류·상태 이유를 남깁니다. `ReportDraft`가 마지막 Agent 산출물이며, Reporter work 종료 뒤 신뢰
-runtime이 `AnalysisRunResult`와 `AnalysisRunState`를 새 Agent 판단 없이 원자적으로 확정한 다음 자동화가
-끝납니다. 이후 사람의 검토·수정·제출·공개는 Agent 계약 밖이며 Reporter에는 외부 제출·공개나
+오류·상태 이유를 남깁니다. `ReportDraft`가 마지막 Agent 산출물이며 `AnalysisRunResult` 확정 뒤 자동화가 끝납니다.
+Reporter work 종료 뒤 신뢰 runtime은 `AnalysisRunResult`와 `AnalysisRunState`를 새 Agent 판단 없이
+원자적으로 확정합니다. 이후 사람의 검토·수정·제출·공개는 Agent 계약 밖이며 Reporter에는 외부 제출·공개나
 CVE/GHSA 요청 권한이 없습니다.
 
 `ALLOW`가 PASS·scope·impact 조건과 모순되거나 Gate가 현재 작업과 다른 input revision을 가리키면 유효한 Gate 결과가 아니다. LLM 호출을 `INVALID_OUTPUT`, 오류를 `GATE/INVALID_OUTPUT`으로 기록하고 Reporter를 호출하지 않는다.
