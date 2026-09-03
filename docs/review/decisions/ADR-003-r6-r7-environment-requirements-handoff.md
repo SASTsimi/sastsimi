@@ -1,14 +1,14 @@
 # ADR-003. R6 환경 요구사항과 R7 실제 환경 비교 handoff
 
 - 상태: `SUPERSEDED`
-- 대체 결정: [ADR-004. R6 동적 재현 요청과 R7 PoC 생산](./ADR-004-r6-request-r7-poc-production.md)
+- 대체 결정: [ADR-007. R7 자율 동적 재현과 Session Manager 결과 확정](./ADR-007-r7-autonomous-reproduction-session.md)
 - 결정 담당: R4 PM·아키텍처·공통 계약
 - 필수 검토: R6 검증·반박, R7 동적검증·Sandbox
 - 추가 검토: R3 통합 개발, R8 데이터·평가
 
 ## Context
 
-> 이 문서는 당시 R6가 `EnvironmentRequirements`와 `ReproductionPlan`을 생산하던 결정을 보존하는 역사 기록입니다. 현재 계약으로 사용하지 않습니다. 현재 생산 권한과 PoC 규칙은 ADR-004를 따릅니다.
+> 이 문서는 당시 R6가 `EnvironmentRequirements`와 `ReproductionPlan`을 생산하던 결정을 보존하는 역사 기록입니다. 현재 계약으로 사용하지 않습니다. 현재 생산 권한·자율 실행·AgentLog·PoC 규칙은 ADR-007을 따릅니다.
 
 기존 `environment_ref`는 R7이 실제로 만든 `sandbox_environment`를 정확히 가리키지만, R6이 재현 전에 요구한 애플리케이션 역할·인증·데이터·DB/service·fixture/mock·버전·Health Check를 별도 record로 남기지 않았습니다. 따라서 실제 환경이 R6의 전제와 같은지 기계적으로 비교할 exact reference가 없었습니다.
 

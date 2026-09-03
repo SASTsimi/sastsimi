@@ -57,6 +57,9 @@ if (-not $diagramText.Contains($declaredCount)) {
 if (-not $wikiDiagramText.Contains($declaredCount)) {
     Add-Failure "Wiki diagram count text is not '$declaredCount'"
 }
+if (-not $diagramText.Contains('RUNNING --> READY: immediate dynamic auto retry')) {
+    Add-Failure 'canonical state diagram is missing the DYNAMIC_REPRO immediate auto-retry transition'
+}
 
 $activeContractPaths = @(
     (Join-Path $repoRoot 'docs/architecture-v5'),
@@ -146,6 +149,26 @@ foreach ($file in $activeUnifiedPrimitiveFiles) {
     }
 }
 
+# Current documentation must not restore the pre-ADR-007 Runner/step-list contract.
+# Historical ADRs and superseded design plans are intentionally excluded.
+$obsoleteR7SchemaPatterns = @(
+    'runner_invoked:',
+    'steps_ref:',
+    'environment_created:',
+    'ReproductionStep:',
+    'mode: LIMITED_REPRO | FULL_REPRO',
+    'requested_by=SANDBOX',
+    'failure_reason=POLICY_BLOCKED'
+)
+foreach ($file in $activeUnifiedPrimitiveFiles) {
+    $text = Get-Content -Raw -LiteralPath $file.FullName
+    foreach ($pattern in $obsoleteR7SchemaPatterns) {
+        if ($text.Contains($pattern)) {
+            Add-Failure "obsolete pre-ADR-007 R7 schema term '$pattern': $($file.FullName)"
+        }
+    }
+}
+
 $contractPath = Join-Path $repoRoot 'docs/architecture-v5/08-lightweight-data-contracts.md'
 $contractText = Get-Content -Raw -LiteralPath $contractPath
 $overviewPath = Join-Path $repoRoot 'docs/architecture-v5/01-system-overview.md'
@@ -200,8 +223,8 @@ $workExecutionBlock = [regex]::Match($contractText, '(?ms)^WorkExecutionState:\s
 if (-not $workExecutionBlock.Contains('parent_work_ref:')) {
     Add-Failure 'WorkExecutionState is missing parent_work_ref'
 }
-if (-not $contractText.Contains('`PRO_EVIDENCE | CON_EVIDENCE | DYNAMIC_REPRO`에서는 필수')) {
-    Add-Failure 'dynamic reproduction work is not bound to the current Verification parent'
+if (-not $contractText.Contains('`PRO_EVIDENCE | CON_EVIDENCE | DYNAMIC_REPRO | CWE_LABEL`에서는 필수')) {
+    Add-Failure 'Verification child work is not bound to the current Verification parent'
 }
 
 $evidenceAgentResultBlock = [regex]::Match($contractText, '(?ms)^EvidenceAgentResult:\s*(.*?)^CandidateRef:').Groups[1].Value
@@ -231,6 +254,46 @@ $requiredVerificationDebateFields = @(
 foreach ($field in $requiredVerificationDebateFields) {
     if (-not $verificationResultBlock.Contains($field)) {
         Add-Failure "VerificationResult is missing Pro/Con join field: $field"
+    }
+}
+
+$cweLabelBlock = [regex]::Match($contractText, '(?ms)^CWELabel:\s*(.*?)^```').Groups[1].Value
+$requiredCweLabelFields = @(
+    'verification_result_ref:',
+    'verification_generation:',
+    'cwe_labeling_work_id:',
+    'llm_call_id:',
+    'primary:',
+    'alternatives:',
+    'taxonomy_version:',
+    'rationale:',
+    'evidence_refs:',
+    'uncertainty:'
+)
+foreach ($field in $requiredCweLabelFields) {
+    if (-not $cweLabelBlock.Contains($field)) {
+        Add-Failure "CWELabel is missing field: $field"
+    }
+}
+
+$requiredCweLabelContractMarkers = @(
+    '`CWELabel`의 logical producer/runtime role은 `CWE_LABELING`, R1~R8 실제 업무 owner는 R5-01이다.',
+    '`CWE_LABEL`은 이 역할을 실행하는 `WorkExecutionState.work_type` 이름이다.',
+    'primary·alternatives가 그대로여도 새 Verification을 가리키는 새 revision이 필요하다.',
+    '과거 label은 overwrite하지 않고 감사 이력으로 보존하지만 새 `CWE_LABEL` work나 Gate의 current input으로 재사용하지 않는다.',
+    'current label은 current final TRUE를 input으로 가진 유일한 `CWE_LABEL` work가 `SUCCEEDED`이고 그 work의 유일한 `output_refs`가 가리키는 exact revision이다.',
+    '`CWELabel.verification_result_ref`와 exact match해야 한다.',
+    'CWE labeling 실패·timeout·provider 인증 오류는 Verification을 `FALSE | HOLD`로 바꾸지 않으며',
+    'Technical Gate는 CWE 정합성을 검토할 뿐 `CWELabel`을 생성·수정·덮어쓰지 않는다.',
+    '`CWE_LABEL`의 `SUCCEEDED`, exact `CWELabel` 저장과 그 하나뿐인 `output_refs`는 같은 `COMMITTED` `TransitionCommit`으로 확정한다.',
+    'R5-01 `CWE_LABELING`의 `CALL_LLM`은 current `CWE_LABEL` work의 active attempt에서만 허용한다.',
+    'R5-01 `CWE_LABELING`은 exact `CWELabel`',
+    '`CWELabel.llm_call_id`는 바로 이 성공한 CWE 호출의 `llm_call_id`와 같아야 한다.',
+    '`AnalysisRunResult.cwe_label_refs`에는 각 current final TRUE Verification에 대응하는 current `CWELabel`만 가설별로 하나씩 넣는다.'
+)
+foreach ($marker in $requiredCweLabelContractMarkers) {
+    if (-not $contractText.Contains($marker)) {
+        Add-Failure "missing or weakened R5-01 CWE labeling contract: $marker"
     }
 }
 
@@ -270,7 +333,7 @@ foreach ($field in $requiredTransitionCommitFields) {
 $requiredStateRows = @(
     '| `PENDING` | `READY`, `CANCELLED` |',
     '| `READY` | `RUNNING`, `BLOCKED`, `CANCELLED` |',
-    '| `RUNNING` | `BLOCKED`, `SUCCEEDED`, `PARTIAL`, `FAILED`, `CANCELLED` |',
+    '| `RUNNING` | `READY`, `BLOCKED`, `SUCCEEDED`, `PARTIAL`, `FAILED`, `CANCELLED` |',
     '| `BLOCKED` | `READY`, `FAILED`, `CANCELLED` |',
     '| `SUCCEEDED`, `PARTIAL`, `FAILED`, `CANCELLED` | 없음 |'
 )
@@ -283,6 +346,7 @@ foreach ($row in $requiredStateRows) {
 $requiredBindingRules = @(
     '`VERIFICATION`의 `SUCCEEDED`와 `HypothesisProcessState.status=TERMINAL`',
     '`DYNAMIC_REPRO`의 종료 transition',
+    '`CWE_LABEL`의 `SUCCEEDED`, exact `CWELabel` 저장',
     '`TECHNICAL_GATE`의 `SUCCEEDED`',
     '`RULE_SCOPE_GATE`의 `SUCCEEDED`',
     '`REPORT_DRAFT`의 `SUCCEEDED`와 `ReportProcessState.status=DRAFTED`',
@@ -297,15 +361,15 @@ foreach ($rule in $requiredBindingRules) {
 $reviewRemediationPatterns = @(
     @{
         Name = 'dynamic state requires request and uses an exact result pointer when a result exists'
-        Pattern = '(?s)동적 재현을 요청하면 `DynamicReproductionState.request_ref`.*?current generation의 exact `DynamicReproductionRequest`.*?`SUCCEEDED \| PARTIAL`에는 `dynamic_result_ref.record_id`가 필수.*?`BLOCKED \| FAILED`.*?결과를 조립하지 못했다면 `dynamic_result_ref=null`'
+        Pattern = '(?s)동적 재현을 요청하면 `DynamicReproductionState.request_ref`.*?current generation의 exact `DynamicReproductionRequest`.*?`SUCCEEDED \| PARTIAL \| BLOCKED \| FAILED \| CANCELLED`에는 Reproduction Session Manager가 확정한 exact `DynamicReproductionResult\.record_id`가 필수.*?Agent 호출 전 정책 차단도 Session Manager가 최소 `AgentLog`와 결과'
     },
     @{
         Name = 'dynamic PARTIAL uses structured limitations without fake errors'
-        Pattern = '(?s)`DYNAMIC_REPRO`는 정확히 하나의 `DynamicReproductionResult\(status=PARTIAL, failure_reason=NONE\)`.*?`hypothesis_evidence_refs`와 `limitations`가 각각 하나 이상.*?억지로 `error_ids`나 `gap_ids`로 만들지 않는다'
+        Pattern = '(?s)`DYNAMIC_REPRO`는 정확히 하나의 `DynamicReproductionResult\(status=PARTIAL, failure_category=NONE, failure_reason=null\)`.*?`hypothesis_evidence_refs`와 `limitations`가 각각 하나 이상.*?억지로 `error_ids`나 `gap_ids`로 만들지 않는다'
     },
     @{
-        Name = 'retryable dynamic failure remains the same blocked work'
-        Pattern = '(?s)`BLOCKED` \| `BLOCKED`.*?같은 work의 새 attempt.*?final verdict와 Gate는 없다.*?같은 `work_id`에서 새 `attempt_id`'
+        Name = 'dynamic autonomous retry is distinct from external blocking'
+        Pattern = '(?s)R7이 스스로 해결할 수 있는 command·PoC·환경 조정은 `BLOCKED` 사유가 아니며.*?`RUNNING -> READY -> RUNNING` 자동 retry.*?외부 조건이 해결되면 같은 `work_id`에서 새 `attempt_id`'
     },
     @{
         Name = 'dynamic cancellation result is atomically bound and late output is stale'
@@ -340,6 +404,8 @@ $staticPath = Join-Path $repoRoot 'docs/architecture-v5/02-static-fact-layer.md'
 $staticText = Get-Content -Raw -LiteralPath $staticPath
 $commonWikiPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/common-contracts.md'
 $commonWikiText = Get-Content -Raw -LiteralPath $commonWikiPath
+$chainingWikiPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/chaining.md'
+$chainingWikiText = Get-Content -Raw -LiteralPath $chainingWikiPath
 $requiredErrorCodes = @(
     'STATE_TRANSITION_INVALID',
     'STATE_VERSION_CONFLICT',
@@ -394,8 +460,16 @@ $requiredR403ContractNames = @(
     'DynamicReproductionRequest:',
     'EnvironmentRequirements:',
     'ReproductionPlan:',
+    'EnvironmentRecipe:',
     'SandboxEnvironment:',
-    'SandboxStepLog:',
+    'PlanIssueItem:',
+    'SandboxPolicyDecision:',
+    'CleanupResult:',
+    'AgentLogEvent:',
+    'AgentLog:',
+    'PoCCandidate:',
+    'PoCBundle:',
+    'DynamicReproductionResult:',
     'LLMCallSpec:',
     'action_id:',
     'decision_id:',
@@ -445,12 +519,18 @@ foreach ($field in $requiredActionRequestFields) {
 $environmentNeedBlock = [regex]::Match($contractText, '(?ms)^EnvironmentNeed:\s*(.*?)^DynamicReproductionRequest:').Groups[1].Value
 $dynamicRequestBlock = [regex]::Match($contractText, '(?ms)^DynamicReproductionRequest:\s*(.*?)^EnvironmentRequirement:').Groups[1].Value
 $environmentRequirementBlock = [regex]::Match($contractText, '(?ms)^EnvironmentRequirement:\s*(.*?)^EnvironmentRequirements:').Groups[1].Value
-$environmentRequirementsBlock = [regex]::Match($contractText, '(?ms)^EnvironmentRequirements:\s*(.*?)^ReproductionStep:').Groups[1].Value
-$reproductionStepBlock = [regex]::Match($contractText, '(?ms)^ReproductionStep:\s*(.*?)^ReproductionPlan:').Groups[1].Value
-$reproductionPlanBlock = [regex]::Match($contractText, '(?ms)^ReproductionPlan:\s*(.*?)^EnvironmentCheck:').Groups[1].Value
+$environmentRequirementsBlock = [regex]::Match($contractText, '(?ms)^EnvironmentRequirements:\s*(.*?)^ReproductionPlan:').Groups[1].Value
+$reproductionPlanBlock = [regex]::Match($contractText, '(?ms)^ReproductionPlan:\s*(.*?)^EnvironmentRecipe:').Groups[1].Value
+$environmentRecipeBlock = [regex]::Match($contractText, '(?ms)^EnvironmentRecipe:\s*(.*?)^EnvironmentCheck:').Groups[1].Value
 $environmentCheckBlock = [regex]::Match($contractText, '(?ms)^EnvironmentCheck:\s*(.*?)^SandboxEnvironment:').Groups[1].Value
-$sandboxEnvironmentBlock = [regex]::Match($contractText, '(?ms)^SandboxEnvironment:\s*(.*?)^SandboxStepEntry:').Groups[1].Value
-$sandboxStepLogBlock = [regex]::Match($contractText, '(?ms)^SandboxStepLog:\s*(.*?)^DynamicReproductionResult:').Groups[1].Value
+$sandboxEnvironmentBlock = [regex]::Match($contractText, '(?ms)^SandboxEnvironment:\s*(.*?)^PlanIssueItem:').Groups[1].Value
+$planIssueItemBlock = [regex]::Match($contractText, '(?ms)^PlanIssueItem:\s*(.*?)^SandboxPolicyDecision:').Groups[1].Value
+$sandboxPolicyDecisionBlock = [regex]::Match($contractText, '(?ms)^SandboxPolicyDecision:\s*(.*?)^CleanupResult:').Groups[1].Value
+$cleanupResultBlock = [regex]::Match($contractText, '(?ms)^CleanupResult:\s*(.*?)^AgentLogEvent:').Groups[1].Value
+$agentLogEventBlock = [regex]::Match($contractText, '(?ms)^AgentLogEvent:\s*(.*?)^AgentLog:').Groups[1].Value
+$agentLogBlock = [regex]::Match($contractText, '(?ms)^AgentLog:\s*(.*?)^PoCCandidate:').Groups[1].Value
+$pocCandidateBlock = [regex]::Match($contractText, '(?ms)^PoCCandidate:\s*(.*?)^PoCBundle:').Groups[1].Value
+$pocBundleBlock = [regex]::Match($contractText, '(?ms)^PoCBundle:\s*(.*?)^DynamicReproductionResult:').Groups[1].Value
 $dynamicResultBlock = [regex]::Match($contractText, '(?ms)^DynamicReproductionResult:\s*(.*?)^```').Groups[1].Value
 foreach ($field in @('need_id:', 'kind:', 'description:', 'required:', 'source_refs:')) {
     if (-not $environmentNeedBlock.Contains($field)) {
@@ -483,14 +563,14 @@ foreach ($fieldPattern in @('meta:\s*RecordMeta', 'request_ref:\s*StoredDataRef'
         Add-Failure "missing or invalid EnvironmentRequirements field: $fieldPattern"
     }
 }
-foreach ($field in @('step_id:', 'command_ref:', 'attack_input_refs:', 'required:')) {
-    if (-not $reproductionStepBlock.Contains($field)) {
-        Add-Failure "missing ReproductionStep field: $field"
-    }
-}
-foreach ($field in @('request_ref:', 'purpose:', 'mode:', 'hypothesis_ref:', 'environment_requirements_ref:', 'sandbox_profile_ref:', 'poc_candidate_ref:', 'steps:', 'cleanup_policy_ref:')) {
+foreach ($field in @('request_ref:', 'purpose:', 'hypothesis_ref:', 'environment_requirements_ref:', 'sandbox_profile_ref:', 'reproduction_goal:', 'strategy_summary:', 'requested_evidence:')) {
     if (-not $reproductionPlanBlock.Contains($field)) {
         Add-Failure "missing ReproductionPlan field: $field"
+    }
+}
+foreach ($field in @('meta:', 'request_ref:', 'environment_requirements_ref:', 'recipe_source_ref:', 'source_refs:', 'base_image_digest:', 'built_image_digest:', 'baseline_recipe_ref:', 'build_disposition:', 'created_at:')) {
+    if (-not $environmentRecipeBlock.Contains($field)) {
+        Add-Failure "missing EnvironmentRecipe field: $field"
     }
 }
 foreach ($fieldPattern in @(
@@ -508,8 +588,14 @@ foreach ($fieldPattern in @(
 }
 foreach ($fieldPattern in @(
     'meta:\s*RecordMeta',
+    'request_ref:\s*StoredDataRef',
     'reproduction_plan_ref:\s*StoredDataRef',
+    'environment_recipe_ref:\s*StoredDataRef',
     'requirements_ref:\s*StoredDataRef',
+    'container_instance_id:\s*string',
+    'container_action:\s*CREATED \| REUSED',
+    'container_reason:\s*INITIAL_CLEAN \| NO_RELEVANT_CHANGE \| STATE_CHANGED \| CONFIG_CHANGED \| STATE_UNCERTAIN',
+    'previous_environment_ref:\s*StoredDataRef \| null',
     'status:\s*READY \| MISMATCH \| ERROR',
     'checks:\s*\[EnvironmentCheck\]',
     'created_at:\s*timestamp'
@@ -518,28 +604,64 @@ foreach ($fieldPattern in @(
         Add-Failure "missing or invalid SandboxEnvironment field: $fieldPattern"
     }
 }
-foreach ($field in @('meta:', 'reproduction_plan_ref:', 'entries:')) {
-    if (-not $sandboxStepLogBlock.Contains($field)) {
-        Add-Failure "missing SandboxStepLog field: $field"
+foreach ($fieldPattern in @(
+    'issue_code:\s*MISSING_INPUT \| CONTRADICTORY_REQUIREMENT \| UNEXECUTABLE_GOAL \| STALE_REFERENCE \| OTHER',
+    'status:\s*OPEN \| RESOLVED',
+    'message:\s*string',
+    'related_refs:\s*\[StoredDataRef\]'
+)) {
+    if (-not [regex]::IsMatch($planIssueItemBlock, $fieldPattern)) { Add-Failure "missing or invalid PlanIssueItem field: $fieldPattern" }
+}
+foreach ($field in @('meta:', 'action_decision_ref:', 'request_ref:', 'sandbox_profile_ref:', 'resource_profile_ref:', 'decision:', 'reason_codes:', 'checked_boundary_refs:', 'decided_at:')) {
+    if (-not $sandboxPolicyDecisionBlock.Contains($field)) { Add-Failure "missing SandboxPolicyDecision field: $field" }
+}
+foreach ($field in @('meta:', 'request_ref:', 'environment_refs:', 'resource_refs:', 'status:', 'failure_reason:', 'finished_at:')) {
+    if (-not $cleanupResultBlock.Contains($field)) { Add-Failure "missing CleanupResult field: $field" }
+}
+foreach ($field in @('event_id:', 'sequence:', 'action_id:', 'event_type:', 'actor:', 'environment_ref:', 'environment_recipe_ref:', 'poc_candidate_ref:', 'input_refs:', 'output_refs:', 'exit_code:', 'safe_message:', 'occurred_at:')) {
+    if (-not $agentLogEventBlock.Contains($field)) { Add-Failure "missing AgentLogEvent field: $field" }
+}
+foreach ($field in @('meta:', 'request_ref:', 'events:')) {
+    if (-not $agentLogBlock.Contains($field)) {
+        Add-Failure "missing AgentLog field: $field"
     }
 }
+foreach ($field in @('meta:', 'request_ref:', 'reproduction_plan_ref:', 'content_ref:', 'content_digest:', 'created_by_invocation_ref:', 'created_at:')) {
+    if (-not $pocCandidateBlock.Contains($field)) { Add-Failure "missing PoCCandidate field: $field" }
+}
+foreach ($field in @('meta:', 'request_ref:', 'reproduction_plan_ref:', 'environment_recipe_ref:', 'environment_ref:', 'agent_log_ref:', 'candidate_ref:', 'candidate_digest:', 'execution_action_id:', 'evidence_refs:', 'validated_at:')) {
+    if (-not $pocBundleBlock.Contains($field)) { Add-Failure "missing PoCBundle field: $field" }
+}
 foreach ($fieldPattern in @(
-    'action_decision_ref:\s*StoredDataRef',
+    'meta:\s*RecordMeta',
+    'action_decision_ref:\s*StoredDataRef \| null',
     'request_ref:\s*StoredDataRef',
-    'reproduction_plan_ref:\s*StoredDataRef',
+    'reproduction_plan_ref:\s*StoredDataRef \| null',
     'purpose:\s*POC_CONFIRMATION \| VERDICT_EVIDENCE',
-    'mode:\s*LIMITED_REPRO \| FULL_REPRO',
     'policy_decision_ref:\s*StoredDataRef \| null',
-    'runner_invoked:\s*boolean',
-    'environment_created:\s*boolean',
+    'agent_invoked:\s*boolean',
+    'agent_log_ref:\s*StoredDataRef',
+    'environment_recipe_ref:\s*StoredDataRef \| null',
     'environment_ref:\s*StoredDataRef \| null',
-    'steps_ref:\s*StoredDataRef \| null',
     'poc_candidate_ref:\s*StoredDataRef \| null',
     'poc_ref:\s*StoredDataRef \| null',
-    'attack_input_refs:\s*\[StoredDataRef\]',
-    'cleanup_policy_ref:\s*StoredDataRef',
+    'observation_refs:\s*\[StoredDataRef\]',
+    'status:\s*SUCCEEDED \| PARTIAL \| FAILED \| BLOCKED \| CANCELLED',
+    'failure_category:\s*NONE \| POLICY_BLOCKED \| EXTERNAL_CONFIGURATION \| PLAN \| ENVIRONMENT_SETUP \| DEPENDENCY \| AGENT \| EXECUTION \| OBSERVATION \| TIMEOUT \| RESOURCE_LIMIT \| RETRY_LIMIT \| INTERNAL',
+    'failure_reason:\s*string \| null',
+    'plan_issues:\s*\[PlanIssueItem\]',
+    'hypothesis_outcome:\s*SUPPORTED \| DISPROVED \| INCONCLUSIVE',
+    'hypothesis_evidence_refs:\s*\[StoredDataRef\]',
+    'hypothesis_disproved:\s*boolean',
+    'disproof_evidence_refs:\s*\[StoredDataRef\]',
+    'hypothesis_linkage:\s*string',
+    'limitations:\s*\[string\]',
     'cleanup_required:\s*boolean',
-    'cleanup_status:\s*SUCCEEDED \| FAILED \| NOT_REQUIRED'
+    'cleanup_status:\s*SUCCEEDED \| FAILED \| NOT_REQUIRED',
+    'cleanup_ref:\s*StoredDataRef \| null',
+    'started_at:\s*timestamp',
+    'finished_at:\s*timestamp',
+    'elapsed_ms:\s*integer'
 )) {
     if (-not [regex]::IsMatch($dynamicResultBlock, $fieldPattern)) {
         Add-Failure "missing or invalid DynamicReproductionResult field: $fieldPattern"
@@ -584,16 +706,16 @@ foreach ($binding in $requiredActionCheckBindings.GetEnumerator()) {
 
 $requiredActionRequesterBindings = [ordered]@{
     REGISTER_WORK = 'ORCHESTRATION, VERIFICATION, RECOVERY'
-    CHANGE_WORK_STATE = 'ORCHESTRATION, VERIFICATION, SANDBOX, RECOVERY'
-    START_ATTEMPT = 'ORCHESTRATION, VERIFICATION, SANDBOX, RECOVERY'
-    CANCEL_WORK = 'ORCHESTRATION, VERIFICATION, SANDBOX, RECOVERY'
+    CHANGE_WORK_STATE = 'ORCHESTRATION, VERIFICATION, REPRODUCTION_SESSION_MANAGER, RECOVERY'
+    START_ATTEMPT = 'ORCHESTRATION, VERIFICATION, REPRODUCTION_SESSION_MANAGER, RECOVERY'
+    CANCEL_WORK = 'ORCHESTRATION, VERIFICATION, REPRODUCTION_SESSION_MANAGER, RECOVERY'
     READ_CODE = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, TECHNICAL_GATE'
     RUN_TOOL = 'REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR'
-    CALL_LLM = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, SANDBOX'
+    CALL_LLM = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, R7_AGENT'
     FETCH_POLICY = 'POLICY_COLLECTOR'
     REQUEST_DYNAMIC_REPRO = 'VERIFICATION'
-    RUN_SANDBOX = 'SANDBOX'
-    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, SANDBOX, RECOVERY'
+    RUN_SANDBOX = 'R7_SETUP_AUTOMATION'
+    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, R7_AGENT, R7_SETUP_AUTOMATION, SANDBOX_CONTROLLER, REPRODUCTION_SESSION_MANAGER, RECOVERY'
     CALL_TECHNICAL_GATE = 'VERIFICATION'
     CALL_RULE_SCOPE_GATE = 'VERIFICATION'
     CREATE_REPORT_DRAFT = 'VERIFICATION'
@@ -673,7 +795,7 @@ foreach ($pair in @(
 }
 
 $analysisRunResultBlock = [regex]::Match($contractText, '(?ms)^AnalysisRunResult:\s*(.*?)^```').Groups[1].Value
-$requiredAnalysisResultFields = @('finding_refs:', 'verification_refs:', 'cwe_label_refs:', 'technical_review_refs:', 'rule_scope_review_refs:', 'policy_record_refs:', 'dynamic_request_refs:', 'dynamic_result_refs:', 'poc_candidate_refs:', 'poc_refs:', 'report_draft_refs:', 'llm_invocation_log_refs:', 'action_decision_refs:', 'work_state_refs:', 'work_attempt_refs:', 'transition_commit_refs:', 'debug_trace_ref:')
+$requiredAnalysisResultFields = @('hypothesis_duplicate_review_refs:', 'finding_refs:', 'verification_refs:', 'cwe_label_refs:', 'technical_review_refs:', 'rule_scope_review_refs:', 'policy_record_refs:', 'dynamic_request_refs:', 'dynamic_result_refs:', 'environment_recipe_refs:', 'sandbox_environment_refs:', 'agent_log_refs:', 'sandbox_policy_decision_refs:', 'cleanup_result_refs:', 'poc_candidate_refs:', 'poc_refs:', 'report_draft_refs:', 'llm_invocation_log_refs:', 'action_decision_refs:', 'work_state_refs:', 'work_attempt_refs:', 'transition_commit_refs:', 'debug_trace_ref:')
 foreach ($field in $requiredAnalysisResultFields) {
     if (-not $analysisRunResultBlock.Contains($field)) {
         Add-Failure "missing AnalysisRunResult handoff field: $field"
@@ -682,8 +804,8 @@ foreach ($field in $requiredAnalysisResultFields) {
 if ($contractText -match 'POLICY_BLOCKED[^\r\n]*정적·찬반[^\r\n]*`ACCEPT`') {
     Add-Failure 'POLICY_BLOCKED without a validated PoC must not reach Technical ACCEPT'
 }
-if (-not $contractText.Contains('PoC candidate 생성 전에 실패하면 아직 실행할 plan과 `RUN_SANDBOX` decision이 없으므로 `ReproductionPlan`이나 `DynamicReproductionResult`를 억지로 만들지 않는다.')) {
-    Add-Failure 'pre-plan PoC generation failure handling is missing'
+if (-not $contractText.Contains('Sandbox 실행 Agent가 호출되기 전 정책 차단도 `agent_invoked=false`와 `POLICY_BLOCKED` event를 가진 로그·결과로 확정할 수 있다.')) {
+    Add-Failure 'policy block before Agent invocation must still produce an AgentLog and dynamic result'
 }
 $reportDraftBlock = [regex]::Match($contractText, '(?ms)^ReportDraft:\s*(.*?)^```').Groups[1].Value
 foreach ($field in @('finding_ref:', 'dynamic_result_ref:', 'poc_ref:', 'restrictions:', 'limitations:', 'unresolved_conditions:', 'redaction_status: PASSED')) {
@@ -734,10 +856,10 @@ $authorityScenarioMarkers = @(
     '`SAVE_RESULT` 검사 뒤 candidate bytes를 바꿈',
     '실행 오류만 든 `FALSE` 후보를 저장',
     '다른 역할이 만든 결과 후보를 저장'
-    '`RUN_SANDBOX` 허가 뒤 재현 계획·requirements·공격 입력·cleanup revision이 바뀜'
-    'Sandbox가 계획에 없는 command·공격 입력을 실행하려 함'
-    '동적 결과의 step log·공격 입력·cleanup 정책이 승인 계획과 다름'
-    'Verification이 `DynamicReproductionResult`를 직접 저장'
+    '`RUN_SANDBOX` 허가 뒤 request·requirements·profile·resource/lifecycle revision이 바뀜'
+    'Sandbox 내부 command가 host·Docker socket·secret·미허용 egress에 접근하려 함'
+    '동적 결과의 recipe·환경·AgentLog·candidate·PoC·cleanup attempt 또는 digest가 다름'
+    'Verification 또는 R7 Agent가 `DynamicReproductionResult`를 직접 저장'
 )
 foreach ($marker in $authorityScenarioMarkers) {
     if (-not $securityText.Contains($marker)) {
@@ -747,28 +869,28 @@ foreach ($marker in $authorityScenarioMarkers) {
 
 $sandboxReviewPatterns = @(
     @{
-        Name = 'Runtime Validator authorizes Sandbox calls without duplicating detailed policy checks'
-        Pattern = '(?s)`RUN_SANDBOX`의 `ActionDecision=ALLOW`.*?Runtime Validator.*?R7 호출자의 권한.*?예산.*?exact request.*?`ReproductionPlan`.*?current `EnvironmentRequirements`.*?Sandbox Controller.*?image digest.*?command/tool allowlist.*?network target.*?CPU·memory·disk·process·time limit.*?cleanup 정책을 전담 검사'
+        Name = 'Sandbox Controller enforces only the external isolation boundary'
+        Pattern = '(?s)`action_decision_ref`는 plan 입력 부족·모순.*?pre-boundary 결과에서만 `null`.*?`action_decision_ref\.record_id`는 R7 호출자의 권한·상태·예산.*?exact `DynamicReproductionRequest`.*?current `EnvironmentRequirements`.*?Sandbox Controller는 host, Docker daemon/socket, host mount·namespace, secret, 허용되지 않은 egress, 다른 workspace와 R8 resource profile/lifecycle.*?컨테이너 내부 command를 allowlist로 재판단하지 않는다'
     },
     @{
-        Name = 'RUN_SANDBOX freezes the complete reproduction plan closure'
-        Pattern = '(?s)`REQUEST_DYNAMIC_REPRO`와 `RUN_SANDBOX`는 같은 exact `dynamic_request_ref`.*?`RUN_SANDBOX`만 `reproduction_plan_ref`.*?`input_refs`에는 exact request·`ReproductionPlan`.*?`hypothesis_ref`.*?`environment_requirements_ref`.*?`poc_candidate_ref`.*?`sandbox_profile_ref`.*?`command_ref`.*?`attack_input_refs`.*?`cleanup_policy_ref`'
+        Name = 'ReproductionPlan is strategy rather than an execution allowlist'
+        Pattern = '(?s)`ReproductionPlan`은 R7 Agent가.*?`requested_evidence`는 비어 있을 수 있는 참고 목표.*?allowlist가 아니다.*?plan에는 실행 mode, exact command·step·payload·PoC·cleanup 지시를 넣지 않는다.*?실제 수행 사실은 `AgentLog`에 남긴다'
     },
     @{
-        Name = 'invoked sandbox execution log exactly matches the authorized plan'
-        Pattern = '(?s)`runner_invoked=true`이면.*?exact `SandboxStepLog`를 가리키는 `steps_ref`가 필수.*?`step_id`, `command_ref`, `attack_input_refs`.*?field-by-field exact match.*?계획에 없는 entry를 허용하지 않는다'
+        Name = 'AgentLog is durable append-only and attempt isolated'
+        Pattern = '(?s)비-LLM `Reproduction Session Manager`는.*?durable append-only `AgentLog`.*?`agent_invoked`는 외부 경계 승인 뒤 Sandbox 안에서 실행하는 R7 Agent 단계.*?`event_id`는 시스템 전체에서 고유.*?`sequence`는 attempt별 1부터 엄격히 증가.*?시작과 종료 event는 동일한 `action_id`.*?종료된 이전 attempt의 늦은 event는 current log나 결과에 붙이지 않는다'
     },
     @{
-        Name = 'dynamic result save repeats plan and execution checks'
-        Pattern = '(?s)`SAVE_RESULT\(requested_by=SANDBOX, result_kind=dynamic_reproduction_result\)`.*?request·purpose·plan·requirements·candidate·정책·실제 환경·Runner log·validated PoC·cleanup 조합을 다시 확인'
+        Name = 'dynamic result save repeats same-attempt provenance checks'
+        Pattern = '(?s)`SAVE_RESULT\(requested_by=REPRODUCTION_SESSION_MANAGER, result_kind=dynamic_reproduction_result\)`.*?request·purpose·plan·recipe·정책·환경·AgentLog·candidate·validated PoC·cleanup의 same-attempt 조합을 다시 확인'
     },
     @{
-        Name = 'Sandbox result assembler produces and Verification only consumes dynamic results'
-        Pattern = '(?s)Sandbox runtime의 비-LLM result assembler만 exact reference를 동적 결과에 조립.*?Verification은.*?같은 final 결과만 읽으며 `DynamicReproductionResult`를 직접 만들거나 수정하지 않는다'
+        Name = 'Session Manager owns logs validated PoCs and dynamic results'
+        Pattern = '(?s)비-LLM Reproduction Session Manager는 append-only log, validated PoC와 `DynamicReproductionResult`의 유일한 result owner.*?Verification은.*?같은 final 결과만 읽으며 `DynamicReproductionResult`를 직접 만들거나 수정하지 않는다'
     },
     @{
-        Name = 'dynamic result nullable references follow lifecycle facts'
-        Pattern = '(?s)`runner_invoked=false`이면 `steps_ref=null`.*?`runner_invoked=true`이면.*?`steps_ref`가 필수.*?`environment_created`.*?`false`이면 `environment_ref=null`.*?`true`이면 `environment_ref`가 필수'
+        Name = 'agent invocation flag matches AgentLog lifecycle'
+        Pattern = '(?s)`agent_invoked=false`인데 `AgentLog`에 `AGENT_STARTED`가 있거나, `true`인데 해당 event가 없음.*?`agent_log_ref=null`이거나 event의 `event_id`·attempt별 `sequence`·start/end `action_id` 규칙을 어김'
     },
     @{
         Name = 'cleanup NOT_REQUIRED is limited to attempts without cleanup targets'
@@ -776,15 +898,23 @@ $sandboxReviewPatterns = @(
     },
     @{
         Name = 'policy blocked result retains the exact Controller decision'
-        Pattern = '(?s)`failure_reason=POLICY_BLOCKED`이면.*?`policy_decision_ref`.*?반드시 존재.*?정책의 exact revision.*?`ALLOW \| DENY` 결과와 사유 코드'
+        Pattern = '(?s)`failure_category=POLICY_BLOCKED`이면 `action_decision_ref`와 `policy_decision_ref`가 반드시 존재.*?`decision=DENY`.*?정책의 exact revision과 사유 코드를 확인'
+    },
+    @{
+        Name = 'pre-boundary plan failure has no sandbox or policy decision'
+        Pattern = '(?s)plan 입력 부족·모순으로 RUN_SANDBOX 요청 전 종료.*?`action_decision_ref=null`.*?`policy_decision_ref=null`.*?`agent_invoked=false`.*?`BLOCKED \| FAILED \+ PLAN \+ INCONCLUSIVE`'
+    },
+    @{
+        Name = 'invoked and successful attempts retain allow decisions'
+        Pattern = '(?s)동적 재현 성공과 가설 지지.*?`policy_decision_ref\(decision=ALLOW\)`.*?`agent_invoked=true`인데 `action_decision_ref=null`, `policy_decision_ref=null` 또는 정책 decision이 `ALLOW`가 아님'
     },
     @{
         Name = 'PoC candidate and validated PoC are distinct'
-        Pattern = '(?s)`poc_candidate_ref`.*?성공을 뜻하지 않는다.*?`poc_ref`는 실제 취약점 재현에 성공한 validated PoC.*?`status=SUCCEEDED`.*?`hypothesis_outcome=SUPPORTED`.*?exact candidate revision 또는 digest를 실제 실행'
+        Pattern = '(?s)`poc_candidate_ref`.*?성공을 뜻하지 않는다.*?`poc_ref`는 실제 취약점 재현에 성공한 `PoCBundle`.*?`status=SUCCEEDED`.*?`hypothesis_outcome=SUPPORTED`.*?exact candidate revision과 `content_digest`를 실제 실행'
     },
     @{
-        Name = 'Verification owns requests while Sandbox owns plans and dynamic results'
-        Pattern = '(?s)`dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`.*?`environment_requirements -> EnvironmentRequirements -> SANDBOX`.*?`reproduction_plan -> ReproductionPlan -> SANDBOX`.*?`dynamic_reproduction_result -> DynamicReproductionResult -> SANDBOX`'
+        Name = 'Dynamic records have distinct R6 and R7 owners'
+        Pattern = '(?s)`dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`.*?`environment_requirements -> EnvironmentRequirements -> R7_AGENT`.*?`reproduction_plan -> ReproductionPlan -> R7_AGENT`.*?`environment_recipe -> EnvironmentRecipe -> R7_SETUP_AUTOMATION`.*?`agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`.*?`poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`.*?`dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`'
     }
 )
 foreach ($rule in $sandboxReviewPatterns) {
@@ -800,27 +930,31 @@ $environmentHandoffPatterns = @(
     },
     @{
         Name = 'reproduction plan binds current exact requirements'
-        Pattern = '(?s)`ReproductionPlan`은 R7이.*?`environment_requirements_ref`는 같은 R7 work·attempt의 current requirements.*?`sandbox_profile_ref`는 request 값과 exact match'
+        Pattern = '(?s)`ReproductionPlan`은 R7 Agent가.*?`sandbox_profile_ref`는 R6 request와 exact match.*?`environment_requirements_ref`는 같은 R7 attempt의 current requirements'
     },
     @{
-        Name = 'RUN_SANDBOX closure includes requirements'
-        Pattern = '(?s)action `input_refs`에는 exact request·`ReproductionPlan`.*?`environment_requirements_ref`.*?current exact `EnvironmentRequirements` revision'
+        Name = 'RUN_SANDBOX freezes only the external boundary inputs'
+        Pattern = '(?s)`RUN_SANDBOX` action `input_refs`에는 exact request·current `EnvironmentRequirements`·`sandbox_profile_ref`·R8 resource/lifecycle profile.*?plan·candidate·command는 Sandbox 안에서 만들어질 수 있으므로 RUN_SANDBOX 선행 allowlist나 exact action input으로 요구하지 않는다'
     },
     @{
         Name = 'actual environment compares every requirement'
         Pattern = '(?s)EnvironmentCheck:.*?status: MATCH \| MISMATCH \| NOT_CHECKED \| ERROR.*?SandboxEnvironment:.*?requirements_ref: StoredDataRef.*?checks: \[EnvironmentCheck\].*?모든 `requirement_id`를 정확히 한 번씩 포함'
     },
     @{
-        Name = 'required mismatch stops attack execution'
-        Pattern = '(?s)필수 item.*?`MISMATCH \| NOT_CHECKED \| ERROR`.*?공격 단계를 시작하지 않는다.*?`entries=\[\]`.*?모든 entry가 `SKIPPED`'
+        Name = 'environment mismatch is resolved or returned without a false verdict'
+        Pattern = '(?s)필수 item에 확인된 값 차이 또는 미확인이 있으면 환경 status는 `MISMATCH`.*?setup·비교 자체의 오류가 있으면 `ERROR`.*?필수 환경 요구사항 불일치.*?자율 retry.*?외부 수정이 필요하면 `BLOCKED`.*?한도 소진이면 `FAILED`'
     },
     @{
-        Name = 'requirements are not duplicated in dynamic result'
-        Pattern = '(?s)`DynamicReproductionResult`에는 `environment_requirements_ref`를 중복 저장하지 않고 plan과 environment의 두 경로를 대조한다'
+        Name = 'environment recipe is immutable and digest bound'
+        Pattern = '(?s)`EnvironmentRecipe`는 저장소와 필요한 실행 환경.*?불변 build recipe.*?별도 Dependency Scanner나 R2 사전 package prefetch를 전제로 하지 않는다.*?`base_image_digest`는 시작 image.*?`built_image_digest`는 실제 build 또는 재사용한 완성 image'
+    },
+    @{
+        Name = 'container reuse is isolated and state aware'
+        Pattern = '(?s)첫 `DYNAMIC_REPRO` attempt는.*?clean container.*?서로 다른 가설은 같은 `container_instance_id`의 writable container를 공유하지 않는다.*?`REUSED \+ NO_RELEVANT_CHANGE`.*?`STATE_CHANGED \| CONFIG_CHANGED \| STATE_UNCERTAIN`.*?runtime이 `STATE_UNCERTAIN`으로 강제'
     },
     @{
         Name = 'R7 revision cannot bypass sandbox policy'
-        Pattern = '(?s)R7이 retry에서 새 requirements·plan·candidate revision을 만들더라도.*?R6의 request 목적·가설·profile을 바꾸거나 이 검사를 생략할 수 없다'
+        Pattern = '(?s)R7이 retry에서 새 requirements·plan·recipe·candidate revision을 만들더라도.*?R6 request의 목적·가설·profile을 바꾸거나 외부 경계 검사를 생략할 수 없다'
     },
     @{
         Name = 'environment secrets use opaque handles only'
@@ -828,7 +962,7 @@ $environmentHandoffPatterns = @(
     },
     @{
         Name = 'dynamic request and production split use a new major schema'
-        Pattern = '(?s)`DynamicReproductionRequest`, `EnvironmentRequirements`, `ReproductionPlan`과 `DynamicReproductionResult` 변경은 새 MAJOR schema'
+        Pattern = '(?s)새 plan·recipe·AgentLog·result-owner·candidate/validated PoC·retry 계약은 관련 record의 새 MAJOR schema'
     }
 )
 foreach ($rule in $environmentHandoffPatterns) {
@@ -841,12 +975,12 @@ $environmentNegativeMarkers = @(
     'ReproductionPlan에 `request_ref` 또는 `environment_requirements_ref`가 없음',
     'R6가 EnvironmentRequirements를 만들거나 수정함',
     'plan과 실제 환경이 다른 requirements revision을 가리킴',
-    '필수 환경 차이가 있는데 공격 단계를 실행함',
+    '다른 가설의 writable container를 재사용하거나 상태 변화 뒤 그대로 사용',
     '허용 목록에 없는 version fallback을 자동 적용함',
     '오래된 EnvironmentRequirements revision을 재사용함',
     'PoC 생성·환경 구성·실행 실패를 `FALSE | HOLD`로 변환함',
     '환경 요구사항·실제 값에 credential·token 원문을 저장함',
-    'R7이 요구사항·계획을 바꾸고 Sandbox 정책 재검사를 생략함'
+    'R7이 request·requirements·profile·resource/lifecycle을 바꾸고 Sandbox 외부 경계 재검사를 생략함'
 )
 foreach ($marker in $environmentNegativeMarkers) {
     $rowPattern = '(?m)^\|\s*' + [regex]::Escape($marker) + '\s*\|'
@@ -864,7 +998,8 @@ $gateWikiText = Get-Content -Raw -LiteralPath $gateWikiPath
 $requiredAuthorityRules = @(
     '## 역할별 권한 경계',
     '## action 요청과 실행',
-    'final VerificationResult + CWELabel',
+    'R5-01 CWE_LABELING work',
+    'current CWELabel bound to that exact Verification',
     '-> Technical Evidence Gate',
     '-> Rule Scope Impact Gate',
     '`ReportDraft`는 마지막 Agent 산출물',
@@ -878,8 +1013,8 @@ $requiredAuthorityRules = @(
     'llm_call_spec_ref',
     'output은 log를 역참조하지 않는다',
     '아직 `outcome_refs`가 비어 있는 revision',
-    'Technical action의 `REVISION`은 exact Verification+CWE',
-    '같은 Verification·CWE revision 또는 같은 domain input hash',
+    'Technical action의 `REVISION`은 exact Verification·current CWELabel pair',
+    '같은 Verification·CWELabel revision 또는 같은 domain input hash',
     '오류 층은 섞어 기록하지 않는다',
     '정책 문장이나 정책의 의미를 대신 해석하지 않는다',
     'Pro와 Con의 `SESSION` check는 독립성을 선택값이 아닌 필수 불변조건으로 검사한다',
@@ -902,7 +1037,7 @@ $requiredR504CrossReviewRules = @(
     @{
         Name = 'policy-blocked dynamic reproduction is not automatic rejection or falsification'
         Text = $contractText
-        Marker = '`DynamicReproductionResult(status=BLOCKED, failure_reason=POLICY_BLOCKED)`는 가설 반증이나 Technical `REJECT`가 아니다.'
+        Marker = '`DynamicReproductionResult(status=BLOCKED | FAILED, failure_category=POLICY_BLOCKED)`는 가설 반증이나 Technical `REJECT`가 아니다.'
     },
     @{
         Name = 'policy freshness is explicit in the shared contract'
@@ -974,9 +1109,15 @@ $requiredVerificationChainingContracts = @(
     'verification_assignment_ref:',
     'ChainingResult:',
     'source_result_refs:',
+    'considered_primitive_refs:',
     'input_primitive_refs:',
     'primitive_match_candidates:',
     'chained_hypothesis_proposals:',
+    'excluded_lineage_refs:',
+    'LineageExclusion:',
+    'excluded_primitive_ref:',
+    'excluded_by_ref:',
+    'reason_code: ANCESTOR_REUSE',
     'no_match_reasons:',
     'origin: INITIAL | VERIFICATION | CHAINING',
     'source_primitive_match_id: string | null',
@@ -985,7 +1126,7 @@ $requiredVerificationChainingContracts = @(
     'technical_review_ref:',
     'inputs: [PrimitiveDraft]',
     'result: PrimitiveDraft | null',
-    'restrictions: [string]',
+    'restrictions: [Restriction]',
     'PrimitiveIndexState:',
     'primitive_refs: [StoredDataRef]',
     'upstream_result_ref: StoredDataRef',
@@ -996,6 +1137,86 @@ $requiredVerificationChainingContracts = @(
 foreach ($marker in $requiredVerificationChainingContracts) {
     if (-not $contractText.Contains($marker)) {
         Add-Failure "missing Verification/Chaining contract: $marker"
+    }
+}
+
+$requiredRestrictionContractMarkers = @(
+    'CodeFactRef:',
+    'bundle_ref: StoredDataRef',
+    'fact_id: string',
+    'Restriction:',
+    'restriction_id: string',
+    'fact_refs: [CodeFactRef]',
+    'evidence_refs: [StoredDataRef]',
+    '`observed_facts[].fact_id` 집합과 `restrictions[].fact_refs[].fact_id` 집합은 서로 겹치면 안 된다.',
+    '`restriction_id`와 전체 `Restriction` 객체를 그대로 보존',
+    'Restriction 객체의 중복 없는 합집합',
+    '| N27 | restriction 문장만 저장하거나 `fact_refs`와 `evidence_refs`를 모두 비움',
+    '| N27-A | INITIAL proposal restriction의 `fact_refs`가 비어 있거나 final StaticFactBundle 밖 사실을 가리킴',
+    '| N28 | 같은 `fact_id`를 proposal의 observed fact와 restriction 근거 양쪽에 넣음'
+)
+$hypothesisProposalBlock = [regex]::Match($contractText, '(?ms)^HypothesisProposal:\s*(.*?)^```').Groups[1].Value
+foreach ($field in @('proposal_state: HYPOTHESIS_ONLY', 'assertion_mode: NON_FINAL', 'observed_facts: [CodeFact]', 'assumptions: [string]', 'restrictions: [Restriction]', 'falsification_questions:', 'validation_checks:')) {
+    if (-not $hypothesisProposalBlock.Contains($field)) {
+        Add-Failure "HypothesisProposal is missing field: $field"
+    }
+}
+foreach ($field in @('missing_information:', 'confidence:')) {
+    if ($hypothesisProposalBlock.Contains($field)) {
+        Add-Failure "HypothesisProposal still contains obsolete field: $field"
+    }
+}
+foreach ($marker in $requiredRestrictionContractMarkers) {
+    if (-not ($contractText.Contains($marker) -or $verificationText.Contains($marker) -or $commonWikiText.Contains($marker) -or $securityText.Contains($marker))) {
+        Add-Failure "missing hypothesis restriction provenance contract: $marker"
+    }
+}
+
+$requiredDuplicateLifecycleMarkers = @(
+    'HypothesisDuplicateReview:',
+    'candidate_hypothesis_refs: [StoredDataRef]',
+    'decision: UNIQUE | DUPLICATE | UNCERTAIN',
+    'duplicate_of_hypothesis_ref: StoredDataRef | null',
+    'registration_reason: NOT_CHECKED | NO_CANDIDATES | UNIQUE | UNCERTAIN | CHECK_FAILED | INVALID_DUPLICATE_TARGET | DUPLICATE',
+    'status: PROPOSED | SCHEMA_VALID | DUPLICATE | INVALID_OUTPUT | CANCELLED',
+    '`hypothesis_duplicate_review -> HypothesisDuplicateReview -> HYPOTHESIS`',
+    '같은 analysis·workspace·commit의 등록 가설만 비교 후보',
+    'LLM 호출 실패·형식 오류·유효하지 않은 중복 대상은 가설을 버리는 근거가 아니다.',
+    '`DUPLICATE`이면 새 `hypothesis_id`를 발급하지 않는다.',
+    'final `ProposalProcessState`, 새 `VulnerabilityHypothesis`와 `HypothesisProcessState.status=REGISTERED`를 같은 atomic transition으로 확정',
+    '| N29 | 중복 LLM이 runtime 후보 목록 밖 가설을 `DUPLICATE` 대상으로 지목',
+    '| N30 | 중복 LLM 호출 실패·형식 오류·`UNCERTAIN`을 proposal 삭제로 처리'
+)
+foreach ($marker in $requiredDuplicateLifecycleMarkers) {
+    if (-not ($contractText.Contains($marker) -or $orchestrationText.Contains($marker) -or $commonWikiText.Contains($marker) -or $securityText.Contains($marker))) {
+        Add-Failure "missing hypothesis duplicate decision lifecycle: $marker"
+    }
+}
+
+$duplicateReviewBlock = [regex]::Match($contractText, '(?ms)^HypothesisDuplicateReview:\s*(.*?)^```').Groups[1].Value
+foreach ($field in @('meta: RecordMeta without hypothesis, with attempt', 'proposal_ref:', 'candidate_hypothesis_refs:', 'decision:', 'duplicate_of_hypothesis_ref:', 'rationale:', 'llm_call_id:')) {
+    if (-not $duplicateReviewBlock.Contains($field)) {
+        Add-Failure "HypothesisDuplicateReview is missing field: $field"
+    }
+}
+$proposalStateBlock = [regex]::Match($contractText, '(?ms)^ProposalProcessState:\s*(.*?)^VerificationAssignment:').Groups[1].Value
+foreach ($field in @('duplicate_review_ref:', 'duplicate_of_hypothesis_ref:', 'registration_reason:')) {
+    if (-not $proposalStateBlock.Contains($field)) {
+        Add-Failure "ProposalProcessState is missing duplicate lifecycle field: $field"
+    }
+}
+
+$activeConfidenceChecks = @(
+    @{ Path = $verificationPath; Marker = 'debate 전후 verdict와 confidence 변화' },
+    @{ Path = $contractPath; Marker = 'confidence range' },
+    @{ Path = (Join-Path $repoRoot 'docs/governance/OPEN_QUESTIONS.md'); Marker = 'Hypothesis schema repair 횟수와 confidence 기준' },
+    @{ Path = (Join-Path $repoRoot 'docs/review/ISSUE_CATALOG.md'); Marker = 'confidence는 scheduling hint' },
+    @{ Path = $contractPath; Marker = 'confidence: LOW | MEDIUM | HIGH' }
+)
+foreach ($check in $activeConfidenceChecks) {
+    $activeText = Get-Content -Raw -LiteralPath $check.Path
+    if ($activeText.Contains($check.Marker)) {
+        Add-Failure "obsolete active Hypothesis confidence contract remains: $($check.Marker)"
     }
 }
 
@@ -1048,9 +1269,67 @@ foreach ($field in @('match_kind:', 'input_primitive_index_refs:', 'upstream_pro
 }
 
 $chainingResultBlock = [regex]::Match($contractText, '(?ms)^ChainingResult:\s*(.*?)^```').Groups[1].Value
+foreach ($field in @('source_result_refs:', 'considered_primitive_refs:', 'input_primitive_refs:', 'primitive_match_candidates:', 'chained_hypothesis_proposals:', 'excluded_lineage_refs:', 'no_match_reasons:', 'errors:')) {
+    if (-not $chainingResultBlock.Contains($field)) {
+        Add-Failure "ChainingResult is missing field: $field"
+    }
+}
 foreach ($field in @('trigger:', 'input_primitive_index_refs:', 'bounded_stop_reason:')) {
     if ($chainingResultBlock.Contains($field)) {
         Add-Failure "ChainingResult still contains obsolete field: $field"
+    }
+}
+
+$requiredChainingExclusionRules = @(
+    '`considered_primitive_refs`는 Runtime이 `REGISTER_WORK(work_type=CHAINING)`에서 고정한 exact Primitive 입력 집합과 set-equal하다.',
+    '고정 뒤 index에 새 revision이 생긴 사실만으로 진행 중인 work를 거절하지 않는다.',
+    '`input_primitive_refs`는 `primitive_match_candidates`의 upstream/downstream exact reference 합집합과 set-equal하다.',
+    '`considered_primitive_refs`, `input_primitive_refs`, `source_result_refs`와 candidate별 `parent_hypothesis_ids`, `parent_verification_refs`는 각각 중복이 없어야 한다.',
+    '`source_result_refs`는 `input_primitive_refs`가 가리키는 Primitive들의 `source_verification_ref`와 non-null `technical_review_ref` 합집합과 set-equal하고 모두 같은 `SAVE_RESULT.input_refs`에 포함되어야 한다.',
+    '각 candidate의 `parent_hypothesis_ids`는 그 upstream/downstream Primitive의 `source_hypothesis_id` 합집합, `parent_verification_refs`는 두 Primitive의 `source_verification_ref` 합집합과 각각 set-equal해야 한다.',
+    '`excluded_primitive_ref`는 `considered_primitive_refs`에 포함되고 `input_primitive_refs`와 모든 match candidate reference에는 포함되지 않아야 한다.',
+    '`excluded_by_ref`는 `considered_primitive_refs`에 포함되고 같은 결과의 `excluded_primitive_ref` 집합에는 포함되지 않아야 한다.',
+    'Runtime은 §06의 계보 규칙으로 기대 제외 쌍을 다시 계산하고 `excluded_lineage_refs`와 set-equal한지 검사한다.',
+    '`origin=CHAINING`이면 `observed_facts=[]`만 허용한다.',
+    '`ChainingResult.considered_primitive_refs`와 `excluded_lineage_refs` 추가는 기존 결과의 필수 필드를 바꾸므로 새 MAJOR schema로 배포한다.'
+)
+foreach ($rule in $requiredChainingExclusionRules) {
+    if (-not $contractText.Contains($rule)) {
+        Add-Failure "missing exact Chaining exclusion rule: $rule"
+    }
+}
+
+$requiredChainingWikiRules = @(
+    '`considered_primitive_refs`',
+    '`excluded_lineage_refs`',
+    '`origin=CHAINING` 자식의 `observed_facts`는 빈 목록',
+    '진행 중인 Chaining work의 입력은 바뀌지 않습니다.'
+)
+foreach ($rule in $requiredChainingWikiRules) {
+    if (-not ($chainingWikiText.Contains($rule) -or $commonWikiText.Contains($rule))) {
+        Add-Failure "Wiki is missing Chaining input/exclusion rule: $rule"
+    }
+}
+
+if ($staticText.Contains('저장된 ACTIVE Primitive')) {
+    Add-Failure 'static fact layer still refers to obsolete ACTIVE Primitive state'
+}
+
+$decisionText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/review/decisions/ADR-001-verification-owned-chaining-admission.md')
+if ($decisionText.Contains('lookup 시 ACTIVE 확인')) {
+    Add-Failure 'Chaining ADR still uses obsolete ACTIVE-based Primitive lookup'
+}
+
+$activeDocumentationText = (($markdownFiles | Where-Object { $_.FullName -notmatch '[\\/]archive[\\/]' } | ForEach-Object { Get-Content -Raw -LiteralPath $_.FullName }) -join "`n")
+foreach ($obsoleteRule in @(
+    'current pointer 갱신으로 오래된 Chaining 결과를 거절',
+    '원자적 current pointer 갱신 실패로 결과·child proposal을 `STALE_RESULT` 처리',
+    'commit 직전에 current head를 재검사해 in-flight stale 결과를 차단',
+    'exact current record가 아닌 결과는 저장할 수 없습니다.',
+    'exact current record를 저장 시 재확인'
+)) {
+    if ($activeDocumentationText.Contains($obsoleteRule)) {
+        Add-Failure "active documentation still contains obsolete Chaining invalidation rule: $obsoleteRule"
     }
 }
 
@@ -1083,6 +1362,12 @@ $verificationChainingScenarioMarkers = @(
     '| N9 | TRUE+TRUE 입력 중 한 부모가 Gate 전 또는 Technical 비정상 결과 |',
     '| N10 | match의 entity 또는 privilege 충족 근거가 없음 |',
     '| N10-A | 후보가 조상 경로에서 이미 사용한 Primitive를 다시 사용 |',
+    '| N10-B | `excluded_primitive_ref`가 고정된 `considered_primitive_refs` 밖이거나 실제 match에 다시 포함됨 |',
+    '| N10-C | `excluded_by_ref`가 같은 work 입력이 아니거나 자신도 제외됐거나 계보가 제외 대상을 포함하지 않음 |',
+    '| N10-D | exclusion pair가 중복되거나 reason code·analysis·workspace·commit이 다름 |',
+    '| N10-E | CHAINING 자식이 `observed_facts`를 채우거나 부모 계보에서 검증 시작점을 복원할 수 없음 |',
+    '| N10-F | `source_result_refs` 또는 match candidate의 parent 가설·Verification 목록이 실제 입력 Primitive와 다르거나 중복됨 |',
+    '| N10-G | `considered_primitive_refs` 또는 `input_primitive_refs`에 같은 exact reference가 중복됨 |',
     '| N11 | Verification이 새 endpoint·sink·권한 경계를 발견 |',
     '| N12 | chained child가 FALSE |',
     '| N13 | Verification이 budget·Sandbox·Gate 순서를 우회하려 함 |',
@@ -1246,8 +1531,12 @@ $requiredValidatedPocContractMarkers = @(
     'request_ref: StoredDataRef',
     'poc_candidate_ref: StoredDataRef | null',
     '`dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`',
-    '`environment_requirements -> EnvironmentRequirements -> SANDBOX`',
-    '`reproduction_plan -> ReproductionPlan -> SANDBOX`',
+    '`environment_requirements -> EnvironmentRequirements -> R7_AGENT`',
+    '`reproduction_plan -> ReproductionPlan -> R7_AGENT`',
+    '`environment_recipe -> EnvironmentRecipe -> R7_SETUP_AUTOMATION`',
+    '`agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`',
+    '`poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`',
+    '`dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`',
     'final `TRUE`에는 current Verification generation의 exact `DynamicReproductionRequest`',
     '`SUCCEEDED + SUPPORTED`',
     'validated `poc_ref`',
@@ -1264,7 +1553,7 @@ $requiredValidatedPocCrossDocumentMarkers = @(
     @{
         Name = 'R6 sends purpose-bound dynamic request and R7 owns production'
         Text = $verificationText
-        Marker = 'R6는 `DynamicReproductionRequest`만 생산하고 R7은 `EnvironmentRequirements`, `ReproductionPlan`, PoC candidate와 `DynamicReproductionResult`를 생산한다.'
+        Marker = 'R6는 목적과 필요한 조건만 정하며 `EnvironmentRequirements`, `ReproductionPlan`, recipe, command 또는 PoC를 생산하지 않는다.'
     },
     @{
         Name = 'overview blocks TRUE without validated PoC'
@@ -1387,6 +1676,128 @@ if (-not $decisionIndexText.Contains('[ADR-006](./ADR-006-static-rule-execution-
     Add-Failure 'decision index is missing ADR-006'
 }
 
+$staticFactBundleBlock = [regex]::Match($contractText, '(?ms)^StaticFactBundle:\s*(.*?)^```').Groups[1].Value
+$requiredStaticFactBundleFields = @(
+    'source_candidates: [CodeFact]',
+    'sink_candidates: [CodeFact]',
+    'sanitizer_candidates: [CodeFact]',
+    'validator_candidates: [CodeFact]',
+    'auth_and_permission_checks: [CodeFact]',
+    'other_facts: [CodeFact]'
+)
+foreach ($field in $requiredStaticFactBundleFields) {
+    if (-not $staticFactBundleBlock.Contains($field)) {
+        Add-Failure "StaticFactBundle is missing fact-kind list: $field"
+    }
+}
+
+$requiredStaticFactBundleSemantics = @(
+    @{ Name = 'closed fact-kind mapping'; Marker = '`source_candidates -> SOURCE`, `sink_candidates -> SINK`, `sanitizer_candidates -> SANITIZER`, `validator_candidates -> VALIDATOR`, `auth_and_permission_checks -> AUTH_CHECK | PERMISSION_CHECK`, `other_facts -> OTHER`' },
+    @{ Name = 'global fact id uniqueness'; Marker = '여섯 목록의 합집합에서 `fact_id`는 정확히 한 번만 나타나야 한다.' },
+    @{ Name = 'empty candidate list is not safety proof'; Marker = '빈 배열은 후보가 없다는 현재 관찰일 뿐, 안전함이나 검증 완료를 증명하지 않는다.' },
+    @{ Name = 'one location can have multiple fact roles'; Marker = '같은 코드 위치가 둘 이상의 역할을 가지면 역할마다 별도 `CodeFact`와 서로 다른 `fact_id`를 만든다.' },
+    @{ Name = 'defense candidates are not verdicts'; Marker = '`SANITIZER`와 `VALIDATOR`는 방어 로직 후보이며 안전함, 경로 차단 또는 `FALSE`의 자동 근거가 아니다.' },
+    @{ Name = 'exact bundle identity and tool provenance'; Marker = '모든 `CodeFact`는 bundle의 `analysis_id` 범위에만 속하고 `location.workspace_id | commit_id`가 bundle과 같아야 한다. `producer.attempt_id`는 current `ToolRunResult`를, 규칙 기반 사실의 `producer.rule_id`는 같은 attempt의 `RuleExecutionRecord.rules[]` 항목을 가리켜야 한다.' },
+    @{ Name = 'normalizer uses the static analysis identity'; Marker = '`Static Fact Normalizer`는 result-owner registry의 `STATIC_ANALYSIS` 신뢰 identity로 실행되는 정규화 component이며 별도 권한 역할이 아니다.' },
+    @{ Name = 'static bundle result owner'; Marker = '`static_fact_bundle -> StaticFactBundle -> STATIC_ANALYSIS`' },
+    @{ Name = 'static bundle save validation'; Marker = '`result_kind=static_fact_bundle`' },
+    @{ Name = 'static bundle major schema migration'; Marker = 'StaticFactBundle 새 MAJOR schema' }
+)
+foreach ($rule in $requiredStaticFactBundleSemantics) {
+    if (-not $contractText.Contains($rule.Marker)) {
+        Add-Failure "missing StaticFactBundle contract rule: $($rule.Name)"
+    }
+}
+
+$glossaryText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/GLOSSARY.md')
+$reviewChecklistText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/governance/REVIEW_CHECKLIST.md')
+$issueCatalogText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/review/ISSUE_CATALOG.md')
+$requiredStaticFactBundleCrossDocumentRules = @(
+    @{ Name = 'static layer declares sanitizer list'; Text = $staticText; Marker = 'sanitizer_candidates: []' },
+    @{ Name = 'static layer declares validator list'; Text = $staticText; Marker = 'validator_candidates: []' },
+    @{ Name = 'static layer declares other facts list'; Text = $staticText; Marker = 'other_facts: []' },
+    @{ Name = 'results document measures fact kinds'; Text = $resultText; Marker = '`fact_kind`별 후보 수' },
+    @{ Name = 'security rejects mismatched fact lists'; Text = $securityText; Marker = '`fact_kind`와 다른 후보 목록에 저장하거나 여섯 목록에서 같은 `fact_id`를 중복 사용' },
+    @{ Name = 'security rejects defense candidate as a verdict'; Text = $securityText; Marker = '`SANITIZER | VALIDATOR` 후보만으로 안전함·경로 차단·`FALSE`를 확정' },
+    @{ Name = 'Wiki explains defense candidates'; Text = $commonWikiText; Marker = '`sanitizer_candidates`와 `validator_candidates`는 방어 로직의 **후보**' },
+    @{ Name = 'glossary explains sanitizer candidate'; Text = $glossaryText; Marker = '**Sanitizer candidate**' },
+    @{ Name = 'glossary explains validator candidate'; Text = $glossaryText; Marker = '**Validator candidate**' },
+    @{ Name = 'governance checks kind partition'; Text = $reviewChecklistText; Marker = '`StaticFactBundle`의 여섯 `CodeFact` 목록' },
+    @{ Name = 'R2 issue catalog owns the mapping'; Text = $issueCatalogText; Marker = '`source_candidates | sink_candidates | sanitizer_candidates | validator_candidates | auth_and_permission_checks | other_facts`' }
+)
+foreach ($rule in $requiredStaticFactBundleCrossDocumentRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing StaticFactBundle cross-document rule: $($rule.Name)"
+    }
+}
+
+$staticFactDecisionPath = Join-Path $repoRoot 'docs/review/decisions/ADR-010-static-fact-kind-partition.md'
+if (-not (Test-Path -LiteralPath $staticFactDecisionPath)) {
+    Add-Failure 'missing ADR-010 StaticFactBundle fact-kind partition decision'
+} else {
+    $staticFactDecisionText = Get-Content -Raw -LiteralPath $staticFactDecisionPath
+    foreach ($marker in @('상태: `ACCEPTED`', 'sanitizer_candidates', 'validator_candidates', 'other_facts', '새 MAJOR schema', 'R2:', 'R4:', 'R6:')) {
+        if (-not $staticFactDecisionText.Contains($marker)) {
+            Add-Failure "ADR-010 is missing decision marker: $marker"
+        }
+    }
+}
+$cweLabelDecisionPath = Join-Path $repoRoot 'docs/review/decisions/ADR-009-r5-01-cwe-labeling-provenance.md'
+if (-not (Test-Path -LiteralPath $cweLabelDecisionPath)) {
+    Add-Failure 'missing ADR-009 R5-01 CWE labeling provenance decision'
+} else {
+    $cweLabelDecisionText = Get-Content -Raw -LiteralPath $cweLabelDecisionPath
+    foreach ($marker in @('상태: `ACCEPTED`', 'R5-01', 'CWE_LABELING', 'verification_result_ref', 'verification_generation', 'cwe_labeling_work_id', 'llm_call_id', 'Technical Gate')) {
+        if (-not $cweLabelDecisionText.Contains($marker)) {
+            Add-Failure "ADR-009 is missing decision marker: $marker"
+        }
+    }
+}
+if (-not $decisionIndexText.Contains('[ADR-009](./ADR-009-r5-01-cwe-labeling-provenance.md)')) {
+    Add-Failure 'decision index is missing ADR-009'
+}
+if (-not $decisionIndexText.Contains('[ADR-010](./ADR-010-static-fact-kind-partition.md)')) {
+    Add-Failure 'decision index is missing ADR-010'
+}
+
+$requiredCweLabelCrossDocumentRules = @(
+    @{
+        Name = 'overview fixes R5-01 between final TRUE and Technical Gate'
+        Text = $overviewText
+        Marker = 'R5-01 `CWE_LABELING`이 exact Verification에 맞는 current `CWELabel` 생성'
+    },
+    @{
+        Name = 'gate reviews an exact Verification and current CWELabel pair'
+        Text = $gateText
+        Marker = 'Technical Gate는 current label의 정합성만 검토하고 이를 생성·수정·덮어쓰지 않는다.'
+    },
+    @{
+        Name = 'security rejects stale labels on a new Verification'
+        Text = $securityText
+        Marker = '새 Verification에 같은 CWE 값의 과거 `CWELabel`을 재사용'
+    },
+    @{
+        Name = 'security rejects Gate ownership of CWE labels'
+        Text = $securityText
+        Marker = 'Technical Gate가 `CWELabel`을 생성·수정하거나 새 CWE를 저장하려 함'
+    },
+    @{
+        Name = 'canonical diagram names the R5-01 CWE stage'
+        Text = $diagramText
+        Marker = 'R5-01 CWE_LABELING creates current CWELabel bound to exact Verification'
+    },
+    @{
+        Name = 'Wiki quick guide names the exact R5-01 CWE stage'
+        Text = (Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/quick-guide.md'))
+        Marker = 'R5-01 CWE_LABELING이 exact Verification에 맞는 current CWELabel 생성'
+    }
+)
+foreach ($rule in $requiredCweLabelCrossDocumentRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing R5-01 CWE labeling cross-document rule: $($rule.Name)"
+    }
+}
+
 $savedErrorAction = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 $gitCheck = & git -C $repoRoot diff --check 2>&1
@@ -1401,6 +1812,8 @@ Write-Output "Mermaid blocks: $($diagramBlocks.Count) canonical / $($wikiDiagram
 Write-Output "R4-02 required contract names: $($requiredContractNames.Count)"
 Write-Output "R4 Pro/Con result fields: $($requiredEvidenceAgentResultFields.Count)"
 Write-Output "R4 Verification join fields: $($requiredVerificationDebateFields.Count)"
+Write-Output "R5-01 CWELabel fields: $($requiredCweLabelFields.Count)"
+Write-Output "R5-01 CWELabel contract rules: $($requiredCweLabelContractMarkers.Count)"
 Write-Output "R4 Pro/Con join rules: $($requiredDebateContractMarkers.Count)"
 Write-Output "R4-02 TransitionCommit atomic fields: $($requiredTransitionCommitFields.Count)"
 Write-Output "R4-02 exact output bindings: $($requiredBindingRules.Count)"
@@ -1418,11 +1831,17 @@ Write-Output 'R4-03 exact LLM call blocks: 2'
 Write-Output "R4-03 authority errors: $($requiredAuthorityErrors.Count)"
 Write-Output "R4-03 authority scenarios: $($authorityScenarioMarkers.Count)"
 Write-Output "R4-03 authority rules: $($requiredAuthorityRules.Count)"
+Write-Output "R5-01 CWELabel cross-document rules: $($requiredCweLabelCrossDocumentRules.Count)"
 Write-Output "R5-03 automation boundary rules: $($requiredAutomationBoundaryRules.Count)"
 Write-Output "R4-03 Sandbox review rules: $($sandboxReviewPatterns.Count)"
 Write-Output "R6-R7 environment handoff rules: $($environmentHandoffPatterns.Count)"
 Write-Output "R6-R7 environment negative scenarios: $($environmentNegativeMarkers.Count)"
 Write-Output "Verification/Chaining contract markers: $($requiredVerificationChainingContracts.Count)"
+Write-Output "Hypothesis restriction provenance markers: $($requiredRestrictionContractMarkers.Count)"
+Write-Output "Hypothesis duplicate lifecycle markers: $($requiredDuplicateLifecycleMarkers.Count)"
+Write-Output 'HypothesisProposal required fields: 7'
+Write-Output 'HypothesisDuplicateReview required fields: 7'
+Write-Output 'ProposalProcessState duplicate fields: 3'
 Write-Output "Verification/Chaining scenarios: $($verificationChainingScenarioMarkers.Count)"
 Write-Output "Verification/Chaining semantic rules: $($requiredVerificationChainingRules.Count)"
 Write-Output "Production debate policy rules: $($requiredDebatePolicyRules.Count)"
@@ -1438,6 +1857,9 @@ Write-Output "Rule execution item fields: $($requiredRuleExecutionItemFields.Cou
 Write-Output "Rule execution record fields: $($requiredRuleExecutionRecordFields.Count)"
 Write-Output "Rule execution semantic rules: $($requiredRuleExecutionSemantics.Count)"
 Write-Output "Obsolete rule execution phrases: $($obsoleteRuleExecutionPhrases.Count)"
+Write-Output "StaticFactBundle fact-kind fields: $($requiredStaticFactBundleFields.Count)"
+Write-Output "StaticFactBundle semantic rules: $($requiredStaticFactBundleSemantics.Count)"
+Write-Output "StaticFactBundle cross-document rules: $($requiredStaticFactBundleCrossDocumentRules.Count)"
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {

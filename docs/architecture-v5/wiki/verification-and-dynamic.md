@@ -38,7 +38,7 @@ token과 전체 시간·판정 변화·HOLD 해소·새 후보 수는 `Verificat
 - `FALSE`: named falsification이 가설을 반증함
 - `HOLD`: 핵심 문맥·환경·조건이 부족하거나 충돌함
 
-판정 뒤 흐름도 다릅니다. `FALSE`는 terminal이며 Primitive와 Chaining으로 가지 않습니다. `HOLD`는 Gate 없이 `inputs`와 `result=null`인 Primitive를 즉시 저장합니다. `TRUE`는 validated PoC와 CWE를 가진 exact revision을 Technical Gate가 `ACCEPT`한 뒤 제공 능력별 `result` Primitive가 됩니다. Rule Scope는 Reporter만 제어합니다.
+판정 뒤 흐름도 다릅니다. `FALSE`는 terminal이며 Primitive와 Chaining으로 가지 않습니다. `HOLD`는 Gate 없이 `inputs`와 `result=null`인 Primitive를 즉시 저장합니다. `TRUE`는 validated PoC와 R5-01이 그 exact Verification에 맞춰 만든 current `CWELabel`을 Technical Gate가 `ACCEPT`한 뒤 제공 능력별 `result` Primitive가 됩니다. Rule Scope는 Reporter만 제어합니다.
 
 판정에는 최소 근거가 필요합니다. TRUE는 핵심 공격 경로와 필요한 조건을 지지하는 근거가 있어야 합니다. FALSE는 이름이 있는 반증 질문이 실제 근거로 `DISPROVED`된 경우에만 가능합니다. 오류·timeout·정보 부족·Sandbox 실패는 FALSE 근거가 아닙니다. HOLD는 판단에 필요한 조건이나 환경이 아직 부족하다는 뜻입니다.
 
@@ -65,14 +65,14 @@ Pro와 Con은 항상 별도의 새 대화에서 실행합니다. 상대 역할�
 | `POC_CONFIRMATION` | 정적·Pro·Con으로 initial TRUE가 된 가설을 실제 PoC로 확인 |
 | `VERDICT_EVIDENCE` | 최종 판정에 꼭 필요한 실행 관측 확보 |
 
-R6는 목적·재현 목표·필요 환경·Sandbox profile·관련 근거를 `DynamicReproductionRequest`로 만듭니다. R7은 이 exact 요청에서 `EnvironmentRequirements`, `LIMITED_REPRO | FULL_REPRO` mode, `ReproductionPlan`과 PoC candidate를 생산합니다. 한 Verification generation에는 동적 work 하나만 허용하며 retry는 같은 work의 새 attempt입니다. Technical `REVISE`로 새 generation이 시작되면 한도를 새로 적용합니다.
+R6는 목적·재현 목표·필요 환경·Sandbox profile·관련 근거를 `DynamicReproductionRequest`로 만듭니다. R7 Agent는 이 exact 요청에서 `EnvironmentRequirements`와 mode·exact command가 없는 `ReproductionPlan`을 먼저 생산하고, 외부 경계를 통과한 뒤 Sandbox 안에서 PoC candidate를 만듭니다. 한 Verification generation에는 동적 work 하나만 허용합니다. Agent가 스스로 해결할 retry는 같은 attempt 또는 외부 대기 없는 새 attempt이고, 외부 설정·정책·승인·resource 변경을 기다릴 때만 `BLOCKED`입니다. Technical `REVISE`로 새 generation이 시작되면 한도를 새로 적용합니다.
 
-Docker는 ephemeral/non-root, network default-deny와 자원·시간 제한을 사용합니다. Runtime Validator와 Sandbox Controller를 통과한 exact plan만 실행합니다. R7은 실제 환경·Health Check를 requirement별로 비교하고 필수 항목이 맞을 때만 공격 단계를 실행합니다.
+Docker는 clean/non-root, network default-deny와 자원·시간 제한을 사용합니다. Runtime Validator와 Sandbox Controller가 current request/requirements와 외부 격리 경계를 확인합니다. Setup Automation이 recipe·image·container·cleanup을 맡고, R7 Agent는 Sandbox 안에서 command·PoC·관찰·재시도를 자율적으로 정합니다. Session Manager가 실제 event를 AgentLog에 기록하고 same-attempt validated PoC와 결과를 확정합니다.
 
 `poc_candidate_ref`는 실행 전 스크립트·입력입니다. exact candidate 실행이 `SUCCEEDED + SUPPORTED`로 끝난 경우에만 validated `poc_ref`를 만듭니다. 생성 실패, 실행 실패, `DISPROVED | INCONCLUSIVE`에서는 `poc_ref=null`입니다. candidate와 실패 로그는 남겨도 최종 PoC로 부르지 않습니다.
 
 `POC_CONFIRMATION` 또는 `VERDICT_EVIDENCE`가 `SUPPORTED`이면 R6는 정적·Pro·Con·동적 근거와 validated PoC를 합쳐 final TRUE를 만듭니다. 실제 반증이면 FALSE, 정상 실행했지만 결론이 부족하면 HOLD가 될 수 있습니다. PoC 생성·환경 구성·정책·실행 자체가 실패했다면 final verdict를 만들지 않습니다. 다시 시도할 수 있으면 같은 work를 `BLOCKED`, 복구할 수 없거나 한도를 소진하면 `FAILED`로 끝내며 Gate를 호출하지 않습니다.
 
-Technical Gate가 `REVISE`를 반환하면 같은 ACTIVE `VerificationAssignment` owner가 직접 받습니다. 프로그램은 새 generation의 Verification work와 `TERMINAL -> VERIFYING` 전이를 먼저 원자적으로 만들고, 필요한 Context·Pro/Con·정적 근거와 설명을 보완합니다. final TRUE를 다시 만들려면 새 generation의 동적 work와 validated PoC도 필요합니다. CWE 보완이 있으면 기존 CWE producer와 새 revision을 조정한 뒤 새 Gate work를 요청합니다. 이는 provider retry나 동일 입력 재투표가 아닙니다.
+Technical Gate가 `REVISE`를 반환하면 같은 ACTIVE `VerificationAssignment` owner가 직접 받습니다. 프로그램은 새 generation의 Verification work와 `TERMINAL -> VERIFYING` 전이를 먼저 원자적으로 만들고, 필요한 Context·Pro/Con·정적 근거와 설명을 보완합니다. final TRUE를 다시 만들려면 새 generation의 동적 work와 validated PoC도 필요합니다. 새 final TRUE가 확정되면 R5-01 `CWE_LABELING`이 CWE 정렬을 다시 평가하고, 값이 같아도 새 Verification을 직접 가리키는 새 `CWELabel` revision을 만든 뒤 새 Gate work를 요청합니다. 이는 provider retry나 동일 입력 재투표가 아닙니다.
 
 `status`는 실행 완료 정도이고 `hypothesis_outcome: SUPPORTED | DISPROVED | INCONCLUSIVE`은 관측과 가설의 관계입니다. 둘 다 최종 판정이 아닙니다. 실제 반증은 `DISPROVED`, `hypothesis_disproved: true`, 관측 근거가 함께 있어야 합니다. 생성·환경·실행 실패는 관측 반증이 아니므로 `FALSE | HOLD`로 바꾸지 않습니다. 저장 확정 marker와 request·plan·result·PoC reference가 모두 일치할 때만 Verification이 읽습니다. 상세 내용은 [검증과 동적 재현](../04-verification-and-dynamic-reproduction.md)을 따릅니다.
