@@ -1,6 +1,6 @@
 - [Wiki 홈](#/)
 - [5분 이해](quick-guide.md)
-- [전체 23단계 흐름](pipeline.md)
+- [전체 22단계 흐름](pipeline.md)
 - [LLM Agent가 하는 일](agents.md)
 - [검증과 동적 재현](verification-and-dynamic.md)
 - [두 검토 단계와 보고](gate-and-reporting.md)

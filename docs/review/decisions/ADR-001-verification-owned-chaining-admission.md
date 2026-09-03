@@ -1,10 +1,12 @@
 # ADR-001. Verification 중심 제어권과 Gate-qualified Chaining
 
-- 상태: `PROPOSED`
+- 상태: `SUPERSEDED`
 - 회의 결정일: 2026-08-30
 - 문서 반영 브랜치: `review/verification-owned-chaining-flow`
 - 결정 담당: PM·아키텍처·워크플로
 - 필수 검토: 검증·반박, LLM 탐색·체이닝, Gate·보고서, 통합 개발, 데이터·평가
+
+> 이 결정의 Verification 제어권은 유지하지만 Primitive 형식, Chaining admission과 비용·순환 규칙은 [ADR-005](./ADR-005-unified-primitive-chaining.md)가 대체합니다. 아래 내용은 당시 결정을 보여 주는 역사 기록이며 현재 구현 기준으로 사용하지 않습니다.
 
 ## Context
 

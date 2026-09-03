@@ -118,6 +118,10 @@ API 방식이 허용되어도 특정 provider를 기본값으로 확정하는 �
 
 Pro/Con 독립성은 설정으로 완화할 수 없는 예외다. 두 역할의 `CALL_LLM` action은 `requested_by`, call spec role과 일치해야 하고 action `session_mode=NEW`, spec `session_policy=NEW`, `parent_session_ref=null`이어야 `SESSION` check를 통과한다. 두 호출은 서로 다른 `llm_call_id`와 실제 `session_ref`, 각자의 action·decision을 사용한다. provider가 session ID를 노출하지 않아도 adapter가 호출별로 서로 다른 불투명 local `session_ref`를 만든다. retry·repair·failover도 같은 역할의 새 `NEW` session으로 만들고 상대 역할의 session·output·decision을 predecessor, parent 또는 context로 사용하지 않는다.
 
+Pro/Con prompt는 trusted prompt builder가 역할별 template과 허용된 공통 입력 reference만 사용해 immutable `prompt_payload_ref`로 만든다. 두 역할은 같은 `debate_input_hash`를 공유하지만 서로의 `EvidenceAgentResult`, 결론, session, action/decision, work·attempt·call log를 `context_refs`, prompt payload, predecessor/parent, 결과 저장소 조회, retrieval/tool 요청이나 tool output으로 받을 수 없다. 호출 직전과 결과 저장 전에 이 경계를 검사하며 위반하면 `CROSS_ROLE_INPUT_DENIED`로 합류를 중단한다.
+
+성공한 Pro/Con 호출의 `LLMInvocationResult.parsed_output_ref`와 `LLMInvocationLog.parsed_output_ref`는 각각 exact `EvidenceAgentResult(role=PRO | CON)` revision을 가리킨다. 해당 child work의 `output_refs`도 같은 result를 가리키며, result는 invocation record나 종료 work revision을 역참조하지 않는다. 부모 Verification의 final 합성 호출은 같은 부모·generation·`debate_input_hash`의 두 exact result reference만 context에 포함한다.
+
 ## 역할별 모델 선택
 
 - Hypothesis Agent에는 저비용 모델 profile을 구성할 수 있다.
@@ -133,7 +137,7 @@ Logging Proxy는 다음만 기록한다.
 - provider/model/role/session metadata
 - 실제 전달된 context와 retrieved code locations
 - exposed tool-call trace
-- parsed output, schema error와 repair attempt
+- parsed output exact reference, schema error와 repair attempt
 - status, 공개 usage, elapsed, retry/failover relation
 - redaction 결과
 
