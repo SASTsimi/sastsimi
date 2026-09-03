@@ -89,5 +89,7 @@
 
 - [x] `rg`로 제거 대상과 새 필수 계약을 전수 확인한다.
 - [x] `& .\scripts\validate-architecture-docs.ps1`과 `git diff --check`를 실행한다.
-- [ ] 원격 `main`을 다시 fetch해 현재 HEAD가 fast-forward 가능한지 확인한다.
-- [ ] 검증된 커밋만 `origin/main`에 직접 push한다.
+- [x] 원격 `main`을 다시 fetch해 현재 HEAD가 fast-forward 가능한지 확인한다.
+- [x] 검증된 커밋만 `origin/main`에 직접 push한다.
+
+검증 결과: Architecture 문서 검사 실패 0, 정본/Wiki Mermaid 13개 exact 일치, 보안 음수 시나리오 ID 중복 0, `git diff --check` 통과. 공통 계약과 PR #81 통합 커밋 `a760aa3`을 2026-09-04에 `origin/main`으로 fast-forward push했다.
