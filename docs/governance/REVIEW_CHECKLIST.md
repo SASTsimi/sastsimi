@@ -52,11 +52,12 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] 공식 정책이 없거나 `STALE | UNVERIFIED`이면 판단과 보고서 전달을 허용하지 않는 `UNCERTAIN + DENY`입니다.
 - [ ] Sandbox의 `POLICY_BLOCKED`는 자동 `REJECT`나 `FALSE`가 아니며, Technical Gate가 남은 근거와 미실행 제한을 함께 검토합니다.
 - [ ] Reporter의 모든 선행 조건이 명시됩니다.
-- [ ] Verification·CWE·두 Gate·정책 중 하나가 새 revision이면 기존 ReportDraft는 감사 이력으로만 남고 다시 생성합니다.
-- [ ] 사람만 최종 공개를 결정합니다.
+- [ ] ReportDraft가 current Finding·Verification·CWE·두 Gate·정책 revision을 정확히 참조합니다.
+- [ ] restriction·limitation·남은 불확실성과 redaction 결과가 ReportDraft에 보존됩니다.
+- [ ] Finding이 없으면 Reporter를 호출하지 않고 `AnalysisRunResult.report_draft_refs=[]`를 유지합니다.
+- [ ] Finding·Verification·CWE·두 Gate·정책 중 하나가 새 revision이면 기존 ReportDraft는 감사 이력으로만 남고 다시 생성합니다.
+- [ ] ReportDraft 뒤 `AnalysisRunResult`를 확정하면 Agent 자동화가 끝나고, 이후 사람 주도 과정에는 자동 action·상태를 두지 않습니다.
 - [ ] Runtime Validator는 취약점·CWE·정책 의미를 판단하는 세 번째 Gate가 아닙니다.
-- [ ] 사람 검토 자료에는 Finding·근거·PoC·두 Gate·비용·오류·HOLD 조건이 포함되며 결정은 ReportDraft와 분리됩니다.
-- [ ] Finding이 없으면 `FINDING_NOT_CREATED` blocked packet만 만들고 `DISCLOSE`하지 않습니다.
 
 ## 전체 시나리오
 
@@ -71,14 +72,14 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] 환경 구성 실패·차이·허용되지 않은 version fallback·오래된 requirements를 가설 `FALSE`로 바꾸지 않습니다.
 - [ ] 환경 요구사항·실제 값·Health Check·log에 credential·cookie·token·password 원문이 없습니다.
 - [ ] 기술적으로 `TRUE`여도 공식 정책을 확인할 수 없으면 보고서 전달을 허용하지 않습니다.
-- [ ] Finding이 아직 없거나 ReportDraft의 선행 revision이 바뀌면 사람이 볼 진행 자료만 만들고 공개는 차단합니다.
+- [ ] Finding이 아직 없거나 ReportDraft의 선행 revision이 바뀌면 current 초안을 만들거나 재사용하지 않고 원인을 결과·오류 기록에 남깁니다.
 - [ ] 기술 검토에서 보완이 필요하면 같은 ACTIVE `VerificationAssignment` owner에게 직접 돌아가 새 VERIFICATION work와 `TERMINAL -> VERIFYING` 전이를 만든 뒤 새 revision을 확정합니다.
 - [ ] LLM 로그인·인증 실패를 취약점이 아니라는 뜻의 `FALSE`로 바꾸지 않고 별도 오류로 남깁니다.
 - [ ] [Final Issue #10](https://github.com/SASTsimi/sastsimi/issues/10)의 전체 종단 시나리오를 통과합니다.
 
 ## 최종 통합 확인
 
-- [ ] 정본 23단계가 README, overview, Wiki와 Mermaid에서 일치합니다.
+- [ ] 정본 22단계와 Agent 자동화 종료 지점이 README, overview, Wiki와 Mermaid에서 일치합니다.
 - [ ] 정본/Wiki Mermaid가 동일하며 실제 렌더링됩니다.
 - [ ] broken local link와 Markdown fence 오류가 0입니다.
 - [ ] [PM 전체 관리 Issue #1](https://github.com/SASTsimi/sastsimi/issues/1)의 역할별 상위 Issue, 모든 하위 Issue와 `main` 대상 PR이 [최종 Issue #10](https://github.com/SASTsimi/sastsimi/issues/10)에 연결됩니다.

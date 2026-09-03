@@ -17,7 +17,7 @@
 - Docker 결과, exact Controller 정책 판정·실제 환경·Runner 단계 로그, redacted PoC와 cleanup
 - HOLD REQUIRED, Gate-qualified TRUE PROVIDED, TRUE+HOLD·TRUE+TRUE Chaining match와 재검증 여부
 - `CWELabel`, Technical 및 Rule Scope Impact Gate, 공식 `ProgramPolicyRecord`과 두 Gate·보고서가 사용한 정확한 revision reference
-- 보고서 초안과 사람 검토 상태
+- current 보고서 초안, 오래된 초안 제외와 Agent 자동화 종료 상태
 - 역할/provider/model/session별 LLM invocation log
 - AST/SAST·LLM·sandbox 자원과 모든 오류
 - `work_id`, attempt 이력, 상태 전이, 중복 요청과 중단 후 복구 결과

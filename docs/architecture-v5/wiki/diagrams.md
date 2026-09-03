@@ -10,7 +10,7 @@ Architecture v5의 전체 처리 순서와 역할·데이터 관계를 그림으
 
 > 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
 
-## 1. 정본 23단계 파이프라인
+## 1. 정본 22단계 파이프라인
 
 ```mermaid
 flowchart TB
@@ -72,7 +72,7 @@ flowchart TB
     CLOSED --> S22
     S22 --> MORE{22 More hypotheses}
     MORE -->|Yes| S08
-    MORE -->|No| S23[23 Human review and disclosure decision]
+    MORE -->|No| END[22 Finalize AnalysisRunResult and end Agent automation]
 ```
 
 가설들은 예산 범위에서 병렬화할 수 있지만, 한 가설 안의 `workspace_id`·`commit_id`·판정·Gate 순서와 Reporter 전제는 유지한다.
@@ -212,7 +212,7 @@ flowchart TB
 
 Primitive DB는 queue가 아니며 Chaining match와 child proposal은 Finding이 아니다. Gate 전 TRUE와 오래된 Gate revision은 ACTIVE PROVIDED가 될 수 없다.
 
-## 6. 이중 LLM Gate와 사람 결정
+## 6. 이중 LLM Gate와 Agent 자동화 종료
 
 ```mermaid
 flowchart TB
@@ -230,9 +230,9 @@ flowchart TB
     READY -->|Yes| RREQ[Verification requests Reporter]
     RREQ --> REPORTER[Reporter Agent]
     REPORTER --> DRAFT[Internal ReportDraft]
-    BLOCK --> HUMAN[Human Reviewer]
-    DRAFT --> HUMAN
-    HUMAN --> DECIDE[Disclose Revise Withhold or More validation]
+    BLOCK --> FINAL[Finalize AnalysisRunResult]
+    DRAFT --> FINAL
+    FINAL --> END[Agent automation end]
 ```
 
 두 Gate 모두 LLM 검토 Agent이고 Verification verdict를 직접 바꾸지 않는다. Technical Gate는 exact final `TRUE`만 검토하며 `FALSE | HOLD`와 실패 가설은 입력으로 받지 않는다. 공식 정책이 없으면 Reporter 경로는 닫힌다.
@@ -282,7 +282,7 @@ flowchart LR
     GATESTORE --> RUN
     REPORTS --> RUN
     INV --> RUN
-    RUN --> HUMAN[Human review]
+    RUN --> END[Agent automation end]
 ```
 
 ## 9. 공통 식별자와 revision 추적
@@ -382,36 +382,28 @@ flowchart LR
     CLAIM -->|Conflict or stale| REJECT[Expire and reject replay or stale action]
     CLAIM -->|Claimed| EXECUTE[Execute exact action once]
     EXECUTE --> OUTCOME[Store outcome refs and state transition]
-    DOMAIN[Verification Gates Reporter Human keep domain decisions] -. not decided by validator .-> CHECK
+    DOMAIN[Verification Gates and Reporter keep domain decisions] -. not decided by validator .-> CHECK
 ```
 
-Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter·redaction·공개 전제를 검사한다. `RUN_SANDBOX`에서는 호출 권한·상태·예산·exact plan reference까지만 확인하고, image·command·file·network·resource·cleanup 정책은 Sandbox Controller가 검사한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
+Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `RUN_SANDBOX`에서는 호출 권한·상태·예산·exact plan reference까지만 확인하고, image·command·file·network·resource·cleanup 정책은 Sandbox Controller가 검사한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
 
-## 13. 사람 검토와 외부 공개 경계
+## 13. ReportDraft와 Agent 자동화 종료 경계
 
 ```mermaid
-flowchart TB
-    RUN[Final AnalysisRunResult] --> PACKET[HumanReviewPacket]
-    FIND[Findings verification and evidence] --> PACKET
-    GATES[Technical and Rule Scope Gate refs] --> PACKET
-    DYNAMIC[Dynamic results and redacted PoC] --> PACKET
-    RESOURCE[Resources errors gaps and HOLD] --> PACKET
-    REPORT[ReportDrafts or blocked reasons] --> PACKET
-    PACKET --> CURRENT[HumanReviewState current packet generation]
-    CURRENT --> HUMAN[Human Reviewer]
-    HUMAN --> SAVE[Validated SAVE HUMAN DECISION action]
-    SAVE --> DECISION[HumanReviewDecision]
-    DECISION --> STATE[CAS current decision into HumanReviewState]
-    STATE --> KIND{DISCLOSE REVISE WITHHOLD or MORE VALIDATION}
-    KIND -->|REVISE or MORE VALIDATION| RETURN[Return to allowed analysis stage]
-    KIND -->|WITHHOLD| STOP[Keep internal]
-    KIND -->|DISCLOSE| DISCLOSE{Still current packet decision and report ready}
-    DISCLOSE -->|No| BLOCK[DISCLOSURE DENIED]
-    DISCLOSE -->|Yes| BOUNDARY[External disclosure action boundary]
-    AGENT[Agent Gate or Reporter] -->|Cannot save human decision or disclose| BLOCK
+flowchart LR
+    FIND[Current Finding] --> REPORTER[R5-03 Reporter]
+    VERIFY[Final Verification and CWE] --> REPORTER
+    GATES[Technical and Rule Scope reviews] --> REPORTER
+    POLICY[Current policy record] --> REPORTER
+    DYNAMIC[Dynamic evidence and redacted PoC] --> REPORTER
+    REPORTER --> DRAFT[ReportDraft with restrictions limitations and redaction passed]
+    DRAFT --> FINAL[Trusted runtime finalizes AnalysisRunResult and logs]
+    BLOCKED[No report-ready Finding] --> FINAL
+    FINAL --> END[Agent automation end]
+    END -. outside Agent automation .-> HUMAN[Person-led review edit submit or disclose]
 ```
 
-사람 결정은 ReportDraft와 분리한다. 새 packet generation은 이전 결정을 supersede한다. 실제 자동 제출 integration은 이 설계에 포함하지 않으며, 향후 추가해도 current `DISCLOSE` 결정과 redaction 검사를 건너뛸 수 없다.
+ReportDraft는 마지막 Agent 산출물이다. `AnalysisRunResult` 확정은 기존 결과와 로그를 묶는 신뢰 runtime 작업이며 새 LLM 판단이 아니다. 점선 뒤의 사람 검토·수정·제출·공개는 Agent action과 상태 계약 밖이다.
 
 ## Rendering check
 

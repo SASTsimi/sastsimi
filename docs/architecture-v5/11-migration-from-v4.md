@@ -23,7 +23,7 @@
 | 역할 분리된 LLM 분석 | Hypothesis, Verification, Pro/Con, Chaining, 두 Gate, Reporter |
 | 격리된 동적 검증 | Docker `LIMITED_REPRO | FULL_REPRO` |
 | 조건부 연계 탐색 | Primitive DB match가 새 가설만 생성 |
-| 사람의 공개 승인 | 자동 결과는 FindingCandidate/ReportDraft에 머묾 |
+| 자동화와 사람 과정의 분리 | 자동화는 ReportDraft·AnalysisRunResult에서 끝나고 이후 검토·제출·공개는 사람이 수행 |
 | 오류·근거·자원 보존 | normalized invocation과 run/debug records |
 
 ## 현재 설계로 승계하지 않는 것
@@ -95,6 +95,6 @@ v4 TRUE | FALSE | PENDING
 8. official `ProgramPolicyRecord` 수집 경계, Rule Scope Impact Gate와 Gate-qualified PROVIDED admission
 9. Primitive DB와 TRUE+HOLD, 앞 TRUE PROVIDED→뒤 TRUE exact precondition Chaining loop
 10. provider adapters, session policy와 Logging Proxy/parser
-11. Reporter, result stores와 human review UI
+11. Reporter와 result stores, `ReportDraft` 뒤 Agent 자동화 종료 경계
 
 각 단계는 구현 위협 모델, 평가 corpus, resource budget과 rollback을 별도 승인받는다. 현재 문서는 runtime migration 완료를 주장하지 않는다.

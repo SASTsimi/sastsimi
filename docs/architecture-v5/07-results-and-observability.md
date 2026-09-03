@@ -25,7 +25,6 @@
 | `gates` | Technical 및 Rule Scope Impact review와 Verification·CWELabel·정책 input revision refs |
 | `policies` | 공식 `ProgramPolicyRecord`과 source refs |
 | `reports` | 허용된 내부 `ReportDraft`와 두 Gate가 공통으로 본 CWELabel revision ref |
-| `human_reviews` | `HumanReviewPacket`, 사람의 `HumanReviewDecision`과 외부 공개 action 기록 |
 | `actions` | `ActionRequest`, validator의 `ActionDecision`, check와 일회성 사용·outcome refs |
 | `invocations` | normalized `LLMInvocationLog`와 safe provider/session metadata |
 | `dynamic` | sandbox 실행, PoC, output refs와 cleanup |
@@ -101,7 +100,7 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 - Technical ACCEPT/REVISE/REJECT와 revision 원인
 - Rule/Scope PASS/FAIL/UNCERTAIN, impact와 DENY 이유
 - `ProgramPolicyRecord` 누락·오래된 정책 경고 상태
-- Reporter 조건 통과/차단과 human decision
+- Reporter 조건 통과/차단, current·stale ReportDraft와 자동화 종료 상태
 
 ### Resources
 
@@ -122,15 +121,15 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 - `TransitionCommit`의 `PREPARED | COMMITTED | ABORTED` 수와 복구 시간
 - 중단 뒤 재사용한 committed 결과, 다시 실행한 attempt와 `RECOVERY_FAILED` 수
 
-### 권한·사람 검토 지표
+### 권한·자동화 종료 지표
 
 - action type·요청 역할별 `ALLOW | DENY` 수와 실패한 `ActionCheck.reason_code`
 - `ALLOW` decision의 `UNUSED | USED`, outcome 누락과 replay 거절 수
-- `AUTHORITY_DENIED`, Gate 순서·Reporter·Sandbox·provider·file·disclosure 차단 수
+- `AUTHORITY_DENIED`, Gate 순서·Reporter·Sandbox·provider·file 차단 수
 - Sandbox 계획 revision 변경, 계획 밖 step·공격 입력, 결과 정책·환경·PoC·log·cleanup 불일치와 동적 결과 생산 역할 위반 수
 - Runner 미호출인데 step log가 있거나 Runner 호출 뒤 log가 없는 조합, 실제 환경·cleanup 상태와 reference가 어긋나 저장이 거절된 횟수
-- HumanReviewPacket의 report-ready/blocked 수와 누락된 policy·PoC·오류·HOLD 조건
-- `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION` 사람 결정 수
+- ReportDraft의 exact provenance, restriction·limitation·unresolved condition과 redaction 검사 실패 수
+- ReportDraft 뒤 허용되지 않은 Agent action 요청과 오래된 draft의 current 결과 승격 차단 수
 
 ## 상태와 결과를 함께 저장하는 경계
 
@@ -182,9 +181,9 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 
 최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, INITIAL·VERIFICATION·CHAINING·invalid hypothesis 수, verdict별 수, `failed_hypothesis_count`, 두 Gate별 수, PoC/report refs, 공식 정책 상태, Primitive/Chaining 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. `failed_hypothesis_count`는 final verdict 없이 `HypothesisProcessState.status=FAILED`로 끝난 가설 수이며 verdict별 수와 섞지 않는다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
 
-분석 종료 뒤 review packet assembler가 exact `AnalysisRunResult`에서 `HumanReviewPacket`을 만든다. packet은 Finding·Verification, 두 Gate, 정책·CWE, dynamic·redacted PoC, report 또는 차단 이유, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. Finding이 아직 없으면 `finding_refs=[]`, `report_ready=false`, `blocked_reasons=FINDING_NOT_CREATED`인 blocked packet만 만들 수 있고 공개할 수 없다. `HumanReviewState`는 current packet generation과 current 사람 decision을 가리킨다. 새 packet이 생기면 이전 packet과 결정은 감사 기록으로만 남고 공개에는 사용할 수 없다. `HumanReviewDecision`은 packet과 별도 record이며 ReportDraft를 수정하지 않는다.
+Reporter가 마지막 Agent 산출물인 `ReportDraft`를 저장한 뒤, 신뢰 runtime이 exact `AnalysisRunResult`를 만든다. 이 결과에는 Finding·Verification, 두 Gate, 정책·CWE, dynamic·redacted PoC, current ReportDraft, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. Finding이 아직 없으면 Reporter를 호출하지 않고 `finding_refs=[]`, `report_draft_refs=[]`와 관련 `REPORT_NOT_READY` 오류·상태를 보존한다. 결과와 `AnalysisRunState`를 atomic하게 확정하면 Agent 자동화가 끝난다.
 
-ReportDraft가 가리킨 Verification·CWE·두 Gate·정책 중 하나라도 새 current revision으로 바뀌면 그 초안은 즉시 감사 이력으로만 남는다. 새 exact dependency chain으로 Gate와 Reporter를 다시 실행해 새 초안과 packet generation을 만들기 전에는 current packet이나 공개 판단에 사용할 수 없다.
+ReportDraft가 가리킨 Finding·Verification·CWE·두 Gate·정책 중 하나라도 새 current revision으로 바뀌면 그 초안은 즉시 감사 이력으로만 남고 `AnalysisRunResult.report_draft_refs`의 current 목록에서 제외한다. 새 exact dependency chain으로 Gate와 Reporter를 다시 실행해 새 초안을 만들기 전에는 current 결과로 사용할 수 없다. 자동화 종료 뒤 사람의 검토·수정·제출·공개는 이 저장 lifecycle 밖에서 수행하며, 자동 action이나 상태를 만들지 않는다.
 
 | 최종 상태 | 저장 조건 |
 |---|---|
@@ -278,7 +277,6 @@ Context 조회 실패·timeout·권한 오류는 다음 기준으로 처리한�
 | `FILE_ACCESS_DENIED` | path validator | workspace 밖 파일 접근 금지 | workspace 상대 허용 경로로 새 요청 |
 | `SANDBOX_POLICY_DENIED` | Sandbox Controller policy validator | 동적 실행 또는 network 변경 금지 | 승인된 image·network·resource profile 사용 |
 | `PROVIDER_PROFILE_DENIED` | provider policy validator | LLM 호출·silent failover 금지 | 허용 profile과 explicit 새 action 사용 |
-| `DISCLOSURE_DENIED` | disclosure validator | 외부 제출·공개 action 금지 | exact 사람 결정과 report-ready packet 확인 |
 | `UNTRUSTED_INSTRUCTION` | prompt/action validator | 저장소·LLM 지시를 policy 변경으로 실행하지 않음 | data로 격리하고 승인된 설정만 사용 |
 
 모든 `AnalysisError`에는 `stage`, `code`, `retryable`, 민감정보가 제거된 `safe_message`, 관련된 `work_id`·`attempt_id`, `related_record_ids`와 `created_at`을 남긴다. 실행 작업과 무관하면 두 실행 식별자는 `null`이다. 원본 오류는 일반 record에 복사하지 않고 별도 접근 통제·redaction·보존 정책이 적용된 결과로 분리한다. 표의 어떤 오류도 가설 `FALSE`를 직접 만들지 않는다.
@@ -293,7 +291,7 @@ Gate가 모순된 `ALLOW` 또는 서로 다른 input revision을 출력하면 `L
 
 하나의 사건이 여러 층에 걸치면 각 record가 맡은 사실만 연결한다. 예를 들어 호출 후 Gate output의 reference가 다르면 invocation은 `INVALID_OUTPUT`, 그 output의 저장 action은 별도 `DENY`가 될 수 있지만 서로의 오류 코드를 대체하지 않는다.
 
-상태 전이·version·active attempt 오류는 `stage=STATE`, 결과와 pointer 일부 저장은 `stage=STORAGE`, 재시작·journal 정리는 `stage=RECOVERY`, action 권한·실행 범위·공개 차단은 `stage=AUTHORITY`로 기록한다.
+상태 전이·version·active attempt 오류는 `stage=STATE`, 결과와 pointer 일부 저장은 `stage=STORAGE`, 재시작·journal 정리는 `stage=RECOVERY`, action 권한·실행 범위 위반은 `stage=AUTHORITY`로 기록한다.
 
 ## Debug trace와 보존
 
