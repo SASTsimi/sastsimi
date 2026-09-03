@@ -37,7 +37,7 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 - Verification: `TRUE`
 - Technical Evidence Gate: `ACCEPT`
 - Rule/Scope/Impact: `rule_compliance PASS / scope_compliance PASS / security_impact SUFFICIENT`
-- 보고서 전달 권한: `ALLOW`
+- Reporter 초안 생성 권한: `ALLOW`
 - Finding ref: `{finding_ref.record_id}`
 - ReportDraft redaction: `PASSED`
 
@@ -64,6 +64,8 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 - 남은 불확실성: `{unresolved conditions or none}`
 
 과장된 최악 시나리오 대신 재검증된 경로와 재현 범위만 실제 영향으로 쓴다.
+severity, exploitability, capability, scope, exposure, required privilege, reproduction certainty와
+security impact는 exact upstream evidence보다 강하게 표현하지 않는다.
 
 ## 4. 취약 위치
 
@@ -136,6 +138,8 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 ```
 
 실제 credential, session cookie, API key와 개인정보를 포함하지 않는다.
+runner가 실행되지 않았거나 step·observation이 부족하거나 상태가 `BLOCKED`이면 성공 단계처럼 채우지
+말고 실제 미실행·차단·제한 상태를 기록한다. 환경·실행 실패를 취약점 부재로 해석하지 않는다.
 
 ## 8. CWE
 
@@ -188,6 +192,8 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 - 관련 error/resource limit: `{safe summary or none}`
 
 hidden chain-of-thought와 secret은 포함하지 않는다.
+access/session token, password, private key, credential, cookie·authorization secret, 불필요한 PII,
+내부 secret과 private/raw reasoning도 저장하지 않는다.
 
 ## 12. 완화와 회귀 테스트
 
@@ -203,4 +209,7 @@ hidden chain-of-thought와 secret은 포함하지 않는다.
 
 ---
 
-Reporter Agent는 이 초안을 만든 뒤 추가 검토·수정·제출·공개를 수행하지 않는다. 신뢰 runtime이 current 결과와 이 초안을 `AnalysisRunResult`에 확정하면 Agent 자동화가 끝난다. 이후 과정은 사람이 시스템 밖에서 주도하며, 이 템플릿은 사람의 결정 상태나 자동 공개 action을 정의하지 않는다.
+Reporter Agent는 이 초안을 만든 뒤 추가 검토·수정·제출·공개를 수행하지 않는다. 신뢰 runtime이
+current 결과와 이 초안을 `AnalysisRunResult`에 묶고 `AnalysisRunState`와 원자적으로 확정한 뒤 Agent
+자동화가 끝난다. 이 finalization은 새 Agent 판단이 아니라 저장·상태 확정이다. 이후 과정은 사람이
+시스템 밖에서 주도하며, 이 템플릿은 사람의 결정 상태나 자동 공개 action을 정의하지 않는다.
