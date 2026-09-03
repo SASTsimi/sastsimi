@@ -57,8 +57,7 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 | 기술 Gate | `ACCEPT`, `REVISE`, `REJECT` | 판정을 검토하지만 바꾸지 않음 |
 | 정책·영향 Gate | `PASS`, `FAIL`, `UNCERTAIN`, `ALLOW`, `DENY` | 보고서 전달 조건 |
 | 보고서 초안 상태 | `NOT_REQUESTED`, `DRAFTED`, `FAILED` | 아니요. 내부 초안 진행 상태 |
-| 사람 검토 준비 상태 | `EMPTY`, `PACKET_READY`, `DECIDED` | 아니요. 최신 packet·결정 pointer 상태 |
-| 사람 검토 | `DISCLOSE`, `REVISE`, `WITHHOLD`, `NEED_MORE_VALIDATION` | 별도 `HumanReviewDecision`에 기록하는 최종 공개 결정 |
+| 보고서 초안 | `NOT_REQUESTED`, `DRAFTED`, `FAILED` | 아니요. Reporter 작업 상태이며 `DRAFTED` 뒤 결과를 확정하고 자동화를 종료함 |
 
 ## DataGap과 AnalysisError의 차이
 
@@ -68,6 +67,16 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 둘 다 자동으로 `TRUE`, `FALSE`, `HOLD`가 되지 않습니다. 오류는 “작업이 실패했다”는 기록이고, 취약점 판정 근거가 아닙니다. `FALSE`는 미리 정한 반증 질문과 실제 반증 근거가 연결될 때만 가능합니다.
 
 각 반증 질문에는 `question_id`를 붙입니다. 최종 검증은 모든 질문에 결과를 남기며, 실제 근거가 있는 `DISPROVED` 질문이 하나 이상일 때만 `FALSE`를 허용합니다. `NOT_DISPROVED`는 질문으로 반증하지 못했다는 뜻이며 취약점이 증명됐다는 뜻이 아닙니다.
+
+`SAVE_RESULT(result_kind=verification_result)`는 verdict별 최소 구조를 검사합니다. `TRUE`는 실제 reference가 연결된 supporting evidence, `FALSE`는 근거가 있는 `DISPROVED`, `HOLD`는 하나 이상의 `unresolved_conditions`와 정상적으로 확인한 범위를 설명하는 실제 evidence reference가 필요합니다. 오류·timeout·빈 Context·예산 초과 기록만으로 어떤 final verdict도 저장할 수 없습니다. Runtime Validator는 구조·reference·완료 상태만 검사합니다. final `TRUE` 근거의 의미적 충분성은 Technical Evidence Gate가 exact final TRUE revision을 대상으로 검토하며, `FALSE | HOLD`는 Technical Gate 입력이 아닙니다.
+
+검증 플레이북은 `logical_record_id`로 식별하고 내용이 바뀔 때마다 새 `record_id`, 증가한 `revision_number`와 새 `content_hash`를 만듭니다. `VerificationResult.playbook_ref`는 실제 사용한 exact 플레이북 revision을 가리키며 final Verification 합성 호출과 저장 요청도 같은 reference를 사용해야 합니다. 새 플레이북 revision이 생겨도 과거 판정의 reference는 바꾸지 않습니다.
+
+운영 검증의 Pro와 Con은 각각 `EvidenceAgentResult`라는 독립 결과를 만듭니다. final `VerificationResult`는 `pro_evidence_ref`와 `con_evidence_ref`로 두 결과를 정확히 하나씩 가리키고, `debate_input_hash`로 두 역할이 같은 가설·코드 사실·플레이북·설정·예산 기준을 받았는지 확인합니다. 부모 Verification, generation 또는 공통 입력이 다르면 두 결과를 섞을 수 없습니다.
+
+운영 `ALWAYS_DEBATE`와 실제 Debate를 수행한 평가에서는 두 reference와 hash가 모두 필요합니다. 평가용 `BASIC` 또는 조건이 발생하지 않아 Debate를 생략한 평가에서는 세 값을 모두 비워 둡니다. 운영에서 한쪽 결과가 빠졌다면 `TRUE | FALSE | HOLD`를 만들지 않고, 다시 시도할 수 있으면 기다리고 그렇지 않으면 검증 실패로 끝냅니다.
+
+이 연결 규칙은 기존 운영 결과의 허용 조건을 바꾸므로 새 MAJOR schema로 적용합니다. 예전 형식의 결과는 기록으로 남길 수 있지만 새 운영 결과처럼 자동 보완하거나 Gate로 보내지 않습니다.
 
 정적 분석과 코드 조회 결과는 사용할 수 있는 사실뿐 아니라 도구별 실행 상태, 분석·제외 범위, `DataGap`, `AnalysisError`를 함께 전달합니다. `DataGap`은 영향받은 path·language·코드 위치를 가능한 범위에서 적습니다. 결과가 비어 있거나 일부 도구가 실패했다는 이유로 안전하다고 판단하지 않습니다.
 
@@ -104,14 +113,15 @@ credential·cookie·token·password 원문은 요구사항과 실제 값에 저�
 
 이 참조들은 같은 분석·코드·가설과 정확한 record revision에 속해야 합니다. R6 requirements와 plan은 같은 Verification generation·attempt에서 연결하고, R7 정책·실제 환경·PoC·로그·정리 기록은 같은 동적 실행 attempt에서 연결합니다. plan의 `environment_requirements_ref`와 실제 환경의 `requirements_ref`가 다르거나 “가장 최신 결과”를 다시 찾거나 다른 R7 attempt의 PoC·환경·로그를 섞으면 저장을 거절합니다. R4는 이 공통 연결 규칙을 정하고, R6는 요구사항과 허용 차이를, R7은 실제 비교·PoC·환경·정책 판정·단계 로그의 세부 내용을 정합니다.
 
-Technical Gate는 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`만 direct input으로 받고, Verification의 `hypothesis_ref`·Evidence·Dynamic·PoC와 `CWELabel.evidence_refs`는 두 direct input에서 따라가는 transitive dependency로 고정합니다. 등록된 `VulnerabilityHypothesis`의 material content는 수정하지 않으며 의미가 달라지면 새 proposal과 `hypothesis_id`로 전체 Verification을 시작합니다. runtime은 호출 직전과 review 저장·사용 직전에 direct/transitive reference graph의 exact revision·hash·workspace·commit·hypothesis와 R7 실행 artifact의 attempt를 검사하고 하나라도 달라지면 이전 Gate 승인을 재사용하지 않습니다. shared static evidence는 같은 workspace·commit에서 여러 가설이 재사용할 수 있고 직접 가설 ID 일치를 요구하지 않습니다. Rule Scope Gate와 보고서 초안도 같은 CWELabel `record_id`를 사용해야 합니다. `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
-Technical Gate는 final `TRUE`만 입력으로 받고 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 자신이 읽은 Verification과 CWELabel 수정본을 정확히 기록합니다. `FALSE | HOLD`와 검증 실패 가설은 Technical Gate로 보내지 않습니다. 둘 중 하나가 수정되면 이전 Gate 승인을 새 수정본에 재사용하지 않습니다. Rule Scope Gate와 보고서 초안도 같은 CWELabel `record_id`를 사용해야 합니다. `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
+Technical Gate는 final `TRUE`만 입력으로 받고 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`만 direct input으로 사용합니다. Verification의 `hypothesis_ref`·Evidence·Dynamic·PoC와 `CWELabel.evidence_refs`는 여기서 따라가는 transitive dependency입니다. 등록 가설의 material content가 달라지면 새 proposal과 `hypothesis_id`로 전체 Verification을 시작합니다. runtime은 호출 직전, review 저장 직전과 R5-02 진입 직전에 exact revision·hash·workspace·commit·hypothesis와 R7 실행 attempt를 검사합니다. `FALSE | HOLD`, 검증 실패 가설 또는 변경된 dependency에는 이전 Gate 승인을 재사용하지 않습니다. shared static evidence는 같은 workspace·commit에서 여러 가설이 재사용할 수 있고 직접 가설 ID 일치를 요구하지 않습니다. `handoff_readiness`는 Technical Gate 결과의 downstream handoff 가능 여부이며 `ACCEPT`일 때만 `READY`입니다. 현재 R5 pipeline에서는 `ACCEPT + READY`인 동일 exact Verification revision을 immediate next stage인 R5-02에 전달할 수 있습니다. 이는 R5-02 통과를 뜻하지 않습니다. Rule Scope Gate와 보고서 초안도 같은 CWELabel `record_id`를 사용해야 하며, `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
 
 Primitive도 exact revision을 사용합니다. HOLD는 final Verification ref가 붙은 REQUIRED를 Gate 없이 만들고, TRUE는 Technical `ACCEPT`와 Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`가 같은 Verification revision을 가리킬 때만 PROVIDED를 만듭니다. TRUE의 PROVIDED에는 그 취약점을 악용하기 위한 exact Verification의 `required_preconditions`도 함께 고정합니다. 가설별 `PrimitiveIndexState`가 current ACTIVE 항목을 가리키며 새 Verification/index revision이 생기면 과거 항목과 진행 중인 오래된 Chaining 결과를 commit 시 거절합니다.
 
 ## 자주 쓰는 작은 데이터 구조
 
 - `EvidenceClaim`: 찬성·반대 주장, 작성 역할, 실제 근거와 코드 위치를 한 묶음으로 저장합니다.
+- `EvidenceAgentResult`: Pro 또는 Con 한쪽이 같은 공통 입력을 읽고 만든 독립 근거 결과입니다. 부모 Verification과 역할별 작업 ID를 함께 남깁니다.
+- `VerificationPlaybook`: 취약점 검증에 사용할 사전 조건, 경로·방어 확인, 반증 질문, 근거 요구사항과 HOLD 조건을 묶은 versioned 절차입니다.
 - `CandidateRef`: 아직 검증되지 않은 우회·대체 경로·영향 확대 후보입니다. 새 주장이면 별도 가설로 검증하기 전까지 확정 결과로 쓰지 않습니다.
 - `VerificationMetrics`: debate의 token·시간·판정 변화와 새로 발견한 항목 수를 저장합니다. 제공되지 않은 token은 `null`입니다.
 - `PolicyItem`: 공식 정책의 항목 하나와 원문을 다시 찾을 수 있는 출처 위치를 연결합니다.

@@ -2,7 +2,7 @@
 
 ## 쉽게 말하면
 
-각 LLM Agent가 맡는 일과 직접 결정하면 안 되는 일을 한눈에 보여 줍니다. 프로그램 규칙 검사기와 사람의 최종 결정을 LLM Agent가 대신하지 않습니다.
+각 LLM Agent가 맡는 일과 직접 결정하면 안 되는 일을 한눈에 보여 줍니다. 프로그램 규칙 검사기를 LLM Agent가 대신하지 않으며 자동화는 Reporter 초안 뒤에 끝납니다.
 
 **상세 기준:** [03. Agent 역할과 오케스트레이션](../03-agent-roles-and-orchestration.md)
 
@@ -22,7 +22,6 @@
 | Technical Evidence Gate | verdict-evidence·코드/동적 연결·CWE·restriction 검토 | verdict 변경 |
 | Rule Scope Impact Gate | 공식 rule/scope·금지 테스트·실제 impact·report permission 검토 | 공식 자료 없는 추정 승인 |
 | Reporter | 통과한 근거로 내부 보고서 초안 작성 | 새 근거 확정, 제출·공개 |
-| Human Reviewer | 수정·추가 검증·보류·공개 결정 | — |
 
 ```text
 Orchestration → Hypothesis proposal validation and registration → assign Verification
@@ -34,8 +33,10 @@ HOLD → REQUIRED Primitive → Chaining
 TRUE → CWE → Technical Gate → Rule Scope Impact Gate
 Gate-qualified TRUE → PROVIDED Primitive → Chaining
 Verification or Chaining material claim → new hypothesis → new Verification
-all report conditions → Reporter → Human
+all report conditions → Reporter → ReportDraft → AnalysisRunResult → Agent automation end
 ```
+
+자동화 종료 뒤의 검토·수정·제출·공개는 이 Agent 목록 밖에서 사람이 수행합니다.
 
 각 역할은 공통 `LLMProviderAdapter`를 사용하며 역할 독립성이 필요한 조합은 NEW session을 기본으로 한다. 상세 경계는 [Agent 역할과 오케스트레이션](../03-agent-roles-and-orchestration.md)을 따른다.
 

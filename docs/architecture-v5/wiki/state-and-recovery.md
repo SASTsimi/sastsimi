@@ -38,7 +38,7 @@
 
 다음은 순서를 지켜야 합니다.
 
-`최종 검증 + CWE → Technical Gate → Rule Scope Gate → Reporter → 사람 검토`
+`최종 검증 + CWE → Technical Gate → Rule Scope Gate → Reporter → ReportDraft → AnalysisRunResult → Agent 자동화 종료`
 
 ## 결과를 안전하게 합칩니다
 
@@ -91,6 +91,10 @@ Gate 작업은 시작할 때 읽은 Verification, CWE, 앞 Gate와 정책의 정
 - 예산 부족: 새 예산 승인 대기
 
 조건이 해결되면 `READY`에서 새 `attempt_id`로 다시 시작합니다. 재시도할 수 없거나 한도를 모두 사용하면 최종 `FAILED`가 됩니다. 취소된 작업은 자동 재시도하지 않습니다.
+
+Pro와 Con은 부모 Verification 아래의 별도 child work입니다. 한쪽이 재시도를 기다리면 그 child와 부모 Verification을 모두 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지합니다. 성공한 다른 쪽 결과는 부모·generation·공통 입력·플레이북·설정·예산 기준이 그대로일 때만 보존합니다. 하나라도 바뀌면 두 역할을 모두 다시 실행합니다.
+
+한쪽이 복구 불가능하게 실패하면 child 실패를 먼저 확정해 부모 진행을 막습니다. 이어 부모 Verification과 가설을 함께 `FAILED`로 끝냅니다. 중간에 프로그램이 멈추면 복구가 이 전파를 끝낼 때까지 부모를 다시 실행하지 않습니다. final `VerificationResult`는 없고 Gate도 호출하지 않습니다. 취소되거나 부모가 교체된 뒤 늦게 도착한 결과는 보관할 수 있지만 현재 결과로 사용하지 않습니다.
 
 Technical Gate의 `REVISE`는 이 retry와 다릅니다. `REVISE` 작업은 결과를 저장하고 끝낸 뒤 같은 ACTIVE `VerificationAssignment` owner에게 직접 전달합니다. 프로그램은 종료된 기존 Verification work를 되돌리지 않고 새 generation의 Verification work를 만들며, 가설 상태와 새 work pointer를 한 번에 `TERMINAL -> VERIFYING`으로 바꿉니다. 새 결과·work 종료·가설의 current result pointer도 함께 확정한 다음 새 `input_hash`, `dedupe_key`, `work_id`와 첫 attempt로 Gate를 다시 시작합니다. 같은 입력에 attempt만 추가해 다시 투표하거나 오래된 Gate 결과를 새 Verification revision에 재사용하지 않습니다.
 

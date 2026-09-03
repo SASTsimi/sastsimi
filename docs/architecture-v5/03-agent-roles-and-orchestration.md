@@ -94,7 +94,7 @@ Chaining match -> PROPOSED child hypothesis origin CHAINING
 | Verification `SUCCEEDED` | `VerificationResult.verdict = TRUE | FALSE | HOLD` |
 | Technical Gate `SUCCEEDED` | `TechnicalEvidenceReview.status = ACCEPT | REVISE | REJECT` |
 | Rule Scope Gate `SUCCEEDED` | `RuleScopeImpactReview.review_status`와 `report_permission` |
-| Reporter `SUCCEEDED` | 내부 `ReportDraft`; 사람 결정은 별도 `HumanReviewDecision` |
+| Reporter `SUCCEEDED` | 내부 `ReportDraft`; 마지막 Agent 산출물 |
 
 `PENDING -> READY -> RUNNING` 뒤에는 `SUCCEEDED | PARTIAL | FAILED | CANCELLED`로 끝나거나, 재시도·인증·승인·입력·예산 조건을 기다릴 때 `BLOCKED`로 이동한다. `BLOCKED`는 조건을 충족하면 `READY`가 되지만 종료 상태는 되돌리지 않는다. 재시도 가능한 attempt 실패는 attempt 자체를 `FAILED`로 보존하고 work를 `BLOCKED`로 두며, 새 attempt를 시작할 때 이전 실패를 삭제하지 않는다.
 
@@ -117,9 +117,10 @@ Chaining match -> PROPOSED child hypothesis origin CHAINING
 | Rule Scope Impact Gate Agent | 정책 누락·보완 사유 | `PASS | FAIL | UNCERTAIN`, `ALLOW | DENY` | 공식 정책·scope·impact | 없음 | 없음 |
 | Reporter Agent | 내부 보고서 문장·구성 | 없음 | 통과한 결과와 두 Gate | 없음 | 없음 |
 | Runtime Validator | 허용 가능한 대체 action 안내 | 없음 | 실행 전제와 exact reference | action 허용·차단 | 없음 |
-| Human Reviewer | 재검증·보완 요청 | 외부 제출·공개 | 전체 `HumanReviewPacket` | 공개 승인 | `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION` |
 
 Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 호출 순서, 기술 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 확정하지 않는다. Verification Agent는 hypothesis-local 다음 작업과 동적 재현 모드를 선택하고 exact `EnvironmentRequirements`와 `ReproductionPlan`을 생산하지만 프로그램 enforcement를 우회하거나 Sandbox를 직접 실행하지 못한다. Sandbox Controller는 exact plan·requirements reference와 세부 실행 정책을 검사해 판정을 만들고, Sandbox Runner는 통과한 계획의 환경을 구성해 요구사항·Health Check를 비교한 뒤 필수 항목이 맞을 때만 공격 단계를 실행한다. 비-LLM Sandbox Result Assembler는 같은 분석·가설의 exact R6 plan closure와 같은 R7 실행 attempt에서 나온 정책·환경 비교·log·PoC·cleanup만 동적 결과로 조립한다. R7 구성요소는 R6 요구사항·허용 대체값·계획·최종 verdict를 바꾸지 않는다. Runtime Validator는 값의 생산자가 맞는지, 필요한 선행 record와 상태가 있는지, exact revision과 실행 범위가 허용됐는지만 확인하며 환경 의미나 domain 값을 대신 만들지 않는다.
+
+ReportDraft 이후의 검토·수정·제출·공개는 이 역할표와 Agent action lifecycle 밖에서 사람이 수행한다. 자동화는 사람 검토 상태나 공개 결정을 만들지 않는다.
 
 ## action 요청과 실행
 
@@ -147,9 +148,10 @@ Agent 또는 service의 제안
 - provider/model/profile, NEW/RESUME/AUTO와 explicit failover
 - final `TRUE` Verification+CWE 뒤 Technical Gate, 그 뒤 Rule Scope Gate라는 순서. `FALSE | HOLD`와 실패 가설은 Gate 입력이 아님
 - 모든 report 조건을 통과한 뒤 Reporter 호출
-- redaction 성공과 exact 사람 결정 전 외부 공개 차단
+- Reporter 저장 전 redaction 성공과 restriction·limitation 보존
+- ReportDraft 저장 뒤 `AnalysisRunResult`를 확정하고 Agent 자동화 종료
 
-Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서 품질을 평가하지 않는다. 그것은 Verification, 두 LLM Gate, Reporter와 사람의 역할이다.
+Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서 품질을 평가하지 않는다. 그것은 Verification, 두 LLM Gate와 Reporter의 역할이다.
 
 `RUN_SANDBOX`의 `ActionDecision=ALLOW`는 Controller에 exact `ReproductionPlan`과 그 계획의 current `EnvironmentRequirements`를 전달할 권한만 부여한다. Sandbox Controller가 image digest, command/tool allowlist, mount와 file path, default-deny network, CPU·memory·disk·process·time limit, non-root와 cleanup을 한 번 검사한다. 통과한 계획만 Sandbox Runner가 받으며, Runner는 실제 환경·Health Check를 requirement별로 비교해 필수 항목이 모두 `MATCH`일 때만 공격 단계를 계속한다. 실행 뒤 `SAVE_RESULT`는 plan requirements, 실제 `sandbox_environment.requirements_ref`, 비교 결과와 `SandboxStepLog`의 일치 여부를 다시 대조한다. 마지막 대조는 환경 의미나 정책을 재판단하는 중복 검사가 아니라 실행 결과 무결성 확인이다.
 
@@ -159,10 +161,12 @@ Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서
 |---|---|---|---|
 | AST와 SAST | tool별 `work_id` | 기대한 tool의 종료 상태와 output/error 확인 | 하나 이상의 신뢰 결과가 있으면 `DataGap`을 포함한 `PARTIAL` 정규화 가능 |
 | 가설 검증 | `hypothesis_id`별 work | 각 가설은 자기 final Verification까지 독립 | 한 가설 오류가 다른 가설을 취소하지 않으며 분석은 `PARTIAL` 가능 |
-| Pro와 Con | 같은 가설의 역할별 work·NEW session | 필요한 두 결과 또는 명시된 skip/실패·예산 상태 확인 | 누락을 반증으로 바꾸지 않고 unresolved condition으로 전달 |
+| Pro와 Con | 같은 가설의 역할별 child work·NEW session | 운영은 같은 입력의 exact Pro·Con 결과를 모두 확인; 평가 생략은 명시된 mode와 skip reason 확인 | 필수 결과 누락 시 final 판정을 만들지 않고 부모 Verification을 대기 또는 실패 처리 |
 | chaining 후보 | child proposal별 work | 중복·cycle·depth·예산 검사를 통과한 proposal만 등록 | 거절 사유를 저장하고 부모 verdict 유지 |
 
 같은 가설과 같은 `work_type`에는 활성 `attempt_id`를 하나만 허용한다. 중복 요청의 `dedupe_key`가 같으면 기존 `work_id`를 반환한다. 이미 합류가 끝난 뒤 늦게 도착한 tool·Pro·Con 결과는 기존 결과를 덮어쓰지 않는다. 새로운 근거로 사용할 필요가 있으면 입력 revision을 바꾼 새 논리 작업과 새 downstream revision을 만든다.
+
+현재 `VERIFICATION` work는 `PRO_EVIDENCE`와 `CON_EVIDENCE` child work의 부모다. 두 자식은 `parent_work_ref`로 같은 부모와 generation을 가리키고, 각자 exact `EvidenceAgentResult`를 `COMMITTED`한 뒤에만 합류한다. 부모 Verification은 같은 `debate_input_hash`의 Pro·Con result reference를 final 합성 입력에 각각 한 번 넣는다. 한쪽이 재시도 대기이면 해당 자식과 부모를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지한다. 복구 불가능하면 자식 실패를 먼저 확정해 부모 진행을 막고, 부모 `FAILED`와 가설 `FAILED`를 함께 확정하며 final verdict를 만들지 않는다.
 
 ## 바꿀 수 없는 직렬 순서
 
@@ -175,7 +179,9 @@ final VerificationResult + CWELabel
 -> Rule Scope Impact Gate
 -> PASS/PASS/PASS/SUFFICIENT/ALLOW와 exact revision 확인
 -> Reporter
--> Human Reviewer
+-> ReportDraft
+-> AnalysisRunResult 확정
+-> Agent 자동화 종료
 ```
 
 Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니다. 현재 Technical Gate work는 `TechnicalEvidenceReview.status=REVISE`를 exact output으로 atomic commit하고 `SUCCEEDED`로 끝낸 뒤 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 직접 전달한다. runtime은 기존 종료 VERIFICATION work를 되돌리지 않고 증가한 generation의 새 VERIFICATION work를 등록하며, 같은 CAS transition에서 `HypothesisProcessState`를 `TERMINAL -> VERIFYING`으로 바꾸고 새 work를 가리킨다. Verification은 새 근거를 반영한 `VerificationResult`와 새 work 종료·hypothesis `TERMINAL`·current result pointer를 atomic commit하고, 필요하면 기존 CWE producer가 만든 새 `CWELabel` revision을 조정한다. 그 뒤 바뀐 `input_hash`·`dedupe_key`와 새 `work_id`로 Technical Gate를 다시 요청한다. 이 새 논리 작업의 첫 attempt는 `attempt_number=1`, `trigger=INITIAL`이다. provider timeout처럼 입력이 그대로인 일반 retry만 같은 `work_id`에서 새 `attempt_id`, `trigger=RETRY`를 사용한다. Rule Scope Gate와 Reporter는 앞 단계의 `COMMITTED` output reference만 읽는다. `PREPARED`, 취소된 attempt, 오래된 input hash와 다른 workspace/commit 결과는 다음 단계로 전달하지 않는다.
@@ -185,7 +191,8 @@ Chaining work는 각 parent의 current `PrimitiveIndexState` revision을 input�
 ## retry·취소·중단 후 재개
 
 - 일반 retry와 provider/model failover는 새 `attempt_id`를 사용하고, LLM 호출이면 새 `llm_call_id`도 사용한다.
-- 재시도 가능한 오류는 work를 `BLOCKED`로 두고 `waiting_for`에 `RETRY | AUTH | APPROVAL | INPUT | BUDGET | DEPENDENCY` 중 실제 조건을 기록한다.
+- 재시도 가능한 오류는 work를 `BLOCKED`로 두고 `waiting_for`에 `RETRY | AUTH | APPROVAL | INPUT | BUDGET | DEPENDENCY` 중 실제 조건을 기록한다. Pro/Con child 오류이면 부모 Verification도 같은 실제 이유로 `BLOCKED`다.
+- Pro/Con 중 성공한 한쪽 결과는 가설·부모 generation·공통 입력·플레이북·Debate 설정·예산 profile이 그대로일 때만 보존한다. 이 중 하나가 바뀌면 두 결과를 모두 stale로 격리하고 두 역할을 다시 실행한다.
 - 사용자가 개별 가설을 취소하면 그 가설의 새 downstream 작업을 만들지 않고 늦은 결과를 `STALE_RESULT`로 거절한다.
 - 전체 분석을 취소하면 새 work 등록을 중단하고 실행 중 attempt에 취소를 전달하되 이미 저장된 결과와 오류는 보존한다.
 - 재개 시 마지막 `COMMITTED` marker와 그 marker에서 투영된 상태 pointer만 신뢰한다. 완료 결과는 다시 실행하지 않고, 중단된 attempt만 허용된 새 attempt로 재시도한다.
@@ -197,13 +204,12 @@ Chaining work는 각 parent의 current `PrimitiveIndexState` revision을 input�
 |---|---|---|
 | Hypothesis Agent | `HypothesisProposal[]` | verdict, Finding, exploitability 확정 |
 | Verification Agent | `VerificationResult` | 새 claim의 무검증 승격, 공개 |
-| Pro Agent | supporting evidence candidate | 최종 verdict |
-| Con Agent | counterexample·restriction candidate | 최종 verdict |
+| Pro Agent | `EvidenceAgentResult(role=PRO)` | 최종 verdict |
+| Con Agent | `EvidenceAgentResult(role=CON)` | 최종 verdict |
 | Chaining Agent | `ChainingResult`, `origin=CHAINING` proposal | 일반 research, verdict/CWE/Gate/Finding/report 확정 |
 | Technical Evidence Gate | `TechnicalEvidenceReview` | Verification verdict 변경 |
 | Rule Scope Impact Gate | `RuleScopeImpactReview` | 공식 정책 없는 허용 추정 |
 | Reporter Agent | `ReportDraft` | 보고서 제출·공개 |
-| Human Reviewer | `HumanReviewDecision` | Agent output을 근거 없이 승인하거나 다른 revision의 결정을 재사용 |
 
 ## 독립성, provider와 session
 
@@ -211,6 +217,8 @@ Chaining work는 각 parent의 current `PrimitiveIndexState` revision을 input�
 
 세션 재사용은 token 절감 가능성이 있지만 confirmation bias와 prompt contamination 위험이 있다. 실제 정책은 설정 가능해야 하고 선택 결과와 비교 지표를 로그에 남긴다.
 
+Pro와 Con은 session만 분리하지 않는다. trusted prompt builder가 같은 공통 입력에서 역할별 immutable prompt payload를 만들며, 상대 역할의 결과·결론·session·action/decision은 prompt, context, parent/predecessor, 저장소 조회와 tool 입출력 어느 경로에도 넣지 않는다. 위반하면 `CROSS_ROLE_INPUT_DENIED`로 호출 또는 합류를 중단한다.
+
 ## prompt-injection 경계
 
-저장소 내용, 도구 message, README와 주석, 모든 LLM output, provider 응답과 Sandbox output은 모두 비신뢰 분석 데이터다. Agent instruction이나 실행 권한으로 승격하지 않는다. Orchestration은 system instruction과 data 구분을 유지하고 Runtime Validator가 structured output과 action policy를 검사한다. Sandbox Controller는 비신뢰 입력이 image·command·file·network·resource·cleanup 정책을 바꾸지 못하게 한다. 비신뢰 입력은 provider·model·session·Gate 순서·budget·Reporter·공개 정책도 변경하지 못한다. 이런 변경 지시는 `UNTRUSTED_INSTRUCTION`으로 기록하고 실행하지 않는다.
+저장소 내용, 도구 message, README와 주석, 모든 LLM output, provider 응답과 Sandbox output은 모두 비신뢰 분석 데이터다. Agent instruction이나 실행 권한으로 승격하지 않는다. Orchestration은 system instruction과 data 구분을 유지하고 Runtime Validator가 structured output과 action policy를 검사한다. Sandbox Controller는 비신뢰 입력이 image·command·file·network·resource·cleanup 정책을 바꾸지 못하게 한다. 비신뢰 입력은 provider·model·session·Gate 순서·budget·Reporter와 자동화 종료 경계도 변경하지 못한다. 이런 변경 지시는 `UNTRUSTED_INSTRUCTION`으로 기록하고 실행하지 않는다.

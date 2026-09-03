@@ -18,7 +18,7 @@
 | [Issue 작성 양식](../.github/ISSUE_TEMPLATE/architecture-review.yml) | GitHub에서 설계 검토 Issue를 만들 때 필요한 입력 칸을 정의합니다. | Issue 작성자 | 보조 파일 |
 | [Issue 화면 설정](../.github/ISSUE_TEMPLATE/config.yml) | GitHub Issue 작성 화면의 선택 항목을 설정합니다. | 저장소 관리 담당 | 보조 파일 |
 | [PR 작성 양식](../.github/PULL_REQUEST_TEMPLATE.md) | PR에 목적·영향·검증 내용을 빠뜨리지 않도록 기본 양식을 제공합니다. | PR 작성자·검토자 | 보조 파일 |
-| [`scripts/validate-architecture-docs.ps1`](../scripts/validate-architecture-docs.ps1) | Markdown 링크·Mermaid 사본, R4 상태·복구·권한 계약과 운영 Pro/Con 정책 누락을 한 번에 검사합니다. | 문서 작성자·검토자 | 검증 도구 |
+| [`scripts/validate-architecture-docs.ps1`](../scripts/validate-architecture-docs.ps1) | Markdown 링크·Mermaid 사본, R4 상태·복구·권한 계약과 운영 Pro/Con 결과 연결 누락을 한 번에 검사합니다. | 문서 작성자·검토자 | 검증 도구 |
 
 ## 문서 안내와 공통 용어
 

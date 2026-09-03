@@ -1,5 +1,7 @@
 # R4-03 프로그램 검사기와 사람·LLM 권한 경계 설계
 
+> **대체 안내(2026-09-03):** 이 문서의 Human Review 자동화 계약은 `2026-09-03-r5-04-removal-design.md`로 대체됐습니다. 이 파일은 당시 설계 기록이며 현재 구현 기준이 아닙니다.
+
 ## 상태
 
 - 설계 상태: `DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED`

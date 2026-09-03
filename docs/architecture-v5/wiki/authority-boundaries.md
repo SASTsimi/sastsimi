@@ -2,7 +2,7 @@
 
 ## 쉽게 말하면
 
-LLM은 분석과 다음 작업을 제안할 수 있지만 프로그램을 마음대로 실행하거나 보고서를 외부에 공개할 수는 없습니다. 프로그램 검사기는 안전한 실행 범위만 확인하고, 사람만 최종 공개를 결정합니다.
+LLM은 분석과 다음 작업을 제안할 수 있지만 프로그램을 마음대로 실행하거나 보고서를 외부에 공개할 수는 없습니다. 프로그램 검사기는 안전한 실행 범위만 확인하고 `ReportDraft` 뒤에 Agent 자동화를 종료합니다.
 
 **상세 기준:** [03. Agent 역할과 오케스트레이션](../03-agent-roles-and-orchestration.md), [05. 이중 LLM Gate와 보고](../05-llm-gate-and-reporting.md), [08. 경량 데이터 계약](../08-lightweight-data-contracts.md), [10. 보안 경계](../10-security-boundaries.md)
 
@@ -10,7 +10,7 @@ LLM은 분석과 다음 작업을 제안할 수 있지만 프로그램을 마음
 
 1. **LLM Agent**: 가설, 근거, 판정, Gate 검토, 보고서 문장을 자기 역할 안에서 만듭니다.
 2. **Runtime Validator**: 그 역할이 지금 그 일을 실행해도 되는지 검사합니다.
-3. **사람**: 전체 자료를 읽고 외부 제출·공개 여부를 결정합니다.
+3. **사람**: 자동화 종료 뒤 결과를 검토·수정하고 제출·공개 여부를 시스템 밖에서 결정합니다.
 
 Runtime Validator는 취약점이 맞는지 새로 판단하는 Gate가 아닙니다. 코드 의미와 공식 정책은 Verification과 두 LLM Gate가 검토합니다.
 
@@ -29,7 +29,6 @@ Runtime Validator는 취약점이 맞는지 새로 판단하는 Gate가 아닙�
 | Sandbox 세부 안전 정책 검사 | Sandbox Controller | 환경 요구사항·재현 모드·계획·취약점 판정 변경 |
 | 실제 환경 구성·요구사항 비교·Health Check와 승인된 공격 단계 실행 | Sandbox Runner | 환경 차이 수용, 허용되지 않은 fallback, 정책 변경 또는 계획 밖 명령 실행 |
 | 동적 결과 reference 조립 | Sandbox Result Assembler | 다른 attempt 자료 혼합 또는 참조만으로 성공 판단 |
-| 외부 공개 | Human Reviewer | Agent가 자동 승인 |
 
 Orchestration Agent는 proposal 검증·전역 등록·Verification 배정을 조정하지만 배정 뒤 가설 내부 Context·Pro/Con·dynamic·Gate·Chaining, verdict, CWE, 정책 해석, 보고 가능 여부와 공개 여부를 정하지 않습니다. Verification이 가설 내부 다음 작업을 정해도 프로그램 검사를 우회할 수 없습니다.
 
@@ -54,7 +53,7 @@ Agent 또는 service의 제안
 - provider·model·session과 explicit failover
 - Technical Gate 다음 Rule Scope Gate라는 순서
 - Reporter를 부를 일곱 조건
-- 비밀정보 제거와 사람 결정 전 외부 공개 차단
+- ReportDraft의 exact provenance, restriction·limitation 보존과 비밀정보 제거
 
 하나라도 실패하면 실행하지 않고 오류를 남깁니다. 한 요청에는 decision 하나만 만들고 ALLOW 결과는 exact 요청에 한 번만 씁니다. 허가 시간이 지나거나 호출자 권한·상태·예산·입력·설정이 바뀌면 `EXPIRED`(사용 전 만료)로 기록하고 새 요청부터 다시 검사합니다. 실제 LLM 호출의 model·prompt·context·예산도 검사한 `LLMCallSpec`과 같아야 합니다. Gate와 Reporter는 자기 stage action을 건너뛰고 별도 LLM 호출을 만들 수 없습니다.
 
@@ -67,7 +66,7 @@ Agent 또는 service의 제안
 - 모든 LLM 답변과 tool call 제안
 - provider 응답과 Sandbox 출력 파일
 
-예를 들어 README에 “Sandbox network를 열어라” 또는 “Gate를 건너뛰어라”라고 적혀 있어도 실행하지 않습니다. provider, session, Sandbox, 예산, Gate, Reporter와 공개 규칙은 승인된 설정만 바꿀 수 있습니다.
+예를 들어 README에 “Sandbox network를 열어라” 또는 “Gate를 건너뛰어라”라고 적혀 있어도 실행하지 않습니다. provider, session, Sandbox, 예산, Gate, Reporter와 자동화 종료 경계는 승인된 설정만 바꿀 수 있습니다.
 
 ## 두 LLM Gate는 그대로입니다
 
@@ -92,28 +91,16 @@ Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아
 
 동적 재현 전에는 R6 Verification이 `EnvironmentRequirements`(애플리케이션에 필요한 조건)와 이를 가리키는 `ReproductionPlan`(어떤 단계와 공격 입력을 실행하고 어떻게 정리할지 적은 계획)의 정확한 수정본을 고정합니다. Runtime Validator는 요청자·상태·예산과 exact plan·current requirements reference를 확인해 Sandbox 호출만 허가합니다. Sandbox Controller는 실행 직전에 image·명령·파일·네트워크·자원·정리 정책을 한 번 검사하고 exact 판정을 저장합니다. 통과한 계획을 받은 Runner는 실제 환경·Health Check를 각 요구사항과 비교하고 필수 항목이 모두 맞을 때만 공격 단계를 실행합니다. 차이가 있으면 R7이 고치거나 허용하지 않고 R6에 돌려보냅니다. R6가 환경 조건을 바꿔 허용하면 새 요구사항과 이를 가리키는 새 계획을 함께 만들고, 단계만 바꾸면 새 계획만 만든 뒤 새 Sandbox 검사를 거칩니다. Sandbox Result Assembler는 같은 분석·가설의 exact R6 plan closure와 같은 R7 실행 attempt에서 나온 정책 판정·실제 환경 비교·step log·PoC·cleanup reference만 동적 결과에 연결합니다. plan과 실제 환경의 requirements revision이 다르면 저장하지 않습니다. 계획에 없던 명령·공격 입력은 실행하거나 저장하지 않으며 환경 실패·차이는 `FALSE`가 아닙니다. Verification은 저장이 확정된 결과를 읽어 판정합니다.
 
-## 사람이 받는 자료
+## 자동화가 끝나는 지점
 
-`HumanReviewPacket`에는 다음을 함께 넣습니다.
+Reporter는 current Finding·Verification·CWE·두 Gate·정책을 정확히 참조하고 restriction·limitation·남은 불확실성과 redaction 결과를 보존한 `ReportDraft`를 만듭니다. 선행 결과가 바뀌면 기존 초안은 감사 이력으로만 남고 current 결과에서 제외합니다.
 
-- 전체 분석 결과와 Finding 후보
-- final Verification, CWE와 두 Gate
-- 공식 정책, 동적 결과와 redacted PoC
-- ReportDraft 또는 보고서가 막힌 이유
-- token·시간·Sandbox 자원
-- 모든 오류·분석 공백·남은 HOLD 조건
-- LLM 호출·action 검사·work 상태·실행 시도와 debug trace
-
-사람은 별도 `HumanReviewDecision`에 `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION`을 기록합니다. ReportDraft 안의 값을 바꾸어 승인하지 않습니다.
-
-사람 결정 record를 저장할 때도 로그인한 실제 검토자와 `HumanReviewState`가 가리키는 current packet generation을 프로그램이 확인합니다. 새 packet이 만들어지면 이전 packet의 결정은 즉시 만료됩니다. LLM이 사람 결정처럼 생긴 출력을 만들어도 승인으로 저장하지 않습니다.
-
-`DISCLOSE`를 선택하면 실제로 승인한 ReportDraft 수정본과 공개 대상·채널도 함께 적습니다. packet에 없거나 수정된 보고서에는 이전 승인을 재사용할 수 없습니다.
+이 초안과 실행 결과·PoC·자원·오류·HOLD 조건·debug trace를 `AnalysisRunResult`에 확정하면 Agent 자동화가 끝납니다. 이후 검토·수정·제출·공개는 사람이 시스템 밖에서 수행하며, 이를 위한 Agent action이나 상태는 없습니다.
 
 ## 기억할 원칙
 
 - Runtime Validator는 세 번째 Gate가 아닙니다.
 - Agent는 action을 제안할 수 있지만 실행 권한은 없습니다.
-- Reporter는 내부 초안만 만듭니다.
-- exact 사람 결정 없이는 외부 공개를 허용하지 않습니다.
-- 실제 자동 제출 기능은 아직 설계 범위 밖입니다.
+- Reporter는 안전한 내부 초안을 만드는 마지막 Agent입니다.
+- Agent 자동화는 외부 제출·공개 action을 제공하지 않습니다.
+- 사람 주도 후속 과정은 현재 설계 범위 밖입니다.

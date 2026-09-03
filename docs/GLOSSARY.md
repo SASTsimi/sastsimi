@@ -12,7 +12,7 @@
 | `CodeWorkspace` | AST와 SAST가 읽는 실행별 로컬 코드 폴더 | `workspace_id`와 `commit_id`로 구분합니다. |
 | `ProgramPolicyRecord` | 공식 버그바운티 정책을 확인해 남긴 기록 | 저장소 코드 복사본이 아니며 공식 출처와 수집 시각을 기록합니다. |
 | `freshness_status` | 정책을 현재 자료로 믿을 수 있는지 나타내는 상태 | `STALE` 또는 `UNVERIFIED`이면 보고 허용에 쓰지 않고 `UNCERTAIN + DENY`로 처리합니다. |
-| `handoff_readiness` | Technical Gate 결과를 다음 단계에 전달해도 되는지 나타내는 값 | `ACCEPT`일 때만 `READY`이며 `REVISE | REJECT`는 `NOT_READY`입니다. |
+| `handoff_readiness` | Technical Gate 결과를 다음 단계에 전달해도 되는지 나타내는 값 | `ACCEPT`일 때만 `READY`이며 `REVISE | REJECT`는 `NOT_READY`입니다. 현재 R5 pipeline의 다음 단계는 R5-02이며, 그 통과나 보고 허용을 뜻하지 않습니다. |
 | `StoredDataRef` | 도구가 만든 결과 파일이나 기록을 가리키는 번호 | 내부 저장 경로 대신 결과 번호와 내용 hash를 사용합니다. 저장된 결과 수정본을 가리킬 때는 `record_id`도 넣습니다. |
 | `RecordMeta` | 결과마다 붙는 공통 식별 정보 | 분석·작업공간·가설·재시도·수정본을 연결합니다. |
 | `RunMeta` | 코드 준비 전에도 쓸 수 있는 분석 실행 식별 정보 | `analysis_id`로 실행을 추적하며 clone 성공 전에는 workspace·commit을 요구하지 않습니다. |
@@ -65,6 +65,10 @@
 | `Pro / Con` | 가설에 찬성하는 근거와 반대하는 근거 | 서로의 결론을 보지 않는 독립 실행을 기본으로 합니다. |
 | `debate` | 찬성·반대 근거를 따로 모아 비교하는 검증 방법 | 운영에서는 모든 유효 가설에 Pro/Con을 실행합니다. BASIC·조건부 방식은 격리 평가에서만 사용합니다. |
 | `EvidenceClaim` | 주장 하나와 그 주장을 확인할 실제 근거·코드 위치를 묶은 데이터 | 근거가 없는 설명을 찬성·반대 근거로 저장하지 않습니다. |
+| `EvidenceAgentResult` | Pro 또는 Con 한쪽이 만든 독립 근거 결과 | 부모 Verification, 역할별 작업·호출, 공통 입력 기준과 연결합니다. |
+| `debate_input_hash` | Pro와 Con이 같은 공통 검증 입력을 받았는지 비교하는 값 | 역할별 지시문은 달라도 가설·코드 사실·플레이북·설정·예산 기준은 같아야 합니다. |
+| `parent_work_ref` | 현재 작업을 만든 직접 부모 작업의 정확한 수정본을 가리키는 값 | Pro/Con child work에서는 현재 Verification work를 가리킵니다. |
+| `CROSS_ROLE_INPUT_DENIED` | Pro와 Con 사이에 서로의 결과가 입력으로 넘어가 차단됐다는 오류 | 새 대화만 분리하는 것이 아니라 prompt·조회·도구 결과까지 분리합니다. |
 | `CandidateRef` | 아직 검증되지 않은 우회·대체 경로·영향 확대 후보 | 새 공격 주장이면 별도 가설로 검증하기 전까지 확정 사실로 쓰지 않습니다. |
 | `VerificationMetrics` | 검증에 사용한 token·시간과 판정 변화 기록 | provider가 알려 주지 않은 token을 임의로 추정하지 않습니다. |
 | `PoC` | 취약점이 어떻게 재현되는지 보여 주는 절차와 증거 | 승인된 격리 환경에서 만든 자료만 사용합니다. |
@@ -108,12 +112,8 @@
 | `VerificationAssignment` | 한 가설의 내부 검증 흐름을 맡은 논리 owner의 저장 기록 | 같은 역할의 다른 Agent가 아니라 ACTIVE assignment와 일치하는 owner만 Gate·보완·보고 요청을 제안할 수 있습니다. |
 | `REVISE` | 부족한 근거를 같은 Verification owner가 새 Verification work에서 보완한 뒤 새 revision으로 다시 검토하라는 결과 | provider retry나 동일 입력 재투표가 아니며 오래된 Gate 결과를 재사용하지 않습니다. |
 | `UNCERTAIN + DENY` | 공식 정책을 확인하지 못해 결론과 보고서 전달을 허용하지 않는 상태 | LLM의 기억으로 정책을 채우지 않습니다. |
-| `Reporter` | 통과한 결과를 사람이 읽을 보고서 초안으로 정리하는 Agent | 외부 제출과 공개는 하지 않습니다. |
-| `human handoff` | 사람이 최종 검토할 자료를 전달하는 단계 | 외부 공개 여부는 사람이 결정합니다. |
-| `HumanReviewPacket` | 사람이 볼 Finding·근거·PoC·Gate·비용·오류·보류 조건을 모은 자료 묶음 | exact AnalysisRunResult 수정본에서 빠짐없이 만듭니다. |
-| `HumanReviewState` | 지금 검토해야 할 최신 packet과 현재 사람 결정을 가리키는 상태 | 새 packet이 생기면 이전 결정을 공개에 쓰지 못하게 합니다. |
-| `HumanReviewDecision` | 사람이 자료 묶음을 읽고 남긴 최종 결정 기록 | `DISCLOSE`, `REVISE`, `WITHHOLD`, `NEED_MORE_VALIDATION` 중 하나이며 ReportDraft와 분리합니다. |
-| `FINDING_NOT_CREATED` | 아직 Finding이 만들어지지 않아 사람 검토 자료가 공개 준비 전이라는 차단 사유 | packet 자체는 볼 수 있지만 `report_ready=false`이며 공개할 수 없습니다. |
+| `Reporter` | 통과한 결과를 사람이 읽을 `ReportDraft`로 정리하는 마지막 Agent | 외부 제출과 공개는 하지 않습니다. |
+| `Agent automation end` | `ReportDraft`와 `AnalysisRunResult`를 확정한 뒤 Agent 작업을 끝내는 경계 | 이후 검토·수정·제출·공개는 시스템 밖에서 사람이 진행합니다. |
 
 ## 실행·보안·평가
 
