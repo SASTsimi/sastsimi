@@ -23,19 +23,20 @@
 | 단독 구현·통합 개발 | 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec` | LLM 연결과 실행 경계, 구현 가능성, 테스트·모듈 통합 | `09`, 구현 가능성 검토 | PM, 데이터·평가, 동적검증 | [#4](https://github.com/SASTsimi/sastsimi/issues/4) |
 | PM·아키텍처·워크플로 | 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec` | 전체 분석 흐름, 공통 입출력 약속, 사람·LLM 경계, 오류·병렬 처리 | root README, `01`, `08`, `11`, `13`, Wiki 통합 | 전체 파트 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
 | Gate·Finding·보고서 | 김혜령 `@kimhr8463` | 기술 근거·공식 정책 검토, 같은 Verification owner로의 REVISE와 보고서 초안 | `05`, `12` | 검증, PM, 데이터·평가 | [#6](https://github.com/SASTsimi/sastsimi/issues/6) |
-| 검증·반박·플레이북 | 임채민 `@UltraPeachKeen` | 찬성·반대 근거, 환경 요구사항·동적 재현 모드·`ReproductionPlan`, 환경 차이 수용 여부, 최종 기술 판정과 보완 | `04` 검증 영역 | LLM 탐색, 동적검증, Gate | [#7](https://github.com/SASTsimi/sastsimi/issues/7) |
-| 동적검증·Sandbox | 조근석 `@Potatonion` | Controller 정책 판정, 승인된 exact 계획의 환경 구성·요구사항 비교·Runner 실행, 환경·Health Check·log·PoC 상세 artifact와 result 조립 | `04` 동적 영역, `10` 격리 실행 영역 | 검증, PM, 통합 개발 | [#8](https://github.com/SASTsimi/sastsimi/issues/8) |
+| 검증·반박·플레이북 | 임채민 `@UltraPeachKeen` | 찬성·반대 근거, `DynamicReproductionRequest`, 반환 결과 소비, 최종 기술 판정과 보완 | `04` 검증 영역 | LLM 탐색, 동적검증, Gate | [#7](https://github.com/SASTsimi/sastsimi/issues/7) |
+| 동적검증·Sandbox | 조근석 `@Potatonion` | `EnvironmentRequirements`·실행 mode·`ReproductionPlan`·PoC candidate 생산, Controller 정책 판정, 환경 구성·Runner 실행, validated PoC와 동적 결과 조립 | `04` 동적 영역, `10` 격리 실행 영역 | 검증, PM, 통합 개발 | [#8](https://github.com/SASTsimi/sastsimi/issues/8) |
 | 데이터·평가·예산 | 성병찬 `@gitterable` | 평가 자료·품질 지표·예산 profile; 실제 action 예산은 runtime이 강제 | `07`, `08/09` 관련 지표 | 전체 LLM 역할, PM | [#9](https://github.com/SASTsimi/sastsimi/issues/9) |
 
 번호는 `docs/architecture-v5/` 아래 정본 문서를 의미합니다.
 
 ## 역할 연결 기준
 
-- R4는 `EnvironmentRequirements`, `ReproductionPlan`, 실제 `sandbox_environment`의 공통 필드·exact reference·상태·생산자/소비자와 오류 규칙을 담당합니다.
-- R6 Verification이 `NOT_REQUIRED | LIMITED_REPRO | FULL_REPRO`를 고르고, 동적 재현이 필요하면 필요한 환경 조건과 미리 허용할 대체 버전을 `EnvironmentRequirements`로 기록한 뒤 이를 가리키는 exact `ReproductionPlan`을 생산합니다. 환경 조건을 바꾸면 새 요구사항과 이를 가리키는 새 계획을 함께 만들고, 실행 단계만 바꾸면 새 계획만 만듭니다.
+- R4는 `DynamicReproductionRequest`, `EnvironmentRequirements`, `ReproductionPlan`, 실제 `sandbox_environment`, PoC candidate와 validated PoC의 공통 필드·exact reference·상태·생산자/소비자와 오류 규칙을 담당합니다.
+- R6 Verification은 `POC_CONFIRMATION | VERDICT_EVIDENCE` 목적, 재현 목표·필요 환경·Sandbox profile·근거 reference를 `DynamicReproductionRequest`로 생산합니다. R6는 환경 요구사항·실행 mode·계획·PoC·동적 결과를 생산하지 않습니다.
 - R4의 trusted runtime은 계획과 current requirements의 schema·reference·호출 권한·상태·예산을 검사해 `COMMITTED`와 `RUN_SANDBOX ALLOW`를 확정합니다. 환경 조건의 의미나 image·command·file·network·resource·cleanup 세부 정책은 판단하지 않습니다.
-- R7의 Sandbox Controller는 세부 Sandbox 정책을 검사해 exact 판정을 저장합니다. Sandbox Runner는 통과한 exact 계획을 바꾸지 않고 실제 환경을 구성해 requirement별 상태와 Health Check를 기록하며, 필수 항목이 모두 맞을 때만 공격 단계를 실행합니다. R7 비-LLM Result Assembler는 R4가 정한 requirements·nullable·상태·identity 규칙에 맞는 exact reference만 `DynamicReproductionResult`로 조립하며 R6가 `COMMITTED` 결과를 소비해 최종 판정을 만듭니다.
-- R7은 요구사항을 수정하거나 허용되지 않은 version fallback·환경 차이를 임의 수용할 수 없고, R6의 차이 수용은 Sandbox 정책 검사를 우회하는 권한이 아닙니다.
+- R7은 exact 요청을 바탕으로 `EnvironmentRequirements`, 실행 mode, `ReproductionPlan`과 PoC candidate를 생산합니다. Sandbox Controller는 세부 정책을 검사해 exact 판정을 저장하고, Runner는 실제 환경·Health Check가 필수 요구사항과 맞을 때만 공격 단계를 실행합니다. 비-LLM Result Assembler는 같은 request·plan·attempt의 reference만 `DynamicReproductionResult`로 조립하며 R6가 `COMMITTED` 결과를 소비해 최종 판정을 만듭니다.
+- R7은 요청 목적·가설·profile을 바꾸거나 허용되지 않은 fallback·환경 차이를 임의 수용할 수 없습니다. 계획을 고쳤다면 같은 동적 work의 새 attempt와 새 Sandbox 정책 검사를 거칩니다.
+- 모든 final TRUE에는 `SUCCEEDED + SUPPORTED` 동적 결과와 validated `poc_ref`가 필요합니다. PoC 생성·환경 구성·실행 실패는 `FALSE | HOLD`가 아니라 retry 가능 시 `BLOCKED`, 복구 불가능 시 verdict 없는 `FAILED`입니다.
 - R8은 예산 profile과 회귀 기준을 설계하고 각 전문 역할은 최소 품질 요구를 제공합니다. 실제 예산 차단·허용은 R4 trusted runtime의 책임입니다.
 - Technical `REVISE`는 Orchestration이나 R7이 목적지를 고르지 않고 같은 ACTIVE `VerificationAssignment`의 R6 owner에게 돌아갑니다.
 

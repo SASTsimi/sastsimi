@@ -55,10 +55,11 @@ R4 담당자는 이 PR의 작성자이므로 자신의 확인만으로 교차 �
 ## 이번 수정 요청의 처리 방향
 
 - 최신 `main`을 병합해 충돌을 해결하고 R4의 exact Sandbox 정책·환경·로그·PoC 전달 계약을 사용합니다.
-- R6가 만든 `EnvironmentRequirements`와 plan의 `environment_requirements_ref`, R7의 `EnvironmentCheck`를 exact revision으로 연결합니다.
+- R6가 만든 `DynamicReproductionRequest`, R7이 만든 `EnvironmentRequirements`·plan·PoC candidate와 실제 `EnvironmentCheck`를 exact revision으로 연결합니다.
+- 모든 final TRUE에는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated PoC가 필요하고, 실패는 verdict 없이 `BLOCKED | FAILED`로 처리합니다.
 - 필수 환경 불일치·구성 실패는 공격 전에 멈추고 `INCONCLUSIVE`로 R6에 반환하며 가설 `FALSE`로 바꾸지 않습니다.
 - 정책이 없거나 `STALE | UNVERIFIED`이면 Rule Scope Gate를 `UNCERTAIN + DENY`로 고정합니다.
-- `POLICY_BLOCKED`는 자동 `REJECT`가 아니며 Technical Gate가 근거 충분성에 따라 `ACCEPT | REVISE | REJECT`를 구분합니다.
+- `POLICY_BLOCKED`는 가설 반증이나 자동 `REJECT`가 아닙니다. 다만 validated PoC가 없으므로 final verdict와 Technical Gate 없이 `BLOCKED | FAILED`로 처리합니다.
 - Finding이 없으면 Reporter를 호출하지 않고 `AnalysisRunResult.report_draft_refs=[]`와 `REPORT_NOT_READY` 원인을 보존합니다.
 - upstream revision이 바뀐 ReportDraft는 current `AnalysisRunResult`에 재사용하지 않습니다.
 - ReportDraft 생성 뒤 Agent 자동화는 끝나며 사람의 검토·수정·제출·공개는 자동화 밖에서 수행합니다.

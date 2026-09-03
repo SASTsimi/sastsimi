@@ -19,8 +19,8 @@
 9. Verification의 코드 위치 기반 on-demand retrieval
 10. 운영 Verification의 독립 Pro/Con 병렬 검증
 11. initial `TRUE | FALSE | HOLD`
-12. Verification이 `EnvironmentRequirements`와 LIMITED/FULL `ReproductionPlan` 결정 → Runtime Validator가 exact reference·호출 전제 확인 → R7 Sandbox Controller가 세부 정책 판정 저장 → Runner가 실제 환경·Health Check 비교 → 필수 항목 일치 시 exact 공격 단계 실행 → Result Assembler가 exact reference를 결과로 묶어 반환
-13. final `TRUE | FALSE | HOLD`
+12. initial TRUE이면 Verification이 `POC_CONFIRMATION`, 판정에 실행 근거가 필요하면 `VERDICT_EVIDENCE` 요청 → R7이 `EnvironmentRequirements`·LIMITED/FULL plan·PoC candidate 생산 → Runtime Validator와 Controller 검사 → Runner 실행 → Result Assembler 반환; generation당 동적 work는 하나
+13. 성공한 `SUPPORTED` 실행과 validated PoC를 가진 final TRUE 또는 근거 기반 final FALSE/HOLD; 생성·환경·실행 실패는 verdict 없이 BLOCKED/FAILED
 14. FALSE terminal / HOLD REQUIRED 즉시 admission / TRUE CWE 분기
 15. final TRUE를 Technical Evidence Gate Agent가 검토
 16. `REVISE`이면 같은 Verification owner가 새 Verification/CWE revision 생성 후 재제출
@@ -31,7 +31,7 @@
 21. 모든 전달 조건을 만족한 결과에 Reporter Agent 호출
 22. 결과·자원·LLM log·PoC·오류·debug 정보를 `AnalysisRunResult`에 저장하고 모든 가설에 반복한 뒤 Agent 자동화 종료
 
-Technical Gate의 `REVISE`는 같은 hypothesis의 Verification owner에게 직접 돌아간다. HOLD는 Gate 없이 Chaining에 들어가지만 TRUE는 두 Gate를 정상 통과하기 전에는 Chaining에 들어갈 수 없다. Verification과 Chaining의 material claim은 새 가설이 되며 기존 verdict에 직접 합쳐지지 않는다. 독립 가설은 예산 범위에서 병렬 처리할 수 있다.
+Technical Gate의 `REVISE`는 같은 hypothesis의 Verification owner에게 직접 돌아가 새 generation을 시작한다. final TRUE를 다시 만들려면 그 generation의 동적 결과와 validated PoC도 새로 필요하다. HOLD는 Gate 없이 Chaining에 들어가지만 TRUE는 두 Gate를 정상 통과하기 전에는 Chaining에 들어갈 수 없다. Verification과 Chaining의 material claim은 새 가설이 되며 기존 verdict에 직접 합쳐지지 않는다. 독립 가설은 예산 범위에서 병렬 처리할 수 있다.
 
 `ReportDraft` 이후의 검토·수정·제출·공개는 Agent 자동화 밖에서 사람이 진행한다.
 
