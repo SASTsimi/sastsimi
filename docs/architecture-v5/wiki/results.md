@@ -11,7 +11,7 @@
 `AnalysisRunResult`는 다음을 함께 찾을 수 있게 한다.
 
 - repository, `commit_id`, `workspace_id`, `started_at`, `finished_at`, `elapsed_ms`
-- INITIAL/VERIFICATION/CHAINING/invalid 가설 수, verdict별 개수와 final 판정 없이 끝난 `failed_hypothesis_count`
+- INITIAL/VERIFICATION/CHAINING/invalid 가설 수, 중복 검토 판정·exact review reference, verdict별 개수와 final 판정 없이 끝난 `failed_hypothesis_count`
 - 위치 기반 context 요청·응답과 실제 조회 location
 - Verification, debate mode/trigger/skip, restriction와 capability
 - 동적 재현 요청, R7 requirements·간단한 plan·recipe·PoC candidate, Controller 외부 경계 판정·실제 환경·append-only AgentLog, validated PoC와 cleanup

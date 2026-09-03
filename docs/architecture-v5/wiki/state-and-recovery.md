@@ -67,6 +67,8 @@ marker를 남긴 직후 프로그램이 꺼졌다면 재시작할 때 기존 mar
 
 같은 규칙을 Technical Gate, Rule Scope Gate와 `ReportDraft`에도 적용합니다.
 
+proposal의 형식·의미 검사가 끝난 뒤에는 중복 후보를 찾습니다. 후보가 없거나 LLM이 `UNIQUE | UNCERTAIN`으로 판단하면 새 가설을 등록합니다. exact 후보를 `DUPLICATE`로 지목하면 `ProposalProcessState.status=DUPLICATE`로 끝내고 새 가설 번호를 만들지 않습니다. 중복 검토 호출·형식·대상 검사에 실패한 경우에는 오류 기록을 보존하고 fail-open 등록합니다.
+
 Context 조회 실패·timeout·권한 오류가 있어도 정상 근거로 모든 `validation_checks`를 완료할 수 있으면 현재 Verification work를 계속합니다. 반대로 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증을 끝낼 수 없으면 final `VerificationResult`를 만들지 않습니다. retry·재인증·새 입력을 기다릴 수 있으면 work는 `BLOCKED`이고 가설은 `VERIFYING`, 허용된 재시도를 모두 소진했거나 복구할 수 없으면 work와 가설 모두 `FAILED`입니다. 단순 오류를 `HOLD`로 바꾸지 않습니다.
 
 동적 재현은 같은 단어의 뜻을 구분해야 합니다.

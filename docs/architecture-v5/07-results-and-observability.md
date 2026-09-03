@@ -83,6 +83,7 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 - 생성 proposal 수, schema-valid 비율
 - repair retry와 `INVALID_OUTPUT` 수
 - hypothesis당 observed fact/restriction/assumption 수
+- 중복 비교 후보가 없던 수, `UNIQUE | DUPLICATE | UNCERTAIN` 판정 수, 중복 검토 실패·유효하지 않은 대상 때문에 fail-open 등록한 수와 exact `HypothesisDuplicateReview` reference
 
 ### Retrieval
 
@@ -160,6 +161,8 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 
 Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 final `VerificationResult.record_id`는 같은 atomic transition에 묶인다. 검증을 끝내지 못하고 더 재시도할 수 없으면 Verification work의 `FAILED`와 `HypothesisProcessState.status=FAILED`도 같은 transition에 묶고, 가설은 exact failed work를 가리키되 `verification_result_ref=null`로 둔다. Reporter work의 `SUCCEEDED`, `ReportProcessState.status=DRAFTED`와 `ReportDraft.record_id`도 같은 방식으로 묶인다. 두 Gate work는 각각 정확히 하나인 `TechnicalEvidenceReview`와 `RuleScopeImpactReview` revision을 output으로 가리킨다. 상태만 종료되었거나 결과만 저장된 경우에는 다음 단계와 분석 종료를 차단한다.
 
+가설 등록도 반쪽 저장을 허용하지 않는다. 중복이 아닌 proposal은 final `ProposalProcessState.status=SCHEMA_VALID`, 새 `VulnerabilityHypothesis`와 `HypothesisProcessState.status=REGISTERED`를 같은 transition으로 확정한다. exact 후보를 가리킨 `DUPLICATE`는 `HypothesisDuplicateReview`와 `ProposalProcessState.status=DUPLICATE`를 함께 확정하며 새 가설 record를 만들지 않는다. 중복 호출·형식·대상 검사 실패는 invocation·오류를 보존한 뒤 fail-open 등록 사유와 새 가설을 같은 transition에 남긴다.
+
 운영 Pro/Con child work는 각각 exact `EvidenceAgentResult` 하나를 output으로 `COMMITTED`한다. 부모 Verification은 같은 부모 work·generation·`debate_input_hash`를 가진 Pro와 Con 결과가 모두 있을 때만 final 합성을 시작하며, 그 두 reference를 final LLM 호출과 `VerificationResult`에 그대로 남긴다. 한쪽이 retry 가능한 `BLOCKED`이면 부모도 같은 실제 대기 이유로 `BLOCKED`이고 가설은 `VERIFYING`이다. 한쪽이 최종 실패하면 자식 `FAILED`를 먼저 `COMMITTED`해 부모 진행을 막고, 부모 Verification `FAILED`와 가설 `FAILED`를 함께 확정하며 `verification_result_ref=null`로 둔다. 중간에 중단되면 recovery가 이 전파를 마칠 때까지 부모를 실행하지 않는다.
 
 ## 중복·늦은 결과와 격리
@@ -192,7 +195,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 
 ## AnalysisRunResult
 
-최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, INITIAL·VERIFICATION·CHAINING·invalid hypothesis 수, verdict별 수, `failed_hypothesis_count`, 두 Gate별 수, 동적 재현 request·result·recipe·환경·AgentLog·PoC candidate·validated PoC·cleanup·report refs, 공식 정책 상태, Primitive/Chaining 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. 실패한 PoC candidate도 validated PoC로 승격하지 않은 채 request·attempt·AgentLog와 함께 추적한다. `failed_hypothesis_count`는 final verdict 없이 `HypothesisProcessState.status=FAILED`로 끝난 가설 수이며 verdict별 수와 섞지 않는다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
+최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, INITIAL·VERIFICATION·CHAINING·invalid hypothesis 수, 중복 판정과 exact `hypothesis_duplicate_review_refs`, verdict별 수, `failed_hypothesis_count`, 두 Gate별 수, 동적 재현 request·result·recipe·환경·AgentLog·PoC candidate·validated PoC·cleanup·report refs, 공식 정책 상태, Primitive/Chaining 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. 실패한 PoC candidate도 validated PoC로 승격하지 않은 채 request·attempt·AgentLog와 함께 추적한다. `failed_hypothesis_count`는 final verdict 없이 `HypothesisProcessState.status=FAILED`로 끝난 가설 수이며 verdict별 수와 섞지 않는다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
 
 Reporter가 마지막 Agent 산출물인 `ReportDraft`를 저장한 뒤, 신뢰 runtime이 exact `AnalysisRunResult`를 만든다. 이 결과에는 Finding·Verification, 두 Gate, 정책·CWE, 동적 재현 request·result·recipe·환경·AgentLog·PoC candidate·redacted validated PoC·cleanup, current ReportDraft, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. Finding이 아직 없으면 Reporter를 호출하지 않고 `finding_refs=[]`, `report_draft_refs=[]`와 관련 `REPORT_NOT_READY` 오류·상태를 보존한다. 결과와 `AnalysisRunState`를 atomic하게 확정하면 Agent 자동화가 끝난다.
 

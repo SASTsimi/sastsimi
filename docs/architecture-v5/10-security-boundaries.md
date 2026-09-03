@@ -28,6 +28,8 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - 누락·truncation은 안전함 또는 `FALSE`로 해석하지 않는다.
 - 지원하지 않는 schema MAJOR는 `SCHEMA_UNSUPPORTED`로 거절한다. 같은 `logical_record_id`가 아니거나 바로 이전 revision과 이어지지 않는 수정본은 `RECORD_REVISION_MISMATCH`로 거절하고 자동 변환·병합하지 않는다. `RunMeta`의 workspace·commit은 `null`에서 실제 값으로만 바인딩할 수 있고, 코드 근거 `RecordMeta`에서는 두 값이 필수·불변이다.
 - 저장된 record를 가리키는 `StoredDataRef.record_id`는 참조 대상 revision의 workspace·commit·내용 hash와 일치해야 하고, 가설별 대상 record의 `RecordMeta.hypothesis_id`도 현재 가설과 같아야 한다. Technical Gate가 검토한 Verification revision이나 Rule Scope Gate가 검토한 Verification·Technical·정책 revision이 바뀌면 이전 Gate 결과를 재사용하지 않는다.
+- `Restriction.fact_refs`는 exact final `StaticFactBundle` revision과 그 안의 실제 `fact_id`를 가리켜야 한다. fact/evidence reference가 모두 비어 있거나 다른 workspace·commit을 가리키는 restriction은 저장하지 않는다. proposal의 같은 `fact_id`를 `observed_facts`와 restriction 근거 양쪽에 중복 분류하지 않는다.
+- 가설 중복 비교는 trusted runtime이 같은 analysis·workspace·commit의 등록 가설만 비교 후보로 좁힌 뒤 HYPOTHESIS `CALL_LLM`에 exact proposal·후보 reference를 고정한다. LLM은 후보 밖 가설을 중복 대상으로 선택할 권한이 없고 Orchestration은 review 결과를 만들거나 바꿀 수 없다.
 
 ## 1.1 상태·동시성·복구 경계
 
@@ -146,6 +148,8 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | 정책 판단과 기술 재료 자격 혼합 | Rule Scope는 Reporter만 차단하고 Primitive admission은 exact Technical review에만 연결 |
 | Chaining Agent의 일반 research 확장 | ChainingResult schema와 result-owner validation으로 matching 외 출력 거절 |
 | chain 폭증 | ancestor Primitive 순환 제외, fingerprint 중복 차단과 R8 전체 token·시간·비용·work 예산 |
+| restriction 근거 유실·변조 | exact StaticFactBundle/fact/evidence reference, observed-fact 비중복, 소비 단계의 전체 객체 보존 |
+| 중복 판정으로 새 취약점 누락 | runtime 후보 집합 고정, LLM `DUPLICATE` 대상 검사, 오류·불확실 시 fail-open 등록 |
 | 같은 작업의 중복 반영 | canonical `dedupe_key`, 한 active attempt, state version compare-and-set |
 | 취소·retry 뒤 늦은 결과 오염 | active attempt/input hash 검사와 `STALE_RESULT` 격리 |
 | 결과와 상태 일부 저장 | atomic transaction 또는 `TransitionCommit` journal, uncommitted output 차단 |
@@ -280,6 +284,11 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N24 | Pro가 Con output을, Con이 Pro output을 prompt·context·조회·tool 경로로 읽음 | `CROSS_ROLE_INPUT_DENIED`; 해당 호출과 결과를 합류에 사용하지 않음 |
 | N25 | 한 child가 retry 가능한 `BLOCKED`인데 부모 Verification이 계속 실행됨 | 부모도 같은 `waiting_for`로 `BLOCKED`, 가설은 `VERIFYING`; final 결과 없음 |
 | N26 | 한 child가 복구 불가능하게 실패했는데 부모·가설이 종료되지 않음 | 자식 `FAILED` commit이 부모 진행을 막고 recovery가 부모·가설 `FAILED` 확정을 완료; `verification_result_ref=null` |
+| N27 | restriction 문장만 저장하거나 `fact_refs`와 `evidence_refs`를 모두 비움 | `SCHEMA_INVALID`; final proposal·Verification·Primitive·ReportDraft 저장 거절 |
+| N27-A | INITIAL proposal restriction의 `fact_refs`가 비어 있거나 final StaticFactBundle 밖 사실을 가리킴 | `SCHEMA_INVALID`; exact 정적 사실에 연결하기 전 등록 거절 |
+| N28 | 같은 `fact_id`를 proposal의 observed fact와 restriction 근거 양쪽에 넣음 | `SCHEMA_INVALID`; 서로 겹치지 않게 분류하기 전 등록 거절 |
+| N29 | 중복 LLM이 runtime 후보 목록 밖 가설을 `DUPLICATE` 대상으로 지목 | review와 오류를 보존하고 `INVALID_DUPLICATE_TARGET`으로 fail-open 등록 |
+| N30 | 중복 LLM 호출 실패·형식 오류·`UNCERTAIN`을 proposal 삭제로 처리 | 삭제 거절; 각각 `CHECK_FAILED | UNCERTAIN` 사유로 새 가설 등록 |
 
 ## 남는 위험
 

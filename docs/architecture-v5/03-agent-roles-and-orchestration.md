@@ -14,6 +14,8 @@ Orchestration Agent는 분석 전체와 가설 목록을 관리하는 global con
 
 ```text
 HypothesisProposal validation
+-> runtime narrows duplicate candidates
+-> Hypothesis Agent duplicate review when candidates exist
 -> VulnerabilityHypothesis registration
 -> Verification Agent assignment
 -> hypothesis-local control transfers to Verification
@@ -23,7 +25,8 @@ Orchestration Agent의 주요 책임은 다음과 같다.
 
 - `analysis_id`와 전역 분석 계획 관리
 - INITIAL·VERIFICATION·CHAINING proposal의 schema/semantic validation 요청
-- 검증된 proposal의 `hypothesis_id` 등록
+- 검증된 proposal의 중복 후보 검색과 필요 시 LLM 중복 검토 요청
+- 중복이 아닌 proposal의 `hypothesis_id` 등록
 - `parent_hypothesis_ids`와 Chaining proposal의 `source_primitive_match_id` 관계 검증 요청
 - 독립 가설의 병렬 배정과 hypothesis별 resource budget 배분
 - 등록된 각 가설에 정확히 한 Verification owner를 배정하고 trusted runtime이 ACTIVE `VerificationAssignment`로 저장
@@ -44,7 +47,7 @@ Hypothesis Agent에는 비용 효율적인 모델을 배치할 수 있지만, �
 - vulnerability type candidate
 - 관련 entity와 실제 location
 - suspected source → propagation → sink 또는 권한 흐름
-- observed facts, restrictions와 assumptions의 분리
+- observed facts, exact 근거가 연결된 restrictions와 assumptions의 분리
 - `question_id`가 붙은 구체적인 falsification questions
 - `validation_checks`(반드시 확인할 검증 항목과 고유 ID)
 
@@ -57,7 +60,7 @@ Hypothesis Agent에는 비용 효율적인 모델을 배치할 수 있지만, �
 ## 출력 검증과 실패 처리
 
 1. 구조 parser가 JSON/YAML syntax와 schema를 검증한다.
-2. enum, 필수 field, `workspace_id`·`commit_id`·`CodeLocation`, 반증 질문, 검증 항목과 금지 assertion을 검사한다. 유효한 proposal의 각 반증 질문에는 전역 `question_id`, 각 검증 항목에는 전역 `validation_id`를 붙인다.
+2. enum, 필수 field, `workspace_id`·`commit_id`·`CodeLocation`, restriction 근거 reference, 관측 사실과 restriction 근거의 비중복, 반증 질문, 검증 항목과 금지 assertion을 검사한다. 유효한 proposal의 각 반증 질문에는 전역 `question_id`, 각 검증 항목에는 전역 `validation_id`를 붙인다.
 3. 실패하면 원래 의미를 바꾸지 않는 범위에서 제한 횟수의 repair prompt를 새 invocation으로 실행한다.
 4. 재시도 후에도 유효하지 않으면 해당 호출을 `INVALID_OUTPUT`으로 저장한다.
 5. invalid proposal은 Verification Agent에 전달하지 않는다.
@@ -67,10 +70,14 @@ Hypothesis Agent에는 비용 효율적인 모델을 배치할 수 있지만, �
 ## 가설 lifecycle
 
 ```text
-ProposalProcessState: PROPOSED -> SCHEMA_VALID
-                      \-> INVALID_OUTPUT
-
-SCHEMA_VALID -> register new hypothesis_id
+ProposalProcessState: PROPOSED -> schema and semantic validation
+                      validation failure -> INVALID_OUTPUT
+                      validation success -> narrow candidates
+                          no candidates -> SCHEMA_VALID -> register new hypothesis_id
+                          candidates -> LLM duplicate review
+                              UNIQUE | UNCERTAIN -> SCHEMA_VALID -> register new hypothesis_id
+                              DUPLICATE with exact target -> DUPLICATE -> stop without a new hypothesis_id
+                              call/format/target error -> SCHEMA_VALID -> preserve error and register fail-open
 HypothesisProcessState: REGISTERED -> ASSIGNED -> VERIFYING
                                                -> TERMINAL (final verdict)
                                                -> FAILED (no final verdict)
@@ -83,9 +90,9 @@ Verification material claim -> PROPOSED child hypothesis origin VERIFICATION
 Chaining match -> PROPOSED child hypothesis origin CHAINING
 ```
 
-가설 중복 판정은 LLM이 한다. 정적 정규화로 같은 가설인지 결정하지 않으며, `symbol_id`, `CodeLocation` 범위와 `relation_id`로 비교 후보만 좁힌다. 판정이 애매하면 중복이 아닌 것으로 보고 등록한다.
+가설 중복 판정은 LLM이 한다. 정적 정규화로 같은 가설인지 결정하지 않으며, trusted runtime은 같은 analysis·workspace·commit의 등록 가설만 비교 후보로 삼고 `symbol_id`, `CodeLocation` 범위와 `relation_id`로 후보를 좁힌다. 후보가 없으면 LLM 호출 없이 등록한다. 후보가 있으면 exact proposal과 후보 가설 revision을 HYPOTHESIS `CALL_LLM` 입력에 고정하고 `HypothesisDuplicateReview`를 저장한다. `DUPLICATE`는 후보 목록의 exact 가설을 지목할 때만 새 등록을 막는다. `UNIQUE | UNCERTAIN`은 등록한다. 호출 실패·형식 오류·후보 밖 대상을 가리킨 판정도 기록을 보존하고 fail-open 등록하여 취약점 탐지를 누락하지 않는다.
 
-`ProposalProcessState.status`는 `hypothesis_id`를 발급하기 전의 출력 검증 상태를 기록한다. 검증을 통과하면 새 `hypothesis_id`와 별도 `HypothesisProcessState`를 만들고 같은 `proposal_ref`로 연결한다. `HypothesisProcessState.status`가 등록 뒤 처리 진행 상태를 기록하고 `VerificationResult.verdict`가 기술 판정을 기록한다. `TERMINAL`은 final `TRUE | FALSE | HOLD`가 연결된 정상 종료다. 반면 검증을 끝내지 못하고 재시도도 불가능하면 `FAILED`로 끝나며 final verdict를 만들지 않는다. retry 가능한 work가 `BLOCKED`일 때는 가설을 `VERIFYING`으로 유지한다. parent 가설의 결과와 child 가설은 독립된 lifecycle을 갖고 child 결과가 parent verdict를 바꾸지 않는다.
+`ProposalProcessState.status`는 `hypothesis_id`를 발급하기 전의 출력 검증·중복 판정 상태를 기록한다. `SCHEMA_VALID`에는 `NO_CANDIDATES | UNIQUE | UNCERTAIN | CHECK_FAILED | INVALID_DUPLICATE_TARGET` 중 실제 등록 이유를 남긴다. 등록하면 새 `hypothesis_id`와 별도 `HypothesisProcessState`를 만들고 같은 `proposal_ref`로 연결한다. `DUPLICATE`이면 exact review와 기존 가설 reference를 남기고 새 `HypothesisProcessState`를 만들지 않는다. 등록 뒤에는 `HypothesisProcessState.status`가 처리 진행 상태를 기록하고 `VerificationResult.verdict`가 기술 판정을 기록한다. `TERMINAL`은 final `TRUE | FALSE | HOLD`가 연결된 정상 종료다. 반면 검증을 끝내지 못하고 재시도도 불가능하면 `FAILED`로 끝나며 final verdict를 만들지 않는다. retry 가능한 work가 `BLOCKED`일 때는 가설을 `VERIFYING`으로 유지한다. parent 가설의 결과와 child 가설은 독립된 lifecycle을 갖고 child 결과가 parent verdict를 바꾸지 않는다.
 
 Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하고 trusted validation을 통과할 때만 새 `hypothesis_id`를 받는다. INITIAL·VERIFICATION proposal의 `source_primitive_match_id`는 `null`이고, CHAINING proposal은 자신을 만든 COMMITTED match candidate ID를 가리킨다. 계보 길이는 parent와 match 링크를 따라 계산하며 별도 depth 값을 저장하지 않는다. 새 endpoint·sink·권한 경계·공격 단계·독립 impact는 Verification이 `origin=VERIFICATION` proposal로 분리한다. TRUE+HOLD와 TRUE+TRUE는 upstream result가 downstream input을 코드 근거로 충족할 때만 Chaining Agent가 `origin=CHAINING` proposal로 만든다. 어느 경로도 기존 가설을 수정하거나 child를 자동 TRUE로 만들지 않는다. child가 FALSE여도 부모 판정은 바뀌지 않는다.
 

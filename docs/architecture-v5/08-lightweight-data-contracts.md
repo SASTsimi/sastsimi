@@ -113,7 +113,7 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 |---|---|---|---|---|
 | 분석 실행 | `AnalysisRunState.status` | `RUNNING | COMPLETE | PARTIAL | FAILED | CANCELLED` | Orchestration runtime | 가설 verdict가 아님 |
 | 공통 실행 작업 | `WorkExecutionState.status` | `PENDING | READY | RUNNING | BLOCKED | SUCCEEDED | PARTIAL | FAILED | CANCELLED` | 신뢰 경계 안의 runtime | 전문 결과·가설 verdict와 분리 |
-| proposal 검증 | `ProposalProcessState.status` | `PROPOSED | SCHEMA_VALID | INVALID_OUTPUT | CANCELLED` | 출력 검증 runtime | 아직 `hypothesis_id`가 없는 상태 |
+| proposal 검증 | `ProposalProcessState.status` | `PROPOSED | SCHEMA_VALID | DUPLICATE | INVALID_OUTPUT | CANCELLED` | 출력 검증 runtime | 아직 `hypothesis_id`가 없는 상태 |
 | 등록 가설 처리 | `HypothesisProcessState.status` | `REGISTERED | ASSIGNED | VERIFYING | TERMINAL | FAILED | CANCELLED` | Orchestration runtime | `TRUE | FALSE | HOLD`와 분리 |
 | 기술 판정 | `VerificationResult.verdict` | `TRUE | FALSE | HOLD` | Verification Agent | 오류·정보 부족 상태와 분리 |
 | 동적 재현 | `DynamicReproductionState.status` | `NOT_REQUESTED | RUNNING | SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED` | Reproduction Session Manager | `FAILED`만으로 가설 반증 금지 |
@@ -139,7 +139,10 @@ AnalysisRunState:
 ProposalProcessState:
   meta: RecordMeta without hypothesis/attempt
   proposal_ref: StoredDataRef
-  status: PROPOSED | SCHEMA_VALID | INVALID_OUTPUT | CANCELLED
+  status: PROPOSED | SCHEMA_VALID | DUPLICATE | INVALID_OUTPUT | CANCELLED
+  duplicate_review_ref: StoredDataRef | null
+  duplicate_of_hypothesis_ref: StoredDataRef | null
+  registration_reason: NOT_CHECKED | NO_CANDIDATES | UNIQUE | UNCERTAIN | CHECK_FAILED | INVALID_DUPLICATE_TARGET | DUPLICATE
   started_at: timestamp
   finished_at: timestamp | null
   elapsed_ms: integer
@@ -189,7 +192,7 @@ ReportProcessState:
 
 `AnalysisRunState.status=RUNNING`이면 `analysis_result_ref=null`이다. `COMPLETE | PARTIAL | FAILED | CANCELLED`이면 `analysis_result_ref`가 필수이고 같은 `analysis_id`의 정확한 `AnalysisRunResult`를 가리킨다. 최종 상태와 결과는 atomic transition으로 함께 확정한다.
 
-`ProposalProcessState`의 모든 revision은 `meta.hypothesis_id: null`을 유지한다. `SCHEMA_VALID` proposal을 가설로 등록할 때 새 `hypothesis_id`를 발급하고, 별도 `logical_record_id`의 `HypothesisProcessState.status=REGISTERED`를 만든다. 두 상태 record는 같은 `proposal_ref`로 연결하며 서로의 revision으로 취급하지 않는다.
+`ProposalProcessState`의 모든 revision은 `meta.hypothesis_id: null`을 유지한다. `PROPOSED`는 schema·semantic·중복 검사가 아직 끝나지 않은 상태이며 `registration_reason=NOT_CHECKED`, 두 duplicate reference는 `null`이다. schema·semantic validation을 통과한 뒤 비교 후보가 없으면 `SCHEMA_VALID + NO_CANDIDATES`이고 두 duplicate reference는 `null`이다. 유효한 LLM 판정이 `UNIQUE | UNCERTAIN`이면 같은 이름의 registration reason, non-null `duplicate_review_ref`, `duplicate_of_hypothesis_ref=null`을 사용한다. LLM 호출 실패·형식 오류는 `SCHEMA_VALID + CHECK_FAILED`, LLM이 후보 목록 밖의 대상을 중복으로 지목하면 `SCHEMA_VALID + INVALID_DUPLICATE_TARGET`이고 두 경우 모두 duplicate reference는 `null`이다. 실패 호출·파싱 결과·오류는 `LLMInvocationLog`와 `AnalysisError`에서 추적한다. 이 `SCHEMA_VALID` 경로들은 새 `hypothesis_id`를 발급하고 별도 `logical_record_id`의 `HypothesisProcessState.status=REGISTERED`를 만든다. `DUPLICATE`이면 새 `hypothesis_id`를 발급하지 않는다. 이때 `duplicate_review_ref`와 후보 목록 안의 exact `duplicate_of_hypothesis_ref`가 필수이고, 두 값은 review record와 정확히 같으며 `registration_reason=DUPLICATE`다. `INVALID_OUTPUT | CANCELLED`에서는 `registration_reason=NOT_CHECKED`, 두 duplicate reference는 `null`이고 새 가설을 만들지 않는다. `PROPOSED`만 `finished_at=null`이고 나머지는 종료 시각이 필수다. 등록 경로에서는 final `ProposalProcessState`, 새 `VulnerabilityHypothesis`와 `HypothesisProcessState.status=REGISTERED`를 같은 atomic transition으로 확정한다. 중복 경로에서는 final state와 exact review를 함께 확정한다. 이 record들은 같은 `proposal_ref`로 연결하지만 서로의 revision으로 취급하지 않는다.
 
 진행 중인 상태는 `finished_at: null`이다. 종료 상태는 `finished_at`이 필수이며 `elapsed_ms`는 시작부터 종료까지 monotonic clock으로 계산한다. `NOT_REQUESTED`는 `started_at: null`, `finished_at: null`, `elapsed_ms: 0`이다. `DynamicReproductionState.status=BLOCKED`는 같은 work가 재시도 또는 외부 설정 수정을 기다리는 비종료 상태이므로 `finished_at: null`을 유지한다. `SUCCEEDED | PARTIAL | FAILED | CANCELLED`로 work를 닫을 때만 `finished_at`을 기록한다. 반면 각 `DynamicReproductionResult`는 한 attempt의 종료 기록이므로 해당 결과의 `finished_at`은 `null`일 수 없다.
 
@@ -522,8 +525,9 @@ Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 
 - `result_kind`와 `candidate_result_ref`는 `SAVE_RESULT`에서 필수이고 다른 action에서는 `null`이다. `candidate_result_ref.data_kind`는 `result_kind`와 같고 `candidate_result_ref.record_id`에는 저장 runtime이 미리 발급한 결과 revision ID가 있어야 한다.
 - `candidate_result_ref.content_hash`는 미리 발급한 ID를 포함해 canonical serialization한 결과 후보 전체의 hash다. 후보 record는 read-only staging 영역에 두며 action decision이 생긴 뒤 수정하거나 같은 `stored_data_id`·`record_id`에 다른 bytes를 넣지 않는다. candidate ref도 action `input_refs`에 정확히 한 번 포함한다. staging record는 `TransitionCommit.state=COMMITTED` 전에는 일반 결과 조회나 다음 단계에서 보이지 않는다.
 - `SCHEMA`는 result kind에 맞는 schema와 필수 필드를, `AUTHORITY`는 result kind의 등록된 생산 역할과 `requested_by`를 검사한다. `IDENTITY`·`REVISION`·`STATE`는 모든 candidate의 analysis, current `work_ref`·active attempt·input refs와 hash를 검사하고, `RecordMeta` candidate이면 workspace·commit·hypothesis·`meta.attempt_id`까지 정확히 일치하는지 검사한다.
-- 핵심 registry 항목은 `rule_execution_record -> RuleExecutionRecord -> STATIC_ANALYSIS`, `pro_evidence_result -> EvidenceAgentResult(role=PRO) -> PRO`, `con_evidence_result -> EvidenceAgentResult(role=CON) -> CON`, `verification_result -> VerificationResult -> VERIFICATION`, `primitive -> Primitive -> VERIFICATION`, `chaining_result -> ChainingResult -> CHAINING`, `dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`, `environment_requirements -> EnvironmentRequirements -> R7_AGENT`, `reproduction_plan -> ReproductionPlan -> R7_AGENT`, `environment_recipe -> EnvironmentRecipe -> R7_SETUP_AUTOMATION`, `sandbox_environment -> SandboxEnvironment -> R7_SETUP_AUTOMATION`, `cleanup_result -> CleanupResult -> R7_SETUP_AUTOMATION`, `sandbox_policy_decision -> SandboxPolicyDecision -> SANDBOX_CONTROLLER`, `poc_candidate -> PoCCandidate -> R7_AGENT`, `agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`, `poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`, `dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`, `cwe_label -> CWELabel -> CWE_LABELING`, `technical_evidence_review -> TechnicalEvidenceReview -> TECHNICAL_GATE`, `rule_scope_impact_review -> RuleScopeImpactReview -> RULE_SCOPE_GATE`, `report_draft -> ReportDraft -> REPORTER`다. 앞 값은 `result_kind`·`data_kind`, 가운데 값은 검사할 schema, 뒤 값은 유일한 생산 역할이다. 다른 result kind도 versioned result-owner registry에 정확히 한 schema와 생산 역할을 등록해야 하며, broad requester 표만으로 저장 권한을 얻지 않는다.
+- 핵심 registry 항목은 `rule_execution_record -> RuleExecutionRecord -> STATIC_ANALYSIS`, `hypothesis_duplicate_review -> HypothesisDuplicateReview -> HYPOTHESIS`, `pro_evidence_result -> EvidenceAgentResult(role=PRO) -> PRO`, `con_evidence_result -> EvidenceAgentResult(role=CON) -> CON`, `verification_result -> VerificationResult -> VERIFICATION`, `primitive -> Primitive -> VERIFICATION`, `chaining_result -> ChainingResult -> CHAINING`, `dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`, `environment_requirements -> EnvironmentRequirements -> R7_AGENT`, `reproduction_plan -> ReproductionPlan -> R7_AGENT`, `environment_recipe -> EnvironmentRecipe -> R7_SETUP_AUTOMATION`, `sandbox_environment -> SandboxEnvironment -> R7_SETUP_AUTOMATION`, `cleanup_result -> CleanupResult -> R7_SETUP_AUTOMATION`, `sandbox_policy_decision -> SandboxPolicyDecision -> SANDBOX_CONTROLLER`, `poc_candidate -> PoCCandidate -> R7_AGENT`, `agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`, `poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`, `dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`, `cwe_label -> CWELabel -> CWE_LABELING`, `technical_evidence_review -> TechnicalEvidenceReview -> TECHNICAL_GATE`, `rule_scope_impact_review -> RuleScopeImpactReview -> RULE_SCOPE_GATE`, `report_draft -> ReportDraft -> REPORTER`다. 앞 값은 `result_kind`·`data_kind`, 가운데 값은 검사할 schema, 뒤 값은 유일한 생산 역할이다. 다른 result kind도 versioned result-owner registry에 정확히 한 schema와 생산 역할을 등록해야 하며, broad requester 표만으로 저장 권한을 얻지 않는다.
 - `result_kind=rule_execution_record`이면 STATIC_ANALYSIS만 저장할 수 있다. `SCHEMA`는 catalog와 `rules[].rule_id`의 set equality, 중복 rule ID, selection·execution·`hit_count`·`reason`·`detail` 조합을 검사한다. `REVISION | STATE`는 candidate의 `meta.attempt_id`, 도구·버전, workspace·commit, `analysis_config_ref`·`rule_catalog_ref`가 current `STATIC_TOOL` attempt와 exact match하는지 확인한다. 같은 attempt의 `ToolRunResult`를 확정할 때는 `tool_kind=RULE_BASED`이고 `rule_execution_ref`가 이 record를 가리키는지 다시 검사한다. `StaticFactBundle`을 확정할 때 각 `CodeFact.producer.attempt_id`와 규칙 기반 `producer.rule_id`가 연결된 current `ToolRunResult`·`RuleExecutionItem`과 일치하는지도 검사한다. 실패·누락·확인 불가를 `EXECUTED + hit_count=0`으로 바꾼 candidate는 저장하지 않는다.
+- `result_kind=hypothesis_duplicate_review`이면 HYPOTHESIS만 저장할 수 있다. `SCHEMA`는 `UNIQUE | UNCERTAIN`에서 `duplicate_of_hypothesis_ref=null`, `DUPLICATE`에서 non-null인지 검사한다. `REVISION | STATE`는 proposal이 schema·semantic validation을 통과했는지, candidate 목록이 runtime이 같은 analysis·workspace·commit에서 좁힌 current 가설 exact reference 집합과 set-equal한지, `llm_call_id`가 이 입력을 사용한 성공 호출인지 확인한다. `DUPLICATE` 대상이 후보 목록에 없으면 review를 중복 종결 근거로 쓰지 않고 `INVALID_DUPLICATE_TARGET` fail-open 등록으로 전환한다.
 - `result_kind=pro_evidence_result | con_evidence_result`이면 candidate의 role, `evidence_work_id`, `meta.attempt_id`, `llm_call_id`, `parent_work_id`, `verification_generation`, `debate_input_hash`가 current child work·성공 attempt·호출·부모 Verification과 정확히 일치해야 한다. 다른 역할의 claim이나 상대 역할 record가 입력 경로에 있으면 `AUTHORITY_DENIED` 또는 `CROSS_ROLE_INPUT_DENIED`로 저장하지 않는다.
 - `result_kind=verification_result`이면 `SCHEMA | REVISION | STATE`는 가설의 모든 `ValidationCheck.validation_id`와 candidate의 `ValidationCheckResult.validation_id`가 중복 없이 set-equal인지, 모든 `ValidationCheckResult.completion=COMPLETE`인지, 각 결과의 `evidence_refs`가 하나 이상인지 확인한다. `INCOMPLETE` 항목이 하나라도 있으면 final candidate를 `COMMITTED`하지 않는다. 모든 `FalsificationQuestion.question_id`도 정확히 한 번 처리되어야 하며 사용한 근거는 현재 `workspace_id + commit_id`의 저장 record여야 한다. 운영 분석은 독립 Pro/Con work가 모두 정상 종료되어 exact output이 action `input_refs`에 있어야 한다. 일부 Context 조회 오류가 있어도 제한 retry·대체 조회·다른 정상 근거로 이 조건을 완료했다면 final candidate를 검사할 수 있지만, 필수 Context 또는 운영 Pro/Con을 확보하지 못했다면 final candidate를 `COMMITTED`하지 않는다. 이 경우 retry 가능 work는 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지한다. 더 시도할 수 없으면 같은 atomic transition에서 work와 `HypothesisProcessState`를 `FAILED`로 끝내며 runtime이 `HOLD`를 대신 만들지 않는다. Runtime Validator는 구조·reference·완료 상태만 검사한다. final `TRUE` 근거의 의미적 충분성과 코드·실행 근거 연결은 Technical Evidence Gate가 exact final TRUE revision을 대상으로 별도로 검토한다. `FALSE | HOLD`는 Technical Gate 입력이 아니며, 구조 검사를 통과했다는 사실이 Gate 승인을 의미하지 않는다.
 - `VerificationResult.verdict=TRUE`이면 현재 가설의 핵심 공격 경로와 필요한 조건을 연결하는 하나 이상의 `supporting_evidence`가 필수다. 각 claim은 실제 저장 근거와 같은 `workspace_id + commit_id`의 코드 위치를 가져야 하며 오류·gap record를 근거로 사용할 수 없다. 또한 current Verification generation의 exact `DynamicReproductionRequest`, `DynamicReproductionResult(status=SUCCEEDED, hypothesis_outcome=SUPPORTED)`와 validated `poc_ref`가 모두 필수이고 candidate와 final result의 세 reference가 exact match여야 한다. 이 조건을 충족하지 않은 TRUE candidate는 저장하지 않는다.
@@ -614,6 +618,16 @@ CodeFact:
   location: CodeLocation
   producer: ToolSource
 
+CodeFactRef:
+  bundle_ref: StoredDataRef
+  fact_id: string
+
+Restriction:
+  restriction_id: string
+  statement: string
+  fact_refs: [CodeFactRef]
+  evidence_refs: [StoredDataRef]
+
 CodeRelation:
   relation_id: string
   relation_kind: CALL | DATA_FLOW | IMPORT | INHERITANCE | ROUTE_BINDING | OTHER
@@ -674,6 +688,8 @@ ContextRetrievalLimits:
 `file_path`는 `workspace_root` 기준의 정규화된 Git 상대 경로다. 구분자는 운영체제와 관계없이 `/`를 사용하고 빈 경로, 절대 경로, drive prefix, `.`·`..` segment를 허용하지 않는다. Git에 저장된 경로의 대소문자를 그대로 보존하며 symlink를 해석한 실제 읽기 대상은 `workspace_root` 안에 있어야 한다. 줄은 1부터 시작하고 `start_line`과 `end_line`은 범위에 포함된다. 열 정보가 있는 경우 두 열 모두 1부터 시작하고 Unicode code point 단위이며 `start_column`은 포함, `end_column`은 제외한다. 도구가 줄만 제공하면 두 column을 모두 `null`로 두고 임의의 열 정밀도를 만들지 않는다.
 
 `symbol_kind`는 여러 언어에서 공통으로 쓸 수 있는 큰 범주다. `TYPE`에는 class·interface·enum·struct, `CALLABLE`에는 function·method·constructor·lambda, `DATA`에는 variable·field·property·parameter가 들어간다. 원래 parser나 SAST 도구가 사용한 세부 종류는 `native_kind`에 그대로 남긴다. `symbol_id`, `fact_id`, `relation_id`는 같은 `workspace_id + commit_id` 안에서 유일하다. `CodeFact`와 `CodeRelation`의 `producer.raw_result_ref`는 사실·관계를 만든 도구의 원본 결과를 가리켜야 한다.
+
+`Restriction`은 공격을 제한하는 검사·경계를 자연어만으로 남기지 않고 exact 근거에 연결하는 공통 객체다. `fact_refs`와 `evidence_refs` 중 하나 이상은 비어 있지 않아야 한다. `CodeFactRef.bundle_ref`는 해당 사실을 포함한 final `StaticFactBundle`의 exact revision을 가리키고 `fact_id`는 그 bundle 안에 정확히 한 번 존재해야 한다. 모든 참조는 현재 record와 같은 analysis·workspace·commit이어야 한다. `restriction_id`는 같은 제한을 Verification·Primitive·Chaining·ReportDraft로 전달할 때 그대로 유지한다. statement 또는 근거 집합을 바꾸면 기존 객체를 덮어쓰지 않고 새 `restriction_id`를 만든다.
 
 `RuleExecutionRecord`는 규칙 기반 SAST가 어떤 규칙을 선택했고 실제로 실행했는지 남기는 별도 record다. `RunMeta`는 분석 실행의 공통 식별 정보만 유지하며 도구별 규칙 목록을 넣지 않는다. `analysis_config_ref`는 실행에 사용한 정확한 설정, `rule_catalog_ref`는 이번 분석에서 선택 여부를 비교할 규칙 전체 목록과 버전을 가리킨다. `selected_rule_packs`는 설정이 선택한 rule pack 이름을 보존하고, 개별 규칙 선택 여부는 `rules[].selection_status`가 최종 기준이다. pack 이름은 사람이 읽기 위한 값이며 exact pack 버전과 digest는 `rule_catalog_ref`에서 확인한다. 개별 규칙만 선택했다면 `selected_rule_packs=[]`일 수 있다. `rules`는 하나 이상이어야 하고 `rule_id` 집합은 `rule_catalog_ref`가 가리키는 목록과 중복 없이 set-equal해야 한다. `rule_id`는 전역 ID가 아니므로 `tool_name + tool_version + rule_catalog_ref.content_hash + rule_id` 문맥에서 해석한다.
 
@@ -744,6 +760,8 @@ Context 조회 실패·timeout·권한 오류가 발생하면 실패 사건은 `
 
 `RuleExecutionRecord` 추가, `ToolRunResult.tool_kind`·규칙 기반 `rule_execution_ref`와 `ToolSource.attempt_id` 의무화는 기존 운영 결과의 유효 조건을 바꾸므로 새 MAJOR schema로 적용한다. 이전 MAJOR의 `ToolRunResult`에 규칙 hit이 없다는 이유로 `EXECUTED + hit_count=0`을 추정해 채우지 않는다. 이전 결과는 감사 이력으로 보존할 수 있지만 새 규칙 실행률 계산이나 “검사했지만 탐지 없음”의 근거로 자동 승격하지 않는다.
 
+`Restriction` 객체 도입과 문자열 restriction 제거, `ProposalProcessState`의 duplicate lifecycle 확장, `HypothesisDuplicateReview` 추가는 기존 결과의 의미와 허용 조건을 바꾸므로 `HypothesisProposal`, `ProposalProcessState`, `VerificationResult`, `Primitive`, `ReportDraft`와 관련 Chaining 결과를 새 MAJOR schema로 배포한다. 이전 MAJOR의 문자열 restriction에 근거 reference를 추정해 붙이거나 confidence 값을 새 우선순위·판정 입력으로 변환하지 않는다. 이전 결과는 감사 이력으로만 보존한다.
+
 저장소에서 revision의 유일 키는 `(logical_record_id, revision_number)`다. `previous_record_id`는 같은 `logical_record_id`를 가진 바로 이전 `revision_number`의 `record_id`만 가리킨다. 모든 revision에서 `record_type`과 `analysis_id`가 같아야 한다. `RecordMeta`는 `workspace_id`, `commit_id`, `hypothesis_id`도 이전 revision과 같아야 한다. `RunMeta` 기반 record의 `workspace_id`와 `commit_id`는 준비 과정에서만 `null`에서 실제 값으로 바뀔 수 있고, 실제 값이 기록된 뒤에는 바꿀 수 없다. revision이 연속되지 않거나 이 조건을 어기면 `RECORD_REVISION_MISMATCH`로 거절하고 자동 병합하지 않는다. schema version 변경과 record revision 증가는 서로 다른 개념이다.
 
 ## 1. StaticFactBundle
@@ -793,7 +811,7 @@ HypothesisProposal:
   suspected_path: [CodeRelation | CodeLocation]
   observed_facts: [CodeFact]
   assumptions: [string]
-  restrictions: [string]
+  restrictions: [Restriction]
   falsification_questions: [FalsificationQuestion]
   validation_checks: [ValidationCheck]
   parent_hypothesis_ids: [string]
@@ -804,11 +822,28 @@ HypothesisProposal:
 
 `observed_facts`, `restrictions`, `assumptions`는 다음 기준으로 나눈다.
 
-- `observed_facts`: `StaticFactBundle`의 실제 `CodeFact`를 가리키는 관측 결과다.
-- `restrictions`: 관측된 것 중 공격을 제한하는 검사·경계다. 근거가 된 `CodeFact`는 `observed_facts`에 함께 넣지 않는다. 하나의 관측 사실은 근거이거나 제약이다.
+- `observed_facts`: final `StaticFactBundle`의 실제 `CodeFact`를 값 그대로 가져온 관측 결과다.
+- `restrictions`: 관측된 것 중 공격을 제한하는 검사·경계와 그 exact 근거다. INITIAL proposal의 각 restriction은 final `StaticFactBundle`을 가리키는 `fact_refs`가 하나 이상 필요하다. VERIFICATION·CHAINING proposal은 부모에서 보존한 restriction 또는 검증 근거가 있는 새 restriction을 사용할 수 있다. 모든 origin에서 `observed_facts[].fact_id` 집합과 `restrictions[].fact_refs[].fact_id` 집합은 서로 겹치면 안 된다. 하나의 관측 사실은 공격을 뒷받침하는 사실이거나 제한 근거 중 한쪽으로만 분류한다.
 - `assumptions`: 관측으로 확인하지 못했지만 가설이 성립하려면 참이어야 하는 명제다.
 
 확인하지 못한 것 중 가설이 의존하지 않는 공백은 가설에 넣지 않는다. 가설이 확인해야 할 미확인 조건은 `assumptions`와 `falsification_questions`가 담는다. `StaticFactBundle.gaps`의 `DataGap`은 도구·조회가 실패해 데이터를 얻지 못한 범위이며 가설의 미확인 조건과 다른 것이다. 가설 하나가 결과나 필요 조건을 여러 개 가질 수 있으며 가설의 단위는 규칙으로 강제하지 않는다. 등록된 `VulnerabilityHypothesis`는 이 세 갈래를 자기 필드로 복사하지 않는다. 소비자는 `proposal_ref`가 가리키는 exact `HypothesisProposal` revision에서 읽는다.
+
+```yaml
+HypothesisDuplicateReview:
+  meta: RecordMeta without hypothesis, with attempt
+  proposal_ref: StoredDataRef
+  candidate_hypothesis_refs: [StoredDataRef]
+  decision: UNIQUE | DUPLICATE | UNCERTAIN
+  duplicate_of_hypothesis_ref: StoredDataRef | null
+  rationale: string
+  llm_call_id: string
+```
+
+schema·semantic validation 뒤 trusted runtime은 같은 analysis·workspace·commit의 등록 가설만 비교 후보로 좁힌다. proposal의 `symbol_id`, `CodeLocation` 겹침과 `relation_id`는 후보 검색용이며 중복 결론 자체가 아니다. 후보가 없으면 LLM을 부르지 않고 `NO_CANDIDATES`로 등록한다. 후보가 있으면 HYPOTHESIS 역할의 `CALL_LLM` action에 exact `proposal_ref`와 모든 `candidate_hypothesis_refs`를 고정한다. `candidate_hypothesis_refs`는 runtime이 좁힌 후보 집합과 중복 없이 set-equal해야 하고 current exact `VulnerabilityHypothesis` revision만 가리킨다.
+
+중복 검토는 별도 work type을 만들지 않고 현재 `HYPOTHESIS_PROPOSAL` work의 active attempt 안에서 실행한다. `HypothesisDuplicateReview.meta.attempt_id`는 그 attempt와 같고 후보 배열은 하나 이상이어야 한다. proposal·후보·모델·prompt·출력 schema를 고정한 `LLMCallSpec`과 성공한 invocation이 review의 `llm_call_id`에 연결되어야 한다.
+
+LLM의 `DUPLICATE` 판정은 `duplicate_of_hypothesis_ref`가 후보 목록 안의 exact reference일 때만 유효하며 이 경우 새 가설을 등록하지 않는다. `UNIQUE | UNCERTAIN`은 `duplicate_of_hypothesis_ref=null`이어야 하고 새 가설로 등록한다. LLM 호출 실패·형식 오류·유효하지 않은 중복 대상은 가설을 버리는 근거가 아니다. 호출·오류 record는 보존하되 proposal은 각각 `CHECK_FAILED | INVALID_DUPLICATE_TARGET`으로 fail-open 등록한다. 이 정책은 탐지 누락을 막기 위한 것이며 중복이 늘어난 사실은 최종 결과 지표에 남긴다.
 
 ```yaml
 VulnerabilityHypothesis:
@@ -966,7 +1001,7 @@ VerificationResult:
   poc_ref: StoredDataRef | null
   verdict: TRUE | FALSE | HOLD
   verdict_rationale: string
-  restrictions: [string]
+  restrictions: [Restriction]
   bypass_candidates: [CandidateRef]
   required_primitive_candidates: [PrimitiveDraft]
   provided_primitive_candidates: [PrimitiveDraft]
@@ -996,6 +1031,8 @@ VerificationResult:
 
 `EvidenceClaim.claim_id`는 한 `VerificationResult` 안에서 유일하다. 각 claim은 실제 저장 근거를 가리키는 `evidence_refs`를 하나 이상 가져야 하며, 코드 주장이라면 현재 `workspace_id + commit_id`의 `code_locations`도 하나 이상 가져야 한다. `source_role`은 claim을 작성한 역할이며 근거의 출처를 대신하지 않는다. supporting 목록에는 `VERIFICATION | PRO`, counter 목록에는 `VERIFICATION | CON`만 허용한다.
 
+`VerificationResult.restrictions`는 proposal의 제한과 검증 중 실제 근거로 확인한 제한을 `Restriction` 객체로 저장한다. proposal에서 이어진 항목은 `restriction_id`와 전체 `Restriction` 객체를 그대로 보존한다. 새 제한은 현재 generation의 코드·정적·Pro/Con·동적 근거에 연결된 새 ID를 사용한다. 단순 문장만 있거나 exact 근거가 없는 제한은 final 결과에 넣지 않고 `unresolved_conditions` 또는 `limitations`로 남긴다.
+
 `CandidateRef`는 아직 검증되지 않은 우회·대체 경로·영향 확대 후보다. `candidate_id`는 한 결과 안에서 유일하고 `candidate_state`는 항상 `UNVALIDATED`다. 현재 가설을 `source_hypothesis_ids`에 포함하며, 실제 근거가 있으면 `evidence_refs`, 아직 필요한 사실은 `missing_information`에 넣는다. 후보가 새로운 endpoint·sink·권한 경계·공격 단계 또는 영향을 주장하면 `material_child_proposals`에 `origin=VERIFICATION`인 새 `HypothesisProposal`을 넣는다. trusted validation과 전역 등록 뒤 전체 검증을 거치기 전까지 verdict, CWE, Gate 또는 보고서의 확정 주장으로 사용할 수 없다.
 
 `PrimitiveDraft`는 Verification이 발견한 필요 조건 또는 제공 가능 능력을 같은 모양으로 표현하지만 Primitive DB admission record는 아니다. `draft_id`는 같은 `VerificationResult` 안에서 유일하다. `entity_refs`는 현재 workspace·commit의 코드 요소를 가리키고 `evidence_refs`는 조건·능력의 근거를 하나 이상 가리킨다. `privilege_level`은 저장소 코드에 실제로 나타난 역할명·권한 상수·검사 지점에서만 가져오며 조건에 권한 축이 없으면 `null`이다. 전역 권한 서열표나 이름만 같은 문자열로 충족 관계를 만들지 않는다. final HOLD의 `required_primitive_candidates`는 result가 없는 Primitive의 `inputs`가 된다. final TRUE의 `required_primitive_candidates`는 result가 있는 각 Primitive의 `inputs`, `provided_primitive_candidates`의 각 항목은 서로 다른 Primitive의 `result`가 된다. `FALSE`이면 두 목록이 모두 비어 있어야 한다.
@@ -1018,7 +1055,7 @@ Primitive:
   commit_id: string
   inputs: [PrimitiveDraft]
   result: PrimitiveDraft | null
-  restrictions: [string]
+  restrictions: [Restriction]
   source_hypothesis_id: string
   source_verification_ref: StoredDataRef
   technical_review_ref: StoredDataRef | null
@@ -1049,7 +1086,7 @@ PrimitiveMatchCandidate:
   candidate_state: UNVALIDATED
 ```
 
-`Primitive`는 status를 저장하지 않는다. `result=null`이면 final HOLD에서 나온 입력 조건 묶음이고, `result`가 있으면 final TRUE에서 나온 확인된 능력이다. `workspace_id`와 `commit_id`는 `meta`와 exact match한다. `inputs[].draft_id`는 Primitive 안에서 중복될 수 없으며 `result.draft_id`도 같은 Primitive의 input ID와 겹치지 않는다. `evidence_refs`는 inputs, result와 restrictions의 출처를 추적할 수 있어야 한다.
+`Primitive`는 status를 저장하지 않는다. `result=null`이면 final HOLD에서 나온 입력 조건 묶음이고, `result`가 있으면 final TRUE에서 나온 확인된 능력이다. `workspace_id`와 `commit_id`는 `meta`와 exact match한다. `inputs[].draft_id`는 Primitive 안에서 중복될 수 없으며 `result.draft_id`도 같은 Primitive의 input ID와 겹치지 않는다. `restrictions`는 source Verification의 `restriction_id`와 전체 `Restriction` 객체를 그대로 보존하고, `evidence_refs`는 inputs와 result의 출처를 추적할 수 있어야 한다.
 
 final HOLD는 `required_primitive_candidates`가 하나 이상일 때 Primitive 하나를 만든다. `inputs`는 그 목록과 내용·순서가 같고 `result=null`, `technical_review_ref=null`, `restrictions`는 exact Verification 값과 같다. final FALSE는 Primitive를 만들지 않는다.
 
@@ -1083,7 +1120,7 @@ ChainingResult:
   errors: [AnalysisError]
 ```
 
-`source_result_refs`는 입력 Primitive를 만든 exact Verification과 Technical review 결과의 중복 없는 합집합이다. `input_primitive_refs`는 모든 candidate의 upstream/downstream Primitive reference 합집합과 set-equal해야 한다. downstream result 유무로 TRUE_HOLD와 TRUE_TRUE를 유도하며 별도 trigger나 match kind를 저장하지 않는다. `chained_hypothesis_proposals`는 모두 `origin=CHAINING`, 입력 Primitive의 parent hypothesis ID와 exact `source_primitive_match_id`를 보존한다.
+`source_result_refs`는 입력 Primitive를 만든 exact Verification과 Technical review 결과의 중복 없는 합집합이다. `input_primitive_refs`는 모든 candidate의 upstream/downstream Primitive reference 합집합과 set-equal해야 한다. downstream result 유무로 TRUE_HOLD와 TRUE_TRUE를 유도하며 별도 trigger나 match kind를 저장하지 않는다. `chained_hypothesis_proposals`는 모두 `origin=CHAINING`, 입력 Primitive의 parent hypothesis ID와 exact `source_primitive_match_id`를 보존한다. 각 proposal의 restrictions는 입력 Primitive 양쪽 Restriction 객체의 중복 없는 합집합이며, 같은 `restriction_id`의 canonical content가 다르면 저장하지 않는다.
 
 순환 검사는 각 parent hypothesis의 `source_primitive_match_id`를 따라 조상 match와 입력 Primitive를 역방향으로 걷는다. 이 과정에서 만난 ancestor Primitive를 현재 순회의 후보에서 제외한다. DB 상태는 바꾸지 않는다. 체이닝 전용 임의 depth·전체/parent별 가설 수·호출 수·Primitive 조합 수 한도는 두지 않는다. 대신 R8의 전체 token·시간·비용·work 예산을 모든 Chaining work에 동일하게 적용한다. 예산 소진은 `FALSE`가 아니며 실행 상태와 `AnalysisRunResult.stop_reasons`에 기록한다.
 
@@ -1603,7 +1640,7 @@ ReportDraft:
   dynamic_result_ref: StoredDataRef | null
   poc_ref: StoredDataRef | null
   content_ref: StoredDataRef
-  restrictions: [string]
+  restrictions: [Restriction]
   limitations: [string]
   unresolved_conditions: [string]
   redaction_status: PASSED
@@ -1619,7 +1656,7 @@ ReportDraft:
 - Finding이 ReportDraft의 같은 Verification, CWE, 두 Gate revision을 근거로 하며 current 결과다.
 - 각 reference의 `workspace_id`, `commit_id`, `content_hash`가 실제 대상 record와 일치하고, 가설별 대상 record의 `meta.hypothesis_id`가 ReportDraft와 같다. CWELabel이 새 revision으로 바뀌면 두 Gate와 ReportDraft를 모두 새 revision 기준으로 다시 생성한다.
 - `dynamic_result_ref`와 `poc_ref`는 Verification의 같은 이름 필드와 정확히 같아야 한다. 값이 있으면 같은 분석·가설의 COMMITTED 동적 결과와 exact PoC를 가리키고, 값이 없으면 동적 실행이나 PoC 성공을 주장하지 않는다.
-- `restrictions`와 `unresolved_conditions`는 Verification의 값을 빠짐없이 보존하고, `limitations`는 정적·동적 검증과 두 Gate에 남은 한계를 빠짐없이 보존한다. 해당 값이 없을 때만 빈 배열을 사용한다.
+- `restrictions`는 Verification의 `restriction_id`와 전체 `Restriction` 객체를 그대로 보존하고, `unresolved_conditions`도 빠짐없이 보존한다. `limitations`는 정적·동적 검증과 두 Gate에 남은 한계를 빠짐없이 보존한다. 해당 값이 없을 때만 빈 배열을 사용한다.
 - `redaction_status=PASSED`는 `CREATE_REPORT_DRAFT`의 `REDACTION=PASS` 결과와 일치해야 하며 credential, session secret, 불필요한 개인정보와 비공개 원문을 `content_ref`에 남기지 않는다.
 
 ReportDraft가 참조한 Finding·Verification·CWELabel·Technical review·Rule Scope review·정책 중 하나라도 새 current revision으로 바뀌면 기존 draft record는 감사 이력으로 보존하되 current report로 사용할 수 없다. runtime은 기존 draft를 덮어쓰지 않고 새 dependency chain의 Gate·Reporter work와 새 `ReportDraft.record_id`를 만든다. 오래된 draft는 `AnalysisRunResult.report_draft_refs`의 current 결과에 넣을 수 없다.
@@ -1635,6 +1672,7 @@ AnalysisRunResult:
   commit_id: string | null
   status: COMPLETE | PARTIAL | FAILED | CANCELLED
   hypothesis_counts: map
+  hypothesis_duplicate_review_refs: [StoredDataRef]
   failed_hypothesis_count: integer
   verdict_counts: map
   gate_counts: map
@@ -1674,8 +1712,10 @@ Reporter 호출은 `TRUE + Technical ACCEPT + Rule Scope Impact review_status PA
 
 Reporter가 current `ReportDraft`를 저장하고 해당 `REPORT_DRAFT` work를 종료한 뒤, 신뢰 runtime은 모든 current 결과와 로그를 `AnalysisRunResult`에 묶어 `AnalysisRunState`와 atomic하게 확정한다. `ReportDraft`는 마지막 Agent 산출물이고 `AnalysisRunResult` 확정은 새 판단을 생성하지 않는 저장 작업이다. 그 다음 Agent 자동화는 종료된다. ReportDraft 이후의 검토·수정·제출·공개는 Agent 자동화 밖에서 사람이 수행한다. 이 외부 과정에는 공통 schema, action, 상태 또는 자동 공개 권한을 정의하지 않는다.
 
+`hypothesis_counts`는 최소한 proposal 전체, 등록, `DUPLICATE`, `INVALID_OUTPUT`, `CANCELLED`, duplicate `UNIQUE | UNCERTAIN`, `CHECK_FAILED`, `INVALID_DUPLICATE_TARGET` 수를 분리한다. 분석 종료 시 proposal 전체는 등록·DUPLICATE·INVALID_OUTPUT·CANCELLED 수의 합과 같아야 한다. `hypothesis_duplicate_review_refs`는 final `ProposalProcessState.duplicate_review_ref` 중 non-null 값의 중복 없는 집합과 set-equal해야 하며 모두 같은 analysis·workspace·commit의 COMMITTED `HypothesisDuplicateReview` exact revision을 가리킨다. 호출·형식·유효하지 않은 대상 때문에 review가 저장되지 않은 fail-open 경로는 LLM invocation·오류 reference와 registration reason으로 추적한다.
+
 `failed_hypothesis_count`는 종료 시점에 `HypothesisProcessState.status=FAILED`인 가설 수와 정확히 같아야 하며 이 가설은 current `verdict_counts`에 포함하지 않는다. 최초 검증에서 실패했다면 current final `VerificationResult` 자체가 없다. Technical `REVISE` 뒤 보완 검증이 실패한 경우에는 이전 Verification·Gate revision을 `verification_refs`와 `technical_review_refs`에 감사 기록으로 보존할 수 있지만 superseded history일 뿐 current verdict·Gate·Primitive·Reporter 입력으로 집계하지 않는다. 연결된 실패 work·attempt·transition, `errors`와 `gaps`로 원인을 추적한다. 실패 가설이 하나라도 있으면 분석 전체를 성공으로 숨기지 않으며 완료된 다른 가설이 있더라도 `AnalysisRunResult.status=PARTIAL`로 기록한다.
 
 ## 구현 단계에서 결정할 것
 
-serialization format, schema language/versioning, database/index, Primitive vocabulary, policy source collector, confidence range와 정량 limit은 구현 전 ADR과 평가 corpus로 확정한다. 이 설계의 field 목록을 곧바로 모든 서비스의 영구 API로 간주하지 않는다.
+serialization format, schema language/versioning, database/index, Primitive vocabulary, policy source collector, structured output 합격 기준과 정량 limit은 구현 전 ADR과 평가 corpus로 확정한다. 이 설계의 field 목록을 곧바로 모든 서비스의 영구 API로 간주하지 않는다.

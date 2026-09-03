@@ -10,8 +10,8 @@
 
 | Agent | 쉽게 말한 핵심 책임 | 직접 할 수 없는 일 |
 |---|---|---|
-| Orchestration | proposal 검증·전역 가설 등록·Verification 배정 제안 | 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정, runtime enforcement, Finding·공개 결정 |
-| Hypothesis | schema-valid `HYPOTHESIS_ONLY` 제안 생성 | verdict, Finding, exploitability 확정 |
+| Orchestration | proposal 검증·중복 후보 조회·전역 가설 등록·Verification 배정 제안 | 중복 결론 생성, 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정, runtime enforcement, Finding·공개 결정 |
+| Hypothesis | schema-valid `HYPOTHESIS_ONLY` 제안과 후보가 있을 때 `HypothesisDuplicateReview` 생성 | 후보 목록 밖 중복 대상 선택, verdict, Finding, exploitability 확정 |
 | Verification | 한 가설의 Context·Pro/Con, 목적별 `DynamicReproductionRequest`, 반환 결과 소비·판정·Gate 보완·Chaining handoff와 material child 제안 | 환경 요구사항·실행 계획·PoC·동적 결과 생산, Sandbox 직접 실행, 새 claim 무검증 승격 |
 | R7 Agent | 환경 요구사항·간단한 계획·PoC 초안·동적 근거 해석, Sandbox 안의 자율 실행 | R6 요청 변경, 외부 경계 우회 또는 최종 verdict 판단 |
 | R7 Setup Automation | recipe·image·container 생성/재사용/재생성과 정리 실제 수행 | Agent 분석, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
@@ -25,7 +25,9 @@
 | Reporter | 통과한 근거로 내부 보고서 초안 작성 | 새 근거 확정, 제출·공개 |
 
 ```text
-Orchestration → Hypothesis proposal validation and registration → assign Verification
+Orchestration → proposal validation → runtime narrows duplicate candidates
+Hypothesis → compare exact candidates when needed → registration or duplicate stop
+Orchestration → assign Verification for registered hypotheses
 Verification → context → Pro and Con → DynamicReproductionRequest
 R7 planning → EnvironmentRequirements and simple ReproductionPlan
 Runtime Validator → enforce one dynamic work per generation → authorize Sandbox call

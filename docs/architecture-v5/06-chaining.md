@@ -29,7 +29,7 @@ Primitive:
   commit_id: string
   inputs: [PrimitiveDraft]
   result: PrimitiveDraft | null
-  restrictions: [string]
+  restrictions: [Restriction]
   source_hypothesis_id: string
   source_verification_ref: StoredDataRef
   technical_review_ref: StoredDataRef | null
@@ -39,7 +39,7 @@ Primitive:
 
 - `inputs`: 이 능력을 사용하거나 HOLD를 해소하기 위해 필요한 조건
 - `result`: 이 Primitive가 제공하는 확인된 능력. HOLD는 `null`
-- `restrictions`: 결합 뒤 새 가설에도 남겨야 하는 제약
+- `restrictions`: exact 코드·검증 근거와 연결되고 결합 뒤 새 가설에도 그대로 남겨야 하는 제약
 
 status는 따로 저장하지 않는다. `result=null`이면 HOLD에서 나온 조건 묶음이고, result가 있으면 TRUE에서 나온 능력이다.
 
@@ -116,7 +116,7 @@ ChainingResult:
   errors: [AnalysisError]
 ```
 
-새 가설은 `HypothesisProposal(origin=CHAINING)`으로 만든다. proposal의 `source_primitive_match_id`는 자신을 만든 candidate ID와 같고, `parent_hypothesis_ids`는 그 candidate의 부모 set과 같아야 한다. trusted runtime이 schema·semantic·workspace·commit·exact Primitive·중복·순환·예산을 검사한 뒤 새 `hypothesis_id`로 등록한다. Orchestration Agent는 등록된 가설에 새 Verification Agent를 배정하고 child는 전체 Verification 파이프라인을 처음부터 거친다.
+새 가설은 `HypothesisProposal(origin=CHAINING)`으로 만든다. proposal의 `source_primitive_match_id`는 자신을 만든 candidate ID와 같고, `parent_hypothesis_ids`는 그 candidate의 부모 set과 같아야 한다. proposal의 `restrictions`는 입력 Primitive 양쪽에 있는 Restriction 객체의 중복 없는 합집합이다. 같은 `restriction_id`는 canonical content가 완전히 같을 때 한 번만 유지하고, ID는 같은데 statement나 근거 reference가 다르면 계약 충돌로 거절한다. trusted runtime이 schema·semantic·workspace·commit·exact Primitive·중복·순환·예산을 검사한 뒤 새 `hypothesis_id`로 등록한다. Orchestration Agent는 등록된 가설에 새 Verification Agent를 배정하고 child는 전체 Verification 파이프라인을 처음부터 거친다.
 
 ### 금지 권한
 

@@ -108,7 +108,7 @@
 ### 확인할 권한 경계
 
 - proposal은 `HYPOTHESIS_ONLY / NON_FINAL`이며 verdict·Finding·CWE·Gate·report를 확정하지 않는다.
-- confidence는 scheduling hint이며 진위 확률이나 verdict가 아니다.
+- 등록된 가설은 점수로 제외하거나 순서를 매기지 않고 모두 검증한다.
 - HOLD는 `inputs`와 `result=null`인 Primitive로 즉시 matching 가능하다. TRUE는 validated PoC와 Technical `ACCEPT`가 있는 exact revision만 `result` Primitive가 된다. Rule Scope는 보고 가능성만 판단하며 FALSE는 chaining 근거로 승격하지 않는다.
 - 문자열 일치나 전역 권한 서열로 chain을 확정하지 않는다. 같은 `workspace_id`·`commit_id`에서 upstream result가 downstream의 `matched_input_id`를 실제로 충족하는지 저장소의 entity·역할/권한 상수·검사 위치·restriction 근거로 확인한다.
 - Chaining Agent는 upstream result→downstream input matching만 하며 일반 bypass·alternate path·impact·Technical revision을 조사하지 않는다.

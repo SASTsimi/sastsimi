@@ -74,10 +74,12 @@ Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` 
 
 - 모드와 trigger/skip reason
 - Pro/Con 및 종합에 사용한 token과 wall-clock time
-- debate 전후 verdict와 confidence 변화
+- debate 전후 verdict 변화
 - `HOLD` 해소 여부
 - false-positive 감소 후보
 - 새 bypass·restriction·falsification 발견 여부
+
+검증에서 확인한 restriction은 문장만 저장하지 않는다. proposal에서 이어진 restriction은 같은 `restriction_id`와 전체 근거 객체를 유지하고, 새 restriction은 현재 generation의 코드·정적·Pro/Con·동적 근거 reference를 붙인다. 근거가 아직 없으면 restriction으로 확정하지 않고 `unresolved_conditions` 또는 `limitations`에 남긴다.
 
 `BASIC | CONDITIONAL_DEBATE`가 더 정확하거나 저렴한지는 동일 corpus의 격리된 평가에서만 측정한다. 평가 결과가 운영 기본 변경의 합격선을 통과하고 별도 설계 결정을 남기기 전까지 운영은 `ALWAYS_DEBATE`를 유지한다.
 

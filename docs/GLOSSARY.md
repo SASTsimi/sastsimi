@@ -55,12 +55,13 @@
 | 용어 | 쉽게 말하면 | 사용할 때 주의할 점 |
 |---|---|---|
 | `Hypothesis` | 검증이 필요한 취약점 가능성 | 아직 확정 취약점이나 Finding이 아닙니다. |
+| `HypothesisDuplicateReview` | 새 가설 제안이 기존 등록 가설과 같은지 LLM이 비교해 남긴 결과 | 프로그램이 먼저 좁힌 exact 후보만 비교하며, 애매하거나 검토에 실패하면 탐지 누락을 막기 위해 새 가설로 등록합니다. |
 | `Verification` | 배정된 가설 안에서 코드·찬반·동적 근거와 보완 흐름을 관리해 판정하는 과정 | 다음 작업은 선택하지만 Runtime Validator의 실행 검사를 우회하거나 공개를 결정하지 않습니다. |
 | `verdict` | 검증 Agent가 내린 기술 판정 | `TRUE`, `FALSE`, `HOLD` 중 하나입니다. |
 | `TRUE` | 코드·찬반 근거와 실제 PoC 재현으로 취약점이 성립한다고 판단한 상태 | 모든 final TRUE에는 현재 검증 차수의 validated PoC가 필요하며 사람의 공개 결정과는 다릅니다. |
 | `FALSE` | 미리 정한 반증 조건이 실제 근거로 확인된 상태 | 도구 실패나 정보 부족을 `FALSE`로 바꾸면 안 됩니다. |
 | `HOLD` | 필요한 정보나 조건이 부족해 판단을 보류한 상태 | 무엇이 부족한지 함께 기록합니다. |
-| `restriction` | 공격을 막거나 제한하는 조건 | `HOLD`의 부족 조건과 연계 탐색에 사용합니다. |
+| `Restriction` | 공격을 막거나 제한하는 조건과 실제 코드·검증 근거를 함께 담은 객체 | `restriction_id`와 exact reference를 Verification·Primitive·Chaining·ReportDraft에서 그대로 보존합니다. |
 | `capability` | 다른 공격에 필요한 권한이나 접근 능력 | 검증된 범위 안에서만 연계 가능성을 확인합니다. |
 | `falsification` | 확인되면 가설이 틀렸다고 볼 수 있는 구체적 질문 | 각 질문에 `question_id`를 붙이고 실제 근거가 있는 `DISPROVED` 결과가 있어야 `FALSE`가 됩니다. |
 | `hypothesis_outcome` | Docker 관측이 가설을 지지·반증하는지 또는 결론을 주지 못하는지 표시 | `SUPPORTED`, `DISPROVED`, `INCONCLUSIVE` 중 하나이며 최종 verdict는 아닙니다. |

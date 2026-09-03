@@ -752,7 +752,7 @@ foreach ($pair in @(
 }
 
 $analysisRunResultBlock = [regex]::Match($contractText, '(?ms)^AnalysisRunResult:\s*(.*?)^```').Groups[1].Value
-$requiredAnalysisResultFields = @('finding_refs:', 'verification_refs:', 'cwe_label_refs:', 'technical_review_refs:', 'rule_scope_review_refs:', 'policy_record_refs:', 'dynamic_request_refs:', 'dynamic_result_refs:', 'environment_recipe_refs:', 'sandbox_environment_refs:', 'agent_log_refs:', 'sandbox_policy_decision_refs:', 'cleanup_result_refs:', 'poc_candidate_refs:', 'poc_refs:', 'report_draft_refs:', 'llm_invocation_log_refs:', 'action_decision_refs:', 'work_state_refs:', 'work_attempt_refs:', 'transition_commit_refs:', 'debug_trace_ref:')
+$requiredAnalysisResultFields = @('hypothesis_duplicate_review_refs:', 'finding_refs:', 'verification_refs:', 'cwe_label_refs:', 'technical_review_refs:', 'rule_scope_review_refs:', 'policy_record_refs:', 'dynamic_request_refs:', 'dynamic_result_refs:', 'environment_recipe_refs:', 'sandbox_environment_refs:', 'agent_log_refs:', 'sandbox_policy_decision_refs:', 'cleanup_result_refs:', 'poc_candidate_refs:', 'poc_refs:', 'report_draft_refs:', 'llm_invocation_log_refs:', 'action_decision_refs:', 'work_state_refs:', 'work_attempt_refs:', 'transition_commit_refs:', 'debug_trace_ref:')
 foreach ($field in $requiredAnalysisResultFields) {
     if (-not $analysisRunResultBlock.Contains($field)) {
         Add-Failure "missing AnalysisRunResult handoff field: $field"
@@ -1076,7 +1076,7 @@ $requiredVerificationChainingContracts = @(
     'technical_review_ref:',
     'inputs: [PrimitiveDraft]',
     'result: PrimitiveDraft | null',
-    'restrictions: [string]',
+    'restrictions: [Restriction]',
     'PrimitiveIndexState:',
     'primitive_refs: [StoredDataRef]',
     'upstream_result_ref: StoredDataRef',
@@ -1087,6 +1087,86 @@ $requiredVerificationChainingContracts = @(
 foreach ($marker in $requiredVerificationChainingContracts) {
     if (-not $contractText.Contains($marker)) {
         Add-Failure "missing Verification/Chaining contract: $marker"
+    }
+}
+
+$requiredRestrictionContractMarkers = @(
+    'CodeFactRef:',
+    'bundle_ref: StoredDataRef',
+    'fact_id: string',
+    'Restriction:',
+    'restriction_id: string',
+    'fact_refs: [CodeFactRef]',
+    'evidence_refs: [StoredDataRef]',
+    '`observed_facts[].fact_id` 집합과 `restrictions[].fact_refs[].fact_id` 집합은 서로 겹치면 안 된다.',
+    '`restriction_id`와 전체 `Restriction` 객체를 그대로 보존',
+    'Restriction 객체의 중복 없는 합집합',
+    '| N27 | restriction 문장만 저장하거나 `fact_refs`와 `evidence_refs`를 모두 비움',
+    '| N27-A | INITIAL proposal restriction의 `fact_refs`가 비어 있거나 final StaticFactBundle 밖 사실을 가리킴',
+    '| N28 | 같은 `fact_id`를 proposal의 observed fact와 restriction 근거 양쪽에 넣음'
+)
+$hypothesisProposalBlock = [regex]::Match($contractText, '(?ms)^HypothesisProposal:\s*(.*?)^```').Groups[1].Value
+foreach ($field in @('proposal_state: HYPOTHESIS_ONLY', 'assertion_mode: NON_FINAL', 'observed_facts: [CodeFact]', 'assumptions: [string]', 'restrictions: [Restriction]', 'falsification_questions:', 'validation_checks:')) {
+    if (-not $hypothesisProposalBlock.Contains($field)) {
+        Add-Failure "HypothesisProposal is missing field: $field"
+    }
+}
+foreach ($field in @('missing_information:', 'confidence:')) {
+    if ($hypothesisProposalBlock.Contains($field)) {
+        Add-Failure "HypothesisProposal still contains obsolete field: $field"
+    }
+}
+foreach ($marker in $requiredRestrictionContractMarkers) {
+    if (-not ($contractText.Contains($marker) -or $verificationText.Contains($marker) -or $commonWikiText.Contains($marker) -or $securityText.Contains($marker))) {
+        Add-Failure "missing hypothesis restriction provenance contract: $marker"
+    }
+}
+
+$requiredDuplicateLifecycleMarkers = @(
+    'HypothesisDuplicateReview:',
+    'candidate_hypothesis_refs: [StoredDataRef]',
+    'decision: UNIQUE | DUPLICATE | UNCERTAIN',
+    'duplicate_of_hypothesis_ref: StoredDataRef | null',
+    'registration_reason: NOT_CHECKED | NO_CANDIDATES | UNIQUE | UNCERTAIN | CHECK_FAILED | INVALID_DUPLICATE_TARGET | DUPLICATE',
+    'status: PROPOSED | SCHEMA_VALID | DUPLICATE | INVALID_OUTPUT | CANCELLED',
+    '`hypothesis_duplicate_review -> HypothesisDuplicateReview -> HYPOTHESIS`',
+    '같은 analysis·workspace·commit의 등록 가설만 비교 후보',
+    'LLM 호출 실패·형식 오류·유효하지 않은 중복 대상은 가설을 버리는 근거가 아니다.',
+    '`DUPLICATE`이면 새 `hypothesis_id`를 발급하지 않는다.',
+    'final `ProposalProcessState`, 새 `VulnerabilityHypothesis`와 `HypothesisProcessState.status=REGISTERED`를 같은 atomic transition으로 확정',
+    '| N29 | 중복 LLM이 runtime 후보 목록 밖 가설을 `DUPLICATE` 대상으로 지목',
+    '| N30 | 중복 LLM 호출 실패·형식 오류·`UNCERTAIN`을 proposal 삭제로 처리'
+)
+foreach ($marker in $requiredDuplicateLifecycleMarkers) {
+    if (-not ($contractText.Contains($marker) -or $orchestrationText.Contains($marker) -or $commonWikiText.Contains($marker) -or $securityText.Contains($marker))) {
+        Add-Failure "missing hypothesis duplicate decision lifecycle: $marker"
+    }
+}
+
+$duplicateReviewBlock = [regex]::Match($contractText, '(?ms)^HypothesisDuplicateReview:\s*(.*?)^```').Groups[1].Value
+foreach ($field in @('meta: RecordMeta without hypothesis, with attempt', 'proposal_ref:', 'candidate_hypothesis_refs:', 'decision:', 'duplicate_of_hypothesis_ref:', 'rationale:', 'llm_call_id:')) {
+    if (-not $duplicateReviewBlock.Contains($field)) {
+        Add-Failure "HypothesisDuplicateReview is missing field: $field"
+    }
+}
+$proposalStateBlock = [regex]::Match($contractText, '(?ms)^ProposalProcessState:\s*(.*?)^VerificationAssignment:').Groups[1].Value
+foreach ($field in @('duplicate_review_ref:', 'duplicate_of_hypothesis_ref:', 'registration_reason:')) {
+    if (-not $proposalStateBlock.Contains($field)) {
+        Add-Failure "ProposalProcessState is missing duplicate lifecycle field: $field"
+    }
+}
+
+$activeConfidenceChecks = @(
+    @{ Path = $verificationPath; Marker = 'debate 전후 verdict와 confidence 변화' },
+    @{ Path = $contractPath; Marker = 'confidence range' },
+    @{ Path = (Join-Path $repoRoot 'docs/governance/OPEN_QUESTIONS.md'); Marker = 'Hypothesis schema repair 횟수와 confidence 기준' },
+    @{ Path = (Join-Path $repoRoot 'docs/review/ISSUE_CATALOG.md'); Marker = 'confidence는 scheduling hint' },
+    @{ Path = $contractPath; Marker = 'confidence: LOW | MEDIUM | HIGH' }
+)
+foreach ($check in $activeConfidenceChecks) {
+    $activeText = Get-Content -Raw -LiteralPath $check.Path
+    if ($activeText.Contains($check.Marker)) {
+        Add-Failure "obsolete active Hypothesis confidence contract remains: $($check.Marker)"
     }
 }
 
@@ -1518,6 +1598,11 @@ Write-Output "R4-03 Sandbox review rules: $($sandboxReviewPatterns.Count)"
 Write-Output "R6-R7 environment handoff rules: $($environmentHandoffPatterns.Count)"
 Write-Output "R6-R7 environment negative scenarios: $($environmentNegativeMarkers.Count)"
 Write-Output "Verification/Chaining contract markers: $($requiredVerificationChainingContracts.Count)"
+Write-Output "Hypothesis restriction provenance markers: $($requiredRestrictionContractMarkers.Count)"
+Write-Output "Hypothesis duplicate lifecycle markers: $($requiredDuplicateLifecycleMarkers.Count)"
+Write-Output 'HypothesisProposal required fields: 7'
+Write-Output 'HypothesisDuplicateReview required fields: 7'
+Write-Output 'ProposalProcessState duplicate fields: 3'
 Write-Output "Verification/Chaining scenarios: $($verificationChainingScenarioMarkers.Count)"
 Write-Output "Verification/Chaining semantic rules: $($requiredVerificationChainingRules.Count)"
 Write-Output "Production debate policy rules: $($requiredDebatePolicyRules.Count)"

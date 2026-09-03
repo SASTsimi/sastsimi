@@ -30,7 +30,7 @@ flowchart TB
     S04 --> S05[5 Orchestration starts initial hypothesis work]
     S05 --> RUNTIME[[Trusted Runtime Validator]]
     RUNTIME --> S06[6 Low-cost Hypothesis Agent]
-    S06 --> S07[7 Validate and register INITIAL proposals]
+    S06 --> S07[7 Validate deduplicate and register INITIAL proposals]
     S07 --> S08[8 Runtime stores ACTIVE VerificationAssignment]
     S08 --> S09[9 Verification requests on-demand context]
     S09 --> S10[10 Production Verification runs independent Pro and Con]
@@ -131,7 +131,17 @@ flowchart TB
     HA --> RAW[Candidate output]
     RAW --> SCHEMA{Syntax schema enums locations valid}
     SCHEMA -->|Yes| ASSERT{HYPOTHESIS_ONLY and NON_FINAL}
-    ASSERT -->|Yes| REGISTER[Register VulnerabilityHypothesis]
+    ASSERT -->|Yes| CANDIDATES{Runtime found exact duplicate candidates}
+    CANDIDATES -->|No| REGISTER[Register VulnerabilityHypothesis]
+    CANDIDATES -->|Yes| DUPCALL[Hypothesis Agent compares exact proposal and candidates]
+    DUPCALL --> DUPVALID{Valid duplicate review}
+    DUPVALID -->|No| FAILOPEN[Preserve error and register fail open]
+    DUPVALID -->|Yes| DUPDECISION{UNIQUE DUPLICATE or UNCERTAIN}
+    DUPDECISION -->|UNIQUE or UNCERTAIN| REGISTER
+    DUPDECISION -->|DUPLICATE| TARGET{Target is an exact candidate}
+    TARGET -->|Yes| DUPSTOP[Store DUPLICATE and do not issue hypothesis id]
+    TARGET -->|No| FAILOPEN
+    FAILOPEN --> REGISTER
     REGISTER --> VERIFY[Assign Verification Agent]
     SCHEMA -->|No| RETRY{Repair retries remain}
     ASSERT -->|No| RETRY
@@ -141,7 +151,7 @@ flowchart TB
     INVALID --> STORE[Store errors and invocation refs]
 ```
 
-proposal은 observed facts, restrictions, assumptions, falsification questions, 고유 `validation_id`가 있는 `validation_checks`를 분리한다. 등록된 가설은 전수 검증하며 점수로 선별하거나 순서를 매기지 않는다.
+proposal은 observed facts, exact 근거가 연결된 restrictions, assumptions, falsification questions, 고유 `validation_id`가 있는 `validation_checks`를 분리한다. 같은 코드 사실은 observed fact와 restriction 근거 양쪽에 중복하지 않는다. 중복 비교 후보는 같은 analysis·workspace·commit에서 runtime이 좁히며, 후보 밖 중복 대상·호출 실패·형식 오류는 기록을 남기고 fail-open 등록한다. 등록된 가설은 전수 검증하며 점수로 선별하거나 순서를 매기지 않는다.
 
 ## 4. 운영 상시 찬반 검증과 평가 모드
 

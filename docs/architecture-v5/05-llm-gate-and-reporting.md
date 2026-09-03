@@ -48,7 +48,7 @@ CWE 후보는 final TRUE 뒤에 Gate 입력으로 작성한다. primary·alterna
 - `poc_ref`가 실제 실행된 `poc_candidate_ref`, 성공 log와 `SUCCEEDED + SUPPORTED` 관측의 같은 revision에 연결되는지
 - 동적 근거가 승인된 Sandbox 정책 안에서 생성되었고 금지된 재현으로 오염되지 않았는지
 - CWE 선택이 취약점 유형과 근거에 적절한지
-- 실제 코드 경로, restriction·반박·HOLD 조건이 빠짐없이 정확하게 표현되었는지
+- 실제 코드 경로와 각 restriction의 `restriction_id`·exact 근거 reference, 반박·HOLD 조건이 빠짐없이 정확하게 표현되었는지
 - 기술 검토 결과를 다음 단계 또는 내부 종결 기록으로 전달할 수 있는지
 
 ### 출력과 의미
@@ -143,7 +143,7 @@ Runtime Validator는 공식 정책 문장이나 정책의 의미를 대신 해�
 
 ## Technical-accepted TRUE와 Primitive admission
 
-final TRUE가 Chaining에 쓰이려면 current generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated PoC가 있고 exact 같은 Verification+CWE revision을 Technical Gate가 `ACCEPT`해야 한다. 이때 runtime은 `provided_primitive_candidates`의 각 능력을 result로, `required_primitive_candidates`를 inputs로, Verification restrictions를 restrictions로 가진 Primitive admission을 허가한다.
+final TRUE가 Chaining에 쓰이려면 current generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated PoC가 있고 exact 같은 Verification+CWE revision을 Technical Gate가 `ACCEPT`해야 한다. 이때 runtime은 `provided_primitive_candidates`의 각 능력을 result로, `required_primitive_candidates`를 inputs로, Verification의 `restriction_id`와 전체 `Restriction` 객체를 그대로 보존한 restrictions로 가진 Primitive admission을 허가한다.
 
 Rule Scope Gate는 제출·보고 가능성을 판단하며 Primitive admission의 입력이 아니다. Rule Scope `FAIL | UNCERTAIN | DENY`는 Reporter를 차단하지만 Technical-accepted TRUE에서 이미 확인된 Primitive와 Chaining을 취소하지 않는다. Gate 전 TRUE와 Technical `REVISE | REJECT`는 result Primitive나 Chaining 입력이 아니다. HOLD는 Technical Gate를 사용하지 않고 final HOLD의 required candidates를 inputs로 가진 result 없는 Primitive로 즉시 들어간다.
 
@@ -184,7 +184,7 @@ Reporter는 통과한 근거를 읽기 쉬운 내부 초안으로 구성한다.
 
 Reporter는 새로운 공격 경로를 확정하거나 미검증 material child 또는 Chaining 후보를 실제 영향으로 쓰지 않는다. 초안의 핵심 주장은 current Finding, Verification, validated PoC와 두 Gate의 exact revision에 연결한다. 실패한 시도의 `poc_candidate_ref`는 validated `poc_ref`나 재현 성공으로 서술하지 않는다. `ReportDraft.cwe_label_ref.record_id`는 Technical review와 Rule Scope review가 공통으로 가리킨 CWELabel `record_id`와 같아야 하며, CWELabel이 수정되면 두 Gate를 다시 통과하기 전에는 초안을 만들지 않는다.
 
-Reporter는 Verification의 restriction과 unresolved condition, 정적·동적 검증 및 두 Gate의 limitation을 빠뜨리거나 완화하지 않는다. 저장 전 `REDACTION=PASS`를 요구하며 credential, session secret, 불필요한 개인정보와 비공개 원문을 제거한다. 이 값은 `ReportDraft.restrictions`, `limitations`, `unresolved_conditions`, `redaction_status=PASSED`로 확인할 수 있어야 한다.
+Reporter는 Verification의 restriction ID·문장·근거 reference를 객체 그대로 보존하고 unresolved condition, 정적·동적 검증 및 두 Gate의 limitation을 빠뜨리거나 완화하지 않는다. 저장 전 `REDACTION=PASS`를 요구하며 credential, session secret, 불필요한 개인정보와 비공개 원문을 제거한다. 이 값은 `ReportDraft.restrictions`, `limitations`, `unresolved_conditions`, `redaction_status=PASSED`로 확인할 수 있어야 한다.
 
 ReportDraft가 참조한 `FindingCandidate`, `VerificationResult`, `CWELabel`, `TechnicalEvidenceReview`, `RuleScopeImpactReview` 또는 `ProgramPolicyRecord` 중 하나라도 새 current revision으로 바뀌면 기존 초안은 감사 기록으로만 남고 `AnalysisRunResult.report_draft_refs`의 current 결과로 사용할 수 없다. 새 exact dependency chain으로 Gate와 Reporter를 다시 실행해 새 ReportDraft를 만든다.
 
