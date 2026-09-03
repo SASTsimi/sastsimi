@@ -52,7 +52,7 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] 새 Verification generation/revision에는 오래된 Technical review나 Primitive를 재사용하지 않고, 공통 record revision과 원자적 current pointer 갱신으로 오래된 Chaining 결과를 거절합니다.
 - [ ] Technical Evidence Gate와 Rule Scope Impact Gate가 분리됩니다.
 - [ ] 공식 정책이 없거나 `STALE | UNVERIFIED`이면 판단과 보고서 전달을 허용하지 않는 `UNCERTAIN + DENY`입니다.
-- [ ] Sandbox의 `POLICY_BLOCKED`는 자동 `FALSE | HOLD`나 Technical `REJECT`가 아니며, validated PoC가 없으므로 final verdict와 Technical Gate 없이 `BLOCKED | FAILED`로 처리됩니다.
+- [ ] Sandbox 정책 차단은 `failure_category=POLICY`로 기록하며 자동 `FALSE | HOLD`나 Technical `REJECT`가 아닙니다. validated PoC가 없으므로 final verdict와 Technical Gate 없이 retry 가능 시 `BLOCKED`, 복구 불가능 시 `FAILED`로 처리됩니다.
 - [ ] Reporter의 모든 선행 조건이 명시됩니다.
 - [ ] ReportDraft가 current Finding·Verification·CWE·두 Gate·정책 revision을 정확히 참조합니다.
 - [ ] restriction·limitation·남은 불확실성과 redaction 결과가 ReportDraft에 보존됩니다.
@@ -68,9 +68,9 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] TRUE에서 나온 두 Primitive를 연결할 때 upstream 결과와 downstream의 특정 입력, 양쪽 exact parent revision을 확인하고 새 가설로 검증합니다.
 - [ ] 새 연계 가설의 부모 계보를 따라가 조상 Primitive를 현재 match 후보에서 제외하며, 체이닝 전용 임의 깊이 제한 대신 R8 전역 예산을 적용합니다.
 - [ ] PoC candidate와 재현 성공 뒤 validated PoC를 구분하고, validated PoC가 어떤 가설·코드 위치·관찰 결과를 뒷받침하는지 추적됩니다.
-- [ ] 동적 결과의 Runner 호출·실제 환경 생성·정리 필요 상태와 nullable log·환경·정책·PoC reference가 모순되지 않습니다.
+- [ ] 동적 결과의 `agent_invoked`·`agent_log_ref`·실제 환경 생성·cleanup 상태와 nullable 환경·정책·PoC reference가 모순되지 않습니다.
 - [ ] Sandbox 정책 차단은 exact 정책 결정과 미실행 상태를 남기며, 그 사실만으로 Technical `REJECT`나 가설 `FALSE`가 되지 않습니다.
-- [ ] 필수 환경 차이가 있으면 공격 단계 전에 멈추고 `FAILED + ENVIRONMENT_SETUP`과 exact 비교 결과를 R6에 반환합니다.
+- [ ] 필수 환경 차이·미확인·비교 오류로 현재 attempt를 진행할 수 없으면 공격 단계 전에 멈추고 `failure_category=ENVIRONMENT`와 exact 비교 결과를 남깁니다. retry 가능하면 동적 결과와 work를 `BLOCKED`, 복구 불가능하거나 한도 소진이면 `FAILED`로 처리합니다.
 - [ ] R7이 환경 조건이나 실행 단계를 고치면 같은 request·동적 work 안에서 새 requirements·plan·attempt를 만들고 새 `RUN_SANDBOX`·Sandbox Controller 검사를 거칩니다.
 - [ ] PoC 생성·환경 구성·실행 실패는 validated `poc_ref=null`이며 retry 가능 시 `BLOCKED`, 복구 불가능 시 verdict 없는 `FAILED`이고 `FALSE | HOLD`로 변환되지 않습니다.
 - [ ] 환경 구성 실패·차이·허용되지 않은 version fallback·오래된 requirements를 가설 `FALSE`로 바꾸지 않습니다.

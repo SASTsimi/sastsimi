@@ -45,7 +45,7 @@ PR #47은 문서 자동 검사와 기술 검토를 통과했지만 GitHub 교차
 | R4 PM·아키텍처 | `@taehyeon-git` | 다른 역할의 검토 증거, 최신 main과 환경 계약 병합 결과, 최종 commit과 완료 조건 확인 | `RECHECK_REQUIRED` | 최신 main 동기화와 R6–R7 환경 계약 추가 뒤 최종 SHA 재확인 필요 |
 | R5 Gate·Finding·보고서 | `@kimhr8463` | 두 Gate 순서, REVISE, Reporter 호출과 사람 전달 조건 | `APPROVED` | [aff3106 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5491995886). 이후 변경은 이미 승인한 final TRUE 전용 Gate 범위를 더 명확히 했고 R5의 Gate 결과·순서·Reporter 계약은 바꾸지 않음 |
 | R6 검증·반박 | `@UltraPeachKeen` | Pro/Con 독립성, Context 오류와 final verdict 구분, TRUE/FALSE/HOLD, `EnvironmentRequirements`·plan revision과 환경 실패 `INCONCLUSIVE` 처리 | `RECHECK_REQUIRED` | [b037bd3 최종 리뷰](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5494941957)의 TRUE 전용 Technical Gate 문구와 검증 완료·실패 계약을 반영한 최종 SHA 재검토 필요 |
-| R7 동적검증·Sandbox | `@Potatonion` | LIMITED/FULL_REPRO, exact 요구사항과 실제 환경 비교, PoC·log·sandbox 권한과 결과 연결 | `APPROVED` | [aff3106 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5490971913). 이후 변경은 Sandbox plan·환경·PoC·log 계약을 바꾸지 않음 |
+| R7 동적검증·Sandbox | `@Potatonion` | exact 요구사항과 실제 환경 비교, Sandbox 외부 경계·자율 Agent 실행·AgentLog·PoC와 결과 연결 | `APPROVED` | [aff3106 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5490971913). 이후 변경은 Sandbox plan·환경·PoC·log 계약을 바꾸지 않음 |
 | R8 데이터·평가·예산 | `@gitterable` | 운영 `ALWAYS_DEBATE`, 평가 모드 격리, 예산 초과 처리 | `APPROVED` | [aff3106 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5492356188). 이후 변경은 debate·평가·예산 계약을 바꾸지 않음 |
 
 R4 담당자는 이 PR의 작성자이므로 자신의 확인만으로 교차 검토를 대신할 수 없습니다. R4의 최종 확인은 다른 필수 역할의 검토가 끝난 뒤에 수행합니다.
@@ -59,7 +59,7 @@ R4 담당자는 이 PR의 작성자이므로 자신의 확인만으로 교차 �
 - 모든 final TRUE에는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated PoC가 필요하고, 실패는 verdict 없이 `BLOCKED | FAILED`로 처리합니다.
 - 필수 환경 불일치·구성 실패는 공격 전에 멈추고 `INCONCLUSIVE`로 R6에 반환하며 가설 `FALSE`로 바꾸지 않습니다.
 - 정책이 없거나 `STALE | UNVERIFIED`이면 Rule Scope Gate를 `UNCERTAIN + DENY`로 고정합니다.
-- `POLICY_BLOCKED`는 가설 반증이나 자동 `REJECT`가 아닙니다. 다만 validated PoC가 없으므로 final verdict와 Technical Gate 없이 `BLOCKED | FAILED`로 처리합니다.
+- `failure_category=POLICY`인 정책 차단은 가설 반증이나 자동 `REJECT`가 아닙니다. validated PoC가 없으므로 final verdict와 Technical Gate 근거로 소비하지 않으며, retry 가능하면 같은 동적 work를 `BLOCKED`로 유지하고 복구 불가능하거나 retry 한도를 소진하면 `FAILED`로 종료합니다.
 - Finding이 없으면 Reporter를 호출하지 않고 `AnalysisRunResult.report_draft_refs=[]`와 `REPORT_NOT_READY` 원인을 보존합니다.
 - upstream revision이 바뀐 ReportDraft는 current `AnalysisRunResult`에 재사용하지 않습니다.
 - ReportDraft 생성 뒤 Agent 자동화는 끝나며 사람의 검토·수정·제출·공개는 자동화 밖에서 수행합니다.

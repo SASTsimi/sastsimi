@@ -44,7 +44,7 @@ CWE 후보는 final TRUE 뒤에 Gate 입력으로 작성한다. primary·alterna
 - final `TRUE`와 찬성·반대 근거의 일치
 - 핵심 주장이 현재 `workspace_id`와 `commit_id`의 코드 위치·호출·데이터 흐름에 연결되는지
 - 동적 관측이 현재 가설·`workspace_id`·실행 조건에 연결되는지
-- Runner 호출 여부와 step log, 실제 환경 생성 여부와 환경 reference, 정책 차단과 Controller 판정 reference, 정리 필요 여부와 상태가 공통 계약에 맞는지
+- `agent_invoked`와 같은 attempt의 `agent_log_ref`, 실제 환경 생성 여부와 `environment_ref`, 정책 차단과 Controller의 `policy_decision_ref`, cleanup 필요 여부·상태가 공통 계약에 맞는지
 - `poc_ref`가 실제 실행된 `poc_candidate_ref`, 성공 log와 `SUCCEEDED + SUPPORTED` 관측의 같은 revision에 연결되는지
 - 동적 근거가 승인된 Sandbox 정책 안에서 생성되었고 금지된 재현으로 오염되지 않았는지
 - CWE 선택이 취약점 유형과 근거에 적절한지
@@ -82,7 +82,7 @@ technical_evidence_review:
 
 `ACCEPT`는 `handoff_readiness=READY`, `REVISE | REJECT`는 `handoff_readiness=NOT_READY`와 함께 사용한다. 이 조합이 맞지 않으면 Gate output을 저장하지 않는다.
 
-`DynamicReproductionResult(status=BLOCKED, failure_reason=POLICY_BLOCKED)`는 정책 때문에 실행하지 못했다는 뜻이지 가설 반증이 아니다. 그러나 validated PoC가 없으므로 final TRUE를 저장하거나 Technical Gate를 호출할 수 없다. 이 경우 Verification과 동적 work를 `BLOCKED`로 유지하거나 복구 불가능하면 verdict 없이 `FAILED`로 끝낸다. 정책 차단 자체를 `FALSE | HOLD` 또는 Gate의 `REJECT` 근거로 바꾸지 않는다.
+`DynamicReproductionResult(status=BLOCKED, failure_category=POLICY)`는 정책 때문에 현재 attempt를 진행하지 못했다는 뜻이지 가설 반증이 아니다. 그러나 validated PoC가 없으므로 final TRUE를 저장하거나 Technical Gate를 호출할 수 없다. 이 경우 Verification과 동적 work를 `BLOCKED`로 유지하거나 복구 불가능하면 verdict 없이 `FAILED`로 끝낸다. 정책 차단 자체를 `FALSE | HOLD` 또는 Gate의 `REJECT` 근거로 바꾸지 않는다.
 
 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 Gate가 실제로 읽은 `VerificationResult`와 `CWELabel` revision을 각각 고정한다. runtime은 Gate와 두 대상의 `workspace_id`, `commit_id`, `hypothesis_id`, `record_id`, `content_hash`를 확인한다. Verification 또는 CWELabel이 수정되면 이전 `ACCEPT`를 새 revision에 재사용하지 않고 Gate를 새로 호출한다.
 

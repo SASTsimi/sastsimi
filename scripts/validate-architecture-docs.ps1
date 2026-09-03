@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
@@ -301,7 +301,7 @@ $reviewRemediationPatterns = @(
     },
     @{
         Name = 'dynamic PARTIAL uses structured limitations without fake errors'
-        Pattern = '(?s)`DYNAMIC_REPRO`는 정확히 하나의 `DynamicReproductionResult\(status=PARTIAL, failure_reason=NONE\)`.*?`hypothesis_evidence_refs`와 `limitations`가 각각 하나 이상.*?억지로 `error_ids`나 `gap_ids`로 만들지 않는다'
+        Pattern = '(?s)`DYNAMIC_REPRO`는 정확히 하나의 `DynamicReproductionResult\(status=PARTIAL, failure_category=NONE\)`.*?`hypothesis_evidence_refs`와 `limitations`가 각각 하나 이상.*?억지로 `error_ids`나 `gap_ids`로 만들지 않는다'
     },
     @{
         Name = 'retryable dynamic failure remains the same blocked work'
@@ -694,8 +694,8 @@ foreach ($field in $requiredAnalysisResultFields) {
         Add-Failure "missing AnalysisRunResult handoff field: $field"
     }
 }
-if ($contractText -match 'POLICY_BLOCKED[^\r\n]*정적·찬반[^\r\n]*`ACCEPT`') {
-    Add-Failure 'POLICY_BLOCKED without a validated PoC must not reach Technical ACCEPT'
+if ($contractText -match 'failure_category=POLICY[^\r\n]*정적·찬반[^\r\n]*`ACCEPT`') {
+    Add-Failure 'policy-blocked dynamic reproduction without a validated PoC must not reach Technical ACCEPT'
 }
 if (-not $contractText.Contains('한도를 소진하면 `DynamicReproductionResult(status=FAILED, hypothesis_outcome=INCONCLUSIVE, poc_ref=null)`로 반환하며 R6가 후속 흐름을 결정한다.')) {
     Add-Failure 'R7 retry exhaustion result handling is missing'
@@ -902,7 +902,7 @@ $requiredR504CrossReviewRules = @(
     @{
         Name = 'policy-blocked dynamic reproduction is not automatic rejection or falsification'
         Text = $contractText
-        Marker = '`DynamicReproductionResult(status=BLOCKED, failure_reason=POLICY_BLOCKED)`는 가설 반증이나 Technical `REJECT`가 아니다.'
+        Marker = '`DynamicReproductionResult(status=BLOCKED, failure_category=POLICY)`는 가설 반증이나 Technical `REJECT`가 아니다.'
     },
     @{
         Name = 'policy freshness is explicit in the shared contract'

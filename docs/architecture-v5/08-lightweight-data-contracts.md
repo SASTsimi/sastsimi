@@ -299,7 +299,7 @@ TransitionCommit:
 - `RUNNING`은 `active_attempt_id`, `started_at`이 필수이고 `finished_at=null`이다.
 - `BLOCKED`는 `active_attempt_id=null`, 하나 이상의 `waiting_for`와 구체적인 `stop_reason`이 필요하다.
 - `SUCCEEDED | PARTIAL | FAILED | CANCELLED`는 `active_attempt_id=null`, `finished_at`과 `stop_reason`이 필요하다. 정상 `SUCCEEDED`의 `stop_reason`은 `COMPLETED`다.
-- `PARTIAL`은 `STATIC_TOOL | STATIC_NORMALIZE | CONTEXT_RETRIEVAL | DYNAMIC_REPRO`에서만 허용하고 하나 이상의 신뢰 가능한 `output_refs`가 필요하다. static·context 작업은 누락을 설명하는 `error_ids` 또는 `gap_ids`가 필요하다. `DYNAMIC_REPRO`는 정확히 하나의 `DynamicReproductionResult(status=PARTIAL, failure_reason=NONE)`를 가리키고 그 결과의 `hypothesis_evidence_refs`와 `limitations`가 각각 하나 이상이면 이 구조화된 `limitations`가 부분 실행의 누락 설명을 대신한다. 실제 오류나 `DataGap`이 없는데 동적 재현의 정상적인 환경 한계를 억지로 `error_ids`나 `gap_ids`로 만들지 않는다.
+- `PARTIAL`은 `STATIC_TOOL | STATIC_NORMALIZE | CONTEXT_RETRIEVAL | DYNAMIC_REPRO`에서만 허용하고 하나 이상의 신뢰 가능한 `output_refs`가 필요하다. static·context 작업은 누락을 설명하는 `error_ids` 또는 `gap_ids`가 필요하다. `DYNAMIC_REPRO`는 정확히 하나의 `DynamicReproductionResult(status=PARTIAL, failure_category=NONE)`를 가리키고 그 결과의 `hypothesis_evidence_refs`와 `limitations`가 각각 하나 이상이면 이 구조화된 `limitations`가 부분 실행의 누락 설명을 대신한다. 실제 오류나 `DataGap`이 없는데 동적 재현의 정상적인 환경 한계를 억지로 `error_ids`나 `gap_ids`로 만들지 않는다.
 - `FAILED`는 하나 이상의 `error_ids`가 필요하다. 전문 schema가 실패 결과 record를 정의한 `DYNAMIC_REPRO` 같은 작업은 그 실패 record를 `output_refs`에 포함할 수 있지만 성공 결과로 해석하지 않는다.
 - `DYNAMIC_REPRO` 취소 전이는 현재 활성 attempt가 만든 `DynamicReproductionResult(status=CANCELLED)`를 같은 atomic transition에서 확정할 수 있다. 이미 `CANCELLED`가 확정된 뒤 늦게 도착한 output은 현재 상태에 연결하지 않는다.
 - `WorkExecutionState.elapsed_ms`는 완료된 `WorkAttempt.elapsed_ms`의 합이다. block 대기 시간과 프로세스가 꺼진 시간은 별도 상태 체류 지표로 기록하며 실행 시간에 더하지 않는다.
@@ -1310,14 +1310,14 @@ cleanup은 R6 요청이 아니라 R7 lifecycle 책임이다. session 자원이 �
 | `environment_ref` | `sandbox_environment` | R7 Reproduction Agent | Session Manager, Verification, Gate | 실제 환경과 requirement별 비교 |
 | `cleanup_log_ref` | `cleanup_log` | Reproduction Session Manager | 운영 디버깅 | lifecycle cleanup event |
 
-Agent가 outcome·evidence·plan issue·limitation·failure reason과 linkage를 초안 작성한다. Reproduction Session Manager는 실제 event와 artifact를 대조하고 schema·authority·identity·revision·attempt·hash·redaction 불변조건만 검사해 `DynamicReproductionResult`를 COMMITTED한다. Verification은 이 결과를 직접 만들거나 수정하지 않고 소비만 한다.
+Agent가 outcome·evidence·plan issue·limitation·`failure_category` 후보와 사람이 읽을 수 있는 `failure_reason` 설명, linkage를 초안 작성한다. Reproduction Session Manager는 실제 event와 artifact를 대조하고 schema·authority·identity·revision·attempt·hash·redaction 불변조건만 검사해 `DynamicReproductionResult`를 COMMITTED한다. Verification은 이 결과를 직접 만들거나 수정하지 않고 소비만 한다.
 
 | `status` | `failure_category` | 필수 의미 |
 |---|---|---|
 | `SUCCEEDED` | `NONE` | 목표에 필요한 실행과 관찰을 끝냄 |
 | `PARTIAL` | `NONE | OBSERVATION` | 신뢰 관측은 있으나 전체 확인은 부족함. `INCONCLUSIVE` |
 | `FAILED` | `PLAN | ENVIRONMENT | EXECUTION | OBSERVATION | TIMEOUT | RETRY_LIMIT | OTHER` | 자체 재시도 한도를 소진했거나 복구 불가능함. final verdict 없음 |
-| `BLOCKED` | `POLICY` | 외부 경계 또는 외부 설정 때문에 현재 attempt를 진행할 수 없음 |
+| `BLOCKED` | `PLAN | ENVIRONMENT | EXECUTION | OBSERVATION | POLICY | TIMEOUT | OTHER` | 현재 attempt를 진행할 수 없지만 같은 work에서 조건 수정·backoff·재구성·retry가 가능함 |
 | `CANCELLED` | `CANCELLED` | 사용자나 runtime이 중단함 |
 
 | 상황 | 필수 조합 |
@@ -1358,7 +1358,7 @@ TechnicalEvidenceReview:
 
 `action_decision_ref.record_id`는 `CALL_TECHNICAL_GATE`를 허가하고 `USED`로 claim한 decision revision을 가리킨다. 실행 결과를 기록한 이후 decision revision의 `outcome_refs`에는 같은 call spec을 실행한 `TECHNICAL_GATE` `LLMInvocationLog`와 현재 review가 각각 한 번 포함되고, log의 `parsed_output_ref.record_id`가 현재 review를 가리켜야 한다. review는 log를 역참조하지 않아 content hash 순환을 만들지 않는다. `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 필수이며 각각 정확히 한 final `VerificationResult(verdict=TRUE)`와 `CWELabel` revision을 가리킨다. `FALSE | HOLD` 또는 `HypothesisProcessState.status=FAILED`인 가설에는 Technical Gate work와 review를 만들 수 없다. runtime은 두 대상의 `record_id`, `workspace_id`, `commit_id`, `hypothesis_id`와 `content_hash`가 서로와 현재 Technical review에 일치하는지 확인한다. Verification 또는 CWELabel이 새 revision으로 바뀌면 이전 `TechnicalEvidenceReview`를 재사용할 수 없고 Gate를 새로 호출해야 한다. Technical review는 `VerificationResult.verdict`나 `CWELabel`을 덮어쓰지 않는다.
 
-`status=ACCEPT`는 `handoff_readiness=READY`, `status=REVISE | REJECT`는 `handoff_readiness=NOT_READY`만 허용한다. `DynamicReproductionResult(status=BLOCKED, failure_reason=POLICY_BLOCKED)`는 가설 반증이나 Technical `REJECT`가 아니다. 그러나 validated PoC가 없으므로 final `VerificationResult`를 만들거나 Technical Gate를 호출하지 않는다. 재시도 또는 정책·환경 수정이 가능하면 같은 동적 work와 Verification을 `BLOCKED`로 유지하고, 복구 불가능하거나 한도를 소진하면 verdict 없이 `FAILED`로 끝낸다. 어떤 경우에도 정책 차단을 가설 `FALSE | HOLD`로 변환하지 않는다.
+`status=ACCEPT`는 `handoff_readiness=READY`, `status=REVISE | REJECT`는 `handoff_readiness=NOT_READY`만 허용한다. `DynamicReproductionResult(status=BLOCKED, failure_category=POLICY)`는 가설 반증이나 Technical `REJECT`가 아니다. 그러나 validated PoC가 없으므로 final `VerificationResult`를 만들거나 Technical Gate를 호출하지 않는다. 재시도 또는 정책·환경 수정이 가능하면 같은 동적 work와 Verification을 `BLOCKED`로 유지하고, 복구 불가능하거나 한도를 소진하면 verdict 없이 `FAILED`로 끝낸다. 어떤 경우에도 정책 차단을 가설 `FALSE | HOLD`로 변환하지 않는다.
 
 ## 9. ProgramPolicyRecord과 RuleScopeImpactReview
 

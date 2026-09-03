@@ -83,7 +83,7 @@ Technical Evidence Gate의 `REVISE`는 같은 가설의 Verification owner에게
 
 ## 구성 요소와 책임
 
-Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배정을 제안·조정하지만 가설 내부 다음 작업이나 enforcement authority를 갖지 않는다. 가설 내부 다음 작업은 Verification owner가 선택한다. 신뢰 경계 안의 비-LLM Runtime Validator가 schema, 호출 권한, 상태 전이, 예산, 병렬성, provider/session 정책, Gate 순서와 Reporter 호출 전제조건을 강제한다. Sandbox의 image·command·file·network·resource·cleanup 세부 정책은 Sandbox Controller가 한곳에서 검사한다. 모든 LLM 출력은 validation 전까지 비신뢰 입력이다.
+Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배정을 제안·조정하지만 가설 내부 다음 작업이나 enforcement authority를 갖지 않는다. 가설 내부 다음 작업은 Verification owner가 선택한다. 신뢰 경계 안의 비-LLM Runtime Validator가 schema, 호출 권한, 상태 전이, 예산, 병렬성, provider/session 정책, Gate 순서와 Reporter 호출 전제조건을 강제한다. Sandbox Controller는 host·Docker daemon/socket·mount/namespace·production secret·허용되지 않은 egress·다른 workspace·resource/lifecycle 같은 Sandbox 외부 안전 경계만 판정·강제한다. Sandbox 내부 command·package·payload·실행 순서는 Reproduction Agent가 자율 결정한다. 모든 LLM 출력은 validation 전까지 비신뢰 입력이다.
 
 | 구성 요소 | 책임 | 금지 경계 |
 |---|---|---|
@@ -120,7 +120,7 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 
 한 축의 값으로 다른 축을 암묵적으로 추론하지 않는다. 예를 들어 기술적으로 `TRUE`여도 out-of-scope이거나 실질 영향이 부족하면 Reporter를 호출하지 않는다.
 
-Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제안한다. 비-LLM Runtime Validator가 역할·schema·exact revision·상태·예산·일반 도구·경로·provider·두 Gate 순서와 보고 조건을 검사해 `ActionDecision=ALLOW | DENY`를 저장한다. `REQUEST_DYNAMIC_REPRO`는 Verification의 요청을 R7 work로 등록하는 허가이고, `RUN_SANDBOX`는 R7이 확정한 exact plan·current requirements를 Sandbox Controller에 전달하는 허가다. 어느 허가도 환경 일치나 재현 성공을 뜻하지 않는다. Controller가 Sandbox 정책을 통과시킨 exact 계획만 Runner가 받고, Runner는 필수 환경 조건이 맞을 때만 공격 단계를 실행한다. 이 검사는 환경 의미·취약점 판정이나 정책 해석을 대신하지 않는다.
+Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제안한다. 비-LLM Runtime Validator가 역할·schema·exact revision·상태·예산·일반 도구·경로·provider·두 Gate 순서와 보고 조건을 검사해 `ActionDecision=ALLOW | DENY`를 저장한다. `REQUEST_DYNAMIC_REPRO`는 Verification의 요청을 R7 work로 등록하는 허가이고, `RUN_SANDBOX`는 R7이 확정한 exact plan·current requirements를 Sandbox Controller에 전달하는 허가다. 어느 허가도 환경 일치나 재현 성공을 뜻하지 않는다. Controller가 외부 안전 경계를 통과시키면 R7 Sandbox Setup Automation이 clean Sandbox를 준비하고, Reproduction Agent가 내부 환경 구성·PoC·command·관찰·retry를 자율 수행한다. Reproduction Session Manager는 실제 runtime/tool event를 durable AgentLog로 기록하고 같은 attempt의 `DynamicReproductionResult`를 확정한다. 이 검사는 환경 의미·취약점 판정이나 정책 해석을 대신하지 않는다.
 
 ## 병렬성과 종료 조건
 

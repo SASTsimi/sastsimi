@@ -118,7 +118,7 @@ credential·cookie·token·password 원문은 요구사항과 실제 값에 저�
 - `poc_ref`: `SUCCEEDED + SUPPORTED`로 재현에 성공한 exact candidate만 가리키는 validated PoC입니다. 그 밖의 상태·관측에서는 반드시 비어 있습니다.
 - `agent_invoked`: Reproduction Agent가 시작됐는지 나타냅니다. 거짓이어도 Session Manager는 정책 차단 결과를 확정할 수 있고, 참이면 실패해도 exact `agent_log_ref`가 필요합니다.
 - `environment_created`: 실제 환경이 만들어졌는지 나타냅니다. 거짓이면 `environment_ref`가 비어 있고, 참이면 실제 생성 환경과 요구사항별 비교 기록을 가리켜야 합니다. 실행 전 요구사항이나 Sandbox profile과는 다릅니다.
-- `policy_decision_ref`: Controller가 어떤 정책 버전으로 왜 허용·차단했는지 가리킵니다. `POLICY_BLOCKED`이면 반드시 필요하며 Technical Gate의 판정과 다릅니다.
+- `policy_decision_ref`: Controller가 어떤 정책 버전으로 왜 허용·차단했는지 가리킵니다. `failure_category=POLICY`인 정책 차단 결과에는 반드시 필요하며 Technical Gate의 판정과 다릅니다.
 - `cleanup_required`: 정리할 자원이 생겼는지 나타냅니다. 거짓일 때만 `cleanup_status=NOT_REQUIRED`를 씁니다. 정책에 막혔더라도 임시 자원이 생겼다면 정리 결과를 성공 또는 실패로 남깁니다.
 
 이 참조들은 같은 분석·코드·가설·generation과 exact revision에 속해야 합니다. R6 request와 R7 requirements·plan이 연결되고, recipe·정책·실제 환경·AgentLog·candidate·cleanup은 같은 attempt에서 연결됩니다. 다른 attempt를 섞으면 저장을 거절합니다. R6는 요청과 최종 판정을, R7 Agent는 실행 artifact를, Session Manager는 actual event와 최종 결과 확정을 맡습니다.

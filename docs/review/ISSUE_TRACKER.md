@@ -26,7 +26,7 @@ GitHub가 실제 상태, 담당자와 토론의 기준입니다. 이 문서는 �
 
 번호 문서는 `docs/architecture-v5/` 아래 파일을 뜻합니다. 세부 입력·출력, 금지 권한과 완료 조건은 [ISSUE_CATALOG.md](./ISSUE_CATALOG.md)에 있습니다.
 
-R6가 동적 재현 목적·목표·필요 환경을 요청하고, R7이 환경 요구사항·mode·계획·PoC candidate를 만듭니다. R4 trusted runtime은 generation당 한 work와 exact reference·호출 권한·상태·예산을 검사합니다. R7의 Sandbox Controller와 Runner가 승인된 계획을 실행하며 성공한 `SUPPORTED` 결과만 validated PoC가 됩니다. 모든 final TRUE에는 이 PoC가 필요합니다.
+R6가 동적 재현 목적·목표·필요 환경을 요청하고, R7 Reproduction Agent가 환경 요구사항·계획·recipe·PoC candidate를 만듭니다. R4 trusted runtime은 generation당 한 work와 exact reference·호출 권한·상태·예산을 검사합니다. R7 Sandbox Controller는 Sandbox 외부 안전 경계만 판정·강제하고, Sandbox Setup Automation이 clean Sandbox를 준비한 뒤 Reproduction Agent가 내부 환경 구성·PoC·실행·관찰·retry를 자율 수행합니다. Reproduction Session Manager가 AgentLog와 결과를 확정하며, `SUCCEEDED + SUPPORTED`이고 validated `poc_ref`가 있는 결과만 final TRUE의 동적 근거가 됩니다.
 
 R4-04의 역할별 확인 범위, 승인으로 인정하는 기록과 병합 조건은 [R4-04 교차 검토 기록](./R4-04_CROSS_REVIEW.md)에서 확인합니다.
 
