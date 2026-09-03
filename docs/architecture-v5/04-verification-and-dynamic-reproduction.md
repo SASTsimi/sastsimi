@@ -10,9 +10,9 @@
 
 ## Verification의 목적과 제어권
 
-Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 소유한다. 가설이 실제 코드 흐름과 실행 조건에서 성립하는지 검토하고 `TRUE | FALSE | HOLD`를 판정하며, 필요한 Context·Pro/Con·동적 재현·보완 작업과 Gate 제출 시점을 선택한다. 제한 조건·우회 후보·필요 능력·제공 가능 능력·실질 영향의 상승 가능성도 함께 기록한다.
+Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 소유한다. 가설이 실제 코드 흐름과 실행 조건에서 성립하는지 검토하고 `TRUE | FALSE | HOLD`를 판정하며, 필요한 Context·Pro/Con·동적 재현 요청·보완 작업과 Gate 제출 시점을 선택한다. 제한 조건·우회 후보·필요 능력·제공 가능 능력·실질 영향의 상승 가능성도 함께 기록한다. R6는 재현 목적과 필요한 조건을 요청하지만 실행 환경·계획·PoC를 직접 만들지 않는다.
 
-이 제어권은 실행 허가 권한이 아니다. Verification이 다음 작업을 제안하면 비-LLM Runtime Validator가 `ActionRequest`, exact revision, 역할, 상태, 예산과 provider/session을 확인한다. `RUN_SANDBOX`가 허가된 뒤에는 Sandbox Controller가 Sandbox 외부 경계 정책을 결정·강제하고 R7 Sandbox Setup Automation이 clean Sandbox를 만든다. `REPRODUCTION_AGENT`는 그 내부에서 재현 전략과 실행을 자율적으로 결정한다.
+이 제어권은 실행 허가 권한이 아니다. Verification이 `REQUEST_DYNAMIC_REPRO`를 제안하면 Runtime Validator가 exact request·generation·역할·상태·예산을 확인한다. R7 Agent가 환경 요구사항과 계획을 만든 뒤 `RUN_SANDBOX`를 요청하고, Sandbox Controller는 host·Docker daemon·secret·egress·다른 workspace·자원·lifecycle의 외부 경계만 검사한다. 통과하면 Setup Automation이 clean Sandbox를 만들고 Agent가 내부 작업을 자율 수행한다.
 
 ## 기본 검증 순서
 
@@ -20,13 +20,13 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 2. `CodeContextRequest`로 caller/callee, data flow, auth guard와 route 문맥을 필요한 만큼 조회한다. 추가 Context 요청은 현재 가설과 같은 `workspace_id`·`commit_id`를 사용해야 한다. 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 기록하며 오류 자체를 verdict 근거로 사용하지 않는다. 일부 조회가 실패했더라도 제한 retry·대체 조회·다른 정상 근거로 모든 `ValidationCheck`, 반증 질문과 운영 Pro/Con을 완료했다면 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있다. 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증이 하나라도 미완료이면 final `VerificationResult`를 저장하지 않는다. 재시도할 수 있으면 work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지하며, 더 시도할 수 없으면 work와 `HypothesisProcessState`를 원자적으로 `FAILED`로 끝낸다. 운영 Pro/Con 전에 예산이 부족한 경우에도 `BUDGET_EXCEEDED`로 작업을 중단하고 final verdict를 저장하지 않는다. Context 부족이나 조회 실패를 `DISPROVED` 또는 `FALSE`로 변환하지 않는다.
 3. observed fact와 assumption을 분리하고 각 `FalsificationQuestion.question_id`를 확인한다.
 4. 운영 분석이면 Pro/Con Agent를 서로 독립된 NEW session으로 병렬 호출해 supporting/counter evidence를 모두 수집한다. BASIC 또는 조건부 debate는 격리된 평가 실행에서만 선택한다.
-5. initial verdict와 unresolved condition을 만든다.
-6. 정적 근거만으로 부족하거나 PoC가 필요하면 동적 재현을 요청한다. `LIMITED_REPRO | FULL_REPRO` mode를 계약에 유지할지는 PL 교차 검토에서 확정한다.
-7. 정적·찬반·동적 결과를 종합해 final verdict를 만든다.
-8. HOLD면 REQUIRED Primitive 후보를, TRUE면 Gate 통과 뒤 등록할 PROVIDED Primitive 후보를 기록한다. FALSE는 Primitive 후보를 만들지 않는다.
+5. 정적·Pro·Con 근거로 initial verdict와 unresolved condition을 만든다.
+6. initial TRUE이면 동적 근거가 별도로 필요하지 않아도 `purpose=POC_CONFIRMATION`을 요청한다. 최종 판정에 실행 근거가 필요하면 `purpose=VERDICT_EVIDENCE`를 요청한다.
+7. R7의 실행 결과를 종합해 final verdict를 만든다. final TRUE에는 현재 generation의 재현 성공과 validated `poc_ref`가 반드시 필요하다. 정적·Pro·Con만으로 충분한 FALSE 또는 HOLD는 동적 요청 없이 확정할 수 있다.
+8. HOLD면 Primitive `inputs`가 될 부족 조건을, TRUE면 Technical `ACCEPT` 뒤 Primitive `result`가 될 제공 능력을 기록한다. FALSE는 Primitive 후보를 만들지 않는다.
 9. 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 발견하면 `HypothesisProposal(origin=VERIFICATION)`으로 분리한다.
 10. TRUE의 CWE labeling을 조정하고 Technical Evidence Gate를 요청한다. `REVISE`면 같은 Verification owner가 보완한 새 revision으로 다시 제출한다.
-11. HOLD는 즉시 Chaining으로 넘길 수 있고, TRUE는 두 Gate를 정상 통과한 exact revision만 Chaining으로 넘길 수 있다.
+11. HOLD의 부족 조건은 result 없는 Primitive로 즉시 Chaining에 넘길 수 있고, TRUE는 exact Technical `ACCEPT`를 받은 뒤 result 있는 Primitive로 넘길 수 있다. Rule Scope 결과는 보고 경로에만 적용한다.
 
 ## 우회 인지 검증
 
@@ -87,9 +87,9 @@ Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` 
 - `FALSE`: 가설의 필수 조건을 묻는 named falsification 하나 이상이 실제 근거로 `DISPROVED`되었다. 다른 path 가능성까지 부정하지 않는다.
 - `HOLD`: 핵심 정보·환경·재현 조건이 부족하거나 상충해 현재 증거로 결론을 낼 수 없다.
 
-`HOLD`는 실패가 아니다. 누락 정보와 필요한 capability를 구조화해 exact final Verification revision에 연결된 REQUIRED Primitive로 즉시 저장하고 Chaining Agent의 matching 입력으로 사용할 수 있다. HOLD는 두 Gate를 거치지 않으며 PROVIDED 능력이나 확인된 취약점으로 승격되지 않는다.
+`HOLD`는 실패가 아니다. 누락 정보와 필요한 capability를 구조화해 exact final Verification revision에 연결된 result 없는 Primitive의 `inputs`로 즉시 저장하고 Chaining Agent의 matching 입력으로 사용할 수 있다. HOLD는 두 Gate를 거치지 않으며 확인된 능력이나 취약점으로 승격되지 않는다.
 
-`TRUE`도 판정 직후에는 Chaining 입력이 아니다. 현재 revision이 Technical `ACCEPT`와 Rule Scope의 정상 통과 조건을 모두 만족한 뒤에만 PROVIDED Primitive가 된다. `FALSE`는 terminal internal result이며 REQUIRED/PROVIDED Primitive와 Chaining work를 만들지 않는다.
+`TRUE`도 판정 직후에는 Chaining 입력이 아니다. 현재 revision이 Technical `ACCEPT`를 받은 뒤에만 제공 능력을 `result`로 가진 Primitive가 된다. Rule Scope 결과는 보고 가능성만 결정하고 이 admission을 취소하지 않는다. `FALSE`는 terminal internal result이며 Primitive와 Chaining work를 만들지 않는다.
 
 최종 결과는 등록 가설의 모든 반증 질문에 `DISPROVED | NOT_DISPROVED | INCONCLUSIVE` 중 하나를 기록한다. 또한 모든 `validation_checks`를 같은 `validation_id`의 `ValidationCheckResult`로 정확히 한 번씩 답하고, 각 항목을 `COMPLETE`와 실제 근거 reference로 마쳐야 한다. 하나라도 빠지거나 `INCOMPLETE`이면 final `VerificationResult`를 저장하지 않는다. `DISPROVED`에는 실제 `evidence_refs`가 필요하고, `NOT_DISPROVED`는 가설이 참이라는 증거로 승격하지 않는다. `FALSE`는 적어도 하나의 근거 있는 `DISPROVED` 결과와 그 `question_id`를 설명하는 판정 이유가 있을 때만 허용한다. 오류·timeout·누락만으로는 `DISPROVED`나 `FALSE`를 만들지 않는다.
 
@@ -97,9 +97,9 @@ Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` 
 
 | 판정 | 최소 필수 근거 | 허용하지 않는 판정 이유 |
 |---|---|---|
-| `TRUE` | 현재 가설의 핵심 exploit path와 필요한 조건을 지지하는 실제 evidence | 단순 추측, `NOT_DISPROVED`, 일부 동적 경로 확인 결과만을 정적·Pro/Con 근거와 종합하지 않고 단독으로 전체 취약점 성립 근거로 사용한 경우 |
+| `TRUE` | 현재 가설의 핵심 exploit path를 지지하는 정적·Pro·Con 근거, 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated `poc_ref` | 단순 추측, `NOT_DISPROVED`, validated PoC가 없거나 현재 generation과 다른 동적 결과 |
 | `FALSE` | named falsification의 `question_id`, `outcome=DISPROVED`, 하나 이상의 실제 `evidence_refs`와 이를 연결하는 판정 이유 | 오류, timeout, 빈 Context, 예산 초과, Sandbox 실패 |
-| `HOLD` | 하나 이상의 `unresolved_conditions`와 정상적으로 확인한 범위 및 결론을 막는 조건을 설명하는 실제 evidence reference | 취약점이 아니라는 의미로 사용하거나 PROVIDED 능력으로 승격 |
+| `HOLD` | 하나 이상의 `unresolved_conditions`와 정상적으로 확인한 범위 및 결론을 막는 조건을 설명하는 실제 evidence reference | 취약점이 아니라는 의미로 사용하거나 result가 있는 능력으로 승격 |
 
 ### HOLD와 실행 오류의 결정 기준
 
@@ -117,15 +117,15 @@ Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` 
 
 ### Initial verdict와 final verdict
 
-`initial_verdict`는 기본 Context와 Verification Agent가 직접 확인한 사실을 바탕으로 만든 중간 판단이다. 운영 분석에서는 독립 Pro/Con과 필요한 동적 재현이 끝나기 전의 initial verdict를 Gate·Primitive·Reporter 입력으로 사용할 수 없다.
+`initial_verdict`는 기본 Context와 Verification Agent가 직접 확인한 사실을 바탕으로 만든 중간 판단이다. 운영 분석에서는 독립 Pro/Con과 필요한 동적 재현이 끝나기 전의 initial verdict를 Gate·Primitive·Reporter 입력으로 사용할 수 없다. 특히 initial TRUE는 PoC 확인을 시작하기 위한 중간 상태일 뿐 final TRUE가 아니다.
 
-final `verdict`는 필요한 Pro/Con과 동적 결과를 포함해 현재 work에서 사용할 수 있는 모든 근거를 종합한 최종 판단이다. initial verdict와 final verdict가 다르면 `verdict_rationale`에 변경 이유를 남긴다. 이 변화가 Debate로 인한 것이면 `VerificationMetrics.verdict_changed_after_debate=true`로 기록한다.
+final `verdict`는 필요한 Pro/Con과 동적 결과를 포함해 현재 work에서 사용할 수 있는 모든 근거를 종합한 최종 판단이다. 모든 final TRUE는 현재 generation의 성공한 동적 재현과 validated PoC를 포함한다. initial verdict와 final verdict가 다르면 `verdict_rationale`에 변경 이유를 남긴다. 이 변화가 Debate로 인한 것이면 `VerificationMetrics.verdict_changed_after_debate=true`로 기록한다.
 
 새 evidence나 Technical `REVISE`로 결과가 바뀌면 기존 record를 수정하지 않고 새 `VerificationResult` revision을 만든다. 과거 revision을 검토한 Gate 결과는 새 revision에 재사용하지 않는다.
 
 ### Verification `TRUE`와 Technical `ACCEPT`의 경계
 
-Verification의 `TRUE`는 R6가 정적·Pro/Con·필요 시 동적 근거를 종합해 현재 가설의 핵심 공격 경로와 필요한 조건이 성립한다고 판정한 결과다.
+Verification의 `TRUE`는 R6가 정적·Pro/Con 근거와 현재 generation의 성공한 동적 재현·validated PoC를 종합해 현재 가설의 핵심 공격 경로와 필요한 조건이 성립한다고 판정한 결과다.
 
 Technical Evidence Gate의 `ACCEPT`는 R5가 exact final TRUE revision을 대상으로 evidence와 코드 경로의 연결, 동적 재현·PoC와 restriction, CWE와 다음 단계 전달 준비 상태가 충분한지 별도로 검토한 결과다.
 
@@ -161,72 +161,92 @@ Verification의 직접 검증, 독립 Pro/Con 실행, final 합성과 결과 저
 
 ## Docker 동적 재현
 
-동적 검증은 정적 판단을 대체하지 않고 특정 가설의 조건을 제한된 환경에서 확인한다.
+동적 검증은 정적 판단을 대체하지 않고 특정 가설을 제한된 환경에서 실제로 확인한다. 모든 final TRUE에는 실행으로 확인된 PoC가 필요하므로 initial TRUE도 반드시 이 단계를 거친다.
 
-동적 재현이 필요하면 Verification Agent가 필요한 역할·권한·인증 방식·데이터·DB/service·fixture/mock·버전·Health Check를 exact `EnvironmentRequirements`로 저장한다. 이어 가설, 요구사항, Sandbox profile, 재현 목표와 관련 문맥만 담은 최소 `ReproductionPlan`을 생산한다. exact step·command·payload·cleanup policy는 R6가 지정하지 않는다. `LIMITED_REPRO | FULL_REPRO` mode를 공통 계약에 유지할지는 PL 교차 검토에서 확정하며, mode 유무와 관계없이 R7 Agent의 자율 실행 범위는 동일하다.
+### R6 요청과 R7 생산 책임
 
-R7 `REPRODUCTION_AGENT`는 전달받은 가설을 다시 최종 판정하지 않고 환경 구성, package·계정·fixture·mock 준비, PoC 작성, command 실행, 관찰과 재시도를 직접 결정한다. 실제 실행 근거가 가설을 지지하는지 `SUPPORTED | DISPROVED | INCONCLUSIVE`로 정리하고 R6에 반환한다. R6가 이 결과를 정적·찬반 근거와 함께 읽어 최종 `TRUE | FALSE | HOLD`를 결정한다.
+R6는 다음 항목을 가진 `DynamicReproductionRequest`를 만든다.
+
+- `hypothesis_ref`와 현재 `verification_generation`
+- `purpose: POC_CONFIRMATION | VERDICT_EVIDENCE`
+- 재현 목표와 요청 이유
+- 필요한 역할·권한·인증·데이터·service 같은 `environment_needs`
+- 적용할 `sandbox_profile_ref`
+- 관련 코드·정적·Pro·Con 근거 reference
+
+`POC_CONFIRMATION`은 정적·Pro·Con으로 initial TRUE가 나온 뒤 실제 PoC로 확인하는 목적이다. `VERDICT_EVIDENCE`는 실행 관측이 있어야 최종 판정을 내릴 수 있을 때 사용한다. R6는 목적을 고르지만 실행 mode, `EnvironmentRequirements`, `ReproductionPlan` 또는 PoC를 생산하지 않는다.
+
+R6는 `DynamicReproductionRequest`만 생산하고 R7은 `EnvironmentRequirements`, `ReproductionPlan`, PoC candidate와 `DynamicReproductionResult`를 생산한다.
+
+R7 Agent는 요청을 읽고 exact `EnvironmentRequirements`와 `LIMITED_REPRO | FULL_REPRO` mode의 `ReproductionPlan`을 만든다. 계획은 목표·문맥·선택적 관찰 항목을 담지만 exact command·payload·실행 순서·cleanup policy로 Agent를 대리 실행기에 묶지 않는다. Agent는 clean Sandbox 안에서 recipe·환경·PoC candidate를 만들고 실행·관찰·retry하며, Session Manager가 실제 event와 artifact를 검증해 결과를 `COMMITTED`한다.
+
+### generation당 한 번의 동적 재현 work
+
+- 한 Verification generation에는 `DYNAMIC_REPRO` work를 하나만 등록한다.
+- `POC_CONFIRMATION`과 `VERDICT_EVIDENCE`를 같은 generation에서 각각 별도 work로 실행하지 않는다.
+- PoC 재작성·환경 수정·실행 재시도는 같은 `work_id`의 새 `attempt_id`다.
+- Technical Gate `REVISE`는 새 Verification generation이므로 새 동적 재현 work 하나를 허용한다.
+- 같은 generation의 중복 요청은 `hypothesis_id + verification_generation` 고유키로 차단한다.
+- R6가 이미 전달한 hypothesis·purpose·goal·필수 환경·profile을 바꿔야 하면 기존 request를 수정하지 않는다. 새 Verification generation의 새 request·work로 등록하고 Runtime Validator·Controller 검사를 모두 다시 거친다.
 
 ### 실행 경계
 
-- 같은 `workspace_id`와 `commit_id`, current plan·requirements·profile reference를 사용한다.
-- Runtime Validator는 requester·state·budget·reference만 검사하고 command·payload·package·재현 전략을 의미 검사하지 않는다.
-- Sandbox Controller가 Docker socket, host mount/namespace, production secret, 다른 workspace와 허용되지 않은 network egress 및 R8 profile의 외부 경계 정책을 결정·강제하고 판정을 기록한다. Controller는 Sandbox를 생성·폐기하거나 Agent를 호출하지 않는다.
-- R7 Sandbox Setup Automation이 승인된 정책을 사용해 image build, clean Sandbox 생성과 lifecycle cleanup을 수행한다. Agent에게 Docker daemon 권한을 주지 않는다.
-- Sandbox 내부 filesystem·process·service에서는 Agent의 환경 변경, command, PoC와 재시도를 넓게 허용한다.
-- 자주 쓰는 runtime·도구가 있는 Toolbox Image를 사용하고, 누락 package는 Dockerfile·manifest·setup script에 반영해 새 `EnvironmentRecipe`와 image digest로 build한다.
-- package download는 versioned baseline build 단계에서 수행하고 동적 재현 runtime의 임의 인터넷 설치 상태를 최종 환경으로 숨기지 않는다.
-- 성공한 baseline image/recipe는 보존하고 session container·network·volume·tmp와 임시 build만 cleanup한다.
-- 기존 Agent tool runtime이 실제 command·파일·환경·PoC·관찰·재시도 event를 방출하고 Reproduction Session Manager가 이를 append-only `AgentLog`로 수동 기록한다. Sandbox lifecycle automation의 cleanup event도 같은 방식으로 기록하며 숨은 사고 과정은 저장하지 않는다.
-- 가설별 새 container 생성 여부는 PL 결정 전까지 고정하지 않지만 서로 다른 가설·attempt의 writable state가 섞이지 않아야 한다.
+- 같은 `workspace_id`와 `commit_id`, base·built image digest가 고정된 versioned `EnvironmentRecipe` 사용
+- 가설마다 별도의 clean Sandbox와 writable state를 생성하고 분석용 `CodeWorkspace`는 직접 수정하지 않음
+- Runtime Validator는 R7 권한·상태·예산과 exact request·plan·requirements·profile reference만 확인
+- Sandbox Controller는 Docker socket·host mount·production secret·범위 밖 egress·다른 workspace·R8 resource·lifecycle을 외부에서 차단하고 Agent 내부 command·package·payload·실행 순서는 제한하지 않음
+- Reproduction Agent는 환경·계정·fixture·mock·PoC·공격 입력·관찰과 retry를 Sandbox 안에서 자율 수행
+- Reproduction Session Manager는 action의 STARTED·종료 event, command·입출력·exit code·artifact hash·관찰과 cleanup을 durable `AgentLog`로 기록
+- 환경 구축 실패·필수 요구사항 차이·정책 차단·동적 반증을 서로 다른 상태와 이유로 기록
 
-### 동적 결과를 Verification에 전달하는 방법
+### PoC candidate와 validated PoC
 
-R7은 재사용 가능한 exact `EnvironmentRecipe` revision을 참조하고, 실제 `SandboxEnvironment`, `AgentLog`, 실행된 `PoCBundle`, observation과 `CleanupLog`는 같은 attempt로 연결한다.
+- `poc_candidate_ref`는 실행 전에 만든 스크립트·공격 입력 묶음이다. 실패한 시도도 로그와 함께 보존할 수 있지만 검증된 PoC가 아니다.
+- validated `poc_ref`는 exact candidate를 실행해 재현이 성공하고 `status=SUCCEEDED`, `hypothesis_outcome=SUPPORTED`인 경우에만 저장한다.
+- candidate 생성 실패면 `poc_candidate_ref=null`, `poc_ref=null`이다.
+- candidate는 만들었지만 실행 실패, `DISPROVED`, `INCONCLUSIVE`이면 `poc_ref=null`이다.
+- reference가 존재한다는 사실만으로 성공을 추론하지 않는다. validated `poc_ref`는 성공 실행 로그와 동적 근거를 가리켜야 한다.
 
-- `environment_recipe_ref`: Dockerfile·package·setup/account/fixture/mock/healthcheck와 image digest의 exact revision
-- `agent_log_ref`: 실제 행동의 append-only 불변 기록
-- `poc_ref`: 실제 실행을 시작한 최종 PoC Bundle만 가리킴. draft-only PoC는 최종 ref로 전달하지 않음
-- `plan_execution_status`: plan이 실행 가능했는지 `EXECUTABLE | EXECUTABLE_WITH_LIMITATIONS | NEEDS_REVISION`으로 반환
-- `failure_category`와 자유 형식 `failure_reason`: 환경·실행·관찰·정책·timeout 원인을 범용적으로 설명
-- `cleanup_log_ref`: session ephemeral 정리와 persistent baseline 보존 결과
+### 결과를 R6가 판정하는 방법
 
-Agent가 outcome, evidence 선택, plan issue, limitation, failure reason과 linkage를 초안 작성한다. Reproduction Session Manager는 runtime/tool event에서 실제 reference·시간·상태·cleanup·digest를 기록하고, 종료 시 schema·identity·revision·hash·redaction·상태 불변조건만 검사해 최종 결과 문서를 확정한다. Session Manager는 Agent 실행·명령·재시도·cleanup을 제어하거나 의미를 다시 판단하지 않는다. 결과와 work/transition이 같은 COMMITTED record를 가리킬 때만 R6에 전달한다.
+| 목적과 실행 결과 | R6 처리 |
+|---|---|
+| `POC_CONFIRMATION` + `SUCCEEDED/SUPPORTED` | 정적·Pro·Con·동적 근거와 validated PoC를 합쳐 final TRUE 생성 후 Technical Gate 진행 |
+| `VERDICT_EVIDENCE` + `SUCCEEDED/SUPPORTED` | 같은 실행의 validated PoC를 연결해 final TRUE 생성 후 Technical Gate 진행 |
+| 정상 실행에서 실제 반증 `DISPROVED` | 근거 있는 final FALSE |
+| 정상 실행했지만 결론 불충분 `INCONCLUSIVE` | 근거와 남은 조건을 가진 final HOLD |
+| PoC 생성·환경 구성·정책·실행 자체 실패 | final verdict 없이 동적 work와 Verification을 `BLOCKED | FAILED`; Gate 금지 |
 
-### 동적 재현 상태와 실제 반증
+`DynamicReproductionResult.hypothesis_outcome`은 Sandbox의 관측 요약이며 최종 verdict가 아니다. `SUPPORTED | DISPROVED`에는 실제 관측을 가리키는 `hypothesis_evidence_refs`가 필요하다. `DISPROVED`일 때만 `hypothesis_disproved=true`와 `disproof_evidence_refs`를 사용한다. 오류·빈 출력·exit code만으로는 반증이나 FALSE를 만들 수 없다.
 
-동적 재현 상태는 `NOT_REQUESTED | RUNNING | SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED`다. 실행이 끝난 결과는 `DynamicReproductionResult.status`에 `SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED` 중 하나를 기록한다.
+### 생성·구성·실행 실패 처리
 
-- 필수 환경을 끝내 만들지 못하면 `FAILED + failure_category=ENVIRONMENT`와 exact recipe·Agent Log·차이를 반환한다.
-- plan 자체가 모순되거나 필수 문맥이 없으면 `NEEDS_REVISION`과 string `plan_issues`를 반환한다.
-- 공격 경로를 일부 실행하고 신뢰 관측을 얻었지만 전체 확인이 부족하면 `PARTIAL`과 evidence·limitations를 함께 기록한다.
-- `SUCCEEDED`는 Agent가 재현 목표의 실행과 관찰을 마쳤다는 상태이지 가설 지지나 최종 취약점 확정을 뜻하지 않는다.
-- `hypothesis_outcome`은 `SUPPORTED | DISPROVED | INCONCLUSIVE`이며 Verification verdict가 아니다. `SUPPORTED | DISPROVED`는 실제 관측을 가리키는 `hypothesis_evidence_refs`가 필요하다.
-- `DISPROVED`일 때만 `hypothesis_disproved=true`와 비어 있지 않은 `disproof_evidence_refs`를 사용한다. 반증 근거는 일반 가설 근거 목록에도 포함한다.
-- `FAILED | BLOCKED | CANCELLED`, 실행하지 못함, 빈 출력과 exit code만으로는 `DISPROVED`, `hypothesis_disproved=true` 또는 `FALSE`를 만들 수 없다.
+- 다시 시도할 수 있으면 같은 work를 `BLOCKED`, `waiting_for=RETRY`로 두고 새 attempt를 시작한다.
+- 외부 설정이나 환경 수정이 필요하면 `BLOCKED`, `waiting_for=INPUT | APPROVAL | DEPENDENCY`로 두고 수정될 때까지 기다린다.
+- 복구할 수 없거나 retry 한도를 소진하면 work와 가설 처리를 `FAILED`로 끝낸다.
+- 이 경로에서는 final `VerificationResult`와 validated `poc_ref`를 만들지 않고 Technical Gate를 호출하지 않는다.
+- 실패를 자동으로 `FALSE | HOLD`로 바꾸지 않는다.
 
-동적 결과 상태와 공통 실행 상태는 뜻이 다르다. `PARTIAL`은 신뢰 관측과 limitations를 가진 종료 결과다. `BLOCKED + failure_category=POLICY`도 외부 경계가 요청을 정상적으로 차단한 종료 결과이므로 공통 work는 `SUCCEEDED`로 닫을 수 있지만 재현 성공은 아니다. retry·승인·입력을 기다리는 경우에만 공통 `BLOCKED`를 사용한다. `CANCELLED`와 늦게 도착한 결과의 기존 격리 규칙은 유지한다.
-
-모든 종료 결과는 `DynamicReproductionState.dynamic_result_ref`, `WorkExecutionState.output_refs`와 `TransitionCommit.output_refs`가 같은 `DynamicReproductionResult.record_id`를 가리킬 때만 Verification에 전달한다. R7은 동적 outcome까지만 기록하고 R6 Verification이 이를 정적·찬반 근거와 함께 읽어 최종 `TRUE | FALSE | HOLD`를 결정한다. 실행 실패·환경 실패·정책 차단·빈 출력은 자동 `FALSE`가 아니다.
+종료된 동적 결과는 `DynamicReproductionState.dynamic_result_ref`, `WorkExecutionState.output_refs`와 `TransitionCommit.output_refs`가 같은 exact `DynamicReproductionResult.record_id`를 가리킬 때만 R6에 전달한다. R6는 결과를 소비해 final verdict를 만들지만 R7의 요구사항·계획·동적 결과를 대신 생산하지 않는다.
 
 ## Technical `REVISE` 처리
 
-Technical Evidence Gate의 `REVISE`는 Orchestration이나 Chaining Agent가 받을 작업이 아니다. 같은 hypothesis의 ACTIVE `VerificationAssignment` owner가 직접 받고 누락된 Context·Pro/Con·정적 근거·동적 재현·PoC 연결·restriction·설명을 보완한다. runtime은 종료된 기존 work를 되돌리지 않고 새 generation의 VERIFICATION work를 만들고 hypothesis 상태를 `TERMINAL -> VERIFYING`으로 원자 전환한다. CWE 보완이 필요하면 CWE producer와 새 label revision을 조정하되 CWE 소유권을 가져오지 않는다.
+Technical Evidence Gate의 `REVISE`는 Orchestration이나 Chaining Agent가 받을 작업이 아니다. 같은 hypothesis의 ACTIVE `VerificationAssignment` owner가 직접 받고 누락된 Context·Pro/Con·정적 근거·동적 재현·PoC 연결·restriction·설명을 보완한다. runtime은 종료된 기존 work를 되돌리지 않고 새 generation의 VERIFICATION work를 만들고 hypothesis 상태를 `TERMINAL -> VERIFYING`으로 원자 전환한다. 새 generation에서 final TRUE를 다시 만들려면 그 generation의 동적 재현 work와 validated PoC도 새로 연결해야 한다. CWE 보완이 필요하면 CWE producer와 새 label revision을 조정하되 CWE 소유권을 가져오지 않는다.
 
 ```text
 VerificationResult revision N
 -> Technical Gate REVISE
 -> same Verification owner
--> new evidence and/or revised CWE
+-> new evidence and/or revised CWE + current-generation validated PoC
 -> VerificationResult revision N+1
 -> new Technical Gate work
 ```
 
-`REVISE`는 provider retry나 동일 입력 재투표가 아니다. 새 work는 새 `input_hash`, `dedupe_key`, `work_id`, `attempt_number=1`, `trigger=INITIAL`을 사용한다. 이전 Gate 결과가 N을 가리키면 N+1에 재사용할 수 없다.
+`REVISE`는 provider retry나 동일 입력 재투표가 아니다. 새 work는 새 `input_hash`, `dedupe_key`, `work_id`, `attempt_number=1`, `trigger=INITIAL`을 사용한다. 새 Verification generation에는 동적 재현 work 하나를 다시 허용한다. 이전 Gate 결과와 동적 결과가 N을 가리키면 N+1에 재사용할 수 없다.
 
 ## VerificationResult에 남길 정보
 
-최종 결과는 verdict뿐 아니라 질문별 `FalsificationResult`, supporting/counter evidence, restrictions, bypass·alternate path·impact 후보, REQUIRED/PROVIDED Primitive 후보, `origin=VERIFICATION` material child proposal, unresolved conditions, debate 지표와 동적 재현 reference를 포함한다. HOLD의 REQUIRED 후보는 즉시 admission할 수 있다. TRUE의 REQUIRED 후보는 그 취약점의 악용 선행 조건으로만 보존되고, PROVIDED 후보가 두 Gate를 정상 통과해 admission될 때 `required_preconditions`에 복사된다. 이 정보가 CWE, 두 Gate, Primitive admission, Reporter와 `AnalysisRunResult`의 입력이 된다.
+최종 결과는 verdict뿐 아니라 질문별 `FalsificationResult`, supporting/counter evidence, restrictions, bypass·alternate path·impact 후보, `required_primitive_candidates`와 `provided_primitive_candidates`, `origin=VERIFICATION` material child proposal, unresolved conditions, debate 지표와 동적 재현 reference를 포함한다. HOLD의 required 후보는 result 없는 Primitive의 `inputs`로 즉시 admission할 수 있다. TRUE의 required 후보는 악용 선행 조건인 `inputs`, provided 후보는 Technical `ACCEPT` 뒤 능력별 Primitive의 `result`가 된다. 이 정보가 CWE, Technical Gate, Primitive admission, Rule Scope/Reporter와 `AnalysisRunResult`의 입력이 된다.
 
 supporting/counter evidence는 자유 형식 문자열이 아니라 `EvidenceClaim`으로 기록한다. 각 claim은 작성 역할, 실제 저장 근거와 코드 주장에 필요한 현재 workspace·commit의 위치를 포함한다. 우회·대체 경로·영향 확대 후보는 `CandidateRef(candidate_state=UNVALIDATED)`로 구분하고 새 material claim이면 별도 가설로 재검증한다. debate token·시간과 판정 변화는 `VerificationMetrics`에 저장하며 provider가 token을 제공하지 않으면 값을 추정하지 않고 `null`로 둔다.
 

@@ -24,11 +24,11 @@ Orchestration Agent의 주요 책임은 다음과 같다.
 - `analysis_id`와 전역 분석 계획 관리
 - INITIAL·VERIFICATION·CHAINING proposal의 schema/semantic validation 요청
 - 검증된 proposal의 `hypothesis_id` 등록
-- `parent_hypothesis_ids`·`root_hypothesis_id`·`chain_depth` 관계 검증 요청
+- `parent_hypothesis_ids`와 Chaining proposal의 `source_primitive_match_id` 관계 검증 요청
 - 독립 가설의 병렬 배정과 hypothesis별 resource budget 배분
 - 등록된 각 가설에 정확히 한 Verification owner를 배정하고 trusted runtime이 ACTIVE `VerificationAssignment`로 저장
 - 전체 가설의 진행 상태·종료 상태·오류 집계
-- chain depth/count/token/time/duplicate 전역 제한 적용 요청
+- R8 전체 token·시간·비용·work 예산과 체이닝 fingerprint 중복·ancestor 순환 제외 적용 요청
 - 실패와 `INVALID_OUTPUT`을 숨기지 않고 분석 결과에 보존
 
 Orchestration Agent는 한 가설 안에서 Pro/Con·동적 재현·두 Gate·Reporter·Chaining의 호출 여부나 Technical `REVISE` 목적지를 결정하지 않는다. 논리 작업의 상태, `work_id`·`dedupe_key`, 활성 attempt, compare-and-set, atomic output binding과 실제 action 허가는 신뢰 경계 안의 비-LLM runtime이 관리한다.
@@ -75,15 +75,16 @@ HypothesisProcessState: REGISTERED -> ASSIGNED -> VERIFYING
                                                -> FAILED (no final verdict)
 Technical REVISE: TERMINAL -> same assignment + new VERIFICATION work -> VERIFYING
 VerificationResult.verdict -> TRUE | FALSE | HOLD
-HOLD -> REQUIRED Primitive -> Chaining eligible
-TRUE -> two Gates pass -> PROVIDED Primitive -> Chaining eligible
+HOLD -> Primitive inputs with result null -> Chaining eligible
+TRUE -> Technical ACCEPT -> Primitive with result -> Chaining eligible
+Technical ACCEPT -> Rule Scope -> report eligibility only
 Verification material claim -> PROPOSED child hypothesis origin VERIFICATION
 Chaining match -> PROPOSED child hypothesis origin CHAINING
 ```
 
 `ProposalProcessState.status`는 `hypothesis_id`를 발급하기 전의 출력 검증 상태를 기록한다. 검증을 통과하면 새 `hypothesis_id`와 별도 `HypothesisProcessState`를 만들고 같은 `proposal_ref`로 연결한다. `HypothesisProcessState.status`가 등록 뒤 처리 진행 상태를 기록하고 `VerificationResult.verdict`가 기술 판정을 기록한다. `TERMINAL`은 final `TRUE | FALSE | HOLD`가 연결된 정상 종료다. 반면 검증을 끝내지 못하고 재시도도 불가능하면 `FAILED`로 끝나며 final verdict를 만들지 않는다. retry 가능한 work가 `BLOCKED`일 때는 가설을 `VERIFYING`으로 유지한다. parent 가설의 결과와 child 가설은 독립된 lifecycle을 갖고 child 결과가 parent verdict를 바꾸지 않는다.
 
-초기 가설은 자기 자신을 `root_hypothesis_id`로 사용하고 `chain_depth=0`이다. Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하고 trusted validation을 통과할 때만 새 `hypothesis_id`를 받는다. 새 endpoint·sink·권한 경계·공격 단계·독립 impact는 Verification이 `origin=VERIFICATION` proposal로 분리한다. TRUE+HOLD는 PROVIDED가 HOLD REQUIRED를, TRUE+TRUE는 앞 TRUE의 PROVIDED가 뒤 TRUE의 exact Verification에 기록된 선행 조건을 충족할 때만 Chaining Agent가 `origin=CHAINING` proposal로 만든다. 어느 경로도 기존 가설을 수정하거나 child를 자동 TRUE로 만들지 않는다. child가 FALSE여도 부모 판정은 바뀌지 않는다.
+Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하고 trusted validation을 통과할 때만 새 `hypothesis_id`를 받는다. INITIAL·VERIFICATION proposal의 `source_primitive_match_id`는 `null`이고, CHAINING proposal은 자신을 만든 COMMITTED match candidate ID를 가리킨다. 계보 길이는 parent와 match 링크를 따라 계산하며 별도 depth 값을 저장하지 않는다. 새 endpoint·sink·권한 경계·공격 단계·독립 impact는 Verification이 `origin=VERIFICATION` proposal로 분리한다. TRUE+HOLD와 TRUE+TRUE는 upstream result가 downstream input을 코드 근거로 충족할 때만 Chaining Agent가 `origin=CHAINING` proposal로 만든다. 어느 경로도 기존 가설을 수정하거나 child를 자동 TRUE로 만들지 않는다. child가 FALSE여도 부모 판정은 바뀌지 않는다.
 
 ## 공통 실행 상태와 전문 결과의 분리
 
@@ -107,18 +108,19 @@ Chaining match -> PROPOSED child hypothesis origin CHAINING
 | Orchestration Agent | 전역 분석 계획·proposal 등록·가설 배정·가설 간 병렬화 | 없음 | 전체 진행 상태 요약 | 없음 | 없음 |
 | Hypothesis Agent | 취약점 가설 | 없음 | static 사실을 입력으로 읽음 | 없음 | 없음 |
 | Pro·Con Agent | 찬성·반대 근거 | 없음 | 자기 역할의 근거 | 없음 | 없음 |
-| Verification Agent | Context·Pro/Con, `EnvironmentRequirements`·최소 `ReproductionPlan`, 두 Gate·Reporter·Chaining 요청, material child proposal | `TRUE | FALSE | HOLD` | static·Pro·Con·COMMITTED dynamic 근거와 plan issue·환경 차이·Gate 보완 요청 | 없음 | 없음 |
-| Sandbox Controller | 없음 | 없음 | current plan·requirements·profile과 host·Docker daemon·mount·namespace·network egress·secret·resource 외부 경계 정책 | 외부 경계 허용·차단 판정 저장 | 없음 |
-| Reproduction Agent | 환경 구성·PoC·관찰·재시도 전략 | `SUPPORTED | DISPROVED | INCONCLUSIVE` 동적 결과 | R6의 가설·환경 요구사항·재현 목표와 실제 실행 근거 | 없음 | 없음 |
-| Reproduction Session Manager | 없음 | 없음 | runtime/tool event append-only 기록과 Agent 의미 초안·실행 사실의 최종 결과 문서화 | 같은 attempt·reference·hash·redaction 불변조건을 만족하는 결과만 저장 | 없음 |
+| Verification Agent | Context·Pro/Con, 목적·목표·필요 환경을 담은 `DynamicReproductionRequest`, 두 Gate·Reporter·Chaining 요청, material child proposal | `TRUE | FALSE | HOLD` | static·Pro·Con·COMMITTED dynamic 근거와 Gate 보완 요청 | 없음 | 없음 |
+| Reproduction Agent | `EnvironmentRequirements`·`ReproductionPlan`·recipe·PoC candidate와 환경·실행·관찰·retry 전략 | `SUPPORTED | DISPROVED | INCONCLUSIVE` 동적 outcome | R6 요청과 Sandbox 안의 실제 동적 근거 | 없음 | 없음 |
+| Sandbox Controller | 없음 | 없음 | host·Docker daemon·secret·egress·다른 workspace·resource·lifecycle 외부 경계 정책과 exact 판정 | 경계 위반 실행 차단 | 없음 |
+| R7 Sandbox Setup Automation | 없음 | 없음 | 승인된 경계로 image build·가설별 clean Sandbox 생성·lifecycle cleanup | 외부 경계 우회 차단 | 없음 |
+| Reproduction Session Manager | 없음 | 없음 | runtime/tool event의 durable AgentLog와 같은 attempt의 최종 `DynamicReproductionResult` 확정 | schema·authority·identity·revision·hash·redaction 불변조건 | 없음 |
 | CWE Labeling | CWE 후보와 근거 | CWE label revision 생성 | final Verification | 없음 | 없음 |
-| Chaining Agent | TRUE+HOLD·TRUE+TRUE Primitive match와 chained proposal | 없음 | ACTIVE Primitive와 exact Gate provenance | 없음 | 없음 |
+| Chaining Agent | upstream Primitive `result`→downstream Primitive `input` match와 chained proposal | 없음 | exact Primitive, Verification·Technical provenance와 코드 근거 | 없음 | 없음 |
 | Technical Evidence Gate Agent | 구체적인 보완 요청 | 없음 | verdict·근거·코드 흐름·CWE | 없음 | 없음 |
 | Rule Scope Impact Gate Agent | 정책 누락·보완 사유 | `PASS | FAIL | UNCERTAIN`, `ALLOW | DENY` | 공식 정책·scope·impact | 없음 | 없음 |
 | Reporter Agent | 내부 보고서 문장·구성 | 없음 | 통과한 결과와 두 Gate | 없음 | 없음 |
 | Runtime Validator | 허용 가능한 대체 action 안내 | 없음 | 실행 전제와 exact reference | action 허용·차단 | 없음 |
 
-Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 호출 순서, 기술 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 확정하지 않는다. Verification Agent는 exact `EnvironmentRequirements`와 재현 목표 중심의 최소 `ReproductionPlan`을 생산하지만 Sandbox를 직접 실행하지 않는다. Sandbox Controller는 Docker socket·host 권한·egress·secret·R8 profile의 외부 경계 정책만 결정·강제하고 정책 판정을 저장한다. R7 Sandbox Setup Automation이 승인된 정책으로 clean Sandbox를 생성하고, 그 경계 안에서 `REPRODUCTION_AGENT`는 환경·package·계정·fixture·PoC·command·관찰·재시도를 자율적으로 결정해 실제 동적 근거를 `SUPPORTED | DISPROVED | INCONCLUSIVE`로 정리한다. Reproduction Session Manager는 Agent에 명령하거나 실행을 허용·차단하지 않고 runtime/tool event를 기록한 뒤 Agent 의미 초안과 실행 사실로 최종 결과 문서만 확정한다. R6 Verification은 이 COMMITTED 결과를 정적·찬반 근거와 함께 읽어 최종 `TRUE | FALSE | HOLD`를 결정한다.
+Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 판정을 확정하지 않는다. Verification Agent는 `DynamicReproductionRequest`와 최종 verdict를 생산하고, R7 Agent는 exact `EnvironmentRequirements`·mode·`ReproductionPlan`·recipe·PoC를 생산한다. Controller는 Sandbox 외부 경계를 검사하고 Setup Automation이 clean Sandbox를 만든다. Agent는 내부에서 환경·command·PoC·관찰·retry를 자율 수행한다. 비-LLM Session Manager는 실제 event와 같은 attempt의 artifact를 대조해 AgentLog와 최종 동적 결과만 확정한다. R7은 R6 요청 목적과 최종 verdict를 바꾸지 않는다.
 
 ReportDraft 이후의 검토·수정·제출·공개는 이 역할표와 Agent action lifecycle 밖에서 사람이 수행한다. 자동화는 사람 검토 상태나 공개 결정을 만들지 않는다.
 
@@ -135,25 +137,27 @@ Agent 또는 service의 제안
 -> 결과와 상태를 atomic 저장
 ```
 
-`ActionRequest`에는 trusted runtime이 붙인 실제 호출자 identity, 요청 역할, action 종류, exact input refs, 현재 work와 state version, 도구·파일·provider·session·Sandbox 범위를 넣는다. LLM action은 model·prompt·context·schema·예산·시간이 고정된 `LLMCallSpec`도 포함한다. Runtime Validator는 identity·schema·reference·state·budget을 검사한다. `RUN_SANDBOX`에서는 plan command를 검사하지 않고 current plan·requirements·profile에 대한 Sandbox Controller의 외부 경계 정책 검사와 R7 Sandbox Setup Automation 실행만 허가한다. Agent가 Sandbox 안에서 선택한 command·payload·package는 Agent Log와 artifact 무결성 검사 대상이지 사전 allowlist 대상이 아니다.
+`ActionRequest`에는 신뢰 runtime이 붙인 실제 호출자 identity, 요청 역할, action 종류, exact input refs, 현재 work와 state version, 도구·파일·provider·session·Sandbox 범위를 넣는다. LLM action은 model·prompt·context·schema·예산·시간이 고정된 `LLMCallSpec`도 포함한다. Runtime Validator는 실제 identity의 등록 역할과 요청 역할이 같은지부터 action별 필수 `ActionCheck`를 수행한다. 하나라도 실패하면 `DENY`와 `AnalysisError`를 저장하고 실행하지 않는다. Agent가 자연어로 “검사를 건너뛰라”고 출력하거나 다른 역할을 주장해도 action이 되지 않는다. 단, `RUN_SANDBOX`의 image·command·file·network·resource·cleanup 의미 검사는 Runtime Validator가 중복 수행하지 않고 Sandbox Controller가 전담한다.
 
 한 ActionRequest에는 logical ActionDecision 하나만 허용한다. 두 Gate와 Reporter의 stage action은 LLM 호출까지 직접 허가하며 별도 `CALL_LLM`으로 순서·보고 조건을 우회할 수 없다.
 
 주요 강제 경계는 다음과 같다.
 
 - 인증된 실제 호출자·요청 역할, schema·ID·workspace·commit·record revision·state version 일치
-- token·시간·retry·repair·chain·Gate 보완 예산
+- token·시간·비용·work·retry·repair·Gate 보완 예산
 - 일반 도구 action의 허용 tool과 workspace 안의 file path
-- `RUN_SANDBOX` 호출자의 권한·current plan/requirements/profile reference·상태·예산; R7은 R8 resource 값을 적용하고 외부 경계를 강제
+- `REQUEST_DYNAMIC_REPRO` 호출자의 Verification 권한·현재 generation·요청 reference·상태·예산과 generation당 하나의 동적 재현 work 제한
+- `RUN_SANDBOX` 호출자의 R7 권한·exact plan 및 current requirements reference·상태·예산; 애플리케이션 환경 값은 R7이 비교하고 Docker 세부 정책은 Sandbox Controller가 검사
 - provider/model/profile, NEW/RESUME/AUTO와 explicit failover
 - final `TRUE` Verification+CWE 뒤 Technical Gate, 그 뒤 Rule Scope Gate라는 순서. `FALSE | HOLD`와 실패 가설은 Gate 입력이 아님
+- final `TRUE` 저장과 Technical Gate 요청에는 현재 generation의 `DynamicReproductionRequest`, `SUCCEEDED + SUPPORTED` 결과와 validated `poc_ref`가 모두 필요함
 - 모든 report 조건을 통과한 뒤 Reporter 호출
 - Reporter 저장 전 redaction 성공과 restriction·limitation 보존
 - ReportDraft 저장 뒤 `AnalysisRunResult`를 확정하고 Agent 자동화 종료
 
 Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서 품질을 평가하지 않는다. 그것은 Verification, 두 LLM Gate와 Reporter의 역할이다.
 
-`RUN_SANDBOX`의 `ActionDecision=ALLOW`는 exact `ReproductionPlan`, current `EnvironmentRequirements`와 Sandbox profile로 R7 실행을 시작할 권한만 부여한다. Sandbox Controller는 외부 경계 정책을 결정·강제하고, R7 Sandbox Setup Automation이 그 정책을 사용해 clean Sandbox를 생성한다. Agent는 Sandbox 내부에서 필요한 command와 파일·환경 변경을 자유롭게 수행한다. 기존 Agent tool runtime이 실제 action event를 방출하면 Reproduction Session Manager가 이를 제어 경로 밖에서 기록한다. Session Manager는 command·실행 순서·retry에 관여하지 않고 실행 종료 뒤 결과 문서만 확정한다.
+`REQUEST_DYNAMIC_REPRO`의 ALLOW는 generation당 하나의 동적 work를 등록하고, `RUN_SANDBOX`의 ALLOW는 exact plan·requirements·profile로 외부 경계 검사를 시작한다. Controller는 host·Docker daemon·secret·egress·다른 workspace·R8 resource·lifecycle을 제한하며 Agent 내부 명령을 사전 검사하지 않는다. Session Manager의 `SAVE_RESULT`는 plan requirements, 실제 environment·recipe image digest, AgentLog·candidate·validated PoC·cleanup의 동일 attempt 여부만 대조한다.
 
 ## 병렬 실행과 결과 합류
 
@@ -162,7 +166,7 @@ Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서
 | AST와 SAST | tool별 `work_id` | 기대한 tool의 종료 상태와 output/error 확인 | 하나 이상의 신뢰 결과가 있으면 `DataGap`을 포함한 `PARTIAL` 정규화 가능 |
 | 가설 검증 | `hypothesis_id`별 work | 각 가설은 자기 final Verification까지 독립 | 한 가설 오류가 다른 가설을 취소하지 않으며 분석은 `PARTIAL` 가능 |
 | Pro와 Con | 같은 가설의 역할별 child work·NEW session | 운영은 같은 입력의 exact Pro·Con 결과를 모두 확인; 평가 생략은 명시된 mode와 skip reason 확인 | 필수 결과 누락 시 final 판정을 만들지 않고 부모 Verification을 대기 또는 실패 처리 |
-| chaining 후보 | child proposal별 work | 중복·cycle·depth·예산 검사를 통과한 proposal만 등록 | 거절 사유를 저장하고 부모 verdict 유지 |
+| chaining 후보 | child proposal별 work | exact match lineage, fingerprint 중복·ancestor cycle·R8 전체 예산 검사를 통과한 proposal만 등록 | 거절 사유를 저장하고 부모 verdict 유지 |
 
 같은 가설과 같은 `work_type`에는 활성 `attempt_id`를 하나만 허용한다. 중복 요청의 `dedupe_key`가 같으면 기존 `work_id`를 반환한다. 이미 합류가 끝난 뒤 늦게 도착한 tool·Pro·Con 결과는 기존 결과를 덮어쓰지 않는다. 새로운 근거로 사용할 필요가 있으면 입력 revision을 바꾼 새 논리 작업과 새 downstream revision을 만든다.
 
@@ -174,19 +178,21 @@ Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서
 
 ```text
 final VerificationResult + CWELabel
+-> current generation DynamicReproductionResult SUCCEEDED + SUPPORTED
+-> validated PoC
 -> Technical Evidence Gate
 -> Technical ACCEPT와 TRUE 확인
--> Rule Scope Impact Gate
--> PASS/PASS/PASS/SUFFICIENT/ALLOW와 exact revision 확인
--> Reporter
+-> result Primitive admission + Chaining handoff
+and independently
+-> Rule Scope Impact Gate -> PASS/PASS/PASS/SUFFICIENT/ALLOW -> Reporter
 -> ReportDraft
 -> AnalysisRunResult 확정
 -> Agent 자동화 종료
 ```
 
-Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니다. 현재 Technical Gate work는 `TechnicalEvidenceReview.status=REVISE`를 exact output으로 atomic commit하고 `SUCCEEDED`로 끝낸 뒤 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 직접 전달한다. runtime은 기존 종료 VERIFICATION work를 되돌리지 않고 증가한 generation의 새 VERIFICATION work를 등록하며, 같은 CAS transition에서 `HypothesisProcessState`를 `TERMINAL -> VERIFYING`으로 바꾸고 새 work를 가리킨다. Verification은 새 근거를 반영한 `VerificationResult`와 새 work 종료·hypothesis `TERMINAL`·current result pointer를 atomic commit하고, 필요하면 기존 CWE producer가 만든 새 `CWELabel` revision을 조정한다. 그 뒤 바뀐 `input_hash`·`dedupe_key`와 새 `work_id`로 Technical Gate를 다시 요청한다. 이 새 논리 작업의 첫 attempt는 `attempt_number=1`, `trigger=INITIAL`이다. provider timeout처럼 입력이 그대로인 일반 retry만 같은 `work_id`에서 새 `attempt_id`, `trigger=RETRY`를 사용한다. Rule Scope Gate와 Reporter는 앞 단계의 `COMMITTED` output reference만 읽는다. `PREPARED`, 취소된 attempt, 오래된 input hash와 다른 workspace/commit 결과는 다음 단계로 전달하지 않는다.
+Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니다. 현재 Technical Gate work는 `TechnicalEvidenceReview.status=REVISE`를 exact output으로 atomic commit하고 `SUCCEEDED`로 끝낸 뒤 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 직접 전달한다. runtime은 기존 종료 VERIFICATION work를 되돌리지 않고 증가한 generation의 새 VERIFICATION work를 등록하며, 같은 CAS transition에서 `HypothesisProcessState`를 `TERMINAL -> VERIFYING`으로 바꾸고 새 work를 가리킨다. Verification은 새 근거를 반영하고, final TRUE 후보라면 새 generation의 동적 재현 요청과 validated PoC를 다시 확보한다. 그 뒤 새 `VerificationResult`와 새 work 종료·hypothesis `TERMINAL`·current result pointer를 atomic commit하고, 필요하면 기존 CWE producer가 만든 새 `CWELabel` revision을 조정한다. 바뀐 `input_hash`·`dedupe_key`와 새 `work_id`로 Technical Gate를 다시 요청한다. 새 generation에는 동적 재현 work 하나를 다시 허용한다. 같은 work의 PoC 생성·환경 구성·실행 재시도는 새 동적 work가 아니라 새 `attempt_id`다. 이 새 논리 작업의 첫 attempt는 `attempt_number=1`, `trigger=INITIAL`이다. provider timeout처럼 입력이 그대로인 일반 retry만 같은 `work_id`에서 새 `attempt_id`, `trigger=RETRY`를 사용한다. Rule Scope Gate와 Reporter는 앞 단계의 `COMMITTED` output reference만 읽는다. `PREPARED`, 취소된 attempt, 오래된 input hash와 다른 workspace/commit 결과는 다음 단계로 전달하지 않는다.
 
-Chaining work는 각 parent의 current `PrimitiveIndexState` revision을 input으로 고정한다. 결과와 child proposal commit 직전에 index head와 current final Verification을 다시 검사하며, 탐색 중 새 Verification generation이 생겼다면 이전 Primitive record의 표면상 `ACTIVE` 값과 무관하게 `STALE_RESULT`로 거절한다.
+Chaining work는 exact Primitive와 source Verification·Technical review를 input으로 고정한다. proposal 저장 전 `source_primitive_match_id`와 parent set을 확인하고, parent 링크를 따라 만난 ancestor Primitive를 현재 순회의 후보에서 제외한다. 동일 fingerprint와 ancestor 재사용 결과는 저장하지 않는다. Primitive index 자체의 동시 갱신은 공통 `RecordMeta.revision_number`와 atomic current pointer 규칙으로 보호한다.
 
 ## retry·취소·중단 후 재개
 
@@ -206,7 +212,6 @@ Chaining work는 각 parent의 current `PrimitiveIndexState` revision을 input�
 | Verification Agent | `VerificationResult` | 새 claim의 무검증 승격, 공개 |
 | Pro Agent | `EvidenceAgentResult(role=PRO)` | 최종 verdict |
 | Con Agent | `EvidenceAgentResult(role=CON)` | 최종 verdict |
-| Reproduction Agent | `EnvironmentRecipe`, `PoCBundle`, `DynamicReproductionResult` 의미 필드 초안 | 최종 `TRUE | FALSE | HOLD`, Sandbox 외부 경계·AgentLog·공식 결과 문서 변경 |
 | Chaining Agent | `ChainingResult`, `origin=CHAINING` proposal | 일반 research, verdict/CWE/Gate/Finding/report 확정 |
 | Technical Evidence Gate | `TechnicalEvidenceReview` | Verification verdict 변경 |
 | Rule Scope Impact Gate | `RuleScopeImpactReview` | 공식 정책 없는 허용 추정 |
@@ -214,7 +219,7 @@ Chaining work는 각 parent의 current `PrimitiveIndexState` revision을 input�
 
 ## 독립성, provider와 session
 
-역할은 특정 LLM 공급 방식에 묶지 않는다. Agent Runtime은 `LLMProviderAdapter`를 통해 membership session 또는 API provider를 명시적으로 선택한다. Reproduction Agent는 한 동적 재현 attempt 안에서 환경 수정·PoC 개선·재시도를 이어갈 수 있지만 다른 가설의 session·writable Sandbox state를 물려받지 않는다. Pro와 Con, Verification과 Gate, 두 Gate, Verification과 Chaining, Reporter는 기존 독립 session 원칙을 유지한다.
+역할은 특정 LLM 공급 방식에 묶지 않는다. Agent Runtime은 `LLMProviderAdapter`를 통해 membership session 또는 API provider를 명시적으로 선택한다. 서로 반대되는 판단의 독립성을 위해 Pro와 Con, Verification과 Gate, 두 Gate, Verification과 Chaining, Reporter는 기본적으로 NEW session을 사용한다. 같은 역할·가설에서 추가 문맥을 조회하거나 같은 Verification이 Gate revision을 보완할 때만 `AUTO` 정책이 제한적으로 RESUME을 선택할 수 있다.
 
 세션 재사용은 token 절감 가능성이 있지만 confirmation bias와 prompt contamination 위험이 있다. 실제 정책은 설정 가능해야 하고 선택 결과와 비교 지표를 로그에 남긴다.
 
@@ -222,4 +227,4 @@ Pro와 Con은 session만 분리하지 않는다. trusted prompt builder가 같�
 
 ## prompt-injection 경계
 
-저장소 내용, 도구 message, README와 주석, 모든 LLM output, provider 응답과 Sandbox output은 모두 비신뢰 분석 데이터다. Agent instruction이나 실행 권한으로 승격하지 않는다. Orchestration은 system instruction과 data 구분을 유지하고 Runtime Validator가 structured output과 action policy를 검사한다. Reproduction Agent가 Sandbox 내부 command와 파일을 자유롭게 바꿀 수 있어도 Sandbox Controller가 강제하는 host·Docker daemon·secret·외부 network profile·R8 resource limit·cleanup lifecycle은 바꿀 수 없다. 비신뢰 입력은 provider·model·session·Gate 순서·budget·Reporter와 자동화 종료 경계도 변경하지 못한다. 이런 변경 지시는 `UNTRUSTED_INSTRUCTION` 또는 `SANDBOX_POLICY_DENIED`로 기록하고 실행하지 않는다.
+저장소 내용, 도구 message, README와 주석, 모든 LLM output, provider 응답과 Sandbox output은 모두 비신뢰 분석 데이터다. Agent instruction이나 실행 권한으로 승격하지 않는다. Orchestration은 system instruction과 data 구분을 유지하고 Runtime Validator가 structured output과 action policy를 검사한다. Sandbox Controller는 비신뢰 입력이 image·command·file·network·resource·cleanup 정책을 바꾸지 못하게 한다. 비신뢰 입력은 provider·model·session·Gate 순서·budget·Reporter와 자동화 종료 경계도 변경하지 못한다. 이런 변경 지시는 `UNTRUSTED_INSTRUCTION`으로 기록하고 실행하지 않는다.

@@ -115,11 +115,14 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 
 ## 7. 동적 재현과 PoC
 
-- 재현 범위: `{실제로 수행한 범위와 한계; mode 계약 채택 시 optional mode}`
+- 요청 목적: `{POC_CONFIRMATION | VERDICT_EVIDENCE}`
+- R7 실행 모드: `{LIMITED_REPRO | FULL_REPRO}`
 - Docker 환경: `{image digest and relevant configuration}`
 - 전제: `{account, data, route or build condition}`
 - 실행 상태: `{SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED}`
 - 관측 결과: `{SUPPORTED | DISPROVED | INCONCLUSIVE}`
+- PoC candidate reference: `{poc_candidate_ref.record_id}`
+- validated PoC reference: `{poc_ref.record_id; SUCCEEDED + SUPPORTED인 final TRUE에 필수}`
 - 가설 연결: `{hypothesis evidence refs와 관측이 지지·반증하는 정확한 claim}`
 - 환경 차이/제한: `{limitations}`
 
@@ -129,10 +132,10 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 2. `{action}`
 3. `{observation}`
 
-### 입력 또는 요청
+### 검증된 PoC 입력
 
 ```text
-{redacted PoC input or request}
+{redacted input from the exact validated PoC}
 ```
 
 실제 credential, session cookie, API key와 개인정보를 포함하지 않는다.
@@ -149,11 +152,11 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 
 - Verification이 조사한 bypass/alternate/impact: `{validated outcomes or none}`
 - Verification-origin 새 가설: `{proposal and validated child refs or none}`
-- Gate-qualified PROVIDED Primitive: `{primitive refs and exact Gate provenance}`
-- Chaining 조합: `{TRUE_HOLD | TRUE_TRUE, upstream PROVIDED, downstream requirement/precondition, current PrimitiveIndexState refs, match refs or skipped}`
+- Chaining에 사용한 Primitive: `{primitive refs and exact Verification/Technical review provenance}`
+- Chaining 조합: `{upstream result Primitive, downstream input Primitive, matched_input_id, match refs or skipped}`
 - Chaining-origin 새 가설: `{proposal and validated child refs or none}`
 - 아직 미검증: `{candidate refs; report claim으로 사용하지 않음}`
-- match 없음 또는 제한 중단: `{no-match/bounded-stop reason if applicable}`
+- match 없음 또는 전역 예산 중단: `{no-match/global-budget reason if applicable}`
 
 ## 10. 두 Gate 검토
 

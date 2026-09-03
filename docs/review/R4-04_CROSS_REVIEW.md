@@ -39,7 +39,7 @@ PR #47은 문서 자동 검사와 기술 검토를 통과했지만 GitHub 교차
 
 | 역할 | 담당자 | 이번에 확인할 내용 | 현재 상태 | GitHub 증거 |
 |---|---|---|---|---|
-| R1 LLM 탐색·체이닝 | `@baeseungwon1010` | 가설 생성, HOLD·TRUE+TRUE 체이닝 입력과 새 가설 재검증 조건 | `RECHECK_REQUIRED` | [이전 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5489231154) 뒤 `validation_checks`의 stable ID 계약이 추가되어 최종 SHA 재검토 필요 |
+| R1 LLM 탐색·체이닝 | `@baeseungwon1010` | 가설 생성, HOLD 입력·TRUE 결과의 체이닝과 새 가설 재검증 조건 | `RECHECK_REQUIRED` | [이전 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5489231154) 뒤 `validation_checks`의 stable ID 계약이 추가되어 최종 SHA 재검토 필요 |
 | R2 정적분석·컨텍스트 | `@zv9uvr` | AST/SAST 사실, 코드 위치, 호출 경로, Context 오류·누락 범위와 공통 식별자 연결 | `RECHECK_REQUIRED` | [b037bd3 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5495159036) 뒤 Context 완료 결과와 실패 상태 계약이 추가되어 최종 SHA 재검토 필요 |
 | R3 통합 구현 | `@YHS-Sec` | 상태 전이, 재시도·복구, 계약을 실제 코드로 구현할 수 있는지 | `RECHECK_REQUIRED` | [이전 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5494246304) 뒤 `ValidationCheckResult`와 가설 `FAILED` atomic transition이 추가되어 최종 SHA 재검토 필요 |
 | R4 PM·아키텍처 | `@taehyeon-git` | 다른 역할의 검토 증거, 최신 main과 환경 계약 병합 결과, 최종 commit과 완료 조건 확인 | `RECHECK_REQUIRED` | 최신 main 동기화와 R6–R7 환경 계약 추가 뒤 최종 SHA 재확인 필요 |
@@ -55,10 +55,11 @@ R4 담당자는 이 PR의 작성자이므로 자신의 확인만으로 교차 �
 ## 이번 수정 요청의 처리 방향
 
 - 최신 `main`을 병합해 충돌을 해결하고 R4의 exact Sandbox 정책·환경·로그·PoC 전달 계약을 사용합니다.
-- R6가 만든 `EnvironmentRequirements`와 plan의 `environment_requirements_ref`, R7의 `EnvironmentCheck`를 exact revision으로 연결합니다.
+- R6가 만든 `DynamicReproductionRequest`, R7이 만든 `EnvironmentRequirements`·plan·PoC candidate와 실제 `EnvironmentCheck`를 exact revision으로 연결합니다.
+- 모든 final TRUE에는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated PoC가 필요하고, 실패는 verdict 없이 `BLOCKED | FAILED`로 처리합니다.
 - 필수 환경 불일치·구성 실패는 공격 전에 멈추고 `INCONCLUSIVE`로 R6에 반환하며 가설 `FALSE`로 바꾸지 않습니다.
 - 정책이 없거나 `STALE | UNVERIFIED`이면 Rule Scope Gate를 `UNCERTAIN + DENY`로 고정합니다.
-- `POLICY_BLOCKED`는 자동 `REJECT`가 아니며 Technical Gate가 근거 충분성에 따라 `ACCEPT | REVISE | REJECT`를 구분합니다.
+- `POLICY_BLOCKED`는 가설 반증이나 자동 `REJECT`가 아닙니다. 다만 validated PoC가 없으므로 final verdict와 Technical Gate 없이 `BLOCKED | FAILED`로 처리합니다.
 - Finding이 없으면 Reporter를 호출하지 않고 `AnalysisRunResult.report_draft_refs=[]`와 `REPORT_NOT_READY` 원인을 보존합니다.
 - upstream revision이 바뀐 ReportDraft는 current `AnalysisRunResult`에 재사용하지 않습니다.
 - ReportDraft 생성 뒤 Agent 자동화는 끝나며 사람의 검토·수정·제출·공개는 자동화 밖에서 수행합니다.

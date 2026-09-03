@@ -21,7 +21,7 @@
 | 같은 코드 버전 연결 | 실행별 clone과 `commit_id`로 facts, context, verdict, PoC 연결 |
 | AST/SAST 정규화 | LLM이 사용할 entity/location/path/auth 사실 계층 |
 | 역할 분리된 LLM 분석 | Hypothesis, Verification, Pro/Con, Chaining, 두 Gate, Reporter |
-| 격리된 동적 검증 | R7 외부 안전 경계와 자율 Reproduction Agent를 가진 Docker; LIMITED/FULL mode 계약 여부는 PL 검토 중 |
+| 격리된 동적 검증 | R6 목적별 요청 → R7 `LIMITED_REPRO | FULL_REPRO` 실행; 모든 final TRUE에 validated PoC 필수 |
 | 조건부 연계 탐색 | Primitive DB match가 새 가설만 생성 |
 | 자동화와 사람 과정의 분리 | 자동화는 ReportDraft·AnalysisRunResult에서 끝나고 이후 검토·제출·공개는 사람이 수행 |
 | 오류·근거·자원 보존 | normalized invocation과 run/debug records |
@@ -49,7 +49,7 @@
 | 선택 code fragment 전달 | 같은 workspace와 commit의 on-demand location retrieval |
 | Semantic Judge/Synthesis | bypass-aware Verification Agent |
 | Proof Router/Resolver | VerificationResult의 evidence/gap/restriction |
-| confirmed/held 목록 | HOLD REQUIRED, Gate-qualified TRUE PROVIDED와 current `PrimitiveIndexState` records |
+| confirmed/held 목록 | `result=null`인 HOLD Primitive와 `result`가 있는 Technical-accepted TRUE Primitive, current `PrimitiveIndexState` |
 | chaining 내부 탐색 | matching 전용 Chaining Agent + 새 가설 환류 |
 | 하나의 LLM Gate | Technical Evidence Gate + Rule Scope Impact Gate |
 | membership 중심 연결 | Membership/API 공통 `LLMProviderAdapter` |
@@ -89,11 +89,11 @@ v4 TRUE | FALSE | PENDING
 2. Context Retrieval Service와 location audit
 3. constrained Hypothesis output validation
 4. Verification과 BASIC/CONDITIONAL debate
-5. Docker LIMITED/FULL reproduction
+5. R6 `DynamicReproductionRequest`, R7 LIMITED/FULL plan·PoC candidate, Docker 실행과 validated PoC
 6. ACTIVE `VerificationAssignment` 기반 material claim과 새 VERIFICATION work를 만드는 Technical `REVISE` loop
 7. CWE와 Technical Evidence Gate
-8. official `ProgramPolicyRecord` 수집 경계, Rule Scope Impact Gate와 Gate-qualified PROVIDED admission
-9. Primitive DB와 TRUE+HOLD, 앞 TRUE PROVIDED→뒤 TRUE exact precondition Chaining loop
+8. Technical `ACCEPT` 기반 result Primitive admission과 독립된 official `ProgramPolicyRecord`·Rule Scope Impact Gate
+9. Primitive DB와 upstream `result`→downstream `input` Chaining loop, 계보 기반 순환 제외
 10. provider adapters, session policy와 Logging Proxy/parser
 11. Reporter와 result stores, `ReportDraft` 뒤 Agent 자동화 종료 경계
 

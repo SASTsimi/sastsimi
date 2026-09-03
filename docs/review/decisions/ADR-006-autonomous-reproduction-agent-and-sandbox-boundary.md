@@ -1,10 +1,10 @@
-# ADR-004. 자율 Reproduction Agent와 Sandbox 외부 안전 경계
+# ADR-006. 자율 Reproduction Agent와 Sandbox 외부 안전 경계
 
 - 상태: `PROPOSED`
 - 결정 담당: R7 동적검증·Sandbox
 - 필수 검토: R4 PM·아키텍처·공통 계약, R6 검증·반박, R8 데이터·평가·예산
 - 추가 검토: R3 통합 개발, R5 Gate·보고
-- 일부 대체: ADR-002의 command/step 사전 정책 검사, ADR-003의 exact step 실행·mismatch 즉시 중단 부분
+- 관련 결정: ADR-004의 R6 request/R7 생산 권한과 validated PoC 의무를 유지하면서 ADR-002의 command/step 사전 정책 검사를 대체
 
 ## Context
 
@@ -33,9 +33,9 @@ R7의 목적은 가설의 최종 취약점 판정이 아니라, 격리 환경에
 
 후보 결정은 C다.
 
-- R6는 `EnvironmentRequirements`, 가설, 재현 목표, Sandbox profile과 관련 context만 `ReproductionPlan`으로 전달한다.
-- R6는 exact step·command·payload·cleanup policy를 전달하지 않는다.
-- R7 `REPRODUCTION_AGENT`는 환경 recipe, package·계정·fixture·mock, PoC, command, 관찰과 retry를 자율적으로 결정한다.
+- R6는 가설·purpose·goal·필수 환경·Sandbox profile과 근거를 불변 `DynamicReproductionRequest`로 전달한다.
+- R7 `REPRODUCTION_AGENT`가 exact `EnvironmentRequirements`, `LIMITED_REPRO | FULL_REPRO` mode와 `ReproductionPlan`을 생산한다. plan은 exact step·command·payload·cleanup policy를 강제하지 않는다.
+- R7 Agent는 환경 recipe, package·계정·fixture·mock, PoC candidate, command, 관찰과 retry를 자율적으로 결정한다.
 - R7은 동적 근거를 `SUPPORTED | DISPROVED | INCONCLUSIVE`로 판단한다. 최종 `TRUE | FALSE | HOLD`는 R6가 맡는다.
 - Runtime Validator는 schema·authority·identity·revision·state·budget과 exact input refs만 검사한다.
 - Sandbox Controller는 Docker socket/daemon, host mount/namespace, secret, network egress와 R8 resource profile의 외부 경계 정책만 결정·강제한다. Sandbox 생성·폐기나 Agent 호출을 수행하지 않고 Agent command·payload 의미를 사전 allowlist로 검사하지 않는다.
@@ -53,18 +53,15 @@ R7의 목적은 가설의 최종 취약점 판정이 아니라, 격리 환경에
 
 ## Result boundary
 
-- `poc_ref`는 실제 실행을 시작한 final PoC Bundle만 가리킨다. draft-only PoC는 Agent Log에 남길 수 있으나 결과 PoC가 아니다.
+- `poc_candidate_ref`는 작성·실행을 시도한 exact PoC Bundle이며 실패해도 남을 수 있다.
+- validated `poc_ref`는 `SUCCEEDED + SUPPORTED`이고 AgentLog의 `POC_EXECUTE`가 exact candidate를 실행한 경우에만 같은 bundle revision을 가리킨다. 그 밖의 상태에서는 `poc_ref=null`이다.
 - plan이 모순되거나 필수 문맥이 없으면 `plan_execution_status=NEEDS_REVISION`과 string `plan_issues`를 결과에 포함한다. 별도 `PlanIssue` record와 고정 issue code enum은 만들지 않는다.
 - 넓은 `failure_category`와 자유 형식 `failure_reason`을 사용한다.
 - 환경·실행·정책·timeout 실패와 빈 출력만으로 `DISPROVED` 또는 최종 `FALSE`를 만들지 않는다.
 
-## Pending review decisions
+## Open decision
 
-- `LIMITED_REPRO | FULL_REPRO` mode를 공통 계약에 유지할지
-- 가설마다 반드시 새 Docker container를 만들지, 다른 격리 lifecycle을 허용할지
-- `requested_evidence` 선택 필드를 유지할지
-
-정적 dependency scanner와 사전 package prefetch 연동은 R2와 별도 협의하며 이 ADR 승인 전제나 이번 PR reviewer 요청에 포함하지 않는다.
+정적 Dependency Scanner와 사전 package prefetch를 R2와 연동할지는 별도 협의한다. mode는 R7이 선택하는 `LIMITED_REPRO | FULL_REPRO`로 유지하고, 가설마다 별도의 clean Sandbox와 writable state를 생성하며, `requested_evidence`는 Agent를 편향시키지 않는 선택 필드로 둔다.
 
 ## Validation before acceptance
 
@@ -72,7 +69,7 @@ R7의 목적은 가설의 최종 취약점 판정이 아니라, 격리 환경에
 - Docker socket·host path·secret·profile 밖 egress 차단
 - R8 profile 적용과 실제 사용량·timeout 기록
 - 재사용 가능한 exact recipe revision·built image digest와 같은 attempt의 environment·Agent Log·PoC·cleanup 연결
-- 실행하지 않은 PoC draft를 결과에 연결하지 않음
+- 실패·미실행 PoC를 validated `poc_ref`로 승격하지 않음
 - persistent baseline과 ephemeral cleanup lifecycle 혼합 차단
 - Agent Log에 hidden chain-of-thought를 요구·저장하지 않음
 - 환경·실행 실패를 반증이나 `FALSE`로 변환하지 않음

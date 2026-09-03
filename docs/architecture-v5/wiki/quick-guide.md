@@ -14,9 +14,9 @@
 - 저비용 가설 Agent는 ‘아직 최종 결과가 아님’을 뜻하는 `HYPOTHESIS_ONLY / NON_FINAL` 형식만 출력한다.
 - 필요한 코드는 같은 `workspace_id`와 `commit_id`에서 코드 요소·위치·경로를 기준으로 조회한다.
 - Orchestration은 가설을 검증·등록하고 Verification에 배정하는 데서 가설별 역할이 끝난다.
-- 검증(`Verification`)은 한 가설의 Context·찬반, 환경 요구사항·최소 `ReproductionPlan`, 판정·Gate 보완·연계 handoff를 관리한다. Runtime Validator는 current references와 R7 호출 전제를 확인하고, Sandbox Controller는 Sandbox 외부 경계 정책을 결정·강제한다. R7 Sandbox Setup Automation이 clean Sandbox를 생성하고 Reproduction Agent는 그 내부에서 환경·PoC·실행·관찰·retry를 자율 수행한다. Reproduction Session Manager는 실행을 통제하지 않고 event 기록과 최종 동적 결과 문서화만 담당한다.
+- 검증(`Verification`)은 한 가설의 Context·찬반, 동적 재현 목적 요청·결과 소비·판정·Gate 보완·연계 handoff를 관리한다. R7은 환경 요구사항·mode·실행 계획·PoC candidate를 만들고 Sandbox에서 실행한다. 모든 final TRUE에는 재현 성공과 validated PoC가 필요하며, 생성·환경·실행 실패는 verdict 없이 `BLOCKED | FAILED`다.
 - 운영 기본값은 `ALWAYS_DEBATE`이며 모든 유효 가설에서 Pro/Con을 독립 NEW session으로 실행한다. BASIC과 조건부 debate는 격리된 평가 전용이다.
-- HOLD의 필요 조건은 즉시 REQUIRED가 된다. TRUE는 두 Gate를 정상 통과한 exact revision만 PROVIDED가 된다. TRUE+TRUE는 앞 PROVIDED가 뒤 TRUE의 exact 선행 조건을 충족할 때만 연결한다.
+- HOLD의 필요 조건은 `inputs`, 결과는 `null`인 Primitive로 즉시 저장한다. TRUE는 validated PoC와 Technical `ACCEPT`가 있는 exact revision만 `result`가 있는 Primitive가 된다. 한 Primitive의 result가 다른 Primitive의 특정 input을 충족할 때만 연결한다.
 - 기술 근거 검토와 공식 정책·영향 검토를 분리한다.
 - 공식 프로그램 정책이 없으면 rule/scope는 `UNCERTAIN`, report permission은 `DENY`다.
 - Membership session과 API는 공통 provider adapter의 선택지다.
@@ -27,11 +27,12 @@
 ```text
 Repository → Repository Loader → CodeWorkspace → AST and SAST → StaticFactBundle
 → constrained hypotheses → trusted registration → Orchestration assigns Verification
-→ Verification owns context → Pro/Con → EnvironmentRequirements and ReproductionPlan
-→ runtime approval → R7 environment comparison → exact attack execution → Verification TRUE/FALSE/HOLD
-→ HOLD REQUIRED → Chaining
-→ TRUE → CWE → Technical Gate → Rule Scope Impact Gate
-→ gate-qualified TRUE PROVIDED → Chaining → new hypothesis loop
+→ Verification owns context → Pro/Con → POC_CONFIRMATION or VERDICT_EVIDENCE request
+→ R7 requirements plan and PoC candidate → runtime approval → exact attack execution
+→ supported success and validated PoC → Verification TRUE; disproof or inconclusive → FALSE/HOLD
+→ HOLD inputs plus null result Primitive → Chaining
+→ TRUE → CWE → Technical Gate → result Primitive → Chaining → new hypothesis loop
+→ Technical ACCEPT → independent Rule Scope Impact Gate for report eligibility
 → ReportDraft when allowed → AnalysisRunResult → Agent automation end
 ```
 

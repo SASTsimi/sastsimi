@@ -20,14 +20,14 @@
 | `hypotheses` | initial/child/chained proposal, validation state와 parent 관계 |
 | `contexts` | `CodeContextRequest/Response`, 실제 반환·열람 위치 |
 | `verifications` | Pro/Con, initial/final verdict, restriction/capability, CWE |
-| `primitives` | HeldHypothesis, Gate-qualified ConfirmedCapability와 exact admission provenance |
-| `chaining` | `ChainingResult`, TRUE+HOLD·TRUE+TRUE match와 child proposal validation state |
+| `primitives` | result 없는 HOLD 조건, Technical-accepted TRUE 능력과 exact Verification·Technical provenance |
+| `chaining` | `ChainingResult`, upstream result→downstream input match와 child proposal validation state |
 | `gates` | Technical 및 Rule Scope Impact review와 Verification·CWELabel·정책 input revision refs |
 | `policies` | 공식 `ProgramPolicyRecord`과 source refs |
 | `reports` | 허용된 내부 `ReportDraft`와 두 Gate가 공통으로 본 CWELabel revision ref |
 | `actions` | `ActionRequest`, validator의 `ActionDecision`, check와 일회성 사용·outcome refs |
 | `invocations` | normalized `LLMInvocationLog`와 safe provider/session metadata |
-| `dynamic` | sandbox 실행, PoC, output refs와 cleanup |
+| `dynamic` | `DynamicReproductionRequest`, R7 환경 요구사항·계획·PoC candidate, Sandbox 실행, validated PoC, output refs와 cleanup |
 | `runs` | 전체 요약, `WorkExecutionState`·attempt·transition commit, 자원·오류·시간·debug event |
 
 Primitive DB의 confirmed는 사람 승인 Finding이 아니며 held는 실행 queue가 아니다.
@@ -91,9 +91,9 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 ### Verification-owned exploration/chaining
 
 - Verification-origin material claim 수와 재검증 결과
-- ACTIVE VerificationAssignment, HOLD REQUIRED, Gate-qualified TRUE PROVIDED, PrimitiveIndexState version과 TRUE+HOLD·TRUE+TRUE match·stale 거절 수
-- Gate 전·stale TRUE admission 차단 수와 no-match reason
-- chain depth·duplicate·budget 제한 도달
+- ACTIVE VerificationAssignment, result 없는 HOLD Primitive, result 있는 Technical-accepted TRUE Primitive와 upstream result→downstream input match 수
+- Gate 전·Technical 비정상 TRUE admission 차단 수, entity·privilege 근거 부족과 no-match reason
+- `source_primitive_match_id` 계보, ancestor Primitive 순환 제외·duplicate fingerprint와 R8 전체 예산 중단
 
 ### Gates/reporting
 
@@ -106,10 +106,10 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 
 - 역할·provider·model별 invocation, token/동등 usage와 elapsed time
 - AST/SAST별 `SUCCEEDED | PARTIAL | FAILED | SKIPPED`, 실제 분석·제외 path/language와 coverage
-- R8 profile별 CPU/memory/disk/network/time, `agent_invoked`, 환경 생성 여부, recipe build/retry, requirement `PASSED | FAILED | NOT_CHECKED` 수와 cleanup
-- exact `environment_requirements_ref`·`environment_recipe_ref`·`agent_log_ref`·`poc_ref`·`policy_decision_ref`·`environment_ref`·`cleanup_log_ref`의 data kind, record revision과 content hash
-- Agent Log의 shell·file/environment change·image build·PoC create/update/execute·observation·retry·cleanup event 수와 실패·timeout 분포. 숨은 사고 과정은 수집하지 않음
-- `PERSISTENT_BASELINE` recipe/image 보존 수, `SESSION_EPHEMERAL` cleanup 성공·실패와 잔여 자원 수
+- 목적별 `POC_CONFIRMATION | VERDICT_EVIDENCE` 요청 수, generation당 동적 work 수, 같은 work의 attempt 수
+- sandbox mode별 CPU/memory/disk/network/time, `agent_invoked`, 실제 환경 생성 여부, requirement `MATCH | MISMATCH | NOT_CHECKED | ERROR` 수와 cleanup
+- exact `dynamic_request_ref`·`environment_requirements_ref`·`environment_recipe_ref`·`poc_candidate_ref`·validated `poc_ref`·`policy_decision_ref`·`environment_ref`·`agent_log_ref`의 data kind, record revision과 content hash
+- initial TRUE 뒤 validated PoC 성공률, PoC candidate 생성·환경 구성·실행 실패와 `BLOCKED | FAILED` 원인
 - `cleanup_required`와 `SUCCEEDED | FAILED | NOT_REQUIRED`; 자원이 생겼는데 `NOT_REQUIRED`로 제출되어 거절된 횟수
 
 provider가 token이나 비용을 제공하지 않으면 추정치를 확정값처럼 표시하지 않고 metric source와 unavailable reason을 남긴다.
@@ -128,8 +128,8 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 - action type·요청 역할별 `ALLOW | DENY` 수와 실패한 `ActionCheck.reason_code`
 - `ALLOW` decision의 `UNUSED | USED`, outcome 누락과 replay 거절 수
 - `AUTHORITY_DENIED`, Gate 순서·Reporter·Sandbox·provider·file 차단 수
-- Sandbox 계획·환경 요구사항 revision 변경, 결과의 정책·환경·PoC·AgentLog·cleanup 불일치와 동적 결과 생산 역할 위반 수
-- Agent 미호출인데 AgentLog가 있거나 Agent 호출 뒤 log가 없는 조합, 실제 환경·cleanup 상태와 reference가 어긋나 저장이 거절된 횟수
+- Sandbox 계획 revision 변경, 계획 밖 step·공격 입력, 결과 정책·환경·PoC·log·cleanup 불일치와 동적 결과 생산 역할 위반 수
+- Runner 미호출인데 step log가 있거나 Runner 호출 뒤 log가 없는 조합, 실제 환경·cleanup 상태와 reference가 어긋나 저장이 거절된 횟수
 - ReportDraft의 exact provenance, restriction·limitation·unresolved condition과 redaction 검사 실패 수
 - ReportDraft 뒤 허용되지 않은 Agent action 요청과 오래된 draft의 current 결과 승격 차단 수
 
@@ -181,9 +181,9 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 
 ## AnalysisRunResult
 
-최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, INITIAL·VERIFICATION·CHAINING·invalid hypothesis 수, verdict별 수, `failed_hypothesis_count`, 두 Gate별 수, PoC/report refs, 공식 정책 상태, Primitive/Chaining 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. `failed_hypothesis_count`는 final verdict 없이 `HypothesisProcessState.status=FAILED`로 끝난 가설 수이며 verdict별 수와 섞지 않는다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
+최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, INITIAL·VERIFICATION·CHAINING·invalid hypothesis 수, verdict별 수, `failed_hypothesis_count`, 두 Gate별 수, 동적 재현 request·result·PoC candidate·validated PoC·report refs, 공식 정책 상태, Primitive/Chaining 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. 실패한 PoC candidate도 validated PoC로 승격하지 않은 채 request·attempt·실행 로그와 함께 추적한다. `failed_hypothesis_count`는 final verdict 없이 `HypothesisProcessState.status=FAILED`로 끝난 가설 수이며 verdict별 수와 섞지 않는다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
 
-Reporter가 마지막 Agent 산출물인 `ReportDraft`를 저장한 뒤, 신뢰 runtime이 exact `AnalysisRunResult`를 만든다. 이 결과에는 Finding·Verification, 두 Gate, 정책·CWE, dynamic·redacted PoC, current ReportDraft, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. Finding이 아직 없으면 Reporter를 호출하지 않고 `finding_refs=[]`, `report_draft_refs=[]`와 관련 `REPORT_NOT_READY` 오류·상태를 보존한다. 결과와 `AnalysisRunState`를 atomic하게 확정하면 Agent 자동화가 끝난다.
+Reporter가 마지막 Agent 산출물인 `ReportDraft`를 저장한 뒤, 신뢰 runtime이 exact `AnalysisRunResult`를 만든다. 이 결과에는 Finding·Verification, 두 Gate, 정책·CWE, 동적 재현 request·result·PoC candidate·redacted validated PoC, current ReportDraft, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. Finding이 아직 없으면 Reporter를 호출하지 않고 `finding_refs=[]`, `report_draft_refs=[]`와 관련 `REPORT_NOT_READY` 오류·상태를 보존한다. 결과와 `AnalysisRunState`를 atomic하게 확정하면 Agent 자동화가 끝난다.
 
 ReportDraft가 가리킨 Finding·Verification·CWE·두 Gate·정책 중 하나라도 새 current revision으로 바뀌면 그 초안은 즉시 감사 이력으로만 남고 `AnalysisRunResult.report_draft_refs`의 current 목록에서 제외한다. 새 exact dependency chain으로 Gate와 Reporter를 다시 실행해 새 초안을 만들기 전에는 current 결과로 사용할 수 없다. 자동화 종료 뒤 사람의 검토·수정·제출·공개는 이 저장 lifecycle 밖에서 수행하며, 자동 action이나 상태를 만들지 않는다.
 
@@ -208,12 +208,14 @@ ReportDraft가 가리킨 Finding·Verification·CWE·두 Gate·정책 중 하나
 | provider 인증 필요 | `BLOCKED`, `waiting_for=AUTH` | 재인증 또는 승인된 failover 전까지 대기, verdict 변경 금지 |
 | rate limit·timeout | retry 가능하면 `BLOCKED`, 아니면 `FAILED` | backoff·예산 확인 뒤 새 attempt, 이전 실패 보존 |
 | Context 조회 실패·timeout·권한 오류 | 필수 검증을 아직 완료하지 못했고 retry 가능하면 work `BLOCKED`와 가설 `VERIFYING`, 더 시도할 수 없으면 work·가설 `FAILED`; 대체 조회·다른 정상 근거로 필수 검증을 완료할 수 있으면 현재 Verification 계속 | `AnalysisError`와 영향 범위 `DataGap`을 함께 남긴다. 오류 자체는 verdict 근거가 아니며, 필수 검증을 완료하지 못하면 final `VerificationResult`를 만들지 않음 |
-| Sandbox 환경 구성 실패 | `FAILED + failure_category=ENVIRONMENT` | 동적 반증이 아님. exact recipe·AgentLog·실제 차이와 자유 형식 `failure_reason`을 R6에 반환 |
-| 필수 환경 요구사항을 만족하지 못함 | `FAILED + failure_category=ENVIRONMENT`, `environment_check=FAILED | NOT_CHECKED` | Agent의 제한 retry 뒤에도 만들지 못한 실제 차이를 R6에 반환. recipe를 보완하면 새 version·image digest와 clean Sandbox attempt를 만든다 |
-| Sandbox 부분 실행 | `PARTIAL`, 신뢰 결과와 `limitations` 저장 | 실제 오류가 없으면 `error_ids`·`gap_ids`를 만들지 않고 Verification이 한계와 관측을 함께 판단 |
-| Sandbox 외부 경계 차단 결과 | 공통 work `SUCCEEDED`, 동적 결과 `BLOCKED + failure_category=POLICY` | exact `policy_decision_ref`를 요구한다. Agent가 호출되지 않았으면 `agent_log_ref=null`, `poc_ref=null`; `INCONCLUSIVE`로 Verification에 전달 |
+| PoC candidate 생성 실패 | retry 가능하면 동적 work `BLOCKED`, 불가능하거나 한도 소진이면 `FAILED` | `poc_candidate_ref=null`, validated `poc_ref=null`; final verdict와 Gate를 만들지 않음 |
+| Sandbox 환경 구성 실패 | retry·외부 수정 가능하면 `BLOCKED`, 복구 불가능하면 `FAILED`; `failure_reason=ENVIRONMENT_SETUP` | 동적 반증이 아니며 validated `poc_ref=null`; 같은 work의 새 attempt로만 재시도 |
+| 필수 환경 요구사항 차이·미확인·비교 오류 | retry·외부 수정 가능하면 `BLOCKED`, 복구 불가능하면 `FAILED`; `sandbox_environment=MISMATCH | ERROR` | 공격 단계를 시작하지 않고 exact 차이를 R7에 반환. R7이 같은 request 아래 새 requirements·plan·attempt를 만들며 R6는 생산하지 않음 |
+| Sandbox 부분 실행 | `PARTIAL`, 신뢰 결과와 `limitations` 저장 | validated `poc_ref=null`; 정상 관측이 결론 불충분이면 R6가 근거와 남은 조건을 가진 HOLD를 만들 수 있음 |
+| Sandbox 정책 차단 결과 | 동적 결과와 공통 work `BLOCKED`, `failure_category=POLICY` | exact `policy_decision_ref`를 요구한다. Agent가 호출되지 않았으면 `agent_log_ref=null`이어도 Session Manager가 결과를 확정하며 validated `poc_ref`와 final verdict·Gate는 만들지 않음 |
+| PoC 실행 실패 | retry 가능하면 동적 work `BLOCKED`, 불가능하거나 한도 소진이면 `FAILED` | candidate와 log는 보존하되 validated `poc_ref=null`; `FALSE | HOLD`로 변환하지 않고 Gate 금지 |
 | Sandbox 실행 취소 | 공통 work와 동적 결과 `CANCELLED` | 취소 결과를 같은 atomic transition에서 저장하고 이후 늦은 결과는 격리 |
-| Sandbox plan·요구사항·정책·recipe·AgentLog·PoC·cleanup 불일치 | 결과 저장 action `DENY` | recipe의 exact revision·built image digest와 실행 artifact의 같은 attempt·nullable reference·lifecycle 조합을 검사해 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
+| Sandbox 요청·계획·요구사항·정책·환경·PoC·실행 log·cleanup 불일치 | 결과 저장 action `DENY` | request와 requirements revision, 항목별 비교, candidate/validated PoC, nullable reference와 lifecycle 조합까지 검사해 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
 | 정책 조회 실패 또는 정책 최신성 `STALE | UNVERIFIED` | policy work `FAILED` 또는 현재 상태 기록 | 기술 verdict 유지, Rule Scope `UNCERTAIN + DENY`, Reporter 차단. 오래된 정책은 감사 자료로만 보존 |
 | Technical Gate 실행 오류·보완 한도 초과 | Gate work `FAILED` | 기술 verdict 유지, Rule Scope Gate와 Reporter 차단 |
 | Rule Scope Gate 실행 오류 | Gate work `FAILED` | 기술 verdict 유지, Reporter 차단 |
@@ -253,8 +255,9 @@ Context 조회 실패·timeout·권한 오류는 다음 기준으로 처리한�
 | `AUTH_REQUIRED` | provider adapter | LLM 호출 중단 | 사용자 재인증 뒤 새 시도 |
 | `RATE_LIMITED` | provider adapter | LLM 호출 지연·중단 | backoff 또는 명시적 fallback |
 | `TIMED_OUT` | 각 runtime | 해당 작업 시간 초과 | 예산 안에서 새 시도 또는 중단 |
-| `SANDBOX_ERROR` | Sandbox runtime | 동적 재현 `FAILED` | 안전 조건 확인 뒤 제한 retry |
-| `ENVIRONMENT_MISMATCH` | R7 Sandbox 환경 비교기 | 필수 조건이 다르거나 확인되지 않아 공격 단계 금지 | R6가 exact 차이를 검토하고, 조건 변경이면 새 requirements와 이를 가리키는 새 plan을 함께 저장한 뒤 새 실행 요청 |
+| `POC_GENERATION_FAILED` | R7 PoC 생성기 | validated PoC와 final verdict 없음 | 같은 동적 work에서 제한 retry; 불가능하면 `FAILED` |
+| `SANDBOX_ERROR` | Sandbox runtime | validated PoC와 final verdict 없음 | retry 가능하면 같은 work `BLOCKED`, 불가능하면 `FAILED` |
+| `ENVIRONMENT_MISMATCH` | R7 Sandbox 환경 비교기 | 필수 조건이 다르거나 확인되지 않아 공격 단계 금지 | R7이 exact 차이를 검토하고 같은 request·work의 새 attempt에 요구사항과 계획을 다시 생산 |
 | `CHAINING_ERROR` | Chaining runtime | matching 실패, 부모 verdict 유지 | 제한 retry 또는 no-match/실패 기록 |
 | `TECHNICAL_GATE_ERROR` | Technical Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
 | `POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 Gate `UNCERTAIN + DENY` | 공식 출처 재확인 |
@@ -277,7 +280,7 @@ Context 조회 실패·timeout·권한 오류는 다음 기준으로 처리한�
 | `REPORT_NOT_READY` | runtime validator | Reporter 호출 금지, 기술 verdict 유지 | Rule Scope와 report 조건 보완 |
 | `TOOL_NOT_ALLOWED` | tool validator | tool·command 실행 금지 | allowlist의 안전한 도구로 새 요청 |
 | `FILE_ACCESS_DENIED` | path validator | workspace 밖 파일 접근 금지 | workspace 상대 허용 경로로 새 요청 |
-| `SANDBOX_POLICY_DENIED` | Sandbox Controller 외부 경계 정책 | 외부 경계를 벗어난 실행 또는 network 변경 금지 | 승인된 image·network·resource profile 사용 |
+| `SANDBOX_POLICY_DENIED` | Sandbox Controller policy validator | 동적 실행 또는 network 변경 금지 | 승인된 image·network·resource profile 사용 |
 | `PROVIDER_PROFILE_DENIED` | provider policy validator | LLM 호출·silent failover 금지 | 허용 profile과 explicit 새 action 사용 |
 | `UNTRUSTED_INSTRUCTION` | prompt/action validator | 저장소·LLM 지시를 policy 변경으로 실행하지 않음 | data로 격리하고 승인된 설정만 사용 |
 

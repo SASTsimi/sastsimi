@@ -28,44 +28,46 @@ flowchart TB
     S08 --> S09[9 Verification requests on-demand context]
     S09 --> S10[10 Production Verification runs independent Pro and Con]
     S10 --> S11[11 Initial TRUE FALSE HOLD]
-    S11 --> S12{12 Dynamic reproduction requested}
-    S12 -->|No| S13[13 Final verdict and material claim split]
-    S12 -->|Yes| DPLAN[EnvironmentRequirements and minimal ReproductionPlan]
-    DPLAN --> DAUTH[Runtime Validator call authorization]
-    DAUTH --> DCTRL[Sandbox Controller decides external boundary policy]
-    DCTRL --> DPD{Boundary allowed}
-    DPD -->|Blocked| DSESSION[Reproduction Session Manager records result]
-    DPD -->|Allowed| DSETUP[R7 setup automation creates clean Sandbox]
-    DSETUP --> DAI[Reproduction Agent autonomous inside Sandbox]
-    DAI --> DREC[Versioned EnvironmentRecipe and clean Sandbox]
-    DREC --> DACT[PoC execution observation and retry]
-    DACT --> DART[EnvironmentRecipe PoCBundle and observations]
-    DACT -. runtime and tool events .-> DSESSION
-    DSETUP -. lifecycle events .-> DSESSION
-    DAI -. semantic draft .-> DSESSION
-    DART --> DSESSION
-    DSESSION --> DRES[AgentLog CleanupLog and DynamicReproductionResult]
-    DRES --> DREV{Plan needs R6 revision}
-    DREV -->|Yes| DRET[R6 writes new requirements or minimal plan]
-    DREV -->|No| S13
-    DRET --> DAUTH
+    S11 --> S12{12 Dynamic work required}
+    S12 -->|Complete static and debate FALSE or HOLD| S13[13 Final verdict and material claim split]
+    S12 -->|Initial TRUE| DREQ[Verification requests POC_CONFIRMATION]
+    S12 -->|Execution evidence needed| DREQ2[Verification requests VERDICT_EVIDENCE]
+    DREQ --> DWAUTH[Runtime allows one dynamic work per generation]
+    DREQ2 --> DWAUTH
+    DWAUTH --> DR7[R7 Agent creates Requirements and Plan]
+    DR7 --> DAUTH[Runtime Validator Sandbox call authorization]
+    DAUTH --> DCTRL[Sandbox Controller external boundary check]
+    DCTRL --> DPD[Exact SandboxPolicyDecision]
+    DPD -->|Pass| DENV[Setup Automation creates a clean Sandbox]
+    DPD -->|Policy blocked| DASM[Session Manager finalizes blocked result]
+    DENV --> DRUN[Agent builds environment PoC executes observes and retries]
+    DRUN --> DASM
+    DASM --> DRES[AgentLog result candidate and nullable validated PoC]
+    DRES --> DOUT{Observed outcome}
+    DOUT -->|SUPPORTED| POCOK{Validated PoC and supported result}
+    POCOK -->|Yes| S13
+    DOUT -->|DISPROVED or INCONCLUSIVE| S13
+    DOUT -->|Execution failure| DSTOP
+    DSTOP -->|Retryable same work new attempt| DR7
+    DSTOP -->|Unrecoverable| S22
     S13 --> S14{14 Final verdict}
     S14 -->|FALSE| CLOSED[Terminal internal result]
-    S14 -->|HOLD| REQUIRED[HOLD REQUIRED Primitive admitted]
-    S14 -->|TRUE| CWE[14 CWE labeling for TRUE]
+    S14 -->|HOLD| REQUIRED[Result null Primitive with required inputs admitted]
+    S14 -->|TRUE with validated PoC| CWE[14 CWE labeling for TRUE]
     CWE --> S15[15 Technical Evidence Gate]
     S15 -->|REVISE| S16[16 Same assignment starts new Verification work and revision]
-    S16 --> S13
+    S16 --> S09
     S15 -->|REJECT| S22[22 Store results logs PoC errors debug]
-    S15 -->|ACCEPT| S17[17 Rule Scope Impact Gate]
-    S17 -->|FAIL UNCERTAIN or DENY| S22
-    S17 -->|Normal pass| S18[18 Gate-qualified TRUE PROVIDED admitted]
-    REQUIRED --> S19[19 Chaining with current index and directional requirement]
-    S18 --> S19
-    S17 -->|All report conditions| RREQ[Verification requests Reporter]
+    S15 -->|ACCEPT| S17{17 Independent technical material and report review paths}
+    S17 --> PADMIT[Result Primitive admitted]
+    S17 --> S19[19 Rule Scope Impact Gate]
+    S19 -->|FAIL UNCERTAIN or DENY| S22
+    REQUIRED --> S18[18 Chaining upstream result to downstream input]
+    PADMIT --> S18
+    S19 -->|All report conditions| RREQ[Verification requests Reporter]
     RREQ --> S21[21 Reporter draft]
-    S19 -->|Match| S20[20 Validate child proposal and assign new Verification]
-    S19 -->|No match or bounded stop| S22
+    S18 -->|Match| S20[20 Validate child proposal and assign new Verification]
+    S18 -->|No match or global budget stop| S22
     S20 --> S08
     S13 -. origin VERIFICATION material claim .-> S20
     S21 --> S22
@@ -152,27 +154,27 @@ flowchart TB
     BASIC --> SYN
     BASIC -. no Gate Primitive or Reporter .-> METRICS[Evaluation metrics only]
     SYN --> INITIAL[Initial TRUE FALSE HOLD]
-    INITIAL --> DYN{Dynamic reproduction requested}
-    DYN -->|No| FINAL[Final VerificationResult]
-    DYN -->|Yes| PLAN[EnvironmentRequirements and minimal ReproductionPlan]
-    PLAN --> AUTH[Runtime Validator call authorization]
-    AUTH --> CTRL[Sandbox Controller decides external boundary policy]
-    CTRL --> PDEC{Boundary allowed}
-    PDEC -->|Blocked| SESSION[Reproduction Session Manager records result]
-    PDEC -->|Allowed| SETUP[R7 setup automation creates clean Sandbox]
-    SETUP --> AGENT[Reproduction Agent autonomous inside Sandbox]
-    AGENT --> RECIPE[Versioned EnvironmentRecipe and clean Sandbox]
-    RECIPE --> ACTIONS[PoC execution observation and retry]
-    ACTIONS --> ARTIFACTS[EnvironmentRecipe PoCBundle and observations]
-    ACTIONS -. runtime and tool events .-> SESSION
-    SETUP -. lifecycle events .-> SESSION
-    AGENT -. semantic draft .-> SESSION
-    ARTIFACTS --> SESSION
-    SESSION --> DRESULT[AgentLog CleanupLog and DynamicReproductionResult]
-    DRESULT --> ISSUE{Plan needs R6 revision}
-    ISSUE -->|Yes| EREVIEW[R6 writes new requirements or minimal plan]
-    ISSUE -->|No| SYN2[Verification re-synthesizes evidence]
-    EREVIEW --> AUTH
+    INITIAL --> DYN{Dynamic work required}
+    DYN -->|Complete static and debate FALSE or HOLD| FINAL[Final VerificationResult]
+    DYN -->|Initial TRUE| CREQ[R6 request POC_CONFIRMATION]
+    DYN -->|Execution evidence needed| VREQ[R6 request VERDICT_EVIDENCE]
+    CREQ --> ONE[Runtime allows one work per Verification generation]
+    VREQ --> ONE
+    ONE --> R7PLAN[R7 Agent creates Requirements mode and Plan]
+    R7PLAN --> AUTH[Runtime Validator call authorization]
+    AUTH --> CTRL[Sandbox Controller external boundary check]
+    CTRL --> PDEC[Exact SandboxPolicyDecision]
+    PDEC -->|Pass| ENV[Setup Automation creates a clean Sandbox]
+    PDEC -->|Policy blocked| ASSEMBLER[Session Manager finalizes blocked result]
+    ENV --> RUNNER[Agent builds environment PoC executes observes and retries]
+    RUNNER --> ASSEMBLER
+    ASSEMBLER --> DRESULT[AgentLog result candidate and nullable validated PoC]
+    DRESULT --> OBS{Observed outcome}
+    OBS -->|SUPPORTED with validated PoC| SYN2[Verification re-synthesizes evidence]
+    OBS -->|DISPROVED or INCONCLUSIVE| SYN2
+    OBS -->|Execution failure| FAIL
+    FAIL -->|Retryable same work new attempt| R7PLAN
+    FAIL -->|Unrecoverable| NOFINAL[No final verdict and no Gate]
     SYN2 --> FINAL
     FINAL --> OUT[Restrictions candidates PrimitiveDraft and VERIFICATION origin child proposals]
 ```
@@ -185,43 +187,46 @@ flowchart TB
 flowchart TB
     VR[Final VerificationResult] --> KIND{Verdict}
     KIND -->|FALSE| CLOSED[Terminal no Primitive no Chaining]
-    KIND -->|HOLD| REQUIRED[Immediate REQUIRED with exact Verification ref]
-    KIND -->|TRUE| CWE[CWE labeling]
+    KIND -->|HOLD| REQUIRED[Primitive with inputs and null result]
+    KIND -->|TRUE with current validated PoC| CWE[CWE labeling]
     CWE --> TECH[Technical Evidence Gate]
     TECH -->|REVISE| SAME[Same assignment new Verification work and revision]
     SAME --> VR
     TECH -->|REJECT| NOCHAIN[No Chaining]
-    TECH -->|ACCEPT| RULE[Rule Scope Impact Gate]
-    RULE -->|FAIL UNCERTAIN DENY| NOCHAIN
-    RULE -->|PASS PASS PASS SUFFICIENT ALLOW| PROVIDED[PROVIDED with exact Gate refs]
+    TECH -->|ACCEPT| PROVIDED[Primitive with inputs and one result]
+    TECH -->|ACCEPT independent report review| RULE[Rule Scope Impact Gate]
+    RULE -->|FAIL UNCERTAIN DENY| REPORTBLOCK[Report blocked but Primitive remains usable]
+    RULE -->|PASS PASS PASS SUFFICIENT ALLOW| REPORTOK[Reporter eligibility may continue]
     REQUIRED --> PDB[(Primitive records)]
     PROVIDED --> PDB
-    PDB --> INDEX[Current PrimitiveIndexState]
-    INDEX --> MATCH{Upstream PROVIDED satisfies downstream requirement}
-    MATCH -->|No| RECORD[ChainingResult no match or bounded stop]
+    PDB --> MATCH{Upstream result satisfies downstream input}
+    MATCH -->|No| RECORD[ChainingResult with no material candidate]
     MATCH -->|Yes| CHAIN[Chaining Agent matching only]
     CHAIN --> NEW[HypothesisProposal origin CHAINING]
-    NEW --> LIMIT{Runtime validation depth budget duplicate cycle}
+    NEW --> LIMIT{Runtime validation duplicate ancestor cycle and global budget}
     LIMIT -->|Pass| REGISTER[Global registration]
-    LIMIT -->|Fail| STOP[Reject or bounded stop]
+    LIMIT -->|Fail| STOP[Reject or global budget stop]
     REGISTER --> ORCH[Orchestration assigns Verification]
     ORCH --> VERIFY[Full Verification pipeline]
     VMAT[Verification material claim] --> VNEW[HypothesisProposal origin VERIFICATION]
     VNEW --> LIMIT
 ```
 
-Primitive DB는 queue가 아니며 Chaining match와 child proposal은 Finding이 아니다. Gate 전 TRUE와 오래된 Gate revision은 ACTIVE PROVIDED가 될 수 없다.
+Primitive DB는 queue가 아니며 Chaining match와 child proposal은 Finding이 아니다. Gate 전 TRUE와 오래된 Technical review revision은 result가 있는 Primitive가 될 수 없다. Rule Scope 결과는 보고 가능성만 바꾸며 이미 admission된 Primitive를 취소하지 않는다.
 
 ## 6. 이중 LLM Gate와 Agent 자동화 종료
 
 ```mermaid
 flowchart TB
-    VR[Final TRUE VerificationResult plus CWE] --> TECH[Technical Evidence Gate Agent]
+    DYN[Current SUCCEEDED SUPPORTED dynamic result and validated PoC] --> VR[Final TRUE VerificationResult plus CWE]
+    VR --> TECH[Technical Evidence Gate Agent]
     TECH --> TS{ACCEPT REVISE REJECT}
     TS -->|REVISE| BACK[Same hypothesis Verification owner]
-    BACK --> VR
+    BACK --> NEWGEN[New Verification generation and new validated PoC]
+    NEWGEN --> VR
     TS -->|REJECT| BLOCK[Report blocked]
-    TS -->|ACCEPT| RULE[Rule Scope Impact Gate Agent]
+    TS -->|ACCEPT| PRIMITIVE[Admit result Primitive for Chaining]
+    TS -->|ACCEPT independent report review| RULE[Rule Scope Impact Gate Agent]
     POLICY[Official ProgramPolicyRecord] --> RULE
     NOPOL[Missing official policy] --> UNCERTAIN[Rule and scope UNCERTAIN permission DENY]
     UNCERTAIN --> BLOCK
@@ -235,7 +240,7 @@ flowchart TB
     FINAL --> END[Agent automation end]
 ```
 
-두 Gate 모두 LLM 검토 Agent이고 Verification verdict를 직접 바꾸지 않는다. Technical Gate는 exact final `TRUE`만 검토하며 `FALSE | HOLD`와 실패 가설은 입력으로 받지 않는다. 공식 정책이 없으면 Reporter 경로는 닫힌다.
+두 Gate 모두 LLM 검토 Agent이고 Verification verdict를 직접 바꾸지 않는다. Technical Gate는 current generation의 `SUCCEEDED + SUPPORTED` 결과와 validated PoC를 가진 exact final `TRUE`만 검토하며 `FALSE | HOLD`와 실패 가설은 입력으로 받지 않는다. 공식 정책이 없으면 Reporter 경로는 닫힌다.
 
 ## 7. Provider, session과 logging
 
@@ -295,7 +300,7 @@ flowchart TB
     ANA --> LOADER[Repository Loader]
     LOADER -->|READY| WORK[workspace_id plus commit_id]
     ANA --> HYP[hypothesis_id]
-    HYP --> REL[parent IDs root ID chain depth]
+    HYP --> REL[parent IDs and source Primitive match ID]
     HYP --> ATT[attempt_id]
     ATT --> CALL[llm_call_id]
     WORK --> META
@@ -385,7 +390,7 @@ flowchart LR
     DOMAIN[Verification Gates and Reporter keep domain decisions] -. not decided by validator .-> CHECK
 ```
 
-Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `RUN_SANDBOX`에서는 호출 권한·상태·예산·current plan·requirements·profile reference를 확인한다. Sandbox Controller는 host·Docker daemon·secret·egress·다른 workspace·resource·lifecycle의 외부 경계 정책만 결정·강제하고 R7 Sandbox Setup Automation이 clean Sandbox를 생성한다. Agent가 내부에서 선택한 command·package·PoC는 허용·거절 대상이 아니라 runtime/tool event 기록과 artifact 무결성 확인 대상으로 남긴다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 runtime이 판단하지 않는다.
+Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 호출 권한·상태·예산·exact plan reference를 확인한다. image·command·file·network·resource·cleanup 정책은 Sandbox Controller가 검사한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
 
 ## 13. ReportDraft와 Agent 자동화 종료 경계
 
@@ -395,7 +400,7 @@ flowchart LR
     VERIFY[Final Verification and CWE] --> REPORTER
     GATES[Technical and Rule Scope reviews] --> REPORTER
     POLICY[Current policy record] --> REPORTER
-    DYNAMIC[Dynamic evidence and redacted PoC] --> REPORTER
+    DYNAMIC[Current supported dynamic evidence and redacted validated PoC] --> REPORTER
     REPORTER --> DRAFT[ReportDraft with restrictions limitations and redaction passed]
     DRAFT --> FINAL[Trusted runtime finalizes AnalysisRunResult and logs]
     BLOCKED[No report-ready Finding] --> FINAL

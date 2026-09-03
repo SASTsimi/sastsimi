@@ -26,17 +26,17 @@ Pro와 Con은 서로의 결과를 받지 않는 별도 NEW session이다. trigge
 
 ## 판정과 동적 재현
 
-- `TRUE`: 명시된 경로와 전제가 evidence로 지지됨
+- `TRUE`: 명시된 경로와 전제가 evidence로 지지되고 현재 generation의 실행 성공·validated PoC가 있음
 - `FALSE`: named falsification이 가설을 반증함
 - `HOLD`: 핵심 문맥·환경·조건이 부족하거나 충돌함
 
-판정 뒤 흐름도 다릅니다. `FALSE`는 terminal이며 Primitive와 Chaining으로 가지 않습니다. `HOLD`는 Gate 없이 REQUIRED Primitive를 즉시 저장합니다. `TRUE`는 CWE와 두 Gate를 정상 통과한 exact revision만 PROVIDED Primitive가 됩니다.
+판정 뒤 흐름도 다릅니다. `FALSE`는 terminal이며 Primitive와 Chaining으로 가지 않습니다. `HOLD`는 Gate 없이 `inputs`와 `result=null`인 Primitive를 즉시 저장합니다. `TRUE`는 validated PoC와 CWE를 가진 exact revision을 Technical Gate가 `ACCEPT`한 뒤 제공 능력별 `result` Primitive가 됩니다. Rule Scope는 Reporter만 제어합니다.
 
 판정에는 최소 근거가 필요합니다. TRUE는 핵심 공격 경로와 필요한 조건을 지지하는 근거가 있어야 합니다. FALSE는 이름이 있는 반증 질문이 실제 근거로 `DISPROVED`된 경우에만 가능합니다. 오류·timeout·정보 부족·Sandbox 실패는 FALSE 근거가 아닙니다. HOLD는 판단에 필요한 조건이나 환경이 아직 부족하다는 뜻입니다.
 
 기본 Context가 부족하면 검증 Agent가 같은 workspace·commit을 기준으로 추가 Context를 요청합니다. 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 기록하며 오류 자체를 verdict 근거로 사용하지 않습니다. 일부 조회가 실패했더라도 제한 retry·대체 조회·다른 정상 근거로 모든 `ValidationCheck`, 반증 질문과 운영 Pro/Con을 완료했다면 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있습니다. 하나라도 완료하지 못했다면 final `VerificationResult`를 만들지 않고, 재시도 가능 시 `BLOCKED + VERIFYING`, 복구 불가능 시 work와 가설 처리 상태를 `FAILED`로 끝냅니다. 정상 검증을 모두 마친 뒤에도 부족한 조건이 남는 경우에만 실제 근거와 `unresolved_conditions`를 연결해 `HOLD`로 판정할 수 있습니다. 운영 Pro/Con 전에 예산이 부족한 경우도 `BUDGET_EXCEEDED`로 작업을 중단하고 final verdict를 저장하지 않습니다.
 
-`initial_verdict`는 중간 판단이며 운영 Gate·Primitive·보고서 입력으로 사용할 수 없습니다. final verdict는 독립 Pro/Con과 필요한 동적 결과를 종합한 최종 판단입니다.
+`initial_verdict`는 중간 판단이며 운영 Gate·Primitive·보고서 입력으로 사용할 수 없습니다. initial TRUE이면 동적 근거가 별도로 필요하지 않아도 PoC 확인을 요청합니다. final TRUE는 독립 Pro/Con과 현재 generation의 성공한 동적 결과·validated PoC를 종합한 최종 판단입니다.
 
 지원 취약점 유형 목록은 R8의 versioned evaluation corpus에서 확정합니다. 목록이 확정되기 전이나 적용 가능한 유형별 플레이북이 없는 경우에는 공통 플레이북을 사용합니다. 플레이북 후보는 R6 담당이 작성하고, 신뢰할 수 있는 runtime이 형식과 revision을 검사해 변경 불가능한 record로 등록합니다.
 
@@ -50,22 +50,21 @@ Pro와 Con은 서로의 결과를 받지 않는 별도 NEW session이다. trigge
 
 Pro와 Con은 항상 별도의 새 대화에서 실행합니다. 상대 역할의 결론이나 대화를 이어받지 않으며, 실패 후 재시도나 provider 변경도 같은 역할의 새 대화로 시작합니다. Verification Agent만 두 결과를 함께 읽고 최종 판정을 만듭니다.
 
-결과를 저장하기 전에는 결과 종류, 저장 담당 역할, 정확한 작업·시도·코드 버전, 플레이북 revision과 후보 내용 hash를 함께 검사합니다. `TRUE`는 실제 근거 reference가 연결된 supporting evidence, `FALSE`는 근거가 있는 `DISPROVED`, `HOLD`는 하나 이상의 `unresolved_conditions`와 정상적으로 확인한 범위를 설명하는 실제 evidence reference가 필요합니다. 오류·timeout·빈 Context·예산 초과 상태만으로 어떤 final verdict도 저장할 수 없습니다. Runtime Validator는 구조·reference·완료 상태만 검사합니다. final `TRUE` 근거의 기술적 충분성은 Technical Evidence Gate가 exact final TRUE revision을 대상으로 검토하며, `FALSE | HOLD`는 Technical Gate 입력이 아닙니다.
+결과를 저장하기 전에는 결과 종류, 저장 담당 역할, 정확한 작업·시도·코드 버전, 플레이북 revision과 후보 내용 hash를 함께 검사합니다. `TRUE`는 supporting evidence와 현재 generation의 `SUCCEEDED + SUPPORTED` 결과·validated `poc_ref`, `FALSE`는 근거가 있는 `DISPROVED`, `HOLD`는 `unresolved_conditions`와 정상 확인 근거가 필요합니다. 오류·timeout·빈 Context·예산 초과 상태만으로 어떤 final verdict도 저장할 수 없습니다. validated PoC 없는 TRUE는 저장과 Technical Gate 호출이 모두 차단됩니다.
 
-동적 재현이 필요하면 Verification Agent가 `EnvironmentRequirements`와 이를 가리키는 목표 중심의 최소 `ReproductionPlan`을 만듭니다. plan에는 가설·요구사항·Sandbox profile·재현 목표·관련 문맥을 담고, 원하는 사실을 편향 없이 적는 `requested_evidence`는 선택 필드로 둡니다. exact step·command·payload·target·cleanup policy는 R6가 지정하지 않습니다. `LIMITED_REPRO | FULL_REPRO` mode를 공통 계약에 둘지는 PL 교차 검토에서 확정합니다.
+| 요청 목적 | 뜻 |
+|---|---|
+| `POC_CONFIRMATION` | 정적·Pro·Con으로 initial TRUE가 된 가설을 실제 PoC로 확인 |
+| `VERDICT_EVIDENCE` | 최종 판정에 꼭 필요한 실행 관측 확보 |
 
-Runtime Validator는 요청자·상태·예산과 current plan·requirements·profile reference를 확인해 R7 호출을 허가합니다. Sandbox Controller는 host·Docker socket/daemon·mount/namespace·production secret·허용되지 않은 egress·다른 workspace와 R8 profile의 외부 경계 정책을 결정·강제하고 판정을 기록합니다. Controller는 Sandbox를 생성·폐기하거나 Agent를 호출하지 않습니다. R7 Sandbox Setup Automation이 승인된 정책으로 image build와 clean Sandbox lifecycle을 수행하며 Agent에게 Docker daemon 권한은 주지 않습니다.
+R6는 목적·재현 목표·필요 환경·Sandbox profile·관련 근거를 `DynamicReproductionRequest`로 만듭니다. R7 Agent는 exact 요청에서 `EnvironmentRequirements`, `LIMITED_REPRO | FULL_REPRO` mode와 `ReproductionPlan`을 생산합니다. 한 generation에는 동적 work 하나만 허용하며 retry는 같은 work의 새 attempt입니다.
 
-`REPRODUCTION_AGENT`는 이 외부 경계 안에서 package·계정·fixture/mock·PoC·command·공격 입력·관찰·retry를 자율적으로 결정합니다. 자주 쓰는 도구가 있는 Toolbox Image를 시작점으로 삼고, 저장소별 Dockerfile·manifest·setup/account/fixture/mock/healthcheck를 불변 `EnvironmentRecipe`로 묶습니다. 누락 package를 발견하면 runtime/tool event로 실패를 남기고 recipe를 갱신해 새 baseline `built_image_digest`와 clean Sandbox attempt를 만듭니다. package download는 baseline build 단계에서 수행하고 검증된 `PERSISTENT_BASELINE`은 이후에도 보존합니다.
+Controller는 host·Docker daemon·secret·egress·다른 workspace·R8 resource·lifecycle의 외부 경계를 강제하고 Setup Automation이 가설마다 clean Sandbox를 만듭니다. Agent는 내부에서 package·계정·fixture·mock·PoC·command·관찰·retry를 자율 수행하며 Session Manager가 actual event와 결과를 확정합니다.
 
-가설이나 attempt 사이에는 writable state를 공유하지 않습니다. 가설마다 새 container를 강제할지는 PL 결정 사항이지만, 어떤 구현이든 각 시도는 snapshot처럼 깨끗한 상태에서 시작해야 합니다. 하나의 Sandbox는 하나의 가설·attempt만 처리합니다. session container·network·volume·tmp는 cleanup하고 baseline recipe/image는 `PRESERVED`로 구분합니다.
+`poc_candidate_ref`는 실행 전 스크립트·입력입니다. exact candidate 실행이 `SUCCEEDED + SUPPORTED`로 끝난 경우에만 validated `poc_ref`를 만듭니다. 생성 실패, 실행 실패, `DISPROVED | INCONCLUSIVE`에서는 `poc_ref=null`입니다. candidate와 실패 로그는 남겨도 최종 PoC로 부르지 않습니다.
 
-기존 Agent tool runtime과 Sandbox lifecycle automation이 실제 shell·파일·환경 변경·image build·서비스·HTTP·DB·PoC 생성/수정/실행·관찰·retry·cleanup event를 방출하면 Reproduction Session Manager가 Agent에 개입하지 않고 append-only `AgentLog`로 기록합니다. 숨은 chain-of-thought는 저장하지 않습니다. 만들기만 한 PoC는 log에만 남기고, 실행을 시작한 최종 exact `PoCBundle`만 `poc_ref`로 전달합니다. 실행이 실패해도 시작했다면 bundle을 연결하고 성공 여부는 log·status·outcome으로 구분합니다.
+`POC_CONFIRMATION` 또는 `VERDICT_EVIDENCE`가 `SUPPORTED`이면 R6는 정적·Pro·Con·동적 근거와 validated PoC를 합쳐 final TRUE를 만듭니다. 실제 반증이면 FALSE, 정상 실행했지만 결론이 부족하면 HOLD가 될 수 있습니다. PoC 생성·환경 구성·정책·실행 자체가 실패했다면 final verdict를 만들지 않습니다. 다시 시도할 수 있으면 같은 work를 `BLOCKED`, 복구할 수 없거나 한도를 소진하면 `FAILED`로 끝내며 Gate를 호출하지 않습니다.
 
-Agent는 plan 자체가 실행 가능한지 `EXECUTABLE | EXECUTABLE_WITH_LIMITATIONS | NEEDS_REVISION`으로 기록하고 문제는 결과의 범용 string 목록과 근거 refs로 반환합니다. 별도 `PlanIssue` record는 만들지 않습니다. Agent가 의미 필드를 초안 작성하고 Reproduction Session Manager가 runtime/tool event의 facts·refs·시간·cleanup·digest를 기록해 schema·authority·attempt·hash·redaction·reference 불변식만 검사한 최종 결과 문서를 확정합니다. Session Manager는 Agent 호출·명령·retry·cleanup에 개입하지 않습니다. Verification은 `COMMITTED` 결과만 읽어 final `TRUE | FALSE | HOLD`에 사용합니다.
+Technical Gate가 `REVISE`를 반환하면 같은 ACTIVE `VerificationAssignment` owner가 직접 받습니다. 프로그램은 새 generation의 Verification work와 `TERMINAL -> VERIFYING` 전이를 먼저 원자적으로 만들고, 필요한 Context·Pro/Con·정적 근거와 설명을 보완합니다. final TRUE를 다시 만들려면 새 generation의 동적 work와 validated PoC도 필요합니다. CWE 보완이 있으면 기존 CWE producer와 새 revision을 조정한 뒤 새 Gate work를 요청합니다. 이는 provider retry나 동일 입력 재투표가 아닙니다.
 
-Technical Gate가 `REVISE`를 반환하면 같은 ACTIVE `VerificationAssignment` owner가 직접 받습니다. 프로그램은 새 generation의 Verification work와 `TERMINAL -> VERIFYING` 전이를 먼저 원자적으로 만들고, 필요한 Context·Pro/Con·정적·동적 근거와 설명을 보완해 새 Verification revision·work 종료·current pointer를 함께 확정합니다. CWE 보완이 있으면 기존 CWE producer와 새 revision을 조정한 뒤 새 Gate work를 요청합니다. 이는 provider retry나 동일 입력 재투표가 아닙니다.
-
-`status`는 실행 완료 정도이고 `hypothesis_outcome: SUPPORTED | DISPROVED | INCONCLUSIVE`은 관측과 가설의 관계입니다. 둘 다 최종 판정이 아닙니다. `FAILED | BLOCKED | CANCELLED`는 `INCONCLUSIVE`이며 가설 반증이 아닙니다. 실제 반증은 `DISPROVED`, `hypothesis_disproved: true`, 관측 근거 `hypothesis_evidence_refs`와 `disproof_evidence_refs`가 함께 있어야 합니다. Verification Agent가 이 정보와 다른 근거를 종합해 `TRUE | FALSE | HOLD`를 결정합니다. 상세 내용은 [검증과 동적 재현](../04-verification-and-dynamic-reproduction.md)을 따릅니다.
-
-공통 작업 상태와 동적 결과 상태는 다르게 읽습니다. 부분 실행은 결과의 `limitations`로 한계를 설명하며 실제 오류가 없으면 오류 record를 만들지 않습니다. 외부 경계 차단 결과 `BLOCKED + failure_category=POLICY`는 요청을 정상 처리해 만든 종료 결과이므로 공통 작업은 `SUCCEEDED`로 닫지만 재현 성공은 아닙니다. 공통 작업의 `BLOCKED`는 승인이나 입력을 기다리는 비종료 상태에만 사용합니다. 취소 결과는 공통 `CANCELLED`와 함께 저장하며, 저장 확정 marker와 모든 결과 reference가 일치할 때만 Verification이 읽습니다.
+`status`는 실행 완료 정도이고 `hypothesis_outcome: SUPPORTED | DISPROVED | INCONCLUSIVE`은 관측과 가설의 관계입니다. 둘 다 최종 판정이 아닙니다. 실제 반증은 `DISPROVED`, `hypothesis_disproved: true`, 관측 근거가 함께 있어야 합니다. 생성·환경·실행 실패는 관측 반증이 아니므로 `FALSE | HOLD`로 바꾸지 않습니다. 저장 확정 marker와 request·plan·result·PoC reference가 모두 일치할 때만 Verification이 읽습니다. 상세 내용은 [검증과 동적 재현](../04-verification-and-dynamic-reproduction.md)을 따릅니다.
