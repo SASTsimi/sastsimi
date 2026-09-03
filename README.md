@@ -64,12 +64,14 @@ Repository input
 → constrained HypothesisProposal
 → Orchestration이 가설을 등록하고 가설별 Verification owner를 배정
 → Verification이 on-demand context와 운영 기본 Pro/Con 병렬 검증 관리
-→ 필요 시 Verification이 환경 요구사항과 LIMITED_REPRO / FULL_REPRO ReproductionPlan 생성
-→ Runtime Validator가 exact 요구사항·계획 reference, 호출 권한·상태·예산을 확인해 Sandbox 호출 허가
+→ initial TRUE면 POC_CONFIRMATION, 판정 근거가 필요하면 VERDICT_EVIDENCE 요청을 R6가 생성
+→ Runtime Validator가 같은 Verification generation의 동적 work가 하나인지 확인
+→ R7이 EnvironmentRequirements·LIMITED/FULL ReproductionPlan·PoC candidate 생성
 → Sandbox Controller가 세부 안전 정책을 한 번 검사
-→ Sandbox Runner가 실제 환경·Health Check를 요구사항과 비교하고 필수 항목이 맞을 때만 공격 단계 실행
-→ Sandbox Result Assembler가 exact R6 계획 묶음과 같은 R7 실행 시도의 정책·환경 비교·로그·PoC·정리 참조를 결과로 묶어 반환
+→ Sandbox Runner가 실제 환경을 비교하고 승인된 PoC candidate를 실행
+→ Sandbox Result Assembler가 같은 요청·계획·attempt의 정책·환경·로그·candidate·validated PoC를 결과로 묶어 반환
 → final TRUE / FALSE / HOLD
+→ final TRUE는 재현에 성공한 validated PoC가 있을 때만 저장하고 Technical Gate로 전달
 → FALSE는 terminal
 → HOLD는 REQUIRED Primitive로 즉시 Chaining
 → TRUE는 CWE → Technical Evidence Gate → Rule Scope Impact Gate
@@ -139,13 +141,13 @@ main  ← Architecture v5 candidate baseline
 | 단독 구현·통합 개발 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 모듈의 구현 가능성, 계약 준수 테스트와 통합 계획 검토 |
 | PM·아키텍처·워크플로 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 구조, 공통 입출력 계약, 사람·LLM 경계, 병렬·직렬 흐름과 오류 정책 |
 | Gate·Finding·보고서 | 김혜령 ([@kimhr8463](https://github.com/kimhr8463)) | 검증 근거·정책 범위 검토, 내부 Finding과 안전한 보고서 초안 작성 |
-| 검증·반박·플레이북 | 임채민 ([@UltraPeachKeen](https://github.com/UltraPeachKeen)) | 가설별 Context·찬반, 환경 요구사항·LIMITED/FULL `ReproductionPlan`, 환경 차이 수용 여부, 최종 판정·Gate 보완 |
-| 동적검증·Sandbox | 조근석 ([@Potatonion](https://github.com/Potatonion)) | Controller 정책 판정, Runner의 환경 구성·요구사항 비교·exact 계획 실행, Health Check·log·PoC 상세 artifact와 result 조립 |
+| 검증·반박·플레이북 | 임채민 ([@UltraPeachKeen](https://github.com/UltraPeachKeen)) | 가설별 Context·찬반, 동적 재현 목적·목표 요청, 반환 결과 소비, 최종 판정·Gate 보완 |
+| 동적검증·Sandbox | 조근석 ([@Potatonion](https://github.com/Potatonion)) | 환경 요구사항·실행 계획·PoC candidate 생성, Controller 정책 판정, Docker 실행과 validated PoC·동적 결과 조립 |
 | 데이터·평가·예산 | 성병찬 ([@gitterable](https://github.com/gitterable)) | 평가 데이터·품질 지표와 예산 profile 설계; 실제 예산 강제는 trusted runtime 담당 |
 
 Gate는 Verification verdict를 변경하거나 공개를 승인하지 않습니다. Reporter는 보고서 초안만 작성하고 이후 Agent 자동화는 종료됩니다. 사람의 검토·수정·제출·공개는 이 자동화 밖에서 진행합니다.
 
-동적 재현의 역할 연결은 `R6 Verification의 환경 요구사항·모드·계획 결정 → R4 Runtime Validator의 exact reference·호출 전제 확인 → R7 Sandbox Controller의 세부 정책 검사·판정 저장 → R7 Sandbox Runner의 실제 환경 비교 → 필수 항목 일치 시 exact plan 공격 단계 실행 → 비-LLM Result Assembler의 exact reference 조립 → R6의 최종 판정`입니다. R7은 환경 차이·실행 불가능·정책 차단을 기록하지만 요구사항·허용 대체값·모드·계획·최종 verdict를 바꾸지 않습니다.
+동적 재현의 역할 연결은 `R6의 목적별 DynamicReproductionRequest → R4 Runtime Validator의 generation별 단일 work·exact reference 검사 → R7의 EnvironmentRequirements·ReproductionPlan·PoC candidate 생성 → Sandbox Controller 정책 검사 → Runner 실행 → Result Assembler의 validated PoC·동적 결과 조립 → R6의 최종 판정`입니다. R6는 R7 산출물을 대신 만들지 않고, R7은 가설 verdict를 결정하지 않습니다. validated PoC가 없는 TRUE는 저장하거나 Technical Gate로 보낼 수 없습니다.
 
 ## 설계 초안
 

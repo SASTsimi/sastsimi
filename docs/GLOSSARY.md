@@ -55,7 +55,7 @@
 | `Hypothesis` | 검증이 필요한 취약점 가능성 | 아직 확정 취약점이나 Finding이 아닙니다. |
 | `Verification` | 배정된 가설 안에서 코드·찬반·동적 근거와 보완 흐름을 관리해 판정하는 과정 | 다음 작업은 선택하지만 Runtime Validator의 실행 검사를 우회하거나 공개를 결정하지 않습니다. |
 | `verdict` | 검증 Agent가 내린 기술 판정 | `TRUE`, `FALSE`, `HOLD` 중 하나입니다. |
-| `TRUE` | 현재 근거로 취약점이 성립한다고 판단한 상태 | 사람의 공개 결정과는 다릅니다. |
+| `TRUE` | 코드·찬반 근거와 실제 PoC 재현으로 취약점이 성립한다고 판단한 상태 | 모든 final TRUE에는 현재 검증 차수의 validated PoC가 필요하며 사람의 공개 결정과는 다릅니다. |
 | `FALSE` | 미리 정한 반증 조건이 실제 근거로 확인된 상태 | 도구 실패나 정보 부족을 `FALSE`로 바꾸면 안 됩니다. |
 | `HOLD` | 필요한 정보나 조건이 부족해 판단을 보류한 상태 | 무엇이 부족한지 함께 기록합니다. |
 | `restriction` | 공격을 막거나 제한하는 조건 | `HOLD`의 부족 조건과 연계 탐색에 사용합니다. |
@@ -72,9 +72,11 @@
 | `CandidateRef` | 아직 검증되지 않은 우회·대체 경로·영향 확대 후보 | 새 공격 주장이면 별도 가설로 검증하기 전까지 확정 사실로 쓰지 않습니다. |
 | `VerificationMetrics` | 검증에 사용한 token·시간과 판정 변화 기록 | provider가 알려 주지 않은 token을 임의로 추정하지 않습니다. |
 | `PoC` | 취약점이 어떻게 재현되는지 보여 주는 절차와 증거 | 승인된 격리 환경에서 만든 자료만 사용합니다. |
-| `poc_ref` | 이번 동적 재현과 연결된 정확한 PoC 묶음 번호 | 값이 있어도 실행·성공을 뜻하지 않으며 상태와 단계 로그를 함께 봅니다. |
+| `DynamicReproductionRequest` | R6가 R7에 무엇을 왜 재현할지 전달하는 요청 | `POC_CONFIRMATION`은 initial TRUE 확인, `VERDICT_EVIDENCE`는 최종 판정에 필요한 실행 근거 확보입니다. |
+| `poc_candidate_ref` | R7이 실행 전에 만든 PoC 스크립트·입력 번호 | 실패한 시도에도 남을 수 있으며 검증된 PoC가 아닙니다. |
+| `poc_ref` | 실제 실행에 성공해 가설을 지지한 validated PoC 번호 | `SUCCEEDED + SUPPORTED`인 exact candidate에만 생기며 모든 final TRUE에 필수입니다. |
 | `runner_invoked` | Sandbox Runner를 실제로 호출했는지 나타내는 값 | 거짓이면 단계 로그가 없어야 하고 참이면 실패해도 호출 로그가 필요합니다. |
-| `EnvironmentRequirements` | R6가 동적 재현 전에 정하는 애플리케이션 환경 조건 묶음 | 역할·인증 방식·데이터·DB/service·fixture/mock·버전·Health Check를 근거와 함께 기록합니다. |
+| `EnvironmentRequirements` | R7이 R6 요청을 실제 환경 구성·검사 항목으로 구체화한 조건 묶음 | 역할·인증 방식·데이터·DB/service·fixture/mock·버전·Health Check를 근거와 함께 기록합니다. |
 | `environment_requirements_ref` | ReproductionPlan이 사용하는 정확한 환경 요구사항 수정본 번호 | 오래된 수정본이나 다른 계획의 요구사항을 재사용하지 않습니다. |
 | `EnvironmentCheck` | R7이 요구사항 하나와 실제 환경을 비교한 결과 | `MATCH`, `MISMATCH`, `NOT_CHECKED`, `ERROR` 중 하나와 실제 값·차이·근거를 남깁니다. |
 | `sandbox_profile_ref` | Sandbox에서 허용하는 image·명령·네트워크·자원 등의 보안 정책 번호 | 애플리케이션에 필요한 환경 조건을 뜻하지 않습니다. |

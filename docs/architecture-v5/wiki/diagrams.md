@@ -28,34 +28,38 @@ flowchart TB
     S08 --> S09[9 Verification requests on-demand context]
     S09 --> S10[10 Production Verification runs independent Pro and Con]
     S10 --> S11[11 Initial TRUE FALSE HOLD]
-    S11 --> S12{12 Verification chooses dynamic mode}
-    S12 -->|No| S13[13 Final verdict and material claim split]
-    S12 -->|LIMITED| DL[Verification LIMITED Requirements and Plan]
-    S12 -->|FULL| DF[Verification FULL Requirements Plan and PoC draft]
-    DL --> DAUTH[Runtime Validator call authorization]
-    DF --> DAUTH
+    S11 --> S12{12 Dynamic work required}
+    S12 -->|Complete static and debate FALSE or HOLD| S13[13 Final verdict and material claim split]
+    S12 -->|Initial TRUE| DREQ[Verification requests POC_CONFIRMATION]
+    S12 -->|Execution evidence needed| DREQ2[Verification requests VERDICT_EVIDENCE]
+    DREQ --> DWAUTH[Runtime allows one dynamic work per generation]
+    DREQ2 --> DWAUTH
+    DWAUTH --> DR7[R7 creates Requirements Plan and PoC candidate]
+    DR7 --> DAUTH[Runtime Validator Sandbox call authorization]
     DAUTH --> DCTRL[Sandbox Controller policy check]
     DCTRL --> DPD[Exact SandboxPolicyDecision]
     DPD -->|Pass| DENV[Sandbox Runner prepares environment and Health Checks]
-    DPD -->|Policy blocked no Runner| DASM[Sandbox Result Assembler]
+    DPD -->|Policy blocked| DSTOP[BLOCKED or FAILED no final verdict]
     DENV --> DCHK{All required items MATCH}
     DCHK -->|Yes| DRUN[Sandbox Runner executes exact attack steps]
-    DCHK -->|No| DFAIL[Stop before attack with ENVIRONMENT_SETUP]
-    DFAIL --> DASM
+    DCHK -->|No| DFAIL[BLOCKED or FAILED ENVIRONMENT_SETUP]
+    DFAIL --> DSTOP
     DRUN --> DASM
-    DASM --> DRES[Dynamic result with exact nullable refs]
-    DRES --> DMIS{Required environment mismatch}
-    DMIS -->|Yes| DRET[R6 reviews exact differences]
-    DMIS -->|No| S13
-    DRET -->|New requirements plus plan or plan-only revision| DAUTH
-    DRET -->|No retry| S13
+    DASM --> DRES[Dynamic result with exact candidate and evidence refs]
+    DRES --> DOUT{Observed outcome}
+    DOUT -->|SUPPORTED| POCOK{Validated PoC and supported result}
+    POCOK -->|Yes| S13
+    DOUT -->|DISPROVED or INCONCLUSIVE| S13
+    DOUT -->|Execution failure| DSTOP
+    DSTOP -->|Retryable same work new attempt| DR7
+    DSTOP -->|Unrecoverable| S22
     S13 --> S14{14 Final verdict}
     S14 -->|FALSE| CLOSED[Terminal internal result]
     S14 -->|HOLD| REQUIRED[HOLD REQUIRED Primitive admitted]
-    S14 -->|TRUE| CWE[14 CWE labeling for TRUE]
+    S14 -->|TRUE with validated PoC| CWE[14 CWE labeling for TRUE]
     CWE --> S15[15 Technical Evidence Gate]
     S15 -->|REVISE| S16[16 Same assignment starts new Verification work and revision]
-    S16 --> S13
+    S16 --> S09
     S15 -->|REJECT| S22[22 Store results logs PoC errors debug]
     S15 -->|ACCEPT| S17[17 Rule Scope Impact Gate]
     S17 -->|FAIL UNCERTAIN or DENY| S22
@@ -152,27 +156,30 @@ flowchart TB
     BASIC --> SYN
     BASIC -. no Gate Primitive or Reporter .-> METRICS[Evaluation metrics only]
     SYN --> INITIAL[Initial TRUE FALSE HOLD]
-    INITIAL --> DYN{Verification chooses dynamic mode}
-    DYN -->|No| FINAL[Final VerificationResult]
-    DYN -->|Small question| LIMITED[Verification LIMITED Requirements and Plan]
-    DYN -->|End to end| FULL[Verification FULL Requirements Plan and PoC draft]
-    LIMITED --> AUTH[Runtime Validator call authorization]
-    FULL --> AUTH
+    INITIAL --> DYN{Dynamic work required}
+    DYN -->|Complete static and debate FALSE or HOLD| FINAL[Final VerificationResult]
+    DYN -->|Initial TRUE| CREQ[R6 request POC_CONFIRMATION]
+    DYN -->|Execution evidence needed| VREQ[R6 request VERDICT_EVIDENCE]
+    CREQ --> ONE[Runtime allows one work per Verification generation]
+    VREQ --> ONE
+    ONE --> R7PLAN[R7 Requirements mode Plan and PoC candidate]
+    R7PLAN --> AUTH[Runtime Validator call authorization]
     AUTH --> CTRL[Sandbox Controller policy check]
     CTRL --> PDEC[Exact SandboxPolicyDecision]
     PDEC -->|Pass| ENV[Sandbox Runner prepares environment and Health Checks]
-    PDEC -->|Policy blocked no Runner| ASSEMBLER[Sandbox Result Assembler]
+    PDEC -->|Policy blocked| FAIL[BLOCKED or FAILED no final verdict]
     ENV --> CHECK{All required items MATCH}
     CHECK -->|Yes| RUNNER[Sandbox Runner executes exact attack steps]
-    CHECK -->|No| EFAIL[Stop before attack with ENVIRONMENT_SETUP]
-    EFAIL --> ASSEMBLER
+    CHECK -->|No| EFAIL[BLOCKED or FAILED ENVIRONMENT_SETUP]
+    EFAIL --> FAIL
     RUNNER --> ASSEMBLER
-    ASSEMBLER --> DRESULT[Dynamic result with exact nullable refs]
-    DRESULT --> EMIS{Required environment mismatch}
-    EMIS -->|Yes| EREVIEW[R6 reviews exact differences]
-    EMIS -->|No| SYN2[Verification re-synthesizes evidence]
-    EREVIEW -->|New requirements plus plan or plan-only revision| AUTH
-    EREVIEW -->|No retry| SYN2
+    ASSEMBLER --> DRESULT[Dynamic result with candidate evidence and nullable validated PoC]
+    DRESULT --> OBS{Observed outcome}
+    OBS -->|SUPPORTED with validated PoC| SYN2[Verification re-synthesizes evidence]
+    OBS -->|DISPROVED or INCONCLUSIVE| SYN2
+    OBS -->|Execution failure| FAIL
+    FAIL -->|Retryable same work new attempt| R7PLAN
+    FAIL -->|Unrecoverable| NOFINAL[No final verdict and no Gate]
     SYN2 --> FINAL
     FINAL --> OUT[Restrictions candidates PrimitiveDraft and VERIFICATION origin child proposals]
 ```
@@ -186,7 +193,7 @@ flowchart TB
     VR[Final VerificationResult] --> KIND{Verdict}
     KIND -->|FALSE| CLOSED[Terminal no Primitive no Chaining]
     KIND -->|HOLD| REQUIRED[Immediate REQUIRED with exact Verification ref]
-    KIND -->|TRUE| CWE[CWE labeling]
+    KIND -->|TRUE with current validated PoC| CWE[CWE labeling]
     CWE --> TECH[Technical Evidence Gate]
     TECH -->|REVISE| SAME[Same assignment new Verification work and revision]
     SAME --> VR
@@ -216,10 +223,12 @@ Primitive DB는 queue가 아니며 Chaining match와 child proposal은 Finding�
 
 ```mermaid
 flowchart TB
-    VR[Final TRUE VerificationResult plus CWE] --> TECH[Technical Evidence Gate Agent]
+    DYN[Current SUCCEEDED SUPPORTED dynamic result and validated PoC] --> VR[Final TRUE VerificationResult plus CWE]
+    VR --> TECH[Technical Evidence Gate Agent]
     TECH --> TS{ACCEPT REVISE REJECT}
     TS -->|REVISE| BACK[Same hypothesis Verification owner]
-    BACK --> VR
+    BACK --> NEWGEN[New Verification generation and new validated PoC]
+    NEWGEN --> VR
     TS -->|REJECT| BLOCK[Report blocked]
     TS -->|ACCEPT| RULE[Rule Scope Impact Gate Agent]
     POLICY[Official ProgramPolicyRecord] --> RULE
@@ -235,7 +244,7 @@ flowchart TB
     FINAL --> END[Agent automation end]
 ```
 
-두 Gate 모두 LLM 검토 Agent이고 Verification verdict를 직접 바꾸지 않는다. Technical Gate는 exact final `TRUE`만 검토하며 `FALSE | HOLD`와 실패 가설은 입력으로 받지 않는다. 공식 정책이 없으면 Reporter 경로는 닫힌다.
+두 Gate 모두 LLM 검토 Agent이고 Verification verdict를 직접 바꾸지 않는다. Technical Gate는 current generation의 `SUCCEEDED + SUPPORTED` 결과와 validated PoC를 가진 exact final `TRUE`만 검토하며 `FALSE | HOLD`와 실패 가설은 입력으로 받지 않는다. 공식 정책이 없으면 Reporter 경로는 닫힌다.
 
 ## 7. Provider, session과 logging
 
@@ -385,7 +394,7 @@ flowchart LR
     DOMAIN[Verification Gates and Reporter keep domain decisions] -. not decided by validator .-> CHECK
 ```
 
-Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `RUN_SANDBOX`에서는 호출 권한·상태·예산·exact plan reference까지만 확인하고, image·command·file·network·resource·cleanup 정책은 Sandbox Controller가 검사한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
+Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 호출 권한·상태·예산·exact plan reference를 확인한다. image·command·file·network·resource·cleanup 정책은 Sandbox Controller가 검사한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
 
 ## 13. ReportDraft와 Agent 자동화 종료 경계
 
@@ -395,7 +404,7 @@ flowchart LR
     VERIFY[Final Verification and CWE] --> REPORTER
     GATES[Technical and Rule Scope reviews] --> REPORTER
     POLICY[Current policy record] --> REPORTER
-    DYNAMIC[Dynamic evidence and redacted PoC] --> REPORTER
+    DYNAMIC[Current supported dynamic evidence and redacted validated PoC] --> REPORTER
     REPORTER --> DRAFT[ReportDraft with restrictions limitations and redaction passed]
     DRAFT --> FINAL[Trusted runtime finalizes AnalysisRunResult and logs]
     BLOCKED[No report-ready Finding] --> FINAL
