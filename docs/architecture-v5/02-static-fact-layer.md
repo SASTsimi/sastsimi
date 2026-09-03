@@ -62,7 +62,7 @@ static_fact_bundle:
 
 분석 계획은 어떤 rule 묶음으로 codeql·opengrep을 실행해 `source`/`sink` 후보(`CodeFact.fact_kind: SOURCE | SINK`)를 수집할지 — 즉 사실 수집의 범위 — 를 정한다. 이 rule 선택은 취약점을 판정하거나 유형을 확정하는 과정이 아니라 어떤 사실을 모을지 정하는 과정이다. 실제 `vulnerability_type_candidates`는 Hypothesis Agent가 정적 사실을 조합해 만들며, SAST rule 매치와 severity는 최종 취약점 판정이 아니다(위 "정적 분석의 역할" 참고).
 
-> **미정 사항 (구현 전 확정 필요)**: 어떤 rule/rule pack을 실제로 실행했는지 추적할 방법이 아직 없다. `CodeFact.producer.rule_id`는 그 rule이 실제로 hit을 만들었을 때만 존재하는 필드라, rule을 실행했지만 결과가 0건인 경우와 애초에 그 rule을 실행하지 않은 경우를 구분하지 못한다. 최소한 다음이 실행 결과와 연결돼야 한다: 도구 이름·버전, 선택한 rule/rule pack, 분석 설정의 정확한 revision·hash, 실제 실행 여부, 실행했지만 0건이었는지 여부, 해당 실행의 `ToolRunResult`. 이 계약은 이 PR에서 확정하지 않으므로 후속 Issue로 분리하고, 구현 전에 반드시 해결해야 한다 — 그 전까지는 "스키마 변경이 필요 없다"고 확정적으로 말할 수 없다. 저장 위치는 R2 단독으로 정할 사안이 아니라 데이터·평가(#9)·PM(#5)과 함께 확정한다.
+> **미정 사항 (구현 전 확정 필요)**: 어떤 rule/rule pack을 실제로 실행했는지 추적할 방법이 아직 없다. `CodeFact.producer.rule_id`는 그 rule이 실제로 hit을 만들었을 때만 존재하는 필드라, rule을 실행했지만 결과가 0건인 경우와 애초에 그 rule을 실행하지 않은 경우를 구분하지 못한다. 최소한 다음이 실행 결과와 연결돼야 한다: 도구 이름·버전, 선택한 rule/rule pack, 분석 설정의 정확한 revision·hash, 실제 실행 여부, 실행했지만 0건이었는지 여부, 해당 실행의 `ToolRunResult`. 이 계약은 이 PR에서 확정하지 않으므로 후속 **Issue #82**로 분리했고, 구현 전에 반드시 해결해야 한다 — 그 전까지는 "스키마 변경이 필요 없다"고 확정적으로 말할 수 없다. 저장 위치는 R2 단독으로 정할 사안이 아니라 데이터·평가(#9)·PM(#5)과 함께 확정한다.
 
 codeql·opengrep이 rule 매치로 만든 source 후보는 "이 위치에 이런 패턴이 있다"는 사실만 담을 뿐, 실제로 공격자가 조작 가능한 유저 입력에서 그 위치까지 도달 가능한 경로가 있는지는 담지 않는다. 이 경로는 AST가 만든 call·data-flow 그래프로 판단한다.
 
