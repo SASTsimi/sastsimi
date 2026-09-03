@@ -28,10 +28,9 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 ## 가설끼리는 어떻게 연결하나요?
 
 - `parent_hypothesis_ids`: 바로 앞에서 새 가설을 만들게 한 부모들
-- `root_hypothesis_id`: 이 가설 계보의 첫 가설
-- `chain_depth`: 첫 가설은 0, 한 단계 이어질 때마다 1 증가
+- `source_primitive_match_id`: `origin=CHAINING` 가설을 만든 정확한 Primitive match
 
-`TRUE + TRUE`를 연결해 더 큰 공격 가능성을 찾아도 기존 두 결과를 수정하지 않습니다. 양쪽 TRUE가 모두 두 Gate를 통과한 exact revision인지 확인한 뒤 새로운 `origin=CHAINING` proposal과 `hypothesis_id`를 만들고 전체 검증을 다시 거칩니다. Verification이 별도 endpoint·sink·권한 경계를 발견한 경우에는 `origin=VERIFICATION` proposal을 사용합니다.
+한 Primitive의 `result`가 다른 Primitive의 특정 `input`을 충족해 더 큰 공격 가능성을 찾아도 기존 결과를 수정하지 않습니다. Technical `ACCEPT`을 받은 upstream TRUE revision, downstream Primitive와 `matched_input_id`를 확인한 뒤 새로운 `origin=CHAINING` proposal과 `hypothesis_id`를 만들고 전체 검증을 다시 거칩니다. 현재 가설의 부모와 source match를 따라 조상 Primitive를 계산해 현재 match 후보에서 제외하므로 별도 root ID나 depth 숫자를 저장하지 않습니다. Verification이 별도 endpoint·sink·권한 경계를 발견한 경우에는 `origin=VERIFICATION` proposal을 사용합니다.
 
 ## 시간은 어떻게 적나요?
 
@@ -80,6 +79,16 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 
 정적 분석과 코드 조회 결과는 사용할 수 있는 사실뿐 아니라 도구별 실행 상태, 분석·제외 범위, `DataGap`, `AnalysisError`를 함께 전달합니다. `DataGap`은 영향받은 path·language·코드 위치를 가능한 범위에서 적습니다. 결과가 비어 있거나 일부 도구가 실패했다는 이유로 안전하다고 판단하지 않습니다.
 
+### 검사 결과 0건과 미실행을 어떻게 구분하나요?
+
+CodeQL·OpenGrep은 규칙별 실행 이력을 `RuleExecutionRecord`에 저장하고 `ToolRunResult`가 그 정확한 기록을 가리킵니다.
+
+- `EXECUTED + hit_count=0`: 검사했지만 탐지 결과가 0건입니다.
+- `NOT_EXECUTED`: 검사하지 않았습니다. 계획에서 제외했거나 실행하지 못한 이유를 함께 적습니다.
+- `UNKNOWN`: 오류나 기록 부족으로 검사했는지 확인할 수 없습니다.
+
+도구 오류나 timeout을 0건으로 바꾸지 않습니다. 다시 실행하면 새 `attempt_id`와 새 기록을 만들며 이전 결과와 합치지 않습니다. R2는 실행 기록을 만들고, R4의 Runtime Validator는 형식·참조·상태 조합을 검사하며, R8은 exact 기록으로 실행률과 평가 지표를 계산합니다. LLM Agent는 이 실행 이력을 만들거나 수정하지 않습니다.
+
 Context 조회가 실패·timeout·권한 오류로 끝나면 실패 사건은 `AnalysisError`, 그 때문에 확인하지 못한 코드 범위는 `DataGap`으로 함께 남깁니다. 가설에는 해야 할 검증마다 고유 `validation_id`가 있고, 결과는 같은 ID로 완료 여부와 실제 근거를 답합니다. 일부 조회가 실패했더라도 재시도·대체 조회·다른 정상 근거로 모든 검증 항목과 운영 Pro/Con을 끝냈다면 실제 근거에 따라 `TRUE | FALSE | HOLD`를 저장할 수 있습니다. 하나라도 끝내지 못했다면 final `VerificationResult`를 만들지 않습니다. 다시 시도할 수 있으면 work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지합니다. 더 시도할 수 없으면 work와 가설 처리 상태를 한 번에 `FAILED`로 끝내고 결과 reference는 비워 둡니다. 단순 조회 오류만으로 `HOLD`를 만들지 않습니다.
 
 ## 동적 재현 실패와 반증은 다릅니다
@@ -116,7 +125,7 @@ credential·cookie·token·password 원문은 요구사항과 실제 값에 저�
 
 Technical Gate는 현재 generation의 exact `DynamicReproductionRequest`, `SUCCEEDED + SUPPORTED` 동적 결과와 validated PoC가 있는 final `TRUE`만 입력으로 받고 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`만 direct input으로 사용합니다. Verification의 `hypothesis_ref`·Evidence·Dynamic request/result·validated PoC와 `CWELabel.evidence_refs`는 여기서 따라가는 transitive dependency입니다. 등록 가설의 material content가 달라지면 새 proposal과 `hypothesis_id`로 전체 Verification을 시작합니다. runtime은 action 허가 시점, 호출 직전, review 저장 직전과 R5-02 진입 직전에 exact revision·hash·workspace·commit·hypothesis와 R7 실행 attempt를 검사합니다. `FALSE | HOLD`, 검증 실패 가설 또는 변경된 dependency에는 이전 Gate 승인을 재사용하지 않습니다. `poc_candidate_ref`는 validated PoC가 아니며 Gate 근거로 사용할 수 없습니다. shared static evidence는 같은 workspace·commit에서 여러 가설이 재사용할 수 있고 직접 가설 ID 일치를 요구하지 않습니다. `handoff_readiness`는 Technical Gate 결과의 downstream handoff 가능 여부이며 `ACCEPT`일 때만 `READY`입니다. 현재 R5 pipeline에서는 `ACCEPT + READY`인 동일 exact Verification revision을 immediate next stage인 R5-02에 전달할 수 있습니다. 이는 R5-02 통과를 뜻하지 않습니다. Rule Scope Gate와 보고서 초안도 같은 exact Verification·CWELabel revision을 사용해야 하며, `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
 
-Primitive도 exact revision을 사용합니다. HOLD는 final Verification ref가 붙은 REQUIRED를 Gate 없이 만들고, TRUE는 Technical `ACCEPT`와 Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`가 같은 Verification revision을 가리킬 때만 PROVIDED를 만듭니다. TRUE의 PROVIDED에는 그 취약점을 악용하기 위한 exact Verification의 `required_preconditions`도 함께 고정합니다. 가설별 `PrimitiveIndexState`가 current ACTIVE 항목을 가리키며 새 Verification/index revision이 생기면 과거 항목과 진행 중인 오래된 Chaining 결과를 commit 시 거절합니다.
+Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 부족 조건을 `inputs`에 넣고 `result=null`로 Gate 없이 저장합니다. TRUE는 validated PoC와 같은 revision을 검토한 Technical `ACCEPT` 뒤 제공 능력 하나마다 `result`가 있는 Primitive를 만들고, 그 TRUE의 입력 조건과 restrictions도 함께 보존합니다. Rule Scope 결과는 Reporter만 제어하며 Primitive admission을 취소하지 않습니다. `PrimitiveIndexState`는 current Verification과 Primitive refs만 가리키며 별도 전용 version은 두지 않습니다. 공통 `RecordMeta` revision과 원자적 current pointer 갱신으로 오래된 Chaining 결과를 거절합니다.
 
 ## 자주 쓰는 작은 데이터 구조
 
@@ -126,7 +135,8 @@ Primitive도 exact revision을 사용합니다. HOLD는 final Verification ref�
 - `CandidateRef`: 아직 검증되지 않은 우회·대체 경로·영향 확대 후보입니다. 새 주장이면 별도 가설로 검증하기 전까지 확정 결과로 쓰지 않습니다.
 - `VerificationMetrics`: debate의 token·시간·판정 변화와 새로 발견한 항목 수를 저장합니다. 제공되지 않은 token은 `null`입니다.
 - `PolicyItem`: 공식 정책의 항목 하나와 원문을 다시 찾을 수 있는 출처 위치를 연결합니다.
-- `PrimitiveMatchCandidate`: TRUE+HOLD에서는 PROVIDED와 HOLD REQUIRED를, TRUE+TRUE에서는 앞 PROVIDED와 뒤 TRUE의 exact `required_preconditions`를 방향성 있게 비교하고 current index·revision 호환성을 기록한 미검증 연결 후보입니다.
+- `PrimitiveDraft`: Primitive의 입력 조건이나 실행 결과 하나를 entity·저장소 권한 값·근거·설명으로 나타냅니다.
+- `PrimitiveMatchCandidate`: upstream Primitive의 하나뿐인 `result`가 downstream Primitive의 `matched_input_id`를 충족하는지, 양쪽 exact record·부모·workspace·commit·근거와 함께 기록한 미검증 연결 후보입니다.
 
 ## 계약이 바뀌면 어떻게 하나요?
 

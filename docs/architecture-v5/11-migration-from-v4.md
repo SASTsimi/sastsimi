@@ -49,7 +49,7 @@
 | 선택 code fragment 전달 | 같은 workspace와 commit의 on-demand location retrieval |
 | Semantic Judge/Synthesis | bypass-aware Verification Agent |
 | Proof Router/Resolver | VerificationResult의 evidence/gap/restriction |
-| confirmed/held 목록 | HOLD REQUIRED, Gate-qualified TRUE PROVIDED와 current `PrimitiveIndexState` records |
+| confirmed/held 목록 | `result=null`인 HOLD Primitive와 `result`가 있는 Technical-accepted TRUE Primitive, current `PrimitiveIndexState` |
 | chaining 내부 탐색 | matching 전용 Chaining Agent + 새 가설 환류 |
 | 하나의 LLM Gate | Technical Evidence Gate + Rule Scope Impact Gate |
 | membership 중심 연결 | Membership/API 공통 `LLMProviderAdapter` |
@@ -92,8 +92,8 @@ v4 TRUE | FALSE | PENDING
 5. R6 `DynamicReproductionRequest`, R7 LIMITED/FULL plan·PoC candidate, Docker 실행과 validated PoC
 6. ACTIVE `VerificationAssignment` 기반 material claim과 새 VERIFICATION work를 만드는 Technical `REVISE` loop
 7. CWE와 Technical Evidence Gate
-8. official `ProgramPolicyRecord` 수집 경계, Rule Scope Impact Gate와 Gate-qualified PROVIDED admission
-9. Primitive DB와 TRUE+HOLD, 앞 TRUE PROVIDED→뒤 TRUE exact precondition Chaining loop
+8. Technical `ACCEPT` 기반 result Primitive admission과 독립된 official `ProgramPolicyRecord`·Rule Scope Impact Gate
+9. Primitive DB와 upstream `result`→downstream `input` Chaining loop, 계보 기반 순환 제외
 10. provider adapters, session policy와 Logging Proxy/parser
 11. Reporter와 result stores, `ReportDraft` 뒤 Agent 자동화 종료 경계
 

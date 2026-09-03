@@ -34,7 +34,7 @@ NOT_IMPLEMENTED
 
 1. LLM 중심 분석 파이프라인의 단계와 역할 경계를 팀 전체가 동일하게 이해합니다.
 2. 정적 분석, 가설 생성, Verification 중심 검증, 동적 재현, 두 검토 단계(`Gate`)와 보고 사이의 입출력 약속을 명확히 합니다.
-3. 보류된 가설의 부족 조건과 두 Gate를 통과한 공격 능력을 연결하는 연계 탐색(`Primitive DB`와 `Chaining Agent`) 규칙을 검토합니다.
+3. 보류된 가설의 입력 조건과 Technical Gate가 승인한 공격 결과를 연결하는 연계 탐색(`Primitive DB`와 `Chaining Agent`) 규칙을 검토합니다.
 4. 회원 로그인·API 방식의 LLM 연결(`provider`), 로그인·대화 상태(`session`), 실행 기록(`logging`)과 비용·평가 정책을 구현 가능한 수준으로 구체화합니다.
 5. 파트 간 모순과 Blocker/High 이슈를 제거한 뒤 전체 설계를 승인합니다.
 6. 승인된 설계를 기준으로 구현 계획과 검증 계획을 별도 수립합니다.
@@ -45,10 +45,10 @@ NOT_IMPLEMENTED
 
 쉽게 나누면 다음과 같습니다.
 
-1. **코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다.
+1. **코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다. SAST 규칙별로 검사 0건·미실행·확인 불가를 구분합니다.
 2. **가설 생성과 검증**: Orchestration이 가설을 등록해 Verification에 배정하고, Verification이 찬성·반대 근거와 필요한 후속 작업을 관리합니다.
 3. **필요한 경우 재현**: Verification 판단에 따라 Docker 격리 환경에서 제한적으로 공격 흐름을 재현합니다.
-4. **판정별 연계 탐색**: HOLD의 필요 조건은 즉시, TRUE의 제공 능력은 두 Gate를 모두 통과한 뒤에만 연결해 새 가설을 만듭니다.
+4. **판정별 연계 탐색**: HOLD의 필요 조건은 즉시, TRUE의 제공 능력은 validated PoC와 Technical `ACCEPT` 뒤 연결해 새 가설을 만듭니다. Rule Scope는 보고 가능성만 판단합니다.
 5. **근거·정책 검토와 자동화 종료**: 두 Gate를 통과한 결과만 보고서 초안으로 만들고, 결과와 디버깅 정보를 저장한 뒤 Agent 자동화를 끝냅니다.
 
 그 이후의 검토·수정·제출·공개는 Agent 자동화와 공통 action 계약 밖에서 사람이 수행합니다.
@@ -60,7 +60,8 @@ Repository input
 → Repository Loader가 git clone과 commit checkout
 → CodeWorkspace 준비
 → AST parse와 SAST 병렬 실행
-→ StaticFactBundle
+→ ToolRunResult와 규칙별 RuleExecutionRecord
+→ exact 규칙 실행 기록이 연결된 StaticFactBundle
 → constrained HypothesisProposal
 → Orchestration이 가설을 등록하고 가설별 Verification owner를 배정
 → Verification이 on-demand context와 운영 기본 Pro/Con 병렬 검증 관리
@@ -73,9 +74,9 @@ Repository input
 → final TRUE / FALSE / HOLD
 → final TRUE는 재현에 성공한 validated PoC가 있을 때만 저장하고 Technical Gate로 전달
 → FALSE는 terminal
-→ HOLD는 REQUIRED Primitive로 즉시 Chaining
-→ TRUE는 CWE → Technical Evidence Gate → Rule Scope Impact Gate
-→ 두 Gate를 정상 통과한 exact TRUE revision만 PROVIDED Primitive로 Chaining
+→ HOLD는 inputs만 있고 result가 없는 Primitive로 즉시 Chaining
+→ TRUE는 CWE → Technical Evidence Gate
+→ Technical ACCEPT 뒤 result Primitive Chaining과 Rule Scope 보고 검토를 독립 진행
 → Verification 또는 Chaining의 새 material claim은 새 가설로 등록·재검증
 → 조건 충족 시 ReportDraft
 → AnalysisRunResult에 결과·로그 확정
@@ -136,7 +137,7 @@ main  ← Architecture v5 candidate baseline
 
 | 역할 | 담당자 | 핵심 책임 |
 |---|---|---|
-| LLM 탐색·체이닝 | 배승원 ([@baeseungwon1010](https://github.com/baeseungwon1010)) | 최초 취약점 후보 생성, HOLD REQUIRED 및 Gate-qualified TRUE PROVIDED의 방향성 matching과 token 최적화 |
+| LLM 탐색·체이닝 | 배승원 ([@baeseungwon1010](https://github.com/baeseungwon1010)) | 최초 취약점 후보 생성, upstream result와 downstream input의 근거 기반 matching 및 예산 최적화 |
 | 정적분석·컨텍스트 | 김나연 ([@zv9uvr](https://github.com/zv9uvr)) | AST·CodeQL·OpenGrep 결과 정리, 코드 위치·호출 흐름과 LLM용 context 조립 |
 | 단독 구현·통합 개발 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 모듈의 구현 가능성, 계약 준수 테스트와 통합 계획 검토 |
 | PM·아키텍처·워크플로 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 구조, 공통 입출력 계약, 사람·LLM 경계, 병렬·직렬 흐름과 오류 정책 |

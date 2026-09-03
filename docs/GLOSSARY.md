@@ -31,6 +31,8 @@
 | `source` | 외부 입력이 시작되는 곳 | 사용자 입력, 요청 값, 파일 값 등이 될 수 있습니다. |
 | `sink` | 위험한 동작이 실행될 수 있는 곳 | 명령 실행, DB 질의, 응답 출력 등이 될 수 있습니다. |
 | `StaticFactBundle` | AST와 SAST가 찾은 코드 사실을 한데 모은 데이터 묶음 | 취약점 최종 판정이 아니라 LLM이 검토할 자료입니다. |
+| `RuleExecutionRecord` | SAST가 어떤 규칙을 선택하고 실제 실행했는지 남긴 기록 | 실행 0건, 미실행, 확인 불가를 구분하고 정확한 도구 시도와 연결합니다. |
+| `hit_count` | 한 규칙이 raw 도구 결과에서 만든 탐지 수 | `EXECUTED`일 때만 0 이상의 값을 쓰며 0은 미실행이 아닙니다. |
 | `retrieval` | 필요한 코드만 위치를 기준으로 다시 가져오는 작업 | 저장소 전체를 무제한으로 보내지 않습니다. |
 | `context` | 판단에 필요한 주변 코드와 관련 정보 | 원본 위치와 조회 범위를 함께 기록합니다. |
 | `schema` | 데이터에 어떤 항목이 있어야 하는지 정한 형식 | 형식에 맞지 않는 LLM 출력은 그대로 사용하지 않습니다. |
@@ -92,12 +94,12 @@
 |---|---|---|
 | `Agent` | 한 가지 분석 역할을 맡는 LLM 작업 단위 | 프로그램의 강제 규칙이나 사람의 결정을 대신하지 않습니다. |
 | `Orchestration` | 가설 제안을 확인·등록하고 각 가설에 Verification을 배정하는 전역 조정 기능 | 배정 뒤 가설 내부 Pro/Con·동적 재현·Gate·Chaining을 결정하지 않습니다. |
-| `Primitive` | 연계 공격에서 필요한 조건(`REQUIRED`) 또는 제공되는 능력(`PROVIDED`) | HOLD만 REQUIRED가 되고, TRUE는 두 Gate를 정상 통과한 정확한 revision만 PROVIDED가 됩니다. TRUE PROVIDED에는 해당 취약점의 악용 선행 조건도 함께 고정합니다. |
-| `PrimitiveIndexState` | 가설마다 현재 사용할 수 있는 Primitive 수정본을 가리키는 인덱스 상태 | 탐색 중 새 Verification이 생기면 version이 바뀌어 오래된 Chaining 결과의 저장을 막습니다. |
-| `PrimitiveMatchCandidate` | TRUE+HOLD 또는 TRUE+TRUE의 조건·능력이 연결될 수 있는지 검사한 미검증 후보 | TRUE+TRUE는 앞 PROVIDED와 뒤 TRUE의 exact 선행 조건을 방향성 있게 비교하고 current index·revision도 확인합니다. |
-| `Chaining Agent` | ACTIVE Primitive의 TRUE+HOLD와 TRUE+TRUE 조합만 찾는 Agent | 일반 취약점·우회·영향 탐색, 동적 재현, Gate 보완과 판정은 하지 않습니다. |
-| `chaining` | Gate-qualified TRUE의 능력과 HOLD 조건 또는 다른 Gate-qualified TRUE 능력을 연결해 새 공격 가설을 만드는 과정 | 깊이, 횟수, token, 시간, 중복과 순환 제한을 둡니다. |
-| `Gate-qualified TRUE` | 같은 TRUE revision이 Technical `ACCEPT`와 Rule Scope 정상 통과를 모두 받은 상태 | Gate 전 TRUE, Technical만 통과한 TRUE와 오래된 Gate 승인은 현재 체이닝에 사용할 수 없습니다. |
+| `PrimitiveDraft` | 연계 공격의 입력 조건 또는 실행 뒤 얻는 결과를 표현한 작은 데이터 | 코드 entity, 필요하면 저장소에 정의된 권한 값, 근거와 쉬운 설명을 함께 둡니다. |
+| `Primitive` | 한 가설의 필요한 입력들과 실행 결과를 한 형식으로 묶은 연계 재료 | HOLD는 `result=null`, TRUE는 Technical `ACCEPT` 뒤 `result`가 있습니다. `REQUIRED/PROVIDED` 같은 별도 종류 필드는 저장하지 않습니다. |
+| `PrimitiveIndexState` | 가설의 현재 Verification과 현재 Primitive 수정본들을 가리키는 목록 | 별도 전용 version 필드 없이 공통 `RecordMeta` revision과 원자적 current pointer 갱신을 사용합니다. |
+| `PrimitiveMatchCandidate` | 한 Primitive의 결과가 다른 Primitive의 특정 입력을 채울 수 있는지 나타낸 미검증 후보 | `upstream_result_ref`, `downstream_input_ref`, `matched_input_id`와 실제 근거를 기록하며 아직 취약점 확정 결과가 아닙니다. |
+| `Chaining Agent` | upstream 결과와 downstream 입력이 이어지는 조합만 찾는 Agent | 일반 취약점·우회·영향 탐색, 동적 재현, Gate 보완과 판정은 하지 않습니다. |
+| `chaining` | 확인된 결과가 다른 가설의 입력 조건을 충족할 때 새 공격 가설을 만드는 과정 | 조상 계보의 Primitive를 현재 후보에서 제외해 순환을 막고 전체 비용은 R8 전역 예산으로 제한합니다. |
 | `origin=VERIFICATION` | Verification이 검증 중 발견한 별도 material claim에서 나온 새 가설 | trusted validation과 새 가설 등록 뒤 처음부터 검증합니다. |
 | `origin=CHAINING` | Chaining Agent의 Primitive match에서 나온 새 가설 | 부모 판정을 바꾸지 않고 별도 lifecycle로 검증합니다. |
 | `material claim` | 기존 가설과 구분해 따로 검증해야 할 새로운 공격 주장 | 기존 판정에 바로 합치지 않고 새 가설로 만듭니다. |
@@ -108,8 +110,8 @@
 |---|---|---|
 | `Finding` | 사람이 검토할 수 있게 정리한 취약점 결과 | Hypothesis, Verification-origin 또는 Chaining-origin 후보와 구분합니다. |
 | `Gate` | 다음 단계로 보내도 되는지 확인하는 검토 단계 | Verification 판정을 직접 바꾸지 않습니다. |
-| `Technical Evidence Gate` | 판정과 코드·실행 근거가 서로 맞는지 확인하는 기술 검토 | 부족하면 `REVISE`로 보완을 요청할 수 있습니다. |
-| `Rule Scope Impact Gate` | 공식 정책 범위와 실제 영향을 확인하는 검토 | 공식 정책이 없으면 추측하지 않습니다. |
+| `Technical Evidence Gate` | 판정과 코드·실행 근거가 서로 맞는지 확인하는 기술 검토 | `ACCEPT`인 TRUE만 result Primitive가 됩니다. 금지 재현으로 근거가 오염됐는지와 코드 경로·제한 조건이 정확한지도 확인합니다. |
+| `Rule Scope Impact Gate` | 공식 정책 범위와 실제 영향을 확인하는 보고 가능성 검토 | 공식 정책이 없으면 추측하지 않습니다. 결과는 Reporter를 제어하며 이미 만들어진 Primitive나 Chaining 자격을 취소하지 않습니다. |
 | `PolicyItem` | 공식 정책에서 뽑은 항목 하나와 원문 위치를 묶은 데이터 | 반드시 공식 출처 기록으로 다시 확인할 수 있어야 합니다. |
 | `VerificationAssignment` | 한 가설의 내부 검증 흐름을 맡은 논리 owner의 저장 기록 | 같은 역할의 다른 Agent가 아니라 ACTIVE assignment와 일치하는 owner만 Gate·보완·보고 요청을 제안할 수 있습니다. |
 | `REVISE` | 부족한 근거를 같은 Verification owner가 새 Verification work에서 보완한 뒤 새 revision으로 다시 검토하라는 결과 | provider retry나 동일 입력 재투표가 아니며 오래된 Gate 결과를 재사용하지 않습니다. |

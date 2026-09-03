@@ -1,10 +1,10 @@
 # 06. Primitive DB와 Chaining
 
-- **이 문서는 무엇을 설명하나요?** 보류된 가설의 부족 조건과 Gate를 통과한 공격 능력을 연결해 새 가설을 만드는 방법을 설명합니다.
-- **누가 읽어야 하나요?** LLM 탐색·체이닝, 검증과 데이터·평가 담당자가 읽습니다.
-- **읽은 뒤 무엇을 확인하거나 결정하나요?** 어떤 결과가 언제 체이닝 입력이 되는지와 깊이·횟수·token·시간 중단 기준을 확인합니다.
+- **이 문서는 무엇을 설명하나요?** 보류된 가설의 부족 조건과 검증된 공격 능력을 같은 형식으로 저장하고 새 연계 가설을 만드는 방법을 설명합니다.
+- **누가 읽어야 하나요?** LLM 탐색·체이닝, 검증, Gate와 데이터·평가 담당자가 읽습니다.
+- **읽은 뒤 무엇을 확인하거나 결정하나요?** 어떤 결과가 체이닝 재료가 되는지, 어떤 근거로 결합하며 순환과 비용을 어떻게 막는지 확인합니다.
 
-`Primitive`는 연계 공격의 필요 조건 또는 확인된 능력입니다. `Chaining`은 호환되는 Primitive 두 개를 연결해 새 가설을 제안하는 제한된 작업입니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
+`Primitive`는 공격 경로의 입력 조건과 결과 능력을 담는 재료입니다. `Chaining`은 확인된 결과가 다른 Primitive의 입력을 채울 수 있을 때 새 가설을 제안하는 작업입니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
 
 > 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
 
@@ -13,115 +13,110 @@
 Chaining Agent는 다음 두 조합만 확인한다.
 
 ```text
-Gate-qualified TRUE + HOLD
-Gate-qualified TRUE + Gate-qualified TRUE
+result가 있는 TRUE Primitive + result가 없는 HOLD Primitive
+result가 있는 TRUE Primitive + result가 있는 다른 TRUE Primitive
 ```
 
-Chaining Agent는 Primitive 조회·호환성 검사·중복 및 순환 검사·새 가설 제안만 담당한다. 일반 취약점 탐색, 우회·대체 경로 탐색, 영향 확대 조사, 추가 정적·동적 검증과 Technical Gate `REVISE` 처리는 Verification Agent의 책임이다. Primitive DB와 Chaining Agent는 Finding을 만들거나 부모 가설의 판정을 바꾸지 않는다.
+Chaining Agent는 Primitive 조회·근거 기반 호환성 검사·중복 및 순환 검사·새 가설 제안만 담당한다. 일반 취약점 탐색, 우회·대체 경로 탐색, 영향 확대 조사, 추가 정적·동적 검증과 Technical Gate `REVISE` 처리는 Verification Agent의 책임이다. Primitive DB와 Chaining Agent는 Finding을 만들거나 부모 가설의 판정을 바꾸지 않는다.
 
-## Primitive 모델과 등록 시점
-
-Primitive는 공격 경로에서 필요하거나 제공되는 최소 능력을 표현한다.
+## Primitive 모델
 
 ```yaml
 Primitive:
   meta: RecordMeta
   primitive_id: string
-  primitive_type: string
-  target:
-    workspace_id: string
-    commit_id: string
-    asset: string
-    entity_refs: [CodeSymbol]
-    endpoint: string | null
-    privilege_level: string
-    data_type: string | null
-  status: REQUIRED | PROVIDED
+  workspace_id: string
+  commit_id: string
+  inputs: [PrimitiveDraft]
+  result: PrimitiveDraft | null
+  restrictions: [string]
   source_hypothesis_id: string
   source_verification_ref: StoredDataRef
   technical_review_ref: StoredDataRef | null
-  rule_scope_review_ref: StoredDataRef | null
-  required_preconditions: [PrimitiveDraft]
-  eligibility: ACTIVE | SUPERSEDED
-  superseded_by_verification_ref: StoredDataRef | null
   evidence_refs: [StoredDataRef]
-  confidence: LOW | MEDIUM | HIGH
   description: string
 ```
 
-등록 규칙은 판정별로 다르다.
+- `inputs`: 이 능력을 사용하거나 HOLD를 해소하기 위해 필요한 조건
+- `result`: 이 Primitive가 제공하는 확인된 능력. HOLD는 `null`
+- `restrictions`: 결합 뒤 새 가설에도 남겨야 하는 제약
 
-- final `HOLD`: exact final `VerificationResult`에서 `REQUIRED` Primitive를 즉시 저장한다. 두 Gate를 기다리지 않으며 `technical_review_ref`와 `rule_scope_review_ref`는 `null`이다.
-- final `FALSE`: Primitive를 만들지 않고 체이닝을 호출하지 않는다.
-- final `TRUE`: Verification 결과만으로 `PROVIDED`를 만들지 않는다. 현재 generation의 성공한 동적 재현과 validated PoC가 연결되고, 같은 Verification revision과 CWE revision을 Technical Gate가 `ACCEPT`하고, Rule Scope Gate가 기존 정상 통과 조건을 모두 만족한 뒤에만 `PROVIDED`를 저장한다. 이 PROVIDED의 `required_preconditions`에는 exact Verification이 기록한 악용 전제조건을 복사한다.
+status는 따로 저장하지 않는다. `result=null`이면 HOLD에서 나온 조건 묶음이고, result가 있으면 TRUE에서 나온 능력이다.
 
-Rule Scope Gate의 정상 통과는 다음 기존 조건을 그대로 사용한다.
+## 등록 시점
 
-```text
-review_status == PASS
-AND rule_compliance == PASS
-AND scope_compliance == PASS
-AND security_impact == SUFFICIENT
-AND report_permission == ALLOW
+- final `HOLD`: `required_primitive_candidates`가 있을 때 Primitive 하나를 즉시 저장한다. 해당 목록은 `inputs`, `result=null`, `technical_review_ref=null`이며 restrictions를 그대로 보존한다.
+- final `FALSE`: Primitive와 Chaining work를 만들지 않는다.
+- final `TRUE`: 현재 generation의 성공한 동적 재현과 validated PoC가 있고, exact TRUE+CWE를 Technical Gate가 `ACCEPT`한 뒤에만 result가 있는 Primitive를 저장한다. 제공 능력이 여러 개면 능력마다 Primitive 하나를 만들고 각 record의 inputs에는 그 TRUE의 악용 전제조건을 복사한다.
+- Gate 전 TRUE와 Technical `REVISE | REJECT`: Primitive를 만들지 않는다.
+
+Technical `ACCEPT`은 체이닝 재료의 자격을 확정하고 Rule Scope는 보고 가능성만 판단한다. Rule Scope 결과는 이미 admission된 Primitive를 취소하지 않는다. 따라서 프로그램 정책 부족, 범위 밖, 중복 또는 보고 불가 판정은 Reporter를 막지만 코드에 실제로 존재하는 능력을 체이닝 재료에서 제거하지 않는다.
+
+Technical Gate는 validated PoC 연결뿐 아니라 금지된 재현으로 근거가 오염되지 않았는지, 실제 경로와 restrictions가 정확히 표현됐는지를 확인한다. 이 검사를 통과하지 못한 TRUE는 체이닝에 들어가지 않는다.
+
+## PrimitiveIndexState
+
+```yaml
+PrimitiveIndexState:
+  meta: RecordMeta with attempt_id null
+  current_verification_ref: StoredDataRef
+  primitive_refs: [StoredDataRef]
+  updated_at: timestamp
 ```
 
-따라서 validated PoC가 없는 TRUE 후보, `Technical ACCEPT`만 받은 TRUE, `FAIL | UNCERTAIN | DENY`인 TRUE와 Gate 전 TRUE는 체이닝 자격이 없다. PROVIDED의 provenance reference는 동일한 `workspace_id`, `commit_id`, `hypothesis_id`와 exact Verification·동적 결과·PoC revision을 가리켜야 한다.
+가설마다 하나의 index가 current final Verification과 그 결과에서 만든 Primitive exact reference를 가리킨다. REQUIRED/PROVIDED 목록, 별도 `state_version`, 사후 ACTIVE/SUPERSEDED 상태는 사용하지 않는다.
 
-## exact revision과 오래된 승인 차단
-
-Primitive DB는 가설별 `PrimitiveIndexState`가 가리키는 exact final Verification revision과 `ACTIVE` 항목만 조회한다. 새 Verification generation 또는 새 `VerificationResult` revision이 생기면 index version을 증가시키고 이전 revision에서 나온 Primitive는 기록으로 보존하되 새 Primitive revision에서 `SUPERSEDED`로 표시하고 현재 체이닝 조회에서 제외한다. REVISE 재진입에서는 새 Verification work와 hypothesis `VERIFYING` 전이와 같은 atomic transaction으로 active 목록을 먼저 비운다.
-
-과거 Technical `ACCEPT` 또는 Rule Scope `PASS`가 Verification N을 가리키는데 Verification N+1이 만들어졌다면 N+1은 아직 Gate-qualified TRUE가 아니다. N의 Gate reference를 N+1의 PROVIDED admission에 재사용할 수 없다. 이 규칙은 Gate에서 나중에 탈락할 TRUE가 먼저 chain ancestor가 되는 문제를 구조적으로 막는다.
-
-Chaining work는 각 parent의 current `PrimitiveIndexState` exact revision을 input에 고정한다. 결과와 child proposal을 저장하기 직전에 runtime이 index head와 현재 final Verification을 compare-and-set으로 다시 검사한다. 탐색 중 새 Verification/index revision이 생기면 과거 Primitive record에 `ACTIVE`가 남아 있어도 해당 결과는 `STALE_RESULT`이며 proposal을 등록하지 않는다.
-
-## HeldHypothesis와 ConfirmedCapability
-
-- `HeldHypothesis`는 final HOLD, restriction, unresolved condition과 `REQUIRED` Primitive를 묶는다. 이는 확인된 취약점이 아니다.
-- `ConfirmedCapability`는 두 Gate를 정상 통과한 exact TRUE revision과 `PROVIDED` Primitive를 묶는다. `TRUE` 자체가 외부 공개되었다는 뜻은 아니다.
-- HOLD를 `PROVIDED`로 바꾸거나 체이닝 성공을 근거로 부모 HOLD를 TRUE로 바꾸지 않는다.
-
-Primitive DB는 worker가 항목을 꺼내 실행하는 queue가 아니다. 가설 등록과 Verification 배정은 global trusted runtime과 Orchestration Agent가 담당하고, DB는 체이닝 후보를 찾는 분석 인덱스다.
+동시에 index를 쓰면서 결과가 사라지지 않도록 공통 immutable record 규칙은 유지한다. 새 revision은 바로 전 `record_id`와 연속된 `revision_number`를 사용하고 current pointer를 원자적으로 바꾼다. 이는 모든 record에 적용되는 저장 안전 규칙이며 체이닝 전용 CAS나 사후 자격 변경 절차가 아니다.
 
 ## Chaining Agent
 
-### 입력과 허용 책임
+### 입력과 비교 기준
 
-Chaining Agent는 final HOLD의 ACTIVE REQUIRED와 Gate-qualified TRUE의 ACTIVE PROVIDED만 입력으로 받는다. 다음 항목을 확인한다.
+Chaining Agent는 result가 있는 Primitive를 upstream으로 사용한다. downstream은 하나 이상의 input을 가져야 한다. 다음 조건을 모두 확인한다.
 
 - 같은 `workspace_id`와 `commit_id`
-- 같은 asset 또는 근거가 있는 asset 간 이동
-- entity와 endpoint 호환성
-- privilege 수준의 충족 관계
-- data 형식과 식별자 호환성
-- 공격 순서상 능력이 필요한 시점보다 먼저 생기는지
-- 결합 뒤에도 남는 restriction
-- normalized fingerprint 중복, ancestor cycle과 chain budget
+- upstream result와 downstream input의 `entity_refs`가 같거나 코드 흐름으로 연결됨
+- 권한 조건이 있으면 저장소의 역할명·권한 상수·검사 위치로 충족 관계가 확인됨
+- upstream 능력이 downstream보다 먼저 성립함
+- 양쪽 restrictions를 합쳐도 공격 경로가 성립함
+- 비교 결론을 뒷받침하는 실제 코드·검증 근거가 있음
+- 동일 fingerprint 중복이나 ancestor Primitive 재사용 순환이 아님
 
-두 종류의 matching을 지원한다.
+전역 권한 서열표나 문자열 이름의 단순 일치는 사용하지 않는다. 축이 맞지 않거나 근거가 없으면 candidate를 만들지 않고 `no_match_reasons`에 이유를 남긴다. 별도 PASS/UNCERTAIN 필드는 두지 않는다.
 
-- `TRUE_HOLD`: 한 PROVIDED가 한 REQUIRED를 충족하는지 확인한다.
-- `TRUE_TRUE`: 앞 TRUE의 PROVIDED가 뒤 TRUE의 PROVIDED에 포함된 `required_preconditions` 중 하나를 충족하는지 순서 있게 확인한다. 양쪽 부모 TRUE 모두 exact Gate-qualified revision이어야 하며, 뒤 TRUE의 exact Verification에 기록되지 않은 전제조건을 새로 만들어 연결하지 않는다.
+### PrimitiveMatchCandidate
 
-문자열 `primitive_type`이 같다는 이유만으로 match를 만들지 않는다. 호환성 근거와 미확인 조건을 `PrimitiveMatchCandidate`에 남긴다.
+```yaml
+PrimitiveMatchCandidate:
+  primitive_match_id: string
+  upstream_result_ref: StoredDataRef
+  downstream_input_ref: StoredDataRef
+  matched_input_id: string
+  parent_hypothesis_ids: [string]
+  parent_verification_refs: [StoredDataRef]
+  workspace_id: string
+  commit_id: string
+  normalized_fingerprint: string
+  evidence_refs: [StoredDataRef]
+  candidate_state: UNVALIDATED
+```
+
+`upstream_result_ref`와 `downstream_input_ref`는 nested draft가 아니라 두 Primitive record의 exact reference다. upstream은 non-null result를 가져야 하고 `matched_input_id`는 downstream `inputs[].draft_id` 하나를 선택한다. downstream result가 `null`이면 TRUE_HOLD, result가 있으면 TRUE_TRUE로 유도하므로 match 종류를 따로 저장하지 않는다.
 
 ### 출력
 
 ```yaml
 ChainingResult:
   meta: RecordMeta
-  trigger: HOLD_MATCH | TRUE_HOLD_MATCH | TRUE_TRUE_MATCH
   source_result_refs: [StoredDataRef]
   input_primitive_refs: [StoredDataRef]
-  input_primitive_index_refs: [StoredDataRef]
   primitive_match_candidates: [PrimitiveMatchCandidate]
   chained_hypothesis_proposals: [HypothesisProposal]
   no_match_reasons: [string]
-  bounded_stop_reason: string | null
   errors: [AnalysisError]
 ```
 
-새 가설은 `HypothesisProposal(origin=CHAINING)`으로 만든다. trusted runtime이 schema·semantic·workspace·commit·exact Primitive eligibility·중복·깊이·예산을 검사한 뒤 새 `hypothesis_id`로 등록한다. Orchestration Agent는 등록된 가설에 새 Verification Agent를 배정한다. child는 전체 Verification 파이프라인을 처음부터 거친다.
+새 가설은 `HypothesisProposal(origin=CHAINING)`으로 만든다. proposal의 `source_primitive_match_id`는 자신을 만든 candidate ID와 같고, `parent_hypothesis_ids`는 그 candidate의 부모 set과 같아야 한다. trusted runtime이 schema·semantic·workspace·commit·exact Primitive·중복·순환·예산을 검사한 뒤 새 `hypothesis_id`로 등록한다. Orchestration Agent는 등록된 가설에 새 Verification Agent를 배정하고 child는 전체 Verification 파이프라인을 처음부터 거친다.
 
 ### 금지 권한
 
@@ -148,21 +143,14 @@ Verification
 -> full Verification pipeline
 ```
 
-Verification은 proposal을 만들 수 있지만 `hypothesis_id`를 직접 발급하거나 child를 자동 TRUE로 만들 수 없다. duplicate·depth·token·time 제한을 우회할 수도 없다. 부모와 child의 lifecycle과 verdict는 독립이며 child가 FALSE여도 부모 판정은 바뀌지 않는다.
+Verification은 proposal을 만들 수 있지만 `hypothesis_id`를 직접 발급하거나 child를 자동 TRUE로 만들 수 없다. 부모와 child의 lifecycle과 verdict는 독립이며 child가 FALSE여도 부모 판정은 바뀌지 않는다.
 
-## 확장 제한과 순환 방지
+## 순환과 비용 제어
 
-모든 run은 다음 제한을 설정한다.
+각 parent hypothesis에서 `source_primitive_match_id`를 따라 조상 match와 입력 Primitive를 역방향으로 걷는다. 이 과정에서 만난 ancestor Primitive를 현재 순회의 후보에서 제외한다. DB record는 바꾸지 않는다.
 
-- maximum chain depth
-- 전체 및 parent당 파생 가설 수
-- Chaining Agent 호출 수와 primitive 조합 수
-- 누적 LLM token과 wall-clock time
-- normalized hypothesis/primitive-match fingerprint 중복 횟수
-- 동일 ancestor/capability cycle
-
-한도 도달은 `FALSE`가 아니다. 만들지 못한 후보, 적용한 제한과 `bounded_stop_reason`을 저장한다. 새 사실이나 capability 없이 `A -> B -> A`로 순환하는 후보와 이미 같은 조건으로 반증된 후보는 다시 생성하지 않는다.
+체이닝 전용 임의 depth, 전체·parent별 가설 수, Chaining 호출 수와 Primitive 조합 수 한도는 두지 않는다. 대신 R8의 전체 token·시간·비용·work 예산이 모든 체이닝에도 적용된다. 예산 소진은 `FALSE`가 아니며 work 상태와 `AnalysisRunResult.stop_reasons`에 기록한다. 같은 `normalized_fingerprint`도 한 분석에서 중복 저장하지 않는다.
 
 ## 사람에게 보이는 결과
 
-사람은 HOLD requirement, Gate-qualified capability, exact Gate provenance, match 이유, 생성된 child hypothesis와 검증 여부를 구분해서 본다. match 후보와 미검증 child는 Finding, PoC 또는 실제 impact 주장에 섞이지 않는다.
+사람은 result 없는 HOLD 조건, Technical-accepted TRUE 능력, 두 Primitive를 연결한 근거, 생성된 child hypothesis와 검증 여부를 구분해서 본다. match candidate와 미검증 child는 Finding, PoC 또는 실제 impact 주장에 섞이지 않는다.
