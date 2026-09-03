@@ -60,19 +60,20 @@ static_fact_bundle:
 
 ## source reachability 판단
 
-버그클래스(예: SQL Injection, Path Traversal)를 먼저 정해야 codeql·opengrep이 어떤 rule로 `source`/`sink` 후보(`CodeFact.fact_kind: SOURCE | SINK`)를 찾을지가 정해진다. rule을 정하지 않으면 후보 자체가 생기지 않는다.
+분석 계획은 어떤 rule 묶음으로 codeql·opengrep을 실행해 `source`/`sink` 후보(`CodeFact.fact_kind: SOURCE | SINK`)를 수집할지 — 즉 사실 수집의 범위 — 를 정한다. 이 rule 선택은 취약점을 판정하거나 유형을 확정하는 과정이 아니라 어떤 사실을 모을지 정하는 과정이다. 실제 `vulnerability_type_candidates`는 Hypothesis Agent가 정적 사실을 조합해 만들며, SAST rule 매치와 severity는 최종 취약점 판정이 아니다(위 "정적 분석의 역할" 참고).
 
-> **미정 사항**: 버그클래스 결정 자체를 어느 record에 남길지(예: `RunMeta`에 필드 추가, 또는 rule set 선택 이력을 `ToolRunResult.producer` 쪽에 남기는 방식)는 아직 정하지 않았다. R2 스키마만으로 결정할 사안이 아니라 데이터·평가(#9)·PM(#5)과 함께 확정이 필요하다.
+> **미정 사항 (구현 전 확정 필요)**: 어떤 rule/rule pack을 실제로 실행했는지 추적할 방법이 아직 없다. `CodeFact.producer.rule_id`는 그 rule이 실제로 hit을 만들었을 때만 존재하는 필드라, rule을 실행했지만 결과가 0건인 경우와 애초에 그 rule을 실행하지 않은 경우를 구분하지 못한다. 최소한 다음이 실행 결과와 연결돼야 한다: 도구 이름·버전, 선택한 rule/rule pack, 분석 설정의 정확한 revision·hash, 실제 실행 여부, 실행했지만 0건이었는지 여부, 해당 실행의 `ToolRunResult`. 이 계약은 이 PR에서 확정하지 않으므로 후속 Issue로 분리하고, 구현 전에 반드시 해결해야 한다 — 그 전까지는 "스키마 변경이 필요 없다"고 확정적으로 말할 수 없다. 저장 위치는 R2 단독으로 정할 사안이 아니라 데이터·평가(#9)·PM(#5)과 함께 확정한다.
 
 codeql·opengrep이 rule 매치로 만든 source 후보는 "이 위치에 이런 패턴이 있다"는 사실만 담을 뿐, 실제로 공격자가 조작 가능한 유저 입력에서 그 위치까지 도달 가능한 경로가 있는지는 담지 않는다. 이 경로는 AST가 만든 call·data-flow 그래프로 판단한다.
 
-- 요청 진입점(`ROUTE_BINDINGS`로 식별된 handler 파라미터 등)에서 source 후보까지 이어지는 `CodeRelation(relation_kind=DATA_FLOW)` 경로가 있으면 그 관계를 `StaticFactBundle.data_flow_candidates`에 근거로 남긴다.
-- 이 판단은 source 후보를 지우거나 걸러내지 않는다. 경로를 찾지 못해도 후보 자체는 유지하며, `data_flow_candidates`에 해당 근거가 없다는 사실이 "reachability 미확인"이라는 정보로 남는다. call graph는 dynamic dispatch·reflection 등으로 불완전할 수 있으므로 이를 "도달 불가능 확정"으로 자동 해석하지 않는다.
-- 이렇게 reachability 근거가 붙은(또는 붙지 않은) source 후보를 LLM 탐색·체이닝이 `HypothesisProposal`을 만들 때 반증·검증 근거로 사용한다.
+- 요청 진입점(`StaticFactBundle.route_bindings`의 `CodeRelation(relation_kind=ROUTE_BINDING)`으로 식별된 handler 파라미터 등)에서 source 후보까지 이어지는 `CodeRelation(relation_kind=DATA_FLOW)` 경로가 있으면 그 관계를 `StaticFactBundle.data_flow_candidates`에 근거로 남긴다.
+- `data_flow_candidates`에 해당 근거가 없다는 사실은 서로 다른 두 상태를 가리킬 수 있으므로 섞어 기록하지 않는다. AST의 call/data-flow 분석도 결국 하나의 도구 실행이므로 위 `ToolRunResult.status` 규칙을 그대로 따른다.
+  - `status=SUCCEEDED`이고 필요한 범위가 `coverage`에 포함돼 있으면: 탐색은 했지만 경로를 확인하지 못한 것이다.
+  - `status=PARTIAL`(예: 재귀 깊이 제한으로 일부 경로만 추적 — 범위는 `coverage`에 남긴다), `FAILED`(분석 자체 실패 — `AnalysisError(code=STATIC_TOOL_ERROR)`, [결과와 관측 가능성](./07-results-and-observability.md) 참고), `SKIPPED`(미실행) 중 하나면: 분석이 부족하거나 실패해서 확인하지 못한 것이다. 원인은 `gaps`·`errors`에 남긴다.
+- 두 경우 모두 source 후보를 지우거나 걸러내지 않는다. call graph는 `SUCCEEDED` 상태에서도 dynamic dispatch·reflection 등으로 불완전할 수 있으므로, reachability 미확인을 "도달 불가능 확정"으로 자동 해석하지 않는다.
+- 이렇게 reachability 근거가 붙은(또는 붙지 않은) source 후보는 Hypothesis Agent의 초기 가설 생성과 Verification·Pro·Con의 반증·검증 근거로 사용한다. Pro·Con과 최종 판정을 내리는 Verification Agent는 같은 exact 정적분석 결과 revision을 사용한다. Chaining Agent는 이 정적 source 후보를 직접 소비하지 않는다 — 코드 문맥을 새로 탐색하지 않고 두 Gate를 거쳐 admission된 current ACTIVE Primitive와 그 provenance만 읽는다는 기존 경계([03. Agent 역할과 오케스트레이션](./03-agent-roles-and-orchestration.md), [06. Chaining](./06-chaining.md))를 그대로 따른다.
 
-AST의 call/data-flow 분석도 결국 하나의 도구 실행이므로, 위에서 설명한 `ToolRunResult`/`DataGap`/`AnalysisError` 규칙을 그대로 따른다. 예를 들어 재귀 깊이 제한으로 일부 경로만 추적했다면 `ToolRunResult.status=PARTIAL`과 `coverage`에 남기고, 분석 자체가 실패했다면 `AnalysisError(code=STATIC_TOOL_ERROR)`([결과와 관측 가능성](./07-results-and-observability.md) 참고)로 남긴다. "경로를 찾았는데 없다"와 "경로 탐색 자체가 실패했다"는 서로 다른 상태이므로 섞어 기록하지 않는다.
-
-다음은 `get_order` 핸들러(`/orders/<id>`, 유저 조작 가능한 `id` 파라미터)에서 SQL 조합 지점까지의 reachability 근거 예시다.
+다음은 `get_order` 핸들러(`/orders/<id>`, 유저 조작 가능한 `id` 파라미터)에서 SQL 조합 지점까지의 reachability 근거 예시다 — `ToolRunResult.status=SUCCEEDED`로 탐색을 마치고 경로를 확인한 경우다.
 
 ```yaml
 source_candidate: # CodeFact, codeql이 생성
@@ -107,7 +108,7 @@ reachability_edge: # CodeRelation, ast 파서의 data-flow 분석이 생성
     raw_result_ref: { stored_data_id: data-raw-002, data_kind: raw_tool_result, content_hash: "sha256:...", workspace_id: ws-001, commit_id: 7f3a2c1, record_id: null }
 ```
 
-`reachability_edge`가 `StaticFactBundle.data_flow_candidates`에 존재하면 `source_candidate`는 reachable로 표시된다. 이 관계가 없으면(탐색은 했으나 경로를 못 찾음) source 후보는 그대로 유지되고 reachability 미확인 상태로 LLM 검증 단계에 전달된다.
+`reachability_edge`가 `StaticFactBundle.data_flow_candidates`에 존재하면 `source_candidate`는 reachable로 표시된다. 이 관계가 없으면 위 두 상태(탐색 완료·경로 미확인, 또는 분석 부족·실패) 중 하나이며, source 후보는 그대로 유지된 채 어느 상태인지는 `ast_dataflow`의 `ToolRunResult`로 구분해 Hypothesis·Verification 단계에 전달된다.
 
 ## submodule, Git LFS와 생성 파일
 
