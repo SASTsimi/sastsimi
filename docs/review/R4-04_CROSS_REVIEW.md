@@ -39,7 +39,7 @@ PR #47은 문서 자동 검사와 기술 검토를 통과했지만 GitHub 교차
 
 | 역할 | 담당자 | 이번에 확인할 내용 | 현재 상태 | GitHub 증거 |
 |---|---|---|---|---|
-| R1 LLM 탐색·체이닝 | `@baeseungwon1010` | 가설 생성, HOLD·TRUE+TRUE 체이닝 입력과 새 가설 재검증 조건 | `RECHECK_REQUIRED` | [이전 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5489231154) 뒤 `validation_checks`의 stable ID 계약이 추가되어 최종 SHA 재검토 필요 |
+| R1 LLM 탐색·체이닝 | `@baeseungwon1010` | 가설 생성, HOLD 입력·TRUE 결과의 체이닝과 새 가설 재검증 조건 | `RECHECK_REQUIRED` | [이전 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5489231154) 뒤 `validation_checks`의 stable ID 계약이 추가되어 최종 SHA 재검토 필요 |
 | R2 정적분석·컨텍스트 | `@zv9uvr` | AST/SAST 사실, 코드 위치, 호출 경로, Context 오류·누락 범위와 공통 식별자 연결 | `RECHECK_REQUIRED` | [b037bd3 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5495159036) 뒤 Context 완료 결과와 실패 상태 계약이 추가되어 최종 SHA 재검토 필요 |
 | R3 통합 구현 | `@YHS-Sec` | 상태 전이, 재시도·복구, 계약을 실제 코드로 구현할 수 있는지 | `RECHECK_REQUIRED` | [이전 승인](https://github.com/SASTsimi/sastsimi/pull/48#issuecomment-5494246304) 뒤 `ValidationCheckResult`와 가설 `FAILED` atomic transition이 추가되어 최종 SHA 재검토 필요 |
 | R4 PM·아키텍처 | `@taehyeon-git` | 다른 역할의 검토 증거, 최신 main과 환경 계약 병합 결과, 최종 commit과 완료 조건 확인 | `RECHECK_REQUIRED` | 최신 main 동기화와 R6–R7 환경 계약 추가 뒤 최종 SHA 재확인 필요 |

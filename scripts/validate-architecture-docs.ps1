@@ -109,6 +109,43 @@ foreach ($filePath in @((Join-Path $repoRoot 'README.md'), (Join-Path $repoRoot 
     }
 }
 
+# Current documentation must not reintroduce the pre-ADR-005 Primitive model.
+# Decision records are historical and are intentionally excluded from this scan.
+$activeUnifiedPrimitiveFiles = @(
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'README.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'docs/GLOSSARY.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'docs/DOCUMENT_GUIDE.md'))
+) + @(
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5') -Recurse -File -Filter '*.md'
+) + @(
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/governance') -Recurse -File -Filter '*.md'
+) + @(
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/review') -Recurse -File -Filter '*.md' |
+        Where-Object { $_.FullName -notmatch '[\\/]decisions[\\/]' }
+)
+$obsoleteUnifiedPrimitivePatterns = @(
+    'Gate-qualified',
+    'active_required_refs',
+    'active_provided_refs',
+    'HeldHypothesis',
+    'ConfirmedCapability',
+    'root_hypothesis_id',
+    'chain_depth',
+    'bounded_stop_reason',
+    'required_preconditions',
+    'commit-time Primitive index',
+    'PROVIDED Primitive',
+    'REQUIRED Primitive'
+)
+foreach ($file in $activeUnifiedPrimitiveFiles) {
+    $text = Get-Content -Raw -LiteralPath $file.FullName
+    foreach ($pattern in $obsoleteUnifiedPrimitivePatterns) {
+        if ($text.Contains($pattern)) {
+            Add-Failure "obsolete pre-ADR-005 Primitive term '$pattern': $($file.FullName)"
+        }
+    }
+}
+
 $contractPath = Join-Path $repoRoot 'docs/architecture-v5/08-lightweight-data-contracts.md'
 $contractText = Get-Content -Raw -LiteralPath $contractPath
 $overviewPath = Join-Path $repoRoot 'docs/architecture-v5/01-system-overview.md'
@@ -299,6 +336,8 @@ foreach ($rule in $reviewRemediationPatterns) {
 
 $resultPath = Join-Path $repoRoot 'docs/architecture-v5/07-results-and-observability.md'
 $resultText = Get-Content -Raw -LiteralPath $resultPath
+$staticPath = Join-Path $repoRoot 'docs/architecture-v5/02-static-fact-layer.md'
+$staticText = Get-Content -Raw -LiteralPath $staticPath
 $commonWikiPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/common-contracts.md'
 $commonWikiText = Get-Content -Raw -LiteralPath $commonWikiPath
 $requiredErrorCodes = @(
@@ -911,7 +950,7 @@ $requiredAutomationBoundaryRules = @(
     @{
         Name = 'overview canonical flow ends automation'
         Text = $overviewText
-        Marker = 'Gate-qualified result -> Reporter -> ReportDraft -> AnalysisRunResult -> Agent automation end'
+        Marker = 'Reporter -> ReportDraft -> AnalysisRunResult -> Agent automation end'
     },
     @{
         Name = 'canonical Mermaid shows the Reporter boundary'
@@ -934,28 +973,95 @@ $requiredVerificationChainingContracts = @(
     'VerificationAssignment:',
     'verification_assignment_ref:',
     'ChainingResult:',
-    'trigger: HOLD_MATCH | TRUE_HOLD_MATCH | TRUE_TRUE_MATCH',
     'source_result_refs:',
     'input_primitive_refs:',
-    'input_primitive_index_refs:',
     'primitive_match_candidates:',
     'chained_hypothesis_proposals:',
     'no_match_reasons:',
-    'bounded_stop_reason:',
     'origin: INITIAL | VERIFICATION | CHAINING',
+    'source_primitive_match_id: string | null',
     'material_child_proposals:',
     'source_verification_ref:',
     'technical_review_ref:',
-    'rule_scope_review_ref:',
-    'required_preconditions:',
+    'inputs: [PrimitiveDraft]',
+    'result: PrimitiveDraft | null',
+    'restrictions: [string]',
     'PrimitiveIndexState:',
-    'eligibility: ACTIVE | SUPERSEDED',
-    'superseded_by_verification_ref:',
+    'primitive_refs: [StoredDataRef]',
+    'upstream_result_ref: StoredDataRef',
+    'downstream_input_ref: StoredDataRef',
+    'matched_input_id: string',
     'primitive_and_chaining_refs:'
 )
 foreach ($marker in $requiredVerificationChainingContracts) {
     if (-not $contractText.Contains($marker)) {
         Add-Failure "missing Verification/Chaining contract: $marker"
+    }
+}
+
+$primitiveDraftBlock = [regex]::Match($contractText, '(?ms)^PrimitiveDraft:\s*(.*?)^VerificationMetrics:').Groups[1].Value
+foreach ($field in @('draft_id:', 'entity_refs:', 'privilege_level: string | null', 'evidence_refs:', 'description:')) {
+    if (-not $primitiveDraftBlock.Contains($field)) {
+        Add-Failure "PrimitiveDraft is missing unified field: $field"
+    }
+}
+foreach ($field in @('primitive_type:', 'target_asset:', 'endpoint:', 'data_type:')) {
+    if ($primitiveDraftBlock.Contains($field)) {
+        Add-Failure "PrimitiveDraft still contains obsolete field: $field"
+    }
+}
+
+$primitiveBlock = [regex]::Match($contractText, '(?ms)^Primitive:\s*(.*?)^PrimitiveIndexState:').Groups[1].Value
+foreach ($field in @('workspace_id:', 'commit_id:', 'inputs:', 'result:', 'restrictions:', 'source_hypothesis_id:', 'source_verification_ref:', 'technical_review_ref:', 'evidence_refs:', 'description:')) {
+    if (-not $primitiveBlock.Contains($field)) {
+        Add-Failure "Primitive is missing unified field: $field"
+    }
+}
+foreach ($field in @('primitive_type:', 'target:', 'status:', 'rule_scope_review_ref:', 'required_preconditions:', 'eligibility:', 'superseded_by_verification_ref:', 'confidence:')) {
+    if ($primitiveBlock.Contains($field)) {
+        Add-Failure "Primitive still contains obsolete field: $field"
+    }
+}
+
+$primitiveIndexBlock = [regex]::Match($contractText, '(?ms)^PrimitiveIndexState:\s*(.*?)^PrimitiveMatchCandidate:').Groups[1].Value
+foreach ($field in @('current_verification_ref:', 'primitive_refs:', 'updated_at:')) {
+    if (-not $primitiveIndexBlock.Contains($field)) {
+        Add-Failure "PrimitiveIndexState is missing field: $field"
+    }
+}
+foreach ($field in @('state_version:', 'active_required_refs:', 'active_provided_refs:')) {
+    if ($primitiveIndexBlock.Contains($field)) {
+        Add-Failure "PrimitiveIndexState still contains obsolete field: $field"
+    }
+}
+
+$primitiveMatchBlock = [regex]::Match($contractText, '(?ms)^PrimitiveMatchCandidate:\s*(.*?)^ChainingResult:').Groups[1].Value
+foreach ($field in @('upstream_result_ref:', 'downstream_input_ref:', 'matched_input_id:', 'parent_hypothesis_ids:', 'parent_verification_refs:', 'workspace_id:', 'commit_id:', 'normalized_fingerprint:', 'evidence_refs:', 'candidate_state: UNVALIDATED')) {
+    if (-not $primitiveMatchBlock.Contains($field)) {
+        Add-Failure "PrimitiveMatchCandidate is missing field: $field"
+    }
+}
+foreach ($field in @('match_kind:', 'input_primitive_index_refs:', 'upstream_provided_ref:', 'matched_requirement_id:', 'asset_check:', 'entity_check:', 'endpoint_check:', 'privilege_check:', 'data_check:', 'attack_order_check:', 'restriction_check:', 'unresolved_conditions:')) {
+    if ($primitiveMatchBlock.Contains($field)) {
+        Add-Failure "PrimitiveMatchCandidate still contains obsolete field: $field"
+    }
+}
+
+$chainingResultBlock = [regex]::Match($contractText, '(?ms)^ChainingResult:\s*(.*?)^```').Groups[1].Value
+foreach ($field in @('trigger:', 'input_primitive_index_refs:', 'bounded_stop_reason:')) {
+    if ($chainingResultBlock.Contains($field)) {
+        Add-Failure "ChainingResult still contains obsolete field: $field"
+    }
+}
+
+foreach ($record in @('HeldHypothesis:', 'ConfirmedCapability:')) {
+    if ($contractText.Contains($record)) {
+        Add-Failure "obsolete duplicate Chaining record remains: $record"
+    }
+}
+foreach ($field in @('root_hypothesis_id:', 'chain_depth:')) {
+    if ($contractText.Contains($field)) {
+        Add-Failure "obsolete derived hypothesis lineage field remains: $field"
     }
 }
 
@@ -972,11 +1078,11 @@ $verificationChainingScenarioMarkers = @(
     '| N4 | TRUE + Technical `ACCEPT`, Rule Scope 미실행 |',
     '| N5 | TRUE + Technical `ACCEPT` + Rule Scope `FAIL | UNCERTAIN | DENY` |',
     '| N6 | TRUE + Technical `ACCEPT` + Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW` |',
-    '| N7 | Gate-qualified TRUE PROVIDED + HOLD REQUIRED |',
-    '| N8 | 서로 다른 Gate-qualified TRUE PROVIDED 둘 |',
-    '| N9 | TRUE_TRUE 입력 중 한 부모가 Gate 전 또는 비정상 Gate 결과 |',
-    '| N10 | Verification N은 Gate-qualified지만 N+1이 새로 생성됨 |',
-    '| N10-A | Chaining이 N의 ACTIVE Primitive를 읽은 뒤 commit 전에 새 Verification generation/index revision 생성 |',
+    '| N7 | result가 있는 TRUE Primitive + result가 없는 HOLD Primitive |',
+    '| N8 | result가 있는 서로 다른 TRUE Primitive 둘 |',
+    '| N9 | TRUE+TRUE 입력 중 한 부모가 Gate 전 또는 Technical 비정상 결과 |',
+    '| N10 | match의 entity 또는 privilege 충족 근거가 없음 |',
+    '| N10-A | 후보가 조상 경로에서 이미 사용한 Primitive를 다시 사용 |',
     '| N11 | Verification이 새 endpoint·sink·권한 경계를 발견 |',
     '| N12 | chained child가 FALSE |',
     '| N13 | Verification이 budget·Sandbox·Gate 순서를 우회하려 함 |',
@@ -997,15 +1103,17 @@ foreach ($marker in $verificationChainingScenarioMarkers) {
 $requiredVerificationChainingRules = @(
     'Orchestration Agent는 한 가설 안에서 Pro/Con·동적 재현·두 Gate·Reporter·Chaining의 호출 여부나 Technical `REVISE` 목적지를 결정하지 않는다.',
     '같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 전달',
-    'Gate 전 TRUE와 오래된 Gate revision은 ACTIVE PROVIDED가 될 수 없다.',
+    'Gate 전 TRUE는 result가 있는 Primitive가 될 수 없다.',
     'origin=VERIFICATION',
     'origin=CHAINING',
     'TRUE_HOLD',
     'TRUE_TRUE',
-    '앞 TRUE의 제공 능력이 뒤 TRUE를 악용하기 위해 exact Verification에서 명시한 선행 조건을 충족',
+    'upstream result가 downstream input을 충족',
     'HypothesisProcessState.status=TERMINAL',
     'VerificationAssignment.owner_identity_ref',
-    'commit-time CAS 검사가 최종 강제 경계',
+    'ancestor Primitive를 현재 순회의 후보에서 제외한다.',
+    'Technical `ACCEPT`은 체이닝 재료의 자격을 확정하고 Rule Scope는 보고 가능성만 판단한다.',
+    'Rule Scope 결과는 이미 admission된 Primitive를 취소하지 않는다.',
     'child가 FALSE여도 부모 판정은 바뀌지 않는다'
 )
 foreach ($rule in $requiredVerificationChainingRules) {
@@ -1192,6 +1300,93 @@ foreach ($phrase in $obsoleteContextFailurePhrases) {
     }
 }
 
+$ruleExecutionItemBlock = [regex]::Match($contractText, '(?ms)^RuleExecutionItem:\s*(.*?)^RuleExecutionRecord:').Groups[1].Value
+$requiredRuleExecutionItemFields = @(
+    'rule_id: string',
+    'selection_status: SELECTED | NOT_SELECTED',
+    'execution_status: EXECUTED | NOT_EXECUTED | UNKNOWN',
+    'hit_count: integer | null',
+    'reason: NOT_SELECTED | TOOL_FAILURE | UNSUPPORTED | CANCELLED | TELEMETRY_MISSING | OTHER | null',
+    'detail: string | null'
+)
+foreach ($field in $requiredRuleExecutionItemFields) {
+    if (-not $ruleExecutionItemBlock.Contains($field)) {
+        Add-Failure "RuleExecutionItem is missing field: $field"
+    }
+}
+
+$toolSourceBlock = [regex]::Match($contractText, '(?ms)^ToolSource:\s*(.*?)^CodeFact:').Groups[1].Value
+if (-not $toolSourceBlock.Contains('attempt_id: string')) {
+    Add-Failure 'ToolSource is missing attempt_id'
+}
+
+$ruleExecutionRecordBlock = [regex]::Match($contractText, '(?ms)^RuleExecutionRecord:\s*(.*?)^ToolRunResult:').Groups[1].Value
+$requiredRuleExecutionRecordFields = @(
+    'meta: RecordMeta without hypothesis, with attempt',
+    'tool_name: string',
+    'tool_version: string',
+    'analysis_config_ref: StoredDataRef',
+    'rule_catalog_ref: StoredDataRef',
+    'selected_rule_packs: [string]',
+    'rules: [RuleExecutionItem]'
+)
+foreach ($field in $requiredRuleExecutionRecordFields) {
+    if (-not $ruleExecutionRecordBlock.Contains($field)) {
+        Add-Failure "RuleExecutionRecord is missing field: $field"
+    }
+}
+
+$toolRunResultBlock = [regex]::Match($contractText, '(?ms)^ToolRunResult:\s*(.*?)^ContextRetrievalLimits:').Groups[1].Value
+foreach ($field in @('tool_kind: STRUCTURE | RULE_BASED', 'rule_execution_ref: StoredDataRef | null')) {
+    if (-not $toolRunResultBlock.Contains($field)) {
+        Add-Failure "ToolRunResult is missing field: $field"
+    }
+}
+
+$requiredRuleExecutionSemantics = @(
+    @{ Name = 'zero hit is an executed rule'; Text = $contractText; Marker = '`hit_count=0`만이 “규칙을 실행했지만 탐지 결과가 0건”이라는 뜻이다.' },
+    @{ Name = 'not executed and unknown never use zero'; Text = $contractText; Marker = '`NOT_EXECUTED | UNKNOWN`에서 `hit_count=0`을 쓰는 것도 금지한다.' },
+    @{ Name = 'other reason requires detail'; Text = $contractText; Marker = '`reason=OTHER`이면 사람이 이해할 수 있는 비어 있지 않은 `detail`이 필수다.' },
+    @{ Name = 'CodeFact is bound to a tool attempt'; Text = $contractText; Marker = '`CodeFact.producer.attempt_id`는 이 사실을 만든 exact `ToolRunResult.attempt_id`와 같아야 한다.' },
+    @{ Name = 'missing CodeFact does not prove zero'; Text = $staticText; Marker = '`CodeFact`가 없다는 사실만으로 규칙을 실행했거나 결과가 0건이었다고 추정하지 않는다.' },
+    @{ Name = 'retry keeps rule records separate'; Text = $contractText; Marker = '이전 attempt의 규칙 상태나 탐지 수를 합치지 않는다.' },
+    @{ Name = 'R8 separates plan and execution coverage'; Text = $resultText; Marker = '실행 coverage는 `SELECTED` 규칙 중 `EXECUTED` 비율, 계획 coverage는 catalog 규칙 중 `SELECTED` 비율로 따로 계산' },
+    @{ Name = 'security blocks zero-hit inference'; Text = $securityText; Marker = '`CodeFact`가 없다는 이유만으로 규칙 실행 0건을 기록' },
+    @{ Name = 'Wiki explains the three execution meanings'; Text = $commonWikiText; Marker = '`EXECUTED + hit_count=0`: 검사했지만 탐지 결과가 0건입니다.' },
+    @{ Name = 'result owner registry protects rule records'; Text = $contractText; Marker = '`rule_execution_record -> RuleExecutionRecord -> STATIC_ANALYSIS`' }
+)
+foreach ($rule in $requiredRuleExecutionSemantics) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing or weakened rule execution contract: $($rule.Name)"
+    }
+}
+
+$obsoleteRuleExecutionPhrases = @(
+    '어떤 rule/rule pack을 실제로 실행했는지 추적할 방법이 아직 없다.',
+    '이 계약은 이 PR에서 확정하지 않으므로 후속 **Issue #82**로 분리'
+)
+foreach ($phrase in $obsoleteRuleExecutionPhrases) {
+    if ($staticText.Contains($phrase)) {
+        Add-Failure "obsolete unresolved rule execution statement remains: $phrase"
+    }
+}
+
+$ruleExecutionDecisionPath = Join-Path $repoRoot 'docs/review/decisions/ADR-006-static-rule-execution-record.md'
+if (-not (Test-Path -LiteralPath $ruleExecutionDecisionPath)) {
+    Add-Failure 'missing ADR-006 static rule execution decision'
+} else {
+    $ruleExecutionDecisionText = Get-Content -Raw -LiteralPath $ruleExecutionDecisionPath
+    foreach ($marker in @('상태: `ACCEPTED`', 'RunMeta', 'RuleExecutionRecord', 'ToolRunResult.tool_kind', 'ToolSource.attempt_id', '새 MAJOR schema', 'R2:', 'R4:', 'R8:')) {
+        if (-not $ruleExecutionDecisionText.Contains($marker)) {
+            Add-Failure "ADR-006 is missing decision marker: $marker"
+        }
+    }
+}
+$decisionIndexText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/review/decisions/README.md')
+if (-not $decisionIndexText.Contains('[ADR-006](./ADR-006-static-rule-execution-record.md)')) {
+    Add-Failure 'decision index is missing ADR-006'
+}
+
 $savedErrorAction = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 $gitCheck = & git -C $repoRoot diff --check 2>&1
@@ -1239,6 +1434,10 @@ Write-Output "Technical Gate TRUE-only scope rules: $($requiredTechnicalGateScop
 Write-Output "Validated PoC contract markers: $($requiredValidatedPocContractMarkers.Count)"
 Write-Output "Validated PoC cross-document rules: $($requiredValidatedPocCrossDocumentMarkers.Count)"
 Write-Output "Obsolete Context failure phrases: $($obsoleteContextFailurePhrases.Count)"
+Write-Output "Rule execution item fields: $($requiredRuleExecutionItemFields.Count)"
+Write-Output "Rule execution record fields: $($requiredRuleExecutionRecordFields.Count)"
+Write-Output "Rule execution semantic rules: $($requiredRuleExecutionSemantics.Count)"
+Write-Output "Obsolete rule execution phrases: $($obsoleteRuleExecutionPhrases.Count)"
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {

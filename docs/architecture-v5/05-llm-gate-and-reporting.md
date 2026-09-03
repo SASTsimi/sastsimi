@@ -13,8 +13,8 @@
 v5에는 책임이 다른 두 LLM 검토 Agent가 있다.
 
 1. final `VerificationResult.verdict=TRUE`, 현재 generation의 `DynamicReproductionRequest`·성공한 `DynamicReproductionResult`·validated PoC와 별도 `CWELabel`의 정확한 `record_id` revision을 Technical Evidence Gate Agent가 함께 검토한다. FALSE와 HOLD는 이 Gate를 호출하지 않는다.
-2. Technical 결과가 `ACCEPT`일 때만 Rule Scope Impact Gate Agent를 호출한다.
-3. 두 Gate와 impact·permission 조건을 모두 통과했을 때만 같은 Verification owner가 Reporter Agent 호출을 요청한다.
+2. Technical 결과가 `ACCEPT`이면 result가 있는 Primitive admission과 Chaining을 허용한다. 이 기술 재료 경로는 Rule Scope 결과를 기다리지 않는다.
+3. 같은 Technical `ACCEPT`에서 Rule Scope Impact Gate Agent를 호출하고, 두 Gate와 impact·permission 조건을 모두 통과했을 때만 같은 Verification owner가 Reporter Agent 호출을 요청한다.
 
 가설 내부의 Gate 제출 시점은 같은 가설의 Verification owner가 정한다. Verification은 `CALL_TECHNICAL_GATE`와, Technical `ACCEPT` 뒤의 `CALL_RULE_SCOPE_GATE`, 모든 보고 조건을 통과한 뒤의 `CREATE_REPORT_DRAFT`를 제안한다. 실제 호출 가능 여부와 순서는 비-LLM Runtime Validator가 강제한다. Orchestration Agent가 `REVISE` 목적지를 선택하거나 Verification 대신 Gate 보완 내용을 조정하지 않는다.
 
@@ -46,8 +46,9 @@ CWE 후보는 final TRUE 뒤에 Gate 입력으로 작성한다. primary·alterna
 - 동적 관측이 현재 가설·`workspace_id`·실행 조건에 연결되는지
 - Runner 호출 여부와 step log, 실제 환경 생성 여부와 환경 reference, 정책 차단과 Controller 판정 reference, 정리 필요 여부와 상태가 공통 계약에 맞는지
 - `poc_ref`가 실제 실행된 `poc_candidate_ref`, 성공 log와 `SUCCEEDED + SUPPORTED` 관측의 같은 revision에 연결되는지
+- 동적 근거가 승인된 Sandbox 정책 안에서 생성되었고 금지된 재현으로 오염되지 않았는지
 - CWE 선택이 취약점 유형과 근거에 적절한지
-- restriction·반박·HOLD 조건이 정확히 표현되었는지
+- 실제 코드 경로, restriction·반박·HOLD 조건이 빠짐없이 정확하게 표현되었는지
 - 기술 검토 결과를 다음 단계 또는 내부 종결 기록으로 전달할 수 있는지
 
 ### 출력과 의미
@@ -85,7 +86,7 @@ technical_evidence_review:
 
 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 Gate가 실제로 읽은 `VerificationResult`와 `CWELabel` revision을 각각 고정한다. runtime은 Gate와 두 대상의 `workspace_id`, `commit_id`, `hypothesis_id`, `record_id`, `content_hash`를 확인한다. Verification 또는 CWELabel이 수정되면 이전 `ACCEPT`를 새 revision에 재사용하지 않고 Gate를 새로 호출한다.
 
-`REVISE`는 동일 입력 재투표나 provider retry가 아니다. 현재 Gate work는 `REVISE` review를 exact output으로 확정하고 종료한다. 그 review는 Orchestration을 경유해 목적지를 다시 선택하지 않고 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 전달한다. runtime은 이전 종료 work를 되돌리지 않고 새 generation의 VERIFICATION work를 등록하며 hypothesis 상태를 `TERMINAL -> VERIFYING`으로 CAS 전환한다. Verification은 필요한 Context·Pro/Con·정적 근거·restriction을 보완하고, final TRUE 후보라면 새 generation의 동적 재현 요청과 validated PoC도 다시 확보한다. 새 result·work 종료·hypothesis current pointer를 atomic commit하고, 필요하면 CWE producer와 새 label revision을 조정한다. 그 뒤 새 `VerificationResult` 및 필요한 `CWELabel` revision을 가리키는 새 Gate work를 요청한다. 새 Gate work는 새 `input_hash`·`dedupe_key`·`work_id`와 `attempt_number=1`, `trigger=INITIAL`을 사용한다. 입력이 바뀌지 않은 호출 실패만 같은 work 안에서 `trigger=RETRY`인 새 attempt를 사용할 수 있다. 횟수·token·시간 한도 도달 시 보고와 TRUE 체이닝을 차단하고 미해결 사유를 저장한다.
+`REVISE`는 동일 입력 재투표나 provider retry가 아니다. 현재 Gate work는 `REVISE` review를 exact output으로 확정하고 종료한다. 그 review는 Orchestration을 경유해 목적지를 다시 선택하지 않고 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 전달한다. runtime은 이전 종료 work를 되돌리지 않고 새 generation의 VERIFICATION work를 등록하며 hypothesis 상태를 `TERMINAL -> VERIFYING`으로 CAS 전환한다. Verification은 필요한 Context·Pro/Con·정적 근거·restriction을 보완하고, final TRUE 후보라면 새 generation의 동적 재현 요청과 validated PoC도 다시 확보한다. 새 result·work 종료·hypothesis current pointer를 atomic commit하고, 필요하면 CWE producer와 새 label revision을 조정한다. 그 뒤 새 `VerificationResult` 및 필요한 `CWELabel` revision을 가리키는 새 Gate work를 요청한다. 새 Gate work는 새 `input_hash`·`dedupe_key`·`work_id`와 `attempt_number=1`, `trigger=INITIAL`을 사용한다. 입력이 바뀌지 않은 호출 실패만 같은 work 안에서 `trigger=RETRY`인 새 attempt를 사용할 수 있다. 공통 token·시간·비용·work 예산을 소진하면 보고와 result Primitive admission을 차단하고 미해결 사유를 저장한다.
 
 Runtime Validator는 `REVISE`를 만든 기존 action·decision을 다시 사용하지 못하게 하고, 같은 Verification·CWE revision 또는 같은 domain input hash로 새 Gate 투표를 요청하면 `ACTION_NOT_ALLOWED`로 차단한다. 보완된 upstream revision을 가리키는 새 work·call spec·action·decision이 모두 있어야 한다. 반대로 provider 실패나 `INVALID_OUTPUT` repair는 Gate 판단을 다시 요구한 것이 아니므로, 허용된 횟수 안에서 같은 domain input과 새 invocation 식별자·action을 사용하는 `RETRY`로만 처리한다.
 
@@ -129,7 +130,7 @@ freshness 판정은 `freshness_checked_at`, 승인된 criterion reference, 시�
 `valid_until` 또는 source-native current-version 검사 결과/reference를 함께 가진 assertion이어야
 한다. R5는 모든 정책에 임의의 TTL을 만들지 않는다. criterion을 정할 수 없거나 currentness 확인이
 끝나지 않으면 `UNVERIFIED + DENY`다. runtime은 정책 의미를 판단하지 않고 Gate 2 action 허가·실제 호출
-직전, PROVIDED admission 직전, Reporter action 허가·실제 호출 직전에 같은 exact policy
+직전과 Reporter action 허가·실제 호출 직전에 같은 exact policy
 revision이 아직 `CURRENT`인지 검사한다. stale이 되거나 currentness가 깨지면 기존 Gate 2 결과를
 새 downstream action에 재사용하지 않는다.
 
@@ -239,7 +240,7 @@ Runtime Validator는 공식 정책 문장이나 정책의 의미를 대신 해�
 
 `report_permission=ALLOW`는 동일 exact Verification revision이 R5-03 Reporter로 진행하기 위한
 Gate 2 정책 전제조건을 만족했다는 뜻으로만 사용한다. 외부 제출·공개, 사람의 disclosure 승인,
-Reporter 호출 또는 `ReportDraft`·PROVIDED Primitive 생성을 뜻하지 않으며, 다음 조건을 모두
+Reporter 호출 또는 `ReportDraft`·result Primitive 생성을 뜻하지 않으며, 다음 조건을 모두
 만족할 때만 유효하다.
 
 ```text
@@ -255,7 +256,7 @@ AND missing critical information is empty
 그 밖의 유효한 정책 판단 결과는 `DENY`다. 예를 들어 `FAIL`, `UNCERTAIN`, `INSUFFICIENT`, stale
 또는 `UNVERIFIED` 정책과 `ALLOW`의 조합은 semantic contradiction이다. trusted runtime은
 기존 공통 semantic validation 계약으로 이를 `INVALID_OUTPUT` 처리하고 해당 Gate 출력을
-Reporter 또는 PROVIDED Primitive admission 입력으로 사용하지 않는다. Gate 2 전용 오류 enum이나
+Reporter 입력으로 사용하지 않는다. 이미 Technical `ACCEPT`으로 admission된 Primitive의 자격에는 영향을 주지 않는다. Gate 2 전용 오류 enum이나
 validator를 새로 만들지 않는다.
 
 정책 source 부재가 확인되었거나 유효한 record의 핵심 정보가 부족한 것은 정책 근거 부족이므로
@@ -270,14 +271,14 @@ Gate 판단 시점에 policy가 이미 `STALE | UNVERIFIED`인데 `ALLOW`를 출
 contradiction이므로 `INVALID_OUTPUT`이다. 반면 유효한 policy와 input으로 정상 생성된 review 뒤에
 Verification, policy 또는 관련 upstream의 새 revision이 생긴 경우, 과거 review 자체를 사후
 `INVALID_OUTPUT`으로 바꾸지 않는다. 그 review는 자신이 검토한 과거 exact revision의 기록으로
-남지만 새 revision의 Reporter 요청, PROVIDED admission 또는 Chaining provenance에는 사용할 수
+남지만 새 revision의 Reporter 요청에는 사용할 수
 없으며 공통 revision/runtime validation이 재사용을 차단한다.
 
 ### 권한 경계와 추가 결정 필요
 
 Gate 2는 Verification verdict나 부모 가설 판정을 변경하지 않고 새 취약점·공격 경로·child
 proposal·공식 정책·impact를 만들지 않는다. 미검증 child proposal을 verified impact로 승격하거나
-Pro/Con·추가 Evidence·동적 재현을 소유하지 않으며, PROVIDED Primitive를 직접 생성하거나 Reporter를
+Pro/Con·추가 Evidence·동적 재현을 소유하지 않으며, result Primitive를 직접 생성하거나 Reporter를
 직접 호출하거나 ReportDraft를 만들지 않는다. runtime validation을 우회하거나 외부 제출·공개와
 사람의 disclosure 결정을 정하지 않는다.
 
@@ -317,11 +318,11 @@ authenticity `VERIFIED` 또는 freshness `CURRENT`를 부여하지 않는다. �
 schema·semantic 위반이다. `REPORT_NOT_READY`는 Reporter 전제조건 실패이며 앞 오류의 의미를
 대체하지 않는다.
 
-## Gate-qualified TRUE와 PROVIDED admission
+## Technical-accepted TRUE와 Primitive admission
 
-TRUE가 Chaining에 쓰이려면 Reporter 호출 조건과 같은 Rule Scope 정상 통과 의미를 재사용한다. 즉 final TRUE, Technical `ACCEPT`, `review_status/rule/scope=PASS`, `security_impact=SUFFICIENT`, `report_permission=ALLOW`가 exact 같은 Verification·CWE revision에 연결되어야 한다. 이 조건을 모두 통과한 뒤에만 runtime이 `PROVIDED` Primitive admission을 허가한다.
+final TRUE가 Chaining에 쓰이려면 current generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated PoC가 있고 exact 같은 Verification+CWE revision을 Technical Gate가 `ACCEPT`해야 한다. 이때 runtime은 `provided_primitive_candidates`의 각 능력을 result로, `required_primitive_candidates`를 inputs로, Verification restrictions를 restrictions로 가진 Primitive admission을 허가한다.
 
-Technical `ACCEPT`만 받은 결과, `FAIL | UNCERTAIN | DENY` 결과와 Gate 전 TRUE는 내부 기록으로 보존하지만 PROVIDED나 Chaining input이 아니다. 새 Verification generation 또는 revision이 생기면 과거 두 Gate reference는 새 revision의 자격을 증명하지 못하며 이전 Primitive는 current `PrimitiveIndexState`에서 제외된다. 진행 중 Chaining result도 commit 직전 index head와 current final Verification을 다시 검사하므로 오래된 ACTIVE record로 proposal을 등록할 수 없다. HOLD는 이 절차를 사용하지 않고 final HOLD에서 REQUIRED Primitive로 즉시 Chaining에 들어간다.
+Rule Scope Gate는 제출·보고 가능성을 판단하며 Primitive admission의 입력이 아니다. Rule Scope `FAIL | UNCERTAIN | DENY`는 Reporter를 차단하지만 Technical-accepted TRUE에서 이미 확인된 Primitive와 Chaining을 취소하지 않는다. Gate 전 TRUE와 Technical `REVISE | REJECT`는 result Primitive나 Chaining 입력이 아니다. HOLD는 Technical Gate를 사용하지 않고 final HOLD의 required candidates를 inputs로 가진 result 없는 Primitive로 즉시 들어간다.
 
 ## Reporter 호출 조건
 
@@ -352,11 +353,11 @@ Gate와 Reporter의 stage action은 exact `LLMCallSpec`까지 포함해 실제 L
 
 | 시나리오 | 처리 |
 |---|---|
-| 정상 | final `TRUE rev1` + rev1 Technical `ACCEPT`를 Gate 2가 같은 rev1·exact 정책으로 검토해 정상 통과하면 `ALLOW`가 가능하다. rev1은 PROVIDED eligibility를 충족할 수 있고, 같은 owner의 요청과 runtime `REPORT_READY` 검증 뒤 Reporter로 간다. |
-| 정책 불확실 | 공식 scope 또는 impact 기준이 부족하면 해당 component와 `review_status=UNCERTAIN`, `report_permission=DENY`이며 Reporter와 PROVIDED admission을 차단한다. |
+| 정상 | final `TRUE rev1` + rev1 Technical `ACCEPT`를 Gate 2가 같은 rev1·exact 정책으로 검토해 정상 통과하면 `ALLOW`가 가능하다. rev1의 result Primitive admission은 Technical `ACCEPT`으로 독립 확정되고, 같은 owner의 요청과 runtime `REPORT_READY` 검증 뒤 Reporter로 간다. |
+| 정책 불확실 | 공식 scope 또는 impact 기준이 부족하면 해당 component와 `review_status=UNCERTAIN`, `report_permission=DENY`이며 Reporter를 차단한다. Technical `ACCEPT`으로 admission된 result Primitive와 Chaining 자격은 유지한다. |
 | stale Technical Gate | rev1 Technical `ACCEPT`로 rev2 Gate 2를 호출하면 exact Verification reference가 달라 `GATE_ORDER_INVALID` 또는 공통 stale/revision 오류로 호출을 차단한다. |
-| stale Gate 2 | rev1 Gate 2 통과 뒤 rev2가 생기면 rev1 review는 rev2의 Reporter, PROVIDED admission 또는 Chaining provenance가 될 수 없다. |
-| 모순된 ALLOW | `FAIL | UNCERTAIN | INSUFFICIENT`이거나 policy freshness가 `STALE | UNVERIFIED`인 상태와 `ALLOW`의 조합은 `INVALID_OUTPUT`이며 review를 commit하거나 Reporter·Primitive 입력으로 사용하지 않는다. |
+| stale Gate 2 | rev1 Gate 2 통과 뒤 rev2가 생기면 rev1 review는 rev2의 Reporter 입력이 될 수 없다. rev2의 result Primitive 자격은 rev2 Technical review로 별도 판정한다. |
+| 모순된 ALLOW | `FAIL | UNCERTAIN | INSUFFICIENT`이거나 policy freshness가 `STALE | UNVERIFIED`인 상태와 `ALLOW`의 조합은 `INVALID_OUTPUT`이며 review를 commit하거나 Reporter 입력으로 사용하지 않는다. |
 
 ## Reporter Agent
 

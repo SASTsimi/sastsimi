@@ -24,11 +24,11 @@ Orchestration Agent의 주요 책임은 다음과 같다.
 - `analysis_id`와 전역 분석 계획 관리
 - INITIAL·VERIFICATION·CHAINING proposal의 schema/semantic validation 요청
 - 검증된 proposal의 `hypothesis_id` 등록
-- `parent_hypothesis_ids`·`root_hypothesis_id`·`chain_depth` 관계 검증 요청
+- `parent_hypothesis_ids`와 Chaining proposal의 `source_primitive_match_id` 관계 검증 요청
 - 독립 가설의 병렬 배정과 hypothesis별 resource budget 배분
 - 등록된 각 가설에 정확히 한 Verification owner를 배정하고 trusted runtime이 ACTIVE `VerificationAssignment`로 저장
 - 전체 가설의 진행 상태·종료 상태·오류 집계
-- chain depth/count/token/time/duplicate 전역 제한 적용 요청
+- R8 전체 token·시간·비용·work 예산과 체이닝 fingerprint 중복·ancestor 순환 제외 적용 요청
 - 실패와 `INVALID_OUTPUT`을 숨기지 않고 분석 결과에 보존
 
 Orchestration Agent는 한 가설 안에서 Pro/Con·동적 재현·두 Gate·Reporter·Chaining의 호출 여부나 Technical `REVISE` 목적지를 결정하지 않는다. 논리 작업의 상태, `work_id`·`dedupe_key`, 활성 attempt, compare-and-set, atomic output binding과 실제 action 허가는 신뢰 경계 안의 비-LLM runtime이 관리한다.
@@ -75,15 +75,16 @@ HypothesisProcessState: REGISTERED -> ASSIGNED -> VERIFYING
                                                -> FAILED (no final verdict)
 Technical REVISE: TERMINAL -> same assignment + new VERIFICATION work -> VERIFYING
 VerificationResult.verdict -> TRUE | FALSE | HOLD
-HOLD -> REQUIRED Primitive -> Chaining eligible
-TRUE -> two Gates pass -> PROVIDED Primitive -> Chaining eligible
+HOLD -> Primitive inputs with result null -> Chaining eligible
+TRUE -> Technical ACCEPT -> Primitive with result -> Chaining eligible
+Technical ACCEPT -> Rule Scope -> report eligibility only
 Verification material claim -> PROPOSED child hypothesis origin VERIFICATION
 Chaining match -> PROPOSED child hypothesis origin CHAINING
 ```
 
 `ProposalProcessState.status`는 `hypothesis_id`를 발급하기 전의 출력 검증 상태를 기록한다. 검증을 통과하면 새 `hypothesis_id`와 별도 `HypothesisProcessState`를 만들고 같은 `proposal_ref`로 연결한다. `HypothesisProcessState.status`가 등록 뒤 처리 진행 상태를 기록하고 `VerificationResult.verdict`가 기술 판정을 기록한다. `TERMINAL`은 final `TRUE | FALSE | HOLD`가 연결된 정상 종료다. 반면 검증을 끝내지 못하고 재시도도 불가능하면 `FAILED`로 끝나며 final verdict를 만들지 않는다. retry 가능한 work가 `BLOCKED`일 때는 가설을 `VERIFYING`으로 유지한다. parent 가설의 결과와 child 가설은 독립된 lifecycle을 갖고 child 결과가 parent verdict를 바꾸지 않는다.
 
-초기 가설은 자기 자신을 `root_hypothesis_id`로 사용하고 `chain_depth=0`이다. Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하고 trusted validation을 통과할 때만 새 `hypothesis_id`를 받는다. 새 endpoint·sink·권한 경계·공격 단계·독립 impact는 Verification이 `origin=VERIFICATION` proposal로 분리한다. TRUE+HOLD는 PROVIDED가 HOLD REQUIRED를, TRUE+TRUE는 앞 TRUE의 PROVIDED가 뒤 TRUE의 exact Verification에 기록된 선행 조건을 충족할 때만 Chaining Agent가 `origin=CHAINING` proposal로 만든다. 어느 경로도 기존 가설을 수정하거나 child를 자동 TRUE로 만들지 않는다. child가 FALSE여도 부모 판정은 바뀌지 않는다.
+Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하고 trusted validation을 통과할 때만 새 `hypothesis_id`를 받는다. INITIAL·VERIFICATION proposal의 `source_primitive_match_id`는 `null`이고, CHAINING proposal은 자신을 만든 COMMITTED match candidate ID를 가리킨다. 계보 길이는 parent와 match 링크를 따라 계산하며 별도 depth 값을 저장하지 않는다. 새 endpoint·sink·권한 경계·공격 단계·독립 impact는 Verification이 `origin=VERIFICATION` proposal로 분리한다. TRUE+HOLD와 TRUE+TRUE는 upstream result가 downstream input을 코드 근거로 충족할 때만 Chaining Agent가 `origin=CHAINING` proposal로 만든다. 어느 경로도 기존 가설을 수정하거나 child를 자동 TRUE로 만들지 않는다. child가 FALSE여도 부모 판정은 바뀌지 않는다.
 
 ## 공통 실행 상태와 전문 결과의 분리
 
@@ -113,7 +114,7 @@ Chaining match -> PROPOSED child hypothesis origin CHAINING
 | Sandbox Runner | 없음 | 없음 | Controller가 승인한 exact 계획의 환경 구성·요구사항 비교·Health Check 뒤 일치할 때만 공격 단계 실행, 실제 환경·`SandboxStepLog`와 PoC 실행 사실 생산 | 요구사항 변경·임의 차이 수용·허용되지 않은 fallback·계획 밖 command·입력 실행 차단 | 없음 |
 | Sandbox Result Assembler | 없음 | 없음 | exact R7 plan closure와 같은 R7 실행 attempt의 정책·환경 비교·step log·PoC candidate·cleanup reference를 `DynamicReproductionResult`로 조립 | nullable·상태·identity·requirements 조합 위반 결과 저장 차단 | 없음 |
 | CWE Labeling | CWE 후보와 근거 | CWE label revision 생성 | final Verification | 없음 | 없음 |
-| Chaining Agent | TRUE+HOLD·TRUE+TRUE Primitive match와 chained proposal | 없음 | ACTIVE Primitive와 exact Gate provenance | 없음 | 없음 |
+| Chaining Agent | upstream Primitive `result`→downstream Primitive `input` match와 chained proposal | 없음 | exact Primitive, Verification·Technical provenance와 코드 근거 | 없음 | 없음 |
 | Technical Evidence Gate Agent | 구체적인 보완 요청 | 없음 | verdict·근거·코드 흐름·CWE | 없음 | 없음 |
 | Rule Scope Impact Gate Agent | 정책 누락·보완 사유 | `PASS | FAIL | UNCERTAIN`, `ALLOW | DENY` | 공식 정책·scope·impact | 없음 | 없음 |
 | Reporter Agent | 내부 보고서 문장·구성 | 없음 | 통과한 결과와 두 Gate | 없음 | 없음 |
@@ -143,7 +144,7 @@ Agent 또는 service의 제안
 주요 강제 경계는 다음과 같다.
 
 - 인증된 실제 호출자·요청 역할, schema·ID·workspace·commit·record revision·state version 일치
-- token·시간·retry·repair·chain·Gate 보완 예산
+- token·시간·비용·work·retry·repair·Gate 보완 예산
 - 일반 도구 action의 허용 tool과 workspace 안의 file path
 - `REQUEST_DYNAMIC_REPRO` 호출자의 Verification 권한·현재 generation·요청 reference·상태·예산과 generation당 하나의 동적 재현 work 제한
 - `RUN_SANDBOX` 호출자의 R7 권한·exact plan 및 current requirements reference·상태·예산; 애플리케이션 환경 값은 R7이 비교하고 Docker 세부 정책은 Sandbox Controller가 검사
@@ -165,7 +166,7 @@ Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서
 | AST와 SAST | tool별 `work_id` | 기대한 tool의 종료 상태와 output/error 확인 | 하나 이상의 신뢰 결과가 있으면 `DataGap`을 포함한 `PARTIAL` 정규화 가능 |
 | 가설 검증 | `hypothesis_id`별 work | 각 가설은 자기 final Verification까지 독립 | 한 가설 오류가 다른 가설을 취소하지 않으며 분석은 `PARTIAL` 가능 |
 | Pro와 Con | 같은 가설의 역할별 child work·NEW session | 운영은 같은 입력의 exact Pro·Con 결과를 모두 확인; 평가 생략은 명시된 mode와 skip reason 확인 | 필수 결과 누락 시 final 판정을 만들지 않고 부모 Verification을 대기 또는 실패 처리 |
-| chaining 후보 | child proposal별 work | 중복·cycle·depth·예산 검사를 통과한 proposal만 등록 | 거절 사유를 저장하고 부모 verdict 유지 |
+| chaining 후보 | child proposal별 work | exact match lineage, fingerprint 중복·ancestor cycle·R8 전체 예산 검사를 통과한 proposal만 등록 | 거절 사유를 저장하고 부모 verdict 유지 |
 
 같은 가설과 같은 `work_type`에는 활성 `attempt_id`를 하나만 허용한다. 중복 요청의 `dedupe_key`가 같으면 기존 `work_id`를 반환한다. 이미 합류가 끝난 뒤 늦게 도착한 tool·Pro·Con 결과는 기존 결과를 덮어쓰지 않는다. 새로운 근거로 사용할 필요가 있으면 입력 revision을 바꾼 새 논리 작업과 새 downstream revision을 만든다.
 
@@ -181,9 +182,9 @@ final VerificationResult + CWELabel
 -> validated PoC
 -> Technical Evidence Gate
 -> Technical ACCEPT와 TRUE 확인
--> Rule Scope Impact Gate
--> PASS/PASS/PASS/SUFFICIENT/ALLOW와 exact revision 확인
--> Reporter
+-> result Primitive admission + Chaining handoff
+and independently
+-> Rule Scope Impact Gate -> PASS/PASS/PASS/SUFFICIENT/ALLOW -> Reporter
 -> ReportDraft
 -> AnalysisRunResult 확정
 -> Agent 자동화 종료
@@ -191,7 +192,7 @@ final VerificationResult + CWELabel
 
 Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니다. 현재 Technical Gate work는 `TechnicalEvidenceReview.status=REVISE`를 exact output으로 atomic commit하고 `SUCCEEDED`로 끝낸 뒤 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 직접 전달한다. runtime은 기존 종료 VERIFICATION work를 되돌리지 않고 증가한 generation의 새 VERIFICATION work를 등록하며, 같은 CAS transition에서 `HypothesisProcessState`를 `TERMINAL -> VERIFYING`으로 바꾸고 새 work를 가리킨다. Verification은 새 근거를 반영하고, final TRUE 후보라면 새 generation의 동적 재현 요청과 validated PoC를 다시 확보한다. 그 뒤 새 `VerificationResult`와 새 work 종료·hypothesis `TERMINAL`·current result pointer를 atomic commit하고, 필요하면 기존 CWE producer가 만든 새 `CWELabel` revision을 조정한다. 바뀐 `input_hash`·`dedupe_key`와 새 `work_id`로 Technical Gate를 다시 요청한다. 새 generation에는 동적 재현 work 하나를 다시 허용한다. 같은 work의 PoC 생성·환경 구성·실행 재시도는 새 동적 work가 아니라 새 `attempt_id`다. 이 새 논리 작업의 첫 attempt는 `attempt_number=1`, `trigger=INITIAL`이다. provider timeout처럼 입력이 그대로인 일반 retry만 같은 `work_id`에서 새 `attempt_id`, `trigger=RETRY`를 사용한다. Rule Scope Gate와 Reporter는 앞 단계의 `COMMITTED` output reference만 읽는다. `PREPARED`, 취소된 attempt, 오래된 input hash와 다른 workspace/commit 결과는 다음 단계로 전달하지 않는다.
 
-Chaining work는 각 parent의 current `PrimitiveIndexState` revision을 input으로 고정한다. 결과와 child proposal commit 직전에 index head와 current final Verification을 다시 검사하며, 탐색 중 새 Verification generation이 생겼다면 이전 Primitive record의 표면상 `ACTIVE` 값과 무관하게 `STALE_RESULT`로 거절한다.
+Chaining work는 exact Primitive와 source Verification·Technical review를 input으로 고정한다. proposal 저장 전 `source_primitive_match_id`와 parent set을 확인하고, parent 링크를 따라 만난 ancestor Primitive를 현재 순회의 후보에서 제외한다. 동일 fingerprint와 ancestor 재사용 결과는 저장하지 않는다. Primitive index 자체의 동시 갱신은 공통 `RecordMeta.revision_number`와 atomic current pointer 규칙으로 보호한다.
 
 ## retry·취소·중단 후 재개
 

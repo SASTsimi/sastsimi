@@ -29,13 +29,13 @@ Rule은 eligibility·허용/제외 class·금지 testing method·명시 rule을,
 
 공식 정책 자료의 실제 부재가 확인되거나 authenticity·핵심 정보가 부족하면 관련 항목은 `UNCERTAIN`이고 permission은 `DENY`다. freshness는 R8이 승인한 source-native 유효성 기준 또는 필요한 프로그램별 threshold를 만족할 때만 `CURRENT`다. threshold가 필요한데 미확정이거나 적용 기준이 없으면 `UNVERIFIED + DENY`이며 최근 fetch만으로 `CURRENT`를 만들지 않는다. 저장소 문서나 모델 기억으로 공식 정책을 추정하지 않는다. source URL, 수집 원문, parser version/output과 각 PolicyItem의 원문 locator를 보존한다.
 
-기존 `ProgramPolicyRecord`의 freshness 상태와 확인 시각을 사용한다. Gate 2·PROVIDED·Reporter의 action 허가와 실제 호출 직전에 exact policy revision이 여전히 `CURRENT`인지 다시 검사하며 stale Gate 2 결과는 downstream에 재사용하지 않는다. R5-02가 독립 freshness schema나 공통 TTL을 만들지 않고 기준이 없으면 `UNVERIFIED + DENY`다.
+기존 `ProgramPolicyRecord`의 freshness 상태와 확인 시각을 사용한다. Gate 2와 Reporter의 action 허가·실제 호출 직전에 exact policy revision이 여전히 `CURRENT`인지 다시 검사하며 stale Gate 2 결과는 Reporter에 재사용하지 않는다. R5-02가 독립 freshness schema나 공통 TTL을 만들지 않고 기준이 없으면 `UNVERIFIED + DENY`다.
 
 정책 수집은 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`를 구분한다. 실제 부재 확인만 provenance/DataGap에 근거한 정상 `UNCERTAIN + DENY`가 될 수 있고, fetch/parser/schema/runtime 실패는 AnalysisError로 남겨 성공한 Gate review를 만들지 않는다.
 
 fetch/parser/schema/runtime 실패나 invalid output은 정책 `FAIL` 또는 정상 `UNCERTAIN + DENY` Gate 결과가 아니다. 공통 오류로 기록하고 성공한 Gate review 없이 Reporter를 차단한다.
 
-`ALLOW`는 `review_status PASS + rule PASS + scope PASS + impact SUFFICIENT + authentic fresh exact policy revision + 핵심 누락 없음`에서만 유효하며, 동일 exact Verification revision이 R5-03 Reporter로 진행하기 위한 Gate 2 정책 전제조건을 충족했다는 뜻으로 한정한다. 다른 조합의 `ALLOW`는 공통 semantic validation의 `INVALID_OUTPUT`이며 Reporter나 PROVIDED admission에 사용할 수 없다. `ALLOW`는 Reporter 실행, ReportDraft·Primitive 생성 또는 Human Review·외부 제출·공개 승인이 아니다.
+`ALLOW`는 `review_status PASS + rule PASS + scope PASS + impact SUFFICIENT + authentic fresh exact policy revision + 핵심 누락 없음`에서만 유효하며, 동일 exact Verification revision이 R5-03 Reporter로 진행하기 위한 Gate 2 정책 전제조건을 충족했다는 뜻으로 한정한다. 다른 조합의 `ALLOW`는 공통 semantic validation의 `INVALID_OUTPUT`이며 Reporter에 사용할 수 없다. `ALLOW`는 Reporter 실행, ReportDraft·Primitive 생성 또는 Human Review·외부 제출·공개 승인이 아니다.
 
 Gate 결과는 authoritative policy/source/parser/authenticity/freshness와 upstream evidence/execution reference graph, 그리고 그중 LLM이 실제 읽은 bounded context를 구분해 기록한다. Rule은 공식 rule item+verified evidence, Scope는 공식 scope item+실제 target/version, Impact는 공식 criterion+verified impact evidence에 exact linkage가 있어야 확정 상태가 된다. 누락은 stable ID, domain, blocking 여부, 설명과 policy/evidence refs로 구조화하며 blocking 누락과 `ALLOW`가 함께 있으면 `INVALID_OUTPUT`이다. 공통 DataGap 통합은 R8, hash/dedupe 구현은 R4 책임이다.
 
@@ -43,10 +43,10 @@ testing restriction은 R7의 `EnvironmentRequirements -> ReproductionPlan -> act
 
 child proposal은 독립 Verification을 거치며 child TRUE가 부모 impact를 자동 높이지 않는다. 부모가 exact child final revision을 새 parent Verification N+1에 명시적으로 채택한 뒤 Technical Gate와 Gate 2를 다시 수행한 경우만 부모 impact에 사용할 수 있다.
 
-Gate 판단 시점부터 policy가 `STALE | UNVERIFIED`인데 `ALLOW`이면 생성 당시 모순이므로 `INVALID_OUTPUT`이다. 정상 policy와 revision으로 생성된 review가 이후 upstream 변경 때문에 오래된 경우에는 기존 review 자체를 invalid로 바꾸지 않고, 새 revision의 Reporter·PROVIDED admission·Chaining provenance에 재사용하지 못하게 runtime이 차단한다.
+Gate 판단 시점부터 policy가 `STALE | UNVERIFIED`인데 `ALLOW`이면 생성 당시 모순이므로 `INVALID_OUTPUT`이다. 정상 policy와 revision으로 생성된 review가 이후 upstream 변경 때문에 오래된 경우에는 기존 review 자체를 invalid로 바꾸지 않고, 새 revision의 Reporter에 재사용하지 못하게 runtime이 차단한다.
 공식 정책 자료가 없거나 정책의 `freshness_status`가 `STALE | UNVERIFIED`이면 rule/scope/review는 `UNCERTAIN`이고 permission은 `DENY`다. 오래된 정책 reference는 감사용으로 남길 수 있지만 `PASS | ALLOW` 근거로 쓰지 않는다. 저장소 문서나 모델 기억으로 공식 정책을 추정하지 않는다.
 
-두 Gate가 validated PoC를 가진 같은 TRUE revision에 대해 `Technical ACCEPT`와 `review/rule/scope PASS`, `impact SUFFICIENT`, `permission ALLOW`를 모두 만들었을 때만 PROVIDED Primitive를 저장해 Chaining에 사용할 수 있다. 같은 Verification owner가 Reporter 호출도 요청하며 프로그램 검사를 통과해야 실제 초안 작성을 시작한다. Technical만 통과했거나 Gate2가 `FAIL | UNCERTAIN | DENY`이면 보고서와 Chaining을 모두 막는다. 새 Verification revision에는 과거 Gate·동적 결과·PoC를 재사용하지 않는다. HOLD는 Gate를 거치지 않고 REQUIRED Primitive로 Chaining에 들어간다.
+validated PoC를 가진 TRUE의 exact revision을 Technical Gate가 `ACCEPT`하면 제공 능력별로 `result`가 있는 Primitive를 저장해 Chaining에 사용할 수 있다. Rule Scope 검토는 동시에 별도 경로로 진행하며 `review/rule/scope PASS`, `impact SUFFICIENT`, `permission ALLOW`를 모두 만족해야 Reporter를 호출할 수 있다. Rule Scope가 `FAIL | UNCERTAIN | DENY`이면 보고서만 막고 이미 admission된 Primitive와 Chaining 자격은 유지한다. 새 Verification revision에는 과거 Gate·동적 결과·PoC를 재사용하지 않는다. HOLD는 Gate 없이 `inputs`와 `result=null`인 Primitive로 Chaining에 들어간다.
 
 이 판단은 Rule Scope Gate가 내립니다. 프로그램 검사기는 정책 문장의 뜻을 다시 판단하지 않고 결과 형식과 공식 출처 연결을 확인합니다. 정상적인 `UNCERTAIN + DENY`는 그대로 저장하고 Reporter만 부르지 않습니다.
 
@@ -66,7 +66,7 @@ Reporter는 위 조건을 모두 만족하고 current Finding이 있으며 exact
 
 `ReportDraft`가 마지막 Agent 산출물이며 `AnalysisRunResult` 확정 뒤 자동화가 끝납니다. trusted runtime은 `AnalysisRunResult + AnalysisRunState`를 원자적으로 확정한다. 이후 Human Review·초안 수정·외부 제출/공개는 사람 주도 과정이며 active architecture는 이를 위한 schema, state, decision enum이나 자동 action을 정의하지 않는다.
 
-프로그램 검사기는 Gate 결론을 대신 내리지 않습니다. Verification이 Gate 호출을 제안하더라도 Technical 다음 Rule Scope라는 순서, 정확한 입력·LLM call spec, PROVIDED admission과 Reporter 조건을 검사합니다. Finding이 없으면 Reporter를 호출하지 않고 `report_draft_refs=[]`와 오류·상태 이유를 남긴 뒤 runtime finalization으로 간다.
+프로그램 검사기는 Gate 결론을 대신 내리지 않습니다. Verification이 Gate 호출을 제안하더라도 정확한 입력·LLM call spec, Technical-accepted Primitive admission과 Reporter 조건을 검사합니다. Rule Scope는 동일한 current Verification revision에 대한 Technical `ACCEPT` 이후의 downstream 보고 경로입니다. Finding이 없으면 Reporter를 호출하지 않고 `report_draft_refs=[]`와 오류·상태 이유를 남긴 뒤 runtime finalization으로 간다.
 
 `ALLOW`가 PASS·scope·impact 조건과 모순되거나 Gate가 현재 작업과 다른 input revision을 가리키면 유효한 Gate 결과가 아니다. LLM 호출을 `INVALID_OUTPUT`, 오류를 `GATE/INVALID_OUTPUT`으로 기록하고 Reporter를 호출하지 않는다.
 

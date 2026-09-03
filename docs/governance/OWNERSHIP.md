@@ -18,7 +18,7 @@
 
 | 담당 역할 | 담당자 | 주요 담당 영역 | 우선 검토할 문서 | 반드시 함께 검토할 역할 | 역할별 상위 Issue |
 |---|---|---|---|---|---|
-| LLM 탐색·체이닝 | 배승원 `@baeseungwon1010` | 최초 가설과 HOLD REQUIRED·Gate-qualified TRUE PROVIDED의 방향성 연계 후보 | `03`, `06` | 정적분석, 검증, 데이터·평가 | [#2](https://github.com/SASTsimi/sastsimi/issues/2) |
+| LLM 탐색·체이닝 | 배승원 `@baeseungwon1010` | 최초 가설과 upstream Primitive 결과→downstream Primitive 입력의 방향성 연계 후보 | `03`, `06` | 정적분석, 검증, 데이터·평가 | [#2](https://github.com/SASTsimi/sastsimi/issues/2) |
 | 정적분석·컨텍스트 | 김나연 `@zv9uvr` | AST/SAST 결과 정리, 코드 사실 묶음과 필요한 코드 조회 | `02` | LLM 탐색, 검증 | [#3](https://github.com/SASTsimi/sastsimi/issues/3) |
 | 단독 구현·통합 개발 | 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec` | LLM 연결과 실행 경계, 구현 가능성, 테스트·모듈 통합 | `09`, 구현 가능성 검토 | PM, 데이터·평가, 동적검증 | [#4](https://github.com/SASTsimi/sastsimi/issues/4) |
 | PM·아키텍처·워크플로 | 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec` | 전체 분석 흐름, 공통 입출력 약속, 사람·LLM 경계, 오류·병렬 처리 | root README, `01`, `08`, `11`, `13`, Wiki 통합 | 전체 파트 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
@@ -74,7 +74,7 @@ PM은 하위 Issue를 대신 세세하게 작성하지 않습니다. PM은 역�
 - Hypothesis Agent는 verdict·Finding을 만들지 않습니다.
 - Orchestration Agent는 proposal을 검증·등록하고 Verification 배정을 제안하지만 가설 내부 작업을 선택하지 않습니다. 실제 owner는 trusted runtime의 ACTIVE `VerificationAssignment`로 저장합니다.
 - Verification Agent가 가설 내부 Context·찬반·동적 재현·Gate 보완 흐름과 기술 verdict를 소유하지만 Runtime Validator를 우회하거나 외부 공개를 결정하지 않습니다. `REVISE`도 같은 assignment owner의 새 VERIFICATION work로 처리합니다.
-- Chaining Agent는 Gate-qualified TRUE+HOLD 또는 앞 TRUE 능력→뒤 TRUE exact 선행 조건 match와 새 가설만 제안합니다. current Primitive index가 바뀐 결과는 저장할 수 없습니다.
+- Chaining Agent는 upstream Primitive의 `result`가 downstream Primitive의 특정 `input`을 충족하는 match와 새 가설만 제안합니다. 조상 계보의 Primitive를 현재 후보에서 제외하고, exact current record가 아닌 결과는 저장할 수 없습니다.
 - Technical Evidence Gate와 Rule Scope Impact Gate는 verdict를 직접 변경하지 않습니다.
 - Reporter는 안전 요구사항을 지킨 내부 `ReportDraft`만 만들며 이 결과가 마지막 Agent 산출물입니다.
 - `AnalysisRunResult` 확정 뒤 Agent 자동화가 끝나며, 사람의 검토·수정·제출·공개는 이 자동화 밖에서 수행합니다.

@@ -30,7 +30,7 @@ Pro와 Con은 서로의 결과를 받지 않는 별도 NEW session이다. trigge
 - `FALSE`: named falsification이 가설을 반증함
 - `HOLD`: 핵심 문맥·환경·조건이 부족하거나 충돌함
 
-판정 뒤 흐름도 다릅니다. `FALSE`는 terminal이며 Primitive와 Chaining으로 가지 않습니다. `HOLD`는 Gate 없이 REQUIRED Primitive를 즉시 저장합니다. `TRUE`는 CWE와 두 Gate를 정상 통과한 exact revision만 PROVIDED Primitive가 됩니다.
+판정 뒤 흐름도 다릅니다. `FALSE`는 terminal이며 Primitive와 Chaining으로 가지 않습니다. `HOLD`는 Gate 없이 `inputs`와 `result=null`인 Primitive를 즉시 저장합니다. `TRUE`는 validated PoC와 CWE를 가진 exact revision을 Technical Gate가 `ACCEPT`한 뒤 제공 능력별 `result` Primitive가 됩니다. Rule Scope는 Reporter만 제어합니다.
 
 판정에는 최소 근거가 필요합니다. TRUE는 핵심 공격 경로와 필요한 조건을 지지하는 근거가 있어야 합니다. FALSE는 이름이 있는 반증 질문이 실제 근거로 `DISPROVED`된 경우에만 가능합니다. 오류·timeout·정보 부족·Sandbox 실패는 FALSE 근거가 아닙니다. HOLD는 판단에 필요한 조건이나 환경이 아직 부족하다는 뜻입니다.
 

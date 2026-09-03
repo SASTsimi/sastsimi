@@ -15,7 +15,7 @@
 - 위치 기반 context 요청·응답과 실제 조회 location
 - Verification, debate mode/trigger/skip, restriction와 capability
 - 동적 재현 요청, R7 환경 요구사항·계획·PoC candidate, exact Controller 정책 판정·실제 환경·Runner 단계 로그, validated PoC와 cleanup
-- HOLD REQUIRED, Gate-qualified TRUE PROVIDED, TRUE+HOLD·TRUE+TRUE Chaining match와 재검증 여부
+- `result=null`인 HOLD Primitive, result가 있는 Technical-accepted TRUE Primitive, upstream result→downstream input match와 재검증 여부
 - `CWELabel`, Technical 및 Rule Scope Impact Gate, 공식 `ProgramPolicyRecord`과 두 Gate·보고서가 사용한 정확한 revision reference
 - current 보고서 초안, 오래된 초안 제외와 Agent 자동화 종료 상태
 - 역할/provider/model/session별 LLM invocation log
