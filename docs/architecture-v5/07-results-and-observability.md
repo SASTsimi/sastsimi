@@ -141,7 +141,7 @@ Sandbox ENV/POLICY/EXEC/TIMEOUT은 동적 work의 `BLOCKED | FAILED`다. 최종 
 한도는 두 종류다. 둘 다 가설 `FALSE`(구멍 없음)가 아니다.
 
 1. **실행 예산** — 벽시계 시간, 호출, 재시도, 조회 깊이·조각. Runtime Validator가 `ActionCheck.BUDGET`으로 검사한다. 실패 코드는 `BUDGET_EXCEEDED`다. 해당 work를 중단한다. 분석 run은 `PARTIAL`일 수 있다. **token 상한은 분석 전체·모든 Agent·호출마다 두지 않는다.** `LLMCallSpec.token_budget` 칸이 계약에 있어도 R8 절단 상한이 아니라 관측·계획용이다. token을 넘겨 `BUDGET_EXCEEDED`로 자르지 않는다. 사용량은 관측만 한다. 조금만 더 쓰면 취약점을 찾을 수 있는데 잘리면 안 된다. **체이닝 전용 짝·깊이·조합 한도도 두지 않는다.** 잇기도 이 전역 시간·재시도·조회 예산만 따른다.
-2. **Sandbox 정책 상한** — 네트워크, **요청 가능한 상자 시간**. Sandbox Controller가 검사한다. 허용되지 않은 계획은 `SANDBOX_POLICY_DENIED`이고 Runner를 부르지 않는다. 환경 구성 실패·실행 실패·실행 중 timeout은 기존 환경·실행 오류로 남긴다. 이 실패를 `BUDGET_EXCEEDED`로 바꾸지 않는다. **CPU·RAM·디스크·PID 상한은 두지 않는다.** 실제 사용량은 관측할 수 있다. R7 profile과 숫자가 다를 수 있으나 이 표는 관측만 유지한다.
+2. **Sandbox 정책 상한** — 네트워크, **요청 가능한 상자 시간**. Sandbox Controller가 검사한다. 허용되지 않은 계획은 `SANDBOX_POLICY_DENIED`이고 Runner를 부르지 않는다. 환경 구성 실패·실행 실패·실행 중 timeout은 기존 환경·실행 오류로 남긴다. 이 실패를 `BUDGET_EXCEEDED`로 바꾸지 않는다. **CPU·RAM·디스크·PID 상한은 R7이 `sandbox_profile_ref`에 정한 값을 따른다.** Sandbox Controller가 이 한도를 검사하며, 초과 시 `SANDBOX_POLICY_DENIED`로 Runner를 부르지 않는다. 구체적 수치는 R7이 확정한다.
 
 상자 **시간**이 부족한 이유는 셋이다. 같은 360초/1200초 숫자를 세 번 적는 것이 아니라, 끊는 주체가 다르다.
 
@@ -176,12 +176,16 @@ token 상한은 없다. 분석 전체·모든 Agent·호출마다 동일하다. 
 
 ### Sandbox 정책 상한 (Sandbox Controller → `SANDBOX_POLICY_DENIED`)
 
-숫자는 Docker 상자 **최대 상한**이다. 교차 전 초안이며 R7 profile과 맞춘다. 요청이 이 표보다 크면 실행 중 timeout이 아니라 **입장 거절**(2번)이다. CPU·RAM·디스크·PID 상한은 두지 않는다.
+숫자는 Docker 상자 **최대 상한**이다. 교차 전 초안이며 R7 profile과 맞춘다. 요청이 이 표보다 크면 실행 중 timeout이 아니라 **입장 거절**(2번)이다. CPU·RAM·디스크·PID 상한은 R7 `sandbox_profile_ref`에 정한 값을 따른다. 구체적 수치는 R7이 확정한다.
 
 | 항목 | 상한 (초안) | 위반 시 |
 |---|---|---|
 | 시간 | LIMITED 360초 / FULL 1200초. 요청 가능한 최대 | `SANDBOX_POLICY_DENIED`, Runner 미호출, `BLOCKED + POLICY_BLOCKED`. 최종 판정 없음. FALSE 아님 |
 | 네트워크 | default-deny. 승인 profile 밖 대상 금지 | 위와 같음 |
+| CPU | R7 `sandbox_profile_ref`가 정한 값 | 위와 같음 |
+| RAM | R7 `sandbox_profile_ref`가 정한 값 | 위와 같음 |
+| 디스크 | R7 `sandbox_profile_ref`가 정한 값 | 위와 같음 |
+| PID | R7 `sandbox_profile_ref`가 정한 값 | 위와 같음 |
 
 `ActionCheck.BUDGET` 실패 시 저장하는 `AnalysisError.code`는 `BUDGET_EXCEEDED`다. Sandbox 정책 위반 코드는 `SANDBOX_POLICY_DENIED`다.
 
@@ -268,7 +272,7 @@ provider·model·session을 바꿀 때는 **이름이 아니라 정확한 식별
 - 역할·provider·model별 invocation, token/동등 usage와 elapsed time
 - AST/SAST별 `SUCCEEDED | PARTIAL | FAILED | SKIPPED`, 실제 분석·제외 path/language, exact 규칙 실행 record와 coverage
 - 목적별 `POC_CONFIRMATION | VERDICT_EVIDENCE` 요청 수, generation당 동적 work 수, 같은 work의 attempt 수
-- sandbox mode별 실제 사용량(관측), network/time, `runner_invoked`, 실제 환경 생성 여부, requirement `MATCH | MISMATCH | NOT_CHECKED | ERROR` 수와 cleanup. CPU·RAM·디스크는 한도가 아니라 관측값이다. 실행 예산 초과(`BUDGET_EXCEEDED`)와 정책 거절(`SANDBOX_POLICY_DENIED`)을 따로 셈
+- sandbox mode별 실제 사용량(관측), network/time, `runner_invoked`, 실제 환경 생성 여부, requirement `MATCH | MISMATCH | NOT_CHECKED | ERROR` 수와 cleanup. CPU·RAM·디스크는 R7 `sandbox_profile_ref` 한도를 따르며, 실제 사용량도 관측한다. 실행 예산 초과(`BUDGET_EXCEEDED`)와 정책 거절(`SANDBOX_POLICY_DENIED`)을 따로 셈
 - exact `dynamic_request_ref`·`environment_requirements_ref`·`poc_candidate_ref`·validated `poc_ref`·`policy_decision_ref`·`environment_ref`·`steps_ref`의 data kind, record revision과 content hash
 - initial TRUE 뒤 validated PoC 성공률, PoC candidate 생성·환경 구성·실행 실패와 `BLOCKED | FAILED` 원인
 - `cleanup_required`와 `SUCCEEDED | FAILED | NOT_REQUIRED`; 자원이 생겼는데 `NOT_REQUIRED`로 제출되어 거절된 횟수
