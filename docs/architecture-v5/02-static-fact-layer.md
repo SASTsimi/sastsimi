@@ -71,7 +71,9 @@ codeql·opengrep이 rule 매치로 만든 source 후보는 "이 위치에 이런
   - `status=SUCCEEDED`이고 필요한 범위가 `coverage`에 포함돼 있으면: 탐색은 했지만 경로를 확인하지 못한 것이다.
   - `status=PARTIAL`(예: 재귀 깊이 제한으로 일부 경로만 추적 — 범위는 `coverage`에 남긴다), `FAILED`(분석 자체 실패 — `AnalysisError(code=STATIC_TOOL_ERROR)`, [결과와 관측 가능성](./07-results-and-observability.md) 참고), `SKIPPED`(미실행) 중 하나면: 분석이 부족하거나 실패해서 확인하지 못한 것이다. 원인은 `gaps`·`errors`에 남긴다.
 - 두 경우 모두 source 후보를 지우거나 걸러내지 않는다. call graph는 `SUCCEEDED` 상태에서도 dynamic dispatch·reflection 등으로 불완전할 수 있으므로, reachability 미확인을 "도달 불가능 확정"으로 자동 해석하지 않는다.
-- 이렇게 reachability 근거가 붙은(또는 붙지 않은) source 후보는 Hypothesis Agent의 초기 가설 생성과 Verification·Pro·Con의 반증·검증 근거로 사용한다. Pro·Con과 최종 판정을 내리는 Verification Agent는 같은 exact 정적분석 결과 revision을 사용한다. Chaining Agent는 이 정적 source 후보를 직접 소비하지 않는다 — 코드 문맥을 새로 탐색하지 않고 두 Gate를 거쳐 admission된 current ACTIVE Primitive와 그 provenance만 읽는다는 기존 경계([03. Agent 역할과 오케스트레이션](./03-agent-roles-and-orchestration.md), [06. Chaining](./06-chaining.md))를 그대로 따른다.
+- 이렇게 reachability 근거가 붙은(또는 붙지 않은) source 후보는 Hypothesis Agent의 초기 가설 생성과 Verification·Pro·Con의 반증·검증 근거로 사용한다. Pro·Con과 최종 판정을 내리는 Verification Agent는 같은 exact 정적분석 결과 revision을 사용한다. Chaining Agent는 이 정적 source 후보를 직접 소비하지 않는다 — 코드 문맥을 새로 탐색하지 않고, 판정 유형별 등록 조건에 따라 admission된 current ACTIVE Primitive만 사용한다는 기존 경계([03. Agent 역할과 오케스트레이션](./03-agent-roles-and-orchestration.md), [06. Chaining](./06-chaining.md))를 그대로 따른다. 이 admission 조건은 판정 유형마다 다르다.
+  - final `HOLD`의 `REQUIRED`는 두 Gate를 기다리지 않고 exact final `VerificationResult`에서 즉시 등록되어 Chaining 입력이 된다.
+  - final `TRUE`의 `PROVIDED`는 Technical Evidence Gate(동적 재현·PoC 근거 포함)와 Rule Scope Gate를 모두 통과한 뒤에만 Chaining 입력이 된다.
 
 다음은 `get_order` 핸들러(`/orders/<id>`, 유저 조작 가능한 `id` 파라미터)에서 SQL 조합 지점까지의 reachability 근거 예시다 — `ToolRunResult.status=SUCCEEDED`로 탐색을 마치고 경로를 확인한 경우다.
 
