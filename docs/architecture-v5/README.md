@@ -14,7 +14,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 
 ## 전체 흐름을 쉽게 나누면
 
-1. **입력과 코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다.
+1. **입력과 코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다. 규칙 기반 SAST는 검사 0건·미실행·확인 불가를 구분해 기록합니다.
 2. **가설과 검증**: LLM이 취약점 가능성을 제안하고, Orchestration이 등록·배정한 뒤 Verification Agent가 코드·찬성·반대 근거를 검토하고 필요한 동적 재현 목적을 R7에 요청합니다.
 3. **동적 재현과 연계 탐색**: R7이 환경·계획·PoC candidate를 만들고 Docker에서 실행합니다. 모든 final TRUE에는 validated PoC가 필요하며, HOLD는 즉시, TRUE는 Technical `ACCEPT` 뒤에 Primitive matching에 사용합니다.
 4. **최종 검토와 자동화 종료**: 취약점 종류를 붙이고 기술 근거와 공식 정책을 차례로 검토한 뒤, Reporter가 내부 초안을 만들고 결과를 저장하면 Agent 자동화가 끝납니다.
@@ -23,8 +23,8 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 
 1. 저장소를 입력받는다.
 2. `Repository Loader`가 저장소를 `git clone`하고 분석할 `commit_id`를 checkout해 `CodeWorkspace`를 준비한다.
-3. AST parse와 SAST 도구를 병렬 실행한다.
-4. 결과를 `StaticFactBundle`로 정규화한다.
+3. AST parse와 SAST 도구를 병렬 실행하고 `ToolRunResult`와 규칙 기반 도구의 `RuleExecutionRecord`를 저장한다.
+4. 결과를 exact 규칙 실행 기록이 연결된 `StaticFactBundle`로 정규화한다.
 5. Orchestration Agent가 초기 가설 생성 실행을 시작한다.
 6. 저비용 Hypothesis Agent를 호출한다.
 7. schema-valid `HypothesisProposal(origin=INITIAL)`을 전역 등록한다.
@@ -48,7 +48,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 
 ## 핵심 원칙
 
-- AST와 SAST는 source, sink, entity, 위치, 호출·데이터 흐름, 인증·인가와 같은 사실 후보를 제공한다.
+- AST와 SAST는 source, sink, entity, 위치, 호출·데이터 흐름, 인증·인가와 같은 사실 후보를 제공한다. 규칙 기반 SAST는 선택·실행 여부와 raw 탐지 수를 별도 record로 남기며 미실행·확인 불가를 탐지 0건으로 바꾸지 않는다.
 - Hypothesis Agent는 항상 `HYPOTHESIS_ONLY / NON_FINAL` 제안만 만들며 Finding이나 확정 판정을 만들 수 없다.
 - 코드 문맥은 같은 `workspace_id`와 `commit_id`에서 위치 기반으로 필요할 때 조회하고, 조회 범위와 반환 위치를 기록한다.
 - Verification은 가설 내부 Context·Pro/Con, 목적별 `DynamicReproductionRequest`, 반환 결과 소비와 최종 판정을 소유한다. R7 Agent는 `EnvironmentRequirements`, `ReproductionPlan`, recipe·PoC·동적 outcome을 생산하고, Controller는 Sandbox 외부 경계를 강제하며, Session Manager는 AgentLog·cleanup·validated PoC와 최종 결과를 확정한다.

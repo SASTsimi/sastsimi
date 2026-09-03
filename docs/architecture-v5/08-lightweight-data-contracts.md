@@ -328,7 +328,7 @@ TransitionCommit:
 | `work_type` | 등록 요청 주체 | 실행·출력 생산자 | `SUCCEEDED` 또는 `PARTIAL`이 가리키는 결과 |
 |---|---|---|---|
 | `WORKSPACE_PREP` | 분석 입력 runtime | Repository Loader | 준비된 `CodeWorkspace` |
-| `STATIC_TOOL` | Orchestration runtime | AST/SAST runner | `ToolRunResult` |
+| `STATIC_TOOL` | Orchestration runtime | AST/SAST runner | `ToolRunResult`, 규칙 기반 도구이면 exact `RuleExecutionRecord` |
 | `STATIC_NORMALIZE` | Orchestration runtime | Static Fact Normalizer | `StaticFactBundle` |
 | `HYPOTHESIS_PROPOSAL` | global registration runtime | Hypothesis·Verification·Chaining 출력 검증 runtime | schema-valid `HypothesisProposal[]` |
 | `CONTEXT_RETRIEVAL` | 허용된 Agent Runtime | Context Retrieval Service | `CodeContextResponse` |
@@ -364,6 +364,7 @@ state store는 새 전이를 승인하기 전에 `(work_id, current_state_versio
 
 다음 output binding은 필수다.
 
+- `STATIC_TOOL` attempt의 `ToolRunResult.tool_kind=RULE_BASED`이고 그 status가 `SUCCEEDED | PARTIAL | SKIPPED`이면 `rule_execution_ref`와 같은 exact `RuleExecutionRecord`를 output으로 함께 확정한다. 두 결과의 attempt·도구·workspace·commit이 다르면 다음 단계에 전달하지 않는다.
 - `VERIFICATION`의 `SUCCEEDED`와 `HypothesisProcessState.status=TERMINAL`은 같은 final `VerificationResult.record_id`를 가리킨다.
 - retry 가능한 `VERIFICATION` work가 `BLOCKED`이면 가설은 `VERIFYING`을 유지하고 `verification_work_ref`가 그 work revision을 가리킨다. 재시도를 소진했거나 복구 불가능한 경우에는 같은 atomic transition에서 `VERIFICATION`의 `FAILED`와 `HypothesisProcessState.status=FAILED`를 확정한다. 이때 가설의 `verification_work_ref`는 실패한 exact work revision, `verification_result_ref=null`이어야 하며 final verdict나 Gate 입력을 만들지 않는다.
 - `DYNAMIC_REPRO`의 종료 transition은 위 매핑을 만족해야 하며 `WorkExecutionState.output_refs`, `TransitionCommit.output_refs`와 `DynamicReproductionState.dynamic_result_ref`가 같은 `DynamicReproductionResult.record_id`를 가리킨다. Verification은 `COMMITTED` marker와 세 reference가 모두 맞을 때만 이 결과를 읽는다.
@@ -512,7 +513,7 @@ Technical Gate가 `REVISE`를 확정하면 그 Gate action과 decision은 이미
 
 `REQUEST_DYNAMIC_REPRO`는 ACTIVE assignment의 R6 owner만 current Verification generation에서 요청한다. `REPRODUCTION_AGENT`는 그 요청의 exact `DYNAMIC_REPRO` work 안에서만 requirements·plan·recipe·PoC candidate를 만들고 `RUN_SANDBOX`를 요청할 수 있다. `REPRODUCTION_SESSION_MANAGER`는 같은 attempt의 event·cleanup·최종 결과 확정만 수행한다. 두 역할 모두 가설 verdict·CWE·Gate 결과를 생산하거나 request의 purpose·goal·가설·profile을 바꿀 수 없다.
 
-Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 있지만 hypothesis-local 작업, Verification verdict, CWE, 두 Gate 결과, 정책 해석과 ReportDraft 내용을 생산하지 못한다. Verification은 hypothesis-local 작업을 제안하지만 실제 실행·저장 권한은 Runtime Validator를 통과해야 한다. 각 전문 결과는 위 표의 `SAVE_RESULT` 허용 역할 중에서도 해당 result kind를 소유한 역할만 저장한다. 예를 들어 `VerificationResult`는 VERIFICATION, `ChainingResult`는 CHAINING, `TechnicalEvidenceReview`는 TECHNICAL_GATE, `RuleScopeImpactReview`는 RULE_SCOPE_GATE, `ReportDraft`는 REPORTER만 생산한다. runtime validator는 값의 생산자·schema·선행 reference를 확인하지만 취약점 진위·CWE 적절성·정책 의미를 대신 판정하지 않는다.
+Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 있지만 hypothesis-local 작업, Verification verdict, CWE, 두 Gate 결과, 정책 해석과 ReportDraft 내용을 생산하지 못한다. Verification은 hypothesis-local 작업을 제안하지만 실제 실행·저장 권한은 Runtime Validator를 통과해야 한다. 각 전문 결과는 위 표의 `SAVE_RESULT` 허용 역할 중에서도 해당 result kind를 소유한 역할만 저장한다. 예를 들어 `RuleExecutionRecord`는 STATIC_ANALYSIS, `VerificationResult`는 VERIFICATION, `ChainingResult`는 CHAINING, `TechnicalEvidenceReview`는 TECHNICAL_GATE, `RuleScopeImpactReview`는 RULE_SCOPE_GATE, `ReportDraft`는 REPORTER만 생산한다. runtime validator는 값의 생산자·schema·선행 reference를 확인하지만 취약점 진위·CWE 적절성·정책 의미를 대신 판정하지 않는다.
 
 `ActionCheck.check_type=BUDGET` 실패는 `AnalysisError(stage=ORCHESTRATION, code=BUDGET_EXCEEDED)`로 기록한다. 가설 verdict나 LLM `INVALID_OUTPUT`으로 바꾸지 않으며, 운영 Verification의 Pro/Con 중 하나라도 실행할 예산이 없으면 두 호출과 final result 저장을 시작하지 않는다.
 
@@ -521,7 +522,8 @@ Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 
 - `result_kind`와 `candidate_result_ref`는 `SAVE_RESULT`에서 필수이고 다른 action에서는 `null`이다. `candidate_result_ref.data_kind`는 `result_kind`와 같고 `candidate_result_ref.record_id`에는 저장 runtime이 미리 발급한 결과 revision ID가 있어야 한다.
 - `candidate_result_ref.content_hash`는 미리 발급한 ID를 포함해 canonical serialization한 결과 후보 전체의 hash다. 후보 record는 read-only staging 영역에 두며 action decision이 생긴 뒤 수정하거나 같은 `stored_data_id`·`record_id`에 다른 bytes를 넣지 않는다. candidate ref도 action `input_refs`에 정확히 한 번 포함한다. staging record는 `TransitionCommit.state=COMMITTED` 전에는 일반 결과 조회나 다음 단계에서 보이지 않는다.
 - `SCHEMA`는 result kind에 맞는 schema와 필수 필드를, `AUTHORITY`는 result kind의 등록된 생산 역할과 `requested_by`를 검사한다. `IDENTITY`·`REVISION`·`STATE`는 모든 candidate의 analysis, current `work_ref`·active attempt·input refs와 hash를 검사하고, `RecordMeta` candidate이면 workspace·commit·hypothesis·`meta.attempt_id`까지 정확히 일치하는지 검사한다.
-- 핵심 registry에서 `pro_evidence_result -> EvidenceAgentResult(role=PRO) -> PRO`, `con_evidence_result -> EvidenceAgentResult(role=CON) -> CON`과 기존 Verification·Primitive·Chaining·CWE·Gate·Reporter 생산 권한을 유지한다. 동적 재현은 `dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`, `environment_requirements -> EnvironmentRequirements -> REPRODUCTION_AGENT`, `reproduction_plan -> ReproductionPlan -> REPRODUCTION_AGENT`, `environment_recipe -> EnvironmentRecipe -> REPRODUCTION_AGENT`, `poc_bundle -> PoCBundle -> REPRODUCTION_AGENT`, `agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`, `cleanup_log -> CleanupLog -> REPRODUCTION_SESSION_MANAGER`, `dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`를 유일 생산자로 등록한다.
+- 핵심 registry 항목은 `rule_execution_record -> RuleExecutionRecord -> STATIC_ANALYSIS`, `pro_evidence_result -> EvidenceAgentResult(role=PRO) -> PRO`, `con_evidence_result -> EvidenceAgentResult(role=CON) -> CON`, `verification_result -> VerificationResult -> VERIFICATION`, `primitive -> Primitive -> VERIFICATION`, `chaining_result -> ChainingResult -> CHAINING`, `dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`, `environment_requirements -> EnvironmentRequirements -> REPRODUCTION_AGENT`, `reproduction_plan -> ReproductionPlan -> REPRODUCTION_AGENT`, `environment_recipe -> EnvironmentRecipe -> REPRODUCTION_AGENT`, `poc_bundle -> PoCBundle -> REPRODUCTION_AGENT`, `agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`, `cleanup_log -> CleanupLog -> REPRODUCTION_SESSION_MANAGER`, `dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`, `cwe_label -> CWELabel -> CWE_LABELING`, `technical_evidence_review -> TechnicalEvidenceReview -> TECHNICAL_GATE`, `rule_scope_impact_review -> RuleScopeImpactReview -> RULE_SCOPE_GATE`, `report_draft -> ReportDraft -> REPORTER`다. 앞 값은 `result_kind`·`data_kind`, 가운데 값은 검사할 schema, 뒤 값은 유일한 생산 역할이다. 다른 result kind도 versioned result-owner registry에 정확히 한 schema와 생산 역할을 등록해야 하며, broad requester 표만으로 저장 권한을 얻지 않는다.
+- `result_kind=rule_execution_record`이면 STATIC_ANALYSIS만 저장할 수 있다. `SCHEMA`는 catalog와 `rules[].rule_id`의 set equality, 중복 rule ID, selection·execution·`hit_count`·`reason`·`detail` 조합을 검사한다. `REVISION | STATE`는 candidate의 `meta.attempt_id`, 도구·버전, workspace·commit, `analysis_config_ref`·`rule_catalog_ref`가 current `STATIC_TOOL` attempt와 exact match하는지 확인한다. 같은 attempt의 `ToolRunResult`를 확정할 때는 `tool_kind=RULE_BASED`이고 `rule_execution_ref`가 이 record를 가리키는지 다시 검사한다. `StaticFactBundle`을 확정할 때 각 `CodeFact.producer.attempt_id`와 규칙 기반 `producer.rule_id`가 연결된 current `ToolRunResult`·`RuleExecutionItem`과 일치하는지도 검사한다. 실패·누락·확인 불가를 `EXECUTED + hit_count=0`으로 바꾼 candidate는 저장하지 않는다.
 - `result_kind=pro_evidence_result | con_evidence_result`이면 candidate의 role, `evidence_work_id`, `meta.attempt_id`, `llm_call_id`, `parent_work_id`, `verification_generation`, `debate_input_hash`가 current child work·성공 attempt·호출·부모 Verification과 정확히 일치해야 한다. 다른 역할의 claim이나 상대 역할 record가 입력 경로에 있으면 `AUTHORITY_DENIED` 또는 `CROSS_ROLE_INPUT_DENIED`로 저장하지 않는다.
 - `result_kind=verification_result`이면 `SCHEMA | REVISION | STATE`는 가설의 모든 `ValidationCheck.validation_id`와 candidate의 `ValidationCheckResult.validation_id`가 중복 없이 set-equal인지, 모든 `ValidationCheckResult.completion=COMPLETE`인지, 각 결과의 `evidence_refs`가 하나 이상인지 확인한다. `INCOMPLETE` 항목이 하나라도 있으면 final candidate를 `COMMITTED`하지 않는다. 모든 `FalsificationQuestion.question_id`도 정확히 한 번 처리되어야 하며 사용한 근거는 현재 `workspace_id + commit_id`의 저장 record여야 한다. 운영 분석은 독립 Pro/Con work가 모두 정상 종료되어 exact output이 action `input_refs`에 있어야 한다. 일부 Context 조회 오류가 있어도 제한 retry·대체 조회·다른 정상 근거로 이 조건을 완료했다면 final candidate를 검사할 수 있지만, 필수 Context 또는 운영 Pro/Con을 확보하지 못했다면 final candidate를 `COMMITTED`하지 않는다. 이 경우 retry 가능 work는 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지한다. 더 시도할 수 없으면 같은 atomic transition에서 work와 `HypothesisProcessState`를 `FAILED`로 끝내며 runtime이 `HOLD`를 대신 만들지 않는다. Runtime Validator는 구조·reference·완료 상태만 검사한다. final `TRUE` 근거의 의미적 충분성과 코드·실행 근거 연결은 Technical Evidence Gate가 exact final TRUE revision을 대상으로 별도로 검토한다. `FALSE | HOLD`는 Technical Gate 입력이 아니며, 구조 검사를 통과했다는 사실이 Gate 승인을 의미하지 않는다.
 - `VerificationResult.verdict=TRUE`이면 현재 가설의 핵심 공격 경로와 필요한 조건을 연결하는 하나 이상의 `supporting_evidence`가 필수다. 각 claim은 실제 저장 근거와 같은 `workspace_id + commit_id`의 코드 위치를 가져야 하며 오류·gap record를 근거로 사용할 수 없다. 또한 current Verification generation의 exact `DynamicReproductionRequest`, `DynamicReproductionResult(status=SUCCEEDED, hypothesis_outcome=SUPPORTED)`와 validated `poc_ref`가 모두 필수이고 candidate와 final result의 세 reference가 exact match여야 한다. 이 조건을 충족하지 않은 TRUE candidate는 저장하지 않는다.
@@ -598,6 +600,7 @@ AnalysisError:
   created_at: timestamp
 
 ToolSource:
+  attempt_id: string
   tool_name: string
   tool_version: string
   rule_id: string | null
@@ -626,12 +629,31 @@ ToolCoverage:
   skipped_languages: [string]
   notes: [string]
 
+RuleExecutionItem:
+  rule_id: string
+  selection_status: SELECTED | NOT_SELECTED
+  execution_status: EXECUTED | NOT_EXECUTED | UNKNOWN
+  hit_count: integer | null
+  reason: NOT_SELECTED | TOOL_FAILURE | UNSUPPORTED | CANCELLED | TELEMETRY_MISSING | OTHER | null
+  detail: string | null
+
+RuleExecutionRecord:
+  meta: RecordMeta without hypothesis, with attempt
+  tool_name: string
+  tool_version: string
+  analysis_config_ref: StoredDataRef
+  rule_catalog_ref: StoredDataRef
+  selected_rule_packs: [string]
+  rules: [RuleExecutionItem]
+
 ToolRunResult:
   attempt_id: string
   tool_name: string
   tool_version: string
+  tool_kind: STRUCTURE | RULE_BASED
   status: SUCCEEDED | PARTIAL | FAILED | SKIPPED
   coverage: ToolCoverage
+  rule_execution_ref: StoredDataRef | null
   raw_result_ref: StoredDataRef | null
   gaps: [DataGap]
   errors: [AnalysisError]
@@ -651,6 +673,26 @@ ContextRetrievalLimits:
 `file_path`는 `workspace_root` 기준의 정규화된 Git 상대 경로다. 구분자는 운영체제와 관계없이 `/`를 사용하고 빈 경로, 절대 경로, drive prefix, `.`·`..` segment를 허용하지 않는다. Git에 저장된 경로의 대소문자를 그대로 보존하며 symlink를 해석한 실제 읽기 대상은 `workspace_root` 안에 있어야 한다. 줄은 1부터 시작하고 `start_line`과 `end_line`은 범위에 포함된다. 열 정보가 있는 경우 두 열 모두 1부터 시작하고 Unicode code point 단위이며 `start_column`은 포함, `end_column`은 제외한다. 도구가 줄만 제공하면 두 column을 모두 `null`로 두고 임의의 열 정밀도를 만들지 않는다.
 
 `symbol_kind`는 여러 언어에서 공통으로 쓸 수 있는 큰 범주다. `TYPE`에는 class·interface·enum·struct, `CALLABLE`에는 function·method·constructor·lambda, `DATA`에는 variable·field·property·parameter가 들어간다. 원래 parser나 SAST 도구가 사용한 세부 종류는 `native_kind`에 그대로 남긴다. `symbol_id`, `fact_id`, `relation_id`는 같은 `workspace_id + commit_id` 안에서 유일하다. `CodeFact`와 `CodeRelation`의 `producer.raw_result_ref`는 사실·관계를 만든 도구의 원본 결과를 가리켜야 한다.
+
+`RuleExecutionRecord`는 규칙 기반 SAST가 어떤 규칙을 선택했고 실제로 실행했는지 남기는 별도 record다. `RunMeta`는 분석 실행의 공통 식별 정보만 유지하며 도구별 규칙 목록을 넣지 않는다. `analysis_config_ref`는 실행에 사용한 정확한 설정, `rule_catalog_ref`는 이번 분석에서 선택 여부를 비교할 규칙 전체 목록과 버전을 가리킨다. `selected_rule_packs`는 설정이 선택한 rule pack 이름을 보존하고, 개별 규칙 선택 여부는 `rules[].selection_status`가 최종 기준이다. pack 이름은 사람이 읽기 위한 값이며 exact pack 버전과 digest는 `rule_catalog_ref`에서 확인한다. 개별 규칙만 선택했다면 `selected_rule_packs=[]`일 수 있다. `rules`는 하나 이상이어야 하고 `rule_id` 집합은 `rule_catalog_ref`가 가리키는 목록과 중복 없이 set-equal해야 한다. `rule_id`는 전역 ID가 아니므로 `tool_name + tool_version + rule_catalog_ref.content_hash + rule_id` 문맥에서 해석한다.
+
+규칙별 상태 조합은 다음과 같다.
+
+- `SELECTED + EXECUTED`이면 `hit_count`는 0 이상의 정수이고 `reason=null`이다. `hit_count=0`만이 “규칙을 실행했지만 탐지 결과가 0건”이라는 뜻이다.
+- `SELECTED + NOT_EXECUTED`이면 `hit_count=null`이고 `reason=TOOL_FAILURE | UNSUPPORTED | CANCELLED | OTHER` 중 하나가 필수다.
+- `SELECTED + UNKNOWN`이면 실행 여부를 증명할 수 없다는 뜻이며 `hit_count=null`, `reason=TELEMETRY_MISSING | TOOL_FAILURE | OTHER` 중 하나가 필수다.
+- `NOT_SELECTED + NOT_EXECUTED`이면 `hit_count=null`, `reason=NOT_SELECTED`다. 분석 계획에서 제외한 규칙은 이 조합으로 기록한다.
+- `NOT_SELECTED + EXECUTED`와 `NOT_SELECTED + UNKNOWN`은 모순이므로 저장하지 않는다. `NOT_EXECUTED | UNKNOWN`에서 `hit_count=0`을 쓰는 것도 금지한다.
+
+`reason=OTHER`이면 사람이 이해할 수 있는 비어 있지 않은 `detail`이 필수다. 나머지 reason에서도 추가 설명이 필요하면 `detail`을 사용할 수 있고, reason이 `null`이면 `detail`도 `null`이다.
+
+`hit_count`는 정규화 전 raw 도구 결과에서 해당 규칙이 만든 결과 수다. `CodeFact` 수와 같다고 추정하거나 normalizer의 중복 제거 때문에 값을 바꾸지 않는다. `CodeFact.producer.attempt_id`는 이 사실을 만든 exact `ToolRunResult.attempt_id`와 같아야 한다. `CodeFact.producer.rule_id`가 존재하면 같은 attempt의 `RuleExecutionItem`은 반드시 `SELECTED + EXECUTED`, `hit_count>0`이어야 한다. 반대로 `CodeFact`가 없다는 사실만으로 0건을 추정하지 않고 exact `RuleExecutionRecord`를 확인한다.
+
+CodeQL·OpenGrep처럼 규칙을 실행하는 도구는 `tool_kind=RULE_BASED`, AST parser처럼 개별 규칙 개념이 없는 도구는 `tool_kind=STRUCTURE`다. `RULE_BASED`의 `ToolRunResult.rule_execution_ref`는 `SUCCEEDED | PARTIAL | SKIPPED`에서 필수이고, 참조 대상 `RuleExecutionRecord.meta.attempt_id`·도구 이름·버전·workspace·commit이 `ToolRunResult`와 같아야 한다. `FAILED`가 exact 설정이나 catalog를 확정하기 전에 발생한 경우에만 이 참조를 `null`로 둘 수 있으며, 하나 이상의 `AnalysisError`와 영향받은 `DataGap`을 남기고 전체 규칙 실행 여부를 `UNKNOWN`으로 취급한다. `STRUCTURE`는 `rule_execution_ref=null`이며 `ToolSource.rule_id`도 `null`이다.
+
+전체 도구 상태와 규칙별 상태도 모순되면 안 된다. `SUCCEEDED`이면 선택한 규칙이 하나 이상이고 모두 `EXECUTED`여야 한다. 선택한 규칙 중 하나라도 `NOT_EXECUTED | UNKNOWN`이면 `SUCCEEDED`가 될 수 없으며, 사용할 수 있는 일부 결과가 있으면 `PARTIAL`, 사용할 수 있는 결과가 없으면 `FAILED | SKIPPED` 중 실제 원인을 사용한다. `SKIPPED`에는 `EXECUTED` 규칙이 있을 수 없다. 선택한 규칙의 미실행·확인 불가 범위는 `DataGap(stage=STATIC_ANALYSIS)`에 남기고 실제 오류가 원인이면 `AnalysisError(stage=STATIC_ANALYSIS)`도 함께 남긴다. 규칙 0건, 미실행, 확인 불가 어느 것도 취약점이 없거나 가설이 `FALSE`라는 뜻이 아니다.
+
+규칙 실행 record는 attempt마다 새로 만든다. retry는 같은 `work_id`의 새 `attempt_id`와 새 `RuleExecutionRecord`를 사용하며 이전 attempt의 규칙 상태나 탐지 수를 합치지 않는다. 현재 active attempt와 다른 record, 설정·catalog hash가 다른 record와 늦게 도착한 record는 `ATTEMPT_NOT_ACTIVE | STALE_RESULT | RECORD_REVISION_MISMATCH` 중 실제 원인으로 거절한다.
 
 `StoredDataRef`는 준비된 코드와 연결된 결과에만 사용한다. raw 도구 출력·코드 조각처럼 독립 artifact이면 `record_id=null`이다. 저장된 record의 정확한 revision을 가리키는 참조는 해당 revision의 전역 `record_id`를 반드시 넣고, runtime은 참조의 `workspace_id`, `commit_id`, `content_hash`가 그 record와 일치하는지 확인한다. `RunStoredDataRef`는 입력 검증, clone·checkout, 실행 오류와 debug trace처럼 commit 준비 전에도 생기는 실행 자료에만 사용하며 코드 근거·PoC·Finding·보고서 주장의 근거로 사용할 수 없다. raw 실행 artifact이면 `record_id=null`, `RunMeta`를 가진 저장 record의 정확한 revision을 가리키면 그 `record_id`가 필수이며 `analysis_id`와 `content_hash`가 대상과 일치해야 한다. 두 참조 모두 내부 저장 경로 대신 결과 번호와 내용 hash만 전달한다.
 
@@ -698,6 +740,8 @@ Context 조회 실패·timeout·권한 오류가 발생하면 실패 사건은 `
 - `PATCH`: 데이터 해석이 바뀌지 않는 설명·예시·검증 규칙 명확화
 
 이 문서에 나열한 enum은 모두 닫힌 enum이다. 따라서 소비자는 목록에 없는 값을 추정해서 처리하지 않는다. 소비자는 지원하지 않는 MAJOR를 추정해서 읽지 않고 `SCHEMA_UNSUPPORTED`를 기록한다. 알 수 없는 선택 필드는 보존하거나 무시할 수 있지만 새 의미를 만들지 않는다. schema 변경을 이유로 기존 record를 덮어쓰지 않고 같은 `logical_record_id` 아래 새 `record_id`, `created_at`과 증가한 `revision_number`를 만든다.
+
+`RuleExecutionRecord` 추가, `ToolRunResult.tool_kind`·규칙 기반 `rule_execution_ref`와 `ToolSource.attempt_id` 의무화는 기존 운영 결과의 유효 조건을 바꾸므로 새 MAJOR schema로 적용한다. 이전 MAJOR의 `ToolRunResult`에 규칙 hit이 없다는 이유로 `EXECUTED + hit_count=0`을 추정해 채우지 않는다. 이전 결과는 감사 이력으로 보존할 수 있지만 새 규칙 실행률 계산이나 “검사했지만 탐지 없음”의 근거로 자동 승격하지 않는다.
 
 저장소에서 revision의 유일 키는 `(logical_record_id, revision_number)`다. `previous_record_id`는 같은 `logical_record_id`를 가진 바로 이전 `revision_number`의 `record_id`만 가리킨다. 모든 revision에서 `record_type`과 `analysis_id`가 같아야 한다. `RecordMeta`는 `workspace_id`, `commit_id`, `hypothesis_id`도 이전 revision과 같아야 한다. `RunMeta` 기반 record의 `workspace_id`와 `commit_id`는 준비 과정에서만 `null`에서 실제 값으로 바뀔 수 있고, 실제 값이 기록된 뒤에는 바꿀 수 없다. revision이 연속되지 않거나 이 조건을 어기면 `RECORD_REVISION_MISMATCH`로 거절하고 자동 병합하지 않는다. schema version 변경과 record revision 증가는 서로 다른 개념이다.
 

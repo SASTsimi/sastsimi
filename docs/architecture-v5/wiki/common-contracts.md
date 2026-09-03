@@ -79,6 +79,16 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 
 정적 분석과 코드 조회 결과는 사용할 수 있는 사실뿐 아니라 도구별 실행 상태, 분석·제외 범위, `DataGap`, `AnalysisError`를 함께 전달합니다. `DataGap`은 영향받은 path·language·코드 위치를 가능한 범위에서 적습니다. 결과가 비어 있거나 일부 도구가 실패했다는 이유로 안전하다고 판단하지 않습니다.
 
+### 검사 결과 0건과 미실행을 어떻게 구분하나요?
+
+CodeQL·OpenGrep은 규칙별 실행 이력을 `RuleExecutionRecord`에 저장하고 `ToolRunResult`가 그 정확한 기록을 가리킵니다.
+
+- `EXECUTED + hit_count=0`: 검사했지만 탐지 결과가 0건입니다.
+- `NOT_EXECUTED`: 검사하지 않았습니다. 계획에서 제외했거나 실행하지 못한 이유를 함께 적습니다.
+- `UNKNOWN`: 오류나 기록 부족으로 검사했는지 확인할 수 없습니다.
+
+도구 오류나 timeout을 0건으로 바꾸지 않습니다. 다시 실행하면 새 `attempt_id`와 새 기록을 만들며 이전 결과와 합치지 않습니다. R2는 실행 기록을 만들고, R4의 Runtime Validator는 형식·참조·상태 조합을 검사하며, R8은 exact 기록으로 실행률과 평가 지표를 계산합니다. LLM Agent는 이 실행 이력을 만들거나 수정하지 않습니다.
+
 Context 조회가 실패·timeout·권한 오류로 끝나면 실패 사건은 `AnalysisError`, 그 때문에 확인하지 못한 코드 범위는 `DataGap`으로 함께 남깁니다. 가설에는 해야 할 검증마다 고유 `validation_id`가 있고, 결과는 같은 ID로 완료 여부와 실제 근거를 답합니다. 일부 조회가 실패했더라도 재시도·대체 조회·다른 정상 근거로 모든 검증 항목과 운영 Pro/Con을 끝냈다면 실제 근거에 따라 `TRUE | FALSE | HOLD`를 저장할 수 있습니다. 하나라도 끝내지 못했다면 final `VerificationResult`를 만들지 않습니다. 다시 시도할 수 있으면 work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지합니다. 더 시도할 수 없으면 work와 가설 처리 상태를 한 번에 `FAILED`로 끝내고 결과 reference는 비워 둡니다. 단순 조회 오류만으로 `HOLD`를 만들지 않습니다.
 
 ## 동적 재현 실패와 반증은 다릅니다

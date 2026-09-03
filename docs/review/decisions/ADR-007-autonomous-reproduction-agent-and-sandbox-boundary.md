@@ -1,4 +1,4 @@
-# ADR-006. 자율 Reproduction Agent와 Sandbox 외부 안전 경계
+# ADR-007. 자율 Reproduction Agent와 Sandbox 외부 안전 경계
 
 - 상태: `PROPOSED`
 - 결정 담당: R7 동적검증·Sandbox

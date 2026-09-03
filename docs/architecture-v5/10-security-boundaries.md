@@ -135,6 +135,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 |---|---|
 | repository prompt injection | instruction/data 분리, 최소 context, output validation |
 | SAST hit 자동 승격 | fact-only 정규화, Verification |
+| 규칙 실행 기록이 없어도 “검사 결과 0건”으로 해석 | exact `RuleExecutionRecord` 확인, 미실행·확인 불가와 0건 분리 |
 | 저비용 모델의 과도한 확정 | fixed hypothesis schema, 금지 assertion, `INVALID_OUTPUT` |
 | LLM 확증 편향 | 운영상 항상 실행하는 독립 Pro/Con, 역할 간 NEW session, 두 Gate |
 | session contamination | `NEW/RESUME/AUTO` policy와 결정 logging |
@@ -156,6 +157,16 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | Agent가 검토·제출·공개를 계속 자동화 | ReportDraft와 AnalysisRunResult 확정 뒤 Agent action이 없는 종료 경계 |
 | 역할 위조, ALLOW replay 또는 stale 허가 사용 | trusted requester identity와 exact action·state·input·config·`valid_until` binding, stale이면 `UNUSED -> EXPIRED`, 유효하면 `UNUSED -> USED` 일회성 claim |
 | 권한 없는 domain 결과 저장 | 역할별 `SAVE_RESULT` authority와 선행 exact ref 검사 |
+
+## 정적분석 규칙 기록 부정 시나리오
+
+| 입력·사건 | runtime이 반드시 확인할 것 | 기대 차단 결과 |
+|---|---|---|
+| `CodeFact`가 없다는 이유만으로 규칙 실행 0건을 기록 | exact `RuleExecutionRecord`, 규칙별 execution status와 raw count | 추정값 저장 금지; record가 없으면 `UNKNOWN`으로 처리 |
+| `NOT_EXECUTED | UNKNOWN` 규칙에 `hit_count=0`을 기록 | selection·execution·hit count·reason 조합 | `SAVE_RESULT` 거절, 실제 상태와 이유를 다시 기록 |
+| 선택한 규칙이 미실행·확인 불가인데 `ToolRunResult.status=SUCCEEDED` | selected 규칙 전체와 ToolRunResult status | 성공 상태 거절, 실제 결과에 따라 `PARTIAL | FAILED | SKIPPED`와 gap·error 기록 |
+| 다른 attempt·도구 버전·설정·catalog의 규칙 실행 record를 연결 | `rule_execution_ref`, `meta.attempt_id`, 도구·버전·workspace·commit과 exact refs | `ATTEMPT_NOT_ACTIVE | STALE_RESULT | RECORD_REVISION_MISMATCH`, 정적 사실 묶음에 연결 금지 |
+| retry 뒤 이전 규칙 실행 수와 새 실행 수를 합침 | `work_id`, attempt별 record와 active attempt | attempt별 기록 유지, 현재 결과에는 current attempt만 연결 |
 
 ## 상태·복구 부정 시나리오
 
@@ -212,6 +223,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | `SAVE_RESULT` 검사 뒤 candidate bytes를 바꿈 | `candidate_result_ref.stored_data_id`와 `content_hash`, current attempt·state | decision `EXPIRED` 또는 save `DENY`, 변조 후보 미저장 |
 | 실행 오류만 든 `FALSE` 후보를 저장 | `result_kind`, VERIFICATION 생산자, named `DISPROVED`의 `question_id`·`evidence_refs` | `SAVE_RESULT` 거절, 오류 상태 유지와 verdict 자동 생성 금지 |
 | 다른 역할이 만든 결과 후보를 저장 | result-owner registry와 `requested_by`, candidate meta | `AUTHORITY_DENIED`, candidate 격리와 최신 pointer 미연결 |
+| STATIC_ANALYSIS가 아닌 역할이 `RuleExecutionRecord`를 저장하거나 수정 | `rule_execution_record` result-owner와 `requested_by` | `AUTHORITY_DENIED`, 규칙 실행 이력 불변 유지 |
 | R6가 `EnvironmentRequirements`·`ReproductionPlan`·PoC 또는 `DynamicReproductionResult`를 생산 | result-owner registry와 `requested_by` | `AUTHORITY_DENIED`, R6의 `DynamicReproductionRequest`만 허용 |
 | R7이 동적 요청의 purpose·가설·필요 조건·profile을 임의 변경 | exact `DynamicReproductionRequest`와 R7 산출물 | `RECORD_REVISION_MISMATCH`, 산출물 저장·실행 금지 |
 | 같은 Verification generation에 두 번째 동적 work를 등록 | `hypothesis_id`, `verification_generation`, existing work | `ACTION_NOT_ALLOWED`, 기존 `work_id`를 재사용하고 retry는 새 attempt로 처리 |

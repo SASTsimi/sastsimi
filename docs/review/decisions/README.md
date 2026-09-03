@@ -41,4 +41,5 @@
 | [ADR-003](./ADR-003-r6-r7-environment-requirements-handoff.md) | 과거 R6 환경 요구사항과 R7 실행 handoff | SUPERSEDED | #5, #7, #8 | ADR-004로 대체 |
 | [ADR-004](./ADR-004-r6-request-r7-poc-production.md) | R6 요청·R7 재현 생산과 모든 TRUE의 validated PoC 의무 | ACCEPTED | #5, #7, #8 | `docs: align R6 R7 contract around validated PoC` |
 | [ADR-005](./ADR-005-unified-primitive-chaining.md) | 통합 Primitive와 결과→입력 Chaining | ACCEPTED | #2, #5, #78, #79, #80 | `docs: unify Primitive chaining contracts` |
-| [ADR-006](./ADR-006-autonomous-reproduction-agent-and-sandbox-boundary.md) | 자율 Reproduction Agent와 Sandbox 외부 안전 경계 | PROPOSED | #8, #73, #74, #75 | PR #76 |
+| [ADR-006](./ADR-006-static-rule-execution-record.md) | 정적분석 규칙 실행 이력 분리 | ACCEPTED | #3, #5, #9, #82 | `docs: define static rule execution history contract` |
+| [ADR-007](./ADR-007-autonomous-reproduction-agent-and-sandbox-boundary.md) | 자율 Reproduction Agent와 Sandbox 외부 안전 경계 | PROPOSED | #8, #73, #74, #75 | PR #76 |

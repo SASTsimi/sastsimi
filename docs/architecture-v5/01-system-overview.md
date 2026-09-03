@@ -18,8 +18,8 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 |---:|---|---|
 | 1 | 저장소 입력 | repository reference |
 | 2 | 저장소 clone과 commit checkout | `CodeWorkspace` |
-| 3 | AST parse와 SAST 도구 병렬 실행 | raw AST/SAST outputs |
-| 4 | 정적 사실 정규화 | `StaticFactBundle` |
+| 3 | AST parse와 SAST 도구 병렬 실행 | raw AST/SAST outputs, `ToolRunResult`, 규칙 기반 도구의 `RuleExecutionRecord` |
+| 4 | 정적 사실 정규화 | exact 규칙 실행 기록을 연결한 `StaticFactBundle` |
 | 5 | 초기 가설 생성 실행 | Orchestration이 Hypothesis work 시작 |
 | 6 | 저비용 가설 생성 모델 호출 | constrained invocation |
 | 7 | 출력 검증과 전역 등록 | schema-valid `HypothesisProposal(origin=INITIAL)` 또는 `INVALID_OUTPUT` |
@@ -88,7 +88,7 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | 구성 요소 | 책임 | 금지 경계 |
 |---|---|---|
 | Repository Loader | 실행별 `git clone`, `commit_id` checkout과 HEAD 확인 | 실행 중 작업공간 변경 또는 다른 commit 혼합 |
-| AST/SAST runners | 구조·규칙 일치·경로 후보 수집 | 취약점 최종 판정 |
+| AST/SAST runners | 구조·규칙 일치·경로 후보 수집, 규칙별 선택·실행·raw 탐지 수 기록 | 취약점 최종 판정 또는 미실행·확인 불가를 0건으로 변경 |
 | Static Fact Normalizer | 공통 entity/location/path 표현 생성 | 증거가 없는 의미 확정 |
 | Context Retrieval Service | 같은 `workspace_id`와 `commit_id`에서 제한된 추가 문맥 조회 | 작업공간 밖 무제한 repository dump |
 | Orchestration Agent | proposal 검증·전역 가설 등록·Verification 배정·가설 간 병렬성 | 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정 또는 Finding 공개 |

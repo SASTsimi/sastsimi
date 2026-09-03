@@ -45,7 +45,7 @@ NOT_IMPLEMENTED
 
 쉽게 나누면 다음과 같습니다.
 
-1. **코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다.
+1. **코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다. SAST 규칙별로 검사 0건·미실행·확인 불가를 구분합니다.
 2. **가설 생성과 검증**: Orchestration이 가설을 등록해 Verification에 배정하고, Verification이 찬성·반대 근거와 필요한 후속 작업을 관리합니다.
 3. **필요한 경우 재현**: Verification 판단에 따라 Docker 격리 환경에서 제한적으로 공격 흐름을 재현합니다.
 4. **판정별 연계 탐색**: HOLD의 필요 조건은 즉시, TRUE의 제공 능력은 validated PoC와 Technical `ACCEPT` 뒤 연결해 새 가설을 만듭니다. Rule Scope는 보고 가능성만 판단합니다.
@@ -60,7 +60,8 @@ Repository input
 → Repository Loader가 git clone과 commit checkout
 → CodeWorkspace 준비
 → AST parse와 SAST 병렬 실행
-→ StaticFactBundle
+→ ToolRunResult와 규칙별 RuleExecutionRecord
+→ exact 규칙 실행 기록이 연결된 StaticFactBundle
 → constrained HypothesisProposal
 → Orchestration이 가설을 등록하고 가설별 Verification owner를 배정
 → Verification이 on-demand context와 운영 기본 Pro/Con 병렬 검증 관리

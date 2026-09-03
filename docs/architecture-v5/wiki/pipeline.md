@@ -10,8 +10,8 @@
 
 1. 저장소 입력
 2. `Repository Loader`가 `git clone`과 `commit_id` checkout으로 `CodeWorkspace` 준비
-3. AST parse와 SAST 도구 병렬 실행
-4. `StaticFactBundle` 생성
+3. AST parse와 SAST 도구 병렬 실행, 규칙 기반 도구는 검사 0건·미실행·확인 불가를 나눈 `RuleExecutionRecord` 생성
+4. exact 규칙 실행 기록이 연결된 `StaticFactBundle` 생성
 5. Orchestration Agent가 초기 가설 생성 시작
 6. 저비용 Hypothesis Agent 호출
 7. schema-valid INITIAL proposal 검증·전역 등록
