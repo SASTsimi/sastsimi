@@ -82,7 +82,7 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 
 - 생성 proposal 수, schema-valid 비율
 - repair retry와 `INVALID_OUTPUT` 수
-- hypothesis당 observed fact/assumption/missing information 수
+- hypothesis당 observed fact/restriction/assumption 수
 
 ### Retrieval
 

@@ -133,7 +133,7 @@ flowchart TB
     INVALID --> STORE[Store errors and invocation refs]
 ```
 
-proposal은 facts와 assumptions, restrictions, missing information, falsification questions, 고유 `validation_id`가 있는 `validation_checks`를 분리한다. confidence는 우선순위 힌트일 뿐 verdict가 아니다.
+proposal은 observed facts, restrictions, assumptions, falsification questions, 고유 `validation_id`가 있는 `validation_checks`를 분리한다. 등록된 가설은 전수 검증하며 점수로 선별하거나 순서를 매기지 않는다.
 
 ## 4. 운영 상시 찬반 검증과 평가 모드
 

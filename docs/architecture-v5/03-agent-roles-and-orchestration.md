@@ -44,14 +44,13 @@ Hypothesis Agent에는 비용 효율적인 모델을 배치할 수 있지만, �
 - vulnerability type candidate
 - 관련 entity와 실제 location
 - suspected source → propagation → sink 또는 권한 흐름
-- observed facts와 assumptions의 분리
-- 현재 restriction
-- missing information
+- observed facts, restrictions와 assumptions의 분리
 - `question_id`가 붙은 구체적인 falsification questions
 - `validation_checks`(반드시 확인할 검증 항목과 고유 ID)
-- 우선순위용 confidence
 
-confidence는 verdict, exploitability 또는 Finding 확률로 해석하지 않는다. Hypothesis Agent는 `confirmed`, `verified`, `finding`, `exploitable`과 같은 확정 주장을 출력할 권한이 없다.
+세 갈래는 관측 여부와 가설이 그것에 의존하는지로 나눈다. 구분 기준은 `08-lightweight-data-contracts.md`에 있다.
+
+등록된 가설은 전수 검증한다. 점수로 미리 선별하거나 검증 순서를 매기지 않는다. Hypothesis Agent는 `confirmed`, `verified`, `finding`, `exploitable`과 같은 확정 주장을 출력할 권한이 없다.
 
 ## 출력 검증과 실패 처리
 
@@ -81,6 +80,8 @@ Technical ACCEPT -> Rule Scope -> report eligibility only
 Verification material claim -> PROPOSED child hypothesis origin VERIFICATION
 Chaining match -> PROPOSED child hypothesis origin CHAINING
 ```
+
+가설 중복 판정은 LLM이 한다. 정적 정규화로 같은 가설인지 결정하지 않으며, `symbol_id`, `CodeLocation` 범위와 `relation_id`로 비교 후보만 좁힌다. 판정이 애매하면 중복이 아닌 것으로 보고 등록한다.
 
 `ProposalProcessState.status`는 `hypothesis_id`를 발급하기 전의 출력 검증 상태를 기록한다. 검증을 통과하면 새 `hypothesis_id`와 별도 `HypothesisProcessState`를 만들고 같은 `proposal_ref`로 연결한다. `HypothesisProcessState.status`가 등록 뒤 처리 진행 상태를 기록하고 `VerificationResult.verdict`가 기술 판정을 기록한다. `TERMINAL`은 final `TRUE | FALSE | HOLD`가 연결된 정상 종료다. 반면 검증을 끝내지 못하고 재시도도 불가능하면 `FAILED`로 끝나며 final verdict를 만들지 않는다. retry 가능한 work가 `BLOCKED`일 때는 가설을 `VERIFYING`으로 유지한다. parent 가설의 결과와 child 가설은 독립된 lifecycle을 갖고 child 결과가 parent verdict를 바꾸지 않는다.
 
