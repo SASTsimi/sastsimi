@@ -95,7 +95,7 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 | `external_program_id` | 외부 버그바운티 플랫폼 | 같은 `program_namespace` | `ProgramPolicyRecord` | 같은 외부 프로그램을 다시 참조할 수 있으며 namespace 없이 단독 사용 금지 |
 | `revision_number` | 새 revision을 저장하는 runtime | 같은 논리 결과 | `RunMeta`와 `RecordMeta` | 1부터 1씩 증가 |
 
-`root_hypothesis_id`, `parent_hypothesis_ids`, `source_hypothesis_id`, `target_hypothesis_id`, `retry_of_llm_call_id`와 `failover_from_llm_call_id`는 새 종류의 ID가 아니라 각각 기존 `hypothesis_id` 또는 `llm_call_id`를 가리키는 참조 필드다. 로컬 폴더를 정리해도 성공한 `workspace_id → repository_url + commit_id` 연결 정보는 삭제하지 않는다. 시스템이 직접 만든 ID는 다른 대상에 재사용하지 않는다. 외부 ID인 `commit_id`와 `external_program_id`는 같은 대상을 다시 가리킬 수 있다. 서로 다른 종류의 ID는 대신 사용할 수 없으며, 소비자는 필요한 ID를 `RecordMeta`와 전문 record 양쪽에서 검사한다.
+`parent_hypothesis_ids`, `source_hypothesis_id`, `target_hypothesis_id`, `retry_of_llm_call_id`와 `failover_from_llm_call_id`는 새 종류의 ID가 아니라 각각 기존 `hypothesis_id` 또는 `llm_call_id`를 가리키는 참조 필드다. `source_primitive_match_id`는 분석 전체에서 유일한 기존 `primitive_match_id`를 가리킨다. 로컬 폴더를 정리해도 성공한 `workspace_id → repository_url + commit_id` 연결 정보는 삭제하지 않는다. 시스템이 직접 만든 ID는 다른 대상에 재사용하지 않는다. 외부 ID인 `commit_id`와 `external_program_id`는 같은 대상을 다시 가리킬 수 있다. 서로 다른 종류의 ID는 대신 사용할 수 없으며, 소비자는 필요한 ID를 `RecordMeta`와 전문 record 양쪽에서 검사한다.
 
 ### 공통 시간 규칙
 
@@ -336,7 +336,7 @@ TransitionCommit:
 | `CON_EVIDENCE` | Verification runtime | Con Agent | exact `EvidenceAgentResult(role=CON)` |
 | `VERIFICATION` | Orchestration의 배정 뒤 Verification runtime | Verification runtime | final `VerificationResult` |
 | `DYNAMIC_REPRO` | Verification의 `REQUEST_DYNAMIC_REPRO`를 Runtime Validator가 허가 | R7 Dynamic Reproduction·Sandbox runtime | request·requirements·plan·PoC candidate와 실행 결과가 연결된 `DynamicReproductionResult` |
-| `PRIMITIVE_UPDATE` | Verification 또는 Gate-qualified admission runtime | Primitive 저장 runtime | 새 `Primitive` revision |
+| `PRIMITIVE_UPDATE` | final HOLD의 Verification 또는 Technical-accepted TRUE admission runtime | Primitive 저장 runtime | 새 `Primitive`와 가설별 `PrimitiveIndexState` revision |
 | `CHAINING` | Verification handoff 뒤 Chaining runtime | Chaining runtime | `ChainingResult` |
 | `CWE_LABEL` | Verification workflow의 요청 뒤 CWE labeling runtime | CWE labeling runtime | `CWELabel` |
 | `POLICY_FETCH` | Rule Scope Gate 준비 runtime | 공식 정책 수집 runtime | `ProgramPolicyRecord` |
@@ -531,8 +531,8 @@ Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 
 - candidate의 `playbook_ref`는 `SAVE_RESULT.input_refs`에 포함된 exact `VerificationPlaybook` revision과 일치해야 한다. reference가 없거나 `record_id`·`content_hash`가 다르거나, final Verification 합성 호출이 다른 플레이북 revision을 사용했으면 저장을 거절한다.
 - `result_kind=dynamic_reproduction_request`이면 VERIFICATION만 저장할 수 있다. `POC_CONFIRMATION`은 `initial_verdict=TRUE`, `VERDICT_EVIDENCE`는 `initial_verdict=HOLD`만 허용한다. production에서는 same-generation ACTIVE assignment, exact hypothesis, 비어 있지 않은 goal·environment needs·code/static refs와 exact Pro·Con refs가 필수다. Runtime Validator는 한 Verification generation에는 `DYNAMIC_REPRO` work를 최대 하나만 허용하고 두 purpose를 동시에 또는 순차 등록하려는 요청을 `ACTION_NOT_ALLOWED`로 거절한다.
 - `result_kind=report_draft`이면 REPORTER만 저장할 수 있고 candidate의 `action_decision_ref`는 같은 초안을 허용한 exact `CREATE_REPORT_DRAFT` decision을 가리켜야 한다. `finding_ref`, Verification·CWE·두 Gate·정책, 존재하는 동적 결과·PoC reference는 action `input_refs`와 current upstream record에 정확히 일치해야 한다. `restrictions`와 `unresolved_conditions`는 Verification의 값을 빠짐없이 보존하고 `limitations`는 연결된 동적 결과와 Gate가 남긴 제한을 빠뜨리지 않는다. `redaction_status=PASSED`와 action의 `REDACTION=PASS`가 모두 확인되지 않으면 저장을 거절한다.
-- `result_kind=primitive`이면 `SCHEMA`와 `REVISION`은 admission 종류를 구분한다. REQUIRED는 exact final HOLD `source_verification_ref`, `technical_review_ref=null`, `rule_scope_review_ref=null`, 빈 `required_preconditions`여야 한다. PROVIDED는 exact final TRUE, 같은 Verification+CWE를 검토한 Technical `ACCEPT`, 그 Technical review를 입력으로 한 Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`를 모두 가리키고 exact Verification의 필요 조건을 `required_preconditions`에 복사해야 한다. 새 Verification revision이 생긴 뒤 과거 Gate refs를 붙인 PROVIDED, `SUPERSEDED` 입력과 FALSE 기반 Primitive는 저장하지 않는다.
-- `result_kind=chaining_result`이면 입력 Primitive뿐 아니라 각 parent의 current `PrimitiveIndexState` exact revision을 요구한다. TRUE_HOLD는 Gate-qualified PROVIDED 하나와 HOLD REQUIRED 하나, TRUE_TRUE는 앞 PROVIDED가 뒤 PROVIDED의 exact `required_preconditions` 하나를 충족해야 한다. 저장 직전 index head와 current final Verification을 CAS 재검사하며, 하나라도 바뀌면 `STALE_RESULT`로 결과와 proposal 등록을 거절한다. ChainingResult에 일반 research·동적 재현·Gate 보완 요청이 있거나 proposal origin이 CHAINING이 아니면 저장을 거절한다.
+- `result_kind=primitive`이면 `SCHEMA`와 `REVISION`은 `result` 유무에 따른 admission을 검사한다. `result=null`은 exact final HOLD만 허용하며 `inputs`는 그 Verification의 `required_primitive_candidates`, `restrictions`는 Verification restrictions와 같고 `technical_review_ref=null`이다. `result`가 있으면 current generation의 validated PoC를 가진 exact final TRUE와 그 TRUE+CWE를 검토한 Technical `ACCEPT`가 필수다. 제공 능력 하나마다 Primitive 하나를 만들고 각 Primitive의 `inputs`는 같은 TRUE의 `required_primitive_candidates`, `result`는 `provided_primitive_candidates` 한 항목, `restrictions`는 Verification 값과 exact match한다. Rule Scope 결과는 primitive action 입력이나 admission 조건이 아니다. FALSE, Gate 전 TRUE와 Technical `REVISE | REJECT` 기반 Primitive는 저장하지 않는다.
+- `result_kind=chaining_result`이면 `input_primitive_refs`가 모든 match candidate의 upstream/downstream Primitive exact reference 합집합과 set-equal인지 확인한다. 각 upstream Primitive는 final TRUE + Technical `ACCEPT` 기반의 non-null `result`, downstream은 하나 이상의 `inputs`를 가져야 한다. `matched_input_id`는 downstream `inputs[].draft_id` 하나를 정확히 선택하고 upstream result가 그 input을 충족한다는 entity·privilege·순서·restriction 코드 근거가 `evidence_refs`에 있어야 한다. downstream `result=null`이면 TRUE_HOLD, non-null이면 TRUE_TRUE로 유도한다. 같은 fingerprint 중복, 조상 링크를 따라 이미 사용한 Primitive의 재사용, 일반 research·동적 재현·Gate 보완 출력 또는 CHAINING이 아닌 proposal origin은 저장을 거절한다.
 - 저장 runtime은 claim한 action의 candidate bytes와 hash를 다시 확인한다. 확정된 result ref는 candidate와 `stored_data_id`·`data_kind`·`content_hash`·`record_id`가 모두 같아야 한다. 결과 ref, 종료 `StateTransition`과 `TransitionCommit`은 같은 output을 가리켜야 하며 `TransitionCommit.state=COMMITTED`가 된 뒤에만 소비할 수 있다. 후속 `ActionDecision.outcome_refs`에는 그 exact result ref와 COMMITTED commit ref를 각각 한 번 넣는다.
 - `result_kind=environment_requirements`이면 SANDBOX만 저장할 수 있다. `request_ref`는 current R7 work의 exact `DynamicReproductionRequest`여야 한다. `SCHEMA`는 R6 request의 모든 `environment_needs`를 빠뜨리거나 약화하지 않은 고유 `requirement_id`, 허용 kind, 필수 여부, 하나 이상의 exact `source_refs`, 값·artifact·검사 조건 연결과 secret 금지를 검사한다. retry에서 요구사항을 바꾸면 같은 record를 덮어쓰지 않고 새 `record_id`를 만든다.
 - `result_kind=reproduction_plan`이면 SANDBOX만 저장할 수 있다. plan의 `request_ref`, `purpose`, `hypothesis_ref`, `sandbox_profile_ref`는 R6 request와 exact match하고 `environment_requirements_ref`는 같은 R7 work·attempt가 만든 current requirements를 가리켜야 한다. `poc_candidate_ref`, 순서가 있는 steps와 cleanup policy가 필수이며 R7이 선택한 mode는 `LIMITED_REPRO | FULL_REPRO`다.
@@ -755,11 +755,10 @@ HypothesisProposal:
   validation_checks: [ValidationCheck]
   confidence: LOW | MEDIUM | HIGH
   parent_hypothesis_ids: [string]
-  root_hypothesis_id: string | null
-  chain_depth: integer
+  source_primitive_match_id: string | null
 ```
 
-초기 proposal은 `parent_hypothesis_ids: []`, `root_hypothesis_id: null`, `chain_depth: 0`이다. schema validation과 semantic validation을 통과한 proposal만 stable `hypothesis_id`가 있는 `VulnerabilityHypothesis`로 등록한다.
+초기 proposal은 `parent_hypothesis_ids: []`, `source_primitive_match_id: null`이다. Verification-origin proposal도 `source_primitive_match_id=null`이다. Chaining-origin proposal은 직접 부모를 `parent_hypothesis_ids`에 넣고 자신을 만든 COMMITTED match candidate의 ID를 `source_primitive_match_id`에 넣는다. schema validation과 semantic validation을 통과한 proposal만 stable `hypothesis_id`가 있는 `VulnerabilityHypothesis`로 등록한다.
 
 ```yaml
 VulnerabilityHypothesis:
@@ -767,8 +766,7 @@ VulnerabilityHypothesis:
   proposal_ref: StoredDataRef
   origin: INITIAL | VERIFICATION | CHAINING
   parent_hypothesis_ids: [string]
-  root_hypothesis_id: string
-  chain_depth: integer
+  source_primitive_match_id: string | null
   statement: string
   target_entities: [CodeSymbol]
   target_locations: [CodeLocation]
@@ -777,7 +775,7 @@ VulnerabilityHypothesis:
   validation_checks: [ValidationCheck]
 ```
 
-초기 가설의 `root_hypothesis_id`는 자기 `hypothesis_id`다. `origin=VERIFICATION`은 Verification이 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 분리한 proposal이고, `origin=CHAINING`은 TRUE+HOLD 또는 TRUE+TRUE Primitive match가 만든 proposal이다. 자식 가설은 직접 원인이 된 부모만 `parent_hypothesis_ids`에 넣고, 부모 중 가장 큰 `chain_depth + 1`을 사용한다. 부모와 자식의 lifecycle·verdict는 독립이며 child 결과로 parent verdict를 바꾸지 않는다. proposal 출력 검증 runtime은 각 반증 질문에 전역 `question_id`, 각 필수 검증 항목에 전역 `validation_id`를 부여하고 등록 가설까지 그대로 유지한다. `instruction`은 무엇을 확인해야 완료되는지 짧게 설명한다. 질문은 가설의 필수 조건 하나를 실제 근거로 반증할 수 있게 구체적으로 작성한다. 금지된 확정 assertion, 잘못된 enum, 필수 field/location·반증 질문·검증 항목 누락 또는 중복 ID는 제한된 repair retry 뒤 `INVALID_OUTPUT`이다. confidence는 scheduling hint이지 verdict가 아니다.
+`origin=VERIFICATION`은 Verification이 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 분리한 proposal이고, `origin=CHAINING`은 upstream Primitive의 `result`가 downstream Primitive의 특정 `input`을 충족한 match가 만든 proposal이다. INITIAL과 VERIFICATION은 `source_primitive_match_id=null`, CHAINING은 분석 전체에서 유일하고 COMMITTED `ChainingResult.primitive_match_candidates`에 정확히 한 번 존재하는 ID가 필수다. 그 match의 parent hypothesis set은 proposal과 등록 가설의 `parent_hypothesis_ids`와 같아야 한다. 계보 길이가 필요하면 이 직접 링크를 따라 계산하며 별도 depth 값을 저장하지 않는다. 부모와 자식의 lifecycle·verdict는 독립이며 child 결과로 parent verdict를 바꾸지 않는다. proposal 출력 검증 runtime은 각 반증 질문에 전역 `question_id`, 각 필수 검증 항목에 전역 `validation_id`를 부여하고 등록 가설까지 그대로 유지한다. `instruction`은 무엇을 확인해야 완료되는지 짧게 설명한다. 질문은 가설의 필수 조건 하나를 실제 근거로 반증할 수 있게 구체적으로 작성한다. 금지된 확정 assertion, 잘못된 enum, 필수 field/location·반증 질문·검증 항목 누락 또는 중복 ID는 제한된 repair retry 뒤 `INVALID_OUTPUT`이다. confidence는 scheduling hint이지 verdict가 아니다.
 
 ## 3. CodeContextRequest/Response
 
@@ -870,12 +868,8 @@ CandidateRef:
 
 PrimitiveDraft:
   draft_id: string
-  primitive_type: string
-  target_asset: string
   entity_refs: [CodeSymbol]
-  endpoint: string | null
-  privilege_level: string
-  data_type: string | null
+  privilege_level: string | null
   evidence_refs: [StoredDataRef]
   description: string
 
@@ -954,7 +948,7 @@ VerificationResult:
 
 `CandidateRef`는 아직 검증되지 않은 우회·대체 경로·영향 확대 후보다. `candidate_id`는 한 결과 안에서 유일하고 `candidate_state`는 항상 `UNVALIDATED`다. 현재 가설을 `source_hypothesis_ids`에 포함하며, 실제 근거가 있으면 `evidence_refs`, 아직 필요한 사실은 `missing_information`에 넣는다. 후보가 새로운 endpoint·sink·권한 경계·공격 단계 또는 영향을 주장하면 `material_child_proposals`에 `origin=VERIFICATION`인 새 `HypothesisProposal`을 넣는다. trusted validation과 전역 등록 뒤 전체 검증을 거치기 전까지 verdict, CWE, Gate 또는 보고서의 확정 주장으로 사용할 수 없다.
 
-`PrimitiveDraft`는 Verification이 발견한 필요 조건 또는 제공 가능 능력을 표현하지만 Primitive DB admission record가 아니다. `draft_id`는 같은 VerificationResult 안에서 유일하다. final `HOLD`의 `required_primitive_candidates`는 exact Verification reference를 붙여 REQUIRED Primitive로 즉시 저장한다. final `TRUE`의 `provided_primitive_candidates`는 같은 revision이 두 Gate를 정상 통과한 뒤에만 PROVIDED Primitive가 된다. TRUE의 `required_primitive_candidates`는 그 취약점을 악용하기 전에 필요한 입력 조건이며 별도 REQUIRED record로 admission하지 않고 PROVIDED Primitive의 `required_preconditions`에 exact 복사한다. `FALSE`이면 두 목록이 모두 비어 있어야 한다.
+`PrimitiveDraft`는 Verification이 발견한 필요 조건 또는 제공 가능 능력을 같은 모양으로 표현하지만 Primitive DB admission record는 아니다. `draft_id`는 같은 `VerificationResult` 안에서 유일하다. `entity_refs`는 현재 workspace·commit의 코드 요소를 가리키고 `evidence_refs`는 조건·능력의 근거를 하나 이상 가리킨다. `privilege_level`은 저장소 코드에 실제로 나타난 역할명·권한 상수·검사 지점에서만 가져오며 조건에 권한 축이 없으면 `null`이다. 전역 권한 서열표나 이름만 같은 문자열로 충족 관계를 만들지 않는다. final HOLD의 `required_primitive_candidates`는 result가 없는 Primitive의 `inputs`가 된다. final TRUE의 `required_primitive_candidates`는 result가 있는 각 Primitive의 `inputs`, `provided_primitive_candidates`의 각 항목은 서로 다른 Primitive의 `result`가 된다. `FALSE`이면 두 목록이 모두 비어 있어야 한다.
 
 `VerificationMetrics`의 token 값은 provider가 값을 제공하지 않으면 `null`이고, 나머지 정수는 모두 0 이상이어야 한다. debate를 실행하지 않았으면 `pro_tokens`와 `con_tokens`는 `null`, `verdict_changed_after_debate=false`다. `hold_resolved=true`는 `initial_verdict=HOLD`이고 final `verdict`가 `TRUE | FALSE`일 때만 허용한다. initial TRUE는 final 결과가 아니며 `POC_CONFIRMATION` request를 만들기 위한 중간 판단이다. initial TRUE와 PoC가 일치해 `SUCCEEDED + SUPPORTED`가 된 뒤에만 final TRUE를 저장한다.
 
@@ -970,117 +964,78 @@ VerificationResult:
 Primitive:
   meta: RecordMeta
   primitive_id: string
-  primitive_type: string
-  target:
-    workspace_id: string
-    commit_id: string
-    asset: string
-    entity_refs: [CodeSymbol]
-    endpoint: string | null
-    privilege_level: string
-    data_type: string | null
-  status: REQUIRED | PROVIDED
+  workspace_id: string
+  commit_id: string
+  inputs: [PrimitiveDraft]
+  result: PrimitiveDraft | null
+  restrictions: [string]
   source_hypothesis_id: string
   source_verification_ref: StoredDataRef
   technical_review_ref: StoredDataRef | null
-  rule_scope_review_ref: StoredDataRef | null
-  required_preconditions: [PrimitiveDraft]
-  eligibility: ACTIVE | SUPERSEDED
-  superseded_by_verification_ref: StoredDataRef | null
   evidence_refs: [StoredDataRef]
-  confidence: LOW | MEDIUM | HIGH
   description: string
 ```
 
 ```yaml
 PrimitiveIndexState:
   meta: RecordMeta with attempt_id null
-  state_version: integer
   current_verification_ref: StoredDataRef
-  active_required_refs: [StoredDataRef]
-  active_provided_refs: [StoredDataRef]
+  primitive_refs: [StoredDataRef]
   updated_at: timestamp
-```
-
-```yaml
-HeldHypothesis:
-  hypothesis_id: string
-  verdict: HOLD
-  verification_result_ref: StoredDataRef
-  restrictions: [string]
-  required_primitive_refs: [StoredDataRef]
-  unresolved_conditions: [string]
-  related_entities: [CodeSymbol]
-  chain_depth: integer
-```
-
-```yaml
-ConfirmedCapability:
-  hypothesis_id: string
-  verdict: TRUE
-  verification_result_ref: StoredDataRef
-  technical_review_ref: StoredDataRef
-  rule_scope_review_ref: StoredDataRef
-  provided_primitive_refs: [StoredDataRef]
-  required_preconditions: [PrimitiveDraft]
-  affected_entities: [CodeSymbol]
-  privilege_level: string
-  evidence_refs: [StoredDataRef]
 ```
 
 ```yaml
 PrimitiveMatchCandidate:
   primitive_match_id: string
-  match_kind: TRUE_HOLD | TRUE_TRUE
-  input_primitive_refs: [StoredDataRef]
-  input_primitive_index_refs: [StoredDataRef]
-  upstream_provided_ref: StoredDataRef
+  upstream_result_ref: StoredDataRef
   downstream_input_ref: StoredDataRef
-  matched_requirement_id: string
+  matched_input_id: string
   parent_hypothesis_ids: [string]
   parent_verification_refs: [StoredDataRef]
   workspace_id: string
   commit_id: string
-  asset_check: PASS | UNCERTAIN
-  entity_check: PASS | UNCERTAIN
-  endpoint_check: PASS | UNCERTAIN
-  privilege_check: PASS | UNCERTAIN
-  data_check: PASS | UNCERTAIN
-  attack_order_check: PASS | UNCERTAIN
-  restriction_check: PASS | UNCERTAIN
   normalized_fingerprint: string
   evidence_refs: [StoredDataRef]
-  unresolved_conditions: [string]
   candidate_state: UNVALIDATED
 ```
 
-`REQUIRED` Primitive는 final HOLD의 exact `source_verification_ref`에서만 생성하며 두 Gate reference는 `null`, `required_preconditions=[]`여야 한다. `PROVIDED` Primitive는 final TRUE의 exact Verification과 같은 CWE를 검토한 Technical `ACCEPT`, 그리고 그 Technical review를 입력으로 받은 Rule Scope 정상 통과 결과를 모두 가리켜야 한다. 정상 통과는 `review_status/rule_compliance/scope_compliance=PASS`, `security_impact=SUFFICIENT`, `report_permission=ALLOW`다. PROVIDED의 `required_preconditions`는 그 exact VerificationResult의 `required_primitive_candidates`와 `draft_id`·내용·순서가 같아야 한다. 하나라도 없거나 reference가 다른 Verification revision을 가리키면 admission을 거절한다.
+`Primitive`는 status를 저장하지 않는다. `result=null`이면 final HOLD에서 나온 입력 조건 묶음이고, `result`가 있으면 final TRUE에서 나온 확인된 능력이다. `workspace_id`와 `commit_id`는 `meta`와 exact match한다. `inputs[].draft_id`는 Primitive 안에서 중복될 수 없으며 `result.draft_id`도 같은 Primitive의 input ID와 겹치지 않는다. `evidence_refs`는 inputs, result와 restrictions의 출처를 추적할 수 있어야 한다.
 
-가설마다 하나인 `PrimitiveIndexState`가 현재 final Verification과 ACTIVE Primitive 목록을 가리킨다. Primitive는 처음 저장할 때 `eligibility=ACTIVE`, `superseded_by_verification_ref=null`이다. 같은 가설에 새 Verification generation이 시작되거나 새 final Verification revision이 생기면 runtime은 index의 `state_version`을 compare-and-set으로 증가시키고 이전 Primitive를 삭제하지 않은 채 새 Primitive revision에서 `eligibility=SUPERSEDED`와 새 Verification ref를 기록한다. REVISE 재진입은 새 VERIFICATION work·hypothesis `VERIFYING` 전이와 같은 atomic transaction에서 기존 active 목록을 비운다. HOLD final commit은 REQUIRED admission과 index 갱신을 같은 atomic transition으로 처리하고, TRUE는 두 Gate 정상 통과 뒤 PROVIDED admission과 index 갱신을 atomic 처리한다. FALSE와 Gate 전 TRUE의 active 목록은 비어 있다.
+final HOLD는 `required_primitive_candidates`가 하나 이상일 때 Primitive 하나를 만든다. `inputs`는 그 목록과 내용·순서가 같고 `result=null`, `technical_review_ref=null`, `restrictions`는 exact Verification 값과 같다. final FALSE는 Primitive를 만들지 않는다.
 
-Chaining work를 등록할 때 각 parent의 exact current `PrimitiveIndexState` ref와 version을 input에 고정한다. ChainingResult와 child proposal을 commit하기 직전에 runtime은 index logical record의 현재 head, `HypothesisProcessState.verification_result_ref`, Primitive의 `source_verification_ref`와 ACTIVE 목록 포함 여부를 다시 검사한다. 그 사이 새 Verification generation이나 index revision이 생겼으면 과거 Primitive record 자체에 `ACTIVE`가 쓰여 있어도 `STALE_RESULT`로 저장·proposal 등록을 거절한다. runtime은 영향받은 PENDING/READY/RUNNING Chaining work를 만료 또는 취소할 수 있지만 commit-time CAS 검사가 최종 강제 경계다.
+final TRUE는 현재 Verification generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated PoC가 있고 같은 Verification+CWE를 검토한 Technical `ACCEPT`가 있을 때만 result가 있는 Primitive를 만든다. 제공 능력이 여러 개면 `provided_primitive_candidates` 항목마다 Primitive 하나를 만들고, 각 Primitive의 `inputs`는 같은 TRUE의 `required_primitive_candidates`, `result`는 해당 제공 능력 하나, `restrictions`는 Verification 값과 같아야 한다. Gate 전 TRUE는 result가 있는 Primitive가 될 수 없다. Technical `REVISE | REJECT`도 admission할 수 없다.
 
-`PrimitiveMatchCandidate`는 같은 `workspace_id + commit_id`의 정확히 두 current ACTIVE Primitive와 두 parent의 current index ref를 연결한다. `upstream_provided_ref`는 앞 단계가 제공하는 능력이다. `TRUE_HOLD`의 `downstream_input_ref`는 HOLD REQUIRED Primitive이고 `matched_requirement_id`는 그 `primitive_id`다. `TRUE_TRUE`의 `downstream_input_ref`는 뒤 단계의 Gate-qualified PROVIDED Primitive이며 `matched_requirement_id`는 그 안의 `required_preconditions.draft_id` 중 하나여야 한다. 즉 두 PROVIDED의 문자열을 단순 비교하지 않고, 앞 TRUE의 제공 능력이 뒤 TRUE를 악용하기 위해 exact Verification에서 명시한 선행 조건을 충족하는지 증명한다. `input_primitive_refs`는 upstream/downstream 두 ref와 set-equal이고 `input_primitive_index_refs`는 두 parent의 current index ref와 set-equal이어야 한다. 입력 ref와 `parent_verification_refs`는 exact admission provenance까지 가리켜야 한다. check 중 호환 불가가 있으면 후보를 만들지 않는다. 모두 `PASS`면 `unresolved_conditions`는 비어 있어야 하고, 하나라도 `UNCERTAIN`이면 확인할 조건을 반드시 기록한다. `evidence_refs`는 하나 이상이며 각 reference도 같은 workspace·commit을 가리킨다. 같은 `normalized_fingerprint`를 같은 분석에서 중복 저장하지 않는다. match는 queue message, verdict, Finding 또는 impact 확정이 아니다.
+Technical `ACCEPT`은 체이닝 재료의 자격을 확정하고 Rule Scope는 보고 가능성만 판단한다. Rule Scope 결과는 이미 admission된 Primitive를 취소하지 않는다. `FAIL | UNCERTAIN | DENY`는 Finding·Reporter 경로를 막지만 실제 코드 능력의 Primitive 저장과 Chaining을 막지 않는다. Technical Gate는 이를 위해 validated PoC 연결, 금지된 재현으로 오염되지 않은 근거, 실제 코드 경로와 restrictions 표현의 정확성을 검토한다.
+
+가설마다 하나인 `PrimitiveIndexState`는 current final Verification과 그 결과에서 admission된 모든 Primitive exact reference를 가리킨다. 전용 `state_version`, status별 목록과 사후 `SUPERSEDED` lifecycle은 사용하지 않는다. 동시 쓰기 손실은 공통 immutable record 규칙으로 막는다. 새 index revision은 직전 `record_id`와 연속된 `meta.revision_number`를 사용하고 current pointer를 atomic하게 바꾼다. 이는 모든 저장 record에 적용되는 revision 검사이며 Chaining 결과 저장 직전의 별도 index CAS가 아니다.
+
+`PrimitiveMatchCandidate.upstream_result_ref`와 `downstream_input_ref`는 nested draft가 아니라 각각 result가 있는 upstream Primitive record와 하나 이상의 input을 가진 downstream Primitive record의 exact reference다. `matched_input_id`는 downstream `inputs[].draft_id` 하나와 같아야 한다. upstream result가 downstream input을 충족한다는 사실은 다음 두 축으로만 판단한다.
+
+- `entity_refs`: 같은 코드 요소이거나 호출·데이터·권한 경계 관계로 연결된다는 코드 근거
+- `privilege_level`: 조건에 권한 축이 있으면 저장소의 역할명·권한 상수·검사 위치로 입증한 충족 관계
+
+전역 권한 서열표, 문자열 이름의 단순 일치나 근거 없는 추측은 사용하지 않는다. 양쪽 restrictions를 합친 뒤에도 공격 순서가 성립해야 하며 `evidence_refs`는 entity·privilege·순서·restriction 결론의 실제 근거를 하나 이상 포함한다. 축이 맞지 않거나 근거가 없으면 후보를 만들지 않고 `ChainingResult.no_match_reasons`에 이유를 남긴다. 후보가 존재한다는 것 자체가 비교를 통과했다는 뜻이므로 PASS/UNCERTAIN check와 unresolved 조건을 중복 저장하지 않는다.
+
+downstream Primitive의 `result=null`이면 TRUE_HOLD, non-null이면 TRUE_TRUE로 유도한다. `primitive_match_id`는 분석 전체에서 유일하고 같은 `normalized_fingerprint`도 중복 저장하지 않는다. match는 queue message, verdict, Finding 또는 impact 확정이 아니다.
 
 ## 6. ChainingResult
 
-Chaining Agent가 TRUE+HOLD 또는 TRUE+TRUE Primitive matching 결과와 새로 검증할 가설 후보를 반환하는 결과입니다.
+Chaining Agent가 upstream Primitive `result`→downstream Primitive `input` matching 결과와 새로 검증할 가설 후보를 반환하는 결과입니다.
 
 ```yaml
 ChainingResult:
   meta: RecordMeta
-  trigger: HOLD_MATCH | TRUE_HOLD_MATCH | TRUE_TRUE_MATCH
   source_result_refs: [StoredDataRef]
   input_primitive_refs: [StoredDataRef]
-  input_primitive_index_refs: [StoredDataRef]
   primitive_match_candidates: [PrimitiveMatchCandidate]
   chained_hypothesis_proposals: [HypothesisProposal]
   no_match_reasons: [string]
-  bounded_stop_reason: string | null
   errors: [AnalysisError]
 ```
 
-`HOLD_MATCH`는 final HOLD의 REQUIRED를 기준으로 호환 PROVIDED를 조회한 결과다. 실제 조합 proposal이 있으면 match kind는 `TRUE_HOLD`다. `TRUE_HOLD_MATCH`와 `TRUE_TRUE_MATCH`의 모든 TRUE parent는 exact Gate-qualified current ACTIVE PROVIDED여야 한다. TRUE_TRUE는 앞 PROVIDED와 뒤 PROVIDED의 exact `required_preconditions` 한 항목을 방향성 있게 연결해야 한다. `input_primitive_index_refs`는 commit 시점에도 current head여야 하며, `chained_hypothesis_proposals`는 모두 `origin=CHAINING`이고 입력 Primitive의 parent hypothesis를 보존한다.
+`source_result_refs`는 입력 Primitive를 만든 exact Verification과 Technical review 결과의 중복 없는 합집합이다. `input_primitive_refs`는 모든 candidate의 upstream/downstream Primitive reference 합집합과 set-equal해야 한다. downstream result 유무로 TRUE_HOLD와 TRUE_TRUE를 유도하며 별도 trigger나 match kind를 저장하지 않는다. `chained_hypothesis_proposals`는 모두 `origin=CHAINING`, 입력 Primitive의 parent hypothesis ID와 exact `source_primitive_match_id`를 보존한다.
+
+순환 검사는 각 parent hypothesis의 `source_primitive_match_id`를 따라 조상 match와 입력 Primitive를 역방향으로 걷는다. 이 과정에서 만난 ancestor Primitive를 현재 순회의 후보에서 제외한다. DB 상태는 바꾸지 않는다. 체이닝 전용 임의 depth·전체/parent별 가설 수·호출 수·Primitive 조합 수 한도는 두지 않는다. 대신 R8의 전체 token·시간·비용·work 예산을 모든 Chaining work에 동일하게 적용한다. 예산 소진은 `FALSE`가 아니며 실행 상태와 `AnalysisRunResult.stop_reasons`에 기록한다.
 
 ChainingResult는 bypass, alternate path, 새 sink, impact escalation, Technical revision, 일반 validation 또는 동적 재현 요청을 포함할 수 없다. 이런 주장은 Verification이 자기 흐름에서 조사하고 material하면 `origin=VERIFICATION` proposal로 분리한다. 이 record는 기존 verdict, CWE, Gate 또는 Finding을 변경하지 않는다.
 

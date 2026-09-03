@@ -20,8 +20,8 @@
 | `hypotheses` | initial/child/chained proposal, validation state와 parent 관계 |
 | `contexts` | `CodeContextRequest/Response`, 실제 반환·열람 위치 |
 | `verifications` | Pro/Con, initial/final verdict, restriction/capability, CWE |
-| `primitives` | HeldHypothesis, Gate-qualified ConfirmedCapability와 exact admission provenance |
-| `chaining` | `ChainingResult`, TRUE+HOLD·TRUE+TRUE match와 child proposal validation state |
+| `primitives` | result 없는 HOLD 조건, Technical-accepted TRUE 능력과 exact Verification·Technical provenance |
+| `chaining` | `ChainingResult`, upstream result→downstream input match와 child proposal validation state |
 | `gates` | Technical 및 Rule Scope Impact review와 Verification·CWELabel·정책 input revision refs |
 | `policies` | 공식 `ProgramPolicyRecord`과 source refs |
 | `reports` | 허용된 내부 `ReportDraft`와 두 Gate가 공통으로 본 CWELabel revision ref |
@@ -91,9 +91,9 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 ### Verification-owned exploration/chaining
 
 - Verification-origin material claim 수와 재검증 결과
-- ACTIVE VerificationAssignment, HOLD REQUIRED, Gate-qualified TRUE PROVIDED, PrimitiveIndexState version과 TRUE+HOLD·TRUE+TRUE match·stale 거절 수
-- Gate 전·stale TRUE admission 차단 수와 no-match reason
-- chain depth·duplicate·budget 제한 도달
+- ACTIVE VerificationAssignment, result 없는 HOLD Primitive, result 있는 Technical-accepted TRUE Primitive와 upstream result→downstream input match 수
+- Gate 전·Technical 비정상 TRUE admission 차단 수, entity·privilege 근거 부족과 no-match reason
+- `source_primitive_match_id` 계보, ancestor Primitive 순환 제외·duplicate fingerprint와 R8 전체 예산 중단
 
 ### Gates/reporting
 

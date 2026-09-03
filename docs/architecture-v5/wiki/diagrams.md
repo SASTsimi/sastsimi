@@ -55,21 +55,22 @@ flowchart TB
     DSTOP -->|Unrecoverable| S22
     S13 --> S14{14 Final verdict}
     S14 -->|FALSE| CLOSED[Terminal internal result]
-    S14 -->|HOLD| REQUIRED[HOLD REQUIRED Primitive admitted]
+    S14 -->|HOLD| REQUIRED[Result null Primitive with required inputs admitted]
     S14 -->|TRUE with validated PoC| CWE[14 CWE labeling for TRUE]
     CWE --> S15[15 Technical Evidence Gate]
     S15 -->|REVISE| S16[16 Same assignment starts new Verification work and revision]
     S16 --> S09
     S15 -->|REJECT| S22[22 Store results logs PoC errors debug]
-    S15 -->|ACCEPT| S17[17 Rule Scope Impact Gate]
-    S17 -->|FAIL UNCERTAIN or DENY| S22
-    S17 -->|Normal pass| S18[18 Gate-qualified TRUE PROVIDED admitted]
-    REQUIRED --> S19[19 Chaining with current index and directional requirement]
-    S18 --> S19
-    S17 -->|All report conditions| RREQ[Verification requests Reporter]
+    S15 -->|ACCEPT| S17{17 Independent technical material and report review paths}
+    S17 --> PADMIT[Result Primitive admitted]
+    S17 --> S19[19 Rule Scope Impact Gate]
+    S19 -->|FAIL UNCERTAIN or DENY| S22
+    REQUIRED --> S18[18 Chaining upstream result to downstream input]
+    PADMIT --> S18
+    S19 -->|All report conditions| RREQ[Verification requests Reporter]
     RREQ --> S21[21 Reporter draft]
-    S19 -->|Match| S20[20 Validate child proposal and assign new Verification]
-    S19 -->|No match or bounded stop| S22
+    S18 -->|Match| S20[20 Validate child proposal and assign new Verification]
+    S18 -->|No match or global budget stop| S22
     S20 --> S08
     S13 -. origin VERIFICATION material claim .-> S20
     S21 --> S22
@@ -192,32 +193,32 @@ flowchart TB
 flowchart TB
     VR[Final VerificationResult] --> KIND{Verdict}
     KIND -->|FALSE| CLOSED[Terminal no Primitive no Chaining]
-    KIND -->|HOLD| REQUIRED[Immediate REQUIRED with exact Verification ref]
+    KIND -->|HOLD| REQUIRED[Primitive with inputs and null result]
     KIND -->|TRUE with current validated PoC| CWE[CWE labeling]
     CWE --> TECH[Technical Evidence Gate]
     TECH -->|REVISE| SAME[Same assignment new Verification work and revision]
     SAME --> VR
     TECH -->|REJECT| NOCHAIN[No Chaining]
-    TECH -->|ACCEPT| RULE[Rule Scope Impact Gate]
-    RULE -->|FAIL UNCERTAIN DENY| NOCHAIN
-    RULE -->|PASS PASS PASS SUFFICIENT ALLOW| PROVIDED[PROVIDED with exact Gate refs]
+    TECH -->|ACCEPT| PROVIDED[Primitive with inputs and one result]
+    TECH -->|ACCEPT independent report review| RULE[Rule Scope Impact Gate]
+    RULE -->|FAIL UNCERTAIN DENY| REPORTBLOCK[Report blocked but Primitive remains usable]
+    RULE -->|PASS PASS PASS SUFFICIENT ALLOW| REPORTOK[Reporter eligibility may continue]
     REQUIRED --> PDB[(Primitive records)]
     PROVIDED --> PDB
-    PDB --> INDEX[Current PrimitiveIndexState]
-    INDEX --> MATCH{Upstream PROVIDED satisfies downstream requirement}
-    MATCH -->|No| RECORD[ChainingResult no match or bounded stop]
+    PDB --> MATCH{Upstream result satisfies downstream input}
+    MATCH -->|No| RECORD[ChainingResult with no material candidate]
     MATCH -->|Yes| CHAIN[Chaining Agent matching only]
     CHAIN --> NEW[HypothesisProposal origin CHAINING]
-    NEW --> LIMIT{Runtime validation depth budget duplicate cycle}
+    NEW --> LIMIT{Runtime validation duplicate ancestor cycle and global budget}
     LIMIT -->|Pass| REGISTER[Global registration]
-    LIMIT -->|Fail| STOP[Reject or bounded stop]
+    LIMIT -->|Fail| STOP[Reject or global budget stop]
     REGISTER --> ORCH[Orchestration assigns Verification]
     ORCH --> VERIFY[Full Verification pipeline]
     VMAT[Verification material claim] --> VNEW[HypothesisProposal origin VERIFICATION]
     VNEW --> LIMIT
 ```
 
-Primitive DB는 queue가 아니며 Chaining match와 child proposal은 Finding이 아니다. Gate 전 TRUE와 오래된 Gate revision은 ACTIVE PROVIDED가 될 수 없다.
+Primitive DB는 queue가 아니며 Chaining match와 child proposal은 Finding이 아니다. Gate 전 TRUE와 오래된 Technical review revision은 result가 있는 Primitive가 될 수 없다. Rule Scope 결과는 보고 가능성만 바꾸며 이미 admission된 Primitive를 취소하지 않는다.
 
 ## 6. 이중 LLM Gate와 Agent 자동화 종료
 
@@ -230,7 +231,8 @@ flowchart TB
     BACK --> NEWGEN[New Verification generation and new validated PoC]
     NEWGEN --> VR
     TS -->|REJECT| BLOCK[Report blocked]
-    TS -->|ACCEPT| RULE[Rule Scope Impact Gate Agent]
+    TS -->|ACCEPT| PRIMITIVE[Admit result Primitive for Chaining]
+    TS -->|ACCEPT independent report review| RULE[Rule Scope Impact Gate Agent]
     POLICY[Official ProgramPolicyRecord] --> RULE
     NOPOL[Missing official policy] --> UNCERTAIN[Rule and scope UNCERTAIN permission DENY]
     UNCERTAIN --> BLOCK
@@ -304,7 +306,7 @@ flowchart TB
     ANA --> LOADER[Repository Loader]
     LOADER -->|READY| WORK[workspace_id plus commit_id]
     ANA --> HYP[hypothesis_id]
-    HYP --> REL[parent IDs root ID chain depth]
+    HYP --> REL[parent IDs and source Primitive match ID]
     HYP --> ATT[attempt_id]
     ATT --> CALL[llm_call_id]
     WORK --> META

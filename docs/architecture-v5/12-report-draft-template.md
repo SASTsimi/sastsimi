@@ -152,11 +152,11 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 
 - Verification이 조사한 bypass/alternate/impact: `{validated outcomes or none}`
 - Verification-origin 새 가설: `{proposal and validated child refs or none}`
-- Gate-qualified PROVIDED Primitive: `{primitive refs and exact Gate provenance}`
-- Chaining 조합: `{TRUE_HOLD | TRUE_TRUE, upstream PROVIDED, downstream requirement/precondition, current PrimitiveIndexState refs, match refs or skipped}`
+- Chaining에 사용한 Primitive: `{primitive refs and exact Verification/Technical review provenance}`
+- Chaining 조합: `{upstream result Primitive, downstream input Primitive, matched_input_id, match refs or skipped}`
 - Chaining-origin 새 가설: `{proposal and validated child refs or none}`
 - 아직 미검증: `{candidate refs; report claim으로 사용하지 않음}`
-- match 없음 또는 제한 중단: `{no-match/bounded-stop reason if applicable}`
+- match 없음 또는 전역 예산 중단: `{no-match/global-budget reason if applicable}`
 
 ## 10. 두 Gate 검토
 

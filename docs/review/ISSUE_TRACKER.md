@@ -14,7 +14,7 @@ GitHub가 실제 상태, 담당자와 토론의 기준입니다. 이 문서는 �
 | 구분 | 역할·목적 | GitHub Issue | 역할 담당자 / GitHub 배정 상태 | 작업 브랜치 | 우선 검토할 문서 | 반드시 함께 검토할 역할 | 현재 상태 |
 |---|---|---|---|---|---|---|---|
 | 전체 관리 | Architecture v5 검토 중 설계 초안 전체 검토·승인 | [#1](https://github.com/SASTsimi/sastsimi/issues/1) | 김태현 `@taehyeon-git` 배정, 윤희섭 `@YHS-Sec` 공동 역할 담당 | — | `README.md`, `docs/architecture-v5/README.md`, 협업·검토 문서 | R1–R8, 최종 검토·승인 담당자 | OPEN |
-| R1 | 최초 가설·HOLD REQUIRED/Gate-qualified TRUE PROVIDED Chaining | [#2](https://github.com/SASTsimi/sastsimi/issues/2) | 배승원 `@baeseungwon1010` | `review/hypothesis-research` | `03`, `06`, `08`, `09`, `13` | R2, R6, R4, R8 | OPEN |
+| R1 | 최초 가설·통합 Primitive의 upstream result→downstream input Chaining | [#2](https://github.com/SASTsimi/sastsimi/issues/2) | 배승원 `@baeseungwon1010` | `review/hypothesis-research` | `03`, `06`, `08`, `09`, `13` | R2, R6, R4, R8 | OPEN |
 | R2 | AST/SAST 정적 사실·위치 기반 분석 정보 | [#3](https://github.com/SASTsimi/sastsimi/issues/3) | 김나연 `@zv9uvr` | `review/static-context` | `02`, `07`, `08`, `10`, `13` | R1, R6, R4, R3 | OPEN |
 | R3 | 통합 구현 가능성·계약 준수 테스트 | [#4](https://github.com/SASTsimi/sastsimi/issues/4) | 김태현 `@taehyeon-git` 배정, 윤희섭 `@YHS-Sec` 공동 역할 담당 | `review/integration-feasibility` | `01`, `03`, `08`, `09`, `10`, `11`, `13` | R4, 변경 영향 역할, R8 | OPEN |
 | R4 | PM·Control Plane·중앙 계약·워크플로 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) | 김태현 `@taehyeon-git` 배정, 윤희섭 `@YHS-Sec` 공동 역할 담당 | `review/r4-04-governance-audit` | root README, `01`, `03`, `08`, `09`, `10`, `11`, `13`, governance/review | 전체 역할 | IN REVIEW — R4-01~03 완료, [R4-04 PR #48](https://github.com/SASTsimi/sastsimi/pull/48) 교차 검토 중 |

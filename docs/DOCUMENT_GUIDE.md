@@ -46,21 +46,23 @@
 | [`docs/review/FINDINGS.md`](./review/FINDINGS.md) | 현재 설계에서 발견된 큰 문제와 해결 조건을 정리합니다. | PM·문제 담당자 | 기준 문서 |
 | [`docs/review/PROVENANCE.md`](./review/PROVENANCE.md) | Architecture v5 파일을 어디에서 가져왔는지와 원본 해시를 기록합니다. | PM·최종 검토 담당자 | 기준 기록 |
 | [`docs/review/decisions/README.md`](./review/decisions/README.md) | 팀이 확정한 중요한 설계 결정과 근거를 기록하는 방법을 설명합니다. | 결정 담당자·검토자 | 기준 문서 |
-| [`ADR-001-verification-owned-chaining-admission.md`](./review/decisions/ADR-001-verification-owned-chaining-admission.md) | Verification 중심 제어권과 Gate를 통과한 결과만 연계 탐색에 쓰는 제안을 설명합니다. | R1·R4·R6·Gate 담당 | 검토 중 결정 |
+| [`ADR-001-verification-owned-chaining-admission.md`](./review/decisions/ADR-001-verification-owned-chaining-admission.md) | Verification 중심 제어권을 정한 과거 결정입니다. Primitive와 체이닝 부분은 ADR-005가 대체했습니다. | R1·R4·R6·Gate 담당 | 대체된 이력 |
+| [`ADR-002-sandbox-policy-enforcement.md`](./review/decisions/ADR-002-sandbox-policy-enforcement.md) | Sandbox 정책 판정·실행·결과 조립의 권한 분리 제안을 설명합니다. | R4·R6·R7 담당 | 검토 중 결정 |
 | [`ADR-003-r6-r7-environment-requirements-handoff.md`](./review/decisions/ADR-003-r6-r7-environment-requirements-handoff.md) | R6가 환경 요구사항과 계획을 만들던 과거 결정을 보존합니다. ADR-004가 대체했습니다. | R4·R6·R7 담당 | 대체된 이력 |
 | [`ADR-004-r6-request-r7-poc-production.md`](./review/decisions/ADR-004-r6-request-r7-poc-production.md) | R6는 재현을 요청하고 R7은 환경·계획·PoC를 만들며 모든 TRUE에 validated PoC가 필요하다는 현재 결정을 설명합니다. | R4·R6·R7·Gate 담당 | 확정 결정 |
+| [`ADR-005-unified-primitive-chaining.md`](./review/decisions/ADR-005-unified-primitive-chaining.md) | HOLD와 TRUE를 하나의 Primitive로 표현하고 결과→입력 matching, Technical admission, 계보 기반 순환 방지를 정한 현재 결정을 설명합니다. | R1·R4·R6·R8·Gate 담당 | 확정 결정 |
 
 ## Architecture v5 기술 기준 문서
 
 | 파일 | 쉽게 말하면 | 주로 읽는 사람 | 구분 |
 |---|---|---|---|
 | [`docs/architecture-v5/README.md`](./architecture-v5/README.md) | Architecture v5 전체 흐름과 번호 문서의 읽는 순서를 소개합니다. | 모든 설계 참여자 | 기준 문서 |
-| [`01-system-overview.md`](./architecture-v5/01-system-overview.md) | 저장소 입력부터 사람의 최종 판단까지 전체 23단계를 설명합니다. | PM·모든 역할 담당자 | 기준 문서 |
+| [`01-system-overview.md`](./architecture-v5/01-system-overview.md) | 저장소 입력부터 Agent 자동화 종료와 이후 사람 판단까지 전체 22단계를 설명합니다. | PM·모든 역할 담당자 | 기준 문서 |
 | [`02-static-fact-layer.md`](./architecture-v5/02-static-fact-layer.md) | AST와 SAST 결과를 LLM이 사용할 코드 사실로 정리하는 방법을 설명합니다. | 정적분석·탐색·검증 담당 | 기준 문서 |
 | [`03-agent-roles-and-orchestration.md`](./architecture-v5/03-agent-roles-and-orchestration.md) | Orchestration의 전역 등록·배정과 Verification의 가설 내부 제어권을 포함해 각 Agent 역할을 설명합니다. | PM·LLM 역할·통합 담당 | 기준 문서 |
 | [`04-verification-and-dynamic-reproduction.md`](./architecture-v5/04-verification-and-dynamic-reproduction.md) | Verification이 가설 내부 Context·찬반·동적 재현·판정·Gate 보완을 관리하는 절차를 설명합니다. | 검증·동적검증 담당 | 기준 문서 |
 | [`05-llm-gate-and-reporting.md`](./architecture-v5/05-llm-gate-and-reporting.md) | 기술 근거와 공식 정책을 검토하고 보고서 초안을 만드는 조건을 설명합니다. | Gate·검증·PM 담당 | 기준 문서 |
-| [`06-chaining.md`](./architecture-v5/06-chaining.md) | HOLD REQUIRED와 Gate-qualified TRUE PROVIDED의 TRUE+HOLD·TRUE+TRUE matching 및 제한을 설명합니다. | 탐색·체이닝·검증 담당 | 기준 문서 |
+| [`06-chaining.md`](./architecture-v5/06-chaining.md) | HOLD/TRUE를 같은 Primitive 형식으로 저장하고 upstream 결과가 downstream 입력을 충족하는지 비교하는 방법을 설명합니다. | 탐색·체이닝·검증 담당 | 기준 문서 |
 | [`07-results-and-observability.md`](./architecture-v5/07-results-and-observability.md) | 분석 결과, 오류, 비용과 디버깅 기록을 무엇을 저장할지 설명합니다. | 데이터·평가·통합 담당 | 기준 문서 |
 | [`08-lightweight-data-contracts.md`](./architecture-v5/08-lightweight-data-contracts.md) | 파트 사이에 주고받는 데이터 묶음과 필드 이름을 정의합니다. | 모든 구현·설계 담당자 | 기준 문서 |
 | [`09-llm-provider-session-and-logging.md`](./architecture-v5/09-llm-provider-session-and-logging.md) | 회원 로그인·API 연결, 대화 상태와 LLM 호출 기록 방법을 설명합니다. | 통합·PM·데이터 담당 | 기준 문서 |

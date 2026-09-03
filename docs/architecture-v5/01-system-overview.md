@@ -29,12 +29,12 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 | 11 | 정적·Pro·Con 근거로 초기 판정 | initial `TRUE | FALSE | HOLD`; initial TRUE는 아직 최종 TRUE가 아님 |
 | 12 | Verification이 목적을 적은 동적 재현 요청을 만들고, R7이 환경 요구사항·실행 계획·PoC candidate를 만든 뒤 승인된 Sandbox에서 한 work로 실행 | `DynamicReproductionRequest`, `EnvironmentRequirements`, `ReproductionPlan`, `DynamicReproductionResult` |
 | 13 | 동적 결과를 반영해 최종 판정과 material claim 분리 | final TRUE에는 재현 성공을 가리키는 validated `poc_ref` 필수; optional `origin=VERIFICATION` proposal |
-| 14 | 판정별 분기 | FALSE terminal / HOLD REQUIRED 즉시 admission / TRUE CWE 진행 |
+| 14 | 판정별 분기 | FALSE terminal / HOLD는 inputs만 있고 result가 없는 Primitive 즉시 admission / TRUE CWE 진행 |
 | 15 | TRUE 기술 근거 검토 | `TechnicalEvidenceReview` |
 | 16 | Technical `REVISE` 보완 loop | same Verification, 새 Verification/CWE revision |
-| 17 | Technical `ACCEPT` TRUE의 공식 규칙·범위·영향 검토 | `RuleScopeImpactReview` |
-| 18 | Gate-qualified TRUE PROVIDED admission | exact Gate provenance를 가진 `Primitive` |
-| 19 | current HOLD 또는 Gate-qualified TRUE 체이닝 | `ChainingResult`; TRUE+TRUE는 앞 능력과 뒤 TRUE의 exact 선행 조건을 방향성 있게 연결 |
+| 17 | Technical `ACCEPT` TRUE의 기술 재료·보고 경로 분기 | result가 있는 `Primitive` admission과 Rule Scope 요청은 서로 독립 |
+| 18 | current Primitive 체이닝 | upstream result가 downstream input을 근거 있게 충족한 `ChainingResult` |
+| 19 | 공식 규칙·범위·영향 검토 | `RuleScopeImpactReview`; Primitive 자격은 변경하지 않음 |
 | 20 | 체이닝·검증 중 새 주장 전역 등록 | `origin=CHAINING | VERIFICATION` proposal, 새 Verification 배정 |
 | 21 | 조건 충족 시 보고서 초안 작성 | `ReportDraft` |
 | 22 | 결과·디버깅 저장, 모든 가설 반복과 자동화 종료 | `AnalysisRunResult`, bounded parallel processing과 run records |
@@ -60,21 +60,21 @@ Orchestration -> Hypothesis Agent -> trusted validation and registration
                    ┌──────────────────┼────────────────────┐
                    v                  v                    v
                  FALSE               HOLD                 TRUE
-              terminal      REQUIRED -> Chaining     CWE -> Technical Gate
-                                                         │ REVISE
-                                                         └-> same Verification
-                                                         │ ACCEPT
-                                                         v
-                                                  Rule Scope Impact Gate
-                                                         │ normal pass
-                                                         v
-                                                PROVIDED -> Chaining
+              terminal      inputs, result null      CWE -> Technical Gate
+                                  -> Chaining                │ REVISE -> same Verification
+                                                             │ ACCEPT
+                                           ┌─────────────────┴─────────────────┐
+                                           v                                   v
+                                result Primitive -> Chaining         Rule Scope Impact Gate
+                                                                                │ normal pass
+                                                                                v
+                                                                             Reporter
 
 Verification material claim -> origin=VERIFICATION proposal ┐
 Chaining match -> origin=CHAINING proposal ------------------┴-> trusted registration
                                                                -> Orchestration assigns Verification
 
-Gate-qualified result -> Reporter -> ReportDraft -> AnalysisRunResult -> Agent automation end
+Reporter -> ReportDraft -> AnalysisRunResult -> Agent automation end
 ```
 
 Technical Evidence Gate의 `REVISE`는 같은 가설의 Verification owner에게 직접 돌아간다. Verification은 필요한 Context·Pro/Con·정적·동적 근거를 보완하고 새 `VerificationResult` 및 필요한 `CWELabel` revision으로 Gate를 다시 요청한다. Verification 또는 Chaining이 만든 새 material claim은 기존 결과에 붙여 확정하지 않고 trusted registration 뒤 8단계부터 전체 검증을 새로 거친다.
@@ -99,8 +99,8 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | Sandbox Controller | R7이 만든 exact plan·requirements closure의 보안 정책 검사와 exact 허용·차단 판정 생산 | 요구사항·동적 목적·계획·최종 verdict 변경 또는 정책 미검사 실행 |
 | Sandbox Runner | Controller가 승인한 exact 계획으로 환경 구성·요구사항 비교·Health Check를 수행하고 필수 일치 시 공격 단계·step log·PoC candidate 실행 사실 생산 | 요구사항 변경·차이 임의 수용·허용되지 않은 fallback·계획 밖 명령 또는 최종 verdict 판단 |
 | Sandbox Result Assembler | 같은 분석·가설·계획 closure와 같은 R7 실행 attempt의 정책·환경 비교·log·PoC·cleanup reference를 `DynamicReproductionResult`로 조립 | 다른 계획·요구사항·실행 attempt 혼합 또는 reference 존재만으로 성공 판단 |
-| Primitive DB | HOLD REQUIRED와 Gate-qualified TRUE PROVIDED의 ACTIVE exact revision 검색 | 작업 queue, Gate 전 TRUE admission 또는 자동 Finding 생성 |
-| Chaining Agent | TRUE+HOLD·TRUE+TRUE Primitive matching과 chained proposal | 일반 research, dynamic, Gate, verdict, CWE, report 확정 |
+| Primitive DB | HOLD의 inputs-only Primitive와 Technical-accepted TRUE의 result Primitive exact revision 검색 | 작업 queue, Gate 전 TRUE admission 또는 자동 Finding 생성 |
+| Chaining Agent | upstream Primitive `result`→downstream Primitive `input` matching과 chained proposal | 일반 research, dynamic, Gate, verdict, CWE, report 확정 |
 | Technical Evidence Gate | 기술적 연결성과 handoff 품질 검토 | Verification verdict 직접 변경 |
 | Rule Scope Impact Gate | 공식 정책·scope·실질 impact·전달 권한 검토 | 공식 자료 없는 추정 승인 |
 | Reporter Agent | 통과한 결과의 보고서 초안 작성 | 공개 또는 제출 |

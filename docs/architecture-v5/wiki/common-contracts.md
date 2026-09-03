@@ -28,10 +28,9 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 ## 가설끼리는 어떻게 연결하나요?
 
 - `parent_hypothesis_ids`: 바로 앞에서 새 가설을 만들게 한 부모들
-- `root_hypothesis_id`: 이 가설 계보의 첫 가설
-- `chain_depth`: 첫 가설은 0, 한 단계 이어질 때마다 1 증가
+- `source_primitive_match_id`: `origin=CHAINING` 가설을 만든 정확한 Primitive match
 
-`TRUE + TRUE`를 연결해 더 큰 공격 가능성을 찾아도 기존 두 결과를 수정하지 않습니다. 양쪽 TRUE가 모두 두 Gate를 통과한 exact revision인지 확인한 뒤 새로운 `origin=CHAINING` proposal과 `hypothesis_id`를 만들고 전체 검증을 다시 거칩니다. Verification이 별도 endpoint·sink·권한 경계를 발견한 경우에는 `origin=VERIFICATION` proposal을 사용합니다.
+한 Primitive의 `result`가 다른 Primitive의 특정 `input`을 충족해 더 큰 공격 가능성을 찾아도 기존 결과를 수정하지 않습니다. Technical `ACCEPT`을 받은 upstream TRUE revision, downstream Primitive와 `matched_input_id`를 확인한 뒤 새로운 `origin=CHAINING` proposal과 `hypothesis_id`를 만들고 전체 검증을 다시 거칩니다. 현재 가설의 부모와 source match를 따라 조상 Primitive를 계산해 현재 match 후보에서 제외하므로 별도 root ID나 depth 숫자를 저장하지 않습니다. Verification이 별도 endpoint·sink·권한 경계를 발견한 경우에는 `origin=VERIFICATION` proposal을 사용합니다.
 
 ## 시간은 어떻게 적나요?
 
@@ -116,7 +115,7 @@ credential·cookie·token·password 원문은 요구사항과 실제 값에 저�
 
 Technical Gate는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated PoC가 있는 final `TRUE`만 입력으로 받습니다. `FALSE | HOLD`와 검증 실패 가설은 보내지 않습니다. Verification·동적 결과·PoC·CWE 중 하나가 수정되면 이전 Gate 승인을 재사용하지 않습니다. Rule Scope Gate와 보고서 초안도 같은 exact revision을 사용해야 합니다. `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
 
-Primitive도 exact revision을 사용합니다. HOLD는 final Verification ref가 붙은 REQUIRED를 Gate 없이 만들고, TRUE는 Technical `ACCEPT`와 Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`가 같은 Verification revision을 가리킬 때만 PROVIDED를 만듭니다. TRUE의 PROVIDED에는 그 취약점을 악용하기 위한 exact Verification의 `required_preconditions`도 함께 고정합니다. 가설별 `PrimitiveIndexState`가 current ACTIVE 항목을 가리키며 새 Verification/index revision이 생기면 과거 항목과 진행 중인 오래된 Chaining 결과를 commit 시 거절합니다.
+Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 부족 조건을 `inputs`에 넣고 `result=null`로 Gate 없이 저장합니다. TRUE는 validated PoC와 같은 revision을 검토한 Technical `ACCEPT` 뒤 제공 능력 하나마다 `result`가 있는 Primitive를 만들고, 그 TRUE의 입력 조건과 restrictions도 함께 보존합니다. Rule Scope 결과는 Reporter만 제어하며 Primitive admission을 취소하지 않습니다. `PrimitiveIndexState`는 current Verification과 Primitive refs만 가리키며 별도 전용 version은 두지 않습니다. 공통 `RecordMeta` revision과 원자적 current pointer 갱신으로 오래된 Chaining 결과를 거절합니다.
 
 ## 자주 쓰는 작은 데이터 구조
 
@@ -126,7 +125,8 @@ Primitive도 exact revision을 사용합니다. HOLD는 final Verification ref�
 - `CandidateRef`: 아직 검증되지 않은 우회·대체 경로·영향 확대 후보입니다. 새 주장이면 별도 가설로 검증하기 전까지 확정 결과로 쓰지 않습니다.
 - `VerificationMetrics`: debate의 token·시간·판정 변화와 새로 발견한 항목 수를 저장합니다. 제공되지 않은 token은 `null`입니다.
 - `PolicyItem`: 공식 정책의 항목 하나와 원문을 다시 찾을 수 있는 출처 위치를 연결합니다.
-- `PrimitiveMatchCandidate`: TRUE+HOLD에서는 PROVIDED와 HOLD REQUIRED를, TRUE+TRUE에서는 앞 PROVIDED와 뒤 TRUE의 exact `required_preconditions`를 방향성 있게 비교하고 current index·revision 호환성을 기록한 미검증 연결 후보입니다.
+- `PrimitiveDraft`: Primitive의 입력 조건이나 실행 결과 하나를 entity·저장소 권한 값·근거·설명으로 나타냅니다.
+- `PrimitiveMatchCandidate`: upstream Primitive의 하나뿐인 `result`가 downstream Primitive의 `matched_input_id`를 충족하는지, 양쪽 exact record·부모·workspace·commit·근거와 함께 기록한 미검증 연결 후보입니다.
 
 ## 계약이 바뀌면 어떻게 하나요?
 

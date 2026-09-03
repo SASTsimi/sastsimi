@@ -23,10 +23,10 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 5. 정적·Pro·Con 근거로 initial verdict와 unresolved condition을 만든다.
 6. initial TRUE이면 동적 근거가 별도로 필요하지 않아도 `purpose=POC_CONFIRMATION`을 요청한다. 최종 판정에 실행 근거가 필요하면 `purpose=VERDICT_EVIDENCE`를 요청한다.
 7. R7의 실행 결과를 종합해 final verdict를 만든다. final TRUE에는 현재 generation의 재현 성공과 validated `poc_ref`가 반드시 필요하다. 정적·Pro·Con만으로 충분한 FALSE 또는 HOLD는 동적 요청 없이 확정할 수 있다.
-8. HOLD면 REQUIRED Primitive 후보를, TRUE면 Gate 통과 뒤 등록할 PROVIDED Primitive 후보를 기록한다. FALSE는 Primitive 후보를 만들지 않는다.
+8. HOLD면 Primitive `inputs`가 될 부족 조건을, TRUE면 Technical `ACCEPT` 뒤 Primitive `result`가 될 제공 능력을 기록한다. FALSE는 Primitive 후보를 만들지 않는다.
 9. 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 발견하면 `HypothesisProposal(origin=VERIFICATION)`으로 분리한다.
 10. TRUE의 CWE labeling을 조정하고 Technical Evidence Gate를 요청한다. `REVISE`면 같은 Verification owner가 보완한 새 revision으로 다시 제출한다.
-11. HOLD는 즉시 Chaining으로 넘길 수 있고, TRUE는 두 Gate를 정상 통과한 exact revision만 Chaining으로 넘길 수 있다.
+11. HOLD의 부족 조건은 result 없는 Primitive로 즉시 Chaining에 넘길 수 있고, TRUE는 exact Technical `ACCEPT`를 받은 뒤 result 있는 Primitive로 넘길 수 있다. Rule Scope 결과는 보고 경로에만 적용한다.
 
 ## 우회 인지 검증
 
@@ -87,9 +87,9 @@ Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` 
 - `FALSE`: 가설의 필수 조건을 묻는 named falsification 하나 이상이 실제 근거로 `DISPROVED`되었다. 다른 path 가능성까지 부정하지 않는다.
 - `HOLD`: 핵심 정보·환경·재현 조건이 부족하거나 상충해 현재 증거로 결론을 낼 수 없다.
 
-`HOLD`는 실패가 아니다. 누락 정보와 필요한 capability를 구조화해 exact final Verification revision에 연결된 REQUIRED Primitive로 즉시 저장하고 Chaining Agent의 matching 입력으로 사용할 수 있다. HOLD는 두 Gate를 거치지 않으며 PROVIDED 능력이나 확인된 취약점으로 승격되지 않는다.
+`HOLD`는 실패가 아니다. 누락 정보와 필요한 capability를 구조화해 exact final Verification revision에 연결된 result 없는 Primitive의 `inputs`로 즉시 저장하고 Chaining Agent의 matching 입력으로 사용할 수 있다. HOLD는 두 Gate를 거치지 않으며 확인된 능력이나 취약점으로 승격되지 않는다.
 
-`TRUE`도 판정 직후에는 Chaining 입력이 아니다. 현재 revision이 Technical `ACCEPT`와 Rule Scope의 정상 통과 조건을 모두 만족한 뒤에만 PROVIDED Primitive가 된다. `FALSE`는 terminal internal result이며 REQUIRED/PROVIDED Primitive와 Chaining work를 만들지 않는다.
+`TRUE`도 판정 직후에는 Chaining 입력이 아니다. 현재 revision이 Technical `ACCEPT`를 받은 뒤에만 제공 능력을 `result`로 가진 Primitive가 된다. Rule Scope 결과는 보고 가능성만 결정하고 이 admission을 취소하지 않는다. `FALSE`는 terminal internal result이며 Primitive와 Chaining work를 만들지 않는다.
 
 최종 결과는 등록 가설의 모든 반증 질문에 `DISPROVED | NOT_DISPROVED | INCONCLUSIVE` 중 하나를 기록한다. 또한 모든 `validation_checks`를 같은 `validation_id`의 `ValidationCheckResult`로 정확히 한 번씩 답하고, 각 항목을 `COMPLETE`와 실제 근거 reference로 마쳐야 한다. 하나라도 빠지거나 `INCOMPLETE`이면 final `VerificationResult`를 저장하지 않는다. `DISPROVED`에는 실제 `evidence_refs`가 필요하고, `NOT_DISPROVED`는 가설이 참이라는 증거로 승격하지 않는다. `FALSE`는 적어도 하나의 근거 있는 `DISPROVED` 결과와 그 `question_id`를 설명하는 판정 이유가 있을 때만 허용한다. 오류·timeout·누락만으로는 `DISPROVED`나 `FALSE`를 만들지 않는다.
 
@@ -99,7 +99,7 @@ Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` 
 |---|---|---|
 | `TRUE` | 현재 가설의 핵심 exploit path를 지지하는 정적·Pro·Con 근거, 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated `poc_ref` | 단순 추측, `NOT_DISPROVED`, validated PoC가 없거나 현재 generation과 다른 동적 결과 |
 | `FALSE` | named falsification의 `question_id`, `outcome=DISPROVED`, 하나 이상의 실제 `evidence_refs`와 이를 연결하는 판정 이유 | 오류, timeout, 빈 Context, 예산 초과, Sandbox 실패 |
-| `HOLD` | 하나 이상의 `unresolved_conditions`와 정상적으로 확인한 범위 및 결론을 막는 조건을 설명하는 실제 evidence reference | 취약점이 아니라는 의미로 사용하거나 PROVIDED 능력으로 승격 |
+| `HOLD` | 하나 이상의 `unresolved_conditions`와 정상적으로 확인한 범위 및 결론을 막는 조건을 설명하는 실제 evidence reference | 취약점이 아니라는 의미로 사용하거나 result가 있는 능력으로 승격 |
 
 ### HOLD와 실행 오류의 결정 기준
 
@@ -247,7 +247,7 @@ VerificationResult revision N
 
 ## VerificationResult에 남길 정보
 
-최종 결과는 verdict뿐 아니라 질문별 `FalsificationResult`, supporting/counter evidence, restrictions, bypass·alternate path·impact 후보, REQUIRED/PROVIDED Primitive 후보, `origin=VERIFICATION` material child proposal, unresolved conditions, debate 지표와 동적 재현 reference를 포함한다. HOLD의 REQUIRED 후보는 즉시 admission할 수 있다. TRUE의 REQUIRED 후보는 그 취약점의 악용 선행 조건으로만 보존되고, PROVIDED 후보가 두 Gate를 정상 통과해 admission될 때 `required_preconditions`에 복사된다. 이 정보가 CWE, 두 Gate, Primitive admission, Reporter와 `AnalysisRunResult`의 입력이 된다.
+최종 결과는 verdict뿐 아니라 질문별 `FalsificationResult`, supporting/counter evidence, restrictions, bypass·alternate path·impact 후보, `required_primitive_candidates`와 `provided_primitive_candidates`, `origin=VERIFICATION` material child proposal, unresolved conditions, debate 지표와 동적 재현 reference를 포함한다. HOLD의 required 후보는 result 없는 Primitive의 `inputs`로 즉시 admission할 수 있다. TRUE의 required 후보는 악용 선행 조건인 `inputs`, provided 후보는 Technical `ACCEPT` 뒤 능력별 Primitive의 `result`가 된다. 이 정보가 CWE, Technical Gate, Primitive admission, Rule Scope/Reporter와 `AnalysisRunResult`의 입력이 된다.
 
 supporting/counter evidence는 자유 형식 문자열이 아니라 `EvidenceClaim`으로 기록한다. 각 claim은 작성 역할, 실제 저장 근거와 코드 주장에 필요한 현재 workspace·commit의 위치를 포함한다. 우회·대체 경로·영향 확대 후보는 `CandidateRef(candidate_state=UNVALIDATED)`로 구분하고 새 material claim이면 별도 가설로 재검증한다. debate token·시간과 판정 변화는 `VerificationMetrics`에 저장하며 provider가 token을 제공하지 않으면 값을 추정하지 않고 `null`로 둔다.
 

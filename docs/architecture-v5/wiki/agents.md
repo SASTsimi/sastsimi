@@ -19,7 +19,7 @@
 | Sandbox Result Assembler | exact R7 plan closure와 같은 R7 실행 시도의 정책·환경 비교·log·PoC candidate·정리 참조를 동적 결과로 조립 | reference 존재만으로 성공 판단, 다른 request·plan·attempt 결과 혼합 |
 | Pro | 가설 성립 근거 탐색 | 최종 verdict |
 | Con | 반증·보호·도달 불가·restriction 탐색 | 최종 verdict |
-| Chaining | Gate-qualified TRUE+HOLD·TRUE+TRUE Primitive matching과 새 가설 제안 | 일반 research, dynamic, REVISE, verdict/CWE/Gate/Finding/report 확정 |
+| Chaining | upstream Primitive 결과→downstream Primitive 입력 matching과 새 가설 제안 | 일반 research, dynamic, REVISE, verdict/CWE/Gate/Finding/report 확정 |
 | Technical Evidence Gate | verdict-evidence·코드/동적 연결·CWE·restriction 검토 | verdict 변경 |
 | Rule Scope Impact Gate | 공식 rule/scope·금지 테스트·실제 impact·report permission 검토 | 공식 자료 없는 추정 승인 |
 | Reporter | 통과한 근거로 내부 보고서 초안 작성 | 새 근거 확정, 제출·공개 |
@@ -31,9 +31,9 @@ R7 → EnvironmentRequirements and ReproductionPlan and PoC candidate
 Runtime Validator → enforce one dynamic work per generation → authorize Sandbox call
 Sandbox Controller → store exact policy decision → Sandbox Runner compares actual environment
 required MATCH → execute exact attack steps → validated PoC on supported success → Verification final verdict
-HOLD → REQUIRED Primitive → Chaining
+HOLD → inputs plus null result Primitive → Chaining
 TRUE → CWE → Technical Gate → Rule Scope Impact Gate
-Gate-qualified TRUE → PROVIDED Primitive → Chaining
+Technical-accepted TRUE → result Primitive → Chaining
 Verification or Chaining material claim → new hypothesis → new Verification
 all report conditions → Reporter → ReportDraft → AnalysisRunResult → Agent automation end
 ```

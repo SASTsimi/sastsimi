@@ -115,9 +115,9 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - retrieved context → request와 실제 location
 - `FALSE` verdict → `DISPROVED` falsification question과 실제 evidence
 - verdict → Pro/Con/dynamic evidence와 restriction
-- HOLD REQUIRED Primitive → exact final HOLD Verification revision
-- TRUE PROVIDED Primitive → exact final TRUE + Technical ACCEPT + Rule Scope 정상 통과 revision
-- Chaining candidate → ACTIVE Primitive refs, match kind와 아직 검증되지 않은 상태
+- result 없는 Primitive → exact final HOLD Verification revision과 inputs·restrictions
+- result 있는 Primitive → validated PoC를 가진 exact final TRUE + Technical `ACCEPT` revision
+- Chaining candidate → exact upstream/downstream Primitive refs, `matched_input_id`, 비교 근거와 아직 검증되지 않은 상태
 - CWE → 정확한 `CWELabel` revision, evidence와 uncertainty
 - Technical review → 정확한 Verification·CWELabel revision
 - Rule/Scope review → 정확한 Verification·Technical review·CWELabel과 `ProgramPolicyRecord` revision
@@ -140,10 +140,10 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | session contamination | `NEW/RESUME/AUTO` policy와 결정 logging |
 | 잘못된 path 연결 | location retrieval와 Technical Gate linkage 검토 |
 | Verification/Chaining 후보의 오승격 | origin을 구분한 새 hypothesis로 전체 재검증 |
-| Gate 전 TRUE의 체이닝 오염 | 두 Gate 정상 통과 전 PROVIDED admission 금지 |
-| 오래된 Gate 승인 재사용 | exact Verification revision binding과 이전 Primitive `SUPERSEDED` |
+| Gate 전 TRUE의 체이닝 오염 | Technical `ACCEPT` 전 result Primitive admission 금지 |
+| 정책 판단과 기술 재료 자격 혼합 | Rule Scope는 Reporter만 차단하고 Primitive admission은 exact Technical review에만 연결 |
 | Chaining Agent의 일반 research 확장 | ChainingResult schema와 result-owner validation으로 matching 외 출력 거절 |
-| chain 폭증 | depth/count/token/time/duplicate/cycle 제한 |
+| chain 폭증 | ancestor Primitive 순환 제외, fingerprint 중복 차단과 R8 전체 token·시간·비용·work 예산 |
 | 같은 작업의 중복 반영 | canonical `dedupe_key`, 한 active attempt, state version compare-and-set |
 | 취소·retry 뒤 늦은 결과 오염 | active attempt/input hash 검사와 `STALE_RESULT` 격리 |
 | 결과와 상태 일부 저장 | atomic transaction 또는 `TransitionCommit` journal, uncommitted output 차단 |
@@ -186,7 +186,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | Hypothesis Agent가 final verdict를 출력 | 역할별 output schema | `INVALID_OUTPUT`, proposal만 사용 가능 |
 | Technical Gate가 Verification verdict를 바꾸려 함 | Gate output과 input verdict | `ACTION_NOT_ALLOWED`, 기존 verdict 보존 |
 | Technical Gate 없이 Rule Scope Gate 호출 | exact Technical review ref와 status | `GATE_ORDER_INVALID` |
-| Rule Scope Gate 없이 Reporter 호출 | exact Rule Scope review와 일곱 report 조건 | `REPORT_NOT_READY` |
+| Rule Scope Gate 없이 Reporter 호출 | exact Rule Scope review와 모든 report 조건 | `REPORT_NOT_READY` |
 | 공식 정책이 없는데 `ALLOW` 출력 | policy ref와 Rule Scope 불변조건 | invalid output, `UNCERTAIN + DENY` 또는 Gate 실패 |
 | repository prompt가 Sandbox network를 열라고 함 | Sandbox Controller가 versioned profile과 instruction source 확인 | `UNTRUSTED_INSTRUCTION` 또는 `SANDBOX_POLICY_DENIED` |
 | LLM이 workspace 밖 파일을 요청 | 정규화·symlink 해석 뒤 실제 path | `FILE_ACCESS_DENIED` |
@@ -239,17 +239,17 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 
 | ID | 입력·사건 | 기대 결과 |
 |---|---|---|
-| N1 | final HOLD | 두 Gate 없이 REQUIRED Primitive 저장과 Chaining 조회 허용 |
+| N1 | final HOLD | required candidates를 inputs로 가진 result 없는 Primitive를 두 Gate 없이 저장하고 Chaining 조회 허용 |
 | N2 | final FALSE | terminal internal result; Primitive와 Chaining work 생성 금지 |
-| N3 | final TRUE, Gate 미실행 | PROVIDED admission과 Chaining 금지 |
-| N4 | TRUE + Technical `ACCEPT`, Rule Scope 미실행 | PROVIDED admission과 Chaining 금지 |
-| N5 | TRUE + Technical `ACCEPT` + Rule Scope `FAIL | UNCERTAIN | DENY` | PROVIDED admission과 Chaining 금지 |
-| N6 | TRUE + Technical `ACCEPT` + Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW` | exact revision PROVIDED admission과 Chaining 허용 |
-| N7 | Gate-qualified TRUE PROVIDED + HOLD REQUIRED | TRUE_HOLD match가 있으면 `origin=CHAINING` proposal을 새로 등록·검증 |
-| N8 | 서로 다른 Gate-qualified TRUE PROVIDED 둘 | 앞 PROVIDED가 뒤 PROVIDED의 exact Verification에서 복사한 `required_preconditions` 한 항목을 충족하고 양쪽 parent revision이 유효할 때만 TRUE_TRUE proposal 허용 |
-| N9 | TRUE_TRUE 입력 중 한 부모가 Gate 전 또는 비정상 Gate 결과 | match 저장과 proposal 등록 거절 |
-| N10 | Verification N은 Gate-qualified지만 N+1이 새로 생성됨 | N 기록은 보존하되 current Primitive는 `SUPERSEDED`; N+1은 두 Gate 전까지 자격 없음 |
-| N10-A | Chaining이 N의 ACTIVE Primitive를 읽은 뒤 commit 전에 새 Verification generation/index revision 생성 | commit-time index CAS에서 `STALE_RESULT`; ChainingResult와 child proposal 등록 금지 |
+| N3 | final TRUE, Gate 미실행 | result Primitive admission과 Chaining 금지 |
+| N4 | TRUE + Technical `ACCEPT`, Rule Scope 미실행 | exact result Primitive admission과 Chaining 허용; Reporter는 아직 금지 |
+| N5 | TRUE + Technical `ACCEPT` + Rule Scope `FAIL | UNCERTAIN | DENY` | result Primitive와 Chaining 자격 유지; Finding·Reporter 차단 |
+| N6 | TRUE + Technical `ACCEPT` + Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW` | result Primitive와 Chaining 자격 유지, Reporter 조건 평가 허용 |
+| N7 | result가 있는 TRUE Primitive + result가 없는 HOLD Primitive | upstream result가 HOLD input 하나를 근거 있게 충족하면 `origin=CHAINING` proposal을 새로 등록·검증 |
+| N8 | result가 있는 서로 다른 TRUE Primitive 둘 | 앞 result가 뒤 Primitive의 `inputs` 한 항목을 근거 있게 충족할 때만 TRUE_TRUE proposal 허용 |
+| N9 | TRUE+TRUE 입력 중 한 부모가 Gate 전 또는 Technical 비정상 결과 | result Primitive가 될 수 없으므로 match 저장과 proposal 등록 거절 |
+| N10 | match의 entity 또는 privilege 충족 근거가 없음 | uncertain candidate를 만들지 않고 `no_match_reasons`에 이유 기록 |
+| N10-A | 후보가 조상 경로에서 이미 사용한 Primitive를 다시 사용 | ancestor walk에서 현재 후보 제외, DB와 부모 verdict는 변경하지 않음 |
 | N11 | Verification이 새 endpoint·sink·권한 경계를 발견 | Chaining을 거치지 않고 `HypothesisProposal(origin=VERIFICATION)`로 전역 등록 후 새 Verification |
 | N12 | chained child가 FALSE | 두 parent의 기존 verdict와 Gate record 불변 |
 | N13 | Verification이 budget·Sandbox·Gate 순서를 우회하려 함 | Runtime Validator가 budget·Gate·호출 권한을, Sandbox Controller가 세부 Sandbox 정책을 `DENY`; hypothesis-local ownership은 enforcement 권한이 아님 |

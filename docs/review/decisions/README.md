@@ -36,7 +36,8 @@
 
 | ID | 제목 | 상태 | Issue | 반영 PR/commit |
 |---|---|---|---|---|
-| [ADR-001](./ADR-001-verification-owned-chaining-admission.md) | Verification 중심 제어권과 Gate-qualified Chaining | PROPOSED | #1, #2, #4–#7, #9, #10 | `review/verification-owned-chaining-flow` |
+| [ADR-001](./ADR-001-verification-owned-chaining-admission.md) | Verification 중심 제어권과 Gate-qualified Chaining | SUPERSEDED | #1, #2, #4–#7, #9, #10 | ADR-005로 대체 |
 | [ADR-002](./ADR-002-sandbox-policy-enforcement.md) | Sandbox 정책 판정·실행·결과 조립 권한 분리 | PROPOSED | #5, #7, #8, #16, #21 | PR #48 검토 후 확정 |
 | [ADR-003](./ADR-003-r6-r7-environment-requirements-handoff.md) | 과거 R6 환경 요구사항과 R7 실행 handoff | SUPERSEDED | #5, #7, #8 | ADR-004로 대체 |
 | [ADR-004](./ADR-004-r6-request-r7-poc-production.md) | R6 요청·R7 재현 생산과 모든 TRUE의 validated PoC 의무 | ACCEPTED | #5, #7, #8 | `docs: align R6 R7 contract around validated PoC` |
+| [ADR-005](./ADR-005-unified-primitive-chaining.md) | 통합 Primitive와 결과→입력 Chaining | ACCEPTED | #2, #5, #78, #79, #80 | `docs: unify Primitive chaining contracts` |
