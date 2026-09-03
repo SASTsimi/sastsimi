@@ -404,6 +404,8 @@ $staticPath = Join-Path $repoRoot 'docs/architecture-v5/02-static-fact-layer.md'
 $staticText = Get-Content -Raw -LiteralPath $staticPath
 $commonWikiPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/common-contracts.md'
 $commonWikiText = Get-Content -Raw -LiteralPath $commonWikiPath
+$chainingWikiPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/chaining.md'
+$chainingWikiText = Get-Content -Raw -LiteralPath $chainingWikiPath
 $requiredErrorCodes = @(
     'STATE_TRANSITION_INVALID',
     'STATE_VERSION_CONFLICT',
@@ -1107,9 +1109,15 @@ $requiredVerificationChainingContracts = @(
     'verification_assignment_ref:',
     'ChainingResult:',
     'source_result_refs:',
+    'considered_primitive_refs:',
     'input_primitive_refs:',
     'primitive_match_candidates:',
     'chained_hypothesis_proposals:',
+    'excluded_lineage_refs:',
+    'LineageExclusion:',
+    'excluded_primitive_ref:',
+    'excluded_by_ref:',
+    'reason_code: ANCESTOR_REUSE',
     'no_match_reasons:',
     'origin: INITIAL | VERIFICATION | CHAINING',
     'source_primitive_match_id: string | null',
@@ -1261,10 +1269,52 @@ foreach ($field in @('match_kind:', 'input_primitive_index_refs:', 'upstream_pro
 }
 
 $chainingResultBlock = [regex]::Match($contractText, '(?ms)^ChainingResult:\s*(.*?)^```').Groups[1].Value
+foreach ($field in @('source_result_refs:', 'considered_primitive_refs:', 'input_primitive_refs:', 'primitive_match_candidates:', 'chained_hypothesis_proposals:', 'excluded_lineage_refs:', 'no_match_reasons:', 'errors:')) {
+    if (-not $chainingResultBlock.Contains($field)) {
+        Add-Failure "ChainingResult is missing field: $field"
+    }
+}
 foreach ($field in @('trigger:', 'input_primitive_index_refs:', 'bounded_stop_reason:')) {
     if ($chainingResultBlock.Contains($field)) {
         Add-Failure "ChainingResult still contains obsolete field: $field"
     }
+}
+
+$requiredChainingExclusionRules = @(
+    '`considered_primitive_refs`는 Runtime이 `REGISTER_WORK(work_type=CHAINING)`에서 고정한 exact Primitive 입력 집합과 set-equal하다.',
+    '고정 뒤 index에 새 revision이 생긴 사실만으로 진행 중인 work를 거절하지 않는다.',
+    '`input_primitive_refs`는 `primitive_match_candidates`의 upstream/downstream exact reference 합집합과 set-equal하다.',
+    '`excluded_primitive_ref`는 `considered_primitive_refs`에 포함되고 `input_primitive_refs`와 모든 match candidate reference에는 포함되지 않아야 한다.',
+    '`excluded_by_ref`는 `considered_primitive_refs`에 포함되고 같은 결과의 `excluded_primitive_ref` 집합에는 포함되지 않아야 한다.',
+    'Runtime은 §06의 계보 규칙으로 기대 제외 쌍을 다시 계산하고 `excluded_lineage_refs`와 set-equal한지 검사한다.',
+    '`origin=CHAINING`이면 `observed_facts=[]`만 허용한다.',
+    '`ChainingResult.considered_primitive_refs`와 `excluded_lineage_refs` 추가는 기존 결과의 필수 필드를 바꾸므로 새 MAJOR schema로 배포한다.'
+)
+foreach ($rule in $requiredChainingExclusionRules) {
+    if (-not $contractText.Contains($rule)) {
+        Add-Failure "missing exact Chaining exclusion rule: $rule"
+    }
+}
+
+$requiredChainingWikiRules = @(
+    '`considered_primitive_refs`',
+    '`excluded_lineage_refs`',
+    '`origin=CHAINING` 자식의 `observed_facts`는 빈 목록',
+    '진행 중인 Chaining work의 입력은 바뀌지 않습니다.'
+)
+foreach ($rule in $requiredChainingWikiRules) {
+    if (-not ($chainingWikiText.Contains($rule) -or $commonWikiText.Contains($rule))) {
+        Add-Failure "Wiki is missing Chaining input/exclusion rule: $rule"
+    }
+}
+
+if ($staticText.Contains('저장된 ACTIVE Primitive')) {
+    Add-Failure 'static fact layer still refers to obsolete ACTIVE Primitive state'
+}
+
+$decisionText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/review/decisions/ADR-001-verification-owned-chaining-admission.md')
+if ($decisionText.Contains('lookup 시 ACTIVE 확인')) {
+    Add-Failure 'Chaining ADR still uses obsolete ACTIVE-based Primitive lookup'
 }
 
 foreach ($record in @('HeldHypothesis:', 'ConfirmedCapability:')) {
@@ -1296,6 +1346,10 @@ $verificationChainingScenarioMarkers = @(
     '| N9 | TRUE+TRUE 입력 중 한 부모가 Gate 전 또는 Technical 비정상 결과 |',
     '| N10 | match의 entity 또는 privilege 충족 근거가 없음 |',
     '| N10-A | 후보가 조상 경로에서 이미 사용한 Primitive를 다시 사용 |',
+    '| N10-B | `excluded_primitive_ref`가 고정된 `considered_primitive_refs` 밖이거나 실제 match에 다시 포함됨 |',
+    '| N10-C | `excluded_by_ref`가 같은 work 입력이 아니거나 자신도 제외됐거나 계보가 제외 대상을 포함하지 않음 |',
+    '| N10-D | exclusion pair가 중복되거나 reason code·analysis·workspace·commit이 다름 |',
+    '| N10-E | CHAINING 자식이 `observed_facts`를 채우거나 부모 계보에서 검증 시작점을 복원할 수 없음 |',
     '| N11 | Verification이 새 endpoint·sink·권한 경계를 발견 |',
     '| N12 | chained child가 FALSE |',
     '| N13 | Verification이 budget·Sandbox·Gate 순서를 우회하려 함 |',

@@ -81,7 +81,7 @@
 | final TRUE → PROVIDED | Gate-qualified exact TRUE → PROVIDED | admission 순서와 조회 index 변경 |
 | 역할 이름만 확인 | ACTIVE `VerificationAssignment` exact owner 확인 | requester identity와 assignment 저장 필요 |
 | TRUE PROVIDED 두 개 비교 | 앞 PROVIDED → 뒤 TRUE exact precondition 비교 | PROVIDED와 match schema 보강 |
-| lookup 시 ACTIVE 확인 | `PrimitiveIndexState` commit-time CAS | 진행 중 stale Chaining 결과 비호환 |
+| Primitive별 상태값으로 조회 대상 선택 | `PrimitiveIndexState`의 current exact reference를 work 시작 시 고정 | 상태값 기반 조회와 호환되지 않으며, 새 index revision은 이미 시작한 work를 무효화하지 않음 |
 
 ## Affected documents and contracts
 

@@ -120,7 +120,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - verdict → Pro/Con/dynamic evidence와 restriction
 - result 없는 Primitive → exact final HOLD Verification revision과 inputs·restrictions
 - result 있는 Primitive → validated PoC를 가진 exact final TRUE + Technical `ACCEPT` revision
-- Chaining candidate → exact upstream/downstream Primitive refs, `matched_input_id`, 비교 근거와 아직 검증되지 않은 상태
+- Chaining candidate → work 시작 시 고정한 `considered_primitive_refs`, 실제 upstream/downstream `input_primitive_refs`, `matched_input_id`, 계보 제외 기록과 비교 근거, 아직 검증되지 않은 상태
 - CWE → R5-01 `CWE_LABELING`이 만든 정확한 `CWELabel` revision, 그 label의 exact final TRUE `verification_result_ref`·generation·work·invocation provenance, evidence와 uncertainty
 - Technical review → 정확한 Verification·CWELabel revision
 - Rule/Scope review → 정확한 Verification·Technical review·CWELabel과 `ProgramPolicyRecord` revision
@@ -275,6 +275,10 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N9 | TRUE+TRUE 입력 중 한 부모가 Gate 전 또는 Technical 비정상 결과 | result Primitive가 될 수 없으므로 match 저장과 proposal 등록 거절 |
 | N10 | match의 entity 또는 privilege 충족 근거가 없음 | uncertain candidate를 만들지 않고 `no_match_reasons`에 이유 기록 |
 | N10-A | 후보가 조상 경로에서 이미 사용한 Primitive를 다시 사용 | ancestor walk에서 현재 후보 제외, DB와 부모 verdict는 변경하지 않음 |
+| N10-B | `excluded_primitive_ref`가 고정된 `considered_primitive_refs` 밖이거나 실제 match에 다시 포함됨 | `SAVE_RESULT` 거절; 같은 Chaining work가 고정한 순환 검사 전 입력과 제외 후 match를 다시 계산 |
+| N10-C | `excluded_by_ref`가 같은 work 입력이 아니거나 자신도 제외됐거나 계보가 제외 대상을 포함하지 않음 | `SAVE_RESULT` 거절; 같은 work에서 남은 Primitive와 §06 계보 관계가 확인된 exclusion만 허용 |
+| N10-D | exclusion pair가 중복되거나 reason code·analysis·workspace·commit이 다름 | `SCHEMA_INVALID | STALE_RESULT` 중 실제 원인으로 저장 거절; 값을 추정하거나 다른 work reference로 교체하지 않음 |
+| N10-E | CHAINING 자식이 `observed_facts`를 채우거나 부모 계보에서 검증 시작점을 복원할 수 없음 | proposal 등록과 Verification 배정 거절; `observed_facts=[]`로 고정하고 exact 부모 entity·location을 복원한 뒤 다시 제안 |
 | N11 | Verification이 새 endpoint·sink·권한 경계를 발견 | Chaining을 거치지 않고 `HypothesisProposal(origin=VERIFICATION)`로 전역 등록 후 새 Verification |
 | N12 | chained child가 FALSE | 두 parent의 기존 verdict와 Gate record 불변 |
 | N13 | Verification이 budget·Sandbox·Gate 순서를 우회하려 함 | Runtime Validator가 budget·Gate·호출 권한을, Sandbox Controller가 세부 Sandbox 정책을 `DENY`; hypothesis-local ownership은 enforcement 권한이 아님 |
