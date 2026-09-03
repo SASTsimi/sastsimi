@@ -794,15 +794,21 @@ HypothesisProposal:
   observed_facts: [CodeFact]
   assumptions: [string]
   restrictions: [string]
-  missing_information: [string]
   falsification_questions: [FalsificationQuestion]
   validation_checks: [ValidationCheck]
-  confidence: LOW | MEDIUM | HIGH
   parent_hypothesis_ids: [string]
   source_primitive_match_id: string | null
 ```
 
 초기 proposal은 `parent_hypothesis_ids: []`, `source_primitive_match_id: null`이다. Verification-origin proposal도 `source_primitive_match_id=null`이다. Chaining-origin proposal은 직접 부모를 `parent_hypothesis_ids`에 넣고 자신을 만든 COMMITTED match candidate의 ID를 `source_primitive_match_id`에 넣는다. schema validation과 semantic validation을 통과한 proposal만 stable `hypothesis_id`가 있는 `VulnerabilityHypothesis`로 등록한다.
+
+`observed_facts`, `restrictions`, `assumptions`는 다음 기준으로 나눈다.
+
+- `observed_facts`: `StaticFactBundle`의 실제 `CodeFact`를 가리키는 관측 결과다.
+- `restrictions`: 관측된 것 중 공격을 제한하는 검사·경계다. 근거가 된 `CodeFact`는 `observed_facts`에 함께 넣지 않는다. 하나의 관측 사실은 근거이거나 제약이다.
+- `assumptions`: 관측으로 확인하지 못했지만 가설이 성립하려면 참이어야 하는 명제다.
+
+확인하지 못한 것 중 가설이 의존하지 않는 공백은 가설에 넣지 않는다. 가설이 확인해야 할 미확인 조건은 `assumptions`와 `falsification_questions`가 담는다. `StaticFactBundle.gaps`의 `DataGap`은 도구·조회가 실패해 데이터를 얻지 못한 범위이며 가설의 미확인 조건과 다른 것이다. 가설 하나가 결과나 필요 조건을 여러 개 가질 수 있으며 가설의 단위는 규칙으로 강제하지 않는다. 등록된 `VulnerabilityHypothesis`는 이 세 갈래를 자기 필드로 복사하지 않는다. 소비자는 `proposal_ref`가 가리키는 exact `HypothesisProposal` revision에서 읽는다.
 
 ```yaml
 VulnerabilityHypothesis:
@@ -819,7 +825,7 @@ VulnerabilityHypothesis:
   validation_checks: [ValidationCheck]
 ```
 
-`origin=VERIFICATION`은 Verification이 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 분리한 proposal이고, `origin=CHAINING`은 upstream Primitive의 `result`가 downstream Primitive의 특정 `input`을 충족한 match가 만든 proposal이다. INITIAL과 VERIFICATION은 `source_primitive_match_id=null`, CHAINING은 분석 전체에서 유일하고 COMMITTED `ChainingResult.primitive_match_candidates`에 정확히 한 번 존재하는 ID가 필수다. 그 match의 parent hypothesis set은 proposal과 등록 가설의 `parent_hypothesis_ids`와 같아야 한다. 계보 길이가 필요하면 이 직접 링크를 따라 계산하며 별도 depth 값을 저장하지 않는다. 부모와 자식의 lifecycle·verdict는 독립이며 child 결과로 parent verdict를 바꾸지 않는다. proposal 출력 검증 runtime은 각 반증 질문에 전역 `question_id`, 각 필수 검증 항목에 전역 `validation_id`를 부여하고 등록 가설까지 그대로 유지한다. `instruction`은 무엇을 확인해야 완료되는지 짧게 설명한다. 질문은 가설의 필수 조건 하나를 실제 근거로 반증할 수 있게 구체적으로 작성한다. 금지된 확정 assertion, 잘못된 enum, 필수 field/location·반증 질문·검증 항목 누락 또는 중복 ID는 제한된 repair retry 뒤 `INVALID_OUTPUT`이다. confidence는 scheduling hint이지 verdict가 아니다.
+`origin=VERIFICATION`은 Verification이 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 분리한 proposal이고, `origin=CHAINING`은 upstream Primitive의 `result`가 downstream Primitive의 특정 `input`을 충족한 match가 만든 proposal이다. INITIAL과 VERIFICATION은 `source_primitive_match_id=null`, CHAINING은 분석 전체에서 유일하고 COMMITTED `ChainingResult.primitive_match_candidates`에 정확히 한 번 존재하는 ID가 필수다. 그 match의 parent hypothesis set은 proposal과 등록 가설의 `parent_hypothesis_ids`와 같아야 한다. 계보 길이가 필요하면 이 직접 링크를 따라 계산하며 별도 depth 값을 저장하지 않는다. 부모와 자식의 lifecycle·verdict는 독립이며 child 결과로 parent verdict를 바꾸지 않는다. proposal 출력 검증 runtime은 각 반증 질문에 전역 `question_id`, 각 필수 검증 항목에 전역 `validation_id`를 부여하고 등록 가설까지 그대로 유지한다. `instruction`은 무엇을 확인해야 완료되는지 짧게 설명한다. 질문은 가설의 필수 조건 하나를 실제 근거로 반증할 수 있게 구체적으로 작성한다. 금지된 확정 assertion, 잘못된 enum, 필수 field/location·반증 질문·검증 항목 누락 또는 중복 ID는 제한된 repair retry 뒤 `INVALID_OUTPUT`이다.
 
 ## 3. CodeContextRequest/Response
 
