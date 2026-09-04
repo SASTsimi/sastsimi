@@ -2,6 +2,12 @@
 
 이 문서는 R6 Verification, Pro Agent, Con Agent가 같은 가설을 검토할 때 참고하는 공통 및 웹 취약점 유형별 검증 절차의 정본입니다.
 
+- **이 문서는 무엇을 설명하나요?** 공통 플레이북과 웹 취약점 6종의 검증 절차를 설명합니다.
+- **누가 읽어야 하나요?** R6 검증 담당과 Pro·Con·R7·Gate·구현 담당자가 읽습니다.
+- **읽은 뒤 무엇을 확인하거나 결정하나요?** 적용할 플레이북의 확인 항목, 반증 질문과 필요한 정적·동적 근거를 확인합니다.
+
+> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+
 ## 적용 원칙
 
 - 플레이북은 점수표나 자동 판정표가 아니라 누락을 줄이는 참고 절차입니다. 질문을 더 많이 충족한 Agent가 이기는 구조가 아니며, verdict는 현재 코드와 실제 evidence로 결정합니다.
@@ -15,7 +21,7 @@
 
 ## 식별과 revision
 
-| playbook_key | scope | vulnerability_type |
+| 문서용 playbook_key | scope | vulnerability_type |
 | --- | --- | --- |
 | COMMON | COMMON | null |
 | WEB-SQLI | TYPE_SPECIFIC | SQL_INJECTION |
@@ -25,7 +31,16 @@
 | WEB-SSRF | TYPE_SPECIFIC | SSRF |
 | WEB-IDOR-BOLA | TYPE_SPECIFIC | IDOR_BOLA |
 
-각 저장본은 기존 VerificationPlaybook 계약의 playbook_id, version, revision 또는 immutable StoredDataRef로 식별합니다. 아래 내용이 변경되면 새 revision을 등록합니다.
+`playbook_key`는 이 문서에서 사람이 플레이북을 쉽게 구분하기 위한 읽기 쉬운 이름입니다. `VerificationPlaybook` 계약의 실제 식별자 필드가 아니며, runtime이 플레이북의 동일성이나 revision을 판단하는 데 사용하지 않습니다.
+
+플레이북은 기존 공통 계약에 따라 다음과 같이 식별합니다.
+
+- 플레이북의 논리 식별자: `meta.logical_record_id`
+- 플레이북 내용 수정본: `meta.revision_number`
+- 플레이북 데이터 구조 버전: `meta.schema_version`
+- 실행에 사용한 정확한 수정본: `StoredDataRef.record_id + content_hash`
+
+플레이북 내용이 변경되면 기존 record를 덮어쓰지 않고 새로운 `record_id`, 증가한 `meta.revision_number`, 새로운 `content_hash`를 생성합니다.
 
 ---
 
@@ -55,6 +70,12 @@ HTTP query, path, body, header, cookie, 업로드 파일, 메시지, 데이터�
 ### 방어 확인
 
 입력 검증, allowlist, sanitizer, canonicalization, parameterization, 인증·인가, tenant·소유권 검사, 안전한 기본 설정이 위험 동작 전에 모든 도달 가능 경로에 적용되는지 확인합니다. 방어 함수의 이름만으로 안전하다고 판단하지 않습니다.
+
+### 반증 질문 템플릿 이름과 실제 question_id
+
+`SQLI-FQ-01`, `XSS-FQ-01`, `SSRF-FQ-01` 같은 값은 플레이북에서 질문 양식을 구분하기 위한 템플릿 이름입니다. 실제 `FalsificationQuestion.question_id`가 아닙니다.
+
+플레이북의 질문을 특정 가설에 적용할 때 trusted runtime은 각 질문에 새로운 전역 고유 `question_id`를 발급합니다. 이후 `FalsificationQuestion`과 `FalsificationResult`는 이 실제 `question_id`로 연결합니다. 템플릿 이름을 실제 `question_id`로 저장하거나 다른 가설에서 재사용하지 않습니다.
 
 ### Named falsification questions
 
