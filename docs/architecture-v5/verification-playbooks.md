@@ -12,8 +12,8 @@
 
 - 플레이북은 점수표나 자동 판정표가 아니라 누락을 줄이는 참고 절차입니다. 질문을 더 많이 충족한 Agent가 이기는 구조가 아니며, verdict는 현재 코드와 실제 evidence로 결정합니다.
 - 한 Verification work의 직접 검증, Pro, Con, 합성은 같은 workspace_id, commit_id, hypothesis_id, generation과 exact playbook_ref를 사용합니다.
-- vulnerability_type과 정확히 일치하는 TYPE_SPECIFIC 플레이북이 등록돼 있으면 이를 사용하고, 없거나 유형이 불명확하면 COMMON을 사용합니다.
-- 진행 중인 work에 새로운 플레이북 revision을 섞지 않습니다. 새 revision은 새 Verification work 또는 새 generation부터 적용합니다.
+- trusted runtime은 현재 versioned 지원·적용 규칙에서 사용이 허용되고, 가설의 `vulnerability_type`과 정확히 일치하는 `TYPE_SPECIFIC` 플레이북의 current exact revision을 선택합니다.
+- 유형별 플레이북이 존재하더라도 현재 지원·적용 규칙에서 허용되지 않았으면 사용하지 않습니다. 유형이 불명확하거나, 허용된 유형별 플레이북이 없거나, 유형이 일치하지 않으면 current exact `COMMON` revision을 선택합니다.- 진행 중인 work에 새로운 플레이북 revision을 섞지 않습니다. 새 revision은 새 Verification work 또는 새 generation부터 적용합니다.
 - 오류, timeout, 빈 Context, Sandbox 실패는 가설의 반증 evidence가 아닙니다.
 - FALSE는 named falsification question이 실제 evidence로 DISPROVED 되었을 때만 가능합니다. 필수 검증을 완료한 뒤 남은 조건이 있으면 HOLD와 unresolved_conditions를 사용합니다.
 - R6 플레이북은 동적 검증의 목적과 판정에 필요한 관측을 정의합니다. PoC, command, 환경 계획과 DynamicReproductionResult의 생산은 R7 책임입니다.
