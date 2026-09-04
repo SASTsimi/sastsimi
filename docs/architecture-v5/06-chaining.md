@@ -46,10 +46,10 @@ status는 따로 저장하지 않는다. `result=null`이면 HOLD에서 나온 �
 
 ## 등록 시점
 
-- final `HOLD`: `required_primitive_candidates`가 있을 때 Primitive 하나를 즉시 저장한다. 해당 목록은 `inputs`, `result=null`, `technical_review_ref=null`이며 restrictions를 그대로 보존한다.
+- final `HOLD`: `required_primitive_candidates`가 있을 때 Primitive 하나를 즉시 저장한다. 해당 목록은 `inputs`, `result=null`, `technical_review_ref=null`, `admission_decision_ref=null`이며 restrictions를 그대로 보존한다.
 - final `FALSE`: Primitive와 Chaining work를 만들지 않는다.
-- final `TRUE`: 현재 generation의 성공한 동적 재현과 validated PoC가 있고, exact TRUE Verification과 이를 직접 가리키는 current `CWELabel`을 Technical Gate가 `ACCEPT`한 뒤에만 result가 있는 Primitive를 저장한다. 제공 능력이 여러 개면 능력마다 Primitive 하나를 만들고 각 record의 inputs에는 그 TRUE의 악용 전제조건을 복사한다.
-- Gate 전 TRUE와 Technical `REVISE | REJECT`: Primitive를 만들지 않는다.
+- final `TRUE`: 현재 generation의 성공한 동적 재현과 validated PoC가 있고, exact TRUE Verification과 이를 직접 가리키는 current `CWELabel`을 Technical Gate가 `ACCEPT`했으며, 같은 Verification의 current `PrimitiveAdmissionDecision.decision=ALLOW`일 때만 result가 있는 Primitive를 저장한다. 각 Primitive의 `admission_decision_ref`는 그 decision을 exact하게 가리킨다. 제공 능력이 여러 개면 능력마다 Primitive 하나를 만들고 각 record의 inputs에는 그 TRUE의 악용 전제조건을 복사한다.
+- Gate 전 TRUE, Technical `REVISE | REJECT`와 admission `DENY`: Primitive를 만들지 않는다.
 
 체이닝 재료 자격은 세 가지를 확인해 정한다 — `result`가 있는 Primitive일 것, 그 Primitive의 current `PrimitiveAdmissionDecision.decision=ALLOW`일 것, 그리고 직접 부모와 `source_primitive_match_id` 계보를 따라 도달하는 모든 result Primitive도 current `ALLOW`일 것. Chaining Agent는 `rule_compliance`나 `evidence_links`를 읽어 금지 테스트 위반을 추정하지 않는다. 위반 판정과 그 결론은 admission decision이 이미 담고 있다.
 
