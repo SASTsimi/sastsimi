@@ -19,19 +19,19 @@
 9. Verification의 코드 위치 기반 on-demand retrieval
 10. 운영 Verification의 독립 Pro/Con 병렬 검증
 11. initial `TRUE | FALSE | HOLD`
-12. initial TRUE이면 Verification이 `POC_CONFIRMATION`, 판정에 실행 근거가 필요하면 `VERDICT_EVIDENCE` 요청 → R7이 `EnvironmentRequirements`·LIMITED/FULL plan·PoC candidate 생산 → Runtime Validator와 Controller 검사 → Runner 실행 → Result Assembler 반환; generation당 동적 work는 하나
+12. initial TRUE이면 Verification이 `POC_CONFIRMATION`, 판정에 실행 근거가 필요하면 `VERDICT_EVIDENCE` 요청 → R7 Agent가 requirements·간단한 plan 생성 → Controller 외부 경계 검사 → Setup Automation과 Agent의 격리 실행 → Session Manager가 AgentLog·validated PoC·동적 결과 확정; generation당 동적 work는 하나
 13. 성공한 `SUPPORTED` 실행과 validated PoC를 가진 final TRUE 또는 근거 기반 final FALSE/HOLD; 생성·환경·실행 실패는 verdict 없이 BLOCKED/FAILED
-14. FALSE terminal / HOLD `inputs + result=null` Primitive 즉시 admission / TRUE CWE 분기
-15. final TRUE를 Technical Evidence Gate Agent가 검토
-16. `REVISE`이면 같은 Verification owner가 새 Verification/CWE revision 생성 후 재제출
+14. FALSE terminal / HOLD `inputs + result=null` Primitive 즉시 admission / TRUE는 R5-01 `CWE_LABELING` work에서 exact Verification에 대응하는 current `CWELabel` 생성
+15. final TRUE와 그 Verification을 직접 가리키는 current CWELabel을 Technical Evidence Gate Agent가 검토
+16. `REVISE`이면 같은 Verification owner가 새 Verification을 만들고 R5-01이 CWE 정렬을 다시 평가해 새 label revision 생성 후 재제출
 17. Technical `ACCEPT` 뒤 exact TRUE를 result Primitive로 admission하고 Rule Scope 보고 검토를 독립 경로로 시작
-18. Chaining Agent가 exact current Primitive를 사용해 upstream result가 downstream의 특정 input을 충족하는지 matching
+18. Chaining Agent가 work 시작 시 고정한 exact Primitive를 사용해 upstream result가 downstream의 특정 input을 충족하는지 matching
 19. Rule Scope Impact Gate Agent가 공식 정책·범위·영향을 검토하되 Primitive 자격은 변경하지 않음
 20. Verification-origin 또는 Chaining-origin 새 주장을 trusted validation·전역 등록하고 새 Verification 배정
 21. 모든 전달 조건을 만족한 결과에 Reporter Agent 호출
 22. 결과·자원·LLM log·PoC·오류·debug 정보를 `AnalysisRunResult`에 저장하고 모든 가설에 반복한 뒤 Agent 자동화 종료
 
-Technical Gate의 `REVISE`는 같은 hypothesis의 Verification owner에게 직접 돌아가 새 generation을 시작한다. final TRUE를 다시 만들려면 그 generation의 동적 결과와 validated PoC도 새로 필요하다. HOLD는 Gate 없이 Chaining에 들어가고 TRUE는 Technical `ACCEPT` 뒤 들어간다. Rule Scope 결과는 Reporter만 제어하며 Primitive 자격을 취소하지 않는다. Verification과 Chaining의 material claim은 새 가설이 되며 기존 verdict에 직접 합쳐지지 않는다. 독립 가설은 전역 예산 범위에서 병렬 처리할 수 있다.
+Technical Gate의 `REVISE`는 같은 hypothesis의 Verification owner에게 직접 돌아가 새 generation을 시작한다. final TRUE를 다시 만들려면 그 generation의 동적 결과와 validated PoC도 새로 필요하고, R5-01은 값이 같아도 그 Verification에 맞는 새 CWELabel revision을 만들어야 한다. HOLD는 Gate 없이 Chaining에 들어가고 TRUE는 Technical `ACCEPT` 뒤 들어간다. Rule Scope 결과는 Reporter만 제어하며 Primitive 자격을 취소하지 않는다. Verification과 Chaining의 material claim은 새 가설이 되며 기존 verdict에 직접 합쳐지지 않는다. 독립 가설은 전역 예산 범위에서 병렬 처리할 수 있다.
 
 `ReportDraft` 이후의 검토·수정·제출·공개는 Agent 자동화 밖에서 사람이 진행한다.
 

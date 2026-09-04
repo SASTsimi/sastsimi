@@ -22,21 +22,21 @@
 | 정적분석·컨텍스트 | 김나연 `@zv9uvr` | AST/SAST 결과 정리, 코드 사실 묶음과 필요한 코드 조회 | `02` | LLM 탐색, 검증 | [#3](https://github.com/SASTsimi/sastsimi/issues/3) |
 | 단독 구현·통합 개발 | 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec` | LLM 연결과 실행 경계, 구현 가능성, 테스트·모듈 통합 | `09`, 구현 가능성 검토 | PM, 데이터·평가, 동적검증 | [#4](https://github.com/SASTsimi/sastsimi/issues/4) |
 | PM·아키텍처·워크플로 | 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec` | 전체 분석 흐름, 공통 입출력 약속, 사람·LLM 경계, 오류·병렬 처리 | root README, `01`, `08`, `11`, `13`, Wiki 통합 | 전체 파트 | [#5](https://github.com/SASTsimi/sastsimi/issues/5) |
-| Gate·Finding·보고서 | 김혜령 `@kimhr8463` | 기술 근거·공식 정책 검토, 같은 Verification owner로의 REVISE와 보고서 초안 | `05`, `12` | 검증, PM, 데이터·평가 | [#6](https://github.com/SASTsimi/sastsimi/issues/6) |
+| Gate·Finding·보고서 | 김혜령 `@kimhr8463` | R5-01 CWELabel 생산·기술 근거 검토, R5-02 공식 정책 검토, 같은 Verification owner로의 REVISE, R5-03 보고서 초안 | `05`, `08` CWE/Gate 계약, `12` | 검증, PM, 데이터·평가 | [#6](https://github.com/SASTsimi/sastsimi/issues/6) |
 | 검증·반박·플레이북 | 임채민 `@UltraPeachKeen` | 찬성·반대 근거, `DynamicReproductionRequest`, 반환 결과 소비, 최종 기술 판정과 보완 | `04` 검증 영역 | LLM 탐색, 동적검증, Gate | [#7](https://github.com/SASTsimi/sastsimi/issues/7) |
-| 동적검증·Sandbox | 조근석 `@Potatonion` | `EnvironmentRequirements`·실행 mode·`ReproductionPlan`·PoC candidate 생산, Controller 정책 판정, 환경 구성·Runner 실행, validated PoC와 동적 결과 조립 | `04` 동적 영역, `10` 격리 실행 영역 | 검증, PM, 통합 개발 | [#8](https://github.com/SASTsimi/sastsimi/issues/8) |
+| 동적검증·Sandbox | 조근석 `@Potatonion` | R7 Agent의 requirements·간단한 plan·PoC candidate, Setup Automation의 recipe·환경·정리, Controller 외부 경계와 Session Manager의 AgentLog·validated PoC·동적 결과 | `04` 동적 영역, `10` 격리 실행 영역 | 검증, PM, 통합 개발 | [#8](https://github.com/SASTsimi/sastsimi/issues/8) |
 | 데이터·평가·예산 | 성병찬 `@gitterable` | 평가 자료·품질 지표·예산 profile; 실제 action 예산은 runtime이 강제 | `07`, `08/09` 관련 지표 | 전체 LLM 역할, PM | [#9](https://github.com/SASTsimi/sastsimi/issues/9) |
 
 번호는 `docs/architecture-v5/` 아래 정본 문서를 의미합니다.
 
 ## 역할 연결 기준
 
-- R4는 `DynamicReproductionRequest`, `EnvironmentRequirements`, `ReproductionPlan`, 실제 `sandbox_environment`, PoC candidate와 validated PoC의 공통 필드·exact reference·상태·생산자/소비자와 오류 규칙을 담당합니다.
-- R6 Verification은 `POC_CONFIRMATION | VERDICT_EVIDENCE` 목적, 재현 목표·필요 환경·Sandbox profile·근거 reference를 `DynamicReproductionRequest`로 생산합니다. R6는 환경 요구사항·실행 mode·계획·PoC·동적 결과를 생산하지 않습니다.
-- R4의 trusted runtime은 계획과 current requirements의 schema·reference·호출 권한·상태·예산을 검사해 `COMMITTED`와 `RUN_SANDBOX ALLOW`를 확정합니다. 환경 조건의 의미나 image·command·file·network·resource·cleanup 세부 정책은 판단하지 않습니다.
-- R7은 exact 요청을 바탕으로 `EnvironmentRequirements`, 실행 mode, `ReproductionPlan`과 PoC candidate를 생산합니다. Sandbox Controller는 세부 정책을 검사해 exact 판정을 저장하고, Runner는 실제 환경·Health Check가 필수 요구사항과 맞을 때만 공격 단계를 실행합니다. 비-LLM Result Assembler는 같은 request·plan·attempt의 reference만 `DynamicReproductionResult`로 조립하며 R6가 `COMMITTED` 결과를 소비해 최종 판정을 만듭니다.
-- R7은 요청 목적·가설·profile을 바꾸거나 허용되지 않은 fallback·환경 차이를 임의 수용할 수 없습니다. 계획을 고쳤다면 같은 동적 work의 새 attempt와 새 Sandbox 정책 검사를 거칩니다.
-- 모든 final TRUE에는 `SUCCEEDED + SUPPORTED` 동적 결과와 validated `poc_ref`가 필요합니다. PoC 생성·환경 구성·실행 실패는 `FALSE | HOLD`가 아니라 retry 가능 시 `BLOCKED`, 복구 불가능 시 verdict 없는 `FAILED`입니다.
+- R4는 `DynamicReproductionRequest`, `EnvironmentRequirements`, 간단한 `ReproductionPlan`, `EnvironmentRecipe`, `SandboxEnvironment`, `AgentLog`, candidate/validated PoC와 동적 결과의 공통 필드·exact reference·상태·result owner·오류 규칙을 담당합니다.
+- R6 Verification은 `POC_CONFIRMATION | VERDICT_EVIDENCE` 목적, 재현 목표·필요 환경·Sandbox profile·근거 reference를 `DynamicReproductionRequest`로 생산합니다. R6는 requirements·plan·recipe·command·PoC·동적 결과를 생산하지 않습니다.
+- R4의 trusted runtime은 current request/requirements, 호출 권한·상태·예산과 same-attempt provenance를 검사합니다. Sandbox 내부 실행 전략이나 취약점 의미는 판단하지 않습니다.
+- R7 Agent는 외부 경계 검사 전에 requirements와 mode·exact command가 없는 plan을 만들고, 검사 뒤 Sandbox 안에서 PoC candidate·command·관찰·재시도를 자율적으로 정합니다. Setup Automation은 recipe·image·container·cleanup을 만듭니다. Sandbox Controller는 외부 격리 경계만 검사하고, 비-LLM Reproduction Session Manager는 append-only AgentLog·validated PoC·동적 결과를 확정합니다.
+- R7은 요청 목적·가설·profile을 바꾸지 않습니다. Sandbox 안에서는 command·PoC·관찰·재시도를 자율적으로 선택하지만 host·Docker·secret·egress·workspace·R8 resource/lifecycle 경계를 우회할 수 없습니다.
+- 모든 final TRUE에는 `SUCCEEDED + SUPPORTED` 동적 결과와 validated `poc_ref`가 필요합니다. R7이 스스로 해결할 수 있는 PoC 생성·환경 구성·실행 실패는 같은 work에서 자동 retry하고, 외부 설정·정책·승인을 기다릴 때만 `BLOCKED`입니다. 복구 불가능하거나 한도를 소진하면 verdict 없는 `FAILED`이며 `FALSE | HOLD`로 바꾸지 않습니다.
 - R8은 예산 profile과 회귀 기준을 설계하고 각 전문 역할은 최소 품질 요구를 제공합니다. 실제 예산 차단·허용은 R4 trusted runtime의 책임입니다.
 - Technical `REVISE`는 Orchestration이나 R7이 목적지를 고르지 않고 같은 ACTIVE `VerificationAssignment`의 R6 owner에게 돌아갑니다.
 
@@ -74,7 +74,8 @@ PM은 하위 Issue를 대신 세세하게 작성하지 않습니다. PM은 역�
 - Hypothesis Agent는 verdict·Finding을 만들지 않습니다.
 - Orchestration Agent는 proposal을 검증·등록하고 Verification 배정을 제안하지만 가설 내부 작업을 선택하지 않습니다. 실제 owner는 trusted runtime의 ACTIVE `VerificationAssignment`로 저장합니다.
 - Verification Agent가 가설 내부 Context·찬반·동적 재현·Gate 보완 흐름과 기술 verdict를 소유하지만 Runtime Validator를 우회하거나 외부 공개를 결정하지 않습니다. `REVISE`도 같은 assignment owner의 새 VERIFICATION work로 처리합니다.
-- Chaining Agent는 upstream Primitive의 `result`가 downstream Primitive의 특정 `input`을 충족하는 match와 새 가설만 제안합니다. 조상 계보의 Primitive를 현재 후보에서 제외하고, exact current record가 아닌 결과는 저장할 수 없습니다.
+- Chaining Agent는 upstream Primitive의 `result`가 downstream Primitive의 특정 `input`을 충족하는 match와 새 가설만 제안합니다. 조상 계보의 Primitive를 현재 후보에서 제외하고, work 시작 시 고정한 exact Primitive·index reference와 다른 결과는 저장할 수 없습니다. 시작 뒤 current index가 갱신된 사실만으로 진행 중 work를 무효화하지 않습니다.
+- R5-01 `CWE_LABELING`은 final TRUE마다 exact Verification revision을 직접 가리키는 current `CWELabel`을 만듭니다. 새 Verification에는 같은 CWE를 유지해도 새 label revision이 필요합니다.
 - Technical Evidence Gate와 Rule Scope Impact Gate는 verdict를 직접 변경하지 않습니다.
 - Reporter는 안전 요구사항을 지킨 내부 `ReportDraft`만 만들며 이 결과가 마지막 Agent 산출물입니다.
 - `AnalysisRunResult` 확정 뒤 Agent 자동화가 끝나며, 사람의 검토·수정·제출·공개는 이 자동화 밖에서 수행합니다.
