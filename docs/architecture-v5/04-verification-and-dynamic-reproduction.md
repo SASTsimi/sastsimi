@@ -192,7 +192,7 @@ Technical Evidence Gate의 `ACCEPT`는 R5가 exact final TRUE revision을 대상
 
 플레이북은 Agent에게 자유로운 결론을 요구하는 prompt나 점수표가 아니다. 과거 사례와 검증 지식을 바탕으로 빠뜨리면 안 되는 사전 조건, source, sink, source-to-sink 경로, 방어, named falsification question, 정적·동적 evidence, restriction과 HOLD 조건을 안내한다. verdict는 체크 개수나 Pro·Con 중 한쪽의 승패가 아니라 현재 코드와 실제 evidence로 결정한다.
 
-플레이북 후보는 R6 검증·반박·플레이북 담당이 작성하고, trusted playbook registry runtime이 schema와 revision을 검사해 변경 불가능한 record로 등록한다. Verification work를 등록할 때 trusted runtime은 가설 유형과 정확히 일치하는 current exact TYPE_SPECIFIC revision을 선택한다. 등록된 유형별 플레이북이 없거나 유형이 불명확하면 current exact COMMON revision을 선택해 WorkExecutionState.input_refs에 고정한다.
+플레이북 후보는 R6 검증·반박·플레이북 담당이 작성하고, trusted playbook registry runtime이 schema와 revision을 검사해 변경 불가능한 record로 등록한다. Verification work를 등록할 때 trusted runtime은 현재 versioned 지원·적용 규칙에서 사용이 허용되고 가설 유형과 정확히 일치하는 current exact `TYPE_SPECIFIC` revision을 선택한다. 유형별 플레이북이 등록되어 있더라도 현재 지원·적용 규칙에서 허용되지 않았거나 유형이 불명확하거나 일치하지 않으면 current exact `COMMON` revision을 선택해 `WorkExecutionState.input_refs`에 고정한다.
 
 Verification의 직접 검증, 독립 Pro/Con 실행, final 합성과 결과 저장은 모두 work에 고정된 동일한 exact 플레이북 revision을 사용한다. 검증 도중 current revision이 변경돼도 진행 중인 work에는 새 revision을 섞지 않는다. 단순 retry는 기존 revision을 유지하고, 새 revision을 적용하려면 새 Verification work 또는 새 verification generation을 만들어야 한다.
 
