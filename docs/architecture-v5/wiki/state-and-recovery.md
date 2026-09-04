@@ -38,7 +38,9 @@
 
 다음은 순서를 지켜야 합니다.
 
-`최종 검증 + CWE → Technical Gate → Rule Scope Gate → Reporter → ReportDraft → AnalysisRunResult → Agent 자동화 종료`
+`final TRUE Verification → R5-01 CWE_LABELING의 current CWELabel → Technical Gate → Rule Scope Gate → Reporter → ReportDraft → AnalysisRunResult → Agent 자동화 종료`
+
+새 Verification revision이나 generation이 생기면 CWE 값이 같더라도 R5-01이 다시 평가해 새 label revision을 만들어야 합니다. 과거 label은 기록으로만 남고 현재 Gate 입력으로 재사용하지 않습니다.
 
 ## 결과를 안전하게 합칩니다
 
@@ -67,23 +69,25 @@ marker를 남긴 직후 프로그램이 꺼졌다면 재시작할 때 기존 mar
 
 같은 규칙을 Technical Gate, Rule Scope Gate와 `ReportDraft`에도 적용합니다.
 
+proposal의 형식·의미 검사가 끝난 뒤에는 중복 후보를 찾습니다. 후보가 없거나 LLM이 `UNIQUE | UNCERTAIN`으로 판단하면 새 가설을 등록합니다. exact 후보를 `DUPLICATE`로 지목하면 `ProposalProcessState.status=DUPLICATE`로 끝내고 새 가설 번호를 만들지 않습니다. 중복 검토 호출·형식·대상 검사에 실패한 경우에는 오류 기록을 보존하고 fail-open 등록합니다.
+
 Context 조회 실패·timeout·권한 오류가 있어도 정상 근거로 모든 `validation_checks`를 완료할 수 있으면 현재 Verification work를 계속합니다. 반대로 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증을 끝낼 수 없으면 final `VerificationResult`를 만들지 않습니다. retry·재인증·새 입력을 기다릴 수 있으면 work는 `BLOCKED`이고 가설은 `VERIFYING`, 허용된 재시도를 모두 소진했거나 복구할 수 없으면 work와 가설 모두 `FAILED`입니다. 단순 오류를 `HOLD`로 바꾸지 않습니다.
 
 동적 재현은 같은 단어의 뜻을 구분해야 합니다.
 
-- 동적 환경 구성 실패: 필수 환경이 다르거나 확인되지 않아 공격 단계를 시작하지 못한 상태입니다. 가설 반증이 아니며, retry 가능하면 같은 work의 새 attempt에서 R7이 요구사항·계획을 다시 만들고 `BLOCKED`로 기다립니다. 복구 불가능하면 verdict 없이 `FAILED`입니다.
+- 동적 환경 구성 실패: 필수 환경이 다르거나 확인되지 않은 상태입니다. 가설 반증이 아니며, R7이 스스로 고칠 수 있으면 같은 work에서 새 attempt를 즉시 시작합니다. 외부 설정·정책·승인·resource 변경을 기다릴 때만 `BLOCKED`이고, 복구 불가능하거나 한도를 소진하면 verdict 없이 `FAILED`입니다.
 - 동적 결과 `PARTIAL`: 일부 공격 단계를 실행해 믿을 수 있는 관측을 얻었지만 환경 차이 같은 한계가 남은 상태입니다. 결과의 `limitations`가 빠진 범위를 설명하므로 실제 오류가 없다면 오류나 `DataGap`을 억지로 만들지 않습니다.
-- 동적 work `BLOCKED`: PoC 생성·외부 설정·환경 구성·정책·실행 문제를 고친 뒤 같은 work에서 다시 시도할 수 있는 대기 상태입니다. validated PoC와 final verdict는 없으며 `FALSE | HOLD`로 바꾸지 않습니다.
+- 동적 work `BLOCKED`: 외부 설정·정책·승인·resource 변경을 기다리는 상태입니다. R7이 내부에서 해결할 수 있는 PoC 생성·환경 구성·실행 문제에는 사용하지 않습니다. validated PoC와 final verdict는 없으며 `FALSE | HOLD`로 바꾸지 않습니다.
 - 공통 작업 `BLOCKED`: 재시도·인증·승인·입력을 기다리는 중이며 아직 끝나지 않은 상태입니다.
 - 동적 결과 `CANCELLED`: 공통 취소 상태와 함께 저장합니다. 취소 확정 뒤 도착한 결과는 사용하지 않습니다.
 
 동적 결과를 Verification에 넘기려면 저장 확정 marker, 공통 작업의 출력 reference와 동적 상태의 `dynamic_result_ref`가 모두 같은 결과 수정본을 가리켜야 합니다. final TRUE에는 현재 generation의 `SUCCEEDED + SUPPORTED` 결과와 validated PoC가 반드시 필요합니다.
 
-Gate 작업은 시작할 때 읽은 Verification, CWE, 앞 Gate와 정책의 정확한 수정본을 `input_refs`와 `input_hash`로 고정합니다. Gate 결과 안의 reference가 이 입력과 다르면 저장을 취소하고 다음 단계로 넘기지 않습니다.
+Gate 작업은 시작할 때 읽은 Verification, current CWELabel, 앞 Gate와 정책의 정확한 수정본을 `input_refs`와 `input_hash`로 고정합니다. Gate 결과 안의 reference가 이 입력과 다르면 저장을 취소하고 다음 단계로 넘기지 않습니다.
 
 ## retry는 실패를 지우지 않습니다
 
-재시도할 수 있는 attempt가 실패하면 작업은 `BLOCKED`가 됩니다.
+일반 작업에서 재시도 전에 외부 조건을 기다려야 하면 작업은 `BLOCKED`가 됩니다. `DYNAMIC_REPRO`가 외부 대기 없이 자체 해결할 수 있으면 실패 attempt를 보존하고 `RUNNING -> READY -> RUNNING`으로 즉시 새 attempt를 시작합니다.
 
 - 인증 실패: 사용자 재인증 대기
 - 호출량 제한: 정한 시간만큼 대기

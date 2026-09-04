@@ -29,7 +29,7 @@ Primitive:
   commit_id: string
   inputs: [PrimitiveDraft]
   result: PrimitiveDraft | null
-  restrictions: [string]
+  restrictions: [Restriction]
   source_hypothesis_id: string
   source_verification_ref: StoredDataRef
   technical_review_ref: StoredDataRef | null
@@ -39,7 +39,7 @@ Primitive:
 
 - `inputs`: 이 능력을 사용하거나 HOLD를 해소하기 위해 필요한 조건
 - `result`: 이 Primitive가 제공하는 확인된 능력. HOLD는 `null`
-- `restrictions`: 결합 뒤 새 가설에도 남겨야 하는 제약
+- `restrictions`: exact 코드·검증 근거와 연결되고 결합 뒤 새 가설에도 그대로 남겨야 하는 제약
 
 status는 따로 저장하지 않는다. `result=null`이면 HOLD에서 나온 조건 묶음이고, result가 있으면 TRUE에서 나온 능력이다.
 
@@ -47,7 +47,7 @@ status는 따로 저장하지 않는다. `result=null`이면 HOLD에서 나온 �
 
 - final `HOLD`: `required_primitive_candidates`가 있을 때 Primitive 하나를 즉시 저장한다. 해당 목록은 `inputs`, `result=null`, `technical_review_ref=null`이며 restrictions를 그대로 보존한다.
 - final `FALSE`: Primitive와 Chaining work를 만들지 않는다.
-- final `TRUE`: 현재 generation의 성공한 동적 재현과 validated PoC가 있고, exact TRUE+CWE를 Technical Gate가 `ACCEPT`한 뒤에만 result가 있는 Primitive를 저장한다. 제공 능력이 여러 개면 능력마다 Primitive 하나를 만들고 각 record의 inputs에는 그 TRUE의 악용 전제조건을 복사한다.
+- final `TRUE`: 현재 generation의 성공한 동적 재현과 validated PoC가 있고, exact TRUE Verification과 이를 직접 가리키는 current `CWELabel`을 Technical Gate가 `ACCEPT`한 뒤에만 result가 있는 Primitive를 저장한다. 제공 능력이 여러 개면 능력마다 Primitive 하나를 만들고 각 record의 inputs에는 그 TRUE의 악용 전제조건을 복사한다.
 - Gate 전 TRUE와 Technical `REVISE | REJECT`: Primitive를 만들지 않는다.
 
 Technical `ACCEPT`은 체이닝 재료의 자격을 확정하고 Rule Scope는 보고 가능성만 판단한다. Rule Scope 결과는 이미 admission된 Primitive를 취소하지 않는다. 따라서 프로그램 정책 부족, 범위 밖, 중복 또는 보고 불가 판정은 Reporter를 막지만 코드에 실제로 존재하는 능력을 체이닝 재료에서 제거하지 않는다.
@@ -109,14 +109,27 @@ PrimitiveMatchCandidate:
 ChainingResult:
   meta: RecordMeta
   source_result_refs: [StoredDataRef]
+  considered_primitive_refs: [StoredDataRef]
   input_primitive_refs: [StoredDataRef]
   primitive_match_candidates: [PrimitiveMatchCandidate]
   chained_hypothesis_proposals: [HypothesisProposal]
+  excluded_lineage_refs: [LineageExclusion]
   no_match_reasons: [string]
   errors: [AnalysisError]
 ```
 
-새 가설은 `HypothesisProposal(origin=CHAINING)`으로 만든다. proposal의 `source_primitive_match_id`는 자신을 만든 candidate ID와 같고, `parent_hypothesis_ids`는 그 candidate의 부모 set과 같아야 한다. trusted runtime이 schema·semantic·workspace·commit·exact Primitive·중복·순환·예산을 검사한 뒤 새 `hypothesis_id`로 등록한다. Orchestration Agent는 등록된 가설에 새 Verification Agent를 배정하고 child는 전체 Verification 파이프라인을 처음부터 거친다.
+```yaml
+LineageExclusion:
+  excluded_primitive_ref: StoredDataRef
+  excluded_by_ref: StoredDataRef
+  reason_code: ANCESTOR_REUSE
+```
+
+`considered_primitive_refs`는 Chaining work를 시작할 때 Runtime이 고정한 순환 검사 전 전체 Primitive 입력이다. `input_primitive_refs`는 실제 match candidate에 사용된 upstream/downstream Primitive의 중복 없는 합집합이다. `excluded_lineage_refs`는 계보 때문에 match에서 제외한 Primitive와 그 제외를 일으킨 같은 work의 Primitive를 기록한다. `source_result_refs`는 실제 match Primitive들이 직접 가리키는 source Verification과 non-null Technical review의 중복 없는 합집합이다. 각 candidate의 `parent_hypothesis_ids`와 `parent_verification_refs`도 해당 upstream/downstream Primitive가 직접 가리키는 source hypothesis와 Verification의 정확한 합집합이어야 한다. 세 Primitive 목록과 source·parent 목록은 중복을 허용하지 않으며 자세한 저장 검사는 [경량 데이터 계약](08-lightweight-data-contracts.md)의 `SAVE_RESULT` 규칙을 따른다.
+
+새 가설은 `HypothesisProposal(origin=CHAINING)`으로 만든다. proposal의 `source_primitive_match_id`는 자신을 만든 candidate ID와 같고, `parent_hypothesis_ids`는 그 candidate의 부모 set과 같아야 한다. Chaining Agent는 새 코드 사실을 만들지 않으므로 `observed_facts=[]`만 허용한다. `target_entities`·`target_locations`·`suspected_path`는 비어 있을 수 있지만, 값을 넣으면 부모 Primitive의 exact entity·location 계보에서 얻을 수 있어야 한다. Verification이 시작할 entity나 location을 부모 계보에서 하나도 복원할 수 없으면 proposal 등록과 배정을 거절한다.
+
+proposal의 `restrictions`는 입력 Primitive 양쪽에 있는 Restriction 객체의 중복 없는 합집합이다. 같은 `restriction_id`는 canonical content가 완전히 같을 때 한 번만 유지하고, ID는 같은데 statement나 근거 reference가 다르면 계약 충돌로 거절한다. trusted runtime이 schema·semantic·workspace·commit·exact Primitive·중복·순환·예산을 검사한 뒤 새 `hypothesis_id`로 등록한다. Orchestration Agent는 등록된 가설에 새 Verification Agent를 배정하고 child는 전체 Verification 파이프라인을 처음부터 거친다.
 
 ### 금지 권한
 
@@ -147,9 +160,11 @@ Verification은 proposal을 만들 수 있지만 `hypothesis_id`를 직접 발�
 
 ## 순환과 비용 제어
 
-각 parent hypothesis에서 `source_primitive_match_id`를 따라 조상 match와 입력 Primitive를 역방향으로 걷는다. 이 과정에서 만난 ancestor Primitive를 현재 순회의 후보에서 제외한다. DB record는 바꾸지 않는다.
+각 parent hypothesis에서 `source_primitive_match_id`를 따라 조상 match와 입력 Primitive를 역방향으로 걷는다. 이 과정에서 만난 ancestor Primitive를 현재 순회의 후보에서 제외한다. 제외한 항목마다 `LineageExclusion`을 만들고, `excluded_by_ref`에는 같은 work에서 검토한 현재 Primitive 중 해당 조상 계보를 가진 정확한 record를 넣는다. 제외된 Primitive와 제외 근거 Primitive는 모두 고정된 `considered_primitive_refs`에 있어야 하고, 제외 근거 Primitive 자신은 제외 목록에 있으면 안 된다. Runtime은 같은 계보 규칙으로 기대 제외 쌍을 다시 계산하여 `excluded_lineage_refs`와 정확히 같은지 확인한다. DB record는 바꾸지 않는다.
 
 체이닝 전용 임의 depth, 전체·parent별 가설 수, Chaining 호출 수와 Primitive 조합 수 한도는 두지 않는다. 대신 R8의 전체 token·시간·비용·work 예산이 모든 체이닝에도 적용된다. 예산 소진은 `FALSE`가 아니며 work 상태와 `AnalysisRunResult.stop_reasons`에 기록한다. 같은 `normalized_fingerprint`도 한 분석에서 중복 저장하지 않는다.
+
+`considered_primitive_refs`와 `excluded_lineage_refs`는 기존 `ChainingResult`에 없던 필수 필드이므로 새 MAJOR schema에서만 사용한다. 이전 MAJOR 결과에 빈 목록을 추정해 넣지 않고 감사 이력으로만 보존한다.
 
 ## 사람에게 보이는 결과
 

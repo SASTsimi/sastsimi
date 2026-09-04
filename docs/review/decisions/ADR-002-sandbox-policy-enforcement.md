@@ -2,14 +2,17 @@
 
 > ADR-007이 command/step 사전 검사와 exact 대리 실행 구조를 대체한다. 이 ADR은 외부 경계 정책, 자율 실행, 수동 기록과 최종 문서화의 권한을 분리하는 결정만 유지한다.
 
-- 상태: `PROPOSED`
+- 상태: `SUPERSEDED`
+- 대체 결정: [ADR-007. R7 자율 동적 재현과 Session Manager 결과 확정](./ADR-007-r7-autonomous-reproduction-session.md)
 - 결정 담당: PM·아키텍처·워크플로, 동적검증·Sandbox
 - 필수 검토: 검증·반박, 통합 개발, Gate·보고서, 데이터·평가
 - 검토 PR: [#76](https://github.com/SASTsimi/sastsimi/pull/76)
 
 ## Context
 
-Runtime Validator의 `RUN_SANDBOX ALLOW`는 호출 권한·상태·예산과 current reference를 확인할 뿐 Sandbox 외부 정책 통과나 동적 재현 성공을 뜻하지 않는다. 또한 Agent가 실행 전에 차단되거나 실행 중 crash할 수 있으므로 Agent를 로그와 최종 결과의 유일한 저장 주체로 둘 수 없다.
+> 이 문서는 exact plan·Runner·Result Assembler를 사용하던 당시 제안을 보존한 역사 기록입니다. 현재 계약으로 사용하지 않습니다. 외부 격리 경계와 현재 result owner는 ADR-007을 따릅니다.
+
+Runtime Validator의 `RUN_SANDBOX ALLOW`는 호출 권한·상태·예산과 exact `ReproductionPlan`만 확인합니다. 이를 Sandbox 세부 정책 통과나 Docker 실행 성공으로 해석하면 Controller를 우회한 실행과 정책 차단 근거 누락을 구분할 수 없습니다.
 
 ## Decision
 
