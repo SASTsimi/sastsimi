@@ -309,7 +309,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] retry/failover가 새 attempt/invocation이며, 바로 앞 실패 호출 reference로 순서와 원인을 복원할 수 있음
 - [ ] 같은 요청은 canonical `dedupe_key`로 기존 `work_id`를 재사용하고 한 work에는 active attempt가 하나임
 - [ ] 상태 변경은 `state_version` compare-and-set을 사용하고 stale·취소·다른 workspace/commit 결과를 거절함
-- [ ] 중복·ancestor cycle·repair/Gate revision과 R8 전역 time/cost/work budget의 enforcement owner가 비-LLM Runtime Validator로, Sandbox 세부 정책의 enforcement owner가 Sandbox Controller로 명시됨. token은 관측값이며 초과·누락만으로 action을 차단하지 않음
+- [ ] 중복·ancestor 재사용·repair/Gate revision과 R8 전역 time/cost/work budget의 enforcement owner가 비-LLM Runtime Validator로, Sandbox 세부 정책의 enforcement owner가 Sandbox Controller로 명시됨. token은 관측값이며 초과·누락만으로 action을 차단하지 않음
 - [ ] Technical `REVISE`가 Orchestration을 경유해 재배정되지 않고 같은 ACTIVE VerificationAssignment owner의 새 VERIFICATION work로 돌아감
 - [ ] HOLD의 `inputs + result=null`과 Technical-accepted TRUE의 `inputs + result` Primitive admission·supersede 규칙이 있음
 - [ ] persistence/recovery/atomicity/idempotency 계약이 합의되고 `TERMINAL`·`DRAFTED` 상태가 정확한 결과 `record_id`를 가리킴
@@ -635,7 +635,7 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 | TRUE result→TRUE input | upstream result와 downstream TRUE Primitive의 특정 input이 근거로 연결될 때만 새 chain hypothesis 생성 |
 | stale Gate revision | 새 Verification revision에 과거 Gate/Primitive 자격 재사용 금지 |
 | Primitive scope 불일치 | match 거절/후보 유지 |
-| chain budget/cycle | R8 전역 예산 중단 또는 ancestor cycle 제외; FALSE 금지 |
+| chain budget/reuse | R8 전역 예산 중단 또는 ancestor 재사용 제외; FALSE 금지 |
 | Technical REVISE | 같은 ACTIVE VerificationAssignment owner의 새 VERIFICATION work로 직접 반환; 새 evidence/revision 전 result Primitive·Rule Scope·Reporter 차단 |
 | Chaining 시작 뒤 parent/index 새 revision 생성 | 진행 중인 work는 시작 시 고정한 exact reference로 계속 처리; 새 revision은 새 Chaining work에서 사용하고, 고정하지 않은 reference가 기존 결과에 섞인 경우만 `STALE_RESULT` 처리 |
 | Chaining의 일반 research 출력 | invalid output; bypass·impact·dynamic·Gate 보완은 Verification 책임 |

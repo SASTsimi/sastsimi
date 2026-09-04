@@ -31,7 +31,7 @@ Orchestration Agent의 주요 책임은 다음과 같다.
 - 독립 가설의 병렬 배정과 hypothesis별 resource budget 배분
 - 등록된 각 가설에 정확히 한 Verification owner를 배정하고 trusted runtime이 ACTIVE `VerificationAssignment`로 저장
 - 전체 가설의 진행 상태·종료 상태·오류 집계
-- R8 전체 시간·비용·work 예산과 체이닝 fingerprint 중복·ancestor 순환 제외 적용 요청. token 사용량은 관측하지만 상한으로 차단하지 않음
+- R8 전체 시간·비용·work 예산과 체이닝 fingerprint 중복·ancestor 재사용 제외 적용 요청. token 사용량은 관측하지만 상한으로 차단하지 않음
 - 실패와 `INVALID_OUTPUT`을 숨기지 않고 분석 결과에 보존
 
 Orchestration Agent는 한 가설 안에서 Pro/Con·동적 재현·두 Gate·Reporter·Chaining의 호출 여부나 Technical `REVISE` 목적지를 결정하지 않는다. 논리 작업의 상태, `work_id`·`dedupe_key`, 활성 attempt, compare-and-set, atomic output binding과 실제 action 허가는 신뢰 경계 안의 비-LLM runtime이 관리한다.
@@ -177,8 +177,13 @@ Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서
 |---|---|---|---|
 | AST와 SAST | tool별 `work_id` | 기대한 tool의 종료 상태와 output/error 확인 | 하나 이상의 신뢰 결과가 있으면 `DataGap`을 포함한 `PARTIAL` 정규화 가능 |
 | 가설 검증 | `hypothesis_id`별 work | 각 가설은 자기 final Verification까지 독립 | 한 가설 오류가 다른 가설을 취소하지 않으며 분석은 `PARTIAL` 가능 |
+<<<<<<< HEAD
 | Pro와 Con | 같은 가설의 역할별 child work·NEW session | 운영은 같은 hypothesis·policy·playbook·application 질문 집합의 exact Pro·Con 결과를 모두 확인; 평가 생략은 명시된 mode와 skip reason 확인 | 필수 결과 누락·application 불일치 시 final 판정을 만들지 않고 부모 Verification을 대기 또는 실패 처리 |
-| chaining 후보 | child proposal별 work | exact match lineage, fingerprint 중복·ancestor cycle·R8 전체 예산 검사를 통과한 proposal만 등록 | 거절 사유를 저장하고 부모 verdict 유지 |
+| chaining 후보 | child proposal별 work | exact match lineage, fingerprint 중복·ancestor 재사용·R8 전체 예산 검사를 통과한 proposal만 등록 | 거절 사유를 저장하고 부모 verdict 유지 |
+=======
+| Pro와 Con | 같은 가설의 역할별 child work·NEW session | 운영은 같은 입력의 exact Pro·Con 결과를 모두 확인; 평가 생략은 명시된 mode와 skip reason 확인 | 필수 결과 누락 시 final 판정을 만들지 않고 부모 Verification을 대기 또는 실패 처리 |
+| chaining 후보 | child proposal별 work | exact match lineage, fingerprint 중복·ancestor 재사용·R8 전체 예산 검사를 통과한 proposal만 등록 | 거절 사유를 저장하고 부모 verdict 유지 |
+>>>>>>> 1fd8dfe (docs: clarify ancestor-reuse exclusion is not cycle prevention)
 
 같은 가설과 같은 `work_type`에는 활성 `attempt_id`를 하나만 허용한다. 중복 요청의 `dedupe_key`가 같으면 기존 `work_id`를 반환한다. 이미 합류가 끝난 뒤 늦게 도착한 tool·Pro·Con 결과는 기존 결과를 덮어쓰지 않는다. 새로운 근거로 사용할 필요가 있으면 입력 revision을 바꾼 새 논리 작업과 새 downstream revision을 만든다.
 
@@ -204,7 +209,7 @@ and independently
 
 Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니다. 현재 Technical Gate work는 `TechnicalEvidenceReview.status=REVISE`를 exact output으로 atomic commit하고 `SUCCEEDED`로 끝낸 뒤 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 직접 전달한다. runtime은 기존 종료 VERIFICATION work를 되돌리지 않고 증가한 generation의 새 VERIFICATION work를 등록하며, 같은 CAS transition에서 `HypothesisProcessState`를 `TERMINAL -> VERIFYING`으로 바꾸고 새 work를 가리킨다. Verification은 새 근거를 반영하고, final TRUE 후보라면 새 generation의 동적 재현 요청과 validated PoC를 다시 확보한다. 그 뒤 새 `VerificationResult`와 새 work 종료·hypothesis `TERMINAL`·current result pointer를 atomic commit한다. R5-01 `CWE_LABELING`은 새 `CWE_LABEL` work에서 CWE 정렬을 반드시 다시 평가하고 새 Verification을 직접 가리키는 새 `CWELabel` revision을 확정한다. 동일 CWE를 유지해도 이전 label `record_id`는 재사용하지 않는다. 바뀐 Verification과 current label을 가진 새 `input_hash`·`dedupe_key`·`work_id`로 Technical Gate를 다시 요청한다. 새 generation에는 동적 재현 work 하나를 다시 허용한다. 같은 work의 PoC 생성·환경 구성·실행 재시도는 새 동적 work가 아니라 새 `attempt_id`다. 이 새 논리 작업의 첫 attempt는 `attempt_number=1`, `trigger=INITIAL`이다. provider timeout처럼 입력이 그대로인 일반 retry만 같은 `work_id`에서 새 `attempt_id`, `trigger=RETRY`를 사용한다. Rule Scope Gate와 Reporter는 앞 단계의 `COMMITTED` output reference만 읽는다. `PREPARED`, 취소된 attempt, 오래된 input hash와 다른 workspace/commit 결과는 다음 단계로 전달하지 않는다.
 
-Chaining work는 exact Primitive와 source Verification·Technical review를 input으로 고정한다. proposal 저장 전 `source_primitive_match_id`와 parent set을 확인하고, parent 링크를 따라 만난 ancestor Primitive를 현재 순회의 후보에서 제외한다. 동일 fingerprint와 ancestor 재사용 결과는 저장하지 않는다. Primitive index 자체의 동시 갱신은 공통 `RecordMeta.revision_number`와 atomic current pointer 규칙으로 보호한다.
+Chaining work는 exact Primitive와 source Verification·Technical review를 input으로 고정한다. proposal 저장 전 `source_primitive_match_id`와 parent set을 확인하고, 같은 계보에서 가장 깊은 후보와의 match가 실제로 성립한 뒤에만 그 후보의 양쪽(upstream·downstream) Primitive를 재귀 추적해 얻은 조상을 현재 순회의 후보에서 제외한다. 동일 fingerprint와 조상 재사용 결과는 저장하지 않는다. Primitive index 자체의 동시 갱신은 공통 `RecordMeta.revision_number`와 atomic current pointer 규칙으로 보호한다.
 
 ## retry·취소·중단 후 재개
 

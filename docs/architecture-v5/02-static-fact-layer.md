@@ -86,7 +86,7 @@ CodeQL·OpenGrep처럼 규칙을 실행하는 도구는 `ToolRunResult.tool_kind
 
 Hypothesis Agent는 전체 코드가 아니라 entity, location과 suspected path를 제안한다. Verification·Pro·Con은 필요한 추가 문맥을 `CodeContextRequest`로 요청한다. R5-01 `CWE_LABELING`은 exact final TRUE가 가리키는 저장 근거로 current `CWELabel`을 만들고, Technical Gate는 별도 Context 조회를 시작하지 않은 채 그 Verification·CWELabel exact pair를 검토한다. Chaining Agent는 코드 문맥을 새로 탐색하지 않고 `PrimitiveIndexState`가 가리키는 current exact Primitive와 provenance만 읽는다.
 
-1. 가설의 `CodeSymbol`, `CodeLocation`, `suspected_path`에서 시작한다.
+1. 가설의 `CodeSymbol`, `CodeLocation`, `suspected_path`에서 시작한다. 이 필드가 비어 있으면(체이닝 자식) `source_primitive_match_id` 계보를 따라 부모 Primitive의 `entity_refs`에서 얻는다.
 2. 분석 목적에 맞는 관계를 명시한다.
 3. Context Retrieval Service가 동일한 `workspace_id`와 연결된 `commit_id`인지, 요청이 budget 안인지 검증한다.
 4. 허용된 깊이까지 필요한 fragment와 관계만 조회한다.
