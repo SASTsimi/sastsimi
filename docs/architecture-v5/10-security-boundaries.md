@@ -103,11 +103,12 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 
 ## 6. 프로그램 정책 신뢰 경계
 
-- Rule Scope Impact Gate는 확인 가능한 공식 source만 `ProgramPolicyRecord`로 사용한다.
+- Policy Collector는 확인 가능한 공식 source만 `ProgramPolicyRecord`로 사용하고 source 확인 결과와 parser 실행 결과를 exact reference로 남긴다.
 - 저장소 문서, 검색 snippet, 오래된 모델 지식과 비공식 요약을 공식 rule로 승격하지 않는다.
-- source URL/reference, 수집 시각, 누락과 freshness warning을 보존한다.
-- 공식 자료가 없거나 `ProgramPolicyRecord.freshness_status=STALE | UNVERIFIED`이면 `UNCERTAIN + DENY`다. 오래된 record는 감사용으로 보존할 수 있지만 `PASS | ALLOW` 근거로 사용하지 않는다.
-- 정책 수집기가 향후 추가되면 외부 fetch, parser, provenance와 변경 탐지에 별도 보안 검토가 필요하다.
+- source URL/reference, 게시자 확인 근거, parser 이름·버전·결과, 수집 시각, 누락과 freshness 기준·근거·만료 시각을 보존한다.
+- `PolicyCollectionResult`는 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`를 구분한다. 공식 정책 부재를 확인한 경우에만 `ABSENT_CONFIRMED`이고, fetch·parser 실패는 `COLLECTION_FAILED`이며 Rule Scope review를 만들지 않는다.
+- 공식 자료가 없음을 확인했거나 `ProgramPolicyRecord.freshness_status=STALE | UNVERIFIED`이면 `UNCERTAIN + DENY`다. 오래된 record는 감사용으로 보존할 수 있지만 `PASS | ALLOW` 근거로 사용하지 않는다.
+- 확정 판단은 실제 정책 항목과 코드·동적 근거를 `RuleScopeEvidenceLink`로 연결한다. 판단을 막는 누락은 `PolicyMissingInfo`로 구조화하고 `blocks_allow=true`이면 공개 허용을 차단한다.
 
 ## 7. 근거·권한 연결
 
@@ -158,7 +159,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | crash 뒤 이중 실행 | 마지막 committed transition 재사용과 attempt 이력 보존 |
 | 위험한 PoC | sandbox default-deny와 resource limit |
 | credential·코드 유출 | adapter secret boundary, 최소 context, redaction |
-| 정책 환각 | 공식 `ProgramPolicyRecord`가 없으면 `UNCERTAIN + DENY` |
+| 정책 환각 | 공식 부재를 확인한 `ABSENT_CONFIRMED`만 `UNCERTAIN + DENY`; 수집 실패 `COLLECTION_FAILED`는 Gate 미호출 |
 | 오래되거나 최신성을 확인하지 못한 정책으로 보고 허용 | `freshness_status=STALE | UNVERIFIED`이면 `UNCERTAIN + DENY`, `PASS | ALLOW` 거절 |
 | 새 Verification에 과거 CWELabel을 붙임 | exact Verification·generation·CWE work·attempt·LLM invocation 연결 검사, `STALE_RESULT | RECORD_REVISION_MISMATCH` |
 | Gate가 CWELabel을 만들거나 수정함 | R5-01 `CWE_LABELING`만 생산하도록 result-owner 검사, `AUTHORITY_DENIED` |
@@ -215,7 +216,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | CWE labeling 호출 실패·timeout·인증 오류를 `FALSE | HOLD`로 바꿈 | CWE work·invocation 상태와 Verification evidence | verdict 변경 거절, work 오류를 보존하고 current label 전까지 Technical Gate 차단 |
 | Technical Gate 없이 Rule Scope Gate 호출 | exact Technical review ref와 status | `GATE_ORDER_INVALID` |
 | Rule Scope Gate 없이 Reporter 호출 | exact Rule Scope review와 모든 report 조건 | `REPORT_NOT_READY` |
-| 공식 정책이 없는데 `ALLOW` 출력 | policy ref와 Rule Scope 불변조건 | invalid output, `UNCERTAIN + DENY` 또는 Gate 실패 |
+| 공식 부재 확인 또는 수집 실패인데 `ALLOW` 출력 | collection status, policy ref와 Rule Scope 불변조건 | `ABSENT_CONFIRMED`는 invalid output과 `UNCERTAIN + DENY`; `COLLECTION_FAILED`는 Gate 호출·review 저장 거절 |
 | repository prompt가 Sandbox network를 열라고 함 | Sandbox Controller가 versioned profile과 instruction source 확인 | `UNTRUSTED_INSTRUCTION` 또는 `SANDBOX_POLICY_DENIED` |
 | LLM이 workspace 밖 파일을 요청 | 정규화·symlink 해석 뒤 실제 path | `FILE_ACCESS_DENIED` |
 | 허용하지 않은 provider/model로 silent failover | provider profile과 선행 invocation | `PROVIDER_PROFILE_DENIED`, 호출 미실행 |
@@ -315,6 +316,8 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N32 | policy에 없는 type 또는 policy와 다른 playbook revision을 선택 | work 등록 거절; exact policy mapping과 playbook을 다시 고정 |
 | N33 | 플레이북 질문 template가 application에서 빠지거나 다른 문장·중복 ID로 저장됨 | application 저장 거절; template set과 새 전역 question ID를 다시 생성 |
 | N34 | Verification 결과가 hypothesis 질문만 처리하고 application 질문을 누락 | `SAVE_RESULT` 거절; 두 질문 집합의 합집합을 정확히 한 번씩 검증 |
+| N35 | 정책 수집 실패를 정책 부재로 바꿔 `UNCERTAIN + DENY` review를 저장 | `PolicyCollectionResult.status=COLLECTION_FAILED`와 error를 보존하고 Rule Scope Gate work·호출·review 저장 거절 |
+| N36 | Rule·Scope·Impact 확정 판단에 사용한 정책 항목 또는 실제 근거 연결이 없음 | `SAVE_RESULT` 거절; 같은 area의 `RuleScopeEvidenceLink`를 exact 정책·근거 reference로 다시 생성 |
 
 ## 남는 위험
 

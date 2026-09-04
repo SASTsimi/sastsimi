@@ -136,17 +136,11 @@ freshness 판정은 `freshness_checked_at`, 승인된 criterion reference, 시�
 revision이 아직 `CURRENT`인지 검사한다. stale이 되거나 currentness가 깨지면 기존 Gate 2 결과를
 새 downstream action에 재사용하지 않는다.
 
-정책 수집은 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`를 구분해야 한다. `FOUND`는 exact
-ProgramPolicyRecord가 필요하고, `ABSENT_CONFIRMED`는 확인한 official source와 부재를 입증하는
-provenance/누락 reference가 필요하다. `COLLECTION_FAILED`는 하나 이상의 AnalysisError가 필요하며
-정상 `UNCERTAIN + DENY` review로 변환하지 않는다. collection record 이름과 공통 schema는 R4/R8이
-정하며, 정책 reference 없이 정상 `UNCERTAIN + DENY`가 가능한 경우는 실제 부재가 확인된 때뿐이다.
+저장소 문서나 모델 기억을 공식 정책으로 자동 승격하지 않는다. 정책 수집은 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`를 구분한다. 공식 부재를 확인한 `ABSENT_CONFIRMED`만 `UNCERTAIN + DENY` review를 만들 수 있고, 수집·parser 실패인 `COLLECTION_FAILED`는 Rule Scope Gate를 호출하지 않는다. `FOUND`라도 핵심 자료가 누락되거나 `freshness_status=STALE | UNVERIFIED`이면 최신 정책으로 취급하지 않는다. 최신성 기준값과 재수집 주기는 R8이 승인한 versioned 설정을 사용하고 R5는 그 결과를 정책 의미로 해석한다. stale·미검증 상태의 Gate 결과는 항상 `UNCERTAIN + DENY`다.
 
-저장소 문서나 모델 기억을 공식 정책으로 자동 승격하지 않는다. 공식 `ProgramPolicyRecord`가
-없거나 핵심 공식 자료가 누락되면 추측하지 않고 `UNCERTAIN + DENY`로 처리한다. 정책 record가
-있어도 `freshness_status=STALE | UNVERIFIED`이면 최신 정책으로 취급하지 않으며 Gate 결과는 항상
-`UNCERTAIN + DENY`다. 원문, parser 결과 또는 정책 내용이 변경되면 새 `ProgramPolicyRecord`
-revision으로 취급하고 이전 Gate 2 결과를 재사용하지 않는다.
+`FOUND`는 exact `PolicyParserResult`, `PolicyCollectionResult`, `ProgramPolicyRecord`와 official source provenance가 필요하다. `ABSENT_CONFIRMED`는 확인한 official source와 부재 근거가 필요하다. `COLLECTION_FAILED`는 하나 이상의 `AnalysisError`를 기록하고 Gate work·review·Reporter를 만들지 않으며 `UNCERTAIN + DENY`로 변환하지 않는다. 원문, parser 결과 또는 정책 내용이 변경되면 새 exact revision으로 취급하고 이전 Gate 결과를 재사용하지 않는다.
+
+Policy Parser만 `PolicyParserResult`를, Policy Collector만 `PolicyCollectionResult`와 `ProgramPolicyRecord`를 생산한다. R5는 이 exact artifact를 입력으로 받아 Rule·Scope·Impact 의미만 판정한다.
 
 ### 검토 항목
 
@@ -195,7 +189,7 @@ R7 Dynamic Reproduction/PoC의 testing restriction 검토는 R7이 실제 수행
 
 `agent_invoked=false`인 사전 정책 차단에서도 같은 attempt의 exact `AgentLog`와 `POLICY_BLOCKED` event가 필요하지만, 계획이나 request의 목표를 수행 사실로 보지 않는다. Agent가 시작됐다면 성공·실패·취소와 관계없이 같은 attempt의 exact `AgentLog`가 필요하며, 실제 완료되거나 실패한 event와 생성된 artifact만 사용한다. `poc_ref` 존재만으로 실행을 주장할 수 없고, current dynamic attempt의 exact PoC bundle이 AgentLog의 `POC_EXECUTION_STARTED | POC_EXECUTION_FINISHED`, observation과 `DynamicReproductionResult`에 같은 revision 또는 digest로 연결된 경우만 실제 PoC 행위다. request·requirements·plan·policy decision·recipe·environment·AgentLog·PoC·cleanup·dynamic result 중 다른 revision, generation 또는 attempt를 섞거나 latest lookup으로 보정하면 기존 공통 revision/error 계약으로 거절한다.
 
-Gate 2 출력이나 `VerificationResult`에 실행 사실용 별도 목록 필드는 두지 않는다. testing restriction 판단에 필요한 actual execution facts는 exact `verification_result_ref -> dynamic_result_ref`의 canonical transitive closure로 전달된다. 정책 판단에 중요한 실제 행위를 선택적으로 빼 결과를 바꿀 수 없고, lifecycle상 존재하며 실제 수행된 fact는 complete해야 한다. 반대로 실행되지 않은 계획상 행동이나 생성되지 않은 artifact를 사실로 추정하지 않는다. Runtime Validator는 current generation과 same-attempt reference closure, artifact 존재와 lifecycle을 검사하고 정책 의미는 재판정하지 않는다.
+`execution_fact_refs`는 전체 R7 graph의 복사본이 아니라 exact `verification_result_ref -> dynamic_result_ref`의 current attempt에서 testing restriction 판단에 필요한 실제 수행 fact closure다. 정책 판단에 중요한 실제 행위를 선택적으로 빼 결과를 바꿀 수 없고, lifecycle상 존재하며 실제 수행된 fact는 complete해야 한다. 반대로 실행되지 않은 attack/PoC step, Runner 미호출 시 attack fact, observation 연결 없는 PoC는 포함하지 않는다. policy block 또는 environment precheck로 artifact가 생성되지 않았다면 존재하지 않는 artifact reference를 요구하지 않는다. Runtime Validator는 current generation과 same-attempt closure, artifact 존재와 lifecycle을 검사하고 정책 의미는 재판정하지 않는다.
 
 공통 계약, R4와 R8에는 혼합 component의 `review_status` 우선순위가 정의되어 있지 않다. 따라서
 아래 규칙은 R5-02가 Rule·Scope·Impact 결과를 하나의 Gate 2 `review_status`로 합성하기 위해
@@ -221,27 +215,34 @@ rule_scope_impact_review:
   verification_result_ref: StoredDataRef
   technical_review_ref: StoredDataRef
   cwe_label_ref: StoredDataRef
+  policy_collection_result_ref: StoredDataRef
   policy_record_ref: StoredDataRef | null
+  execution_fact_refs: [StoredDataRef]
+  adopted_child_impact_links: [AdoptedChildImpactLink]
   review_status: PASS | FAIL | UNCERTAIN
   rule_compliance: PASS | FAIL | UNCERTAIN
   scope_compliance: PASS | FAIL | UNCERTAIN
   security_impact: SUFFICIENT | INSUFFICIENT | UNCERTAIN
   report_permission: ALLOW | DENY
+  policy_record_ref: StoredDataRef | null
+  evidence_links: [RuleScopeEvidenceLink]
   reasons: []
-  missing_information: []
+  missing_information: [PolicyMissingInfo]
 ```
 
-Rule의 확정 상태에는 공식 rule item과 관련 verified evidence, Scope에는 공식 scope item과 실제
+`evidence_links`는 domain별 `PolicyItem`과 exact evidence를 묶어 정책 원문/항목에서 parser·collection result와 `ProgramPolicyRecord`를 거쳐 Gate 판정까지 이어지는 reference chain을 보존한다. Rule의 확정 상태에는 공식 rule item과 관련 verified evidence, Scope에는 공식 scope item과 실제
 target/asset/version/endpoint, Impact에는 공식 criterion과 verified impact evidence의 exact reference가
 각각 필요하다. testing restriction의 확정 판단에는 restriction item과 R7이 보존한 실제 execution
 fact reference가 모두 필요하다. 필요한 근거가 없으면 `UNCERTAIN`이며 explanation 문자열은 exact
 provenance를 대신하지 않는다.
 
-핵심 정책·근거 누락은 기존 `missing_information`에 보존하고 `ALLOW`를 금지한다. Runtime Validator는 설명 문자열에서 정책 의미나 중요도를 새로 추론하지 않는다.
+공식 정책 부재를 확인한 `ABSENT_CONFIRMED`이거나 `freshness_status=STALE | UNVERIFIED`이면 Rule Scope Gate Agent가 정책을 추정하지 않고 최소한 `rule_compliance=UNCERTAIN`, `scope_compliance=UNCERTAIN`, `review_status=UNCERTAIN`, `report_permission=DENY`와 구조화된 `missing_information`을 판단해 반환한다. impact도 검토할 근거가 부족하면 `security_impact=UNCERTAIN`이다. stale record의 exact reference와 경고는 감사 기록으로 보존하지만 `PASS | ALLOW` 근거로 사용하지 않는다. 수집 자체가 실패한 `COLLECTION_FAILED`는 이 review를 만들지 않는다.
 
-공식 정책 자료가 없거나 `freshness_status=STALE | UNVERIFIED`이면 Rule Scope Gate Agent가 정책을 추정하지 않고 최소한 `rule_compliance=UNCERTAIN`, `scope_compliance=UNCERTAIN`, `review_status=UNCERTAIN`, `report_permission=DENY`와 `missing_information`을 판단해 반환한다. impact도 검토할 근거가 부족하면 `security_impact=UNCERTAIN`이다. stale record의 exact reference와 경고는 감사 기록으로 보존하지만 `PASS | ALLOW` 근거로 사용하지 않는다.
+각 확정 판정은 `RuleScopeEvidenceLink`를 통해 exact `PolicyItem`과 evidence reference에 연결한다. 핵심 정책·근거 누락은 구조화된 `PolicyMissingInfo`에 보존하고 `ALLOW`를 금지한다. Runtime Validator는 설명 문자열에서 정책 의미나 중요도를 새로 추론하지 않는다.
 
-Runtime Validator는 공식 정책 문장이나 정책의 의미를 대신 해석하지 않는다. Rule Scope Gate가 판단한 `UNCERTAIN + DENY`의 필수 필드, exact 정책 reference와 구조적 불변조건만 검사한다. `policy_record_ref=null`이거나 핵심 공식 source가 누락된 출력에서 `ALLOW`·`PASS`가 함께 나타나면 semantic `INVALID_OUTPUT`으로 거절하고, 정상적인 `UNCERTAIN + DENY`이면 `REPORT_READY` check로 Reporter만 프로그램적으로 차단한다. 제한된 repair 뒤에도 불변조건이 맞지 않으면 Rule Scope Gate work를 실패 처리한다. 두 경우 모두 Verification verdict를 바꾸지 않는다.
+R6 canonical `VerificationCondition.gate_projections`에 선언된 domain은 `(source_verification_ref, source_condition_id, domain)` identity로 `PolicyMissingInfo`에 빠짐없이 정확히 한 번 projection한다. 선언되지 않은 일반 condition은 projection하지 않으며 source evidence와 blocking 의미를 약화하지 않는다.
+
+Runtime Validator는 공식 정책 문장이나 정책의 의미를 대신 해석하지 않는다. Rule Scope Gate가 판단한 `UNCERTAIN + DENY`의 필수 필드, exact 정책 수집·정책 reference, 판단별 `RuleScopeEvidenceLink`, 구조화된 `PolicyMissingInfo`와 상태 불변조건만 검사한다. `ABSENT_CONFIRMED`인데 `policy_record_ref`가 있거나 핵심 공식 source가 누락된 출력에서 `ALLOW`·`PASS`가 함께 나타나면 semantic `INVALID_OUTPUT`으로 거절하고, 정상적인 `UNCERTAIN + DENY`이면 `REPORT_READY` check로 Reporter만 프로그램적으로 차단한다. 제한된 repair 뒤에도 불변조건이 맞지 않으면 Rule Scope Gate work를 실패 처리한다. 두 경우 모두 Verification verdict를 바꾸지 않는다.
 
 `report_permission=ALLOW`는 동일 exact Verification revision이 R5-03 Reporter로 진행하기 위한
 Gate 2 정책 전제조건을 만족했다는 뜻으로만 사용한다. 외부 제출·공개, 사람의 disclosure 승인,
@@ -322,6 +323,7 @@ authenticity `VERIFIED` 또는 freshness `CURRENT`를 부여하지 않는다. �
 `GATE_ORDER_INVALID`는 선행 Gate/status가 성립하지 않은 호출, `INVALID_OUTPUT`은 Gate/LLM 출력 자체의
 schema·semantic 위반이다. `REPORT_NOT_READY`는 Reporter 전제조건 실패이며 앞 오류의 의미를
 대체하지 않는다.
+`verification_result_ref`, `technical_review_ref`, `cwe_label_ref`, `policy_collection_result_ref`와 존재하는 `policy_record_ref`에는 정확한 저장 revision의 `record_id`가 필요하다. runtime은 Technical review가 `ACCEPT`이고, Technical review와 Rule Scope review가 같은 Verification과 CWELabel `record_id`를 각각 가리키는지 확인한다. 각 reference의 `workspace_id`, `commit_id`, `content_hash`는 대상 record와 일치해야 하며, Verification·CWELabel·Technical 대상의 `meta.hypothesis_id`는 Rule Scope review의 가설과 같아야 한다. 정책 수집 결과가 `FOUND`이면 review의 정책 record가 그 결과의 exact `policy_record_ref`와 같아야 한다. 입력 revision이 하나라도 달라지면 기존 Rule Scope 결과를 재사용하지 않는다.
 
 ## Technical-accepted TRUE와 Primitive admission
 
@@ -347,7 +349,7 @@ AND report_permission == ALLOW
 
 조건이 하나라도 충족되지 않거나 Gate reference 연결이 맞지 않으면 결과와 검토 사유는 저장하지만 Reporter를 호출하지 않는다. LLM이 `review_status`, rule, scope 또는 impact 조건과 모순되는 `ALLOW`를 출력하면 semantic validation 실패다. 이 호출은 `LLMInvocationResult.status=INVALID_OUTPUT`, `AnalysisError.stage=GATE`, `AnalysisError.code=INVALID_OUTPUT`으로 기록하며 invalid output을 `RuleScopeImpactReview`로 commit하지 않는다. 제한된 repair가 남아 있을 때만 같은 입력의 새 invocation attempt를 허용하고, 한도를 소진하면 Gate work를 `FAILED`로 끝낸다. 어느 경우에도 Reporter를 호출하거나 Verification verdict를 변경하지 않는다. 이는 취약점 판정 규칙이 아니라 권한 없는 보고 생성을 막는 호출 전제다.
 
-Gate와 Reporter의 stage action은 exact `LLMCallSpec`까지 포함해 실제 LLM 호출을 직접 허가한다. 이 세 역할이 별도 `CALL_LLM` action으로 stage 검사를 우회하는 것은 허용하지 않는다. Technical action의 `REVISION`은 exact Verification·current CWELabel pair를, `GATE_ORDER`는 두 revision의 final `COMMITTED` 상태를 검사한다. Rule Scope action의 `REVISION`은 같은 Verification·CWELabel과 exact Technical review를, `GATE_ORDER`는 `TRUE`+Technical `ACCEPT`를 검사한다. Reporter action의 `REVISION`은 current Finding과 두 Gate가 검토한 같은 Verification·CWELabel·Technical·Rule Scope·정책 revision을 검사하고 `REPORT_READY`는 Finding 존재와 위 모든 조건을 검사한다. 하나라도 맞지 않으면 `REPORT_NOT_READY`로 차단한다. Runtime은 이 검사를 action 허가 때와 실제 provider 호출 직전에 반복하며, 달라졌으면 decision을 `EXPIRED`로 바꾸고 호출하지 않는다. 실제 invocation request의 model·prompt·context·schema·budget·timeout은 검사한 call spec과 모두 같아야 한다.
+Gate와 Reporter의 stage action은 exact `LLMCallSpec`까지 포함해 실제 LLM 호출을 직접 허가한다. 이 세 역할이 별도 `CALL_LLM` action으로 stage 검사를 우회하는 것은 허용하지 않는다. Technical action의 `REVISION`은 exact Verification·current CWELabel pair를, `GATE_ORDER`는 두 revision의 final `COMMITTED` 상태를 검사한다. Rule Scope action의 `REVISION`은 같은 Verification·CWELabel, exact Technical review와 정책 수집 결과, `FOUND`일 때 정책 record를 검사하고, `GATE_ORDER`는 `TRUE`+Technical `ACCEPT`이며 수집 결과가 `COLLECTION_FAILED`가 아닌지 검사한다. Reporter action의 `REVISION`은 current Finding과 두 Gate가 검토한 같은 Verification·CWELabel·Technical·Rule Scope·정책 revision을 검사하고 `REPORT_READY`는 Finding 존재와 위 모든 조건을 검사한다. 하나라도 맞지 않으면 `REPORT_NOT_READY`로 차단한다. Runtime은 이 검사를 action 허가 때와 실제 provider 호출 직전에 반복하며, 달라졌으면 decision을 `EXPIRED`로 바꾸고 호출하지 않는다. 실제 invocation request의 model·prompt·context·schema·budget·timeout은 검사한 call spec과 모두 같아야 한다.
 
 ## Reporter Agent
 

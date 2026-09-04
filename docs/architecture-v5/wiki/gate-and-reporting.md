@@ -22,7 +22,13 @@ final TRUE `VerificationResult`의 찬반 근거, 실제 코드·호출·데이�
 
 ## 2. 공식 정책·범위·영향 검토(`Rule Scope Impact Gate`)
 
-final `TRUE`이고 Technical `ACCEPT`인 exact revision만 공식 `ProgramPolicyRecord`과 함께 검토한다. Rule Scope 결과에는 자신이 읽은 Verification, Technical review, CWELabel과 정책의 정확한 `record_id`를 남긴다. Technical Gate가 ACCEPT할 때 검토한 Verification/CWELabel과 Gate 2의 두 입력은 각각 같아야 한다. 이 중 하나나 정책 원문/parser 결과가 수정되면 이전 Rule Scope 결과를 재사용하지 않는다.
+정책 경로는 `Policy collection/parser -> PolicyParserResult -> PolicyCollectionResult 확인 -> ProgramPolicyRecord -> Rule Scope Impact Gate -> Reporter`입니다. Parser와 Collector가 공통 artifact를 만들고 R5는 Rule·Scope·Impact 의미만 판단합니다.
+
+Technical `ACCEPT`인 `TRUE`만 정책 수집 결과와 함께 검토합니다. 정책 수집은 `FOUND`, `ABSENT_CONFIRMED`, `COLLECTION_FAILED`를 구분합니다. `FOUND`이면 exact `ProgramPolicyRecord`도 함께 읽고, `ABSENT_CONFIRMED`이면 정책을 추정하지 않고 `UNCERTAIN + DENY`로 검토할 수 있습니다. `COLLECTION_FAILED`는 Rule Scope review를 만들지 않습니다.
+
+Rule Scope 결과에는 `policy_collection_result_ref`로 정책 수집 결과를 고정하고, 자신이 읽은 Verification, Technical review, CWELabel과 존재하는 정책 record의 정확한 `record_id`를 남깁니다. `PASS | FAIL | SUFFICIENT | INSUFFICIENT` 판단은 실제 정책 항목과 코드·실행 근거에 연결하고, 부족한 정보는 어느 판단을 막는지 구조화해 남깁니다. 입력 중 하나라도 수정되거나 정책 최신성이 만료되면 이전 Rule Scope 결과를 재사용하지 않습니다.
+
+Technical Gate가 `ACCEPT`할 때 검토한 Verification/CWELabel과 Gate 2의 두 exact input revision은 각각 같아야 하며, Gate는 Verification verdict나 hypothesis를 수정하지 않습니다.
 
 - rule_compliance: `PASS | FAIL | UNCERTAIN`
 - scope_compliance: `PASS | FAIL | UNCERTAIN`
@@ -37,20 +43,20 @@ Rule은 eligibility·허용/제외 class·금지 testing method·명시 rule을,
 
 기존 `ProgramPolicyRecord`의 freshness 상태와 확인 시각을 사용한다. Gate 2와 Reporter의 action 허가·실제 호출 직전에 exact policy revision이 여전히 `CURRENT`인지 다시 검사하며 stale Gate 2 결과는 Reporter에 재사용하지 않는다. R5-02가 독립 freshness schema나 공통 TTL을 만들지 않고 기준이 없으면 `UNVERIFIED + DENY`다.
 
-정책 수집은 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`를 구분한다. 실제 부재 확인만 provenance/DataGap에 근거한 정상 `UNCERTAIN + DENY`가 될 수 있고, fetch/parser/schema/runtime 실패는 AnalysisError로 남겨 성공한 Gate review를 만들지 않는다.
+정책 수집은 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`를 구분한다. `FOUND`는 exact parser result·공식 source와 `ProgramPolicyRecord`를 연결한다. 실제 부재를 확인한 `ABSENT_CONFIRMED`만 provenance/DataGap에 근거한 정상 `UNCERTAIN + DENY`가 될 수 있다. `COLLECTION_FAILED`는 AnalysisError와 함께 `AnalysisRunResult`에 남기지만 Gate work를 호출하지 않고 `RuleScopeImpactReview`를 생성하지 않는다. 따라서 downstream Reporter도 진행할 수 없다.
 
 fetch/parser/schema/runtime 실패나 invalid output은 정책 `FAIL` 또는 정상 `UNCERTAIN + DENY` Gate 결과가 아니다. 공통 오류로 기록하고 성공한 Gate review 없이 Reporter를 차단한다.
 
 `ALLOW`는 `review_status PASS + rule PASS + scope PASS + impact SUFFICIENT + authentic fresh exact policy revision + 핵심 누락 없음`에서만 유효하며, 동일 exact Verification revision이 R5-03 Reporter로 진행하기 위한 Gate 2 정책 전제조건을 충족했다는 뜻으로 한정한다. 다른 조합의 `ALLOW`는 공통 semantic validation의 `INVALID_OUTPUT`이며 Reporter에 사용할 수 없다. `ALLOW`는 Reporter 실행, ReportDraft·Primitive 생성 또는 Human Review·외부 제출·공개 승인이 아니다.
 
-Gate 결과는 authoritative policy/source/parser/authenticity/freshness와 upstream evidence/execution reference graph, 그리고 그중 LLM이 실제 읽은 bounded context를 구분해 기록한다. Rule은 공식 rule item+verified evidence, Scope는 공식 scope item+실제 target/version, Impact는 공식 criterion+verified impact evidence에 exact linkage가 있어야 확정 상태가 된다. 누락은 stable ID, domain, blocking 여부, 설명과 policy/evidence refs로 구조화하며 blocking 누락과 `ALLOW`가 함께 있으면 `INVALID_OUTPUT`이다. 공통 DataGap 통합은 R8, hash/dedupe 구현은 R4 책임이다.
+Gate 결과는 authoritative policy/source/parser/authenticity/freshness와 upstream evidence/execution reference graph, 그리고 그중 LLM이 실제 읽은 bounded context를 구분해 기록한다. `evidence_links`로 Rule은 공식 rule item+verified evidence, Scope는 공식 scope item+실제 target/version, Impact는 공식 criterion+verified impact evidence에 연결되어야 확정 상태가 된다. 누락은 `missing_information`에 stable ID, domain, blocking 여부, 설명과 policy/evidence refs로 구조화한다. R6 `gate_projections`의 각 `RULE | SCOPE | IMPACT` domain은 `(source_verification_ref, source_condition_id, domain)` identity로 정확히 한 번 반영하며 누락·중복·blocking 약화 또는 blocking 누락과 `ALLOW`의 조합은 `INVALID_OUTPUT`이다.
 
-testing restriction은 `verification_result_ref -> dynamic_result_ref`를 통해 current-generation exact `DynamicReproductionRequest`, exact `ReproductionPlan`, 같은 attempt의 `agent_log_ref -> AgentLog`와 결과가 연결한 실제 환경·recipe·명령·입출력·관측·네트워크 대상·계정/권한·상태 변경만 사용한다. `agent_invoked=false`이면 계획을 수행 사실로 보지 않고, Agent가 시작됐다면 exact AgentLog가 필요하다. `poc_ref`만으로 PoC 실행 사실을 만들지 않으며 same-attempt `POC_EXECUTE`·observation 연결이 필요하다. 다른 generation/revision/attempt 혼합과 결과를 바꾸는 실제 수행 사실 누락을 금지한다. R7은 사실과 provenance를 제공하고 Gate 2가 공식 testing restriction과 비교하며, Gate 2는 R7 환경·정책 판정을 재심사하지 않는다.
+testing restriction은 `verification_result_ref -> dynamic_result_ref`를 통해 current-generation exact attempt에서 실제 수행한 사실만 `execution_fact_refs`로 고정한다. 계획했지만 실행하지 않은 attack/PoC, Runner가 호출되지 않은 attack fact, observation 없는 PoC는 포함하지 않는다. policy block이나 environment precheck로 만들지 않은 artifact는 요구하지 않는다. 다른 generation/revision/attempt 혼합과 결과를 바꾸는 실제 수행 사실 누락을 금지한다. R7은 사실과 provenance를 제공하고 Gate 2가 공식 testing restriction과 비교하며, Gate 2는 R7 환경·정책 판정을 재심사하지 않는다.
 
-child proposal은 독립 Verification을 거치며 child TRUE가 부모 impact를 자동 높이지 않는다. 부모가 exact child final revision을 새 parent Verification N+1에 명시적으로 채택한 뒤 Technical Gate와 Gate 2를 다시 수행한 경우만 부모 impact에 사용할 수 있다.
+child proposal은 독립 Verification을 거치며 child TRUE가 부모 impact를 자동 높이지 않는다. `adopted_child_impact_links`는 exact child final TRUE revision·impact ID·evidence와 parent/child의 동일 analysis/workspace/commit/canonical target identity를 고정한다. 부모가 이를 새 parent Verification N+1에 명시적으로 채택한 뒤 Technical Gate와 Gate 2를 다시 수행한 경우만 부모 impact에 사용할 수 있다.
 
 Gate 판단 시점부터 policy가 `STALE | UNVERIFIED`인데 `ALLOW`이면 생성 당시 모순이므로 `INVALID_OUTPUT`이다. 정상 policy와 revision으로 생성된 review가 이후 upstream 변경 때문에 오래된 경우에는 기존 review 자체를 invalid로 바꾸지 않고, 새 revision의 Reporter에 재사용하지 못하게 runtime이 차단한다.
-공식 정책 자료가 없거나 정책의 `freshness_status`가 `STALE | UNVERIFIED`이면 rule/scope/review는 `UNCERTAIN`이고 permission은 `DENY`다. 오래된 정책 reference는 감사용으로 남길 수 있지만 `PASS | ALLOW` 근거로 쓰지 않는다. 저장소 문서나 모델 기억으로 공식 정책을 추정하지 않는다.
+공식 정책 부재가 확인된 `ABSENT_CONFIRMED`이거나 정책의 `freshness_status`가 `STALE | UNVERIFIED`이면 rule/scope/review는 `UNCERTAIN`이고 permission은 `DENY`입니다. 오래된 정책 reference는 감사용으로 남길 수 있지만 `PASS | ALLOW` 근거로 쓰지 않습니다. 수집 실패 `COLLECTION_FAILED`는 review를 만들지 않으며, 저장소 문서나 모델 기억으로 공식 정책을 추정하지 않습니다.
 
 validated PoC를 가진 TRUE의 exact revision을 Technical Gate가 `ACCEPT`하면 제공 능력별로 `result`가 있는 Primitive를 저장해 Chaining에 사용할 수 있다. Rule Scope 검토는 동시에 별도 경로로 진행하며 `review/rule/scope PASS`, `impact SUFFICIENT`, `permission ALLOW`를 모두 만족해야 Reporter를 호출할 수 있다. Rule Scope가 `FAIL | UNCERTAIN | DENY`이면 보고서만 막고 이미 admission된 Primitive와 Chaining 자격은 유지한다. 새 Verification revision에는 과거 Gate·동적 결과·PoC를 재사용하지 않는다. HOLD는 Gate 없이 `inputs`와 `result=null`인 Primitive로 Chaining에 들어간다.
 

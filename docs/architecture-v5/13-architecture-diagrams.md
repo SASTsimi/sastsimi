@@ -253,8 +253,9 @@ flowchart TB
     TS -->|REJECT| BLOCK[Report blocked]
     TS -->|ACCEPT| PRIMITIVE[Admit result Primitive for Chaining]
     TS -->|ACCEPT independent report review| RULE[Rule Scope Impact Gate Agent]
-    POLICY[Official ProgramPolicyRecord] --> RULE
-    NOPOL[Missing official policy] --> UNCERTAIN[Rule and scope UNCERTAIN permission DENY]
+    COLLECT[PolicyCollectionResult] -->|FOUND plus current policy| RULE
+    COLLECT -->|ABSENT_CONFIRMED| UNCERTAIN[Rule and scope UNCERTAIN permission DENY]
+    COLLECT -->|COLLECTION_FAILED| NOGATE[No Rule Scope review]
     UNCERTAIN --> BLOCK
     RULE --> READY{Review PASS Rule PASS Scope PASS Impact SUFFICIENT Permission ALLOW}
     READY -->|No| BLOCK

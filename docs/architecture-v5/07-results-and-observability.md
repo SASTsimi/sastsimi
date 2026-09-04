@@ -24,7 +24,7 @@
 | `primitives` | result 없는 HOLD 조건, Technical-accepted TRUE 능력과 exact Verification·Technical provenance |
 | `chaining` | `ChainingResult`, upstream result→downstream input match와 child proposal validation state |
 | `gates` | Technical 및 Rule Scope Impact review와 서로 exact pair인 Verification·current CWELabel·정책 input revision refs |
-| `policies` | 공식 `ProgramPolicyRecord`과 source refs |
+| `policies` | 정책 parser 결과, `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 수집 결과, 공식 `ProgramPolicyRecord`과 source·freshness refs |
 | `reports` | 허용된 내부 `ReportDraft`와 두 Gate가 공통으로 본 CWELabel revision ref |
 | `actions` | `ActionRequest`, validator의 `ActionDecision`, check와 일회성 사용·outcome refs |
 | `invocations` | normalized `LLMInvocationLog`와 safe provider/session metadata |
@@ -113,7 +113,7 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 
 - Technical ACCEPT/REVISE/REJECT와 revision 원인
 - Rule/Scope PASS/FAIL/UNCERTAIN, impact와 DENY 이유
-- `ProgramPolicyRecord` 누락·오래된 정책 경고 상태
+- 정책 수집의 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`, parser 실패, `ProgramPolicyRecord` 누락·오래된 정책 경고 상태
 - Reporter 조건 통과/차단, current·stale ReportDraft와 자동화 종료 상태
 
 ### Resources
@@ -198,7 +198,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 
 ## AnalysisRunResult
 
-최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, INITIAL·VERIFICATION·CHAINING·invalid hypothesis 수, 중복 판정과 exact `hypothesis_duplicate_review_refs`, verdict별 수, `failed_hypothesis_count`, 두 Gate별 수, 동적 재현 request·result·recipe·환경·AgentLog·PoC candidate·validated PoC·cleanup·report refs, 공식 정책 상태, Primitive/Chaining 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. 실패한 PoC candidate도 validated PoC로 승격하지 않은 채 request·attempt·AgentLog와 함께 추적한다. `failed_hypothesis_count`는 final verdict 없이 `HypothesisProcessState.status=FAILED`로 끝난 가설 수이며 verdict별 수와 섞지 않는다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
+최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, INITIAL·VERIFICATION·CHAINING·invalid hypothesis 수, 중복 판정과 exact `hypothesis_duplicate_review_refs`, verdict별 수, `failed_hypothesis_count`, 두 Gate별 수, 동적 재현 request·result·recipe·환경·AgentLog·PoC candidate·validated PoC·cleanup·report refs, 정책 parser·수집 결과·공식 정책 record refs, Primitive/Chaining 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. 실패한 PoC candidate도 validated PoC로 승격하지 않은 채 request·attempt·AgentLog와 함께 추적한다. `failed_hypothesis_count`는 final verdict 없이 `HypothesisProcessState.status=FAILED`로 끝난 가설 수이며 verdict별 수와 섞지 않는다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
 
 Reporter가 마지막 Agent 산출물인 `ReportDraft`를 저장한 뒤, 신뢰 runtime이 exact `AnalysisRunResult`를 만든다. 이 결과에는 Finding·Verification, 두 Gate, 정책·CWE, 동적 재현 request·result·recipe·환경·AgentLog·PoC candidate·redacted validated PoC·cleanup, current ReportDraft, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. Finding이 아직 없으면 Reporter를 호출하지 않고 `finding_refs=[]`, `report_draft_refs=[]`와 관련 `REPORT_NOT_READY` 오류·상태를 보존한다. 결과와 `AnalysisRunState`를 atomic하게 확정하면 Agent 자동화가 끝난다.
 
@@ -277,7 +277,8 @@ Context 조회 실패·timeout·권한 오류는 다음 기준으로 처리한�
 | `ENVIRONMENT_MISMATCH` | R7 Setup Automation | 필수 조건이 다르거나 확인되지 않음 | Agent가 recipe를 자율 보완하고 exact 차이·plan issue·AgentLog를 보존 |
 | `CHAINING_ERROR` | Chaining runtime | matching 실패, 부모 verdict 유지 | 제한 retry 또는 no-match/실패 기록 |
 | `TECHNICAL_GATE_ERROR` | Technical Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
-| `POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 Gate `UNCERTAIN + DENY` | 공식 출처 재확인 |
+| `POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 수집 결과 `COLLECTION_FAILED`; 성공한 Rule Scope review 없음 | 공식 출처 재확인 뒤 같은 정책 work 재시도 또는 실패 종료 |
+| `POLICY_PARSE_ERROR` | 정책 수집 계층 | parser 실행 실패와 `COLLECTION_FAILED`; 성공한 Rule Scope review 없음 | 원문·parser 버전 확인 뒤 새 parser attempt |
 | `RULE_SCOPE_GATE_ERROR` | 정책·영향 Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
 | `REPORT_ERROR` | Reporter runtime | 초안 `FAILED`, 기술 판정 유지 | 조건 보존 후 초안 재작성 |
 | `BUDGET_EXCEEDED` | Orchestration runtime | 작업 중단과 남은 검증 조건을 Verification에 전달; 분석은 `PARTIAL` 가능 | 운영 Pro/Con 등 필수 검증을 끝내지 못했다면 final verdict 없이 work를 중단하고, 새 예산 승인 뒤 새 attempt에서만 재시도 |
