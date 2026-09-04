@@ -1029,6 +1029,33 @@ $orchestrationPath = Join-Path $repoRoot 'docs/architecture-v5/03-agent-roles-an
 $orchestrationText = Get-Content -Raw -LiteralPath $orchestrationPath
 $gatePath = Join-Path $repoRoot 'docs/architecture-v5/05-llm-gate-and-reporting.md'
 $gateText = Get-Content -Raw -LiteralPath $gatePath
+$chainingPath = Join-Path $repoRoot 'docs/architecture-v5/06-chaining.md'
+$chainingText = Get-Content -Raw -LiteralPath $chainingPath
+$requiredChainingAdmissionRules = @(
+    '체이닝 재료 자격은 세 가지를 확인해 정한다',
+    'current `PrimitiveAdmissionDecision.decision=ALLOW`',
+    'Chaining Agent는 `rule_compliance`나 `evidence_links`를 읽어 금지 테스트 위반을 추정하지 않는다.',
+    '확정된 금지 테스트 위반으로 `DENY`가 된 경우만 재료에서 제외된다.',
+    '`WorkExecutionState.input_refs`에 함께 고정한다',
+    '`source_admission_refs`에는 실제 match에 사용한 Primitive와 그 계보에서 재귀적으로 도달한 모든 admission decision을 중복 없이 기록하며',
+    '`STALE_RESULT`로 저장을 거절하고 새 자식 가설을 만들지 않는다',
+    '실제 match에 사용하지 않은 후보의 decision 변경만으로는 진행 중인 결과를 무효화하지 않는다.',
+    '부모의 admission이 나중에 `DENY`로 바뀌면 파생 결과는 감사 기록으로만 보존하고'
+)
+foreach ($rule in $requiredChainingAdmissionRules) {
+    if (-not $chainingText.Contains($rule)) {
+        Add-Failure "missing Chaining admission rule in 06-chaining.md: $rule"
+    }
+}
+$chainingDocResultBlock = [regex]::Match($chainingText, '(?ms)^ChainingResult:\s*(.*?)^```').Groups[1].Value
+if (-not $chainingDocResultBlock.Contains('source_admission_refs:')) {
+    Add-Failure '06-chaining.md ChainingResult is missing field: source_admission_refs:'
+}
+$chainingPrimitiveBlock = [regex]::Match($chainingText, '(?ms)^Primitive:\s*(.*?)^```').Groups[1].Value
+if (-not $chainingPrimitiveBlock.Contains('admission_decision_ref:')) {
+    Add-Failure '06-chaining.md Primitive is missing field: admission_decision_ref:'
+}
+
 $gateWikiPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/gate-and-reporting.md'
 $gateWikiText = Get-Content -Raw -LiteralPath $gateWikiPath
 $requiredAuthorityRules = @(
