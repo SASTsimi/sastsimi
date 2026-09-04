@@ -11,9 +11,10 @@
 ## 적용 원칙
 
 - 플레이북은 점수표나 자동 판정표가 아니라 누락을 줄이는 참고 절차입니다. 질문을 더 많이 충족한 Agent가 이기는 구조가 아니며, verdict는 현재 코드와 실제 evidence로 결정합니다.
-- 한 Verification work의 직접 검증, Pro, Con, 합성은 같은 workspace_id, commit_id, hypothesis_id, generation과 exact playbook_ref를 사용합니다.
-- trusted runtime은 현재 versioned 지원·적용 규칙에서 사용이 허용되고, 가설의 `vulnerability_type`과 정확히 일치하는 `TYPE_SPECIFIC` 플레이북의 current exact revision을 선택합니다.
-- 유형별 플레이북이 존재하더라도 현재 지원·적용 규칙에서 허용되지 않았으면 사용하지 않습니다. 유형이 불명확하거나, 허용된 유형별 플레이북이 없거나, 유형이 일치하지 않으면 current exact `COMMON` revision을 선택합니다.
+- Verification work 등록 시 trusted runtime은 exact `VulnerabilityHypothesis.proposal_ref`가 가리키는 `HypothesisProposal.vulnerability_type_candidates`와 current exact `PlaybookPolicy`를 확인합니다.
+- 유형 후보가 정확히 하나이고 current `PlaybookPolicy.type_playbooks`에 같은 유형의 유효한 mapping이 있을 때만 `TYPE_SPECIFIC`을 선택합니다. 후보가 없거나 여러 개이거나 policy가 허용하지 않으면 current exact `COMMON`을 선택합니다.
+- runtime은 선택한 policy·playbook과 질문별 실제 `question_id`를 `PlaybookApplication`으로 고정합니다. Verification 직접 검증·Pro·Con·최종 합성은 동일한 exact `PlaybookPolicy`, `VerificationPlaybook`, `PlaybookApplication`을 사용합니다.
+- final `VerificationResult`는 `playbook_ref`와 `playbook_application_ref`를 모두 기록하며, 가설 자체 질문과 application 질문의 합집합을 빠짐없이 정확히 한 번씩 처리합니다.
 - 진행 중인 work에 새로운 플레이북 revision을 섞지 않습니다. 새 revision은 새 Verification work 또는 새 generation부터 적용합니다.
 - 오류, timeout, 빈 Context, Sandbox 실패는 가설의 반증 evidence가 아닙니다.
 - FALSE는 named falsification question이 실제 evidence로 DISPROVED 되었을 때만 가능합니다. 필수 검증을 완료한 뒤 남은 조건이 있으면 HOLD와 unresolved_conditions를 사용합니다.
@@ -45,6 +46,16 @@
 
 ---
 
+## 선택과 적용 기록
+
+1. runtime은 exact `VulnerabilityHypothesis.proposal_ref`를 따라 `HypothesisProposal.vulnerability_type_candidates`를 읽습니다.
+2. 후보가 정확히 하나이고 current `PlaybookPolicy`에 같은 유형의 mapping이 있으면 `selection=TYPE_SPECIFIC`, `selection_reason=TYPE_MATCH`로 해당 exact 플레이북을 선택합니다.
+3. 후보가 없으면 `NO_TYPE`, 여러 개면 `MULTIPLE_TYPES`, 하나지만 policy에 없으면 `TYPE_NOT_ALLOWED`로 `selection=COMMON`을 사용합니다.
+4. runtime은 exact hypothesis·proposal·policy·playbook과 적용된 질문을 `PlaybookApplication`에 고정합니다.
+5. 같은 Verification work의 직접 검증·Pro·Con·최종 합성과 저장은 모두 같은 application을 사용합니다.
+6. final `VerificationResult.playbook_ref`는 application의 playbook과 같아야 하며 `playbook_application_ref`도 함께 기록합니다.
+7. final `falsification_results[].question_id` 집합은 가설 자체 질문과 application 질문의 중복 없는 합집합과 같아야 하며, 각 질문을 정확히 한 번 평가합니다.
+
 ## COMMON
 
 ### 사전 조건
@@ -74,9 +85,9 @@ HTTP query, path, body, header, cookie, 업로드 파일, 메시지, 데이터�
 
 ### 반증 질문 템플릿 이름과 실제 question_id
 
-`SQLI-FQ-01`, `XSS-FQ-01`, `SSRF-FQ-01` 같은 값은 플레이북에서 질문 양식을 구분하기 위한 템플릿 이름입니다. 실제 `FalsificationQuestion.question_id`가 아닙니다.
+`COM-FQ-01`, `SQLI-FQ-01`, `XSS-FQ-01` 같은 값은 `PlaybookQuestionTemplate.template_key`입니다. 같은 플레이북 revision 안에서 사람이 질문 템플릿을 구분하기 위한 이름이며 실제 `FalsificationQuestion.question_id`가 아닙니다.
 
-플레이북의 질문을 특정 가설에 적용할 때 trusted runtime은 각 질문에 새로운 전역 고유 `question_id`를 발급합니다. 이후 `FalsificationQuestion`과 `FalsificationResult`는 이 실제 `question_id`로 연결합니다. 템플릿 이름을 실제 `question_id`로 저장하거나 다른 가설에서 재사용하지 않습니다.
+Verification work를 처음 등록할 때 trusted runtime은 선택한 플레이북의 모든 `PlaybookQuestionTemplate`을 `PlaybookApplication.questions`에 한 번씩 복사하고, 각 질문에 새로운 전역 고유 `question_id`를 발급합니다. `AppliedPlaybookQuestion`은 `template_key`, 새 `question_id`, 원래 질문 문장을 함께 보존합니다. 같은 work의 retry는 동일 application과 질문 ID를 유지하지만, 새 work 또는 새 generation은 새 application과 새 질문 ID를 만듭니다.
 
 ### Named falsification questions
 
