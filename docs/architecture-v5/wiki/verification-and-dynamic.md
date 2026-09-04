@@ -82,3 +82,17 @@ Docker는 clean/non-root, network default-deny와 자원·시간 제한을 사�
 Technical Gate가 `REVISE`를 반환하면 같은 ACTIVE `VerificationAssignment` owner가 직접 받습니다. 프로그램은 새 generation의 Verification work와 `TERMINAL -> VERIFYING` 전이를 먼저 원자적으로 만들고, 필요한 Context·Pro/Con·정적 근거와 설명을 보완합니다. final TRUE를 다시 만들려면 새 generation의 동적 work와 validated PoC도 필요합니다. 새 final TRUE가 확정되면 R5-01 `CWE_LABELING`이 CWE 정렬을 다시 평가하고, 값이 같아도 새 Verification을 직접 가리키는 새 `CWELabel` revision을 만든 뒤 새 Gate work를 요청합니다. 이는 provider retry나 동일 입력 재투표가 아닙니다.
 
 `status`는 실행 완료 정도이고 `hypothesis_outcome: SUPPORTED | DISPROVED | INCONCLUSIVE`은 관측과 가설의 관계입니다. 둘 다 최종 판정이 아닙니다. 실제 반증은 `DISPROVED`, `hypothesis_disproved: true`, 관측 근거가 함께 있어야 합니다. 생성·환경·실행 실패는 관측 반증이 아니므로 `FALSE | HOLD`로 바꾸지 않습니다. 저장 확정 marker와 request·plan·result·PoC reference가 모두 일치할 때만 Verification이 읽습니다. 상세 내용은 [검증과 동적 재현](../04-verification-and-dynamic-reproduction.md)을 따릅니다.
+
+
+## R6 동적 요청과 결과 소비 요약
+
+R6의 선택은 다음과 같습니다.
+
+- 정적·Pro·Con만으로 initial TRUE이면 `POC_CONFIRMATION`을 한 번 요청합니다.
+- 실행 관측 없이는 판정할 수 없으면 `VERDICT_EVIDENCE`를 한 번 요청합니다. 여기서 `SUPPORTED`가 나오면 같은 실행의 validated PoC를 final TRUE에 사용하므로 PoC 확인을 다시 요청하지 않습니다.
+- 정적·Pro·Con으로 근거 있는 FALSE 또는 HOLD를 확정할 수 있으면 동적 요청을 생략할 수 있지만, validated PoC 없는 final TRUE는 만들 수 없습니다.
+- 한 generation에는 동적 work를 하나만 허용합니다. Technical `REVISE`는 새 generation이므로 목적을 다시 정하고 새 work를 최대 한 번 요청합니다.
+
+R6는 current generation과 exact request에 연결된 확정 결과만 읽습니다. `SUCCEEDED + SUPPORTED`와 same-attempt validated PoC는 final TRUE 후보, 실제 근거가 있는 `DISPROVED`는 FALSE 근거, 정상 실행의 `INCONCLUSIVE`는 근거와 남은 조건을 가진 HOLD 후보입니다. 정책 차단·환경 구성·Agent·PoC 생성·실행 실패·timeout은 verdict가 아니므로 final 결과와 Gate 요청을 만들지 않습니다. hypothesis·workspace·commit·generation·purpose·attempt가 다른 결과는 `STALE_RESULT`로 격리합니다.
+
+R6는 재현할 exact 가설, current generation, 목적, 재현 목표, 필요한 환경 조건, `sandbox_profile_ref`와 관련 근거만 `DynamicReproductionRequest`에 기록합니다. `EnvironmentRequirements`, `ReproductionPlan`, recipe, command, payload와 PoC는 R7이 생산합니다.
