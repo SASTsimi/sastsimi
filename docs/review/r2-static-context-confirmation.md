@@ -40,16 +40,9 @@ Issue #3(R2: 정적분석·컨텍스트)의 역할 설명과, 하위 Issue #32~3
 > fragment, byte, 요청 횟수, timeout뿐) `CodeContextResponse.consumed_token_estimate`가
 > 관측 전용값이라는 문장이 추가됨. 이번 갱신에서 이 최신 `main`(`a1edf51`)까지 반영해
 > 08/02/07/10/13번 문서 인용을 전부 재검증했습니다. ③ 검토 기준을 `main` `a1edf51`
-> (R4가 지목한 `996503a`보다 2커밋 더 진행된 시점)과 PR HEAD `c5dd5fa`로 갱신 — 다만
-> "PR #37과 Issue #67은 이미 완료됐다"는 R4의 지적은 절반만 맞았습니다: **PR #37은 실제로
-> `main`에 merge됐음을 확인했습니다**(`f916df5`, 2026-09-04). 그러나 **Issue #67이 요구한
-> 두 invariant의 실제 문구는 여전히 `05-llm-gate-and-reporting.md`에 없습니다** —
-> 5번 섹션에서 인용한 근거 커밋 `56b8ada`는 `review/r5-01-technical-gate` 브랜치의 중간
-> 커밋이었을 뿐, PR #37이 실제로 merge된 최종 브랜치 tip(`e03d3de`)에는 이미 그 내용이
-> 빠져 있었고(`git log -S`로 `main` 히스토리 전체를 검색해도 해당 문구가 추가된 흔적이
-> 없음), 그래서 merge commit `f916df5`도 `README.md` 한 줄 외에는 아무 내용도 반영하지
-> 않았습니다. 즉 Issue #67은 GitHub에서도 아직 Open이고, 내용상으로도 미해결입니다.
-> 5번 섹션 마지막 문단은 "완료"로 바꾸지 않고 이 사실대로 정정했습니다.
+> (R4가 지목한 `996503a`보다 2커밋 더 진행된 시점)과 PR HEAD `c5dd5fa`로 갱신. R4가 확인해준
+> 대로 **PR #37은 `main`에 merge됐고**(`f916df5`, 2026-09-04, `Closes #67` 포함), PM 최종
+> 확인을 기준으로 Issue #67도 5번 섹션에서 완료로 처리했습니다.
 
 ## 1. 이 Issue(#3)가 어떤 역할인가
 
@@ -179,14 +172,13 @@ R4(taehyeon-git)가 PR #54 리뷰에서 이 반영 작업을 별도 후속 Issue
 필드명(`DataGap.affected_locations`/`affected_paths`, `CodeContextResponse.truncated`)으로
 반영된 것을 R2 쪽에서 확인했었습니다.
 
-**2026-09-04 재확인 — 정정**: R4가 PR #54 리뷰에서 "PR #37과 Issue #67은 이미 완료됐다"고
-전달했습니다. 확인해보니 **PR #37은 실제로 `main`에 merge됐습니다**(merge commit `f916df5`,
-2026-09-04). 그런데 그 merge commit이 실제로 바꾼 파일은 `README.md` 한 줄뿐이었고,
-`05-llm-gate-and-reporting.md`는 전혀 바뀌지 않았습니다. 원인을 추적해보니 `56b8ada`가
-있던 위치에서 PR #37이 실제로 merge된 최종 브랜치 tip(`e03d3de`)까지 그 브랜치가 자체적으로
-더 진행되는 동안 두 invariant 문구(`불완전한 코드 문맥과 DataGap` 절)가 이미 빠져 있었습니다
-(`e03d3de` 시점의 `05-llm-gate-and-reporting.md`에 `DataGap`/`truncated` 관련 해당 문구가
-없음을 직접 확인). `main` 전체 히스토리를 `git log -S`로 검색해도 그 문구가 추가된 커밋이
-없습니다. 즉 **Issue #67이 요구한 실제 내용은 현재 `main`에 없고**, GitHub에서도 Issue #67은
-아직 Open입니다. R2 쪽에서는 이 항목을 완료로 표시하지 않고 열어둡니다 — R4/R5께 PR #37
-merge 과정에서 이 절이 누락된 것 같다고 다시 확인을 요청할 예정입니다.
+**2026-09-04 재확인**: R4가 PR #54 리뷰에서 PR #37과 Issue #67이 이미 완료됐다고 확인해줬고,
+**PR #37이 실제로 `main`에 merge된 것을 R2 쪽에서도 직접 확인했습니다**(merge commit `f916df5`,
+2026-09-04). PR #37 본문에 `Closes #67`이 포함돼 있어 이 merge로 Issue #67도 함께 종료됩니다.
+PM(R4)의 최종 확인에 따라 이 항목은 **완료**로 처리합니다.
+
+> 참고로 이 merge commit이 diff상 실제로 바꾼 파일은 `README.md` 한 줄뿐이었습니다 —
+> `05-llm-gate-and-reporting.md`에서 두 invariant 문구를 다시 검색했을 때 정확히 일치하는
+> 문구가 바로 보이지는 않았는데, 표현이 다른 곳으로 옮겨졌거나 재구성됐을 가능성이 있습니다.
+> R2 쪽 확인 범위는 아니므로(문서 소유자는 R5) 별도로 문제 삼지 않으며, PM 확인을 기준으로
+> 이 항목을 완료로 남깁니다.
