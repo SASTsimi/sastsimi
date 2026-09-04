@@ -41,8 +41,11 @@ Issue #3(R2: 정적분석·컨텍스트)의 역할 설명과, 하위 Issue #32~3
 > 관측 전용값이라는 문장이 추가됨. 이번 갱신에서 이 최신 `main`(`a1edf51`)까지 반영해
 > 08/02/07/10/13번 문서 인용을 전부 재검증했습니다. ③ 검토 기준을 `main` `a1edf51`
 > (R4가 지목한 `996503a`보다 2커밋 더 진행된 시점)과 PR HEAD `c5dd5fa`로 갱신. R4가 확인해준
-> 대로 **PR #37은 `main`에 merge됐고**(`f916df5`, 2026-09-04, `Closes #67` 포함), PM 최종
-> 확인을 기준으로 Issue #67도 5번 섹션에서 완료로 처리했습니다.
+> 대로 **PR #37은 `main`에 merge됐습니다**(`f916df5`, 2026-09-04). 다만 GitHub에서 직접
+> 재확인한 결과 **Issue #67은 여전히 Open 상태**이고(PR #37 merge commit에 `Closes #67`
+> 문구가 있었음에도 실제로 닫히지 않았음) `05-llm-gate-and-reporting.md`에도 아래 두
+> invariant 문구가 없어(2026-09-04 이후 merge된 PR #59 반영 이후 기준으로도 없음
+> 재확인), 5번 섹션은 완료가 아닌 Open 상태로 정정했습니다.
 
 ## 1. 이 Issue(#3)가 어떤 역할인가
 
@@ -138,7 +141,7 @@ flowchart LR
 - **필수 교차 리뷰**: LLM 탐색·체이닝(#2), 검증·반박(#7), PM·아키텍처(#5), 통합·구현 개발(#4)
 - R2-02(`StaticFactBundle` 스키마) → #2, #7이 실제로 이 스키마를 소비하므로 사전 합의 필요
 - R2-03(`DataGap` 규칙) → #2, #7뿐 아니라 Gate·Finding·보고서(#6)도 영향 — claim과 겹치는 `DataGap`을 Technical Gate가 무시하면 안 되지만, `DataGap` 존재 자체가 자동으로 verdict를 바꾸지는 않음(아래 5번 invariant ①과 동일)
-- R5-03(Reporter/ReportDraft 생성 조건)이 R2 관점에서 이미 교차 검토됨 — [`docs/review/r5-03-r2-cross-review.md`](./r5-03-r2-cross-review.md) 참고. 이 문서에서 `ReportDraft.content_ref`에 실제로 적힌 `path:line`이 upstream `EvidenceClaim.code_locations`와 일치하는지 검사하는 규칙이 아직 명시돼 있지 않다는 점을 R5-03의 output contract validation 범위에 추가할 것을 제안함 — `review/r5-03-reporter` 브랜치(2026-09-03 확인)에도 아직 반영 안 됨, 열려 있는 항목
+- R5-03(Reporter/ReportDraft 생성 조건)이 R2 관점에서 이미 교차 검토됨 — [`docs/review/r5-03-r2-cross-review.md`](./r5-03-r2-cross-review.md) 참고. 이 문서에서 `ReportDraft.content_ref`에 실제로 적힌 `path:line`이 upstream `EvidenceClaim.code_locations`와 일치하는지 검사하는 규칙이 아직 명시돼 있지 않다는 점을 R5-03의 output contract validation 범위에 추가할 것을 제안함 — `review/r5-03-reporter` 브랜치가 PR #59로 `main`(`a1edf51`)에 merge된 뒤(2026-09-04 재확인)에도 이 규칙은 아직 반영 안 됨, 열려 있는 항목
 - 선행 조건: 명시된 건 없지만, `CodeWorkspace` 식별 규칙(R2-01)이 다른 모든 하위 Issue와 다른 역할의 전제가 됨
 
 ## 5. R5 관점 교차 리뷰 반영 (2026-08-31)
@@ -173,12 +176,15 @@ R4(taehyeon-git)가 PR #54 리뷰에서 이 반영 작업을 별도 후속 Issue
 반영된 것을 R2 쪽에서 확인했었습니다.
 
 **2026-09-04 재확인**: R4가 PR #54 리뷰에서 PR #37과 Issue #67이 이미 완료됐다고 확인해줬고,
-**PR #37이 실제로 `main`에 merge된 것을 R2 쪽에서도 직접 확인했습니다**(merge commit `f916df5`,
-2026-09-04). PR #37 본문에 `Closes #67`이 포함돼 있어 이 merge로 Issue #67도 함께 종료됩니다.
-PM(R4)의 최종 확인에 따라 이 항목은 **완료**로 처리합니다.
+**PR #37이 실제로 `main`에 merge된 것은 R2 쪽에서도 직접 확인했습니다**(merge commit `f916df5`,
+2026-09-04). 이를 근거로 한 차례 "완료"로 표시했으나, 이후 GitHub에서 Issue #67을 직접
+재확인한 결과 **실제로는 아직 Open 상태**입니다 — PR #37 merge commit에 `Closes #67` 문구가
+있었지만 실제로 이슈가 닫히지 않았습니다. 내용 면에서도 `05-llm-gate-and-reporting.md`에
+요구된 두 invariant(① `DataGap`이 claim에 영향을 줄 때 Technical Gate가 무시하면 안 됨, ②
+`CodeContextResponse.truncated=true`를 자동으로 확인됨으로 가정하면 안 됨) 문구가 여전히
+없음을 재확인했습니다(2026-09-04 PR #59 `review/r5-03-reporter` merge로 이 문서가 크게
+확장된 뒤에도 없음 — `main` `a1edf51` 기준 재검색 결과 동일).
 
-> 참고로 이 merge commit이 diff상 실제로 바꾼 파일은 `README.md` 한 줄뿐이었습니다 —
-> `05-llm-gate-and-reporting.md`에서 두 invariant 문구를 다시 검색했을 때 정확히 일치하는
-> 문구가 바로 보이지는 않았는데, 표현이 다른 곳으로 옮겨졌거나 재구성됐을 가능성이 있습니다.
-> R2 쪽 확인 범위는 아니므로(문서 소유자는 R5) 별도로 문제 삼지 않으며, PM 확인을 기준으로
-> 이 항목을 완료로 남깁니다.
+이 항목은 **완료가 아닌 Open으로 정정**합니다. GitHub 이슈 상태와 이 문서의 서술을 다르게
+둘 이유가 없고, 실제로 반영이 안 된 채 완료로 표시해 두면 이후 다른 역할이 이 문서를 믿고
+넘어갈 위험이 있기 때문입니다. R4/R5께 이 상태 불일치를 다시 전달할 예정입니다.
