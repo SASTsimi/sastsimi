@@ -21,15 +21,15 @@ Runtime Validator는 취약점이 맞는지 새로 판단하는 Gate가 아닙�
 | 취약점 가설 | Hypothesis Agent | 확정 Finding 생성 |
 | `TRUE | FALSE | HOLD` | Verification Agent | Orchestration·Runtime이 대신 판정 |
 | 재현 목적·목표·필요 환경 요청과 최종 verdict | R6 Verification | R7이 요청 목적이나 verdict를 변경 |
-| 환경 요구사항·mode·계획·PoC candidate·동적 결과 | R7 Dynamic Reproduction | R6가 R7 산출물을 대신 생산 |
 | CWE label | CWE Labeling | Orchestration이 임의 확정 |
 | 기술 근거 검토 | Technical Evidence Gate | Verification verdict 변경 |
 | 공식 정책·scope·impact·report permission | Rule Scope Impact Gate | 정책 없는 `ALLOW` 추정 |
 | 내부 보고서 초안 | Reporter Agent | Gate 우회·외부 제출 |
-| 일반 실행 허용·차단과 exact plan·requirements Sandbox 호출 전제 확인 | Runtime Validator | 환경 의미·취약점·CWE·정책 또는 Sandbox 세부 정책 판단 |
-| Sandbox 세부 안전 정책 검사 | Sandbox Controller | 환경 요구사항·재현 모드·계획·취약점 판정 변경 |
-| 실제 환경 구성·요구사항 비교·Health Check와 승인된 공격 단계 실행 | Sandbox Runner | 환경 차이 수용, 허용되지 않은 fallback, 정책 변경 또는 계획 밖 명령 실행 |
-| 동적 결과 reference 조립 | Sandbox Result Assembler | 다른 attempt 자료 혼합 또는 참조만으로 성공 판단 |
+| 일반 실행 허용·차단과 current request·requirements Sandbox 호출 전제 확인 | Runtime Validator | 환경 의미·취약점·CWE·정책 또는 Sandbox 외부 경계 판단 |
+| Sandbox 외부 격리 경계 검사 | Sandbox Controller | 환경 요구사항·재현 전략·내부 command·취약점 판정 변경 |
+| recipe·image·container·환경 비교·cleanup 실행 | R7 Setup Automation | Agent의 취약점 해석, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
+| Sandbox 안에서 command·PoC·관찰·재시도 선택 | R7 Agent | 외부 격리 경계 변경 또는 최종 verdict 판단 |
+| AgentLog·validated PoC·동적 결과 확정 | Reproduction Session Manager | Agent 실행 전략 결정, 다른 attempt 자료 혼합 또는 참조만으로 성공 판단 |
 
 Orchestration Agent는 proposal 검증·전역 등록·Verification 배정을 조정하지만 배정 뒤 가설 내부 Context·Pro/Con·dynamic·Gate·Chaining, verdict, CWE, 정책 해석, 보고 가능 여부와 공개 여부를 정하지 않습니다. Verification이 가설 내부 다음 작업을 정해도 프로그램 검사를 우회할 수 없습니다.
 
@@ -76,7 +76,7 @@ Agent 또는 service의 제안
 
 프로그램 검사기는 이 두 Gate의 순서와 입력 수정본만 확인합니다. Gate 결론은 LLM Gate가 만듭니다. 공식 정책이 없으면 Rule Scope 결과는 `UNCERTAIN + DENY`이며 Reporter를 부르지 않습니다.
 
-Gate를 실제 호출하기 직전에도 검사한 입력 수정본이 그대로인지 다시 확인합니다. Technical Gate는 같은 Verification·CWE를, Rule Scope Gate는 여기에 같은 Technical 검토를, Reporter는 두 Gate가 검토한 동일한 결과 묶음을 사용해야 합니다. 중간에 하나라도 바뀌면 기존 허가는 만료되고 새 요청이 필요합니다.
+Gate를 실제 호출하기 직전에도 검사한 입력 수정본이 그대로인지 다시 확인합니다. Technical Gate는 exact Verification과 이를 직접 가리키는 current CWELabel을, Rule Scope Gate는 여기에 같은 Technical 검토를, Reporter는 두 Gate가 검토한 동일한 결과 묶음을 사용해야 합니다. 중간에 하나라도 바뀌면 기존 허가는 만료되고 새 요청이 필요합니다.
 
 Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아닙니다. 같은 가설의 Verification owner가 직접 받고, Verification 또는 CWE가 실제로 보완된 새 수정본이 생겨야 새 Gate 작업을 시작할 수 있습니다. Orchestration이나 Chaining이 목적지를 다시 고르지 않습니다. 로그인 실패나 잘못된 출력의 제한 재시도와 이 보완 재검토는 별개입니다.
 
@@ -90,11 +90,11 @@ Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아
 
 결과 저장 요청에는 결과 종류와 검사할 후보 파일의 정확한 hash를 함께 넣습니다. 프로그램 검사기는 그 결과를 만들 권한이 있는 역할인지, 현재 작업·시도·코드 버전과 같은지 확인합니다. 검사 뒤 후보 내용이 바뀌거나 다른 역할이 저장하려 하면 거절합니다. 저장이 완료된 결과와 작업 종료 기록이 같은 `COMMITTED` 전이에 연결된 뒤에만 다음 단계가 읽습니다.
 
-동적 재현 전에는 R6 Verification이 목적·목표·필요 환경·Sandbox profile·근거를 `DynamicReproductionRequest`로 고정합니다. R7은 exact 요청을 읽어 `EnvironmentRequirements`, 실행 mode, `ReproductionPlan`과 PoC candidate를 만듭니다. Runtime Validator는 현재 generation에 동적 work가 하나뿐인지와 exact reference를 확인하고, Sandbox Controller는 image·명령·파일·네트워크·자원·정리 정책을 검사합니다. Runner는 실제 환경·Health Check가 필수 요구사항과 맞을 때만 exact candidate를 실행합니다. Result Assembler는 같은 request·plan·attempt의 정책 판정·환경 비교·step log·PoC·cleanup reference만 연결합니다. 성공한 `SUCCEEDED + SUPPORTED` 실행만 validated `poc_ref`를 만들며, 모든 final TRUE와 Technical Gate 요청에 이 PoC가 필요합니다. 생성·환경·실행 실패는 `FALSE | HOLD`가 아니라 retry 가능 시 `BLOCKED`, 복구 불가능 시 verdict 없는 `FAILED`입니다.
+동적 재현 전에는 R6 Verification이 목적·목표·필요 환경·Sandbox profile·근거를 `DynamicReproductionRequest`로 고정합니다. R7 Agent는 exact 요청을 읽어 `EnvironmentRequirements`와 mode·exact command가 없는 `ReproductionPlan`을 만듭니다. Runtime Validator는 현재 generation에 동적 work가 하나뿐인지와 current request/requirements를 확인하고, Sandbox Controller는 host·Docker·mount/namespace·secret·egress·workspace·resource/lifecycle 외부 경계만 검사합니다. Setup Automation은 recipe·image·container·cleanup을 맡고 Agent는 Sandbox 안에서 PoC candidate·command·관찰·재시도를 자율적으로 정합니다. Reproduction Session Manager는 같은 attempt의 실제 event를 `AgentLog`에 남기고 validated PoC와 결과를 확정합니다. 성공한 `SUCCEEDED + SUPPORTED` 실행만 validated `poc_ref`를 만들며, 모든 final TRUE와 Technical Gate 요청에 이 PoC가 필요합니다. 자율 retry는 외부 대기가 없으면 `BLOCKED`가 아니고, 실패·정책 차단·환경 오류는 `FALSE | HOLD`로 바꾸지 않습니다.
 
 ## 자동화가 끝나는 지점
 
-Reporter는 current Finding·Verification·CWE·두 Gate·정책을 정확히 참조하고 restriction·limitation·남은 불확실성과 redaction 결과를 보존한 `ReportDraft`를 만듭니다. 선행 결과가 바뀌면 기존 초안은 감사 이력으로만 남고 current 결과에서 제외합니다.
+Reporter는 current Finding·Verification·CWELabel·두 Gate·정책을 정확히 참조하고 restriction·limitation·남은 불확실성과 redaction 결과를 보존한 `ReportDraft`를 만듭니다. 선행 결과가 바뀌면 기존 초안은 감사 이력으로만 남고 current 결과에서 제외합니다.
 
 이 초안과 실행 결과·PoC·자원·오류·HOLD 조건·debug trace를 `AnalysisRunResult`에 확정하면 Agent 자동화가 끝납니다. 이후 검토·수정·제출·공개는 사람이 시스템 밖에서 수행하며, 이를 위한 Agent action이나 상태는 없습니다.
 

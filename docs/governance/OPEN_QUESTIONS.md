@@ -35,7 +35,7 @@
 | 1 | 역할별로 어떤 LLM 서비스와 모델을 쓸지 정합니다. | provider/model profile과 공식 지원 범위 |
 | 2 | 회원 로그인·API 인증정보와 로그인 상태를 어디까지 저장할지 정합니다. | Membership/API credential와 session 저장 경계 |
 | 3 | 새 대화, 이어서 대화, 자동 선택을 어떻게 비교하고 기본 한도를 얼마로 할지 정합니다. | `NEW / RESUME / AUTO` 평가와 기본 limit |
-| 4 | LLM이 잘못된 형식으로 답했을 때 몇 번 고치게 할지와 신뢰도 평가 방법을 정합니다. | Hypothesis schema repair 횟수와 confidence 기준 |
+| 4 | LLM이 잘못된 형식으로 답했을 때 몇 번 고치게 할지와 구조화된 출력의 합격 기준을 정합니다. | Hypothesis schema repair 횟수와 structured-output 합격 기준 |
 | 5 | 필요한 코드를 얼마나 깊고 많이 가져올 수 있는지 정합니다. | Context retrieval depth/token/request 제한 |
 | 6 | 운영은 항상 찬성·반대 검증을 실행합니다. BASIC·조건부 방식의 비용·효과를 비교할 평가 자료와 운영 전환 합격선만 정합니다. | `ALWAYS_DEBATE` 운영 고정, BASIC/CONDITIONAL 비교 corpus와 acceptance threshold |
 | 7 | 연계 공격의 필요 조건과 확인된 능력을 어떤 단어로 기록하고 연결할지 정합니다. | Primitive vocabulary와 scope/capability matching |

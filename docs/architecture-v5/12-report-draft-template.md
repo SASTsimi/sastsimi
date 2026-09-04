@@ -116,7 +116,9 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 ## 7. 동적 재현과 PoC
 
 - 요청 목적: `{POC_CONFIRMATION | VERDICT_EVIDENCE}`
-- R7 실행 모드: `{LIMITED_REPRO | FULL_REPRO}`
+- R7 재현 전략: `{strategy_summary}`
+- 실행 환경 recipe/image: `{environment_recipe_ref / built_image_digest}`
+- 실행 기록: `{agent_log_ref}`
 - Docker 환경: `{image digest and relevant configuration}`
 - 전제: `{account, data, route or build condition}`
 - 실행 상태: `{SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED}`
@@ -143,6 +145,7 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 ## 8. CWE
 
 - 검토한 CWELabel revision: `{cwe_label_ref.record_id}`
+- CWELabel이 직접 가리킨 Verification revision: `{CWELabel.verification_result_ref.record_id}`
 - primary: `{CWE-ID and name}`
 - taxonomy version: `{version}`
 - 선택 이유와 evidence: `{rationale and refs}`
@@ -180,7 +183,7 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 - 정책 근거와 판단 이유: `{policy refs and rationale}`
 - report permission: `ALLOW`
 
-위 세 위치의 `cwe_label_ref.record_id`는 같아야 한다. CWELabel이 수정되면 기존 Gate 결과와 보고서 초안을 재사용하지 않는다.
+위 세 위치의 `cwe_label_ref.record_id`는 같아야 한다. 또한 `CWELabel.verification_result_ref.record_id`는 두 Gate와 초안이 검토한 `verification_result_ref.record_id`와 같아야 한다. CWELabel이나 Verification이 수정되면 기존 Gate 결과와 보고서 초안을 재사용하지 않는다.
 
 ## 11. LLM invocation trace와 오류
 
