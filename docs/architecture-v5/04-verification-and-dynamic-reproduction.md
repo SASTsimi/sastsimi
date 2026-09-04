@@ -188,31 +188,17 @@ Technical Evidence Gate의 `ACCEPT`는 R5가 exact final TRUE revision을 대상
 
 ## 취약점 유형별 검증 플레이북
 
-지원 취약점 유형 목록은 R8의 versioned evaluation corpus에서 확정한다. 현재는 지원 목록이 확정되지 않았으므로 이번 설계에서는 모든 유형에 공통으로 적용할 플레이북 구조와 작성 규칙을 먼저 확정한다. 지원 목록이 확정되면 이 구조를 사용해 유형별 플레이북을 별도 revision으로 추가한다.
+플레이북의 공통 구조와 실제 검증 내용은 [R6 검증 플레이북](./verification-playbooks.md)을 정본으로 사용한다. 최초 작성 범위는 공통 fallback 1종과 웹 취약점 6종(SQL Injection, XSS, OS Command Injection, Path Traversal, SSRF, IDOR/BOLA)이다. 이 목록은 플레이북 작성 범위이며 R8 평가 corpus나 운영 지원 목록의 자동 변경을 뜻하지 않는다.
 
-목록이 확정된 뒤 각 지원 취약점 유형은 같은 이름으로 식별 가능한 검증 플레이북을 가진다. 플레이북은 Agent에게 자유로운 결론을 요구하는 prompt가 아니라, 해당 유형에서 빠뜨리면 안 되는 확인 항목과 반증 질문을 정의한 실행 가능한 검증 절차다.
+플레이북은 Agent에게 자유로운 결론을 요구하는 prompt나 점수표가 아니다. 과거 사례와 검증 지식을 바탕으로 빠뜨리면 안 되는 사전 조건, source, sink, source-to-sink 경로, 방어, named falsification question, 정적·동적 evidence, restriction과 HOLD 조건을 안내한다. verdict는 체크 개수나 Pro·Con 중 한쪽의 승패가 아니라 현재 코드와 실제 evidence로 결정한다.
 
-플레이북 후보는 R6 검증·반박·플레이북 담당이 작성하고, trusted playbook registry runtime이 schema와 revision을 검사해 변경 불가능한 record로 등록한다. Verification work를 등록할 때 trusted runtime은 지원 유형과 일치하는 current exact `TYPE_SPECIFIC` revision을 선택하고, 적용 가능한 유형별 플레이북이 없으면 current exact `COMMON` revision을 선택해 `WorkExecutionState.input_refs`에 고정한다.
+플레이북 후보는 R6 검증·반박·플레이북 담당이 작성하고, trusted playbook registry runtime이 schema와 revision을 검사해 변경 불가능한 record로 등록한다. Verification work를 등록할 때 trusted runtime은 가설 유형과 정확히 일치하는 current exact TYPE_SPECIFIC revision을 선택한다. 등록된 유형별 플레이북이 없거나 유형이 불명확하면 current exact COMMON revision을 선택해 WorkExecutionState.input_refs에 고정한다.
 
-Verification의 직접 검증, 독립 Pro/Con 실행, final 합성과 결과 저장은 모두 work에 고정된 동일한 플레이북 revision을 사용한다. 검증 도중 current revision이 변경돼도 진행 중인 work에는 새 revision을 섞지 않는다. 단순 retry는 기존 revision을 유지하고, 새 revision을 적용하려면 새 Verification work 또는 새 verification generation을 만들어야 한다.
+Verification의 직접 검증, 독립 Pro/Con 실행, final 합성과 결과 저장은 모두 work에 고정된 동일한 exact 플레이북 revision을 사용한다. 검증 도중 current revision이 변경돼도 진행 중인 work에는 새 revision을 섞지 않는다. 단순 retry는 기존 revision을 유지하고, 새 revision을 적용하려면 새 Verification work 또는 새 verification generation을 만들어야 한다.
 
-각 플레이북에는 최소한 다음 항목을 기록한다.
+미지원 유형도 후속 Issue만 만들고 현재 실행을 끝내서는 안 된다. COMMON으로 필수 검증을 먼저 수행한다. 필수 검증을 완료했지만 유형별 정보가 부족하면 unresolved_conditions와 HOLD를 기록할 수 있고, 실행 자체가 실패하면 verdict 없이 실행 오류를 기록한다. 오류·timeout·빈 Context·Sandbox 실패는 FALSE의 반증 evidence가 아니다.
 
-| 항목 | 설명 |
-|---|---|
-| `vulnerability_type` | 플레이북이 다루는 취약점 유형 |
-| 사전 조건 | 공격자가 먼저 만족해야 하는 권한·입력·환경 |
-| source | 공격자 입력이나 제어 값이 시작되는 위치 |
-| sink | 위험 동작 또는 영향이 발생하는 위치 |
-| 경로 확인 | source에서 sink까지 이어지는 호출·데이터 흐름 |
-| 방어 확인 | validator, sanitizer, canonicalization, 인증·인가와 권한 검사 |
-| 반증 질문 | 무엇이 실제 근거로 확인되면 가설이 반증되는지 |
-| 정적 evidence | 필요한 코드 위치·호출 관계·도구 결과 |
-| 동적 evidence | 실행으로 확인해야 하는 조건과 observable effect |
-| restriction | 공격이 가능한 범위를 제한하는 조건 |
-| HOLD 조건 | 아직 해결되지 않으면 최종 판단을 보류해야 하는 조건 |
-
-지원 목록이 확정되기 전에는 임의의 취약점 유형을 지원 대상으로 가정하지 않는다. 목록 확정 후에도 지원 목록에 없는 유형을 기존 플레이북에 억지로 맞추지 않는다. 필요한 검증 항목을 확정할 수 없으면 공통 플레이북으로 현재 실행을 먼저 처리한다. 정상적으로 필수 검증을 완료했지만 정보가 부족하면 `unresolved_conditions`와 `HOLD`를 기록한 뒤 후속 Issue를 연결한다. 실행 자체가 실패했다면 verdict 없이 실행 오류를 기록한 뒤 후속 Issue를 연결한다. 새로운 endpoint·sink·권한 경계·공격 단계·독립 impact가 발견되면 현재 verdict에 합치지 않고 material child proposal로 분리한다.
+플레이북은 동적 검증의 목적과 필요한 관측만 정의한다. R6는 재현할 가설, 재현 목표, 필요한 환경 조건, sandbox_profile_ref와 관련 문맥을 요청하며, PoC·command·환경 계획과 DynamicReproductionResult는 R7이 생산한다. 모든 final TRUE에는 current generation의 SUCCEEDED + SUPPORTED 동적 결과와 validated poc_ref가 필요하다.
 
 ## Docker 동적 재현
 
