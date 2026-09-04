@@ -8,13 +8,15 @@
 
 Gate는 검증 판정을 직접 바꾸지 않고 Reporter는 외부 공개를 결정하지 않습니다. 모르는 단어는 [쉬운 용어집](../../GLOSSARY.md)에서 확인하세요.
 
+## 0. R5-01 CWE labeling
+
+final TRUE와 현재 generation의 validated PoC가 확정되면 R5-01 `CWE_LABELING`이 별도 `CWE_LABEL` work에서 current `CWELabel`을 만듭니다. label은 자신이 분류한 exact Verification revision·generation과 생산 work·LLM 호출을 직접 가리킵니다. 새 Verification에는 같은 CWE를 유지하더라도 새 label revision이 필요하며 과거 label은 history로만 남습니다.
+
+Technical Gate는 이 label이 Verification 근거와 맞는지 검토하지만 label을 만들거나 수정하지 않습니다. current label이 없거나 label이 다른 Verification을 가리키면 Gate를 호출하지 않습니다.
+
 ## 1. 기술 근거 검토(`Technical Evidence Gate`)
 
-Technical review schema의 상태 필드는 `handoff_readiness: READY | NOT_READY`이며 `ACCEPT + READY`, `REVISE | REJECT + NOT_READY` 조합만 허용합니다.
-
-final TRUE와 Technical Gate 사이에서 R5-01이 소유한 `CWE_LABELING` work가 current `CWELabel`을 생산합니다. 새 Verification generation은 이전 label을 current input으로 그대로 재사용하지 않습니다. 이전 label은 history/provenance로 보존하고 root cause·Evidence 정렬을 다시 평가하며, 동일 CWE가 적절하면 그 판단을 새 current revision/provenance로 확정합니다. Technical Gate는 CWELabel을 생성·수정·덮어쓰지 않습니다.
-
-final TRUE `VerificationResult`와 `CWELabel` 두 reference만 direct input으로 받고, 찬반 근거, 가설, 실제 코드·호출·데이터 흐름, current generation의 exact `DynamicReproductionRequest`·그 request에 exact linkage된 `SUCCEEDED + SUPPORTED` 동적 결과·validated `poc_ref`, CWE evidence, restriction·unresolved condition은 여기서 따라가는 transitive dependency로 검토한다. `poc_candidate_ref`는 Gate 근거가 아니며 FALSE와 HOLD는 이 Gate를 호출하지 않는다. claim 관련 `DataGap` 또는 `CodeContextResponse.truncated=true`가 있으면 조회되지 않은 코드를 확인된 근거로 보거나 불완전한 context로 upstream보다 claim을 강화할 수 없고, 이를 evidence-verdict·code-flow·restriction 판단에 반영한다. 다만 gap/truncation 자체는 자동 `REVISE | REJECT`가 아니며 독립적인 기존 근거만으로 claim이 충분하면 `ACCEPT`할 수 있다. runtime은 action 허가 시점, 호출 직전, review 저장 직전과 R5-02 진입 직전에 exact input graph를 검증하며 어느 revision/hash든 바뀌면 기존 Gate 결과를 변경된 revision의 R5-02 진입 근거로 재사용하지 않는다. 출력은 `ACCEPT + READY | REVISE + NOT_READY | REJECT + NOT_READY`이며 verdict를 직접 바꾸지 않는다. `handoff_readiness`는 Technical Gate 결과의 downstream handoff 가능 여부이고 현재 R5 pipeline의 immediate next stage가 R5-02다. 따라서 이 문맥의 `ACCEPT + READY`는 동일 exact Verification revision을 R5-02에 전달할 수 있음을 뜻하지만, R5-02 결과, `report_permission`, `REPORT_READY`, Reporter 실행, ReportDraft 생성 또는 result가 있는 Primitive admission을 뜻하지 않는다. `REVISE`는 Orchestration이 목적지를 고르지 않고 같은 hypothesis의 ACTIVE Verification owner에게 직접 돌아가 새 generation, `TERMINAL -> VERIFYING`, 새 Verification/CWE revision과 새 Gate work를 만든다. 새 generation에서 TRUE를 다시 만들려면 새 동적 재현과 validated PoC가 필요하며 이전 generation artifact는 재사용하지 않는다. 동일 입력 재투표는 금지하며 provider·`INVALID_OUTPUT` retry와 구분한다. reference·provenance 검증을 통과한 package의 핵심 의미 linkage가 근본적으로 신뢰 불가능할 때만 `REJECT`이며, schema·semantic·reference·stale·provider/runtime 오류는 Gate 실행 전 또는 저장·사용 전에 공통 오류로 처리한다.
+final TRUE `VerificationResult`의 찬반 근거, 실제 코드·호출·데이터 흐름, 현재 generation의 `DynamicReproductionRequest`·성공한 동적 결과·validated PoC, CWE와 restriction을 검토한다. FALSE와 HOLD는 이 Gate를 호출하지 않는다. 각 exact revision을 고정하며 하나라도 수정되면 기존 Gate 결과를 재사용하지 않는다. 출력은 `ACCEPT | REVISE | REJECT`와 별도 `handoff_readiness: READY | NOT_READY`다. `ACCEPT`는 `READY`, 나머지는 `NOT_READY`만 허용하며 verdict를 직접 바꾸지 않는다. `REVISE`는 같은 Verification owner에게 직접 돌아가며, 새 generation에서 TRUE를 다시 만들려면 새 동적 결과와 validated PoC도 필요하다.
 
 동적 재현이 Sandbox 정책에 막힌 것은 `FALSE`나 Gate의 `REJECT` 근거가 아니다. 하지만 validated PoC가 없으므로 final TRUE와 Technical Gate 입력을 만들 수 없다. retry 가능하면 동적 work를 `BLOCKED`, 복구 불가능하면 verdict 없이 `FAILED`로 끝낸다.
 
@@ -51,6 +53,6 @@ Reporter는 위 조건을 모두 만족하고 ReportDraft가 가리킨 current F
 
 `ALLOW`가 PASS·scope·impact 조건과 모순되거나 Gate가 현재 작업과 다른 input revision을 가리키면 유효한 Gate 결과가 아니다. LLM 호출을 `INVALID_OUTPUT`, 오류를 `GATE/INVALID_OUTPUT`으로 기록하고 Reporter를 호출하지 않는다.
 
-각 Gate와 Reporter는 action 허가 시점과 실제 LLM 호출 직전에 같은 입력 수정본을 다시 확인합니다. `REVISE` 뒤에는 같은 입력으로 재투표할 수 없고, 보완된 Verification 또는 CWE 수정본으로 새 Gate 작업과 새 action을 만들어야 합니다.
+각 Gate와 Reporter는 action 허가 시점과 실제 LLM 호출 직전에 같은 입력 수정본을 다시 확인합니다. `REVISE` 뒤에는 같은 입력으로 재투표할 수 없고, 보완된 Verification을 만든 뒤 R5-01이 CWE 정렬을 다시 평가해 새 label revision을 확정한 다음 새 Gate 작업과 새 action을 만들어야 합니다.
 
 상세 내용은 [이중 LLM Gate와 보고](../05-llm-gate-and-reporting.md)을 따른다.

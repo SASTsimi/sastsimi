@@ -71,7 +71,7 @@ R6는 `EnvironmentRequirements`, `ReproductionPlan`, PoC candidate 또는 `Dynam
 
 - `EnvironmentRequirements.request_ref`는 exact `DynamicReproductionRequest`를 가리킨다.
 - `ReproductionPlan.request_ref`와 `purpose`는 같은 요청과 일치한다.
-- 모든 동적 재현은 별도 LIMITED/FULL mode 없이 같은 Sandbox 실행 경로를 사용한다.
+- `ReproductionPlan.mode=LIMITED_REPRO | FULL_REPRO`는 R7이 목표에 맞춰 선택한다.
 - `ReproductionPlan.sandbox_profile_ref`는 요청 값을 그대로 사용한다.
 - `ReproductionPlan.poc_candidate_ref`는 실행 전 PoC 스크립트·요청·입력 묶음의 exact reference다.
 - `DynamicReproductionResult.request_ref`, `reproduction_plan_ref`, `purpose`, `poc_candidate_ref`는 같은 실행 closure를 가리킨다.

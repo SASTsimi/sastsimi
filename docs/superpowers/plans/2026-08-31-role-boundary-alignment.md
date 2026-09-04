@@ -51,9 +51,9 @@ Expected: R6/R7, R1, R5, R8 경계 검토 대상이 출력된다.
 Required content:
 
 ```text
-R6: 동적 재현 필요성·EnvironmentRequirements·최소 ReproductionPlan 결정/생산
-Runtime: schema/reference/권한/예산 검사와 COMMITTED/ALLOW
-R7: Controller 외부 경계 정책·clean Sandbox 자동화·자율 Agent 실행·AgentLog/PoC/DynamicReproductionResult 생산
+R6: 동적 재현 필요성·NOT_REQUIRED/LIMITED_REPRO/FULL_REPRO·ReproductionPlan 결정/생산
+Runtime: schema/reference/권한/예산/Sandbox 정책 검사와 COMMITTED/ALLOW
+R7: 승인된 exact plan 실행·SandboxStepLog·DynamicReproductionResult·PoC 생산
 R6: COMMITTED 결과 소비와 최종 TRUE/FALSE/HOLD
 ```
 
@@ -151,7 +151,7 @@ Run:
 
 ```powershell
 rg -n "재현 필요성 결정|R7.*모드.*선택|R7.*ReproductionPlan.*생산|REVISE.*Orchestration|최종 TRUE.*두 개" README.md docs
-rg -n "ReproductionPlan|AgentLog|DynamicReproductionResult|PROVIDED Primitive|ACTIVE.*VerificationAssignment|budget profile" README.md docs
+rg -n "ReproductionPlan|SandboxStepLog|DynamicReproductionResult|PROVIDED Primitive|ACTIVE.*VerificationAssignment|budget profile" README.md docs
 ```
 
 Expected: 금지 표현 0건 또는 역사 문맥만 존재하고, 필수 표현은 생산자·소비자 양쪽에 존재한다.
