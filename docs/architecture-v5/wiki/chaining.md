@@ -23,7 +23,7 @@ Chaining Agent는 `upstream_result_ref`가 `downstream_input_ref`의 `matched_in
 
 match 후보는 부모 가설·Verification, workspace·commit, 정확한 Primitive record와 근거를 고정한 `PrimitiveMatchCandidate`입니다. 이 후보는 `UNVALIDATED`이며, 의미 있는 연결이면 `HypothesisProposal(origin=CHAINING)`을 만들고 trusted validation·전역 등록 뒤 새 Verification을 배정합니다. 새 가설은 `source_primitive_match_id`로 자신을 만든 정확한 match를 가리키고, 양쪽 Primitive의 `Restriction` 객체를 중복 없이 합쳐 그대로 보존합니다. 같은 restriction ID의 내용이나 근거가 다르면 등록하지 않습니다.
 
-Runtime은 work를 시작할 때 조상 재사용 검사 전 전체 Primitive를 `considered_primitive_refs`로 고정합니다. 실제 match에 사용된 Primitive만 `input_primitive_refs`에 남기므로 두 목록을 같은 의미로 사용하지 않습니다. 두 목록에는 같은 exact reference를 중복해서 넣지 않습니다. 진행 중인 Chaining work의 입력은 바뀌지 않습니다. 새 Primitive가 생기면 별도 Chaining work에서 처리합니다.
+Runtime은 work를 시작할 때 조상 제외 전 전체 Primitive를 `considered_primitive_refs`로 고정합니다. 실제 match에 사용된 Primitive만 `input_primitive_refs`에 남기므로 두 목록을 같은 의미로 사용하지 않습니다. 두 목록에는 같은 exact reference를 중복해서 넣지 않습니다. 진행 중인 Chaining work의 입력은 바뀌지 않습니다. 새 Primitive가 생기면 별도 Chaining work에서 처리합니다.
 
 `source_result_refs`와 각 match의 부모 가설·Verification 목록은 실제 match에 사용한 Primitive가 직접 가리키는 값만 중복 없이 모읍니다. 빠진 값, 관계없는 값, 다른 work의 값을 넣으면 결과를 저장하지 않습니다.
 
@@ -43,7 +43,7 @@ Runtime은 work를 시작할 때 조상 재사용 검사 전 전체 Primitive를
 
 ## 조상 재사용과 비용 제한
 
-이 규칙은 순환 방지가 아닙니다 — record가 불변·append-only라 계보는 이미 DAG입니다. 상세 문서 §06대로, 체이닝 산물인 후보의 match가 가리키는 양쪽(upstream·downstream) Primitive를 조상으로 재귀 추적해 현재 순회의 후보에서 제외합니다. 조상 쪽은 새 Primitive가 등장하기 전부터 이미 서로 연결이 확정돼 있었으므로, 가장 깊은 조합의 전체 재검증이 결합 지점을 확인하는 순간 얕은 조합들의 결론도 함께 확인되는 셈이라 따로 제안할 이유가 없습니다. 계보가 겹치지 않는 다른 Primitive의 재사용은 막지 않습니다. 실제 제외한 항목은 `excluded_lineage_refs`에 제외된 Primitive, 제외 근거가 된 같은 work의 Primitive와 `ANCESTOR_REUSE` 이유를 함께 남깁니다. Runtime은 이 기록을 고정된 `considered_primitive_refs`와 다시 비교해 누락·추가·잘못된 계보를 거절합니다. 별도 루트 ID나 깊이 숫자, 체이닝 전용 임의 깊이·호출·조합 한도는 저장하지 않습니다.
+이 규칙은 순환 방지가 아닙니다 — record가 불변·append-only라 계보는 이미 DAG입니다. 상세 문서 §06대로, 같은 계보에서는 가장 깊은 후보부터 match를 검토하고 그 match가 실제로 성립한 뒤에만 그 후보의 양쪽(upstream·downstream) Primitive를 재귀 추적해 얻은 조상을 현재 순회의 후보에서 제외합니다. match가 성립하지 않으면 아무것도 제외하지 않고 얕은 후보를 그대로 검토합니다. 조상 쪽은 새 Primitive가 등장하기 전부터 이미 서로 연결이 확정돼 있었으므로, 가장 깊은 match가 성립한 시점에서 그 결론이 얕은 조합들의 결론을 이미 포함합니다. 대신 가장 깊은 조합의 자식 가설이 이후 검증에서 실패해도 제외된 얕은 조합은 다시 제안되지 않으며, 이는 중복 제안을 줄이는 대가로 의도적으로 수용한 미탐 위험입니다. 계보가 겹치지 않는 다른 Primitive의 재사용은 막지 않습니다. 실제 제외한 항목은 `excluded_lineage_refs`에 제외된 Primitive, 제외 근거가 된 같은 work의 Primitive와 `ANCESTOR_REUSE` 이유를 함께 남깁니다. Runtime은 이 기록을 고정된 `considered_primitive_refs`와 다시 비교해 누락·추가·잘못된 계보를 거절합니다. 별도 루트 ID나 깊이 숫자, 체이닝 전용 임의 깊이·호출·조합 한도는 저장하지 않습니다.
 
 체이닝 전용 depth·count·call·조합·token 상한은 두지 않습니다. R8의 전체 시간·비용·작업 예산, 중복 fingerprint와 조상 재사용은 Runtime Validator가 검사하며, 중단은 `FALSE`가 아닙니다. token은 사용량만 관측합니다.
 

@@ -1322,8 +1322,8 @@ $requiredChainingExclusionRules = @(
     '`source_result_refs`는 `input_primitive_refs`가 가리키는 Primitive들의 `source_verification_ref`와 non-null `technical_review_ref` 합집합과 set-equal하고 모두 같은 `SAVE_RESULT.input_refs`에 포함되어야 한다.',
     '각 candidate의 `parent_hypothesis_ids`는 그 upstream/downstream Primitive의 `source_hypothesis_id` 합집합, `parent_verification_refs`는 두 Primitive의 `source_verification_ref` 합집합과 각각 set-equal해야 한다.',
     '`excluded_primitive_ref`는 `considered_primitive_refs`에 포함되고 `input_primitive_refs`와 모든 match candidate reference에는 포함되지 않아야 한다.',
-    '`excluded_by_ref`는 `considered_primitive_refs`에 포함되고 같은 결과의 `excluded_primitive_ref` 집합에는 포함되지 않아야 한다.',
-    'Runtime은 §06의 계보 규칙(양방향 재귀 탐색)으로 기대 제외 쌍을 다시 계산하고 `excluded_lineage_refs`와 set-equal한지 검사한다.',
+    '`excluded_by_ref`는 `considered_primitive_refs`와 `input_primitive_refs`에 모두 포함되고 같은 결과의 `excluded_primitive_ref` 집합에는 포함되지 않아야 한다.',
+    'Runtime은 §06의 제외 규칙(성립한 match의 후보에서 양방향 재귀 탐색)으로 기대 제외 쌍을 다시 계산하고 `excluded_lineage_refs`와 set-equal한지 검사한다.',
     '`origin=CHAINING`이면 `observed_facts=[]`만 허용한다.',
     '`ChainingResult.considered_primitive_refs`와 `excluded_lineage_refs` 추가는 기존 결과의 필수 필드를 바꾸므로 새 MAJOR schema로 배포한다.'
 )
@@ -1395,9 +1395,9 @@ $verificationChainingScenarioMarkers = @(
     '| N8 | result가 있는 서로 다른 TRUE Primitive 둘 |',
     '| N9 | TRUE+TRUE 입력 중 한 부모가 Gate 전 또는 Technical 비정상 결과 |',
     '| N10 | match의 entity 또는 privilege 충족 근거가 없음 |',
-    '| N10-A | 후보가 조상 경로에서 이미 사용한 Primitive를 다시 사용 |',
+    '| N10-A | 성립한 match의 후보가 양방향 계보에서 이미 사용한 Primitive를 같은 결과에서 다시 사용 |',
     '| N10-B | `excluded_primitive_ref`가 고정된 `considered_primitive_refs` 밖이거나 실제 match에 다시 포함됨 |',
-    '| N10-C | `excluded_by_ref`가 같은 work 입력이 아니거나 자신도 제외됐거나 계보가 제외 대상을 포함하지 않음 |',
+    '| N10-C | `excluded_by_ref`가 같은 work 입력이 아니거나 실제 match에 사용되지 않았거나 자신도 제외됐거나 계보가 제외 대상을 포함하지 않음 |',
     '| N10-D | exclusion pair가 중복되거나 reason code·analysis·workspace·commit이 다름 |',
     '| N10-E | CHAINING 자식이 `observed_facts`를 채우거나 부모 계보에서 검증 시작점을 복원할 수 없음 |',
     '| N10-F | `source_result_refs` 또는 match candidate의 parent 가설·Verification 목록이 실제 입력 Primitive와 다르거나 중복됨 |',

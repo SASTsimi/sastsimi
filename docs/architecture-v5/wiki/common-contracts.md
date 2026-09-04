@@ -31,7 +31,7 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 - `source_primitive_match_id`: `origin=CHAINING` 가설을 만든 정확한 Primitive match
 - `LineageExclusion`: 같은 체이닝 작업에서 조상 계보 때문에 제외한 Primitive와 제외 근거를 묶은 기록
 
-한 Primitive의 `result`가 다른 Primitive의 특정 `input`을 충족해 더 큰 공격 가능성을 찾아도 기존 결과를 수정하지 않습니다. Technical `ACCEPT`을 받은 upstream TRUE revision, downstream Primitive와 `matched_input_id`를 확인한 뒤 새로운 `origin=CHAINING` proposal과 `hypothesis_id`를 만들고 전체 검증을 다시 거칩니다. Runtime은 조상 재사용 검사 전 전체 입력을 `considered_primitive_refs`, 실제 match 입력을 `input_primitive_refs`, 계보 때문에 제외한 항목을 `excluded_lineage_refs`로 구분합니다. 상세 문서 §06의 계보 규칙(양방향 재귀 탐색)으로 기대 제외 목록을 다시 계산하므로 검토하지 않은 Primitive나 잘못된 조상 관계를 제외 기록으로 저장할 수 없습니다. Verification이 별도 endpoint·sink·권한 경계를 발견한 경우에는 `origin=VERIFICATION` proposal을 사용합니다.
+한 Primitive의 `result`가 다른 Primitive의 특정 `input`을 충족해 더 큰 공격 가능성을 찾아도 기존 결과를 수정하지 않습니다. Technical `ACCEPT`을 받은 upstream TRUE revision, downstream Primitive와 `matched_input_id`를 확인한 뒤 새로운 `origin=CHAINING` proposal과 `hypothesis_id`를 만들고 전체 검증을 다시 거칩니다. Runtime은 조상 제외 전 전체 입력을 `considered_primitive_refs`, 실제 match 입력을 `input_primitive_refs`, 성립한 match의 후보 계보 때문에 제외한 항목을 `excluded_lineage_refs`로 구분합니다. 상세 문서 §06의 제외 규칙(성립한 match의 후보에서 양방향 재귀 탐색)으로 기대 제외 목록을 다시 계산하므로 검토하지 않은 Primitive나 잘못된 조상 관계를 제외 기록으로 저장할 수 없습니다. Verification이 별도 endpoint·sink·권한 경계를 발견한 경우에는 `origin=VERIFICATION` proposal을 사용합니다.
 
 ## 같은 가설인지 어떻게 확인하나요?
 

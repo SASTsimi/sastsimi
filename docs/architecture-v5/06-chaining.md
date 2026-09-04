@@ -125,7 +125,7 @@ LineageExclusion:
   reason_code: ANCESTOR_REUSE
 ```
 
-`considered_primitive_refs`는 Chaining work를 시작할 때(`REGISTER_WORK`) Runtime이 고정한, 조상 재사용 검사 전 전체 Primitive 입력이다. `input_primitive_refs`는 실제 match candidate에 사용된 upstream/downstream Primitive의 중복 없는 합집합이다. `excluded_lineage_refs`는 계보 때문에 match에서 제외한 Primitive와 그 제외를 일으킨 같은 work의 Primitive를 기록한다. `source_result_refs`는 실제 match Primitive들이 직접 가리키는 source Verification과 non-null Technical review의 중복 없는 합집합이다. 각 candidate의 `parent_hypothesis_ids`와 `parent_verification_refs`도 해당 upstream/downstream Primitive가 직접 가리키는 source hypothesis와 Verification의 정확한 합집합이어야 한다. 세 Primitive 목록과 source·parent 목록은 중복을 허용하지 않으며 자세한 저장 검사는 [경량 데이터 계약](08-lightweight-data-contracts.md)의 `SAVE_RESULT` 규칙을 따른다.
+`considered_primitive_refs`는 Chaining work를 시작할 때(`REGISTER_WORK`) Runtime이 고정한, 조상 제외 전 전체 Primitive 입력이다. `input_primitive_refs`는 실제 match candidate에 사용된 upstream/downstream Primitive의 중복 없는 합집합이다. `excluded_lineage_refs`는 계보 때문에 match에서 제외한 Primitive와 그 제외를 일으킨 같은 work의 Primitive를 기록한다. `source_result_refs`는 실제 match Primitive들이 직접 가리키는 source Verification과 non-null Technical review의 중복 없는 합집합이다. 각 candidate의 `parent_hypothesis_ids`와 `parent_verification_refs`도 해당 upstream/downstream Primitive가 직접 가리키는 source hypothesis와 Verification의 정확한 합집합이어야 한다. 세 Primitive 목록과 source·parent 목록은 중복을 허용하지 않으며 자세한 저장 검사는 [경량 데이터 계약](08-lightweight-data-contracts.md)의 `SAVE_RESULT` 규칙을 따른다.
 
 새 가설은 `HypothesisProposal(origin=CHAINING)`으로 만든다. proposal의 `source_primitive_match_id`는 자신을 만든 candidate ID와 같고, `parent_hypothesis_ids`는 그 candidate의 부모 set과 같아야 한다. Chaining Agent는 새 코드 사실을 만들지 않으므로 `observed_facts=[]`만 허용한다. `target_entities`·`target_locations`·`suspected_path`는 비어 있을 수 있지만, 값을 넣으면 부모 Primitive의 exact entity·location 계보에서 얻을 수 있어야 한다. Verification이 시작할 entity나 location을 부모 계보에서 하나도 복원할 수 없으면 proposal 등록과 배정을 거절한다.
 
@@ -176,13 +176,21 @@ Verification은 proposal을 만들 수 있지만 `hypothesis_id`를 직접 발�
 
 이 규칙은 순환을 막기 위한 것이 아니다. `Primitive`와 `VulnerabilityHypothesis`는 모두 불변·append-only record이고 match는 이미 존재하는(시간상 앞선) record만 참조할 수 있으므로, 계보 그래프는 구성 자체로 DAG다 — 순환은 애초에 만들어질 수 없다.
 
-이 규칙이 실제로 막는 것은 중복이다: 현재 순회의 후보 각각에 대해, 그 후보의 `source_hypothesis_id`가 가리키는 등록 가설의 `source_primitive_match_id`가 non-null이면(=체이닝 산물이면) 그 match의 `upstream_result_ref`와 `downstream_input_ref` 양쪽이 가리키는 두 Primitive를 조상으로 삼는다. 그 조상이 또 체이닝 산물이면 같은 방식으로 재귀적으로 거슬러 올라간다. 이렇게 찾은 모든 조상 Primitive를 현재 순회의 후보에서 제외한다.
+이 규칙이 실제로 막는 것은 중복이다. 제외는 후보를 미리 걸러내는 단계가 아니라, 실제 match가 성립한 뒤 그 결론에 이미 포함되는 얕은 조합만 걷어내는 단계다. 순서를 다음과 같이 고정한다.
 
-이 제외가 안전한 이유는 다음과 같다. 조상 쪽(예: B, B→C, B→C→D)은 새 Primitive가 등장하기 전부터 이미 서로 연결이 확정된 상태로 candidate pool에 존재한다 — 그 계보 자체는 새 Primitive와 무관하게 독립적으로 이미 성립해 있었다는 뜻이다. 그러므로 새 Primitive가 가장 깊은 후손(B→C→D→E)과 맺는 match를 검증할 때 새로 확인해야 하는 것은 사실상 그 결합 지점(새 Primitive가 조상 쪽 빈 자리를 실제로 채우는지) 하나뿐이다. 이 전체 검증이 실패한다면 그 이유는 거의 항상 이 결합 지점 자체가 성립하지 않기 때문이며, 그 경우 얕은 조상과의 match도 같은 이유로 성립하지 않았을 것이므로 따로 제안해도 잃을 정보가 없다. 결합 지점 판정과 무관한 이유로 실패하는 경우는 검증 과정 일반에 있는 오판 가능성일 뿐이고, 이는 조상 제외 여부와 상관없이 모든 체이닝 제안에 동일하게 존재하는 리스크다. 반대로 결합 지점이 실제로 성립하면, 가장 깊은 조합이 얕은 조합들의 결론을 그대로 포함하므로 얕은 조합을 따로 제안해도 새 정보가 없다.
+1. 같은 계보 안에서는 가장 깊은 후보부터 match를 검토한다. 후보의 깊이는 그 후보의 `source_hypothesis_id`가 가리키는 등록 가설의 `source_primitive_match_id`를 따라가 얻은 match의 `upstream_result_ref`와 `downstream_input_ref` 양쪽을 재귀적으로 거슬러 올라가 얻은 조상 수다. `source_primitive_match_id`가 `null`이면(=체이닝 산물이 아니면) 깊이는 0이고 조상도 없다.
+2. 가장 깊은 후보와의 match가 실제로 성립하면, 그 후보의 조상 Primitive 전체를 이번 순회의 후보에서 제외한다. 이때 `excluded_by_ref`는 match가 성립한 그 후보 하나뿐이고, 제외된 Primitive는 다시 다른 항목의 제외 근거가 되지 않는다. 따라서 한 결과 안에서 같은 Primitive가 제외 대상이면서 제외 근거인 상태는 생기지 않는다.
+3. 가장 깊은 후보와의 match가 성립하지 않으면 아무것도 제외하지 않는다. 같은 계보의 얕은 후보들은 후보로 남아 그대로 match를 검토한다.
+
+1번의 검토 순서는 Chaining Agent가 지키는 규칙이고, Runtime은 저장할 결과의 정합성만 검사한다. 순서를 지키지 않아 얕은 후보부터 match해도 최상위 조합을 잃지는 않는다 — 제외 대상은 조상뿐이라 더 깊은 후손은 후보로 남기 때문이다. 실제 손실은 경로가 겹치는 중복 제안이 늘어나는 것뿐이고, 같은 결과에서 얕은 후보와 깊은 후보를 모두 match하면 얕은 후보가 match 입력이면서 제외 대상이 되므로 아래 저장 검사에서 거절된다. 따라서 검토 순서를 강제하는 별도 필드나 검사는 두지 않는다.
+
+이 제외가 안전한 이유는 다음과 같다. 조상 쪽(예: B, B→C, B→C→D)은 새 Primitive가 등장하기 전부터 이미 서로 연결이 확정된 상태로 candidate pool에 존재한다 — 그 계보 자체는 새 Primitive와 무관하게 독립적으로 이미 성립해 있었다는 뜻이다. 그러므로 새 Primitive가 가장 깊은 후손(B→C→D→E)과 맺는 match가 성립한 시점에서 그 결합 지점(새 Primitive가 조상 쪽 빈 자리를 실제로 채우는지)은 이미 확인된 것이고, 가장 깊은 조합이 얕은 조합들의 결론을 그대로 포함하므로 얕은 조합을 따로 제안해도 새 정보가 없다. match가 성립하지 않았다면 3번에 따라 얕은 후보가 그대로 남으므로 잃는 조합도 없다.
+
+남는 위험은 하나다. 가장 깊은 조합의 match는 성립했지만 그 자식 가설이 이후 Verification에서 실패하는 경우, 이미 제외된 얕은 조합은 이 분석에서 다시 제안되지 않는다. 이는 검증 과정 일반의 오판이 아니라 이 중복 제거 정책 자체가 만드는 미탐 위험이며, 중복 제안을 줄이는 대가로 팀이 의도적으로 수용한 설계 결정이다.
 
 계보가 겹치지 않는 다른 Primitive의 정당한 재사용(같은 조상이 전혀 다른 능력으로 다른 곳에 쓰이는 것)은 이 규칙과 무관하며 막지 않는다.
 
-제외한 항목마다 `LineageExclusion`을 만들고, `excluded_by_ref`에는 같은 work에서 검토한 현재 Primitive 중 해당 조상 계보를 가진 정확한 record를 넣는다. 제외된 Primitive와 제외 근거 Primitive는 모두 고정된 `considered_primitive_refs`에 있어야 하고, 제외 근거 Primitive 자신은 제외 목록에 있으면 안 된다. Runtime은 같은 계보 규칙(양방향 재귀 탐색)으로 기대 제외 쌍을 다시 계산하여 `excluded_lineage_refs`와 정확히 같은지 확인한다. DB record는 바꾸지 않는다.
+제외한 항목마다 `LineageExclusion`을 만들고, `excluded_by_ref`에는 실제로 match가 성립해 그 조상들을 제외시킨 정확한 record를 넣는다. 제외된 Primitive와 제외 근거 Primitive는 모두 고정된 `considered_primitive_refs`에 있어야 하고, 제외 근거 Primitive 자신은 제외 목록에 있으면 안 되며 실제 match candidate에 사용된 상태여야 한다. Runtime은 같은 규칙(성립한 match의 후보에서 양방향 재귀 탐색)으로 기대 제외 쌍을 다시 계산하여 `excluded_lineage_refs`와 정확히 같은지 확인한다. DB record는 바꾸지 않는다.
 
 체이닝 전용 임의 depth, 전체·parent별 가설 수, Chaining 호출 수, Primitive 조합 수와 token 상한은 두지 않는다. 대신 R8의 전체 시간·비용·work 예산이 모든 체이닝에도 적용된다. token 사용량은 관측하되 초과만으로 중단하지 않는다. 다른 예산 소진도 `FALSE`가 아니며 work 상태와 `AnalysisRunResult.stop_reasons`에 기록한다. 같은 `normalized_fingerprint`도 한 분석에서 중복 저장하지 않는다.
 
