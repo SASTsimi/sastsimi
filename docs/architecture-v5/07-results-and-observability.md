@@ -95,7 +95,7 @@ Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을
 | S-SANDBOX-POLICY | 요청한 상자 시간·네트워크 등이 profile 상한을 넘김 | Agent 미시작, `agent_invoked=false`. 공격 입력·관측 없음. 고칠 수 있으면 `BLOCKED`, 최종 거절이면 `FAILED`. `failure_category`는 정책. 자원이 없을 때만 `cleanup_status=NOT_REQUIRED`. 최종 판정 없음 | 실행 성공으로 적거나 TRUE/FALSE/HOLD로 바꿈. 실행 Agent 시작 기록이 있음 |
 | S-SANDBOX-EXEC | 승인된 profile 안에서 Agent가 돌던 중 실행 실패 | 같은 attempt 안 재시도는 R7. 새 attempt는 R8 한도 안. 바깥 대기만 `BLOCKED`. 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE`. 반증·`FALSE` 금지 | 실패 = 반증 또는 HOLD |
 | S-SANDBOX-TIMEOUT | 승인된 시간 안에서 Agent가 돌다 시계가 끝남 | `FAILED + TIMEOUT`, `agent_invoked=true`. `agent_log_ref`와 당시 관측을 남김. cleanup 생략 금지. 자원이 생겼으면 `cleanup_status=SUCCEEDED \| FAILED`. 최종 판정 없음 | 시간 초과 = 반증·HOLD. cleanup을 건너뜀 |
-| S-CHAIN-STOP | 전역 예산 소진 또는 ancestor 순환 | 중단 이유 기록, FALSE 금지. 체이닝 전용 짝·깊이 한도는 없음 | 중단을 구멍 없음으로 기록 |
+| S-CHAIN-STOP | 전역 예산 소진, fingerprint 중복, 또는 성립한 match 기준 조상 Primitive 재사용 제외 | 중단 이유 기록, FALSE 금지. 체이닝 전용 짝·깊이 한도는 없음. 순환 검사가 아님 | 중단을 구멍 없음으로 기록 |
 | S-INJECT | 저장소에 정책 변경 지시 | 설정이 안 바뀜 | 지시를 따라 설정 변경 |
 | S-GATE-BAD | 문지기 출력이 모순 | 출력 폐기, 초안 차단 | 모순 초안 통과 |
 | S-REDACT | 비밀값 가리기 실패 | 일반 로그/보고서 전달 차단 | 그대로 저장 |
@@ -127,7 +127,7 @@ Sandbox ENV/POLICY/EXEC/TIMEOUT은 동적 work의 `BLOCKED | FAILED`다. 최종 
 | FALSE 잇기 | FALSE를 Chaining 재료로 씀 | 0 |
 | stale 잇기 | 옛 Primitive/Gate로 잇기를 거절 | 거절 안 하고 저장한 횟수 0 |
 | 부모 불변 | Chaining이 부모 판정을 바꿈 | 0 |
-| 잇기 중단 | 끊긴 횟수와 이유(전역 예산/순환). 끊긴 것을 FALSE로 바꾼 횟수 | 이유는 기록. FALSE로 바꾼 횟수 0. 체이닝 전용 짝 한도로 끊은 횟수는 두지 않음 |
+| 잇기 중단 | 끊긴 횟수와 이유(전역 예산/중복 fingerprint/조상 Primitive 재사용 제외). 끊긴 것을 FALSE로 바꾼 횟수 | 이유는 기록. FALSE로 바꾼 횟수 0. 체이닝 전용 짝 한도로 끊은 횟수는 두지 않음 |
 | 독립 session | 찬반이 상대 답·상대 session·낡은 결과를 본 횟수 | 0 |
 | debate 한쪽 실패 | 한쪽 누락·실패 뒤 최종 판정 | 0 |
 | debate 재시도 대기 | 재시도 가능한데 부모·가설을 바로 `FAILED`로 끝낸 횟수 | 0. 기대는 자식·부모 `BLOCKED`, 가설 `VERIFYING` |
@@ -144,7 +144,7 @@ Sandbox ENV/POLICY/EXEC/TIMEOUT은 동적 work의 `BLOCKED | FAILED`다. 최종 
 
 한도는 두 종류다. 둘 다 가설 `FALSE`(구멍 없음)가 아니다.
 
-1. **실행 예산** — 벽시계 시간, 호출, 재시도, 조회 깊이·조각. Runtime Validator가 `ActionCheck.BUDGET`으로 검사한다. 실패 코드는 `BUDGET_EXCEEDED`다. 해당 work를 중단한다. 분석 run은 `PARTIAL`일 수 있다. **token 상한은 분석 전체·모든 Agent·호출마다 두지 않는다.** `LLMCallSpec.token_budget` 칸이 계약에 있어도 R8 절단 상한이 아니라 관측·계획용이다. token을 넘겨 `BUDGET_EXCEEDED`로 자르지 않는다. 사용량은 관측만 한다. 조금만 더 쓰면 취약점을 찾을 수 있는데 잘리면 안 된다. **체이닝 전용 짝·깊이·조합 한도도 두지 않는다.** 잇기도 이 전역 시간·재시도·조회 예산만 따른다.
+1. **실행 예산** — 벽시계 시간, 호출, 재시도, 조회 깊이·조각, **비용, 분석 전체 work 수**. Runtime Validator가 `ActionCheck.BUDGET`으로 검사한다. 실패 코드는 `BUDGET_EXCEEDED`다. 해당 work를 중단한다. 분석 run은 `PARTIAL`일 수 있다. **token 상한은 분석 전체·모든 Agent·호출마다 두지 않는다.** `LLMCallSpec.token_budget` 칸이 계약에 있어도 R8 절단 상한이 아니라 관측·계획용이다. token을 넘겨 `BUDGET_EXCEEDED`로 자르지 않는다. 사용량은 관측만 한다. 조금만 더 쓰면 취약점을 찾을 수 있는데 잘리면 안 된다. **체이닝 전용 짝·깊이·조합 한도도 두지 않는다.** 잇기도 이 전역 시간·재시도·조회·비용·work 예산만 따른다. **비용과 전체 work 수 숫자는 임의로 정하지 않는다.** versioned R8 정책에서 관리하며 현재 미확정이다.
 2. **Sandbox 정책 상한** — 네트워크, **요청 가능한 상자 시간**. Sandbox Controller가 검사한다. 허용되지 않은 계획은 `SANDBOX_POLICY_DENIED`이고 상자 안 Agent를 시작하지 않는다. 환경 구성 실패·실행 실패·실행 중 timeout은 기존 환경·실행 오류로 남긴다. 이 실패를 `BUDGET_EXCEEDED`로 바꾸지 않는다. **CPU·RAM·디스크·PID 상한은 R7이 `sandbox_profile_ref`에 정한 값을 따른다.** Sandbox Controller가 이 한도를 검사하며, 초과 시 `SANDBOX_POLICY_DENIED`로 Agent를 시작하지 않는다. 구체적 수치는 R7이 확정한다.
 
 상자 **시간**이 부족한 이유는 셋이다. 같은 profile 시간 숫자를 세 번 적는 것이 아니라, 끊는 주체가 다르다.
@@ -165,16 +165,16 @@ Orchestration은 가설 등록·Verification 배정까지만 한다. 찬반·Doc
 
 ### 실행 예산 (Runtime Validator → `BUDGET_EXCEEDED`)
 
-token 상한은 없다. 분석 전체·모든 Agent·호출마다 동일하다. 아래는 시간·횟수·조회 한도만이다.
+token 상한은 없다. 분석 전체·모든 Agent·호출마다 동일하다. 아래는 시간·횟수·조회 초안이다. 비용과 전체 work 수 한도는 versioned R8 정책에서 관리하며 현재 미확정이다. 숫자를 지어 넣지 않는다.
 
 | 역할 | 시간 | 재시도 (같은 요청) | 기타 | 초과 시 | 같이 정할 사람 |
 |---|---|---|---|---|---|
 | Hypothesis | 180초 | 4 | — | 그 의심 중단, FALSE 아님 | 배승원 |
 | 코드 다시 꺼내기 | 45초 | 가설당 24회 | 깊이 5, 조각 32개, 요청당 256KiB | 빈칸/조회 오류. FALSE 아님 | 김나연 |
 | Verification / debate | 종합 240초 / 찬반 각 180초 | 의심마다 찬반 각 1회 | 서로 다른 대화. Docker 요청 예산은 이 칸 | 초과 ≠ FALSE. 찬반 생략은 운영 불합격 | 임채민 |
-| Chaining | 120초 | — | 체이닝 전용 짝·깊이 한도 없음. result→input 비교. 전역 시간·중복·순환만 | 중단 이유, 부모 불변. FALSE 아님 | 배승원 |
+| Chaining | 120초 | — | 체이닝 전용 짝·깊이 한도 없음. result→input 비교. 전역 시간·중복 fingerprint·조상 Primitive 재사용 제외만. 순환 검사 아님 | 중단 이유, 부모 불변. FALSE 아님 | 배승원 |
 | Sandbox 호출 전 | 이 work에 남은 runtime 시간. 초안은 아래 정책 표의 profile 시간 상한을 **잔여 예산**으로 본다. `LIMITED_REPRO \| FULL_REPRO` mode는 없음 | 같은 attempt 안 자율 재시도는 R7(횟수 아님). 새 attempt는 R8 한도. 초안 새 attempt 4회(최초 1회 별도, 총 5회). 바깥 대기만 `BLOCKED` | 요청 가능 최대는 아래 정책 표 | 실행 **요청 전**에 소진되면 `BUDGET_EXCEEDED`. 한도 소진 뒤 새 attempt 없음. 동적 결과 `PARTIAL` 금지. FALSE 아님 | 조근석 |
-| Technical Gate | 180초 | provider·형식 오류 4 | `REVISE` 상한 3 (재시도 열 아님) | 2번 문지기·초안 차단, 판정 유지 | 김혜령 |
+| Technical Gate | 180초 | provider·형식 오류 4 | `REVISE` 상한 3 (재시도 열 아님) | Technical Gate와 이후 Rule Scope·초안 진행 차단, 판정 유지 | 김혜령 |
 | Rule Scope Gate | 180초 | provider·형식 오류 4 | `REVISE` 없음 | 초안 차단, 판정 유지 | 김혜령 |
 | Reporter | 180초 | provider·형식 오류 4 | `REVISE`를 만들지 않음 | 초안 실패, 판정·Gate 유지 | 김혜령 |
 
