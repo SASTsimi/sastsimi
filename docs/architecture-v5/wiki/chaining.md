@@ -21,13 +21,19 @@
 
 Chaining Agent는 `upstream_result_ref`가 `downstream_input_ref`의 `matched_input_id`를 충족하는지 코드 근거로 비교합니다. 저장소 전체에 공통인 임의의 권한 서열은 두지 않고, 분석 중인 저장소의 역할·권한 상수와 실제 검사 위치를 근거로 사용합니다.
 
-match 후보는 부모 가설·Verification, workspace·commit, 정확한 Primitive record와 근거를 고정한 `PrimitiveMatchCandidate`입니다. 이 후보는 `UNVALIDATED`이며, 의미 있는 연결이면 `HypothesisProposal(origin=CHAINING)`을 만들고 trusted validation·전역 등록 뒤 새 Verification을 배정합니다. 새 가설은 `source_primitive_match_id`로 자신을 만든 정확한 match를 가리킵니다.
+match 후보는 부모 가설·Verification, workspace·commit, 정확한 Primitive record와 근거를 고정한 `PrimitiveMatchCandidate`입니다. 이 후보는 `UNVALIDATED`이며, 의미 있는 연결이면 `HypothesisProposal(origin=CHAINING)`을 만들고 trusted validation·전역 등록 뒤 새 Verification을 배정합니다. 새 가설은 `source_primitive_match_id`로 자신을 만든 정확한 match를 가리키고, 양쪽 Primitive의 `Restriction` 객체를 중복 없이 합쳐 그대로 보존합니다. 같은 restriction ID의 내용이나 근거가 다르면 등록하지 않습니다.
+
+Runtime은 work를 시작할 때 순환 검사 전 전체 Primitive를 `considered_primitive_refs`로 고정합니다. 실제 match에 사용된 Primitive만 `input_primitive_refs`에 남기므로 두 목록을 같은 의미로 사용하지 않습니다. 두 목록에는 같은 exact reference를 중복해서 넣지 않습니다. 진행 중인 Chaining work의 입력은 바뀌지 않습니다. 새 Primitive가 생기면 별도 Chaining work에서 처리합니다.
+
+`source_result_refs`와 각 match의 부모 가설·Verification 목록은 실제 match에 사용한 Primitive가 직접 가리키는 값만 중복 없이 모읍니다. 빠진 값, 관계없는 값, 다른 work의 값을 넣으면 결과를 저장하지 않습니다.
+
+`origin=CHAINING` 자식의 `observed_facts`는 빈 목록으로 고정합니다. Chaining Agent가 코드 사실을 새로 만들지 않고, 자식 Verification이 `source_primitive_match_id`를 따라 부모 Primitive의 entity와 location에서 다시 확인합니다. 부모 계보가 끊겨 검증 시작점을 찾을 수 없으면 자식 가설을 등록하지 않습니다.
 
 일반 우회·대체 경로·영향 탐색, 동적 재현과 Technical `REVISE` 보완은 Verification이 담당합니다. 어느 child도 부모 판정을 바꾸지 않습니다.
 
 ## 순환과 비용 제한
 
-현재 가설의 `parent_hypothesis_ids`와 `source_primitive_match_id`를 따라 조상 계보를 계산하고, 조상 Primitive는 현재 matching 후보에서 제외합니다. 별도 루트 ID나 깊이 숫자, 체이닝 전용 임의 깊이·호출·조합 한도는 저장하지 않습니다.
+상세 문서 §06의 계보 규칙으로 조상 Primitive를 계산하고 현재 matching 후보에서 제외합니다. 실제 제외한 항목은 `excluded_lineage_refs`에 제외된 Primitive, 제외 근거가 된 같은 work의 Primitive와 `ANCESTOR_REUSE` 이유를 함께 남깁니다. Runtime은 이 기록을 고정된 `considered_primitive_refs`와 다시 비교해 누락·추가·잘못된 계보를 거절합니다. 별도 루트 ID나 깊이 숫자, 체이닝 전용 임의 깊이·호출·조합 한도는 저장하지 않습니다.
 
 전체 token·시간·작업 수는 R8의 전역 예산 정책으로 제한합니다. 중복 fingerprint와 ancestor cycle은 Runtime Validator가 차단하며, 예산 중단은 `FALSE`가 아닙니다.
 
