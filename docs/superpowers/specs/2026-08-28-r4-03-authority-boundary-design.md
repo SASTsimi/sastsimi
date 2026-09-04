@@ -84,7 +84,7 @@ Agent 또는 서비스가 부작용이 있는 실행을 원할 때 만드는 요
 
 `REGISTER_WORK | CHANGE_WORK_STATE | START_ATTEMPT | CANCEL_WORK | READ_CODE | RUN_TOOL | CALL_LLM | FETCH_POLICY | RUN_SANDBOX | SAVE_RESULT | CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT | PREPARE_HUMAN_REVIEW | SAVE_HUMAN_DECISION | EXTERNAL_DISCLOSURE`
 
-`requester_identity_ref`는 LLM이 주장한 역할을 복사하지 않는다. 신뢰 runtime이 현재 인증된 호출자에서 만들며 그 identity의 등록 역할과 `requested_by`가 같아야 한다. 실제 LLM을 실행하는 action에는 immutable `LLMCallSpec`이 필요하다. 일반 역할은 `CALL_LLM`, 두 Gate와 Reporter는 자기 stage action이 LLM 호출까지 직접 허가하며 별도 `CALL_LLM`으로 우회하지 않는다. `RUN_SANDBOX`에는 exact `ReproductionPlan`, current `EnvironmentRequirements`와 sandbox profile reference가 필요하다. Runtime Validator는 요청자·상태·예산과 reference 고정만 확인하고, Sandbox Controller는 host·Docker daemon/socket·mount·namespace·secret·금지된 egress·범위 밖 workspace·R8 resource/lifecycle의 외부 경계 정책만 판정·강제한다. `input_refs`는 계획과 그 안의 hypothesis, requirements와 profile reference를 포함하며 Agent의 내부 command·공격 입력·재시도는 사전 허가 대상으로 고정하지 않는다. `EXTERNAL_DISCLOSURE`는 Human Reviewer만 요청할 수 있고 current `HumanReviewState`가 가리키는 exact 결정·packet·report·target을 사용해야 한다. 한 번이라도 `ActionDecision`이 저장된 요청은 수정하지 않는다. 범위를 바꾸거나 다시 시도하려면 새 `action_id`를 사용한다.
+`requester_identity_ref`는 LLM이 주장한 역할을 복사하지 않는다. 신뢰 runtime이 현재 인증된 호출자에서 만들며 그 identity의 등록 역할과 `requested_by`가 같아야 한다. 실제 LLM을 실행하는 action에는 immutable `LLMCallSpec`이 필요하다. 일반 역할은 `CALL_LLM`, 두 Gate와 Reporter는 자기 stage action이 LLM 호출까지 직접 허가하며 별도 `CALL_LLM`으로 우회하지 않는다. `RUN_SANDBOX`에는 exact `ReproductionPlan`, sandbox profile·image digest·network target이 필요하다. Runtime Validator는 요청자·상태·예산과 reference 고정만 확인하고, Sandbox Controller가 계획 안의 image·command·file·network·resource·cleanup 정책을 검사한다. `input_refs`는 계획과 그 안의 hypothesis, 모든 step command·공격 입력, cleanup 정책 reference를 포함한다. `EXTERNAL_DISCLOSURE`는 Human Reviewer만 요청할 수 있고 current `HumanReviewState`가 가리키는 exact 결정·packet·report·target을 사용해야 한다. 한 번이라도 `ActionDecision`이 저장된 요청은 수정하지 않는다. 범위를 바꾸거나 다시 시도하려면 새 `action_id`를 사용한다.
 
 ### ActionDecision
 
@@ -108,7 +108,7 @@ runtime validator의 검사 결과다.
 
 `SAVE_RESULT` action은 쉬운 영문 필드 `result_kind`와 `candidate_result_ref`로 검사 대상을 고정한다. candidate ref에는 미리 발급한 `record_id`와 결과 후보 전체의 `content_hash`가 있고, 확정된 결과도 같은 exact ref를 사용한다. runtime은 result-owner, work·attempt·workspace·commit·hypothesis와 named falsification 구조를 검사하고, 같은 후보를 `COMMITTED` transition에 원자적으로 연결한다. 검사 뒤 후보가 바뀌거나 오류만으로 `FALSE`를 만들려 하면 저장하지 않는다.
 
-동적 재현은 Verification이 `SAVE_RESULT(result_kind=reproduction_plan)`로 exact 최소 `ReproductionPlan`을 생산하고 `RUN_SANDBOX`를 요청한다. Runtime Validator의 ALLOW 뒤 Sandbox Controller가 외부 경계 정책을 판정·강제하고, R7 Sandbox Setup Automation이 그 정책으로 clean Sandbox를 만든다. `REPRODUCTION_AGENT`는 경계 안에서 환경 구성·PoC·command·관찰·재시도를 자율적으로 수행하고 의미 필드를 초안 작성한다. 기존 runtime/tool 및 lifecycle 계층이 실제 event를 방출하면 Reproduction Session Manager가 이를 `AgentLog`와 `CleanupLog`에 append-only로 수동 기록하고, Agent 초안과 같은 attempt의 정책·recipe·환경·PoC·관찰·cleanup 사실로 최종 `DynamicReproductionResult` 문서를 확정한다. `SAVE_RESULT(requested_by=REPRODUCTION_SESSION_MANAGER, result_kind=dynamic_reproduction_result)`는 schema·authority·identity·revision·attempt·hash·redaction과 reference 연결만 검사한다. Session Manager는 Agent를 호출·차단·중지하거나 command·실행 순서·retry·cleanup을 결정하지 않는다. Verification은 `COMMITTED` 결과만 소비한다.
+동적 재현은 Verification이 `SAVE_RESULT(result_kind=reproduction_plan)`로 exact `ReproductionPlan`을 생산하고 `RUN_SANDBOX`를 요청하지만, Sandbox Controller·Runner runtime만 `SandboxStepLog`와 `DynamicReproductionResult`를 생산한다. 계획에는 mode, hypothesis, 순서가 있는 step의 command·공격 입력 reference와 cleanup 정책 reference가 들어간다. Runtime Validator의 ALLOW 뒤 Controller가 실행 직전 plan closure의 세부 정책을 한 번 검사하고, 통과한 exact 계획만 Runner가 실행한다. Runner는 실제 step ID·command·공격 입력을 append-only log에 남긴 뒤 immutable artifact로 확정한다. `SAVE_RESULT(requested_by=SANDBOX, result_kind=dynamic_reproduction_result)`는 candidate, USED 실행 decision, 계획 closure와 step log를 입력으로 받아 plan·mode·command·attack input·cleanup policy가 exact match인지 다시 검사한다. 이 저장 검사는 정책 재판단이 아니라 실행 결과 무결성 확인이다. Verification은 `COMMITTED` 결과만 소비한다.
 
 ## runtime validator가 강제할 항목
 
@@ -169,7 +169,7 @@ runtime validator가 할 수 없는 일은 다음과 같다.
 - membership/API provider 응답과 raw session log
 - Sandbox stdout·stderr·생성 파일
 
-이 입력은 provider, model, session, Gate 순서, Reporter 조건, budget 또는 disclosure policy를 바꾸지 못한다. Sandbox Controller도 비신뢰 입력이 host·Docker daemon/socket·mount·namespace·secret·금지된 egress·범위 밖 workspace·R8 resource/lifecycle의 외부 경계를 바꾸지 못하게 한다. Agent의 Sandbox 내부 command·file·환경·PoC 선택은 Controller의 사전 allowlist 대상이 아니며 실제 event와 artifact로 기록한다. 외부 경계 정책 변경은 versioned configuration과 승인된 운영 절차로만 반영한다. 저장소 문구가 이를 요구하면 `UNTRUSTED_INSTRUCTION`으로 기록하고 실행하지 않는다.
+이 입력은 provider, model, session, Gate 순서, Reporter 조건, budget 또는 disclosure policy를 바꾸지 못한다. Sandbox Controller도 비신뢰 입력이 Sandbox image·command·file·network·resource·cleanup 정책을 바꾸지 못하게 한다. 정책 변경은 versioned configuration과 승인된 운영 절차로만 반영한다. 저장소 문구가 이를 요구하면 `UNTRUSTED_INSTRUCTION`으로 기록하고 실행하지 않는다.
 
 ## 두 LLM Gate와 Reporter
 

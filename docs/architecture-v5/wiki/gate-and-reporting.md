@@ -18,7 +18,7 @@ Technical Gate는 이 label이 Verification 근거와 맞는지 검토하지만 
 
 final TRUE `VerificationResult`의 찬반 근거, 실제 코드·호출·데이터 흐름, 현재 generation의 `DynamicReproductionRequest`·성공한 동적 결과·validated PoC, CWE와 restriction을 검토한다. FALSE와 HOLD는 이 Gate를 호출하지 않는다. 각 exact revision을 고정하며 하나라도 수정되면 기존 Gate 결과를 재사용하지 않는다. 출력은 `ACCEPT | REVISE | REJECT`와 별도 `handoff_readiness: READY | NOT_READY`다. `ACCEPT`는 `READY`, 나머지는 `NOT_READY`만 허용하며 verdict를 직접 바꾸지 않는다. `REVISE`는 같은 Verification owner에게 직접 돌아가며, 새 generation에서 TRUE를 다시 만들려면 새 동적 결과와 validated PoC도 필요하다.
 
-동적 재현이 Sandbox 외부 경계에 막힌 것은 `failure_category=POLICY`인 실패 attempt이며 `FALSE`나 Gate의 `REJECT` 근거가 아니다. 환경·계획·실행·관찰·timeout 문제도 원인에 맞는 `failure_category`를 기록한다. validated PoC가 없으므로 final TRUE와 Technical Gate 입력을 만들 수 없다. retry 가능하면 동적 work를 `BLOCKED`, 복구 불가능하거나 한도를 소진하면 verdict 없이 `FAILED`로 끝내며, 이 실패 결과는 R6 final verdict evidence로 소비하지 않는다.
+동적 재현이 Sandbox 정책에 막힌 것은 `FALSE`나 Gate의 `REJECT` 근거가 아니다. 하지만 validated PoC가 없으므로 final TRUE와 Technical Gate 입력을 만들 수 없다. retry 가능하면 동적 work를 `BLOCKED`, 복구 불가능하면 verdict 없이 `FAILED`로 끝낸다.
 
 ## 2. 공식 정책·범위·영향 검토(`Rule Scope Impact Gate`)
 

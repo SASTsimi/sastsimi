@@ -23,7 +23,7 @@ flowchart TB
     S04 --> S05[5 Orchestration starts initial hypothesis work]
     S05 --> RUNTIME[[Trusted Runtime Validator]]
     RUNTIME --> S06[6 Low-cost Hypothesis Agent]
-    S06 --> S07[7 Validate and register INITIAL proposals]
+    S06 --> S07[7 Validate deduplicate and register INITIAL proposals]
     S07 --> S08[8 Runtime stores ACTIVE VerificationAssignment]
     S08 --> S09[9 Verification requests on-demand context]
     S09 --> S10[10 Production Verification runs independent Pro and Con]
@@ -34,26 +34,30 @@ flowchart TB
     S12 -->|Execution evidence needed| DREQ2[Verification requests VERDICT_EVIDENCE]
     DREQ --> DWAUTH[Runtime allows one dynamic work per generation]
     DREQ2 --> DWAUTH
-    DWAUTH --> DR7[R7 Agent creates Requirements and Plan]
-    DR7 --> DAUTH[Runtime Validator Sandbox call authorization]
-    DAUTH --> DCTRL[Sandbox Controller external boundary check]
+    DWAUTH --> DR7[R7 Agent creates Requirements and simple Plan]
+    DR7 --> DAUTH[Runtime authorizes external Sandbox boundary]
+    DAUTH --> DCTRL[Controller checks host Docker secret egress resource boundaries]
     DCTRL --> DPD[Exact SandboxPolicyDecision]
-    DPD -->|Pass| DENV[Setup Automation creates a clean Sandbox]
-    DPD -->|Policy blocked| DASM[Session Manager finalizes blocked result]
-    DENV --> DRUN[Agent builds environment PoC executes observes and retries]
-    DRUN --> DASM
-    DASM --> DRES[AgentLog result candidate and nullable validated PoC]
+    DPD -->|Pass| DENV[Setup Automation builds recipe and prepares clean environment]
+    DPD -->|Policy blocked| DSTOP[Attempt cannot complete no verdict]
+    DENV --> DRUN[R7 Agent autonomously creates and runs PoC in Sandbox]
+    DRUN --> DLOG[Session Manager appends actual events to AgentLog]
+    DLOG --> DASM[Session Manager binds same-attempt recipe environment candidate and evidence]
+    DASM --> DRES[Dynamic result and validated PoC only on supported success]
     DRES --> DOUT{Observed outcome}
     DOUT -->|SUPPORTED| POCOK{Validated PoC and supported result}
     POCOK -->|Yes| S13
+    POCOK -->|No| DSTOP
     DOUT -->|DISPROVED or INCONCLUSIVE| S13
     DOUT -->|Execution failure| DSTOP
-    DSTOP -->|Retryable same work new attempt| DR7
+    DSTOP -->|Autonomous retry same work new attempt| DR7
+    DSTOP -->|External condition| DWAIT[BLOCKED until input policy or resource change]
+    DWAIT --> DR7
     DSTOP -->|Unrecoverable| S22
     S13 --> S14{14 Final verdict}
     S14 -->|FALSE| CLOSED[Terminal internal result]
     S14 -->|HOLD| REQUIRED[Result null Primitive with required inputs admitted]
-    S14 -->|TRUE with validated PoC| CWE[14 CWE labeling for TRUE]
+    S14 -->|TRUE with validated PoC| CWE[14 R5-01 CWE_LABELING creates current CWELabel bound to exact Verification]
     CWE --> S15[15 Technical Evidence Gate]
     S15 -->|REVISE| S16[16 Same assignment starts new Verification work and revision]
     S16 --> S09
@@ -120,7 +124,17 @@ flowchart TB
     HA --> RAW[Candidate output]
     RAW --> SCHEMA{Syntax schema enums locations valid}
     SCHEMA -->|Yes| ASSERT{HYPOTHESIS_ONLY and NON_FINAL}
-    ASSERT -->|Yes| REGISTER[Register VulnerabilityHypothesis]
+    ASSERT -->|Yes| CANDIDATES{Runtime found exact duplicate candidates}
+    CANDIDATES -->|No| REGISTER[Register VulnerabilityHypothesis]
+    CANDIDATES -->|Yes| DUPCALL[Hypothesis Agent compares exact proposal and candidates]
+    DUPCALL --> DUPVALID{Valid duplicate review}
+    DUPVALID -->|No| FAILOPEN[Preserve error and register fail open]
+    DUPVALID -->|Yes| DUPDECISION{UNIQUE DUPLICATE or UNCERTAIN}
+    DUPDECISION -->|UNIQUE or UNCERTAIN| REGISTER
+    DUPDECISION -->|DUPLICATE| TARGET{Target is an exact candidate}
+    TARGET -->|Yes| DUPSTOP[Store DUPLICATE and do not issue hypothesis id]
+    TARGET -->|No| FAILOPEN
+    FAILOPEN --> REGISTER
     REGISTER --> VERIFY[Assign Verification Agent]
     SCHEMA -->|No| RETRY{Repair retries remain}
     ASSERT -->|No| RETRY
@@ -130,7 +144,7 @@ flowchart TB
     INVALID --> STORE[Store errors and invocation refs]
 ```
 
-proposal은 facts와 assumptions, restrictions, missing information, falsification questions, 고유 `validation_id`가 있는 `validation_checks`를 분리한다. confidence는 우선순위 힌트일 뿐 verdict가 아니다.
+proposal은 observed facts, exact 근거가 연결된 restrictions, assumptions, falsification questions, 고유 `validation_id`가 있는 `validation_checks`를 분리한다. 같은 코드 사실은 observed fact와 restriction 근거 양쪽에 중복하지 않는다. 중복 비교 후보는 같은 analysis·workspace·commit에서 runtime이 좁히며, 후보 밖 중복 대상·호출 실패·형식 오류는 기록을 남기고 fail-open 등록한다. 등록된 가설은 전수 검증하며 점수로 선별하거나 순서를 매기지 않는다.
 
 ## 4. 운영 상시 찬반 검증과 평가 모드
 
@@ -160,20 +174,24 @@ flowchart TB
     DYN -->|Execution evidence needed| VREQ[R6 request VERDICT_EVIDENCE]
     CREQ --> ONE[Runtime allows one work per Verification generation]
     VREQ --> ONE
-    ONE --> R7PLAN[R7 Agent creates Requirements and Plan]
-    R7PLAN --> AUTH[Runtime Validator call authorization]
-    AUTH --> CTRL[Sandbox Controller external boundary check]
+    ONE --> R7PLAN[R7 Agent creates Requirements and simple Plan]
+    R7PLAN --> AUTH[Runtime authorizes external Sandbox boundary]
+    AUTH --> CTRL[Controller checks host Docker secret egress and resource boundaries]
     CTRL --> PDEC[Exact SandboxPolicyDecision]
-    PDEC -->|Pass| ENV[Setup Automation creates a clean Sandbox]
-    PDEC -->|Policy blocked| ASSEMBLER[Session Manager finalizes blocked result]
-    ENV --> AGENT[Agent builds environment PoC executes observes and retries]
-    AGENT --> ASSEMBLER
-    ASSEMBLER --> DRESULT[AgentLog result candidate and nullable validated PoC]
+    PDEC -->|Pass| ENV[Setup Automation builds recipe and prepares clean environment]
+    PDEC -->|Policy blocked| FAIL[Attempt cannot complete no final verdict]
+    ENV --> AGENT[R7 Agent autonomously creates and runs PoC]
+    AGENT --> LOG[Session Manager appends AgentLog events]
+    LOG --> ASSEMBLER[Session Manager validates same-attempt provenance]
+    ASSEMBLER --> DRESULT[Dynamic result with candidate evidence and nullable validated PoC]
     DRESULT --> OBS{Observed outcome}
     OBS -->|SUPPORTED with validated PoC| SYN2[Verification re-synthesizes evidence]
+    OBS -->|SUPPORTED but PoC missing or invalid| FAIL
     OBS -->|DISPROVED or INCONCLUSIVE| SYN2
     OBS -->|Execution failure| FAIL
-    FAIL -->|Retryable same work new attempt| R7PLAN
+    FAIL -->|Autonomous retry same work new attempt| R7PLAN
+    FAIL -->|External condition| WAIT[BLOCKED until condition changes]
+    WAIT --> R7PLAN
     FAIL -->|Unrecoverable| NOFINAL[No final verdict and no Gate]
     SYN2 --> FINAL
     FINAL --> OUT[Restrictions candidates PrimitiveDraft and VERIFICATION origin child proposals]
@@ -188,7 +206,7 @@ flowchart TB
     VR[Final VerificationResult] --> KIND{Verdict}
     KIND -->|FALSE| CLOSED[Terminal no Primitive no Chaining]
     KIND -->|HOLD| REQUIRED[Primitive with inputs and null result]
-    KIND -->|TRUE with current validated PoC| CWE[CWE labeling]
+    KIND -->|TRUE with current validated PoC| CWE[R5-01 CWE_LABELING creates exact current CWELabel]
     CWE --> TECH[Technical Evidence Gate]
     TECH -->|REVISE| SAME[Same assignment new Verification work and revision]
     SAME --> VR
@@ -218,8 +236,9 @@ Primitive DB는 queue가 아니며 Chaining match와 child proposal은 Finding�
 
 ```mermaid
 flowchart TB
-    DYN[Current SUCCEEDED SUPPORTED dynamic result and validated PoC] --> VR[Final TRUE VerificationResult plus CWE]
-    VR --> TECH[Technical Evidence Gate Agent]
+    DYN[Current SUCCEEDED SUPPORTED dynamic result and validated PoC] --> VR[Final TRUE VerificationResult]
+    VR --> CWE[R5-01 CWE_LABELING creates current label for exact Verification]
+    CWE --> TECH[Technical Evidence Gate Agent]
     TECH --> TS{ACCEPT REVISE REJECT}
     TS -->|REVISE| BACK[Same hypothesis Verification owner]
     BACK --> NEWGEN[New Verification generation and new validated PoC]
@@ -327,7 +346,8 @@ stateDiagram-v2
     READY --> RUNNING: start new attempt
     READY --> BLOCKED: prerequisite missing
     READY --> CANCELLED: cancelled
-    RUNNING --> BLOCKED: retryable attempt failure
+    RUNNING --> BLOCKED: external waiting condition
+    RUNNING --> READY: immediate dynamic auto retry
     RUNNING --> SUCCEEDED: full output committed
     RUNNING --> PARTIAL: partial output committed
     RUNNING --> FAILED: terminal failure
@@ -341,7 +361,7 @@ stateDiagram-v2
     CANCELLED --> [*]
 ```
 
-작업 상태는 전문 판정과 분리한다. retry 가능한 attempt 실패는 work를 `BLOCKED`로 두고, 조건을 해결한 뒤 새 `attempt_id`로 다시 시작한다. `SUCCEEDED | PARTIAL | FAILED | CANCELLED`는 되돌리지 않는다.
+작업 상태는 전문 판정과 분리한다. 일반 retry가 외부 조건을 기다리면 work를 `BLOCKED`로 두고, 조건을 해결한 뒤 새 `attempt_id`로 다시 시작한다. `DYNAMIC_REPRO`가 외부 대기 없이 자체 해결할 수 있으면 `RUNNING -> READY -> RUNNING`으로 즉시 새 attempt를 시작한다. `SUCCEEDED | PARTIAL | FAILED | CANCELLED`는 되돌리지 않는다.
 
 ## 11. 중복 방지와 atomic 저장·복구
 
@@ -390,7 +410,7 @@ flowchart LR
     DOMAIN[Verification Gates and Reporter keep domain decisions] -. not decided by validator .-> CHECK
 ```
 
-Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 호출 권한·상태·예산과 current generation의 exact request·requirements·sandbox_profile_ref 및 same-work ReproductionPlan reference 연결을 확인한다. Sandbox Controller는 host·daemon/socket·mount/namespace·secret·egress·workspace·resource/lifecycle 외부 경계만 검사하고 Agent 내부 command·package·payload·실행 순서는 사전 검사하지 않는다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
+Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 Setup Automation 권한·상태·예산·exact request/requirements·R8 resource/lifecycle을 확인한다. host·Docker daemon/socket·mount/namespace·secret·egress·workspace 외부 경계는 Sandbox Controller가 검사하고 내부 command는 Agent가 자율적으로 정한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
 
 ## 13. ReportDraft와 Agent 자동화 종료 경계
 

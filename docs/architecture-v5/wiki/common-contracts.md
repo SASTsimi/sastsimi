@@ -29,8 +29,9 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 
 - `parent_hypothesis_ids`: 바로 앞에서 새 가설을 만들게 한 부모들
 - `source_primitive_match_id`: `origin=CHAINING` 가설을 만든 정확한 Primitive match
+- `LineageExclusion`: 같은 체이닝 작업에서 조상 계보 때문에 제외한 Primitive와 제외 근거를 묶은 기록
 
-한 Primitive의 `result`가 다른 Primitive의 특정 `input`을 충족해 더 큰 공격 가능성을 찾아도 기존 결과를 수정하지 않습니다. Technical `ACCEPT`을 받은 upstream TRUE revision, downstream Primitive와 `matched_input_id`를 확인한 뒤 새로운 `origin=CHAINING` proposal과 `hypothesis_id`를 만들고 전체 검증을 다시 거칩니다. 현재 가설의 부모와 source match를 따라 조상 Primitive를 계산해 현재 match 후보에서 제외하므로 별도 root ID나 depth 숫자를 저장하지 않습니다. Verification이 별도 endpoint·sink·권한 경계를 발견한 경우에는 `origin=VERIFICATION` proposal을 사용합니다.
+한 Primitive의 `result`가 다른 Primitive의 특정 `input`을 충족해 더 큰 공격 가능성을 찾아도 기존 결과를 수정하지 않습니다. Technical `ACCEPT`을 받은 upstream TRUE revision, downstream Primitive와 `matched_input_id`를 확인한 뒤 새로운 `origin=CHAINING` proposal과 `hypothesis_id`를 만들고 전체 검증을 다시 거칩니다. Runtime은 순환 검사 전 전체 입력을 `considered_primitive_refs`, 실제 match 입력을 `input_primitive_refs`, 계보 때문에 제외한 항목을 `excluded_lineage_refs`로 구분합니다. 상세 문서 §06의 계보 규칙으로 기대 제외 목록을 다시 계산하므로 검토하지 않은 Primitive나 잘못된 조상 관계를 제외 기록으로 저장할 수 없습니다. Verification이 별도 endpoint·sink·권한 경계를 발견한 경우에는 `origin=VERIFICATION` proposal을 사용합니다.
 
 ## 같은 가설인지 어떻게 확인하나요?
 
@@ -59,7 +60,7 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 | proposal 검증 상태 | `PROPOSED`, `SCHEMA_VALID`, `DUPLICATE`, `INVALID_OUTPUT` | 아니요. 아직 가설 번호가 없을 수 있음. `DUPLICATE`는 새 가설 번호를 만들지 않음 |
 | 등록된 가설 처리 상태 | `REGISTERED`, `ASSIGNED`, `VERIFYING`, `TERMINAL`, `FAILED` | 아니요. `FAILED`는 final 판정 없이 검증 절차가 끝난 상태 |
 | 기술 판정 | `TRUE`, `FALSE`, `HOLD` | 예 |
-| 동적 재현 상태 | `SUCCEEDED`, `FAILED`, `BLOCKED` | 아니요 |
+| 동적 재현 상태 | `SUCCEEDED`, `PARTIAL`, `FAILED`, `BLOCKED`, `CANCELLED` | 아니요 |
 | LLM 호출 상태 | `AUTH_REQUIRED`, `RATE_LIMITED`, `TIMED_OUT` | 아니요 |
 | 기술 Gate | `ACCEPT`, `REVISE`, `REJECT` | 판정을 검토하지만 바꾸지 않음 |
 | 정책·영향 Gate | `PASS`, `FAIL`, `UNCERTAIN`, `ALLOW`, `DENY` | 보고서 전달 조건 |
@@ -126,9 +127,9 @@ Docker 환경을 만들지 못했거나 실행이 timeout된 것은 재현 실�
 
 ### 필요한 환경과 실제 환경을 어떻게 연결하나요?
 
-R6 Verification은 `DynamicReproductionRequest`에 목적, 목표·필요 환경·`sandbox_profile_ref`와 근거를 적습니다. R7 Agent는 이 요청을 가리키는 `EnvironmentRequirements`와 `ReproductionPlan`을 만든 뒤 clean Sandbox 안에서 recipe·환경·PoC를 구성합니다. `sandbox_profile_ref`는 외부 격리 정책이며 애플리케이션 환경 요구사항을 대신하지 않습니다.
+R6 Verification은 `DynamicReproductionRequest`에 `POC_CONFIRMATION | VERDICT_EVIDENCE` 목적, 재현 목표·필요 환경·`sandbox_profile_ref`와 코드·정적·Pro·Con 근거를 적습니다. R7 Agent는 이 요청을 가리키는 `EnvironmentRequirements`와 mode·exact command가 없는 `ReproductionPlan`을 먼저 만듭니다. 외부 경계를 통과한 뒤 Sandbox 안에서 PoC candidate·command·관찰·재시도를 자율적으로 정합니다. `sandbox_profile_ref`는 Docker 외부 경계 정책이므로 애플리케이션 환경 요구사항을 대신하지 않습니다.
 
-R7은 실제 환경의 requirements·recipe·built image digest와 각 requirement의 비교·Health Check를 기록합니다. 환경이나 계획을 고치면 같은 request·work의 새 attempt와 immutable revision을 만들고 외부 경계 검사를 다시 받습니다. 차이·미확인·오류는 숨기지 않으며 그 자체로 `DISPROVED`가 아닙니다.
+R7은 실제 환경을 만든 뒤 `sandbox_environment.requirements_ref`에 같은 요구사항 수정본을 연결하고, 각 `requirement_id`에 `MATCH | MISMATCH | NOT_CHECKED | ERROR`, 실제 값 또는 artifact, 차이와 Health Check 결과를 기록합니다. 필수 항목이 모두 `MATCH`일 때만 실제 취약점 재현을 확정할 수 있습니다. 같은 session 안의 plan·recipe·command 보완은 같은 attempt의 새 불변 revision과 AgentLog event로 남깁니다. request·requirements·profile·resource/lifecycle 같은 외부 경계 입력이 바뀌면 새 `RUN_SANDBOX` action과 Controller 검사가 필요하고, session을 다시 시작하거나 외부 대기에서 재개하면 같은 work의 새 attempt를 만듭니다.
 
 credential·cookie·token·password 원문은 요구사항과 실제 값에 저장하지 않습니다. 필요한 비밀은 secret store의 불투명 `secret_ref`만 사용합니다.
 
@@ -136,16 +137,19 @@ credential·cookie·token·password 원문은 요구사항과 실제 값에 저�
 
 - `poc_candidate_ref`: 실행 전에 만든 PoC 스크립트·입력입니다. 실패한 시도에도 남을 수 있으며 검증된 PoC가 아닙니다.
 - `poc_ref`: `SUCCEEDED + SUPPORTED`로 재현에 성공한 exact candidate만 가리키는 validated PoC입니다. 그 밖의 상태·관측에서는 반드시 비어 있습니다.
-- `agent_invoked`: Reproduction Agent가 시작됐는지 나타냅니다. 거짓이어도 Session Manager는 정책 차단 결과를 확정할 수 있고, 참이면 실패해도 exact `agent_log_ref`가 필요합니다.
-- `environment_created`: 실제 환경이 만들어졌는지 나타냅니다. 거짓이면 `environment_ref`가 비어 있고, 참이면 실제 생성 환경과 요구사항별 비교 기록을 가리켜야 합니다. 실행 전 요구사항이나 Sandbox profile과는 다릅니다.
-- `policy_decision_ref`: Controller가 어떤 정책 버전으로 왜 허용·차단했는지 가리킵니다. `failure_category=POLICY`인 정책 차단 결과에는 반드시 필요하며 Technical Gate의 판정과 다릅니다.
+- `agent_invoked`: 외부 경계 승인 뒤 Sandbox 안의 R7 Agent 실행 단계가 실제 시작됐는지 나타냅니다. 사전 requirements·plan 작성 호출과 구분하며 필수 `AgentLog`의 `AGENT_STARTED` event와 같아야 합니다.
+- `agent_log_ref`: Session Manager가 실제 event를 순서대로 저장한 append-only 기록을 가리킵니다.
+- `environment_recipe_ref`: base/built image digest와 저장소 의존성 source를 고정한 현재 attempt의 recipe를 가리킵니다.
+- `failure_category`, `failure_reason`, `plan_issues`: 비교 가능한 실패 범주, 쉬운 자유형 설명, plan의 누락·모순을 각각 기록합니다.
+- `environment_ref`: Setup Automation이 현재 attempt에서 실제 생성하거나 재사용한 환경 기록을 가리킵니다. container instance, `CREATED | REUSED`, 사유와 요구사항 비교를 포함하며 plan이나 recipe로 대신할 수 없습니다.
+- `policy_decision_ref`: Controller가 어떤 정책 버전으로 왜 허용·차단했는지 가리킵니다. `POLICY_BLOCKED`이면 반드시 필요하며 Technical Gate의 판정과 다릅니다.
 - `cleanup_required`: 정리할 자원이 생겼는지 나타냅니다. 거짓일 때만 `cleanup_status=NOT_REQUIRED`를 씁니다. 정책에 막혔더라도 임시 자원이 생겼다면 정리 결과를 성공 또는 실패로 남깁니다.
 
-이 참조들은 같은 분석·코드·가설·generation과 exact revision에 속해야 합니다. R6 request와 R7 requirements·plan이 연결되고, recipe·정책·실제 환경·AgentLog·candidate·cleanup은 같은 attempt에서 연결됩니다. 다른 attempt를 섞으면 저장을 거절합니다. R6는 요청과 최종 판정을, R7 Agent는 실행 artifact를, Session Manager는 actual event와 최종 결과 확정을 맡습니다.
+이 참조들은 같은 분석·코드·가설·Verification generation과 정확한 record revision에 속해야 합니다. R6 request와 R7 requirements·plan이 연결되고, Controller 정책·Setup 환경·PoC candidate·AgentLog·정리 기록은 같은 동적 실행 attempt에서 연결됩니다. plan의 `environment_requirements_ref`와 실제 환경의 `requirements_ref`가 다르거나 다른 attempt의 자료를 섞으면 저장을 거절합니다. R4는 공통 연결 규칙을, R6는 요청과 최종 판정을 맡습니다. R7 Agent는 requirements·plan·PoC·관찰을, Setup Automation은 recipe·환경·정리를, Controller는 외부 경계 판정을, Session Manager는 AgentLog·validated PoC·동적 결과 확정을 맡습니다.
 
 Technical Gate는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated PoC가 있는 final `TRUE`만 입력으로 받습니다. `FALSE | HOLD`와 검증 실패 가설은 보내지 않습니다. Verification·동적 결과·PoC·CWE 중 하나가 수정되면 이전 Gate 승인을 재사용하지 않습니다. Rule Scope Gate와 보고서 초안도 같은 exact revision을 사용해야 합니다. `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
 
-Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 부족 조건을 `inputs`에 넣고 `result=null`로 Gate 없이 저장합니다. TRUE는 validated PoC와 같은 revision을 검토한 Technical `ACCEPT` 뒤 제공 능력 하나마다 `result`가 있는 Primitive를 만들고, 그 TRUE의 입력 조건과 `restriction_id`·근거 reference 전체도 함께 보존합니다. Rule Scope 결과는 Reporter만 제어하며 Primitive admission을 취소하지 않습니다. `PrimitiveIndexState`는 current Verification과 Primitive refs만 가리키며 별도 전용 version은 두지 않습니다. 공통 `RecordMeta` revision과 원자적 current pointer 갱신으로 오래된 Chaining 결과를 거절합니다.
+Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 부족 조건을 `inputs`에 넣고 `result=null`로 Gate 없이 저장합니다. TRUE는 validated PoC와 같은 revision을 검토한 Technical `ACCEPT` 뒤 제공 능력 하나마다 `result`가 있는 Primitive를 만들고, 그 TRUE의 입력 조건과 `restriction_id`·근거 reference 전체도 함께 보존합니다. Rule Scope 결과는 Reporter만 제어하며 Primitive admission을 취소하지 않습니다. `PrimitiveIndexState`는 current Verification과 Primitive refs만 가리키며 별도 전용 version은 두지 않습니다. Chaining work는 시작할 때 읽은 index와 Primitive exact reference를 고정합니다. 이후 current pointer가 갱신돼도 진행 중인 work를 무효화하지 않으며, 그 work에 고정하지 않은 reference가 결과에 섞였을 때만 `STALE_RESULT`로 거절합니다.
 
 ## 자주 쓰는 작은 데이터 구조
 

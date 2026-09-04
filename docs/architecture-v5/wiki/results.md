@@ -11,12 +11,13 @@
 `AnalysisRunResult`는 다음을 함께 찾을 수 있게 한다.
 
 - repository, `commit_id`, `workspace_id`, `started_at`, `finished_at`, `elapsed_ms`
-- INITIAL/VERIFICATION/CHAINING/invalid 가설 수, verdict별 개수와 final 판정 없이 끝난 `failed_hypothesis_count`
+- INITIAL/VERIFICATION/CHAINING/invalid 가설 수, 중복 검토 판정·exact review reference, verdict별 개수와 final 판정 없이 끝난 `failed_hypothesis_count`
 - 위치 기반 context 요청·응답과 실제 조회 location
 - Verification, debate mode/trigger/skip, restriction와 capability
-- 동적 재현 요청, R7 환경 요구사항·계획·recipe·PoC candidate, Controller 외부 경계 판정·실제 환경·AgentLog, `failure_category`·`failure_reason`, validated PoC와 cleanup
+- 동적 재현 요청, R7 requirements·간단한 plan·recipe·PoC candidate, Controller 외부 경계 판정·실제 환경·append-only AgentLog, validated PoC와 cleanup
 - `result=null`인 HOLD Primitive, result가 있는 Technical-accepted TRUE Primitive, upstream result→downstream input match와 재검증 여부
-- `CWELabel`, Technical 및 Rule Scope Impact Gate, 공식 `ProgramPolicyRecord`과 두 Gate·보고서가 사용한 정확한 revision reference
+- R5-01 `CWE_LABELING` work와 `CWELabel`의 exact Verification·generation·work·호출 provenance, 과거/current label revision
+- Technical 및 Rule Scope Impact Gate, 공식 `ProgramPolicyRecord`과 두 Gate·보고서가 사용한 서로 일치하는 Verification·current CWELabel revision reference
 - current 보고서 초안, 오래된 초안 제외와 Agent 자동화 종료 상태
 - 역할/provider/model/session별 LLM invocation log
 - AST/SAST·LLM·sandbox 자원과 모든 오류
@@ -28,7 +29,7 @@ Proxy가 어려운 membership 호출은 raw session log → provider parser → 
 
 Context 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 함께 찾을 수 있어야 합니다. 일부 조회 실패가 있어도 모든 `validation_checks`를 실제 근거로 완료했다면 판정을 저장할 수 있습니다. 하나라도 완료하지 못했으면 final `VerificationResult`는 저장하지 않고, 재시도 가능 여부에 따라 가설을 `VERIFYING`으로 유지하거나 work와 함께 `FAILED`로 끝냅니다. 실패 가설 수는 verdict 수와 섞지 않고 `failed_hypothesis_count`로 따로 보입니다.
 
-동적 결과에서는 request·plan·attempt, Agent 호출·AgentLog, recipe·실제 환경·PoC·cleanup 상태가 서로 맞는지 확인합니다. 외부 경계 차단이면 `failure_category=POLICY`와 Controller 판정이 필수입니다. 그 밖의 재시도 가능한 환경·계획·실행·관찰 문제도 해당 `failure_category`와 `status=BLOCKED`로 기록하고, 복구 불가 또는 한도 소진은 `status=FAILED`로 기록합니다. 실패 attempt는 routing·감사용으로만 보존하며 R6 final verdict 근거로 소비하지 않습니다. `poc_candidate_ref`는 미검증 자료이고 `SUCCEEDED + SUPPORTED`인 candidate 실행만 validated `poc_ref`를 가집니다. 모든 final TRUE는 이 validated PoC를 가져야 합니다.
+동적 결과에서는 request·plan·recipe·환경·AgentLog·PoC와 attempt가 서로 맞는지 확인합니다. 정책 차단이면 Controller 판정과 AgentLog가 필수입니다. `poc_candidate_ref`는 작성하거나 실행을 시도한 자료이고, `SUCCEEDED + SUPPORTED`이며 같은 attempt의 AgentLog가 exact candidate digest 실행을 증명할 때만 validated `poc_ref`를 가집니다. 모든 final TRUE는 이 validated PoC를 가져야 합니다.
 
 상세 내용은 [결과 저장과 관측성](../07-results-and-observability.md)을 따른다.
 ID 생성 주체, 상태 계층과 gap/error 차이는 [공통 ID·상태·오류](common-contracts.md)에서 쉽게 확인할 수 있다. 병렬 합류, 재시도, 늦은 결과와 crash-resume은 [상태·병렬 실행·재시도·복구](state-and-recovery.md)를 따른다.
