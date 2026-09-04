@@ -96,7 +96,7 @@ Gate 작업은 시작할 때 읽은 Verification, current CWELabel, 앞 Gate와 
 
 조건이 해결되면 `READY`에서 새 `attempt_id`로 다시 시작합니다. 재시도할 수 없거나 한도를 모두 사용하면 최종 `FAILED`가 됩니다. 취소된 작업은 자동 재시도하지 않습니다.
 
-Pro와 Con은 부모 Verification 아래의 별도 child work입니다. 한쪽이 재시도를 기다리면 그 child와 부모 Verification을 모두 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지합니다. 성공한 다른 쪽 결과는 부모·generation·공통 입력·플레이북·설정·예산 기준이 그대로일 때만 보존합니다. 하나라도 바뀌면 두 역할을 모두 다시 실행합니다.
+Pro와 Con은 부모 Verification 아래의 별도 child work입니다. 한쪽이 재시도를 기다리면 그 child와 부모 Verification을 모두 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지합니다. 성공한 다른 쪽 결과는 부모·generation·공통 입력·policy·playbook·application과 질문 ID 집합·설정·예산 기준이 그대로일 때만 보존합니다. 하나라도 바뀌면 두 역할을 모두 다시 실행합니다.
 
 한쪽이 복구 불가능하게 실패하면 child 실패를 먼저 확정해 부모 진행을 막습니다. 이어 부모 Verification과 가설을 함께 `FAILED`로 끝냅니다. 중간에 프로그램이 멈추면 복구가 이 전파를 끝낼 때까지 부모를 다시 실행하지 않습니다. final `VerificationResult`는 없고 Gate도 호출하지 않습니다. 취소되거나 부모가 교체된 뒤 늦게 도착한 결과는 보관할 수 있지만 현재 결과로 사용하지 않습니다.
 

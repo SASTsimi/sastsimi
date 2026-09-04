@@ -54,7 +54,7 @@
 - Produces: 새 MAJOR Primitive/Chaining 계약과 Gate 책임 경계
 
 - [ ] 공통 YAML schema와 저장·권한·오류 규칙을 교체한다.
-- [ ] admission, exact reference, lineage, 순환 제외와 공통 예산 규칙을 정본에 반영한다.
+- [ ] admission, exact reference, lineage, 조상 재사용 제외와 공통 예산 규칙을 정본에 반영한다.
 - [ ] ADR-005를 ACCEPTED로 추가하고 ADR-001을 SUPERSEDED로 표시한다.
 - [ ] validator를 실행해 Task 1 검사가 통과하도록 수정한다.
 

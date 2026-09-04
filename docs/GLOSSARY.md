@@ -59,6 +59,9 @@
 | `Hypothesis` | 검증이 필요한 취약점 가능성 | 아직 확정 취약점이나 Finding이 아닙니다. |
 | `HypothesisDuplicateReview` | 새 가설 제안이 기존 등록 가설과 같은지 LLM이 비교해 남긴 결과 | 프로그램이 먼저 좁힌 exact 후보만 비교하며, 애매하거나 검토에 실패하면 탐지 누락을 막기 위해 새 가설로 등록합니다. |
 | `Verification` | 배정된 가설 안에서 코드·찬반·동적 근거와 보완 흐름을 관리해 판정하는 과정 | 다음 작업은 선택하지만 Runtime Validator의 실행 검사를 우회하거나 공개를 결정하지 않습니다. |
+| `VerificationPlaybook` | 취약점 유형별로 빠뜨리지 말아야 할 확인 항목과 반증 질문을 묶은 수정 가능한 절차 | 플레이북이 등록됐다는 이유만으로 운영 지원 유형이 되지는 않습니다. |
+| `PlaybookPolicy` | 운영에서 허용한 취약점 유형과 사용할 정확한 플레이북 수정본을 연결한 사람 승인 설정 | R6가 플레이북을 작성해도 이 정책 없이는 유형별 플레이북을 자동 활성화하지 않습니다. |
+| `PlaybookApplication` | 이번 Verification 작업에 어떤 policy·playbook·질문 ID를 적용했는지 고정한 기록 | retry에서는 그대로 사용하고 새 work나 generation에서는 새 기록과 질문 ID를 만듭니다. |
 | `verdict` | 검증 Agent가 내린 기술 판정 | `TRUE`, `FALSE`, `HOLD` 중 하나입니다. |
 | `TRUE` | 코드·찬반 근거와 실제 PoC 재현으로 취약점이 성립한다고 판단한 상태 | 모든 final TRUE에는 현재 검증 차수의 validated PoC가 필요하며 사람의 공개 결정과는 다릅니다. |
 | `FALSE` | 미리 정한 반증 조건이 실제 근거로 확인된 상태 | 도구 실패나 정보 부족을 `FALSE`로 바꾸면 안 됩니다. |
@@ -139,8 +142,10 @@
 | `Reproduction Session Manager` | 한 동적 재현 attempt의 실제 event와 최종 결과를 확정하는 비-LLM 모듈 | AgentLog, validated PoC와 DynamicReproductionResult의 result owner이며 Agent의 실행 전략은 결정하지 않습니다. |
 | `provider` | LLM을 제공하는 서비스나 연결 방식 | API 방식과 회원 로그인 방식을 같은 경계에서 관리합니다. |
 | `session` | LLM 서비스와 이어지는 로그인 또는 대화 상태 | 인증정보와 session 비밀값을 일반 로그에 남기지 않습니다. |
-| `token` | LLM이 입력과 출력을 처리할 때 쓰는 계산 단위 | 역할별·전체 실행별 한도를 둡니다. |
-| `budget` | token, 시간, 재시도와 실행 자원에 둔 한도 | 초과를 취약점 `FALSE`로 바꾸지 않습니다. |
+| `token` | LLM이 입력과 출력을 처리할 때 쓰는 계산 단위 | 실제 사용량을 관측하며 token만으로 실행을 자르지 않습니다. |
+| `token_budget` | 한 LLM 호출의 예상 token 사용량을 적는 선택 계획값 | 강제 상한이 아니며 값이 없거나 실제 사용량이 더 많아도 token만으로 차단하지 않습니다. |
+| `budget` | 시간, 비용, 호출, 재시도, 작업 수와 실행 자원에 둔 한도 | 초과를 취약점 `FALSE`로 바꾸지 않습니다. |
+| `eval_config_refs` | 평가 실행에 사용한 장면·지표·정답·채점·LLM 설정의 정확한 수정본 목록 | 목록이 같은 평가 결과끼리만 직접 비교하며 생산 Gate·Primitive·Reporter 입력으로 쓰지 않습니다. |
 | `corpus` | 반복 평가에 사용하는 예제 모음 | 버전과 정답 근거를 기록해 같은 조건으로 비교합니다. |
 | `observability` | 실행 상태와 오류를 확인할 수 있는 기록 | 비밀정보와 숨은 사고 과정은 저장하지 않습니다. |
 | `redaction` | 로그나 보고서에서 비밀정보를 가리는 처리 | 가리기 실패 시 일반 전달을 중단합니다. |
