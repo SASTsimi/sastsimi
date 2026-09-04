@@ -84,7 +84,8 @@ Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을
 | S-HOLD | 핵심 정보 부족 | HOLD + 부족한 것을 `inputs`에 기록. Gate 없이 `result=null` Primitive 등록. 정상 실행 뒤 `INCONCLUSIVE`면 HOLD 가능 | 공백·실행 실패를 FALSE/HOLD로 처리. HOLD에 `result`를 채워 확정처럼 씀 |
 | S-GAP | AST/SAST 일부 실패 | 못 본 범위 보존, 일부만 끝남 가능 | 그걸 FALSE로 변환 |
 | S-CONFLICT | 찬반 근거 충돌 | 같은 공통 입력(`debate_input_hash`). 서로 다른 `NEW` session. 상대 결과·낡은 결과 미공유. 근거형 판정 또는 HOLD | 한쪽 결론을 공유. 입력이 다름. 같은 session. 옛 결과 재사용 |
-| S-DEBATE-FAIL | 운영 찬반 한쪽 누락·실패 | 최종 TRUE/FALSE/HOLD 없음. 부모 Verification·가설 `FAILED`, `verification_result_ref=null` | 한쪽만으로 최종 판정 |
+| S-DEBATE-BLOCK | 운영 찬반 한쪽 누락·실패, 재시도 가능 | 최종 판정 없음. 실패 자식과 부모 Verification `BLOCKED`, 가설 `VERIFYING`. 실패 역할만 새 `NEW` session으로 재시도 | 바로 부모·가설 `FAILED`. 한쪽만으로 최종 판정 |
+| S-DEBATE-FAIL | 운영 찬반 한쪽 누락·실패, 재시도 소진 또는 복구 불가 | 최종 판정 없음. 실패 자식 `FAILED`를 먼저 확정한 뒤 부모·가설 `FAILED`, `verification_result_ref=null` | 한쪽만으로 최종 판정. 재시도 가능한데 바로 `FAILED` |
 | S-V-CHILD | Verification이 새 주장 | 새 쪽지로 재검증, 부모 불변 | 부모 TRUE에 합침 |
 | S-CHAIN-CHILD | upstream `result`가 downstream `input`을 채우는 짝 | 새 쪽지, 부모 불변 | 부모 판정을 바꿈. 우회 조사로 확장 |
 | S-TRUE-EARLY | validated PoC·Technical ACCEPT 전 TRUE를 잇기 | Technical `ACCEPT` + validated PoC 전 Primitive 등록·잇기 금지 | ACCEPT 전에 `result` Primitive로 등록하거나 잇기 |
@@ -129,8 +130,10 @@ Sandbox ENV/POLICY/EXEC/TIMEOUT은 동적 work의 `BLOCKED | FAILED`다. 최종 
 | 잇기 중단 | 끊긴 횟수와 이유(전역 예산/순환). 끊긴 것을 FALSE로 바꾼 횟수 | 이유는 기록. FALSE로 바꾼 횟수 0. 체이닝 전용 짝 한도로 끊은 횟수는 두지 않음 |
 | 독립 session | 찬반이 상대 답·상대 session·낡은 결과를 본 횟수 | 0 |
 | debate 한쪽 실패 | 한쪽 누락·실패 뒤 최종 판정 | 0 |
+| debate 재시도 대기 | 재시도 가능한데 부모·가설을 바로 `FAILED`로 끝낸 횟수 | 0. 기대는 자식·부모 `BLOCKED`, 가설 `VERIFYING` |
+| debate 최종 실패 | 재시도 소진·복구 불가 뒤에도 최종 판정을 만든 횟수 | 0. 기대는 자식 `FAILED` 확정 후 부모·가설 `FAILED` |
 | 두 Gate | 문지기 전제 없이 초안 호출 | 0 |
-| Gate vs 사람 | 초안 OK vs 사람 공개 거부 | 차이 이유 기록. 이 숫자가 공개를 대신하지 않음 |
+| 사람 정답 대비 | 공장 답을 오프라인 사람 정답과 맞춤. 자동 lifecycle 아님 | 차이 이유 기록. 이 숫자가 공개·Gate·완료를 대신하지 않음 |
 | provider/model | 아래 재비교처럼 같은 장면으로 비교 | 품질 하락이면 그 설정 불합격 |
 | usage | token 숫자를 서비스가 안 줌 | 없음 + 이유. 지어내지 않음 |
 | 수집 금지 | 비밀번호·세션 비밀·숨은 생각을 평가/로그로 모은 횟수 | 0. `S-REDACT`는 가리기 실패 장면. 이건 모으지 말 것 |
@@ -251,7 +254,7 @@ provider·model·session을 바꿀 때는 **이름이 아니라 정확한 식별
 - 운영 ALWAYS 사용 수, 평가 BASIC/CONDITIONAL/ALWAYS 사용 수와 trigger/skip reason
 - Pro/Con 및 종합 token·시간
 - 같은 부모·generation·`debate_input_hash`로 정상 합류한 수, 한쪽 누락·stale·교차 입력으로 거절한 수
-- 한쪽 실패 뒤 최종 판정을 만들지 않고 부모·가설을 `FAILED`로 끝낸 수
+- 한쪽 실패 뒤 최종 판정을 만들지 않은 수. 재시도 가능이면 자식·부모 `BLOCKED` + 가설 `VERIFYING` 수, 소진·복구 불가면 자식 `FAILED` 확정 후 부모·가설 `FAILED` 수를 따로 셈. 재시도 가능한데 바로 `FAILED`로 끝낸 수는 0이어야 함
 - 서로 다른 `NEW` session, 상대 결과 미공유, 낡은 결과 미재사용
 - debate 전후 verdict 변화
 - HOLD 해소, false-positive 감소 후보와 bypass 발견
@@ -268,7 +271,7 @@ provider·model·session을 바꿀 때는 **이름이 아니라 정확한 식별
 - Technical `ACCEPT | REVISE | REJECT`와 `handoff_readiness`. `ACCEPT`↔`READY`, `REVISE | REJECT`↔`NOT_READY`는 R5가 이미 확정한 조합이다. R8은 그 불변조건을 **관측**할 뿐 Gate 의미를 새로 정하지 않는다. 조합이 틀리면 저장하지 않은 횟수를 센다.
 - Rule/Scope PASS/FAIL/UNCERTAIN, impact와 DENY 이유
 - `ProgramPolicyRecord` 누락·오래된 정책 경고 상태
-- Reporter 조건 통과/차단, current·stale ReportDraft, human decision과 자동화 종료 상태
+- Reporter 조건 통과/차단, current·stale ReportDraft, `ReportDraft` 저장 뒤 자동화 종료 상태. 사람 검토·공개는 Agent 자동화 밖이며 `AnalysisRunResult` 필드가 아니다. 오프라인 평가 정답만 별도로 쓸 수 있고 완료·Gate·초안 생성 조건으로 쓰지 않는다
 - Technical `REVISE` 횟수 (새 검증 세대)와 provider·형식 재시도를 따로 셈. Reporter `REVISE` 수는 없음
 
 ### Resources
