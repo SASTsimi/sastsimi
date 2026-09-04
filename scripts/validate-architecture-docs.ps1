@@ -378,11 +378,11 @@ $reviewRemediationPatterns = @(
     },
     @{
         Name = 'exact Technical and Rule Scope domain input sets'
-        Pattern = '(?s)Gate domain input set.*?`TECHNICAL_GATE`에서는 `VerificationResult`와 `CWELabel` reference가 정확한 domain input set.*?`RULE_SCOPE_GATE`에서는 `VerificationResult`, `TechnicalEvidenceReview`, `CWELabel`과 존재하는 `ProgramPolicyRecord` reference가 정확한 domain input set'
+        Pattern = '(?s)Gate domain input set.*?`TECHNICAL_GATE`에서는 `VerificationResult`와 `CWELabel` reference가 정확한 domain input set.*?`RULE_SCOPE_GATE`에서는 `VerificationResult`, `TechnicalEvidenceReview`, `CWELabel`, 정확히 하나의 `PolicyCollectionResult`.*?`FOUND`일 때만 exact `ProgramPolicyRecord` reference가 domain input set'
     },
     @{
         Name = 'Gate result references match the frozen work inputs'
-        Pattern = '(?s)`TechnicalEvidenceReview` 안의 `verification_result_ref`와 `cwe_label_ref`.*?Technical Gate work의 domain input 두 개와 각각 exact match.*?`RuleScopeImpactReview` 안의 `verification_result_ref`, `technical_review_ref`, `cwe_label_ref`, `policy_record_ref`.*?Rule Scope Gate work의 domain input set과 exact match'
+        Pattern = '(?s)`TechnicalEvidenceReview` 안의 `verification_result_ref`와 `cwe_label_ref`.*?Technical Gate work의 domain input 두 개와 각각 exact match.*?`RuleScopeImpactReview` 안의 `verification_result_ref`, `technical_review_ref`, `cwe_label_ref`, `policy_collection_result_ref`, `policy_record_ref`.*?Rule Scope Gate work의 domain input set과 exact match'
     },
     @{
         Name = 'REVISE creates a new work while retry keeps the same work'
@@ -872,7 +872,7 @@ $authorityScenarioMarkers = @(
     'Technical Gate가 Verification verdict를 바꾸려 함',
     'Technical Gate 없이 Rule Scope Gate 호출',
     'Rule Scope Gate 없이 Reporter 호출',
-    '공식 정책이 없는데 `ALLOW` 출력',
+    '공식 부재 확인 또는 수집 실패인데 `ALLOW` 출력',
     'repository prompt가 Sandbox network를 열라고 함',
     'LLM이 workspace 밖 파일을 요청',
     '허용하지 않은 provider/model로 silent failover',
@@ -1082,7 +1082,7 @@ $requiredR504CrossReviewRules = @(
     @{
         Name = 'stale or unverified policy blocks report permission'
         Text = $contractText
-        Marker = '`freshness_status=STALE | UNVERIFIED`이면 `rule_compliance`, `scope_compliance`, `review_status`는 `UNCERTAIN`, permission은 `DENY`다.'
+        Marker = '`FOUND`라도 핵심 출처가 누락되거나 정책이 `STALE | UNVERIFIED`이면 Rule·Scope·review는 `UNCERTAIN`, permission은 `DENY`이며 누락·최신성 문제를 구조화해 보존한다.'
     },
     @{
         Name = 'changed upstream revisions supersede report drafts'
@@ -1926,6 +1926,70 @@ if (Test-Path -LiteralPath $playbookGuidePath) {
     }
 }
 
+# R4 owns the machine-readable policy collection, freshness and Gate 2 linkage
+# contracts. These checks prevent narrative-only policy rules from drifting away
+# from the common schema consumed by R5 and R8.
+$policySourceCheckBlock = [regex]::Match($contractText, '(?ms)^PolicySourceCheck:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$policyParserResultBlock = [regex]::Match($contractText, '(?ms)^PolicyParserResult:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$policyCollectionResultBlock = [regex]::Match($contractText, '(?ms)^PolicyCollectionResult:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$policyMissingInfoBlock = [regex]::Match($contractText, '(?ms)^PolicyMissingInfo:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$ruleScopeEvidenceLinkBlock = [regex]::Match($contractText, '(?ms)^RuleScopeEvidenceLink:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$programPolicyRecordBlock = [regex]::Match($contractText, '(?ms)^ProgramPolicyRecord:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$ruleScopeImpactReviewBlock = [regex]::Match($contractText, '(?ms)^RuleScopeImpactReview:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$gateRuleScopeImpactReviewBlock = [regex]::Match($gateText, '(?ms)^rule_scope_impact_review:\s*(.*?)^```').Groups[1].Value
+$analysisRunResultPolicyBlock = [regex]::Match($contractText, '(?ms)^AnalysisRunResult:\s*(.*?)^```').Groups[1].Value
+
+$requiredPolicyContractFields = @(
+    @{ Contract = 'PolicySourceCheck'; Block = $policySourceCheckBlock; Fields = @('source_id: string', 'source_ref: StoredDataRef', 'status: VERIFIED | UNVERIFIED', 'evidence_refs: [StoredDataRef]', 'checked_at: timestamp') },
+    @{ Contract = 'PolicyParserResult'; Block = $policyParserResultBlock; Fields = @('parser_result_id: string', 'parser_name: string', 'parser_version: string', 'source_ref: StoredDataRef', 'parsed_output_ref: StoredDataRef | null', 'status: SUCCEEDED | FAILED | INVALID_OUTPUT', 'error_ids: [string]', 'completed_at: timestamp') },
+    @{ Contract = 'PolicyCollectionResult'; Block = $policyCollectionResultBlock; Fields = @('collection_result_id: string', 'program_id: string', 'status: FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED', 'official_source_refs: [StoredDataRef]', 'parser_result_refs: [StoredDataRef]', 'policy_record_ref: StoredDataRef | null', 'gap_ids: [string]', 'error_ids: [string]', 'completed_at: timestamp') },
+    @{ Contract = 'PolicyMissingInfo'; Block = $policyMissingInfoBlock; Fields = @('missing_info_id: string', 'area: RULE | SCOPE | IMPACT | SOURCE | FRESHNESS | TESTING_RESTRICTION', 'blocks_allow: boolean', 'description: string', 'policy_item_ids: [string]', 'evidence_refs: [StoredDataRef]') },
+    @{ Contract = 'RuleScopeEvidenceLink'; Block = $ruleScopeEvidenceLinkBlock; Fields = @('link_id: string', 'area: RULE | SCOPE | IMPACT | TESTING_RESTRICTION', 'policy_item_ids: [string]', 'evidence_refs: [StoredDataRef]') },
+    @{ Contract = 'ProgramPolicyRecord'; Block = $programPolicyRecordBlock; Fields = @('source_checks: [PolicySourceCheck]', 'parser_result_refs: [StoredDataRef]', 'freshness_criterion_ref: StoredDataRef | null', 'freshness_evidence_refs: [StoredDataRef]', 'freshness_valid_until: timestamp | null', 'missing_information: [PolicyMissingInfo]') },
+    @{ Contract = 'RuleScopeImpactReview'; Block = $ruleScopeImpactReviewBlock; Fields = @('policy_collection_result_ref: StoredDataRef', 'evidence_links: [RuleScopeEvidenceLink]', 'missing_information: [PolicyMissingInfo]') }
+    @{ Contract = 'Gate guide RuleScopeImpactReview'; Block = $gateRuleScopeImpactReviewBlock; Fields = @('policy_collection_result_ref: StoredDataRef', 'evidence_links: [RuleScopeEvidenceLink]', 'missing_information: [PolicyMissingInfo]') }
+    @{ Contract = 'AnalysisRunResult'; Block = $analysisRunResultPolicyBlock; Fields = @('policy_collection_result_refs: [StoredDataRef]', 'policy_parser_result_refs: [StoredDataRef]') }
+)
+foreach ($contract in $requiredPolicyContractFields) {
+    if ([string]::IsNullOrWhiteSpace($contract.Block)) {
+        Add-Failure "missing R4 policy contract block: $($contract.Contract)"
+        continue
+    }
+    foreach ($field in $contract.Fields) {
+        if (-not $contract.Block.Contains($field)) {
+            Add-Failure "$($contract.Contract) is missing R4 policy field: $field"
+        }
+    }
+}
+
+$requiredPolicyContractRules = @(
+    @{ Name = 'policy result owners are registered'; Text = $contractText; Marker = '`policy_parser_result -> PolicyParserResult -> POLICY_COLLECTOR`, `policy_collection_result -> PolicyCollectionResult -> POLICY_COLLECTOR`, `program_policy_record -> ProgramPolicyRecord -> POLICY_COLLECTOR`' },
+    @{ Name = 'FOUND requires a policy record'; Text = $contractText; Marker = '`FOUND`이면 `policy_record_ref`가 필수이고 `error_ids=[]`다.' },
+    @{ Name = 'successful collection uses successful parsers'; Text = $contractText; Marker = '`FOUND | ABSENT_CONFIRMED`의 `parser_result_refs`는 하나 이상이고 모두 `status=SUCCEEDED`인 exact parser 결과를 가리킨다.' },
+    @{ Name = 'FOUND binds collection and policy provenance'; Text = $contractText; Marker = '`FOUND`에서는 collection의 `official_source_refs`, `parser_result_refs`가 정책 record의 `source_refs`, `parser_result_refs`와 각각 set-equal해야 한다.' },
+    @{ Name = 'confirmed absence is not a fetch failure'; Text = $contractText; Marker = '`ABSENT_CONFIRMED`이면 `policy_record_ref=null`, 하나 이상의 공식 출처와 `gap_ids`가 필요하고 `error_ids=[]`다.' },
+    @{ Name = 'collection failure cannot produce a Gate review'; Text = $contractText; Marker = '`COLLECTION_FAILED`이면 `policy_record_ref=null`과 하나 이상의 `error_ids`가 필요하며 Rule Scope Gate work와 review를 만들지 않는다.' },
+    @{ Name = 'Gate input includes the exact collection result'; Text = $contractText; Marker = '`policy_collection_result_ref`는 Gate가 사용한 exact `PolicyCollectionResult`를 가리킨다.' },
+    @{ Name = 'CURRENT policy has enforceable freshness'; Text = $contractText; Marker = '`freshness_status=CURRENT`이면 `freshness_criterion_ref`, 하나 이상의 `freshness_evidence_refs`, `freshness_checked_at`과 미래의 `freshness_valid_until`이 모두 필수다.' },
+    @{ Name = 'R8 owns freshness criteria'; Text = $contractText; Marker = 'freshness 기준값과 재수집 주기는 R8이 승인한 versioned 설정만 사용한다.' },
+    @{ Name = 'Gate guide keeps R8 freshness ownership'; Text = $gateText; Marker = '최신성 기준값과 재수집 주기는 R8이 승인한 versioned 설정을 사용하고 R5는 그 결과를 정책 의미로 해석한다.' },
+    @{ Name = 'Gate Wiki distinguishes collection failure'; Text = $gateWikiText; Marker = '`COLLECTION_FAILED`는 Rule Scope review를 만들지 않습니다.' },
+    @{ Name = 'Gate diagram distinguishes collection failure'; Text = $diagramText; Marker = 'COLLECT -->|COLLECTION_FAILED| NOGATE[No Rule Scope review]' },
+    @{ Name = 'Gate evidence links are complete'; Text = $contractText; Marker = '`PASS | FAIL | SUFFICIENT | INSUFFICIENT`인 각 판단 영역은 같은 area의 `RuleScopeEvidenceLink`를 하나 이상 가져야 한다.' },
+    @{ Name = 'blocking missing information denies ALLOW'; Text = $contractText; Marker = '`blocks_allow=true`인 `PolicyMissingInfo`가 하나라도 있으면 `report_permission=ALLOW`를 저장하지 않는다.' },
+    @{ Name = 'policy fetch error does not become a successful Gate result'; Text = $resultText; Marker = '`POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 수집 결과 `COLLECTION_FAILED`; 성공한 Rule Scope review 없음' },
+    @{ Name = 'policy parser error is distinct'; Text = $resultText; Marker = '`POLICY_PARSE_ERROR` | 정책 수집 계층 | parser 실행 실패와 `COLLECTION_FAILED`; 성공한 Rule Scope review 없음' },
+    @{ Name = 'policy collection negative scenario exists'; Text = $securityText; Marker = '| N35 | 정책 수집 실패를 정책 부재로 바꿔 `UNCERTAIN + DENY` review를 저장 |' },
+    @{ Name = 'policy evidence negative scenario exists'; Text = $securityText; Marker = '| N36 | Rule·Scope·Impact 확정 판단에 사용한 정책 항목 또는 실제 근거 연결이 없음 |' },
+    @{ Name = 'Wiki explains collection outcomes'; Text = $commonWikiText; Marker = '`FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`' },
+    @{ Name = 'AnalysisRunResult policy refs use a new major'; Text = $contractText; Marker = '두 목록 추가는 `AnalysisRunResult`의 새 필수 필드이므로 새 MAJOR schema에서만 사용한다.' }
+)
+foreach ($rule in $requiredPolicyContractRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing R4 policy contract rule: $($rule.Name)"
+    }
+}
+
 $savedErrorAction = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 $gitCheck = & git -C $repoRoot diff --check 2>&1
@@ -1995,6 +2059,8 @@ Write-Output "Obsolete rule execution phrases: $($obsoleteRuleExecutionPhrases.C
 Write-Output "StaticFactBundle fact-kind fields: $($requiredStaticFactBundleFields.Count)"
 Write-Output "StaticFactBundle semantic rules: $($requiredStaticFactBundleSemantics.Count)"
 Write-Output "StaticFactBundle cross-document rules: $($requiredStaticFactBundleCrossDocumentRules.Count)"
+Write-Output "R4 policy contract blocks: $($requiredPolicyContractFields.Count)"
+Write-Output "R4 policy contract rules: $($requiredPolicyContractRules.Count)"
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {

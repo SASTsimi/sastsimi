@@ -157,6 +157,18 @@ Technical Gate는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 
 
 Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 부족 조건을 `inputs`에 넣고 `result=null`로 Gate 없이 저장합니다. TRUE는 validated PoC와 같은 revision을 검토한 Technical `ACCEPT` 뒤 제공 능력 하나마다 `result`가 있는 Primitive를 만들고, 그 TRUE의 입력 조건과 `restriction_id`·근거 reference 전체도 함께 보존합니다. Rule Scope 결과는 Reporter만 제어하며 Primitive admission을 취소하지 않습니다. `PrimitiveIndexState`는 current Verification과 Primitive refs만 가리키며 별도 전용 version은 두지 않습니다. Chaining work는 시작할 때 읽은 index와 Primitive exact reference를 고정합니다. 이후 current pointer가 갱신돼도 진행 중인 work를 무효화하지 않으며, 그 work에 고정하지 않은 reference가 결과에 섞였을 때만 `STALE_RESULT`로 거절합니다.
 
+## 정책 수집 실패와 정책 부재를 구분합니다
+
+정책 수집 결과는 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 중 하나입니다.
+
+- `FOUND`: 공식 정책을 찾았고 구조화한 정책 record까지 연결했습니다.
+- `ABSENT_CONFIRMED`: 공식 출처를 실제로 확인했지만 사용할 정책이 없음을 확인했습니다. Gate는 `UNCERTAIN + DENY`로 기록할 수 있습니다.
+- `COLLECTION_FAILED`: 접속 또는 parser가 실패해 정책 유무를 확인하지 못했습니다. 이 경우 Rule Scope Gate 결과를 만들지 않습니다.
+
+정책 record에는 공식 출처 확인 근거, parser 이름과 버전, 최신성 검사 기준·근거·만료 시각을 남깁니다. `CURRENT`는 이 값이 모두 있고 아직 만료되지 않았을 때만 가능합니다. 기준값과 재수집 주기는 R8 설정을 사용하고, Runtime Validator는 Gate와 Reporter 호출 직전에 만료 여부를 다시 검사합니다.
+
+Rule Scope Gate가 `PASS`, `FAIL`, `SUFFICIENT`, `INSUFFICIENT`를 선택하면 `RuleScopeEvidenceLink`로 실제 정책 항목과 코드·실행 근거를 연결해야 합니다. 정보가 부족하면 `PolicyMissingInfo`에 부족한 영역과 이유를 남깁니다. 그 누락이 공개 허용을 막는 항목이면 `blocks_allow=true`로 기록하고 `ALLOW`를 저장하지 않습니다.
+
 ## 자주 쓰는 작은 데이터 구조
 
 - `EvidenceClaim`: 찬성·반대 주장, 작성 역할, 실제 근거와 코드 위치를 한 묶음으로 저장합니다.
@@ -169,6 +181,9 @@ Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 �
 - `CandidateRef`: 아직 검증되지 않은 우회·대체 경로·영향 확대 후보입니다. 새 주장이면 별도 가설로 검증하기 전까지 확정 결과로 쓰지 않습니다.
 - `VerificationMetrics`: debate의 token·시간·판정 변화와 새로 발견한 항목 수를 저장합니다. 제공되지 않은 token은 `null`입니다.
 - `PolicyItem`: 공식 정책의 항목 하나와 원문을 다시 찾을 수 있는 출처 위치를 연결합니다.
+- `PolicyCollectionResult`: 정책을 찾음·공식 부재 확인·수집 실패를 서로 다른 상태로 저장합니다.
+- `PolicyMissingInfo`: 정책 판단에 무엇이 부족한지와 공개 허용을 막는지를 구조화해 저장합니다.
+- `RuleScopeEvidenceLink`: Rule·Scope·Impact 판단을 실제 정책 항목과 근거에 연결합니다.
 - `PrimitiveDraft`: Primitive의 입력 조건이나 실행 결과 하나를 entity·저장소 권한 값·근거·설명으로 나타냅니다.
 - `PrimitiveMatchCandidate`: upstream Primitive의 하나뿐인 `result`가 downstream Primitive의 `matched_input_id`를 충족하는지, 양쪽 exact record·부모·workspace·commit·근거와 함께 기록한 미검증 연결 후보입니다.
 
