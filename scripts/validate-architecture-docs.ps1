@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
@@ -972,8 +972,8 @@ $environmentHandoffPatterns = @(
         Pattern = '(?s)`RUN_SANDBOX` action `input_refs`에는 exact request·current `EnvironmentRequirements`·`sandbox_profile_ref`·R8 resource/lifecycle profile.*?plan·candidate·command는 Sandbox 안에서 만들어질 수 있으므로 RUN_SANDBOX 선행 allowlist나 exact action input으로 요구하지 않는다'
     },
     @{
-        Name = 'EnvironmentRecipe records base and built image digests'
-        Pattern = '(?s)`EnvironmentRecipe`.*?base·built image digest.*?`PERSISTENT_BASELINE`.*?writable container는 가설 work를 넘겨 재사용하지 않는다'
+        Name = 'actual environment compares every requirement'
+        Pattern = '(?s)EnvironmentCheck:.*?status: MATCH \| MISMATCH \| NOT_CHECKED \| ERROR.*?SandboxEnvironment:.*?requirements_ref: StoredDataRef.*?checks: \[EnvironmentCheck\].*?모든 `requirement_id`를 정확히 한 번씩 포함'
     },
     @{
         Name = 'environment mismatch is resolved or returned without a false verdict'
@@ -1082,7 +1082,7 @@ $requiredR504CrossReviewRules = @(
     @{
         Name = 'stale or unverified policy blocks report permission'
         Text = $contractText
-        Marker = '`FOUND`라도 핵심 출처가 누락되거나 정책이 `STALE | UNVERIFIED`이면 Rule·Scope·review는 `UNCERTAIN`, permission은 `DENY`이며 누락·최신성 문제를 구조화해 보존한다.'
+        Marker = '`FOUND`라도 핵심 출처가 누락되거나 정책이 `STALE | UNVERIFIED`이면 Rule·Scope·testing restriction·review는 `UNCERTAIN`, permission은 `DENY`이며 누락·최신성 문제를 구조화해 보존한다.'
     },
     @{
         Name = 'changed upstream revisions supersede report drafts'
@@ -1390,11 +1390,13 @@ $verificationChainingScenarioMarkers = @(
     '| N2 | final FALSE |',
     '| N3 | final TRUE, Gate 미실행 |',
     '| N4 | TRUE + Technical `ACCEPT`, Rule Scope 미실행 |',
-    '| N5 | TRUE + Technical `ACCEPT` + Rule Scope `FAIL | UNCERTAIN | DENY` |',
-    '| N6 | TRUE + Technical `ACCEPT` + Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW` |',
+    '| N5-A | TRUE + Technical `ACCEPT` + `testing_restriction=FAIL` |',
+    '| N5-B | TRUE + Technical `ACCEPT` + `testing_restriction=UNCERTAIN` |',
+    '| N5-C | TRUE + Technical `ACCEPT` + `testing_restriction=PASS` + scope `FAIL` 또는 일반 eligibility/impact 실패 |',
+    '| N6 | TRUE + Technical `ACCEPT` + review/rule/scope/testing `PASS` + impact `SUFFICIENT` + permission `ALLOW` |',
     '| N7 | result가 있는 TRUE Primitive + result가 없는 HOLD Primitive |',
     '| N8 | result가 있는 서로 다른 TRUE Primitive 둘 |',
-    '| N9 | TRUE+TRUE 입력 중 한 부모가 Gate 전 또는 Technical 비정상 결과 |',
+    '| N9 | TRUE+TRUE 입력 중 한 부모가 Rule Scope 전, Technical 비정상 또는 `testing_restriction!=PASS` |',
     '| N10 | match의 entity 또는 privilege 충족 근거가 없음 |',
     '| N10-A | 성립한 match의 후보가 양방향 계보에서 이미 사용한 Primitive를 같은 결과에서 다시 사용 |',
     '| N10-B | `excluded_primitive_ref`가 고정된 `considered_primitive_refs` 밖이거나 실제 match에 다시 포함됨 |',
@@ -1423,7 +1425,7 @@ foreach ($marker in $verificationChainingScenarioMarkers) {
 $requiredVerificationChainingRules = @(
     'Orchestration Agent는 한 가설 안에서 Pro/Con·동적 재현·두 Gate·Reporter·Chaining의 호출 여부나 Technical `REVISE` 목적지를 결정하지 않는다.',
     '같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 전달',
-    'Gate 전 TRUE는 result가 있는 Primitive가 될 수 없다.',
+    'Rule Scope 전 TRUE와 Technical `REVISE | REJECT` 기반 Primitive는 저장하지 않는다.',
     'origin=VERIFICATION',
     'origin=CHAINING',
     'TRUE_HOLD',
@@ -1431,8 +1433,9 @@ $requiredVerificationChainingRules = @(
     'upstream result가 downstream input을 충족',
     'HypothesisProcessState.status=TERMINAL',
     'VerificationAssignment.owner_identity_ref',
-    'Technical `ACCEPT`은 체이닝 재료의 자격을 확정하고 Rule Scope는 보고 가능성만 판단한다.',
-    'Rule Scope 결과는 이미 admission된 Primitive를 취소하지 않는다.',
+    '같은 Verification·CWELabel·Technical review를 고정한 Rule Scope review의 `testing_restriction=PASS`가 모두 필수다.',
+    '`testing_restriction=UNCERTAIN`은 Primitive admission과 Chaining도 보류한다.',
+    '`testing_restriction=PASS`이면 scope·일반 eligibility·impact·report permission 실패만으로 저장을 거절하지 않는다.',
     'child가 FALSE여도 부모 판정은 바뀌지 않는다'
 )
 foreach ($rule in $requiredVerificationChainingRules) {
@@ -1575,7 +1578,7 @@ $requiredValidatedPocContractMarkers = @(
     '`SUCCEEDED + SUPPORTED`',
     'validated `poc_ref`',
     '한 Verification generation에는 `DYNAMIC_REPRO` work를 최대 하나만',
-    'candidate 생성·환경 구성·실행 실패'
+    'PoC 생성·실행 실패를 `FALSE | HOLD`로 변환하지 않는다'
 )
 foreach ($marker in $requiredValidatedPocContractMarkers) {
     if (-not $contractText.Contains($marker)) {
@@ -1946,8 +1949,8 @@ $requiredPolicyContractFields = @(
     @{ Contract = 'PolicyMissingInfo'; Block = $policyMissingInfoBlock; Fields = @('missing_info_id: string', 'area: RULE | SCOPE | IMPACT | SOURCE | FRESHNESS | TESTING_RESTRICTION', 'blocks_allow: boolean', 'description: string', 'policy_item_ids: [string]', 'evidence_refs: [StoredDataRef]') },
     @{ Contract = 'RuleScopeEvidenceLink'; Block = $ruleScopeEvidenceLinkBlock; Fields = @('link_id: string', 'area: RULE | SCOPE | IMPACT | TESTING_RESTRICTION', 'policy_item_ids: [string]', 'evidence_refs: [StoredDataRef]') },
     @{ Contract = 'ProgramPolicyRecord'; Block = $programPolicyRecordBlock; Fields = @('source_checks: [PolicySourceCheck]', 'parser_result_refs: [StoredDataRef]', 'freshness_criterion_ref: StoredDataRef | null', 'freshness_evidence_refs: [StoredDataRef]', 'freshness_valid_until: timestamp | null', 'missing_information: [PolicyMissingInfo]') },
-    @{ Contract = 'RuleScopeImpactReview'; Block = $ruleScopeImpactReviewBlock; Fields = @('policy_collection_result_ref: StoredDataRef', 'evidence_links: [RuleScopeEvidenceLink]', 'missing_information: [PolicyMissingInfo]') }
-    @{ Contract = 'Gate guide RuleScopeImpactReview'; Block = $gateRuleScopeImpactReviewBlock; Fields = @('policy_collection_result_ref: StoredDataRef', 'evidence_links: [RuleScopeEvidenceLink]', 'missing_information: [PolicyMissingInfo]') }
+    @{ Contract = 'RuleScopeImpactReview'; Block = $ruleScopeImpactReviewBlock; Fields = @('policy_collection_result_ref: StoredDataRef', 'testing_restriction: PASS | FAIL | UNCERTAIN', 'evidence_links: [RuleScopeEvidenceLink]', 'missing_information: [PolicyMissingInfo]') }
+    @{ Contract = 'Gate guide RuleScopeImpactReview'; Block = $gateRuleScopeImpactReviewBlock; Fields = @('policy_collection_result_ref: StoredDataRef', 'testing_restriction: PASS | FAIL | UNCERTAIN', 'evidence_links: [RuleScopeEvidenceLink]', 'missing_information: [PolicyMissingInfo]') }
     @{ Contract = 'AnalysisRunResult'; Block = $analysisRunResultPolicyBlock; Fields = @('policy_collection_result_refs: [StoredDataRef]', 'policy_parser_result_refs: [StoredDataRef]') }
 )
 foreach ($contract in $requiredPolicyContractFields) {

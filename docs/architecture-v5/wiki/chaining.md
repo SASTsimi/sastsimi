@@ -11,11 +11,12 @@
 ## 통합 Primitive
 
 - HOLD는 부족한 조건들을 `inputs`에 넣고 `result=null`로 저장합니다.
-- TRUE는 validated PoC가 있고 Technical Gate가 exact revision을 `ACCEPT`한 뒤에만 `result`가 있는 Primitive가 됩니다.
+- TRUE는 validated PoC가 있고 Technical Gate가 exact revision을 `ACCEPT`한 뒤, 같은 exact chain의 Rule Scope Gate가 `testing_restriction=PASS`로 판정해야 `result`가 있는 Primitive가 됩니다.
 - TRUE의 제공 능력이 여러 개면 능력마다 Primitive 하나를 만들며, 같은 TRUE의 입력 조건과 제한을 각각 함께 보존합니다.
 - `REQUIRED`, `PROVIDED`, `TRUE_HOLD`, `TRUE_TRUE` 같은 별도 종류는 저장하지 않습니다. 필요하면 `result` 유무와 부모 verdict에서 계산합니다.
-- Rule Scope Gate는 보고 가능성만 판단합니다. `FAIL | UNCERTAIN | DENY`여도 이미 admission된 Primitive와 Chaining 자격은 유지됩니다.
-- FALSE, Gate 전 TRUE, Technical `REVISE | REJECT`는 result Primitive가 되지 않습니다.
+- `testing_restriction=FAIL`은 Primitive·Chaining을 금지하고 `UNCERTAIN`은 재판정까지 admission을 보류합니다. 명시적 `PASS`일 때만 admission할 수 있습니다.
+- `testing_restriction=PASS`라면 scope·일반 eligibility·impact·report permission 실패는 현재 Reporter만 차단하고 Primitive·Chaining은 허용합니다.
+- FALSE, Rule Scope 전 TRUE, Technical `REVISE | REJECT`는 result Primitive가 되지 않습니다.
 
 ## Matching과 새 가설
 

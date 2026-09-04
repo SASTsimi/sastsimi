@@ -109,7 +109,7 @@
 
 - proposal은 `HYPOTHESIS_ONLY / NON_FINAL`이며 verdict·Finding·CWE·Gate·report를 확정하지 않는다.
 - 등록된 가설은 점수로 제외하거나 순서를 매기지 않고 모두 검증한다.
-- HOLD는 `inputs`와 `result=null`인 Primitive로 즉시 matching 가능하다. TRUE는 validated PoC와 Technical `ACCEPT`가 있는 exact revision만 `result` Primitive가 된다. Rule Scope는 보고 가능성만 판단하며 FALSE는 chaining 근거로 승격하지 않는다.
+- HOLD는 `inputs`와 `result=null`인 Primitive로 즉시 matching 가능하다. TRUE는 validated PoC, Technical `ACCEPT`, Rule Scope `testing_restriction=PASS`가 있는 exact revision만 `result` Primitive가 된다. testing restriction 외 report eligibility는 현재 Reporter와 분리하며 FALSE는 chaining 근거로 승격하지 않는다.
 - 문자열 일치나 전역 권한 서열로 chain을 확정하지 않는다. 같은 `workspace_id`·`commit_id`에서 upstream result가 downstream의 `matched_input_id`를 실제로 충족하는지 저장소의 entity·역할/권한 상수·검사 위치·restriction 근거로 확인한다.
 - Chaining Agent는 upstream result→downstream input matching만 하며 일반 bypass·alternate path·impact·Technical revision을 조사하지 않는다.
 - chained proposal은 `origin=CHAINING`이며 새 가설로 전체 검증한다.
@@ -311,7 +311,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] 상태 변경은 `state_version` compare-and-set을 사용하고 stale·취소·다른 workspace/commit 결과를 거절함
 - [ ] 중복·ancestor 재사용·repair/Gate revision과 R8 전역 time/cost/work budget의 enforcement owner가 비-LLM Runtime Validator로, Sandbox 세부 정책의 enforcement owner가 Sandbox Controller로 명시됨. token은 관측값이며 초과·누락만으로 action을 차단하지 않음
 - [ ] Technical `REVISE`가 Orchestration을 경유해 재배정되지 않고 같은 ACTIVE VerificationAssignment owner의 새 VERIFICATION work로 돌아감
-- [ ] HOLD의 `inputs + result=null`과 Technical-accepted TRUE의 `inputs + result` Primitive admission·supersede 규칙이 있음
+- [ ] HOLD의 `inputs + result=null`과 Technical-accepted + testing-restriction-PASS TRUE의 `inputs + result` Primitive admission·supersede 규칙이 있음
 - [ ] persistence/recovery/atomicity/idempotency 계약이 합의되고 `TERMINAL`·`DRAFTED` 상태가 정확한 결과 `record_id`를 가리킴
 - [ ] 결과 record 저장과 종료 상태 변경 중 하나만 성공했을 때의 crash-resume 복구와 오래되거나 취소된 결과의 연결 거절 규칙이 있음
 - [ ] `TransitionCommit`이 `COMMITTED`된 결과만 downstream과 최종 결과에서 사용함
@@ -588,7 +588,7 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 ### 완료 조건
 
 - [ ] corpus가 TRUE/FALSE/HOLD, gap, conflicting evidence, Verification-origin child, Chaining-origin child, policy absence, sandbox failure를 포함함
-- [ ] schema validity/repair, retrieval gap/`WORKSPACE_MISMATCH`, debate 전후 품질, HOLD 즉시 chaining, Technical-accepted TRUE admission과 전역 예산에 따른 chaining 중단을 측정함
+- [ ] schema validity/repair, retrieval gap/`WORKSPACE_MISMATCH`, debate 전후 품질, HOLD 즉시 chaining, Technical-accepted + testing-restriction-PASS TRUE admission과 전역 예산에 따른 chaining 중단을 측정함
 - [ ] conditional debate, 독립 session, 두 Gate와 provider/model 선택에 acceptance threshold가 있음
 - [ ] adversarial prompt-injection, contradictory Gate, redaction failure case가 있음
 - [ ] role별 time/cost/call/retry/chain/sandbox budget과 `BUDGET_EXCEEDED` 의미가 있고 token은 비차단 관측값으로 구분됨
@@ -629,9 +629,12 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 | HOLD | Gate 없이 `inputs`와 `result=null`인 Primitive 저장과 Chaining 조회 |
 | FALSE | terminal internal result; Primitive/Chaining 금지 |
 | Gate 전 TRUE | result Primitive admission과 Chaining 금지 |
-| Technical ACCEPT만 받은 TRUE | result Primitive admission과 Chaining 허용; Rule Scope 완료 전 Reporter 금지 |
+| Technical ACCEPT만 받은 TRUE | Rule Scope `testing_restriction` 판정 전 result Primitive admission·Chaining·Reporter 금지 |
+| testing restriction `FAIL` | result Primitive admission·Chaining·Reporter 금지 |
+| testing restriction `UNCERTAIN` | 정책·근거 보완과 재판정까지 admission 보류, Chaining·Reporter 금지 |
+| testing restriction `PASS` + 일반 report eligibility 실패 | result Primitive admission·Chaining 허용, 현재 Reporter 금지 |
 | Verification 새 claim | `origin=VERIFICATION` child hypothesis로 8단계부터 재검증; parent 불변 |
-| TRUE result→HOLD input | upstream TRUE가 exact Technical-accepted이고 그 result가 HOLD Primitive의 특정 input을 충족할 때만 `origin=CHAINING` child 생성 |
+| TRUE result→HOLD input | upstream TRUE가 exact Technical-accepted + testing-restriction-PASS이고 그 result가 HOLD Primitive의 특정 input을 충족할 때만 `origin=CHAINING` child 생성 |
 | TRUE result→TRUE input | upstream result와 downstream TRUE Primitive의 특정 input이 근거로 연결될 때만 새 chain hypothesis 생성 |
 | stale Gate revision | 새 Verification revision에 과거 Gate/Primitive 자격 재사용 금지 |
 | Primitive scope 불일치 | match 거절/후보 유지 |

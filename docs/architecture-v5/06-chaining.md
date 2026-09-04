@@ -47,12 +47,12 @@ status는 따로 저장하지 않는다. `result=null`이면 HOLD에서 나온 �
 
 - final `HOLD`: `required_primitive_candidates`가 있을 때 Primitive 하나를 즉시 저장한다. 해당 목록은 `inputs`, `result=null`, `technical_review_ref=null`이며 restrictions를 그대로 보존한다.
 - final `FALSE`: Primitive와 Chaining work를 만들지 않는다.
-- final `TRUE`: 현재 generation의 성공한 동적 재현과 validated PoC가 있고, exact TRUE Verification과 이를 직접 가리키는 current `CWELabel`을 Technical Gate가 `ACCEPT`한 뒤에만 result가 있는 Primitive를 저장한다. 제공 능력이 여러 개면 능력마다 Primitive 하나를 만들고 각 record의 inputs에는 그 TRUE의 악용 전제조건을 복사한다.
-- Gate 전 TRUE와 Technical `REVISE | REJECT`: Primitive를 만들지 않는다.
+- final `TRUE`: 현재 generation의 성공한 동적 재현과 validated PoC가 있고, exact TRUE Verification과 이를 직접 가리키는 current `CWELabel`을 Technical Gate가 `ACCEPT`한 뒤 같은 exact chain의 Rule Scope Gate가 `testing_restriction=PASS`로 확정한 경우에만 result가 있는 Primitive를 저장한다. 제공 능력이 여러 개면 능력마다 Primitive 하나를 만들고 각 record의 inputs에는 그 TRUE의 악용 전제조건을 복사한다.
+- Gate 전 TRUE, Technical `REVISE | REJECT`, `testing_restriction=FAIL | UNCERTAIN`: Primitive를 만들지 않는다. `UNCERTAIN`은 영구 reject가 아니라 정책·근거 보완 후 Gate 재판정까지 admission을 보류하는 상태다.
 
-Technical `ACCEPT`은 체이닝 재료의 자격을 확정하고 Rule Scope는 보고 가능성만 판단한다. Rule Scope 결과는 이미 admission된 Primitive를 취소하지 않는다. 따라서 프로그램 정책 부족, 범위 밖, 중복 또는 보고 불가 판정은 Reporter를 막지만 코드에 실제로 존재하는 능력을 체이닝 재료에서 제거하지 않는다.
+Technical `ACCEPT`은 기술적 integrity 전제이고 Rule Scope의 명시적 `testing_restriction=PASS`가 체이닝 재료 admission을 확정한다. `FAIL`은 금지 테스트 위반이므로 admission·Chaining·Reporter를 차단하고, `UNCERTAIN`은 금지 여부를 확인할 때까지 admission과 Chaining을 보류한다. 반면 `testing_restriction=PASS`라면 범위 밖, 보상/보고 대상 class 아님, duplicate/known, impact 부족 등 일반 report eligibility 실패는 현재 Reporter만 막고 Primitive와 Chaining은 허용한다.
 
-Technical Gate는 validated PoC 연결뿐 아니라 금지된 재현으로 근거가 오염되지 않았는지, 실제 경로와 restrictions가 정확히 표현됐는지를 확인한다. 이 검사를 통과하지 못한 TRUE는 체이닝에 들어가지 않는다.
+Technical Gate는 validated PoC·`dynamic_linkage`·`code_flow_linkage`, capability와 `restriction_assessment`, alternate path의 기술적 정확성과 evidence integrity를 확인한다. 공식 프로그램 정책상 해당 실행이 금지 테스트인지는 판정하지 않는다. 이 기술 검사를 통과하지 못한 TRUE는 Rule Scope나 Primitive admission으로 진행하지 않으며, Technical `ACCEPT` 뒤 Gate 2가 exact execution provenance와 공식 정책을 비교한다.
 
 ## PrimitiveIndexState
 
@@ -198,7 +198,7 @@ Verification은 proposal을 만들 수 있지만 `hypothesis_id`를 직접 발�
 
 ## 사람에게 보이는 결과
 
-사람은 result 없는 HOLD 조건, Technical-accepted TRUE 능력, 두 Primitive를 연결한 근거, 생성된 child hypothesis와 검증 여부를 구분해서 본다. match candidate와 미검증 child는 Finding, PoC 또는 실제 impact 주장에 섞이지 않는다.
+사람은 result 없는 HOLD 조건, Technical-accepted이면서 testing-restriction PASS인 TRUE 능력, 두 Primitive를 연결한 근거, 생성된 child hypothesis와 검증 여부를 구분해서 본다. match candidate와 미검증 child는 Finding, PoC 또는 실제 impact 주장에 섞이지 않는다.
 
 사슬에서 나온 Finding은 재료가 된 Finding 밑에 중첩해 저장하지 않는다. 한 부모가 여러 자식의 재료가 되고 부모 자신도 독립 Finding이라 중첩이 성립하지 않으며, HOLD 부모는 Finding이 없어 자리가 빈다. Finding은 평평하게 둔다.
 

@@ -120,7 +120,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - `FALSE` verdict → `DISPROVED` falsification question과 실제 evidence
 - verdict → Pro/Con/dynamic evidence와 restriction
 - result 없는 Primitive → exact final HOLD Verification revision과 inputs·restrictions
-- result 있는 Primitive → validated PoC를 가진 exact final TRUE + Technical `ACCEPT` revision
+- result 있는 Primitive → validated PoC를 가진 exact final TRUE + Technical `ACCEPT` + 같은 exact chain의 Rule Scope `testing_restriction=PASS`
 - Chaining candidate → work 시작 시 고정한 `considered_primitive_refs`, 실제 upstream/downstream `input_primitive_refs`, `matched_input_id`, 계보 제외 기록과 비교 근거, 아직 검증되지 않은 상태
 - CWE → R5-01 `CWE_LABELING`이 만든 정확한 `CWELabel` revision, 그 label의 exact final TRUE `verification_result_ref`·generation·work·invocation provenance, evidence와 uncertainty
 - Technical review → 정확한 Verification·CWELabel revision
@@ -145,8 +145,8 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | session contamination | `NEW/RESUME/AUTO` policy와 결정 logging |
 | 잘못된 path 연결 | location retrieval와 Technical Gate linkage 검토 |
 | Verification/Chaining 후보의 오승격 | origin을 구분한 새 hypothesis로 전체 재검증 |
-| Gate 전 TRUE의 체이닝 오염 | Technical `ACCEPT` 전 result Primitive admission 금지 |
-| 정책 판단과 기술 재료 자격 혼합 | Rule Scope는 Reporter만 차단하고 Primitive admission은 exact Technical review에만 연결 |
+| Gate 전 TRUE의 체이닝 오염 | Technical `ACCEPT`와 Rule Scope `testing_restriction=PASS` 전 result Primitive admission 금지 |
+| 정책 판단과 기술 재료 자격 혼합 | 금지 테스트 여부만 Primitive admission에 연결하고 일반 Rule·Scope·Impact/report eligibility는 Reporter 조건으로 분리 |
 | Chaining Agent의 일반 research 확장 | ChainingResult schema와 result-owner validation으로 matching 외 출력 거절 |
 | chain 폭증 | ancestor Primitive 재사용 제외, fingerprint 중복 차단과 R8 전체 시간·비용·work 예산; token은 사용량만 관측 |
 | 등록만 된 유형별 플레이북의 무단 활성화 | 사람이 승인한 exact `PlaybookPolicy`와 proposal 후보 수를 검사하고 불명확·미허용 유형은 COMMON으로 fallback |
@@ -276,12 +276,14 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N1 | final HOLD | required candidates를 inputs로 가진 result 없는 Primitive를 두 Gate 없이 저장하고 Chaining 조회 허용 |
 | N2 | final FALSE | terminal internal result; Primitive와 Chaining work 생성 금지 |
 | N3 | final TRUE, Gate 미실행 | result Primitive admission과 Chaining 금지 |
-| N4 | TRUE + Technical `ACCEPT`, Rule Scope 미실행 | exact result Primitive admission과 Chaining 허용; Reporter는 아직 금지 |
-| N5 | TRUE + Technical `ACCEPT` + Rule Scope `FAIL | UNCERTAIN | DENY` | result Primitive와 Chaining 자격 유지; Finding·Reporter 차단 |
-| N6 | TRUE + Technical `ACCEPT` + Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW` | result Primitive와 Chaining 자격 유지, Reporter 조건 평가 허용 |
+| N4 | TRUE + Technical `ACCEPT`, Rule Scope 미실행 | result Primitive admission 보류, Chaining·Reporter 금지 |
+| N5-A | TRUE + Technical `ACCEPT` + `testing_restriction=FAIL` | result Primitive admission·Chaining·Reporter 금지 |
+| N5-B | TRUE + Technical `ACCEPT` + `testing_restriction=UNCERTAIN` | 정책·근거 보완과 Gate 재판정까지 admission 보류, Chaining·Reporter 금지 |
+| N5-C | TRUE + Technical `ACCEPT` + `testing_restriction=PASS` + scope `FAIL` 또는 일반 eligibility/impact 실패 | result Primitive admission과 Chaining 허용, 현재 Finding·Reporter 차단; 자식은 자신의 대상과 두 Gate로 재판정 |
+| N6 | TRUE + Technical `ACCEPT` + review/rule/scope/testing `PASS` + impact `SUFFICIENT` + permission `ALLOW` | result Primitive와 Chaining 자격, Reporter 조건 평가 모두 허용 |
 | N7 | result가 있는 TRUE Primitive + result가 없는 HOLD Primitive | upstream result가 HOLD input 하나를 근거 있게 충족하면 `origin=CHAINING` proposal을 새로 등록·검증 |
 | N8 | result가 있는 서로 다른 TRUE Primitive 둘 | 앞 result가 뒤 Primitive의 `inputs` 한 항목을 근거 있게 충족할 때만 TRUE_TRUE proposal 허용 |
-| N9 | TRUE+TRUE 입력 중 한 부모가 Gate 전 또는 Technical 비정상 결과 | result Primitive가 될 수 없으므로 match 저장과 proposal 등록 거절 |
+| N9 | TRUE+TRUE 입력 중 한 부모가 Rule Scope 전, Technical 비정상 또는 `testing_restriction!=PASS` | result Primitive가 될 수 없으므로 match 저장과 proposal 등록 거절 |
 | N10 | match의 entity 또는 privilege 충족 근거가 없음 | uncertain candidate를 만들지 않고 `no_match_reasons`에 이유 기록 |
 | N10-A | 성립한 match의 후보가 양방향 계보에서 이미 사용한 Primitive를 같은 결과에서 다시 사용 | 그 후보를 근거로 조상을 제외하고 match 입력에서 빼며, DB와 부모 verdict는 변경하지 않음 |
 | N10-B | `excluded_primitive_ref`가 고정된 `considered_primitive_refs` 밖이거나 실제 match에 다시 포함됨 | `SAVE_RESULT` 거절; 같은 Chaining work가 고정한 조상 제외 전 입력과 제외 후 match를 다시 계산 |

@@ -24,14 +24,14 @@
 14. FALSE terminal / HOLD `inputs + result=null` Primitive 즉시 admission / TRUE는 R5-01 `CWE_LABELING` work에서 exact Verification에 대응하는 current `CWELabel` 생성
 15. final TRUE와 그 Verification을 직접 가리키는 current CWELabel을 Technical Evidence Gate Agent가 검토
 16. `REVISE`이면 같은 Verification owner가 새 Verification을 만들고 R5-01이 CWE 정렬을 다시 평가해 새 label revision 생성 후 재제출
-17. Technical `ACCEPT` 뒤 exact TRUE를 result Primitive로 admission하고 Rule Scope 보고 검토를 독립 경로로 시작
-18. Chaining Agent가 work 시작 시 고정한 exact Primitive를 사용해 upstream result가 downstream의 특정 input을 충족하는지 matching
-19. Rule Scope Impact Gate Agent가 공식 정책·범위·영향을 검토하되 Primitive 자격은 변경하지 않음
+17. Technical `ACCEPT` 뒤 Rule Scope Impact Gate Agent가 공식 정책과 실제 수행 행위, 범위·영향·보고 조건을 검토
+18. `testing_restriction=PASS`인 exact TRUE만 result Primitive로 admission하고 Chaining Agent가 고정된 Primitive로 matching
+19. testing restriction 외 Rule·Scope·Impact/report eligibility는 현재 Reporter 자격만 결정
 20. Verification-origin 또는 Chaining-origin 새 주장을 trusted validation·전역 등록하고 새 Verification 배정
 21. 모든 전달 조건을 만족한 결과에 Reporter Agent 호출
 22. 결과·자원·LLM log·PoC·오류·debug 정보를 `AnalysisRunResult`에 저장하고 모든 가설에 반복한 뒤 Agent 자동화 종료
 
-Technical Gate의 `REVISE`는 같은 hypothesis의 Verification owner에게 직접 돌아가 새 generation을 시작한다. final TRUE를 다시 만들려면 그 generation의 동적 결과와 validated PoC도 새로 필요하고, R5-01은 값이 같아도 그 Verification에 맞는 새 CWELabel revision을 만들어야 한다. HOLD는 Gate 없이 Chaining에 들어가고 TRUE는 Technical `ACCEPT` 뒤 들어간다. Rule Scope 결과는 Reporter만 제어하며 Primitive 자격을 취소하지 않는다. Verification과 Chaining의 material claim은 새 가설이 되며 기존 verdict에 직접 합쳐지지 않는다. 독립 가설은 전역 예산 범위에서 병렬 처리할 수 있다.
+Technical Gate의 `REVISE`는 같은 hypothesis의 Verification owner에게 직접 돌아가 새 generation을 시작한다. final TRUE를 다시 만들려면 그 generation의 동적 결과와 validated PoC도 새로 필요하고, R5-01은 값이 같아도 그 Verification에 맞는 새 CWELabel revision을 만들어야 한다. HOLD는 Gate 없이 Chaining에 들어가고 TRUE는 Technical `ACCEPT`와 Rule Scope `testing_restriction=PASS` 뒤 들어간다. testing restriction이 `FAIL`이면 차단하고 `UNCERTAIN`이면 admission을 보류한다. 일반 report eligibility 실패는 testing PASS Primitive를 취소하지 않는다. Verification과 Chaining의 material claim은 새 가설이 되며 기존 verdict에 직접 합쳐지지 않는다. 독립 가설은 전역 예산 범위에서 병렬 처리할 수 있다.
 
 `ReportDraft` 이후의 검토·수정·제출·공개는 Agent 자동화 밖에서 사람이 진행한다.
 

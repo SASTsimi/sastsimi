@@ -84,8 +84,8 @@ HypothesisProcessState: REGISTERED -> ASSIGNED -> VERIFYING
 Technical REVISE: TERMINAL -> same assignment + new VERIFICATION work -> VERIFYING
 VerificationResult.verdict -> TRUE | FALSE | HOLD
 HOLD -> Primitive inputs with result null -> Chaining eligible
-TRUE -> Technical ACCEPT -> Primitive with result -> Chaining eligible
-Technical ACCEPT -> Rule Scope -> report eligibility only
+TRUE -> Technical ACCEPT -> Rule Scope testing_restriction PASS -> Primitive with result -> Chaining eligible
+Rule Scope rule/scope/impact/report_permission -> current report eligibility
 Verification material claim -> PROPOSED child hypothesis origin VERIFICATION
 Chaining match -> PROPOSED child hypothesis origin CHAINING
 ```
@@ -193,10 +193,15 @@ final TRUE VerificationResult with current generation SUCCEEDED + SUPPORTED repr
 -> R5-01 CWE_LABELING work
 -> current CWELabel bound to that exact Verification
 -> Technical Evidence Gate
--> Technical ACCEPT와 TRUE 확인
--> result Primitive admission + Chaining handoff
-and independently
--> Rule Scope Impact Gate -> PASS/PASS/PASS/SUFFICIENT/ALLOW -> Reporter
+-> Technical ACCEPT
+-> Rule Scope Impact Gate
+-> testing_restriction 판정
+   - PASS: exact same Verification/CWE/Technical/Rule Scope provenance가 닫힌 result Primitive admission + Chaining handoff 가능
+   - FAIL: Primitive admission, Chaining, Reporter 금지
+   - UNCERTAIN: Primitive admission 보류, Chaining 및 Reporter 금지
+-> Primitive/Chaining 자격과 별도로 Reporter readiness 확인
+-> review_status=PASS + rule_compliance=PASS + scope_compliance=PASS + testing_restriction=PASS + security_impact=SUFFICIENT + report_permission=ALLOW
+-> Reporter
 -> ReportDraft
 -> AnalysisRunResult 확정
 -> Agent 자동화 종료

@@ -35,7 +35,7 @@
 - B-003에서 제기한 저장소 라이선스와 외부 기여 범위는 설계·개발의 Blocker가 아니므로 공개 배포 또는 외부 기여를 받기 전 결정사항으로 재분류했다. 결정 전에는 `LICENSE`를 추가하지 않으며, 공개 방침을 정할 때 라이선스 후보와 `CONTRIBUTING.md` 범위를 함께 확정한다.
 - Wiki는 사용자 요구에 따라 포함했으나 파생·비규범적으로 유지한다. 장기적으로 번호 문서에서 생성·검증하는 방식을 결정한다.
 - `11-migration-from-v4.md`는 비규범적 설계 계보로 전환했으며 로컬 v4 경로 주장을 제거했다.
-- Primitive는 final HOLD의 `inputs + result=null`과 validated PoC·Technical `ACCEPT`를 받은 TRUE의 `inputs + result`를 같은 형식으로 표현한다. upstream `result`와 downstream의 특정 `input`을 방향성 있게 비교하고, Chaining work 시작 시 고정한 exact record와 결과가 같은지 저장 시 재확인한다. `FALSE`, Gate 전 TRUE와 오래된 Technical review revision을 chaining 근거로 승격하지 않는다. Rule Scope는 보고 가능성만 판단한다.
+- Primitive는 final HOLD의 `inputs + result=null`과 validated PoC·Technical `ACCEPT`·Rule Scope `testing_restriction=PASS`를 받은 TRUE의 `inputs + result`를 같은 형식으로 표현한다. upstream `result`와 downstream의 특정 `input`을 방향성 있게 비교하고, Chaining work 시작 시 고정한 exact record와 결과가 같은지 저장 시 재확인한다. `FALSE`, Rule Scope 전 TRUE, testing restriction `FAIL | UNCERTAIN`과 오래된 review revision을 chaining 근거로 승격하지 않는다. 다른 Rule·Scope·Impact/report eligibility는 현재 Reporter 자격과 분리한다.
 - Docsify가 사용하는 외부 CDN dependency의 version pinning과 offline rendering 정책은 별도 결정한다.
 - 표현·예시·문서 미세 보정은 Blocker/High 검토보다 후순위다.
 

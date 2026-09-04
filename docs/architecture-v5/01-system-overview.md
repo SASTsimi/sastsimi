@@ -32,9 +32,9 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 | 14 | 판정별 분기와 CWE 분류 | FALSE terminal / HOLD는 inputs만 있고 result가 없는 Primitive 즉시 admission / TRUE는 R5-01 `CWE_LABELING`이 exact Verification에 맞는 current `CWELabel` 생성 |
 | 15 | TRUE 기술 근거 검토 | `TechnicalEvidenceReview` |
 | 16 | Technical `REVISE` 보완 loop | same Verification owner, 새 Verification과 반드시 다시 평가한 새 CWELabel revision |
-| 17 | Technical `ACCEPT` TRUE의 기술 재료·보고 경로 분기 | result가 있는 `Primitive` admission과 Rule Scope 요청은 서로 독립 |
-| 18 | current Primitive 체이닝 | upstream result가 downstream input을 근거 있게 충족한 `ChainingResult` |
-| 19 | 공식 규칙·범위·영향 검토 | `RuleScopeImpactReview`; Primitive 자격은 변경하지 않음 |
+| 17 | 공식 규칙·범위·testing restriction·영향 검토 | `RuleScopeImpactReview`; Technical `ACCEPT` 뒤 testing restriction 판정 |
+| 18 | admission된 current Primitive 체이닝 | `testing_restriction=PASS`인 result Primitive; upstream result가 downstream input을 근거 있게 충족한 `ChainingResult` |
+| 19 | 현재 가설의 보고 자격 분기 | Rule·Scope·Impact·permission 전체 조건; Primitive admission과 분리 |
 | 20 | 체이닝·검증 중 새 주장 전역 등록 | `origin=CHAINING | VERIFICATION` proposal, 새 Verification 배정 |
 | 21 | 조건 충족 시 보고서 초안 작성 | `ReportDraft` |
 | 22 | 결과·디버깅 저장, 모든 가설 반복과 자동화 종료 | `AnalysisRunResult`, bounded parallel processing과 run records |
@@ -100,7 +100,7 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | R7 Setup Automation | recipe·image·container 생성/재사용/재생성·환경 비교·cleanup 실제 수행 | Agent 판단, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
 | Sandbox Controller | host·Docker daemon/socket·mount/namespace·secret·egress·workspace·resource/lifecycle 외부 경계 검사 | 내부 command allowlist 운영, 재현 전략·환경 의미·최종 verdict 변경 |
 | Reproduction Session Manager | 실제 event를 append-only AgentLog로 저장하고 same-attempt validated PoC·동적 결과 확정 | Agent 호출·command·retry·cleanup 전략 결정 또는 다른 attempt 혼합 |
-| Primitive DB | HOLD의 inputs-only Primitive와 Technical-accepted TRUE의 result Primitive exact revision 검색 | 작업 queue, Gate 전 TRUE admission 또는 자동 Finding 생성 |
+| Primitive DB | HOLD의 inputs-only Primitive와 Technical-accepted + testing-restriction-PASS TRUE의 result Primitive exact revision 검색 | 작업 queue, Gate 전 TRUE admission 또는 자동 Finding 생성 |
 | Chaining Agent | upstream Primitive `result`→downstream Primitive `input` matching과 chained proposal | 일반 research, dynamic, Gate, verdict, CWE, report 확정 |
 | R5-01 CWE Labeling | final TRUE의 root cause·Evidence·taxonomy를 평가해 exact Verification에 묶인 current `CWELabel` 생성 | Verification verdict 변경, 과거 label 재사용 또는 Technical Gate 결과 생성 |
 | Technical Evidence Gate | 기술적 연결성과 handoff 품질 검토 | Verification verdict 직접 변경 |

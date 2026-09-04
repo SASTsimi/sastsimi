@@ -62,10 +62,11 @@ flowchart TB
     S15 -->|REVISE| S16[16 Same assignment starts new Verification work and revision]
     S16 --> S09
     S15 -->|REJECT| S22[22 Store results logs PoC errors debug]
-    S15 -->|ACCEPT| S17{17 Independent technical material and report review paths}
-    S17 --> PADMIT[Result Primitive admitted]
-    S17 --> S19[19 Rule Scope Impact Gate]
-    S19 -->|FAIL UNCERTAIN or DENY| S22
+    S15 -->|ACCEPT| S19[17 Rule Scope Impact Gate]
+    S19 --> TR{testing_restriction}
+    TR -->|PASS| PADMIT[Result Primitive admitted]
+    TR -->|FAIL or UNCERTAIN| S22
+    S19 -->|Report conditions fail| S22
     REQUIRED --> S18[18 Chaining upstream result to downstream input]
     PADMIT --> S18
     S19 -->|All report conditions| RREQ[Verification requests Reporter]
@@ -211,10 +212,12 @@ flowchart TB
     TECH -->|REVISE| SAME[Same assignment new Verification work and revision]
     SAME --> VR
     TECH -->|REJECT| NOCHAIN[No Chaining]
-    TECH -->|ACCEPT| PROVIDED[Primitive with inputs and one result]
-    TECH -->|ACCEPT independent report review| RULE[Rule Scope Impact Gate]
-    RULE -->|FAIL UNCERTAIN DENY| REPORTBLOCK[Report blocked but Primitive remains usable]
-    RULE -->|PASS PASS PASS SUFFICIENT ALLOW| REPORTOK[Reporter eligibility may continue]
+    TECH -->|ACCEPT| RULE[Rule Scope Impact Gate]
+    RULE --> TR{testing_restriction}
+    TR -->|FAIL or UNCERTAIN| NOADMIT[No Primitive admission or Chaining]
+    TR -->|PASS| PROVIDED[Primitive with inputs and one result]
+    RULE -->|Rule Scope or Impact report failure| REPORTBLOCK[Current report blocked; admitted Primitive unaffected when testing PASS]
+    RULE -->|Review PASS Rule PASS Scope PASS Testing PASS Impact SUFFICIENT Allow| REPORTOK[Reporter eligibility may continue]
     REQUIRED --> PDB[(Primitive records)]
     PROVIDED --> PDB
     PDB --> MATCH{Upstream result satisfies downstream input}
@@ -230,7 +233,7 @@ flowchart TB
     VNEW --> LIMIT
 ```
 
-Primitive DB는 queue가 아니며 Chaining match와 child proposal은 Finding이 아니다. Gate 전 TRUE와 오래된 Technical review revision은 result가 있는 Primitive가 될 수 없다. Rule Scope 결과는 보고 가능성만 바꾸며 이미 admission된 Primitive를 취소하지 않는다.
+Primitive DB는 queue가 아니며 Chaining match와 child proposal은 Finding이 아니다. Rule Scope 전 TRUE, 오래된 Technical review revision, `testing_restriction=FAIL | UNCERTAIN`은 result Primitive가 될 수 없다. 명시적 `testing_restriction=PASS` 뒤에는 일반 Rule·Scope·Impact/report eligibility 실패가 현재 Reporter만 막고 admission된 Primitive를 취소하지 않는다.
 
 ## 6. 이중 LLM Gate와 Agent 자동화 종료
 
@@ -244,13 +247,15 @@ flowchart TB
     BACK --> NEWGEN[New Verification generation and new validated PoC]
     NEWGEN --> VR
     TS -->|REJECT| BLOCK[Report blocked]
-    TS -->|ACCEPT| PRIMITIVE[Admit result Primitive for Chaining]
-    TS -->|ACCEPT independent report review| RULE[Rule Scope Impact Gate Agent]
+    TS -->|ACCEPT| RULE[Rule Scope Impact Gate Agent]
     COLLECT[PolicyCollectionResult] -->|FOUND plus current policy| RULE
-    COLLECT -->|ABSENT_CONFIRMED| UNCERTAIN[Rule and scope UNCERTAIN permission DENY]
+    COLLECT -->|ABSENT_CONFIRMED| UNCERTAIN[Rule Scope Testing UNCERTAIN permission DENY]
     COLLECT -->|COLLECTION_FAILED| NOGATE[No Rule Scope review]
     UNCERTAIN --> BLOCK
-    RULE --> READY{Review PASS Rule PASS Scope PASS Impact SUFFICIENT Permission ALLOW}
+    RULE --> TR{testing_restriction}
+    TR -->|PASS| PRIMITIVE[Admit result Primitive for Chaining]
+    TR -->|FAIL or UNCERTAIN| BLOCK
+    RULE --> READY{Review PASS Rule PASS Scope PASS Testing PASS Impact SUFFICIENT Permission ALLOW}
     READY -->|No| BLOCK
     READY -->|Yes| RREQ[Verification requests Reporter]
     RREQ --> REPORTER[Reporter Agent]
