@@ -197,7 +197,11 @@ token 상한은 없다. 분석 전체·모든 Agent·호출마다 동일하다. 
 
 provider·model·session을 바꿀 때는 **이름이 아니라 정확한 식별자+버전**이 같을 때만 같은 설정으로 비교한다. 한 개의 문자열 `config_id`만 적는 것으로 끝내지 않는다.
 
-비교에 쓰는 설정은 아래를 각각 versioned record로 남기고, 그 참조를 `ActionDecision.checked_config_refs`와 평가 결과 record에 같은 집합으로 연결한다. 새 칸을 만들기보다 기존 `checked_config_refs`를 재사용한다.
+비교에 쓰는 설정은 아래를 각각 versioned record로 남긴다.
+
+분석 시작 때 전체 평가 설정을 `AnalysisRunState.eval_config_refs`에 고정한다. 각 `ActionDecision.checked_config_refs`에는 그 작업이 실제 사용한 설정만 넣고, 모두 시작 때 고정한 집합의 원소여야 한다. 종료 시 `AnalysisRunResult.eval_config_refs`는 시작 상태의 전체 설정과 중복 없이 같아야 한다.
+
+두 평가 결과는 `AnalysisRunResult.eval_config_refs`가 exact reference 기준으로 같을 때만 직접 비교한다. `PRODUCTION`에서는 `eval_config_refs=[]`이다. 이 목록은 Gate·Primitive·Reporter 입력이 아니다.
 
 | 무엇이 같아야 하나 | 남기는 것 |
 |---|---|
@@ -206,7 +210,7 @@ provider·model·session을 바꿀 때는 **이름이 아니라 정확한 식별
 | 예제 판·정답·채점 | 판 이름, 정답 라벨 집합, 채점 방식의 식별자·버전. 지금 예제 파일은 없음 |
 | 모델·연결·대화 | provider / model / session 설정의 식별자·버전 |
 
-직접 비교는 위 참조가 **집합으로 동일**할 때만 허용한다. 표시 이름만 같고 식별자·버전이 다르면 다른 설정이다.
+직접 비교는 두 `AnalysisRunResult.eval_config_refs`가 exact reference 기준으로 **집합으로 동일**할 때만 허용한다. 표시 이름만 같고 식별자·버전이 다르면 다른 설정이다.
 
 비교 장면은 **같은 S-* 집합과 같은 판 이름**이다. 합격 지표를 나란히 적는다. 예제를 붙인 뒤에는 공장 답을 사람 정답과 맞춘다.
 
