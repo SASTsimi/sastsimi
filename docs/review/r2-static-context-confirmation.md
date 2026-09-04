@@ -22,6 +22,14 @@ Issue #3(R2: 정적분석·컨텍스트)의 역할 설명과, 하위 Issue #32~3
 > merge하고 아래 모든 인용 line을 그 기준으로 다시 대조·갱신했습니다. 내용상 결론은 이번에도
 > 바뀌지 않았습니다.
 
+> **2026-09-04 갱신**: `main`에 `StaticFactBundle`의 `sanitizer_candidates`/`validator_candidates`/
+> `other_facts` 필드 추가(ADR-010), `Primitive.restrictions`가 `[string]`에서 구조화된
+> `[Restriction]`으로 변경, `ChainingResult`에 `considered_primitive_refs`/`excluded_lineage_refs`
+> 추가, `CodeContextRequest`에 `action_decision_ref` 필드 추가 등 R4·R5 관련 커밋이 다수
+> merge되면서 08/02/07/10/13번 문서 line이 또 밀렸습니다. 재확인 시점의 실제 `main` HEAD
+> `2c63d15`로 다시 merge하고 아래 모든 인용 line을 재검증·갱신했습니다. 내용상 결론은
+> 바뀌지 않았습니다.
+
 ## 1. 이 Issue(#3)가 어떤 역할인가
 
 **한 줄로**: AST(CodeQL, OpenGrep 등) 분석 결과를 LLM이 바로 쓸 수 있게, "어느 파일·함수·줄에서
@@ -46,11 +54,11 @@ flowchart LR
 
 이 구조는 저장소 공식 다이어그램·Wiki와 실제로 일치함을 확인했습니다.
 
-- `docs/architecture-v5/13-architecture-diagrams.md` "## 2. 정적 사실과 위치 기반 조회"(L92-123,
-  2026-09-03 `main` `312fcb2` 기준. 이전에는 L87-118이었으나 그 사이 문서가 재구성되며 이동함) —
+- `docs/architecture-v5/13-architecture-diagrams.md` "## 2. 정적 사실과 위치 기반 조회"(L93-125,
+  2026-09-04 `main` `2c63d15` 기준. 이전 L92-123에서 한 줄 밀림) —
   `Repository Loader → CodeWorkspace → AST/SAST → Static Fact Normalizer → StaticFactBundle →
   CodeContextRequest → (workspace/commit·budget 확인) → CodeContextResponse` 순서로 위 다이어그램과
-  동일한 흐름을 정의하며, 바로 아래 줄(L122)에 "empty, truncated, gap와 error는 `TRUE | FALSE |
+  동일한 흐름을 정의하며, 바로 아래 줄(L124)에 "empty, truncated, gap와 error는 `TRUE | FALSE |
   HOLD`의 근거로 자동 변환하지 않는다"는 규칙도 명시되어 있음
 - `docs/architecture-v5/wiki/pipeline.md` L12("Repository Loader가 git clone과 commit_id
   checkout으로 CodeWorkspace 준비"), L14(현재는 "exact 규칙 실행 기록이 연결된 `StaticFactBundle`
@@ -81,35 +89,35 @@ flowchart LR
 
 - `CodeWorkspace`의 identity(`workspace_id`, `analysis_id`, `repository_url`, `commit_id`, `status`) — `08-lightweight-data-contracts.md` L20-27(변동 없음)
 - 각 식별자의 생성 주체 표: `workspace_id`는 `Repository Loader`가 만들고 전체 시스템에서 유일하며 변경·재사용 금지 — `08-lightweight-data-contracts.md` L68-71(표 헤더 포함, 변동 없음)
-- `CodeLocation`(`workspace_id`, `commit_id`, `file_path`, `start_line`/`end_line`/`start_column`/`end_column`), `CodeSymbol`(`symbol_id`, `symbol_kind`, `native_kind`, `name`, `location`)의 불변 식별자 형식 — `08-lightweight-data-contracts.md` L548-562(이전 L544-559)
-- **`StoredDataRef`** (R7·R4 요청으로 추가): `stored_data_id`, `data_kind`, `content_hash`, `workspace_id`, `commit_id`, `record_id`(nullable) 필드 정의 — `08-lightweight-data-contracts.md` L564-570(이전 L560-566). 생성 주체·유일성·재사용 규칙은 식별자 표의 `stored_data_id`/`record_id` 행에 명시: `stored_data_id`는 결과 저장 계층이 만들고 전체 시스템에서 유일하며 변경·재사용 금지, `record_id`는 저장 직전 runtime이 만들고 각 `RunMeta`/`RecordMeta`와 정확한 revision을 가리키는 `StoredDataRef`에 연결되며 revision마다 새 값을 가짐 — `08-lightweight-data-contracts.md` L73-74(변동 없음). 즉 어떤 저장 데이터를 참조하든 `content_hash` + `workspace_id`/`commit_id` + `record_id`로 정확히 어느 revision인지까지 역추적 가능함
-- submodule, LFS, generated dependency를 분석 범위에 포함할지/어떻게 고정할지 규칙 — `02-static-fact-layer.md` L71-76(이전 L61-66)
-- `WORKSPACE_MISMATCH`/`WORKSPACE_CHANGED` negative scenario — `02-static-fact-layer.md` L174-186(요청·응답 mismatch는 L176, 분석 중 변경은 L182; 이전 L164-175), `07-results-and-observability.md` "## DataGap과 오류 분류"의 오류 코드 표 `WORKSPACE_MISMATCH`(L255)/`WORKSPACE_CHANGED`(L256) 행(이전 L237-238), `10-security-boundaries.md` L23(`WORKSPACE_CHANGED`, 변동 없음), L177(다른 `workspace_id`/`commit_id` 결과 합류 negative scenario 표; 이전 L164)
+- `CodeLocation`(`workspace_id`, `commit_id`, `file_path`, `start_line`/`end_line`/`start_column`/`end_column`), `CodeSymbol`(`symbol_id`, `symbol_kind`, `native_kind`, `name`, `location`)의 불변 식별자 형식 — `08-lightweight-data-contracts.md` L566-580(이전 L548-562)
+- **`StoredDataRef`** (R7·R4 요청으로 추가): `stored_data_id`, `data_kind`, `content_hash`, `workspace_id`, `commit_id`, `record_id`(nullable) 필드 정의 — `08-lightweight-data-contracts.md` L582-588(이전 L564-570). 생성 주체·유일성·재사용 규칙은 식별자 표의 `stored_data_id`/`record_id` 행에 명시: `stored_data_id`는 결과 저장 계층이 만들고 전체 시스템에서 유일하며 변경·재사용 금지, `record_id`는 저장 직전 runtime이 만들고 각 `RunMeta`/`RecordMeta`와 정확한 revision을 가리키는 `StoredDataRef`에 연결되며 revision마다 새 값을 가짐 — `08-lightweight-data-contracts.md` L73-74(변동 없음). 즉 어떤 저장 데이터를 참조하든 `content_hash` + `workspace_id`/`commit_id` + `record_id`로 정확히 어느 revision인지까지 역추적 가능함
+- submodule, LFS, generated dependency를 분석 범위에 포함할지/어떻게 고정할지 규칙 — `02-static-fact-layer.md` L78-83(이전 L71-76)
+- `WORKSPACE_MISMATCH`/`WORKSPACE_CHANGED` negative scenario — `02-static-fact-layer.md` L183(요청·응답 mismatch), L189(분석 중 변경; 이전 L176/L182), `07-results-and-observability.md` "## DataGap과 오류 분류"의 오류 코드 표 `WORKSPACE_MISMATCH`(L262)/`WORKSPACE_CHANGED`(L263) 행(이전 L255/L256), `10-security-boundaries.md` L23(`WORKSPACE_CHANGED`, 변동 없음), L187(다른 `workspace_id`/`commit_id` 결과 합류 negative scenario 표; 이전 L177)
 
 ### #33 (R2-02) AST·CodeQL·OpenGrep 결과 정리 형식(`StaticFactBundle`) 확정
 
-- `entities`, `locations`, `source_candidates`, `sink_candidates`, `call_edges`, `data_flow_candidates`, `auth_and_permission_checks`, `route_bindings`, `tool_runs` 스키마 — `08-lightweight-data-contracts.md` L754-767 (`StaticFactBundle`; 이전 L708-720). `#82`/ADR-006으로 `tool_runs`가 가리키는 `ToolRunResult`에 `tool_kind`·`rule_execution_ref`가 새로 생겼지만 `StaticFactBundle` 자체 필드 목록은 그대로임
-- `ToolSource`(`attempt_id`, `tool_name`, `tool_version`, `rule_id`, `raw_result_ref`) — `08-lightweight-data-contracts.md` L603-608(이전 L599-603). `#82`/ADR-006으로 `attempt_id`가 필수 필드로 추가됨(R2-02 완료조건 자체와는 무관)
-- `CodeFact.producer`/`CodeRelation.producer`로 각 fact/relation이 어떤 도구 결과에서 왔는지 역추적 가능 — `08-lightweight-data-contracts.md` L615(`CodeFact.producer`, 이전 L610), L624(`CodeRelation.producer`, 이전 L619)
-- "SAST rule hit와 불완전한 경로는 관찰된 사실 후보이지 취약점 확정이 아니다"는 표현으로 SAST severity/rule hit을 verdict로 승격하지 않는다는 제약이 명시됨 — `02-static-fact-layer.md` L25(이전 L24; `#82` 반영으로 위에 항목 하나가 늘며 한 줄 밀림)
+- `entities`, `locations`, `source_candidates`, `sink_candidates`, `sanitizer_candidates`, `validator_candidates`, `auth_and_permission_checks`, `other_facts`, `call_edges`, `data_flow_candidates`, `route_bindings`, `tool_runs` 스키마 — `08-lightweight-data-contracts.md` L788-804 (`StaticFactBundle`; 이전 L754-767). ADR-010으로 `sanitizer_candidates`/`validator_candidates`/`other_facts` 세 필드가 새로 추가됨(R1이 PR #71 리뷰에서 지적한 필드 공백이 별도 커밋으로 해결됨) — 나머지 필드 목록·의미는 그대로임
+- `ToolSource`(`attempt_id`, `tool_name`, `tool_version`, `rule_id`, `raw_result_ref`) — `08-lightweight-data-contracts.md` L621-626(이전 L603-608)
+- `CodeFact.producer`/`CodeRelation.producer`로 각 fact/relation이 어떤 도구 결과에서 왔는지 역추적 가능 — `08-lightweight-data-contracts.md` L633(`CodeFact.producer`, 이전 L615), L652(`CodeRelation.producer`, 이전 L624)
+- "SAST rule hit와 불완전한 경로는 관찰된 사실 후보이지 취약점 확정이 아니다"는 표현으로 SAST severity/rule hit을 verdict로 승격하지 않는다는 제약이 명시됨 — `02-static-fact-layer.md` L25(변동 없음)
 
 ### #34 (R2-03) 도구 부분 실패·분석 공백(gap) 표현 규칙 확정
 
-- `STATIC_TOOL_ERROR` 등 실패 분류 체계(코드별 주 생산자·실행 영향·복구 방향 표) — `07-results-and-observability.md` "## DataGap과 오류 분류"(헤더 L237, 오류 코드 표 L250-260; 이전 L219-240)
-- `tool_runs`의 `SUCCEEDED`/`PARTIAL`/`FAILED`/`SKIPPED` 상태 표기 규칙 — `02-static-fact-layer.md` L62-67(이전 L52-59)
-- `DataGap` 스키마(`gap_id`, `stage`, `code`, `reason`, `description`, `affected_*`, `retryable`, `related_record_ids`, `created_at`) — `08-lightweight-data-contracts.md` L579-590(이전 L575-586)
-- "empty/truncated/unresolved 결과 → 안전 또는 FALSE 해석 금지" 규칙이 소비자 쪽 계약에도 명시 — `02-static-fact-layer.md` L25, `08-lightweight-data-contracts.md` L659(`ToolRunResult.gaps`, 이전 L635)·L765(`StaticFactBundle.gaps`, 이전 L719), `07-results-and-observability.md` L239(이전 L219-221)
+- `STATIC_TOOL_ERROR` 등 실패 분류 체계(코드별 주 생산자·실행 영향·복구 방향 표) — `07-results-and-observability.md` "## DataGap과 오류 분류"(헤더 L244, 오류 코드 표 L258부터 — `WORKSPACE_MISMATCH`(L262)/`WORKSPACE_CHANGED`(L263)/`STATIC_TOOL_ERROR`(L265) 등; 이전 헤더 L237)
+- `tool_runs`의 `SUCCEEDED`/`PARTIAL`/`FAILED`/`SKIPPED` 상태 표기 규칙 — `02-static-fact-layer.md` L71-74(이전 L62-67)
+- `DataGap` 스키마(`gap_id`, `stage`, `code`, `reason`, `description`, `affected_*`, `retryable`, `related_record_ids`, `created_at`) — `08-lightweight-data-contracts.md` L597-608(이전 L579-590)
+- "empty/truncated/unresolved 결과 → 안전 또는 FALSE 해석 금지" 규칙이 소비자 쪽 계약에도 명시 — `02-static-fact-layer.md` L25, `08-lightweight-data-contracts.md` L687(`ToolRunResult.gaps`, 이전 L659)·L802(`StaticFactBundle.gaps`, 이전 L765), `07-results-and-observability.md` L246(이전 L239)
 - `gaps: [DataGap]` 필드와 소비자 의미의 문서 전체 일관성 — 위와 동일 근거
 
 ### #35 (R2-04) `CodeContextRequest/Response` 조회 계약과 보안 한도 확정
 
-- `CodeContextRequest`(`requested_entities`/`requested_locations`, `relation_query`, `limits: ContextRetrievalLimits`) — `08-lightweight-data-contracts.md` L829-838(이전 L785-793)
-- `CodeContextResponse`(`truncated`, `returned_fragment_count`, `returned_bytes`, `consumed_token_estimate` 등) — `08-lightweight-data-contracts.md` L843-856(이전 L799-811)
-- `ContextRetrievalLimits`(`max_depth`, `max_fragments`, `max_bytes`, `token_budget`, `max_requests_per_hypothesis`, `timeout_ms`) — `08-lightweight-data-contracts.md` L665-672(이전 L641-648)
-- 요청 가능한 relation 종류(`CALLERS`, `CALLEES`, `DATA_FLOW_NEIGHBORS`, `AUTH_GUARDS`, `ROUTE_BINDINGS`)와 depth/byte/token/request/time 한도 예시 — `02-static-fact-layer.md` L91-136(이전 L81-127)
-- path traversal·symlink escape 차단 규칙 — `10-security-boundaries.md` L24(이전 L24-25; 현재는 한 줄로 합쳐져 있음)
+- `CodeContextRequest`(`requested_entities`/`requested_locations`, `relation_query`, `limits: ContextRetrievalLimits`) — `08-lightweight-data-contracts.md` L899-908(이전 L829-838). `action_decision_ref: StoredDataRef` 필드가 새로 추가됨(R2-04 완료조건 자체와는 무관, R4-03 action 권한 계약 강화)
+- `CodeContextResponse`(`truncated`, `returned_fragment_count`, `returned_bytes`, `consumed_token_estimate` 등) — `08-lightweight-data-contracts.md` L913-925(이전 L843-856)
+- `ContextRetrievalLimits`(`max_depth`, `max_fragments`, `max_bytes`, `token_budget`, `max_requests_per_hypothesis`, `timeout_ms`) — `08-lightweight-data-contracts.md` L693-699(이전 L665-672)
+- 요청 가능한 relation 종류(`CALLERS`, `CALLEES`, `DATA_FLOW_NEIGHBORS`, `AUTH_GUARDS`, `ROUTE_BINDINGS`)와 depth/byte/token/request/time 한도 예시 — `02-static-fact-layer.md` L85-143(이전 L91-136)
+- path traversal·symlink escape 차단 규칙 — `10-security-boundaries.md` L24(변동 없음)
 - 누락·truncation을 안전함 또는 `FALSE`로 해석하지 않는다는 규칙 — `10-security-boundaries.md` L28(변동 없음)
-- 전체 저장소 대신 필요한 location/context만 전달한다는 규칙("전체 repository dump 금지") — `10-security-boundaries.md` L63(변동 없음)
+- 전체 저장소 대신 필요한 location/context만 전달한다는 규칙("전체 repository dump 금지") — `10-security-boundaries.md` L65(이전 L63)
 
 ## 4. 다른 파트와의 연결
 

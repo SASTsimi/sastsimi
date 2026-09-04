@@ -3,8 +3,8 @@
 - 검토자: 김나연 (R2 정적분석·컨텍스트, `@zv9uvr`)
 - 검토 대상: Issue R5-03 "함께 검토할 역할 — R2" 항목
   > ReportDraft에 포함된 코드 위치와 code-flow claim이 실제 정적분석 Evidence로 추적 가능한지 검토
-- 검토 기준 커밋: `SASTsimi/sastsimi` `main` `312fcb2016241cb75e436f00ea558f20cffc9704`(2026-09-03) — 최초 작성(2026-08-30, `main` `16e834a` 기준)에서 line 인용만 갱신, 결론은 변경 없음.
-- 참고: 검토 시점 기준 `review/r5-03-reporter` 브랜치가 존재하며(`23ed763` "docs: finalize R5-03 reporter contracts") `05-llm-gate-and-reporting.md`/`12-report-draft-template.md`에 상당한 내용이 반영됐다. 다만 아래 4번에서 제안한 `content_ref`의 `path:line` ↔ upstream `EvidenceClaim.code_locations` 일치 검사 규칙은 이 브랜치에도 아직 반영되지 않은 것으로 확인된다(4번 참고).
+- 검토 기준 커밋: `SASTsimi/sastsimi` `main` `2c63d1557c50220f90739c2b89bcb21a048cb880`(2026-09-04) — 최초 작성(2026-08-30, `main` `16e834a` 기준)에서 line 인용만 갱신, 결론은 변경 없음.
+- 참고: 검토 시점 기준 `review/r5-03-reporter` 브랜치가 `dd56d53`까지 진행됐고(R7 동적 재현 provenance 필드 정합, 실패 분류 세분화 등) `05-llm-gate-and-reporting.md`/`12-report-draft-template.md`에 상당한 내용이 반영됐다. 다만 아래 4번에서 제안한 `content_ref`의 `path:line` ↔ upstream `EvidenceClaim.code_locations` 일치 검사 규칙은 이 브랜치에도 아직 반영되지 않은 것으로 확인된다(4번 참고).
 
 ## 결론 요약
 
@@ -14,10 +14,10 @@ ReportDraft의 코드 위치·code-flow claim은 **`ReportDraft.verification_res
 
 R5-03 이슈가 그린 provenance 체인(`Report claim → VerificationResult → Evidence/Dynamic/PoC`)은 다음 스키마로 실제 뒷받침된다.
 
-- `ReportDraft`는 `verification_result_ref: StoredDataRef` 하나로 검토 시점의 정확한 `VerificationResult` revision을 고정한다 — `08-lightweight-data-contracts.md` L1509-1526
-- `VerificationResult.supporting_evidence` / `counter_evidence`는 `EvidenceClaim[]`이고, 각 `EvidenceClaim`은 `evidence_refs: [StoredDataRef]`와 함께 "코드 주장이면 현재 `workspace_id`+`commit_id`의 `code_locations`를 하나 이상 가져야 한다"는 필수 규칙이 있다 — `08-lightweight-data-contracts.md` L882-888(스키마), L991(필수 규칙 설명)
-- `CodeLocation`은 `workspace_id`, `commit_id`, `file_path`, `start_line`/`end_line`(1-based, inclusive)로 구성되어 위치 자체가 코드 버전에 고정된다 — `08-lightweight-data-contracts.md` L548-555, 규칙 설명 L674
-- `evidence_refs`가 가리키는 정적 근거의 원본은 `StaticFactBundle`(`CodeFact`/`CodeRelation`)이며, 각 `CodeFact`/`CodeRelation`은 `producer: ToolSource`(`tool_name`, `tool_version`, `rule_id`, `raw_result_ref`)를 가져 실제 AST/SAST 도구 원본 결과까지 역추적된다 — `08-lightweight-data-contracts.md` L603-608(스키마), L676(도구 역추적 설명), L754-767(`StaticFactBundle`)
+- `ReportDraft`는 `verification_result_ref: StoredDataRef` 하나로 검토 시점의 정확한 `VerificationResult` revision을 고정한다 — `08-lightweight-data-contracts.md` L1681부터(스키마 블록)
+- `VerificationResult.supporting_evidence` / `counter_evidence`는 `EvidenceClaim[]`이고, 각 `EvidenceClaim`은 `evidence_refs: [StoredDataRef]`와 함께 "코드 주장이면 현재 `workspace_id`+`commit_id`의 `code_locations`를 하나 이상 가져야 한다"는 필수 규칙이 있다 — `08-lightweight-data-contracts.md` L952-958(스키마), L1061(필수 규칙 설명)
+- `CodeLocation`은 `workspace_id`, `commit_id`, `file_path`, `start_line`/`end_line`(1-based, inclusive)로 구성되어 위치 자체가 코드 버전에 고정된다 — `08-lightweight-data-contracts.md` L566-573, 규칙 설명 L702
+- `evidence_refs`가 가리키는 정적 근거의 원본은 `StaticFactBundle`(`CodeFact`/`CodeRelation`)이며, 각 `CodeFact`/`CodeRelation`은 `producer: ToolSource`(`tool_name`, `tool_version`, `rule_id`, `raw_result_ref`)를 가져 실제 AST/SAST 도구 원본 결과까지 역추적된다 — `08-lightweight-data-contracts.md` L621-626(스키마), L704(도구 역추적 설명), L788-804(`StaticFactBundle`)
 
 즉 "Reporter가 참조하는 코드 위치·흐름이 실제 정적분석 결과에서 나왔는가"라는 질문에는, `VerificationResult` 레벨까지는 **예**라고 답할 수 있는 근거가 있다.
 
@@ -36,9 +36,11 @@ R5-03 이슈가 그린 provenance 체인(`Report claim → VerificationResult �
 - 스키마 레벨에서 보장되는 것: `ReportDraft`가 가리키는 `VerificationResult` revision이 정확하다는 것, 그리고 그 `VerificationResult` 안의 `EvidenceClaim`들이 각각 `code_locations`/`evidence_refs`를 갖고 있다는 것.
 - 스키마 레벨에서 보장되지 않는 것: Reporter LLM이 `content_ref` 본문(템플릿 4번/5번 섹션)에 실제로 적어 넣은 `{path:line}` 문자열이, 참조된 `VerificationResult.EvidenceClaim.code_locations`에 존재하는 값과 실제로 일치하는지.
 
-`07-results-and-observability.md`(`REPORT_NOT_READY` 서술 L196, `REPORT_ERROR` 표 행 L275, `REPORT_NOT_READY` 표 행 L290)와 `10-security-boundaries.md`(`REPORT_READY` check 목록 L48, Reporter exact revision 요구 L128)에서 확인한 관련 검사는 모두 "Reporter를 호출해도 되는가"(선행조건, Gate 순서)에 대한 것이지, "Reporter가 생성한 본문 내용이 upstream evidence와 위치 단위로 일치하는가"에 대한 것이 아니다.
+`07-results-and-observability.md`(`REPORT_NOT_READY` 서술 L203, `REPORT_ERROR` 표 행 L282, `REPORT_NOT_READY` 표 행 L297)와 `10-security-boundaries.md`(`REPORT_READY` check 목록 L50, Reporter exact revision 요구 L131)에서 확인한 관련 검사는 모두 "Reporter를 호출해도 되는가"(선행조건, Gate 순서)에 대한 것이지, "Reporter가 생성한 본문 내용이 upstream evidence와 위치 단위로 일치하는가"에 대한 것이 아니다.
 
 **갱신(2026-09-03)**: `review/r5-03-reporter` 브랜치(`23ed763`)가 이후 `05-llm-gate-and-reporting.md`에 severity/exploitability가 upstream evidence보다 강해지면 안 된다는 semantic invariant, restriction/limitation 보존 규칙, redaction 세부 목록을 추가했지만, 위에서 제기한 `path:line` ↔ `code_locations` 일치 검사 규칙은 diff에 포함되지 않았다. 이 항목은 여전히 열려 있다.
+
+**갱신(2026-09-04)**: 같은 브랜치가 `dd56d53`까지 더 진행되어(R7 동적 재현 provenance 필드 정합, `failure_category` enum 등) `05-llm-gate-and-reporting.md`/`12-report-draft-template.md`에 추가로 반영됐지만, 위 결론은 그대로다 — `path:line` ↔ `code_locations` 일치 검사 규칙은 여전히 없다(위 참고 항목과 동일).
 
 **제안**: R5-03의 "report claim의 evidence/PoC/Gate/policy provenance 기준 확정" 항목에서, code-flow claim에 한해 "본문에 등장하는 모든 `path:line`은 참조된 `VerificationResult`의 `EvidenceClaim.code_locations`(같은 `workspace_id`+`commit_id`) 중 하나와 정확히 일치해야 하며, 일치하지 않으면 `INVALID_OUTPUT`/`REPORT_ERROR`로 처리한다"는 규칙을 output contract validation 항목에 명시적으로 추가할 것을 제안한다. 이는 새로운 스키마 필드 추가 없이(= R5-03이 우려하는 "새 `FindingCandidate` 스키마 독자 신설" 문제와 무관하게) 기존 `content_ref` 검증 규칙에 조건 하나를 더하는 정도로 처리 가능해 보인다.
 
@@ -48,8 +50,8 @@ R5-03 이슈가 그린 provenance 체인(`Report claim → VerificationResult �
 
 ## 6. 참고 (R2 소관 아님, 확인 중 발견): `FindingCandidate` 소유권은 이미 공통 계약에 명시돼 있음
 
-R5-03의 "착수 전 확인" 체크리스트 1~2번(독립 Finding record 필요 여부, schema 소유권 합의)과 관련해, `08-lightweight-data-contracts.md` L1542에 "`FindingCandidate` 본문과 품질 기준은 R5가 소유한다. R4는 이미 저장된 Finding revision과 다른 exact 결과를 `AnalysisRunResult`로 전달할 뿐 새 Finding claim을 만들거나 빠진 Finding을 추정하지 않는다"라는 문장이 이미 있다. 즉 독립 Finding record 존재가 공통 계약에 이미 전제되어 있고, 그 내용 스키마 소유권도 R5로 이미 지정되어 있다. R2 도메인은 아니지만 R5-03 착수 전 확인 항목과 바로 관련되어 있어 참고로 남긴다(R4와의 교차 확인은 별도로 필요).
+R5-03의 "착수 전 확인" 체크리스트 1~2번(독립 Finding record 필요 여부, schema 소유권 합의)과 관련해, `08-lightweight-data-contracts.md` L1715에 "`FindingCandidate` 본문과 품질 기준은 R5가 소유한다. R4는 이미 저장된 Finding revision과 다른 exact 결과를 `AnalysisRunResult`로 전달할 뿐 새 Finding claim을 만들거나 빠진 Finding을 추정하지 않는다"라는 문장이 이미 있다. 즉 독립 Finding record 존재가 공통 계약에 이미 전제되어 있고, 그 내용 스키마 소유권도 R5로 이미 지정되어 있다. R2 도메인은 아니지만 R5-03 착수 전 확인 항목과 바로 관련되어 있어 참고로 남긴다(R4와의 교차 확인은 별도로 필요).
 
 ---
 
-*이 문서는 R2(정적분석·컨텍스트) 담당자가 R5-03 이슈의 "함께 검토할 역할" 요청에 따라 작성한 교차 검토 기록이다. 2026-08-30 최초 작성, 2026-09-03 line 인용 갱신(내용 변경 없음).*
+*이 문서는 R2(정적분석·컨텍스트) 담당자가 R5-03 이슈의 "함께 검토할 역할" 요청에 따라 작성한 교차 검토 기록이다. 2026-08-30 최초 작성, 2026-09-03 line 인용 갱신, 2026-09-04 `main` `2c63d15` 기준 line 인용 재갱신(내용 변경 없음).*
