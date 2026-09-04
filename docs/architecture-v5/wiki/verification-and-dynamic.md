@@ -93,10 +93,12 @@ R6의 선택은 다음과 같습니다.
 - 정적·Pro·Con으로 근거 있는 `VerificationResult.verdict=FALSE | HOLD`를 확정할 수 있으면 동적 요청을 생략할 수 있지만, validated `poc_ref`가 없는 `VerificationResult.verdict=TRUE`는 만들 수 없습니다.
 - 한 `verification_generation`에는 동적 work를 하나만 허용합니다. Technical `REVISE`는 새 `verification_generation`이므로 `purpose`를 다시 정하고 새 work를 최대 한 번 요청합니다.
 
-R6는 `DynamicReproductionState.dynamic_result_ref`, `WorkExecutionState.output_refs`, `TransitionCommit.output_refs`가 같은 `DynamicReproductionResult.meta.record_id`를 가리키는 확정 결과만 읽습니다. `DynamicReproductionResult.meta.workspace_id`, `meta.commit_id`, `meta.hypothesis_id`, `meta.attempt_id`, `request_ref`, `purpose`를 확인하고, `request_ref`가 가리키는 `DynamicReproductionRequest.verification_generation`과 `hypothesis_ref`도 현재 Verification과 exact match해야 합니다.
-
 `DynamicReproductionResult.status=SUCCEEDED`와 `hypothesis_outcome=SUPPORTED`, 실제 `hypothesis_evidence_refs`, 같은 `meta.attempt_id`에서 검증된 `poc_ref`가 모두 있으면 `VerificationResult.verdict=TRUE` 후보입니다. `hypothesis_outcome=DISPROVED`, `hypothesis_disproved=true`, 실제 `disproof_evidence_refs`와 named falsification이 연결되면 `VerificationResult.verdict=FALSE` 근거입니다. `status=SUCCEEDED | PARTIAL`과 `hypothesis_outcome=INCONCLUSIVE`이면 `hypothesis_evidence_refs`, `limitations`, `VerificationResult.unresolved_conditions`를 기록할 수 있을 때 `verdict=HOLD` 후보입니다.
 
-정책 차단·환경 구성·Agent·PoC 생성·실행 실패·timeout은 verdict가 아닙니다. 외부 조치가 필요하면 `DynamicReproductionResult.status=BLOCKED`, 복구 불가능하거나 retry 한도 소진이면 `status=FAILED`이며 `failure_category`와 `failure_reason`을 기록하고 final `VerificationResult`와 Gate 요청을 만들지 않습니다. 위 exact reference나 `verification_generation`이 다르거나 이전 `meta.attempt_id`의 늦은 결과는 오류 코드 `STALE_RESULT`로 격리합니다.
+R6는 current `DynamicReproductionState.status=SUCCEEDED | PARTIAL | BLOCKED | FAILED | CANCELLED`에 연결된 `dynamic_result_ref`를 읽습니다. `DynamicReproductionState.dynamic_result_ref`, `WorkExecutionState.output_refs`, `TransitionCommit.output_refs`는 같은 exact `DynamicReproductionResult.meta.record_id`를 가리켜야 합니다. `status=BLOCKED`는 외부 조치를 기다리는 비종료 상태이며 `finished_at=null`을 유지합니다.
+
+결과의 `meta.attempt_id`가 현재 `active_attempt_id`와 다르면 `ATTEMPT_NOT_ACTIVE`, 고정 입력·`request_ref`·`verification_generation`이 다르면 `STALE_RESULT`, exact reference의 `record_id` 또는 `content_hash`가 다르면 `RECORD_REVISION_MISMATCH`, 상태 version이 다르면 `STATE_VERSION_CONFLICT`로 구분해 거절합니다. `meta.workspace_id`, `meta.commit_id`, `meta.hypothesis_id`, `request_ref`, `purpose`와 `DynamicReproductionRequest.hypothesis_ref`도 현재 Verification과 exact match해야 합니다.
+
+정책 차단·환경 구성·Agent·PoC 생성·실행 실패·timeout·취소는 verdict가 아닙니다. `DynamicReproductionResult.status=BLOCKED | FAILED | CANCELLED`와 `hypothesis_outcome=INCONCLUSIVE`를 기록하고 final `VerificationResult`와 Gate 요청을 만들지 않습니다. `BLOCKED`는 비종료 대기 상태이고 `FAILED | CANCELLED`는 종료 상태입니다.
 
 R6는 `DynamicReproductionRequest.verification_assignment_ref`, `verification_generation`, `hypothesis_ref`, `purpose`, `initial_verdict`, `goal`, `environment_needs`, `sandbox_profile_ref`, `code_refs`, `static_evidence_refs`, `pro_evidence_ref`, `con_evidence_ref`를 기록합니다. `EnvironmentRequirements`, `ReproductionPlan`, recipe, command, payload와 PoC는 R7이 생산합니다.
