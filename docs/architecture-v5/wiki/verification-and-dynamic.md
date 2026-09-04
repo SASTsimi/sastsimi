@@ -32,6 +32,16 @@ Pro와 Con은 각각 exact `EvidenceAgentResult`를 저장합니다. 두 child w
 
 token과 전체 시간·판정 변화·HOLD 해소·새 후보 수는 `VerificationMetrics`에, 역할별 호출 수·상태·retry·failover·provider·session·실제 usage는 `LLMInvocationLog`에 기록합니다. R8은 이 기록을 비교 평가에 사용하지만 개별 실행이나 verdict를 결정하지 않습니다.
 
+## 검증 플레이북
+
+R6-01의 공통 구조에 따라 [R6 검증 플레이북](../verification-playbooks.md)에 COMMON fallback과 웹 취약점 6종(SQL Injection, XSS, OS Command Injection, Path Traversal, SSRF, IDOR/BOLA)의 실제 확인 절차를 작성합니다.
+
+각 플레이북에는 사전 조건, source, sink, 경로, 방어, named falsification question, 정적·동적 evidence, restriction과 HOLD 조건이 있습니다. 이 내용은 확인 누락을 줄이는 참고 절차이며 점수표가 아닙니다. 체크 수나 Pro·Con의 단순 승패가 아니라 현재 코드와 실제 evidence로 판정합니다.
+
+가설 유형과 정확히 일치하는 TYPE_SPECIFIC 플레이북이 있으면 해당 exact revision을, 없거나 유형이 불명확하면 COMMON의 exact revision을 사용합니다. 같은 Verification work의 직접 검증·Pro·Con·합성에는 동일 revision을 고정하며, 진행 중 revision이 바뀌어도 섞지 않습니다.
+
+플레이북은 동적 검증의 목표와 필요한 관측을 제시할 뿐입니다. R6가 요청 조건을 전달하고 R7이 PoC·command·환경 계획과 결과를 생산합니다. 오류·timeout·실행 실패는 반증이 아니며, final TRUE에는 current generation의 SUCCEEDED + SUPPORTED 결과와 validated poc_ref가 필요합니다.
+
 ## 판정과 동적 재현
 
 - `TRUE`: 명시된 경로와 전제가 evidence로 지지되고 현재 generation의 실행 성공·validated PoC가 있음
