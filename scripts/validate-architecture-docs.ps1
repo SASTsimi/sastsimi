@@ -1381,6 +1381,17 @@ if ($staticText.Contains('저장된 ACTIVE Primitive')) {
     Add-Failure 'static fact layer still refers to obsolete ACTIVE Primitive state'
 }
 
+$requiredStaticPrimitiveAdmissionRules = @(
+    '같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`',
+    '`Primitive.admission_decision_ref`는 그 current exact ALLOW decision을 가리킨다.',
+    'R4 `PRIMITIVE_ADMISSION_RUNTIME`의 입력이며, confirmed `FAIL`은 `PrimitiveAdmissionDecision=DENY`로 매핑'
+)
+foreach ($rule in $requiredStaticPrimitiveAdmissionRules) {
+    if (-not $staticText.Contains($rule)) {
+        Add-Failure "static fact layer is missing Primitive admission authority rule: $rule"
+    }
+}
+
 $decisionText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/review/decisions/ADR-001-verification-owned-chaining-admission.md')
 if ($decisionText.Contains('lookup 시 ACTIVE 확인')) {
     Add-Failure 'Chaining ADR still uses obsolete ACTIVE-based Primitive lookup'
@@ -2138,6 +2149,7 @@ Write-Output "Obsolete rule execution phrases: $($obsoleteRuleExecutionPhrases.C
 Write-Output "StaticFactBundle fact-kind fields: $($requiredStaticFactBundleFields.Count)"
 Write-Output "StaticFactBundle semantic rules: $($requiredStaticFactBundleSemantics.Count)"
 Write-Output "StaticFactBundle cross-document rules: $($requiredStaticFactBundleCrossDocumentRules.Count)"
+Write-Output "Static layer Primitive admission rules: $($requiredStaticPrimitiveAdmissionRules.Count)"
 Write-Output "R4 policy contract blocks: $($requiredPolicyContractFields.Count)"
 Write-Output "R4 policy contract rules: $($requiredPolicyContractRules.Count)"
 Write-Output "Failures: $($failures.Count)"
