@@ -11,7 +11,10 @@
 Reporter Agent는 다음 조건이 모두 참일 때만 이 내부 초안을 작성한다.
 
 ```text
-Verification TRUE
+current final Verification TRUE
++ current Finding
++ current dynamic reproduction SUCCEEDED + SUPPORTED
++ current validated poc_ref
 + Technical Evidence Gate ACCEPT
 + Rule Scope Impact Gate review_status PASS
 + rule_compliance PASS
@@ -37,7 +40,7 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 - Verification: `TRUE`
 - Technical Evidence Gate: `ACCEPT`
 - Rule/Scope/Impact: `rule_compliance PASS / scope_compliance PASS / security_impact SUFFICIENT`
-- 보고서 전달 권한: `ALLOW`
+- Reporter 초안 생성 권한: `ALLOW`
 - Finding ref: `{finding_ref.record_id}`
 - ReportDraft redaction: `PASSED`
 
@@ -64,6 +67,8 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 - 남은 불확실성: `{unresolved conditions or none}`
 
 과장된 최악 시나리오 대신 재검증된 경로와 재현 범위만 실제 영향으로 쓴다.
+severity, exploitability, capability, scope, exposure, required privilege, reproduction certainty와
+security impact는 exact upstream evidence보다 강하게 표현하지 않는다.
 
 ## 4. 취약 위치
 
@@ -115,24 +120,38 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 
 ## 7. 동적 재현과 PoC
 
+- Verification이 참조한 동적 결과: `{dynamic_result_ref.record_id and content_hash}`
 - 요청 목적: `{POC_CONFIRMATION | VERDICT_EVIDENCE}`
 - R7 재현 전략: `{strategy_summary}`
-- 실행 환경 recipe/image: `{environment_recipe_ref / built_image_digest}`
-- 실행 기록: `{agent_log_ref}`
 - Docker 환경: `{image digest and relevant configuration}`
 - 전제: `{account, data, route or build condition}`
 - 실행 상태: `{SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED}`
+- 실패 분류: `{NONE | POLICY_BLOCKED | EXTERNAL_CONFIGURATION | PLAN | ENVIRONMENT_SETUP | DEPENDENCY | AGENT | EXECUTION | OBSERVATION | TIMEOUT | RESOURCE_LIMIT | RETRY_LIMIT | INTERNAL}`
+- 실패 상세 사유: `{failure_reason string or null}`
+- Reproduction Agent 호출 여부: `{agent_invoked}`
+- AgentLog reference: `{agent_log_ref.record_id; 정책 단계에서 차단된 경우에도 Session Manager가 남기는 필수 reference이며 null 불가}`
+- 환경 생성 또는 재사용 여부: `{SandboxEnvironment.container_action: CREATED | REUSED; environment_ref가 있을 때}`
+- 실제 환경 reference: `{environment_ref.record_id or null}`
+- 환경 recipe reference: `{environment_recipe_ref.record_id or null}`
+- 관측 references: `{observation_refs}`
+- cleanup 필요 여부와 상태: `{cleanup_required / cleanup_status}`
+- cleanup reference: `{cleanup_ref.record_id or null}`
+- 동일 결과 provenance: `{request_ref, reproduction_plan_ref와 그 plan의 environment_requirements_ref, policy_decision_ref, environment_ref, agent_log_ref, poc_candidate_ref, poc_ref, cleanup_ref의 exact revision/hash; request, plan, environment, AgentLog, PoC candidate, validated PoC, cleanup은 모두 동일 reproduction attempt에 속해야 함}`
 - 관측 결과: `{SUPPORTED | DISPROVED | INCONCLUSIVE}`
 - PoC candidate reference: `{poc_candidate_ref.record_id}`
-- validated PoC reference: `{poc_ref.record_id; SUCCEEDED + SUPPORTED인 final TRUE에 필수}`
+- validated PoC reference: `{poc_ref.record_id; R7이 exact candidate revision/digest의 POC_EXECUTION_STARTED와 POC_EXECUTION_FINISHED, 지지 observation 및 SUCCEEDED + SUPPORTED를 연결해 확정한 값만 사용}`
 - 가설 연결: `{hypothesis evidence refs와 관측이 지지·반증하는 정확한 claim}`
 - 환경 차이/제한: `{limitations}`
 
-### 재현 단계
+### AgentLog 기반 재현 과정 요약
 
-1. `{setup/action}`
-2. `{action}`
-3. `{observation}`
+- `{exact AgentLog event의 event_type/action_id/sequence와 실제 수행 결과}`
+- `{POC_EXECUTION_STARTED와 POC_EXECUTION_FINISHED event가 있으면 exact candidate 실행과 연결된 observation}`
+- `{실패·timeout·cancel·cleanup event와 그 limitation}`
+
+이 목록은 exact `AgentLog`의 실제 event를 사람이 읽을 수 있게 요약한 것이며 새 실행 순서나 action을
+추론하지 않는다. 실행되지 않은 action을 단계처럼 만들지 않고, `POC_EXECUTION_STARTED`와 `POC_EXECUTION_FINISHED` 및 observation은 log와
+`observation_refs`에 존재하는 범위만 표시한다.
 
 ### 검증된 PoC 입력
 
@@ -141,6 +160,13 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 ```
 
 실제 credential, session cookie, API key와 개인정보를 포함하지 않는다.
+환경의 존재와 식별은 `environment_ref`로, 생성 또는 재사용 여부는 `SandboxEnvironment.container_action=CREATED | REUSED`로 기록한다.
+`agent_log_ref`는 정책 단계에서 차단되어 `agent_invoked=false`인 경우에도 Session Manager가 남기는 필수 reference이며 `null`을 허용하지 않는다. `agent_invoked=false`이거나, `agent_invoked=true`인데 동일 attempt의 exact `agent_log_ref`와 `AgentLog`
+event가 실제 PoC 실행·관측을 뒷받침하지 않거나, 상태가 `BLOCKED`이면 성공 단계처럼 채우지 않는다.
+Reporter는 R7이 확정하고 Verification의 exact `dynamic_result_ref`에 연결한 request·plan·requirements와
+environment·policy·AgentLog·PoC·cleanup provenance를 그대로 따라 실제 미실행·차단·제한 상태와
+관측 범위를 기록한다. request, plan, `environment_ref`, `agent_log_ref`, PoC candidate, validated PoC, `cleanup_ref`는 모두 동일한 reproduction attempt에 속해야 한다. 서로 다른 attempt의 artifact를 섞거나 이 무결성을 새로 판정하지 않으며, 특히 `agent_log_ref`·`environment_ref`·PoC·cleanup reference의 attempt가 하나라도 다르면 fail-closed 처리한다.
+환경·실행 실패를 취약점 부재로 해석하지 않는다.
 
 ## 8. CWE
 
@@ -194,6 +220,8 @@ Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비
 - 관련 error/resource limit: `{safe summary or none}`
 
 hidden chain-of-thought와 secret은 포함하지 않는다.
+access/session token, password, private key, credential, cookie·authorization secret, 불필요한 PII,
+내부 secret과 private/raw reasoning도 저장하지 않는다.
 
 ## 12. 완화와 회귀 테스트
 
@@ -209,4 +237,7 @@ hidden chain-of-thought와 secret은 포함하지 않는다.
 
 ---
 
-Reporter Agent는 이 초안을 만든 뒤 추가 검토·수정·제출·공개를 수행하지 않는다. 신뢰 runtime이 current 결과와 이 초안을 `AnalysisRunResult`에 확정하면 Agent 자동화가 끝난다. 이후 과정은 사람이 시스템 밖에서 주도하며, 이 템플릿은 사람의 결정 상태나 자동 공개 action을 정의하지 않는다.
+Reporter Agent는 이 초안을 만든 뒤 추가 검토·수정·제출·공개를 수행하지 않는다. 신뢰 runtime이
+current 결과와 이 초안을 `AnalysisRunResult`에 묶고 `AnalysisRunState`와 원자적으로 확정한 뒤 Agent
+자동화가 끝난다. 이 finalization은 새 Agent 판단이 아니라 저장·상태 확정이다. 이후 과정은 사람이
+시스템 밖에서 주도하며, 이 템플릿은 사람의 결정 상태나 자동 공개 action을 정의하지 않는다.
