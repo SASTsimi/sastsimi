@@ -14,7 +14,7 @@
 - Verification work 등록 시 trusted runtime은 exact `VulnerabilityHypothesis.proposal_ref`가 가리키는 `HypothesisProposal.vulnerability_type_candidates`와 current exact `PlaybookPolicy`를 확인합니다.
 - 유형 후보가 정확히 하나이고 current `PlaybookPolicy.type_playbooks`에 같은 유형의 유효한 mapping이 있을 때만 `TYPE_SPECIFIC`을 선택합니다. 후보가 없거나 여러 개이거나 policy가 허용하지 않으면 current exact `COMMON`을 선택합니다.
 - runtime은 선택한 policy·playbook과 질문별 실제 `question_id`를 `PlaybookApplication`으로 고정합니다. Verification 직접 검증·Pro·Con·최종 합성은 동일한 exact `PlaybookPolicy`, `VerificationPlaybook`, `PlaybookApplication`을 사용합니다.
-- final `VerificationResult`는 `playbook_ref`와 `playbook_application_ref`를 모두 기록하며, 가설 자체 질문과 application 질문의 합집합을 빠짐없이 정확히 한 번씩 처리합니다.
+- final `VerificationResult`는 `playbook_ref`와 `playbook_application_ref`를 모두 기록하며, 가설 자체의 반증 질문과 application 질문의 합집합을 빠짐없이 정확히 한 번씩 처리합니다.
 - 진행 중인 work에 새로운 플레이북 revision을 섞지 않습니다. 새 revision은 새 Verification work 또는 새 generation부터 적용합니다.
 - 오류, timeout, 빈 Context, Sandbox 실패는 가설의 반증 evidence가 아닙니다.
 - FALSE는 named falsification question이 실제 evidence로 DISPROVED 되었을 때만 가능합니다. 필수 검증을 완료한 뒤 남은 조건이 있으면 HOLD와 unresolved_conditions를 사용합니다.
