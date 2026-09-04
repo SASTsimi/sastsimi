@@ -234,8 +234,6 @@ R6는 다음 항목을 가진 `DynamicReproductionRequest`만 만든다.
 
 `POC_CONFIRMATION`은 정적·Pro·Con으로 initial TRUE가 나온 뒤 실제 PoC로 확인하는 목적이다. `VERDICT_EVIDENCE`는 실행 관측이 있어야 최종 판정을 내릴 수 있을 때 사용한다. R6는 목적과 필요한 조건만 정하며 `EnvironmentRequirements`, `ReproductionPlan`, recipe, command 또는 PoC를 생산하지 않는다.
 
-
-
 R7 내부 책임은 다음처럼 나눈다.
 
 - **R7 Agent**: 요청을 환경 조건으로 구체화하고, 재현 전략·PoC candidate·command·관찰·동적 근거 해석을 만든다.
@@ -331,7 +329,6 @@ final `VerificationResult` 후보를 저장하기 전에 trusted runtime은 `SAV
 검사 이후 candidate bytes·`content_hash`, 현재 work·attempt 또는 상태 revision이 변경되면 기존 저장 허가를 재사용하지 않는다. 해당 결과는 `STALE_RESULT | RECORD_REVISION_MISMATCH | STATE_VERSION_CONFLICT` 중 실제 원인을 기록하고 저장을 거절한다.
 
 결과 reference, 종료 상태 전이와 `TransitionCommit.output_refs`가 같은 `VerificationResult.record_id`를 가리키고 `TransitionCommit.state=COMMITTED`가 된 exact revision만 Technical Evidence Gate의 입력으로 사용할 수 있다.
-
 
 ## R6 동적 재현 요청과 결과 소비 계약
 
