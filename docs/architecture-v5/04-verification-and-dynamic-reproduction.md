@@ -153,7 +153,9 @@ Pro·Con 호출 횟수는 같은 Verification work와 역할에 속한 중복 �
 | 판정 | 최소 필수 근거 | 허용하지 않는 판정 이유 |
 |---|---|---|
 | `TRUE` | 현재 가설의 핵심 exploit path를 지지하는 정적·Pro·Con 근거, 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated `poc_ref` | 단순 추측, `NOT_DISPROVED`, validated PoC가 없거나 현재 generation과 다른 동적 결과 |
-| `FALSE` | named falsification의 `question_id`, `outcome=DISPROVED`, 하나 이상의 실제 `evidence_refs`와 이를 연결하는 판정 이유 | 오류, timeout, 빈 Context, 예산 초과, Sandbox 실패 |
+| `FALSE` | named falsification의 `question_id`, `outcoR7 내부 책임은 다음처럼 나눈다.
+
+- **R7 Agent**:me=DISPROVED`, 하나 이상의 실제 `evidence_refs`와 이를 연결하는 판정 이유 | 오류, timeout, 빈 Context, 예산 초과, Sandbox 실패 |
 | `HOLD` | 하나 이상의 `unresolved_conditions`와 정상적으로 확인한 범위 및 결론을 막는 조건을 설명하는 실제 evidence reference | 취약점이 아니라는 의미로 사용하거나 result가 있는 능력으로 승격 |
 
 ### HOLD와 실행 오류의 결정 기준
@@ -235,6 +237,8 @@ R6는 다음 항목을 가진 `DynamicReproductionRequest`만 만든다.
 `POC_CONFIRMATION`은 정적·Pro·Con으로 initial TRUE가 나온 뒤 실제 PoC로 확인하는 목적이다. `VERDICT_EVIDENCE`는 실행 관측이 있어야 최종 판정을 내릴 수 있을 때 사용한다. R6는 목적과 필요한 조건만 정하며 `EnvironmentRequirements`, `ReproductionPlan`, recipe, command 또는 PoC를 생산하지 않는다.
 
 
+
+R7 내부 책임은 다음처럼 나눈다.
 
 - **R7 Agent**: 요청을 환경 조건으로 구체화하고, 재현 전략·PoC candidate·command·관찰·동적 근거 해석을 만든다.
 - **R7 Setup Automation**: 저장소 선언을 우선한 recipe, image build, container 생성·재사용·재생성과 cleanup을 실제 수행한다.
@@ -329,3 +333,42 @@ final `VerificationResult` 후보를 저장하기 전에 trusted runtime은 `SAV
 검사 이후 candidate bytes·`content_hash`, 현재 work·attempt 또는 상태 revision이 변경되면 기존 저장 허가를 재사용하지 않는다. 해당 결과는 `STALE_RESULT | RECORD_REVISION_MISMATCH | STATE_VERSION_CONFLICT` 중 실제 원인을 기록하고 저장을 거절한다.
 
 결과 reference, 종료 상태 전이와 `TransitionCommit.output_refs`가 같은 `VerificationResult.record_id`를 가리키고 `TransitionCommit.state=COMMITTED`가 된 exact revision만 Technical Evidence Gate의 입력으로 사용할 수 있다.
+
+
+## R6 동적 재현 요청과 결과 소비 계약
+
+### R6 요청 결정표와 단일 실행 규칙
+
+| 정적·Pro·Con 검토 상태 | R6 요청 | 같은 generation의 처리 |
+|---|---|---|
+| 정적·Pro·Con만으로 initial TRUE이며 판정용 동적 근거는 더 필요하지 않음 | `purpose=POC_CONFIRMATION` | PoC 확인용 동적 work를 한 번 등록한다. |
+| 실행 관측 없이는 final verdict를 정할 수 없음 | `purpose=VERDICT_EVIDENCE` | 판정 근거와 PoC 생성을 한 번의 동적 work에서 함께 수행한다. `SUPPORTED`이면 같은 validated PoC를 final TRUE에 사용하며 별도 PoC work를 만들지 않는다. |
+| 정적·Pro·Con으로 근거 있는 final FALSE 또는 HOLD를 확정할 수 있음 | 요청하지 않음 | 동적 work 없이 결과를 저장할 수 있다. 단, final TRUE는 만들 수 없다. |
+| 같은 generation에 동적 work가 이미 등록됨 | 두 번째 요청 금지 | 기존 work의 current attempt 또는 허용된 retry 결과만 기다린다. |
+| Technical Gate `REVISE`로 새 generation이 시작됨 | 필요 목적을 다시 결정 | 이전 generation의 request·result·PoC를 재사용하지 않고 새 generation에서 최대 한 번 요청한다. |
+
+두 목적이 모두 필요해 보이면 `VERDICT_EVIDENCE` 하나를 선택한다. 한 generation에서 `POC_CONFIRMATION`과 `VERDICT_EVIDENCE`를 연속으로 요청하지 않는다. R6가 만드는 불변 `DynamicReproductionRequest`에는 재현할 exact 가설, current generation, 목적, 재현 목표, 필요한 환경 조건, `sandbox_profile_ref`, 관련 코드·정적·Pro·Con 근거 reference만 넣는다. `EnvironmentRequirements`, `ReproductionPlan`, recipe, command, payload와 PoC는 R7 책임이므로 R6 request에 미리 확정하지 않는다.
+
+### R6 결과 소비 순서와 차단 조건
+
+1. R6는 종료된 `DynamicReproductionState.dynamic_result_ref`, `WorkExecutionState.output_refs`, `TransitionCommit.output_refs`가 같은 exact `DynamicReproductionResult.record_id`를 가리키는지 확인한다.
+2. 결과의 hypothesis·workspace·commit·generation·request·purpose가 현재 Verification과 exact match인지 확인한다. 하나라도 다르거나 이전 attempt의 늦은 결과이면 `STALE_RESULT`로 격리하고 final verdict를 만들지 않는다.
+3. `SUCCEEDED + SUPPORTED`는 실제 `hypothesis_evidence_refs`와 same-attempt validated `poc_ref`가 모두 있을 때만 final TRUE 후보가 된다.
+4. 정상 실행의 `DISPROVED`는 named falsification과 실제 `disproof_evidence_refs`가 연결된 경우에만 final FALSE 근거가 된다.
+5. 정상 실행 또는 신뢰 가능한 부분 완료의 `INCONCLUSIVE`는 확인한 근거와 남은 조건을 함께 기록할 수 있을 때 final HOLD 후보가 된다.
+6. 정책 차단·환경 구성 실패·Agent 또는 PoC 생성·실행 실패·timeout은 verdict가 아니다. 외부 조치가 필요하면 `BLOCKED`, 복구 불가능하거나 retry 한도 소진이면 `FAILED`로 끝내고 final `VerificationResult`와 Gate 요청을 만들지 않는다.
+7. 위 검사를 통과한 동적 결과만 정적·Pro·Con 근거와 합성하고 trusted runtime의 `SAVE_RESULT(result_kind=verification_result)` 검사에 제출한다.
+
+### R6 동적 재현 검증 시나리오
+
+| 시나리오 | 기대 결과 |
+|---|---|
+| initial TRUE, 별도 실행 근거 불필요 | `POC_CONFIRMATION` work 하나를 만들고 validated PoC가 확인된 뒤 final TRUE |
+| 실행 관측이 판정에 필요 | `VERDICT_EVIDENCE` work 하나를 만들고 `SUPPORTED`이면 같은 PoC로 final TRUE |
+| 정상 실행에서 named falsification이 실제 근거로 `DISPROVED` | final FALSE, `poc_ref=null` |
+| 정상 실행 또는 신뢰 가능한 부분 완료가 `INCONCLUSIVE` | 실제 근거와 `unresolved_conditions`가 있으면 final HOLD |
+| 정책 차단·setup 실패·timeout·PoC 생성 또는 실행 실패 | final verdict 없이 `BLOCKED | FAILED`, Gate 금지 |
+| current request와 다른 hypothesis·workspace·commit·generation·purpose·attempt 결과 | `STALE_RESULT`로 격리, Verification 소비 금지 |
+| 같은 generation에서 두 번째 동적 목적 요청 | 중복 work 등록 거절 |
+| Technical `REVISE` 뒤 이전 generation 결과 또는 PoC 재사용 | stale로 거절하고 새 generation에서 새 동적 work 요구 |
+
