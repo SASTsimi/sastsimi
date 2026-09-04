@@ -72,7 +72,6 @@ TRUE
 + Technical ACCEPT
 + Rule Scope Impact review_status PASS
 + rule_compliance PASS
-+ testing_restriction_compliance PASS
 + scope_compliance PASS
 + testing_restriction_compliance PASS
 + security_impact SUFFICIENT

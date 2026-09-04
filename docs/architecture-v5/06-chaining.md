@@ -208,7 +208,7 @@ Verification은 proposal을 만들 수 있지만 `hypothesis_id`를 직접 발�
 
 ## 사람에게 보이는 결과
 
-사람은 result 없는 HOLD 조건, Technical-accepted이면서 testing-restriction PASS인 TRUE 능력, 두 Primitive를 연결한 근거, 생성된 child hypothesis와 검증 여부를 구분해서 본다. match candidate와 미검증 child는 Finding, PoC 또는 실제 impact 주장에 섞이지 않는다.
+사람은 result 없는 HOLD 조건, Technical-accepted이면서 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`를 가진 TRUE 능력, 두 Primitive를 연결한 근거, 생성된 child hypothesis와 검증 여부를 구분해서 본다. match candidate와 미검증 child는 Finding, PoC 또는 실제 impact 주장에 섞이지 않는다.
 
 사슬에서 나온 Finding은 재료가 된 Finding 밑에 중첩해 저장하지 않는다. 한 부모가 여러 자식의 재료가 되고 부모 자신도 독립 Finding이라 중첩이 성립하지 않으며, HOLD 부모는 Finding이 없어 자리가 빈다. Finding은 평평하게 둔다.
 

@@ -57,4 +57,4 @@ Primitive 전용 `state_version`과 전용 commit-time CAS 필드는 제거합�
 
 - 정본과 Wiki의 Mermaid block은 같은 수와 같은 내용이어야 합니다.
 - schema block에는 새 필수 필드가 모두 있고 제거 필드가 없어야 합니다.
-- final HOLD, Technical-accepted + testing-restriction-PASS TRUE, testing restriction FAIL/UNCERTAIN, report-only eligibility 실패, stale revision, ancestor 재사용 제외와 전역 예산 중단 시나리오를 문서 검사로 확인합니다.
+- final HOLD, Technical-accepted + current `PrimitiveAdmissionDecision=ALLOW` TRUE, testing restriction FAIL/UNCERTAIN, report-only eligibility 실패, stale revision, ancestor 재사용 제외와 전역 예산 중단 시나리오를 문서 검사로 확인합니다.

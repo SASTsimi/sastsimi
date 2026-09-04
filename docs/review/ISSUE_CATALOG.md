@@ -311,7 +311,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] 상태 변경은 `state_version` compare-and-set을 사용하고 stale·취소·다른 workspace/commit 결과를 거절함
 - [ ] 중복·ancestor 재사용·repair/Gate revision과 R8 전역 time/cost/work budget의 enforcement owner가 비-LLM Runtime Validator로, Sandbox 세부 정책의 enforcement owner가 Sandbox Controller로 명시됨. token은 관측값이며 초과·누락만으로 action을 차단하지 않음
 - [ ] Technical `REVISE`가 Orchestration을 경유해 재배정되지 않고 같은 ACTIVE VerificationAssignment owner의 새 VERIFICATION work로 돌아감
-- [ ] HOLD의 `inputs + result=null`과 Technical-accepted + testing-restriction-PASS TRUE의 `inputs + result` Primitive admission·supersede 규칙이 있음
+- [ ] HOLD의 `inputs + result=null`과 Technical-accepted + 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW` TRUE의 `inputs + result` Primitive admission·supersede 규칙이 있음
 - [ ] persistence/recovery/atomicity/idempotency 계약이 합의되고 `TERMINAL`·`DRAFTED` 상태가 정확한 결과 `record_id`를 가리킴
 - [ ] 결과 record 저장과 종료 상태 변경 중 하나만 성공했을 때의 crash-resume 복구와 오래되거나 취소된 결과의 연결 거절 규칙이 있음
 - [ ] `TransitionCommit`이 `COMMITTED`된 결과만 downstream과 최종 결과에서 사용함
@@ -588,7 +588,7 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 ### 완료 조건
 
 - [ ] corpus가 TRUE/FALSE/HOLD, gap, conflicting evidence, Verification-origin child, Chaining-origin child, policy absence, sandbox failure를 포함함
-- [ ] schema validity/repair, retrieval gap/`WORKSPACE_MISMATCH`, debate 전후 품질, HOLD 즉시 chaining, Technical-accepted + testing-restriction-PASS TRUE admission과 전역 예산에 따른 chaining 중단을 측정함
+- [ ] schema validity/repair, retrieval gap/`WORKSPACE_MISMATCH`, debate 전후 품질, HOLD 즉시 chaining, Technical-accepted + current `PrimitiveAdmissionDecision=ALLOW` TRUE admission과 전역 예산에 따른 chaining 중단을 측정함
 - [ ] conditional debate, 독립 session, 두 Gate와 provider/model 선택에 acceptance threshold가 있음
 - [ ] adversarial prompt-injection, contradictory Gate, redaction failure case가 있음
 - [ ] role별 time/cost/call/retry/chain/sandbox budget과 `BUDGET_EXCEEDED` 의미가 있고 token은 비차단 관측값으로 구분됨

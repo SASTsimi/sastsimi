@@ -121,15 +121,12 @@ Verification revision의 Technical `ACCEPT`는 Gate 2 입력이 아니다.
 없다. 출처와 연결되지 않은 parser 항목은 정책 사실로 사용하지 않는다.
 
 freshness는 정책 최신성을 마지막으로 검증한 `freshness_checked_at`, source가 제공한 version/effective date·last-modified 정보, 수집 시각과
-R8이 승인한 적용 기준을 함께 기록한 판정이다. `CURRENT`는 source가 명시한 현재 유효 기간·현재
-version 같은 R8 승인 source-native 기준으로 평가 시점의 유효성을 입증하거나, age 검사가 필요한
-source라면 R8이 정한 프로그램별 freshness threshold를 만족할 때만 부여한다. threshold가 필요한데
+R8이 승인한 적용 기준을 함께 기록한 판정이다. source-native current-version·유효 기간 확인 결과는 freshness의 provenance와 evidence로 보존하지만 `freshness_valid_until`을 대신하지 않는다. `CURRENT`는 이 근거에 R8이 정한 프로그램별 freshness 기준을 적용해 미래의 `freshness_valid_until`을 확정한 경우에만 부여한다. threshold가 필요한데
 아직 정해지지 않았거나 적용할 승인 기준이 없으면 `UNVERIFIED`이며, 단지 최근 수집했다는 이유로
 `CURRENT`를 만들지 않는다. threshold와 재수집 주기 자체는 R8이 확정한다. `STALE | UNVERIFIED` 정책으로
 `ALLOW`하지 않는다.
 
-freshness 판정은 `freshness_checked_at`, 승인된 criterion reference, 시간 기반 criterion에서 해당 판정을 유효하게 사용할 수 있는
-`freshness_valid_until` 또는 source-native current-version 검사 결과/reference를 함께 가진 assertion이어야
+freshness 판정은 `freshness_checked_at`, 승인된 criterion reference, 하나 이상의 source-native 또는 수집 시각 evidence reference와 해당 판정을 유효하게 사용할 수 있는 미래의 `freshness_valid_until`을 함께 가진 assertion이어야
 한다. R5는 모든 정책에 임의의 TTL을 만들지 않는다. criterion을 정할 수 없거나 currentness 확인이
 끝나지 않으면 `UNVERIFIED + DENY`다. runtime은 정책 의미를 판단하지 않고 Gate 2 action 허가·실제 호출
 직전과 Reporter action 허가·실제 호출 직전에 같은 exact policy
