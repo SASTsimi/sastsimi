@@ -2,7 +2,7 @@
 
 - **이 문서는 무엇을 설명하나요?** 보류된 가설의 부족 조건과 검증된 공격 능력을 같은 형식으로 저장하고 새 연계 가설을 만드는 방법을 설명합니다.
 - **누가 읽어야 하나요?** LLM 탐색·체이닝, 검증, Gate와 데이터·평가 담당자가 읽습니다.
-- **읽은 뒤 무엇을 확인하거나 결정하나요?** 어떤 결과가 체이닝 재료가 되는지, 어떤 근거로 결합하며 순환과 비용을 어떻게 막는지 확인합니다.
+- **읽은 뒤 무엇을 확인하거나 결정하나요?** 어떤 결과가 체이닝 재료가 되는지, 어떤 근거로 결합하며 조상 재사용과 비용을 어떻게 막는지 확인합니다.
 
 `Primitive`는 공격 경로의 입력 조건과 결과 능력을 담는 재료입니다. `Chaining`은 확인된 결과가 다른 Primitive의 입력을 채울 수 있을 때 새 가설을 제안하는 작업입니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
 
@@ -17,7 +17,7 @@ result가 있는 TRUE Primitive + result가 없는 HOLD Primitive
 result가 있는 TRUE Primitive + result가 있는 다른 TRUE Primitive
 ```
 
-Chaining Agent는 Primitive 조회·근거 기반 호환성 검사·중복 및 순환 검사·새 가설 제안만 담당한다. 일반 취약점 탐색, 우회·대체 경로 탐색, 영향 확대 조사, 추가 정적·동적 검증과 Technical Gate `REVISE` 처리는 Verification Agent의 책임이다. Primitive DB와 Chaining Agent는 Finding을 만들거나 부모 가설의 판정을 바꾸지 않는다.
+Chaining Agent는 Primitive 조회·근거 기반 호환성 검사·중복 및 조상 재사용 검사·새 가설 제안만 담당한다. 일반 취약점 탐색, 우회·대체 경로 탐색, 영향 확대 조사, 추가 정적·동적 검증과 Technical Gate `REVISE` 처리는 Verification Agent의 책임이다. Primitive DB와 Chaining Agent는 Finding을 만들거나 부모 가설의 판정을 바꾸지 않는다.
 
 ## Primitive 모델
 
@@ -80,7 +80,7 @@ Chaining Agent는 result가 있는 Primitive를 upstream으로 사용한다. dow
 - upstream 능력이 downstream보다 먼저 성립함
 - 양쪽 restrictions를 합쳐도 공격 경로가 성립함
 - 비교 결론을 뒷받침하는 실제 코드·검증 근거가 있음
-- 동일 fingerprint 중복이나 ancestor Primitive 재사용 순환이 아님
+- 동일 fingerprint 중복이 아니고, 같은 계보의 조상 Primitive 재사용도 아님
 
 전역 권한 서열표나 문자열 이름의 단순 일치는 사용하지 않는다. 축이 맞지 않거나 근거가 없으면 candidate를 만들지 않고 `no_match_reasons`에 이유를 남긴다. 별도 PASS/UNCERTAIN 필드는 두지 않는다.
 
@@ -125,11 +125,11 @@ LineageExclusion:
   reason_code: ANCESTOR_REUSE
 ```
 
-`considered_primitive_refs`는 Chaining work를 시작할 때 Runtime이 고정한 순환 검사 전 전체 Primitive 입력이다. `input_primitive_refs`는 실제 match candidate에 사용된 upstream/downstream Primitive의 중복 없는 합집합이다. `excluded_lineage_refs`는 계보 때문에 match에서 제외한 Primitive와 그 제외를 일으킨 같은 work의 Primitive를 기록한다. `source_result_refs`는 실제 match Primitive들이 직접 가리키는 source Verification과 non-null Technical review의 중복 없는 합집합이다. 각 candidate의 `parent_hypothesis_ids`와 `parent_verification_refs`도 해당 upstream/downstream Primitive가 직접 가리키는 source hypothesis와 Verification의 정확한 합집합이어야 한다. 세 Primitive 목록과 source·parent 목록은 중복을 허용하지 않으며 자세한 저장 검사는 [경량 데이터 계약](08-lightweight-data-contracts.md)의 `SAVE_RESULT` 규칙을 따른다.
+`considered_primitive_refs`는 Chaining work를 시작할 때(`REGISTER_WORK`) Runtime이 고정한, 조상 재사용 검사 전 전체 Primitive 입력이다. `input_primitive_refs`는 실제 match candidate에 사용된 upstream/downstream Primitive의 중복 없는 합집합이다. `excluded_lineage_refs`는 계보 때문에 match에서 제외한 Primitive와 그 제외를 일으킨 같은 work의 Primitive를 기록한다. `source_result_refs`는 실제 match Primitive들이 직접 가리키는 source Verification과 non-null Technical review의 중복 없는 합집합이다. 각 candidate의 `parent_hypothesis_ids`와 `parent_verification_refs`도 해당 upstream/downstream Primitive가 직접 가리키는 source hypothesis와 Verification의 정확한 합집합이어야 한다. 세 Primitive 목록과 source·parent 목록은 중복을 허용하지 않으며 자세한 저장 검사는 [경량 데이터 계약](08-lightweight-data-contracts.md)의 `SAVE_RESULT` 규칙을 따른다.
 
 새 가설은 `HypothesisProposal(origin=CHAINING)`으로 만든다. proposal의 `source_primitive_match_id`는 자신을 만든 candidate ID와 같고, `parent_hypothesis_ids`는 그 candidate의 부모 set과 같아야 한다. Chaining Agent는 새 코드 사실을 만들지 않으므로 `observed_facts=[]`만 허용한다. `target_entities`·`target_locations`·`suspected_path`는 비어 있을 수 있지만, 값을 넣으면 부모 Primitive의 exact entity·location 계보에서 얻을 수 있어야 한다. Verification이 시작할 entity나 location을 부모 계보에서 하나도 복원할 수 없으면 proposal 등록과 배정을 거절한다.
 
-proposal의 `restrictions`는 입력 Primitive 양쪽에 있는 Restriction 객체의 중복 없는 합집합이다. 같은 `restriction_id`는 canonical content가 완전히 같을 때 한 번만 유지하고, ID는 같은데 statement나 근거 reference가 다르면 계약 충돌로 거절한다. trusted runtime이 schema·semantic·workspace·commit·exact Primitive·중복·순환·예산을 검사한 뒤 새 `hypothesis_id`로 등록한다. Orchestration Agent는 등록된 가설에 새 Verification Agent를 배정하고 child는 전체 Verification 파이프라인을 처음부터 거친다.
+proposal의 `restrictions`는 입력 Primitive 양쪽에 있는 Restriction 객체의 중복 없는 합집합이다. 같은 `restriction_id`는 canonical content가 완전히 같을 때 한 번만 유지하고, ID는 같은데 statement나 근거 reference가 다르면 계약 충돌로 거절한다. trusted runtime이 schema·semantic·workspace·commit·exact Primitive·중복·조상 재사용·예산을 검사한 뒤 새 `hypothesis_id`로 등록한다. Orchestration Agent는 등록된 가설에 새 Verification Agent를 배정하고 child는 전체 Verification 파이프라인을 처음부터 거친다.
 
 ### 자식 가설의 내용
 
@@ -143,7 +143,7 @@ Chaining input은 exact Primitive와 그 Primitive를 만든 source Verification
 
 승계는 다시 확인하지 않는다는 뜻이 아니다. 물려받은 사실이 결합 상황에서도 참인지는 자식 검증이 전부 다시 본다.
 
-자식 가설은 두 능력이 이어지는 지점을 겨냥한 반증 질문을 최소 하나 포함한다. `assumptions`에 남은 조건은 위 규칙으로 본문에 드러나므로 기존 반증 질문 요건이 이미 그 조건들을 잡지만, 결합 지점은 어느 쪽 부모의 조건도 아니고 자식이 새로 만든 것이라 그 요건이 잡지 못한다.
+자식 가설은 두 능력이 이어지는 지점을 겨냥한 반증 질문을 최소 하나 포함한다. 결합 지점은 어느 쪽 부모의 조건도 아니고 자식이 새로 만든 것이라 `assumptions`로는 드러나지 않으므로 별도로 요구한다. 이 질문이 실제로 결합 지점을 겨냥했는지는 Technical Evidence Gate가 다른 의미적 충분성 검토와 함께 판단하며, Runtime Validator는 반증 질문 목록이 비어 있지 않은지만 구조적으로 확인한다.
 
 ### 금지 권한
 
@@ -172,9 +172,17 @@ Verification
 
 Verification은 proposal을 만들 수 있지만 `hypothesis_id`를 직접 발급하거나 child를 자동 TRUE로 만들 수 없다. 부모와 child의 lifecycle과 verdict는 독립이며 child가 FALSE여도 부모 판정은 바뀌지 않는다.
 
-## 순환과 비용 제어
+## 조상 재사용과 비용 제어
 
-각 parent hypothesis에서 `source_primitive_match_id`를 따라 조상 match와 입력 Primitive를 역방향으로 걷는다. 이 과정에서 만난 ancestor Primitive를 현재 순회의 후보에서 제외한다. 제외한 항목마다 `LineageExclusion`을 만들고, `excluded_by_ref`에는 같은 work에서 검토한 현재 Primitive 중 해당 조상 계보를 가진 정확한 record를 넣는다. 제외된 Primitive와 제외 근거 Primitive는 모두 고정된 `considered_primitive_refs`에 있어야 하고, 제외 근거 Primitive 자신은 제외 목록에 있으면 안 된다. Runtime은 같은 계보 규칙으로 기대 제외 쌍을 다시 계산하여 `excluded_lineage_refs`와 정확히 같은지 확인한다. DB record는 바꾸지 않는다.
+이 규칙은 순환을 막기 위한 것이 아니다. `Primitive`와 `VulnerabilityHypothesis`는 모두 불변·append-only record이고 match는 이미 존재하는(시간상 앞선) record만 참조할 수 있으므로, 계보 그래프는 구성 자체로 DAG다 — 순환은 애초에 만들어질 수 없다.
+
+이 규칙이 실제로 막는 것은 중복이다: 현재 순회의 후보 각각에 대해, 그 후보의 `source_hypothesis_id`가 가리키는 등록 가설의 `source_primitive_match_id`가 non-null이면(=체이닝 산물이면) 그 match의 `upstream_result_ref`와 `downstream_input_ref` 양쪽이 가리키는 두 Primitive를 조상으로 삼는다. 그 조상이 또 체이닝 산물이면 같은 방식으로 재귀적으로 거슬러 올라간다. 이렇게 찾은 모든 조상 Primitive를 현재 순회의 후보에서 제외한다.
+
+이 제외가 안전한 이유는 다음과 같다. 조상 쪽(예: B, B→C, B→C→D)은 새 Primitive가 등장하기 전부터 이미 서로 연결이 확정된 상태로 candidate pool에 존재한다 — 그 계보 자체는 새 Primitive와 무관하게 독립적으로 이미 성립해 있었다는 뜻이다. 그러므로 새 Primitive가 가장 깊은 후손(B→C→D→E)과 맺는 match를 검증할 때 새로 확인해야 하는 것은 사실상 그 결합 지점(새 Primitive가 조상 쪽 빈 자리를 실제로 채우는지) 하나뿐이다. 이 전체 검증이 실패한다면 그 이유는 거의 항상 이 결합 지점 자체가 성립하지 않기 때문이며, 그 경우 얕은 조상과의 match도 같은 이유로 성립하지 않았을 것이므로 따로 제안해도 잃을 정보가 없다. 결합 지점 판정과 무관한 이유로 실패하는 경우는 검증 과정 일반에 있는 오판 가능성일 뿐이고, 이는 조상 제외 여부와 상관없이 모든 체이닝 제안에 동일하게 존재하는 리스크다. 반대로 결합 지점이 실제로 성립하면, 가장 깊은 조합이 얕은 조합들의 결론을 그대로 포함하므로 얕은 조합을 따로 제안해도 새 정보가 없다.
+
+계보가 겹치지 않는 다른 Primitive의 정당한 재사용(같은 조상이 전혀 다른 능력으로 다른 곳에 쓰이는 것)은 이 규칙과 무관하며 막지 않는다.
+
+제외한 항목마다 `LineageExclusion`을 만들고, `excluded_by_ref`에는 같은 work에서 검토한 현재 Primitive 중 해당 조상 계보를 가진 정확한 record를 넣는다. 제외된 Primitive와 제외 근거 Primitive는 모두 고정된 `considered_primitive_refs`에 있어야 하고, 제외 근거 Primitive 자신은 제외 목록에 있으면 안 된다. Runtime은 같은 계보 규칙(양방향 재귀 탐색)으로 기대 제외 쌍을 다시 계산하여 `excluded_lineage_refs`와 정확히 같은지 확인한다. DB record는 바꾸지 않는다.
 
 체이닝 전용 임의 depth, 전체·parent별 가설 수, Chaining 호출 수, Primitive 조합 수와 token 상한은 두지 않는다. 대신 R8의 전체 시간·비용·work 예산이 모든 체이닝에도 적용된다. token 사용량은 관측하되 초과만으로 중단하지 않는다. 다른 예산 소진도 `FALSE`가 아니며 work 상태와 `AnalysisRunResult.stop_reasons`에 기록한다. 같은 `normalized_fingerprint`도 한 분석에서 중복 저장하지 않는다.
 

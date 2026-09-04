@@ -107,7 +107,7 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 - Verification-origin material claim 수와 재검증 결과
 - ACTIVE VerificationAssignment, result 없는 HOLD Primitive, result 있는 Technical-accepted TRUE Primitive와 upstream result→downstream input match 수
 - Gate 전·Technical 비정상 TRUE admission 차단 수, entity·privilege 근거 부족과 no-match reason
-- `source_primitive_match_id` 계보, ancestor Primitive 순환 제외·duplicate fingerprint와 R8 전체 예산 중단
+- `source_primitive_match_id` 계보, ancestor Primitive 재사용 제외·duplicate fingerprint와 R8 전체 예산 중단
 
 ### Gates/reporting
 
