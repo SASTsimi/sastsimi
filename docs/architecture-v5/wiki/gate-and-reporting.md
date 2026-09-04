@@ -27,13 +27,14 @@ Technical `ACCEPT`인 `TRUE`만 정책 수집 결과와 함께 검토합니다. 
 Rule Scope 결과에는 자신이 읽은 Verification, Technical review, CWELabel, 정책 수집 결과와 존재하는 정책 record의 정확한 `record_id`를 남깁니다. `PASS | FAIL | SUFFICIENT | INSUFFICIENT` 판단은 실제 정책 항목과 코드·실행 근거에 연결하고, 부족한 정보는 어느 판단을 막는지 구조화해 남깁니다. 입력 중 하나라도 수정되거나 정책 최신성이 만료되면 이전 Rule Scope 결과를 재사용하지 않습니다.
 
 - rule_compliance: `PASS | FAIL | UNCERTAIN`
+- testing_restriction_compliance: `PASS | FAIL | UNCERTAIN`
 - scope_compliance: `PASS | FAIL | UNCERTAIN`
 - security_impact: `SUFFICIENT | INSUFFICIENT | UNCERTAIN`
 - report permission: `ALLOW | DENY`
 
 공식 정책 부재가 확인된 `ABSENT_CONFIRMED`이거나 정책의 `freshness_status`가 `STALE | UNVERIFIED`이면 rule/scope/review는 `UNCERTAIN`이고 permission은 `DENY`입니다. 오래된 정책 reference는 감사용으로 남길 수 있지만 `PASS | ALLOW` 근거로 쓰지 않습니다. 수집 실패 `COLLECTION_FAILED`는 review를 만들지 않으며, 저장소 문서나 모델 기억으로 공식 정책을 추정하지 않습니다.
 
-validated PoC를 가진 TRUE의 exact revision을 Technical Gate가 `ACCEPT`하면 제공 능력별로 `result`가 있는 Primitive를 저장해 Chaining에 사용할 수 있다. Rule Scope 검토는 동시에 별도 경로로 진행하며 `review/rule/scope PASS`, `impact SUFFICIENT`, `permission ALLOW`를 모두 만족해야 Reporter를 호출할 수 있다. Rule Scope가 `FAIL | UNCERTAIN | DENY`이면 보고서만 막고 이미 admission된 Primitive와 Chaining 자격은 유지한다. 새 Verification revision에는 과거 Gate·동적 결과·PoC를 재사용하지 않는다. HOLD는 Gate 없이 `inputs`와 `result=null`인 Primitive로 Chaining에 들어간다.
+validated PoC를 가진 TRUE의 exact revision을 Technical Gate가 `ACCEPT`하면 정책 수집과 Rule Scope 검토를 진행한다. Rule Scope는 금지 테스트 위반 여부를 `testing_restriction_compliance`로 다른 판단과 분리한다. 이 값이 `FAIL`이면 result Primitive를 만들지 않고, `PASS | UNCERTAIN`이면 admission `ALLOW` 뒤 제공 능력별 Primitive를 저장한다. 정책 수집 실패는 `NOT_EVALUATED + ALLOW`로 구분하되 Reporter는 막는다. 나머지 `review/rule/scope PASS`, `impact SUFFICIENT`, `permission ALLOW`를 모두 만족해야 Reporter를 호출할 수 있다. 다른 Rule Scope 항목의 `FAIL | UNCERTAIN | DENY`는 보고서만 막고 current `ALLOW` Primitive와 Chaining 자격은 유지한다. 새 Verification revision에는 과거 Gate·동적 결과·PoC·admission decision을 재사용하지 않는다. HOLD는 Gate 없이 `inputs`와 `result=null`인 Primitive로 Chaining에 들어간다.
 
 이 판단은 Rule Scope Gate가 내립니다. 프로그램 검사기는 정책 문장의 뜻을 다시 판단하지 않고 결과 형식과 공식 출처 연결을 확인합니다. 정상적인 `UNCERTAIN + DENY`는 그대로 저장하고 Reporter만 부르지 않습니다.
 
@@ -44,6 +45,7 @@ TRUE
 + Technical ACCEPT
 + Rule Scope Impact review_status PASS
 + rule_compliance PASS
++ testing_restriction_compliance PASS
 + scope_compliance PASS
 + security_impact SUFFICIENT
 + permission ALLOW
@@ -62,9 +64,9 @@ limitation을 빠짐없이 보존하고 실행·환경 실패를 취약점 부�
 secret·불필요한 PII·private/raw reasoning을 제거한 `REDACTION=PASS`가 필요합니다.
 
 프로그램 검사기는 Gate 결론을 대신 내리지 않습니다. Verification이 Gate 호출을 제안하더라도 정확한
-입력·LLM call spec, Technical-accepted result Primitive admission과 Reporter 조건을 검사합니다. Rule
-Scope는 Technical `ACCEPT` 이후의 독립된 보고 경로이며 이미 확정된 Primitive·Chaining 자격을 다시
-판정하거나 취소하지 않습니다. Finding이 없으면 Reporter를 호출하지 않고 `report_draft_refs=[]`와
+입력·LLM call spec, Technical-accepted TRUE의 current admission decision과 Reporter 조건을 검사합니다.
+금지 테스트 위반이 확정되면 result Primitive admission을 거절하고, 그 밖의 Rule Scope 판단은 보고
+경로에만 적용합니다. Finding이 없으면 Reporter를 호출하지 않고 `report_draft_refs=[]`와
 오류·상태 이유를 남깁니다. `ReportDraft`가 마지막 Agent 산출물이며 `AnalysisRunResult` 확정 뒤 자동화가 끝납니다.
 Reporter work 종료 뒤 신뢰 runtime은 `AnalysisRunResult`와 `AnalysisRunState`를 새 Agent 판단 없이
 원자적으로 확정합니다. 이후 사람의 검토·수정·제출·공개는 Agent 계약 밖이며 Reporter에는 외부 제출·공개나

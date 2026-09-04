@@ -82,6 +82,8 @@ Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아
 
 공식 정책의 뜻과 `UNCERTAIN + DENY` 판단은 Rule Scope Gate가 담당합니다. 프로그램 검사기는 그 판단을 대신하지 않고 필수 항목과 정확한 출처 연결만 확인한 뒤 Reporter 호출을 막습니다.
 
+금지된 테스트 방법도 Rule Scope Gate가 독립된 `testing_restriction_compliance`로 판단합니다. Rule Scope Gate가 테스트 제한의 의미를 판단하고, Runtime은 그 구조화된 판정으로 `PrimitiveAdmissionDecision`을 확정합니다. Runtime은 정책 문장을 다시 해석하지 않으며, 전용 판정이 `FAIL`인 경우에만 TRUE Primitive의 체이닝 사용을 거절합니다. 다른 Rule·Scope·impact 실패는 보고 경로에만 적용합니다.
+
 ## 오류는 FALSE가 아닙니다
 
 로그인 만료, rate limit, timeout, 잘못된 응답 형식, provider 장애, Sandbox 실패와 예산 소진은 실행 오류입니다. 이 오류만으로 취약점 `FALSE`를 만들 수 없습니다.

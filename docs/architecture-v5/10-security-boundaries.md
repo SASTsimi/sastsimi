@@ -146,7 +146,9 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | 잘못된 path 연결 | location retrieval와 Technical Gate linkage 검토 |
 | Verification/Chaining 후보의 오승격 | origin을 구분한 새 hypothesis로 전체 재검증 |
 | Gate 전 TRUE의 체이닝 오염 | Technical `ACCEPT` 전 result Primitive admission 금지 |
-| 정책 판단과 기술 재료 자격 혼합 | Rule Scope는 Reporter만 차단하고 Primitive admission은 exact Technical review에만 연결 |
+| 정책 판단과 기술 재료 자격 혼합 | Rule Scope의 전용 테스트 제한 판정만 `PrimitiveAdmissionDecision`에 전달하고 다른 정책·scope·impact 판정은 Reporter에만 적용 |
+| 다른 규칙 실패를 금지 테스트 위반으로 오인 | 독립 `testing_restriction_compliance`와 같은 area의 근거·누락 구조를 검사하고 `rule_compliance` 또는 link 존재만으로 추정 금지 |
+| admission 변경 뒤 진행 중이거나 이미 파생된 체이닝이 오염된 재료 사용 | `source_admission_refs`로 직접·부모 체인의 current exact decision을 재검사하고, 변경·DENY이면 진행 결과 차단과 파생 결과 current 사용 중단 |
 | Chaining Agent의 일반 research 확장 | ChainingResult schema와 result-owner validation으로 matching 외 출력 거절 |
 | chain 폭증 | ancestor Primitive 재사용 제외, fingerprint 중복 차단과 R8 전체 시간·비용·work 예산; token은 사용량만 관측 |
 | 등록만 된 유형별 플레이북의 무단 활성화 | 사람이 승인한 exact `PlaybookPolicy`와 proposal 후보 수를 검사하고 불명확·미허용 유형은 COMMON으로 fallback |
@@ -276,9 +278,9 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N1 | final HOLD | required candidates를 inputs로 가진 result 없는 Primitive를 두 Gate 없이 저장하고 Chaining 조회 허용 |
 | N2 | final FALSE | terminal internal result; Primitive와 Chaining work 생성 금지 |
 | N3 | final TRUE, Gate 미실행 | result Primitive admission과 Chaining 금지 |
-| N4 | TRUE + Technical `ACCEPT`, Rule Scope 미실행 | exact result Primitive admission과 Chaining 허용; Reporter는 아직 금지 |
-| N5 | TRUE + Technical `ACCEPT` + Rule Scope `FAIL | UNCERTAIN | DENY` | result Primitive와 Chaining 자격 유지; Finding·Reporter 차단 |
-| N6 | TRUE + Technical `ACCEPT` + Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW` | result Primitive와 Chaining 자격 유지, Reporter 조건 평가 허용 |
+| N4 | TRUE + Technical `ACCEPT`, 정책 수집 또는 Rule Scope 검토가 아직 종료되지 않음 | result Primitive와 Chaining을 아직 허용하지 않고 admission 입력 완료를 기다림; Reporter도 금지 |
+| N5 | TRUE + Technical `ACCEPT` + Rule Scope의 다른 판단 `FAIL | UNCERTAIN | DENY`, testing restriction은 `PASS | UNCERTAIN` | `PrimitiveAdmissionDecision=ALLOW`; result Primitive와 Chaining 자격 유지, Finding·Reporter는 별도 조건에 따라 차단 |
+| N6 | TRUE + Technical `ACCEPT` + Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`, testing restriction `PASS` | `PrimitiveAdmissionDecision=ALLOW`; result Primitive와 Chaining 자격 유지, Reporter 조건 평가 허용 |
 | N7 | result가 있는 TRUE Primitive + result가 없는 HOLD Primitive | upstream result가 HOLD input 하나를 근거 있게 충족하면 `origin=CHAINING` proposal을 새로 등록·검증 |
 | N8 | result가 있는 서로 다른 TRUE Primitive 둘 | 앞 result가 뒤 Primitive의 `inputs` 한 항목을 근거 있게 충족할 때만 TRUE_TRUE proposal 허용 |
 | N9 | TRUE+TRUE 입력 중 한 부모가 Gate 전 또는 Technical 비정상 결과 | result Primitive가 될 수 없으므로 match 저장과 proposal 등록 거절 |
@@ -318,6 +320,14 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N34 | Verification 결과가 hypothesis 질문만 처리하고 application 질문을 누락 | `SAVE_RESULT` 거절; 두 질문 집합의 합집합을 정확히 한 번씩 검증 |
 | N35 | 정책 수집 실패를 정책 부재로 바꿔 `UNCERTAIN + DENY` review를 저장 | `PolicyCollectionResult.status=COLLECTION_FAILED`와 error를 보존하고 Rule Scope Gate work·호출·review 저장 거절 |
 | N36 | Rule·Scope·Impact 확정 판단에 사용한 정책 항목 또는 실제 근거 연결이 없음 | `SAVE_RESULT` 거절; 같은 area의 `RuleScopeEvidenceLink`를 exact 정책·근거 reference로 다시 생성 |
+| N37 | 다른 규칙 때문에 `rule_compliance=FAIL`이지만 `testing_restriction_compliance=PASS` | 금지 테스트 위반으로 바꾸지 않고 `PrimitiveAdmissionDecision=ALLOW`; 보고 가능성만 별도로 차단 |
+| N38 | `testing_restriction_compliance=FAIL`인 Rule Scope review | exact `TESTING_RESTRICTION` link를 확인하고 `PrimitiveAdmissionDecision=DENY`; result Primitive와 Chaining 금지 |
+| N39 | `TESTING_RESTRICTION` link만 있고 전용 판정이 없거나 판정과 link가 모순됨 | Rule Scope review와 admission decision 저장 거절; `rule_compliance`나 link 존재로 판정 추정 금지 |
+| N40 | 정책 수집이 `COLLECTION_FAILED`라 Rule Scope review가 없음 | exact collection result와 error를 보존한 `NOT_EVALUATED + ALLOW + POLICY_COLLECTION_FAILED`; 확정 위반으로 취급하지 않되 Reporter 금지 |
+| N41 | Chaining work가 실제 match에 사용한 admission decision 뒤 current decision이 `DENY`로 변경됨 | 이전 Primitive를 current index에서 제거하고 진행 중 결과도 `STALE_RESULT`; 새 child 등록 금지. 사용하지 않은 후보 변경만으로는 결과를 거절하지 않음 |
+| N42 | result Primitive에 current `admission_decision_ref`가 없거나 다른 Verification의 decision을 참조 | `SAVE_RESULT` 거절; same analysis·workspace·commit·hypothesis·Verification의 current ALLOW decision 요구 |
+| N43 | 이미 COMMITTED된 Chaining 자식·손자 뒤 부모 admission이 `DENY`로 변경됨 | `source_admission_refs`와 `source_primitive_match_id` 계보를 따라 파생 Primitive를 current index에서 제거하고 새 Verification·Gate·Primitive·Reporter 사용 차단; 과거 verdict와 결과는 감사 이력으로만 보존 |
+| N44 | `ChainingResult.source_admission_refs`가 실제 match의 direct·ancestor ALLOW decision 합집합과 다름 | `SAVE_RESULT` 거절; 누락·추가·중복·다른 계보 reference를 바로잡기 전 child 등록 금지 |
 
 ## 남는 위험
 
