@@ -102,14 +102,14 @@
 
 ### 검토할 입력·출력
 
-- 입력: 최초 가설용 `StaticFactBundle` refs, `RecordMeta`, 전역 budget, current `Primitive` refs
-- 출력: schema-valid `HypothesisProposal[]`, `INVALID_OUTPUT`, `PrimitiveMatchCandidate`, `ChainingResult`, chained proposal과 no-match 결과
+- 입력: 최초 가설용 `StaticFactBundle` refs, `RecordMeta`, 전역 budget, current `Primitive`와 direct·ancestor ALLOW admission refs
+- 출력: schema-valid `HypothesisProposal[]`, `INVALID_OUTPUT`, `PrimitiveMatchCandidate`, `source_admission_refs`를 포함한 `ChainingResult`, chained proposal과 no-match 결과
 
 ### 확인할 권한 경계
 
 - proposal은 `HYPOTHESIS_ONLY / NON_FINAL`이며 verdict·Finding·CWE·Gate·report를 확정하지 않는다.
 - 등록된 가설은 점수로 제외하거나 순서를 매기지 않고 모두 검증한다.
-- HOLD는 `inputs`와 `result=null`인 Primitive로 즉시 matching 가능하다. TRUE는 validated PoC, Technical `ACCEPT`, Rule Scope `testing_restriction=PASS`가 있는 exact revision만 `result` Primitive가 된다. testing restriction 외 report eligibility는 현재 Reporter와 분리하며 FALSE는 chaining 근거로 승격하지 않는다.
+- HOLD는 `inputs`와 `result=null`인 Primitive로 즉시 matching 가능하다. TRUE는 validated PoC와 Technical `ACCEPT`가 있고 금지 테스트 위반이 확정되지 않아 current admission이 `ALLOW`인 exact revision만 `result` Primitive가 된다. 다른 Rule Scope 판단은 보고 가능성만 바꾸며 FALSE와 admission `DENY`는 chaining 근거로 승격하지 않는다.
 - 문자열 일치나 전역 권한 서열로 chain을 확정하지 않는다. 같은 `workspace_id`·`commit_id`에서 upstream result가 downstream의 `matched_input_id`를 실제로 충족하는지 저장소의 entity·역할/권한 상수·검사 위치·restriction 근거로 확인한다.
 - Chaining Agent는 upstream result→downstream input matching만 하며 일반 bypass·alternate path·impact·Technical revision을 조사하지 않는다.
 - chained proposal은 `origin=CHAINING`이며 새 가설로 전체 검증한다.
@@ -629,18 +629,16 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 | HOLD | Gate 없이 `inputs`와 `result=null`인 Primitive 저장과 Chaining 조회 |
 | FALSE | terminal internal result; Primitive/Chaining 금지 |
 | Gate 전 TRUE | result Primitive admission과 Chaining 금지 |
-| Technical ACCEPT만 받은 TRUE | Rule Scope `testing_restriction` 판정 전 result Primitive admission·Chaining·Reporter 금지 |
-| testing restriction `FAIL` | result Primitive admission·Chaining·Reporter 금지 |
-| testing restriction `UNCERTAIN` | 정책·근거 보완과 재판정까지 admission 보류, Chaining·Reporter 금지 |
-| testing restriction `PASS` + 일반 report eligibility 실패 | result Primitive admission·Chaining 허용, 현재 Reporter 금지 |
+| Technical ACCEPT만 받은 TRUE | 정책 수집·Rule Scope의 금지 테스트 판정과 `PrimitiveAdmissionDecision`이 끝날 때까지 result Primitive·Chaining·Reporter 금지 |
 | Verification 새 claim | `origin=VERIFICATION` child hypothesis로 8단계부터 재검증; parent 불변 |
-| TRUE result→HOLD input | upstream TRUE가 exact Technical-accepted + testing-restriction-PASS이고 그 result가 HOLD Primitive의 특정 input을 충족할 때만 `origin=CHAINING` child 생성 |
+| TRUE result→HOLD input | upstream TRUE가 exact Technical-accepted·admission-allowed이고 그 result가 HOLD Primitive의 특정 input을 충족할 때만 `origin=CHAINING` child 생성 |
 | TRUE result→TRUE input | upstream result와 downstream TRUE Primitive의 특정 input이 근거로 연결될 때만 새 chain hypothesis 생성 |
-| stale Gate revision | 새 Verification revision에 과거 Gate/Primitive 자격 재사용 금지 |
+| stale Gate/admission revision | 새 Verification revision에 과거 Gate·Primitive admission 자격 재사용 금지 |
 | Primitive scope 불일치 | match 거절/후보 유지 |
 | chain budget/reuse | R8 전역 예산 중단 또는 ancestor 재사용 제외; FALSE 금지 |
 | Technical REVISE | 같은 ACTIVE VerificationAssignment owner의 새 VERIFICATION work로 직접 반환; 새 evidence/revision 전 result Primitive·Rule Scope·Reporter 차단 |
 | Chaining 시작 뒤 parent/index 새 revision 생성 | 진행 중인 work는 시작 시 고정한 exact reference로 계속 처리; 새 revision은 새 Chaining work에서 사용하고, 고정하지 않은 reference가 기존 결과에 섞인 경우만 `STALE_RESULT` 처리 |
+| 실제 match가 사용한 admission decision 변경 | direct·ancestor `source_admission_refs` 중 하나가 오래됐거나 `DENY`이면 진행 결과·새 child 사용 차단; 이미 저장된 파생 결과는 감사 이력으로만 보존 |
 | Chaining의 일반 research 출력 | invalid output; bypass·impact·dynamic·Gate 보완은 Verification 책임 |
 | 모순된 ALLOW | semantic invalid; Reporter 차단 |
 | provider auth/rate-limit | explicit attempt/fallback; silent failover/FALSE 금지 |

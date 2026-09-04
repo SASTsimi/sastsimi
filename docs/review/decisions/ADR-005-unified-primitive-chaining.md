@@ -21,7 +21,7 @@
 `Primitive`는 필요한 `inputs`, nullable `result`, 공통 `restrictions`, source Verification과 근거를 함께 저장합니다.
 
 - final HOLD: 부족 조건을 `inputs`에 넣고 `result=null`
-- final TRUE: validated PoC와 exact Technical `ACCEPT`, 같은 chain의 Rule Scope `testing_restriction=PASS` 뒤 제공 능력 하나마다 `result`가 있는 Primitive 하나 생성
+- final TRUE: validated PoC와 exact Technical `ACCEPT` 뒤 R4의 current `PrimitiveAdmissionDecision=ALLOW`가 있으면 제공 능력 하나마다 `result`가 있는 Primitive 하나 생성
 - TRUE Primitive의 각 record는 같은 TRUE의 `inputs`와 `restrictions`를 함께 보존
 - `REQUIRED | PROVIDED`, `status`, `match_kind`는 저장하지 않고 `result` 유무와 부모 verdict에서 계산
 
@@ -35,7 +35,7 @@
 
 ### 3. Technical integrity와 Rule Scope testing restriction 분리
 
-validated PoC가 있는 final TRUE가 exact Technical `ACCEPT`을 받은 뒤 Rule Scope Impact Gate가 실제 수행 행위와 공식 정책을 비교해 `testing_restriction=PASS`로 판정해야 result Primitive와 Chaining 자격을 얻습니다. `FAIL`은 admission을 차단하고 `UNCERTAIN`은 재판정까지 보류합니다. 다른 Rule·Scope·Impact/report eligibility 실패는 현재 Reporter만 막습니다.
+validated PoC가 있는 final TRUE가 exact Technical `ACCEPT`을 받으면 Rule Scope Impact Gate가 실제 수행 행위와 공식 정책을 비교해 `testing_restriction_compliance`와 provenance를 만듭니다. R4 `PRIMITIVE_ADMISSION_RUNTIME`이 이를 current `PrimitiveAdmissionDecision`으로 매핑하며 `FAIL`만 `DENY`로 차단하고 `PASS | UNCERTAIN`은 `ALLOW`로 처리합니다. `COLLECTION_FAILED`는 review 없이 `NOT_EVALUATED + ALLOW`로 기록합니다. 다른 Rule·Scope·Impact/report eligibility 실패는 현재 Reporter만 막습니다.
 
 Technical Gate는 verdict·근거 연결과 실제 코드 경로·restrictions의 기술적 정확성 및 evidence integrity를 검토합니다. 공식 정책상 금지 테스트 여부는 Rule Scope Gate가 판정합니다.
 

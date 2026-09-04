@@ -13,8 +13,8 @@
 v5에는 책임이 다른 두 LLM 검토 Agent가 있다.
 
 1. final `VerificationResult.verdict=TRUE`와 현재 generation의 validated PoC가 확정되면 R5-01 `CWE_LABELING`이 별도 `CWE_LABEL` work에서 그 exact Verification을 가리키는 current `CWELabel` revision을 만든다. Technical Evidence Gate Agent는 이 정확한 Verification·CWELabel 쌍과 연결된 동적 결과를 함께 검토한다. FALSE와 HOLD는 CWE work와 이 Gate를 호출하지 않는다.
-2. Technical 결과가 `ACCEPT`이면 같은 exact Verification에 대해 Rule Scope Impact Gate Agent를 호출한다. Gate 2가 실제 수행 행위와 공식 정책을 비교해 `testing_restriction`을 명시적으로 판정한다.
-3. `testing_restriction=PASS`일 때만 result가 있는 Primitive admission과 Chaining을 허용한다. Reporter는 이 admission과 별도로 Rule·Scope·Impact·permission 조건까지 모두 통과했을 때만 호출한다.
+2. Technical 결과가 `ACCEPT`이면 같은 exact Verification에 대해 Rule Scope Impact Gate Agent를 호출한다. Gate 2가 실제 수행 행위와 공식 정책을 비교해 `testing_restriction_compliance`을 명시적으로 판정한다.
+3. R5는 `testing_restriction_compliance`와 정책 provenance를 생산하고, R4 `PRIMITIVE_ADMISSION_RUNTIME`이 이를 current `PrimitiveAdmissionDecision`으로 기계적으로 매핑한다. result Primitive 저장과 Chaining은 `decision=ALLOW`만 허용하며 Reporter는 별도로 Rule·Scope·Impact·permission 조건까지 모두 통과해야 한다.
 
 가설 내부의 Gate 제출 시점은 같은 가설의 Verification owner가 정한다. Verification은 `CALL_TECHNICAL_GATE`와, Technical `ACCEPT` 뒤의 `CALL_RULE_SCOPE_GATE`, 모든 보고 조건을 통과한 뒤의 `CREATE_REPORT_DRAFT`를 제안한다. 실제 호출 가능 여부와 순서는 비-LLM Runtime Validator가 강제한다. Orchestration Agent가 `REVISE` 목적지를 선택하거나 Verification 대신 Gate 보완 내용을 조정하지 않는다.
 
@@ -189,13 +189,13 @@ R7 Dynamic Reproduction/PoC의 testing restriction 검토는 R7이 실제 수행
 
 Gate 2는 별도 실행 사실 목록을 만들지 않고 exact `verification_result_ref -> dynamic_result_ref`의 canonical transitive reference closure를 소비한다. 정책 판단에 중요한 실제 행위를 선택적으로 빼 결과를 바꿀 수 없고, current generation과 same-attempt의 실제 수행 artifact만 인정한다. 반대로 실행되지 않은 attack/PoC step, `agent_invoked=false`인 실행 fact, observation 연결 없는 PoC는 사용하지 않는다. policy block 또는 environment precheck로 artifact가 생성되지 않았다면 존재하지 않는 artifact reference를 요구하지 않는다. Runtime Validator는 reference closure, artifact 존재와 lifecycle을 검사하고 정책 의미는 재판정하지 않는다.
 
-`testing_restriction`은 위 actual execution closure와 공식 `ProgramPolicyRecord`의 testing restriction을 비교한 독립 판정축이다.
+`testing_restriction_compliance`은 위 actual execution closure와 공식 `ProgramPolicyRecord`의 testing restriction을 비교한 독립 판정축이다.
 
-- `PASS`: 현재 공식 정책과 exact 실행 근거에서 금지 테스트 위반이 없음을 확인했다. result Primitive admission을 검토할 수 있다.
-- `FAIL`: 실제 수행 행위가 공식 정책의 금지 조건을 위반했다. Primitive admission, Chaining과 Reporter를 모두 금지한다.
-- `UNCERTAIN`: 정책 부재·freshness 문제·핵심 실행 정보 부족 등으로 금지 여부를 확정할 수 없다. Primitive admission을 보류하고 Chaining·Reporter를 금지하며, 정책이나 근거 보완 뒤 Gate 2를 다시 수행한다.
+- `PASS`: 현재 공식 정책과 exact 실행 근거에서 금지 테스트 위반이 없음을 확인했다. R4 admission runtime은 `ALLOW`로 매핑할 수 있다.
+- `FAIL`: 실제 수행 행위가 공식 정책의 금지 조건을 위반했다. R4 admission runtime은 `DENY`로 매핑하며 Primitive·Chaining·Reporter를 차단한다.
+- `UNCERTAIN`: 정책 부재·freshness 문제·핵심 실행 정보 부족 등으로 금지 여부를 확정할 수 없다. R4 admission runtime은 확정 위반이 아니므로 `ALLOW`로 매핑하지만 Reporter는 차단한다.
 
-`RuleScopeEvidenceLink.area=TESTING_RESTRICTION`은 이 판정에 사용한 공식 정책 항목과 exact 실행 artifact를 연결하는 provenance일 뿐 판정값이 아니다. 위반 여부는 반드시 `testing_restriction`에서 읽는다.
+`RuleScopeEvidenceLink.area=TESTING_RESTRICTION`은 이 판정에 사용한 공식 정책 항목과 exact 실행 artifact를 연결하는 provenance일 뿐 판정값이 아니다. 위반 여부는 반드시 `testing_restriction_compliance`에서 읽는다.
 
 공통 계약, R4와 R8에는 혼합 component의 `review_status` 우선순위가 정의되어 있지 않다. 따라서
 아래 규칙은 R5-02가 Rule·Scope·Impact 결과를 하나의 Gate 2 `review_status`로 합성하기 위해
@@ -206,7 +206,7 @@ component와 `missing_information`은 그대로 보존한다.
 1. Rule/Scope/testing restriction 중 하나가 `FAIL`이거나 impact가 `INSUFFICIENT`이면, 다른 component가
    `UNCERTAIN`이어도 `review_status=FAIL`이다.
 2. 확정적 거부 component가 없고 하나 이상이 `UNCERTAIN`이면 `review_status=UNCERTAIN`이다.
-3. `rule_compliance=PASS`, `scope_compliance=PASS`, `testing_restriction=PASS`, `security_impact=SUFFICIENT`일 때만
+3. `rule_compliance=PASS`, `scope_compliance=PASS`, `testing_restriction_compliance=PASS`, `security_impact=SUFFICIENT`일 때만
    `review_status=PASS`다.
 
 따라서 `FAIL + UNCERTAIN + SUFFICIENT`는 명시적 정책 위반을 약화시키지 않고 전체 `FAIL + DENY`다.
@@ -226,7 +226,7 @@ rule_scope_impact_review:
   review_status: PASS | FAIL | UNCERTAIN
   rule_compliance: PASS | FAIL | UNCERTAIN
   scope_compliance: PASS | FAIL | UNCERTAIN
-  testing_restriction: PASS | FAIL | UNCERTAIN
+  testing_restriction_compliance: PASS | FAIL | UNCERTAIN
   security_impact: SUFFICIENT | INSUFFICIENT | UNCERTAIN
   report_permission: ALLOW | DENY
   evidence_links: [RuleScopeEvidenceLink]
@@ -240,7 +240,7 @@ target/asset/version/endpoint, Impact에는 공식 criterion과 verified impact 
 fact reference가 모두 필요하다. 필요한 근거가 없으면 `UNCERTAIN`이며 explanation 문자열은 exact
 provenance를 대신하지 않는다.
 
-공식 정책 부재를 확인한 `ABSENT_CONFIRMED`이거나 `freshness_status=STALE | UNVERIFIED`이면 Rule Scope Gate Agent가 정책을 추정하지 않고 최소한 `rule_compliance=UNCERTAIN`, `scope_compliance=UNCERTAIN`, `testing_restriction=UNCERTAIN`, `review_status=UNCERTAIN`, `report_permission=DENY`와 구조화된 `missing_information`을 판단해 반환한다. impact도 검토할 근거가 부족하면 `security_impact=UNCERTAIN`이다. stale record의 exact reference와 경고는 감사 기록으로 보존하지만 `PASS | ALLOW`나 Primitive admission 근거로 사용하지 않는다. 수집 자체가 실패한 `COLLECTION_FAILED`는 이 review를 만들지 않는다.
+공식 정책 부재를 확인한 `ABSENT_CONFIRMED`이거나 `freshness_status=STALE | UNVERIFIED`이면 Rule Scope Gate Agent가 정책을 추정하지 않고 최소한 `rule_compliance=UNCERTAIN`, `scope_compliance=UNCERTAIN`, `testing_restriction_compliance=UNCERTAIN`, `review_status=UNCERTAIN`, `report_permission=DENY`와 구조화된 `missing_information`을 판단해 반환한다. impact도 검토할 근거가 부족하면 `security_impact=UNCERTAIN`이다. stale record의 exact reference와 경고는 감사 기록으로 보존하지만 Reporter의 `PASS | ALLOW` 근거로 사용하지 않는다. 수집 자체가 실패한 `COLLECTION_FAILED`는 review를 만들지 않으며 R4 admission runtime이 `NOT_EVALUATED + ALLOW`로 기록한다.
 
 각 확정 판정은 `RuleScopeEvidenceLink`를 통해 exact `PolicyItem`과 evidence reference에 연결한다. 핵심 정책·근거 누락은 구조화된 `PolicyMissingInfo`에 보존하고 `ALLOW`를 금지한다. Runtime Validator는 설명 문자열에서 정책 의미나 중요도를 새로 추론하지 않는다.
 
@@ -257,7 +257,7 @@ Reporter 호출 또는 `ReportDraft`·result Primitive 생성을 뜻하지 않�
 review_status == PASS
 AND rule_compliance == PASS
 AND scope_compliance == PASS
-AND testing_restriction == PASS
+AND testing_restriction_compliance == PASS
 AND security_impact == SUFFICIENT
 AND policy_record_ref != null
 AND policy authenticity/provenance/freshness is valid for this review
@@ -267,7 +267,7 @@ AND missing critical information is empty
 그 밖의 유효한 정책 판단 결과는 `DENY`다. 예를 들어 `FAIL`, `UNCERTAIN`, `INSUFFICIENT`, stale
 또는 `UNVERIFIED` 정책과 `ALLOW`의 조합은 semantic contradiction이다. trusted runtime은
 기존 공통 semantic validation 계약으로 이를 `INVALID_OUTPUT` 처리하고 해당 Gate 출력을
-Reporter 입력으로 사용하지 않는다. 다만 일반 Rule·Scope·Impact/report eligibility 실패는 `testing_restriction=PASS`인 기술 재료의 admission을 막지 않는다. Gate 2 전용 오류 enum이나 validator를 새로 만들지 않는다.
+Reporter 입력으로 사용하지 않는다. 다만 일반 Rule·Scope·Impact/report eligibility 실패와 `testing_restriction_compliance=UNCERTAIN`은 R4가 current `PrimitiveAdmissionDecision=ALLOW`로 확정한 기술 재료의 admission을 막지 않는다. Gate 2 전용 오류 enum이나 validator를 새로 만들지 않는다.
 
 정책 source 부재가 확인되었거나 유효한 record의 핵심 정보가 부족한 것은 정책 근거 부족이므로
 `UNCERTAIN + DENY`다. 반면 source fetch unavailable, parser failure, invalid parser output,
@@ -331,9 +331,9 @@ schema·semantic 위반이다. `REPORT_NOT_READY`는 Reporter 전제조건 실�
 
 ## Technical-accepted TRUE, testing restriction과 Primitive admission
 
-final TRUE가 Chaining에 쓰이려면 current generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated PoC가 있고, exact Verification과 이를 직접 가리키는 current CWELabel revision을 Technical Gate가 `ACCEPT`한 뒤, 같은 exact chain의 Rule Scope review가 `testing_restriction=PASS`여야 한다. 이때 runtime은 `provided_primitive_candidates`의 각 능력을 result로, `required_primitive_candidates`를 inputs로, Verification의 `restriction_id`와 전체 `Restriction` 객체를 그대로 보존한 restrictions로 가진 Primitive admission을 허가한다.
+final TRUE가 Chaining에 쓰이려면 current generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated PoC가 있고 exact Verification과 current CWELabel을 Technical Gate가 `ACCEPT`해야 한다. R5는 같은 exact chain의 Rule Scope review와 `testing_restriction_compliance`를 생산하고, R4 `PRIMITIVE_ADMISSION_RUNTIME`이 정책 수집 결과까지 입력으로 current `PrimitiveAdmissionDecision`을 확정한다. runtime은 `decision=ALLOW`일 때만 제공 능력별 result Primitive와 index를 저장하며 각 Primitive의 `admission_decision_ref`는 같은 Verification의 current decision을 exact하게 가리킨다.
 
-`testing_restriction=FAIL`이면 admission과 Chaining을 금지하고, `UNCERTAIN`이면 admission을 보류해 Chaining 후보에 넣지 않는다. 명시적 `PASS`에서만 admission할 수 있다. 반면 scope `FAIL`, 일반 eligibility 실패, impact `INSUFFICIENT` 또는 그에 따른 `report_permission=DENY`는 현재 가설의 Reporter만 차단하며, `testing_restriction=PASS`인 Primitive admission을 그 사유만으로 막지 않는다. 자식 가설은 새로운 대상·경로와 자신의 Verification·두 Gate로 다시 판정한다. Gate 전 TRUE와 Technical `REVISE | REJECT`는 result Primitive나 Chaining 입력이 아니다. HOLD는 Technical Gate를 사용하지 않고 final HOLD의 required candidates를 inputs로 가진 result 없는 Primitive로 즉시 들어간다.
+`testing_restriction_compliance=FAIL`만 이 정책 축에서 `DENY`가 되어 Primitive와 Chaining을 차단한다. `PASS | UNCERTAIN`은 `ALLOW`로 매핑하며, `COLLECTION_FAILED`는 review 없이 `testing_restriction_compliance=NOT_EVALUATED`, `decision=ALLOW`, `reason_code=POLICY_COLLECTION_FAILED`로 구분한다. `UNCERTAIN`과 수집 실패, scope `FAIL`, 일반 eligibility 실패, impact `INSUFFICIENT` 또는 `report_permission=DENY`는 Reporter를 차단하지만 current `ALLOW` Primitive를 제거하지 않는다. R5는 admission을 직접 결정하지 않으며 자식 가설은 새로운 대상·경로와 자신의 Verification·두 Gate로 다시 판정한다. Gate 전 TRUE와 Technical `REVISE | REJECT`는 result Primitive나 Chaining 입력이 아니다. HOLD는 Technical Gate를 사용하지 않고 final HOLD의 required candidates를 inputs로 가진 result 없는 Primitive로 즉시 들어간다.
 
 ## Reporter 호출 조건
 
@@ -347,7 +347,7 @@ AND Technical Evidence Gate == ACCEPT
 AND Rule Scope Impact Gate review_status == PASS
 AND rule_compliance == PASS
 AND scope_compliance == PASS
-AND testing_restriction == PASS
+AND testing_restriction_compliance == PASS
 AND security_impact == SUFFICIENT
 AND report_permission == ALLOW
 ```

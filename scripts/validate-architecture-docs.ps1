@@ -405,6 +405,7 @@ $staticPath = Join-Path $repoRoot 'docs/architecture-v5/02-static-fact-layer.md'
 $staticText = Get-Content -Raw -LiteralPath $staticPath
 $commonWikiPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/common-contracts.md'
 $commonWikiText = Get-Content -Raw -LiteralPath $commonWikiPath
+$authorityWikiText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/authority-boundaries.md')
 $chainingWikiPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/chaining.md'
 $chainingWikiText = Get-Content -Raw -LiteralPath $chainingWikiPath
 $requiredErrorCodes = @(
@@ -706,17 +707,17 @@ foreach ($binding in $requiredActionCheckBindings.GetEnumerator()) {
 }
 
 $requiredActionRequesterBindings = [ordered]@{
-    REGISTER_WORK = 'ORCHESTRATION, VERIFICATION, RECOVERY'
-    CHANGE_WORK_STATE = 'ORCHESTRATION, VERIFICATION, REPRODUCTION_SESSION_MANAGER, RECOVERY'
-    START_ATTEMPT = 'ORCHESTRATION, VERIFICATION, REPRODUCTION_SESSION_MANAGER, RECOVERY'
-    CANCEL_WORK = 'ORCHESTRATION, VERIFICATION, REPRODUCTION_SESSION_MANAGER, RECOVERY'
+    REGISTER_WORK = 'ORCHESTRATION, VERIFICATION, PRIMITIVE_ADMISSION_RUNTIME, RECOVERY'
+    CHANGE_WORK_STATE = 'ORCHESTRATION, VERIFICATION, PRIMITIVE_ADMISSION_RUNTIME, REPRODUCTION_SESSION_MANAGER, RECOVERY'
+    START_ATTEMPT = 'ORCHESTRATION, VERIFICATION, PRIMITIVE_ADMISSION_RUNTIME, REPRODUCTION_SESSION_MANAGER, RECOVERY'
+    CANCEL_WORK = 'ORCHESTRATION, VERIFICATION, PRIMITIVE_ADMISSION_RUNTIME, REPRODUCTION_SESSION_MANAGER, RECOVERY'
     READ_CODE = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, TECHNICAL_GATE'
     RUN_TOOL = 'REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR'
     CALL_LLM = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, R7_AGENT'
     FETCH_POLICY = 'POLICY_COLLECTOR'
     REQUEST_DYNAMIC_REPRO = 'VERIFICATION'
     RUN_SANDBOX = 'R7_SETUP_AUTOMATION'
-    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, R7_AGENT, R7_SETUP_AUTOMATION, SANDBOX_CONTROLLER, REPRODUCTION_SESSION_MANAGER, RECOVERY'
+    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, PRIMITIVE_ADMISSION_RUNTIME, R7_AGENT, R7_SETUP_AUTOMATION, SANDBOX_CONTROLLER, REPRODUCTION_SESSION_MANAGER, RECOVERY'
     CALL_TECHNICAL_GATE = 'VERIFICATION'
     CALL_RULE_SCOPE_GATE = 'VERIFICATION'
     CREATE_REPORT_DRAFT = 'VERIFICATION'
@@ -1028,6 +1029,33 @@ $orchestrationPath = Join-Path $repoRoot 'docs/architecture-v5/03-agent-roles-an
 $orchestrationText = Get-Content -Raw -LiteralPath $orchestrationPath
 $gatePath = Join-Path $repoRoot 'docs/architecture-v5/05-llm-gate-and-reporting.md'
 $gateText = Get-Content -Raw -LiteralPath $gatePath
+$chainingPath = Join-Path $repoRoot 'docs/architecture-v5/06-chaining.md'
+$chainingText = Get-Content -Raw -LiteralPath $chainingPath
+$requiredChainingAdmissionRules = @(
+    '체이닝 재료 자격은 세 가지를 확인해 정한다',
+    'current `PrimitiveAdmissionDecision.decision=ALLOW`',
+    'Chaining Agent는 `rule_compliance`나 `evidence_links`를 읽어 금지 테스트 위반을 추정하지 않는다.',
+    '확정된 금지 테스트 위반으로 `DENY`가 된 경우만 재료에서 제외된다.',
+    '`WorkExecutionState.input_refs`에 함께 고정한다',
+    '`source_admission_refs`에는 실제 match에 사용한 Primitive와 그 계보에서 재귀적으로 도달한 모든 admission decision을 중복 없이 기록하며',
+    '`STALE_RESULT`로 저장을 거절하고 새 자식 가설을 만들지 않는다',
+    '실제 match에 사용하지 않은 후보의 decision 변경만으로는 진행 중인 결과를 무효화하지 않는다.',
+    '부모의 admission이 나중에 `DENY`로 바뀌면 파생 결과는 감사 기록으로만 보존하고'
+)
+foreach ($rule in $requiredChainingAdmissionRules) {
+    if (-not $chainingText.Contains($rule)) {
+        Add-Failure "missing Chaining admission rule in 06-chaining.md: $rule"
+    }
+}
+$chainingDocResultBlock = [regex]::Match($chainingText, '(?ms)^ChainingResult:\s*(.*?)^```').Groups[1].Value
+if (-not $chainingDocResultBlock.Contains('source_admission_refs:')) {
+    Add-Failure '06-chaining.md ChainingResult is missing field: source_admission_refs:'
+}
+$chainingPrimitiveBlock = [regex]::Match($chainingText, '(?ms)^Primitive:\s*(.*?)^```').Groups[1].Value
+if (-not $chainingPrimitiveBlock.Contains('admission_decision_ref:')) {
+    Add-Failure '06-chaining.md Primitive is missing field: admission_decision_ref:'
+}
+
 $gateWikiPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/gate-and-reporting.md'
 $gateWikiText = Get-Content -Raw -LiteralPath $gateWikiPath
 $requiredAuthorityRules = @(
@@ -1082,7 +1110,7 @@ $requiredR504CrossReviewRules = @(
     @{
         Name = 'stale or unverified policy blocks report permission'
         Text = $contractText
-        Marker = '`FOUND`라도 핵심 출처가 누락되거나 정책이 `STALE | UNVERIFIED`이면 Rule·Scope·testing restriction·review는 `UNCERTAIN`, permission은 `DENY`이며 누락·최신성 문제를 구조화해 보존한다.'
+        Marker = '`FOUND`라도 핵심 출처가 누락되거나 정책이 `STALE | UNVERIFIED`이면 Rule·testing restriction·Scope·review는 `UNCERTAIN`, permission은 `DENY`이며 누락·최신성 문제를 구조화해 보존한다.'
     },
     @{
         Name = 'changed upstream revisions supersede report drafts'
@@ -1144,6 +1172,7 @@ $requiredVerificationChainingContracts = @(
     'verification_assignment_ref:',
     'ChainingResult:',
     'source_result_refs:',
+    'source_admission_refs:',
     'considered_primitive_refs:',
     'input_primitive_refs:',
     'primitive_match_candidates:',
@@ -1304,7 +1333,7 @@ foreach ($field in @('match_kind:', 'input_primitive_index_refs:', 'upstream_pro
 }
 
 $chainingResultBlock = [regex]::Match($contractText, '(?ms)^ChainingResult:\s*(.*?)^```').Groups[1].Value
-foreach ($field in @('source_result_refs:', 'considered_primitive_refs:', 'input_primitive_refs:', 'primitive_match_candidates:', 'chained_hypothesis_proposals:', 'excluded_lineage_refs:', 'no_match_reasons:', 'errors:')) {
+foreach ($field in @('source_result_refs:', 'source_admission_refs:', 'considered_primitive_refs:', 'input_primitive_refs:', 'primitive_match_candidates:', 'chained_hypothesis_proposals:', 'excluded_lineage_refs:', 'no_match_reasons:', 'errors:')) {
     if (-not $chainingResultBlock.Contains($field)) {
         Add-Failure "ChainingResult is missing field: $field"
     }
@@ -1317,16 +1346,17 @@ foreach ($field in @('trigger:', 'input_primitive_index_refs:', 'bounded_stop_re
 
 $requiredChainingExclusionRules = @(
     '`considered_primitive_refs`는 Runtime이 `REGISTER_WORK(work_type=CHAINING)`에서 고정한 exact Primitive 입력 집합과 set-equal하다.',
-    '고정 뒤 index에 새 revision이 생긴 사실만으로 진행 중인 work를 거절하지 않는다.',
+    '`source_admission_refs`는 이 실제 사용 decision 집합과 중복 없이 set-equal해야 한다.',
+    '일반 index 갱신이나 실제 match에 사용하지 않은 후보의 decision 변경만으로는 기존 work를 거절하지 않지만, `source_admission_refs` 중 하나가 current가 아니거나 `DENY`로 바뀌면 오염된 재료의 사용을 막기 위해 진행 중인 결과를 거절한다.',
     '`input_primitive_refs`는 `primitive_match_candidates`의 upstream/downstream exact reference 합집합과 set-equal하다.',
-    '`considered_primitive_refs`, `input_primitive_refs`, `source_result_refs`와 candidate별 `parent_hypothesis_ids`, `parent_verification_refs`는 각각 중복이 없어야 한다.',
+    '`considered_primitive_refs`, `input_primitive_refs`, `source_result_refs`, `source_admission_refs`와 candidate별 `parent_hypothesis_ids`, `parent_verification_refs`는 각각 중복이 없어야 한다.',
     '`source_result_refs`는 `input_primitive_refs`가 가리키는 Primitive들의 `source_verification_ref`와 non-null `technical_review_ref` 합집합과 set-equal하고 모두 같은 `SAVE_RESULT.input_refs`에 포함되어야 한다.',
     '각 candidate의 `parent_hypothesis_ids`는 그 upstream/downstream Primitive의 `source_hypothesis_id` 합집합, `parent_verification_refs`는 두 Primitive의 `source_verification_ref` 합집합과 각각 set-equal해야 한다.',
     '`excluded_primitive_ref`는 `considered_primitive_refs`에 포함되고 `input_primitive_refs`와 모든 match candidate reference에는 포함되지 않아야 한다.',
     '`excluded_by_ref`는 `considered_primitive_refs`와 `input_primitive_refs`에 모두 포함되고 같은 결과의 `excluded_primitive_ref` 집합에는 포함되지 않아야 한다.',
     'Runtime은 §06의 제외 규칙(성립한 match의 후보에서 양방향 재귀 탐색)으로 기대 제외 쌍을 다시 계산하고 `excluded_lineage_refs`와 set-equal한지 검사한다.',
     '`origin=CHAINING`이면 `observed_facts=[]`만 허용한다.',
-    '`ChainingResult.considered_primitive_refs`와 `excluded_lineage_refs` 추가는 기존 결과의 필수 필드를 바꾸므로 새 MAJOR schema로 배포한다.'
+    '`ChainingResult.considered_primitive_refs`, `source_admission_refs`와 `excluded_lineage_refs` 추가는 기존 결과의 필수 필드를 바꾸므로 새 MAJOR schema로 배포한다.'
 )
 foreach ($rule in $requiredChainingExclusionRules) {
     if (-not $contractText.Contains($rule)) {
@@ -1338,7 +1368,8 @@ $requiredChainingWikiRules = @(
     '`considered_primitive_refs`',
     '`excluded_lineage_refs`',
     '`origin=CHAINING` 자식의 `observed_facts`는 빈 목록',
-    '진행 중인 Chaining work의 입력은 바뀌지 않습니다.'
+    '`source_admission_refs`',
+    '일반적인 새 Primitive·index 변경과 사용하지 않은 후보의 decision 변경은 진행 중 입력을 바꾸지 않고 다음 work에서 처리합니다.'
 )
 foreach ($rule in $requiredChainingWikiRules) {
     if (-not ($chainingWikiText.Contains($rule) -or $commonWikiText.Contains($rule))) {
@@ -1389,14 +1420,12 @@ $verificationChainingScenarioMarkers = @(
     '| N1 | final HOLD |',
     '| N2 | final FALSE |',
     '| N3 | final TRUE, Gate 미실행 |',
-    '| N4 | TRUE + Technical `ACCEPT`, Rule Scope 미실행 |',
-    '| N5-A | TRUE + Technical `ACCEPT` + `testing_restriction=FAIL` |',
-    '| N5-B | TRUE + Technical `ACCEPT` + `testing_restriction=UNCERTAIN` |',
-    '| N5-C | TRUE + Technical `ACCEPT` + `testing_restriction=PASS` + scope `FAIL` 또는 일반 eligibility/impact 실패 |',
-    '| N6 | TRUE + Technical `ACCEPT` + review/rule/scope/testing `PASS` + impact `SUFFICIENT` + permission `ALLOW` |',
+    '| N4 | TRUE + Technical `ACCEPT`, 정책 수집 또는 Rule Scope 검토가 아직 종료되지 않음 |',
+    '| N5 | TRUE + Technical `ACCEPT` + Rule Scope의 다른 판단 `FAIL | UNCERTAIN | DENY`, testing restriction은 `PASS | UNCERTAIN` |',
+    '| N6 | TRUE + Technical `ACCEPT` + Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`, testing restriction `PASS` |',
     '| N7 | result가 있는 TRUE Primitive + result가 없는 HOLD Primitive |',
     '| N8 | result가 있는 서로 다른 TRUE Primitive 둘 |',
-    '| N9 | TRUE+TRUE 입력 중 한 부모가 Rule Scope 전, Technical 비정상 또는 `testing_restriction!=PASS` |',
+    '| N9 | TRUE+TRUE 입력 중 한 부모가 Technical 비정상이거나 direct·ancestor current `PrimitiveAdmissionDecision=ALLOW`를 충족하지 않음 |',
     '| N10 | match의 entity 또는 privilege 충족 근거가 없음 |',
     '| N10-A | 성립한 match의 후보가 양방향 계보에서 이미 사용한 Primitive를 같은 결과에서 다시 사용 |',
     '| N10-B | `excluded_primitive_ref`가 고정된 `considered_primitive_refs` 밖이거나 실제 match에 다시 포함됨 |',
@@ -1425,7 +1454,7 @@ foreach ($marker in $verificationChainingScenarioMarkers) {
 $requiredVerificationChainingRules = @(
     'Orchestration Agent는 한 가설 안에서 Pro/Con·동적 재현·두 Gate·Reporter·Chaining의 호출 여부나 Technical `REVISE` 목적지를 결정하지 않는다.',
     '같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 전달',
-    'Rule Scope 전 TRUE와 Technical `REVISE | REJECT` 기반 Primitive는 저장하지 않는다.',
+    'Gate 전 TRUE는 result가 있는 Primitive가 될 수 없다.',
     'origin=VERIFICATION',
     'origin=CHAINING',
     'TRUE_HOLD',
@@ -1433,9 +1462,8 @@ $requiredVerificationChainingRules = @(
     'upstream result가 downstream input을 충족',
     'HypothesisProcessState.status=TERMINAL',
     'VerificationAssignment.owner_identity_ref',
-    '같은 Verification·CWELabel·Technical review를 고정한 Rule Scope review의 `testing_restriction=PASS`가 모두 필수다.',
-    '`testing_restriction=UNCERTAIN`은 Primitive admission과 Chaining도 보류한다.',
-    '`testing_restriction=PASS`이면 scope·일반 eligibility·impact·report permission 실패만으로 저장을 거절하지 않는다.',
+    '`testing_restriction_compliance`는 `rule_compliance`와 독립된 판정 축이다.',
+    'current `PrimitiveAdmissionDecision(decision=ALLOW)`',
     'child가 FALSE여도 부모 판정은 바뀌지 않는다'
 )
 foreach ($rule in $requiredVerificationChainingRules) {
@@ -1939,6 +1967,7 @@ $policyMissingInfoBlock = [regex]::Match($contractText, '(?ms)^PolicyMissingInfo
 $ruleScopeEvidenceLinkBlock = [regex]::Match($contractText, '(?ms)^RuleScopeEvidenceLink:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $programPolicyRecordBlock = [regex]::Match($contractText, '(?ms)^ProgramPolicyRecord:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $ruleScopeImpactReviewBlock = [regex]::Match($contractText, '(?ms)^RuleScopeImpactReview:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$primitiveAdmissionDecisionBlock = [regex]::Match($contractText, '(?ms)^PrimitiveAdmissionDecision:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $gateRuleScopeImpactReviewBlock = [regex]::Match($gateText, '(?ms)^rule_scope_impact_review:\s*(.*?)^```').Groups[1].Value
 $analysisRunResultPolicyBlock = [regex]::Match($contractText, '(?ms)^AnalysisRunResult:\s*(.*?)^```').Groups[1].Value
 
@@ -1949,8 +1978,10 @@ $requiredPolicyContractFields = @(
     @{ Contract = 'PolicyMissingInfo'; Block = $policyMissingInfoBlock; Fields = @('missing_info_id: string', 'area: RULE | SCOPE | IMPACT | SOURCE | FRESHNESS | TESTING_RESTRICTION', 'blocks_allow: boolean', 'description: string', 'policy_item_ids: [string]', 'evidence_refs: [StoredDataRef]') },
     @{ Contract = 'RuleScopeEvidenceLink'; Block = $ruleScopeEvidenceLinkBlock; Fields = @('link_id: string', 'area: RULE | SCOPE | IMPACT | TESTING_RESTRICTION', 'policy_item_ids: [string]', 'evidence_refs: [StoredDataRef]') },
     @{ Contract = 'ProgramPolicyRecord'; Block = $programPolicyRecordBlock; Fields = @('source_checks: [PolicySourceCheck]', 'parser_result_refs: [StoredDataRef]', 'freshness_criterion_ref: StoredDataRef | null', 'freshness_evidence_refs: [StoredDataRef]', 'freshness_valid_until: timestamp | null', 'missing_information: [PolicyMissingInfo]') },
-    @{ Contract = 'RuleScopeImpactReview'; Block = $ruleScopeImpactReviewBlock; Fields = @('policy_collection_result_ref: StoredDataRef', 'testing_restriction: PASS | FAIL | UNCERTAIN', 'evidence_links: [RuleScopeEvidenceLink]', 'missing_information: [PolicyMissingInfo]') }
-    @{ Contract = 'Gate guide RuleScopeImpactReview'; Block = $gateRuleScopeImpactReviewBlock; Fields = @('policy_collection_result_ref: StoredDataRef', 'testing_restriction: PASS | FAIL | UNCERTAIN', 'evidence_links: [RuleScopeEvidenceLink]', 'missing_information: [PolicyMissingInfo]') }
+    @{ Contract = 'RuleScopeImpactReview'; Block = $ruleScopeImpactReviewBlock; Fields = @('policy_collection_result_ref: StoredDataRef', 'testing_restriction_compliance: PASS | FAIL | UNCERTAIN', 'evidence_links: [RuleScopeEvidenceLink]', 'missing_information: [PolicyMissingInfo]') }
+    @{ Contract = 'PrimitiveAdmissionDecision'; Block = $primitiveAdmissionDecisionBlock; Fields = @('meta: RecordMeta', 'verification_result_ref: StoredDataRef', 'technical_review_ref: StoredDataRef', 'policy_collection_result_ref: StoredDataRef', 'rule_scope_review_ref: StoredDataRef | null', 'testing_restriction_compliance: PASS | FAIL | UNCERTAIN | NOT_EVALUATED', 'decision: ALLOW | DENY', 'reason_code: TESTING_RESTRICTION_PASSED | TESTING_RESTRICTION_UNCERTAIN | POLICY_COLLECTION_FAILED | TESTING_RESTRICTION_VIOLATION') }
+    @{ Contract = 'Primitive'; Block = $primitiveBlock; Fields = @('admission_decision_ref: StoredDataRef | null') }
+    @{ Contract = 'Gate guide RuleScopeImpactReview'; Block = $gateRuleScopeImpactReviewBlock; Fields = @('policy_collection_result_ref: StoredDataRef', 'evidence_links: [RuleScopeEvidenceLink]', 'missing_information: [PolicyMissingInfo]') }
     @{ Contract = 'AnalysisRunResult'; Block = $analysisRunResultPolicyBlock; Fields = @('policy_collection_result_refs: [StoredDataRef]', 'policy_parser_result_refs: [StoredDataRef]') }
 )
 foreach ($contract in $requiredPolicyContractFields) {
@@ -1977,20 +2008,65 @@ $requiredPolicyContractRules = @(
     @{ Name = 'R8 owns freshness criteria'; Text = $contractText; Marker = 'freshness 기준값과 재수집 주기는 R8이 승인한 versioned 설정만 사용한다.' },
     @{ Name = 'Gate guide keeps R8 freshness ownership'; Text = $gateText; Marker = '최신성 기준값과 재수집 주기는 R8이 승인한 versioned 설정을 사용하고 R5는 그 결과를 정책 의미로 해석한다.' },
     @{ Name = 'Gate Wiki distinguishes collection failure'; Text = $gateWikiText; Marker = '`COLLECTION_FAILED`는 Rule Scope review를 만들지 않습니다.' },
-    @{ Name = 'Gate diagram distinguishes collection failure'; Text = $diagramText; Marker = 'COLLECT -->|COLLECTION_FAILED| NOGATE[No Rule Scope review]' },
+    @{ Name = 'Gate diagram distinguishes collection failure'; Text = $diagramText; Marker = 'COLLECT -->|COLLECTION_FAILED| ADMIT[PrimitiveAdmissionDecision NOT_EVALUATED ALLOW]' },
     @{ Name = 'Gate evidence links are complete'; Text = $contractText; Marker = '`PASS | FAIL | SUFFICIENT | INSUFFICIENT`인 각 판단 영역은 같은 area의 `RuleScopeEvidenceLink`를 하나 이상 가져야 한다.' },
     @{ Name = 'blocking missing information denies ALLOW'; Text = $contractText; Marker = '`blocks_allow=true`인 `PolicyMissingInfo`가 하나라도 있으면 `report_permission=ALLOW`를 저장하지 않는다.' },
     @{ Name = 'policy fetch error does not become a successful Gate result'; Text = $resultText; Marker = '`POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 수집 결과 `COLLECTION_FAILED`; 성공한 Rule Scope review 없음' },
     @{ Name = 'policy parser error is distinct'; Text = $resultText; Marker = '`POLICY_PARSE_ERROR` | 정책 수집 계층 | parser 실행 실패와 `COLLECTION_FAILED`; 성공한 Rule Scope review 없음' },
     @{ Name = 'policy collection negative scenario exists'; Text = $securityText; Marker = '| N35 | 정책 수집 실패를 정책 부재로 바꿔 `UNCERTAIN + DENY` review를 저장 |' },
     @{ Name = 'policy evidence negative scenario exists'; Text = $securityText; Marker = '| N36 | Rule·Scope·Impact 확정 판단에 사용한 정책 항목 또는 실제 근거 연결이 없음 |' },
+    @{ Name = 'primitive admission decision owner is registered'; Text = $contractText; Marker = '`primitive_admission_decision -> PrimitiveAdmissionDecision -> PRIMITIVE_ADMISSION_RUNTIME`' },
+    @{ Name = 'TRUE primitive binds admission decision'; Text = $contractText; Marker = '`result`가 있는 Primitive의 `admission_decision_ref`는 같은 Verification의 current `PrimitiveAdmissionDecision(decision=ALLOW)`을 exact하게 가리켜야 한다.' },
+    @{ Name = 'testing restriction verdict is independent'; Text = $contractText; Marker = '`testing_restriction_compliance`는 `rule_compliance`와 독립된 판정 축이다.' },
+    @{ Name = 'confirmed prohibited testing denies admission'; Text = $contractText; Marker = '`testing_restriction_compliance=FAIL`이면 `decision=DENY`, `reason_code=TESTING_RESTRICTION_VIOLATION`만 허용하고 result Primitive를 만들지 않는다.' },
+    @{ Name = 'policy collection failure keeps exact provenance'; Text = $contractText; Marker = '`COLLECTION_FAILED`이면 `rule_scope_review_ref=null`, `testing_restriction_compliance=NOT_EVALUATED`, `decision=ALLOW`, `reason_code=POLICY_COLLECTION_FAILED`로만 확정한다.' },
+    @{ Name = 'chaining registration pins direct and ancestor allowed decisions'; Text = $contractText; Marker = '이들에 직접·재귀적으로 연결된 current ALLOW decision exact reference를 함께 고정한다.' },
+    @{ Name = 'stale used admission blocks in-flight chaining'; Text = $contractText; Marker = '`source_admission_refs` 중 하나가 current가 아니거나 `DENY`로 바뀌면 오염된 재료의 사용을 막기 위해 진행 중인 결과를 거절한다.' },
+    @{ Name = 'derived hypothesis rechecks admission lineage'; Text = $contractText; Marker = '`origin=CHAINING` 가설의 새 Verification·Gate·Primitive update·Reporter work를 등록하거나 그 결과를 저장할 때도 trusted runtime은 같은 `source_primitive_match_id` 계보의 result Primitive admission decision을 재귀 확인한다.' },
+    @{ Name = 'committed descendants become audit only after denial'; Text = $contractText; Marker = '이미 COMMITTED된 Verification·Gate·Finding·ReportDraft는 감사 이력으로 남기되 current 결과나 외부 전달 가능 결과로 사용하지 않는다.' },
+    @{ Name = 'current run result excludes denied admission descendants'; Text = $contractText; Marker = '`ChainingResult.source_admission_refs` 중 하나라도 더 이상 current ALLOW가 아니면 해당 ChainingResult와 그 `source_primitive_match_id`에서 파생된 Primitive·Finding·ReportDraft를 current 목록에 넣지 않는다.' },
+    @{ Name = 'report requires testing restriction pass'; Text = $contractText; Marker = 'testing_restriction_compliance PASS + scope_compliance PASS' },
+    @{ Name = 'unrelated rule failure scenario exists'; Text = $securityText; Marker = '| N37 | 다른 규칙 때문에 `rule_compliance=FAIL`이지만 `testing_restriction_compliance=PASS` |' },
+    @{ Name = 'prohibited testing scenario exists'; Text = $securityText; Marker = '| N38 | `testing_restriction_compliance=FAIL`인 Rule Scope review |' },
+    @{ Name = 'ambiguous testing evidence scenario exists'; Text = $securityText; Marker = '| N39 | `TESTING_RESTRICTION` link만 있고 전용 판정이 없거나 판정과 link가 모순됨 |' },
+    @{ Name = 'collection failure admission scenario exists'; Text = $securityText; Marker = '| N40 | 정책 수집이 `COLLECTION_FAILED`라 Rule Scope review가 없음 |' },
+    @{ Name = 'stale admission decision scenario exists'; Text = $securityText; Marker = '| N41 | Chaining work가 실제 match에 사용한 admission decision 뒤 current decision이 `DENY`로 변경됨 |' },
+    @{ Name = 'missing admission reference scenario exists'; Text = $securityText; Marker = '| N42 | result Primitive에 current `admission_decision_ref`가 없거나 다른 Verification의 decision을 참조 |' },
+    @{ Name = 'committed descendant invalidation scenario exists'; Text = $securityText; Marker = '| N43 | 이미 COMMITTED된 Chaining 자식·손자 뒤 부모 admission이 `DENY`로 변경됨 |' },
+    @{ Name = 'source admission set mismatch scenario exists'; Text = $securityText; Marker = '| N44 | `ChainingResult.source_admission_refs`가 실제 match의 direct·ancestor ALLOW decision 합집합과 다름 |' },
     @{ Name = 'Wiki explains collection outcomes'; Text = $commonWikiText; Marker = '`FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`' },
+    @{ Name = 'Wiki explains primitive admission decision'; Text = $commonWikiText; Marker = '`PrimitiveAdmissionDecision`은 TRUE 결과를 체이닝 재료로 사용해도 되는지 기록합니다.' },
+    @{ Name = 'authority Wiki separates policy meaning and runtime derivation'; Text = $authorityWikiText; Marker = 'Rule Scope Gate가 테스트 제한의 의미를 판단하고, Runtime은 그 구조화된 판정으로 `PrimitiveAdmissionDecision`을 확정합니다.' },
+    @{ Name = 'overview requires admission ALLOW for result Primitive'; Text = $overviewText; Marker = 'current admission `ALLOW`인 Technical-accepted TRUE의 result Primitive exact revision 검색' },
+    @{ Name = 'orchestration fixes primitive admission order'; Text = $orchestrationText; Marker = '-> PrimitiveAdmissionDecision' },
+    @{ Name = 'architecture hub explains confirmed prohibited testing denial'; Text = (Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/README.md')); Marker = '금지 테스트 위반이 확정된 `DENY`는 result Primitive와 Chaining을 막지만' },
+    @{ Name = 'canonical diagram routes Technical ACCEPT through admission'; Text = $diagramText; Marker = 'ADEC{PrimitiveAdmissionDecision}' },
+    @{ Name = 'pipeline Wiki requires current admission ALLOW'; Text = (Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/pipeline.md')); Marker = 'TRUE는 Technical `ACCEPT`와 current admission `ALLOW` 뒤 들어간다.' },
+    @{ Name = 'Chaining Wiki pins current ALLOW decision lineage'; Text = $chainingWikiText; Marker = '실제 입력의 direct·ancestor admission 집합은 `source_admission_refs`에 중복 없이 기록합니다.' },
+    @{ Name = 'Gate Wiki separates testing restriction result'; Text = $gateWikiText; Marker = 'testing_restriction_compliance: `PASS | FAIL | UNCERTAIN`' },
+    @{ Name = 'ownership assigns R1 current admission consumption'; Text = (Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/governance/OWNERSHIP.md')); Marker = 'R1 Chaining은 result Primitive와 직접·부모 체인의 current `PrimitiveAdmissionDecision=ALLOW`를 함께 입력으로 고정' },
     @{ Name = 'AnalysisRunResult policy refs use a new major'; Text = $contractText; Marker = '두 목록 추가는 `AnalysisRunResult`의 새 필수 필드이므로 새 MAJOR schema에서만 사용한다.' }
 )
 foreach ($rule in $requiredPolicyContractRules) {
     if (-not $rule.Text.Contains($rule.Marker)) {
         Add-Failure "missing R4 policy contract rule: $($rule.Name)"
     }
+}
+
+$primitiveAdmissionDecisionPath = Join-Path $repoRoot 'docs/review/decisions/ADR-011-testing-restriction-primitive-admission.md'
+if (-not (Test-Path -LiteralPath $primitiveAdmissionDecisionPath)) {
+    Add-Failure 'missing ADR-011 testing restriction primitive admission decision'
+} else {
+    $primitiveAdmissionDecisionText = Get-Content -Raw -LiteralPath $primitiveAdmissionDecisionPath
+    foreach ($marker in @('상태: `ACCEPTED`', '`testing_restriction_compliance`', '`PrimitiveAdmissionDecision`', '`PRIMITIVE_ADMISSION_RUNTIME`', '`COLLECTION_FAILED`', 'R1:', 'R4:', 'R5-02:')) {
+        if (-not $primitiveAdmissionDecisionText.Contains($marker)) {
+            Add-Failure "ADR-011 is missing decision marker: $marker"
+        }
+    }
+}
+$policyDecisionIndexText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/review/decisions/README.md')
+if (-not $policyDecisionIndexText.Contains('[ADR-011](./ADR-011-testing-restriction-primitive-admission.md)')) {
+    Add-Failure 'decision index is missing ADR-011'
 }
 
 $savedErrorAction = $ErrorActionPreference

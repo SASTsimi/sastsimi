@@ -39,6 +39,9 @@
 - 모든 final TRUE에는 `SUCCEEDED + SUPPORTED` 동적 결과와 validated `poc_ref`가 필요합니다. R7이 스스로 해결할 수 있는 PoC 생성·환경 구성·실행 실패는 같은 work에서 자동 retry하고, 외부 설정·정책·승인을 기다릴 때만 `BLOCKED`입니다. 복구 불가능하거나 한도를 소진하면 verdict 없는 `FAILED`이며 `FALSE | HOLD`로 바꾸지 않습니다.
 - R8은 예산 profile과 회귀 기준을 설계하고 각 전문 역할은 최소 품질 요구를 제공합니다. 실제 예산 차단·허용은 R4 trusted runtime의 책임입니다.
 - Technical `REVISE`는 Orchestration이나 R7이 목적지를 고르지 않고 같은 ACTIVE `VerificationAssignment`의 R6 owner에게 돌아갑니다.
+- R5-02 Rule Scope Gate는 공식 정책과 실제 재현 근거를 읽고 금지 테스트 위반 여부를 독립 `testing_restriction_compliance`로 판단합니다. 일반 `rule_compliance`나 `TESTING_RESTRICTION` link 존재만으로 이 값을 대신 추정하지 않습니다.
+- R4의 비-LLM Primitive Admission Runtime은 exact Technical review·정책 수집 결과·Rule Scope review를 정해진 표에 대입해 `PrimitiveAdmissionDecision`과 허용된 Primitive/index를 원자적으로 확정합니다. 정책 문장을 다시 해석하지 않습니다.
+- R1 Chaining은 result Primitive와 직접·부모 체인의 current `PrimitiveAdmissionDecision=ALLOW`를 함께 입력으로 고정하고, 실제 match의 합집합을 `source_admission_refs`로 남긴 뒤 저장 직전에도 current인지 확인합니다. 확정된 금지 테스트 위반이 생기면 과거 Primitive와 그 파생 결과를 새 체이닝 재료로 쓰지 않습니다.
 
 ## 역할 배정과 GitHub 담당자 지정 상태
 
@@ -77,6 +80,7 @@ PM은 하위 Issue를 대신 세세하게 작성하지 않습니다. PM은 역�
 - Chaining Agent는 upstream Primitive의 `result`가 downstream Primitive의 특정 `input`을 충족하는 match와 새 가설만 제안합니다. 조상 계보의 Primitive를 현재 후보에서 제외하고, work 시작 시 고정한 exact Primitive·index reference와 다른 결과는 저장할 수 없습니다. 시작 뒤 current index가 갱신된 사실만으로 진행 중 work를 무효화하지 않습니다.
 - R5-01 `CWE_LABELING`은 final TRUE마다 exact Verification revision을 직접 가리키는 current `CWELabel`을 만듭니다. 새 Verification에는 같은 CWE를 유지해도 새 label revision이 필요합니다.
 - Technical Evidence Gate와 Rule Scope Impact Gate는 verdict를 직접 변경하지 않습니다.
+- Primitive Admission Runtime은 LLM Agent가 아니며 Rule Scope의 전용 금지 테스트 판정과 정책 수집 상태를 기계적으로 `ALLOW | DENY`로 변환합니다. `DENY`인 result Primitive를 만들거나 current index에 남길 수 없습니다.
 - Reporter는 안전 요구사항을 지킨 내부 `ReportDraft`만 만들며 이 결과가 마지막 Agent 산출물입니다.
 - `AnalysisRunResult` 확정 뒤 Agent 자동화가 끝나며, 사람의 검토·수정·제출·공개는 이 자동화 밖에서 수행합니다.
 - Agent와 service는 실행을 `ActionRequest`로 제안하고 비-LLM Runtime Validator가 실행 범위만 허용·차단합니다.

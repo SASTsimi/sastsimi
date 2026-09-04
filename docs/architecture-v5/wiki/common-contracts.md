@@ -31,7 +31,7 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 - `source_primitive_match_id`: `origin=CHAINING` 가설을 만든 정확한 Primitive match
 - `LineageExclusion`: 같은 체이닝 작업에서 조상 계보 때문에 제외한 Primitive와 제외 근거를 묶은 기록
 
-한 Primitive의 `result`가 다른 Primitive의 특정 `input`을 충족해 더 큰 공격 가능성을 찾아도 기존 결과를 수정하지 않습니다. Technical `ACCEPT`과 Rule Scope `testing_restriction=PASS`를 받은 upstream TRUE revision, downstream Primitive와 `matched_input_id`를 확인한 뒤 새로운 `origin=CHAINING` proposal과 `hypothesis_id`를 만들고 전체 검증을 다시 거칩니다. Runtime은 조상 제외 전 전체 입력을 `considered_primitive_refs`, 실제 match 입력을 `input_primitive_refs`, 성립한 match의 후보 계보 때문에 제외한 항목을 `excluded_lineage_refs`로 구분합니다. 상세 문서 §06의 제외 규칙(성립한 match의 후보에서 양방향 재귀 탐색)으로 기대 제외 목록을 다시 계산하므로 검토하지 않은 Primitive나 잘못된 조상 관계를 제외 기록으로 저장할 수 없습니다. Verification이 별도 endpoint·sink·권한 경계를 발견한 경우에는 `origin=VERIFICATION` proposal을 사용합니다.
+한 Primitive의 `result`가 다른 Primitive의 특정 `input`을 충족해 더 큰 공격 가능성을 찾아도 기존 결과를 수정하지 않습니다. Technical `ACCEPT`과 current `PrimitiveAdmissionDecision=ALLOW`를 받은 upstream TRUE revision, downstream Primitive와 `matched_input_id`를 확인한 뒤 새로운 `origin=CHAINING` proposal과 `hypothesis_id`를 만들고 전체 검증을 다시 거칩니다. Runtime은 direct·ancestor current admission을 확인하고 사용한 결정을 `source_admission_refs`에 남깁니다. 또한 조상 제외 전 전체 입력을 `considered_primitive_refs`, 실제 match 입력을 `input_primitive_refs`, 성립한 match의 후보 계보 때문에 제외한 항목을 `excluded_lineage_refs`로 구분합니다. 상세 문서 §06의 제외 규칙으로 기대 제외 목록을 다시 계산하므로 검토하지 않은 Primitive나 잘못된 조상 관계를 제외 기록으로 저장할 수 없습니다. Verification이 별도 endpoint·sink·권한 경계를 발견한 경우에는 `origin=VERIFICATION` proposal을 사용합니다.
 
 ## 같은 가설인지 어떻게 확인하나요?
 
@@ -155,7 +155,9 @@ Technical Gate는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 
 
 유형별 플레이북은 파일이 존재한다는 이유만으로 자동 사용하지 않습니다. 사람이 승인한 `PlaybookPolicy`가 유형과 exact 플레이북 수정본을 연결하고, 프로그램은 등록 가설의 exact proposal에 유형 후보가 하나뿐이며 policy에 같은 유형이 있을 때만 `TYPE_SPECIFIC`을 선택합니다. 후보가 없거나 여러 개이거나 허용되지 않았으면 `COMMON`을 선택합니다. 이번 검증에서 사용한 policy·playbook과 새로 발급한 질문 ID는 `PlaybookApplication`으로 묶어 work 입력에 고정합니다. Pro·Con과 최종 결과는 이 같은 application을 사용하고, 최종 질문 결과는 가설 질문과 application 질문을 빠짐없이 정확히 한 번씩 처리해야 합니다.
 
-Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 부족 조건을 `inputs`에 넣고 `result=null`로 Gate 없이 저장합니다. TRUE는 validated PoC와 같은 revision을 검토한 Technical `ACCEPT` 및 Rule Scope `testing_restriction=PASS` 뒤 제공 능력 하나마다 `result` Primitive를 만들고, 그 TRUE의 입력 조건과 `restriction_id`·근거 reference 전체도 함께 보존합니다. testing restriction `FAIL`은 차단하고 `UNCERTAIN`은 재판정까지 보류하지만, 다른 report eligibility 실패는 testing PASS admission을 취소하지 않습니다. `PrimitiveIndexState`는 current Verification과 Primitive refs만 가리키며 별도 전용 version은 두지 않습니다. Chaining work는 시작할 때 읽은 index와 Primitive exact reference를 고정합니다. 이후 current pointer가 갱신돼도 진행 중인 work를 무효화하지 않으며, 그 work에 고정하지 않은 reference가 결과에 섞였을 때만 `STALE_RESULT`로 거절합니다.
+Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 부족 조건을 `inputs`에 넣고 `result=null`로 Gate 없이 저장합니다. TRUE는 validated PoC와 같은 revision을 검토한 Technical `ACCEPT` 뒤 정책 확인 결과까지 연결해 체이닝 사용 가능 여부를 확정합니다. `PrimitiveAdmissionDecision`은 TRUE 결과를 체이닝 재료로 사용해도 되는지 기록합니다. Rule Scope Gate가 별도로 출력한 `testing_restriction_compliance`가 `FAIL`일 때만 사용을 거절하며, 범위 밖·영향 부족·보상 대상 아님 같은 다른 판정은 체이닝을 막지 않습니다. 정책 수집 실패와 `UNCERTAIN`도 확정 위반으로 바꾸지 않고 정확한 상태와 근거를 남깁니다.
+
+사용이 허용된 TRUE만 제공 능력마다 `result`가 있는 Primitive를 만들고, `admission_decision_ref`로 같은 Verification의 current 허용 결정을 가리킵니다. `PrimitiveIndexState`는 current Verification과 현재 사용할 수 있는 Primitive refs만 가리킵니다. Chaining work는 시작할 때 읽은 index, Primitive와 admission decision의 정확한 수정본을 함께 고정합니다. 실제 match가 직접 또는 부모 체인을 통해 사용한 admission 집합은 `source_admission_refs`로 남깁니다. 일반 index 갱신과 사용하지 않은 후보의 decision 변경은 진행 중 work를 바꾸지 않지만, 실제 사용한 decision이 금지 테스트 위반으로 `DENY`가 되면 해당 Primitive를 index에서 빼고 이전 결정을 사용하는 진행 중 결과도 `STALE_RESULT`로 거절합니다. 이미 저장된 자식·손자 결과는 감사 이력으로만 남기며 새 Verification·Gate·Primitive·Reporter 입력에서 제외합니다.
 
 ## 정책 수집 실패와 정책 부재를 구분합니다
 
@@ -183,6 +185,7 @@ Rule Scope Gate가 `PASS`, `FAIL`, `SUFFICIENT`, `INSUFFICIENT`를 선택하면 
 - `PolicyItem`: 공식 정책의 항목 하나와 원문을 다시 찾을 수 있는 출처 위치를 연결합니다.
 - `PolicyCollectionResult`: 정책을 찾음·공식 부재 확인·수집 실패를 서로 다른 상태로 저장합니다.
 - `PolicyMissingInfo`: 정책 판단에 무엇이 부족한지와 공개 허용을 막는지를 구조화해 저장합니다.
+- `PrimitiveAdmissionDecision`: exact 기술 검토와 정책 확인 결과를 연결해 TRUE Primitive를 체이닝에 사용할 수 있는지 기록합니다.
 - `RuleScopeEvidenceLink`: Rule·Scope·Impact 판단을 실제 정책 항목과 근거에 연결합니다.
 - `PrimitiveDraft`: Primitive의 입력 조건이나 실행 결과 하나를 entity·저장소 권한 값·근거·설명으로 나타냅니다.
 - `PrimitiveMatchCandidate`: upstream Primitive의 하나뿐인 `result`가 downstream Primitive의 `matched_input_id`를 충족하는지, 양쪽 exact record·부모·workspace·commit·근거와 함께 기록한 미검증 연결 후보입니다.

@@ -57,7 +57,7 @@
 
 - FALSE: terminal, Primitive와 Chaining 없음.
 - HOLD: exact final Verification에서 REQUIRED Primitive를 즉시 저장하며 Gate를 거치지 않는다.
-- TRUE: exact 같은 revision이 Technical `ACCEPT`와 Rule Scope `testing_restriction=PASS`를 받은 뒤 PROVIDED Primitive가 된다. 다른 Rule·Scope·Impact/report eligibility 실패는 현재 Reporter만 차단한다.
+- TRUE: exact 같은 revision이 Technical `ACCEPT`를 받은 뒤 R4 `PRIMITIVE_ADMISSION_RUNTIME`이 Rule Scope 또는 정책 수집 결과로 current `PrimitiveAdmissionDecision=ALLOW`를 확정해야 PROVIDED Primitive가 된다. prohibited-testing `FAIL`만 이 정책 축에서 `DENY`가 되며 다른 Rule·Scope·Impact/report eligibility 실패와 `UNCERTAIN | COLLECTION_FAILED`는 현재 Reporter만 차단한다.
 - 새 Verification revision이 생기면 과거 Gate 자격은 새 revision에 적용되지 않고 이전 Primitive는 current matching에서 `SUPERSEDED`된다.
 - TRUE+TRUE는 앞 PROVIDED가 뒤 TRUE의 exact Verification에 기록된 `required_preconditions`를 충족할 때만 허용한다.
 - work 등록 시 각 parent의 current `PrimitiveIndexState`와 그 안의 exact Primitive를 Chaining input에 고정한다. 저장 시 결과가 이 고정 집합과 같은지 검사하며, 등록 뒤 생긴 새 index revision은 기존 work를 무효화하지 않는다.

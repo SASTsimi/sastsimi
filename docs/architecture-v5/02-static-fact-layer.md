@@ -75,6 +75,62 @@ CodeQL·OpenGrep처럼 규칙을 실행하는 도구는 `ToolRunResult.tool_kind
 
 한 도구가 `FAILED | SKIPPED`여도 다른 도구의 사용 가능한 사실을 버리지 않는다. 이때 전체 묶음에는 해당 `ToolRunResult`, 존재하는 `RuleExecutionRecord`, `DataGap`, 필요한 `AnalysisError`가 함께 있어야 한다. retry는 같은 `work_id`의 새 `attempt_id`와 새 규칙 실행 record를 사용하며 이전 시도의 규칙 상태나 탐지 수를 합치지 않는다.
 
+## source reachability 판단
+
+분석 계획은 어떤 rule 묶음으로 codeql·opengrep을 실행해 `source`/`sink` 후보(`CodeFact.fact_kind: SOURCE | SINK`)를 수집할지 — 즉 사실 수집의 범위 — 를 정한다. 이 rule 선택은 취약점을 판정하거나 유형을 확정하는 과정이 아니라 어떤 사실을 모을지 정하는 과정이다. 실제 `vulnerability_type_candidates`는 Hypothesis Agent가 정적 사실을 조합해 만들며, SAST rule 매치와 severity는 최종 취약점 판정이 아니다(위 "정적 분석의 역할" 참고).
+
+rule을 실제로 실행했는지는 위 `RuleExecutionRecord`로 추적한다. `SELECTED + EXECUTED + hit_count=0`(실행했지만 0건)과 `NOT_SELECTED + NOT_EXECUTED`(애초에 미실행)를 구분하고, 확인할 수 없는 경우는 `UNKNOWN`으로 남긴다 — **Issue #82**에서 분리했던 이 공백은 [ADR-006](../review/decisions/ADR-006-static-rule-execution-record.md)로 확정됐다.
+
+codeql·opengrep이 rule 매치로 만든 source 후보는 "이 위치에 이런 패턴이 있다"는 사실만 담을 뿐, 실제로 공격자가 조작 가능한 유저 입력에서 그 위치까지 도달 가능한 경로가 있는지는 담지 않는다. 이 경로는 AST가 만든 call·data-flow 그래프로 판단한다.
+
+- 요청 진입점(`StaticFactBundle.route_bindings`의 `CodeRelation(relation_kind=ROUTE_BINDING)`으로 식별된 handler 파라미터 등)에서 source 후보까지 이어지는 `CodeRelation(relation_kind=DATA_FLOW)` 경로가 있으면 그 관계를 `StaticFactBundle.data_flow_candidates`에 근거로 남긴다.
+- `data_flow_candidates`에 해당 근거가 없다는 사실은 서로 다른 두 상태를 가리킬 수 있으므로 섞어 기록하지 않는다. AST의 call/data-flow 분석도 결국 하나의 도구 실행이므로 위 `ToolRunResult.status` 규칙을 그대로 따른다.
+  - `status=SUCCEEDED`이고 필요한 범위가 `coverage`에 포함돼 있으면: 탐색은 했지만 경로를 확인하지 못한 것이다.
+  - `status=PARTIAL`(예: 재귀 깊이 제한으로 일부 경로만 추적 — 범위는 `coverage`에 남긴다), `FAILED`(분석 자체 실패 — `AnalysisError(code=STATIC_TOOL_ERROR)`, [결과와 관측 가능성](./07-results-and-observability.md) 참고), `SKIPPED`(미실행) 중 하나면: 분석이 부족하거나 실패해서 확인하지 못한 것이다. 원인은 `gaps`·`errors`에 남긴다.
+- 두 경우 모두 source 후보를 지우거나 걸러내지 않는다. call graph는 `SUCCEEDED` 상태에서도 dynamic dispatch·reflection 등으로 불완전할 수 있으므로, reachability 미확인을 "도달 불가능 확정"으로 자동 해석하지 않는다.
+- 이렇게 reachability 근거가 붙은(또는 붙지 않은) source 후보는 Hypothesis Agent의 초기 가설 생성과 Verification·Pro·Con의 반증·검증 근거로 사용한다. Pro·Con과 최종 판정을 내리는 Verification Agent는 같은 exact 정적분석 결과 revision을 사용한다. Chaining Agent는 이 정적 source 후보를 직접 소비하지 않는다 — 코드 문맥을 새로 조회하지 않고, 가설별 `PrimitiveIndexState`가 가리키는 current `Primitive`와 그 `Primitive`를 만든 exact Verification(`source_verification_ref`), 있는 경우 그 Technical review(`technical_review_ref`; final HOLD는 `null`)만 사용한다는 기존 경계([03. Agent 역할과 오케스트레이션](./03-agent-roles-and-orchestration.md), [06. Chaining](./06-chaining.md))를 그대로 따른다. `Primitive`는 별도 상태 필드를 두지 않고 등록 조건이 판정 유형마다 다르다.
+  - final `HOLD`: `required_primitive_candidates`가 있을 때만 `result=null` `Primitive`를 Gate 없이 즉시 등록한다.
+  - final `TRUE`: 현재 Verification generation의 성공한 동적 재현(validated PoC)과 Technical Gate `ACCEPT`가 모두 있고 `provided_primitive_candidates`가 있을 때, 제공 능력마다 `result`가 있는 `Primitive`를 하나씩 등록한다. Rule Scope Gate는 보고 가능성만 판단할 뿐 `Primitive` 등록 조건이 아니다.
+
+다음은 `get_order` 핸들러(`/orders/<id>`, 유저 조작 가능한 `id` 파라미터)에서 SQL 조합 지점까지의 reachability 근거 예시다 — `ToolRunResult.status=SUCCEEDED`로 탐색을 마치고 경로를 확인한 경우다.
+
+```yaml
+source_candidate: # CodeFact, codeql이 생성
+  fact_id: cf-src-001
+  fact_kind: SOURCE
+  symbol_id: null
+  location:
+    workspace_id: ws-001
+    commit_id: 7f3a2c1
+    file_path: src/orders.py
+    start_line: 45
+    start_column: 5
+    end_line: 45
+    end_column: 42
+  producer:
+    attempt_id: attempt-codeql-001
+    tool_name: codeql
+    tool_version: 2.15.0
+    rule_id: py/sql-injection
+    raw_result_ref: { stored_data_id: data-raw-001, data_kind: raw_tool_result, content_hash: "sha256:...", workspace_id: ws-001, commit_id: 7f3a2c1, record_id: null }
+
+reachability_edge: # CodeRelation, ast 파서의 data-flow 분석이 생성
+  relation_id: cr-df-001
+  relation_kind: DATA_FLOW
+  from_symbol_id: sym-get-order # app.route('/orders/<id>') 핸들러의 id 파라미터
+  from_location: { workspace_id: ws-001, commit_id: 7f3a2c1, file_path: src/orders.py, start_line: 12, start_column: 1, end_line: 12, end_column: 20 }
+  to_symbol_id: null # source_candidate 위치와 동일
+  to_location: { workspace_id: ws-001, commit_id: 7f3a2c1, file_path: src/orders.py, start_line: 45, start_column: 5, end_line: 45, end_column: 42 }
+  producer:
+    attempt_id: attempt-ast-001
+    tool_name: ast_dataflow
+    tool_version: 1.4.2
+    rule_id: null
+    raw_result_ref: { stored_data_id: data-raw-002, data_kind: raw_tool_result, content_hash: "sha256:...", workspace_id: ws-001, commit_id: 7f3a2c1, record_id: null }
+```
+
+위 예시의 `source_candidate`, `reachability_edge`는 설명용 이름이며, 실제 저장 필드는 각각 `StaticFactBundle.source_candidates`(`CodeFact`)와 `data_flow_candidates`(`CodeRelation`)다. `CodeFact`에는 별도 `reachable` 필드를 두지 않는다 — 요청 진입점에서 이 `source_candidate` 위치까지 이어지는 `CodeRelation(relation_kind=DATA_FLOW)`이 `data_flow_candidates`에 존재하면 그 관계 자체가 reachability 근거다. 이 관계가 없으면 위 두 상태(탐색 완료·경로 미확인, 또는 분석 부족·실패) 중 하나이며, source 후보는 그대로 유지된 채 어느 상태인지는 `ast_dataflow`의 `ToolRunResult`로 구분해 Hypothesis·Verification 단계에 전달된다.
+
 ## submodule, Git LFS와 생성 파일
 
 - 분석 범위에 submodule이 필요하면 `Repository Loader`가 명시적으로 초기화한다. 실패한 submodule과 영향 범위는 `DataGap`으로 남긴다.

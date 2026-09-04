@@ -11,12 +11,11 @@
 ## 통합 Primitive
 
 - HOLD는 부족한 조건들을 `inputs`에 넣고 `result=null`로 저장합니다.
-- TRUE는 validated PoC가 있고 Technical Gate가 exact revision을 `ACCEPT`한 뒤, 같은 exact chain의 Rule Scope Gate가 `testing_restriction=PASS`로 판정해야 `result`가 있는 Primitive가 됩니다.
+- TRUE는 validated PoC가 있고 Technical Gate가 exact revision을 `ACCEPT`한 뒤, 금지 테스트 위반 여부를 분리한 current `PrimitiveAdmissionDecision=ALLOW`일 때만 `result`가 있는 Primitive가 됩니다.
 - TRUE의 제공 능력이 여러 개면 능력마다 Primitive 하나를 만들며, 같은 TRUE의 입력 조건과 제한을 각각 함께 보존합니다.
 - `REQUIRED`, `PROVIDED`, `TRUE_HOLD`, `TRUE_TRUE` 같은 별도 종류는 저장하지 않습니다. 필요하면 `result` 유무와 부모 verdict에서 계산합니다.
-- `testing_restriction=FAIL`은 Primitive·Chaining을 금지하고 `UNCERTAIN`은 재판정까지 admission을 보류합니다. 명시적 `PASS`일 때만 admission할 수 있습니다.
-- `testing_restriction=PASS`라면 scope·일반 eligibility·impact·report permission 실패는 현재 Reporter만 차단하고 Primitive·Chaining은 허용합니다.
-- FALSE, Rule Scope 전 TRUE, Technical `REVISE | REJECT`는 result Primitive가 되지 않습니다.
+- Rule Scope Gate의 금지 테스트 판정이 `FAIL`이면 admission은 `DENY`이고 result Primitive를 만들지 않습니다. 다른 규칙·scope·impact·보고 판단의 `FAIL | UNCERTAIN | DENY`는 current `ALLOW` Primitive와 Chaining 자격을 없애지 않습니다.
+- FALSE, Gate 전 TRUE, Technical `REVISE | REJECT`와 admission `DENY`인 TRUE는 result Primitive가 되지 않습니다.
 
 ## Matching과 새 가설
 
@@ -24,7 +23,7 @@ Chaining Agent는 `upstream_result_ref`가 `downstream_input_ref`의 `matched_in
 
 match 후보는 부모 가설·Verification, workspace·commit, 정확한 Primitive record와 근거를 고정한 `PrimitiveMatchCandidate`입니다. 이 후보는 `UNVALIDATED`이며, 의미 있는 연결이면 `HypothesisProposal(origin=CHAINING)`을 만들고 trusted validation·전역 등록 뒤 새 Verification을 배정합니다. 새 가설은 `source_primitive_match_id`로 자신을 만든 정확한 match를 가리키고, 양쪽 Primitive의 `Restriction` 객체를 중복 없이 합쳐 그대로 보존합니다. 같은 restriction ID의 내용이나 근거가 다르면 등록하지 않습니다.
 
-Runtime은 work를 시작할 때 조상 제외 전 전체 Primitive를 `considered_primitive_refs`로 고정합니다. 실제 match에 사용된 Primitive만 `input_primitive_refs`에 남기므로 두 목록을 같은 의미로 사용하지 않습니다. 두 목록에는 같은 exact reference를 중복해서 넣지 않습니다. 진행 중인 Chaining work의 입력은 바뀌지 않습니다. 새 Primitive가 생기면 별도 Chaining work에서 처리합니다.
+Runtime은 work를 시작할 때 조상 제외 전 전체 Primitive를 `considered_primitive_refs`로 고정합니다. result Primitive와 CHAINING에서 파생된 Primitive는 부모 match를 재귀 추적해 그때의 current `PrimitiveAdmissionDecision=ALLOW`도 함께 고정합니다. 실제 match에 사용된 Primitive만 `input_primitive_refs`에 남기므로 두 목록을 같은 의미로 사용하지 않습니다. 실제 입력의 direct·ancestor admission 집합은 `source_admission_refs`에 중복 없이 기록합니다. 일반적인 새 Primitive·index 변경과 사용하지 않은 후보의 decision 변경은 진행 중 입력을 바꾸지 않고 다음 work에서 처리합니다. 다만 실제 match가 사용한 admission decision이 오래됐거나 `DENY`로 바뀌면 금지된 근거가 자식·손자 가설로 번지지 않도록 진행 중 결과를 저장하지 않습니다. 이미 저장된 파생 결과는 감사 이력으로만 남기고 새 Verification·Gate·Primitive·Reporter 입력에서 제외합니다.
 
 `source_result_refs`와 각 match의 부모 가설·Verification 목록은 실제 match에 사용한 Primitive가 직접 가리키는 값만 중복 없이 모읍니다. 빠진 값, 관계없는 값, 다른 work의 값을 넣으면 결과를 저장하지 않습니다.
 

@@ -54,6 +54,9 @@
 | [`ADR-006-static-rule-execution-record.md`](./review/decisions/ADR-006-static-rule-execution-record.md) | SAST 규칙의 실행 0건·미실행·확인 불가를 구분하고 ToolRunResult와 연결하는 현재 결정을 설명합니다. | R2·R4·R8 담당 | 확정 결정 |
 | [`ADR-007-r7-autonomous-reproduction-session.md`](./review/decisions/ADR-007-r7-autonomous-reproduction-session.md) | R7 Agent의 Sandbox 내부 자율 재현과 Session Manager의 로그·결과 확정 책임을 설명합니다. | R4·R6·R7·R8 담당 | 확정 결정 |
 | [`ADR-008-hypothesis-restriction-duplicate-contract.md`](./review/decisions/ADR-008-hypothesis-restriction-duplicate-contract.md) | 가설 제한 조건의 exact 근거와 LLM 중복 판정·실패 처리 lifecycle을 설명합니다. | R1·R2·R3·R4·R6·R8 담당 | 확정 결정 |
+| [`ADR-009-r5-01-cwe-labeling-provenance.md`](./review/decisions/ADR-009-r5-01-cwe-labeling-provenance.md) | CWE 라벨을 새 Verification마다 다시 평가하고 exact revision에 연결하는 현재 결정을 설명합니다. | R4·R5·R6 담당 | 확정 결정 |
+| [`ADR-010-static-fact-kind-partition.md`](./review/decisions/ADR-010-static-fact-kind-partition.md) | StaticFactBundle의 사실 종류와 sanitizer·validator 후보를 분리해 전달하는 현재 결정을 설명합니다. | R2·R4·R6·R8 담당 | 확정 결정 |
+| [`ADR-011-testing-restriction-primitive-admission.md`](./review/decisions/ADR-011-testing-restriction-primitive-admission.md) | 금지된 테스트 위반만 TRUE Primitive 체이닝 자격을 막도록 전용 판정과 admission 결정을 분리한 현재 결정을 설명합니다. | R1·R4·R5 담당 | 확정 결정 |
 
 ## Architecture v5 기술 기준 문서
 
