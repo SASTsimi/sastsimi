@@ -153,6 +153,8 @@ Technical Gate는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 
 
 평가 실행은 시작할 때 평가 장면, 지표·한도, corpus·사람 정답·채점 방식, provider·model·session의 정확한 설정 수정본을 `AnalysisRunState.eval_config_refs`에 고정합니다. 종료 결과의 `AnalysisRunResult.eval_config_refs`는 이 전체 집합과 정확히 같아야 하며 `PRODUCTION`에서는 둘 다 빈 목록입니다. 두 평가 결과는 이 목록이 exact reference 기준으로 같을 때만 직접 비교합니다. 이 목록은 평가 출처 확인용이며 Gate·Primitive·Reporter 입력이 아닙니다.
 
+유형별 플레이북은 파일이 존재한다는 이유만으로 자동 사용하지 않습니다. 사람이 승인한 `PlaybookPolicy`가 유형과 exact 플레이북 수정본을 연결하고, 프로그램은 등록 가설의 exact proposal에 유형 후보가 하나뿐이며 policy에 같은 유형이 있을 때만 `TYPE_SPECIFIC`을 선택합니다. 후보가 없거나 여러 개이거나 허용되지 않았으면 `COMMON`을 선택합니다. 이번 검증에서 사용한 policy·playbook과 새로 발급한 질문 ID는 `PlaybookApplication`으로 묶어 work 입력에 고정합니다. Pro·Con과 최종 결과는 이 같은 application을 사용하고, 최종 질문 결과는 가설 질문과 application 질문을 빠짐없이 정확히 한 번씩 처리해야 합니다.
+
 Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 부족 조건을 `inputs`에 넣고 `result=null`로 Gate 없이 저장합니다. TRUE는 validated PoC와 같은 revision을 검토한 Technical `ACCEPT` 뒤 제공 능력 하나마다 `result`가 있는 Primitive를 만들고, 그 TRUE의 입력 조건과 `restriction_id`·근거 reference 전체도 함께 보존합니다. Rule Scope 결과는 Reporter만 제어하며 Primitive admission을 취소하지 않습니다. `PrimitiveIndexState`는 current Verification과 Primitive refs만 가리키며 별도 전용 version은 두지 않습니다. Chaining work는 시작할 때 읽은 index와 Primitive exact reference를 고정합니다. 이후 current pointer가 갱신돼도 진행 중인 work를 무효화하지 않으며, 그 work에 고정하지 않은 reference가 결과에 섞였을 때만 `STALE_RESULT`로 거절합니다.
 
 ## 자주 쓰는 작은 데이터 구조
@@ -162,6 +164,8 @@ Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 �
 - `Restriction`: 공격을 제한하는 조건과 그 조건을 확인한 코드 사실·검증 근거를 함께 저장합니다.
 - `EvidenceAgentResult`: Pro 또는 Con 한쪽이 같은 공통 입력을 읽고 만든 독립 근거 결과입니다. 부모 Verification과 역할별 작업 ID를 함께 남깁니다.
 - `VerificationPlaybook`: 취약점 검증에 사용할 사전 조건, 경로·방어 확인, 반증 질문, 근거 요구사항과 HOLD 조건을 묶은 versioned 절차입니다.
+- `PlaybookPolicy`: 사람이 승인한 운영 지원 유형과 사용할 exact 공통·유형별 플레이북 수정본을 연결한 설정입니다.
+- `PlaybookApplication`: 한 Verification work에서 선택한 policy·playbook과 플레이북 질문에 발급한 실제 `question_id`를 고정한 기록입니다.
 - `CandidateRef`: 아직 검증되지 않은 우회·대체 경로·영향 확대 후보입니다. 새 주장이면 별도 가설로 검증하기 전까지 확정 결과로 쓰지 않습니다.
 - `VerificationMetrics`: debate의 token·시간·판정 변화와 새로 발견한 항목 수를 저장합니다. 제공되지 않은 token은 `null`입니다.
 - `PolicyItem`: 공식 정책의 항목 하나와 원문을 다시 찾을 수 있는 출처 위치를 연결합니다.

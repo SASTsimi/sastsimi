@@ -1832,6 +1832,81 @@ foreach ($rule in $requiredCweLabelCrossDocumentRules) {
     }
 }
 
+$playbookQuestionTemplateBlock = [regex]::Match($contractText, '(?ms)^PlaybookQuestionTemplate:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$verificationPlaybookBlock = [regex]::Match($contractText, '(?ms)^VerificationPlaybook:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$playbookPolicyItemBlock = [regex]::Match($contractText, '(?ms)^PlaybookPolicyItem:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$playbookPolicyBlock = [regex]::Match($contractText, '(?ms)^PlaybookPolicy:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$appliedPlaybookQuestionBlock = [regex]::Match($contractText, '(?ms)^AppliedPlaybookQuestion:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$playbookApplicationBlock = [regex]::Match($contractText, '(?ms)^PlaybookApplication:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+
+$requiredPlaybookContractFields = @(
+    @{ Contract = 'PlaybookQuestionTemplate'; Block = $playbookQuestionTemplateBlock; Fields = @('template_key: string', 'question: string') },
+    @{ Contract = 'VerificationPlaybook'; Block = $verificationPlaybookBlock; Fields = @('falsification_question_templates: [PlaybookQuestionTemplate]') },
+    @{ Contract = 'PlaybookPolicyItem'; Block = $playbookPolicyItemBlock; Fields = @('vulnerability_type: string', 'playbook_ref: StoredDataRef') },
+    @{ Contract = 'PlaybookPolicy'; Block = $playbookPolicyBlock; Fields = @('common_playbook_ref: StoredDataRef', 'type_playbooks: [PlaybookPolicyItem]', 'approved_by: string', 'approved_at: timestamp') },
+    @{ Contract = 'AppliedPlaybookQuestion'; Block = $appliedPlaybookQuestionBlock; Fields = @('template_key: string', 'question_id: string', 'question: string') },
+    @{ Contract = 'PlaybookApplication'; Block = $playbookApplicationBlock; Fields = @('verification_work_id: string', 'verification_generation: integer', 'hypothesis_ref: StoredDataRef', 'proposal_ref: StoredDataRef', 'policy_ref: StoredDataRef', 'playbook_ref: StoredDataRef', 'selection: COMMON | TYPE_SPECIFIC', 'selected_type: string | null', 'selection_reason: TYPE_MATCH | NO_TYPE | MULTIPLE_TYPES | TYPE_NOT_ALLOWED', 'questions: [AppliedPlaybookQuestion]') },
+    @{ Contract = 'VerificationResult'; Block = $verificationResultBlock; Fields = @('playbook_ref: StoredDataRef', 'playbook_application_ref: StoredDataRef') }
+)
+foreach ($contract in $requiredPlaybookContractFields) {
+    if ([string]::IsNullOrWhiteSpace($contract.Block)) {
+        Add-Failure "missing playbook contract block: $($contract.Contract)"
+        continue
+    }
+    foreach ($field in $contract.Fields) {
+        if (-not $contract.Block.Contains($field)) {
+            Add-Failure "$($contract.Contract) is missing playbook field: $field"
+        }
+    }
+}
+
+$requiredPlaybookApplicationRules = @(
+    @{ Name = 'Verification work registration pins policy and application'; Marker = '`REGISTER_WORK(work_type=VERIFICATION)` 시 trusted runtime은 exact `VulnerabilityHypothesis`와 그 `proposal_ref`, current exact `PlaybookPolicy`를 읽고' },
+    @{ Name = 'Verification registration key excludes its derived application'; Marker = 'registration 과정에서 새로 생기는 application reference 자체는 `dedupe_key`에 넣지 않고 application의 원본인 hypothesis·proposal·policy·playbook reference를 넣는다.' },
+    @{ Name = 'duplicate Verification registration reuses its application'; Marker = '같은 key의 work가 있으면 새 application을 만들지 않고 기존 work와 그 work에 고정된 application을 반환한다.' },
+    @{ Name = 'registered hypothesis has no singular vulnerability type'; Marker = '등록된 `VulnerabilityHypothesis`에는 단일 `vulnerability_type` 필드가 없다.' },
+    @{ Name = 'selection reads exact proposal candidates'; Marker = '선택 runtime은 `VulnerabilityHypothesis.proposal_ref`가 가리키는 exact `HypothesisProposal.vulnerability_type_candidates`만 읽는다.' },
+    @{ Name = 'selection has explicit common fallbacks'; Marker = '후보가 없으면 `NO_TYPE`, 둘 이상이면 `MULTIPLE_TYPES`, 하나지만 policy에 없으면 `TYPE_NOT_ALLOWED`로 current COMMON revision을 선택한다.' },
+    @{ Name = 'playbook application binds the Verification work'; Marker = '`PlaybookApplication`은 위 선택을 특정 Verification work에 고정한 runtime record다.' },
+    @{ Name = 'template questions receive fresh global IDs'; Marker = '각 항목에 새 전역 `question_id`를 발급한다.' },
+    @{ Name = 'all Verification actors use one exact application'; Marker = 'Verification Agent의 직접 검증, `PRO_EVIDENCE`, `CON_EVIDENCE`, final Verification 합성 호출 및 `SAVE_RESULT(result_kind=verification_result)`는 모두 해당 Verification work에 고정된 동일한 policy·playbook·application reference를 사용해야 한다.' },
+    @{ Name = 'final question result set is exact union'; Marker = 'exact `VulnerabilityHypothesis.falsification_questions[].question_id`와 exact `PlaybookApplication.questions[].question_id`의 중복 없는 합집합과 set-equal해야 한다.' },
+    @{ Name = 'policy and application are runtime-owned'; Marker = '`PlaybookApplication`도 Agent의 `SAVE_RESULT` 출력이 아니라 `REGISTER_WORK(work_type=VERIFICATION)` runtime이 work와 함께 만드는 고정 입력 record다.' },
+    @{ Name = 'playbook application requires a new major schema'; Marker = '`PlaybookQuestionTemplate`, `PlaybookPolicy`, `PlaybookApplication`과 `VerificationResult.playbook_application_ref`는 새 필수 계약이므로 새 MAJOR schema에서만 사용한다.' },
+    @{ Name = 'old playbook data is not inferred'; Marker = '과거 플레이북 문자열이나 Verification 결과에 template key·policy·application·질문 ID를 추정해 채우지 않는다.' }
+)
+foreach ($rule in $requiredPlaybookApplicationRules) {
+    if (-not $contractText.Contains($rule.Marker)) {
+        Add-Failure "missing playbook application contract rule: $($rule.Name)"
+    }
+}
+
+$verificationWikiText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/verification-and-dynamic.md')
+$requiredPlaybookCrossDocumentRules = @(
+    @{ Name = 'role document defines registry runtime'; Text = $orchestrationText; Marker = '| Playbook Registry Runtime |' },
+    @{ Name = 'role document fixes one question set'; Text = $orchestrationText; Marker = '같은 application 질문 집합을 사용하는지 검사' },
+    @{ Name = 'Verification document separates evaluation evidence from operational approval'; Text = $verificationText; Marker = 'R8의 versioned evaluation corpus는 우선 지원할 취약점 유형을 정하는 평가 근거이고, 운영에서 실제 허용할 유형과 exact 플레이북 revision의 연결은 사람이 승인한 current `PlaybookPolicy`로 확정한다.' },
+    @{ Name = 'Verification document defines exact type selection'; Text = $verificationText; Marker = '후보가 정확히 하나이고 current `PlaybookPolicy`에 같은 유형의 mapping이 있을 때만 해당 exact `TYPE_SPECIFIC` revision을 선택한다.' },
+    @{ Name = 'Verification document requires one application question set'; Text = $verificationText; Marker = 'final 질문 결과는 가설 자체의 반증 질문과 application 질문의 합집합을 빠짐없이 정확히 한 번씩 처리해야 한다.' },
+    @{ Name = 'security rejects guessed singular type'; Text = $securityText; Marker = '등록 가설에 없는 단일 `vulnerability_type`을 추정하거나 여러 type 후보 중 하나를 Agent가 선택' },
+    @{ Name = 'security rejects different applications'; Text = $securityText; Marker = 'Pro·Con·최종 합성이 서로 다른 `PlaybookApplication` 또는 질문 ID를 사용' },
+    @{ Name = 'security scenario N31 exists'; Text = $securityText; Marker = '| N31 | 가설 type 후보가 없거나 여러 개인데 TYPE_SPECIFIC 플레이북을 선택 |' },
+    @{ Name = 'security scenario N32 exists'; Text = $securityText; Marker = '| N32 | policy에 없는 type 또는 policy와 다른 playbook revision을 선택 |' },
+    @{ Name = 'security scenario N33 exists'; Text = $securityText; Marker = '| N33 | 플레이북 질문 template가 application에서 빠지거나 다른 문장·중복 ID로 저장됨 |' },
+    @{ Name = 'security scenario N34 exists'; Text = $securityText; Marker = '| N34 | Verification 결과가 hypothesis 질문만 처리하고 application 질문을 누락 |' },
+    @{ Name = 'Wiki explains exact playbook selection'; Text = $commonWikiText; Marker = '사람이 승인한 `PlaybookPolicy`가 유형과 exact 플레이북 수정본을 연결' },
+    @{ Name = 'Wiki explains the applied question binding'; Text = $commonWikiText; Marker = '이번 검증에서 사용한 policy·playbook과 새로 발급한 질문 ID는 `PlaybookApplication`으로 묶어 work 입력에 고정합니다.' },
+    @{ Name = 'Verification Wiki records both exact refs'; Text = $verificationWikiText; Marker = '`VerificationResult`는 exact `playbook_ref`와 `playbook_application_ref`를 함께 기록합니다.' },
+    @{ Name = 'Verification Wiki explains template keys'; Text = $verificationWikiText; Marker = '플레이북의 `template_key`는 사람이 읽는 이름일 뿐 실제 질문 ID가 아닙니다.' },
+    @{ Name = 'glossary explains policy'; Text = $glossaryText; Marker = '| `PlaybookPolicy` |' },
+    @{ Name = 'glossary explains application'; Text = $glossaryText; Marker = '| `PlaybookApplication` |' }
+)
+foreach ($rule in $requiredPlaybookCrossDocumentRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing playbook application cross-document rule: $($rule.Name)"
+    }
+}
+
 $savedErrorAction = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 $gitCheck = & git -C $repoRoot diff --check 2>&1
@@ -1867,6 +1942,9 @@ Write-Output "R4-03 authority errors: $($requiredAuthorityErrors.Count)"
 Write-Output "R4-03 authority scenarios: $($authorityScenarioMarkers.Count)"
 Write-Output "R4-03 authority rules: $($requiredAuthorityRules.Count)"
 Write-Output "R5-01 CWELabel cross-document rules: $($requiredCweLabelCrossDocumentRules.Count)"
+Write-Output "Playbook application contract blocks: $($requiredPlaybookContractFields.Count)"
+Write-Output "Playbook application contract rules: $($requiredPlaybookApplicationRules.Count)"
+Write-Output "Playbook application cross-document rules: $($requiredPlaybookCrossDocumentRules.Count)"
 Write-Output "R5-03 automation boundary rules: $($requiredAutomationBoundaryRules.Count)"
 Write-Output "R4-03 Sandbox review rules: $($sandboxReviewPatterns.Count)"
 Write-Output "R6-R7 environment handoff rules: $($environmentHandoffPatterns.Count)"

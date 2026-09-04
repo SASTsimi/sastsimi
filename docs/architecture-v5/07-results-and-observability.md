@@ -176,7 +176,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 - 현재 state version·input hash·workspace·commit·hypothesis·record revision과 다르면 `STALE_RESULT`다.
 - 취소 뒤 도착한 결과, 이미 합류가 끝난 이전 결과와 `ABORTED` output은 debug 격리 영역에 보존할 수 있지만 `facts`, `verifications`, `gates`, `reports`의 최신 pointer로 승격하지 않는다.
 - 이미 확정된 결과에 새 근거를 반영해야 하면 기존 record를 덮어쓰지 않고 새 input revision, `dedupe_key`, `work_id`와 downstream revision을 만든다.
-- Pro/Con 한쪽만 재시도할 때 성공한 다른 쪽 결과는 부모 work·generation·공통 입력·플레이북·Debate 설정·예산 profile이 모두 그대로일 때만 재사용한다. 하나라도 바뀌면 두 결과 모두 `STALE_RESULT`다.
+- Pro/Con 한쪽만 재시도할 때 성공한 다른 쪽 결과는 부모 work·generation·공통 입력·policy·playbook·application과 질문 ID 집합·Debate 설정·예산 profile이 모두 그대로일 때만 재사용한다. 하나라도 바뀌면 두 결과 모두 `STALE_RESULT`다.
 
 ## 중단 후 재개
 
