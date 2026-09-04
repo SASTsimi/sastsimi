@@ -93,7 +93,7 @@ v4 TRUE | FALSE | PENDING
 6. ACTIVE `VerificationAssignment` 기반 material claim과 새 VERIFICATION work를 만드는 Technical `REVISE` loop
 7. CWE와 Technical Evidence Gate
 8. Technical `ACCEPT` 기반 result Primitive admission과 독립된 official `ProgramPolicyRecord`·Rule Scope Impact Gate
-9. Primitive DB와 upstream `result`→downstream `input` Chaining loop, 계보 기반 순환 제외
+9. Primitive DB와 upstream `result`→downstream `input` Chaining loop, 계보 기반 조상 재사용 제외
 10. provider adapters, session policy와 Logging Proxy/parser
 11. Reporter와 result stores, `ReportDraft` 뒤 Agent 자동화 종료 경계
 

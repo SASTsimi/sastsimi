@@ -11,7 +11,7 @@ HOLD의 부족 조건과 TRUE의 확인된 능력을 서로 다른 상태·보�
 - `HypothesisProposal`, `VulnerabilityHypothesis` 계보 필드 단순화
 - TRUE 재료 자격을 final TRUE + Technical `ACCEPT`로 변경
 - Rule Scope Gate를 보고서 제출 가능성 판단으로 한정
-- 체이닝 전용 depth/count/call/combination 한도 제거, R8 공통 예산과 순환 제외 유지
+- 체이닝 전용 depth/count/call/combination 한도 제거, R8 공통 예산과 조상 재사용 제외 유지
 - 정본·Wiki·Mermaid·governance·review·validator 동기화
 
 ## Unified Primitive
@@ -44,7 +44,7 @@ HOLD의 부족 조건과 TRUE의 확인된 능력을 서로 다른 상태·보�
 
 `root_hypothesis_id`와 `chain_depth`를 제거하고 직접 부모인 `parent_hypothesis_ids`만 유지한다. Chaining-origin proposal과 hypothesis는 `source_primitive_match_id`로 자신을 만든 match candidate를 가리킨다. 이 ID는 분석 전체에서 유일하며 COMMITTED `ChainingResult` 안의 후보 하나로 해석되어야 한다.
 
-순환 검사는 현재 parent hypothesis에서 `source_primitive_match_id`를 따라 조상 match와 입력 Primitive를 역방향으로 걷는다. 이 과정에서 만난 Primitive는 현재 순회의 후보에서 제외한다. DB record를 수정하지 않는다. 체이닝 전용 임의 depth·가설 수·호출 수·조합 수 한도는 두지 않지만, R8의 전체 token·시간·비용·work 예산은 모든 체이닝에도 적용한다.
+조상 재사용 제외는 같은 계보에서 가장 깊은 후보부터 match를 검토하고, 그 match가 실제로 성립한 뒤에만 그 후보의 `upstream_result_ref`·`downstream_input_ref` 양쪽을 재귀 추적해 얻은 조상을 현재 순회의 후보에서 제외한다. match가 성립하지 않으면 아무것도 제외하지 않는다. DB record를 수정하지 않는다. 체이닝 전용 임의 depth·가설 수·호출 수·조합 수와 token 상한은 두지 않고, R8의 전체 시간·비용·work 예산을 모든 체이닝에 적용한다.
 
 ## Primitive index and concurrency
 
