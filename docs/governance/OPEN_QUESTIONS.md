@@ -36,10 +36,10 @@
 | 2 | 회원 로그인·API 인증정보와 로그인 상태를 어디까지 저장할지 정합니다. | Membership/API credential와 session 저장 경계 |
 | 3 | 새 대화, 이어서 대화, 자동 선택을 어떻게 비교하고 기본 한도를 얼마로 할지 정합니다. | `NEW / RESUME / AUTO` 평가와 기본 limit |
 | 4 | LLM이 잘못된 형식으로 답했을 때 몇 번 고치게 할지와 구조화된 출력의 합격 기준을 정합니다. | Hypothesis schema repair 횟수와 structured-output 합격 기준 |
-| 5 | 필요한 코드를 얼마나 깊고 많이 가져올 수 있는지 정합니다. | Context retrieval depth/token/request 제한 |
+| 5 | 필요한 코드를 얼마나 깊고 많이 가져올 수 있는지 정합니다. | Context retrieval depth/fragment/byte/request/time 제한; token은 관측만 함 |
 | 6 | 운영은 항상 찬성·반대 검증을 실행합니다. BASIC·조건부 방식의 비용·효과를 비교할 평가 자료와 운영 전환 합격선만 정합니다. | `ALWAYS_DEBATE` 운영 고정, BASIC/CONDITIONAL 비교 corpus와 acceptance threshold |
 | 7 | 연계 공격의 필요 조건과 확인된 능력을 어떤 단어로 기록하고 연결할지 정합니다. | Primitive vocabulary와 scope/capability matching |
-| 8 | 연계 탐색이 끝없이 늘어나지 않도록 한도를 정합니다. | Chaining depth·count·primitive 조합·token·time·duplicate 제한 |
+| 8 | 연계 탐색이 끝없이 늘어나지 않도록 전체 실행 한도와 중복 기준을 정합니다. | 전체 time·cost·work와 duplicate/ancestor 기준; 체이닝 전용 depth·count·조합·token 상한은 두지 않음 |
 | 9 | Docker 이미지, 네트워크, 자원과 종료 후 정리 방법을 정합니다. | image/network/resource/cleanup 정책 |
 | 10 | 공식 정책의 출처별 최대 허용 나이와 확인 방법을 정합니다. 공통 처리 규칙은 이미 확정되어, 정책이 없거나 오래됐거나 최신성을 확인하지 못하면 `UNCERTAIN + DENY`입니다. | `ProgramPolicyRecord` source·freshness threshold·collector failure; `STALE | UNVERIFIED -> UNCERTAIN + DENY` 고정 |
 | 11 | 두 Gate가 사용할 질문, 보완 반복 횟수와 평가 자료를 정합니다. | Gate prompt, revision limit와 dataset |

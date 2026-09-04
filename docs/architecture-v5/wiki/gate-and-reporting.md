@@ -22,14 +22,16 @@ final TRUE `VerificationResult`의 찬반 근거, 실제 코드·호출·데이�
 
 ## 2. 공식 정책·범위·영향 검토(`Rule Scope Impact Gate`)
 
-Technical `ACCEPT`인 `TRUE`만 공식 `ProgramPolicyRecord`과 함께 검토한다. Rule Scope 결과에는 자신이 읽은 Verification, Technical review, CWELabel과 정책의 정확한 `record_id`를 남긴다. Technical review가 가리킨 CWELabel과 Rule Scope가 직접 가리킨 CWELabel은 같아야 한다. 이 중 하나라도 수정되면 이전 Rule Scope 결과를 재사용하지 않는다.
+Technical `ACCEPT`인 `TRUE`만 정책 수집 결과와 함께 검토합니다. 정책 수집은 `FOUND`, `ABSENT_CONFIRMED`, `COLLECTION_FAILED`를 구분합니다. `FOUND`이면 exact `ProgramPolicyRecord`도 함께 읽고, `ABSENT_CONFIRMED`이면 정책을 추정하지 않고 `UNCERTAIN + DENY`로 검토할 수 있습니다. `COLLECTION_FAILED`는 Rule Scope review를 만들지 않습니다.
+
+Rule Scope 결과에는 자신이 읽은 Verification, Technical review, CWELabel, 정책 수집 결과와 존재하는 정책 record의 정확한 `record_id`를 남깁니다. `PASS | FAIL | SUFFICIENT | INSUFFICIENT` 판단은 실제 정책 항목과 코드·실행 근거에 연결하고, 부족한 정보는 어느 판단을 막는지 구조화해 남깁니다. 입력 중 하나라도 수정되거나 정책 최신성이 만료되면 이전 Rule Scope 결과를 재사용하지 않습니다.
 
 - rule_compliance: `PASS | FAIL | UNCERTAIN`
 - scope_compliance: `PASS | FAIL | UNCERTAIN`
 - security_impact: `SUFFICIENT | INSUFFICIENT | UNCERTAIN`
 - report permission: `ALLOW | DENY`
 
-공식 정책 자료가 없거나 정책의 `freshness_status`가 `STALE | UNVERIFIED`이면 rule/scope/review는 `UNCERTAIN`이고 permission은 `DENY`다. 오래된 정책 reference는 감사용으로 남길 수 있지만 `PASS | ALLOW` 근거로 쓰지 않는다. 저장소 문서나 모델 기억으로 공식 정책을 추정하지 않는다.
+공식 정책 부재가 확인된 `ABSENT_CONFIRMED`이거나 정책의 `freshness_status`가 `STALE | UNVERIFIED`이면 rule/scope/review는 `UNCERTAIN`이고 permission은 `DENY`입니다. 오래된 정책 reference는 감사용으로 남길 수 있지만 `PASS | ALLOW` 근거로 쓰지 않습니다. 수집 실패 `COLLECTION_FAILED`는 review를 만들지 않으며, 저장소 문서나 모델 기억으로 공식 정책을 추정하지 않습니다.
 
 validated PoC를 가진 TRUE의 exact revision을 Technical Gate가 `ACCEPT`하면 제공 능력별로 `result`가 있는 Primitive를 저장해 Chaining에 사용할 수 있다. Rule Scope 검토는 동시에 별도 경로로 진행하며 `review/rule/scope PASS`, `impact SUFFICIENT`, `permission ALLOW`를 모두 만족해야 Reporter를 호출할 수 있다. Rule Scope가 `FAIL | UNCERTAIN | DENY`이면 보고서만 막고 이미 admission된 Primitive와 Chaining 자격은 유지한다. 새 Verification revision에는 과거 Gate·동적 결과·PoC를 재사용하지 않는다. HOLD는 Gate 없이 `inputs`와 `result=null`인 Primitive로 Chaining에 들어간다.
 
@@ -49,7 +51,24 @@ TRUE
 
 Reporter는 위 조건을 모두 만족하고 ReportDraft가 가리킨 current Finding·Verification·Technical review·Rule Scope review·CWELabel·정책 revision이 서로 맞을 때만 내부 보고서 초안을 만든다. 두 Gate가 검토한 CWELabel과 보고서 초안의 `cwe_label_ref.record_id`가 다르면 초안을 만들지 않는다. restriction·limitation·남은 불확실성과 redaction 통과 상태도 초안에 보존한다. 이 upstream 중 하나가 새 revision으로 바뀌면 기존 초안은 감사 기록으로만 남고 새 Gate·Reporter 결과가 나오기 전까지 current `AnalysisRunResult`에 쓸 수 없다.
 
-프로그램 검사기는 Gate 결론을 대신 내리지 않습니다. Verification이 Gate 호출을 제안하더라도 정확한 입력·LLM call spec, Technical-accepted Primitive admission과 Reporter 조건을 검사합니다. Rule Scope는 Technical `ACCEPT` 이후의 독립된 보고 경로입니다. Finding이 없으면 Reporter를 호출하지 않고 `report_draft_refs=[]`와 오류·상태 이유를 남깁니다. `ReportDraft`가 마지막 Agent 산출물이며 `AnalysisRunResult` 확정 뒤 자동화가 끝납니다. 이후 사람의 검토·수정·제출·공개는 Agent 계약 밖입니다.
+Reporter는 검증된 사실을 합성·표현할 뿐 새 vulnerability fact, attack path, reproduction/PoC 성공,
+policy·scope 판단이나 upstream보다 강한 severity·exploitability·security impact를 만들지 않습니다.
+주요 claim은 current Finding과 두 Gate가 실제 검토한 exact Verification·CWE·정책·Dynamic/PoC revision으로
+추적해야 하며, 별도로 최신 결과를 검색해 연결하지 않습니다. Dynamic/PoC 표시는 Verification의 exact
+`dynamic_result_ref`와 R7에서 이미 validated된 `poc_ref`만 소비하고, request·plan·requirements와 존재하는
+policy·environment·AgentLog·PoC·cleanup을 다른 attempt와 섞지 않습니다. Reporter는 이 무결성이나 실행
+성공을 새로 판정하지 않습니다. Verification restriction과 unresolved condition, 정적·동적·Gate
+limitation을 빠짐없이 보존하고 실행·환경 실패를 취약점 부재로 바꾸지 않습니다. 저장 전
+secret·불필요한 PII·private/raw reasoning을 제거한 `REDACTION=PASS`가 필요합니다.
+
+프로그램 검사기는 Gate 결론을 대신 내리지 않습니다. Verification이 Gate 호출을 제안하더라도 정확한
+입력·LLM call spec, Technical-accepted result Primitive admission과 Reporter 조건을 검사합니다. Rule
+Scope는 Technical `ACCEPT` 이후의 독립된 보고 경로이며 이미 확정된 Primitive·Chaining 자격을 다시
+판정하거나 취소하지 않습니다. Finding이 없으면 Reporter를 호출하지 않고 `report_draft_refs=[]`와
+오류·상태 이유를 남깁니다. `ReportDraft`가 마지막 Agent 산출물이며 `AnalysisRunResult` 확정 뒤 자동화가 끝납니다.
+Reporter work 종료 뒤 신뢰 runtime은 `AnalysisRunResult`와 `AnalysisRunState`를 새 Agent 판단 없이
+원자적으로 확정합니다. 이후 사람의 검토·수정·제출·공개는 Agent 계약 밖이며 Reporter에는 외부 제출·공개나
+CVE/GHSA 요청 권한이 없습니다.
 
 `ALLOW`가 PASS·scope·impact 조건과 모순되거나 Gate가 현재 작업과 다른 input revision을 가리키면 유효한 Gate 결과가 아니다. LLM 호출을 `INVALID_OUTPUT`, 오류를 `GATE/INVALID_OUTPUT`으로 기록하고 Reporter를 호출하지 않는다.
 

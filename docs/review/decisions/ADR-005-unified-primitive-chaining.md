@@ -43,7 +43,7 @@ Technical Gate는 verdict·근거 연결 외에도 금지된 재현으로 근거
 
 별도 `root_hypothesis_id`, `chain_depth`와 체이닝 전용 임의 depth·hypothesis·call·combination 한도를 제거합니다. 현재 가설의 `parent_hypothesis_ids`와 `source_primitive_match_id`를 따라 조상 Primitive를 계산하고, 이들을 현재 순회의 후보에서 제외해 순환을 막습니다.
 
-token·시간·작업 수 제한은 R8의 전역 예산 정책과 Runtime Validator가 강제합니다. 중복 fingerprint, ancestor cycle 또는 전역 예산 중단은 취약점 `FALSE`가 아닙니다.
+시간·비용·작업 수 제한은 R8의 전역 예산 정책과 Runtime Validator가 강제합니다. token은 사용량만 관측하며 계획값 초과·누락만으로 체이닝을 중단하지 않습니다. 중복 fingerprint, ancestor 재사용 제외 또는 전역 예산 중단은 취약점 `FALSE`가 아닙니다.
 
 ### 5. revision 안전성
 
@@ -57,4 +57,4 @@ Primitive 전용 `state_version`과 전용 commit-time CAS 필드는 제거합�
 
 - 정본과 Wiki의 Mermaid block은 같은 수와 같은 내용이어야 합니다.
 - schema block에는 새 필수 필드가 모두 있고 제거 필드가 없어야 합니다.
-- final HOLD, Technical-accepted TRUE, Rule Scope 거절, stale revision, ancestor cycle과 전역 예산 중단 시나리오를 문서 검사로 확인합니다.
+- final HOLD, Technical-accepted TRUE, Rule Scope 거절, stale revision, ancestor 재사용 제외와 전역 예산 중단 시나리오를 문서 검사로 확인합니다.

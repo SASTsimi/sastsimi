@@ -134,7 +134,7 @@ Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제�
 - 실행 상태는 `WorkExecutionState`가 관리하고 가설 판정·Gate 결과·보고서 상태와 분리한다. 같은 `dedupe_key` 요청은 한 `work_id`로만 반영한다.
 - `COMMITTED` marker와 종료 상태 pointer가 같은 결과를 가리킨 뒤에만 다음 단계를 호출한다. `PREPARED`, 취소된 attempt, 오래된 revision과 늦은 결과는 다음 단계에서 읽지 않는다.
 - 모든 초기·파생 가설이 종료 상태에 도달하고 atomic 저장·복구가 끝나면 Orchestration run을 닫는다.
-- chaining은 깊이·개수·토큰·시간·중복 fingerprint 제한을 넘으면 새 가설을 만들지 않고 중단 이유를 기록한다.
+- chaining 전용 깊이·개수·호출·조합·token 상한은 두지 않는다. R8의 전체 시간·비용·work 예산과 중복 fingerprint 규칙으로 중단하며 이유를 기록한다. token 사용량은 관측하되 초과만으로 새 가설을 차단하지 않는다.
 
 최종 분석 상태는 다음 의미를 갖는다.
 

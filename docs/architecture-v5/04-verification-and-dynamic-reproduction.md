@@ -80,7 +80,7 @@ mode와 실행·생략 기록은 다음 조합만 허용한다.
 
 ### 공통 입력 snapshot과 독립 호출
 
-Verification은 호출 전에 current ACTIVE `VerificationAssignment`, exact `VulnerabilityHypothesis`, `workspace_id`, `commit_id`, 코드 경로·Context·정적 근거·인증 및 방어 로직 reference, 반증 질문, 검증 항목, 사용한 exact `VerificationPlaybook` revision과 versioned Debate·budget 설정을 하나의 공통 입력 snapshot으로 고정한다. canonical JSON으로 만든 이 공통 입력의 SHA-256을 `debate_input_hash`로 사용한다. 역할별 system instruction·prompt template·worker와 session/call ID는 hash에서 제외한다. Pro와 Con의 `LLMCallSpec.context_refs`는 이 공통 reference 집합과 exact match해야 하며, 역할별 prompt payload와 output schema가 달라도 입력 가설·코드·플레이북 revision과 `debate_input_hash`는 같아야 한다.
+Verification은 호출 전에 current ACTIVE `VerificationAssignment`, exact `VulnerabilityHypothesis`와 proposal, `workspace_id`, `commit_id`, 코드 경로·Context·정적 근거·인증 및 방어 로직 reference, 반증 질문, 검증 항목, 사람이 승인한 exact `PlaybookPolicy`, 선택한 `VerificationPlaybook`과 work별 `PlaybookApplication`, versioned Debate·budget 설정을 하나의 공통 입력 snapshot으로 고정한다. canonical JSON으로 만든 이 공통 입력의 SHA-256을 `debate_input_hash`로 사용한다. 역할별 system instruction·prompt template·worker와 session/call ID는 hash에서 제외한다. Pro와 Con의 `LLMCallSpec.context_refs`는 이 공통 reference 집합과 exact match해야 하며, 역할별 prompt payload와 output schema가 달라도 입력 가설·코드·policy·playbook·application revision과 질문 ID 집합, `debate_input_hash`는 같아야 한다.
 
 Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` session에서 시작한다. 각 호출은 `requested_by=PRO | CON`, 같은 역할의 `LLMCallSpec.agent_role`, `session_mode=NEW`, `session_policy=NEW`, `parent_session_ref=null`과 서로 다른 `work_id`·`attempt_id`·`llm_call_id`·spec·action·decision·실제 session을 사용한다. provider가 session ID를 주지 않으면 adapter가 호출마다 서로 다른 local `session_ref`를 발급한다.
 
@@ -100,7 +100,7 @@ trusted prompt builder는 고정된 공통 입력 reference와 역할별 instruc
 
 한쪽이 `FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED`이면 성공한 반대쪽 결과만으로 합성하지 않는다. 재시도할 수 있으면 실패한 Pro/Con child work와 부모 Verification work를 실제 대기 이유를 가진 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지한다. 허용된 repair·retry·provider failover는 실패한 역할에서만 수행할 수 있고, 같은 공통 입력 snapshot을 유지하는 동안에는 먼저 성공한 반대쪽의 COMMITTED 결과를 보존할 수 있다. retry와 failover도 새 `attempt_id`·`llm_call_id`·spec·action·decision·`NEW` session을 만들고 같은 역할의 바로 앞 허용 실패만 predecessor로 연결한다. 실패한 역할의 retry가 성공하고 두 current child 결과가 join 조건을 모두 만족할 때만 부모 Verification을 다시 진행한다.
 
-공통 입력의 가설·Context·코드·플레이북 revision 또는 Verification generation이 바뀌면 이전 Pro/Con output을 새 snapshot과 섞지 않는다. 기존 결과는 stale로 보존하고 새 Verification work에서 두 역할을 다시 호출한다. 부모가 취소·교체·종료된 뒤 늦게 도착한 child 결과도 `STALE_RESULT`로 격리한다.
+공통 입력의 가설·Context·코드·policy·playbook·application revision, application 질문 ID 집합 또는 Verification generation이 바뀌면 이전 Pro/Con output을 새 snapshot과 섞지 않는다. 기존 결과는 stale로 보존하고 새 Verification work에서 두 역할을 다시 호출한다. 부모가 취소·교체·종료된 뒤 늦게 도착한 child 결과도 `STALE_RESULT`로 격리한다.
 
 허용된 retry·failover 뒤에도 한쪽의 유효 output을 확보하지 못하면 실패 child의 `FAILED`를 먼저 COMMITTED해 부모의 실행과 join을 막는다. 이어 부모 Verification work의 `FAILED`와 `HypothesisProcessState.status=FAILED`를 공통 원자 전이로 확정하고 `verification_result_ref=null`을 유지한다. 중간에 전파가 끊기면 recovery가 이를 완료할 때까지 부모를 다시 실행하지 않는다. 어느 실패도 `FALSE | HOLD`의 근거가 아니다.
 
@@ -188,32 +188,35 @@ Technical Evidence Gate의 `ACCEPT`는 R5가 exact final TRUE revision을 대상
 
 ## 취약점 유형별 검증 플레이북
 
-지원 취약점 유형 목록은 R8의 versioned evaluation corpus에서 확정한다. 현재는 지원 목록이 확정되지 않았으므로 이번 설계에서는 모든 유형에 공통으로 적용할 플레이북 구조와 작성 규칙을 먼저 확정한다. 지원 목록이 확정되면 이 구조를 사용해 유형별 플레이북을 별도 revision으로 추가한다.
+공통 및 웹 취약점 6종의 실제 검증 내용은 [R6 검증 플레이북](./verification-playbooks.md)을 정본으로 사용한다. 최초 작성 범위는 `COMMON`, SQL Injection, XSS, OS Command Injection, Path Traversal, SSRF, IDOR/BOLA이며, 작성됐다는 사실만으로 운영 지원 유형이 되지는 않는다.
 
-목록이 확정된 뒤 각 지원 취약점 유형은 같은 이름으로 식별 가능한 검증 플레이북을 가진다. 플레이북은 Agent에게 자유로운 결론을 요구하는 prompt가 아니라, 해당 유형에서 빠뜨리면 안 되는 확인 항목과 반증 질문을 정의한 실행 가능한 검증 절차다.
+R8의 versioned evaluation corpus는 우선 지원할 취약점 유형을 정하는 평가 근거이고, 운영에서 실제 허용할 유형과 exact 플레이북 revision의 연결은 사람이 승인한 current `PlaybookPolicy`로 확정한다. 현재는 운영 지원 목록이 확정되지 않았으므로 모든 유형에 공통으로 적용할 플레이북 구조와 작성 규칙을 먼저 사용한다. 지원 목록이 확정되면 이 구조로 유형별 플레이북을 별도 revision으로 등록하고 승인된 policy에 연결한다.
 
-플레이북 후보는 R6 검증·반박·플레이북 담당이 작성하고, trusted playbook registry runtime이 schema와 revision을 검사해 변경 불가능한 record로 등록한다. Verification work를 등록할 때 trusted runtime은 지원 유형과 일치하는 current exact `TYPE_SPECIFIC` revision을 선택하고, 적용 가능한 유형별 플레이북이 없으면 current exact `COMMON` revision을 선택해 `WorkExecutionState.input_refs`에 고정한다.
+플레이북은 Agent에게 자유로운 결론을 요구하는 prompt나 점수표가 아니다. 과거 사례와 검증 지식을 바탕으로 빠뜨리면 안 되는 사전 조건, source, sink, source-to-sink 경로, 방어, named falsification question, 정적·동적 evidence, restriction과 HOLD 조건을 안내한다. verdict는 체크 개수나 Pro·Con 중 한쪽의 승패가 아니라 현재 코드와 실제 evidence로 결정한다.
 
-Verification의 직접 검증, 독립 Pro/Con 실행, final 합성과 결과 저장은 모두 work에 고정된 동일한 플레이북 revision을 사용한다. 검증 도중 current revision이 변경돼도 진행 중인 work에는 새 revision을 섞지 않는다. 단순 retry는 기존 revision을 유지하고, 새 revision을 적용하려면 새 Verification work 또는 새 verification generation을 만들어야 한다.
+플레이북 후보와 유형 mapping 후보는 R6 검증·반박·플레이북 담당이 작성하고, trusted playbook registry runtime이 schema와 revision을 검사해 변경 불가능한 record로 등록한다. 등록만으로 운영 지원 목록을 바꿀 수는 없다. Verification work를 등록할 때 runtime은 exact `VulnerabilityHypothesis.proposal_ref`가 가리키는 `HypothesisProposal.vulnerability_type_candidates`를 읽는다. 후보가 정확히 하나이고 current `PlaybookPolicy`에 같은 유형의 mapping이 있을 때만 해당 exact `TYPE_SPECIFIC` revision을 선택한다. 후보가 없거나 여러 개이거나 policy가 허용하지 않으면 current exact `COMMON` revision을 선택한다.
 
-각 플레이북에는 최소한 다음 항목을 기록한다.
+runtime은 선택한 policy·playbook, 선택 이유와 플레이북 질문마다 새로 발급한 전역 `question_id`를 work별 `PlaybookApplication`으로 저장한다. Verification의 직접 검증, 독립 Pro/Con 실행, final 합성과 결과 저장은 모두 work에 고정된 동일한 application을 사용한다. final 질문 결과는 가설 자체의 반증 질문과 application 질문의 합집합을 빠짐없이 정확히 한 번씩 처리해야 한다. 검증 도중 current policy나 playbook revision이 변경돼도 진행 중인 work에는 섞지 않는다. 같은 work의 retry는 기존 application과 질문 ID를 유지하고, 새 Verification work 또는 새 verification generation에서는 새 application과 새 질문 ID를 만든다.
+
+미지원 유형도 후속 Issue만 만들고 현재 실행을 끝내서는 안 된다. COMMON으로 필수 검증을 먼저 수행한다. 필수 검증을 완료했지만 유형별 정보가 부족하면 `unresolved_conditions`와 HOLD를 기록할 수 있고, 실행 자체가 실패하면 verdict 없이 실행 오류를 기록한다. 오류·timeout·빈 Context·Sandbox 실패는 FALSE의 반증 evidence가 아니다.
+
+플레이북은 동적 검증의 목적과 필요한 관측만 정의한다. R6는 재현할 가설, 재현 목표, 필요한 환경 조건, `sandbox_profile_ref`와 관련 문맥을 요청하며, PoC·command·환경 계획과 `DynamicReproductionResult`는 R7이 생산한다. 모든 final TRUE에는 current generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated `poc_ref`가 필요하다.
 
 | 항목 | 설명 |
-|---|---|
-| `vulnerability_type` | 플레이북이 다루는 취약점 유형 |
+| --- | --- |
+| `VerificationPlaybook.vulnerability_type` | 플레이북이 다루는 취약점 유형 |
 | 사전 조건 | 공격자가 먼저 만족해야 하는 권한·입력·환경 |
 | source | 공격자 입력이나 제어 값이 시작되는 위치 |
 | sink | 위험 동작 또는 영향이 발생하는 위치 |
 | 경로 확인 | source에서 sink까지 이어지는 호출·데이터 흐름 |
 | 방어 확인 | validator, sanitizer, canonicalization, 인증·인가와 권한 검사 |
-| 반증 질문 | 무엇이 실제 근거로 확인되면 가설이 반증되는지 |
+| 반증 질문 | `template_key`와 질문 문장. `template_key`는 플레이북 안의 이름일 뿐 실제 `question_id`가 아니며 적용할 때 새 ID를 발급함 |
 | 정적 evidence | 필요한 코드 위치·호출 관계·도구 결과 |
 | 동적 evidence | 실행으로 확인해야 하는 조건과 observable effect |
 | restriction | 공격이 가능한 범위를 제한하는 조건 |
 | HOLD 조건 | 아직 해결되지 않으면 최종 판단을 보류해야 하는 조건 |
 
 지원 목록이 확정되기 전에는 임의의 취약점 유형을 지원 대상으로 가정하지 않는다. 목록 확정 후에도 지원 목록에 없는 유형을 기존 플레이북에 억지로 맞추지 않는다. 필요한 검증 항목을 확정할 수 없으면 공통 플레이북으로 현재 실행을 먼저 처리한다. 정상적으로 필수 검증을 완료했지만 정보가 부족하면 `unresolved_conditions`와 `HOLD`를 기록한 뒤 후속 Issue를 연결한다. 실행 자체가 실패했다면 verdict 없이 실행 오류를 기록한 뒤 후속 Issue를 연결한다. 새로운 endpoint·sink·권한 경계·공격 단계·독립 impact가 발견되면 현재 verdict에 합치지 않고 material child proposal로 분리한다.
-
 ## Docker 동적 재현
 
 동적 검증은 정적 판단을 대체하지 않고 특정 가설을 격리된 환경에서 실제로 확인한다. 모든 final TRUE에는 실행으로 확인된 PoC가 필요하므로 initial TRUE도 반드시 이 단계를 거친다.

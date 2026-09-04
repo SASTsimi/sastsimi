@@ -48,7 +48,7 @@ Agent 또는 service의 제안
 - 데이터 형식, 인증된 실제 호출자와 역할 권한
 - analysis·work·hypothesis ID와 정확한 수정본
 - `workspace_id`, `commit_id`, state version
-- token·시간·retry·chain·Gate 보완 예산
+- 시간·비용·호출·retry·work·chain·Gate 보완 예산. token은 사용량만 관측하며 초과·누락만으로 차단하지 않음
 - 허용 도구와 workspace 안의 파일 경로
 - Sandbox 재현 계획·단계·공격 입력·cleanup(실행 후 정리)과 image·network·resource
 - provider·model·session과 explicit failover
@@ -56,7 +56,7 @@ Agent 또는 service의 제안
 - Reporter를 부를 모든 조건
 - ReportDraft의 exact provenance, restriction·limitation 보존과 비밀정보 제거
 
-하나라도 실패하면 실행하지 않고 오류를 남깁니다. 한 요청에는 decision 하나만 만들고 ALLOW 결과는 exact 요청에 한 번만 씁니다. 허가 시간이 지나거나 호출자 권한·상태·예산·입력·설정이 바뀌면 `EXPIRED`(사용 전 만료)로 기록하고 새 요청부터 다시 검사합니다. 실제 LLM 호출의 model·prompt·context·예산도 검사한 `LLMCallSpec`과 같아야 합니다. Gate와 Reporter는 자기 stage action을 건너뛰고 별도 LLM 호출을 만들 수 없습니다.
+하나라도 실패하면 실행하지 않고 오류를 남깁니다. 한 요청에는 decision 하나만 만들고 ALLOW 결과는 exact 요청에 한 번만 씁니다. 허가 시간이 지나거나 호출자 권한·상태·비-token 예산·입력·설정이 바뀌면 `EXPIRED`(사용 전 만료)로 기록하고 새 요청부터 다시 검사합니다. 실제 LLM 호출의 model·prompt·context·token 계획값·시간도 검사한 `LLMCallSpec`과 같아야 하지만, token 계획값은 실행 상한이 아닙니다. Gate와 Reporter는 자기 stage action을 건너뛰고 별도 LLM 호출을 만들 수 없습니다.
 
 ## 저장소와 LLM 출력은 명령이 아닙니다
 
@@ -74,9 +74,9 @@ Agent 또는 service의 제안
 1. Technical Evidence Gate
 2. Rule Scope Impact Gate
 
-프로그램 검사기는 이 두 Gate의 순서와 입력 수정본만 확인합니다. Gate 결론은 LLM Gate가 만듭니다. 공식 정책이 없으면 Rule Scope 결과는 `UNCERTAIN + DENY`이며 Reporter를 부르지 않습니다.
+프로그램 검사기는 이 두 Gate의 순서와 입력 수정본만 확인합니다. Gate 결론은 LLM Gate가 만듭니다. 공식 정책 부재를 확인한 `ABSENT_CONFIRMED`이면 Rule Scope 결과는 `UNCERTAIN + DENY`이며 Reporter를 부르지 않습니다. 정책 수집·parser가 실패한 `COLLECTION_FAILED`이면 Rule Scope 결과 자체를 만들지 않습니다.
 
-Gate를 실제 호출하기 직전에도 검사한 입력 수정본이 그대로인지 다시 확인합니다. Technical Gate는 exact Verification과 이를 직접 가리키는 current CWELabel을, Rule Scope Gate는 여기에 같은 Technical 검토를, Reporter는 두 Gate가 검토한 동일한 결과 묶음을 사용해야 합니다. 중간에 하나라도 바뀌면 기존 허가는 만료되고 새 요청이 필요합니다.
+Gate를 실제 호출하기 직전에도 검사한 입력 수정본이 그대로인지 다시 확인합니다. Technical Gate는 exact Verification과 이를 직접 가리키는 current CWELabel을, Rule Scope Gate는 여기에 같은 Technical 검토와 exact 정책 수집 결과·존재하는 정책 record를, Reporter는 두 Gate가 검토한 동일한 결과 묶음을 사용해야 합니다. 중간에 하나라도 바뀌거나 정책 최신성이 만료되면 기존 허가는 만료되고 새 요청이 필요합니다.
 
 Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아닙니다. 같은 가설의 Verification owner가 직접 받고, Verification 또는 CWE가 실제로 보완된 새 수정본이 생겨야 새 Gate 작업을 시작할 수 있습니다. Orchestration이나 Chaining이 목적지를 다시 고르지 않습니다. 로그인 실패나 잘못된 출력의 제한 재시도와 이 보완 재검토는 별개입니다.
 

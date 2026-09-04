@@ -228,7 +228,7 @@ flowchart TB
     MATCH -->|No| RECORD[ChainingResult with no material candidate]
     MATCH -->|Yes| CHAIN[Chaining Agent matching only]
     CHAIN --> NEW[HypothesisProposal origin CHAINING]
-    NEW --> LIMIT{Runtime validation duplicate ancestor cycle and global budget}
+    NEW --> LIMIT{Runtime validation ancestor reuse across lineage, duplicate fingerprint, and global budget}
     LIMIT -->|Pass| REGISTER[Global registration]
     LIMIT -->|Fail| STOP[Reject or global budget stop]
     REGISTER --> ORCH[Orchestration assigns Verification]
@@ -253,15 +253,16 @@ flowchart TB
     TS -->|REJECT| BLOCK[Report blocked]
     TS -->|ACCEPT| PRIMITIVE[Admit result Primitive for Chaining]
     TS -->|ACCEPT independent report review| RULE[Rule Scope Impact Gate Agent]
-    POLICY[Official ProgramPolicyRecord] --> RULE
-    NOPOL[Missing official policy] --> UNCERTAIN[Rule and scope UNCERTAIN permission DENY]
+    COLLECT[PolicyCollectionResult] -->|FOUND plus current policy| RULE
+    COLLECT -->|ABSENT_CONFIRMED| UNCERTAIN[Rule and scope UNCERTAIN permission DENY]
+    COLLECT -->|COLLECTION_FAILED| NOGATE[No Rule Scope review]
     UNCERTAIN --> BLOCK
     RULE --> READY{Review PASS Rule PASS Scope PASS Impact SUFFICIENT Permission ALLOW}
     READY -->|No| BLOCK
     READY -->|Yes| RREQ[Verification requests Reporter]
     RREQ --> REPORTER[Reporter Agent]
     REPORTER --> DRAFT[Internal ReportDraft]
-    BLOCK --> FINAL[Finalize AnalysisRunResult]
+    BLOCK --> FINAL[Atomically finalize AnalysisRunResult and AnalysisRunState]
     DRAFT --> FINAL
     FINAL --> END[Agent automation end]
 ```
@@ -429,13 +430,13 @@ flowchart LR
     POLICY[Current policy record] --> REPORTER
     DYNAMIC[Current supported dynamic evidence and redacted validated PoC] --> REPORTER
     REPORTER --> DRAFT[ReportDraft with restrictions limitations and redaction passed]
-    DRAFT --> FINAL[Trusted runtime finalizes AnalysisRunResult and logs]
+    DRAFT --> FINAL[Trusted runtime atomically finalizes AnalysisRunResult and AnalysisRunState]
     BLOCKED[No report-ready Finding] --> FINAL
     FINAL --> END[Agent automation end]
     END -. outside Agent automation .-> HUMAN[Person-led review edit submit or disclose]
 ```
 
-ReportDraft는 마지막 Agent 산출물이다. `AnalysisRunResult` 확정은 기존 결과와 로그를 묶는 신뢰 runtime 작업이며 새 LLM 판단이 아니다. 점선 뒤의 사람 검토·수정·제출·공개는 Agent action과 상태 계약 밖이다.
+ReportDraft는 마지막 Agent 산출물이다. `AnalysisRunResult`와 `AnalysisRunState`의 원자적 확정은 기존 결과와 로그를 묶는 신뢰 runtime 작업이며 새 LLM 판단이 아니다. 점선 뒤의 사람 검토·수정·제출·공개는 Agent action과 상태 계약 밖이다.
 
 ## Rendering check
 

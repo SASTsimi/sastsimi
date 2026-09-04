@@ -88,7 +88,7 @@ technical_evidence_review:
 
 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 Gate가 실제로 읽은 `VerificationResult`와 `CWELabel` revision을 각각 고정한다. runtime은 Gate와 두 대상의 `workspace_id`, `commit_id`, `hypothesis_id`, `record_id`, `content_hash`를 확인하고 `CWELabel.verification_result_ref`가 Gate의 `verification_result_ref`와 정확히 같은지 검사한다. label의 generation·work·attempt·invocation이 current CWE work와 다르거나 과거 Verification의 label이면 호출·저장을 차단한다. Verification 또는 CWELabel이 수정되면 이전 `ACCEPT`를 새 revision에 재사용하지 않고 R5-01 CWE 평가와 Gate를 새로 실행한다.
 
-`REVISE`는 동일 입력 재투표나 provider retry가 아니다. 현재 Gate work는 `REVISE` review를 exact output으로 확정하고 종료한다. 그 review는 Orchestration을 경유해 목적지를 다시 선택하지 않고 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 전달한다. runtime은 이전 종료 work를 되돌리지 않고 새 generation의 VERIFICATION work를 등록하며 hypothesis 상태를 `TERMINAL -> VERIFYING`으로 CAS 전환한다. Verification은 필요한 Context·Pro/Con·정적 근거·restriction을 보완하고, final TRUE 후보라면 새 generation의 동적 재현 요청과 validated PoC도 다시 확보한다. 새 result·work 종료·hypothesis current pointer를 atomic commit한다. 이후 R5-01이 새 CWE work에서 정렬을 다시 평가해 새 Verification을 직접 가리키는 current `CWELabel` revision을 확정한다. 같은 CWE 값이어도 이전 label reference를 재사용하지 않는다. 그 뒤 새 `VerificationResult`와 current `CWELabel` revision을 가리키는 새 Gate work를 요청한다. 새 Gate work는 새 `input_hash`·`dedupe_key`·`work_id`와 `attempt_number=1`, `trigger=INITIAL`을 사용한다. 입력이 바뀌지 않은 호출 실패만 같은 work 안에서 `trigger=RETRY`인 새 attempt를 사용할 수 있다. 공통 token·시간·비용·work 예산을 소진하면 보고와 result Primitive admission을 차단하고 미해결 사유를 저장한다.
+`REVISE`는 동일 입력 재투표나 provider retry가 아니다. 현재 Gate work는 `REVISE` review를 exact output으로 확정하고 종료한다. 그 review는 Orchestration을 경유해 목적지를 다시 선택하지 않고 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 전달한다. runtime은 이전 종료 work를 되돌리지 않고 새 generation의 VERIFICATION work를 등록하며 hypothesis 상태를 `TERMINAL -> VERIFYING`으로 CAS 전환한다. Verification은 필요한 Context·Pro/Con·정적 근거·restriction을 보완하고, final TRUE 후보라면 새 generation의 동적 재현 요청과 validated PoC도 다시 확보한다. 새 result·work 종료·hypothesis current pointer를 atomic commit한다. 이후 R5-01이 새 CWE work에서 정렬을 다시 평가해 새 Verification을 직접 가리키는 current `CWELabel` revision을 확정한다. 같은 CWE 값이어도 이전 label reference를 재사용하지 않는다. 그 뒤 새 `VerificationResult`와 current `CWELabel` revision을 가리키는 새 Gate work를 요청한다. 새 Gate work는 새 `input_hash`·`dedupe_key`·`work_id`와 `attempt_number=1`, `trigger=INITIAL`을 사용한다. 입력이 바뀌지 않은 호출 실패만 같은 work 안에서 `trigger=RETRY`인 새 attempt를 사용할 수 있다. 공통 시간·비용·work 예산을 소진하면 보고와 result Primitive admission을 차단하고 미해결 사유를 저장한다. token 사용량은 기록하지만 초과만으로 이 경로를 차단하지 않는다.
 
 Runtime Validator는 `REVISE`를 만든 기존 action·decision을 다시 사용하지 못하게 하고, 같은 Verification·CWELabel revision 또는 같은 domain input hash로 새 Gate 투표를 요청하면 `ACTION_NOT_ALLOWED`로 차단한다. 보완된 Verification과 이를 다시 평가한 새 current CWELabel을 가리키는 새 work·call spec·action·decision이 모두 있어야 한다. 반대로 provider 실패나 `INVALID_OUTPUT` repair는 Gate 판단을 다시 요구한 것이 아니므로, 허용된 횟수 안에서 같은 domain input과 새 invocation 식별자·action을 사용하는 `RETRY`로만 처리한다.
 
@@ -108,7 +108,7 @@ Runtime Validator는 `REVISE`를 만든 기존 action·decision을 다시 사용
 - 각 항목의 official source reference
 - 수집하지 못한 자료와 freshness warning
 
-저장소 문서나 모델 기억을 공식 정책으로 자동 승격하지 않는다. 공식 `ProgramPolicyRecord`가 없거나 핵심 자료가 누락되면 추측하지 않는다. 정책 record가 있어도 `freshness_status=STALE | UNVERIFIED`이면 최신 정책으로 취급하지 않는다. `CURRENT` 판정의 최대 허용 나이와 출처별 확인 방법은 R5 정책 수집 설계에서 정하지만, stale·미검증 상태의 Gate 결과는 항상 `UNCERTAIN + DENY`다.
+저장소 문서나 모델 기억을 공식 정책으로 자동 승격하지 않는다. 정책 수집은 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`를 구분한다. 공식 부재를 확인한 `ABSENT_CONFIRMED`만 `UNCERTAIN + DENY` review를 만들 수 있고, 수집·parser 실패인 `COLLECTION_FAILED`는 Rule Scope Gate를 호출하지 않는다. `FOUND`라도 핵심 자료가 누락되거나 `freshness_status=STALE | UNVERIFIED`이면 최신 정책으로 취급하지 않는다. 최신성 기준값과 재수집 주기는 R8이 승인한 versioned 설정을 사용하고 R5는 그 결과를 정책 의미로 해석한다. stale·미검증 상태의 Gate 결과는 항상 `UNCERTAIN + DENY`다.
 
 ### 검토 항목
 
@@ -127,21 +127,23 @@ rule_scope_impact_review:
   verification_result_ref: StoredDataRef
   technical_review_ref: StoredDataRef
   cwe_label_ref: StoredDataRef
+  policy_collection_result_ref: StoredDataRef
   review_status: PASS | FAIL | UNCERTAIN
   rule_compliance: PASS | FAIL | UNCERTAIN
   scope_compliance: PASS | FAIL | UNCERTAIN
   security_impact: SUFFICIENT | INSUFFICIENT | UNCERTAIN
   report_permission: ALLOW | DENY
   policy_record_ref: StoredDataRef | null
+  evidence_links: [RuleScopeEvidenceLink]
   reasons: []
-  missing_information: []
+  missing_information: [PolicyMissingInfo]
 ```
 
-공식 정책 자료가 없거나 `freshness_status=STALE | UNVERIFIED`이면 Rule Scope Gate Agent가 정책을 추정하지 않고 최소한 `rule_compliance=UNCERTAIN`, `scope_compliance=UNCERTAIN`, `review_status=UNCERTAIN`, `report_permission=DENY`와 `missing_information`을 판단해 반환한다. impact도 검토할 근거가 부족하면 `security_impact=UNCERTAIN`이다. stale record의 exact reference와 경고는 감사 기록으로 보존하지만 `PASS | ALLOW` 근거로 사용하지 않는다.
+공식 정책 부재를 확인한 `ABSENT_CONFIRMED`이거나 `freshness_status=STALE | UNVERIFIED`이면 Rule Scope Gate Agent가 정책을 추정하지 않고 최소한 `rule_compliance=UNCERTAIN`, `scope_compliance=UNCERTAIN`, `review_status=UNCERTAIN`, `report_permission=DENY`와 구조화된 `missing_information`을 판단해 반환한다. impact도 검토할 근거가 부족하면 `security_impact=UNCERTAIN`이다. stale record의 exact reference와 경고는 감사 기록으로 보존하지만 `PASS | ALLOW` 근거로 사용하지 않는다. 수집 자체가 실패한 `COLLECTION_FAILED`는 이 review를 만들지 않는다.
 
-Runtime Validator는 공식 정책 문장이나 정책의 의미를 대신 해석하지 않는다. Rule Scope Gate가 판단한 `UNCERTAIN + DENY`의 필수 필드, exact 정책 reference와 구조적 불변조건만 검사한다. `policy_record_ref=null`이거나 핵심 공식 source가 누락된 출력에서 `ALLOW`·`PASS`가 함께 나타나면 semantic `INVALID_OUTPUT`으로 거절하고, 정상적인 `UNCERTAIN + DENY`이면 `REPORT_READY` check로 Reporter만 프로그램적으로 차단한다. 제한된 repair 뒤에도 불변조건이 맞지 않으면 Rule Scope Gate work를 실패 처리한다. 두 경우 모두 Verification verdict를 바꾸지 않는다.
+Runtime Validator는 공식 정책 문장이나 정책의 의미를 대신 해석하지 않는다. Rule Scope Gate가 판단한 `UNCERTAIN + DENY`의 필수 필드, exact 정책 수집·정책 reference, 판단별 `RuleScopeEvidenceLink`, 구조화된 `PolicyMissingInfo`와 상태 불변조건만 검사한다. `ABSENT_CONFIRMED`인데 `policy_record_ref`가 있거나 핵심 공식 source가 누락된 출력에서 `ALLOW`·`PASS`가 함께 나타나면 semantic `INVALID_OUTPUT`으로 거절하고, 정상적인 `UNCERTAIN + DENY`이면 `REPORT_READY` check로 Reporter만 프로그램적으로 차단한다. 제한된 repair 뒤에도 불변조건이 맞지 않으면 Rule Scope Gate work를 실패 처리한다. 두 경우 모두 Verification verdict를 바꾸지 않는다.
 
-`verification_result_ref`, `technical_review_ref`, `cwe_label_ref`와 존재하는 `policy_record_ref`에는 정확한 저장 revision의 `record_id`가 필요하다. runtime은 Technical review가 `ACCEPT`이고, Technical review와 Rule Scope review가 같은 Verification과 CWELabel `record_id`를 각각 가리키는지 확인한다. 각 reference의 `workspace_id`, `commit_id`, `content_hash`는 대상 record와 일치해야 하며, Verification·CWELabel·Technical 대상의 `meta.hypothesis_id`는 Rule Scope review의 가설과 같아야 한다. 정책이 있으면 Rule Scope review가 가리킨 정책 record와 Reporter가 사용할 정책 record도 같아야 한다. 입력 revision이 하나라도 달라지면 기존 Rule Scope 결과를 재사용하지 않는다.
+`verification_result_ref`, `technical_review_ref`, `cwe_label_ref`, `policy_collection_result_ref`와 존재하는 `policy_record_ref`에는 정확한 저장 revision의 `record_id`가 필요하다. runtime은 Technical review가 `ACCEPT`이고, Technical review와 Rule Scope review가 같은 Verification과 CWELabel `record_id`를 각각 가리키는지 확인한다. 각 reference의 `workspace_id`, `commit_id`, `content_hash`는 대상 record와 일치해야 하며, Verification·CWELabel·Technical 대상의 `meta.hypothesis_id`는 Rule Scope review의 가설과 같아야 한다. 정책 수집 결과가 `FOUND`이면 review의 정책 record가 그 결과의 exact `policy_record_ref`와 같아야 한다. 입력 revision이 하나라도 달라지면 기존 Rule Scope 결과를 재사용하지 않는다.
 
 ## Technical-accepted TRUE와 Primitive admission
 
@@ -167,7 +169,7 @@ AND report_permission == ALLOW
 
 조건이 하나라도 충족되지 않거나 Gate reference 연결이 맞지 않으면 결과와 검토 사유는 저장하지만 Reporter를 호출하지 않는다. LLM이 `review_status`, rule, scope 또는 impact 조건과 모순되는 `ALLOW`를 출력하면 semantic validation 실패다. 이 호출은 `LLMInvocationResult.status=INVALID_OUTPUT`, `AnalysisError.stage=GATE`, `AnalysisError.code=INVALID_OUTPUT`으로 기록하며 invalid output을 `RuleScopeImpactReview`로 commit하지 않는다. 제한된 repair가 남아 있을 때만 같은 입력의 새 invocation attempt를 허용하고, 한도를 소진하면 Gate work를 `FAILED`로 끝낸다. 어느 경우에도 Reporter를 호출하거나 Verification verdict를 변경하지 않는다. 이는 취약점 판정 규칙이 아니라 권한 없는 보고 생성을 막는 호출 전제다.
 
-Gate와 Reporter의 stage action은 exact `LLMCallSpec`까지 포함해 실제 LLM 호출을 직접 허가한다. 이 세 역할이 별도 `CALL_LLM` action으로 stage 검사를 우회하는 것은 허용하지 않는다. Technical action의 `REVISION`은 exact Verification·current CWELabel pair를, `GATE_ORDER`는 두 revision의 final `COMMITTED` 상태를 검사한다. Rule Scope action의 `REVISION`은 같은 Verification·CWELabel과 exact Technical review를, `GATE_ORDER`는 `TRUE`+Technical `ACCEPT`를 검사한다. Reporter action의 `REVISION`은 current Finding과 두 Gate가 검토한 같은 Verification·CWELabel·Technical·Rule Scope·정책 revision을 검사하고 `REPORT_READY`는 Finding 존재와 위 모든 조건을 검사한다. 하나라도 맞지 않으면 `REPORT_NOT_READY`로 차단한다. Runtime은 이 검사를 action 허가 때와 실제 provider 호출 직전에 반복하며, 달라졌으면 decision을 `EXPIRED`로 바꾸고 호출하지 않는다. 실제 invocation request의 model·prompt·context·schema·budget·timeout은 검사한 call spec과 모두 같아야 한다.
+Gate와 Reporter의 stage action은 exact `LLMCallSpec`까지 포함해 실제 LLM 호출을 직접 허가한다. 이 세 역할이 별도 `CALL_LLM` action으로 stage 검사를 우회하는 것은 허용하지 않는다. Technical action의 `REVISION`은 exact Verification·current CWELabel pair를, `GATE_ORDER`는 두 revision의 final `COMMITTED` 상태를 검사한다. Rule Scope action의 `REVISION`은 같은 Verification·CWELabel, exact Technical review와 정책 수집 결과, `FOUND`일 때 정책 record를 검사하고, `GATE_ORDER`는 `TRUE`+Technical `ACCEPT`이며 수집 결과가 `COLLECTION_FAILED`가 아닌지 검사한다. Reporter action의 `REVISION`은 current Finding과 두 Gate가 검토한 같은 Verification·CWELabel·Technical·Rule Scope·정책 revision을 검사하고 `REPORT_READY`는 Finding 존재와 위 모든 조건을 검사한다. 하나라도 맞지 않으면 `REPORT_NOT_READY`로 차단한다. Runtime은 이 검사를 action 허가 때와 실제 provider 호출 직전에 반복하며, 달라졌으면 decision을 `EXPIRED`로 바꾸고 호출하지 않는다. 실제 invocation request의 model·prompt·context·schema·budget·timeout은 검사한 call spec과 모두 같아야 한다.
 
 ## Reporter Agent
 
@@ -186,9 +188,57 @@ Reporter는 통과한 근거를 읽기 쉬운 내부 초안으로 구성한다.
 
 Reporter는 새로운 공격 경로를 확정하거나 미검증 material child 또는 Chaining 후보를 실제 영향으로 쓰지 않는다. 초안의 핵심 주장은 current Finding, Verification, validated PoC와 두 Gate의 exact revision에 연결한다. 실패한 시도의 `poc_candidate_ref`는 validated `poc_ref`나 재현 성공으로 서술하지 않는다. `ReportDraft.cwe_label_ref.record_id`는 Technical review와 Rule Scope review가 공통으로 가리킨 CWELabel `record_id`와 같아야 하며, CWELabel이 수정되면 두 Gate를 다시 통과하기 전에는 초안을 만들지 않는다.
 
-Reporter는 Verification의 restriction ID·문장·근거 reference를 객체 그대로 보존하고 unresolved condition, 정적·동적 검증 및 두 Gate의 limitation을 빠뜨리거나 완화하지 않는다. 저장 전 `REDACTION=PASS`를 요구하며 credential, session secret, 불필요한 개인정보와 비공개 원문을 제거한다. 이 값은 `ReportDraft.restrictions`, `limitations`, `unresolved_conditions`, `redaction_status=PASSED`로 확인할 수 있어야 한다.
+Reporter는 presentation/synthesis 역할이다. 새 vulnerability fact, attack path, exploitation step,
+policy·scope 판단, reproduction·PoC 성공이나 upstream보다 강한 exploitability·security impact를
+만들지 않는다. severity, exploitability, capability, scope, exposure, required privilege,
+reproduction certainty와 security impact를 포함한 모든 주장의 강도는 verified upstream evidence보다
+강할 수 없다. 조건부·부분·제한된 관측을 무조건적이거나 완전히 재현된 결과로 바꾸면 안 된다.
+완화·회귀 테스트 제안도 검증된 root cause와 근거 범위 안에서 recommendation으로 구분하며 새
+취약점 사실을 만들지 않는다. 이 규칙은 새 score·enum·claim-mapping schema가 아닌 Reporter output의
+semantic invariant다.
 
-ReportDraft가 참조한 `FindingCandidate`, `VerificationResult`, `CWELabel`, `TechnicalEvidenceReview`, `RuleScopeImpactReview` 또는 `ProgramPolicyRecord` 중 하나라도 새 current revision으로 바뀌면 기존 초안은 감사 기록으로만 남고 `AnalysisRunResult.report_draft_refs`의 current 결과로 사용할 수 없다. 새 exact dependency chain으로 Gate와 Reporter를 다시 실행해 새 ReportDraft를 만든다.
+각 주요 claim은 `finding_ref`의 current Finding, `verification_result_ref`의 exact Verification,
+그 Verification을 검토한 `technical_review_ref`, exact `rule_scope_impact_review_ref`, 두 Gate가 사용한
+동일 `cwe_label_ref`, Rule Scope Gate가 사용한 `policy_record_ref`로 추적할 수 있어야 한다.
+Dynamic/PoC 주장은 Verification이 실제 참조한 exact `dynamic_result_ref`와 `poc_ref`만 사용한다.
+runtime은 같은 workspace·commit·hypothesis, `record_id`, `content_hash`와 revision chain을 검사하며,
+Reporter가 저장소에서 가장 최신처럼 보이는 별도 결과를 다시 검색해 연결하거나 서로 다른 revision의
+유리한 근거를 조합해서는 안 된다.
+
+Reporter는 R7이 이미 확정한 `DynamicReproductionResult`의 request·plan·requirements 연결과 존재하는
+policy·environment·`AgentLog`·PoC candidate·validated PoC·cleanup provenance만 그대로 소비한다.
+request, plan, `environment_ref`, `agent_log_ref`, PoC candidate, validated PoC, `cleanup_ref`는 모두 동일한 reproduction attempt에 속해야 한다. 서로 다른 attempt의 artifact를 섞거나 누락된 reference를 다른 실행에서 보충하지 않으며, 특히 `agent_log_ref`·`environment_ref`·PoC·cleanup reference의 attempt가 하나라도 다르면 fail-closed 처리한다. 이 무결성을
+새로 판정하거나 `poc_candidate_ref`를 validated PoC로 승격하지 않는다. validated `poc_ref`는 R7에서
+exact `poc_candidate_ref`와 같은 bundle revision/digest, `AgentLog`의 실제 `POC_EXECUTION_STARTED`와 `POC_EXECUTION_FINISHED`, 지지
+observation 및 `SUCCEEDED + SUPPORTED`가 연결되어 확정된 reference라는 의미로만 표시한다.
+
+환경의 존재와 식별은 `environment_ref`로, 생성 또는 재사용 여부는 `SandboxEnvironment.container_action=CREATED | REUSED`로 표시한다.
+`agent_log_ref`는 정책 단계에서 차단되어 `agent_invoked=false`인 경우에도 Session Manager가 남기는 필수 reference이며 `null`을 허용하지 않는다. `agent_invoked=false`이거나, `agent_invoked=true`인데 같은 attempt의 exact `agent_log_ref`와 `AgentLog`
+event가 실제 PoC 실행·관측을 뒷받침하지 않거나, Dynamic/PoC가 `BLOCKED`이거나 환경 restriction 때문에
+실행하지 못했거나 실제 observation이 부족하면 재현 성공으로 서술하지 않는다. 실행 사실과 관측은
+`agent_log_ref`, `observation_refs` 및 결과에 연결된 exact environment·policy·PoC·cleanup provenance를
+함께 따라 표현한다.
+동적 검증 실패·환경 실패는 취약점이 존재하지 않는다는 뜻으로 바꾸지 않는다. ReportDraft는 실제
+실행 여부, 관측 범위와 환경·실행 limitation을 원래 상태 그대로 표시한다.
+
+Reporter는 Verification의 restriction과 unresolved condition, 정적·동적 검증 및 두 Gate의 limitation을
+빠뜨리거나 완화하지 않는다. `ReportDraft.restrictions`는 Verification restriction을,
+`unresolved_conditions`는 Verification unresolved condition을 빠짐없이 보존하고, `limitations`는
+정적·동적 검증과 Gate limitation을 보존한다. 문장을 자연스럽게 만들기 위해 조건을 삭제하거나
+해결된 것처럼 표현해서는 안 된다.
+
+저장 전 `REDACTION=PASS`를 요구하며 API/access/session token, password, private key, credential,
+cookie·authorization secret, 불필요한 PII, 내부 secret과 private/raw reasoning 또는 hidden
+chain-of-thought 성격의 비공개 원문을 `content_ref`에 넣지 않는다. 민감정보를 먼저 저장하고 나중에
+제거하는 흐름은 허용하지 않는다. 이 검사는 `ReportDraft.redaction_status=PASSED`와 일치해야 한다.
+
+ReportDraft가 참조한 `Finding`, `VerificationResult`, `CWELabel`, `TechnicalEvidenceReview`,
+`RuleScopeImpactReview` 또는 `ProgramPolicyRecord` 중 하나라도 새 current revision으로 바뀌면 기존 초안은
+감사 기록으로만 남고 `AnalysisRunResult.report_draft_refs`의 current 결과로 사용할 수 없다. 새 exact
+dependency chain에서 필요한 Gate와 Reporter 흐름을 다시 수행해 새 ReportDraft를 만든다. Reporter는
+공통 `Finding`/`FindingCandidate` schema나 lifecycle을 재설계하지 않으며 current Finding이 없으면
+`CREATE_REPORT_DRAFT`를 허용하지 않고 `report_draft_refs=[]`와 기존 `REPORT_NOT_READY` 오류·상태 원인을
+유지한다.
 
 ## Agent 자동화 종료와 사람 주도 후속 과정
 
@@ -202,4 +252,9 @@ ReportDraft가 참조한 `FindingCandidate`, `VerificationResult`, `CWELabel`, `
 - 모든 실행 오류·DataGap·남은 HOLD 조건
 - LLM 호출·action decision·work state·work attempt·transition commit와 debug trace reference
 
-`AnalysisRunResult`와 `AnalysisRunState`를 함께 확정하면 Agent 자동화가 끝난다. Finding이 없으면 Reporter를 호출하지 않고 `report_draft_refs=[]`로 종료 원인을 보존한다. 이후 사람이 결과를 검토하거나 문서를 수정하고 외부에 제출·공개하는 과정은 Agent 자동화 밖이다. 현재 아키텍처는 이 사람 주도 과정의 schema, 상태, 결정 enum 또는 자동 action을 정의하지 않는다.
+신뢰 runtime이 `AnalysisRunResult`와 `AnalysisRunState`를 원자적으로 함께 확정하면 Agent 자동화가
+끝난다. 이 finalization은 이미 생성된 결과의 저장·상태 확정이며 새로운 Agent 판단이 아니다. Finding이
+없으면 Reporter를 호출하지 않고 `report_draft_refs=[]`로 종료 원인을 보존한다. 이후 사람이 결과를
+검토하거나 문서를 수정하고 외부에 제출·공개하는 과정은 Agent 자동화 밖이다. 현재 아키텍처는 이 사람
+주도 과정의 schema, 상태, 결정 enum 또는 자동 action을 정의하지 않으며 Reporter에는 사람 승인,
+submission decision, 외부 전송·공개 또는 CVE/GHSA 발급·요청 권한이 없다.
