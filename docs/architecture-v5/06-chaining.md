@@ -50,9 +50,13 @@ status는 따로 저장하지 않는다. `result=null`이면 HOLD에서 나온 �
 - final `TRUE`: 현재 generation의 성공한 동적 재현과 validated PoC가 있고, exact TRUE Verification과 이를 직접 가리키는 current `CWELabel`을 Technical Gate가 `ACCEPT`한 뒤에만 result가 있는 Primitive를 저장한다. 제공 능력이 여러 개면 능력마다 Primitive 하나를 만들고 각 record의 inputs에는 그 TRUE의 악용 전제조건을 복사한다.
 - Gate 전 TRUE와 Technical `REVISE | REJECT`: Primitive를 만들지 않는다.
 
-Technical `ACCEPT`은 체이닝 재료의 자격을 확정하고 Rule Scope는 보고 가능성만 판단한다. Rule Scope 결과는 이미 admission된 Primitive를 취소하지 않는다. 따라서 프로그램 정책 부족, 범위 밖, 중복 또는 보고 불가 판정은 Reporter를 막지만 코드에 실제로 존재하는 능력을 체이닝 재료에서 제거하지 않는다.
+체이닝 재료 자격은 두 가지에만 의존한다 — Technical Gate의 `ACCEPT`, 그리고 Rule Scope의 금지된 재현 항목이 위반으로 확정되지 않았을 것.
 
-Technical Gate는 validated PoC 연결뿐 아니라 금지된 재현으로 근거가 오염되지 않았는지, 실제 경로와 restrictions가 정확히 표현됐는지를 확인한다. 이 검사를 통과하지 못한 TRUE는 체이닝에 들어가지 않는다.
+Rule Scope의 나머지 판정은 보고 가능성만 가른다. `review_status`와 `report_permission`은 Reporter를 막을 뿐 이미 admission된 Primitive를 취소하지 않는다. 프로그램 정책 부족, 범위 밖 자산, 중복, 영향 부족, 보상 대상 클래스 아님은 코드에 실제로 존재하는 능력을 체이닝 재료에서 제거하지 않는다. 정책상 보고할 수 없는 능력이라도 그것을 발판으로 삼는 다른 취약점은 보고 대상일 수 있기 때문이다.
+
+금지된 재현 항목만 다른 이유는 그것이 정책 판단이 아니라 근거 품질 문제이기 때문이다. Rule Scope가 공식 정책의 금지 테스트 방법과 실제 수행한 재현을 대조해 위반을 명시적으로 확정하면(`rule_compliance=FAIL`이고 그 판단이 `evidence_links`의 `area=TESTING_RESTRICTION`에 연결된 경우), 그 근거는 오염된 것이므로 해당 Verification에서 result가 있는 Primitive를 등록하지 않는다. 이미 등록됐다면 이후 Chaining work의 후보에 넣지 않는다. 이 항목이 `UNCERTAIN`이면 재료로 사용한다 — 위반이 확정되지 않은 것을 위반으로 취급하지 않는다.
+
+이 판단을 Rule Scope에 두는 이유는 공식 정책 record를 읽어야 하기 때문이다. Technical Gate 입력에는 정책이 없다. Technical Gate는 자기 입력으로 확인할 수 있는 근거 품질을 판단한다 — validated PoC가 실제로 연결되는지(`dynamic_linkage`), 실제 경로가 근거와 이어지는지(`code_flow_linkage`), restrictions가 정확히 표현됐는지(`restriction_assessment`). 하나라도 통과하지 못한 TRUE는 체이닝에 들어가지 않는다. 부모의 제약 서술이 부정확하면 그 오류가 자식 가설의 `Restriction` 합집합으로 그대로 승계되기 때문이다.
 
 ## PrimitiveIndexState
 
