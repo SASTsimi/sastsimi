@@ -34,13 +34,9 @@ token과 전체 시간·판정 변화·HOLD 해소·새 후보 수는 `Verificat
 
 ## 검증 플레이북
 
-R6-01의 공통 구조에 따라 [R6 검증 플레이북](../verification-playbooks.md)에 COMMON fallback과 웹 취약점 6종(SQL Injection, XSS, OS Command Injection, Path Traversal, SSRF, IDOR/BOLA)의 실제 확인 절차를 작성합니다.
+공통 및 웹 취약점 6종의 구체적인 확인 항목은 [R6 검증 플레이북](../../verification-playbooks.md)을 따릅니다. 플레이북은 누락을 줄이는 참고 절차이며 점수표나 자동 판정표가 아닙니다.
 
-각 플레이북에는 사전 조건, source, sink, 경로, 방어, named falsification question, 정적·동적 evidence, restriction과 HOLD 조건이 있습니다. 이 내용은 확인 누락을 줄이는 참고 절차이며 점수표가 아닙니다. 체크 수나 Pro·Con의 단순 승패가 아니라 현재 코드와 실제 evidence로 판정합니다.
-
-현재 versioned 지원·적용 규칙에서 허용되고 가설 유형과 정확히 일치하는 `TYPE_SPECIFIC` 플레이북이 있을 때만 해당 exact revision을 사용합니다. 플레이북이 존재하더라도 허용되지 않았거나 유형이 불명확하면 `COMMON`의 exact revision을 사용합니다.
-
-플레이북은 동적 검증의 목표와 필요한 관측을 제시할 뿐입니다. R6가 요청 조건을 전달하고 R7이 PoC·command·환경 계획과 결과를 생산합니다. 오류·timeout·실행 실패는 반증이 아니며, final TRUE에는 current generation의 SUCCEEDED + SUPPORTED 결과와 validated poc_ref가 필요합니다.
+운영에서 어떤 유형별 플레이북을 사용할지와 질문을 어떻게 적용할지는 아래 `판정과 동적 재현` 절의 `PlaybookPolicy`·`PlaybookApplication` 규칙을 따릅니다.
 
 ## 판정과 동적 재현
 
