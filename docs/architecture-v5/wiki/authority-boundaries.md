@@ -49,7 +49,7 @@ Agent 또는 service의 제안
 - 데이터 형식, 인증된 실제 호출자와 역할 권한
 - analysis·work·hypothesis ID와 정확한 수정본
 - `workspace_id`, `commit_id`, state version
-- token·시간·retry·chain·Gate 보완 예산
+- 시간·비용·호출·retry·work·chain·Gate 보완 예산. token은 사용량만 관측하며 초과·누락만으로 차단하지 않음
 - 허용 도구와 workspace 안의 파일 경로
 - Sandbox 재현 계획·단계·공격 입력·cleanup(실행 후 정리)과 image·network·resource
 - provider·model·session과 explicit failover
@@ -57,7 +57,7 @@ Agent 또는 service의 제안
 - Reporter를 부를 모든 조건
 - ReportDraft의 exact provenance, restriction·limitation 보존과 비밀정보 제거
 
-하나라도 실패하면 실행하지 않고 오류를 남깁니다. 한 요청에는 decision 하나만 만들고 ALLOW 결과는 exact 요청에 한 번만 씁니다. 허가 시간이 지나거나 호출자 권한·상태·예산·입력·설정이 바뀌면 `EXPIRED`(사용 전 만료)로 기록하고 새 요청부터 다시 검사합니다. 실제 LLM 호출의 model·prompt·context·예산도 검사한 `LLMCallSpec`과 같아야 합니다. Gate와 Reporter는 자기 stage action을 건너뛰고 별도 LLM 호출을 만들 수 없습니다.
+하나라도 실패하면 실행하지 않고 오류를 남깁니다. 한 요청에는 decision 하나만 만들고 ALLOW 결과는 exact 요청에 한 번만 씁니다. 허가 시간이 지나거나 호출자 권한·상태·비-token 예산·입력·설정이 바뀌면 `EXPIRED`(사용 전 만료)로 기록하고 새 요청부터 다시 검사합니다. 실제 LLM 호출의 model·prompt·context·token 계획값·시간도 검사한 `LLMCallSpec`과 같아야 하지만, token 계획값은 실행 상한이 아닙니다. Gate와 Reporter는 자기 stage action을 건너뛰고 별도 LLM 호출을 만들 수 없습니다.
 
 ## 저장소와 LLM 출력은 명령이 아닙니다
 

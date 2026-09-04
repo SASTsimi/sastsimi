@@ -24,13 +24,19 @@
 
 평가용 `CONDITIONAL_DEBATE`는 versioned 설정의 `CONFLICTING_EVIDENCE | HIGH_IMPACT_OR_COST | INITIAL_HOLD | AUTH_OR_SANITIZER_BYPASS | ONE_SIDED_EVIDENCE | REVISE_ALTERNATE_PATH` trigger를 사용합니다. 충족된 code는 `debate_triggers`에 기록합니다. 아무 trigger도 충족하지 않으면 `debate_skip_reason=NO_TRIGGER_MATCH`, BASIC이면 `MODE_BASIC`을 기록합니다. 실제 Pro/Con을 실행하면 skip reason은 `null`입니다.
 
-Verification은 Pro와 Con을 부르기 전에 같은 가설·workspace·commit·코드 경로·Context·정적 근거·인증/방어 로직·반증 질문·검증 항목·플레이북 revision을 공통 입력 snapshot으로 고정하고 `debate_input_hash`로 식별합니다. 두 Agent는 이 snapshot만 함께 사용하고, 서로의 결론·출력·session은 받지 않습니다. 각 Agent는 별도 child work·call identity와 `parent_session_ref=null`인 독립 `NEW` session에서 병렬 실행됩니다. trusted prompt builder는 공통 reference와 역할별 instruction만으로 prompt를 만들며, 상대 결과를 prompt·context·parent/predecessor·저장소 조회·tool 입출력으로 전달하면 `CROSS_ROLE_INPUT_DENIED`로 차단합니다.
+Verification은 Pro와 Con을 부르기 전에 같은 가설·proposal·workspace·commit·코드 경로·Context·정적 근거·인증/방어 로직·반증 질문·검증 항목·`PlaybookPolicy`·`VerificationPlaybook`·`PlaybookApplication`을 공통 입력 snapshot으로 고정하고 `debate_input_hash`로 식별합니다. 두 Agent는 같은 application의 질문 ID 집합을 사용하고 서로의 결론·출력·session은 받지 않습니다. 각 Agent는 별도 child work·call identity와 `parent_session_ref=null`인 독립 `NEW` session에서 병렬 실행됩니다. trusted prompt builder는 공통 reference와 역할별 instruction만으로 prompt를 만들며, 상대 결과를 prompt·context·parent/predecessor·저장소 조회·tool 입출력으로 전달하면 `CROSS_ROLE_INPUT_DENIED`로 차단합니다.
 
 Pro와 Con은 각각 exact `EvidenceAgentResult`를 저장합니다. 두 child work가 모두 성공하고 두 결과가 schema-valid·COMMITTED이며 같은 부모 Verification·generation·`debate_input_hash`를 가리킬 때만 합성합니다. final `VerificationResult`는 `pro_evidence_ref`와 `con_evidence_ref`로 두 결과를 정확히 하나씩 연결합니다.
 
 한쪽이 실패·timeout·인증 실패·빈 출력이면 다른 한쪽만으로 운영 final verdict를 만들지 않습니다. 재시도 가능 시 실패 child와 부모 Verification을 `BLOCKED`, 가설을 `VERIFYING`으로 유지하고 실패 역할만 새 identity·`NEW` session으로 재시도합니다. retry가 성공해 current 결과 두 개가 모여야 join을 재개합니다. 시도 소진 또는 복구 불가능 시 실패 child를 먼저 확정하고 부모 Verification과 가설을 `FAILED`로 끝내며 `verification_result_ref=null`을 유지합니다. 공통 입력 revision이 바뀌거나 부모 종료 뒤 늦게 도착한 결과는 `STALE_RESULT`로 격리합니다. 어느 실패도 `FALSE | HOLD` 근거로 사용하지 않습니다.
 
 token과 전체 시간·판정 변화·HOLD 해소·새 후보 수는 `VerificationMetrics`에, 역할별 호출 수·상태·retry·failover·provider·session·실제 usage는 `LLMInvocationLog`에 기록합니다. R8은 이 기록을 비교 평가에 사용하지만 개별 실행이나 verdict를 결정하지 않습니다.
+
+## 검증 플레이북
+
+공통 및 웹 취약점 6종의 구체적인 확인 항목은 [R6 검증 플레이북](../verification-playbooks.md)을 따릅니다. 플레이북은 누락을 줄이는 참고 절차이며 점수표나 자동 판정표가 아닙니다.
+
+운영에서 어떤 유형별 플레이북을 사용할지와 질문을 어떻게 적용할지는 아래 `판정과 동적 재현` 절의 `PlaybookPolicy`·`PlaybookApplication` 규칙을 따릅니다.
 
 ## 판정과 동적 재현
 
@@ -46,19 +52,19 @@ token과 전체 시간·판정 변화·HOLD 해소·새 후보 수는 `Verificat
 
 `initial_verdict`는 중간 판단이며 운영 Gate·Primitive·보고서 입력으로 사용할 수 없습니다. initial TRUE이면 동적 근거가 별도로 필요하지 않아도 PoC 확인을 요청합니다. final TRUE는 독립 Pro/Con과 현재 generation의 성공한 동적 결과·validated PoC를 종합한 최종 판단입니다.
 
-지원 취약점 유형 목록은 R8의 versioned evaluation corpus에서 확정합니다. 목록이 확정되기 전이나 적용 가능한 유형별 플레이북이 없는 경우에는 공통 플레이북을 사용합니다. 플레이북 후보는 R6 담당이 작성하고, 신뢰할 수 있는 runtime이 형식과 revision을 검사해 변경 불가능한 record로 등록합니다.
+R8의 versioned evaluation corpus는 우선 지원할 유형을 정하는 평가 근거입니다. 운영에서 실제 허용할 유형과 exact 플레이북 수정본은 사람이 승인한 `PlaybookPolicy`로 확정합니다. 플레이북과 유형 mapping 후보는 R6 담당이 작성하지만 등록만으로 운영 지원 목록을 바꾸지는 못합니다.
 
-검증 작업을 등록할 때 trusted runtime이 사용할 정확한 플레이북 revision을 선택해 작업 입력에 고정합니다. 직접 검증, Pro 검토, Con 검토, 최종 판정과 결과 저장은 모두 처음 고정한 동일한 revision을 사용합니다. 최종 `VerificationResult.playbook_ref`에는 실제 사용한 플레이북의 정확한 `record_id`와 `content_hash`가 기록됩니다.
+검증 작업을 등록할 때 trusted runtime은 가설의 exact proposal에 유형 후보가 하나이고 승인 policy에 같은 mapping이 있을 때만 유형별 플레이북을 선택합니다. 그 외에는 공통 플레이북을 사용합니다. 선택한 policy·playbook·이유와 플레이북 질문에 새로 발급한 ID는 `PlaybookApplication`으로 작업 입력에 고정합니다. 직접 검증, Pro, Con, 최종 판정과 결과 저장은 모두 같은 application을 사용하며, `VerificationResult`는 exact `playbook_ref`와 `playbook_application_ref`를 함께 기록합니다.
 
-검증 도중 새 플레이북 revision이 등록돼도 진행 중인 검증에는 섞지 않습니다. 단순 재시도는 처음 고정한 revision을 유지하며, 새 revision을 적용하려면 새로운 Verification work 또는 verification generation을 만들어야 합니다.
+검증 도중 새 policy나 플레이북 revision이 등록돼도 진행 중인 검증에는 섞지 않습니다. 같은 work의 재시도는 처음 고정한 application과 질문 ID를 유지합니다. 새 Verification work 또는 generation은 새 application과 질문 ID를 만들며 이전 결과를 섞지 않습니다.
 
-각 반증 질문에는 `question_id`가 있습니다. 검증 결과는 질문마다 `DISPROVED`, `NOT_DISPROVED`, `INCONCLUSIVE` 중 하나와 근거를 남깁니다. 실제 근거가 있는 `DISPROVED`가 하나 이상일 때만 `FALSE`가 가능합니다. `NOT_DISPROVED`는 반증하지 못했다는 뜻일 뿐 가설을 증명하지 않습니다.
+가설 자체의 반증 질문과 이번 `PlaybookApplication`의 질문에는 모두 전역 `question_id`가 있습니다. 플레이북의 `template_key`는 사람이 읽는 이름일 뿐 실제 질문 ID가 아닙니다. 최종 결과는 두 질문 집합을 빠짐없이 정확히 한 번씩 처리하고 질문마다 `DISPROVED`, `NOT_DISPROVED`, `INCONCLUSIVE` 중 하나와 근거를 남깁니다. 실제 근거가 있는 `DISPROVED`가 하나 이상일 때만 `FALSE`가 가능합니다. `NOT_DISPROVED`는 반증하지 못했다는 뜻일 뿐 가설을 증명하지 않습니다.
 
 가설의 각 필수 검증 항목에는 `validation_id`가 있습니다. final 결과는 같은 ID의 결과가 빠짐없이 한 번씩 있고, 모두 `COMPLETE`이며 실제 근거를 가리킬 때만 저장합니다. 하나라도 완료하지 못하면 final 판정을 만들지 않습니다. 다시 시도할 수 있으면 work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지하며, 더 시도할 수 없으면 work와 가설을 함께 `FAILED`로 끝냅니다. 이 실패는 `FALSE`나 `HOLD`가 아니며 Gate 입력도 아닙니다.
 
 Pro와 Con은 항상 별도의 새 대화에서 실행합니다. 상대 역할의 결론이나 대화를 이어받지 않으며, 실패 후 재시도나 provider 변경도 같은 역할의 새 대화로 시작합니다. Verification Agent만 두 결과를 함께 읽고 최종 판정을 만듭니다.
 
-결과를 저장하기 전에는 결과 종류, 저장 담당 역할, 정확한 작업·시도·코드 버전, 플레이북 revision과 후보 내용 hash를 함께 검사합니다. `TRUE`는 supporting evidence와 현재 generation의 `SUCCEEDED + SUPPORTED` 결과·validated `poc_ref`, `FALSE`는 근거가 있는 `DISPROVED`, `HOLD`는 `unresolved_conditions`와 정상 확인 근거가 필요합니다. 오류·timeout·빈 Context·예산 초과 상태만으로 어떤 final verdict도 저장할 수 없습니다. validated PoC 없는 TRUE는 저장과 Technical Gate 호출이 모두 차단됩니다.
+결과를 저장하기 전에는 결과 종류, 저장 담당 역할, 정확한 작업·시도·코드 버전, policy·playbook·application exact revision, 전체 질문 ID 집합과 후보 내용 hash를 함께 검사합니다. `TRUE`는 supporting evidence와 현재 generation의 `SUCCEEDED + SUPPORTED` 결과·validated `poc_ref`, `FALSE`는 근거가 있는 `DISPROVED`, `HOLD`는 `unresolved_conditions`와 정상 확인 근거가 필요합니다. 오류·timeout·빈 Context·예산 초과 상태만으로 어떤 final verdict도 저장할 수 없습니다. validated PoC 없는 TRUE는 저장과 Technical Gate 호출이 모두 차단됩니다.
 
 | 요청 목적 | 뜻 |
 |---|---|
