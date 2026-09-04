@@ -205,13 +205,13 @@ Reporter가 저장소에서 가장 최신처럼 보이는 별도 결과를 다�
 
 Reporter는 R7이 이미 확정한 `DynamicReproductionResult`의 request·plan·requirements 연결과 존재하는
 policy·environment·`AgentLog`·PoC candidate·validated PoC·cleanup provenance만 그대로 소비한다.
-서로 다른 attempt의 artifact를 섞거나 누락된 reference를 다른 실행에서 보충하지 않으며, 이 무결성을
+request, plan, `environment_ref`, `agent_log_ref`, PoC candidate, validated PoC, `cleanup_ref`는 모두 동일한 reproduction attempt에 속해야 한다. 서로 다른 attempt의 artifact를 섞거나 누락된 reference를 다른 실행에서 보충하지 않으며, 특히 `agent_log_ref`·`environment_ref`·PoC·cleanup reference의 attempt가 하나라도 다르면 fail-closed 처리한다. 이 무결성을
 새로 판정하거나 `poc_candidate_ref`를 validated PoC로 승격하지 않는다. validated `poc_ref`는 R7에서
-exact `poc_candidate_ref`와 같은 bundle revision/digest, `AgentLog`의 실제 `POC_EXECUTE`, 지지
+exact `poc_candidate_ref`와 같은 bundle revision/digest, `AgentLog`의 실제 `POC_EXECUTION_STARTED`와 `POC_EXECUTION_FINISHED`, 지지
 observation 및 `SUCCEEDED + SUPPORTED`가 연결되어 확정된 reference라는 의미로만 표시한다.
 
-`environment_created=false`와 `agent_invoked=false`는 서로 다른 실행 사실로 각각 표시한다.
-`agent_invoked=false`이거나, `agent_invoked=true`인데 같은 attempt의 exact `agent_log_ref`와 `AgentLog`
+환경의 존재와 식별은 `environment_ref`로, 생성 또는 재사용 여부는 `SandboxEnvironment.container_action=CREATED | REUSED`로 표시한다.
+`agent_log_ref`는 정책 단계에서 차단되어 `agent_invoked=false`인 경우에도 Session Manager가 남기는 필수 reference이며 `null`을 허용하지 않는다. `agent_invoked=false`이거나, `agent_invoked=true`인데 같은 attempt의 exact `agent_log_ref`와 `AgentLog`
 event가 실제 PoC 실행·관측을 뒷받침하지 않거나, Dynamic/PoC가 `BLOCKED`이거나 환경 restriction 때문에
 실행하지 못했거나 실제 observation이 부족하면 재현 성공으로 서술하지 않는다. 실행 사실과 관측은
 `agent_log_ref`, `observation_refs` 및 결과에 연결된 exact environment·policy·PoC·cleanup provenance를

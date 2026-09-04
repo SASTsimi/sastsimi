@@ -129,28 +129,28 @@ security impact는 exact upstream evidence보다 강하게 표현하지 않는�
 - 실패 분류: `{NONE | POLICY_BLOCKED | EXTERNAL_CONFIGURATION | PLAN | ENVIRONMENT_SETUP | DEPENDENCY | AGENT | EXECUTION | OBSERVATION | TIMEOUT | RESOURCE_LIMIT | RETRY_LIMIT | INTERNAL}`
 - 실패 상세 사유: `{failure_reason string or null}`
 - Reproduction Agent 호출 여부: `{agent_invoked}`
-- AgentLog reference: `{agent_log_ref.record_id or null}`
-- 실제 환경 생성 여부: `{environment_created}`
+- AgentLog reference: `{agent_log_ref.record_id; 정책 단계에서 차단된 경우에도 Session Manager가 남기는 필수 reference이며 null 불가}`
+- 환경 생성 또는 재사용 여부: `{SandboxEnvironment.container_action: CREATED | REUSED; environment_ref가 있을 때}`
 - 실제 환경 reference: `{environment_ref.record_id or null}`
 - 환경 recipe reference: `{environment_recipe_ref.record_id or null}`
 - 관측 references: `{observation_refs}`
 - cleanup 필요 여부와 상태: `{cleanup_required / cleanup_status}`
-- cleanup log reference: `{cleanup_log_ref.record_id or null}`
-- 동일 결과 provenance: `{request_ref, reproduction_plan_ref와 그 plan의 environment_requirements_ref, policy_decision_ref, environment_ref, agent_log_ref, poc_candidate_ref, poc_ref, cleanup_log_ref의 exact revision/hash}`
+- cleanup reference: `{cleanup_ref.record_id or null}`
+- 동일 결과 provenance: `{request_ref, reproduction_plan_ref와 그 plan의 environment_requirements_ref, policy_decision_ref, environment_ref, agent_log_ref, poc_candidate_ref, poc_ref, cleanup_ref의 exact revision/hash; request, plan, environment, AgentLog, PoC candidate, validated PoC, cleanup은 모두 동일 reproduction attempt에 속해야 함}`
 - 관측 결과: `{SUPPORTED | DISPROVED | INCONCLUSIVE}`
 - PoC candidate reference: `{poc_candidate_ref.record_id}`
-- validated PoC reference: `{poc_ref.record_id; R7이 exact candidate revision/digest의 POC_EXECUTE와 지지 observation 및 SUCCEEDED + SUPPORTED를 연결해 확정한 값만 사용}`
+- validated PoC reference: `{poc_ref.record_id; R7이 exact candidate revision/digest의 POC_EXECUTION_STARTED와 POC_EXECUTION_FINISHED, 지지 observation 및 SUCCEEDED + SUPPORTED를 연결해 확정한 값만 사용}`
 - 가설 연결: `{hypothesis evidence refs와 관측이 지지·반증하는 정확한 claim}`
 - 환경 차이/제한: `{limitations}`
 
 ### AgentLog 기반 재현 과정 요약
 
-- `{exact AgentLog event의 action_type/action_id/sequence와 실제 수행 결과}`
-- `{POC_EXECUTE event가 있으면 exact candidate 실행과 연결된 observation}`
+- `{exact AgentLog event의 event_type/action_id/sequence와 실제 수행 결과}`
+- `{POC_EXECUTION_STARTED와 POC_EXECUTION_FINISHED event가 있으면 exact candidate 실행과 연결된 observation}`
 - `{실패·timeout·cancel·cleanup event와 그 limitation}`
 
 이 목록은 exact `AgentLog`의 실제 event를 사람이 읽을 수 있게 요약한 것이며 새 실행 순서나 action을
-추론하지 않는다. 실행되지 않은 action을 단계처럼 만들지 않고, `POC_EXECUTE`와 observation은 log와
+추론하지 않는다. 실행되지 않은 action을 단계처럼 만들지 않고, `POC_EXECUTION_STARTED`와 `POC_EXECUTION_FINISHED` 및 observation은 log와
 `observation_refs`에 존재하는 범위만 표시한다.
 
 ### 검증된 PoC 입력
@@ -160,12 +160,12 @@ security impact는 exact upstream evidence보다 강하게 표현하지 않는�
 ```
 
 실제 credential, session cookie, API key와 개인정보를 포함하지 않는다.
-`environment_created=false`와 `agent_invoked=false`는 서로 다른 값으로 각각 기록한다.
-`agent_invoked=false`이거나, `agent_invoked=true`인데 동일 attempt의 exact `agent_log_ref`와 `AgentLog`
+환경의 존재와 식별은 `environment_ref`로, 생성 또는 재사용 여부는 `SandboxEnvironment.container_action=CREATED | REUSED`로 기록한다.
+`agent_log_ref`는 정책 단계에서 차단되어 `agent_invoked=false`인 경우에도 Session Manager가 남기는 필수 reference이며 `null`을 허용하지 않는다. `agent_invoked=false`이거나, `agent_invoked=true`인데 동일 attempt의 exact `agent_log_ref`와 `AgentLog`
 event가 실제 PoC 실행·관측을 뒷받침하지 않거나, 상태가 `BLOCKED`이면 성공 단계처럼 채우지 않는다.
 Reporter는 R7이 확정하고 Verification의 exact `dynamic_result_ref`에 연결한 request·plan·requirements와
 environment·policy·AgentLog·PoC·cleanup provenance를 그대로 따라 실제 미실행·차단·제한 상태와
-관측 범위를 기록한다. 서로 다른 attempt의 artifact를 섞거나 이 무결성을 새로 판정하지 않는다.
+관측 범위를 기록한다. request, plan, `environment_ref`, `agent_log_ref`, PoC candidate, validated PoC, `cleanup_ref`는 모두 동일한 reproduction attempt에 속해야 한다. 서로 다른 attempt의 artifact를 섞거나 이 무결성을 새로 판정하지 않으며, 특히 `agent_log_ref`·`environment_ref`·PoC·cleanup reference의 attempt가 하나라도 다르면 fail-closed 처리한다.
 환경·실행 실패를 취약점 부재로 해석하지 않는다.
 
 ## 8. CWE
