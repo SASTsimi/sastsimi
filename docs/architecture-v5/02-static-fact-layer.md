@@ -138,7 +138,6 @@ code_context_request:
     max_depth: 3
     max_fragments: 20
     max_bytes: 80000
-    token_budget: 6000
     max_requests_per_hypothesis: 6
     timeout_ms: 15000
 ```
@@ -181,7 +180,7 @@ code_context_response:
 ## 일관성·예산·보안 규칙
 
 - 응답의 `meta.workspace_id` 또는 `meta.commit_id`가 요청·가설·`CodeWorkspace`와 다르면 사용하지 않고 `WORKSPACE_MISMATCH`로 기록한다.
-- `ContextRetrievalLimits`의 depth, fragment 수, byte/token budget, 가설별 요청 횟수와 `timeout_ms`를 적용한다.
+- `ContextRetrievalLimits`의 depth, fragment 수, byte budget, 가설별 요청 횟수와 `timeout_ms`를 적용한다. 반환 코드의 token 추정치는 관측값으로만 남기며 조회 차단 기준으로 사용하지 않는다.
 - 반복 요청은 normalized request fingerprint로 탐지한다.
 - symlink escape, submodule drift와 path traversal을 차단하고 `workspace_root` 안의 파일만 읽는다.
 - `file_path`는 `/` 구분자를 쓰는 정규화된 Git 상대 경로다. 절대 경로, drive prefix, `.`·`..` segment를 거절한다.

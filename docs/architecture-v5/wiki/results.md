@@ -23,9 +23,12 @@
 - AST/SAST·LLM·sandbox 자원과 모든 오류
 - `work_id`, attempt 이력, 상태 전이, 중복 요청과 중단 후 복구 결과
 - retry·같은 Verification의 Gate 보완·Chaining no-match/제한·예산으로 멈춘 이유
+- 평가 실행이면 장면·지표·정답·채점·provider·model·session의 exact `eval_config_refs`; 생산 실행이면 빈 목록
 - `COMMITTED` 상태와 artifact reference를 연결한 debug trace
 
 Proxy가 어려운 membership 호출은 raw session log → provider parser → redaction 경로를 쓴다. 사용자에게 노출된 request/response/tool trace만 기록하고 hidden chain-of-thought와 credential은 저장하지 않는다. 일반 결과에는 credential, 개인정보, 인증 헤더, 로컬 절대 경로가 없는 `AnalysisError.safe_message`만 넣는다. 꼭 필요한 원본 오류는 별도의 접근 제한·민감정보 제거 저장소에 두며 일반 결과와 분리한다. 오류는 `TRUE | FALSE | HOLD`와 구분한다.
+
+평가 결과 둘은 `eval_config_refs`가 exact reference 기준으로 같은 경우에만 직접 비교합니다. token은 사용량을 관측하지만 계획값 초과·누락만으로 실행을 차단하지 않습니다. 이 평가 정보는 Gate·Primitive·Reporter 입력이 아닙니다.
 
 Context 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 함께 찾을 수 있어야 합니다. 일부 조회 실패가 있어도 모든 `validation_checks`를 실제 근거로 완료했다면 판정을 저장할 수 있습니다. 하나라도 완료하지 못했으면 final `VerificationResult`는 저장하지 않고, 재시도 가능 여부에 따라 가설을 `VERIFYING`으로 유지하거나 work와 함께 `FAILED`로 끝냅니다. 실패 가설 수는 verdict 수와 섞지 않고 `failed_hypothesis_count`로 따로 보입니다.
 

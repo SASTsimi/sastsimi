@@ -35,6 +35,6 @@ Runtime은 work를 시작할 때 순환 검사 전 전체 Primitive를 `consider
 
 상세 문서 §06의 계보 규칙으로 조상 Primitive를 계산하고 현재 matching 후보에서 제외합니다. 실제 제외한 항목은 `excluded_lineage_refs`에 제외된 Primitive, 제외 근거가 된 같은 work의 Primitive와 `ANCESTOR_REUSE` 이유를 함께 남깁니다. Runtime은 이 기록을 고정된 `considered_primitive_refs`와 다시 비교해 누락·추가·잘못된 계보를 거절합니다. 별도 루트 ID나 깊이 숫자, 체이닝 전용 임의 깊이·호출·조합 한도는 저장하지 않습니다.
 
-전체 token·시간·작업 수는 R8의 전역 예산 정책으로 제한합니다. 중복 fingerprint와 ancestor cycle은 Runtime Validator가 차단하며, 예산 중단은 `FALSE`가 아닙니다.
+체이닝 전용 depth·count·call·조합·token 상한은 두지 않습니다. R8의 전체 시간·비용·작업 예산, 중복 fingerprint와 ancestor cycle은 Runtime Validator가 검사하며, 중단은 `FALSE`가 아닙니다. token은 사용량만 관측합니다.
 
 상세 내용은 [Primitive DB와 Chaining](../06-chaining.md)을 따릅니다.

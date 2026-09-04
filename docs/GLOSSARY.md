@@ -139,8 +139,10 @@
 | `Reproduction Session Manager` | 한 동적 재현 attempt의 실제 event와 최종 결과를 확정하는 비-LLM 모듈 | AgentLog, validated PoC와 DynamicReproductionResult의 result owner이며 Agent의 실행 전략은 결정하지 않습니다. |
 | `provider` | LLM을 제공하는 서비스나 연결 방식 | API 방식과 회원 로그인 방식을 같은 경계에서 관리합니다. |
 | `session` | LLM 서비스와 이어지는 로그인 또는 대화 상태 | 인증정보와 session 비밀값을 일반 로그에 남기지 않습니다. |
-| `token` | LLM이 입력과 출력을 처리할 때 쓰는 계산 단위 | 역할별·전체 실행별 한도를 둡니다. |
-| `budget` | token, 시간, 재시도와 실행 자원에 둔 한도 | 초과를 취약점 `FALSE`로 바꾸지 않습니다. |
+| `token` | LLM이 입력과 출력을 처리할 때 쓰는 계산 단위 | 실제 사용량을 관측하며 token만으로 실행을 자르지 않습니다. |
+| `token_budget` | 한 LLM 호출의 예상 token 사용량을 적는 선택 계획값 | 강제 상한이 아니며 값이 없거나 실제 사용량이 더 많아도 token만으로 차단하지 않습니다. |
+| `budget` | 시간, 비용, 호출, 재시도, 작업 수와 실행 자원에 둔 한도 | 초과를 취약점 `FALSE`로 바꾸지 않습니다. |
+| `eval_config_refs` | 평가 실행에 사용한 장면·지표·정답·채점·LLM 설정의 정확한 수정본 목록 | 목록이 같은 평가 결과끼리만 직접 비교하며 생산 Gate·Primitive·Reporter 입력으로 쓰지 않습니다. |
 | `corpus` | 반복 평가에 사용하는 예제 모음 | 버전과 정답 근거를 기록해 같은 조건으로 비교합니다. |
 | `observability` | 실행 상태와 오류를 확인할 수 있는 기록 | 비밀정보와 숨은 사고 과정은 저장하지 않습니다. |
 | `redaction` | 로그나 보고서에서 비밀정보를 가리는 처리 | 가리기 실패 시 일반 전달을 중단합니다. |

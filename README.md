@@ -85,7 +85,7 @@ Repository input
 
 정적 분석 도구는 취약점 최종 판정자가 아닙니다. 함수·클래스 같은 코드 요소(`entity`), 코드 위치, 입력 시작점(`source`), 위험 동작 지점(`sink`), 호출·데이터 흐름과 인증·권한 정보를 제공합니다. 가설(`Hypothesis`)과 체이닝 후보는 아직 사람이 검토할 취약점 결과(`Finding`)가 아닙니다. 새로운 공격 주장은 새 가설로 등록되어 전체 검증을 다시 거칩니다.
 
-LLM Agent의 출력은 그대로 믿지 않습니다. 프로그램 내부 규칙 검사기(`Runtime Validator`)는 token·시간 한도, 호출 권한, 상태가 바뀌는 순서, LLM 연결·로그인 정책, Gate 순서와 Reporter 호출 조건을 확인합니다. Sandbox Controller는 host·Docker daemon/socket·mount·secret·egress·자원 같은 외부 경계를 강제하고, R7 Agent는 그 격리 환경 안에서 재현 방법을 자율적으로 정합니다.
+LLM Agent의 출력은 그대로 믿지 않습니다. 프로그램 내부 규칙 검사기(`Runtime Validator`)는 시간·비용·호출·재시도·작업 한도, 호출 권한, 상태가 바뀌는 순서, LLM 연결·로그인 정책, Gate 순서와 Reporter 호출 조건을 확인합니다. `LLMCallSpec.token_budget`은 예상 사용량을 기록하는 계획값일 뿐 token 초과·누락만으로 실행을 차단하지 않습니다. Sandbox Controller는 host·Docker daemon/socket·mount·secret·egress·자원 같은 외부 경계를 강제하고, R7 Agent는 그 격리 환경 안에서 재현 방법을 자율적으로 정합니다.
 
 ## 설계 검토 운영 방식
 

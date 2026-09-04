@@ -91,7 +91,7 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 ### Retrieval
 
 - 요청·응답 수, relation query와 실제 조회 location 수
-- depth/token budget, truncation과 unresolved gap
+- depth/byte budget, truncation과 unresolved gap
 - 반복 request fingerprint와 `WORKSPACE_MISMATCH`
 
 ### Verification/debate

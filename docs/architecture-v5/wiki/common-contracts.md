@@ -149,6 +149,10 @@ credential·cookie·token·password 원문은 요구사항과 실제 값에 저�
 
 Technical Gate는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated PoC가 있는 final `TRUE`만 입력으로 받습니다. `FALSE | HOLD`와 검증 실패 가설은 보내지 않습니다. Verification·동적 결과·PoC·CWE 중 하나가 수정되면 이전 Gate 승인을 재사용하지 않습니다. Rule Scope Gate와 보고서 초안도 같은 exact revision을 사용해야 합니다. `AnalysisError`에는 민감정보가 제거된 `safe_message`만 넣고 원본 오류는 별도 보호 저장소로 분리합니다.
 
+`LLMCallSpec.token_budget`은 예상 token 사용량을 기록하는 선택 계획값입니다. 값이 없거나 실제 사용량이 계획보다 많아도 token만으로 `DENY`·`BUDGET_EXCEEDED`를 만들지 않습니다. 시간·비용·호출·재시도·work 한도는 계속 Runtime Validator가 검사하고 실제 token 사용량은 제공된 경우에만 기록합니다.
+
+평가 실행은 시작할 때 평가 장면, 지표·한도, corpus·사람 정답·채점 방식, provider·model·session의 정확한 설정 수정본을 `AnalysisRunState.eval_config_refs`에 고정합니다. 종료 결과의 `AnalysisRunResult.eval_config_refs`는 이 전체 집합과 정확히 같아야 하며 `PRODUCTION`에서는 둘 다 빈 목록입니다. 두 평가 결과는 이 목록이 exact reference 기준으로 같을 때만 직접 비교합니다. 이 목록은 평가 출처 확인용이며 Gate·Primitive·Reporter 입력이 아닙니다.
+
 Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 부족 조건을 `inputs`에 넣고 `result=null`로 Gate 없이 저장합니다. TRUE는 validated PoC와 같은 revision을 검토한 Technical `ACCEPT` 뒤 제공 능력 하나마다 `result`가 있는 Primitive를 만들고, 그 TRUE의 입력 조건과 `restriction_id`·근거 reference 전체도 함께 보존합니다. Rule Scope 결과는 Reporter만 제어하며 Primitive admission을 취소하지 않습니다. `PrimitiveIndexState`는 current Verification과 Primitive refs만 가리키며 별도 전용 version은 두지 않습니다. Chaining work는 시작할 때 읽은 index와 Primitive exact reference를 고정합니다. 이후 current pointer가 갱신돼도 진행 중인 work를 무효화하지 않으며, 그 work에 고정하지 않은 reference가 결과에 섞였을 때만 `STALE_RESULT`로 거절합니다.
 
 ## 자주 쓰는 작은 데이터 구조

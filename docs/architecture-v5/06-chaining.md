@@ -162,7 +162,7 @@ Verification은 proposal을 만들 수 있지만 `hypothesis_id`를 직접 발�
 
 각 parent hypothesis에서 `source_primitive_match_id`를 따라 조상 match와 입력 Primitive를 역방향으로 걷는다. 이 과정에서 만난 ancestor Primitive를 현재 순회의 후보에서 제외한다. 제외한 항목마다 `LineageExclusion`을 만들고, `excluded_by_ref`에는 같은 work에서 검토한 현재 Primitive 중 해당 조상 계보를 가진 정확한 record를 넣는다. 제외된 Primitive와 제외 근거 Primitive는 모두 고정된 `considered_primitive_refs`에 있어야 하고, 제외 근거 Primitive 자신은 제외 목록에 있으면 안 된다. Runtime은 같은 계보 규칙으로 기대 제외 쌍을 다시 계산하여 `excluded_lineage_refs`와 정확히 같은지 확인한다. DB record는 바꾸지 않는다.
 
-체이닝 전용 임의 depth, 전체·parent별 가설 수, Chaining 호출 수와 Primitive 조합 수 한도는 두지 않는다. 대신 R8의 전체 token·시간·비용·work 예산이 모든 체이닝에도 적용된다. 예산 소진은 `FALSE`가 아니며 work 상태와 `AnalysisRunResult.stop_reasons`에 기록한다. 같은 `normalized_fingerprint`도 한 분석에서 중복 저장하지 않는다.
+체이닝 전용 임의 depth, 전체·parent별 가설 수, Chaining 호출 수, Primitive 조합 수와 token 상한은 두지 않는다. 대신 R8의 전체 시간·비용·work 예산이 모든 체이닝에도 적용된다. token 사용량은 관측하되 초과만으로 중단하지 않는다. 다른 예산 소진도 `FALSE`가 아니며 work 상태와 `AnalysisRunResult.stop_reasons`에 기록한다. 같은 `normalized_fingerprint`도 한 분석에서 중복 저장하지 않는다.
 
 `considered_primitive_refs`와 `excluded_lineage_refs`는 기존 `ChainingResult`에 없던 필수 필드이므로 새 MAJOR schema에서만 사용한다. 이전 MAJOR 결과에 빈 목록을 추정해 넣지 않고 감사 이력으로만 보존한다.
 

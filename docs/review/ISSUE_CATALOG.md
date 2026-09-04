@@ -82,7 +82,7 @@
 
 - `[R1-01] 취약점 가설에 반드시 들어갈 정보 확정`
 - `[R1-02] 연계 공격 후보를 새 가설로 만드는 조건 확정`
-- `[R1-03] 연계 탐색의 token·시간·중복 중단 기준 확정`
+- `[R1-03] 연계 탐색의 시간·작업·중복 중단 기준 확정`
 
 ### 역할 소유권
 
@@ -119,7 +119,7 @@
 - 정적분석·컨텍스트: location/fact grounding
 - 검증·반박·플레이북: falsification과 새 claim 경계
 - PM·아키텍처·워크플로: lifecycle/schema/runtime enforcement
-- 데이터·평가·예산: token/time/quality 기준
+- 데이터·평가·예산: time/cost/work/quality 기준과 token 사용량 관측
 
 ### 완료 조건
 
@@ -127,7 +127,7 @@
 - [ ] facts와 assumptions, restriction, missing information, falsification question이 구분됨
 - [ ] Primitive match compatibility와 duplicate/cycle 규칙이 문서화됨
 - [ ] `parent_hypothesis_ids`와 `source_primitive_match_id`에서 조상 계보를 계산해 조상 Primitive를 현재 후보에서 제외함
-- [ ] 체이닝 전용 임의 depth/count/call/combination 한도를 두지 않고 R8 전역 token/time/work budget과 중단 이유를 사용함
+- [ ] 체이닝 전용 임의 depth/count/call/combination/token 상한을 두지 않고 R8 전역 time/cost/work budget과 중단 이유를 사용함
 - [ ] no-match와 전역 예산 중단도 관측 가능함
 - [ ] token 최적화가 동일 corpus의 품질 저하 여부와 함께 평가됨
 - [ ] Wiki/Mermaid 및 인접 계약이 일치함
@@ -191,7 +191,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] sanitizer·validator는 방어 로직 후보로만 전달하며 실제 적용·순서·우회 가능성은 R6가 검증함
 - [ ] 후보가 없는 목록도 `[]`로 전달하고 빈 배열을 안전함이나 검사 완료로 해석하지 않음
 - [ ] AST/SAST 부분 실패와 충돌·불확실성이 gap/error로 보존됨
-- [ ] relation query와 depth/fragment/byte/token/request/time 제한이 정의됨
+- [ ] relation query와 depth/fragment/byte/request/time 제한이 정의되고 token 추정치는 비차단 관측값으로 구분됨
 - [ ] `WORKSPACE_MISMATCH`, `WORKSPACE_CHANGED`와 path/symlink negative scenario가 문서화됨
 - [ ] `gaps` 이름과 소비자 의미가 일관됨
 
@@ -309,7 +309,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] retry/failover가 새 attempt/invocation이며, 바로 앞 실패 호출 reference로 순서와 원인을 복원할 수 있음
 - [ ] 같은 요청은 canonical `dedupe_key`로 기존 `work_id`를 재사용하고 한 work에는 active attempt가 하나임
 - [ ] 상태 변경은 `state_version` compare-and-set을 사용하고 stale·취소·다른 workspace/commit 결과를 거절함
-- [ ] 중복·ancestor cycle·repair/Gate revision과 R8 전역 token/time/work budget의 enforcement owner가 비-LLM Runtime Validator로, Sandbox 세부 정책의 enforcement owner가 Sandbox Controller로 명시됨
+- [ ] 중복·ancestor cycle·repair/Gate revision과 R8 전역 time/cost/work budget의 enforcement owner가 비-LLM Runtime Validator로, Sandbox 세부 정책의 enforcement owner가 Sandbox Controller로 명시됨. token은 관측값이며 초과·누락만으로 action을 차단하지 않음
 - [ ] Technical `REVISE`가 Orchestration을 경유해 재배정되지 않고 같은 ACTIVE VerificationAssignment owner의 새 VERIFICATION work로 돌아감
 - [ ] HOLD의 `inputs + result=null`과 Technical-accepted TRUE의 `inputs + result` Primitive admission·supersede 규칙이 있음
 - [ ] persistence/recovery/atomicity/idempotency 계약이 합의되고 `TERMINAL`·`DRAFTED` 상태가 정확한 결과 `record_id`를 가리킴
@@ -541,13 +541,13 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 
 ### 쉽게 말하면
 
-각 Agent와 분석 단계가 실제로 잘 동작하는지 같은 평가 데이터로 비교할 기준을 만든다. 각 전문 역할이 제공한 최소 품질·실행 요구와 함께 token, 시간, 재시도, chaining과 sandbox 예산 profile을 정한다. 실제 action 허용·차단은 R4 trusted runtime이 담당한다.
+각 Agent와 분석 단계가 실제로 잘 동작하는지 같은 평가 데이터로 비교할 기준을 만든다. 각 전문 역할이 제공한 최소 품질·실행 요구와 함께 시간, 비용, 호출, 재시도, chaining과 sandbox 예산 profile을 정하고 token 사용량은 관측한다. 실제 action 허용·차단은 R4 trusted runtime이 담당하지만 token 계획값 초과·누락만으로 차단하지 않는다.
 
 ### 담당자가 나눌 수 있는 하위 Issue 예시
 
 - `[R8-01] 평가에 사용할 취약점·오류 예제 모음 확정`
 - `[R8-02] 역할별 품질·오류·비용 지표 확정`
-- `[R8-03] token·시간·재시도·연계 탐색 한도 확정`
+- `[R8-03] 시간·비용·호출·재시도·연계 탐색 한도와 token 관측 기준 확정`
 - `[R8-04] 변경 전후를 같은 조건으로 비교하는 절차 확정`
 
 ### 역할 소유권
@@ -571,7 +571,7 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 
 ### 확인할 권한 경계
 
-- metric은 verdict/Gate/human decision을 대신하지 않는다.
+- metric과 오프라인 사람 정답은 verdict·Gate·자동화 상태를 대신하지 않는다.
 - R8은 budget profile과 합격 기준을 설계하지만 action 예산을 직접 허용·차단하지 않는다. R4 trusted runtime이 승인된 profile을 강제한다.
 - 전문 역할의 최소 품질·실행 요구 없이 예산만 줄여 debate·동적 재현·Gate 의미를 바꾸지 않는다.
 - unavailable usage를 추정 확정값으로 표시하지 않는다.
@@ -591,8 +591,8 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 - [ ] schema validity/repair, retrieval gap/`WORKSPACE_MISMATCH`, debate 전후 품질, HOLD 즉시 chaining, Technical-accepted TRUE admission과 전역 예산에 따른 chaining 중단을 측정함
 - [ ] conditional debate, 독립 session, 두 Gate와 provider/model 선택에 acceptance threshold가 있음
 - [ ] adversarial prompt-injection, contradictory Gate, redaction failure case가 있음
-- [ ] role별 token/time/retry/chain/sandbox budget과 `BUDGET_EXCEEDED` 의미가 있음
-- [ ] config 변경은 versioned config와 동일 corpus 비교를 요구함
+- [ ] role별 time/cost/call/retry/chain/sandbox budget과 `BUDGET_EXCEEDED` 의미가 있고 token은 비차단 관측값으로 구분됨
+- [ ] config 변경은 `AnalysisRunResult.eval_config_refs`의 exact versioned reference set과 동일 corpus 비교를 요구함
 - [ ] training 활용은 별도 ADR/data lineage/license/redaction 없이는 범위 밖임
 
 ---
