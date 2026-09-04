@@ -546,7 +546,12 @@ foreach ($field in @('verification_assignment_ref:', 'verification_generation:',
 foreach ($fieldPattern in @(
     'requirement_id:\s*string',
     'kind:\s*APP_ROLE \| AUTH \| DATA \| DATABASE \| SERVICE \| FIXTURE \| MOCK \| VERSION \| HEALTH_CHECK',
+    'name:\s*string',
     'required:\s*boolean',
+    'expected:\s*string \| null',
+    'expected_ref:\s*StoredDataRef \| null',
+    'alternatives:\s*\[string\]',
+    'check_ref:\s*StoredDataRef \| null',
     'secret_ref:\s*StoredDataRef \| null',
     'source_refs:\s*\[StoredDataRef\]'
 )) {
@@ -573,7 +578,10 @@ foreach ($fieldPattern in @(
     'requirement_id:\s*string',
     'status:\s*MATCH \| MISMATCH \| NOT_CHECKED \| ERROR',
     'actual:\s*string \| null',
-    'evidence_refs:\s*\[StoredDataRef\]'
+    'actual_ref:\s*StoredDataRef \| null',
+    'difference:\s*string \| null',
+    'evidence_refs:\s*\[StoredDataRef\]',
+    'check_result_ref:\s*StoredDataRef \| null'
 )) {
     if (-not [regex]::IsMatch($environmentCheckBlock, $fieldPattern)) {
         Add-Failure "missing or invalid EnvironmentCheck field: $fieldPattern"
@@ -590,7 +598,8 @@ foreach ($fieldPattern in @(
     'container_reason:\s*INITIAL_CLEAN \| NO_RELEVANT_CHANGE \| STATE_CHANGED \| CONFIG_CHANGED \| STATE_UNCERTAIN',
     'previous_environment_ref:\s*StoredDataRef \| null',
     'status:\s*READY \| MISMATCH \| ERROR',
-    'checks:\s*\[EnvironmentCheck\]'
+    'checks:\s*\[EnvironmentCheck\]',
+    'created_at:\s*timestamp'
 )) {
     if (-not [regex]::IsMatch($sandboxEnvironmentBlock, $fieldPattern)) {
         Add-Failure "missing or invalid SandboxEnvironment field: $fieldPattern"
