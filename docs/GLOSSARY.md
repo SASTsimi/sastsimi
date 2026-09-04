@@ -128,7 +128,7 @@
 | `REVISE` | 부족한 근거를 같은 Verification owner가 새 Verification work에서 보완한 뒤 새 revision으로 다시 검토하라는 결과 | provider retry나 동일 입력 재투표가 아니며 오래된 Gate 결과를 재사용하지 않습니다. |
 | `UNCERTAIN + DENY` | 공식 정책을 확인하지 못해 결론과 보고서 전달을 허용하지 않는 상태 | LLM의 기억으로 정책을 채우지 않습니다. |
 | `Reporter` | 통과한 결과를 사람이 읽을 `ReportDraft`로 정리하는 마지막 Agent | 외부 제출과 공개는 하지 않습니다. |
-| `Agent automation end` | `ReportDraft`와 `AnalysisRunResult`를 확정한 뒤 Agent 작업을 끝내는 경계 | 이후 검토·수정·제출·공개는 시스템 밖에서 사람이 진행합니다. |
+| `Agent automation end` | `ReportDraft`를 포함한 `AnalysisRunResult`와 `AnalysisRunState`를 원자적으로 확정한 뒤 Agent 작업을 끝내는 경계 | 이후 검토·수정·제출·공개는 시스템 밖에서 사람이 진행합니다. |
 
 ## 실행·보안·평가
 

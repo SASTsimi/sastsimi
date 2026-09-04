@@ -255,7 +255,7 @@ flowchart TB
     READY -->|Yes| RREQ[Verification requests Reporter]
     RREQ --> REPORTER[Reporter Agent]
     REPORTER --> DRAFT[Internal ReportDraft]
-    BLOCK --> FINAL[Finalize AnalysisRunResult]
+    BLOCK --> FINAL[Atomically finalize AnalysisRunResult and AnalysisRunState]
     DRAFT --> FINAL
     FINAL --> END[Agent automation end]
 ```
@@ -423,13 +423,13 @@ flowchart LR
     POLICY[Current policy record] --> REPORTER
     DYNAMIC[Current supported dynamic evidence and redacted validated PoC] --> REPORTER
     REPORTER --> DRAFT[ReportDraft with restrictions limitations and redaction passed]
-    DRAFT --> FINAL[Trusted runtime finalizes AnalysisRunResult and logs]
+    DRAFT --> FINAL[Trusted runtime atomically finalizes AnalysisRunResult and AnalysisRunState]
     BLOCKED[No report-ready Finding] --> FINAL
     FINAL --> END[Agent automation end]
     END -. outside Agent automation .-> HUMAN[Person-led review edit submit or disclose]
 ```
 
-ReportDraft는 마지막 Agent 산출물이다. `AnalysisRunResult` 확정은 기존 결과와 로그를 묶는 신뢰 runtime 작업이며 새 LLM 판단이 아니다. 점선 뒤의 사람 검토·수정·제출·공개는 Agent action과 상태 계약 밖이다.
+ReportDraft는 마지막 Agent 산출물이다. `AnalysisRunResult`와 `AnalysisRunState`의 원자적 확정은 기존 결과와 로그를 묶는 신뢰 runtime 작업이며 새 LLM 판단이 아니다. 점선 뒤의 사람 검토·수정·제출·공개는 Agent action과 상태 계약 밖이다.
 
 ## Rendering check
 

@@ -1054,29 +1054,6 @@ ValidationCheckResult:
   evidence_refs: [StoredDataRef]
   summary: string
 
-VerifiedImpact:
-  impact_id: string
-  claim: string
-  supporting_evidence_refs: [StoredDataRef]
-  related_condition_ids: [string]
-  adopted_child_impact_links: [AdoptedChildImpactLink]
-
-AdoptedChildImpactLink:
-  child_verification_ref: StoredDataRef
-  child_verified_impact_ids: [string]
-  supporting_evidence_refs: [StoredDataRef]
-
-VerificationCondition:
-  condition_id: string
-  description: string
-  evidence_refs: [StoredDataRef]
-  resolution_requirement: string
-  gate_projections: [VerificationConditionGateProjection]
-
-VerificationConditionGateProjection:
-  domain: RULE | SCOPE | IMPACT
-  blocking_for_sufficiency: boolean
-
 VerificationResult:
   meta: RecordMeta
   playbook_ref: StoredDataRef
@@ -1098,20 +1075,16 @@ VerificationResult:
   verdict: TRUE | FALSE | HOLD
   verdict_rationale: string
   restrictions: [Restriction]
-  verified_impacts: [VerifiedImpact]
   bypass_candidates: [CandidateRef]
   required_primitive_candidates: [PrimitiveDraft]
   provided_primitive_candidates: [PrimitiveDraft]
   impact_escalation_candidates: [CandidateRef]
   material_child_proposals: [HypothesisProposal]
-  unresolved_conditions: [VerificationCondition]
+  unresolved_conditions: [string]
   metrics: VerificationMetrics
   errors: [AnalysisError]
 ```
 
-`VerificationCondition`은 R6가 생산하는 범용 unresolved condition 정본이다. Gate와 무관한 condition은 `gate_projections=[]`로 두며 억지로 domain을 붙이지 않는다. Gate-relevant condition만 domain별 projection을 가지며 같은 condition 안의 domain은 유일하다. projection identity는 exact parent revision을 결합한 `(source_verification_ref, source_condition_id, domain)`이다. `blocking_for_sufficiency=true`는 `IMPACT`에서만 허용하고 관련 impact의 `SUFFICIENT`와 Gate의 `ALLOW`를 막는다.
-
-부모가 child impact를 채택하면 `VerifiedImpact.adopted_child_impact_links`는 exact child final TRUE Verification과 그 revision의 impact ID·evidence closure를 고정한다. parent/child의 analysis·workspace·commit과 canonical target identity가 모두 같아야 하며, 자연어 asset 이름이나 evidence 목록은 identity를 대신하지 않는다. 채택은 새 parent Verification revision에서만 가능하고 이후 Technical Gate와 Rule Scope Impact Gate를 다시 실행한다.
 `VerificationPlaybook.meta.logical_record_id`는 플레이북 식별자이고 `meta.revision_number`는 내용 revision이다. `schema_version`은 플레이북 데이터 구조의 버전이므로 내용 revision과 구분한다. 플레이북 내용이 변경되면 기존 record를 수정하지 않고 새 `record_id`, 증가한 `revision_number`와 새 `content_hash`를 만든다. `PlaybookQuestionTemplate.template_key`는 같은 플레이북 revision 안에서만 유일한 사람이 읽는 템플릿 이름이고 실제 `question_id`가 아니다. `template_key` 중복과 비어 있는 질문은 플레이북 등록 단계에서 거절한다.
 
 `scope=COMMON`이면 `vulnerability_type=null`, `scope=TYPE_SPECIFIC`이면 `vulnerability_type`이 필수다. R6 검증·반박·플레이북 담당은 플레이북 내용을 제안하지만 등록만으로 운영 지원 유형을 바꾸지 못한다. 운영 지원 목록과 적용 mapping은 사람의 승인을 받은 `PlaybookPolicy` revision으로만 바뀌며 trusted playbook registry runtime이 immutable record로 저장한다. `common_playbook_ref`는 실제 `scope=COMMON` 플레이북을, 각 `type_playbooks[].playbook_ref`는 같은 항목의 `vulnerability_type`을 가진 `scope=TYPE_SPECIFIC` 플레이북을 가리켜야 한다. `type_playbooks`의 유형은 중복될 수 없고 모든 reference는 존재하는 exact `record_id + content_hash`여야 한다. 유효한 COMMON reference가 없거나 TYPE mapping이 중복·불일치하면 policy를 current로 만들지 않는다.
@@ -1631,8 +1604,6 @@ PolicyMissingInfo:
   description: string
   policy_item_ids: [string]
   evidence_refs: [StoredDataRef]
-  source_verification_ref: StoredDataRef | null
-  source_condition_id: string | null
 
 ProgramPolicyRecord:
   meta: RecordMeta without hypothesis/attempt
@@ -1698,8 +1669,6 @@ RuleScopeImpactReview:
   cwe_label_ref: StoredDataRef
   policy_collection_result_ref: StoredDataRef
   policy_record_ref: StoredDataRef | null
-  execution_fact_refs: [StoredDataRef]
-  adopted_child_impact_links: [AdoptedChildImpactLink]
   review_status: PASS | FAIL | UNCERTAIN
   rule_compliance: PASS | FAIL | UNCERTAIN
   scope_compliance: PASS | FAIL | UNCERTAIN
@@ -1728,9 +1697,7 @@ RuleScopeEvidenceLink:
 
 `RuleScopeImpactReview`의 정책 수집·근거 연결·missing-information 필드는 새 필수 계약이므로 새 MAJOR schema에서 사용한다. 이전 MAJOR review의 문자열 이유나 “당시 최신 정책”을 exact reference로 추정 변환하지 않는다.
 
-`PolicyMissingInfo`는 R6 canonical `VerificationCondition`을 재정의하지 않는다. 현재 final Verification의 `gate_projections`에 선언된 domain만 `(source_verification_ref, source_condition_id, domain)` identity로 정확히 한 번 projection하며, 그 `domain`은 canonical `PolicyMissingInfo.area`의 `RULE | SCOPE | IMPACT` 값으로 저장한다. multi-domain condition은 domain별 항목을 만들고, `gate_projections=[]`인 일반 condition은 만들지 않는다. 선언 domain 누락·중복, source evidence나 blocking 의미 약화는 invalid다. IMPACT `blocking_for_sufficiency=true`는 `blocks_allow=true`로 보존하며 관련 `SUFFICIENT`와 전체 `ALLOW`를 금지한다.
-
-`execution_fact_refs`는 current R7 attempt에서 testing restriction 판단에 필요한 실제 수행 fact closure에 대해 complete해야 한다. 다른 revision/generation/attempt를 섞거나 결과를 바꾸는 실제 행위를 누락하지 않는다. 실행되지 않은 attack/PoC step, `runner_invoked=false`인 attack fact, observation 연결 없는 PoC는 포함하지 않는다. policy block 또는 environment precheck stop으로 artifact가 생성되지 않았다면 존재하지 않는 reference를 요구하지 않는다. `adopted_child_impact_links`는 parent Verification이 명시적으로 채택한 exact child final TRUE impact linkage와 set-equal해야 하며 parent/child analysis·workspace·commit 및 canonical target identity가 같을 때만 허용한다. 채택 후 새 parent Verification revision과 두 Gate가 필요하다.
+Rule·Scope·Impact 판단은 별도 condition/projection 또는 execution-fact schema를 만들지 않고 current final `VerificationResult`의 canonical evidence와 exact transitive reference closure를 직접 소비한다. 동적 사실을 사용할 때에는 `dynamic_result_ref`가 고정한 current generation·same-attempt artifact와 `AgentLogEvent` 연결만 인정하며, 다른 revision·generation·attempt의 artifact나 stale event를 섞지 않는다. 실행되지 않았거나 policy block·environment precheck stop으로 생성되지 않은 artifact는 요구하지 않는다. `PolicyMissingInfo`는 이 closure와 정책 provenance만으로 판단할 수 없는 사항을 구조화하며, Gate가 새로운 Verification 사실이나 child-impact 연결을 만들지 않는다.
 
 `ABSENT_CONFIRMED`이거나 `ProgramPolicyRecord`의 핵심 출처가 누락되면 Gate를 실제 호출할 수 있는 입력 상태에서 `UNCERTAIN + DENY`다. `freshness_status=STALE | UNVERIFIED`이면 `rule_compliance`, `scope_compliance`, `review_status`는 `UNCERTAIN`, permission은 `DENY`다. 누락은 구조화된 `missing_information`과 관련 provenance로 설명한다. 이 상태에서 `PASS | ALLOW`를 반환하면 invalid다. 반면 `COLLECTION_FAILED`는 이 경로에 들어오지 않으며 review 자체가 없다.
 

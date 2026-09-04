@@ -49,11 +49,11 @@ fetch/parser/schema/runtime 실패나 invalid output은 정책 `FAIL` 또는 정
 
 `ALLOW`는 `review_status PASS + rule PASS + scope PASS + impact SUFFICIENT + authentic fresh exact policy revision + 핵심 누락 없음`에서만 유효하며, 동일 exact Verification revision이 R5-03 Reporter로 진행하기 위한 Gate 2 정책 전제조건을 충족했다는 뜻으로 한정한다. 다른 조합의 `ALLOW`는 공통 semantic validation의 `INVALID_OUTPUT`이며 Reporter에 사용할 수 없다. `ALLOW`는 Reporter 실행, ReportDraft·Primitive 생성 또는 Human Review·외부 제출·공개 승인이 아니다.
 
-Gate 결과는 authoritative policy/source/parser/authenticity/freshness와 upstream evidence/execution reference graph, 그리고 그중 LLM이 실제 읽은 bounded context를 구분해 기록한다. `evidence_links`로 Rule은 공식 rule item+verified evidence, Scope는 공식 scope item+실제 target/version, Impact는 공식 criterion+verified impact evidence에 연결되어야 확정 상태가 된다. 누락은 `missing_information`에 stable ID, domain, blocking 여부, 설명과 policy/evidence refs로 구조화한다. R6 `gate_projections`의 각 `RULE | SCOPE | IMPACT` domain은 `(source_verification_ref, source_condition_id, domain)` identity로 정확히 한 번 반영하며 누락·중복·blocking 약화 또는 blocking 누락과 `ALLOW`의 조합은 `INVALID_OUTPUT`이다.
+Gate 결과는 authoritative policy/source/parser/authenticity/freshness와 current final `VerificationResult`의 exact evidence/reference closure, 그리고 그중 LLM이 실제 읽은 bounded context를 구분해 기록한다. `evidence_links`로 Rule은 공식 rule item+verified evidence, Scope는 공식 scope item+실제 target/version, Impact는 공식 criterion+verified impact evidence에 연결되어야 확정 상태가 된다. 누락은 `missing_information`에 stable ID, domain, blocking 여부, 설명과 policy/evidence refs로 구조화한다. 별도 condition/projection schema는 만들지 않으며 blocking 누락과 `ALLOW`의 조합은 `INVALID_OUTPUT`이다.
 
-testing restriction은 `verification_result_ref -> dynamic_result_ref`를 통해 current-generation exact attempt에서 실제 수행한 사실만 `execution_fact_refs`로 고정한다. 계획했지만 실행하지 않은 attack/PoC, Runner가 호출되지 않은 attack fact, observation 없는 PoC는 포함하지 않는다. policy block이나 environment precheck로 만들지 않은 artifact는 요구하지 않는다. 다른 generation/revision/attempt 혼합과 결과를 바꾸는 실제 수행 사실 누락을 금지한다. R7은 사실과 provenance를 제공하고 Gate 2가 공식 testing restriction과 비교하며, Gate 2는 R7 환경·정책 판정을 재심사하지 않는다.
+testing restriction은 `verification_result_ref -> dynamic_result_ref`의 canonical transitive reference closure를 통해 current-generation exact attempt에서 실제 수행한 사실만 사용한다. `AgentLogEvent.event_type`, `input_refs`, output/observation과 연결 artifact 및 canonical `agent_invoked`가 실행 사실의 provenance를 제공한다. 계획했지만 실행하지 않은 attack/PoC, `agent_invoked=false`인 실행 fact, observation 없는 PoC는 사용하지 않고 policy block이나 environment precheck로 만들지 않은 artifact는 요구하지 않는다. 다른 generation/revision/attempt 혼합과 결과를 바꾸는 실제 수행 사실 누락을 금지한다. R7은 사실과 provenance를 제공하고 Gate 2가 공식 testing restriction과 비교하며, Gate 2는 R7 환경·정책 판정을 재심사하지 않는다.
 
-child proposal은 독립 Verification을 거치며 child TRUE가 부모 impact를 자동 높이지 않는다. `adopted_child_impact_links`는 exact child final TRUE revision·impact ID·evidence와 parent/child의 동일 analysis/workspace/commit/canonical target identity를 고정한다. 부모가 이를 새 parent Verification N+1에 명시적으로 채택한 뒤 Technical Gate와 Gate 2를 다시 수행한 경우만 부모 impact에 사용할 수 있다.
+child proposal은 독립 Verification을 거치며 child TRUE가 부모 impact를 자동 높이지 않는다. 부모 impact 판단은 current parent `VerificationResult`의 exact evidence/reference closure에 이미 검증되어 포함된 사실만 소비하며, Gate 2가 별도 child-adoption schema를 만들거나 child 결과를 부모 사실로 승격하지 않는다.
 
 Gate 판단 시점부터 policy가 `STALE | UNVERIFIED`인데 `ALLOW`이면 생성 당시 모순이므로 `INVALID_OUTPUT`이다. 정상 policy와 revision으로 생성된 review가 이후 upstream 변경 때문에 오래된 경우에는 기존 review 자체를 invalid로 바꾸지 않고, 새 revision의 Reporter에 재사용하지 못하게 runtime이 차단한다.
 공식 정책 부재가 확인된 `ABSENT_CONFIRMED`이거나 정책의 `freshness_status`가 `STALE | UNVERIFIED`이면 rule/scope/review는 `UNCERTAIN`이고 permission은 `DENY`입니다. 오래된 정책 reference는 감사용으로 남길 수 있지만 `PASS | ALLOW` 근거로 쓰지 않습니다. 수집 실패 `COLLECTION_FAILED`는 review를 만들지 않으며, 저장소 문서나 모델 기억으로 공식 정책을 추정하지 않습니다.
@@ -76,9 +76,24 @@ TRUE
 
 Reporter는 위 조건을 모두 만족하고 current Finding이 있으며 exact revision closure와 `REPORT_READY`, 동일 ACTIVE Verification owner를 runtime이 확인한 때만 내부 ReportDraft를 만든다. 두 Gate가 검토한 CWELabel과 보고서 초안의 `cwe_label_ref.record_id`가 다르면 초안을 만들지 않는다. 이 upstream 중 하나가 새 revision으로 바뀌면 기존 초안은 감사 기록으로만 남고 새 Gate·Reporter 결과가 나오기 전까지 current 결과로 쓸 수 없다. 두 Gate와 Reporter 모두 외부 제출·공개 권한이 없다.
 
-`ReportDraft`가 마지막 Agent 산출물이며 `AnalysisRunResult` 확정 뒤 자동화가 끝납니다. trusted runtime은 `AnalysisRunResult + AnalysisRunState`를 원자적으로 확정한다. 이후 Human Review·초안 수정·외부 제출/공개는 사람 주도 과정이며 active architecture는 이를 위한 schema, state, decision enum이나 자동 action을 정의하지 않는다.
+Reporter는 검증된 사실을 합성·표현할 뿐 새 vulnerability fact, attack path, reproduction/PoC 성공,
+policy·scope 판단이나 upstream보다 강한 severity·exploitability·security impact를 만들지 않습니다.
+주요 claim은 current Finding과 두 Gate가 실제 검토한 exact Verification·CWE·정책·Dynamic/PoC revision으로
+추적해야 하며, 별도로 최신 결과를 검색해 연결하지 않습니다. Dynamic/PoC 표시는 Verification의 exact
+`dynamic_result_ref`와 R7에서 이미 validated된 `poc_ref`만 소비하고, request·plan·requirements와 존재하는
+policy·environment·AgentLog·PoC·cleanup을 다른 attempt와 섞지 않습니다. Reporter는 이 무결성이나 실행
+성공을 새로 판정하지 않습니다. Verification restriction과 unresolved condition, 정적·동적·Gate
+limitation을 빠짐없이 보존하고 실행·환경 실패를 취약점 부재로 바꾸지 않습니다. 저장 전
+secret·불필요한 PII·private/raw reasoning을 제거한 `REDACTION=PASS`가 필요합니다.
 
-프로그램 검사기는 Gate 결론을 대신 내리지 않습니다. Verification이 Gate 호출을 제안하더라도 정확한 입력·LLM call spec, Technical-accepted Primitive admission과 Reporter 조건을 검사합니다. Rule Scope는 동일한 current Verification revision에 대한 Technical `ACCEPT` 이후의 downstream 보고 경로입니다. Finding이 없으면 Reporter를 호출하지 않고 `report_draft_refs=[]`와 오류·상태 이유를 남긴 뒤 runtime finalization으로 간다.
+프로그램 검사기는 Gate 결론을 대신 내리지 않습니다. Verification이 Gate 호출을 제안하더라도 정확한
+입력·LLM call spec, Technical-accepted result Primitive admission과 Reporter 조건을 검사합니다. Rule
+Scope는 Technical `ACCEPT` 이후의 독립된 보고 경로이며 이미 확정된 Primitive·Chaining 자격을 다시
+판정하거나 취소하지 않습니다. Finding이 없으면 Reporter를 호출하지 않고 `report_draft_refs=[]`와
+오류·상태 이유를 남깁니다. `ReportDraft`가 마지막 Agent 산출물이며 `AnalysisRunResult` 확정 뒤 자동화가 끝납니다.
+Reporter work 종료 뒤 신뢰 runtime은 `AnalysisRunResult`와 `AnalysisRunState`를 새 Agent 판단 없이
+원자적으로 확정합니다. 이후 사람의 검토·수정·제출·공개는 Agent 계약 밖이며 Reporter에는 외부 제출·공개나
+CVE/GHSA 요청 권한이 없습니다.
 
 `ALLOW`가 PASS·scope·impact 조건과 모순되거나 Gate가 현재 작업과 다른 input revision을 가리키면 유효한 Gate 결과가 아니다. LLM 호출을 `INVALID_OUTPUT`, 오류를 `GATE/INVALID_OUTPUT`으로 기록하고 Reporter를 호출하지 않는다.
 
