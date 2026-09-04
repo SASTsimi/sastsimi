@@ -153,9 +153,7 @@ Pro·Con 호출 횟수는 같은 Verification work와 역할에 속한 중복 �
 | 판정 | 최소 필수 근거 | 허용하지 않는 판정 이유 |
 |---|---|---|
 | `TRUE` | 현재 가설의 핵심 exploit path를 지지하는 정적·Pro·Con 근거, 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated `poc_ref` | 단순 추측, `NOT_DISPROVED`, validated PoC가 없거나 현재 generation과 다른 동적 결과 |
-| `FALSE` | named falsification의 `question_id`, `outcoR7 내부 책임은 다음처럼 나눈다.
-
-- **R7 Agent**:me=DISPROVED`, 하나 이상의 실제 `evidence_refs`와 이를 연결하는 판정 이유 | 오류, timeout, 빈 Context, 예산 초과, Sandbox 실패 |
+| `FALSE` | named falsification의 `question_id`, `outcome=DISPROVED`, 하나 이상의 실제 `evidence_refs`와 이를 연결하는 판정 이유 | 오류, timeout, 빈 Context, 예산 초과, Sandbox 실패 |
 | `HOLD` | 하나 이상의 `unresolved_conditions`와 정상적으로 확인한 범위 및 결론을 막는 조건을 설명하는 실제 evidence reference | 취약점이 아니라는 의미로 사용하거나 result가 있는 능력으로 승격 |
 
 ### HOLD와 실행 오류의 결정 기준
@@ -371,4 +369,3 @@ final `VerificationResult` 후보를 저장하기 전에 trusted runtime은 `SAV
 | current request와 다른 hypothesis·workspace·commit·generation·purpose·attempt 결과 | `STALE_RESULT`로 격리, Verification 소비 금지 |
 | 같은 generation에서 두 번째 동적 목적 요청 | 중복 work 등록 거절 |
 | Technical `REVISE` 뒤 이전 generation 결과 또는 PoC 재사용 | stale로 거절하고 새 generation에서 새 동적 work 요구 |
-
