@@ -1,11 +1,14 @@
 # ADR-002. Sandbox 정책 판정·실행·결과 조립 권한 분리
 
-- 상태: `PROPOSED`
+- 상태: `SUPERSEDED`
+- 대체 결정: [ADR-007. R7 자율 동적 재현과 Session Manager 결과 확정](./ADR-007-r7-autonomous-reproduction-session.md)
 - 결정 담당: PM·아키텍처·워크플로, 동적검증·Sandbox
 - 필수 검토: 검증·반박, 통합 개발, Gate·보고서, 데이터·평가
 - 검토 PR: [#48](https://github.com/SASTsimi/sastsimi/pull/48)
 
 ## Context
+
+> 이 문서는 exact plan·Runner·Result Assembler를 사용하던 당시 제안을 보존한 역사 기록입니다. 현재 계약으로 사용하지 않습니다. 외부 격리 경계와 현재 result owner는 ADR-007을 따릅니다.
 
 Runtime Validator의 `RUN_SANDBOX ALLOW`는 호출 권한·상태·예산과 exact `ReproductionPlan`만 확인합니다. 이를 Sandbox 세부 정책 통과나 Docker 실행 성공으로 해석하면 Controller를 우회한 실행과 정책 차단 근거 누락을 구분할 수 없습니다.
 
