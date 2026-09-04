@@ -22,7 +22,15 @@
 
 운영에서는 예산 부족을 이유로 Pro/Con을 생략하지 않습니다. `BUDGET_EXCEEDED`로 현재 검증 작업을 중단하고, 새 예산이 승인된 작업에서 다시 진행합니다. 평가 모드의 BASIC·조건부 결과는 Gate, Primitive 또는 보고서 입력으로 사용하지 않습니다.
 
-Pro와 Con은 서로의 결과를 받지 않는 별도 NEW session이다. trigger/skip reason, token·시간, verdict 변화, HOLD 해소, 오탐 감소 후보와 bypass 발견을 기록한다.
+평가용 `CONDITIONAL_DEBATE`는 versioned 설정의 `CONFLICTING_EVIDENCE | HIGH_IMPACT_OR_COST | INITIAL_HOLD | AUTH_OR_SANITIZER_BYPASS | ONE_SIDED_EVIDENCE | REVISE_ALTERNATE_PATH` trigger를 사용합니다. 충족된 code는 `debate_triggers`에 기록합니다. 아무 trigger도 충족하지 않으면 `debate_skip_reason=NO_TRIGGER_MATCH`, BASIC이면 `MODE_BASIC`을 기록합니다. 실제 Pro/Con을 실행하면 skip reason은 `null`입니다.
+
+Verification은 Pro와 Con을 부르기 전에 같은 가설·workspace·commit·코드 경로·Context·정적 근거·인증/방어 로직·반증 질문·검증 항목·플레이북 revision을 공통 입력 snapshot으로 고정하고 `debate_input_hash`로 식별합니다. 두 Agent는 이 snapshot만 함께 사용하고, 서로의 결론·출력·session은 받지 않습니다. 각 Agent는 별도 child work·call identity와 `parent_session_ref=null`인 독립 `NEW` session에서 병렬 실행됩니다. trusted prompt builder는 공통 reference와 역할별 instruction만으로 prompt를 만들며, 상대 결과를 prompt·context·parent/predecessor·저장소 조회·tool 입출력으로 전달하면 `CROSS_ROLE_INPUT_DENIED`로 차단합니다.
+
+Pro와 Con은 각각 exact `EvidenceAgentResult`를 저장합니다. 두 child work가 모두 성공하고 두 결과가 schema-valid·COMMITTED이며 같은 부모 Verification·generation·`debate_input_hash`를 가리킬 때만 합성합니다. final `VerificationResult`는 `pro_evidence_ref`와 `con_evidence_ref`로 두 결과를 정확히 하나씩 연결합니다.
+
+한쪽이 실패·timeout·인증 실패·빈 출력이면 다른 한쪽만으로 운영 final verdict를 만들지 않습니다. 재시도 가능 시 실패 child와 부모 Verification을 `BLOCKED`, 가설을 `VERIFYING`으로 유지하고 실패 역할만 새 identity·`NEW` session으로 재시도합니다. retry가 성공해 current 결과 두 개가 모여야 join을 재개합니다. 시도 소진 또는 복구 불가능 시 실패 child를 먼저 확정하고 부모 Verification과 가설을 `FAILED`로 끝내며 `verification_result_ref=null`을 유지합니다. 공통 입력 revision이 바뀌거나 부모 종료 뒤 늦게 도착한 결과는 `STALE_RESULT`로 격리합니다. 어느 실패도 `FALSE | HOLD` 근거로 사용하지 않습니다.
+
+token과 전체 시간·판정 변화·HOLD 해소·새 후보 수는 `VerificationMetrics`에, 역할별 호출 수·상태·retry·failover·provider·session·실제 usage는 `LLMInvocationLog`에 기록합니다. R8은 이 기록을 비교 평가에 사용하지만 개별 실행이나 verdict를 결정하지 않습니다.
 
 ## 판정과 동적 재현
 
