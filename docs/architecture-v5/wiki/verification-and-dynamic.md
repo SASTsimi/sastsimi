@@ -32,6 +32,12 @@ Pro와 Con은 각각 exact `EvidenceAgentResult`를 저장합니다. 두 child w
 
 token과 전체 시간·판정 변화·HOLD 해소·새 후보 수는 `VerificationMetrics`에, 역할별 호출 수·상태·retry·failover·provider·session·실제 usage는 `LLMInvocationLog`에 기록합니다. R8은 이 기록을 비교 평가에 사용하지만 개별 실행이나 verdict를 결정하지 않습니다.
 
+## 검증 플레이북
+
+공통 및 웹 취약점 6종의 구체적인 확인 항목은 [R6 검증 플레이북](../verification-playbooks.md)을 따릅니다. 플레이북은 누락을 줄이는 참고 절차이며 점수표나 자동 판정표가 아닙니다.
+
+운영에서 어떤 유형별 플레이북을 사용할지와 질문을 어떻게 적용할지는 아래 `판정과 동적 재현` 절의 `PlaybookPolicy`·`PlaybookApplication` 규칙을 따릅니다.
+
 ## 판정과 동적 재현
 
 - `TRUE`: 명시된 경로와 전제가 evidence로 지지되고 현재 generation의 실행 성공·validated PoC가 있음
