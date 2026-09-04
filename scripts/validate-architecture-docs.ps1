@@ -90,7 +90,8 @@ $forbiddenPatterns = @(
     'NEED_MORE_VALIDATION',
     'WITHHOLD',
     'decision: DISCLOSE',
-    'human_reviews'
+    'human_reviews',
+    '가설의 `vulnerability_type`'
 )
 foreach ($path in $activeContractPaths) {
     $files = Get-ChildItem -LiteralPath $path -Recurse -File -Filter '*.md'
@@ -1907,6 +1908,25 @@ foreach ($rule in $requiredPlaybookCrossDocumentRules) {
     }
 }
 
+$playbookGuidePath = Join-Path $repoRoot 'docs/architecture-v5/verification-playbooks.md'
+if (Test-Path -LiteralPath $playbookGuidePath) {
+    $playbookGuideText = Get-Content -Raw -LiteralPath $playbookGuidePath
+    $requiredPlaybookGuideRules = @(
+        '`HypothesisProposal.vulnerability_type_candidates`',
+        '`PlaybookPolicy`',
+        '`PlaybookApplication`',
+        '`template_key`',
+        '`playbook_application_ref`',
+        '가설 자체의 반증 질문',
+        'application 질문'
+    )
+    foreach ($marker in $requiredPlaybookGuideRules) {
+        if (-not $playbookGuideText.Contains($marker)) {
+            Add-Failure "verification playbook guide is missing shared-contract marker: $marker"
+        }
+    }
+}
+
 $savedErrorAction = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 $gitCheck = & git -C $repoRoot diff --check 2>&1
@@ -1945,6 +1965,9 @@ Write-Output "R5-01 CWELabel cross-document rules: $($requiredCweLabelCrossDocum
 Write-Output "Playbook application contract blocks: $($requiredPlaybookContractFields.Count)"
 Write-Output "Playbook application contract rules: $($requiredPlaybookApplicationRules.Count)"
 Write-Output "Playbook application cross-document rules: $($requiredPlaybookCrossDocumentRules.Count)"
+if (Test-Path -LiteralPath $playbookGuidePath) {
+    Write-Output "Verification playbook guide rules: $($requiredPlaybookGuideRules.Count)"
+}
 Write-Output "R5-03 automation boundary rules: $($requiredAutomationBoundaryRules.Count)"
 Write-Output "R4-03 Sandbox review rules: $($sandboxReviewPatterns.Count)"
 Write-Output "R6-R7 environment handoff rules: $($environmentHandoffPatterns.Count)"
