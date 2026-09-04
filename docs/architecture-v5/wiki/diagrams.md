@@ -253,15 +253,15 @@ flowchart TB
     TS -->|ACCEPT| COLLECT[PolicyCollectionResult]
     COLLECT -->|FOUND plus current policy| RULE[Rule Scope Impact Gate Agent]
     COLLECT -->|ABSENT_CONFIRMED| UNCERTAIN[Rule and scope UNCERTAIN permission DENY]
-    COLLECT -->|COLLECTION_FAILED| ADMIT[PrimitiveAdmissionDecision NOT_EVALUATED ALLOW]
-    RULE --> PA{Testing restriction compliance}
-    PA -->|PASS or UNCERTAIN| PRIMITIVE[Admit result Primitive for Chaining]
-    PA -->|FAIL| NOPRIMITIVE[No result Primitive]
-    ADMIT --> PRIMITIVE
-    ADMIT -. report unavailable .-> BLOCK
-    UNCERTAIN --> PA
+    COLLECT -->|COLLECTION_FAILED| ARUN[R4 Primitive Admission Runtime]
+    RULE --> ARUN
+    UNCERTAIN --> ARUN
+    ARUN --> ADEC{PrimitiveAdmissionDecision}
+    ADEC -->|ALLOW| PRIMITIVE[Admit result Primitive for Chaining]
+    ADEC -->|DENY| NOPRIMITIVE[No result Primitive]
+    COLLECT -. COLLECTION_FAILED report unavailable .-> BLOCK
     UNCERTAIN --> BLOCK
-    RULE --> READY{Review PASS Rule PASS Scope PASS Impact SUFFICIENT Permission ALLOW}
+    RULE --> READY{Review PASS Rule PASS Scope PASS Testing PASS Impact SUFFICIENT Permission ALLOW}
     READY -->|No| BLOCK
     READY -->|Yes| RREQ[Verification requests Reporter]
     RREQ --> REPORTER[Reporter Agent]

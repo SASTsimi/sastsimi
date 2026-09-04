@@ -21,6 +21,7 @@ Runtime Validator는 취약점이 맞는지 새로 판단하는 Gate가 아닙�
 | 취약점 가설 | Hypothesis Agent | 확정 Finding 생성 |
 | `TRUE | FALSE | HOLD` | Verification Agent | Orchestration·Runtime이 대신 판정 |
 | 재현 목적·목표·필요 환경 요청과 최종 verdict | R6 Verification | R7이 요청 목적이나 verdict를 변경 |
+
 | CWE label | CWE Labeling | Orchestration이 임의 확정 |
 | 기술 근거 검토 | Technical Evidence Gate | Verification verdict 변경 |
 | 공식 정책·scope·impact·report permission | Rule Scope Impact Gate | 정책 없는 `ALLOW` 추정 |

@@ -120,7 +120,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - `FALSE` verdict → `DISPROVED` falsification question과 실제 evidence
 - verdict → Pro/Con/dynamic evidence와 restriction
 - result 없는 Primitive → exact final HOLD Verification revision과 inputs·restrictions
-- result 있는 Primitive → validated PoC를 가진 exact final TRUE + Technical `ACCEPT` revision
+- result 있는 Primitive → validated PoC를 가진 exact final TRUE + Technical `ACCEPT` + 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`
 - Chaining candidate → work 시작 시 고정한 `considered_primitive_refs`, 실제 upstream/downstream `input_primitive_refs`, `matched_input_id`, 계보 제외 기록과 비교 근거, 아직 검증되지 않은 상태
 - CWE → R5-01 `CWE_LABELING`이 만든 정확한 `CWELabel` revision, 그 label의 exact final TRUE `verification_result_ref`·generation·work·invocation provenance, evidence와 uncertainty
 - Technical review → 정확한 Verification·CWELabel revision
@@ -200,7 +200,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | `token_budget`이 비어 있거나 실제 token 사용량이 계획값을 넘음 | exact call spec과 provider usage 출처 | token만으로 `BUDGET_EXCEEDED`·`DENY`를 만들지 않고 실제 사용량 또는 unavailable을 기록 |
 | 서로 다른 평가 설정의 결과를 직접 비교 | 두 `AnalysisRunResult.eval_config_refs`의 exact set equality | 비교 거절; Gate·Primitive·Reporter 결과는 변경하지 않음 |
 | `PARTIAL` 결과에 누락 설명이 없음 | static/context의 `gap_ids`·`error_ids` 또는 dynamic 결과의 `limitations`, output refs | `STATE_TRANSITION_INVALID`, 부분 결과 사용 금지 |
-| 동적 `BLOCKED + POLICY_BLOCKED` 결과를 공통 work `BLOCKED`에 연결 | 전문 결과 status와 공통 실행 status 매핑 | 종료 결과를 비종료 대기 상태에 연결하지 않고 `STATE_TRANSITION_INVALID` |
+| retry 가능한 동적 attempt의 `BLOCKED` 결과를 같은 work의 `BLOCKED` 상태와 연결하지 않음 | attempt 결과와 공통 work lifecycle 매핑 | 감사용 `DynamicReproductionResult`는 COMMITTED하고 같은 work를 `BLOCKED`로 유지해 새 attempt만 허용; 오래된 attempt 결과를 current 성공 근거로 소비하면 `STATE_TRANSITION_INVALID` |
 | 동적 종료 결과와 work·전문 상태 pointer가 다름 | `TransitionCommit`, `WorkExecutionState.output_refs`, `dynamic_result_ref` | `TRANSITION_INCOMPLETE`, Verification 전달 차단 |
 | 분석 종료 시 `RUNNING` work나 `PREPARED` journal이 남음 | 전체 work와 commit 상태 | 최종 `AnalysisRunState` 전이 차단 |
 | `COMMITTED` marker 투영 전에 취소·retry 전이가 경쟁 | 다음 target version의 unique marker와 pointer | 기존 marker를 먼저 재투영하고 경쟁 전이는 version conflict로 거절 |
@@ -283,7 +283,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N6 | TRUE + Technical `ACCEPT` + Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`, testing restriction `PASS` | `PrimitiveAdmissionDecision=ALLOW`; result Primitive와 Chaining 자격 유지, Reporter 조건 평가 허용 |
 | N7 | result가 있는 TRUE Primitive + result가 없는 HOLD Primitive | upstream result가 HOLD input 하나를 근거 있게 충족하면 `origin=CHAINING` proposal을 새로 등록·검증 |
 | N8 | result가 있는 서로 다른 TRUE Primitive 둘 | 앞 result가 뒤 Primitive의 `inputs` 한 항목을 근거 있게 충족할 때만 TRUE_TRUE proposal 허용 |
-| N9 | TRUE+TRUE 입력 중 한 부모가 Gate 전 또는 Technical 비정상 결과 | result Primitive가 될 수 없으므로 match 저장과 proposal 등록 거절 |
+| N9 | TRUE+TRUE 입력 중 한 부모가 Technical 비정상이거나 direct·ancestor current `PrimitiveAdmissionDecision=ALLOW`를 충족하지 않음 | result Primitive가 될 수 없으므로 match 저장과 proposal 등록 거절 |
 | N10 | match의 entity 또는 privilege 충족 근거가 없음 | uncertain candidate를 만들지 않고 `no_match_reasons`에 이유 기록 |
 | N10-A | 성립한 match의 후보가 양방향 계보에서 이미 사용한 Primitive를 같은 결과에서 다시 사용 | 그 후보를 근거로 조상을 제외하고 match 입력에서 빼며, DB와 부모 verdict는 변경하지 않음 |
 | N10-B | `excluded_primitive_ref`가 고정된 `considered_primitive_refs` 밖이거나 실제 match에 다시 포함됨 | `SAVE_RESULT` 거절; 같은 Chaining work가 고정한 조상 제외 전 입력과 제외 후 match를 다시 계산 |

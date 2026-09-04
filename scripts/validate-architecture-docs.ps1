@@ -961,8 +961,8 @@ foreach ($rule in $sandboxReviewPatterns) {
 
 $environmentHandoffPatterns = @(
     @{
-        Name = 'R6 owns the immutable request and R7 owns environment requirements'
-        Pattern = '(?s)`DynamicReproductionRequest`는 R6 Verification이.*?불변 record.*?`EnvironmentRequirements`는 R7이 exact request.*?불변 요구사항 record'
+        Name = 'R6 owns the immutable request and R7 Agent owns requirements and plan'
+        Pattern = '(?s)`DynamicReproductionRequest`는 R6 Verification.*?불변 record.*?`EnvironmentRequirements`와 `ReproductionPlan`은 R7 Reproduction Agent'
     },
     @{
         Name = 'reproduction plan binds current exact requirements'
@@ -1381,6 +1381,17 @@ if ($staticText.Contains('저장된 ACTIVE Primitive')) {
     Add-Failure 'static fact layer still refers to obsolete ACTIVE Primitive state'
 }
 
+$requiredStaticPrimitiveAdmissionRules = @(
+    '같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`',
+    '`Primitive.admission_decision_ref`는 그 current exact ALLOW decision을 가리킨다.',
+    'R4 `PRIMITIVE_ADMISSION_RUNTIME`의 입력이며, confirmed `FAIL`은 `PrimitiveAdmissionDecision=DENY`로 매핑'
+)
+foreach ($rule in $requiredStaticPrimitiveAdmissionRules) {
+    if (-not $staticText.Contains($rule)) {
+        Add-Failure "static fact layer is missing Primitive admission authority rule: $rule"
+    }
+}
+
 $decisionText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/review/decisions/ADR-001-verification-owned-chaining-admission.md')
 if ($decisionText.Contains('lookup 시 ACTIVE 확인')) {
     Add-Failure 'Chaining ADR still uses obsolete ACTIVE-based Primitive lookup'
@@ -1425,7 +1436,7 @@ $verificationChainingScenarioMarkers = @(
     '| N6 | TRUE + Technical `ACCEPT` + Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`, testing restriction `PASS` |',
     '| N7 | result가 있는 TRUE Primitive + result가 없는 HOLD Primitive |',
     '| N8 | result가 있는 서로 다른 TRUE Primitive 둘 |',
-    '| N9 | TRUE+TRUE 입력 중 한 부모가 Gate 전 또는 Technical 비정상 결과 |',
+    '| N9 | TRUE+TRUE 입력 중 한 부모가 Technical 비정상이거나 direct·ancestor current `PrimitiveAdmissionDecision=ALLOW`를 충족하지 않음 |',
     '| N10 | match의 entity 또는 privilege 충족 근거가 없음 |',
     '| N10-A | 성립한 match의 후보가 양방향 계보에서 이미 사용한 Primitive를 같은 결과에서 다시 사용 |',
     '| N10-B | `excluded_primitive_ref`가 고정된 `considered_primitive_refs` 밖이거나 실제 match에 다시 포함됨 |',
@@ -2008,7 +2019,7 @@ $requiredPolicyContractRules = @(
     @{ Name = 'R8 owns freshness criteria'; Text = $contractText; Marker = 'freshness 기준값과 재수집 주기는 R8이 승인한 versioned 설정만 사용한다.' },
     @{ Name = 'Gate guide keeps R8 freshness ownership'; Text = $gateText; Marker = '최신성 기준값과 재수집 주기는 R8이 승인한 versioned 설정을 사용하고 R5는 그 결과를 정책 의미로 해석한다.' },
     @{ Name = 'Gate Wiki distinguishes collection failure'; Text = $gateWikiText; Marker = '`COLLECTION_FAILED`는 Rule Scope review를 만들지 않습니다.' },
-    @{ Name = 'Gate diagram distinguishes collection failure'; Text = $diagramText; Marker = 'COLLECT -->|COLLECTION_FAILED| ADMIT[PrimitiveAdmissionDecision NOT_EVALUATED ALLOW]' },
+    @{ Name = 'Gate diagram routes collection failure through admission runtime'; Text = $diagramText; Marker = 'COLLECT -->|COLLECTION_FAILED| ARUN[R4 Primitive Admission Runtime]' },
     @{ Name = 'Gate evidence links are complete'; Text = $contractText; Marker = '`PASS | FAIL | SUFFICIENT | INSUFFICIENT`인 각 판단 영역은 같은 area의 `RuleScopeEvidenceLink`를 하나 이상 가져야 한다.' },
     @{ Name = 'blocking missing information denies ALLOW'; Text = $contractText; Marker = '`blocks_allow=true`인 `PolicyMissingInfo`가 하나라도 있으면 `report_permission=ALLOW`를 저장하지 않는다.' },
     @{ Name = 'policy fetch error does not become a successful Gate result'; Text = $resultText; Marker = '`POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 수집 결과 `COLLECTION_FAILED`; 성공한 Rule Scope review 없음' },
@@ -2138,6 +2149,7 @@ Write-Output "Obsolete rule execution phrases: $($obsoleteRuleExecutionPhrases.C
 Write-Output "StaticFactBundle fact-kind fields: $($requiredStaticFactBundleFields.Count)"
 Write-Output "StaticFactBundle semantic rules: $($requiredStaticFactBundleSemantics.Count)"
 Write-Output "StaticFactBundle cross-document rules: $($requiredStaticFactBundleCrossDocumentRules.Count)"
+Write-Output "Static layer Primitive admission rules: $($requiredStaticPrimitiveAdmissionRules.Count)"
 Write-Output "R4 policy contract blocks: $($requiredPolicyContractFields.Count)"
 Write-Output "R4 policy contract rules: $($requiredPolicyContractRules.Count)"
 Write-Output "Failures: $($failures.Count)"
