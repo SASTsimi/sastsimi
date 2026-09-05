@@ -75,6 +75,8 @@ CodeQL·OpenGrep처럼 규칙을 실행하는 도구는 `ToolRunResult.tool_kind
 
 한 도구가 `FAILED | SKIPPED`여도 다른 도구의 사용 가능한 사실을 버리지 않는다. 이때 전체 묶음에는 해당 `ToolRunResult`, 존재하는 `RuleExecutionRecord`, `DataGap`, 필요한 `AnalysisError`가 함께 있어야 한다. retry는 같은 `work_id`의 새 `attempt_id`와 새 규칙 실행 record를 사용하며 이전 시도의 규칙 상태나 탐지 수를 합치지 않는다.
 
+AST/SAST 도구 실행(`RUN_TOOL`) 자체의 시간 한도는 도구당 900초, 재시도 1회다(`07-results-and-observability.md`의 "실행 예산" 표, `AST/SAST (RUN_TOOL)` 행 참고). 같은 `CodeWorkspace` 안에서 도구마다 별도 work로 병렬 실행하며, 도구 자체 timeout은 이 한도를 넘지 않는다. 이 한도를 넘겨 중단된 work는 `PARTIAL | FAILED`가 될 수 있으며, 위 `ToolRunResult.status` 규칙과 마찬가지로 `hit_count=0`·안전함·`FALSE`의 근거로 자동 해석하지 않는다.
+
 ## source reachability 판단
 
 분석 계획은 어떤 rule 묶음으로 codeql·opengrep을 실행해 `source`/`sink` 후보(`CodeFact.fact_kind: SOURCE | SINK`)를 수집할지 — 즉 사실 수집의 범위 — 를 정한다. 이 rule 선택은 취약점을 판정하거나 유형을 확정하는 과정이 아니라 어떤 사실을 모을지 정하는 과정이다. 실제 `vulnerability_type_candidates`는 Hypothesis Agent가 정적 사실을 조합해 만들며, SAST rule 매치와 severity는 최종 취약점 판정이 아니다(위 "정적 분석의 역할" 참고).
