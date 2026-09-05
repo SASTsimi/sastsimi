@@ -1576,6 +1576,19 @@ if (-not $chainingText.Contains('`checked_input_id`가 downstream Primitive의 �
 if ($contractText.Contains('위반한 조합만 결과에서 빼') -or $chainingText.Contains('위반한 조합만 결과에서 빼')) {
     Add-Failure 'duplicate match combinations must not define a partial-exclusion path alongside the reject rule'
 }
+foreach ($phrase in @('skip 기록', '이미 저장된 조합이라 건너뛴', '이미 저장된 조합이라 검토를 건너뛴')) {
+    if ($contractText.Contains($phrase) -or $chainingText.Contains($phrase)) {
+        Add-Failure "obsolete duplicate-skip phrase must not return: $phrase"
+    }
+}
+foreach ($rule in @(
+    '담당이 아닌 조합은 처음부터 검토 대상이 아니므로 여기 넣지 않고 별도 기록도 만들지 않는다.',
+    'unique key 충돌은 정상 중복이 아니라 구현 오류이므로 해당 `ChainingResult`를 저장하지 않고 `AnalysisError`와 work 오류로 남기며, `FALSE`·`HOLD`·`NoMatchReason`이나 전체 분석 중단으로 바꾸지 않는다.'
+)) {
+    if (-not $contractText.Contains($rule)) {
+        Add-Failure "missing exact duplicate-combination rule: $rule"
+    }
+}
 if ($contractText.Contains('meta.created_at`이 늦은 쪽') -or $chainingText.Contains('meta.created_at`이 늦은 쪽')) {
     Add-Failure 'combination ownership must not depend on wall-clock created_at'
 }
