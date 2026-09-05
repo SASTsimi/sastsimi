@@ -44,12 +44,12 @@ token과 전체 시간·판정 변화·HOLD 해소·새 후보 수는 `Verificat
 - `FALSE`: named falsification이 가설을 반증함
 - `HOLD`: 핵심 문맥·환경·조건이 부족하거나 충돌함
 
-판정 뒤 흐름도 다릅니다. `FALSE`는 terminal이며 Primitive와 Chaining으로 가지 않습니다. `HOLD`는 `required_primitive_candidates`가 하나 이상일 때만 후보 전체를 `inputs`로, `result=null`로 가진 Primitive를 Gate 없이 저장합니다. 후보가 없으면 Primitive를 저장하지 않습니다. `TRUE`는 validated 판정 뒤 흐름도 다릅니다. `FALSE`는 terminal이며 Primitive와 Chaining으로 가지 않습니다. `HOLD`는 `required_primitive_candidates`가 하나 이상일 때만 후보 전체를 `inputs`로, `result=null`로 가진 Primitive를 Gate 없이 저장합니다. 후보가 없으면 Primitive와 Chaining work를 만들지 않고 HOLD 처리를 끝냅니다. `TRUE`는 validated PoC와 R5-01이 그 exact Verification에 맞춰 만든 current `CWELabel`을 Technical Gate가 `ACCEPT`한 뒤 정책 확인으로 갑니다. 금지 테스트 위반이 확정되지 않아 current admission이 `ALLOW`인 경우에만 제공 능력별 `result` Primitive가 됩니다. 다른 Rule Scope 판단은 Reporter만 제어합니다.뒤 정책 확인으로 갑니다. 금지 테스트 위반이 확정되지 않아 current admission이 `ALLOW`인 경우에만 제공 능력별 `result` Primitive가 됩니다. 다른 Rule Scope 판단은 Reporter만 제어합니다.
+판정 뒤 흐름도 다릅니다. `FALSE`는 terminal이며 Primitive와 Chaining으로 가지 않습니다. `HOLD`는 `required_primitive_candidates`가 하나 이상일 때만 후보 전체를 `inputs`로, `result=null`로 가진 Primitive를 Gate 없이 저장합니다. 후보가 없으면 Primitive와 Chaining work를 만들지 않고 HOLD 처리를 끝냅니다. `TRUE`는 validated PoC와 R5-01이 그 exact Verification에 맞춰 만든 current `CWELabel`을 Technical Gate가 `ACCEPT`한 뒤 정책 확인으로 갑니다. 금지 테스트 위반이 확정되지 않아 current admission이 `ALLOW`인 경우에만 제공 능력별 `result` Primitive가 됩니다. 다른 Rule Scope 판단은 Reporter만 제어합니다.
 
 ### verdict 이후 수명주기
 
 - `FALSE`: Primitive 후보·Gate·Chaining 없이 종료합니다.
-- `HOLD`: `required_primitive_candidates`가 하나 이상일 때만 후보 전체가 `inputs`이고 - `HOLD`: `required_primitive_candidates`가 하나 이상일 때만 후보 전체가 `inputs`이고 `result=null`인 Primitive 하나를 Gate 없이 저장합니다. 목록이 비어 있으면 Primitive와 Chaining work를 만들지 않고 HOLD 처리를 끝냅니다.
+- `HOLD`: `required_primitive_candidates`가 하나 이상일 때만 후보 전체가 `inputs`이고 `result=null`인 Primitive 하나를 Gate 없이 저장합니다. 목록이 비어 있으면 Primitive와 Chaining work를 만들지 않고 HOLD 처리를 끝냅니다.
 - final `TRUE`: current generation의 성공한 동적 결과·validated PoC와 current `CWELabel`을 갖춘 뒤 Technical Gate로 갑니다. Technical `ACCEPT`와 current `PrimitiveAdmissionDecision.decision=ALLOW` 전에는 result Primitive나 Chaining 입력이 아닙니다.
 - Technical `REVISE`: 같은 ACTIVE Verification owner가 새 work·generation·result revision에서 다시 검증하며 과거 동적 결과·PoC·CWE·Gate·admission 자격을 재사용하지 않습니다.
 - admission `ALLOW`: provided 후보마다 `result`가 있는 Primitive 하나를 만들고, 각 Primitive의 `inputs`에는 같은 TRUE의 required 후보 전체를 복사합니다.
@@ -66,7 +66,7 @@ Chaining 결과를 저장하기 직전에 사용한 Primitive와 `source_primiti
 
 `initial_verdict`는 중간 판단이며 운영 Gate·Primitive·보고서 입력으로 사용할 수 없습니다. initial TRUE이면 동적 근거가 별도로 필요하지 않아도 PoC 확인을 요청합니다. final TRUE는 독립 Pro/Con과 현재 generation의 성공한 동적 결과·validated PoC를 종합한 최종 판단입니다.
 
-R8의 versioned evaluation corpus는 우선 지원할 유형을 정하는 평가 근거입니다. 운영에서 실제 허용할 유형과 exact 플레이북 수정본은 사람이 승인한 `PlaybookPolicy`로 확정합니다. 플레이북과 유형 mapping 후R8의 versioned evaluation corpus는 우선 지원할 유형을 정하는 평가 근거입니다. 운영에서 실제 허용할 유형과 exact 플레이북 수정본은 사람이 승인한 `PlaybookPolicy`로 확정합니다. 플레이북과 유형 mapping 후보는 R6 담당이 작성하지만 등록만으로 운영 지원 목록을 바꾸지는 못합니다.고 HOLD 처리를 끝냅니다.을 바꾸지는 못합니다.
+R8의 versioned evaluation corpus는 우선 지원할 유형을 정하는 평가 근거입니다. 운영에서 실제 허용할 유형과 exact 플레이북 수정본은 사람이 승인한 `PlaybookPolicy`로 확정합니다. 플레이북과 유형 mapping 후보는 R6 담당이 작성하지만 등록만으로 운영 지원 목록을 바꾸지는 못합니다.
 
 검증 작업을 등록할 때 trusted runtime은 가설의 exact proposal에 유형 후보가 하나이고 승인 policy에 같은 mapping이 있을 때만 유형별 플레이북을 선택합니다. 그 외에는 공통 플레이북을 사용합니다. 선택한 policy·playbook·이유와 플레이북 질문에 새로 발급한 ID는 `PlaybookApplication`으로 작업 입력에 고정합니다. 직접 검증, Pro, Con, 최종 판정과 결과 저장은 모두 같은 application을 사용하며, `VerificationResult`는 exact `playbook_ref`와 `playbook_application_ref`를 함께 기록합니다.
 
