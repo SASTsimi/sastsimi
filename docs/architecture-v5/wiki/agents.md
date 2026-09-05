@@ -4,7 +4,7 @@
 
 각 LLM Agent가 맡는 일과 직접 결정하면 안 되는 일을 한눈에 보여 줍니다. 프로그램 규칙 검사기를 LLM Agent가 대신하지 않으며 자동화는 Reporter 초안 뒤에 끝납니다.
 
-**상세 기준:** [03. Agent 역할과 오케스트레이션](../03-agent-roles-and-orchestration.md)
+**상세 기준:** [03. Agent 역할과 오케스트레이션](../03-agent-roles-and-orchestration.md), [R3-05 Agent 프롬프트 구조](../implementation/05-prompt-runtime.md)
 
 모르는 단어는 [쉬운 용어집](../../GLOSSARY.md)에서 확인하세요.
 
@@ -46,6 +46,10 @@ all report conditions → Reporter → ReportDraft → AnalysisRunResult → Age
 자동화 종료 뒤의 검토·수정·제출·공개는 이 Agent 목록 밖에서 사람이 수행합니다.
 
 각 역할은 공통 `LLMProviderAdapter`를 사용하며 역할 독립성이 필요한 조합은 NEW session을 기본으로 한다. 상세 경계는 [Agent 역할과 오케스트레이션](../03-agent-roles-and-orchestration.md)을 따른다.
+
+프롬프트가 필요한 역할은 Hypothesis, Pro, Con, Verification, R7 Agent, Chaining, CWE Labeling, Technical Gate, Rule Scope Gate, Reporter의 10개입니다. Orchestration은 화면과 문서에서 전체 조정 기능을 부르는 이름이지만, 실제 등록·중복 후보 축소·배정·상태·권한 관리는 정해진 프로그램이 수행하므로 별도 LLM 프롬프트를 만들지 않습니다.
+
+프롬프트는 문장 파일만 두지 않습니다. “어느 역할의 어떤 작업인지, 어떤 입력만 읽는지, 어떤 형식으로 답해야 하는지”를 `PromptRegistryEntry`에 등록하고, 실제 호출마다 exact template과 입력으로 `PromptPayload`를 만듭니다. API 또는 구독 Provider를 바꿔도 이 논리 내용과 출력 형식은 같아야 합니다.
 
 모든 LLM 출력은 비신뢰 입력이다. 비-LLM Runtime Validator가 schema·호출 권한·상태 전이·예산·provider/session·Gate/Reporter 순서를 강제한다. Sandbox Controller는 host·Docker·mount/namespace·secret·egress·workspace·resource/lifecycle 같은 외부 격리 경계를 강제하며 Sandbox 내부 command를 allowlist로 제한하지 않는다.
 

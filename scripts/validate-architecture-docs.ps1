@@ -828,6 +828,18 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
         }
     }
 }
+$promptAgentWikiText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/agents.md')
+$promptContractWikiText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/common-contracts.md')
+foreach ($rule in @(
+    @{ Name = 'Agent Wiki links prompt runtime'; Text = $promptAgentWikiText; Marker = '[R3-05 Agent 프롬프트 구조](../implementation/05-prompt-runtime.md)' },
+    @{ Name = 'Agent Wiki names ten LLM roles'; Text = $promptAgentWikiText; Marker = '프롬프트가 필요한 역할은 Hypothesis, Pro, Con, Verification, R7 Agent, Chaining, CWE Labeling, Technical Gate, Rule Scope Gate, Reporter의 10개입니다.' },
+    @{ Name = 'Contract Wiki explains prompt registry'; Text = $promptContractWikiText; Marker = '`PromptRegistryEntry`: 역할·작업, template, 허용·금지 입력' },
+    @{ Name = 'Contract Wiki explains provider-neutral prompt'; Text = $promptContractWikiText; Marker = 'OpenAI API·Codex 구독·Anthropic API·Claude 구독 중 경로가 바뀌어도 같은 논리 payload와 출력 schema를 사용합니다.' }
+)) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing R3-05 Wiki synchronization rule: $($rule.Name)"
+    }
+}
 foreach ($pair in @(
     @{ Name = 'TechnicalEvidenceReview'; End = '## 9.' },
     @{ Name = 'RuleScopeImpactReview'; End = '```' },

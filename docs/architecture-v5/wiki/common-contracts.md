@@ -151,6 +151,17 @@ Technical Gate는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 
 
 `LLMCallSpec.token_budget`은 예상 token 사용량을 기록하는 선택 계획값입니다. 값이 없거나 실제 사용량이 계획보다 많아도 token만으로 `DENY`·`BUDGET_EXCEEDED`를 만들지 않습니다. 시간·비용·호출·재시도·work 한도는 계속 Runtime Validator가 검사하고 실제 token 사용량은 제공된 경우에만 기록합니다.
 
+## 실제 사용한 프롬프트를 정확히 추적합니다
+
+- `PromptRegistryEntry`: 역할·작업, template, 허용·금지 입력, 출력 schema, model/provider 후보, session·예산·재시도·redaction 정책과 담당자를 묶은 등록 정보입니다.
+- `PromptPayload`: 한 번의 호출에 실제 사용한 exact template과 입력 reference를 묶은 불변 자료입니다.
+- `LLMCallSpec`, 요청과 log는 같은 역할·작업·registry·template·payload reference를 가져야 합니다.
+- `R7_AGENT`를 포함한 10개 LLM 역할만 등록하며 Orchestration·Runtime Validator·Controller 같은 정해진 프로그램 구성요소에는 prompt를 만들지 않습니다.
+- 저장소 코드·README·정책 원문·도구와 이전 LLM 출력은 지시문이 아니라 `UNTRUSTED_DATA`로 전달합니다.
+- OpenAI API·Codex 구독·Anthropic API·Claude 구독 중 경로가 바뀌어도 같은 논리 payload와 출력 schema를 사용합니다.
+
+어느 exact template과 자료로 결과를 만들었는지 연결되지 않거나 다른 역할·작업의 자료가 섞이면 LLM을 호출하지 않습니다. 호출 뒤 형식이나 의미 검사를 통과하지 못한 응답도 역할 결과로 저장하지 않습니다.
+
 평가 실행은 시작할 때 평가 장면, 지표·한도, corpus·사람 정답·채점 방식, provider·model·session의 정확한 설정 수정본을 `AnalysisRunState.eval_config_refs`에 고정합니다. 종료 결과의 `AnalysisRunResult.eval_config_refs`는 이 전체 집합과 정확히 같아야 하며 `PRODUCTION`에서는 둘 다 빈 목록입니다. 두 평가 결과는 이 목록이 exact reference 기준으로 같을 때만 직접 비교합니다. 이 목록은 평가 출처 확인용이며 Gate·Primitive·Reporter 입력이 아닙니다.
 
 유형별 플레이북은 파일이 존재한다는 이유만으로 자동 사용하지 않습니다. 사람이 승인한 `PlaybookPolicy`가 유형과 exact 플레이북 수정본을 연결하고, 프로그램은 등록 가설의 exact proposal에 유형 후보가 하나뿐이며 policy에 같은 유형이 있을 때만 `TYPE_SPECIFIC`을 선택합니다. 후보가 없거나 여러 개이거나 허용되지 않았으면 `COMMON`을 선택합니다. 이번 검증에서 사용한 policy·playbook과 새로 발급한 질문 ID는 `PlaybookApplication`으로 묶어 work 입력에 고정합니다. Pro·Con과 최종 결과는 이 같은 application을 사용하고, 최종 질문 결과는 가설 질문과 application 질문을 빠짐없이 정확히 한 번씩 처리해야 합니다.
