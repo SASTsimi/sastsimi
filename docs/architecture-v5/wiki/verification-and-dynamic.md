@@ -44,19 +44,21 @@ token과 전체 시간·판정 변화·HOLD 해소·새 후보 수는 `Verificat
 - `FALSE`: named falsification이 가설을 반증함
 - `HOLD`: 핵심 문맥·환경·조건이 부족하거나 충돌함
 
-판정 뒤 흐름도 다릅니다. `FALSE`는 terminal이며 Primitive와 Chaining으로 가지 않습니다. `HOLD`는 Gate 없이 `inputs`와 `result=null`인 Primitive를 즉시 저장합니다. `TRUE`는 validated PoC와 R5-01이 그 exact Verification에 맞춰 만든 current `CWELabel`을 Technical Gate가 `ACCEPT`한 뒤 정책 확인으로 갑니다. 금지 테스트 위반이 확정되지 않아 current admission이 `ALLOW`인 경우에만 제공 능력별 `result` Primitive가 됩니다. 다른 Rule Scope 판단은 Reporter만 제어합니다.
+판정 뒤 흐름도 다릅니다. `FALSE`는 terminal이며 Primitive와 Chaining으로 가지 않습니다. `HOLD`는 `required_primitive_candidates`가 하나 이상일 때만 후보 전체를 `inputs`로, `result=null`로 가진 Primitive를 Gate 없이 저장합니다. 후보가 없으면 Primitive를 저장하지 않습니다. `TRUE`는 validated PoC와 R5-01이 그 exact Verification에 맞춰 만든 current `CWELabel`을 Technical Gate가 `ACCEPT`한 뒤 정책 확인으로 갑니다. 금지 테스트 위반이 확정되지 않아 current admission이 `ALLOW`인 경우에만 제공 능력별 `result` Primitive가 됩니다. 다른 Rule Scope 판단은 Reporter만 제어합니다.
 
 ### verdict 이후 수명주기
 
 - `FALSE`: Primitive 후보·Gate·Chaining 없이 종료합니다.
-- `HOLD`: `required_primitive_candidates` 전체가 `inputs`이고 `result=null`인 Primitive 하나를 Gate 없이 저장할 수 있습니다.
+- `HOLD`: `required_primitive_candidates`가 하나 이상일 때만 후보 전체가 `inputs`이고 `result=null`인 Primitive 하나를 Gate 없이 저장합니다. 목록이 비어 있으면 저장하지 않습니다.
 - final `TRUE`: current generation의 성공한 동적 결과·validated PoC와 current `CWELabel`을 갖춘 뒤 Technical Gate로 갑니다. Technical `ACCEPT`와 current `PrimitiveAdmissionDecision.decision=ALLOW` 전에는 result Primitive나 Chaining 입력이 아닙니다.
 - Technical `REVISE`: 같은 ACTIVE Verification owner가 새 work·generation·result revision에서 다시 검증하며 과거 동적 결과·PoC·CWE·Gate·admission 자격을 재사용하지 않습니다.
 - admission `ALLOW`: provided 후보마다 `result`가 있는 Primitive 하나를 만들고, 각 Primitive의 `inputs`에는 같은 TRUE의 required 후보 전체를 복사합니다.
 - admission `DENY`: result Primitive와 Chaining을 차단하지만 부모 verdict를 바꾸지 않습니다.
 - Rule Scope의 범위·영향·보고 가능성 실패는 Reporter를 차단할 수 있지만, current admission이 `ALLOW`이면 내부 Chaining 자격은 유지됩니다.
 
-R6는 후보와 Gate action·exact reference를 만들고, trusted runtime이 commit·current pointer·Primitive 저장과 `PrimitiveIndexState` 갱신을 수행합니다. Chaining은 `TRUE + HOLD`와 `TRUE + TRUE`만 검사하며 결과로 부모 verdict를 변경하지 않습니다.
+R6는 후보와 Gate action·exact reference를 만들고, trusted runtime이 commit·current pointer·Primitive 저장과 `PrimitiveIndexState` 갱신을 수행합니다. Chaining은 같은 workspace·commit, entity 또는 코드 흐름 연결, 권한 조건, 순서, 합산 restrictions와 실제 근거를 확인해 `TRUE + HOLD`와 `TRUE + TRUE`만 검사합니다. `draft_id`는 매칭 기준이 아니며, 매칭이 성립한 뒤 해당 input을 `PrimitiveMatchCandidate.matched_input_id`로 지목할 때만 사용합니다.
+
+Chaining 결과를 저장하기 직전에 사용한 Primitive와 `source_primitive_match_id` 계보의 모든 result Primitive가 current admission `ALLOW`인지 다시 확인합니다. 하나라도 stale이거나 `DENY`이면 `STALE_RESULT`로 거절하고 새 child hypothesis를 만들지 않습니다. 기존 부모 verdict는 변경하지 않습니다.
 
 판정에는 최소 근거가 필요합니다. TRUE는 핵심 공격 경로와 필요한 조건을 지지하는 근거가 있어야 합니다. FALSE는 이름이 있는 반증 질문이 실제 근거로 `DISPROVED`된 경우에만 가능합니다. 오류·timeout·정보 부족·Sandbox 실패는 FALSE 근거가 아닙니다. HOLD는 판단에 필요한 조건이나 환경이 아직 부족하다는 뜻입니다.
 
