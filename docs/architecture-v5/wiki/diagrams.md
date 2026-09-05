@@ -50,9 +50,13 @@ flowchart TB
     POCOK -->|No| DSTOP
     DOUT -->|DISPROVED or INCONCLUSIVE| S13
     DOUT -->|Execution failure| DSTOP
-    DSTOP -->|Autonomous retry same work new attempt| DR7
+    DSTOP -->|Same R7 Agent session: adjust command PoC environment; current attempt| DADJUST[Continue current attempt]
+    DADJUST --> DR7
+    DSTOP -->|Session restart: new attempt trigger=RETRY| DRETRY[Restart same work with new attempt]
+    DRETRY --> DR7
     DSTOP -->|External condition| DWAIT[BLOCKED until input policy or resource change]
-    DWAIT --> DR7
+    DWAIT -->|Condition resolved: new attempt trigger=RESUME| DRESUME[Resume same work with new attempt]
+    DRESUME --> DR7
     DSTOP -->|Unrecoverable| S22
     S13 --> S14{14 Final verdict}
     S14 -->|FALSE| CLOSED[Terminal internal result]
@@ -193,9 +197,13 @@ flowchart TB
     OBS -->|SUPPORTED but PoC missing or invalid| FAIL
     OBS -->|DISPROVED or INCONCLUSIVE| SYN2
     OBS -->|Execution failure| FAIL
-    FAIL -->|Autonomous retry same work new attempt| R7PLAN
+    FAIL -->|Same R7 Agent session: adjust command PoC environment; current attempt| ADJUST[Continue current attempt]
+    ADJUST --> R7PLAN
+    FAIL -->|Session restart: new attempt trigger=RETRY| R7RETRY[Restart same work with new attempt]
+    R7RETRY --> R7PLAN
     FAIL -->|External condition| WAIT[BLOCKED until condition changes]
-    WAIT --> R7PLAN
+    WAIT -->|Condition resolved: new attempt trigger=RESUME| R7RESUME[Resume same work with new attempt]
+    R7RESUME --> R7PLAN
     FAIL -->|Unrecoverable| NOFINAL[No final verdict and no Gate]
     SYN2 --> FINAL
     FINAL --> OUT[Restrictions candidates PrimitiveDraft and VERIFICATION origin child proposals]

@@ -2151,7 +2151,7 @@ foreach ($doc in $dynamicLifecycleDocuments) {
         }
     }
 }
-foreach ($legacy in @('RUNNING --> READY: immediate dynamic auto retry', '외부 대기 없는 새 attempt')) {
+foreach ($legacy in @('RUNNING --> READY: immediate dynamic auto retry', '외부 대기 없는 새 attempt', 'Autonomous retry same work new attempt')) {
     if ($diagramText.Contains($legacy) -or $wikiDiagramText.Contains($legacy) -or $contractText.Contains($legacy)) {
         Add-Failure "obsolete dynamic retry marker remains: $legacy"
     }
