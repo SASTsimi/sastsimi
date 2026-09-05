@@ -29,7 +29,7 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 | 11 | 정적·Pro·Con 근거로 초기 판정 | initial `TRUE | FALSE | HOLD`; initial TRUE는 아직 최종 TRUE가 아님 |
 | 12 | Verification이 목적을 적은 동적 재현 요청을 만들고, R7 Agent가 환경 요구사항·간단한 plan을 만든다. 외부 경계를 통과하면 Setup Automation이 Sandbox를 준비하고 Agent가 PoC candidate·command·관찰·재시도를 자율 수행하며 Session Manager가 결과를 확정한다. | `DynamicReproductionRequest`, `EnvironmentRequirements`, `ReproductionPlan`, `EnvironmentRecipe`, `AgentLog`, `DynamicReproductionResult` |
 | 13 | 동적 결과를 반영해 최종 판정과 material claim 분리 | final TRUE에는 재현 성공을 가리키는 validated `poc_ref` 필수; optional `origin=VERIFICATION` proposal |
-| 14 | 판정별 분기와 CWE 분류 | FALSE terminal / HOLD는 inputs만 있고 result가 없는 Primitive 즉시 admission / TRUE는 R5-01 `CWE_LABELING`이 exact Verification에 맞는 current `CWELabel` 생성 |
+| 14 | 판정별 분기와 CWE 분류 | FALSE terminal / HOLD는 `required_primitive_candidates`가 하나 이상일 때만 inputs-only Primitive admission, 후보가 없으면 Primitive·Chaining 없음 / TRUE는 R5-01 `CWE_LABELING`이 exact Verification에 맞는 current `CWELabel` 생성 |
 | 15 | TRUE 기술 근거 검토 | `TechnicalEvidenceReview` |
 | 16 | Technical `REVISE` 보완 loop | same Verification owner, 새 Verification과 반드시 다시 평가한 새 CWELabel revision |
 | 17 | Technical `ACCEPT` TRUE의 정책 수집·Rule Scope 검토와 체이닝 재료 사용 결정 | 독립 `testing_restriction_compliance`, `PrimitiveAdmissionDecision=ALLOW | DENY`; `ALLOW`일 때만 result가 있는 `Primitive` admission |
@@ -105,7 +105,7 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | Sandbox Controller | host·Docker daemon/socket·mount/namespace·secret·egress·workspace·resource/lifecycle 외부 경계 검사 | 내부 command allowlist 운영, 재현 전략·환경 의미·최종 verdict 변경 |
 | Reproduction Session Manager | 실제 event를 append-only AgentLog로 저장하고 same-attempt validated PoC·동적 결과 확정 | Agent 호출·command·retry·cleanup 전략 결정 또는 다른 attempt 혼합 |
 | Primitive Admission Runtime | exact Technical review·정책 수집·Rule Scope의 전용 테스트 제한 판정을 정해진 표로 변환해 `PrimitiveAdmissionDecision`과 허용된 Primitive 확정 | 정책 원문 해석, Gate 판정 변경 또는 `DENY` 결과의 Primitive 생성 |
-| Primitive DB | HOLD의 inputs-only Primitive와 current admission `ALLOW`인 Technical-accepted TRUE의 result Primitive exact revision 검색 | 작업 queue, Gate 전·admission `DENY` TRUE 저장 또는 자동 Finding 생성 |
+| Primitive DB | required candidate가 있는 HOLD의 inputs-only Primitive와 current admission `ALLOW`인 Technical-accepted TRUE의 result Primitive exact revision 검색 | 작업 queue, candidate가 없는 HOLD나 Gate 전·admission `DENY` TRUE 저장 또는 자동 Finding 생성 |
 | Chaining Agent | current ALLOW인 direct·parent material만 사용해 upstream Primitive `result`→downstream Primitive `input` matching과 chained proposal 생성 | 일반 research, dynamic, Gate, verdict, CWE, report 확정 |
 | R5-01 CWE Labeling | final TRUE의 root cause·Evidence·taxonomy를 평가해 exact Verification에 묶인 current `CWELabel` 생성 | Verification verdict 변경, 과거 label 재사용 또는 Technical Gate 결과 생성 |
 | Technical Evidence Gate | 기술적 연결성과 handoff 품질 검토 | Verification verdict 직접 변경 |
