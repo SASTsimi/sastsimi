@@ -144,7 +144,7 @@ Sandbox ENV/POLICY/EXEC/TIMEOUT은 동적 work의 `BLOCKED | FAILED`다. 최종 
 
 한도는 두 종류다. 둘 다 가설 `FALSE`(구멍 없음)가 아니다.
 
-1. **실행 예산** — 벽시계 시간, 호출, 재시도, 조회 깊이·조각, **비용, 분석 전체 work 수**. Runtime Validator가 `ActionCheck.BUDGET`으로 검사한다. 실패 코드는 `BUDGET_EXCEEDED`다. 해당 work를 중단한다. 분석 run은 `PARTIAL`일 수 있다. **token 상한은 분석 전체·모든 Agent·호출마다 두지 않는다.** `LLMCallSpec.token_budget` 칸이 계약에 있어도 R8 절단 상한이 아니라 관측·계획용이다. token을 넘겨 `BUDGET_EXCEEDED`로 자르지 않는다. 사용량은 관측만 한다. 조금만 더 쓰면 취약점을 찾을 수 있는데 잘리면 안 된다. **체이닝 전용 짝·깊이·조합 한도도 두지 않는다.** 잇기도 이 전역 시간·재시도·조회·비용·work 예산만 따른다. **비용과 전체 work 수 숫자는 임의로 정하지 않는다.** versioned R8 정책에서 관리하며 현재 미확정이다.
+1. **실행 예산** — 벽시계 시간, 호출, 재시도, 조회 깊이·조각, **비용, 분석 전체 work 수**. Runtime Validator가 `ActionCheck.BUDGET`으로 검사한다. 실패 코드는 `BUDGET_EXCEEDED`다. 해당 work를 중단한다. 분석 run은 `PARTIAL`일 수 있다. **token 상한은 분석 전체·모든 Agent·호출마다 두지 않는다.** `LLMCallSpec.token_budget` 칸이 계약에 있어도 R8 절단 상한이 아니라 관측·계획용이다. token을 넘겨 `BUDGET_EXCEEDED`로 자르지 않는다. 사용량은 관측만 한다. 조금만 더 쓰면 취약점을 찾을 수 있는데 잘리면 안 된다. **체이닝 전용 짝·깊이·조합 한도도 두지 않는다.** 잇기도 이 전역 시간·재시도·조회·비용·work 예산만 따른다. **분석 전체 벽시계는 120분(7200초)이다.** 소진 시 새 work를 시작하지 않는다. 분석은 `PARTIAL`일 수 있다. FALSE가 아니다. **비용과 전체 work 수 숫자는 임의로 정하지 않는다.** versioned R8 정책에서 관리하며 현재 미확정이다.
 2. **Sandbox 정책 상한** — 네트워크, **요청 가능한 상자 시간**. Sandbox Controller가 검사한다. 허용되지 않은 계획은 `SANDBOX_POLICY_DENIED`이고 상자 안 Agent를 시작하지 않는다. 환경 구성 실패·실행 실패·실행 중 timeout은 기존 환경·실행 오류로 남긴다. 이 실패를 `BUDGET_EXCEEDED`로 바꾸지 않는다. **CPU·RAM·디스크·PID 상한은 R7이 `sandbox_profile_ref`에 정한 값을 따른다.** Sandbox Controller가 이 한도를 검사하며, 초과 시 `SANDBOX_POLICY_DENIED`로 Agent를 시작하지 않는다. 구체적 수치는 R7이 확정한다.
 
 상자 **시간**이 부족한 이유는 셋이다. 같은 profile 시간 숫자를 세 번 적는 것이 아니라, 끊는 주체가 다르다.
@@ -165,10 +165,12 @@ Orchestration은 가설 등록·Verification 배정까지만 한다. 찬반·Doc
 
 ### 실행 예산 (Runtime Validator → `BUDGET_EXCEEDED`)
 
-token 상한은 없다. 분석 전체·모든 Agent·호출마다 동일하다. 아래는 시간·횟수·조회 초안이다. 비용과 전체 work 수 한도는 versioned R8 정책에서 관리하며 현재 미확정이다. 숫자를 지어 넣지 않는다.
+token 상한은 없다. 분석 전체·모든 Agent·호출마다 동일하다. 아래는 시간·횟수·조회 초안이다. **분석 1회 벽시계는 120분이다.** 비용과 전체 work 수 한도는 versioned R8 정책에서 관리하며 현재 미확정이다. 그 두 숫자는 지어 넣지 않는다.
 
 | 역할 | 시간 | 재시도 (같은 요청) | 기타 | 초과 시 | 같이 정할 사람 |
 |---|---|---|---|---|---|
+| 분석 전체 | 120분 | — | 파이프라인 1–22 벽시계 1회. clone·정적 도구·가설·검증·Gate·초안을 포함한다. 역할 칸을 더해도 이 한도가 먼저다 | 새 work 금지. 진행 중 work는 `BUDGET_EXCEEDED`. 분석 `PARTIAL` 가능. FALSE 아님 | 성병찬 |
+| AST/SAST (`RUN_TOOL`) | 도구당 900초 | 1 | 파이프라인 3단계. 도구마다 work 하나. 같은 workspace에서 병렬. 도구 자체 timeout은 이 칸을 넘지 않는다. `02` 예시·도구 설정은 R2가 맞춘다. 실패·timeout ≠ 0건·안전함·FALSE | 그 도구 work 중단. `PARTIAL`/`FAILED` 가능. FALSE 아님 | 김나연 |
 | Hypothesis | 180초 | 4 | — | 그 의심 중단, FALSE 아님 | 배승원 |
 | 코드 다시 꺼내기 | 45초 | 가설당 24회 | 깊이 5, 조각 32개, 요청당 256KiB | 빈칸/조회 오류. FALSE 아님 | 김나연 |
 | Verification / debate | 종합 240초 / 찬반 각 180초 | 의심마다 찬반 각 1회 | 서로 다른 대화. Docker 요청 예산은 이 칸 | 초과 ≠ FALSE. 찬반 생략은 운영 불합격 | 임채민 |
