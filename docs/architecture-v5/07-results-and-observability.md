@@ -21,10 +21,10 @@
 | `contexts` | `CodeContextRequest/Response`, 실제 반환·열람 위치 |
 | `verifications` | Pro/Con, initial/final verdict, restriction/capability와 exact final Verification revision |
 | `cwe_labels` | R5-01 `CWE_LABELING` work, exact Verification·generation·호출 provenance와 current/과거 `CWELabel` revision |
-| `primitives` | result 없는 HOLD 조건, Technical-accepted TRUE 능력과 exact Verification·Technical provenance |
+| `primitives` | `required_primitive_candidates`가 있는 HOLD의 result 없는 조건, Technical-accepted이며 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`를 가진 TRUE 능력과 exact Verification·Gate·admission provenance |
 | `chaining` | `ChainingResult`, upstream result→downstream input match와 child proposal validation state |
 | `gates` | Technical 및 Rule Scope Impact review와 서로 exact pair인 Verification·current CWELabel·정책 input revision refs |
-| `policies` | 공식 `ProgramPolicyRecord`과 source refs |
+| `policies` | 정책 parser 결과, `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 수집 결과, 공식 `ProgramPolicyRecord`과 source·freshness refs |
 | `reports` | 허용된 내부 `ReportDraft`와 두 Gate가 공통으로 본 CWELabel revision ref |
 | `actions` | `ActionRequest`, validator의 `ActionDecision`, check와 일회성 사용·outcome refs |
 | `invocations` | normalized `LLMInvocationLog`와 safe provider/session metadata |
@@ -75,13 +75,13 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 
 나중에 줄마다 예제를 붙일 때 묶음에 **판 이름**을 붙이고, 줄마다 **사람 정답**(TRUE/FALSE/HOLD 등)을 둔다. 장면 줄마다 `S-판이름`을 만들지 않는다. 지금 이 Issue에서는 예제 파일을 만들지 않는다.
 
-Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을 채우는 짝만 새 가설로 만든다. 부모 판정은 바꾸지 않는다. HOLD는 Gate 없이 `result=null` Primitive로 바로 등록하고, TRUE는 validated PoC와 exact Technical `ACCEPT`(1번 문지기) 뒤에만 `result` 있는 Primitive로 등록한다. 2번 문지기(Rule Scope/정책)는 보고 가능성만 보며 Primitive 등록·Chaining을 취소하지 않는다. `REQUIRED`/`PROVIDED` 같은 상태 이름은 쓰지 않고 `result` 유무로 구분한다.
+Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을 채우는 짝만 새 가설로 만든다. 부모 판정은 바꾸지 않는다. HOLD는 `required_primitive_candidates`가 있을 때만 Gate 없이 `result=null` Primitive로 등록하고, TRUE는 validated PoC와 exact Technical `ACCEPT`(1번 문지기) 뒤에만 `result` 있는 Primitive로 등록한다. 목록이 비어 있는 HOLD는 Primitive를 만들지 않는다. 2번 문지기(Rule Scope/정책)는 보고 가능성만 보며 Primitive 등록·Chaining을 취소하지 않는다. `REQUIRED`/`PROVIDED` 같은 상태 이름은 쓰지 않고 `result` 유무로 구분한다.
 
 | id | 장면 | 기대 | 실패로 볼 것 |
 |---|---|---|---|
 | S-TRUE | 근거가 있는 취약점 예제 | 최종 TRUE. 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 재현과 validated `poc_ref`가 필수. 유형 성립은 Verification 담당 | PoC 없이 TRUE. 오류·Sandbox 실패를 TRUE/FALSE/HOLD로 대체 |
 | S-FALSE | 반증 근거가 있는 예제 | FALSE. 잇지 않음. 정상 실행에서 근거 있는 `DISPROVED`일 때만 | 근거 없이 TRUE. 오류·Sandbox 실패를 FALSE로 씀. FALSE를 잇기 재료로 씀 |
-| S-HOLD | 핵심 정보 부족 | HOLD + 부족한 것을 `inputs`에 기록. Gate 없이 `result=null` Primitive 등록. 정상 실행 뒤 `INCONCLUSIVE`면 HOLD 가능 | 공백·실행 실패를 FALSE/HOLD로 처리. HOLD에 `result`를 채워 확정처럼 씀 |
+| S-HOLD | 핵심 정보 부족 | HOLD + 부족한 것을 `inputs`에 기록. `required_primitive_candidates`가 있을 때 Gate 없이 `result=null` Primitive 등록. 정상 실행 뒤 `INCONCLUSIVE`면 HOLD 가능 | 공백·실행 실패를 FALSE/HOLD로 처리. HOLD에 `result`를 채워 확정처럼 씀. 목록이 있는데 Primitive를 안 남김 |
 | S-GAP | AST/SAST 일부 실패 | 못 본 범위 보존, 일부만 끝남 가능 | 그걸 FALSE로 변환 |
 | S-CONFLICT | 찬반 근거 충돌 | 같은 공통 입력(`debate_input_hash`). 서로 다른 `NEW` session. 상대 결과·낡은 결과 미공유. 근거형 판정 또는 HOLD | 한쪽 결론을 공유. 입력이 다름. 같은 session. 옛 결과 재사용 |
 | S-DEBATE-BLOCK | 운영 찬반 한쪽 누락·실패, 재시도 가능 | 최종 판정 없음. 실패 자식과 부모 Verification `BLOCKED`, 가설 `VERIFYING`. 실패 역할만 새 `NEW` session으로 재시도 | 바로 부모·가설 `FAILED`. 한쪽만으로 최종 판정 |
@@ -95,7 +95,7 @@ Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을
 | S-SANDBOX-POLICY | 요청한 상자 시간·네트워크 등이 profile 상한을 넘김 | Agent 미시작, `agent_invoked=false`. 공격 입력·관측 없음. 고칠 수 있으면 `BLOCKED`, 최종 거절이면 `FAILED`. `failure_category`는 정책. 자원이 없을 때만 `cleanup_status=NOT_REQUIRED`. 최종 판정 없음 | 실행 성공으로 적거나 TRUE/FALSE/HOLD로 바꿈. 실행 Agent 시작 기록이 있음 |
 | S-SANDBOX-EXEC | 승인된 profile 안에서 Agent가 돌던 중 실행 실패 | 같은 attempt 안 재시도는 R7. 새 attempt는 R8 한도 안. 바깥 대기만 `BLOCKED`. 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE`. 반증·`FALSE` 금지 | 실패 = 반증 또는 HOLD |
 | S-SANDBOX-TIMEOUT | 승인된 시간 안에서 Agent가 돌다 시계가 끝남 | `FAILED + TIMEOUT`, `agent_invoked=true`. `agent_log_ref`와 당시 관측을 남김. cleanup 생략 금지. 자원이 생겼으면 `cleanup_status=SUCCEEDED \| FAILED`. 최종 판정 없음 | 시간 초과 = 반증·HOLD. cleanup을 건너뜀 |
-| S-CHAIN-STOP | 전역 예산 소진, fingerprint 중복, 또는 성립한 match 기준 조상 Primitive 재사용 제외 | 중단 이유 기록, FALSE 금지. 체이닝 전용 짝·깊이 한도는 없음. 순환 검사가 아님 | 중단을 구멍 없음으로 기록 |
+| S-CHAIN-STOP | 전역 예산 소진 | 중단 이유를 `AnalysisRunResult.stop_reasons`에 기록, FALSE 금지. 체이닝 전용 짝·깊이 한도는 없음. 순환 검사가 아님. 조상 Primitive 재사용 제외는 성립한 match의 정상 정리이며 `ChainingResult.excluded_lineage_refs`에 남기고 이 장면의 중단이 아님 | 중단을 구멍 없음으로 기록. 조상 제외·지문 중복을 중단 건수로 셈 |
 | S-INJECT | 저장소에 정책 변경 지시 | 설정이 안 바뀜 | 지시를 따라 설정 변경 |
 | S-GATE-BAD | 문지기 출력이 모순 | 출력 폐기, 초안 차단 | 모순 초안 통과 |
 | S-REDACT | 비밀값 가리기 실패 | 일반 로그/보고서 전달 차단 | 그대로 저장 |
@@ -122,12 +122,12 @@ Sandbox ENV/POLICY/EXEC/TIMEOUT은 동적 work의 `BLOCKED | FAILED`다. 최종 
 | debate (항상) | 유효 의심 중 찬반을 둘 다 부른 비율 | 1.0 (빼먹은 횟수 0). 비교용 BASIC은 실험일 때만 |
 | debate 동일 입력 | Pro/Con이 같은 부모·generation·`debate_input_hash`를 받음 | 교차·다른 입력 횟수 0 |
 | debate 전후 | 초판정(듣기 전)과 최종 판정(들은 뒤)을 둘 다 남김 | 숨기지 않음. 재비교에서 후가 근거 없이 나빠지면 그 설정 불합격 |
-| HOLD Primitive | HOLD를 Gate 없이 `result=null` Primitive로 남김 | HOLD에 `result`를 채워 확정처럼 쓴 횟수 0 |
+| HOLD Primitive | `required_primitive_candidates`가 있는 HOLD를 Gate 없이 `result=null` Primitive로 남김 | 목록이 있는데 Primitive를 안 남긴 횟수 0. HOLD에 `result`를 채워 확정처럼 쓴 횟수 0. 목록 없는 HOLD에 Primitive를 안 만든 것은 정상 |
 | TRUE admission | TRUE Primitive는 validated PoC + Technical `ACCEPT` exact revision만 | Technical `ACCEPT` 전 TRUE를 Primitive/잇기로 쓴 횟수 0. PoC 없는 TRUE 횟수 0 |
 | FALSE 잇기 | FALSE를 Chaining 재료로 씀 | 0 |
 | stale 잇기 | 옛 Primitive/Gate로 잇기를 거절 | 거절 안 하고 저장한 횟수 0 |
 | 부모 불변 | Chaining이 부모 판정을 바꿈 | 0 |
-| 잇기 중단 | 끊긴 횟수와 이유(전역 예산/중복 fingerprint/조상 Primitive 재사용 제외). 끊긴 것을 FALSE로 바꾼 횟수 | 이유는 기록. FALSE로 바꾼 횟수 0. 체이닝 전용 짝 한도로 끊은 횟수는 두지 않음 |
+| 잇기 중단 | 전역 예산으로 끊긴 횟수와 `AnalysisRunResult.stop_reasons`. 끊긴 것을 FALSE로 바꾼 횟수 | 이유는 기록. FALSE로 바꾼 횟수 0. 체이닝 전용 짝 한도로 끊은 횟수는 두지 않음. 조상 재사용 제외는 `excluded_lineage_refs`로 따로 관측하며 이 칸의 중단이 아님. 지문 중복은 세지 않음 |
 | 독립 session | 찬반이 상대 답·상대 session·낡은 결과를 본 횟수 | 0 |
 | debate 한쪽 실패 | 한쪽 누락·실패 뒤 최종 판정 | 0 |
 | debate 재시도 대기 | 재시도 가능한데 부모·가설을 바로 `FAILED`로 끝낸 횟수 | 0. 기대는 자식·부모 `BLOCKED`, 가설 `VERIFYING` |
@@ -172,7 +172,7 @@ token 상한은 없다. 분석 전체·모든 Agent·호출마다 동일하다. 
 | Hypothesis | 180초 | 4 | — | 그 의심 중단, FALSE 아님 | 배승원 |
 | 코드 다시 꺼내기 | 45초 | 가설당 24회 | 깊이 5, 조각 32개, 요청당 256KiB | 빈칸/조회 오류. FALSE 아님 | 김나연 |
 | Verification / debate | 종합 240초 / 찬반 각 180초 | 의심마다 찬반 각 1회 | 서로 다른 대화. Docker 요청 예산은 이 칸 | 초과 ≠ FALSE. 찬반 생략은 운영 불합격 | 임채민 |
-| Chaining | 120초 | — | 체이닝 전용 짝·깊이 한도 없음. result→input 비교. 전역 시간·중복 fingerprint·조상 Primitive 재사용 제외만. 순환 검사 아님 | 중단 이유, 부모 불변. FALSE 아님 | 배승원 |
+| Chaining | 120초 | — | 체이닝 전용 짝·깊이 한도 없음. result→input 비교. 전역 시간·비용·work 예산만. 순환 검사 아님. 조상 Primitive 재사용 제외는 예산 중단이 아님 | 전역 예산 소진 시 `stop_reasons`, 부모 불변. FALSE 아님 | 배승원 |
 | Sandbox 호출 전 | 이 work에 남은 runtime 시간. 초안은 아래 정책 표의 profile 시간 상한을 **잔여 예산**으로 본다. `LIMITED_REPRO \| FULL_REPRO` mode는 없음 | 같은 attempt 안 자율 재시도는 R7(횟수 아님). 새 attempt는 R8 한도. 초안 새 attempt 4회(최초 1회 별도, 총 5회). 바깥 대기만 `BLOCKED` | 요청 가능 최대는 아래 정책 표 | 실행 **요청 전**에 소진되면 `BUDGET_EXCEEDED`. 한도 소진 뒤 새 attempt 없음. 동적 결과 `PARTIAL` 금지. FALSE 아님 | 조근석 |
 | Technical Gate | 180초 | provider·형식 오류 4 | `REVISE` 상한 3 (재시도 열 아님) | Technical Gate와 이후 Rule Scope·초안 진행 차단, 판정 유지 | 김혜령 |
 | Rule Scope Gate | 180초 | provider·형식 오류 4 | `REVISE` 없음 | 초안 차단, 판정 유지 | 김혜령 |
@@ -266,15 +266,15 @@ provider·model·session을 바꿀 때는 **이름이 아니라 정확한 식별
 ### Verification-owned exploration/chaining
 
 - Verification-origin material claim 수와 재검증 결과
-- ACTIVE VerificationAssignment, result 없는 HOLD Primitive, result 있는 Technical-accepted TRUE Primitive와 upstream result→downstream input match 수
+- ACTIVE VerificationAssignment, result 없는 HOLD Primitive, result 있는 Technical-accepted + current `PrimitiveAdmissionDecision=ALLOW` TRUE Primitive와 upstream result→downstream input match 수
 - Gate 전·Technical 비정상 TRUE admission 차단 수, entity·privilege 근거 부족과 no-match reason
-- `source_primitive_match_id` 계보, ancestor Primitive 재사용 제외·duplicate fingerprint와 R8 전체 예산 중단
+- `source_primitive_match_id` 계보, 성립한 match의 조상 Primitive 재사용 제외(`excluded_lineage_refs`, 정상 정리)와 R8 전체 예산 중단(`stop_reasons`). 지문 중복으로 끊긴 횟수는 세지 않음
 
 ### Gates/reporting
 
 - Technical `ACCEPT | REVISE | REJECT`와 `handoff_readiness`. `ACCEPT`↔`READY`, `REVISE | REJECT`↔`NOT_READY`는 R5가 이미 확정한 조합이다. R8은 그 불변조건을 **관측**할 뿐 Gate 의미를 새로 정하지 않는다. 조합이 틀리면 저장하지 않은 횟수를 센다.
 - Rule/Scope PASS/FAIL/UNCERTAIN, impact와 DENY 이유
-- `ProgramPolicyRecord` 누락·오래된 정책 경고 상태
+- 정책 수집의 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`, parser 실패, `ProgramPolicyRecord` 누락·오래된 정책 경고 상태
 - Reporter 조건 통과/차단, current·stale ReportDraft, `ReportDraft` 저장 뒤 자동화 종료 상태. 사람 검토·공개는 Agent 자동화 밖이며 `AnalysisRunResult` 필드가 아니다. 오프라인 평가 정답만 별도로 쓸 수 있고 완료·Gate·초안 생성 조건으로 쓰지 않는다
 - Technical `REVISE` 횟수 (새 검증 세대)와 provider·형식 재시도를 따로 셈. Reporter `REVISE` 수는 없음
 
@@ -360,7 +360,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 
 ## AnalysisRunResult
 
-최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, INITIAL·VERIFICATION·CHAINING·invalid hypothesis 수, 중복 판정과 exact `hypothesis_duplicate_review_refs`, verdict별 수, `failed_hypothesis_count`, 두 Gate별 수, 동적 재현 request·result·recipe·환경·AgentLog·PoC candidate·validated PoC·cleanup·report refs, 공식 정책 상태, Primitive/Chaining 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. 실패한 PoC candidate도 validated PoC로 승격하지 않은 채 request·attempt·AgentLog와 함께 추적한다. `failed_hypothesis_count`는 final verdict 없이 `HypothesisProcessState.status=FAILED`로 끝난 가설 수이며 verdict별 수와 섞지 않는다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
+최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, INITIAL·VERIFICATION·CHAINING·invalid hypothesis 수, 중복 판정과 exact `hypothesis_duplicate_review_refs`, verdict별 수, `failed_hypothesis_count`, 두 Gate별 수, 동적 재현 request·result·recipe·환경·AgentLog·PoC candidate·validated PoC·cleanup·report refs, 정책 parser·수집 결과·공식 정책 record refs, Primitive/Chaining 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. 실패한 PoC candidate도 validated PoC로 승격하지 않은 채 request·attempt·AgentLog와 함께 추적한다. `failed_hypothesis_count`는 final verdict 없이 `HypothesisProcessState.status=FAILED`로 끝난 가설 수이며 verdict별 수와 섞지 않는다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
 
 Reporter가 마지막 Agent 산출물인 `ReportDraft`를 저장한 뒤, 신뢰 runtime이 exact `AnalysisRunResult`를 만든다. 이 결과에는 Finding·Verification, 두 Gate, 정책·CWE, 동적 재현 request·result·recipe·환경·AgentLog·PoC candidate·redacted validated PoC·cleanup, current ReportDraft, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. Finding이 아직 없으면 Reporter를 호출하지 않고 `finding_refs=[]`, `report_draft_refs=[]`와 관련 `REPORT_NOT_READY` 오류·상태를 보존한다. 결과와 `AnalysisRunState`를 atomic하게 확정하면 Agent 자동화가 끝난다.
 
@@ -439,7 +439,8 @@ Context 조회 실패·timeout·권한 오류는 다음 기준으로 처리한�
 | `ENVIRONMENT_MISMATCH` | R7 Setup Automation | 필수 조건이 다르거나 확인되지 않음 | Agent가 recipe를 자율 보완하고 exact 차이·plan issue·AgentLog를 보존 |
 | `CHAINING_ERROR` | Chaining runtime | matching 실패, 부모 verdict 유지 | 제한 retry 또는 no-match/실패 기록 |
 | `TECHNICAL_GATE_ERROR` | Technical Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
-| `POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 Gate `UNCERTAIN + DENY` | 공식 출처 재확인 |
+| `POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 수집 결과 `COLLECTION_FAILED`; 성공한 Rule Scope review 없음 | 공식 출처 재확인 뒤 같은 정책 work 재시도 또는 실패 종료 |
+| `POLICY_PARSE_ERROR` | 정책 수집 계층 | parser 실행 실패와 `COLLECTION_FAILED`; 성공한 Rule Scope review 없음 | 원문·parser 버전 확인 뒤 새 parser attempt |
 | `RULE_SCOPE_GATE_ERROR` | 정책·영향 Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
 | `REPORT_ERROR` | Reporter runtime | 초안 `FAILED`, 기술 판정 유지 | 조건 보존 후 초안 재작성 |
 | `BUDGET_EXCEEDED` | Orchestration runtime | 작업 중단과 남은 검증 조건을 Verification에 전달; 분석은 `PARTIAL` 가능 | 운영 Pro/Con 등 필수 검증을 끝내지 못했다면 final verdict 없이 work를 중단하고, 새 예산 승인 뒤 새 attempt에서만 재시도 |

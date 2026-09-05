@@ -32,13 +32,19 @@ Pro와 Con은 각각 exact `EvidenceAgentResult`를 저장합니다. 두 child w
 
 token과 전체 시간·판정 변화·HOLD 해소·새 후보 수는 `VerificationMetrics`에, 역할별 호출 수·상태·retry·failover·provider·session·실제 usage는 `LLMInvocationLog`에 기록합니다. R8은 이 기록을 비교 평가에 사용하지만 개별 실행이나 verdict를 결정하지 않습니다.
 
+## 검증 플레이북
+
+공통 및 웹 취약점 6종의 구체적인 확인 항목은 [R6 검증 플레이북](../verification-playbooks.md)을 따릅니다. 플레이북은 누락을 줄이는 참고 절차이며 점수표나 자동 판정표가 아닙니다.
+
+운영에서 어떤 유형별 플레이북을 사용할지와 질문을 어떻게 적용할지는 아래 `판정과 동적 재현` 절의 `PlaybookPolicy`·`PlaybookApplication` 규칙을 따릅니다.
+
 ## 판정과 동적 재현
 
 - `TRUE`: 명시된 경로와 전제가 evidence로 지지되고 현재 generation의 실행 성공·validated PoC가 있음
 - `FALSE`: named falsification이 가설을 반증함
 - `HOLD`: 핵심 문맥·환경·조건이 부족하거나 충돌함
 
-판정 뒤 흐름도 다릅니다. `FALSE`는 terminal이며 Primitive와 Chaining으로 가지 않습니다. `HOLD`는 Gate 없이 `inputs`와 `result=null`인 Primitive를 즉시 저장합니다. `TRUE`는 validated PoC와 R5-01이 그 exact Verification에 맞춰 만든 current `CWELabel`을 Technical Gate가 `ACCEPT`한 뒤 제공 능력별 `result` Primitive가 됩니다. Rule Scope는 Reporter만 제어합니다.
+판정 뒤 흐름도 다릅니다. `FALSE`는 terminal이며 Primitive와 Chaining으로 가지 않습니다. `HOLD`는 Gate 없이 `inputs`와 `result=null`인 Primitive를 즉시 저장합니다. `TRUE`는 validated PoC와 R5-01이 그 exact Verification에 맞춰 만든 current `CWELabel`을 Technical Gate가 `ACCEPT`한 뒤 정책 확인으로 갑니다. 금지 테스트 위반이 확정되지 않아 current admission이 `ALLOW`인 경우에만 제공 능력별 `result` Primitive가 됩니다. 다른 Rule Scope 판단은 Reporter만 제어합니다.
 
 판정에는 최소 근거가 필요합니다. TRUE는 핵심 공격 경로와 필요한 조건을 지지하는 근거가 있어야 합니다. FALSE는 이름이 있는 반증 질문이 실제 근거로 `DISPROVED`된 경우에만 가능합니다. 오류·timeout·정보 부족·Sandbox 실패는 FALSE 근거가 아닙니다. HOLD는 판단에 필요한 조건이나 환경이 아직 부족하다는 뜻입니다.
 

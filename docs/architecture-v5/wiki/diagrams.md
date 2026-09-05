@@ -62,9 +62,11 @@ flowchart TB
     S15 -->|REVISE| S16[16 Same assignment starts new Verification work and revision]
     S16 --> S09
     S15 -->|REJECT| S22[22 Store results logs PoC errors debug]
-    S15 -->|ACCEPT| S17{17 Independent technical material and report review paths}
-    S17 --> PADMIT[Result Primitive admitted]
-    S17 --> S19[19 Rule Scope Impact Gate]
+    S15 -->|ACCEPT| S17[17 Policy collection and Rule Scope review]
+    S17 --> ADEC{PrimitiveAdmissionDecision}
+    ADEC -->|ALLOW| PADMIT[Result Primitive admitted]
+    ADEC -->|DENY confirmed prohibited test| S22
+    S17 --> S19[19 Apply remaining report conditions]
     S19 -->|FAIL UNCERTAIN or DENY| S22
     REQUIRED --> S18[18 Chaining upstream result to downstream input]
     PADMIT --> S18
@@ -211,9 +213,13 @@ flowchart TB
     TECH -->|REVISE| SAME[Same assignment new Verification work and revision]
     SAME --> VR
     TECH -->|REJECT| NOCHAIN[No Chaining]
-    TECH -->|ACCEPT| PROVIDED[Primitive with inputs and one result]
-    TECH -->|ACCEPT independent report review| RULE[Rule Scope Impact Gate]
-    RULE -->|FAIL UNCERTAIN DENY| REPORTBLOCK[Report blocked but Primitive remains usable]
+    TECH -->|ACCEPT| COLLECT[PolicyCollectionResult]
+    COLLECT -->|FOUND or ABSENT_CONFIRMED| RULE[Rule Scope Impact Gate]
+    COLLECT -->|COLLECTION_FAILED| ADMIT[Primitive Admission Runtime]
+    RULE --> ADMIT
+    ADMIT -->|testing restriction PASS UNCERTAIN or NOT_EVALUATED| PROVIDED[Primitive with inputs and one result]
+    ADMIT -->|testing restriction FAIL| NOCHAIN
+    RULE -->|Other FAIL UNCERTAIN DENY| REPORTBLOCK[Report blocked but allowed Primitive remains usable]
     RULE -->|PASS PASS PASS SUFFICIENT ALLOW| REPORTOK[Reporter eligibility may continue]
     REQUIRED --> PDB[(Primitive records)]
     PROVIDED --> PDB
@@ -230,7 +236,7 @@ flowchart TB
     VNEW --> LIMIT
 ```
 
-Primitive DB는 queue가 아니며 Chaining match와 child proposal은 Finding이 아니다. Gate 전 TRUE와 오래된 Technical review revision은 result가 있는 Primitive가 될 수 없다. Rule Scope 결과는 보고 가능성만 바꾸며 이미 admission된 Primitive를 취소하지 않는다.
+Primitive DB는 queue가 아니며 Chaining match와 child proposal은 Finding이 아니다. Gate 전 TRUE, 오래된 Technical review revision과 current `PrimitiveAdmissionDecision=ALLOW`가 없는 TRUE는 result가 있는 Primitive가 될 수 없다. 금지 테스트 위반이 `FAIL`로 확정되면 admission을 거절한다. 그 밖의 Rule Scope 실패·불확실성과 보고 거절은 Reporter만 막고 `ALLOW`인 Primitive와 Chaining 자격은 유지한다.
 
 ## 6. 이중 LLM Gate와 Agent 자동화 종료
 
@@ -244,17 +250,23 @@ flowchart TB
     BACK --> NEWGEN[New Verification generation and new validated PoC]
     NEWGEN --> VR
     TS -->|REJECT| BLOCK[Report blocked]
-    TS -->|ACCEPT| PRIMITIVE[Admit result Primitive for Chaining]
-    TS -->|ACCEPT independent report review| RULE[Rule Scope Impact Gate Agent]
-    POLICY[Official ProgramPolicyRecord] --> RULE
-    NOPOL[Missing official policy] --> UNCERTAIN[Rule and scope UNCERTAIN permission DENY]
+    TS -->|ACCEPT| COLLECT[PolicyCollectionResult]
+    COLLECT -->|FOUND plus current policy| RULE[Rule Scope Impact Gate Agent]
+    COLLECT -->|ABSENT_CONFIRMED| UNCERTAIN[Rule and scope UNCERTAIN permission DENY]
+    COLLECT -->|COLLECTION_FAILED| ARUN[R4 Primitive Admission Runtime]
+    RULE --> ARUN
+    UNCERTAIN --> ARUN
+    ARUN --> ADEC{PrimitiveAdmissionDecision}
+    ADEC -->|ALLOW| PRIMITIVE[Admit result Primitive for Chaining]
+    ADEC -->|DENY| NOPRIMITIVE[No result Primitive]
+    COLLECT -. COLLECTION_FAILED report unavailable .-> BLOCK
     UNCERTAIN --> BLOCK
-    RULE --> READY{Review PASS Rule PASS Scope PASS Impact SUFFICIENT Permission ALLOW}
+    RULE --> READY{Review PASS Rule PASS Scope PASS Testing PASS Impact SUFFICIENT Permission ALLOW}
     READY -->|No| BLOCK
     READY -->|Yes| RREQ[Verification requests Reporter]
     RREQ --> REPORTER[Reporter Agent]
     REPORTER --> DRAFT[Internal ReportDraft]
-    BLOCK --> FINAL[Finalize AnalysisRunResult]
+    BLOCK --> FINAL[Atomically finalize AnalysisRunResult and AnalysisRunState]
     DRAFT --> FINAL
     FINAL --> END[Agent automation end]
 ```
@@ -422,13 +434,13 @@ flowchart LR
     POLICY[Current policy record] --> REPORTER
     DYNAMIC[Current supported dynamic evidence and redacted validated PoC] --> REPORTER
     REPORTER --> DRAFT[ReportDraft with restrictions limitations and redaction passed]
-    DRAFT --> FINAL[Trusted runtime finalizes AnalysisRunResult and logs]
+    DRAFT --> FINAL[Trusted runtime atomically finalizes AnalysisRunResult and AnalysisRunState]
     BLOCKED[No report-ready Finding] --> FINAL
     FINAL --> END[Agent automation end]
     END -. outside Agent automation .-> HUMAN[Person-led review edit submit or disclose]
 ```
 
-ReportDraft는 마지막 Agent 산출물이다. `AnalysisRunResult` 확정은 기존 결과와 로그를 묶는 신뢰 runtime 작업이며 새 LLM 판단이 아니다. 점선 뒤의 사람 검토·수정·제출·공개는 Agent action과 상태 계약 밖이다.
+ReportDraft는 마지막 Agent 산출물이다. `AnalysisRunResult`와 `AnalysisRunState`의 원자적 확정은 기존 결과와 로그를 묶는 신뢰 runtime 작업이며 새 LLM 판단이 아니다. 점선 뒤의 사람 검토·수정·제출·공개는 Agent action과 상태 계약 밖이다.
 
 ## Rendering check
 

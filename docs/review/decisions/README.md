@@ -46,3 +46,4 @@
 | [ADR-008](./ADR-008-hypothesis-restriction-duplicate-contract.md) | 가설 restriction 근거와 중복 판정 lifecycle | ACCEPTED | #2, #3, #5, #6, #9 | PR #81 + R4 공통 계약 보완 |
 | [ADR-009](./ADR-009-r5-01-cwe-labeling-provenance.md) | R5-01 CWE labeling 소유권과 Verification provenance | ACCEPTED | #5, #6, #7 | R4 공통 계약 보완 |
 | [ADR-010](./ADR-010-static-fact-kind-partition.md) | StaticFactBundle 사실 종류별 분할과 방어 후보 의미 | ACCEPTED | #3, #5, #7, #9 | R4 공통 계약 보완 |
+| [ADR-011](./ADR-011-testing-restriction-primitive-admission.md) | 금지 테스트 위반과 Primitive 체이닝 자격 분리 | ACCEPTED | #2, #5, PR #52, PR #88 | R4 공통 계약 보완 |

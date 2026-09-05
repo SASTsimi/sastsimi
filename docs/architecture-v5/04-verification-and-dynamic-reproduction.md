@@ -23,10 +23,10 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 5. 정적·Pro·Con 근거로 initial verdict와 unresolved condition을 만든다.
 6. initial TRUE이면 동적 근거가 별도로 필요하지 않아도 `purpose=POC_CONFIRMATION`을 요청한다. 최종 판정에 실행 근거가 필요하면 `purpose=VERDICT_EVIDENCE`를 요청한다.
 7. R7의 실행 결과를 종합해 final verdict를 만든다. final TRUE에는 현재 generation의 재현 성공과 validated `poc_ref`가 반드시 필요하다. 정적·Pro·Con만으로 충분한 FALSE 또는 HOLD는 동적 요청 없이 확정할 수 있다.
-8. HOLD면 Primitive `inputs`가 될 부족 조건을, TRUE면 Technical `ACCEPT` 뒤 Primitive `result`가 될 제공 능력을 기록한다. FALSE는 Primitive 후보를 만들지 않는다.
+8. HOLD면 Primitive `inputs`가 될 부족 조건을, TRUE면 Technical `ACCEPT` 뒤 R4 admission runtime이 평가할 Primitive `result` 후보 능력을 기록한다. FALSE는 Primitive 후보를 만들지 않는다.
 9. 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 발견하면 `HypothesisProposal(origin=VERIFICATION)`으로 분리한다.
 10. final TRUE를 확정하면 R5-01 `CWE_LABELING` work를 요청한다. R5-01이 exact Verification에 맞는 current `CWELabel`을 확정한 뒤 Technical Evidence Gate를 요청한다. `REVISE`면 같은 Verification owner가 새 Verification을 만들고 R5-01이 CWE 정렬을 다시 평가해 새 label revision을 만든 뒤 다시 제출한다.
-11. HOLD의 부족 조건은 result 없는 Primitive로 즉시 Chaining에 넘길 수 있고, TRUE는 exact Technical `ACCEPT`를 받은 뒤 result 있는 Primitive로 넘길 수 있다. Rule Scope 결과는 보고 경로에만 적용한다.
+11. HOLD의 부족 조건은 result 없는 Primitive로 즉시 Chaining에 넘길 수 있고, TRUE는 exact Technical `ACCEPT` 뒤 같은 chain의 Rule Scope 또는 정책 수집 결과로 R4가 current `PrimitiveAdmissionDecision=ALLOW`를 확정한 경우 result Primitive로 넘길 수 있다. Rule·Scope·Impact 결과는 현재 보고 경로에 별도로 적용한다.
 
 ## 우회 인지 검증
 
@@ -144,7 +144,7 @@ Pro·Con 호출 횟수는 같은 Verification work와 역할에 속한 중복 �
 
 `HOLD`는 실패가 아니다. 누락 정보와 필요한 capability를 구조화해 exact final Verification revision에 연결된 result 없는 Primitive의 `inputs`로 즉시 저장하고 Chaining Agent의 matching 입력으로 사용할 수 있다. HOLD는 두 Gate를 거치지 않으며 확인된 능력이나 취약점으로 승격되지 않는다.
 
-`TRUE`도 판정 직후에는 Chaining 입력이 아니다. 현재 revision이 Technical `ACCEPT`를 받은 뒤에만 제공 능력을 `result`로 가진 Primitive가 된다. Rule Scope 결과는 보고 가능성만 결정하고 이 admission을 취소하지 않는다. `FALSE`는 terminal internal result이며 Primitive와 Chaining work를 만들지 않는다.
+`TRUE`도 판정 직후에는 Chaining 입력이 아니다. 현재 revision이 Technical `ACCEPT`를 받은 뒤 R4 `PRIMITIVE_ADMISSION_RUNTIME`이 Rule Scope 또는 정책 수집 결과를 매핑한 current `PrimitiveAdmissionDecision=ALLOW`가 있어야 제공 능력을 `result`로 가진 Primitive가 된다. prohibited-testing `FAIL`은 `DENY`로 차단하지만 `UNCERTAIN | COLLECTION_FAILED`와 다른 report eligibility 실패는 Reporter만 차단한다. `FALSE`는 terminal internal result이며 Primitive와 Chaining work를 만들지 않는다.
 
 최종 결과는 등록 가설의 모든 반증 질문에 `DISPROVED | NOT_DISPROVED | INCONCLUSIVE` 중 하나를 기록한다. 또한 모든 `validation_checks`를 같은 `validation_id`의 `ValidationCheckResult`로 정확히 한 번씩 답하고, 각 항목을 `COMPLETE`와 실제 근거 reference로 마쳐야 한다. 하나라도 빠지거나 `INCOMPLETE`이면 final `VerificationResult`를 저장하지 않는다. `DISPROVED`에는 실제 `evidence_refs`가 필요하고, `NOT_DISPROVED`는 가설이 참이라는 증거로 승격하지 않는다. `FALSE`는 적어도 하나의 근거 있는 `DISPROVED` 결과와 그 `question_id`를 설명하는 판정 이유가 있을 때만 허용한다. 오류·timeout·누락만으로는 `DISPROVED`나 `FALSE`를 만들지 않는다.
 
@@ -188,19 +188,23 @@ Technical Evidence Gate의 `ACCEPT`는 R5가 exact final TRUE revision을 대상
 
 ## 취약점 유형별 검증 플레이북
 
+공통 및 웹 취약점 6종의 실제 검증 내용은 [R6 검증 플레이북](./verification-playbooks.md)을 정본으로 사용한다. 최초 작성 범위는 `COMMON`, SQL Injection, XSS, OS Command Injection, Path Traversal, SSRF, IDOR/BOLA이며, 작성됐다는 사실만으로 운영 지원 유형이 되지는 않는다.
+
 R8의 versioned evaluation corpus는 우선 지원할 취약점 유형을 정하는 평가 근거이고, 운영에서 실제 허용할 유형과 exact 플레이북 revision의 연결은 사람이 승인한 current `PlaybookPolicy`로 확정한다. 현재는 운영 지원 목록이 확정되지 않았으므로 모든 유형에 공통으로 적용할 플레이북 구조와 작성 규칙을 먼저 사용한다. 지원 목록이 확정되면 이 구조로 유형별 플레이북을 별도 revision으로 등록하고 승인된 policy에 연결한다.
 
-목록이 확정된 뒤 각 지원 취약점 유형은 같은 이름으로 식별 가능한 검증 플레이북을 가진다. 플레이북은 Agent에게 자유로운 결론을 요구하는 prompt가 아니라, 해당 유형에서 빠뜨리면 안 되는 확인 항목과 반증 질문을 정의한 실행 가능한 검증 절차다.
+플레이북은 Agent에게 자유로운 결론을 요구하는 prompt나 점수표가 아니다. 과거 사례와 검증 지식을 바탕으로 빠뜨리면 안 되는 사전 조건, source, sink, source-to-sink 경로, 방어, named falsification question, 정적·동적 evidence, restriction과 HOLD 조건을 안내한다. verdict는 체크 개수나 Pro·Con 중 한쪽의 승패가 아니라 현재 코드와 실제 evidence로 결정한다.
 
 플레이북 후보와 유형 mapping 후보는 R6 검증·반박·플레이북 담당이 작성하고, trusted playbook registry runtime이 schema와 revision을 검사해 변경 불가능한 record로 등록한다. 등록만으로 운영 지원 목록을 바꿀 수는 없다. Verification work를 등록할 때 runtime은 exact `VulnerabilityHypothesis.proposal_ref`가 가리키는 `HypothesisProposal.vulnerability_type_candidates`를 읽는다. 후보가 정확히 하나이고 current `PlaybookPolicy`에 같은 유형의 mapping이 있을 때만 해당 exact `TYPE_SPECIFIC` revision을 선택한다. 후보가 없거나 여러 개이거나 policy가 허용하지 않으면 current exact `COMMON` revision을 선택한다.
 
 runtime은 선택한 policy·playbook, 선택 이유와 플레이북 질문마다 새로 발급한 전역 `question_id`를 work별 `PlaybookApplication`으로 저장한다. Verification의 직접 검증, 독립 Pro/Con 실행, final 합성과 결과 저장은 모두 work에 고정된 동일한 application을 사용한다. final 질문 결과는 가설 자체의 반증 질문과 application 질문의 합집합을 빠짐없이 정확히 한 번씩 처리해야 한다. 검증 도중 current policy나 playbook revision이 변경돼도 진행 중인 work에는 섞지 않는다. 같은 work의 retry는 기존 application과 질문 ID를 유지하고, 새 Verification work 또는 새 verification generation에서는 새 application과 새 질문 ID를 만든다.
 
-각 플레이북에는 최소한 다음 항목을 기록한다.
+미지원 유형도 후속 Issue만 만들고 현재 실행을 끝내서는 안 된다. COMMON으로 필수 검증을 먼저 수행한다. 필수 검증을 완료했지만 유형별 정보가 부족하면 `unresolved_conditions`와 HOLD를 기록할 수 있고, 실행 자체가 실패하면 verdict 없이 실행 오류를 기록한다. 오류·timeout·빈 Context·Sandbox 실패는 FALSE의 반증 evidence가 아니다.
+
+플레이북은 동적 검증의 목적과 필요한 관측만 정의한다. R6는 재현할 가설, 재현 목표, 필요한 환경 조건, `sandbox_profile_ref`와 관련 문맥을 요청하며, PoC·command·환경 계획과 `DynamicReproductionResult`는 R7이 생산한다. 모든 final TRUE에는 current generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated `poc_ref`가 필요하다.
 
 | 항목 | 설명 |
-|---|---|
-| `vulnerability_type` | 플레이북이 다루는 취약점 유형 |
+| --- | --- |
+| `VerificationPlaybook.vulnerability_type` | 플레이북이 다루는 취약점 유형 |
 | 사전 조건 | 공격자가 먼저 만족해야 하는 권한·입력·환경 |
 | source | 공격자 입력이나 제어 값이 시작되는 위치 |
 | sink | 위험 동작 또는 영향이 발생하는 위치 |
@@ -213,7 +217,6 @@ runtime은 선택한 policy·playbook, 선택 이유와 플레이북 질문마�
 | HOLD 조건 | 아직 해결되지 않으면 최종 판단을 보류해야 하는 조건 |
 
 지원 목록이 확정되기 전에는 임의의 취약점 유형을 지원 대상으로 가정하지 않는다. 목록 확정 후에도 지원 목록에 없는 유형을 기존 플레이북에 억지로 맞추지 않는다. 필요한 검증 항목을 확정할 수 없으면 공통 플레이북으로 현재 실행을 먼저 처리한다. 정상적으로 필수 검증을 완료했지만 정보가 부족하면 `unresolved_conditions`와 `HOLD`를 기록한 뒤 후속 Issue를 연결한다. 실행 자체가 실패했다면 verdict 없이 실행 오류를 기록한 뒤 후속 Issue를 연결한다. 새로운 endpoint·sink·권한 경계·공격 단계·독립 impact가 발견되면 현재 verdict에 합치지 않고 material child proposal로 분리한다.
-
 ## Docker 동적 재현
 
 동적 검증은 정적 판단을 대체하지 않고 특정 가설을 격리된 환경에서 실제로 확인한다. 모든 final TRUE에는 실행으로 확인된 PoC가 필요하므로 initial TRUE도 반드시 이 단계를 거친다.
@@ -267,6 +270,7 @@ Sandbox 안에서는 Agent가 환경 설정, 저장소에 필요한 package, 계
 - 복구할 수 없거나 retry 한도를 소진하면 Session Manager가 `FAILED + INCONCLUSIVE`를 확정한다.
 - Technical Gate `REVISE`는 새 Verification generation이므로 새 동적 재현 work 하나를 허용한다.
 
+
 ### AgentLog와 결과 확정
 
 - 실제 event는 기존 runtime/tool/lifecycle 계층이 발생시키고 Session Manager가 즉시 durable log에 append한다.
@@ -296,7 +300,7 @@ Sandbox 안에서는 Agent가 환경 설정, 저장소에 필요한 package, 계
 
 `DynamicReproductionResult.hypothesis_outcome`은 동적 관측 요약이며 최종 verdict가 아니다. `SUPPORTED | DISPROVED`에는 실제 관측을 가리키는 `hypothesis_evidence_refs`가 필요하다. `DISPROVED`일 때만 `hypothesis_disproved=true`와 `disproof_evidence_refs`를 사용한다. 오류·빈 출력·exit code만으로는 반증이나 FALSE를 만들 수 없다. 실패 결과의 `failure_category`는 비교 가능한 범주, `failure_reason`은 민감정보를 제거한 구체적인 자유형 설명이다. plan의 부족·모순은 `plan_issues`에 직접 포함한다.
 
-종료된 동적 결과는 `DynamicReproductionState.dynamic_result_ref`, `WorkExecutionState.output_refs`와 `TransitionCommit.output_refs`가 같은 exact `DynamicReproductionResult.record_id`를 가리킬 때만 R6에 전달한다. R6는 결과를 소비해 final verdict를 만들지만 R7 산출물을 대신 생산하지 않는다. current generation의 exact request, `SUCCEEDED + SUPPORTED` 결과와 validated `poc_ref` 중 하나라도 없으면 final TRUE 저장과 Technical Gate 호출을 모두 차단한다.
+`DynamicReproductionState.dynamic_result_ref`, `WorkExecutionState.output_refs`와 `TransitionCommit.output_refs`는 같은 exact `DynamicReproductionResult.meta.record_id`를 가리키는 current 반환 동적 결과만 R6에 전달한다. current 반환 결과에는 비종료 상태인 `BLOCKED`가 포함될 수 있고 R6는 이를 대기·복구 판단에 읽을 수 있지만, final `VerificationResult`나 Technical Gate를 포함한 Gate 입력으로 사용할 수 없다. R6는 자격을 갖춘 결과를 소비해 final verdict를 만들지만 R7 산출물을 대신 생산하지 않는다. current generation의 exact request, `SUCCEEDED + SUPPORTED` 결과와 validated `poc_ref` 중 하나라도 없으면 final TRUE 저장과 Technical Gate 호출을 모두 차단한다.
 
 ## Technical `REVISE` 처리
 
@@ -315,7 +319,7 @@ VerificationResult revision N
 
 ## VerificationResult에 남길 정보
 
-최종 결과는 verdict뿐 아니라 질문별 `FalsificationResult`, supporting/counter evidence, restrictions, bypass·alternate path·impact 후보, `required_primitive_candidates`와 `provided_primitive_candidates`, `origin=VERIFICATION` material child proposal, unresolved conditions, debate 지표와 동적 재현 reference를 포함한다. HOLD의 required 후보는 result 없는 Primitive의 `inputs`로 즉시 admission할 수 있다. TRUE의 required 후보는 악용 선행 조건인 `inputs`, provided 후보는 Technical `ACCEPT` 뒤 능력별 Primitive의 `result`가 된다. 이 정보가 CWE, Technical Gate, Primitive admission, Rule Scope/Reporter와 `AnalysisRunResult`의 입력이 된다.
+최종 결과는 verdict뿐 아니라 질문별 `FalsificationResult`, supporting/counter evidence, restrictions, bypass·alternate path·impact 후보, `required_primitive_candidates`와 `provided_primitive_candidates`, `origin=VERIFICATION` material child proposal, unresolved conditions, debate 지표와 동적 재현 reference를 포함한다. HOLD의 required 후보는 result 없는 Primitive의 `inputs`로 즉시 admission할 수 있다. TRUE의 required 후보는 악용 선행 조건인 `inputs`, provided 후보는 Technical `ACCEPT` 뒤 R4의 current `PrimitiveAdmissionDecision=ALLOW`가 허용한 능력별 Primitive의 `result`가 된다. 이 정보가 CWE, Technical Gate, Rule Scope Gate, Primitive admission, Reporter와 `AnalysisRunResult`의 입력이 된다.
 
 supporting/counter evidence는 자유 형식 문자열이 아니라 `EvidenceClaim`으로 기록한다. 각 claim은 작성 역할, 실제 저장 근거와 코드 주장에 필요한 현재 workspace·commit의 위치를 포함한다. 우회·대체 경로·영향 확대 후보는 `CandidateRef(candidate_state=UNVALIDATED)`로 구분하고 새 material claim이면 별도 가설로 재검증한다. debate token·시간과 판정 변화는 `VerificationMetrics`에 저장하며 provider가 token을 제공하지 않으면 값을 추정하지 않고 `null`로 둔다.
 

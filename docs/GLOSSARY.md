@@ -106,11 +106,13 @@
 | `Agent` | 한 가지 분석 역할을 맡는 LLM 작업 단위 | 프로그램의 강제 규칙이나 사람의 결정을 대신하지 않습니다. |
 | `Orchestration` | 가설 제안을 확인·등록하고 각 가설에 Verification을 배정하는 전역 조정 기능 | 배정 뒤 가설 내부 Pro/Con·동적 재현·Gate·Chaining을 결정하지 않습니다. |
 | `PrimitiveDraft` | 연계 공격의 입력 조건 또는 실행 뒤 얻는 결과를 표현한 작은 데이터 | 코드 entity, 필요하면 저장소에 정의된 권한 값, 근거와 쉬운 설명을 함께 둡니다. |
-| `Primitive` | 한 가설의 필요한 입력들과 실행 결과를 한 형식으로 묶은 연계 재료 | HOLD는 `result=null`, TRUE는 Technical `ACCEPT` 뒤 `result`가 있습니다. `REQUIRED/PROVIDED` 같은 별도 종류 필드는 저장하지 않습니다. |
+| `Primitive` | 한 가설의 필요한 입력들과 실행 결과를 한 형식으로 묶은 연계 재료 | HOLD는 `result=null`, TRUE는 Technical `ACCEPT`와 current admission `ALLOW` 뒤 `result`가 있습니다. `REQUIRED/PROVIDED` 같은 별도 종류 필드는 저장하지 않습니다. |
+| `PrimitiveAdmissionDecision` | TRUE 결과를 체이닝 재료로 써도 되는지 프로그램이 `ALLOW | DENY`로 기록한 값 | Rule Scope의 전용 금지 테스트 판정과 정책 수집 상태를 정해진 표로 변환하며 정책 뜻을 새로 해석하지 않습니다. |
+| `source_admission_refs` | 한 체이닝 결과가 직접 또는 부모 체인을 통해 실제로 사용한 모든 허용 결정 목록 | 하나라도 오래됐거나 `DENY`로 바뀌면 그 체이닝과 파생 결과를 current 입력으로 쓰지 않습니다. |
 | `PrimitiveIndexState` | 가설의 현재 Verification과 현재 Primitive 수정본들을 가리키는 목록 | 별도 전용 version 필드 없이 공통 `RecordMeta` revision과 원자적 current pointer 갱신을 사용합니다. |
 | `PrimitiveMatchCandidate` | 한 Primitive의 결과가 다른 Primitive의 특정 입력을 채울 수 있는지 나타낸 미검증 후보 | `upstream_result_ref`, `downstream_input_ref`, `matched_input_id`와 실제 근거를 기록하며 아직 취약점 확정 결과가 아닙니다. |
 | `Chaining Agent` | upstream 결과와 downstream 입력이 이어지는 조합만 찾는 Agent | 일반 취약점·우회·영향 탐색, 동적 재현, Gate 보완과 판정은 하지 않습니다. |
-| `chaining` | 확인된 결과가 다른 가설의 입력 조건을 충족할 때 새 공격 가설을 만드는 과정 | 조상 계보의 Primitive를 현재 후보에서 제외해 순환을 막고 전체 비용은 R8 전역 예산으로 제한합니다. |
+| `chaining` | 확인된 결과가 다른 가설의 입력 조건을 충족할 때 새 공격 가설을 만드는 과정 | 이미 포함된 얕은 조상 조합을 후보에서 제외해 중복 제안을 줄이고 전체 비용은 R8 전역 예산으로 제한합니다. |
 | `origin=VERIFICATION` | Verification이 검증 중 발견한 별도 material claim에서 나온 새 가설 | trusted validation과 새 가설 등록 뒤 처음부터 검증합니다. |
 | `origin=CHAINING` | Chaining Agent의 Primitive match에서 나온 새 가설 | 부모 판정을 바꾸지 않고 별도 lifecycle로 검증합니다. |
 | `material claim` | 기존 가설과 구분해 따로 검증해야 할 새로운 공격 주장 | 기존 판정에 바로 합치지 않고 새 가설로 만듭니다. |
@@ -121,14 +123,14 @@
 |---|---|---|
 | `Finding` | 사람이 검토할 수 있게 정리한 취약점 결과 | Hypothesis, Verification-origin 또는 Chaining-origin 후보와 구분합니다. |
 | `Gate` | 다음 단계로 보내도 되는지 확인하는 검토 단계 | Verification 판정을 직접 바꾸지 않습니다. |
-| `Technical Evidence Gate` | 판정과 코드·실행 근거가 서로 맞는지 확인하는 기술 검토 | `ACCEPT`인 TRUE만 result Primitive가 됩니다. 금지 재현으로 근거가 오염됐는지와 코드 경로·제한 조건이 정확한지도 확인합니다. |
-| `Rule Scope Impact Gate` | 공식 정책 범위와 실제 영향을 확인하는 보고 가능성 검토 | 공식 정책이 없으면 추측하지 않습니다. 결과는 Reporter를 제어하며 이미 만들어진 Primitive나 Chaining 자격을 취소하지 않습니다. |
+| `Technical Evidence Gate` | 판정과 코드·실행 근거가 서로 맞는지 확인하는 기술 검토 | 공식 정책을 읽지 않으므로 금지 테스트 여부는 판단하지 않습니다. 코드 경로·동적 결과·제한 조건의 연결을 확인합니다. |
+| `Rule Scope Impact Gate` | 공식 정책 범위·금지 테스트 여부와 실제 영향을 확인하는 검토 | 금지 테스트 위반은 별도 필드로 판단해 TRUE Primitive admission에 전달하고, 다른 결과는 Reporter 가능성에 적용합니다. 공식 정책이 없으면 추측하지 않습니다. |
 | `PolicyItem` | 공식 정책에서 뽑은 항목 하나와 원문 위치를 묶은 데이터 | 반드시 공식 출처 기록으로 다시 확인할 수 있어야 합니다. |
 | `VerificationAssignment` | 한 가설의 내부 검증 흐름을 맡은 논리 owner의 저장 기록 | 같은 역할의 다른 Agent가 아니라 ACTIVE assignment와 일치하는 owner만 Gate·보완·보고 요청을 제안할 수 있습니다. |
 | `REVISE` | 부족한 근거를 같은 Verification owner가 새 Verification work에서 보완한 뒤 새 revision으로 다시 검토하라는 결과 | provider retry나 동일 입력 재투표가 아니며 오래된 Gate 결과를 재사용하지 않습니다. |
 | `UNCERTAIN + DENY` | 공식 정책을 확인하지 못해 결론과 보고서 전달을 허용하지 않는 상태 | LLM의 기억으로 정책을 채우지 않습니다. |
 | `Reporter` | 통과한 결과를 사람이 읽을 `ReportDraft`로 정리하는 마지막 Agent | 외부 제출과 공개는 하지 않습니다. |
-| `Agent automation end` | `ReportDraft`와 `AnalysisRunResult`를 확정한 뒤 Agent 작업을 끝내는 경계 | 이후 검토·수정·제출·공개는 시스템 밖에서 사람이 진행합니다. |
+| `Agent automation end` | `ReportDraft`를 포함한 `AnalysisRunResult`와 `AnalysisRunState`를 원자적으로 확정한 뒤 Agent 작업을 끝내는 경계 | 이후 검토·수정·제출·공개는 시스템 밖에서 사람이 진행합니다. |
 
 ## 실행·보안·평가
 

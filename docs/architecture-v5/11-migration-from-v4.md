@@ -49,7 +49,7 @@
 | 선택 code fragment 전달 | 같은 workspace와 commit의 on-demand location retrieval |
 | Semantic Judge/Synthesis | bypass-aware Verification Agent |
 | Proof Router/Resolver | VerificationResult의 evidence/gap/restriction |
-| confirmed/held 목록 | `result=null`인 HOLD Primitive와 `result`가 있는 Technical-accepted TRUE Primitive, current `PrimitiveIndexState` |
+| confirmed/held 목록 | `result=null`인 HOLD Primitive와 `result`가 있는 Technical-accepted·admission-allowed TRUE Primitive, current `PrimitiveIndexState` |
 | chaining 내부 탐색 | matching 전용 Chaining Agent + 새 가설 환류 |
 | 하나의 LLM Gate | Technical Evidence Gate + Rule Scope Impact Gate |
 | membership 중심 연결 | Membership/API 공통 `LLMProviderAdapter` |
@@ -67,9 +67,11 @@ v4 TRUE | FALSE | PENDING
 → TechnicalEvidenceReview ACCEPT | REVISE | REJECT
 → RuleScopeImpactReview PASS | FAIL | UNCERTAIN
   + rule_compliance PASS | FAIL | UNCERTAIN
+  + testing_restriction_compliance PASS | FAIL | UNCERTAIN
   + scope_compliance PASS | FAIL | UNCERTAIN
   + security_impact SUFFICIENT | INSUFFICIENT | UNCERTAIN
   + report_permission ALLOW | DENY
+→ PrimitiveAdmissionDecision ALLOW | DENY
 ```
 
 과거 결과는 자동 변환하지 않는다. 같은 commit의 원문 근거를 확인해 새 record로 재검토해야 한다.
@@ -92,7 +94,7 @@ v4 TRUE | FALSE | PENDING
 5. R6 `DynamicReproductionRequest`, R7의 간단한 plan·외부 경계 검사·자율 Docker 실행·AgentLog·validated PoC와 Session Manager 결과 확정
 6. ACTIVE `VerificationAssignment` 기반 material claim과 새 VERIFICATION work를 만드는 Technical `REVISE` loop
 7. CWE와 Technical Evidence Gate
-8. Technical `ACCEPT` 기반 result Primitive admission과 독립된 official `ProgramPolicyRecord`·Rule Scope Impact Gate
+8. Technical `ACCEPT` 뒤 official `ProgramPolicyRecord`·Rule Scope 검토, 금지 테스트 전용 판정에 따른 `PrimitiveAdmissionDecision`, 허용된 result Primitive admission
 9. Primitive DB와 upstream `result`→downstream `input` Chaining loop, 계보 기반 조상 재사용 제외
 10. provider adapters, session policy와 Logging Proxy/parser
 11. Reporter와 result stores, `ReportDraft` 뒤 Agent 자동화 종료 경계

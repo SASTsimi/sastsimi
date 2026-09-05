@@ -21,6 +21,7 @@ Runtime Validator는 취약점이 맞는지 새로 판단하는 Gate가 아닙�
 | 취약점 가설 | Hypothesis Agent | 확정 Finding 생성 |
 | `TRUE | FALSE | HOLD` | Verification Agent | Orchestration·Runtime이 대신 판정 |
 | 재현 목적·목표·필요 환경 요청과 최종 verdict | R6 Verification | R7이 요청 목적이나 verdict를 변경 |
+
 | CWE label | CWE Labeling | Orchestration이 임의 확정 |
 | 기술 근거 검토 | Technical Evidence Gate | Verification verdict 변경 |
 | 공식 정책·scope·impact·report permission | Rule Scope Impact Gate | 정책 없는 `ALLOW` 추정 |
@@ -74,13 +75,15 @@ Agent 또는 service의 제안
 1. Technical Evidence Gate
 2. Rule Scope Impact Gate
 
-프로그램 검사기는 이 두 Gate의 순서와 입력 수정본만 확인합니다. Gate 결론은 LLM Gate가 만듭니다. 공식 정책이 없으면 Rule Scope 결과는 `UNCERTAIN + DENY`이며 Reporter를 부르지 않습니다.
+프로그램 검사기는 이 두 Gate의 순서와 입력 수정본만 확인합니다. Gate 결론은 LLM Gate가 만듭니다. 공식 정책 부재를 확인한 `ABSENT_CONFIRMED`이면 Rule Scope 결과는 `UNCERTAIN + DENY`이며 Reporter를 부르지 않습니다. 정책 수집·parser가 실패한 `COLLECTION_FAILED`이면 Rule Scope 결과 자체를 만들지 않습니다.
 
-Gate를 실제 호출하기 직전에도 검사한 입력 수정본이 그대로인지 다시 확인합니다. Technical Gate는 exact Verification과 이를 직접 가리키는 current CWELabel을, Rule Scope Gate는 여기에 같은 Technical 검토를, Reporter는 두 Gate가 검토한 동일한 결과 묶음을 사용해야 합니다. 중간에 하나라도 바뀌면 기존 허가는 만료되고 새 요청이 필요합니다.
+Gate를 실제 호출하기 직전에도 검사한 입력 수정본이 그대로인지 다시 확인합니다. Technical Gate는 exact Verification과 이를 직접 가리키는 current CWELabel을, Rule Scope Gate는 여기에 같은 Technical 검토와 exact 정책 수집 결과·존재하는 정책 record를, Reporter는 두 Gate가 검토한 동일한 결과 묶음을 사용해야 합니다. 중간에 하나라도 바뀌거나 정책 최신성이 만료되면 기존 허가는 만료되고 새 요청이 필요합니다.
 
 Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아닙니다. 같은 가설의 Verification owner가 직접 받고, Verification 또는 CWE가 실제로 보완된 새 수정본이 생겨야 새 Gate 작업을 시작할 수 있습니다. Orchestration이나 Chaining이 목적지를 다시 고르지 않습니다. 로그인 실패나 잘못된 출력의 제한 재시도와 이 보완 재검토는 별개입니다.
 
 공식 정책의 뜻과 `UNCERTAIN + DENY` 판단은 Rule Scope Gate가 담당합니다. 프로그램 검사기는 그 판단을 대신하지 않고 필수 항목과 정확한 출처 연결만 확인한 뒤 Reporter 호출을 막습니다.
+
+금지된 테스트 방법도 Rule Scope Gate가 독립된 `testing_restriction_compliance`로 판단합니다. Rule Scope Gate가 테스트 제한의 의미를 판단하고, Runtime은 그 구조화된 판정으로 `PrimitiveAdmissionDecision`을 확정합니다. Runtime은 정책 문장을 다시 해석하지 않으며, 전용 판정이 `FAIL`인 경우에만 TRUE Primitive의 체이닝 사용을 거절합니다. 다른 Rule·Scope·impact 실패는 보고 경로에만 적용합니다.
 
 ## 오류는 FALSE가 아닙니다
 
