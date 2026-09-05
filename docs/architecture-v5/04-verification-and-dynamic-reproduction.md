@@ -142,7 +142,7 @@ Pro·Con 호출 횟수는 같은 Verification work와 역할에 속한 중복 �
 - `FALSE`: 가설의 필수 조건을 묻는 named falsification 하나 이상이 실제 근거로 `DISPROVED`되었다. 다른 path 가능성까지 부정하지 않는다.
 - `HOLD`: 핵심 정보·환경·재현 조건이 부족하거나 상충해 현재 증거로 결론을 낼 수 없다.
 
-`HOLD`는 실패가 아니다. 누락 정보와 필요한 capability를 구조화해 exact final Verification revision에 연결된 result 없는 Primitive의 `inputs`로 즉시 저장하고 Chaining Agent의 matching 입력으로 사용할 수 있다. HOLD는 두 Gate를 거치지 않으며 확인된 능력이나 취약점으로 승격되지 않는다.
+`HOLD`는 실패가 아니다. 누락 정보와 필요한 capability를 `required_primitive_candidates`로 구조화하며, 후보가 하나 이상일 때만 exact final Verification revision에 연결된 result 없는 Primitive의 `inputs`로 저장해 Chaining Agent의 matching 입력으로 사용할 수 있다. 후보가 비어 있으면 Primitive와 Chaining work를 만들지 않고 HOLD 처리를 끝낸다. HOLD는 두 Gate를 거치지 않으며 확인된 능력이나 취약점으로 승격되지 않는다.
 
 `TRUE`도 판정 직후에는 Chaining 입력이 아니다. 현재 revision이 Technical `ACCEPT`를 받은 뒤 R4 `PRIMITIVE_ADMISSION_RUNTIME`이 Rule Scope 또는 정책 수집 결과를 매핑한 current `PrimitiveAdmissionDecision=ALLOW`가 있어야 제공 능력을 `result`로 가진 Primitive가 된다. prohibited-testing `FAIL`은 `DENY`로 차단하지만 `UNCERTAIN | COLLECTION_FAILED`와 다른 report eligibility 실패는 Reporter만 차단한다. `FALSE`는 terminal internal result이며 Primitive와 Chaining work를 만들지 않는다.
 
@@ -196,7 +196,7 @@ Chaining 결과를 저장하기 직전에 실제로 사용한 Primitive와 `sour
 
 새 Verification generation이 만들어지면 이전 dynamic result·validated PoC·`CWELabel`·Technical review·Rule Scope review·admission decision과 그 자격을 새 generation에 재사용하지 않는다. 기존 record는 감사 이력으로 보존하되 current index와 새 Gate·Chaining 입력에서 제외한다. child proposal이나 Chaining 결과도 부모 `VerificationResult.verdict`를 변경하지 않는다.
 
-### Initial verdict와 final verdict`HOLD`는 실패가 아니다. 누락 정보와 필요한 capability를 `required_primitive_candidates`로 구조화하며, 후보가 하나 이상일 때만 exact final Verification revision에 연결된 result 없는 Primitive의 `inputs`로 저장해 Chaining Agent의 matching 입력으로 사용할 수 있다. 후보가 비어 있으면 Primitive와 Chaining work를 만들지 않고 HOLD 처리를 끝낸다. HOLD는 두 Gate를 거치지 않으며 확인된 능력이나 취약점으로 승격되지 않는다.
+### Initial verdict와 final verdict`HOLD`는 실패가 아니다. 누락 정보와 필요한 capability를 `required_primitive_candidates`로 구조화하며, 후보가 하나 이상일 때만 exact final Verification ### Initial verdict와 final verdict사용할 수 있다. 후보가 비어 있으면 Primitive와 Chaining work를 만들지 않고 HOLD 처리를 끝낸다. HOLD는 두 Gate를 거치지 않으며 확인된 능력이나 취약점으로 승격되지 않는다.
 
 `initial_verdict`는 기본 Context와 Verification Agent가 직접 확인한 사실을 바탕으로 만든 중간 판단이다. 운영 분석에서는 독립 Pro/Con과 필요한 동적 재현이 끝나기 전의 initial verdict를 Gate·Primitive·Reporter 입력으로 사용할 수 없다. 특히 initial TRUE는 PoC 확인을 시작하기 위한 중간 상태일 뿐 final TRUE가 아니다.
 
