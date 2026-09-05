@@ -347,7 +347,7 @@ Finding은 LLM Agent가 아니라 신뢰 runtime이 이미 `COMMITTED`된 exact 
 - `verification_result_ref`를 직접 가리키는 current `CWELabel` revision
 - 그 Verification·CWELabel exact pair를 검토한 `TechnicalEvidenceReview.status=ACCEPT`
 - 같은 `verification_result_ref`·`technical_review_ref`·`cwe_label_ref`·`policy_collection_result_ref`(그리고 `FOUND`이면 `policy_record_ref`)를 가리키는 current `RuleScopeImpactReview`. 이 review의 `review_status`·`report_permission` 값과 무관하게 존재만으로 충분하다
-- 위 upstream record의 `meta.hypothesis_id`·`meta.workspace_id`·`meta.commit_id`가 같음
+- 위 upstream record의 `meta.workspace_id`·`meta.commit_id`가 같아야 하며, hypothesis-local artifact에 대해서만 동일 `meta.hypothesis_id`를 요구한다. `ProgramPolicyRecord`, `PolicyCollectionResult` 등 hypothesis 비종속 정책 record에는 `hypothesis_id` 일치를 요구하지 않으며, 기존 exact `StoredDataRef`, `meta.workspace_id`·`meta.commit_id` 및 policy revision/provenance 계약으로 검증한다
 - `TechnicalEvidenceReview`·`RuleScopeImpactReview`·`CWELabel`이 가리키는 `verification_result_ref`가 서로 같고, 그 `VerificationResult`가 current `HypothesisProcessState.verification_result_ref`와 같음. current Verification generation은 별도 새 field 없이 `HypothesisProcessState`와 관련 `VERIFICATION` work generation, `CWELabel.verification_generation`의 기존 계약으로 확인함
 - Evidence provenance는 그 `VerificationResult`의 `pro_evidence_ref`·`con_evidence_ref`와 `supporting_evidence`·`counter_evidence`의 exact transitive closure로 고정하고, `restrictions`·`unresolved_conditions`를 그대로 보존
 

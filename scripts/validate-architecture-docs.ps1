@@ -1180,8 +1180,8 @@ $requiredFindingLifecycleRules = @(
     @{ Name = 'security doc rejects mixing Finding creation with Reporter readiness'; Text = $securityText; Marker = '| Finding 생성 조건을 Reporter 6축 readiness와 동일하게 취급 |' },
     @{ Name = 'security doc blocks stale Finding reuse in Reporter'; Text = $securityText; Marker = '| Finding 정규화 전이거나 stale Finding으로 Reporter 호출 |' },
     @{ Name = 'overview canonical flow puts current Finding before Reporter'; Text = $overviewText; Marker = 'current Finding -> Reporter -> ReportDraft -> AnalysisRunResult -> Agent automation end' },
-    @{ Name = 'canonical diagram shows trusted-runtime Finding normalization'; Text = $diagramText; Marker = 'NORM[Trusted runtime normalizes current Finding]' },
-    @{ Name = 'wiki diagram shows trusted-runtime Finding normalization'; Text = $wikiDiagramText; Marker = 'NORM[Trusted runtime normalizes current Finding]' },
+    @{ Name = 'canonical diagram shows trusted-runtime Finding normalization'; Text = $diagramText; Marker = 'NORM[FINDING_NORMALIZE - trusted runtime non-LLM work]' },
+    @{ Name = 'wiki diagram shows trusted-runtime Finding normalization'; Text = $wikiDiagramText; Marker = 'NORM[FINDING_NORMALIZE - trusted runtime non-LLM work]' },
     @{ Name = 'gate wiki documents the Finding normalization step'; Text = $gateWikiText; Marker = '## Finding 정규화' }
 )
 foreach ($rule in $requiredFindingLifecycleRules) {
@@ -1189,6 +1189,33 @@ foreach ($rule in $requiredFindingLifecycleRules) {
         Add-Failure "missing or weakened R5-03 follow-up Finding lifecycle rule: $($rule.Name)"
     }
 }
+
+# R7 cross-review: Finding closure metadata scope and normalization work agreement.
+$findingClosurePaths = @(
+    '05-llm-gate-and-reporting.md',
+    '08-lightweight-data-contracts.md',
+    '10-security-boundaries.md',
+    'implementation/01-module-map.md',
+    'wiki/gate-and-reporting.md'
+)
+foreach ($path in $findingClosurePaths) {
+    $text = Get-Content -Raw -LiteralPath (Join-Path $repoRoot "docs/architecture-v5/$path")
+    foreach ($marker in @('hypothesis-local artifact에 대해서만 동일 `meta.hypothesis_id`', '`ProgramPolicyRecord`, `PolicyCollectionResult` 등 hypothesis 비종속 정책 record에는 `hypothesis_id` 일치를 요구하지 않으며', '기존 exact `StoredDataRef`, `meta.workspace_id`·`meta.commit_id` 및 policy revision/provenance 계약')) {
+        if (-not $text.Contains($marker)) { Add-Failure "missing Finding closure metadata scope in ${path}: $marker" }
+    }
+    if ($text -match 'upstream(?: record)?의? `meta.hypothesis_id`·`meta.workspace_id`·`meta.commit_id`') {
+        Add-Failure "unscoped Finding upstream hypothesis match in $path"
+    }
+}
+foreach ($text in @($gateWikiText, $diagramText, $wikiDiagramText)) {
+    foreach ($marker in @('RULE_SCOPE_GATE → FINDING_NORMALIZE → Reporter readiness', '비-LLM normalization work', '새 autonomous Agent나 LLM Gate가')) {
+        if (-not $text.Contains($marker)) { Add-Failure "missing Finding work cross-document rule: $marker" }
+    }
+    if ($text.Contains('Finding 생성은 새 Agent role·work·action을 추가하지 않으며')) {
+        Add-Failure 'obsolete no-new-work Finding contract'
+    }
+}
+Write-Output "Finding lifecycle cross-document checks: R7 closure scope (5 documents) and normalization work (Wiki + 2 diagrams)"
 
 # R4 Finding storage: schema, exclusive output binding and current-only finalization.
 $findingSchema = [regex]::Match($contractText, '(?ms)^Finding:\r?\n(.*?)^FindingConditionSource:').Groups[1].Value

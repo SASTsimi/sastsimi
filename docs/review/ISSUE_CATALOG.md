@@ -399,7 +399,7 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 - [ ] current Finding은 두 Gate가 검토한 exact chain을 신뢰 runtime이 정규화한 record이며 새 verdict·attack path·impact를 만들지 않고 claim 강도는 verified upstream 이하임
 - [ ] Finding 생성 조건(Rule Scope review 존재, 값 무관)과 Reporter 6축 readiness가 분리되어 `Finding 존재 + report_permission=DENY + ReportDraft 없음` 상태를 허용함
 - [ ] Verification generation/revision·CWELabel·두 Gate·동적 결과·PoC·고정 정책 변경이 Finding을 stale하게 만들고 새 generation에서 재사용되지 않음
-- [ ] 새 Finding Agent role·`work_type`·`action_type`을 추가하지 않고 저장 binding은 R4(B2)로 명시함
+- [ ] 새 Finding Agent role이나 LLM Gate는 추가하지 않고, R4 trusted runtime의 전용 비-LLM `FINDING_NORMALIZE` work와 저장 binding을 사용함
 - [ ] policy source 인증·freshness·parser failure threat model/ADR 요구가 있음
 - [ ] 모순된 `ALLOW` 출력은 semantic `INVALID_OUTPUT`이며 Reporter가 차단됨
 - [ ] 보고서 Agent 호출을 `runtime validator`가 다음 exact 조건 전부일 때만 허용함: `VerificationResult.final == TRUE`, `TechnicalEvidenceReview.status == ACCEPT`, current non-stale Finding 존재(Reporter의 별도 선행조건), 그리고 Reporter 6축 readiness `review_status == PASS` · `rule_compliance == PASS` · `scope_compliance == PASS` · `testing_restriction_compliance == PASS` · `security_impact == SUFFICIENT` · `report_permission == ALLOW` (`05-llm-gate-and-reporting.md` Reporter 호출 조건과 동일, Finding 생성 eligibility와 분리)
