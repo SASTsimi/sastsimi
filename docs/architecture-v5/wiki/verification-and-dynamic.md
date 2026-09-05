@@ -79,7 +79,7 @@ Chaining 결과를 저장하기 직전에 사용한 Primitive와 `source_primiti
 
 등록 후에는 Context Retrieval Service가 실제 코드 조회 전에 같은 계보가 여전히 current인지 다시 검사합니다. 등록 후 stale 또는 무효 계보가 발견되면 Context 조회와 Verification work를 final verdict 없이 중단합니다.
 
-R6 Verification Agent는 부모 Primitive와 match candidate를 직접 DB에서 조회하거나 가설 등록을 거절하지 않습니다. R6는 `source_primitive_match_id`를 포함한 `CodeContextRequest`로 필요한 Context를 요청하고, Context Retrieval Service가 검증하여 반환한 `CodeContextResponse`를 사용합니다.
+R6 Verification Agent는 부모 Primitive와 match candidate를 직접 DB에서 조회하거나 가설 등록을 거절하지 않습니다. R6는 일반 `CodeContextRequest`로 필요한 Context를 요청합니다. `CONTEXT_RETRIEVAL` work에는 exact proposal이 함께 고정되며, Context Retrieval Service가 그 proposal에서 `source_primitive_match_id`를 읽어 계보를 검사하고, Context Retrieval Service가 검증하여 반환한 `CodeContextResponse`를 사용합니다.
 
 반환된 Context는 자식 가설을 자동으로 참으로 만드는 근거가 아닙니다. R6는 upstream과 downstream 양쪽의 남은 입력 조건과 실제 결합 지점을 현재 코드에서 다시 확인하며 부모 verdict를 자식에게 상속하지 않습니다.
 
