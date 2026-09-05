@@ -83,7 +83,8 @@ HypothesisProcessState: REGISTERED -> ASSIGNED -> VERIFYING
                                                -> FAILED (no final verdict)
 Technical REVISE: TERMINAL -> same assignment + new VERIFICATION work -> VERIFYING
 VerificationResult.verdict -> TRUE | FALSE | HOLD
-HOLD + non-empty required_primitive_candidates -> Primitive inputs with result null -> Chaining eligibleHOLD + empty required_primitive_candidates -> no Primitive -> no Chaining work
+HOLD + non-empty required_primitive_candidates -> Primitive inputs with result null -> Chaining eligible
+HOLD + empty required_primitive_candidates -> no Primitive -> no Chaining workeligibleHOLD + empty required_primitive_candidates -> no Primitive -> no Chaining work
 TRUE -> Technical ACCEPT -> policy check and Rule Scope testing restriction review
 -> PrimitiveAdmissionDecision ALLOW -> Primitive with result -> Chaining eligible
 -> PrimitiveAdmissionDecision DENY -> no result Primitive
@@ -128,8 +129,8 @@ Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하
 | Sandbox Controller | 없음 | 없음 | host·Docker daemon/socket·mount/namespace·secret·egress·workspace·R8 resource/lifecycle 외부 경계 | 정책 위반 Sandbox 시작 차단 | 없음 |
 | Reproduction Session Manager | 없음 | 없음 | runtime/tool/lifecycle event와 같은 attempt의 plan·recipe·환경·PoC provenance | append-only `AgentLog`, validated PoC와 `DynamicReproductionResult` 확정 | 없음 |
 | R5-01 CWE Labeling | CWE 후보와 근거 | current `CWELabel` revision 생성 | exact final TRUE Verification | 없음 | 없음 |
-| Chaining Agent | upstream Primitive `result`→downstream Primitive `input` match와 chained proposal | 없음 | exact Primitive, VerificationHOLD + non-empty required_primitive_candidates -> Primitive inputs with result null -> Chaining eligible
-HOLD + empty required_primitive_candidates -> no Primitive -> no Chaining work·Technical provenance와 코드 근거 | 없음 | 없음 |
+| Chaining Agent | upstream Primitive `result`→downstream Primitive `input` match와 chained | Chaining Agent | upstream Primitive `result`→downstream Primitive `input` match와 chained proposal | 없음 | exact Primitive, Verification·Technical provenance와 코드 근거 | 없음 | 없음 |> Primitive inputs with result null -> Chaining eligible
+HOLD + empty required_primitive_candidates -> no Primitive -> no Chaining work·Technical
 | Technical Evidence Gate Agent | 구체적인 보완 요청 | 없음 | verdict·근거·코드 흐름·CWE | 없음 | 없음 |
 | Rule Scope Impact Gate Agent | 정책 누락·보완 사유 | `PASS | FAIL | UNCERTAIN`, `ALLOW | DENY` | 공식 정책·scope·impact | 없음 | 없음 |
 | Primitive Admission Runtime | 없음 | 없음 | exact Technical review·정책 수집·Rule Scope의 전용 테스트 제한 판정 | `PrimitiveAdmissionDecision`, 허용된 Primitive와 current index 확정 | 없음 |
