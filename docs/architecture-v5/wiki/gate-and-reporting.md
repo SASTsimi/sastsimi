@@ -56,7 +56,7 @@ testing restriction은 `verification_result_ref -> dynamic_result_ref`의 canoni
 
 R5는 `testing_restriction_compliance`와 provenance를 만들고 R4 `PRIMITIVE_ADMISSION_RUNTIME`이 current `PrimitiveAdmissionDecision`을 확정한다. `FAIL`만 `DENY`로 Primitive·Chaining·Reporter를 차단한다. `PASS | UNCERTAIN`은 admission `ALLOW`이며, `COLLECTION_FAILED`는 review 없이 `NOT_EVALUATED + ALLOW`로 구분한다. `UNCERTAIN`과 수집 실패는 Primitive·Chaining을 허용하지만 Reporter는 차단한다. `RuleScopeEvidenceLink.area=TESTING_RESTRICTION`은 공식 정책과 exact 실행 근거를 연결하는 provenance이며 판정값이나 저장 authority가 아니다.
 
-child proposal은 독립 Verification을 거치며 child TRUE가 부모 impact를 자동 높이지 않는다. 부모 impact 판단은 current parent `VerificationResult`의 exact evidence/reference closure에 이미 검증되어 포함된 사실만 소비하며, Gate 2가 별도 child-adoption schema를 만들거나 child 결과를 부모 사실로 승격하지 않는다.
+child proposal은 독립 Verification lifecycle을 거치며 child TRUE가 부모 impact를 자동 높이지 않는다. 부모 impact 판단은 current parent `VerificationResult`의 exact evidence/reference closure에 이미 검증되어 포함된 사실만 소비하며, Gate 2가 child 결과를 부모 사실로 승격하거나 부모 Verification에 흡수하지 않는다. 동일 material claim의 보강은 부모 supporting evidence로 유지하고, 서로 다른 material claim 사이의 능력 결합이 필요하면 흡수 대신 Primitive Chaining이 새 결합 hypothesis를 만들어 독립 Verification과 두 Gate를 수행한다.
 
 Gate 판단 시점부터 policy가 `STALE | UNVERIFIED`인데 `ALLOW`이면 생성 당시 모순이므로 `INVALID_OUTPUT`이다. 정상 policy와 revision으로 생성된 review가 이후 upstream 변경 때문에 오래된 경우에는 기존 review 자체를 invalid로 바꾸지 않고, 새 revision의 Reporter에 재사용하지 못하게 runtime이 차단한다.
 공식 정책 부재가 확인된 `ABSENT_CONFIRMED`이거나 정책의 `freshness_status`가 `STALE | UNVERIFIED`이면 rule/scope/review는 `UNCERTAIN`이고 permission은 `DENY`입니다. 오래된 정책 reference는 감사용으로 남길 수 있지만 `PASS | ALLOW` 근거로 쓰지 않습니다. 수집 실패 `COLLECTION_FAILED`는 review를 만들지 않으며, 저장소 문서나 모델 기억으로 공식 정책을 추정하지 않습니다.
