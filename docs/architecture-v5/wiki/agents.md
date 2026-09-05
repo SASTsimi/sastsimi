@@ -39,8 +39,9 @@ HOLD + required candidates → inputs plus null result Primitive → Chaining
 HOLD + no required candidates → no Primitive and no Chaining work
 TRUE → R5-01 CWE_LABELING → current CWELabel → Technical Gate → policy and Rule Scope review
 Technical-accepted TRUE → PrimitiveAdmissionDecision ALLOW → result Primitive → Chaining
+Rule Scope review committed → trusted runtime normalizes current Finding (any review_status)
 Verification or Chaining material claim → new hypothesis → new Verification
-all report conditions → Reporter → ReportDraft → AnalysisRunResult → Agent automation end
+current Finding + all report conditions → Reporter → ReportDraft → AnalysisRunResult → Agent automation end
 ```
 
 자동화 종료 뒤의 검토·수정·제출·공개는 이 Agent 목록 밖에서 사람이 수행합니다.

@@ -5,7 +5,7 @@
 - 기준 main: `ef8e1ad`
 - 결정 담당: LLM 탐색·체이닝(R1)
 - 함께 검토할 역할: PM·아키텍처·워크플로(R4), 데이터·평가·예산(R8)
-- 연결 Issue/PR: ADR-005
+- 연결 Issue/PR: #104, PR #105, ADR-005
 - 반영 commit: `docs: replace chaining fingerprint with match reference key`
 
 ## Context

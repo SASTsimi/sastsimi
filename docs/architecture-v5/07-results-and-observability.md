@@ -25,7 +25,7 @@
 | `chaining` | `ChainingResult`, upstream result→downstream input match와 child proposal validation state |
 | `gates` | Technical 및 Rule Scope Impact review와 서로 exact pair인 Verification·current CWELabel·정책 input revision refs |
 | `policies` | 정책 parser 결과, `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 수집 결과, 공식 `ProgramPolicyRecord`과 source·freshness refs |
-| `reports` | 허용된 내부 `ReportDraft`와 두 Gate가 공통으로 본 CWELabel revision ref |
+| `reports` | 신뢰 runtime이 exact chain에서 정규화한 current/과거 `Finding` revision, 허용된 내부 `ReportDraft`와 두 Gate가 공통으로 본 CWELabel revision ref |
 | `actions` | `ActionRequest`, validator의 `ActionDecision`, check와 일회성 사용·outcome refs |
 | `invocations` | normalized `LLMInvocationLog`와 safe provider/session metadata |
 | `dynamic` | `DynamicReproductionRequest`, R7 requirements·plan·recipe·환경·AgentLog·PoC candidate, validated PoC, output refs와 cleanup |
@@ -95,7 +95,7 @@ Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을
 | S-SANDBOX-POLICY | 요청한 상자 시간·네트워크 등이 profile 상한을 넘김 | Agent 미시작, `agent_invoked=false`. 공격 입력·관측 없음. 외부 profile 변경을 기다릴 때만 `BLOCKED`, 최종 거절이면 `FAILED`. `failure_category`는 정책. 자원이 없을 때만 `cleanup_status=NOT_REQUIRED`. 최종 판정 없음 | 실행 성공으로 적거나 TRUE/FALSE/HOLD로 바꿈. 실행 Agent 시작 기록이 있음 |
 | S-SANDBOX-EXEC | 승인된 profile 안에서 Agent가 돌던 중 실행 실패 | 같은 R7 Agent session의 조정은 현재 attempt에서 계속한다. session 재시작 때만 R8 한도 안에서 새 attempt를 만든다. 바깥 대기만 `BLOCKED`. 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE`. 반증·`FALSE` 금지 | 실패 = 반증 또는 HOLD |
 | S-SANDBOX-TIMEOUT | 승인된 시간 안에서 Agent가 돌다 시계가 끝남 | `FAILED + TIMEOUT`, `agent_invoked=true`. `agent_log_ref`와 당시 관측을 남김. cleanup 생략 금지. 자원이 생겼으면 `cleanup_status=SUCCEEDED \| FAILED`. 최종 판정 없음 | 시간 초과 = 반증·HOLD. cleanup을 건너뜀 |
-| S-CHAIN-STOP | 전역 예산 소진 | 중단 이유를 `AnalysisRunResult.stop_reasons`에 기록, FALSE 금지. 체이닝 전용 짝·깊이 한도는 없음. 순환 검사가 아님. 조상 Primitive 재사용 제외는 성립한 match의 정상 정리이며 `ChainingResult.excluded_lineage_refs`에 남기고 이 장면의 중단이 아님 | 중단을 구멍 없음으로 기록. 조상 제외·지문 중복을 중단 건수로 셈 |
+| S-CHAIN-STOP | 전역 예산 소진 | 중단 이유를 `AnalysisRunResult.stop_reasons`에 기록, FALSE 금지. 체이닝 전용 짝·깊이 한도는 없음. 순환 검사가 아님. 조상 Primitive 재사용 제외는 성립한 match의 정상 정리이며 `ChainingResult.excluded_lineage_refs`에 남기고 이 장면의 중단이 아님 | 중단을 구멍 없음으로 기록. 조상 제외·match 조합 중복을 중단 건수로 셈 |
 | S-INJECT | 저장소에 정책 변경 지시 | 설정이 안 바뀜 | 지시를 따라 설정 변경 |
 | S-GATE-BAD | 문지기 출력이 모순 | 출력 폐기, 초안 차단 | 모순 초안 통과 |
 | S-REDACT | 비밀값 가리기 실패 | 일반 로그/보고서 전달 차단 | 그대로 저장 |
@@ -127,7 +127,7 @@ Sandbox ENV/POLICY/EXEC/TIMEOUT은 동적 work의 `BLOCKED | FAILED`다. 최종 
 | FALSE 잇기 | FALSE를 Chaining 재료로 씀 | 0 |
 | stale 잇기 | 옛 Primitive/Gate, 또는 사용한 admission이 current가 아니거나 `DENY`로 바뀐 잇기를 거절 | 거절 안 하고 저장한 횟수 0. 부모 verdict를 바꾼 횟수 0 |
 | 부모 불변 | Chaining이 부모 판정을 바꿈 | 0 |
-| 잇기 중단 | 전역 예산으로 끊긴 횟수와 `AnalysisRunResult.stop_reasons`. 끊긴 것을 FALSE로 바꾼 횟수 | 이유는 기록. FALSE로 바꾼 횟수 0. 체이닝 전용 짝 한도로 끊은 횟수는 두지 않음. 조상 재사용 제외는 `excluded_lineage_refs`로 따로 관측하며 이 칸의 중단이 아님. 지문 중복은 세지 않음 |
+| 잇기 중단 | 전역 예산으로 끊긴 횟수와 `AnalysisRunResult.stop_reasons`. 끊긴 것을 FALSE로 바꾼 횟수 | 이유는 기록. FALSE로 바꾼 횟수 0. 체이닝 전용 짝 한도로 끊은 횟수는 두지 않음. 조상 재사용 제외는 `excluded_lineage_refs`로 따로 관측하며 이 칸의 중단이 아님. match 조합 중복은 세지 않음 |
 | 독립 session | 찬반이 상대 답·상대 session·낡은 결과를 본 횟수 | 0 |
 | debate 한쪽 실패 | 한쪽 누락·실패 뒤 최종 판정 | 0 |
 | debate 재시도 대기 | 재시도 가능한데 부모·가설을 바로 `FAILED`로 끝낸 횟수 | 0. 기대는 자식·부모 `BLOCKED`, 가설 `VERIFYING` |
@@ -365,7 +365,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 
 최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, INITIAL·VERIFICATION·CHAINING·invalid hypothesis 수, 중복 판정과 exact `hypothesis_duplicate_review_refs`, verdict별 수, `failed_hypothesis_count`, 두 Gate별 수, 동적 재현 request·result·recipe·환경·AgentLog·PoC candidate·validated PoC·cleanup·report refs, 정책 parser·수집 결과·공식 정책 record refs, Primitive/Chaining 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. 실패한 PoC candidate도 validated PoC로 승격하지 않은 채 request·attempt·AgentLog와 함께 추적한다. `failed_hypothesis_count`는 final verdict 없이 `HypothesisProcessState.status=FAILED`로 끝난 가설 수이며 verdict별 수와 섞지 않는다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
 
-Reporter가 마지막 Agent 산출물인 `ReportDraft`를 저장한 뒤, 신뢰 runtime이 exact `AnalysisRunResult`를 만든다. 이 결과에는 Finding·Verification, 두 Gate, 정책·CWE, 동적 재현 request·result·recipe·환경·AgentLog·PoC candidate·redacted validated PoC·cleanup, current ReportDraft, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. Finding이 아직 없으면 Reporter를 호출하지 않고 `finding_refs=[]`, `report_draft_refs=[]`와 관련 `REPORT_NOT_READY` 오류·상태를 보존한다. 결과와 `AnalysisRunState`를 atomic하게 확정하면 Agent 자동화가 끝난다.
+필요한 Agent 작업과 trusted-runtime 결과 정규화가 종료되면 신뢰 runtime이 exact `AnalysisRunResult`를 만든다. Reporter가 실행된 경우에는 current `ReportDraft`를 포함하고, Reporter가 차단된 경우에는 `report_draft_refs=[]`와 차단 원인을 보존한다. 이 결과에는 Finding·Verification, 두 Gate, 정책·CWE, 동적 재현 request·result·recipe·환경·AgentLog·PoC candidate·redacted validated PoC·cleanup, current ReportDraft, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. current Finding은 두 Gate가 검토한 exact chain을 신뢰 runtime이 정규화한 record이며 새 verdict가 아니다. `report_permission=DENY` 등 정책 조건 미달로 Reporter가 차단돼도 current Finding은 `finding_refs`에 남고 `report_draft_refs=[]`로 종료 원인을 보존한다. Rule Scope review가 없거나(정책 `COLLECTION_FAILED`) chain이 아직 정규화 전이면 `finding_refs=[]`이며 이때도 Reporter를 호출하지 않고 관련 `REPORT_NOT_READY` 오류·상태를 보존한다. 결과와 `AnalysisRunState`를 atomic하게 확정하면 Agent 자동화가 끝난다.
 
 ReportDraft가 가리킨 Finding·Verification·CWELabel·두 Gate·정책 중 하나라도 새 current revision으로 바뀌면 그 초안은 즉시 감사 이력으로만 남고 `AnalysisRunResult.report_draft_refs`의 current 목록에서 제외한다. 새 exact dependency chain으로 Gate와 Reporter를 다시 실행해 새 초안을 만들기 전에는 current 결과로 사용할 수 없다. 자동화 종료 뒤 사람의 검토·수정·제출·공개는 이 저장 lifecycle 밖에서 수행하며, 자동 action이나 상태를 만들지 않는다.
 

@@ -140,12 +140,16 @@ LineageExclusion:
 
 ```yaml
 NoMatchReason:
-  candidate_primitive_ref: StoredDataRef
-  reason_code: ENTITY_UNRELATED | PRIVILEGE_UNSATISFIED | ORDER_INVALID | RESTRICTION_CONFLICT | NO_CODE_EVIDENCE | DUPLICATE_COMBINATION
+  upstream_result_ref: StoredDataRef
+  downstream_input_ref: StoredDataRef
+  checked_input_id: string
+  reason_code: ENTITY_UNRELATED | PRIVILEGE_UNSATISFIED | ORDER_INVALID | RESTRICTION_CONFLICT | NO_CODE_EVIDENCE
   detail: string
 ```
 
-`no_match_reasons`는 매칭 조건을 실제로 검토했지만 candidate를 만들지 않은 상대 Primitive마다 하나씩 남긴다. `reason_code`는 위 조건에서 걸린 항목이고 `detail`은 사람이 읽을 자유 문장이다. 조상 재사용 제외는 `excluded_lineage_refs`, 예산·오류로 검토하지 못한 후보는 work 상태와 `errors`에 남기며 여기 넣지 않는다. 결과가 비었을 때 검토한 것과 확인하지 못한 것을 구분하기 위한 기록이므로 Runtime Validator는 schema와 `candidate_primitive_ref`가 `considered_primitive_refs`에 있는지만 검사한다.
+`no_match_reasons`는 매칭 조건을 실제로 검토했지만 candidate를 만들지 않은 조합마다 하나씩 남긴다. 두 Primitive reference와 `checked_input_id`가 어떤 조합을 검토했는지 가리키고, `reason_code`는 위 조건에서 걸린 항목, `detail`은 사람이 읽을 자유 문장이다.
+
+검토하지 않은 경우는 여기 넣지 않는다. 이미 저장된 조합이라 건너뛴 것은 Runtime의 skip 기록, 조상 재사용 제외는 `excluded_lineage_refs`, 예산·오류로 확인하지 못한 후보는 work 상태와 `errors`에 남긴다. 결과가 비었을 때 검토한 것과 확인하지 못한 것을 구분하기 위한 기록이므로 Runtime Validator는 schema와 두 reference가 `considered_primitive_refs`에 있는지만 검사한다.
 
 `considered_primitive_refs`는 Chaining work를 시작할 때(`REGISTER_WORK`) Runtime이 고정한, 조상 제외 전 전체 Primitive 입력이다. `input_primitive_refs`는 실제 match candidate에 사용된 upstream/downstream Primitive의 중복 없는 합집합이다. `excluded_lineage_refs`는 계보 때문에 match에서 제외한 Primitive와 그 제외를 일으킨 같은 work의 Primitive를 기록한다. `source_result_refs`는 실제 match Primitive들이 직접 가리키는 source Verification과 non-null Technical review의 중복 없는 합집합이다. `source_admission_refs`는 실제 입력 Primitive와 그 계보에서 재귀적으로 도달한 모든 result Primitive의 current `ALLOW` admission decision을 중복 없이 모은 집합이다. 각 candidate의 `parent_hypothesis_ids`와 `parent_verification_refs`도 해당 upstream/downstream Primitive가 직접 가리키는 source hypothesis와 Verification의 정확한 합집합이어야 한다. 세 Primitive 목록과 source·parent 목록은 중복을 허용하지 않으며 자세한 저장 검사는 [경량 데이터 계약](08-lightweight-data-contracts.md)의 `SAVE_RESULT` 규칙을 따른다.
 

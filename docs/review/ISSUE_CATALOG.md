@@ -331,22 +331,30 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 쉽게 말하면
 
-검증 결과의 근거가 코드·동적 재현과 제대로 연결됐는지 확인하고, 공식 정책 범위 안에서 보고 가능한지 검토한다. 조건을 통과한 결과만 Finding과 보고서 초안으로 정리하며 **취약점 판정을 바꾸거나 외부 공개를 결정하지는 않는다**.
+검증 결과의 근거가 코드·동적 재현과 제대로 연결됐는지 확인하고, 공식 정책 범위와 영향을 검토한다. Technical ACCEPT 뒤 Rule Scope review가 정상적으로 COMMITTED된 결과는 그 review의 `PASS/FAIL/UNCERTAIN`·`report_permission` 값과 무관하게 신뢰 runtime이 exact upstream chain을 기반으로 current Finding으로 정규화하며, 그중 current non-stale Finding 존재와 Reporter 6축 readiness를 모두 충족한 경우에만 보고서 초안을 만든다. 따라서 `Finding 존재 + Reporter 차단 + ReportDraft 없음`은 정상 상태다. **취약점 판정을 바꾸거나 외부 공개를 결정하지는 않는다**.
 
 ### 담당자가 나눌 수 있는 하위 Issue 예시
 
 - `[R5-01] CWE labeling과 기술 근거 Gate의 입력·출력·보완 요청 기준 확정`
 - `[R5-02] 공식 정책·범위·영향 검토 기준 확정`
 - `[R5-03] Finding과 안전한 보고서 초안 생성 및 자동화 종료 조건 확인`
+- `[R5-03 후속이슈] Finding 생성 lifecycle 및 Reporter handoff 확정`
 
 R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다. 기존 사람 검토 자동화 작업은 제거했으며, 출처 추적·오래된 참조 차단·restriction/limitation 보존·민감정보 제거 요구는 R5-03에 포함한다.
+
+#### R5-03 이력과 후속이슈
+
+- 기존 `[R5-03]`(PR #59, `main` `a1edf51`)에서 Technical/Rule Scope Gate 뒤 Reporter·`ReportDraft` 계약, claim traceability, restriction/limitation/redaction, 자동화 종료 경계를 완료했다. 이 이력은 유지한다.
+- 이후 R3-01 구현 모듈 맵이 B2로, Reporter가 `current Finding`을 필수 입력으로 요구하는 반면 그 Finding을 누가·언제·어떤 조건으로 생성·저장·current로 확정하는지 lifecycle이 연결돼 있지 않음을 확인했다.
+- `[R5-03 후속이슈]`에서 새 R5 기능이나 Agent 추가 없이, 기존 Architecture v5 계약 안에서 이 Finding 생성 lifecycle을 보완한다. R5는 Finding의 의미·생성 exact upstream closure·claim strength 제한·restriction 보존·Finding↔Reporter handoff 조건·stale Finding 의미를 확정하고, 저장 action/work/schema/current pointer/CAS는 R4 trusted runtime 계약을 재사용하며 owner 협의 필요 부분(B2 storage binding)을 명시한다.
+- 변경 문서: `01`, `03`, `05`, `07`, `08`, `10`, `12`, `13`, `implementation/01-module-map.md`, `GLOSSARY.md`, 관련 wiki. 기존 Gate/Primitive/Chaining/6축 readiness/redaction/claim-strength/ReportDraft 이후 종료 계약은 변경하지 않는다.
 
 ### 역할 소유권
 
 - 담당 역할: Gate·Finding·보고서
 - 담당자: 김혜령 `@kimhr8463`
 - 주요 작업 브랜치: `review/gate-reporting`
-- 관련 흐름: final TRUE → R5-01 `CWE_LABELING` current label 생성 → 기술 근거 검토 → 공식 정책·영향 검토 → 안전한 보고서 초안 → 결과 저장 → Agent 자동화 종료
+- 관련 흐름: final TRUE → R5-01 `CWE_LABELING` current label 생성 → 기술 근거 검토 → 공식 정책·영향 검토 → 신뢰 runtime의 current Finding 정규화 → 안전한 보고서 초안 → 결과 저장 → Agent 자동화 종료
 
 ### 검토 문서
 
@@ -359,7 +367,7 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 ### 검토할 입력·출력
 
 - 입력: final VerificationResult, evidence, dynamic/PoC, restrictions, taxonomy와 official ProgramPolicyRecord
-- 출력: R5-01의 current CWELabel, TechnicalEvidenceReview, RuleScopeImpactReview, revision requests와 안전 요구사항을 충족한 ReportDraft
+- 출력: R5-01의 current CWELabel, TechnicalEvidenceReview, RuleScopeImpactReview, 신뢰 runtime이 exact chain에서 정규화한 current Finding, revision requests와 안전 요구사항을 충족한 ReportDraft
 
 ### 확인할 권한 경계
 
@@ -388,9 +396,13 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 - [ ] REVISE는 구체적인 새 evidence/revision을 요구하며 무한 재투표가 아님
 - [ ] REVISE는 같은 ACTIVE VerificationAssignment owner에게 직접 전달되고 새 VERIFICATION work·Verification/CWELabel revision 전에는 재호출되지 않음
 - [ ] result Primitive은 Technical `ACCEPT` + current `PrimitiveAdmissionDecision=ALLOW`를, Reporter는 Technical·Rule Scope의 별도 보고 조건 전체를 요구하며 두 자격을 혼합하지 않음
+- [ ] current Finding은 두 Gate가 검토한 exact chain을 신뢰 runtime이 정규화한 record이며 새 verdict·attack path·impact를 만들지 않고 claim 강도는 verified upstream 이하임
+- [ ] Finding 생성 조건(Rule Scope review 존재, 값 무관)과 Reporter 6축 readiness가 분리되어 `Finding 존재 + report_permission=DENY + ReportDraft 없음` 상태를 허용함
+- [ ] Verification generation/revision·CWELabel·두 Gate·동적 결과·PoC·고정 정책 변경이 Finding을 stale하게 만들고 새 generation에서 재사용되지 않음
+- [ ] 새 Finding Agent role이나 LLM Gate는 추가하지 않고, R4 trusted runtime의 전용 비-LLM `FINDING_NORMALIZE` work와 저장 binding을 사용함
 - [ ] policy source 인증·freshness·parser failure threat model/ADR 요구가 있음
 - [ ] 모순된 `ALLOW` 출력은 semantic `INVALID_OUTPUT`이며 Reporter가 차단됨
-- [ ] 보고서 Agent 호출 조건 `TRUE + ACCEPT + PASS + PASS + PASS + SUFFICIENT + ALLOW`를 프로그램 내부 규칙 검사기(`runtime validator`)가 강제함
+- [ ] 보고서 Agent 호출을 `runtime validator`가 다음 exact 조건 전부일 때만 허용함: `VerificationResult.final == TRUE`, `TechnicalEvidenceReview.status == ACCEPT`, current non-stale Finding 존재(Reporter의 별도 선행조건), 그리고 Reporter 6축 readiness `review_status == PASS` · `rule_compliance == PASS` · `scope_compliance == PASS` · `testing_restriction_compliance == PASS` · `security_impact == SUFFICIENT` · `report_permission == ALLOW` (`05-llm-gate-and-reporting.md` Reporter 호출 조건과 동일, Finding 생성 eligibility와 분리)
 - [ ] 핵심 report claim이 evidence/PoC/Gate/policy artifact로 추적됨
 - [ ] restriction·limitation·남은 불확실성이 초안에서 빠지거나 약화되지 않음
 - [ ] secret·PII·hidden chain-of-thought가 report와 trace에 포함되지 않음
