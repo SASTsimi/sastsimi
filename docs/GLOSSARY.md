@@ -89,7 +89,8 @@
 | `EnvironmentRequirements` | R7이 R6 요청을 실제 환경 구성·검사 항목으로 구체화한 조건 묶음 | 역할·인증 방식·데이터·DB/service·fixture/mock·버전·Health Check를 근거와 함께 기록합니다. |
 | `environment_requirements_ref` | ReproductionPlan과 recipe가 사용하는 정확한 환경 요구사항 수정본 번호 | 오래된 수정본이나 다른 attempt의 요구사항을 재사용하지 않습니다. |
 | `EnvironmentCheck` | R7이 요구사항 하나와 실제 환경을 비교한 결과 | `MATCH`, `MISMATCH`, `NOT_CHECKED`, `ERROR` 중 하나와 실제 값·차이·근거를 남깁니다. |
-| `sandbox_profile_ref` | Sandbox의 host·Docker·mount·secret·egress·resource/lifecycle 외부 경계를 정한 정책 번호 | 내부 command allowlist나 애플리케이션 환경 조건을 뜻하지 않습니다. |
+| `sandbox_profile_ref` | R7이 소유·확정하는 Sandbox의 host·Docker·mount·namespace·secret·egress·workspace 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 정책 번호 (`data_kind=sandbox_profile`) | R8 호출 전 잔여 예산·새 attempt 한도나 내부 command allowlist, 애플리케이션 환경 조건을 뜻하지 않습니다. |
+| `DynamicReproductionLifecycleProfile` | R8이 소유하는 호출 전 work 잔여 시간 검사 정책과 새 attempt 한도의 versioned record (`data_kind=dynamic_reproduction_lifecycle_profile`) | 같은 session 조정은 세지 않고 session 재시작 `RETRY`와 외부 조건 해소 뒤 `RESUME`만 새 attempt로 세며, CPU·RAM·disk·PID·요청 가능 최대 시간은 포함하지 않습니다. |
 | `environment_ref` | 이번 시도에서 실제 생성된 Sandbox 환경 기록 번호 | 실행 전 환경 설정이나 최신 환경을 가리키지 않습니다. |
 | `secret_ref` | 비밀값 원문 대신 secret store의 항목을 가리키는 불투명 번호 | credential·cookie·token·password를 요구사항이나 일반 log에 저장하지 않습니다. |
 | `policy_decision_ref` | Sandbox Controller가 허용·차단한 이유를 가리키는 번호 | Technical Gate 판정과 다른 기록이며 정책 차단이면 반드시 필요합니다. |
@@ -141,7 +142,7 @@
 | `runtime` | 설계가 실제로 실행되는 프로그램 부분 | 현재 저장소에는 구현되어 있지 않습니다. |
 | `runtime validator` | 프로그램 내부 실행 범위 검사기 | 데이터 형식, 상태 순서, 예산과 권한을 강제하지만 취약점·CWE·정책 의미는 판단하지 않습니다. |
 | `sandbox` | 다른 시스템과 격리해 안전하게 코드를 실행하는 환경 | host, 비밀정보와 범위 밖 네트워크 접근을 막습니다. |
-| `Sandbox Controller` | 격리 환경 밖의 안전 경계를 강제하는 모듈 | host·Docker daemon/socket·mount/namespace·secret·egress·workspace·resource/lifecycle을 검사하며 내부 command allowlist는 운영하지 않습니다. |
+| `Sandbox Controller` | 격리 환경 밖의 안전 경계를 강제하는 모듈 | R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하며 내부 command allowlist, R7 profile 값, R8 잔여 예산·새 attempt는 결정하지 않습니다. |
 | `R7 Setup Automation` | Docker image·container·환경 재생성과 정리를 실제 수행하는 비-LLM 모듈 | Agent가 Docker daemon을 직접 다루지 않도록 격리된 실행 통로를 제공합니다. |
 | `Reproduction Session Manager` | 한 동적 재현 attempt의 실제 event와 최종 결과를 확정하는 비-LLM 모듈 | AgentLog, validated PoC와 DynamicReproductionResult의 result owner이며 Agent의 실행 전략은 결정하지 않습니다. |
 | `provider` | LLM을 제공하는 서비스나 연결 방식 | API 방식과 회원 로그인 방식을 같은 경계에서 관리합니다. |

@@ -86,11 +86,11 @@ current Finding -> Reporter -> ReportDraft -> AnalysisRunResult -> Agent automat
 
 Technical Evidence Gate의 `REVISE`는 같은 가설의 Verification owner에게 직접 돌아간다. Verification은 필요한 Context·Pro/Con·정적·동적 근거를 보완하고 새 `VerificationResult`를 확정한다. R5-01 `CWE_LABELING`은 CWE 값의 변경 여부와 관계없이 그 새 Verification에 맞는 새 `CWELabel` revision을 확정한 뒤 Gate를 다시 요청한다. Verification 또는 Chaining이 만든 새 material claim은 기존 결과에 붙여 확정하지 않고 trusted registration 뒤 8단계부터 전체 검증을 새로 거친다.
 
-모든 final `TRUE`에는 현재 Verification generation에서 성공한 동적 재현과 validated PoC가 필요하다. validated PoC가 없는 `TRUE`는 저장하거나 Technical Gate로 전달하지 않는다. PoC 작성·환경 구성·실행이 실패했다면 취약점 판정을 `FALSE`나 `HOLD`로 바꾸지 않고 같은 동적 재현 work를 `BLOCKED` 또는 `FAILED`로 끝낸다.
+모든 final `TRUE`에는 현재 Verification generation에서 성공한 동적 재현과 validated PoC가 필요하다. validated PoC가 없는 `TRUE`는 저장하거나 Technical Gate로 전달하지 않는다. PoC 작성·환경 구성·실행이 실패했다면 취약점 판정을 `FALSE`나 `HOLD`로 바꾸지 않는다. 같은 R7 Agent session에서 해결할 수 있으면 현재 attempt를 계속하고, session 재시작은 같은 work의 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개는 새 `attempt_id`·`trigger=RESUME`를 사용하며 복구 불가·한도 소진만 `FAILED`로 끝낸다.
 
 ## 구성 요소와 책임
 
-Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배정을 제안·조정하지만 가설 내부 다음 작업이나 enforcement authority를 갖지 않는다. 가설 내부 다음 작업은 Verification owner가 선택한다. 신뢰 경계 안의 비-LLM Runtime Validator가 schema, 호출 권한, 상태 전이, 예산, 병렬성, provider/session 정책, Gate 순서와 Reporter 호출 전제조건을 강제한다. Sandbox Controller는 host·Docker·mount/namespace·secret·egress·workspace·resource/lifecycle 같은 외부 격리 경계를 검사하며 내부 command allowlist를 운영하지 않는다. 모든 LLM 출력은 validation 전까지 비신뢰 입력이다.
+Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배정을 제안·조정하지만 가설 내부 다음 작업이나 enforcement authority를 갖지 않는다. 가설 내부 다음 작업은 Verification owner가 선택한다. 신뢰 경계 안의 비-LLM Runtime Validator가 schema, 호출 권한, 상태 전이, 예산, 병렬성, provider/session 정책, Gate 순서와 Reporter 호출 전제조건을 강제한다. Runtime Validator는 R7 `sandbox_profile_ref`와 exact R8 `DynamicReproductionLifecycleProfile` revision을 고정하고, 호출 전 잔여 시간·새 attempt 한도를 검사한다. Sandbox Controller는 R7 profile의 host·Docker·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하며 내부 command allowlist를 운영하지 않는다. 모든 LLM 출력은 validation 전까지 비신뢰 입력이다.
 
 | 구성 요소 | 책임 | 금지 경계 |
 |---|---|---|
@@ -104,7 +104,7 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | Pro/Con Agents | 독립적인 성립·반박 근거 조사 | 동일 session 공유 |
 | R7 Agent | exact request에서 requirements·간단한 plan·PoC candidate·동적 근거 해석 생산 | R6 목적 변경, 외부 경계 우회 또는 최종 verdict 판단 |
 | R7 Setup Automation | recipe·image·container 생성/재사용/재생성·환경 비교·cleanup 실제 수행 | Agent 판단, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
-| Sandbox Controller | host·Docker daemon/socket·mount/namespace·secret·egress·workspace·resource/lifecycle 외부 경계 검사 | 내부 command allowlist 운영, 재현 전략·환경 의미·최종 verdict 변경 |
+| Sandbox Controller | R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 강제 | 내부 command allowlist 운영, R7 profile 값 결정, R8 잔여 예산·새 attempt 결정, 재현 전략·환경 의미·최종 verdict 변경 |
 | Reproduction Session Manager | 실제 event를 append-only AgentLog로 저장하고 same-attempt validated PoC·동적 결과 확정 | Agent 호출·command·retry·cleanup 전략 결정 또는 다른 attempt 혼합 |
 | Primitive Admission Runtime | exact Technical review·정책 수집·Rule Scope의 전용 테스트 제한 판정을 정해진 표로 변환해 `PrimitiveAdmissionDecision`과 허용된 Primitive 확정 | 정책 원문 해석, Gate 판정 변경 또는 `DENY` 결과의 Primitive 생성 |
 | Primitive DB | required candidate가 있는 HOLD의 inputs-only Primitive와 current admission `ALLOW`인 Technical-accepted TRUE의 result Primitive exact revision 검색 | 작업 queue, candidate가 없는 HOLD나 Gate 전·admission `DENY` TRUE 저장 또는 자동 Finding 생성 |
@@ -131,7 +131,7 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 
 한 축의 값으로 다른 축을 암묵적으로 추론하지 않는다. 예를 들어 기술적으로 `TRUE`여도 out-of-scope이거나 실질 영향이 부족하면 Reporter를 호출하지 않는다.
 
-Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제안한다. 비-LLM Runtime Validator가 역할·schema·exact revision·상태·예산·일반 도구·경로·provider·두 Gate 순서와 보고 조건을 검사해 `ActionDecision=ALLOW | DENY`를 저장한다. `REQUEST_DYNAMIC_REPRO`는 Verification의 요청을 R7 work로 등록하는 허가이고, `RUN_SANDBOX`는 current request·requirements·profile·resource/lifecycle 범위에서 외부 격리 경계를 만들 허가다. 어느 허가도 재현 성공을 뜻하지 않는다. Controller가 외부 경계를 통과시키면 Setup Automation과 R7 Agent가 격리 환경에서 재현하고 Session Manager가 실제 event와 결과를 확정한다. 이 검사는 환경 의미·취약점 판정이나 정책 해석을 대신하지 않는다.
+Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제안한다. 비-LLM Runtime Validator가 역할·schema·exact revision·상태·예산·일반 도구·경로·provider·두 Gate 순서와 보고 조건을 검사해 `ActionDecision=ALLOW | DENY`를 저장한다. `REQUEST_DYNAMIC_REPRO`는 Verification의 요청을 R7 work로 등록하는 허가이고, `RUN_SANDBOX`는 exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` revision을 고정해 외부 격리 경계를 만들 허가다. plan이나 profile revision이 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 만들고 새 action을 요구한다. 어느 허가도 재현 성공을 뜻하지 않는다. Controller가 외부 경계를 통과시키면 Setup Automation과 R7 Agent가 격리 환경에서 재현하고 Session Manager가 실제 event와 결과를 확정한다. 이 검사는 환경 의미·취약점 판정이나 정책 해석을 대신하지 않는다.
 
 ## 병렬성과 종료 조건
 
@@ -139,7 +139,7 @@ Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제�
 - 서로 독립된 가설의 Verification은 가설별 예산 범위에서 병렬화할 수 있다. 한 가설의 실패가 다른 가설을 자동 취소하지 않는다.
 - 운영(`PRODUCTION`)에서는 한 가설의 Pro/Con을 서로 다른 work와 NEW session으로 항상 병렬화하고 Verification이 두 결과를 확인해 합류한다. 예산 부족이나 실행 오류로 한쪽이 없으면 final verdict를 만들지 않고 work를 중단한다. `BASIC | CONDITIONAL_DEBATE`와 skip은 격리된 평가(`EVALUATION`)에서만 허용한다.
 - 같은 가설의 `workspace_id`와 `commit_id`, final Verification, R5-01의 current CWELabel, Technical Gate, 정책 수집·Rule Scope Gate, Primitive admission과 Reporter 순서는 의존성을 지킨다. 새 Verification에는 값이 같아도 새 label revision과 그 revision을 가리키는 새 admission decision이 필요하다.
-- 한 Verification generation에는 동적 재현 work를 하나만 만든다. 재시도는 같은 work의 새 `attempt_id`이고, Technical Gate의 `REVISE`로 새 generation이 시작된 경우에만 새 동적 재현 한도를 부여한다.
+- 한 Verification generation에는 동적 재현 work를 하나만 만든다. 같은 R7 Agent session의 command·PoC·환경 조정은 현재 attempt를 유지한다. session 재시작만 같은 work의 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개만 새 `attempt_id`·`trigger=RESUME`를 사용하며, Technical Gate의 `REVISE`로 새 generation이 시작된 경우에만 새 동적 재현 한도를 부여한다.
 - 실행 상태는 `WorkExecutionState`가 관리하고 가설 판정·Gate 결과·보고서 상태와 분리한다. 같은 `dedupe_key` 요청은 한 `work_id`로만 반영한다.
 - `COMMITTED` marker와 종료 상태 pointer가 같은 결과를 가리킨 뒤에만 다음 단계를 호출한다. `PREPARED`, 취소된 attempt, 오래된 revision과 늦은 결과는 다음 단계에서 읽지 않는다.
 - 모든 초기·파생 가설이 종료 상태에 도달하고 atomic 저장·복구가 끝나면 Orchestration run을 닫는다.

@@ -62,7 +62,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 - 공식 프로그램 정책이 없으면 rule/scope를 추정하지 않으며 보고서 전달 권한은 `DENY`다.
 - Membership session과 API provider는 공통 adapter 경계를 사용한다. Membership path는 feasibility/security 검토 전 experimental이며, provider 전환은 명시적으로 기록하고 조용한 failover는 금지한다.
 - Reporter는 `ReportDraft`를 만드는 마지막 Agent다. 이후 신뢰 runtime이 `AnalysisRunResult`를 확정하면 자동화가 끝난다.
-- 모든 LLM 출력은 비신뢰 입력이다. 신뢰 경계 안의 Runtime Validator가 schema·호출 권한·상태 전이·예산·provider/session·Gate 순서·Reporter 전제조건을 강제하고, Sandbox Controller가 host·Docker daemon/socket·mount/namespace·secret·egress·workspace·resource/lifecycle 외부 경계를 전담한다.
+- 모든 LLM 출력은 비신뢰 입력이다. 신뢰 경계 안의 Runtime Validator가 schema·호출 권한·상태 전이·예산·provider/session·Gate 순서·Reporter 전제조건을 강제하고, Runtime Validator가 exact R7 `sandbox_profile_ref`와 R8 `DynamicReproductionLifecycleProfile` revision을 고정하고 호출 전 잔여 시간·새 attempt 한도를 검사한다. Sandbox Controller는 R7 profile의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다.
 - Agent와 service는 실행을 `ActionRequest`로 제안하고 runtime validator가 요청당 하나의 `ActionDecision=ALLOW | DENY`를 만든다. 실제 LLM 호출은 검사한 `LLMCallSpec`과 같아야 하며 ALLOW는 exact action과 state version에 한 번만 사용한다.
 - current Finding은 두 Gate가 검토한 exact chain(final TRUE·validated PoC·current CWELabel·Technical `ACCEPT`·current Rule Scope review)을 신뢰 runtime이 하나의 취약점 record로 정규화한 것이다. 새 verdict·impact가 아니며 claim 강도는 verified upstream 이하다. Finding 존재는 Reporter의 6축 정책 readiness와 별개 자격이라 `report_permission=DENY`여도 Finding은 보존된다. upstream revision이 바뀌면 Finding은 stale이 되어 새 chain에서 다시 정규화한다.
 - `ReportDraft`는 current non-stale Finding·Verification·CWELabel·두 Gate·정책 revision을 정확히 참조하고 restriction·limitation·남은 불확실성과 redaction 결과를 보존한다. 오래된 초안은 current `AnalysisRunResult`에 넣지 않는다.

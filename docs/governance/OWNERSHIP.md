@@ -33,11 +33,11 @@
 
 - R4는 `DynamicReproductionRequest`, `EnvironmentRequirements`, 간단한 `ReproductionPlan`, `EnvironmentRecipe`, `SandboxEnvironment`, `AgentLog`, candidate/validated PoC와 동적 결과의 공통 필드·exact reference·상태·result owner·오류 규칙을 담당합니다.
 - R6 Verification은 `POC_CONFIRMATION | VERDICT_EVIDENCE` 목적, 재현 목표·필요 환경·Sandbox profile·근거 reference를 `DynamicReproductionRequest`로 생산합니다. R6는 requirements·plan·recipe·command·PoC·동적 결과를 생산하지 않습니다.
-- R4의 trusted runtime은 current request/requirements, 호출 권한·상태·예산과 same-attempt provenance를 검사합니다. Sandbox 내부 실행 전략이나 취약점 의미는 판단하지 않습니다.
+- R4의 trusted runtime은 exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile`, 호출 권한·상태·예산과 same-attempt provenance를 검사합니다. plan이나 profile revision이 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 만들고 새 action을 요구합니다. Sandbox 내부 실행 전략이나 취약점 의미는 판단하지 않습니다.
 - R7 Agent는 외부 경계 검사 전에 requirements와 mode·exact command가 없는 plan을 만들고, 검사 뒤 Sandbox 안에서 PoC candidate·command·관찰·재시도를 자율적으로 정합니다. Setup Automation은 recipe·image·container·cleanup을 만듭니다. Sandbox Controller는 외부 격리 경계만 검사하고, 비-LLM Reproduction Session Manager는 append-only AgentLog·validated PoC·동적 결과를 확정합니다.
-- R7은 요청 목적·가설·profile을 바꾸지 않습니다. Sandbox 안에서는 command·PoC·관찰·재시도를 자율적으로 선택하지만 host·Docker·secret·egress·workspace·R8 resource/lifecycle 경계를 우회할 수 없습니다.
-- 모든 final TRUE에는 `SUCCEEDED + SUPPORTED` 동적 결과와 validated `poc_ref`가 필요합니다. R7이 스스로 해결할 수 있는 PoC 생성·환경 구성·실행 실패는 같은 work에서 자동 retry하고, 외부 설정·정책·승인을 기다릴 때만 `BLOCKED`입니다. 복구 불가능하거나 한도를 소진하면 verdict 없는 `FAILED`이며 `FALSE | HOLD`로 바꾸지 않습니다.
-- R8은 예산 profile과 회귀 기준을 설계하고 각 전문 역할은 최소 품질 요구를 제공합니다. 실제 예산 차단·허용은 R4 trusted runtime의 책임입니다.
+- R7은 요청 목적·가설을 바꾸지 않습니다. R7 sandbox policy owner는 `sandbox_profile_ref`의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 소유·확정합니다. Sandbox 안에서 command·PoC·관찰·재시도를 자율적으로 선택해도 이 입장 경계를 우회할 수 없습니다.
+- 모든 final TRUE에는 `SUCCEEDED + SUPPORTED` 동적 결과와 validated `poc_ref`가 필요합니다. 같은 R7 Agent session의 command·PoC·환경 조정은 현재 attempt를 유지하고, session 재시작만 같은 work의 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개만 새 `attempt_id`·`trigger=RESUME`를 사용합니다. 대기 중에만 `BLOCKED`이며 복구 불가능하거나 한도를 소진하면 verdict 없는 `FAILED`로 끝내고 `FALSE | HOLD`로 바꾸지 않습니다.
+- R8은 `DynamicReproductionLifecycleProfile(data_kind=dynamic_reproduction_lifecycle_profile)`의 호출 전 work 잔여 시간 검사와 새 attempt 한도만 소유합니다. 초안은 새 attempt 4회(최초 별도, 총 5회)이며 같은 session 조정은 세지 않습니다. trusted resource policy registry runtime이 승인된 immutable revision을 게시하고 Runtime Validator가 `BUDGET_EXCEEDED`와 attempt 한도를 강제합니다.
 - Technical `REVISE`는 Orchestration이나 R7이 목적지를 고르지 않고 같은 ACTIVE `VerificationAssignment`의 R6 owner에게 돌아갑니다.
 - R5-02 Rule Scope Gate는 공식 정책과 실제 재현 근거를 읽고 금지 테스트 위반 여부를 독립 `testing_restriction_compliance`로 판단합니다. 일반 `rule_compliance`나 `TESTING_RESTRICTION` link 존재만으로 이 값을 대신 추정하지 않습니다.
 - R4의 비-LLM Primitive Admission Runtime은 exact Technical review·정책 수집 결과·Rule Scope review를 정해진 표에 대입해 `PrimitiveAdmissionDecision`과 허용된 Primitive/index를 원자적으로 확정합니다. 정책 문장을 다시 해석하지 않습니다.

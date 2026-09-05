@@ -450,7 +450,7 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 - 오류, empty retrieval와 sandbox setup failure를 `FALSE`로 만들지 않는다.
 - 별도 endpoint/sink/권한/impact를 기존 verdict에 몰래 합치지 않는다.
 - R6는 동적 재현 purpose·목표·필요 환경·Sandbox profile·근거 reference를 요청하지만 `EnvironmentRequirements`·`ReproductionPlan`·recipe·command·PoC·동적 결과를 생산하지 않는다. R7의 `COMMITTED` 결과만 소비한다.
-- 모든 TRUE에는 validated PoC가 필요하다. PoC 생성·환경 구성·실행 실패는 `FALSE | HOLD`가 아니다. R7이 자체 해결할 수 있으면 자동 retry하고, 외부 조건을 기다릴 때만 `BLOCKED`, 복구 불가능하거나 한도를 소진하면 verdict 없는 `FAILED`다.
+- 모든 TRUE에는 validated PoC가 필요하다. PoC 생성·환경 구성·실행 실패는 `FALSE | HOLD`가 아니다. 같은 R7 Agent session의 조정은 현재 attempt, session 재시작은 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개는 새 `attempt_id`·`trigger=RESUME`이며 대기 중에만 `BLOCKED`다. 복구 불가능하거나 한도를 소진하면 verdict 없는 `FAILED`다.
 - Gate 결과·정책 의미·공개 결정을 대신 만들지 않는다. Gate·Reporter 호출을 제안해도 Runtime Validator 검사를 우회하지 않는다.
 
 ### 필수 교차 리뷰
@@ -470,7 +470,7 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 - [ ] initial/final verdict와 revision history가 분리됨
 - [ ] dynamic 실행 `status`, 관측 `hypothesis_outcome`, `hypothesis_disproved`와 Verification verdict가 구분됨
 - [ ] R6가 current generation의 exact `DynamicReproductionRequest`만 생산하고 R7의 `COMMITTED` 결과만 소비함
-- [ ] 한 Verification generation에 동적 work 하나만 있고 retry는 같은 work의 새 attempt이며, Technical `REVISE` 새 generation에는 한도가 새로 적용됨
+- [ ] 한 Verification generation에 동적 work 하나만 있고 같은 R7 Agent session 조정은 현재 attempt, session 재시작은 같은 work의 `trigger=RETRY` 새 attempt, 외부 조건 해소 뒤 재개는 `trigger=RESUME` 새 attempt이며 Technical `REVISE` 새 generation에는 한도가 새로 적용됨
 - [ ] final TRUE는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated `poc_ref`를 요구함
 - [ ] PoC 생성·환경 구성·실행 실패는 final verdict와 Gate 없이 `BLOCKED | FAILED`이며 `FALSE | HOLD`로 바뀌지 않음
 - [ ] material new claim과 같은 가설의 작은 validation subtask 경계가 있음
@@ -514,16 +514,16 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 
 ### 검토할 입력·출력
 
-- 입력: R6가 생산하고 runtime이 확정한 exact `DynamicReproductionRequest`, 같은 hypothesis/workspace/commit/generation의 R7 실행 work/attempt, image digest와 승인된 target/network/resource policy
+- 입력: R6가 생산하고 runtime이 확정한 exact `DynamicReproductionRequest`, current `EnvironmentRequirements`, current exact `ReproductionPlan`, `sandbox_profile_ref`, exact `DynamicReproductionLifecycleProfile`, 같은 hypothesis/workspace/commit/generation의 R7 실행 work/attempt와 image digest
 - 출력: `EnvironmentRequirements`, 간단한 `ReproductionPlan`, `EnvironmentRecipe`, `poc_candidate_ref`, container lifecycle과 요구사항 비교를 담은 `SandboxEnvironment`, append-only `AgentLog`, `DynamicReproductionResult`, 성공 시 validated `poc_ref`, plan issue/limitation/cleanup/error
 
 ### 확인할 권한 경계
 
 - sandbox는 evidence만 생산하며 verdict를 결정하지 않는다.
 - R7은 R6 요청의 목적·가설·profile을 바꾸지 않지만 실행 가능한 requirements·간단한 plan·PoC candidate와 동적 해석을 만든다. plan은 mode나 exact command allowlist가 아니다.
-- Runtime Validator는 `RUN_SANDBOX` 호출 권한·상태·예산·current request/requirements를 검사하고, Sandbox Controller는 host·Docker daemon/socket·mount/namespace·secret·egress·workspace·R8 resource/lifecycle 외부 경계를 전담한다.
+- Runtime Validator는 `RUN_SANDBOX` 호출 권한·상태·예산과 exact request·current requirements·current exact plan·R7 `sandbox_profile_ref`·exact R8 `DynamicReproductionLifecycleProfile` revision을 고정하고 호출 전 잔여 시간·새 attempt 한도를 검사한다. Sandbox Controller는 R7 profile의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다.
 - Setup Automation은 recipe·image·container·cleanup을 수행하고, R7 Agent는 Sandbox 안의 command·PoC·관찰·재시도를 자율적으로 정한다.
-- Reproduction Session Manager는 AgentLog를 append-only로 저장하고 same-attempt reference만으로 validated PoC와 `DynamicReproductionResult`를 확정한다.
+- Reproduction Session Manager는 AgentLog를 append-only로 저장하고 `COMMAND_STARTED`·`COMMAND_FINISHED`의 exact `SandboxCommandRecord`·digest·action·attempt·environment·redaction 일치와 same-attempt reference를 검사해 validated PoC와 `DynamicReproductionResult`를 확정한다.
 - R4는 request·requirements·plan·recipe·환경·AgentLog·candidate/validated PoC와 nullable reference·상태·result-owner 조합을 확정하고, R7은 실제 환경 구성·실행·관찰·정리 세부 절차를 정의한다.
 - version fallback은 R7이 exact requirements에 미리 적은 `alternatives`만 허용하며, 요구사항·환경 기록에 credential·cookie·token·password 원문을 저장하지 않는다.
 - host root/home, Docker socket, host process namespace, host secret, production credential와 범위 밖 target 접근을 금지한다.
@@ -533,7 +533,7 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 
 - R6 검증·반박: request와 outcome/최종 verdict 경계, 실패 결과 소비
 - R4 PM·아키텍처: producer authority·Session Manager·SAVE_RESULT 계약
-- R8 데이터·평가: resource/time/retry budget 값과 지표
+- R8 데이터·평가: `DynamicReproductionLifecycleProfile(data_kind=dynamic_reproduction_lifecycle_profile)`의 호출 전 잔여 시간·새 attempt 한도(초안 4회, 최초 별도 총 5회)와 revision 정책. CPU·RAM·disk·PID·요청 가능 최대 시간은 R7 `sandbox_profile_ref` 검토
 - R3 통합 개발: Docker Controller·recipe/image lifecycle·cleanup 구현 가능성
 - R5 Gate·보고: AgentLog·validated PoC·evidence와 Reporter 소비·redaction
 
@@ -545,9 +545,9 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 - [ ] R6 purpose와 R7 plan의 재현 목표·선택적인 requested evidence·실제 observable effect 연결이 명확함
 - [ ] exact request/requirements/plan/recipe/action/work/attempt가 일치하고 내부 command는 AgentLog로 추적되며 Sandbox 외부 경계를 넘지 않음
 - [ ] setup/execution/observation/policy/timeout failure와 반증이 다른 상태임
-- [ ] 필수 환경 불일치는 R7 Agent가 recipe·환경을 보완해 같은 work에서 자율 retry하고, 외부 수정이 필요할 때만 `BLOCKED`, 복구 불가능하거나 한도를 소진하면 `FAILED`로 끝내며 final verdict를 만들지 않음
+- [ ] 필수 환경 불일치는 같은 R7 Agent session이면 현재 attempt에서 보완하고, session 재시작만 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개만 새 `attempt_id`·`trigger=RESUME`를 사용함. 대기 중에만 `BLOCKED`, 복구 불가능하거나 한도를 소진하면 `FAILED`로 끝내며 final verdict를 만들지 않음
 - [ ] 모든 requirement가 `SandboxEnvironment.checks`에 정확히 한 번 나타나고 차이·오류가 `failure_category`, 자유형 `failure_reason`, `plan_issues`와 일치함
-- [ ] workspace/commit, recipe, container, command, input, observation과 cleanup이 AgentLog와 hypothesis에 추적됨
+- [ ] workspace/commit, recipe, container, command, input, observation과 cleanup이 AgentLog와 hypothesis에 추적되며 command 시작·종료가 같은 exact command record·digest·action·attempt·environment와 유효한 redaction을 가리킴
 - [ ] Agent 미호출/호출, plan·recipe·환경 미생성/생성, cleanup 불필요/필요 조합이 R4 nullable reference 계약과 일치함
 - [ ] PoC candidate와 `SUCCEEDED + SUPPORTED`일 때만 생기는 validated PoC, Controller 정책 판정, 환경과 AgentLog의 R7 상세 artifact schema가 정의됨
 - [ ] escape/socket/secret/out-of-scope network negative scenario가 있음
@@ -641,10 +641,10 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 | empty/truncated context | gap 또는 HOLD 가능; 자동 FALSE 금지 |
 | workspace 또는 commit 불일치 | context/dynamic evidence 폐기와 `WORKSPACE_MISMATCH` 기록 |
 | 상충 Pro/Con | 독립 NEW session과 근거 기반 verdict/HOLD |
-| PoC 생성·sandbox setup·실행 실패 | 자체 해결 가능하면 같은 work 자동 retry, 외부 조건 대기만 `BLOCKED`, 복구 불가능·한도 소진은 verdict 없는 `FAILED`; vulnerability FALSE/HOLD와 Gate 금지 |
-| 동적 재현 요청·계획 생성 | R6가 purpose·goal·needs를 요청하고 R7 Agent가 exact requirements와 mode·exact command가 없는 간단한 plan을 만든 뒤 runtime이 generation당 단일 work와 RUN_SANDBOX 외부 경계 입력을 검사 |
+| PoC 생성·sandbox setup·실행 실패 | 같은 session 조정은 현재 attempt, session 재시작은 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개는 새 `attempt_id`·`trigger=RESUME`; 대기 중에만 `BLOCKED`, 복구 불가능·한도 소진은 verdict 없는 `FAILED`; vulnerability FALSE/HOLD와 Gate 금지 |
+| 동적 재현 요청·계획 생성 | R6가 purpose·goal·needs를 요청하고 R7 Agent가 exact requirements와 mode·exact command가 없는 간단한 plan을 만든 뒤 runtime이 generation당 단일 work와 exact request·requirements·plan·`sandbox_profile_ref`·`DynamicReproductionLifecycleProfile`을 검사 |
 | 동적 재현 실행·반환 | Controller 외부 경계 허용 뒤 Setup Automation이 환경을 만들고 R7 Agent가 PoC candidate·command·관찰·재시도를 자율 선택; Session Manager가 same-attempt AgentLog·validated PoC·동적 결과를 확정하고 R6가 최종 판정 |
-| 동적 plan·candidate 변경과 stale 실행 | 같은 attempt의 변경은 새 불변 revision과 AgentLog에 남기고 최종 결과가 exact revision을 가리켜야 함. request·requirements·profile·resource/lifecycle 또는 attempt가 바뀌면 기존 action/result를 재사용하지 않고 새 RUN_SANDBOX action 필요 |
+| 동적 plan·candidate 변경과 stale 실행 | 같은 attempt의 변경은 새 불변 revision과 AgentLog에 남기고 최종 결과가 exact revision을 가리켜야 함. request·requirements·plan·`sandbox_profile_ref`·`DynamicReproductionLifecycleProfile` revision 또는 attempt가 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 처리하고 action/result를 재사용하지 않으며 새 RUN_SANDBOX action 필요 |
 | HOLD + non-empty `required_primitive_candidates` | Gate 없이 전체 후보를 `inputs`, `result=null`로 둔 Primitive 저장과 Chaining 조회 |
 | HOLD + `required_primitive_candidates=[]` | Primitive를 저장하지 않고 Chaining work도 만들지 않은 채 HOLD 처리 종료 |
 | FALSE | terminal internal result; Primitive/Chaining 금지 |
