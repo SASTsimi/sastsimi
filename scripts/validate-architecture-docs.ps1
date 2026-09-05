@@ -1176,7 +1176,7 @@ $requiredFindingLifecycleRules = @(
     @{ Name = 'gate doc defines the stale Finding lifecycle'; Text = $gateText; Marker = '### stale Finding' },
     @{ Name = 'contract doc binds Finding to the committed exact chain without a new agent'; Text = $contractText; Marker = 'current Finding은 새 vulnerability verdict나 impact를 만드는 Gate가 아니라, 신뢰 runtime이 이미 `COMMITTED`된 exact upstream reference를 조립한 정규화 record다.' },
     @{ Name = 'contract doc adds no new Finding agent, action_type, or producer enum'; Text = $contractText; Marker = '이 작업은 새 autonomous Agent role, 새 `action_type` 또는 새 producer enum을 추가하지 않는다.' },
-    @{ Name = 'contract doc keeps Finding storage binding as an R4 B2 decision'; Text = $contractText; Marker = '구체 binding은 [구현 모듈 맵](implementation/01-module-map.md) B2에서 R4·R5가 함께 확정한다.' },
+    @{ Name = 'contract doc resolves Finding storage binding in R4 B2'; Text = $contractText; Marker = '구체 binding은 [구현 모듈 맵](implementation/01-module-map.md) B2에 확정한다.' },
     @{ Name = 'security doc rejects mixing Finding creation with Reporter readiness'; Text = $securityText; Marker = '| Finding 생성 조건을 Reporter 6축 readiness와 동일하게 취급 |' },
     @{ Name = 'security doc blocks stale Finding reuse in Reporter'; Text = $securityText; Marker = '| Finding 정규화 전이거나 stale Finding으로 Reporter 호출 |' },
     @{ Name = 'overview canonical flow puts current Finding before Reporter'; Text = $overviewText; Marker = 'current Finding -> Reporter -> ReportDraft -> AnalysisRunResult -> Agent automation end' },
@@ -1189,6 +1189,38 @@ foreach ($rule in $requiredFindingLifecycleRules) {
         Add-Failure "missing or weakened R5-03 follow-up Finding lifecycle rule: $($rule.Name)"
     }
 }
+
+# R4 Finding storage: schema, exclusive output binding and current-only finalization.
+$findingSchema = [regex]::Match($contractText, '(?ms)^Finding:\r?\n(.*?)^FindingConditionSource:').Groups[1].Value
+foreach ($field in @('meta: RecordMeta', 'verification_result_ref: StoredDataRef', 'dynamic_result_ref: StoredDataRef', 'poc_ref: StoredDataRef', 'cwe_label_ref: StoredDataRef', 'technical_review_ref: StoredDataRef', 'rule_scope_impact_review_ref: StoredDataRef', 'policy_collection_result_ref: StoredDataRef', 'policy_record_ref: StoredDataRef | null', 'evidence_refs: [StoredDataRef]', 'condition_sources: [FindingConditionSource]')) {
+    if (-not $findingSchema.Contains($field)) { Add-Failure "missing canonical Finding field: $field" }
+}
+$requiredFindingStorageRules = @(
+    'RULE_SCOPE_GATE | FINDING_NORMALIZE | REPORT_DRAFT',
+    '`RULE_SCOPE_GATE`의 `SUCCEEDED`는 정확히 하나의 `RuleScopeImpactReview.record_id`를 가리킨다.',
+    '`FINDING_NORMALIZE`의 `SUCCEEDED`는 정확히 하나의 `Finding.record_id`를 가리킨다.',
+    '`finding -> Finding -> VERIFICATION`',
+    'versioned result-owner registry에 고정된 이 service의 exact `requester_identity_ref`',
+    'source_path: string',
+    'status: EMPTY | CURRENT | STALE',
+    'stale_finding_ref: StoredDataRef | null',
+    'index의 expected `record_id`·`state_version`과 모든 upstream current pointer/generation을 함께 비교한다.',
+    'normalization commit과 invalidation은 같은 index CAS로 직렬화',
+    '`AnalysisRunResult.finding_refs`는 확정 시 각 `CURRENT` index',
+    '`current Finding 존재 + Reporter blocked + report_draft_refs=[]`는 정상적인 `AnalysisRunResult`다.',
+    '다른 필수 작업이 완료되면 `COMPLETE`가 가능하다.'
+)
+foreach ($rule in $requiredFindingStorageRules) {
+    if (-not $contractText.Contains($rule)) { Add-Failure "missing R4 Finding storage rule: $rule" }
+}
+$findingModuleText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/implementation/01-module-map.md')
+foreach ($rule in @('`FINDING_NORMALIZE`', '`finding -> Finding -> VERIFICATION`', '`FindingIndexState`', 'Reporter blocked이면 `report_draft_refs=[]`')) {
+    if (-not $findingModuleText.Contains($rule)) { Add-Failure "missing Finding module binding: $rule" }
+}
+foreach ($obsolete in @('Reporter가 current `ReportDraft`를 저장하고 해당 `REPORT_DRAFT` work를 종료한 뒤, 신뢰 runtime은', 'R4 storage binding 대기', '**R4 대기(storage binding)**')) {
+    if ($contractText.Contains($obsolete) -or $findingModuleText.Contains($obsolete)) { Add-Failure "obsolete Finding storage contract: $obsolete" }
+}
+Write-Output "R4 Finding storage rules: $($requiredFindingStorageRules.Count)"
 
 $requiredVerificationChainingContracts = @(
     'VerificationAssignment:',
