@@ -20,7 +20,7 @@ SASTSIMI는 Agent를 특정 회사·상품·인증 방식에 묶지 않는다. �
 1. OpenAI Responses API + API Key
 2. Codex CLI/SDK + ChatGPT 구독 로그인
 3. Anthropic Messages API + API Key
-4. Claude Code CLI/Agent SDK + Claude 구독 로그인
+4. Claude Code CLI + Claude 구독 로그인. Agent SDK 임베딩은 별도 인증·약관 검토 뒤 허용
 
 네 경로는 같은 자격 증명을 공유하지 않는다. ChatGPT 구독으로 Claude를 호출하거나 Claude 구독으로 OpenAI 모델을 호출할 수 있다고 가정하지 않는다. Codex에서 Claude로 바꾼다는 말은 **SASTSIMI가 다른 ProviderProfile과 어댑터를 선택한다**는 뜻이지, Codex 로그인 안에서 Claude 모델로 바꾼다는 뜻이 아니다.
 
@@ -171,14 +171,16 @@ SASTSIMI는 Codex 인증 파일을 읽어 token을 추출하거나 다른 HTTP c
 ### 4.4 Claude Code + Claude 구독 로그인
 
 - profile 후보: `anthropic.claude-code.subscription.v1`
-- 공식 경계: 공식 Claude Code CLI의 `claude -p` 또는 공식 Agent SDK
+- 공식 경계: 첫 구현은 공식 Claude Code CLI의 `claude -p`. Agent SDK는 아래 인증·약관 조건을 별도로 통과한 profile에서만 허용
 - credential: Claude Pro·Max·Team·Enterprise의 공식 로그인 또는 공식 `setup-token` 경계
 - 모델: 해당 구독과 client가 실제 허용한 Claude model ID만 등록
 - 구조화 출력: `--output-format json --json-schema` 또는 Agent SDK 대응 기능
 - session: 새 호출을 `NEW`, 공식 session ID 재개를 `RESUME`으로 매핑
 - 제안 환경: 개인·팀 로컬 우선, private CI는 공식 token과 신뢰 runner에서 별도 검토
 
-SASTSIMI는 Claude credential 파일, browser cookie 또는 token을 직접 파싱하지 않는다. 구독 사용량과 Agent SDK용 사용량이 같은 한도라고 가정하지 않고 provider가 공개한 값만 기록한다. `claude -p` 또는 SDK가 built-in tool·MCP·hook·plugin·project/user instruction을 불러오지 않도록 검증된 `ClientExecutionProfile`을 강제할 수 없으면 이 경로를 사용하지 않는다.
+SASTSIMI는 Claude credential 파일, browser cookie 또는 token을 직접 파싱하지 않는다. 구독 사용량과 API 사용량이 같은 한도라고 가정하지 않고 provider가 공개한 값만 기록한다. `claude -p`가 built-in tool·MCP·hook·plugin·project/user instruction을 불러오지 않도록 검증된 `ClientExecutionProfile`을 강제할 수 없으면 이 경로를 사용하지 않는다.
+
+구독 경로의 첫 허용 범위는 **구독 사용자가 자기 개발 환경에서 시작하는 내부 분석**이다. 제3자 사용자에게 Claude 로그인을 제공하거나 그 사용자를 대신해 구독 credential로 요청을 중계하는 제품 경로로 확장하지 않는다. Anthropic은 제품·서비스에서 Claude 기능을 제공하는 개발자, 특히 Agent SDK 사용에 API Key 또는 지원 cloud provider 인증을 요구한다고 안내하므로, SASTSIMI 프로세스에 Agent SDK를 직접 임베딩하는 경로는 기본적으로 `Anthropic Messages API + API Key` profile로 분류한다. 구독 Agent SDK 경로를 쓰려면 사용 시점의 공식 허용 범위, 계정 유형과 내부 사용 목적을 별도 검토하고 그 증거를 새 profile revision에 연결해야 한다.
 
 ## 5. 환경별 기본 판정
 
@@ -201,7 +203,7 @@ SASTSIMI는 Claude credential 파일, browser cookie 또는 token을 직접 파�
 - Claude Code CLI `2.1.250`: 설치됨, 로그인되지 않은 상태 확인
 - OpenAI·Anthropic API adapter와 고정 SDK version: 아직 구현·선정되지 않음
 
-이는 client 설치·인증 사전 확인일 뿐 `PVD-01`–`PVD-14` adapter 시험이 아니다. 따라서 ProviderProfile을 발급하거나 지원 상태를 정하는 증거로 사용하지 않는다.
+이는 client 설치·인증 사전 확인일 뿐 `PVD-01`–`PVD-15` adapter 시험이 아니다. 따라서 ProviderProfile을 발급하거나 지원 상태를 정하는 증거로 사용하지 않는다.
 
 Issue에서 요구한 `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`는 OpenAI 경로의 접근 확인 후보로 사용한다. 이름이 문서나 설정에 있다는 사실만으로 접근 가능하다고 표시하지 않고, 실제 계정·client·환경별 probe에 성공한 model ID만 route로 등록한다. Claude 모델도 같은 방식으로 실제 접근 결과 뒤에 exact model ID를 등록한다.
 
@@ -254,8 +256,9 @@ Agent 코드와 prompt template에 모델명을 넣지 않는다. Runtime은 mod
 | `PVD-12` | 관측값 | 공개된 request ID·usage·session metadata만 기록하고 미제공 값은 null |
 | `PVD-13` | 구독 client 격리 | 실제 저장소 접근, command·file·web tool, MCP·hook·plugin·추가 instruction·ambient secret 사용이 모두 차단 |
 | `PVD-14` | 환경 binding | local용 profile을 CI·shared server에서 사용하면 호출 전 거절하고 exact profile로 환경을 복원 가능 |
+| `PVD-15` | 이용 범위·약관 | 인증 종류·계정 유형·실행 환경·내부/서비스 사용 목적이 provider의 현재 공식 허용 범위와 일치하고 검토 근거를 보존 |
 
-`SUPPORTED`로 올리려면 `PVD-01`–`PVD-14`가 그 조합에서 통과하고 증거에 다음이 포함되어야 한다. API 경로의 `PVD-13`은 client tool이 없음을 확인해 `NOT_APPLICABLE`로 기록할 수 있지만 생략하지 않는다.
+`SUPPORTED`로 올리려면 `PVD-01`–`PVD-15`가 그 조합에서 통과하고 증거에 다음이 포함되어야 한다. API 경로의 `PVD-13`은 client tool이 없음을 확인해 `NOT_APPLICABLE`로 기록할 수 있지만 생략하지 않는다.
 
 - exact client/SDK version과 model ID
 - 실행 환경과 인증 종류
@@ -283,12 +286,13 @@ credential·cookie·token·원문 인증 파일은 증거로 첨부하지 않는
 - Anthropic Messages API 구조화 출력: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs>
 - Anthropic Consumer Terms: <https://www.anthropic.com/legal/consumer-terms>
 - Anthropic Commercial Terms: <https://www.anthropic.com/legal/commercial-terms>
+- Claude Code 인증·credential 사용 범위: <https://code.claude.com/docs/en/legal-and-compliance>
 
 ## 10. 미완료 증거와 종료 조건
 
 이 문서만으로 #90을 닫지 않는다. 다음 증거가 없기 때문이다.
 
-- 네 경로별 실제 `PVD-01`–`PVD-14` 결과
+- 네 경로별 실제 `PVD-01`–`PVD-15` 결과
 - 역할별 필요한 model의 실제 계정 접근 범위
 - private CI의 credential 격리·취소·동시성 검증
 - R8의 동일 fixture 품질·시간·사용량 비교
