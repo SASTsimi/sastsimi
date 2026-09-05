@@ -66,7 +66,9 @@ Chaining 결과를 저장하기 직전에 사용한 Primitive와 `source_primiti
 
 `origin=CHAINING` 자식 proposal은 `target_entities`, `target_locations` 또는 `suspected_path`가 비어 있을 수 있습니다. 이 경우 Verification은 exact proposal의 `source_primitive_match_id`로 exact `PrimitiveMatchCandidate`를 찾습니다.
 
-그다음 `upstream_result_ref`가 가리키는 Primitive의 `result.entity_refs`, `downstream_input_ref`가 가리키는 Primitive에서 `draft_id == matched_input_id`인 입력의 `entity_refs`, 그리고 아직 충족되지 않은 나머지 `inputs[].entity_refs`를 확인합니다. 매칭된 downstream input의 `entity_refs`는 두 Primitive가 실제로 결합하는 코드 지점을 확인하는 데 사용합니다.
+그다음 `upstream_result_ref`가 가리키는 Primitive의 `result.entity_refs`, upstream Primitive 자신의 `inputs[].entity_refs`, `downstream_input_ref`가 가리키는 Primitive에서 `draft_id == matched_input_id`인 입력의 `entity_refs`, 그리고 downstream Primitive에서 `matched_input_id`로 선택되지 않은 나머지 `inputs[].entity_refs`를 확인합니다. 매칭된 downstream input의 `entity_refs`는 두 Primitive가 실제로 결합하는 코드 지점을 확인하는 데 사용합니다.
+
+매칭이 성립했다는 사실만으로 upstream Primitive의 전제조건이 자동으로 충족되는 것은 아닙니다. Verification은 upstream과 downstream 양쪽의 남은 입력 조건을 현재 결합 상황에서 다시 확인합니다.
 
 `matched_input_id`는 입력 항목의 ID일 뿐 코드 위치가 아닙니다. 따라서 ID, 권한 조건과 근거만 확보해서는 복구가 완료된 것으로 보지 않습니다. 현재 `proposal.meta.workspace_id`와 `proposal.meta.commit_id`에 속하는 유효한 entity 또는 location을 최소 하나 이상 확보해야 합니다.
 
