@@ -8,7 +8,7 @@
 
 ## 1. 기준과 핵심 결론
 
-- 작성 기준 `main`: `3d30253acc27d57916611e0ebea2fd46344c5fa8`
+- 작성 기준 `main`: `40c744523c09349c47592b4e3a1ee84a382bb16c`
 - 연결 Issue: [R3-05 #91](https://github.com/SASTsimi/sastsimi/issues/91)
 - Provider 연결 결정: [R3-04 #90](https://github.com/SASTsimi/sastsimi/issues/90)
 - 최종 구현 기준선: [R3-06 #92](https://github.com/SASTsimi/sastsimi/issues/92)
