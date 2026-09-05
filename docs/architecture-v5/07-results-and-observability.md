@@ -145,21 +145,21 @@ Sandbox ENV/POLICY/EXEC/TIMEOUT은 동적 work의 `BLOCKED | FAILED`다. 최종 
 한도는 두 종류다. 둘 다 가설 `FALSE`(구멍 없음)가 아니다.
 
 1. **실행 예산** — 벽시계 시간, 호출, 재시도, 조회 깊이·조각, **비용, 분석 전체 work 수**. Runtime Validator가 `ActionCheck.BUDGET`으로 검사한다. 실패 코드는 `BUDGET_EXCEEDED`다. 해당 work를 중단한다. 분석 run은 `PARTIAL`일 수 있다. **token 상한은 분석 전체·모든 Agent·호출마다 두지 않는다.** `LLMCallSpec.token_budget` 칸이 계약에 있어도 R8 절단 상한이 아니라 관측·계획용이다. token을 넘겨 `BUDGET_EXCEEDED`로 자르지 않는다. 사용량은 관측만 한다. 조금만 더 쓰면 취약점을 찾을 수 있는데 잘리면 안 된다. **체이닝 전용 짝·깊이·조합 한도도 두지 않는다.** 잇기도 이 전역 시간·재시도·조회·비용·work 예산만 따른다. **분석 전체 벽시계는 120분(7200초)이다.** 소진 시 새 work를 시작하지 않는다. 분석은 `PARTIAL`일 수 있다. FALSE가 아니다. **비용과 전체 work 수 숫자는 임의로 정하지 않는다.** versioned R8 정책에서 관리하며 현재 미확정이다.
-2. **Sandbox 외부 경계와 resource/lifecycle 상한** — `sandbox_profile_ref`는 egress·mount·namespace·secret 등 외부 접근 및 격리 정책을 고정하고, R8의 versioned resource/lifecycle profile은 CPU·RAM·디스크·PID·시간·새 attempt 한도를 소유한다. Runtime Validator는 exact 두 profile reference와 work·attempt 예산을 확인하고 Sandbox Controller는 각각의 정책·수치를 실행 경계에 강제한다. 허용되지 않은 요청은 `SANDBOX_POLICY_DENIED`이고 상자 안 Agent를 시작하지 않는다. 환경 구성 실패·실행 실패·실행 중 timeout은 기존 환경·실행 오류로 남기며 `BUDGET_EXCEEDED`로 바꾸지 않는다.
+2. **Sandbox 정책 상한** — R7 소유 `sandbox_profile_ref`가 network·mount·namespace·secret 등 외부 접근·격리와 상자 입장용 CPU·RAM·디스크·PID·요청 가능 최대 시간을 정한다. Sandbox Controller가 이 정책·수치를 강제하며 초과는 `SANDBOX_POLICY_DENIED`, Agent 미시작이다. R8 소유 `DynamicReproductionLifecycleProfile`은 호출 전 work 잔여 시간과 새 attempt 한도만 맡고 Runtime Validator가 `BUDGET_EXCEEDED`와 attempt 제한을 강제한다. 환경 구성 실패·실행 실패·실행 중 timeout은 기존 환경·실행 오류로 남기며 두 코드를 섞지 않는다.
 
-상자 **시간**이 부족한 이유는 셋이다. 같은 R8 resource/lifecycle profile의 시간 숫자를 세 번 적는 것이 아니라, 끊는 주체가 다르다.
+상자 **시간**이 부족한 이유는 셋이다. 1번 R8 잔여 예산과 2번 R7 입장 상한은 서로 다른 장부·실패 코드이며, 3번은 승인 뒤 실행 timeout이다.
 
 1. **호출 전** 이 분석·Sandbox work의 runtime 예산이 이미 없음 → Runtime Validator `BUDGET_EXCEEDED`. 동적 결과 `PARTIAL` 금지.
-2. **요청한** 상자 시간이 R8 resource/lifecycle profile 상한(아래 표)보다 김 → Sandbox Controller `SANDBOX_POLICY_DENIED`. Agent 미시작, `agent_invoked=false`. 외부 R8 profile 변경을 기다릴 때만 `BLOCKED`, 최종 거절이면 `FAILED`. `failure_category`는 정책. `INCONCLUSIVE`.
+2. **요청한** 상자 시간이 R7 `sandbox_profile_ref`의 입장 상한(아래 표)보다 김 → Sandbox Controller `SANDBOX_POLICY_DENIED`. Agent 미시작, `agent_invoked=false`. 외부 R7 profile 변경을 기다릴 때만 `BLOCKED`, 최종 거절이면 `FAILED`. `failure_category`는 정책. `INCONCLUSIVE`.
 3. **승인된** 시간 안에서 Agent가 실행 중 시계가 끝남 → `FAILED + TIMEOUT` + `INCONCLUSIVE`. `agent_invoked=true`. `agent_log_ref`와 당시 관측을 남긴다.
 
-R8 resource/lifecycle profile 시간에 환경 구성·Health Check·실행·관측·cleanup을 포함해도, **실행 timeout이 났다고 cleanup을 생략하지 않는다.** 실행이 끝난 뒤 별도 제한된 cleanup/recovery를 하고, 자원이 생겼으면 `cleanup_status=SUCCEEDED | FAILED`다. 자원을 만들지 못한 정책 차단만 `NOT_REQUIRED`가 될 수 있다.
+R7 `sandbox_profile_ref`가 승인한 실행 시간에 환경 구성·Health Check·실행·관측·cleanup을 포함해도, **실행 timeout이 났다고 cleanup을 생략하지 않는다.** 실행이 끝난 뒤 별도 제한된 cleanup/recovery를 하고, 자원이 생겼으면 `cleanup_status=SUCCEEDED | FAILED`다. 자원을 만들지 못한 정책 차단만 `NOT_REQUIRED`가 될 수 있다.
 
 Sandbox **동적 결과**의 `PARTIAL`은 공격 경로를 일부 실행해 신뢰할 관측이 있을 때만 쓴다. 환경 구성 중이거나 실행 시작 전에 예산·정책에 막히면 `PARTIAL`이 아니다.
 
 아래 숫자는 **제안(교차 전)** 초안이다. 측정값이 아니다. 담당 확인 전에 확정이 아니다. 시간은 벽시계 1회다. `—`는 이 열에 해당 없음이다. token 열은 없다.
 
-Orchestration은 가설 등록·Verification 배정까지만 한다. 찬반·Docker **요청 예산**은 Verification 칸, 잇기는 Chaining 칸이다. 상자 외부 접근·격리는 `sandbox_profile_ref`, CPU·RAM·디스크·PID·시간·새 attempt 수는 R8 resource/lifecycle profile을 따른다.
+Orchestration은 가설 등록·Verification 배정까지만 한다. 찬반·Docker **호출 전 잔여 예산**과 새 attempt 수는 R8 `DynamicReproductionLifecycleProfile`, 상자 외부 접근·격리와 CPU·RAM·디스크·PID·요청 가능 최대 시간은 R7 `sandbox_profile_ref`를 따른다.
 
 `REVISE`는 같은 요청을 다시 보내는 재시도가 아니다. Technical Gate가 근거 보완을 요구하면 같은 Verification owner가 새 검증 세대·새 Gate work를 만든다. provider 오류·`INVALID_OUTPUT` 재시도와 칸을 섞지 않는다. Reporter는 `REVISE`를 판정하지 않는다.
 
@@ -175,23 +175,23 @@ token 상한은 없다. 분석 전체·모든 Agent·호출마다 동일하다. 
 | 코드 다시 꺼내기 | 45초 | — | 가설당 조회 24회. 같은 요청 재시도가 아니라 한 가설의 `code_request_id` 누적 상한이다. 다른 위치·관계 요청도 센다. 깊이 5, 조각 32개, 요청당 256KiB | 빈칸/조회 오류. FALSE 아님 | 김나연 |
 | Verification / debate | 종합 240초 / 찬반 각 180초 | 의심마다 찬반 각 1회 | 서로 다른 대화. Docker 요청 예산은 이 칸 | 초과 ≠ FALSE. 찬반 생략은 운영 불합격 | 임채민 |
 | Chaining | 120초 | — | 체이닝 전용 짝·깊이 한도 없음. result→input 비교. 전역 시간·비용·work 예산만. 순환 검사 아님. 조상 Primitive 재사용 제외는 예산 중단이 아님 | 전역 예산 소진 시 `stop_reasons`, 부모 불변. FALSE 아님 | 배승원 |
-| Sandbox 호출 전 | 이 work에 남은 runtime 시간. R8 versioned resource/lifecycle profile의 시간 상한을 **잔여 예산**으로 본다. `LIMITED_REPRO \| FULL_REPRO` mode는 없음 | 같은 R7 Agent session의 조정은 현재 attempt를 유지한다. session 재시작이 필요할 때만 R8 한도 안에서 새 attempt를 만들고, 외부 조건 대기만 `BLOCKED`다 | 요청 가능 최대와 새 attempt 한도는 R8 resource/lifecycle profile | 실행 **요청 전**에 소진되면 `BUDGET_EXCEEDED`. 한도 소진 뒤 새 attempt 없음. 동적 결과 `PARTIAL` 금지. FALSE 아님 | 조근석 |
+| Sandbox 호출 전 | 이 work에 남은 runtime 시간을 R8 budget으로 검사한다. `LIMITED_REPRO \| FULL_REPRO` mode는 없음 | 같은 R7 Agent session 조정은 현재 attempt로 횟수에 세지 않는다. session 재시작 `RETRY`와 외부 조건 해소 뒤 `RESUME`만 새 attempt다. 초안은 새 attempt 4회(최초 1회 별도, 총 5회) | 요청 가능 최대는 아래 R7 Sandbox 정책 표. R8 lifecycle profile로 옮겨도 새 attempt 4회 초안은 유지 | 실행 **요청 전** 잔여 시간이 없으면 `BUDGET_EXCEEDED`. 새 attempt 4회 소진 뒤 추가 attempt 없음. 동적 결과 `PARTIAL` 금지. FALSE 아님 | 조근석 |
 | Technical Gate | 180초 | provider·형식 오류 4 | `REVISE` 상한 3 (재시도 열 아님) | Technical Gate와 이후 Rule Scope·초안 진행 차단, 판정 유지 | 김혜령 |
 | Rule Scope Gate | 180초 | provider·형식 오류 4 | `REVISE` 없음 | 초안 차단, 판정 유지 | 김혜령 |
 | Reporter | 180초 | provider·형식 오류 4 | `REVISE`를 만들지 않음 | 초안 실패, 판정·Gate 유지 | 김혜령 |
 
-### Sandbox 외부 경계와 resource/lifecycle 상한 (Runtime Validator + Sandbox Controller)
+### Sandbox 정책 상한 (Sandbox Controller → `SANDBOX_POLICY_DENIED`)
 
-Docker 상자의 외부 접근·격리 정책은 `sandbox_profile_ref`, 수치 상한은 R8의 versioned resource/lifecycle profile이 소유한다. 요청이 허용 범위를 넘으면 실행 중 timeout이 아니라 **입장 거절**(2번)이다. Runtime Validator는 exact profile reference와 현재 work·attempt를 확인하고 Sandbox Controller가 실제 격리와 자원 제한을 강제한다.
+R7 `sandbox_profile_ref(data_kind=sandbox_profile)`가 network·격리와 CPU·RAM·디스크·PID·요청 가능 최대 시간을 소유한다. 구체 수치는 R7이 확정한다. 요청이 허용 범위를 넘으면 실행 중 timeout이 아니라 **입장 거절**(2번)이다. Runtime Validator는 exact R7 sandbox profile과 R8 `DynamicReproductionLifecycleProfile(data_kind=dynamic_reproduction_lifecycle_profile)` revision, 현재 work·attempt를 고정한다. `RUN_SANDBOX.input_refs`와 `ActionDecision.checked_config_refs`에는 두 profile이 모두 있고, `ActionRequest.sandbox_profile_ref`·`SandboxPolicyDecision.sandbox_profile_ref`는 같은 R7 revision, `ActionRequest.resource_profile_ref`·`SandboxPolicyDecision.resource_profile_ref`는 같은 R8 revision을 가리켜야 한다. Runtime Validator는 R8 호출 전 잔여 시간·새 attempt 한도를, Sandbox Controller는 R7 입장 정책·수치를 강제한다.
 
 | 항목 | 상한 (초안) | 위반 시 |
 |---|---|---|
-| 시간 | R8 resource/lifecycle profile이 정한 요청 가능 최대. mode 구분 없음 | `SANDBOX_POLICY_DENIED`, Agent 미시작, `agent_invoked=false`. 외부 profile 변경을 기다릴 때만 `BLOCKED`, 최종이면 `FAILED`. 최종 판정 없음. FALSE 아님 |
+| 시간 | R7 `sandbox_profile_ref`가 정한 요청 가능 최대. mode 구분 없음 | `SANDBOX_POLICY_DENIED`, Agent 미시작, `agent_invoked=false`. 외부 profile 변경을 기다릴 때만 `BLOCKED`, 최종이면 `FAILED`. 최종 판정 없음. FALSE 아님 |
 | 네트워크·외부 접근 | `sandbox_profile_ref`의 default-deny와 승인된 egress·mount·namespace·secret 경계 | 위와 같음 |
-| CPU | R8 resource/lifecycle profile이 정한 값 | 위와 같음 |
-| RAM | R8 resource/lifecycle profile이 정한 값 | 위와 같음 |
-| 디스크 | R8 resource/lifecycle profile이 정한 값 | 위와 같음 |
-| PID | R8 resource/lifecycle profile이 정한 값 | 위와 같음 |
+| CPU | R7 `sandbox_profile_ref`가 정한 값 | 위와 같음 |
+| RAM | R7 `sandbox_profile_ref`가 정한 값 | 위와 같음 |
+| 디스크 | R7 `sandbox_profile_ref`가 정한 값 | 위와 같음 |
+| PID | R7 `sandbox_profile_ref`가 정한 값 | 위와 같음 |
 
 `ActionCheck.BUDGET` 실패 시 저장하는 `AnalysisError.code`는 `BUDGET_EXCEEDED`다. Sandbox 정책 위반 코드는 `SANDBOX_POLICY_DENIED`다.
 
@@ -285,9 +285,10 @@ provider·model·session을 바꿀 때는 **이름이 아니라 정확한 식별
 - 역할·provider·model별 invocation, token/동등 usage와 elapsed time
 - AST/SAST별 `SUCCEEDED | PARTIAL | FAILED | SKIPPED`, 실제 분석·제외 path/language, exact 규칙 실행 record와 coverage
 - 목적별 `POC_CONFIRMATION | VERDICT_EVIDENCE` 요청 수, generation당 동적 work 수, 같은 work의 attempt 수
-- `sandbox_profile_ref`별 외부 접근·격리 정책과 R8 resource/lifecycle profile별 CPU/memory/disk/PID/time·새 attempt 한도, `agent_invoked`, container `CREATED | REUSED`, 재생성 사유, requirement `MATCH | MISMATCH | NOT_CHECKED | ERROR` 수와 cleanup. 실제 사용량도 관측하고 실행 예산 초과(`BUDGET_EXCEEDED`)와 정책 거절(`SANDBOX_POLICY_DENIED`)을 따로 셈
+- R7 `sandbox_profile_ref`별 network·격리·CPU/memory/disk/PID/requested max time과 R8 `DynamicReproductionLifecycleProfile`별 호출 전 잔여 예산·새 attempt 한도, `agent_invoked`, container `CREATED | REUSED`, 재생성 사유, requirement `MATCH | MISMATCH | NOT_CHECKED | ERROR` 수와 cleanup. 실제 사용량도 관측하고 실행 예산 초과(`BUDGET_EXCEEDED`)와 정책 거절(`SANDBOX_POLICY_DENIED`)을 따로 셈
 - exact `dynamic_request_ref`·`environment_requirements_ref`·`reproduction_plan_ref`·`environment_recipe_ref`·`poc_candidate_ref`·validated `poc_ref`·`policy_decision_ref`·`environment_ref`·`agent_log_ref`의 data kind, record revision과 content hash
-- AgentLog event 수, attempt별 마지막 sequence, 자율 retry·외부 대기·강제 `STATE_UNCERTAIN` 재생성 수
+- AgentLog event 수, attempt별 마지막 sequence, same-session 조정·session 재시작 `RETRY`·외부 조건 해소 `RESUME`·강제 `STATE_UNCERTAIN` 재생성 수
+- `COMMAND_STARTED`·`COMMAND_FINISHED`의 exact command record·digest·action·attempt·environment·redaction 불일치로 저장이 거절된 수
 - initial TRUE 뒤 validated PoC 성공률, PoC candidate 생성·환경 구성·실행 실패와 `BLOCKED | FAILED` 원인
 - `cleanup_required`와 `SUCCEEDED | FAILED | NOT_REQUIRED`; 자원이 생겼는데 `NOT_REQUIRED`로 제출되어 거절된 횟수
 
@@ -307,7 +308,7 @@ provider가 token이나 비용을 제공하지 않으면 추정치를 확정값�
 - action type·요청 역할별 `ALLOW | DENY` 수와 실패한 `ActionCheck.reason_code`
 - `ALLOW` decision의 `UNUSED | USED`, outcome 누락과 replay 거절 수
 - `AUTHORITY_DENIED`, Gate 순서·Reporter·Sandbox·provider·file 차단 수
-- Sandbox request/requirements/profile 변경, 외부 경계 차단, 결과 recipe·환경·PoC·AgentLog·cleanup 불일치와 동적 result-owner 위반 수
+- Sandbox request/requirements/plan/`sandbox_profile_ref`/`DynamicReproductionLifecycleProfile` 변경, 외부 경계 차단, 결과 recipe·환경·PoC·AgentLog·cleanup 불일치와 동적 result-owner 위반 수
 - `agent_invoked`와 AgentLog의 시작 event가 다르거나, recipe·환경·cleanup·PoC의 attempt/digest가 어긋나 저장이 거절된 횟수
 - ReportDraft의 exact provenance, restriction·limitation·unresolved condition과 redaction 검사 실패 수
 - ReportDraft 뒤 허용되지 않은 Agent action 요청과 오래된 draft의 current 결과 승격 차단 수

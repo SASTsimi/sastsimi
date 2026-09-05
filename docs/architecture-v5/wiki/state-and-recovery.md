@@ -75,7 +75,7 @@ Context 조회 실패·timeout·권한 오류가 있어도 정상 근거로 모�
 
 동적 재현은 같은 단어의 뜻을 구분해야 합니다.
 
-- 동적 환경 구성 실패: 필수 환경이 다르거나 확인되지 않은 상태입니다. 가설 반증이 아니며, R7이 같은 session에서 스스로 고칠 수 있으면 현재 attempt에서 계속합니다. session 재시작이 필요할 때만 같은 work의 새 attempt를 만들고, 외부 설정·정책·승인·resource 변경을 기다릴 때만 `BLOCKED`입니다. 복구 불가능하거나 한도를 소진하면 verdict 없이 `FAILED`입니다.
+- 동적 환경 구성 실패: 필수 환경이 다르거나 확인되지 않은 상태입니다. 가설 반증이 아니며, R7이 같은 session에서 스스로 고칠 수 있으면 현재 attempt에서 계속합니다. session 재시작이 필요할 때만 같은 work의 새 `attempt_id`·`trigger=RETRY`를 만들고, 외부 설정·정책·승인·resource 변경을 기다릴 때만 `BLOCKED`이며 해소 뒤에는 새 `attempt_id`·`trigger=RESUME`로 재개합니다. 복구 불가능하거나 한도를 소진하면 verdict 없이 `FAILED`입니다.
 - 동적 결과 `PARTIAL`: 일부 공격 단계를 실행해 믿을 수 있는 관측을 얻었지만 환경 차이 같은 한계가 남은 상태입니다. 결과의 `limitations`가 빠진 범위를 설명하므로 실제 오류가 없다면 오류나 `DataGap`을 억지로 만들지 않습니다.
 - 동적 work `BLOCKED`: 외부 설정·정책·승인·resource 변경을 기다리는 상태입니다. R7이 내부에서 해결할 수 있는 PoC 생성·환경 구성·실행 문제에는 사용하지 않습니다. validated PoC와 final verdict는 없으며 `FALSE | HOLD`로 바꾸지 않습니다.
 - 공통 작업 `BLOCKED`: 재시도·인증·승인·입력을 기다리는 중이며 아직 끝나지 않은 상태입니다.
@@ -87,7 +87,7 @@ Gate 작업은 시작할 때 읽은 Verification, current CWELabel, 앞 Gate와 
 
 ## retry는 실패를 지우지 않습니다
 
-일반 작업에서 재시도 전에 외부 조건을 기다려야 하면 작업은 `BLOCKED`가 됩니다. `DYNAMIC_REPRO`에서 같은 R7 Agent session의 command·PoC·환경 조정은 현재 attempt에 실패와 후속 event를 남기고 계속합니다. session 재시작이 필요한 work-level retry만 같은 work에서 새 attempt를 만들며, 외부 조건을 기다릴 때만 `BLOCKED`를 사용합니다.
+일반 작업에서 재시도 전에 외부 조건을 기다려야 하면 작업은 `BLOCKED`가 됩니다. `DYNAMIC_REPRO`에서 같은 R7 Agent session의 command·PoC·환경 조정은 현재 attempt에 실패와 후속 event를 남기고 계속합니다. session 재시작이 필요한 work-level retry만 같은 work의 새 `attempt_id`·`trigger=RETRY`를 만들며, 외부 조건을 기다릴 때만 `BLOCKED`를 사용하고 해소 뒤에는 새 `attempt_id`·`trigger=RESUME`로 재개합니다.
 
 - 인증 실패: 사용자 재인증 대기
 - 호출량 제한: 정한 시간만큼 대기
