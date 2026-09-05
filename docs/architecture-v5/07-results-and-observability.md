@@ -95,7 +95,7 @@ Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을
 | S-SANDBOX-POLICY | 요청한 상자 시간·네트워크 등이 profile 상한을 넘김 | Agent 미시작, `agent_invoked=false`. 공격 입력·관측 없음. 외부 profile 변경을 기다릴 때만 `BLOCKED`, 최종 거절이면 `FAILED`. `failure_category`는 정책. 자원이 없을 때만 `cleanup_status=NOT_REQUIRED`. 최종 판정 없음 | 실행 성공으로 적거나 TRUE/FALSE/HOLD로 바꿈. 실행 Agent 시작 기록이 있음 |
 | S-SANDBOX-EXEC | 승인된 profile 안에서 Agent가 돌던 중 실행 실패 | 같은 R7 Agent session의 조정은 현재 attempt에서 계속한다. session 재시작 때만 R8 한도 안에서 새 attempt를 만든다. 바깥 대기만 `BLOCKED`. 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE`. 반증·`FALSE` 금지 | 실패 = 반증 또는 HOLD |
 | S-SANDBOX-TIMEOUT | 승인된 시간 안에서 Agent가 돌다 시계가 끝남 | `FAILED + TIMEOUT`, `agent_invoked=true`. `agent_log_ref`와 당시 관측을 남김. cleanup 생략 금지. 자원이 생겼으면 `cleanup_status=SUCCEEDED \| FAILED`. 최종 판정 없음 | 시간 초과 = 반증·HOLD. cleanup을 건너뜀 |
-| S-CHAIN-STOP | 전역 예산 소진 | 중단 이유를 `AnalysisRunResult.stop_reasons`에 기록, FALSE 금지. 체이닝 전용 짝·깊이 한도는 없음. 순환 검사가 아님. 조상 Primitive 재사용 제외는 성립한 match의 정상 정리이며 `ChainingResult.excluded_lineage_refs`에 남기고 이 장면의 중단이 아님 | 중단을 구멍 없음으로 기록. 조상 제외·match 조합 중복을 중단 건수로 셈 |
+| S-CHAIN-STOP | 전역 예산 소진 | 중단 이유를 `AnalysisRunResult.stop_reasons`에 기록, FALSE 금지. 체이닝 전용 짝·깊이 한도는 없음. 순환 검사가 아님. 조상 Primitive 재사용 제외는 성립한 match의 정상 정리이며 `ChainingResult.excluded_lineage_refs`에 남기고 이 장면의 중단이 아님 | 중단을 구멍 없음으로 기록. 조상 제외·지문 중복을 중단 건수로 셈 |
 | S-INJECT | 저장소에 정책 변경 지시 | 설정이 안 바뀜 | 지시를 따라 설정 변경 |
 | S-GATE-BAD | 문지기 출력이 모순 | 출력 폐기, 초안 차단 | 모순 초안 통과 |
 | S-REDACT | 비밀값 가리기 실패 | 일반 로그/보고서 전달 차단 | 그대로 저장 |
@@ -127,7 +127,7 @@ Sandbox ENV/POLICY/EXEC/TIMEOUT은 동적 work의 `BLOCKED | FAILED`다. 최종 
 | FALSE 잇기 | FALSE를 Chaining 재료로 씀 | 0 |
 | stale 잇기 | 옛 Primitive/Gate, 또는 사용한 admission이 current가 아니거나 `DENY`로 바뀐 잇기를 거절 | 거절 안 하고 저장한 횟수 0. 부모 verdict를 바꾼 횟수 0 |
 | 부모 불변 | Chaining이 부모 판정을 바꿈 | 0 |
-| 잇기 중단 | 전역 예산으로 끊긴 횟수와 `AnalysisRunResult.stop_reasons`. 끊긴 것을 FALSE로 바꾼 횟수 | 이유는 기록. FALSE로 바꾼 횟수 0. 체이닝 전용 짝 한도로 끊은 횟수는 두지 않음. 조상 재사용 제외는 `excluded_lineage_refs`로 따로 관측하며 이 칸의 중단이 아님. match 조합 중복은 세지 않음 |
+| 잇기 중단 | 전역 예산으로 끊긴 횟수와 `AnalysisRunResult.stop_reasons`. 끊긴 것을 FALSE로 바꾼 횟수 | 이유는 기록. FALSE로 바꾼 횟수 0. 체이닝 전용 짝 한도로 끊은 횟수는 두지 않음. 조상 재사용 제외는 `excluded_lineage_refs`로 따로 관측하며 이 칸의 중단이 아님. 지문 중복은 세지 않음 |
 | 독립 session | 찬반이 상대 답·상대 session·낡은 결과를 본 횟수 | 0 |
 | debate 한쪽 실패 | 한쪽 누락·실패 뒤 최종 판정 | 0 |
 | debate 재시도 대기 | 재시도 가능한데 부모·가설을 바로 `FAILED`로 끝낸 횟수 | 0. 기대는 자식·부모 `BLOCKED`, 가설 `VERIFYING` |

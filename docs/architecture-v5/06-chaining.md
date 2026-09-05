@@ -113,7 +113,7 @@ PrimitiveMatchCandidate:
 
 `upstream_result_ref`와 `downstream_input_ref`는 nested draft가 아니라 두 Primitive record의 exact reference다. upstream은 non-null result를 가져야 하고 `matched_input_id`는 downstream `inputs[].draft_id` 하나를 선택한다. downstream result가 `null`이면 TRUE_HOLD, result가 있으면 TRUE_TRUE로 유도하므로 match 종류를 따로 저장하지 않는다.
 
-`(upstream_result_ref, downstream_input_ref, matched_input_id)`가 match 하나를 유일하게 식별한다. 세 값 모두 이미 record에 있으므로 중복 판정을 위한 별도 요약 값은 두지 않는다.
+`(upstream_result_ref, downstream_input_ref, matched_input_id)`가 match 하나를 유일하게 식별한다. 세 값 모두 이미 record에 있으므로 중복 판정을 위한 별도 요약 값은 두지 않으며 `normalized_fingerprint`는 사용하지 않는다.
 
 ### 출력
 
@@ -224,7 +224,7 @@ Verification은 proposal을 만들 수 있지만 `hypothesis_id`를 직접 발�
 
 체이닝 전용 임의 depth, 전체·parent별 가설 수, Chaining 호출 수, Primitive 조합 수와 token 상한은 두지 않는다. 대신 R8의 전체 시간·비용·work 예산이 모든 체이닝에도 적용된다. token 사용량은 관측하되 초과만으로 중단하지 않는다. 다른 예산 소진도 `FALSE`가 아니며 work 상태와 `AnalysisRunResult.stop_reasons`에 기록한다. 같은 `(upstream_result_ref, downstream_input_ref, matched_input_id)` 조합도 한 분석에서 중복 저장하지 않는다.
 
-`considered_primitive_refs`, `source_admission_refs`와 `excluded_lineage_refs`는 기존 `ChainingResult`에 없던 필수 필드이고 `normalized_fingerprint` 제거도 기존 `PrimitiveMatchCandidate`의 필드를 없애므로 새 MAJOR schema에서만 사용한다. 이전 MAJOR 결과에 빈 목록을 추정해 넣거나 제거한 필드를 다시 계산해 채우지 않고 감사 이력으로만 보존한다.
+`considered_primitive_refs`, `source_admission_refs`와 `excluded_lineage_refs`는 기존 `ChainingResult`에 없던 필수 필드이고 `PrimitiveMatchCandidate`에서도 필드 하나를 없애므로 새 MAJOR schema에서만 사용한다. 이전 MAJOR 결과에 빈 목록을 추정해 넣거나 제거한 필드를 다시 계산해 채우지 않고 감사 이력으로만 보존한다.
 
 ## 사람에게 보이는 결과
 
