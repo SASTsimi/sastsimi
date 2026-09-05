@@ -48,7 +48,7 @@ token과 전체 시간·판정 변화·HOLD 해소·새 후보 수는 `Verificat
 
 판정에는 최소 근거가 필요합니다. TRUE는 핵심 공격 경로와 필요한 조건을 지지하는 근거가 있어야 합니다. FALSE는 이름이 있는 반증 질문이 실제 근거로 `DISPROVED`된 경우에만 가능합니다. 오류·timeout·정보 부족·Sandbox 실패는 FALSE 근거가 아닙니다. HOLD는 판단에 필요한 조건이나 환경이 아직 부족하다는 뜻입니다.
 
-기본 Context가 부족하면 검증 Agent가 같은 workspace·commit을 기준으로 추가 Context를 요청합니다. 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 기록하며 오류 자체를 verdict 근거로 사용하지 않습니다. 일부 조회가 실패했더라도 제한 retry·대체 조회·다른 정상 근거로 모든 `ValidationCheck`, 반증 질문과 운영 Pro/Con을 완료했다면 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있습니다. 하나라도 완료하지 못했다면 final `VerificationResult`를 만들지 않고, 재시도 가능 시 `BLOCKED + VERIFYING`, 복구 불가능 시 work와 가설 처리 상태를 `FAILED`로 끝냅니다. 정상 검증을 모두 마친 뒤에도 부족한 조건이 남는 경우에만 실제 근거와 `unresolved_conditions`를 연결해 `HOLD`로 판정할 수 있습니다. 운영 Pro/Con 전에 예산이 부족한 경우도 `BUDGET_EXCEEDED`로 작업을 중단하고 final verdict를 저장하지 않습니다.
+기본 Context가 부족하면 검증 Agent가 같은 workspace·commit을 기준으로 추가 Context를 요청합니다. 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 기록하며 오류 자체를 verdict 근거로 사용하지 않습니다. 일부 조회가 실패했더라도 제한 retry·대체 조회·다른 정상 근거로 모든 `ValidationCheck`, 반증 질문과 운영 Pro/Con을 완료했다면 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있습니다. 하나라도 완료하지 못했다면 final `VerificationResult`를 만들지 않습니다. 재시도 가능하면 Verification work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지합니다. 복구할 수 없거나 재시도 한도를 소진하면 work와 가설 처리 상태를 `FAILED`로 끝냅니다. 정상 검증을 모두 마친 뒤에도 부족한 조건이 남는 경우에만 실제 근거와 `unresolved_conditions`를 연결해 `HOLD`로 판정할 수 있습니다. 운영 Pro/Con 전에 예산이 부족한 경우도 `BUDGET_EXCEEDED`로 작업을 중단하고 final verdict를 저장하지 않습니다.
 
 `initial_verdict`는 중간 판단이며 운영 Gate·Primitive·보고서 입력으로 사용할 수 없습니다. initial TRUE이면 동적 근거가 별도로 필요하지 않아도 PoC 확인을 요청합니다. final TRUE는 독립 Pro/Con과 현재 generation의 성공한 동적 결과·validated PoC를 종합한 최종 판단입니다.
 
@@ -60,7 +60,7 @@ R8의 versioned evaluation corpus는 우선 지원할 유형을 정하는 평가
 
 가설 자체의 반증 질문과 이번 `PlaybookApplication`의 질문에는 모두 전역 `question_id`가 있습니다. 플레이북의 `template_key`는 사람이 읽는 이름일 뿐 실제 질문 ID가 아닙니다. 최종 결과는 두 질문 집합을 빠짐없이 정확히 한 번씩 처리하고 질문마다 `DISPROVED`, `NOT_DISPROVED`, `INCONCLUSIVE` 중 하나와 근거를 남깁니다. 실제 근거가 있는 `DISPROVED`가 하나 이상일 때만 `FALSE`가 가능합니다. `NOT_DISPROVED`는 반증하지 못했다는 뜻일 뿐 가설을 증명하지 않습니다.
 
-가설의 각 필수 검증 항목에는 `validation_id`가 있습니다. final 결과는 같은 ID의 결과가 빠짐없이 한 번씩 있고, 모두 `COMPLETE`이며 실제 근거를 가리킬 때만 저장합니다. 하나라도 완료하지 못하면 final 판정을 만들지 않습니다. 다시 시도할 수 있으면 work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지하며, 더 시도할 수 없으면 work와 가설을 함께 `FAILED`로 끝냅니다. 이 실패는 `FALSE`나 `HOLD`가 아니며 Gate 입력도 아닙니다.
+가설의 각 필수 검증 항목에는 `validation_id`가 있습니다. final 결과는 같은 ID의 결과가 빠짐없이 한 번씩 있고, 모두 `COMPLETE`이며 실제 근거를 가리킬 때만 저장합니다. 하나라도 완료하지 못하면 final 판정을 만들지 않습니다. 재시도 가능하면 Verification work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지합니다. 복구할 수 없거나 재시도 한도를 소진하면 work와 가설을 함께 `FAILED`로 끝냅니다. 이 실패는 `FALSE`나 `HOLD`가 아니며 Gate 입력도 아닙니다.
 
 Pro와 Con은 항상 별도의 새 대화에서 실행합니다. 상대 역할의 결론이나 대화를 이어받지 않으며, 실패 후 재시도나 provider 변경도 같은 역할의 새 대화로 시작합니다. Verification Agent만 두 결과를 함께 읽고 최종 판정을 만듭니다.
 
@@ -77,8 +77,30 @@ Docker는 clean/non-root, network default-deny와 자원·시간 제한을 사�
 
 `poc_candidate_ref`는 실행 전 스크립트·입력입니다. exact candidate 실행이 `SUCCEEDED + SUPPORTED`로 끝난 경우에만 validated `poc_ref`를 만듭니다. 생성 실패, 실행 실패, `DISPROVED | INCONCLUSIVE`에서는 `poc_ref=null`입니다. candidate와 실패 로그는 남겨도 최종 PoC로 부르지 않습니다.
 
-`POC_CONFIRMATION` 또는 `VERDICT_EVIDENCE`가 `SUPPORTED`이면 R6는 정적·Pro·Con·동적 근거와 validated PoC를 합쳐 final TRUE를 만듭니다. 실제 반증이면 FALSE, 정상 실행했지만 결론이 부족하면 HOLD가 될 수 있습니다. PoC 생성·환경 구성·정책·실행 자체가 실패했다면 final verdict를 만들지 않습니다. 다시 시도할 수 있으면 같은 work를 `BLOCKED`, 복구할 수 없거나 한도를 소진하면 `FAILED`로 끝내며 Gate를 호출하지 않습니다.
+`POC_CONFIRMATION` 또는 `VERDICT_EVIDENCE`가 `SUPPORTED`이면 R6는 정적·Pro·Con·동적 근거와 validated PoC를 합쳐 final TRUE를 만듭니다. 실제 반증이면 FALSE, 정상 실행했지만 결론이 부족하면 HOLD가 될 수 있습니다. PoC 생성·환경 구성·정책·실행 자체가 실패했다면 final verdict를 만들지 않습니다. Agent가 자체 해결할 수 있으면 같은 attempt에서 계속하거나 `RUNNING → READY → RUNNING`으로 새 retry attempt를 실행합니다. 외부 설정·정책·승인·resource 변경을 기다리는 경우에만 같은 work를 `BLOCKED`로 두고, 복구할 수 없거나 재시도 한도를 소진하면 `FAILED`로 끝내며 Gate를 호출하지 않습니다.
 
 Technical Gate가 `REVISE`를 반환하면 같은 ACTIVE `VerificationAssignment` owner가 직접 받습니다. 프로그램은 새 generation의 Verification work와 `TERMINAL -> VERIFYING` 전이를 먼저 원자적으로 만들고, 필요한 Context·Pro/Con·정적 근거와 설명을 보완합니다. final TRUE를 다시 만들려면 새 generation의 동적 work와 validated PoC도 필요합니다. 새 final TRUE가 확정되면 R5-01 `CWE_LABELING`이 CWE 정렬을 다시 평가하고, 값이 같아도 새 Verification을 직접 가리키는 새 `CWELabel` revision을 만든 뒤 새 Gate work를 요청합니다. 이는 provider retry나 동일 입력 재투표가 아닙니다.
 
 `status`는 실행 완료 정도이고 `hypothesis_outcome: SUPPORTED | DISPROVED | INCONCLUSIVE`은 관측과 가설의 관계입니다. 둘 다 최종 판정이 아닙니다. 실제 반증은 `DISPROVED`, `hypothesis_disproved: true`, 관측 근거가 함께 있어야 합니다. 생성·환경·실행 실패는 관측 반증이 아니므로 `FALSE | HOLD`로 바꾸지 않습니다. 저장 확정 marker와 request·plan·result·PoC reference가 모두 일치할 때만 Verification이 읽습니다. 상세 내용은 [검증과 동적 재현](../04-verification-and-dynamic-reproduction.md)을 따릅니다.
+
+
+## R6 동적 요청과 결과 소비 요약
+
+R6의 선택은 다음과 같습니다.
+
+- 정적·Pro·Con만으로 `VerificationResult.initial_verdict=TRUE`이면 `DynamicReproductionRequest.purpose=POC_CONFIRMATION`을 한 번 요청합니다.
+- 실행 관측 없이는 판정할 수 없으면 `DynamicReproductionRequest.purpose=VERDICT_EVIDENCE`를 한 번 요청합니다. 여기서 `DynamicReproductionResult.hypothesis_outcome=SUPPORTED`가 나오면 같은 `meta.attempt_id`에서 검증된 `poc_ref`를 `VerificationResult.verdict=TRUE`에 사용하므로 PoC 확인을 다시 요청하지 않습니다.
+- 정적·Pro·Con으로 근거 있는 `VerificationResult.verdict=FALSE | HOLD`를 확정할 수 있으면 동적 요청을 생략할 수 있지만, validated `poc_ref`가 없는 `VerificationResult.verdict=TRUE`는 만들 수 없습니다.
+- 한 `verification_generation`에는 동적 work를 하나만 허용합니다. Technical `REVISE`는 새 `verification_generation`이므로 `purpose`를 다시 정하고 새 work를 최대 한 번 요청합니다.
+
+`DynamicReproductionResult.status=SUCCEEDED`와 `hypothesis_outcome=SUPPORTED`, 실제 `hypothesis_evidence_refs`, 같은 `meta.attempt_id`에서 검증된 `poc_ref`가 모두 있으면 `VerificationResult.verdict=TRUE` 후보입니다. `hypothesis_outcome=DISPROVED`, `hypothesis_disproved=true`, 실제 `disproof_evidence_refs`와 named falsification이 연결되면 `VerificationResult.verdict=FALSE` 근거입니다. `status=SUCCEEDED | PARTIAL`과 `hypothesis_outcome=INCONCLUSIVE`이면 `hypothesis_evidence_refs`, `limitations`, `VerificationResult.unresolved_conditions`를 기록할 수 있을 때 `verdict=HOLD` 후보입니다.
+
+R6는 current `DynamicReproductionState.status=SUCCEEDED | PARTIAL | BLOCKED | FAILED | CANCELLED`에 연결된 `dynamic_result_ref`를 읽습니다. `DynamicReproductionState.dynamic_result_ref`, `WorkExecutionState.output_refs`, `TransitionCommit.output_refs`는 같은 exact `DynamicReproductionResult.meta.record_id`를 가리켜야 합니다. `WorkExecutionState.last_transition_commit_ref`는 이 결과를 확정한 `TransitionCommit.state=COMMITTED` revision을 가리켜야 합니다. `DynamicReproductionState.status=BLOCKED`는 외부 조치를 기다리는 비종료 상태이며 `finished_at=null`을 유지합니다.
+
+결과 제출 중 `WorkExecutionState.status=RUNNING`이면 `DynamicReproductionResult.meta.attempt_id`를 `WorkExecutionState.active_attempt_id`와 비교합니다. R6가 current 반환 결과를 소비할 때는 `active_attempt_id=null`이므로 이 값과 비교하지 않고, 결과의 `meta.attempt_id`를 `last_transition_commit_ref`가 가리키는 `COMMITTED TransitionCommit.attempt_id` 및 해당 `WorkAttempt.attempt_id`와 비교합니다. attempt가 다르면 `ATTEMPT_NOT_ACTIVE`로 거절합니다.
+
+고정 입력·`request_ref`·`verification_generation`이 다르면 `STALE_RESULT`, exact reference의 `record_id` 또는 `content_hash`가 다르면 `RECORD_REVISION_MISMATCH`로 거절합니다. 현재 `WorkExecutionState.state_version`은 `TransitionCommit.target_state_version`과 비교합니다. `StateTransition.expected_state_version=TransitionCommit.expected_state_version`, `StateTransition.new_state_version=TransitionCommit.target_state_version`, `target_state_version=expected_state_version+1` 관계를 위반하면 `STATE_VERSION_CONFLICT`로 거절합니다. `meta.workspace_id`, `meta.commit_id`, `meta.hypothesis_id`, `request_ref`, `purpose`와 `DynamicReproductionRequest.hypothesis_ref`도 현재 Verification과 exact match해야 합니다.
+
+정책 차단·환경 구성·Agent·PoC 생성·실행 실패·timeout·취소는 verdict가 아닙니다. `DynamicReproductionResult.status=BLOCKED | FAILED | CANCELLED`와 `hypothesis_outcome=INCONCLUSIVE`를 기록하고 final `VerificationResult`와 Gate 요청을 만들지 않습니다. `BLOCKED`는 비종료 대기 상태이고 `FAILED | CANCELLED`는 종료 상태입니다.
+
+R6는 `DynamicReproductionRequest.verification_assignment_ref`, `verification_generation`, `hypothesis_ref`, `purpose`, `initial_verdict`, `goal`, `environment_needs`, `sandbox_profile_ref`, `code_refs`, `static_evidence_refs`, `pro_evidence_ref`, `con_evidence_ref`를 기록합니다. `EnvironmentRequirements`, `ReproductionPlan`, recipe, command, payload와 PoC는 R7이 생산합니다.
