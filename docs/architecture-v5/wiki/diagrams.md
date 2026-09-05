@@ -221,7 +221,9 @@ flowchart TB
     ADMIT -->|testing restriction FAIL| NOCHAIN
     RULE -->|Other FAIL UNCERTAIN DENY| REPORTBLOCK[Report blocked but allowed Primitive remains usable]
     RULE -->|PASS PASS PASS SUFFICIENT ALLOW| REPORTOK[Reporter eligibility may continue]
-    REQUIRED --> PDB[(Primitive records)]
+    REQUIRED --> PDB[(Primitive records)]S14 -->|HOLD| HREQ{Required candidates exist}
+    HREQ -->|Yes| REQUIRED[Result null Primitive with required inputs admitted]
+    HREQ -->|No| HEND[HOLD no Primitive no Chaining]
     PROVIDED --> PDB
     PDB --> MATCH{Upstream result satisfies downstream input}
     MATCH -->|No| RECORD[ChainingResult with no material candidate]
