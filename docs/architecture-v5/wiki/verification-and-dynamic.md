@@ -66,7 +66,7 @@ Chaining 결과를 저장하기 직전에 사용한 Primitive와 `source_primiti
 
 `initial_verdict`는 중간 판단이며 운영 Gate·Primitive·보고서 입력으로 사용할 수 없습니다. initial TRUE이면 동적 근거가 별도로 필요하지 않아도 PoC 확인을 요청합니다. final TRUE는 독립 Pro/Con과 현재 generation의 성공한 동적 결과·validated PoC를 종합한 최종 판단입니다.
 
-R8의 versioned evaluation corpus는 우선 지원할 유형을 정하는 평가 근거입니다. 운영에서 실제 허용할 유형과 exact 플레이북 수정본은 사람이 승인한 `PlaybookPolicy`로 확정합니다. 플레이북과 유형 mapping 후보는 R6 담당이 작성하지만 등록만으로 운영 지원 목록을 바꾸지는 못합니다.
+R8의 versioned evaluation corpus는 우선 지원할 유형을 정하는 평가 근거입니다. 운영에서 실제 허용할 유형과 exact 플레이북 수정본은 사람이 승인한 `PlaybookPolicy`로 확정합니다. 플레이북과 유형 mapping 후보는 R6 담당이 작성하지만 등록만으로 운영 지원 목록후보가 없으면 Primitive와 Chaining work를 만들지 않고 HOLD 처리를 끝냅니다.을 바꾸지는 못합니다.
 
 검증 작업을 등록할 때 trusted runtime은 가설의 exact proposal에 유형 후보가 하나이고 승인 policy에 같은 mapping이 있을 때만 유형별 플레이북을 선택합니다. 그 외에는 공통 플레이북을 사용합니다. 선택한 policy·playbook·이유와 플레이북 질문에 새로 발급한 ID는 `PlaybookApplication`으로 작업 입력에 고정합니다. 직접 검증, Pro, Con, 최종 판정과 결과 저장은 모두 같은 application을 사용하며, `VerificationResult`는 exact `playbook_ref`와 `playbook_application_ref`를 함께 기록합니다.
 
