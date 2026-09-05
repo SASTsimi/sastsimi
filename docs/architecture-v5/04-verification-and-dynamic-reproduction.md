@@ -16,7 +16,7 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 
 ## 기본 검증 순서
 
-1. 배정된 가설의 exact proposal에서 `proposal.meta.workspace_id`, `proposal.meta.commit_id`, `target_entities`, `target_locations`와 `suspected_path`를 확인한다. 단, `origin=CHAINING` proposal의 선택 필드가 비어 있는 경우에는 아래의 계보 기반 검증 시작점 복구 절차를 먼저 수행한다.
+1. 배정된 가설의 exact proposal에서 `proposal.meta.workspace_id`, `proposal.meta.commit_id`, `target_entities`, `target_locations`와 `suspected_path`를 확인한다. `origin=CHAINING` proposal의 선택 필드가 비어 있으면 R6 Verification Agent가 계보를 직접 조회하지 않고, 등록 단계에서 검증된 `source_primitive_match_id`를 포함한 `CodeContextRequest`로 Context Retrieval Service에 필요한 Context를 요청한다.
 2. `CodeContextRequest`로 caller/callee, data flow, auth guard와 route 문맥을 필요한 만큼 조회한다. 추가 Context 요청은 현재 가설과 같은 `workspace_id`·`commit_id`를 사용해야 한다. 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 기록하며 오류 자체를 verdict 근거로 사용하지 않는다. 일부 조회가 실패했더라도 제한 retry·대체 조회·다른 정상 근거로 모든 `ValidationCheck`, 반증 질문과 운영 Pro/Con을 완료했다면 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있다. 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증이 하나라도 미완료이면 final `VerificationResult`를 저장하지 않는다. 재시도할 수 있으면 work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지하며, 더 시도할 수 없으면 work와 `HypothesisProcessState`를 원자적으로 `FAILED`로 끝낸다. 운영 Pro/Con 전에 예산이 부족한 경우에도 `BUDGET_EXCEEDED`로 작업을 중단하고 final verdict를 저장하지 않는다. Context 부족이나 조회 실패를 `DISPROVED` 또는 `FALSE`로 변환하지 않는다.
 3. observed fact와 assumption을 분리하고 각 `FalsificationQuestion.question_id`를 확인한다.
 4. 운영 분석이면 Pro/Con Agent를 서로 독립된 NEW session으로 병렬 호출해 supporting/counter evidence를 모두 수집한다. BASIC 또는 조건부 debate는 격리된 평가 실행에서만 선택한다.
@@ -30,32 +30,57 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 
 ### Chaining-origin 가설의 검증 시작점 복구
 
-`origin=CHAINING` proposal의 `target_entities`, `target_locations` 또는 `suspected_path`가 비어 있으면 그 사실만으로 입력 오류로 처리하지 않는다. R6 Verification은 exact proposal의 `source_primitive_match_id`를 사용해 해당 ID를 가진 exact `PrimitiveMatchCandidate`와 부모 Primitive를 조회한다.
+`origin=CHAINING` proposal의 `target_entities`, `target_locations` 또는 `suspected_path`는 비어 있을 수 있다. 이 사실만으로 입력 오류로 처리하지 않지만, 등록 전 검사와 등록 후 Context 조회 전 재검사를 서로 다른 단계와 주체가 수행한다.
 
-검증 시작점은 다음 순서로 복구한다.
+#### 등록 전 검사
 
-1. `source_primitive_match_id`가 가리키는 exact `PrimitiveMatchCandidate`를 확인한다.
-2. `PrimitiveMatchCandidate.upstream_result_ref`가 가리키는 upstream Primitive의 `result.entity_refs`를 확인한다.
-3. `PrimitiveMatchCandidate.downstream_input_ref`가 가리키는 downstream Primitive의 `inputs[]`에서 `draft_id == matched_input_id`인 입력을 찾고, 해당 입력의 `entity_refs`를 실제 결합 지점의 검증 시작점으로 확인한다.
-4. upstream Primitive 자신의 `inputs[].entity_refs`와, downstream Primitive에서 `matched_input_id`로 선택되지 않은 나머지 `inputs[].entity_refs`를 양쪽 부모의 남은 전제조건에 대한 검증 시작점으로 확인한다.
-5. 부모 Primitive의 `privilege_level`과 각 단계의 `evidence_refs`를 함께 확인한다.
+Proposal Validator, Hypothesis Registry와 Assignment Runtime은 자식 가설을 등록하고 Verification을 배정하기 전에 exact proposal의 `source_primitive_match_id`에서 exact `PrimitiveMatchCandidate`와 부모 Primitive 계보를 조회한다.
 
-`matched_input_id`는 입력 항목을 식별하는 ID일 뿐 entity 또는 코드 위치가 아니다. 따라서 `matched_input_id`, `privilege_level`, `evidence_refs`만 확보한 경우에는 코드 검증 시작점을 복구한 것으로 인정하지 않는다. 현재 `proposal.meta.workspace_id`와 `proposal.meta.commit_id`에 속하는 유효한 entity 또는 location을 최소 하나 이상 복구해야 한다.
+등록 전에는 다음 정보를 확인한다.
 
-복구한 정보는 자식 가설을 자동으로 지지하는 판정 근거가 아니라 검증을 시작하기 위한 계보 기반 Context다. R6는 복구한 시작점을 바탕으로 현재 `proposal.meta.workspace_id`와 `proposal.meta.commit_id`에서 필요한 Context를 직접 조회한다. 부모의 verdict나 결론을 자식에게 재사용하지 않고 결합 상황과 자식 가설을 처음부터 다시 검증한다.
+1. `PrimitiveMatchCandidate.upstream_result_ref`가 가리키는 upstream Primitive의 `result.entity_refs`
+2. `PrimitiveMatchCandidate.downstream_input_ref`가 가리키는 downstream Primitive의 `inputs[]` 중 `draft_id == matched_input_id`인 입력의 `entity_refs`
+3. upstream Primitive 자신의 모든 `inputs[].entity_refs`
+4. downstream Primitive에서 `matched_input_id`로 선택되지 않은 나머지 `inputs[].entity_refs`
+5. 부모 Primitive의 `privilege_level`과 각 단계의 `evidence_refs`
 
-proposal, `PrimitiveMatchCandidate`, upstream Primitive, downstream Primitive와 복구한 모든 entity·location reference는 현재 `proposal.meta.workspace_id`와 `proposal.meta.commit_id`에 속해야 한다. 계보의 reference 하나라도 다른 workspace 또는 commit을 가리키면 일부 reference만 제외하고 나머지 정보로 검증을 계속하지 않는다. 계보 전체를 유효하지 않은 입력으로 처리하여 proposal 등록과 Verification 배정을 거절한다.
+`matched_input_id`는 입력 항목을 식별하는 ID일 뿐 entity 또는 코드 위치가 아니다. 따라서 `matched_input_id`, `privilege_level`, `evidence_refs`만으로는 코드 검증 시작점을 확보한 것으로 인정하지 않는다. 현재 `proposal.meta.workspace_id`와 `proposal.meta.commit_id`에 속하는 유효한 entity 또는 location을 최소 하나 이상 복구해야 한다.
 
-계보가 끊겼거나, `draft_id == matched_input_id`인 downstream input을 찾을 수 없거나, 유효한 entity 또는 location을 하나도 복구하지 못한 경우에도 proposal 등록과 Verification 배정을 거절한다. 이미 Verification이 시작된 뒤 이러한 불일치를 발견했다면 final `VerificationResult`를 만들지 않고 verdict 없이 해당 work를 중단한다.
+proposal, `PrimitiveMatchCandidate`, upstream Primitive, downstream Primitive와 복구한 모든 entity·location reference는 `proposal.meta.workspace_id`와 `proposal.meta.commit_id`에 속해야 한다. 하나라도 다른 workspace 또는 commit을 가리키면 일부 reference만 제외하고 계속하지 않고 계보 전체를 유효하지 않은 입력으로 처리한다.
+
+계보가 끊겼거나, `draft_id == matched_input_id`인 downstream input을 찾을 수 없거나, 유효한 entity 또는 location을 하나도 복구하지 못하거나, workspace·commit이 일치하지 않으면 Proposal Validator와 Hypothesis Registry는 새 가설을 등록하지 않는다. Assignment Runtime도 해당 proposal에 Verification을 배정하지 않는다.
+
+#### 등록 후 Context 조회 전 재검사
+
+가설이 정상적으로 등록되고 Verification이 배정된 뒤에는 Context Retrieval Service가 실제 코드 조회 전에 같은 `source_primitive_match_id` 계보를 다시 확인한다.
+
+Context Retrieval Service는 다음을 검사한다.
+
+- 등록 전에 확인한 exact `PrimitiveMatchCandidate`와 부모 Primitive가 여전히 current인지
+- upstream의 `result.entity_refs`와 모든 `inputs[].entity_refs`가 유효한지
+- `draft_id == matched_input_id`인 downstream input과 해당 `entity_refs`가 유효한지
+- downstream의 나머지 `inputs[].entity_refs`가 유효한지
+- 모든 계보와 entity·location reference가 현재 `proposal.meta.workspace_id`·`proposal.meta.commit_id`와 일치하는지
+- 코드 조회를 시작할 유효한 entity 또는 location이 최소 하나 이상 존재하는지
+
+계보가 등록 후 stale 또는 무효 상태가 됐거나 위 조건 중 하나라도 충족하지 못하면 Context Retrieval Service는 Context 조회를 중단한다. 진행 중인 Context work와 Verification work는 final `VerificationResult`와 verdict 없이 중단한다. 계보 오류나 조회 실패를 `TRUE | FALSE | HOLD`의 근거로 변환하지 않는다.
+
+#### Verification Agent의 역할
+
+R6 Verification Agent는 `PrimitiveMatchCandidate`와 부모 Primitive를 직접 DB에서 조회하거나 proposal 등록·Verification 배정을 거절하지 않는다. R6는 exact proposal과 `source_primitive_match_id`를 포함한 `CodeContextRequest`로 필요한 Context를 요청하고, Context Retrieval Service가 검증하여 반환한 `CodeContextResponse`를 사용한다.
+
+반환된 정보는 자식 가설을 자동으로 지지하는 판정 근거가 아니라 검증 시작점이다. R6는 부모 verdict나 결론을 자식에게 상속하지 않고, 반환된 Context에서 결합 상황과 양쪽 부모의 남은 전제조건을 처음부터 다시 검증한다.
 
 다음 시나리오를 반드시 확인한다.
 
-| 시나리오 | 기대 결과 |
-|---|---|
-| `source_primitive_match_id` 계보가 끊겼거나 부모 Primitive를 찾을 수 없음 | proposal 등록과 Verification 배정을 거절한다. 이미 시작됐다면 final verdict 없이 work를 중단한다. |
-| `draft_id == matched_input_id`인 downstream input의 `entity_refs`가 없고 다른 유효한 entity 또는 location도 복구되지 않음 | 검증 시작점 복구 실패로 처리하고 Verification을 진행하지 않는다. |
-| proposal·match candidate·부모 Primitive·entity 또는 location reference 중 하나라도 `proposal.meta.workspace_id`·`proposal.meta.commit_id`와 다름 | 일부 reference만 제외하지 않고 계보 전체를 거절한다. |
-| 유효한 결합 지점과 양쪽 부모의 남은 입력 시작점을 정상적으로 복구함 | 현재 workspace·commit에서 upstream의 전제조건, 결합 지점과 downstream의 나머지 전제조건을 다시 확인하고, 부모 verdict를 재사용하지 않은 채 자식 가설을 처음부터 검증한다. |
+| 검사 시점 | 시나리오 | 기대 결과 |
+|---|---|---|
+| 등록 전 | `source_primitive_match_id` 계보가 끊겼거나 부모 Primitive를 찾을 수 없음 | Proposal Validator와 Hypothesis Registry가 새 가설 등록을 거절하고 Assignment Runtime이 Verification을 배정하지 않는다. |
+| 등록 전 | `draft_id == matched_input_id`인 downstream input의 `entity_refs`가 없고 다른 유효한 entity 또는 location도 없음 | 검증 시작점 복구 실패로 등록과 배정을 거절한다. |
+| 등록 전 | upstream Primitive의 `inputs[].entity_refs`가 복구 대상에서 누락됨 | 양쪽 부모의 전제조건을 완전히 복구하지 못한 것으로 처리하여 등록과 배정을 거절한다. |
+| 등록 전 | 계보의 reference 하나라도 `proposal.meta.workspace_id`·`proposal.meta.commit_id`와 다름 | 일부 reference만 제외하지 않고 계보 전체를 거절한다. |
+| 등록 후 | 등록 당시 유효했던 부모 계보가 Context 조회 전에 stale 또는 무효 상태가 됨 | Context Retrieval Service가 조회를 중단하고 final verdict 없이 Context·Verification work를 중단한다. |
+| 정상 | 결합 지점과 양쪽 부모의 남은 입력 시작점이 모두 유효함 | Context Retrieval Service가 Context를 반환하고 R6가 부모 verdict를 재사용하지 않은 채 자식 가설을 처음부터 검증한다. |
 
 ## 우회 인지 검증
 
