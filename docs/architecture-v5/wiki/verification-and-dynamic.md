@@ -46,6 +46,18 @@ token과 전체 시간·판정 변화·HOLD 해소·새 후보 수는 `Verificat
 
 판정 뒤 흐름도 다릅니다. `FALSE`는 terminal이며 Primitive와 Chaining으로 가지 않습니다. `HOLD`는 Gate 없이 `inputs`와 `result=null`인 Primitive를 즉시 저장합니다. `TRUE`는 validated PoC와 R5-01이 그 exact Verification에 맞춰 만든 current `CWELabel`을 Technical Gate가 `ACCEPT`한 뒤 정책 확인으로 갑니다. 금지 테스트 위반이 확정되지 않아 current admission이 `ALLOW`인 경우에만 제공 능력별 `result` Primitive가 됩니다. 다른 Rule Scope 판단은 Reporter만 제어합니다.
 
+### verdict 이후 수명주기
+
+- `FALSE`: Primitive 후보·Gate·Chaining 없이 종료합니다.
+- `HOLD`: `required_primitive_candidates` 전체가 `inputs`이고 `result=null`인 Primitive 하나를 Gate 없이 저장할 수 있습니다.
+- final `TRUE`: current generation의 성공한 동적 결과·validated PoC와 current `CWELabel`을 갖춘 뒤 Technical Gate로 갑니다. Technical `ACCEPT`와 current `PrimitiveAdmissionDecision.decision=ALLOW` 전에는 result Primitive나 Chaining 입력이 아닙니다.
+- Technical `REVISE`: 같은 ACTIVE Verification owner가 새 work·generation·result revision에서 다시 검증하며 과거 동적 결과·PoC·CWE·Gate·admission 자격을 재사용하지 않습니다.
+- admission `ALLOW`: provided 후보마다 `result`가 있는 Primitive 하나를 만들고, 각 Primitive의 `inputs`에는 같은 TRUE의 required 후보 전체를 복사합니다.
+- admission `DENY`: result Primitive와 Chaining을 차단하지만 부모 verdict를 바꾸지 않습니다.
+- Rule Scope의 범위·영향·보고 가능성 실패는 Reporter를 차단할 수 있지만, current admission이 `ALLOW`이면 내부 Chaining 자격은 유지됩니다.
+
+R6는 후보와 Gate action·exact reference를 만들고, trusted runtime이 commit·current pointer·Primitive 저장과 `PrimitiveIndexState` 갱신을 수행합니다. Chaining은 `TRUE + HOLD`와 `TRUE + TRUE`만 검사하며 결과로 부모 verdict를 변경하지 않습니다.
+
 판정에는 최소 근거가 필요합니다. TRUE는 핵심 공격 경로와 필요한 조건을 지지하는 근거가 있어야 합니다. FALSE는 이름이 있는 반증 질문이 실제 근거로 `DISPROVED`된 경우에만 가능합니다. 오류·timeout·정보 부족·Sandbox 실패는 FALSE 근거가 아닙니다. HOLD는 판단에 필요한 조건이나 환경이 아직 부족하다는 뜻입니다.
 
 기본 Context가 부족하면 검증 Agent가 같은 workspace·commit을 기준으로 추가 Context를 요청합니다. 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 기록하며 오류 자체를 verdict 근거로 사용하지 않습니다. 일부 조회가 실패했더라도 제한 retry·대체 조회·다른 정상 근거로 모든 `ValidationCheck`, 반증 질문과 운영 Pro/Con을 완료했다면 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있습니다. 하나라도 완료하지 못했다면 final `VerificationResult`를 만들지 않습니다. 재시도 가능하면 Verification work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지합니다. 복구할 수 없거나 재시도 한도를 소진하면 work와 가설 처리 상태를 `FAILED`로 끝냅니다. 정상 검증을 모두 마친 뒤에도 부족한 조건이 남는 경우에만 실제 근거와 `unresolved_conditions`를 연결해 `HOLD`로 판정할 수 있습니다. 운영 Pro/Con 전에 예산이 부족한 경우도 `BUDGET_EXCEEDED`로 작업을 중단하고 final verdict를 저장하지 않습니다.
