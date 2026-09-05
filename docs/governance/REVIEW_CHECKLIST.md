@@ -55,7 +55,7 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] Sandbox Controller는 host·Docker·mount/namespace·secret·egress·workspace·R8 resource/lifecycle 외부 경계만 검사하고 내부 command allowlist를 운영하지 않습니다.
 - [ ] Reproduction Session Manager만 append-only `AgentLog`, validated PoC와 `DynamicReproductionResult`를 확정합니다.
 - [ ] Chaining Agent는 upstream Primitive의 `result`→downstream Primitive의 특정 `input` matching만 수행하고 일반 research·동적 재현·Gate 보완을 하지 않습니다.
-- [ ] HOLD는 Gate 없이 `inputs`와 `result=null`인 Primitive가 되고, FALSE는 Primitive나 Chaining으로 들어가지 않습니다.
+- [ ] HOLD는 Gate 없이 처리하되 `required_primitive_candidates`가 하나 이상일 때만 전체 후보를 `inputs`, `result=null`로 둔 Primitive가 됩니다. 후보가 비어 있으면 Primitive와 Chaining work를 만들지 않으며, FALSE도 Primitive나 Chaining으로 들어가지 않습니다.
 - [ ] TRUE는 validated PoC와 Technical `ACCEPT`가 있고 금지 테스트 위반이 확정되지 않아 current `PrimitiveAdmissionDecision=ALLOW`인 exact revision만 `result`를 가진 Primitive가 됩니다. 다른 Rule Scope 판단은 Reporter만 제어합니다.
 - [ ] 새 Verification generation/revision에는 오래된 CWELabel·Technical review·Primitive admission decision을 재사용하지 않습니다. Gate는 current Verification·CWELabel pair가 아니면 거절하고, Chaining은 work 시작 시 고정하지 않은 Primitive·index·direct/ancestor admission reference가 결과에 섞이면 거절합니다. 일반 index 갱신과 사용하지 않은 후보 변경만으로는 진행 중 work를 무효화하지 않지만 실제 사용 decision이 오래됐거나 `DENY`이면 결과와 파생 current 사용을 차단합니다.
 - [ ] Technical Evidence Gate와 Rule Scope Impact Gate가 분리됩니다.
