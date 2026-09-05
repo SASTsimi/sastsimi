@@ -1924,6 +1924,85 @@ foreach ($rule in $requiredPlaybookApplicationRules) {
 }
 
 $verificationWikiText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/verification-and-dynamic.md')
+$requiredChainingOriginRecoveryRules = @(
+    @{
+        Name = 'canonical Verification resolves upstream result entities'
+        Text = $verificationText
+        Marker = '`PrimitiveMatchCandidate.upstream_result_ref`가 가리키는 upstream Primitive의 `result.entity_refs`'
+    },
+    @{
+        Name = 'canonical Verification resolves matched downstream input entities'
+        Text = $verificationText
+        Marker = '`draft_id == matched_input_id`인 입력을 찾고, 해당 입력의 `entity_refs`'
+    },
+    @{
+        Name = 'canonical Verification resolves remaining downstream input entities'
+        Text = $verificationText
+        Marker = '`matched_input_id`로 선택되지 않은 나머지 `inputs[].entity_refs`'
+    },
+    @{
+        Name = 'canonical Verification requires an entity or location'
+        Text = $verificationText
+        Marker = '유효한 entity 또는 location을 최소 하나 이상 복구해야 한다.'
+    },
+    @{
+        Name = 'canonical Verification uses proposal metadata scope'
+        Text = $verificationText
+        Marker = '`proposal.meta.workspace_id`와 `proposal.meta.commit_id`'
+    },
+    @{
+        Name = 'canonical Verification rejects the whole mismatched lineage'
+        Text = $verificationText
+        Marker = '일부 reference만 제외하고 나머지 정보로 검증을 계속하지 않는다.'
+    },
+    @{
+        Name = 'canonical Verification stops without a verdict after late failure'
+        Text = $verificationText
+        Marker = 'final `VerificationResult`를 만들지 않고 verdict 없이 해당 work를 중단한다.'
+    },
+    @{
+        Name = 'canonical Verification includes broken-lineage scenario'
+        Text = $verificationText
+        Marker = '| `source_primitive_match_id` 계보가 끊겼거나 부모 Primitive를 찾을 수 없음 |'
+    },
+    @{
+        Name = 'canonical Verification includes missing matched-input entity scenario'
+        Text = $verificationText
+        Marker = '| `draft_id == matched_input_id`인 downstream input의 `entity_refs`가 없고 다른 유효한 entity 또는 location도 복구되지 않음 |'
+    },
+    @{
+        Name = 'canonical Verification includes workspace and commit mismatch scenario'
+        Text = $verificationText
+        Marker = '| proposal·match candidate·부모 Primitive·entity 또는 location reference 중 하나라도 `proposal.meta.workspace_id`·`proposal.meta.commit_id`와 다름 |'
+    },
+    @{
+        Name = 'Verification Wiki explains matched downstream input entities'
+        Text = $verificationWikiText
+        Marker = '`draft_id == matched_input_id`인 입력의 `entity_refs`'
+    },
+    @{
+        Name = 'Verification Wiki requires an entity or location'
+        Text = $verificationWikiText
+        Marker = '유효한 entity 또는 location을 최소 하나 이상 확보해야 합니다.'
+    },
+    @{
+        Name = 'Verification Wiki rejects the whole mismatched lineage'
+        Text = $verificationWikiText
+        Marker = '계보 전체를 유효하지 않은 입력으로 처리합니다.'
+    },
+    @{
+        Name = 'Verification Wiki does not inherit the parent verdict'
+        Text = $verificationWikiText
+        Marker = '부모 verdict를 자식에게 물려주지 않고'
+    }
+)
+
+foreach ($rule in $requiredChainingOriginRecoveryRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing Chaining-origin Verification recovery rule: $($rule.Name)"
+    }
+}
+
 $requiredPlaybookCrossDocumentRules = @(
     @{ Name = 'role document defines registry runtime'; Text = $orchestrationText; Marker = '| Playbook Registry Runtime |' },
     @{ Name = 'role document fixes one question set'; Text = $orchestrationText; Marker = '같은 application 질문 집합을 사용하는지 검사' },
@@ -2133,6 +2212,7 @@ Write-Output 'HypothesisDuplicateReview required fields: 7'
 Write-Output 'ProposalProcessState duplicate fields: 3'
 Write-Output "Verification/Chaining scenarios: $($verificationChainingScenarioMarkers.Count)"
 Write-Output "Verification/Chaining semantic rules: $($requiredVerificationChainingRules.Count)"
+Write-Output "Chaining-origin recovery rules: $($requiredChainingOriginRecoveryRules.Count)"
 Write-Output "Production debate policy rules: $($requiredDebatePolicyRules.Count)"
 Write-Output "Context failure contract rules: $($requiredContextFailureRules.Count)"
 Write-Output "Validation completion contract rules: $($requiredVerificationCompletionRules.Count)"
