@@ -16,7 +16,7 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 
 ## 기본 검증 순서
 
-1. 배정된 가설의 `workspace_id`, `commit_id`, entity, location과 suspected path를 확인한다.
+1. 배정된 가설의 exact proposal에서 `workspace_id`, `commit_id`, `target_entities`, `target_locations`와 `suspected_path`를 확인한다. 단, `origin=CHAINING` proposal의 선택 필드가 비어 있는 경우에는 아래의 계보 기반 검증 시작점 복구 절차를 먼저 수행한다.
 2. `CodeContextRequest`로 caller/callee, data flow, auth guard와 route 문맥을 필요한 만큼 조회한다. 추가 Context 요청은 현재 가설과 같은 `workspace_id`·`commit_id`를 사용해야 한다. 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 기록하며 오류 자체를 verdict 근거로 사용하지 않는다. 일부 조회가 실패했더라도 제한 retry·대체 조회·다른 정상 근거로 모든 `ValidationCheck`, 반증 질문과 운영 Pro/Con을 완료했다면 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있다. 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증이 하나라도 미완료이면 final `VerificationResult`를 저장하지 않는다. 재시도할 수 있으면 work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지하며, 더 시도할 수 없으면 work와 `HypothesisProcessState`를 원자적으로 `FAILED`로 끝낸다. 운영 Pro/Con 전에 예산이 부족한 경우에도 `BUDGET_EXCEEDED`로 작업을 중단하고 final verdict를 저장하지 않는다. Context 부족이나 조회 실패를 `DISPROVED` 또는 `FALSE`로 변환하지 않는다.
 3. observed fact와 assumption을 분리하고 각 `FalsificationQuestion.question_id`를 확인한다.
 4. 운영 분석이면 Pro/Con Agent를 서로 독립된 NEW session으로 병렬 호출해 supporting/counter evidence를 모두 수집한다. BASIC 또는 조건부 debate는 격리된 평가 실행에서만 선택한다.
@@ -27,6 +27,20 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 9. 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 발견하면 `HypothesisProposal(origin=VERIFICATION)`으로 분리한다.
 10. final TRUE를 확정하면 R5-01 `CWE_LABELING` work를 요청한다. R5-01이 exact Verification에 맞는 current `CWELabel`을 확정한 뒤 Technical Evidence Gate를 요청한다. `REVISE`면 같은 Verification owner가 새 Verification을 만들고 R5-01이 CWE 정렬을 다시 평가해 새 label revision을 만든 뒤 다시 제출한다.
 11. HOLD의 부족 조건은 result 없는 Primitive로 즉시 Chaining에 넘길 수 있고, TRUE는 exact Technical `ACCEPT` 뒤 같은 chain의 Rule Scope 또는 정책 수집 결과로 R4가 current `PrimitiveAdmissionDecision=ALLOW`를 확정한 경우 result Primitive로 넘길 수 있다. Rule·Scope·Impact 결과는 현재 보고 경로에 별도로 적용한다.
+
+### Chaining-origin 가설의 검증 시작점 복구
+
+`origin=CHAINING` 가설의 `target_entities`, `target_locations` 또는 `suspected_path`가 비어 있으면 입력 오류로 처리하지 않는다. R6 Verification은 exact proposal의 `source_primitive_match_id`에서 `PrimitiveMatchCandidate`와 부모 Primitive를 따라가 검증 시작점을 확보한다.
+
+- 부모 Primitive의 `result.entity_refs`
+- `matched_input_id`로 선택되지 않은 나머지 `inputs[].entity_refs`
+- 결합 지점을 나타내는 `PrimitiveMatchCandidate.matched_input_id`
+- 부모 Primitive의 `privilege_level`
+- 각 단계의 `evidence_refs`
+
+이 정보는 자식 가설을 자동으로 지지하는 판정 근거가 아니라 검증을 시작하기 위한 계보 기반 Context다. R6는 이를 바탕으로 현재 `workspace_id`와 `commit_id`에서 필요한 Context를 직접 조회하고, 부모의 판정이나 결론을 재사용하지 않은 채 결합 상황과 자식 가설을 처음부터 검증한다.
+
+계보가 끊겼거나 검증 시작점을 하나도 얻을 수 없는 proposal은 등록·입력 계약 위반으로 거절하며 Verification을 시작하지 않는다. 복구한 reference가 현재 분석의 `workspace_id`와 `commit_id`에 속하지 않으면 해당 reference를 검증 입력으로 사용하지 않는다.
 
 ## 우회 인지 검증
 
