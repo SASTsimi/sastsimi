@@ -142,7 +142,7 @@ Pro·Con 호출 횟수는 같은 Verification work와 역할에 속한 중복 �
 - `FALSE`: 가설의 필수 조건을 묻는 named falsification 하나 이상이 실제 근거로 `DISPROVED`되었다. 다른 path 가능성까지 부정하지 않는다.
 - `HOLD`: 핵심 정보·환경·재현 조건이 부족하거나 상충해 현재 증거로 결론을 낼 수 없다.
 
-`HOLD`는 실패가 아니다. 누락 정보와 필요한 capability를 구조화해 exact final Verification revision에 연결된 result 없는 Primitive의 `inputs`로 즉시 저장하고 Chaining Agent의 matching 입력으로 사용할 수 있다. HOLD는 두 Gate를 거치지 않으며 확인된 능력이나 취약점으로 승격되지 않는다.
+`HOLD`는 실패가 아니다. 누락 정보와 필요한 capability를 `required_primitive_candidates`로 구조화하며, 후보가 하나 이상일 때만 exact final Verification revision에 연결된 result 없는 Primitive의 `inputs`로 저장해 Chaining Agent의 matching 입력으로 사용할 수 있다. 후보가 비어 있으면 Primitive와 Chaining work를 만들지 않고 HOLD 처리를 끝낸다. HOLD는 두 Gate를 거치지 않으며 확인된 능력이나 취약점으로 승격되지 않는다.
 
 `TRUE`도 판정 직후에는 Chaining 입력이 아니다. 현재 revision이 Technical `ACCEPT`를 받은 뒤 R4 `PRIMITIVE_ADMISSION_RUNTIME`이 Rule Scope 또는 정책 수집 결과를 매핑한 current `PrimitiveAdmissionDecision=ALLOW`가 있어야 제공 능력을 `result`로 가진 Primitive가 된다. prohibited-testing `FAIL`은 `DENY`로 차단하지만 `UNCERTAIN | COLLECTION_FAILED`와 다른 report eligibility 실패는 Reporter만 차단한다. `FALSE`는 terminal internal result이며 Primitive와 Chaining work를 만들지 않는다.
 
@@ -169,6 +169,32 @@ Pro·Con 호출 횟수는 같은 Verification work와 역할에 속한 중복 �
 정상적으로 조회됐지만 결과가 비어 있거나 일부만 반환된 것은 정보 부족으로 처리한다. 요청 실패·timeout·권한 오류는 실행 오류지만, final 결과 허용 여부는 오류의 존재 자체가 아니라 모든 필수 검증의 완료 여부로 결정한다. Runtime은 오류를 verdict로 바꾸거나 미완료 검증 대신 `HOLD`를 만들지 않는다.
 
 미지원 취약점 유형도 후속 Issue만 생성하고 현재 실행을 끝내서는 안 된다. 공통 플레이북으로 수행할 수 있는 검증을 먼저 진행하고, 정상 검증 후 유형별 정보가 부족하면 `HOLD`, 실행 자체가 실패하면 실행 오류를 기록한다. 그 상태를 기록한 뒤 유형별 플레이북 추가 Issue를 연결한다. 후속 Issue는 현재 실행 상태나 verdict를 대신하지 않는다.
+
+## final verdict 이후 Gate·Primitive·Chaining 수명주기
+
+R6가 final `VerificationResult`를 준비한 뒤의 진행은 다음 상태 전이표를 따른다.
+
+| final verdict 또는 Gate 결과 | R6가 기록·요청하는 것 | trusted runtime이 강제하는 것 | 다음 단계 |
+|---|---|---|---|
+| `FALSE` | 두 Primitive 후보 목록을 비운다. | Gate·Primitive·Chaining work 등록을 거절한다. | 종료 |
+| `HOLD` | `required_primitive_candidates`와 근거·`unresolved_conditions`를 기록한다. | exact final HOLD이고 `required_primitive_candidates`가 하나 이상일 때만 후보 전체를 `inputs`로, `result=null`로 가진 Primitive 하나를 저장한다. 후보 목록이 비어 있으면 Primitive를 저장하지 않는다. | 후보가 있으면 Gate 없이 Chaining 후보 |
+| Gate 전 final `TRUE` | required/provided 후보와 current-generation 동적 결과·validated PoC를 기록하고 R5-01 `CWE_LABELING`을 요청한다. | current `CWELabel` 전에는 Technical Gate를, Technical `ACCEPT`와 admission `ALLOW` 전에는 result Primitive를 차단한다. | CWE → Technical Gate |
+| Technical `REVISE` | 같은 ACTIVE assignment owner가 요청 내용을 받아 근거·설명·restriction을 보완한다. | 기존 work를 되돌리지 않고 새 VERIFICATION work·증가한 generation을 만들며 hypothesis를 `TERMINAL -> VERIFYING`으로 전환한다. | 새 final Verification |
+| Technical `REJECT` | 부모 verdict를 바꾸지 않는다. | result Primitive·Chaining·Reporter 진행을 차단한다. | 내부 종결 |
+| Technical `ACCEPT` | 같은 exact Verification·`CWELabel`로 Rule Scope Gate를 요청한다. | stale·mismatched reference를 거절한다. | 정책·금지 테스트 검토 |
+| current admission `ALLOW` | 추가 verdict를 만들지 않는다. | provided 후보마다 Primitive 하나를 저장한다. 각 `result`는 후보 하나, `inputs`는 같은 TRUE의 `required_primitive_candidates` 전체다. Chaining에 사용할 때는 해당 Primitive와 `source_primitive_match_id` 계보로 연결된 모든 result Primitive의 admission이 current `ALLOW`인지 확인한다. | 계보 검사 통과 시 Chaining 후보 |
+| current admission `DENY` | 부모 verdict를 바꾸지 않는다. | result Primitive·Chaining을 차단한다. | Reporter도 차단 |
+| Rule Scope 보고 조건 실패 + admission `ALLOW` | 부모 verdict를 바꾸지 않는다. | Reporter만 차단하고 Chaining 재료 자격은 유지한다. | 내부 Chaining 가능 |
+
+Primitive admission과 보고 가능성은 같은 판정이 아니다. R5가 정책·`testing_restriction_compliance`를 생산하면 R4 `PRIMITIVE_ADMISSION_RUNTIME`이 current `PrimitiveAdmissionDecision`을 만든다. result Primitive와 Chaining은 `decision=ALLOW`만 사용한다. Rule Scope의 범위·영향·보상 대상·`report_permission`은 Reporter 자격을 별도로 결정한다.
+
+R6는 `required_primitive_candidates`, `provided_primitive_candidates`, Gate action과 exact reference를 생산한다. result commit, current result pointer, Primitive 저장·제거와 `PrimitiveIndexState` 갱신은 trusted runtime의 책임이다. R6는 이를 직접 admission하거나 ACTIVE로 만들지 않는다.
+
+TRUE의 필요 조건은 별도 HOLD Primitive로 만들지 않는다. admission된 각 result Primitive의 `inputs`에 같은 TRUE의 `required_primitive_candidates` 전체를 내용·순서 그대로 복사한다. Chaining은 같은 `workspace_id`·`commit_id`, `entity_refs` 일치 또는 코드 흐름 연결, 권한 조건, 성립 순서, 합산된 restrictions와 실제 코드·검증 근거를 모두 확인해 upstream result가 downstream input을 충족하는지 판단한다. 매칭이 성립한 뒤에만 해당 downstream `inputs[].draft_id`를 `PrimitiveMatchCandidate.matched_input_id`로 기록한다. `draft_id` 자체를 서로 다른 Verification 사이의 매칭 기준으로 사용하지 않는다.
+
+Chaining 결과를 저장하기 직전에 실제로 사용한 Primitive와 `source_primitive_match_id` 계보로 도달하는 모든 result Primitive의 `PrimitiveAdmissionDecision`을 다시 확인한다. 하나라도 current가 아니거나 `DENY`로 바뀌었으면 `STALE_RESULT`로 저장을 거절하고 새 child hypothesis를 만들지 않는다. 이미 만들어진 파생 결과는 감사 기록으로만 보존하며 새 Verification·Gate·Primitive·Reporter 입력으로 사용하지 않는다. 이 과정에서 기존 부모 `VerificationResult.verdict`는 변경하지 않는다.
+
+새 Verification generation이 만들어지면 이전 dynamic result·validated PoC·`CWELabel`·Technical review·Rule Scope review·admission decision과 그 자격을 새 generation에 재사용하지 않는다. 기존 record는 감사 이력으로 보존하되 current index와 새 Gate·Chaining 입력에서 제외한다. child proposal이나 Chaining 결과도 부모 `VerificationResult.verdict`를 변경하지 않는다.
 
 ### Initial verdict와 final verdict
 

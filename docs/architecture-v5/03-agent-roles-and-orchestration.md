@@ -83,7 +83,8 @@ HypothesisProcessState: REGISTERED -> ASSIGNED -> VERIFYING
                                                -> FAILED (no final verdict)
 Technical REVISE: TERMINAL -> same assignment + new VERIFICATION work -> VERIFYING
 VerificationResult.verdict -> TRUE | FALSE | HOLD
-HOLD -> Primitive inputs with result null -> Chaining eligible
+HOLD + non-empty required_primitive_candidates -> Primitive inputs with result null -> Chaining eligible
+HOLD + empty required_primitive_candidates -> no Primitive -> no Chaining work
 TRUE -> Technical ACCEPT -> policy check and Rule Scope testing restriction review
 -> PrimitiveAdmissionDecision ALLOW -> Primitive with result -> Chaining eligible
 -> PrimitiveAdmissionDecision DENY -> no result Primitive
