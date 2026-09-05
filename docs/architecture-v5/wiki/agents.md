@@ -22,8 +22,7 @@
 | Chaining | upstream Primitive 결과→downstream Primitive 입력 matching과 새 가설 제안 | 일반 research, dynamic, REVISE, verdict/CWE/Gate/Finding/report 확정 |
 | R5-01 CWE Labeling | final TRUE를 exact CWE 분류 record로 정리 | Verification verdict 변경, 과거 label 재사용, Gate 판정 생성 |
 | Technical Evidence Gate | verdict-evidence·코드/동적 연결·CWE·restriction 검토 | verdict 변경 |
-| Rule Scope Impact Gate | 공식 rule/scope·금지 테스트·실제 impact·report permission 검토 | 공식 자료 없는 추정 승인 |HOLD + required candidates → inputs plus null result Primitive → Chaining
-HOLD + no required candidates → no Primitive and no Chaining work
+| Rule Scope Impact Gate | 공식 rule/scope·금지 테스트·실제 impact·report permission 검토 | 공식 | Rule Scope Impact Gate | 공식 rule/scope·금지 테스트·실제 impact·report permission 검토 | 공식 자료 없는 추정 승인 |
 | Primitive Admission Runtime | Rule Scope의 금지 테스트 판정과 정책 수집 상태를 정해진 표로 바꿔 체이닝 재료 사용 허용·거절 | 정책 원문 재해석, Gate 결과 변경 |
 | Reporter | 통과한 근거로 내부 보고서 초안 작성 | 새 근거 확정, 제출·공개 |
 
@@ -36,7 +35,8 @@ R7 planning → EnvironmentRequirements and simple ReproductionPlan
 Runtime Validator → enforce one dynamic work per generation → authorize Sandbox call
 Sandbox Controller checks external boundary → Setup Automation prepares recipe and clean environment
 R7 Agent creates PoC candidate and autonomously runs it → Session Manager stores AgentLog and same-attempt result → Verification final verdict
-HOLD + required candidates → inputs plus null result Primitive → ChainingHOLD + no required candidates → no Primitive and no Chaining work
+HOLD + required candidates → inputs plus null result Primitive → ChainingHOLD + no required HOLD + required candidates → inputs plus null result Primitive → Chaining
+HOLD + no required candidates → no Primitive and no Chaining work
 TRUE → R5-01 CWE_LABELING → current CWELabel → Technical Gate → policy and Rule Scope review
 Technical-accepted TRUE → PrimitiveAdmissionDecision ALLOW → result Primitive → Chaining
 Verification or Chaining material claim → new hypothesis → new Verification
