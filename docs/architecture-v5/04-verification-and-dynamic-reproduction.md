@@ -37,7 +37,7 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 1. `source_primitive_match_id`가 가리키는 exact `PrimitiveMatchCandidate`를 확인한다.
 2. `PrimitiveMatchCandidate.upstream_result_ref`가 가리키는 upstream Primitive의 `result.entity_refs`를 확인한다.
 3. `PrimitiveMatchCandidate.downstream_input_ref`가 가리키는 downstream Primitive의 `inputs[]`에서 `draft_id == matched_input_id`인 입력을 찾고, 해당 입력의 `entity_refs`를 실제 결합 지점의 검증 시작점으로 확인한다.
-4. 같은 downstream Primitive에서 `matched_input_id`로 선택되지 않은 나머지 `inputs[].entity_refs`를 남은 전제조건의 검증 시작점으로 확인한다.
+4. upstream Primitive 자신의 `inputs[].entity_refs`와, downstream Primitive에서 `matched_input_id`로 선택되지 않은 나머지 `inputs[].entity_refs`를 양쪽 부모의 남은 전제조건에 대한 검증 시작점으로 확인한다.
 5. 부모 Primitive의 `privilege_level`과 각 단계의 `evidence_refs`를 함께 확인한다.
 
 `matched_input_id`는 입력 항목을 식별하는 ID일 뿐 entity 또는 코드 위치가 아니다. 따라서 `matched_input_id`, `privilege_level`, `evidence_refs`만 확보한 경우에는 코드 검증 시작점을 복구한 것으로 인정하지 않는다. 현재 `proposal.meta.workspace_id`와 `proposal.meta.commit_id`에 속하는 유효한 entity 또는 location을 최소 하나 이상 복구해야 한다.
@@ -55,7 +55,7 @@ proposal, `PrimitiveMatchCandidate`, upstream Primitive, downstream Primitive와
 | `source_primitive_match_id` 계보가 끊겼거나 부모 Primitive를 찾을 수 없음 | proposal 등록과 Verification 배정을 거절한다. 이미 시작됐다면 final verdict 없이 work를 중단한다. |
 | `draft_id == matched_input_id`인 downstream input의 `entity_refs`가 없고 다른 유효한 entity 또는 location도 복구되지 않음 | 검증 시작점 복구 실패로 처리하고 Verification을 진행하지 않는다. |
 | proposal·match candidate·부모 Primitive·entity 또는 location reference 중 하나라도 `proposal.meta.workspace_id`·`proposal.meta.commit_id`와 다름 | 일부 reference만 제외하지 않고 계보 전체를 거절한다. |
-| 유효한 시작점을 정상적으로 복구함 | 현재 workspace·commit에서 Context를 다시 조회하고 부모 verdict를 재사용하지 않은 채 자식 가설을 처음부터 검증한다. |
+| 유효한 결합 지점과 양쪽 부모의 남은 입력 시작점을 정상적으로 복구함 | 현재 workspace·commit에서 upstream의 전제조건, 결합 지점과 downstream의 나머지 전제조건을 다시 확인하고, 부모 verdict를 재사용하지 않은 채 자식 가설을 처음부터 검증한다. |
 
 ## 우회 인지 검증
 
