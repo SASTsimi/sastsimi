@@ -75,7 +75,7 @@ CodeQL·OpenGrep처럼 규칙을 실행하는 도구는 `ToolRunResult.tool_kind
 
 한 도구가 `FAILED | SKIPPED`여도 다른 도구의 사용 가능한 사실을 버리지 않는다. 이때 전체 묶음에는 해당 `ToolRunResult`, 존재하는 `RuleExecutionRecord`, `DataGap`, 필요한 `AnalysisError`가 함께 있어야 한다. retry는 같은 `work_id`의 새 `attempt_id`와 새 규칙 실행 record를 사용하며 이전 시도의 규칙 상태나 탐지 수를 합치지 않는다.
 
-AST/SAST 도구 실행(`RUN_TOOL`) 자체의 시간 한도는 도구당 900초, 재시도 1회다(`07-results-and-observability.md`의 "실행 예산" 표, `AST/SAST (RUN_TOOL)` 행 참고). 같은 `CodeWorkspace` 안에서 도구마다 별도 work로 병렬 실행하며, 도구 자체 timeout은 이 한도를 넘지 않는다. 이 한도를 넘겨 중단된 work는 `PARTIAL | FAILED`가 될 수 있으며, 위 `ToolRunResult.status` 규칙과 마찬가지로 `hit_count=0`·안전함·`FALSE`의 근거로 자동 해석하지 않는다.
+AST/SAST 도구 실행(`RUN_TOOL`) 자체의 시간 한도는 현재 R8-03 제안 초안 기준으로 도구당 900초, 같은 요청 재시도 1회다(`07-results-and-observability.md`의 "실행 예산" 표, `AST/SAST (RUN_TOOL)` 행 참고). 이 표 전체가 "제안(교차 전) 초안"이므로 이 값도 실측·확정값이 아닌 잠정값이며, 실제 실행에서는 versioned R8 예산 설정의 정확한 revision을 기준으로 검사한다. 같은 `CodeWorkspace` 안에서 도구마다 별도 work로 병렬 실행하며, 도구 자체 timeout은 이 한도를 넘지 않는다. 이 한도를 넘겨 중단된 work는 `PARTIAL | FAILED`가 될 수 있으며, 위 `ToolRunResult.status` 규칙과 마찬가지로 `hit_count=0`·안전함·`FALSE`의 근거로 자동 해석하지 않는다.
 
 ## source reachability 판단
 
