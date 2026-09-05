@@ -22,7 +22,7 @@ final TRUE `VerificationResult`의 찬반 근거, 실제 코드·호출·데이�
 
 ## 2. 공식 정책·범위·영향 검토(`Rule Scope Impact Gate`)
 
-정책 경로는 `Policy collection/parser -> PolicyParserResult -> PolicyCollectionResult 확인 -> ProgramPolicyRecord -> Rule Scope Impact Gate -> Reporter`입니다. Parser와 Collector가 공통 artifact를 만들고 R5는 Rule·Scope·Impact 의미만 판단합니다.
+정책 경로는 `Policy collection/parser -> PolicyParserResult -> PolicyCollectionResult 확인 -> ProgramPolicyRecord -> Rule Scope Impact Gate -> 신뢰 runtime의 current Finding 정규화 -> Reporter`입니다. Parser와 Collector가 공통 artifact를 만들고 R5는 Rule·Scope·Impact 의미만 판단합니다. Finding 정규화는 아래 "Finding 정규화" 섹션을 따릅니다.
 
 Technical `ACCEPT`인 `TRUE`만 정책 수집 결과와 함께 검토합니다. 정책 수집은 `FOUND`, `ABSENT_CONFIRMED`, `COLLECTION_FAILED`를 구분합니다. `FOUND`이면 exact `ProgramPolicyRecord`도 함께 읽고, `ABSENT_CONFIRMED`이면 정책을 추정하지 않고 `UNCERTAIN + DENY`로 검토할 수 있습니다. `COLLECTION_FAILED`는 Rule Scope review를 만들지 않습니다.
 
@@ -56,7 +56,7 @@ testing restriction은 `verification_result_ref -> dynamic_result_ref`의 canoni
 
 R5는 `testing_restriction_compliance`와 provenance를 만들고 R4 `PRIMITIVE_ADMISSION_RUNTIME`이 current `PrimitiveAdmissionDecision`을 확정한다. `FAIL`만 `DENY`로 Primitive·Chaining·Reporter를 차단한다. `PASS | UNCERTAIN`은 admission `ALLOW`이며, `COLLECTION_FAILED`는 review 없이 `NOT_EVALUATED + ALLOW`로 구분한다. `UNCERTAIN`과 수집 실패는 Primitive·Chaining을 허용하지만 Reporter는 차단한다. `RuleScopeEvidenceLink.area=TESTING_RESTRICTION`은 공식 정책과 exact 실행 근거를 연결하는 provenance이며 판정값이나 저장 authority가 아니다.
 
-child proposal은 독립 Verification을 거치며 child TRUE가 부모 impact를 자동 높이지 않는다. 부모 impact 판단은 current parent `VerificationResult`의 exact evidence/reference closure에 이미 검증되어 포함된 사실만 소비하며, Gate 2가 별도 child-adoption schema를 만들거나 child 결과를 부모 사실로 승격하지 않는다.
+child proposal은 독립 Verification lifecycle을 거치며 child TRUE가 부모 impact를 자동 높이지 않는다. 부모 impact 판단은 current parent `VerificationResult`의 exact evidence/reference closure에 이미 검증되어 포함된 사실만 소비하며, Gate 2가 child 결과를 부모 사실로 승격하거나 부모 Verification에 흡수하지 않는다. 동일 material claim의 보강은 부모 supporting evidence로 유지한다. 서로 다른 material claim 사이의 능력 결합이 필요하면 흡수 대신 Primitive Chaining을 쓴다. Chaining은 한 TRUE의 result가 HOLD의 `required_primitive_candidates`에 기록된 부족한 input을 충족하는 `TRUE + HOLD`, 또는 한 TRUE의 result가 다른 TRUE에 이미 기록된 input을 충족하는 `TRUE + TRUE`만 확인한다. 두 경우 모두 result와 input을 단순히 합치는 것이 아니라 같은 workspace·commit, 코드 흐름·권한·실행 순서·합산 restriction 근거로 `result → input` 연결이 성립할 때만 매칭한다. 매칭되면 새 결합 hypothesis가 독립 Verification과 Technical Gate·Gate 2를 새로 수행한다.
 
 Gate 판단 시점부터 policy가 `STALE | UNVERIFIED`인데 `ALLOW`이면 생성 당시 모순이므로 `INVALID_OUTPUT`이다. 정상 policy와 revision으로 생성된 review가 이후 upstream 변경 때문에 오래된 경우에는 기존 review 자체를 invalid로 바꾸지 않고, 새 revision의 Reporter에 재사용하지 못하게 runtime이 차단한다.
 공식 정책 부재가 확인된 `ABSENT_CONFIRMED`이거나 정책의 `freshness_status`가 `STALE | UNVERIFIED`이면 rule/scope/review는 `UNCERTAIN`이고 permission은 `DENY`입니다. 오래된 정책 reference는 감사용으로 남길 수 있지만 `PASS | ALLOW` 근거로 쓰지 않습니다. 수집 실패 `COLLECTION_FAILED`는 review를 만들지 않으며, 저장소 문서나 모델 기억으로 공식 정책을 추정하지 않습니다.
@@ -64,6 +64,10 @@ Gate 판단 시점부터 policy가 `STALE | UNVERIFIED`인데 `ALLOW`이면 생�
 validated PoC를 가진 TRUE의 exact revision을 Technical Gate가 `ACCEPT`하면 정책 수집과 Rule Scope 검토를 진행한다. Rule Scope는 금지 테스트 위반 여부를 `testing_restriction_compliance`로 다른 판단과 분리한다. 이 값이 `FAIL`이면 result Primitive를 만들지 않고, `PASS | UNCERTAIN`이면 admission `ALLOW` 뒤 제공 능력별 Primitive를 저장한다. 정책 수집 실패는 `NOT_EVALUATED + ALLOW`로 구분하되 Reporter는 막는다. 나머지 `review/rule/scope PASS`, `impact SUFFICIENT`, `permission ALLOW`를 모두 만족해야 Reporter를 호출할 수 있다. 다른 Rule Scope 항목의 `FAIL | UNCERTAIN | DENY`는 보고서만 막고 current `ALLOW` Primitive와 Chaining 자격은 유지한다. 새 Verification revision에는 과거 Gate·동적 결과·PoC·admission decision을 재사용하지 않는다. HOLD는 Gate를 거치지 않지만 `required_primitive_candidates`가 하나 이상일 때만 전체 후보를 `inputs`, `result=null`로 둔 Primitive로 Chaining에 들어간다. 후보가 비어 있으면 Primitive와 Chaining 작업을 만들지 않는다.
 
 이 판단은 Rule Scope Gate가 내립니다. 프로그램 검사기는 정책 문장의 뜻을 다시 판단하지 않고 결과 형식과 공식 출처 연결을 확인합니다. 정상적인 `UNCERTAIN + DENY`는 그대로 저장하고 Reporter만 부르지 않습니다.
+
+## Finding 정규화
+
+`Finding`은 새 취약점 Gate가 아니라, 두 Gate가 같은 exact chain에서 검토를 끝낸 결과를 신뢰 runtime이 하나의 current 취약점 record로 정규화한 것입니다. `RuleScopeImpactReview`가 `COMMITTED`되면(`review_status`·`report_permission` 값과 무관) 신뢰 runtime이 final TRUE Verification·validated PoC를 가진 current 동적 결과·current CWELabel·Technical `ACCEPT`·current Rule Scope review의 exact chain에서 Finding을 만듭니다. 정책 `COLLECTION_FAILED`로 Rule Scope review가 없으면 Finding을 만들지 않습니다. Finding은 새 verdict·attack path·impact를 만들지 않고 claim 강도는 verified upstream 이하이며, 미검증 candidate·실패 PoC·Chaining proposal을 사실로 승격하지 않고 restriction·limitation·unresolved condition을 보존합니다. Finding 저장 흐름은 `RULE_SCOPE_GATE → FINDING_NORMALIZE → Reporter readiness`입니다. `RULE_SCOPE_GATE`의 `SUCCEEDED`와 review의 `COMMITTED` 이후 전용 `FINDING_NORMALIZE` work를 실행합니다. `FINDING_NORMALIZE`는 trusted runtime의 비-LLM normalization work이며 새 autonomous Agent나 LLM Gate가 아닙니다. 저장 primitive와 result owner는 R4 계약([구현 모듈 맵](../implementation/01-module-map.md) B2)을 따릅니다. Finding closure의 hypothesis-local artifact에 대해서만 동일 `meta.hypothesis_id`를 요구한다. `ProgramPolicyRecord`, `PolicyCollectionResult` 등 hypothesis 비종속 정책 record에는 `hypothesis_id` 일치를 요구하지 않으며, 기존 exact `StoredDataRef`, `meta.workspace_id`·`meta.commit_id` 및 policy revision/provenance 계약으로 검증한다. Verification generation/revision·CWELabel·두 Gate·동적 결과·PoC·고정 정책이 바뀌면 기존 Finding은 stale이 되어 새 Reporter 실행에 쓸 수 없고 새 exact chain에서 다시 정규화합니다.
 
 ## Reporter 조건
 
@@ -78,7 +82,7 @@ TRUE
 + permission ALLOW
 ```
 
-Reporter는 위 조건을 모두 만족하고 current Finding이 있으며 exact revision closure와 `REPORT_READY`, 동일 ACTIVE Verification owner를 runtime이 확인한 때만 내부 ReportDraft를 만든다. 두 Gate가 검토한 CWELabel과 보고서 초안의 `cwe_label_ref.record_id`가 다르면 초안을 만들지 않는다. 이 upstream 중 하나가 새 revision으로 바뀌면 기존 초안은 감사 기록으로만 남고 새 Gate·Reporter 결과가 나오기 전까지 current 결과로 쓸 수 없다. 두 Gate와 Reporter 모두 외부 제출·공개 권한이 없다.
+Reporter는 위 6축 정책 조건을 모두 만족하고, 그와 별개로 current non-stale Finding이 있으며 exact revision closure와 `REPORT_READY`, 동일 ACTIVE Verification owner를 runtime이 확인한 때만 내부 ReportDraft를 만든다. Finding이 있어도 6축 중 하나가 미달이면 Reporter만 차단하고 Finding은 보존한다. 두 Gate가 검토한 CWELabel과 보고서 초안의 `cwe_label_ref.record_id`가 다르면 초안을 만들지 않는다. 이 upstream 중 하나가 새 revision으로 바뀌면 기존 초안은 감사 기록으로만 남고 새 Gate·Reporter 결과가 나오기 전까지 current 결과로 쓸 수 없다. 두 Gate와 Reporter 모두 외부 제출·공개 권한이 없다.
 
 Reporter는 검증된 사실을 합성·표현할 뿐 새 vulnerability fact, attack path, reproduction/PoC 성공,
 policy·scope 판단이나 upstream보다 강한 severity·exploitability·security impact를 만들지 않습니다.

@@ -27,7 +27,7 @@ Runtime은 work를 시작할 때 조상 제외 전 전체 Primitive를 `consider
 
 `source_result_refs`와 각 match의 부모 가설·Verification 목록은 실제 match에 사용한 Primitive가 직접 가리키는 값만 중복 없이 모읍니다. 빠진 값, 관계없는 값, 다른 work의 값을 넣으면 결과를 저장하지 않습니다.
 
-`origin=CHAINING` 자식의 `observed_facts`는 빈 목록으로 고정합니다. Chaining Agent가 코드 사실을 새로 만들지 않고, 자식 Verification이 `source_primitive_match_id`를 따라 부모 Primitive의 entity와 location에서 다시 확인합니다. 부모 계보가 끊겨 검증 시작점을 찾을 수 없으면 자식 가설을 등록하지 않습니다.
+`origin=CHAINING` 자식의 `observed_facts`는 빈 목록으로 고정합니다. Chaining Agent가 코드 사실을 새로 만들지 않고, Context Retrieval Service가 `CONTEXT_RETRIEVAL` work에 고정된 exact proposal의 `source_primitive_match_id`를 따라 부모 Primitive에서 검증 시작점을 복구하고, 자식 Verification은 반환된 `CodeContextResponse`로 다시 확인합니다. 부모 계보가 끊겨 검증 시작점을 찾을 수 없으면 자식 가설을 등록하지 않습니다.
 
 일반 우회·대체 경로·영향 탐색, 동적 재현과 Technical `REVISE` 보완은 Verification이 담당합니다. 어느 child도 부모 판정을 바꾸지 않습니다.
 
@@ -45,6 +45,6 @@ Runtime은 work를 시작할 때 조상 제외 전 전체 Primitive를 `consider
 
 이 규칙은 순환 방지가 아닙니다 — record가 불변·append-only라 계보는 이미 DAG입니다. 상세 문서 §06대로, 같은 계보에서는 가장 깊은 후보부터 match를 검토하고 그 match가 실제로 성립한 뒤에만 그 후보의 양쪽(upstream·downstream) Primitive를 재귀 추적해 얻은 조상을 현재 순회의 후보에서 제외합니다. match가 성립하지 않으면 아무것도 제외하지 않고 얕은 후보를 그대로 검토합니다. 조상 쪽은 새 Primitive가 등장하기 전부터 이미 서로 연결이 확정돼 있었으므로, 가장 깊은 match가 성립한 시점에서 그 결론이 얕은 조합들의 결론을 이미 포함합니다. 대신 가장 깊은 조합의 자식 가설이 이후 검증에서 실패해도 제외된 얕은 조합은 다시 제안되지 않으며, 이는 중복 제안을 줄이는 대가로 의도적으로 수용한 미탐 위험입니다. 계보가 겹치지 않는 다른 Primitive의 재사용은 막지 않습니다. 실제 제외한 항목은 `excluded_lineage_refs`에 제외된 Primitive, 제외 근거가 된 같은 work의 Primitive와 `ANCESTOR_REUSE` 이유를 함께 남깁니다. Runtime은 이 기록을 고정된 `considered_primitive_refs`와 다시 비교해 누락·추가·잘못된 계보를 거절합니다. 별도 루트 ID나 깊이 숫자, 체이닝 전용 임의 깊이·호출·조합 한도는 저장하지 않습니다.
 
-체이닝 전용 depth·count·call·조합·token 상한은 두지 않습니다. R8의 전체 시간·비용·작업 예산, 중복 fingerprint와 조상 재사용은 Runtime Validator가 검사하며, 중단은 `FALSE`가 아닙니다. token은 사용량만 관측합니다.
+체이닝 전용 depth·count·call·조합·token 상한은 두지 않습니다. R8의 전체 시간·비용·작업 예산, 중복 match 조합과 조상 재사용은 Runtime Validator가 검사하며, 중단은 `FALSE`가 아닙니다. token은 사용량만 관측합니다.
 
 상세 내용은 [Primitive DB와 Chaining](../06-chaining.md)을 따릅니다.

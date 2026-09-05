@@ -79,6 +79,14 @@
 | [`12-report-draft-template.md`](./architecture-v5/12-report-draft-template.md) | Gate를 통과한 결과를 사람이 검토할 보고서 초안으로 정리하는 양식입니다. | Gate·보고서 담당 | 기준 문서 |
 | [`13-architecture-diagrams.md`](./architecture-v5/13-architecture-diagrams.md) | 전체 흐름과 역할 관계를 Mermaid 그림으로 보여 줍니다. | 모든 팀원 | 기준 문서 |
 
+## Architecture v5 구현 준비 문서
+
+번호 문서의 설계 의미를 실제 모듈·입출력·테스트 단위로 옮깁니다. 번호 문서나 공통 계약과 충돌하면 번호 문서와 공통 계약이 우선합니다.
+
+| 파일 | 쉽게 말하면 | 주로 읽는 사람 | 구분 |
+|---|---|---|---|
+| [`implementation/01-module-map.md`](./architecture-v5/implementation/01-module-map.md) | 정본 22단계를 실행 모듈, 입력·출력, 저장 위치, 오류와 테스트에 연결합니다. | 전체 구현 담당자·R1~R8 검토자 | 구현 준비 기준 |
+
 ## Architecture v5 쉬운 Wiki
 
 Wiki는 번호 문서의 쉬운 요약입니다. Wiki만 수정해 새로운 규칙을 만들 수 없습니다.
@@ -88,7 +96,7 @@ Wiki는 번호 문서의 쉬운 요약입니다. Wiki만 수정해 새로운 규
 | [`wiki/README.md`](./architecture-v5/wiki/README.md) | Wiki의 성격과 추천 읽기 순서를 설명합니다. | 처음 설계를 읽는 팀원 | 쉬운 요약 |
 | [`wiki/_Sidebar.md`](./architecture-v5/wiki/_Sidebar.md) | Wiki 왼쪽 메뉴를 구성합니다. | Wiki 이용자 | 보조 파일 |
 | [`wiki/quick-guide.md`](./architecture-v5/wiki/quick-guide.md) | Architecture v5를 약 5분 안에 이해하도록 핵심만 요약합니다. | 처음 참여한 팀원 | 쉬운 요약 |
-| [`wiki/pipeline.md`](./architecture-v5/wiki/pipeline.md) | 23단계 전체 흐름을 짧게 설명합니다. | 모든 팀원 | 쉬운 요약 |
+| [`wiki/pipeline.md`](./architecture-v5/wiki/pipeline.md) | 22단계 전체 흐름을 짧게 설명합니다. | 모든 팀원 | 쉬운 요약 |
 | [`wiki/agents.md`](./architecture-v5/wiki/agents.md) | Agent별 역할과 금지 권한을 표로 요약합니다. | LLM·PM 담당 | 쉬운 요약 |
 | [`wiki/verification-and-dynamic.md`](./architecture-v5/wiki/verification-and-dynamic.md) | 가설 판정과 Docker 재현을 짧게 설명합니다. | 검증·동적검증 담당 | 쉬운 요약 |
 | [`wiki/gate-and-reporting.md`](./architecture-v5/wiki/gate-and-reporting.md) | 두 검토 단계와 보고서 작성 조건을 요약합니다. | Gate·보고서 담당 | 쉬운 요약 |

@@ -117,6 +117,7 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 | 공통 실행 작업 | `WorkExecutionState.status` | `PENDING | READY | RUNNING | BLOCKED | SUCCEEDED | PARTIAL | FAILED | CANCELLED` | 신뢰 경계 안의 runtime | 전문 결과·가설 verdict와 분리 |
 | proposal 검증 | `ProposalProcessState.status` | `PROPOSED | SCHEMA_VALID | DUPLICATE | INVALID_OUTPUT | CANCELLED` | 출력 검증 runtime | 아직 `hypothesis_id`가 없는 상태 |
 | 등록 가설 처리 | `HypothesisProcessState.status` | `REGISTERED | ASSIGNED | VERIFYING | TERMINAL | FAILED | CANCELLED` | Orchestration runtime | `TRUE | FALSE | HOLD`와 분리 |
+| Finding current 상태 | `FindingIndexState.status` | `EMPTY | CURRENT | STALE` | Verification trusted runtime의 Finding normalization service | Finding 의미·Reporter readiness와 분리 |
 | 기술 판정 | `VerificationResult.verdict` | `TRUE | FALSE | HOLD` | Verification Agent | 오류·정보 부족 상태와 분리 |
 | 동적 재현 | `DynamicReproductionState.status` | `NOT_REQUESTED | RUNNING | SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED` | Reproduction Session Manager | `FAILED`만으로 가설 반증 금지 |
 | LLM 호출 | `LLMInvocationResult.status` | `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED | CANCELLED` | Agent Runtime과 provider adapter | 가설 verdict로 변환 금지 |
@@ -213,7 +214,7 @@ WorkExecutionState:
   meta: RunMeta | RecordMeta
   work_id: string
   parent_work_ref: RunStoredDataRef | StoredDataRef | null
-  work_type: WORKSPACE_PREP | STATIC_TOOL | STATIC_NORMALIZE | HYPOTHESIS_PROPOSAL | CONTEXT_RETRIEVAL | PRO_EVIDENCE | CON_EVIDENCE | VERIFICATION | DYNAMIC_REPRO | PRIMITIVE_UPDATE | CHAINING | CWE_LABEL | POLICY_FETCH | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORT_DRAFT
+  work_type: WORKSPACE_PREP | STATIC_TOOL | STATIC_NORMALIZE | HYPOTHESIS_PROPOSAL | CONTEXT_RETRIEVAL | PRO_EVIDENCE | CON_EVIDENCE | VERIFICATION | DYNAMIC_REPRO | PRIMITIVE_UPDATE | CHAINING | CWE_LABEL | POLICY_FETCH | TECHNICAL_GATE | RULE_SCOPE_GATE | FINDING_NORMALIZE | REPORT_DRAFT
   subject_type: ANALYSIS | PROPOSAL | HYPOTHESIS | REPORT
   subject_id: string
   work_generation: integer
@@ -224,6 +225,7 @@ WorkExecutionState:
   active_attempt_id: string | null
   input_hash: string
   dedupe_key: string
+  trigger_primitive_ref: StoredDataRef | null
   input_refs: [RunStoredDataRef | StoredDataRef]
   output_refs: [RunStoredDataRef | StoredDataRef]
   gap_ids: [string]
@@ -296,7 +298,7 @@ TransitionCommit:
 |---|---|---|
 | `PENDING` | `READY`, `CANCELLED` | 앞 단계와 입력이 준비되거나 취소됨 |
 | `READY` | `RUNNING`, `BLOCKED`, `CANCELLED` | 실행 전 검사를 통과하거나 외부 조건이 부족함 |
-| `RUNNING` | `READY`, `BLOCKED`, `SUCCEEDED`, `PARTIAL`, `FAILED`, `CANCELLED` | attempt 결과와 atomic transition이 있음. `READY`는 DYNAMIC_REPRO의 즉시 자율 retry에만 허용 |
+| `RUNNING` | `READY`, `BLOCKED`, `SUCCEEDED`, `PARTIAL`, `FAILED`, `CANCELLED` | attempt 결과와 atomic transition이 있음. `READY`는 DYNAMIC_REPRO Agent session 재시작의 `trigger=RETRY`에만 허용 |
 | `BLOCKED` | `READY`, `FAILED`, `CANCELLED` | 대기 조건을 충족하거나 더 진행할 수 없음 |
 | `SUCCEEDED`, `PARTIAL`, `FAILED`, `CANCELLED` | 없음 | 종료 상태를 되돌리지 않음 |
 
@@ -317,7 +319,7 @@ TransitionCommit:
 
 `parent_work_ref`는 작업의 직접 부모를 가리키는 선택 필드다. `PRO_EVIDENCE | CON_EVIDENCE | DYNAMIC_REPRO | CWE_LABEL`에서는 필수이며, 같은 가설과 현재 `verification_generation`의 `VERIFICATION` work exact revision을 가리켜야 한다. `DYNAMIC_REPRO`의 request와 부모 Verification은 같은 `hypothesis_id`와 `verification_generation`이어야 한다. `CWE_LABEL`의 입력 `verification_result_ref`는 부모 Verification work가 `SUCCEEDED`로 확정한 유일한 final TRUE output이어야 한다. 나머지 work type은 이 문서가 별도 부모 관계를 정하지 않는 한 `null`이다. 자식 work의 `subject_id`와 부모 Verification의 `subject_id`는 같은 `hypothesis_id`여야 하며, 부모가 교체되거나 generation이 바뀌면 기존 자식 결과를 새 부모에 연결하지 않는다.
 
-일반 작업의 재시도 가능한 attempt 실패는 `WorkAttempt.status=FAILED`와 오류를 보존하고 작업을 `BLOCKED`로 전환한다. 단, `DYNAMIC_REPRO`에서 외부 입력이나 승인을 기다리지 않고 R7이 즉시 자율 재시도할 수 있으면 이전 attempt와 결과·로그를 보존한 채 `RUNNING -> READY`를 atomic하게 확정하고 바로 새 `attempt_id`를 발급한다. 이 전이는 같은 `work_id`·`input_hash`·request를 유지하고 R8 retry·시간·resource 한도가 남아 있을 때만 허용한다. 재인증·정책 변경·외부 설정·resource profile 변경처럼 외부 조건을 기다릴 때만 `BLOCKED`와 `waiting_for`를 사용한다. 재시도할 수 없거나 한도를 소진한 때만 작업을 최종 `FAILED`로 끝낸다. 종료된 작업을 되돌리지 않는다. 사람이 같은 입력으로 새 논리 실행을 명시적으로 승인하면 이전 값보다 1 큰 `work_generation`과 새 `work_id`를 만들고, 두 작업을 restart 관계로 debug trace에 연결한다.
+일반 작업의 재시도 가능한 attempt 실패는 `WorkAttempt.status=FAILED`와 오류를 보존하고 작업을 `BLOCKED`로 전환한다. `DYNAMIC_REPRO`에서는 같은 R7 Agent session의 command·PoC·환경 조정을 현재 attempt의 event로 계속 기록하며 상태 전이나 새 attempt를 만들지 않는다. session 재시작이 필요할 때만 이전 attempt의 결과·로그를 보존한 채 `RUNNING -> READY -> RUNNING`을 atomic하게 확정하고 같은 `work_id`의 새 `attempt_id`, `trigger=RETRY`를 사용한다. 재인증·정책 변경·외부 설정·resource profile 변경처럼 외부 조건을 기다릴 때는 `BLOCKED`와 `waiting_for`를 사용하고, 조건 해소 뒤 `BLOCKED -> READY -> RUNNING`으로 같은 work의 새 `attempt_id`, `trigger=RESUME`를 사용한다. 새 attempt는 R8의 호출 전 잔여 시간과 새 attempt 한도가 남아 있을 때만 허용하며 과거 attempt artifact를 current 결과에 섞지 않는다. 재시도할 수 없거나 한도를 소진한 때만 작업을 최종 `FAILED`로 끝낸다. 종료된 작업을 되돌리지 않는다. 사람이 같은 입력으로 새 논리 실행을 명시적으로 승인하면 이전 값보다 1 큰 `work_generation`과 새 `work_id`를 만들고, 두 작업을 restart 관계로 debug trace에 연결한다.
 
 운영 Pro/Con 자식 중 하나가 재시도 가능한 오류로 `BLOCKED`가 되면 부모 `VERIFICATION` work도 `BLOCKED`가 되고 같은 실제 대기 이유를 `waiting_for`에 기록한다. 가설 상태는 `VERIFYING`을 유지하며 final `VerificationResult`를 만들지 않는다. 자식 `BLOCKED`가 먼저 보인 짧은 구간에도 runtime은 부모의 새 attempt·합성·결과 저장을 거절하고 recovery가 부모 상태를 맞춘다. 입력·부모 generation·Debate 설정이 그대로이면 성공한 다른 자식 결과는 보존할 수 있고 실패한 역할만 새 attempt와 새 `llm_call_id`, 새 `NEW` session으로 재시도한다. 하나라도 달라지면 기존 두 자식 결과를 모두 `STALE_RESULT`로 격리하고 Pro와 Con을 다시 실행한다.
 
@@ -330,6 +332,14 @@ TransitionCommit:
 플레이북·적용 정책의 current revision이 검증 도중 변경되더라도 진행 중인 work의 입력과 `PlaybookApplication`을 바꾸지 않는다. 같은 work의 retry는 기존 application과 질문 ID를 유지한다. 새 Verification work 또는 새 verification generation은 그때의 current policy와 playbook으로 새 application을 만들고 플레이북 질문에 새 `question_id`를 발급한다. 과거 application·질문 결과를 새 work에 자동 승격하거나 서로 다른 application의 Pro·Con·최종 결과를 섞지 않는다.
 
 `REGISTER_WORK(work_type=CHAINING)` 시 trusted runtime은 같은 analysis·workspace·commit의 current `PrimitiveIndexState` revision을 읽고, 각 index의 `primitive_refs`에서 non-null `result` 또는 하나 이상의 `inputs`를 가진 current exact Primitive만 중복 없이 펼친다. result Primitive는 `admission_decision_ref`가 가리키는 같은 Verification의 current `PrimitiveAdmissionDecision.decision=ALLOW`일 때만 펼친다. 또한 각 Primitive의 source hypothesis가 `origin=CHAINING`이면 `source_primitive_match_id`에서 부모 `ChainingResult.input_primitive_refs`를 재귀 추적하고, 그 계보의 모든 result Primitive가 current ALLOW admission decision을 가리키는지 확인한다. 하나라도 current가 아니거나 `DENY`이면 해당 Primitive를 이번 후보에서 제외한다. runtime은 사용한 index revision, 펼친 Primitive exact reference와 이들에 직접·재귀적으로 연결된 current ALLOW decision exact reference를 함께 고정한다. 이 전체를 `WorkExecutionState.input_refs`, `input_hash`와 `dedupe_key`에 반영하며 Primitive reference 집합이 해당 work의 `considered_primitive_refs`다. 진행 중 새 Primitive나 일반 index revision이 생겨도 기존 work 입력에 섞지 않고 새 Chaining work에서 처리한다. 저장 시에는 실제 match에 사용한 Primitive의 admission 계보만 다시 확인하며, 그중 하나가 더 이상 current가 아니거나 `DENY`로 바뀌면 해당 결과를 `STALE_RESULT`로 거절한다. 사용하지 않은 후보의 decision 변경과 일반 index 갱신만으로는 기존 work를 무효화하지 않는다. 결과에 해당 work가 고정하지 않은 index·Primitive·admission decision reference가 섞여도 `STALE_RESULT`로 거절한다. 이는 별도 Snapshot 모듈이 아니라 실행 입력의 exact reference 고정이다.
+
+Chaining work는 새 Primitive 저장을 계기로 등록한다. `PRIMITIVE_UPDATE`가 Primitive와 `PrimitiveIndexState` 갱신을 COMMITTED한 뒤에만 그 Primitive를 `trigger_primitive_ref`로 가리키는 `CHAINING` work를 등록하며, 저장 전에 등록하지 않는다. `subject_type=ANALYSIS`, `subject_id`는 `analysis_id`이고 계기가 된 Primitive는 `trigger_primitive_ref`로만 식별한다.
+
+`trigger_primitive_ref`는 `work_type=CHAINING`에서 필수이고 다른 모든 work type에서는 `null`이다. CHAINING에서는 `considered_primitive_refs`와 `input_refs`에 각각 정확히 한 번 들어간다. 이 필드 추가는 `WorkExecutionState`의 기존 필드를 바꾸지 않는 선택 필드 확장이므로 같은 MAJOR 안에서 MINOR로 올리고, 이전 MINOR 결과에는 `null`을 채우지 않고 감사 이력으로 보존한다. `dedupe_key`는 `analysis_id`, `workspace_id`, `commit_id`, `trigger_primitive_ref`와 고정한 index revision 집합으로 계산한다. 같은 계기와 같은 index 집합으로는 work를 하나만 등록하며, 두 번째 요청은 새 work를 만들지 않고 기존 work를 반환한다.
+
+한 조합의 담당은 두 Primitive 중 자기 후보 pool에 상대가 들어 있는 work다. pool은 `REGISTER_WORK`가 COMMITTED된 index에서 고정하므로 실제 저장 순서를 그대로 따른다. 양쪽 pool에 서로가 모두 있으면 `record_id`가 사전순으로 큰 Primitive를 계기로 가진 work가 담당이다. 각 work는 담당인 조합만 검토·저장한다. 담당이 아닌 조합은 검토 대상이 아니라서 `no_match_reasons`에도 넣지 않고 별도 skip 목록도 두지 않는다.
+
+담당 규칙 때문에 같은 조합이 두 번 저장될 수 없다. 저장 계층은 `(analysis_id, upstream_result_ref, downstream_input_ref, matched_input_id)`를 unique key로 강제하며, 이는 담당 규칙이 지켜졌는지 확인하는 검사다. 제약이 걸리면 담당 계산·pool 고정·`dedupe_key` 중 하나가 잘못된 구현 오류이므로 결과를 저장하지 않고 `AnalysisError(stage=ORCHESTRATION)`와 `WorkExecutionState.error_ids`에 남긴다. 같은 입력으로 retry해도 해소되지 않는다. retry 자체는 같은 `work_id`의 새 attempt이며 그 work의 COMMITTED `ChainingResult`가 이미 있으면 새 결과를 만들지 않고 기존 결과를 반환한다.
 
 `origin=CHAINING` 가설의 새 Verification·Gate·Primitive update·Reporter work를 등록하거나 그 결과를 저장할 때도 trusted runtime은 같은 `source_primitive_match_id` 계보의 result Primitive admission decision을 재귀 확인한다. 확정된 `DENY` 또는 오래된 decision이 있으면 새 작업·결과 사용을 차단하고, 실행 중 work는 `CANCELLED`로 정리하며 가설 verdict를 `FALSE | HOLD`로 바꾸지 않는다. 이미 COMMITTED된 Verification·Gate·Finding·ReportDraft는 감사 이력으로 남기되 current 결과나 외부 전달 가능 결과로 사용하지 않는다. 같은 run 안에서 ALLOW가 DENY로 바뀌면 admission runtime은 이를 참조한 `ChainingResult.source_admission_refs`와 자식 `source_primitive_match_id`를 따라 파생 Primitive를 current index에서 제거한다. 이 전파가 끝나기 전에는 `AnalysisRunResult`를 확정하지 않는다.
 
@@ -354,7 +364,10 @@ TransitionCommit:
 | `POLICY_FETCH` | Rule Scope Gate 준비 runtime | 공식 정책 수집 runtime | `PolicyParserResult`, `PolicyCollectionResult`, `FOUND`이면 `ProgramPolicyRecord` |
 | `TECHNICAL_GATE` | Verification runtime | Technical Gate runtime | `TechnicalEvidenceReview` |
 | `RULE_SCOPE_GATE` | Verification runtime | Rule Scope Gate runtime | `RuleScopeImpactReview` |
+| `FINDING_NORMALIZE` | Verification trusted runtime | Verification trusted runtime의 Finding normalization service | `Finding` 한 개 |
 | `REPORT_DRAFT` | Reporter 조건 검사 runtime | Reporter runtime | `ReportDraft` |
+
+current Finding 저장은 `RULE_SCOPE_GATE`의 `SUCCEEDED`와 review의 `COMMITTED` 이후 실행하는 전용 비-LLM `FINDING_NORMALIZE` work로 확정한다. Step 19에서 Reporter readiness 검사보다 먼저 실행하며 Reporter 차단 여부와 독립적이다. 기존 `REGISTER_WORK`, `START_ATTEMPT`, `SAVE_RESULT`, `CHANGE_WORK_STATE`를 사용하고 §11의 Finding pointer와 함께 commit한다. Rule Scope와 Reporter work의 추가 output으로 묶지 않는다.
 
 `DYNAMIC_REPRO`는 공통 작업 상태와 전문 결과 상태를 다음처럼 연결한다. 공통 상태는 “현재 work가 완료·대기·실패 중 어느 상태인가”를 나타내고 전문 상태는 “재현이 얼마나 수행되었는가”를 나타낸다.
 
@@ -363,10 +376,10 @@ TransitionCommit:
 | `SUCCEEDED` | `SUCCEEDED` | 계획한 실행과 관측을 끝낸 결과를 저장한다. 가설 지지 여부는 `hypothesis_outcome`을 읽는다. |
 | `PARTIAL` | `PARTIAL` | 신뢰 관측과 `limitations`가 있는 부분 실행 결과를 저장한다. 오류나 `DataGap`을 억지로 만들지 않는다. |
 | `FAILED` | `FAILED` | 복구 불가능하거나 retry 한도를 소진한 실패 결과와 하나 이상의 `error_ids`를 저장한다. final verdict와 Gate는 없다. |
-| `BLOCKED` | `BLOCKED` | 외부 설정·승인·정책 또는 resource profile 변경을 기다린다. 조건 해결 뒤 같은 work의 새 attempt로 재개하며 final verdict와 Gate는 없다. |
+| `BLOCKED` | `BLOCKED` | 외부 설정·승인·정책 또는 resource profile 변경을 기다린다. 조건 해결 뒤 같은 work의 새 `attempt_id`, `trigger=RESUME`로 재개하며 final verdict와 Gate는 없다. |
 | `CANCELLED` | `CANCELLED` | 취소 이유와 취소 결과를 같은 transition에서 저장한다. 취소 확정 뒤 늦은 결과는 격리한다. |
 
-공통 `WorkExecutionState.status=BLOCKED`는 인증, 승인, 외부 설정·정책 또는 입력처럼 외부 조건을 기다리는 비종료 상태다. R7이 스스로 해결할 수 있는 command·PoC·환경 조정은 `BLOCKED` 사유가 아니며 현재 attempt 안에서 수행하거나, session 재시작이 필요하면 `RUNNING -> READY -> RUNNING` 자동 retry를 사용한다. 이때 끝난 실패 attempt의 `DynamicReproductionResult(status=FAILED)`와 `AnalysisError.retryable=true`는 해당 attempt의 output history에 보존하지만 validated PoC나 R6 final verdict로 소비하지 않는다. 외부 조건이 해결되면 같은 `work_id`에서 새 `attempt_id`를 만들며 새 `work_generation`을 만들지 않는다.
+공통 `WorkExecutionState.status=BLOCKED`는 인증, 승인, 외부 설정·정책 또는 입력처럼 외부 조건을 기다리는 비종료 상태다. R7이 스스로 해결할 수 있는 command·PoC·환경 조정은 `BLOCKED` 사유가 아니며 같은 session의 현재 attempt 안에서 수행한다. session 재시작이 필요하면 `RUNNING -> READY -> RUNNING`과 새 `attempt_id`, `trigger=RETRY`를 사용한다. 이때 끝난 실패 attempt의 `DynamicReproductionResult(status=FAILED)`와 `AnalysisError.retryable=true`는 해당 attempt의 output history에 보존하지만 validated PoC나 R6 final verdict로 소비하지 않는다. 외부 조건이 해결되면 같은 `work_id`에서 새 `attempt_id`, `trigger=RESUME`를 만들며 새 `work_generation`을 만들지 않는다.
 
 작업 모듈과 Agent는 등록 또는 상태 변경을 요청할 뿐 직접 확정하지 않는다. 모든 행의 `StateTransition` 승인과 저장은 신뢰 경계 안의 state transition validator와 state store가 담당한다. Orchestration Agent의 자연어 출력은 상태 변경 명령으로 직접 실행하지 않는다.
 
@@ -385,6 +398,7 @@ state store는 새 전이를 승인하기 전에 `(work_id, current_state_versio
 - `POLICY_FETCH`의 종료 transition은 parser를 실행했다면 모든 `PolicyParserResult`, 정확히 하나의 `PolicyCollectionResult`, 그리고 그 결과가 `FOUND`일 때만 exact `ProgramPolicyRecord`를 함께 가리킨다. `ABSENT_CONFIRMED | COLLECTION_FAILED`에서는 정책 record를 임의 생성하지 않는다.
 - `TECHNICAL_GATE`의 `SUCCEEDED`는 정확히 하나의 `TechnicalEvidenceReview.record_id`를 가리킨다.
 - `RULE_SCOPE_GATE`의 `SUCCEEDED`는 정확히 하나의 `RuleScopeImpactReview.record_id`를 가리킨다.
+- `FINDING_NORMALIZE`의 `SUCCEEDED`는 정확히 하나의 `Finding.record_id`를 가리킨다. `WorkAttempt`, `WorkExecutionState`, `StateTransition`, `TransitionCommit`의 `output_refs`는 모두 그 하나와 같으며 `PARTIAL` Finding output은 허용하지 않는다.
 - `REPORT_DRAFT`의 `SUCCEEDED`와 `ReportProcessState.status=DRAFTED`는 같은 `ReportDraft.record_id`를 가리킨다.
 - 분석 종료 transition과 `AnalysisRunState.analysis_result_ref`는 같은 `AnalysisRunResult`를 가리킨다.
 - 각 reference의 workspace, commit, hypothesis, `record_id`와 `content_hash`는 실제 record와 일치한다.
@@ -426,6 +440,7 @@ ActionRequest:
   provider_profile_ref: RunStoredDataRef | StoredDataRef | null
   session_mode: NEW | RESUME | AUTO | null
   sandbox_profile_ref: RunStoredDataRef | StoredDataRef | null
+  resource_profile_ref: StoredDataRef | null
   image_digest: string | null
   network_targets: [string]
   resource_limits: map | null
@@ -487,21 +502,21 @@ action이 만든 output의 `action_decision_ref.record_id`는 `UNUSED -> USED`�
 | `CALL_LLM` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, REDACTION | 새 `llm_call_id`, explicit retry/failover |
 | `FETCH_POLICY` | SCHEMA, AUTHORITY, BUDGET, TOOL, REDACTION | 승인된 공식 source만 정책 후보로 저장 |
 | `REQUEST_DYNAMIC_REPRO` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET | R6의 exact `DynamicReproductionRequest`와 generation별 단일 동적 work를 확인해 R7에 전달 |
-| `RUN_SANDBOX` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET | R7의 current work, exact request·`EnvironmentRequirements`·Sandbox profile·R8 resource/lifecycle을 확인해 외부 격리 경계 생성만 허가 |
+| `RUN_SANDBOX` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET | R7의 current work, exact `DynamicReproductionRequest`·current `EnvironmentRequirements`·current exact `ReproductionPlan`·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile`을 고정해 외부 격리 경계 생성만 허가 |
 | `SAVE_RESULT` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION | 역할별 생산 권한, exact input과 same-attempt plan·recipe·환경·AgentLog·PoC 일치, atomic commit |
 | `CALL_TECHNICAL_GATE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, GATE_ORDER, REDACTION | validated PoC가 연결된 final TRUE Verification과 이를 직접 가리키는 current CWELabel의 COMMITTED exact pair 및 LLM call spec 필요 |
 | `CALL_RULE_SCOPE_GATE` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, GATE_ORDER, REDACTION | `TRUE`+Technical `ACCEPT`, exact 정책 수집 결과와 `FOUND`일 때 current 정책 record, exact LLM call spec 필요 |
-| `CREATE_REPORT_DRAFT` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, REPORT_READY, REDACTION | current Finding, PASS/PASS/PASS/SUFFICIENT/ALLOW와 exact LLM call spec 필요 |
+| `CREATE_REPORT_DRAFT` | SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, REPORT_READY, REDACTION | current non-stale Finding, Reporter 6축 readiness 전부 충족, exact LLM call spec 필요 |
 
 Gate와 Reporter action의 기존 check는 다음 exact revision을 검사한다. 검사는 `ActionDecision`을 만들 때와 실제 provider 호출 직전에 같은 기준으로 다시 수행한다.
 
-`REQUEST_DYNAMIC_REPRO`의 ALLOW는 R6 요청을 R7의 한 `DYNAMIC_REPRO` work로 등록할 수 있다는 뜻이다. Runtime Validator는 `(analysis_id, hypothesis_id, verification_generation, work_type=DYNAMIC_REPRO)` unique key를 강제하고 같은 generation에서 purpose가 다른 두 번째 request나 work를 거절한다. `RUN_SANDBOX`의 `ActionDecision=ALLOW`는 Docker 실행 성공이나 Sandbox 정책 통과를 뜻하지 않는다. Runtime Validator는 R7 Setup Automation 호출자의 권한, 현재 work·attempt와 예산, 변경되지 않은 exact request·current `EnvironmentRequirements`, request의 Sandbox profile과 R8 resource/lifecycle profile을 검사한다. 이후 Sandbox Controller는 host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace 같은 외부 격리 경계만 검사해 exact 정책 판정을 저장한다. Controller는 Agent가 Sandbox 내부에서 고른 command·package·PoC를 allowlist로 검사하지 않는다. 정책 거절은 `policy_decision_ref`와 append-only `agent_log_ref`가 필수인 `DynamicReproductionResult(status=BLOCKED | FAILED, failure_category=POLICY_BLOCKED, agent_invoked=false, poc_ref=null)`로 기록한다. R7이 retry에서 새 requirements·plan·recipe·candidate revision을 만들더라도 R6 request의 목적·가설·profile을 바꾸거나 외부 경계 검사를 생략할 수 없다.
+`REQUEST_DYNAMIC_REPRO`의 ALLOW는 R6 요청을 R7의 한 `DYNAMIC_REPRO` work로 등록할 수 있다는 뜻이다. Runtime Validator는 `(analysis_id, hypothesis_id, verification_generation, work_type=DYNAMIC_REPRO)` unique key를 강제하고 같은 generation에서 purpose가 다른 두 번째 request나 work를 거절한다. `RUN_SANDBOX`의 `ActionDecision=ALLOW`는 Docker 실행 성공이나 Sandbox 정책 통과를 뜻하지 않는다. Runtime Validator는 R7 Setup Automation 호출자의 권한, 현재 work·attempt와 예산, 변경되지 않은 exact `DynamicReproductionRequest`·current `EnvironmentRequirements`·current exact `ReproductionPlan`·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile`을 검사하고 그 exact revision을 action `input_refs`와 `resource_profile_ref`에 고정한다. `ActionDecision.checked_config_refs`에는 두 profile exact revision이 모두 있어야 한다. current `ReproductionPlan` revision이 바뀌면 실행 전 기존 `UNUSED` decision을 `EXPIRED`로 확정하고 새 `action_id`·action·decision을 만들어야 한다. 이후 Sandbox Controller는 host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace 같은 외부 격리 경계만 검사해 exact 정책 판정을 저장한다. Controller는 Agent가 Sandbox 내부에서 고른 command·package·PoC를 allowlist로 검사하지 않는다. 정책 거절은 `policy_decision_ref`와 append-only `agent_log_ref`가 필수인 `DynamicReproductionResult(status=BLOCKED | FAILED, failure_category=POLICY_BLOCKED, agent_invoked=false, poc_ref=null)`로 기록한다. R7이 retry에서 새 requirements·plan·recipe·candidate revision을 만들더라도 R6 request의 목적·가설·profile을 바꾸거나 외부 경계 검사를 생략할 수 없다.
 
 R5-01 `CWE_LABELING`의 `CALL_LLM`은 current `CWE_LABEL` work의 active attempt에서만 허용한다. action·`LLMCallSpec.context_refs`와 immutable prompt payload에는 current final TRUE `VerificationResult`, 그 result의 evidence closure와 사용할 taxonomy revision을 정확히 고정한다. 다른 Verification·generation·가설·commit의 label이나 evidence, 과거 CWE 출력은 current 분류 근거로 넣지 않는다. Runtime Validator는 호출 직전 이 exact 입력과 parent Verification work를 다시 확인하고, 바뀌면 decision을 `EXPIRED`로 만들어 새 work 또는 action을 요구한다.
 
 - Technical Gate의 `REVISION`은 action `input_refs`와 call spec context가 final `VerificationResult(verdict=TRUE)`와 `CWELabel`의 정확한 `record_id`·`content_hash`를 가리키는지 검사한다. 이 TRUE의 `dynamic_request_ref`, `dynamic_result_ref`, `poc_ref`는 current Verification generation의 exact request, `SUCCEEDED + SUPPORTED` 결과와 validated PoC를 가리켜야 한다. Gate 출력의 `TechnicalEvidenceReview.verification_result_ref`와 `cwe_label_ref`도 바로 이 두 record를 가리켜야 한다. `GATE_ORDER`는 모든 결과가 현재 work에서 `COMMITTED`됐고 final인지 검사한다. validated PoC가 없는 TRUE, HOLD와 FALSE는 Technical Gate action을 만들 수 없다.
 - Rule Scope Gate의 `REVISION`은 같은 Verification·current CWELabel revision, `RuleScopeImpactReview.technical_review_ref`가 가리킬 exact `TechnicalEvidenceReview`, Gate가 사용할 exact `PolicyCollectionResult`와 `FOUND`일 때 current `ProgramPolicyRecord`를 검사한다. `GATE_ORDER`는 Technical review가 그 두 revision을 검토한 `ACCEPT`이고 Verification verdict가 `TRUE`이며 정책 수집 결과가 `COLLECTION_FAILED`가 아닌지 검사한다.
-- Reporter의 `REVISION`은 Reporter action, call spec과 context가 current Finding, 두 Gate가 실제로 검토한 같은 Verification·CWELabel revision, exact Technical·Rule Scope review와 존재하는 정책 revision을 가리키는지 검사한다. `REPORT_READY`는 Finding이 존재하고 그 exact 결과가 보고 조건을 모두 통과했는지 검사한다.
+- Reporter의 `REVISION`은 Reporter action, call spec과 context가 current non-stale Finding, 두 Gate가 실제로 검토한 같은 Verification·CWELabel revision, exact Technical·Rule Scope review와 존재하는 정책 revision을 가리키는지 검사한다. `REPORT_READY`는 current non-stale Finding이 존재하고, 그와 별개로 그 exact `RuleScopeImpactReview`가 `review_status == PASS`, `rule_compliance == PASS`, `scope_compliance == PASS`, `testing_restriction_compliance == PASS`, `security_impact == SUFFICIENT`, `report_permission == ALLOW`를 각각 만족하는지 검사한다. slash shorthand로 축약하지 않고 각 field를 확인한다.
 
 세 hypothesis-local stage action의 `requested_by`는 VERIFICATION이다. runtime은 action의 `meta.hypothesis_id`, 현재 `HypothesisProcessState.verification_assignment_ref`, 그 ACTIVE `VerificationAssignment.owner_identity_ref`와 `ActionRequest.requester_identity_ref`를 exact 비교한다. 배정되지 않은 Verification-role identity나 superseded assignment가 요청하면 `AUTHORITY_DENIED`다. `CALL_TECHNICAL_GATE`의 REVISE output은 같은 assignment owner에게만 전달한다. `CALL_RULE_SCOPE_GATE`와 `CREATE_REPORT_DRAFT`도 그 owner가 제안하되 Runtime Validator가 exact Gate 순서와 보고 조건을 다시 검사한다. CHAINING이나 ORCHESTRATION이 이 stage action을 요청하면 `AUTHORITY_DENIED`다.
 
@@ -539,7 +554,7 @@ Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 
 - `result_kind`와 `candidate_result_ref`는 `SAVE_RESULT`에서 필수이고 다른 action에서는 `null`이다. `candidate_result_ref.data_kind`는 `result_kind`와 같고 `candidate_result_ref.record_id`에는 저장 runtime이 미리 발급한 결과 revision ID가 있어야 한다.
 - `candidate_result_ref.content_hash`는 미리 발급한 ID를 포함해 canonical serialization한 결과 후보 전체의 hash다. 후보 record는 read-only staging 영역에 두며 action decision이 생긴 뒤 수정하거나 같은 `stored_data_id`·`record_id`에 다른 bytes를 넣지 않는다. candidate ref도 action `input_refs`에 정확히 한 번 포함한다. staging record는 `TransitionCommit.state=COMMITTED` 전에는 일반 결과 조회나 다음 단계에서 보이지 않는다.
 - `SCHEMA`는 result kind에 맞는 schema와 필수 필드를, `AUTHORITY`는 result kind의 등록된 생산 역할과 `requested_by`를 검사한다. `IDENTITY`·`REVISION`·`STATE`는 모든 candidate의 analysis, current `work_ref`·active attempt·input refs와 hash를 검사하고, `RecordMeta` candidate이면 workspace·commit·hypothesis·`meta.attempt_id`까지 정확히 일치하는지 검사한다.
-- 핵심 registry 항목은 `static_fact_bundle -> StaticFactBundle -> STATIC_ANALYSIS`, `rule_execution_record -> RuleExecutionRecord -> STATIC_ANALYSIS`, `hypothesis_duplicate_review -> HypothesisDuplicateReview -> HYPOTHESIS`, `pro_evidence_result -> EvidenceAgentResult(role=PRO) -> PRO`, `con_evidence_result -> EvidenceAgentResult(role=CON) -> CON`, `verification_result -> VerificationResult -> VERIFICATION`, `primitive_admission_decision -> PrimitiveAdmissionDecision -> PRIMITIVE_ADMISSION_RUNTIME`, `primitive -> Primitive -> PRIMITIVE_ADMISSION_RUNTIME`, `chaining_result -> ChainingResult -> CHAINING`, `dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`, `environment_requirements -> EnvironmentRequirements -> R7_AGENT`, `reproduction_plan -> ReproductionPlan -> R7_AGENT`, `environment_recipe -> EnvironmentRecipe -> R7_SETUP_AUTOMATION`, `sandbox_environment -> SandboxEnvironment -> R7_SETUP_AUTOMATION`, `cleanup_result -> CleanupResult -> R7_SETUP_AUTOMATION`, `sandbox_policy_decision -> SandboxPolicyDecision -> SANDBOX_CONTROLLER`, `poc_candidate -> PoCCandidate -> R7_AGENT`, `agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`, `poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`, `dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`, `cwe_label -> CWELabel -> CWE_LABELING`, `policy_parser_result -> PolicyParserResult -> POLICY_COLLECTOR`, `policy_collection_result -> PolicyCollectionResult -> POLICY_COLLECTOR`, `program_policy_record -> ProgramPolicyRecord -> POLICY_COLLECTOR`, `technical_evidence_review -> TechnicalEvidenceReview -> TECHNICAL_GATE`, `rule_scope_impact_review -> RuleScopeImpactReview -> RULE_SCOPE_GATE`, `report_draft -> ReportDraft -> REPORTER`다. 앞 값은 `result_kind`·`data_kind`, 가운데 값은 검사할 schema, 뒤 값은 유일한 생산 역할이다. 다른 result kind도 versioned result-owner registry에 정확히 한 schema와 생산 역할을 등록해야 하며, broad requester 표만으로 저장 권한을 얻지 않는다.
+- 핵심 registry 항목은 `static_fact_bundle -> StaticFactBundle -> STATIC_ANALYSIS`, `rule_execution_record -> RuleExecutionRecord -> STATIC_ANALYSIS`, `hypothesis_duplicate_review -> HypothesisDuplicateReview -> HYPOTHESIS`, `pro_evidence_result -> EvidenceAgentResult(role=PRO) -> PRO`, `con_evidence_result -> EvidenceAgentResult(role=CON) -> CON`, `verification_result -> VerificationResult -> VERIFICATION`, `primitive_admission_decision -> PrimitiveAdmissionDecision -> PRIMITIVE_ADMISSION_RUNTIME`, `primitive -> Primitive -> PRIMITIVE_ADMISSION_RUNTIME`, `chaining_result -> ChainingResult -> CHAINING`, `dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`, `environment_requirements -> EnvironmentRequirements -> R7_AGENT`, `reproduction_plan -> ReproductionPlan -> R7_AGENT`, `environment_recipe -> EnvironmentRecipe -> R7_SETUP_AUTOMATION`, `sandbox_environment -> SandboxEnvironment -> R7_SETUP_AUTOMATION`, `cleanup_result -> CleanupResult -> R7_SETUP_AUTOMATION`, `sandbox_policy_decision -> SandboxPolicyDecision -> SANDBOX_CONTROLLER`, `sandbox_command_record -> SandboxCommandRecord -> REPRODUCTION_SESSION_MANAGER`, `poc_candidate -> PoCCandidate -> R7_AGENT`, `agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`, `poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`, `dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`, `cwe_label -> CWELabel -> CWE_LABELING`, `policy_parser_result -> PolicyParserResult -> POLICY_COLLECTOR`, `policy_collection_result -> PolicyCollectionResult -> POLICY_COLLECTOR`, `program_policy_record -> ProgramPolicyRecord -> POLICY_COLLECTOR`, `technical_evidence_review -> TechnicalEvidenceReview -> TECHNICAL_GATE`, `rule_scope_impact_review -> RuleScopeImpactReview -> RULE_SCOPE_GATE`, `finding -> Finding -> VERIFICATION`, `report_draft -> ReportDraft -> REPORTER`다. 앞 값은 `result_kind`·`data_kind`, 가운데 값은 검사할 schema, 뒤 값은 유일한 생산 역할이다. 다른 result kind도 versioned result-owner registry에 정확히 한 schema와 생산 역할을 등록해야 하며, broad requester 표만으로 저장 권한을 얻지 않는다.
 - `PlaybookPolicy`는 Agent 결과가 아니라 사람이 승인한 운영 설정이며 trusted playbook registry runtime만 새 revision을 current로 만들 수 있다. `PlaybookApplication`도 Agent의 `SAVE_RESULT` 출력이 아니라 `REGISTER_WORK(work_type=VERIFICATION)` runtime이 work와 함께 만드는 고정 입력 record다. R6·Verification·Pro·Con이 두 record를 생성·수정하거나 current pointer를 바꾸려는 요청은 `AUTHORITY_DENIED`다.
 - `result_kind=rule_execution_record`이면 STATIC_ANALYSIS만 저장할 수 있다. `SCHEMA`는 catalog와 `rules[].rule_id`의 set equality, 중복 rule ID, selection·execution·`hit_count`·`reason`·`detail` 조합을 검사한다. `REVISION | STATE`는 candidate의 `meta.attempt_id`, 도구·버전, workspace·commit, `analysis_config_ref`·`rule_catalog_ref`가 current `STATIC_TOOL` attempt와 exact match하는지 확인한다. 같은 attempt의 `ToolRunResult`를 확정할 때는 `tool_kind=RULE_BASED`이고 `rule_execution_ref`가 이 record를 가리키는지 다시 검사한다. `StaticFactBundle`을 확정할 때 각 `CodeFact.producer.attempt_id`와 규칙 기반 `producer.rule_id`가 연결된 current `ToolRunResult`·`RuleExecutionItem`과 일치하는지도 검사한다. 실패·누락·확인 불가를 `EXECUTED + hit_count=0`으로 바꾼 candidate는 저장하지 않는다.
 - `result_kind=static_fact_bundle`이면 STATIC_ANALYSIS만 저장할 수 있다. `SCHEMA`는 여섯 `CodeFact` 목록의 필수 존재, fact 종류와 목록의 정확한 대응, 전체 합집합에서 `fact_id` 중복이 없는지 검사한다. 빈 후보 목록은 허용하지만 `tool_runs`, `gaps`, `errors`를 보지 않고 안전함이나 검사 완료로 바꾸지 않는다. `IDENTITY | REVISION | STATE`는 bundle과 모든 사실의 analysis·workspace·commit, `producer.attempt_id`, 도구·규칙·원본 결과가 current `STATIC_TOOL` 결과와 exact match하는지 확인한다. 다른 attempt의 사실, 목록과 `fact_kind`가 다른 사실, 같은 ID를 둘 이상의 목록에 넣은 사실은 저장하지 않는다.
@@ -564,7 +579,7 @@ Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 
 - `excluded_primitive_ref`는 `considered_primitive_refs`에 포함되고 `input_primitive_refs`와 모든 match candidate reference에는 포함되지 않아야 한다. `excluded_by_ref`는 `considered_primitive_refs`와 `input_primitive_refs`에 모두 포함되고 같은 결과의 `excluded_primitive_ref` 집합에는 포함되지 않아야 한다. 즉 제외 근거는 실제로 match가 성립한 후보만 될 수 있고, 한 결과 안에서 같은 Primitive가 제외 대상이면서 제외 근거일 수 없다. 두 reference는 같은 analysis·workspace·commit의 exact Primitive여야 하고 `(excluded_primitive_ref, excluded_by_ref, reason_code)` 조합은 중복될 수 없다. `reason_code`는 `ANCESTOR_REUSE`만 허용한다.
 - Runtime은 §06의 제외 규칙(성립한 match의 후보에서 양방향 재귀 탐색)으로 기대 제외 쌍을 다시 계산하고 `excluded_lineage_refs`와 set-equal한지 검사한다. match가 성립하지 않은 후보를 근거로 삼았거나, `excluded_by_ref`의 계보가 `excluded_primitive_ref`에 실제로 도달하지 않거나, 실제 제외를 빠뜨리거나 추가한 결과는 저장하지 않는다. 따라서 검토 대상이 아니었던 Primitive, 예산·오류로 확인하지 못한 Primitive와 계보 때문에 제외한 Primitive를 같은 것으로 취급하지 않는다.
 - 각 `chained_hypothesis_proposals`는 COMMITTED match의 exact `source_primitive_match_id`와 부모 가설을 보존한다. `origin=CHAINING`이면 `observed_facts=[]`만 허용한다. `target_entities`·`target_locations`·`suspected_path`는 비어 있을 수 있지만, 값을 넣으면 부모 Primitive의 `result.entity_refs`와 `inputs[].entity_refs`에서 exact하게 얻을 수 있는 범위를 벗어날 수 없다. 부모 reference가 무효하거나 Verification이 사용할 entity·location 시작점을 하나도 복원할 수 없으면 가설 등록과 Verification 배정을 거절한다. proposal restrictions는 두 부모 Primitive의 `Restriction` 객체 합집합과 exact match하고, 같은 `restriction_id`의 canonical content가 다르면 저장하지 않는다. 남은 `PrimitiveDraft`마다 `description`과 같은 assumption을 정확히 하나 보존하고, 결합 지점을 겨냥한 반증 질문이 하나 이상 있는지(목록이 비어 있지 않은지만) 확인한다 — 그 질문이 실제로 결합 지점을 겨냥했는지는 Technical Evidence Gate의 의미적 충분성 검토 몫이다.
-- 다음 중 하나라도 해당하면 저장을 거절한다: 같은 fingerprint 중복, 조상 링크를 따라 이미 사용한 Primitive의 재사용, 일반 research·동적 재현·Gate 보완 출력, CHAINING이 아닌 proposal origin.
+- 다음 중 하나라도 해당하면 저장을 거절한다: 같은 `(upstream_result_ref, downstream_input_ref, matched_input_id)` 조합 중복, 조상 링크를 따라 이미 사용한 Primitive의 재사용, 일반 research·동적 재현·Gate 보완 출력, CHAINING이 아닌 proposal origin.
 - 저장 runtime은 claim한 action의 candidate bytes와 hash를 다시 확인한다. 확정된 result ref는 candidate와 `stored_data_id`·`data_kind`·`content_hash`·`record_id`가 모두 같아야 한다. 결과 ref, 종료 `StateTransition`과 `TransitionCommit`은 같은 output을 가리켜야 하며 `TransitionCommit.state=COMMITTED`가 된 뒤에만 소비할 수 있다. 후속 `ActionDecision.outcome_refs`에는 그 exact result ref와 COMMITTED commit ref를 각각 한 번 넣는다.
 - `result_kind=environment_requirements | reproduction_plan | poc_candidate`이면 R7_AGENT만 저장할 수 있다. requirements는 R6 request의 모든 `environment_needs`를 빠뜨리거나 약화하지 않고, plan의 request·purpose·hypothesis·profile은 request와 exact match하며 current requirements를 가리킨다. plan에는 mode·exact command·step·payload·cleanup allowlist를 넣지 않는다. candidate를 처음 저장할 때는 current request·plan·attempt와 content digest만 검사하며 아직 뒤따를 AgentLog event를 요구하지 않는다. 대신 candidate 존재만으로 실행이나 성공을 인정하지 않고, `DynamicReproductionResult`와 validated PoC를 저장할 때 same-attempt `AgentLog`의 작성·실행 event가 exact candidate revision·digest를 가리키는지 검사한다.
 - `result_kind=environment_recipe | sandbox_environment | cleanup_result`이면 R7_SETUP_AUTOMATION만 저장할 수 있다. recipe는 저장소 선언 의존성 source, 서로 구분된 base/built digest, build/reuse 결정을 기록한다. environment는 same-attempt request·plan·recipe·requirements와 container instance·생성/재사용 사유를 가리킨다. cleanup은 실제 생성 자원과 환경을 빠짐없이 가리킨다. 다른 가설의 writable container 공유와 근거 없는 reuse는 거절한다.
@@ -572,7 +587,7 @@ Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 
 - check 뒤 candidate bytes·hash, active attempt, work input 또는 state version이 달라지면 decision을 `EXPIRED`로 만들거나 save를 `DENY`하고 `STALE_RESULT | RECORD_REVISION_MISMATCH | STATE_VERSION_CONFLICT` 중 실제 원인을 기록한다. 변한 후보를 저장하거나 이미 `USED`인 action으로 다시 저장하지 않는다.
 Runtime Validator는 구조·reference·완료 상태만 검사한다. final `TRUE` 근거의 의미적 충분성과 코드·실행 근거 연결은 Technical Evidence Gate가 exact final TRUE revision을 대상으로 별도로 검토한다. `FALSE | HOLD`는 Technical Gate 입력이 아니며, 구조 검사를 통과했다는 사실이 Gate 승인을 의미하지 않는다.
 
-action type에서 쓰지 않는 선택 field는 `null` 또는 빈 배열이어야 하고 `reason`은 비어 있지 않아야 한다. `READ_CODE`는 하나 이상의 `file_paths`, `RUN_TOOL`은 `tool_name`과 필요한 file path가 필수다. 실제 LLM을 실행하는 `CALL_LLM | CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT`는 exact `llm_call_spec_ref`, `provider_profile_ref`, `session_mode`와 work state가 필요하며 action의 provider·session 값은 spec과 같아야 한다. R7 Agent의 `CALL_LLM`은 current `DYNAMIC_REPRO` work에서 requirements·plan·PoC candidate와 동적 근거 해석을 만드는 목적만 허용한다. `SAVE_RESULT`만 `result_kind`와 `candidate_result_ref`를 사용한다. Gate와 Reporter는 별도 `CALL_LLM`을 우회 호출하지 않고 각 stage action이 LLM 호출까지 직접 허가한다. `REQUEST_DYNAMIC_REPRO`와 `RUN_SANDBOX`는 같은 exact `dynamic_request_ref`를 사용한다. `RUN_SANDBOX` action `input_refs`에는 exact request·current `EnvironmentRequirements`·`sandbox_profile_ref`·R8 resource/lifecycle profile을 중복 없이 포함한다. Runtime Validator의 `SCHEMA`·`REVISION`은 이 reference와 역할·상태·예산만 확인한다. Sandbox Controller는 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 경계를 검사하고 빈 `network_targets`를 default-deny로 해석한다. plan·candidate·command는 Sandbox 안에서 만들어질 수 있으므로 RUN_SANDBOX 선행 allowlist나 exact action input으로 요구하지 않는다.
+action type에서 쓰지 않는 선택 field는 `null` 또는 빈 배열이어야 하고 `reason`은 비어 있지 않아야 한다. `READ_CODE`는 하나 이상의 `file_paths`, `RUN_TOOL`은 `tool_name`과 필요한 file path가 필수다. 실제 LLM을 실행하는 `CALL_LLM | CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT`는 exact `llm_call_spec_ref`, `provider_profile_ref`, `session_mode`와 work state가 필요하며 action의 provider·session 값은 spec과 같아야 한다. R7 Agent의 `CALL_LLM`은 current `DYNAMIC_REPRO` work에서 requirements·plan·PoC candidate와 동적 근거 해석을 만드는 목적만 허용한다. `SAVE_RESULT`만 `result_kind`와 `candidate_result_ref`를 사용한다. Gate와 Reporter는 별도 `CALL_LLM`을 우회 호출하지 않고 각 stage action이 LLM 호출까지 직접 허가한다. `REQUEST_DYNAMIC_REPRO`와 `RUN_SANDBOX`는 같은 exact `dynamic_request_ref`를 사용한다. `ActionRequest.reproduction_plan_ref`는 current `DYNAMIC_REPRO` work·attempt의 current exact `ReproductionPlan`을 가리켜야 한다. `RUN_SANDBOX` action `input_refs`에는 exact `DynamicReproductionRequest`·current `EnvironmentRequirements`·current exact `ReproductionPlan`·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile`을 중복 없이 포함하고 `resource_profile_ref`도 같은 profile revision을 가리킨다. Runtime Validator의 `SCHEMA`·`REVISION`은 이 reference와 역할·상태·예산만 확인한다. Sandbox Controller는 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 경계를 검사하고 빈 `network_targets`를 default-deny로 해석한다. `EnvironmentRequirements`와 `ReproductionPlan`은 외부 경계 검사 전에 생성하고, PoC candidate와 command만 경계 승인 후 Sandbox 내부에서 생성한다. 경계 전에 만든 plan은 command allowlist가 아니라 실행 provenance로 사용한다.
 
 ```yaml
 CodeLocation:
@@ -866,11 +881,11 @@ HypothesisProposal:
 - `restrictions`: 관측된 것 중 공격을 제한하는 검사·경계와 그 exact 근거다. INITIAL proposal의 각 restriction은 final `StaticFactBundle`을 가리키는 `fact_refs`가 하나 이상 필요하다. VERIFICATION·CHAINING proposal은 부모에서 보존한 restriction 또는 검증 근거가 있는 새 restriction을 사용할 수 있다. 모든 origin에서 `observed_facts[].fact_id` 집합과 `restrictions[].fact_refs[].fact_id` 집합은 서로 겹치면 안 된다. 하나의 관측 사실은 공격을 뒷받침하는 사실이거나 제한 근거 중 한쪽으로만 분류한다.
 - `assumptions`: 관측으로 확인하지 못했지만 가설이 성립하려면 참이어야 하는 명제다.
 
-확인하지 못한 것 중 가설이 의존하지 않는 공백은 가설에 넣지 않는다. 가설이 확인해야 할 미확인 조건은 `assumptions`와 `falsification_questions`가 담는다. `StaticFactBundle.gaps`의 `DataGap`은 도구·조회가 실패해 데이터를 얻지 못한 범위이며 가설의 미확인 조건과 다른 것이다. 가설 하나가 결과나 필요 조건을 여러 개 가질 수 있으며 가설의 단위는 규칙으로 강제하지 않는다. 등록된 `VulnerabilityHypothesis`는 이 세 갈래를 자기 필드로 복사하지 않는다. 소비자는 `proposal_ref`가 가리키는 exact `HypothesisProposal` revision에서 읽는다. `origin=CHAINING`의 `observed_facts`·`target_entities`·`target_locations`·`suspected_path`는 모두 비어 있을 수 있다. 이 경계 안에는 `CodeFact`가 없고, entity 정보는 `source_primitive_match_id` 계보(`PrimitiveMatchCandidate` → 부모 `Primitive` → `entity_refs`)를 따라가면 얻을 수 있어 Chaining Agent가 다시 계산해 싣지 않는다. `suspected_path`는 부모 데이터에 관계(순서·연결) 정보 자체가 없어 계산해도 위치 집합일 뿐 실제 경로가 되지 않는다. 자식 Verification이 이 계보를 따라 직접 확보한다.
+확인하지 못한 것 중 가설이 의존하지 않는 공백은 가설에 넣지 않는다. 가설이 확인해야 할 미확인 조건은 `assumptions`와 `falsification_questions`가 담는다. `StaticFactBundle.gaps`의 `DataGap`은 도구·조회가 실패해 데이터를 얻지 못한 범위이며 가설의 미확인 조건과 다른 것이다. 가설 하나가 결과나 필요 조건을 여러 개 가질 수 있으며 가설의 단위는 규칙으로 강제하지 않는다. 등록된 `VulnerabilityHypothesis`는 이 세 갈래를 자기 필드로 복사하지 않는다. 소비자는 `proposal_ref`가 가리키는 exact `HypothesisProposal` revision에서 읽는다. `origin=CHAINING`의 `observed_facts`·`target_entities`·`target_locations`·`suspected_path`는 모두 비어 있을 수 있다. 이 경계 안에는 `CodeFact`가 없고, entity 정보는 `source_primitive_match_id` 계보(`PrimitiveMatchCandidate` → 부모 `Primitive` → `entity_refs`)를 따라가면 얻을 수 있어 Chaining Agent가 다시 계산해 싣지 않는다. `suspected_path`는 부모 데이터에 관계(순서·연결) 정보 자체가 없어 계산해도 위치 집합일 뿐 실제 경로가 되지 않는다. Context Retrieval Service가 `CONTEXT_RETRIEVAL` work에 고정된 exact proposal의 `source_primitive_match_id`를 읽어 계보를 검사하고 검증 시작점을 복구한다. 자식 Verification은 검증된 `CodeContextResponse`를 소비한다.
 
 `vulnerability_type_candidates`는 비어 있을 수 있지만 비어 있지 않은 값과 중복 없는 문자열만 허용한다. 이 목록은 아직 확정 분류가 아니므로 여러 후보가 있으면 trusted runtime이 하나를 임의 선택하지 않는다. Verification playbook 선택은 등록 가설의 exact `proposal_ref`를 따라 이 목록을 읽고 §4의 `PlaybookPolicy` 규칙으로만 수행한다.
 
-`origin=CHAINING` proposal은 Chaining 입력 경계에 `CodeFact`가 없으므로 `observed_facts=[]`만 허용한다. 부모에서 물려받은 restriction과 assumption은 위 필드에 보존하고, 코드 사실은 자식 Verification이 `source_primitive_match_id`를 따라 exact 부모 Primitive의 `result.entity_refs`와 `inputs[].entity_refs`에서 시작해 다시 조회한다. `target_entities`·`target_locations`·`suspected_path`는 비어 있을 수 있으며 채운 값은 이 계보에서 exact하게 복원되는 범위를 벗어나면 안 된다. 계보가 끊겼거나 Verification 시작점을 하나도 얻지 못하면 proposal을 등록하지 않는다.
+`origin=CHAINING` proposal은 Chaining 입력 경계에 `CodeFact`가 없으므로 `observed_facts=[]`만 허용한다. 부모에서 물려받은 restriction과 assumption은 위 필드에 보존하고, 코드 사실은 Context Retrieval Service가 `CONTEXT_RETRIEVAL` work에 고정된 exact proposal의 `source_primitive_match_id`를 따라 부모 Primitive의 `result.entity_refs`와 `inputs[].entity_refs`에서 검증 시작점을 복구한 뒤 현재 workspace·commit에서 조회한다. 자식 Verification은 반환된 `CodeContextResponse`를 사용한다. `target_entities`·`target_locations`·`suspected_path`는 비어 있을 수 있으며 채운 값은 이 계보에서 exact하게 복원되는 범위를 벗어나면 안 된다. 계보가 끊겼거나 Verification 시작점을 하나도 얻지 못하면 proposal을 등록하지 않는다.
 
 ```yaml
 HypothesisDuplicateReview:
@@ -904,7 +919,7 @@ VulnerabilityHypothesis:
   validation_checks: [ValidationCheck]
 ```
 
-`origin=VERIFICATION`은 Verification이 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 분리한 proposal이고, `origin=CHAINING`은 upstream Primitive의 `result`가 downstream Primitive의 특정 `input`을 충족한 match가 만든 proposal이다. INITIAL과 VERIFICATION은 `source_primitive_match_id=null`, CHAINING은 분석 전체에서 유일하고 COMMITTED `ChainingResult.primitive_match_candidates`에 정확히 한 번 존재하는 ID가 필수다. 그 match의 parent hypothesis set은 proposal과 등록 가설의 `parent_hypothesis_ids`와 같아야 한다. 계보 길이가 필요하면 이 직접 링크를 따라 계산하며 별도 depth 값을 저장하지 않는다. 부모와 자식의 lifecycle·verdict는 독립이며 child 결과로 parent verdict를 바꾸지 않는다. proposal 출력 검증 runtime은 각 반증 질문에 전역 `question_id`, 각 필수 검증 항목에 전역 `validation_id`를 부여하고 등록 가설까지 그대로 유지한다. `instruction`은 무엇을 확인해야 완료되는지 짧게 설명한다. 질문은 가설의 필수 조건 하나를 실제 근거로 반증할 수 있게 구체적으로 작성한다. 금지된 확정 assertion, 잘못된 enum, 필수 field/location·반증 질문·검증 항목 누락 또는 중복 ID는 제한된 repair retry 뒤 `INVALID_OUTPUT`이다. `origin=CHAINING`의 `observed_facts`·`target_entities`·`target_locations`·`suspected_path`는 이 필수 field 규칙에서 제외한다 — 이 경계에서 채울 수 없는 정보이며 자식 Verification이 `source_primitive_match_id` 계보를 따라 확보한다(§6 `chaining_result` 저장 검사와 동일). 이 계보를 복원할 수 없으면(§6) 등록 자체를 거절한다.
+`origin=VERIFICATION`은 Verification이 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 분리한 proposal이고, `origin=CHAINING`은 upstream Primitive의 `result`가 downstream Primitive의 특정 `input`을 충족한 match가 만든 proposal이다. INITIAL과 VERIFICATION은 `source_primitive_match_id=null`, CHAINING은 분석 전체에서 유일하고 COMMITTED `ChainingResult.primitive_match_candidates`에 정확히 한 번 존재하는 ID가 필수다. 그 match의 parent hypothesis set은 proposal과 등록 가설의 `parent_hypothesis_ids`와 같아야 한다. 계보 길이가 필요하면 이 직접 링크를 따라 계산하며 별도 depth 값을 저장하지 않는다. 부모와 자식의 lifecycle·verdict는 독립이며 child 결과로 parent verdict를 바꾸지 않는다. proposal 출력 검증 runtime은 각 반증 질문에 전역 `question_id`, 각 필수 검증 항목에 전역 `validation_id`를 부여하고 등록 가설까지 그대로 유지한다. `instruction`은 무엇을 확인해야 완료되는지 짧게 설명한다. 질문은 가설의 필수 조건 하나를 실제 근거로 반증할 수 있게 구체적으로 작성한다. 금지된 확정 assertion, 잘못된 enum, 필수 field/location·반증 질문·검증 항목 누락 또는 중복 ID는 제한된 repair retry 뒤 `INVALID_OUTPUT`이다. `origin=CHAINING`의 `observed_facts`·`target_entities`·`target_locations`·`suspected_path`는 이 필수 field 규칙에서 제외한다 — 이 경계에서 채울 수 없는 정보이며 Context Retrieval Service가 exact proposal의 `source_primitive_match_id` 계보를 따라 복구하고 자식 Verification은 검증된 `CodeContextResponse`를 소비한다(§6 `chaining_result` 저장 검사와 동일). 이 계보를 복원할 수 없으면(§6) 등록 자체를 거절한다.
 
 ## 3. CodeContextRequest/Response
 
@@ -1180,7 +1195,6 @@ PrimitiveMatchCandidate:
   parent_verification_refs: [StoredDataRef]
   workspace_id: string
   commit_id: string
-  normalized_fingerprint: string
   evidence_refs: [StoredDataRef]
   candidate_state: UNVALIDATED
 ```
@@ -1191,7 +1205,7 @@ final HOLD는 `required_primitive_candidates`가 하나 이상일 때 Primitive 
 
 final TRUE는 현재 Verification generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated PoC가 있고, 같은 Verification과 이를 직접 가리키는 current CWELabel을 검토한 Technical `ACCEPT`가 있을 때 admission 검토를 시작한다. `PRIMITIVE_ADMISSION_RUNTIME`은 exact 정책 수집 결과와 존재하는 Rule Scope review를 아래 결정표에 적용해 `PrimitiveAdmissionDecision`을 만든다. `decision=ALLOW`일 때만 제공 능력마다 result가 있는 Primitive를 만들며, 각 record의 `admission_decision_ref`는 그 current decision을 exact하게 가리킨다. 제공 능력이 여러 개면 `provided_primitive_candidates` 항목마다 Primitive 하나를 만들고, 각 Primitive의 `inputs`는 같은 TRUE의 `required_primitive_candidates`, `result`는 해당 제공 능력 하나, `restrictions`는 Verification 값과 같아야 한다. Gate 전 TRUE는 result가 있는 Primitive가 될 수 없다. Technical `REVISE | REJECT`와 admission `DENY`도 result Primitive가 될 수 없다.
 
-체이닝 재료 자격의 최종 authority는 R4 `PRIMITIVE_ADMISSION_RUNTIME`이 만든 current `PrimitiveAdmissionDecision`이다. Rule Scope의 `review_status`와 `report_permission`의 `FAIL | UNCERTAIN | DENY`는 Finding·Reporter 경로를 막지만 current admission이 `ALLOW`인 실제 코드 능력의 Primitive와 Chaining을 막지 않는다. `testing_restriction_compliance=FAIL`만 이 정책 축에서 `DENY`가 되며, `UNCERTAIN`은 `ALLOW`, `COLLECTION_FAILED`는 review 없는 `NOT_EVALUATED + ALLOW`로 구분한다. Technical Gate는 정책 record를 입력으로 갖지 않으므로 금지 재현을 판정하지 않고, validated PoC 연결(`dynamic_linkage`), 실제 코드 경로 연결(`code_flow_linkage`), restrictions 표현의 정확성(`restriction_assessment`)만 검토한다.
+체이닝 재료 자격의 최종 authority는 R4 `PRIMITIVE_ADMISSION_RUNTIME`이 만든 current `PrimitiveAdmissionDecision`이다. Rule Scope의 `review_status`와 `report_permission`의 `FAIL | UNCERTAIN | DENY`는 Reporter를 막지만, COMMITTED `RuleScopeImpactReview`가 존재하면 current Finding은 보존한다. 또한 current admission이 `ALLOW`인 실제 코드 능력의 Primitive와 Chaining도 막지 않는다. `testing_restriction_compliance=FAIL`만 이 정책 축에서 `DENY`가 되며, `UNCERTAIN`은 `ALLOW`, `COLLECTION_FAILED`는 review 없는 `NOT_EVALUATED + ALLOW`로 구분한다. Technical Gate는 정책 record를 입력으로 갖지 않으므로 금지 재현을 판정하지 않고, validated PoC 연결(`dynamic_linkage`), 실제 코드 경로 연결(`code_flow_linkage`), restrictions 표현의 정확성(`restriction_assessment`)만 검토한다.
 
 다만 `rule_compliance=FAIL + TESTING_RESTRICTION link`는 다른 규칙 실패와 금지 테스트 위반을 구분하기에 충분하지 않다. `testing_restriction_compliance`는 `rule_compliance`와 독립된 판정 축이다. 다른 `rule_compliance`, `scope_compliance`, impact와 report permission 값은 admission decision에 사용하지 않는다. Rule Scope review의 전용 값과 정책 수집 상태만 다음처럼 기계적으로 매핑한다.
 
@@ -1217,7 +1231,7 @@ decision의 `meta`는 `PRIMITIVE_UPDATE` current attempt와 같은 `attempt_id`�
 
 전역 권한 서열표, 문자열 이름의 단순 일치나 근거 없는 추측은 사용하지 않는다. 양쪽 restrictions를 합친 뒤에도 공격 순서가 성립해야 하며 `evidence_refs`는 entity·privilege·순서·restriction 결론의 실제 근거를 하나 이상 포함한다. 축이 맞지 않거나 근거가 없으면 후보를 만들지 않고 `ChainingResult.no_match_reasons`에 이유를 남긴다. 후보가 존재한다는 것 자체가 비교를 통과했다는 뜻이므로 PASS/UNCERTAIN check와 unresolved 조건을 중복 저장하지 않는다.
 
-downstream Primitive의 `result=null`이면 TRUE_HOLD, non-null이면 TRUE_TRUE로 유도한다. `primitive_match_id`는 분석 전체에서 유일하고 같은 `normalized_fingerprint`도 중복 저장하지 않는다. match는 queue message, verdict, Finding 또는 impact 확정이 아니다.
+downstream Primitive의 `result=null`이면 TRUE_HOLD, non-null이면 TRUE_TRUE로 유도한다. `primitive_match_id`는 분석 전체에서 유일하고 같은 `(upstream_result_ref, downstream_input_ref, matched_input_id)` 조합도 중복 저장하지 않는다. 세 값이 match 하나를 유일하게 식별하므로 중복 판정을 위한 별도 요약 값은 두지 않으며 `normalized_fingerprint`는 사용하지 않는다. match는 queue message, verdict, Finding 또는 impact 확정이 아니다.
 
 ## 6. ChainingResult
 
@@ -1233,7 +1247,7 @@ ChainingResult:
   primitive_match_candidates: [PrimitiveMatchCandidate]
   chained_hypothesis_proposals: [HypothesisProposal]
   excluded_lineage_refs: [LineageExclusion]
-  no_match_reasons: [string]
+  no_match_reasons: [NoMatchReason]
   errors: [AnalysisError]
 ```
 
@@ -1244,11 +1258,24 @@ LineageExclusion:
   reason_code: ANCESTOR_REUSE
 ```
 
+```yaml
+NoMatchReason:
+  upstream_result_ref: StoredDataRef
+  downstream_input_ref: StoredDataRef
+  checked_input_id: string
+  reason_code: ENTITY_UNRELATED | PRIVILEGE_UNSATISFIED | ORDER_INVALID | RESTRICTION_CONFLICT | NO_CODE_EVIDENCE
+  detail: string
+```
+
+`no_match_reasons`는 §06의 매칭 조건을 실제로 검토했지만 candidate를 만들지 않은 조합마다 하나씩 남긴다. 두 reference는 `considered_primitive_refs`에 있는 exact Primitive여야 하고 `checked_input_id`는 downstream `inputs[].draft_id` 하나여야 한다. 같은 `(upstream_result_ref, downstream_input_ref, checked_input_id)` 조합은 한 결과에서 중복될 수 없고 `primitive_match_candidates`가 성립시킨 조합과 겹칠 수 없다.
+
+담당이 아닌 조합은 처음부터 검토 대상이 아니므로 여기 넣지 않고 별도 기록도 만들지 않는다. unique key 충돌은 정상 중복이 아니라 구현 오류이므로 해당 `ChainingResult`를 저장하지 않고 `AnalysisError`와 work 오류로 남기며, `FALSE`·`HOLD`·`NoMatchReason`이나 전체 분석 중단으로 바꾸지 않는다. 조상 재사용 제외는 `excluded_lineage_refs`, 예산·오류로 확인하지 못한 후보는 work 상태와 `errors`가 담는다. Runtime Validator는 위 구조와 소속만 검사하고 `reason_code`·`detail`의 판단 내용은 다시 판정하지 않는다.
+
 `considered_primitive_refs`는 work 시작 시(`REGISTER_WORK`) Runtime이 고정한, 조상 제외 전 전체 Primitive 입력이고, `input_primitive_refs`는 실제 match candidate에 사용된 Primitive 합집합이다. 두 목록은 의미가 다르며 서로 대신하지 않는다. `source_result_refs`는 match에 사용된 Primitive들의 `source_verification_ref`와 non-null `technical_review_ref`를 중복 없이 합친 정확한 집합이다. `source_admission_refs`는 실제 match에 사용된 Primitive에서 직접 또는 `source_primitive_match_id` 계보를 따라 재귀적으로 도달하는 모든 result Primitive의 current ALLOW admission decision exact reference를 중복 없이 합친 집합이다. clean initial HOLD처럼 result Primitive 계보가 없을 때만 빈 목록일 수 있다. 각 candidate의 `parent_hypothesis_ids`와 `parent_verification_refs`도 해당 upstream/downstream Primitive가 직접 가리키는 source hypothesis와 Verification의 중복 없는 합집합이다. downstream result 유무로 TRUE_HOLD와 TRUE_TRUE를 유도하며 별도 trigger나 match kind를 저장하지 않는다. `chained_hypothesis_proposals`는 모두 `origin=CHAINING`, 입력 Primitive의 parent hypothesis ID와 exact `source_primitive_match_id`를 보존한다. 각 proposal의 restrictions는 입력 Primitive 양쪽 Restriction 객체의 중복 없는 합집합이며, 같은 `restriction_id`의 canonical content가 다르면 저장하지 않는다.
 
 조상 제외는 §06이 정의한 순서를 따른다(순환 방지가 아니다 — record가 불변·append-only라 계보는 이미 DAG다). 같은 계보에서는 가장 깊은 후보부터 match를 검토하고, 그 match가 실제로 성립한 뒤에만 그 후보의 조상 Primitive를 양방향 재귀 탐색으로 찾아 이번 순회의 후보에서 제외한다. match가 성립하지 않으면 아무것도 제외하지 않고 얕은 후보를 그대로 검토한다. 검토 순서 자체는 Agent 규칙이고 Runtime은 결과 정합성만 검사한다. 순서를 어겨도 제외 대상이 조상뿐이라 더 깊은 후손은 후보로 남고, 같은 결과에서 얕은 후보와 깊은 후보를 모두 match하면 아래 `excluded_primitive_ref` 규칙에 걸려 저장이 거절된다. 조상 쪽은 새 Primitive가 등장하기 전부터 이미 서로 연결이 확정된 상태였으므로, 가장 깊은 match가 성립한 시점에서 그 결론이 얕은 조합들의 결론을 이미 포함한다. 대신 가장 깊은 조합의 자식 가설이 이후 Verification에서 실패해도 제외된 얕은 조합은 다시 제안되지 않으며, 이는 이 중복 제거 정책이 만드는 미탐 위험으로 의도적으로 수용한 결정이다. 실제로 제외한 항목마다 `LineageExclusion`을 남기며 Runtime이 고정 입력에서 기대되는 제외 쌍과 결과를 다시 비교한다. 제외된 Primitive는 match 입력으로 사용할 수 없고, 제외 근거가 된 Primitive는 실제 match에 사용된 같은 work 입력이어야 하며 자신은 제외되지 않아야 한다. DB 상태는 바꾸지 않는다. 체이닝 전용 임의 depth·전체/parent별 가설 수·호출 수·Primitive 조합 수와 token 상한은 두지 않는다. 대신 R8의 전체 시간·비용·work 예산을 모든 Chaining work에 동일하게 적용한다. token 사용량은 관측할 뿐 초과만으로 중단하지 않는다. 다른 예산 소진도 `FALSE`가 아니며 실행 상태와 `AnalysisRunResult.stop_reasons`에 기록한다.
 
-`ChainingResult.considered_primitive_refs`, `source_admission_refs`와 `excluded_lineage_refs` 추가는 기존 결과의 필수 필드를 바꾸므로 새 MAJOR schema로 배포한다. 이전 MAJOR 결과에 세 목록을 빈 배열로 추정하지 않는다. 기존 결과는 감사 이력으로만 보존하고 새 Chaining·가설 등록 입력으로 자동 승격하지 않는다.
+`ChainingResult.considered_primitive_refs`, `source_admission_refs`와 `excluded_lineage_refs` 추가, `PrimitiveMatchCandidate`의 필드 제거, `no_match_reasons`의 `NoMatchReason` 전환은 기존 결과의 필수 필드를 바꾸므로 새 MAJOR schema로 배포한다. 이전 MAJOR 결과에 세 목록을 빈 배열로 추정하지 않는다. 기존 결과는 감사 이력으로만 보존하고 새 Chaining·가설 등록 입력으로 자동 승격하지 않는다.
 
 ChainingResult는 bypass, alternate path, 새 sink, impact escalation, Technical revision, 일반 validation 또는 동적 재현 요청을 포함할 수 없다. 이런 주장은 Verification이 자기 흐름에서 조사하고 material하면 `origin=VERIFICATION` proposal로 분리한다. 이 record는 기존 verdict, CWE, Gate 또는 Finding을 변경하지 않는다.
 
@@ -1329,6 +1356,25 @@ ReproductionPlan:
   strategy_summary: string
   requested_evidence: [string]
 
+SandboxProfile:
+  meta: RecordMeta with hypothesis_id null and attempt_id null
+  network_mode: DEFAULT_DENY
+  allowed_egress_refs: [StoredDataRef]
+  isolation_policy_refs: [StoredDataRef]
+  cpu_limit_millicores: integer
+  memory_limit_bytes: integer
+  disk_limit_bytes: integer
+  pid_limit: integer
+  max_requested_execution_ms: integer
+  created_at: timestamp
+
+DynamicReproductionLifecycleProfile:
+  meta: RecordMeta with hypothesis_id null and attempt_id null
+  preflight_budget_ref: StoredDataRef
+  preflight_budget_source: WORK_REMAINING_TIME
+  max_new_attempts: integer
+  created_at: timestamp
+
 EnvironmentRecipe:
   meta: RecordMeta
   request_ref: StoredDataRef
@@ -1382,6 +1428,23 @@ SandboxPolicyDecision:
   checked_boundary_refs: [StoredDataRef]
   decided_at: timestamp
 
+SandboxCommandRecord:
+  meta: RecordMeta
+  action_id: string
+  request_ref: StoredDataRef
+  reproduction_plan_ref: StoredDataRef
+  environment_recipe_ref: StoredDataRef
+  environment_ref: StoredDataRef
+  executable: string
+  arguments: [string]
+  working_directory: string
+  environment_binding_refs: [StoredDataRef]
+  stdin_ref: StoredDataRef | null
+  secret_refs: [StoredDataRef]
+  command_digest: string
+  redaction_status: REDACTED | NOT_REQUIRED
+  created_at: timestamp
+
 CleanupResult:
   meta: RecordMeta
   request_ref: StoredDataRef
@@ -1400,6 +1463,9 @@ AgentLogEvent:
   environment_ref: StoredDataRef | null
   environment_recipe_ref: StoredDataRef | null
   poc_candidate_ref: StoredDataRef | null
+  command_ref: StoredDataRef | null
+  command_digest: string | null
+  redaction_status: REDACTED | NOT_REQUIRED | null
   input_refs: [StoredDataRef]
   output_refs: [StoredDataRef]
   exit_code: integer | null
@@ -1457,7 +1523,6 @@ DynamicReproductionResult:
   disproof_evidence_refs: [StoredDataRef]
   hypothesis_linkage: string
   plan_execution_status: EXECUTABLE | EXECUTABLE_WITH_LIMITATIONS | NEEDS_REVISION
-  plan_issues: [string]
   plan_issue_evidence_refs: [StoredDataRef]
   limitations: [string]
   cleanup_required: boolean
@@ -1482,7 +1547,7 @@ credential·cookie·token·password와 재사용 가능한 인증 값은 require
 
 plan의 입력 부족이나 모순은 별도 `PlanIssue` record를 만들지 않고 `DynamicReproductionResult.plan_issues`에 `PlanIssueItem`으로 반환한다. Agent가 attempt 안에서 해결하면 `status=RESOLVED`로 이력을 남기고 계속할 수 있다. `OPEN` 항목이 남아 재현을 신뢰할 수 없으면 `hypothesis_outcome=INCONCLUSIVE`, `poc_ref=null`이며, 외부 수정 가능 여부에 따라 결과 status는 `BLOCKED | FAILED`다.
 
-`EnvironmentRecipe`는 저장소와 필요한 실행 환경에서 Docker image를 다시 만들 수 있는 불변 build recipe이며 base·built image digest를 구분해 기록한다. `source_refs`는 Dockerfile·README·package manifest·lockfile처럼 저장소가 이미 선언한 의존성을 우선 가리킨다. 별도 Dependency Scanner나 R2 사전 package prefetch를 전제로 하지 않는다. `base_image_digest`는 시작 image, `built_image_digest`는 실제 build 또는 재사용한 완성 image를 뜻하며 서로 바꾸어 쓰지 않는다. package 누락을 실제로 확인하면 Agent가 recipe source를 갱신하고 Setup Automation이 새 image를 build한 뒤 새 recipe revision을 만든다. 성공한 baseline image는 다른 가설에서도 재사용할 수 있지만, 현재 attempt에는 `build_disposition=REUSED`, exact `baseline_recipe_ref`와 같은 `built_image_digest`를 가진 새 binding record를 만들어 provenance를 고정한다. `PERSISTENT_BASELINE`을 writable container 재사용 모드로 정의하지 않으며 writable container는 가설 work를 넘겨 재사용하지 않는다.
+`EnvironmentRecipe`는 current `DYNAMIC_REPRO` attempt의 binding record이자 저장소와 필요한 실행 환경에서 Docker image를 다시 만들 수 있는 불변 build recipe다. `meta.hypothesis_id`와 `meta.attempt_id`는 반드시 현재 work·attempt 값이어야 하며 base·built image digest를 구분해 기록한다. `source_refs`는 Dockerfile·README·package manifest·lockfile처럼 저장소가 이미 선언한 의존성을 우선 가리킨다. 별도 Dependency Scanner나 R2 사전 package prefetch를 전제로 하지 않는다. `base_image_digest`는 시작 image, `built_image_digest`는 실제 build 또는 재사용한 완성 image를 뜻하며 서로 바꾸어 쓰지 않는다. package 누락을 실제로 확인하면 Agent가 recipe source를 갱신하고 Setup Automation이 새 image를 build한 뒤 현재 attempt의 새 binding record를 만든다. 과거 성공 환경은 `baseline_recipe_ref`로만 참조할 수 있다. baseline을 재사용해도 현재 attempt에는 `build_disposition=REUSED`, exact `baseline_recipe_ref`와 같은 `built_image_digest`를 가진 새 `EnvironmentRecipe` binding을 생성해 provenance를 고정한다. `PERSISTENT_BASELINE`을 writable container 재사용 모드로 정의하지 않으며 writable container는 가설 work를 넘겨 재사용하지 않는다.
 
 `SandboxEnvironment`는 R7 Setup Automation이 해당 attempt에서 실제로 만든 또는 재사용한 환경과 요구사항 비교를 기록하는 불변 record다. `request_ref`, `reproduction_plan_ref`, `environment_recipe_ref`와 `requirements_ref`는 같은 attempt의 exact record를 가리킨다. `checks`는 요구사항의 모든 `requirement_id`를 정확히 한 번씩 포함한다. `MATCH | MISMATCH`에는 공개 가능한 `actual` 또는 실제 구성 artifact를 가리키는 exact `actual_ref` 중 하나 이상이 필요하다. `NOT_CHECKED | ERROR`에서는 두 필드가 모두 `null`일 수 있지만 비어 있지 않은 `difference`와 비교 시도 근거가 필요하다. 모든 check는 `evidence_refs` 또는 `check_result_ref` 중 하나 이상을 가져야 하며, `check_result_ref`는 Health Check 결과를 가리킨다. 실제 비밀값은 어느 필드에도 저장하지 않는다.
 
@@ -1490,11 +1555,11 @@ plan의 입력 부족이나 모순은 별도 `PlanIssue` record를 만들지 않
 
 가설의 첫 `DYNAMIC_REPRO` attempt는 writable 상태를 공유하지 않는 clean container에서 시작하며 `container_action=CREATED`, `container_reason=INITIAL_CLEAN`, `previous_environment_ref=null`이다. 서로 다른 가설은 같은 `container_instance_id`의 writable container를 공유하지 않는다. 같은 가설·work 안에서는 attempt가 달라도 다음 실행에 영향을 줄 상태·설정 변화가 없을 때만 기존 container를 `REUSED + NO_RELEVANT_CHANGE`로 사용할 수 있다. 재사용하더라도 current attempt의 새 `SandboxEnvironment` binding record를 만들고 `previous_environment_ref`로 직전 환경을 연결한다. Agent가 `STATE_CHANGED | CONFIG_CHANGED | STATE_UNCERTAIN`을 이유로 재생성을 요청할 수 있고, crash·비정상 종료·사후 Health Check 실패면 runtime이 `STATE_UNCERTAIN`으로 강제한다. 각 결정은 새 `SandboxEnvironment` record와 `previous_environment_ref`로 연결하고 `SANDBOX_RECREATE_REQUESTED | SANDBOX_RECREATED` event에 요청 주체·사유·이전/새 환경을 남긴다.
 
-`action_decision_ref`는 plan 입력 부족·모순 때문에 `RUN_SANDBOX` 요청 자체를 만들기 전에 종료된 pre-boundary 결과에서만 `null`일 수 있다. 이때 `failure_category=PLAN`, `agent_invoked=false`, `policy_decision_ref=null`, recipe·환경·candidate·validated PoC reference는 모두 `null`이어야 하며 `AgentLog`가 plan issue와 종료 event를 보존한다. 그 밖에 Sandbox 외부 경계 검사를 시도한 모든 결과의 `action_decision_ref.record_id`는 R7 호출자의 권한·상태·예산, exact `DynamicReproductionRequest`, current `EnvironmentRequirements`와 Sandbox profile을 확인해 외부 격리 경계 생성을 허가한 `RUN_SANDBOX` ALLOW decision의 `USED` revision을 가리킨다. 이 decision은 plan·recipe·PoC·command 성공이나 정책 통과를 뜻하지 않으며 다른 가설·attempt에 재사용하지 않는다. Sandbox Controller는 host, Docker daemon/socket, host mount·namespace, secret, 허용되지 않은 egress, 다른 workspace와 R8 resource profile/lifecycle 같은 Sandbox 바깥 경계만 검사한다. 컨테이너 내부 command를 allowlist로 재판단하지 않는다. `failure_category=POLICY_BLOCKED`이면 `action_decision_ref`와 `policy_decision_ref`가 반드시 존재하고, 정책 판정은 `decision=DENY`이며 적용한 정책의 exact revision과 사유 코드를 확인할 수 있어야 한다. 이 정책 판정은 Technical Gate와 다른 결과이며 서로 변환하지 않는다.
+`action_decision_ref`는 plan 입력 부족·모순 때문에 `RUN_SANDBOX` 요청 자체를 만들기 전에 종료된 pre-boundary 결과에서만 `null`일 수 있다. 이때 `failure_category=PLAN`, `agent_invoked=false`, `policy_decision_ref=null`, recipe·환경·candidate·validated PoC reference는 모두 `null`이어야 하며 `AgentLog`가 plan issue와 종료 event를 보존한다. 그 밖에 Sandbox 외부 경계 검사를 시도한 모든 결과의 `action_decision_ref.record_id`는 R7 호출자의 권한·상태·예산, exact `DynamicReproductionRequest`, current `EnvironmentRequirements`, current exact `ReproductionPlan`, `sandbox_profile_ref`와 exact `DynamicReproductionLifecycleProfile`을 확인해 외부 격리 경계 생성을 허가한 `RUN_SANDBOX` ALLOW decision의 `USED` revision을 가리킨다. 이 decision은 plan·recipe·PoC·command 성공이나 정책 통과를 뜻하지 않으며 다른 가설·attempt에 재사용하지 않는다. Sandbox Controller는 R7 소유 `sandbox_profile_ref`의 host, Docker daemon/socket, host mount·namespace, secret, 허용되지 않은 egress, 다른 workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 수치를 강제한다. 컨테이너 내부 command를 allowlist로 재판단하지 않는다. `failure_category=POLICY_BLOCKED`이면 `action_decision_ref`와 `policy_decision_ref`가 반드시 존재하고, 정책 판정은 `decision=DENY`이며 적용한 정책의 exact revision과 사유 코드를 확인할 수 있어야 한다. 이 정책 판정은 Technical Gate와 다른 결과이며 서로 변환하지 않는다.
 
 정책을 통과하면 R7 Setup Automation이 image build·container 생성·재생성·정리를 수행한다. R7 Agent는 격리된 container 안에서 환경 설정, 저장소가 필요로 하는 package, 계정, fixture/mock, PoC, command, 관찰과 재시도를 자율적으로 선택할 수 있다. Agent는 Docker daemon이나 host를 직접 제어하지 않고 Setup Automation이 제공한 in-container 실행 통로만 사용한다. 새로운 package registry나 외부 target 접근은 여전히 versioned profile의 egress 경계를 통과해야 한다. Agent가 선택한 command의 내용은 plan allowlist와 비교하지 않지만 모든 실제 event는 `AgentLog`에 기록한다.
 
-비-LLM `Reproduction Session Manager`는 runtime/tool/lifecycle 계층에서 발생한 event를 durable append-only `AgentLog`로 저장하고, 같은 attempt의 exact reference만 사용해 `DynamicReproductionResult`와 validated PoC를 확정하는 result owner다. Agent의 실행 전략이나 해석을 대신 쓰지 않으며 Agent 호출·중단, command 허용, 재시도 또는 cleanup 전략을 결정하지 않는다. `agent_invoked`는 외부 경계 승인 뒤 Sandbox 안에서 실행하는 R7 Agent 단계가 시작됐는지를 뜻하며, 경계 승인 전에 requirements·plan을 작성한 LLM invocation과 구분한다. Sandbox 실행 Agent가 호출되기 전 정책 차단도 `agent_invoked=false`와 `POLICY_BLOCKED` event를 가진 로그·결과로 확정할 수 있다. `event_id`는 시스템 전체에서 고유하고 `sequence`는 attempt별 1부터 엄격히 증가한다. 시작과 종료 event는 동일한 `action_id`로 연결한다. 각 append를 바로 durable revision으로 확정하므로 crash 뒤에도 이전 event가 남고, 종료된 이전 attempt의 늦은 event는 current log나 결과에 붙이지 않는다.
+비-LLM `Reproduction Session Manager`는 runtime/tool/lifecycle 계층에서 발생한 event를 durable append-only `AgentLog`로 저장하고, 같은 attempt의 exact reference만 사용해 `DynamicReproductionResult`와 validated PoC를 확정하는 result owner다. Agent의 실행 전략이나 해석을 대신 쓰지 않으며 Agent 호출·중단, command 허용, 재시도 또는 cleanup 전략을 결정하지 않는다. `agent_invoked`는 외부 경계 승인 뒤 Sandbox 안에서 실행하는 R7 Agent 단계가 시작됐는지를 뜻하며, 경계 승인 전에 requirements·plan을 작성한 LLM invocation과 구분한다. Sandbox 실행 Agent가 호출되기 전 정책 차단도 `agent_invoked=false`와 `POLICY_BLOCKED` event를 가진 로그·결과로 확정할 수 있다. `event_id`는 시스템 전체에서 고유하고 `sequence`는 attempt별 1부터 엄격히 증가한다. 시작과 종료 event는 동일한 `action_id`로 연결한다. `COMMAND_STARTED`와 대응하는 `COMMAND_FINISHED`는 같은 attempt의 동일한 exact `SandboxCommandRecord.command_ref`·`command_digest`, `action_id`, `environment_ref`, `environment_recipe_ref`를 사용한다. command event에는 `command_ref`, `command_digest`, `redaction_status`가 필수이며 다른 event에서는 모두 `null`이다. `SandboxCommandRecord`는 실제 실행한 executable·argv·working directory·환경 binding·stdin을 정본으로 보존하되 secret 원문은 저장하지 않고 opaque `secret_refs`로 대체한다. `command_digest`는 이 redacted canonical command에 대해 계산하고 두 event와 record에서 같아야 한다. redaction이 필요하면 `REDACTED`, 민감값이 없으면 `NOT_REQUIRED`이며 검사 실패 command나 log는 저장하지 않는다. 각 append를 바로 durable revision으로 확정하므로 crash 뒤에도 이전 event가 남고, 종료된 이전 attempt의 늦은 event는 current log나 결과에 붙이지 않는다.
 
 `poc_candidate_ref`는 Agent가 작성했거나 실행을 시도한 exact `PoCCandidate`를 가리킨다. candidate가 있으면 같은 attempt의 `AgentLog`에 `POC_CANDIDATE_CREATED` 또는 `POC_EXECUTION_STARTED` event와 exact candidate revision·digest가 있어야 한다. 생성하지 못했다면 `poc_candidate_ref=null`이다. candidate 생성·실행 실패에서도 candidate와 관련 log는 감사 이력으로 남길 수 있지만 성공을 뜻하지 않는다.
 
@@ -1504,27 +1569,36 @@ candidate 생성·환경 구성·실행 실패는 동적 재현 실패 사실일
 
 `cleanup_required`는 container·network·volume·image/build 임시 자원·임시 파일 등 정리 대상이 하나라도 생성됐는지를 나타낸다. `false`이면 `cleanup_status=NOT_REQUIRED`, `true`이면 `cleanup_status=SUCCEEDED | FAILED`만 허용한다. 정책 차단이라는 이유만으로 `NOT_REQUIRED`를 선택하지 않는다. 실제 자원이 있는데 `cleanup_required=false` 또는 `cleanup_status=NOT_REQUIRED`인 결과는 계약 위반이다.
 
-plan 자체가 모순되거나 필수 입력이 없으면 별도 `PlanIssue` 대신 결과의 `plan_execution_status=NEEDS_REVISION`, `plan_issues`와 근거로 반환한다. 해결 가능한 package·setup·PoC·실행 문제는 Agent가 R8 한도 안에서 자체 재시도한다. 한도를 소진하면 `DynamicReproductionResult(status=FAILED, hypothesis_outcome=INCONCLUSIVE, poc_ref=null)`로 반환하며 R6가 후속 흐름을 결정한다.
+plan 자체가 모순되거나 필수 입력이 없으면 별도 `PlanIssue` 대신 결과의 `plan_execution_status=NEEDS_REVISION`, `plan_issues`와 근거로 반환한다. 해결 가능한 package·setup·PoC·실행 문제는 같은 R7 Agent session이면 현재 attempt에서 조정하고, session 재시작이 필요할 때만 R8 한도 안에서 같은 work의 새 attempt로 재시도한다. 한도를 소진하면 `DynamicReproductionResult(status=FAILED, hypothesis_outcome=INCONCLUSIVE, poc_ref=null)`로 반환하며 R6가 후속 흐름을 결정한다.
 
-다음 reference는 모두 `record_id`가 있는 `StoredDataRef`를 사용한다. target record의 analysis·workspace·commit·hypothesis는 동적 결과와 같아야 한다. request의 `verification_generation`, plan·recipe·candidate·result의 `request_ref`, plan/result의 `purpose`가 exact match해야 한다. current `EnvironmentRecipe`, terminal `SandboxEnvironment`, `AgentLog`, `PoCCandidate`, `PoCBundle`과 `DynamicReproductionResult`는 모두 결과와 같은 `DYNAMIC_REPRO.work_id + attempt_id`에 속한다. baseline 재사용을 나타내는 `EnvironmentRecipe.baseline_recipe_ref`만 과거 attempt를 가리킬 수 있으며 현재 binding recipe와 `built_image_digest`가 같아야 한다. log event가 가리키는 environment·recipe·candidate도 event가 속한 attempt의 exact record다. retry는 같은 `work_id`의 새 `attempt_id`이며 과거 attempt artifact를 current 결과에 섞지 않는다. 별도 `reproduction_id`를 발급하지 않고 exact `DynamicReproductionRequest.record_id + work_id + attempt_id`로 시도를 식별한다.
+다음 reference는 모두 `record_id`가 있는 exact `StoredDataRef`를 사용한다. target record의 analysis·workspace·commit·hypothesis는 동적 결과와 같아야 한다. request의 `verification_generation`, plan·recipe·candidate·result의 `request_ref`, plan/result의 `purpose`가 exact match해야 한다. current `EnvironmentRecipe`, terminal `SandboxEnvironment`, `AgentLog`, `PoCCandidate`, `PoCBundle`, cleanup과 `DynamicReproductionResult`는 모두 결과와 같은 `DYNAMIC_REPRO.work_id + attempt_id`에 속한다. baseline 재사용을 나타내는 `EnvironmentRecipe.baseline_recipe_ref`만 과거 attempt를 가리킬 수 있으며 현재 binding recipe와 `built_image_digest`가 같아야 한다. log event가 가리키는 environment·recipe·candidate도 event가 속한 attempt의 exact record다. 같은 R7 Agent session의 command·PoC·환경 조정은 같은 attempt의 event로 기록한다. session 재시작이 필요하면 같은 work의 새 `attempt_id`와 `trigger=RETRY`를 사용하고, 외부 조건 해소 뒤 재개하면 같은 work의 새 `attempt_id`와 `trigger=RESUME`를 사용한다. 과거 attempt artifact와 늦은 event는 current 결과에 섞지 않는다. 별도 `reproduction_id`를 발급하지 않고 exact `DynamicReproductionRequest.record_id + work_id + attempt_id`로 시도를 식별한다.
 
-다음 reference는 모두 exact `StoredDataRef`를 사용한다. request·requirements·plan·policy·환경·log·PoC·cleanup과 결과는 같은 분석·workspace·commit·가설·work의 revision을 가리켜야 한다. retry는 같은 `work_id`의 새 `attempt_id`이고 과거 attempt artifact를 섞지 않는다. 재사용 가능한 `EnvironmentRecipe`만 repository/environment 범위이며 hypothesis·attempt는 `null`이다.
+
 
 | reference 위치 | `data_kind` | 만드는 주체 | 읽는 주체 | 최소 의미 |
 |---|---|---|---|---|
 | `DynamicReproductionRequest` | `dynamic_reproduction_request` | R6 Verification | R7, Runtime Validator | 재현 가설·목적·목표·환경 필요·profile과 근거의 current generation 요청 |
 | `EnvironmentRequirements.request_ref` | `dynamic_reproduction_request` | R6 Verification | Runtime Validator, R7 | R7 requirements가 구체화한 exact 요청 |
 | `ReproductionPlan.environment_requirements_ref` | `environment_requirements` | R7 Agent | Runtime Validator, R7 Setup Automation | 필요한 애플리케이션 환경의 current exact revision |
+| `sandbox_profile_ref` | `sandbox_profile` | R7 sandbox policy owner가 승인하고 trusted sandbox policy registry runtime이 게시 | Runtime Validator, Sandbox Controller, Session Manager | network·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간의 immutable exact revision |
+| `resource_profile_ref` | `dynamic_reproduction_lifecycle_profile` | R8 evaluation/budget owner가 승인하고 trusted resource policy registry runtime이 게시 | Runtime Validator, Sandbox Controller, Session Manager | 호출 전 work 잔여 시간 검사 정책과 새 attempt 한도의 immutable exact revision |
 | `environment_recipe_ref` | `environment_recipe` | R7 Setup Automation | Session Manager, Verification, Gate | base·built image digest와 저장소 선언 의존성을 고정한 current attempt recipe |
 | `poc_candidate_ref` | `poc_candidate` | R7 Agent | Session Manager, Verification | 작성 또는 실행을 시도한 PoC script·요청·입력 |
 | `poc_ref` | `poc_bundle` | Reproduction Session Manager | Verification, Gate, Reporter | 같은 attempt 실행으로 검증된 exact PoC와 provenance 묶음 |
 | `policy_decision_ref` | `sandbox_policy_decision` | Sandbox Controller | Session Manager, Verification, Gate | 외부 격리 경계의 exact 정책 revision과 허용·차단 사유 |
 | `environment_ref` | `sandbox_environment` | R7 Setup Automation | Session Manager, R6 Verification, Gate | 실제 container instance, 생성·재사용 사유와 요구사항 비교 |
+| `command_ref` | `sandbox_command_record` | Reproduction Session Manager | Runtime Validator, Verification, Gate, 운영 디버깅 | 실제 실행한 redacted canonical command와 digest의 same-attempt 정본 |
 | `agent_log_ref` | `agent_log` | Reproduction Session Manager | Verification, Gate, 운영 디버깅 | Agent·tool·setup의 실제 event를 attempt 순서대로 보존한 로그 |
+
+`SandboxProfile`은 `data_kind=sandbox_profile`인 immutable versioned config다. R7 sandbox policy owner가 network·격리와 상자 입장용 CPU·RAM·disk·PID·요청 가능 최대 시간을 소유·확정하고 trusted sandbox policy registry runtime만 새 revision을 current로 게시한다. Sandbox Controller는 요청이 이 상한을 넘으면 `SANDBOX_POLICY_DENIED`로 Agent 시작을 거절한다.
+
+`DynamicReproductionLifecycleProfile`은 `data_kind=dynamic_reproduction_lifecycle_profile`인 immutable versioned config다. R8 evaluation/budget owner는 호출 전 `WORK_REMAINING_TIME`을 검사하는 budget policy와 새 attempt 한도만 소유한다. trusted resource policy registry runtime만 승인된 새 revision을 current로 게시한다. Runtime Validator는 호출 전 잔여 시간이 없으면 `BUDGET_EXCEEDED`로 거절하고, 같은 session 조정은 attempt 수에 포함하지 않으며 session 재시작 `RETRY`와 외부 조건 해소 뒤 `RESUME`로 생기는 새 attempt만 `max_new_attempts`에 센다. CPU·RAM·disk·PID·요청 가능 최대 시간은 이 R8 profile에 넣지 않는다.
+
+같은 `RUN_SANDBOX`의 `ActionRequest.input_refs`와 `ActionDecision.checked_config_refs`에는 exact `SandboxProfile`과 exact `DynamicReproductionLifecycleProfile` revision이 모두 있어야 한다. `ActionRequest.sandbox_profile_ref`와 `SandboxPolicyDecision.sandbox_profile_ref`는 같은 R7 profile exact `record_id + content_hash`, `ActionRequest.resource_profile_ref`와 `SandboxPolicyDecision.resource_profile_ref`는 같은 R8 lifecycle profile exact `record_id + content_hash`를 가리켜야 한다. 어느 하나가 없거나 서로 다르거나 current revision이 바뀌면 실행 전 decision을 `EXPIRED`로 만들고 새 action을 요구한다.
 
 R4는 공통 record·필드명·자료형·null·exact reference·상태·생산자와 소비자·오류 규칙을 정한다. R6은 `DynamicReproductionRequest`, 반환 결과 소비와 최종 가설 판정을 맡는다. R7 Agent는 requirements·plan·candidate와 동적 근거 해석을 만들고, R7 Setup Automation은 recipe·image·container·cleanup을 실제로 수행한다. Sandbox Controller는 외부 격리 경계만 판정한다. 비-LLM Reproduction Session Manager는 append-only log, validated PoC와 `DynamicReproductionResult`의 유일한 result owner다. Verification은 COMMITTED 결과를 읽어 판정하고, Gate는 final TRUE에 연결된 validated PoC와 동적 근거를 검토하며, Reporter는 두 Gate를 통과한 결과만 사용한다.
 
-Sandbox Controller는 실행 직전 `RUN_SANDBOX` decision의 exact request·requirements·profile과 현재 외부 경계를 검사한다. 결과를 저장할 때 `SAVE_RESULT(requested_by=REPRODUCTION_SESSION_MANAGER, result_kind=dynamic_reproduction_result)`는 request·purpose·plan·recipe·정책·환경·AgentLog·candidate·validated PoC·cleanup의 same-attempt 조합을 다시 확인한다. Verification은 `DynamicReproductionState.dynamic_result_ref`, work output과 commit이 같은 final 결과만 읽으며 `DynamicReproductionResult`를 직접 만들거나 수정하지 않는다.
+Runtime Validator는 실행 직전 `RUN_SANDBOX` decision의 exact request·current requirements·current exact plan·R7 `sandbox_profile_ref`·exact R8 `DynamicReproductionLifecycleProfile`이 current인지 다시 검사하고 호출 전 잔여 시간·새 attempt 한도를 강제한다. Sandbox Controller는 R7 sandbox profile의 외부 격리·입장 수치 경계를 강제한다. 결과를 저장할 때 `SAVE_RESULT(requested_by=REPRODUCTION_SESSION_MANAGER, result_kind=dynamic_reproduction_result)`는 request·purpose·plan·recipe·정책·환경·AgentLog·candidate·validated PoC·cleanup의 same-attempt 조합을 다시 확인한다. Verification은 `DynamicReproductionState.dynamic_result_ref`, work output과 commit이 같은 final 결과만 읽으며 `DynamicReproductionResult`를 직접 만들거나 수정하지 않는다.
 
 | `status` | `failure_category`와 `failure_reason` | 필수 의미 |
 |---|---|---|
@@ -1543,7 +1617,7 @@ Sandbox Controller는 실행 직전 `RUN_SANDBOX` decision의 exact request·req
 | Sandbox 실행 Agent 호출 뒤 생성·실행 실패 | `agent_invoked=true`, `agent_log_ref` 필수. 생성된 plan·recipe·environment·candidate는 same-attempt exact ref로 보존하고 `poc_ref=null` |
 | 동적 재현 성공과 가설 지지 | `SUCCEEDED + SUPPORTED`, `action_decision_ref`와 `policy_decision_ref(decision=ALLOW)`, `agent_invoked=true`, plan·recipe·environment·AgentLog·candidate와 validated `poc_ref` 필수. 전부 같은 request·work·attempt·digest에 속함 |
 | 환경 또는 임시 자원을 만든 뒤 오류·정책 차단 | `environment_ref`가 있으면 `cleanup_required=true`, `cleanup_status=SUCCEEDED | FAILED`, `cleanup_ref` 필수. 실제 자원이 없을 때만 `NOT_REQUIRED` |
-| 필수 환경 요구사항 불일치 | Agent가 같은 attempt에서 recipe를 고쳐 해결하거나 자율 retry한다. 외부 수정이 필요하면 `BLOCKED`, 복구 불가능하거나 한도 소진이면 `FAILED`; 모두 `ENVIRONMENT_SETUP + INCONCLUSIVE`, `poc_ref=null` |
+| 필수 환경 요구사항 불일치 | 같은 R7 Agent session이면 현재 attempt에서 recipe를 고친다. session 재시작은 새 `attempt_id`·`trigger=RETRY`, 외부 수정 대기 해소 뒤 재개는 새 `attempt_id`·`trigger=RESUME`를 사용한다. 복구 불가능하거나 한도 소진이면 `FAILED`; 모두 `ENVIRONMENT_SETUP + INCONCLUSIVE`, `poc_ref=null` |
 
 R7 Agent가 command·PoC·환경을 같은 session에서 다시 시도하는 것은 한 attempt의 event로 기록한다. session crash처럼 새 attempt가 필요한 일시 오류라도 외부 입력을 기다리지 않고 R8 한도가 남아 있으면 실패 attempt를 보존하고 같은 work를 `RUNNING -> READY -> RUNNING`으로 넘겨 자동 재시도한다. 외부 설정·정책·승인·resource profile 변경을 기다릴 때만 `BLOCKED`이며, 조건이 해결되면 `trigger=RESUME`인 새 attempt를 시작한다. 복구 불가능하거나 한도를 소진하면 Session Manager가 최종 `FAILED + INCONCLUSIVE`를 확정하고 work와 현재 Verification을 verdict 없이 `FAILED`로 끝낸다. PoC 생성·실행 실패를 `FALSE | HOLD`로 변환하지 않는다. `SUPPORTED | DISPROVED`는 실제 관측 reference가 필수다. `DISPROVED`이면 `hypothesis_disproved=true`와 disproof refs가 필요하고, 정상 종료 또는 신뢰 가능한 부분 완료의 `INCONCLUSIVE`일 때만 R6가 final HOLD를 만들 수 있다. `POC_CONFIRMATION | VERDICT_EVIDENCE` 모두 실제 반증은 FALSE, 정상 관측의 불충분은 HOLD, `SUCCEEDED + SUPPORTED`와 validated PoC만 TRUE로 이어진다.
 
@@ -1741,7 +1815,7 @@ Rule·Scope·Impact 판단은 별도 condition/projection 또는 execution-fact 
 LLMCallSpec:
   meta: RecordMeta
   llm_call_id: string
-  agent_role: HYPOTHESIS | VERIFICATION | PRO | CON | CWE_LABELING | CHAINING | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER
+  agent_role: HYPOTHESIS | VERIFICATION | PRO | CON | CWE_LABELING | CHAINING | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER | R7_AGENT
   provider_profile_ref: StoredDataRef
   model: string
   session_policy: NEW | RESUME | AUTO
@@ -1758,7 +1832,7 @@ LLMInvocationRequest:
   llm_call_id: string
   action_decision_ref: StoredDataRef
   call_spec_ref: StoredDataRef
-  agent_role: HYPOTHESIS | VERIFICATION | PRO | CON | CWE_LABELING | CHAINING | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER
+  agent_role: HYPOTHESIS | VERIFICATION | PRO | CON | CWE_LABELING | CHAINING | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER | R7_AGENT
   provider_profile_ref: StoredDataRef
   model: string
   session_policy: NEW | RESUME | AUTO
@@ -1886,7 +1960,57 @@ ReportDraft:
 
 ReportDraft가 참조한 Finding·Verification·CWELabel·Technical review·Rule Scope review·정책 중 하나라도 새 current revision으로 바뀌면 기존 draft record는 감사 이력으로 보존하되 current report로 사용할 수 없다. runtime은 기존 draft를 덮어쓰지 않고 새 dependency chain의 Gate·Reporter work와 새 `ReportDraft.record_id`를 만든다. 오래된 draft는 `AnalysisRunResult.report_draft_refs`의 current 결과에 넣을 수 없다.
 
-`FindingCandidate` 본문과 품질 기준은 R5가 소유한다. R4는 이미 저장된 Finding revision과 다른 exact 결과를 `AnalysisRunResult`로 전달할 뿐 새 Finding claim을 만들거나 빠진 Finding을 추정하지 않는다. Finding이 없으면 `CREATE_REPORT_DRAFT`를 허용하지 않고 `AnalysisRunResult.report_draft_refs=[]`를 유지한다. 원인은 `REPORT_NOT_READY`와 연결된 오류·상태 기록으로 추적한다.
+Finding 의미·품질 기준은 R5가 소유하고 canonical 저장 schema·authority는 아래 R4 계약을 따른다. `FindingCandidate`는 별도 domain record로 정의하지 않고, 동일한 `Finding` schema의 immutable staging candidate를 기존 `SAVE_RESULT.candidate_result_ref`로 고정한다. R4는 exact upstream을 조립할 뿐 새 Finding claim을 만들거나 빠진 Finding을 추정하지 않는다. Finding이 없으면 `CREATE_REPORT_DRAFT`를 허용하지 않고 `AnalysisRunResult.report_draft_refs=[]`를 유지한다. 원인은 `REPORT_NOT_READY`와 연결된 오류·상태 기록으로 추적한다.
+
+current Finding은 새 vulnerability verdict나 impact를 만드는 Gate가 아니라, 신뢰 runtime이 이미 `COMMITTED`된 exact upstream reference를 조립한 정규화 record다. 신뢰 runtime은 한 가설의 `RuleScopeImpactReview`가 `COMMITTED`된 뒤(`review_status`·`report_permission` 값과 무관), `CREATE_REPORT_DRAFT`의 `REPORT_READY` 검사 전에, 다음 exact chain에서 current Finding을 만든다: `HypothesisProcessState.status=TERMINAL`의 final `VerificationResult(verdict=TRUE)`, current generation의 `SUCCEEDED + SUPPORTED` `DynamicReproductionResult`와 validated `poc_ref`, 그 Verification을 직접 가리키는 current `CWELabel`, 그 pair를 검토한 `TechnicalEvidenceReview.status=ACCEPT`, 같은 `verification_result_ref`·`technical_review_ref`·`cwe_label_ref`·`policy_collection_result_ref`(`FOUND`이면 `policy_record_ref`)를 가리키는 current `RuleScopeImpactReview`. upstream record의 `meta.workspace_id`·`meta.commit_id`가 일치해야 하며, hypothesis-local artifact에 대해서만 동일 `meta.hypothesis_id`를 요구한다. `ProgramPolicyRecord`, `PolicyCollectionResult` 등 hypothesis 비종속 정책 record에는 `hypothesis_id` 일치를 요구하지 않으며, 기존 exact `StoredDataRef`, `meta.workspace_id`·`meta.commit_id` 및 policy revision/provenance 계약으로 검증한다. 또한 `TechnicalEvidenceReview`·`RuleScopeImpactReview`·`CWELabel`이 같은 `verification_result_ref`를 가리키며 그 `VerificationResult`가 current `HypothesisProcessState.verification_result_ref`와 같아야 한다. current Verification generation은 새 `verification_generation` field를 `RecordMeta`나 Gate schema에 추가하지 않고 기존 `HypothesisProcessState`·`VERIFICATION` work generation·`CWELabel.verification_generation` 계약으로 확인한다. `restrictions`·`unresolved_conditions`와 evidence transitive closure를 그대로 보존한다. 서로 다른 Verification generation의 artifact·evidence를 섞으면 기존 공통 `STALE_RESULT`·revision mismatch 계약으로 차단되고, 정책 수집이 `COLLECTION_FAILED`여서 `RuleScopeImpactReview`가 없으면 Finding을 만들지 않는다. Finding claim 강도는 verified upstream evidence 이하다. 의미·생성 closure·claim 제한·stale 조건은 R5가 소유하며 [05. 이중 LLM Gate와 보고](05-llm-gate-and-reporting.md)를 따른다.
+
+### Finding canonical schema와 current pointer
+
+```yaml
+Finding:
+  meta: RecordMeta
+  verification_result_ref: StoredDataRef
+  dynamic_result_ref: StoredDataRef
+  poc_ref: StoredDataRef
+  cwe_label_ref: StoredDataRef
+  technical_review_ref: StoredDataRef
+  rule_scope_impact_review_ref: StoredDataRef
+  policy_collection_result_ref: StoredDataRef
+  policy_record_ref: StoredDataRef | null
+  evidence_refs: [StoredDataRef]
+  condition_sources: [FindingConditionSource]
+
+FindingConditionSource:
+  kind: RESTRICTION | LIMITATION | UNRESOLVED_CONDITION
+  source_ref: StoredDataRef
+  source_path: string
+
+FindingIndexState:
+  meta: RecordMeta
+  state_version: integer
+  status: EMPTY | CURRENT | STALE
+  finding_ref: StoredDataRef | null
+  stale_finding_ref: StoredDataRef | null
+  normalization_work_ref: StoredDataRef | null
+  last_transition_commit_ref: StoredDataRef | null
+  invalidated_by_refs: [StoredDataRef]
+```
+
+모든 record reference의 `record_id`는 필수이며 `StoredDataRef`의 identity·hash·workspace·commit exact equality를 적용한다. `poc_ref`는 dynamic result가 연결한 validated `PoCBundle`이며 candidate PoC가 아니다. `policy_record_ref`는 `FOUND`이면 review·collection result의 exact 정책 record와 같고 `ABSENT_CONFIRMED`이면 null이다. `evidence_refs`는 final Verification의 `pro_evidence_ref`·`con_evidence_ref`, `supporting_evidence`·`counter_evidence`에서 도달하는 exact evidence transitive closure와 중복 없이 set-equal하다. 독립 raw artifact에는 기존 규칙대로 `record_id=null`을 허용하되 저장 ID·내용 hash를 고정한다. 서로 다른 generation의 evidence를 합치지 않는다.
+
+`condition_sources`는 이 exact upstream closure의 restriction / limitation / unresolved condition을 빠짐없이 가리킨다. `source_ref`는 조건을 담은 immutable record의 exact `StoredDataRef`, `source_path`는 그 revision 안의 항목을 가리키는 JSON Pointer다. kind·reference·path 조합은 중복 없이 보존하고 경로의 실제 값과 종류를 검증한다. 별도 조건 record나 새 요약 claim을 만들지 않으며 Reporter는 원문 값과 provenance를 그대로 해석해 기존 `restrictions`·`limitations`·`unresolved_conditions`에 전달한다. 조건이 없을 때만 빈 목록이다.
+
+`result_kind=finding`의 유일한 저장 주체는 Verification trusted runtime의 비-LLM Finding normalization service다. registry의 `finding -> Finding -> VERIFICATION`은 기존 역할 enum을 재사용하지만 `requested_by=VERIFICATION`만으로 권한을 주지 않는다. `AUTHORITY`는 versioned result-owner registry에 고정된 이 service의 exact `requester_identity_ref`와 현재 ACTIVE Verification assignment 연결을 검사한다. Verification Agent, Rule Scope Gate, Reporter, Orchestration은 Finding을 직접 저장하거나 pointer를 바꿀 수 없다. recovery는 승인된 service identity와 journal을 복구할 뿐 다른 생산자로 새 Finding을 만들지 않는다. 이 작업은 새 autonomous Agent role, 새 `action_type` 또는 새 producer enum을 추가하지 않는다. 구체 binding은 [구현 모듈 맵](implementation/01-module-map.md) B2에 확정한다.
+
+`FINDING_NORMALIZE`는 `subject_type=HYPOTHESIS`, `subject_id=meta.hypothesis_id`이며 `parent_work_ref`는 성공한 current `RULE_SCOPE_GATE` exact work다. service가 기존 VERIFICATION authority로 work를 등록·실행하고 `SAVE_RESULT(result_kind=finding)`을 요청한다. domain `input_refs`에는 위 exact upstream closure, current `HypothesisProcessState`, ACTIVE assignment, `FindingIndexState`의 expected revision을 고정한다. 최초 등록 전에 service가 가설별 EMPTY index를 unique key로 생성한다. `input_hash`는 모든 exact input reference를 포함하고 `dedupe_key`는 가설·Verification generation·upstream exact chain으로 계산한다. 같은 chain의 재전달은 기존 work/commit을 반환하며 retry는 기존 attempt 규칙을 따른다. upstream이 바뀌면 새 work generation·work ID·input hash를 사용한다. LLM call spec과 별도 Gate 호출은 없다.
+
+`FindingIndexState`의 unique key는 `(analysis_id, workspace_id, commit_id, hypothesis_id)`이고 가설별 current Finding은 최대 하나다. 최초 `EMPTY`는 version 1, 모든 nullable ref는 null이다. `CURRENT`는 `finding_ref`, 성공한 `normalization_work_ref`, 그 결과를 확정한 `last_transition_commit_ref`가 필수이고 stale ref는 null이다. `STALE`은 `finding_ref=null`, 이전 exact Finding을 `stale_finding_ref`에 보존하고 `invalidated_by_refs`에 변경을 일으킨 exact 상태·결과 revision을 기록한다. STALE 상태의 `normalization_work_ref`는 이전 Finding 생산 work를 유지하며 `last_transition_commit_ref`는 invalidation을 확정한 upstream transition commit을 가리킨다. 두 비-stale 상태의 invalidation 목록은 비어 있다. index의 `meta.attempt_id=null`이며 Finding은 실제 normalization attempt를 기록한다.
+
+저장 시 service는 `Finding`의 새 immutable revision, work의 `SUCCEEDED`, index의 `CURRENT` 새 revision을 하나의 논리적 atomic `TransitionCommit`으로 확정한다. 기존 `StateTransition`·`TransitionCommit` schema와 unique `(work_id, target_state_version)` marker를 재사용한다. index는 추가 work output이 아닌 전문 상태 projection이다. 같은 가설의 Finding과 index는 각각 같은 `logical_record_id`를 유지하며 새 `record_id`, 증가한 `revision_number`, exact `previous_record_id`로 연결한다. CAS는 work의 expected state version·active attempt·input hash뿐 아니라 index의 expected `record_id`·`state_version`과 모든 upstream current pointer/generation을 함께 비교한다. 성공 시 index version은 정확히 1 증가한다. 충돌은 `STATE_VERSION_CONFLICT` 또는 `STALE_RESULT`로 `ABORTED` 처리하고 candidate를 current에 연결하지 않는다. `PREPARED` Finding은 소비할 수 없고, COMMITTED marker·work output·index pointer가 일치할 때만 current로 읽는다. marker 이후 projection 중단은 recovery가 같은 journal을 재적용한다.
+
+R5의 stale 조건인 Verification generation/revision, CWELabel revision, 두 Gate 재생성, dynamic result·validated PoC, 고정 정책 등 claim-relevant upstream 변경은 해당 current 갱신과 같은 atomic 경계에서 의존 index를 `STALE`로 바꾼다. 물리적 다중 저장소에서는 변경 transition journal이 exact dependent index의 expected revision과 invalidation projection을 함께 고정하고, projection 완료 전 downstream current 조회·Reporter·run finalization을 차단한다. Finding history는 수정하지 않는다. normalization commit과 invalidation은 같은 index CAS로 직렬화하여 옛 chain이 다시 current가 되는 것을 막는다. 새로운 chain이 eligibility를 만족하면 새 Finding revision을 commit하고, `COLLECTION_FAILED` 등 review 부재에서는 stale index를 current로 복구하지 않는다. 기존 Primitive admission·Chaining 계보 invalidation도 그대로 적용한다.
+
+Reporter의 action 승인·provider 호출 직전·draft 저장 시 current index와 exact upstream을 재검사하며 current non-stale Finding만 소비한다. `REPORT_READY` 6축은 별도 검사이고 Finding 저장 eligibility에 적용하지 않는다. `AnalysisRunResult.finding_refs`는 확정 시 각 `CURRENT` index가 가리키는 유효한 Finding의 중복 없는 집합과 set-equal해야 한다. run finalization은 index version과 upstream을 CAS snapshot으로 확인하고 invalidation이 진행 중이면 확정하지 않는다. 확정 후 upstream이 변경되는 경우 과거 run result는 immutable snapshot으로 보존하며 current run result pointer는 invalidation 완료 후 새 `AnalysisRunResult` revision으로 atomic 갱신한다. 과거 Finding을 current 목록에 재사용하지 않는다.
 
 ```yaml
 AnalysisRunResult:
@@ -1938,7 +2062,9 @@ AnalysisRunResult:
 
 Reporter 호출은 `TRUE + Technical ACCEPT + Rule Scope Impact review_status PASS + rule_compliance PASS + testing_restriction_compliance PASS + scope_compliance PASS + security_impact SUFFICIENT + ALLOW`인 경우만 유효하다.
 
-Reporter가 current `ReportDraft`를 저장하고 해당 `REPORT_DRAFT` work를 종료한 뒤, 신뢰 runtime은 모든 current 결과와 로그를 `AnalysisRunResult`에 묶어 `AnalysisRunState`와 atomic하게 확정한다. `ReportDraft`는 마지막 Agent 산출물이고 `AnalysisRunResult` 확정은 새 판단을 생성하지 않는 저장 작업이다. 그 다음 Agent 자동화는 종료된다. ReportDraft 이후의 검토·수정·제출·공개는 Agent 자동화 밖에서 사람이 수행한다. 이 외부 과정에는 공통 schema, action, 상태 또는 자동 공개 권한을 정의하지 않는다.
+Reporter가 허용된 경로에서는 current `ReportDraft` 저장과 해당 `REPORT_DRAFT` work 종료를 기다린다. Reporter가 차단된 경로에서는 draft 저장을 종료 전제조건으로 요구하지 않는다. 신뢰 runtime은 필요한 work와 invalidation 정리를 마친 뒤 모든 current 결과와 로그를 `AnalysisRunResult`에 묶어 `AnalysisRunState`와 atomic하게 확정한다. `ReportDraft`는 마지막 Agent 산출물이고 `AnalysisRunResult` 확정은 새 판단을 생성하지 않는 저장 작업이다. 그 다음 Agent 자동화는 종료된다. ReportDraft 이후의 검토·수정·제출·공개는 Agent 자동화 밖에서 사람이 수행한다. 이 외부 과정에는 공통 schema, action, 상태 또는 자동 공개 권한을 정의하지 않는다.
+
+`current Finding 존재 + Reporter blocked + report_draft_refs=[]`는 정상적인 `AnalysisRunResult`다. 차단한 exact action decision과 `REPORT_NOT_READY` 사유를 `action_decision_refs`·`stop_reasons`에 보존하고, Reporter 미호출 시 `ReportProcessState.status=NOT_REQUESTED`와 null draft pointer를 유지한다. 이미 등록된 실행 불가능한 report work는 사유를 기록해 `CANCELLED`로 닫는다. 보고 조건 차단 자체만으로 run을 `FAILED | PARTIAL`로 만들지 않으며 다른 필수 작업이 완료되면 `COMPLETE`가 가능하다. 실행 실패·미완료·취소는 기존 run status 규칙대로 반영한다. Finding이 없는 경로도 draft를 기다리지 않고 실제 결과와 차단 원인으로 종료한다.
 
 `AnalysisRunResult.policy_collection_result_refs`에는 분석에서 확정한 모든 정책 수집 결과를, `policy_parser_result_refs`에는 그 수집 시도에서 실제 사용한 parser 결과를 중복 없이 넣는다. `policy_record_refs`는 `FOUND` collection result가 exact하게 가리킨 정책 record만 포함한다. `ABSENT_CONFIRMED | COLLECTION_FAILED`에 대응하는 가짜 정책 record를 만들거나 누락된 수집 결과를 정책 record 유무만으로 추정하지 않는다. 세 목록의 reference는 해당 `POLICY_FETCH` work output과 COMMITTED transition에서 복원할 수 있어야 한다. 두 목록 추가는 `AnalysisRunResult`의 새 필수 필드이므로 새 MAJOR schema에서만 사용한다. 이전 결과에 current 수집·parser reference를 추정해 넣지 않는다.
 

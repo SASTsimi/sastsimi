@@ -12,11 +12,11 @@
 
 Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 소유한다. 가설이 실제 코드 흐름과 실행 조건에서 성립하는지 검토하고 `TRUE | FALSE | HOLD`를 판정하며, 필요한 Context·Pro/Con·동적 재현 요청·보완 작업과 Gate 제출 시점을 선택한다. 제한 조건·우회 후보·필요 능력·제공 가능 능력·실질 영향의 상승 가능성도 함께 기록한다. R6는 재현 목적과 필요한 조건을 요청하지만 실행 환경·계획·PoC를 직접 만들지 않는다.
 
-이 제어권은 실행 허가 권한이 아니다. Verification이 `REQUEST_DYNAMIC_REPRO` 등 다음 작업을 제안하면 비-LLM Runtime Validator가 `ActionRequest`, exact revision, 역할, 상태, 예산과 provider/session을 확인한다. R7 Setup Automation이 `RUN_SANDBOX`를 요청하면 Sandbox Controller가 host·Docker daemon/socket·mount/namespace·secret·egress·workspace·R8 resource/lifecycle 같은 외부 격리 경계를 검사한다. 허가된 Sandbox 안에서는 R7 Agent가 command·PoC·관찰·재시도를 자율적으로 정하고, 비-LLM Reproduction Session Manager가 실제 event와 결과를 확정한다.
+이 제어권은 실행 허가 권한이 아니다. Verification이 `REQUEST_DYNAMIC_REPRO` 등 다음 작업을 제안하면 비-LLM Runtime Validator가 `ActionRequest`, exact revision, 역할, 상태, 예산과 provider/session을 확인한다. R7 Setup Automation이 `RUN_SANDBOX`를 요청하면 Runtime Validator가 exact request·current requirements·current exact plan·R7 `sandbox_profile_ref`·exact R8 `DynamicReproductionLifecycleProfile` revision을 고정하고 호출 전 잔여 시간·새 attempt 한도를 검사한다. Sandbox Controller는 R7 profile의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다. 허가된 Sandbox 안에서는 R7 Agent가 command·PoC·관찰·재시도를 자율적으로 정하고, 비-LLM Reproduction Session Manager가 실제 event와 결과를 확정한다.
 
 ## 기본 검증 순서
 
-1. 배정된 가설의 `workspace_id`, `commit_id`, entity, location과 suspected path를 확인한다.
+1. 배정된 가설의 exact proposal에서 `proposal.meta.workspace_id`, `proposal.meta.commit_id`, `target_entities`, `target_locations`와 `suspected_path`를 확인한다. `origin=CHAINING` proposal의 선택 필드가 비어 있으면 R6 Verification Agent가 계보를 직접 조회하지 않고, `CodeContextRequest`를 만들며, `CONTEXT_RETRIEVAL` work에는 exact proposal을 함께 고정한다. Context Retrieval Service가 그 proposal에서 `source_primitive_match_id`를 읽어 필요한 Context를 조회한다.
 2. `CodeContextRequest`로 caller/callee, data flow, auth guard와 route 문맥을 필요한 만큼 조회한다. 추가 Context 요청은 현재 가설과 같은 `workspace_id`·`commit_id`를 사용해야 한다. 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 기록하며 오류 자체를 verdict 근거로 사용하지 않는다. 일부 조회가 실패했더라도 제한 retry·대체 조회·다른 정상 근거로 모든 `ValidationCheck`, 반증 질문과 운영 Pro/Con을 완료했다면 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있다. 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증이 하나라도 미완료이면 final `VerificationResult`를 저장하지 않는다. 재시도할 수 있으면 work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지하며, 더 시도할 수 없으면 work와 `HypothesisProcessState`를 원자적으로 `FAILED`로 끝낸다. 운영 Pro/Con 전에 예산이 부족한 경우에도 `BUDGET_EXCEEDED`로 작업을 중단하고 final verdict를 저장하지 않는다. Context 부족이나 조회 실패를 `DISPROVED` 또는 `FALSE`로 변환하지 않는다.
 3. observed fact와 assumption을 분리하고 각 `FalsificationQuestion.question_id`를 확인한다.
 4. 운영 분석이면 Pro/Con Agent를 서로 독립된 NEW session으로 병렬 호출해 supporting/counter evidence를 모두 수집한다. BASIC 또는 조건부 debate는 격리된 평가 실행에서만 선택한다.
@@ -27,6 +27,60 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 9. 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 발견하면 `HypothesisProposal(origin=VERIFICATION)`으로 분리한다.
 10. final TRUE를 확정하면 R5-01 `CWE_LABELING` work를 요청한다. R5-01이 exact Verification에 맞는 current `CWELabel`을 확정한 뒤 Technical Evidence Gate를 요청한다. `REVISE`면 같은 Verification owner가 새 Verification을 만들고 R5-01이 CWE 정렬을 다시 평가해 새 label revision을 만든 뒤 다시 제출한다.
 11. HOLD의 부족 조건은 result 없는 Primitive로 즉시 Chaining에 넘길 수 있고, TRUE는 exact Technical `ACCEPT` 뒤 같은 chain의 Rule Scope 또는 정책 수집 결과로 R4가 current `PrimitiveAdmissionDecision=ALLOW`를 확정한 경우 result Primitive로 넘길 수 있다. Rule·Scope·Impact 결과는 현재 보고 경로에 별도로 적용한다.
+
+### Chaining-origin 가설의 검증 시작점 복구
+
+`origin=CHAINING` proposal의 `target_entities`, `target_locations` 또는 `suspected_path`는 비어 있을 수 있다. 이 사실만으로 입력 오류로 처리하지 않지만, 등록 전 검사와 등록 후 Context 조회 전 재검사를 서로 다른 단계와 주체가 수행한다.
+
+#### 등록 전 검사
+
+Proposal Validator, Hypothesis Registry와 Assignment Runtime은 자식 가설을 등록하고 Verification을 배정하기 전에 exact proposal의 `source_primitive_match_id`에서 exact `PrimitiveMatchCandidate`와 부모 Primitive 계보를 조회한다.
+
+등록 전에는 다음 정보를 확인한다.
+
+1. `PrimitiveMatchCandidate.upstream_result_ref`가 가리키는 upstream Primitive의 `result.entity_refs`
+2. `PrimitiveMatchCandidate.downstream_input_ref`가 가리키는 downstream Primitive의 `inputs[]` 중 `draft_id == matched_input_id`인 입력의 `entity_refs`
+3. upstream Primitive 자신의 모든 `inputs[].entity_refs`
+4. downstream Primitive에서 `matched_input_id`로 선택되지 않은 나머지 `inputs[].entity_refs`
+5. 부모 Primitive의 `privilege_level`과 각 단계의 `evidence_refs`
+
+`matched_input_id`는 입력 항목을 식별하는 ID일 뿐 entity 또는 코드 위치가 아니다. 따라서 `matched_input_id`, `privilege_level`, `evidence_refs`만으로는 코드 검증 시작점을 확보한 것으로 인정하지 않는다. 현재 `proposal.meta.workspace_id`와 `proposal.meta.commit_id`에 속하는 유효한 entity 또는 location을 최소 하나 이상 복구해야 한다.
+
+proposal, `PrimitiveMatchCandidate`, upstream Primitive, downstream Primitive와 복구한 모든 entity·location reference는 `proposal.meta.workspace_id`와 `proposal.meta.commit_id`에 속해야 한다. 하나라도 다른 workspace 또는 commit을 가리키면 일부 reference만 제외하고 계속하지 않고 계보 전체를 유효하지 않은 입력으로 처리한다.
+
+계보가 끊겼거나, `draft_id == matched_input_id`인 downstream input을 찾을 수 없거나, 유효한 entity 또는 location을 하나도 복구하지 못하거나, workspace·commit이 일치하지 않으면 Proposal Validator와 Hypothesis Registry는 새 가설을 등록하지 않는다. Assignment Runtime도 해당 proposal에 Verification을 배정하지 않는다.
+
+#### 등록 후 Context 조회 전 재검사
+
+가설이 정상적으로 등록되고 Verification이 배정된 뒤에는 Context Retrieval Service가 실제 코드 조회 전에 같은 `source_primitive_match_id` 계보를 다시 확인한다.
+
+Context Retrieval Service는 다음을 검사한다.
+
+- 등록 전에 확인한 exact `PrimitiveMatchCandidate`와 부모 Primitive가 여전히 current인지
+- upstream의 `result.entity_refs`와 모든 `inputs[].entity_refs`가 유효한지
+- `draft_id == matched_input_id`인 downstream input과 해당 `entity_refs`가 유효한지
+- downstream의 나머지 `inputs[].entity_refs`가 유효한지
+- 모든 계보와 entity·location reference가 현재 `proposal.meta.workspace_id`·`proposal.meta.commit_id`와 일치하는지
+- 코드 조회를 시작할 유효한 entity 또는 location이 최소 하나 이상 존재하는지
+
+계보가 등록 후 stale 또는 무효 상태가 됐거나 위 조건 중 하나라도 충족하지 못하면 Context Retrieval Service는 Context 조회를 중단한다. 진행 중인 Context work와 Verification work는 final `VerificationResult`와 verdict 없이 중단한다. 계보 오류나 조회 실패를 `TRUE | FALSE | HOLD`의 근거로 변환하지 않는다.
+
+#### Verification Agent의 역할
+
+R6 Verification Agent는 `PrimitiveMatchCandidate`와 부모 Primitive를 직접 DB에서 조회하거나 proposal 등록·Verification 배정을 거절하지 않는다. R6는 일반 `CodeContextRequest`로 필요한 Context를 요청하고, `CONTEXT_RETRIEVAL` work에는 exact proposal을 함께 고정한다. Context Retrieval Service는 그 proposal에서 `source_primitive_match_id`를 읽어 계보를 검사하고, Context Retrieval Service가 검증하여 반환한 `CodeContextResponse`를 사용한다.
+
+반환된 정보는 자식 가설을 자동으로 지지하는 판정 근거가 아니라 검증 시작점이다. R6는 부모 verdict나 결론을 자식에게 상속하지 않고, 반환된 Context에서 결합 상황과 양쪽 부모의 남은 전제조건을 처음부터 다시 검증한다.
+
+다음 시나리오를 반드시 확인한다.
+
+| 검사 시점 | 시나리오 | 기대 결과 |
+|---|---|---|
+| 등록 전 | `source_primitive_match_id` 계보가 끊겼거나 부모 Primitive를 찾을 수 없음 | Proposal Validator와 Hypothesis Registry가 새 가설 등록을 거절하고 Assignment Runtime이 Verification을 배정하지 않는다. |
+| 등록 전 | `draft_id == matched_input_id`인 downstream input의 `entity_refs`가 없고 다른 유효한 entity 또는 location도 없음 | 검증 시작점 복구 실패로 등록과 배정을 거절한다. |
+| 등록 전 | upstream Primitive의 `inputs[].entity_refs`가 복구 대상에서 누락됨 | 양쪽 부모의 전제조건을 완전히 복구하지 못한 것으로 처리하여 등록과 배정을 거절한다. |
+| 등록 전 | 계보의 reference 하나라도 `proposal.meta.workspace_id`·`proposal.meta.commit_id`와 다름 | 일부 reference만 제외하지 않고 계보 전체를 거절한다. |
+| 등록 후 | 등록 당시 유효했던 부모 계보가 Context 조회 전에 stale 또는 무효 상태가 됨 | Context Retrieval Service가 조회를 중단하고 final verdict 없이 Context·Verification work를 중단한다. |
+| 정상 | 결합 지점과 양쪽 부모의 남은 입력 시작점이 모두 유효함 | Context Retrieval Service가 Context를 반환하고 R6가 부모 verdict를 재사용하지 않은 채 자식 가설을 처음부터 검증한다. |
 
 ## 우회 인지 검증
 
@@ -264,7 +318,7 @@ R7 내부 책임은 다음처럼 나눈다.
 
 - **R7 Agent**: 요청을 환경 조건으로 구체화하고, 재현 전략·PoC candidate·command·관찰·동적 근거 해석을 만든다.
 - **R7 Setup Automation**: 저장소 선언을 우선한 recipe, image build, container 생성·재사용·재생성과 cleanup을 실제 수행한다.
-- **Sandbox Controller**: host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace·R8 resource/lifecycle 같은 Sandbox 밖의 강제 경계만 검사한다.
+- **Sandbox Controller**: R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다. R7 profile 값, R8 잔여 예산·새 attempt 또는 내부 command allowlist는 정하지 않는다.
 - **Reproduction Session Manager**: runtime/tool/lifecycle event를 append-only `AgentLog`로 기록하고 같은 attempt의 validated PoC와 `DynamicReproductionResult`를 확정하는 비-LLM result owner다.
 
 R7은 `SUPPORTED | DISPROVED | INCONCLUSIVE` 동적 관측만 반환하며 최종 `TRUE | FALSE | HOLD`는 계속 R6가 판단한다. Session Manager는 Agent 호출·중단, command 허용, retry 또는 cleanup 전략을 결정하지 않는다.
@@ -291,8 +345,8 @@ Sandbox 안에서는 Agent가 환경 설정, 저장소에 필요한 package, 계
 - 한 Verification generation에는 `DYNAMIC_REPRO` work를 하나만 등록한다.
 - `POC_CONFIRMATION`과 `VERDICT_EVIDENCE`를 같은 generation에서 각각 별도 work로 실행하지 않는다.
 - 같은 Agent session 안의 command·PoC·환경 조정은 같은 attempt의 event다.
-- session 재시작이 필요한 일시 오류는 R8 한도가 남아 있으면 실패 attempt를 보존하고 같은 work의 새 attempt로 자동 재시도한다. 외부 대기가 없으므로 work를 `BLOCKED`로 두지 않는다.
-- `BLOCKED`는 외부 설정·정책·승인 또는 resource profile 변경을 기다릴 때만 사용한다. 해결 뒤 `RESUME` attempt를 만든다.
+- session 재시작이 필요한 일시 오류는 R8 한도가 남아 있으면 실패 attempt를 보존하고 같은 work의 새 `attempt_id`, `trigger=RETRY`로 재시도한다. 같은 session 조정에는 새 attempt를 만들지 않고, 외부 대기가 없으므로 work를 `BLOCKED`로 두지 않는다.
+- `BLOCKED`는 외부 설정·정책·승인 또는 resource profile 변경을 기다릴 때만 사용한다. 해결 뒤 같은 work의 새 `attempt_id`, `trigger=RESUME`를 만든다.
 - 복구할 수 없거나 retry 한도를 소진하면 Session Manager가 `FAILED + INCONCLUSIVE`를 확정한다.
 - Technical Gate `REVISE`는 새 Verification generation이므로 새 동적 재현 work 하나를 허용한다.
 
