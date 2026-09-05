@@ -2128,9 +2128,19 @@ $requiredChainingOriginRecoveryRules = @(
         Marker = 'R6 Verification Agent는 `PrimitiveMatchCandidate`와 부모 Primitive를 직접 DB에서 조회하거나'
     },
     @{
-        Name = 'canonical uses CodeContextRequest'
-        Text = $verificationText
-        Marker = '`source_primitive_match_id`를 포함한 `CodeContextRequest`'
+    Name = 'canonical binds exact proposal to Context work'
+    Text = $verificationText
+    Marker = '`CONTEXT_RETRIEVAL` work에는 exact proposal을 함께 고정한다.'
+    },
+    @{
+        Name = 'contract assigns lineage lookup to Context service'
+        Text = $contractText
+        Marker = 'Context Retrieval Service가 `CONTEXT_RETRIEVAL` work에 고정된 exact proposal의 `source_primitive_match_id`를 읽어'
+    },
+    @{
+        Name = 'Wiki assigns lineage lookup to Context service'
+        Text = $verificationWikiText
+        Marker = 'Context Retrieval Service가 그 proposal에서 `source_primitive_match_id`를 읽어'
     },
     @{
         Name = 'canonical resolves upstream result entities'
