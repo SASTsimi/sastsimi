@@ -205,11 +205,15 @@ final TRUE VerificationResult with current generation SUCCEEDED + SUPPORTED repr
 -> PrimitiveAdmissionDecision
    -> ALLOW: result Primitive admission + Chaining handoff
    -> DENY: no result Primitive
--> Rule Scope의 보고 조건 PASS/PASS/PASS/SUFFICIENT/ALLOW -> Reporter
+-> Rule Scope review가 COMMITTED되면 신뢰 runtime이 exact chain에서 current Finding 정규화
+   (review_status·report_permission 값과 무관, COLLECTION_FAILED이면 Finding 없음)
+-> current non-stale Finding + Reporter 6축 readiness 전부 충족 -> Reporter
 -> ReportDraft
 -> AnalysisRunResult 확정
 -> Agent 자동화 종료
 ```
+
+current Finding 정규화는 LLM Agent나 새 orchestration authority가 아니라, 이미 `COMMITTED`된 exact upstream을 조립하는 신뢰 runtime 단계다. `PRIMITIVE_ADMISSION_RUNTIME`의 기계적 매핑, `AnalysisRunResult` finalization과 같은 성격이며 새 verdict·impact·attack path를 만들지 않고 claim 강도는 verified upstream 이하다. 생성 closure와 stale 조건은 [05. 이중 LLM Gate와 보고](05-llm-gate-and-reporting.md), 저장 primitive·result owner·current pointer·revision/CAS는 R4 계약([구현 모듈 맵](implementation/01-module-map.md) B2)을 따른다. Reporter는 6축 정책 readiness와 별개로 current non-stale Finding을 요구하며, Finding이 있어도 정책 조건 미달이면 Reporter만 차단하고 Finding은 보존한다.
 
 Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니다. 현재 Technical Gate work는 `TechnicalEvidenceReview.status=REVISE`를 exact output으로 atomic commit하고 `SUCCEEDED`로 끝낸 뒤 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 직접 전달한다. runtime은 기존 종료 VERIFICATION work를 되돌리지 않고 증가한 generation의 새 VERIFICATION work를 등록하며, 같은 CAS transition에서 `HypothesisProcessState`를 `TERMINAL -> VERIFYING`으로 바꾸고 새 work를 가리킨다. Verification은 새 근거를 반영하고, final TRUE 후보라면 새 generation의 동적 재현 요청과 validated PoC를 다시 확보한다. 그 뒤 새 `VerificationResult`와 새 work 종료·hypothesis `TERMINAL`·current result pointer를 atomic commit한다. R5-01 `CWE_LABELING`은 새 `CWE_LABEL` work에서 CWE 정렬을 반드시 다시 평가하고 새 Verification을 직접 가리키는 새 `CWELabel` revision을 확정한다. 동일 CWE를 유지해도 이전 label `record_id`는 재사용하지 않는다. 바뀐 Verification과 current label을 가진 새 `input_hash`·`dedupe_key`·`work_id`로 Technical Gate를 다시 요청한다. 새 generation에는 동적 재현 work 하나를 다시 허용한다. 같은 R7 Agent session의 PoC 생성·환경 구성·command·실행 조정은 현재 `attempt_id`의 event다. session 재시작이 필요한 work-level retry만 새 동적 work가 아니라 같은 work의 새 `attempt_id`를 사용한다. 이 새 논리 작업의 첫 attempt는 `attempt_number=1`, `trigger=INITIAL`이다. provider timeout처럼 입력이 그대로인 일반 retry만 같은 `work_id`에서 새 `attempt_id`, `trigger=RETRY`를 사용한다. Rule Scope Gate와 Reporter는 앞 단계의 `COMMITTED` output reference만 읽는다. `PREPARED`, 취소된 attempt, 오래된 input hash와 다른 workspace/commit 결과는 다음 단계로 전달하지 않는다.
 

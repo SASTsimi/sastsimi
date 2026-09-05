@@ -68,6 +68,53 @@ foreach ($marker in $requiredDynamicStateDiagramMarkers) {
     }
 }
 
+# R5-03 Finding lifecycle: with a Rule Scope review present (FOUND or ABSENT_CONFIRMED)
+# the RuleScopeImpactReview is COMMITTED, so every Reporter-blocking Gate outcome
+# (UNCERTAIN, DENY, ...) must still pass through FINDING_NORMALIZE before Reporter
+# BLOCK. Any Mermaid block that models both ABSENT_CONFIRMED and FINDING_NORMALIZE
+# must not contain a direct edge from a Rule Scope branch node to the report-block
+# node. The COLLECTION_FAILED path (no RuleScopeImpactReview, no Finding) stays
+# allowed: its edge originates from the policy-collection node, not a Rule Scope
+# branch node.
+foreach ($diagramSource in @(
+    @{ Label = 'canonical'; Blocks = $diagramBlocks },
+    @{ Label = 'Wiki'; Blocks = $wikiDiagramBlocks }
+)) {
+    foreach ($block in $diagramSource.Blocks) {
+        if (($block -notmatch 'FINDING_NORMALIZE') -or ($block -notmatch 'ABSENT_CONFIRMED')) {
+            continue
+        }
+        $normMatch = [regex]::Match($block, '(\w+)\[FINDING_NORMALIZE')
+        $blockNodeMatch = [regex]::Match($block, '(\w+)\[Report blocked\]')
+        if (-not ($normMatch.Success -and $blockNodeMatch.Success)) {
+            Add-Failure "$($diagramSource.Label) Mermaid Finding lifecycle block is missing a FINDING_NORMALIZE or 'Report blocked' node"
+            continue
+        }
+        $normNode = $normMatch.Groups[1].Value
+        $blockNode = $blockNodeMatch.Groups[1].Value
+
+        # Rule Scope branch nodes: the target of the FOUND edge and the target of
+        # the ABSENT_CONFIRMED edge out of the policy-collection node.
+        $branchNodes = [regex]::Matches($block, '[-.=]+>\s*\|[^|]*(?:FOUND|ABSENT_CONFIRMED)[^|]*\|\s*(\w+)') |
+            ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique
+        if ($branchNodes.Count -eq 0) {
+            Add-Failure "$($diagramSource.Label) Mermaid Finding lifecycle block has no identifiable Rule Scope branch node"
+        }
+        foreach ($branchNode in $branchNodes) {
+            # An edge line from $branchNode to a target node id, allowing any
+            # connector style (-->, -.->, ==>) and an optional edge label, and
+            # tolerating an optional `[label]` shape declaration on the target.
+            $edge = '(?m)^\s*' + [regex]::Escape($branchNode) + '\s*[-.=]+>\s*(?:\|[^|]*\|\s*)?'
+            if ([regex]::IsMatch($block, ($edge + [regex]::Escape($blockNode) + '\b'))) {
+                Add-Failure "$($diagramSource.Label) Mermaid has a forbidden direct '$branchNode -> $blockNode' edge that bypasses FINDING_NORMALIZE on a Rule Scope review path"
+            }
+            if (-not [regex]::IsMatch($block, ($edge + [regex]::Escape($normNode) + '\b'))) {
+                Add-Failure "$($diagramSource.Label) Mermaid Rule Scope branch '$branchNode' no longer routes through FINDING_NORMALIZE ('$branchNode -> $normNode' edge missing)"
+            }
+        }
+    }
+}
+
 $activeContractPaths = @(
     (Join-Path $repoRoot 'docs/architecture-v5'),
     (Join-Path $repoRoot 'docs/review'),
@@ -1223,6 +1270,88 @@ foreach ($rule in $requiredAutomationBoundaryRules) {
     }
 }
 
+# R5-03 후속이슈: Finding 생성 lifecycle과 Reporter handoff.
+$requiredFindingLifecycleRules = @(
+    @{ Name = 'gate doc defines Finding as a trusted-runtime normalization record'; Text = $gateText; Marker = '`Finding`은 새 취약점 판정 Gate가 아니라, 이미 검증된 upstream 결과를 하나의 current 취약점 결과로 정규화해 저장하는 record다.' },
+    @{ Name = 'gate doc keeps Finding claim strength at or below verified upstream'; Text = $gateText; Marker = 'Finding의 모든 material claim 강도는 verified upstream evidence의 claim strength 이하여야 한다.' },
+    @{ Name = 'gate doc separates Finding existence from Reporter eligibility'; Text = $gateText; Marker = '`current Finding 존재 + Reporter 차단 + report_draft_refs=[]`' },
+    @{ Name = 'gate doc requires a current non-stale Finding for Reporter'; Text = $gateText; Marker = 'AND current non-stale Finding exists for this exact chain' },
+    @{ Name = 'gate doc defines the stale Finding lifecycle'; Text = $gateText; Marker = '### stale Finding' },
+    @{ Name = 'contract doc binds Finding to the committed exact chain without a new agent'; Text = $contractText; Marker = 'current Finding은 새 vulnerability verdict나 impact를 만드는 Gate가 아니라, 신뢰 runtime이 이미 `COMMITTED`된 exact upstream reference를 조립한 정규화 record다.' },
+    @{ Name = 'contract doc adds no new Finding agent, action_type, or producer enum'; Text = $contractText; Marker = '이 작업은 새 autonomous Agent role, 새 `action_type` 또는 새 producer enum을 추가하지 않는다.' },
+    @{ Name = 'contract doc resolves Finding storage binding in R4 B2'; Text = $contractText; Marker = '구체 binding은 [구현 모듈 맵](implementation/01-module-map.md) B2에 확정한다.' },
+    @{ Name = 'security doc rejects mixing Finding creation with Reporter readiness'; Text = $securityText; Marker = '| Finding 생성 조건을 Reporter 6축 readiness와 동일하게 취급 |' },
+    @{ Name = 'security doc blocks stale Finding reuse in Reporter'; Text = $securityText; Marker = '| Finding 정규화 전이거나 stale Finding으로 Reporter 호출 |' },
+    @{ Name = 'overview canonical flow puts current Finding before Reporter'; Text = $overviewText; Marker = 'current Finding -> Reporter -> ReportDraft -> AnalysisRunResult -> Agent automation end' },
+    @{ Name = 'canonical diagram shows trusted-runtime Finding normalization'; Text = $diagramText; Marker = 'NORM[FINDING_NORMALIZE - trusted runtime non-LLM work]' },
+    @{ Name = 'wiki diagram shows trusted-runtime Finding normalization'; Text = $wikiDiagramText; Marker = 'NORM[FINDING_NORMALIZE - trusted runtime non-LLM work]' },
+    @{ Name = 'gate wiki documents the Finding normalization step'; Text = $gateWikiText; Marker = '## Finding 정규화' }
+)
+foreach ($rule in $requiredFindingLifecycleRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing or weakened R5-03 follow-up Finding lifecycle rule: $($rule.Name)"
+    }
+}
+
+# R7 cross-review: Finding closure metadata scope and normalization work agreement.
+$findingClosurePaths = @(
+    '05-llm-gate-and-reporting.md',
+    '08-lightweight-data-contracts.md',
+    '10-security-boundaries.md',
+    'implementation/01-module-map.md',
+    'wiki/gate-and-reporting.md'
+)
+foreach ($path in $findingClosurePaths) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot "docs/architecture-v5/$path")
+    foreach ($marker in @('hypothesis-local artifact에 대해서만 동일 `meta.hypothesis_id`', '`ProgramPolicyRecord`, `PolicyCollectionResult` 등 hypothesis 비종속 정책 record에는 `hypothesis_id` 일치를 요구하지 않으며', '기존 exact `StoredDataRef`, `meta.workspace_id`·`meta.commit_id` 및 policy revision/provenance 계약')) {
+        if (-not $text.Contains($marker)) { Add-Failure "missing Finding closure metadata scope in ${path}: $marker" }
+    }
+    if ($text -match 'upstream(?: record)?의? `meta.hypothesis_id`·`meta.workspace_id`·`meta.commit_id`') {
+        Add-Failure "unscoped Finding upstream hypothesis match in $path"
+    }
+}
+foreach ($text in @($gateWikiText, $diagramText, $wikiDiagramText)) {
+    foreach ($marker in @('RULE_SCOPE_GATE → FINDING_NORMALIZE → Reporter readiness', '비-LLM normalization work', '새 autonomous Agent나 LLM Gate가')) {
+        if (-not $text.Contains($marker)) { Add-Failure "missing Finding work cross-document rule: $marker" }
+    }
+    if ($text.Contains('Finding 생성은 새 Agent role·work·action을 추가하지 않으며')) {
+        Add-Failure 'obsolete no-new-work Finding contract'
+    }
+}
+Write-Output "Finding lifecycle cross-document checks: R7 closure scope (5 documents) and normalization work (Wiki + 2 diagrams)"
+
+# R4 Finding storage: schema, exclusive output binding and current-only finalization.
+$findingSchema = [regex]::Match($contractText, '(?ms)^Finding:\r?\n(.*?)^FindingConditionSource:').Groups[1].Value
+foreach ($field in @('meta: RecordMeta', 'verification_result_ref: StoredDataRef', 'dynamic_result_ref: StoredDataRef', 'poc_ref: StoredDataRef', 'cwe_label_ref: StoredDataRef', 'technical_review_ref: StoredDataRef', 'rule_scope_impact_review_ref: StoredDataRef', 'policy_collection_result_ref: StoredDataRef', 'policy_record_ref: StoredDataRef | null', 'evidence_refs: [StoredDataRef]', 'condition_sources: [FindingConditionSource]')) {
+    if (-not $findingSchema.Contains($field)) { Add-Failure "missing canonical Finding field: $field" }
+}
+$requiredFindingStorageRules = @(
+    'RULE_SCOPE_GATE | FINDING_NORMALIZE | REPORT_DRAFT',
+    '`RULE_SCOPE_GATE`의 `SUCCEEDED`는 정확히 하나의 `RuleScopeImpactReview.record_id`를 가리킨다.',
+    '`FINDING_NORMALIZE`의 `SUCCEEDED`는 정확히 하나의 `Finding.record_id`를 가리킨다.',
+    '`finding -> Finding -> VERIFICATION`',
+    'versioned result-owner registry에 고정된 이 service의 exact `requester_identity_ref`',
+    'source_path: string',
+    'status: EMPTY | CURRENT | STALE',
+    'stale_finding_ref: StoredDataRef | null',
+    'index의 expected `record_id`·`state_version`과 모든 upstream current pointer/generation을 함께 비교한다.',
+    'normalization commit과 invalidation은 같은 index CAS로 직렬화',
+    '`AnalysisRunResult.finding_refs`는 확정 시 각 `CURRENT` index',
+    '`current Finding 존재 + Reporter blocked + report_draft_refs=[]`는 정상적인 `AnalysisRunResult`다.',
+    '다른 필수 작업이 완료되면 `COMPLETE`가 가능하다.'
+)
+foreach ($rule in $requiredFindingStorageRules) {
+    if (-not $contractText.Contains($rule)) { Add-Failure "missing R4 Finding storage rule: $rule" }
+}
+$findingModuleText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/implementation/01-module-map.md')
+foreach ($rule in @('`FINDING_NORMALIZE`', '`finding -> Finding -> VERIFICATION`', '`FindingIndexState`', 'Reporter blocked이면 `report_draft_refs=[]`')) {
+    if (-not $findingModuleText.Contains($rule)) { Add-Failure "missing Finding module binding: $rule" }
+}
+foreach ($obsolete in @('Reporter가 current `ReportDraft`를 저장하고 해당 `REPORT_DRAFT` work를 종료한 뒤, 신뢰 runtime은', 'R4 storage binding 대기', '**R4 대기(storage binding)**')) {
+    if ($contractText.Contains($obsolete) -or $findingModuleText.Contains($obsolete)) { Add-Failure "obsolete Finding storage contract: $obsolete" }
+}
+Write-Output "R4 Finding storage rules: $($requiredFindingStorageRules.Count)"
+
 $requiredVerificationChainingContracts = @(
     'VerificationAssignment:',
     'verification_assignment_ref:',
@@ -1489,7 +1618,7 @@ $verificationChainingScenarioMarkers = @(
     '| N3 | final TRUE, Gate 미실행 |',
     '| N4 | TRUE + Technical `ACCEPT`, 정책 수집 또는 Rule Scope 검토가 아직 종료되지 않음 |',
     '| N5 | TRUE + Technical `ACCEPT` + Rule Scope의 다른 판단 `FAIL | UNCERTAIN | DENY`, testing restriction은 `PASS | UNCERTAIN` |',
-    '| N6 | TRUE + Technical `ACCEPT` + Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`, testing restriction `PASS` |',
+    '| N6 | TRUE + Technical `ACCEPT` + Rule Scope review가 Reporter 6축 readiness 전부 충족 |',
     '| N7 | result가 있는 TRUE Primitive + result가 없는 HOLD Primitive |',
     '| N8 | result가 있는 서로 다른 TRUE Primitive 둘 |',
     '| N9 | TRUE+TRUE 입력 중 한 부모가 Technical 비정상이거나 direct·ancestor current `PrimitiveAdmissionDecision=ALLOW`를 충족하지 않음 |',
@@ -2226,6 +2355,7 @@ if ($gitCheckExitCode -ne 0) {
 
 Write-Output "Markdown files: $($markdownFiles.Count)"
 Write-Output "Mermaid blocks: $($diagramBlocks.Count) canonical / $($wikiDiagramBlocks.Count) Wiki"
+Write-Output 'Finding lifecycle Rule Scope -> FINDING_NORMALIZE bypass guard: canonical + Wiki'
 Write-Output "R4-02 required contract names: $($requiredContractNames.Count)"
 Write-Output "R4 Pro/Con result fields: $($requiredEvidenceAgentResultFields.Count)"
 Write-Output "R4 Verification join fields: $($requiredVerificationDebateFields.Count)"

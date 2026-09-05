@@ -34,7 +34,7 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 | 16 | Technical `REVISE` 보완 loop | same Verification owner, 새 Verification과 반드시 다시 평가한 새 CWELabel revision |
 | 17 | Technical `ACCEPT` TRUE의 정책 수집·Rule Scope 검토와 체이닝 재료 사용 결정 | 독립 `testing_restriction_compliance`, `PrimitiveAdmissionDecision=ALLOW | DENY`; `ALLOW`일 때만 result가 있는 `Primitive` admission |
 | 18 | direct·parent chain의 current ALLOW 결정을 고정한 Primitive 체이닝 | upstream result가 downstream input을 근거 있게 충족하고 `source_admission_refs`를 보존한 `ChainingResult` |
-| 19 | 공식 규칙·범위·영향의 보고 조건 적용 | 금지 테스트 위반 외의 Rule Scope 판단은 Primitive 자격이 아니라 보고 가능성만 변경 |
+| 19 | 신뢰 runtime이 exact chain에서 current Finding을 정규화하고 공식 규칙·범위·영향의 보고 조건을 적용 | Finding은 두 Gate가 검토한 결과를 정규화한 record이며 새 verdict가 아님. 금지 테스트 위반 외의 Rule Scope 판단은 Primitive 자격이 아니라 보고 가능성만 변경 |
 | 20 | 체이닝·검증 중 새 주장 전역 등록 | `origin=CHAINING | VERIFICATION` proposal, 새 Verification 배정 |
 | 21 | 조건 충족 시 보고서 초안 작성 | `ReportDraft` |
 | 22 | 결과·디버깅 저장, 모든 가설 반복과 자동화 종료 | `AnalysisRunResult`, bounded parallel processing과 run records |
@@ -69,17 +69,19 @@ Orchestration -> Hypothesis Agent -> trusted validation and registration
                                                              │
                                            ┌─────────────────┴─────────────────┐
                                            v                                   v
-                          PrimitiveAdmissionDecision                 report conditions
-                              │ ALLOW       │ DENY                           │ pass
-                              v             v                                v
-                    result Primitive    no Primitive                      Reporter
-                         -> Chaining
+                          PrimitiveAdmissionDecision          trusted runtime normalizes current Finding
+                              │ ALLOW       │ DENY                     (any Rule Scope review_status)
+                              v             v                                │
+                    result Primitive    no Primitive                  report conditions
+                         -> Chaining                                         │ pass
+                                                                            v
+                                                                         Reporter
 
 Verification material claim -> origin=VERIFICATION proposal ┐
 Chaining match -> origin=CHAINING proposal ------------------┴-> trusted registration
                                                                -> Orchestration assigns Verification
 
-Reporter -> ReportDraft -> AnalysisRunResult -> Agent automation end
+current Finding -> Reporter -> ReportDraft -> AnalysisRunResult -> Agent automation end
 ```
 
 Technical Evidence Gate의 `REVISE`는 같은 가설의 Verification owner에게 직접 돌아간다. Verification은 필요한 Context·Pro/Con·정적·동적 근거를 보완하고 새 `VerificationResult`를 확정한다. R5-01 `CWE_LABELING`은 CWE 값의 변경 여부와 관계없이 그 새 Verification에 맞는 새 `CWELabel` revision을 확정한 뒤 Gate를 다시 요청한다. Verification 또는 Chaining이 만든 새 material claim은 기존 결과에 붙여 확정하지 않고 trusted registration 뒤 8단계부터 전체 검증을 새로 거친다.
