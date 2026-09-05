@@ -18,11 +18,19 @@ Agent 역할을 특정 로그인 방식이나 API에 결합하지 않고, provid
 Agent Runtime
 → LLM Logging Proxy
 → LLMProviderAdapter
-   ├─ MembershipSessionAdapter
-   └─ APIProviderAdapter
+   ├─ APIProviderAdapter
+   │  ├─ OpenAIResponsesApiAdapter
+   │  └─ AnthropicMessagesApiAdapter
+   └─ MembershipSessionAdapter
+      ├─ CodexSubscriptionAdapter
+      └─ ClaudeSubscriptionAdapter
 ```
 
 Agent Runtime은 역할·structured-output 요구·context reference·budget·session policy를 요청한다. Adapter는 provider별 인증·호출·오류·usage를 공통 결과로 정규화한다. Logging Proxy는 양쪽에서 노출된 요청·응답·tool trace와 실제 선택을 `LLMInvocationLog`로 연결한다.
+
+네 후보 경로와 환경별 지원 판정·시험 기준은 [R3-04 Provider 결정](./implementation/04-provider-decision.md)을 따른다. API Key와 구독 session은 서로 바꿔 쓸 수 있는 credential이 아니다. 실제 선택 단위는 `provider + product + transport + auth_mode + client version + model + environment`를 고정한 versioned `ProviderProfile` revision이다. Codex 구독에서 Claude 구독으로 바꾼다는 말은 같은 client에서 model 문자열만 바꾸는 것이 아니라 다른 profile과 adapter의 새 호출을 시작한다는 뜻이다.
+
+R7의 Sandbox 실행은 provider 내장 file·command·web tool을 켜지 않는다. 모델은 구조화된 R7 turn만 반환하고 SASTSIMI Runtime이 권한·상태·exact work/attempt·Sandbox 경계를 검사한 뒤 in-container 실행 통로로 전달한다. 이 반복 경로는 `runtime_tool_loop=SUPPORTED`인 exact ProviderProfile만 사용할 수 있으며 명령·관찰은 같은 attempt의 `AgentLog`와 호출 log에 연결한다.
 
 ## provider 호출 전 권한 검사
 
@@ -83,6 +91,13 @@ LLM 호출은 상위 `WorkExecutionState`의 한 attempt 안에서 실행한다.
 
 UI 자동화나 session 재사용이 공식 지원 범위 밖이라면 구현 완료로 표시하지 않는다. raw cookie, token, browser profile path를 결과에 포함하지 않는다.
 
+- `CodexSubscriptionAdapter`는 ChatGPT 계정으로 공식 로그인한 Codex CLI/SDK 경계만 사용한다.
+- `ClaudeSubscriptionAdapter`는 Claude 계정으로 공식 로그인한 Claude Code CLI의 `claude -p` 경계만 사용한다. Claude Agent SDK는 이번 네 adapter 범위에 포함하지 않으며 도입하려면 별도 product·transport·adapter와 client 격리 검토가 필요하다.
+- 어느 adapter도 client credential 파일을 직접 파싱하거나 token을 추출해 일반 HTTP client에 전달하지 않는다.
+- 구독 plan, workspace, client와 rollout에 따라 모델 접근 범위가 다를 수 있으므로 실제 시험을 마친 model·environment 조합마다 별도 profile revision을 사용한다.
+- 구독 client는 실제 저장소가 아닌 격리된 빈 working directory에서 실행하고 redacted PromptPayload만 받는다. exact `ClientExecutionProfile`로 file·command·web tool, MCP·hook·plugin·project/user instruction·provider fallback과 불필요한 환경 변수를 fail-closed로 끈다.
+- 사용 중인 client version에서 이 격리를 강제하고 부정 시험할 수 없으면 Membership adapter를 호출하지 않는다.
+
 ## APIProviderAdapter
 
 - 공식 API/SDK를 통한 호출 경계
@@ -92,6 +107,10 @@ UI 자동화나 session 재사용이 공식 지원 범위 밖이라면 구현 �
 - key 부재는 membership adapter 선택과 별개의 configuration 상태
 
 API 방식이 허용되어도 특정 provider를 기본값으로 확정하는 것은 별도 ADR 대상이다.
+
+- `OpenAIResponsesApiAdapter`는 OpenAI Responses API와 해당 API 조직·project의 model 접근 권한을 사용한다.
+- `AnthropicMessagesApiAdapter`는 Anthropic Messages API와 해당 workspace의 model 접근 권한을 사용한다.
+- API Key 경로도 provider가 다르면 별도 credential과 profile을 사용하며 key를 다른 provider에 재사용하지 않는다.
 
 ## SessionPolicy
 
@@ -160,6 +179,7 @@ LLM 호출 상태는 `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIM
 | `CANCELLED` | 사용자 또는 runtime이 취소함 | 취소 기록 후 실행 종료 |
 
 1. Runtime이 adapter capability와 인증 사용 가능 여부를 확인한다.
+   - R7 Sandbox 실행 task이면 `runtime_tool_loop=SUPPORTED`를 추가로 확인하고, 사전 requirements·plan 작성 호출에는 Sandbox tool policy를 부여하지 않는다.
 2. 호출할 수 없으면 `AUTH_REQUIRED` 또는 명시적 provider error를 반환한다.
 3. Orchestration은 어떤 LLM 호출 상태도 가설 `FALSE`로 바꾸지 않는다.
 4. 제한 retry, 사용자 재인증 또는 구성된 explicit fallback을 선택한다.

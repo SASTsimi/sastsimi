@@ -14,11 +14,21 @@ LLM을 회원 로그인이나 API로 연결하는 공통 방법, 새 대화·이
 Agent Runtime
 → LLM Logging Proxy
 → LLMProviderAdapter
-   ├─ MembershipSessionAdapter
-   └─ APIProviderAdapter
+   ├─ APIProviderAdapter
+   │  ├─ OpenAI Responses API
+   │  └─ Anthropic Messages API
+   └─ MembershipSessionAdapter
+      ├─ Codex + ChatGPT 구독 로그인
+      └─ Claude Code + Claude 구독 로그인
 ```
 
-API provider는 공식 API/SDK 경계다. Membership session은 공식 지원·약관·동시성·session/log 가용성 검토를 통과해야 채택할 수 있는 `EXPERIMENTAL / FEASIBILITY_REQUIRED` adapter다. 어느 하나도 아직 기본·검증 완료 방식으로 확정하지 않는다. API key와 membership credential은 각 adapter의 secret boundary 안에 두며 Agent와 일반 log에 노출하지 않는다.
+API provider는 공식 API/SDK 경계다. Membership session은 공식 지원·약관·동시성·session/log 가용성 검토를 통과해야 채택할 수 있는 `EXPERIMENTAL / FEASIBILITY_REQUIRED` adapter다. 어느 하나도 아직 기본·검증 완료 방식으로 확정하지 않는다. API key와 membership credential은 각 adapter의 secret boundary 안에 두며 Agent와 일반 log에 노출하지 않는다. 구독 경로는 구독 사용자가 자기 개발 환경에서 시작하는 내부 분석 후보이며, 제3자 사용자를 대신해 구독 credential로 요청을 중계하는 서비스 경로로 확장하지 않는다. Claude Agent SDK는 이번 네 경로에서 제외하며, 나중에 도입하려면 Messages API나 Claude CLI와 합치지 않고 별도 adapter·격리·약관 검토를 거친다.
+
+네 연결 경로의 구체적인 차이와 시험 기준은 [R3-04 Provider 결정](../implementation/04-provider-decision.md)에 정리한다. ChatGPT 구독은 OpenAI/Codex 경로에만, Claude 구독은 Anthropic/Claude Code 경로에만 사용한다. Provider를 바꿀 때는 model 이름만 교체하지 않고 새 profile·adapter·call ID·session으로 실행한다.
+
+ProviderProfile 하나는 provider·인증·client version뿐 아니라 model과 실행 환경 하나까지 고정합니다. 시험하지 않은 후보는 실행 가능한 `EXPERIMENTAL`로 표시하지 않습니다. 구독형 Codex·Claude Code는 원래 파일과 명령을 다룰 수 있으므로, 실제 저장소가 없는 격리 directory에서 tool·MCP·hook·plugin·추가 instruction을 모두 끌 수 있을 때만 LLM 전송 경로로 사용합니다. 이 격리를 증명하지 못하면 해당 구독 경로를 거절합니다.
+
+R7이 Sandbox 안에서 명령을 반복 실행할 때도 provider 내장 tool은 켜지 않습니다. 모델은 다음 작업을 구조화된 형식으로 제안하고, SASTSIMI Runtime이 허용 여부를 검사해 격리 container 안에서만 실행한 뒤 결과를 다시 전달합니다. 이 기능을 실제 시험해 `runtime_tool_loop=SUPPORTED`가 된 ProviderProfile만 R7 실행에 사용할 수 있습니다. 다른 Agent에서 사용할 수 있는 Provider라도 이 기능이 없으면 R7에는 배정하지 않습니다.
 
 provider/model failover는 조용히 수행하지 않는다. 모든 retry와 fallback 호출은 새 `llm_call_id`를 사용한다. 일반 retry는 `retry_of_llm_call_id`, provider/model 전환은 `failover_from_llm_call_id`로 바로 앞의 허용된 실패 호출을 가리킨다. 두 필드를 동시에 사용하지 않으며 이 연결을 따라 최초 실패부터 마지막 결과까지 순서와 원인을 확인할 수 있어야 한다.
 

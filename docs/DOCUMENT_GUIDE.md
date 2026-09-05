@@ -73,6 +73,7 @@
 | [`07-results-and-observability.md`](./architecture-v5/07-results-and-observability.md) | 분석 결과, 오류, 비용과 디버깅 기록을 무엇을 저장할지 설명합니다. | 데이터·평가·통합 담당 | 기준 문서 |
 | [`08-lightweight-data-contracts.md`](./architecture-v5/08-lightweight-data-contracts.md) | 파트 사이에 주고받는 데이터 묶음과 필드 이름을 정의합니다. | 모든 구현·설계 담당자 | 기준 문서 |
 | [`09-llm-provider-session-and-logging.md`](./architecture-v5/09-llm-provider-session-and-logging.md) | 회원 로그인·API 연결, 대화 상태와 LLM 호출 기록 방법을 설명합니다. | 통합·PM·데이터 담당 | 기준 문서 |
+| [`implementation/04-provider-decision.md`](./architecture-v5/implementation/04-provider-decision.md) | OpenAI·Codex·Anthropic·Claude를 API Key 또는 구독 로그인으로 연결하는 네 경로와 실제 검증 기준을 설명합니다. | R3·R4·R8·LLM 역할 담당 | 구현 인계 설계 |
 | [`10-security-boundaries.md`](./architecture-v5/10-security-boundaries.md) | LLM, 저장소, 비밀정보, Docker와 공식 정책을 안전하게 다루는 경계를 설명합니다. | 모든 역할·보안 검토자 | 기준 문서 |
 | [`11-migration-from-v4.md`](./architecture-v5/11-migration-from-v4.md) | v4에서 유지한 생각과 v5에서 버린 구조를 역사적 맥락으로 설명합니다. | PM·기존 설계 참여자 | 참고 문서 |
 | [`12-report-draft-template.md`](./architecture-v5/12-report-draft-template.md) | Gate를 통과한 결과를 사람이 검토할 보고서 초안으로 정리하는 양식입니다. | Gate·보고서 담당 | 기준 문서 |
