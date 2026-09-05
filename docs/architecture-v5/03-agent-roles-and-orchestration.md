@@ -8,9 +8,13 @@
 
 > 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
 
+역할별 prompt의 등록 이름, template, 허용 입력, 출력 schema와 검증 방식은 [R3-05 Agent 프롬프트 구조](./implementation/05-prompt-runtime.md)를 따른다. 운영 prompt는 Markdown 문장만으로 완성되지 않으며 `PromptRegistryEntry + template exact revision + PromptPayload + output schema/semantic validator`를 한 묶음으로 승인한다.
+
 ## Orchestration Agent
 
 Orchestration Agent는 분석 전체와 가설 목록을 관리하는 global control-plane이다. 한 가설에 대한 책임은 proposal 검증·전역 등록·Verification 배정에서 끝난다. 배정 뒤 Context, Pro/Con, 동적 재현, 판정, Gate `REVISE`와 Chaining handoff를 선택하는 주체는 그 가설의 Verification owner다.
+
+여기서 “Agent”는 사용자에게 보이는 조정 기능의 이름이다. 구현에서는 LLM이 전역 상태를 마음대로 제어하지 않는다. Hypothesis Agent가 가설 생성·중복 검토처럼 추론이 필요한 부분만 맡고, 등록·중복 후보 축소·배정·상태 전이·권한 검사는 비-LLM orchestration runtime이 수행한다. 따라서 Orchestration 자체의 별도 LLM prompt는 만들지 않는다.
 
 ```text
 HypothesisProposal validation
@@ -123,8 +127,8 @@ Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하
 | Hypothesis Agent | 취약점 가설 | 없음 | static 사실을 입력으로 읽음 | 없음 | 없음 |
 | Playbook Registry Runtime | R6가 작성한 플레이북과 사람이 승인한 적용 정책을 versioned record로 등록하고 Verification work별 `PlaybookApplication` 생성 | 없음 | exact proposal의 유형 후보·policy·playbook revision | schema·선택·질문 ID·current pointer 검사 | 운영 지원 유형과 적용 mapping 승인 |
 | Pro·Con Agent | 찬성·반대 근거 | 없음 | 자기 역할의 근거 | 없음 | 없음 |
-| Verification Agent | Context·Pro/Con, 목적·목표·필요 환경을 담은 `DynamicReproductionRequest`, 두 Gate·Reporter·Chaining 요청, material child proposal | `TRUE | FALSE | HOLD` | static·Pro·Con·COMMITTED dynamic 근거와 Gate 보완 요청 | 없음 | 없음 |
-| R7 Agent | `EnvironmentRequirements`·간단한 `ReproductionPlan`·PoC candidate·동적 근거 해석 | 없음 | R6 요청과 Sandbox 안의 실제 관측 | 없음 | 없음 |
+| Verification Agent | Context·Pro/Con 뒤 `VerificationInitialAssessment`, 필요한 경우 목적·목표·필요 환경을 담은 `DynamicReproductionRequest`, 두 Gate·Reporter·Chaining 요청, material child proposal | `TRUE | FALSE | HOLD` | static·Pro·Con·COMMITTED dynamic 근거와 Gate 보완 요청 | 없음 | 없음 |
+| R7 Agent | 실제 저장소 의존성 내용을 사용한 `EnvironmentRequirements`·간단한 `ReproductionPlan`, PoC candidate·구조화된 Sandbox tool request·동적 근거 해석 | 없음 | R6 요청과 Sandbox 안의 실제 관측 | 없음 | 없음 |
 | R7 Setup Automation | image build, container 생성·재사용·재생성, 환경 비교와 cleanup 실행 | 없음 | recipe, 실제 환경과 Health Check | host·Docker 권한은 없음 | 없음 |
 | Sandbox Controller | 없음 | 없음 | R7 `sandbox_profile_ref`의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 강제 | 정책 위반 Sandbox 시작 차단 | R7 profile 값·R8 잔여 예산·새 attempt 결정 없음 |
 | Reproduction Session Manager | 없음 | 없음 | runtime/tool/lifecycle event와 같은 attempt의 plan·recipe·환경·PoC provenance | append-only `AgentLog`, validated PoC와 `DynamicReproductionResult` 확정 | 없음 |
@@ -136,7 +140,7 @@ Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하
 | Reporter Agent | 내부 보고서 문장·구성 | 없음 | 통과한 결과와 두 Gate | 없음 | 없음 |
 | Runtime Validator | 허용 가능한 대체 action 안내 | 없음 | 실행 전제와 exact reference | action 허용·차단 | 없음 |
 
-Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 호출 순서, 기술 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 확정하지 않는다. R6 담당은 플레이북 내용과 유형 mapping 후보를 작성할 수 있지만 운영 지원 목록을 활성화하지 않는다. Playbook Registry Runtime은 사람 승인 뒤 policy를 등록하고 exact proposal의 `vulnerability_type_candidates`를 읽어 결정 규칙대로 playbook과 질문 집합을 고정할 뿐 취약점 유형이나 verdict를 새로 판단하지 않는다. Verification Agent는 hypothesis-local 다음 작업을 선택하고 `DynamicReproductionRequest`와 최종 verdict를 생산하지만 프로그램 enforcement를 우회하거나 Sandbox를 직접 실행하지 못한다. R7 Agent는 exact `EnvironmentRequirements`, mode·exact command가 없는 `ReproductionPlan`, PoC candidate와 동적 근거 해석을 만든다. Setup Automation은 저장소 선언을 우선한 immutable recipe와 image·container·cleanup을 수행한다. Sandbox Controller는 Sandbox 밖의 강제 경계만 검사하며 컨테이너 내부 command allowlist를 운영하지 않는다. 비-LLM Reproduction Session Manager는 실제 event를 append-only `AgentLog`에 기록하고 같은 attempt의 plan·recipe·환경·candidate·실행 digest만으로 validated PoC와 동적 결과를 확정한다. R7 구성요소는 R6 요청 목적과 최종 verdict를 바꾸지 않는다. Rule Scope Gate는 공식 정책에서 테스트 제한의 의미를 독립 필드로 판단하고, Primitive Admission Runtime은 그 값과 exact 정책 수집 상태를 정해진 표에 대입할 뿐 정책을 재해석하지 않는다. Runtime Validator는 값의 생산자가 맞는지, 필요한 선행 record와 상태가 있는지, exact revision과 실행 범위가 허용됐는지만 확인하며 환경 의미나 domain 값을 대신 만들지 않는다.
+Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 호출 순서, 기술 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 확정하지 않는다. R6 담당은 플레이북 내용과 유형 mapping 후보를 작성할 수 있지만 운영 지원 목록을 활성화하지 않는다. Playbook Registry Runtime은 사람 승인 뒤 policy를 등록하고 exact proposal의 `vulnerability_type_candidates`를 읽어 결정 규칙대로 playbook과 질문 집합을 고정할 뿐 취약점 유형이나 verdict를 새로 판단하지 않는다. Verification Agent는 Pro·Con 뒤 initial assessment로 PoC 확인·판정용 동적 근거·동적 실행 없는 final FALSE/HOLD 합성 중 하나를 고르고, 필요한 `DynamicReproductionRequest`와 최종 verdict를 생산하지만 프로그램 enforcement를 우회하거나 Sandbox를 직접 실행하지 못한다. R7 Agent는 Dockerfile·README·manifest·lockfile의 실제 redacted 내용을 읽어 exact `EnvironmentRequirements`, mode·exact command가 없는 `ReproductionPlan`, PoC candidate와 동적 근거 해석을 만든다. 외부 경계 허용 뒤에는 provider 내장 tool이 아니라 구조화된 `R7SandboxToolRequest`로 다음 한 작업을 제안한다. Setup Automation은 저장소 선언을 우선한 immutable recipe와 image·container·cleanup을 수행한다. Sandbox Controller는 Sandbox 밖의 강제 경계만 검사하며 컨테이너 내부 command allowlist를 운영하지 않는다. 비-LLM Reproduction Session Manager는 실제 event를 append-only `AgentLog`에 기록하고 같은 attempt의 plan·recipe·환경·candidate·tool request·실행 digest로 validated PoC와 동적 결과를 확정한다. 동적 결과의 outcome·evidence·linkage·limitations는 exact `R7AgentConclusion`과 같아야 하며 Session Manager는 다른 결론을 만들지 않는다. R7 구성요소는 R6 요청 목적과 최종 verdict를 바꾸지 않는다. Rule Scope Gate는 공식 정책에서 테스트 제한의 의미를 독립 필드로 판단하고, Primitive Admission Runtime은 그 값과 exact 정책 수집 상태를 정해진 표에 대입할 뿐 정책을 재해석하지 않는다. Runtime Validator는 값의 생산자가 맞는지, 필요한 선행 record와 상태가 있는지, exact revision과 실행 범위가 허용됐는지만 확인하며 환경 의미나 domain 값을 대신 만들지 않는다.
 
 ReportDraft 이후의 검토·수정·제출·공개는 이 역할표와 Agent action lifecycle 밖에서 사람이 수행한다. 자동화는 사람 검토 상태나 공개 결정을 만들지 않는다.
 
@@ -250,6 +254,16 @@ Chaining work는 exact Primitive, source Verification·Technical review와 실�
 세션 재사용은 token 절감 가능성이 있지만 confirmation bias와 prompt contamination 위험이 있다. 실제 정책은 설정 가능해야 하고 선택 결과와 비교 지표를 로그에 남긴다.
 
 Pro와 Con은 session만 분리하지 않는다. trusted prompt builder가 같은 공통 입력에서 역할별 immutable prompt payload를 만들며, 상대 역할의 결과·결론·session·action/decision은 prompt, context, parent/predecessor, 저장소 조회와 tool 입출력 어느 경로에도 넣지 않는다. 위반하면 `CROSS_ROLE_INPUT_DENIED`로 호출 또는 합류를 중단한다.
+
+## prompt 작성과 실행 책임
+
+- R1은 Hypothesis·Chaining, R5는 CWE Labeling·두 Gate·Reporter, R6은 Pro·Con·Verification, R7은 Reproduction Agent의 판단 기준을 작성한다.
+- R2는 prompt가 읽는 정적 사실과 코드 위치의 의미를, R8은 평가 fixture와 품질·시간·비용 측정 기준을 검토한다.
+- R3는 공통 registry·loader·builder·provider-neutral 전달과 통합 시험을 구현하며 다른 파트의 보안 판단 기준을 임의로 대신 쓰지 않는다.
+- R4는 role·task·template·payload의 exact reference, session·retry·권한·오류 불변조건을 검토한다.
+- Orchestration runtime, Runtime Validator, Playbook Registry Runtime, Setup Automation, Sandbox Controller, Reproduction Session Manager와 Primitive Admission Runtime에는 LLM prompt를 만들지 않는다.
+
+OpenAI API, Codex 구독, Anthropic API 또는 Claude 구독 중 무엇을 사용하더라도 같은 논리 `PromptPayload`와 output schema를 사용한다. Adapter는 provider 전송 형식만 바꾸며 역할 지시·입력·판정 기준을 바꾸지 않는다.
 
 ## prompt-injection 경계
 

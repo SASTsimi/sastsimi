@@ -592,7 +592,8 @@ $sandboxCommandRecordBlock = [regex]::Match($contractText, '(?ms)^SandboxCommand
 $cleanupResultBlock = [regex]::Match($contractText, '(?ms)^CleanupResult:\s*(.*?)^AgentLogEvent:').Groups[1].Value
 $agentLogEventBlock = [regex]::Match($contractText, '(?ms)^AgentLogEvent:\s*(.*?)^AgentLog:').Groups[1].Value
 $agentLogBlock = [regex]::Match($contractText, '(?ms)^AgentLog:\s*(.*?)^PoCCandidate:').Groups[1].Value
-$pocCandidateBlock = [regex]::Match($contractText, '(?ms)^PoCCandidate:\s*(.*?)^PoCBundle:').Groups[1].Value
+$pocCandidateBlock = [regex]::Match($contractText, '(?ms)^PoCCandidate:\s*(.*?)^R7AgentConclusion:').Groups[1].Value
+$r7AgentConclusionBlock = [regex]::Match($contractText, '(?ms)^R7AgentConclusion:\s*(.*?)^PoCBundle:').Groups[1].Value
 $pocBundleBlock = [regex]::Match($contractText, '(?ms)^PoCBundle:\s*(.*?)^DynamicReproductionResult:').Groups[1].Value
 $dynamicResultBlock = [regex]::Match($contractText, '(?ms)^DynamicReproductionResult:\s*(.*?)^```').Groups[1].Value
 foreach ($field in @('need_id:', 'kind:', 'description:', 'required:', 'source_refs:')) {
@@ -702,8 +703,22 @@ foreach ($field in @('meta:', 'request_ref:', 'events:')) {
         Add-Failure "missing AgentLog field: $field"
     }
 }
-foreach ($field in @('meta:', 'request_ref:', 'reproduction_plan_ref:', 'content_ref:', 'content_digest:', 'created_by_invocation_ref:', 'created_at:')) {
+foreach ($field in @('meta:', 'request_ref:', 'reproduction_plan_ref:', 'content_ref:', 'content_digest:', 'llm_call_id:', 'created_at:')) {
     if (-not $pocCandidateBlock.Contains($field)) { Add-Failure "missing PoCCandidate field: $field" }
+}
+foreach ($field in @('meta:', 'request_ref:', 'reproduction_plan_ref:', 'environment_ref:', 'poc_candidate_ref:', 'observation_refs:', 'proposed_outcome:', 'hypothesis_evidence_refs:', 'hypothesis_linkage:', 'limitations:', 'llm_call_id:')) {
+    if (-not $r7AgentConclusionBlock.Contains($field)) { Add-Failure "missing R7AgentConclusion field: $field" }
+}
+foreach ($marker in @(
+    'hypothesis_proposal -> HypothesisProposal -> HYPOTHESIS',
+    '`result_kind=hypothesis_proposal`이면 HYPOTHESIS만 저장할 수 있다.',
+    '`PoCCandidate.llm_call_id`는 같은 analysis·hypothesis·work·attempt에서 candidate를 만든 성공한 `R7_AGENT / CREATE_POC_CANDIDATE` 호출 ID와 같아야 한다.',
+    '`R7AgentConclusion`은 R7 Agent의 해석 제안이지 최종 실행 사실이나 취약점 판정이 아니다. `llm_call_id`는 같은 analysis·hypothesis·work·attempt의 성공한 `R7_AGENT / INTERPRET_ATTEMPT` 호출 ID와 같아야 하고'
+)) {
+    if (-not $contractText.Contains($marker)) { Add-Failure "missing R3-05 result ownership or invocation marker: $marker" }
+}
+if ($contractText.Contains('created_by_invocation_ref')) {
+    Add-Failure 'obsolete reverse invocation reference remains in common contract'
 }
 foreach ($field in @('meta:', 'request_ref:', 'reproduction_plan_ref:', 'environment_recipe_ref:', 'environment_ref:', 'agent_log_ref:', 'candidate_ref:', 'candidate_digest:', 'execution_action_id:', 'evidence_refs:', 'validated_at:')) {
     if (-not $pocBundleBlock.Contains($field)) { Add-Failure "missing PoCBundle field: $field" }
@@ -717,6 +732,7 @@ foreach ($fieldPattern in @(
     'policy_decision_ref:\s*StoredDataRef \| null',
     'agent_invoked:\s*boolean',
     'agent_log_ref:\s*StoredDataRef',
+    'agent_conclusion_ref:\s*StoredDataRef \| null',
     'environment_recipe_ref:\s*StoredDataRef \| null',
     'environment_ref:\s*StoredDataRef \| null',
     'poc_candidate_ref:\s*StoredDataRef \| null',
@@ -833,10 +849,57 @@ foreach ($field in $requiredActionDecisionFields) {
     }
 }
 
+$promptRegistryBlock = [regex]::Match($contractText, '(?ms)^PromptRegistryEntry:\s*(.*?)^PromptContextBinding:').Groups[1].Value
+$promptPayloadBlock = [regex]::Match($contractText, '(?ms)^PromptPayload:\s*(.*?)^LLMCallSpec:').Groups[1].Value
+$modelRouteBlock = [regex]::Match($contractText, '(?ms)^ModelRoute:\s*(.*?)^ModelProfile:').Groups[1].Value
+$modelProfileBlock = [regex]::Match($contractText, '(?ms)^ModelProfile:\s*(.*?)^ExecutionLimits:').Groups[1].Value
+$executionLimitsBlock = [regex]::Match($contractText, '(?ms)^ExecutionLimits:\s*(.*?)^LLMRetryPolicy:').Groups[1].Value
+$retryPolicyBlock = [regex]::Match($contractText, '(?ms)^LLMRetryPolicy:\s*(.*?)^LLMToolPolicy:').Groups[1].Value
+$toolPolicyBlock = [regex]::Match($contractText, '(?ms)^LLMToolPolicy:\s*(.*?)^PromptRedactionPolicy:').Groups[1].Value
+$redactionPolicyBlock = [regex]::Match($contractText, '(?ms)^PromptRedactionPolicy:\s*(.*?)^OutputSchemaSpec:').Groups[1].Value
+$outputSchemaSpecBlock = [regex]::Match($contractText, '(?ms)^OutputSchemaSpec:\s*(.*?)^SemanticValidatorSpec:').Groups[1].Value
+$semanticValidatorSpecBlock = [regex]::Match($contractText, '(?ms)^SemanticValidatorSpec:\s*(.*?)^PromptInputSlot:').Groups[1].Value
+$promptInputSlotBlock = [regex]::Match($contractText, '(?ms)^PromptInputSlot:\s*(.*?)^PromptRegistryEntry:').Groups[1].Value
+$promptContextBindingBlock = [regex]::Match($contractText, '(?ms)^PromptContextBinding:\s*(.*?)^PromptPayload:').Groups[1].Value
+
+foreach ($contract in @(
+    @{ Name = 'ModelRoute'; Block = $modelRouteBlock; Fields = @('provider_profile_ref:', 'model:', 'priority:', 'use:', 'required_capabilities:') },
+    @{ Name = 'ModelProfile'; Block = $modelProfileBlock; Fields = @('meta:', 'profile_key:', 'agent_role:', 'task_kind:', 'routes:', 'status:') },
+    @{ Name = 'ExecutionLimits'; Block = $executionLimitsBlock; Fields = @('meta:', 'limits_key:', 'token_budget:', 'timeout_ms:', 'max_parallel_calls:', 'max_calls_per_work:') },
+    @{ Name = 'LLMRetryPolicy'; Block = $retryPolicyBlock; Fields = @('meta:', 'policy_key:', 'max_schema_repairs:', 'max_semantic_repairs:', 'max_retries:', 'max_failovers:', 'retryable_statuses:') },
+    @{ Name = 'LLMToolPolicy'; Block = $toolPolicyBlock; Fields = @('meta:', 'policy_key:', 'allowed_tools:', 'forbidden_actions:', 'sandbox_only:') },
+    @{ Name = 'PromptRedactionPolicy'; Block = $redactionPolicyBlock; Fields = @('meta:', 'policy_key:', 'remove_categories:', 'fail_closed:') },
+    @{ Name = 'OutputSchemaSpec'; Block = $outputSchemaSpecBlock; Fields = @('meta:', 'schema_key:', 'schema_artifact_ref:', 'result_kind:') },
+    @{ Name = 'SemanticValidatorSpec'; Block = $semanticValidatorSpecBlock; Fields = @('meta:', 'validator_key:', 'implementation_ref:', 'test_refs:') },
+    @{ Name = 'PromptInputSlot'; Block = $promptInputSlotBlock; Fields = @('slot:', 'data_kind:', 'field_paths:', 'cardinality:', 'trust_class:') },
+    @{ Name = 'PromptContextBinding'; Block = $promptContextBindingBlock; Fields = @('slot:', 'data_kind:', 'source_ref:', 'projected_data_ref:', 'field_paths:', 'trust_class:') }
+)) {
+    foreach ($field in $contract.Fields) {
+        if (-not $contract.Block.Contains($field)) { Add-Failure "missing $($contract.Name) field: $field" }
+    }
+}
+
+foreach ($field in @('meta:', 'prompt_key:', 'agent_role:', 'task_kind:', 'template_ref:', 'template_version:', 'input_slots:', 'forbidden_context_kinds:', 'output_schema_ref:', 'session_policy:', 'model_profile_ref:', 'provider_profile_refs:', 'execution_limits_ref:', 'retry_policy_ref:', 'semantic_validator_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'result_kind:', 'status:', 'owner_role:', 'reviewer_roles:')) {
+    if (-not $promptRegistryBlock.Contains($field)) {
+        Add-Failure "missing PromptRegistryEntry field: $field"
+    }
+}
+foreach ($field in @('meta:', 'registry_entry_ref:', 'prompt_key:', 'agent_role:', 'task_kind:', 'template_ref:', 'template_version:', 'context_bindings:', 'rendered_prompt_ref:', 'output_schema_ref:')) {
+    if (-not $promptPayloadBlock.Contains($field)) {
+        Add-Failure "missing PromptPayload field: $field"
+    }
+}
+$requiredPromptRoles = @('HYPOTHESIS', 'PRO', 'CON', 'VERIFICATION', 'R7_AGENT', 'CHAINING', 'CWE_LABELING', 'TECHNICAL_GATE', 'RULE_SCOPE_GATE', 'REPORTER')
+foreach ($role in $requiredPromptRoles) {
+    if (-not $promptRegistryBlock.Contains($role) -or -not $promptPayloadBlock.Contains($role)) {
+        Add-Failure "missing prompt role in registry or payload: $role"
+    }
+}
+
 $llmSpecBlock = [regex]::Match($contractText, '(?ms)^LLMCallSpec:\s*(.*?)^LLMInvocationRequest:').Groups[1].Value
 $llmRequestBlock = [regex]::Match($contractText, '(?ms)^LLMInvocationRequest:\s*(.*?)^```').Groups[1].Value
 foreach ($block in @($llmSpecBlock, $llmRequestBlock)) {
-    foreach ($field in @('llm_call_id:', 'agent_role:', 'provider_profile_ref:', 'model:', 'session_policy:', 'context_refs:', 'prompt_payload_ref:', 'output_schema:', 'token_budget:', 'timeout_ms:')) {
+    foreach ($field in @('llm_call_id:', 'agent_role:', 'task_kind:', 'provider_profile_ref:', 'model:', 'session_policy:', 'context_refs:', 'prompt_registry_entry_ref:', 'prompt_key:', 'prompt_template_ref:', 'prompt_template_version:', 'prompt_payload_ref:', 'model_profile_ref:', 'execution_limits_ref:', 'retry_policy_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'semantic_validator_ref:', 'output_schema_ref:', 'output_schema:', 'token_budget:', 'timeout_ms:')) {
         if (-not $block.Contains($field)) {
             Add-Failure "missing exact LLM call field: $field"
         }
@@ -872,8 +935,126 @@ if (-not $llmRequestBlock.Contains('call_spec_ref:')) {
     Add-Failure 'LLMInvocationRequest missing call_spec_ref'
 }
 $llmLogBlock = [regex]::Match($contractText, '(?ms)^LLMInvocationLog:\s*(.*?)^```').Groups[1].Value
-if (-not $llmLogBlock.Contains('parsed_output_ref:')) {
-    Add-Failure 'LLMInvocationLog missing parsed_output_ref'
+foreach ($field in @('agent_role:', 'task_kind:', 'provider_profile_ref:', 'model:', 'prompt_registry_entry_ref:', 'prompt_key:', 'prompt_template_ref:', 'prompt_template_version:', 'prompt_payload_ref:', 'model_profile_ref:', 'execution_limits_ref:', 'retry_policy_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'semantic_validator_ref:', 'output_schema_ref:', 'context_refs:', 'parsed_output_ref:')) {
+    if (-not $llmLogBlock.Contains($field)) {
+        Add-Failure "LLMInvocationLog missing prompt trace field: $field"
+    }
+}
+if (-not $llmLogBlock.Contains('R7_AGENT')) {
+    Add-Failure 'R7_AGENT missing from LLMInvocationLog role enum'
+}
+
+$promptRuntimePath = Join-Path $repoRoot 'docs/architecture-v5/implementation/05-prompt-runtime.md'
+if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
+    Add-Failure 'missing R3-05 prompt runtime design'
+} else {
+    $promptRuntimeText = Get-Content -Raw -LiteralPath $promptRuntimePath
+    foreach ($marker in @('DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED', 'PromptRegistryEntry', 'PromptPayload', 'R7_AGENT', 'OpenAI API, Codex 구독, Anthropic API, Claude 구독', '`PMT-01`', '`PMT-15`', 'Orchestration 자체의 별도 LLM prompt는 만들지 않는다', '한 호출당 한 result kind의 structured output artifact 하나', 'R7AgentConclusion', '#90에서 채택된 각 adapter profile fixture', 'HypothesisProposal[]', 'model.hypothesis.generate-initial.quality-v1', 'model.hypothesis.duplicate-review.quality-v1', 'model.verification.technical-revise.quality-v1', 'model.r7-agent.interpret-attempt.quality-v1', 'PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', '/sanitizer_candidates', '/validator_candidates')) {
+        if (-not $promptRuntimeText.Contains($marker)) {
+            Add-Failure "R3-05 prompt runtime is missing marker: $marker"
+        }
+    }
+    foreach ($task in @('GENERATE_INITIAL', 'DUPLICATE_REVIEW', 'COLLECT_SUPPORT', 'COLLECT_COUNTEREVIDENCE', 'ASSESS_INITIAL', 'CREATE_DYNAMIC_REQUEST', 'FINAL_VERDICT', 'TECHNICAL_REVISE', 'DERIVE_ENVIRONMENT', 'PLAN_REPRODUCTION', 'CREATE_POC_CANDIDATE', 'EXECUTE_REPRODUCTION', 'INTERPRET_ATTEMPT', 'MATCH_PRIMITIVES', 'CLASSIFY', 'CREATE_DRAFT')) {
+        if (-not $promptRuntimeText.Contains($task)) { Add-Failure "R3-05 prompt runtime is missing task registry row: $task" }
+    }
+    foreach ($testId in @('PMT-HYP-01', 'PMT-HYP-02', 'PMT-PRO-01', 'PMT-CON-01', 'PMT-VER-00', 'PMT-VER-01', 'PMT-VER-02', 'PMT-VER-03', 'PMT-R7-01', 'PMT-R7-02', 'PMT-R7-03', 'PMT-R7-04', 'PMT-R7-05', 'PMT-CHN-01', 'PMT-CWE-01', 'PMT-TG-01', 'PMT-RSG-01', 'PMT-REP-01')) {
+        if (-not $promptRuntimeText.Contains($testId)) { Add-Failure "R3-05 prompt runtime is missing role fixture: $testId" }
+    }
+    foreach ($obsoletePointer in @('/relations', '/tool_coverage', '/bundle_hash')) {
+        if ($promptRuntimeText.Contains($obsoletePointer)) { Add-Failure "R3-05 prompt runtime uses nonexistent StaticFactBundle pointer: $obsoletePointer" }
+    }
+    foreach ($obsoleteExample in @('data_kind: evidence_agent_result', '"/restrictions"')) {
+        if ($promptRuntimeText.Contains($obsoleteExample)) { Add-Failure "R3-05 prompt runtime uses invalid registration example field: $obsoleteExample" }
+    }
+    $proTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| PRO / `COLLECT_SUPPORT`.*$').Value
+    $conTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| CON / `COLLECT_COUNTEREVIDENCE`.*$').Value
+    foreach ($rowRule in @(
+        @{ Name = 'PRO'; Text = $proTaskRow },
+        @{ Name = 'CON'; Text = $conTaskRow }
+    )) {
+        foreach ($requiredInput in @('VerificationAssignment($)', 'HypothesisProcessState(', 'VulnerabilityHypothesis($)', 'HypothesisProposal($)', 'StaticFactBundle(', 'CodeContextResponse($)', 'PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', 'debate_config($)', 'verification_budget_profile($)')) {
+            if (-not $rowRule.Text.Contains($requiredInput)) { Add-Failure "R3-05 $($rowRule.Name) task row is missing canonical debate input: $requiredInput" }
+        }
+    }
+    $dynamicRequestTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| VERIFICATION / `CREATE_DYNAMIC_REQUEST` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('VerificationAssignment($)', 'HypothesisProcessState(', 'VulnerabilityHypothesis($)', 'HypothesisProposal($)', 'data_kind=pro_evidence_result', 'data_kind=con_evidence_result')) {
+        if (-not $dynamicRequestTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 CREATE_DYNAMIC_REQUEST row is missing required input: $requiredInput" }
+    }
+    $finalVerdictTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| VERIFICATION / `FINAL_VERDICT` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('VerificationAssignment($)', 'HypothesisProcessState(', 'VulnerabilityHypothesis($)', 'HypothesisProposal($)', 'PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', 'data_kind=pro_evidence_result', 'data_kind=con_evidence_result')) {
+        if (-not $finalVerdictTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 FINAL_VERDICT row is missing required input: $requiredInput" }
+    }
+    $technicalReviseTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| VERIFICATION / `TECHNICAL_REVISE` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('`assignment`', '`process`', '`proposal`', '`policy`', '`playbook`', '`application`', '`debate_config`', '`budget_profile`')) {
+        if (-not $technicalReviseTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 TECHNICAL_REVISE row is missing current exact input: $requiredInput" }
+    }
+
+    $initialAssessmentTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| VERIFICATION / `ASSESS_INITIAL` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', 'data_kind=pro_evidence_result', 'data_kind=con_evidence_result', 'verification_initial_assessment', 'PMT-VER-00')) {
+        if (-not $initialAssessmentTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 ASSESS_INITIAL row is missing required contract: $requiredInput" }
+    }
+    foreach ($requiredInput in @('PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', 'VerificationInitialAssessment($)')) {
+        if (-not $dynamicRequestTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 CREATE_DYNAMIC_REQUEST row is missing assessment/playbook input: $requiredInput" }
+    }
+    if (-not $finalVerdictTaskRow.Contains('VerificationInitialAssessment($)')) {
+        Add-Failure 'R3-05 FINAL_VERDICT row is missing initial assessment input'
+    }
+
+    $chainingTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| CHAINING / `MATCH_PRIMITIVES` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('indexes: PrimitiveIndexState($) REQUIRED_MANY', 'lineage_hypotheses: VulnerabilityHypothesis(', 'lineage_results: ChainingResult(')) {
+        if (-not $chainingTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 CHAINING row is missing lineage input: $requiredInput" }
+    }
+
+    $deriveEnvironmentTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| R7_AGENT / `DERIVE_ENVIRONMENT` \| `config/prompts/templates/.*$').Value
+    $planReproductionTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| R7_AGENT / `PLAN_REPRODUCTION` \| `config/prompts/templates/.*$').Value
+    foreach ($rowRule in @(
+        @{ Name = 'DERIVE_ENVIRONMENT'; Text = $deriveEnvironmentTaskRow },
+        @{ Name = 'PLAN_REPRODUCTION'; Text = $planReproductionTaskRow }
+    )) {
+        foreach ($requiredInput in @('dependency_context: CodeContextResponse($)', '`dependency_files: code_fragment($)` OPTIONAL_MANY')) {
+            if (-not $rowRule.Text.Contains($requiredInput)) { Add-Failure "R3-05 $($rowRule.Name) row is missing repository dependency content: $requiredInput" }
+        }
+    }
+
+    foreach ($requiredMarker in @(
+        'R7_AGENT / `EXECUTE_REPRODUCTION`',
+        'schema.r7-sandbox-tool-request.next-major',
+        '`tools.none.v1`',
+        '`tools.r7-sandbox-inner.v1`',
+        '`PMT-R7-05`',
+        'DynamicReproductionResult의 `hypothesis_outcome`, `hypothesis_evidence_refs`, `hypothesis_linkage`, `limitations`'
+    )) {
+        if (-not $promptRuntimeText.Contains($requiredMarker)) { Add-Failure "R3-05 prompt runtime is missing R7 staged execution rule: $requiredMarker" }
+    }
+}
+
+$initialAssessmentBlock = [regex]::Match($contractText, '(?ms)^VerificationInitialAssessment:\s*(.*?)^EvidenceClaim:').Groups[1].Value
+foreach ($field in @('verification_work_id:', 'verification_generation:', 'hypothesis_ref:', 'policy_ref:', 'playbook_ref:', 'playbook_application_ref:', 'pro_evidence_ref:', 'con_evidence_ref:', 'next_step:', 'proposed_verdict:', 'evidence_refs:', 'llm_call_id:')) {
+    if (-not $initialAssessmentBlock.Contains($field)) { Add-Failure "VerificationInitialAssessment missing field: $field" }
+}
+$r7SandboxToolRequestBlock = [regex]::Match($contractText, '(?ms)^R7SandboxToolRequest:\s*(.*?)^PoCBundle:').Groups[1].Value
+foreach ($field in @('request_ref:', 'reproduction_plan_ref:', 'environment_ref:', 'action:', 'command:', 'poc_candidate_ref:', 'recreate_reason:', 'llm_call_id:')) {
+    if (-not $r7SandboxToolRequestBlock.Contains($field)) { Add-Failure "R7SandboxToolRequest missing field: $field" }
+}
+foreach ($marker in @(
+    '`verification_initial_assessment -> VerificationInitialAssessment -> VERIFICATION`',
+    '`r7_sandbox_tool_request -> R7SandboxToolRequest -> R7_AGENT`',
+    'initial assessment를 final `VerificationResult`나 Gate 입력으로 사용하지 않는다',
+    'Session Manager는 이 네 값을 새로 판단하거나 바꾸지 않는다'
+)) {
+    if (-not $contractText.Contains($marker)) { Add-Failure "missing reviewed prompt contract rule: $marker" }
+}
+$promptAgentWikiText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/agents.md')
+$promptContractWikiText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/common-contracts.md')
+foreach ($rule in @(
+    @{ Name = 'Agent Wiki links prompt runtime'; Text = $promptAgentWikiText; Marker = '[R3-05 Agent 프롬프트 구조](../implementation/05-prompt-runtime.md)' },
+    @{ Name = 'Agent Wiki names ten LLM roles'; Text = $promptAgentWikiText; Marker = '프롬프트가 필요한 역할은 Hypothesis, Pro, Con, Verification, R7 Agent, Chaining, CWE Labeling, Technical Gate, Rule Scope Gate, Reporter의 10개입니다.' },
+    @{ Name = 'Contract Wiki explains prompt registry'; Text = $promptContractWikiText; Marker = '`PromptRegistryEntry`: 역할·작업, template, 허용·금지 입력' },
+    @{ Name = 'Contract Wiki explains provider-neutral prompt'; Text = $promptContractWikiText; Marker = 'R3-04 시험에서 채택된 `ProviderProfile`만 실행할 수 있습니다.' }
+)) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing R3-05 Wiki synchronization rule: $($rule.Name)"
+    }
 }
 foreach ($pair in @(
     @{ Name = 'TechnicalEvidenceReview'; End = '## 9.' },
@@ -895,7 +1076,7 @@ $analysisRunStateBlock = [regex]::Match($contractText, '(?ms)^AnalysisRunState:\
 if (-not $analysisRunStateBlock.Contains('eval_config_refs: [RunStoredDataRef | StoredDataRef]')) {
     Add-Failure 'AnalysisRunState.eval_config_refs must freeze exact evaluation configuration references'
 }
-$requiredAnalysisResultFields = @('hypothesis_duplicate_review_refs:', 'finding_refs:', 'verification_refs:', 'cwe_label_refs:', 'technical_review_refs:', 'rule_scope_review_refs:', 'policy_record_refs:', 'dynamic_request_refs:', 'dynamic_result_refs:', 'environment_recipe_refs:', 'sandbox_environment_refs:', 'agent_log_refs:', 'sandbox_policy_decision_refs:', 'cleanup_result_refs:', 'poc_candidate_refs:', 'poc_refs:', 'report_draft_refs:', 'llm_invocation_log_refs:', 'action_decision_refs:', 'work_state_refs:', 'work_attempt_refs:', 'transition_commit_refs:', 'eval_config_refs:', 'debug_trace_ref:')
+$requiredAnalysisResultFields = @('hypothesis_duplicate_review_refs:', 'finding_refs:', 'verification_refs:', 'cwe_label_refs:', 'technical_review_refs:', 'rule_scope_review_refs:', 'policy_record_refs:', 'dynamic_request_refs:', 'dynamic_result_refs:', 'environment_recipe_refs:', 'sandbox_environment_refs:', 'agent_log_refs:', 'r7_agent_conclusion_refs:', 'sandbox_policy_decision_refs:', 'cleanup_result_refs:', 'poc_candidate_refs:', 'poc_refs:', 'report_draft_refs:', 'llm_invocation_log_refs:', 'action_decision_refs:', 'work_state_refs:', 'work_attempt_refs:', 'transition_commit_refs:', 'eval_config_refs:', 'debug_trace_ref:')
 foreach ($field in $requiredAnalysisResultFields) {
     if (-not $analysisRunResultBlock.Contains($field)) {
         Add-Failure "missing AnalysisRunResult handoff field: $field"
@@ -1045,7 +1226,7 @@ $sandboxReviewPatterns = @(
     },
     @{
         Name = 'AgentLog command events bind the same exact command'
-        Pattern = '(?s)SandboxCommandRecord:.*?command_digest: string.*?redaction_status: REDACTED \| NOT_REQUIRED.*?`COMMAND_STARTED`와 대응하는 `COMMAND_FINISHED`.*?동일한 exact `SandboxCommandRecord.command_ref`·`command_digest`, `action_id`, `environment_ref`, `environment_recipe_ref`.*?secret 원문은 저장하지 않고 opaque `secret_refs`.*?검사 실패 command나 log는 저장하지 않는다'
+        Pattern = '(?s)SandboxCommandRecord:.*?tool_request_ref: StoredDataRef.*?command_digest: string.*?redaction_status: REDACTED \| NOT_REQUIRED.*?`COMMAND_STARTED`와 대응하는 `COMMAND_FINISHED`.*?동일한 exact `R7SandboxToolRequest`, `SandboxCommandRecord.command_ref`·`command_digest`, `action_id`, `environment_ref`, `environment_recipe_ref`.*?실제 실행한 executable·argv·working directory·환경 binding·stdin을 정본으로 보존.*?secret 원문은 저장하지 않고 opaque `secret_refs`.*?검사 실패 command나 log는 저장하지 않는다'
     },
     @{
         Name = 'Dynamic retry lifecycle distinguishes session and external resume'
@@ -2615,6 +2796,7 @@ Write-Output "StaticFactBundle cross-document rules: $($requiredStaticFactBundle
 Write-Output "Static layer Primitive admission rules: $($requiredStaticPrimitiveAdmissionRules.Count)"
 Write-Output "R4 policy contract blocks: $($requiredPolicyContractFields.Count)"
 Write-Output "R4 policy contract rules: $($requiredPolicyContractRules.Count)"
+Write-Output 'R3-05 reviewed prompt contract rules: initial assessment, Chaining lineage, R7 staged loop'
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {
