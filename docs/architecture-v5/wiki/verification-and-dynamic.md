@@ -62,6 +62,27 @@ Chaining 결과를 저장하기 직전에 사용한 Primitive와 `source_primiti
 
 판정에는 최소 근거가 필요합니다. TRUE는 핵심 공격 경로와 필요한 조건을 지지하는 근거가 있어야 합니다. FALSE는 이름이 있는 반증 질문이 실제 근거로 `DISPROVED`된 경우에만 가능합니다. 오류·timeout·정보 부족·Sandbox 실패는 FALSE 근거가 아닙니다. HOLD는 판단에 필요한 조건이나 환경이 아직 부족하다는 뜻입니다.
 
+### Chaining 자식 가설의 검증 시작점 복구
+
+`origin=CHAINING` 자식 proposal은 `target_entities`, `target_locations` 또는 `suspected_path`가 비어 있을 수 있습니다. 이 경우 검사 시점을 등록 전과 등록 후로 나눕니다.
+
+등록 전에는 Proposal Validator, Hypothesis Registry와 Assignment Runtime이 `source_primitive_match_id`에서 exact `PrimitiveMatchCandidate`와 부모 Primitive를 따라갑니다. 다음 코드 시작점을 모두 확인합니다.
+
+- upstream Primitive의 `result.entity_refs`
+- upstream Primitive 자신의 모든 `inputs[].entity_refs`
+- downstream Primitive에서 `draft_id == matched_input_id`인 입력의 `entity_refs`
+- downstream Primitive에서 매칭된 항목을 제외한 나머지 `inputs[].entity_refs`
+
+`matched_input_id`는 코드 위치가 아니라 입력 항목을 구분하는 ID입니다. 따라서 ID, 권한 조건과 근거만으로 복구가 완료된 것으로 보지 않습니다. 현재 `proposal.meta.workspace_id`와 `proposal.meta.commit_id`에 속하는 유효한 entity 또는 location을 최소 하나 이상 확보해야 합니다.
+
+계보가 끊겼거나, 매칭된 downstream input을 찾을 수 없거나, upstream 전제조건이 누락됐거나, 유효한 entity·location을 복구하지 못하면 새 가설을 등록하거나 Verification을 배정하지 않습니다. 계보의 reference 하나라도 다른 workspace·commit을 가리키면 해당 reference만 제외하지 않고 계보 전체를 거절합니다.
+
+등록 후에는 Context Retrieval Service가 실제 코드 조회 전에 같은 계보가 여전히 current인지 다시 검사합니다. 등록 후 stale 또는 무효 계보가 발견되면 Context 조회와 Verification work를 final verdict 없이 중단합니다.
+
+R6 Verification Agent는 부모 Primitive와 match candidate를 직접 DB에서 조회하거나 가설 등록을 거절하지 않습니다. R6는 일반 `CodeContextRequest`로 필요한 Context를 요청합니다. `CONTEXT_RETRIEVAL` work에는 exact proposal이 함께 고정되며, Context Retrieval Service가 그 proposal에서 `source_primitive_match_id`를 읽어 계보를 검사하고, Context Retrieval Service가 검증하여 반환한 `CodeContextResponse`를 사용합니다.
+
+반환된 Context는 자식 가설을 자동으로 참으로 만드는 근거가 아닙니다. R6는 upstream과 downstream 양쪽의 남은 입력 조건과 실제 결합 지점을 현재 코드에서 다시 확인하며 부모 verdict를 자식에게 상속하지 않습니다.
+
 기본 Context가 부족하면 검증 Agent가 같은 workspace·commit을 기준으로 추가 Context를 요청합니다. 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 기록하며 오류 자체를 verdict 근거로 사용하지 않습니다. 일부 조회가 실패했더라도 제한 retry·대체 조회·다른 정상 근거로 모든 `ValidationCheck`, 반증 질문과 운영 Pro/Con을 완료했다면 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있습니다. 하나라도 완료하지 못했다면 final `VerificationResult`를 만들지 않습니다. 재시도 가능하면 Verification work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지합니다. 복구할 수 없거나 재시도 한도를 소진하면 work와 가설 처리 상태를 `FAILED`로 끝냅니다. 정상 검증을 모두 마친 뒤에도 부족한 조건이 남는 경우에만 실제 근거와 `unresolved_conditions`를 연결해 `HOLD`로 판정할 수 있습니다. 운영 Pro/Con 전에 예산이 부족한 경우도 `BUDGET_EXCEEDED`로 작업을 중단하고 final verdict를 저장하지 않습니다.
 
 `initial_verdict`는 중간 판단이며 운영 Gate·Primitive·보고서 입력으로 사용할 수 없습니다. initial TRUE이면 동적 근거가 별도로 필요하지 않아도 PoC 확인을 요청합니다. final TRUE는 독립 Pro/Con과 현재 generation의 성공한 동적 결과·validated PoC를 종합한 최종 판단입니다.
@@ -85,13 +106,13 @@ Pro와 Con은 항상 별도의 새 대화에서 실행합니다. 상대 역할�
 | `POC_CONFIRMATION` | 정적·Pro·Con으로 initial TRUE가 된 가설을 실제 PoC로 확인 |
 | `VERDICT_EVIDENCE` | 최종 판정에 꼭 필요한 실행 관측 확보 |
 
-R6는 목적·재현 목표·필요 환경·Sandbox profile·관련 근거를 `DynamicReproductionRequest`로 만듭니다. R7 Agent는 이 exact 요청에서 `EnvironmentRequirements`와 mode·exact command가 없는 `ReproductionPlan`을 먼저 생산하고, 외부 경계를 통과한 뒤 Sandbox 안에서 PoC candidate를 만듭니다. 한 Verification generation에는 동적 work 하나만 허용합니다. Agent가 스스로 해결할 retry는 같은 attempt 또는 외부 대기 없는 새 attempt이고, 외부 설정·정책·승인·resource 변경을 기다릴 때만 `BLOCKED`입니다. Technical `REVISE`로 새 generation이 시작되면 한도를 새로 적용합니다.
+R6는 목적·재현 목표·필요 환경·Sandbox profile·관련 근거를 `DynamicReproductionRequest`로 만듭니다. R7 Agent는 이 exact 요청에서 `EnvironmentRequirements`와 mode·exact command가 없는 `ReproductionPlan`을 먼저 생산하고, 외부 경계를 통과한 뒤 Sandbox 안에서 PoC candidate를 만듭니다. 한 Verification generation에는 동적 work 하나만 허용합니다. 같은 R7 Agent session의 command·PoC·환경 조정은 현재 attempt를 유지합니다. session 재시작이 필요할 때만 같은 work의 새 `attempt_id`·`trigger=RETRY`, 외부 설정·정책·승인·resource 변경을 기다렸다가 해소된 뒤에만 새 `attempt_id`·`trigger=RESUME`를 사용합니다. 대기 중에만 `BLOCKED`입니다. Technical `REVISE`로 새 generation이 시작되면 한도를 새로 적용합니다.
 
-Docker는 clean/non-root, network default-deny와 자원·시간 제한을 사용합니다. Runtime Validator와 Sandbox Controller가 current request/requirements와 외부 격리 경계를 확인합니다. Setup Automation이 recipe·image·container·cleanup을 맡고, R7 Agent는 Sandbox 안에서 command·PoC·관찰·재시도를 자율적으로 정합니다. Session Manager가 실제 event를 AgentLog에 기록하고 same-attempt validated PoC와 결과를 확정합니다.
+Docker는 clean/non-root, network default-deny와 자원·시간 제한을 사용합니다. Runtime Validator가 exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` revision을 고정하고, Runtime Validator가 R8 호출 전 잔여 시간·새 attempt 한도를 검사하고, Sandbox Controller가 R7 sandbox profile의 외부 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제합니다. Setup Automation이 recipe·image·container·cleanup을 맡고, R7 Agent는 Sandbox 안에서 command·PoC·관찰·재시도를 자율적으로 정합니다. Session Manager가 실제 event를 AgentLog에 기록하고 same-attempt validated PoC와 결과를 확정합니다.
 
 `poc_candidate_ref`는 실행 전 스크립트·입력입니다. exact candidate 실행이 `SUCCEEDED + SUPPORTED`로 끝난 경우에만 validated `poc_ref`를 만듭니다. 생성 실패, 실행 실패, `DISPROVED | INCONCLUSIVE`에서는 `poc_ref=null`입니다. candidate와 실패 로그는 남겨도 최종 PoC로 부르지 않습니다.
 
-`POC_CONFIRMATION` 또는 `VERDICT_EVIDENCE`가 `SUPPORTED`이면 R6는 정적·Pro·Con·동적 근거와 validated PoC를 합쳐 final TRUE를 만듭니다. 실제 반증이면 FALSE, 정상 실행했지만 결론이 부족하면 HOLD가 될 수 있습니다. PoC 생성·환경 구성·정책·실행 자체가 실패했다면 final verdict를 만들지 않습니다. Agent가 자체 해결할 수 있으면 같은 attempt에서 계속하거나 `RUNNING → READY → RUNNING`으로 새 retry attempt를 실행합니다. 외부 설정·정책·승인·resource 변경을 기다리는 경우에만 같은 work를 `BLOCKED`로 두고, 복구할 수 없거나 재시도 한도를 소진하면 `FAILED`로 끝내며 Gate를 호출하지 않습니다.
+`POC_CONFIRMATION` 또는 `VERDICT_EVIDENCE`가 `SUPPORTED`이면 R6는 정적·Pro·Con·동적 근거와 validated PoC를 합쳐 final TRUE를 만듭니다. 실제 반증이면 FALSE, 정상 실행했지만 결론이 부족하면 HOLD가 될 수 있습니다. PoC 생성·환경 구성·정책·실행 자체가 실패했다면 final verdict를 만들지 않습니다. 같은 session에서 자체 해결할 수 있으면 현재 attempt에서 계속합니다. session 재시작이 필요할 때만 `RUNNING → READY → RUNNING`으로 새 `attempt_id`·`trigger=RETRY`를 실행합니다. 외부 설정·정책·승인·resource 변경을 기다리는 경우에만 같은 work를 `BLOCKED`로 두고, 복구할 수 없거나 재시도 한도를 소진하면 `FAILED`로 끝내며 Gate를 호출하지 않습니다.
 
 Technical Gate가 `REVISE`를 반환하면 같은 ACTIVE `VerificationAssignment` owner가 직접 받습니다. 프로그램은 새 generation의 Verification work와 `TERMINAL -> VERIFYING` 전이를 먼저 원자적으로 만들고, 필요한 Context·Pro/Con·정적 근거와 설명을 보완합니다. final TRUE를 다시 만들려면 새 generation의 동적 work와 validated PoC도 필요합니다. 새 final TRUE가 확정되면 R5-01 `CWE_LABELING`이 CWE 정렬을 다시 평가하고, 값이 같아도 새 Verification을 직접 가리키는 새 `CWELabel` revision을 만든 뒤 새 Gate work를 요청합니다. 이는 provider retry나 동일 입력 재투표가 아닙니다.
 

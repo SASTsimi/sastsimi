@@ -25,7 +25,7 @@
 
 프로그램은 입력 record와 설정을 이용해 `dedupe_key`(같은 요청인지 확인하는 값)를 만듭니다. 같은 key가 다시 들어오면 새 작업을 만들지 않고 기존 `work_id`와 상태를 반환합니다.
 
-같은 작업에는 실행 중인 `attempt_id`가 하나만 있습니다. retry할 때는 새 attempt를 만들지만 이전 실패와 오류는 지우지 않습니다.
+같은 작업에는 실행 중인 `attempt_id`가 하나만 있습니다. 일반 work의 retry와 `DYNAMIC_REPRO`의 session 재시작 또는 외부 조건 해소 뒤 work-level retry는 새 attempt를 만들지만 이전 실패와 오류는 지우지 않습니다. 같은 R7 Agent session의 command·PoC·환경 조정은 현재 attempt의 event로 계속 기록합니다.
 
 최종 종료 뒤 같은 입력으로 완전히 새 작업을 시작하려면 사람이 명시적으로 승인해야 합니다. 이때만 `work_generation`을 1 증가시키고 새 `work_id`와 key를 만듭니다.
 
@@ -38,7 +38,7 @@
 
 다음은 순서를 지켜야 합니다.
 
-`final TRUE Verification → R5-01 CWE_LABELING의 current CWELabel → Technical Gate → Rule Scope Gate → Reporter → ReportDraft → AnalysisRunResult → Agent 자동화 종료`
+`final TRUE Verification → R5-01 CWE_LABELING의 current CWELabel → Technical Gate → Rule Scope Gate → 신뢰 runtime의 current Finding 정규화 → Reporter → ReportDraft → AnalysisRunResult → Agent 자동화 종료`
 
 새 Verification revision이나 generation이 생기면 CWE 값이 같더라도 R5-01이 다시 평가해 새 label revision을 만들어야 합니다. 과거 label은 기록으로만 남고 현재 Gate 입력으로 재사용하지 않습니다.
 
@@ -75,7 +75,7 @@ Context 조회 실패·timeout·권한 오류가 있어도 정상 근거로 모�
 
 동적 재현은 같은 단어의 뜻을 구분해야 합니다.
 
-- 동적 환경 구성 실패: 필수 환경이 다르거나 확인되지 않은 상태입니다. 가설 반증이 아니며, R7이 스스로 고칠 수 있으면 같은 work에서 새 attempt를 즉시 시작합니다. 외부 설정·정책·승인·resource 변경을 기다릴 때만 `BLOCKED`이고, 복구 불가능하거나 한도를 소진하면 verdict 없이 `FAILED`입니다.
+- 동적 환경 구성 실패: 필수 환경이 다르거나 확인되지 않은 상태입니다. 가설 반증이 아니며, R7이 같은 session에서 스스로 고칠 수 있으면 현재 attempt에서 계속합니다. session 재시작이 필요할 때만 같은 work의 새 `attempt_id`·`trigger=RETRY`를 만들고, 외부 설정·정책·승인·resource 변경을 기다릴 때만 `BLOCKED`이며 해소 뒤에는 새 `attempt_id`·`trigger=RESUME`로 재개합니다. 복구 불가능하거나 한도를 소진하면 verdict 없이 `FAILED`입니다.
 - 동적 결과 `PARTIAL`: 일부 공격 단계를 실행해 믿을 수 있는 관측을 얻었지만 환경 차이 같은 한계가 남은 상태입니다. 결과의 `limitations`가 빠진 범위를 설명하므로 실제 오류가 없다면 오류나 `DataGap`을 억지로 만들지 않습니다.
 - 동적 work `BLOCKED`: 외부 설정·정책·승인·resource 변경을 기다리는 상태입니다. R7이 내부에서 해결할 수 있는 PoC 생성·환경 구성·실행 문제에는 사용하지 않습니다. validated PoC와 final verdict는 없으며 `FALSE | HOLD`로 바꾸지 않습니다.
 - 공통 작업 `BLOCKED`: 재시도·인증·승인·입력을 기다리는 중이며 아직 끝나지 않은 상태입니다.
@@ -87,14 +87,14 @@ Gate 작업은 시작할 때 읽은 Verification, current CWELabel, 앞 Gate와 
 
 ## retry는 실패를 지우지 않습니다
 
-일반 작업에서 재시도 전에 외부 조건을 기다려야 하면 작업은 `BLOCKED`가 됩니다. `DYNAMIC_REPRO`가 외부 대기 없이 자체 해결할 수 있으면 실패 attempt를 보존하고 `RUNNING -> READY -> RUNNING`으로 즉시 새 attempt를 시작합니다.
+일반 작업에서 재시도 전에 외부 조건을 기다려야 하면 작업은 `BLOCKED`가 됩니다. `DYNAMIC_REPRO`에서 같은 R7 Agent session의 command·PoC·환경 조정은 현재 attempt에 실패와 후속 event를 남기고 계속합니다. session 재시작이 필요한 work-level retry만 같은 work의 새 `attempt_id`·`trigger=RETRY`를 만들며, 외부 조건을 기다릴 때만 `BLOCKED`를 사용하고 해소 뒤에는 새 `attempt_id`·`trigger=RESUME`로 재개합니다.
 
 - 인증 실패: 사용자 재인증 대기
 - 호출량 제한: 정한 시간만큼 대기
 - 잘못된 LLM 형식: 제한된 형식 수정 시도
 - 예산 부족: 새 예산 승인 대기
 
-조건이 해결되면 `READY`에서 새 `attempt_id`로 다시 시작합니다. 재시도할 수 없거나 한도를 모두 사용하면 최종 `FAILED`가 됩니다. 취소된 작업은 자동 재시도하지 않습니다.
+조건이 해결되면 `READY`에서 새 `attempt_id`로 다시 시작합니다. `DYNAMIC_REPRO`의 외부 조건 해소 뒤 재개는 `trigger=RESUME`, session 재시작은 `trigger=RETRY`를 사용합니다. 재시도할 수 없거나 한도를 모두 사용하면 최종 `FAILED`가 됩니다. 취소된 작업은 자동 재시도하지 않습니다.
 
 Pro와 Con은 부모 Verification 아래의 별도 child work입니다. 한쪽이 재시도를 기다리면 그 child와 부모 Verification을 모두 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지합니다. 성공한 다른 쪽 결과는 부모·generation·공통 입력·policy·playbook·application과 질문 ID 집합·설정·예산 기준이 그대로일 때만 보존합니다. 하나라도 바뀌면 두 역할을 모두 다시 실행합니다.
 

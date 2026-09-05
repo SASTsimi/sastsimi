@@ -15,7 +15,7 @@
 | Verification | 한 가설의 Context·Pro/Con, 목적별 `DynamicReproductionRequest`, 반환 결과 소비·판정·Gate 보완·Chaining handoff와 material child 제안 | 환경 요구사항·실행 계획·PoC·동적 결과 생산, Sandbox 직접 실행, 새 claim 무검증 승격 |
 | R7 Agent | 환경 요구사항·간단한 계획·PoC 초안·동적 근거 해석, Sandbox 안의 자율 실행 | R6 요청 변경, 외부 경계 우회 또는 최종 verdict 판단 |
 | R7 Setup Automation | recipe·image·container 생성/재사용/재생성과 정리 실제 수행 | Agent 분석, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
-| Sandbox Controller | host·Docker·mount/namespace·secret·egress·workspace·resource/lifecycle 외부 경계 검사 | 내부 command allowlist, 재현 전략 또는 최종 verdict 판단 |
+| Sandbox Controller | R7 `sandbox_profile_ref`의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 강제 | 내부 command allowlist, R7 profile 값, R8 잔여 예산·새 attempt, 재현 전략 또는 최종 verdict 판단 |
 | Reproduction Session Manager | 실제 event의 append-only AgentLog, same-attempt validated PoC와 동적 결과 확정 | Agent 호출·command·retry·cleanup 전략 결정 또는 다른 attempt 혼합 |
 | Pro | 가설 성립 근거 탐색 | 최종 verdict |
 | Con | 반증·보호·도달 불가·restriction 탐색 | 최종 verdict |
@@ -39,8 +39,9 @@ HOLD + required candidates → inputs plus null result Primitive → Chaining
 HOLD + no required candidates → no Primitive and no Chaining work
 TRUE → R5-01 CWE_LABELING → current CWELabel → Technical Gate → policy and Rule Scope review
 Technical-accepted TRUE → PrimitiveAdmissionDecision ALLOW → result Primitive → Chaining
+Rule Scope review committed → trusted runtime normalizes current Finding (any review_status)
 Verification or Chaining material claim → new hypothesis → new Verification
-all report conditions → Reporter → ReportDraft → AnalysisRunResult → Agent automation end
+current Finding + all report conditions → Reporter → ReportDraft → AnalysisRunResult → Agent automation end
 ```
 
 자동화 종료 뒤의 검토·수정·제출·공개는 이 Agent 목록 밖에서 사람이 수행합니다.
@@ -51,7 +52,7 @@ all report conditions → Reporter → ReportDraft → AnalysisRunResult → Age
 
 프롬프트는 문장 파일만 두지 않습니다. “어느 역할의 어떤 작업인지, 어떤 입력만 읽는지, 어떤 형식으로 답해야 하는지”를 `PromptRegistryEntry`에 등록하고, 실제 호출마다 exact template과 입력으로 `PromptPayload`를 만듭니다. API 또는 구독 Provider를 바꿔도 이 논리 내용과 출력 형식은 같아야 합니다.
 
-모든 LLM 출력은 비신뢰 입력이다. 비-LLM Runtime Validator가 schema·호출 권한·상태 전이·예산·provider/session·Gate/Reporter 순서를 강제한다. Sandbox Controller는 host·Docker·mount/namespace·secret·egress·workspace·resource/lifecycle 같은 외부 격리 경계를 강제하며 Sandbox 내부 command를 allowlist로 제한하지 않는다.
+모든 LLM 출력은 비신뢰 입력이다. 비-LLM Runtime Validator가 schema·호출 권한·상태 전이·예산·provider/session·Gate/Reporter 순서를 강제한다. Runtime Validator는 `RUN_SANDBOX`의 exact request·current requirements·current exact plan과 두 profile revision을 고정합니다. Runtime Validator는 R8 lifecycle profile의 호출 전 잔여 시간·새 attempt 한도를 검사합니다. Sandbox Controller는 R7 `sandbox_profile_ref`의 host·Docker·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하며 Sandbox 내부 command를 allowlist로 제한하지 않습니다.
 
 배정은 ACTIVE `VerificationAssignment`로 저장한다. 같은 역할의 다른 Agent가 아니라 그 assignment의 논리 owner만 가설 내부 action과 `REVISE` 보완을 요청할 수 있다.
 

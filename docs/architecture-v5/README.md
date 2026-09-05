@@ -12,6 +12,8 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 
 번호 문서 `01`–`13`이 설계 의미의 기준입니다. Wiki는 빠르게 이해하기 위한 쉬운 요약이며 새로운 입출력 약속이나 결정을 만들 수 없습니다. 검토 결정은 이 저장소의 Issue, 설계 결정 기록(`ADR`)과 PR에서 먼저 확정합니다. 승인된 설계 commit만 별도 PR로 구현 저장소에 반영합니다.
 
+`implementation/` 문서는 번호 문서의 의미를 실제 모듈·테스트 단위로 옮기는 구현 준비 자료입니다. 번호 문서와 충돌하면 번호 문서와 공통 계약이 우선하며, 발견한 계약 빈틈은 담당 역할 Issue에서 먼저 해결합니다.
+
 ## 전체 흐름을 쉽게 나누면
 
 1. **입력과 코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다. 규칙 기반 SAST는 검사 0건·미실행·확인 불가를 구분해 기록합니다.
@@ -60,9 +62,10 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 - 공식 프로그램 정책이 없으면 rule/scope를 추정하지 않으며 보고서 전달 권한은 `DENY`다.
 - Membership session과 API provider는 공통 adapter 경계를 사용한다. Membership path는 feasibility/security 검토 전 experimental이며, provider 전환은 명시적으로 기록하고 조용한 failover는 금지한다.
 - Reporter는 `ReportDraft`를 만드는 마지막 Agent다. 이후 신뢰 runtime이 `AnalysisRunResult`를 확정하면 자동화가 끝난다.
-- 모든 LLM 출력은 비신뢰 입력이다. 신뢰 경계 안의 Runtime Validator가 schema·호출 권한·상태 전이·예산·provider/session·Gate 순서·Reporter 전제조건을 강제하고, Sandbox Controller가 host·Docker daemon/socket·mount/namespace·secret·egress·workspace·resource/lifecycle 외부 경계를 전담한다.
+- 모든 LLM 출력은 비신뢰 입력이다. 신뢰 경계 안의 Runtime Validator가 schema·호출 권한·상태 전이·예산·provider/session·Gate 순서·Reporter 전제조건을 강제하고, Runtime Validator가 exact R7 `sandbox_profile_ref`와 R8 `DynamicReproductionLifecycleProfile` revision을 고정하고 호출 전 잔여 시간·새 attempt 한도를 검사한다. Sandbox Controller는 R7 profile의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다.
 - Agent와 service는 실행을 `ActionRequest`로 제안하고 runtime validator가 요청당 하나의 `ActionDecision=ALLOW | DENY`를 만든다. 실제 LLM 호출은 검사한 `LLMCallSpec`과 같아야 하며 ALLOW는 exact action과 state version에 한 번만 사용한다.
-- `ReportDraft`는 current Finding·Verification·CWELabel·두 Gate·정책 revision을 정확히 참조하고 restriction·limitation·남은 불확실성과 redaction 결과를 보존한다. 오래된 초안은 current `AnalysisRunResult`에 넣지 않는다.
+- current Finding은 두 Gate가 검토한 exact chain(final TRUE·validated PoC·current CWELabel·Technical `ACCEPT`·current Rule Scope review)을 신뢰 runtime이 하나의 취약점 record로 정규화한 것이다. 새 verdict·impact가 아니며 claim 강도는 verified upstream 이하다. Finding 존재는 Reporter의 6축 정책 readiness와 별개 자격이라 `report_permission=DENY`여도 Finding은 보존된다. upstream revision이 바뀌면 Finding은 stale이 되어 새 chain에서 다시 정규화한다.
+- `ReportDraft`는 current non-stale Finding·Verification·CWELabel·두 Gate·정책 revision을 정확히 참조하고 restriction·limitation·남은 불확실성과 redaction 결과를 보존한다. 오래된 초안은 current `AnalysisRunResult`에 넣지 않는다.
 - 분석 공백, 실행 오류, LLM·sandbox 실패와 취소는 기술 판정 `FALSE`와 분리한다. 공통 ID·시간·상태·오류 기준은 [경량 데이터 계약](./08-lightweight-data-contracts.md)을 따른다.
 - 같은 논리 요청은 `dedupe_key`로 한 번만 반영하고, 한 작업에는 활성 attempt를 하나만 둔다. 결과와 종료 상태는 atomic하게 연결하며 `COMMITTED` output만 다음 단계가 읽는다.
 - retry는 새 `attempt_id`로 실행하고 이전 실패를 보존한다. 취소·입력 변경·오래된 revision 뒤 도착한 결과는 격리하며, 중단 후에는 마지막으로 확정 저장된 상태에서 재개한다.
@@ -85,6 +88,10 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 14. [아키텍처 다이어그램](./13-architecture-diagrams.md)
 15. [Wiki](./wiki/README.md)
 16. [검토 운영과 발견사항](../review/FINDINGS.md)
+
+## 구현 준비 문서
+
+1. [R3-01 22단계 구현 모듈·입출력·저장 위치 매핑](./implementation/01-module-map.md) — 각 단계를 실제 프로그램 경계와 테스트 책임으로 옮긴 문서입니다.
 
 ## 문서 적용 범위
 

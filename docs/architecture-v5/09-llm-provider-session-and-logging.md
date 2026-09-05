@@ -53,7 +53,7 @@ Agent Runtime은 역할·structured-output 요구·context reference·budget·se
 
 provider/model을 조용히 바꾸는 failover는 금지한다. 허용된 fallback이 있더라도 원래 실패, 새 provider/model, 이유, 새 session과 결과를 별도 `llm_call_id`로 남긴다. 같은 provider/model의 일반 retry는 `retry_of_llm_call_id`, provider/model을 바꾸는 failover는 `failover_from_llm_call_id`로 바로 앞의 허용된 실패 호출을 가리킨다. 두 reference를 동시에 사용하지 않는다.
 
-retry와 failover마다 새 `llm_call_id`의 `LLMCallSpec`, `ActionRequest`, `ActionDecision`과 `attempt_id`가 필요하다. 이전 ALLOW decision, spec 또는 provider 요청을 그대로 다시 보내는 것은 `ACTION_NOT_ALLOWED`다.
+retry와 failover마다 새 `llm_call_id`의 `LLMCallSpec`, `ActionRequest`, `ActionDecision`이 필요하다. 일반 work와 R7 Agent session 재시작은 새 `attempt_id`를 사용한다. `DYNAMIC_REPRO`에서 같은 R7 Agent session이 호출 실패를 해결해 계속하는 경우에는 현재 `attempt_id`에 실패 invocation과 후속 호출을 모두 기록한다. 이전 ALLOW decision, spec 또는 provider 요청을 그대로 다시 보내는 것은 `ACTION_NOT_ALLOWED`다.
 
 선행 호출 status는 다음과 같이 제한한다.
 
@@ -69,7 +69,7 @@ retry와 failover마다 새 `llm_call_id`의 `LLMCallSpec`, `ActionRequest`, `Ac
 
 retry/failover 선행 호출은 같은 분석·가설·역할의 바로 앞 호출이어야 한다. `SUCCEEDED`, `CANCELLED`, 존재하지 않는 호출, 더 이전 호출, 자기 자신과 이후 호출을 연결하면 `INVOCATION_CHAIN_INVALID`다.
 
-LLM 호출은 상위 `WorkExecutionState`의 한 attempt 안에서 실행한다. 호출이 성공하면 runtime은 structured-output 검증과 output 저장을 끝낸 뒤에만 work를 `SUCCEEDED` 또는 다음 전문 상태로 확정한다. 재시도 가능한 호출 실패라면 `WorkAttempt.status=FAILED`와 `LLMInvocationLog`를 저장하고 work는 `BLOCKED`로 이동한다. `waiting_for` 조건을 충족한 뒤 `READY -> RUNNING`으로 새 `attempt_id`를 발급한다. 재시도할 수 없거나 한도를 모두 사용한 경우에만 work를 최종 `FAILED`로 끝낸다.
+LLM 호출은 상위 `WorkExecutionState`의 한 attempt 안에서 실행한다. 호출이 성공하면 runtime은 structured-output 검증과 output 저장을 끝낸 뒤에만 work를 `SUCCEEDED` 또는 다음 전문 상태로 확정한다. 일반 work의 재시도 가능한 호출 실패는 `WorkAttempt.status=FAILED`와 `LLMInvocationLog`를 저장하고 work를 `BLOCKED`로 이동한 뒤, `waiting_for` 조건을 충족하면 `READY -> RUNNING`으로 새 `attempt_id`를 발급한다. `DYNAMIC_REPRO`는 예외다. R7 Agent가 같은 session에서 해결 가능한 호출 실패는 현재 attempt에 실패 invocation을 기록하고 계속한다. session 재시작이 필요하면 같은 work의 새 `attempt_id`를 사용한다. 인증·승인·외부 설정·resource 변경을 기다릴 때만 `BLOCKED`로 이동하며, retry 불가능 또는 한도 소진이면 `FAILED`로 끝낸다.
 
 ## MembershipSessionAdapter
 
@@ -164,9 +164,9 @@ LLM 호출 상태는 `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIM
 2. 호출할 수 없으면 `AUTH_REQUIRED` 또는 명시적 provider error를 반환한다.
 3. Orchestration은 어떤 LLM 호출 상태도 가설 `FALSE`로 바꾸지 않는다.
 4. 제한 retry, 사용자 재인증 또는 구성된 explicit fallback을 선택한다.
-5. 모든 시도는 독립 `llm_call_id`와 `attempt_id`로 저장하고 같은 논리 요청의 `work_id`·`dedupe_key`는 유지한다.
-6. retry 가능한 실패는 work를 `BLOCKED`로 두고 `FAILED` attempt와 오류를 보존한다. `AUTH_REQUIRED`는 재인증, `RATE_LIMITED`는 backoff, `INVALID_OUTPUT`은 제한된 repair 조건을 `waiting_for`와 함께 기록한다.
-7. 조건을 충족하면 work를 `READY`로 전환하고 새 `attempt_id`에서 후속 호출을 시작한다. 후속 호출은 위 표에서 허용한 바로 앞의 실패 호출 reference와 1씩 증가하는 `retry_count`를 저장하며, runtime은 status·같은 분석·가설·역할·호출 순서와 순환이 없는지 검사한다.
+5. 모든 시도는 독립 `llm_call_id`로 저장하고 같은 논리 요청의 `work_id`·`dedupe_key`는 유지한다. 일반 work는 새 `attempt_id`를 사용하지만, `DYNAMIC_REPRO`의 same-session 후속 호출은 현재 attempt에 기록한다.
+6. 일반 work의 retry 가능한 실패는 work를 `BLOCKED`로 두고 `FAILED` attempt와 오류를 보존한다. `DYNAMIC_REPRO`는 같은 R7 Agent session에서 해결할 수 있으면 현재 attempt에 실패 invocation을 남기고 계속하며, session 재시작이 필요할 때만 같은 work의 새 attempt를 만든다. 인증·승인·외부 설정·resource 변경 대기만 `BLOCKED`와 `waiting_for`를 사용한다.
+7. 외부 조건을 충족하면 work를 `READY`로 전환하고 새 `attempt_id`에서 후속 호출을 시작한다. `DYNAMIC_REPRO`의 외부 조건 해소 뒤 재개는 `trigger=RESUME`, session 재시작은 `trigger=RETRY`를 사용한다. 후속 호출은 위 표에서 허용한 바로 앞의 실패 호출 reference와 1씩 증가하는 `retry_count`를 저장하며, runtime은 status·같은 분석·가설·역할·호출 순서와 순환이 없는지 검사한다.
 8. work나 분석이 `CANCELLED`이면 도착한 응답을 `STALE_RESULT`로 격리하고 output pointer, Gate와 Reporter 입력에 연결하지 않는다.
 
 인증·rate limit·형식·provider 오류가 발생한 `LLMInvocationResult`는 실행 오류다. 그 호출만을 이유로 `SAVE_RESULT` action이 `VerificationResult.verdict=FALSE`를 만들려고 하면 Runtime Validator가 거절한다. `FALSE`는 final Verification의 named falsification과 실제 `DISPROVED` 근거가 있을 때만 별도로 저장할 수 있다.

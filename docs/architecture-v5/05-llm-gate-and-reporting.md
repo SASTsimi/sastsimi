@@ -39,7 +39,7 @@ v5에는 책임이 다른 두 LLM 검토 Agent가 있다.
 - 현재 generation의 `DynamicReproductionRequest`, `DynamicReproductionResult`와 exact validated `poc_ref`·`policy_decision_ref`·`environment_recipe_ref`·`environment_ref`·`agent_log_ref`
 - `CWELabel`의 정확한 `record_id`가 있는 `StoredDataRef`와 근거
 - restriction, bypass candidate, unresolved condition
-- 같은 Verification에서 분리한 material child proposal 중 재검증 완료 여부
+- 같은 Verification에서 분리한 `material_child_proposals` (verified impact가 아닌 미검증 후보로만 읽는다)
 
 ### 검토 항목
 
@@ -289,7 +289,20 @@ Pro/Con·추가 Evidence·동적 재현을 소유하지 않으며, result Primit
 직접 호출하거나 ReportDraft를 만들지 않는다. runtime validation을 우회하거나 외부 제출·공개와
 사람의 disclosure 결정을 정하지 않는다.
 
-`material_child_proposals` 자체는 verified impact가 아니다. child는 전역 등록과 독립 Verification lifecycle을 거쳐야 하며, child가 final `TRUE`가 되어도 부모 결과는 자동 변경되지 않는다. child 결과가 부모 impact에 필요하면 부모 Verification owner가 exact child `VerificationResult` revision을 명시적으로 채택해 새 부모 `VerificationResult` revision N+1을 만든다. 이후 N+1에 대해 Technical Gate와 Gate 2를 모두 다시 수행하며 N의 두 Gate 결과는 재사용하지 않는다. 부모가 명시적으로 흡수하지 않은 child impact는 child 자신의 Gate 2에서만 평가한다.
+`material_child_proposals` 자체는 verified impact가 아니다. proposal은 전역 등록 뒤 독립 Verification lifecycle을 거쳐야 하며, proposal 자체를 부모 impact 근거, Gate 입력의 verified claim 또는 Reporter의 verified claim으로 사용하지 않는다.
+
+child가 final `TRUE`가 되어도 부모 `VerificationResult`를 자동 변경하거나 부모 revision을 새로 만들지 않고, 부모 Technical Gate·Gate 2 결과를 변경하거나 stale 처리하지 않는다. child lifecycle은 부모 lifecycle과 독립적으로 유지한다. child 결과를 부모 Verification에 흡수해 새 부모 결과를 만드는 경로는 없다.
+
+child로 분리하려는 내용이 실제로 부모와 동일한 material claim을 확인하는 보강 작업이면, [검증과 동적 재현](04-verification-and-dynamic-reproduction.md)의 child 분리 기준에 따라 애초에 부모의 supporting evidence로 유지하고 별도 child로 분리하지 않는다. 분리 실수를 되돌리기 위한 별도 흡수 경로는 두지 않는다.
+
+부모와 child가 서로 다른 material claim이고 두 능력의 연결이 전체 공격 경로나 impact 설명에 필요하면, child 결과를 부모 Verification에 흡수하지 않고 기존 Primitive Chaining 계약([Primitive DB와 Chaining](06-chaining.md))을 사용한다. Technical `ACCEPT`와 current `PrimitiveAdmissionDecision=ALLOW`를 받은 TRUE의 제공 능력은 그 TRUE의 악용 선행 조건을 `inputs`로 가진 result Primitive가 되고, final HOLD의 부족 조건은 `required_primitive_candidates`를 `inputs`로 가진 result 없는 Primitive가 된다. Chaining Agent는 기존 공통 계약이 정의한 두 조합만 확인한다.
+
+- `TRUE + HOLD`: 한 TRUE의 result Primitive가 다른 final HOLD의 `required_primitive_candidates`에 이미 기록된 부족한 input을 충족한다.
+- `TRUE + TRUE`: 한 TRUE의 result Primitive가 다른 TRUE에 이미 기록된 input(그 TRUE의 악용 선행 조건)을 충족한다.
+
+두 경우 모두 result와 input을 단순히 합치는 것이 아니라, 같은 `workspace_id`·`commit_id`, `entity_refs` 일치 또는 코드 흐름 연결, 권한 조건, 성립 순서, 합산된 restriction과 실제 코드·검증 근거로 `result → input` 연결이 성립할 때만 매칭으로 인정한다. 매칭이 성립하면 Chaining Agent가 새 결합 hypothesis를 만들고, 그 결합 hypothesis가 독립 Verification lifecycle과 Technical Gate·Gate 2를 처음부터 새로 수행한다. R5는 이 Chaining matching·admission·invalidation 알고리즘을 새로 정의하지 않고 R1 소유 계약을 그대로 참조한다.
+
+child가 부모와 별개로 성립하는 취약점·impact이면 child 자신의 Verification → Technical Gate → Gate 2 → 이후 결과 처리 경로에서만 평가하며, 부모가 child impact를 흡수하는 경로는 두지 않는다.
 
 - R4: final `TRUE + same-revision Technical ACCEPT` 호출 순서, exact revision·`REPORT_READY`
   validation, stale/invalid Reporter·Primitive 차단과 공통 semantic validation의 상태 전이
@@ -332,6 +345,47 @@ final TRUE가 Chaining에 쓰이려면 current generation의 `SUCCEEDED + SUPPOR
 
 `testing_restriction_compliance=FAIL`만 이 정책 축에서 `DENY`가 되어 Primitive와 Chaining을 차단한다. `PASS | UNCERTAIN`은 `ALLOW`로 매핑하며, `COLLECTION_FAILED`는 review 없이 `testing_restriction_compliance=NOT_EVALUATED`, `decision=ALLOW`, `reason_code=POLICY_COLLECTION_FAILED`로 구분한다. `UNCERTAIN`과 수집 실패, scope `FAIL`, 일반 eligibility 실패, impact `INSUFFICIENT` 또는 `report_permission=DENY`는 Reporter를 차단하지만 current `ALLOW` Primitive를 제거하지 않는다. R5는 admission을 직접 결정하지 않으며 자식 가설은 새로운 대상·경로와 자신의 Verification·두 Gate로 다시 판정한다. Gate 전 TRUE와 Technical `REVISE | REJECT`는 result Primitive나 Chaining 입력이 아니다. HOLD는 Technical Gate를 사용하지 않으며, final HOLD의 `required_primitive_candidates`가 하나 이상일 때만 전체 후보를 inputs로 가진 result 없는 Primitive로 들어간다. 후보가 비어 있으면 Primitive와 Chaining work를 만들지 않는다.
 
+## Finding 생성과 lifecycle
+
+`Finding`은 새 취약점 판정 Gate가 아니라, 이미 검증된 upstream 결과를 하나의 current 취약점 결과로 정규화해 저장하는 record다. Finding 생성 과정에서는 새 vulnerability verdict·attack path·security impact·exploitability 주장을 만들지 않고, 미검증 Research artifact·Chaining proposal·candidate/실패 PoC를 사실로 승격하지 않으며, restriction·limitation·unresolved condition을 삭제하거나 약화하지 않는다. Finding의 모든 material claim 강도는 verified upstream evidence의 claim strength 이하여야 한다. 서로 다른 Verification generation·revision의 evidence를 혼합한 Finding은 만들 수 없다.
+
+Finding은 LLM Agent가 아니라 신뢰 runtime이 이미 `COMMITTED`된 exact upstream reference를 조립하는 정규화 단계에서 생산한다. `PRIMITIVE_ADMISSION_RUNTIME`의 기계적 매핑, `AnalysisRunResult` finalization과 같은 성격이며 새 Finding Agent role·orchestration authority를 추가하지 않는다. 이 정규화는 17단계 Rule Scope review가 `COMMITTED`된 뒤, 19단계 보고 조건 확인 전에 수행한다.
+
+### Finding 생성 조건 (exact upstream closure)
+
+한 가설의 current Finding은 다음이 모두 같은 exact chain에서 성립할 때만 만들 수 있다.
+
+- `HypothesisProcessState.status=TERMINAL`이고 그 `verification_result_ref`가 가리키는 final `VerificationResult.verdict=TRUE`
+- 그 Verification의 `dynamic_request_ref`·`dynamic_result_ref`가 current generation의 `SUCCEEDED + SUPPORTED` 동적 결과이고 validated `poc_ref`가 존재
+- `verification_result_ref`를 직접 가리키는 current `CWELabel` revision
+- 그 Verification·CWELabel exact pair를 검토한 `TechnicalEvidenceReview.status=ACCEPT`
+- 같은 `verification_result_ref`·`technical_review_ref`·`cwe_label_ref`·`policy_collection_result_ref`(그리고 `FOUND`이면 `policy_record_ref`)를 가리키는 current `RuleScopeImpactReview`. 이 review의 `review_status`·`report_permission` 값과 무관하게 존재만으로 충분하다
+- 위 upstream record의 `meta.workspace_id`·`meta.commit_id`가 같아야 하며, hypothesis-local artifact에 대해서만 동일 `meta.hypothesis_id`를 요구한다. `ProgramPolicyRecord`, `PolicyCollectionResult` 등 hypothesis 비종속 정책 record에는 `hypothesis_id` 일치를 요구하지 않으며, 기존 exact `StoredDataRef`, `meta.workspace_id`·`meta.commit_id` 및 policy revision/provenance 계약으로 검증한다
+- `TechnicalEvidenceReview`·`RuleScopeImpactReview`·`CWELabel`이 가리키는 `verification_result_ref`가 서로 같고, 그 `VerificationResult`가 current `HypothesisProcessState.verification_result_ref`와 같음. current Verification generation은 별도 새 field 없이 `HypothesisProcessState`와 관련 `VERIFICATION` work generation, `CWELabel.verification_generation`의 기존 계약으로 확인함
+- Evidence provenance는 그 `VerificationResult`의 `pro_evidence_ref`·`con_evidence_ref`와 `supporting_evidence`·`counter_evidence`의 exact transitive closure로 고정하고, `restrictions`·`unresolved_conditions`를 그대로 보존
+
+정책 수집이 `COLLECTION_FAILED`여서 `RuleScopeImpactReview`가 없으면 Finding을 만들지 않는다. 서로 다른 Verification generation의 artifact·evidence를 혼합하면 기존 공통 계약의 `STALE_RESULT` 또는 revision mismatch로 차단되어 Finding을 생성할 수 없다. 이 목록은 새 schema를 강제하는 것이 아니라 현재 canonical data contract의 실제 field/ref로 표현한 closure다. 저장 action·work·result owner·current pointer·revision/CAS·stale enforcement는 R4 trusted runtime의 기존 계약(immutable revision + atomic current pointer, `TransitionCommit`)을 재사용하며 이 문서에서 새로 정의하지 않는다([구현 모듈 맵](implementation/01-module-map.md) B2 참조).
+
+### Finding과 Reporter eligibility 분리
+
+Finding 존재 조건과 Reporter의 6축 readiness는 다르다. Finding은 검증된 취약점 결과 자체를 표현하고, Reporter는 그 Finding 중 보고 조건까지 통과한 결과만 `ReportDraft`로 표현한다. 따라서 다음 상태를 허용한다.
+
+`current Finding 존재 + Reporter 차단 + report_draft_refs=[]`
+
+예를 들어 기술적으로 검증된 Finding이 있어도 `review_status=UNCERTAIN`, `scope_compliance=FAIL`, `security_impact=INSUFFICIENT` 또는 `report_permission=DENY`이면 Reporter만 차단하며 Finding을 삭제하거나 `FALSE`로 취급하지 않는다. `PrimitiveAdmissionDecision`도 계속 Reporter eligibility와 별개 자격이다. 특히 `testing_restriction_compliance=UNCERTAIN`은 admission `ALLOW`이지만 Reporter는 차단하며, 이 경우에도 Finding은 그대로 존재한다.
+
+### stale Finding
+
+Finding이 만들어진 뒤 claim-relevant upstream이 바뀌면 기존 Finding을 새 generation의 current Finding으로 재사용할 수 없다. 최소한 다음 변경이 Finding을 stale하게 만든다.
+
+- Verification generation 변경 또는 `VerificationResult` revision 변경
+- `CWELabel` revision 변경
+- `TechnicalEvidenceReview` 또는 `RuleScopeImpactReview` 재생성
+- `DynamicReproductionResult` 또는 validated `poc_ref` 변경
+- Finding이 고정한 `ProgramPolicyRecord` 등 claim-relevant upstream reference 변경
+
+기존 Finding은 append-only 감사 이력으로 보존하지만 stale Finding은 새 Reporter 실행에 사용하지 않는다. 새 Verification generation에서는 이전 generation의 Finding을 재사용하지 않고 새 exact chain에서 Finding을 다시 정규화한다. 이 stale 판정과 차단은 R4 trusted runtime의 기존 revision·current pointer·CAS 규칙으로 강제하며 Gate·`ReportDraft` stale 처리와 동일한 방식이다.
+
 ## Reporter 호출 조건
 
 다음 조건을 모두 만족해야 한다.
@@ -347,7 +401,10 @@ AND scope_compliance == PASS
 AND testing_restriction_compliance == PASS
 AND security_impact == SUFFICIENT
 AND report_permission == ALLOW
+AND current non-stale Finding exists for this exact chain
 ```
+
+current Finding 조건은 위 6축 정책 readiness와 별개다. Finding이 없으면(정규화 전이거나 stale) `report_permission=ALLOW`여도 Reporter를 호출하지 않고 `REPORT_NOT_READY`로 차단한다. 반대로 Finding이 있어도 6축 중 하나라도 통과하지 못하면 Reporter를 호출하지 않으며 Finding은 그대로 보존한다.
 
 조건이 하나라도 충족되지 않거나 Gate reference 연결이 맞지 않으면 결과와 검토 사유는 저장하지만 Reporter를 호출하지 않는다. LLM이 `review_status`, rule, scope 또는 impact 조건과 모순되는 `ALLOW`를 출력하면 semantic validation 실패다. 이 호출은 `LLMInvocationResult.status=INVALID_OUTPUT`, `AnalysisError.stage=GATE`, `AnalysisError.code=INVALID_OUTPUT`으로 기록하며 invalid output을 `RuleScopeImpactReview`로 commit하지 않는다. 제한된 repair가 남아 있을 때만 같은 입력의 새 invocation attempt를 허용하고, 한도를 소진하면 Gate work를 `FAILED`로 끝낸다. 어느 경우에도 Reporter를 호출하거나 Verification verdict를 변경하지 않는다. 이는 취약점 판정 규칙이 아니라 권한 없는 보고 생성을 막는 호출 전제다.
 

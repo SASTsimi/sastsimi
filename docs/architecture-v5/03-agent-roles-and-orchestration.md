@@ -35,7 +35,7 @@ Orchestration Agent의 주요 책임은 다음과 같다.
 - 독립 가설의 병렬 배정과 hypothesis별 resource budget 배분
 - 등록된 각 가설에 정확히 한 Verification owner를 배정하고 trusted runtime이 ACTIVE `VerificationAssignment`로 저장
 - 전체 가설의 진행 상태·종료 상태·오류 집계
-- R8 전체 시간·비용·work 예산과 체이닝 fingerprint 중복·ancestor 재사용 제외 적용 요청. token 사용량은 관측하지만 상한으로 차단하지 않음
+- R8 전체 시간·비용·work 예산과 체이닝 match 조합 중복·ancestor 재사용 제외 적용 요청. token 사용량은 관측하지만 상한으로 차단하지 않음
 - 실패와 `INVALID_OUTPUT`을 숨기지 않고 분석 결과에 보존
 
 Orchestration Agent는 한 가설 안에서 Pro/Con·동적 재현·두 Gate·Reporter·Chaining의 호출 여부나 Technical `REVISE` 목적지를 결정하지 않는다. 논리 작업의 상태, `work_id`·`dedupe_key`, 활성 attempt, compare-and-set, atomic output binding과 실제 action 허가는 신뢰 경계 안의 비-LLM runtime이 관리한다.
@@ -115,7 +115,7 @@ Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하
 | Primitive update `SUCCEEDED` | `PrimitiveAdmissionDecision`, 허용된 `Primitive`와 current `PrimitiveIndexState` |
 | Reporter `SUCCEEDED` | 내부 `ReportDraft`; 마지막 Agent 산출물 |
 
-`PENDING -> READY -> RUNNING` 뒤에는 `SUCCEEDED | PARTIAL | FAILED | CANCELLED`로 끝나거나, 재시도·인증·승인·입력·예산 조건을 기다릴 때 `BLOCKED`로 이동한다. `BLOCKED`는 조건을 충족하면 `READY`가 되지만 종료 상태는 되돌리지 않는다. 일반적인 재시도 가능 attempt 실패는 attempt 자체를 `FAILED`로 보존하고 work를 `BLOCKED`로 둔다. 단, `DYNAMIC_REPRO`가 외부 조건을 기다리지 않고 R7 자율 retry를 즉시 수행할 수 있으면 같은 work를 `RUNNING -> READY -> RUNNING`으로 넘겨 새 attempt를 시작한다. 어느 경우에도 이전 실패를 삭제하지 않는다.
+`PENDING -> READY -> RUNNING` 뒤에는 `SUCCEEDED | PARTIAL | FAILED | CANCELLED`로 끝나거나, 재시도·인증·승인·입력·예산 조건을 기다릴 때 `BLOCKED`로 이동한다. `BLOCKED`는 조건을 충족하면 `READY`가 되지만 종료 상태는 되돌리지 않는다. 일반적인 재시도 가능 attempt 실패는 attempt 자체를 `FAILED`로 보존하고 work를 `BLOCKED`로 둔다. 단, `DYNAMIC_REPRO`에서 같은 R7 Agent session의 command·PoC·환경 조정은 현재 attempt의 event로 계속 기록한다. session 재시작이 필요한 work-level retry만 같은 work를 `RUNNING -> READY -> RUNNING`으로 넘겨 새 attempt를 시작하고, 외부 조건을 기다릴 때는 `BLOCKED` 뒤 `trigger=RESUME`인 새 attempt로 재개한다. 어느 경우에도 이전 실패를 삭제하지 않는다.
 
 상태 변경을 실제로 승인·저장하는 주체는 Orchestration Agent가 아니라 신뢰 경계 안의 runtime이다. 작업 모듈은 결과와 다음 상태를 요청하고 runtime이 schema, 현재 `state_version`, 활성 attempt, 입력 hash, workspace·commit·가설, 예산과 권한을 검사한 뒤 `StateTransition`을 저장한다.
 
@@ -130,7 +130,7 @@ Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하
 | Verification Agent | Context·Pro/Con, 목적·목표·필요 환경을 담은 `DynamicReproductionRequest`, 두 Gate·Reporter·Chaining 요청, material child proposal | `TRUE | FALSE | HOLD` | static·Pro·Con·COMMITTED dynamic 근거와 Gate 보완 요청 | 없음 | 없음 |
 | R7 Agent | `EnvironmentRequirements`·간단한 `ReproductionPlan`·PoC candidate·동적 근거 해석 | 없음 | R6 요청과 Sandbox 안의 실제 관측 | 없음 | 없음 |
 | R7 Setup Automation | image build, container 생성·재사용·재생성, 환경 비교와 cleanup 실행 | 없음 | recipe, 실제 환경과 Health Check | host·Docker 권한은 없음 | 없음 |
-| Sandbox Controller | 없음 | 없음 | host·Docker daemon/socket·mount/namespace·secret·egress·workspace·R8 resource/lifecycle 외부 경계 | 정책 위반 Sandbox 시작 차단 | 없음 |
+| Sandbox Controller | 없음 | 없음 | R7 `sandbox_profile_ref`의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 강제 | 정책 위반 Sandbox 시작 차단 | R7 profile 값·R8 잔여 예산·새 attempt 결정 없음 |
 | Reproduction Session Manager | 없음 | 없음 | runtime/tool/lifecycle event와 같은 attempt의 plan·recipe·환경·PoC provenance | append-only `AgentLog`, validated PoC와 `DynamicReproductionResult` 확정 | 없음 |
 | R5-01 CWE Labeling | CWE 후보와 근거 | current `CWELabel` revision 생성 | exact final TRUE Verification | 없음 | 없음 |
 | Chaining Agent | upstream Primitive `result`→downstream Primitive `input` match와 chained proposal | 없음 | exact Primitive, Verification·Technical provenance와 코드 근거 | 없음 | 없음 |
@@ -157,7 +157,7 @@ Agent 또는 service의 제안
 -> 결과와 상태를 atomic 저장
 ```
 
-`ActionRequest`에는 신뢰 runtime이 붙인 실제 호출자 identity, 요청 역할, action 종류, exact input refs, 현재 work와 state version, 도구·파일·provider·session·Sandbox 범위를 넣는다. LLM action은 model·prompt·context·schema·예산·시간이 고정된 `LLMCallSpec`도 포함한다. Runtime Validator는 실제 identity의 등록 역할과 요청 역할이 같은지부터 action별 필수 `ActionCheck`를 수행한다. 하나라도 실패하면 `DENY`와 `AnalysisError`를 저장하고 실행하지 않는다. Agent가 자연어로 “검사를 건너뛰라”고 출력하거나 다른 역할을 주장해도 action이 되지 않는다. 단, `RUN_SANDBOX`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace·resource/lifecycle 의미 검사는 Runtime Validator가 중복 수행하지 않고 Sandbox Controller가 전담한다.
+`ActionRequest`에는 신뢰 runtime이 붙인 실제 호출자 identity, 요청 역할, action 종류, exact input refs, 현재 work와 state version, 도구·파일·provider·session·Sandbox 범위를 넣는다. LLM action은 model·prompt·context·schema·예산·시간이 고정된 `LLMCallSpec`도 포함한다. Runtime Validator는 실제 identity의 등록 역할과 요청 역할이 같은지부터 action별 필수 `ActionCheck`를 수행한다. 하나라도 실패하면 `DENY`와 `AnalysisError`를 저장하고 실행하지 않는다. Agent가 자연어로 “검사를 건너뛰라”고 출력하거나 다른 역할을 주장해도 action이 되지 않는다. `RUN_SANDBOX`에서 Runtime Validator는 exact request·requirements·plan, R7 sandbox profile과 R8 lifecycle profile revision을 고정하고 호출 전 잔여 시간·새 attempt 한도를 검사한다. Sandbox Controller는 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다.
 
 한 ActionRequest에는 logical ActionDecision 하나만 허용한다. 두 Gate와 Reporter의 stage action은 LLM 호출까지 직접 허가하며 별도 `CALL_LLM`으로 순서·보고 조건을 우회할 수 없다.
 
@@ -167,7 +167,7 @@ Agent 또는 service의 제안
 - 시간·비용·work·retry·repair·Gate 보완 예산. token 사용량과 `LLMCallSpec.token_budget`은 관측·계획 정보이며 token 초과·누락만으로 `DENY`하지 않음
 - 일반 도구 action의 허용 tool과 workspace 안의 file path
 - `REQUEST_DYNAMIC_REPRO` 호출자의 Verification 권한·현재 generation·요청 reference·상태·예산과 generation당 하나의 동적 재현 work 제한
-- `RUN_SANDBOX` 호출자의 R7 Setup Automation 권한·current request/requirements·상태·예산·R8 resource/lifecycle; 실제 환경 값은 R7이 비교하고 외부 격리 경계는 Sandbox Controller가 검사
+- `RUN_SANDBOX` 호출자의 R7 Setup Automation 권한·exact `DynamicReproductionRequest`·current `EnvironmentRequirements`·current exact `ReproductionPlan`·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile`, 상태·예산. 두 profile은 action `input_refs`와 `checked_config_refs`에 각각 같은 exact revision으로 고정한다. Runtime Validator는 R8 잔여 시간·새 attempt를, Sandbox Controller는 R7 격리·입장 수치를 강제하고 실제 애플리케이션 환경 값은 R7이 비교
 - provider/model/profile, NEW/RESUME/AUTO와 explicit failover
 - Verification work 등록 시 exact hypothesis→proposal, `PlaybookPolicy`, 선택된 `VerificationPlaybook`과 `PlaybookApplication`을 함께 고정하고, 직접 검증·Pro·Con·최종 합성이 같은 application 질문 집합을 사용하는지 검사
 - final `TRUE` Verification 뒤 R5-01이 만든 current `CWELabel`과의 exact pair로 Technical Gate, 그 뒤 Rule Scope Gate라는 순서. `FALSE | HOLD`와 실패 가설은 CWE work·Gate 입력이 아님
@@ -179,7 +179,7 @@ Agent 또는 service의 제안
 
 Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서 품질을 평가하지 않는다. 그것은 Verification, 두 LLM Gate와 Reporter의 역할이다.
 
-`REQUEST_DYNAMIC_REPRO`의 `ActionDecision=ALLOW`는 현재 Verification generation에 하나의 `DYNAMIC_REPRO` work를 등록한다. `RUN_SANDBOX`의 `ActionDecision=ALLOW`는 current request·requirements·profile·resource/lifecycle 범위에서 외부 격리 경계를 만들 권한만 부여한다. Sandbox Controller는 host와 Docker 경계를 검사하고, Setup Automation은 통과한 범위에서 image·container·cleanup을 수행한다. R7 Agent가 Sandbox 안에서 command·PoC·관찰과 재시도를 자율적으로 선택하며, Session Manager가 실제 event를 기록한다. 실행 뒤 `SAVE_RESULT`는 plan·recipe·실제 환경·AgentLog·candidate·validated PoC가 같은 attempt인지 다시 대조한다. 마지막 대조는 환경 의미나 취약점 판단을 반복하는 검사가 아니라 결과 무결성 확인이다.
+`REQUEST_DYNAMIC_REPRO`의 `ActionDecision=ALLOW`는 현재 Verification generation에 하나의 `DYNAMIC_REPRO` work를 등록한다. `RUN_SANDBOX`의 `ActionDecision=ALLOW`는 exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` 범위에서 외부 격리 경계를 만들 권한만 부여한다. plan revision이 바뀌면 기존 `UNUSED` decision은 `EXPIRED`이고 새 action이 필요하다. Sandbox Controller는 host와 Docker 경계를 검사하고, Setup Automation은 통과한 범위에서 image·container·cleanup을 수행한다. R7 Agent가 Sandbox 안에서 command·PoC·관찰과 재시도를 자율적으로 선택하며, Session Manager가 실제 event를 기록한다. 실행 뒤 `SAVE_RESULT`는 plan·recipe·실제 환경·AgentLog·candidate·validated PoC가 같은 attempt인지 다시 대조한다. 마지막 대조는 환경 의미나 취약점 판단을 반복하는 검사가 아니라 결과 무결성 확인이다.
 
 ## 병렬 실행과 결과 합류
 
@@ -188,7 +188,7 @@ Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서
 | AST와 SAST | tool별 `work_id` | 기대한 tool의 종료 상태와 output/error 확인 | 하나 이상의 신뢰 결과가 있으면 `DataGap`을 포함한 `PARTIAL` 정규화 가능 |
 | 가설 검증 | `hypothesis_id`별 work | 각 가설은 자기 final Verification까지 독립 | 한 가설 오류가 다른 가설을 취소하지 않으며 분석은 `PARTIAL` 가능 |
 | Pro와 Con | 같은 가설의 역할별 child work·NEW session | 운영은 같은 hypothesis·policy·playbook·application 질문 집합의 exact Pro·Con 결과를 모두 확인; 평가 생략은 명시된 mode와 skip reason 확인 | 필수 결과 누락·application 불일치 시 final 판정을 만들지 않고 부모 Verification을 대기 또는 실패 처리 |
-| chaining 후보 | child proposal별 work | exact match lineage, fingerprint 중복·ancestor 재사용·R8 전체 예산 검사를 통과한 proposal만 등록 | 거절 사유를 저장하고 부모 verdict 유지 |
+| chaining 후보 | child proposal별 work | exact match lineage, match 조합 중복·ancestor 재사용·R8 전체 예산 검사를 통과한 proposal만 등록 | 거절 사유를 저장하고 부모 verdict 유지 |
 
 같은 가설과 같은 `work_type`에는 활성 `attempt_id`를 하나만 허용한다. 중복 요청의 `dedupe_key`가 같으면 기존 `work_id`를 반환한다. 이미 합류가 끝난 뒤 늦게 도착한 tool·Pro·Con 결과는 기존 결과를 덮어쓰지 않는다. 새로운 근거로 사용할 필요가 있으면 입력 revision을 바꾼 새 논리 작업과 새 downstream revision을 만든다.
 
@@ -209,20 +209,24 @@ final TRUE VerificationResult with current generation SUCCEEDED + SUPPORTED repr
 -> PrimitiveAdmissionDecision
    -> ALLOW: result Primitive admission + Chaining handoff
    -> DENY: no result Primitive
--> Rule Scope의 보고 조건 PASS/PASS/PASS/SUFFICIENT/ALLOW -> Reporter
+-> Rule Scope review가 COMMITTED되면 신뢰 runtime이 exact chain에서 current Finding 정규화
+   (review_status·report_permission 값과 무관, COLLECTION_FAILED이면 Finding 없음)
+-> current non-stale Finding + Reporter 6축 readiness 전부 충족 -> Reporter
 -> ReportDraft
 -> AnalysisRunResult 확정
 -> Agent 자동화 종료
 ```
 
-Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니다. 현재 Technical Gate work는 `TechnicalEvidenceReview.status=REVISE`를 exact output으로 atomic commit하고 `SUCCEEDED`로 끝낸 뒤 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 직접 전달한다. runtime은 기존 종료 VERIFICATION work를 되돌리지 않고 증가한 generation의 새 VERIFICATION work를 등록하며, 같은 CAS transition에서 `HypothesisProcessState`를 `TERMINAL -> VERIFYING`으로 바꾸고 새 work를 가리킨다. Verification은 새 근거를 반영하고, final TRUE 후보라면 새 generation의 동적 재현 요청과 validated PoC를 다시 확보한다. 그 뒤 새 `VerificationResult`와 새 work 종료·hypothesis `TERMINAL`·current result pointer를 atomic commit한다. R5-01 `CWE_LABELING`은 새 `CWE_LABEL` work에서 CWE 정렬을 반드시 다시 평가하고 새 Verification을 직접 가리키는 새 `CWELabel` revision을 확정한다. 동일 CWE를 유지해도 이전 label `record_id`는 재사용하지 않는다. 바뀐 Verification과 current label을 가진 새 `input_hash`·`dedupe_key`·`work_id`로 Technical Gate를 다시 요청한다. 새 generation에는 동적 재현 work 하나를 다시 허용한다. 같은 work의 PoC 생성·환경 구성·실행 재시도는 새 동적 work가 아니라 새 `attempt_id`다. 이 새 논리 작업의 첫 attempt는 `attempt_number=1`, `trigger=INITIAL`이다. provider timeout처럼 입력이 그대로인 일반 retry만 같은 `work_id`에서 새 `attempt_id`, `trigger=RETRY`를 사용한다. Rule Scope Gate와 Reporter는 앞 단계의 `COMMITTED` output reference만 읽는다. `PREPARED`, 취소된 attempt, 오래된 input hash와 다른 workspace/commit 결과는 다음 단계로 전달하지 않는다.
+current Finding 정규화는 LLM Agent나 새 orchestration authority가 아니라, 이미 `COMMITTED`된 exact upstream을 조립하는 신뢰 runtime 단계다. `PRIMITIVE_ADMISSION_RUNTIME`의 기계적 매핑, `AnalysisRunResult` finalization과 같은 성격이며 새 verdict·impact·attack path를 만들지 않고 claim 강도는 verified upstream 이하다. 생성 closure와 stale 조건은 [05. 이중 LLM Gate와 보고](05-llm-gate-and-reporting.md), 저장 primitive·result owner·current pointer·revision/CAS는 R4 계약([구현 모듈 맵](implementation/01-module-map.md) B2)을 따른다. Reporter는 6축 정책 readiness와 별개로 current non-stale Finding을 요구하며, Finding이 있어도 정책 조건 미달이면 Reporter만 차단하고 Finding은 보존한다.
 
-Chaining work는 exact Primitive, source Verification·Technical review와 실제 match Primitive의 계보에서 재귀적으로 도달하는 current ALLOW admission decision을 input으로 고정한다. `ChainingResult.source_admission_refs`는 이 실제 사용 집합과 같아야 한다. proposal 저장 전에도 각 decision이 current인지 다시 확인하며 하나라도 오래됐거나 `DENY`로 바뀌었으면 `STALE_RESULT`로 거절한다. 이미 만들어진 CHAINING 자식도 새 Verification·Gate·Primitive·Reporter 작업 전에 같은 계보를 확인하며, 확정된 금지 테스트 위반을 근거로 한 파생 결과는 감사 이력으로만 남긴다. 그 뒤 `source_primitive_match_id`와 parent set을 확인하고, 같은 계보에서 가장 깊은 후보와의 match가 실제로 성립한 뒤에만 그 후보의 양쪽(upstream·downstream) Primitive를 재귀 추적해 얻은 조상을 현재 순회의 후보에서 제외한다. 동일 fingerprint와 조상 재사용 결과는 저장하지 않는다. Primitive index 자체의 동시 갱신은 공통 `RecordMeta.revision_number`와 atomic current pointer 규칙으로 보호한다.
+Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니다. 현재 Technical Gate work는 `TechnicalEvidenceReview.status=REVISE`를 exact output으로 atomic commit하고 `SUCCEEDED`로 끝낸 뒤 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 직접 전달한다. runtime은 기존 종료 VERIFICATION work를 되돌리지 않고 증가한 generation의 새 VERIFICATION work를 등록하며, 같은 CAS transition에서 `HypothesisProcessState`를 `TERMINAL -> VERIFYING`으로 바꾸고 새 work를 가리킨다. Verification은 새 근거를 반영하고, final TRUE 후보라면 새 generation의 동적 재현 요청과 validated PoC를 다시 확보한다. 그 뒤 새 `VerificationResult`와 새 work 종료·hypothesis `TERMINAL`·current result pointer를 atomic commit한다. R5-01 `CWE_LABELING`은 새 `CWE_LABEL` work에서 CWE 정렬을 반드시 다시 평가하고 새 Verification을 직접 가리키는 새 `CWELabel` revision을 확정한다. 동일 CWE를 유지해도 이전 label `record_id`는 재사용하지 않는다. 바뀐 Verification과 current label을 가진 새 `input_hash`·`dedupe_key`·`work_id`로 Technical Gate를 다시 요청한다. 새 generation에는 동적 재현 work 하나를 다시 허용한다. 같은 R7 Agent session의 PoC 생성·환경 구성·command·실행 조정은 현재 `attempt_id`의 event다. session 재시작이 필요한 work-level retry만 새 동적 work가 아니라 같은 work의 새 `attempt_id`를 사용한다. 이 새 논리 작업의 첫 attempt는 `attempt_number=1`, `trigger=INITIAL`이다. provider timeout처럼 입력이 그대로인 일반 retry만 같은 `work_id`에서 새 `attempt_id`, `trigger=RETRY`를 사용한다. Rule Scope Gate와 Reporter는 앞 단계의 `COMMITTED` output reference만 읽는다. `PREPARED`, 취소된 attempt, 오래된 input hash와 다른 workspace/commit 결과는 다음 단계로 전달하지 않는다.
+
+Chaining work는 exact Primitive, source Verification·Technical review와 실제 match Primitive의 계보에서 재귀적으로 도달하는 current ALLOW admission decision을 input으로 고정한다. `ChainingResult.source_admission_refs`는 이 실제 사용 집합과 같아야 한다. proposal 저장 전에도 각 decision이 current인지 다시 확인하며 하나라도 오래됐거나 `DENY`로 바뀌었으면 `STALE_RESULT`로 거절한다. 이미 만들어진 CHAINING 자식도 새 Verification·Gate·Primitive·Reporter 작업 전에 같은 계보를 확인하며, 확정된 금지 테스트 위반을 근거로 한 파생 결과는 감사 이력으로만 남긴다. 그 뒤 `source_primitive_match_id`와 parent set을 확인하고, 같은 계보에서 가장 깊은 후보와의 match가 실제로 성립한 뒤에만 그 후보의 양쪽(upstream·downstream) Primitive를 재귀 추적해 얻은 조상을 현재 순회의 후보에서 제외한다. 이미 저장된 `(upstream_result_ref, downstream_input_ref, matched_input_id)` 조합과 조상 재사용 결과는 저장하지 않는다. Primitive index 자체의 동시 갱신은 공통 `RecordMeta.revision_number`와 atomic current pointer 규칙으로 보호한다.
 
 ## retry·취소·중단 후 재개
 
 - 일반 retry와 provider/model failover는 새 `attempt_id`를 사용하고, LLM 호출이면 새 `llm_call_id`도 사용한다.
-- 일반 재시도에서 외부 조건을 기다리는 오류는 work를 `BLOCKED`로 두고 `waiting_for`에 `RETRY | AUTH | APPROVAL | INPUT | BUDGET | DEPENDENCY` 중 실제 조건을 기록한다. Pro/Con child 오류이면 부모 Verification도 같은 실제 이유로 `BLOCKED`다. `DYNAMIC_REPRO`의 자체 해결 가능한 오류는 예외로 같은 work에서 즉시 새 attempt를 시작하고, 외부 설정·정책·승인·resource 변경을 기다릴 때만 `BLOCKED`를 사용한다.
+- 일반 재시도에서 외부 조건을 기다리는 오류는 work를 `BLOCKED`로 두고 `waiting_for`에 `RETRY | AUTH | APPROVAL | INPUT | BUDGET | DEPENDENCY` 중 실제 조건을 기록한다. Pro/Con child 오류이면 부모 Verification도 같은 실제 이유로 `BLOCKED`다. `DYNAMIC_REPRO`의 자체 해결 가능한 오류는 예외로 같은 R7 Agent session에서 현재 attempt를 계속한다. session 재시작이 필요할 때만 같은 work의 새 attempt를 시작하고, 외부 설정·정책·승인·resource 변경을 기다릴 때만 `BLOCKED`를 사용한 뒤 조건 해소 시 `trigger=RESUME`인 새 attempt로 재개한다.
 - Pro/Con 중 성공한 한쪽 결과는 가설·부모 generation·공통 입력·policy·playbook·application과 질문 ID 집합·Debate 설정·예산 profile이 그대로일 때만 보존한다. 이 중 하나가 바뀌면 두 결과를 모두 stale로 격리하고 두 역할을 다시 실행한다.
 - 사용자가 개별 가설을 취소하면 그 가설의 새 downstream 작업을 만들지 않고 늦은 결과를 `STALE_RESULT`로 거절한다.
 - 전체 분석을 취소하면 새 work 등록을 중단하고 실행 중 attempt에 취소를 전달하되 이미 저장된 결과와 오류는 보존한다.
@@ -263,4 +267,4 @@ OpenAI API, Codex 구독, Anthropic API 또는 Claude 구독 중 무엇을 사�
 
 ## prompt-injection 경계
 
-저장소 내용, 도구 message, README와 주석, 모든 LLM output, provider 응답과 Sandbox output은 모두 비신뢰 분석 데이터다. Agent instruction이나 실행 권한으로 승격하지 않는다. Orchestration은 system instruction과 data 구분을 유지하고 Runtime Validator가 structured output과 action policy를 검사한다. Sandbox Controller는 비신뢰 입력이 host·Docker daemon/socket·mount/namespace·secret·egress·workspace·resource/lifecycle 외부 경계를 바꾸지 못하게 한다. 비신뢰 입력은 provider·model·session·Gate 순서·budget·Reporter와 자동화 종료 경계도 변경하지 못한다. 이런 변경 지시는 `UNTRUSTED_INSTRUCTION`으로 기록하고 실행하지 않는다.
+저장소 내용, 도구 message, README와 주석, 모든 LLM output, provider 응답과 Sandbox output은 모두 비신뢰 분석 데이터다. Agent instruction이나 실행 권한으로 승격하지 않는다. Orchestration은 system instruction과 data 구분을 유지하고 Runtime Validator가 structured output과 action policy를 검사한다. Sandbox Controller는 비신뢰 입력이 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 exact `DynamicReproductionLifecycleProfile`의 수치 한도를 바꾸지 못하게 한다. 비신뢰 입력은 provider·model·session·Gate 순서·budget·Reporter와 자동화 종료 경계도 변경하지 못한다. 이런 변경 지시는 `UNTRUSTED_INSTRUCTION`으로 기록하고 실행하지 않는다.

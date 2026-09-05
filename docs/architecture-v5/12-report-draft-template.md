@@ -4,7 +4,7 @@
 - **누가 읽어야 하나요?** Gate·Finding·보고서 담당과 최종 사람 검토자가 읽습니다.
 - **읽은 뒤 무엇을 확인하거나 결정하나요?** 어떤 근거·정책·영향·재현 정보가 있어야 초안을 만들 수 있는지 확인합니다.
 
-`Finding`은 검증된 취약점 결과이고 `ReportDraft`는 Reporter가 만드는 내부 초안입니다. 이 초안이 마지막 Agent 산출물이며 자동 외부 제출을 허용하지 않습니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
+`Finding`은 이미 검증된 upstream 결과를 하나의 current 취약점 결과로 정규화한 record이고 `ReportDraft`는 Reporter가 그 Finding 중 보고 조건까지 통과한 결과로 만드는 내부 초안입니다. Finding 생성과 Reporter eligibility는 별개 조건이며, Finding 생성 조건과 lifecycle은 [05. 이중 LLM Gate와 보고](05-llm-gate-and-reporting.md)의 "Finding 생성과 lifecycle"을 따릅니다. 이 초안이 마지막 Agent 산출물이며 자동 외부 제출을 허용하지 않습니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
 
 > 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
 
@@ -24,6 +24,8 @@ current final Verification TRUE
 ```
 
 Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비-LLM Runtime Validator가 위 조건, exact input revision, 현재 state version과 redaction을 확인해 `ALLOW`한 요청만 실행한다. Reporter나 Orchestration의 자연어 출력은 이 조건을 바꾸지 못한다.
+
+`current Finding`은 신뢰 runtime이 두 Gate가 검토한 exact chain에서 정규화한 record다. Finding이 없거나 stale이면 6축 정책 조건이 모두 `PASS/ALLOW`여도 Reporter를 호출하지 않는다. 반대로 Finding이 존재해도 정책 조건 중 하나가 미달이면 Reporter만 차단하고 Finding은 감사 결과로 남긴다.
 
 중괄호 값은 검증된 artifact에서 채우며 미검증 Verification-origin 또는 Chaining-origin 후보를 확정 사실로 표현하지 않는다.
 

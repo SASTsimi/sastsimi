@@ -89,9 +89,13 @@ Chaining Agent는 result가 있는 Primitive를 upstream으로 사용한다. dow
 - upstream 능력이 downstream보다 먼저 성립함
 - 양쪽 restrictions를 합쳐도 공격 경로가 성립함
 - 비교 결론을 뒷받침하는 실제 코드·검증 근거가 있음
-- 동일 fingerprint 중복이 아니고, 같은 계보의 조상 Primitive 재사용도 아님
+- 같은 계보의 조상 Primitive 재사용이 아님
 
-전역 권한 서열표나 문자열 이름의 단순 일치는 사용하지 않는다. 축이 맞지 않거나 근거가 없으면 candidate를 만들지 않고 `no_match_reasons`에 이유를 남긴다. 별도 PASS/UNCERTAIN 필드는 두지 않는다.
+전역 권한 서열표나 문자열 이름의 단순 일치는 사용하지 않는다. 축이 맞지 않거나 근거가 없으면 candidate를 만들지 않고 `no_match_reasons`에 `NoMatchReason` 하나를 남긴다. 별도 PASS/UNCERTAIN 필드는 두지 않는다.
+
+새로 저장된 Primitive 하나를 계기로 그 Primitive와 자기 자신을 제외한 기존 Primitive 전체를 비교한다. 한 조합의 담당은 두 Primitive 중 자기 후보 pool에 상대가 들어 있는 work다. pool은 `REGISTER_WORK`가 COMMITTED된 index에서 고정하므로 실제 저장 순서를 그대로 따른다. 양쪽 pool에 서로가 모두 있으면 `record_id`가 사전순으로 큰 Primitive를 계기로 가진 work가 담당이다. work는 담당인 조합만 검토·저장하고, 담당이 아닌 조합은 검토 대상이 아니므로 `no_match_reasons`에 넣지 않는다.
+
+이 규칙 때문에 서로 다른 두 work가 같은 조합을 검토하지 않으므로 이미 저장된 조합을 다시 만나는 일이 없다. 저장 계층의 unique key는 이 규칙이 지켜졌는지 확인하는 검사이며, 걸리면 구현 오류이므로 결과를 저장하지 않고 오류로 기록한다. 자세한 저장 검사는 [경량 데이터 계약](08-lightweight-data-contracts.md)을 따른다.
 
 ### PrimitiveMatchCandidate
 
@@ -105,12 +109,13 @@ PrimitiveMatchCandidate:
   parent_verification_refs: [StoredDataRef]
   workspace_id: string
   commit_id: string
-  normalized_fingerprint: string
   evidence_refs: [StoredDataRef]
   candidate_state: UNVALIDATED
 ```
 
 `upstream_result_ref`와 `downstream_input_ref`는 nested draft가 아니라 두 Primitive record의 exact reference다. upstream은 non-null result를 가져야 하고 `matched_input_id`는 downstream `inputs[].draft_id` 하나를 선택한다. downstream result가 `null`이면 TRUE_HOLD, result가 있으면 TRUE_TRUE로 유도하므로 match 종류를 따로 저장하지 않는다.
+
+`(upstream_result_ref, downstream_input_ref, matched_input_id)`가 match 하나를 유일하게 식별한다. 세 값 모두 이미 record에 있으므로 중복 판정을 위한 별도 요약 값은 두지 않으며 `normalized_fingerprint`는 사용하지 않는다.
 
 ### 출력
 
@@ -124,7 +129,7 @@ ChainingResult:
   primitive_match_candidates: [PrimitiveMatchCandidate]
   chained_hypothesis_proposals: [HypothesisProposal]
   excluded_lineage_refs: [LineageExclusion]
-  no_match_reasons: [string]
+  no_match_reasons: [NoMatchReason]
   errors: [AnalysisError]
 ```
 
@@ -134,6 +139,19 @@ LineageExclusion:
   excluded_by_ref: StoredDataRef
   reason_code: ANCESTOR_REUSE
 ```
+
+```yaml
+NoMatchReason:
+  upstream_result_ref: StoredDataRef
+  downstream_input_ref: StoredDataRef
+  checked_input_id: string
+  reason_code: ENTITY_UNRELATED | PRIVILEGE_UNSATISFIED | ORDER_INVALID | RESTRICTION_CONFLICT | NO_CODE_EVIDENCE
+  detail: string
+```
+
+`no_match_reasons`는 매칭 조건을 실제로 검토했지만 candidate를 만들지 않은 조합마다 하나씩 남긴다. 두 Primitive reference와 `checked_input_id`가 어떤 조합을 검토했는지 가리키고, `reason_code`는 위 조건에서 걸린 항목, `detail`은 사람이 읽을 자유 문장이다.
+
+검토하지 않은 경우는 여기 넣지 않는다. 담당이 아닌 조합은 처음부터 검토 대상이 아니므로 별도 기록을 만들지 않는다. 조상 재사용 제외는 `excluded_lineage_refs`, 예산·오류로 확인하지 못한 후보는 work 상태와 `errors`에 남긴다. 결과가 비었을 때 검토한 것과 확인하지 못한 것을 구분하기 위한 기록이다. Runtime Validator는 두 reference가 `considered_primitive_refs`에 있는지, `checked_input_id`가 downstream Primitive의 실제 `inputs[].draft_id`인지, 같은 조합이 중복되지 않는지, 성립한 `PrimitiveMatchCandidate` 조합과 겹치지 않는지를 검사한다. `reason_code`와 `detail`의 판단 내용은 다시 판정하지 않는다.
 
 `considered_primitive_refs`는 Chaining work를 시작할 때(`REGISTER_WORK`) Runtime이 고정한, 조상 제외 전 전체 Primitive 입력이다. `input_primitive_refs`는 실제 match candidate에 사용된 upstream/downstream Primitive의 중복 없는 합집합이다. `excluded_lineage_refs`는 계보 때문에 match에서 제외한 Primitive와 그 제외를 일으킨 같은 work의 Primitive를 기록한다. `source_result_refs`는 실제 match Primitive들이 직접 가리키는 source Verification과 non-null Technical review의 중복 없는 합집합이다. `source_admission_refs`는 실제 입력 Primitive와 그 계보에서 재귀적으로 도달한 모든 result Primitive의 current `ALLOW` admission decision을 중복 없이 모은 집합이다. 각 candidate의 `parent_hypothesis_ids`와 `parent_verification_refs`도 해당 upstream/downstream Primitive가 직접 가리키는 source hypothesis와 Verification의 정확한 합집합이어야 한다. 세 Primitive 목록과 source·parent 목록은 중복을 허용하지 않으며 자세한 저장 검사는 [경량 데이터 계약](08-lightweight-data-contracts.md)의 `SAVE_RESULT` 규칙을 따른다.
 
@@ -149,7 +167,9 @@ Chaining input은 exact Primitive와 그 Primitive를 만든 source Verification
 - `observed_facts`·`target_entities`·`target_locations`·`suspected_path`는 모두 비어 있을 수 있다. entity 정보는 `source_primitive_match_id` 계보(`PrimitiveMatchCandidate` → `upstream_result_ref`/`downstream_input_ref` → `Primitive.result`/`inputs` → `entity_refs`)를 따라가면 얻을 수 있어 Chaining Agent가 다시 계산해 싣지 않아도 된다. `suspected_path`는 부모 데이터에 관계(순서·연결) 정보 자체가 없어 흉내 내도 위치 집합일 뿐 실제 경로가 되지 않는다. 값을 채우는 경우에도 이 계보 밖의 entity·location·path를 임의로 추가하지 않는다. 계보를 복원할 수 없으면(부모 참조가 무효하거나 시작점을 하나도 못 얻으면) 자식 가설 등록과 Verification 배정을 거절한다.
 - `vulnerability_type_candidates`는 Chaining Agent가 이번 match가 정의한 노리는 능력에서 판단한다.
 - `restrictions`는 위에서 정한 대로 두 부모의 `Restriction` 합집합과 정확히 같다.
-- 이번 매칭으로 채워진 downstream input은 자식의 전제에서 빠지고, upstream의 남은 `inputs`와 downstream의 나머지 `inputs`가 자식이 아직 필요로 하는 조건으로 `assumptions`에 남는다. 남은 `PrimitiveDraft` 하나마다 그 `description`을 문자열 그대로 사용해 `assumptions`에 하나씩 담는다.
+- 이번 매칭으로 채워진 downstream input은 자식의 전제에서 빠지고, upstream의 남은 `inputs`와 downstream의 나머지 `inputs`가 자식이 아직 필요로 하는 조건으로 `assumptions`에 남는다. 남은 `PrimitiveDraft` 하나마다 그 `description`을 문자열 그대로 사용해 `assumptions`에 하나씩 담는다. `assumptions`는 문자열이므로 각 조건의 `entity_refs`와 `evidence_refs`는 담기지 않는다.
+
+비워 둔 entity·location과 `assumptions`가 담지 못한 위치·근거는 자식 Verification이 `source_primitive_match_id` 계보를 따라 확보한다. Chaining Agent는 추가 코드 조회를 할 수 없어 근거 있는 값을 만들 수 없고, 계보에는 검증을 시작하는 데 필요한 값이 그대로 남아 있기 때문이다. 복구 절차는 [검증과 동적 재현](04-verification-and-dynamic-reproduction.md)을 따른다.
 
 승계는 다시 확인하지 않는다는 뜻이 아니다. 물려받은 사실이 결합 상황에서도 참인지는 자식 검증이 전부 다시 본다.
 
@@ -196,15 +216,17 @@ Verification은 proposal을 만들 수 있지만 `hypothesis_id`를 직접 발�
 
 이 제외가 안전한 이유는 다음과 같다. 조상 쪽(예: B, B→C, B→C→D)은 새 Primitive가 등장하기 전부터 이미 서로 연결이 확정된 상태로 candidate pool에 존재한다 — 그 계보 자체는 새 Primitive와 무관하게 독립적으로 이미 성립해 있었다는 뜻이다. 그러므로 새 Primitive가 가장 깊은 후손(B→C→D→E)과 맺는 match가 성립한 시점에서 그 결합 지점(새 Primitive가 조상 쪽 빈 자리를 실제로 채우는지)은 이미 확인된 것이고, 가장 깊은 조합이 얕은 조합들의 결론을 그대로 포함하므로 얕은 조합을 따로 제안해도 새 정보가 없다. match가 성립하지 않았다면 3번에 따라 얕은 후보가 그대로 남으므로 잃는 조합도 없다.
 
-남는 위험은 하나다. 가장 깊은 조합의 match는 성립했지만 그 자식 가설이 이후 Verification에서 실패하는 경우, 이미 제외된 얕은 조합은 이 분석에서 다시 제안되지 않는다. 이는 검증 과정 일반의 오판이 아니라 이 중복 제거 정책 자체가 만드는 미탐 위험이며, 중복 제안을 줄이는 대가로 팀이 의도적으로 수용한 설계 결정이다.
+남는 위험은 하나다. 가장 깊은 조합의 match가 성립해 얕은 조합을 제외했는데 그 자식 가설이 final `TRUE`에 이르지 못하면, 제외된 얕은 조합은 이 분석에서 다시 제안되지 않는다. 자식이 `FALSE`로 확정된 경우, `HOLD`로 남은 경우, 검증 work가 `FAILED | BLOCKED`로 끝난 경우가 모두 해당한다. 결합이 실제로 성립하는데 검증이 확인하지 못했다면 다시 볼 기회를 잃고, 깊은 조합에서 추가된 단계만 성립하지 않았다면 성립하는 조합 자체를 잃는다.
+
+이는 검증의 오판이나 실행 실패를 가리키는 것이 아니라, 그런 일이 일어났을 때 대안이 될 조합을 이 중복 제거 정책이 미리 없앴다는 뜻이다. 중복 제안을 줄이는 대가로 팀이 의도적으로 수용한 설계 결정이다.
 
 계보가 겹치지 않는 다른 Primitive의 정당한 재사용(같은 조상이 전혀 다른 능력으로 다른 곳에 쓰이는 것)은 이 규칙과 무관하며 막지 않는다.
 
 제외한 항목마다 `LineageExclusion`을 만들고, `excluded_by_ref`에는 실제로 match가 성립해 그 조상들을 제외시킨 정확한 record를 넣는다. 제외된 Primitive와 제외 근거 Primitive는 모두 고정된 `considered_primitive_refs`에 있어야 하고, 제외 근거 Primitive 자신은 제외 목록에 있으면 안 되며 실제 match candidate에 사용된 상태여야 한다. Runtime은 같은 규칙(성립한 match의 후보에서 양방향 재귀 탐색)으로 기대 제외 쌍을 다시 계산하여 `excluded_lineage_refs`와 정확히 같은지 확인한다. DB record는 바꾸지 않는다.
 
-체이닝 전용 임의 depth, 전체·parent별 가설 수, Chaining 호출 수, Primitive 조합 수와 token 상한은 두지 않는다. 대신 R8의 전체 시간·비용·work 예산이 모든 체이닝에도 적용된다. token 사용량은 관측하되 초과만으로 중단하지 않는다. 다른 예산 소진도 `FALSE`가 아니며 work 상태와 `AnalysisRunResult.stop_reasons`에 기록한다. 같은 `normalized_fingerprint`도 한 분석에서 중복 저장하지 않는다.
+체이닝 전용 임의 depth, 전체·parent별 가설 수, Chaining 호출 수, Primitive 조합 수와 token 상한은 두지 않는다. 대신 R8의 전체 시간·비용·work 예산이 모든 체이닝에도 적용된다. token 사용량은 관측하되 초과만으로 중단하지 않는다. 다른 예산 소진도 `FALSE`가 아니며 work 상태와 `AnalysisRunResult.stop_reasons`에 기록한다. 같은 `(upstream_result_ref, downstream_input_ref, matched_input_id)` 조합도 한 분석에서 중복 저장하지 않는다.
 
-`considered_primitive_refs`, `source_admission_refs`와 `excluded_lineage_refs`는 기존 `ChainingResult`에 없던 필수 필드이므로 새 MAJOR schema에서만 사용한다. 이전 MAJOR 결과에 빈 목록을 추정해 넣지 않고 감사 이력으로만 보존한다.
+`considered_primitive_refs`, `source_admission_refs`와 `excluded_lineage_refs`는 기존 `ChainingResult`에 없던 필수 필드이고 `PrimitiveMatchCandidate`에서도 필드 하나를 없애므로 새 MAJOR schema에서만 사용한다. 이전 MAJOR 결과에 빈 목록을 추정해 넣거나 제거한 필드를 다시 계산해 채우지 않고 감사 이력으로만 보존한다.
 
 ## 사람에게 보이는 결과
 
