@@ -1936,6 +1936,11 @@ $requiredChainingOriginRecoveryRules = @(
         Marker = '`draft_id == matched_input_id`인 입력을 찾고, 해당 입력의 `entity_refs`'
     },
     @{
+    Name = 'canonical Verification resolves upstream prerequisite entities'
+    Text = $verificationText
+    Marker = 'upstream Primitive 자신의 `inputs[].entity_refs`'
+    },
+    @{
         Name = 'canonical Verification resolves remaining downstream input entities'
         Text = $verificationText
         Marker = '`matched_input_id`로 선택되지 않은 나머지 `inputs[].entity_refs`'
@@ -1979,6 +1984,11 @@ $requiredChainingOriginRecoveryRules = @(
         Name = 'Verification Wiki explains matched downstream input entities'
         Text = $verificationWikiText
         Marker = '`draft_id == matched_input_id`인 입력의 `entity_refs`'
+    },
+    @{
+    Name = 'Verification Wiki resolves both parent prerequisites'
+    Text = $verificationWikiText
+    Marker = 'upstream과 downstream 양쪽의 남은 입력 조건'
     },
     @{
         Name = 'Verification Wiki requires an entity or location'
