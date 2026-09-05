@@ -57,9 +57,13 @@ flowchart TB
     POCOK -->|No| DSTOP
     DOUT -->|DISPROVED or INCONCLUSIVE| S13
     DOUT -->|Execution failure| DSTOP
-    DSTOP -->|Autonomous retry same work new attempt| DR7
+    DSTOP -->|Same R7 Agent session: adjust command PoC environment; current attempt| DADJUST[Continue current attempt]
+    DADJUST --> DR7
+    DSTOP -->|Session restart: new attempt trigger=RETRY| DRETRY[Restart same work with new attempt]
+    DRETRY --> DR7
     DSTOP -->|External condition| DWAIT[BLOCKED until input policy or resource change]
-    DWAIT --> DR7
+    DWAIT -->|Condition resolved: new attempt trigger=RESUME| DRESUME[Resume same work with new attempt]
+    DRESUME --> DR7
     DSTOP -->|Unrecoverable| S22
     S13 --> S14{14 Final verdict}
     S14 -->|FALSE| CLOSED[Terminal internal result]
@@ -200,9 +204,13 @@ flowchart TB
     OBS -->|SUPPORTED but PoC missing or invalid| FAIL
     OBS -->|DISPROVED or INCONCLUSIVE| SYN2
     OBS -->|Execution failure| FAIL
-    FAIL -->|Autonomous retry same work new attempt| R7PLAN
+    FAIL -->|Same R7 Agent session: adjust command PoC environment; current attempt| ADJUST[Continue current attempt]
+    ADJUST --> R7PLAN
+    FAIL -->|Session restart: new attempt trigger=RETRY| R7RETRY[Restart same work with new attempt]
+    R7RETRY --> R7PLAN
     FAIL -->|External condition| WAIT[BLOCKED until condition changes]
-    WAIT --> R7PLAN
+    WAIT -->|Condition resolved: new attempt trigger=RESUME| R7RESUME[Resume same work with new attempt]
+    R7RESUME --> R7PLAN
     FAIL -->|Unrecoverable| NOFINAL[No final verdict and no Gate]
     SYN2 --> FINAL
     FINAL --> OUT[Restrictions candidates PrimitiveDraft and VERIFICATION origin child proposals]
@@ -370,12 +378,13 @@ stateDiagram-v2
     READY --> BLOCKED: prerequisite missing
     READY --> CANCELLED: cancelled
     RUNNING --> BLOCKED: external waiting condition
-    RUNNING --> READY: immediate dynamic auto retry
+    RUNNING --> RUNNING: same session command PoC environment adjustment
+    RUNNING --> READY: session restart trigger RETRY
     RUNNING --> SUCCEEDED: full output committed
     RUNNING --> PARTIAL: partial output committed
     RUNNING --> FAILED: terminal failure
     RUNNING --> CANCELLED: cancelled
-    BLOCKED --> READY: waiting condition resolved
+    BLOCKED --> READY: external condition resolved trigger RESUME
     BLOCKED --> FAILED: cannot continue
     BLOCKED --> CANCELLED: cancelled
     SUCCEEDED --> [*]
@@ -384,7 +393,7 @@ stateDiagram-v2
     CANCELLED --> [*]
 ```
 
-작업 상태는 전문 판정과 분리한다. 일반 retry가 외부 조건을 기다리면 work를 `BLOCKED`로 두고, 조건을 해결한 뒤 새 `attempt_id`로 다시 시작한다. `DYNAMIC_REPRO`가 외부 대기 없이 자체 해결할 수 있으면 `RUNNING -> READY -> RUNNING`으로 즉시 새 attempt를 시작한다. `SUCCEEDED | PARTIAL | FAILED | CANCELLED`는 되돌리지 않는다.
+작업 상태는 전문 판정과 분리한다. `DYNAMIC_REPRO`의 같은 R7 Agent session 안 command·PoC·환경 조정은 `RUNNING`인 현재 attempt의 event로 남기며 새 attempt를 만들지 않는다. session 재시작이 필요할 때만 `RUNNING -> READY -> RUNNING`과 새 `attempt_id`, `trigger=RETRY`를 사용한다. 외부 조건을 기다리면 `BLOCKED`로 두고 해소 뒤 `BLOCKED -> READY -> RUNNING`과 새 `attempt_id`, `trigger=RESUME`를 사용한다. `SUCCEEDED | PARTIAL | FAILED | CANCELLED`는 되돌리지 않는다.
 
 ## 11. 중복 방지와 atomic 저장·복구
 
@@ -433,7 +442,7 @@ flowchart LR
     DOMAIN[Verification Gates and Reporter keep domain decisions] -. not decided by validator .-> CHECK
 ```
 
-Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 Setup Automation 권한·상태·예산·exact request/requirements·R8 resource/lifecycle을 확인한다. host·Docker daemon/socket·mount/namespace·secret·egress·workspace 외부 경계는 Sandbox Controller가 검사하고 내부 command는 Agent가 자율적으로 정한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
+Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 Setup Automation 권한·상태·예산·exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` revision을 고정한다. plan 또는 profile revision이 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 처리한다. host·Docker daemon/socket·mount/namespace·secret·egress·workspace 외부 경계는 Sandbox Controller가 검사하고 내부 command는 Agent가 자율적으로 정한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
 
 ## 13. ReportDraft와 Agent 자동화 종료 경계
 

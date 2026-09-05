@@ -127,9 +127,9 @@ Docker 환경을 만들지 못했거나 실행이 timeout된 것은 재현 실�
 
 ### 필요한 환경과 실제 환경을 어떻게 연결하나요?
 
-R6 Verification은 `DynamicReproductionRequest`에 `POC_CONFIRMATION | VERDICT_EVIDENCE` 목적, 재현 목표·필요 환경·`sandbox_profile_ref`와 코드·정적·Pro·Con 근거를 적습니다. R7 Agent는 이 요청을 가리키는 `EnvironmentRequirements`와 mode·exact command가 없는 `ReproductionPlan`을 먼저 만듭니다. 외부 경계를 통과한 뒤 Sandbox 안에서 PoC candidate·command·관찰·재시도를 자율적으로 정합니다. `sandbox_profile_ref`는 Docker 외부 경계 정책이므로 애플리케이션 환경 요구사항을 대신하지 않습니다.
+R6 Verification은 `DynamicReproductionRequest`에 `POC_CONFIRMATION | VERDICT_EVIDENCE` 목적, 재현 목표·필요 환경·`sandbox_profile_ref`와 코드·정적·Pro·Con 근거를 적습니다. R7 Agent는 이 요청을 가리키는 `EnvironmentRequirements`와 mode·exact command가 없는 `ReproductionPlan`을 먼저 만듭니다. 외부 경계를 통과한 뒤 Sandbox 안에서 PoC candidate·command·관찰·재시도를 자율적으로 정합니다. `sandbox_profile_ref(data_kind=sandbox_profile)`는 R7이 소유·확정하는 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 정책이고, `DynamicReproductionLifecycleProfile(data_kind=dynamic_reproduction_lifecycle_profile)`은 R8이 소유한 호출 전 잔여 시간 검사·새 attempt 한도 정책입니다. 둘 다 애플리케이션 환경 요구사항을 대신하지 않습니다.
 
-R7은 실제 환경을 만든 뒤 `sandbox_environment.requirements_ref`에 같은 요구사항 수정본을 연결하고, 각 `requirement_id`에 `MATCH | MISMATCH | NOT_CHECKED | ERROR`, 실제 값 또는 artifact, 차이와 Health Check 결과를 기록합니다. 필수 항목이 모두 `MATCH`일 때만 실제 취약점 재현을 확정할 수 있습니다. 같은 session 안의 plan·recipe·command 보완은 같은 attempt의 새 불변 revision과 AgentLog event로 남깁니다. request·requirements·profile·resource/lifecycle 같은 외부 경계 입력이 바뀌면 새 `RUN_SANDBOX` action과 Controller 검사가 필요하고, session을 다시 시작하거나 외부 대기에서 재개하면 같은 work의 새 attempt를 만듭니다.
+R7은 실제 환경을 만든 뒤 `sandbox_environment.requirements_ref`에 같은 요구사항 수정본을 연결하고, 각 `requirement_id`에 `MATCH | MISMATCH | NOT_CHECKED | ERROR`, 실제 값 또는 artifact, 차이와 Health Check 결과를 기록합니다. 필수 항목이 모두 `MATCH`일 때만 실제 취약점 재현을 확정할 수 있습니다. 같은 R7 Agent session 안의 plan·recipe·command 보완은 현재 attempt의 새 불변 revision과 AgentLog event로 남깁니다. `RUN_SANDBOX`는 exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile`을 고정합니다. 이들 revision이 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 만들고 새 action과 Controller 검사를 요구합니다. session 재시작은 같은 work의 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개는 새 `attempt_id`·`trigger=RESUME`를 사용합니다.
 
 credential·cookie·token·password 원문은 요구사항과 실제 값에 저장하지 않습니다. 필요한 비밀은 secret store의 불투명 `secret_ref`만 사용합니다.
 

@@ -14,7 +14,7 @@ R6는 “무엇을 왜 재현할지”만 요청합니다. R7 Agent는 격리된
 
 1. `ReproductionPlan`에는 목적·가설·환경 요구사항·재현 목표·전략 요약과 선택적 `requested_evidence`만 둡니다. `LIMITED_REPRO | FULL_REPRO`, exact step·command·payload·cleanup allowlist는 제거합니다.
 2. R7 Agent는 Sandbox 안에서 환경 설정, 저장소에 필요한 package, 계정, fixture/mock, PoC, command·관찰·재시도를 자율적으로 정합니다.
-3. Sandbox Controller는 host, Docker daemon/socket, mount/namespace, secret, 허용되지 않은 egress, 다른 workspace와 R8 resource/lifecycle 같은 외부 경계만 강제합니다. 내부 command allowlist는 운영하지 않습니다.
+3. Runtime Validator는 exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` revision을 고정합니다. Sandbox Controller는 R7 `sandbox_profile_ref`의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하며 내부 command allowlist나 profile 값은 결정하지 않습니다. R8 lifecycle profile의 호출 전 잔여 시간·새 attempt 한도는 Runtime Validator가 강제합니다.
 4. R7 Setup Automation이 실제 image build, container 생성·재사용·재생성과 cleanup을 맡습니다.
 5. 비-LLM Reproduction Session Manager가 runtime/tool/lifecycle event를 durable append-only `AgentLog`에 기록하고 validated PoC와 `DynamicReproductionResult`를 확정합니다.
 6. R6의 최종 `TRUE | FALSE | HOLD` 권한과 모든 TRUE의 validated PoC 의무는 유지합니다. R7은 `SUPPORTED | DISPROVED | INCONCLUSIVE`만 반환합니다.
@@ -40,7 +40,7 @@ R6는 “무엇을 왜 재현할지”만 요청합니다. R7 Agent는 격리된
 ## retry와 실패
 
 - 같은 session 안의 command·PoC·환경 조정은 한 attempt의 event입니다.
-- session 재시작이 필요한 일시 오류는 R8 한도 안에서 같은 work의 새 attempt로 자동 retry하며 외부 대기가 없으면 `BLOCKED`를 사용하지 않습니다.
+- 같은 session 조정은 현재 attempt를 유지합니다. session 재시작이 필요한 일시 오류만 R8 한도 안에서 같은 work의 새 `attempt_id`·`trigger=RETRY`로 재시도하며 외부 대기가 없으면 `BLOCKED`를 사용하지 않습니다. 외부 조건 해소 뒤 재개는 `trigger=RESUME`입니다.
 - `BLOCKED`는 외부 설정·정책·승인 또는 resource profile 변경을 기다릴 때만 사용합니다.
 - 복구 불가능하거나 retry 한도를 소진하면 `FAILED + INCONCLUSIVE`로 끝냅니다.
 - 실패는 R6의 `FALSE | HOLD`로 자동 변환하지 않고 final VerificationResult와 Technical Gate를 만들지 않습니다.
