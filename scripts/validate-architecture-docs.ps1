@@ -880,6 +880,31 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
     foreach ($obsoletePointer in @('/relations', '/tool_coverage', '/bundle_hash')) {
         if ($promptRuntimeText.Contains($obsoletePointer)) { Add-Failure "R3-05 prompt runtime uses nonexistent StaticFactBundle pointer: $obsoletePointer" }
     }
+    foreach ($obsoleteExample in @('data_kind: evidence_agent_result', '"/restrictions"')) {
+        if ($promptRuntimeText.Contains($obsoleteExample)) { Add-Failure "R3-05 prompt runtime uses invalid registration example field: $obsoleteExample" }
+    }
+    $proTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| PRO / `COLLECT_SUPPORT`.*$').Value
+    $conTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| CON / `COLLECT_COUNTEREVIDENCE`.*$').Value
+    foreach ($rowRule in @(
+        @{ Name = 'PRO'; Text = $proTaskRow },
+        @{ Name = 'CON'; Text = $conTaskRow }
+    )) {
+        foreach ($requiredInput in @('VerificationAssignment($)', 'HypothesisProcessState(', 'VulnerabilityHypothesis($)', 'HypothesisProposal($)', 'StaticFactBundle(', 'CodeContextResponse($)', 'PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', 'debate_config($)', 'verification_budget_profile($)')) {
+            if (-not $rowRule.Text.Contains($requiredInput)) { Add-Failure "R3-05 $($rowRule.Name) task row is missing canonical debate input: $requiredInput" }
+        }
+    }
+    $dynamicRequestTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| VERIFICATION / `CREATE_DYNAMIC_REQUEST` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('VerificationAssignment($)', 'HypothesisProcessState(', 'VulnerabilityHypothesis($)', 'HypothesisProposal($)', 'data_kind=pro_evidence_result', 'data_kind=con_evidence_result')) {
+        if (-not $dynamicRequestTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 CREATE_DYNAMIC_REQUEST row is missing required input: $requiredInput" }
+    }
+    $finalVerdictTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| VERIFICATION / `FINAL_VERDICT` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('VerificationAssignment($)', 'HypothesisProcessState(', 'VulnerabilityHypothesis($)', 'HypothesisProposal($)', 'PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', 'data_kind=pro_evidence_result', 'data_kind=con_evidence_result')) {
+        if (-not $finalVerdictTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 FINAL_VERDICT row is missing required input: $requiredInput" }
+    }
+    $technicalReviseTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| VERIFICATION / `TECHNICAL_REVISE` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('`assignment`', '`process`', '`proposal`', '`policy`', '`playbook`', '`application`', '`debate_config`', '`budget_profile`')) {
+        if (-not $technicalReviseTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 TECHNICAL_REVISE row is missing current exact input: $requiredInput" }
+    }
 }
 $promptAgentWikiText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/agents.md')
 $promptContractWikiText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/common-contracts.md')

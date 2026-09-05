@@ -105,15 +105,35 @@ PromptRegistryEntry:
   template_ref: StoredDataRef
   template_version: 1.0.0
   input_slots:
-    - slot: hypothesis
-      data_kind: vulnerability_hypothesis
-      field_paths: ["/meta", "/statement", "/falsification_questions", "/validation_checks", "/restrictions"]
+    - slot: assignment
+      data_kind: verification_assignment
+      field_paths: ["$"]
       cardinality: REQUIRED_ONE
       trust_class: UNTRUSTED_DATA
-    - slot: evidence
-      data_kind: evidence_agent_result
+    - slot: process
+      data_kind: hypothesis_process_state
+      field_paths: ["/status", "/verification_assignment_ref", "/verification_generation", "/verification_work_ref"]
+      cardinality: REQUIRED_ONE
+      trust_class: UNTRUSTED_DATA
+    - slot: hypothesis
+      data_kind: vulnerability_hypothesis
       field_paths: ["$"]
-      cardinality: REQUIRED_MANY
+      cardinality: REQUIRED_ONE
+      trust_class: UNTRUSTED_DATA
+    - slot: proposal
+      data_kind: hypothesis_proposal
+      field_paths: ["$"]
+      cardinality: REQUIRED_ONE
+      trust_class: UNTRUSTED_DATA
+    - slot: pro
+      data_kind: pro_evidence_result
+      field_paths: ["$"]
+      cardinality: REQUIRED_ONE
+      trust_class: UNTRUSTED_DATA
+    - slot: con
+      data_kind: con_evidence_result
+      field_paths: ["$"]
+      cardinality: REQUIRED_ONE
       trust_class: UNTRUSTED_DATA
   forbidden_context_kinds:
     - report_draft
@@ -128,12 +148,12 @@ PromptRegistryEntry:
   tool_policy_ref: StoredDataRef
   redaction_policy_ref: StoredDataRef
   result_kind: verification_result
-  status: ACTIVE
+  status: DRAFT
   owner_role: R6
   reviewer_roles: [R3, R4, R7, R8]
 ```
 
-`prompt_key`는 사람이 설정과 리뷰에서 찾기 쉬운 등록 이름이다. record의 정체성과 정확한 수정본은 `meta.logical_record_id`, `meta.revision_number`와 `StoredDataRef(record_id + content_hash)`가 기준이다. `prompt_key`나 `template_version` 문자열만으로 실행할 수정본을 찾으면 안 된다.
+위 YAML은 필드 의미를 보여주는 `DRAFT` 일부 예시다. 운영 `ACTIVE` entry는 아래 task 행에 적힌 모든 필수 slot과 exact data kind를 빠짐없이 등록해야 한다. `prompt_key`는 사람이 설정과 리뷰에서 찾기 쉬운 등록 이름이다. record의 정체성과 정확한 수정본은 `meta.logical_record_id`, `meta.revision_number`와 `StoredDataRef(record_id + content_hash)`가 기준이다. `prompt_key`나 `template_version` 문자열만으로 실행할 수정본을 찾으면 안 된다.
 
 `input_slots`는 slot별 data kind, 노출할 JSON Pointer, 필수 개수와 신뢰 등급을 정한다. `"$"`는 해당 record 전체를 허용할 때만 단독으로 사용한다. Builder는 허용 field만 새 `projected_data_ref`에 canonical serialization하며 원본 exact `source_ref`도 함께 남긴다.
 
@@ -204,11 +224,11 @@ PromptContextBinding:
 |---|---|---|---|---|
 | HYPOTHESIS / `GENERATE_INITIAL` | `config/prompts/templates/hypothesis/generate-initial/1.0.0.md` | `facts: StaticFactBundle(/entities,/locations,/source_candidates,/sink_candidates,/sanitizer_candidates,/validator_candidates,/auth_and_permission_checks,/other_facts,/call_edges,/data_flow_candidates,/route_bindings,/tool_runs,/gaps,/errors)` | `schema.hypothesis-proposal-list.next-major` / `validator.hypothesis-proposal-list.v1` / `hypothesis_proposal` | R1 / R2,R3,R4,R8 / `PMT-HYP-01` |
 | HYPOTHESIS / `DUPLICATE_REVIEW` | `config/prompts/templates/hypothesis/duplicate-review/1.0.0.md` | `proposal: HypothesisProposal($)`; `candidates: VulnerabilityHypothesis(/meta,/proposal_ref,/parent_hypothesis_ids,/source_primitive_match_id)` REQUIRED_MANY | `schema.hypothesis-duplicate-review.next-major` / `validator.hypothesis-duplicate-review.v1` / `hypothesis_duplicate_review` | R1 / R3,R4,R8 / `PMT-HYP-02` |
-| PRO / `COLLECT_SUPPORT` | `config/prompts/templates/pro/collect-support/1.0.0.md` | `hypothesis: VulnerabilityHypothesis($)`; `facts: StaticFactBundle(/entities,/locations,/source_candidates,/sink_candidates,/sanitizer_candidates,/validator_candidates,/auth_and_permission_checks,/other_facts,/call_edges,/data_flow_candidates,/route_bindings,/tool_runs,/gaps,/errors)`; `policy: PlaybookPolicy($)`; `playbook: VerificationPlaybook($)`; `application: PlaybookApplication($)` | `schema.evidence-agent-result.next-major` / `validator.pro-evidence.v1` / `pro_evidence_result` | R6 / R2,R3,R4,R8 / `PMT-PRO-01` |
-| CON / `COLLECT_COUNTEREVIDENCE` | `config/prompts/templates/con/collect-counterevidence/1.0.0.md` | `hypothesis: VulnerabilityHypothesis($)`; `facts: StaticFactBundle(/entities,/locations,/source_candidates,/sink_candidates,/sanitizer_candidates,/validator_candidates,/auth_and_permission_checks,/other_facts,/call_edges,/data_flow_candidates,/route_bindings,/tool_runs,/gaps,/errors)`; `policy: PlaybookPolicy($)`; `playbook: VerificationPlaybook($)`; `application: PlaybookApplication($)`; 상대 결과는 금지 | `schema.evidence-agent-result.next-major` / `validator.con-evidence.v1` / `con_evidence_result` | R6 / R2,R3,R4,R8 / `PMT-CON-01` |
-| VERIFICATION / `CREATE_DYNAMIC_REQUEST` | `config/prompts/templates/verification/create-dynamic-request/1.0.0.md` | `hypothesis: VulnerabilityHypothesis($)`; `pro: EvidenceAgentResult($)`; `con: EvidenceAgentResult($)`; `facts: StaticFactBundle(/entities,/locations,/auth_and_permission_checks,/call_edges,/data_flow_candidates,/route_bindings,/gaps,/errors)`; `sandbox_profile: sandbox_profile($)` | `schema.dynamic-reproduction-request.next-major` / `validator.dynamic-request.v1` / `dynamic_reproduction_request` | R6 / R2,R3,R4,R7,R8 / `PMT-VER-01` |
-| VERIFICATION / `FINAL_VERDICT` | `config/prompts/templates/verification/final-verdict/1.0.0.md` | `assignment: VerificationAssignment($)`; `hypothesis: VulnerabilityHypothesis($)`; `playbook: PlaybookApplication($)`; `pro`,`con: EvidenceAgentResult($)`; `dynamic: DynamicReproductionResult($)` OPTIONAL_ONE; `poc: PoCBundle($)` OPTIONAL_ONE | `schema.verification-result.next-major` / `validator.verification-result.v1` / `verification_result` | R6 / R1,R3,R4,R7,R8 / `PMT-VER-02` |
-| VERIFICATION / `TECHNICAL_REVISE` | `config/prompts/templates/verification/technical-revise/1.0.0.md` | `previous: VerificationResult($)`; `review: TechnicalEvidenceReview(/status,/revision_requests,/verification_result_ref,/cwe_label_ref)`; 새 generation의 current `hypothesis`,`playbook`,`pro`,`con`,`dynamic`,`poc` | `schema.verification-result.next-major` / `validator.verification-revise.v1` / `verification_result` | R6 / R3,R4,R5,R7,R8 / `PMT-VER-03` |
+| PRO / `COLLECT_SUPPORT` | `config/prompts/templates/pro/collect-support/1.0.0.md` | `assignment: VerificationAssignment($)`; `process: HypothesisProcessState(/status,/verification_assignment_ref,/verification_generation,/verification_work_ref)`; `hypothesis: VulnerabilityHypothesis($)`; `proposal: HypothesisProposal($)`; `facts: StaticFactBundle(/entities,/locations,/source_candidates,/sink_candidates,/sanitizer_candidates,/validator_candidates,/auth_and_permission_checks,/other_facts,/call_edges,/data_flow_candidates,/route_bindings,/tool_runs,/gaps,/errors)`; `contexts: CodeContextResponse($)` OPTIONAL_MANY; `policy: PlaybookPolicy($)`; `playbook: VerificationPlaybook($)`; `application: PlaybookApplication($)`; `debate_config: debate_config($)`; `budget_profile: verification_budget_profile($)` | `schema.evidence-agent-result.next-major` / `validator.pro-evidence.v1` / `pro_evidence_result` | R6 / R2,R3,R4,R8 / `PMT-PRO-01` |
+| CON / `COLLECT_COUNTEREVIDENCE` | `config/prompts/templates/con/collect-counterevidence/1.0.0.md` | `assignment: VerificationAssignment($)`; `process: HypothesisProcessState(/status,/verification_assignment_ref,/verification_generation,/verification_work_ref)`; `hypothesis: VulnerabilityHypothesis($)`; `proposal: HypothesisProposal($)`; `facts: StaticFactBundle(/entities,/locations,/source_candidates,/sink_candidates,/sanitizer_candidates,/validator_candidates,/auth_and_permission_checks,/other_facts,/call_edges,/data_flow_candidates,/route_bindings,/tool_runs,/gaps,/errors)`; `contexts: CodeContextResponse($)` OPTIONAL_MANY; `policy: PlaybookPolicy($)`; `playbook: VerificationPlaybook($)`; `application: PlaybookApplication($)`; `debate_config: debate_config($)`; `budget_profile: verification_budget_profile($)`; 상대 결과는 금지 | `schema.evidence-agent-result.next-major` / `validator.con-evidence.v1` / `con_evidence_result` | R6 / R2,R3,R4,R8 / `PMT-CON-01` |
+| VERIFICATION / `CREATE_DYNAMIC_REQUEST` | `config/prompts/templates/verification/create-dynamic-request/1.0.0.md` | `assignment: VerificationAssignment($)`; `process: HypothesisProcessState(/status,/verification_assignment_ref,/verification_generation,/verification_work_ref)`; `hypothesis: VulnerabilityHypothesis($)`; `proposal: HypothesisProposal($)`; `pro: EvidenceAgentResult(role=PRO, data_kind=pro_evidence_result)`; `con: EvidenceAgentResult(role=CON, data_kind=con_evidence_result)`; `facts: StaticFactBundle(/entities,/locations,/auth_and_permission_checks,/call_edges,/data_flow_candidates,/route_bindings,/gaps,/errors)`; `contexts: CodeContextResponse($)` OPTIONAL_MANY; `sandbox_profile: sandbox_profile($)` | `schema.dynamic-reproduction-request.next-major` / `validator.dynamic-request.v1` / `dynamic_reproduction_request` | R6 / R2,R3,R4,R7,R8 / `PMT-VER-01` |
+| VERIFICATION / `FINAL_VERDICT` | `config/prompts/templates/verification/final-verdict/1.0.0.md` | `assignment: VerificationAssignment($)`; `process: HypothesisProcessState(/status,/verification_assignment_ref,/verification_generation,/verification_work_ref)`; `hypothesis: VulnerabilityHypothesis($)`; `proposal: HypothesisProposal($)`; `facts: StaticFactBundle($)`; `contexts: CodeContextResponse($)` OPTIONAL_MANY; `policy: PlaybookPolicy($)`; `playbook: VerificationPlaybook($)`; `application: PlaybookApplication($)`; `debate_config: debate_config($)`; `budget_profile: verification_budget_profile($)`; `pro: EvidenceAgentResult(role=PRO, data_kind=pro_evidence_result)`; `con: EvidenceAgentResult(role=CON, data_kind=con_evidence_result)`; `dynamic: DynamicReproductionResult($)` OPTIONAL_ONE; `poc: PoCBundle($)` OPTIONAL_ONE | `schema.verification-result.next-major` / `validator.verification-result.v1` / `verification_result` | R6 / R1,R3,R4,R7,R8 / `PMT-VER-02` |
+| VERIFICATION / `TECHNICAL_REVISE` | `config/prompts/templates/verification/technical-revise/1.0.0.md` | `previous: VerificationResult($)`; `review: TechnicalEvidenceReview(/status,/revision_requests,/verification_result_ref,/cwe_label_ref)`; 새 generation의 current exact `assignment`,`process`,`hypothesis`,`proposal`,`facts`,`contexts`,`policy`,`playbook`,`application`,`debate_config`,`budget_profile`,`pro`,`con`,`dynamic`,`poc`를 `FINAL_VERDICT`와 같은 slot·field 규칙으로 입력 | `schema.verification-result.next-major` / `validator.verification-revise.v1` / `verification_result` | R6 / R3,R4,R5,R7,R8 / `PMT-VER-03` |
 | R7_AGENT / `DERIVE_ENVIRONMENT` | `config/prompts/templates/r7_agent/derive-environment/1.0.0.md` | `request: DynamicReproductionRequest(/meta,/purpose,/goal,/environment_needs,/sandbox_profile_ref,/code_refs,/static_evidence_refs)` | `schema.environment-requirements.next-major` / `validator.environment-requirements.v1` / `environment_requirements` | R7 / R3,R4,R6,R8 / `PMT-R7-01` |
 | R7_AGENT / `PLAN_REPRODUCTION` | `config/prompts/templates/r7_agent/plan-reproduction/1.0.0.md` | `request: DynamicReproductionRequest($)`; `requirements: EnvironmentRequirements($)` | `schema.reproduction-plan.next-major` / `validator.reproduction-plan.v1` / `reproduction_plan` | R7 / R3,R4,R6,R8 / `PMT-R7-02` |
 | R7_AGENT / `CREATE_POC_CANDIDATE` | `config/prompts/templates/r7_agent/create-poc-candidate/1.0.0.md` | `request: DynamicReproductionRequest($)`; `plan: ReproductionPlan($)`; `environment: SandboxEnvironment(/meta,/request_ref,/reproduction_plan_ref,/requirements_ref,/status,/checks,/limitations)` | `schema.poc-candidate.next-major` / `validator.poc-candidate.v1` / `poc_candidate` | R7 / R3,R4,R6,R8 / `PMT-R7-03` |
@@ -220,6 +240,8 @@ PromptContextBinding:
 | REPORTER / `CREATE_DRAFT` | `config/prompts/templates/reporter/create-draft/1.0.0.md` | `finding: finding($)`; `verification: VerificationResult($)`; `technical: TechnicalEvidenceReview($)`; `scope: RuleScopeImpactReview($)`; `cwe: CWELabel($)`; `policy: ProgramPolicyRecord($)`; `dynamic: DynamicReproductionResult($)`; `poc: PoCBundle($)` | `schema.report-draft.next-major` / `validator.report-draft.v1` / `report_draft` | R5 / R1,R3,R4,R6,R7,R8 / `PMT-REP-01` |
 
 위 `schema.*`, `validator.*`, `model.*`, `limits.*`, `retry.*`, `tools.*`, `redaction.*`, provider set은 `config/prompts/registry.yaml`에서 각 exact record reference로 resolve된다. 파일이나 logical key가 존재해도 exact reference·상태·검토자가 맞지 않으면 `ACTIVE`로 만들지 않는다. 모든 입력 slot의 기본 trust class는 `UNTRUSTED_DATA`이며 별도 표기가 없는 한 그대로다.
+
+Pro와 Con의 공통 slot은 이름만 같은 것이 아니라 `source_ref + projected_data_ref + field_paths`의 중복 없는 집합이 exact하게 같아야 한다. `debate_config`는 R6가 승인한 versioned Debate 규칙 record, `verification_budget_profile`은 R8이 승인한 이 Verification의 공통 시간·호출·자원 예산 record다. 두 data kind의 실제 schema와 ACTIVE record가 확정되기 전에는 Pro/Con registry entry도 `DRAFT`다. 역할별 `ExecutionLimits`는 개별 LLM 호출 한도이고 이 공통 budget profile을 대신하지 않는다. trusted runtime은 위 공통 slot 전체의 canonical reference 집합으로 `debate_input_hash`를 계산하며 상대 역할의 결과·호출·session은 포함하지 않는다.
 
 ### 4.1 Hypothesis Agent — R1
 
