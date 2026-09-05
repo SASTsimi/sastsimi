@@ -84,8 +84,10 @@ HypothesisProcessState: REGISTERED -> ASSIGNED -> VERIFYING
 Technical REVISE: TERMINAL -> same assignment + new VERIFICATION work -> VERIFYING
 VerificationResult.verdict -> TRUE | FALSE | HOLD
 HOLD -> Primitive inputs with result null -> Chaining eligible
-TRUE -> Technical ACCEPT -> Primitive with result -> Chaining eligible
-Technical ACCEPT -> Rule Scope -> report eligibility only
+TRUE -> Technical ACCEPT -> policy check and Rule Scope testing restriction review
+-> PrimitiveAdmissionDecision ALLOW -> Primitive with result -> Chaining eligible
+-> PrimitiveAdmissionDecision DENY -> no result Primitive
+Rule Scope remaining fields -> report eligibility only
 Verification material claim -> PROPOSED child hypothesis origin VERIFICATION
 Chaining match -> PROPOSED child hypothesis origin CHAINING
 ```
@@ -104,7 +106,8 @@ Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하
 |---|---|
 | Verification `SUCCEEDED` | `VerificationResult.verdict = TRUE | FALSE | HOLD` |
 | Technical Gate `SUCCEEDED` | `TechnicalEvidenceReview.status = ACCEPT | REVISE | REJECT` |
-| Rule Scope Gate `SUCCEEDED` | `RuleScopeImpactReview.review_status`와 `report_permission` |
+| Rule Scope Gate `SUCCEEDED` | `RuleScopeImpactReview.review_status`, `testing_restriction_compliance`와 `report_permission` |
+| Primitive update `SUCCEEDED` | `PrimitiveAdmissionDecision`, 허용된 `Primitive`와 current `PrimitiveIndexState` |
 | Reporter `SUCCEEDED` | 내부 `ReportDraft`; 마지막 Agent 산출물 |
 
 `PENDING -> READY -> RUNNING` 뒤에는 `SUCCEEDED | PARTIAL | FAILED | CANCELLED`로 끝나거나, 재시도·인증·승인·입력·예산 조건을 기다릴 때 `BLOCKED`로 이동한다. `BLOCKED`는 조건을 충족하면 `READY`가 되지만 종료 상태는 되돌리지 않는다. 일반적인 재시도 가능 attempt 실패는 attempt 자체를 `FAILED`로 보존하고 work를 `BLOCKED`로 둔다. 단, `DYNAMIC_REPRO`가 외부 조건을 기다리지 않고 R7 자율 retry를 즉시 수행할 수 있으면 같은 work를 `RUNNING -> READY -> RUNNING`으로 넘겨 새 attempt를 시작한다. 어느 경우에도 이전 실패를 삭제하지 않는다.
@@ -128,10 +131,11 @@ Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하
 | Chaining Agent | upstream Primitive `result`→downstream Primitive `input` match와 chained proposal | 없음 | exact Primitive, Verification·Technical provenance와 코드 근거 | 없음 | 없음 |
 | Technical Evidence Gate Agent | 구체적인 보완 요청 | 없음 | verdict·근거·코드 흐름·CWE | 없음 | 없음 |
 | Rule Scope Impact Gate Agent | 정책 누락·보완 사유 | `PASS | FAIL | UNCERTAIN`, `ALLOW | DENY` | 공식 정책·scope·impact | 없음 | 없음 |
+| Primitive Admission Runtime | 없음 | 없음 | exact Technical review·정책 수집·Rule Scope의 전용 테스트 제한 판정 | `PrimitiveAdmissionDecision`, 허용된 Primitive와 current index 확정 | 없음 |
 | Reporter Agent | 내부 보고서 문장·구성 | 없음 | 통과한 결과와 두 Gate | 없음 | 없음 |
 | Runtime Validator | 허용 가능한 대체 action 안내 | 없음 | 실행 전제와 exact reference | action 허용·차단 | 없음 |
 
-Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 호출 순서, 기술 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 확정하지 않는다. R6 담당은 플레이북 내용과 유형 mapping 후보를 작성할 수 있지만 운영 지원 목록을 활성화하지 않는다. Playbook Registry Runtime은 사람 승인 뒤 policy를 등록하고 exact proposal의 `vulnerability_type_candidates`를 읽어 결정 규칙대로 playbook과 질문 집합을 고정할 뿐 취약점 유형이나 verdict를 새로 판단하지 않는다. Verification Agent는 hypothesis-local 다음 작업을 선택하고 `DynamicReproductionRequest`와 최종 verdict를 생산하지만 프로그램 enforcement를 우회하거나 Sandbox를 직접 실행하지 못한다. R7 Agent는 exact `EnvironmentRequirements`, mode·exact command가 없는 `ReproductionPlan`, PoC candidate와 동적 근거 해석을 만든다. Setup Automation은 저장소 선언을 우선한 immutable recipe와 image·container·cleanup을 수행한다. Sandbox Controller는 Sandbox 밖의 강제 경계만 검사하며 컨테이너 내부 command allowlist를 운영하지 않는다. 비-LLM Reproduction Session Manager는 실제 event를 append-only `AgentLog`에 기록하고 같은 attempt의 plan·recipe·환경·candidate·실행 digest만으로 validated PoC와 동적 결과를 확정한다. R7 구성요소는 R6 요청 목적과 최종 verdict를 바꾸지 않는다. Runtime Validator는 값의 생산자가 맞는지, 필요한 선행 record와 상태가 있는지, exact revision과 실행 범위가 허용됐는지만 확인하며 환경 의미나 domain 값을 대신 만들지 않는다.
+Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 호출 순서, 기술 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 확정하지 않는다. R6 담당은 플레이북 내용과 유형 mapping 후보를 작성할 수 있지만 운영 지원 목록을 활성화하지 않는다. Playbook Registry Runtime은 사람 승인 뒤 policy를 등록하고 exact proposal의 `vulnerability_type_candidates`를 읽어 결정 규칙대로 playbook과 질문 집합을 고정할 뿐 취약점 유형이나 verdict를 새로 판단하지 않는다. Verification Agent는 hypothesis-local 다음 작업을 선택하고 `DynamicReproductionRequest`와 최종 verdict를 생산하지만 프로그램 enforcement를 우회하거나 Sandbox를 직접 실행하지 못한다. R7 Agent는 exact `EnvironmentRequirements`, mode·exact command가 없는 `ReproductionPlan`, PoC candidate와 동적 근거 해석을 만든다. Setup Automation은 저장소 선언을 우선한 immutable recipe와 image·container·cleanup을 수행한다. Sandbox Controller는 Sandbox 밖의 강제 경계만 검사하며 컨테이너 내부 command allowlist를 운영하지 않는다. 비-LLM Reproduction Session Manager는 실제 event를 append-only `AgentLog`에 기록하고 같은 attempt의 plan·recipe·환경·candidate·실행 digest만으로 validated PoC와 동적 결과를 확정한다. R7 구성요소는 R6 요청 목적과 최종 verdict를 바꾸지 않는다. Rule Scope Gate는 공식 정책에서 테스트 제한의 의미를 독립 필드로 판단하고, Primitive Admission Runtime은 그 값과 exact 정책 수집 상태를 정해진 표에 대입할 뿐 정책을 재해석하지 않는다. Runtime Validator는 값의 생산자가 맞는지, 필요한 선행 record와 상태가 있는지, exact revision과 실행 범위가 허용됐는지만 확인하며 환경 의미나 domain 값을 대신 만들지 않는다.
 
 ReportDraft 이후의 검토·수정·제출·공개는 이 역할표와 Agent action lifecycle 밖에서 사람이 수행한다. 자동화는 사람 검토 상태나 공개 결정을 만들지 않는다.
 
@@ -162,6 +166,7 @@ Agent 또는 service의 제안
 - provider/model/profile, NEW/RESUME/AUTO와 explicit failover
 - Verification work 등록 시 exact hypothesis→proposal, `PlaybookPolicy`, 선택된 `VerificationPlaybook`과 `PlaybookApplication`을 함께 고정하고, 직접 검증·Pro·Con·최종 합성이 같은 application 질문 집합을 사용하는지 검사
 - final `TRUE` Verification 뒤 R5-01이 만든 current `CWELabel`과의 exact pair로 Technical Gate, 그 뒤 Rule Scope Gate라는 순서. `FALSE | HOLD`와 실패 가설은 CWE work·Gate 입력이 아님
+- result Primitive admission은 exact Technical `ACCEPT`뿐 아니라 current `PrimitiveAdmissionDecision=ALLOW`가 필요하며, 이 결정은 Rule Scope의 독립 테스트 제한 판정 또는 `COLLECTION_FAILED` 상태를 그대로 매핑함
 - final `TRUE` 저장과 Technical Gate 요청에는 현재 generation의 `DynamicReproductionRequest`, `SUCCEEDED + SUPPORTED` 결과와 validated `poc_ref`가 모두 필요함
 - 모든 report 조건을 통과한 뒤 Reporter 호출
 - Reporter 저장 전 redaction 성공과 restriction·limitation 보존
@@ -177,13 +182,8 @@ Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서
 |---|---|---|---|
 | AST와 SAST | tool별 `work_id` | 기대한 tool의 종료 상태와 output/error 확인 | 하나 이상의 신뢰 결과가 있으면 `DataGap`을 포함한 `PARTIAL` 정규화 가능 |
 | 가설 검증 | `hypothesis_id`별 work | 각 가설은 자기 final Verification까지 독립 | 한 가설 오류가 다른 가설을 취소하지 않으며 분석은 `PARTIAL` 가능 |
-<<<<<<< HEAD
 | Pro와 Con | 같은 가설의 역할별 child work·NEW session | 운영은 같은 hypothesis·policy·playbook·application 질문 집합의 exact Pro·Con 결과를 모두 확인; 평가 생략은 명시된 mode와 skip reason 확인 | 필수 결과 누락·application 불일치 시 final 판정을 만들지 않고 부모 Verification을 대기 또는 실패 처리 |
 | chaining 후보 | child proposal별 work | exact match lineage, fingerprint 중복·ancestor 재사용·R8 전체 예산 검사를 통과한 proposal만 등록 | 거절 사유를 저장하고 부모 verdict 유지 |
-=======
-| Pro와 Con | 같은 가설의 역할별 child work·NEW session | 운영은 같은 입력의 exact Pro·Con 결과를 모두 확인; 평가 생략은 명시된 mode와 skip reason 확인 | 필수 결과 누락 시 final 판정을 만들지 않고 부모 Verification을 대기 또는 실패 처리 |
-| chaining 후보 | child proposal별 work | exact match lineage, fingerprint 중복·ancestor 재사용·R8 전체 예산 검사를 통과한 proposal만 등록 | 거절 사유를 저장하고 부모 verdict 유지 |
->>>>>>> 1fd8dfe (docs: clarify ancestor-reuse exclusion is not cycle prevention)
 
 같은 가설과 같은 `work_type`에는 활성 `attempt_id`를 하나만 허용한다. 중복 요청의 `dedupe_key`가 같으면 기존 `work_id`를 반환한다. 이미 합류가 끝난 뒤 늦게 도착한 tool·Pro·Con 결과는 기존 결과를 덮어쓰지 않는다. 새로운 근거로 사용할 필요가 있으면 입력 revision을 바꾼 새 논리 작업과 새 downstream revision을 만든다.
 
@@ -199,9 +199,12 @@ final TRUE VerificationResult with current generation SUCCEEDED + SUPPORTED repr
 -> current CWELabel bound to that exact Verification
 -> Technical Evidence Gate
 -> Technical ACCEPT와 TRUE 확인
--> result Primitive admission + Chaining handoff
-and independently
--> Rule Scope Impact Gate -> PASS/PASS/PASS/SUFFICIENT/ALLOW -> Reporter
+-> PolicyCollectionResult
+-> Rule Scope Impact Gate review 또는 COLLECTION_FAILED
+-> PrimitiveAdmissionDecision
+   -> ALLOW: result Primitive admission + Chaining handoff
+   -> DENY: no result Primitive
+-> Rule Scope의 보고 조건 PASS/PASS/PASS/SUFFICIENT/ALLOW -> Reporter
 -> ReportDraft
 -> AnalysisRunResult 확정
 -> Agent 자동화 종료
@@ -209,7 +212,7 @@ and independently
 
 Technical `REVISE`는 같은 입력으로 다시 투표하는 상태가 아니다. 현재 Technical Gate work는 `TechnicalEvidenceReview.status=REVISE`를 exact output으로 atomic commit하고 `SUCCEEDED`로 끝낸 뒤 같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 직접 전달한다. runtime은 기존 종료 VERIFICATION work를 되돌리지 않고 증가한 generation의 새 VERIFICATION work를 등록하며, 같은 CAS transition에서 `HypothesisProcessState`를 `TERMINAL -> VERIFYING`으로 바꾸고 새 work를 가리킨다. Verification은 새 근거를 반영하고, final TRUE 후보라면 새 generation의 동적 재현 요청과 validated PoC를 다시 확보한다. 그 뒤 새 `VerificationResult`와 새 work 종료·hypothesis `TERMINAL`·current result pointer를 atomic commit한다. R5-01 `CWE_LABELING`은 새 `CWE_LABEL` work에서 CWE 정렬을 반드시 다시 평가하고 새 Verification을 직접 가리키는 새 `CWELabel` revision을 확정한다. 동일 CWE를 유지해도 이전 label `record_id`는 재사용하지 않는다. 바뀐 Verification과 current label을 가진 새 `input_hash`·`dedupe_key`·`work_id`로 Technical Gate를 다시 요청한다. 새 generation에는 동적 재현 work 하나를 다시 허용한다. 같은 work의 PoC 생성·환경 구성·실행 재시도는 새 동적 work가 아니라 새 `attempt_id`다. 이 새 논리 작업의 첫 attempt는 `attempt_number=1`, `trigger=INITIAL`이다. provider timeout처럼 입력이 그대로인 일반 retry만 같은 `work_id`에서 새 `attempt_id`, `trigger=RETRY`를 사용한다. Rule Scope Gate와 Reporter는 앞 단계의 `COMMITTED` output reference만 읽는다. `PREPARED`, 취소된 attempt, 오래된 input hash와 다른 workspace/commit 결과는 다음 단계로 전달하지 않는다.
 
-Chaining work는 exact Primitive와 source Verification·Technical review를 input으로 고정한다. proposal 저장 전 `source_primitive_match_id`와 parent set을 확인하고, 같은 계보에서 가장 깊은 후보와의 match가 실제로 성립한 뒤에만 그 후보의 양쪽(upstream·downstream) Primitive를 재귀 추적해 얻은 조상을 현재 순회의 후보에서 제외한다. 동일 fingerprint와 조상 재사용 결과는 저장하지 않는다. Primitive index 자체의 동시 갱신은 공통 `RecordMeta.revision_number`와 atomic current pointer 규칙으로 보호한다.
+Chaining work는 exact Primitive, source Verification·Technical review와 실제 match Primitive의 계보에서 재귀적으로 도달하는 current ALLOW admission decision을 input으로 고정한다. `ChainingResult.source_admission_refs`는 이 실제 사용 집합과 같아야 한다. proposal 저장 전에도 각 decision이 current인지 다시 확인하며 하나라도 오래됐거나 `DENY`로 바뀌었으면 `STALE_RESULT`로 거절한다. 이미 만들어진 CHAINING 자식도 새 Verification·Gate·Primitive·Reporter 작업 전에 같은 계보를 확인하며, 확정된 금지 테스트 위반을 근거로 한 파생 결과는 감사 이력으로만 남긴다. 그 뒤 `source_primitive_match_id`와 parent set을 확인하고, 같은 계보에서 가장 깊은 후보와의 match가 실제로 성립한 뒤에만 그 후보의 양쪽(upstream·downstream) Primitive를 재귀 추적해 얻은 조상을 현재 순회의 후보에서 제외한다. 동일 fingerprint와 조상 재사용 결과는 저장하지 않는다. Primitive index 자체의 동시 갱신은 공통 `RecordMeta.revision_number`와 atomic current pointer 규칙으로 보호한다.
 
 ## retry·취소·중단 후 재개
 
@@ -232,6 +235,7 @@ Chaining work는 exact Primitive와 source Verification·Technical review를 inp
 | Chaining Agent | `ChainingResult`, `origin=CHAINING` proposal | 일반 research, verdict/CWE/Gate/Finding/report 확정 |
 | Technical Evidence Gate | `TechnicalEvidenceReview` | Verification verdict 변경 |
 | Rule Scope Impact Gate | `RuleScopeImpactReview` | 공식 정책 없는 허용 추정 |
+| Primitive Admission Runtime | `PrimitiveAdmissionDecision`, 허용된 `Primitive`와 index revision | 정책 원문 해석, Gate 판정 변경, `DENY` 결과의 Primitive 생성 |
 | Reporter Agent | `ReportDraft` | 보고서 제출·공개 |
 
 ## 독립성, provider와 session

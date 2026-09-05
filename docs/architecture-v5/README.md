@@ -16,7 +16,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 
 1. **입력과 코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다. 규칙 기반 SAST는 검사 0건·미실행·확인 불가를 구분해 기록합니다.
 2. **가설과 검증**: LLM이 취약점 가능성을 제안하고, Orchestration이 등록·배정한 뒤 Verification Agent가 코드·찬성·반대 근거를 검토하고 필요한 동적 재현 목적을 R7에 요청합니다.
-3. **동적 재현과 연계 탐색**: R7 Agent가 환경·간단한 plan을 준비하고 외부 경계 안의 Docker에서 PoC를 자율 실행합니다. Session Manager가 AgentLog·validated PoC·동적 결과를 확정합니다. 모든 final TRUE에는 validated PoC가 필요하며, HOLD는 즉시, TRUE는 Technical `ACCEPT` 뒤에 Primitive matching에 사용합니다.
+3. **동적 재현과 연계 탐색**: R7 Agent가 환경·간단한 plan을 준비하고 외부 경계 안의 Docker에서 PoC를 자율 실행합니다. Session Manager가 AgentLog·validated PoC·동적 결과를 확정합니다. 모든 final TRUE에는 validated PoC가 필요합니다. HOLD는 즉시 Primitive matching에 사용하고, TRUE는 Technical `ACCEPT` 뒤 공식 정책의 금지 테스트 위반 여부를 별도로 확인해 `PrimitiveAdmissionDecision=ALLOW`인 경우에만 사용합니다.
 4. **CWE와 최종 검토·자동화 종료**: R5-01이 final TRUE마다 exact Verification에 맞는 current CWELabel을 만들고 기술 근거와 공식 정책을 차례로 검토한 뒤, Reporter가 내부 초안을 만들고 결과를 저장하면 Agent 자동화가 끝납니다.
 
 ## 정확한 22단계 기준 흐름
@@ -37,9 +37,9 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 14. `FALSE`는 terminal로 끝내고, `HOLD`는 inputs만 있고 result가 없는 Primitive를 즉시 저장해 Chaining 자격을 준다. TRUE는 R5-01 `CWE_LABELING` work에서 exact Verification에 대응하는 current `CWELabel`을 만든다.
 15. validated PoC와 `SUCCEEDED + SUPPORTED` 동적 결과가 연결된 final TRUE와 그 Verification을 직접 가리키는 current CWELabel만 Technical Evidence Gate Agent가 검토한다.
 16. `REVISE`이면 같은 Verification owner가 근거를 보완해 새 Verification을 만들고 R5-01이 CWE를 다시 평가해 새 label revision으로 제출한다. CWE 값이 같아도 이전 label은 재사용하지 않는다.
-17. Technical `ACCEPT`인 exact TRUE는 제공 능력을 result로 가진 Primitive로 저장한다. 동시에 Rule Scope Impact Gate 요청을 시작할 수 있으며 두 경로는 서로 독립이다.
-18. Chaining Agent가 upstream result가 downstream input을 실제 코드 근거로 충족하는지 방향성 있게 matching한다.
-19. Rule Scope Impact Gate Agent가 공식 정책·범위·실질 영향을 검토하지만 이미 저장된 Primitive 자격은 바꾸지 않는다.
+17. Technical `ACCEPT`인 exact TRUE는 공식 정책 수집과 Rule Scope 검토를 진행한다. Rule Scope는 금지 테스트 위반 여부를 `testing_restriction_compliance`로 다른 판단과 분리하고, 비-LLM Primitive Admission Runtime은 이를 `PrimitiveAdmissionDecision=ALLOW | DENY`로 기계적으로 변환한다. `ALLOW`일 때만 제공 능력을 result로 가진 Primitive를 저장한다.
+18. Chaining Agent가 direct·parent chain의 current `ALLOW` decision을 함께 고정한 Primitive만 읽고, upstream result가 downstream input을 실제 코드 근거로 충족하는지 방향성 있게 matching한다.
+19. Rule Scope Impact Gate Agent의 나머지 공식 규칙·범위·실질 영향 판단은 보고 가능성에만 적용한다. 금지 테스트 위반이 확정된 `DENY`는 result Primitive와 Chaining을 막지만, 그 밖의 scope·impact·보고 실패는 Primitive 자격을 없애지 않는다.
 20. Verification-origin 또는 Chaining-origin material claim은 trusted validation 뒤 새 가설로 등록하고 새 Verification을 배정한다.
 21. 모든 전달 조건을 만족한 결과에만 Reporter Agent가 보고서 초안을 작성한다.
 22. 결과·자원·LLM 호출 기록·PoC·오류·디버깅 정보를 `AnalysisRunResult`에 저장하고 초기·파생 가설에 8–21단계를 반복한 뒤 Agent 자동화를 종료한다.
@@ -53,10 +53,10 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 - 코드 문맥은 같은 `workspace_id`와 `commit_id`에서 위치 기반으로 필요할 때 조회하고, 조회 범위와 반환 위치를 기록한다.
 - Verification은 가설 내부 Context·Pro/Con, 목적별 `DynamicReproductionRequest`, 반환 결과 소비, 최종 판정·Technical `REVISE`·Gate 제출과 Chaining handoff를 소유한다. R7 Agent는 `EnvironmentRequirements`, 간단한 `ReproductionPlan`, PoC candidate와 동적 근거 해석을 만든다. Setup Automation은 recipe·image·container·cleanup, Sandbox Controller는 외부 격리 경계, Reproduction Session Manager는 append-only AgentLog·validated PoC·동적 결과 확정을 맡는다.
 - 운영(`PRODUCTION`) 기본 검증 모드는 `ALWAYS_DEBATE`다. 모든 유효 가설에서 Pro와 Con을 독립 NEW session으로 실행한다. `BASIC | CONDITIONAL_DEBATE`는 격리된 평가(`EVALUATION`)에서만 비교한다.
-- Primitive DB는 queue가 아니라 HOLD의 inputs-only Primitive와 Technical-accepted TRUE의 result Primitive를 연결하는 인덱스다. Gate 전 TRUE와 FALSE는 matching에 사용할 수 없다.
+- Primitive DB는 queue가 아니라 HOLD의 inputs-only Primitive와 Technical-accepted 뒤 current `PrimitiveAdmissionDecision=ALLOW`인 TRUE의 result Primitive를 연결하는 인덱스다. Gate 전 TRUE, admission `DENY`와 FALSE는 matching에 사용할 수 없다.
 - Chaining Agent는 upstream Primitive의 `result`가 downstream Primitive의 특정 `input`을 충족하는지 matching만 수행하며 일반 취약점·우회·impact research, 동적 재현, Gate 보완이나 verdict를 수행할 수 없다.
 - Verification과 Chaining이 발견한 새 material claim은 각각 `origin=VERIFICATION | CHAINING`인 새 가설로 등록되어 처음부터 검증된다. 부모 판정은 바뀌지 않는다.
-- R5-01 `CWE_LABELING`은 final TRUE와 Gate 사이에서 exact Verification에 맞는 current `CWELabel`을 만드는 유일한 생산자다. Technical Evidence Gate와 Rule Scope Impact Gate는 서로 다른 LLM 검토 단계이며 어느 Gate도 Verification verdict나 CWELabel을 직접 바꾸지 않는다.
+- R5-01 `CWE_LABELING`은 final TRUE와 Gate 사이에서 exact Verification에 맞는 current `CWELabel`을 만드는 유일한 생산자다. Technical Evidence Gate와 Rule Scope Impact Gate는 서로 다른 LLM 검토 단계이며 어느 Gate도 Verification verdict나 CWELabel을 직접 바꾸지 않는다. Rule Scope Gate는 금지 테스트 여부를 독립 필드로 판단하고, 비-LLM Primitive Admission Runtime은 그 값을 정책 해석 없이 정해진 표에 대입한다.
 - 공식 프로그램 정책이 없으면 rule/scope를 추정하지 않으며 보고서 전달 권한은 `DENY`다.
 - Membership session과 API provider는 공통 adapter 경계를 사용한다. Membership path는 feasibility/security 검토 전 experimental이며, provider 전환은 명시적으로 기록하고 조용한 failover는 금지한다.
 - Reporter는 `ReportDraft`를 만드는 마지막 Agent다. 이후 신뢰 runtime이 `AnalysisRunResult`를 확정하면 자동화가 끝난다.

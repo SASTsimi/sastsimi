@@ -1,10 +1,12 @@
-# ADR-002. Sandbox 정책 판정·실행·결과 조립 권한 분리
+# ADR-002. Sandbox 외부 정책·실행 기록·결과 저장 권한 분리
+
+> ADR-007이 command/step 사전 검사와 exact 대리 실행 구조를 대체한다. 이 ADR은 외부 경계 정책, 자율 실행, 수동 기록과 최종 문서화의 권한을 분리하는 결정만 유지한다.
 
 - 상태: `SUPERSEDED`
 - 대체 결정: [ADR-007. R7 자율 동적 재현과 Session Manager 결과 확정](./ADR-007-r7-autonomous-reproduction-session.md)
 - 결정 담당: PM·아키텍처·워크플로, 동적검증·Sandbox
 - 필수 검토: 검증·반박, 통합 개발, Gate·보고서, 데이터·평가
-- 검토 PR: [#48](https://github.com/SASTsimi/sastsimi/pull/48)
+- 검토 PR: [#76](https://github.com/SASTsimi/sastsimi/pull/76)
 
 ## Context
 
@@ -12,51 +14,27 @@
 
 Runtime Validator의 `RUN_SANDBOX ALLOW`는 호출 권한·상태·예산과 exact `ReproductionPlan`만 확인합니다. 이를 Sandbox 세부 정책 통과나 Docker 실행 성공으로 해석하면 Controller를 우회한 실행과 정책 차단 근거 누락을 구분할 수 없습니다.
 
-또한 Controller가 Runner를 호출하지 않은 정책 차단 결과에 필수 step log를 요구하면 존재하지 않는 실행 기록을 만들게 됩니다. 정책 판정, 실제 실행, 결과 reference 조립의 책임을 분리해야 합니다.
+## Decision
 
-## Options
-
-### A. Runtime Validator가 Sandbox 세부 정책까지 모두 검사
-
-- 장점: 검사 주체가 하나입니다.
-- 단점: 공통 권한 검사와 Docker 전문 정책이 섞이고 R4와 R7 책임이 겹칩니다.
-
-### B. Controller가 판단과 실행 결과를 모두 생산
-
-- 장점: Sandbox 내부 구성요소가 적습니다.
-- 단점: 정책 판정과 실제 실행 사실, 최종 결과 조립 책임이 한곳에 집중됩니다.
-
-### C. Controller·Runner·Result Assembler를 분리
-
-- 장점: 정책 판정, 실행 로그, exact reference 조립을 각각 검증할 수 있습니다.
-- 단점: 공통 상태와 nullable reference 규칙이 추가로 필요합니다.
-
-## Outcome
-
-후보 결정은 C입니다. Architecture v5 정본에는 검토 후보로 반영되어 있으며 PR #48의 필수 교차 검토가 끝나기 전까지 이 ADR은 `PROPOSED`입니다.
-
-- Runtime Validator는 Sandbox 호출 전제만 검사합니다.
-- Sandbox Controller는 exact plan closure와 정책 revision을 검사해 `ALLOW | DENY`와 사유를 `sandbox_policy_decision`으로 저장합니다.
-- Sandbox Runner는 Controller가 허용한 exact 계획만 실행하고 실제 환경·단계 로그·PoC 실행 사실을 저장합니다.
-- 비-LLM Sandbox Result Assembler는 같은 attempt의 정책·환경·로그·PoC·정리 reference만 `DynamicReproductionResult`에 조립합니다.
-- Verification은 COMMITTED 결과를 읽어 최종 `TRUE | FALSE | HOLD`를 결정하며 Sandbox 구성요소는 verdict를 만들지 않습니다.
+- Runtime Validator는 R7 호출 전제와 current reference만 검사한다.
+- Sandbox Controller는 host·Docker daemon·mount/namespace·secret·network egress·R8 resource·lifecycle의 외부 경계 정책만 결정·강제하고 exact `sandbox_policy_decision`을 저장한다.
+- Sandbox Controller는 Sandbox 생성·폐기, Agent 호출, command 허용·거절, 실행 순서, retry와 cleanup을 수행하지 않는다.
+- R7 Sandbox Setup Automation이 승인된 정책을 사용해 image build, clean Sandbox 생성과 lifecycle cleanup을 수행한다.
+- Reproduction Agent는 Sandbox 내부 환경·package·PoC·command·관찰·retry를 자율적으로 결정한다.
+- 기존 Agent tool runtime과 Sandbox lifecycle automation은 실제 action event를 방출한다.
+- Reproduction Session Manager는 이 event를 append-only로 수동 기록하고, Agent 의미 초안과 runtime 사실을 최종 `DynamicReproductionResult` 문서로 확정한다.
+- Session Manager는 Agent 실행을 허용·차단·변경하지 않으며 동적 의미를 다시 판단하지 않는다.
+- Verification은 COMMITTED 결과를 읽어 최종 `TRUE | FALSE | HOLD`를 결정한다.
 
 ## Required invariants
 
-- `POLICY_BLOCKED`이면 exact `policy_decision_ref`가 필수입니다.
-- `runner_invoked=false`이면 `steps_ref=null`, `true`이면 실패해도 exact step log가 필수입니다.
-- 실제 환경 생성 여부와 `environment_ref`, 정리 대상 여부와 `cleanup_status`가 일치해야 합니다.
-- PoC reference 존재는 실행이나 성공을 뜻하지 않습니다.
-- 정책 차단·환경 실패·실행 실패를 취약점 `FALSE`로 바꾸지 않습니다.
-- 서로 다른 analysis·workspace·commit·hypothesis·attempt의 artifact를 섞지 않습니다.
+- `agent_invoked=false`인 정책 차단·실행 전 취소도 Session Manager가 Agent 출력 없이 결과로 문서화할 수 있다.
+- `agent_invoked=true`이면 Session Manager가 runtime/tool event에서 확정한 exact `AgentLog`가 필요하다.
+- event는 실행 전 `STARTED`와 종료 상태를 같은 `action_id`로 연결하고 attempt 안에서 sequence가 단조 증가한다.
+- Agent crash 뒤에도 이미 기록된 event를 보존하며 retry는 새 attempt를 사용한다.
+- 정책 차단·환경 실패·실행 실패를 취약점 `FALSE`로 바꾸지 않는다.
+- 서로 다른 analysis·workspace·commit·hypothesis·attempt의 실행 artifact를 섞지 않는다.
 
 ## Responsibility boundary
 
-R4는 공통 필드·자료형·null·상태·identity·생산자/소비자 규칙을 관리합니다. R7은 정책 판정, 환경, 단계 로그와 PoC artifact의 상세 구조와 실행·정리 절차를 관리합니다.
-
-## Acceptance
-
-- Architecture 정본·Wiki·Mermaid가 같은 흐름을 설명합니다.
-- 잘못된 nullable reference와 cleanup 조합을 자동 문서 검사가 탐지합니다.
-- R3·R5·R6·R7이 최종 review freeze SHA를 기준으로 역할 경계를 재검토합니다.
-- PR #48 병합 뒤 상태를 `ACCEPTED`로 바꾸고 병합 commit을 기록합니다.
+R4는 공통 필드·자료형·null·상태·identity·생산자/소비자 규칙을 관리한다. R7은 외부 경계 정책, 환경 자동화, Agent 실행 artifact, event 기록과 최종 결과 문서 형식을 관리한다.

@@ -56,8 +56,8 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] Reproduction Session Manager만 append-only `AgentLog`, validated PoC와 `DynamicReproductionResult`를 확정합니다.
 - [ ] Chaining Agent는 upstream Primitive의 `result`→downstream Primitive의 특정 `input` matching만 수행하고 일반 research·동적 재현·Gate 보완을 하지 않습니다.
 - [ ] HOLD는 Gate 없이 `inputs`와 `result=null`인 Primitive가 되고, FALSE는 Primitive나 Chaining으로 들어가지 않습니다.
-- [ ] TRUE는 validated PoC와 Technical `ACCEPT`가 있는 exact revision만 `result`를 가진 Primitive가 됩니다. Rule Scope는 Reporter만 제어합니다.
-- [ ] 새 Verification generation/revision에는 오래된 CWELabel·Technical review·Primitive를 재사용하지 않습니다. Gate는 current Verification·CWELabel pair가 아니면 거절하고, Chaining은 work 시작 시 고정하지 않은 Primitive·index reference가 결과에 섞이면 거절합니다. 시작 뒤 생긴 새 index revision만으로 진행 중 Chaining work를 무효화하지 않습니다.
+- [ ] TRUE는 validated PoC와 Technical `ACCEPT`가 있고 금지 테스트 위반이 확정되지 않아 current `PrimitiveAdmissionDecision=ALLOW`인 exact revision만 `result`를 가진 Primitive가 됩니다. 다른 Rule Scope 판단은 Reporter만 제어합니다.
+- [ ] 새 Verification generation/revision에는 오래된 CWELabel·Technical review·Primitive admission decision을 재사용하지 않습니다. Gate는 current Verification·CWELabel pair가 아니면 거절하고, Chaining은 work 시작 시 고정하지 않은 Primitive·index·direct/ancestor admission reference가 결과에 섞이면 거절합니다. 일반 index 갱신과 사용하지 않은 후보 변경만으로는 진행 중 work를 무효화하지 않지만 실제 사용 decision이 오래됐거나 `DENY`이면 결과와 파생 current 사용을 차단합니다.
 - [ ] Technical Evidence Gate와 Rule Scope Impact Gate가 분리됩니다.
 - [ ] 공식 정책이 없거나 `STALE | UNVERIFIED`이면 판단과 보고서 전달을 허용하지 않는 `UNCERTAIN + DENY`입니다.
 - [ ] Sandbox의 `POLICY_BLOCKED`는 자동 `FALSE | HOLD`나 Technical `REJECT`가 아니며, validated PoC가 없으므로 final verdict와 Technical Gate 없이 `BLOCKED | FAILED`로 처리됩니다.
@@ -72,7 +72,7 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 ## 전체 시나리오
 
 - [ ] 미리 정한 반증 조건이 실제 코드에서 확인되었을 때만 `FALSE`가 됩니다.
-- [ ] 판단을 보류한 가설의 입력 조건을 Technical-accepted TRUE Primitive의 결과가 채울 때만, 바로 합치지 않고 새로운 연계 가설로 다시 검증합니다.
+- [ ] 판단을 보류한 가설의 입력 조건을 Technical-accepted·admission-allowed TRUE Primitive의 결과가 채울 때만, 바로 합치지 않고 새로운 연계 가설로 다시 검증합니다.
 - [ ] TRUE에서 나온 두 Primitive를 연결할 때 upstream 결과와 downstream의 특정 입력, 양쪽 exact parent revision을 확인하고 새 가설로 검증합니다.
 - [ ] 새 연계 가설의 부모 계보를 따라가 조상 Primitive를 현재 match 후보에서 제외하며, 체이닝 전용 임의 깊이 제한 대신 R8 전역 예산을 적용합니다.
 - [ ] PoC candidate와 재현 성공 뒤 validated PoC를 구분하고, validated PoC가 어떤 가설·코드 위치·관찰 결과를 뒷받침하는지 추적됩니다.
