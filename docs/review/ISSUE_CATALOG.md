@@ -63,7 +63,7 @@
 - [ ] 오류·timeout·auth·sandbox setup 실패가 `FALSE`로 변환되지 않음
 - [ ] 두 Gate와 보고서 Agent의 순서·전제조건을 프로그램 내부 규칙 검사기(`runtime validator`)가 강제함
 - [ ] Verification-origin과 Chaining-origin material claim이 새 가설로 전체 검증됨
-- [ ] HOLD는 즉시 REQUIRED, TRUE는 두 Gate 정상 통과 뒤 PROVIDED가 되며 FALSE는 체이닝되지 않음
+- [ ] HOLD는 `inputs + result=null` Primitive로 즉시 연결 후보가 되고, TRUE는 validated PoC·Technical `ACCEPT`·current admission `ALLOW` 뒤에만 `inputs + result` Primitive로 연결되며 FALSE는 체이닝되지 않음
 - [ ] 모든 Blocker/High가 닫히고 Medium은 명시적으로 처리됨
 - [ ] freeze commit SHA, 역할 간 교차 검토와 최종 검토·승인 담당자의 최신 확인 기록이 있음
 - [ ] 별도 승인 PR 전까지 `REVIEW_REQUIRED / NOT_IMPLEMENTED`를 유지함
@@ -387,7 +387,7 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 - [ ] `verification_result_ref.record_id`와 `cwe_label_ref.record_id`로 실제 검토한 Verification·CWELabel revision을 고정하고, 두 Gate와 ReportDraft가 같은 revision을 사용함
 - [ ] REVISE는 구체적인 새 evidence/revision을 요구하며 무한 재투표가 아님
 - [ ] REVISE는 같은 ACTIVE VerificationAssignment owner에게 직접 전달되고 새 VERIFICATION work·Verification/CWELabel revision 전에는 재호출되지 않음
-- [ ] 두 Gate 정상 통과는 exact TRUE의 PROVIDED admission 조건과 Reporter 조건에 같은 의미로 적용됨
+- [ ] result Primitive은 Technical `ACCEPT` + current `PrimitiveAdmissionDecision=ALLOW`를, Reporter는 Technical·Rule Scope의 별도 보고 조건 전체를 요구하며 두 자격을 혼합하지 않음
 - [ ] policy source 인증·freshness·parser failure threat model/ADR 요구가 있음
 - [ ] 모순된 `ALLOW` 출력은 semantic `INVALID_OUTPUT`이며 Reporter가 차단됨
 - [ ] 보고서 Agent 호출 조건 `TRUE + ACCEPT + PASS + PASS + PASS + SUFFICIENT + ALLOW`를 프로그램 내부 규칙 검사기(`runtime validator`)가 강제함
@@ -410,7 +410,9 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 
 - `[R6-01] TRUE·FALSE·HOLD 판정에 필요한 최소 근거 확정`
 - `[R6-02] 찬성·반대 Agent를 호출하는 조건과 독립성 확인`
-- `[R6-03] 취약점 유형별 검증 절차와 우회 확인 항목 작성`
+- `[R6-03] 동적 재현 요청과 결과 소비 계약 확정`
+- `[R6-04] Gate REVISE·Primitive·Chaining 연결과 Verification 수명주기 확정`
+- `[R6-05] 공통·웹 취약점 6종 검증 플레이북 작성`
 
 ### 역할 소유권
 
@@ -428,7 +430,7 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 ### 검토할 입력·출력
 
 - 입력: VulnerabilityHypothesis, 같은 workspace/commit의 context, 운영 Pro/Con budget, 평가용 debate trigger, R7의 DynamicReproductionResult, revision request
-- 출력: supporting/counter evidence, 질문별 `FalsificationResult`, initial/final verdict, `DynamicReproductionRequest`, restrictions, PrimitiveDraft, `origin=VERIFICATION` material child proposal와 Gate revision coordination
+- 출력: supporting/counter evidence, 질문별 `FalsificationResult`, initial/final verdict, `DynamicReproductionRequest`, restrictions, `required_primitive_candidates`, `provided_primitive_candidates`, `origin=VERIFICATION` material child proposal와 exact Gate action/reference
 
 ### 확인할 권한 경계
 
@@ -462,6 +464,11 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 - [ ] material new claim과 같은 가설의 작은 validation subtask 경계가 있음
 - [ ] material new claim은 `origin=VERIFICATION` proposal로 trusted registration 뒤 새 Verification을 받음
 - [ ] Technical REVISE를 같은 ACTIVE VerificationAssignment owner가 새 VERIFICATION work에서 받고 새 evidence 또는 설명 revision을 남김
+- [ ] `FALSE`는 Primitive·Gate·Chaining 없이 종료하고, `HOLD`는 `inputs + result=null`, `TRUE`는 Technical `ACCEPT` + current admission `ALLOW`일 때만 `inputs + result` Primitive로 저장됨
+- [ ] Rule Scope의 보고 적격성과 Primitive·Chaining admission이 분리되며, admission `DENY`만 result Primitive·Chaining을 차단함
+- [ ] R6는 후보·Gate action·exact reference를 만들고 trusted runtime이 commit·current pointer·Primitive·`PrimitiveIndexState`를 갱신함
+- [ ] 새 generation에서 과거 동적 결과·PoC·CWE·Gate·admission 자격을 재사용하지 않음
+- [ ] `TRUE + HOLD`, `TRUE + TRUE`만 current Primitive로 연결하며 child·Chaining 결과가 부모 verdict를 변경하지 않음
 
 ---
 
