@@ -629,11 +629,22 @@ foreach ($field in @('meta:', 'request_ref:', 'events:')) {
         Add-Failure "missing AgentLog field: $field"
     }
 }
-foreach ($field in @('meta:', 'request_ref:', 'reproduction_plan_ref:', 'content_ref:', 'content_digest:', 'created_by_invocation_ref:', 'created_at:')) {
+foreach ($field in @('meta:', 'request_ref:', 'reproduction_plan_ref:', 'content_ref:', 'content_digest:', 'llm_call_id:', 'created_at:')) {
     if (-not $pocCandidateBlock.Contains($field)) { Add-Failure "missing PoCCandidate field: $field" }
 }
-foreach ($field in @('meta:', 'request_ref:', 'reproduction_plan_ref:', 'environment_ref:', 'poc_candidate_ref:', 'observation_refs:', 'proposed_outcome:', 'hypothesis_evidence_refs:', 'hypothesis_linkage:', 'limitations:', 'created_by_invocation_ref:')) {
+foreach ($field in @('meta:', 'request_ref:', 'reproduction_plan_ref:', 'environment_ref:', 'poc_candidate_ref:', 'observation_refs:', 'proposed_outcome:', 'hypothesis_evidence_refs:', 'hypothesis_linkage:', 'limitations:', 'llm_call_id:')) {
     if (-not $r7AgentConclusionBlock.Contains($field)) { Add-Failure "missing R7AgentConclusion field: $field" }
+}
+foreach ($marker in @(
+    'hypothesis_proposal -> HypothesisProposal -> HYPOTHESIS',
+    '`result_kind=hypothesis_proposal`이면 HYPOTHESIS만 저장할 수 있다.',
+    '`PoCCandidate.llm_call_id`는 같은 analysis·hypothesis·work·attempt에서 candidate를 만든 성공한 `R7_AGENT / CREATE_POC_CANDIDATE` 호출 ID와 같아야 한다.',
+    '`R7AgentConclusion`은 R7 Agent의 해석 제안이지 최종 실행 사실이나 취약점 판정이 아니다. `llm_call_id`는 같은 analysis·hypothesis·work·attempt의 성공한 `R7_AGENT / INTERPRET_ATTEMPT` 호출 ID와 같아야 하고'
+)) {
+    if (-not $contractText.Contains($marker)) { Add-Failure "missing R3-05 result ownership or invocation marker: $marker" }
+}
+if ($contractText.Contains('created_by_invocation_ref')) {
+    Add-Failure 'obsolete reverse invocation reference remains in common contract'
 }
 foreach ($field in @('meta:', 'request_ref:', 'reproduction_plan_ref:', 'environment_recipe_ref:', 'environment_ref:', 'agent_log_ref:', 'candidate_ref:', 'candidate_digest:', 'execution_action_id:', 'evidence_refs:', 'validated_at:')) {
     if (-not $pocBundleBlock.Contains($field)) { Add-Failure "missing PoCBundle field: $field" }
@@ -855,7 +866,7 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
     Add-Failure 'missing R3-05 prompt runtime design'
 } else {
     $promptRuntimeText = Get-Content -Raw -LiteralPath $promptRuntimePath
-    foreach ($marker in @('DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED', 'PromptRegistryEntry', 'PromptPayload', 'R7_AGENT', 'OpenAI API, Codex 구독, Anthropic API, Claude 구독', '`PMT-01`', '`PMT-15`', 'Orchestration 자체의 별도 LLM prompt는 만들지 않는다', '한 호출당 한 result kind의 structured output artifact 하나', 'R7AgentConclusion', '#90에서 채택된 각 adapter profile fixture', 'HypothesisProposal[]')) {
+    foreach ($marker in @('DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED', 'PromptRegistryEntry', 'PromptPayload', 'R7_AGENT', 'OpenAI API, Codex 구독, Anthropic API, Claude 구독', '`PMT-01`', '`PMT-15`', 'Orchestration 자체의 별도 LLM prompt는 만들지 않는다', '한 호출당 한 result kind의 structured output artifact 하나', 'R7AgentConclusion', '#90에서 채택된 각 adapter profile fixture', 'HypothesisProposal[]', 'model.hypothesis.generate-initial.quality-v1', 'model.hypothesis.duplicate-review.quality-v1', 'model.verification.technical-revise.quality-v1', 'model.r7-agent.interpret-attempt.quality-v1', 'PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', '/sanitizer_candidates', '/validator_candidates')) {
         if (-not $promptRuntimeText.Contains($marker)) {
             Add-Failure "R3-05 prompt runtime is missing marker: $marker"
         }
@@ -865,6 +876,9 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
     }
     foreach ($testId in @('PMT-HYP-01', 'PMT-HYP-02', 'PMT-PRO-01', 'PMT-CON-01', 'PMT-VER-01', 'PMT-VER-02', 'PMT-VER-03', 'PMT-R7-01', 'PMT-R7-02', 'PMT-R7-03', 'PMT-R7-04', 'PMT-CHN-01', 'PMT-CWE-01', 'PMT-TG-01', 'PMT-RSG-01', 'PMT-REP-01')) {
         if (-not $promptRuntimeText.Contains($testId)) { Add-Failure "R3-05 prompt runtime is missing role fixture: $testId" }
+    }
+    foreach ($obsoletePointer in @('/relations', '/tool_coverage', '/bundle_hash')) {
+        if ($promptRuntimeText.Contains($obsoletePointer)) { Add-Failure "R3-05 prompt runtime uses nonexistent StaticFactBundle pointer: $obsoletePointer" }
     }
 }
 $promptAgentWikiText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/agents.md')
