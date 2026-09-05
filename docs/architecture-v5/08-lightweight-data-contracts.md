@@ -335,9 +335,11 @@ TransitionCommit:
 
 Chaining work는 새 Primitive 저장을 계기로 등록한다. `PRIMITIVE_UPDATE`가 Primitive와 `PrimitiveIndexState` 갱신을 COMMITTED한 뒤에만 그 Primitive를 `trigger_primitive_ref`로 가리키는 `CHAINING` work를 등록하며, 저장 전에 등록하지 않는다. `subject_type=ANALYSIS`, `subject_id`는 `analysis_id`이고 계기가 된 Primitive는 `trigger_primitive_ref`로만 식별한다.
 
-`trigger_primitive_ref`는 `considered_primitive_refs`에 포함되고 `input_refs`에 정확히 한 번 들어간다. `dedupe_key`는 `analysis_id`, `workspace_id`, `commit_id`, `trigger_primitive_ref`와 고정한 index revision 집합으로 계산한다. 같은 계기와 같은 index 집합으로는 work를 하나만 등록하며, 두 번째 요청은 새 work를 만들지 않고 기존 work를 반환한다.
+`trigger_primitive_ref`는 `work_type=CHAINING`에서 필수이고 다른 모든 work type에서는 `null`이다. CHAINING에서는 `considered_primitive_refs`와 `input_refs`에 각각 정확히 한 번 들어간다. 이 필드 추가는 `WorkExecutionState`의 기존 필드를 바꾸지 않는 선택 필드 확장이므로 같은 MAJOR 안에서 MINOR로 올리고, 이전 MINOR 결과에는 `null`을 채우지 않고 감사 이력으로 보존한다. `dedupe_key`는 `analysis_id`, `workspace_id`, `commit_id`, `trigger_primitive_ref`와 고정한 index revision 집합으로 계산한다. 같은 계기와 같은 index 집합으로는 work를 하나만 등록하며, 두 번째 요청은 새 work를 만들지 않고 기존 work를 반환한다.
 
-같은 조합을 두 work가 동시에 저장하지 못하도록 `(analysis_id, upstream_result_ref, downstream_input_ref, matched_input_id)`에 저장 시점 uniqueness를 강제한다. 이미 저장된 조합을 포함한 결과는 거절하고, 그 조합은 `no_match_reasons`가 아니라 skip 기록으로 남긴다. retry는 같은 `work_id`의 새 attempt이며 그 work의 COMMITTED `ChainingResult`가 이미 있으면 새 결과를 만들지 않고 기존 결과를 반환한다.
+한 조합의 담당 work는 두 Primitive 중 `meta.created_at`이 늦은 쪽, 같으면 `record_id`가 큰 쪽을 `trigger_primitive_ref`로 가진 work다. 각 work는 자신이 담당인 조합만 검토·저장하므로 서로 다른 두 work가 같은 조합을 저장하려 하지 않는다. 담당이 아닌 조합은 검토 대상이 아니라서 `no_match_reasons`에도 넣지 않고 별도 skip 목록도 두지 않는다.
+
+`(analysis_id, upstream_result_ref, downstream_input_ref, matched_input_id)`에는 저장 시점 uniqueness를 그대로 강제한다. 담당 규칙이 지켜지면 걸릴 일이 없으므로 실제로 위반이 나오면 정상 흐름이 아니라 구현 오류다. 이때는 결과 전체를 거절하지 않고 위반한 조합만 결과에서 빼며, 같은 work의 `AnalysisError(stage=ORCHESTRATION)`와 `WorkExecutionState.error_ids`에 남긴다. retry는 같은 `work_id`의 새 attempt이며 그 work의 COMMITTED `ChainingResult`가 이미 있으면 새 결과를 만들지 않고 기존 결과를 반환한다.
 
 `origin=CHAINING` 가설의 새 Verification·Gate·Primitive update·Reporter work를 등록하거나 그 결과를 저장할 때도 trusted runtime은 같은 `source_primitive_match_id` 계보의 result Primitive admission decision을 재귀 확인한다. 확정된 `DENY` 또는 오래된 decision이 있으면 새 작업·결과 사용을 차단하고, 실행 중 work는 `CANCELLED`로 정리하며 가설 verdict를 `FALSE | HOLD`로 바꾸지 않는다. 이미 COMMITTED된 Verification·Gate·Finding·ReportDraft는 감사 이력으로 남기되 current 결과나 외부 전달 가능 결과로 사용하지 않는다. 같은 run 안에서 ALLOW가 DENY로 바뀌면 admission runtime은 이를 참조한 `ChainingResult.source_admission_refs`와 자식 `source_primitive_match_id`를 따라 파생 Primitive를 current index에서 제거한다. 이 전파가 끝나기 전에는 `AnalysisRunResult`를 확정하지 않는다.
 

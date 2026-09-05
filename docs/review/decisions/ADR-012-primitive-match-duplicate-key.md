@@ -46,7 +46,7 @@ ADR-005는 `PrimitiveMatchCandidate`가 fingerprint를 고정한다고 적었습
 
 Runtime의 중복 검사가 저장된 reference 비교로 끝나므로 별도 계산 계층이 없어집니다.
 
-`CHAINING` work를 무엇을 계기로 등록하는지는 `WorkExecutionState`의 `subject_type`·`subject_id`와 함께 정해야 합니다. 이 ADR은 순회 단위만 정하고 work 등록 계약은 R4와 별도로 확정합니다.
+`CHAINING` work의 등록 계기는 `WorkExecutionState.trigger_primitive_ref`로 고정합니다. `subject_type`은 `ANALYSIS`를 유지하고, 이 필드는 `work_type=CHAINING`에서만 값을 가집니다. 한 조합의 담당 work는 두 Primitive 중 나중에 저장된 쪽을 계기로 가진 work이므로 서로 다른 두 work가 같은 조합을 검토하지 않습니다. 저장 시점 uniqueness는 안전장치로 남기며, 위반이 실제로 나오면 해당 조합만 결과에서 빼고 오류로 기록합니다.
 
 ## Responsibility
 

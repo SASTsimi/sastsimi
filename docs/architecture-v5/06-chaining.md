@@ -93,7 +93,9 @@ Chaining Agent는 result가 있는 Primitive를 upstream으로 사용한다. dow
 
 전역 권한 서열표나 문자열 이름의 단순 일치는 사용하지 않는다. 축이 맞지 않거나 근거가 없으면 candidate를 만들지 않고 `no_match_reasons`에 `NoMatchReason` 하나를 남긴다. 별도 PASS/UNCERTAIN 필드는 두지 않는다.
 
-새로 저장된 Primitive 하나를 계기로 그 Primitive와 자기 자신을 제외한 기존 Primitive 전체를 비교한다. 각 조합은 나중에 저장된 쪽이 계기가 될 때 한 번만 검토하며, 이전 계기에서 이미 검토한 조합을 다시 만들지 않는다.
+새로 저장된 Primitive 하나를 계기로 그 Primitive와 자기 자신을 제외한 기존 Primitive 전체를 비교한다. 한 조합의 담당은 두 Primitive 중 `meta.created_at`이 늦은 쪽이고, 같으면 `record_id`가 큰 쪽이다. work는 자신의 계기 Primitive가 담당인 조합만 검토·저장한다. 담당이 아닌 조합은 검토 대상이 아니므로 `no_match_reasons`에 넣지 않는다.
+
+이 규칙 때문에 서로 다른 두 work가 같은 조합을 검토하지 않는다. 저장 시점 uniqueness는 그래도 남겨 두는 안전장치이며, 실제로 걸리면 정상 흐름이 아니라 `AnalysisError`로 기록한다.
 
 ### PrimitiveMatchCandidate
 
@@ -149,7 +151,7 @@ NoMatchReason:
 
 `no_match_reasons`는 매칭 조건을 실제로 검토했지만 candidate를 만들지 않은 조합마다 하나씩 남긴다. 두 Primitive reference와 `checked_input_id`가 어떤 조합을 검토했는지 가리키고, `reason_code`는 위 조건에서 걸린 항목, `detail`은 사람이 읽을 자유 문장이다.
 
-검토하지 않은 경우는 여기 넣지 않는다. 이미 저장된 조합이라 건너뛴 것은 Runtime의 skip 기록, 조상 재사용 제외는 `excluded_lineage_refs`, 예산·오류로 확인하지 못한 후보는 work 상태와 `errors`에 남긴다. 결과가 비었을 때 검토한 것과 확인하지 못한 것을 구분하기 위한 기록이므로 Runtime Validator는 schema와 두 reference가 `considered_primitive_refs`에 있는지만 검사한다.
+검토하지 않은 경우는 여기 넣지 않는다. 이미 저장된 조합이라 건너뛴 것은 Runtime의 skip 기록, 조상 재사용 제외는 `excluded_lineage_refs`, 예산·오류로 확인하지 못한 후보는 work 상태와 `errors`에 남긴다. 결과가 비었을 때 검토한 것과 확인하지 못한 것을 구분하기 위한 기록이다. Runtime Validator는 두 reference가 `considered_primitive_refs`에 있는지, `checked_input_id`가 downstream Primitive의 실제 `inputs[].draft_id`인지, 같은 조합이 중복되지 않는지, 성립한 `PrimitiveMatchCandidate` 조합과 겹치지 않는지를 검사한다. `reason_code`와 `detail`의 판단 내용은 다시 판정하지 않는다.
 
 `considered_primitive_refs`는 Chaining work를 시작할 때(`REGISTER_WORK`) Runtime이 고정한, 조상 제외 전 전체 Primitive 입력이다. `input_primitive_refs`는 실제 match candidate에 사용된 upstream/downstream Primitive의 중복 없는 합집합이다. `excluded_lineage_refs`는 계보 때문에 match에서 제외한 Primitive와 그 제외를 일으킨 같은 work의 Primitive를 기록한다. `source_result_refs`는 실제 match Primitive들이 직접 가리키는 source Verification과 non-null Technical review의 중복 없는 합집합이다. `source_admission_refs`는 실제 입력 Primitive와 그 계보에서 재귀적으로 도달한 모든 result Primitive의 current `ALLOW` admission decision을 중복 없이 모은 집합이다. 각 candidate의 `parent_hypothesis_ids`와 `parent_verification_refs`도 해당 upstream/downstream Primitive가 직접 가리키는 source hypothesis와 Verification의 정확한 합집합이어야 한다. 세 Primitive 목록과 source·parent 목록은 중복을 허용하지 않으며 자세한 저장 검사는 [경량 데이터 계약](08-lightweight-data-contracts.md)의 `SAVE_RESULT` 규칙을 따른다.
 

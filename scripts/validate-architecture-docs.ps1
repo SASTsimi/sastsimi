@@ -1553,9 +1553,28 @@ $requiredChainingExclusionRules = @(
     '`origin=CHAINING`이면 `observed_facts=[]`만 허용한다.',
     '`ChainingResult.considered_primitive_refs`, `source_admission_refs`와 `excluded_lineage_refs` 추가, `PrimitiveMatchCandidate`의 필드 제거, `no_match_reasons`의 `NoMatchReason` 전환은 기존 결과의 필수 필드를 바꾸므로 새 MAJOR schema로 배포한다.',
     '`primitive_match_id`는 분석 전체에서 유일하고 같은 `(upstream_result_ref, downstream_input_ref, matched_input_id)` 조합도 중복 저장하지 않는다.',
-    '`(analysis_id, upstream_result_ref, downstream_input_ref, matched_input_id)`에 저장 시점 uniqueness를 강제한다.',
-    'Chaining work는 새 Primitive 저장을 계기로 등록한다.'
+    '`(analysis_id, upstream_result_ref, downstream_input_ref, matched_input_id)`에는 저장 시점 uniqueness를 그대로 강제한다.',
+    'Chaining work는 새 Primitive 저장을 계기로 등록한다.',
+    '`trigger_primitive_ref`는 `work_type=CHAINING`에서 필수이고 다른 모든 work type에서는 `null`이다.',
+    '한 조합의 담당 work는 두 Primitive 중 `meta.created_at`이 늦은 쪽, 같으면 `record_id`가 큰 쪽을 `trigger_primitive_ref`로 가진 work다.',
+    '위반한 조합만 결과에서 빼며, 같은 work의 `AnalysisError(stage=ORCHESTRATION)`와 `WorkExecutionState.error_ids`에 남긴다.'
 )
+
+$requiredChainingNoMatchRules = @(
+    '`checked_input_id`는 downstream `inputs[].draft_id` 하나여야 한다.',
+    '같은 `(upstream_result_ref, downstream_input_ref, checked_input_id)` 조합은 한 결과에서 중복될 수 없고 `primitive_match_candidates`가 성립시킨 조합과 겹칠 수 없다.'
+)
+foreach ($rule in $requiredChainingNoMatchRules) {
+    if (-not $contractText.Contains($rule)) {
+        Add-Failure "missing exact NoMatchReason storage rule: $rule"
+    }
+}
+if (-not $chainingText.Contains('`checked_input_id`가 downstream Primitive의 실제 `inputs[].draft_id`인지')) {
+    Add-Failure 'chaining doc must mirror the NoMatchReason storage checks from the common contract'
+}
+if ($contractText.Contains('trigger_primitive_ref') -and -not $contractText.Contains('다른 모든 work type에서는 `null`이다')) {
+    Add-Failure 'trigger_primitive_ref scope is not fixed for non-CHAINING work types'
+}
 foreach ($rule in $requiredChainingExclusionRules) {
     if (-not $contractText.Contains($rule)) {
         Add-Failure "missing exact Chaining exclusion rule: $rule"
