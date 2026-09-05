@@ -196,7 +196,7 @@ Chaining 결과를 저장하기 직전에 실제로 사용한 Primitive와 `sour
 
 새 Verification generation이 만들어지면 이전 dynamic result·validated PoC·`CWELabel`·Technical review·Rule Scope review·admission decision과 그 자격을 새 generation에 재사용하지 않는다. 기존 record는 감사 이력으로 보존하되 current index와 새 Gate·Chaining 입력에서 제외한다. child proposal이나 Chaining 결과도 부모 `VerificationResult.verdict`를 변경하지 않는다.
 
-### Initial verdict와 final verdict
+### Initial verdict와 final verdict`HOLD`는 실패가 아니다. 누락 정보와 필요한 capability를 `required_primitive_candidates`로 구조화하며, 후보가 하나 이상일 때만 exact final Verification revision에 연결된 result 없는 Primitive의 `inputs`로 저장해 Chaining Agent의 matching 입력으로 사용할 수 있다. 후보가 비어 있으면 Primitive와 Chaining work를 만들지 않고 HOLD 처리를 끝낸다. HOLD는 두 Gate를 거치지 않으며 확인된 능력이나 취약점으로 승격되지 않는다.
 
 `initial_verdict`는 기본 Context와 Verification Agent가 직접 확인한 사실을 바탕으로 만든 중간 판단이다. 운영 분석에서는 독립 Pro/Con과 필요한 동적 재현이 끝나기 전의 initial verdict를 Gate·Primitive·Reporter 입력으로 사용할 수 없다. 특히 initial TRUE는 PoC 확인을 시작하기 위한 중간 상태일 뿐 final TRUE가 아니다.
 
