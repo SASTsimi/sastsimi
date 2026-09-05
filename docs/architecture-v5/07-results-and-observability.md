@@ -172,7 +172,7 @@ token 상한은 없다. 분석 전체·모든 Agent·호출마다 동일하다. 
 | 분석 전체 | 120분 | — | 파이프라인 1–22 벽시계 1회. clone·정적 도구·가설·검증·Gate·초안을 포함한다. 역할 칸을 더해도 이 한도가 먼저다 | 새 work 금지. 진행 중 work는 `BUDGET_EXCEEDED`. 분석 `PARTIAL` 가능. FALSE 아님 | 성병찬 |
 | AST/SAST (`RUN_TOOL`) | 도구당 900초 | 1 | 파이프라인 3단계. 도구마다 work 하나. 같은 workspace에서 병렬. 도구 자체 timeout은 이 칸을 넘지 않는다. `02` 예시·도구 설정은 R2가 맞춘다. 실패·timeout ≠ 0건·안전함·FALSE | 그 도구 work 중단. `PARTIAL`/`FAILED` 가능. FALSE 아님 | 김나연 |
 | Hypothesis | 180초 | 4 | — | 그 의심 중단, FALSE 아님 | 배승원 |
-| 코드 다시 꺼내기 | 45초 | 가설당 24회 | 깊이 5, 조각 32개, 요청당 256KiB | 빈칸/조회 오류. FALSE 아님 | 김나연 |
+| 코드 다시 꺼내기 | 45초 | — | 가설당 조회 24회. 같은 요청 재시도가 아니라 한 가설의 `code_request_id` 누적 상한이다. 다른 위치·관계 요청도 센다. 깊이 5, 조각 32개, 요청당 256KiB | 빈칸/조회 오류. FALSE 아님 | 김나연 |
 | Verification / debate | 종합 240초 / 찬반 각 180초 | 의심마다 찬반 각 1회 | 서로 다른 대화. Docker 요청 예산은 이 칸 | 초과 ≠ FALSE. 찬반 생략은 운영 불합격 | 임채민 |
 | Chaining | 120초 | — | 체이닝 전용 짝·깊이 한도 없음. result→input 비교. 전역 시간·비용·work 예산만. 순환 검사 아님. 조상 Primitive 재사용 제외는 예산 중단이 아님 | 전역 예산 소진 시 `stop_reasons`, 부모 불변. FALSE 아님 | 배승원 |
 | Sandbox 호출 전 | 이 work에 남은 runtime 시간. 초안은 아래 정책 표의 profile 시간 상한을 **잔여 예산**으로 본다. `LIMITED_REPRO \| FULL_REPRO` mode는 없음 | 같은 attempt 안 자율 재시도는 R7(횟수 아님). 새 attempt는 R8 한도. 초안 새 attempt 4회(최초 1회 별도, 총 5회). 바깥 대기만 `BLOCKED` | 요청 가능 최대는 아래 정책 표 | 실행 **요청 전**에 소진되면 `BUDGET_EXCEEDED`. 한도 소진 뒤 새 attempt 없음. 동적 결과 `PARTIAL` 금지. FALSE 아님 | 조근석 |
