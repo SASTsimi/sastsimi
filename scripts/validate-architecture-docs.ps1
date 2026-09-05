@@ -1924,86 +1924,118 @@ foreach ($rule in $requiredPlaybookApplicationRules) {
 }
 
 $verificationWikiText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/verification-and-dynamic.md')
+$moduleMapText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/implementation/01-module-map.md')
+
 $requiredChainingOriginRecoveryRules = @(
     @{
-        Name = 'canonical Verification resolves upstream result entities'
+        Name = 'canonical separates pre-registration validation'
         Text = $verificationText
-        Marker = '`PrimitiveMatchCandidate.upstream_result_ref`가 가리키는 upstream Primitive의 `result.entity_refs`'
+        Marker = 'Proposal Validator, Hypothesis Registry와 Assignment Runtime은 자식 가설을 등록하고 Verification을 배정하기 전에'
     },
     @{
-        Name = 'canonical Verification resolves matched downstream input entities'
+        Name = 'canonical assigns post-registration check to Context service'
         Text = $verificationText
-        Marker = '`draft_id == matched_input_id`인 입력을 찾고, 해당 입력의 `entity_refs`'
+        Marker = 'Context Retrieval Service가 실제 코드 조회 전에 같은 `source_primitive_match_id` 계보를 다시 확인한다.'
     },
     @{
-    Name = 'canonical Verification resolves upstream prerequisite entities'
-    Text = $verificationText
-    Marker = 'upstream Primitive 자신의 `inputs[].entity_refs`'
+        Name = 'canonical prevents direct lineage lookup by Verification'
+        Text = $verificationText
+        Marker = 'R6 Verification Agent는 `PrimitiveMatchCandidate`와 부모 Primitive를 직접 DB에서 조회하거나'
     },
     @{
-        Name = 'canonical Verification resolves remaining downstream input entities'
+        Name = 'canonical uses CodeContextRequest'
+        Text = $verificationText
+        Marker = '`source_primitive_match_id`를 포함한 `CodeContextRequest`'
+    },
+    @{
+        Name = 'canonical resolves upstream result entities'
+        Text = $verificationText
+        Marker = 'upstream Primitive의 `result.entity_refs`'
+    },
+    @{
+        Name = 'canonical resolves matched downstream input entities'
+        Text = $verificationText
+        Marker = '`draft_id == matched_input_id`인 입력의 `entity_refs`'
+    },
+    @{
+        Name = 'canonical resolves upstream prerequisite entities'
+        Text = $verificationText
+        Marker = 'upstream Primitive 자신의 모든 `inputs[].entity_refs`'
+    },
+    @{
+        Name = 'canonical resolves remaining downstream entities'
         Text = $verificationText
         Marker = '`matched_input_id`로 선택되지 않은 나머지 `inputs[].entity_refs`'
     },
     @{
-        Name = 'canonical Verification requires an entity or location'
+        Name = 'canonical requires valid entity or location'
         Text = $verificationText
         Marker = '유효한 entity 또는 location을 최소 하나 이상 복구해야 한다.'
     },
     @{
-        Name = 'canonical Verification uses proposal metadata scope'
+        Name = 'canonical uses proposal metadata scope'
         Text = $verificationText
         Marker = '`proposal.meta.workspace_id`와 `proposal.meta.commit_id`'
     },
     @{
-        Name = 'canonical Verification rejects the whole mismatched lineage'
+        Name = 'canonical rejects whole mismatched lineage'
         Text = $verificationText
-        Marker = '일부 reference만 제외하고 나머지 정보로 검증을 계속하지 않는다.'
+        Marker = '일부 reference만 제외하고 계속하지 않고 계보 전체를 유효하지 않은 입력으로 처리한다.'
     },
     @{
-        Name = 'canonical Verification stops without a verdict after late failure'
+        Name = 'canonical stops stale context without verdict'
         Text = $verificationText
-        Marker = 'final `VerificationResult`를 만들지 않고 verdict 없이 해당 work를 중단한다.'
+        Marker = 'final `VerificationResult`와 verdict 없이 중단한다.'
     },
     @{
-        Name = 'canonical Verification includes broken-lineage scenario'
-        Text = $verificationText
-        Marker = '| `source_primitive_match_id` 계보가 끊겼거나 부모 Primitive를 찾을 수 없음 |'
-    },
-    @{
-        Name = 'canonical Verification includes missing matched-input entity scenario'
-        Text = $verificationText
-        Marker = '| `draft_id == matched_input_id`인 downstream input의 `entity_refs`가 없고 다른 유효한 entity 또는 location도 복구되지 않음 |'
-    },
-    @{
-        Name = 'canonical Verification includes workspace and commit mismatch scenario'
-        Text = $verificationText
-        Marker = '| proposal·match candidate·부모 Primitive·entity 또는 location reference 중 하나라도 `proposal.meta.workspace_id`·`proposal.meta.commit_id`와 다름 |'
-    },
-    @{
-        Name = 'Verification Wiki explains matched downstream input entities'
+        Name = 'Wiki separates registration and retrieval checks'
         Text = $verificationWikiText
-        Marker = '`draft_id == matched_input_id`인 입력의 `entity_refs`'
+        Marker = '검사 시점을 등록 전과 등록 후로 나눕니다.'
     },
     @{
-    Name = 'Verification Wiki resolves both parent prerequisites'
-    Text = $verificationWikiText
-    Marker = 'upstream과 downstream 양쪽의 남은 입력 조건'
-    },
-    @{
-        Name = 'Verification Wiki requires an entity or location'
+        Name = 'Wiki assigns post-registration check to Context service'
         Text = $verificationWikiText
-        Marker = '유효한 entity 또는 location을 최소 하나 이상 확보해야 합니다.'
+        Marker = 'Context Retrieval Service가 실제 코드 조회 전에 같은 계보가 여전히 current인지 다시 검사합니다.'
     },
     @{
-        Name = 'Verification Wiki rejects the whole mismatched lineage'
+        Name = 'Wiki prevents direct DB lookup by Verification'
         Text = $verificationWikiText
-        Marker = '계보 전체를 유효하지 않은 입력으로 처리합니다.'
+        Marker = 'R6 Verification Agent는 부모 Primitive와 match candidate를 직접 DB에서 조회하거나'
     },
     @{
-        Name = 'Verification Wiki does not inherit the parent verdict'
+        Name = 'Wiki includes both parent prerequisites'
         Text = $verificationWikiText
-        Marker = '부모 verdict를 자식에게 물려주지 않고'
+        Marker = 'upstream Primitive 자신의 모든 `inputs[].entity_refs`'
+    },
+    @{
+        Name = 'module Step 20 assigns pre-registration validation'
+        Text = $moduleMapText
+        Marker = 'Chaining-origin 등록 전에는 Proposal Validator·Hypothesis Registry·Assignment Runtime이'
+    },
+    @{
+        Name = 'module Step 9 assigns lineage recheck to Context service'
+        Text = $moduleMapText
+        Marker = 'Context Retrieval Service가 계보를 재검사하고 Context를 반환함'
+    },
+    @{
+        Name = 'registration test covers broken lineage'
+        Text = $moduleMapText
+        Marker = '`source_primitive_match_id` 계보가 끊기면 자식 가설을 등록하지 않는다.'
+    },
+    @{
+        Name = 'registration test covers upstream prerequisites'
+        Text = $moduleMapText
+        Marker = 'upstream Primitive의 `inputs[].entity_refs`가 복구 대상에서 누락되면 등록하지 않는다.'
+    },
+    @{
+        Name = 'context test covers stale lineage'
+        Text = $moduleMapText
+        Marker = '등록 당시 유효했던 match candidate 또는 부모 Primitive가 stale 상태가 되면 Context 조회를 중단한다.'
+    },
+    @{
+        Name = 'context test blocks final verdict'
+        Text = $moduleMapText
+        Marker = '실패한 Context work로 final `VerificationResult` 또는 `TRUE | FALSE | HOLD`를 만들지 않는다.'
     }
 )
 
