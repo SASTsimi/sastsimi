@@ -16,7 +16,7 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 
 ## 기본 검증 순서
 
-1. 배정된 가설의 exact proposal에서 `proposal.meta.workspace_id`, `proposal.meta.commit_id`, `target_entities`, `target_locations`와 `suspected_path`를 확인한다. `origin=CHAINING` proposal의 선택 필드가 비어 있으면 R6 Verification Agent가 계보를 직접 조회하지 않고, 등록 단계에서 검증된 `source_primitive_match_id`를 포함한 `CodeContextRequest`로 Context Retrieval Service에 필요한 Context를 요청한다.
+1. 배정된 가설의 exact proposal에서 `proposal.meta.workspace_id`, `proposal.meta.commit_id`, `target_entities`, `target_locations`와 `suspected_path`를 확인한다. `origin=CHAINING` proposal의 선택 필드가 비어 있으면 R6 Verification Agent가 계보를 직접 조회하지 않고, `CodeContextRequest`를 만들며, `CONTEXT_RETRIEVAL` work에는 exact proposal을 함께 고정한다. Context Retrieval Service가 그 proposal에서 `source_primitive_match_id`를 읽어 필요한 Context를 조회한다.
 2. `CodeContextRequest`로 caller/callee, data flow, auth guard와 route 문맥을 필요한 만큼 조회한다. 추가 Context 요청은 현재 가설과 같은 `workspace_id`·`commit_id`를 사용해야 한다. 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 기록하며 오류 자체를 verdict 근거로 사용하지 않는다. 일부 조회가 실패했더라도 제한 retry·대체 조회·다른 정상 근거로 모든 `ValidationCheck`, 반증 질문과 운영 Pro/Con을 완료했다면 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있다. 필수 Context 또는 운영 Pro/Con을 확보하지 못해 검증이 하나라도 미완료이면 final `VerificationResult`를 저장하지 않는다. 재시도할 수 있으면 work를 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지하며, 더 시도할 수 없으면 work와 `HypothesisProcessState`를 원자적으로 `FAILED`로 끝낸다. 운영 Pro/Con 전에 예산이 부족한 경우에도 `BUDGET_EXCEEDED`로 작업을 중단하고 final verdict를 저장하지 않는다. Context 부족이나 조회 실패를 `DISPROVED` 또는 `FALSE`로 변환하지 않는다.
 3. observed fact와 assumption을 분리하고 각 `FalsificationQuestion.question_id`를 확인한다.
 4. 운영 분석이면 Pro/Con Agent를 서로 독립된 NEW session으로 병렬 호출해 supporting/counter evidence를 모두 수집한다. BASIC 또는 조건부 debate는 격리된 평가 실행에서만 선택한다.
@@ -67,7 +67,7 @@ Context Retrieval Service는 다음을 검사한다.
 
 #### Verification Agent의 역할
 
-R6 Verification Agent는 `PrimitiveMatchCandidate`와 부모 Primitive를 직접 DB에서 조회하거나 proposal 등록·Verification 배정을 거절하지 않는다. R6는 exact proposal과 `source_primitive_match_id`를 포함한 `CodeContextRequest`로 필요한 Context를 요청하고, Context Retrieval Service가 검증하여 반환한 `CodeContextResponse`를 사용한다.
+R6 Verification Agent는 `PrimitiveMatchCandidate`와 부모 Primitive를 직접 DB에서 조회하거나 proposal 등록·Verification 배정을 거절하지 않는다. R6는 일반 `CodeContextRequest`로 필요한 Context를 요청하고, `CONTEXT_RETRIEVAL` work에는 exact proposal을 함께 고정한다. Context Retrieval Service는 그 proposal에서 `source_primitive_match_id`를 읽어 계보를 검사하고, Context Retrieval Service가 검증하여 반환한 `CodeContextResponse`를 사용한다.
 
 반환된 정보는 자식 가설을 자동으로 지지하는 판정 근거가 아니라 검증 시작점이다. R6는 부모 verdict나 결론을 자식에게 상속하지 않고, 반환된 Context에서 결합 상황과 양쪽 부모의 남은 전제조건을 처음부터 다시 검증한다.
 
