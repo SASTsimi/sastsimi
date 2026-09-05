@@ -93,7 +93,7 @@ R3-06은 다음 조건을 동적 재현 회귀 시험에 포함한다.
 
 1. 경계 전 R7 Agent의 requirements·plan 작성 호출과 경계 승인 뒤 Sandbox 실행 Agent 시작을 구분한다. 전자는 `agent_invoked`를 `true`로 만들지 않으며, 정책 차단이면 `agent_invoked=false`와 exact 정책 결정·AgentLog를 남긴다.
 2. 같은 Agent session의 command·PoC·환경 조정은 같은 attempt의 event로 남긴다. session 재시작이 필요한 일시 오류만 새 retry attempt를 만들고, 외부 조건을 기다리는 경우에만 `BLOCKED` 뒤 `trigger=RESUME`인 새 attempt를 만든다. R6에 반환하는 current 결과에는 이전 attempt의 중간 실패 결과나 늦게 도착한 event를 섞지 않는다.
-3. 각 가설의 첫 attempt는 clean container에서 시작하고 다른 가설끼리 writable container를 공유하지 않는다. 같은 가설에서는 영향 있는 상태·설정 변화가 없을 때만 재사용하며, `STATE_CHANGED | CONFIG_CHANGED | STATE_UNCERTAIN` 또는 crash·비정상 종료·사후 Health Check 실패이면 재생성한다.
+3. 각 가설의 첫 attempt는 clean container에서 시작하고 다른 가설끼리 writable container를 공유하지 않는다. 같은 가설의 같은 `DYNAMIC_REPRO` work에서는 영향 있는 상태·설정 변화가 없을 때만 재사용하며, `STATE_CHANGED | CONFIG_CHANGED | STATE_UNCERTAIN` 또는 crash·비정상 종료·사후 Health Check 실패이면 재생성한다.
 4. validated `poc_ref`는 `SUCCEEDED + SUPPORTED + agent_invoked=true`이고 같은 attempt AgentLog가 exact `poc_candidate_ref` revision과 `content_digest`의 실제 실행을 입증할 때만 허용한다. candidate 생성·실행 실패, 정책·환경 실패, timeout, `DISPROVED | INCONCLUSIVE`에서는 `poc_ref=null`이며 candidate reference만으로 성공을 추론하지 않는다.
 5. build·container·network·volume·임시 파일 중 하나라도 생성되면 성공·실패·정책 차단과 관계없이 cleanup 결과와 exact reference를 기록한다. `cleanup_status=NOT_REQUIRED`는 정리할 자원이 하나도 생성되지 않았을 때만 허용한다.
 

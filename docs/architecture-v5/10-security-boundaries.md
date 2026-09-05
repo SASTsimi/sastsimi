@@ -90,7 +90,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - network는 default-deny이고 versioned profile이 허용한 egress만 연다. package 설치도 승인된 registry egress 안에서만 가능하다.
 - production credential, 실제 개인정보와 범위 밖 target을 사용하지 않는다. 환경 요구사항·실제 값·Health Check·AgentLog에도 credential·cookie·token·password 원문을 넣지 않고 필요한 경우 secret store의 불투명 handle만 연결한다.
 - R6의 `REQUEST_DYNAMIC_REPRO`는 Runtime Validator가 현재 Verification generation, exact request, 권한·상태·예산과 generation당 하나의 동적 work 제한을 확인한 뒤 R7에 전달한다.
-- `RUN_SANDBOX`는 Runtime Validator가 R7 Setup Automation의 권한·상태·예산, exact request·current `EnvironmentRequirements`·Sandbox profile·R8 resource/lifecycle을 확인한 `ActionDecision=ALLOW` 뒤 Sandbox Controller로 전달한다. 이 ALLOW는 정책 통과나 Docker 실행 성공을 뜻하지 않는다.
+- `RUN_SANDBOX`는 Runtime Validator가 R7 Setup Automation의 권한·상태·예산, exact `DynamicReproductionRequest`·current `EnvironmentRequirements`·current exact `ReproductionPlan`·`sandbox_profile_ref`·R8 resource/lifecycle profile을 확인한 `ActionDecision=ALLOW` 뒤 Sandbox Controller로 전달한다. 이 ALLOW는 정책 통과나 Docker 실행 성공을 뜻하지 않는다.
 - Sandbox Controller는 host·Docker daemon/socket·mount/namespace·secret·egress·workspace·resource/lifecycle 외부 경계를 검사하고 exact `sandbox_policy_decision`을 저장한다. 컨테이너 내부 command·package·PoC를 allowlist로 검사하지 않는다.
 - 정책을 통과하면 R7 Setup Automation이 저장소 선언을 우선한 recipe로 image build, container 생성·재사용·재생성과 cleanup을 수행한다. Docker build와 실행은 분석용 `CodeWorkspace`를 직접 수정하지 않고 Sandbox 내부 복사본에서 수행한다.
 - R7 Agent는 격리된 container 안에서 환경 설정, package, 계정, fixture/mock, PoC, command, 관찰과 재시도를 자율적으로 정한다. Agent는 Docker daemon을 직접 제어하지 않고 Setup Automation의 in-container 실행 통로만 사용한다.
@@ -99,7 +99,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - request·plan·recipe·실제 환경·AgentLog·PoC candidate·validated PoC는 같은 analysis·workspace·commit·hypothesis·work·attempt를 가리킨다. 성공한 baseline recipe 재사용은 exact baseline ref와 동일 built image digest를 가진 current-attempt binding으로 기록한다.
 - validated PoC 없이 `TRUE` 저장 또는 Technical Gate 호출을 요청하면 Runtime Validator가 거절한다. validated `poc_ref`는 `SUCCEEDED + SUPPORTED`이고 same-attempt AgentLog가 exact candidate revision·digest의 실제 실행을 입증할 때만 허용한다.
 - 정리 대상이 하나도 생기지 않았을 때만 `cleanup_status=NOT_REQUIRED`다. 정책 차단 전에 build·container·network·volume·임시 파일이 생겼다면 정리 성공 또는 실패와 exact cleanup reference를 기록한다.
-- 환경·정책·Agent·PoC 생성·실행 실패는 가설 `FALSE | HOLD`가 아니다. 자율 retry와 외부 대기를 구분하고 한도 소진 또는 복구 불가 시 `FAILED + INCONCLUSIVE`로 종료한다.
+- 환경·정책·Agent·PoC 생성·실행 실패는 가설 `FALSE | HOLD`가 아니다. 같은 R7 Agent session의 조정은 현재 attempt에 기록하고, session 재시작이 필요한 retry만 새 attempt를 사용한다. 외부 조건을 기다릴 때만 `BLOCKED`이며 조건 해결 뒤에는 같은 work에서 `trigger=RESUME`인 새 attempt를 시작한다. 한도 소진 또는 복구 불가 시 `FAILED + INCONCLUSIVE`로 종료하고 과거 attempt 결과를 current 성공 근거로 사용하지 않는다.
 
 ## 6. 프로그램 정책 신뢰 경계
 
@@ -200,7 +200,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | `token_budget`이 비어 있거나 실제 token 사용량이 계획값을 넘음 | exact call spec과 provider usage 출처 | token만으로 `BUDGET_EXCEEDED`·`DENY`를 만들지 않고 실제 사용량 또는 unavailable을 기록 |
 | 서로 다른 평가 설정의 결과를 직접 비교 | 두 `AnalysisRunResult.eval_config_refs`의 exact set equality | 비교 거절; Gate·Primitive·Reporter 결과는 변경하지 않음 |
 | `PARTIAL` 결과에 누락 설명이 없음 | static/context의 `gap_ids`·`error_ids` 또는 dynamic 결과의 `limitations`, output refs | `STATE_TRANSITION_INVALID`, 부분 결과 사용 금지 |
-| retry 가능한 동적 attempt의 `BLOCKED` 결과를 같은 work의 `BLOCKED` 상태와 연결하지 않음 | attempt 결과와 공통 work lifecycle 매핑 | 감사용 `DynamicReproductionResult`는 COMMITTED하고 같은 work를 `BLOCKED`로 유지해 새 attempt만 허용; 오래된 attempt 결과를 current 성공 근거로 소비하면 `STATE_TRANSITION_INVALID` |
+| 외부 조건을 기다리는 동적 attempt의 `BLOCKED` 결과를 같은 work의 `BLOCKED` 상태와 연결하지 않음 | attempt 결과와 공통 work lifecycle 매핑 | 감사용 `DynamicReproductionResult`는 COMMITTED하고 같은 work를 `BLOCKED`로 유지한다. 조건 해결 뒤에는 `trigger=RESUME`인 새 attempt만 허용하며 과거 attempt 결과를 current 성공 근거로 소비하면 `STATE_TRANSITION_INVALID` |
 | 동적 종료 결과와 work·전문 상태 pointer가 다름 | `TransitionCommit`, `WorkExecutionState.output_refs`, `dynamic_result_ref` | `TRANSITION_INCOMPLETE`, Verification 전달 차단 |
 | 분석 종료 시 `RUNNING` work나 `PREPARED` journal이 남음 | 전체 work와 commit 상태 | 최종 `AnalysisRunState` 전이 차단 |
 | `COMMITTED` marker 투영 전에 취소·retry 전이가 경쟁 | 다음 target version의 unique marker와 pointer | 기존 marker를 먼저 재투영하고 경쟁 전이는 version conflict로 거절 |
