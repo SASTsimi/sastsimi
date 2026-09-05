@@ -48,7 +48,7 @@ NOT_IMPLEMENTED
 1. **코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다. SAST 규칙별로 검사 0건·미실행·확인 불가를 구분합니다.
 2. **가설 생성과 검증**: Orchestration이 가설을 등록해 Verification에 배정하고, Verification이 찬성·반대 근거와 필요한 후속 작업을 관리합니다.
 3. **필요한 경우 재현**: Verification 판단에 따라 Docker 격리 환경에서 제한적으로 공격 흐름을 재현합니다.
-4. **판정별 연계 탐색**: HOLD의 필요 조건은 즉시 연결 재료가 됩니다. TRUE의 제공 능력은 validated PoC와 Technical `ACCEPT` 뒤 공식 정책의 금지 테스트 위반 여부를 따로 확인하고, `PrimitiveAdmissionDecision=ALLOW`일 때만 연결해 새 가설을 만듭니다. 다른 Rule Scope 판단은 보고 가능성에 적용합니다.
+4. **판정별 연계 탐색**: HOLD에 하나 이상의 `required_primitive_candidates`가 있으면 그 필요 조건을 연결 재료로 사용합니다. 후보가 없으면 Primitive와 Chaining 작업을 만들지 않습니다. TRUE의 제공 능력은 validated PoC와 Technical `ACCEPT` 뒤 공식 정책의 금지 테스트 위반 여부를 따로 확인하고, `PrimitiveAdmissionDecision=ALLOW`일 때만 연결해 새 가설을 만듭니다. 다른 Rule Scope 판단은 보고 가능성에 적용합니다.
 5. **근거·정책 검토와 자동화 종료**: 두 Gate를 통과한 결과만 보고서 초안으로 만들고, 결과와 디버깅 정보를 저장한 뒤 Agent 자동화를 끝냅니다.
 
 그 이후의 검토·수정·제출·공개는 Agent 자동화와 공통 action 계약 밖에서 사람이 수행합니다.
@@ -74,7 +74,7 @@ Repository input
 → final TRUE / FALSE / HOLD
 → final TRUE는 재현에 성공한 validated PoC가 있을 때만 저장하고 Technical Gate로 전달
 → FALSE는 terminal
-→ HOLD는 inputs만 있고 result가 없는 Primitive로 즉시 Chaining
+→ HOLD는 required candidate가 있을 때만 inputs만 있고 result가 없는 Primitive로 Chaining; 후보가 없으면 Primitive·Chaining 없음
 → TRUE는 R5-01 CWE_LABELING이 exact Verification에 맞는 current CWELabel 생성 → Technical Evidence Gate
 → Technical ACCEPT 뒤 정책 수집·Rule Scope의 금지 테스트 판정 → PrimitiveAdmissionDecision
 → ALLOW인 result Primitive만 Chaining; 나머지 Rule Scope 판단은 보고 조건에 적용
