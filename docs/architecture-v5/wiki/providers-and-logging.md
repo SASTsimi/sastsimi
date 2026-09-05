@@ -26,6 +26,8 @@ API provider는 공식 API/SDK 경계다. Membership session은 공식 지원·�
 
 네 연결 경로의 구체적인 차이와 시험 기준은 [R3-04 Provider 결정](../implementation/04-provider-decision.md)에 정리한다. ChatGPT 구독은 OpenAI/Codex 경로에만, Claude 구독은 Anthropic/Claude Code 경로에만 사용한다. Provider를 바꿀 때는 model 이름만 교체하지 않고 새 profile·adapter·call ID·session으로 실행한다.
 
+ProviderProfile 하나는 provider·인증·client version뿐 아니라 model과 실행 환경 하나까지 고정합니다. 시험하지 않은 후보는 실행 가능한 `EXPERIMENTAL`로 표시하지 않습니다. 구독형 Codex·Claude Code는 원래 파일과 명령을 다룰 수 있으므로, 실제 저장소가 없는 격리 directory에서 tool·MCP·hook·plugin·추가 instruction을 모두 끌 수 있을 때만 LLM 전송 경로로 사용합니다. 이 격리를 증명하지 못하면 해당 구독 경로를 거절합니다.
+
 provider/model failover는 조용히 수행하지 않는다. 모든 retry와 fallback 호출은 새 `llm_call_id`를 사용한다. 일반 retry는 `retry_of_llm_call_id`, provider/model 전환은 `failover_from_llm_call_id`로 바로 앞의 허용된 실패 호출을 가리킨다. 두 필드를 동시에 사용하지 않으며 이 연결을 따라 최초 실패부터 마지막 결과까지 순서와 원인을 확인할 수 있어야 한다.
 
 선행 상태는 `FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED`만 허용한다. `INVALID_OUTPUT`은 제한된 repair 뒤, `RATE_LIMITED`는 backoff 뒤, `AUTH_REQUIRED`는 재인증 뒤에만 retry한다. failover는 미리 허용한 profile과 전환 이유가 필요하다. `SUCCEEDED`나 `CANCELLED` 뒤에는 같은 retry/failover chain을 잇지 않으며, 새 작업이면 선행 reference가 없는 독립 호출로 시작한다.

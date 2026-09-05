@@ -28,7 +28,7 @@ Agent Runtime
 
 Agent Runtime은 역할·structured-output 요구·context reference·budget·session policy를 요청한다. Adapter는 provider별 인증·호출·오류·usage를 공통 결과로 정규화한다. Logging Proxy는 양쪽에서 노출된 요청·응답·tool trace와 실제 선택을 `LLMInvocationLog`로 연결한다.
 
-네 후보 경로와 환경별 지원 판정·시험 기준은 [R3-04 Provider 결정](./implementation/04-provider-decision.md)을 따른다. API Key와 구독 session은 서로 바꿔 쓸 수 있는 credential이 아니다. 실제 선택 단위는 `provider + product + transport + auth_mode + model`을 고정한 versioned `ProviderProfile` revision이다. Codex 구독에서 Claude 구독으로 바꾼다는 말은 같은 client에서 model 문자열만 바꾸는 것이 아니라 다른 profile과 adapter의 새 호출을 시작한다는 뜻이다.
+네 후보 경로와 환경별 지원 판정·시험 기준은 [R3-04 Provider 결정](./implementation/04-provider-decision.md)을 따른다. API Key와 구독 session은 서로 바꿔 쓸 수 있는 credential이 아니다. 실제 선택 단위는 `provider + product + transport + auth_mode + client version + model + environment`를 고정한 versioned `ProviderProfile` revision이다. Codex 구독에서 Claude 구독으로 바꾼다는 말은 같은 client에서 model 문자열만 바꾸는 것이 아니라 다른 profile과 adapter의 새 호출을 시작한다는 뜻이다.
 
 ## provider 호출 전 권한 검사
 
@@ -92,7 +92,9 @@ UI 자동화나 session 재사용이 공식 지원 범위 밖이라면 구현 �
 - `CodexSubscriptionAdapter`는 ChatGPT 계정으로 공식 로그인한 Codex CLI/SDK 경계만 사용한다.
 - `ClaudeSubscriptionAdapter`는 Claude 계정으로 공식 로그인한 Claude Code CLI/Agent SDK 경계만 사용한다.
 - 어느 adapter도 client credential 파일을 직접 파싱하거나 token을 추출해 일반 HTTP client에 전달하지 않는다.
-- 구독 plan, workspace, client와 rollout에 따라 모델 접근 범위가 다를 수 있으므로 실제 capability probe 결과가 있는 model·environment 조합만 profile의 `route_support`에 등록한다.
+- 구독 plan, workspace, client와 rollout에 따라 모델 접근 범위가 다를 수 있으므로 실제 시험을 마친 model·environment 조합마다 별도 profile revision을 사용한다.
+- 구독 client는 실제 저장소가 아닌 격리된 빈 working directory에서 실행하고 redacted PromptPayload만 받는다. exact `ClientExecutionProfile`로 file·command·web tool, MCP·hook·plugin·project/user instruction·provider fallback과 불필요한 환경 변수를 fail-closed로 끈다.
+- 사용 중인 client version에서 이 격리를 강제하고 부정 시험할 수 없으면 Membership adapter를 호출하지 않는다.
 
 ## APIProviderAdapter
 

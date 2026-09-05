@@ -37,27 +37,26 @@ ProviderProfile:
   provider: OPENAI | ANTHROPIC
   product: OPENAI_API | CODEX | ANTHROPIC_API | CLAUDE_CODE
   transport: RESPONSES_API | CODEX_CLIENT | MESSAGES_API | CLAUDE_CODE_CLIENT
+  model: string
+  environment: PERSONAL_LOCAL | TEAM_LOCAL | PRIVATE_CI | SHARED_SERVER
   auth_mode: API_KEY | SUBSCRIPTION_LOGIN
   credential_source: ENVIRONMENT | SECRET_STORE | OFFICIAL_CLIENT_SESSION
   client_name: string
   client_version: string
-  route_support: [ProviderRouteSupport]
-  checked_at: RFC3339 UTC timestamp
-  evidence_urls: [string]
-
-ProviderRouteSupport:
-  route_id: string
-  model: string
-  environment: PERSONAL_LOCAL | TEAM_LOCAL | PRIVATE_CI | SHARED_SERVER
   capabilities: ProviderCapabilities
   support_status: SUPPORTED | EXPERIMENTAL | REJECTED
-  evidence_ref: StoredDataRef | null
+  validation_evidence_ref: StoredDataRef
+  client_execution_profile_ref: StoredDataRef | null
   limitations: [string]
+  checked_at: RFC3339 UTC timestamp
+  evidence_urls: [string]
 ```
 
 `profile_key`는 사람이 설정에서 읽기 쉬운 등록 이름이다. record 정체성과 수정본은 각각 `meta.logical_record_id`와 `meta.revision_number`가 기준이며, `profile_key`를 exact reference 대신 사용하면 안 된다.
 
-지원 판정의 최소 단위는 `profile revision + model + environment`다. 한 모델의 개인 로컬 성공을 다른 모델·CI·공용 server에 복사하지 않는다. 아직 실행 증거가 없으면 `evidence_ref=null`과 `EXPERIMENTAL | REJECTED`만 사용할 수 있으며 `SUPPORTED`로 올리지 않는다.
+`ProviderProfile` 한 revision은 **정확히 한 provider·product·transport·인증·client version·model·실행 환경 조합**만 나타낸다. 따라서 `LLMCallSpec.provider_profile_ref` 하나로 허가한 실행 환경까지 복원할 수 있고, spec의 `model`은 profile의 `model`과 같아야 한다. 한 모델의 개인 로컬 성공을 다른 모델·CI·공용 server에 복사하지 않는다.
+
+시험 전 후보에는 `ProviderProfile`을 발급하지 않는다. `EXPERIMENTAL`도 제한된 환경에서 실제 필수 시험을 통과했다는 증거가 있을 때만 사용한다. `SUPPORTED | EXPERIMENTAL`은 non-null `validation_evidence_ref`가 필수다. `REJECTED`도 시험 실패 또는 운영 정책상 금지한 근거를 연결한다.
 
 `ProviderCapabilities`에는 최소한 다음 값이 있어야 한다.
 
@@ -78,6 +77,27 @@ ProviderCapabilities:
 ```
 
 비밀값, cookie, OAuth token, browser profile 경로와 실제 session credential은 `ProviderProfile`에 저장하지 않는다. `credential_source`는 비밀값의 종류와 주입 경계만 설명한다.
+
+구독 client를 LLM 전송 경계로 사용할 때에는 다음 record도 필수다.
+
+```yaml
+ClientExecutionProfile:
+  meta: RecordMeta
+  execution_key: string
+  working_directory_mode: ISOLATED_EMPTY
+  filesystem_mode: NO_REPOSITORY_ACCESS
+  tool_mode: DISABLED
+  mcp_mode: DISABLED
+  hooks_mode: DISABLED
+  plugin_mode: DISABLED
+  instruction_sources: EXPLICIT_SASTSIMI_PAYLOAD_ONLY
+  environment_variable_allowlist: [string]
+  network_policy_ref: StoredDataRef
+  provider_fallback: DISABLED
+  verification_evidence_ref: StoredDataRef
+```
+
+Codex·Claude Code는 단순 채팅 client가 아니라 파일·명령·tool을 사용할 수 있는 coding agent다. 구독 adapter는 실제 분석 저장소를 client working directory로 열지 않고 격리된 빈 directory에서 실행하며, 코드와 근거는 redacted `PromptPayload`로만 전달한다. tool·MCP·hook·plugin·project/user instruction 자동 발견·provider 자체 fallback과 불필요한 환경 변수는 모두 꺼야 한다. 사용 중인 정확한 client version에서 이 경계를 공식 옵션과 부정 시험으로 강제할 수 없으면 그 구독 조합은 `REJECTED`다. API adapter의 `client_execution_profile_ref`는 `null`, 구독 adapter는 검증된 exact profile이 필수다.
 
 ## 3. 어댑터 구조
 
@@ -117,7 +137,7 @@ class LLMProviderAdapter(Protocol):
 - profile 후보: `openai.responses.api-key.v1`
 - 공식 경계: OpenAI Responses API와 공식 SDK
 - credential: 승인된 환경 변수 또는 secret store가 adapter process에만 주입
-- 모델: API 조직·project가 실제 허용한 OpenAI model ID와 현재 환경을 `route_support`에 등록
+- 모델: API 조직·project가 실제 허용한 OpenAI model ID와 현재 환경을 별도 ProviderProfile로 등록
 - 구조화 출력: Responses API JSON Schema 기능을 사용
 - session: 기본 `NEW`; 이어가기가 필요하면 공식 conversation/previous response 기능을 adapter 내부에서 매핑
 - 제안 환경: 개인·팀 로컬, private CI와 shared server 후보
@@ -134,7 +154,7 @@ API Key가 존재한다는 사실만으로 특정 모델 접근 권한이나 한
 - session: 새 thread를 `NEW`, 명시한 thread 재개를 `RESUME`으로 매핑
 - 제안 환경: 개인·팀 로컬 우선, private CI는 신뢰 runner와 공식 인증 수단을 별도 검토
 
-SASTSIMI는 Codex 인증 파일을 읽어 token을 추출하거나 다른 HTTP client에 재사용하지 않는다. 공식 client/SDK를 자식 process 또는 library 경계로 호출하고, 인증 만료는 `AUTH_REQUIRED`로 변환한다.
+SASTSIMI는 Codex 인증 파일을 읽어 token을 추출하거나 다른 HTTP client에 재사용하지 않는다. 공식 client/SDK를 검증된 `ClientExecutionProfile`의 자식 process 또는 library 경계로 호출하고, 인증 만료는 `AUTH_REQUIRED`로 변환한다. client의 command·file·web·MCP·project instruction 기능이 남아 있으면 이 경로를 사용하지 않는다.
 
 ### 4.3 Anthropic Messages API + API Key
 
@@ -158,18 +178,18 @@ SASTSIMI는 Codex 인증 파일을 읽어 token을 추출하거나 다른 HTTP c
 - session: 새 호출을 `NEW`, 공식 session ID 재개를 `RESUME`으로 매핑
 - 제안 환경: 개인·팀 로컬 우선, private CI는 공식 token과 신뢰 runner에서 별도 검토
 
-SASTSIMI는 Claude credential 파일, browser cookie 또는 token을 직접 파싱하지 않는다. 구독 사용량과 Agent SDK용 사용량이 같은 한도라고 가정하지 않고 provider가 공개한 값만 기록한다.
+SASTSIMI는 Claude credential 파일, browser cookie 또는 token을 직접 파싱하지 않는다. 구독 사용량과 Agent SDK용 사용량이 같은 한도라고 가정하지 않고 provider가 공개한 값만 기록한다. `claude -p` 또는 SDK가 built-in tool·MCP·hook·plugin·project/user instruction을 불러오지 않도록 검증된 `ClientExecutionProfile`을 강제할 수 없으면 이 경로를 사용하지 않는다.
 
 ## 5. 환경별 기본 판정
 
-아래 표는 **실제 SASTSIMI smoke test 전의 안전한 초기 상태**다.
+아래 표는 **실제 SASTSIMI smoke test 전의 후보 상태**다. `NOT_EVALUATED`는 ProviderProfile의 지원 상태가 아니라 profile을 아직 발급하지 않았다는 뜻이다.
 
-| profile | 개인 로컬 | 팀 로컬 | private CI | shared server |
+| 연결 후보 | 개인 로컬 | 팀 로컬 | private CI | shared server |
 |---|---|---|---|---|
-| `openai.responses.api-key.v1` | `EXPERIMENTAL` | `EXPERIMENTAL` | `EXPERIMENTAL` | `EXPERIMENTAL` |
-| `openai.codex.subscription.v1` | `EXPERIMENTAL` | `EXPERIMENTAL` | `EXPERIMENTAL` | `REJECTED` |
-| `anthropic.messages.api-key.v1` | `EXPERIMENTAL` | `EXPERIMENTAL` | `EXPERIMENTAL` | `EXPERIMENTAL` |
-| `anthropic.claude-code.subscription.v1` | `EXPERIMENTAL` | `EXPERIMENTAL` | `EXPERIMENTAL` | `REJECTED` |
+| `openai.responses.api-key.v1` | `NOT_EVALUATED` | `NOT_EVALUATED` | `NOT_EVALUATED` | `NOT_EVALUATED` |
+| `openai.codex.subscription.v1` | `NOT_EVALUATED` | `NOT_EVALUATED` | `NOT_EVALUATED` | `REJECTED` |
+| `anthropic.messages.api-key.v1` | `NOT_EVALUATED` | `NOT_EVALUATED` | `NOT_EVALUATED` | `NOT_EVALUATED` |
+| `anthropic.claude-code.subscription.v1` | `NOT_EVALUATED` | `NOT_EVALUATED` | `NOT_EVALUATED` | `REJECTED` |
 
 구독 경로의 `shared server=REJECTED`는 개인 또는 대화형 계정 credential을 공용 서비스 credential로 쓰지 않는 현재 안전 기본값이다. 조직용 공식 비대화형 인증과 격리된 사용자별 실행 경계가 별도 ADR로 승인되면 새 profile revision에서 다시 판단할 수 있다.
 
@@ -181,7 +201,7 @@ SASTSIMI는 Claude credential 파일, browser cookie 또는 token을 직접 파�
 - Claude Code CLI `2.1.250`: 설치됨, 로그인되지 않은 상태 확인
 - OpenAI·Anthropic API adapter와 고정 SDK version: 아직 구현·선정되지 않음
 
-이는 client 설치·인증 사전 확인일 뿐 `PVD-01`–`PVD-12` adapter 시험이 아니다. 따라서 위 표의 상태를 `SUPPORTED`로 올리는 증거로 사용하지 않는다.
+이는 client 설치·인증 사전 확인일 뿐 `PVD-01`–`PVD-14` adapter 시험이 아니다. 따라서 ProviderProfile을 발급하거나 지원 상태를 정하는 증거로 사용하지 않는다.
 
 Issue에서 요구한 `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`는 OpenAI 경로의 접근 확인 후보로 사용한다. 이름이 문서나 설정에 있다는 사실만으로 접근 가능하다고 표시하지 않고, 실제 계정·client·환경별 probe에 성공한 model ID만 route로 등록한다. Claude 모델도 같은 방식으로 실제 접근 결과 뒤에 exact model ID를 등록한다.
 
@@ -189,17 +209,17 @@ Issue에서 요구한 `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`는 OpenAI �
 
 ## 6. 모델 변경과 Provider 전환
 
-Agent 코드와 prompt template에 모델명을 넣지 않는다. Runtime은 exact `provider_profile_ref + model`을 `LLMCallSpec`에 고정한다.
+Agent 코드와 prompt template에 모델명을 넣지 않는다. Runtime은 model·environment까지 포함한 exact `provider_profile_ref`와 같은 `model`을 `LLMCallSpec`에 고정한다.
 
 호출 전 다음을 모두 검사한다.
 
-1. 현재 `profile revision + model + environment` route가 `SUPPORTED` 또는 사용자가 명시적으로 허용한 `EXPERIMENTAL`인지
-2. route의 capability가 해당 Agent가 요구하는 structured output·session·취소·기록 조건을 충족하는지
+1. exact profile revision의 model·현재 environment가 실제 요청과 같고 상태가 `SUPPORTED` 또는 사용자가 명시적으로 허용한 `EXPERIMENTAL`인지
+2. profile capability가 해당 Agent가 요구하는 structured output·session·취소·기록 조건을 충족하는지
 3. 해당 Agent 역할에 필요한 structured output과 session 기능이 있는지
 4. credential source가 profile의 인증 방식과 일치하는지
 5. prompt·schema·timeout·budget과 실제 adapter 요청이 call spec과 같은지
 
-같은 profile 안에서 model을 바꾸거나 다른 provider로 전환하는 것은 모두 명시적 failover다. 새 `llm_call_id`, `LLMCallSpec`, `ActionRequest`, `ActionDecision`, session과 attempt를 만들고 `failover_from_llm_call_id`로 바로 앞의 허용된 실패 호출을 연결한다. 성공 호출 뒤 자동 전환하거나 provider가 자체 fallback을 조용히 적용하는 것은 금지한다.
+다른 model·환경·인증·provider로 전환하려면 항상 다른 exact ProviderProfile을 사용하는 명시적 failover다. 새 `llm_call_id`, `LLMCallSpec`, `ActionRequest`, `ActionDecision`, session과 attempt를 만들고 `failover_from_llm_call_id`로 바로 앞의 허용된 실패 호출을 연결한다. 성공 호출 뒤 자동 전환하거나 provider가 자체 fallback을 조용히 적용하는 것은 금지한다.
 
 ## 7. 공통 오류 변환
 
@@ -232,8 +252,10 @@ Agent 코드와 prompt template에 모델명을 넣지 않는다. Runtime은 exa
 | `PVD-10` | explicit failover | 원래 실패와 새 provider/model 호출이 모두 보존됨 |
 | `PVD-11` | redaction | key·cookie·token·credential path·절대 경로가 prompt/result/log에 없음 |
 | `PVD-12` | 관측값 | 공개된 request ID·usage·session metadata만 기록하고 미제공 값은 null |
+| `PVD-13` | 구독 client 격리 | 실제 저장소 접근, command·file·web tool, MCP·hook·plugin·추가 instruction·ambient secret 사용이 모두 차단 |
+| `PVD-14` | 환경 binding | local용 profile을 CI·shared server에서 사용하면 호출 전 거절하고 exact profile로 환경을 복원 가능 |
 
-`SUPPORTED`로 올리려면 `PVD-01`–`PVD-12`가 그 조합에서 통과하고 증거에 다음이 포함되어야 한다.
+`SUPPORTED`로 올리려면 `PVD-01`–`PVD-14`가 그 조합에서 통과하고 증거에 다음이 포함되어야 한다. API 경로의 `PVD-13`은 client tool이 없음을 확인해 `NOT_APPLICABLE`로 기록할 수 있지만 생략하지 않는다.
 
 - exact client/SDK version과 model ID
 - 실행 환경과 인증 종류
@@ -252,20 +274,24 @@ credential·cookie·token·원문 인증 파일은 증거로 첨부하지 않는
 - OpenAI Codex 비대화형 실행과 JSON Schema: <https://learn.chatgpt.com/docs/non-interactive-mode>
 - OpenAI Codex 모델 선택: <https://learn.chatgpt.com/docs/models>
 - OpenAI Responses API: <https://developers.openai.com/api/reference/cli/resources/responses/methods/create>
+- OpenAI 개인용 이용약관: <https://openai.com/policies/terms-of-use/>
+- OpenAI API·비즈니스 서비스 계약: <https://openai.com/policies/services-agreement/>
 - Claude Code 인증: <https://code.claude.com/docs/en/authentication>
 - Claude Code 비대화형 실행과 JSON Schema: <https://code.claude.com/docs/en/headless>
 - Claude Code CLI 모델 선택: <https://code.claude.com/docs/en/cli-reference>
 - Anthropic API 인증: <https://platform.claude.com/docs/en/manage-claude/authentication>
 - Anthropic Messages API 구조화 출력: <https://platform.claude.com/docs/en/build-with-claude/structured-outputs>
+- Anthropic Consumer Terms: <https://www.anthropic.com/legal/consumer-terms>
+- Anthropic Commercial Terms: <https://www.anthropic.com/legal/commercial-terms>
 
 ## 10. 미완료 증거와 종료 조건
 
 이 문서만으로 #90을 닫지 않는다. 다음 증거가 없기 때문이다.
 
-- 네 경로별 실제 `PVD-01`–`PVD-12` 결과
+- 네 경로별 실제 `PVD-01`–`PVD-14` 결과
 - 역할별 필요한 model의 실제 계정 접근 범위
 - private CI의 credential 격리·취소·동시성 검증
 - R8의 동일 fixture 품질·시간·사용량 비교
 - R4의 profile·session·retry·failover·secret·log 계약 승인
 
-위 증거가 준비되면 표의 각 환경 상태를 새 profile revision으로 갱신한다. `EXPERIMENTAL`을 `SUPPORTED`로 바꾸는 commit에는 시험 증거와 검토 기준 SHA가 반드시 있어야 한다.
+위 증거가 준비되면 model·환경 조합마다 별도 ProviderProfile을 발급한다. `EXPERIMENTAL`을 `SUPPORTED`로 바꾸는 새 revision에는 시험 증거와 검토 기준 SHA가 반드시 있어야 한다.
