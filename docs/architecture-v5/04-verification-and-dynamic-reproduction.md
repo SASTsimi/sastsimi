@@ -299,7 +299,7 @@ Sandbox 안에서는 Agent가 환경 설정, 저장소에 필요한 package, 계
 
 `DynamicReproductionResult.hypothesis_outcome`은 동적 관측 요약이며 최종 verdict가 아니다. `SUPPORTED | DISPROVED`에는 실제 관측을 가리키는 `hypothesis_evidence_refs`가 필요하다. `DISPROVED`일 때만 `hypothesis_disproved=true`와 `disproof_evidence_refs`를 사용한다. 오류·빈 출력·exit code만으로는 반증이나 FALSE를 만들 수 없다. 실패 결과의 `failure_category`는 비교 가능한 범주, `failure_reason`은 민감정보를 제거한 구체적인 자유형 설명이다. plan의 부족·모순은 `plan_issues`에 직접 포함한다.
 
-종료된 동적 결과는 `DynamicReproductionState.dynamic_result_ref`, `WorkExecutionState.output_refs`와 `TransitionCommit.output_refs`가 같은 exact `DynamicReproductionResult.record_id`를 가리킬 때만 R6에 전달한다. R6는 결과를 소비해 final verdict를 만들지만 R7 산출물을 대신 생산하지 않는다. current generation의 exact request, `SUCCEEDED + SUPPORTED` 결과와 validated `poc_ref` 중 하나라도 없으면 final TRUE 저장과 Technical Gate 호출을 모두 차단한다.
+current 반환 동적 결과는 `DynamicReproductionState.dynamic_result_ref`, `WorkExecutionState.output_refs`와 `TransitionCommit.output_refs`가 같은 exact `DynamicReproductionResult.meta.record_id`를 가리킬 때만 R6에 전달한다. `DynamicReproductionState.status=BLOCKED`인 결과도 R6가 대기·복구 판단을 위해 읽을 수 있지만, final `VerificationResult` 또는 Gate 입력으로 사용할 수 없다. R6는 결과를 소비해 final verdict를 만들지만 R7 산출물을 대신 생산하지 않는다. current generation의 exact request, `SUCCEEDED + SUPPORTED` 결과와 validated `poc_ref` 중 하나라도 없으면 final TRUE 저장과 Technical Gate 호출을 모두 차단한다.
 
 ## Technical `REVISE` 처리
 
