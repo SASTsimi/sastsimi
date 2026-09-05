@@ -191,12 +191,14 @@ code_context_request:
   relation_query: [CALLERS, AUTH_GUARDS]
   reason: verify whether ownership checks cover the update path
   limits:
-    max_depth: 3
-    max_fragments: 20
-    max_bytes: 80000
-    max_requests_per_hypothesis: 6
-    timeout_ms: 15000
+    max_depth: 5
+    max_fragments: 32
+    max_bytes: 262144
+    max_requests_per_hypothesis: 24
+    timeout_ms: 45000
 ```
+
+이 예시의 `limits` 값은 R8-03(`07-results-and-observability.md`의 "역할별 자원 한도" 표, "코드 다시 꺼내기" 행)이 제안한 초안과 맞춘 것이다. 실측값이 아니며, R8이 명시한 대로 team이 확정하기 전까지는 잠정 초안이다.
 
 ```yaml
 code_context_response:
