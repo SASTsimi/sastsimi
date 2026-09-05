@@ -141,12 +141,12 @@ R3-06은 다음 조건을 동적 재현 회귀 시험에 포함한다.
 
 아래 항목은 이 문서 작성 중 최신 `main`에서 직접 확인한 사항이다. R3-01이 임의로 새 공통 계약을 만들지 않고 담당 Issue로 넘긴다.
 
-### B1. R7 Agent의 LLM role enum 불일치 — 구현 시작 Blocker
+### B1. R7 Agent의 LLM role enum 불일치 — R3-05에서 해결
 
 [08. 경량 데이터 계약](../08-lightweight-data-contracts.md)은 `CALL_LLM`의 `requested_by=R7_AGENT`를 허용하지만 `LLMCallSpec.agent_role`과 `LLMInvocationRequest.agent_role` enum에는 `R7_AGENT`가 없다. 이대로는 Step 12의 경계 전 requirements·plan 작성 `CALL_LLM`과 경계 승인 뒤 Sandbox 실행 Agent의 역할을 같은 R7 identity로 연결할 수 없고 호출도 schema를 통과할 수 없다.
 
-- 담당: R3-05 #91에서 prompt/call 구조 결정, R4가 공통 enum·authority test 반영
-- 완료 기준: call spec, invocation request/log, Prompt Registry key와 action role 검사가 같은 R7 role을 사용함
+- 해결 내용: R3-05 #91에서 `PromptRegistryEntry`·`PromptPayload`·`LLMCallSpec`·`LLMInvocationRequest`·`LLMInvocationLog`와 action role을 `R7_AGENT`로 통일하고 `PMT-05` fixture를 추가했다.
+- 유지 조건: requirements·plan 작성과 Sandbox 실행 turn의 task는 나누되 같은 R7 role, exact work·attempt와 provider/session provenance를 사용한다.
 
 ### B2. current Finding 생산 단계·저장 권한 — R5 semantic·R4 storage binding 확정
 
@@ -164,14 +164,14 @@ work/output 표에는 `CodeWorkspace`, `ToolRunResult`, schema-valid `Hypothesis
 - 담당: R4 공통 계약, 소비 역할은 R2·R3·R8 교차 검토
 - 완료 기준: 네 output 각각의 저장 entry point, producer, current pointer와 TransitionCommit 사용 여부가 명확함
 
-### B4. Orchestration이 LLM Agent인지 비-LLM control runtime인지 표현 불일치 — 구현 시작 전 High
+### B4. Orchestration이 LLM Agent인지 비-LLM control runtime인지 표현 불일치 — R3-05에서 해결
 
 번호 문서는 `Orchestration Agent`라고 부르지만 실제 권한 대부분은 비-LLM runtime에 있으며 R3-05의 prompt 대상 목록에는 Orchestration prompt가 없다. 모델이 판단하는 부분과 프로그램이 순서를 관리하는 부분을 나누지 않으면 구현자가 전체 실행 제어를 LLM에 맡길 수 있다.
 
-- 담당: R3-05 #91과 R3-06 #92
-- 완료 기준: Orchestration의 LLM 판단 entry point와 비-LLM 등록·배정·state enforcement entry point가 각각 한 번만 정의됨
+- 해결 내용: R3-05 #91은 별도 Orchestration prompt를 두지 않고, Hypothesis Agent가 proposal과 중복 결론을 만들며 Orchestration runtime은 등록·배정·상태·권한 enforcement만 수행하도록 고정했다.
+- 유지 조건: R3-06 #92의 구현 기준선과 실제 module wiring도 이 분리를 그대로 따라야 한다.
 
-이 네 항목은 R3-06 최종 구현 기준을 닫기 전에 해결해야 한다. 해결 전에도 R3-02·R3-03의 테스트 설계는 시작할 수 있지만 실제 production pipeline 구현 완료를 선언할 수 없다.
+B1과 B4는 R3-05에서 해결했다. B2는 이 문서에 기록된 R5·R4 결정으로 완료됐고, B3의 core output 저장 entry point는 R4 공통 계약에서 별도로 닫아야 한다. 남은 미해결 항목을 닫기 전에는 실제 production pipeline 구현 완료를 선언할 수 없다.
 
 ## 8. 역할별 필수 검토 범위
 

@@ -954,10 +954,10 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
             Add-Failure "R3-05 prompt runtime is missing marker: $marker"
         }
     }
-    foreach ($task in @('GENERATE_INITIAL', 'DUPLICATE_REVIEW', 'COLLECT_SUPPORT', 'COLLECT_COUNTEREVIDENCE', 'CREATE_DYNAMIC_REQUEST', 'FINAL_VERDICT', 'TECHNICAL_REVISE', 'DERIVE_ENVIRONMENT', 'PLAN_REPRODUCTION', 'CREATE_POC_CANDIDATE', 'INTERPRET_ATTEMPT', 'MATCH_PRIMITIVES', 'CLASSIFY', 'CREATE_DRAFT')) {
+    foreach ($task in @('GENERATE_INITIAL', 'DUPLICATE_REVIEW', 'COLLECT_SUPPORT', 'COLLECT_COUNTEREVIDENCE', 'ASSESS_INITIAL', 'CREATE_DYNAMIC_REQUEST', 'FINAL_VERDICT', 'TECHNICAL_REVISE', 'DERIVE_ENVIRONMENT', 'PLAN_REPRODUCTION', 'CREATE_POC_CANDIDATE', 'EXECUTE_REPRODUCTION', 'INTERPRET_ATTEMPT', 'MATCH_PRIMITIVES', 'CLASSIFY', 'CREATE_DRAFT')) {
         if (-not $promptRuntimeText.Contains($task)) { Add-Failure "R3-05 prompt runtime is missing task registry row: $task" }
     }
-    foreach ($testId in @('PMT-HYP-01', 'PMT-HYP-02', 'PMT-PRO-01', 'PMT-CON-01', 'PMT-VER-01', 'PMT-VER-02', 'PMT-VER-03', 'PMT-R7-01', 'PMT-R7-02', 'PMT-R7-03', 'PMT-R7-04', 'PMT-CHN-01', 'PMT-CWE-01', 'PMT-TG-01', 'PMT-RSG-01', 'PMT-REP-01')) {
+    foreach ($testId in @('PMT-HYP-01', 'PMT-HYP-02', 'PMT-PRO-01', 'PMT-CON-01', 'PMT-VER-00', 'PMT-VER-01', 'PMT-VER-02', 'PMT-VER-03', 'PMT-R7-01', 'PMT-R7-02', 'PMT-R7-03', 'PMT-R7-04', 'PMT-R7-05', 'PMT-CHN-01', 'PMT-CWE-01', 'PMT-TG-01', 'PMT-RSG-01', 'PMT-REP-01')) {
         if (-not $promptRuntimeText.Contains($testId)) { Add-Failure "R3-05 prompt runtime is missing role fixture: $testId" }
     }
     foreach ($obsoletePointer in @('/relations', '/tool_coverage', '/bundle_hash')) {
@@ -988,6 +988,61 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
     foreach ($requiredInput in @('`assignment`', '`process`', '`proposal`', '`policy`', '`playbook`', '`application`', '`debate_config`', '`budget_profile`')) {
         if (-not $technicalReviseTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 TECHNICAL_REVISE row is missing current exact input: $requiredInput" }
     }
+
+    $initialAssessmentTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| VERIFICATION / `ASSESS_INITIAL` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', 'data_kind=pro_evidence_result', 'data_kind=con_evidence_result', 'verification_initial_assessment', 'PMT-VER-00')) {
+        if (-not $initialAssessmentTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 ASSESS_INITIAL row is missing required contract: $requiredInput" }
+    }
+    foreach ($requiredInput in @('PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', 'VerificationInitialAssessment($)')) {
+        if (-not $dynamicRequestTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 CREATE_DYNAMIC_REQUEST row is missing assessment/playbook input: $requiredInput" }
+    }
+    if (-not $finalVerdictTaskRow.Contains('VerificationInitialAssessment($)')) {
+        Add-Failure 'R3-05 FINAL_VERDICT row is missing initial assessment input'
+    }
+
+    $chainingTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| CHAINING / `MATCH_PRIMITIVES` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('indexes: PrimitiveIndexState($) REQUIRED_MANY', 'lineage_hypotheses: VulnerabilityHypothesis(', 'lineage_results: ChainingResult(')) {
+        if (-not $chainingTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 CHAINING row is missing lineage input: $requiredInput" }
+    }
+
+    $deriveEnvironmentTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| R7_AGENT / `DERIVE_ENVIRONMENT` \| `config/prompts/templates/.*$').Value
+    $planReproductionTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| R7_AGENT / `PLAN_REPRODUCTION` \| `config/prompts/templates/.*$').Value
+    foreach ($rowRule in @(
+        @{ Name = 'DERIVE_ENVIRONMENT'; Text = $deriveEnvironmentTaskRow },
+        @{ Name = 'PLAN_REPRODUCTION'; Text = $planReproductionTaskRow }
+    )) {
+        foreach ($requiredInput in @('dependency_context: CodeContextResponse($)', '`dependency_files: code_fragment($)` OPTIONAL_MANY')) {
+            if (-not $rowRule.Text.Contains($requiredInput)) { Add-Failure "R3-05 $($rowRule.Name) row is missing repository dependency content: $requiredInput" }
+        }
+    }
+
+    foreach ($requiredMarker in @(
+        'R7_AGENT / `EXECUTE_REPRODUCTION`',
+        'schema.r7-sandbox-tool-request.next-major',
+        '`tools.none.v1`',
+        '`tools.r7-sandbox-inner.v1`',
+        '`PMT-R7-05`',
+        'DynamicReproductionResult의 `hypothesis_outcome`, `hypothesis_evidence_refs`, `hypothesis_linkage`, `limitations`'
+    )) {
+        if (-not $promptRuntimeText.Contains($requiredMarker)) { Add-Failure "R3-05 prompt runtime is missing R7 staged execution rule: $requiredMarker" }
+    }
+}
+
+$initialAssessmentBlock = [regex]::Match($contractText, '(?ms)^VerificationInitialAssessment:\s*(.*?)^EvidenceClaim:').Groups[1].Value
+foreach ($field in @('verification_work_id:', 'verification_generation:', 'hypothesis_ref:', 'policy_ref:', 'playbook_ref:', 'playbook_application_ref:', 'pro_evidence_ref:', 'con_evidence_ref:', 'next_step:', 'proposed_verdict:', 'evidence_refs:', 'llm_call_id:')) {
+    if (-not $initialAssessmentBlock.Contains($field)) { Add-Failure "VerificationInitialAssessment missing field: $field" }
+}
+$r7SandboxToolRequestBlock = [regex]::Match($contractText, '(?ms)^R7SandboxToolRequest:\s*(.*?)^PoCBundle:').Groups[1].Value
+foreach ($field in @('request_ref:', 'reproduction_plan_ref:', 'environment_ref:', 'action:', 'command:', 'poc_candidate_ref:', 'recreate_reason:', 'llm_call_id:')) {
+    if (-not $r7SandboxToolRequestBlock.Contains($field)) { Add-Failure "R7SandboxToolRequest missing field: $field" }
+}
+foreach ($marker in @(
+    '`verification_initial_assessment -> VerificationInitialAssessment -> VERIFICATION`',
+    '`r7_sandbox_tool_request -> R7SandboxToolRequest -> R7_AGENT`',
+    'initial assessment를 final `VerificationResult`나 Gate 입력으로 사용하지 않는다',
+    'Session Manager는 이 네 값을 새로 판단하거나 바꾸지 않는다'
+)) {
+    if (-not $contractText.Contains($marker)) { Add-Failure "missing reviewed prompt contract rule: $marker" }
 }
 $promptAgentWikiText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/agents.md')
 $promptContractWikiText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/common-contracts.md')
@@ -1171,7 +1226,7 @@ $sandboxReviewPatterns = @(
     },
     @{
         Name = 'AgentLog command events bind the same exact command'
-        Pattern = '(?s)SandboxCommandRecord:.*?command_digest: string.*?redaction_status: REDACTED \| NOT_REQUIRED.*?`COMMAND_STARTED`와 대응하는 `COMMAND_FINISHED`.*?동일한 exact `SandboxCommandRecord.command_ref`·`command_digest`, `action_id`, `environment_ref`, `environment_recipe_ref`.*?secret 원문은 저장하지 않고 opaque `secret_refs`.*?검사 실패 command나 log는 저장하지 않는다'
+        Pattern = '(?s)SandboxCommandRecord:.*?tool_request_ref: StoredDataRef.*?command_digest: string.*?redaction_status: REDACTED \| NOT_REQUIRED.*?`COMMAND_STARTED`와 대응하는 `COMMAND_FINISHED`.*?동일한 exact `R7SandboxToolRequest`, `SandboxCommandRecord.command_ref`·`command_digest`, `action_id`, `environment_ref`, `environment_recipe_ref`.*?실제 실행한 executable·argv·working directory·환경 binding·stdin을 정본으로 보존.*?secret 원문은 저장하지 않고 opaque `secret_refs`.*?검사 실패 command나 log는 저장하지 않는다'
     },
     @{
         Name = 'Dynamic retry lifecycle distinguishes session and external resume'
@@ -2741,6 +2796,7 @@ Write-Output "StaticFactBundle cross-document rules: $($requiredStaticFactBundle
 Write-Output "Static layer Primitive admission rules: $($requiredStaticPrimitiveAdmissionRules.Count)"
 Write-Output "R4 policy contract blocks: $($requiredPolicyContractFields.Count)"
 Write-Output "R4 policy contract rules: $($requiredPolicyContractRules.Count)"
+Write-Output 'R3-05 reviewed prompt contract rules: initial assessment, Chaining lineage, R7 staged loop'
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {

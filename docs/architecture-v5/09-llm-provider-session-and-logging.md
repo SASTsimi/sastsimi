@@ -39,6 +39,8 @@ Agent Runtime은 역할·structured-output 요구·context reference·budget·se
 
 모든 check가 `PASS`인 `ActionDecision=ALLOW`를 runtime이 `USED`로 claim한 뒤에만 `LLMInvocationRequest`를 만든다. 요청의 `action_decision_ref`는 그 exact claim revision, `call_spec_ref`와 `provider_profile_ref`는 검사한 exact spec과 versioned provider profile revision을 가리킨다. runtime은 provider 호출 직전에 role·task·model·session·source context·prompt registry/template/payload·model/limits/retry/tool/redaction 정책·output schema·semantic validator·token budget 계획값·timeout이 spec과 모두 같은지 다시 검사한다. Prompt Builder가 만든 각 context projection도 registry의 slot·field·cardinality·trust class와 정확히 맞아야 한다. 이 equality는 요청 변조를 막는 검사이며 실제 token 사용량의 상한 검사가 아니다. `LLMInvocationLog`도 같은 action decision·spec·profile ref와 위 exact reference를 보존한다. 다른 action, 이전 state version, retry 또는 failover에 같은 decision을 재사용하지 않는다.
 
+R7의 `DERIVE_ENVIRONMENT | PLAN_REPRODUCTION | CREATE_POC_CANDIDATE | INTERPRET_ATTEMPT`는 provider 내장 tool이 없는 일반 구조화 호출이다. 외부 경계 허용 뒤의 `EXECUTE_REPRODUCTION`만 `tools.r7-sandbox-inner.v1`을 사용하며 이 이름은 provider client에 host command/file/web tool을 켠다는 뜻이 아니다. 모델은 `R7SandboxToolRequest`를 반환하고 SASTSIMI Runtime이 exact work·attempt·environment를 검사해 in-container 통로로 실행한다. 각 turn의 호출 log, exact tool request, `SandboxCommandRecord`와 AgentLog event를 연결하고 실행 결과는 다음 turn의 비신뢰 입력으로만 전달한다.
+
 저장소 텍스트나 LLM output이 provider·model·session mode·fallback·budget을 바꾸라고 요구해도 configuration 변경으로 해석하지 않는다. 요청된 값이 versioned provider policy와 다르면 `PROVIDER_PROFILE_DENIED` 또는 `UNTRUSTED_INSTRUCTION`으로 호출하지 않는다.
 
 ## 공통 adapter 책임

@@ -30,11 +30,13 @@
 Orchestration → proposal validation → runtime narrows duplicate candidates
 Hypothesis → compare exact candidates when needed → registration or duplicate stop
 Orchestration → assign Verification for registered hypotheses
-Verification → context → Pro and Con → DynamicReproductionRequest
-R7 planning → EnvironmentRequirements and simple ReproductionPlan
+Verification → context → Pro and Con → initial assessment
+Initial assessment → PoC confirmation request / verdict evidence request / final FALSE or HOLD synthesis
+R7 planning before Sandbox → dependency file contents → EnvironmentRequirements and simple ReproductionPlan
 Runtime Validator → enforce one dynamic work per generation → authorize Sandbox call
 Sandbox Controller checks external boundary → Setup Automation prepares recipe and clean environment
-R7 Agent creates PoC candidate and autonomously runs it → Session Manager stores AgentLog and same-attempt result → Verification final verdict
+R7 Agent creates PoC candidate → structured Sandbox turns repeat inside the boundary → R7 conclusion
+Session Manager checks conclusion against AgentLog and stores same-attempt result → Verification final verdict
 HOLD + required candidates → inputs plus null result Primitive → Chaining
 HOLD + no required candidates → no Primitive and no Chaining work
 TRUE → R5-01 CWE_LABELING → current CWELabel → Technical Gate → policy and Rule Scope review
@@ -51,6 +53,10 @@ current Finding + all report conditions → Reporter → ReportDraft → Analysi
 프롬프트가 필요한 역할은 Hypothesis, Pro, Con, Verification, R7 Agent, Chaining, CWE Labeling, Technical Gate, Rule Scope Gate, Reporter의 10개입니다. Orchestration은 화면과 문서에서 전체 조정 기능을 부르는 이름이지만, 실제 등록·중복 후보 축소·배정·상태·권한 관리는 정해진 프로그램이 수행하므로 별도 LLM 프롬프트를 만들지 않습니다.
 
 프롬프트는 문장 파일만 두지 않습니다. “어느 역할의 어떤 작업인지, 어떤 입력만 읽는지, 어떤 형식으로 답해야 하는지”를 `PromptRegistryEntry`에 등록하고, 실제 호출마다 exact template과 입력으로 `PromptPayload`를 만듭니다. API 또는 구독 Provider를 바꿔도 이 논리 내용과 출력 형식은 같아야 합니다.
+
+Verification은 Pro·Con 뒤 `ASSESS_INITIAL`로 PoC 확인, 판정용 동적 근거, 동적 실행 없는 final FALSE/HOLD 합성 중 하나를 고릅니다. 이 중간 결과는 final 판정이나 Gate 입력이 아닙니다. Chaining은 여러 current Primitive index와 가설·부모 ChainingResult 계보를 함께 받아 실제 조상 제외를 계산할 수 있어야 합니다.
+
+R7의 requirements·plan 작성은 Sandbox 밖에서 tool 없이 수행합니다. Dockerfile·README·manifest·lockfile의 실제 redacted 내용과 조회 gap을 입력으로 받고, 외부 경계 허용 뒤에만 구조화된 Sandbox tool request를 한 번에 하나씩 반환합니다. Runtime이 container 안에서 실행하고 Session Manager가 기록합니다. 마지막 R7 conclusion과 동적 결과의 outcome·evidence·linkage·limitations가 다르면 저장하지 않습니다.
 
 모든 LLM 출력은 비신뢰 입력이다. 비-LLM Runtime Validator가 schema·호출 권한·상태 전이·예산·provider/session·Gate/Reporter 순서를 강제한다. Runtime Validator는 `RUN_SANDBOX`의 exact request·current requirements·current exact plan과 두 profile revision을 고정합니다. Runtime Validator는 R8 lifecycle profile의 호출 전 잔여 시간·새 attempt 한도를 검사합니다. Sandbox Controller는 R7 `sandbox_profile_ref`의 host·Docker·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하며 Sandbox 내부 command를 allowlist로 제한하지 않습니다.
 

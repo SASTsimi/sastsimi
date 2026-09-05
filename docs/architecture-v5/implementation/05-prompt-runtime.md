@@ -8,7 +8,7 @@
 
 ## 1. 기준과 핵심 결론
 
-- 작성 기준 `main`: `40c744523c09349c47592b4e3a1ee84a382bb16c`
+- 작성 기준 `main`: `0cae9bdc5161efb68a3fdc15cb72ec12e3a3440e`
 - 연결 Issue: [R3-05 #91](https://github.com/SASTsimi/sastsimi/issues/91)
 - Provider 연결 결정: [R3-04 #90](https://github.com/SASTsimi/sastsimi/issues/90)
 - 최종 구현 기준선: [R3-06 #92](https://github.com/SASTsimi/sastsimi/issues/92)
@@ -199,13 +199,15 @@ PromptContextBinding:
 | HYPOTHESIS / `DUPLICATE_REVIEW` | `model.hypothesis.duplicate-review.quality-v1` | `providers.r3-04-accepted-v1` | `limits.hypothesis.v1` | `retry.standard.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
 | PRO | `model.pro.quality-v1` | `providers.r3-04-accepted-v1` | `limits.pro.v1` | `retry.debate.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
 | CON | `model.con.quality-v1` | `providers.r3-04-accepted-v1` | `limits.con.v1` | `retry.debate.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
+| VERIFICATION / `ASSESS_INITIAL` | `model.verification.assess-initial.quality-v1` | `providers.r3-04-accepted-v1` | `limits.verification.v1` | `retry.verification.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
 | VERIFICATION / `CREATE_DYNAMIC_REQUEST` | `model.verification.create-dynamic-request.quality-v1` | `providers.r3-04-accepted-v1` | `limits.verification.v1` | `retry.verification.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
 | VERIFICATION / `FINAL_VERDICT` | `model.verification.final-verdict.quality-v1` | `providers.r3-04-accepted-v1` | `limits.verification.v1` | `retry.verification.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
 | VERIFICATION / `TECHNICAL_REVISE` | `model.verification.technical-revise.quality-v1` | `providers.r3-04-accepted-v1` | `limits.verification.v1` | `retry.verification.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
-| R7_AGENT / `DERIVE_ENVIRONMENT` | `model.r7-agent.derive-environment.quality-v1` | `providers.r3-04-accepted-v1` | `limits.r7-agent.v1` | `retry.r7-agent.v1` | `tools.r7-sandbox-inner.v1` | `redaction.sandbox.v1` | NEW |
-| R7_AGENT / `PLAN_REPRODUCTION` | `model.r7-agent.plan-reproduction.quality-v1` | `providers.r3-04-accepted-v1` | `limits.r7-agent.v1` | `retry.r7-agent.v1` | `tools.r7-sandbox-inner.v1` | `redaction.sandbox.v1` | NEW |
-| R7_AGENT / `CREATE_POC_CANDIDATE` | `model.r7-agent.create-poc-candidate.quality-v1` | `providers.r3-04-accepted-v1` | `limits.r7-agent.v1` | `retry.r7-agent.v1` | `tools.r7-sandbox-inner.v1` | `redaction.sandbox.v1` | NEW |
-| R7_AGENT / `INTERPRET_ATTEMPT` | `model.r7-agent.interpret-attempt.quality-v1` | `providers.r3-04-accepted-v1` | `limits.r7-agent.v1` | `retry.r7-agent.v1` | `tools.r7-sandbox-inner.v1` | `redaction.sandbox.v1` | NEW |
+| R7_AGENT / `DERIVE_ENVIRONMENT` | `model.r7-agent.derive-environment.quality-v1` | `providers.r3-04-accepted-v1` | `limits.r7-agent.v1` | `retry.r7-agent.v1` | `tools.none.v1` | `redaction.sandbox.v1` | NEW |
+| R7_AGENT / `PLAN_REPRODUCTION` | `model.r7-agent.plan-reproduction.quality-v1` | `providers.r3-04-accepted-v1` | `limits.r7-agent.v1` | `retry.r7-agent.v1` | `tools.none.v1` | `redaction.sandbox.v1` | NEW |
+| R7_AGENT / `CREATE_POC_CANDIDATE` | `model.r7-agent.create-poc-candidate.quality-v1` | `providers.r3-04-accepted-v1` | `limits.r7-agent.v1` | `retry.r7-agent.v1` | `tools.none.v1` | `redaction.sandbox.v1` | NEW |
+| R7_AGENT / `EXECUTE_REPRODUCTION` | `model.r7-agent.execute-reproduction.quality-v1` | `providers.r3-04-accepted-v1` | `limits.r7-agent.v1` | `retry.r7-agent.v1` | `tools.r7-sandbox-inner.v1` | `redaction.sandbox.v1` | NEW then same logical session turns |
+| R7_AGENT / `INTERPRET_ATTEMPT` | `model.r7-agent.interpret-attempt.quality-v1` | `providers.r3-04-accepted-v1` | `limits.r7-agent.v1` | `retry.r7-agent.v1` | `tools.none.v1` | `redaction.sandbox.v1` | NEW |
 | CHAINING | `model.chaining.quality-v1` | `providers.r3-04-accepted-v1` | `limits.chaining.v1` | `retry.standard.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
 | CWE_LABELING | `model.cwe.quality-v1` | `providers.r3-04-accepted-v1` | `limits.cwe.v1` | `retry.standard.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
 | TECHNICAL_GATE | `model.technical-gate.quality-v1` | `providers.r3-04-accepted-v1` | `limits.technical-gate.v1` | `retry.gate.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
@@ -226,14 +228,16 @@ PromptContextBinding:
 | HYPOTHESIS / `DUPLICATE_REVIEW` | `config/prompts/templates/hypothesis/duplicate-review/1.0.0.md` | `proposal: HypothesisProposal($)`; `candidates: VulnerabilityHypothesis(/meta,/proposal_ref,/parent_hypothesis_ids,/source_primitive_match_id)` REQUIRED_MANY | `schema.hypothesis-duplicate-review.next-major` / `validator.hypothesis-duplicate-review.v1` / `hypothesis_duplicate_review` | R1 / R3,R4,R8 / `PMT-HYP-02` |
 | PRO / `COLLECT_SUPPORT` | `config/prompts/templates/pro/collect-support/1.0.0.md` | `assignment: VerificationAssignment($)`; `process: HypothesisProcessState(/status,/verification_assignment_ref,/verification_generation,/verification_work_ref)`; `hypothesis: VulnerabilityHypothesis($)`; `proposal: HypothesisProposal($)`; `facts: StaticFactBundle(/entities,/locations,/source_candidates,/sink_candidates,/sanitizer_candidates,/validator_candidates,/auth_and_permission_checks,/other_facts,/call_edges,/data_flow_candidates,/route_bindings,/tool_runs,/gaps,/errors)`; `contexts: CodeContextResponse($)` OPTIONAL_MANY; `policy: PlaybookPolicy($)`; `playbook: VerificationPlaybook($)`; `application: PlaybookApplication($)`; `debate_config: debate_config($)`; `budget_profile: verification_budget_profile($)` | `schema.evidence-agent-result.next-major` / `validator.pro-evidence.v1` / `pro_evidence_result` | R6 / R2,R3,R4,R8 / `PMT-PRO-01` |
 | CON / `COLLECT_COUNTEREVIDENCE` | `config/prompts/templates/con/collect-counterevidence/1.0.0.md` | `assignment: VerificationAssignment($)`; `process: HypothesisProcessState(/status,/verification_assignment_ref,/verification_generation,/verification_work_ref)`; `hypothesis: VulnerabilityHypothesis($)`; `proposal: HypothesisProposal($)`; `facts: StaticFactBundle(/entities,/locations,/source_candidates,/sink_candidates,/sanitizer_candidates,/validator_candidates,/auth_and_permission_checks,/other_facts,/call_edges,/data_flow_candidates,/route_bindings,/tool_runs,/gaps,/errors)`; `contexts: CodeContextResponse($)` OPTIONAL_MANY; `policy: PlaybookPolicy($)`; `playbook: VerificationPlaybook($)`; `application: PlaybookApplication($)`; `debate_config: debate_config($)`; `budget_profile: verification_budget_profile($)`; 상대 결과는 금지 | `schema.evidence-agent-result.next-major` / `validator.con-evidence.v1` / `con_evidence_result` | R6 / R2,R3,R4,R8 / `PMT-CON-01` |
-| VERIFICATION / `CREATE_DYNAMIC_REQUEST` | `config/prompts/templates/verification/create-dynamic-request/1.0.0.md` | `assignment: VerificationAssignment($)`; `process: HypothesisProcessState(/status,/verification_assignment_ref,/verification_generation,/verification_work_ref)`; `hypothesis: VulnerabilityHypothesis($)`; `proposal: HypothesisProposal($)`; `pro: EvidenceAgentResult(role=PRO, data_kind=pro_evidence_result)`; `con: EvidenceAgentResult(role=CON, data_kind=con_evidence_result)`; `facts: StaticFactBundle(/entities,/locations,/auth_and_permission_checks,/call_edges,/data_flow_candidates,/route_bindings,/gaps,/errors)`; `contexts: CodeContextResponse($)` OPTIONAL_MANY; `sandbox_profile: sandbox_profile($)` | `schema.dynamic-reproduction-request.next-major` / `validator.dynamic-request.v1` / `dynamic_reproduction_request` | R6 / R2,R3,R4,R7,R8 / `PMT-VER-01` |
-| VERIFICATION / `FINAL_VERDICT` | `config/prompts/templates/verification/final-verdict/1.0.0.md` | `assignment: VerificationAssignment($)`; `process: HypothesisProcessState(/status,/verification_assignment_ref,/verification_generation,/verification_work_ref)`; `hypothesis: VulnerabilityHypothesis($)`; `proposal: HypothesisProposal($)`; `facts: StaticFactBundle($)`; `contexts: CodeContextResponse($)` OPTIONAL_MANY; `policy: PlaybookPolicy($)`; `playbook: VerificationPlaybook($)`; `application: PlaybookApplication($)`; `debate_config: debate_config($)`; `budget_profile: verification_budget_profile($)`; `pro: EvidenceAgentResult(role=PRO, data_kind=pro_evidence_result)`; `con: EvidenceAgentResult(role=CON, data_kind=con_evidence_result)`; `dynamic: DynamicReproductionResult($)` OPTIONAL_ONE; `poc: PoCBundle($)` OPTIONAL_ONE | `schema.verification-result.next-major` / `validator.verification-result.v1` / `verification_result` | R6 / R1,R3,R4,R7,R8 / `PMT-VER-02` |
-| VERIFICATION / `TECHNICAL_REVISE` | `config/prompts/templates/verification/technical-revise/1.0.0.md` | `previous: VerificationResult($)`; `review: TechnicalEvidenceReview(/status,/revision_requests,/verification_result_ref,/cwe_label_ref)`; 새 generation의 current exact `assignment`,`process`,`hypothesis`,`proposal`,`facts`,`contexts`,`policy`,`playbook`,`application`,`debate_config`,`budget_profile`,`pro`,`con`,`dynamic`,`poc`를 `FINAL_VERDICT`와 같은 slot·field 규칙으로 입력 | `schema.verification-result.next-major` / `validator.verification-revise.v1` / `verification_result` | R6 / R3,R4,R5,R7,R8 / `PMT-VER-03` |
-| R7_AGENT / `DERIVE_ENVIRONMENT` | `config/prompts/templates/r7_agent/derive-environment/1.0.0.md` | `request: DynamicReproductionRequest(/meta,/purpose,/goal,/environment_needs,/sandbox_profile_ref,/code_refs,/static_evidence_refs)` | `schema.environment-requirements.next-major` / `validator.environment-requirements.v1` / `environment_requirements` | R7 / R3,R4,R6,R8 / `PMT-R7-01` |
-| R7_AGENT / `PLAN_REPRODUCTION` | `config/prompts/templates/r7_agent/plan-reproduction/1.0.0.md` | `request: DynamicReproductionRequest($)`; `requirements: EnvironmentRequirements($)` | `schema.reproduction-plan.next-major` / `validator.reproduction-plan.v1` / `reproduction_plan` | R7 / R3,R4,R6,R8 / `PMT-R7-02` |
+| VERIFICATION / `ASSESS_INITIAL` | `config/prompts/templates/verification/assess-initial/1.0.0.md` | `assignment: VerificationAssignment($)`; `process: HypothesisProcessState(/status,/verification_assignment_ref,/verification_generation,/verification_work_ref)`; `hypothesis: VulnerabilityHypothesis($)`; `proposal: HypothesisProposal($)`; `facts: StaticFactBundle($)`; `contexts: CodeContextResponse($)` OPTIONAL_MANY; `policy: PlaybookPolicy($)`; `playbook: VerificationPlaybook($)`; `application: PlaybookApplication($)`; `pro: EvidenceAgentResult(role=PRO, data_kind=pro_evidence_result)`; `con: EvidenceAgentResult(role=CON, data_kind=con_evidence_result)` | `schema.verification-initial-assessment.next-major` / `validator.verification-initial-assessment.v1` / `verification_initial_assessment` | R6 / R1,R3,R4,R7,R8 / `PMT-VER-00` |
+| VERIFICATION / `CREATE_DYNAMIC_REQUEST` | `config/prompts/templates/verification/create-dynamic-request/1.0.0.md` | `assignment: VerificationAssignment($)`; `process: HypothesisProcessState(/status,/verification_assignment_ref,/verification_generation,/verification_work_ref)`; `hypothesis: VulnerabilityHypothesis($)`; `proposal: HypothesisProposal($)`; `assessment: VerificationInitialAssessment($)`; `pro: EvidenceAgentResult(role=PRO, data_kind=pro_evidence_result)`; `con: EvidenceAgentResult(role=CON, data_kind=con_evidence_result)`; `facts: StaticFactBundle(/entities,/locations,/auth_and_permission_checks,/call_edges,/data_flow_candidates,/route_bindings,/gaps,/errors)`; `contexts: CodeContextResponse($)` OPTIONAL_MANY; `policy: PlaybookPolicy($)`; `playbook: VerificationPlaybook($)`; `application: PlaybookApplication($)`; `sandbox_profile: sandbox_profile($)` | `schema.dynamic-reproduction-request.next-major` / `validator.dynamic-request.v1` / `dynamic_reproduction_request` | R6 / R2,R3,R4,R7,R8 / `PMT-VER-01` |
+| VERIFICATION / `FINAL_VERDICT` | `config/prompts/templates/verification/final-verdict/1.0.0.md` | `assignment: VerificationAssignment($)`; `process: HypothesisProcessState(/status,/verification_assignment_ref,/verification_generation,/verification_work_ref)`; `hypothesis: VulnerabilityHypothesis($)`; `proposal: HypothesisProposal($)`; `assessment: VerificationInitialAssessment($)`; `facts: StaticFactBundle($)`; `contexts: CodeContextResponse($)` OPTIONAL_MANY; `policy: PlaybookPolicy($)`; `playbook: VerificationPlaybook($)`; `application: PlaybookApplication($)`; `debate_config: debate_config($)`; `budget_profile: verification_budget_profile($)`; `pro: EvidenceAgentResult(role=PRO, data_kind=pro_evidence_result)`; `con: EvidenceAgentResult(role=CON, data_kind=con_evidence_result)`; `dynamic: DynamicReproductionResult($)` OPTIONAL_ONE; `poc: PoCBundle($)` OPTIONAL_ONE | `schema.verification-result.next-major` / `validator.verification-result.v1` / `verification_result` | R6 / R1,R3,R4,R7,R8 / `PMT-VER-02` |
+| VERIFICATION / `TECHNICAL_REVISE` | `config/prompts/templates/verification/technical-revise/1.0.0.md` | `previous: VerificationResult($)`; `review: TechnicalEvidenceReview(/status,/revision_requests,/verification_result_ref,/cwe_label_ref)`; 새 generation의 current exact `assignment`,`process`,`hypothesis`,`proposal`,`facts`,`contexts`,`policy`,`playbook`,`application`,`debate_config`,`budget_profile`,`pro`,`con`,`assessment`,`dynamic`,`poc`를 `FINAL_VERDICT`와 같은 slot·field 규칙으로 입력 | `schema.verification-result.next-major` / `validator.verification-revise.v1` / `verification_result` | R6 / R3,R4,R5,R7,R8 / `PMT-VER-03` |
+| R7_AGENT / `DERIVE_ENVIRONMENT` | `config/prompts/templates/r7_agent/derive-environment/1.0.0.md` | `request: DynamicReproductionRequest(/meta,/purpose,/goal,/environment_needs,/sandbox_profile_ref,/code_refs,/static_evidence_refs)`; `dependency_context: CodeContextResponse($)`; `dependency_files: code_fragment($)` OPTIONAL_MANY | `schema.environment-requirements.next-major` / `validator.environment-requirements.v1` / `environment_requirements` | R7 / R2,R3,R4,R6,R8 / `PMT-R7-01` |
+| R7_AGENT / `PLAN_REPRODUCTION` | `config/prompts/templates/r7_agent/plan-reproduction/1.0.0.md` | `request: DynamicReproductionRequest($)`; `requirements: EnvironmentRequirements($)`; `dependency_context: CodeContextResponse($)`; `dependency_files: code_fragment($)` OPTIONAL_MANY | `schema.reproduction-plan.next-major` / `validator.reproduction-plan.v1` / `reproduction_plan` | R7 / R2,R3,R4,R6,R8 / `PMT-R7-02` |
 | R7_AGENT / `CREATE_POC_CANDIDATE` | `config/prompts/templates/r7_agent/create-poc-candidate/1.0.0.md` | `request: DynamicReproductionRequest($)`; `plan: ReproductionPlan($)`; `environment: SandboxEnvironment(/meta,/request_ref,/reproduction_plan_ref,/requirements_ref,/status,/checks,/limitations)` | `schema.poc-candidate.next-major` / `validator.poc-candidate.v1` / `poc_candidate` | R7 / R3,R4,R6,R8 / `PMT-R7-03` |
+| R7_AGENT / `EXECUTE_REPRODUCTION` | `config/prompts/templates/r7_agent/execute-reproduction/1.0.0.md` | `request: DynamicReproductionRequest($)`; `requirements: EnvironmentRequirements($)`; `plan: ReproductionPlan($)`; `environment: SandboxEnvironment($)`; `candidate: PoCCandidate($)` OPTIONAL_ONE; `agent_log: AgentLog(/request_ref,/events)`; `prior_turns: R7SandboxToolRequest($)` OPTIONAL_MANY; `observations: dynamic_observation($)` OPTIONAL_MANY | `schema.r7-sandbox-tool-request.next-major` / `validator.r7-sandbox-tool-request.v1` / `r7_sandbox_tool_request` | R7 / R3,R4,R6,R8 / `PMT-R7-05` |
 | R7_AGENT / `INTERPRET_ATTEMPT` | `config/prompts/templates/r7_agent/interpret-attempt/1.0.0.md` | `request: DynamicReproductionRequest($)`; `plan: ReproductionPlan($)`; `environment: SandboxEnvironment($)`; `candidate: PoCCandidate($)` OPTIONAL_ONE; `agent_log: AgentLog(/request_ref,/events)`; `observations: dynamic_observation($)` OPTIONAL_MANY | `schema.r7-agent-conclusion.next-major` / `validator.r7-agent-conclusion.v1` / `r7_agent_conclusion` | R7 / R3,R4,R6,R8 / `PMT-R7-04` |
-| CHAINING / `MATCH_PRIMITIVES` | `config/prompts/templates/chaining/match-primitives/1.0.0.md` | `index: PrimitiveIndexState($)`; `considered: Primitive($)` REQUIRED_MANY; `admission: PrimitiveAdmissionDecision($)` REQUIRED_MANY | `schema.chaining-result.next-major` / `validator.chaining-result.v1` / `chaining_result` | R1 / R3,R4,R5,R8 / `PMT-CHN-01` |
+| CHAINING / `MATCH_PRIMITIVES` | `config/prompts/templates/chaining/match-primitives/1.0.0.md` | `indexes: PrimitiveIndexState($) REQUIRED_MANY`; `considered: Primitive($)` REQUIRED_MANY; `admission: PrimitiveAdmissionDecision($)` REQUIRED_MANY; `lineage_hypotheses: VulnerabilityHypothesis(/meta,/origin,/parent_hypothesis_ids,/source_primitive_match_id)` REQUIRED_MANY; `lineage_results: ChainingResult(/primitive_match_candidates,/input_primitive_refs)` REQUIRED_MANY | `schema.chaining-result.next-major` / `validator.chaining-result.v1` / `chaining_result` | R1 / R3,R4,R5,R8 / `PMT-CHN-01` |
 | CWE_LABELING / `CLASSIFY` | `config/prompts/templates/cwe_labeling/classify/1.0.0.md` | `verification: VerificationResult($)`; `taxonomy: cwe_taxonomy($)` | `schema.cwe-label.next-major` / `validator.cwe-label.v1` / `cwe_label` | R5 / R3,R4,R6,R8 / `PMT-CWE-01` |
 | TECHNICAL_GATE / `REVIEW` | `config/prompts/templates/technical_gate/review/1.0.0.md` | `verification: VerificationResult($)`; `cwe: CWELabel($)`; exact transitive evidence refs | `schema.technical-evidence-review.next-major` / `validator.technical-gate.v1` / `technical_evidence_review` | R5 / R1,R3,R4,R6,R7,R8 / `PMT-TG-01` |
 | RULE_SCOPE_GATE / `REVIEW` | `config/prompts/templates/rule_scope_gate/review/1.0.0.md` | `verification: VerificationResult($)`; `technical: TechnicalEvidenceReview($)`; `cwe: CWELabel($)`; `collection: PolicyCollectionResult($)`; `policy: ProgramPolicyRecord($)` OPTIONAL_ONE | `schema.rule-scope-impact-review.next-major` / `validator.rule-scope-gate.v1` / `rule_scope_impact_review` | R5 / R3,R4,R6,R8 / `PMT-RSG-01` |
@@ -264,22 +268,32 @@ Pro와 Con의 공통 slot은 이름만 같은 것이 아니라 `source_ref + pro
 
 ### 4.4 Verification Agent — R6
 
-- `verification.dynamic-request`: 필요 목적·목표·환경 조건을 `DynamicReproductionRequest`로 생성
+- `verification.assess-initial`: Pro·Con과 current 플레이북 적용을 종합해 `POC_CONFIRMATION | VERDICT_EVIDENCE | FINALIZE_WITHOUT_DYNAMIC` 중 다음 경로를 `VerificationInitialAssessment`로 선택
+- `verification.dynamic-request`: 같은 initial assessment와 exact 플레이북 적용에서 필요 목적·목표·환경 조건을 `DynamicReproductionRequest`로 생성
 - `verification.final-verdict`: current generation의 근거와 동적 결과를 종합해 final `VerificationResult` 생성
 - `verification.technical-revise`: Technical Gate의 구조화된 보완 요청과 새 generation 근거로 보완된 `VerificationResult` 생성
 - 필수 금지: R7의 plan·command 대신 작성, CWE·Gate 결과·보고서 생성
 - session: Pro·Con session을 재개하지 않는다. 보완도 새 invocation이며 `NEW`가 기본이다.
+
+Runtime은 initial assessment의 의미를 대신 해석하지 않는다. `POC_CONFIRMATION | VERDICT_EVIDENCE`면 `CREATE_DYNAMIC_REQUEST`, `FINALIZE_WITHOUT_DYNAMIC`이면 동적 work 없이 `FINAL_VERDICT`를 호출한다. assessment는 final Verification이나 Gate 입력이 아니며, 같은 work·generation의 exact policy·playbook·application·Pro·Con과 맞지 않으면 사용하지 않는다.
 
 ### 4.5 R7 Reproduction Agent — R7
 
 - `r7.derive-environment`: exact `DynamicReproductionRequest`에서 `EnvironmentRequirements` 하나를 생성
 - `r7.plan-reproduction`: exact request와 requirements에서 `ReproductionPlan` 하나를 생성
 - `r7.create-poc-candidate`: current plan과 환경에서 `PoCCandidate` 하나를 생성하거나 새 revision으로 보완
+- `r7.execute-reproduction`: 승인된 Sandbox 안에서 다음 command·PoC 사용·환경 재생성·종료 중 한 가지를 `R7SandboxToolRequest`로 제안하고 실제 결과를 받은 뒤 반복
 - `r7.interpret-attempt`: 실제 AgentLog·관찰을 읽어 `R7AgentConclusion` 하나를 생성
 - 필수 금지: Sandbox 외부 경계 우회, final `TRUE | FALSE | HOLD`, validated PoC 또는 final `DynamicReproductionResult` 직접 확정
 - session: 한 dynamic work/attempt의 정책에 따르며 다른 가설 session을 재사용하지 않는다.
 
-한 R7 호출이 requirements와 plan을 동시에 반환하거나 여러 candidate·결론을 한 output에 넣지 않는다. 각 출력은 자기 `LLMInvocationLog.parsed_output_ref` 하나에 연결된다. Session Manager는 `R7AgentConclusion`을 실제 AgentLog·환경·candidate·observation과 대조한 뒤에만 final dynamic result를 확정한다.
+한 R7 호출이 requirements와 plan을 동시에 반환하거나 여러 candidate·tool request·결론을 한 output에 넣지 않는다. 각 출력은 자기 `LLMInvocationLog.parsed_output_ref` 하나에 연결된다. `DERIVE_ENVIRONMENT`와 `PLAN_REPRODUCTION`은 Sandbox 실행 전이므로 `tools.none.v1`, `CREATE_POC_CANDIDATE`는 실행할 candidate만 만들므로 `tools.none.v1`, `EXECUTE_REPRODUCTION`만 외부 경계 승인 뒤 `tools.r7-sandbox-inner.v1`, `INTERPRET_ATTEMPT`는 저장된 log·관찰만 읽으므로 `tools.none.v1`이다.
+
+`dependency_context`는 current workspace·commit에서 Context Retrieval Service가 Dockerfile, README, package manifest와 lockfile을 조회한 결과다. `dependency_files`는 그 응답의 `code_fragment_refs`를 실제 redacted 내용·path·content hash와 함께 역참조한 입력이며 두 집합은 set-equal해야 한다. 파일이 없거나 읽지 못한 경우에는 빈 파일 내용을 만들지 않고 context의 gap·error로 전달한다. Agent가 reference 문자열만 받고 의존성을 추측해서는 안 된다.
+
+`EXECUTE_REPRODUCTION`의 첫 호출은 `NEW` session으로 시작하고 같은 dynamic work·attempt 안의 후속 turn은 같은 논리 session을 이어 간다. 모델은 provider 내장 command/file/web tool을 직접 쓰지 않고 한 번에 하나의 구조화된 `R7SandboxToolRequest`만 반환한다. Runtime Validator가 exact request·plan·READY environment·attempt와 tool policy를 검사하고, Runtime이 in-container 통로로 실행하며 Session Manager가 exact tool request·`SandboxCommandRecord`·관찰을 `AgentLog`에 기록한다. redacted 실행 결과는 다음 turn의 `UNTRUSTED_DATA`로 들어간다. `FINISH` 뒤에만 `INTERPRET_ATTEMPT`를 호출한다.
+
+Session Manager는 `R7AgentConclusion`을 실제 AgentLog·환경·candidate·observation과 대조한 뒤에만 final dynamic result를 확정한다. DynamicReproductionResult의 `hypothesis_outcome`, `hypothesis_evidence_refs`, `hypothesis_linkage`, `limitations`는 conclusion의 대응 값과 같아야 하며 Session Manager가 새 결론으로 바꾸지 않는다. 불일치하면 저장을 거절한다.
 
 이 역할은 기존 `ActionRequest.requested_by=R7_AGENT`와 일치해야 하므로 `LLMCallSpec`, request와 log의 `agent_role`에도 `R7_AGENT`가 반드시 포함된다.
 
@@ -288,6 +302,8 @@ Pro와 Con의 공통 slot은 이름만 같은 것이 아니라 `source_ref + pro
 - `chaining.match-primitives`: exact eligible Primitive 집합에서 result→input match와 그 match에서 나온 `HypothesisProposal(origin=CHAINING)`을 포함한 `ChainingResult` 생성
 - 필수 금지: Primitive admission 변경, 부모 verdict 변경, 직접 자식 등록
 - 기본 session: match batch마다 `NEW`
+
+`indexes`는 같은 analysis·workspace·commit의 current `PrimitiveIndexState` revision 전부이며 `REQUIRED_MANY`다. Runtime은 각 index의 `primitive_refs`를 펼쳐 `considered`와 정확히 맞춘다. `lineage_hypotheses`와 `lineage_results`는 considered Primitive의 `source_hypothesis_id → VulnerabilityHypothesis.source_primitive_match_id → ChainingResult.primitive_match_candidates` 경로를 양방향으로 따라 조상 제외를 계산하는 데 필요한 최소 계보다. Runtime이 계산한 필요한 계보 closure와 두 slot이 set-equal하지 않으면 호출하지 않는다. admission 계보는 work 등록 때 이미 검사하므로 이 두 slot에 중복해서 넣지 않는다.
 
 ### 4.7 CWE Labeling — R5-01
 
@@ -358,6 +374,10 @@ runtime은 호출 직전에 다음 equality를 검사한다.
 - spec·request·payload·log의 registry/template/payload reference가 같은가
 - output schema와 semantic validator가 registry entry와 같은가
 - session 정책과 provider capability가 해당 역할 요구를 만족하는가
+
+Verification은 Pro·Con 완료 직후 `ASSESS_INITIAL`을 반드시 한 번 실행한다. 그 결과가 `POC_CONFIRMATION | VERDICT_EVIDENCE`이면 exact assessment와 같은 policy·playbook·application으로 `CREATE_DYNAMIC_REQUEST`를 호출하고, `FINALIZE_WITHOUT_DYNAMIC`이면 동적 work를 만들지 않고 `FINAL_VERDICT`로 이동한다. Runtime은 LLM의 구조화된 `next_step`을 그대로 라우팅할 뿐 가설 근거를 해석해 분기를 대신 고르지 않는다. assessment는 final 결과나 Gate input으로 승격하지 않는다.
+
+R7은 `DERIVE_ENVIRONMENT → PLAN_REPRODUCTION`을 Sandbox 밖의 읽기 전용 LLM 호출로 수행하고, Controller 허용과 환경 준비 뒤 `CREATE_POC_CANDIDATE → EXECUTE_REPRODUCTION`으로 들어간다. 실행 task는 `R7SandboxToolRequest` 한 개씩을 반환하고, Runtime 실행·Session Manager 기록·redacted 결과 재입력을 같은 attempt에서 반복한다. `FINISH` 뒤 `INTERPRET_ATTEMPT`가 conclusion을 만들며 Session Manager는 conclusion과 실제 log가 일치할 때만 동적 결과를 확정한다.
 
 하나라도 다르면 provider를 호출하지 않고 decision을 `EXPIRED` 또는 `DENY`로 처리한다. 호출 뒤 실제 exposed request가 `PromptPayload`와 다르면 성공 output으로 저장하지 않는다.
 
@@ -434,6 +454,11 @@ repair prompt는 invalid 응답 전체를 신뢰 지시문으로 넣지 않는�
 | `PMT-13` | stale registry | template/registry/context 변경 뒤 기존 decision·payload 재사용 차단 |
 | `PMT-14` | non-LLM roles | Orchestration runtime·Validator·Controller 등에 prompt entry가 없음 |
 | `PMT-15` | role outputs | 10개 역할의 성공 output이 등록된 schema와 result owner에 정확히 연결 |
+| `PMT-16` | initial routing | 같은 generation의 policy·playbook·application·Pro·Con을 읽어 세 경로 중 하나만 고르고 Runtime이 의미 판정을 대신하지 않음 |
+| `PMT-17` | Chaining lineage | multiple current index와 필요한 hypothesis·ChainingResult 계보가 set-equal이며 누락·다른 generation이면 호출 전 차단 |
+| `PMT-18` | R7 stage/tool policy | requirements·plan·candidate·interpret는 provider tool 없음, execute만 승인된 Sandbox 내부 Runtime tool loop 사용 |
+| `PMT-19` | R7 conclusion binding | 동적 결과의 outcome·evidence·linkage·limitations가 exact conclusion과 다르면 저장 거절 |
+| `PMT-20` | repository dependency content | Dockerfile·README·manifest·lockfile의 actual redacted content와 context ref 집합이 같고 누락은 gap/error로 전달 |
 
 각 역할 template은 최소 한 개 정상 fixture, schema 실패, semantic 실패, prompt injection, stale reference 사례를 가져야 한다. Pro/Con, Gate, R7은 위 공통 사례에 역할별 금지 행동 사례를 추가한다.
 
@@ -443,6 +468,8 @@ repair prompt는 invalid 응답 전체를 신뢰 지시문으로 넣지 않는�
 
 - 10개 역할의 초기 registry entry·template·output schema·semantic validator 확정
 - `R7_AGENT`가 spec·request·log와 권한 표에서 일치
+- Verification의 `ASSESS_INITIAL` 세 경로와 exact 플레이북 적용, Chaining의 multiple index·lineage closure가 fixture로 검증됨
+- R7의 실행 전·Sandbox 내부·해석 단계 tool policy, repository dependency contents, Runtime 관리형 반복 turn과 conclusion→result equality가 fixture로 검증됨
 - Prompt Registry Runtime·Builder의 unit/contract test
 - 각 역할 정상·실패·injection fixture
 - R3-04의 각 채택 adapter에서 provider 동등성 통합 시험

@@ -156,12 +156,16 @@ Technical Gate는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 
 - `PromptRegistryEntry`: 역할·작업, template, 허용·금지 입력, 출력 schema, model/provider 후보, session·예산·재시도·redaction 정책과 담당자를 묶은 등록 정보입니다.
 - `PromptPayload`: 한 번의 호출에 실제 사용한 exact template과 입력 reference를 묶은 불변 자료입니다.
 - `LLMCallSpec`, 요청과 log는 같은 역할·작업·registry·template·payload reference를 가져야 합니다.
+- `VerificationInitialAssessment`: Pro·Con 뒤 PoC 확인, 판정용 동적 근거, 동적 실행 없는 final FALSE/HOLD 합성 중 하나를 고르는 중간 결과입니다. current policy·playbook·application을 고정하고 final 결과나 Gate 입력으로 쓰지 않습니다.
+- `R7SandboxToolRequest`: 외부 경계를 통과한 뒤 R7 Agent가 Sandbox 안에서 다음 한 작업만 제안하는 구조화 출력입니다. 실제 실행과 기록은 Runtime과 Session Manager가 맡습니다.
 - R7 Agent의 실행 해석은 `R7AgentConclusion`으로 따로 남기고, 비-LLM Session Manager가 같은 attempt의 실제 log·환경·관찰과 대조해 `DynamicReproductionResult`를 확정합니다. Agent가 실행되지 않았거나 결론 전에 실패했다면 가짜 conclusion을 만들지 않습니다.
 - `R7_AGENT`를 포함한 10개 LLM 역할만 등록하며 Orchestration·Runtime Validator·Controller 같은 정해진 프로그램 구성요소에는 prompt를 만들지 않습니다.
 - 저장소 코드·README·정책 원문·도구와 이전 LLM 출력은 지시문이 아니라 `UNTRUSTED_DATA`로 전달합니다.
 - OpenAI API·Codex 구독·Anthropic API·Claude 구독은 연결 후보이며, R3-04 시험에서 채택된 `ProviderProfile`만 실행할 수 있습니다. 채택 경로를 바꿔도 같은 논리 payload와 출력 schema를 사용합니다.
 
 어느 exact template과 자료로 결과를 만들었는지 연결되지 않거나 다른 역할·작업의 자료가 섞이면 LLM을 호출하지 않습니다. 호출 뒤 형식이나 의미 검사를 통과하지 못한 응답도 역할 결과로 저장하지 않습니다.
+
+R7의 환경·계획 task는 Dockerfile, README, package manifest와 lockfile을 조회한 `CodeContextResponse`와 실제 redacted `code_fragment` 내용을 함께 받습니다. reference만 전달하거나 읽지 못한 내용을 추측하지 않습니다. 실행 task만 Sandbox 내부 Runtime tool policy를 사용하고, requirements·plan·PoC candidate 작성과 최종 해석 task에는 provider command/file/web tool을 허용하지 않습니다. Session Manager는 R7 conclusion의 outcome·evidence·linkage·limitations를 새로 판단하거나 바꾸지 않고 실제 log와의 일치만 검사합니다.
 
 평가 실행은 시작할 때 평가 장면, 지표·한도, corpus·사람 정답·채점 방식, provider·model·session의 정확한 설정 수정본을 `AnalysisRunState.eval_config_refs`에 고정합니다. 종료 결과의 `AnalysisRunResult.eval_config_refs`는 이 전체 집합과 정확히 같아야 하며 `PRODUCTION`에서는 둘 다 빈 목록입니다. 두 평가 결과는 이 목록이 exact reference 기준으로 같을 때만 직접 비교합니다. 이 목록은 평가 출처 확인용이며 Gate·Primitive·Reporter 입력이 아닙니다.
 
