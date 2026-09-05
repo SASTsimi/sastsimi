@@ -677,7 +677,8 @@ R1-A + R2 + R4 + R8 ──> R6 Verification
 R6 DynamicReproductionRequest + R4 runtime + R8 budget ─> R7 requirements/simple plan, external boundary, autonomous Sandbox reproduction and AgentLog
 R7 COMMITTED dynamic result ──────────────────> R6 final Verification
 R6 final Verification ─────────────────────────> R5 Technical/Rule Scope Gate
-R6 HOLD + required candidate 있음 ───────────────> R1-B Primitive ChainingR6 HOLD + required candidate 없음 ──────────────> Primitive·Chaining 없이 종료
+R6 HOLD + required candidate 있음 ───────────────> R1-B Primitive Chaining
+R6 HOLD + required candidate 없음 ──────────────> Primitive·Chaining 없이 종료
 R6 + R7 + R1-B + R4 + R5 ─> ReportDraft·AnalysisRunResult·Agent 자동화 종료
 R3는 모든 계약의 구현 가능성과 종단 조립을 교차 검토
 R1–R8 완료 ───────────> Final cross-scenario review
