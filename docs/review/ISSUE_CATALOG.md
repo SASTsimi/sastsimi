@@ -1,4 +1,5 @@
-# Architecture v5 역할별 Issue 카탈로그
+| HOLD + non-empty `required_primitive_candidates` | Gate 없이 전체 후보를 `inputs`, `result=null`로 둔 Primitive 저장과 Chaining 조회 |
+| HOLD + `required_primitive_candidates=[]` | Primitive를 저장하지 않고 Chaining work도 만들지 않은 채 HOLD 처리 종료 |# Architecture v5 역할별 Issue 카탈로그
 
 이 문서는 역할별 상위 Issue에서 무엇을 검토하고 어떤 세부 하위 Issue를 만들지 안내합니다. 실제 Issue와 담당자 상태는 [Issue 현황](./ISSUE_TRACKER.md)에서 확인합니다. 현재 단계는 **설계 검토**이며 실행 코드(`runtime`) 구현은 범위 밖입니다. 역할 담당자와 실제 GitHub 계정, 최종 검토·승인 담당자는 모두 정해졌습니다. 모르는 기술 용어는 [쉬운 용어집](../GLOSSARY.md)에서 확인합니다.
 
