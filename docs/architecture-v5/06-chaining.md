@@ -89,13 +89,13 @@ Chaining Agent는 result가 있는 Primitive를 upstream으로 사용한다. dow
 - upstream 능력이 downstream보다 먼저 성립함
 - 양쪽 restrictions를 합쳐도 공격 경로가 성립함
 - 비교 결론을 뒷받침하는 실제 코드·검증 근거가 있음
-- 같은 `(upstream_result_ref, downstream_input_ref, matched_input_id)` 조합이 이 분석에 이미 저장되어 있지 않고, 같은 계보의 조상 Primitive 재사용도 아님
+- 같은 계보의 조상 Primitive 재사용이 아님
 
 전역 권한 서열표나 문자열 이름의 단순 일치는 사용하지 않는다. 축이 맞지 않거나 근거가 없으면 candidate를 만들지 않고 `no_match_reasons`에 `NoMatchReason` 하나를 남긴다. 별도 PASS/UNCERTAIN 필드는 두지 않는다.
 
-새로 저장된 Primitive 하나를 계기로 그 Primitive와 자기 자신을 제외한 기존 Primitive 전체를 비교한다. 한 조합의 담당은 두 Primitive 중 `meta.created_at`이 늦은 쪽이고, 같으면 `record_id`가 큰 쪽이다. work는 자신의 계기 Primitive가 담당인 조합만 검토·저장한다. 담당이 아닌 조합은 검토 대상이 아니므로 `no_match_reasons`에 넣지 않는다.
+새로 저장된 Primitive 하나를 계기로 그 Primitive와 자기 자신을 제외한 기존 Primitive 전체를 비교한다. 한 조합의 담당은 두 Primitive 중 자기 후보 pool에 상대가 들어 있는 work다. pool은 `REGISTER_WORK`가 COMMITTED된 index에서 고정하므로 실제 저장 순서를 그대로 따른다. 양쪽 pool에 서로가 모두 있으면 `record_id`가 사전순으로 큰 Primitive를 계기로 가진 work가 담당이다. work는 담당인 조합만 검토·저장하고, 담당이 아닌 조합은 검토 대상이 아니므로 `no_match_reasons`에 넣지 않는다.
 
-이 규칙 때문에 서로 다른 두 work가 같은 조합을 검토하지 않는다. 저장 시점 uniqueness는 그래도 남겨 두는 안전장치이며, 실제로 걸리면 정상 흐름이 아니라 `AnalysisError`로 기록한다.
+이 규칙 때문에 서로 다른 두 work가 같은 조합을 검토하지 않으므로 이미 저장된 조합을 다시 만나는 일이 없다. 저장 계층의 unique key는 이 규칙이 지켜졌는지 확인하는 검사이며, 걸리면 구현 오류이므로 결과를 저장하지 않고 오류로 기록한다. 자세한 저장 검사는 [경량 데이터 계약](08-lightweight-data-contracts.md)을 따른다.
 
 ### PrimitiveMatchCandidate
 

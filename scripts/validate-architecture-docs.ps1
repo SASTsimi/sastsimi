@@ -1553,11 +1553,12 @@ $requiredChainingExclusionRules = @(
     '`origin=CHAINING`이면 `observed_facts=[]`만 허용한다.',
     '`ChainingResult.considered_primitive_refs`, `source_admission_refs`와 `excluded_lineage_refs` 추가, `PrimitiveMatchCandidate`의 필드 제거, `no_match_reasons`의 `NoMatchReason` 전환은 기존 결과의 필수 필드를 바꾸므로 새 MAJOR schema로 배포한다.',
     '`primitive_match_id`는 분석 전체에서 유일하고 같은 `(upstream_result_ref, downstream_input_ref, matched_input_id)` 조합도 중복 저장하지 않는다.',
-    '`(analysis_id, upstream_result_ref, downstream_input_ref, matched_input_id)`에는 저장 시점 uniqueness를 그대로 강제한다.',
+    '저장 계층은 `(analysis_id, upstream_result_ref, downstream_input_ref, matched_input_id)`를 unique key로 강제하며, 이는 담당 규칙이 지켜졌는지 확인하는 검사다.',
     'Chaining work는 새 Primitive 저장을 계기로 등록한다.',
     '`trigger_primitive_ref`는 `work_type=CHAINING`에서 필수이고 다른 모든 work type에서는 `null`이다.',
-    '한 조합의 담당 work는 두 Primitive 중 `meta.created_at`이 늦은 쪽, 같으면 `record_id`가 큰 쪽을 `trigger_primitive_ref`로 가진 work다.',
-    '위반한 조합만 결과에서 빼며, 같은 work의 `AnalysisError(stage=ORCHESTRATION)`와 `WorkExecutionState.error_ids`에 남긴다.'
+    '한 조합의 담당은 두 Primitive 중 자기 후보 pool에 상대가 들어 있는 work다.',
+    'pool은 `REGISTER_WORK`가 COMMITTED된 index에서 고정하므로 실제 저장 순서를 그대로 따른다.',
+    '제약이 걸리면 담당 계산·pool 고정·`dedupe_key` 중 하나가 잘못된 구현 오류이므로 결과를 저장하지 않고 `AnalysisError(stage=ORCHESTRATION)`와 `WorkExecutionState.error_ids`에 남긴다.'
 )
 
 $requiredChainingNoMatchRules = @(
@@ -1572,6 +1573,26 @@ foreach ($rule in $requiredChainingNoMatchRules) {
 if (-not $chainingText.Contains('`checked_input_id`가 downstream Primitive의 실제 `inputs[].draft_id`인지')) {
     Add-Failure 'chaining doc must mirror the NoMatchReason storage checks from the common contract'
 }
+if ($contractText.Contains('위반한 조합만 결과에서 빼') -or $chainingText.Contains('위반한 조합만 결과에서 빼')) {
+    Add-Failure 'duplicate match combinations must not define a partial-exclusion path alongside the reject rule'
+}
+if ($contractText.Contains('meta.created_at`이 늦은 쪽') -or $chainingText.Contains('meta.created_at`이 늦은 쪽')) {
+    Add-Failure 'combination ownership must not depend on wall-clock created_at'
+}
+$workStateBlock = [regex]::Match($contractText, '(?ms)^WorkExecutionState:\s*(.*?)^WorkAttempt:').Groups[1].Value
+if (-not $workStateBlock.Contains('trigger_primitive_ref: StoredDataRef | null')) {
+    Add-Failure 'WorkExecutionState is missing field: trigger_primitive_ref'
+}
+foreach ($rule in @(
+    '`trigger_primitive_ref`는 `work_type=CHAINING`에서 필수이고 다른 모든 work type에서는 `null`이다.',
+    'CHAINING에서는 `considered_primitive_refs`와 `input_refs`에 각각 정확히 한 번 들어간다.',
+    '같은 MAJOR 안에서 MINOR로 올리고, 이전 MINOR 결과에는 `null`을 채우지 않고 감사 이력으로 보존한다.'
+)) {
+    if (-not $contractText.Contains($rule)) {
+        Add-Failure "missing exact trigger_primitive_ref rule: $rule"
+    }
+}
+
 if ($contractText.Contains('trigger_primitive_ref') -and -not $contractText.Contains('다른 모든 work type에서는 `null`이다')) {
     Add-Failure 'trigger_primitive_ref scope is not fixed for non-CHAINING work types'
 }
