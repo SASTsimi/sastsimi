@@ -1,5 +1,5 @@
-| HOLD + non-empty `required_primitive_candidates` | Gate 없이 전체 후보를 `inputs`, `result=null`로 둔 Primitive 저장과 Chaining 조회 |
-| HOLD + `required_primitive_candidates=[]` | Primitive를 저장하지 않고 Chaining work도 만들지 않은 채 HOLD 처리 종료 |# Architecture v5 역할별 Issue 카탈로그
+`result=null`로 둔 Primitive 저장과 Chaining 조회 |
+# Architecture v5 역할별 Issue 카탈로그은 채 HOLD 처리 종료 |# Architecture v5 역할별 Issue 카탈로그
 
 이 문서는 역할별 상위 Issue에서 무엇을 검토하고 어떤 세부 하위 Issue를 만들지 안내합니다. 실제 Issue와 담당자 상태는 [Issue 현황](./ISSUE_TRACKER.md)에서 확인합니다. 현재 단계는 **설계 검토**이며 실행 코드(`runtime`) 구현은 범위 밖입니다. 역할 담당자와 실제 GitHub 계정, 최종 검토·승인 담당자는 모두 정해졌습니다. 모르는 기술 용어는 [쉬운 용어집](../GLOSSARY.md)에서 확인합니다.
 
@@ -634,7 +634,8 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 | 동적 재현 요청·계획 생성 | R6가 purpose·goal·needs를 요청하고 R7 Agent가 exact requirements와 mode·exact command가 없는 간단한 plan을 만든 뒤 runtime이 generation당 단일 work와 RUN_SANDBOX 외부 경계 입력을 검사 |
 | 동적 재현 실행·반환 | Controller 외부 경계 허용 뒤 Setup Automation이 환경을 만들고 R7 Agent가 PoC candidate·command·관찰·재시도를 자율 선택; Session Manager가 same-attempt AgentLog·validated PoC·동적 결과를 확정하고 R6가 최종 판정 |
 | 동적 plan·candidate 변경과 stale 실행 | 같은 attempt의 변경은 새 불변 revision과 AgentLog에 남기고 최종 결과가 exact revision을 가리켜야 함. request·requirements·profile·resource/lifecycle 또는 attempt가 바뀌면 기존 action/result를 재사용하지 않고 새 RUN_SANDBOX action 필요 |
-| HOLD + non-empty `required_primitive_candidates` | Gate 없이 전체 후보를 `inputs`, `result=null`로 둔 Primitive 저장과 Chaining 조회 || HOLD + `required_primitive_candidates=[]` | Primitive를 저장하지 않고 Chaining work도 만들지 않은 채 HOLD 처리 종료 |
+| HOLD + non-empty `required_primitive_candidates` | Gate 없이 전체 후보를 `inputs`, `result=null`로 둔 Primitive 저장과 Chaining 조회 |
+| HOLD + `required_primitive_candidates=[]` | Primitive를 저장하지 않고 Chaining work도 만들지 않은 채 HOLD 처리 종료 |
 | FALSE | terminal internal result; Primitive/Chaining 금지 |
 | Gate 전 TRUE | result Primitive admission과 Chaining 금지 |
 | Technical ACCEPT만 받은 TRUE | 정책 수집·Rule Scope의 금지 테스트 판정과 `PrimitiveAdmissionDecision`이 끝날 때까지 result Primitive·Chaining·Reporter 금지 |
