@@ -192,11 +192,11 @@ PromptContextBinding:
 
 ### 4.0.1 task별 구현 행
 
-각 행은 **한 호출당 한 structured output**을 만든다. template 형식은 UTF-8 Markdown이고 version `1.0.0`부터 시작한다. schema·validator 이름도 logical key이며 activation 때 exact record reference로 바뀐다.
+각 행은 **한 호출당 한 result kind의 structured output artifact 하나**를 만든다. 기존 역할 계약이 목록을 출력하는 경우 artifact 안에 같은 종류의 항목 배열을 둘 수 있지만, 서로 다른 result kind를 한 응답에 섞지 않는다. template 형식은 UTF-8 Markdown이고 version `1.0.0`부터 시작한다. schema·validator 이름도 logical key이며 activation 때 exact record reference로 바뀐다.
 
 | role / task | template | 허용 input slot과 field projection | output schema / validator / result kind | owner / 필수 review / test |
 |---|---|---|---|---|
-| HYPOTHESIS / `GENERATE_INITIAL` | `config/prompts/templates/hypothesis/generate-initial/1.0.0.md` | `facts: StaticFactBundle(/entities,/locations,/source_candidates,/sink_candidates,/sanitizer_candidates,/validator_candidates,/relations,/tool_coverage,/gaps,/errors,/bundle_hash)` | `schema.hypothesis-proposal.next-major` / `validator.hypothesis-proposal.v1` / `hypothesis_proposal` | R1 / R2,R3,R4,R8 / `PMT-HYP-01` |
+| HYPOTHESIS / `GENERATE_INITIAL` | `config/prompts/templates/hypothesis/generate-initial/1.0.0.md` | `facts: StaticFactBundle(/entities,/locations,/source_candidates,/sink_candidates,/sanitizer_candidates,/validator_candidates,/relations,/tool_coverage,/gaps,/errors,/bundle_hash)` | `schema.hypothesis-proposal-list.next-major` / `validator.hypothesis-proposal-list.v1` / `hypothesis_proposal` | R1 / R2,R3,R4,R8 / `PMT-HYP-01` |
 | HYPOTHESIS / `DUPLICATE_REVIEW` | `config/prompts/templates/hypothesis/duplicate-review/1.0.0.md` | `proposal: HypothesisProposal($)`; `candidates: VulnerabilityHypothesis(/meta,/proposal_ref,/parent_hypothesis_ids,/source_primitive_match_id)` REQUIRED_MANY | `schema.hypothesis-duplicate-review.next-major` / `validator.hypothesis-duplicate-review.v1` / `hypothesis_duplicate_review` | R1 / R3,R4,R8 / `PMT-HYP-02` |
 | PRO / `COLLECT_SUPPORT` | `config/prompts/templates/pro/collect-support/1.0.0.md` | `hypothesis: VulnerabilityHypothesis($)`; `facts: StaticFactBundle(/entities,/locations,/relations,/source_candidates,/sink_candidates,/sanitizer_candidates,/validator_candidates,/gaps)`; `playbook: PlaybookApplication($)` | `schema.evidence-agent-result.next-major` / `validator.pro-evidence.v1` / `pro_evidence_result` | R6 / R2,R3,R4,R8 / `PMT-PRO-01` |
 | CON / `COLLECT_COUNTEREVIDENCE` | `config/prompts/templates/con/collect-counterevidence/1.0.0.md` | PRO와 같은 공통 source refs·field projections; 상대 결과는 금지 | `schema.evidence-agent-result.next-major` / `validator.con-evidence.v1` / `con_evidence_result` | R6 / R2,R3,R4,R8 / `PMT-CON-01` |
@@ -217,7 +217,7 @@ PromptContextBinding:
 
 ### 4.1 Hypothesis Agent — R1
 
-- `hypothesis.generate-initial`: `StaticFactBundle`에서 호출당 하나의 `HypothesisProposal(origin=INITIAL)` 생성
+- `hypothesis.generate-initial`: `StaticFactBundle`에서 기존 계약의 `HypothesisProposal[]` 한 묶음을 생성하고, runtime이 각 proposal을 개별 검증·등록
 - `hypothesis.duplicate-review`: runtime이 좁힌 후보만 읽고 `HypothesisDuplicateReview` 생성
 - 필수 금지: final verdict, CWE, Gate 결과, Sandbox 실행 요청 생성
 - 기본 session: 각 독립 proposal batch와 중복 검토마다 `NEW`

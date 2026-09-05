@@ -855,7 +855,7 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
     Add-Failure 'missing R3-05 prompt runtime design'
 } else {
     $promptRuntimeText = Get-Content -Raw -LiteralPath $promptRuntimePath
-    foreach ($marker in @('DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED', 'PromptRegistryEntry', 'PromptPayload', 'R7_AGENT', 'OpenAI API, Codex 구독, Anthropic API, Claude 구독', '`PMT-01`', '`PMT-15`', 'Orchestration 자체의 별도 LLM prompt는 만들지 않는다', '한 호출당 한 structured output', 'R7AgentConclusion', '#90에서 채택된 각 adapter profile fixture')) {
+    foreach ($marker in @('DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED', 'PromptRegistryEntry', 'PromptPayload', 'R7_AGENT', 'OpenAI API, Codex 구독, Anthropic API, Claude 구독', '`PMT-01`', '`PMT-15`', 'Orchestration 자체의 별도 LLM prompt는 만들지 않는다', '한 호출당 한 result kind의 structured output artifact 하나', 'R7AgentConclusion', '#90에서 채택된 각 adapter profile fixture', 'HypothesisProposal[]')) {
         if (-not $promptRuntimeText.Contains($marker)) {
             Add-Failure "R3-05 prompt runtime is missing marker: $marker"
         }
