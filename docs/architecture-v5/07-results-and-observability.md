@@ -21,7 +21,7 @@
 | `contexts` | `CodeContextRequest/Response`, 실제 반환·열람 위치 |
 | `verifications` | Pro/Con, initial/final verdict, restriction/capability와 exact final Verification revision |
 | `cwe_labels` | R5-01 `CWE_LABELING` work, exact Verification·generation·호출 provenance와 current/과거 `CWELabel` revision |
-| `primitives` | `required_primitive_candidates`가 있는 HOLD의 result 없는 조건, Technical-accepted이며 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`를 가진 TRUE 능력과 exact Verification·Gate·admission provenance |
+| `primitives` | `required_primitive_candidates`가 있는 HOLD의 result 없는 조건, Technical-accepted이며 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`를 가진 TRUE 능력과 exact Verification·Gate·admission provenance. 잇기 재료는 그 Primitive뿐 아니라 `source_primitive_match_id` 계보의 모든 result Primitive도 current `ALLOW`여야 한다 |
 | `chaining` | `ChainingResult`, upstream result→downstream input match와 child proposal validation state |
 | `gates` | Technical 및 Rule Scope Impact review와 서로 exact pair인 Verification·current CWELabel·정책 input revision refs |
 | `policies` | 정책 parser 결과, `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 수집 결과, 공식 `ProgramPolicyRecord`과 source·freshness refs |
@@ -75,7 +75,7 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 
 나중에 줄마다 예제를 붙일 때 묶음에 **판 이름**을 붙이고, 줄마다 **사람 정답**(TRUE/FALSE/HOLD 등)을 둔다. 장면 줄마다 `S-판이름`을 만들지 않는다. 지금 이 Issue에서는 예제 파일을 만들지 않는다.
 
-Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을 채우는 짝만 새 가설로 만든다. 부모 판정은 바꾸지 않는다. HOLD는 `required_primitive_candidates`가 있을 때만 Gate 없이 `result=null` Primitive로 등록하고, TRUE는 validated PoC와 exact Technical `ACCEPT`(1번 문지기) 뒤에만 `result` 있는 Primitive로 등록한다. 목록이 비어 있는 HOLD는 Primitive를 만들지 않는다. 2번 문지기(Rule Scope/정책)는 보고 가능성만 보며 Primitive 등록·Chaining을 취소하지 않는다. `REQUIRED`/`PROVIDED` 같은 상태 이름은 쓰지 않고 `result` 유무로 구분한다.
+Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을 채우는 짝만 새 가설로 만든다. 부모 판정은 바꾸지 않는다. HOLD는 `required_primitive_candidates`가 있을 때만 Gate 없이 `result=null` Primitive로 등록하고, TRUE는 validated PoC와 exact Technical `ACCEPT`(1번 문지기), 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`일 때만 `result` 있는 Primitive로 등록한다. `ACCEPT`만으로 등록하지 않으며 admission `DENY`면 Primitive를 만들지 않는다. 목록이 비어 있는 HOLD는 Primitive를 만들지 않는다. 2번 문지기(Rule Scope/정책)의 rule·scope·impact와 `report_permission`은 보고 가능성만 보며 Primitive 등록·Chaining을 취소하지 않는다. `testing_restriction_compliance=FAIL`만 admission `DENY`로 매핑되어 등록과 Chaining을 차단한다. 잇기 재료는 해당 result Primitive와 `source_primitive_match_id` 계보의 모든 result Primitive가 current `ALLOW`여야 한다. `REQUIRED`/`PROVIDED` 같은 상태 이름은 쓰지 않고 `result` 유무로 구분한다.
 
 | id | 장면 | 기대 | 실패로 볼 것 |
 |---|---|---|---|
@@ -88,9 +88,9 @@ Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을
 | S-DEBATE-FAIL | 운영 찬반 한쪽 누락·실패, 재시도 소진 또는 복구 불가 | 최종 판정 없음. 실패 자식 `FAILED`를 먼저 확정한 뒤 부모·가설 `FAILED`, `verification_result_ref=null` | 한쪽만으로 최종 판정. 재시도 가능한데 바로 `FAILED` |
 | S-V-CHILD | Verification이 새 주장 | 새 쪽지로 재검증, 부모 불변 | 부모 TRUE에 합침 |
 | S-CHAIN-CHILD | upstream `result`가 downstream `input`을 채우는 짝 | 새 쪽지, 부모 불변 | 부모 판정을 바꿈. 우회 조사로 확장 |
-| S-TRUE-EARLY | validated PoC·Technical ACCEPT 전 TRUE를 잇기 | Technical `ACCEPT` + validated PoC 전 Primitive 등록·잇기 금지 | ACCEPT 전에 `result` Primitive로 등록하거나 잇기 |
-| S-CHAIN-STALE | 오래된 Primitive/Gate revision | `STALE_RESULT`, 저장 안 함 | 옛 결과로 잇기 |
-| S-POLICY | 기술 TRUE + 공식 정책 없음 | 2번 문지기가 초안(보고)만 막음. Primitive 등록·잇기는 유지 | 추측 후 초안 작성. 또는 정책 없음으로 Primitive·잇기를 취소 |
+| S-TRUE-EARLY | validated PoC·Technical ACCEPT·admission ALLOW 전 TRUE를 잇기 | Technical `ACCEPT` + validated PoC + current `PrimitiveAdmissionDecision=ALLOW` 전 Primitive 등록·잇기 금지. `ACCEPT`여도 `DENY`면 등록하지 않음 | ACCEPT·ALLOW 전에 `result` Primitive로 등록하거나 잇기. `DENY`인데 등록·잇기 |
+| S-CHAIN-STALE | 오래된 Primitive/Gate revision이거나, 사용한 admission이 current가 아니거나 `DENY`로 바뀜 | `STALE_RESULT`, 저장 안 함. 부모 verdict를 FALSE/HOLD로 바꾸지 않음. 이미 만든 파생 결과는 감사 기록으로만 남김 | 옛 결과·옛/`DENY` admission으로 잇기. 파생 결과를 새 Verification·Gate·Primitive·Reporter 입력으로 씀 |
+| S-POLICY | 기술 TRUE + 공식 정책 없음 | 2번 문지기가 초안(보고)만 막음. Primitive 등록·잇기는 유지. 금지 테스트 `FAIL`이 아니면 admission을 `DENY`로 바꾸지 않음 | 추측 후 초안 작성. 또는 정책 없음으로 Primitive·잇기를 취소 |
 | S-SANDBOX-ENV | 필수 환경이 `MISMATCH` / `NOT_CHECKED` / `ERROR` | Agent가 recipe를 먼저 보완한다. 바깥 설정·정책을 기다릴 때만 `BLOCKED`. 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE`. `failure_category`는 환경. 최종 TRUE/FALSE/HOLD 없음 | 바로 판정으로 바꾸거나, 자율 보완 없이 무조건 시작 금지로만 적음 |
 | S-SANDBOX-POLICY | 요청한 상자 시간·네트워크 등이 profile 상한을 넘김 | Agent 미시작, `agent_invoked=false`. 공격 입력·관측 없음. 고칠 수 있으면 `BLOCKED`, 최종 거절이면 `FAILED`. `failure_category`는 정책. 자원이 없을 때만 `cleanup_status=NOT_REQUIRED`. 최종 판정 없음 | 실행 성공으로 적거나 TRUE/FALSE/HOLD로 바꿈. 실행 Agent 시작 기록이 있음 |
 | S-SANDBOX-EXEC | 승인된 profile 안에서 Agent가 돌던 중 실행 실패 | 같은 attempt 안 재시도는 R7. 새 attempt는 R8 한도 안. 바깥 대기만 `BLOCKED`. 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE`. 반증·`FALSE` 금지 | 실패 = 반증 또는 HOLD |
@@ -123,9 +123,9 @@ Sandbox ENV/POLICY/EXEC/TIMEOUT은 동적 work의 `BLOCKED | FAILED`다. 최종 
 | debate 동일 입력 | Pro/Con이 같은 부모·generation·`debate_input_hash`를 받음 | 교차·다른 입력 횟수 0 |
 | debate 전후 | 초판정(듣기 전)과 최종 판정(들은 뒤)을 둘 다 남김 | 숨기지 않음. 재비교에서 후가 근거 없이 나빠지면 그 설정 불합격 |
 | HOLD Primitive | `required_primitive_candidates`가 있는 HOLD를 Gate 없이 `result=null` Primitive로 남김 | 목록이 있는데 Primitive를 안 남긴 횟수 0. HOLD에 `result`를 채워 확정처럼 쓴 횟수 0. 목록 없는 HOLD에 Primitive를 안 만든 것은 정상 |
-| TRUE admission | TRUE Primitive는 validated PoC + Technical `ACCEPT` exact revision만 | Technical `ACCEPT` 전 TRUE를 Primitive/잇기로 쓴 횟수 0. PoC 없는 TRUE 횟수 0 |
+| TRUE admission | TRUE Primitive는 validated PoC + Technical `ACCEPT` + 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW` exact revision만 | `ACCEPT`·`ALLOW` 전 TRUE를 Primitive/잇기로 쓴 횟수 0. `DENY`인데 등록한 횟수 0. PoC 없는 TRUE 횟수 0 |
 | FALSE 잇기 | FALSE를 Chaining 재료로 씀 | 0 |
-| stale 잇기 | 옛 Primitive/Gate로 잇기를 거절 | 거절 안 하고 저장한 횟수 0 |
+| stale 잇기 | 옛 Primitive/Gate, 또는 사용한 admission이 current가 아니거나 `DENY`로 바뀐 잇기를 거절 | 거절 안 하고 저장한 횟수 0. 부모 verdict를 바꾼 횟수 0 |
 | 부모 불변 | Chaining이 부모 판정을 바꿈 | 0 |
 | 잇기 중단 | 전역 예산으로 끊긴 횟수와 `AnalysisRunResult.stop_reasons`. 끊긴 것을 FALSE로 바꾼 횟수 | 이유는 기록. FALSE로 바꾼 횟수 0. 체이닝 전용 짝 한도로 끊은 횟수는 두지 않음. 조상 재사용 제외는 `excluded_lineage_refs`로 따로 관측하며 이 칸의 중단이 아님. 지문 중복은 세지 않음 |
 | 독립 session | 찬반이 상대 답·상대 session·낡은 결과를 본 횟수 | 0 |
@@ -218,13 +218,13 @@ provider·model·session을 바꿀 때는 **이름이 아니라 정확한 식별
 
 | 바꾸려는 것 | 필수 비교 | 불합격 |
 |---|---|---|
-| 모델 / 연결 | 동일 S-*, 동일 판 | S-FALSE 오탐 증가, 형식 하락, Technical ACCEPT 전 TRUE 잇기, 사람 정답과 어긋남 증가 |
+| 모델 / 연결 | 동일 S-*, 동일 판 | S-FALSE 오탐 증가, 형식 하락, Technical ACCEPT·admission ALLOW 전 TRUE 잇기, 사람 정답과 어긋남 증가 |
 | 대화 재사용 확대 | 동일 S-*, 동일 판 | 충돌/잇기 장면에서 오판 증가 |
 | 기본 운영에서 토론 끄기 | — | 평가 없이 끄면 금지. BASIC은 비교 실험으로만 남김 |
 | 평가 없이 변경 | — | 금지 |
 | 학습에 재사용 | — | ADR 없이 금지 |
 
-오탐 증가, 문지기 우회, 비밀 유출, 한도 초과를 FALSE로 바꿈, Technical `ACCEPT` 전 TRUE/FALSE를 잇기에 쓴 경우가 있으면 그 설정은 채택하지 않는다.
+오탐 증가, 문지기 우회, 비밀 유출, 한도 초과를 FALSE로 바꿈, Technical `ACCEPT`·current `ALLOW` 전 TRUE/FALSE를 잇기에 쓰거나 admission `DENY`인 TRUE를 등록·잇기에 쓴 경우가 있으면 그 설정은 채택하지 않는다.
 
 ## 분석 및 비교 지표
 
@@ -266,9 +266,9 @@ provider·model·session을 바꿀 때는 **이름이 아니라 정확한 식별
 ### Verification-owned exploration/chaining
 
 - Verification-origin material claim 수와 재검증 결과
-- ACTIVE VerificationAssignment, result 없는 HOLD Primitive, result 있는 Technical-accepted + current `PrimitiveAdmissionDecision=ALLOW` TRUE Primitive와 upstream result→downstream input match 수
-- Gate 전·Technical 비정상 TRUE admission 차단 수, entity·privilege 근거 부족과 no-match reason
-- `source_primitive_match_id` 계보, 성립한 match의 조상 Primitive 재사용 제외(`excluded_lineage_refs`, 정상 정리)와 R8 전체 예산 중단(`stop_reasons`). 지문 중복으로 끊긴 횟수는 세지 않음
+- ACTIVE VerificationAssignment, result 없는 HOLD Primitive, result 있는 Technical-accepted + current `PrimitiveAdmissionDecision=ALLOW` TRUE Primitive와 upstream result→downstream input match 수. 잇기 재료는 `source_primitive_match_id` 계보의 모든 result Primitive도 current `ALLOW`여야 하며, 사용한 admission은 `source_admission_refs`에 남긴다
+- Gate 전·Technical 비정상 TRUE admission 차단 수, `ACCEPT`인데 `DENY`라서 등록하지 않은 수, entity·privilege 근거 부족과 no-match reason
+- `source_primitive_match_id` 계보, 성립한 match의 조상 Primitive 재사용 제외(`excluded_lineage_refs`, 정상 정리), 부모 admission이 `DENY`로 바뀌어 파생 결과를 감사 기록으로만 남긴 수, R8 전체 예산 중단(`stop_reasons`). 지문 중복으로 끊긴 횟수는 세지 않음
 
 ### Gates/reporting
 
