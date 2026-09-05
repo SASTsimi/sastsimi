@@ -63,7 +63,7 @@ flowchart TB
     DSTOP -->|Unrecoverable| S22
     S13 --> S14{14 Final verdict}
     S14 -->|FALSE| CLOSED[Terminal internal result]
-        S14 -->|HOLD| HREQ{Required candidates exist}
+    S14 -->|HOLD| HREQ{Required candidates exist}
     HREQ -->|Yes| REQUIRED[Result null Primitive with required inputs admitted]
     HREQ -->|No| HEND[HOLD no Primitive no Chaining]
     S14 -->|TRUE with validated PoC| CWE[14 R5-01 CWE_LABELING creates current CWELabel bound to exact Verification]
@@ -216,7 +216,7 @@ flowchart TB
 flowchart TB
     VR[Final VerificationResult] --> KIND{Verdict}
     KIND -->|FALSE| CLOSED[Terminal no Primitive no Chaining]
-    KIND -->|HOLD| HREQ{Required candidates exist}    HREQ -->|Yes| REQUIRED[Primitive with     KIND -->|HOLD| HREQ{Required candidates exist}
+    KIND -->|HOLD| HREQ{Required candidates exist}
     HREQ -->|Yes| REQUIRED[Primitive with inputs and null result]
     HREQ -->|No| HEND[HOLD no Primitive no Chaining]
     KIND -->|TRUE with current validated PoC| CWE[R5-01 CWE_LABELING creates exact current CWELabel]
@@ -228,9 +228,7 @@ flowchart TB
     COLLECT -->|FOUND or ABSENT_CONFIRMED| RULE[Rule Scope Impact Gate]
     COLLECT -->|COLLECTION_FAILED| ADMIT[Primitive Admission Runtime]
     RULE --> ADMIT
-    ADMIT -->|testing restriction PASS UNCERTAIN or NOT_EVALUATED| PROVIDED[Primitive with     ADMIT -->|testing restriction PASS UNCERTAIN or NOT_EVALUATED| PROVIDED[Primitive with inputs and one result]
-
-
+    ADMIT -->|testing restriction PASS UNCERTAIN or NOT_EVALUATED| PROVIDED[Primitive with inputs and one result]
     ADMIT -->|testing restriction FAIL| NOCHAIN
     RULE -->|Other FAIL UNCERTAIN DENY| REPORTBLOCK[Report blocked but allowed Primitive remains usable]
     RULE -->|PASS PASS PASS SUFFICIENT ALLOW| REPORTOK[Reporter eligibility may continue]
