@@ -224,7 +224,9 @@ flowchart TB
     COLLECT -->|FOUND or ABSENT_CONFIRMED| RULE[Rule Scope Impact Gate]
     COLLECT -->|COLLECTION_FAILED| ADMIT[Primitive Admission Runtime]
     RULE --> ADMIT
-    ADMIT -->|testing restriction PASS UNCERTAIN or NOT_EVALUATED| PROVIDED[Primitive with inputs and one result]
+    ADMIT -->|testing restriction PASS UNCERTAIN or NOT_EVALUATED| PROVIDED[Primitive with inputs and one result]S14 -->|HOLD| HREQ{Required candidates exist}
+    HREQ -->|Yes| REQUIRED[Result null Primitive with required inputs admitted]
+    HREQ -->|No| HEND[HOLD no Primitive no Chaining]
     ADMIT -->|testing restriction FAIL| NOCHAIN
     RULE -->|Other FAIL UNCERTAIN DENY| REPORTBLOCK[Report blocked but allowed Primitive remains usable]
     RULE -->|PASS PASS PASS SUFFICIENT ALLOW| REPORTOK[Reporter eligibility may continue]
