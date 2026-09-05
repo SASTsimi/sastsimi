@@ -35,7 +35,7 @@ R7 planning → EnvironmentRequirements and simple ReproductionPlan
 Runtime Validator → enforce one dynamic work per generation → authorize Sandbox call
 Sandbox Controller checks external boundary → Setup Automation prepares recipe and clean environment
 R7 Agent creates PoC candidate and autonomously runs it → Session Manager stores AgentLog and same-attempt result → Verification final verdict
-HOLD → inputs plus null result Primitive → Chaining
+HOLD + required candidates → inputs plus null result Primitive → ChainingHOLD + no required candidates → no Primitive and no Chaining work
 TRUE → R5-01 CWE_LABELING → current CWELabel → Technical Gate → policy and Rule Scope review
 Technical-accepted TRUE → PrimitiveAdmissionDecision ALLOW → result Primitive → Chaining
 Verification or Chaining material claim → new hypothesis → new Verification
