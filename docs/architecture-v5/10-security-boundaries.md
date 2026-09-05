@@ -125,7 +125,8 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - CWE → R5-01 `CWE_LABELING`이 만든 정확한 `CWELabel` revision, 그 label의 exact final TRUE `verification_result_ref`·generation·work·invocation provenance, evidence와 uncertainty
 - Technical review → 정확한 Verification·CWELabel revision
 - Rule/Scope review → 정확한 Verification·Technical review·CWELabel과 `ProgramPolicyRecord` revision
-- report claim → current Finding, 통과한 result, 두 Gate와 두 Gate가 공통으로 검토한 CWELabel revision
+- current Finding → 같은 exact chain의 final TRUE Verification, validated PoC를 가진 current 동적 결과, current CWELabel, Technical `ACCEPT`와 current Rule Scope review(값 무관); claim 강도는 verified upstream 이하
+- report claim → current non-stale Finding, 통과한 result, 두 Gate와 두 Gate가 공통으로 검토한 CWELabel revision
 
 Verification, Chaining, Gate와 Reporter는 제출·공개 권한이 없다. `ReportDraft`는 마지막 Agent 산출물이다.
 
@@ -218,6 +219,10 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | CWE labeling 호출 실패·timeout·인증 오류를 `FALSE | HOLD`로 바꿈 | CWE work·invocation 상태와 Verification evidence | verdict 변경 거절, work 오류를 보존하고 current label 전까지 Technical Gate 차단 |
 | Technical Gate 없이 Rule Scope Gate 호출 | exact Technical review ref와 status | `GATE_ORDER_INVALID` |
 | Rule Scope Gate 없이 Reporter 호출 | exact Rule Scope review와 모든 report 조건 | `REPORT_NOT_READY` |
+| Finding 정규화 전이거나 stale Finding으로 Reporter 호출 | current Finding 존재와 exact chain(Verification generation/revision·CWELabel·두 Gate·동적 결과·PoC·고정 정책) | `REPORT_NOT_READY`, 새 exact chain에서 Finding 재정규화 요구 |
+| Finding 생성 조건을 Reporter 6축 readiness와 동일하게 취급 | Finding: `RuleScopeImpactReview` 존재(값 무관). Reporter: `review_status`·`rule_compliance`·`scope_compliance`·`testing_restriction_compliance` = `PASS`, `security_impact` = `SUFFICIENT`, `report_permission` = `ALLOW` 전부 | 두 자격 분리, `report_permission=DENY`여도 current Finding 보존 |
+| 서로 다른 Verification generation·stale upstream reference를 섞은 Finding 생성 | upstream `meta.hypothesis_id`·`meta.workspace_id`·`meta.commit_id` 일치, `CWELabel`·`TechnicalEvidenceReview`·`RuleScopeImpactReview`가 같은 `verification_result_ref`를 가리키고 그것이 current `HypothesisProcessState.verification_result_ref`와 동일, generation은 기존 `HypothesisProcessState`·`VERIFICATION` work·`CWELabel.verification_generation` 계약으로 확인 | Finding 정규화 거절, `STALE_RESULT` 또는 revision mismatch 오류 |
+| Finding이 새 verdict·impact·attack path를 만듦 | Finding claim이 verified upstream evidence closure 범위 안인지 | invalid output, verified upstream 이하 claim만 허용 |
 | 공식 부재 확인 또는 수집 실패인데 `ALLOW` 출력 | collection status, policy ref와 Rule Scope 불변조건 | `ABSENT_CONFIRMED`는 invalid output과 `UNCERTAIN + DENY`; `COLLECTION_FAILED`는 Gate 호출·review 저장 거절 |
 | repository prompt가 Sandbox network를 열라고 함 | Sandbox Controller가 versioned profile과 instruction source 확인 | `UNTRUSTED_INSTRUCTION` 또는 `SANDBOX_POLICY_DENIED` |
 | LLM이 workspace 밖 파일을 요청 | 정규화·symlink 해석 뒤 실제 path | `FILE_ACCESS_DENIED` |
@@ -279,9 +284,11 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N1-a | final HOLD + `required_primitive_candidates=[]` | Primitive와 Chaining work를 만들지 않고 HOLD 처리 종료 |
 | N2 | final FALSE | terminal internal result; Primitive와 Chaining work 생성 금지 |
 | N3 | final TRUE, Gate 미실행 | result Primitive admission과 Chaining 금지 |
-| N4 | TRUE + Technical `ACCEPT`, 정책 수집 또는 Rule Scope 검토가 아직 종료되지 않음 | result Primitive와 Chaining을 아직 허용하지 않고 admission 입력 완료를 기다림; Reporter도 금지 |
-| N5 | TRUE + Technical `ACCEPT` + Rule Scope의 다른 판단 `FAIL | UNCERTAIN | DENY`, testing restriction은 `PASS | UNCERTAIN` | `PrimitiveAdmissionDecision=ALLOW`; result Primitive와 Chaining 자격 유지, Finding·Reporter는 별도 조건에 따라 차단 |
-| N6 | TRUE + Technical `ACCEPT` + Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`, testing restriction `PASS` | `PrimitiveAdmissionDecision=ALLOW`; result Primitive와 Chaining 자격 유지, Reporter 조건 평가 허용 |
+| N4 | TRUE + Technical `ACCEPT`, 정책 수집 또는 Rule Scope 검토가 아직 종료되지 않음 | result Primitive와 Chaining을 아직 허용하지 않고 admission 입력 완료를 기다림; Finding 정규화 전이므로 Reporter도 금지 |
+| N4-a | TRUE + Technical `ACCEPT`, 정책 `COLLECTION_FAILED`로 Rule Scope review 없음 | `PrimitiveAdmissionDecision=NOT_EVALUATED + ALLOW`; Rule Scope review가 없어 current Finding을 만들지 않고 Reporter 금지 |
+| N5 | TRUE + Technical `ACCEPT` + Rule Scope의 다른 판단 `FAIL | UNCERTAIN | DENY`, testing restriction은 `PASS | UNCERTAIN` | `PrimitiveAdmissionDecision=ALLOW`; result Primitive와 Chaining 자격 유지. Rule Scope review가 존재하므로 신뢰 runtime이 current Finding을 정규화하되 `report_permission=DENY`이면 Reporter만 차단하고 Finding은 보존 |
+| N6 | TRUE + Technical `ACCEPT` + Rule Scope review가 Reporter 6축 readiness 전부 충족 | `PrimitiveAdmissionDecision=ALLOW`; result Primitive와 Chaining 자격 유지, current Finding 정규화 후 Reporter 조건 평가 허용 |
+| N6-a | current Finding 존재 후 Verification generation·CWELabel·두 Gate·동적 결과·PoC·고정 정책 중 하나가 새 revision으로 변경 | 기존 Finding은 감사 이력으로만 남고 stale 처리; 새 exact chain에서 Finding 재정규화 전까지 Reporter 금지 |
 | N7 | result가 있는 TRUE Primitive + result가 없는 HOLD Primitive | upstream result가 HOLD input 하나를 근거 있게 충족하면 `origin=CHAINING` proposal을 새로 등록·검증 |
 | N8 | result가 있는 서로 다른 TRUE Primitive 둘 | 앞 result가 뒤 Primitive의 `inputs` 한 항목을 근거 있게 충족할 때만 TRUE_TRUE proposal 허용 |
 | N9 | TRUE+TRUE 입력 중 한 부모가 Technical 비정상이거나 direct·ancestor current `PrimitiveAdmissionDecision=ALLOW`를 충족하지 않음 | result Primitive가 될 수 없으므로 match 저장과 proposal 등록 거절 |

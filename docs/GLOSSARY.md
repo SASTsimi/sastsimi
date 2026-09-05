@@ -121,7 +121,9 @@
 
 | 용어 | 쉽게 말하면 | 사용할 때 주의할 점 |
 |---|---|---|
-| `Finding` | 사람이 검토할 수 있게 정리한 취약점 결과 | Hypothesis, Verification-origin 또는 Chaining-origin 후보와 구분합니다. |
+| `Finding` | 이미 검증된 upstream 결과를 하나의 current 취약점 결과로 정규화해 저장한 record | 새 verdict·attack path·impact를 만드는 Gate가 아닙니다. Hypothesis, Verification-origin 또는 Chaining-origin 후보와 구분하고 claim 강도는 verified upstream 이하입니다. |
+| current `Finding` | 한 가설의 현재 exact chain(final TRUE·validated PoC·current CWELabel·Technical `ACCEPT`·current Rule Scope review)에 묶인 Finding revision | Reporter는 이 값이 있어야 호출되며, 6축 정책 readiness와는 별개 조건입니다. |
+| stale `Finding` | 생성 뒤 Verification generation/revision·CWELabel·두 Gate·동적 결과·validated PoC·고정 정책 record가 바뀌어 더는 current가 아닌 Finding | 감사 이력으로 보존하지만 새 Reporter 실행에 재사용하지 않습니다. R4의 revision·current pointer·CAS 규칙으로 차단합니다. |
 | `Gate` | 다음 단계로 보내도 되는지 확인하는 검토 단계 | Verification 판정을 직접 바꾸지 않습니다. |
 | `Technical Evidence Gate` | 판정과 코드·실행 근거가 서로 맞는지 확인하는 기술 검토 | 공식 정책을 읽지 않으므로 금지 테스트 여부는 판단하지 않습니다. 코드 경로·동적 결과·제한 조건의 연결을 확인합니다. |
 | `Rule Scope Impact Gate` | 공식 정책 범위·금지 테스트 여부와 실제 영향을 확인하는 검토 | 금지 테스트 위반은 별도 필드로 판단해 TRUE Primitive admission에 전달하고, 다른 결과는 Reporter 가능성에 적용합니다. 공식 정책이 없으면 추측하지 않습니다. |

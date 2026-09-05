@@ -1167,6 +1167,29 @@ foreach ($rule in $requiredAutomationBoundaryRules) {
     }
 }
 
+# R5-03 후속이슈: Finding 생성 lifecycle과 Reporter handoff.
+$requiredFindingLifecycleRules = @(
+    @{ Name = 'gate doc defines Finding as a trusted-runtime normalization record'; Text = $gateText; Marker = '`Finding`은 새 취약점 판정 Gate가 아니라, 이미 검증된 upstream 결과를 하나의 current 취약점 결과로 정규화해 저장하는 record다.' },
+    @{ Name = 'gate doc keeps Finding claim strength at or below verified upstream'; Text = $gateText; Marker = 'Finding의 모든 material claim 강도는 verified upstream evidence의 claim strength 이하여야 한다.' },
+    @{ Name = 'gate doc separates Finding existence from Reporter eligibility'; Text = $gateText; Marker = '`current Finding 존재 + Reporter 차단 + report_draft_refs=[]`' },
+    @{ Name = 'gate doc requires a current non-stale Finding for Reporter'; Text = $gateText; Marker = 'AND current non-stale Finding exists for this exact chain' },
+    @{ Name = 'gate doc defines the stale Finding lifecycle'; Text = $gateText; Marker = '### stale Finding' },
+    @{ Name = 'contract doc binds Finding to the committed exact chain without a new agent'; Text = $contractText; Marker = 'current Finding은 새 vulnerability verdict나 impact를 만드는 Gate가 아니라, 신뢰 runtime이 이미 `COMMITTED`된 exact upstream reference를 조립한 정규화 record다.' },
+    @{ Name = 'contract doc adds no new Finding agent, action_type, or producer enum'; Text = $contractText; Marker = '이 작업은 새 autonomous Agent role, 새 `action_type` 또는 새 producer enum을 추가하지 않는다.' },
+    @{ Name = 'contract doc keeps Finding storage binding as an R4 B2 decision'; Text = $contractText; Marker = '구체 binding은 [구현 모듈 맵](implementation/01-module-map.md) B2에서 R4·R5가 함께 확정한다.' },
+    @{ Name = 'security doc rejects mixing Finding creation with Reporter readiness'; Text = $securityText; Marker = '| Finding 생성 조건을 Reporter 6축 readiness와 동일하게 취급 |' },
+    @{ Name = 'security doc blocks stale Finding reuse in Reporter'; Text = $securityText; Marker = '| Finding 정규화 전이거나 stale Finding으로 Reporter 호출 |' },
+    @{ Name = 'overview canonical flow puts current Finding before Reporter'; Text = $overviewText; Marker = 'current Finding -> Reporter -> ReportDraft -> AnalysisRunResult -> Agent automation end' },
+    @{ Name = 'canonical diagram shows trusted-runtime Finding normalization'; Text = $diagramText; Marker = 'NORM[Trusted runtime normalizes current Finding]' },
+    @{ Name = 'wiki diagram shows trusted-runtime Finding normalization'; Text = $wikiDiagramText; Marker = 'NORM[Trusted runtime normalizes current Finding]' },
+    @{ Name = 'gate wiki documents the Finding normalization step'; Text = $gateWikiText; Marker = '## Finding 정규화' }
+)
+foreach ($rule in $requiredFindingLifecycleRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing or weakened R5-03 follow-up Finding lifecycle rule: $($rule.Name)"
+    }
+}
+
 $requiredVerificationChainingContracts = @(
     'VerificationAssignment:',
     'verification_assignment_ref:',
@@ -1433,7 +1456,7 @@ $verificationChainingScenarioMarkers = @(
     '| N3 | final TRUE, Gate 미실행 |',
     '| N4 | TRUE + Technical `ACCEPT`, 정책 수집 또는 Rule Scope 검토가 아직 종료되지 않음 |',
     '| N5 | TRUE + Technical `ACCEPT` + Rule Scope의 다른 판단 `FAIL | UNCERTAIN | DENY`, testing restriction은 `PASS | UNCERTAIN` |',
-    '| N6 | TRUE + Technical `ACCEPT` + Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`, testing restriction `PASS` |',
+    '| N6 | TRUE + Technical `ACCEPT` + Rule Scope review가 Reporter 6축 readiness 전부 충족 |',
     '| N7 | result가 있는 TRUE Primitive + result가 없는 HOLD Primitive |',
     '| N8 | result가 있는 서로 다른 TRUE Primitive 둘 |',
     '| N9 | TRUE+TRUE 입력 중 한 부모가 Technical 비정상이거나 direct·ancestor current `PrimitiveAdmissionDecision=ALLOW`를 충족하지 않음 |',

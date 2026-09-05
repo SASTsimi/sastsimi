@@ -38,7 +38,7 @@
 
 다음은 순서를 지켜야 합니다.
 
-`final TRUE Verification → R5-01 CWE_LABELING의 current CWELabel → Technical Gate → Rule Scope Gate → Reporter → ReportDraft → AnalysisRunResult → Agent 자동화 종료`
+`final TRUE Verification → R5-01 CWE_LABELING의 current CWELabel → Technical Gate → Rule Scope Gate → 신뢰 runtime의 current Finding 정규화 → Reporter → ReportDraft → AnalysisRunResult → Agent 자동화 종료`
 
 새 Verification revision이나 generation이 생기면 CWE 값이 같더라도 R5-01이 다시 평가해 새 label revision을 만들어야 합니다. 과거 label은 기록으로만 남고 현재 Gate 입력으로 재사용하지 않습니다.
 

@@ -272,8 +272,10 @@ flowchart TB
     ADEC -->|DENY| NOPRIMITIVE[No result Primitive]
     COLLECT -. COLLECTION_FAILED report unavailable .-> BLOCK
     UNCERTAIN --> BLOCK
-    RULE --> READY{Review PASS Rule PASS Scope PASS Testing PASS Impact SUFFICIENT Permission ALLOW}
-    READY -->|No| BLOCK
+    RULE --> NORMF[Trusted runtime normalizes current Finding from exact chain]
+    UNCERTAIN --> NORMF
+    NORMF --> READY{Current Finding plus Review PASS Rule PASS Scope PASS Testing PASS Impact SUFFICIENT Permission ALLOW}
+    READY -->|No Finding kept if only policy blocked| BLOCK
     READY -->|Yes| RREQ[Verification requests Reporter]
     RREQ --> REPORTER[Reporter Agent]
     REPORTER --> DRAFT[Internal ReportDraft]
@@ -439,19 +441,21 @@ Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구
 
 ```mermaid
 flowchart LR
-    FIND[Current Finding] --> REPORTER[R5-03 Reporter]
+    GATES[Technical ACCEPT and Rule Scope review on one exact chain] --> NORM[Trusted runtime normalizes current Finding]
+    NORM --> FIND[Current Finding]
+    FIND --> REPORTER[R5-03 Reporter]
     VERIFY[Final Verification and CWE] --> REPORTER
-    GATES[Technical and Rule Scope reviews] --> REPORTER
     POLICY[Current policy record] --> REPORTER
     DYNAMIC[Current supported dynamic evidence and redacted validated PoC] --> REPORTER
     REPORTER --> DRAFT[ReportDraft with restrictions limitations and redaction passed]
     DRAFT --> FINAL[Trusted runtime atomically finalizes AnalysisRunResult and AnalysisRunState]
-    BLOCKED[No report-ready Finding] --> FINAL
+    FIND -. Finding exists but six-axis policy readiness fails .-> FINAL
+    BLOCKED[No current Finding normalized] --> FINAL
     FINAL --> END[Agent automation end]
     END -. outside Agent automation .-> HUMAN[Person-led review edit submit or disclose]
 ```
 
-ReportDraft는 마지막 Agent 산출물이다. `AnalysisRunResult`와 `AnalysisRunState`의 원자적 확정은 기존 결과와 로그를 묶는 신뢰 runtime 작업이며 새 LLM 판단이 아니다. 점선 뒤의 사람 검토·수정·제출·공개는 Agent action과 상태 계약 밖이다.
+current Finding은 두 Gate가 같은 exact chain에서 검토한 결과를 신뢰 runtime이 정규화한 record이며 새 verdict가 아니다. Finding 존재는 Reporter의 6축 정책 readiness와 별개 조건이라 `report_permission=DENY`여도 Finding은 보존되고 Reporter만 차단된다. ReportDraft는 마지막 Agent 산출물이다. `AnalysisRunResult`와 `AnalysisRunState`의 원자적 확정은 기존 결과와 로그를 묶는 신뢰 runtime 작업이며 새 LLM 판단이 아니다. 점선 뒤의 사람 검토·수정·제출·공개는 Agent action과 상태 계약 밖이다.
 
 ## Rendering check
 
