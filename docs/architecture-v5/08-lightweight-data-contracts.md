@@ -225,6 +225,7 @@ WorkExecutionState:
   active_attempt_id: string | null
   input_hash: string
   dedupe_key: string
+  trigger_primitive_ref: StoredDataRef | null
   input_refs: [RunStoredDataRef | StoredDataRef]
   output_refs: [RunStoredDataRef | StoredDataRef]
   gap_ids: [string]
@@ -331,6 +332,14 @@ TransitionCommit:
 플레이북·적용 정책의 current revision이 검증 도중 변경되더라도 진행 중인 work의 입력과 `PlaybookApplication`을 바꾸지 않는다. 같은 work의 retry는 기존 application과 질문 ID를 유지한다. 새 Verification work 또는 새 verification generation은 그때의 current policy와 playbook으로 새 application을 만들고 플레이북 질문에 새 `question_id`를 발급한다. 과거 application·질문 결과를 새 work에 자동 승격하거나 서로 다른 application의 Pro·Con·최종 결과를 섞지 않는다.
 
 `REGISTER_WORK(work_type=CHAINING)` 시 trusted runtime은 같은 analysis·workspace·commit의 current `PrimitiveIndexState` revision을 읽고, 각 index의 `primitive_refs`에서 non-null `result` 또는 하나 이상의 `inputs`를 가진 current exact Primitive만 중복 없이 펼친다. result Primitive는 `admission_decision_ref`가 가리키는 같은 Verification의 current `PrimitiveAdmissionDecision.decision=ALLOW`일 때만 펼친다. 또한 각 Primitive의 source hypothesis가 `origin=CHAINING`이면 `source_primitive_match_id`에서 부모 `ChainingResult.input_primitive_refs`를 재귀 추적하고, 그 계보의 모든 result Primitive가 current ALLOW admission decision을 가리키는지 확인한다. 하나라도 current가 아니거나 `DENY`이면 해당 Primitive를 이번 후보에서 제외한다. runtime은 사용한 index revision, 펼친 Primitive exact reference와 이들에 직접·재귀적으로 연결된 current ALLOW decision exact reference를 함께 고정한다. 이 전체를 `WorkExecutionState.input_refs`, `input_hash`와 `dedupe_key`에 반영하며 Primitive reference 집합이 해당 work의 `considered_primitive_refs`다. 진행 중 새 Primitive나 일반 index revision이 생겨도 기존 work 입력에 섞지 않고 새 Chaining work에서 처리한다. 저장 시에는 실제 match에 사용한 Primitive의 admission 계보만 다시 확인하며, 그중 하나가 더 이상 current가 아니거나 `DENY`로 바뀌면 해당 결과를 `STALE_RESULT`로 거절한다. 사용하지 않은 후보의 decision 변경과 일반 index 갱신만으로는 기존 work를 무효화하지 않는다. 결과에 해당 work가 고정하지 않은 index·Primitive·admission decision reference가 섞여도 `STALE_RESULT`로 거절한다. 이는 별도 Snapshot 모듈이 아니라 실행 입력의 exact reference 고정이다.
+
+Chaining work는 새 Primitive 저장을 계기로 등록한다. `PRIMITIVE_UPDATE`가 Primitive와 `PrimitiveIndexState` 갱신을 COMMITTED한 뒤에만 그 Primitive를 `trigger_primitive_ref`로 가리키는 `CHAINING` work를 등록하며, 저장 전에 등록하지 않는다. `subject_type=ANALYSIS`, `subject_id`는 `analysis_id`이고 계기가 된 Primitive는 `trigger_primitive_ref`로만 식별한다.
+
+`trigger_primitive_ref`는 `work_type=CHAINING`에서 필수이고 다른 모든 work type에서는 `null`이다. CHAINING에서는 `considered_primitive_refs`와 `input_refs`에 각각 정확히 한 번 들어간다. 이 필드 추가는 `WorkExecutionState`의 기존 필드를 바꾸지 않는 선택 필드 확장이므로 같은 MAJOR 안에서 MINOR로 올리고, 이전 MINOR 결과에는 `null`을 채우지 않고 감사 이력으로 보존한다. `dedupe_key`는 `analysis_id`, `workspace_id`, `commit_id`, `trigger_primitive_ref`와 고정한 index revision 집합으로 계산한다. 같은 계기와 같은 index 집합으로는 work를 하나만 등록하며, 두 번째 요청은 새 work를 만들지 않고 기존 work를 반환한다.
+
+한 조합의 담당은 두 Primitive 중 자기 후보 pool에 상대가 들어 있는 work다. pool은 `REGISTER_WORK`가 COMMITTED된 index에서 고정하므로 실제 저장 순서를 그대로 따른다. 양쪽 pool에 서로가 모두 있으면 `record_id`가 사전순으로 큰 Primitive를 계기로 가진 work가 담당이다. 각 work는 담당인 조합만 검토·저장한다. 담당이 아닌 조합은 검토 대상이 아니라서 `no_match_reasons`에도 넣지 않고 별도 skip 목록도 두지 않는다.
+
+담당 규칙 때문에 같은 조합이 두 번 저장될 수 없다. 저장 계층은 `(analysis_id, upstream_result_ref, downstream_input_ref, matched_input_id)`를 unique key로 강제하며, 이는 담당 규칙이 지켜졌는지 확인하는 검사다. 제약이 걸리면 담당 계산·pool 고정·`dedupe_key` 중 하나가 잘못된 구현 오류이므로 결과를 저장하지 않고 `AnalysisError(stage=ORCHESTRATION)`와 `WorkExecutionState.error_ids`에 남긴다. 같은 입력으로 retry해도 해소되지 않는다. retry 자체는 같은 `work_id`의 새 attempt이며 그 work의 COMMITTED `ChainingResult`가 이미 있으면 새 결과를 만들지 않고 기존 결과를 반환한다.
 
 `origin=CHAINING` 가설의 새 Verification·Gate·Primitive update·Reporter work를 등록하거나 그 결과를 저장할 때도 trusted runtime은 같은 `source_primitive_match_id` 계보의 result Primitive admission decision을 재귀 확인한다. 확정된 `DENY` 또는 오래된 decision이 있으면 새 작업·결과 사용을 차단하고, 실행 중 work는 `CANCELLED`로 정리하며 가설 verdict를 `FALSE | HOLD`로 바꾸지 않는다. 이미 COMMITTED된 Verification·Gate·Finding·ReportDraft는 감사 이력으로 남기되 current 결과나 외부 전달 가능 결과로 사용하지 않는다. 같은 run 안에서 ALLOW가 DENY로 바뀌면 admission runtime은 이를 참조한 `ChainingResult.source_admission_refs`와 자식 `source_primitive_match_id`를 따라 파생 Primitive를 current index에서 제거한다. 이 전파가 끝나기 전에는 `AnalysisRunResult`를 확정하지 않는다.
 
@@ -570,7 +579,7 @@ Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 
 - `excluded_primitive_ref`는 `considered_primitive_refs`에 포함되고 `input_primitive_refs`와 모든 match candidate reference에는 포함되지 않아야 한다. `excluded_by_ref`는 `considered_primitive_refs`와 `input_primitive_refs`에 모두 포함되고 같은 결과의 `excluded_primitive_ref` 집합에는 포함되지 않아야 한다. 즉 제외 근거는 실제로 match가 성립한 후보만 될 수 있고, 한 결과 안에서 같은 Primitive가 제외 대상이면서 제외 근거일 수 없다. 두 reference는 같은 analysis·workspace·commit의 exact Primitive여야 하고 `(excluded_primitive_ref, excluded_by_ref, reason_code)` 조합은 중복될 수 없다. `reason_code`는 `ANCESTOR_REUSE`만 허용한다.
 - Runtime은 §06의 제외 규칙(성립한 match의 후보에서 양방향 재귀 탐색)으로 기대 제외 쌍을 다시 계산하고 `excluded_lineage_refs`와 set-equal한지 검사한다. match가 성립하지 않은 후보를 근거로 삼았거나, `excluded_by_ref`의 계보가 `excluded_primitive_ref`에 실제로 도달하지 않거나, 실제 제외를 빠뜨리거나 추가한 결과는 저장하지 않는다. 따라서 검토 대상이 아니었던 Primitive, 예산·오류로 확인하지 못한 Primitive와 계보 때문에 제외한 Primitive를 같은 것으로 취급하지 않는다.
 - 각 `chained_hypothesis_proposals`는 COMMITTED match의 exact `source_primitive_match_id`와 부모 가설을 보존한다. `origin=CHAINING`이면 `observed_facts=[]`만 허용한다. `target_entities`·`target_locations`·`suspected_path`는 비어 있을 수 있지만, 값을 넣으면 부모 Primitive의 `result.entity_refs`와 `inputs[].entity_refs`에서 exact하게 얻을 수 있는 범위를 벗어날 수 없다. 부모 reference가 무효하거나 Verification이 사용할 entity·location 시작점을 하나도 복원할 수 없으면 가설 등록과 Verification 배정을 거절한다. proposal restrictions는 두 부모 Primitive의 `Restriction` 객체 합집합과 exact match하고, 같은 `restriction_id`의 canonical content가 다르면 저장하지 않는다. 남은 `PrimitiveDraft`마다 `description`과 같은 assumption을 정확히 하나 보존하고, 결합 지점을 겨냥한 반증 질문이 하나 이상 있는지(목록이 비어 있지 않은지만) 확인한다 — 그 질문이 실제로 결합 지점을 겨냥했는지는 Technical Evidence Gate의 의미적 충분성 검토 몫이다.
-- 다음 중 하나라도 해당하면 저장을 거절한다: 같은 fingerprint 중복, 조상 링크를 따라 이미 사용한 Primitive의 재사용, 일반 research·동적 재현·Gate 보완 출력, CHAINING이 아닌 proposal origin.
+- 다음 중 하나라도 해당하면 저장을 거절한다: 같은 `(upstream_result_ref, downstream_input_ref, matched_input_id)` 조합 중복, 조상 링크를 따라 이미 사용한 Primitive의 재사용, 일반 research·동적 재현·Gate 보완 출력, CHAINING이 아닌 proposal origin.
 - 저장 runtime은 claim한 action의 candidate bytes와 hash를 다시 확인한다. 확정된 result ref는 candidate와 `stored_data_id`·`data_kind`·`content_hash`·`record_id`가 모두 같아야 한다. 결과 ref, 종료 `StateTransition`과 `TransitionCommit`은 같은 output을 가리켜야 하며 `TransitionCommit.state=COMMITTED`가 된 뒤에만 소비할 수 있다. 후속 `ActionDecision.outcome_refs`에는 그 exact result ref와 COMMITTED commit ref를 각각 한 번 넣는다.
 - `result_kind=environment_requirements | reproduction_plan | poc_candidate`이면 R7_AGENT만 저장할 수 있다. requirements는 R6 request의 모든 `environment_needs`를 빠뜨리거나 약화하지 않고, plan의 request·purpose·hypothesis·profile은 request와 exact match하며 current requirements를 가리킨다. plan에는 mode·exact command·step·payload·cleanup allowlist를 넣지 않는다. candidate를 처음 저장할 때는 current request·plan·attempt와 content digest만 검사하며 아직 뒤따를 AgentLog event를 요구하지 않는다. 대신 candidate 존재만으로 실행이나 성공을 인정하지 않고, `DynamicReproductionResult`와 validated PoC를 저장할 때 same-attempt `AgentLog`의 작성·실행 event가 exact candidate revision·digest를 가리키는지 검사한다.
 - `result_kind=environment_recipe | sandbox_environment | cleanup_result`이면 R7_SETUP_AUTOMATION만 저장할 수 있다. recipe는 저장소 선언 의존성 source, 서로 구분된 base/built digest, build/reuse 결정을 기록한다. environment는 same-attempt request·plan·recipe·requirements와 container instance·생성/재사용 사유를 가리킨다. cleanup은 실제 생성 자원과 환경을 빠짐없이 가리킨다. 다른 가설의 writable container 공유와 근거 없는 reuse는 거절한다.
@@ -1186,7 +1195,6 @@ PrimitiveMatchCandidate:
   parent_verification_refs: [StoredDataRef]
   workspace_id: string
   commit_id: string
-  normalized_fingerprint: string
   evidence_refs: [StoredDataRef]
   candidate_state: UNVALIDATED
 ```
@@ -1223,7 +1231,7 @@ decision의 `meta`는 `PRIMITIVE_UPDATE` current attempt와 같은 `attempt_id`�
 
 전역 권한 서열표, 문자열 이름의 단순 일치나 근거 없는 추측은 사용하지 않는다. 양쪽 restrictions를 합친 뒤에도 공격 순서가 성립해야 하며 `evidence_refs`는 entity·privilege·순서·restriction 결론의 실제 근거를 하나 이상 포함한다. 축이 맞지 않거나 근거가 없으면 후보를 만들지 않고 `ChainingResult.no_match_reasons`에 이유를 남긴다. 후보가 존재한다는 것 자체가 비교를 통과했다는 뜻이므로 PASS/UNCERTAIN check와 unresolved 조건을 중복 저장하지 않는다.
 
-downstream Primitive의 `result=null`이면 TRUE_HOLD, non-null이면 TRUE_TRUE로 유도한다. `primitive_match_id`는 분석 전체에서 유일하고 같은 `normalized_fingerprint`도 중복 저장하지 않는다. match는 queue message, verdict, Finding 또는 impact 확정이 아니다.
+downstream Primitive의 `result=null`이면 TRUE_HOLD, non-null이면 TRUE_TRUE로 유도한다. `primitive_match_id`는 분석 전체에서 유일하고 같은 `(upstream_result_ref, downstream_input_ref, matched_input_id)` 조합도 중복 저장하지 않는다. 세 값이 match 하나를 유일하게 식별하므로 중복 판정을 위한 별도 요약 값은 두지 않으며 `normalized_fingerprint`는 사용하지 않는다. match는 queue message, verdict, Finding 또는 impact 확정이 아니다.
 
 ## 6. ChainingResult
 
@@ -1239,7 +1247,7 @@ ChainingResult:
   primitive_match_candidates: [PrimitiveMatchCandidate]
   chained_hypothesis_proposals: [HypothesisProposal]
   excluded_lineage_refs: [LineageExclusion]
-  no_match_reasons: [string]
+  no_match_reasons: [NoMatchReason]
   errors: [AnalysisError]
 ```
 
@@ -1250,11 +1258,24 @@ LineageExclusion:
   reason_code: ANCESTOR_REUSE
 ```
 
+```yaml
+NoMatchReason:
+  upstream_result_ref: StoredDataRef
+  downstream_input_ref: StoredDataRef
+  checked_input_id: string
+  reason_code: ENTITY_UNRELATED | PRIVILEGE_UNSATISFIED | ORDER_INVALID | RESTRICTION_CONFLICT | NO_CODE_EVIDENCE
+  detail: string
+```
+
+`no_match_reasons`는 §06의 매칭 조건을 실제로 검토했지만 candidate를 만들지 않은 조합마다 하나씩 남긴다. 두 reference는 `considered_primitive_refs`에 있는 exact Primitive여야 하고 `checked_input_id`는 downstream `inputs[].draft_id` 하나여야 한다. 같은 `(upstream_result_ref, downstream_input_ref, checked_input_id)` 조합은 한 결과에서 중복될 수 없고 `primitive_match_candidates`가 성립시킨 조합과 겹칠 수 없다.
+
+담당이 아닌 조합은 처음부터 검토 대상이 아니므로 여기 넣지 않고 별도 기록도 만들지 않는다. unique key 충돌은 정상 중복이 아니라 구현 오류이므로 해당 `ChainingResult`를 저장하지 않고 `AnalysisError`와 work 오류로 남기며, `FALSE`·`HOLD`·`NoMatchReason`이나 전체 분석 중단으로 바꾸지 않는다. 조상 재사용 제외는 `excluded_lineage_refs`, 예산·오류로 확인하지 못한 후보는 work 상태와 `errors`가 담는다. Runtime Validator는 위 구조와 소속만 검사하고 `reason_code`·`detail`의 판단 내용은 다시 판정하지 않는다.
+
 `considered_primitive_refs`는 work 시작 시(`REGISTER_WORK`) Runtime이 고정한, 조상 제외 전 전체 Primitive 입력이고, `input_primitive_refs`는 실제 match candidate에 사용된 Primitive 합집합이다. 두 목록은 의미가 다르며 서로 대신하지 않는다. `source_result_refs`는 match에 사용된 Primitive들의 `source_verification_ref`와 non-null `technical_review_ref`를 중복 없이 합친 정확한 집합이다. `source_admission_refs`는 실제 match에 사용된 Primitive에서 직접 또는 `source_primitive_match_id` 계보를 따라 재귀적으로 도달하는 모든 result Primitive의 current ALLOW admission decision exact reference를 중복 없이 합친 집합이다. clean initial HOLD처럼 result Primitive 계보가 없을 때만 빈 목록일 수 있다. 각 candidate의 `parent_hypothesis_ids`와 `parent_verification_refs`도 해당 upstream/downstream Primitive가 직접 가리키는 source hypothesis와 Verification의 중복 없는 합집합이다. downstream result 유무로 TRUE_HOLD와 TRUE_TRUE를 유도하며 별도 trigger나 match kind를 저장하지 않는다. `chained_hypothesis_proposals`는 모두 `origin=CHAINING`, 입력 Primitive의 parent hypothesis ID와 exact `source_primitive_match_id`를 보존한다. 각 proposal의 restrictions는 입력 Primitive 양쪽 Restriction 객체의 중복 없는 합집합이며, 같은 `restriction_id`의 canonical content가 다르면 저장하지 않는다.
 
 조상 제외는 §06이 정의한 순서를 따른다(순환 방지가 아니다 — record가 불변·append-only라 계보는 이미 DAG다). 같은 계보에서는 가장 깊은 후보부터 match를 검토하고, 그 match가 실제로 성립한 뒤에만 그 후보의 조상 Primitive를 양방향 재귀 탐색으로 찾아 이번 순회의 후보에서 제외한다. match가 성립하지 않으면 아무것도 제외하지 않고 얕은 후보를 그대로 검토한다. 검토 순서 자체는 Agent 규칙이고 Runtime은 결과 정합성만 검사한다. 순서를 어겨도 제외 대상이 조상뿐이라 더 깊은 후손은 후보로 남고, 같은 결과에서 얕은 후보와 깊은 후보를 모두 match하면 아래 `excluded_primitive_ref` 규칙에 걸려 저장이 거절된다. 조상 쪽은 새 Primitive가 등장하기 전부터 이미 서로 연결이 확정된 상태였으므로, 가장 깊은 match가 성립한 시점에서 그 결론이 얕은 조합들의 결론을 이미 포함한다. 대신 가장 깊은 조합의 자식 가설이 이후 Verification에서 실패해도 제외된 얕은 조합은 다시 제안되지 않으며, 이는 이 중복 제거 정책이 만드는 미탐 위험으로 의도적으로 수용한 결정이다. 실제로 제외한 항목마다 `LineageExclusion`을 남기며 Runtime이 고정 입력에서 기대되는 제외 쌍과 결과를 다시 비교한다. 제외된 Primitive는 match 입력으로 사용할 수 없고, 제외 근거가 된 Primitive는 실제 match에 사용된 같은 work 입력이어야 하며 자신은 제외되지 않아야 한다. DB 상태는 바꾸지 않는다. 체이닝 전용 임의 depth·전체/parent별 가설 수·호출 수·Primitive 조합 수와 token 상한은 두지 않는다. 대신 R8의 전체 시간·비용·work 예산을 모든 Chaining work에 동일하게 적용한다. token 사용량은 관측할 뿐 초과만으로 중단하지 않는다. 다른 예산 소진도 `FALSE`가 아니며 실행 상태와 `AnalysisRunResult.stop_reasons`에 기록한다.
 
-`ChainingResult.considered_primitive_refs`, `source_admission_refs`와 `excluded_lineage_refs` 추가는 기존 결과의 필수 필드를 바꾸므로 새 MAJOR schema로 배포한다. 이전 MAJOR 결과에 세 목록을 빈 배열로 추정하지 않는다. 기존 결과는 감사 이력으로만 보존하고 새 Chaining·가설 등록 입력으로 자동 승격하지 않는다.
+`ChainingResult.considered_primitive_refs`, `source_admission_refs`와 `excluded_lineage_refs` 추가, `PrimitiveMatchCandidate`의 필드 제거, `no_match_reasons`의 `NoMatchReason` 전환은 기존 결과의 필수 필드를 바꾸므로 새 MAJOR schema로 배포한다. 이전 MAJOR 결과에 세 목록을 빈 배열로 추정하지 않는다. 기존 결과는 감사 이력으로만 보존하고 새 Chaining·가설 등록 입력으로 자동 승격하지 않는다.
 
 ChainingResult는 bypass, alternate path, 새 sink, impact escalation, Technical revision, 일반 validation 또는 동적 재현 요청을 포함할 수 없다. 이런 주장은 Verification이 자기 흐름에서 조사하고 material하면 `origin=VERIFICATION` proposal로 분리한다. 이 record는 기존 verdict, CWE, Gate 또는 Finding을 변경하지 않는다.
 

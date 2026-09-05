@@ -151,7 +151,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | 다른 규칙 실패를 금지 테스트 위반으로 오인 | 독립 `testing_restriction_compliance`와 같은 area의 근거·누락 구조를 검사하고 `rule_compliance` 또는 link 존재만으로 추정 금지 |
 | admission 변경 뒤 진행 중이거나 이미 파생된 체이닝이 오염된 재료 사용 | `source_admission_refs`로 직접·부모 체인의 current exact decision을 재검사하고, 변경·DENY이면 진행 결과 차단과 파생 결과 current 사용 중단 |
 | Chaining Agent의 일반 research 확장 | ChainingResult schema와 result-owner validation으로 matching 외 출력 거절 |
-| chain 폭증 | ancestor Primitive 재사용 제외, fingerprint 중복 차단과 R8 전체 시간·비용·work 예산; token은 사용량만 관측 |
+| chain 폭증 | ancestor Primitive 재사용 제외, match 조합 중복 차단과 R8 전체 시간·비용·work 예산; token은 사용량만 관측 |
 | 등록만 된 유형별 플레이북의 무단 활성화 | 사람이 승인한 exact `PlaybookPolicy`와 proposal 후보 수를 검사하고 불명확·미허용 유형은 COMMON으로 fallback |
 | 플레이북 질문 누락·바꿔치기 | work별 immutable `PlaybookApplication`, 전역 `question_id`, template·결과 집합의 exact 비교 |
 | restriction 근거 유실·변조 | exact StaticFactBundle/fact/evidence reference, observed-fact 비중복, 소비 단계의 전체 객체 보존 |
@@ -293,7 +293,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N7 | result가 있는 TRUE Primitive + result가 없는 HOLD Primitive | upstream result가 HOLD input 하나를 근거 있게 충족하면 `origin=CHAINING` proposal을 새로 등록·검증 |
 | N8 | result가 있는 서로 다른 TRUE Primitive 둘 | 앞 result가 뒤 Primitive의 `inputs` 한 항목을 근거 있게 충족할 때만 TRUE_TRUE proposal 허용 |
 | N9 | TRUE+TRUE 입력 중 한 부모가 Technical 비정상이거나 direct·ancestor current `PrimitiveAdmissionDecision=ALLOW`를 충족하지 않음 | result Primitive가 될 수 없으므로 match 저장과 proposal 등록 거절 |
-| N10 | match의 entity 또는 privilege 충족 근거가 없음 | uncertain candidate를 만들지 않고 `no_match_reasons`에 이유 기록 |
+| N10 | match의 entity 또는 privilege 충족 근거가 없음 | uncertain candidate를 만들지 않고 `no_match_reasons`에 `NoMatchReason` 기록 |
 | N10-A | 성립한 match의 후보가 양방향 계보에서 이미 사용한 Primitive를 같은 결과에서 다시 사용 | 그 후보를 근거로 조상을 제외하고 match 입력에서 빼며, DB와 부모 verdict는 변경하지 않음 |
 | N10-B | `excluded_primitive_ref`가 고정된 `considered_primitive_refs` 밖이거나 실제 match에 다시 포함됨 | `SAVE_RESULT` 거절; 같은 Chaining work가 고정한 조상 제외 전 입력과 제외 후 match를 다시 계산 |
 | N10-C | `excluded_by_ref`가 같은 work 입력이 아니거나 실제 match에 사용되지 않았거나 자신도 제외됐거나 계보가 제외 대상을 포함하지 않음 | `SAVE_RESULT` 거절; 성립한 match에 사용된 Primitive와 §06 계보 관계가 확인된 exclusion만 허용 |

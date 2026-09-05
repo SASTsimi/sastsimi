@@ -246,7 +246,7 @@ flowchart TB
     MATCH -->|No| RECORD[ChainingResult with no material candidate]
     MATCH -->|Yes| CHAIN[Chaining Agent matching only]
     CHAIN --> NEW[HypothesisProposal origin CHAINING]
-    NEW --> LIMIT{Runtime validation ancestor reuse across lineage, duplicate fingerprint, and global budget}
+    NEW --> LIMIT{Runtime validation ancestor reuse across lineage, duplicate match combination, and global budget}
     LIMIT -->|Pass| REGISTER[Global registration]
     LIMIT -->|Fail| STOP[Reject or global budget stop]
     REGISTER --> ORCH[Orchestration assigns Verification]
