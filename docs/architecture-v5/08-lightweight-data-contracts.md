@@ -1738,15 +1738,60 @@ Rule·Scope·Impact 판단은 별도 condition/projection 또는 execution-fact 
 각 LLM 호출의 요청, 응답, 모델·세션 정보, 사용량과 오류를 다시 확인할 수 있게 남기는 기록입니다.
 
 ```yaml
+PromptRegistryEntry:
+  meta: RecordMeta
+  prompt_key: string
+  agent_role: HYPOTHESIS | PRO | CON | VERIFICATION | R7_AGENT | CHAINING | CWE_LABELING | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER
+  task_kind: string
+  template_ref: StoredDataRef
+  template_version: string
+  allowed_context_kinds: [string]
+  forbidden_context_kinds: [string]
+  output_schema: string
+  session_policy: NEW | RESUME | AUTO
+  model_profile_ref: StoredDataRef
+  provider_profile_refs: [StoredDataRef]
+  execution_limits_ref: StoredDataRef
+  retry_policy_ref: StoredDataRef
+  semantic_validator: string
+  tool_policy_ref: StoredDataRef | null
+  redaction_policy_ref: StoredDataRef
+  result_kind: string
+  status: DRAFT | ACTIVE | RETIRED
+  owner_role: string
+  reviewer_roles: [string]
+
+PromptContextBinding:
+  slot: string
+  data_kind: string
+  data_ref: StoredDataRef
+  trust_class: TRUSTED_INSTRUCTION | UNTRUSTED_DATA
+
+PromptPayload:
+  meta: RecordMeta
+  registry_entry_ref: StoredDataRef
+  prompt_key: string
+  agent_role: HYPOTHESIS | PRO | CON | VERIFICATION | R7_AGENT | CHAINING | CWE_LABELING | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER
+  task_kind: string
+  template_ref: StoredDataRef
+  template_version: string
+  context_bindings: [PromptContextBinding]
+  rendered_prompt_ref: StoredDataRef
+  output_schema: string
+
 LLMCallSpec:
   meta: RecordMeta
   llm_call_id: string
-  agent_role: HYPOTHESIS | VERIFICATION | PRO | CON | CWE_LABELING | CHAINING | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER
+  agent_role: HYPOTHESIS | PRO | CON | VERIFICATION | R7_AGENT | CHAINING | CWE_LABELING | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER
+  task_kind: string
   provider_profile_ref: StoredDataRef
   model: string
   session_policy: NEW | RESUME | AUTO
   parent_session_ref: string | null
   context_refs: [StoredDataRef]
+  prompt_registry_entry_ref: StoredDataRef
+  prompt_key: string
+  prompt_template_ref: StoredDataRef
   prompt_template_version: string
   prompt_payload_ref: StoredDataRef
   output_schema: string
@@ -1758,12 +1803,16 @@ LLMInvocationRequest:
   llm_call_id: string
   action_decision_ref: StoredDataRef
   call_spec_ref: StoredDataRef
-  agent_role: HYPOTHESIS | VERIFICATION | PRO | CON | CWE_LABELING | CHAINING | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER
+  agent_role: HYPOTHESIS | PRO | CON | VERIFICATION | R7_AGENT | CHAINING | CWE_LABELING | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER
+  task_kind: string
   provider_profile_ref: StoredDataRef
   model: string
   session_policy: NEW | RESUME | AUTO
   parent_session_ref: string | null
   context_refs: [StoredDataRef]
+  prompt_registry_entry_ref: StoredDataRef
+  prompt_key: string
+  prompt_template_ref: StoredDataRef
   prompt_template_version: string
   prompt_payload_ref: StoredDataRef
   output_schema: string
@@ -1771,11 +1820,17 @@ LLMInvocationRequest:
   timeout_ms: integer
 ```
 
-`call_spec_ref.record_id`는 수정할 수 없는 exact `LLMCallSpec` revision을 가리킨다. `action_decision_ref.record_id`는 일반 Agent이면 `CALL_LLM`, Gate이면 해당 `CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE`, Reporter이면 `CREATE_REPORT_DRAFT` action을 `ALLOW`하고 `USED`로 claim한 exact decision revision을 가리킨다. 그 action의 `llm_call_spec_ref.record_id`는 `call_spec_ref.record_id`와 같아야 한다. request의 `llm_call_id`, role, provider profile, model, session, parent session, context, prompt template/payload, output schema, token budget 계획값과 timeout은 spec과 field-by-field exact equality를 만족해야 하며 runtime은 이 equality를 provider 호출 직전에 다시 확인한다. 다르면 decision을 `EXPIRED`로 바꾸고 호출하지 않는다. 이 equality는 승인된 요청의 변조를 막는 `REVISION` 검사이며 token 사용량 상한 검사가 아니다. `timeout_ms`는 monotonic clock으로 계산하는 0보다 큰 밀리초 실행 예산이다.
+`PromptRegistryEntry`는 trusted Prompt Registry Runtime이 등록한 역할·작업별 설정이다. `prompt_key`는 사람이 읽는 등록 이름일 뿐 exact identity가 아니며, 실행할 항목은 `StoredDataRef(record_id + content_hash)`로 고정한다. `ACTIVE` entry는 `agent_role + task_kind` 조합마다 정확히 하나여야 한다. `template_ref`, output schema와 semantic validator를 바꾸면 기존 record를 덮어쓰지 않고 새 revision을 만든다. `model_profile_ref`는 역할의 모델 선택 정책, `provider_profile_refs`는 허용된 공식 연결 경로의 exact revision 목록, `execution_limits_ref`는 token 계획값·timeout·동시성 한도, `retry_policy_ref`는 repair·retry·explicit failover 조건을 가리킨다. 실제 한 호출에서 선택한 exact provider profile과 model은 `LLMCallSpec`에 고정하며 registry 허용 목록과 model profile을 모두 만족해야 한다. `tool_policy_ref=null`이면 tool을 허용하지 않는다. `result_kind`는 성공 출력이 저장될 공통 result-owner registry 항목과 같아야 한다.
+
+`PromptPayload`는 trusted Prompt Builder가 그 entry와 허용된 exact context로 조립한 불변 호출 입력이다. repository 코드·문서·정책 원문·도구·이전 LLM 출력은 `UNTRUSTED_DATA`로만 binding하며 `TRUSTED_INSTRUCTION`으로 승격하지 않는다. `rendered_prompt_ref`는 비밀값과 host 절대 경로를 제거한 실제 전송 직전 artifact를 가리킨다.
+
+`PromptPayload.context_bindings[*].data_ref`의 중복 없는 집합은 `LLMCallSpec.context_refs`와 `LLMInvocationRequest.context_refs`의 집합과 정확히 같아야 한다. 각 binding의 `data_kind`는 실제 reference 및 registry의 허용 목록과 같아야 하고 금지 목록에는 없어야 한다. 필수 slot 누락, 다른 workspace·commit·hypothesis의 reference, registry에 없는 추가 context 또는 untrusted 자료의 `TRUSTED_INSTRUCTION` 승격은 provider 호출 전에 거절한다.
+
+`call_spec_ref.record_id`는 수정할 수 없는 exact `LLMCallSpec` revision을 가리킨다. `action_decision_ref.record_id`는 일반 Agent이면 `CALL_LLM`, Gate이면 해당 `CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE`, Reporter이면 `CREATE_REPORT_DRAFT` action을 `ALLOW`하고 `USED`로 claim한 exact decision revision을 가리킨다. 그 action의 `llm_call_spec_ref.record_id`는 `call_spec_ref.record_id`와 같아야 한다. request의 `llm_call_id`, role, task, provider profile, model, session, parent session, context, prompt registry/template/payload, output schema, token budget 계획값과 timeout은 spec과 field-by-field exact equality를 만족해야 하며 runtime은 이 equality를 provider 호출 직전에 다시 확인한다. spec·request·payload의 role·task·prompt key·template revision·version·output schema도 registry entry와 같아야 한다. 다르면 decision을 `EXPIRED`로 바꾸고 호출하지 않는다. 이 equality는 승인된 요청의 변조를 막는 `REVISION` 검사이며 token 사용량 상한 검사가 아니다. `timeout_ms`는 monotonic clock으로 계산하는 0보다 큰 밀리초 실행 예산이다.
 
 `LLMCallSpec.token_budget`과 `LLMInvocationRequest.token_budget`은 provider 호출에 예상되는 사용량을 기록하는 0 이상의 선택 계획값이다. 값을 정하지 않았으면 `null`이며, 실제 사용량이 계획값을 넘거나 provider가 usage를 제공하지 않아도 token만을 이유로 `ActionCheck.BUDGET=FAIL`, `DENY` 또는 `BUDGET_EXCEEDED`를 만들지 않는다. 실제 usage는 `LLMInvocationLog`와 `AnalysisRunResult.resources`에 출처와 함께 기록하고 제공되지 않으면 `null`로 둔다. 이 nullable 의미로 바뀐 두 계약은 새 MAJOR schema로 배포하고 이전 값을 강제 상한으로 해석하지 않는다.
 
-`LLMCallSpec`은 이를 입력으로 가진 첫 `ActionDecision`이 저장된 뒤 수정하지 않는다. action `input_refs`에는 spec 자체와 spec의 `prompt_payload_ref`, 모든 `context_refs`를 포함하고 `REVISION`·`REDACTION` check를 적용한다. `CALL_LLM`에서는 spec role이 `requested_by`와 같아야 한다. `CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT`에서는 각각 `TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER`여야 한다. retry와 failover는 새 `llm_call_id`, spec, action과 decision을 만든다.
+`LLMCallSpec`은 이를 입력으로 가진 첫 `ActionDecision`이 저장된 뒤 수정하지 않는다. action `input_refs`에는 spec 자체와 spec의 `prompt_registry_entry_ref`, `prompt_template_ref`, `prompt_payload_ref`, 모든 `context_refs`를 포함하고 `REVISION`·`REDACTION` check를 적용한다. `CALL_LLM`에서는 spec role이 `requested_by`와 같아야 한다. `CALL_TECHNICAL_GATE | CALL_RULE_SCOPE_GATE | CREATE_REPORT_DRAFT`에서는 각각 `TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER`여야 한다. retry와 failover는 새 `llm_call_id`, spec, action과 decision을 만든다. 다른 provider로 전환해도 같은 논리 `PromptPayload`와 output schema를 사용하며, adapter가 역할 지시·context·판정 기준을 추가·삭제하면 호출 결과를 사용하지 않는다.
 
 Pro와 Con의 `SESSION` check는 독립성을 선택값이 아닌 필수 불변조건으로 검사한다. `requested_by=PRO | CON`인 `CALL_LLM` action은 `session_mode=NEW`, exact `LLMCallSpec.agent_role`이 같은 역할, `LLMCallSpec.session_policy=NEW`, `parent_session_ref=null`이어야 한다. Pro와 Con은 서로 다른 `llm_call_id`, `LLMCallSpec`, `ActionRequest`, `ActionDecision`과 실제 `session_ref`를 가져야 한다. provider가 session ID를 주지 않아도 adapter가 호출마다 서로 다른 불투명 local `session_ref`를 발급한다. 공통 가설·코드 fact는 각각의 `context_refs`에 넣을 수 있지만 상대 역할의 output·결론·session을 parent 또는 context로 넣을 수 없다.
 
@@ -1809,14 +1864,19 @@ LLMInvocationLog:
   llm_call_id: string
   action_decision_ref: StoredDataRef
   call_spec_ref: StoredDataRef
-  agent_role: string
+  agent_role: HYPOTHESIS | PRO | CON | VERIFICATION | R7_AGENT | CHAINING | CWE_LABELING | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER
+  task_kind: string
   provider_profile_ref: StoredDataRef
   provider: string
   model: string
   session_policy: NEW | RESUME | AUTO
   session_ref: string | null
   parent_session_ref: string | null
+  prompt_registry_entry_ref: StoredDataRef
+  prompt_key: string
+  prompt_template_ref: StoredDataRef
   prompt_template_version: string
+  prompt_payload_ref: StoredDataRef
   context_refs: [StoredDataRef]
   retrieved_code_locations: [CodeLocation]
   exposed_request_ref: StoredDataRef
@@ -1837,7 +1897,9 @@ LLMInvocationLog:
   redaction_result: APPLIED | NOT_REQUIRED | FAILED
 ```
 
-`LLMInvocationLog.action_decision_ref`와 `call_spec_ref`는 request와 같아야 한다. log의 role·profile·model·session·prompt template·context는 request와 spec에서 바뀌지 않으며 실제 adapter가 선택한 값과 차이가 있으면 호출을 실패 처리한다. log의 `parsed_output_ref.record_id`는 역할이 만든 exact structured output revision을 가리킨다. Pro/Con은 각각 exact `EvidenceAgentResult`, R5-01 `CWE_LABELING`은 exact `CWELabel`, Gate는 exact Gate review, Reporter는 exact `ReportDraft`를 가리킨다. `CWELabel.llm_call_id`는 바로 이 성공한 CWE 호출의 `llm_call_id`와 같아야 한다. output은 log를 역참조하지 않는다. 해당 action decision의 후속 revision `outcome_refs`에 log와 final output을 각각 한 번 포함해 두 record를 같은 실행에 연결한다.
+`LLMInvocationLog.action_decision_ref`와 `call_spec_ref`는 request와 같아야 한다. log의 role·task·profile·model·session·prompt registry/template/payload·context는 request와 spec에서 바뀌지 않으며 실제 adapter가 선택한 값과 차이가 있으면 호출을 실패 처리한다. log의 `parsed_output_ref.record_id`는 역할이 만든 exact structured output revision을 가리킨다. Pro/Con은 각각 exact `EvidenceAgentResult`, R5-01 `CWE_LABELING`은 exact `CWELabel`, Gate는 exact Gate review, Reporter는 exact `ReportDraft`를 가리킨다. `CWELabel.llm_call_id`는 바로 이 성공한 CWE 호출의 `llm_call_id`와 같아야 한다. output은 log를 역참조하지 않는다. 해당 action decision의 후속 revision `outcome_refs`에 log와 final output을 각각 한 번 포함해 두 record를 같은 실행에 연결한다.
+
+`PromptRegistryEntry`, `PromptPayload` 추가와 `R7_AGENT`·prompt exact reference 필드 추가는 LLM invocation 계약의 새 필수 구조이므로 새 MAJOR schema에서만 사용한다. 이전 MAJOR의 role 문자열이나 `prompt_template_version`만 보고 새 registry/template/payload reference를 추정해 채우지 않는다.
 
 새로운 독립 호출은 `retry_count=0`이고 두 선행 호출 reference가 모두 `null`이다. 같은 provider/model에서 일반 retry를 실행하면 `retry_of_llm_call_id`가 바로 앞의 허용된 실패 호출을 가리키고 `failover_from_llm_call_id=null`이다. provider 또는 model을 바꾸는 failover이면 반대로 `failover_from_llm_call_id`만 바로 앞의 허용된 실패 호출을 가리킨다. 두 필드는 동시에 값을 가질 수 없다.
 

@@ -759,10 +759,29 @@ foreach ($field in $requiredActionDecisionFields) {
     }
 }
 
+$promptRegistryBlock = [regex]::Match($contractText, '(?ms)^PromptRegistryEntry:\s*(.*?)^PromptContextBinding:').Groups[1].Value
+$promptPayloadBlock = [regex]::Match($contractText, '(?ms)^PromptPayload:\s*(.*?)^LLMCallSpec:').Groups[1].Value
+foreach ($field in @('meta:', 'prompt_key:', 'agent_role:', 'task_kind:', 'template_ref:', 'template_version:', 'allowed_context_kinds:', 'forbidden_context_kinds:', 'output_schema:', 'session_policy:', 'model_profile_ref:', 'provider_profile_refs:', 'execution_limits_ref:', 'retry_policy_ref:', 'semantic_validator:', 'tool_policy_ref:', 'redaction_policy_ref:', 'result_kind:', 'status:', 'owner_role:', 'reviewer_roles:')) {
+    if (-not $promptRegistryBlock.Contains($field)) {
+        Add-Failure "missing PromptRegistryEntry field: $field"
+    }
+}
+foreach ($field in @('meta:', 'registry_entry_ref:', 'prompt_key:', 'agent_role:', 'task_kind:', 'template_ref:', 'template_version:', 'context_bindings:', 'rendered_prompt_ref:', 'output_schema:')) {
+    if (-not $promptPayloadBlock.Contains($field)) {
+        Add-Failure "missing PromptPayload field: $field"
+    }
+}
+$requiredPromptRoles = @('HYPOTHESIS', 'PRO', 'CON', 'VERIFICATION', 'R7_AGENT', 'CHAINING', 'CWE_LABELING', 'TECHNICAL_GATE', 'RULE_SCOPE_GATE', 'REPORTER')
+foreach ($role in $requiredPromptRoles) {
+    if (-not $promptRegistryBlock.Contains($role) -or -not $promptPayloadBlock.Contains($role)) {
+        Add-Failure "missing prompt role in registry or payload: $role"
+    }
+}
+
 $llmSpecBlock = [regex]::Match($contractText, '(?ms)^LLMCallSpec:\s*(.*?)^LLMInvocationRequest:').Groups[1].Value
 $llmRequestBlock = [regex]::Match($contractText, '(?ms)^LLMInvocationRequest:\s*(.*?)^```').Groups[1].Value
 foreach ($block in @($llmSpecBlock, $llmRequestBlock)) {
-    foreach ($field in @('llm_call_id:', 'agent_role:', 'provider_profile_ref:', 'model:', 'session_policy:', 'context_refs:', 'prompt_payload_ref:', 'output_schema:', 'token_budget:', 'timeout_ms:')) {
+    foreach ($field in @('llm_call_id:', 'agent_role:', 'task_kind:', 'provider_profile_ref:', 'model:', 'session_policy:', 'context_refs:', 'prompt_registry_entry_ref:', 'prompt_key:', 'prompt_template_ref:', 'prompt_template_version:', 'prompt_payload_ref:', 'output_schema:', 'token_budget:', 'timeout_ms:')) {
         if (-not $block.Contains($field)) {
             Add-Failure "missing exact LLM call field: $field"
         }
@@ -772,6 +791,9 @@ foreach ($block in @($llmSpecBlock, $llmRequestBlock)) {
     }
     if (-not $block.Contains('CHAINING')) {
         Add-Failure 'CHAINING missing from LLM call role enum'
+    }
+    if (-not $block.Contains('R7_AGENT')) {
+        Add-Failure 'R7_AGENT missing from LLM call role enum'
     }
 }
 foreach ($blockInfo in @(
@@ -786,8 +808,25 @@ if (-not $llmRequestBlock.Contains('call_spec_ref:')) {
     Add-Failure 'LLMInvocationRequest missing call_spec_ref'
 }
 $llmLogBlock = [regex]::Match($contractText, '(?ms)^LLMInvocationLog:\s*(.*?)^```').Groups[1].Value
-if (-not $llmLogBlock.Contains('parsed_output_ref:')) {
-    Add-Failure 'LLMInvocationLog missing parsed_output_ref'
+foreach ($field in @('agent_role:', 'task_kind:', 'prompt_registry_entry_ref:', 'prompt_key:', 'prompt_template_ref:', 'prompt_template_version:', 'prompt_payload_ref:', 'parsed_output_ref:')) {
+    if (-not $llmLogBlock.Contains($field)) {
+        Add-Failure "LLMInvocationLog missing prompt trace field: $field"
+    }
+}
+if (-not $llmLogBlock.Contains('R7_AGENT')) {
+    Add-Failure 'R7_AGENT missing from LLMInvocationLog role enum'
+}
+
+$promptRuntimePath = Join-Path $repoRoot 'docs/architecture-v5/implementation/05-prompt-runtime.md'
+if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
+    Add-Failure 'missing R3-05 prompt runtime design'
+} else {
+    $promptRuntimeText = Get-Content -Raw -LiteralPath $promptRuntimePath
+    foreach ($marker in @('DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED', 'PromptRegistryEntry', 'PromptPayload', 'R7_AGENT', 'OpenAI API, Codex 구독, Anthropic API, Claude 구독', '`PMT-01`', '`PMT-15`', 'Orchestration 자체의 별도 LLM prompt는 만들지 않는다')) {
+        if (-not $promptRuntimeText.Contains($marker)) {
+            Add-Failure "R3-05 prompt runtime is missing marker: $marker"
+        }
+    }
 }
 foreach ($pair in @(
     @{ Name = 'TechnicalEvidenceReview'; End = '## 9.' },

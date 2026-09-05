@@ -8,9 +8,13 @@
 
 > 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
 
+역할별 prompt의 등록 이름, template, 허용 입력, 출력 schema와 검증 방식은 [R3-05 Agent 프롬프트 구조](./implementation/05-prompt-runtime.md)를 따른다. 운영 prompt는 Markdown 문장만으로 완성되지 않으며 `PromptRegistryEntry + template exact revision + PromptPayload + output schema/semantic validator`를 한 묶음으로 승인한다.
+
 ## Orchestration Agent
 
 Orchestration Agent는 분석 전체와 가설 목록을 관리하는 global control-plane이다. 한 가설에 대한 책임은 proposal 검증·전역 등록·Verification 배정에서 끝난다. 배정 뒤 Context, Pro/Con, 동적 재현, 판정, Gate `REVISE`와 Chaining handoff를 선택하는 주체는 그 가설의 Verification owner다.
+
+여기서 “Agent”는 사용자에게 보이는 조정 기능의 이름이다. 구현에서는 LLM이 전역 상태를 마음대로 제어하지 않는다. Hypothesis Agent가 가설 생성·중복 검토처럼 추론이 필요한 부분만 맡고, 등록·중복 후보 축소·배정·상태 전이·권한 검사는 비-LLM orchestration runtime이 수행한다. 따라서 Orchestration 자체의 별도 LLM prompt는 만들지 않는다.
 
 ```text
 HypothesisProposal validation
@@ -246,6 +250,16 @@ Chaining work는 exact Primitive, source Verification·Technical review와 실�
 세션 재사용은 token 절감 가능성이 있지만 confirmation bias와 prompt contamination 위험이 있다. 실제 정책은 설정 가능해야 하고 선택 결과와 비교 지표를 로그에 남긴다.
 
 Pro와 Con은 session만 분리하지 않는다. trusted prompt builder가 같은 공통 입력에서 역할별 immutable prompt payload를 만들며, 상대 역할의 결과·결론·session·action/decision은 prompt, context, parent/predecessor, 저장소 조회와 tool 입출력 어느 경로에도 넣지 않는다. 위반하면 `CROSS_ROLE_INPUT_DENIED`로 호출 또는 합류를 중단한다.
+
+## prompt 작성과 실행 책임
+
+- R1은 Hypothesis·Chaining, R5는 CWE Labeling·두 Gate·Reporter, R6은 Pro·Con·Verification, R7은 Reproduction Agent의 판단 기준을 작성한다.
+- R2는 prompt가 읽는 정적 사실과 코드 위치의 의미를, R8은 평가 fixture와 품질·시간·비용 측정 기준을 검토한다.
+- R3는 공통 registry·loader·builder·provider-neutral 전달과 통합 시험을 구현하며 다른 파트의 보안 판단 기준을 임의로 대신 쓰지 않는다.
+- R4는 role·task·template·payload의 exact reference, session·retry·권한·오류 불변조건을 검토한다.
+- Orchestration runtime, Runtime Validator, Playbook Registry Runtime, Setup Automation, Sandbox Controller, Reproduction Session Manager와 Primitive Admission Runtime에는 LLM prompt를 만들지 않는다.
+
+OpenAI API, Codex 구독, Anthropic API 또는 Claude 구독 중 무엇을 사용하더라도 같은 논리 `PromptPayload`와 output schema를 사용한다. Adapter는 provider 전송 형식만 바꾸며 역할 지시·입력·판정 기준을 바꾸지 않는다.
 
 ## prompt-injection 경계
 
