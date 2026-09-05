@@ -14,11 +14,17 @@ LLM을 회원 로그인이나 API로 연결하는 공통 방법, 새 대화·이
 Agent Runtime
 → LLM Logging Proxy
 → LLMProviderAdapter
-   ├─ MembershipSessionAdapter
-   └─ APIProviderAdapter
+   ├─ APIProviderAdapter
+   │  ├─ OpenAI Responses API
+   │  └─ Anthropic Messages API
+   └─ MembershipSessionAdapter
+      ├─ Codex + ChatGPT 구독 로그인
+      └─ Claude Code + Claude 구독 로그인
 ```
 
 API provider는 공식 API/SDK 경계다. Membership session은 공식 지원·약관·동시성·session/log 가용성 검토를 통과해야 채택할 수 있는 `EXPERIMENTAL / FEASIBILITY_REQUIRED` adapter다. 어느 하나도 아직 기본·검증 완료 방식으로 확정하지 않는다. API key와 membership credential은 각 adapter의 secret boundary 안에 두며 Agent와 일반 log에 노출하지 않는다.
+
+네 연결 경로의 구체적인 차이와 시험 기준은 [R3-04 Provider 결정](../implementation/04-provider-decision.md)에 정리한다. ChatGPT 구독은 OpenAI/Codex 경로에만, Claude 구독은 Anthropic/Claude Code 경로에만 사용한다. Provider를 바꿀 때는 model 이름만 교체하지 않고 새 profile·adapter·call ID·session으로 실행한다.
 
 provider/model failover는 조용히 수행하지 않는다. 모든 retry와 fallback 호출은 새 `llm_call_id`를 사용한다. 일반 retry는 `retry_of_llm_call_id`, provider/model 전환은 `failover_from_llm_call_id`로 바로 앞의 허용된 실패 호출을 가리킨다. 두 필드를 동시에 사용하지 않으며 이 연결을 따라 최초 실패부터 마지막 결과까지 순서와 원인을 확인할 수 있어야 한다.
 
