@@ -156,9 +156,10 @@ Technical Gate는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 
 - `PromptRegistryEntry`: 역할·작업, template, 허용·금지 입력, 출력 schema, model/provider 후보, session·예산·재시도·redaction 정책과 담당자를 묶은 등록 정보입니다.
 - `PromptPayload`: 한 번의 호출에 실제 사용한 exact template과 입력 reference를 묶은 불변 자료입니다.
 - `LLMCallSpec`, 요청과 log는 같은 역할·작업·registry·template·payload reference를 가져야 합니다.
+- R7 Agent의 실행 해석은 `R7AgentConclusion`으로 따로 남기고, 비-LLM Session Manager가 같은 attempt의 실제 log·환경·관찰과 대조해 `DynamicReproductionResult`를 확정합니다. Agent가 실행되지 않았거나 결론 전에 실패했다면 가짜 conclusion을 만들지 않습니다.
 - `R7_AGENT`를 포함한 10개 LLM 역할만 등록하며 Orchestration·Runtime Validator·Controller 같은 정해진 프로그램 구성요소에는 prompt를 만들지 않습니다.
 - 저장소 코드·README·정책 원문·도구와 이전 LLM 출력은 지시문이 아니라 `UNTRUSTED_DATA`로 전달합니다.
-- OpenAI API·Codex 구독·Anthropic API·Claude 구독 중 경로가 바뀌어도 같은 논리 payload와 출력 schema를 사용합니다.
+- OpenAI API·Codex 구독·Anthropic API·Claude 구독은 연결 후보이며, R3-04 시험에서 채택된 `ProviderProfile`만 실행할 수 있습니다. 채택 경로를 바꿔도 같은 논리 payload와 출력 schema를 사용합니다.
 
 어느 exact template과 자료로 결과를 만들었는지 연결되지 않거나 다른 역할·작업의 자료가 섞이면 LLM을 호출하지 않습니다. 호출 뒤 형식이나 의미 검사를 통과하지 못한 응답도 역할 결과로 저장하지 않습니다.
 

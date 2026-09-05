@@ -531,7 +531,8 @@ $sandboxPolicyDecisionBlock = [regex]::Match($contractText, '(?ms)^SandboxPolicy
 $cleanupResultBlock = [regex]::Match($contractText, '(?ms)^CleanupResult:\s*(.*?)^AgentLogEvent:').Groups[1].Value
 $agentLogEventBlock = [regex]::Match($contractText, '(?ms)^AgentLogEvent:\s*(.*?)^AgentLog:').Groups[1].Value
 $agentLogBlock = [regex]::Match($contractText, '(?ms)^AgentLog:\s*(.*?)^PoCCandidate:').Groups[1].Value
-$pocCandidateBlock = [regex]::Match($contractText, '(?ms)^PoCCandidate:\s*(.*?)^PoCBundle:').Groups[1].Value
+$pocCandidateBlock = [regex]::Match($contractText, '(?ms)^PoCCandidate:\s*(.*?)^R7AgentConclusion:').Groups[1].Value
+$r7AgentConclusionBlock = [regex]::Match($contractText, '(?ms)^R7AgentConclusion:\s*(.*?)^PoCBundle:').Groups[1].Value
 $pocBundleBlock = [regex]::Match($contractText, '(?ms)^PoCBundle:\s*(.*?)^DynamicReproductionResult:').Groups[1].Value
 $dynamicResultBlock = [regex]::Match($contractText, '(?ms)^DynamicReproductionResult:\s*(.*?)^```').Groups[1].Value
 foreach ($field in @('need_id:', 'kind:', 'description:', 'required:', 'source_refs:')) {
@@ -631,6 +632,9 @@ foreach ($field in @('meta:', 'request_ref:', 'events:')) {
 foreach ($field in @('meta:', 'request_ref:', 'reproduction_plan_ref:', 'content_ref:', 'content_digest:', 'created_by_invocation_ref:', 'created_at:')) {
     if (-not $pocCandidateBlock.Contains($field)) { Add-Failure "missing PoCCandidate field: $field" }
 }
+foreach ($field in @('meta:', 'request_ref:', 'reproduction_plan_ref:', 'environment_ref:', 'poc_candidate_ref:', 'observation_refs:', 'proposed_outcome:', 'hypothesis_evidence_refs:', 'hypothesis_linkage:', 'limitations:', 'created_by_invocation_ref:')) {
+    if (-not $r7AgentConclusionBlock.Contains($field)) { Add-Failure "missing R7AgentConclusion field: $field" }
+}
 foreach ($field in @('meta:', 'request_ref:', 'reproduction_plan_ref:', 'environment_recipe_ref:', 'environment_ref:', 'agent_log_ref:', 'candidate_ref:', 'candidate_digest:', 'execution_action_id:', 'evidence_refs:', 'validated_at:')) {
     if (-not $pocBundleBlock.Contains($field)) { Add-Failure "missing PoCBundle field: $field" }
 }
@@ -643,6 +647,7 @@ foreach ($fieldPattern in @(
     'policy_decision_ref:\s*StoredDataRef \| null',
     'agent_invoked:\s*boolean',
     'agent_log_ref:\s*StoredDataRef',
+    'agent_conclusion_ref:\s*StoredDataRef \| null',
     'environment_recipe_ref:\s*StoredDataRef \| null',
     'environment_ref:\s*StoredDataRef \| null',
     'poc_candidate_ref:\s*StoredDataRef \| null',
@@ -761,12 +766,40 @@ foreach ($field in $requiredActionDecisionFields) {
 
 $promptRegistryBlock = [regex]::Match($contractText, '(?ms)^PromptRegistryEntry:\s*(.*?)^PromptContextBinding:').Groups[1].Value
 $promptPayloadBlock = [regex]::Match($contractText, '(?ms)^PromptPayload:\s*(.*?)^LLMCallSpec:').Groups[1].Value
-foreach ($field in @('meta:', 'prompt_key:', 'agent_role:', 'task_kind:', 'template_ref:', 'template_version:', 'allowed_context_kinds:', 'forbidden_context_kinds:', 'output_schema:', 'session_policy:', 'model_profile_ref:', 'provider_profile_refs:', 'execution_limits_ref:', 'retry_policy_ref:', 'semantic_validator:', 'tool_policy_ref:', 'redaction_policy_ref:', 'result_kind:', 'status:', 'owner_role:', 'reviewer_roles:')) {
+$modelRouteBlock = [regex]::Match($contractText, '(?ms)^ModelRoute:\s*(.*?)^ModelProfile:').Groups[1].Value
+$modelProfileBlock = [regex]::Match($contractText, '(?ms)^ModelProfile:\s*(.*?)^ExecutionLimits:').Groups[1].Value
+$executionLimitsBlock = [regex]::Match($contractText, '(?ms)^ExecutionLimits:\s*(.*?)^LLMRetryPolicy:').Groups[1].Value
+$retryPolicyBlock = [regex]::Match($contractText, '(?ms)^LLMRetryPolicy:\s*(.*?)^LLMToolPolicy:').Groups[1].Value
+$toolPolicyBlock = [regex]::Match($contractText, '(?ms)^LLMToolPolicy:\s*(.*?)^PromptRedactionPolicy:').Groups[1].Value
+$redactionPolicyBlock = [regex]::Match($contractText, '(?ms)^PromptRedactionPolicy:\s*(.*?)^OutputSchemaSpec:').Groups[1].Value
+$outputSchemaSpecBlock = [regex]::Match($contractText, '(?ms)^OutputSchemaSpec:\s*(.*?)^SemanticValidatorSpec:').Groups[1].Value
+$semanticValidatorSpecBlock = [regex]::Match($contractText, '(?ms)^SemanticValidatorSpec:\s*(.*?)^PromptInputSlot:').Groups[1].Value
+$promptInputSlotBlock = [regex]::Match($contractText, '(?ms)^PromptInputSlot:\s*(.*?)^PromptRegistryEntry:').Groups[1].Value
+$promptContextBindingBlock = [regex]::Match($contractText, '(?ms)^PromptContextBinding:\s*(.*?)^PromptPayload:').Groups[1].Value
+
+foreach ($contract in @(
+    @{ Name = 'ModelRoute'; Block = $modelRouteBlock; Fields = @('provider_profile_ref:', 'model:', 'priority:', 'use:', 'required_capabilities:') },
+    @{ Name = 'ModelProfile'; Block = $modelProfileBlock; Fields = @('meta:', 'profile_key:', 'agent_role:', 'task_kind:', 'routes:', 'status:') },
+    @{ Name = 'ExecutionLimits'; Block = $executionLimitsBlock; Fields = @('meta:', 'limits_key:', 'token_budget:', 'timeout_ms:', 'max_parallel_calls:', 'max_calls_per_work:') },
+    @{ Name = 'LLMRetryPolicy'; Block = $retryPolicyBlock; Fields = @('meta:', 'policy_key:', 'max_schema_repairs:', 'max_semantic_repairs:', 'max_retries:', 'max_failovers:', 'retryable_statuses:') },
+    @{ Name = 'LLMToolPolicy'; Block = $toolPolicyBlock; Fields = @('meta:', 'policy_key:', 'allowed_tools:', 'forbidden_actions:', 'sandbox_only:') },
+    @{ Name = 'PromptRedactionPolicy'; Block = $redactionPolicyBlock; Fields = @('meta:', 'policy_key:', 'remove_categories:', 'fail_closed:') },
+    @{ Name = 'OutputSchemaSpec'; Block = $outputSchemaSpecBlock; Fields = @('meta:', 'schema_key:', 'schema_artifact_ref:', 'result_kind:') },
+    @{ Name = 'SemanticValidatorSpec'; Block = $semanticValidatorSpecBlock; Fields = @('meta:', 'validator_key:', 'implementation_ref:', 'test_refs:') },
+    @{ Name = 'PromptInputSlot'; Block = $promptInputSlotBlock; Fields = @('slot:', 'data_kind:', 'field_paths:', 'cardinality:', 'trust_class:') },
+    @{ Name = 'PromptContextBinding'; Block = $promptContextBindingBlock; Fields = @('slot:', 'data_kind:', 'source_ref:', 'projected_data_ref:', 'field_paths:', 'trust_class:') }
+)) {
+    foreach ($field in $contract.Fields) {
+        if (-not $contract.Block.Contains($field)) { Add-Failure "missing $($contract.Name) field: $field" }
+    }
+}
+
+foreach ($field in @('meta:', 'prompt_key:', 'agent_role:', 'task_kind:', 'template_ref:', 'template_version:', 'input_slots:', 'forbidden_context_kinds:', 'output_schema_ref:', 'session_policy:', 'model_profile_ref:', 'provider_profile_refs:', 'execution_limits_ref:', 'retry_policy_ref:', 'semantic_validator_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'result_kind:', 'status:', 'owner_role:', 'reviewer_roles:')) {
     if (-not $promptRegistryBlock.Contains($field)) {
         Add-Failure "missing PromptRegistryEntry field: $field"
     }
 }
-foreach ($field in @('meta:', 'registry_entry_ref:', 'prompt_key:', 'agent_role:', 'task_kind:', 'template_ref:', 'template_version:', 'context_bindings:', 'rendered_prompt_ref:', 'output_schema:')) {
+foreach ($field in @('meta:', 'registry_entry_ref:', 'prompt_key:', 'agent_role:', 'task_kind:', 'template_ref:', 'template_version:', 'context_bindings:', 'rendered_prompt_ref:', 'output_schema_ref:')) {
     if (-not $promptPayloadBlock.Contains($field)) {
         Add-Failure "missing PromptPayload field: $field"
     }
@@ -781,7 +814,7 @@ foreach ($role in $requiredPromptRoles) {
 $llmSpecBlock = [regex]::Match($contractText, '(?ms)^LLMCallSpec:\s*(.*?)^LLMInvocationRequest:').Groups[1].Value
 $llmRequestBlock = [regex]::Match($contractText, '(?ms)^LLMInvocationRequest:\s*(.*?)^```').Groups[1].Value
 foreach ($block in @($llmSpecBlock, $llmRequestBlock)) {
-    foreach ($field in @('llm_call_id:', 'agent_role:', 'task_kind:', 'provider_profile_ref:', 'model:', 'session_policy:', 'context_refs:', 'prompt_registry_entry_ref:', 'prompt_key:', 'prompt_template_ref:', 'prompt_template_version:', 'prompt_payload_ref:', 'output_schema:', 'token_budget:', 'timeout_ms:')) {
+    foreach ($field in @('llm_call_id:', 'agent_role:', 'task_kind:', 'provider_profile_ref:', 'model:', 'session_policy:', 'context_refs:', 'prompt_registry_entry_ref:', 'prompt_key:', 'prompt_template_ref:', 'prompt_template_version:', 'prompt_payload_ref:', 'model_profile_ref:', 'execution_limits_ref:', 'retry_policy_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'semantic_validator_ref:', 'output_schema_ref:', 'output_schema:', 'token_budget:', 'timeout_ms:')) {
         if (-not $block.Contains($field)) {
             Add-Failure "missing exact LLM call field: $field"
         }
@@ -808,7 +841,7 @@ if (-not $llmRequestBlock.Contains('call_spec_ref:')) {
     Add-Failure 'LLMInvocationRequest missing call_spec_ref'
 }
 $llmLogBlock = [regex]::Match($contractText, '(?ms)^LLMInvocationLog:\s*(.*?)^```').Groups[1].Value
-foreach ($field in @('agent_role:', 'task_kind:', 'prompt_registry_entry_ref:', 'prompt_key:', 'prompt_template_ref:', 'prompt_template_version:', 'prompt_payload_ref:', 'parsed_output_ref:')) {
+foreach ($field in @('agent_role:', 'task_kind:', 'provider_profile_ref:', 'model:', 'prompt_registry_entry_ref:', 'prompt_key:', 'prompt_template_ref:', 'prompt_template_version:', 'prompt_payload_ref:', 'model_profile_ref:', 'execution_limits_ref:', 'retry_policy_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'semantic_validator_ref:', 'output_schema_ref:', 'context_refs:', 'parsed_output_ref:')) {
     if (-not $llmLogBlock.Contains($field)) {
         Add-Failure "LLMInvocationLog missing prompt trace field: $field"
     }
@@ -822,10 +855,16 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
     Add-Failure 'missing R3-05 prompt runtime design'
 } else {
     $promptRuntimeText = Get-Content -Raw -LiteralPath $promptRuntimePath
-    foreach ($marker in @('DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED', 'PromptRegistryEntry', 'PromptPayload', 'R7_AGENT', 'OpenAI API, Codex 구독, Anthropic API, Claude 구독', '`PMT-01`', '`PMT-15`', 'Orchestration 자체의 별도 LLM prompt는 만들지 않는다')) {
+    foreach ($marker in @('DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED', 'PromptRegistryEntry', 'PromptPayload', 'R7_AGENT', 'OpenAI API, Codex 구독, Anthropic API, Claude 구독', '`PMT-01`', '`PMT-15`', 'Orchestration 자체의 별도 LLM prompt는 만들지 않는다', '한 호출당 한 structured output', 'R7AgentConclusion', '#90에서 채택된 각 adapter profile fixture')) {
         if (-not $promptRuntimeText.Contains($marker)) {
             Add-Failure "R3-05 prompt runtime is missing marker: $marker"
         }
+    }
+    foreach ($task in @('GENERATE_INITIAL', 'DUPLICATE_REVIEW', 'COLLECT_SUPPORT', 'COLLECT_COUNTEREVIDENCE', 'CREATE_DYNAMIC_REQUEST', 'FINAL_VERDICT', 'TECHNICAL_REVISE', 'DERIVE_ENVIRONMENT', 'PLAN_REPRODUCTION', 'CREATE_POC_CANDIDATE', 'INTERPRET_ATTEMPT', 'MATCH_PRIMITIVES', 'CLASSIFY', 'CREATE_DRAFT')) {
+        if (-not $promptRuntimeText.Contains($task)) { Add-Failure "R3-05 prompt runtime is missing task registry row: $task" }
+    }
+    foreach ($testId in @('PMT-HYP-01', 'PMT-HYP-02', 'PMT-PRO-01', 'PMT-CON-01', 'PMT-VER-01', 'PMT-VER-02', 'PMT-VER-03', 'PMT-R7-01', 'PMT-R7-02', 'PMT-R7-03', 'PMT-R7-04', 'PMT-CHN-01', 'PMT-CWE-01', 'PMT-TG-01', 'PMT-RSG-01', 'PMT-REP-01')) {
+        if (-not $promptRuntimeText.Contains($testId)) { Add-Failure "R3-05 prompt runtime is missing role fixture: $testId" }
     }
 }
 $promptAgentWikiText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/agents.md')
@@ -834,7 +873,7 @@ foreach ($rule in @(
     @{ Name = 'Agent Wiki links prompt runtime'; Text = $promptAgentWikiText; Marker = '[R3-05 Agent 프롬프트 구조](../implementation/05-prompt-runtime.md)' },
     @{ Name = 'Agent Wiki names ten LLM roles'; Text = $promptAgentWikiText; Marker = '프롬프트가 필요한 역할은 Hypothesis, Pro, Con, Verification, R7 Agent, Chaining, CWE Labeling, Technical Gate, Rule Scope Gate, Reporter의 10개입니다.' },
     @{ Name = 'Contract Wiki explains prompt registry'; Text = $promptContractWikiText; Marker = '`PromptRegistryEntry`: 역할·작업, template, 허용·금지 입력' },
-    @{ Name = 'Contract Wiki explains provider-neutral prompt'; Text = $promptContractWikiText; Marker = 'OpenAI API·Codex 구독·Anthropic API·Claude 구독 중 경로가 바뀌어도 같은 논리 payload와 출력 schema를 사용합니다.' }
+    @{ Name = 'Contract Wiki explains provider-neutral prompt'; Text = $promptContractWikiText; Marker = 'R3-04 시험에서 채택된 `ProviderProfile`만 실행할 수 있습니다.' }
 )) {
     if (-not $rule.Text.Contains($rule.Marker)) {
         Add-Failure "missing R3-05 Wiki synchronization rule: $($rule.Name)"
@@ -860,7 +899,7 @@ $analysisRunStateBlock = [regex]::Match($contractText, '(?ms)^AnalysisRunState:\
 if (-not $analysisRunStateBlock.Contains('eval_config_refs: [RunStoredDataRef | StoredDataRef]')) {
     Add-Failure 'AnalysisRunState.eval_config_refs must freeze exact evaluation configuration references'
 }
-$requiredAnalysisResultFields = @('hypothesis_duplicate_review_refs:', 'finding_refs:', 'verification_refs:', 'cwe_label_refs:', 'technical_review_refs:', 'rule_scope_review_refs:', 'policy_record_refs:', 'dynamic_request_refs:', 'dynamic_result_refs:', 'environment_recipe_refs:', 'sandbox_environment_refs:', 'agent_log_refs:', 'sandbox_policy_decision_refs:', 'cleanup_result_refs:', 'poc_candidate_refs:', 'poc_refs:', 'report_draft_refs:', 'llm_invocation_log_refs:', 'action_decision_refs:', 'work_state_refs:', 'work_attempt_refs:', 'transition_commit_refs:', 'eval_config_refs:', 'debug_trace_ref:')
+$requiredAnalysisResultFields = @('hypothesis_duplicate_review_refs:', 'finding_refs:', 'verification_refs:', 'cwe_label_refs:', 'technical_review_refs:', 'rule_scope_review_refs:', 'policy_record_refs:', 'dynamic_request_refs:', 'dynamic_result_refs:', 'environment_recipe_refs:', 'sandbox_environment_refs:', 'agent_log_refs:', 'r7_agent_conclusion_refs:', 'sandbox_policy_decision_refs:', 'cleanup_result_refs:', 'poc_candidate_refs:', 'poc_refs:', 'report_draft_refs:', 'llm_invocation_log_refs:', 'action_decision_refs:', 'work_state_refs:', 'work_attempt_refs:', 'transition_commit_refs:', 'eval_config_refs:', 'debug_trace_ref:')
 foreach ($field in $requiredAnalysisResultFields) {
     if (-not $analysisRunResultBlock.Contains($field)) {
         Add-Failure "missing AnalysisRunResult handoff field: $field"
