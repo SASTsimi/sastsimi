@@ -22,7 +22,7 @@ Agent Runtime
       └─ Claude Code + Claude 구독 로그인
 ```
 
-API provider는 공식 API/SDK 경계다. Membership session은 공식 지원·약관·동시성·session/log 가용성 검토를 통과해야 채택할 수 있는 `EXPERIMENTAL / FEASIBILITY_REQUIRED` adapter다. 어느 하나도 아직 기본·검증 완료 방식으로 확정하지 않는다. API key와 membership credential은 각 adapter의 secret boundary 안에 두며 Agent와 일반 log에 노출하지 않는다. 구독 경로는 구독 사용자가 자기 개발 환경에서 시작하는 내부 분석 후보이며, 제3자 사용자를 대신해 구독 credential로 요청을 중계하는 서비스 경로로 확장하지 않는다. 그런 제품·서비스 경로와 Agent SDK 임베딩은 provider의 현재 허용 범위를 별도로 확인하고 기본적으로 API Key profile을 사용한다.
+API provider는 공식 API/SDK 경계다. Membership session은 공식 지원·약관·동시성·session/log 가용성 검토를 통과해야 채택할 수 있는 `EXPERIMENTAL / FEASIBILITY_REQUIRED` adapter다. 어느 하나도 아직 기본·검증 완료 방식으로 확정하지 않는다. API key와 membership credential은 각 adapter의 secret boundary 안에 두며 Agent와 일반 log에 노출하지 않는다. 구독 경로는 구독 사용자가 자기 개발 환경에서 시작하는 내부 분석 후보이며, 제3자 사용자를 대신해 구독 credential로 요청을 중계하는 서비스 경로로 확장하지 않는다. Claude Agent SDK는 이번 네 경로에서 제외하며, 나중에 도입하려면 Messages API나 Claude CLI와 합치지 않고 별도 adapter·격리·약관 검토를 거친다.
 
 네 연결 경로의 구체적인 차이와 시험 기준은 [R3-04 Provider 결정](../implementation/04-provider-decision.md)에 정리한다. ChatGPT 구독은 OpenAI/Codex 경로에만, Claude 구독은 Anthropic/Claude Code 경로에만 사용한다. Provider를 바꿀 때는 model 이름만 교체하지 않고 새 profile·adapter·call ID·session으로 실행한다.
 

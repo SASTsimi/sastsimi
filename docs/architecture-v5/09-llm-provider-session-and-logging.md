@@ -90,7 +90,7 @@ LLM 호출은 상위 `WorkExecutionState`의 한 attempt 안에서 실행한다.
 UI 자동화나 session 재사용이 공식 지원 범위 밖이라면 구현 완료로 표시하지 않는다. raw cookie, token, browser profile path를 결과에 포함하지 않는다.
 
 - `CodexSubscriptionAdapter`는 ChatGPT 계정으로 공식 로그인한 Codex CLI/SDK 경계만 사용한다.
-- `ClaudeSubscriptionAdapter`는 Claude 계정으로 공식 로그인한 Claude Code CLI/Agent SDK 경계만 사용한다.
+- `ClaudeSubscriptionAdapter`는 Claude 계정으로 공식 로그인한 Claude Code CLI의 `claude -p` 경계만 사용한다. Claude Agent SDK는 이번 네 adapter 범위에 포함하지 않으며 도입하려면 별도 product·transport·adapter와 client 격리 검토가 필요하다.
 - 어느 adapter도 client credential 파일을 직접 파싱하거나 token을 추출해 일반 HTTP client에 전달하지 않는다.
 - 구독 plan, workspace, client와 rollout에 따라 모델 접근 범위가 다를 수 있으므로 실제 시험을 마친 model·environment 조합마다 별도 profile revision을 사용한다.
 - 구독 client는 실제 저장소가 아닌 격리된 빈 working directory에서 실행하고 redacted PromptPayload만 받는다. exact `ClientExecutionProfile`로 file·command·web tool, MCP·hook·plugin·project/user instruction·provider fallback과 불필요한 환경 변수를 fail-closed로 끈다.
