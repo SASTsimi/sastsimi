@@ -8,7 +8,7 @@
 
 ## 1. 기준과 결론
 
-- 작성 기준 `main`: `40c744523c09349c47592b4e3a1ee84a382bb16c`
+- 작성 기준 `main`: `d8023bb801aa5900a9ce82d8469294c31b3bb87b`
 - 연결 Issue: [R3-04 #90](https://github.com/SASTsimi/sastsimi/issues/90)
 - 후속 결정: [R3-06 #92](https://github.com/SASTsimi/sastsimi/issues/92)
 - 공식 문서 확인일: 2026-09-05
