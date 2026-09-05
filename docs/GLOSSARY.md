@@ -89,7 +89,8 @@
 | `EnvironmentRequirements` | R7이 R6 요청을 실제 환경 구성·검사 항목으로 구체화한 조건 묶음 | 역할·인증 방식·데이터·DB/service·fixture/mock·버전·Health Check를 근거와 함께 기록합니다. |
 | `environment_requirements_ref` | ReproductionPlan과 recipe가 사용하는 정확한 환경 요구사항 수정본 번호 | 오래된 수정본이나 다른 attempt의 요구사항을 재사용하지 않습니다. |
 | `EnvironmentCheck` | R7이 요구사항 하나와 실제 환경을 비교한 결과 | `MATCH`, `MISMATCH`, `NOT_CHECKED`, `ERROR` 중 하나와 실제 값·차이·근거를 남깁니다. |
-| `sandbox_profile_ref` | Sandbox의 host·Docker·mount·secret·egress·resource/lifecycle 외부 경계를 정한 정책 번호 | 내부 command allowlist나 애플리케이션 환경 조건을 뜻하지 않습니다. |
+| `sandbox_profile_ref` | R7이 소유·확정하는 Sandbox의 host·Docker·mount·namespace·secret·egress·workspace 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 정책 번호 (`data_kind=sandbox_profile`) | R8 호출 전 잔여 예산·새 attempt 한도나 내부 command allowlist, 애플리케이션 환경 조건을 뜻하지 않습니다. |
+| `DynamicReproductionLifecycleProfile` | R8이 소유하는 호출 전 work 잔여 시간 검사 정책과 새 attempt 한도의 versioned record (`data_kind=dynamic_reproduction_lifecycle_profile`) | 같은 session 조정은 세지 않고 session 재시작 `RETRY`와 외부 조건 해소 뒤 `RESUME`만 새 attempt로 세며, CPU·RAM·disk·PID·요청 가능 최대 시간은 포함하지 않습니다. |
 | `environment_ref` | 이번 시도에서 실제 생성된 Sandbox 환경 기록 번호 | 실행 전 환경 설정이나 최신 환경을 가리키지 않습니다. |
 | `secret_ref` | 비밀값 원문 대신 secret store의 항목을 가리키는 불투명 번호 | credential·cookie·token·password를 요구사항이나 일반 log에 저장하지 않습니다. |
 | `policy_decision_ref` | Sandbox Controller가 허용·차단한 이유를 가리키는 번호 | Technical Gate 판정과 다른 기록이며 정책 차단이면 반드시 필요합니다. |
@@ -121,7 +122,9 @@
 
 | 용어 | 쉽게 말하면 | 사용할 때 주의할 점 |
 |---|---|---|
-| `Finding` | 사람이 검토할 수 있게 정리한 취약점 결과 | Hypothesis, Verification-origin 또는 Chaining-origin 후보와 구분합니다. |
+| `Finding` | 이미 검증된 upstream 결과를 하나의 current 취약점 결과로 정규화해 저장한 record | 새 verdict·attack path·impact를 만드는 Gate가 아닙니다. Hypothesis, Verification-origin 또는 Chaining-origin 후보와 구분하고 claim 강도는 verified upstream 이하입니다. |
+| current `Finding` | 한 가설의 현재 exact chain(final TRUE·validated PoC·current CWELabel·Technical `ACCEPT`·current Rule Scope review)에 묶인 Finding revision | Reporter는 이 값이 있어야 호출되며, 6축 정책 readiness와는 별개 조건입니다. |
+| stale `Finding` | 생성 뒤 Verification generation/revision·CWELabel·두 Gate·동적 결과·validated PoC·고정 정책 record가 바뀌어 더는 current가 아닌 Finding | 감사 이력으로 보존하지만 새 Reporter 실행에 재사용하지 않습니다. R4의 revision·current pointer·CAS 규칙으로 차단합니다. |
 | `Gate` | 다음 단계로 보내도 되는지 확인하는 검토 단계 | Verification 판정을 직접 바꾸지 않습니다. |
 | `Technical Evidence Gate` | 판정과 코드·실행 근거가 서로 맞는지 확인하는 기술 검토 | 공식 정책을 읽지 않으므로 금지 테스트 여부는 판단하지 않습니다. 코드 경로·동적 결과·제한 조건의 연결을 확인합니다. |
 | `Rule Scope Impact Gate` | 공식 정책 범위·금지 테스트 여부와 실제 영향을 확인하는 검토 | 금지 테스트 위반은 별도 필드로 판단해 TRUE Primitive admission에 전달하고, 다른 결과는 Reporter 가능성에 적용합니다. 공식 정책이 없으면 추측하지 않습니다. |
@@ -139,7 +142,7 @@
 | `runtime` | 설계가 실제로 실행되는 프로그램 부분 | 현재 저장소에는 구현되어 있지 않습니다. |
 | `runtime validator` | 프로그램 내부 실행 범위 검사기 | 데이터 형식, 상태 순서, 예산과 권한을 강제하지만 취약점·CWE·정책 의미는 판단하지 않습니다. |
 | `sandbox` | 다른 시스템과 격리해 안전하게 코드를 실행하는 환경 | host, 비밀정보와 범위 밖 네트워크 접근을 막습니다. |
-| `Sandbox Controller` | 격리 환경 밖의 안전 경계를 강제하는 모듈 | host·Docker daemon/socket·mount/namespace·secret·egress·workspace·resource/lifecycle을 검사하며 내부 command allowlist는 운영하지 않습니다. |
+| `Sandbox Controller` | 격리 환경 밖의 안전 경계를 강제하는 모듈 | R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하며 내부 command allowlist, R7 profile 값, R8 잔여 예산·새 attempt는 결정하지 않습니다. |
 | `R7 Setup Automation` | Docker image·container·환경 재생성과 정리를 실제 수행하는 비-LLM 모듈 | Agent가 Docker daemon을 직접 다루지 않도록 격리된 실행 통로를 제공합니다. |
 | `Reproduction Session Manager` | 한 동적 재현 attempt의 실제 event와 최종 결과를 확정하는 비-LLM 모듈 | AgentLog, validated PoC와 DynamicReproductionResult의 result owner이며 Agent의 실행 전략은 결정하지 않습니다. |
 | `provider` | LLM을 제공하는 서비스나 연결 방식 | API 방식과 회원 로그인 방식을 같은 경계에서 관리합니다. |

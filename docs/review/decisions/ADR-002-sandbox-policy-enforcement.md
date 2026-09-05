@@ -17,7 +17,7 @@ Runtime Validator의 `RUN_SANDBOX ALLOW`는 호출 권한·상태·예산과 exa
 ## Decision
 
 - Runtime Validator는 R7 호출 전제와 current reference만 검사한다.
-- Sandbox Controller는 host·Docker daemon·mount/namespace·secret·network egress·R8 resource·lifecycle의 외부 경계 정책만 결정·강제하고 exact `sandbox_policy_decision`을 저장한다.
+- Sandbox Controller는 R7 `sandbox_profile_ref`의 host·Docker daemon·mount/namespace·secret·network egress·CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하고 exact `sandbox_policy_decision`을 저장한다. R8 lifecycle profile의 호출 전 잔여 시간·새 attempt 한도는 Runtime Validator가 강제한다.
 - Sandbox Controller는 Sandbox 생성·폐기, Agent 호출, command 허용·거절, 실행 순서, retry와 cleanup을 수행하지 않는다.
 - R7 Sandbox Setup Automation이 승인된 정책을 사용해 image build, clean Sandbox 생성과 lifecycle cleanup을 수행한다.
 - Reproduction Agent는 Sandbox 내부 환경·package·PoC·command·관찰·retry를 자율적으로 결정한다.
@@ -31,7 +31,7 @@ Runtime Validator의 `RUN_SANDBOX ALLOW`는 호출 권한·상태·예산과 exa
 - `agent_invoked=false`인 정책 차단·실행 전 취소도 Session Manager가 Agent 출력 없이 결과로 문서화할 수 있다.
 - `agent_invoked=true`이면 Session Manager가 runtime/tool event에서 확정한 exact `AgentLog`가 필요하다.
 - event는 실행 전 `STARTED`와 종료 상태를 같은 `action_id`로 연결하고 attempt 안에서 sequence가 단조 증가한다.
-- Agent crash 뒤에도 이미 기록된 event를 보존하며 retry는 새 attempt를 사용한다.
+- 같은 R7 Agent session의 조정은 현재 attempt에 기록한다. Agent crash처럼 session 재시작이 필요하면 기존 event를 보존하고 같은 work의 새 `attempt_id`·`trigger=RETRY`를 사용한다. 외부 조건 해소 뒤 재개는 `trigger=RESUME`다.
 - 정책 차단·환경 실패·실행 실패를 취약점 `FALSE`로 바꾸지 않는다.
 - 서로 다른 analysis·workspace·commit·hypothesis·attempt의 실행 artifact를 섞지 않는다.
 

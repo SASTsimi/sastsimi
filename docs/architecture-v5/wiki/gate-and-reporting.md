@@ -22,7 +22,7 @@ final TRUE `VerificationResult`의 찬반 근거, 실제 코드·호출·데이�
 
 ## 2. 공식 정책·범위·영향 검토(`Rule Scope Impact Gate`)
 
-정책 경로는 `Policy collection/parser -> PolicyParserResult -> PolicyCollectionResult 확인 -> ProgramPolicyRecord -> Rule Scope Impact Gate -> Reporter`입니다. Parser와 Collector가 공통 artifact를 만들고 R5는 Rule·Scope·Impact 의미만 판단합니다.
+정책 경로는 `Policy collection/parser -> PolicyParserResult -> PolicyCollectionResult 확인 -> ProgramPolicyRecord -> Rule Scope Impact Gate -> 신뢰 runtime의 current Finding 정규화 -> Reporter`입니다. Parser와 Collector가 공통 artifact를 만들고 R5는 Rule·Scope·Impact 의미만 판단합니다. Finding 정규화는 아래 "Finding 정규화" 섹션을 따릅니다.
 
 Technical `ACCEPT`인 `TRUE`만 정책 수집 결과와 함께 검토합니다. 정책 수집은 `FOUND`, `ABSENT_CONFIRMED`, `COLLECTION_FAILED`를 구분합니다. `FOUND`이면 exact `ProgramPolicyRecord`도 함께 읽고, `ABSENT_CONFIRMED`이면 정책을 추정하지 않고 `UNCERTAIN + DENY`로 검토할 수 있습니다. `COLLECTION_FAILED`는 Rule Scope review를 만들지 않습니다.
 
@@ -65,6 +65,10 @@ validated PoC를 가진 TRUE의 exact revision을 Technical Gate가 `ACCEPT`하�
 
 이 판단은 Rule Scope Gate가 내립니다. 프로그램 검사기는 정책 문장의 뜻을 다시 판단하지 않고 결과 형식과 공식 출처 연결을 확인합니다. 정상적인 `UNCERTAIN + DENY`는 그대로 저장하고 Reporter만 부르지 않습니다.
 
+## Finding 정규화
+
+`Finding`은 새 취약점 Gate가 아니라, 두 Gate가 같은 exact chain에서 검토를 끝낸 결과를 신뢰 runtime이 하나의 current 취약점 record로 정규화한 것입니다. `RuleScopeImpactReview`가 `COMMITTED`되면(`review_status`·`report_permission` 값과 무관) 신뢰 runtime이 final TRUE Verification·validated PoC를 가진 current 동적 결과·current CWELabel·Technical `ACCEPT`·current Rule Scope review의 exact chain에서 Finding을 만듭니다. 정책 `COLLECTION_FAILED`로 Rule Scope review가 없으면 Finding을 만들지 않습니다. Finding은 새 verdict·attack path·impact를 만들지 않고 claim 강도는 verified upstream 이하이며, 미검증 candidate·실패 PoC·Chaining proposal을 사실로 승격하지 않고 restriction·limitation·unresolved condition을 보존합니다. Finding 저장 흐름은 `RULE_SCOPE_GATE → FINDING_NORMALIZE → Reporter readiness`입니다. `RULE_SCOPE_GATE`의 `SUCCEEDED`와 review의 `COMMITTED` 이후 전용 `FINDING_NORMALIZE` work를 실행합니다. `FINDING_NORMALIZE`는 trusted runtime의 비-LLM normalization work이며 새 autonomous Agent나 LLM Gate가 아닙니다. 저장 primitive와 result owner는 R4 계약([구현 모듈 맵](../implementation/01-module-map.md) B2)을 따릅니다. Finding closure의 hypothesis-local artifact에 대해서만 동일 `meta.hypothesis_id`를 요구한다. `ProgramPolicyRecord`, `PolicyCollectionResult` 등 hypothesis 비종속 정책 record에는 `hypothesis_id` 일치를 요구하지 않으며, 기존 exact `StoredDataRef`, `meta.workspace_id`·`meta.commit_id` 및 policy revision/provenance 계약으로 검증한다. Verification generation/revision·CWELabel·두 Gate·동적 결과·PoC·고정 정책이 바뀌면 기존 Finding은 stale이 되어 새 Reporter 실행에 쓸 수 없고 새 exact chain에서 다시 정규화합니다.
+
 ## Reporter 조건
 
 ```text
@@ -78,7 +82,7 @@ TRUE
 + permission ALLOW
 ```
 
-Reporter는 위 조건을 모두 만족하고 current Finding이 있으며 exact revision closure와 `REPORT_READY`, 동일 ACTIVE Verification owner를 runtime이 확인한 때만 내부 ReportDraft를 만든다. 두 Gate가 검토한 CWELabel과 보고서 초안의 `cwe_label_ref.record_id`가 다르면 초안을 만들지 않는다. 이 upstream 중 하나가 새 revision으로 바뀌면 기존 초안은 감사 기록으로만 남고 새 Gate·Reporter 결과가 나오기 전까지 current 결과로 쓸 수 없다. 두 Gate와 Reporter 모두 외부 제출·공개 권한이 없다.
+Reporter는 위 6축 정책 조건을 모두 만족하고, 그와 별개로 current non-stale Finding이 있으며 exact revision closure와 `REPORT_READY`, 동일 ACTIVE Verification owner를 runtime이 확인한 때만 내부 ReportDraft를 만든다. Finding이 있어도 6축 중 하나가 미달이면 Reporter만 차단하고 Finding은 보존한다. 두 Gate가 검토한 CWELabel과 보고서 초안의 `cwe_label_ref.record_id`가 다르면 초안을 만들지 않는다. 이 upstream 중 하나가 새 revision으로 바뀌면 기존 초안은 감사 기록으로만 남고 새 Gate·Reporter 결과가 나오기 전까지 current 결과로 쓸 수 없다. 두 Gate와 Reporter 모두 외부 제출·공개 권한이 없다.
 
 Reporter는 검증된 사실을 합성·표현할 뿐 새 vulnerability fact, attack path, reproduction/PoC 성공,
 policy·scope 판단이나 upstream보다 강한 severity·exploitability·security impact를 만들지 않습니다.

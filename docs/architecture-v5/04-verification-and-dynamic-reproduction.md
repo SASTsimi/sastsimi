@@ -12,7 +12,7 @@
 
 Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 소유한다. 가설이 실제 코드 흐름과 실행 조건에서 성립하는지 검토하고 `TRUE | FALSE | HOLD`를 판정하며, 필요한 Context·Pro/Con·동적 재현 요청·보완 작업과 Gate 제출 시점을 선택한다. 제한 조건·우회 후보·필요 능력·제공 가능 능력·실질 영향의 상승 가능성도 함께 기록한다. R6는 재현 목적과 필요한 조건을 요청하지만 실행 환경·계획·PoC를 직접 만들지 않는다.
 
-이 제어권은 실행 허가 권한이 아니다. Verification이 `REQUEST_DYNAMIC_REPRO` 등 다음 작업을 제안하면 비-LLM Runtime Validator가 `ActionRequest`, exact revision, 역할, 상태, 예산과 provider/session을 확인한다. R7 Setup Automation이 `RUN_SANDBOX`를 요청하면 Sandbox Controller가 host·Docker daemon/socket·mount/namespace·secret·egress·workspace·R8 resource/lifecycle 같은 외부 격리 경계를 검사한다. 허가된 Sandbox 안에서는 R7 Agent가 command·PoC·관찰·재시도를 자율적으로 정하고, 비-LLM Reproduction Session Manager가 실제 event와 결과를 확정한다.
+이 제어권은 실행 허가 권한이 아니다. Verification이 `REQUEST_DYNAMIC_REPRO` 등 다음 작업을 제안하면 비-LLM Runtime Validator가 `ActionRequest`, exact revision, 역할, 상태, 예산과 provider/session을 확인한다. R7 Setup Automation이 `RUN_SANDBOX`를 요청하면 Runtime Validator가 exact request·current requirements·current exact plan·R7 `sandbox_profile_ref`·exact R8 `DynamicReproductionLifecycleProfile` revision을 고정하고 호출 전 잔여 시간·새 attempt 한도를 검사한다. Sandbox Controller는 R7 profile의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다. 허가된 Sandbox 안에서는 R7 Agent가 command·PoC·관찰·재시도를 자율적으로 정하고, 비-LLM Reproduction Session Manager가 실제 event와 결과를 확정한다.
 
 ## 기본 검증 순서
 
@@ -318,7 +318,7 @@ R7 내부 책임은 다음처럼 나눈다.
 
 - **R7 Agent**: 요청을 환경 조건으로 구체화하고, 재현 전략·PoC candidate·command·관찰·동적 근거 해석을 만든다.
 - **R7 Setup Automation**: 저장소 선언을 우선한 recipe, image build, container 생성·재사용·재생성과 cleanup을 실제 수행한다.
-- **Sandbox Controller**: host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace·R8 resource/lifecycle 같은 Sandbox 밖의 강제 경계만 검사한다.
+- **Sandbox Controller**: R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다. R7 profile 값, R8 잔여 예산·새 attempt 또는 내부 command allowlist는 정하지 않는다.
 - **Reproduction Session Manager**: runtime/tool/lifecycle event를 append-only `AgentLog`로 기록하고 같은 attempt의 validated PoC와 `DynamicReproductionResult`를 확정하는 비-LLM result owner다.
 
 R7은 `SUPPORTED | DISPROVED | INCONCLUSIVE` 동적 관측만 반환하며 최종 `TRUE | FALSE | HOLD`는 계속 R6가 판단한다. Session Manager는 Agent 호출·중단, command 허용, retry 또는 cleanup 전략을 결정하지 않는다.
@@ -345,8 +345,8 @@ Sandbox 안에서는 Agent가 환경 설정, 저장소에 필요한 package, 계
 - 한 Verification generation에는 `DYNAMIC_REPRO` work를 하나만 등록한다.
 - `POC_CONFIRMATION`과 `VERDICT_EVIDENCE`를 같은 generation에서 각각 별도 work로 실행하지 않는다.
 - 같은 Agent session 안의 command·PoC·환경 조정은 같은 attempt의 event다.
-- session 재시작이 필요한 일시 오류는 R8 한도가 남아 있으면 실패 attempt를 보존하고 같은 work의 새 attempt로 자동 재시도한다. 외부 대기가 없으므로 work를 `BLOCKED`로 두지 않는다.
-- `BLOCKED`는 외부 설정·정책·승인 또는 resource profile 변경을 기다릴 때만 사용한다. 해결 뒤 `RESUME` attempt를 만든다.
+- session 재시작이 필요한 일시 오류는 R8 한도가 남아 있으면 실패 attempt를 보존하고 같은 work의 새 `attempt_id`, `trigger=RETRY`로 재시도한다. 같은 session 조정에는 새 attempt를 만들지 않고, 외부 대기가 없으므로 work를 `BLOCKED`로 두지 않는다.
+- `BLOCKED`는 외부 설정·정책·승인 또는 resource profile 변경을 기다릴 때만 사용한다. 해결 뒤 같은 work의 새 `attempt_id`, `trigger=RESUME`를 만든다.
 - 복구할 수 없거나 retry 한도를 소진하면 Session Manager가 `FAILED + INCONCLUSIVE`를 확정한다.
 - Technical Gate `REVISE`는 새 Verification generation이므로 새 동적 재현 work 하나를 허용한다.
 

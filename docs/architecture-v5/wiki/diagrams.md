@@ -50,9 +50,13 @@ flowchart TB
     POCOK -->|No| DSTOP
     DOUT -->|DISPROVED or INCONCLUSIVE| S13
     DOUT -->|Execution failure| DSTOP
-    DSTOP -->|Autonomous retry same work new attempt| DR7
+    DSTOP -->|Same R7 Agent session: adjust command PoC environment; current attempt| DADJUST[Continue current attempt]
+    DADJUST --> DR7
+    DSTOP -->|Session restart: new attempt trigger=RETRY| DRETRY[Restart same work with new attempt]
+    DRETRY --> DR7
     DSTOP -->|External condition| DWAIT[BLOCKED until input policy or resource change]
-    DWAIT --> DR7
+    DWAIT -->|Condition resolved: new attempt trigger=RESUME| DRESUME[Resume same work with new attempt]
+    DRESUME --> DR7
     DSTOP -->|Unrecoverable| S22
     S13 --> S14{14 Final verdict}
     S14 -->|FALSE| CLOSED[Terminal internal result]
@@ -193,9 +197,13 @@ flowchart TB
     OBS -->|SUPPORTED but PoC missing or invalid| FAIL
     OBS -->|DISPROVED or INCONCLUSIVE| SYN2
     OBS -->|Execution failure| FAIL
-    FAIL -->|Autonomous retry same work new attempt| R7PLAN
+    FAIL -->|Same R7 Agent session: adjust command PoC environment; current attempt| ADJUST[Continue current attempt]
+    ADJUST --> R7PLAN
+    FAIL -->|Session restart: new attempt trigger=RETRY| R7RETRY[Restart same work with new attempt]
+    R7RETRY --> R7PLAN
     FAIL -->|External condition| WAIT[BLOCKED until condition changes]
-    WAIT --> R7PLAN
+    WAIT -->|Condition resolved: new attempt trigger=RESUME| R7RESUME[Resume same work with new attempt]
+    R7RESUME --> R7PLAN
     FAIL -->|Unrecoverable| NOFINAL[No final verdict and no Gate]
     SYN2 --> FINAL
     FINAL --> OUT[Restrictions candidates PrimitiveDraft and VERIFICATION origin child proposals]
@@ -264,9 +272,10 @@ flowchart TB
     ADEC -->|ALLOW| PRIMITIVE[Admit result Primitive for Chaining]
     ADEC -->|DENY| NOPRIMITIVE[No result Primitive]
     COLLECT -. COLLECTION_FAILED report unavailable .-> BLOCK
-    UNCERTAIN --> BLOCK
-    RULE --> READY{Review PASS Rule PASS Scope PASS Testing PASS Impact SUFFICIENT Permission ALLOW}
-    READY -->|No| BLOCK
+    RULE --> NORMF[FINDING_NORMALIZE - trusted runtime non-LLM work from exact chain]
+    UNCERTAIN --> NORMF
+    NORMF --> READY{Current Finding plus Review PASS Rule PASS Scope PASS Testing PASS Impact SUFFICIENT Permission ALLOW}
+    READY -->|No; Reporter blocked, current Finding kept| BLOCK
     READY -->|Yes| RREQ[Verification requests Reporter]
     RREQ --> REPORTER[Reporter Agent]
     REPORTER --> DRAFT[Internal ReportDraft]
@@ -363,12 +372,13 @@ stateDiagram-v2
     READY --> BLOCKED: prerequisite missing
     READY --> CANCELLED: cancelled
     RUNNING --> BLOCKED: external waiting condition
-    RUNNING --> READY: immediate dynamic auto retry
+    RUNNING --> RUNNING: same session command PoC environment adjustment
+    RUNNING --> READY: session restart trigger RETRY
     RUNNING --> SUCCEEDED: full output committed
     RUNNING --> PARTIAL: partial output committed
     RUNNING --> FAILED: terminal failure
     RUNNING --> CANCELLED: cancelled
-    BLOCKED --> READY: waiting condition resolved
+    BLOCKED --> READY: external condition resolved trigger RESUME
     BLOCKED --> FAILED: cannot continue
     BLOCKED --> CANCELLED: cancelled
     SUCCEEDED --> [*]
@@ -377,7 +387,7 @@ stateDiagram-v2
     CANCELLED --> [*]
 ```
 
-작업 상태는 전문 판정과 분리한다. 일반 retry가 외부 조건을 기다리면 work를 `BLOCKED`로 두고, 조건을 해결한 뒤 새 `attempt_id`로 다시 시작한다. `DYNAMIC_REPRO`가 외부 대기 없이 자체 해결할 수 있으면 `RUNNING -> READY -> RUNNING`으로 즉시 새 attempt를 시작한다. `SUCCEEDED | PARTIAL | FAILED | CANCELLED`는 되돌리지 않는다.
+작업 상태는 전문 판정과 분리한다. `DYNAMIC_REPRO`의 같은 R7 Agent session 안 command·PoC·환경 조정은 `RUNNING`인 현재 attempt의 event로 남기며 새 attempt를 만들지 않는다. session 재시작이 필요할 때만 `RUNNING -> READY -> RUNNING`과 새 `attempt_id`, `trigger=RETRY`를 사용한다. 외부 조건을 기다리면 `BLOCKED`로 두고 해소 뒤 `BLOCKED -> READY -> RUNNING`과 새 `attempt_id`, `trigger=RESUME`를 사용한다. `SUCCEEDED | PARTIAL | FAILED | CANCELLED`는 되돌리지 않는다.
 
 ## 11. 중복 방지와 atomic 저장·복구
 
@@ -426,25 +436,28 @@ flowchart LR
     DOMAIN[Verification Gates and Reporter keep domain decisions] -. not decided by validator .-> CHECK
 ```
 
-Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 Setup Automation 권한·상태·예산·exact request/requirements·R8 resource/lifecycle을 확인한다. host·Docker daemon/socket·mount/namespace·secret·egress·workspace 외부 경계는 Sandbox Controller가 검사하고 내부 command는 Agent가 자율적으로 정한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
+Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 Setup Automation 권한·상태·예산·exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` revision을 고정한다. plan 또는 profile revision이 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 처리한다. host·Docker daemon/socket·mount/namespace·secret·egress·workspace 외부 경계는 Sandbox Controller가 검사하고 내부 command는 Agent가 자율적으로 정한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
 
 ## 13. ReportDraft와 Agent 자동화 종료 경계
 
 ```mermaid
 flowchart LR
-    FIND[Current Finding] --> REPORTER[R5-03 Reporter]
+    GATES[Technical ACCEPT and Rule Scope review on one exact chain] --> NORM[FINDING_NORMALIZE - trusted runtime non-LLM work]
+    NORM --> FIND[Current Finding]
+    FIND --> READYF{Reporter readiness}
+    READYF -->|Ready| REPORTER[R5-03 Reporter]
     VERIFY[Final Verification and CWE] --> REPORTER
-    GATES[Technical and Rule Scope reviews] --> REPORTER
     POLICY[Current policy record] --> REPORTER
     DYNAMIC[Current supported dynamic evidence and redacted validated PoC] --> REPORTER
     REPORTER --> DRAFT[ReportDraft with restrictions limitations and redaction passed]
     DRAFT --> FINAL[Trusted runtime atomically finalizes AnalysisRunResult and AnalysisRunState]
-    BLOCKED[No report-ready Finding] --> FINAL
+    FIND -. Finding exists but six-axis policy readiness fails .-> FINAL
+    BLOCKED[No current Finding normalized] --> FINAL
     FINAL --> END[Agent automation end]
     END -. outside Agent automation .-> HUMAN[Person-led review edit submit or disclose]
 ```
 
-ReportDraft는 마지막 Agent 산출물이다. `AnalysisRunResult`와 `AnalysisRunState`의 원자적 확정은 기존 결과와 로그를 묶는 신뢰 runtime 작업이며 새 LLM 판단이 아니다. 점선 뒤의 사람 검토·수정·제출·공개는 Agent action과 상태 계약 밖이다.
+`RULE_SCOPE_GATE → FINDING_NORMALIZE → Reporter readiness` 순서로 실행한다. `FINDING_NORMALIZE`는 trusted runtime의 전용 비-LLM normalization work이며 새 autonomous Agent나 LLM Gate가 아니다. current Finding은 두 Gate가 같은 exact chain에서 검토한 결과를 신뢰 runtime이 정규화한 record이며 새 verdict가 아니다. Finding 존재는 Reporter의 6축 정책 readiness와 별개 조건이라 `report_permission=DENY`여도 Finding은 보존되고 Reporter만 차단된다. ReportDraft는 마지막 Agent 산출물이다. `AnalysisRunResult`와 `AnalysisRunState`의 원자적 확정은 기존 결과와 로그를 묶는 신뢰 runtime 작업이며 새 LLM 판단이 아니다. 점선 뒤의 사람 검토·수정·제출·공개는 Agent action과 상태 계약 밖이다.
 
 ## Rendering check
 
