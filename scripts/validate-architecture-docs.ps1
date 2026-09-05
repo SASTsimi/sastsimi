@@ -2109,6 +2109,137 @@ foreach ($rule in $requiredPlaybookApplicationRules) {
 }
 
 $verificationWikiText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/verification-and-dynamic.md')
+$moduleMapText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/implementation/01-module-map.md')
+
+$requiredChainingOriginRecoveryRules = @(
+    @{
+        Name = 'canonical separates pre-registration validation'
+        Text = $verificationText
+        Marker = 'Proposal Validator, Hypothesis Registry와 Assignment Runtime은 자식 가설을 등록하고 Verification을 배정하기 전에'
+    },
+    @{
+        Name = 'canonical assigns post-registration check to Context service'
+        Text = $verificationText
+        Marker = 'Context Retrieval Service가 실제 코드 조회 전에 같은 `source_primitive_match_id` 계보를 다시 확인한다.'
+    },
+    @{
+        Name = 'canonical prevents direct lineage lookup by Verification'
+        Text = $verificationText
+        Marker = 'R6 Verification Agent는 `PrimitiveMatchCandidate`와 부모 Primitive를 직접 DB에서 조회하거나'
+    },
+    @{
+    Name = 'canonical binds exact proposal to Context work'
+    Text = $verificationText
+    Marker = '`CONTEXT_RETRIEVAL` work에는 exact proposal을 함께 고정한다.'
+    },
+    @{
+        Name = 'contract assigns lineage lookup to Context service'
+        Text = $contractText
+        Marker = 'Context Retrieval Service가 `CONTEXT_RETRIEVAL` work에 고정된 exact proposal의 `source_primitive_match_id`를 읽어'
+    },
+    @{
+        Name = 'Wiki assigns lineage lookup to Context service'
+        Text = $verificationWikiText
+        Marker = 'Context Retrieval Service가 그 proposal에서 `source_primitive_match_id`를 읽어'
+    },
+    @{
+        Name = 'canonical resolves upstream result entities'
+        Text = $verificationText
+        Marker = 'upstream Primitive의 `result.entity_refs`'
+    },
+    @{
+        Name = 'canonical resolves matched downstream input entities'
+        Text = $verificationText
+        Marker = '`draft_id == matched_input_id`인 입력의 `entity_refs`'
+    },
+    @{
+        Name = 'canonical resolves upstream prerequisite entities'
+        Text = $verificationText
+        Marker = 'upstream Primitive 자신의 모든 `inputs[].entity_refs`'
+    },
+    @{
+        Name = 'canonical resolves remaining downstream entities'
+        Text = $verificationText
+        Marker = '`matched_input_id`로 선택되지 않은 나머지 `inputs[].entity_refs`'
+    },
+    @{
+        Name = 'canonical requires valid entity or location'
+        Text = $verificationText
+        Marker = '유효한 entity 또는 location을 최소 하나 이상 복구해야 한다.'
+    },
+    @{
+        Name = 'canonical uses proposal metadata scope'
+        Text = $verificationText
+        Marker = '`proposal.meta.workspace_id`와 `proposal.meta.commit_id`'
+    },
+    @{
+        Name = 'canonical rejects whole mismatched lineage'
+        Text = $verificationText
+        Marker = '일부 reference만 제외하고 계속하지 않고 계보 전체를 유효하지 않은 입력으로 처리한다.'
+    },
+    @{
+        Name = 'canonical stops stale context without verdict'
+        Text = $verificationText
+        Marker = 'final `VerificationResult`와 verdict 없이 중단한다.'
+    },
+    @{
+        Name = 'Wiki separates registration and retrieval checks'
+        Text = $verificationWikiText
+        Marker = '검사 시점을 등록 전과 등록 후로 나눕니다.'
+    },
+    @{
+        Name = 'Wiki assigns post-registration check to Context service'
+        Text = $verificationWikiText
+        Marker = 'Context Retrieval Service가 실제 코드 조회 전에 같은 계보가 여전히 current인지 다시 검사합니다.'
+    },
+    @{
+        Name = 'Wiki prevents direct DB lookup by Verification'
+        Text = $verificationWikiText
+        Marker = 'R6 Verification Agent는 부모 Primitive와 match candidate를 직접 DB에서 조회하거나'
+    },
+    @{
+        Name = 'Wiki includes both parent prerequisites'
+        Text = $verificationWikiText
+        Marker = 'upstream Primitive 자신의 모든 `inputs[].entity_refs`'
+    },
+    @{
+        Name = 'module Step 20 assigns pre-registration validation'
+        Text = $moduleMapText
+        Marker = 'Chaining-origin 등록 전에는 Proposal Validator·Hypothesis Registry·Assignment Runtime이'
+    },
+    @{
+        Name = 'module Step 9 assigns lineage recheck to Context service'
+        Text = $moduleMapText
+        Marker = 'Context Retrieval Service가 계보를 재검사하고 Context를 반환함'
+    },
+    @{
+        Name = 'registration test covers broken lineage'
+        Text = $moduleMapText
+        Marker = '`source_primitive_match_id` 계보가 끊기면 자식 가설을 등록하지 않는다.'
+    },
+    @{
+        Name = 'registration test covers upstream prerequisites'
+        Text = $moduleMapText
+        Marker = 'upstream Primitive의 `inputs[].entity_refs`가 복구 대상에서 누락되면 등록하지 않는다.'
+    },
+    @{
+        Name = 'context test covers stale lineage'
+        Text = $moduleMapText
+        Marker = '등록 당시 유효했던 match candidate 또는 부모 Primitive가 stale 상태가 되면 Context 조회를 중단한다.'
+    },
+    @{
+        Name = 'context test blocks final verdict'
+        Text = $moduleMapText
+        Marker = '실패한 Context work로 final `VerificationResult` 또는 `TRUE | FALSE | HOLD`를 만들지 않는다.'
+    }
+)
+
+foreach ($rule in $requiredChainingOriginRecoveryRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing Chaining-origin Verification recovery rule: $($rule.Name)"
+    }
+}
+
 $requiredPlaybookCrossDocumentRules = @(
     @{ Name = 'role document defines registry runtime'; Text = $orchestrationText; Marker = '| Playbook Registry Runtime |' },
     @{ Name = 'role document fixes one question set'; Text = $orchestrationText; Marker = '같은 application 질문 집합을 사용하는지 검사' },
@@ -2398,6 +2529,7 @@ Write-Output 'HypothesisDuplicateReview required fields: 7'
 Write-Output 'ProposalProcessState duplicate fields: 3'
 Write-Output "Verification/Chaining scenarios: $($verificationChainingScenarioMarkers.Count)"
 Write-Output "Verification/Chaining semantic rules: $($requiredVerificationChainingRules.Count)"
+Write-Output "Chaining-origin recovery rules: $($requiredChainingOriginRecoveryRules.Count)"
 Write-Output "Production debate policy rules: $($requiredDebatePolicyRules.Count)"
 Write-Output "Context failure contract rules: $($requiredContextFailureRules.Count)"
 Write-Output "Validation completion contract rules: $($requiredVerificationCompletionRules.Count)"
