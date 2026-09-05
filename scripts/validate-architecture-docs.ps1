@@ -2530,6 +2530,27 @@ foreach ($marker in $resultContractMarkers) {
 
 $activeArchitectureText = $activeDocumentationText
 
+$providerDecisionPath = Join-Path $repoRoot 'docs/architecture-v5/implementation/04-provider-decision.md'
+$providerDecisionText = if (Test-Path -LiteralPath $providerDecisionPath) { Get-Content -LiteralPath $providerDecisionPath -Raw } else { '' }
+$providerCapabilityBlock = [regex]::Match($providerDecisionText, '(?ms)^ProviderCapabilities:\s*(.*?)^```').Groups[1].Value
+
+if ([string]::IsNullOrWhiteSpace($providerDecisionText)) {
+    Add-Failure 'missing R3-04 provider decision document'
+}
+if (-not $providerCapabilityBlock.Contains('runtime_tool_loop:')) {
+    Add-Failure 'ProviderCapabilities must declare runtime_tool_loop support'
+}
+foreach ($marker in @(
+    'provider 내장 tool은 계속 차단',
+    'SASTSIMI Runtime이 model의 구조화된 요청을 받아',
+    '`R7_AGENT` 실행 경로에서는 `runtime_tool_loop=SUPPORTED`',
+    '`PVD-16`'
+)) {
+    if (-not $providerDecisionText.Contains($marker)) {
+        Add-Failure "missing R7 runtime-managed tool-loop provider rule: $marker"
+    }
+}
+
 $forbiddenR8OwnershipMarkers = @(
     '그 R8 profile의 수치',
     'R8 profile의 CPU',
@@ -2615,6 +2636,7 @@ Write-Output "StaticFactBundle cross-document rules: $($requiredStaticFactBundle
 Write-Output "Static layer Primitive admission rules: $($requiredStaticPrimitiveAdmissionRules.Count)"
 Write-Output "R4 policy contract blocks: $($requiredPolicyContractFields.Count)"
 Write-Output "R4 policy contract rules: $($requiredPolicyContractRules.Count)"
+Write-Output 'R3-04 provider runtime tool-loop rules: 4'
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {

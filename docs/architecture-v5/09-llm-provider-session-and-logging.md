@@ -30,6 +30,8 @@ Agent Runtime은 역할·structured-output 요구·context reference·budget·se
 
 네 후보 경로와 환경별 지원 판정·시험 기준은 [R3-04 Provider 결정](./implementation/04-provider-decision.md)을 따른다. API Key와 구독 session은 서로 바꿔 쓸 수 있는 credential이 아니다. 실제 선택 단위는 `provider + product + transport + auth_mode + client version + model + environment`를 고정한 versioned `ProviderProfile` revision이다. Codex 구독에서 Claude 구독으로 바꾼다는 말은 같은 client에서 model 문자열만 바꾸는 것이 아니라 다른 profile과 adapter의 새 호출을 시작한다는 뜻이다.
 
+R7의 Sandbox 실행은 provider 내장 file·command·web tool을 켜지 않는다. 모델은 구조화된 R7 turn만 반환하고 SASTSIMI Runtime이 권한·상태·exact work/attempt·Sandbox 경계를 검사한 뒤 in-container 실행 통로로 전달한다. 이 반복 경로는 `runtime_tool_loop=SUPPORTED`인 exact ProviderProfile만 사용할 수 있으며 명령·관찰은 같은 attempt의 `AgentLog`와 호출 log에 연결한다.
+
 ## provider 호출 전 권한 검사
 
 일반 Agent Runtime은 provider를 직접 호출하지 않고 `CALL_LLM` `ActionRequest`를 만든다. Technical Gate, Rule Scope Gate와 Reporter의 호출은 각각 `CALL_TECHNICAL_GATE`, `CALL_RULE_SCOPE_GATE`, `CREATE_REPORT_DRAFT` action이 LLM 실행까지 직접 허가하며 별도 `CALL_LLM`으로 우회하지 않는다. 모든 LLM 실행 action은 수정할 수 없는 exact `LLMCallSpec`을 입력으로 갖고 비-LLM Runtime Validator가 다음 `ActionCheck`를 수행한다.
@@ -177,6 +179,7 @@ LLM 호출 상태는 `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIM
 | `CANCELLED` | 사용자 또는 runtime이 취소함 | 취소 기록 후 실행 종료 |
 
 1. Runtime이 adapter capability와 인증 사용 가능 여부를 확인한다.
+   - R7 Sandbox 실행 task이면 `runtime_tool_loop=SUPPORTED`를 추가로 확인하고, 사전 requirements·plan 작성 호출에는 Sandbox tool policy를 부여하지 않는다.
 2. 호출할 수 없으면 `AUTH_REQUIRED` 또는 명시적 provider error를 반환한다.
 3. Orchestration은 어떤 LLM 호출 상태도 가설 `FALSE`로 바꾸지 않는다.
 4. 제한 retry, 사용자 재인증 또는 구성된 explicit fallback을 선택한다.

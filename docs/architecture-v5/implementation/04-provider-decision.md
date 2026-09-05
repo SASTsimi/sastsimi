@@ -8,7 +8,7 @@
 
 ## 1. 기준과 결론
 
-- 작성 기준 `main`: `d8023bb801aa5900a9ce82d8469294c31b3bb87b`
+- 작성 기준 `main`: `0cae9bdc5161efb68a3fdc15cb72ec12e3a3440e`
 - 연결 Issue: [R3-04 #90](https://github.com/SASTsimi/sastsimi/issues/90)
 - 후속 결정: [R3-06 #92](https://github.com/SASTsimi/sastsimi/issues/92)
 - 공식 문서 확인일: 2026-09-05
@@ -74,7 +74,10 @@ ProviderCapabilities:
   request_id: SUPPORTED | UNSUPPORTED | UNVERIFIED
   token_usage: SUPPORTED | UNSUPPORTED | UNVERIFIED
   session_metadata: SUPPORTED | UNSUPPORTED | UNVERIFIED
+  runtime_tool_loop: SUPPORTED | UNSUPPORTED | UNVERIFIED
 ```
+
+`runtime_tool_loop`은 provider나 구독 client의 파일·명령·web tool을 켠다는 뜻이 아니다. 모델이 SASTSIMI가 정한 구조화 출력으로 다음 Sandbox 작업을 제안하고, **SASTSIMI Runtime이 model의 구조화된 요청을 받아** Runtime Validator와 Sandbox Controller를 통과한 명령만 R7의 격리 container 안에서 실행한 뒤 결과를 다음 호출의 비신뢰 입력으로 돌려줄 수 있는지를 뜻한다. 같은 R7 work·attempt의 논리 session, exact input reference, 호출·명령·관찰 로그와 취소·시간 제한을 끝까지 유지할 수 있어야 `SUPPORTED`다.
 
 비밀값, cookie, OAuth token, browser profile 경로와 실제 session credential은 `ProviderProfile`에 저장하지 않는다. `credential_source`는 비밀값의 종류와 주입 경계만 설명한다.
 
@@ -97,7 +100,7 @@ ClientExecutionProfile:
   verification_evidence_ref: StoredDataRef
 ```
 
-Codex·Claude Code는 단순 채팅 client가 아니라 파일·명령·tool을 사용할 수 있는 coding agent다. 구독 adapter는 실제 분석 저장소를 client working directory로 열지 않고 격리된 빈 directory에서 실행하며, 코드와 근거는 redacted `PromptPayload`로만 전달한다. tool·MCP·hook·plugin·project/user instruction 자동 발견·provider 자체 fallback과 불필요한 환경 변수는 모두 꺼야 한다. 사용 중인 정확한 client version에서 이 경계를 공식 옵션과 부정 시험으로 강제할 수 없으면 그 구독 조합은 `REJECTED`다. API adapter의 `client_execution_profile_ref`는 `null`, 구독 adapter는 검증된 exact profile이 필수다.
+Codex·Claude Code는 단순 채팅 client가 아니라 파일·명령·tool을 사용할 수 있는 coding agent다. 구독 adapter는 실제 분석 저장소를 client working directory로 열지 않고 격리된 빈 directory에서 실행하며, 코드와 근거는 redacted `PromptPayload`로만 전달한다. **provider 내장 tool은 계속 차단**하고 MCP·hook·plugin·project/user instruction 자동 발견·provider 자체 fallback과 불필요한 환경 변수도 모두 꺼야 한다. 사용 중인 정확한 client version에서 이 경계를 공식 옵션과 부정 시험으로 강제할 수 없으면 그 구독 조합은 `REJECTED`다. API adapter의 `client_execution_profile_ref`는 `null`, 구독 adapter는 검증된 exact profile이 필수다. R7의 Sandbox 명령 통로는 client에 host 권한을 주는 기능이 아니라 아래 SASTSIMI Runtime 경계이며 `tool_mode=DISABLED`와 양립한다.
 
 ## 3. 어댑터 구조
 
@@ -129,6 +132,21 @@ class LLMProviderAdapter(Protocol):
 - `cancel`: provider가 취소를 지원하면 실제 취소 결과를, 지원하지 않으면 `UNSUPPORTED`를 명시한다.
 
 기능이 없는 adapter가 성공한 것처럼 빈 값을 채우면 안 된다. 공개되지 않은 usage, request ID 또는 session ID는 추정하지 않고 `null`과 capability 상태로 남긴다.
+
+### 3.1 R7의 Runtime 관리형 tool loop
+
+R7의 환경 요구사항·재현 계획 작성은 Sandbox 실행 전 일반 LLM 호출이며 tool을 쓰지 않는다. 외부 경계가 허용되고 R7 Setup Automation이 container를 준비한 뒤에만 R7 실행 task가 Runtime 관리형 tool loop를 사용할 수 있다.
+
+```text
+R7 Agent structured turn
+→ SASTSIMI Runtime이 role·work·attempt·environment·tool policy 검사
+→ Sandbox Controller가 승인한 in-container 통로로만 실행
+→ Session Manager가 command와 관찰을 append-only AgentLog에 기록
+→ redacted 결과를 같은 R7 논리 session의 다음 PromptPayload에 비신뢰 데이터로 전달
+→ 완료·차단·실패·취소 또는 한도 도달까지 반복
+```
+
+Provider adapter는 명령을 직접 실행하지 않고 구조화된 R7 turn을 전달한다. host filesystem, Docker daemon/socket, 임의 network, secret 또는 다른 workspace 접근을 provider tool로 우회할 수 없다. `R7_AGENT` 실행 경로에서는 `runtime_tool_loop=SUPPORTED`인 exact ProviderProfile만 선택한다. `UNSUPPORTED | UNVERIFIED`이면 다른 역할에서 사용할 수 있는 profile이어도 R7 실행 task에는 배정하지 않고 호출 전에 `CAPABILITY_UNSUPPORTED`로 거절한다.
 
 ## 4. 네 연결 경로
 
@@ -218,7 +236,7 @@ Agent 코드와 prompt template에 모델명을 넣지 않는다. Runtime은 mod
 호출 전 다음을 모두 검사한다.
 
 1. exact profile revision의 model·현재 environment가 실제 요청과 같고 상태가 `SUPPORTED` 또는 사용자가 명시적으로 허용한 `EXPERIMENTAL`인지
-2. profile capability가 해당 Agent가 요구하는 structured output·session·취소·기록 조건을 충족하는지
+2. profile capability가 해당 Agent가 요구하는 structured output·session·취소·기록 조건을 충족하는지. R7 Sandbox 실행 task는 `runtime_tool_loop=SUPPORTED`도 필수
 3. 해당 Agent 역할에 필요한 structured output과 session 기능이 있는지
 4. credential source가 profile의 인증 방식과 일치하는지
 5. prompt·schema·timeout·budget과 실제 adapter 요청이 call spec과 같은지
@@ -259,14 +277,16 @@ Agent 코드와 prompt template에 모델명을 넣지 않는다. Runtime은 mod
 | `PVD-13` | 구독 client 격리 | 실제 저장소 접근, command·file·web tool, MCP·hook·plugin·추가 instruction·ambient secret 사용이 모두 차단 |
 | `PVD-14` | 환경 binding | local용 profile을 CI·shared server에서 사용하면 호출 전 거절하고 exact profile로 환경을 복원 가능 |
 | `PVD-15` | 이용 범위·약관 | 인증 종류·계정 유형·실행 환경·내부/서비스 사용 목적이 provider의 현재 공식 허용 범위와 일치하고 검토 근거를 보존 |
+| `PVD-16` | R7 Runtime tool loop | provider 내장 tool을 끈 상태에서 구조화된 command 제안 → Runtime 검사 → 격리 container 실행 → redacted 결과 재입력이 같은 work·attempt·논리 session과 AgentLog에 연결되며 host·Docker·secret·다른 workspace 접근은 차단 |
 
-`SUPPORTED`로 올리려면 `PVD-01`–`PVD-15`가 그 조합에서 통과하고 증거에 다음이 포함되어야 한다. API 경로의 `PVD-13`은 client tool이 없음을 확인해 `NOT_APPLICABLE`로 기록할 수 있지만 생략하지 않는다.
+일반 역할에 쓸 profile을 `SUPPORTED`로 올리려면 `PVD-01`–`PVD-15`가 그 조합에서 통과해야 한다. R7 Sandbox 실행에 허용하려면 여기에 `PVD-16`도 통과해야 하며 그때만 `runtime_tool_loop=SUPPORTED`로 기록한다. API 경로의 `PVD-13`은 client tool이 없음을 확인해 `NOT_APPLICABLE`로 기록할 수 있지만 생략하지 않는다.
 
 - exact client/SDK version과 model ID
 - 실행 환경과 인증 종류
 - redaction된 명령·입력 fixture·output schema
 - 종료 코드 또는 API status와 normalized result
 - 공개 가능한 invocation log reference
+- R7 허용 profile이면 같은 work·attempt의 구조화 turn, redacted command·관찰과 AgentLog 연결 증거
 - 확인자와 확인 시각, 기준 commit SHA
 
 credential·cookie·token·원문 인증 파일은 증거로 첨부하지 않는다.
