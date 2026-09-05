@@ -21,7 +21,7 @@
 | `contexts` | `CodeContextRequest/Response`, 실제 반환·열람 위치 |
 | `verifications` | Pro/Con, initial/final verdict, restriction/capability와 exact final Verification revision |
 | `cwe_labels` | R5-01 `CWE_LABELING` work, exact Verification·generation·호출 provenance와 current/과거 `CWELabel` revision |
-| `primitives` | `required_primitive_candidates`가 있는 HOLD의 result 없는 조건, Technical-accepted이며 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`를 가진 TRUE 능력과 exact Verification·Gate·admission provenance. 잇기 재료는 그 Primitive뿐 아니라 `source_primitive_match_id` 계보의 모든 result Primitive도 current `ALLOW`여야 한다 |
+| `primitives` | `required_primitive_candidates`가 비어 있지 않은 HOLD의 result 없는 조건, Technical-accepted이며 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`를 가진 TRUE 능력과 exact Verification·Gate·admission provenance. 잇기 재료는 그 Primitive뿐 아니라 `source_primitive_match_id` 계보의 모든 result Primitive도 current `ALLOW`여야 한다 |
 | `chaining` | `ChainingResult`, upstream result→downstream input match와 child proposal validation state |
 | `gates` | Technical 및 Rule Scope Impact review와 서로 exact pair인 Verification·current CWELabel·정책 input revision refs |
 | `policies` | 정책 parser 결과, `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 수집 결과, 공식 `ProgramPolicyRecord`과 source·freshness refs |
@@ -268,7 +268,7 @@ provider·model·session을 바꿀 때는 **이름이 아니라 정확한 식별
 ### Verification-owned exploration/chaining
 
 - Verification-origin material claim 수와 재검증 결과
-- ACTIVE VerificationAssignment, result 없는 HOLD Primitive, result 있는 Technical-accepted + current `PrimitiveAdmissionDecision=ALLOW` TRUE Primitive와 upstream result→downstream input match 수. 잇기 재료는 `source_primitive_match_id` 계보의 모든 result Primitive도 current `ALLOW`여야 하며, 사용한 admission은 `source_admission_refs`에 남긴다
+- ACTIVE VerificationAssignment, `required_primitive_candidates`가 비어 있지 않은 result 없는 HOLD Primitive, result 있는 Technical-accepted + current `PrimitiveAdmissionDecision=ALLOW` TRUE Primitive와 upstream result→downstream input match 수. 잇기 재료는 `source_primitive_match_id` 계보의 모든 result Primitive도 current `ALLOW`여야 하며, 사용한 admission은 `source_admission_refs`에 남긴다
 - Gate 전·Technical 비정상 TRUE admission 차단 수, `ACCEPT`인데 `DENY`라서 등록하지 않은 수, entity·privilege 근거 부족과 no-match reason
 - `source_primitive_match_id` 계보, 성립한 match의 조상 Primitive 재사용 제외(`excluded_lineage_refs`, 정상 정리), 부모 admission이 `DENY`로 바뀌어 파생 결과를 감사 기록으로만 남긴 수, R8 전체 예산 중단(`stop_reasons`). 지문 중복으로 끊긴 횟수는 세지 않음
 

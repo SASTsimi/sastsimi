@@ -142,7 +142,7 @@ Pro·Con 호출 횟수는 같은 Verification work와 역할에 속한 중복 �
 - `FALSE`: 가설의 필수 조건을 묻는 named falsification 하나 이상이 실제 근거로 `DISPROVED`되었다. 다른 path 가능성까지 부정하지 않는다.
 - `HOLD`: 핵심 정보·환경·재현 조건이 부족하거나 상충해 현재 증거로 결론을 낼 수 없다.
 
-`HOLD`는 실패가 아니다. 누락 정보와 필요한 capability를 구조화해 exact final Verification revision에 연결된 result 없는 Primitive의 `inputs`로 즉시 저장하고 Chaining Agent의 matching 입력으로 사용할 수 있다. HOLD는 두 Gate를 거치지 않으며 확인된 능력이나 취약점으로 승격되지 않는다.
+`HOLD`는 실패가 아니다. 누락 정보와 필요한 capability를 `required_primitive_candidates`로 구조화하며, 후보가 하나 이상일 때만 exact final Verification revision에 연결된 result 없는 Primitive의 `inputs`로 저장해 Chaining Agent의 matching 입력으로 사용할 수 있다. 후보가 비어 있으면 Primitive와 Chaining work를 만들지 않고 HOLD 처리를 끝낸다. HOLD는 두 Gate를 거치지 않으며 확인된 능력이나 취약점으로 승격되지 않는다.
 
 `TRUE`도 판정 직후에는 Chaining 입력이 아니다. 현재 revision이 Technical `ACCEPT`를 받은 뒤 R4 `PRIMITIVE_ADMISSION_RUNTIME`이 Rule Scope 또는 정책 수집 결과를 매핑한 current `PrimitiveAdmissionDecision=ALLOW`가 있어야 제공 능력을 `result`로 가진 Primitive가 된다. prohibited-testing `FAIL`은 `DENY`로 차단하지만 `UNCERTAIN | COLLECTION_FAILED`와 다른 report eligibility 실패는 Reporter만 차단한다. `FALSE`는 terminal internal result이며 Primitive와 Chaining work를 만들지 않는다.
 
@@ -169,6 +169,32 @@ Pro·Con 호출 횟수는 같은 Verification work와 역할에 속한 중복 �
 정상적으로 조회됐지만 결과가 비어 있거나 일부만 반환된 것은 정보 부족으로 처리한다. 요청 실패·timeout·권한 오류는 실행 오류지만, final 결과 허용 여부는 오류의 존재 자체가 아니라 모든 필수 검증의 완료 여부로 결정한다. Runtime은 오류를 verdict로 바꾸거나 미완료 검증 대신 `HOLD`를 만들지 않는다.
 
 미지원 취약점 유형도 후속 Issue만 생성하고 현재 실행을 끝내서는 안 된다. 공통 플레이북으로 수행할 수 있는 검증을 먼저 진행하고, 정상 검증 후 유형별 정보가 부족하면 `HOLD`, 실행 자체가 실패하면 실행 오류를 기록한다. 그 상태를 기록한 뒤 유형별 플레이북 추가 Issue를 연결한다. 후속 Issue는 현재 실행 상태나 verdict를 대신하지 않는다.
+
+## final verdict 이후 Gate·Primitive·Chaining 수명주기
+
+R6가 final `VerificationResult`를 준비한 뒤의 진행은 다음 상태 전이표를 따른다.
+
+| final verdict 또는 Gate 결과 | R6가 기록·요청하는 것 | trusted runtime이 강제하는 것 | 다음 단계 |
+|---|---|---|---|
+| `FALSE` | 두 Primitive 후보 목록을 비운다. | Gate·Primitive·Chaining work 등록을 거절한다. | 종료 |
+| `HOLD` | `required_primitive_candidates`와 근거·`unresolved_conditions`를 기록한다. | exact final HOLD이고 `required_primitive_candidates`가 하나 이상일 때만 후보 전체를 `inputs`로, `result=null`로 가진 Primitive 하나를 저장한다. 후보 목록이 비어 있으면 Primitive를 저장하지 않는다. | 후보가 있으면 Gate 없이 Chaining 후보 |
+| Gate 전 final `TRUE` | required/provided 후보와 current-generation 동적 결과·validated PoC를 기록하고 R5-01 `CWE_LABELING`을 요청한다. | current `CWELabel` 전에는 Technical Gate를, Technical `ACCEPT`와 admission `ALLOW` 전에는 result Primitive를 차단한다. | CWE → Technical Gate |
+| Technical `REVISE` | 같은 ACTIVE assignment owner가 요청 내용을 받아 근거·설명·restriction을 보완한다. | 기존 work를 되돌리지 않고 새 VERIFICATION work·증가한 generation을 만들며 hypothesis를 `TERMINAL -> VERIFYING`으로 전환한다. | 새 final Verification |
+| Technical `REJECT` | 부모 verdict를 바꾸지 않는다. | result Primitive·Chaining·Reporter 진행을 차단한다. | 내부 종결 |
+| Technical `ACCEPT` | 같은 exact Verification·`CWELabel`로 Rule Scope Gate를 요청한다. | stale·mismatched reference를 거절한다. | 정책·금지 테스트 검토 |
+| current admission `ALLOW` | 추가 verdict를 만들지 않는다. | provided 후보마다 Primitive 하나를 저장한다. 각 `result`는 후보 하나, `inputs`는 같은 TRUE의 `required_primitive_candidates` 전체다. Chaining에 사용할 때는 해당 Primitive와 `source_primitive_match_id` 계보로 연결된 모든 result Primitive의 admission이 current `ALLOW`인지 확인한다. | 계보 검사 통과 시 Chaining 후보 |
+| current admission `DENY` | 부모 verdict를 바꾸지 않는다. | result Primitive·Chaining을 차단한다. | Reporter도 차단 |
+| Rule Scope 보고 조건 실패 + admission `ALLOW` | 부모 verdict를 바꾸지 않는다. | Reporter만 차단하고 Chaining 재료 자격은 유지한다. | 내부 Chaining 가능 |
+
+Primitive admission과 보고 가능성은 같은 판정이 아니다. R5가 정책·`testing_restriction_compliance`를 생산하면 R4 `PRIMITIVE_ADMISSION_RUNTIME`이 current `PrimitiveAdmissionDecision`을 만든다. result Primitive와 Chaining은 `decision=ALLOW`만 사용한다. Rule Scope의 범위·영향·보상 대상·`report_permission`은 Reporter 자격을 별도로 결정한다.
+
+R6는 `required_primitive_candidates`, `provided_primitive_candidates`, Gate action과 exact reference를 생산한다. result commit, current result pointer, Primitive 저장·제거와 `PrimitiveIndexState` 갱신은 trusted runtime의 책임이다. R6는 이를 직접 admission하거나 ACTIVE로 만들지 않는다.
+
+TRUE의 필요 조건은 별도 HOLD Primitive로 만들지 않는다. admission된 각 result Primitive의 `inputs`에 같은 TRUE의 `required_primitive_candidates` 전체를 내용·순서 그대로 복사한다. Chaining은 같은 `workspace_id`·`commit_id`, `entity_refs` 일치 또는 코드 흐름 연결, 권한 조건, 성립 순서, 합산된 restrictions와 실제 코드·검증 근거를 모두 확인해 upstream result가 downstream input을 충족하는지 판단한다. 매칭이 성립한 뒤에만 해당 downstream `inputs[].draft_id`를 `PrimitiveMatchCandidate.matched_input_id`로 기록한다. `draft_id` 자체를 서로 다른 Verification 사이의 매칭 기준으로 사용하지 않는다.
+
+Chaining 결과를 저장하기 직전에 실제로 사용한 Primitive와 `source_primitive_match_id` 계보로 도달하는 모든 result Primitive의 `PrimitiveAdmissionDecision`을 다시 확인한다. 하나라도 current가 아니거나 `DENY`로 바뀌었으면 `STALE_RESULT`로 저장을 거절하고 새 child hypothesis를 만들지 않는다. 이미 만들어진 파생 결과는 감사 기록으로만 보존하며 새 Verification·Gate·Primitive·Reporter 입력으로 사용하지 않는다. 이 과정에서 기존 부모 `VerificationResult.verdict`는 변경하지 않는다.
+
+새 Verification generation이 만들어지면 이전 dynamic result·validated PoC·`CWELabel`·Technical review·Rule Scope review·admission decision과 그 자격을 새 generation에 재사용하지 않는다. 기존 record는 감사 이력으로 보존하되 current index와 새 Gate·Chaining 입력에서 제외한다. child proposal이나 Chaining 결과도 부모 `VerificationResult.verdict`를 변경하지 않는다.
 
 ### Initial verdict와 final verdict
 
@@ -330,3 +356,50 @@ final `VerificationResult` 후보를 저장하기 전에 trusted runtime은 `SAV
 검사 이후 candidate bytes·`content_hash`, 현재 work·attempt 또는 상태 revision이 변경되면 기존 저장 허가를 재사용하지 않는다. 해당 결과는 `STALE_RESULT | RECORD_REVISION_MISMATCH | STATE_VERSION_CONFLICT` 중 실제 원인을 기록하고 저장을 거절한다.
 
 결과 reference, 종료 상태 전이와 `TransitionCommit.output_refs`가 같은 `VerificationResult.record_id`를 가리키고 `TransitionCommit.state=COMMITTED`가 된 exact revision만 Technical Evidence Gate의 입력으로 사용할 수 있다.
+
+## R6 동적 재현 요청과 결과 소비 계약
+
+### R6 요청 결정표와 단일 실행 규칙
+
+| 정적·Pro·Con 검토 상태 | R6 요청 | 같은 `verification_generation`의 처리 |
+|---|---|---|
+| 정적·Pro·Con만으로 `VerificationResult.initial_verdict=TRUE`이며 판정용 동적 근거는 더 필요하지 않음 | `DynamicReproductionRequest.purpose=POC_CONFIRMATION` | PoC 확인용 동적 work를 한 번 등록한다. |
+| 실행 관측 없이는 final verdict를 정할 수 없음 | `DynamicReproductionRequest.purpose=VERDICT_EVIDENCE` | 판정 근거와 PoC 생성을 한 번의 동적 work에서 함께 수행한다. `DynamicReproductionResult.hypothesis_outcome=SUPPORTED`이면 같은 validated PoC를 `VerificationResult.verdict=TRUE`에 사용하며 별도 PoC work를 만들지 않는다. |
+| 정적·Pro·Con으로 근거 있는 `VerificationResult.verdict=FALSE \| HOLD`를 확정할 수 있음 | 요청하지 않음 | 동적 work 없이 결과를 저장할 수 있다. 단, `VerificationResult.verdict=TRUE`는 만들 수 없다. |
+| 같은 `verification_generation`에 동적 work가 이미 등록됨 | 두 번째 요청 금지 | 기존 work의 current attempt 또는 허용된 retry 결과만 기다린다. |
+| Technical Gate `REVISE`로 새 `verification_generation`이 시작됨 | 필요 목적을 다시 결정 | 이전 `verification_generation`의 request·result·PoC를 재사용하지 않고 새 `verification_generation`에서 최대 한 번 요청한다. |
+
+두 목적이 모두 필요해 보이면 `purpose=VERDICT_EVIDENCE` 하나를 선택한다. 한 `verification_generation`에서 `purpose=POC_CONFIRMATION`과 `purpose=VERDICT_EVIDENCE`를 연속으로 요청하지 않는다. R6가 만드는 불변 `DynamicReproductionRequest`에는 `verification_assignment_ref`, `verification_generation`, `hypothesis_ref`, `purpose`, `initial_verdict`, `goal`, `environment_needs`, `sandbox_profile_ref`, `code_refs`, `static_evidence_refs`, `pro_evidence_ref`, `con_evidence_ref`를 기록한다. `EnvironmentRequirements`, `ReproductionPlan`, recipe, command, payload와 PoC는 R7 책임이므로 R6 request에 미리 확정하지 않는다.
+
+### R6 결과 소비 순서와 차단 조건
+
+1. R6는 current `DynamicReproductionState.status=SUCCEEDED | PARTIAL | BLOCKED | FAILED | CANCELLED`에 연결된 `dynamic_result_ref`를 읽는다. `DynamicReproductionState.dynamic_result_ref`, `WorkExecutionState.output_refs`, `TransitionCommit.output_refs`는 같은 exact `DynamicReproductionResult.meta.record_id`를 가리켜야 한다. `WorkExecutionState.last_transition_commit_ref`는 이 결과를 확정한 `TransitionCommit.state=COMMITTED` revision을 가리켜야 한다. `DynamicReproductionState.status=BLOCKED`는 외부 조치를 기다리는 비종료 상태이며 `finished_at=null`을 유지한다.
+2. 결과를 제출하거나 소비하기 전에 다음 기준으로 불일치 원인을 구분한다.
+   - 결과 제출 중 `WorkExecutionState.status=RUNNING`이면 `DynamicReproductionResult.meta.attempt_id`가 `WorkExecutionState.active_attempt_id`와 같아야 한다. 다르면 `ATTEMPT_NOT_ACTIVE`로 거절한다.
+   - R6가 current 반환 결과를 소비할 때는 `WorkExecutionState.active_attempt_id=null`이므로 이 값과 비교하지 않는다. 대신 `DynamicReproductionResult.meta.attempt_id`가 `WorkExecutionState.last_transition_commit_ref`가 가리키는 `TransitionCommit.attempt_id` 및 해당 `WorkAttempt.attempt_id`와 같아야 한다. 다르면 `ATTEMPT_NOT_ACTIVE`로 거절한다.
+   - 고정된 입력, `request_ref` 또는 `DynamicReproductionRequest.verification_generation`이 현재 Verification과 다르면 `STALE_RESULT`로 격리한다.
+   - exact reference의 `record_id` 또는 `content_hash`가 기대한 revision과 다르면 `RECORD_REVISION_MISMATCH`로 거절한다.
+   - 현재 `WorkExecutionState.state_version`은 `TransitionCommit.target_state_version`과 같아야 한다. 또한 `StateTransition.expected_state_version`은 `TransitionCommit.expected_state_version`과 같고, `StateTransition.new_state_version`은 `TransitionCommit.target_state_version`과 같으며, `target_state_version=expected_state_version+1`이어야 한다. 이 관계를 위반하면 `STATE_VERSION_CONFLICT`로 거절한다.
+   - `DynamicReproductionResult.meta.workspace_id`, `meta.commit_id`, `meta.hypothesis_id`, `request_ref`, `purpose`와, `request_ref`가 가리키는 `DynamicReproductionRequest.hypothesis_ref`도 현재 Verification과 exact match해야 한다.
+3. `DynamicReproductionResult.status=SUCCEEDED`이고 `hypothesis_outcome=SUPPORTED`이면 실제 `hypothesis_evidence_refs`와 같은 `meta.attempt_id`에서 검증된 `poc_ref`가 모두 있을 때만 `VerificationResult.verdict=TRUE` 후보가 된다.
+4. 정상 실행에서 `hypothesis_outcome=DISPROVED`이면 `hypothesis_disproved=true`, 실제 `disproof_evidence_refs`와 `VerificationResult.falsification_results`의 named falsification이 연결된 경우에만 `VerificationResult.verdict=FALSE` 근거가 된다.
+5. `DynamicReproductionResult.status=SUCCEEDED \| PARTIAL`이고 `hypothesis_outcome=INCONCLUSIVE`이면 `hypothesis_evidence_refs`와 `limitations`를 기록하고, 남은 조건을 `VerificationResult.unresolved_conditions`에 연결할 수 있을 때만 `VerificationResult.verdict=HOLD` 후보가 된다.
+6. 정책 차단·환경 구성 실패·Agent 또는 PoC 생성·실행 실패·timeout·취소는 verdict가 아니다. `DynamicReproductionResult.status=BLOCKED | FAILED | CANCELLED`와 `hypothesis_outcome=INCONCLUSIVE`를 기록하고 final `VerificationResult`와 Gate 요청을 만들지 않는다. `BLOCKED`는 외부 조치를 기다리는 비종료 상태이고, `FAILED`는 복구 불가능하거나 retry 한도를 소진한 종료 상태이며, `CANCELLED`는 사용자 또는 runtime이 중단한 종료 상태다. 각 상태에는 계약에 맞는 `failure_category`와 `failure_reason`을 기록한다.
+7. 위 검사를 통과한 동적 결과만 정적·Pro·Con 근거와 합성하고 trusted runtime의 `SAVE_RESULT(result_kind=verification_result)` 검사에 제출한다.
+
+### R6 동적 재현 검증 시나리오
+
+| 시나리오 | 기대 결과 |
+|---|---|
+| `VerificationResult.initial_verdict=TRUE`, 별도 실행 근거 불필요 | `DynamicReproductionRequest.purpose=POC_CONFIRMATION` work 하나를 만들고 validated `poc_ref`가 확인된 뒤 `VerificationResult.verdict=TRUE` |
+| 실행 관측이 판정에 필요 | `DynamicReproductionRequest.purpose=VERDICT_EVIDENCE` work 하나를 만들고 `DynamicReproductionResult.hypothesis_outcome=SUPPORTED`이면 같은 `poc_ref`로 `VerificationResult.verdict=TRUE` |
+| 정상 실행에서 named falsification이 실제 근거로 `DynamicReproductionResult.hypothesis_outcome=DISPROVED` | `VerificationResult.verdict=FALSE`, `poc_ref=null` |
+| `DynamicReproductionResult.status=SUCCEEDED \| PARTIAL`이고 `hypothesis_outcome=INCONCLUSIVE` | 실제 근거와 `VerificationResult.unresolved_conditions`가 있으면 `VerificationResult.verdict=HOLD` |
+| 정책 차단·setup 실패·timeout·PoC 생성·실행 실패 또는 취소 | `DynamicReproductionResult.status=BLOCKED \| FAILED \| CANCELLED`, final `VerificationResult`와 Gate 금지 |
+| 결과 제출 중 `WorkExecutionState.status=RUNNING`인데 `meta.attempt_id`가 `active_attempt_id`와 다름 | `ATTEMPT_NOT_ACTIVE`로 거절 |
+| R6 결과 소비 시 `meta.attempt_id`가 `COMMITTED TransitionCommit.attempt_id` 또는 해당 `WorkAttempt.attempt_id`와 다름 | `ATTEMPT_NOT_ACTIVE`로 거절 |
+| 고정 입력·`request_ref`·`verification_generation`이 현재 Verification과 다름 | `STALE_RESULT`로 격리, Verification 소비 금지 |
+| exact reference의 `record_id` 또는 `content_hash`가 기대한 revision과 다름 | `RECORD_REVISION_MISMATCH`로 거절 |
+| 현재 `WorkExecutionState.state_version`이 `TransitionCommit.target_state_version`과 다르거나, transition과 commit의 expected·target version 관계가 맞지 않음 | `STATE_VERSION_CONFLICT`로 거절 |
+| 같은 `verification_generation`에서 두 번째 동적 목적 요청 | 중복 work 등록 거절 |
+| Technical `REVISE` 뒤 이전 `verification_generation` 결과 또는 PoC 재사용 | stale로 거절하고 새 generation에서 새 동적 work 요구 |
