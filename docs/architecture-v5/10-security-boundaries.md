@@ -119,7 +119,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - retrieved context → request와 실제 location
 - `FALSE` verdict → `DISPROVED` falsification question과 실제 evidence
 - verdict → Pro/Con/dynamic evidence와 restriction
-- result 없는 Primitive → exact final HOLD Verification revision과 inputs·restrictions
+- result 없는 Primitive → non-empty `required_primitive_candidates`를 가진 exact final HOLD Verification revision과 inputs·restrictions
 - result 있는 Primitive → validated PoC를 가진 exact final TRUE + Technical `ACCEPT` + 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`
 - Chaining candidate → work 시작 시 고정한 `considered_primitive_refs`, 실제 upstream/downstream `input_primitive_refs`, `matched_input_id`, 계보 제외 기록과 비교 근거, 아직 검증되지 않은 상태
 - CWE → R5-01 `CWE_LABELING`이 만든 정확한 `CWELabel` revision, 그 label의 exact final TRUE `verification_result_ref`·generation·work·invocation provenance, evidence와 uncertainty
@@ -275,7 +275,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 
 | ID | 입력·사건 | 기대 결과 |
 |---|---|---|
-| N1 | final HOLD | required candidates를 inputs로 가진 result 없는 Primitive를 두 Gate 없이 저장하고 Chaining 조회 허용 |
+| N1 | final HOLD | `required_primitive_candidates`가 하나 이상일 때만 후보 전체를 inputs로 가진 result 없는 Primitive를 두 Gate 없이 저장하고 Chaining 조회 허용 || N1-a | final HOLD + `required_primitive_candidates=[]` | Primitive와 Chaining work를 만들지 않고 HOLD 처리 종료 |
 | N2 | final FALSE | terminal internal result; Primitive와 Chaining work 생성 금지 |
 | N3 | final TRUE, Gate 미실행 | result Primitive admission과 Chaining 금지 |
 | N4 | TRUE + Technical `ACCEPT`, 정책 수집 또는 Rule Scope 검토가 아직 종료되지 않음 | result Primitive와 Chaining을 아직 허용하지 않고 admission 입력 완료를 기다림; Reporter도 금지 |
