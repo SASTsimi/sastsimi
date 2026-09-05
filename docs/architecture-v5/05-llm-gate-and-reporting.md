@@ -295,7 +295,12 @@ child가 final `TRUE`가 되어도 부모 `VerificationResult`를 자동 변경�
 
 child로 분리하려는 내용이 실제로 부모와 동일한 material claim을 확인하는 보강 작업이면, [검증과 동적 재현](04-verification-and-dynamic-reproduction.md)의 child 분리 기준에 따라 애초에 부모의 supporting evidence로 유지하고 별도 child로 분리하지 않는다. 분리 실수를 되돌리기 위한 별도 흡수 경로는 두지 않는다.
 
-부모와 child가 서로 다른 material claim이고 두 능력의 연결이 전체 공격 경로나 impact 설명에 필요하면, child 결과를 부모 Verification에 흡수하지 않고 기존 Primitive Chaining 계약([Primitive DB와 Chaining](06-chaining.md))을 사용한다. 한 hypothesis의 검증된 능력은 result Primitive, 다른 hypothesis가 필요로 하지만 아직 없는 능력은 final HOLD의 `required_primitive_candidates`로 표현하고, Chaining Agent가 compatible한 Primitive를 결합해 새 결합 hypothesis를 만든다. 그 결합 hypothesis가 독립 Verification lifecycle과 Technical Gate·Gate 2를 새로 수행한다. R5는 Chaining 알고리즘이나 admission 규칙을 새로 정의하지 않는다.
+부모와 child가 서로 다른 material claim이고 두 능력의 연결이 전체 공격 경로나 impact 설명에 필요하면, child 결과를 부모 Verification에 흡수하지 않고 기존 Primitive Chaining 계약([Primitive DB와 Chaining](06-chaining.md))을 사용한다. Technical `ACCEPT`와 current `PrimitiveAdmissionDecision=ALLOW`를 받은 TRUE의 제공 능력은 그 TRUE의 악용 선행 조건을 `inputs`로 가진 result Primitive가 되고, final HOLD의 부족 조건은 `required_primitive_candidates`를 `inputs`로 가진 result 없는 Primitive가 된다. Chaining Agent는 기존 공통 계약이 정의한 두 조합만 확인한다.
+
+- `TRUE + HOLD`: 한 TRUE의 result Primitive가 다른 final HOLD의 `required_primitive_candidates`에 이미 기록된 부족한 input을 충족한다.
+- `TRUE + TRUE`: 한 TRUE의 result Primitive가 다른 TRUE에 이미 기록된 input(그 TRUE의 악용 선행 조건)을 충족한다.
+
+두 경우 모두 result와 input을 단순히 합치는 것이 아니라, 같은 `workspace_id`·`commit_id`, `entity_refs` 일치 또는 코드 흐름 연결, 권한 조건, 성립 순서, 합산된 restriction과 실제 코드·검증 근거로 `result → input` 연결이 성립할 때만 매칭으로 인정한다. 매칭이 성립하면 Chaining Agent가 새 결합 hypothesis를 만들고, 그 결합 hypothesis가 독립 Verification lifecycle과 Technical Gate·Gate 2를 처음부터 새로 수행한다. R5는 이 Chaining matching·admission·invalidation 알고리즘을 새로 정의하지 않고 R1 소유 계약을 그대로 참조한다.
 
 child가 부모와 별개로 성립하는 취약점·impact이면 child 자신의 Verification → Technical Gate → Gate 2 → 이후 결과 처리 경로에서만 평가하며, 부모가 child impact를 흡수하는 경로는 두지 않는다.
 
