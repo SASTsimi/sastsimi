@@ -264,11 +264,10 @@ flowchart TB
     ADEC -->|ALLOW| PRIMITIVE[Admit result Primitive for Chaining]
     ADEC -->|DENY| NOPRIMITIVE[No result Primitive]
     COLLECT -. COLLECTION_FAILED report unavailable .-> BLOCK
-    UNCERTAIN --> BLOCK
     RULE --> NORMF[FINDING_NORMALIZE - trusted runtime non-LLM work from exact chain]
     UNCERTAIN --> NORMF
     NORMF --> READY{Current Finding plus Review PASS Rule PASS Scope PASS Testing PASS Impact SUFFICIENT Permission ALLOW}
-    READY -->|No Finding kept if only policy blocked| BLOCK
+    READY -->|No; Reporter blocked, current Finding kept| BLOCK
     READY -->|Yes| RREQ[Verification requests Reporter]
     RREQ --> REPORTER[Reporter Agent]
     REPORTER --> DRAFT[Internal ReportDraft]

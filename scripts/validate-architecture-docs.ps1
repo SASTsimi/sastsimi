@@ -61,6 +61,53 @@ if (-not $diagramText.Contains('RUNNING --> READY: immediate dynamic auto retry'
     Add-Failure 'canonical state diagram is missing the DYNAMIC_REPRO immediate auto-retry transition'
 }
 
+# R5-03 Finding lifecycle: with a Rule Scope review present (FOUND or ABSENT_CONFIRMED)
+# the RuleScopeImpactReview is COMMITTED, so every Reporter-blocking Gate outcome
+# (UNCERTAIN, DENY, ...) must still pass through FINDING_NORMALIZE before Reporter
+# BLOCK. Any Mermaid block that models both ABSENT_CONFIRMED and FINDING_NORMALIZE
+# must not contain a direct edge from a Rule Scope branch node to the report-block
+# node. The COLLECTION_FAILED path (no RuleScopeImpactReview, no Finding) stays
+# allowed: its edge originates from the policy-collection node, not a Rule Scope
+# branch node.
+foreach ($diagramSource in @(
+    @{ Label = 'canonical'; Blocks = $diagramBlocks },
+    @{ Label = 'Wiki'; Blocks = $wikiDiagramBlocks }
+)) {
+    foreach ($block in $diagramSource.Blocks) {
+        if (($block -notmatch 'FINDING_NORMALIZE') -or ($block -notmatch 'ABSENT_CONFIRMED')) {
+            continue
+        }
+        $normMatch = [regex]::Match($block, '(\w+)\[FINDING_NORMALIZE')
+        $blockNodeMatch = [regex]::Match($block, '(\w+)\[Report blocked\]')
+        if (-not ($normMatch.Success -and $blockNodeMatch.Success)) {
+            Add-Failure "$($diagramSource.Label) Mermaid Finding lifecycle block is missing a FINDING_NORMALIZE or 'Report blocked' node"
+            continue
+        }
+        $normNode = $normMatch.Groups[1].Value
+        $blockNode = $blockNodeMatch.Groups[1].Value
+
+        # Rule Scope branch nodes: the target of the FOUND edge and the target of
+        # the ABSENT_CONFIRMED edge out of the policy-collection node.
+        $branchNodes = [regex]::Matches($block, '[-.=]+>\s*\|[^|]*(?:FOUND|ABSENT_CONFIRMED)[^|]*\|\s*(\w+)') |
+            ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique
+        if ($branchNodes.Count -eq 0) {
+            Add-Failure "$($diagramSource.Label) Mermaid Finding lifecycle block has no identifiable Rule Scope branch node"
+        }
+        foreach ($branchNode in $branchNodes) {
+            # An edge line from $branchNode to a target node id, allowing any
+            # connector style (-->, -.->, ==>) and an optional edge label, and
+            # tolerating an optional `[label]` shape declaration on the target.
+            $edge = '(?m)^\s*' + [regex]::Escape($branchNode) + '\s*[-.=]+>\s*(?:\|[^|]*\|\s*)?'
+            if ([regex]::IsMatch($block, ($edge + [regex]::Escape($blockNode) + '\b'))) {
+                Add-Failure "$($diagramSource.Label) Mermaid has a forbidden direct '$branchNode -> $blockNode' edge that bypasses FINDING_NORMALIZE on a Rule Scope review path"
+            }
+            if (-not [regex]::IsMatch($block, ($edge + [regex]::Escape($normNode) + '\b'))) {
+                Add-Failure "$($diagramSource.Label) Mermaid Rule Scope branch '$branchNode' no longer routes through FINDING_NORMALIZE ('$branchNode -> $normNode' edge missing)"
+            }
+        }
+    }
+}
+
 $activeContractPaths = @(
     (Join-Path $repoRoot 'docs/architecture-v5'),
     (Join-Path $repoRoot 'docs/review'),
@@ -2173,6 +2220,7 @@ if ($gitCheckExitCode -ne 0) {
 
 Write-Output "Markdown files: $($markdownFiles.Count)"
 Write-Output "Mermaid blocks: $($diagramBlocks.Count) canonical / $($wikiDiagramBlocks.Count) Wiki"
+Write-Output 'Finding lifecycle Rule Scope -> FINDING_NORMALIZE bypass guard: canonical + Wiki'
 Write-Output "R4-02 required contract names: $($requiredContractNames.Count)"
 Write-Output "R4 Pro/Con result fields: $($requiredEvidenceAgentResultFields.Count)"
 Write-Output "R4 Verification join fields: $($requiredVerificationDebateFields.Count)"
