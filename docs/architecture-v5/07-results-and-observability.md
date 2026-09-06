@@ -90,7 +90,11 @@ Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을
 | S-CHAIN-CHILD | upstream `result`가 downstream `input`을 채우는 짝 | 새 쪽지, 부모 불변 | 부모 판정을 바꿈. 우회 조사로 확장 |
 | S-TRUE-EARLY | validated PoC·Technical ACCEPT·admission ALLOW 전 TRUE를 잇기 | Technical `ACCEPT` + validated PoC + current `PrimitiveAdmissionDecision=ALLOW` 전 Primitive 등록·잇기 금지. `ACCEPT`여도 `DENY`면 등록하지 않음 | ACCEPT·ALLOW 전에 `result` Primitive로 등록하거나 잇기. `DENY`인데 등록·잇기 |
 | S-CHAIN-STALE | 오래된 Primitive/Gate revision이거나, 사용한 admission이 current가 아니거나 `DENY`로 바뀜 | `STALE_RESULT`, 저장 안 함. 부모 verdict를 FALSE/HOLD로 바꾸지 않음. 이미 만든 파생 결과는 감사 기록으로만 남김 | 옛 결과·옛/`DENY` admission으로 잇기. 파생 결과를 새 Verification·Gate·Primitive·Reporter 입력으로 씀 |
-| S-POLICY | 기술 TRUE + 공식 정책 없음 | 2번 문지기가 초안(보고)만 막음. Primitive 등록·잇기는 유지. 금지 테스트 `FAIL`이 아니면 admission을 `DENY`로 바꾸지 않음 | 추측 후 초안 작성. 또는 정책 없음으로 Primitive·잇기를 취소 |
+| S-POLICY | 기술 TRUE + `RunPolicyState=ABSENT`(공식 정책 부재 확인) | Rule Scope는 `UNCERTAIN + DENY`로 초안(보고)만 막음. Primitive 등록·잇기는 유지(금지 테스트 `FAIL`이 아니면). 부재 확인도 freshness·`freshness_valid_until`을 가짐 | 정책을 추정해 PASS/ALLOW. 부재를 FALSE/HOLD로 바꿈. 또는 정책 없음으로 Primitive·잇기를 취소 |
+| S-POLICY-REUSE | 같은 `program_id`에 아직 유효한 CURRENT/ABSENT `RunPolicyState`가 있음 | 새 `POLICY_FETCH` 없이 exact state 재사용. Collect/Parse 호출 0. 가설마다 재수집하지 않음 | CURRENT인데 가설·Gate마다 다시 수집·파싱 |
+| S-POLICY-FETCH-FAIL | 공식 출처 수집 실패 | `RunPolicyState=FAILED` 또는 collection `COLLECTION_FAILED`. Rule Scope review·Reporter 없음. 기술 verdict·정적 결과 유지. FALSE/HOLD 아님 | 수집 실패를 FALSE/HOLD·정책 부재(`ABSENT`)로 바꿈 |
+| S-POLICY-PARSE-FAIL | 원문은 있으나 LLM Policy Parser 실패 | parser 실패와 정책 준비 `FAILED`/`COLLECTION_FAILED`로 기록. Rule Scope·Reporter 없음. FALSE/HOLD 아님 | 파싱 실패를 FALSE/HOLD로 바꿈. 또는 모델 기억으로 정책을 채워 `CURRENT`로 승격 |
+| S-POLICY-STALE | `freshness_valid_until` 경과 또는 최신성 확인 실패 | state를 STALE/UNVERIFIED로 기록. `LOCAL_ONLY` Sandbox와 `UNCERTAIN + DENY` Rule Scope만. Reporter와 PASS/ALLOW 금지. 새 `policy_generation` 준비. FALSE/HOLD 아님 | 만료·미검증 정책을 `CURRENT`처럼 쓰거나 판정을 FALSE/HOLD로 바꿈 |
 | S-SANDBOX-ENV | 필수 환경이 `MISMATCH` / `NOT_CHECKED` / `ERROR` | Agent가 recipe를 먼저 보완한다. 바깥 설정·정책을 기다릴 때만 `BLOCKED`. 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE`. `failure_category`는 환경. 최종 TRUE/FALSE/HOLD 없음 | 바로 판정으로 바꾸거나, 자율 보완 없이 무조건 시작 금지로만 적음 |
 | S-SANDBOX-POLICY | current `RunPolicyState`가 없거나 `LOCAL_ONLY`·상자 시간·네트워크 경계를 넘김 | Agent 미시작, `agent_invoked=false`. 공격 입력·관측 없음. 외부 profile 변경을 기다릴 때만 `BLOCKED`, 최종 거절이면 `FAILED`. `failure_category`는 정책. 자원이 없을 때만 `cleanup_status=NOT_REQUIRED`. 최종 판정 없음 | live asset·외부 계정·허용되지 않은 egress 실행, 또는 TRUE/FALSE/HOLD로 바꿈 |
 | S-SANDBOX-EXEC | 승인된 profile 안에서 Agent가 돌던 중 실행 실패 | 같은 R7 Agent session의 조정은 현재 attempt에서 계속한다. session 재시작 때만 R8 한도 안에서 새 attempt를 만든다. 바깥 대기만 `BLOCKED`. 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE`. 반증·`FALSE` 금지 | 실패 = 반증 또는 HOLD |
@@ -133,12 +137,69 @@ Sandbox ENV/POLICY/EXEC/TIMEOUT은 동적 work의 `BLOCKED | FAILED`다. 최종 
 | debate 재시도 대기 | 재시도 가능한데 부모·가설을 바로 `FAILED`로 끝낸 횟수 | 0. 기대는 자식·부모 `BLOCKED`, 가설 `VERIFYING` |
 | debate 최종 실패 | 재시도 소진·복구 불가 뒤에도 최종 판정을 만든 횟수 | 0. 기대는 자식 `FAILED` 확정 후 부모·가설 `FAILED` |
 | 두 Gate | 문지기 전제 없이 초안 호출 | 0 |
+| 정책 재사용률 | 정책이 필요했던 run·generation 중, 유효 CURRENT/ABSENT를 새 Collect/Parse 없이 재사용한 비율 | 제안 0.80 이상(교차 전). 첫 준비·만료 후 재준비는 분모에서 “재사용 기회”로만 셈 |
+| 불필요 재수집률 | 아직 유효한 CURRENT/ABSENT(같은 `program_id`·Parser 버전·`freshness_valid_until` 남음)인데 새 `POLICY_FETCH`를 연 횟수 / 정책 준비 시도 | 0 |
+| 정책 수집 실패 차단 | collection `COLLECTION_FAILED`·`RunPolicyState=FAILED`(수집)로 Rule Scope/Reporter가 막힌 횟수 | 숨기지 않음. 이 횟수를 FALSE/HOLD로 바꾼 횟수 0 |
+| 정책 Parser 실패 차단 | Parser 실패로 준비 실패·Rule Scope/Reporter가 막힌 횟수 | 숨기지 않음. FALSE/HOLD로 바꾼 횟수 0. 수집 실패 칸과 섞지 않음 |
+| 정책 만료·미검증 차단 | STALE/UNVERIFIED 또는 `freshness_valid_until` 경과로 Sandbox/Gate/Reporter가 막히거나 generation이 올라간 횟수 | 숨기지 않음. 만료를 `CURRENT`로 쓰거나 FALSE/HOLD로 바꾼 횟수 0 |
+| policy generation 전환 | 실행 중 `policy_generation`이 증가한 뒤, 옛 generation state·Gate·Finding·ReportDraft를 새 입력에 재사용한 횟수 | 0. 옛 로컬 Sandbox 이력은 실행 당시 state와 보존만 |
 | 사람 정답 대비 | 공장 답을 오프라인 사람 정답과 맞춤. 자동 lifecycle 아님 | 차이 이유 기록. 이 숫자가 공개·Gate·완료를 대신하지 않음 |
 | provider/model | 아래 재비교처럼 같은 장면으로 비교 | 품질 하락이면 그 설정 불합격 |
 | usage | token 숫자를 서비스가 안 줌 | 없음 + 이유. 지어내지 않음 |
 | 수집 금지 | 비밀번호·세션 비밀·숨은 생각을 평가/로그로 모은 횟수 | 0. `S-REDACT`는 가리기 실패 장면. 이건 모으지 말 것 |
 
 연결 발견사항: H-003.
+
+## 정책 최신성·재사용 (R8 versioned)
+
+정책 준비는 가설 Agent가 아니다. `CodeWorkspace.status=READY` 뒤 `POLICY_FETCH`가 AST/SAST와 병렬로 돌고, 결과는 `RunPolicyState`로 모든 가설이 공유한다. R8은 **언제 최신으로 볼지**, **언제 다시 가져올지**, **Collect/Parse 한도**, **재사용·실패 지표**만 정한다. 기준값·TTL은 versioned R8 설정(`freshness_criterion_ref`)이며 아래는 **교차 전 초안**이다.
+
+### 최신성 근거 (evidence)
+
+공식 출처에서 가능한 것을 `freshness_evidence_refs`에 남긴다. 하나 이상이어야 `CURRENT` 또는 유효 `ABSENT` 확인이 된다.
+
+| 근거 | 뜻 |
+|---|---|
+| `ETag` | HTTP 검증기. 같으면 본문 재다운로드 없이 재확인 가능 |
+| `Last-Modified` | 출처가 알린 수정 시각 |
+| 원문 `content_hash` | Collector가 고정한 원문 bytes hash |
+| `parser_version` | LLM Policy Parser 흐름·프롬프트/스키마 버전. 바뀌면 재파싱 |
+
+“최근에 가져왔다”만으로 `CURRENT`로 만들지 않는다.
+
+### `CURRENT` / `ABSENT` / `STALE` / `UNVERIFIED`
+
+| 판정 | 조건 (초안) | run 시작·재사용 |
+|---|---|---|
+| `CURRENT` | `FOUND` + exact policy record + 위 근거 1개 이상 + `now < freshness_valid_until` + 동일 Parser 버전 | 새 Collect/Parse 없이 재사용 |
+| `ABSENT` | 공식 출처에서 부재를 `ABSENT_CONFIRMED`로 확인 + 동일 종류의 freshness 필드·`freshness_valid_until` | 재사용. 정책을 추정하지 않음 |
+| `STALE` | `freshness_valid_until` 경과, 또는 재확인 시 ETag/Last-Modified/hash가 바뀜 | 재사용 금지. `policy_generation` +1 후 새 `POLICY_FETCH` |
+| `UNVERIFIED` | 근거를 못 읽음·기준 미적용·확인 실패 | 재사용 금지. 최신으로 승격하지 않음 |
+
+`BLOCKED` / `FAILED` / `PREPARING`은 최신성 판정이 아니라 준비 lifecycle이다.
+
+### `freshness_valid_until` 계산 (초안)
+
+```text
+freshness_valid_until = freshness_checked_at + freshness_ttl
+```
+
+| 대상 | `freshness_ttl` (초안) | 비고 |
+|---|---|---|
+| 정책을 찾은 `CURRENT` | **24시간** | 플랫폼별 더 짧은 TTL이 필요하면 versioned 설정에 프로그램/플랫폼 키로 덮어쓴다 |
+| 부재 확인 `ABSENT` | **24시간** | 부재 확인을 무기한 재사용하지 않는다 |
+| 재확인만 (304 / 동일 ETag) | checked_at을 갱신한 뒤 같은 TTL로 `valid_until` 재계산 | 본문·Parser를 다시 돌리지 않아도 됨 |
+
+Parser 버전만 바뀌면 TTL과 무관하게 재파싱한다(원문 hash가 같아도). 비용·전체 work 수와 같이, TTL 숫자를 임의로 더 늘리지 말고 팀이 측정한 뒤 versioned 설정으로만 바꾼다.
+
+### run 시작 시 정책 준비 조건
+
+1. 같은 `analysis`가 아니라도, 저장소가 가리키는 `program_id`에 **아직 유효한** `CURRENT|ABSENT` state가 있고 Parser 버전이 같으면 → **재사용** (새 `POLICY_FETCH` 없음).
+2. state 없음 / `STALE` / `UNVERIFIED` / `FAILED` / Parser 버전 불일치 / `valid_until` 경과 → **`POLICY_FETCH` 1회** (`policy_generation`은 최초 1, 만료 후 재준비 시 +1).
+3. 같은 `(analysis_id, program_id, policy_generation)`에는 active policy work **하나**만. 가설마다 열지 않음.
+4. Collect·Parse 실패·만료는 가설 `FALSE|HOLD`가 아니다.
+
+Runtime Validator는 `RUN_SANDBOX` / `CALL_RULE_SCOPE_GATE` / `CREATE_REPORT_DRAFT` 직전마다 `RunPolicyState.freshness_valid_until`을 다시 본다(R4 ADR-013).
 
 ## 역할별 자원 한도
 
@@ -169,8 +230,10 @@ token 상한은 없다. 분석 전체·모든 Agent·호출마다 동일하다. 
 
 | 역할 | 시간 | 재시도 (같은 요청) | 기타 | 초과 시 | 같이 정할 사람 |
 |---|---|---|---|---|---|
-| 분석 전체 | 120분 | — | 파이프라인 1–22 벽시계 1회. clone·정적 도구·가설·검증·Gate·초안을 포함한다. 역할 칸을 더해도 이 한도가 먼저다 | 새 work 금지. 진행 중 work는 `BUDGET_EXCEEDED`. 분석 `PARTIAL` 가능. FALSE 아님 | 성병찬 |
+| 분석 전체 | 120분 | — | 파이프라인 1–22 벽시계 1회. clone·정적 도구·**정책 준비**·가설·검증·Gate·초안을 포함한다. 역할 칸을 더해도 이 한도가 먼저다 | 새 work 금지. 진행 중 work는 `BUDGET_EXCEEDED`. 분석 `PARTIAL` 가능. FALSE 아님 | 성병찬 |
 | AST/SAST (`RUN_TOOL`) | 도구당 900초 | 1 | 파이프라인 3단계. 도구마다 work 하나. 같은 workspace에서 병렬. 도구 자체 timeout은 이 칸을 넘지 않는다. `02` 예시·도구 설정은 R2가 맞춘다. 실패·timeout ≠ 0건·안전함·FALSE | 그 도구 work 중단. `PARTIAL`/`FAILED` 가능. FALSE 아님 | 김나연 |
+| Policy Collect | 60초 | 2 | 비-LLM. 승인된 공식 URL만. 원문 bytes/hash·ETag·Last-Modified·게시 주체 고정. 가설마다 호출하지 않음. `(analysis_id, program_id, policy_generation)`당 active 1 | 그 policy work 중단·`FAILED`/`COLLECTION_FAILED` 가능. FALSE/HOLD 아님 | 성병찬 |
+| Policy Parse | 180초 | provider·형식 오류 3 | LLM `POLICY_PARSER`. Collector가 고정한 exact 원문만. token 상한 없음(관측만). 모델 기억·검색 snippet·README로 정책 승격 금지 | parser 실패로 준비 실패. Rule Scope·Reporter 없음. FALSE/HOLD 아님 | 성병찬 |
 | Hypothesis | 180초 | 4 | — | 그 의심 중단, FALSE 아님 | 배승원 |
 | 코드 다시 꺼내기 | 45초 | — | 가설당 조회 24회. 같은 요청 재시도가 아니라 한 가설의 `code_request_id` 누적 상한이다. 다른 위치·관계 요청도 센다. 깊이 5, 조각 32개, 요청당 256KiB | 빈칸/조회 오류. FALSE 아님 | 김나연 |
 | Verification / debate | 종합 240초 / 찬반 각 180초 | 의심마다 찬반 각 1회 | 서로 다른 대화. Docker 요청 예산은 이 칸 | 초과 ≠ FALSE. 찬반 생략은 운영 불합격 | 임채민 |
@@ -276,7 +339,10 @@ provider·model·session을 바꿀 때는 **이름이 아니라 정확한 식별
 
 - Technical `ACCEPT | REVISE | REJECT`와 `handoff_readiness`. `ACCEPT`↔`READY`, `REVISE | REJECT`↔`NOT_READY`는 R5가 이미 확정한 조합이다. R8은 그 불변조건을 **관측**할 뿐 Gate 의미를 새로 정하지 않는다. 조합이 틀리면 저장하지 않은 횟수를 센다.
 - Rule/Scope PASS/FAIL/UNCERTAIN, impact와 DENY 이유
+- 실행 단위 `RunPolicyState` status·`policy_generation`·`freshness_valid_until`·criterion/evidence refs
 - 정책 수집의 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`, parser 실패, `ProgramPolicyRecord` 누락·오래된 정책 경고 상태
+- 유효 state 재사용 수 vs 새 `POLICY_FETCH` 수. CURRENT인데 재수집한 수(불필요 재수집)
+- 수집 실패·Parser 실패·`STALE|UNVERIFIED`·generation 전환으로 Sandbox/Gate/Reporter가 막힌 수를 **따로** 셈. 가설 FALSE/HOLD로 바꾼 수는 0이어야 함
 - Reporter 조건 통과/차단, current·stale ReportDraft, `ReportDraft` 저장 뒤 자동화 종료 상태. 사람 검토·공개는 Agent 자동화 밖이며 `AnalysisRunResult` 필드가 아니다. 오프라인 평가 정답만 별도로 쓸 수 있고 완료·Gate·초안 생성 조건으로 쓰지 않는다
 - Technical `REVISE` 횟수 (새 검증 세대)와 provider·형식 재시도를 따로 셈. Reporter `REVISE` 수는 없음
 
