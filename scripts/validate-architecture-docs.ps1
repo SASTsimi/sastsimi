@@ -2550,6 +2550,7 @@ foreach ($marker in @(
         Add-Failure "missing R7 runtime-managed tool-loop provider rule: $marker"
     }
 }
+Write-Output 'R3-04 provider runtime tool-loop rules: 4'
 
 $forbiddenR8OwnershipMarkers = @(
     '그 R8 profile의 수치',
@@ -2636,7 +2637,6 @@ Write-Output "StaticFactBundle cross-document rules: $($requiredStaticFactBundle
 Write-Output "Static layer Primitive admission rules: $($requiredStaticPrimitiveAdmissionRules.Count)"
 Write-Output "R4 policy contract blocks: $($requiredPolicyContractFields.Count)"
 Write-Output "R4 policy contract rules: $($requiredPolicyContractRules.Count)"
-Write-Output 'R3-04 provider runtime tool-loop rules: 4'
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {
