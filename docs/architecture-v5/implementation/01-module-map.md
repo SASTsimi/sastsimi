@@ -8,7 +8,8 @@
 
 ## 1. 기준과 문서의 권한
 
-- 작성 기준 `main`: `3d30253acc27d57916611e0ebea2fd46344c5fa8`
+- 작성 기준 선행 PR: [R4 정책 준비 #110](https://github.com/SASTsimi/sastsimi/pull/110) `c7fc22997a7c7c1f5e177d70978e51417995fe5a`
+- 작성 시점 `main`: `af6ffc0e81752bbf7e621f2ba3f3f6bafc7c1947`. #110 병합 뒤 이 문서의 기준 SHA를 실제 merge commit으로 갱신한다.
 - 연결 Issue: [R3-01 #24](https://github.com/SASTsimi/sastsimi/issues/24)
 - 상위 Issue: [R3 #4](https://github.com/SASTsimi/sastsimi/issues/4)
 - 후속 Issue: [R3-02 #25](https://github.com/SASTsimi/sastsimi/issues/25), [R3-03 #89](https://github.com/SASTsimi/sastsimi/issues/89), [R3-05 #91](https://github.com/SASTsimi/sastsimi/issues/91), [R3-06 #92](https://github.com/SASTsimi/sastsimi/issues/92)
@@ -35,6 +36,7 @@
 12. Verification과 Chaining의 새로운 material claim은 새 가설로 등록하고 전체 Verification을 다시 수행한다.
 13. Reporter는 내부 `ReportDraft`까지만 만든다. `AnalysisRunResult`가 확정되면 Agent 자동화가 끝나며 이후 사람 검토·제출·공개는 시스템 밖이다.
 14. 다음 단계는 exact output이 `TransitionCommit.state=COMMITTED`이고 상태 pointer와 같은 revision을 가리킬 때만 시작한다.
+15. workspace가 READY가 되면 R3 runtime은 정적 분석, 정책 준비, Docker baseline 준비를 독립 branch로 등록한다. 앞의 두 branch는 정본 work·record 계약을 따르고, Docker branch는 R4·R7이 B5의 action·result binding을 확정하기 전까지 구현 가능한 것으로 표시하지 않는다.
 
 ## 3. 표 읽는 방법
 
@@ -58,7 +60,7 @@
 |---:|---|---|---|---|---|---|---|---|---|
 | 1. 분석 시작 | 사람 입력 / R3 통합 / Orchestration runtime | `AnalysisService.start_run` / 별도 work 없음, 다음 `WORKSPACE_PREP` 등록 | exact `AnalysisStartRequest`와 승인된 단일 `program_id`; repository URL 또는 로컬 Git reference, 요청 commit/ref, `purpose`, versioned 실행·평가 설정 | 검증 성공 뒤 `analysis_id`, `AnalysisRunState(RUNNING)`, `RunMeta`; 신뢰 runtime만 ID·초기 상태 생산 | 입력 schema·repository scheme·purpose와 Program Catalog의 단일 ID 해석 검사 후 `REGISTER_WORK(WORKSPACE_PREP)` | `runs`; `AnalysisRunState` current pointer 생성, secret·절대 workspace path는 일반 record에 미저장 | 사용자 요청 → 2; 한 run은 프로그램 하나, 같은 저장소의 다른 프로그램은 별도 run, 같은 `analysis_id` 중복 생성 금지 | program 누락·미확인·모호함을 포함한 입력 오류는 `INPUT_ERROR`로 요청 거절, run·work 없음; 생성 뒤에는 `workspace_id/commit_id=null` 가능; 오류를 verdict로 만들지 않음 | `tests/integration/test_analysis_entry.py`; 01·08·10 / R3·R4 |
 | 2. clone·checkout | 비-LLM 도구 / R3 통합 / Repository Loader | `WorkspaceService.prepare` / `WORKSPACE_PREP` | Step 1의 exact run ref, repository reference, 요청 commit/ref | `CodeWorkspace`; REPOSITORY_LOADER만 준비·상태 갱신 | `RUN_TOOL(requested_by=REPOSITORY_LOADER)` 후 `SAVE_RESULT`; path·Git 실행·HEAD·workspace 불변성 검사 | `runs`와 runtime 전용 workspace registry; `workspace_id → repository_url + commit_id` 보존, 로컬 절대 경로 비공개 | 1 → 2 → 3; 완료 전 정적 도구 시작 금지 | `READY`만 분석 가능. clone/checkout 실패는 `CLONE_FAILED/CHECKOUT_FAILED`, 분석 `FAILED`; HEAD 변경은 `WORKSPACE_CHANGED` | `tests/integration/test_workspace_prepare.py`, `tests/security_negative/test_workspace_boundary.py`; 01·02·08·10 / R3·R4·R2 |
-| 3. AST·SAST와 실행 단위 정책 준비(정적 분석과 병렬) | 외부 도구 / R2 Static Tool Coordinator, R5-02 Policy Parser, 비-LLM Policy Collector | `StaticToolCoordinator.run_all`의 도구별 `STATIC_TOOL`; `PolicyPreparationService.prepare`의 분석 단위 `POLICY_FETCH` | READY `CodeWorkspace`; 시작 상태의 단일 `program_id`; static 설정·rule catalog·tool profile; 공식 source 설정·Parser call spec·R8 freshness 기준 | static: raw artifact, `ToolRunResult`, `RuleExecutionRecord`; policy: run마다 새 `RunPolicyState`, `PolicyCollectionResult`, FOUND이면 `ProgramPolicyRecord`; 새 수집이면 `PolicyParserResult`, 성공 준비면 `PolicyCacheRecord` | static은 기존 `RUN_TOOL`; policy는 run 시작 시 exact cache 검사, hit이면 run-local record materialize, miss이면 `FETCH_POLICY → CALL_LLM(requested_by=POLICY_PARSER) → SAVE_RESULT`; 역할·official source·cache closure·dedupe·freshness 검사 | static은 `facts`, 정책·run-neutral cache는 `policies`, 상태·오류는 `runs`; static과 policy는 별도 COMMITTED transition과 current pointer 사용 | AST·CodeQL·OpenGrep과 policy preparation을 독립 fan-out. static만 4에서 join하고 policy는 Sandbox에 요청 당시 감사 ref, 17에 준비 완료 때 고정한 state로 join | static 실패와 policy 실패는 서로의 결과를 바꾸지 않음. policy는 `(analysis_id, program_id, work_type=POLICY_FETCH)` active work 하나, retry는 같은 work의 attempt, 가설별·run 중 재수집 금지. cache 부적합·누락이면 새 수집, 실패 결과는 cache 미게시 | `tests/integration/static_analysis/`, `tests/integration/test_run_policy_preparation.py`, `tests/security_negative/test_policy_static_fact_separation.py`; 01·02·05·08·10·ADR-006/013 / R2·R3·R4·R5·R8 |
+| 3. run-init 세 갈래 병렬 준비 | 비-LLM runtime·외부 도구 / R3 등록, R2 정적 실행, Policy Collector·R5-02 Parser 정책 준비, R7 Docker 준비 | R3 `RunInitializationService.start_branches`; `StaticToolCoordinator.run_all`의 도구별 `STATIC_TOOL`; `PolicyPreparationService.prepare`의 분석 단위 `POLICY_FETCH`; Docker branch의 실제 action·result entry point는 B5 확정 전 미정 | READY `CodeWorkspace`; 시작 상태의 단일 `program_id`; static 설정·rule catalog·tool profile; 공식 source 설정·Parser call spec·R8 freshness 기준; Docker는 clone 안의 Dockerfile·package manifest 등 저장소 선언과 R7 resource profile 후보 | static: raw artifact, `ToolRunResult`, `RuleExecutionRecord`; policy: run마다 새 `RunPolicyState`, `PolicyCollectionResult`, FOUND이면 `ProgramPolicyRecord`; 새 수집이면 `PolicyParserResult`, 성공 준비면 `PolicyCacheRecord`; Docker branch는 B5 전 authoritative domain output 없음 | R3 runtime은 세 branch의 등록과 상태 관측만 담당하고 Docker image·container를 직접 만들지 않는다. static은 기존 `RUN_TOOL`; policy는 run 시작 시 exact cache 검사, hit이면 run-local record materialize, miss이면 `FETCH_POLICY → CALL_LLM(requested_by=POLICY_PARSER) → SAVE_RESULT`; Docker host action은 R4 Runtime Validator와 R7 외부 경계를 우회할 수 없으며 B5 전 새 action을 임의 사용하지 않음 | static은 `facts`, 정책·run-neutral cache는 `policies`, 상태·오류는 `runs`; static과 policy는 별도 COMMITTED transition과 current pointer 사용. Docker prewarm cache는 B5 전 current record나 성공 근거가 아님 | run-init fan-out은 정적 분석, 정책 준비, Docker baseline 준비의 세 branch를 서로 기다리지 않고 시작한다. static만 4에서 join하고 policy는 Sandbox에 요청 당시 감사 ref, 17에 준비 완료 때 고정한 state로 join한다. Docker baseline 준비는 가설별 동적 재현을 대신하지 않는 사전 최적화다. 실제 환경은 12에서 가설·generation·attempt별로 다시 결합한다. | static 실패와 policy 실패는 서로의 결과를 바꾸지 않는다. policy는 `(analysis_id, program_id, work_type=POLICY_FETCH)` active work 하나, retry는 같은 work의 attempt, 가설별·run 중 재수집 금지다. Docker baseline 준비 실패는 정적 분석·정책 준비·가설 판정을 실패로 바꾸지 않는다. 실패·미준비 상태면 Step 12의 R7 Setup이 현재 request 기준으로 환경을 새로 구성한다. | `tests/integration/static_analysis/`, `tests/integration/test_run_policy_preparation.py`, `tests/integration/test_run_init_fanout.py`, `tests/security_negative/test_policy_static_fact_separation.py`, `tests/security_negative/test_run_init_docker_authority.py`; 01·02·03·04·05·08·10·ADR-006/013 / R2·R3·R4·R5·R7·R8 |
 | 4. 정적 사실 정규화 | 비-LLM runtime / R2 / Static Fact Normalizer | `StaticFactService.normalize` / `STATIC_NORMALIZE` | Step 3의 모든 기대 tool 종료 상태와 exact `ToolRunResult`, `RuleExecutionRecord`, raw refs | `StaticFactBundle`; STATIC_ANALYSIS만 생산 | `SAVE_RESULT(result_kind=static_fact_bundle)`; 여섯 CodeFact 목록·fact kind·producer attempt·workspace/commit·raw ref 검사 | `facts`; exact bundle current pointer, raw artifact는 참조만 유지 | 3의 fan-in join → 4 → 5; 신뢰 결과가 있으면 일부 tool 실패 상태도 함께 정규화 | `SUCCEEDED` 또는 gap/error가 있는 `PARTIAL`; 다른 attempt·commit 혼합은 `STALE_RESULT/WORKSPACE_MISMATCH` | `tests/contract/test_static_fact_bundle.py`, `tests/integration/test_static_join.py`; 01·02·07·08·10·ADR-010 / R2·R4·R6·R8 |
 | 5. 초기 가설 work 준비 | 전역 제어 / R3·R1 / Orchestration runtime | `HypothesisWorkflow.register_initial_work` / `HYPOTHESIS_PROPOSAL` | COMMITTED current `StaticFactBundle`, exact run/provider/model/prompt/budget 설정 | `WorkExecutionState(HYPOTHESIS_PROPOSAL)`과 첫 attempt; 신뢰 runtime만 work·attempt 생산 | `REGISTER_WORK`, `START_ATTEMPT`; schema·revision·state·budget·dedupe 검사 | `runs/actions`; work state current pointer와 immutable `input_refs/input_hash` | 4 → 5 → 6; bundle `PARTIAL`도 gap과 함께 허용 | 입력 revision 변경은 새 work; 예산·권한 부족은 `BLOCKED/FAILED`, 가설 verdict 없음 | `tests/integration/test_hypothesis_work_registration.py`; 01·03·07·08·10 / R3·R1·R4·R8 |
 | 6. Hypothesis LLM 호출 | LLM Agent / R1 / Hypothesis Agent Runtime·Provider Adapter | `HypothesisAgent.propose` / Step 5 work의 active attempt | immutable `LLMCallSpec`, trusted prompt payload, current StaticFactBundle와 필요한 최소 code fragment refs | constrained raw response와 `LLMInvocationResult`; parsed proposal candidate는 아직 비신뢰 | `CALL_LLM(requested_by=HYPOTHESIS)`; Runtime Validator가 identity·revision·state·budget·provider·session·redaction 검사, adapter가 호출 | exposed request/response artifact와 `LLMInvocationLog`는 `invocations`; credential·hidden reasoning 미저장 | 5 → 6 → 7; 같은 run에 복수 invocation 가능하나 각 `llm_call_id` 구분 | auth/rate limit/timeout/provider/invalid output은 호출 상태·오류. 허용 repair/retry는 새 attempt·call·action·NEW session, `FALSE` 변환 금지 | `tests/integration/providers/test_hypothesis_call.py`, `tests/security_negative/test_prompt_injection.py`; 03·07·08·09·10 / R1·R3·R4·R8 |
@@ -78,6 +80,17 @@
 | 20. material child 전역 등록 | 비-LLM registry + 필요 시 LLM duplicate review / R1·R3 / Proposal Validator·Hypothesis Registry·Assignment Runtime | `HypothesisRegistry.register_child` / `HYPOTHESIS_PROPOSAL`, 이후 새 `VERIFICATION` | COMMITTED Verification-origin 또는 Chaining-origin proposal, exact parent IDs; Chaining은 `source_primitive_match_id`와 admissible lineage | 새 `VulnerabilityHypothesis`, process state와 ACTIVE VerificationAssignment; 기존 부모 결과와 독립 | Step 7과 같은 validation/duplicate `CALL_LLM/SAVE_RESULT`, 이후 `REGISTER_WORK(VERIFICATION)`; Chaining-origin 등록 전에는 Proposal Validator·Hypothesis Registry·Assignment Runtime이 exact `source_primitive_match_id` 계보, upstream Primitive의 `result.entity_refs`와 모든 `inputs[].entity_refs`, `draft_id == matched_input_id`인 downstream input의 `entity_refs`, downstream의 나머지 `inputs[].entity_refs`, `proposal.meta.workspace_id`·`proposal.meta.commit_id` 일치와 유효한 entity 또는 location 최소 하나 이상 존재 여부를 검사한다. 하나라도 충족하지 못하면 가설을 등록하지 않고 Verification도 배정하지 않는다. | `hypotheses/runs/invocations`; parent-child refs와 새 current process pointer | 13/18 → 20 → 새 child는 8–21 전체 반복; 가설 간 병렬 가능 | duplicate/invalid는 새 child 없음. lineage가 stale/DENY면 등록·후속 사용 차단, 부모 verdict 불변 | `tests/integration/test_child_hypothesis_registration.py`, `tests/e2e/test_chaining_child_full_revalidation.py`; 03·04·06·07·08·10 / R1·R3·R4·R6 |
 | 21. ReportDraft | LLM Agent / R5 / Reporter Agent Runtime | `ReportService.create_draft` / `REPORT_DRAFT` | Step 19에서 검사한 current Finding, same Verification/CWE/Technical/Rule Scope, run에 고정한 exact `RunPolicyState`/policy chain, dynamic/PoC, restrictions·limitations·unresolved conditions | internal `ReportDraft`; REPORTER만 생산, 공개·제출 권한 없음 | Verification owner의 `CREATE_REPORT_DRAFT`; Runtime Validator가 Gate order/readiness/revision, Rule Scope와 같은 frozen policy state, redaction을 action 승인·호출·저장 시 검사 | `reports/invocations/runs`; draft·report work SUCCEEDED·`ReportProcessState(DRAFTED)`를 atomic commit. raw secret/hidden reasoning 미저장 | 19 pass → 21 → 22; 가설별 독립 초안 가능 | missing Finding, stale refs, frozen policy ref 불일치, redaction 실패는 `REPORT_NOT_READY/REPORT_ERROR`; upstream revision 변경 시 과거 draft는 history만 유지 | `tests/contract/test_report_draft.py`, `tests/security_negative/test_report_redaction.py`; 05·07·08·10·12 / R5·R4·R6·R7 |
 | 22. 결과 집계·자동화 종료 | 비-LLM 집계 / R3·R4·R8 / Result Aggregator·State Store·Recovery Runtime | `AnalysisService.finalize_run` / 별도 Agent work 없음 | 모든 current COMMITTED 결과, states/attempts/transitions/actions/logs/resources/errors/gaps/stop reasons; report가 없으면 그 이유 | `AnalysisRunResult`와 `AnalysisRunState(COMPLETE/PARTIAL/FAILED/CANCELLED)`; 신뢰 runtime만 최종 묶음·상태 생산 | finalization 전 outstanding work/journal/pointer·current revision·lineage 검사; 결과와 run 상태를 atomic commit | `runs`와 logical 영역의 exact refs; `analysis_result_ref` current pointer. Agent 자동화 종료 뒤 새 Agent action 금지 | 모든 초기·child 가설의 종료를 join; 다른 가설 실패가 있어도 신뢰 결과가 있으면 PARTIAL 가능 | RUNNING work·미복구 PREPARED·output 없는 종료 상태는 종료 차단. recovery는 마지막 COMMITTED부터 재투영; 오류를 verdict로 만들지 않음 | `tests/e2e/test_full_run_finalization.py`, `tests/integration/test_atomic_run_result.py`; 01·03·05·07·08·10 / R3·R4·R8·전 역할 |
+
+### run-init 세 branch의 합류 경계
+
+run-init Docker branch는 `CodeWorkspace.status=READY` 뒤 저장소 선언을 바탕으로 공통 base image layer를 미리 준비할 수 있는지 확인하는 최적화 경로다. R3가 Docker를 직접 실행하거나, 이 경로의 성공을 가설 검증의 선행 조건으로 만들지는 않는다.
+
+- 정적 branch는 Step 4의 `StaticFactBundle`에서만 합류하며 Hypothesis 시작에 필요한 branch다.
+- 정책 branch는 같은 run의 새 `RunPolicyState`를 만들고 Step 17에서 exact reference로 합류한다. 정책 준비가 끝날 때까지 정적 branch와 Docker branch를 기다리게 하지 않는다.
+- Docker branch는 Step 12의 가설별 `DYNAMIC_REPRO`가 시작될 때까지 합류를 요구하지 않는다. 준비된 layer가 있어도 R7은 current request·requirements·plan·attempt에 맞는 새 binding과 clean 실행 경계를 만들어야 한다.
+- run-init Docker branch는 `EnvironmentRecipe`, `SandboxEnvironment`, `AgentLog`, PoC candidate 또는 validated PoC를 생산하지 않는다. 이들은 모두 Step 12의 current 가설·generation·attempt 산출물이다.
+- 가설 간 writable container를 공유하지 않는다. 공통으로 재사용할 수 있는 것은 content-addressed read-only image layer뿐이며 실제 `built_image_digest`와 사용 사실은 Step 12의 attempt-local record에서 다시 고정한다.
+- Docker branch가 실패하거나 준비 결과를 신뢰할 수 없으면 R7 Setup Automation이 Step 12에서 clean 환경을 새로 만든다. 이 실패는 정적 결과, 정책 상태 또는 취약점 verdict를 바꾸지 않는다.
 
 ### 16단계 필수 부정·복구 시험
 
@@ -141,12 +154,12 @@ R3-06은 다음 조건을 동적 재현 회귀 시험에 포함한다.
 
 아래 항목은 이 문서 작성 중 최신 `main`에서 직접 확인한 사항이다. R3-01이 임의로 새 공통 계약을 만들지 않고 담당 Issue로 넘긴다.
 
-### B1. R7 Agent의 LLM role enum 불일치 — 구현 시작 Blocker
+### B1. R7 Agent의 LLM role enum 불일치 — 해결됨
 
-[08. 경량 데이터 계약](../08-lightweight-data-contracts.md)은 `CALL_LLM`의 `requested_by=R7_AGENT`를 허용하지만 `LLMCallSpec.agent_role`과 `LLMInvocationRequest.agent_role` enum에는 `R7_AGENT`가 없다. 이대로는 Step 12의 경계 전 requirements·plan 작성 `CALL_LLM`과 경계 승인 뒤 Sandbox 실행 Agent의 역할을 같은 R7 identity로 연결할 수 없고 호출도 schema를 통과할 수 없다.
+[08. 경량 데이터 계약](../08-lightweight-data-contracts.md)의 `LLMCallSpec.agent_role`과 `LLMInvocationRequest.agent_role`, `CALL_LLM` 허용 역할에 `R7_AGENT`가 함께 존재한다. Step 12는 이 exact identity를 사용한다.
 
-- 담당: R3-05 #91에서 prompt/call 구조 결정, R4가 공통 enum·authority test 반영
-- 완료 기준: call spec, invocation request/log, Prompt Registry key와 action role 검사가 같은 R7 role을 사용함
+- 반영 위치: R4 공통 enum·authority 검사, R3-05 #91 Prompt Registry와 call 구조
+- 유지 조건: call spec, invocation request/log, Prompt Registry key와 action role 검사가 같은 `R7_AGENT`를 사용함
 
 ### B2. current Finding 생산 단계·저장 권한 — R5 semantic·R4 storage binding 확정
 
@@ -171,20 +184,30 @@ work/output 표에는 `CodeWorkspace`, `ToolRunResult`, schema-valid `Hypothesis
 - 담당: R3-05 #91과 R3-06 #92
 - 완료 기준: Orchestration의 LLM 판단 entry point와 비-LLM 등록·배정·state enforcement entry point가 각각 한 번만 정의됨
 
-이 네 항목은 R3-06 최종 구현 기준을 닫기 전에 해결해야 한다. 해결 전에도 R3-02·R3-03의 테스트 설계는 시작할 수 있지만 실제 production pipeline 구현 완료를 선언할 수 없다.
+### B5. run-init Docker baseline 준비의 action·result binding — 구현 시작 Blocker
+
+현재 공통 계약의 `RUN_SANDBOX`는 가설별 exact `DynamicReproductionRequest`, `EnvironmentRequirements`, `ReproductionPlan`과 attempt를 요구한다. 따라서 가설이 만들어지기 전 Docker baseline 준비에 이 action을 그대로 사용하거나 `EnvironmentRecipe`·`SandboxEnvironment`를 미리 생성하면 기존 R4·R7 계약을 위반한다.
+
+- R3 책임: workspace READY 뒤 세 branch를 등록하고 서로의 성공을 잘못된 join 조건으로 만들지 않는 orchestration mapping 확정
+- R7 책임: 사전 준비가 실제 Docker build인지 image pull/cache warm인지, 재사용 가능한 대상이 read-only content-addressed layer로 제한되는지 확정
+- R4 책임: 실제 host Docker 동작이 필요하다면 requester, action type, exact input, output/log, 상태·retry·취소·권한 검사와 저장 여부 확정
+- R8 책임: 사전 준비의 시간·disk·network 예산과 cache hit/miss/실패 지표 확정
+- 완료 기준: 가설 전 Docker 동작이 Runtime Validator와 Sandbox 외부 경계를 우회하지 않고, Step 12의 attempt-local recipe·환경·로그·PoC와 혼동되지 않으며, 실패해도 static·policy·verdict를 바꾸지 않는 자동 검증이 존재함
+
+B3·B5 Blocker와 B4 High는 R3-06 최종 구현 기준을 닫기 전에 해결해야 한다. 해결 전에도 R3-02·R3-03의 테스트 설계는 시작할 수 있지만 실제 production pipeline 구현 완료를 선언할 수 없다.
 
 ## 8. 역할별 필수 검토 범위
 
 | 역할 | 검토할 단계 | 반드시 확인할 내용 |
 |---|---:|---|
 | R1 탐색·Chaining `@baeseungwon1010` | 5–8, 18, 20 | proposal 등록·중복 처리, Primitive match·lineage·child 재검증 |
-| R2 정적분석·Context `@zv9uvr` | 2–4, 9 | tool별 output, 규칙 실행 0건/미실행 구분, StaticFactBundle, 안전한 code retrieval |
+| R2 정적분석·Context `@zv9uvr` | 2–4, 9 | run-init static branch가 정책·Docker branch와 독립인지, tool별 output, 규칙 실행 0건/미실행 구분, StaticFactBundle, 안전한 code retrieval |
 | R3 통합 `@YHS-Sec`, `@taehyeon-git` | 1–22 | entry point, work 등록, 병렬/join, 모듈 의존 방향과 최종 종료 |
-| R4 공통 계약 `@taehyeon-git` | 전 단계 | ID·revision·state·action·저장·authority와 B1–B3 |
-| R5 CWE·Gate·Reporter `@kimhr8463` | 14–17, 19, 21 | CWE exact provenance, 두 Gate 순서, Finding 생산 빈틈, Reporter 조건 |
+| R4 공통 계약 `@taehyeon-git` | 전 단계 | ID·revision·state·action·저장·authority와 B3·B5, Docker 사전 준비가 기존 `RUN_SANDBOX` 권한을 우회하지 않는지 |
+| R5 CWE·Gate·Reporter `@kimhr8463` | 3, 14–17, 19, 21 | Policy Collector와 Parser 생산 경계, CWE exact provenance, 두 Gate 순서, Finding 생산 빈틈, Reporter 조건 |
 | R6 Verification `@UltraPeachKeen` | 8–16, 20 | Context·Pro/Con·판정·dynamic request·REVISE·material child |
-| R7 동적 재현 `@Potatonion` | 12–13, 15, 21 | R6/R7 경계, Sandbox 외부 경계, AgentLog·same-attempt PoC provenance |
-| R8 평가·예산 `@gitterable` | 전 단계의 budget/metrics, 22 | time/cost/work/retry/resource 정책과 비교 가능한 관측값 |
+| R7 동적 재현 `@Potatonion` | 3, 12–13, 15, 21 | run-init read-only baseline과 가설별 clean Sandbox 분리, R6/R7 경계, Sandbox 외부 경계, AgentLog·same-attempt PoC provenance |
+| R8 평가·예산 `@gitterable` | Step 3을 포함한 전 단계의 budget/metrics, 22 | 세 branch의 독립 시간·resource 한도, Docker cache hit/miss/실패와 기존 time/cost/work/retry 관측값 |
 
 각 검토자는 PR의 최신 head SHA를 기준으로 자신의 생산·소비 record, 오류 전파와 테스트 경로를 확인한다. 리뷰 중 새 commit이 생겨 검토 영역이 바뀌면 해당 역할은 새 head SHA를 다시 확인한다.
 
@@ -217,6 +240,7 @@ work/output 표에는 `CodeWorkspace`, `ToolRunResult`, schema-valid `Hypothesis
 - [x] 각 단계에 주체, 논리 entry point, work, exact 입력·출력, action·검사, 저장, 상태·오류, 연결과 테스트 책임을 적었다.
 - [x] LLM Agent와 비-LLM runtime/controller의 역할을 구분했다.
 - [x] 병렬 fan-out/join과 변경할 수 없는 직렬 순서를 표시했다.
+- [x] run-init의 static·policy·Docker baseline 세 branch와 각 합류 시점을 구분하고, 사전 Docker 준비를 가설별 동적 재현의 성공 근거로 사용하지 않도록 표시했다.
 - [x] `FALSE`, `HOLD`, `BLOCKED`, `FAILED`, Technical `REVISE` 경로를 구분했다.
 - [x] Technical `REVISE` 새 generation에서 새 application·질문·공통 입력으로 Pro·Con을 항상 다시 실행하고 과거 결과를 거절하도록 표시했다.
 - [x] 체이닝 자식의 직접 코드 시작점이 비어 있으면 등록 전에 Proposal Validator·Hypothesis Registry·Assignment Runtime이 exact `source_primitive_match_id` 계보에서 upstream result, 매칭된 downstream input, upstream의 모든 inputs와 downstream의 나머지 inputs에 연결된 entity·location을 복구·검사하고, 등록 후에는 Context Retrieval Service가 코드 조회 전에 같은 계보의 current 상태와 workspace·commit을 다시 검사하도록 표시했다.
@@ -226,7 +250,8 @@ work/output 표에는 `CodeWorkspace`, `ToolRunResult`, schema-valid `Hypothesis
 - [x] 별도 저장소 사본 생성 모듈이나 message queue 제품을 전제로 하지 않았다.
 - [x] R3-01에서 확정할 수 없는 공통 계약 빈틈을 담당 역할과 후속 Issue로 분리했다.
 - [ ] R1·R2·R4·R5·R6·R7·R8 교차 검토가 최신 PR head를 기준으로 완료됐다.
-- [ ] B1·B3 Blocker가 담당 Issue·공통 계약에서 해결됐다.
+- [x] B1의 `R7_AGENT` identity가 공통 LLM call 계약에 반영됐다.
+- [ ] B3·B5 Blocker가 담당 Issue·공통 계약에서 해결됐다.
 - [x] B2의 Finding 의미·생성 closure·claim 제한·stale 조건을 R5가 확정했다([R5-03 후속이슈], `05`/`08`). R4는 `FINDING_NORMALIZE`·VERIFICATION service owner·`FindingIndexState`·CAS binding과 Finding-only 종료를 08에 확정했다.
 
 이 문서는 구현 모듈 경계를 설명하는 설계 산출물이며 실제 runtime 코드가 구현되었다는 뜻은 아니다.

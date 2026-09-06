@@ -2488,7 +2488,7 @@ $requiredRunPolicyPreparationRules = @(
     @{ Name = 'overview shows parallel policy preparation'; Text = $overviewText; Marker = 'AST·SAST와 실행 단위 정책 준비를 독립 병렬 실행' },
     @{ Name = 'overview shows run neutral policy cache'; Text = $overviewText; Marker = '`PolicyCacheRecord`' },
     @{ Name = 'architecture hub explains policy cache'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/README.md')); Marker = '`PolicyCacheRecord`' },
-    @{ Name = 'module map separates policy preparation'; Text = $moduleMapText; Marker = '실행 단위 정책 준비(정적 분석과 병렬)' },
+    @{ Name = 'module map separates policy preparation'; Text = $moduleMapText; Marker = '`PolicyPreparationService.prepare`의 분석 단위 `POLICY_FETCH`' },
     @{ Name = 'module map includes run neutral policy cache'; Text = $moduleMapText; Marker = 'run-neutral cache' },
     @{ Name = 'canonical diagram includes run policy state'; Text = $diagramText; Marker = 'RPS[RunPolicyState]' },
     @{ Name = 'Wiki explains single policy preparation'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/pipeline.md')); Marker = '정책은 가설마다 다시 가져오지 않습니다.' },
@@ -2602,6 +2602,21 @@ foreach ($obsoletePolicyLifecycleRule in @(
 )) {
     if ($activeDocumentationText.Contains($obsoletePolicyLifecycleRule)) {
         Add-Failure "obsolete mid-run policy replacement rule remains: $obsoletePolicyLifecycleRule"
+    }
+}
+
+$requiredR301RunInitFanoutRules = @(
+    'run-init fan-out은 정적 분석, 정책 준비, Docker baseline 준비의 세 branch를 서로 기다리지 않고 시작한다.',
+    'Docker baseline 준비는 가설별 동적 재현을 대신하지 않는 사전 최적화다.',
+    'run-init Docker branch는 `EnvironmentRecipe`, `SandboxEnvironment`, `AgentLog`, PoC candidate 또는 validated PoC를 생산하지 않는다.',
+    '가설 간 writable container를 공유하지 않는다.',
+    'Docker baseline 준비 실패는 정적 분석·정책 준비·가설 판정을 실패로 바꾸지 않는다.',
+    'R3 runtime은 세 branch의 등록과 상태 관측만 담당하고 Docker image·container를 직접 만들지 않는다.',
+    'B5. run-init Docker baseline 준비의 action·result binding'
+)
+foreach ($marker in $requiredR301RunInitFanoutRules) {
+    if (-not $moduleMapText.Contains($marker)) {
+        Add-Failure "missing R3-01 run-init fan-out rule: $marker"
     }
 }
 
@@ -2774,6 +2789,7 @@ Write-Output "StaticFactBundle cross-document rules: $($requiredStaticFactBundle
 Write-Output "Static layer Primitive admission rules: $($requiredStaticPrimitiveAdmissionRules.Count)"
 Write-Output "R4 policy contract blocks: $($requiredPolicyContractFields.Count)"
 Write-Output "R4 policy contract rules: $($requiredPolicyContractRules.Count)"
+Write-Output "R3-01 run-init fan-out rules: $($requiredR301RunInitFanoutRules.Count)"
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {
