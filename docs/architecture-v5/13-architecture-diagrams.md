@@ -28,9 +28,12 @@ flowchart TB
     WORK --> PLOOK{3 Check exact PolicyCacheRecord once at run start}
     PLOOK -->|Reusable| PMAT[Materialize current run policy records]
     PLOOK -->|Miss or invalid| PCOL[Policy Collector fetches official source]
-    PCOL --> PPAR[LLM Policy Parser structures exact source]
-    PPAR --> PPUB[Publish immutable PolicyCacheRecord]
+    PCOL --> PPAR[LLM Policy Parser creates PolicyParserResult]
+    PPAR --> PREADY{Collector validates collection and freshness}
+    PREADY -->|CURRENT or ABSENT| PPUB[Publish immutable PolicyCacheRecord]
+    PREADY -->|UNVERIFIED| PUNC[Commit UNVERIFIED state without cache]
     PPUB --> RPS[RunPolicyState]
+    PUNC --> RPS
     PMAT --> RPS
     S03A --> S04[4 StaticFactBundle]
     S03B --> S04

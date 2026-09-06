@@ -348,6 +348,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N48 | ReportDraft의 `run_policy_state_ref`가 Rule Scope review 또는 run에 고정한 exact state와 다름 | Reporter action 승인·호출·저장 중 실제 발견 시 `EXPIRED | REPORT_NOT_READY`; 초안 미저장, 기존 초안은 감사 이력으로만 보존 |
 | N49 | 다른 program·source 설정·Parser 버전·freshness 기준의 cache를 쓰거나 cache closure 밖의 cross-run 정책 reference를 연결 | cache 거절 후 같은 `POLICY_FETCH`에서 새 수집·파싱; 일반 artifact의 cross-run 재사용은 `STALE_RESULT` |
 | N50 | `AnalysisStartRequest.program_id`가 없거나 catalog에서 사용할 수 없거나, 저장소의 여러 프로그램 중 하나를 선택하지 않음 | `INPUT_ERROR`로 요청 거절; `analysis_id`, `AnalysisRunState`, work를 만들지 않고 내부 `program_id` 하나를 명시한 새 요청 요구 |
+| N51 | `RunPolicyState.status=UNVERIFIED`인데 `collection_result_ref=null`이거나 collection status가 `FOUND | ABSENT_CONFIRMED`가 아님 | state 저장과 Rule Scope 호출을 거절하고, collection 이전 중단은 `BLOCKED | FAILED`로 기록 |
 
 ## 남는 위험
 

@@ -30,7 +30,7 @@
 
 ```text
 Policy Collector → collect exact official policy source and provenance
-Policy Parser → structure the collected exact source → RunPolicyState
+Policy Parser → structure the collected exact source → PolicyParserResult → Policy Collector validates and commits RunPolicyState
 Orchestration → proposal validation → runtime narrows duplicate candidates
 Hypothesis → compare exact candidates when needed → registration or duplicate stop
 Orchestration → assign Verification for registered hypotheses

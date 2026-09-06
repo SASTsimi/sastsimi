@@ -108,7 +108,7 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | R7 Agent | exact request에서 requirements·간단한 plan·PoC candidate·동적 근거 해석 생산 | R6 목적 변경, 외부 경계 우회 또는 최종 verdict 판단 |
 | R7 Setup Automation | recipe·image·container 생성/재사용/재생성·환경 비교·cleanup 실제 수행 | Agent 판단, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
 | Sandbox Controller | R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 강제 | 내부 command allowlist 운영, R7 profile 값 결정, R8 잔여 예산·새 attempt 결정, 재현 전략·환경 의미·최종 verdict 변경 |
-| Policy Collector / Policy Parser | Collector는 공식 원문을 비-LLM으로 수집·검증하고, Parser는 exact 원문을 LLM으로 구조화해 실행 단위 `RunPolicyState` 준비 | 정책을 `StaticFactBundle`에 넣기, scope로 가설 사전 삭제, Rule Scope 최종 의미 판정 |
+| Policy Collector / Policy Parser | Collector는 공식 원문을 비-LLM으로 수집·검증하고, Parser는 exact 원문을 `PolicyParserResult`로 구조화하며, Collector가 이를 취합해 실행 단위 `RunPolicyState` 확정 | 정책을 `StaticFactBundle`에 넣기, scope로 가설 사전 삭제, Rule Scope 최종 의미 판정 |
 | Reproduction Session Manager | 실제 event를 append-only AgentLog로 저장하고 same-attempt validated PoC·동적 결과 확정 | Agent 호출·command·retry·cleanup 전략 결정 또는 다른 attempt 혼합 |
 | Primitive Admission Runtime | exact Technical review·정책 수집·Rule Scope의 전용 테스트 제한 판정을 정해진 표로 변환해 `PrimitiveAdmissionDecision`과 허용된 Primitive 확정 | 정책 원문 해석, Gate 판정 변경 또는 `DENY` 결과의 Primitive 생성 |
 | Primitive DB | required candidate가 있는 HOLD의 inputs-only Primitive와 current admission `ALLOW`인 Technical-accepted TRUE의 result Primitive exact revision 검색 | 작업 queue, candidate가 없는 HOLD나 Gate 전·admission `DENY` TRUE 저장 또는 자동 Finding 생성 |

@@ -22,7 +22,7 @@ final TRUE `VerificationResult`의 찬반 근거, 실제 코드·호출·데이�
 
 ## 2. 공식 정책·범위·영향 검토(`Rule Scope Impact Gate`)
 
-정책 경로는 `workspace 준비 -> 비-LLM Policy Collector -> LLM Policy Parser -> RunPolicyState -> Technical ACCEPT 뒤 Rule Scope Impact Gate -> 신뢰 runtime의 current Finding 정규화 -> Reporter`입니다. 정책은 실행 초기에 한 번 준비해 가설들이 공유하고 가설마다 다시 수집하지 않습니다. Parser와 Collector가 공통 artifact를 만들고 R5는 Rule·Scope·Impact 의미만 판단합니다. Finding 정규화는 아래 "Finding 정규화" 섹션을 따릅니다.
+정책 경로는 `workspace 준비 -> 비-LLM Policy Collector -> LLM Policy Parser -> PolicyParserResult -> Policy Collector가 RunPolicyState 확정 -> Technical ACCEPT 뒤 Rule Scope Impact Gate -> 신뢰 runtime의 current Finding 정규화 -> Reporter`입니다. 정책은 실행 초기에 한 번 준비해 가설들이 공유하고 가설마다 다시 수집하지 않습니다. Parser는 구조화 결과만 만들고 Collector가 collection·policy record·state를 확정하며, R5는 Rule·Scope·Impact 의미만 판단합니다. Finding 정규화는 아래 "Finding 정규화" 섹션을 따릅니다.
 
 Technical `ACCEPT`인 `TRUE`만 current `RunPolicyState`가 가리키는 정책 수집 결과와 함께 검토합니다. 정책 수집은 `FOUND`, `ABSENT_CONFIRMED`, `COLLECTION_FAILED`를 구분합니다. `FOUND`이면 exact `ProgramPolicyRecord`도 함께 읽고, `ABSENT_CONFIRMED`이면 정책을 추정하지 않고 `UNCERTAIN + DENY`로 검토할 수 있습니다. `COLLECTION_FAILED`는 Rule Scope review를 만들지 않습니다.
 
