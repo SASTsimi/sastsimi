@@ -2359,6 +2359,7 @@ $policyCollectionResultBlock = [regex]::Match($contractText, '(?ms)^PolicyCollec
 $policyMissingInfoBlock = [regex]::Match($contractText, '(?ms)^PolicyMissingInfo:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $ruleScopeEvidenceLinkBlock = [regex]::Match($contractText, '(?ms)^RuleScopeEvidenceLink:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $programPolicyRecordBlock = [regex]::Match($contractText, '(?ms)^ProgramPolicyRecord:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$sandboxPolicyDecisionBlock = [regex]::Match($contractText, '(?ms)^SandboxPolicyDecision:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $ruleScopeImpactReviewBlock = [regex]::Match($contractText, '(?ms)^RuleScopeImpactReview:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $primitiveAdmissionDecisionBlock = [regex]::Match($contractText, '(?ms)^PrimitiveAdmissionDecision:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $gateRuleScopeImpactReviewBlock = [regex]::Match($gateText, '(?ms)^rule_scope_impact_review:\s*(.*?)^```').Groups[1].Value
@@ -2371,6 +2372,7 @@ $requiredPolicyContractFields = @(
     @{ Contract = 'PolicyMissingInfo'; Block = $policyMissingInfoBlock; Fields = @('missing_info_id: string', 'area: RULE | SCOPE | IMPACT | SOURCE | FRESHNESS | TESTING_RESTRICTION', 'blocks_allow: boolean', 'description: string', 'policy_item_ids: [string]', 'evidence_refs: [StoredDataRef]') },
     @{ Contract = 'RuleScopeEvidenceLink'; Block = $ruleScopeEvidenceLinkBlock; Fields = @('link_id: string', 'area: RULE | SCOPE | IMPACT | TESTING_RESTRICTION', 'policy_item_ids: [string]', 'evidence_refs: [StoredDataRef]') },
     @{ Contract = 'ProgramPolicyRecord'; Block = $programPolicyRecordBlock; Fields = @('source_checks: [PolicySourceCheck]', 'parser_result_refs: [StoredDataRef]', 'freshness_criterion_ref: StoredDataRef | null', 'freshness_evidence_refs: [StoredDataRef]', 'freshness_valid_until: timestamp | null', 'missing_information: [PolicyMissingInfo]') },
+    @{ Contract = 'SandboxPolicyDecision'; Block = $sandboxPolicyDecisionBlock; Fields = @('policy_collection_result_ref: StoredDataRef', 'policy_record_ref: StoredDataRef | null', 'policy_parser_result_refs: [StoredDataRef]', 'testing_restriction_item_ids: [string]') },
     @{ Contract = 'RuleScopeImpactReview'; Block = $ruleScopeImpactReviewBlock; Fields = @('policy_collection_result_ref: StoredDataRef', 'testing_restriction_compliance: PASS | FAIL | UNCERTAIN', 'evidence_links: [RuleScopeEvidenceLink]', 'missing_information: [PolicyMissingInfo]') }
     @{ Contract = 'PrimitiveAdmissionDecision'; Block = $primitiveAdmissionDecisionBlock; Fields = @('meta: RecordMeta', 'verification_result_ref: StoredDataRef', 'technical_review_ref: StoredDataRef', 'policy_collection_result_ref: StoredDataRef', 'rule_scope_review_ref: StoredDataRef | null', 'testing_restriction_compliance: PASS | FAIL | UNCERTAIN | NOT_EVALUATED', 'decision: ALLOW | DENY', 'reason_code: TESTING_RESTRICTION_PASSED | TESTING_RESTRICTION_UNCERTAIN | POLICY_COLLECTION_FAILED | TESTING_RESTRICTION_VIOLATION') }
     @{ Contract = 'Primitive'; Block = $primitiveBlock; Fields = @('admission_decision_ref: StoredDataRef | null') }
@@ -2443,6 +2445,45 @@ $requiredPolicyContractRules = @(
 foreach ($rule in $requiredPolicyContractRules) {
     if (-not $rule.Text.Contains($rule.Marker)) {
         Add-Failure "missing R4 policy contract rule: $($rule.Name)"
+    }
+}
+
+$requiredDynamicPolicyBindingRules = @(
+    @{
+        Name = 'R6 does not copy policy into DynamicReproductionRequest'
+        Text = $verificationText
+        Marker = 'R6는 공식 프로그램 정책을 직접 수집하거나 해석하지 않으며 `DynamicReproductionRequest`에도 정책 reference를 복사하지 않는다.'
+    },
+    @{
+        Name = 'trusted runtime pins policy to dynamic work inputs'
+        Text = $contractText
+        Marker = 'trusted runtime은 `DYNAMIC_REPRO` work를 실행 가능한 상태로 전환하기 전에 같은 프로그램의 exact `PolicyCollectionResult`를 `WorkExecutionState.input_refs`에 고정한다.'
+    },
+    @{
+        Name = 'policy preparation only blocks dynamic work'
+        Text = $verificationText
+        Marker = '정책 준비가 끝나지 않았더라도 R6의 정적·Pro·Con 검증은 계속 진행한다.'
+    },
+    @{
+        Name = 'policy failures are not verdicts'
+        Text = $contractText
+        Marker = '정책 준비 실패·부재·불확실성·만료와 `decision=DENY`는 `FALSE | HOLD`의 근거가 아니다.'
+    },
+    @{
+        Name = 'successful dynamic result traces allowed policy decision'
+        Text = $contractText
+        Marker = '`status=SUCCEEDED`인 결과의 `policy_decision_ref`는 같은 work·attempt에서 실제 Sandbox 실행을 허가한 `SandboxPolicyDecision(decision=ALLOW)` exact revision을 가리켜야 한다.'
+    },
+    @{
+        Name = 'verification Wiki explains policy binding'
+        Text = $verificationWikiText
+        Marker = 'R6는 정책을 직접 수집하거나 해석하지 않고 `DynamicReproductionRequest`에도 정책을 넣지 않습니다.'
+    }
+)
+
+foreach ($rule in $requiredDynamicPolicyBindingRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing dynamic policy binding rule: $($rule.Name)"
     }
 }
 
@@ -2615,6 +2656,7 @@ Write-Output "StaticFactBundle cross-document rules: $($requiredStaticFactBundle
 Write-Output "Static layer Primitive admission rules: $($requiredStaticPrimitiveAdmissionRules.Count)"
 Write-Output "R4 policy contract blocks: $($requiredPolicyContractFields.Count)"
 Write-Output "R4 policy contract rules: $($requiredPolicyContractRules.Count)"
+Write-Output "Dynamic policy binding rules: $($requiredDynamicPolicyBindingRules.Count)"
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {
