@@ -32,6 +32,8 @@ hypothesis generation·Verification·Chaining은 program scope를 이유로 기�
 
 ### Chaining-origin 가설의 검증 시작점 복구
 
+부모 Primitive의 admission을 다시 확인하지 않는다는 것은 admission decision 하나에만 해당한다. 부모의 `result`와 `inputs`는 자식 검증의 시작점이자 결합 후보일 뿐 취약점 성립 근거가 아니다. 자식은 부모 `VerificationResult`의 verdict를 상속하지 않고, 자신에게 고정된 workspace·commit·proposal·Context·PlaybookApplication·Pro/Con·동적 재현으로 final verdict를 처음부터 만든다. 물려받은 사실이 결합 상황에서도 참인지는 자식 검증이 전부 다시 본다. Technical `REVISE`로 만들어진 새 generation도 이전 generation의 dynamic result·validated PoC·`CWELabel`·Gate 결과를 재사용하지 않는다.
+
 `origin=CHAINING` proposal의 `target_entities`, `target_locations` 또는 `suspected_path`는 비어 있을 수 있다. 이 사실만으로 입력 오류로 처리하지 않지만, 등록 전 검사와 등록 후 Context 조회 전 재검사를 서로 다른 단계와 주체가 수행한다.
 
 #### 등록 전 검사
@@ -238,19 +240,19 @@ R6가 final `VerificationResult`를 준비한 뒤의 진행은 다음 상태 전
 | Technical `REVISE` | 같은 ACTIVE assignment owner가 요청 내용을 받아 근거·설명·restriction을 보완한다. | 기존 work를 되돌리지 않고 새 VERIFICATION work·증가한 generation을 만들며 hypothesis를 `TERMINAL -> VERIFYING`으로 전환한다. | 새 final Verification |
 | Technical `REJECT` | 부모 verdict를 바꾸지 않는다. | result Primitive·Chaining·Reporter 진행을 차단한다. | 내부 종결 |
 | Technical `ACCEPT` | 같은 exact Verification·`CWELabel`로 Rule Scope Gate를 요청한다. | stale·mismatched reference를 거절한다. | 정책·금지 테스트 검토 |
-| current admission `ALLOW` | 추가 verdict를 만들지 않는다. | provided 후보마다 Primitive 하나를 저장한다. 각 `result`는 후보 하나, `inputs`는 같은 TRUE의 `required_primitive_candidates` 전체다. Chaining에 사용할 때는 해당 Primitive와 `source_primitive_match_id` 계보로 연결된 모든 result Primitive의 admission이 current `ALLOW`인지 확인한다. | 계보 검사 통과 시 Chaining 후보 |
-| current admission `DENY` | 부모 verdict를 바꾸지 않는다. | result Primitive·Chaining을 차단한다. | Reporter도 차단 |
+| admission `ALLOW` | 추가 verdict를 만들지 않는다. | provided 후보마다 Primitive 하나를 저장한다. 각 `result`는 후보 하나, `inputs`는 같은 TRUE의 `required_primitive_candidates` 전체다. | Chaining 재료로 등록 |
+| admission `DENY` | 부모 verdict를 바꾸지 않는다. | result Primitive·Chaining을 차단한다. | Reporter도 차단 |
 | Rule Scope 보고 조건 실패 + admission `ALLOW` | 부모 verdict를 바꾸지 않는다. | Reporter만 차단하고 Chaining 재료 자격은 유지한다. | 내부 Chaining 가능 |
 
 Primitive admission과 보고 가능성은 같은 판정이 아니다. R5가 정책·`testing_restriction_compliance`를 생산하면 R4 `PRIMITIVE_ADMISSION_RUNTIME`이 current `PrimitiveAdmissionDecision`을 만든다. result Primitive와 Chaining은 `decision=ALLOW`만 사용한다. Rule Scope의 범위·영향·보상 대상·`report_permission`은 Reporter 자격을 별도로 결정한다.
 
-R6는 `required_primitive_candidates`, `provided_primitive_candidates`, Gate action과 exact reference를 생산한다. result commit, current result pointer, Primitive 저장·제거와 `PrimitiveIndexState` 갱신은 trusted runtime의 책임이다. R6는 이를 직접 admission하거나 ACTIVE로 만들지 않는다.
+R6는 `required_primitive_candidates`, `provided_primitive_candidates`, Gate action과 exact reference를 생산한다. result commit, current result pointer, Primitive 저장과 `PrimitiveIndexState` 갱신은 trusted runtime의 책임이다. R6는 이를 직접 admission하거나 ACTIVE로 만들지 않는다.
 
 TRUE의 필요 조건은 별도 HOLD Primitive로 만들지 않는다. admission된 각 result Primitive의 `inputs`에 같은 TRUE의 `required_primitive_candidates` 전체를 내용·순서 그대로 복사한다. Chaining은 같은 `workspace_id`·`commit_id`, `entity_refs` 일치 또는 코드 흐름 연결, 권한 조건, 성립 순서, 합산된 restrictions와 실제 코드·검증 근거를 모두 확인해 upstream result가 downstream input을 충족하는지 판단한다. 매칭이 성립한 뒤에만 해당 downstream `inputs[].draft_id`를 `PrimitiveMatchCandidate.matched_input_id`로 기록한다. `draft_id` 자체를 서로 다른 Verification 사이의 매칭 기준으로 사용하지 않는다.
 
-Chaining 결과를 저장하기 직전에 실제로 사용한 Primitive와 `source_primitive_match_id` 계보로 도달하는 모든 result Primitive의 `PrimitiveAdmissionDecision`을 다시 확인한다. 하나라도 current가 아니거나 `DENY`로 바뀌었으면 `STALE_RESULT`로 저장을 거절하고 새 child hypothesis를 만들지 않는다. 이미 만들어진 파생 결과는 감사 기록으로만 보존하며 새 Verification·Gate·Primitive·Reporter 입력으로 사용하지 않는다. 이 과정에서 기존 부모 `VerificationResult.verdict`는 변경하지 않는다.
+Chaining 결과를 저장할 때는 work가 고정한 Primitive·index reference와 결과가 맞는지 확인한다. 고정하지 않은 reference가 섞이면 `STALE_RESULT`로 거절한다. admission은 Primitive 등록 시점의 1회 판정이므로 저장 시점에 다시 확인하지 않으며, 기존 부모 `VerificationResult.verdict`도 변경하지 않는다.
 
-새 Verification generation이 만들어지면 이전 dynamic result·validated PoC·`CWELabel`·Technical review·Rule Scope review·admission decision과 그 자격을 새 generation에 재사용하지 않는다. 기존 record는 감사 이력으로 보존하되 current index와 새 Gate·Chaining 입력에서 제외한다. child proposal이나 Chaining 결과도 부모 `VerificationResult.verdict`를 변경하지 않는다.
+새 Verification generation이 만들어지면 이전 dynamic result·validated PoC·`CWELabel`·Technical review를 새 generation에 재사용하지 않는다. 기존 record는 감사 이력으로 보존하되 새 Gate 입력으로 쓰지 않는다. 새 generation은 Technical `REVISE`에서만 만들어지고 그 시점에는 Rule Scope review·admission decision·result Primitive가 아직 없으므로, 이미 등록된 Primitive를 되돌리는 경우는 생기지 않는다. child proposal이나 Chaining 결과도 부모 `VerificationResult.verdict`를 변경하지 않는다.
 
 ### Initial verdict와 final verdict
 

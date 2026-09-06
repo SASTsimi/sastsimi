@@ -33,7 +33,7 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 - `source_primitive_match_id`: `origin=CHAINING` 가설을 만든 정확한 Primitive match
 - `LineageExclusion`: 같은 체이닝 작업에서 조상 계보 때문에 제외한 Primitive와 제외 근거를 묶은 기록
 
-한 Primitive의 `result`가 다른 Primitive의 특정 `input`을 충족해 더 큰 공격 가능성을 찾아도 기존 결과를 수정하지 않습니다. Technical `ACCEPT`과 current `PrimitiveAdmissionDecision=ALLOW`를 받은 upstream TRUE revision, downstream Primitive와 `matched_input_id`를 확인한 뒤 새로운 `origin=CHAINING` proposal과 `hypothesis_id`를 만들고 전체 검증을 다시 거칩니다. Runtime은 direct·ancestor current admission을 확인하고 사용한 결정을 `source_admission_refs`에 남깁니다. 또한 조상 제외 전 전체 입력을 `considered_primitive_refs`, 실제 match 입력을 `input_primitive_refs`, 성립한 match의 후보 계보 때문에 제외한 항목을 `excluded_lineage_refs`로 구분합니다. 상세 문서 §06의 제외 규칙으로 기대 제외 목록을 다시 계산하므로 검토하지 않은 Primitive나 잘못된 조상 관계를 제외 기록으로 저장할 수 없습니다. Verification이 별도 endpoint·sink·권한 경계를 발견한 경우에는 `origin=VERIFICATION` proposal을 사용합니다.
+한 Primitive의 `result`가 다른 Primitive의 특정 `input`을 충족해 더 큰 공격 가능성을 찾아도 기존 결과를 수정하지 않습니다. Technical `ACCEPT`과 current `PrimitiveAdmissionDecision=ALLOW`를 받은 upstream TRUE revision, downstream Primitive와 `matched_input_id`를 확인한 뒤 새로운 `origin=CHAINING` proposal과 `hypothesis_id`를 만들고 전체 검증을 다시 거칩니다. 또한 조상 제외 전 전체 입력을 `considered_primitive_refs`, 실제 match 입력을 `input_primitive_refs`, 성립한 match의 후보 계보 때문에 제외한 항목을 `excluded_lineage_refs`로 구분합니다. 상세 문서 §06의 제외 규칙으로 기대 제외 목록을 다시 계산하므로 검토하지 않은 Primitive나 잘못된 조상 관계를 제외 기록으로 저장할 수 없습니다. Verification이 별도 endpoint·sink·권한 경계를 발견한 경우에는 `origin=VERIFICATION` proposal을 사용합니다.
 
 ## 같은 가설인지 어떻게 확인하나요?
 
@@ -159,7 +159,7 @@ Technical Gate는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 
 
 Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 `required_primitive_candidates`가 하나 이상일 때만 그 전체 부족 조건을 `inputs`에 넣고 `result=null`로 Gate 없이 저장합니다. 후보가 비어 있으면 Primitive와 Chaining work를 만들지 않습니다. TRUE는 validated PoC와 같은 revision을 검토한 Technical `ACCEPT` 뒤 정책 확인 결과까지 연결해 체이닝 사용 가능 여부를 확정합니다. `PrimitiveAdmissionDecision`은 TRUE 결과를 체이닝 재료로 사용해도 되는지 기록합니다. Rule Scope Gate가 별도로 출력한 `testing_restriction_compliance`가 `FAIL`일 때만 사용을 거절하며, 범위 밖·영향 부족·보상 대상 아님 같은 다른 판정은 체이닝을 막지 않습니다. 정책 수집 실패와 `UNCERTAIN`도 확정 위반으로 바꾸지 않고 정확한 상태와 근거를 남깁니다.
 
-사용이 허용된 TRUE만 제공 능력마다 `result`가 있는 Primitive를 만들고, `admission_decision_ref`로 같은 Verification의 current 허용 결정을 가리킵니다. `PrimitiveIndexState`는 current Verification과 현재 사용할 수 있는 Primitive refs만 가리킵니다. Chaining work는 시작할 때 읽은 index, Primitive와 admission decision의 정확한 수정본을 함께 고정합니다. 실제 match가 직접 또는 부모 체인을 통해 사용한 admission 집합은 `source_admission_refs`로 남깁니다. 정책 freshness·parser version 변경은 다음 analysis run의 재사용 판단에만 쓰며 현재 run의 admission을 소급 교체하지 않습니다. 일반 index 갱신과 사용하지 않은 후보의 decision 변경은 진행 중 work를 바꾸지 않지만, 같은 run의 실제 검증 근거가 수정되어 실제 사용 decision이 금지 테스트 위반 `DENY`가 되면 해당 Primitive를 index에서 빼고 이전 결정을 사용하는 진행 중 결과도 `STALE_RESULT`로 거절합니다. 이미 저장된 자식·손자 결과는 감사 이력으로만 남기며 새 Verification·Gate·Primitive·Reporter 입력에서 제외합니다.
+사용이 허용된 TRUE만 제공 능력마다 `result`가 있는 Primitive를 만들고, `admission_decision_ref`로 같은 Verification의 current 허용 결정을 가리킵니다. `PrimitiveIndexState`는 current Verification과 그 가설이 등록한 Primitive refs를 가리킵니다. Chaining work는 시작할 때 읽은 index와 Primitive의 정확한 수정본을 고정합니다. admission은 Primitive 등록 시점의 1회 판정이라 등록된 Primitive는 run 안에서 자격을 잃지 않으므로, 저장 시점에 admission을 다시 확인하지 않습니다. 일반 index 갱신은 진행 중 work를 바꾸지 않습니다.
 
 ## 정책은 run 초기화에서 program별로 준비합니다
 

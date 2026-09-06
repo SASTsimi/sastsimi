@@ -1,11 +1,12 @@
 # ADR-011. 금지 테스트 위반과 Primitive 체이닝 자격 분리
 
-- 상태: `ACCEPTED`
+- 상태: `SUPERSEDED`
 - 결정일: 2026-09-05
 - 기준 main: `f0aa79c485a17d9e7ee2f54002ad33fcf537dbe9`
 - 결정 담당: PM·아키텍처·워크플로(R4)
 - 함께 검토할 역할: LLM 탐색·체이닝(R1), Gate·Finding·보고서(R5-02)
-- 연결 Issue/PR: #2, #5, PR #52, PR #88
+- 연결 Issue/PR: #2, #5, PR #52, PR #88, ADR-014
+- 대체 관계: 회수 절차는 ADR-014가 대체합니다. 금지 테스트 전용 판정과 `PrimitiveAdmissionDecision` 매핑, `ALLOW`일 때만 result Primitive를 만드는 규칙, `Primitive.admission_decision_ref` 요구는 그대로 유지됩니다.
 - 반영 commit: `docs: define prohibited-testing primitive admission contract`
 
 ## Context

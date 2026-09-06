@@ -58,7 +58,7 @@ token과 전체 시간·판정 변화·HOLD 해소·새 후보 수는 `Verificat
 
 R6는 후보와 Gate action·exact reference를 만들고, trusted runtime이 commit·current pointer·Primitive 저장과 `PrimitiveIndexState` 갱신을 수행합니다. Chaining은 같은 workspace·commit, entity 또는 코드 흐름 연결, 권한 조건, 순서, 합산 restrictions와 실제 근거를 확인해 `TRUE + HOLD`와 `TRUE + TRUE`만 검사합니다. `draft_id`는 매칭 기준이 아니며, 매칭이 성립한 뒤 해당 input을 `PrimitiveMatchCandidate.matched_input_id`로 지목할 때만 사용합니다.
 
-Chaining 결과를 저장하기 직전에 사용한 Primitive와 `source_primitive_match_id` 계보의 모든 result Primitive가 current admission `ALLOW`인지 다시 확인합니다. 하나라도 stale이거나 `DENY`이면 `STALE_RESULT`로 거절하고 새 child hypothesis를 만들지 않습니다. 기존 부모 verdict는 변경하지 않습니다.
+Chaining 결과를 저장할 때는 work가 고정한 Primitive·index reference와 결과가 맞는지 확인합니다. 고정하지 않은 reference가 섞이면 `STALE_RESULT`로 거절합니다. admission은 Primitive 등록 시점에 한 번만 판정하므로 저장 시점에 다시 확인하지 않고, 기존 부모 verdict도 변경하지 않습니다.
 
 판정에는 최소 근거가 필요합니다. TRUE는 핵심 공격 경로와 필요한 조건을 지지하는 근거가 있어야 합니다. FALSE는 이름이 있는 반증 질문이 실제 근거로 `DISPROVED`된 경우에만 가능합니다. 오류·timeout·정보 부족·Sandbox 실패는 FALSE 근거가 아닙니다. HOLD는 판단에 필요한 조건이나 환경이 아직 부족하다는 뜻입니다.
 
