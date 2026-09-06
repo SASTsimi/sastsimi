@@ -42,24 +42,24 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] Primitive DB는 queue 또는 Finding 저장소가 아닙니다.
 - [ ] Orchestration은 proposal 검증·등록·Verification 배정 뒤 가설 내부 호출을 결정하지 않습니다.
 - [ ] Verification이 Context·Pro/Con·동적 재현·판정·Technical `REVISE`·Gate 제출과 Chaining handoff를 소유합니다.
-- [ ] R6 Verification은 목적·목표·필요 환경·Sandbox profile·근거 reference를 가진 exact `DynamicReproductionRequest`만 만들고, R7 Agent가 외부 경계 검사 전에 이를 가리키는 `EnvironmentRequirements`·간단한 `ReproductionPlan`을 만듭니다. PoC candidate는 경계 승인 뒤 Sandbox 실행 단계에서 만듭니다.
+- [ ] R6 Verification은 목적·목표·필요 환경·Sandbox profile·근거 reference를 가진 exact `DynamicReproductionRequest`만 만들고, Dynamic Reproduction Agent가 외부 경계 검사 전에 이를 가리키는 `EnvironmentRequirements`·간단한 `ReproductionPlan`을 만듭니다. PoC candidate는 경계 승인 뒤 Sandbox 실행 단계에서 만듭니다.
 - [ ] `EnvironmentRequirements`는 애플리케이션 조건이고 `sandbox_profile_ref`는 Sandbox 보안 정책이며 서로 대신하지 않습니다.
-- [ ] 한 Verification generation에는 `DYNAMIC_REPRO` work가 하나뿐입니다. 같은 R7 Agent session의 command·PoC·환경 조정은 현재 attempt이고, session 재시작이나 외부 조건 해소 뒤 work-level retry만 같은 work의 새 attempt입니다.
+- [ ] 한 Verification generation에는 `DYNAMIC_REPRO` work가 하나뿐입니다. 같은 Dynamic Reproduction Agent session의 command·PoC·환경 조정은 현재 attempt이고, session 재시작이나 외부 조건 해소 뒤 work-level retry만 같은 work의 새 attempt입니다.
 - [ ] final TRUE에는 현재 generation의 `SUCCEEDED + SUPPORTED` 결과와 validated `poc_ref`가 필수이고, 없으면 저장과 Technical Gate 호출이 모두 차단됩니다.
 - [ ] final TRUE 뒤 R5-01 `CWE_LABELING`이 별도 `CWE_LABEL` work에서 exact Verification을 가리키는 current `CWELabel`을 하나 만듭니다.
 - [ ] `CWELabel`의 `verification_result_ref`, `verification_generation`, `cwe_labeling_work_id`, `llm_call_id`가 current work·attempt·성공 호출과 일치합니다.
 - [ ] 새 Verification revision 또는 generation에는 CWE 값을 유지해도 새 label revision을 만들며 과거 label은 history로만 보존합니다.
 - [ ] Technical Gate는 Verification과 이를 직접 가리키는 current CWELabel exact pair만 읽고 label을 생성·수정하지 않습니다.
-- [ ] `ReproductionPlan`에 mode·exact command·step·payload·cleanup allowlist가 없고 선택적 `requested_evidence`가 Agent의 추가 관찰을 막지 않습니다.
+- [ ] `ReproductionPlan`에 mode·exact command·step·payload·cleanup allowlist가 없고 선택적 `requested_evidence`가 Dynamic Reproduction Agent의 추가 관찰을 막지 않습니다.
 - [ ] R7 Setup Automation은 recipe의 base/built image digest를 구분하고 실제 `sandbox_environment`에 container instance·생성/재사용 사유·requirement별 비교를 남깁니다.
 - [ ] Runtime Validator는 exact request·current requirements·current exact plan·R7 `sandbox_profile_ref`·exact R8 `DynamicReproductionLifecycleProfile`을 고정하고 호출 전 잔여 시간·새 attempt 한도를 검사합니다. Sandbox Controller는 R7 profile의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하며 내부 command allowlist를 운영하지 않습니다.
 - [ ] Reproduction Session Manager만 append-only `AgentLog`, validated PoC와 `DynamicReproductionResult`를 확정합니다.
 - [ ] Chaining Agent는 upstream Primitive의 `result`→downstream Primitive의 특정 `input` matching만 수행하고 일반 research·동적 재현·Gate 보완을 하지 않습니다.
 - [ ] HOLD는 Gate 없이 처리하되 `required_primitive_candidates`가 하나 이상일 때만 전체 후보를 `inputs`, `result=null`로 둔 Primitive가 됩니다. 후보가 비어 있으면 Primitive와 Chaining work를 만들지 않으며, FALSE도 Primitive나 Chaining으로 들어가지 않습니다.
 - [ ] TRUE는 validated PoC와 Technical `ACCEPT`가 있고 금지 테스트 위반이 확정되지 않아 current `PrimitiveAdmissionDecision=ALLOW`인 exact revision만 `result`를 가진 Primitive가 됩니다. 다른 Rule Scope 판단은 Reporter만 제어합니다.
-- [ ] 새 Verification generation/revision에는 오래된 CWELabel·Technical review·Primitive admission decision을 재사용하지 않습니다. Gate는 current Verification·CWELabel pair가 아니면 거절하고, Chaining은 work 시작 시 고정하지 않은 Primitive·index·direct/ancestor admission reference가 결과에 섞이면 거절합니다. 일반 index 갱신과 사용하지 않은 후보 변경만으로는 진행 중 work를 무효화하지 않지만 실제 사용 decision이 오래됐거나 `DENY`이면 결과와 파생 current 사용을 차단합니다.
+- [ ] 새 Verification generation/revision에는 오래된 CWELabel·Technical review·Primitive admission decision을 재사용하지 않습니다. Gate는 current Verification·CWELabel pair가 아니면 거절하고, Chaining은 work 시작 시 고정하지 않은 Primitive·index reference가 결과에 섞이면 거절합니다. index revision이 올라간 것만으로는 진행 중 work를 무효화하지 않습니다. admission은 Primitive 등록 시점의 1회 판정이라 등록 뒤 회수하는 절차를 두지 않습니다.
 - [ ] Technical Evidence Gate와 Rule Scope Impact Gate가 분리됩니다.
-- [ ] 공식 정책이 없거나 `STALE | UNVERIFIED`이면 판단과 보고서 전달을 허용하지 않는 `UNCERTAIN + DENY`입니다.
+- [ ] run 시작 때 `STALE` 정책 cache는 재사용하지 않으며, 공식 정책이 없거나 현재 `RunPolicyState=UNVERIFIED`이면 보고서 전달을 허용하지 않는 `UNCERTAIN + DENY`입니다.
 - [ ] Sandbox의 `POLICY_BLOCKED`는 자동 `FALSE | HOLD`나 Technical `REJECT`가 아니며, validated PoC가 없으므로 final verdict와 Technical Gate 없이 `BLOCKED | FAILED`로 처리됩니다.
 - [ ] Reporter의 모든 선행 조건이 명시됩니다.
 - [ ] ReportDraft가 current Finding·Verification·CWELabel·두 Gate·정책 revision을 정확히 참조합니다.
@@ -77,9 +77,9 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] 새 연계 가설의 부모 계보를 따라가 조상 Primitive를 현재 match 후보에서 제외하며, 체이닝 전용 임의 깊이 제한 대신 R8 전역 예산을 적용합니다.
 - [ ] PoC candidate와 재현 성공 뒤 validated PoC를 구분하고, validated PoC가 어떤 가설·코드 위치·관찰 결과를 뒷받침하는지 추적됩니다.
 - [ ] 동적 결과의 Agent 호출·plan/recipe/환경 생성·정리 필요 상태와 nullable 환경·정책·PoC reference 및 필수 AgentLog가 모순되지 않습니다.
-- [ ] Sandbox 정책 차단은 exact 정책 결정과 미실행 상태를 남기며, 그 사실만으로 Technical `REJECT`나 가설 `FALSE`가 되지 않습니다.
+- [ ] Sandbox profile 외부 격리 경계 차단은 exact `SandboxPolicyDecision`과 미실행 상태를 남기며, 그 사실만으로 Technical `REJECT`나 가설 `FALSE`가 되지 않습니다. 프로그램 정책 준비·freshness·testing restriction은 `LOCAL_ONLY` 실행의 이 차단 사유가 아닙니다.
 - [ ] 최초 attempt는 clean container이고 다른 가설은 writable container를 공유하지 않으며, reuse/recreate 사유와 이전·새 환경이 AgentLog에 연결됩니다.
-- [ ] R7 retry에서 같은 Agent session의 조정은 현재 attempt에 기록하고, session 재시작은 같은 work의 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개는 새 `attempt_id`·`trigger=RESUME`를 사용합니다. 대기 중에만 `BLOCKED`입니다.
+- [ ] R7 retry에서 같은 Dynamic Reproduction Agent session의 조정은 현재 attempt에 기록하고, session 재시작은 같은 work의 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개는 새 `attempt_id`·`trigger=RESUME`를 사용합니다. 대기 중에만 `BLOCKED`입니다.
 - [ ] PoC 생성·환경 구성·실행 실패는 validated `poc_ref=null`입니다. 같은 session에서 해결 가능하면 현재 attempt를 계속하고, session 재시작이 필요할 때만 같은 work의 새 attempt를 시작합니다. 외부 조건을 기다릴 때만 `BLOCKED`, 복구 불가능하거나 한도를 소진하면 verdict 없는 `FAILED`이며 `FALSE | HOLD`로 변환하지 않습니다.
 - [ ] 환경 구성 실패·차이·허용되지 않은 version fallback·오래된 requirements를 가설 `FALSE`로 바꾸지 않습니다.
 - [ ] 환경 요구사항·실제 값·Health Check·AgentLog에 credential·cookie·token·password 원문이 없습니다.
