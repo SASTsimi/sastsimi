@@ -1146,7 +1146,7 @@ $requiredChainingAdmissionRules = @(
     '`source_admission_refs`에는 실제 match에 사용한 Primitive와 그 계보에서 재귀적으로 도달한 모든 admission decision을 중복 없이 기록하며',
     '`STALE_RESULT`로 저장을 거절하고 새 자식 가설을 만들지 않는다',
     '실제 match에 사용하지 않은 후보의 decision 변경만으로는 진행 중인 결과를 무효화하지 않는다.',
-    '부모의 admission이 나중에 `DENY`로 바뀌면 파생 결과는 감사 기록으로만 보존하고'
+    '같은 run에서 부모의 실제 검증 근거가 수정되어 admission이 `DENY`로 바뀌면 파생 결과는 감사 기록으로만 보존하고'
 )
 foreach ($rule in $requiredChainingAdmissionRules) {
     if (-not $chainingText.Contains($rule)) {
@@ -2471,6 +2471,9 @@ $requiredPolicyContractRules = @(
     @{ Name = 'testing restriction verdict is independent'; Text = $contractText; Marker = '`testing_restriction_compliance`는 `rule_compliance`와 독립된 판정 축이다.' },
     @{ Name = 'confirmed prohibited testing denies admission'; Text = $contractText; Marker = '`testing_restriction_compliance=FAIL`이면 `decision=DENY`, `reason_code=TESTING_RESTRICTION_VIOLATION`만 허용하고 result Primitive를 만들지 않는다.' },
     @{ Name = 'policy collection failure keeps exact provenance'; Text = $contractText; Marker = '`COLLECTION_FAILED`이면 `rule_scope_review_ref=null`, `testing_restriction_compliance=NOT_EVALUATED`, `decision=ALLOW`, `reason_code=POLICY_COLLECTION_FAILED`로만 확정한다.' },
+    @{ Name = 'policy revision is frozen within an analysis run'; Text = $contractText; Marker = '같은 analysis run에서 policy collection·record revision은 최초 확정 뒤 교체하지 않는다.' },
+    @{ Name = 'freshness and parser changes only decide next-run reuse'; Text = $contractText; Marker = '정책 freshness 만료와 parser version 변경은 다음 analysis run을 시작할 때 재사용 여부를 판단하는 조건이다.' },
+    @{ Name = 'admission revision requires changed same-run evidence'; Text = $contractText; Marker = '같은 run에서 새 `PrimitiveAdmissionDecision` revision은 Verification·Technical review 또는 Rule Scope review의 검증 근거 revision이 바뀐 경우에만 만든다.' },
     @{ Name = 'chaining registration pins direct and ancestor allowed decisions'; Text = $contractText; Marker = '이들에 직접·재귀적으로 연결된 current ALLOW decision exact reference를 함께 고정한다.' },
     @{ Name = 'stale used admission blocks in-flight chaining'; Text = $contractText; Marker = '`source_admission_refs` 중 하나가 current가 아니거나 `DENY`로 바뀌면 오염된 재료의 사용을 막기 위해 진행 중인 결과를 거절한다.' },
     @{ Name = 'derived hypothesis rechecks admission lineage'; Text = $contractText; Marker = '`origin=CHAINING` 가설의 새 Verification·Gate·Primitive update·Reporter work를 등록하거나 그 결과를 저장할 때도 trusted runtime은 같은 `source_primitive_match_id` 계보의 result Primitive admission decision을 재귀 확인한다.' },
@@ -2481,9 +2484,9 @@ $requiredPolicyContractRules = @(
     @{ Name = 'prohibited testing scenario exists'; Text = $securityText; Marker = '| N38 | `testing_restriction_compliance=FAIL`인 Rule Scope review |' },
     @{ Name = 'ambiguous testing evidence scenario exists'; Text = $securityText; Marker = '| N39 | `TESTING_RESTRICTION` link만 있고 전용 판정이 없거나 판정과 link가 모순됨 |' },
     @{ Name = 'collection failure admission scenario exists'; Text = $securityText; Marker = '| N40 | 정책 수집이 `COLLECTION_FAILED`라 Rule Scope review가 없음 |' },
-    @{ Name = 'stale admission decision scenario exists'; Text = $securityText; Marker = '| N41 | Chaining work가 실제 match에 사용한 admission decision 뒤 current decision이 `DENY`로 변경됨 |' },
+    @{ Name = 'stale admission decision scenario exists'; Text = $securityText; Marker = '| N41 | 같은 run의 검증 근거가 수정되어 새 Rule Scope review와 current admission decision이 `DENY`로 변경됨 |' },
     @{ Name = 'missing admission reference scenario exists'; Text = $securityText; Marker = '| N42 | result Primitive에 current `admission_decision_ref`가 없거나 다른 Verification의 decision을 참조 |' },
-    @{ Name = 'committed descendant invalidation scenario exists'; Text = $securityText; Marker = '| N43 | 이미 COMMITTED된 Chaining 자식·손자 뒤 부모 admission이 `DENY`로 변경됨 |' },
+    @{ Name = 'committed descendant invalidation scenario exists'; Text = $securityText; Marker = '| N43 | 이미 COMMITTED된 Chaining 자식·손자 뒤 검증 근거 수정으로 부모 admission이 `DENY`로 변경됨 |' },
     @{ Name = 'source admission set mismatch scenario exists'; Text = $securityText; Marker = '| N44 | `ChainingResult.source_admission_refs`가 실제 match의 direct·ancestor ALLOW decision 합집합과 다름 |' },
     @{ Name = 'Wiki explains collection outcomes'; Text = $commonWikiText; Marker = '`FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`' },
     @{ Name = 'Wiki explains primitive admission decision'; Text = $commonWikiText; Marker = '`PrimitiveAdmissionDecision`은 TRUE 결과를 체이닝 재료로 사용해도 되는지 기록합니다.' },
@@ -2501,6 +2504,15 @@ $requiredPolicyContractRules = @(
 foreach ($rule in $requiredPolicyContractRules) {
     if (-not $rule.Text.Contains($rule.Marker)) {
         Add-Failure "missing R4 policy contract rule: $($rule.Name)"
+    }
+}
+
+foreach ($obsoletePolicyLifecycleRule in @(
+    '정책 수집이나 Rule Scope review가 새 current revision으로 바뀌면',
+    '같은 run 안에서 ALLOW가 DENY로 바뀌면 admission runtime은'
+)) {
+    if ($activeDocumentationText.Contains($obsoletePolicyLifecycleRule)) {
+        Add-Failure "obsolete mid-run policy replacement rule remains: $obsoletePolicyLifecycleRule"
     }
 }
 
