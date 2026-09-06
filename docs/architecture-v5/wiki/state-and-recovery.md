@@ -25,7 +25,7 @@
 
 프로그램은 입력 record와 설정을 이용해 `dedupe_key`(같은 요청인지 확인하는 값)를 만듭니다. 같은 key가 다시 들어오면 새 작업을 만들지 않고 기존 `work_id`와 상태를 반환합니다.
 
-같은 작업에는 실행 중인 `attempt_id`가 하나만 있습니다. 일반 work의 retry와 `DYNAMIC_REPRO`의 session 재시작 또는 외부 조건 해소 뒤 work-level retry는 새 attempt를 만들지만 이전 실패와 오류는 지우지 않습니다. 같은 R7 Agent session의 command·PoC·환경 조정은 현재 attempt의 event로 계속 기록합니다.
+같은 작업에는 실행 중인 `attempt_id`가 하나만 있습니다. 일반 work의 retry와 `DYNAMIC_REPRO`의 session 재시작 또는 외부 조건 해소 뒤 work-level retry는 새 attempt를 만들지만 이전 실패와 오류는 지우지 않습니다. 같은 Dynamic Reproduction Agent session의 command·PoC·환경 조정은 현재 attempt의 event로 계속 기록합니다.
 
 최종 종료 뒤 같은 입력으로 완전히 새 작업을 시작하려면 사람이 명시적으로 승인해야 합니다. 이때만 `work_generation`을 1 증가시키고 새 `work_id`와 key를 만듭니다.
 
@@ -87,7 +87,7 @@ Gate 작업은 시작할 때 읽은 Verification, current CWELabel, 앞 Gate와 
 
 ## retry는 실패를 지우지 않습니다
 
-일반 작업에서 재시도 전에 외부 조건을 기다려야 하면 작업은 `BLOCKED`가 됩니다. `DYNAMIC_REPRO`에서 같은 R7 Agent session의 command·PoC·환경 조정은 현재 attempt에 실패와 후속 event를 남기고 계속합니다. session 재시작이 필요한 work-level retry만 같은 work의 새 `attempt_id`·`trigger=RETRY`를 만들며, 외부 조건을 기다릴 때만 `BLOCKED`를 사용하고 해소 뒤에는 새 `attempt_id`·`trigger=RESUME`로 재개합니다.
+일반 작업에서 재시도 전에 외부 조건을 기다려야 하면 작업은 `BLOCKED`가 됩니다. `DYNAMIC_REPRO`에서 같은 Dynamic Reproduction Agent session의 command·PoC·환경 조정은 현재 attempt에 실패와 후속 event를 남기고 계속합니다. session 재시작이 필요한 work-level retry만 같은 work의 새 `attempt_id`·`trigger=RETRY`를 만들며, 외부 조건을 기다릴 때만 `BLOCKED`를 사용하고 해소 뒤에는 새 `attempt_id`·`trigger=RESUME`로 재개합니다.
 
 - 인증 실패: 사용자 재인증 대기
 - 호출량 제한: 정한 시간만큼 대기

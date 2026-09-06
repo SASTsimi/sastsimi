@@ -44,14 +44,14 @@ flowchart TB
     S12 -->|Execution evidence needed| DREQ2[Verification requests VERDICT_EVIDENCE]
     DREQ --> DWAUTH[Runtime allows one dynamic work per generation]
     DREQ2 --> DWAUTH
-    DWAUTH --> DR7[R7 Agent creates Requirements and simple Plan]
+    DWAUTH --> DR7[Dynamic Reproduction Agent creates Requirements and simple Plan]
     DR7 --> DAUTH[Runtime authorizes external Sandbox boundary]
     RPS -. observed policy audit reference .-> DAUTH
     DAUTH --> DCTRL[Controller checks host Docker secret egress resource boundaries]
     DCTRL --> DPD[Exact SandboxPolicyDecision]
     DPD -->|Pass| DENV[Setup Automation builds recipe and prepares clean environment]
     DPD -->|Sandbox boundary denied| DSTOP[Attempt cannot complete no verdict]
-    DENV --> DRUN[R7 Agent autonomously creates and runs PoC in Sandbox]
+    DENV --> DRUN[Dynamic Reproduction Agent autonomously creates and runs PoC in Sandbox]
     DRUN --> DLOG[Session Manager appends actual events to AgentLog]
     DLOG --> DASM[Session Manager binds same-attempt recipe environment candidate and evidence]
     DASM --> DRES[Dynamic result and validated PoC only on supported success]
@@ -61,7 +61,7 @@ flowchart TB
     POCOK -->|No| DSTOP
     DOUT -->|DISPROVED or INCONCLUSIVE| S13
     DOUT -->|Execution failure| DSTOP
-    DSTOP -->|Same R7 Agent session: adjust command PoC environment; current attempt| DADJUST[Continue current attempt]
+    DSTOP -->|Same Dynamic Reproduction Agent session: adjust command PoC environment; current attempt| DADJUST[Continue current attempt]
     DADJUST --> DR7
     DSTOP -->|Session restart: new attempt trigger=RETRY| DRETRY[Restart same work with new attempt]
     DRETRY --> DR7
@@ -194,14 +194,14 @@ flowchart TB
     DYN -->|Execution evidence needed| VREQ[R6 request VERDICT_EVIDENCE]
     CREQ --> ONE[Runtime allows one work per Verification generation]
     VREQ --> ONE
-    ONE --> R7PLAN[R7 Agent creates Requirements and simple Plan]
+    ONE --> R7PLAN[Dynamic Reproduction Agent creates Requirements and simple Plan]
     RPS4[Observed RunPolicyState] -. exact audit reference .-> AUTH
     R7PLAN --> AUTH[Runtime authorizes external Sandbox boundary]
     AUTH --> CTRL[Controller checks host Docker secret egress and resource boundaries]
     CTRL --> PDEC[Exact SandboxPolicyDecision]
     PDEC -->|Pass| ENV[Setup Automation builds recipe and prepares clean environment]
     PDEC -->|Sandbox boundary denied| FAIL[Attempt cannot complete no final verdict]
-    ENV --> AGENT[R7 Agent autonomously creates and runs PoC]
+    ENV --> AGENT[Dynamic Reproduction Agent autonomously creates and runs PoC]
     AGENT --> LOG[Session Manager appends AgentLog events]
     LOG --> ASSEMBLER[Session Manager validates same-attempt provenance]
     ASSEMBLER --> DRESULT[Dynamic result with candidate evidence and nullable validated PoC]
@@ -210,7 +210,7 @@ flowchart TB
     OBS -->|SUPPORTED but PoC missing or invalid| FAIL
     OBS -->|DISPROVED or INCONCLUSIVE| SYN2
     OBS -->|Execution failure| FAIL
-    FAIL -->|Same R7 Agent session: adjust command PoC environment; current attempt| ADJUST[Continue current attempt]
+    FAIL -->|Same Dynamic Reproduction Agent session: adjust command PoC environment; current attempt| ADJUST[Continue current attempt]
     ADJUST --> R7PLAN
     FAIL -->|Session restart: new attempt trigger=RETRY| R7RETRY[Restart same work with new attempt]
     R7RETRY --> R7PLAN
@@ -400,7 +400,7 @@ stateDiagram-v2
     CANCELLED --> [*]
 ```
 
-작업 상태는 전문 판정과 분리한다. `DYNAMIC_REPRO`의 같은 R7 Agent session 안 command·PoC·환경 조정은 `RUNNING`인 현재 attempt의 event로 남기며 새 attempt를 만들지 않는다. session 재시작이 필요할 때만 `RUNNING -> READY -> RUNNING`과 새 `attempt_id`, `trigger=RETRY`를 사용한다. 외부 조건을 기다리면 `BLOCKED`로 두고 해소 뒤 `BLOCKED -> READY -> RUNNING`과 새 `attempt_id`, `trigger=RESUME`를 사용한다. `SUCCEEDED | PARTIAL | FAILED | CANCELLED`는 되돌리지 않는다.
+작업 상태는 전문 판정과 분리한다. `DYNAMIC_REPRO`의 같은 Dynamic Reproduction Agent session 안 command·PoC·환경 조정은 `RUNNING`인 현재 attempt의 event로 남기며 새 attempt를 만들지 않는다. session 재시작이 필요할 때만 `RUNNING -> READY -> RUNNING`과 새 `attempt_id`, `trigger=RETRY`를 사용한다. 외부 조건을 기다리면 `BLOCKED`로 두고 해소 뒤 `BLOCKED -> READY -> RUNNING`과 새 `attempt_id`, `trigger=RESUME`를 사용한다. `SUCCEEDED | PARTIAL | FAILED | CANCELLED`는 되돌리지 않는다.
 
 ## 11. 중복 방지와 atomic 저장·복구
 
@@ -449,7 +449,7 @@ flowchart LR
     DOMAIN[Verification Gates and Reporter keep domain decisions] -. not decided by validator .-> CHECK
 ```
 
-Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 Setup Automation 권한·상태·예산·exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` revision을 authorization input으로 고정한다. 요청 당시 `RunPolicyState`는 감사 reference로 기록하며 policy pointer·freshness 변경만으로 local-only decision을 만료시키지 않는다. plan·profile 또는 실행 대상·network·mount·secret 경계가 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 처리한다. `LOCAL_ONLY`와 검증 가능한 clone/same-attempt mock·fixture·격리 network, host·Docker daemon/socket·mount/namespace·secret·egress·workspace 외부 경계는 Sandbox Controller가 검사하고 내부 command는 Agent가 자율적으로 정한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
+Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 Setup Automation 권한·상태·예산·exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` revision을 authorization input으로 고정한다. 요청 당시 `RunPolicyState`는 감사 reference로 기록하며 policy pointer·freshness 변경만으로 local-only decision을 만료시키지 않는다. plan·profile 또는 실행 대상·network·mount·secret 경계가 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 처리한다. `LOCAL_ONLY`와 검증 가능한 clone/same-attempt mock·fixture·격리 network, host·Docker daemon/socket·mount/namespace·secret·egress·workspace 외부 경계는 Sandbox Controller가 검사하고 내부 command는 Dynamic Reproduction Agent가 자율적으로 정한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
 
 ## 13. ReportDraft와 Agent 자동화 종료 경계
 

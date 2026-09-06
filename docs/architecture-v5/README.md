@@ -18,7 +18,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 
 1. **입력·코드 사실·정책 준비**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST·SAST와 공식 정책 준비를 별도 work로 병렬 실행합니다. 정책은 실행당 한 번 준비해 가설들이 공유하며 `StaticFactBundle`에는 넣지 않습니다.
 2. **가설과 검증**: LLM이 취약점 가능성을 제안하고, Orchestration이 등록·배정한 뒤 Verification Agent가 코드·찬성·반대 근거를 검토하고 필요한 동적 재현 목적을 R7에 요청합니다.
-3. **동적 재현과 연계 탐색**: R7 Agent가 환경·간단한 plan을 준비하고 외부 경계 안의 Docker에서 PoC를 자율 실행합니다. Session Manager가 AgentLog·validated PoC·동적 결과를 확정합니다. 모든 final TRUE에는 validated PoC가 필요합니다. HOLD는 하나 이상의 `required_primitive_candidates`가 있을 때만 Primitive matching에 사용하고, 후보가 없으면 Primitive와 Chaining 작업을 만들지 않습니다. TRUE는 Technical `ACCEPT` 뒤 run 초기화에서 준비된 공식 정책의 금지 테스트 위반 여부를 별도로 확인해 `PrimitiveAdmissionDecision=ALLOW`인 경우에만 사용합니다.
+3. **동적 재현과 연계 탐색**: Dynamic Reproduction Agent가 환경·간단한 plan을 준비하고 외부 경계 안의 Docker에서 PoC를 자율 실행합니다. Session Manager가 AgentLog·validated PoC·동적 결과를 확정합니다. 모든 final TRUE에는 validated PoC가 필요합니다. HOLD는 하나 이상의 `required_primitive_candidates`가 있을 때만 Primitive matching에 사용하고, 후보가 없으면 Primitive와 Chaining 작업을 만들지 않습니다. TRUE는 Technical `ACCEPT` 뒤 run 초기화에서 준비된 공식 정책의 금지 테스트 위반 여부를 별도로 확인해 `PrimitiveAdmissionDecision=ALLOW`인 경우에만 사용합니다.
 4. **CWE와 최종 검토·자동화 종료**: R5-01이 final TRUE마다 exact Verification에 맞는 current CWELabel을 만들고 기술 근거와 공식 정책을 차례로 검토한 뒤, Reporter가 내부 초안을 만들고 결과를 저장하면 Agent 자동화가 끝납니다.
 
 ## 정확한 22단계 기준 흐름
@@ -34,7 +34,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 9. Verification이 entity·위치·경로를 기준으로 필요한 코드 문맥을 조회한다.
 10. 운영 분석의 Verification이 Pro/Con을 독립 NEW session으로 병렬 실행한다.
 11. 초기 `TRUE | FALSE | HOLD` 판정을 만든다.
-12. Initial TRUE이면 R6가 `POC_CONFIRMATION`, 판정에 동적 근거가 필요하면 `VERDICT_EVIDENCE` 요청을 만든다. 한 Verification generation에는 동적 work가 최대 하나다. R7 Agent는 exact request를 바탕으로 `EnvironmentRequirements`와 mode·exact command가 없는 `ReproductionPlan`을 생산한다. Sandbox Controller가 외부 격리 경계를 확인하면 Setup Automation이 환경을 만들고 Agent가 PoC candidate·command·관찰·재시도를 자율적으로 정한다. 비-LLM Reproduction Session Manager는 같은 attempt의 AgentLog·recipe·환경·validated PoC와 동적 결과를 반환한다.
+12. Initial TRUE이면 R6가 `POC_CONFIRMATION`, 판정에 동적 근거가 필요하면 `VERDICT_EVIDENCE` 요청을 만든다. 한 Verification generation에는 동적 work가 최대 하나다. Dynamic Reproduction Agent는 exact request를 바탕으로 `EnvironmentRequirements`와 mode·exact command가 없는 `ReproductionPlan`을 생산한다. Sandbox Controller가 외부 격리 경계를 확인하면 Setup Automation이 환경을 만들고 Dynamic Reproduction Agent가 PoC candidate·command·관찰·재시도를 자율적으로 정한다. 비-LLM Reproduction Session Manager는 같은 attempt의 AgentLog·recipe·환경·validated PoC와 동적 결과를 반환한다.
 13. 최종 `TRUE | FALSE | HOLD`와 별도 material claim을 확정한다.
 14. `FALSE`는 terminal로 끝낸다. `HOLD`는 `required_primitive_candidates`가 하나 이상일 때만 전체 후보를 `inputs`로, `result=null`로 둔 Primitive를 저장해 Chaining 자격을 준다. 후보가 비어 있으면 Primitive와 Chaining work 없이 HOLD 처리를 끝낸다. TRUE는 R5-01 `CWE_LABELING` work에서 exact Verification에 대응하는 current `CWELabel`을 만든다.
 15. validated PoC와 `SUCCEEDED + SUPPORTED` 동적 결과가 연결된 final TRUE와 그 Verification을 직접 가리키는 current CWELabel만 Technical Evidence Gate Agent가 검토한다.
@@ -53,7 +53,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 - AST와 SAST는 source, sink, entity, 위치, 호출·데이터 흐름, 인증·인가와 같은 사실 후보를 제공한다. 규칙 기반 SAST는 선택·실행 여부와 raw 탐지 수를 별도 record로 남기며 미실행·확인 불가를 탐지 0건으로 바꾸지 않는다.
 - Hypothesis Agent는 항상 `HYPOTHESIS_ONLY / NON_FINAL` 제안만 만들며 Finding이나 확정 판정을 만들 수 없다.
 - 코드 문맥은 같은 `workspace_id`와 `commit_id`에서 위치 기반으로 필요할 때 조회하고, 조회 범위와 반환 위치를 기록한다.
-- Verification은 가설 내부 Context·Pro/Con, 목적별 `DynamicReproductionRequest`, 반환 결과 소비, 최종 판정·Technical `REVISE`·Gate 제출과 Chaining handoff를 소유한다. R7 Agent는 `EnvironmentRequirements`, 간단한 `ReproductionPlan`, PoC candidate와 동적 근거 해석을 만든다. Setup Automation은 recipe·image·container·cleanup, Sandbox Controller는 외부 격리 경계, Reproduction Session Manager는 append-only AgentLog·validated PoC·동적 결과 확정을 맡는다.
+- Verification은 가설 내부 Context·Pro/Con, 목적별 `DynamicReproductionRequest`, 반환 결과 소비, 최종 판정·Technical `REVISE`·Gate 제출과 Chaining handoff를 소유한다. Dynamic Reproduction Agent는 `EnvironmentRequirements`, 간단한 `ReproductionPlan`, PoC candidate와 동적 근거 해석을 만든다. Setup Automation은 recipe·image·container·cleanup, Sandbox Controller는 외부 격리 경계, Reproduction Session Manager는 append-only AgentLog·validated PoC·동적 결과 확정을 맡는다.
 - 운영(`PRODUCTION`) 기본 검증 모드는 `ALWAYS_DEBATE`다. 모든 유효 가설에서 Pro와 Con을 독립 NEW session으로 실행한다. `BASIC | CONDITIONAL_DEBATE`는 격리된 평가(`EVALUATION`)에서만 비교한다.
 - Primitive DB는 queue가 아니라 required candidate가 있는 HOLD의 inputs-only Primitive와 Technical-accepted 뒤 current `PrimitiveAdmissionDecision=ALLOW`인 TRUE의 result Primitive를 연결하는 인덱스다. candidate가 없는 HOLD, Gate 전 TRUE, admission `DENY`와 FALSE는 matching에 사용할 수 없다.
 - Chaining Agent는 upstream Primitive의 `result`가 downstream Primitive의 특정 `input`을 충족하는지 matching만 수행하며 일반 취약점·우회·impact research, 동적 재현, Gate 보완이나 verdict를 수행할 수 없다.
