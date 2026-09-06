@@ -23,7 +23,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 
 ## 정확한 22단계 기준 흐름
 
-1. 저장소를 입력받는다.
+1. 저장소와 승인된 내부 `program_id` 하나를 `AnalysisStartRequest`로 입력한다.
 2. `Repository Loader`가 저장소를 `git clone`하고 분석할 `commit_id`를 checkout해 `CodeWorkspace`를 준비한다.
 3. AST·SAST와 실행 단위 정책 준비를 서로 독립적으로 병렬 실행한다. Policy Collector는 공식 원문을 수집하고 LLM Policy Parser가 exact 원문을 구조화해 `RunPolicyState`를 만든다.
 4. 결과를 exact 규칙 실행 기록이 연결된 `StaticFactBundle`로 정규화한다.

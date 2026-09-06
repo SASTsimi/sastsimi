@@ -2512,6 +2512,11 @@ foreach ($rule in $requiredRunPolicyPreparationRules) {
 }
 
 $requiredPolicyContractRules = @(
+    @{ Name = 'architecture hub starts with repository and one internal program'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/README.md')); Marker = '1. 저장소와 승인된 내부 `program_id` 하나를 `AnalysisStartRequest`로 입력한다.' },
+    @{ Name = 'agent Wiki lists the non-LLM Policy Collector'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/agents.md')); Marker = '| Policy Collector | 공식 정책 원문과 출처 근거를 수집하고 exact 원문·hash를 저장 | 정책 의미·scope·보고 허용 판단 |' },
+    @{ Name = 'agent Wiki lists the LLM Policy Parser'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/agents.md')); Marker = '| Policy Parser | Policy Collector가 저장한 exact 원문을 구조화 | Rule Scope 결론·보고 허용 판단, 원문에 없는 정책 추정 |' },
+    @{ Name = 'agent Wiki distinguishes Agents from support modules'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/agents.md')); Marker = '각 LLM Agent와 분석을 돕는 비-LLM 모듈' },
+    @{ Name = 'glossary keeps stale policy outside Gate input'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/GLOSSARY.md')); Marker = '`STALE`은 run 시작의 cache 재사용 판단에만 쓰며, 해당 record는 current `RunPolicyState`나 Gate 입력으로 연결하지 않습니다. `UNVERIFIED`인 run 정책은 `UNCERTAIN + DENY`로 처리합니다.' },
     @{ Name = 'policy result owners are registered'; Text = $contractText; Marker = '`run_policy_state -> RunPolicyState -> POLICY_COLLECTOR`, `policy_cache_record -> PolicyCacheRecord -> POLICY_COLLECTOR`, `policy_parser_result -> PolicyParserResult -> POLICY_PARSER`, `policy_collection_result -> PolicyCollectionResult -> POLICY_COLLECTOR`, `program_policy_record -> ProgramPolicyRecord -> POLICY_COLLECTOR`' },
     @{ Name = 'FOUND requires a policy record'; Text = $contractText; Marker = '`FOUND`이면 `policy_record_ref`가 필수이고 `error_ids=[]`다.' },
     @{ Name = 'successful collection uses successful parsers'; Text = $contractText; Marker = '`FOUND | ABSENT_CONFIRMED`의 `parser_result_refs`는 하나 이상이고 모두 `status=SUCCEEDED`인 exact parser 결과를 가리킨다.' },
@@ -2574,6 +2579,7 @@ foreach ($rule in $requiredPolicyContractRules) {
 }
 
 foreach ($obsoletePolicyLifecycleRule in @(
+    '`STALE` 또는 `UNVERIFIED`이면 보고 허용에 쓰지 않고 `UNCERTAIN + DENY`로 처리합니다.',
     '정책 수집이나 Rule Scope review가 새 current revision으로 바뀌면',
     '같은 run 안에서 ALLOW가 DENY로 바뀌면 admission runtime은',
     '만료 뒤 재수집할 때만 1 증가한다',

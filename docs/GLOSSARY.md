@@ -15,7 +15,7 @@
 | `PolicyCacheRecord` | 이전 run에서 검증한 공식 정책 자료를 다음 run 시작 때 재사용할 수 있게 묶은 불변 기록 | 프로그램·출처 설정·Parser 버전·최신성 기준이 모두 맞을 때만 재사용하며 `RunPolicyState` 자체를 재사용하지 않습니다. |
 | `Policy Collector` | 공식 사이트에서 정책 원문과 출처 확인 근거를 가져오는 비-LLM 모듈 | 정책 뜻을 판단하지 않고 exact 원문과 hash를 저장합니다. |
 | `Policy Parser` | 수집한 exact 공식 원문을 구조화하는 LLM 역할 | Rule Scope 결론이나 보고 허용을 결정하지 않습니다. |
-| `freshness_status` | 정책을 현재 자료로 믿을 수 있는지 나타내는 상태 | `STALE` 또는 `UNVERIFIED`이면 보고 허용에 쓰지 않고 `UNCERTAIN + DENY`로 처리합니다. |
+| `freshness_status` | 정책 자료가 다음 분석에서도 재사용 가능한지 나타내는 상태 | `STALE`은 run 시작의 cache 재사용 판단에만 쓰며, 해당 record는 current `RunPolicyState`나 Gate 입력으로 연결하지 않습니다. `UNVERIFIED`인 run 정책은 `UNCERTAIN + DENY`로 처리합니다. |
 | `handoff_readiness` | Technical Gate 결과를 다음 단계에 전달해도 되는지 나타내는 값 | `ACCEPT`일 때만 `READY`이며 `REVISE | REJECT`는 `NOT_READY`입니다. |
 | `StoredDataRef` | 도구가 만든 결과 파일이나 기록을 가리키는 번호 | 내부 저장 경로 대신 결과 번호와 내용 hash를 사용합니다. 저장된 결과 수정본을 가리킬 때는 `record_id`도 넣습니다. |
 | `RecordMeta` | 결과마다 붙는 공통 식별 정보 | 분석·작업공간·가설·재시도·수정본을 연결합니다. |
