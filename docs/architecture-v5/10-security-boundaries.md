@@ -293,8 +293,8 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N1-a | final HOLD + `required_primitive_candidates=[]` | Primitive와 Chaining work를 만들지 않고 HOLD 처리 종료 |
 | N2 | final FALSE | terminal internal result; Primitive와 Chaining work 생성 금지 |
 | N3 | final TRUE, Gate 미실행 | result Primitive admission과 Chaining 금지 |
-| N4 | TRUE + Technical `ACCEPT`, 정책 수집 또는 Rule Scope 검토가 아직 종료되지 않음 | result Primitive와 Chaining을 아직 허용하지 않고 admission 입력 완료를 기다림; Finding 정규화 전이므로 Reporter도 금지 |
-| N4-a | TRUE + Technical `ACCEPT`, 정책 `COLLECTION_FAILED`로 Rule Scope review 없음 | `PrimitiveAdmissionDecision=NOT_EVALUATED + ALLOW`; Rule Scope review가 없어 current Finding을 만들지 않고 Reporter 금지 |
+| N4 | TRUE + Technical `ACCEPT`, 정책 수집 또는 Rule Scope 검토가 아직 종료되지 않음 | result Primitive와 Chaining을 아직 허용하지 않고 admission 입력 완료를 기다림; Finding 정규화 전이므로 Reporter도 금지. `RunPolicyState.collection_result_ref=null`(collection 결과 확정 전 `PREPARING | BLOCKED | FAILED`)이면 exact `PolicyCollectionResult`가 없어 Rule Scope Gate·Primitive Admission·Reporter를 모두 진행하지 않고, 재개 가능하면 정책 준비 완료를 기다림 |
+| N4-a | TRUE + Technical `ACCEPT`, `RunPolicyState.collection_result_ref != null`이고 그 exact `PolicyCollectionResult.status=COLLECTION_FAILED`라 Rule Scope review 없음 | `PrimitiveAdmissionDecision=NOT_EVALUATED + ALLOW`, `reason_code=POLICY_COLLECTION_FAILED`; Rule Scope review가 없어 current Finding을 만들지 않고 Reporter 금지. `RunPolicyState.status`(`BLOCKED | FAILED` 포함)만으로 이 경로를 진행하지 않음 |
 | N5 | TRUE + Technical `ACCEPT` + Rule Scope의 다른 판단 `FAIL | UNCERTAIN | DENY`, testing restriction은 `PASS | UNCERTAIN` | `PrimitiveAdmissionDecision=ALLOW`; result Primitive와 Chaining 자격 유지. Rule Scope review가 존재하므로 신뢰 runtime이 current Finding을 정규화하되 `report_permission=DENY`이면 Reporter만 차단하고 Finding은 보존 |
 | N6 | TRUE + Technical `ACCEPT` + Rule Scope review가 Reporter 6축 readiness 전부 충족 | `PrimitiveAdmissionDecision=ALLOW`; result Primitive와 Chaining 자격 유지, current Finding 정규화 후 Reporter 조건 평가 허용 |
 | N6-a | current Finding 존재 후 Verification generation·CWELabel·두 Gate·동적 결과·PoC·고정 정책 중 하나가 새 revision으로 변경 | 기존 Finding은 감사 이력으로만 남고 stale 처리; 새 exact chain에서 Finding 재정규화 전까지 Reporter 금지 |

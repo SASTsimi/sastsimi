@@ -203,7 +203,10 @@ program별 정책 준비(collection → parsing)는 실행 시작 runtime이 wor
 run init: repository + program 확정
    -> 실행 시작 runtime(RunInitializationService / Orchestration runtime)이 POLICY_FETCH 등록 (analysis·program별 1회)
    -> Policy Collector -> Policy Parser
-   -> RunPolicyState 준비 완료 결과: CURRENT | ABSENT | UNVERIFIED | BLOCKED | FAILED
+   -> RunPolicyState (PREPARING 동안 준비 진행)
+        ├─ CURRENT | ABSENT | UNVERIFIED : 해당 run의 정책 준비 확정
+        ├─ BLOCKED : retry 또는 외부 조건 해소를 기다리는 재개 대기 (확정 아님; policy-dependent downstream 진행 금지)
+        └─ FAILED  : 복구 불가능한 policy preparation failure
    (정적 근거 준비·공통 Docker/환경 준비와 병렬; 실행 간에는 run-neutral PolicyCacheRecord만 재사용하고, 새 analysis마다 새 RunPolicyState·PolicyCollectionResult·ProgramPolicyRecord를 생성해 current run에 귀속)
 
 final TRUE VerificationResult with current generation SUCCEEDED + SUPPORTED reproduction and validated PoC
@@ -211,9 +214,14 @@ final TRUE VerificationResult with current generation SUCCEEDED + SUPPORTED repr
 -> current CWELabel bound to that exact Verification
 -> Technical Evidence Gate
 -> Technical ACCEPT와 TRUE 확인
--> current RunPolicyState의 PolicyCollectionResult
-   ├─ FOUND | ABSENT_CONFIRMED -> Rule Scope Impact Gate review   (run에 고정한 정책 + 공식 원문 소비)
-   └─ COLLECTION_FAILED -> Rule Scope Gate·Reporter 미호출; 정책 준비 실패로만 기록하고 Verification verdict를 FALSE | HOLD로 바꾸지 않음
+-> RunPolicyState.collection_result_ref (status만으로 downstream을 추론하지 않고 exact PolicyCollectionResult를 확인)
+   ├─ != null 이고 exact PolicyCollectionResult = FOUND | ABSENT_CONFIRMED
+   │     -> Rule Scope Impact Gate review   (run에 고정한 정책 + 공식 원문 소비)
+   ├─ != null 이고 exact PolicyCollectionResult = COLLECTION_FAILED
+   │     -> Rule Scope Gate·Reporter 미호출; PrimitiveAdmissionDecision(NOT_EVALUATED + ALLOW, reason_code=POLICY_COLLECTION_FAILED) 진행 (정책 평가 미수행을 NOT_EVALUATED로 보존; ALLOW는 정책 준수 PASS 아님)
+   └─ == null (BLOCKED | FAILED 등에서 collection 결과 확정 전)
+         -> Rule Scope Gate·Primitive Admission·Reporter 모두 미진행; 재개 가능하면 policy preparation 재개 대기
+   (어느 경우에도 policy preparation 상태를 Verification verdict FALSE | HOLD로 바꾸지 않음)
 -> PrimitiveAdmissionDecision
    -> ALLOW: result Primitive admission + Chaining handoff
    -> DENY: no result Primitive
