@@ -1684,7 +1684,8 @@ $revocationPatterns = @(
     '실제 사용 Primitive가 current index에 있을 때',
     '`PrimitiveIndexState`가 허용한',
     'current `PrimitiveIndexState`에 없음',
-    '`PrimitiveIndexState`에 있는 Primitive만'
+    '`PrimitiveIndexState`에 있는 Primitive만',
+    'index에 남길 수 없'
 )
 # 저장 시점 재확인·계보 admission 서술은 FINDINGS에도 되살아나면 안 된다.
 # FINDINGS는 제거한 트리거를 근거로 인용하므로 위 목록에서 제외돼 있어, 이 네 문구만 따로 검사한다.

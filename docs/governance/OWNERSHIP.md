@@ -82,7 +82,7 @@ PM은 하위 Issue를 대신 세세하게 작성하지 않습니다. PM은 역�
 - Chaining Agent는 upstream Primitive의 `result`가 downstream Primitive의 특정 `input`을 충족하는 match와 새 가설만 제안합니다. 조상 계보의 Primitive를 현재 후보에서 제외하고, work 시작 시 고정한 exact Primitive·index reference와 다른 결과는 저장할 수 없습니다. 시작 뒤 current index가 갱신된 사실만으로 진행 중 work를 무효화하지 않습니다.
 - R5-01 `CWE_LABELING`은 final TRUE마다 exact Verification revision을 직접 가리키는 current `CWELabel`을 만듭니다. 새 Verification에는 같은 CWE를 유지해도 새 label revision이 필요합니다.
 - Technical Evidence Gate와 Rule Scope Impact Gate는 verdict를 직접 변경하지 않습니다.
-- Primitive Admission Runtime은 LLM Agent가 아니며 Rule Scope의 전용 금지 테스트 판정과 정책 수집 상태를 기계적으로 `ALLOW | DENY`로 변환합니다. `DENY`인 result Primitive를 만들거나 current index에 남길 수 없습니다.
+- Primitive Admission Runtime은 LLM Agent가 아니며 Rule Scope의 전용 금지 테스트 판정과 정책 수집 상태를 기계적으로 `ALLOW | DENY`로 변환합니다. `DENY`이면 result Primitive를 만들지 않으므로 index에도 들어가지 않습니다.
 - current Finding은 신뢰 runtime이 두 Gate가 검토한 exact chain을 하나의 취약점 record로 정규화한 것이며 LLM Agent가 아닙니다. R5는 Finding의 의미·생성 closure·claim 제한·restriction 보존·Reporter handoff·stale 조건을 소유하고, 저장 action/work/schema/current pointer/revision/CAS/stale enforcement는 R4 trusted runtime 계약을 재사용합니다(구현 모듈 맵 B2). Finding 존재는 Reporter의 6축 정책 readiness와 별개 자격입니다.
 - Reporter는 안전 요구사항을 지킨 내부 `ReportDraft`만 만들며 이 결과가 마지막 Agent 산출물입니다.
 - `AnalysisRunResult` 확정 뒤 Agent 자동화가 끝나며, 사람의 검토·수정·제출·공개는 이 자동화 밖에서 수행합니다.
