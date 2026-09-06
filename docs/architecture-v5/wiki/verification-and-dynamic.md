@@ -108,6 +108,12 @@ Pro와 Con은 항상 별도의 새 대화에서 실행합니다. 상대 역할�
 
 R6는 목적·재현 목표·필요 환경·Sandbox profile·관련 근거를 `DynamicReproductionRequest`로 만듭니다. R7 Agent는 이 exact 요청에서 `EnvironmentRequirements`와 mode·exact command가 없는 `ReproductionPlan`을 먼저 생산하고, 외부 경계를 통과한 뒤 Sandbox 안에서 PoC candidate를 만듭니다. 한 Verification generation에는 동적 work 하나만 허용합니다. 같은 R7 Agent session의 command·PoC·환경 조정은 현재 attempt를 유지합니다. session 재시작이 필요할 때만 같은 work의 새 `attempt_id`·`trigger=RETRY`, 외부 설정·정책·승인·resource 변경을 기다렸다가 해소된 뒤에만 새 `attempt_id`·`trigger=RESUME`를 사용합니다. 대기 중에만 `BLOCKED`입니다. Technical `REVISE`로 새 generation이 시작되면 한도를 새로 적용합니다.
 
+R6는 정책을 직접 수집하거나 해석하지 않고 `DynamicReproductionRequest`에도 정책을 넣지 않습니다. 정책 준비가 끝나지 않아도 정적·Pro·Con 검증은 계속할 수 있습니다. 다만 동적 work는 정책 준비가 끝날 때까지 `BLOCKED`로 기다립니다.
+
+정책이 준비되면 trusted runtime이 같은 프로그램의 exact `PolicyCollectionResult`, current `ProgramPolicyRecord`와 parser 결과를 `DYNAMIC_REPRO` work 입력에 고정합니다. Sandbox Controller는 그 정책 record의 `testing_restrictions` 중 실제 실행 방법에 적용되는 항목을 확인하고 exact `SandboxPolicyDecision`을 남깁니다. R7과 R6는 정책 문장을 다시 해석하지 않습니다.
+
+정책 부재·수집 실패·parser 실패·만료·불확실성 또는 금지된 테스트 방법 때문에 Sandbox를 안전하게 실행할 수 없다면 동적 work만 `BLOCKED | FAILED`로 처리합니다. 이를 가설의 `FALSE | HOLD`로 바꾸지 않으며 final 결과와 Technical Gate 입력도 만들지 않습니다. 실행에 성공한 결과는 실제로 사용한 `SandboxPolicyDecision(decision=ALLOW)`과 그 정책 revision을 추적할 수 있어야 합니다.
+
 Docker는 clean/non-root, network default-deny와 자원·시간 제한을 사용합니다. Runtime Validator가 exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` revision을 고정하고, Runtime Validator가 R8 호출 전 잔여 시간·새 attempt 한도를 검사하고, Sandbox Controller가 R7 sandbox profile의 외부 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제합니다. Setup Automation이 recipe·image·container·cleanup을 맡고, R7 Agent는 Sandbox 안에서 command·PoC·관찰·재시도를 자율적으로 정합니다. Session Manager가 실제 event를 AgentLog에 기록하고 same-attempt validated PoC와 결과를 확정합니다.
 
 `poc_candidate_ref`는 실행 전 스크립트·입력입니다. exact candidate 실행이 `SUCCEEDED + SUPPORTED`로 끝난 경우에만 validated `poc_ref`를 만듭니다. 생성 실패, 실행 실패, `DISPROVED | INCONCLUSIVE`에서는 `poc_ref=null`입니다. candidate와 실패 로그는 남겨도 최종 PoC로 부르지 않습니다.
