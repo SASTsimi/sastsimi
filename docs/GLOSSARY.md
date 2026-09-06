@@ -11,7 +11,12 @@
 | `Repository Loader` | 저장소를 로컬로 가져오고 분석할 commit을 준비하는 프로그램 | 별도 저장소 복사본을 만들지 않습니다. |
 | `CodeWorkspace` | AST와 SAST가 읽는 실행별 로컬 코드 폴더 | `workspace_id`와 `commit_id`로 구분합니다. |
 | `ProgramPolicyRecord` | 공식 버그바운티 정책을 확인해 남긴 기록 | 저장소 코드 복사본이 아니며 공식 출처와 수집 시각을 기록합니다. |
-| `freshness_status` | 정책을 현재 자료로 믿을 수 있는지 나타내는 상태 | `STALE` 또는 `UNVERIFIED`이면 보고 허용에 쓰지 않고 `UNCERTAIN + DENY`로 처리합니다. |
+| `RunPolicyState` | 이번 분석 실행에서 모든 가설이 함께 쓰는 정책 기록의 위치 | 분석마다 새로 만들고 준비 완료 뒤 run 종료까지 같은 정책 reference를 유지합니다. 최신성 만료는 다음 run의 재사용 판단에 씁니다. |
+| `PolicyCacheRecord` | 이전 run에서 검증한 공식 정책 자료를 다음 run 시작 때 재사용할 수 있게 묶은 불변 기록 | 프로그램·출처 설정·Parser 버전·최신성 기준이 모두 맞을 때만 재사용하며 `RunPolicyState` 자체를 재사용하지 않습니다. |
+| `Policy Collector` | 공식 사이트에서 정책 원문과 출처 확인 근거를 가져오는 비-LLM 모듈 | 정책 뜻을 판단하지 않고 exact 원문과 hash를 저장합니다. |
+| `Policy Parser` | 수집한 exact 공식 원문을 구조화하는 LLM 역할 | Rule Scope 결론이나 보고 허용을 결정하지 않습니다. |
+| `reward_conditions` | 프로그램의 보상 산정·지급 조건 정책 항목 | 보고서 context 정보일 뿐 `report_permission`이나 technical reportability와 같은 의미가 아닙니다. |
+| `freshness_status` | 정책 자료가 다음 분석에서도 재사용 가능한지 나타내는 상태 | `STALE`은 run 시작의 cache 재사용 판단에만 쓰며, 해당 record는 current `RunPolicyState`나 Gate 입력으로 연결하지 않습니다. `UNVERIFIED`인 run 정책은 `UNCERTAIN + DENY`로 처리합니다. |
 | `handoff_readiness` | Technical Gate 결과를 다음 단계에 전달해도 되는지 나타내는 값 | `ACCEPT`일 때만 `READY`이며 `REVISE | REJECT`는 `NOT_READY`입니다. |
 | `StoredDataRef` | 도구가 만든 결과 파일이나 기록을 가리키는 번호 | 내부 저장 경로 대신 결과 번호와 내용 hash를 사용합니다. 저장된 결과 수정본을 가리킬 때는 `record_id`도 넣습니다. |
 | `RecordMeta` | 결과마다 붙는 공통 식별 정보 | 분석·작업공간·가설·재시도·수정본을 연결합니다. |
@@ -109,8 +114,7 @@
 | `PrimitiveDraft` | 연계 공격의 입력 조건 또는 실행 뒤 얻는 결과를 표현한 작은 데이터 | 코드 entity, 필요하면 저장소에 정의된 권한 값, 근거와 쉬운 설명을 함께 둡니다. |
 | `Primitive` | 한 가설의 필요한 입력들과 실행 결과를 한 형식으로 묶은 연계 재료 | HOLD는 `result=null`, TRUE는 Technical `ACCEPT`와 current admission `ALLOW` 뒤 `result`가 있습니다. `REQUIRED/PROVIDED` 같은 별도 종류 필드는 저장하지 않습니다. |
 | `PrimitiveAdmissionDecision` | TRUE 결과를 체이닝 재료로 써도 되는지 프로그램이 `ALLOW | DENY`로 기록한 값 | Rule Scope의 전용 금지 테스트 판정과 정책 수집 상태를 정해진 표로 변환하며 정책 뜻을 새로 해석하지 않습니다. |
-| `source_admission_refs` | 한 체이닝 결과가 직접 또는 부모 체인을 통해 실제로 사용한 모든 허용 결정 목록 | 하나라도 오래됐거나 `DENY`로 바뀌면 그 체이닝과 파생 결과를 current 입력으로 쓰지 않습니다. |
-| `PrimitiveIndexState` | 가설의 현재 Verification과 현재 Primitive 수정본들을 가리키는 목록 | 별도 전용 version 필드 없이 공통 `RecordMeta` revision과 원자적 current pointer 갱신을 사용합니다. |
+| `PrimitiveIndexState` | 가설의 현재 Verification과 그 가설이 등록한 Primitive 수정본들을 가리키는 목록 | 별도 전용 version 필드 없이 공통 `RecordMeta` revision과 원자적 current pointer 갱신을 사용합니다. |
 | `PrimitiveMatchCandidate` | 한 Primitive의 결과가 다른 Primitive의 특정 입력을 채울 수 있는지 나타낸 미검증 후보 | `upstream_result_ref`, `downstream_input_ref`, `matched_input_id`와 실제 근거를 기록하며 아직 취약점 확정 결과가 아닙니다. |
 | `Chaining Agent` | upstream 결과와 downstream 입력이 이어지는 조합만 찾는 Agent | 일반 취약점·우회·영향 탐색, 동적 재현, Gate 보완과 판정은 하지 않습니다. |
 | `chaining` | 확인된 결과가 다른 가설의 입력 조건을 충족할 때 새 공격 가설을 만드는 과정 | 이미 포함된 얕은 조상 조합을 후보에서 제외해 중복 제안을 줄이고 전체 비용은 R8 전역 예산으로 제한합니다. |
@@ -127,7 +131,7 @@
 | stale `Finding` | 생성 뒤 Verification generation/revision·CWELabel·두 Gate·동적 결과·validated PoC·고정 정책 record가 바뀌어 더는 current가 아닌 Finding | 감사 이력으로 보존하지만 새 Reporter 실행에 재사용하지 않습니다. R4의 revision·current pointer·CAS 규칙으로 차단합니다. |
 | `Gate` | 다음 단계로 보내도 되는지 확인하는 검토 단계 | Verification 판정을 직접 바꾸지 않습니다. |
 | `Technical Evidence Gate` | 판정과 코드·실행 근거가 서로 맞는지 확인하는 기술 검토 | 공식 정책을 읽지 않으므로 금지 테스트 여부는 판단하지 않습니다. 코드 경로·동적 결과·제한 조건의 연결을 확인합니다. |
-| `Rule Scope Impact Gate` | 공식 정책 범위·금지 테스트 여부와 실제 영향을 확인하는 검토 | 금지 테스트 위반은 별도 필드로 판단해 TRUE Primitive admission에 전달하고, 다른 결과는 Reporter 가능성에 적용합니다. 공식 정책이 없으면 추측하지 않습니다. |
+| `Rule Scope Impact Gate` | run 초기화에서 준비된 current `ProgramPolicyRecord`와 그 공식 원문·현재 hypothesis 사실로 정책 범위·금지 테스트 여부와 실제 영향을 hypothesis마다 확인하는 검토 | 금지 테스트 위반은 별도 필드로 판단해 TRUE Primitive admission에 전달하고, 다른 결과는 Reporter 가능성에 적용합니다. 공식 정책이 없으면 추측하지 않고, 원문 확인 불가·Parser 모순 시 fail-closed합니다. |
 | `PolicyItem` | 공식 정책에서 뽑은 항목 하나와 원문 위치를 묶은 데이터 | 반드시 공식 출처 기록으로 다시 확인할 수 있어야 합니다. |
 | `VerificationAssignment` | 한 가설의 내부 검증 흐름을 맡은 논리 owner의 저장 기록 | 같은 역할의 다른 Agent가 아니라 ACTIVE assignment와 일치하는 owner만 Gate·보완·보고 요청을 제안할 수 있습니다. |
 | `REVISE` | 부족한 근거를 같은 Verification owner가 새 Verification work에서 보완한 뒤 새 revision으로 다시 검토하라는 결과 | provider retry나 동일 입력 재투표가 아니며 오래된 Gate 결과를 재사용하지 않습니다. |

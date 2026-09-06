@@ -46,5 +46,7 @@
 | [ADR-008](./ADR-008-hypothesis-restriction-duplicate-contract.md) | 가설 restriction 근거와 중복 판정 lifecycle | ACCEPTED | #2, #3, #5, #6, #9 | PR #81 + R4 공통 계약 보완 |
 | [ADR-009](./ADR-009-r5-01-cwe-labeling-provenance.md) | R5-01 CWE labeling 소유권과 Verification provenance | ACCEPTED | #5, #6, #7 | R4 공통 계약 보완 |
 | [ADR-010](./ADR-010-static-fact-kind-partition.md) | StaticFactBundle 사실 종류별 분할과 방어 후보 의미 | ACCEPTED | #3, #5, #7, #9 | R4 공통 계약 보완 |
-| [ADR-011](./ADR-011-testing-restriction-primitive-admission.md) | 금지 테스트 위반과 Primitive 체이닝 자격 분리 | ACCEPTED | #2, #5, PR #52, PR #88 | R4 공통 계약 보완 |
+| [ADR-011](./ADR-011-testing-restriction-primitive-admission.md) | 금지 테스트 위반과 Primitive 체이닝 자격 분리 | SUPERSEDED | #2, #5, PR #52, PR #88 | 회수 절차는 ADR-014로 대체; 전용 판정·매핑·`admission_decision_ref`는 유지 |
 | [ADR-012](./ADR-012-primitive-match-duplicate-key.md) | Primitive match 중복 판정 키와 순회 단위 | PROPOSED | ADR-005 | `docs: replace chaining fingerprint with match reference key` |
+| [ADR-013](./ADR-013-run-policy-preparation-and-reuse.md) | 실행 단위 정책 준비·재사용과 Sandbox 사전 확인 | PROPOSED | #1, #4, #10 | 이 ADR을 추가하는 PR에서 검토 |
+| [ADR-014](./ADR-014-primitive-admission-single-decision.md) | Primitive admission을 등록 시점 1회 판정으로 확정 | ACCEPTED | #108, ADR-011, PR #102 | ADR-011의 회수 결정을 대체하고 회수 절차를 제거; 매핑·`Primitive.admission_decision_ref`는 유지. `docs: make primitive admission a one-time decision` |

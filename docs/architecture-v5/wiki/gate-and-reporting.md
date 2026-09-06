@@ -22,11 +22,17 @@ final TRUE `VerificationResult`의 찬반 근거, 실제 코드·호출·데이�
 
 ## 2. 공식 정책·범위·영향 검토(`Rule Scope Impact Gate`)
 
-정책 경로는 `Policy collection/parser -> PolicyParserResult -> PolicyCollectionResult 확인 -> ProgramPolicyRecord -> Rule Scope Impact Gate -> 신뢰 runtime의 current Finding 정규화 -> Reporter`입니다. Parser와 Collector가 공통 artifact를 만들고 R5는 Rule·Scope·Impact 의미만 판단합니다. Finding 정규화는 아래 "Finding 정규화" 섹션을 따릅니다.
+정책 경로는 `workspace 준비 -> 비-LLM Policy Collector -> LLM Policy Parser -> PolicyParserResult -> Policy Collector가 RunPolicyState 확정 -> Technical ACCEPT 뒤 Rule Scope Impact Gate -> 신뢰 runtime의 current Finding 정규화 -> Reporter`입니다. 정책은 실행 초기에 한 번 준비해 가설들이 공유하고 가설마다 다시 수집하지 않으며, **Gate evaluation order는 바뀌지 않습니다**. Parser는 구조화 결과만 만들고 Collector가 collection·policy record·state를 확정하며, R5는 Rule·Scope·Impact 의미만 판단합니다. Parser output 자체는 authoritative policy evidence가 아닙니다. Finding 정규화는 아래 "Finding 정규화" 섹션을 따릅니다.
 
-Technical `ACCEPT`인 `TRUE`만 정책 수집 결과와 함께 검토합니다. 정책 수집은 `FOUND`, `ABSENT_CONFIRMED`, `COLLECTION_FAILED`를 구분합니다. `FOUND`이면 exact `ProgramPolicyRecord`도 함께 읽고, `ABSENT_CONFIRMED`이면 정책을 추정하지 않고 `UNCERTAIN + DENY`로 검토할 수 있습니다. `COLLECTION_FAILED`는 Rule Scope review를 만들지 않습니다.
+Technical `ACCEPT`인 `TRUE`만 current `RunPolicyState`가 가리키는 정책 수집 결과와 함께 검토합니다. 정책 수집은 `FOUND`, `ABSENT_CONFIRMED`, `COLLECTION_FAILED`를 구분합니다. `FOUND`이면 exact `ProgramPolicyRecord`도 함께 읽고, `ABSENT_CONFIRMED`이면 정책을 추정하지 않고 `UNCERTAIN + DENY`로 검토할 수 있습니다. `COLLECTION_FAILED`는 Rule Scope review를 만들지 않습니다. `COLLECTION_FAILED`는 fetch 실패(collection failure)와 원문 수집 후 parser 실패(parser failure)를 원인으로 구분하되 정책 부재를 의미하지 않습니다. 어느 준비 실패도 `VerificationResult`의 verdict를 바꾸지 않고 program-policy semantic 의존 단계만 fail-closed됩니다.
 
-Rule Scope 결과에는 `policy_collection_result_ref`로 정책 수집 결과를 고정하고, 자신이 읽은 Verification, Technical review, CWELabel과 존재하는 정책 record의 정확한 `record_id`를 남깁니다. Rule·Scope·Impact와 독립된 `testing_restriction_compliance: PASS | FAIL | UNCERTAIN` 판정은 실제 정책 항목과 코드·실행 근거에 연결하고, 부족한 정보는 어느 판단을 막는지 구조화해 남깁니다. 입력 중 하나라도 수정되거나 정책 최신성이 만료되면 이전 Rule Scope 결과를 재사용하지 않습니다.
+Parser가 구조화하는 정책 영역은 최소한 asset scope(`in_scope_assets`/`out_of_scope_assets`), vulnerability type/eligibility(`accepted_`/`excluded_vulnerability_classes`), testing restrictions(`testing_restrictions`), reward/bounty conditions(`reward_conditions`), impact criteria(`impact_criteria`)를 서로 구분합니다. `reward_conditions`는 보상 정보일 뿐 technical reportability나 `report_permission`과 같은 의미가 아닙니다.
+
+각 Gate-relevant `PolicyItem`에는 `source_ref`(Collector가 보존한 공식 source)와 `source_locator`(원문 위치)가 있어야 합니다. Gate는 structured 정책 record + `source_ref + source_locator`의 공식 원문 + 현재 hypothesis/verification 사실을 함께 사용하고, 필요하면 원문을 직접 확인해 Parser 정규화가 원문과 일치하는지 검증합니다. 원문을 확인할 수 없거나 Parser 결과와 모순되면 fail-closed하여 해당 영역을 `UNCERTAIN`, permission을 `DENY`로 두고 `PolicyMissingInfo(area=SOURCE, blocks_allow=true)`에 근거를 남깁니다.
+
+Sandbox는 요청 당시 state를 exact 감사 reference로 기록하고 `LOCAL_ONLY`·출처 불명/live asset·외부 계정·egress 차단을 확인합니다. `PREPARING | BLOCKED | FAILED | UNVERIFIED`여도 current CodeWorkspace clone·same-attempt mock/fixture·격리 network만 사용하는 로컬 재현은 진행할 수 있습니다. 현재 architecture에서 실제 실행 범위는 정책 상태와 무관하게 항상 `LOCAL_ONLY`이며 external/live 대상·계정·egress 실행은 지원하지 않습니다. 정책이 `CURRENT`여도 external/live로 승격하지 않습니다. Sandbox Controller는 전달받은 경계와 `execution_scope=LOCAL_ONLY`만 강제하고 정책 문장의 뜻이나 report permission을 정하지 않습니다. 실제 수행 기록과 같은 run에 고정한 testing restriction의 의미 비교는 Rule Scope Gate가 담당합니다. freshness 만료와 parser version 변경은 다음 run 시작 때 재사용 여부를 판단하며 현재 run의 policy reference나 local-only action을 바꾸지 않습니다.
+
+`RunPolicyState`는 program-level로 공유되므로 같은 program의 여러 hypothesis(H1·H2·H3)는 각각 별도 Rule Scope Gate evaluation을 수행하되 run에 고정한 같은 state가 가리키는 정책을 재사용하고, 정책 parsing 결과를 hypothesis-specific verdict로 저장하지 않습니다. Rule Scope 결과에는 `run_policy_state_ref`와 `policy_collection_result_ref`로 Gate가 실제 읽은 실행 정책 상태와 수집 결과를 고정하고, 자신이 읽은 Verification, Technical review, CWELabel과 존재하는 정책 record의 정확한 `record_id`를 남깁니다. Rule·Scope·Impact와 독립된 `testing_restriction_compliance: PASS | FAIL | UNCERTAIN` 판정은 실제 정책 항목과 코드·실행 근거에 연결하고, 부족한 정보는 어느 판단을 막는지 구조화해 남깁니다. 같은 run에서 claim-relevant 입력이 수정되면 이전 Rule Scope 결과를 새 downstream action에 재사용하지 않습니다. 정책 freshness 변화는 다음 run의 cache 재사용 판단에만 사용합니다.
 
 Technical Gate가 `ACCEPT`할 때 검토한 Verification/CWELabel과 Gate 2의 두 exact input revision은 각각 같아야 하며, Gate는 Verification verdict나 hypothesis를 수정하지 않습니다.
 
@@ -42,7 +48,7 @@ Rule은 eligibility·허용/제외 class·금지 testing method·명시 rule을,
 
 공식 정책 자료의 실제 부재가 확인되거나 authenticity·핵심 정보가 부족하면 관련 항목은 `UNCERTAIN`이고 permission은 `DENY`다. freshness는 R8이 승인한 source-native 유효성 기준 또는 필요한 프로그램별 threshold를 만족할 때만 `CURRENT`다. threshold가 필요한데 미확정이거나 적용 기준이 없으면 `UNVERIFIED + DENY`이며 최근 fetch만으로 `CURRENT`를 만들지 않는다. 저장소 문서나 모델 기억으로 공식 정책을 추정하지 않는다. source URL, 수집 원문, parser version/output과 각 PolicyItem의 원문 locator를 보존한다.
 
-기존 `ProgramPolicyRecord`의 freshness 상태와 확인 시각을 사용한다. Gate 2와 Reporter의 action 허가·실제 호출 직전에 exact policy revision이 여전히 `CURRENT`인지 다시 검사하며 stale Gate 2 결과는 Reporter에 재사용하지 않는다. R5-02가 독립 freshness schema나 공통 TTL을 만들지 않고 기준이 없으면 `UNVERIFIED + DENY`다.
+`RunPolicyState`와 `ProgramPolicyRecord`의 freshness 상태·확인 시각은 run 시작 때 정책 준비에 사용한다. Gate 2와 Reporter의 action 허가·실제 호출 직전에는 준비 완료 때 고정한 exact state와 같은지 검사하되 run 도중 freshness를 다시 계산하지 않는다. `UNVERIFIED`이면 Gate 2는 `UNCERTAIN + DENY`만 가능하고 Reporter는 차단한다. run 시작 때 `STALE`인 과거 policy record는 current state에 연결하지 않는다. R5-02가 독립 freshness schema나 공통 TTL을 만들지 않고 기준이 없으면 `UNVERIFIED + DENY`다.
 
 정책 수집은 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`를 구분한다. `FOUND`는 exact parser result·공식 source와 `ProgramPolicyRecord`를 연결한다. 실제 부재를 확인한 `ABSENT_CONFIRMED`만 provenance/DataGap에 근거한 정상 `UNCERTAIN + DENY`가 될 수 있다. `COLLECTION_FAILED`는 AnalysisError와 함께 `AnalysisRunResult`에 남기지만 Gate work를 호출하지 않고 `RuleScopeImpactReview`를 생성하지 않는다. 따라서 downstream Reporter도 진행할 수 없다.
 
@@ -58,10 +64,10 @@ R5는 `testing_restriction_compliance`와 provenance를 만들고 R4 `PRIMITIVE_
 
 child proposal은 독립 Verification lifecycle을 거치며 child TRUE가 부모 impact를 자동 높이지 않는다. 부모 impact 판단은 current parent `VerificationResult`의 exact evidence/reference closure에 이미 검증되어 포함된 사실만 소비하며, Gate 2가 child 결과를 부모 사실로 승격하거나 부모 Verification에 흡수하지 않는다. 동일 material claim의 보강은 부모 supporting evidence로 유지한다. 서로 다른 material claim 사이의 능력 결합이 필요하면 흡수 대신 Primitive Chaining을 쓴다. Chaining은 한 TRUE의 result가 HOLD의 `required_primitive_candidates`에 기록된 부족한 input을 충족하는 `TRUE + HOLD`, 또는 한 TRUE의 result가 다른 TRUE에 이미 기록된 input을 충족하는 `TRUE + TRUE`만 확인한다. 두 경우 모두 result와 input을 단순히 합치는 것이 아니라 같은 workspace·commit, 코드 흐름·권한·실행 순서·합산 restriction 근거로 `result → input` 연결이 성립할 때만 매칭한다. 매칭되면 새 결합 hypothesis가 독립 Verification과 Technical Gate·Gate 2를 새로 수행한다.
 
-Gate 판단 시점부터 policy가 `STALE | UNVERIFIED`인데 `ALLOW`이면 생성 당시 모순이므로 `INVALID_OUTPUT`이다. 정상 policy와 revision으로 생성된 review가 이후 upstream 변경 때문에 오래된 경우에는 기존 review 자체를 invalid로 바꾸지 않고, 새 revision의 Reporter에 재사용하지 못하게 runtime이 차단한다.
-공식 정책 부재가 확인된 `ABSENT_CONFIRMED`이거나 정책의 `freshness_status`가 `STALE | UNVERIFIED`이면 rule/scope/review는 `UNCERTAIN`이고 permission은 `DENY`입니다. 오래된 정책 reference는 감사용으로 남길 수 있지만 `PASS | ALLOW` 근거로 쓰지 않습니다. 수집 실패 `COLLECTION_FAILED`는 review를 만들지 않으며, 저장소 문서나 모델 기억으로 공식 정책을 추정하지 않습니다.
+Gate 판단 시점에 current state가 `UNVERIFIED`인데 `ALLOW`이거나 run 시작 때 `STALE`로 판정한 과거 정책을 입력으로 사용하면 생성 당시 모순이므로 `INVALID_OUTPUT`이다. 정상 policy와 revision으로 생성된 review가 이후 claim-relevant upstream 변경 때문에 오래된 경우에는 기존 review 자체를 invalid로 바꾸지 않고, 새 revision의 Reporter에 재사용하지 못하게 runtime이 차단한다.
+공식 정책 부재가 확인된 `ABSENT_CONFIRMED`이거나 current `RunPolicyState.status=UNVERIFIED`이면 rule/scope/review는 `UNCERTAIN`이고 permission은 `DENY`입니다. run 시작 때 stale로 판정한 정책 reference는 감사용으로 남길 수 있지만 current state나 `PASS | ALLOW` 근거로 쓰지 않습니다. 수집 실패 `COLLECTION_FAILED`는 review를 만들지 않으며, 저장소 문서나 모델 기억으로 공식 정책을 추정하지 않습니다.
 
-validated PoC를 가진 TRUE의 exact revision을 Technical Gate가 `ACCEPT`하면 정책 수집과 Rule Scope 검토를 진행한다. Rule Scope는 금지 테스트 위반 여부를 `testing_restriction_compliance`로 다른 판단과 분리한다. 이 값이 `FAIL`이면 result Primitive를 만들지 않고, `PASS | UNCERTAIN`이면 admission `ALLOW` 뒤 제공 능력별 Primitive를 저장한다. 정책 수집 실패는 `NOT_EVALUATED + ALLOW`로 구분하되 Reporter는 막는다. 나머지 `review/rule/scope PASS`, `impact SUFFICIENT`, `permission ALLOW`를 모두 만족해야 Reporter를 호출할 수 있다. 다른 Rule Scope 항목의 `FAIL | UNCERTAIN | DENY`는 보고서만 막고 current `ALLOW` Primitive와 Chaining 자격은 유지한다. 새 Verification revision에는 과거 Gate·동적 결과·PoC·admission decision을 재사용하지 않는다. HOLD는 Gate를 거치지 않지만 `required_primitive_candidates`가 하나 이상일 때만 전체 후보를 `inputs`, `result=null`로 둔 Primitive로 Chaining에 들어간다. 후보가 비어 있으면 Primitive와 Chaining 작업을 만들지 않는다.
+validated PoC를 가진 TRUE의 exact revision을 Technical Gate가 `ACCEPT`하면 실행 초기에 고정한 정책으로 Rule Scope 검토를 진행하며 이 시점에 새 collection/parsing을 실행하지 않는다. Rule Scope는 금지 테스트 위반 여부를 `testing_restriction_compliance`로 다른 판단과 분리한다. 이 값이 `FAIL`이면 result Primitive를 만들지 않고, `PASS | UNCERTAIN`이면 admission `ALLOW` 뒤 제공 능력별 Primitive를 저장한다. 정책 수집 실패는 `NOT_EVALUATED + ALLOW`로 구분하되 Reporter는 막는다. 나머지 `review/rule/scope PASS`, `impact SUFFICIENT`, `permission ALLOW`를 모두 만족해야 Reporter를 호출할 수 있다. 다른 Rule Scope 항목의 `FAIL | UNCERTAIN | DENY`는 보고서만 막고 current `ALLOW` Primitive와 Chaining 자격은 유지한다. 새 Verification revision에는 과거 Gate·동적 결과·PoC·admission decision을 재사용하지 않는다. HOLD는 Gate를 거치지 않지만 `required_primitive_candidates`가 하나 이상일 때만 전체 후보를 `inputs`, `result=null`로 둔 Primitive로 Chaining에 들어간다. 후보가 비어 있으면 Primitive와 Chaining 작업을 만들지 않는다.
 
 이 판단은 Rule Scope Gate가 내립니다. 프로그램 검사기는 정책 문장의 뜻을 다시 판단하지 않고 결과 형식과 공식 출처 연결을 확인합니다. 정상적인 `UNCERTAIN + DENY`는 그대로 저장하고 Reporter만 부르지 않습니다.
 
@@ -82,11 +88,11 @@ TRUE
 + permission ALLOW
 ```
 
-Reporter는 위 6축 정책 조건을 모두 만족하고, 그와 별개로 current non-stale Finding이 있으며 exact revision closure와 `REPORT_READY`, 동일 ACTIVE Verification owner를 runtime이 확인한 때만 내부 ReportDraft를 만든다. Finding이 있어도 6축 중 하나가 미달이면 Reporter만 차단하고 Finding은 보존한다. 두 Gate가 검토한 CWELabel과 보고서 초안의 `cwe_label_ref.record_id`가 다르면 초안을 만들지 않는다. 이 upstream 중 하나가 새 revision으로 바뀌면 기존 초안은 감사 기록으로만 남고 새 Gate·Reporter 결과가 나오기 전까지 current 결과로 쓸 수 없다. 두 Gate와 Reporter 모두 외부 제출·공개 권한이 없다.
+Reporter는 위 6축 정책 조건을 모두 만족하고, 그와 별개로 current non-stale Finding이 있으며 exact revision closure와 `REPORT_READY`, 동일 ACTIVE Verification owner를 runtime이 확인한 때만 내부 ReportDraft를 만든다. Finding이 있어도 6축 중 하나가 미달이면 Reporter만 차단하고 Finding은 보존한다. 보고서 초안의 `cwe_label_ref`는 두 Gate가 검토한 CWELabel과, `run_policy_state_ref`는 Rule Scope review와 run에 고정한 policy state와 exact match해야 한다. action 승인·실제 호출·저장 직전에 이 exact reference를 다시 확인한다. claim-relevant upstream 중 하나가 새 revision으로 바뀌면 기존 초안은 감사 기록으로만 남고 새 Gate·Reporter 결과가 나오기 전까지 current 결과로 쓸 수 없다. 정책 freshness 만료는 다음 run의 재사용을 거절하는 조건이다. 두 Gate와 Reporter 모두 외부 제출·공개 권한이 없다.
 
 Reporter는 검증된 사실을 합성·표현할 뿐 새 vulnerability fact, attack path, reproduction/PoC 성공,
 policy·scope 판단이나 upstream보다 강한 severity·exploitability·security impact를 만들지 않습니다.
-주요 claim은 current Finding과 두 Gate가 실제 검토한 exact Verification·CWE·정책·Dynamic/PoC revision으로
+주요 claim은 current Finding과 두 Gate가 실제 검토한 exact Verification·CWE·`RunPolicyState`·정책·Dynamic/PoC revision으로
 추적해야 하며, 별도로 최신 결과를 검색해 연결하지 않습니다. Dynamic/PoC 표시는 Verification의 exact
 `dynamic_result_ref`와 R7에서 이미 validated된 `poc_ref`만 소비하고, request·plan·requirements와 존재하는
 policy·environment·AgentLog·PoC·cleanup을 다른 attempt와 섞지 않습니다. Reporter는 이 무결성이나 실행

@@ -41,7 +41,7 @@ R6는 “무엇을 왜 재현할지”만 요청합니다. R7 Agent는 격리된
 
 - 같은 session 안의 command·PoC·환경 조정은 한 attempt의 event입니다.
 - 같은 session 조정은 현재 attempt를 유지합니다. session 재시작이 필요한 일시 오류만 R8 한도 안에서 같은 work의 새 `attempt_id`·`trigger=RETRY`로 재시도하며 외부 대기가 없으면 `BLOCKED`를 사용하지 않습니다. 외부 조건 해소 뒤 재개는 `trigger=RESUME`입니다.
-- `BLOCKED`는 외부 설정·정책·승인 또는 resource profile 변경을 기다릴 때만 사용합니다.
+- `BLOCKED`는 current work 입력을 바꾸지 않는 재인증·승인·외부 환경 정비·resource 확보를 기다릴 때만 사용합니다. 프로그램 정책 준비 상태 자체는 `LOCAL_ONLY` 실행의 대기 조건이 아닙니다. exact request나 profile reference를 바꿔야 하면 기존 work를 재개하지 않습니다.
 - 복구 불가능하거나 retry 한도를 소진하면 `FAILED + INCONCLUSIVE`로 끝냅니다.
 - 실패는 R6의 `FALSE | HOLD`로 자동 변환하지 않고 final VerificationResult와 Technical Gate를 만들지 않습니다.
 

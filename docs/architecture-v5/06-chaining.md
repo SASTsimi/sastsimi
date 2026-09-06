@@ -51,15 +51,15 @@ status는 따로 저장하지 않는다. `result=null`이면 HOLD에서 나온 �
 - final `TRUE`: 현재 generation의 성공한 동적 재현과 validated PoC가 있고, exact TRUE Verification과 이를 직접 가리키는 current `CWELabel`을 Technical Gate가 `ACCEPT`했으며, 같은 Verification의 current `PrimitiveAdmissionDecision.decision=ALLOW`일 때만 result가 있는 Primitive를 저장한다. 각 Primitive의 `admission_decision_ref`는 그 decision을 exact하게 가리킨다. 제공 능력이 여러 개면 능력마다 Primitive 하나를 만들고 각 record의 inputs에는 그 TRUE의 악용 전제조건을 복사한다.
 - Gate 전 TRUE, Technical `REVISE | REJECT`와 admission `DENY`: Primitive를 만들지 않는다.
 
-체이닝 재료 자격은 세 가지를 확인해 정한다 — `result`가 있는 Primitive일 것, 그 Primitive의 current `PrimitiveAdmissionDecision.decision=ALLOW`일 것, 그리고 직접 부모와 `source_primitive_match_id` 계보를 따라 도달하는 모든 result Primitive도 current `ALLOW`일 것. Chaining Agent는 `rule_compliance`나 `evidence_links`를 읽어 금지 테스트 위반을 추정하지 않는다. 위반 판정과 그 결론은 admission decision이 이미 담고 있다.
+체이닝 재료는 current `PrimitiveIndexState`에 등록된 Primitive다. 역할은 Primitive마다 고정되지 않고 조합마다 정해진다 — `result`가 있으면 그 조합의 upstream이, `inputs`가 있으면 downstream이 될 수 있고, 둘 다 가진 Primitive는 조합에 따라 어느 쪽도 된다. result Primitive는 admission `ALLOW`일 때만 등록되고, admission은 등록 시점의 1회 판정이라 등록된 Primitive는 run 안에서 자격을 잃지 않는다. 그래서 체이닝은 admission decision을 다시 확인하지 않는다. Chaining Agent는 `rule_compliance`나 `evidence_links`를 읽어 금지 테스트 위반을 추정하지 않는다. 위반 판정과 그 결론은 admission decision이 이미 담고 있다.
 
-Rule Scope의 나머지 판정은 보고 가능성만 가른다. 범위 밖 자산, 영향 부족, 중복, 프로그램 정책 부족, 보상 대상 클래스 아님은 체이닝을 막지 않는다. 확정된 금지 테스트 위반으로 `DENY`가 된 경우만 재료에서 제외된다. 정책상 보고할 수 없는 능력이라도 그것을 발판으로 삼는 다른 취약점은 보고 대상일 수 있기 때문이다.
+Rule Scope의 나머지 판정은 보고 가능성만 가른다. 범위 밖 자산, 영향 부족, 중복, 프로그램 정책 부족, `reward_conditions`상 보상 대상 클래스 아님은 체이닝을 막지 않는다. 확정된 금지 테스트 위반으로 `DENY`가 된 경우만 재료에서 제외된다. 정책상 보고할 수 없는 능력이라도 그것을 발판으로 삼는 다른 취약점은 보고 대상일 수 있기 때문이다. Chaining도 program scope를 이유로 기술적 hypothesis를 제거하지 않으며, run 초기화에서 준비된 정책의 collection/parser 실패를 verdict나 chaining 자격 변경으로 바꾸지 않는다.
 
-Chaining work를 시작할 때 Runtime은 사용 가능한 Primitive뿐 아니라 그 Primitive와 부모 체인의 current `ALLOW` decision reference도 `WorkExecutionState.input_refs`에 함께 고정한다. `source_admission_refs`에는 실제 match에 사용한 Primitive와 그 계보에서 재귀적으로 도달한 모든 admission decision을 중복 없이 기록하며, 이 목록은 실제 사용한 decision 집합과 정확히 같아야 한다.
+Chaining work를 시작할 때 Runtime은 current `PrimitiveIndexState`에서 후보 Primitive를 읽어 `WorkExecutionState.input_refs`에 고정한다. index는 가설별 Primitive pool의 진입점이며 별도 admission 목록은 두지 않는다.
 
-결과를 저장하기 직전에 실제로 사용한 decision을 다시 확인한다. 하나라도 current가 아니거나 `DENY`로 바뀌었으면 `STALE_RESULT`로 저장을 거절하고 새 자식 가설을 만들지 않는다. 이때 기존 가설의 verdict를 `FALSE`나 `HOLD`로 바꾸지 않는다. 실제 match에 사용하지 않은 후보의 decision 변경만으로는 진행 중인 결과를 무효화하지 않는다.
+결과를 저장할 때는 work가 고정한 입력과 결과의 reference가 맞는지 확인한다. 고정하지 않은 Primitive나 index reference가 섞이면 `STALE_RESULT`로 거절하고 새 자식 가설을 만들지 않는다. 이때 기존 가설의 verdict를 `FALSE`나 `HOLD`로 바꾸지 않는다. work 시작 뒤 새 Primitive가 저장돼 index가 갱신된 것만으로는 진행 중인 결과를 무효화하지 않고 다음 Chaining work에서 처리한다.
 
-이미 만들어진 자식과 그 아래 세대도 같은 계보 확인을 받는다. 부모의 admission이 나중에 `DENY`로 바뀌면 파생 결과는 감사 기록으로만 보존하고 새 Verification·Gate·Primitive·Reporter 입력으로 사용하지 않는다.
+이미 만들어진 자식과 그 아래 세대는 부모 admission을 다시 확인받지 않는다. 부모 Primitive가 등록된 시점에 자격이 확정됐고 run 안에서 뒤집히지 않기 때문이다.
 
 Technical Gate는 자기 입력으로 확인할 수 있는 근거 품질을 판단한다 — validated PoC가 실제로 연결되는지(`dynamic_linkage`), 실제 경로가 근거와 이어지는지(`code_flow_linkage`), restrictions가 정확히 표현됐는지(`restriction_assessment`). 하나라도 통과하지 못한 TRUE는 체이닝에 들어가지 않는다. 부모의 제약 서술이 부정확하면 그 오류가 자식 가설의 `Restriction` 합집합으로 그대로 승계되기 때문이다.
 
@@ -73,7 +73,7 @@ PrimitiveIndexState:
   updated_at: timestamp
 ```
 
-가설마다 하나의 index가 current final Verification과 그 결과에서 만든 Primitive exact reference를 가리킨다. REQUIRED/PROVIDED 목록, 별도 `state_version`, 사후 ACTIVE/SUPERSEDED 상태는 사용하지 않는다.
+가설마다 하나의 index가 current final Verification과 그 가설이 등록한 모든 Primitive exact reference를 가리킨다. index 갱신은 Primitive를 더하기만 하며 등록된 Primitive를 빼는 경로를 두지 않는다. REQUIRED/PROVIDED 목록, 별도 `state_version`, 사후 ACTIVE/SUPERSEDED 상태는 사용하지 않는다.
 
 동시에 index를 쓰면서 결과가 사라지지 않도록 공통 immutable record 규칙은 유지한다. 새 revision은 바로 전 `record_id`와 연속된 `revision_number`를 사용하고 current pointer를 원자적으로 바꾼다. 이는 모든 record에 적용되는 저장 안전 규칙이며 체이닝 전용 CAS나 사후 자격 변경 절차가 아니다.
 
@@ -123,7 +123,6 @@ PrimitiveMatchCandidate:
 ChainingResult:
   meta: RecordMeta
   source_result_refs: [StoredDataRef]
-  source_admission_refs: [StoredDataRef]
   considered_primitive_refs: [StoredDataRef]
   input_primitive_refs: [StoredDataRef]
   primitive_match_candidates: [PrimitiveMatchCandidate]
@@ -153,7 +152,7 @@ NoMatchReason:
 
 검토하지 않은 경우는 여기 넣지 않는다. 담당이 아닌 조합은 처음부터 검토 대상이 아니므로 별도 기록을 만들지 않는다. 조상 재사용 제외는 `excluded_lineage_refs`, 예산·오류로 확인하지 못한 후보는 work 상태와 `errors`에 남긴다. 결과가 비었을 때 검토한 것과 확인하지 못한 것을 구분하기 위한 기록이다. Runtime Validator는 두 reference가 `considered_primitive_refs`에 있는지, `checked_input_id`가 downstream Primitive의 실제 `inputs[].draft_id`인지, 같은 조합이 중복되지 않는지, 성립한 `PrimitiveMatchCandidate` 조합과 겹치지 않는지를 검사한다. `reason_code`와 `detail`의 판단 내용은 다시 판정하지 않는다.
 
-`considered_primitive_refs`는 Chaining work를 시작할 때(`REGISTER_WORK`) Runtime이 고정한, 조상 제외 전 전체 Primitive 입력이다. `input_primitive_refs`는 실제 match candidate에 사용된 upstream/downstream Primitive의 중복 없는 합집합이다. `excluded_lineage_refs`는 계보 때문에 match에서 제외한 Primitive와 그 제외를 일으킨 같은 work의 Primitive를 기록한다. `source_result_refs`는 실제 match Primitive들이 직접 가리키는 source Verification과 non-null Technical review의 중복 없는 합집합이다. `source_admission_refs`는 실제 입력 Primitive와 그 계보에서 재귀적으로 도달한 모든 result Primitive의 current `ALLOW` admission decision을 중복 없이 모은 집합이다. 각 candidate의 `parent_hypothesis_ids`와 `parent_verification_refs`도 해당 upstream/downstream Primitive가 직접 가리키는 source hypothesis와 Verification의 정확한 합집합이어야 한다. 세 Primitive 목록과 source·parent 목록은 중복을 허용하지 않으며 자세한 저장 검사는 [경량 데이터 계약](08-lightweight-data-contracts.md)의 `SAVE_RESULT` 규칙을 따른다.
+`considered_primitive_refs`는 Chaining work를 시작할 때(`REGISTER_WORK`) Runtime이 고정한, 조상 제외 전 전체 Primitive 입력이다. `input_primitive_refs`는 실제 match candidate에 사용된 upstream/downstream Primitive의 중복 없는 합집합이다. `excluded_lineage_refs`는 계보 때문에 match에서 제외한 Primitive와 그 제외를 일으킨 같은 work의 Primitive를 기록한다. `source_result_refs`는 실제 match Primitive들이 직접 가리키는 source Verification과 non-null Technical review의 중복 없는 합집합이다. 각 candidate의 `parent_hypothesis_ids`와 `parent_verification_refs`도 해당 upstream/downstream Primitive가 직접 가리키는 source hypothesis와 Verification의 정확한 합집합이어야 한다. 세 Primitive 목록과 source·parent 목록은 중복을 허용하지 않으며 자세한 저장 검사는 [경량 데이터 계약](08-lightweight-data-contracts.md)의 `SAVE_RESULT` 규칙을 따른다.
 
 새 가설은 `HypothesisProposal(origin=CHAINING)`으로 만든다. proposal의 `source_primitive_match_id`는 자신을 만든 candidate ID와 같고, `parent_hypothesis_ids`는 그 candidate의 부모 set과 같아야 한다. Chaining Agent는 새 코드 사실을 만들지 않으므로 `observed_facts=[]`만 허용한다. `target_entities`·`target_locations`·`suspected_path`는 비어 있을 수 있지만, 값을 넣으면 부모 Primitive의 exact entity·location 계보에서 얻을 수 있어야 한다. Verification이 시작할 entity나 location을 부모 계보에서 하나도 복원할 수 없으면 proposal 등록과 배정을 거절한다.
 
@@ -226,7 +225,7 @@ Verification은 proposal을 만들 수 있지만 `hypothesis_id`를 직접 발�
 
 체이닝 전용 임의 depth, 전체·parent별 가설 수, Chaining 호출 수, Primitive 조합 수와 token 상한은 두지 않는다. 대신 R8의 전체 시간·비용·work 예산이 모든 체이닝에도 적용된다. token 사용량은 관측하되 초과만으로 중단하지 않는다. 다른 예산 소진도 `FALSE`가 아니며 work 상태와 `AnalysisRunResult.stop_reasons`에 기록한다. 같은 `(upstream_result_ref, downstream_input_ref, matched_input_id)` 조합도 한 분석에서 중복 저장하지 않는다.
 
-`considered_primitive_refs`, `source_admission_refs`와 `excluded_lineage_refs`는 기존 `ChainingResult`에 없던 필수 필드이고 `PrimitiveMatchCandidate`에서도 필드 하나를 없애므로 새 MAJOR schema에서만 사용한다. 이전 MAJOR 결과에 빈 목록을 추정해 넣거나 제거한 필드를 다시 계산해 채우지 않고 감사 이력으로만 보존한다.
+`considered_primitive_refs`와 `excluded_lineage_refs`는 기존 `ChainingResult`에 없던 필수 필드이고 `source_admission_refs` 제거와 `PrimitiveMatchCandidate`에서도 필드 하나를 없애므로 새 MAJOR schema에서만 사용한다. 이전 MAJOR 결과에 빈 목록을 추정해 넣거나 제거한 필드를 다시 계산해 채우지 않고 감사 이력으로만 보존한다.
 
 ## 사람에게 보이는 결과
 

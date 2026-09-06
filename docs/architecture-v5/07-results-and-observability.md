@@ -21,10 +21,10 @@
 | `contexts` | `CodeContextRequest/Response`, 실제 반환·열람 위치 |
 | `verifications` | Pro/Con, initial/final verdict, restriction/capability와 exact final Verification revision |
 | `cwe_labels` | R5-01 `CWE_LABELING` work, exact Verification·generation·호출 provenance와 current/과거 `CWELabel` revision |
-| `primitives` | `required_primitive_candidates`가 비어 있지 않은 HOLD의 result 없는 조건, Technical-accepted이며 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`를 가진 TRUE 능력과 exact Verification·Gate·admission provenance. 잇기 재료는 그 Primitive뿐 아니라 `source_primitive_match_id` 계보의 모든 result Primitive도 current `ALLOW`여야 한다 |
+| `primitives` | `required_primitive_candidates`가 비어 있지 않은 HOLD의 result 없는 조건, Technical-accepted이며 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`를 가진 TRUE 능력과 exact Verification·Gate·admission provenance. 잇기 재료는 work 시작 시 index에서 읽어 고정한 Primitive만 쓴다 |
 | `chaining` | `ChainingResult`, upstream result→downstream input match와 child proposal validation state |
 | `gates` | Technical 및 Rule Scope Impact review와 서로 exact pair인 Verification·current CWELabel·정책 input revision refs |
-| `policies` | 정책 parser 결과, `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 수집 결과, 공식 `ProgramPolicyRecord`과 source·freshness refs |
+| `policies` | 실행 단위 `RunPolicyState`, run-neutral `PolicyCacheRecord`, LLM 정책 parser 호출·결과, `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 수집 결과, 공식 `ProgramPolicyRecord`과 source·freshness refs |
 | `reports` | 신뢰 runtime이 exact chain에서 정규화한 current/과거 `Finding` revision, 허용된 내부 `ReportDraft`와 두 Gate가 공통으로 본 CWELabel revision ref |
 | `actions` | `ActionRequest`, validator의 `ActionDecision`, check와 일회성 사용·outcome refs |
 | `invocations` | normalized `LLMInvocationLog`와 safe provider/session metadata |
@@ -75,7 +75,7 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 
 나중에 줄마다 예제를 붙일 때 묶음에 **판 이름**을 붙이고, 줄마다 **사람 정답**(TRUE/FALSE/HOLD 등)을 둔다. 장면 줄마다 `S-판이름`을 만들지 않는다. 지금 이 Issue에서는 예제 파일을 만들지 않는다.
 
-Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을 채우는 짝만 새 가설로 만든다. 부모 판정은 바꾸지 않는다. HOLD는 `required_primitive_candidates`가 있을 때만 Gate 없이 `result=null` Primitive로 등록하고, TRUE는 validated PoC와 exact Technical `ACCEPT`(1번 문지기), 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`일 때만 `result` 있는 Primitive로 등록한다. `ACCEPT`만으로 등록하지 않으며 admission `DENY`면 Primitive를 만들지 않는다. 목록이 비어 있는 HOLD는 Primitive를 만들지 않는다. 2번 문지기(Rule Scope/정책)의 rule·scope·impact와 `report_permission`은 보고 가능성만 보며 Primitive 등록·Chaining을 취소하지 않는다. `testing_restriction_compliance=FAIL`만 admission `DENY`로 매핑되어 등록과 Chaining을 차단한다. 잇기 재료는 해당 result Primitive와 `source_primitive_match_id` 계보의 모든 result Primitive가 current `ALLOW`여야 한다. `REQUIRED`/`PROVIDED` 같은 상태 이름은 쓰지 않고 `result` 유무로 구분한다.
+Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을 채우는 짝만 새 가설로 만든다. 부모 판정은 바꾸지 않는다. HOLD는 `required_primitive_candidates`가 있을 때만 Gate 없이 `result=null` Primitive로 등록하고, TRUE는 validated PoC와 exact Technical `ACCEPT`(1번 문지기), 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`일 때만 `result` 있는 Primitive로 등록한다. `ACCEPT`만으로 등록하지 않으며 admission `DENY`면 Primitive를 만들지 않는다. 목록이 비어 있는 HOLD는 Primitive를 만들지 않는다. 2번 문지기(Rule Scope/정책)의 rule·scope·impact와 `report_permission`은 보고 가능성만 보며 Primitive 등록·Chaining을 취소하지 않는다. `testing_restriction_compliance=FAIL`만 admission `DENY`로 매핑되어 등록과 Chaining을 차단한다. 잇기 재료는 current `PrimitiveIndexState`에 등록된 Primitive이며 admission은 등록 시점에 한 번만 판정한다. `REQUIRED`/`PROVIDED` 같은 상태 이름은 쓰지 않고 `result` 유무로 구분한다.
 
 | id | 장면 | 기대 | 실패로 볼 것 |
 |---|---|---|---|
@@ -89,10 +89,13 @@ Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을
 | S-V-CHILD | Verification이 새 주장 | 새 쪽지로 재검증, 부모 불변 | 부모 TRUE에 합침 |
 | S-CHAIN-CHILD | upstream `result`가 downstream `input`을 채우는 짝 | 새 쪽지, 부모 불변 | 부모 판정을 바꿈. 우회 조사로 확장 |
 | S-TRUE-EARLY | validated PoC·Technical ACCEPT·admission ALLOW 전 TRUE를 잇기 | Technical `ACCEPT` + validated PoC + current `PrimitiveAdmissionDecision=ALLOW` 전 Primitive 등록·잇기 금지. `ACCEPT`여도 `DENY`면 등록하지 않음 | ACCEPT·ALLOW 전에 `result` Primitive로 등록하거나 잇기. `DENY`인데 등록·잇기 |
-| S-CHAIN-STALE | 오래된 Primitive/Gate revision이거나, 사용한 admission이 current가 아니거나 `DENY`로 바뀜 | `STALE_RESULT`, 저장 안 함. 부모 verdict를 FALSE/HOLD로 바꾸지 않음. 이미 만든 파생 결과는 감사 기록으로만 남김 | 옛 결과·옛/`DENY` admission으로 잇기. 파생 결과를 새 Verification·Gate·Primitive·Reporter 입력으로 씀 |
+| S-CHAIN-STALE | work가 고정하지 않은 Primitive/index reference가 결과에 섞임 | `STALE_RESULT`, 저장 안 함. 부모 verdict를 FALSE/HOLD로 바꾸지 않음 | 고정하지 않은 재료로 잇기 |
 | S-POLICY | 기술 TRUE + 공식 정책 없음 | 2번 문지기가 초안(보고)만 막음. Primitive 등록·잇기는 유지. 금지 테스트 `FAIL`이 아니면 admission을 `DENY`로 바꾸지 않음 | 추측 후 초안 작성. 또는 정책 없음으로 Primitive·잇기를 취소 |
+| S-POLICY-CACHE | 새 run 시작 때 정책 cache가 있거나 호환되지 않음 | program·source 설정·Parser 버전·freshness 기준·유효기간·exact closure가 모두 맞으면 cache 재사용, 하나라도 다르면 새 수집·파싱. 어느 경로든 새 `RunPolicyState` 생성 | 과거 `RunPolicyState` 직접 재사용, run 중 cache 재조회·정책 교체, 실패 결과를 cache로 게시 |
+| S-POLICY-UNVERIFIED | 공식 원문은 확인했지만 최신성을 확정하지 못함 | current `RunPolicyState=UNVERIFIED`. Rule Scope는 `UNCERTAIN + DENY`, Reporter는 차단. `LOCAL_ONLY` Sandbox는 계속 가능. FALSE/HOLD 아님 | 정책을 추정해 `CURRENT`·PASS/ALLOW로 승격하거나 Sandbox까지 차단 |
+| S-POLICY-FETCH-FAIL | 공식 출처 수집 또는 Parser가 재시도 뒤에도 실패 | 같은 `POLICY_FETCH` work를 `FAILED`와 `COLLECTION_FAILED`로 끝내고 Rule Scope review·Reporter는 만들지 않음. `LOCAL_ONLY` Sandbox와 기술 판정은 유지 | 실패를 `ABSENT`·FALSE/HOLD로 바꾸거나 성공 cache로 게시 |
 | S-SANDBOX-ENV | 필수 환경이 `MISMATCH` / `NOT_CHECKED` / `ERROR` | Agent가 recipe를 먼저 보완한다. 바깥 설정·정책을 기다릴 때만 `BLOCKED`. 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE`. `failure_category`는 환경. 최종 TRUE/FALSE/HOLD 없음 | 바로 판정으로 바꾸거나, 자율 보완 없이 무조건 시작 금지로만 적음 |
-| S-SANDBOX-POLICY | 요청한 상자 시간·네트워크 등이 profile 상한을 넘김 | Agent 미시작, `agent_invoked=false`. 공격 입력·관측 없음. 외부 profile 변경을 기다릴 때만 `BLOCKED`, 최종 거절이면 `FAILED`. `failure_category`는 정책. 자원이 없을 때만 `cleanup_status=NOT_REQUIRED`. 최종 판정 없음 | 실행 성공으로 적거나 TRUE/FALSE/HOLD로 바꿈. 실행 Agent 시작 기록이 있음 |
+| S-SANDBOX-POLICY | `RUN_SANDBOX`가 `LOCAL_ONLY` 격리·상자 시간·네트워크·외부 경계를 넘김 (program policy 준비 상태와 무관) | Agent 미시작, `agent_invoked=false`. 공격 입력·관측 없음. 외부 profile 변경을 기다릴 때만 `BLOCKED`, 최종 거절이면 `FAILED`. `failure_category=POLICY_BLOCKED`. 자원이 없을 때만 `cleanup_status=NOT_REQUIRED`. 최종 판정 없음. program policy unavailable·`BLOCKED`·`FAILED`·`UNVERIFIED` 자체는 이 차단 조건이 아님 | live asset·외부 계정·허용되지 않은 egress 실행, TRUE/FALSE/HOLD로 바꿈, 또는 program policy 준비 상태만으로 `LOCAL_ONLY` Sandbox Agent 차단 |
 | S-SANDBOX-EXEC | 승인된 profile 안에서 Agent가 돌던 중 실행 실패 | 같은 R7 Agent session의 조정은 현재 attempt에서 계속한다. session 재시작 때만 R8 한도 안에서 새 attempt를 만든다. 바깥 대기만 `BLOCKED`. 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE`. 반증·`FALSE` 금지 | 실패 = 반증 또는 HOLD |
 | S-SANDBOX-TIMEOUT | 승인된 시간 안에서 Agent가 돌다 시계가 끝남 | `FAILED + TIMEOUT`, `agent_invoked=true`. `agent_log_ref`와 당시 관측을 남김. cleanup 생략 금지. 자원이 생겼으면 `cleanup_status=SUCCEEDED \| FAILED`. 최종 판정 없음 | 시간 초과 = 반증·HOLD. cleanup을 건너뜀 |
 | S-CHAIN-STOP | 전역 예산 소진 | 중단 이유를 `AnalysisRunResult.stop_reasons`에 기록, FALSE 금지. 체이닝 전용 짝·깊이 한도는 없음. 순환 검사가 아님. 조상 Primitive 재사용 제외는 성립한 match의 정상 정리이며 `ChainingResult.excluded_lineage_refs`에 남기고 이 장면의 중단이 아님 | 중단을 구멍 없음으로 기록. 조상 제외·지문 중복을 중단 건수로 셈 |
@@ -125,7 +128,7 @@ Sandbox ENV/POLICY/EXEC/TIMEOUT은 동적 work의 `BLOCKED | FAILED`다. 최종 
 | HOLD Primitive | `required_primitive_candidates`가 있는 HOLD를 Gate 없이 `result=null` Primitive로 남김 | 목록이 있는데 Primitive를 안 남긴 횟수 0. HOLD에 `result`를 채워 확정처럼 쓴 횟수 0. 목록 없는 HOLD에 Primitive를 안 만든 것은 정상 |
 | TRUE admission | TRUE Primitive는 validated PoC + Technical `ACCEPT` + 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW` exact revision만 | `ACCEPT`·`ALLOW` 전 TRUE를 Primitive/잇기로 쓴 횟수 0. `DENY`인데 등록한 횟수 0. PoC 없는 TRUE 횟수 0 |
 | FALSE 잇기 | FALSE를 Chaining 재료로 씀 | 0 |
-| stale 잇기 | 옛 Primitive/Gate, 또는 사용한 admission이 current가 아니거나 `DENY`로 바뀐 잇기를 거절 | 거절 안 하고 저장한 횟수 0. 부모 verdict를 바꾼 횟수 0 |
+| stale 잇기 | work가 고정하지 않은 Primitive/index reference를 쓴 잇기를 거절 | 거절 안 하고 저장한 횟수 0. 부모 verdict를 바꾼 횟수 0 |
 | 부모 불변 | Chaining이 부모 판정을 바꿈 | 0 |
 | 잇기 중단 | 전역 예산으로 끊긴 횟수와 `AnalysisRunResult.stop_reasons`. 끊긴 것을 FALSE로 바꾼 횟수 | 이유는 기록. FALSE로 바꾼 횟수 0. 체이닝 전용 짝 한도로 끊은 횟수는 두지 않음. 조상 재사용 제외는 `excluded_lineage_refs`로 따로 관측하며 이 칸의 중단이 아님. 지문 중복은 세지 않음 |
 | 독립 session | 찬반이 상대 답·상대 session·낡은 결과를 본 횟수 | 0 |
@@ -133,12 +136,60 @@ Sandbox ENV/POLICY/EXEC/TIMEOUT은 동적 work의 `BLOCKED | FAILED`다. 최종 
 | debate 재시도 대기 | 재시도 가능한데 부모·가설을 바로 `FAILED`로 끝낸 횟수 | 0. 기대는 자식·부모 `BLOCKED`, 가설 `VERIFYING` |
 | debate 최종 실패 | 재시도 소진·복구 불가 뒤에도 최종 판정을 만든 횟수 | 0. 기대는 자식 `FAILED` 확정 후 부모·가설 `FAILED` |
 | 두 Gate | 문지기 전제 없이 초안 호출 | 0 |
+| 정책 상태 재사용률 | current run의 exact `RunPolicyState`를 사용할 수 있었던 `RUN_SANDBOX | RULE_SCOPE_GATE` work 중, 추가 Collect·Parse 없이 그 state를 사용한 비율 | 제안 0.80 이상(교차 전). 최초 준비와 다음 run의 만료 후 재준비는 소비 work가 아니므로 분모에서 제외 |
+| 정책 cache 재사용률 | run 시작 때 exact 호환성 검사를 통과한 유효 cache가 있던 `POLICY_FETCH` work 중, 추가 Collect·Parse 없이 run-local 결과를 만든 비율 | 별도 관측. 최초 준비와 만료·불일치·손상 cache의 재수집은 분모에서 제외 |
+| 불필요 Collect·Parse | 유효한 호환 cache가 있는데도 공식 원문 Collect 또는 Parser를 다시 실행한 work 수 | 0 |
+| 중복 정책 work | 같은 run의 current `RunPolicyState`가 이미 확정됐는데 새 `POLICY_FETCH` work를 등록한 수 | 0. 정상 cache hit도 run당 하나인 기존 `POLICY_FETCH` 안에서 처리 |
+| 정책 수집·Parser 실패 | 수집 실패와 Parser 실패를 원인별로 나누고 `BLOCKED` 재시도와 최종 `FAILED`를 분리 | 숨기지 않음. 실패를 `ABSENT`·FALSE/HOLD로 바꾼 횟수 0 |
+| 최신성 확인 실패 | 새 run에서 cache 거절 사유와 current `UNVERIFIED` 수, Rule Scope `UNCERTAIN + DENY`·Reporter 차단 수 | 숨기지 않음. `LOCAL_ONLY` Sandbox를 막은 횟수와 FALSE/HOLD로 바꾼 횟수는 0 |
+| run 정책 고정 | 준비 확정 뒤 같은 run에서 cache·collection·Parser·정책 record를 교체하거나 TTL을 다시 평가한 수 | 0 |
 | 사람 정답 대비 | 공장 답을 오프라인 사람 정답과 맞춤. 자동 lifecycle 아님 | 차이 이유 기록. 이 숫자가 공개·Gate·완료를 대신하지 않음 |
 | provider/model | 아래 재비교처럼 같은 장면으로 비교 | 품질 하락이면 그 설정 불합격 |
 | usage | token 숫자를 서비스가 안 줌 | 없음 + 이유. 지어내지 않음 |
 | 수집 금지 | 비밀번호·세션 비밀·숨은 생각을 평가/로그로 모은 횟수 | 0. `S-REDACT`는 가리기 실패 장면. 이건 모으지 말 것 |
 
 연결 발견사항: H-003.
+
+## 정책 최신성·재사용 (R8 versioned)
+
+정책 준비는 가설 Agent가 아니다. `CodeWorkspace.status=READY` 뒤 분석 단위 `POLICY_FETCH`가 AST/SAST와 병렬로 한 번 등록되고, 준비가 끝난 `RunPolicyState`를 그 run의 모든 가설이 공유한다. R8은 **다음 run에서 cache를 다시 쓸 기준**, **Collect/Parse 시간·재시도**, **재사용·실패 지표**를 정한다. 기준과 숫자는 `freshness_criterion_ref`가 가리키는 versioned R8 설정이며 아래 값은 **교차 전 초안**이다.
+
+### 최신성 근거와 Parser 호환성
+
+`ETag`, `Last-Modified`와 공식 출처 재확인 기록은 최신성 근거이고, 원문 `content_hash`는 확인한 내용의 식별자이며 `parser_version`은 cache 호환성과 재파싱 조건이다. “최근에 가져왔다”, 원문 hash가 같다는 사실 또는 Parser 버전만으로 최신성을 확정하지 않는다.
+
+- `freshness_evidence_refs`에는 공식 게시자와 출처를 다시 확인한 exact 근거를 둔다.
+- `freshness_checked_at`은 그 확인 시각이고 `freshness_valid_until`은 승인된 기준으로 계산한 다음 run 재사용 만료 시각이다.
+- Collector는 공식 출처가 지원하면 `ETag`·`Last-Modified`를 조건부 요청에 사용할 수 있다. 이 재확인은 아래 Policy Collect 60초·추가 재시도 2회 예산 안에서 수행한다. 응답이 없거나 최신성을 확인하지 못하면 cache를 유효하다고 보지 않는다.
+- Parser 이름·버전이 바뀌면 TTL이 남아 있어도 cache 호환성 검사를 통과하지 못하므로 새 수집·파싱 경로를 사용한다. 이것은 “정책이 오래됨” 판정이 아니라 구조 호환성 문제다.
+
+### TTL과 run 경계
+
+`freshness_valid_until = freshness_checked_at + freshness_ttl`로 계산한다. 기본 `freshness_ttl`은 `CURRENT | ABSENT` 모두 24시간이며 R8이 승인한 versioned `freshness_criterion_ref`로만 바꾼다. 프로그램·플랫폼별 override도 같은 설정의 새 revision으로 남기며 문서 숫자를 임의로 덮어쓰지 않는다.
+
+TTL 만료와 Parser 변경은 다음 run 시작의 cache 선택에만 적용하고, 확정된 `RunPolicyState`는 같은 run에서 다시 만료시키거나 교체하지 않는다. run 중 공식 정책 변경 신호를 받으면 정책 의존 action을 새로 허가하지 않고 새 analysis run을 요구하되, 이미 완료한 기술 판정과 격리된 local-only 실행 기록을 FALSE/HOLD로 바꾸지 않는다.
+
+### run 시작의 cache 선택
+
+실행 간 재사용 여부는 run-neutral `PolicyCacheRecord`로 판단하며 다른 analysis의 `RunPolicyState`를 직접 재사용하지 않는다.
+
+1. 새 run의 `POLICY_FETCH`가 시작될 때 cache를 정확히 한 번 조회한다.
+2. `program_id`, source 설정 hash, Parser 이름·버전, freshness 기준 hash, `freshness_valid_until > AnalysisRunState.started_at`, cache closure의 exact reference가 모두 맞으면 cache hit다.
+3. cache hit에서도 현재 analysis의 새 `PolicyCollectionResult`, 새 `ProgramPolicyRecord`(FOUND일 때), 새 `RunPolicyState`를 만들어 exact cache provenance에 연결한다. 새 Collect·Parse 호출은 없다.
+4. cache가 없거나 만료·설정 불일치·Parser 불일치·reference 손상이 있으면 같은 `POLICY_FETCH` work에서 공식 원문 수집과 Parser 호출을 수행한다. 거절 이유를 debug trace에 남긴다.
+5. 과거 `freshness_status=STALE` record는 current state나 Gate 입력으로 연결하지 않는다. 새 수집 뒤에도 최신성을 확정하지 못한 current `UNVERIFIED` state만 Rule Scope의 `UNCERTAIN + DENY`와 Reporter 차단에 사용한다.
+
+`LOCAL_ONLY` Sandbox는 policy freshness를 허가 근거로 사용하지 않으므로 정책 준비 실패·미확인·만료만으로 막거나 취소하지 않는다. 요청 당시 관측한 exact `RunPolicyState`는 감사 provenance로만 고정한다.
+
+### Collect·Parse 실패와 재시도
+
+Policy Collect는 최초 1회 뒤 최대 2회의 추가 재시도, Policy Parse는 최초 1회 뒤 provider·형식 오류에 최대 3회의 추가 재시도를 허용한다. 숫자는 “총 시도 횟수”가 아니라 최초 시도 뒤 허용하는 추가 횟수다.
+
+재시도 가능 오류는 같은 `POLICY_FETCH` work를 `BLOCKED`로 두고 새 attempt로 재개하며, 추가 재시도 소진 또는 복구 불가는 `FAILED`로 끝낸다. 성공하지 못한 attempt의 수집·Parser 결과와 오류는 이력에 남기되 cache로 게시하지 않는다. 최종 수집 실패는 `COLLECTION_FAILED`이며 Rule Scope review와 Reporter를 만들지 않는다. 이 오류들을 `ABSENT`, 가설 `FALSE | HOLD` 또는 정적 분석 성공으로 바꾸지 않는다.
+
+정책 재사용률의 분모는 run 시작 때 exact 호환성 검사를 통과한 유효 cache가 있던 `POLICY_FETCH` work 수이고, 분자는 추가 Collect·Parse 없이 그 cache로 run-local 결과를 만든 work 수다. 최초 정책 준비, 만료·불일치·손상 cache의 정상 재수집은 분모에서 제외한다.
+
+정책 상태 재사용률의 분모는 current run의 exact `RunPolicyState`를 사용할 수 있었던 `RUN_SANDBOX | RULE_SCOPE_GATE` work 수이고, 분자는 추가 Collect·Parse 없이 그 exact state를 사용한 work 수다. 최초 준비와 다음 run의 만료 후 재준비는 소비 work가 아니므로 이 분모에서도 제외한다.
 
 ## 역할별 자원 한도
 
@@ -169,8 +220,10 @@ token 상한은 없다. 분석 전체·모든 Agent·호출마다 동일하다. 
 
 | 역할 | 시간 | 재시도 (같은 요청) | 기타 | 초과 시 | 같이 정할 사람 |
 |---|---|---|---|---|---|
-| 분석 전체 | 120분 | — | 파이프라인 1–22 벽시계 1회. clone·정적 도구·가설·검증·Gate·초안을 포함한다. 역할 칸을 더해도 이 한도가 먼저다 | 새 work 금지. 진행 중 work는 `BUDGET_EXCEEDED`. 분석 `PARTIAL` 가능. FALSE 아님 | 성병찬 |
+| 분석 전체 | 120분 | — | 파이프라인 1–22 벽시계 1회. clone·정적 도구·**정책 준비**·가설·검증·Gate·초안을 포함한다. 역할 칸을 더해도 이 한도가 먼저다 | 새 work 금지. 진행 중 work는 `BUDGET_EXCEEDED`. 분석 `PARTIAL` 가능. FALSE 아님 | 성병찬 |
 | AST/SAST (`RUN_TOOL`) | 도구당 900초 | 1 | 파이프라인 3단계. 도구마다 work 하나. 같은 workspace에서 병렬. 도구 자체 timeout은 이 칸을 넘지 않는다. `02` 예시·도구 설정은 R2가 맞춘다. 실패·timeout ≠ 0건·안전함·FALSE | 그 도구 work 중단. `PARTIAL`/`FAILED` 가능. FALSE 아님 | 김나연 |
+| Policy Collect | 60초 | 추가 2회(최초 포함 총 3 attempt) | 비-LLM. 승인된 공식 URL만. 원문 bytes/hash·ETag·Last-Modified·게시 주체 고정. 가설마다 호출하지 않음. `(analysis_id, program_id, work_type=POLICY_FETCH)`당 active 1 | 재시도 가능이면 같은 work `BLOCKED`, 소진·복구 불가면 `FAILED`와 실제 `COLLECTION_FAILED`. FALSE/HOLD 아님 | 성병찬 |
+| Policy Parse | 180초 | provider·형식 오류 추가 3회(최초 포함 총 4 attempt) | LLM `POLICY_PARSER`. Collector가 고정한 exact 원문만. token 상한 없음(관측만). 모델 기억·검색 snippet·README로 정책 승격 금지 | 재시도 가능이면 같은 work `BLOCKED`, 소진·복구 불가면 `FAILED`; Rule Scope·Reporter 없음. FALSE/HOLD 아님 | 성병찬 |
 | Hypothesis | 180초 | 4 | — | 그 의심 중단, FALSE 아님 | 배승원 |
 | 코드 다시 꺼내기 | 45초 | — | 가설당 조회 24회. 같은 요청 재시도가 아니라 한 가설의 `code_request_id` 누적 상한이다. 다른 위치·관계 요청도 센다. 깊이 5, 조각 32개, 요청당 256KiB | 빈칸/조회 오류. FALSE 아님 | 김나연 |
 | Verification / debate | 종합 240초 / 찬반 각 180초 | 의심마다 찬반 각 1회 | 서로 다른 대화. Docker 요청 예산은 이 칸 | 초과 ≠ FALSE. 찬반 생략은 운영 불합격 | 임채민 |
@@ -182,7 +235,7 @@ token 상한은 없다. 분석 전체·모든 Agent·호출마다 동일하다. 
 
 ### Sandbox 정책 상한 (Sandbox Controller → `SANDBOX_POLICY_DENIED`)
 
-R7 `sandbox_profile_ref(data_kind=sandbox_profile)`가 network·격리와 CPU·RAM·디스크·PID·요청 가능 최대 시간을 소유한다. 구체 수치는 R7이 확정한다. 요청이 허용 범위를 넘으면 실행 중 timeout이 아니라 **입장 거절**(2번)이다. Runtime Validator는 exact R7 sandbox profile과 R8 `DynamicReproductionLifecycleProfile(data_kind=dynamic_reproduction_lifecycle_profile)` revision, 현재 work·attempt를 고정한다. `RUN_SANDBOX.input_refs`와 `ActionDecision.checked_config_refs`에는 두 profile이 모두 있고, `ActionRequest.sandbox_profile_ref`·`SandboxPolicyDecision.sandbox_profile_ref`는 같은 R7 revision, `ActionRequest.resource_profile_ref`·`SandboxPolicyDecision.resource_profile_ref`는 같은 R8 revision을 가리켜야 한다. Runtime Validator는 R8 호출 전 잔여 시간·새 attempt 한도를, Sandbox Controller는 R7 입장 정책·수치를 강제한다.
+R7 `sandbox_profile_ref(data_kind=sandbox_profile)`가 network·격리와 CPU·RAM·디스크·PID·요청 가능 최대 시간을 소유한다. 구체 수치는 R7이 확정한다. 요청이 허용 범위를 넘으면 실행 중 timeout이 아니라 **입장 거절**(2번)이다. Runtime Validator는 exact R7 sandbox profile과 R8 `DynamicReproductionLifecycleProfile(data_kind=dynamic_reproduction_lifecycle_profile)` revision, 현재 work·attempt를 authorization input으로 고정한다. `RUN_SANDBOX.input_refs`와 `ActionDecision.checked_config_refs`에는 두 profile이 모두 있고 각 R7/R8 profile reference가 같은 exact revision을 가리켜야 한다. `ActionRequest.run_policy_state_ref`와 `SandboxPolicyDecision.run_policy_state_ref`는 요청 당시 관측한 same exact policy state를 감사 provenance로 가리키되 `input_refs`·`checked_config_refs`에는 중복하지 않는다. Runtime Validator는 R8 호출 전 잔여 시간·새 attempt 한도를, Sandbox Controller는 검증 가능한 clone/same-attempt mock·fixture·격리 network를 포함한 `LOCAL_ONLY`·R7 입장 정책·수치를 강제한다. policy state 변경만으로 local-only action을 만료시키지 않는다.
 
 | 항목 | 상한 (초안) | 위반 시 |
 |---|---|---|
@@ -268,15 +321,18 @@ provider·model·session을 바꿀 때는 **이름이 아니라 정확한 식별
 ### Verification-owned exploration/chaining
 
 - Verification-origin material claim 수와 재검증 결과
-- ACTIVE VerificationAssignment, `required_primitive_candidates`가 비어 있지 않은 result 없는 HOLD Primitive, result 있는 Technical-accepted + current `PrimitiveAdmissionDecision=ALLOW` TRUE Primitive와 upstream result→downstream input match 수. 잇기 재료는 `source_primitive_match_id` 계보의 모든 result Primitive도 current `ALLOW`여야 하며, 사용한 admission은 `source_admission_refs`에 남긴다
+- ACTIVE VerificationAssignment, `required_primitive_candidates`가 비어 있지 않은 result 없는 HOLD Primitive, result 있는 Technical-accepted + current `PrimitiveAdmissionDecision=ALLOW` TRUE Primitive와 upstream result→downstream input match 수. 잇기 재료는 current index에 등록된 Primitive를 쓴다
 - Gate 전·Technical 비정상 TRUE admission 차단 수, `ACCEPT`인데 `DENY`라서 등록하지 않은 수, entity·privilege 근거 부족과 no-match reason
-- `source_primitive_match_id` 계보, 성립한 match의 조상 Primitive 재사용 제외(`excluded_lineage_refs`, 정상 정리), 부모 admission이 `DENY`로 바뀌어 파생 결과를 감사 기록으로만 남긴 수, R8 전체 예산 중단(`stop_reasons`). 지문 중복으로 끊긴 횟수는 세지 않음
+- `source_primitive_match_id` 계보, 성립한 match의 조상 Primitive 재사용 제외(`excluded_lineage_refs`, 정상 정리), R8 전체 예산 중단(`stop_reasons`). 지문 중복으로 끊긴 횟수는 세지 않음
 
 ### Gates/reporting
 
 - Technical `ACCEPT | REVISE | REJECT`와 `handoff_readiness`. `ACCEPT`↔`READY`, `REVISE | REJECT`↔`NOT_READY`는 R5가 이미 확정한 조합이다. R8은 그 불변조건을 **관측**할 뿐 Gate 의미를 새로 정하지 않는다. 조합이 틀리면 저장하지 않은 횟수를 센다.
 - Rule/Scope PASS/FAIL/UNCERTAIN, impact와 DENY 이유
-- 정책 수집의 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`, parser 실패, `ProgramPolicyRecord` 누락·오래된 정책 경고 상태
+- 실행 단위 `RunPolicyState` status·`preparation_source`·`freshness_valid_until`·criterion/evidence refs와 선택한 run-neutral cache exact reference
+- cache hit·miss·거절 사유, 유효 cache 기회·실제 재사용·불필요 Collect/Parse·같은 run의 중복 `POLICY_FETCH` 수
+- 정책 수집의 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`, Parser 오류, 추가 재시도 attempt와 `BLOCKED | FAILED`, `ProgramPolicyRecord` 누락·오래된 정책 경고 상태
+- `UNVERIFIED`로 Rule Scope `UNCERTAIN + DENY`·Reporter가 막힌 수와, 정책 문제만으로 `LOCAL_ONLY` Sandbox 또는 가설을 막거나 FALSE/HOLD로 바꾼 수를 **따로** 셈. 후자는 0이어야 함
 - Reporter 조건 통과/차단, current·stale ReportDraft, `ReportDraft` 저장 뒤 자동화 종료 상태. 사람 검토·공개는 Agent 자동화 밖이며 `AnalysisRunResult` 필드가 아니다. 오프라인 평가 정답만 별도로 쓸 수 있고 완료·Gate·초안 생성 조건으로 쓰지 않는다
 - Technical `REVISE` 횟수 (새 검증 세대)와 provider·형식 재시도를 따로 셈. Reporter `REVISE` 수는 없음
 
@@ -363,7 +419,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 
 ## AnalysisRunResult
 
-최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, INITIAL·VERIFICATION·CHAINING·invalid hypothesis 수, 중복 판정과 exact `hypothesis_duplicate_review_refs`, verdict별 수, `failed_hypothesis_count`, 두 Gate별 수, 동적 재현 request·result·recipe·환경·AgentLog·PoC candidate·validated PoC·cleanup·report refs, 정책 parser·수집 결과·공식 정책 record refs, Primitive/Chaining 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. 실패한 PoC candidate도 validated PoC로 승격하지 않은 채 request·attempt·AgentLog와 함께 추적한다. `failed_hypothesis_count`는 final verdict 없이 `HypothesisProcessState.status=FAILED`로 끝난 가설 수이며 verdict별 수와 섞지 않는다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
+최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, INITIAL·VERIFICATION·CHAINING·invalid hypothesis 수, 중복 판정과 exact `hypothesis_duplicate_review_refs`, verdict별 수, `failed_hypothesis_count`, 두 Gate별 수, 동적 재현 request·result·recipe·환경·AgentLog·PoC candidate·validated PoC·cleanup·report refs, current `run_policy_state_ref`, 정책 parser·수집 결과·공식 정책 record refs, Primitive/Chaining 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. 실패한 PoC candidate도 validated PoC로 승격하지 않은 채 request·attempt·AgentLog와 함께 추적한다. `failed_hypothesis_count`는 final verdict 없이 `HypothesisProcessState.status=FAILED`로 끝난 가설 수이며 verdict별 수와 섞지 않는다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
 
 필요한 Agent 작업과 trusted-runtime 결과 정규화가 종료되면 신뢰 runtime이 exact `AnalysisRunResult`를 만든다. Reporter가 실행된 경우에는 current `ReportDraft`를 포함하고, Reporter가 차단된 경우에는 `report_draft_refs=[]`와 차단 원인을 보존한다. 이 결과에는 Finding·Verification, 두 Gate, 정책·CWE, 동적 재현 request·result·recipe·환경·AgentLog·PoC candidate·redacted validated PoC·cleanup, current ReportDraft, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. current Finding은 두 Gate가 검토한 exact chain을 신뢰 runtime이 정규화한 record이며 새 verdict가 아니다. `report_permission=DENY` 등 정책 조건 미달로 Reporter가 차단돼도 current Finding은 `finding_refs`에 남고 `report_draft_refs=[]`로 종료 원인을 보존한다. Rule Scope review가 없거나(정책 `COLLECTION_FAILED`) chain이 아직 정규화 전이면 `finding_refs=[]`이며 이때도 Reporter를 호출하지 않고 관련 `REPORT_NOT_READY` 오류·상태를 보존한다. 결과와 `AnalysisRunState`를 atomic하게 확정하면 Agent 자동화가 끝난다.
 
@@ -398,7 +454,7 @@ ReportDraft가 가리킨 Finding·Verification·CWELabel·두 Gate·정책 중 �
 | PoC 실행 실패 | Agent가 같은 session의 현재 attempt에서 자율 조정하거나 session 재시작이 필요할 때만 R8 한도 안에서 새 attempt로 retry; 외부 대기일 때만 `BLOCKED`, 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE` | candidate와 AgentLog는 보존하되 validated `poc_ref=null`; `FALSE | HOLD`로 변환하지 않고 Gate 금지 |
 | Sandbox 실행 취소 | 공통 work와 동적 결과 `CANCELLED` | 취소 결과를 같은 atomic transition에서 저장하고 이후 늦은 결과는 격리 |
 | Sandbox 요청·plan·recipe·요구사항·정책·환경·AgentLog·PoC·cleanup의 attempt/digest 불일치 | 결과 저장 action `DENY` | same-attempt reference, event sequence/action 연결, candidate/validated PoC와 nullable lifecycle 조합까지 검사해 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
-| 정책 조회 실패 또는 정책 최신성 `STALE | UNVERIFIED` | policy work `FAILED` 또는 현재 상태 기록 | 기술 verdict 유지, Rule Scope `UNCERTAIN + DENY`, Reporter 차단. 오래된 정책은 감사 자료로만 보존 |
+| 정책 수집 실패 또는 수집 완료 뒤 최신성 확인 실패 | 수집 실패·collection 이전 중단은 `RunPolicyState.status=BLOCKED | FAILED`, exact `FOUND | ABSENT_CONFIRMED` collection을 만든 뒤 최신성만 확인하지 못하면 `UNVERIFIED`로 기록. `PolicyCollectionResult.status=COLLECTION_FAILED`와 구분 | 기술 verdict 유지. `COLLECTION_FAILED`와 collection 없는 중단에는 Rule Scope review가 없고, exact collection이 연결된 `UNVERIFIED`만 `UNCERTAIN + DENY`; Reporter 차단. 순수 로컬 Sandbox 이력은 실행 당시 state와 보존 |
 | Technical Gate 실행 오류·보완 한도 초과 | Gate work `FAILED` | 기술 verdict 유지, Rule Scope Gate와 Reporter 차단 |
 | Rule Scope Gate 실행 오류 | Gate work `FAILED` | 기술 verdict 유지, Reporter 차단 |
 | 보고서 작성 실패 | report work·`ReportProcessState` `FAILED` | Verification과 두 Gate 결과 유지, 초안만 실패 |
@@ -421,7 +477,7 @@ Context 조회 실패·timeout·권한 오류는 다음 기준으로 처리한�
 
 | code | 주 생산자 | 실행·상태에 미치는 영향 | 기본 복구 방향 |
 |---|---|---|---|
-| `INPUT_ERROR` | 입력 검증기 | 분석 시작 전 `FAILED` | 입력 수정 뒤 새 분석 |
+| `INPUT_ERROR` | 입력 검증기 | 분석 요청 거절; `AnalysisRunState`·work 없음 | 저장소·Git ref·내부 `program_id`를 바로잡아 다시 요청 |
 | `CLONE_FAILED` | Repository Loader | 분석 `FAILED`, AST/SAST 미실행 | 네트워크·권한 확인 뒤 새 분석 |
 | `CHECKOUT_FAILED` | Repository Loader | 분석 `FAILED`, AST/SAST 미실행 | 유효한 commit 확인 뒤 새 분석 |
 | `WORKSPACE_MISMATCH` | runtime validator | 해당 record 사용 금지 | 올바른 workspace·commit 결과 재요청 |
