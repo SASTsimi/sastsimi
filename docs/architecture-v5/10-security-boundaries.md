@@ -10,7 +10,7 @@
 
 ## 신뢰 실행 경계
 
-LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM Runtime Validator가 코드 근거의 `workspace_id`·`commit_id` 일치, 지원하는 schema MAJOR, `(logical_record_id, revision_number)` 연결, 역할·호출 권한, 상태 전이, retry/failover 선행 status와 time/cost/call/retry/work/chain budget, provider/session 선택, R5-01 CWELabel과 exact Verification의 provenance 연결, Gate가 읽은 Verification·CWELabel·정책 revision, Reporter 전제조건을 강제한다. token 계획값과 사용량은 관측하지만 token 초과·누락만으로 action을 차단하지 않는다. Runtime Validator는 exact `sandbox_profile_ref`와 `DynamicReproductionLifecycleProfile` revision을 고정하고 R8 lifecycle profile의 호출 전 잔여 시간과 새 attempt 한도를 검사한다. Sandbox Controller는 R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 실행 경계에 강제한다. 저장소 내용과 모든 LLM 출력은 validation 전까지 비신뢰 입력이며 policy 변경 명령으로 해석하지 않는다.
+LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM Runtime Validator가 코드 근거의 `workspace_id`·`commit_id` 일치, 지원하는 schema MAJOR, `(logical_record_id, revision_number)` 연결, 역할·호출 권한, 상태 전이, retry/failover 선행 status와 time/cost/call/retry/work/chain budget, provider/session 선택, R5-01 CWELabel과 exact Verification의 provenance 연결, Gate가 읽은 Verification·CWELabel·정책 revision, Reporter 전제조건을 강제한다. token 계획값과 사용량은 관측하지만 token 초과·누락만으로 action을 차단하지 않는다. Runtime Validator는 current `RunPolicyState`, exact `sandbox_profile_ref`와 `DynamicReproductionLifecycleProfile` revision을 고정하고 정책 만료와 R8 lifecycle profile의 호출 전 잔여 시간·새 attempt 한도를 검사한다. Sandbox Controller는 `LOCAL_ONLY`와 R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 실행 경계에 강제한다. 저장소 내용과 모든 LLM 출력은 validation 전까지 비신뢰 입력이며 policy 변경 명령으로 해석하지 않는다.
 
 ## 방향
 
@@ -90,8 +90,8 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - network는 default-deny이고 versioned profile이 허용한 egress만 연다. package 설치도 승인된 registry egress 안에서만 가능하다.
 - production credential, 실제 개인정보와 범위 밖 target을 사용하지 않는다. 환경 요구사항·실제 값·Health Check·AgentLog에도 credential·cookie·token·password 원문을 넣지 않고 필요한 경우 secret store의 불투명 handle만 연결한다.
 - R6의 `REQUEST_DYNAMIC_REPRO`는 Runtime Validator가 현재 Verification generation, exact request, 권한·상태·예산과 generation당 하나의 동적 work 제한을 확인한 뒤 R7에 전달한다.
-- `RUN_SANDBOX`는 Runtime Validator가 R7 Setup Automation의 권한·상태·예산, exact `DynamicReproductionRequest`·current `EnvironmentRequirements`·current exact `ReproductionPlan`·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile`을 확인하고 action `input_refs`와 `checked_config_refs`에 같은 exact revision을 고정한 `ActionDecision=ALLOW` 뒤 Sandbox Controller로 전달한다. plan revision이 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 처리하고 새 action을 만든다. 이 ALLOW는 정책 통과나 Docker 실행 성공을 뜻하지 않는다.
-- Sandbox Controller는 R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하고 exact `sandbox_policy_decision`을 저장한다. R8 lifecycle profile의 호출 전 잔여 시간·새 attempt 한도는 Runtime Validator가 강제한다. 컨테이너 내부 command·package·PoC를 allowlist로 검사하지 않는다.
+- `RUN_SANDBOX`는 Runtime Validator가 R7 Setup Automation의 권한·상태·예산, exact `DynamicReproductionRequest`·current `EnvironmentRequirements`·current exact `ReproductionPlan`·current `RunPolicyState`·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile`을 확인하고 action `input_refs`와 `checked_config_refs`에 같은 exact revision을 고정한 `ActionDecision=ALLOW` 뒤 Sandbox Controller로 전달한다. policy state, plan 또는 profile revision이 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 처리하고 새 action을 만든다. 이 ALLOW는 정책 의미 검토나 Docker 실행 성공을 뜻하지 않는다.
+- Sandbox Controller는 `execution_scope=LOCAL_ONLY`와 R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리, CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하고 exact `sandbox_policy_decision`을 저장한다. live program asset·외부 계정·허용되지 않은 egress는 차단한다. R8 lifecycle profile의 호출 전 잔여 시간·새 attempt 한도는 Runtime Validator가 강제한다. 컨테이너 내부 command·package·PoC를 allowlist로 검사하거나 정책 의미를 판정하지 않는다.
 - 정책을 통과하면 R7 Setup Automation이 저장소 선언을 우선한 recipe로 image build, container 생성·재사용·재생성과 cleanup을 수행한다. Docker build와 실행은 분석용 `CodeWorkspace`를 직접 수정하지 않고 Sandbox 내부 복사본에서 수행한다.
 - R7 Agent는 격리된 container 안에서 환경 설정, package, 계정, fixture/mock, PoC, command, 관찰과 재시도를 자율적으로 정한다. Agent는 Docker daemon을 직접 제어하지 않고 Setup Automation의 in-container 실행 통로만 사용한다.
 - 같은 가설·work에서는 영향 있는 상태·설정 변화가 없을 때만 container를 재사용한다. `STATE_CHANGED | CONFIG_CHANGED | STATE_UNCERTAIN`이면 재생성하며 crash·비정상 종료·사후 Health Check 실패는 runtime이 `STATE_UNCERTAIN`으로 강제한다.
@@ -103,11 +103,14 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 
 ## 6. 프로그램 정책 신뢰 경계
 
-- Policy Collector는 확인 가능한 공식 source만 `ProgramPolicyRecord`로 사용하고 source 확인 결과와 parser 실행 결과를 exact reference로 남긴다.
+- workspace가 준비되면 비-LLM Policy Collector와 LLM Policy Parser의 분석 단위 `POLICY_FETCH`를 정적 도구와 독립 병렬 실행한다. 같은 실행·program·generation에는 active work 하나만 두고 가설별 수집·파싱을 금지한다.
+- Policy Collector는 확인 가능한 공식 source만 원문으로 저장하고 source 확인 결과와 exact bytes/hash를 남긴다. Policy Parser는 그 exact 원문만 구조화하며 호출 기록을 `PolicyParserResult.llm_invocation_ref`로 남긴다.
+- `RunPolicyState`가 같은 실행의 current collection/policy record를 고정한다. 정책은 `StaticFactBundle`이나 Hypothesis 사전 scope 필터가 아니다.
 - 저장소 문서, 검색 snippet, 오래된 모델 지식과 비공식 요약을 공식 rule로 승격하지 않는다.
 - source URL/reference, 게시자 확인 근거, parser 이름·버전·결과, 수집 시각, 누락과 freshness 기준·근거·만료 시각을 보존한다.
 - `PolicyCollectionResult`는 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`를 구분한다. 공식 정책 부재를 확인한 경우에만 `ABSENT_CONFIRMED`이고, fetch·parser 실패는 `COLLECTION_FAILED`이며 Rule Scope review를 만들지 않는다.
 - 공식 자료가 없음을 확인했거나 `ProgramPolicyRecord.freshness_status=STALE | UNVERIFIED`이면 `UNCERTAIN + DENY`다. 오래된 record는 감사용으로 보존할 수 있지만 `PASS | ALLOW` 근거로 사용하지 않는다.
+- Runtime Validator는 Sandbox·Rule Scope·Reporter action 직전에 `freshness_valid_until`을 다시 확인한다. 만료되면 state를 `STALE`로 만들고 새 generation의 수집을 완료하기 전 정책 의존 action을 거절한다. 이미 끝난 순수 로컬 재현은 실행 당시 exact state와 함께 보존한다.
 - 확정 판단은 실제 정책 항목과 코드·동적 근거를 `RuleScopeEvidenceLink`로 연결한다. 판단을 막는 누락은 `PolicyMissingInfo`로 구조화하고 `blocks_allow=true`이면 공개 허용을 차단한다.
 
 ## 7. 근거·권한 연결
@@ -337,6 +340,9 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N42 | result Primitive에 current `admission_decision_ref`가 없거나 다른 Verification의 decision을 참조 | `SAVE_RESULT` 거절; same analysis·workspace·commit·hypothesis·Verification의 current ALLOW decision 요구 |
 | N43 | 이미 COMMITTED된 Chaining 자식·손자 뒤 부모 admission이 `DENY`로 변경됨 | `source_admission_refs`와 `source_primitive_match_id` 계보를 따라 파생 Primitive를 current index에서 제거하고 새 Verification·Gate·Primitive·Reporter 사용 차단; 과거 verdict와 결과는 감사 이력으로만 보존 |
 | N44 | `ChainingResult.source_admission_refs`가 실제 match의 direct·ancestor ALLOW decision 합집합과 다름 | `SAVE_RESULT` 거절; 누락·추가·중복·다른 계보 reference를 바로잡기 전 child 등록 금지 |
+| N45 | 정책 record를 `StaticFactBundle`에 넣거나 정책으로 Hypothesis proposal을 사전 삭제 | 저장·등록 거절; 정책 work를 static work와 분리하고 기술 가설은 검증 뒤 Rule Scope에서 판단 |
+| N46 | `RUN_SANDBOX`가 current `RunPolicyState` 없이 live asset·외부 계정·허용되지 않은 egress에 접근 | `DENY`; `LOCAL_ONLY`와 exact policy state를 고정한 새 action만 허용 |
+| N47 | 만료된 `RunPolicyState`를 최신 정책처럼 새 Sandbox·Rule Scope·Reporter action에 재사용 | 기존 action을 `EXPIRED`, state를 `STALE`로 확정하고 새 policy generation 준비. 새 action은 `LOCAL_ONLY` Sandbox와 `UNCERTAIN + DENY` Rule Scope만 허용하고 Reporter·`PASS | ALLOW` 금지 |
 
 ## 남는 위험
 

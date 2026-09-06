@@ -19,6 +19,8 @@ Runtime Validator는 취약점이 맞는지 새로 판단하는 Gate가 아닙�
 | 결정 | 담당 | 다른 역할이 할 수 없는 일 |
 |---|---|---|
 | 취약점 가설 | Hypothesis Agent | 확정 Finding 생성 |
+| 공식 정책 원문 수집 | 비-LLM Policy Collector | 저장소 문서·검색 snippet·모델 기억을 공식 원문으로 승격 |
+| 공식 정책 구조화 | LLM Policy Parser | Rule Scope 결론·Primitive admission·보고 허용 결정 |
 | `TRUE | FALSE | HOLD` | Verification Agent | Orchestration·Runtime이 대신 판정 |
 | 재현 목적·목표·필요 환경 요청과 최종 verdict | R6 Verification | R7이 요청 목적이나 verdict를 변경 |
 
@@ -28,7 +30,7 @@ Runtime Validator는 취약점이 맞는지 새로 판단하는 Gate가 아닙�
 | current Finding 정규화(두 Gate exact chain을 하나의 취약점 record로) | 신뢰 runtime | 새 verdict·impact 생성, Reporter eligibility와 혼동, stale Finding 재사용 |
 | 내부 보고서 초안 | Reporter Agent | Gate 우회·외부 제출 |
 | 일반 실행 허용·차단과 current request·requirements Sandbox 호출 전제 확인 | Runtime Validator | 환경 의미·취약점·CWE·정책 또는 Sandbox 외부 경계 판단 |
-| Sandbox 외부 격리 경계 검사 | Sandbox Controller | 환경 요구사항·재현 전략·내부 command·취약점 판정 변경 |
+| Sandbox 외부 격리 경계 검사 | Sandbox Controller | 정책 의미·scope·보고 가능성, 환경 요구사항·재현 전략·내부 command·취약점 판정 변경 |
 | recipe·image·container·환경 비교·cleanup 실행 | R7 Setup Automation | Agent의 취약점 해석, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
 | Sandbox 안에서 command·PoC·관찰·재시도 선택 | R7 Agent | 외부 격리 경계 변경 또는 최종 verdict 판단 |
 | AgentLog·validated PoC·동적 결과 확정 | Reproduction Session Manager | Agent 실행 전략 결정, 다른 attempt 자료 혼합 또는 참조만으로 성공 판단 |
@@ -94,7 +96,7 @@ Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아
 
 결과 저장 요청에는 결과 종류와 검사할 후보 파일의 정확한 hash를 함께 넣습니다. 프로그램 검사기는 그 결과를 만들 권한이 있는 역할인지, 현재 작업·시도·코드 버전과 같은지 확인합니다. 검사 뒤 후보 내용이 바뀌거나 다른 역할이 저장하려 하면 거절합니다. 저장이 완료된 결과와 작업 종료 기록이 같은 `COMMITTED` 전이에 연결된 뒤에만 다음 단계가 읽습니다.
 
-동적 재현 전에는 R6 Verification이 목적·목표·필요 환경·Sandbox profile·근거를 `DynamicReproductionRequest`로 고정합니다. R7 Agent는 exact 요청을 읽어 `EnvironmentRequirements`와 mode·exact command가 없는 `ReproductionPlan`을 만듭니다. Runtime Validator는 현재 generation에 동적 work가 하나뿐인지와 exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile`을 확인하며 R8 lifecycle profile의 호출 전 잔여 시간·새 attempt 한도를 검사하고 Sandbox Controller는 R7 sandbox profile의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제합니다. Setup Automation은 recipe·image·container·cleanup을 맡고 Agent는 Sandbox 안에서 PoC candidate·command·관찰·재시도를 자율적으로 정합니다. Reproduction Session Manager는 같은 attempt의 실제 event를 `AgentLog`에 남기고 validated PoC와 결과를 확정합니다. 성공한 `SUCCEEDED + SUPPORTED` 실행만 validated `poc_ref`를 만들며, 모든 final TRUE와 Technical Gate 요청에 이 PoC가 필요합니다. 같은 R7 Agent session의 command·PoC·환경 조정은 현재 attempt이고, session 재시작은 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개는 새 `attempt_id`·`trigger=RESUME`입니다. 외부 대기 중에만 `BLOCKED`이며 실패·정책 차단·환경 오류는 `FALSE | HOLD`로 바꾸지 않습니다.
+동적 재현 전에는 R6 Verification이 목적·목표·필요 환경·Sandbox profile·근거를 `DynamicReproductionRequest`로 고정합니다. 정책은 workspace 준비 뒤 비-LLM Collector와 LLM Parser가 실행당 한 번 준비한 current `RunPolicyState`를 사용합니다. R7 Agent는 exact 요청을 읽어 `EnvironmentRequirements`와 mode·exact command가 없는 `ReproductionPlan`을 만듭니다. Runtime Validator는 현재 generation에 동적 work가 하나뿐인지와 exact request·current requirements·current exact plan·current policy state·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile`을 확인하며 정책 만료와 R8 lifecycle profile의 호출 전 잔여 시간·새 attempt 한도를 검사합니다. Sandbox Controller는 `LOCAL_ONLY`, live asset·외부 계정·허용되지 않은 egress 차단과 R7 sandbox profile의 외부 접근·격리, CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하지만 정책 의미는 판단하지 않습니다. Setup Automation은 recipe·image·container·cleanup을 맡고 Agent는 Sandbox 안에서 PoC candidate·command·관찰·재시도를 자율적으로 정합니다. Reproduction Session Manager는 같은 attempt의 실제 event를 `AgentLog`에 남기고 validated PoC와 결과를 확정합니다. 성공한 `SUCCEEDED + SUPPORTED` 실행만 validated `poc_ref`를 만들며, 모든 final TRUE와 Technical Gate 요청에 이 PoC가 필요합니다. 같은 R7 Agent session의 command·PoC·환경 조정은 현재 attempt이고, session 재시작은 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개는 새 `attempt_id`·`trigger=RESUME`입니다. 외부 대기 중에만 `BLOCKED`이며 실패·정책 차단·환경 오류는 `FALSE | HOLD`로 바꾸지 않습니다.
 
 ## 자동화가 끝나는 지점
 

@@ -125,6 +125,7 @@ Pro/Con prompt는 trusted prompt builder가 역할별 template과 허용된 공�
 ## 역할별 모델 선택
 
 - Hypothesis Agent에는 저비용 모델 profile을 구성할 수 있다.
+- Policy Parser는 가설별 session이 아니라 분석 단위 policy work의 `NEW` session을 사용하고, 비-LLM Collector가 고정한 exact 공식 원문 reference만 context로 받는다. Parser 호출·provider·model·prompt·schema와 결과는 `PolicyParserResult.llm_invocation_ref`로 연결한다.
 - Verification, Chaining과 두 Gate에는 과업 위험도에 맞는 별도 profile을 구성할 수 있다.
 - 특정 역할의 가격 등급이 정확도를 보장하지 않는다.
 - 모델·provider 변경은 versioned configuration과 evaluation 대상으로 관리한다.

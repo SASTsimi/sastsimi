@@ -161,13 +161,15 @@ Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 `r
 
 ## 정책 수집 실패와 정책 부재를 구분합니다
 
+workspace 준비 뒤 정책은 정적 도구와 독립 병렬로 실행당 한 번 준비합니다. 비-LLM Policy Collector가 공식 원문과 hash를 고정하고 LLM Policy Parser가 그 exact 원문만 구조화합니다. `RunPolicyState`는 같은 실행의 모든 가설이 공유하는 current 정책 pointer이며 정책 record는 `StaticFactBundle`이나 Hypothesis 사전 scope 필터로 쓰지 않습니다.
+
 정책 수집 결과는 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 중 하나입니다.
 
 - `FOUND`: 공식 정책을 찾았고 구조화한 정책 record까지 연결했습니다.
-- `ABSENT_CONFIRMED`: 공식 출처를 실제로 확인했지만 사용할 정책이 없음을 확인했습니다. Gate는 `UNCERTAIN + DENY`로 기록할 수 있습니다.
+- `ABSENT_CONFIRMED`: 공식 출처를 실제로 확인했지만 사용할 정책이 없음을 확인했습니다. 이 부재 확인에도 유효기간을 두며, Gate는 유효한 exact 확인을 `UNCERTAIN + DENY`로 기록할 수 있습니다.
 - `COLLECTION_FAILED`: 접속 또는 parser가 실패해 정책 유무를 확인하지 못했습니다. 이 경우 Rule Scope Gate 결과를 만들지 않습니다.
 
-정책 record에는 공식 출처 확인 근거, parser 이름과 버전, 최신성 검사 기준·근거·만료 시각을 남깁니다. `CURRENT`는 이 값이 모두 있고 아직 만료되지 않았을 때만 가능합니다. 기준값과 재수집 주기는 R8 설정을 사용하고, Runtime Validator는 Gate와 Reporter 호출 직전에 만료 여부를 다시 검사합니다.
+정책 record에는 공식 출처 확인 근거, parser 이름과 버전·실제 LLM 호출 reference, 최신성 검사 기준·근거·만료 시각을 남깁니다. `CURRENT`는 이 값이 모두 있고 아직 만료되지 않았을 때만 가능하며, `ABSENT` state도 기준·확인 시각·근거·만료 시각을 가집니다. 기준값과 재수집 주기는 R8 설정을 사용하고, Runtime Validator는 Sandbox·Gate·Reporter action 직전에 만료 여부를 다시 검사합니다. 만료 중에는 `LOCAL_ONLY` Sandbox와 `UNCERTAIN + DENY` Rule Scope만 허용하고 Reporter는 차단합니다. Sandbox Controller는 외부 격리를 강제할 뿐 정책 의미를 판정하지 않습니다.
 
 Rule Scope Gate가 `PASS`, `FAIL`, `SUFFICIENT`, `INSUFFICIENT`를 선택하면 `RuleScopeEvidenceLink`로 실제 정책 항목과 코드·실행 근거를 연결해야 합니다. 정보가 부족하면 `PolicyMissingInfo`에 부족한 영역과 이유를 남깁니다. 그 누락이 공개 허용을 막는 항목이면 `blocks_allow=true`로 기록하고 `ALLOW`를 저장하지 않습니다.
 

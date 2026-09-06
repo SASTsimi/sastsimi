@@ -18,6 +18,9 @@ flowchart TB
     S02 --> WORK[CodeWorkspace READY]
     WORK --> S03A[3 AST parse]
     WORK --> S03B[3 SAST tools]
+    WORK --> PCOL[3 Policy Collector fetches official source once per run]
+    PCOL --> PPAR[LLM Policy Parser structures exact source]
+    PPAR --> RPS[RunPolicyState]
     S03A --> S04[4 StaticFactBundle]
     S03B --> S04
     S04 --> S05[5 Orchestration starts initial hypothesis work]
@@ -36,6 +39,7 @@ flowchart TB
     DREQ2 --> DWAUTH
     DWAUTH --> DR7[R7 Agent creates Requirements and simple Plan]
     DR7 --> DAUTH[Runtime authorizes external Sandbox boundary]
+    RPS -. current exact policy state .-> DAUTH
     DAUTH --> DCTRL[Controller checks host Docker secret egress resource boundaries]
     DCTRL --> DPD[Exact SandboxPolicyDecision]
     DPD -->|Pass| DENV[Setup Automation builds recipe and prepares clean environment]
@@ -68,7 +72,8 @@ flowchart TB
     S15 -->|REVISE| S16[16 Same assignment starts new Verification work and revision]
     S16 --> S09
     S15 -->|REJECT| S22[22 Store results logs PoC errors debug]
-    S15 -->|ACCEPT| S17[17 Policy collection and Rule Scope review]
+    S15 -->|ACCEPT| S17[17 Reuse current policy and run Rule Scope review]
+    RPS -. current exact policy state .-> S17
     S17 --> ADEC{PrimitiveAdmissionDecision}
     ADEC -->|ALLOW| PADMIT[Result Primitive admitted]
     ADEC -->|DENY confirmed prohibited test| S22
@@ -183,6 +188,7 @@ flowchart TB
     CREQ --> ONE[Runtime allows one work per Verification generation]
     VREQ --> ONE
     ONE --> R7PLAN[R7 Agent creates Requirements and simple Plan]
+    RPS4[Current RunPolicyState] -. exact run policy input .-> AUTH
     R7PLAN --> AUTH[Runtime authorizes external Sandbox boundary]
     AUTH --> CTRL[Controller checks host Docker secret egress and resource boundaries]
     CTRL --> PDEC[Exact SandboxPolicyDecision]
@@ -225,7 +231,7 @@ flowchart TB
     TECH -->|REVISE| SAME[Same assignment new Verification work and revision]
     SAME --> VR
     TECH -->|REJECT| NOCHAIN[No Chaining]
-    TECH -->|ACCEPT| COLLECT[PolicyCollectionResult]
+    TECH -->|ACCEPT| COLLECT[Current RunPolicyState and PolicyCollectionResult]
     COLLECT -->|FOUND or ABSENT_CONFIRMED| RULE[Rule Scope Impact Gate]
     COLLECT -->|COLLECTION_FAILED| ADMIT[Primitive Admission Runtime]
     RULE --> ADMIT
@@ -262,7 +268,7 @@ flowchart TB
     BACK --> NEWGEN[New Verification generation and new validated PoC]
     NEWGEN --> VR
     TS -->|REJECT| BLOCK[Report blocked]
-    TS -->|ACCEPT| COLLECT[PolicyCollectionResult]
+    TS -->|ACCEPT| COLLECT[Current RunPolicyState and PolicyCollectionResult]
     COLLECT -->|FOUND plus current policy| RULE[Rule Scope Impact Gate Agent]
     COLLECT -->|ABSENT_CONFIRMED| UNCERTAIN[Rule and scope UNCERTAIN permission DENY]
     COLLECT -->|COLLECTION_FAILED| ARUN[R4 Primitive Admission Runtime]
@@ -436,7 +442,7 @@ flowchart LR
     DOMAIN[Verification Gates and Reporter keep domain decisions] -. not decided by validator .-> CHECK
 ```
 
-Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 Setup Automation 권한·상태·예산·exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` revision을 고정한다. plan 또는 profile revision이 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 처리한다. host·Docker daemon/socket·mount/namespace·secret·egress·workspace 외부 경계는 Sandbox Controller가 검사하고 내부 command는 Agent가 자율적으로 정한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
+Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 Setup Automation 권한·상태·예산·exact request·current requirements·current exact plan·current `RunPolicyState`·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` revision을 고정한다. policy state, plan 또는 profile revision이 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 처리한다. `LOCAL_ONLY`와 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 외부 경계는 Sandbox Controller가 검사하고 내부 command는 Agent가 자율적으로 정한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
 
 ## 13. ReportDraft와 Agent 자동화 종료 경계
 
