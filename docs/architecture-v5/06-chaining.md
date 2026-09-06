@@ -73,7 +73,7 @@ PrimitiveIndexState:
   updated_at: timestamp
 ```
 
-가설마다 하나의 index가 current final Verification과 그 결과에서 만든 Primitive exact reference를 가리킨다. REQUIRED/PROVIDED 목록, 별도 `state_version`, 사후 ACTIVE/SUPERSEDED 상태는 사용하지 않는다.
+가설마다 하나의 index가 current final Verification과 그 가설이 등록한 모든 Primitive exact reference를 가리킨다. index 갱신은 Primitive를 더하기만 하며 등록된 Primitive를 빼는 경로를 두지 않는다. REQUIRED/PROVIDED 목록, 별도 `state_version`, 사후 ACTIVE/SUPERSEDED 상태는 사용하지 않는다.
 
 동시에 index를 쓰면서 결과가 사라지지 않도록 공통 immutable record 규칙은 유지한다. 새 revision은 바로 전 `record_id`와 연속된 `revision_number`를 사용하고 current pointer를 원자적으로 바꾼다. 이는 모든 record에 적용되는 저장 안전 규칙이며 체이닝 전용 CAS나 사후 자격 변경 절차가 아니다.
 
