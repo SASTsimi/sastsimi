@@ -89,13 +89,13 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **F-STA (저장소·정적 분석·Context)**: run R-A, CodeWorkspace W-A/C-A가 READY. AST/CodeQL/OpenGrep는 K-AST/K-CQL/K-OG와 서로 다른 attempt를 사용한다. 각 raw artifact·ToolRunResult·규칙 도구의 RuleExecutionRecord가 같은 workspace/commit과 자기 도구 attempt에 연결된다. 정규화 bundle B1, Context 요청 QCTX1/응답 CTX1/fragment X1은 이 코드 범위를 사용한다. 아직 가설이 없는 정적 단계에서는 hypothesis_id=null.
 - **F-HYP (가설 등록·배정)**: current COMMITTED StaticFactBundle B1과 INITIAL proposal candidate HP1, exact 근거 refs·질문·제약·missing information을 준비한다. 등록 뒤 H-A와 ACTIVE Assignment AS1이 생긴다. Verification 등록은 H-A/HP1/PlaybookPolicy PP1/VerificationPlaybook PB1을 고정하고 PlaybookApplication PA1을 생성한다. 각 시험은 등록 전/후 중 본문이 지정한 지점에서 시작한다.
 - **F-LLM (Prompt·Provider·session·권한)**: 정상 역할 HYPOTHESIS의 consumer work K-H/active attempt A-H. exact template/payload P1/LLMCallSpec S1/ProviderProfile PV1 및 ALLOW 후 USED decision AD1을 준비한다. 실제 outbound request O1은 S1과 필드별 동일하다. fake adapter는 미리 정한 성공/실패 응답만 반환한다. PR97의 Registry 세부 필드는 F-PR에서만 사용한다.
-- **F-VER (Pro/Con·최종 판정·REVISE)**: ACTIVE owner AS1, hypothesis H-A=VERIFYING, VERIFICATION work KV1/generation G1, 같은 고정 B1/CTX1/PP1/PB1/PA1 및 debate 설정. PRO work KP1/attempt AP1/session SP1과 CON KC1/AC1/SC1은 서로 다르며 common input hash DH1만 동일하다. 각각의 result EPRO1/ECON1은 자기 work의 COMMITTED output. final TRUE용 DX1/POC1은 F-DYN의 정상 chain이다.
+- **F-VER (Pro/Con·최종 판정·REVISE)**: ACTIVE owner AS1, hypothesis H-A=VERIFYING, VERIFICATION work KV1/generation G1, 같은 고정 B1/CTX1/PP1/PB1/PA1 및 versioned debate 설정 DP1. 기본 run은 `purpose=PRODUCTION`, `verification_mode=ALWAYS_DEBATE`, `debate_triggers=[]`, `debate_skip_reason=null`이다. PRO work KP1/attempt AP1/session SP1과 CON KC1/AC1/SC1은 서로 다르며 common input hash DH1만 동일하다. 각각의 result EPRO1/ECON1은 자기 work의 COMMITTED output. final TRUE용 DX1/POC1은 F-DYN의 정상 chain이다. 평가 변형은 별도 `purpose=EVALUATION` run과 비어 있지 않은 exact `eval_config_refs`를 사용하며 운영 결과와 섞지 않는다.
 - **F-DYN (동적 재현·Sandbox·PoC)**: H-A의 verification generation G1 아래 exact DynamicReproductionRequest DQ1과 단 하나의 DYNAMIC_REPRO work KD1. 현재 attempt ADYN1, 같은 session SD1에 requirements ER1/plan PL1/recipe RC1/environment ENV1/SandboxPolicyDecision SPD1/AgentLog LOG1/candidate PC1/validated PoC POC1/결과 DX1를 연결한다. R6 request의 producer attempt와 R7 실행 attempt를 같다고 강요하지 않는다. recipe의 baseline 재사용은 새 시도 연결 검사를 따로 수행한다.
 - **F-GAT (CWE·두 Gate·정책·Finding)**: H-A TERMINAL, exact final TRUE V1, current generation DX1(SUCCEEDED,SUPPORTED)/POC1, V1을 직접 가리키는 current CWELabel CW1. Technical TG1(ACCEPT)은 V1/CW1을, 정책 수집 COL1과 RuleScope RS1은 같은 V1/CW1/TG1/policy chain을 참조한다. 기본 COL1=FOUND/ProgramPolicyRecord POL1 존재. 기본 RS1 6축은 PASS/PASS/PASS/PASS/SUFFICIENT/ALLOW. 각 case가 지정한 완료 직전부터 시작한다.
 - **F-CHN (Primitive·Chaining·자식)**: 같은 R-A/W-A/C-A의 가설 HA(TRUE)와 HB(HOLD), 각각 current Primitive PRA(result 있음)/PRB(inputs 있음,result=null), initial origins. PRA는 Technical ACCEPT와 current ALLOW admission ADA를 가진다. PrimitiveUpdate COMMITTED 뒤 trigger/index refs를 고정한 CHAINING work KCH1(RUNNING/active ACH1), pair PRA.result→PRB.inputs의 draft_id를 matched_input_id로 사용한다. ancestor 추가 변형에는 source match와 parent hypothesis/result를 모두 연결한다.
 - **F-REP (Reporter·집계·사람 경계)**: F-GAT 정상 closure에서 trusted Finding normalization이 만든 current Finding FN1 및 FindingIndexState FI1. Reporter가 참조하는 V1/CW1/TG1/RS1/COL1/POL1/DX1/POC1이 모두 동일. ReportDraft 후보 RD1에 restriction/limitation/provenance 보존. 기본 종료 run에는 RUNNING work/미복구 PREPARED/잘못된 pointer가 없고 다른 실패도 없다. 변형마다 필요한 부분만 변경한다.
 - **F-BUD (예산·관측성)**: AnalysisRunState 시작 때 versioned eval_config_refs ESET1 고정. 작업 ActionDecision.checked_config_refs는 필요한 정확한 부분집합, budget/lifecycle/sandbox profile은 각각 별도 ref. monotonic 실행 시간과 provider가 공개한 usage만 입력한다. token 계획값과 실제 사용량, R7 입장 보호 설정과 R8 실행 lifecycle 한도를 분리한다.
-- **F-PR (미병합 Provider·Prompt 제안 시험)**: 기준 main 공통 fixture에 #96@01799bb 및 #97@803f586 문서에서 제안한 profile/Registry/assessment/tool-loop slot을 덧붙인 별도 계획 fixture다. 실제 profile/template/schema/validator 파일이 존재하거나 실행 가능하다는 뜻이 아니다. PR 시험은 본문의 pending 상태를 그대로 따른다.
+- **F-PR (미병합 Provider·Prompt 제안 시험)**: 기준 main 공통 fixture에 #96@a8d8a4e 및 #97@83f7797 문서에서 제안한 profile/Registry/assessment/tool-loop slot을 덧붙인 별도 계획 fixture다. 실제 profile/template/schema/validator 파일이 존재하거나 실행 가능하다는 뜻이 아니다. PR 시험은 본문의 pending 상태를 그대로 따른다.
 
 ## 3. 22단계 coverage 색인
 
@@ -110,17 +110,17 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 | 5 | 초기 work 등록·고정 입력 | HYP-001~002 |
 | 6 | Hypothesis 호출 | LLM-001~008 |
 | 7 | proposal 검증·중복·등록 | HYP-001~004 |
-| 8 | Verification 배정·application | HYP-001/005, VER-001 |
+| 8 | Verification 배정·application·운영 mode preflight | HYP-001/005, VER-001/008 |
 | 9 | Context·자식 계보 | STA-006~007, CHN-008 |
-| 10 | Pro/Con 독립·합류 | VER-001~004 |
-| 11 | initial 판단·동적 요청 | VER-006, DYN-001~002; PR-002는 제안 |
+| 10 | Pro/Con 정책·독립·합류 | VER-001~004, VER-008~011 |
+| 11 | initial 판단·동적 요청 | VER-006/009/011, DYN-001~002; PR-002는 제안 |
 | 12 | R7 동적 실행 | DYN-001~008; PR-001/005는 제안 |
-| 13 | 최종 판정 | VER-005~006 |
+| 13 | 최종 판정·근거 집합 완전성 | VER-005~006, VER-009~013 |
 | 14 | FALSE/HOLD/TRUE 분기·CWE | CHN-001, GAT-001~003 |
 | 15 | Technical Gate | GAT-001~003 |
 | 16 | REVISE 새 generation | VER-007 |
 | 17 | 정책·Rule Scope·admission | GAT-004~006 |
-| 18 | Primitive·Chaining | CHN-001~007; PR-003~004 미결정/제안 |
+| 18 | Primitive·Chaining | CHN-001~007; PR-003~004 미병합 제안 |
 | 19 | Finding 정규화·보고 자격 | GAT-007~008, REP-002 |
 | 20 | 새 material child 등록 | HYP-001~004, CHN-008 |
 | 21 | ReportDraft | REP-001~004 |
@@ -790,6 +790,102 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **12. 실행 계층**: contract / integration / E2E
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R6·R4·R7·R5. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
 
+#### R3-CT-VER-008 — 운영 목적의 Debate mode 강제
+
+- **1. ID·유형·설명**: R3-CT-VER-008 / 정상·부정 / 운영 목적의 Debate mode 강제
+- **2. 단계·계약 경계**: 1, 5, 8, 10; AnalysisRunState purpose·Verification 등록·Debate preflight
+- **3. producer → consumer**: Analysis Entry의 고정 purpose·versioned Debate 설정 → Orchestration / Verification Runtime
+- **4. 선행 상태·exact refs**: F-VER(§2.3)의 정상 `purpose=PRODUCTION`, DP1과 exact run/work/application refs. 각 변형은 mode만 바꾸고 다른 입력은 고정한다.
+- **5. 정상/잘못된 fixture**: A는 `PRODUCTION + ALWAYS_DEBATE`; B는 `PRODUCTION + BASIC`; C는 `PRODUCTION + CONDITIONAL_DEBATE`. B/C가 평가에서 가능하다는 이유로 운영 run에 사용되는지 검사한다.
+- **6. 검사 주체**: Analysis Entry + Orchestration / Runtime Validator의 purpose·mode preflight; R6는 mode 허용 규칙의 의미 검토
+- **7. 허용·차단·격리 기대**: A만 Analysis/Verification 등록과 두 child 준비 허용. B/C는 Provider 호출 전에 분석 또는 Verification 등록을 차단하며 `ALWAYS_DEBATE`로 조용히 바꿔 계속하지 않는다.
+- **8. work·attempt·가설 기대**: A는 정상 Verification 진행. B/C에는 유효 Verification child work·attempt·final result를 만들지 않고 기존 가설 verdict를 변경하지 않는다.
+- **9. 오류·DataGap 기대**: purpose·mode 계약 위반. exact 오류·상태 매핑은 Q-02이며 `FALSE | HOLD` 근거가 아니다.
+- **10. 저장·갱신 금지 pointer**: 거절된 설정을 current run/Verification 설정으로 확정하지 않고 Pro/Con·final·Gate·Primitive·Reporter pointer를 만들지 않는다.
+- **11. FALSE 변환 금지**: 운영 mode 오류를 취약점 반증 또는 불확실 판정으로 변환하지 않는다. Runtime은 전문 verdict를 대신 생성하지 않는다.
+- **12. 실행 계층**: contract / integration / security-negative
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R6·R4·R8. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
+
+#### R3-CT-VER-009 — 운영 ALWAYS_DEBATE 실행 완전성과 예산 부족
+
+- **1. ID·유형·설명**: R3-CT-VER-009 / 부정 / 운영 ALWAYS_DEBATE 실행 완전성과 예산 부족
+- **2. 단계·계약 경계**: 8, 10, 13; Debate preflight·두 child 실행·final 합성
+- **3. producer → consumer**: Orchestration / PRO·CON child work → Verification join·final 저장
+- **4. 선행 상태·exact refs**: F-VER(§2.3)의 운영 `ALWAYS_DEBATE`; 정상은 두 최초 호출을 시작할 권한·시간·비용·호출/work 예산이 있고 triggers는 `[]`, skip reason은 `null`이다.
+- **5. 정상/잘못된 fixture**: A는 Pro와 Con 모두 실행·합류. B는 Pro만 실행, C는 Con만 실행, D는 Pro/Con 시작 전 실제 비-token 예산 부족인데 한쪽 또는 둘 다 생략하고 final 후보를 제출한다. 별도 변형으로 `debate_triggers`를 채우거나 skip reason을 기록한다.
+- **6. 검사 주체**: R8 budget preflight + Orchestration child 등록 + Runtime Validator exact join + R6 semantic validator
+- **7. 허용·차단·격리 기대**: A만 final 합성 진행. B/C는 누락 child 때문에 저장 차단. D는 어느 child도 시작하지 않고 현재 Verification을 실제 예산 상태로 중단한다. mode를 BASIC으로 낮추거나 단독 결과로 계속하지 않는다.
+- **8. work·attempt·가설 기대**: B/C는 누락 child 복구 가능성에 따라 부모 BLOCKED 또는 실패 전파 계약을 적용하고 hypothesis는 임의 TERMINAL이 되지 않는다. D는 `BUDGET_EXCEEDED`, final result 없음. 새 예산 승인 시 새 work 규칙을 따른다.
+- **9. 오류·DataGap 기대**: D는 `BUDGET_EXCEEDED`; B/C 및 mode 기록 모순의 exact 오류는 Q-02. token 계획 초과·usage 미제공만으로 D를 만들지 않는다.
+- **10. 저장·갱신 금지 pointer**: 한쪽 EvidenceAgentResult history는 보존할 수 있으나 final/current Verification·CWE·Gate·Primitive·Reporter pointer 갱신은 금지한다.
+- **11. FALSE 변환 금지**: Pro/Con 누락과 예산 부족은 실제 반증이 아니므로 `FALSE | HOLD` 결과를 만들지 않는다.
+- **12. 실행 계층**: contract / integration / E2E / security-negative
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R6·R4·R8. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
+
+#### R3-CT-VER-010 — 평가 결과의 운영 경계 차단
+
+- **1. ID·유형·설명**: R3-CT-VER-010 / 부정 / 평가 결과의 운영 Gate·Primitive·Reporter 사용 차단
+- **2. 단계·계약 경계**: 10, 13–15, 17–21; EVALUATION provenance와 운영 후속 입력 권한
+- **3. producer → consumer**: EVALUATION Verification 결과 → Technical Gate / Primitive Admission / Reporter 요청
+- **4. 선행 상태·exact refs**: 별도 `purpose=EVALUATION` run에 exact 비어 있지 않은 eval_config_refs를 고정한다. BASIC 또는 CONDITIONAL_DEBATE 평가 결과를 정상적으로 저장하되 운영 F-GAT/F-REP와 analysis identity를 섞지 않는다.
+- **5. 정상/잘못된 fixture**: A는 평가 결과를 품질·비용 비교 자료로만 조회한다. B/C/D는 같은 평가 결과 또는 그 복사본을 각각 Gate, Primitive admission, Reporter의 input/evidence ref로 제출한다. E는 purpose만 PRODUCTION으로 바꿔 재포장한다.
+- **6. 검사 주체**: Runtime Validator의 purpose·analysis·authority·exact reference 검사 + 각 Gate/Admission/Reporter 전용 입력 검사
+- **7. 허용·차단·격리 기대**: A만 평가 저장/비교 허용. B~E는 후속 action·LLM 호출·결과 저장 전 차단한다. 평가 결과를 운영 결과로 복제하거나 current 운영 pointer로 승격하지 않는다.
+- **8. work·attempt·가설 기대**: 평가 work의 실제 완료 상태는 유지할 수 있으나 운영 가설·Gate·Primitive·Report 상태는 불변이다.
+- **9. 오류·DataGap 기대**: purpose/authority/reference 계약 위반의 exact 오류는 Q-02. 평가 결과 자체를 실패·FALSE로 바꾸지 않는다.
+- **10. 저장·갱신 금지 pointer**: 평가 provenance와 eval_config_refs는 보존하되 운영 current Verification·Gate·PrimitiveIndexState·Finding/report pointer 갱신은 모두 0이다.
+- **11. FALSE 변환 금지**: 평가 결과 차단은 취약점 의미 판정이 아니다. 운영 verdict를 새로 만들거나 기존 verdict를 덮어쓰지 않는다.
+- **12. 실행 계층**: contract / integration / security-negative
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R6·R4·R5·R8. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
+
+#### R3-CT-VER-011 — 평가 mode의 trigger·실행·skip reason 조합
+
+- **1. ID·유형·설명**: R3-CT-VER-011 / 정상·부정 / 평가 CONDITIONAL_DEBATE·BASIC 기록 정합성
+- **2. 단계·계약 경계**: 8, 10, 13; EVALUATION Debate 정책·Pro/Con 실행·VerificationResult 기록
+- **3. producer → consumer**: versioned Debate trigger 평가 → Orchestration / PRO·CON → VerificationResult 저장 검사
+- **4. 선행 상태·exact refs**: `purpose=EVALUATION`, exact DP-EVAL1과 eval_config_refs를 고정한다. trigger code는 승인된 설정에 있는 값만 사용하며 중복 없이 기록한다.
+- **5. 정상/잘못된 fixture**: 정상 A는 CONDITIONAL+trigger 충족+두 Agent 실행+충족 code+skip null, 정상 B는 CONDITIONAL+trigger 없음+미실행+`[]`+`NO_TRIGGER_MATCH`, 정상 C는 BASIC+미실행+`[]`+`MODE_BASIC`. 부정 변형은 trigger가 있는데 생략, trigger가 없는데 실행, 실행하면서 skip reason 기록, 생략하면서 skip reason null, BASIC에서 호출 또는 임의 trigger 기록이다.
+- **6. 검사 주체**: trusted trigger evaluator + Orchestration 호출 spy + Runtime Validator + R6 semantic validator
+- **7. 허용·차단·격리 기대**: A~C의 정확한 조합만 평가 결과 저장 허용. 부정 변형은 Provider 호출 전 또는 결과 저장 전에 차단하며 Runtime이 trigger/skip reason을 추정 보정하지 않는다.
+- **8. work·attempt·가설 기대**: A는 두 child 성공 뒤 평가 합성, B/C는 child work 없이 평가 Verification만 정상 완료 가능. 부정 변형은 current 평가 result로 연결하지 않는다.
+- **9. 오류·DataGap 기대**: mode·trigger·skip 기록 semantic 위반. exact 오류는 Q-02이며 운영 FALSE/HOLD와 무관하다.
+- **10. 저장·갱신 금지 pointer**: 정상 평가 result에는 실제 조합과 eval refs를 보존. 부정 후보·관계없는 trigger·누락 skip reason은 current pointer 갱신 금지.
+- **11. FALSE 변환 금지**: 평가 mode의 기록 오류나 호출 생략은 운영 취약점 반증이 아니며 운영 결과로 승격하지 않는다.
+- **12. 실행 계층**: unit / contract / integration / security-negative
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R6·R4·R8. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
+
+#### R3-CT-VER-012 — ValidationCheck ID 집합과 evidence 완전성
+
+- **1. ID·유형·설명**: R3-CT-VER-012 / 부정 / final validation ID 집합·완료·근거 완전성
+- **2. 단계·계약 경계**: 11, 13; 가설 ValidationCheck → final ValidationCheckResult → VerificationResult 저장
+- **3. producer → consumer**: exact VulnerabilityHypothesis의 validation checks와 각 검증 결과 → R6 final 합성 / Runtime Validator
+- **4. 선행 상태·exact refs**: F-VER(§2.3)의 같은 work·generation·application. 가설 validation_id 집합 `VID={v1,v2,v3}`과 각 ID의 COMPLETE·비어 있지 않은 실제 evidence를 가진 정상 final 후보를 준비한다.
+- **5. 정상/잘못된 fixture**: 정상은 결과 ID가 VID와 중복 없이 set-equal. 변형 A는 v3 누락, B는 v2 중복, C는 무관한 vx 추가, D는 `completion=INCOMPLETE`, E는 COMPLETE이지만 `evidence_refs=[]`, F는 다른 work/generation/application의 evidence를 연결한다.
+- **6. 검사 주체**: Runtime Validator의 exact set/work/generation/reference 검사 + R6 validation semantic validator
+- **7. 허용·차단·격리 기대**: 정상만 final 후보 저장 허용. A~F는 누락을 추정하거나 중복 제거·근거 대체를 하지 않고 전체 final 저장을 차단한다.
+- **8. work·attempt·가설 기대**: 부정 후보로 Verification work를 SUCCEEDED 또는 가설을 TERMINAL로 만들지 않는다. 복구 정책에 따른 BLOCKED/FAILED 여부는 실제 원인과 Q-02로 결정한다.
+- **9. 오류·DataGap 기대**: validation 집합·completion·evidence semantic/reference 오류. exact code는 Q-02이며 빠진 검사는 DataGap/미완료 근거로만 보존한다.
+- **10. 저장·갱신 금지 pointer**: 잘못된 VerificationResult와 current verification_result_ref, CWE·Gate·Primitive·Reporter 후속 pointer를 만들지 않는다.
+- **11. FALSE 변환 금지**: check 누락·중복·빈 evidence·stale evidence를 실제 DISPROVED 근거로 사용하지 않는다.
+- **12. 실행 계층**: unit / contract / integration / security-negative
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R6·R4·R2·R7. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
+
+#### R3-CT-VER-013 — Falsification 질문 집합과 FALSE·HOLD 근거 완전성
+
+- **1. ID·유형·설명**: R3-CT-VER-013 / 정상·부정 / final falsification 질문·근거·rationale·HOLD 조건 완전성
+- **2. 단계·계약 경계**: 8, 11, 13; 가설 질문+PlaybookApplication 질문 → FalsificationResult → final verdict
+- **3. producer → consumer**: VulnerabilityHypothesis·current PlaybookApplication 질문 → Verification Agent / Runtime Validator → final 저장
+- **4. 선행 상태·exact refs**: F-VER(§2.3)의 exact H-A/PA1/work/generation. 기대 질문 집합 `QSET`은 가설 질문 ID와 PA1 질문 ID의 중복 없는 합집합이며 각 질문에는 정확히 하나의 결과·실제 evidence·비어 있지 않은 rationale이 있다.
+- **5. 정상/잘못된 fixture**: 정상 A는 실제 반증 evidence와 rationale을 가진 `DISPROVED` 질문으로 FALSE, 정상 B는 완료된 정상 확인 근거와 비어 있지 않은 `unresolved_conditions`로 HOLD. 부정 변형은 질문 하나 누락, ID 중복, 관계없는 ID 추가, 다른 work/generation/application 질문 또는 evidence 사용, DISPROVED의 빈 evidence/rationale, HOLD의 빈 unresolved_conditions, HOLD에 정상 확인 evidence 없음이다.
+- **6. 검사 주체**: Runtime Validator의 QSET set-equality·exact application/work/generation 검사 + R6 falsification/verdict semantic validator
+- **7. 허용·차단·격리 기대**: 정상 A/B만 전문 의미 검사 뒤 저장 후보가 된다. 모든 부정 변형은 final 저장을 차단하며 Runtime이 질문·근거·rationale·미해결 조건을 만들어 채우거나 verdict를 바꾸지 않는다.
+- **8. work·attempt·가설 기대**: 정상은 해당 전문 검증이 모두 완료됐을 때만 TERMINAL 가능. 부정 후보에는 current final result가 없고 기존 가설/Verification 상태를 임의 FALSE/HOLD로 끝내지 않는다.
+- **9. 오류·DataGap 기대**: 질문 집합·근거·rationale·verdict semantic/reference 오류. exact code는 Q-02; 실제 미해결 조건은 DataGap/limitations와 구분해 보존한다.
+- **10. 저장·갱신 금지 pointer**: 부정 VerificationResult, current pointer, CWE·Gate·Primitive·Reporter 입력 생성 금지. 정상 FALSE/HOLD도 허용된 종료 경로 외 후속 Gate로 보내지 않는다.
+- **11. FALSE 변환 금지**: 오류·누락을 FALSE로 만들지 않는다. FALSE는 모든 필수 검사를 정상 완료하고 실제 질문별 반증 evidence와 rationale이 있을 때만 허용한다.
+- **12. 실행 계층**: contract / integration / E2E / security-negative
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R6·R4·R2·R7. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
+
 ### DYN. 동적 재현·Sandbox·PoC
 
 근거: 04·08·10. 모든 사례는 **미실행 / 역할 검토 필요**.
@@ -1324,11 +1420,11 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 ## 5. 미병합 PR 기준 별도 card
 
-[#96](https://github.com/SASTsimi/sastsimi/pull/96) HEAD `01799bb88ace54580a6e19cad87e15fbabea56fa`, [#97](https://github.com/SASTsimi/sastsimi/pull/97) HEAD `803f586504dbf70ce5dd4427b2958fb8496705eb`. 둘 다 작성 시점 열림/미병합이다. 이 묶음은 main 통과 조건으로 섞지 않는다. 특히 PR-003은 [본인 수정 요청](https://github.com/SASTsimi/sastsimi/pull/97#issuecomment-5556385502)의 미해결 사례다. 실제 수정과 교차 검토 뒤 기대값을 확정한다.
+[#96](https://github.com/SASTsimi/sastsimi/pull/96) HEAD `a8d8a4ea08918ef789133002699ed34813758a31`, [#97](https://github.com/SASTsimi/sastsimi/pull/97) HEAD `83f77977619cf210fe3e266b8a0f6bb462d3c266`. 둘 다 작성 시점 열림/미병합이다. 이 묶음은 main 통과 조건으로 섞지 않는다. #97 최신 HEAD에서는 [본인 수정 요청](https://github.com/SASTsimi/sastsimi/pull/97#issuecomment-5556385502)의 빈 최초 계보 문제가 `OPTIONAL_MANY`와 exact closure 검사로 보완됐다. 실제 병합 뒤 main 기준으로 다시 대조한다.
 
 ### PR. 미병합 Provider·Prompt 제안 시험
 
-근거: PR #96@01799bb·#97@803f586 (main 아님). 모든 사례는 **미실행 / 역할 검토 필요**.
+근거: PR #96@a8d8a4e·#97@83f7797 (main 아님). 모든 사례는 **미실행 / 역할 검토 필요**.
 
 #### R3-CT-PR-001 — Provider 지원 판정과 runtime tool-loop
 
@@ -1364,15 +1460,15 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 #### R3-CT-PR-003 — 최초 Chaining의 빈 lineage_results
 
-- **1. ID·유형·설명**: R3-CT-PR-003 / 미결정 / 최초 Chaining의 빈 lineage_results / #97 수정 요청 미해결
+- **1. ID·유형·설명**: R3-CT-PR-003 / PR 제안 / 최초 Chaining의 빈 lineage_results / #97 최신 HEAD 보완 확인
 - **2. 단계·계약 경계**: 6, 10–13, 18; 미병합 Provider·Prompt 제안 시험
 - **3. producer → consumer**: PR #96 Provider 경계·PR #97 Prompt Builder → 해당 역할 wrapper
 - **4. 선행 상태·exact refs**: F-PR(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: INITIAL TRUE와 INITIAL HOLD, 둘 다 source_primitive_match_id=null, 필요한 과거 ChainingResult 집합이 비어 있음.
 - **6. 검사 주체**: 제안된 schema/semantic validator·Runtime tool-loop; 아직 구현되지 않음
-- **7. 허용·차단·격리 기대**: 권고 기대값: lineage_results=[] 허용. 현재 PR97 REQUIRED_MANY와 충돌하는 미해결 요구이므로 main 통과 기준/해결 완료로 취급하지 않음.
-- **8. work·attempt·가설 기대**: 해결 전 실제 호출 가능 판정 보류; 부모 정상 TRUE/HOLD 유지.
-- **9. 오류·DataGap 기대**: Q-05: cardinality 결정 필요
+- **7. 허용·차단·격리 기대**: #97@83f7797 제안 기준으로 `lineage_results=[]`를 허용한다. `OPTIONAL_MANY`는 0개 이상이며 관계없는 결과로 개수만 맞추지 않는다. 아직 main 미병합이므로 main 구현 통과 기준으로 활성화하지 않는다.
+- **8. work·attempt·가설 기대**: 제안 기준 정상 호출 진행; 부모 TRUE/HOLD와 source_primitive_match_id=null 유지. 실제 호출 가능 판정은 #97 병합·구현 뒤 수행한다.
+- **9. 오류·DataGap 기대**: 정상 없음. PR 제안 활성화 전 main에는 해당 Registry 구현이 없다는 상태를 보존한다.
 - **10. 저장·갱신 금지 pointer**: fixture 설계만 보존; 관련 없는 과거 결과를 억지 삽입 금지.
 - **11. FALSE 변환 금지**: 입력 위반·조회/호출/실행 오류·정책 차단·예산/저장 실패를 새 FALSE 근거로 사용하지 않음. 이미 존재하는 부모/가설 verdict는 해당 case의 명시적 검증 경로 외에는 변경하지 않음.
 - **12. 실행 계층**: contract / integration / security-negative (후속 구현)
@@ -1388,7 +1484,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **6. 검사 주체**: 제안된 schema/semantic validator·Runtime tool-loop; 아직 구현되지 않음
 - **7. 허용·차단·격리 기대**: 제안 closure set과 정확히 같지 않으면 거절. 빈 집합 허용과 필요한 조상 누락 허용은 다름.
 - **8. work·attempt·가설 기대**: 호출/저장 성공 처리 없음; 부모 판정 불변.
-- **9. 오류·DataGap 기대**: Q-05 해결 뒤 semantic 오류 매핑 Q-04
+- **9. 오류·DataGap 기대**: #97@83f7797 제안의 closure semantic 거절; exact 오류 매핑은 Q-04
 - **10. 저장·갱신 금지 pointer**: 거절 trace와 expected/actual 참조 집합. 무관 결과로 cardinality만 맞추지 않음.
 - **11. FALSE 변환 금지**: 입력 위반·조회/호출/실행 오류·정책 차단·예산/저장 실패를 새 FALSE 근거로 사용하지 않음. 이미 존재하는 부모/가설 verdict는 해당 case의 명시적 검증 경로 외에는 변경하지 않음.
 - **12. 실행 계층**: contract / integration / security-negative (후속 구현)
@@ -1420,7 +1516,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 4. STA/HYP/VER/DYN/GAT/CHN/REP 순으로 contract→integration을 연결한다. 도구와 LLM의 의미 결과는 fixture로 주입하며 runtime이 의미를 대신 판정하지 않게 검사한다.
 5. #89에서 아래 장애 시나리오를 같은 fixture·test ID에 연결한다.
 6. fake E2E와 security-negative를 실행한 뒤 별도 실제 dependency capability 시험을 한다.
-7. 실제 실행한 case/variant 수, 실행 SHA, schema/profile refs, 통과·실패·건너뜀, log 위치를 결과표로 기록한다. 지금 단계에서 ‘77개 테스트 통과’라고 쓰지 않는다.
+7. 실제 실행한 case/variant 수, 실행 SHA, schema/profile refs, 통과·실패·건너뜀, log 위치를 결과표로 기록한다. 지금 단계에서 ‘83개 테스트 통과’라고 쓰지 않는다.
 
 | 본 문서 경계 | #89에 연결할 중단 지점 | 복구 후 확인 |
 |---|---|---|
@@ -1479,8 +1575,9 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 | Q-02 | 공통 문서의 확인 가능한 오류는 사용했지만 각 schema 필드/권한/reference 거절이 어떤 exact code·ActionCheck·상태 전파를 쓰는지 case별 매핑은 불완전 | 기존 오류 재사용과 전용 오류 필요 여부를 R4가 결정. 검사 실패와 실제 work 실행 실패를 분리하고 error stage/retryable/related refs를 확정 | R4+해당 owner. 본문에서 Q-02로 표시한 case의 실행 가능한 assertion 작성 전 해결; 문서 초안은 진행 가능 |
 | Q-03 | deterministic JSON+SHA-256은 #92 제안; executable schema version/fixture bytes는 아직 없음 | Unicode/숫자/null/시간/key 순서·hash 대상 bytes·동일 값 직렬화 fixture를 승인. 단순 key 정렬만으로 모든 runtime 동일 hash를 가정하지 않음 | R4·R3·R8. 실제 schema registry·정상 fixture 및 content hash 기대값 확정 전 필요 |
 | Q-04 | B1 R7 role enum·B4 Orchestration 표현 및 Provider/Prompt 구체 구조는 #96/#97 제안에 의존 | 병합 후 main의 role/spec/registry/action owner 정합성 재대조. 실제 profile 발급에는 provider 지원 시험 필요. 특정 모델/구독 경로가 실제 사용 가능하다고 단정하지 않음 | R4·R3·R7·R8, 전문 prompt owner. PR card와 실제 provider 의미 동등성 시험 활성화 전 필요 |
-| Q-05 | #97 lineage_results=REQUIRED_MANY와 최초 Chaining의 빈 조상 결과 집합 충돌 | OPTIONAL_MANY 등 정상 빈 집합 허용과 필요한 실제 조상 closure 누락 차단을 함께 명시. cardinality 최소 개수 의미 확정 | R1 @baeseungwon1010·R4 @taehyeon-git. PR-003/004 fixture 기대값 확정 전 필요. [수정 요청](https://github.com/SASTsimi/sastsimi/pull/97#issuecomment-5556385502) |
-| Q-06 | #96/#97 개별 HEAD와 함께 합칠 때의 변경은 별개 | 한 PR 병합 후 다른 PR main 동기화, validator 양쪽 검사 보존·통합 재실행. 현재 문서 검사 0건만으로 runtime 동작 보증 불가 | 두 PR 작성자·R3. 통합된 Provider/Prompt 시험 기준 SHA를 결정할 때 재확인 |
+| Q-05 | #97@83f7797은 최초 Chaining의 빈 조상 결과 집합에 `lineage_results=OPTIONAL_MANY`를 적용하고 cardinality 최소 개수와 exact closure 검사를 추가함 | PR-003의 빈 집합 허용, PR-004의 필요한 실제 조상 누락·관계없는 결과 추가 차단을 함께 유지. 아직 main 미병합이므로 병합 SHA에서 재대조 | R1 @baeseungwon1010·R4 @taehyeon-git. [수정 요청](https://github.com/SASTsimi/sastsimi/pull/97#issuecomment-5556385502)은 제안 문서상 보완됐고 main 활성화 확인만 남음 |
+| Q-06 | #96@a8d8a4e와 #97@83f7797은 각각 main 기준 clean이며 두 HEAD의 로컬 가상 병합도 content conflict 없이 문서 검사 `Failures: 0` | 한 PR 실제 병합 후 다른 PR을 새 main과 동기화하고 양쪽 validator 규칙·출력을 보존해 다시 실행. 문서 검사만으로 runtime 동작을 보증하지 않음 | 두 PR 작성자·R3. 실제 병합 SHA를 통합 Provider/Prompt 시험 기준으로 기록할 때 완료 |
+| Q-07 | [#108](https://github.com/SASTsimi/sastsimi/issues/108)은 Primitive admission을 등록 시점 1회 판정으로 둘지, 이후 회수 가능한 current revision으로 유지할지 재검토 중 | 결정 전에는 GAT-006·CHN-003/005의 stale/DENY 재검사 기대를 삭제하거나 새 회수 trigger를 임의로 만들지 않음. 정책 수집 주기·PrimitiveIndexState 의미·Admission Runtime 유지 여부를 역할 결정에 맞춰 갱신 | R1·R4·R5 중심 결정, R3는 결정 후 #106·#107 fixture와 #92 구현 기준을 동기화 |
 
 ### 8.1 main 해석 시 주의할 항목
 
@@ -1492,7 +1589,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - 정책 수집 실패는 공식 부재가 아니다. 빈 정책 record로 Gate를 억지 호출하지 않는다.
 - Finding 생성, 6축 Reporter readiness, Primitive admission은 서로 다른 검사다.
 - 토큰 계획값은 강제 중단 상한이 아니다. 미확정 시간/비용/work 수치를 문서에서 임의로 확정하지 않는다.
-- source admission이 바뀌었다는 이유만으로 모든 진행 Chaining을 취소하지 않는다. 실제 사용 direct/ancestor 관계를 확인한다.
+- source admission이 바뀌었다는 이유만으로 모든 진행 Chaining을 취소하지 않는다. 실제 사용 direct/ancestor 관계를 확인하되, admission 재판정·회수 경로 자체는 #108 결정 전 임의 구현하지 않는다.
 
 ## 9. 필수 교차 검토와 완료 조건
 
@@ -1508,7 +1605,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 검토자는 ‘좋습니다’뿐 아니라 검토한 문서 commit SHA, 담당 case IDs, 수정 요구/미결정 항목을 남긴다. 자동 문서 검사는 담당자의 승인을 대신하지 않는다.
 
-- [x] 기준 main과 현재 22단계 연결, 77개 case card 초안 작성
+- [x] 기준 main과 현재 22단계 연결, 83개 case card 초안 작성
 - [x] case별 13개 필수 항목과 계획 fixture·저장 효과 명시
 - [x] 정상·부정·보안·오류·예산 및 미병합 PR 시험 분리
 - [x] 알려진 이전 OK/BAD 이력과 #89 복구 연결
