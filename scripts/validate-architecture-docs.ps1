@@ -1001,8 +1001,20 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
     }
 
     $chainingTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| CHAINING / `MATCH_PRIMITIVES` \| `config/prompts/templates/.*$').Value
-    foreach ($requiredInput in @('indexes: PrimitiveIndexState($) REQUIRED_MANY', 'lineage_hypotheses: VulnerabilityHypothesis(', 'lineage_results: ChainingResult(')) {
+    foreach ($requiredInput in @('indexes: PrimitiveIndexState($) REQUIRED_MANY', 'lineage_hypotheses: VulnerabilityHypothesis(', 'lineage_results: ChainingResult(/primitive_match_candidates,/input_primitive_refs)` OPTIONAL_MANY')) {
         if (-not $chainingTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 CHAINING row is missing lineage input: $requiredInput" }
+    }
+    foreach ($cardinalityRule in @(
+        '`REQUIRED_ONE`은 정확히 1개',
+        '`OPTIONAL_ONE`은 0개 또는 1개',
+        '`REQUIRED_MANY`는 1개 이상',
+        '`OPTIONAL_MANY`는 0개 이상'
+    )) {
+        if (-not $promptRuntimeText.Contains($cardinalityRule)) { Add-Failure "R3-05 prompt slot cardinality meaning is missing: $cardinalityRule" }
+        if (-not $contractText.Contains($cardinalityRule)) { Add-Failure "common PromptInputSlot cardinality meaning is missing: $cardinalityRule" }
+    }
+    foreach ($lineageScenario in @('PMT-CHN-EMPTY-LINEAGE', 'PMT-CHN-MISSING-LINEAGE', 'PMT-CHN-EXTRA-LINEAGE')) {
+        if (-not $promptRuntimeText.Contains($lineageScenario)) { Add-Failure "R3-05 Chaining lineage scenario is missing: $lineageScenario" }
     }
 
     $deriveEnvironmentTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| R7_AGENT / `DERIVE_ENVIRONMENT` \| `config/prompts/templates/.*$').Value
