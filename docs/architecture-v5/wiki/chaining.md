@@ -23,7 +23,7 @@ Chaining Agent는 `upstream_result_ref`가 `downstream_input_ref`의 `matched_in
 
 match 후보는 부모 가설·Verification, workspace·commit, 정확한 Primitive record와 근거를 고정한 `PrimitiveMatchCandidate`입니다. 이 후보는 `UNVALIDATED`이며, 의미 있는 연결이면 `HypothesisProposal(origin=CHAINING)`을 만들고 trusted validation·전역 등록 뒤 새 Verification을 배정합니다. 새 가설은 `source_primitive_match_id`로 자신을 만든 정확한 match를 가리키고, 양쪽 Primitive의 `Restriction` 객체를 중복 없이 합쳐 그대로 보존합니다. 같은 restriction ID의 내용이나 근거가 다르면 등록하지 않습니다.
 
-Runtime은 work를 시작할 때 조상 제외 전 전체 Primitive를 `considered_primitive_refs`로 고정합니다. 실제 match에 사용된 Primitive만 `input_primitive_refs`에 남기므로 두 목록을 같은 의미로 사용하지 않습니다. 일반적인 새 Primitive·index 변경은 진행 중 입력을 바꾸지 않고 다음 work에서 처리합니다. work가 고정하지 않은 Primitive·index reference가 결과에 섞이면 저장하지 않습니다.
+Runtime은 work를 시작할 때 조상 제외 전 전체 Primitive를 `considered_primitive_refs`로 고정합니다. 실제 match에 사용된 Primitive만 `input_primitive_refs`에 남기므로 두 목록을 같은 의미로 사용하지 않습니다. 새 Primitive가 저장돼 index revision이 올라가는 것은 진행 중 입력을 바꾸지 않고 다음 work에서 처리합니다. work가 고정하지 않은 Primitive·index reference가 결과에 섞이면 저장하지 않습니다.
 
 `source_result_refs`와 각 match의 부모 가설·Verification 목록은 실제 match에 사용한 Primitive가 직접 가리키는 값만 중복 없이 모읍니다. 빠진 값, 관계없는 값, 다른 work의 값을 넣으면 결과를 저장하지 않습니다.
 

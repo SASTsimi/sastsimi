@@ -77,7 +77,7 @@ Chaining 결과를 저장할 때는 work가 고정한 Primitive·index reference
 
 계보가 끊겼거나, 매칭된 downstream input을 찾을 수 없거나, upstream 전제조건이 누락됐거나, 유효한 entity·location을 복구하지 못하면 새 가설을 등록하거나 Verification을 배정하지 않습니다. 계보의 reference 하나라도 다른 workspace·commit을 가리키면 해당 reference만 제외하지 않고 계보 전체를 거절합니다.
 
-등록 후에는 Context Retrieval Service가 실제 코드 조회 전에 같은 계보가 여전히 current인지 다시 검사합니다. 등록 후 stale 또는 무효 계보가 발견되면 Context 조회와 Verification work를 final verdict 없이 중단합니다.
+등록 후에는 Context Retrieval Service가 실제 코드 조회 전에 proposal이 고정한 계보 reference의 존재와 `content_hash`를 확인합니다. 부모 admission이나 최신 index 소속은 다시 검사하지 않습니다. 고정한 reference를 찾을 수 없거나 `content_hash`가 다르거나 workspace·commit·entity·location 연결이 맞지 않으면 Context 조회와 Verification work를 final verdict 없이 중단합니다. 등록 이후 어떤 index revision이 생겨도 자식 가설과 Verification을 무효화하지 않습니다.
 
 R6 Verification Agent는 부모 Primitive와 match candidate를 직접 DB에서 조회하거나 가설 등록을 거절하지 않습니다. R6는 일반 `CodeContextRequest`로 필요한 Context를 요청합니다. `CONTEXT_RETRIEVAL` work에는 exact proposal이 함께 고정되며, Context Retrieval Service가 그 proposal에서 `source_primitive_match_id`를 읽어 계보를 검사하고, Context Retrieval Service가 검증하여 반환한 `CodeContextResponse`를 사용합니다.
 

@@ -54,24 +54,24 @@ proposal, `PrimitiveMatchCandidate`, upstream Primitive, downstream Primitive와
 
 계보가 끊겼거나, `draft_id == matched_input_id`인 downstream input을 찾을 수 없거나, 유효한 entity 또는 location을 하나도 복구하지 못하거나, workspace·commit이 일치하지 않으면 Proposal Validator와 Hypothesis Registry는 새 가설을 등록하지 않는다. Assignment Runtime도 해당 proposal에 Verification을 배정하지 않는다.
 
-#### 등록 후 Context 조회 전 재검사
+#### 등록 후 Context 조회 전 확인
 
-가설이 정상적으로 등록되고 Verification이 배정된 뒤에는 Context Retrieval Service가 실제 코드 조회 전에 같은 `source_primitive_match_id` 계보를 다시 확인한다.
+가설이 정상적으로 등록되고 Verification이 배정된 뒤에는 Context Retrieval Service가 실제 코드 조회 전에 proposal이 고정한 `source_primitive_match_id` 계보 reference를 확인한다. 부모 admission이나 부모 Primitive의 최신 index 소속은 다시 검사하지 않는다. admission은 Primitive 등록 시점의 1회 판정이고 등록된 Primitive는 run 안에서 자격을 잃지 않는다.
 
 Context Retrieval Service는 다음을 검사한다.
 
-- 등록 전에 확인한 exact `PrimitiveMatchCandidate`와 부모 Primitive가 여전히 current인지
+- 등록 전에 고정한 exact `PrimitiveMatchCandidate`와 부모 Primitive reference가 실제로 존재하고 `content_hash`가 일치하는지
 - upstream의 `result.entity_refs`와 모든 `inputs[].entity_refs`가 유효한지
 - `draft_id == matched_input_id`인 downstream input과 해당 `entity_refs`가 유효한지
 - downstream의 나머지 `inputs[].entity_refs`가 유효한지
 - 모든 계보와 entity·location reference가 현재 `proposal.meta.workspace_id`·`proposal.meta.commit_id`와 일치하는지
 - 코드 조회를 시작할 유효한 entity 또는 location이 최소 하나 이상 존재하는지
 
-계보가 등록 후 stale 또는 무효 상태가 됐거나 위 조건 중 하나라도 충족하지 못하면 Context Retrieval Service는 Context 조회를 중단한다. 진행 중인 Context work와 Verification work는 final `VerificationResult`와 verdict 없이 중단한다. 계보 오류나 조회 실패를 `TRUE | FALSE | HOLD`의 근거로 변환하지 않는다.
+고정한 reference를 찾을 수 없거나 `content_hash`가 다르거나 위 조건 중 하나라도 충족하지 못하면 Context Retrieval Service는 Context 조회를 중단한다. 등록 이후 어떤 `PrimitiveIndexState` revision이 생겨도 이 자식 가설과 Verification을 무효화하지 않는다. 진행 중인 Context work와 Verification work는 final `VerificationResult`와 verdict 없이 중단한다. 계보 오류나 조회 실패를 `TRUE | FALSE | HOLD`의 근거로 변환하지 않는다.
 
 #### Verification Agent의 역할
 
-R6 Verification Agent는 `PrimitiveMatchCandidate`와 부모 Primitive를 직접 DB에서 조회하거나 proposal 등록·Verification 배정을 거절하지 않는다. R6는 일반 `CodeContextRequest`로 필요한 Context를 요청하고, `CONTEXT_RETRIEVAL` work에는 exact proposal을 함께 고정한다. Context Retrieval Service는 그 proposal에서 `source_primitive_match_id`를 읽어 계보를 검사하고, Context Retrieval Service가 검증하여 반환한 `CodeContextResponse`를 사용한다.
+R6 Verification Agent는 `PrimitiveMatchCandidate`와 부모 Primitive를 직접 DB에서 조회하거나 proposal 등록·Verification 배정을 거절하지 않는다. R6는 일반 `CodeContextRequest`로 필요한 Context를 요청하고, `CONTEXT_RETRIEVAL` work에는 exact proposal을 함께 고정한다. Context Retrieval Service는 그 proposal에서 `source_primitive_match_id`를 읽어 고정된 계보 reference를 검사하고, Context Retrieval Service가 검증하여 반환한 `CodeContextResponse`를 사용한다.
 
 반환된 정보는 자식 가설을 자동으로 지지하는 판정 근거가 아니라 검증 시작점이다. R6는 부모 verdict나 결론을 자식에게 상속하지 않고, 반환된 Context에서 결합 상황과 양쪽 부모의 남은 전제조건을 처음부터 다시 검증한다.
 
@@ -83,7 +83,8 @@ R6 Verification Agent는 `PrimitiveMatchCandidate`와 부모 Primitive를 직접
 | 등록 전 | `draft_id == matched_input_id`인 downstream input의 `entity_refs`가 없고 다른 유효한 entity 또는 location도 없음 | 검증 시작점 복구 실패로 등록과 배정을 거절한다. |
 | 등록 전 | upstream Primitive의 `inputs[].entity_refs`가 복구 대상에서 누락됨 | 양쪽 부모의 전제조건을 완전히 복구하지 못한 것으로 처리하여 등록과 배정을 거절한다. |
 | 등록 전 | 계보의 reference 하나라도 `proposal.meta.workspace_id`·`proposal.meta.commit_id`와 다름 | 일부 reference만 제외하지 않고 계보 전체를 거절한다. |
-| 등록 후 | 등록 당시 유효했던 부모 계보가 Context 조회 전에 stale 또는 무효 상태가 됨 | Context Retrieval Service가 조회를 중단하고 final verdict 없이 Context·Verification work를 중단한다. |
+| 등록 후 | 고정한 계보 reference를 찾을 수 없거나 `content_hash`가 다름 | Context Retrieval Service가 조회를 중단하고 final verdict 없이 Context·Verification work를 중단한다. |
+| 등록 후 | 다른 가설이 새 Primitive를 등록해 `PrimitiveIndexState` revision이 올라감 | 자식 가설과 Verification을 무효화하지 않고 그대로 진행한다. |
 | 정상 | 결합 지점과 양쪽 부모의 남은 입력 시작점이 모두 유효함 | Context Retrieval Service가 Context를 반환하고 R6가 부모 verdict를 재사용하지 않은 채 자식 가설을 처음부터 검증한다. |
 
 ## 우회 인지 검증

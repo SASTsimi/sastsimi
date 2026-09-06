@@ -159,7 +159,7 @@ Technical Gate는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 
 
 Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 `required_primitive_candidates`가 하나 이상일 때만 그 전체 부족 조건을 `inputs`에 넣고 `result=null`로 Gate 없이 저장합니다. 후보가 비어 있으면 Primitive와 Chaining work를 만들지 않습니다. TRUE는 validated PoC와 같은 revision을 검토한 Technical `ACCEPT` 뒤 정책 확인 결과까지 연결해 체이닝 사용 가능 여부를 확정합니다. `PrimitiveAdmissionDecision`은 TRUE 결과를 체이닝 재료로 사용해도 되는지 기록합니다. Rule Scope Gate가 별도로 출력한 `testing_restriction_compliance`가 `FAIL`일 때만 사용을 거절하며, 범위 밖·영향 부족·보상 대상 아님 같은 다른 판정은 체이닝을 막지 않습니다. 정책 수집 실패와 `UNCERTAIN`도 확정 위반으로 바꾸지 않고 정확한 상태와 근거를 남깁니다.
 
-사용이 허용된 TRUE만 제공 능력마다 `result`가 있는 Primitive를 만들고, `admission_decision_ref`로 같은 Verification의 current 허용 결정을 가리킵니다. `PrimitiveIndexState`는 current Verification과 그 가설이 등록한 Primitive refs를 가리킵니다. Chaining work는 시작할 때 읽은 index와 Primitive의 정확한 수정본을 고정합니다. admission은 Primitive 등록 시점의 1회 판정이라 등록된 Primitive는 run 안에서 자격을 잃지 않으므로, 저장 시점에 admission을 다시 확인하지 않습니다. 일반 index 갱신은 진행 중 work를 바꾸지 않습니다.
+사용이 허용된 TRUE만 제공 능력마다 `result`가 있는 Primitive를 만들고, `admission_decision_ref`로 같은 Verification의 current 허용 결정을 가리킵니다. `PrimitiveIndexState`는 current Verification과 그 가설이 등록한 Primitive refs를 가리킵니다. Chaining work는 시작할 때 읽은 index와 Primitive의 정확한 수정본을 고정합니다. admission은 Primitive 등록 시점의 1회 판정이라 등록된 Primitive는 run 안에서 자격을 잃지 않으므로, 저장 시점에 admission을 다시 확인하지 않습니다. index revision 갱신은 진행 중 work를 바꾸지 않습니다.
 
 ## 정책은 run 초기화에서 program별로 준비합니다
 

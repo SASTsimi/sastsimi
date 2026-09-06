@@ -1672,7 +1672,15 @@ $revocationPatterns = @(
     '저장 시점에도 current index에 있는지',
     '여전히 current index에 있는지',
     'admissible lineage',
-    'lineage가 stale/DENY'
+    'lineage가 stale/DENY',
+    '계보가 여전히 current',
+    '계보를 다시 확인한다',
+    '계보가 등록 후 stale',
+    '계보 재검사',
+    '계보가 무효·stale',
+    'current 계보',
+    '부모 Primitive가 stale',
+    '계보의 current 상태'
 )
 # 저장 시점 재확인·계보 admission 서술은 FINDINGS에도 되살아나면 안 된다.
 # FINDINGS는 제거한 트리거를 근거로 인용하므로 위 목록에서 제외돼 있어, 이 네 문구만 따로 검사한다.
@@ -1740,7 +1748,7 @@ $requiredChainingWikiRules = @(
     '`considered_primitive_refs`',
     '`excluded_lineage_refs`',
     '`origin=CHAINING` 자식의 `observed_facts`는 빈 목록',
-    '일반적인 새 Primitive·index 변경은 진행 중 입력을 바꾸지 않고 다음 work에서 처리합니다.'
+    '새 Primitive가 저장돼 index revision이 올라가는 것은 진행 중 입력을 바꾸지 않고 다음 work에서 처리합니다.'
 )
 foreach ($rule in $requiredChainingWikiRules) {
     if (-not ($chainingWikiText.Contains($rule) -or $commonWikiText.Contains($rule))) {
@@ -2306,7 +2314,7 @@ $requiredChainingOriginRecoveryRules = @(
     @{
         Name = 'canonical assigns post-registration check to Context service'
         Text = $verificationText
-        Marker = 'Context Retrieval Service가 실제 코드 조회 전에 같은 `source_primitive_match_id` 계보를 다시 확인한다.'
+        Marker = 'Context Retrieval Service가 실제 코드 조회 전에 proposal이 고정한 `source_primitive_match_id` 계보 reference를 확인한다.'
     },
     @{
         Name = 'canonical prevents direct lineage lookup by Verification'
@@ -2376,7 +2384,7 @@ $requiredChainingOriginRecoveryRules = @(
     @{
         Name = 'Wiki assigns post-registration check to Context service'
         Text = $verificationWikiText
-        Marker = 'Context Retrieval Service가 실제 코드 조회 전에 같은 계보가 여전히 current인지 다시 검사합니다.'
+        Marker = 'Context Retrieval Service가 실제 코드 조회 전에 proposal이 고정한 계보 reference의 존재와 `content_hash`를 확인합니다.'
     },
     @{
         Name = 'Wiki prevents direct DB lookup by Verification'
@@ -2396,7 +2404,7 @@ $requiredChainingOriginRecoveryRules = @(
     @{
         Name = 'module Step 9 assigns lineage recheck to Context service'
         Text = $moduleMapText
-        Marker = 'Context Retrieval Service가 계보를 재검사하고 Context를 반환함'
+        Marker = 'Context Retrieval Service가 고정된 계보 reference를 확인하고 Context를 반환함'
     },
     @{
         Name = 'registration test covers broken lineage'
@@ -2409,9 +2417,9 @@ $requiredChainingOriginRecoveryRules = @(
         Marker = 'upstream Primitive의 `inputs[].entity_refs`가 복구 대상에서 누락되면 등록하지 않는다.'
     },
     @{
-        Name = 'context test covers stale lineage'
+        Name = 'context test covers pinned lineage reference mismatch'
         Text = $moduleMapText
-        Marker = '등록 당시 유효했던 match candidate 또는 부모 Primitive가 stale 상태가 되면 Context 조회를 중단한다.'
+        Marker = '등록 당시 고정한 match candidate 또는 부모 Primitive reference를 찾을 수 없거나 `content_hash`가 다르면 Context 조회를 중단한다.'
     },
     @{
         Name = 'context test blocks final verdict'
