@@ -60,7 +60,7 @@ Repository input
 → Repository Loader가 git clone과 commit checkout
 → CodeWorkspace 준비
 → AST parse·SAST와 실행 단위 정책 준비를 서로 독립적으로 병렬 실행
-→ 정책은 비-LLM Policy Collector가 공식 원문을 고정하고 LLM Policy Parser가 구조화해 current RunPolicyState로 저장
+→ 정책은 run 시작 때 exact cache를 재사용하거나, 비-LLM Policy Collector가 공식 원문을 고정하고 LLM Policy Parser가 구조화해 새 RunPolicyState로 저장
 → ToolRunResult와 규칙별 RuleExecutionRecord
 → exact 규칙 실행 기록이 연결된 StaticFactBundle
 → constrained HypothesisProposal
@@ -77,7 +77,7 @@ Repository input
 → FALSE는 terminal
 → HOLD는 required candidate가 있을 때만 inputs만 있고 result가 없는 Primitive로 Chaining; 후보가 없으면 Primitive·Chaining 없음
 → TRUE는 R5-01 CWE_LABELING이 exact Verification에 맞는 current CWELabel 생성 → Technical Evidence Gate
-→ Technical ACCEPT 뒤 실행 초기에 준비한 current RunPolicyState 재사용·Rule Scope의 금지 테스트 판정 → PrimitiveAdmissionDecision
+→ Technical ACCEPT 뒤 실행 초기에 고정한 RunPolicyState 사용·Rule Scope의 금지 테스트 판정 → PrimitiveAdmissionDecision
 → ALLOW인 result Primitive만 Chaining; 나머지 Rule Scope 판단은 보고 조건에 적용
 → Verification 또는 Chaining의 새 material claim은 새 가설로 등록·재검증
 → 조건 충족 시 ReportDraft

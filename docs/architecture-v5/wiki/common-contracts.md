@@ -161,7 +161,7 @@ Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 `r
 
 ## 정책 수집 실패와 정책 부재를 구분합니다
 
-workspace 준비 뒤 정책은 정적 도구와 독립 병렬로 실행당 한 번 준비합니다. 비-LLM Policy Collector가 공식 원문과 hash를 고정하고 LLM Policy Parser가 그 exact 원문만 구조화합니다. `RunPolicyState`는 같은 실행의 모든 가설이 공유하는 current 정책 pointer이며 정책 record는 `StaticFactBundle`이나 Hypothesis 사전 scope 필터로 쓰지 않습니다.
+workspace 준비 뒤 정책은 정적 도구와 독립 병렬로 실행당 한 번 준비합니다. 비-LLM Policy Collector가 공식 원문과 hash를 고정하고 LLM Policy Parser가 그 exact 원문만 구조화합니다. 분석 요청은 승인된 catalog의 `program_id` 하나를 필수로 갖고, `RunPolicyState`는 같은 실행의 모든 가설이 공유합니다. 새 run 시작 때 `PolicyCacheRecord`의 프로그램·출처 설정·Parser 버전·최신성 기준과 exact reference가 모두 맞으면 재사용하고, 아니면 새로 수집·파싱합니다. cache를 써도 `RunPolicyState`와 현재 run의 collection·policy record는 새로 만듭니다. 준비 완료 뒤 정책 reference는 run 종료까지 바꾸지 않으며 정책 record는 `StaticFactBundle`이나 Hypothesis 사전 scope 필터로 쓰지 않습니다.
 
 정책 수집 결과는 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 중 하나입니다.
 
@@ -169,7 +169,7 @@ workspace 준비 뒤 정책은 정적 도구와 독립 병렬로 실행당 한 �
 - `ABSENT_CONFIRMED`: 공식 출처를 실제로 확인했지만 사용할 정책이 없음을 확인했습니다. 이 부재 확인에도 유효기간을 두며, Gate는 유효한 exact 확인을 `UNCERTAIN + DENY`로 기록할 수 있습니다.
 - `COLLECTION_FAILED`: 접속 또는 parser가 실패해 정책 유무를 확인하지 못했습니다. 이 경우 Rule Scope Gate 결과를 만들지 않습니다.
 
-정책 record에는 공식 출처 확인 근거, parser 이름과 버전·실제 LLM 호출 reference, 최신성 검사 기준·근거·만료 시각을 남깁니다. `CURRENT`는 이 값이 모두 있고 아직 만료되지 않았을 때만 가능하며, `ABSENT` state도 기준·확인 시각·근거·만료 시각을 가집니다. 기준값과 재수집 주기는 R8 설정을 사용하고, Runtime Validator는 Rule Scope·Reporter action 승인과 실제 호출 직전에 만료 여부를 다시 검사합니다. `PREPARING` 동안 Rule Scope와 Reporter는 기다리지만 local-only Sandbox는 실행할 수 있습니다. 만료 중에는 `UNCERTAIN + DENY` Rule Scope만 허용하고 Reporter는 차단합니다. Sandbox Controller는 실행 당시 정책 상태를 감사 reference로 남기고, current CodeWorkspace clone·same-attempt mock/fixture·격리 network인지 확인해 외부 격리를 강제할 뿐 정책 의미를 판정하지 않습니다. policy state 변경만으로 이미 허가된 local-only action을 취소하지 않습니다.
+정책 record에는 공식 출처 확인 근거, parser 이름과 버전·실제 LLM 호출 reference, 최신성 검사 기준·근거·만료 시각을 남깁니다. `CURRENT`는 run 시작 때 이 값이 모두 있고 유효할 때만 가능하며, `ABSENT` state도 기준·확인 시각·근거·만료 시각을 가집니다. cache hit은 새 Parser 호출을 만들지 않고 cache의 exact parser reference를 이어받습니다. freshness 만료와 parser version 변경은 다음 analysis run의 재사용 판단에만 사용합니다. 현재 run에서는 Rule Scope와 Reporter가 준비 완료 때 고정한 exact state를 쓰며, 외부 정책 변경 신호를 확인하면 정책 의존 단계를 멈추고 새 run을 요구합니다. `PREPARING` 동안 Rule Scope와 Reporter는 기다리지만 local-only Sandbox는 실행할 수 있습니다. `UNVERIFIED`이면 `UNCERTAIN + DENY` Rule Scope만 허용하고 Reporter는 차단합니다. Sandbox Controller는 실행 당시 정책 상태를 감사 reference로 남기고, current CodeWorkspace clone·same-attempt mock/fixture·격리 network인지 확인해 외부 격리를 강제할 뿐 정책 의미를 판정하지 않습니다.
 
 Rule Scope Gate가 `PASS`, `FAIL`, `SUFFICIENT`, `INSUFFICIENT`를 선택하면 `RuleScopeEvidenceLink`로 실제 정책 항목과 코드·실행 근거를 연결해야 합니다. 정보가 부족하면 `PolicyMissingInfo`에 부족한 영역과 이유를 남깁니다. 그 누락이 공개 허용을 막는 항목이면 `blocks_allow=true`로 기록하고 `ALLOW`를 저장하지 않습니다.
 

@@ -24,7 +24,7 @@
 | `primitives` | `required_primitive_candidates`가 비어 있지 않은 HOLD의 result 없는 조건, Technical-accepted이며 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`를 가진 TRUE 능력과 exact Verification·Gate·admission provenance. 잇기 재료는 그 Primitive뿐 아니라 `source_primitive_match_id` 계보의 모든 result Primitive도 current `ALLOW`여야 한다 |
 | `chaining` | `ChainingResult`, upstream result→downstream input match와 child proposal validation state |
 | `gates` | Technical 및 Rule Scope Impact review와 서로 exact pair인 Verification·current CWELabel·정책 input revision refs |
-| `policies` | 실행 단위 `RunPolicyState`, LLM 정책 parser 호출·결과, `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 수집 결과, 공식 `ProgramPolicyRecord`과 source·freshness refs |
+| `policies` | 실행 단위 `RunPolicyState`, run-neutral `PolicyCacheRecord`, LLM 정책 parser 호출·결과, `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 수집 결과, 공식 `ProgramPolicyRecord`과 source·freshness refs |
 | `reports` | 신뢰 runtime이 exact chain에서 정규화한 current/과거 `Finding` revision, 허용된 내부 `ReportDraft`와 두 Gate가 공통으로 본 CWELabel revision ref |
 | `actions` | `ActionRequest`, validator의 `ActionDecision`, check와 일회성 사용·outcome refs |
 | `invocations` | normalized `LLMInvocationLog`와 safe provider/session metadata |
@@ -91,6 +91,7 @@ Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을
 | S-TRUE-EARLY | validated PoC·Technical ACCEPT·admission ALLOW 전 TRUE를 잇기 | Technical `ACCEPT` + validated PoC + current `PrimitiveAdmissionDecision=ALLOW` 전 Primitive 등록·잇기 금지. `ACCEPT`여도 `DENY`면 등록하지 않음 | ACCEPT·ALLOW 전에 `result` Primitive로 등록하거나 잇기. `DENY`인데 등록·잇기 |
 | S-CHAIN-STALE | 오래된 Primitive/Gate revision이거나, 사용한 admission이 current가 아니거나 `DENY`로 바뀜 | `STALE_RESULT`, 저장 안 함. 부모 verdict를 FALSE/HOLD로 바꾸지 않음. 이미 만든 파생 결과는 감사 기록으로만 남김 | 옛 결과·옛/`DENY` admission으로 잇기. 파생 결과를 새 Verification·Gate·Primitive·Reporter 입력으로 씀 |
 | S-POLICY | 기술 TRUE + 공식 정책 없음 | 2번 문지기가 초안(보고)만 막음. Primitive 등록·잇기는 유지. 금지 테스트 `FAIL`이 아니면 admission을 `DENY`로 바꾸지 않음 | 추측 후 초안 작성. 또는 정책 없음으로 Primitive·잇기를 취소 |
+| S-POLICY-CACHE | 새 run 시작 때 정책 cache가 있거나 호환되지 않음 | program·source 설정·Parser 버전·freshness 기준·유효기간·exact closure가 모두 맞으면 cache 재사용, 하나라도 다르면 새 수집·파싱. 어느 경로든 새 `RunPolicyState` 생성 | 과거 `RunPolicyState` 직접 재사용, run 중 cache 재조회·정책 교체, 실패 결과를 cache로 게시 |
 | S-SANDBOX-ENV | 필수 환경이 `MISMATCH` / `NOT_CHECKED` / `ERROR` | Agent가 recipe를 먼저 보완한다. 바깥 설정·정책을 기다릴 때만 `BLOCKED`. 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE`. `failure_category`는 환경. 최종 TRUE/FALSE/HOLD 없음 | 바로 판정으로 바꾸거나, 자율 보완 없이 무조건 시작 금지로만 적음 |
 | S-SANDBOX-POLICY | current `RunPolicyState`가 없거나 `LOCAL_ONLY`·상자 시간·네트워크 경계를 넘김 | Agent 미시작, `agent_invoked=false`. 공격 입력·관측 없음. 외부 profile 변경을 기다릴 때만 `BLOCKED`, 최종 거절이면 `FAILED`. `failure_category`는 정책. 자원이 없을 때만 `cleanup_status=NOT_REQUIRED`. 최종 판정 없음 | live asset·외부 계정·허용되지 않은 egress 실행, 또는 TRUE/FALSE/HOLD로 바꿈 |
 | S-SANDBOX-EXEC | 승인된 profile 안에서 Agent가 돌던 중 실행 실패 | 같은 R7 Agent session의 조정은 현재 attempt에서 계속한다. session 재시작 때만 R8 한도 안에서 새 attempt를 만든다. 바깥 대기만 `BLOCKED`. 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE`. 반증·`FALSE` 금지 | 실패 = 반증 또는 HOLD |
@@ -398,7 +399,7 @@ ReportDraft가 가리킨 Finding·Verification·CWELabel·두 Gate·정책 중 �
 | PoC 실행 실패 | Agent가 같은 session의 현재 attempt에서 자율 조정하거나 session 재시작이 필요할 때만 R8 한도 안에서 새 attempt로 retry; 외부 대기일 때만 `BLOCKED`, 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE` | candidate와 AgentLog는 보존하되 validated `poc_ref=null`; `FALSE | HOLD`로 변환하지 않고 Gate 금지 |
 | Sandbox 실행 취소 | 공통 work와 동적 결과 `CANCELLED` | 취소 결과를 같은 atomic transition에서 저장하고 이후 늦은 결과는 격리 |
 | Sandbox 요청·plan·recipe·요구사항·정책·환경·AgentLog·PoC·cleanup의 attempt/digest 불일치 | 결과 저장 action `DENY` | same-attempt reference, event sequence/action 연결, candidate/validated PoC와 nullable lifecycle 조합까지 검사해 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
-| 정책 조회 실패 또는 정책 최신성 `STALE | UNVERIFIED` | `RunPolicyState`를 `BLOCKED | FAILED | STALE | UNVERIFIED` 중 실제 상태로 기록하고 필요 시 증가한 policy generation 준비 | 기술 verdict 유지. `COLLECTION_FAILED`는 Rule Scope review 없음, stale/unverified는 `UNCERTAIN + DENY`; Reporter 차단. 순수 로컬 Sandbox 이력은 실행 당시 state와 보존 |
+| 정책 수집 실패 또는 run 시작 시 최신성 확인 실패 | 수집 실패는 `RunPolicyState.status=BLOCKED | FAILED`, 최신성 확인 실패는 `UNVERIFIED`로 기록. `PolicyCollectionResult.status=COLLECTION_FAILED`와 구분 | 기술 verdict 유지. `COLLECTION_FAILED`는 Rule Scope review 없음, `UNVERIFIED`는 `UNCERTAIN + DENY`; Reporter 차단. 순수 로컬 Sandbox 이력은 실행 당시 state와 보존 |
 | Technical Gate 실행 오류·보완 한도 초과 | Gate work `FAILED` | 기술 verdict 유지, Rule Scope Gate와 Reporter 차단 |
 | Rule Scope Gate 실행 오류 | Gate work `FAILED` | 기술 verdict 유지, Reporter 차단 |
 | 보고서 작성 실패 | report work·`ReportProcessState` `FAILED` | Verification과 두 Gate 결과 유지, 초안만 실패 |

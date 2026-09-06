@@ -18,7 +18,7 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 |---:|---|---|
 | 1 | 저장소 입력 | repository reference |
 | 2 | 저장소 clone과 commit checkout | `CodeWorkspace` |
-| 3 | AST·SAST와 실행 단위 정책 준비를 독립 병렬 실행 | raw AST/SAST outputs, `ToolRunResult`, `RuleExecutionRecord`; `RunPolicyState`, policy source/parser/collection records |
+| 3 | AST·SAST와 실행 단위 정책 준비를 독립 병렬 실행. 정책은 run 시작 때 exact cache 재사용 또는 새 수집·파싱 중 하나로 준비 | raw AST/SAST outputs, `ToolRunResult`, `RuleExecutionRecord`; `RunPolicyState`, `PolicyCacheRecord`, policy source/parser/collection records |
 | 4 | 정적 사실 정규화 | exact 규칙 실행 기록을 연결한 `StaticFactBundle` |
 | 5 | 초기 가설 생성 실행 | Orchestration이 Hypothesis work 시작 |
 | 6 | 저비용 가설 생성 모델 호출 | constrained invocation |
@@ -32,7 +32,7 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 | 14 | 판정별 분기와 CWE 분류 | FALSE terminal / HOLD는 `required_primitive_candidates`가 하나 이상일 때만 inputs-only Primitive admission, 후보가 없으면 Primitive·Chaining 없음 / TRUE는 R5-01 `CWE_LABELING`이 exact Verification에 맞는 current `CWELabel` 생성 |
 | 15 | TRUE 기술 근거 검토 | `TechnicalEvidenceReview` |
 | 16 | Technical `REVISE` 보완 loop | same Verification owner, 새 Verification과 반드시 다시 평가한 새 CWELabel revision |
-| 17 | Technical `ACCEPT` TRUE가 실행 초기에 준비한 current 정책을 재사용해 Rule Scope 검토와 체이닝 재료 사용 결정 | 독립 `testing_restriction_compliance`, `PrimitiveAdmissionDecision=ALLOW | DENY`; `ALLOW`일 때만 result가 있는 `Primitive` admission |
+| 17 | Technical `ACCEPT` TRUE가 실행 초기에 고정한 정책으로 Rule Scope 검토와 체이닝 재료 사용 결정 | 독립 `testing_restriction_compliance`, `PrimitiveAdmissionDecision=ALLOW | DENY`; `ALLOW`일 때만 result가 있는 `Primitive` admission |
 | 18 | direct·parent chain의 current ALLOW 결정을 고정한 Primitive 체이닝 | upstream result가 downstream input을 근거 있게 충족하고 `source_admission_refs`를 보존한 `ChainingResult` |
 | 19 | 신뢰 runtime이 exact chain에서 current Finding을 정규화하고 공식 규칙·범위·영향의 보고 조건을 적용 | Finding은 두 Gate가 검토한 결과를 정규화한 record이며 새 verdict가 아님. 금지 테스트 위반 외의 Rule Scope 판단은 Primitive 자격이 아니라 보고 가능성만 변경 |
 | 20 | 체이닝·검증 중 새 주장 전역 등록 | `origin=CHAINING | VERIFICATION` proposal, 새 Verification 배정 |
@@ -45,8 +45,9 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 Repository Loader -> CodeWorkspace
   ├─ AST Parser ─┐
   ├─ SAST Tools ─┴─> StaticFactBundle
-  └─ Policy Collector -> Policy Parser -> RunPolicyState
-          (정적 사실과 별도, 실행당 한 번 준비해 모든 가설이 공유)
+  └─ Policy preparation -> valid PolicyCacheRecord reuse or Collector -> Parser
+                         -> new RunPolicyState
+          (정적 사실과 별도, run 시작에 한 번 준비해 모든 가설이 공유)
                            │
                            v
 Orchestration -> Hypothesis Agent -> trusted validation and registration
@@ -139,7 +140,7 @@ Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제�
 ## 병렬성과 종료 조건
 
 - AST와 복수 SAST 실행은 tool별 `work_id`와 `attempt_id`로 병렬화할 수 있다. 분석 단위 `POLICY_FETCH`도 이 흐름과 독립 병렬 실행하지만 `StaticFactBundle`의 입력이나 성공 조건은 아니다. 정규화는 모든 기대 정적 작업의 종료 상태를 확인하고, 일부 실패면 `DataGap`과 오류를 포함한 `PARTIAL` 여부를 명시한다.
-- 정책 준비는 가설마다 반복하지 않는다. 같은 실행·프로그램·policy generation에는 active work 하나와 current `RunPolicyState` 하나만 둔다. Rule Scope는 호출 당시 current exact revision을 사용하고, 각 Sandbox는 실행 요청 당시 관측한 exact revision을 감사 reference로 남긴다.
+- 정책 준비는 가설마다 반복하지 않는다. 같은 실행·프로그램에는 `(analysis_id, program_id, work_type=POLICY_FETCH)` 기준 active work 하나와 `RunPolicyState` 하나만 둔다. run 시작 때 compatible `PolicyCacheRecord`를 한 번 조회해 재사용하거나 새로 수집·파싱하고, cache hit에서도 현재 run의 state와 collection·policy record를 새로 만든다. Rule Scope는 준비 완료 때 run에 고정한 exact revision을 사용하고, 각 Sandbox는 실행 요청 당시 관측한 exact revision을 감사 reference로 남긴다. 정책 준비 retry는 같은 work의 새 attempt로 기록한다.
 - 서로 독립된 가설의 Verification은 가설별 예산 범위에서 병렬화할 수 있다. 한 가설의 실패가 다른 가설을 자동 취소하지 않는다.
 - 운영(`PRODUCTION`)에서는 한 가설의 Pro/Con을 서로 다른 work와 NEW session으로 항상 병렬화하고 Verification이 두 결과를 확인해 합류한다. 예산 부족이나 실행 오류로 한쪽이 없으면 final verdict를 만들지 않고 work를 중단한다. `BASIC | CONDITIONAL_DEBATE`와 skip은 격리된 평가(`EVALUATION`)에서만 허용한다.
 - 같은 가설의 `workspace_id`와 `commit_id`, final Verification, R5-01의 current CWELabel, Technical Gate, current 정책·Rule Scope Gate, Primitive admission과 Reporter 순서는 의존성을 지킨다. 새 Verification에는 값이 같아도 새 label revision과 그 revision을 가리키는 새 admission decision이 필요하다.

@@ -11,7 +11,8 @@
 | `Repository Loader` | 저장소를 로컬로 가져오고 분석할 commit을 준비하는 프로그램 | 별도 저장소 복사본을 만들지 않습니다. |
 | `CodeWorkspace` | AST와 SAST가 읽는 실행별 로컬 코드 폴더 | `workspace_id`와 `commit_id`로 구분합니다. |
 | `ProgramPolicyRecord` | 공식 버그바운티 정책을 확인해 남긴 기록 | 저장소 코드 복사본이 아니며 공식 출처와 수집 시각을 기록합니다. |
-| `RunPolicyState` | 이번 분석 실행에서 모든 가설이 함께 쓰는 현재 정책 기록의 위치 | 정책을 가설마다 다시 수집하지 않습니다. 정책을 찾은 결과와 “없음”을 확인한 결과 모두 만료되면 새 policy generation을 준비합니다. |
+| `RunPolicyState` | 이번 분석 실행에서 모든 가설이 함께 쓰는 정책 기록의 위치 | 분석마다 새로 만들고 준비 완료 뒤 run 종료까지 같은 정책 reference를 유지합니다. 최신성 만료는 다음 run의 재사용 판단에 씁니다. |
+| `PolicyCacheRecord` | 이전 run에서 검증한 공식 정책 자료를 다음 run 시작 때 재사용할 수 있게 묶은 불변 기록 | 프로그램·출처 설정·Parser 버전·최신성 기준이 모두 맞을 때만 재사용하며 `RunPolicyState` 자체를 재사용하지 않습니다. |
 | `Policy Collector` | 공식 사이트에서 정책 원문과 출처 확인 근거를 가져오는 비-LLM 모듈 | 정책 뜻을 판단하지 않고 exact 원문과 hash를 저장합니다. |
 | `Policy Parser` | 수집한 exact 공식 원문을 구조화하는 LLM 역할 | Rule Scope 결론이나 보고 허용을 결정하지 않습니다. |
 | `freshness_status` | 정책을 현재 자료로 믿을 수 있는지 나타내는 상태 | `STALE` 또는 `UNVERIFIED`이면 보고 허용에 쓰지 않고 `UNCERTAIN + DENY`로 처리합니다. |

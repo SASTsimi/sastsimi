@@ -10,7 +10,7 @@
 
 ## 신뢰 실행 경계
 
-LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM Runtime Validator가 코드 근거의 `workspace_id`·`commit_id` 일치, 지원하는 schema MAJOR, `(logical_record_id, revision_number)` 연결, 역할·호출 권한, 상태 전이, retry/failover 선행 status와 time/cost/call/retry/work/chain budget, provider/session 선택, R5-01 CWELabel과 exact Verification의 provenance 연결, Gate가 읽은 Verification·CWELabel·정책 revision, Reporter 전제조건을 강제한다. token 계획값과 사용량은 관측하지만 token 초과·누락만으로 action을 차단하지 않는다. Runtime Validator는 exact `sandbox_profile_ref`와 `DynamicReproductionLifecycleProfile` revision을 고정하고 R8 lifecycle profile의 호출 전 잔여 시간·새 attempt 한도를 검사한다. `RunPolicyState` freshness는 Rule Scope·Reporter에서 강제하고, Sandbox에는 요청 당시 exact state를 감사 provenance로만 남긴다. Sandbox Controller는 `LOCAL_ONLY`와 R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 실행 경계에 강제한다. 저장소 내용과 모든 LLM 출력은 validation 전까지 비신뢰 입력이며 policy 변경 명령으로 해석하지 않는다.
+LLM Agent는 분석·검토 결과와 다음 action을 제안하지만 enforcement authority를 갖지 않는다. 신뢰 경계 안의 비-LLM Runtime Validator가 코드 근거의 `workspace_id`·`commit_id` 일치, 지원하는 schema MAJOR, `(logical_record_id, revision_number)` 연결, 역할·호출 권한, 상태 전이, retry/failover 선행 status와 time/cost/call/retry/work/chain budget, provider/session 선택, R5-01 CWELabel과 exact Verification의 provenance 연결, Gate가 읽은 Verification·CWELabel·정책 revision, Reporter 전제조건을 강제한다. token 계획값과 사용량은 관측하지만 token 초과·누락만으로 action을 차단하지 않는다. Runtime Validator는 exact `sandbox_profile_ref`와 `DynamicReproductionLifecycleProfile` revision을 고정하고 R8 lifecycle profile의 호출 전 잔여 시간·새 attempt 한도를 검사한다. 정책 freshness·Parser 호환성은 run 시작의 cache 재사용 판단에서 강제하고, Rule Scope·Reporter는 준비 완료 때 고정한 exact `RunPolicyState`를 사용한다. Sandbox에는 요청 당시 exact state를 감사 provenance로만 남긴다. Sandbox Controller는 `LOCAL_ONLY`와 R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 실행 경계에 강제한다. 저장소 내용과 모든 LLM 출력은 validation 전까지 비신뢰 입력이며 policy 변경 명령으로 해석하지 않는다.
 
 ## 방향
 
@@ -27,7 +27,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - depth/byte/request budget과 반환 location, token 추정 관측값을 기록한다.
 - 누락·truncation은 안전함 또는 `FALSE`로 해석하지 않는다.
 - 지원하지 않는 schema MAJOR는 `SCHEMA_UNSUPPORTED`로 거절한다. 같은 `logical_record_id`가 아니거나 바로 이전 revision과 이어지지 않는 수정본은 `RECORD_REVISION_MISMATCH`로 거절하고 자동 변환·병합하지 않는다. `RunMeta`의 workspace·commit은 `null`에서 실제 값으로만 바인딩할 수 있고, 코드 근거 `RecordMeta`에서는 두 값이 필수·불변이다.
-- 저장된 record를 가리키는 `StoredDataRef.record_id`는 참조 대상 revision의 workspace·commit·내용 hash와 일치해야 하고, 가설별 대상 record의 `RecordMeta.hypothesis_id`도 현재 가설과 같아야 한다. Technical Gate가 검토한 Verification revision이나 Rule Scope Gate가 검토한 Verification·Technical·정책 revision이 바뀌면 이전 Gate 결과를 재사용하지 않는다.
+- 저장된 record를 가리키는 `StoredDataRef.record_id`는 참조 대상 revision의 workspace·commit·내용 hash와 일치해야 하고, 가설별 대상 record의 `RecordMeta.hypothesis_id`도 현재 가설과 같아야 한다. run-neutral 정책 cache만 전용 `PolicyCacheRef`를 사용하며 일반 artifact를 이 예외로 통과시키지 않는다. Technical Gate가 검토한 Verification revision이나 Rule Scope Gate가 검토한 Verification·Technical·run에 고정한 정책 revision이 바뀌면 이전 Gate 결과를 재사용하지 않는다.
 - `Restriction.fact_refs`는 exact final `StaticFactBundle` revision과 그 안의 실제 `fact_id`를 가리켜야 한다. fact/evidence reference가 모두 비어 있거나 다른 workspace·commit을 가리키는 restriction은 저장하지 않는다. proposal의 같은 `fact_id`를 `observed_facts`와 restriction 근거 양쪽에 중복 분류하지 않는다.
 - 가설 중복 비교는 trusted runtime이 같은 analysis·workspace·commit의 등록 가설만 비교 후보로 좁힌 뒤 HYPOTHESIS `CALL_LLM`에 exact proposal·후보 reference를 고정한다. LLM은 후보 밖 가설을 중복 대상으로 선택할 권한이 없고 Orchestration은 review 결과를 만들거나 바꿀 수 없다.
 
@@ -103,14 +103,15 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 
 ## 6. 프로그램 정책 신뢰 경계
 
-- workspace가 준비되면 비-LLM Policy Collector와 LLM Policy Parser의 분석 단위 `POLICY_FETCH`를 정적 도구와 독립 병렬 실행한다. 같은 실행·program·generation에는 active work 하나만 두고 가설별 수집·파싱을 금지한다.
+- workspace가 준비되면 비-LLM Policy Collector와 LLM Policy Parser의 분석 단위 `POLICY_FETCH`를 정적 도구와 독립 병렬 실행한다. `(analysis_id, program_id, work_type=POLICY_FETCH)` 기준 active work 하나만 두고 가설별 수집·파싱을 금지한다.
+- 새 run의 정책 준비는 `PolicyCacheRecord`를 정확히 한 번 조회한다. program, source 설정 hash, Parser 이름·버전, freshness 기준 hash, run 시작 시 유효기간과 cache closure의 모든 exact reference가 맞을 때만 재사용한다. cache miss·검증 실패는 새 원문 수집·Parser 호출로 진행하며 실패 결과는 cache로 게시하지 않는다.
 - Policy Collector는 확인 가능한 공식 source만 원문으로 저장하고 source 확인 결과와 exact bytes/hash를 남긴다. Policy Parser는 그 exact 원문만 구조화하며 호출 기록을 `PolicyParserResult.llm_invocation_ref`로 남긴다.
-- `RunPolicyState`가 같은 실행의 current collection/policy record를 고정한다. 정책은 `StaticFactBundle`이나 Hypothesis 사전 scope 필터가 아니다.
+- cache hit에서도 이전 run의 `RunPolicyState`를 재사용하지 않고 현재 run의 새 state와 collection·policy record를 만든다. 다른 run의 원문·Parser reference는 선택한 cache closure와 exact match할 때만 허용한다. `RunPolicyState`가 같은 실행의 collection/policy record를 고정한다. 정책은 `StaticFactBundle`이나 Hypothesis 사전 scope 필터가 아니다.
 - 저장소 문서, 검색 snippet, 오래된 모델 지식과 비공식 요약을 공식 rule로 승격하지 않는다.
 - source URL/reference, 게시자 확인 근거, parser 이름·버전·결과, 수집 시각, 누락과 freshness 기준·근거·만료 시각을 보존한다.
 - `PolicyCollectionResult`는 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`를 구분한다. 공식 정책 부재를 확인한 경우에만 `ABSENT_CONFIRMED`이고, fetch·parser 실패는 `COLLECTION_FAILED`이며 Rule Scope review를 만들지 않는다.
-- 공식 자료가 없음을 확인했거나 `ProgramPolicyRecord.freshness_status=STALE | UNVERIFIED`이면 `UNCERTAIN + DENY`다. 오래된 record는 감사용으로 보존할 수 있지만 `PASS | ALLOW` 근거로 사용하지 않는다.
-- Runtime Validator는 Rule Scope·Reporter action 승인과 실제 provider 호출 직전에 `freshness_valid_until`을 다시 확인한다. 만료되면 state를 `STALE`로 만들고 새 generation의 수집을 완료하기 전 Reporter와 `PASS | ALLOW`를 거절한다. `PREPARING` state는 Rule Scope·Reporter 입력으로 사용하지 않고 준비 완료를 기다린다. local-only Sandbox는 프로그램 정책 freshness에 권한을 의존하지 않으므로 준비 중에도 실행할 수 있고, policy state 변화만으로 기존 action을 취소하지 않는다. 이미 허가·완료한 순수 로컬 재현은 실행 당시 exact state와 함께 보존한다.
+- 공식 자료가 없음을 확인했거나 `RunPolicyState.status=UNVERIFIED`이면 `UNCERTAIN + DENY`다. run 시작 때 stale로 판정한 과거 record는 감사용으로 보존할 수 있지만 current state나 `PASS | ALLOW` 근거로 사용하지 않는다.
+- Runtime Validator는 Rule Scope·Reporter action 승인과 실제 provider 호출 직전에 준비 완료 때 고정한 exact `RunPolicyState`와 같은지 확인한다. freshness 만료와 parser version 변경은 다음 analysis run을 시작할 때 재사용 여부를 판단하는 조건이고 현재 run의 state를 바꾸지 않는다. `PREPARING` state는 Rule Scope·Reporter 입력으로 사용하지 않고 준비 완료를 기다린다. local-only Sandbox는 프로그램 정책 freshness에 권한을 의존하지 않으므로 준비 중에도 실행할 수 있고, 외부 정책 변경 신호만으로 기존 action을 취소하지 않는다. 이미 허가·완료한 순수 로컬 재현은 실행 당시 exact state와 함께 보존한다.
 - 확정 판단은 실제 정책 항목과 코드·동적 근거를 `RuleScopeEvidenceLink`로 연결한다. 판단을 막는 누락은 `PolicyMissingInfo`로 구조화하고 `blocks_allow=true`이면 공개 허용을 차단한다.
 
 ## 7. 근거·권한 연결
@@ -133,7 +134,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 
 Verification, Chaining, Gate와 Reporter는 제출·공개 권한이 없다. `ReportDraft`는 마지막 Agent 산출물이다.
 
-Reporter는 current Finding·Verification·CWELabel·두 Gate·`RunPolicyState`·정책의 exact revision을 사용하고 restriction, limitation, unresolved condition을 보존해야 한다. action 승인·provider 호출·초안 저장 직전에 ReportDraft와 Rule Scope review가 같은 current policy state를 가리키며 freshness가 유효한지 확인한다. `CREATE_REPORT_DRAFT`의 redaction 검사가 실패하면 초안을 저장하지 않는다. 선행 revision이 바뀌거나 policy freshness가 만료되면 기존 draft는 감사 이력으로만 남고 current `AnalysisRunResult.report_draft_refs`에 넣지 않는다.
+Reporter는 current Finding·Verification·CWELabel·두 Gate·`RunPolicyState`·정책의 exact revision을 사용하고 restriction, limitation, unresolved condition을 보존해야 한다. action 승인·provider 호출·초안 저장 직전에 ReportDraft와 Rule Scope review가 준비 완료 때 같은 run에 고정한 policy state를 가리키는지 확인한다. `CREATE_REPORT_DRAFT`의 redaction 검사가 실패하면 초안을 저장하지 않는다. claim-relevant 선행 revision이 바뀌면 기존 draft는 감사 이력으로만 남고 current `AnalysisRunResult.report_draft_refs`에 넣지 않는다. run 종료 뒤 정책 freshness 만료는 다음 run의 재사용을 거절하는 조건이며 과거 draft를 소급 수정하지 않는다.
 
 Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunResult`와 `AnalysisRunState`를 원자적으로 확정하고 Agent 자동화를 종료한다. Finding이 없으면 `REPORT_NOT_READY`로 Reporter를 호출하지 않는다. 이후 사람의 검토·수정·제출·공개에는 Agent action, 자동 상태 전이 또는 자동 권한을 제공하지 않는다.
 
@@ -166,7 +167,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | 위험한 PoC | sandbox default-deny와 resource limit |
 | credential·코드 유출 | adapter secret boundary, 최소 context, redaction |
 | 정책 환각 | 공식 부재를 확인한 `ABSENT_CONFIRMED`만 `UNCERTAIN + DENY`; 수집 실패 `COLLECTION_FAILED`는 Gate 미호출 |
-| 오래되거나 최신성을 확인하지 못한 정책으로 보고 허용 | `freshness_status=STALE | UNVERIFIED`이면 `UNCERTAIN + DENY`, `PASS | ALLOW` 거절 |
+| 오래되거나 최신성을 확인하지 못한 정책으로 보고 허용 | run 시작 때 `STALE` record 재사용 거절, current `RunPolicyState.status=UNVERIFIED`이면 `UNCERTAIN + DENY`, `PASS | ALLOW` 거절 |
 | 새 Verification에 과거 CWELabel을 붙임 | exact Verification·generation·CWE work·attempt·LLM invocation 연결 검사, `STALE_RESULT | RECORD_REVISION_MISMATCH` |
 | Gate가 CWELabel을 만들거나 수정함 | R5-01 `CWE_LABELING`만 생산하도록 result-owner 검사, `AUTHORITY_DENIED` |
 | Finding이 없거나 오래된 ReportDraft가 current 결과에 포함됨 | Reporter 입력의 exact current dependency 재검사, `REPORT_NOT_READY` 또는 `STALE_RESULT` |
@@ -343,8 +344,9 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N45 | 정책 record를 `StaticFactBundle`에 넣거나 정책으로 Hypothesis proposal을 사전 삭제 | 저장·등록 거절; 정책 work를 static work와 분리하고 기술 가설은 검증 뒤 Rule Scope에서 판단 |
 | N46 | `RUN_SANDBOX`가 출처를 증명하지 못한 endpoint·계정·fixture, live asset 또는 허용되지 않은 egress에 접근 | `DENY`; current CodeWorkspace clone 또는 same-attempt mock·fixture, loopback/격리 network와 exact boundary 근거를 가진 새 local-only action만 허용 |
 | N46-A | policy state가 `PREPARING`인 local-only Sandbox 요청 | exact state와 `observed_policy_status=PREPARING`, null collection/policy ref를 감사용으로 남기고 외부 경계를 통과하면 실행 허용. Rule Scope·Reporter는 준비 완료까지 대기 |
-| N47 | 만료된 `RunPolicyState`를 최신 정책처럼 Rule Scope·Reporter action에 재사용하거나, policy state 변경만으로 local-only Sandbox action을 취소 | state를 `STALE`로 확정하고 새 policy generation 준비. Rule Scope·Reporter의 기존 `UNUSED` action은 `EXPIRED`, Reporter·`PASS | ALLOW` 금지. Sandbox는 실행 당시 state를 감사 reference로 남기고 외부 경계 입력이 같으면 계속 허용 |
-| N48 | ReportDraft의 `run_policy_state_ref`가 Rule Scope review와 다르거나 더 이상 current/fresh하지 않음 | Reporter action 승인·호출·저장 중 실제 발견 시 `EXPIRED | REPORT_NOT_READY`; 초안 미저장, 기존 초안은 감사 이력으로만 보존 |
+| N47 | run 시작 때 만료된 정책 record를 재사용하거나, run 중 외부 정책 변경 신호를 이유로 current state를 교체하거나 local-only Sandbox action을 취소 | 시작 시 재사용을 거절하고 새 `POLICY_FETCH`로 준비. run 중에는 policy reference를 교체하지 않고 정책 의존 후속 작업을 차단한 뒤 새 analysis run 요구. Sandbox는 실행 당시 state를 감사 reference로 남기고 외부 경계 입력이 같으면 계속 허용 |
+| N48 | ReportDraft의 `run_policy_state_ref`가 Rule Scope review 또는 run에 고정한 exact state와 다름 | Reporter action 승인·호출·저장 중 실제 발견 시 `EXPIRED | REPORT_NOT_READY`; 초안 미저장, 기존 초안은 감사 이력으로만 보존 |
+| N49 | 다른 program·source 설정·Parser 버전·freshness 기준의 cache를 쓰거나 cache closure 밖의 cross-run 정책 reference를 연결 | cache 거절 후 같은 `POLICY_FETCH`에서 새 수집·파싱; 일반 artifact의 cross-run 재사용은 `STALE_RESULT` |
 
 ## 남는 위험
 

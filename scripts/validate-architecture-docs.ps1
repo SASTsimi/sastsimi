@@ -898,6 +898,9 @@ if (-not $analysisRunStateBlock.Contains('eval_config_refs: [RunStoredDataRef | 
 if (-not $analysisRunStateBlock.Contains('run_policy_state_ref: StoredDataRef | null')) {
     Add-Failure 'AnalysisRunState.run_policy_state_ref must track the exact current run policy state'
 }
+if (-not $analysisRunStateBlock.Contains('program_id: string')) {
+    Add-Failure 'AnalysisRunState.program_id must identify the program before the run starts'
+}
 $requiredAnalysisResultFields = @('hypothesis_duplicate_review_refs:', 'finding_refs:', 'verification_refs:', 'cwe_label_refs:', 'technical_review_refs:', 'rule_scope_review_refs:', 'policy_record_refs:', 'dynamic_request_refs:', 'dynamic_result_refs:', 'environment_recipe_refs:', 'sandbox_environment_refs:', 'agent_log_refs:', 'sandbox_policy_decision_refs:', 'cleanup_result_refs:', 'poc_candidate_refs:', 'poc_refs:', 'report_draft_refs:', 'llm_invocation_log_refs:', 'action_decision_refs:', 'work_state_refs:', 'work_attempt_refs:', 'transition_commit_refs:', 'eval_config_refs:', 'debug_trace_ref:')
 foreach ($field in $requiredAnalysisResultFields) {
     if (-not $analysisRunResultBlock.Contains($field)) {
@@ -1214,9 +1217,9 @@ $requiredR504CrossReviewRules = @(
         Marker = 'freshness_status: CURRENT | STALE | UNVERIFIED'
     },
     @{
-        Name = 'stale or unverified policy blocks report permission'
+        Name = 'stale input is rejected and unverified policy blocks report permission'
         Text = $contractText
-        Marker = '`FOUND`라도 핵심 출처가 누락되거나 정책이 `STALE | UNVERIFIED`이면 Rule·testing restriction·Scope·review는 `UNCERTAIN`, permission은 `DENY`이며 누락·최신성 문제를 구조화해 보존한다.'
+        Marker = 'run 시작 때 `STALE`로 판정한 기존 정책 record는 current `RunPolicyState`나 Gate 입력에 연결하지 않는다.'
     },
     @{
         Name = 'changed upstream revisions supersede report drafts'
@@ -2360,6 +2363,9 @@ $policySourceCheckBlock = [regex]::Match($contractText, '(?ms)^PolicySourceCheck
 $policyParserResultBlock = [regex]::Match($contractText, '(?ms)^PolicyParserResult:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $policyCollectionResultBlock = [regex]::Match($contractText, '(?ms)^PolicyCollectionResult:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $runPolicyStateBlock = [regex]::Match($contractText, '(?ms)^RunPolicyState:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$policyCacheMetaBlock = [regex]::Match($contractText, '(?ms)^PolicyCacheMeta:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$policyCacheRefBlock = [regex]::Match($contractText, '(?ms)^PolicyCacheRef:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$policyCacheRecordBlock = [regex]::Match($contractText, '(?ms)^PolicyCacheRecord:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $policyMissingInfoBlock = [regex]::Match($contractText, '(?ms)^PolicyMissingInfo:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $ruleScopeEvidenceLinkBlock = [regex]::Match($contractText, '(?ms)^RuleScopeEvidenceLink:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $programPolicyRecordBlock = [regex]::Match($contractText, '(?ms)^ProgramPolicyRecord:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
@@ -2372,17 +2378,20 @@ $analysisRunResultPolicyBlock = [regex]::Match($contractText, '(?ms)^AnalysisRun
 $requiredPolicyContractFields = @(
     @{ Contract = 'PolicySourceCheck'; Block = $policySourceCheckBlock; Fields = @('source_id: string', 'source_ref: StoredDataRef', 'status: VERIFIED | UNVERIFIED', 'evidence_refs: [StoredDataRef]', 'checked_at: timestamp') },
     @{ Contract = 'PolicyParserResult'; Block = $policyParserResultBlock; Fields = @('parser_result_id: string', 'parser_name: string', 'parser_version: string', 'source_ref: StoredDataRef', 'parsed_output_ref: StoredDataRef | null', 'status: SUCCEEDED | FAILED | INVALID_OUTPUT', 'error_ids: [string]', 'completed_at: timestamp') },
-    @{ Contract = 'RunPolicyState'; Block = $runPolicyStateBlock; Fields = @('meta: RecordMeta without hypothesis/attempt', 'program_id: string', 'policy_generation: integer', 'status: PREPARING | CURRENT | ABSENT | BLOCKED | FAILED | STALE | UNVERIFIED', 'policy_work_ref: StoredDataRef', 'collection_result_ref: StoredDataRef | null', 'policy_record_ref: StoredDataRef | null', 'freshness_criterion_ref: StoredDataRef | null', 'freshness_checked_at: timestamp | null', 'freshness_evidence_refs: [StoredDataRef]', 'freshness_valid_until: timestamp | null') },
-    @{ Contract = 'PolicyCollectionResult'; Block = $policyCollectionResultBlock; Fields = @('collection_result_id: string', 'program_id: string', 'status: FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED', 'official_source_refs: [StoredDataRef]', 'parser_result_refs: [StoredDataRef]', 'policy_record_ref: StoredDataRef | null', 'gap_ids: [string]', 'error_ids: [string]', 'completed_at: timestamp') },
+    @{ Contract = 'RunPolicyState'; Block = $runPolicyStateBlock; Fields = @('meta: RecordMeta without hypothesis/attempt', 'program_id: string', 'status: PREPARING | CURRENT | ABSENT | BLOCKED | FAILED | UNVERIFIED', 'preparation_source: COLLECTED | REUSED_CACHE | null', 'source_config_ref: RunStoredDataRef | StoredDataRef', 'parser_name: string', 'parser_version: string', 'policy_work_ref: StoredDataRef', 'policy_cache_ref: PolicyCacheRef | null', 'collection_result_ref: StoredDataRef | null', 'policy_record_ref: StoredDataRef | null', 'freshness_criterion_ref: StoredDataRef | null', 'freshness_checked_at: timestamp | null', 'freshness_evidence_refs: [StoredDataRef]', 'freshness_valid_until: timestamp | null') },
+    @{ Contract = 'PolicyCacheMeta'; Block = $policyCacheMetaBlock; Fields = @('record_id: string', 'logical_record_id: string', 'record_type: policy_cache_record', 'schema_version: string', 'program_id: string', 'revision_number: integer', 'previous_record_id: string | null', 'created_at: timestamp') },
+    @{ Contract = 'PolicyCacheRef'; Block = $policyCacheRefBlock; Fields = @('stored_data_id: string', 'data_kind: policy_cache_record', 'record_id: string', 'content_hash: string', 'program_id: string', 'schema_version: string') },
+    @{ Contract = 'PolicyCacheRecord'; Block = $policyCacheRecordBlock; Fields = @('meta: PolicyCacheMeta', 'source_config_ref: RunStoredDataRef | StoredDataRef', 'parser_name: string', 'parser_version: string', 'collection_status: FOUND | ABSENT_CONFIRMED', 'collection_result_ref: StoredDataRef', 'parser_result_refs: [StoredDataRef]', 'policy_record_ref: StoredDataRef | null', 'freshness_criterion_ref: StoredDataRef', 'freshness_checked_at: timestamp', 'freshness_evidence_refs: [StoredDataRef]', 'freshness_valid_until: timestamp', 'published_at: timestamp') },
+    @{ Contract = 'PolicyCollectionResult'; Block = $policyCollectionResultBlock; Fields = @('collection_result_id: string', 'program_id: string', 'preparation_source: COLLECTED | REUSED_CACHE', 'source_cache_ref: PolicyCacheRef | null', 'status: FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED', 'official_source_refs: [StoredDataRef]', 'parser_result_refs: [StoredDataRef]', 'policy_record_ref: StoredDataRef | null', 'gap_ids: [string]', 'error_ids: [string]', 'completed_at: timestamp') },
     @{ Contract = 'PolicyMissingInfo'; Block = $policyMissingInfoBlock; Fields = @('missing_info_id: string', 'area: RULE | SCOPE | IMPACT | SOURCE | FRESHNESS | TESTING_RESTRICTION', 'blocks_allow: boolean', 'description: string', 'policy_item_ids: [string]', 'evidence_refs: [StoredDataRef]') },
     @{ Contract = 'RuleScopeEvidenceLink'; Block = $ruleScopeEvidenceLinkBlock; Fields = @('link_id: string', 'area: RULE | SCOPE | IMPACT | TESTING_RESTRICTION', 'policy_item_ids: [string]', 'evidence_refs: [StoredDataRef]') },
-    @{ Contract = 'ProgramPolicyRecord'; Block = $programPolicyRecordBlock; Fields = @('source_checks: [PolicySourceCheck]', 'parser_result_refs: [StoredDataRef]', 'freshness_criterion_ref: StoredDataRef | null', 'freshness_evidence_refs: [StoredDataRef]', 'freshness_valid_until: timestamp | null', 'missing_information: [PolicyMissingInfo]') },
-    @{ Contract = 'SandboxPolicyDecision'; Block = $sandboxPolicyDecisionBlock; Fields = @('run_policy_state_ref: StoredDataRef', 'policy_collection_result_ref: StoredDataRef | null', 'policy_record_ref: StoredDataRef | null', 'execution_scope: LOCAL_ONLY', 'observed_policy_status: PREPARING | CURRENT | ABSENT | BLOCKED | FAILED | STALE | UNVERIFIED') },
+    @{ Contract = 'ProgramPolicyRecord'; Block = $programPolicyRecordBlock; Fields = @('preparation_source: COLLECTED | REUSED_CACHE', 'source_cache_ref: PolicyCacheRef | null', 'source_checks: [PolicySourceCheck]', 'parser_result_refs: [StoredDataRef]', 'freshness_criterion_ref: StoredDataRef | null', 'freshness_evidence_refs: [StoredDataRef]', 'freshness_valid_until: timestamp | null', 'missing_information: [PolicyMissingInfo]') },
+    @{ Contract = 'SandboxPolicyDecision'; Block = $sandboxPolicyDecisionBlock; Fields = @('run_policy_state_ref: StoredDataRef', 'policy_collection_result_ref: StoredDataRef | null', 'policy_record_ref: StoredDataRef | null', 'execution_scope: LOCAL_ONLY', 'observed_policy_status: PREPARING | CURRENT | ABSENT | BLOCKED | FAILED | UNVERIFIED') },
     @{ Contract = 'RuleScopeImpactReview'; Block = $ruleScopeImpactReviewBlock; Fields = @('run_policy_state_ref: StoredDataRef', 'policy_collection_result_ref: StoredDataRef', 'testing_restriction_compliance: PASS | FAIL | UNCERTAIN', 'evidence_links: [RuleScopeEvidenceLink]', 'missing_information: [PolicyMissingInfo]') }
     @{ Contract = 'PrimitiveAdmissionDecision'; Block = $primitiveAdmissionDecisionBlock; Fields = @('meta: RecordMeta', 'verification_result_ref: StoredDataRef', 'technical_review_ref: StoredDataRef', 'policy_collection_result_ref: StoredDataRef', 'rule_scope_review_ref: StoredDataRef | null', 'testing_restriction_compliance: PASS | FAIL | UNCERTAIN | NOT_EVALUATED', 'decision: ALLOW | DENY', 'reason_code: TESTING_RESTRICTION_PASSED | TESTING_RESTRICTION_UNCERTAIN | POLICY_COLLECTION_FAILED | TESTING_RESTRICTION_VIOLATION') }
     @{ Contract = 'Primitive'; Block = $primitiveBlock; Fields = @('admission_decision_ref: StoredDataRef | null') }
     @{ Contract = 'Gate guide RuleScopeImpactReview'; Block = $gateRuleScopeImpactReviewBlock; Fields = @('run_policy_state_ref: StoredDataRef', 'policy_collection_result_ref: StoredDataRef', 'evidence_links: [RuleScopeEvidenceLink]', 'missing_information: [PolicyMissingInfo]') }
-    @{ Contract = 'AnalysisRunResult'; Block = $analysisRunResultPolicyBlock; Fields = @('policy_collection_result_refs: [StoredDataRef]', 'policy_parser_result_refs: [StoredDataRef]') }
+    @{ Contract = 'AnalysisRunResult'; Block = $analysisRunResultPolicyBlock; Fields = @('program_id: string', 'run_policy_state_ref: StoredDataRef | null', 'policy_cache_refs: [PolicyCacheRef]', 'policy_collection_result_refs: [StoredDataRef]', 'policy_parser_result_refs: [StoredDataRef]') }
 )
 foreach ($contract in $requiredPolicyContractFields) {
     if ([string]::IsNullOrWhiteSpace($contract.Block)) {
@@ -2418,28 +2427,58 @@ $requiredRunPolicyPreparationRules = @(
     @{ Name = 'policy parser is an LLM role'; Text = $contractText; Marker = 'Policy Collector는 비-LLM으로 공식 원문을 가져오고, Policy Parser는 LLM으로 그 exact 원문만 구조화한다.' },
     @{ Name = 'policy artifacts do not become static facts'; Text = $contractText; Marker = '정책 record는 `StaticFactBundle`에 넣지 않는다.' },
     @{ Name = 'hypothesis generation is not scope filtered'; Text = $contractText; Marker = 'Hypothesis Agent는 정책 범위를 이유로 proposal을 삭제하거나 생성하지 않는 방식으로 제한하지 않는다.' },
-    @{ Name = 'one active policy work per run and program'; Text = $contractText; Marker = '`(analysis_id, program_id, work_type=POLICY_FETCH, policy_generation)` unique key' },
+    @{ Name = 'one active policy work per run and program'; Text = $contractText; Marker = '`(analysis_id, program_id, work_type=POLICY_FETCH)` unique key' },
+    @{ Name = 'policy work is analysis scoped'; Text = $contractText; Marker = '`POLICY_FETCH`는 `subject_type=ANALYSIS`, `subject_id=analysis_id`를 사용한다.' },
+    @{ Name = 'program id is required before run start'; Text = $contractText; Marker = '`program_id`가 없거나 승인된 catalog에서 하나로 해석되지 않으면 분석을 시작하지 않는다.' },
+    @{ Name = 'policy results bind the selected program'; Text = $contractText; Marker = '`PolicyCollectionResult.program_id`와 `ProgramPolicyRecord.program_id`는 시작 상태에 고정한 `program_id`와 같아야 한다.' },
+    @{ Name = 'run policy state is never reused across analyses'; Text = $contractText; Marker = '`RunPolicyState`는 다른 `analysis_id`에서 재사용하지 않는다.' },
+    @{ Name = 'policy cache is run neutral'; Text = $contractText; Marker = '정책 재사용 경로에서는 `PolicyCacheRecord`만 analysis·workspace·commit에 종속되지 않는 실행 간 재사용 record다.' },
+    @{ Name = 'cache selection happens only at run start'; Text = $contractText; Marker = '정책 캐시는 새 analysis run의 `POLICY_FETCH` 준비 단계에서 정확히 한 번만 조회한다.' },
+    @{ Name = 'cache reuse validates exact compatibility'; Text = $contractText; Marker = '`program_id`, source 설정 content hash, parser 이름·버전, freshness 기준 content hash가 모두 같고 `freshness_valid_until > AnalysisRunState.started_at`인 cache만 재사용한다.' },
+    @{ Name = 'policy cache has an exact logical key'; Text = $contractText; Marker = 'cache logical key는 `(program_id, source_config_ref.content_hash, parser_name, parser_version, freshness_criterion_ref.content_hash)`다.' },
+    @{ Name = 'cache miss performs fresh preparation'; Text = $contractText; Marker = '조건 하나라도 다르거나 reference target·content hash를 확인할 수 없으면 cache를 거절하고 같은 `POLICY_FETCH` work에서 공식 원문 수집과 Parser 호출을 수행한다.' },
+    @{ Name = 'cache reuse materializes run local records'; Text = $contractText; Marker = 'cache를 재사용해도 현재 analysis의 새 `PolicyCollectionResult`와, `FOUND`이면 새 `ProgramPolicyRecord`를 만들어 현재 run에 고정한다.' },
+    @{ Name = 'reused collection requires exact cache provenance'; Text = $contractText; Marker = '`preparation_source=REUSED_CACHE`는 `FOUND | ABSENT_CONFIRMED`에서만 허용하고 `source_cache_ref`가 필수다.' },
+    @{ Name = 'cache reuse does not invoke parser'; Text = $contractText; Marker = '`REUSED_CACHE` 경로는 새 `PolicyParserResult`나 LLM 호출을 만들지 않는다.' },
+    @{ Name = 'cache provenance is the only cross run policy exception'; Text = $contractText; Marker = '다른 analysis의 parser·공식 원문 reference는 current `RunPolicyState.policy_cache_ref`가 가리키는 cache closure와 정확히 같을 때만 허용한다.' },
+    @{ Name = 'policy consumers never read cache as policy input'; Text = $contractText; Marker = 'Rule Scope Gate·Reporter·Sandbox Controller는 `PolicyCacheRecord`를 정책 판단 입력으로 직접 읽지 않고 현재 run의 `RunPolicyState`와 run-local collection·policy record만 소비한다.' },
+    @{ Name = 'failed preparation is never cached'; Text = $contractText; Marker = '`COLLECTION_FAILED`, `BLOCKED`, `FAILED`, `UNVERIFIED` 준비 결과는 `PolicyCacheRecord`로 게시하지 않는다.' },
+    @{ Name = 'policy cache and run state commit atomically'; Text = $contractText; Marker = '새 수집 경로는 current collection·존재하는 policy record·새 cache·final `RunPolicyState`를 하나의 `TransitionCommit` output으로 확정한다.' },
+    @{ Name = 'policy cache publication validates successful closure'; Text = $contractText; Marker = '`result_kind=policy_cache_record`는 `POLICY_COLLECTOR`만 저장하며 `FOUND | ABSENT_CONFIRMED`인 성공 collection과 exact parser·policy·freshness closure만 허용한다.' },
+    @{ Name = 'policy cache participates in atomic work records'; Text = $contractText; Marker = '`PolicyCacheRef`는 `POLICY_FETCH`의 work·attempt·transition·action input/output/candidate/outcome reference에만 추가한다.' },
+    @{ Name = 'prepared policy is frozen for the run'; Text = $contractText; Marker = '준비를 확정한 뒤 같은 run에서는 policy cache·collection·parser 결과·정책 record reference를 교체하지 않는다.' },
+    @{ Name = 'freshness only controls next-run reuse'; Text = $contractText; Marker = 'freshness 만료와 parser version 변경은 다음 analysis run을 시작할 때 정책 자료를 재사용할지 판단하는 조건이다.' },
+    @{ Name = 'policy retries remain in one work'; Text = $contractText; Marker = '정책 준비 재시도는 같은 `POLICY_FETCH` work의 새 attempt로 기록하며 별도 generation을 만들지 않는다.' },
+    @{ Name = 'early run result may omit policy state'; Text = $contractText; Marker = '`CodeWorkspace.status=READY` 전에 종료된 `FAILED | CANCELLED` 결과는 `run_policy_state_ref=null`을 허용한다.' },
+    @{ Name = 'post-ready run result binds policy state'; Text = $contractText; Marker = '`CodeWorkspace.status=READY` 뒤 정책 준비를 시작한 실행은 종료 상태와 관계없이 `run_policy_state_ref`가 필수다.' },
     @{ Name = 'policy parser result binds invocation'; Text = $policyParserResultBlock; Marker = 'llm_invocation_ref: StoredDataRef' },
     @{ Name = 'policy parser owner is separate from collector'; Text = $contractText; Marker = '`policy_parser_result -> PolicyParserResult -> POLICY_PARSER`, `policy_collection_result -> PolicyCollectionResult -> POLICY_COLLECTOR`' },
     @{ Name = 'sandbox records observed run policy state'; Text = $contractText; Marker = '`RUN_SANDBOX`는 요청 당시 관측한 `RunPolicyState` exact revision을 감사 reference로 고정한다.' },
     @{ Name = 'sandbox policy is local only'; Text = $contractText; Marker = '`execution_scope=LOCAL_ONLY`만 허용하며 프로그램의 live asset·외부 계정·허용되지 않은 egress에 접근하지 않는다.' },
     @{ Name = 'sandbox controller does not replace scope gate'; Text = $contractText; Marker = 'Sandbox Controller는 Rule Scope의 정책 의미·보고 가능성을 판정하지 않는다.' },
-    @{ Name = 'freshness is checked before policy consumers'; Text = $contractText; Marker = '`CALL_RULE_SCOPE_GATE`와 `CREATE_REPORT_DRAFT` 승인 직전 및 실제 LLM 호출 직전에 `RunPolicyState.freshness_valid_until`을 다시 검사한다.' },
-    @{ Name = 'preparing policy does not block local sandbox'; Text = $contractText; Marker = '`PREPARING | BLOCKED | FAILED | STALE | UNVERIFIED`에서도 격리된 clone·same-attempt mock·fixture만 사용하는 로컬 재현은 기다리지 않고 진행할 수 있다.' },
-    @{ Name = 'policy freshness does not expire local sandbox'; Text = $contractText; Marker = 'policy state 변경·완료·만료만으로 기존 local-only action을 `EXPIRED`로 만들지 않는다.' },
-    @{ Name = 'confirmed absence also expires'; Text = $contractText; Marker = '`RunPolicyState.status=ABSENT`에도 같은 종류의 freshness 필드가 모두 필요하므로 공식 정책 부재 확인을 무기한 재사용하지 않는다.' },
+    @{ Name = 'policy consumers bind the frozen state'; Text = $contractText; Marker = '`CALL_RULE_SCOPE_GATE`와 `CREATE_REPORT_DRAFT`는 준비 완료 때 고정한 exact `RunPolicyState` reference와 일치하는지 검사한다.' },
+    @{ Name = 'preparing policy does not block local sandbox'; Text = $contractText; Marker = '`PREPARING | BLOCKED | FAILED | UNVERIFIED`에서도 격리된 clone·same-attempt mock·fixture만 사용하는 로컬 재현은 기다리지 않고 진행할 수 있다.' },
+    @{ Name = 'policy freshness does not expire local sandbox'; Text = $contractText; Marker = '외부 정책 변경 신호만으로 기존 local-only action을 `EXPIRED`로 만들지 않는다.' },
+    @{ Name = 'confirmed absence is not reused indefinitely'; Text = $contractText; Marker = '`RunPolicyState.status=ABSENT`에도 같은 종류의 freshness 필드가 모두 필요하므로 공식 정책 부재 확인을 다음 run에서 무기한 재사용하지 않는다.' },
     @{ Name = 'Rule Scope review binds run policy state'; Text = $ruleScopeImpactReviewBlock; Marker = 'run_policy_state_ref: StoredDataRef' },
-    @{ Name = 'stale policy blocks report and allow'; Text = $contractText; Marker = '아직 쓰지 않은 Rule Scope·Reporter action은 `EXPIRED`로 확정하고, 새 current 결과 전까지 Rule Scope는 `UNCERTAIN + DENY`만 허용하며 Reporter는 거절한다.' },
+    @{ Name = 'mid-run policy change requires a new run'; Text = $contractText; Marker = 'run 중 공식 정책 변경을 외부 신호로 확인해도 현재 reference를 교체하지 않고 정책 의존 단계를 차단한 뒤 새 analysis run을 요구한다.' },
     @{ Name = 'Reporter binds current run policy state'; Text = $contractText; Marker = 'Rule Scope review의 `run_policy_state_ref.record_id`가 ReportDraft와 Reporter action·call spec이 고정한 `run_policy_state_ref.record_id`와 같고' },
     @{ Name = 'overview shows parallel policy preparation'; Text = $overviewText; Marker = 'AST·SAST와 실행 단위 정책 준비를 독립 병렬 실행' },
+    @{ Name = 'overview shows run neutral policy cache'; Text = $overviewText; Marker = '`PolicyCacheRecord`' },
+    @{ Name = 'architecture hub explains policy cache'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/README.md')); Marker = '`PolicyCacheRecord`' },
     @{ Name = 'module map separates policy preparation'; Text = $moduleMapText; Marker = '실행 단위 정책 준비(정적 분석과 병렬)' },
+    @{ Name = 'module map includes run neutral policy cache'; Text = $moduleMapText; Marker = 'run-neutral cache' },
     @{ Name = 'canonical diagram includes run policy state'; Text = $diagramText; Marker = 'RPS[RunPolicyState]' },
     @{ Name = 'Wiki explains single policy preparation'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/pipeline.md')); Marker = '정책은 가설마다 다시 가져오지 않습니다.' },
+    @{ Name = 'Wiki explains exact policy cache reuse'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/pipeline.md')); Marker = '`PolicyCacheRecord`' },
     @{ Name = 'security scenarios reject policy as static fact'; Text = $securityText; Marker = '| N45 | 정책 record를 `StaticFactBundle`에 넣거나 정책으로 Hypothesis proposal을 사전 삭제 |' },
     @{ Name = 'security scenarios reject external sandbox access'; Text = $securityText; Marker = '| N46 | `RUN_SANDBOX`가 출처를 증명하지 못한 endpoint·계정·fixture, live asset 또는 허용되지 않은 egress에 접근 |' },
     @{ Name = 'security scenarios allow local sandbox while preparing'; Text = $securityText; Marker = '| N46-A | policy state가 `PREPARING`인 local-only Sandbox 요청 |' },
-    @{ Name = 'security scenarios separate stale policy from sandbox auth'; Text = $securityText; Marker = '| N47 | 만료된 `RunPolicyState`를 최신 정책처럼 Rule Scope·Reporter action에 재사용하거나, policy state 변경만으로 local-only Sandbox action을 취소 |' },
-    @{ Name = 'security scenarios bind Reporter policy state'; Text = $securityText; Marker = '| N48 | ReportDraft의 `run_policy_state_ref`가 Rule Scope review와 다르거나 더 이상 current/fresh하지 않음 |' }
+    @{ Name = 'security scenarios separate next-run freshness from sandbox auth'; Text = $securityText; Marker = '| N47 | run 시작 때 만료된 정책 record를 재사용하거나, run 중 외부 정책 변경 신호를 이유로 current state를 교체하거나 local-only Sandbox action을 취소 |' },
+    @{ Name = 'security scenarios reject mismatched policy cache'; Text = $securityText; Marker = '| N49 | 다른 program·source 설정·Parser 버전·freshness 기준의 cache를 쓰거나 cache closure 밖의 cross-run 정책 reference를 연결 |' },
+    @{ Name = 'evaluation scenario covers policy cache'; Text = $resultText; Marker = '| S-POLICY-CACHE |' },
+    @{ Name = 'glossary explains policy cache'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/GLOSSARY.md')); Marker = '`PolicyCacheRecord`' },
+    @{ Name = 'security scenarios bind Reporter policy state'; Text = $securityText; Marker = '| N48 | ReportDraft의 `run_policy_state_ref`가 Rule Scope review 또는 run에 고정한 exact state와 다름 |' }
 )
 foreach ($rule in $requiredRunPolicyPreparationRules) {
     if (-not $rule.Text.Contains($rule.Marker)) {
@@ -2448,16 +2487,16 @@ foreach ($rule in $requiredRunPolicyPreparationRules) {
 }
 
 $requiredPolicyContractRules = @(
-    @{ Name = 'policy result owners are registered'; Text = $contractText; Marker = '`run_policy_state -> RunPolicyState -> POLICY_COLLECTOR`, `policy_parser_result -> PolicyParserResult -> POLICY_PARSER`, `policy_collection_result -> PolicyCollectionResult -> POLICY_COLLECTOR`, `program_policy_record -> ProgramPolicyRecord -> POLICY_COLLECTOR`' },
+    @{ Name = 'policy result owners are registered'; Text = $contractText; Marker = '`run_policy_state -> RunPolicyState -> POLICY_COLLECTOR`, `policy_cache_record -> PolicyCacheRecord -> POLICY_COLLECTOR`, `policy_parser_result -> PolicyParserResult -> POLICY_PARSER`, `policy_collection_result -> PolicyCollectionResult -> POLICY_COLLECTOR`, `program_policy_record -> ProgramPolicyRecord -> POLICY_COLLECTOR`' },
     @{ Name = 'FOUND requires a policy record'; Text = $contractText; Marker = '`FOUND`이면 `policy_record_ref`가 필수이고 `error_ids=[]`다.' },
     @{ Name = 'successful collection uses successful parsers'; Text = $contractText; Marker = '`FOUND | ABSENT_CONFIRMED`의 `parser_result_refs`는 하나 이상이고 모두 `status=SUCCEEDED`인 exact parser 결과를 가리킨다.' },
     @{ Name = 'FOUND binds collection and policy provenance'; Text = $contractText; Marker = '`FOUND`에서는 collection의 `official_source_refs`, `parser_result_refs`가 정책 record의 `source_refs`, `parser_result_refs`와 각각 set-equal해야 한다.' },
     @{ Name = 'confirmed absence is not a fetch failure'; Text = $contractText; Marker = '`ABSENT_CONFIRMED`이면 `policy_record_ref=null`, 하나 이상의 공식 출처와 `gap_ids`가 필요하고 `error_ids=[]`다.' },
     @{ Name = 'collection failure cannot produce a Gate review'; Text = $contractText; Marker = '`COLLECTION_FAILED`이면 `policy_record_ref=null`과 하나 이상의 `error_ids`가 필요하며 Rule Scope Gate work와 review를 만들지 않는다.' },
     @{ Name = 'Gate input includes the exact collection result'; Text = $contractText; Marker = '`policy_collection_result_ref`는 Gate가 사용한 exact `PolicyCollectionResult`를 가리킨다.' },
-    @{ Name = 'CURRENT policy has enforceable freshness'; Text = $contractText; Marker = '`ProgramPolicyRecord.freshness_status=CURRENT`이면 `freshness_criterion_ref`, 하나 이상의 `freshness_evidence_refs`, `freshness_checked_at`과 미래의 `freshness_valid_until`이 모두 필수다.' },
-    @{ Name = 'R8 owns freshness criteria'; Text = $contractText; Marker = 'freshness 기준값과 재수집 주기는 R8이 승인한 versioned 설정만 사용한다.' },
-    @{ Name = 'Gate guide keeps R8 freshness ownership'; Text = $gateText; Marker = '최신성 기준값과 재수집 주기는 R8이 승인한 versioned 설정을 사용하고 R5는 그 결과를 정책 의미로 해석한다.' },
+    @{ Name = 'CURRENT policy has enforceable freshness'; Text = $contractText; Marker = '`ProgramPolicyRecord.freshness_status=CURRENT`이면 `freshness_criterion_ref`, 하나 이상의 `freshness_evidence_refs`, `freshness_checked_at`과 run 시작 시점보다 미래인 `freshness_valid_until`이 모두 필수다.' },
+    @{ Name = 'R8 owns freshness criteria'; Text = $contractText; Marker = 'freshness 기준값은 R8이 승인한 versioned 설정만 사용한다.' },
+    @{ Name = 'Gate guide keeps R8 freshness ownership'; Text = $gateText; Marker = '최신성 기준값은 R8이 승인한 versioned 설정을 사용하고 R5는 그 결과를 정책 의미로 해석한다.' },
     @{ Name = 'Gate Wiki distinguishes collection failure'; Text = $gateWikiText; Marker = '`COLLECTION_FAILED`는 Rule Scope review를 만들지 않습니다.' },
     @{ Name = 'Gate diagram routes collection failure through admission runtime'; Text = $diagramText; Marker = 'COLLECT -->|COLLECTION_FAILED| ARUN[R4 Primitive Admission Runtime]' },
     @{ Name = 'Gate evidence links are complete'; Text = $contractText; Marker = '`PASS | FAIL | SUFFICIENT | INSUFFICIENT`인 각 판단 영역은 같은 area의 `RuleScopeEvidenceLink`를 하나 이상 가져야 한다.' },
@@ -2489,6 +2528,7 @@ $requiredPolicyContractRules = @(
     @{ Name = 'committed descendant invalidation scenario exists'; Text = $securityText; Marker = '| N43 | 이미 COMMITTED된 Chaining 자식·손자 뒤 검증 근거 수정으로 부모 admission이 `DENY`로 변경됨 |' },
     @{ Name = 'source admission set mismatch scenario exists'; Text = $securityText; Marker = '| N44 | `ChainingResult.source_admission_refs`가 실제 match의 direct·ancestor ALLOW decision 합집합과 다름 |' },
     @{ Name = 'Wiki explains collection outcomes'; Text = $commonWikiText; Marker = '`FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`' },
+    @{ Name = 'common contract Wiki explains policy cache'; Text = $commonWikiText; Marker = '`PolicyCacheRecord`' },
     @{ Name = 'Wiki explains primitive admission decision'; Text = $commonWikiText; Marker = '`PrimitiveAdmissionDecision`은 TRUE 결과를 체이닝 재료로 사용해도 되는지 기록합니다.' },
     @{ Name = 'authority Wiki separates policy meaning and runtime derivation'; Text = $authorityWikiText; Marker = 'Rule Scope Gate가 테스트 제한의 의미를 판단하고, Runtime은 그 구조화된 판정으로 `PrimitiveAdmissionDecision`을 확정합니다.' },
     @{ Name = 'overview requires admission ALLOW for result Primitive'; Text = $overviewText; Marker = 'current admission `ALLOW`인 Technical-accepted TRUE의 result Primitive exact revision 검색' },
@@ -2499,7 +2539,7 @@ $requiredPolicyContractRules = @(
     @{ Name = 'Chaining Wiki pins current ALLOW decision lineage'; Text = $chainingWikiText; Marker = '실제 입력의 direct·ancestor admission 집합은 `source_admission_refs`에 중복 없이 기록합니다.' },
     @{ Name = 'Gate Wiki separates testing restriction result'; Text = $gateWikiText; Marker = 'testing_restriction_compliance: `PASS | FAIL | UNCERTAIN`' },
     @{ Name = 'ownership assigns R1 current admission consumption'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/governance/OWNERSHIP.md')); Marker = 'R1 Chaining은 result Primitive와 직접·부모 체인의 current `PrimitiveAdmissionDecision=ALLOW`를 함께 입력으로 고정' },
-    @{ Name = 'AnalysisRunResult policy refs use a new major'; Text = $contractText; Marker = '두 목록 추가는 `AnalysisRunResult`의 새 필수 필드이므로 새 MAJOR schema에서만 사용한다.' }
+    @{ Name = 'AnalysisRunResult policy refs use a new major'; Text = $contractText; Marker = '이 목록 추가는 `AnalysisRunResult`의 새 필수 필드이므로 새 MAJOR schema에서만 사용한다.' }
 )
 foreach ($rule in $requiredPolicyContractRules) {
     if (-not $rule.Text.Contains($rule.Marker)) {
@@ -2509,7 +2549,15 @@ foreach ($rule in $requiredPolicyContractRules) {
 
 foreach ($obsoletePolicyLifecycleRule in @(
     '정책 수집이나 Rule Scope review가 새 current revision으로 바뀌면',
-    '같은 run 안에서 ALLOW가 DENY로 바뀌면 admission runtime은'
+    '같은 run 안에서 ALLOW가 DENY로 바뀌면 admission runtime은',
+    '만료 뒤 재수집할 때만 1 증가한다',
+    '새 policy generation 준비',
+    '새 policy generation을 준비',
+    '실행 중 정책 generation',
+    'policy state가 새 revision 또는 generation으로 바뀔 때',
+    '`RunPolicyState.freshness_valid_until`을 다시 검사한다',
+    '현재 공통 계약에는 run-neutral 정책 캐시가 없으므로',
+    '분석 간 cache는 별도 계약 전 미지원'
 )) {
     if ($activeDocumentationText.Contains($obsoletePolicyLifecycleRule)) {
         Add-Failure "obsolete mid-run policy replacement rule remains: $obsoletePolicyLifecycleRule"

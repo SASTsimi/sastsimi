@@ -25,9 +25,13 @@ flowchart TB
     S02 --> WORK[CodeWorkspace READY]
     WORK --> S03A[3 AST parse]
     WORK --> S03B[3 SAST tools]
-    WORK --> PCOL[3 Policy Collector fetches official source once per run]
+    WORK --> PLOOK{3 Check exact PolicyCacheRecord once at run start}
+    PLOOK -->|Reusable| PMAT[Materialize current run policy records]
+    PLOOK -->|Miss or invalid| PCOL[Policy Collector fetches official source]
     PCOL --> PPAR[LLM Policy Parser structures exact source]
-    PPAR --> RPS[RunPolicyState]
+    PPAR --> PPUB[Publish immutable PolicyCacheRecord]
+    PPUB --> RPS[RunPolicyState]
+    PMAT --> RPS
     S03A --> S04[4 StaticFactBundle]
     S03B --> S04
     S04 --> S05[5 Orchestration starts initial hypothesis work]
@@ -79,7 +83,7 @@ flowchart TB
     S15 -->|REVISE| S16[16 Same assignment starts new Verification work and revision]
     S16 --> S09
     S15 -->|REJECT| S22[22 Store results logs PoC errors debug]
-    S15 -->|ACCEPT| S17[17 Reuse current policy and run Rule Scope review]
+    S15 -->|ACCEPT| S17[17 Use frozen run policy and run Rule Scope review]
     RPS -. current exact policy state .-> S17
     S17 --> ADEC{PrimitiveAdmissionDecision}
     ADEC -->|ALLOW| PADMIT[Result Primitive admitted]

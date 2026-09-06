@@ -40,8 +40,8 @@
 - R8은 `DynamicReproductionLifecycleProfile(data_kind=dynamic_reproduction_lifecycle_profile)`의 호출 전 work 잔여 시간 검사와 새 attempt 한도만 소유합니다. 초안은 새 attempt 4회(최초 별도, 총 5회)이며 같은 session 조정은 세지 않습니다. trusted resource policy registry runtime이 승인된 immutable revision을 게시하고 Runtime Validator가 `BUDGET_EXCEEDED`와 attempt 한도를 강제합니다.
 - Technical `REVISE`는 Orchestration이나 R7이 목적지를 고르지 않고 같은 ACTIVE `VerificationAssignment`의 R6 owner에게 돌아갑니다.
 - R5-02 Rule Scope Gate는 공식 정책과 실제 재현 근거를 읽고 금지 테스트 위반 여부를 독립 `testing_restriction_compliance`로 판단합니다. 일반 `rule_compliance`나 `TESTING_RESTRICTION` link 존재만으로 이 값을 대신 추정하지 않습니다.
-- 정책 준비는 workspace가 준비된 뒤 정적 도구와 독립 병렬로 실행당 한 번 수행합니다. 비-LLM Policy Collector는 공식 원문·출처·hash를, LLM Policy Parser는 exact 원문의 구조화 결과를 생산합니다. current `RunPolicyState`를 같은 실행의 모든 가설이 공유하며 정책을 StaticFactBundle이나 Hypothesis 사전 scope 필터로 사용하지 않습니다.
-- R5-02는 Parser 항목과 Rule Scope 의미 경계를, R7은 `LOCAL_ONLY` Sandbox 강제 가능성을, R8은 freshness 기준·만료·재수집 한도를 확인합니다. R4는 exact schema·reference·단일 active work·만료 차단을 유지합니다.
+- 정책 준비는 workspace가 준비된 뒤 정적 도구와 독립 병렬로 실행당 한 번 수행합니다. 비-LLM Policy Collector는 run 시작 때 exact `PolicyCacheRecord`를 재사용하거나 공식 원문·출처·hash를 새로 수집하고, LLM Policy Parser는 cache miss에서만 exact 원문을 구조화합니다. 매 분석의 새 `RunPolicyState`를 같은 실행의 모든 가설이 공유하며 준비 완료 뒤 run 종료까지 정책 reference를 바꾸지 않습니다. 정책을 StaticFactBundle이나 Hypothesis 사전 scope 필터로 사용하지 않습니다.
+- R5-02는 Parser 항목과 Rule Scope 의미 경계를, R7은 `LOCAL_ONLY` Sandbox 강제 가능성을, R8은 run 시작의 freshness 기준·cache hit/miss·거절 사유와 수집 retry·timeout 지표를 확인합니다. R4는 run-neutral cache·run-local state의 exact schema와 reference, 단일 active work, run 중 정책 불변과 새 run 요구 조건을 유지합니다.
 - R4의 비-LLM Primitive Admission Runtime은 exact Technical review·정책 수집 결과·Rule Scope review를 정해진 표에 대입해 `PrimitiveAdmissionDecision`과 허용된 Primitive/index를 원자적으로 확정합니다. 정책 문장을 다시 해석하지 않습니다.
 - R1 Chaining은 result Primitive와 직접·부모 체인의 current `PrimitiveAdmissionDecision=ALLOW`를 함께 입력으로 고정하고, 실제 match의 합집합을 `source_admission_refs`로 남긴 뒤 저장 직전에도 current인지 확인합니다. 확정된 금지 테스트 위반이 생기면 과거 Primitive와 그 파생 결과를 새 체이닝 재료로 쓰지 않습니다.
 

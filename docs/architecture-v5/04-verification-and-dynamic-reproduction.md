@@ -370,9 +370,9 @@ Sandbox 안에서는 Agent가 환경 설정, 저장소에 필요한 package, 계
 
 ### 실행 단위 정책 준비와 Sandbox 사전 확인
 
-정책은 동적 재현을 요청할 때 가설별로 새로 수집하지 않는다. workspace 준비 직후 정적 도구와 독립 병렬로 준비한 current `RunPolicyState`를 모든 가설이 공유한다. `RUN_SANDBOX` action은 요청 당시 관측한 exact state를 감사 reference로 남기고, state가 `CURRENT`이면 exact collection·policy record도 `SandboxPolicyDecision`에 연결한다. `PREPARING`이어도 collection·policy reference를 null로 명시한 채 로컬 격리 재현을 진행할 수 있다. policy state가 이후 완료·갱신·만료되어도 그 이유만으로 이미 허가된 local-only action을 취소하지 않으며, Rule Scope Gate가 호출 시점의 current 정책과 실제 `AgentLog`를 비교한다.
+정책은 동적 재현을 요청할 때 가설별로 새로 수집하지 않는다. workspace 준비 직후 정적 도구와 독립 병렬로 준비한 `RunPolicyState`를 모든 가설이 공유한다. `RUN_SANDBOX` action은 요청 당시 관측한 exact state를 감사 reference로 남기고, state가 `CURRENT`이면 exact collection·policy record도 `SandboxPolicyDecision`에 연결한다. `PREPARING`이어도 collection·policy reference를 null로 명시한 채 로컬 격리 재현을 진행할 수 있다. 준비 완료 뒤 policy reference는 run 종료까지 고정하며 외부 정책 변경 신호만으로 이미 허가된 local-only action을 취소하지 않는다. Rule Scope Gate는 같은 run에 고정한 정책과 실제 `AgentLog`를 비교한다.
 
-Sandbox는 clone한 코드·mock·fixture 안의 로컬 재현만 허용한다. `ABSENT | BLOCKED | FAILED | STALE`은 취약점 반증이 아니며, 이 상태에서도 기존 default-deny profile로 외부 상호작용이 없는 순수 로컬 재현은 가능하다. live program asset·외부 계정·허용되지 않은 egress처럼 정책에 따라 허용 여부가 달라질 수 있는 실행은 현재 설계에서 모두 차단한다. 실제 실행이 공식 testing restriction과 맞는지의 의미 판정은 Technical `ACCEPT` 뒤 Rule Scope Gate가 `AgentLog`를 읽어 수행한다.
+Sandbox는 clone한 코드·mock·fixture 안의 로컬 재현만 허용한다. `ABSENT | BLOCKED | FAILED | UNVERIFIED`는 취약점 반증이 아니며, 이 상태에서도 기존 default-deny profile로 외부 상호작용이 없는 순수 로컬 재현은 가능하다. live program asset·외부 계정·허용되지 않은 egress처럼 정책에 따라 허용 여부가 달라질 수 있는 실행은 현재 설계에서 모두 차단한다. 실제 실행이 공식 testing restriction과 맞는지의 의미 판정은 Technical `ACCEPT` 뒤 Rule Scope Gate가 `AgentLog`를 읽어 수행한다.
 
 ### 결과를 R6가 판정하는 방법
 
