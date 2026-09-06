@@ -24,7 +24,9 @@ R4는 세 가지를 먼저 공통 계약으로 정합니다.
 
 Repository Loader가 `CodeWorkspace.status=READY`를 확정하면 AST·SAST work와 별도로 `POLICY_FETCH` work를 시작합니다. 두 흐름은 서로 기다리지 않고 병렬 실행합니다. 정책 준비 실패는 정적 분석 결과를 바꾸지 않고, 정적 분석 실패도 정책 결과를 바꾸지 않습니다.
 
-분석 요청에는 승인된 Program Catalog가 발급한 `program_id`가 정확히 하나 있어야 합니다. 없거나 하나로 해석되지 않으면 분석을 시작하지 않습니다. `POLICY_FETCH`는 `subject_type=ANALYSIS`, `subject_id=analysis_id`이며 `(analysis_id, program_id, work_type=POLICY_FETCH)` unique key로 하나만 만듭니다. 동시에 여러 가설이 정책을 요구해도 새 수집을 만들지 않고 같은 `RunPolicyState`의 COMMITTED exact revision을 기다립니다. 정책은 가설마다 다시 수집·파싱하지 않습니다. 재시도는 같은 work의 새 attempt이며 별도 policy generation을 만들지 않습니다.
+분석 시작 API는 repository reference, 요청 Git ref, 목적과 함께 승인된 Program Catalog가 발급한 내부 `program_id`를 정확히 하나 받습니다. `(program_namespace, external_program_id)`는 catalog 등록·조회용 외부 키이며 분석 시작 API의 대체 입력이 아닙니다. CLI·UI가 외부 키를 받으면 API 호출 전에 내부 ID 하나로 해석해야 합니다. ID가 없거나 catalog에서 사용할 수 없거나 둘 이상으로 해석되면 run을 만들지 않고 요청을 거절합니다. 저장소 하나가 여러 프로그램에 연결돼 있으면 호출자가 하나를 선택하고 프로그램마다 별도 run을 시작합니다.
+
+`POLICY_FETCH`는 `subject_type=ANALYSIS`, `subject_id=analysis_id`이며 `(analysis_id, program_id, work_type=POLICY_FETCH)` unique key로 하나만 만듭니다. 동시에 여러 가설이 정책을 요구해도 새 수집을 만들지 않고 같은 `RunPolicyState`의 COMMITTED exact revision을 기다립니다. 정책은 가설마다 다시 수집·파싱하지 않습니다. 재시도는 같은 work의 새 attempt이며 별도 policy generation을 만들지 않습니다. 완료된 attempt마다 `PolicyCollectionResult`는 최대 하나이고 attempt ID를 보존합니다. `AnalysisRunResult`의 복수 collection 목록은 이 재시도 이력을 담기 위한 것이며 여러 프로그램을 뜻하지 않습니다. `RunPolicyState`는 현재 상태를 만든 attempt의 exact collection 결과 하나만 가리키고, 이전 실패 결과는 감사 이력으로만 남깁니다.
 
 ### 2. 원문 수집과 의미 구조화를 분리합니다
 

@@ -422,7 +422,7 @@ Context 조회 실패·timeout·권한 오류는 다음 기준으로 처리한�
 
 | code | 주 생산자 | 실행·상태에 미치는 영향 | 기본 복구 방향 |
 |---|---|---|---|
-| `INPUT_ERROR` | 입력 검증기 | 분석 시작 전 `FAILED` | 입력 수정 뒤 새 분석 |
+| `INPUT_ERROR` | 입력 검증기 | 분석 요청 거절; `AnalysisRunState`·work 없음 | 저장소·Git ref·내부 `program_id`를 바로잡아 다시 요청 |
 | `CLONE_FAILED` | Repository Loader | 분석 `FAILED`, AST/SAST 미실행 | 네트워크·권한 확인 뒤 새 분석 |
 | `CHECKOUT_FAILED` | Repository Loader | 분석 `FAILED`, AST/SAST 미실행 | 유효한 commit 확인 뒤 새 분석 |
 | `WORKSPACE_MISMATCH` | runtime validator | 해당 record 사용 금지 | 올바른 workspace·commit 결과 재요청 |

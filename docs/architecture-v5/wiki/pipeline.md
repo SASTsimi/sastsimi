@@ -8,7 +8,7 @@
 
 아래 목록은 데이터 형식과 구현 순서를 맞추기 위해 정확한 이름을 사용합니다. 뜻은 [쉬운 용어집](../../GLOSSARY.md)에서 확인하세요.
 
-1. 저장소 입력
+1. 저장소와 승인된 내부 `program_id` 하나를 `AnalysisStartRequest`로 입력. 같은 저장소의 다른 프로그램은 별도 실행으로 시작
 2. `Repository Loader`가 `git clone`과 `commit_id` checkout으로 `CodeWorkspace` 준비
 3. AST·SAST와 실행 단위 정책 준비를 독립 병렬 실행. 정적 도구는 `RuleExecutionRecord`, Policy Collector와 LLM Policy Parser는 current `RunPolicyState` 생성
 4. exact 규칙 실행 기록이 연결된 `StaticFactBundle` 생성
@@ -33,7 +33,7 @@
 
 Technical Gate의 `REVISE`는 같은 hypothesis의 Verification owner에게 직접 돌아가 새 generation을 시작한다. final TRUE를 다시 만들려면 그 generation의 동적 결과와 validated PoC도 새로 필요하고, R5-01은 값이 같아도 그 Verification에 맞는 새 CWELabel revision을 만들어야 한다. HOLD는 Gate를 거치지 않지만 `required_primitive_candidates`가 하나 이상일 때만 Primitive로 저장해 Chaining에 들어가며, 후보가 없으면 Primitive와 Chaining work 없이 처리를 끝낸다. TRUE는 Technical `ACCEPT`와 current admission `ALLOW` 뒤 들어간다. 금지 테스트 위반 `FAIL`만 result Primitive를 막고, 다른 Rule Scope 결과는 Reporter만 제어한다. current Finding은 두 Gate가 검토한 exact chain을 신뢰 runtime이 정규화한 record이며 새 verdict가 아니다. Finding 존재와 Reporter의 6축 정책 readiness는 별개 조건이라 `report_permission=DENY`여도 Finding은 보존되고 Reporter만 차단된다. Verification·CWELabel·두 Gate·동적 결과·PoC·고정 정책이 새 revision으로 바뀌면 기존 Finding은 stale이 되어 새 exact chain에서 다시 정규화한다. Verification과 Chaining의 material claim은 새 가설이 되며 기존 verdict에 직접 합쳐지지 않는다. 독립 가설은 전역 예산 범위에서 병렬 처리할 수 있다.
 
-정책은 가설마다 다시 가져오지 않습니다. workspace가 준비되면 정적 도구와 별도로 정책 준비를 한 번 수행합니다. 새 run 시작 때 exact `PolicyCacheRecord`가 맞고 유효하면 재사용하고, 아니면 공식 원문을 새로 수집·파싱합니다. 어느 경로든 현재 run의 새 `RunPolicyState`에 고정하며 cache hit에서는 새 Parser 호출을 만들지 않습니다. Rule Scope는 준비 완료 때 run에 고정한 exact revision을 사용하고 Sandbox는 실행 요청 당시 관측한 state를 감사 reference로 남깁니다. freshness 만료와 parser version 변경은 다음 run 시작 때 재사용 여부를 판단하며 현재 run의 정책을 바꾸지 않습니다. 정책은 `StaticFactBundle`에 들어가지 않으며 Hypothesis Agent가 scope를 이유로 기술 가설을 사전 삭제하는 데 쓰지 않습니다. Sandbox는 `LOCAL_ONLY`와 외부 격리만 강제하고 정책 의미는 Rule Scope Gate가 판단합니다.
+정책은 가설마다 다시 가져오지 않습니다. workspace가 준비되면 정적 도구와 별도로 정책 준비를 한 번 수행합니다. 새 run 시작 때 exact `PolicyCacheRecord`가 맞고 유효하면 재사용하고, 아니면 공식 원문을 새로 수집·파싱합니다. 어느 경로든 현재 run의 새 `RunPolicyState`에 고정하며 cache hit에서는 새 Parser 호출을 만들지 않습니다. 재시도는 같은 `POLICY_FETCH` work의 새 attempt이고, 완료된 attempt마다 최대 하나의 `PolicyCollectionResult`를 남깁니다. 최종 state는 선택한 결과 하나만 가리키며 이전 실패 결과는 최종 정책 판단에 쓰지 않습니다. Rule Scope는 준비 완료 때 run에 고정한 exact revision을 사용하고 Sandbox는 실행 요청 당시 관측한 state를 감사 reference로 남깁니다. freshness 만료와 parser version 변경은 다음 run 시작 때 재사용 여부를 판단하며 현재 run의 정책을 바꾸지 않습니다. 정책은 `StaticFactBundle`에 들어가지 않으며 Hypothesis Agent가 scope를 이유로 기술 가설을 사전 삭제하는 데 쓰지 않습니다. Sandbox는 `LOCAL_ONLY`와 외부 격리만 강제하고 정책 의미는 Rule Scope Gate가 판단합니다.
 
 `ReportDraft` 이후의 검토·수정·제출·공개는 Agent 자동화 밖에서 사람이 진행한다.
 

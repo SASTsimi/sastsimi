@@ -14,7 +14,7 @@ Architecture v5의 전체 처리 순서와 역할·데이터 관계를 그림으
 
 ```mermaid
 flowchart TB
-    S01[1 Repository input] --> S02[2 Repository Loader git clone and commit checkout]
+    S01[1 Repository and program_id input] --> S02[2 Repository Loader git clone and commit checkout]
     S02 --> WORK[CodeWorkspace READY]
     WORK --> S03A[3 AST parse]
     WORK --> S03B[3 SAST tools]

@@ -16,10 +16,12 @@
 | `record_id` | 저장한 결과 한 개의 번호 | 결과를 저장하는 runtime |
 | `logical_record_id` | 같은 결과의 수정본들을 묶는 번호 | 결과를 처음 저장하는 runtime |
 | `stored_data_id` | 결과 파일이나 기록을 찾는 번호 | 결과 저장 계층 |
+| `program_id` | 이번 실행에서 검사할 버그바운티 프로그램 번호 | 내부 Program Catalog |
+| `collection_result_id` | 정책 준비 attempt 한 번의 수집 결과 번호 | Policy Collector |
 
 시스템이 직접 만든 번호는 나중에 다른 대상을 가리키도록 다시 배정하지 않습니다. 같은 논리 결과의 수정본은 같은 `logical_record_id`를 유지하고, 같은 프로그램은 같은 `program_id`를 사용합니다. `commit_id`는 Git이 이미 만든 외부 식별자이므로 같은 commit을 여러 분석에서 다시 참조할 수 있습니다. 로컬 코드 폴더를 지워도 `workspace_id`가 어느 저장소와 commit을 가리켰는지는 남깁니다. `symbol_id`, `gap_id`, `error_id`, `proposal_id`처럼 특정 record에서만 쓰는 나머지 ID의 정확한 범위는 정본인 [경량 데이터 계약](../08-lightweight-data-contracts.md)의 식별자 표를 따릅니다.
 
-clone 전에는 아직 `workspace_id`나 `commit_id`가 없을 수 있습니다. 이때는 `analysis_id`만 필수인 `RunMeta`를 사용합니다. checkout이 끝나 코드가 준비된 뒤의 근거에는 `workspace_id`와 `commit_id`가 모두 있어야 합니다. 외부 버그바운티 프로그램 ID는 출처가 다르면 겹칠 수 있으므로 `(program_namespace, external_program_id)`로 구분하고, 내부에서는 전역 `program_id`로 연결합니다.
+분석 요청은 저장소와 함께 내부 `program_id` 하나를 받습니다. 외부 버그바운티 프로그램 ID는 출처가 다르면 겹칠 수 있으므로 `(program_namespace, external_program_id)`로 Program Catalog에 등록하고, 분석을 시작하기 전에 내부 `program_id` 하나로 바꿉니다. 저장소 하나가 여러 프로그램에 속하면 프로그램마다 별도 실행을 시작합니다. clone 전에는 아직 `workspace_id`나 `commit_id`가 없을 수 있습니다. 이때는 `analysis_id`만 필수인 `RunMeta`를 사용합니다. checkout이 끝나 코드가 준비된 뒤의 근거에는 `workspace_id`와 `commit_id`가 모두 있어야 합니다.
 
 `CodeWorkspace`는 준비 중 `PREPARING`, 분석 가능하면 `READY`, 준비 실패 시 `FAILED`, 로컬 폴더 정리 뒤 `REMOVED`입니다. 정적 분석은 `READY`에서만 시작합니다.
 
@@ -161,7 +163,7 @@ Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 `r
 
 ## 정책 수집 실패와 정책 부재를 구분합니다
 
-workspace 준비 뒤 정책은 정적 도구와 독립 병렬로 실행당 한 번 준비합니다. 비-LLM Policy Collector가 공식 원문과 hash를 고정하고 LLM Policy Parser가 그 exact 원문만 구조화합니다. 분석 요청은 승인된 catalog의 `program_id` 하나를 필수로 갖고, `RunPolicyState`는 같은 실행의 모든 가설이 공유합니다. 새 run 시작 때 `PolicyCacheRecord`의 프로그램·출처 설정·Parser 버전·최신성 기준과 exact reference가 모두 맞으면 재사용하고, 아니면 새로 수집·파싱합니다. cache를 써도 `RunPolicyState`와 현재 run의 collection·policy record는 새로 만듭니다. 준비 완료 뒤 정책 reference는 run 종료까지 바꾸지 않으며 정책 record는 `StaticFactBundle`이나 Hypothesis 사전 scope 필터로 쓰지 않습니다.
+workspace 준비 뒤 정책은 정적 도구와 독립 병렬로 실행당 한 번 준비합니다. 비-LLM Policy Collector가 공식 원문과 hash를 고정하고 LLM Policy Parser가 그 exact 원문만 구조화합니다. 분석 요청은 승인된 catalog의 `program_id` 하나를 필수로 갖고, `RunPolicyState`는 같은 실행의 모든 가설이 공유합니다. 새 run 시작 때 `PolicyCacheRecord`의 프로그램·출처 설정·Parser 버전·최신성 기준과 exact reference가 모두 맞으면 재사용하고, 아니면 새로 수집·파싱합니다. cache를 써도 `RunPolicyState`와 현재 run의 collection·policy record는 새로 만듭니다. 재시도는 같은 work 안의 새 attempt이며 완료된 attempt마다 수집 결과를 최대 하나 남깁니다. 따라서 최종 결과의 수집 결과 목록은 여러 재시도를 담을 수 있지만 프로그램은 하나이고, `RunPolicyState`는 최종 선택 결과 하나만 가리킵니다. 준비 완료 뒤 정책 reference는 run 종료까지 바꾸지 않으며 정책 record는 `StaticFactBundle`이나 Hypothesis 사전 scope 필터로 쓰지 않습니다.
 
 정책 수집 결과는 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 중 하나입니다.
 
