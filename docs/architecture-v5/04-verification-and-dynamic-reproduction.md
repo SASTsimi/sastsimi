@@ -374,7 +374,7 @@ Sandbox 안에서는 Agent가 환경 설정, 저장소에 필요한 package, 계
 - `poc_candidate_ref`는 Agent가 작성했거나 실행을 시도한 PoC다. 실패한 시도도 같은 attempt의 작성·실행 event와 함께 보존할 수 있다.
 - validated `poc_ref`는 `status=SUCCEEDED`, `hypothesis_outcome=SUPPORTED`, `agent_invoked=true`이고 AgentLog가 exact candidate revision·digest를 실제 실행한 사실을 보여 줄 때만 만든다.
 - validated PoC의 request·plan·recipe·environment·AgentLog·candidate·실행 action은 모두 결과와 같은 attempt여야 한다.
-- 환경 실패, 정책 차단, candidate 생성·실행 실패, timeout, `DISPROVED | INCONCLUSIVE`에서는 `poc_ref=null`이다.
+- 환경 실패, Sandbox profile 외부 격리 경계 차단, candidate 생성·실행 실패, timeout, `DISPROVED | INCONCLUSIVE`에서는 `poc_ref=null`이다.
 - reference가 존재한다는 사실만으로 성공을 추론하지 않는다.
 
 ### 실행 단위 정책 준비와 Sandbox 사전 확인
@@ -453,7 +453,7 @@ final `VerificationResult` 후보를 저장하기 전에 trusted runtime은 `SAV
 3. `DynamicReproductionResult.status=SUCCEEDED`이고 `hypothesis_outcome=SUPPORTED`이면 실제 `hypothesis_evidence_refs`와 같은 `meta.attempt_id`에서 검증된 `poc_ref`가 모두 있을 때만 `VerificationResult.verdict=TRUE` 후보가 된다.
 4. 정상 실행에서 `hypothesis_outcome=DISPROVED`이면 `hypothesis_disproved=true`, 실제 `disproof_evidence_refs`와 `VerificationResult.falsification_results`의 named falsification이 연결된 경우에만 `VerificationResult.verdict=FALSE` 근거가 된다.
 5. `DynamicReproductionResult.status=SUCCEEDED \| PARTIAL`이고 `hypothesis_outcome=INCONCLUSIVE`이면 `hypothesis_evidence_refs`와 `limitations`를 기록하고, 남은 조건을 `VerificationResult.unresolved_conditions`에 연결할 수 있을 때만 `VerificationResult.verdict=HOLD` 후보가 된다.
-6. 정책 차단·환경 구성 실패·Agent 또는 PoC 생성·실행 실패·timeout·취소는 verdict가 아니다. `DynamicReproductionResult.status=BLOCKED | FAILED | CANCELLED`와 `hypothesis_outcome=INCONCLUSIVE`를 기록하고 final `VerificationResult`와 Gate 요청을 만들지 않는다. `BLOCKED`는 외부 조치를 기다리는 비종료 상태이고, `FAILED`는 복구 불가능하거나 retry 한도를 소진한 종료 상태이며, `CANCELLED`는 사용자 또는 runtime이 중단한 종료 상태다. 각 상태에는 계약에 맞는 `failure_category`와 `failure_reason`을 기록한다.
+6. Sandbox profile 외부 격리 경계 차단·환경 구성 실패·Agent 또는 PoC 생성·실행 실패·timeout·취소는 verdict가 아니다. `DynamicReproductionResult.status=BLOCKED | FAILED | CANCELLED`와 `hypothesis_outcome=INCONCLUSIVE`를 기록하고 final `VerificationResult`와 Gate 요청을 만들지 않는다. `BLOCKED`는 current work의 불변 입력을 바꾸지 않는 외부 조치를 기다리는 비종료 상태이고, `FAILED`는 복구 불가능하거나 retry 한도를 소진한 종료 상태이며, `CANCELLED`는 사용자 또는 runtime이 중단한 종료 상태다. 프로그램 정책 준비·freshness·testing restriction은 `LOCAL_ONLY` 실행의 `POLICY_BLOCKED` 사유가 아니다. 각 상태에는 계약에 맞는 `failure_category`와 `failure_reason`을 기록한다.
 7. 위 검사를 통과한 동적 결과만 정적·Pro·Con 근거와 합성하고 trusted runtime의 `SAVE_RESULT(result_kind=verification_result)` 검사에 제출한다.
 
 ### R6 동적 재현 검증 시나리오
@@ -464,7 +464,7 @@ final `VerificationResult` 후보를 저장하기 전에 trusted runtime은 `SAV
 | 실행 관측이 판정에 필요 | `DynamicReproductionRequest.purpose=VERDICT_EVIDENCE` work 하나를 만들고 `DynamicReproductionResult.hypothesis_outcome=SUPPORTED`이면 같은 `poc_ref`로 `VerificationResult.verdict=TRUE` |
 | 정상 실행에서 named falsification이 실제 근거로 `DynamicReproductionResult.hypothesis_outcome=DISPROVED` | `VerificationResult.verdict=FALSE`, `poc_ref=null` |
 | `DynamicReproductionResult.status=SUCCEEDED \| PARTIAL`이고 `hypothesis_outcome=INCONCLUSIVE` | 실제 근거와 `VerificationResult.unresolved_conditions`가 있으면 `VerificationResult.verdict=HOLD` |
-| 정책 차단·setup 실패·timeout·PoC 생성·실행 실패 또는 취소 | `DynamicReproductionResult.status=BLOCKED \| FAILED \| CANCELLED`, final `VerificationResult`와 Gate 금지 |
+| Sandbox profile 외부 격리 경계 차단·setup 실패·timeout·PoC 생성·실행 실패 또는 취소 | `DynamicReproductionResult.status=BLOCKED \| FAILED \| CANCELLED`, final `VerificationResult`와 Gate 금지 |
 | 결과 제출 중 `WorkExecutionState.status=RUNNING`인데 `meta.attempt_id`가 `active_attempt_id`와 다름 | `ATTEMPT_NOT_ACTIVE`로 거절 |
 | R6 결과 소비 시 `meta.attempt_id`가 `COMMITTED TransitionCommit.attempt_id` 또는 해당 `WorkAttempt.attempt_id`와 다름 | `ATTEMPT_NOT_ACTIVE`로 거절 |
 | 고정 입력·`request_ref`·`verification_generation`이 현재 Verification과 다름 | `STALE_RESULT`로 격리, Verification 소비 금지 |

@@ -77,7 +77,7 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] 새 연계 가설의 부모 계보를 따라가 조상 Primitive를 현재 match 후보에서 제외하며, 체이닝 전용 임의 깊이 제한 대신 R8 전역 예산을 적용합니다.
 - [ ] PoC candidate와 재현 성공 뒤 validated PoC를 구분하고, validated PoC가 어떤 가설·코드 위치·관찰 결과를 뒷받침하는지 추적됩니다.
 - [ ] 동적 결과의 Agent 호출·plan/recipe/환경 생성·정리 필요 상태와 nullable 환경·정책·PoC reference 및 필수 AgentLog가 모순되지 않습니다.
-- [ ] Sandbox 정책 차단은 exact 정책 결정과 미실행 상태를 남기며, 그 사실만으로 Technical `REJECT`나 가설 `FALSE`가 되지 않습니다.
+- [ ] Sandbox profile 외부 격리 경계 차단은 exact `SandboxPolicyDecision`과 미실행 상태를 남기며, 그 사실만으로 Technical `REJECT`나 가설 `FALSE`가 되지 않습니다. 프로그램 정책 준비·freshness·testing restriction은 `LOCAL_ONLY` 실행의 이 차단 사유가 아닙니다.
 - [ ] 최초 attempt는 clean container이고 다른 가설은 writable container를 공유하지 않으며, reuse/recreate 사유와 이전·새 환경이 AgentLog에 연결됩니다.
 - [ ] R7 retry에서 같은 Agent session의 조정은 현재 attempt에 기록하고, session 재시작은 같은 work의 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개는 새 `attempt_id`·`trigger=RESUME`를 사용합니다. 대기 중에만 `BLOCKED`입니다.
 - [ ] PoC 생성·환경 구성·실행 실패는 validated `poc_ref=null`입니다. 같은 session에서 해결 가능하면 현재 attempt를 계속하고, session 재시작이 필요할 때만 같은 work의 새 attempt를 시작합니다. 외부 조건을 기다릴 때만 `BLOCKED`, 복구 불가능하거나 한도를 소진하면 verdict 없는 `FAILED`이며 `FALSE | HOLD`로 변환하지 않습니다.

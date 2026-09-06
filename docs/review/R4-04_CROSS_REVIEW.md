@@ -59,7 +59,7 @@ R4 담당자는 이 PR의 작성자이므로 자신의 확인만으로 교차 �
 - 모든 final TRUE에는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated PoC가 필요하고, 실패는 verdict 없이 `BLOCKED | FAILED`로 처리합니다.
 - 필수 환경 불일치·구성 실패는 공격 전에 멈추고 `INCONCLUSIVE`로 R6에 반환하며 가설 `FALSE`로 바꾸지 않습니다.
 - run 시작 때 `STALE` 정책 cache는 재사용하지 않고 새로 준비합니다. 정책이 없거나 현재 `RunPolicyState=UNVERIFIED`이면 Rule Scope Gate를 `UNCERTAIN + DENY`로 고정합니다.
-- `POLICY_BLOCKED`는 가설 반증이나 자동 `REJECT`가 아닙니다. 다만 validated PoC가 없으므로 final verdict와 Technical Gate 없이 `BLOCKED | FAILED`로 처리합니다.
+- `POLICY_BLOCKED`는 Sandbox profile 외부 격리 경계 위반이며 프로그램 정책/testing restriction 판정이 아닙니다. 가설 반증이나 자동 `REJECT`로 바꾸지 않고, validated PoC가 없으므로 final verdict와 Technical Gate 없이 `BLOCKED | FAILED`로 처리합니다.
 - Finding이 없으면 Reporter를 호출하지 않고 `AnalysisRunResult.report_draft_refs=[]`와 `REPORT_NOT_READY` 원인을 보존합니다.
 - upstream revision이 바뀐 ReportDraft는 current `AnalysisRunResult`에 재사용하지 않습니다.
 - ReportDraft 생성 뒤 Agent 자동화는 끝나며 사람의 검토·수정·제출·공개는 자동화 밖에서 수행합니다.

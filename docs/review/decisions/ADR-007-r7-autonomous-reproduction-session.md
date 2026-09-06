@@ -34,7 +34,7 @@ R6는 “무엇을 왜 재현할지”만 요청합니다. R7 Agent는 격리된
 - 시작과 종료 event는 같은 `action_id`로 연결합니다.
 - 각 append를 durable revision으로 확정해 crash 뒤에도 기존 event를 보존합니다.
 - 이전 attempt의 늦은 event는 current attempt와 결과에 섞지 않습니다.
-- `agent_invoked`는 외부 경계 승인 뒤 Sandbox 안의 R7 Agent 실행 단계만 뜻합니다. 사전 requirements·plan 작성 호출과 구분하며, 실행 Agent 호출 전 정책 차단도 `agent_invoked=false`, exact 정책 결정과 `POLICY_BLOCKED` event를 가진 결과로 기록할 수 있습니다.
+- `agent_invoked`는 외부 경계 승인 뒤 Sandbox 안의 R7 Agent 실행 단계만 뜻합니다. 사전 requirements·plan 작성 호출과 구분하며, 실행 Agent 호출 전 Sandbox profile 외부 격리 경계 차단도 `agent_invoked=false`, exact `SandboxPolicyDecision`과 `POLICY_BLOCKED` event를 가진 결과로 기록할 수 있습니다. 프로그램 정책 준비·freshness·testing restriction은 이 차단 사유가 아닙니다.
 - Session Manager는 Agent 호출·중단, command 허용, retry와 cleanup 전략을 결정하지 않습니다.
 
 ## retry와 실패
@@ -50,7 +50,7 @@ R6는 “무엇을 왜 재현할지”만 요청합니다. R7 Agent는 격리된
 - `poc_candidate_ref`는 Agent가 작성했거나 실행을 시도한 candidate입니다. 실패해도 같은 attempt의 AgentLog와 함께 남길 수 있습니다.
 - validated `poc_ref`는 `SUCCEEDED + SUPPORTED`, `agent_invoked=true`, exact candidate revision·digest의 실제 실행 event가 모두 있을 때만 생성합니다.
 - request·plan·recipe·environment·AgentLog·candidate·validated PoC와 dynamic result는 같은 work·attempt에 연결합니다. 과거 baseline recipe ref만 명시된 예외입니다.
-- 환경 실패, 정책 차단, candidate 생성/실행 실패, timeout, `DISPROVED | INCONCLUSIVE`이면 `poc_ref=null`입니다.
+- 환경 실패, Sandbox profile 외부 격리 경계 차단, candidate 생성/실행 실패, timeout, `DISPROVED | INCONCLUSIVE`이면 `poc_ref=null`입니다.
 - current generation의 exact request, `SUCCEEDED + SUPPORTED` 결과와 validated PoC 중 하나라도 없으면 R6 final TRUE 저장과 Technical Gate 호출을 막습니다.
 
 ## 호환성
