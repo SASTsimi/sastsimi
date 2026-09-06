@@ -18,7 +18,7 @@ Technical Gate는 이 label이 Verification 근거와 맞는지 검토하지만 
 
 final TRUE `VerificationResult`의 찬반 근거, 실제 코드·호출·데이터 흐름, 현재 generation의 `DynamicReproductionRequest`·성공한 동적 결과·validated PoC, CWE와 restriction을 검토한다. FALSE와 HOLD는 이 Gate를 호출하지 않는다. 각 exact revision을 고정하며 하나라도 수정되면 기존 Gate 결과를 재사용하지 않는다. 출력은 `ACCEPT | REVISE | REJECT`와 별도 `handoff_readiness: READY | NOT_READY`다. `ACCEPT`는 `READY`, 나머지는 `NOT_READY`만 허용하며 verdict를 직접 바꾸지 않는다. `REVISE`는 같은 Verification owner에게 직접 돌아가며, 새 generation에서 TRUE를 다시 만들려면 새 동적 결과와 validated PoC도 필요하다.
 
-동적 재현이 Sandbox 정책에 막힌 것은 `FALSE`나 Gate의 `REJECT` 근거가 아니다. 하지만 validated PoC가 없으므로 final TRUE와 Technical Gate 입력을 만들 수 없다. retry 가능하면 동적 work를 `BLOCKED`, 복구 불가능하면 verdict 없이 `FAILED`로 끝낸다.
+동적 재현이 Sandbox profile의 외부 격리 경계에 막힌 것은 `FALSE`나 Gate의 `REJECT` 근거가 아닙니다. 하지만 validated PoC가 없으므로 final TRUE와 Technical Gate 입력을 만들 수 없습니다. current work의 불변 입력을 바꾸지 않는 외부 조건을 기다릴 때만 동적 work를 `BLOCKED`로 유지합니다. exact request나 profile reference를 바꿔야 하면 새 Verification generation과 새 동적 work를 만들고, 복구 불가능하면 verdict 없이 `FAILED`로 끝냅니다. 프로그램 정책 준비·freshness·testing restriction은 `LOCAL_ONLY` 실행의 차단 사유가 아닙니다.
 
 ## 2. 공식 정책·범위·영향 검토(`Rule Scope Impact Gate`)
 
@@ -58,7 +58,7 @@ fetch/parser/schema/runtime 실패나 invalid output은 정책 `FAIL` 또는 정
 
 Gate 결과는 authoritative policy/source/parser/authenticity/freshness와 current final `VerificationResult`의 exact evidence/reference closure, 그리고 그중 LLM이 실제 읽은 bounded context를 구분해 기록한다. `evidence_links`로 Rule은 공식 rule item+verified evidence, Scope는 공식 scope item+실제 target/version, Impact는 공식 criterion+verified impact evidence에 연결되어야 확정 상태가 된다. 누락은 `missing_information`에 stable ID, domain, blocking 여부, 설명과 policy/evidence refs로 구조화한다. 별도 condition/projection schema는 만들지 않으며 blocking 누락과 `ALLOW`의 조합은 `INVALID_OUTPUT`이다.
 
-testing restriction은 `verification_result_ref -> dynamic_result_ref`의 canonical transitive reference closure를 통해 current-generation exact attempt에서 실제 수행한 사실만 사용한다. `AgentLogEvent.event_type`, `input_refs`, output/observation과 연결 artifact 및 canonical `agent_invoked`가 실행 사실의 provenance를 제공한다. 계획했지만 실행하지 않은 attack/PoC, `agent_invoked=false`인 실행 fact, observation 없는 PoC는 사용하지 않고 policy block이나 environment precheck로 만들지 않은 artifact는 요구하지 않는다. 다른 generation/revision/attempt 혼합과 결과를 바꾸는 실제 수행 사실 누락을 금지한다. R7은 사실과 provenance를 제공하고 Gate 2가 공식 testing restriction과 비교하며, Gate 2는 R7 환경·정책 판정을 재심사하지 않는다.
+testing restriction은 `verification_result_ref -> dynamic_result_ref`의 canonical transitive reference closure를 통해 current-generation exact attempt에서 실제 수행한 사실만 사용한다. `AgentLogEvent.event_type`, `input_refs`, output/observation과 연결 artifact 및 canonical `agent_invoked`가 실행 사실의 provenance를 제공한다. 계획했지만 실행하지 않은 attack/PoC, `agent_invoked=false`인 실행 fact, observation 없는 PoC는 사용하지 않고 Sandbox profile 외부 격리 경계 사전 차단이나 environment precheck로 만들지 않은 artifact는 요구하지 않는다. 다른 generation/revision/attempt 혼합과 결과를 바꾸는 실제 수행 사실 누락을 금지한다. R7은 사실과 provenance를 제공하고 Gate 2가 공식 testing restriction과 비교하며, Gate 2는 R7 환경·정책 판정을 재심사하지 않는다.
 
 R5는 `testing_restriction_compliance`와 provenance를 만들고 R4 `PRIMITIVE_ADMISSION_RUNTIME`이 current `PrimitiveAdmissionDecision`을 확정한다. `FAIL`만 `DENY`로 Primitive·Chaining·Reporter를 차단한다. `PASS | UNCERTAIN`은 admission `ALLOW`이며, `COLLECTION_FAILED`는 review 없이 `NOT_EVALUATED + ALLOW`로 구분한다. `UNCERTAIN`과 수집 실패는 Primitive·Chaining을 허용하지만 Reporter는 차단한다. `RuleScopeEvidenceLink.area=TESTING_RESTRICTION`은 공식 정책과 exact 실행 근거를 연결하는 provenance이며 판정값이나 저장 authority가 아니다.
 

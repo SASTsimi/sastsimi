@@ -438,7 +438,7 @@ foreach ($rule in $requiredBindingRules) {
 $reviewRemediationPatterns = @(
     @{
         Name = 'dynamic state requires request and uses an exact result pointer when a result exists'
-        Pattern = '(?s)동적 재현을 요청하면 `DynamicReproductionState.request_ref`.*?current generation의 exact `DynamicReproductionRequest`.*?`SUCCEEDED \| PARTIAL \| BLOCKED \| FAILED \| CANCELLED`에는 Reproduction Session Manager가 확정한 exact `DynamicReproductionResult\.record_id`가 필수.*?Dynamic Reproduction Agent 호출 전 정책 차단도 Session Manager가 최소 `AgentLog`와 결과'
+        Pattern = '(?s)동적 재현을 요청하면 `DynamicReproductionState.request_ref`.*?current generation의 exact `DynamicReproductionRequest`.*?`SUCCEEDED \| PARTIAL \| BLOCKED \| FAILED \| CANCELLED`에는 Reproduction Session Manager가 확정한 exact `DynamicReproductionResult\.record_id`가 필수.*?Dynamic Reproduction Agent 호출 전 Sandbox profile 외부 격리 경계 차단도 Session Manager가 최소 `AgentLog`와 결과'
     },
     @{
         Name = 'dynamic PARTIAL uses structured limitations without fake errors'
@@ -446,7 +446,7 @@ $reviewRemediationPatterns = @(
     },
     @{
         Name = 'dynamic autonomous retry is distinct from external blocking'
-        Pattern = '(?s)R7이 스스로 해결할 수 있는 command·PoC·환경 조정은 `BLOCKED` 사유가 아니며.*?같은 session의 현재 attempt.*?`RUNNING -> READY -> RUNNING`.*?`trigger=RETRY`.*?외부 조건이 해결되면 같은 `work_id`에서 새 `attempt_id`, `trigger=RESUME`'
+        Pattern = '(?s)R7이 스스로 해결할 수 있는 command·PoC·환경 조정은 `BLOCKED` 사유가 아니며.*?같은 session의 현재 attempt.*?`RUNNING -> READY -> RUNNING`.*?`trigger=RETRY`.*?불변 입력을 바꾸지 않는 실제 외부 조건.*?`BLOCKED -> READY -> RUNNING`.*?`trigger=RESUME`'
     },
     @{
         Name = 'dynamic cancellation result is atomically bound and late output is stale'
@@ -1002,7 +1002,7 @@ foreach ($obsoleteR8PolicyRule in @(
 if ($contractText -match 'POLICY_BLOCKED[^\r\n]*정적·찬반[^\r\n]*`ACCEPT`') {
     Add-Failure 'POLICY_BLOCKED without a validated PoC must not reach Technical ACCEPT'
 }
-if (-not $contractText.Contains('Sandbox 안의 Dynamic Reproduction Agent가 호출되기 전 정책 차단도 `agent_invoked=false`와 `POLICY_BLOCKED` event를 가진 로그·결과로 확정할 수 있다.')) {
+if (-not $contractText.Contains('Sandbox 안의 Dynamic Reproduction Agent가 호출되기 전 Sandbox profile 외부 격리 경계 차단도 `agent_invoked=false`와 `POLICY_BLOCKED` event를 가진 로그·결과로 확정할 수 있다.')) {
     Add-Failure 'policy block before Agent invocation must still produce an AgentLog and dynamic result'
 }
 $reportDraftBlock = [regex]::Match($contractText, '(?ms)^ReportDraft:\s*(.*?)^```').Groups[1].Value
@@ -1097,7 +1097,7 @@ $sandboxReviewPatterns = @(
     },
     @{
         Name = 'policy blocked result retains the exact Controller decision'
-        Pattern = '(?s)`failure_category=POLICY_BLOCKED`이면 `action_decision_ref`와 `policy_decision_ref`가 반드시 존재.*?`decision=DENY`.*?정책의 exact revision과 사유 코드를 확인'
+        Pattern = '(?s)`failure_category=POLICY_BLOCKED`이면 `action_decision_ref`와 `policy_decision_ref`가 반드시 존재.*?`decision=DENY`.*?`SandboxProfile`의 exact revision과 사유 코드를 확인'
     },
     @{
         Name = 'pre-boundary plan failure has no sandbox or policy decision'
@@ -1129,7 +1129,7 @@ $sandboxReviewPatterns = @(
     },
     @{
         Name = 'same-attempt policy provenance links SandboxPolicyDecision, AgentLog and DynamicReproductionResult'
-        Pattern = '(?s)같은 `DYNAMIC_REPRO` attempt 안에서 정책 provenance는 exact reference로 이어진다.*?`AgentLog`의 `SESSION_STARTED` event.*?`input_refs`에는 그 attempt에 고정한 exact `SandboxPolicyDecision`.*?`DynamicReproductionResult\.policy_decision_ref`는 `AgentLog`가 그 attempt에 고정한 exact `SandboxPolicyDecision`과 동일.*?`agent_log_ref`는 같은 attempt의 `AgentLog` exact revision.*?latest lookup으로 다른 attempt의 policy decision·log·result를 보정하지 않는다'
+        Pattern = '(?s)같은 `DYNAMIC_REPRO` attempt 안에서 Sandbox 경계 판정 provenance는 exact reference로 이어진다.*?`AgentLog`의 `SESSION_STARTED` event.*?`input_refs`에는 그 attempt에 고정한 exact `SandboxPolicyDecision`.*?`DynamicReproductionResult\.policy_decision_ref`는 `AgentLog`가 그 attempt에 고정한 exact `SandboxPolicyDecision`과 동일.*?`agent_log_ref`는 같은 attempt의 `AgentLog` exact revision.*?latest lookup으로 다른 attempt의 policy decision·log·result를 보정하지 않는다'
     },
     @{
         Name = 'execution scope is local only with no active external path'
@@ -1285,7 +1285,7 @@ $requiredR504CrossReviewRules = @(
     @{
         Name = 'policy-blocked dynamic reproduction is not automatic rejection or falsification'
         Text = $contractText
-        Marker = '`DynamicReproductionResult(status=BLOCKED | FAILED, failure_category=POLICY_BLOCKED)`는 가설 반증이나 Technical `REJECT`가 아니다.'
+        Marker = '`DynamicReproductionResult(status=BLOCKED | FAILED, failure_category=POLICY_BLOCKED)`는 Sandbox profile의 외부 격리 경계 위반이지 가설 반증이나 Technical `REJECT`가 아니다.'
     },
     @{
         Name = 'policy freshness is explicit in the shared contract'
@@ -2788,6 +2788,78 @@ if ($moduleMapStep3Row -and ($moduleMapStep3Row -notmatch 'POLICY_FETCH')) {
 }
 Write-Output "R5-02 policy preparation-timing rules: $($policyPreparationTimingMarkers.Count)"
 
+# R6 dynamic reproduction must stay independent from program-policy semantics.
+# RunPolicyState is captured at RUN_SANDBOX time for audit only; it is not a
+# mutable DYNAMIC_REPRO work input or a LOCAL_ONLY authorization prerequisite.
+$providerText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/09-llm-provider-session-and-logging.md')
+$stateWikiText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/state-and-recovery.md')
+$requiredR6PolicyBoundaryRules = @(
+    @{ Name = 'R6 does not copy program policy into the dynamic request'; Text = $verificationText; Marker = 'R6는 공식 프로그램 정책을 직접 수집하거나 해석하지 않으며 `DynamicReproductionRequest`에도 정책 reference를 복사하지 않는다.' },
+    @{ Name = 'R6 Wiki keeps program policy out of the dynamic request'; Text = $verificationWikiText; Marker = 'R6는 프로그램 정책을 직접 수집하거나 해석하지 않고 `DynamicReproductionRequest`에도 정책 reference를 넣지 않습니다.' },
+    @{ Name = 'R6 keeps static and debate work independent from policy preparation'; Text = $verificationText; Marker = '프로그램 정책 준비 상태와 관계없이 정적·Pro·Con 검증과 `DynamicReproductionRequest` 생성은 계속할 수 있다.' },
+    @{ Name = 'R6 explains the audit-only RunPolicyState binding'; Text = $verificationText; Marker = '`RunPolicyState`는 `RUN_SANDBOX` 요청 시점에 별도 감사 reference로 기록하며 `DYNAMIC_REPRO` work의 불변 입력이나 R6 verdict 근거로 추가하지 않는다.' },
+    @{ Name = 'R6 resume preserves immutable work inputs'; Text = $contractText; Marker = '`BLOCKED -> READY -> RUNNING` 재개는 기존 work의 `input_refs`와 `input_hash`가 그대로일 때만 허용한다.' },
+    @{ Name = 'orchestration lifecycle preserves immutable dynamic-work inputs'; Text = $orchestrationText; Marker = '현재 work의 불변 입력을 바꾸지 않는 외부 조건을 기다릴 때만 `BLOCKED` 뒤 `trigger=RESUME`인 새 attempt로 재개한다.' },
+    @{ Name = 'provider retry lifecycle preserves immutable dynamic-work inputs'; Text = $providerText; Marker = '`DYNAMIC_REPRO`는 현재 work의 `input_refs/input_hash`를 바꾸지 않는 인증·승인·외부 환경 정비·resource 확보를 기다릴 때만 `BLOCKED`로 이동한다.' },
+    @{ Name = 'module map recovery preserves immutable dynamic-work inputs'; Text = $moduleMapText; Marker = '현재 work의 `input_refs/input_hash`를 바꾸지 않는 재인증·승인·외부 환경 정비·resource 확보 대기만 `BLOCKED` 후 `trigger=RESUME`인 새 attempt를 만든다.' },
+    @{ Name = 'state Wiki preserves immutable dynamic-work inputs'; Text = $stateWikiText; Marker = '`DYNAMIC_REPRO`는 현재 work의 `input_refs/input_hash`를 바꾸지 않는 외부 조건을 기다릴 때만 `BLOCKED`를 사용합니다.' }
+)
+foreach ($rule in $requiredR6PolicyBoundaryRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing R6 program-policy boundary rule: $($rule.Name)"
+    }
+}
+
+$requiredR6PolicyBlockedSemantics = @(
+    @{ Name = 'Gate defines POLICY_BLOCKED as an external Sandbox boundary failure'; Text = $gateText; Marker = '`POLICY_BLOCKED`는 `SandboxProfile`의 외부 격리 경계 위반 때문에 Dynamic Reproduction Agent를 시작하지 못한 상태다.' },
+    @{ Name = 'Common contract keeps POLICY_BLOCKED out of program-policy semantics'; Text = $contractText; Marker = '`DynamicReproductionResult(status=BLOCKED | FAILED, failure_category=POLICY_BLOCKED)`는 Sandbox profile의 외부 격리 경계 위반이지 가설 반증이나 Technical `REJECT`가 아니다.' },
+    @{ Name = 'Results scenario names the Sandbox profile boundary'; Text = $resultText; Marker = '| Sandbox profile 외부 격리 경계 차단 결과 |' },
+    @{ Name = 'Wiki names the Sandbox profile boundary'; Text = $gateWikiText; Marker = '동적 재현이 Sandbox profile의 외부 격리 경계에 막힌 것은 `FALSE`나 Gate의 `REJECT` 근거가 아닙니다.' },
+    @{ Name = 'Gate execution closure names the Sandbox profile pre-boundary stop'; Text = $gateText; Marker = 'Sandbox profile 외부 격리 경계 사전 차단 또는 environment precheck로 artifact가 생성되지 않았다면' },
+    @{ Name = 'Contract execution closure names the Sandbox profile pre-boundary stop'; Text = $contractText; Marker = 'Sandbox profile 외부 격리 경계 사전 차단·environment precheck stop으로 생성되지 않은 artifact는 요구하지 않는다.' },
+    @{ Name = 'Gate Wiki execution closure names the Sandbox profile pre-boundary stop'; Text = $gateWikiText; Marker = 'Sandbox profile 외부 격리 경계 사전 차단이나 environment precheck로 만들지 않은 artifact는 요구하지 않는다.' },
+    @{ Name = 'Common Wiki defines policy decision against an exact Sandbox profile'; Text = $commonWikiText; Marker = '`policy_decision_ref`: Controller가 어떤 exact Sandbox profile revision과 외부 경계 사유로 허용·차단했는지 가리킵니다.' }
+)
+foreach ($rule in $requiredR6PolicyBlockedSemantics) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing R6 POLICY_BLOCKED semantic rule: $($rule.Name)"
+    }
+}
+
+$obsoleteR6PolicyBlockedSemantics = @(
+    @{ Name = 'Gate calls POLICY_BLOCKED a program-policy failure'; Text = $gateText; Marker = '정책 때문에 실행하지 못했다는 뜻' },
+    @{ Name = 'Gate resumes immutable work after an external policy change'; Text = $gateText; Marker = '외부 정책·설정을 바꿀 수 있으면 Verification과 동적 work를 `BLOCKED`로 유지' },
+    @{ Name = 'Common contract resumes immutable work after a policy change'; Text = $contractText; Marker = '정책·외부 설정 수정이 가능하면 같은 동적 work와 Verification을 `BLOCKED`로 유지' },
+    @{ Name = 'Wiki ambiguously calls the boundary a Sandbox policy block'; Text = $gateWikiText; Marker = '동적 재현이 Sandbox 정책에 막힌 것은' },
+    @{ Name = 'Results ambiguously names a Sandbox policy block'; Text = $resultText; Marker = '| Sandbox 정책 차단 결과 |' },
+    @{ Name = 'Results waits for a changed immutable Sandbox profile'; Text = $resultText; Marker = '외부 profile 변경을 기다릴 때만 `BLOCKED`' },
+    @{ Name = 'Gate ambiguously says policy block in the execution closure'; Text = $gateText; Marker = 'policy block 또는 environment precheck' },
+    @{ Name = 'Contract ambiguously says policy block in the execution closure'; Text = $contractText; Marker = 'policy block·environment precheck' },
+    @{ Name = 'Gate Wiki ambiguously says policy block in the execution closure'; Text = $gateWikiText; Marker = 'policy block이나 environment precheck' },
+    @{ Name = 'Common Wiki calls a Sandbox profile revision a generic policy version'; Text = $commonWikiText; Marker = 'Controller가 어떤 정책 버전으로 왜 허용·차단했는지' }
+)
+foreach ($rule in $obsoleteR6PolicyBlockedSemantics) {
+    if ($rule.Text.Contains($rule.Marker)) {
+        Add-Failure "obsolete R6 POLICY_BLOCKED semantic remains: $($rule.Name)"
+    }
+}
+
+$obsoleteR6PolicyBoundaryPhrases = @(
+    '동적 work는 정책 준비가 끝날 때까지 `BLOCKED`로 기다립니다.',
+    'exact `PolicyCollectionResult`, current `ProgramPolicyRecord`와 parser 결과를 `DYNAMIC_REPRO` work 입력에 고정',
+    'Sandbox Controller는 그 정책 record의 `testing_restrictions` 중 실제 실행 방법에 적용되는 항목을 확인',
+    '외부 설정·정책·승인·resource 변경',
+    '외부 설정·승인·정책 또는 resource profile 변경',
+    '외부 설정·정책·승인 또는 resource profile 변경',
+    '재인증·정책 변경·외부 설정·resource profile 변경',
+    '정책·외부 설정·승인·resource profile 변경'
+)
+foreach ($phrase in $obsoleteR6PolicyBoundaryPhrases) {
+    if ($activeDocumentationText.Contains($phrase)) {
+        Add-Failure "obsolete R6 program-policy coupling remains: $phrase"
+    }
+}
+
 # origin/main (docs(r4): freeze policy revisions within each run): no active doc may
 # describe a mid-run policy replacement / admission recompute on a new policy
 # revision. Policy is frozen for the life of an analysis run.
@@ -3008,6 +3080,8 @@ Write-Output "StaticFactBundle cross-document rules: $($requiredStaticFactBundle
 Write-Output "Static layer Primitive admission rules: $($requiredStaticPrimitiveAdmissionRules.Count)"
 Write-Output "R4 policy contract blocks: $($requiredPolicyContractFields.Count)"
 Write-Output "R4 policy contract rules: $($requiredPolicyContractRules.Count)"
+Write-Output "R6 program-policy boundary rules: $($requiredR6PolicyBoundaryRules.Count)"
+Write-Output "R6 POLICY_BLOCKED semantic rules: $($requiredR6PolicyBlockedSemantics.Count)"
 Write-Output "R3-01 run-init fan-out rules: $($requiredR301RunInitFanoutRules.Count)"
 Write-Output "Failures: $($failures.Count)"
 

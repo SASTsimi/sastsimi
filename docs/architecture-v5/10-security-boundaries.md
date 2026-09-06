@@ -98,8 +98,8 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - 비-LLM Reproduction Session Manager가 실제 event를 durable append-only `AgentLog`에 기록한다. 전역 고유 `event_id`, attempt별 증가 `sequence`를 강제한다. `COMMAND_STARTED`와 `COMMAND_FINISHED`는 같은 exact `SandboxCommandRecord`·digest, `action_id`, attempt, environment·recipe를 가리키며 secret 원문 대신 opaque ref를 쓴 redaction 상태가 유효해야 한다. 이전 attempt의 늦은 event는 current 결과에 섞지 않는다.
 - request·plan·recipe·실제 환경·AgentLog·PoC candidate·validated PoC는 같은 analysis·workspace·commit·hypothesis·work·attempt를 가리킨다. 성공한 baseline recipe 재사용은 exact baseline ref와 동일 built image digest를 가진 current-attempt binding으로 기록한다.
 - validated PoC 없이 `TRUE` 저장 또는 Technical Gate 호출을 요청하면 Runtime Validator가 거절한다. validated `poc_ref`는 `SUCCEEDED + SUPPORTED`이고 same-attempt AgentLog가 exact candidate revision·digest의 실제 실행을 입증할 때만 허용한다.
-- 정리 대상이 하나도 생기지 않았을 때만 `cleanup_status=NOT_REQUIRED`다. 정책 차단 전에 build·container·network·volume·임시 파일이 생겼다면 정리 성공 또는 실패와 exact cleanup reference를 기록한다.
-- 환경·정책·Agent·PoC 생성·실행 실패는 가설 `FALSE | HOLD`가 아니다. 같은 Dynamic Reproduction Agent session의 조정은 현재 attempt에 기록하고, session 재시작이 필요한 retry만 새 attempt를 사용한다. 외부 조건을 기다릴 때만 `BLOCKED`이며 조건 해결 뒤에는 같은 work에서 `trigger=RESUME`인 새 attempt를 시작한다. 한도 소진 또는 복구 불가 시 `FAILED + INCONCLUSIVE`로 종료하고 과거 attempt 결과를 current 성공 근거로 사용하지 않는다.
+- 정리 대상이 하나도 생기지 않았을 때만 `cleanup_status=NOT_REQUIRED`다. Sandbox profile 외부 격리 경계 차단 전에 build·container·network·volume·임시 파일이 생겼다면 정리 성공 또는 실패와 exact cleanup reference를 기록한다.
+- 환경·Sandbox profile 외부 격리 경계·Dynamic Reproduction Agent·PoC 생성·실행 실패는 가설 `FALSE | HOLD`가 아니다. 같은 Dynamic Reproduction Agent session의 조정은 현재 attempt에 기록하고, session 재시작이 필요한 retry만 새 attempt를 사용한다. current work의 불변 입력을 바꾸지 않는 외부 조건을 기다릴 때만 `BLOCKED`이며 조건 해결 뒤에는 같은 work에서 `trigger=RESUME`인 새 attempt를 시작한다. exact request나 profile reference 변경이 필요하면 기존 work를 재개하지 않는다. 한도 소진 또는 복구 불가 시 `FAILED + INCONCLUSIVE`로 종료하고 과거 attempt 결과를 current 성공 근거로 사용하지 않는다. 프로그램 정책 준비 상태는 `LOCAL_ONLY` 실행의 대기·차단 사유가 아니다.
 
 ## 6. 프로그램 정책 신뢰 경계
 
@@ -115,7 +115,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - 공식 자료가 없음을 확인했거나 `RunPolicyState.status=UNVERIFIED`이면 `UNCERTAIN + DENY`다. run 시작 때 stale로 판정한 과거 record는 감사용으로 보존할 수 있지만 current state나 `PASS | ALLOW` 근거로 사용하지 않는다.
 - Runtime Validator는 Rule Scope·Reporter action 승인과 실제 provider 호출 직전에 준비 완료 때 고정한 exact `RunPolicyState`와 같은지 확인한다. freshness 만료와 parser version 변경은 다음 analysis run을 시작할 때 재사용 여부를 판단하는 조건이고 현재 run의 state를 바꾸지 않는다. `PREPARING` state는 Rule Scope·Reporter 입력으로 사용하지 않고 준비 완료를 기다린다. local-only Sandbox는 프로그램 정책 freshness에 권한을 의존하지 않으므로 준비 중에도 실행할 수 있고, 외부 정책 변경 신호만으로 기존 action을 취소하지 않는다. 이미 허가·완료한 순수 로컬 재현은 실행 당시 exact state와 함께 보존한다.
 - Rule Scope Gate는 structured 정책 record + `source_ref + source_locator`의 공식 원문 + 현재 hypothesis/verification 사실을 함께 사용하고, 원문을 확인할 수 없거나 Parser 결과와 모순되면 fail-closed(`UNCERTAIN + DENY`, `PolicyMissingInfo(area=SOURCE, blocks_allow=true)`)한다. 같은 program의 여러 hypothesis는 각각 별도 `RuleScopeImpactReview`를 만들되 run에 고정한 같은 정책 state를 재사용하고, 정책 parsing 결과를 hypothesis-specific verdict로 저장하지 않는다.
-- Sandbox Controller는 bug bounty program testing restriction의 semantic compliance를 판정하지 않는다. Sandbox 안에서 Dynamic Reproduction Agent가 고른 command·package·PoC를 program-policy allowlist처럼 의미 해석하지 않으며, 공식 program testing restriction과 실제 수행 행위의 의미 비교는 Rule Scope Gate의 `testing_restriction_compliance`가 유일한 authoritative 판정자다. `SandboxPolicyDecision`의 `ALLOW`는 보고 가능성·제출 허가가 아니고, `POLICY_BLOCKED`은 Sandbox profile 외부 경계 위반이지 `testing_restriction_compliance=FAIL`이 아니다.
+- Sandbox Controller는 bug bounty program testing restriction의 semantic compliance를 판정하지 않는다. Sandbox 안에서 Dynamic Reproduction Agent가 고른 command·package·PoC를 program-policy allowlist처럼 의미 해석하지 않으며, 공식 program testing restriction과 실제 수행 행위의 의미 비교는 Rule Scope Gate의 `testing_restriction_compliance`가 유일한 authoritative 판정자다. `SandboxPolicyDecision`의 `ALLOW`는 보고 가능성·제출 허가가 아니고, `POLICY_BLOCKED`는 Sandbox profile 외부 경계 위반이지 `testing_restriction_compliance=FAIL`이 아니다.
 - 확정 판단은 실제 정책 항목과 코드·동적 근거를 `RuleScopeEvidenceLink`로 연결한다. 판단을 막는 누락은 `PolicyMissingInfo`로 구조화하고 `blocks_allow=true`이면 공개 허용을 차단한다.
 
 ## 7. 근거·권한 연결
@@ -269,7 +269,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | `COMMAND_STARTED`와 `COMMAND_FINISHED`의 command ref·digest·action·attempt·environment가 다르거나 redaction이 유효하지 않음 | exact `SandboxCommandRecord`, 두 event와 AgentLog meta | `SAVE_RESULT` 거절, command·log 격리와 동적 결과 미확정 |
 | Verification 또는 Dynamic Reproduction Agent가 `DynamicReproductionResult`를 직접 저장 | `dynamic_reproduction_result` result-owner와 `requested_by` | `AUTHORITY_DENIED`, Reproduction Session Manager만 허용 |
 | `agent_invoked`와 AgentLog의 `AGENT_STARTED` event가 다름 | result boolean과 exact `agent_log_ref` | `SAVE_RESULT`의 `SCHEMA` 검사 거절, 가설 판정 변경 금지 |
-| 정책 차단 결과에 Controller 판정 reference가 없음 | `POLICY_BLOCKED`와 `policy_decision_ref` | `SAVE_RESULT` 거절, Technical Gate 결과로 대신 채우기 금지 |
+| Sandbox profile 외부 격리 경계 차단 결과에 Controller 판정 reference가 없음 | `POLICY_BLOCKED`와 `policy_decision_ref` | `SAVE_RESULT` 거절, Technical Gate 결과로 대신 채우기 금지 |
 | 환경을 생성·재사용했는데 exact `environment_ref` 또는 container 사유가 없음 | Setup Automation event와 exact `sandbox_environment` record | `SAVE_RESULT` 거절, plan이나 recipe로 실제 환경을 대신하지 않음 |
 | ReproductionPlan에 `request_ref` 또는 `environment_requirements_ref`가 없음 | 새 MAJOR schema와 plan | `SAVE_RESULT` 거절, Dynamic Reproduction Agent가 같은 request를 가리키는 새 requirements·plan 생성 |
 | R6가 EnvironmentRequirements를 만들거나 수정함 | result-owner registry와 candidate producer | `AUTHORITY_DENIED`, 변경 후보 격리 |

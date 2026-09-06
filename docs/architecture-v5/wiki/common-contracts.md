@@ -144,8 +144,8 @@ credential·cookie·token·password 원문은 요구사항과 실제 값에 저�
 - `environment_recipe_ref`: base/built image digest와 저장소 의존성 source를 고정한 현재 attempt의 recipe를 가리킵니다.
 - `failure_category`, `failure_reason`, `plan_issues`: 비교 가능한 실패 범주, 쉬운 자유형 설명, plan의 누락·모순을 각각 기록합니다.
 - `environment_ref`: Setup Automation이 현재 attempt에서 실제 생성하거나 재사용한 환경 기록을 가리킵니다. container instance, `CREATED | REUSED`, 사유와 요구사항 비교를 포함하며 plan이나 recipe로 대신할 수 없습니다.
-- `policy_decision_ref`: Controller가 어떤 정책 버전으로 왜 허용·차단했는지 가리킵니다. `POLICY_BLOCKED`이면 반드시 필요하며 Technical Gate의 판정과 다릅니다.
-- `cleanup_required`: 정리할 자원이 생겼는지 나타냅니다. 거짓일 때만 `cleanup_status=NOT_REQUIRED`를 씁니다. 정책에 막혔더라도 임시 자원이 생겼다면 정리 결과를 성공 또는 실패로 남깁니다.
+- `policy_decision_ref`: Controller가 어떤 exact Sandbox profile revision과 외부 경계 사유로 허용·차단했는지 가리킵니다. `POLICY_BLOCKED`이면 반드시 필요하며 프로그램 정책 판단이나 Technical Gate 판정과 다릅니다.
+- `cleanup_required`: 정리할 자원이 생겼는지 나타냅니다. 거짓일 때만 `cleanup_status=NOT_REQUIRED`를 씁니다. Sandbox profile 외부 격리 경계에 막혔더라도 임시 자원이 생겼다면 정리 결과를 성공 또는 실패로 남깁니다.
 
 이 참조들은 같은 분석·코드·가설·Verification generation과 정확한 record revision에 속해야 합니다. R6 request와 R7 requirements·plan이 연결되고, Controller 정책·Setup 환경·PoC candidate·AgentLog·정리 기록은 같은 동적 실행 attempt에서 연결됩니다. plan의 `environment_requirements_ref`와 실제 환경의 `requirements_ref`가 다르거나 다른 attempt의 자료를 섞으면 저장을 거절합니다. R4는 공통 연결 규칙을, R6는 요청과 최종 판정을 맡습니다. Dynamic Reproduction Agent는 requirements·plan·PoC·관찰을, Setup Automation은 recipe·환경·정리를, Controller는 외부 경계 판정을, Session Manager는 AgentLog·validated PoC·동적 결과 확정을 맡습니다.
 

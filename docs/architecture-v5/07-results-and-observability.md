@@ -94,9 +94,9 @@ Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을
 | S-POLICY-CACHE | 새 run 시작 때 정책 cache가 있거나 호환되지 않음 | program·source 설정·Parser 버전·freshness 기준·유효기간·exact closure가 모두 맞으면 cache 재사용, 하나라도 다르면 새 수집·파싱. 어느 경로든 새 `RunPolicyState` 생성 | 과거 `RunPolicyState` 직접 재사용, run 중 cache 재조회·정책 교체, 실패 결과를 cache로 게시 |
 | S-POLICY-UNVERIFIED | 공식 원문은 확인했지만 최신성을 확정하지 못함 | current `RunPolicyState=UNVERIFIED`. Rule Scope는 `UNCERTAIN + DENY`, Reporter는 차단. `LOCAL_ONLY` Sandbox는 계속 가능. FALSE/HOLD 아님 | 정책을 추정해 `CURRENT`·PASS/ALLOW로 승격하거나 Sandbox까지 차단 |
 | S-POLICY-FETCH-FAIL | 공식 출처 수집 또는 Parser가 재시도 뒤에도 실패 | 같은 `POLICY_FETCH` work를 `FAILED`와 `COLLECTION_FAILED`로 끝내고 Rule Scope review·Reporter는 만들지 않음. `LOCAL_ONLY` Sandbox와 기술 판정은 유지 | 실패를 `ABSENT`·FALSE/HOLD로 바꾸거나 성공 cache로 게시 |
-| S-SANDBOX-ENV | 필수 환경이 `MISMATCH` / `NOT_CHECKED` / `ERROR` | Dynamic Reproduction Agent가 recipe를 먼저 보완한다. 바깥 설정·정책을 기다릴 때만 `BLOCKED`. 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE`. `failure_category`는 환경. 최종 TRUE/FALSE/HOLD 없음 | 바로 판정으로 바꾸거나, 자율 보완 없이 무조건 시작 금지로만 적음 |
-| S-SANDBOX-POLICY | `RUN_SANDBOX`가 `LOCAL_ONLY` 격리·상자 시간·네트워크·외부 경계를 넘김 (program policy 준비 상태와 무관) | Dynamic Reproduction Agent 미시작, `agent_invoked=false`. 공격 입력·관측 없음. 외부 profile 변경을 기다릴 때만 `BLOCKED`, 최종 거절이면 `FAILED`. `failure_category=POLICY_BLOCKED`. 자원이 없을 때만 `cleanup_status=NOT_REQUIRED`. 최종 판정 없음. program policy unavailable·`BLOCKED`·`FAILED`·`UNVERIFIED` 자체는 이 차단 조건이 아님 | live asset·외부 계정·허용되지 않은 egress 실행, TRUE/FALSE/HOLD로 바꿈, 또는 program policy 준비 상태만으로 `LOCAL_ONLY` Dynamic Reproduction Agent 차단 |
-| S-SANDBOX-EXEC | 승인된 profile 안에서 Agent가 돌던 중 실행 실패 | 같은 Dynamic Reproduction Agent session의 조정은 현재 attempt에서 계속한다. session 재시작 때만 R8 한도 안에서 새 attempt를 만든다. 바깥 대기만 `BLOCKED`. 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE`. 반증·`FALSE` 금지 | 실패 = 반증 또는 HOLD |
+| S-SANDBOX-ENV | 필수 환경이 `MISMATCH` / `NOT_CHECKED` / `ERROR` | Dynamic Reproduction Agent가 recipe를 먼저 보완한다. current work 입력을 바꾸지 않는 재인증·승인·외부 환경 정비·resource 확보를 기다릴 때만 `BLOCKED`. 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE`. `failure_category`는 환경. 최종 TRUE/FALSE/HOLD 없음. 프로그램 정책 준비 상태는 대기 사유가 아님 | 바로 판정으로 바꾸거나, 자율 보완 없이 무조건 시작 금지로만 적음 |
+| S-SANDBOX-POLICY | `RUN_SANDBOX`가 `LOCAL_ONLY` 격리·상자 시간·네트워크·외부 경계를 넘김 (program policy 준비 상태와 무관) | Dynamic Reproduction Agent 미시작, `agent_invoked=false`. 공격 입력·관측 없음. current work 입력이 그대로인 외부 경계 조건 해소를 기다릴 때만 `BLOCKED`, 최종 거절이면 `FAILED`. exact request나 profile reference 변경이 필요하면 기존 work를 재개하지 않음. `failure_category=POLICY_BLOCKED`. 자원이 없을 때만 `cleanup_status=NOT_REQUIRED`. 최종 판정 없음. program policy unavailable·`BLOCKED`·`FAILED`·`UNVERIFIED` 자체는 이 차단 조건이 아님 | live asset·외부 계정·허용되지 않은 egress 실행, TRUE/FALSE/HOLD로 바꿈, 또는 program policy 준비 상태만으로 `LOCAL_ONLY` Dynamic Reproduction Agent 차단 |
+| S-SANDBOX-EXEC | 승인된 profile 안에서 Dynamic Reproduction Agent가 돌던 중 실행 실패 | 같은 Dynamic Reproduction Agent session의 조정은 현재 attempt에서 계속한다. session 재시작 때만 R8 한도 안에서 새 attempt를 만든다. 바깥 대기만 `BLOCKED`. 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE`. 반증·`FALSE` 금지 | 실패 = 반증 또는 HOLD |
 | S-SANDBOX-TIMEOUT | 승인된 시간 안에서 Dynamic Reproduction Agent가 실행되다 제한 시간이 끝남 | `FAILED + TIMEOUT`, `agent_invoked=true`. `agent_log_ref`와 당시 관측을 남김. cleanup 생략 금지. 자원이 생겼으면 `cleanup_status=SUCCEEDED \| FAILED`. 최종 판정 없음 | 시간 초과 = 반증·HOLD. cleanup을 건너뜀 |
 | S-CHAIN-STOP | 전역 예산 소진 | 중단 이유를 `AnalysisRunResult.stop_reasons`에 기록, FALSE 금지. 체이닝 전용 짝·깊이 한도는 없음. 순환 검사가 아님. 조상 Primitive 재사용 제외는 성립한 match의 정상 정리이며 `ChainingResult.excluded_lineage_refs`에 남기고 이 장면의 중단이 아님 | 중단을 구멍 없음으로 기록. 조상 제외·지문 중복을 중단 건수로 셈 |
 | S-INJECT | 저장소에 정책 변경 지시 | 설정이 안 바뀜 | 지시를 따라 설정 변경 |
@@ -201,12 +201,12 @@ Policy Collect는 최초 1회 뒤 최대 2회의 추가 재시도, Policy Parse�
 상자 **시간**이 부족한 이유는 셋이다. 1번 R8 잔여 예산과 2번 R7 입장 상한은 서로 다른 장부·실패 코드이며, 3번은 승인 뒤 실행 timeout이다.
 
 1. **호출 전** 이 분석·Sandbox work의 runtime 예산이 이미 없음 → Runtime Validator `BUDGET_EXCEEDED`. 동적 결과 `PARTIAL` 금지.
-2. **요청한** 상자 시간이 R7 `sandbox_profile_ref`의 입장 상한(아래 표)보다 김 → Sandbox Controller `SANDBOX_POLICY_DENIED`. Dynamic Reproduction Agent 미시작, `agent_invoked=false`. 외부 R7 profile 변경을 기다릴 때만 `BLOCKED`, 최종 거절이면 `FAILED`. `failure_category`는 정책. `INCONCLUSIVE`.
+2. **요청한** 상자 시간이 R7 `sandbox_profile_ref`의 입장 상한(아래 표)보다 김 → Sandbox Controller `SANDBOX_POLICY_DENIED`. 이 exact 입력으로는 해소할 수 없는 경계 위반이므로 Dynamic Reproduction Agent를 시작하지 않고 `agent_invoked=false`, `FAILED + POLICY_BLOCKED + INCONCLUSIVE`로 끝낸다. 요청 시간이나 profile reference를 바꾸려면 기존 work를 재개하지 않고 새 Verification generation의 새 동적 work로 처리한다.
 3. **승인된** 시간 안에서 Agent가 실행 중 시계가 끝남 → `FAILED + TIMEOUT` + `INCONCLUSIVE`. `agent_invoked=true`. `agent_log_ref`와 당시 관측을 남긴다.
 
-R7 `sandbox_profile_ref`가 승인한 실행 시간에 환경 구성·Health Check·실행·관측·cleanup을 포함해도, **실행 timeout이 났다고 cleanup을 생략하지 않는다.** 실행이 끝난 뒤 별도 제한된 cleanup/recovery를 하고, 자원이 생겼으면 `cleanup_status=SUCCEEDED | FAILED`다. 자원을 만들지 못한 정책 차단만 `NOT_REQUIRED`가 될 수 있다.
+R7 `sandbox_profile_ref`가 승인한 실행 시간에 환경 구성·Health Check·실행·관측·cleanup을 포함해도, **실행 timeout이 났다고 cleanup을 생략하지 않는다.** 실행이 끝난 뒤 별도 제한된 cleanup/recovery를 하고, 자원이 생겼으면 `cleanup_status=SUCCEEDED | FAILED`다. 자원을 만들지 못한 Sandbox profile 외부 격리 경계 차단만 `NOT_REQUIRED`가 될 수 있다.
 
-Sandbox **동적 결과**의 `PARTIAL`은 공격 경로를 일부 실행해 신뢰할 관측이 있을 때만 쓴다. 환경 구성 중이거나 실행 시작 전에 예산·정책에 막히면 `PARTIAL`이 아니다.
+Sandbox **동적 결과**의 `PARTIAL`은 공격 경로를 일부 실행해 신뢰할 관측이 있을 때만 쓴다. 환경 구성 중이거나 실행 시작 전에 예산 또는 Sandbox profile 외부 격리 경계에 막히면 `PARTIAL`이 아니다.
 
 아래 숫자는 **제안(교차 전)** 초안이다. 측정값이 아니다. 담당 확인 전에 확정이 아니다. 시간은 벽시계 1회다. `—`는 이 열에 해당 없음이다. token 열은 없다.
 
@@ -239,7 +239,7 @@ R7 `sandbox_profile_ref(data_kind=sandbox_profile)`가 network·격리와 CPU·R
 
 | 항목 | 상한 (초안) | 위반 시 |
 |---|---|---|
-| 시간 | R7 `sandbox_profile_ref`가 정한 요청 가능 최대. mode 구분 없음 | `SANDBOX_POLICY_DENIED`, Dynamic Reproduction Agent 미시작, `agent_invoked=false`. 외부 profile 변경을 기다릴 때만 `BLOCKED`, 최종이면 `FAILED`. 최종 판정 없음. FALSE 아님 |
+| 시간 | R7 `sandbox_profile_ref`가 정한 요청 가능 최대. mode 구분 없음 | `SANDBOX_POLICY_DENIED`, Dynamic Reproduction Agent 미시작, `agent_invoked=false`. 같은 exact 입력으로 해소 가능한 외부 조건을 기다릴 때만 `BLOCKED`, 상한 초과처럼 request/profile 변경이 필요한 위반은 `FAILED` 뒤 새 Verification generation·동적 work로 처리. 최종 판정 없음. FALSE 아님 |
 | 네트워크·외부 접근 | `sandbox_profile_ref`의 default-deny와 승인된 egress·mount·namespace·secret 경계 | 위와 같음 |
 | CPU | R7 `sandbox_profile_ref`가 정한 값 | 위와 같음 |
 | RAM | R7 `sandbox_profile_ref`가 정한 값 | 위와 같음 |
@@ -447,13 +447,13 @@ ReportDraft가 가리킨 Finding·Verification·CWELabel·두 Gate·정책 중 �
 | rate limit·timeout | 일반 work는 retry 가능하면 `BLOCKED`, 아니면 `FAILED`. `DYNAMIC_REPRO`는 Dynamic Reproduction Agent가 같은 session에서 해결하면 현재 attempt를 유지하고, session 재시작이 필요할 때만 새 attempt를 만들며, 외부 조건을 기다릴 때만 `BLOCKED` | 실패 invocation은 보존한다. retry 불가능 또는 한도 소진이면 `FAILED` |
 | Context 조회 실패·timeout·권한 오류 | 필수 검증을 아직 완료하지 못했고 retry 가능하면 work `BLOCKED`와 가설 `VERIFYING`, 더 시도할 수 없으면 work·가설 `FAILED`; 대체 조회·다른 정상 근거로 필수 검증을 완료할 수 있으면 현재 Verification 계속 | `AnalysisError`와 영향 범위 `DataGap`을 함께 남긴다. 오류 자체는 verdict 근거가 아니며, 필수 검증을 완료하지 못하면 final `VerificationResult`를 만들지 않음 |
 | PoC candidate 생성 실패 | Agent가 같은 attempt에서 자율 재시도하거나, session 재시작이 필요하고 R8 한도가 남으면 새 attempt 자동 retry; 외부 대기일 때만 `BLOCKED`, 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE` | `poc_candidate_ref`는 실제 작성한 candidate가 있을 때만, validated `poc_ref=null`; final verdict와 Gate를 만들지 않음 |
-| Sandbox 환경 구성 실패 | 같은 Dynamic Reproduction Agent session에서 recipe를 자율 보완하면 현재 attempt를 계속하고, session 재시작이 필요할 때만 새 attempt로 retry한다. 외부 설정·정책·resource 변경 대기면 `BLOCKED`, 복구 불가능하면 `FAILED`; `failure_category=ENVIRONMENT_SETUP` | 동적 반증이 아니며 validated `poc_ref=null`; 자유형 `failure_reason`과 exact recipe·환경·AgentLog를 보존 |
+| Sandbox 환경 구성 실패 | 같은 Dynamic Reproduction Agent session에서 recipe를 자율 보완하면 현재 attempt를 계속하고, session 재시작이 필요할 때만 새 attempt로 retry한다. current work 입력을 바꾸지 않는 재인증·승인·외부 환경 정비·resource 확보를 기다리면 `BLOCKED`, 복구 불가능하면 `FAILED`; `failure_category=ENVIRONMENT_SETUP`. 프로그램 정책 준비 상태는 대기 사유가 아님 | 동적 반증이 아니며 validated `poc_ref=null`; 자유형 `failure_reason`과 exact recipe·환경·AgentLog를 보존 |
 | 필수 환경 요구사항 차이·미확인·비교 오류 | 자율 보완 가능하면 같은 work에서 계속하고, 외부 수정 필요 시 `BLOCKED`, 복구 불가·한도 소진 시 `FAILED + INCONCLUSIVE`; `sandbox_environment=MISMATCH | ERROR` | exact 차이와 `plan_issues`를 결과에 반환. R7이 requirements·recipe·plan을 생산하며 R6는 생산하지 않음 |
 | Sandbox 부분 실행 | `PARTIAL`, 신뢰 결과와 `limitations` 저장 | validated `poc_ref=null`; 정상 관측이 결론 불충분이면 R6가 근거와 남은 조건을 가진 HOLD를 만들 수 있음 |
-| Sandbox 정책 차단 결과 | 수정 가능한 외부 조건이면 `BLOCKED`, 최종 차단이면 `FAILED`; `failure_category=POLICY_BLOCKED`, `hypothesis_outcome=INCONCLUSIVE` | exact `policy_decision_ref`와 `agent_log_ref`가 필요하다. Sandbox 안의 Dynamic Reproduction Agent가 시작되지 않았으면 `agent_invoked=false`; validated PoC·final verdict·Gate 없음 |
+| Sandbox profile 외부 격리 경계 차단 결과 | current work 입력을 바꾸지 않는 외부 조건 해소를 기다리면 `BLOCKED`, 최종 차단이면 `FAILED`; `failure_category=POLICY_BLOCKED`, `hypothesis_outcome=INCONCLUSIVE`. exact request나 profile reference 변경이 필요하면 기존 work를 재개하지 않음 | exact `policy_decision_ref`와 `agent_log_ref`가 필요하다. Sandbox 안의 Dynamic Reproduction Agent가 시작되지 않았으면 `agent_invoked=false`; 프로그램 정책 준비·freshness·testing restriction은 이 차단 사유가 아니며 validated PoC·final verdict·Gate 없음 |
 | PoC 실행 실패 | Agent가 같은 session의 현재 attempt에서 자율 조정하거나 session 재시작이 필요할 때만 R8 한도 안에서 새 attempt로 retry; 외부 대기일 때만 `BLOCKED`, 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE` | candidate와 AgentLog는 보존하되 validated `poc_ref=null`; `FALSE | HOLD`로 변환하지 않고 Gate 금지 |
 | Sandbox 실행 취소 | 공통 work와 동적 결과 `CANCELLED` | 취소 결과를 같은 atomic transition에서 저장하고 이후 늦은 결과는 격리 |
-| Sandbox 요청·plan·recipe·요구사항·정책·환경·AgentLog·PoC·cleanup의 attempt/digest 불일치 | 결과 저장 action `DENY` | same-attempt reference, event sequence/action 연결, candidate/validated PoC와 nullable lifecycle 조합까지 검사해 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
+| Sandbox 요청·plan·recipe·요구사항·외부 경계 판정·환경·AgentLog·PoC·cleanup의 attempt/digest 불일치 | 결과 저장 action `DENY` | same-attempt reference, event sequence/action 연결, candidate/validated PoC와 nullable lifecycle 조합까지 검사해 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
 | 정책 수집 실패 또는 수집 완료 뒤 최신성 확인 실패 | 수집 실패·collection 이전 중단은 `RunPolicyState.status=BLOCKED | FAILED`, exact `FOUND | ABSENT_CONFIRMED` collection을 만든 뒤 최신성만 확인하지 못하면 `UNVERIFIED`로 기록. `PolicyCollectionResult.status=COLLECTION_FAILED`와 구분 | 기술 verdict 유지. `COLLECTION_FAILED`와 collection 없는 중단에는 Rule Scope review가 없고, exact collection이 연결된 `UNVERIFIED`만 `UNCERTAIN + DENY`; Reporter 차단. 순수 로컬 Sandbox 이력은 실행 당시 state와 보존 |
 | Technical Gate 실행 오류·보완 한도 초과 | Gate work `FAILED` | 기술 verdict 유지, Rule Scope Gate와 Reporter 차단 |
 | Rule Scope Gate 실행 오류 | Gate work `FAILED` | 기술 verdict 유지, Reporter 차단 |
@@ -495,7 +495,7 @@ Context 조회 실패·timeout·권한 오류는 다음 기준으로 처리한�
 | `TIMED_OUT` | 각 runtime | 해당 작업 시간 초과 | 일반 work는 예산 안에서 새 시도 또는 중단. `DYNAMIC_REPRO`는 같은 session 해결 시 현재 attempt, session 재시작 시 새 attempt, 외부 대기만 `BLOCKED` |
 | `POC_GENERATION_FAILED` | Dynamic Reproduction Agent | validated PoC와 final verdict 없음 | 같은 session의 현재 attempt에서 자율 조정하거나 session 재시작이 필요할 때만 R8 한도 안의 새 attempt; 외부 대기만 `BLOCKED`, 불가능하면 `FAILED + INCONCLUSIVE` |
 | `SANDBOX_ERROR` | R7 Setup Automation·Session Manager | validated PoC와 final verdict 없음 | 자율 retry와 외부 `BLOCKED`를 구분하고 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE` |
-| `ENVIRONMENT_MISMATCH` | R7 Setup Automation | 필수 조건이 다르거나 확인되지 않음 | Agent가 recipe를 자율 보완하고 exact 차이·plan issue·AgentLog를 보존 |
+| `ENVIRONMENT_MISMATCH` | R7 Setup Automation | 필수 조건이 다르거나 확인되지 않음 | Dynamic Reproduction Agent가 recipe를 자율 보완하고 exact 차이·plan issue·AgentLog를 보존 |
 | `CHAINING_ERROR` | Chaining runtime | matching 실패, 부모 verdict 유지 | 제한 retry 또는 no-match/실패 기록 |
 | `TECHNICAL_GATE_ERROR` | Technical Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
 | `POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 수집 결과 `COLLECTION_FAILED`; 성공한 Rule Scope review 없음 | 공식 출처 재확인 뒤 같은 정책 work 재시도 또는 실패 종료 |
