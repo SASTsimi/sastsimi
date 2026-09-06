@@ -149,7 +149,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | Gate 전 TRUE의 체이닝 오염 | Technical `ACCEPT` 전 result Primitive admission 금지 |
 | 정책 판단과 기술 재료 자격 혼합 | Rule Scope의 전용 테스트 제한 판정만 `PrimitiveAdmissionDecision`에 전달하고 다른 정책·scope·impact 판정은 Reporter에만 적용 |
 | 다른 규칙 실패를 금지 테스트 위반으로 오인 | 독립 `testing_restriction_compliance`와 같은 area의 근거·누락 구조를 검사하고 `rule_compliance` 또는 link 존재만으로 추정 금지 |
-| admission 변경 뒤 진행 중이거나 이미 파생된 체이닝이 오염된 재료 사용 | `source_admission_refs`로 직접·부모 체인의 current exact decision을 재검사하고, 변경·DENY이면 진행 결과 차단과 파생 결과 current 사용 중단 |
+| 같은 run의 검증 근거 수정으로 admission이 바뀐 뒤 진행 중이거나 이미 파생된 체이닝이 오염된 재료 사용 | `source_admission_refs`로 직접·부모 체인의 current exact decision을 재검사하고, 변경·DENY이면 진행 결과 차단과 파생 결과 current 사용 중단. 정책 갱신만으로 current run admission을 소급 교체하지 않음 |
 | Chaining Agent의 일반 research 확장 | ChainingResult schema와 result-owner validation으로 matching 외 출력 거절 |
 | chain 폭증 | ancestor Primitive 재사용 제외, match 조합 중복 차단과 R8 전체 시간·비용·work 예산; token은 사용량만 관측 |
 | 등록만 된 유형별 플레이북의 무단 활성화 | 사람이 승인한 exact `PlaybookPolicy`와 proposal 후보 수를 검사하고 불명확·미허용 유형은 COMMON으로 fallback |
@@ -333,9 +333,9 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N38 | `testing_restriction_compliance=FAIL`인 Rule Scope review | exact `TESTING_RESTRICTION` link를 확인하고 `PrimitiveAdmissionDecision=DENY`; result Primitive와 Chaining 금지 |
 | N39 | `TESTING_RESTRICTION` link만 있고 전용 판정이 없거나 판정과 link가 모순됨 | Rule Scope review와 admission decision 저장 거절; `rule_compliance`나 link 존재로 판정 추정 금지 |
 | N40 | 정책 수집이 `COLLECTION_FAILED`라 Rule Scope review가 없음 | exact collection result와 error를 보존한 `NOT_EVALUATED + ALLOW + POLICY_COLLECTION_FAILED`; 확정 위반으로 취급하지 않되 Reporter 금지 |
-| N41 | Chaining work가 실제 match에 사용한 admission decision 뒤 current decision이 `DENY`로 변경됨 | 이전 Primitive를 current index에서 제거하고 진행 중 결과도 `STALE_RESULT`; 새 child 등록 금지. 사용하지 않은 후보 변경만으로는 결과를 거절하지 않음 |
+| N41 | 같은 run의 검증 근거가 수정되어 새 Rule Scope review와 current admission decision이 `DENY`로 변경됨 | 이전 Primitive를 current index에서 제거하고 진행 중 결과도 `STALE_RESULT`; 새 child 등록 금지. 정책 freshness·parser version 변경이나 사용하지 않은 후보 변경만으로는 결과를 거절하지 않음 |
 | N42 | result Primitive에 current `admission_decision_ref`가 없거나 다른 Verification의 decision을 참조 | `SAVE_RESULT` 거절; same analysis·workspace·commit·hypothesis·Verification의 current ALLOW decision 요구 |
-| N43 | 이미 COMMITTED된 Chaining 자식·손자 뒤 부모 admission이 `DENY`로 변경됨 | `source_admission_refs`와 `source_primitive_match_id` 계보를 따라 파생 Primitive를 current index에서 제거하고 새 Verification·Gate·Primitive·Reporter 사용 차단; 과거 verdict와 결과는 감사 이력으로만 보존 |
+| N43 | 이미 COMMITTED된 Chaining 자식·손자 뒤 검증 근거 수정으로 부모 admission이 `DENY`로 변경됨 | `source_admission_refs`와 `source_primitive_match_id` 계보를 따라 파생 Primitive를 current index에서 제거하고 새 Verification·Gate·Primitive·Reporter 사용 차단; 과거 verdict와 결과는 감사 이력으로만 보존 |
 | N44 | `ChainingResult.source_admission_refs`가 실제 match의 direct·ancestor ALLOW decision 합집합과 다름 | `SAVE_RESULT` 거절; 누락·추가·중복·다른 계보 reference를 바로잡기 전 child 등록 금지 |
 
 ## 남는 위험
