@@ -8,12 +8,12 @@
 
 ## 쉽게 설명하면
 
-R6는 “무엇을 왜 재현할지”만 요청합니다. R7 Agent는 격리된 Docker 안에서 명령·PoC·관찰·재시도를 스스로 정합니다. Sandbox Controller는 Docker 밖으로 위험한 접근이 나가지 못하게 막고, 비-LLM Reproduction Session Manager는 실제로 일어난 기록만 모아 결과를 확정합니다.
+R6는 “무엇을 왜 재현할지”만 요청합니다. Dynamic Reproduction Agent는 격리된 Docker 안에서 명령·PoC·관찰·재시도를 스스로 정합니다. Sandbox Controller는 Docker 밖으로 위험한 접근이 나가지 못하게 막고, 비-LLM Reproduction Session Manager는 실제로 일어난 기록만 모아 결과를 확정합니다.
 
 ## 결정
 
 1. `ReproductionPlan`에는 목적·가설·환경 요구사항·재현 목표·전략 요약과 선택적 `requested_evidence`만 둡니다. `LIMITED_REPRO | FULL_REPRO`, exact step·command·payload·cleanup allowlist는 제거합니다.
-2. R7 Agent는 Sandbox 안에서 환경 설정, 저장소에 필요한 package, 계정, fixture/mock, PoC, command·관찰·재시도를 자율적으로 정합니다.
+2. Dynamic Reproduction Agent는 Sandbox 안에서 환경 설정, 저장소에 필요한 package, 계정, fixture/mock, PoC, command·관찰·재시도를 자율적으로 정합니다.
 3. Runtime Validator는 exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` revision을 고정합니다. Sandbox Controller는 R7 `sandbox_profile_ref`의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하며 내부 command allowlist나 profile 값은 결정하지 않습니다. R8 lifecycle profile의 호출 전 잔여 시간·새 attempt 한도는 Runtime Validator가 강제합니다.
 4. R7 Setup Automation이 실제 image build, container 생성·재사용·재생성과 cleanup을 맡습니다.
 5. 비-LLM Reproduction Session Manager가 runtime/tool/lifecycle event를 durable append-only `AgentLog`에 기록하고 validated PoC와 `DynamicReproductionResult`를 확정합니다.
@@ -23,7 +23,7 @@ R6는 “무엇을 왜 재현할지”만 요청합니다. R7 Agent는 격리된
 
 - `EnvironmentRecipe`는 저장소/환경 단위의 불변 build recipe입니다. `base_image_digest`와 실제 `built_image_digest`를 구분하고 Dockerfile·README·package manifest·lockfile 같은 저장소 선언을 우선합니다.
 - 별도 Dependency Scanner와 R2 package prefetch를 전제로 하지 않습니다.
-- package 누락을 실제로 확인하면 Agent가 recipe source를 고치고 Setup Automation이 새 baseline image와 recipe revision을 만듭니다.
+- package 누락을 실제로 확인하면 Dynamic Reproduction Agent가 recipe source를 고치고 Setup Automation이 새 baseline image와 recipe revision을 만듭니다.
 - 성공한 baseline image는 재사용할 수 있지만 current attempt에는 baseline ref와 built digest를 고정한 binding record를 남깁니다.
 - 각 가설의 최초 attempt는 clean container에서 시작하고 서로 다른 가설은 writable container를 공유하지 않습니다.
 - 같은 가설 work에서는 영향 있는 상태·설정 변화가 없을 때만 재사용합니다. `STATE_CHANGED | CONFIG_CHANGED | STATE_UNCERTAIN`이면 재생성하고 crash·비정상 종료·사후 Health Check 실패는 runtime이 `STATE_UNCERTAIN`으로 강제합니다.
@@ -34,23 +34,23 @@ R6는 “무엇을 왜 재현할지”만 요청합니다. R7 Agent는 격리된
 - 시작과 종료 event는 같은 `action_id`로 연결합니다.
 - 각 append를 durable revision으로 확정해 crash 뒤에도 기존 event를 보존합니다.
 - 이전 attempt의 늦은 event는 current attempt와 결과에 섞지 않습니다.
-- `agent_invoked`는 외부 경계 승인 뒤 Sandbox 안의 R7 Agent 실행 단계만 뜻합니다. 사전 requirements·plan 작성 호출과 구분하며, 실행 Agent 호출 전 정책 차단도 `agent_invoked=false`, exact 정책 결정과 `POLICY_BLOCKED` event를 가진 결과로 기록할 수 있습니다.
-- Session Manager는 Agent 호출·중단, command 허용, retry와 cleanup 전략을 결정하지 않습니다.
+- `agent_invoked`는 외부 경계 승인 뒤 Sandbox 안의 Dynamic Reproduction Agent 실행 단계만 뜻합니다. 사전 requirements·plan 작성 호출과 구분하며, Dynamic Reproduction Agent 호출 전 Sandbox profile 외부 격리 경계 차단도 `agent_invoked=false`, exact `SandboxPolicyDecision`과 `POLICY_BLOCKED` event를 가진 결과로 기록할 수 있습니다. 프로그램 정책 준비·freshness·testing restriction은 이 차단 사유가 아닙니다.
+- Session Manager는 Dynamic Reproduction Agent 호출·중단, command 허용, retry와 cleanup 전략을 결정하지 않습니다.
 
 ## retry와 실패
 
 - 같은 session 안의 command·PoC·환경 조정은 한 attempt의 event입니다.
 - 같은 session 조정은 현재 attempt를 유지합니다. session 재시작이 필요한 일시 오류만 R8 한도 안에서 같은 work의 새 `attempt_id`·`trigger=RETRY`로 재시도하며 외부 대기가 없으면 `BLOCKED`를 사용하지 않습니다. 외부 조건 해소 뒤 재개는 `trigger=RESUME`입니다.
-- `BLOCKED`는 외부 설정·정책·승인 또는 resource profile 변경을 기다릴 때만 사용합니다.
+- `BLOCKED`는 current work 입력을 바꾸지 않는 재인증·승인·외부 환경 정비·resource 확보를 기다릴 때만 사용합니다. 프로그램 정책 준비 상태 자체는 `LOCAL_ONLY` 실행의 대기 조건이 아닙니다. exact request나 profile reference를 바꿔야 하면 기존 work를 재개하지 않습니다.
 - 복구 불가능하거나 retry 한도를 소진하면 `FAILED + INCONCLUSIVE`로 끝냅니다.
 - 실패는 R6의 `FALSE | HOLD`로 자동 변환하지 않고 final VerificationResult와 Technical Gate를 만들지 않습니다.
 
 ## PoC와 provenance
 
-- `poc_candidate_ref`는 Agent가 작성했거나 실행을 시도한 candidate입니다. 실패해도 같은 attempt의 AgentLog와 함께 남길 수 있습니다.
+- `poc_candidate_ref`는 Dynamic Reproduction Agent가 작성했거나 실행을 시도한 candidate입니다. 실패해도 같은 attempt의 AgentLog와 함께 남길 수 있습니다.
 - validated `poc_ref`는 `SUCCEEDED + SUPPORTED`, `agent_invoked=true`, exact candidate revision·digest의 실제 실행 event가 모두 있을 때만 생성합니다.
 - request·plan·recipe·environment·AgentLog·candidate·validated PoC와 dynamic result는 같은 work·attempt에 연결합니다. 과거 baseline recipe ref만 명시된 예외입니다.
-- 환경 실패, 정책 차단, candidate 생성/실행 실패, timeout, `DISPROVED | INCONCLUSIVE`이면 `poc_ref=null`입니다.
+- 환경 실패, Sandbox profile 외부 격리 경계 차단, candidate 생성/실행 실패, timeout, `DISPROVED | INCONCLUSIVE`이면 `poc_ref=null`입니다.
 - current generation의 exact request, `SUCCEEDED + SUPPORTED` 결과와 validated PoC 중 하나라도 없으면 R6 final TRUE 저장과 Technical Gate 호출을 막습니다.
 
 ## 호환성

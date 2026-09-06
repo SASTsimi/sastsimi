@@ -17,9 +17,9 @@
 - 위치 기반 context 요청·응답과 실제 조회 location
 - Verification, debate mode/trigger/skip, restriction와 capability
 - 동적 재현 요청, R7 requirements·간단한 plan·recipe·PoC candidate, Controller 외부 경계 판정·실제 환경·append-only AgentLog, validated PoC와 cleanup
-- `required_primitive_candidates`가 비어 있지 않은 HOLD의 `result=null` Primitive, result가 있는 Technical-accepted·admission-allowed TRUE Primitive, `PrimitiveAdmissionDecision`, match가 직접·부모 체인에서 사용한 `source_admission_refs`, `source_primitive_match_id` 계보의 모든 result Primitive current `ALLOW`, upstream result→downstream input match와 재검증 여부
+- `required_primitive_candidates`가 비어 있지 않은 HOLD의 `result=null` Primitive, result가 있는 Technical-accepted·admission-allowed TRUE Primitive, `PrimitiveAdmissionDecision`, upstream result→downstream input match와 재검증 여부
 - R5-01 `CWE_LABELING` work와 `CWELabel`의 exact Verification·generation·work·호출 provenance, 과거/current label revision
-- Technical 및 Rule Scope Impact Gate, `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 정책 수집 결과, parser 결과, 공식 `ProgramPolicyRecord`과 두 Gate·보고서가 사용한 서로 일치하는 Verification·current CWELabel revision reference
+- 실행 단위 `RunPolicyState`, run-neutral `PolicyCacheRecord`, LLM 정책 parser 호출·결과, freshness·cache 재사용·Collect/Parse 한도와 실패 관측, `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 정책 수집 결과, 공식 `ProgramPolicyRecord`, Technical 및 Rule Scope Impact Gate와 두 Gate·보고서가 사용한 서로 일치하는 Verification·current CWELabel revision reference
 - current 보고서 초안, 오래된 초안 제외와 Agent 자동화 종료 상태
 - 역할/provider/model/session별 LLM invocation log
 - AST/SAST·LLM·sandbox 자원과 모든 오류
@@ -34,7 +34,7 @@ Proxy가 어려운 membership 호출은 raw session log → provider parser → 
 
 Context 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 함께 찾을 수 있어야 합니다. 일부 조회 실패가 있어도 모든 `validation_checks`를 실제 근거로 완료했다면 판정을 저장할 수 있습니다. 하나라도 완료하지 못했으면 final `VerificationResult`는 저장하지 않고, 재시도 가능 여부에 따라 가설을 `VERIFYING`으로 유지하거나 work와 함께 `FAILED`로 끝냅니다. 실패 가설 수는 verdict 수와 섞지 않고 `failed_hypothesis_count`로 따로 보입니다.
 
-동적 결과에서는 request·plan·recipe·환경·AgentLog·PoC와 attempt가 서로 맞는지 확인합니다. 정책 차단이면 Controller 판정과 AgentLog가 필수입니다. `poc_candidate_ref`는 작성하거나 실행을 시도한 자료이고, `SUCCEEDED + SUPPORTED`이며 같은 attempt의 AgentLog가 exact candidate digest 실행을 증명할 때만 validated `poc_ref`를 가집니다. 모든 final TRUE는 이 validated PoC를 가져야 합니다.
+동적 결과에서는 request·plan·recipe·환경·AgentLog·PoC와 attempt가 서로 맞는지 확인합니다. Sandbox profile 외부 격리 경계 차단이면 exact `SandboxPolicyDecision`과 AgentLog가 필수입니다. 프로그램 정책 준비 상태나 testing restriction 판단과는 다른 결과입니다. `poc_candidate_ref`는 작성하거나 실행을 시도한 자료이고, `SUCCEEDED + SUPPORTED`이며 같은 attempt의 AgentLog가 exact candidate digest 실행을 증명할 때만 validated `poc_ref`를 가집니다. 모든 final TRUE는 이 validated PoC를 가져야 합니다.
 
 상세 내용은 [결과 저장과 관측성](../07-results-and-observability.md)을 따른다.
 ID 생성 주체, 상태 계층과 gap/error 차이는 [공통 ID·상태·오류](common-contracts.md)에서 쉽게 확인할 수 있다. 병렬 합류, 재시도, 늦은 결과와 crash-resume은 [상태·병렬 실행·재시도·복구](state-and-recovery.md)를 따른다.
