@@ -87,7 +87,7 @@ Gate 작업은 시작할 때 읽은 Verification, current CWELabel, 앞 Gate와 
 
 ## retry는 실패를 지우지 않습니다
 
-일반 작업에서 재시도 전에 외부 조건을 기다려야 하면 작업은 `BLOCKED`가 됩니다. `DYNAMIC_REPRO`에서 같은 Dynamic Reproduction Agent session의 command·PoC·환경 조정은 현재 attempt에 실패와 후속 event를 남기고 계속합니다. session 재시작이 필요한 work-level retry만 같은 work의 새 `attempt_id`·`trigger=RETRY`를 만들며, 외부 조건을 기다릴 때만 `BLOCKED`를 사용하고 해소 뒤에는 새 `attempt_id`·`trigger=RESUME`로 재개합니다.
+일반 작업에서 재시도 전에 외부 조건을 기다려야 하면 작업은 `BLOCKED`가 됩니다. `DYNAMIC_REPRO`에서 같은 Dynamic Reproduction Agent session의 command·PoC·환경 조정은 현재 attempt에 실패와 후속 event를 남기고 계속합니다. session 재시작이 필요한 work-level retry만 같은 work의 새 `attempt_id`·`trigger=RETRY`를 만듭니다. `DYNAMIC_REPRO`는 현재 work의 `input_refs/input_hash`를 바꾸지 않는 외부 조건을 기다릴 때만 `BLOCKED`를 사용합니다. 조건 해소 뒤에는 새 `attempt_id`·`trigger=RESUME`로 재개하고, exact request나 profile reference가 바뀌면 새 Verification generation과 새 동적 work를 만듭니다.
 
 - 인증 실패: 사용자 재인증 대기
 - 호출량 제한: 정한 시간만큼 대기
