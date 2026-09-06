@@ -337,6 +337,12 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N42 | result Primitive에 current `admission_decision_ref`가 없거나 다른 Verification의 decision을 참조 | `SAVE_RESULT` 거절; same analysis·workspace·commit·hypothesis·Verification의 current ALLOW decision 요구 |
 | N43 | 이미 COMMITTED된 Chaining 자식·손자 뒤 부모 admission이 `DENY`로 변경됨 | `source_admission_refs`와 `source_primitive_match_id` 계보를 따라 파생 Primitive를 current index에서 제거하고 새 Verification·Gate·Primitive·Reporter 사용 차단; 과거 verdict와 결과는 감사 이력으로만 보존 |
 | N44 | `ChainingResult.source_admission_refs`가 실제 match의 direct·ancestor ALLOW decision 합집합과 다름 | `SAVE_RESULT` 거절; 누락·추가·중복·다른 계보 reference를 바로잡기 전 child 등록 금지 |
+| N45 | 정책 준비 전 `DYNAMIC_REPRO` Sandbox attempt 시작 | 동적 work를 `BLOCKED`, `waiting_for=[DEPENDENCY]`로 유지하고 R7 Agent·Sandbox 실행 차단 |
+| N46 | `DynamicReproductionRequest`에 Agent가 선택한 정책 reference를 삽입 | 요청 거절; 정책 입력은 trusted runtime만 `DYNAMIC_REPRO` work에 고정 |
+| N47 | `DYNAMIC_REPRO` work와 다른 정책 revision으로 Sandbox 허가 | `RECORD_REVISION_MISMATCH`; Sandbox 실행과 결과 저장 차단 |
+| N48 | `STALE | UNVERIFIED` 정책 또는 실패한 parser 결과로 Sandbox 허가 | `SandboxPolicyDecision=DENY`; 실행 차단 |
+| N49 | 정책 부재·수집 실패·금지 테스트 차단을 `FALSE | HOLD`로 변환 | final `VerificationResult` 저장 거절; 동적 work와 Verification을 `BLOCKED | FAILED`로 처리 |
+| N50 | `SandboxPolicyDecision(decision=ALLOW)` 없이 성공 결과·validated PoC 저장 | 결과와 PoC 저장 거절; Technical Gate 호출 차단 |
 
 ## 남는 위험
 
