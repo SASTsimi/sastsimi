@@ -39,7 +39,7 @@ Agent Runtime은 역할·structured-output 요구·context reference·budget·se
 
 모든 check가 `PASS`인 `ActionDecision=ALLOW`를 runtime이 `USED`로 claim한 뒤에만 `LLMInvocationRequest`를 만든다. 요청의 `action_decision_ref`는 그 exact claim revision, `call_spec_ref`와 `provider_profile_ref`는 검사한 exact spec과 versioned provider profile revision을 가리킨다. runtime은 provider 호출 직전에 role·task·model·session·source context·prompt registry/template/payload·model/limits/retry/tool/redaction 정책·output schema·semantic validator·token budget 계획값·timeout이 spec과 모두 같은지 다시 검사한다. Prompt Builder가 만든 각 context projection도 registry의 slot·field·cardinality·trust class와 정확히 맞아야 한다. 이 equality는 요청 변조를 막는 검사이며 실제 token 사용량의 상한 검사가 아니다. `LLMInvocationLog`도 같은 action decision·spec·profile ref와 위 exact reference를 보존한다. 다른 action, 이전 state version, retry 또는 failover에 같은 decision을 재사용하지 않는다.
 
-R7의 `DERIVE_ENVIRONMENT | PLAN_REPRODUCTION | CREATE_POC_CANDIDATE | INTERPRET_ATTEMPT`는 provider 내장 tool이 없는 일반 구조화 호출이다. 외부 경계 허용 뒤의 `EXECUTE_REPRODUCTION`만 `tools.r7-sandbox-inner.v1`을 사용하며 이 이름은 provider client에 host command/file/web tool을 켠다는 뜻이 아니다. 모델은 `R7SandboxToolRequest`를 반환하고 SASTSIMI Runtime이 exact work·attempt·environment를 검사해 in-container 통로로 실행한다. 각 turn의 호출 log, exact tool request, `SandboxCommandRecord`와 AgentLog event를 연결하고 실행 결과는 다음 turn의 비신뢰 입력으로만 전달한다.
+Dynamic Reproduction Agent의 `DERIVE_ENVIRONMENT | PLAN_REPRODUCTION | CREATE_POC_CANDIDATE | INTERPRET_ATTEMPT`는 provider 내장 tool이 없는 일반 구조화 호출이다. 외부 경계 허용 뒤의 `EXECUTE_REPRODUCTION`만 `tools.dynamic-reproduction-inner.v1`을 사용하며 이 이름은 provider client에 host command/file/web tool을 켠다는 뜻이 아니다. 모델은 `DynamicReproductionToolRequest`를 반환하고 SASTSIMI Runtime이 exact work·attempt·environment를 검사해 in-container 통로로 실행한다. 각 turn의 호출 log, exact tool request, `SandboxCommandRecord`와 AgentLog event를 연결하고 실행 결과는 다음 turn의 비신뢰 입력으로만 전달한다.
 
 저장소 텍스트나 LLM output이 provider·model·session mode·fallback·budget을 바꾸라고 요구해도 configuration 변경으로 해석하지 않는다. 요청된 값이 versioned provider policy와 다르면 `PROVIDER_PROFILE_DENIED` 또는 `UNTRUSTED_INSTRUCTION`으로 호출하지 않는다.
 
@@ -55,7 +55,7 @@ R7의 `DERIVE_ENVIRONMENT | PLAN_REPRODUCTION | CREATE_POC_CANDIDATE | INTERPRET
 
 provider/model을 조용히 바꾸는 failover는 금지한다. 허용된 fallback이 있더라도 원래 실패, 새 provider/model, 이유, 새 session과 결과를 별도 `llm_call_id`로 남긴다. 같은 provider/model의 일반 retry는 `retry_of_llm_call_id`, provider/model을 바꾸는 failover는 `failover_from_llm_call_id`로 바로 앞의 허용된 실패 호출을 가리킨다. 두 reference를 동시에 사용하지 않는다.
 
-retry와 failover마다 새 `llm_call_id`의 `LLMCallSpec`, `ActionRequest`, `ActionDecision`이 필요하다. 일반 work와 R7 Agent session 재시작은 새 `attempt_id`를 사용한다. `DYNAMIC_REPRO`에서 같은 R7 Agent session이 호출 실패를 해결해 계속하는 경우에는 현재 `attempt_id`에 실패 invocation과 후속 호출을 모두 기록한다. 이전 ALLOW decision, spec 또는 provider 요청을 그대로 다시 보내는 것은 `ACTION_NOT_ALLOWED`다.
+retry와 failover마다 새 `llm_call_id`의 `LLMCallSpec`, `ActionRequest`, `ActionDecision`이 필요하다. 일반 work와 Dynamic Reproduction Agent session 재시작은 새 `attempt_id`를 사용한다. `DYNAMIC_REPRO`에서 같은 Dynamic Reproduction Agent session이 호출 실패를 해결해 계속하는 경우에는 현재 `attempt_id`에 실패 invocation과 후속 호출을 모두 기록한다. 이전 ALLOW decision, spec 또는 provider 요청을 그대로 다시 보내는 것은 `ACTION_NOT_ALLOWED`다.
 
 선행 호출 status는 다음과 같이 제한한다.
 
@@ -71,7 +71,7 @@ retry와 failover마다 새 `llm_call_id`의 `LLMCallSpec`, `ActionRequest`, `Ac
 
 retry/failover 선행 호출은 같은 분석·가설·역할의 바로 앞 호출이어야 한다. `SUCCEEDED`, `CANCELLED`, 존재하지 않는 호출, 더 이전 호출, 자기 자신과 이후 호출을 연결하면 `INVOCATION_CHAIN_INVALID`다.
 
-LLM 호출은 상위 `WorkExecutionState`의 한 attempt 안에서 실행한다. 호출이 성공하면 runtime은 structured-output 검증과 output 저장을 끝낸 뒤에만 work를 `SUCCEEDED` 또는 다음 전문 상태로 확정한다. 일반 work의 재시도 가능한 호출 실패는 `WorkAttempt.status=FAILED`와 `LLMInvocationLog`를 저장하고 work를 `BLOCKED`로 이동한 뒤, `waiting_for` 조건을 충족하면 `READY -> RUNNING`으로 새 `attempt_id`를 발급한다. `DYNAMIC_REPRO`는 예외다. R7 Agent가 같은 session에서 해결 가능한 호출 실패는 현재 attempt에 실패 invocation을 기록하고 계속한다. session 재시작이 필요하면 같은 work의 새 `attempt_id`를 사용한다. 인증·승인·외부 설정·resource 변경을 기다릴 때만 `BLOCKED`로 이동하며, retry 불가능 또는 한도 소진이면 `FAILED`로 끝낸다.
+LLM 호출은 상위 `WorkExecutionState`의 한 attempt 안에서 실행한다. 호출이 성공하면 runtime은 structured-output 검증과 output 저장을 끝낸 뒤에만 work를 `SUCCEEDED` 또는 다음 전문 상태로 확정한다. 일반 work의 재시도 가능한 호출 실패는 `WorkAttempt.status=FAILED`와 `LLMInvocationLog`를 저장하고 work를 `BLOCKED`로 이동한 뒤, `waiting_for` 조건을 충족하면 `READY -> RUNNING`으로 새 `attempt_id`를 발급한다. `DYNAMIC_REPRO`는 예외다. Dynamic Reproduction Agent가 같은 session에서 해결 가능한 호출 실패는 현재 attempt에 실패 invocation을 기록하고 계속한다. session 재시작이 필요하면 같은 work의 새 `attempt_id`를 사용한다. `DYNAMIC_REPRO`는 현재 work의 `input_refs/input_hash`를 바꾸지 않는 인증·승인·외부 환경 정비·resource 확보를 기다릴 때만 `BLOCKED`로 이동한다. exact request나 profile reference를 바꿔야 하면 기존 work를 재개하지 않으며, retry 불가능 또는 한도 소진이면 `FAILED`로 끝낸다.
 
 ## MembershipSessionAdapter
 
@@ -127,6 +127,7 @@ Pro/Con prompt는 trusted prompt builder가 역할별 template과 허용된 공�
 ## 역할별 모델 선택
 
 - Hypothesis Agent에는 저비용 모델 profile을 구성할 수 있다.
+- Policy Parser는 가설별 session이 아니라 분석 단위 policy work의 `NEW` session을 사용하고, 비-LLM Collector가 고정한 exact 공식 원문 reference만 context로 받는다. Parser 호출·provider·model·prompt·schema와 결과는 `PolicyParserResult.llm_invocation_ref`로 연결한다.
 - Verification, Chaining과 두 Gate에는 과업 위험도에 맞는 별도 profile을 구성할 수 있다.
 - 특정 역할의 가격 등급이 정확도를 보장하지 않는다.
 - 모델·provider 변경은 versioned configuration과 evaluation 대상으로 관리한다.
@@ -167,8 +168,8 @@ LLM 호출 상태는 `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIM
 3. Orchestration은 어떤 LLM 호출 상태도 가설 `FALSE`로 바꾸지 않는다.
 4. 제한 retry, 사용자 재인증 또는 구성된 explicit fallback을 선택한다.
 5. 모든 시도는 독립 `llm_call_id`로 저장하고 같은 논리 요청의 `work_id`·`dedupe_key`는 유지한다. 일반 work는 새 `attempt_id`를 사용하지만, `DYNAMIC_REPRO`의 same-session 후속 호출은 현재 attempt에 기록한다.
-6. 일반 work의 retry 가능한 실패는 work를 `BLOCKED`로 두고 `FAILED` attempt와 오류를 보존한다. `DYNAMIC_REPRO`는 같은 R7 Agent session에서 해결할 수 있으면 현재 attempt에 실패 invocation을 남기고 계속하며, session 재시작이 필요할 때만 같은 work의 새 attempt를 만든다. 인증·승인·외부 설정·resource 변경 대기만 `BLOCKED`와 `waiting_for`를 사용한다.
-7. 외부 조건을 충족하면 work를 `READY`로 전환하고 새 `attempt_id`에서 후속 호출을 시작한다. `DYNAMIC_REPRO`의 외부 조건 해소 뒤 재개는 `trigger=RESUME`, session 재시작은 `trigger=RETRY`를 사용한다. 후속 호출은 위 표에서 허용한 바로 앞의 실패 호출 reference와 1씩 증가하는 `retry_count`를 저장하며, runtime은 status·같은 분석·가설·역할·호출 순서와 순환이 없는지 검사한다.
+6. 일반 work의 retry 가능한 실패는 work를 `BLOCKED`로 두고 `FAILED` attempt와 오류를 보존한다. `DYNAMIC_REPRO`는 같은 Dynamic Reproduction Agent session에서 해결할 수 있으면 현재 attempt에 실패 invocation을 남기고 계속하며, session 재시작이 필요할 때만 같은 work의 새 attempt를 만든다. 현재 work의 `input_refs/input_hash`를 바꾸지 않는 인증·승인·외부 환경 정비·resource 확보 대기만 `BLOCKED`와 `waiting_for`를 사용한다.
+7. 외부 조건을 충족하면 work를 `READY`로 전환하고 새 `attempt_id`에서 후속 호출을 시작한다. `DYNAMIC_REPRO`의 외부 조건 해소 뒤 재개는 기존 `input_refs/input_hash`가 그대로일 때만 `trigger=RESUME`, session 재시작은 `trigger=RETRY`를 사용한다. exact request나 profile reference가 바뀌면 새 Verification generation과 새 동적 work가 필요하다. 후속 호출은 위 표에서 허용한 바로 앞의 실패 호출 reference와 1씩 증가하는 `retry_count`를 저장하며, runtime은 status·같은 분석·가설·역할·호출 순서와 순환이 없는지 검사한다.
 8. work나 분석이 `CANCELLED`이면 도착한 응답을 `STALE_RESULT`로 격리하고 output pointer, Gate와 Reporter 입력에 연결하지 않는다.
 
 인증·rate limit·형식·provider 오류가 발생한 `LLMInvocationResult`는 실행 오류다. 그 호출만을 이유로 `SAVE_RESULT` action이 `VerificationResult.verdict=FALSE`를 만들려고 하면 Runtime Validator가 거절한다. `FALSE`는 final Verification의 named falsification과 실제 `DISPROVED` 근거가 있을 때만 별도로 저장할 수 있다.

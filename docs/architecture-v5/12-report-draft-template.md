@@ -130,7 +130,7 @@ security impact는 exact upstream evidence보다 강하게 표현하지 않는�
 - 실행 상태: `{SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED}`
 - 실패 분류: `{NONE | POLICY_BLOCKED | EXTERNAL_CONFIGURATION | PLAN | ENVIRONMENT_SETUP | DEPENDENCY | AGENT | EXECUTION | OBSERVATION | TIMEOUT | RESOURCE_LIMIT | RETRY_LIMIT | INTERNAL}`
 - 실패 상세 사유: `{failure_reason string or null}`
-- Reproduction Agent 호출 여부: `{agent_invoked}`
+- Dynamic Reproduction Agent 호출 여부: `{agent_invoked}`
 - AgentLog reference: `{agent_log_ref.record_id; 정책 단계에서 차단된 경우에도 Session Manager가 남기는 필수 reference이며 null 불가}`
 - 환경 생성 또는 재사용 여부: `{SandboxEnvironment.container_action: CREATED | REUSED; environment_ref가 있을 때}`
 - 실제 환경 reference: `{environment_ref.record_id or null}`

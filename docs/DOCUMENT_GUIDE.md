@@ -52,11 +52,14 @@
 | [`ADR-004-r6-request-r7-poc-production.md`](./review/decisions/ADR-004-r6-request-r7-poc-production.md) | R6는 재현을 요청하고 R7은 환경·계획·PoC를 만들며 모든 TRUE에 validated PoC가 필요하다는 현재 결정을 설명합니다. | R4·R6·R7·Gate 담당 | 확정 결정 |
 | [`ADR-005-unified-primitive-chaining.md`](./review/decisions/ADR-005-unified-primitive-chaining.md) | HOLD와 TRUE를 하나의 Primitive로 표현하고 결과→입력 matching, Technical admission, 계보 기반 순환 방지를 정한 현재 결정을 설명합니다. | R1·R4·R6·R8·Gate 담당 | 확정 결정 |
 | [`ADR-006-static-rule-execution-record.md`](./review/decisions/ADR-006-static-rule-execution-record.md) | SAST 규칙의 실행 0건·미실행·확인 불가를 구분하고 ToolRunResult와 연결하는 현재 결정을 설명합니다. | R2·R4·R8 담당 | 확정 결정 |
-| [`ADR-007-r7-autonomous-reproduction-session.md`](./review/decisions/ADR-007-r7-autonomous-reproduction-session.md) | R7 Agent의 Sandbox 내부 자율 재현과 Session Manager의 로그·결과 확정 책임을 설명합니다. | R4·R6·R7·R8 담당 | 확정 결정 |
+| [`ADR-007-r7-autonomous-reproduction-session.md`](./review/decisions/ADR-007-r7-autonomous-reproduction-session.md) | Dynamic Reproduction Agent의 Sandbox 내부 자율 재현과 Session Manager의 로그·결과 확정 책임을 설명합니다. | R4·R6·R7·R8 담당 | 확정 결정 |
 | [`ADR-008-hypothesis-restriction-duplicate-contract.md`](./review/decisions/ADR-008-hypothesis-restriction-duplicate-contract.md) | 가설 제한 조건의 exact 근거와 LLM 중복 판정·실패 처리 lifecycle을 설명합니다. | R1·R2·R3·R4·R6·R8 담당 | 확정 결정 |
 | [`ADR-009-r5-01-cwe-labeling-provenance.md`](./review/decisions/ADR-009-r5-01-cwe-labeling-provenance.md) | CWE 라벨을 새 Verification마다 다시 평가하고 exact revision에 연결하는 현재 결정을 설명합니다. | R4·R5·R6 담당 | 확정 결정 |
 | [`ADR-010-static-fact-kind-partition.md`](./review/decisions/ADR-010-static-fact-kind-partition.md) | StaticFactBundle의 사실 종류와 sanitizer·validator 후보를 분리해 전달하는 현재 결정을 설명합니다. | R2·R4·R6·R8 담당 | 확정 결정 |
-| [`ADR-011-testing-restriction-primitive-admission.md`](./review/decisions/ADR-011-testing-restriction-primitive-admission.md) | 금지된 테스트 위반만 TRUE Primitive 체이닝 자격을 막도록 전용 판정과 admission 결정을 분리한 현재 결정을 설명합니다. | R1·R4·R5 담당 | 확정 결정 |
+| [`ADR-011-testing-restriction-primitive-admission.md`](./review/decisions/ADR-011-testing-restriction-primitive-admission.md) | 금지된 테스트 위반만 TRUE Primitive 체이닝 자격을 막도록 전용 판정과 admission 결정을 분리한 결정입니다. 회수 절차는 ADR-014가 대체했고 전용 판정·매핑은 유지됩니다. | R1·R4·R5 담당 | 대체된 이력 |
+| [`ADR-013-run-policy-preparation-and-reuse.md`](./review/decisions/ADR-013-run-policy-preparation-and-reuse.md) | 정책을 실행 초기에 한 번 준비해 가설들이 공유하고, run 안에서는 고정하며 다음 run 시작 때 exact cache를 재사용할지 판단하는 제안입니다. | R4·R5·R7·R8 담당 | 검토 중 결정 |
+| [`ADR-012-primitive-match-duplicate-key.md`](./review/decisions/ADR-012-primitive-match-duplicate-key.md) | Primitive match의 중복 판정 키와 순회 단위를 정하는 제안을 설명합니다. | R1·R4 담당 | 검토 중 결정 |
+| [`ADR-014-primitive-admission-single-decision.md`](./review/decisions/ADR-014-primitive-admission-single-decision.md) | Primitive admission을 등록 시점의 1회 판정으로 확정하고 회수 절차를 두지 않는 현재 결정을 설명합니다. ADR-011의 회수 부분을 대체합니다. | R1·R4·R5·R6·R8 담당 | 확정 결정 |
 
 ## Architecture v5 기술 기준 문서
 
@@ -66,7 +69,7 @@
 | [`01-system-overview.md`](./architecture-v5/01-system-overview.md) | 저장소 입력부터 Agent 자동화 종료와 이후 사람 판단까지 전체 22단계를 설명합니다. | PM·모든 역할 담당자 | 기준 문서 |
 | [`02-static-fact-layer.md`](./architecture-v5/02-static-fact-layer.md) | AST와 SAST 결과를 LLM이 사용할 코드 사실로 정리하는 방법을 설명합니다. | 정적분석·탐색·검증 담당 | 기준 문서 |
 | [`03-agent-roles-and-orchestration.md`](./architecture-v5/03-agent-roles-and-orchestration.md) | Orchestration의 전역 등록·배정과 Verification의 가설 내부 제어권을 포함해 각 Agent 역할을 설명합니다. | PM·LLM 역할·통합 담당 | 기준 문서 |
-| [`implementation/05-prompt-runtime.md`](./architecture-v5/implementation/05-prompt-runtime.md) | 10개 LLM 역할의 프롬프트 등록·조립·전달·출력 검증과 작성 책임을 설명합니다. | R1~R8·통합 구현 담당 | 구현 인계 설계 |
+| [`implementation/05-prompt-runtime.md`](./architecture-v5/implementation/05-prompt-runtime.md) | 11개 LLM 역할의 프롬프트 등록·조립·전달·출력 검증과 작성 책임을 설명합니다. | R1~R8·통합 구현 담당 | 구현 인계 설계 |
 | [`04-verification-and-dynamic-reproduction.md`](./architecture-v5/04-verification-and-dynamic-reproduction.md) | Verification이 가설 내부 Context·찬반·동적 재현·판정·Gate 보완을 관리하는 절차를 설명합니다. | 검증·동적검증 담당 | 기준 문서 |
 | [`verification-playbooks.md`](./architecture-v5/verification-playbooks.md) | 공통 및 웹 취약점 유형별 확인 항목, 반증 질문과 필요한 정적·동적 근거를 정의합니다. | 검증·정적분석·동적검증·Gate 담당 | 기준 문서 |
 | [`05-llm-gate-and-reporting.md`](./architecture-v5/05-llm-gate-and-reporting.md) | 기술 근거와 공식 정책을 검토하고 보고서 초안을 만드는 조건을 설명합니다. | Gate·검증·PM 담당 | 기준 문서 |

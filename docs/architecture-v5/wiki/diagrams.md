@@ -14,10 +14,20 @@ Architecture v5의 전체 처리 순서와 역할·데이터 관계를 그림으
 
 ```mermaid
 flowchart TB
-    S01[1 Repository input] --> S02[2 Repository Loader git clone and commit checkout]
+    S01[1 Repository and program_id input] --> S02[2 Repository Loader git clone and commit checkout]
     S02 --> WORK[CodeWorkspace READY]
     WORK --> S03A[3 AST parse]
     WORK --> S03B[3 SAST tools]
+    WORK --> PLOOK{3 Check exact PolicyCacheRecord once at run start}
+    PLOOK -->|Reusable| PMAT[Materialize current run policy records]
+    PLOOK -->|Miss or invalid| PCOL[Policy Collector fetches official source]
+    PCOL --> PPAR[LLM Policy Parser creates PolicyParserResult]
+    PPAR --> PREADY{Collector validates collection and freshness}
+    PREADY -->|CURRENT or ABSENT| PPUB[Publish immutable PolicyCacheRecord]
+    PREADY -->|UNVERIFIED| PUNC[Commit UNVERIFIED state without cache]
+    PPUB --> RPS[RunPolicyState]
+    PUNC --> RPS
+    PMAT --> RPS
     S03A --> S04[4 StaticFactBundle]
     S03B --> S04
     S04 --> S05[5 Orchestration starts initial hypothesis work]
@@ -34,15 +44,16 @@ flowchart TB
     S12 -->|VERDICT_EVIDENCE| DREQ2[Verification requests VERDICT_EVIDENCE]
     DREQ --> DWAUTH[Runtime allows one dynamic work per generation]
     DREQ2 --> DWAUTH
-    DWAUTH --> DR7[R7 Agent reads dependency files and creates Requirements and simple Plan]
+    DWAUTH --> DR7[Dynamic Reproduction Agent creates Requirements and simple Plan]
     DR7 --> DAUTH[Runtime authorizes external Sandbox boundary]
+    RPS -. observed policy audit reference .-> DAUTH
     DAUTH --> DCTRL[Controller checks host Docker secret egress resource boundaries]
     DCTRL --> DPD[Exact SandboxPolicyDecision]
     DPD -->|Pass| DENV[Setup Automation builds recipe and prepares clean environment]
-    DPD -->|Policy blocked| DSTOP[Attempt cannot complete no verdict]
-    DENV --> DRUN[R7 Agent creates PoC and emits structured Sandbox turns]
+    DPD -->|Sandbox boundary denied| DSTOP[Attempt cannot complete no verdict]
+    DENV --> DRUN[Dynamic Reproduction Agent creates PoC and emits structured Sandbox turns]
     DRUN --> DLOG[Session Manager appends actual events to AgentLog]
-    DLOG --> DCONC[R7 Agent writes conclusion from stored observations]
+    DLOG --> DCONC[Dynamic Reproduction Agent writes conclusion from stored observations]
     DCONC --> DASM[Session Manager checks conclusion and same-attempt provenance]
     DASM --> DRES[Dynamic result and validated PoC only on supported success]
     DRES --> DOUT{Observed outcome}
@@ -51,11 +62,11 @@ flowchart TB
     POCOK -->|No| DSTOP
     DOUT -->|DISPROVED or INCONCLUSIVE| S13
     DOUT -->|Execution failure| DSTOP
-    DSTOP -->|Same R7 Agent session: adjust command PoC environment; current attempt| DADJUST[Continue current attempt]
+    DSTOP -->|Same Dynamic Reproduction Agent session: adjust command PoC environment; current attempt| DADJUST[Continue current attempt]
     DADJUST --> DRUN
     DSTOP -->|Session restart: new attempt trigger=RETRY| DRETRY[Restart same work with new attempt]
     DRETRY --> DR7
-    DSTOP -->|External condition| DWAIT[BLOCKED until input policy or resource change]
+    DSTOP -->|External condition| DWAIT[BLOCKED until profile input or resource change]
     DWAIT -->|Condition resolved: new attempt trigger=RESUME| DRESUME[Resume same work with new attempt]
     DRESUME --> DR7
     DSTOP -->|Unrecoverable| S22
@@ -69,7 +80,8 @@ flowchart TB
     S15 -->|REVISE| S16[16 Same assignment starts new Verification work and revision]
     S16 --> S09
     S15 -->|REJECT| S22[22 Store results logs PoC errors debug]
-    S15 -->|ACCEPT| S17[17 Policy collection and Rule Scope review]
+    S15 -->|ACCEPT| S17[17 Use frozen run policy and run Rule Scope review]
+    RPS -. current exact policy state .-> S17
     S17 --> ADEC{PrimitiveAdmissionDecision}
     ADEC -->|ALLOW| PADMIT[Result Primitive admitted]
     ADEC -->|DENY confirmed prohibited test| S22
@@ -183,15 +195,16 @@ flowchart TB
     DYN -->|VERDICT_EVIDENCE| VREQ[R6 request VERDICT_EVIDENCE]
     CREQ --> ONE[Runtime allows one work per Verification generation]
     VREQ --> ONE
-    ONE --> R7PLAN[R7 Agent reads dependency files and creates Requirements and simple Plan]
+    ONE --> R7PLAN[Dynamic Reproduction Agent creates Requirements and simple Plan]
+    RPS4[Observed RunPolicyState] -. exact audit reference .-> AUTH
     R7PLAN --> AUTH[Runtime authorizes external Sandbox boundary]
     AUTH --> CTRL[Controller checks host Docker secret egress and resource boundaries]
     CTRL --> PDEC[Exact SandboxPolicyDecision]
     PDEC -->|Pass| ENV[Setup Automation builds recipe and prepares clean environment]
-    PDEC -->|Policy blocked| FAIL[Attempt cannot complete no final verdict]
-    ENV --> AGENT[R7 Agent creates PoC and emits structured Sandbox turns]
+    PDEC -->|Sandbox boundary denied| FAIL[Attempt cannot complete no final verdict]
+    ENV --> AGENT[Dynamic Reproduction Agent creates PoC and emits structured Sandbox turns]
     AGENT --> LOG[Session Manager appends AgentLog events]
-    LOG --> CONCLUSION[R7 Agent writes conclusion from stored observations]
+    LOG --> CONCLUSION[Dynamic Reproduction Agent writes conclusion from stored observations]
     CONCLUSION --> ASSEMBLER[Session Manager checks conclusion and same-attempt provenance]
     ASSEMBLER --> DRESULT[Dynamic result with candidate evidence and nullable validated PoC]
     DRESULT --> OBS{Observed outcome}
@@ -199,7 +212,7 @@ flowchart TB
     OBS -->|SUPPORTED but PoC missing or invalid| FAIL
     OBS -->|DISPROVED or INCONCLUSIVE| SYN2
     OBS -->|Execution failure| FAIL
-    FAIL -->|Same R7 Agent session: adjust command PoC environment; current attempt| ADJUST[Continue current attempt]
+    FAIL -->|Same Dynamic Reproduction Agent session: adjust command PoC environment; current attempt| ADJUST[Continue current attempt]
     ADJUST --> AGENT
     FAIL -->|Session restart: new attempt trigger=RETRY| R7RETRY[Restart same work with new attempt]
     R7RETRY --> R7PLAN
@@ -227,7 +240,7 @@ flowchart TB
     TECH -->|REVISE| SAME[Same assignment new Verification work and revision]
     SAME --> VR
     TECH -->|REJECT| NOCHAIN[No Chaining]
-    TECH -->|ACCEPT| COLLECT[PolicyCollectionResult]
+    TECH -->|ACCEPT| COLLECT[Current RunPolicyState and PolicyCollectionResult]
     COLLECT -->|FOUND or ABSENT_CONFIRMED| RULE[Rule Scope Impact Gate]
     COLLECT -->|COLLECTION_FAILED| ADMIT[Primitive Admission Runtime]
     RULE --> ADMIT
@@ -264,7 +277,7 @@ flowchart TB
     BACK --> NEWGEN[New Verification generation and new validated PoC]
     NEWGEN --> VR
     TS -->|REJECT| BLOCK[Report blocked]
-    TS -->|ACCEPT| COLLECT[PolicyCollectionResult]
+    TS -->|ACCEPT| COLLECT[Current RunPolicyState and PolicyCollectionResult]
     COLLECT -->|FOUND plus current policy| RULE[Rule Scope Impact Gate Agent]
     COLLECT -->|ABSENT_CONFIRMED| UNCERTAIN[Rule and scope UNCERTAIN permission DENY]
     COLLECT -->|COLLECTION_FAILED| ARUN[R4 Primitive Admission Runtime]
@@ -389,7 +402,7 @@ stateDiagram-v2
     CANCELLED --> [*]
 ```
 
-작업 상태는 전문 판정과 분리한다. `DYNAMIC_REPRO`의 같은 R7 Agent session 안 command·PoC·환경 조정은 `RUNNING`인 현재 attempt의 event로 남기며 새 attempt를 만들지 않는다. session 재시작이 필요할 때만 `RUNNING -> READY -> RUNNING`과 새 `attempt_id`, `trigger=RETRY`를 사용한다. 외부 조건을 기다리면 `BLOCKED`로 두고 해소 뒤 `BLOCKED -> READY -> RUNNING`과 새 `attempt_id`, `trigger=RESUME`를 사용한다. `SUCCEEDED | PARTIAL | FAILED | CANCELLED`는 되돌리지 않는다.
+작업 상태는 전문 판정과 분리한다. `DYNAMIC_REPRO`의 같은 Dynamic Reproduction Agent session 안 command·PoC·환경 조정은 `RUNNING`인 현재 attempt의 event로 남기며 새 attempt를 만들지 않는다. session 재시작이 필요할 때만 `RUNNING -> READY -> RUNNING`과 새 `attempt_id`, `trigger=RETRY`를 사용한다. 외부 조건을 기다리면 `BLOCKED`로 두고 해소 뒤 `BLOCKED -> READY -> RUNNING`과 새 `attempt_id`, `trigger=RESUME`를 사용한다. `SUCCEEDED | PARTIAL | FAILED | CANCELLED`는 되돌리지 않는다.
 
 ## 11. 중복 방지와 atomic 저장·복구
 
@@ -438,7 +451,7 @@ flowchart LR
     DOMAIN[Verification Gates and Reporter keep domain decisions] -. not decided by validator .-> CHECK
 ```
 
-Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 Setup Automation 권한·상태·예산·exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` revision을 고정한다. plan 또는 profile revision이 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 처리한다. host·Docker daemon/socket·mount/namespace·secret·egress·workspace 외부 경계는 Sandbox Controller가 검사하고 내부 command는 Agent가 자율적으로 정한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
+Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 Setup Automation 권한·상태·예산·exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` revision을 authorization input으로 고정한다. 요청 당시 `RunPolicyState`는 감사 reference로 기록하며 policy pointer·freshness 변경만으로 local-only decision을 만료시키지 않는다. plan·profile 또는 실행 대상·network·mount·secret 경계가 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 처리한다. `LOCAL_ONLY`와 검증 가능한 clone/same-attempt mock·fixture·격리 network, host·Docker daemon/socket·mount/namespace·secret·egress·workspace 외부 경계는 Sandbox Controller가 검사하고 내부 command는 Dynamic Reproduction Agent가 자율적으로 정한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
 
 ## 13. ReportDraft와 Agent 자동화 종료 경계
 

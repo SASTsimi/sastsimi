@@ -8,7 +8,7 @@
 
 ## 1. 기준과 핵심 결론
 
-- 작성 기준 `main`: `0cae9bdc5161efb68a3fdc15cb72ec12e3a3440e`
+- 작성 기준 `main`: `9c7a5a19c5e32c3f752bc40a32aaf86441be4d01`
 - 연결 Issue: [R3-05 #91](https://github.com/SASTsimi/sastsimi/issues/91)
 - Provider 연결 결정: [R3-04 #90](https://github.com/SASTsimi/sastsimi/issues/90)
 - 최종 구현 기준선: [R3-06 #92](https://github.com/SASTsimi/sastsimi/issues/92)
@@ -47,7 +47,8 @@ config/
       pro/
       con/
       verification/
-      r7_agent/
+      policy_parser/
+      dynamic_reproduction/
       chaining/
       cwe_labeling/
       technical_gate/
@@ -166,7 +167,7 @@ PromptPayload:
   meta: RecordMeta
   registry_entry_ref: StoredDataRef
   prompt_key: string
-  agent_role: HYPOTHESIS | PRO | CON | VERIFICATION | R7_AGENT | CHAINING | CWE_LABELING | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER
+  agent_role: HYPOTHESIS | VERIFICATION | PRO | CON | CWE_LABELING | CHAINING | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER | POLICY_PARSER | DYNAMIC_REPRODUCTION
   task_kind: string
   template_ref: StoredDataRef
   template_version: string
@@ -203,11 +204,12 @@ PromptContextBinding:
 | VERIFICATION / `CREATE_DYNAMIC_REQUEST` | `model.verification.create-dynamic-request.quality-v1` | `providers.r3-04-accepted-v1` | `limits.verification.v1` | `retry.verification.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
 | VERIFICATION / `FINAL_VERDICT` | `model.verification.final-verdict.quality-v1` | `providers.r3-04-accepted-v1` | `limits.verification.v1` | `retry.verification.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
 | VERIFICATION / `TECHNICAL_REVISE` | `model.verification.technical-revise.quality-v1` | `providers.r3-04-accepted-v1` | `limits.verification.v1` | `retry.verification.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
-| R7_AGENT / `DERIVE_ENVIRONMENT` | `model.r7-agent.derive-environment.quality-v1` | `providers.r3-04-accepted-v1` | `limits.r7-agent.v1` | `retry.r7-agent.v1` | `tools.none.v1` | `redaction.sandbox.v1` | NEW |
-| R7_AGENT / `PLAN_REPRODUCTION` | `model.r7-agent.plan-reproduction.quality-v1` | `providers.r3-04-accepted-v1` | `limits.r7-agent.v1` | `retry.r7-agent.v1` | `tools.none.v1` | `redaction.sandbox.v1` | NEW |
-| R7_AGENT / `CREATE_POC_CANDIDATE` | `model.r7-agent.create-poc-candidate.quality-v1` | `providers.r3-04-accepted-v1` | `limits.r7-agent.v1` | `retry.r7-agent.v1` | `tools.none.v1` | `redaction.sandbox.v1` | NEW |
-| R7_AGENT / `EXECUTE_REPRODUCTION` | `model.r7-agent.execute-reproduction.quality-v1` | `providers.r3-04-accepted-v1` | `limits.r7-agent.v1` | `retry.r7-agent.v1` | `tools.r7-sandbox-inner.v1` | `redaction.sandbox.v1` | NEW then same logical session turns |
-| R7_AGENT / `INTERPRET_ATTEMPT` | `model.r7-agent.interpret-attempt.quality-v1` | `providers.r3-04-accepted-v1` | `limits.r7-agent.v1` | `retry.r7-agent.v1` | `tools.none.v1` | `redaction.sandbox.v1` | NEW |
+| POLICY_PARSER / `PARSE_OFFICIAL_POLICY` | `model.policy-parser.parse-official-policy.quality-v1` | `providers.r3-04-accepted-v1` | `limits.policy-parser.v1` | `retry.policy-parser.v1` | `tools.none.v1` | `redaction.policy.v1` | NEW |
+| DYNAMIC_REPRODUCTION / `DERIVE_ENVIRONMENT` | `model.dynamic-reproduction.derive-environment.quality-v1` | `providers.r3-04-accepted-v1` | `limits.dynamic-reproduction.v1` | `retry.dynamic-reproduction.v1` | `tools.none.v1` | `redaction.sandbox.v1` | NEW |
+| DYNAMIC_REPRODUCTION / `PLAN_REPRODUCTION` | `model.dynamic-reproduction.plan-reproduction.quality-v1` | `providers.r3-04-accepted-v1` | `limits.dynamic-reproduction.v1` | `retry.dynamic-reproduction.v1` | `tools.none.v1` | `redaction.sandbox.v1` | NEW |
+| DYNAMIC_REPRODUCTION / `CREATE_POC_CANDIDATE` | `model.dynamic-reproduction.create-poc-candidate.quality-v1` | `providers.r3-04-accepted-v1` | `limits.dynamic-reproduction.v1` | `retry.dynamic-reproduction.v1` | `tools.none.v1` | `redaction.sandbox.v1` | NEW |
+| DYNAMIC_REPRODUCTION / `EXECUTE_REPRODUCTION` | `model.dynamic-reproduction.execute-reproduction.quality-v1` | `providers.r3-04-accepted-v1` | `limits.dynamic-reproduction.v1` | `retry.dynamic-reproduction.v1` | `tools.dynamic-reproduction-inner.v1` | `redaction.sandbox.v1` | NEW then same logical session turns |
+| DYNAMIC_REPRODUCTION / `INTERPRET_ATTEMPT` | `model.dynamic-reproduction.interpret-attempt.quality-v1` | `providers.r3-04-accepted-v1` | `limits.dynamic-reproduction.v1` | `retry.dynamic-reproduction.v1` | `tools.none.v1` | `redaction.sandbox.v1` | NEW |
 | CHAINING | `model.chaining.quality-v1` | `providers.r3-04-accepted-v1` | `limits.chaining.v1` | `retry.standard.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
 | CWE_LABELING | `model.cwe.quality-v1` | `providers.r3-04-accepted-v1` | `limits.cwe.v1` | `retry.standard.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
 | TECHNICAL_GATE | `model.technical-gate.quality-v1` | `providers.r3-04-accepted-v1` | `limits.technical-gate.v1` | `retry.gate.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
@@ -232,11 +234,12 @@ PromptContextBinding:
 | VERIFICATION / `CREATE_DYNAMIC_REQUEST` | `config/prompts/templates/verification/create-dynamic-request/1.0.0.md` | `assignment: VerificationAssignment($)`; `process: HypothesisProcessState(/status,/verification_assignment_ref,/verification_generation,/verification_work_ref)`; `hypothesis: VulnerabilityHypothesis($)`; `proposal: HypothesisProposal($)`; `assessment: VerificationInitialAssessment($)`; `pro: EvidenceAgentResult(role=PRO, data_kind=pro_evidence_result)`; `con: EvidenceAgentResult(role=CON, data_kind=con_evidence_result)`; `facts: StaticFactBundle(/entities,/locations,/auth_and_permission_checks,/call_edges,/data_flow_candidates,/route_bindings,/gaps,/errors)`; `contexts: CodeContextResponse($)` OPTIONAL_MANY; `policy: PlaybookPolicy($)`; `playbook: VerificationPlaybook($)`; `application: PlaybookApplication($)`; `sandbox_profile: sandbox_profile($)` | `schema.dynamic-reproduction-request.next-major` / `validator.dynamic-request.v1` / `dynamic_reproduction_request` | R6 / R2,R3,R4,R7,R8 / `PMT-VER-01` |
 | VERIFICATION / `FINAL_VERDICT` | `config/prompts/templates/verification/final-verdict/1.0.0.md` | `assignment: VerificationAssignment($)`; `process: HypothesisProcessState(/status,/verification_assignment_ref,/verification_generation,/verification_work_ref)`; `hypothesis: VulnerabilityHypothesis($)`; `proposal: HypothesisProposal($)`; `assessment: VerificationInitialAssessment($)`; `facts: StaticFactBundle($)`; `contexts: CodeContextResponse($)` OPTIONAL_MANY; `policy: PlaybookPolicy($)`; `playbook: VerificationPlaybook($)`; `application: PlaybookApplication($)`; `debate_config: debate_config($)`; `budget_profile: verification_budget_profile($)`; `pro: EvidenceAgentResult(role=PRO, data_kind=pro_evidence_result)`; `con: EvidenceAgentResult(role=CON, data_kind=con_evidence_result)`; `dynamic: DynamicReproductionResult($)` OPTIONAL_ONE; `poc: PoCBundle($)` OPTIONAL_ONE | `schema.verification-result.next-major` / `validator.verification-result.v1` / `verification_result` | R6 / R1,R3,R4,R7,R8 / `PMT-VER-02` |
 | VERIFICATION / `TECHNICAL_REVISE` | `config/prompts/templates/verification/technical-revise/1.0.0.md` | `previous: VerificationResult($)`; `review: TechnicalEvidenceReview(/status,/revision_requests,/verification_result_ref,/cwe_label_ref)`; 새 generation의 current exact `assignment`,`process`,`hypothesis`,`proposal`,`facts`,`contexts`,`policy`,`playbook`,`application`,`debate_config`,`budget_profile`,`pro`,`con`,`assessment`,`dynamic`,`poc`를 `FINAL_VERDICT`와 같은 slot·field 규칙으로 입력 | `schema.verification-result.next-major` / `validator.verification-revise.v1` / `verification_result` | R6 / R3,R4,R5,R7,R8 / `PMT-VER-03` |
-| R7_AGENT / `DERIVE_ENVIRONMENT` | `config/prompts/templates/r7_agent/derive-environment/1.0.0.md` | `request: DynamicReproductionRequest(/meta,/purpose,/goal,/environment_needs,/sandbox_profile_ref,/code_refs,/static_evidence_refs)`; `dependency_context: CodeContextResponse($)`; `dependency_files: code_fragment($)` OPTIONAL_MANY | `schema.environment-requirements.next-major` / `validator.environment-requirements.v1` / `environment_requirements` | R7 / R2,R3,R4,R6,R8 / `PMT-R7-01` |
-| R7_AGENT / `PLAN_REPRODUCTION` | `config/prompts/templates/r7_agent/plan-reproduction/1.0.0.md` | `request: DynamicReproductionRequest($)`; `requirements: EnvironmentRequirements($)`; `dependency_context: CodeContextResponse($)`; `dependency_files: code_fragment($)` OPTIONAL_MANY | `schema.reproduction-plan.next-major` / `validator.reproduction-plan.v1` / `reproduction_plan` | R7 / R2,R3,R4,R6,R8 / `PMT-R7-02` |
-| R7_AGENT / `CREATE_POC_CANDIDATE` | `config/prompts/templates/r7_agent/create-poc-candidate/1.0.0.md` | `request: DynamicReproductionRequest($)`; `plan: ReproductionPlan($)`; `environment: SandboxEnvironment(/meta,/request_ref,/reproduction_plan_ref,/requirements_ref,/status,/checks,/limitations)` | `schema.poc-candidate.next-major` / `validator.poc-candidate.v1` / `poc_candidate` | R7 / R3,R4,R6,R8 / `PMT-R7-03` |
-| R7_AGENT / `EXECUTE_REPRODUCTION` | `config/prompts/templates/r7_agent/execute-reproduction/1.0.0.md` | `request: DynamicReproductionRequest($)`; `requirements: EnvironmentRequirements($)`; `plan: ReproductionPlan($)`; `environment: SandboxEnvironment($)`; `candidate: PoCCandidate($)` OPTIONAL_ONE; `agent_log: AgentLog(/request_ref,/events)`; `prior_turns: R7SandboxToolRequest($)` OPTIONAL_MANY; `observations: dynamic_observation($)` OPTIONAL_MANY | `schema.r7-sandbox-tool-request.next-major` / `validator.r7-sandbox-tool-request.v1` / `r7_sandbox_tool_request` | R7 / R3,R4,R6,R8 / `PMT-R7-05` |
-| R7_AGENT / `INTERPRET_ATTEMPT` | `config/prompts/templates/r7_agent/interpret-attempt/1.0.0.md` | `request: DynamicReproductionRequest($)`; `plan: ReproductionPlan($)`; `environment: SandboxEnvironment($)`; `candidate: PoCCandidate($)` OPTIONAL_ONE; `agent_log: AgentLog(/request_ref,/events)`; `observations: dynamic_observation($)` OPTIONAL_MANY | `schema.r7-agent-conclusion.next-major` / `validator.r7-agent-conclusion.v1` / `r7_agent_conclusion` | R7 / R3,R4,R6,R8 / `PMT-R7-04` |
+| POLICY_PARSER / `PARSE_OFFICIAL_POLICY` | `config/prompts/templates/policy_parser/parse-official-policy/1.0.0.md` | `official_source: official_policy_source($)`; 모델 기억·검색 snippet·저장소 지시문은 금지 | `schema.policy-parser-result.next-major` / `validator.policy-parser-result.v1` / `policy_parser_result` | R5 / R3,R4,R8 / `PMT-POL-01` |
+| DYNAMIC_REPRODUCTION / `DERIVE_ENVIRONMENT` | `config/prompts/templates/dynamic_reproduction/derive-environment/1.0.0.md` | `request: DynamicReproductionRequest(/meta,/purpose,/goal,/environment_needs,/sandbox_profile_ref,/code_refs,/static_evidence_refs)`; `dependency_context: CodeContextResponse($)`; `dependency_files: code_fragment($)` OPTIONAL_MANY | `schema.environment-requirements.next-major` / `validator.environment-requirements.v1` / `environment_requirements` | R7 / R2,R3,R4,R6,R8 / `PMT-R7-01` |
+| DYNAMIC_REPRODUCTION / `PLAN_REPRODUCTION` | `config/prompts/templates/dynamic_reproduction/plan-reproduction/1.0.0.md` | `request: DynamicReproductionRequest($)`; `requirements: EnvironmentRequirements($)`; `dependency_context: CodeContextResponse($)`; `dependency_files: code_fragment($)` OPTIONAL_MANY | `schema.reproduction-plan.next-major` / `validator.reproduction-plan.v1` / `reproduction_plan` | R7 / R2,R3,R4,R6,R8 / `PMT-R7-02` |
+| DYNAMIC_REPRODUCTION / `CREATE_POC_CANDIDATE` | `config/prompts/templates/dynamic_reproduction/create-poc-candidate/1.0.0.md` | `request: DynamicReproductionRequest($)`; `plan: ReproductionPlan($)`; `environment: SandboxEnvironment(/meta,/request_ref,/reproduction_plan_ref,/requirements_ref,/status,/checks,/limitations)` | `schema.poc-candidate.next-major` / `validator.poc-candidate.v1` / `poc_candidate` | R7 / R3,R4,R6,R8 / `PMT-R7-03` |
+| DYNAMIC_REPRODUCTION / `EXECUTE_REPRODUCTION` | `config/prompts/templates/dynamic_reproduction/execute-reproduction/1.0.0.md` | `request: DynamicReproductionRequest($)`; `requirements: EnvironmentRequirements($)`; `plan: ReproductionPlan($)`; `environment: SandboxEnvironment($)`; `candidate: PoCCandidate($)` OPTIONAL_ONE; `agent_log: AgentLog(/request_ref,/events)`; `prior_turns: DynamicReproductionToolRequest($)` OPTIONAL_MANY; `observations: dynamic_observation($)` OPTIONAL_MANY | `schema.dynamic-reproduction-tool-request.next-major` / `validator.dynamic-reproduction-tool-request.v1` / `dynamic_reproduction_tool_request` | R7 / R3,R4,R6,R8 / `PMT-R7-05` |
+| DYNAMIC_REPRODUCTION / `INTERPRET_ATTEMPT` | `config/prompts/templates/dynamic_reproduction/interpret-attempt/1.0.0.md` | `request: DynamicReproductionRequest($)`; `plan: ReproductionPlan($)`; `environment: SandboxEnvironment($)`; `candidate: PoCCandidate($)` OPTIONAL_ONE; `agent_log: AgentLog(/request_ref,/events)`; `observations: dynamic_observation($)` OPTIONAL_MANY | `schema.dynamic-reproduction-conclusion.next-major` / `validator.dynamic-reproduction-conclusion.v1` / `dynamic_reproduction_conclusion` | R7 / R3,R4,R6,R8 / `PMT-R7-04` |
 | CHAINING / `MATCH_PRIMITIVES` | `config/prompts/templates/chaining/match-primitives/1.0.0.md` | `indexes: PrimitiveIndexState($) REQUIRED_MANY`; `considered: Primitive($)` REQUIRED_MANY; `admission: PrimitiveAdmissionDecision($)` REQUIRED_MANY; `lineage_hypotheses: VulnerabilityHypothesis(/meta,/origin,/parent_hypothesis_ids,/source_primitive_match_id)` REQUIRED_MANY; `lineage_results: ChainingResult(/primitive_match_candidates,/input_primitive_refs)` OPTIONAL_MANY | `schema.chaining-result.next-major` / `validator.chaining-result.v1` / `chaining_result` | R1 / R3,R4,R5,R8 / `PMT-CHN-01` |
 | CWE_LABELING / `CLASSIFY` | `config/prompts/templates/cwe_labeling/classify/1.0.0.md` | `verification: VerificationResult($)`; `taxonomy: cwe_taxonomy($)` | `schema.cwe-label.next-major` / `validator.cwe-label.v1` / `cwe_label` | R5 / R3,R4,R6,R8 / `PMT-CWE-01` |
 | TECHNICAL_GATE / `REVIEW` | `config/prompts/templates/technical_gate/review/1.0.0.md` | `verification: VerificationResult($)`; `cwe: CWELabel($)`; exact transitive evidence refs | `schema.technical-evidence-review.next-major` / `validator.technical-gate.v1` / `technical_evidence_review` | R5 / R1,R3,R4,R6,R7,R8 / `PMT-TG-01` |
@@ -279,25 +282,25 @@ Pro와 Con의 공통 slot은 이름만 같은 것이 아니라 `source_ref + pro
 
 Runtime은 initial assessment의 의미를 대신 해석하지 않는다. `POC_CONFIRMATION | VERDICT_EVIDENCE`면 `CREATE_DYNAMIC_REQUEST`, `FINALIZE_WITHOUT_DYNAMIC`이면 동적 work 없이 `FINAL_VERDICT`를 호출한다. assessment는 final Verification이나 Gate 입력이 아니며, 같은 work·generation의 exact policy·playbook·application·Pro·Con과 맞지 않으면 사용하지 않는다.
 
-### 4.5 R7 Reproduction Agent — R7
+### 4.5 Dynamic Reproduction Agent — R7
 
 - `r7.derive-environment`: exact `DynamicReproductionRequest`에서 `EnvironmentRequirements` 하나를 생성
 - `r7.plan-reproduction`: exact request와 requirements에서 `ReproductionPlan` 하나를 생성
 - `r7.create-poc-candidate`: current plan과 환경에서 `PoCCandidate` 하나를 생성하거나 새 revision으로 보완
-- `r7.execute-reproduction`: 승인된 Sandbox 안에서 다음 command·PoC 사용·환경 재생성·종료 중 한 가지를 `R7SandboxToolRequest`로 제안하고 실제 결과를 받은 뒤 반복
-- `r7.interpret-attempt`: 실제 AgentLog·관찰을 읽어 `R7AgentConclusion` 하나를 생성
+- `dynamic-reproduction.execute-reproduction`: 승인된 Sandbox 안에서 다음 command·PoC 사용·환경 재생성·종료 중 한 가지를 `DynamicReproductionToolRequest`로 제안하고 실제 결과를 받은 뒤 반복
+- `dynamic-reproduction.interpret-attempt`: 실제 AgentLog·관찰을 읽어 `DynamicReproductionConclusion` 하나를 생성
 - 필수 금지: Sandbox 외부 경계 우회, final `TRUE | FALSE | HOLD`, validated PoC 또는 final `DynamicReproductionResult` 직접 확정
 - session: 한 dynamic work/attempt의 정책에 따르며 다른 가설 session을 재사용하지 않는다.
 
-한 R7 호출이 requirements와 plan을 동시에 반환하거나 여러 candidate·tool request·결론을 한 output에 넣지 않는다. 각 출력은 자기 `LLMInvocationLog.parsed_output_ref` 하나에 연결된다. `DERIVE_ENVIRONMENT`와 `PLAN_REPRODUCTION`은 Sandbox 실행 전이므로 `tools.none.v1`, `CREATE_POC_CANDIDATE`는 실행할 candidate만 만들므로 `tools.none.v1`, `EXECUTE_REPRODUCTION`만 외부 경계 승인 뒤 `tools.r7-sandbox-inner.v1`, `INTERPRET_ATTEMPT`는 저장된 log·관찰만 읽으므로 `tools.none.v1`이다.
+한 Dynamic Reproduction Agent 호출이 requirements와 plan을 동시에 반환하거나 여러 candidate·tool request·결론을 한 output에 넣지 않는다. 각 출력은 자기 `LLMInvocationLog.parsed_output_ref` 하나에 연결된다. `DERIVE_ENVIRONMENT`와 `PLAN_REPRODUCTION`은 Sandbox 실행 전이므로 `tools.none.v1`, `CREATE_POC_CANDIDATE`는 실행할 candidate만 만들므로 `tools.none.v1`, `EXECUTE_REPRODUCTION`만 외부 경계 승인 뒤 `tools.dynamic-reproduction-inner.v1`, `INTERPRET_ATTEMPT`는 저장된 log·관찰만 읽으므로 `tools.none.v1`이다.
 
 `dependency_context`는 current workspace·commit에서 Context Retrieval Service가 Dockerfile, README, package manifest와 lockfile을 조회한 결과다. `dependency_files`는 그 응답의 `code_fragment_refs`를 실제 redacted 내용·path·content hash와 함께 역참조한 입력이며 두 집합은 set-equal해야 한다. 파일이 없거나 읽지 못한 경우에는 빈 파일 내용을 만들지 않고 context의 gap·error로 전달한다. Agent가 reference 문자열만 받고 의존성을 추측해서는 안 된다.
 
-`EXECUTE_REPRODUCTION`의 첫 호출은 `NEW` session으로 시작하고 같은 dynamic work·attempt 안의 후속 turn은 같은 논리 session을 이어 간다. 모델은 provider 내장 command/file/web tool을 직접 쓰지 않고 한 번에 하나의 구조화된 `R7SandboxToolRequest`만 반환한다. Runtime Validator가 exact request·plan·READY environment·attempt와 tool policy를 검사하고, Runtime이 in-container 통로로 실행하며 Session Manager가 exact tool request·`SandboxCommandRecord`·관찰을 `AgentLog`에 기록한다. redacted 실행 결과는 다음 turn의 `UNTRUSTED_DATA`로 들어간다. `FINISH` 뒤에만 `INTERPRET_ATTEMPT`를 호출한다.
+`EXECUTE_REPRODUCTION`의 첫 호출은 `NEW` session으로 시작하고 같은 dynamic work·attempt 안의 후속 turn은 같은 논리 session을 이어 간다. 모델은 provider 내장 command/file/web tool을 직접 쓰지 않고 한 번에 하나의 구조화된 `DynamicReproductionToolRequest`만 반환한다. Runtime Validator가 exact request·plan·READY environment·attempt와 tool policy를 검사하고, Runtime이 in-container 통로로 실행하며 Session Manager가 exact tool request·`SandboxCommandRecord`·관찰을 `AgentLog`에 기록한다. redacted 실행 결과는 다음 turn의 `UNTRUSTED_DATA`로 들어간다. `FINISH` 뒤에만 `INTERPRET_ATTEMPT`를 호출한다.
 
-Session Manager는 `R7AgentConclusion`을 실제 AgentLog·환경·candidate·observation과 대조한 뒤에만 final dynamic result를 확정한다. DynamicReproductionResult의 `hypothesis_outcome`, `hypothesis_evidence_refs`, `hypothesis_linkage`, `limitations`는 conclusion의 대응 값과 같아야 하며 Session Manager가 새 결론으로 바꾸지 않는다. 불일치하면 저장을 거절한다.
+Session Manager는 `DynamicReproductionConclusion`을 실제 AgentLog·환경·candidate·observation과 대조한 뒤에만 final dynamic result를 확정한다. DynamicReproductionResult의 `hypothesis_outcome`, `hypothesis_evidence_refs`, `hypothesis_linkage`, `limitations`는 conclusion의 대응 값과 같아야 하며 Session Manager가 새 결론으로 바꾸지 않는다. 불일치하면 저장을 거절한다.
 
-이 역할은 기존 `ActionRequest.requested_by=R7_AGENT`와 일치해야 하므로 `LLMCallSpec`, request와 log의 `agent_role`에도 `R7_AGENT`가 반드시 포함된다.
+이 역할은 `ActionRequest.requested_by=DYNAMIC_REPRODUCTION`과 일치해야 하므로 `LLMCallSpec`, request와 log의 `agent_role`에도 `DYNAMIC_REPRODUCTION`이 반드시 포함된다.
 
 ### 4.6 Chaining Agent — R1
 
@@ -379,7 +382,7 @@ runtime은 호출 직전에 다음 equality를 검사한다.
 
 Verification은 Pro·Con 완료 직후 `ASSESS_INITIAL`을 반드시 한 번 실행한다. 그 결과가 `POC_CONFIRMATION | VERDICT_EVIDENCE`이면 exact assessment와 같은 policy·playbook·application으로 `CREATE_DYNAMIC_REQUEST`를 호출하고, `FINALIZE_WITHOUT_DYNAMIC`이면 동적 work를 만들지 않고 `FINAL_VERDICT`로 이동한다. Runtime은 LLM의 구조화된 `next_step`을 그대로 라우팅할 뿐 가설 근거를 해석해 분기를 대신 고르지 않는다. assessment는 final 결과나 Gate input으로 승격하지 않는다.
 
-R7은 `DERIVE_ENVIRONMENT → PLAN_REPRODUCTION`을 Sandbox 밖의 읽기 전용 LLM 호출로 수행하고, Controller 허용과 환경 준비 뒤 `CREATE_POC_CANDIDATE → EXECUTE_REPRODUCTION`으로 들어간다. 실행 task는 `R7SandboxToolRequest` 한 개씩을 반환하고, Runtime 실행·Session Manager 기록·redacted 결과 재입력을 같은 attempt에서 반복한다. `FINISH` 뒤 `INTERPRET_ATTEMPT`가 conclusion을 만들며 Session Manager는 conclusion과 실제 log가 일치할 때만 동적 결과를 확정한다.
+Dynamic Reproduction Agent는 `DERIVE_ENVIRONMENT → PLAN_REPRODUCTION`을 Sandbox 밖의 읽기 전용 LLM 호출로 수행하고, Controller 허용과 환경 준비 뒤 `CREATE_POC_CANDIDATE → EXECUTE_REPRODUCTION`으로 들어간다. 실행 task는 `DynamicReproductionToolRequest` 한 개씩을 반환하고, Runtime 실행·Session Manager 기록·redacted 결과 재입력을 같은 attempt에서 반복한다. `FINISH` 뒤 `INTERPRET_ATTEMPT`가 conclusion을 만들며 Session Manager는 conclusion과 실제 log가 일치할 때만 동적 결과를 확정한다.
 
 하나라도 다르면 provider를 호출하지 않고 decision을 `EXPIRED` 또는 `DENY`로 처리한다. 호출 뒤 실제 exposed request가 `PromptPayload`와 다르면 성공 output으로 저장하지 않는다.
 
@@ -432,7 +435,7 @@ repair prompt는 invalid 응답 전체를 신뢰 지시문으로 넣지 않는�
 - R4: 공통 schema, exact reference, session·retry·권한·오류 불변조건
 - R5: CWE Labeling·Technical Gate·Rule Scope Gate·Reporter 내용
 - R6: Pro·Con·Verification 내용과 플레이북 적용 기준
-- R7: R7 Reproduction Agent 내용과 Sandbox 실행 자료 경계
+- R7: Dynamic Reproduction Agent 내용과 Sandbox 실행 자료 경계
 - R8: 평가 fixture, 품질·비용·시간 측정, 호출·repair 제한
 
 각 domain owner가 template 문장을 작성하고 R3가 임의로 보안 판단 기준을 대신 쓰지 않는다. R3는 모든 template이 같은 등록·조립·호출 규칙을 따르게 만든다. ACTIVE 전환에는 domain owner, R3, R4와 직접 입력·출력 파트의 검토가 필요하다.
@@ -445,7 +448,7 @@ repair prompt는 invalid 응답 전체를 신뢰 지시문으로 넣지 않는�
 | `PMT-02` | exact template | version 문자열이 같아도 hash가 다르면 호출 차단 |
 | `PMT-03` | 허용 context | 금지 data kind·다른 workspace/commit/hypothesis ref 차단 |
 | `PMT-04` | 필수 slot | 누락 시 provider 호출 전 실패 |
-| `PMT-05` | R7 role | `R7_AGENT` spec·request·log가 schema와 authority 검사를 통과 |
+| `PMT-05` | Dynamic Reproduction role | `DYNAMIC_REPRODUCTION` spec·request·log가 schema와 authority 검사를 통과 |
 | `PMT-06` | Pro/Con 격리 | 같은 debate input, 다른 template·call·NEW session, 교차 output 없음 |
 | `PMT-07` | injection | repository 지시문이 role·tool·schema를 바꾸지 못함 |
 | `PMT-08` | provider 동등성 | #90에서 채택된 각 adapter profile fixture가 같은 논리 payload·schema·의미 검사를 보존 |
@@ -455,7 +458,7 @@ repair prompt는 invalid 응답 전체를 신뢰 지시문으로 넣지 않는�
 | `PMT-12` | redaction | prompt·request·response·log에 credential과 host 절대 경로 없음 |
 | `PMT-13` | stale registry | template/registry/context 변경 뒤 기존 decision·payload 재사용 차단 |
 | `PMT-14` | non-LLM roles | Orchestration runtime·Validator·Controller 등에 prompt entry가 없음 |
-| `PMT-15` | role outputs | 10개 역할의 성공 output이 등록된 schema와 result owner에 정확히 연결 |
+| `PMT-15` | role outputs | 11개 역할의 성공 output이 등록된 schema와 result owner에 정확히 연결 |
 | `PMT-16` | initial routing | 같은 generation의 policy·playbook·application·Pro·Con을 읽어 세 경로 중 하나만 고르고 Runtime이 의미 판정을 대신하지 않음 |
 | `PMT-17` | Chaining lineage | multiple current index와 필요한 hypothesis·ChainingResult 계보가 set-equal이며 누락·다른 generation이면 호출 전 차단 |
 | `PMT-18` | R7 stage/tool policy | requirements·plan·candidate·interpret는 provider tool 없음, execute만 승인된 Sandbox 내부 Runtime tool loop 사용 |
@@ -471,8 +474,8 @@ repair prompt는 invalid 응답 전체를 신뢰 지시문으로 넣지 않는�
 
 이 문서 작성만으로 #91을 닫지 않는다. 다음이 모두 필요하다.
 
-- 10개 역할의 초기 registry entry·template·output schema·semantic validator 확정
-- `R7_AGENT`가 spec·request·log와 권한 표에서 일치
+- 11개 역할의 초기 registry entry·template·output schema·semantic validator 확정
+- `DYNAMIC_REPRODUCTION`이 spec·request·log와 권한 표에서 일치
 - Verification의 `ASSESS_INITIAL` 세 경로와 exact 플레이북 적용, Chaining의 multiple index·lineage closure가 fixture로 검증됨
 - R7의 실행 전·Sandbox 내부·해석 단계 tool policy, repository dependency contents, Runtime 관리형 반복 turn과 conclusion→result equality가 fixture로 검증됨
 - Prompt Registry Runtime·Builder의 unit/contract test

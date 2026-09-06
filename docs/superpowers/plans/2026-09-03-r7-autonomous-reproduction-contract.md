@@ -4,7 +4,7 @@
 
 ## 목표
 
-R6는 재현 목적과 필요한 조건만 요청하고, R7 Agent가 격리된 Sandbox 안에서 실행 전략·명령·PoC·관찰·재시도를 자율적으로 정하도록 공통 계약을 바꾼다. 비-LLM `Reproduction Session Manager`가 실제 event를 append-only `AgentLog`에 기록하고 같은 attempt의 환경·recipe·PoC·결과를 확정한다.
+R6는 재현 목적과 필요한 조건만 요청하고, Dynamic Reproduction Agent가 격리된 Sandbox 안에서 실행 전략·명령·PoC·관찰·재시도를 자율적으로 정하도록 공통 계약을 바꾼다. 비-LLM `Reproduction Session Manager`가 실제 event를 append-only `AgentLog`에 기록하고 같은 attempt의 환경·recipe·PoC·결과를 확정한다.
 
 ## 작업 순서
 
