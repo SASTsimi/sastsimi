@@ -102,8 +102,8 @@
 
 ### 검토할 입력·출력
 
-- 입력: 최초 가설용 `StaticFactBundle` refs, `RecordMeta`, 전역 budget, current `Primitive`와 direct·ancestor ALLOW admission refs
-- 출력: schema-valid `HypothesisProposal[]`, `INVALID_OUTPUT`, `PrimitiveMatchCandidate`, `source_admission_refs`를 포함한 `ChainingResult`, chained proposal과 no-match 결과
+- 입력: 최초 가설용 `StaticFactBundle` refs, `RecordMeta`, 전역 budget, work 시작 시 index에서 읽어 고정한 `Primitive`
+- 출력: schema-valid `HypothesisProposal[]`, `INVALID_OUTPUT`, `PrimitiveMatchCandidate`, `ChainingResult`, chained proposal과 no-match 결과
 
 ### 확인할 권한 경계
 
@@ -311,7 +311,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] 상태 변경은 `state_version` compare-and-set을 사용하고 stale·취소·다른 workspace/commit 결과를 거절함
 - [ ] 중복·ancestor 재사용·repair/Gate revision과 R8 전역 time/cost/work budget의 enforcement owner가 비-LLM Runtime Validator로, Sandbox 세부 정책의 enforcement owner가 Sandbox Controller로 명시됨. token은 관측값이며 초과·누락만으로 action을 차단하지 않음
 - [ ] Technical `REVISE`가 Orchestration을 경유해 재배정되지 않고 같은 ACTIVE VerificationAssignment owner의 새 VERIFICATION work로 돌아감
-- [ ] non-empty `required_primitive_candidates`를 가진 HOLD의 `inputs + result=null`과 Technical-accepted + 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW` TRUE의 `inputs + result` Primitive admission·supersede 규칙이 있으며, 빈 HOLD 후보에는 Primitive·Chaining work가 없음
+- [ ] non-empty `required_primitive_candidates`를 가진 HOLD의 `inputs + result=null`과 Technical-accepted + 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW` TRUE의 `inputs + result` Primitive 등록 시점 1회 admission 규칙이 있으며, 빈 HOLD 후보에는 Primitive·Chaining work가 없음
 - [ ] persistence/recovery/atomicity/idempotency 계약이 합의되고 `TERMINAL`·`DRAFTED` 상태가 정확한 결과 `record_id`를 가리킴
 - [ ] 결과 record 저장과 종료 상태 변경 중 하나만 성공했을 때의 crash-resume 복구와 오래되거나 취소된 결과의 연결 거절 규칙이 있음
 - [ ] `TransitionCommit`이 `COMMITTED`된 결과만 downstream과 최종 결과에서 사용함
@@ -658,7 +658,7 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 | chain budget/reuse | R8 전역 예산 중단 또는 ancestor 재사용 제외; FALSE 금지 |
 | Technical REVISE | 같은 ACTIVE VerificationAssignment owner의 새 VERIFICATION work로 직접 반환; 새 evidence/revision 전 result Primitive·Rule Scope·Reporter 차단 |
 | Chaining 시작 뒤 parent/index 새 revision 생성 | 진행 중인 work는 시작 시 고정한 exact reference로 계속 처리; 새 revision은 새 Chaining work에서 사용하고, 고정하지 않은 reference가 기존 결과에 섞인 경우만 `STALE_RESULT` 처리 |
-| 실제 match가 사용한 admission decision 변경 | direct·ancestor `source_admission_refs` 중 하나가 오래됐거나 `DENY`이면 진행 결과·새 child 사용 차단; 이미 저장된 파생 결과는 감사 이력으로만 보존 |
+| 등록 뒤 admission을 뒤집으려는 시도 | admission은 Primitive 등록 시점 1회 판정이므로 새 decision revision을 만들지 않음; 정책·판정이 달라졌으면 다음 run에서 새로 판정 |
 | Chaining의 일반 research 출력 | invalid output; bypass·impact·dynamic·Gate 보완은 Verification 책임 |
 | 모순된 ALLOW | semantic invalid; Reporter 차단 |
 | provider auth/rate-limit | explicit attempt/fallback; silent failover/FALSE 금지 |

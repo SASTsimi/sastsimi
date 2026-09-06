@@ -114,8 +114,7 @@
 | `PrimitiveDraft` | 연계 공격의 입력 조건 또는 실행 뒤 얻는 결과를 표현한 작은 데이터 | 코드 entity, 필요하면 저장소에 정의된 권한 값, 근거와 쉬운 설명을 함께 둡니다. |
 | `Primitive` | 한 가설의 필요한 입력들과 실행 결과를 한 형식으로 묶은 연계 재료 | HOLD는 `result=null`, TRUE는 Technical `ACCEPT`와 current admission `ALLOW` 뒤 `result`가 있습니다. `REQUIRED/PROVIDED` 같은 별도 종류 필드는 저장하지 않습니다. |
 | `PrimitiveAdmissionDecision` | TRUE 결과를 체이닝 재료로 써도 되는지 프로그램이 `ALLOW | DENY`로 기록한 값 | Rule Scope의 전용 금지 테스트 판정과 정책 수집 상태를 정해진 표로 변환하며 정책 뜻을 새로 해석하지 않습니다. |
-| `source_admission_refs` | 한 체이닝 결과가 직접 또는 부모 체인을 통해 실제로 사용한 모든 허용 결정 목록 | 하나라도 오래됐거나 `DENY`로 바뀌면 그 체이닝과 파생 결과를 current 입력으로 쓰지 않습니다. |
-| `PrimitiveIndexState` | 가설의 현재 Verification과 현재 Primitive 수정본들을 가리키는 목록 | 별도 전용 version 필드 없이 공통 `RecordMeta` revision과 원자적 current pointer 갱신을 사용합니다. |
+| `PrimitiveIndexState` | 가설의 현재 Verification과 그 가설이 등록한 Primitive 수정본들을 가리키는 목록 | 별도 전용 version 필드 없이 공통 `RecordMeta` revision과 원자적 current pointer 갱신을 사용합니다. |
 | `PrimitiveMatchCandidate` | 한 Primitive의 결과가 다른 Primitive의 특정 입력을 채울 수 있는지 나타낸 미검증 후보 | `upstream_result_ref`, `downstream_input_ref`, `matched_input_id`와 실제 근거를 기록하며 아직 취약점 확정 결과가 아닙니다. |
 | `Chaining Agent` | upstream 결과와 downstream 입력이 이어지는 조합만 찾는 Agent | 일반 취약점·우회·영향 탐색, 동적 재현, Gate 보완과 판정은 하지 않습니다. |
 | `chaining` | 확인된 결과가 다른 가설의 입력 조건을 충족할 때 새 공격 가설을 만드는 과정 | 이미 포함된 얕은 조상 조합을 후보에서 제외해 중복 제안을 줄이고 전체 비용은 R8 전역 예산으로 제한합니다. |

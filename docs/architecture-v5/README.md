@@ -40,7 +40,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 15. validated PoC와 `SUCCEEDED + SUPPORTED` 동적 결과가 연결된 final TRUE와 그 Verification을 직접 가리키는 current CWELabel만 Technical Evidence Gate Agent가 검토한다.
 16. `REVISE`이면 같은 Verification owner가 근거를 보완해 새 Verification을 만들고 R5-01이 CWE를 다시 평가해 새 label revision으로 제출한다. CWE 값이 같아도 이전 label은 재사용하지 않는다.
 17. Technical `ACCEPT`인 exact TRUE는 실행 초기에 준비한 current `RunPolicyState`를 재사용해 Rule Scope 검토를 진행한다(공식 정책 collection/parsing은 run 초기화에서 정적 준비와 병렬로 수행하며 Gate evaluation order는 유지). Rule Scope는 금지 테스트 위반 여부를 `testing_restriction_compliance`로 다른 판단과 분리하고, 비-LLM Primitive Admission Runtime은 이를 `PrimitiveAdmissionDecision=ALLOW | DENY`로 기계적으로 변환한다. `ALLOW`일 때만 제공 능력을 result로 가진 Primitive를 저장한다.
-18. Chaining Agent가 direct·parent chain의 current `ALLOW` decision을 함께 고정한 Primitive만 읽고, upstream result가 downstream input을 실제 코드 근거로 충족하는지 방향성 있게 matching한다.
+18. Chaining Agent가 current `PrimitiveIndexState`에서 고정한 Primitive만 읽고, upstream result가 downstream input을 실제 코드 근거로 충족하는지 방향성 있게 matching한다.
 19. Rule Scope Impact Gate Agent의 나머지 공식 규칙·범위·실질 영향 판단은 보고 가능성에만 적용한다. 금지 테스트 위반이 확정된 `DENY`는 result Primitive와 Chaining을 막지만, 그 밖의 scope·impact·보고 실패는 Primitive 자격을 없애지 않는다.
 20. Verification-origin 또는 Chaining-origin material claim은 trusted validation 뒤 새 가설로 등록하고 새 Verification을 배정한다.
 21. 모든 전달 조건을 만족한 결과에만 Reporter Agent가 보고서 초안을 작성한다.

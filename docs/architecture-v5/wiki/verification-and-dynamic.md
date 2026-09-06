@@ -58,7 +58,7 @@ token과 전체 시간·판정 변화·HOLD 해소·새 후보 수는 `Verificat
 
 R6는 후보와 Gate action·exact reference를 만들고, trusted runtime이 commit·current pointer·Primitive 저장과 `PrimitiveIndexState` 갱신을 수행합니다. Chaining은 같은 workspace·commit, entity 또는 코드 흐름 연결, 권한 조건, 순서, 합산 restrictions와 실제 근거를 확인해 `TRUE + HOLD`와 `TRUE + TRUE`만 검사합니다. `draft_id`는 매칭 기준이 아니며, 매칭이 성립한 뒤 해당 input을 `PrimitiveMatchCandidate.matched_input_id`로 지목할 때만 사용합니다.
 
-Chaining 결과를 저장하기 직전에 사용한 Primitive와 `source_primitive_match_id` 계보의 모든 result Primitive가 current admission `ALLOW`인지 다시 확인합니다. 하나라도 stale이거나 `DENY`이면 `STALE_RESULT`로 거절하고 새 child hypothesis를 만들지 않습니다. 기존 부모 verdict는 변경하지 않습니다.
+Chaining 결과를 저장할 때는 work가 고정한 Primitive·index reference와 결과가 맞는지 확인합니다. 고정하지 않은 reference가 섞이면 `STALE_RESULT`로 거절합니다. admission은 Primitive 등록 시점에 한 번만 판정하므로 저장 시점에 다시 확인하지 않고, 기존 부모 verdict도 변경하지 않습니다.
 
 판정에는 최소 근거가 필요합니다. TRUE는 핵심 공격 경로와 필요한 조건을 지지하는 근거가 있어야 합니다. FALSE는 이름이 있는 반증 질문이 실제 근거로 `DISPROVED`된 경우에만 가능합니다. 오류·timeout·정보 부족·Sandbox 실패는 FALSE 근거가 아닙니다. HOLD는 판단에 필요한 조건이나 환경이 아직 부족하다는 뜻입니다.
 
@@ -77,7 +77,7 @@ Chaining 결과를 저장하기 직전에 사용한 Primitive와 `source_primiti
 
 계보가 끊겼거나, 매칭된 downstream input을 찾을 수 없거나, upstream 전제조건이 누락됐거나, 유효한 entity·location을 복구하지 못하면 새 가설을 등록하거나 Verification을 배정하지 않습니다. 계보의 reference 하나라도 다른 workspace·commit을 가리키면 해당 reference만 제외하지 않고 계보 전체를 거절합니다.
 
-등록 후에는 Context Retrieval Service가 실제 코드 조회 전에 같은 계보가 여전히 current인지 다시 검사합니다. 등록 후 stale 또는 무효 계보가 발견되면 Context 조회와 Verification work를 final verdict 없이 중단합니다.
+등록 후에는 Context Retrieval Service가 실제 코드 조회 전에 proposal이 고정한 계보 reference의 존재와 `content_hash`를 확인합니다. 부모 admission이나 최신 index 소속은 다시 검사하지 않습니다. 고정한 reference를 찾을 수 없거나 `content_hash`가 다르거나 workspace·commit·entity·location 연결이 맞지 않으면 Context 조회와 Verification work를 final verdict 없이 중단합니다. 등록 이후 어떤 index revision이 생겨도 자식 가설과 Verification을 무효화하지 않습니다.
 
 R6 Verification Agent는 부모 Primitive와 match candidate를 직접 DB에서 조회하거나 가설 등록을 거절하지 않습니다. R6는 일반 `CodeContextRequest`로 필요한 Context를 요청합니다. `CONTEXT_RETRIEVAL` work에는 exact proposal이 함께 고정되며, Context Retrieval Service가 그 proposal에서 `source_primitive_match_id`를 읽어 계보를 검사하고, Context Retrieval Service가 검증하여 반환한 `CodeContextResponse`를 사용합니다.
 

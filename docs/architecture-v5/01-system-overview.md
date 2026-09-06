@@ -33,7 +33,7 @@ SASTSIMI v5는 승인된 내부 `program_id` 하나와 저장소를 `AnalysisSta
 | 15 | TRUE 기술 근거 검토 | `TechnicalEvidenceReview` |
 | 16 | Technical `REVISE` 보완 loop | same Verification owner, 새 Verification과 반드시 다시 평가한 새 CWELabel revision |
 | 17 | Technical `ACCEPT` TRUE가 실행 초기에 고정한 정책으로 Rule Scope 검토와 체이닝 재료 사용 결정 | 독립 `testing_restriction_compliance`, `PrimitiveAdmissionDecision=ALLOW | DENY`; `ALLOW`일 때만 result가 있는 `Primitive` admission |
-| 18 | direct·parent chain의 current ALLOW 결정을 고정한 Primitive 체이닝 | upstream result가 downstream input을 근거 있게 충족하고 `source_admission_refs`를 보존한 `ChainingResult` |
+| 18 | current index에 등록된 Primitive를 고정한 체이닝 | upstream result가 downstream input을 근거 있게 충족하는 `ChainingResult` |
 | 19 | 신뢰 runtime이 exact chain에서 current Finding을 정규화하고 공식 규칙·범위·영향의 보고 조건을 적용 | Finding은 두 Gate가 검토한 결과를 정규화한 record이며 새 verdict가 아님. 금지 테스트 위반 외의 Rule Scope 판단은 Primitive 자격이 아니라 보고 가능성만 변경 |
 | 20 | 체이닝·검증 중 새 주장 전역 등록 | `origin=CHAINING | VERIFICATION` proposal, 새 Verification 배정 |
 | 21 | 조건 충족 시 보고서 초안 작성 | `ReportDraft` |
@@ -112,8 +112,8 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | Sandbox Controller | R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 강제 | 내부 command allowlist 운영, R7 profile 값 결정, R8 잔여 예산·새 attempt 결정, 재현 전략·환경 의미·최종 verdict 변경 |
 | Reproduction Session Manager | 실제 event를 append-only AgentLog로 저장하고 same-attempt validated PoC·동적 결과 확정 | Agent 호출·command·retry·cleanup 전략 결정 또는 다른 attempt 혼합 |
 | Primitive Admission Runtime | exact Technical review·정책 수집·Rule Scope의 전용 테스트 제한 판정을 정해진 표로 변환해 `PrimitiveAdmissionDecision`과 허용된 Primitive 확정 | 정책 원문 해석, Gate 판정 변경 또는 `DENY` 결과의 Primitive 생성 |
-| Primitive DB | required candidate가 있는 HOLD의 inputs-only Primitive와 current admission `ALLOW`인 Technical-accepted TRUE의 result Primitive exact revision 검색 | 작업 queue, candidate가 없는 HOLD나 Gate 전·admission `DENY` TRUE 저장 또는 자동 Finding 생성 |
-| Chaining Agent | current ALLOW인 direct·parent material만 사용해 upstream Primitive `result`→downstream Primitive `input` matching과 chained proposal 생성 | 일반 research, dynamic, Gate, verdict, CWE, report 확정 |
+| Primitive DB | required candidate가 있는 HOLD의 inputs-only Primitive와 admission `ALLOW`인 Technical-accepted TRUE의 result Primitive exact revision 검색 | 작업 queue, candidate가 없는 HOLD나 Gate 전·admission `DENY` TRUE 저장 또는 자동 Finding 생성 |
+| Chaining Agent | current index에 등록된 Primitive만 사용해 upstream Primitive `result`→downstream Primitive `input` matching과 chained proposal 생성 | 일반 research, dynamic, Gate, verdict, CWE, report 확정 |
 | R5-01 CWE Labeling | final TRUE의 root cause·Evidence·taxonomy를 평가해 exact Verification에 묶인 current `CWELabel` 생성 | Verification verdict 변경, 과거 label 재사용 또는 Technical Gate 결과 생성 |
 | Technical Evidence Gate | 기술적 연결성과 handoff 품질 검토 | Verification verdict 직접 변경 |
 | Rule Scope Impact Gate | run 초기화에서 준비된 current `ProgramPolicyRecord`와 그 공식 원문·현재 hypothesis/verification 사실로 scope·실질 impact·전달 권한과 금지 테스트 위반 여부를 hypothesis마다 독립 필드로 검토 | 공식 자료 없는 추정 승인, 정책 수집 실행, Primitive 직접 저장·삭제 |

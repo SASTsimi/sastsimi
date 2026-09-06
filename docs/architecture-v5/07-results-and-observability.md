@@ -21,7 +21,7 @@
 | `contexts` | `CodeContextRequest/Response`, 실제 반환·열람 위치 |
 | `verifications` | Pro/Con, initial/final verdict, restriction/capability와 exact final Verification revision |
 | `cwe_labels` | R5-01 `CWE_LABELING` work, exact Verification·generation·호출 provenance와 current/과거 `CWELabel` revision |
-| `primitives` | `required_primitive_candidates`가 비어 있지 않은 HOLD의 result 없는 조건, Technical-accepted이며 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`를 가진 TRUE 능력과 exact Verification·Gate·admission provenance. 잇기 재료는 그 Primitive뿐 아니라 `source_primitive_match_id` 계보의 모든 result Primitive도 current `ALLOW`여야 한다 |
+| `primitives` | `required_primitive_candidates`가 비어 있지 않은 HOLD의 result 없는 조건, Technical-accepted이며 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`를 가진 TRUE 능력과 exact Verification·Gate·admission provenance. 잇기 재료는 work 시작 시 index에서 읽어 고정한 Primitive만 쓴다 |
 | `chaining` | `ChainingResult`, upstream result→downstream input match와 child proposal validation state |
 | `gates` | Technical 및 Rule Scope Impact review와 서로 exact pair인 Verification·current CWELabel·정책 input revision refs |
 | `policies` | 실행 단위 `RunPolicyState`, run-neutral `PolicyCacheRecord`, LLM 정책 parser 호출·결과, `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 수집 결과, 공식 `ProgramPolicyRecord`과 source·freshness refs |
@@ -75,7 +75,7 @@ credential, cookie, reusable authorization header, 전체 browser profile, hidde
 
 나중에 줄마다 예제를 붙일 때 묶음에 **판 이름**을 붙이고, 줄마다 **사람 정답**(TRUE/FALSE/HOLD 등)을 둔다. 장면 줄마다 `S-판이름`을 만들지 않는다. 지금 이 Issue에서는 예제 파일을 만들지 않는다.
 
-Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을 채우는 짝만 새 가설로 만든다. 부모 판정은 바꾸지 않는다. HOLD는 `required_primitive_candidates`가 있을 때만 Gate 없이 `result=null` Primitive로 등록하고, TRUE는 validated PoC와 exact Technical `ACCEPT`(1번 문지기), 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`일 때만 `result` 있는 Primitive로 등록한다. `ACCEPT`만으로 등록하지 않으며 admission `DENY`면 Primitive를 만들지 않는다. 목록이 비어 있는 HOLD는 Primitive를 만들지 않는다. 2번 문지기(Rule Scope/정책)의 rule·scope·impact와 `report_permission`은 보고 가능성만 보며 Primitive 등록·Chaining을 취소하지 않는다. `testing_restriction_compliance=FAIL`만 admission `DENY`로 매핑되어 등록과 Chaining을 차단한다. 잇기 재료는 해당 result Primitive와 `source_primitive_match_id` 계보의 모든 result Primitive가 current `ALLOW`여야 한다. `REQUIRED`/`PROVIDED` 같은 상태 이름은 쓰지 않고 `result` 유무로 구분한다.
+Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을 채우는 짝만 새 가설로 만든다. 부모 판정은 바꾸지 않는다. HOLD는 `required_primitive_candidates`가 있을 때만 Gate 없이 `result=null` Primitive로 등록하고, TRUE는 validated PoC와 exact Technical `ACCEPT`(1번 문지기), 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`일 때만 `result` 있는 Primitive로 등록한다. `ACCEPT`만으로 등록하지 않으며 admission `DENY`면 Primitive를 만들지 않는다. 목록이 비어 있는 HOLD는 Primitive를 만들지 않는다. 2번 문지기(Rule Scope/정책)의 rule·scope·impact와 `report_permission`은 보고 가능성만 보며 Primitive 등록·Chaining을 취소하지 않는다. `testing_restriction_compliance=FAIL`만 admission `DENY`로 매핑되어 등록과 Chaining을 차단한다. 잇기 재료는 current `PrimitiveIndexState`에 등록된 Primitive이며 admission은 등록 시점에 한 번만 판정한다. `REQUIRED`/`PROVIDED` 같은 상태 이름은 쓰지 않고 `result` 유무로 구분한다.
 
 | id | 장면 | 기대 | 실패로 볼 것 |
 |---|---|---|---|
@@ -89,7 +89,7 @@ Chaining은 upstream Primitive의 `result`가 downstream Primitive의 `input`을
 | S-V-CHILD | Verification이 새 주장 | 새 쪽지로 재검증, 부모 불변 | 부모 TRUE에 합침 |
 | S-CHAIN-CHILD | upstream `result`가 downstream `input`을 채우는 짝 | 새 쪽지, 부모 불변 | 부모 판정을 바꿈. 우회 조사로 확장 |
 | S-TRUE-EARLY | validated PoC·Technical ACCEPT·admission ALLOW 전 TRUE를 잇기 | Technical `ACCEPT` + validated PoC + current `PrimitiveAdmissionDecision=ALLOW` 전 Primitive 등록·잇기 금지. `ACCEPT`여도 `DENY`면 등록하지 않음 | ACCEPT·ALLOW 전에 `result` Primitive로 등록하거나 잇기. `DENY`인데 등록·잇기 |
-| S-CHAIN-STALE | 오래된 Primitive/Gate revision이거나, 사용한 admission이 current가 아니거나 `DENY`로 바뀜 | `STALE_RESULT`, 저장 안 함. 부모 verdict를 FALSE/HOLD로 바꾸지 않음. 이미 만든 파생 결과는 감사 기록으로만 남김 | 옛 결과·옛/`DENY` admission으로 잇기. 파생 결과를 새 Verification·Gate·Primitive·Reporter 입력으로 씀 |
+| S-CHAIN-STALE | work가 고정하지 않은 Primitive/index reference가 결과에 섞임 | `STALE_RESULT`, 저장 안 함. 부모 verdict를 FALSE/HOLD로 바꾸지 않음 | 고정하지 않은 재료로 잇기 |
 | S-POLICY | 기술 TRUE + 공식 정책 없음 | 2번 문지기가 초안(보고)만 막음. Primitive 등록·잇기는 유지. 금지 테스트 `FAIL`이 아니면 admission을 `DENY`로 바꾸지 않음 | 추측 후 초안 작성. 또는 정책 없음으로 Primitive·잇기를 취소 |
 | S-POLICY-CACHE | 새 run 시작 때 정책 cache가 있거나 호환되지 않음 | program·source 설정·Parser 버전·freshness 기준·유효기간·exact closure가 모두 맞으면 cache 재사용, 하나라도 다르면 새 수집·파싱. 어느 경로든 새 `RunPolicyState` 생성 | 과거 `RunPolicyState` 직접 재사용, run 중 cache 재조회·정책 교체, 실패 결과를 cache로 게시 |
 | S-POLICY-UNVERIFIED | 공식 원문은 확인했지만 최신성을 확정하지 못함 | current `RunPolicyState=UNVERIFIED`. Rule Scope는 `UNCERTAIN + DENY`, Reporter는 차단. `LOCAL_ONLY` Sandbox는 계속 가능. FALSE/HOLD 아님 | 정책을 추정해 `CURRENT`·PASS/ALLOW로 승격하거나 Sandbox까지 차단 |
@@ -128,7 +128,7 @@ Sandbox ENV/POLICY/EXEC/TIMEOUT은 동적 work의 `BLOCKED | FAILED`다. 최종 
 | HOLD Primitive | `required_primitive_candidates`가 있는 HOLD를 Gate 없이 `result=null` Primitive로 남김 | 목록이 있는데 Primitive를 안 남긴 횟수 0. HOLD에 `result`를 채워 확정처럼 쓴 횟수 0. 목록 없는 HOLD에 Primitive를 안 만든 것은 정상 |
 | TRUE admission | TRUE Primitive는 validated PoC + Technical `ACCEPT` + 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW` exact revision만 | `ACCEPT`·`ALLOW` 전 TRUE를 Primitive/잇기로 쓴 횟수 0. `DENY`인데 등록한 횟수 0. PoC 없는 TRUE 횟수 0 |
 | FALSE 잇기 | FALSE를 Chaining 재료로 씀 | 0 |
-| stale 잇기 | 옛 Primitive/Gate, 또는 사용한 admission이 current가 아니거나 `DENY`로 바뀐 잇기를 거절 | 거절 안 하고 저장한 횟수 0. 부모 verdict를 바꾼 횟수 0 |
+| stale 잇기 | work가 고정하지 않은 Primitive/index reference를 쓴 잇기를 거절 | 거절 안 하고 저장한 횟수 0. 부모 verdict를 바꾼 횟수 0 |
 | 부모 불변 | Chaining이 부모 판정을 바꿈 | 0 |
 | 잇기 중단 | 전역 예산으로 끊긴 횟수와 `AnalysisRunResult.stop_reasons`. 끊긴 것을 FALSE로 바꾼 횟수 | 이유는 기록. FALSE로 바꾼 횟수 0. 체이닝 전용 짝 한도로 끊은 횟수는 두지 않음. 조상 재사용 제외는 `excluded_lineage_refs`로 따로 관측하며 이 칸의 중단이 아님. 지문 중복은 세지 않음 |
 | 독립 session | 찬반이 상대 답·상대 session·낡은 결과를 본 횟수 | 0 |
@@ -321,9 +321,9 @@ provider·model·session을 바꿀 때는 **이름이 아니라 정확한 식별
 ### Verification-owned exploration/chaining
 
 - Verification-origin material claim 수와 재검증 결과
-- ACTIVE VerificationAssignment, `required_primitive_candidates`가 비어 있지 않은 result 없는 HOLD Primitive, result 있는 Technical-accepted + current `PrimitiveAdmissionDecision=ALLOW` TRUE Primitive와 upstream result→downstream input match 수. 잇기 재료는 `source_primitive_match_id` 계보의 모든 result Primitive도 current `ALLOW`여야 하며, 사용한 admission은 `source_admission_refs`에 남긴다
+- ACTIVE VerificationAssignment, `required_primitive_candidates`가 비어 있지 않은 result 없는 HOLD Primitive, result 있는 Technical-accepted + current `PrimitiveAdmissionDecision=ALLOW` TRUE Primitive와 upstream result→downstream input match 수. 잇기 재료는 current index에 등록된 Primitive를 쓴다
 - Gate 전·Technical 비정상 TRUE admission 차단 수, `ACCEPT`인데 `DENY`라서 등록하지 않은 수, entity·privilege 근거 부족과 no-match reason
-- `source_primitive_match_id` 계보, 성립한 match의 조상 Primitive 재사용 제외(`excluded_lineage_refs`, 정상 정리), 부모 admission이 `DENY`로 바뀌어 파생 결과를 감사 기록으로만 남긴 수, R8 전체 예산 중단(`stop_reasons`). 지문 중복으로 끊긴 횟수는 세지 않음
+- `source_primitive_match_id` 계보, 성립한 match의 조상 Primitive 재사용 제외(`excluded_lineage_refs`, 정상 정리), R8 전체 예산 중단(`stop_reasons`). 지문 중복으로 끊긴 횟수는 세지 않음
 
 ### Gates/reporting
 

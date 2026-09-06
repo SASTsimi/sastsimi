@@ -157,7 +157,6 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | Gate 전 TRUE의 체이닝 오염 | Technical `ACCEPT` 전 result Primitive admission 금지 |
 | 정책 판단과 기술 재료 자격 혼합 | Rule Scope의 전용 테스트 제한 판정만 `PrimitiveAdmissionDecision`에 전달하고 다른 정책·scope·impact 판정은 Reporter에만 적용 |
 | 다른 규칙 실패를 금지 테스트 위반으로 오인 | 독립 `testing_restriction_compliance`와 같은 area의 근거·누락 구조를 검사하고 `rule_compliance` 또는 link 존재만으로 추정 금지 |
-| 같은 run의 검증 근거 수정으로 admission이 바뀐 뒤 진행 중이거나 이미 파생된 체이닝이 오염된 재료 사용 | `source_admission_refs`로 직접·부모 체인의 current exact decision을 재검사하고, 변경·DENY이면 진행 결과 차단과 파생 결과 current 사용 중단. 정책 갱신만으로 current run admission을 소급 교체하지 않음 |
 | Chaining Agent의 일반 research 확장 | ChainingResult schema와 result-owner validation으로 matching 외 출력 거절 |
 | chain 폭증 | ancestor Primitive 재사용 제외, match 조합 중복 차단과 R8 전체 시간·비용·work 예산; token은 사용량만 관측 |
 | 등록만 된 유형별 플레이북의 무단 활성화 | 사람이 승인한 exact `PlaybookPolicy`와 proposal 후보 수를 검사하고 불명확·미허용 유형은 COMMON으로 fallback |
@@ -300,7 +299,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N6-a | current Finding 존재 후 Verification generation·CWELabel·두 Gate·동적 결과·PoC·고정 정책 중 하나가 새 revision으로 변경 | 기존 Finding은 감사 이력으로만 남고 stale 처리; 새 exact chain에서 Finding 재정규화 전까지 Reporter 금지 |
 | N7 | result가 있는 TRUE Primitive + result가 없는 HOLD Primitive | upstream result가 HOLD input 하나를 근거 있게 충족하면 `origin=CHAINING` proposal을 새로 등록·검증 |
 | N8 | result가 있는 서로 다른 TRUE Primitive 둘 | 앞 result가 뒤 Primitive의 `inputs` 한 항목을 근거 있게 충족할 때만 TRUE_TRUE proposal 허용 |
-| N9 | TRUE+TRUE 입력 중 한 부모가 Technical 비정상이거나 direct·ancestor current `PrimitiveAdmissionDecision=ALLOW`를 충족하지 않음 | result Primitive가 될 수 없으므로 match 저장과 proposal 등록 거절 |
+| N9 | TRUE+TRUE 입력 중 한 부모가 Technical 비정상이거나 해당 work의 고정된 `considered_primitive_refs`에 없음 | result Primitive가 될 수 없으므로 match 저장과 proposal 등록 거절 |
 | N10 | match의 entity 또는 privilege 충족 근거가 없음 | uncertain candidate를 만들지 않고 `no_match_reasons`에 `NoMatchReason` 기록 |
 | N10-A | 성립한 match의 후보가 양방향 계보에서 이미 사용한 Primitive를 같은 결과에서 다시 사용 | 그 후보를 근거로 조상을 제외하고 match 입력에서 빼며, DB와 부모 verdict는 변경하지 않음 |
 | N10-B | `excluded_primitive_ref`가 고정된 `considered_primitive_refs` 밖이거나 실제 match에 다시 포함됨 | `SAVE_RESULT` 거절; 같은 Chaining work가 고정한 조상 제외 전 입력과 제외 후 match를 다시 계산 |
@@ -341,10 +340,10 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N38 | `testing_restriction_compliance=FAIL`인 Rule Scope review | exact `TESTING_RESTRICTION` link를 확인하고 `PrimitiveAdmissionDecision=DENY`; result Primitive와 Chaining 금지 |
 | N39 | `TESTING_RESTRICTION` link만 있고 전용 판정이 없거나 판정과 link가 모순됨 | Rule Scope review와 admission decision 저장 거절; `rule_compliance`나 link 존재로 판정 추정 금지 |
 | N40 | 정책 수집이 `COLLECTION_FAILED`라 Rule Scope review가 없음 | exact collection result와 error를 보존한 `NOT_EVALUATED + ALLOW + POLICY_COLLECTION_FAILED`; 확정 위반으로 취급하지 않되 Reporter 금지 |
-| N41 | 같은 run의 검증 근거가 수정되어 새 Rule Scope review와 current admission decision이 `DENY`로 변경됨 | 이전 Primitive를 current index에서 제거하고 진행 중 결과도 `STALE_RESULT`; 새 child 등록 금지. 정책 freshness·parser version 변경이나 사용하지 않은 후보 변경만으로는 결과를 거절하지 않음 |
+| N41 | (은퇴) admission 회수 절차와 함께 제거. admission은 Primitive 등록 시점의 1회 판정이며 `08`이 회수 절차를 두지 않는다 | — |
 | N42 | result Primitive에 current `admission_decision_ref`가 없거나 다른 Verification의 decision을 참조 | `SAVE_RESULT` 거절; same analysis·workspace·commit·hypothesis·Verification의 current ALLOW decision 요구 |
-| N43 | 이미 COMMITTED된 Chaining 자식·손자 뒤 검증 근거 수정으로 부모 admission이 `DENY`로 변경됨 | `source_admission_refs`와 `source_primitive_match_id` 계보를 따라 파생 Primitive를 current index에서 제거하고 새 Verification·Gate·Primitive·Reporter 사용 차단; 과거 verdict와 결과는 감사 이력으로만 보존 |
-| N44 | `ChainingResult.source_admission_refs`가 실제 match의 direct·ancestor ALLOW decision 합집합과 다름 | `SAVE_RESULT` 거절; 누락·추가·중복·다른 계보 reference를 바로잡기 전 child 등록 금지 |
+| N43 | (은퇴) admission 회수 절차와 함께 제거 | — |
+| N44 | Chaining 결과에 그 work가 고정하지 않은 index·Primitive reference가 섞임 | `STALE_RESULT`로 거절; 부모 verdict는 바꾸지 않고 새 child 등록 금지 |
 | N45 | 정책 record를 `StaticFactBundle`에 넣거나 정책으로 Hypothesis proposal을 사전 삭제 | 저장·등록 거절; 정책 work를 static work와 분리하고 기술 가설은 검증 뒤 Rule Scope에서 판단 |
 | N46 | `RUN_SANDBOX`가 출처를 증명하지 못한 endpoint·계정·fixture, live asset 또는 허용되지 않은 egress에 접근 | `DENY`; current CodeWorkspace clone 또는 same-attempt mock·fixture, loopback/격리 network와 exact boundary 근거를 가진 새 local-only action만 허용 |
 | N46-A | policy state가 `PREPARING`인 local-only Sandbox 요청 | exact state와 `observed_policy_status=PREPARING`, null collection/policy ref를 감사용으로 남기고 외부 경계를 통과하면 실행 허용. Rule Scope·Reporter는 준비 완료까지 대기 |

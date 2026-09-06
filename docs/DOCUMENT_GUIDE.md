@@ -56,8 +56,10 @@
 | [`ADR-008-hypothesis-restriction-duplicate-contract.md`](./review/decisions/ADR-008-hypothesis-restriction-duplicate-contract.md) | 가설 제한 조건의 exact 근거와 LLM 중복 판정·실패 처리 lifecycle을 설명합니다. | R1·R2·R3·R4·R6·R8 담당 | 확정 결정 |
 | [`ADR-009-r5-01-cwe-labeling-provenance.md`](./review/decisions/ADR-009-r5-01-cwe-labeling-provenance.md) | CWE 라벨을 새 Verification마다 다시 평가하고 exact revision에 연결하는 현재 결정을 설명합니다. | R4·R5·R6 담당 | 확정 결정 |
 | [`ADR-010-static-fact-kind-partition.md`](./review/decisions/ADR-010-static-fact-kind-partition.md) | StaticFactBundle의 사실 종류와 sanitizer·validator 후보를 분리해 전달하는 현재 결정을 설명합니다. | R2·R4·R6·R8 담당 | 확정 결정 |
-| [`ADR-011-testing-restriction-primitive-admission.md`](./review/decisions/ADR-011-testing-restriction-primitive-admission.md) | 금지된 테스트 위반만 TRUE Primitive 체이닝 자격을 막도록 전용 판정과 admission 결정을 분리한 현재 결정을 설명합니다. | R1·R4·R5 담당 | 확정 결정 |
+| [`ADR-011-testing-restriction-primitive-admission.md`](./review/decisions/ADR-011-testing-restriction-primitive-admission.md) | 금지된 테스트 위반만 TRUE Primitive 체이닝 자격을 막도록 전용 판정과 admission 결정을 분리한 결정입니다. 회수 절차는 ADR-014가 대체했고 전용 판정·매핑은 유지됩니다. | R1·R4·R5 담당 | 대체된 이력 |
 | [`ADR-013-run-policy-preparation-and-reuse.md`](./review/decisions/ADR-013-run-policy-preparation-and-reuse.md) | 정책을 실행 초기에 한 번 준비해 가설들이 공유하고, run 안에서는 고정하며 다음 run 시작 때 exact cache를 재사용할지 판단하는 제안입니다. | R4·R5·R7·R8 담당 | 검토 중 결정 |
+| [`ADR-012-primitive-match-duplicate-key.md`](./review/decisions/ADR-012-primitive-match-duplicate-key.md) | Primitive match의 중복 판정 키와 순회 단위를 정하는 제안을 설명합니다. | R1·R4 담당 | 검토 중 결정 |
+| [`ADR-014-primitive-admission-single-decision.md`](./review/decisions/ADR-014-primitive-admission-single-decision.md) | Primitive admission을 등록 시점의 1회 판정으로 확정하고 회수 절차를 두지 않는 현재 결정을 설명합니다. ADR-011의 회수 부분을 대체합니다. | R1·R4·R5·R6·R8 담당 | 확정 결정 |
 
 ## Architecture v5 기술 기준 문서
 

@@ -43,7 +43,7 @@
 - 정책 준비는 workspace가 준비된 뒤 정적 도구와 독립 병렬로 실행당 한 번 수행합니다. 비-LLM Policy Collector는 run 시작 때 exact `PolicyCacheRecord`를 재사용하거나 공식 원문·출처·hash를 새로 수집하고, LLM Policy Parser는 cache miss에서만 exact 원문을 구조화합니다. 매 분석의 새 `RunPolicyState`를 같은 실행의 모든 가설이 공유하며 준비 완료 뒤 run 종료까지 정책 reference를 바꾸지 않습니다. 준비 실패(`COLLECTION_FAILED`, parser failure)는 program-policy semantic dependency가 있는 작업만 fail-closed시키고 `VerificationResult` verdict와 분리합니다. 정책을 StaticFactBundle이나 Hypothesis 사전 scope 필터로 사용하지 않습니다.
 - R5-02는 Parser 항목과 Rule Scope 의미 경계를, R7은 `LOCAL_ONLY` Sandbox 강제 가능성을, R8은 run 시작의 freshness 기준·cache hit/miss·거절 사유와 수집 retry·timeout 지표를 확인합니다. R4는 run-neutral cache·run-local state의 exact schema와 reference, 단일 active work, run 중 정책 불변과 새 run 요구 조건을 유지합니다.
 - R4의 비-LLM Primitive Admission Runtime은 exact Technical review·정책 수집 결과·Rule Scope review를 정해진 표에 대입해 `PrimitiveAdmissionDecision`과 허용된 Primitive/index를 원자적으로 확정합니다. 정책 문장을 다시 해석하지 않습니다.
-- R1 Chaining은 result Primitive와 직접·부모 체인의 current `PrimitiveAdmissionDecision=ALLOW`를 함께 입력으로 고정하고, 실제 match의 합집합을 `source_admission_refs`로 남긴 뒤 저장 직전에도 current인지 확인합니다. 확정된 금지 테스트 위반이 생기면 과거 Primitive와 그 파생 결과를 새 체이닝 재료로 쓰지 않습니다.
+- R1 Chaining은 current `PrimitiveIndexState`에 등록된 Primitive만 입력으로 고정하고, 고정하지 않은 reference가 결과에 섞이면 거절합니다. admission은 Primitive 등록 시점의 1회 판정이므로 체이닝이 이를 다시 확인하지 않습니다.
 
 ## 역할 배정과 GitHub 담당자 지정 상태
 
@@ -82,7 +82,7 @@ PM은 하위 Issue를 대신 세세하게 작성하지 않습니다. PM은 역�
 - Chaining Agent는 upstream Primitive의 `result`가 downstream Primitive의 특정 `input`을 충족하는 match와 새 가설만 제안합니다. 조상 계보의 Primitive를 현재 후보에서 제외하고, work 시작 시 고정한 exact Primitive·index reference와 다른 결과는 저장할 수 없습니다. 시작 뒤 current index가 갱신된 사실만으로 진행 중 work를 무효화하지 않습니다.
 - R5-01 `CWE_LABELING`은 final TRUE마다 exact Verification revision을 직접 가리키는 current `CWELabel`을 만듭니다. 새 Verification에는 같은 CWE를 유지해도 새 label revision이 필요합니다.
 - Technical Evidence Gate와 Rule Scope Impact Gate는 verdict를 직접 변경하지 않습니다.
-- Primitive Admission Runtime은 LLM Agent가 아니며 Rule Scope의 전용 금지 테스트 판정과 정책 수집 상태를 기계적으로 `ALLOW | DENY`로 변환합니다. `DENY`인 result Primitive를 만들거나 current index에 남길 수 없습니다.
+- Primitive Admission Runtime은 LLM Agent가 아니며 Rule Scope의 전용 금지 테스트 판정과 정책 수집 상태를 기계적으로 `ALLOW | DENY`로 변환합니다. `DENY`이면 result Primitive를 만들지 않으므로 index에도 들어가지 않습니다.
 - current Finding은 신뢰 runtime이 두 Gate가 검토한 exact chain을 하나의 취약점 record로 정규화한 것이며 LLM Agent가 아닙니다. R5는 Finding의 의미·생성 closure·claim 제한·restriction 보존·Reporter handoff·stale 조건을 소유하고, 저장 action/work/schema/current pointer/revision/CAS/stale enforcement는 R4 trusted runtime 계약을 재사용합니다(구현 모듈 맵 B2). Finding 존재는 Reporter의 6축 정책 readiness와 별개 자격입니다.
 - Reporter는 안전 요구사항을 지킨 내부 `ReportDraft`만 만들며 이 결과가 마지막 Agent 산출물입니다.
 - `AnalysisRunResult` 확정 뒤 Agent 자동화가 끝나며, 사람의 검토·수정·제출·공개는 이 자동화 밖에서 수행합니다.
