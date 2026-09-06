@@ -41,7 +41,7 @@ Sandbox Controller checks external boundary → Setup Automation prepares recipe
 R7 Agent creates PoC candidate and autonomously runs it → Session Manager stores AgentLog and same-attempt result → Verification final verdict
 HOLD + required candidates → inputs plus null result Primitive → Chaining
 HOLD + no required candidates → no Primitive and no Chaining work
-TRUE → R5-01 CWE_LABELING → current CWELabel → Technical Gate → policy and Rule Scope review
+TRUE → R5-01 CWE_LABELING → current CWELabel → Technical Gate → run에 고정한 RunPolicyState로 Rule Scope review
 Technical-accepted TRUE → PrimitiveAdmissionDecision ALLOW → result Primitive → Chaining
 Rule Scope review committed → trusted runtime normalizes current Finding (any review_status)
 Verification or Chaining material claim → new hypothesis → new Verification

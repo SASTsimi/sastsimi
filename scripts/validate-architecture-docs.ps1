@@ -2478,6 +2478,7 @@ $requiredRunPolicyPreparationRules = @(
     @{ Name = 'sandbox policy is local only'; Text = $contractText; Marker = '`execution_scope=LOCAL_ONLY`만 허용하며 프로그램의 live asset·외부 계정·허용되지 않은 egress에 접근하지 않는다.' },
     @{ Name = 'sandbox controller does not replace scope gate'; Text = $contractText; Marker = 'Sandbox Controller는 Rule Scope의 정책 의미·보고 가능성을 판정하지 않는다.' },
     @{ Name = 'policy consumers bind the frozen state'; Text = $contractText; Marker = '`CALL_RULE_SCOPE_GATE`와 `CREATE_REPORT_DRAFT`는 준비 완료 때 고정한 exact `RunPolicyState` reference와 일치하는지 검사한다.' },
+    @{ Name = 'Reporter checks the frozen current run policy state'; Text = $contractText; Marker = '그 state가 현재 실행의 current pointer이고, 준비 완료 시 `CURRENT`로 확정되어 현재 run에 고정된 exact state다.' },
     @{ Name = 'preparing policy does not block local sandbox'; Text = $contractText; Marker = '`PREPARING | BLOCKED | FAILED | UNVERIFIED`에서도 격리된 clone·same-attempt mock·fixture만 사용하는 로컬 재현은 기다리지 않고 진행할 수 있다.' },
     @{ Name = 'policy freshness does not expire local sandbox'; Text = $contractText; Marker = '외부 정책 변경 신호만으로 기존 local-only action을 `EXPIRED`로 만들지 않는다.' },
     @{ Name = 'confirmed absence is not reused indefinitely'; Text = $contractText; Marker = '`RunPolicyState.status=ABSENT`에도 같은 종류의 freshness 필드가 모두 필요하므로 공식 정책 부재 확인을 다음 run에서 무기한 재사용하지 않는다.' },
@@ -2492,6 +2493,10 @@ $requiredRunPolicyPreparationRules = @(
     @{ Name = 'canonical diagram includes run policy state'; Text = $diagramText; Marker = 'RPS[RunPolicyState]' },
     @{ Name = 'Wiki explains single policy preparation'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/pipeline.md')); Marker = '정책은 가설마다 다시 가져오지 않습니다.' },
     @{ Name = 'Wiki explains exact policy cache reuse'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/pipeline.md')); Marker = '`PolicyCacheRecord`' },
+    @{ Name = 'agent Wiki uses frozen policy after Technical Gate'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/agents.md')); Marker = 'TRUE → R5-01 CWE_LABELING → current CWELabel → Technical Gate → run에 고정한 RunPolicyState로 Rule Scope review' },
+    @{ Name = 'quick guide prepares policy beside static analysis'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/quick-guide.md')); Marker = 'Repository → Repository Loader → CodeWorkspace → AST·SAST와 정책 준비를 병렬 실행' },
+    @{ Name = 'quick guide uses frozen policy after Technical Gate'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/quick-guide.md')); Marker = '→ Technical Gate → run에 고정한 RunPolicyState로 Rule Scope check → PrimitiveAdmissionDecision' },
+    @{ Name = 'results Wiki includes run state and run-neutral policy cache'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/results.md')); Marker = '실행 단위 `RunPolicyState`, run-neutral `PolicyCacheRecord`, LLM 정책 parser 호출·결과' },
     @{ Name = 'module map starts with an exact program selection'; Text = $moduleMapText; Marker = 'exact `AnalysisStartRequest`와 승인된 단일 `program_id`' },
     @{ Name = 'module map uses frozen policy instead of Gate-time collection'; Text = $moduleMapText; Marker = 'CWE_LABELING → Technical Evidence Gate → run에 고정한 `RunPolicyState` 사용 → Rule Scope Impact Gate' },
     @{ Name = 'invalid program selection creates no run'; Text = $resultText; Marker = '`INPUT_ERROR` | 입력 검증기 | 분석 요청 거절; `AnalysisRunState`·work 없음' },
@@ -2588,6 +2593,9 @@ foreach ($obsoletePolicyLifecycleRule in @(
     '실행 중 정책 generation',
     'policy state가 새 revision 또는 generation으로 바뀔 때',
     '`RunPolicyState.freshness_valid_until`을 다시 검사한다',
+    'freshness가 유효하다',
+    'Technical Gate → policy and Rule Scope review',
+    'Technical Gate → policy and Rule Scope check',
     '현재 공통 계약에는 run-neutral 정책 캐시가 없으므로',
     '분석 간 cache는 별도 계약 전 미지원'
     'CWE_LABELING → Technical Evidence Gate → policy collection → Rule Scope Impact Gate'

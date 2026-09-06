@@ -2079,7 +2079,7 @@ ReportDraft:
 - Rule Scope review의 `technical_review_ref.record_id`가 ReportDraft의 `technical_review_ref.record_id`와 같다.
 - Technical review와 Rule Scope review가 모두 ReportDraft의 같은 CWELabel `record_id`를 가리킨다.
 - 그 CWELabel의 `verification_result_ref.record_id`가 ReportDraft와 두 Gate가 공통으로 가리킨 Verification `record_id`와 같다.
-- Rule Scope review의 `run_policy_state_ref.record_id`가 ReportDraft와 Reporter action·call spec이 고정한 `run_policy_state_ref.record_id`와 같고, 그 state가 현재 실행의 current pointer이며 freshness가 유효하다.
+- Rule Scope review의 `run_policy_state_ref.record_id`가 ReportDraft와 Reporter action·call spec이 고정한 `run_policy_state_ref.record_id`와 같고, 그 state가 현재 실행의 current pointer이고, 준비 완료 시 `CURRENT`로 확정되어 현재 run에 고정된 exact state다.
 - 그 state의 `collection_result_ref`·`policy_record_ref`가 Rule Scope review의 두 정책 reference와 각각 exact match하고, Rule Scope review의 `policy_record_ref.record_id`가 ReportDraft의 `policy_record_ref.record_id`와 같다.
 - Finding이 ReportDraft의 같은 Verification, CWELabel, 두 Gate revision을 근거로 하며 current 결과다.
 - 각 reference의 `workspace_id`, `commit_id`, `content_hash`가 실제 대상 record와 일치하고, 가설별 대상 record의 `meta.hypothesis_id`가 ReportDraft와 같다. CWELabel이 새 revision으로 바뀌면 두 Gate와 ReportDraft를 모두 새 revision 기준으로 다시 생성한다.

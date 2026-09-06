@@ -25,14 +25,15 @@
 ## 핵심 흐름
 
 ```text
-Repository → Repository Loader → CodeWorkspace → AST and SAST → StaticFactBundle
+Repository → Repository Loader → CodeWorkspace → AST·SAST와 정책 준비를 병렬 실행
+→ AST·SAST 결과는 StaticFactBundle로 정규화하고, Policy Collector·Policy Parser 결과는 RunPolicyState로 run에 고정
 → constrained hypotheses → trusted registration → Orchestration assigns Verification
 → Verification owns context → Pro/Con → POC_CONFIRMATION or VERDICT_EVIDENCE request
 → R7 requirements and simple plan → external boundary approval → autonomous Sandbox reproduction and AgentLog
 → supported success and validated PoC → Verification TRUE; disproof or inconclusive → FALSE/HOLD
 → HOLD with required candidates → inputs plus null result Primitive → Chaining; no candidates → no Primitive and no Chaining work
 → TRUE → R5-01 CWE_LABELING이 exact Verification에 맞는 current CWELabel 생성
-→ Technical Gate → policy and Rule Scope check → PrimitiveAdmissionDecision
+→ Technical Gate → run에 고정한 RunPolicyState로 Rule Scope check → PrimitiveAdmissionDecision
 → ALLOW → result Primitive → Chaining → new hypothesis loop; DENY → no result Primitive
 → remaining Rule Scope fields → report eligibility
 → ReportDraft when allowed → AnalysisRunResult → Agent automation end
