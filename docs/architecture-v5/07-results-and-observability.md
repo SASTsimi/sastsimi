@@ -21,7 +21,7 @@
 | `contexts` | `CodeContextRequest/Response`, 실제 반환·열람 위치 |
 | `verifications` | Pro/Con, initial/final verdict, restriction/capability와 exact final Verification revision |
 | `cwe_labels` | R5-01 `CWE_LABELING` work, exact Verification·generation·호출 provenance와 current/과거 `CWELabel` revision |
-| `primitives` | `required_primitive_candidates`가 비어 있지 않은 HOLD의 result 없는 조건, Technical-accepted이며 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`를 가진 TRUE 능력과 exact Verification·Gate·admission provenance. 잇기 재료는 current `PrimitiveIndexState`에 있는 Primitive만 쓴다 |
+| `primitives` | `required_primitive_candidates`가 비어 있지 않은 HOLD의 result 없는 조건, Technical-accepted이며 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`를 가진 TRUE 능력과 exact Verification·Gate·admission provenance. 잇기 재료는 work 시작 시 index에서 읽어 고정한 Primitive만 쓴다 |
 | `chaining` | `ChainingResult`, upstream result→downstream input match와 child proposal validation state |
 | `gates` | Technical 및 Rule Scope Impact review와 서로 exact pair인 Verification·current CWELabel·정책 input revision refs |
 | `policies` | 실행 단위 `RunPolicyState`, run-neutral `PolicyCacheRecord`, LLM 정책 parser 호출·결과, `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 수집 결과, 공식 `ProgramPolicyRecord`과 source·freshness refs |

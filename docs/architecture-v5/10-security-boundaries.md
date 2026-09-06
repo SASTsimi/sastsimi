@@ -299,7 +299,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N6-a | current Finding 존재 후 Verification generation·CWELabel·두 Gate·동적 결과·PoC·고정 정책 중 하나가 새 revision으로 변경 | 기존 Finding은 감사 이력으로만 남고 stale 처리; 새 exact chain에서 Finding 재정규화 전까지 Reporter 금지 |
 | N7 | result가 있는 TRUE Primitive + result가 없는 HOLD Primitive | upstream result가 HOLD input 하나를 근거 있게 충족하면 `origin=CHAINING` proposal을 새로 등록·검증 |
 | N8 | result가 있는 서로 다른 TRUE Primitive 둘 | 앞 result가 뒤 Primitive의 `inputs` 한 항목을 근거 있게 충족할 때만 TRUE_TRUE proposal 허용 |
-| N9 | TRUE+TRUE 입력 중 한 부모가 Technical 비정상이거나 current `PrimitiveIndexState`에 없음 | result Primitive가 될 수 없으므로 match 저장과 proposal 등록 거절 |
+| N9 | TRUE+TRUE 입력 중 한 부모가 Technical 비정상이거나 해당 work의 고정된 `considered_primitive_refs`에 없음 | result Primitive가 될 수 없으므로 match 저장과 proposal 등록 거절 |
 | N10 | match의 entity 또는 privilege 충족 근거가 없음 | uncertain candidate를 만들지 않고 `no_match_reasons`에 `NoMatchReason` 기록 |
 | N10-A | 성립한 match의 후보가 양방향 계보에서 이미 사용한 Primitive를 같은 결과에서 다시 사용 | 그 후보를 근거로 조상을 제외하고 match 입력에서 빼며, DB와 부모 verdict는 변경하지 않음 |
 | N10-B | `excluded_primitive_ref`가 고정된 `considered_primitive_refs` 밖이거나 실제 match에 다시 포함됨 | `SAVE_RESULT` 거절; 같은 Chaining work가 고정한 조상 제외 전 입력과 제외 후 match를 다시 계산 |

@@ -1680,7 +1680,11 @@ $revocationPatterns = @(
     '계보가 무효·stale',
     'current 계보',
     '부모 Primitive가 stale',
-    '계보의 current 상태'
+    '계보의 current 상태',
+    '실제 사용 Primitive가 current index에 있을 때',
+    '`PrimitiveIndexState`가 허용한',
+    'current `PrimitiveIndexState`에 없음',
+    '`PrimitiveIndexState`에 있는 Primitive만'
 )
 # 저장 시점 재확인·계보 admission 서술은 FINDINGS에도 되살아나면 안 된다.
 # FINDINGS는 제거한 트리거를 근거로 인용하므로 위 목록에서 제외돼 있어, 이 네 문구만 따로 검사한다.
@@ -1815,7 +1819,7 @@ $verificationChainingScenarioMarkers = @(
     '| N6 | TRUE + Technical `ACCEPT` + Rule Scope review가 Reporter 6축 readiness 전부 충족 |',
     '| N7 | result가 있는 TRUE Primitive + result가 없는 HOLD Primitive |',
     '| N8 | result가 있는 서로 다른 TRUE Primitive 둘 |',
-    '| N9 | TRUE+TRUE 입력 중 한 부모가 Technical 비정상이거나 current `PrimitiveIndexState`에 없음 |',
+    '| N9 | TRUE+TRUE 입력 중 한 부모가 Technical 비정상이거나 해당 work의 고정된 `considered_primitive_refs`에 없음 |',
     '| N10 | match의 entity 또는 privilege 충족 근거가 없음 |',
     '| N10-A | 성립한 match의 후보가 양방향 계보에서 이미 사용한 Primitive를 같은 결과에서 다시 사용 |',
     '| N10-B | `excluded_primitive_ref`가 고정된 `considered_primitive_refs` 밖이거나 실제 match에 다시 포함됨 |',

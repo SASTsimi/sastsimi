@@ -102,7 +102,7 @@
 
 ### 검토할 입력·출력
 
-- 입력: 최초 가설용 `StaticFactBundle` refs, `RecordMeta`, 전역 budget, current `PrimitiveIndexState`가 허용한 `Primitive`
+- 입력: 최초 가설용 `StaticFactBundle` refs, `RecordMeta`, 전역 budget, work 시작 시 index에서 읽어 고정한 `Primitive`
 - 출력: schema-valid `HypothesisProposal[]`, `INVALID_OUTPUT`, `PrimitiveMatchCandidate`, `ChainingResult`, chained proposal과 no-match 결과
 
 ### 확인할 권한 경계

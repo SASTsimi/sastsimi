@@ -149,7 +149,7 @@ R3-06은 다음 조건을 동적 재현 회귀 시험에 포함한다.
 | `gates` | TechnicalEvidenceReview, RuleScopeImpactReview | 각 Gate Agent | Gate work가 고정한 domain input set과 exact match |
 | `policies` | RunPolicyState, PolicyCacheRecord, PolicyParserResult, PolicyCollectionResult, ProgramPolicyRecord | POLICY_PARSER는 새 수집의 parser 결과, POLICY_COLLECTOR는 run state·cache·collection·policy record | 실행별 고정 pointer, run-neutral cache, 수집 status와 exact official source/parser/freshness provenance |
 | `primitives` | PrimitiveAdmissionDecision, Primitive, PrimitiveIndexState | PRIMITIVE_ADMISSION_RUNTIME | final HOLD 또는 current ALLOW TRUE의 atomic index revision |
-| `chaining` | ChainingResult와 match/exclusion | CHAINING | work 시작 고정 입력과 실제 사용 Primitive가 current index에 있을 때 |
+| `chaining` | ChainingResult와 match/exclusion | CHAINING | work 시작 시 고정한 index revision과 `considered_primitive_refs`에 포함될 때 |
 | `reports` | Finding, ReportDraft | 신뢰 runtime(Finding 정규화, VERIFICATION service identity, R4 B2), REPORTER(ReportDraft) | Finding: `RULE_SCOPE_GATE` 종료 뒤 exact chain을 조립한 가설별 current revision. ReportDraft: current non-stale Finding과 같은 Verification/CWE/two-Gate/current RunPolicyState/policy chain |
 | `actions` | ActionRequest/Decision | requester·Runtime Validator | action당 logical decision 하나, ALLOW는 exact revision에 한 번 사용 |
 | `invocations` | LLMCallSpec/Request/Result/Log | Agent Runtime·adapter·Logging Proxy | exact action/spec/profile과 parsed output 연결 |
