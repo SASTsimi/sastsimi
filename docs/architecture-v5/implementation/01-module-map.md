@@ -8,7 +8,7 @@
 
 ## 1. 기준과 문서의 권한
 
-- 작성 기준 선행 PR: [R4 정책 준비 #110](https://github.com/SASTsimi/sastsimi/pull/110) `c7fc22997a7c7c1f5e177d70978e51417995fe5a`
+- 작성 기준 선행 PR: [R4 정책 준비 #110](https://github.com/SASTsimi/sastsimi/pull/110) `bf3aa5aa8d1413f97bdc95123b9e4848a8302d3f`
 - 작성 시점 `main`: `af6ffc0e81752bbf7e621f2ba3f3f6bafc7c1947`. #110 병합 뒤 이 문서의 기준 SHA를 실제 merge commit으로 갱신한다.
 - 연결 Issue: [R3-01 #24](https://github.com/SASTsimi/sastsimi/issues/24)
 - 상위 Issue: [R3 #4](https://github.com/SASTsimi/sastsimi/issues/4)
