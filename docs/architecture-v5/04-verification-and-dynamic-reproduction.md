@@ -12,7 +12,7 @@
 
 Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 소유한다. 가설이 실제 코드 흐름과 실행 조건에서 성립하는지 검토하고 `TRUE | FALSE | HOLD`를 판정하며, 필요한 Context·Pro/Con·동적 재현 요청·보완 작업과 Gate 제출 시점을 선택한다. 제한 조건·우회 후보·필요 능력·제공 가능 능력·실질 영향의 상승 가능성도 함께 기록한다. R6는 재현 목적과 필요한 조건을 요청하지만 실행 환경·계획·PoC를 직접 만들지 않는다.
 
-이 제어권은 실행 허가 권한이 아니다. Verification이 `REQUEST_DYNAMIC_REPRO` 등 다음 작업을 제안하면 비-LLM Runtime Validator가 `ActionRequest`, exact revision, 역할, 상태, 예산과 provider/session을 확인한다. R7 Setup Automation이 `RUN_SANDBOX`를 요청하면 Runtime Validator가 exact request·current requirements·current exact plan·current `RunPolicyState`·R7 `sandbox_profile_ref`·exact R8 `DynamicReproductionLifecycleProfile` revision을 고정하고 호출 전 정책 최신성·잔여 시간·새 attempt 한도를 검사한다. Sandbox Controller는 `LOCAL_ONLY`, live asset·외부 계정·허용되지 않은 egress 차단과 R7 profile의 외부 접근·격리, CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다. 정책의 의미·scope·보고 가능성은 판단하지 않는다. 허가된 Sandbox 안에서는 R7 Agent가 command·PoC·관찰·재시도를 자율적으로 정하고, 비-LLM Reproduction Session Manager가 실제 event와 결과를 확정한다.
+이 제어권은 실행 허가 권한이 아니다. Verification이 `REQUEST_DYNAMIC_REPRO` 등 다음 작업을 제안하면 비-LLM Runtime Validator가 `ActionRequest`, exact revision, 역할, 상태, 예산과 provider/session을 확인한다. R7 Setup Automation이 `RUN_SANDBOX`를 요청하면 Runtime Validator가 exact request·current requirements·current exact plan·R7 `sandbox_profile_ref`·exact R8 `DynamicReproductionLifecycleProfile` revision을 고정하고 호출 전 잔여 시간·새 attempt 한도를 검사한다. 요청 당시 관측한 `RunPolicyState`는 감사 provenance로 함께 기록하지만 freshness는 Sandbox 허가 조건이 아니다. Sandbox Controller는 `LOCAL_ONLY`, live asset·외부 계정·허용되지 않은 egress 차단과 R7 profile의 외부 접근·격리, CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다. 정책의 의미·scope·보고 가능성은 판단하지 않는다. 허가된 Sandbox 안에서는 R7 Agent가 command·PoC·관찰·재시도를 자율적으로 정하고, 비-LLM Reproduction Session Manager가 실제 event와 결과를 확정한다.
 
 ## 기본 검증 순서
 
@@ -318,7 +318,7 @@ R7 내부 책임은 다음처럼 나눈다.
 
 - **R7 Agent**: 요청을 환경 조건으로 구체화하고, 재현 전략·PoC candidate·command·관찰·동적 근거 해석을 만든다.
 - **R7 Setup Automation**: 저장소 선언을 우선한 recipe, image build, container 생성·재사용·재생성과 cleanup을 실제 수행한다.
-- **Sandbox Controller**: current `RunPolicyState`와 `execution_scope=LOCAL_ONLY`를 고정하고 R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다. R7 profile 값, R8 잔여 예산·새 attempt, 내부 command allowlist 또는 Rule Scope 의미는 정하지 않는다.
+- **Sandbox Controller**: 요청 당시 `RunPolicyState`를 감사 reference로 기록하고 `execution_scope=LOCAL_ONLY`를 강제한다. clone은 current `CodeWorkspace`에서 만든 Sandbox 내부 복사본, mock·fixture는 same-attempt 생성물, 공격 endpoint는 loopback 또는 현재 격리 network 내부 주소로 확인한다. 출처 불명 endpoint·외부 계정·live asset과 R7 `sandbox_profile_ref`가 금지한 host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace 접근을 차단하고 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다. R7 profile 값, R8 잔여 예산·새 attempt, 내부 command allowlist 또는 Rule Scope 의미는 정하지 않는다.
 - **Reproduction Session Manager**: runtime/tool/lifecycle event를 append-only `AgentLog`로 기록하고 같은 attempt의 validated PoC와 `DynamicReproductionResult`를 확정하는 비-LLM result owner다.
 
 R7은 `SUPPORTED | DISPROVED | INCONCLUSIVE` 동적 관측만 반환하며 최종 `TRUE | FALSE | HOLD`는 계속 R6가 판단한다. Session Manager는 Agent 호출·중단, command 허용, retry 또는 cleanup 전략을 결정하지 않는다.
@@ -370,9 +370,9 @@ Sandbox 안에서는 Agent가 환경 설정, 저장소에 필요한 package, 계
 
 ### 실행 단위 정책 준비와 Sandbox 사전 확인
 
-정책은 동적 재현을 요청할 때 가설별로 새로 수집하지 않는다. workspace 준비 직후 정적 도구와 독립 병렬로 준비한 current `RunPolicyState`를 모든 가설이 공유한다. `RUN_SANDBOX` action은 그 exact state를 입력에 한 번 고정하고, state가 `CURRENT`이면 exact collection·policy record도 `SandboxPolicyDecision`에 남긴다.
+정책은 동적 재현을 요청할 때 가설별로 새로 수집하지 않는다. workspace 준비 직후 정적 도구와 독립 병렬로 준비한 `RunPolicyState`를 모든 가설이 공유한다. `RUN_SANDBOX` action은 요청 당시 관측한 exact state를 감사 reference로 남기고, state가 `CURRENT`이면 exact collection·policy record도 `SandboxPolicyDecision`에 연결한다. `PREPARING`이어도 collection·policy reference를 null로 명시한 채 로컬 격리 재현을 진행할 수 있다. 준비 완료 뒤 policy reference는 run 종료까지 고정하며 외부 정책 변경 신호만으로 이미 허가된 local-only action을 취소하지 않는다. Rule Scope Gate는 같은 run에 고정한 정책과 실제 `AgentLog`를 비교한다.
 
-Sandbox는 clone한 코드·mock·fixture 안의 로컬 재현만 허용한다. `ABSENT | BLOCKED | FAILED | STALE`은 취약점 반증이 아니며, 이 상태에서도 기존 default-deny profile로 외부 상호작용이 없는 순수 로컬 재현은 가능하다. live program asset·외부 계정·허용되지 않은 egress처럼 정책에 따라 허용 여부가 달라질 수 있는 실행은 현재 설계에서 모두 차단한다. 실제 실행이 공식 testing restriction과 맞는지의 의미 판정은 Technical `ACCEPT` 뒤 Rule Scope Gate가 `AgentLog`를 읽어 수행한다.
+Sandbox는 clone한 코드·mock·fixture 안의 로컬 재현만 허용한다. `ABSENT | BLOCKED | FAILED | UNVERIFIED`는 취약점 반증이 아니며, 이 상태에서도 기존 default-deny profile로 외부 상호작용이 없는 순수 로컬 재현은 가능하다. live program asset·외부 계정·허용되지 않은 egress처럼 정책에 따라 허용 여부가 달라질 수 있는 실행은 현재 설계에서 모두 차단한다. 실제 실행이 공식 testing restriction과 맞는지의 의미 판정은 Technical `ACCEPT` 뒤 Rule Scope Gate가 `AgentLog`를 읽어 수행한다.
 
 ### 결과를 R6가 판정하는 방법
 

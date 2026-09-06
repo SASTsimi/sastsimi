@@ -57,7 +57,7 @@
 | [`ADR-009-r5-01-cwe-labeling-provenance.md`](./review/decisions/ADR-009-r5-01-cwe-labeling-provenance.md) | CWE 라벨을 새 Verification마다 다시 평가하고 exact revision에 연결하는 현재 결정을 설명합니다. | R4·R5·R6 담당 | 확정 결정 |
 | [`ADR-010-static-fact-kind-partition.md`](./review/decisions/ADR-010-static-fact-kind-partition.md) | StaticFactBundle의 사실 종류와 sanitizer·validator 후보를 분리해 전달하는 현재 결정을 설명합니다. | R2·R4·R6·R8 담당 | 확정 결정 |
 | [`ADR-011-testing-restriction-primitive-admission.md`](./review/decisions/ADR-011-testing-restriction-primitive-admission.md) | 금지된 테스트 위반만 TRUE Primitive 체이닝 자격을 막도록 전용 판정과 admission 결정을 분리한 현재 결정을 설명합니다. | R1·R4·R5 담당 | 확정 결정 |
-| [`ADR-013-run-policy-preparation-and-reuse.md`](./review/decisions/ADR-013-run-policy-preparation-and-reuse.md) | 정책을 실행 초기에 한 번 준비해 가설들이 재사용하고 Sandbox 전 안전 경계와 만료를 확인하는 제안입니다. | R4·R5·R7·R8 담당 | 검토 중 결정 |
+| [`ADR-013-run-policy-preparation-and-reuse.md`](./review/decisions/ADR-013-run-policy-preparation-and-reuse.md) | 정책을 실행 초기에 한 번 준비해 가설들이 공유하고, run 안에서는 고정하며 다음 run 시작 때 exact cache를 재사용할지 판단하는 제안입니다. | R4·R5·R7·R8 담당 | 검토 중 결정 |
 
 ## Architecture v5 기술 기준 문서
 

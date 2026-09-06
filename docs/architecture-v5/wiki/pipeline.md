@@ -8,9 +8,9 @@
 
 아래 목록은 데이터 형식과 구현 순서를 맞추기 위해 정확한 이름을 사용합니다. 뜻은 [쉬운 용어집](../../GLOSSARY.md)에서 확인하세요.
 
-1. 저장소 입력
+1. 저장소와 승인된 내부 `program_id` 하나를 `AnalysisStartRequest`로 입력. 같은 저장소의 다른 프로그램은 별도 실행으로 시작
 2. `Repository Loader`가 `git clone`과 `commit_id` checkout으로 `CodeWorkspace` 준비
-3. AST·SAST와 실행 단위 정책 준비를 독립 병렬 실행. 정적 도구는 `RuleExecutionRecord`, Policy Collector와 LLM Policy Parser는 current `RunPolicyState` 생성
+3. AST·SAST와 실행 단위 정책 준비를 독립 병렬 실행. 정적 도구는 `RuleExecutionRecord`를 만들고, Policy Parser는 `PolicyParserResult`를 만들고 Policy Collector가 이를 검증·취합해 current `RunPolicyState`를 확정
 4. exact 규칙 실행 기록이 연결된 `StaticFactBundle` 생성
 5. Orchestration Agent가 초기 가설 생성 시작
 6. 저비용 Hypothesis Agent 호출
@@ -24,7 +24,7 @@
 14. FALSE terminal / HOLD는 `required_primitive_candidates`가 하나 이상일 때만 `inputs + result=null` Primitive admission, 후보가 없으면 Primitive·Chaining 없음 / TRUE는 R5-01 `CWE_LABELING` work에서 exact Verification에 대응하는 current `CWELabel` 생성
 15. final TRUE와 그 Verification을 직접 가리키는 current CWELabel을 Technical Evidence Gate Agent가 검토
 16. `REVISE`이면 같은 Verification owner가 새 Verification을 만들고 R5-01이 CWE 정렬을 다시 평가해 새 label revision 생성 후 재제출
-17. Technical `ACCEPT` 뒤 실행 초기에 준비한 current 정책을 재사용해 Rule Scope를 확인하고, 금지 테스트 위반이 확정되지 않아 `PrimitiveAdmissionDecision=ALLOW`인 exact TRUE만 result Primitive로 admission
+17. Technical `ACCEPT` 뒤 실행 초기에 고정한 정책으로 Rule Scope를 확인하고, 금지 테스트 위반이 확정되지 않아 `PrimitiveAdmissionDecision=ALLOW`인 exact TRUE만 result Primitive로 admission
 18. Chaining Agent가 work 시작 시 current ALLOW decision과 함께 고정한 exact Primitive를 사용해 upstream result가 downstream의 특정 input을 충족하는지 matching
 19. Rule Scope review가 `COMMITTED`되면 신뢰 runtime이 exact chain에서 current Finding을 정규화(review_status·permission 값 무관, `COLLECTION_FAILED`이면 Finding 없음)하고, 나머지 공식 규칙·범위·영향 판단을 보고 가능성에 적용; 금지 테스트 위반 외의 실패는 ALLOW Primitive 자격을 없애지 않음
 20. Verification-origin 또는 Chaining-origin 새 주장을 trusted validation·전역 등록하고 새 Verification 배정
@@ -33,7 +33,7 @@
 
 Technical Gate의 `REVISE`는 같은 hypothesis의 Verification owner에게 직접 돌아가 새 generation을 시작한다. final TRUE를 다시 만들려면 그 generation의 동적 결과와 validated PoC도 새로 필요하고, R5-01은 값이 같아도 그 Verification에 맞는 새 CWELabel revision을 만들어야 한다. HOLD는 Gate를 거치지 않지만 `required_primitive_candidates`가 하나 이상일 때만 Primitive로 저장해 Chaining에 들어가며, 후보가 없으면 Primitive와 Chaining work 없이 처리를 끝낸다. TRUE는 Technical `ACCEPT`와 current admission `ALLOW` 뒤 들어간다. 금지 테스트 위반 `FAIL`만 result Primitive를 막고, 다른 Rule Scope 결과는 Reporter만 제어한다. current Finding은 두 Gate가 검토한 exact chain을 신뢰 runtime이 정규화한 record이며 새 verdict가 아니다. Finding 존재와 Reporter의 6축 정책 readiness는 별개 조건이라 `report_permission=DENY`여도 Finding은 보존되고 Reporter만 차단된다. Verification·CWELabel·두 Gate·동적 결과·PoC·고정 정책이 새 revision으로 바뀌면 기존 Finding은 stale이 되어 새 exact chain에서 다시 정규화한다. Verification과 Chaining의 material claim은 새 가설이 되며 기존 verdict에 직접 합쳐지지 않는다. 독립 가설은 전역 예산 범위에서 병렬 처리할 수 있다.
 
-정책은 가설마다 다시 가져오지 않습니다. workspace가 준비되면 정적 도구와 별도로 한 번 수집·파싱해 `RunPolicyState`에 고정하고, 같은 실행의 Sandbox와 Rule Scope가 만료 전 exact revision을 공유합니다. 정책은 `StaticFactBundle`에 들어가지 않으며 Hypothesis Agent가 scope를 이유로 기술 가설을 사전 삭제하는 데 쓰지 않습니다. Sandbox는 `LOCAL_ONLY`와 외부 격리만 강제하고 정책 의미는 Rule Scope Gate가 판단합니다.
+정책은 가설마다 다시 가져오지 않습니다. workspace가 준비되면 정적 도구와 별도로 정책 준비를 한 번 수행합니다. 새 run 시작 때 exact `PolicyCacheRecord`가 맞고 유효하면 재사용하고, 아니면 공식 원문을 새로 수집·파싱합니다. 어느 경로든 현재 run의 새 `RunPolicyState`에 고정하며 cache hit에서는 새 Parser 호출을 만들지 않습니다. 재시도는 같은 `POLICY_FETCH` work의 새 attempt이고, 완료된 attempt마다 최대 하나의 `PolicyCollectionResult`를 남깁니다. 최종 state는 선택한 결과 하나만 가리키며 이전 실패 결과는 최종 정책 판단에 쓰지 않습니다. Rule Scope는 준비 완료 때 run에 고정한 exact revision을 사용하고 Sandbox는 실행 요청 당시 관측한 state를 감사 reference로 남깁니다. freshness 만료와 parser version 변경은 다음 run 시작 때 재사용 여부를 판단하며 현재 run의 정책을 바꾸지 않습니다. 정책은 `StaticFactBundle`에 들어가지 않으며 Hypothesis Agent가 scope를 이유로 기술 가설을 사전 삭제하는 데 쓰지 않습니다. Sandbox는 `LOCAL_ONLY`와 외부 격리만 강제하고 정책 의미는 Rule Scope Gate가 판단합니다.
 
 `ReportDraft` 이후의 검토·수정·제출·공개는 Agent 자동화 밖에서 사람이 진행한다.
 

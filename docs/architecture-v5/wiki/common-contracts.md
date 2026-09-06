@@ -16,10 +16,12 @@
 | `record_id` | 저장한 결과 한 개의 번호 | 결과를 저장하는 runtime |
 | `logical_record_id` | 같은 결과의 수정본들을 묶는 번호 | 결과를 처음 저장하는 runtime |
 | `stored_data_id` | 결과 파일이나 기록을 찾는 번호 | 결과 저장 계층 |
+| `program_id` | 이번 실행에서 검사할 버그바운티 프로그램 번호 | 내부 Program Catalog |
+| `collection_result_id` | 정책 준비 attempt 한 번의 수집 결과 번호 | Policy Collector |
 
 시스템이 직접 만든 번호는 나중에 다른 대상을 가리키도록 다시 배정하지 않습니다. 같은 논리 결과의 수정본은 같은 `logical_record_id`를 유지하고, 같은 프로그램은 같은 `program_id`를 사용합니다. `commit_id`는 Git이 이미 만든 외부 식별자이므로 같은 commit을 여러 분석에서 다시 참조할 수 있습니다. 로컬 코드 폴더를 지워도 `workspace_id`가 어느 저장소와 commit을 가리켰는지는 남깁니다. `symbol_id`, `gap_id`, `error_id`, `proposal_id`처럼 특정 record에서만 쓰는 나머지 ID의 정확한 범위는 정본인 [경량 데이터 계약](../08-lightweight-data-contracts.md)의 식별자 표를 따릅니다.
 
-clone 전에는 아직 `workspace_id`나 `commit_id`가 없을 수 있습니다. 이때는 `analysis_id`만 필수인 `RunMeta`를 사용합니다. checkout이 끝나 코드가 준비된 뒤의 근거에는 `workspace_id`와 `commit_id`가 모두 있어야 합니다. 외부 버그바운티 프로그램 ID는 출처가 다르면 겹칠 수 있으므로 `(program_namespace, external_program_id)`로 구분하고, 내부에서는 전역 `program_id`로 연결합니다.
+분석 요청은 저장소와 함께 내부 `program_id` 하나를 받습니다. 외부 버그바운티 프로그램 ID는 출처가 다르면 겹칠 수 있으므로 `(program_namespace, external_program_id)`로 Program Catalog에 등록하고, 분석을 시작하기 전에 내부 `program_id` 하나로 바꿉니다. 저장소 하나가 여러 프로그램에 속하면 프로그램마다 별도 실행을 시작합니다. clone 전에는 아직 `workspace_id`나 `commit_id`가 없을 수 있습니다. 이때는 `analysis_id`만 필수인 `RunMeta`를 사용합니다. checkout이 끝나 코드가 준비된 뒤의 근거에는 `workspace_id`와 `commit_id`가 모두 있어야 합니다.
 
 `CodeWorkspace`는 준비 중 `PREPARING`, 분석 가능하면 `READY`, 준비 실패 시 `FAILED`, 로컬 폴더 정리 뒤 `REMOVED`입니다. 정적 분석은 `READY`에서만 시작합니다.
 
@@ -157,11 +159,11 @@ Technical Gate는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 
 
 Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 `required_primitive_candidates`가 하나 이상일 때만 그 전체 부족 조건을 `inputs`에 넣고 `result=null`로 Gate 없이 저장합니다. 후보가 비어 있으면 Primitive와 Chaining work를 만들지 않습니다. TRUE는 validated PoC와 같은 revision을 검토한 Technical `ACCEPT` 뒤 정책 확인 결과까지 연결해 체이닝 사용 가능 여부를 확정합니다. `PrimitiveAdmissionDecision`은 TRUE 결과를 체이닝 재료로 사용해도 되는지 기록합니다. Rule Scope Gate가 별도로 출력한 `testing_restriction_compliance`가 `FAIL`일 때만 사용을 거절하며, 범위 밖·영향 부족·보상 대상 아님 같은 다른 판정은 체이닝을 막지 않습니다. 정책 수집 실패와 `UNCERTAIN`도 확정 위반으로 바꾸지 않고 정확한 상태와 근거를 남깁니다.
 
-사용이 허용된 TRUE만 제공 능력마다 `result`가 있는 Primitive를 만들고, `admission_decision_ref`로 같은 Verification의 current 허용 결정을 가리킵니다. `PrimitiveIndexState`는 current Verification과 현재 사용할 수 있는 Primitive refs만 가리킵니다. Chaining work는 시작할 때 읽은 index, Primitive와 admission decision의 정확한 수정본을 함께 고정합니다. 실제 match가 직접 또는 부모 체인을 통해 사용한 admission 집합은 `source_admission_refs`로 남깁니다. 일반 index 갱신과 사용하지 않은 후보의 decision 변경은 진행 중 work를 바꾸지 않지만, 실제 사용한 decision이 금지 테스트 위반으로 `DENY`가 되면 해당 Primitive를 index에서 빼고 이전 결정을 사용하는 진행 중 결과도 `STALE_RESULT`로 거절합니다. 이미 저장된 자식·손자 결과는 감사 이력으로만 남기며 새 Verification·Gate·Primitive·Reporter 입력에서 제외합니다.
+사용이 허용된 TRUE만 제공 능력마다 `result`가 있는 Primitive를 만들고, `admission_decision_ref`로 같은 Verification의 current 허용 결정을 가리킵니다. `PrimitiveIndexState`는 current Verification과 현재 사용할 수 있는 Primitive refs만 가리킵니다. Chaining work는 시작할 때 읽은 index, Primitive와 admission decision의 정확한 수정본을 함께 고정합니다. 실제 match가 직접 또는 부모 체인을 통해 사용한 admission 집합은 `source_admission_refs`로 남깁니다. 정책 freshness·parser version 변경은 다음 analysis run의 재사용 판단에만 쓰며 현재 run의 admission을 소급 교체하지 않습니다. 일반 index 갱신과 사용하지 않은 후보의 decision 변경은 진행 중 work를 바꾸지 않지만, 같은 run의 실제 검증 근거가 수정되어 실제 사용 decision이 금지 테스트 위반 `DENY`가 되면 해당 Primitive를 index에서 빼고 이전 결정을 사용하는 진행 중 결과도 `STALE_RESULT`로 거절합니다. 이미 저장된 자식·손자 결과는 감사 이력으로만 남기며 새 Verification·Gate·Primitive·Reporter 입력에서 제외합니다.
 
 ## 정책 수집 실패와 정책 부재를 구분합니다
 
-workspace 준비 뒤 정책은 정적 도구와 독립 병렬로 실행당 한 번 준비합니다. 비-LLM Policy Collector가 공식 원문과 hash를 고정하고 LLM Policy Parser가 그 exact 원문만 구조화합니다. `RunPolicyState`는 같은 실행의 모든 가설이 공유하는 current 정책 pointer이며 정책 record는 `StaticFactBundle`이나 Hypothesis 사전 scope 필터로 쓰지 않습니다.
+workspace 준비 뒤 정책은 정적 도구와 독립 병렬로 실행당 한 번 준비합니다. 비-LLM Policy Collector가 공식 원문과 hash를 고정하고 LLM Policy Parser가 그 exact 원문만 구조화합니다. 분석 요청은 승인된 catalog의 `program_id` 하나를 필수로 갖고, `RunPolicyState`는 같은 실행의 모든 가설이 공유합니다. 새 run 시작 때 `PolicyCacheRecord`의 프로그램·출처 설정·Parser 버전·최신성 기준과 exact reference가 모두 맞으면 재사용하고, 아니면 새로 수집·파싱합니다. cache를 써도 `RunPolicyState`와 현재 run의 collection·policy record는 새로 만듭니다. 재시도는 같은 work 안의 새 attempt이며 완료된 attempt마다 수집 결과를 최대 하나 남깁니다. 따라서 최종 결과의 수집 결과 목록은 여러 재시도를 담을 수 있지만 프로그램은 하나이고, `RunPolicyState`는 최종 선택 결과 하나만 가리킵니다. 준비 완료 뒤 정책 reference는 run 종료까지 바꾸지 않으며 정책 record는 `StaticFactBundle`이나 Hypothesis 사전 scope 필터로 쓰지 않습니다.
 
 정책 수집 결과는 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 중 하나입니다.
 
@@ -169,7 +171,7 @@ workspace 준비 뒤 정책은 정적 도구와 독립 병렬로 실행당 한 �
 - `ABSENT_CONFIRMED`: 공식 출처를 실제로 확인했지만 사용할 정책이 없음을 확인했습니다. 이 부재 확인에도 유효기간을 두며, Gate는 유효한 exact 확인을 `UNCERTAIN + DENY`로 기록할 수 있습니다.
 - `COLLECTION_FAILED`: 접속 또는 parser가 실패해 정책 유무를 확인하지 못했습니다. 이 경우 Rule Scope Gate 결과를 만들지 않습니다.
 
-정책 record에는 공식 출처 확인 근거, parser 이름과 버전·실제 LLM 호출 reference, 최신성 검사 기준·근거·만료 시각을 남깁니다. `CURRENT`는 이 값이 모두 있고 아직 만료되지 않았을 때만 가능하며, `ABSENT` state도 기준·확인 시각·근거·만료 시각을 가집니다. 기준값과 재수집 주기는 R8 설정을 사용하고, Runtime Validator는 Sandbox·Gate·Reporter action 직전에 만료 여부를 다시 검사합니다. 만료 중에는 `LOCAL_ONLY` Sandbox와 `UNCERTAIN + DENY` Rule Scope만 허용하고 Reporter는 차단합니다. Sandbox Controller는 외부 격리를 강제할 뿐 정책 의미를 판정하지 않습니다.
+정책 record에는 공식 출처 확인 근거, parser 이름과 버전·실제 LLM 호출 reference, 최신성 검사 기준·근거·만료 시각을 남깁니다. `CURRENT`는 run 시작 때 이 값이 모두 있고 유효할 때만 가능하며, `ABSENT` state도 기준·확인 시각·근거·만료 시각을 가집니다. 이 두 상태만 새 cache로 게시합니다. `UNVERIFIED`는 exact `FOUND | ABSENT_CONFIRMED` 수집 결과가 있지만 최신성만 확인하지 못한 상태라 cache로 게시하지 않습니다. 수집 결과 전 중단은 `BLOCKED | FAILED`이며 Rule Scope를 호출하지 않습니다. cache hit은 새 Parser 호출을 만들지 않고 cache의 exact parser reference를 이어받습니다. freshness 만료와 parser version 변경은 다음 analysis run의 재사용 판단에만 사용합니다. 현재 run에서는 Rule Scope와 Reporter가 준비 완료 때 고정한 exact state를 쓰며, 외부 정책 변경 신호를 확인하면 정책 의존 단계를 멈추고 새 run을 요구합니다. `PREPARING` 동안 Rule Scope와 Reporter는 기다리지만 local-only Sandbox는 실행할 수 있습니다. exact collection이 연결된 `UNVERIFIED`이면 `UNCERTAIN + DENY` Rule Scope만 허용하고 Reporter는 차단합니다. Sandbox Controller는 실행 당시 정책 상태를 감사 reference로 남기고, current CodeWorkspace clone·same-attempt mock/fixture·격리 network인지 확인해 외부 격리를 강제할 뿐 정책 의미를 판정하지 않습니다.
 
 Rule Scope Gate가 `PASS`, `FAIL`, `SUFFICIENT`, `INSUFFICIENT`를 선택하면 `RuleScopeEvidenceLink`로 실제 정책 항목과 코드·실행 근거를 연결해야 합니다. 정보가 부족하면 `PolicyMissingInfo`에 부족한 영역과 이유를 남깁니다. 그 누락이 공개 허용을 막는 항목이면 `blocks_allow=true`로 기록하고 `ALLOW`를 저장하지 않습니다.
 

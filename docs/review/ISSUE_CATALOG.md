@@ -649,7 +649,7 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 | HOLD + `required_primitive_candidates=[]` | Primitive를 저장하지 않고 Chaining work도 만들지 않은 채 HOLD 처리 종료 |
 | FALSE | terminal internal result; Primitive/Chaining 금지 |
 | Gate 전 TRUE | result Primitive admission과 Chaining 금지 |
-| Technical ACCEPT만 받은 TRUE | 실행 초기에 준비한 current 정책 확인·Rule Scope의 금지 테스트 판정과 `PrimitiveAdmissionDecision`이 끝날 때까지 result Primitive·Chaining·Reporter 금지 |
+| Technical ACCEPT만 받은 TRUE | 실행 초기에 고정한 정책 확인·Rule Scope의 금지 테스트 판정과 `PrimitiveAdmissionDecision`이 끝날 때까지 result Primitive·Chaining·Reporter 금지 |
 | Verification 새 claim | `origin=VERIFICATION` child hypothesis로 8단계부터 재검증; parent 불변 |
 | TRUE result→HOLD input | upstream TRUE가 exact Technical-accepted·admission-allowed이고 그 result가 HOLD Primitive의 특정 input을 충족할 때만 `origin=CHAINING` child 생성 |
 | TRUE result→TRUE input | upstream result와 downstream TRUE Primitive의 특정 input이 근거로 연결될 때만 새 chain hypothesis 생성 |

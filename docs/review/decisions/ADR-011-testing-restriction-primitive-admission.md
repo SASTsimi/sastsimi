@@ -51,7 +51,7 @@ Rule Scope Gate는 정책 의미를 판단하고, 신뢰 Runtime은 그 구조�
 
 result Primitive는 current `PrimitiveAdmissionDecision(decision=ALLOW)`을 exact하게 참조해야 합니다. `DENY`이면 새 result Primitive를 만들지 않습니다. `ChainingResult.source_admission_refs`는 실제 match Primitive에서 직접 또는 부모 match를 따라 재귀적으로 도달하는 모든 result Primitive의 current ALLOW decision을 고정합니다.
 
-이후 decision이 `DENY`로 바뀌면 과거 Primitive는 감사 이력으로 남기되 current index에서 제거하고, 실제 match가 과거 decision을 사용한 진행 중 Chaining 결과도 `STALE_RESULT`로 거절합니다. 이미 자식·손자 결과가 만들어졌다면 `source_admission_refs`와 `source_primitive_match_id` 계보를 따라 파생 Primitive를 current index에서 제거하고 새 Verification·Gate·Primitive·Reporter 입력으로 쓰지 않습니다. 과거 verdict와 결과 자체는 감사 이력으로 보존하며 `FALSE | HOLD`로 바꾸지 않습니다.
+같은 analysis run의 정책 collection·record revision은 최초 확정 뒤 교체하지 않습니다. freshness 만료·Parser 버전 변경·공식 정책 갱신은 다음 run의 재사용 판단에만 사용합니다. 같은 run에서 Verification·Technical review 또는 Rule Scope review의 실제 검증 근거 revision이 바뀌어 decision이 `DENY`가 된 경우에만 과거 Primitive를 감사 이력으로 남기고 current index에서 제거합니다. 실제 match가 과거 decision을 사용한 진행 중 Chaining 결과도 `STALE_RESULT`로 거절합니다. 이미 자식·손자 결과가 만들어졌다면 `source_admission_refs`와 `source_primitive_match_id` 계보를 따라 파생 Primitive를 current index에서 제거하고 새 Verification·Gate·Primitive·Reporter 입력으로 쓰지 않습니다. 과거 verdict와 결과 자체는 감사 이력으로 보존하며 `FALSE | HOLD`로 바꾸지 않습니다.
 
 ## Responsibility
 
@@ -69,6 +69,6 @@ result Primitive는 current `PrimitiveAdmissionDecision(decision=ALLOW)`을 exac
 - 테스트 제한이 FAIL이면 admission을 거절합니다.
 - 전용 판정과 `TESTING_RESTRICTION` 근거 또는 누락 구조가 모순되면 저장을 거절합니다.
 - 정책 수집 실패는 `NOT_EVALUATED`로 구분하며 금지 위반이나 정책 부재로 바꾸지 않습니다.
-- 다른 Verification·정책 revision의 decision을 Primitive에 연결하면 저장을 거절합니다.
-- current decision이 바뀐 뒤 이전 decision을 사용하는 Chaining 결과를 거절합니다.
+- 다른 Verification이나 run에 고정되지 않은 정책 revision의 decision을 Primitive에 연결하면 저장을 거절합니다.
+- 같은 run의 검증 근거 수정으로 current decision이 바뀐 뒤 이전 decision을 사용하는 Chaining 결과를 거절합니다.
 - 이미 생성된 child·descendant도 direct·ancestor admission 계보가 current ALLOW인지 새 downstream 작업 전에 다시 확인합니다.

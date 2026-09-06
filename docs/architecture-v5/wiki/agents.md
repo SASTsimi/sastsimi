@@ -2,7 +2,7 @@
 
 ## 쉽게 말하면
 
-각 LLM Agent가 맡는 일과 직접 결정하면 안 되는 일을 한눈에 보여 줍니다. 프로그램 규칙 검사기를 LLM Agent가 대신하지 않으며 자동화는 Reporter 초안 뒤에 끝납니다.
+각 LLM Agent와 분석을 돕는 비-LLM 모듈이 맡는 일, 직접 결정하면 안 되는 일을 한눈에 보여 줍니다. 프로그램 규칙 검사기를 LLM Agent가 대신하지 않으며 자동화는 Reporter 초안 뒤에 끝납니다.
 
 **상세 기준:** [03. Agent 역할과 오케스트레이션](../03-agent-roles-and-orchestration.md)
 
@@ -12,6 +12,8 @@
 |---|---|---|
 | Orchestration | proposal 검증·중복 후보 조회·전역 가설 등록·Verification 배정 제안 | 중복 결론 생성, 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정, runtime enforcement, Finding·공개 결정 |
 | Hypothesis | schema-valid `HYPOTHESIS_ONLY` 제안과 후보가 있을 때 `HypothesisDuplicateReview` 생성 | 후보 목록 밖 중복 대상 선택, verdict, Finding, exploitability 확정 |
+| Policy Collector | 공식 정책 원문과 출처 근거를 수집하고 exact 원문·hash를 저장 | 정책 의미·scope·보고 허용 판단 |
+| Policy Parser | Policy Collector가 저장한 exact 원문을 구조화 | Rule Scope 결론·보고 허용 판단, 원문에 없는 정책 추정 |
 | Verification | 한 가설의 Context·Pro/Con, 목적별 `DynamicReproductionRequest`, 반환 결과 소비·판정·Gate 보완·Chaining handoff와 material child 제안 | 환경 요구사항·실행 계획·PoC·동적 결과 생산, Sandbox 직접 실행, 새 claim 무검증 승격 |
 | R7 Agent | 환경 요구사항·간단한 계획·PoC 초안·동적 근거 해석, Sandbox 안의 자율 실행 | R6 요청 변경, 외부 경계 우회 또는 최종 verdict 판단 |
 | R7 Setup Automation | recipe·image·container 생성/재사용/재생성과 정리 실제 수행 | Agent 분석, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
@@ -27,6 +29,8 @@
 | Reporter | 통과한 근거로 내부 보고서 초안 작성 | 새 근거 확정, 제출·공개 |
 
 ```text
+Policy Collector → collect exact official policy source and provenance
+Policy Parser → structure the collected exact source → PolicyParserResult → Policy Collector validates and commits RunPolicyState
 Orchestration → proposal validation → runtime narrows duplicate candidates
 Hypothesis → compare exact candidates when needed → registration or duplicate stop
 Orchestration → assign Verification for registered hypotheses
@@ -37,7 +41,7 @@ Sandbox Controller checks external boundary → Setup Automation prepares recipe
 R7 Agent creates PoC candidate and autonomously runs it → Session Manager stores AgentLog and same-attempt result → Verification final verdict
 HOLD + required candidates → inputs plus null result Primitive → Chaining
 HOLD + no required candidates → no Primitive and no Chaining work
-TRUE → R5-01 CWE_LABELING → current CWELabel → Technical Gate → policy and Rule Scope review
+TRUE → R5-01 CWE_LABELING → current CWELabel → Technical Gate → run에 고정한 RunPolicyState로 Rule Scope review
 Technical-accepted TRUE → PrimitiveAdmissionDecision ALLOW → result Primitive → Chaining
 Rule Scope review committed → trusted runtime normalizes current Finding (any review_status)
 Verification or Chaining material claim → new hypothesis → new Verification
