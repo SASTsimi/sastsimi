@@ -255,12 +255,14 @@ AND scope_compliance == PASS
 AND testing_restriction_compliance == PASS
 AND security_impact == SUFFICIENT
 AND policy_record_ref != null
-AND policy authenticity/provenance/freshness is valid for this review
+AND run-preparation-fixed exact RunPolicyState.status == CURRENT
+AND policy authenticity/provenance was validated when that state was prepared
 AND missing critical information is empty
 ```
 
-그 밖의 유효한 정책 판단 결과는 `DENY`다. 예를 들어 `FAIL`, `UNCERTAIN`, `INSUFFICIENT`, stale
-또는 `UNVERIFIED` 정책과 `ALLOW`의 조합은 semantic contradiction이다. trusted runtime은
+여기서 freshness 조건은 run 준비 완료 시 `CURRENT`로 확정되어 고정된 exact `RunPolicyState`와 그 provenance를 뜻한다. 이 조건은 Gate 시점에 TTL을 다시 계산한다는 뜻이 아니다. TTL 만료와 Parser 변경은 다음 analysis run의 cache 재사용 판단에만 적용한다.
+
+그 밖의 유효한 정책 판단 결과는 `DENY`다. 예를 들어 `FAIL`, `UNCERTAIN`, `INSUFFICIENT`, run 시작 때 `STALE`로 판정되어 current state에서 제외된 과거 정책 또는 current `RunPolicyState.status=UNVERIFIED`와 `ALLOW`의 조합은 semantic contradiction이다. trusted runtime은
 기존 공통 semantic validation 계약으로 이를 `INVALID_OUTPUT` 처리하고 해당 Gate 출력을
 Reporter 입력으로 사용하지 않는다. 다만 일반 Rule·Scope·Impact/report eligibility 실패와 `testing_restriction_compliance=UNCERTAIN`은 R4가 current `PrimitiveAdmissionDecision=ALLOW`로 확정한 기술 재료의 admission을 막지 않는다. Gate 2 전용 오류 enum이나 validator를 새로 만들지 않는다.
 

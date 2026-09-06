@@ -2576,6 +2576,7 @@ $requiredPolicyContractRules = @(
     @{ Name = 'CURRENT policy has enforceable freshness'; Text = $contractText; Marker = '`ProgramPolicyRecord.freshness_status=CURRENT`이면 `freshness_criterion_ref`, 하나 이상의 `freshness_evidence_refs`, `freshness_checked_at`과 run 시작 시점보다 미래인 `freshness_valid_until`이 모두 필수다.' },
     @{ Name = 'R8 owns freshness criteria'; Text = $contractText; Marker = 'freshness 기준값은 R8이 승인한 versioned 설정만 사용한다.' },
     @{ Name = 'Gate guide keeps R8 freshness ownership'; Text = $gateText; Marker = '최신성 기준값은 R8이 승인한 versioned 설정을 사용하고 R5는 그 결과를 정책 의미로 해석한다.' },
+    @{ Name = 'Gate ALLOW uses the frozen run-start policy state'; Text = $gateText; Marker = '이 조건은 Gate 시점에 TTL을 다시 계산한다는 뜻이 아니다.' },
     @{ Name = 'Gate Wiki distinguishes collection failure'; Text = $gateWikiText; Marker = '`COLLECTION_FAILED`는 Rule Scope review를 만들지 않습니다.' },
     @{ Name = 'Gate diagram routes collection failure through admission runtime'; Text = $diagramText; Marker = 'COLLECT -->|COLLECTION_FAILED| ARUN[R4 Primitive Admission Runtime]' },
     @{ Name = 'Gate evidence links are complete'; Text = $contractText; Marker = '`PASS | FAIL | SUFFICIENT | INSUFFICIENT`인 각 판단 영역은 같은 area의 `RuleScopeEvidenceLink`를 하나 이상 가져야 한다.' },
