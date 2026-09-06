@@ -35,11 +35,15 @@ flowchart TB
     DREQ --> DWAUTH[Runtime allows one dynamic work per generation]
     DREQ2 --> DWAUTH
     DWAUTH --> DR7[R7 Agent creates Requirements and simple Plan]
-    DR7 --> DAUTH[Runtime authorizes external Sandbox boundary]
-    DAUTH --> DCTRL[Controller checks host Docker secret egress resource boundaries]
-    DCTRL --> DPD[Exact SandboxPolicyDecision]
-    DPD -->|Pass| DENV[Setup Automation builds recipe and prepares clean environment]
-    DPD -->|Policy blocked| DSTOP[Attempt cannot complete no verdict]
+    DR7 --> DPREADY{Current program policy ready}
+    DPREADY -->|Preparing| DPWAIT[Only dynamic work BLOCKED static Pro Con continue]
+    DPWAIT --> DPREADY
+    DPREADY -->|Ready| DAUTH[Runtime pins exact policy inputs and authorizes Sandbox boundary]
+    DPREADY -->|Absent failed stale or uncertain| DSTOP[Dynamic work BLOCKED or FAILED no verdict]
+    DAUTH --> DCTRL[Controller checks testing restrictions host Docker secret egress resource boundaries]
+    DCTRL --> DPD[Exact SandboxPolicyDecision with exact policy revision]
+    DPD -->|ALLOW| DENV[Setup Automation builds recipe and prepares clean environment]
+    DPD -->|DENY| DSTOP
     DENV --> DRUN[R7 Agent autonomously creates and runs PoC in Sandbox]
     DRUN --> DLOG[Session Manager appends actual events to AgentLog]
     DLOG --> DASM[Session Manager binds same-attempt recipe environment candidate and evidence]
