@@ -60,7 +60,7 @@ Repository input
 → Repository Loader가 git clone과 commit checkout
 → CodeWorkspace 준비
 → AST parse·SAST와 실행 단위 정책 준비를 서로 독립적으로 병렬 실행
-→ 정책은 run 시작 때 exact cache를 재사용하거나, 비-LLM Policy Collector가 공식 원문을 고정하고 LLM Policy Parser가 구조화해 새 RunPolicyState로 저장
+→ 정책은 run 시작 때 exact cache를 재사용하거나, 비-LLM Policy Collector가 공식 원문을 고정하고 LLM Policy Parser가 PolicyParserResult를 만들면 Collector가 검증·취합해 새 RunPolicyState로 저장
 → ToolRunResult와 규칙별 RuleExecutionRecord
 → exact 규칙 실행 기록이 연결된 StaticFactBundle
 → constrained HypothesisProposal

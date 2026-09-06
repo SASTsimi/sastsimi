@@ -10,7 +10,7 @@
 
 1. 저장소와 승인된 내부 `program_id` 하나를 `AnalysisStartRequest`로 입력. 같은 저장소의 다른 프로그램은 별도 실행으로 시작
 2. `Repository Loader`가 `git clone`과 `commit_id` checkout으로 `CodeWorkspace` 준비
-3. AST·SAST와 실행 단위 정책 준비를 독립 병렬 실행. 정적 도구는 `RuleExecutionRecord`, Policy Collector와 LLM Policy Parser는 current `RunPolicyState` 생성
+3. AST·SAST와 실행 단위 정책 준비를 독립 병렬 실행. 정적 도구는 `RuleExecutionRecord`를 만들고, Policy Parser는 `PolicyParserResult`를 만들고 Policy Collector가 이를 검증·취합해 current `RunPolicyState`를 확정
 4. exact 규칙 실행 기록이 연결된 `StaticFactBundle` 생성
 5. Orchestration Agent가 초기 가설 생성 시작
 6. 저비용 Hypothesis Agent 호출

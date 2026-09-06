@@ -105,7 +105,7 @@ Verification revision의 Technical `ACCEPT`는 Gate 2 입력이 아니다.
 운영 주체 또는 그 주체가 정책 정본으로 명시적으로 위임한 플랫폼이 게시한 원문이다. 검색 결과,
 제3자 요약, 저장소 문서, 모델 기억은 발견 단서일 수 있지만 공식 source가 아니다.
 
-정책 준비는 Gate 2 직전에 가설별로 반복하지 않는다. `CodeWorkspace.status=READY` 뒤 비-LLM Policy Collector가 공식 원문을 가져오고 LLM Policy Parser가 exact 원문을 구조화해 분석 단위 `RunPolicyState`를 만든다. 정적 도구와는 병렬이지만 `StaticFactBundle`과 Hypothesis 입력에는 섞지 않는다. Gate 2는 이 state가 가리키는 exact collection과 policy record를 읽는다.
+정책 준비는 Gate 2 직전에 가설별로 반복하지 않는다. `CodeWorkspace.status=READY` 뒤 비-LLM Policy Collector가 공식 원문을 가져오고 LLM Policy Parser가 exact 원문을 `PolicyParserResult`로 구조화하면, Collector가 이를 검증·취합해 분석 단위 `RunPolicyState`를 확정한다. 정적 도구와는 병렬이지만 `StaticFactBundle`과 Hypothesis 입력에는 섞지 않는다. Gate 2는 이 state가 가리키는 exact collection과 policy record를 읽는다.
 
 - program identifier, source URL/reference, policy version과 fetch timestamp
 - 게시 주체·도메인·플랫폼 연결을 확인한 source authenticity와 그 확인 근거

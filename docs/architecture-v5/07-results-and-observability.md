@@ -399,7 +399,7 @@ ReportDraft가 가리킨 Finding·Verification·CWELabel·두 Gate·정책 중 �
 | PoC 실행 실패 | Agent가 같은 session의 현재 attempt에서 자율 조정하거나 session 재시작이 필요할 때만 R8 한도 안에서 새 attempt로 retry; 외부 대기일 때만 `BLOCKED`, 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE` | candidate와 AgentLog는 보존하되 validated `poc_ref=null`; `FALSE | HOLD`로 변환하지 않고 Gate 금지 |
 | Sandbox 실행 취소 | 공통 work와 동적 결과 `CANCELLED` | 취소 결과를 같은 atomic transition에서 저장하고 이후 늦은 결과는 격리 |
 | Sandbox 요청·plan·recipe·요구사항·정책·환경·AgentLog·PoC·cleanup의 attempt/digest 불일치 | 결과 저장 action `DENY` | same-attempt reference, event sequence/action 연결, candidate/validated PoC와 nullable lifecycle 조합까지 검사해 후보를 `COMMITTED`하지 않고 Verification에 전달하지 않음 |
-| 정책 수집 실패 또는 run 시작 시 최신성 확인 실패 | 수집 실패는 `RunPolicyState.status=BLOCKED | FAILED`, 최신성 확인 실패는 `UNVERIFIED`로 기록. `PolicyCollectionResult.status=COLLECTION_FAILED`와 구분 | 기술 verdict 유지. `COLLECTION_FAILED`는 Rule Scope review 없음, `UNVERIFIED`는 `UNCERTAIN + DENY`; Reporter 차단. 순수 로컬 Sandbox 이력은 실행 당시 state와 보존 |
+| 정책 수집 실패 또는 수집 완료 뒤 최신성 확인 실패 | 수집 실패·collection 이전 중단은 `RunPolicyState.status=BLOCKED | FAILED`, exact `FOUND | ABSENT_CONFIRMED` collection을 만든 뒤 최신성만 확인하지 못하면 `UNVERIFIED`로 기록. `PolicyCollectionResult.status=COLLECTION_FAILED`와 구분 | 기술 verdict 유지. `COLLECTION_FAILED`와 collection 없는 중단에는 Rule Scope review가 없고, exact collection이 연결된 `UNVERIFIED`만 `UNCERTAIN + DENY`; Reporter 차단. 순수 로컬 Sandbox 이력은 실행 당시 state와 보존 |
 | Technical Gate 실행 오류·보완 한도 초과 | Gate work `FAILED` | 기술 verdict 유지, Rule Scope Gate와 Reporter 차단 |
 | Rule Scope Gate 실행 오류 | Gate work `FAILED` | 기술 verdict 유지, Reporter 차단 |
 | 보고서 작성 실패 | report work·`ReportProcessState` `FAILED` | Verification과 두 Gate 결과 유지, 초안만 실패 |

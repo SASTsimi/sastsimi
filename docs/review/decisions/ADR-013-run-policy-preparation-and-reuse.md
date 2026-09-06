@@ -47,7 +47,9 @@ Repository Loader가 `CodeWorkspace.status=READY`를 확정하면 AST·SAST work
 - `FAILED`: 복구 불가능하거나 retry 소진
 - `UNVERIFIED`: 최신성 기준을 적용하거나 확인하지 못함
 
-`RunPolicyState`는 분석마다 새로 만들고 다른 `analysis_id`의 state를 그대로 재사용하지 않습니다. 실행 간에는 별도 `PolicyCacheRecord`만 재사용하며, 새 run은 cache hit에서도 자기 `RunPolicyState`와 현재 run에 속하는 collection·policy record를 새로 만듭니다. 준비가 `CURRENT | ABSENT | BLOCKED | FAILED | UNVERIFIED`로 확정되면 collection·parser·policy reference를 run 종료까지 바꾸지 않습니다. `PREPARING` 중에도 프로그램 정책과 무관한 외부 격리 경계를 통과한 `LOCAL_ONLY` Sandbox는 허용할 수 있습니다. Rule Scope는 `PREPARING` 동안 기다리고, `UNVERIFIED`에서는 `UNCERTAIN + DENY`만 허용합니다. Reporter와 `PASS | ALLOW`에는 run 시작 때 준비 조건을 통과한 `CURRENT` 정책만 사용할 수 있습니다.
+`UNVERIFIED`는 정책 수집 자체가 끝난 뒤 최신성만 확인하지 못한 상태입니다. 따라서 exact `FOUND | ABSENT_CONFIRMED` collection이 반드시 연결됩니다. `FOUND`이면 `freshness_status=UNVERIFIED`인 정책 record도 연결하고, collection 이전에 멈췄다면 `UNVERIFIED`가 아니라 실제 복구 가능성에 따라 `BLOCKED | FAILED`를 사용합니다.
+
+`RunPolicyState`는 분석마다 새로 만들고 다른 `analysis_id`의 state를 그대로 재사용하지 않습니다. 실행 간에는 별도 `PolicyCacheRecord`만 재사용하며, 새 run은 cache hit에서도 자기 `RunPolicyState`와 현재 run에 속하는 collection·policy record를 새로 만듭니다. 준비가 `CURRENT | ABSENT | BLOCKED | FAILED | UNVERIFIED`로 확정되면 collection·parser·policy reference를 run 종료까지 바꾸지 않습니다. `PREPARING` 중에도 프로그램 정책과 무관한 외부 격리 경계를 통과한 `LOCAL_ONLY` Sandbox는 허용할 수 있습니다. Rule Scope는 `PREPARING` 동안 기다리고, exact collection이 연결된 `UNVERIFIED`에서는 `UNCERTAIN + DENY`만 허용합니다. Reporter와 `PASS | ALLOW`에는 run 시작 때 준비 조건을 통과한 `CURRENT` 정책만 사용할 수 있습니다.
 
 ### 4. 정책은 정적 사실이나 가설 사전 필터가 아닙니다
 
@@ -74,7 +76,7 @@ Sandbox Controller는 공식 정책의 의미, 가설의 scope 또는 보고 가
 
 R8이 승인한 versioned freshness 기준으로 `freshness_valid_until`을 계산합니다. 정책을 찾은 `CURRENT`뿐 아니라 공식 정책 부재를 확인한 `ABSENT`에도 기준·확인 시각·확인 근거·만료 시각이 필요합니다. freshness와 parser version은 다음 analysis run을 시작할 때 기존 정책 자료의 재사용 여부를 정하는 조건입니다.
 
-새 run의 `POLICY_FETCH`는 run-neutral `PolicyCacheRecord`를 정확히 한 번 조회합니다. `program_id`, source 설정 content hash, parser 이름·버전, freshness 기준 content hash가 모두 같고 cache의 `freshness_valid_until`이 새 run 시작 시각보다 뒤이며 모든 exact reference를 읽고 검증할 수 있을 때만 재사용합니다. 하나라도 다르면 cache miss로 처리해 공식 원문 수집과 Parser 호출을 수행합니다. cache hit에서도 과거 `RunPolicyState`를 재사용하지 않고 현재 run의 collection·policy record를 새로 materialize하며, 새 Parser 호출은 만들지 않습니다. 성공한 `FOUND | ABSENT_CONFIRMED` 준비만 cache로 게시하고 실패·차단·미확인 결과는 게시하지 않습니다.
+새 run의 `POLICY_FETCH`는 run-neutral `PolicyCacheRecord`를 정확히 한 번 조회합니다. `program_id`, source 설정 content hash, parser 이름·버전, freshness 기준 content hash가 모두 같고 cache의 `freshness_valid_until`이 새 run 시작 시각보다 뒤이며 모든 exact reference를 읽고 검증할 수 있을 때만 재사용합니다. 하나라도 다르면 cache miss로 처리해 공식 원문 수집과 Parser 호출을 수행합니다. cache hit에서도 과거 `RunPolicyState`를 재사용하지 않고 현재 run의 collection·policy record를 새로 materialize하며, 새 Parser 호출은 만들지 않습니다. 수집 결과가 `FOUND | ABSENT_CONFIRMED`이고 최종 state가 `CURRENT | ABSENT`인 준비만 cache로 게시합니다. `UNVERIFIED`는 수집 결과를 보존하지만 cache로 게시하지 않고, 실패·차단 결과도 게시하지 않습니다.
 
 - 같은 run의 `CALL_RULE_SCOPE_GATE`와 `CREATE_REPORT_DRAFT`는 준비 완료 때 고정한 exact `RunPolicyState`와만 연결합니다.
 - TTL 시계를 다시 읽어 현재 state를 교체하거나 같은 run에서 Collector·Parser를 다시 실행하지 않습니다.

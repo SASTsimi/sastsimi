@@ -26,7 +26,7 @@
 
 ```text
 Repository → Repository Loader → CodeWorkspace → AST·SAST와 정책 준비를 병렬 실행
-→ AST·SAST 결과는 StaticFactBundle로 정규화하고, Policy Collector·Policy Parser 결과는 RunPolicyState로 run에 고정
+→ AST·SAST 결과는 StaticFactBundle로 정규화하고, Policy Parser는 PolicyParserResult를 만들며 Policy Collector가 검증·취합한 RunPolicyState를 run에 고정
 → constrained hypotheses → trusted registration → Orchestration assigns Verification
 → Verification owns context → Pro/Con → POC_CONFIRMATION or VERDICT_EVIDENCE request
 → R7 requirements and simple plan → external boundary approval → autonomous Sandbox reproduction and AgentLog
