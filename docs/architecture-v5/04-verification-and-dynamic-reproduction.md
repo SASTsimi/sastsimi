@@ -12,7 +12,7 @@
 
 Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 소유한다. 가설이 실제 코드 흐름과 실행 조건에서 성립하는지 검토하고 `TRUE | FALSE | HOLD`를 판정하며, 필요한 Context·Pro/Con·동적 재현 요청·보완 작업과 Gate 제출 시점을 선택한다. 제한 조건·우회 후보·필요 능력·제공 가능 능력·실질 영향의 상승 가능성도 함께 기록한다. R6는 재현 목적과 필요한 조건을 요청하지만 실행 환경·계획·PoC를 직접 만들지 않는다.
 
-이 제어권은 실행 허가 권한이 아니다. Verification이 `REQUEST_DYNAMIC_REPRO` 등 다음 작업을 제안하면 비-LLM Runtime Validator가 `ActionRequest`, exact revision, 역할, 상태, 예산과 provider/session을 확인한다. R7 Setup Automation이 `RUN_SANDBOX`를 요청하면 Runtime Validator가 exact request·current requirements·current exact plan·R7 `sandbox_profile_ref`·exact R8 `DynamicReproductionLifecycleProfile` revision을 고정하고 호출 전 잔여 시간·새 attempt 한도를 검사한다. 요청 당시 관측한 `RunPolicyState`는 감사 provenance로 함께 기록하지만 freshness는 Sandbox 허가 조건이 아니다. Sandbox Controller는 `LOCAL_ONLY`, live asset·외부 계정·허용되지 않은 egress 차단과 R7 profile의 외부 접근·격리, CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다. 정책의 의미·scope·보고 가능성은 판단하지 않는다. 허가된 Sandbox 안에서는 R7 Agent가 command·PoC·관찰·재시도를 자율적으로 정하고, 비-LLM Reproduction Session Manager가 실제 event와 결과를 확정한다.
+이 제어권은 실행 허가 권한이 아니다. Verification이 `REQUEST_DYNAMIC_REPRO` 등 다음 작업을 제안하면 비-LLM Runtime Validator가 `ActionRequest`, exact revision, 역할, 상태, 예산과 provider/session을 확인한다. R7 Setup Automation이 `RUN_SANDBOX`를 요청하면 Runtime Validator가 exact request·current requirements·current exact plan·R7 `sandbox_profile_ref`·exact R8 `DynamicReproductionLifecycleProfile` revision을 고정하고 호출 전 잔여 시간·새 attempt 한도를 검사한다. 요청 당시 관측한 `RunPolicyState`는 감사 provenance로 함께 기록하지만 freshness는 Sandbox 허가 조건이 아니다. Sandbox Controller는 `LOCAL_ONLY`, live asset·외부 계정·허용되지 않은 egress 차단과 R7 profile의 외부 접근·격리, CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다. 정책의 의미·scope·보고 가능성은 판단하지 않는다. 허가된 Sandbox 안에서는 Dynamic Reproduction Agent가 command·PoC·관찰·재시도를 자율적으로 정하고, 비-LLM Reproduction Session Manager가 실제 event와 결과를 확정한다.
 
 ## 기본 검증 순서
 
@@ -321,35 +321,35 @@ R6는 다음 항목을 가진 `DynamicReproductionRequest`만 만든다.
 
 R7 내부 책임은 다음처럼 나눈다.
 
-- **R7 Agent**: 요청을 환경 조건으로 구체화하고, 재현 전략·PoC candidate·command·관찰·동적 근거 해석을 만든다.
+- **Dynamic Reproduction Agent**: 요청을 환경 조건으로 구체화하고, 재현 전략·PoC candidate·command·관찰·동적 근거 해석을 만든다.
 - **R7 Setup Automation**: 저장소 선언을 우선한 recipe, image build, container 생성·재사용·재생성과 cleanup을 실제 수행한다.
 - **Sandbox Controller**: 요청 당시 `RunPolicyState`를 감사 reference로 기록하고 `execution_scope=LOCAL_ONLY`를 강제한다. clone은 current `CodeWorkspace`에서 만든 Sandbox 내부 복사본, mock·fixture는 same-attempt 생성물, 공격 endpoint는 loopback 또는 현재 격리 network 내부 주소로 확인한다. 출처 불명 endpoint·외부 계정·live asset과 R7 `sandbox_profile_ref`가 금지한 host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace 접근을 차단하고 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다. R7 profile 값, R8 잔여 예산·새 attempt, 내부 command allowlist 또는 Rule Scope 의미는 정하지 않는다.
 - **Reproduction Session Manager**: runtime/tool/lifecycle event를 append-only `AgentLog`로 기록하고 같은 attempt의 validated PoC와 `DynamicReproductionResult`를 확정하는 비-LLM result owner다.
 
-R7은 `SUPPORTED | DISPROVED | INCONCLUSIVE` 동적 관측만 반환하며 최종 `TRUE | FALSE | HOLD`는 계속 R6가 판단한다. Session Manager는 Agent 호출·중단, command 허용, retry 또는 cleanup 전략을 결정하지 않는다.
+R7은 `SUPPORTED | DISPROVED | INCONCLUSIVE` 동적 관측만 반환하며 최종 `TRUE | FALSE | HOLD`는 계속 R6가 판단한다. Session Manager는 Dynamic Reproduction Agent 호출·중단, command 허용, retry 또는 cleanup 전략을 결정하지 않는다.
 
-### ReproductionPlan과 Agent 자율성
+### ReproductionPlan과 Dynamic Reproduction Agent 자율성
 
-`ReproductionPlan`은 목적·가설·환경 요구사항·재현 목표·전략 요약과 선택적인 `requested_evidence`만 고정한다. `LIMITED/FULL` mode, exact command·step·payload·PoC·cleanup allowlist는 두지 않는다. `requested_evidence`는 참고 목표이며 Agent의 추가 관찰을 제한하지 않는다.
+`ReproductionPlan`은 목적·가설·환경 요구사항·재현 목표·전략 요약과 선택적인 `requested_evidence`만 고정한다. `LIMITED/FULL` mode, exact command·step·payload·PoC·cleanup allowlist는 두지 않는다. `requested_evidence`는 참고 목표이며 Dynamic Reproduction Agent의 추가 관찰을 제한하지 않는다.
 
-Sandbox 안에서는 Agent가 환경 설정, 저장소에 필요한 package, 계정, fixture/mock, PoC, command와 재시도를 자율적으로 선택한다. Sandbox 밖의 접근은 계속 Controller가 강제한다. Agent는 Docker daemon을 직접 다루지 않고 Setup Automation이 제공한 in-container 실행 통로만 사용한다. plan의 입력 부족·모순은 별도 record가 아니라 결과의 `plan_issues`에 남긴다.
+Sandbox 안에서는 Dynamic Reproduction Agent가 환경 설정, 저장소에 필요한 package, 계정, fixture/mock, PoC, command와 재시도를 자율적으로 선택한다. Sandbox 밖의 접근은 계속 Controller가 강제한다. Dynamic Reproduction Agent는 Docker daemon을 직접 다루지 않고 Setup Automation이 제공한 in-container 실행 통로만 사용한다. plan의 입력 부족·모순은 별도 record가 아니라 결과의 `plan_issues`에 남긴다.
 
 ### EnvironmentRecipe와 container lifecycle
 
 - `EnvironmentRecipe`는 저장소·환경 단위의 불변 build recipe이며 `base_image_digest`와 실제 `built_image_digest`를 구분한다.
 - Dockerfile, README, package manifest와 lockfile 등 저장소에 이미 선언된 의존성을 우선한다. 별도 Dependency Scanner나 R2 package prefetch를 전제로 하지 않는다.
-- package 누락을 실제로 확인하면 Agent가 recipe source를 고치고 Setup Automation이 새 baseline image와 recipe revision을 만든다.
+- package 누락을 실제로 확인하면 Dynamic Reproduction Agent가 recipe source를 고치고 Setup Automation이 새 baseline image와 recipe revision을 만든다.
 - 성공한 baseline image는 다른 가설에도 재사용할 수 있지만 현재 attempt에는 exact baseline ref와 digest를 가진 새 recipe binding을 남긴다.
 - 각 가설의 최초 attempt는 clean Sandbox에서 시작하고, 서로 다른 가설은 writable container를 공유하지 않는다.
 - 같은 가설·work 안에서는 다음 실행에 영향을 줄 상태·설정 변화가 없을 때만 container를 재사용한다.
-- Agent는 `STATE_CHANGED | CONFIG_CHANGED | STATE_UNCERTAIN`으로 재생성을 요청할 수 있다. crash·비정상 종료·사후 Health Check 실패면 runtime이 `STATE_UNCERTAIN`으로 강제한다.
+- Dynamic Reproduction Agent는 `STATE_CHANGED | CONFIG_CHANGED | STATE_UNCERTAIN`으로 재생성을 요청할 수 있다. crash·비정상 종료·사후 Health Check 실패면 runtime이 `STATE_UNCERTAIN`으로 강제한다.
 - `SandboxEnvironment`에는 container instance, `CREATED | REUSED`, 사유와 이전 환경 reference를 기록한다. `AgentLog`에는 재생성 요청 주체·사유·이전/새 환경을 남긴다.
 
 ### generation당 한 번의 동적 재현 work와 retry
 
 - 한 Verification generation에는 `DYNAMIC_REPRO` work를 하나만 등록한다.
 - `POC_CONFIRMATION`과 `VERDICT_EVIDENCE`를 같은 generation에서 각각 별도 work로 실행하지 않는다.
-- 같은 Agent session 안의 command·PoC·환경 조정은 같은 attempt의 event다.
+- 같은 Dynamic Reproduction Agent session 안의 command·PoC·환경 조정은 같은 attempt의 event다.
 - session 재시작이 필요한 일시 오류는 R8 한도가 남아 있으면 실패 attempt를 보존하고 같은 work의 새 `attempt_id`, `trigger=RETRY`로 재시도한다. 같은 session 조정에는 새 attempt를 만들지 않고, 외부 대기가 없으므로 work를 `BLOCKED`로 두지 않는다.
 - `BLOCKED`는 외부 설정·정책·승인 또는 resource profile 변경을 기다릴 때만 사용한다. 해결 뒤 같은 work의 새 `attempt_id`, `trigger=RESUME`를 만든다.
 - 복구할 수 없거나 retry 한도를 소진하면 Session Manager가 `FAILED + INCONCLUSIVE`를 확정한다.
@@ -359,15 +359,15 @@ Sandbox 안에서는 Agent가 환경 설정, 저장소에 필요한 package, 계
 ### AgentLog와 결과 확정
 
 - 실제 event는 기존 runtime/tool/lifecycle 계층이 발생시키고 Session Manager가 즉시 durable log에 append한다.
-- `agent_invoked`는 외부 경계 승인 뒤 Sandbox 안의 R7 Agent 실행 단계가 시작됐는지를 뜻한다. 경계 승인 전에 requirements·plan을 만든 LLM 호출과는 구분한다.
+- `agent_invoked`는 외부 경계 승인 뒤 Sandbox 안의 Dynamic Reproduction Agent 실행 단계가 시작됐는지를 뜻한다. 경계 승인 전에 requirements·plan을 만든 LLM 호출과는 구분한다.
 - `event_id`는 전역 고유, `sequence`는 attempt별 증가 값이며 시작·종료 event는 같은 `action_id`를 사용한다.
 - crash 뒤에도 이미 확정한 event는 남고, 이전 attempt의 늦은 event는 current attempt에 섞지 않는다.
-- Sandbox 실행 Agent 호출 전 정책 차단도 `agent_invoked=false`, exact `RunPolicyState`·정책 결정과 `POLICY_BLOCKED` event를 가진 결과로 남긴다.
+- Sandbox Dynamic Reproduction Agent 호출 전 정책 차단도 `agent_invoked=false`, exact `RunPolicyState`·정책 결정과 `POLICY_BLOCKED` event를 가진 결과로 남긴다.
 - recipe·환경·AgentLog·candidate·validated PoC와 결과는 같은 work·attempt에 연결한다. baseline recipe ref만 과거 성공 baseline을 가리킬 수 있다.
 
 ### PoC candidate와 validated PoC
 
-- `poc_candidate_ref`는 Agent가 작성했거나 실행을 시도한 PoC다. 실패한 시도도 같은 attempt의 작성·실행 event와 함께 보존할 수 있다.
+- `poc_candidate_ref`는 Dynamic Reproduction Agent가 작성했거나 실행을 시도한 PoC다. 실패한 시도도 같은 attempt의 작성·실행 event와 함께 보존할 수 있다.
 - validated `poc_ref`는 `status=SUCCEEDED`, `hypothesis_outcome=SUPPORTED`, `agent_invoked=true`이고 AgentLog가 exact candidate revision·digest를 실제 실행한 사실을 보여 줄 때만 만든다.
 - validated PoC의 request·plan·recipe·environment·AgentLog·candidate·실행 action은 모두 결과와 같은 attempt여야 한다.
 - 환경 실패, 정책 차단, candidate 생성·실행 실패, timeout, `DISPROVED | INCONCLUSIVE`에서는 `poc_ref=null`이다.
@@ -387,7 +387,7 @@ Sandbox는 clone한 코드·mock·fixture 안의 로컬 재현만 허용한다. 
 | `VERDICT_EVIDENCE` + `SUCCEEDED/SUPPORTED` + validated PoC | 같은 실행의 validated PoC를 연결해 final TRUE 생성 후 Technical Gate 진행 |
 | 정상 실행에서 실제 반증 `DISPROVED` | 근거 있는 final FALSE |
 | 정상 실행 또는 신뢰 가능한 부분 완료의 `INCONCLUSIVE` | 근거와 남은 조건을 가진 final HOLD |
-| 정책·환경·Agent·PoC 생성·실행 자체 실패 | final verdict 없이 동적 work와 Verification을 `BLOCKED | FAILED`; Gate 금지 |
+| 정책·환경·Dynamic Reproduction Agent·PoC 생성·실행 자체 실패 | final verdict 없이 동적 work와 Verification을 `BLOCKED | FAILED`; Gate 금지 |
 
 `DynamicReproductionResult.hypothesis_outcome`은 동적 관측 요약이며 최종 verdict가 아니다. `SUPPORTED | DISPROVED`에는 실제 관측을 가리키는 `hypothesis_evidence_refs`가 필요하다. `DISPROVED`일 때만 `hypothesis_disproved=true`와 `disproof_evidence_refs`를 사용한다. 오류·빈 출력·exit code만으로는 반증이나 FALSE를 만들 수 없다. 실패 결과의 `failure_category`는 비교 가능한 범주, `failure_reason`은 민감정보를 제거한 구체적인 자유형 설명이다. plan의 부족·모순은 `plan_issues`에 직접 포함한다.
 
@@ -449,7 +449,7 @@ final `VerificationResult` 후보를 저장하기 전에 trusted runtime은 `SAV
 3. `DynamicReproductionResult.status=SUCCEEDED`이고 `hypothesis_outcome=SUPPORTED`이면 실제 `hypothesis_evidence_refs`와 같은 `meta.attempt_id`에서 검증된 `poc_ref`가 모두 있을 때만 `VerificationResult.verdict=TRUE` 후보가 된다.
 4. 정상 실행에서 `hypothesis_outcome=DISPROVED`이면 `hypothesis_disproved=true`, 실제 `disproof_evidence_refs`와 `VerificationResult.falsification_results`의 named falsification이 연결된 경우에만 `VerificationResult.verdict=FALSE` 근거가 된다.
 5. `DynamicReproductionResult.status=SUCCEEDED \| PARTIAL`이고 `hypothesis_outcome=INCONCLUSIVE`이면 `hypothesis_evidence_refs`와 `limitations`를 기록하고, 남은 조건을 `VerificationResult.unresolved_conditions`에 연결할 수 있을 때만 `VerificationResult.verdict=HOLD` 후보가 된다.
-6. 정책 차단·환경 구성 실패·Agent 또는 PoC 생성·실행 실패·timeout·취소는 verdict가 아니다. `DynamicReproductionResult.status=BLOCKED | FAILED | CANCELLED`와 `hypothesis_outcome=INCONCLUSIVE`를 기록하고 final `VerificationResult`와 Gate 요청을 만들지 않는다. `BLOCKED`는 외부 조치를 기다리는 비종료 상태이고, `FAILED`는 복구 불가능하거나 retry 한도를 소진한 종료 상태이며, `CANCELLED`는 사용자 또는 runtime이 중단한 종료 상태다. 각 상태에는 계약에 맞는 `failure_category`와 `failure_reason`을 기록한다.
+6. 정책 차단·환경 구성 실패·Dynamic Reproduction Agent 또는 PoC 생성·실행 실패·timeout·취소는 verdict가 아니다. `DynamicReproductionResult.status=BLOCKED | FAILED | CANCELLED`와 `hypothesis_outcome=INCONCLUSIVE`를 기록하고 final `VerificationResult`와 Gate 요청을 만들지 않는다. `BLOCKED`는 외부 조치를 기다리는 비종료 상태이고, `FAILED`는 복구 불가능하거나 retry 한도를 소진한 종료 상태이며, `CANCELLED`는 사용자 또는 runtime이 중단한 종료 상태다. 각 상태에는 계약에 맞는 `failure_category`와 `failure_reason`을 기록한다.
 7. 위 검사를 통과한 동적 결과만 정적·Pro·Con 근거와 합성하고 trusted runtime의 `SAVE_RESULT(result_kind=verification_result)` 검사에 제출한다.
 
 ### R6 동적 재현 검증 시나리오

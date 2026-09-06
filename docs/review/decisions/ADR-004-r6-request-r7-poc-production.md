@@ -22,7 +22,7 @@ R6는 “무엇을 왜 재현할지” 요청합니다. R7은 그 요청을 바�
    - `POC_CONFIRMATION`: 정적·Pro·Con 결과가 initial TRUE일 때 PoC로 확인
    - `VERDICT_EVIDENCE`: 최종 판정에 필요한 동적 근거 확보
 4. 한 Verification generation에는 두 purpose 중 하나를 가진 `DYNAMIC_REPRO` work를 최대 하나만 등록합니다.
-5. 같은 R7 Agent session의 command·PoC·환경 조정은 현재 attempt입니다. session 재시작은 같은 work의 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개는 새 `attempt_id`·`trigger=RESUME`입니다.
+5. 같은 Dynamic Reproduction Agent session의 command·PoC·환경 조정은 현재 attempt입니다. session 재시작은 같은 work의 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개는 새 `attempt_id`·`trigger=RESUME`입니다.
 6. `poc_candidate_ref`는 실행 전 또는 실패한 스크립트·입력이고, `poc_ref`는 `SUCCEEDED + SUPPORTED` 실행으로 검증된 PoC만 뜻합니다.
 7. final TRUE는 current generation의 exact request·동적 결과·validated PoC가 모두 필요합니다.
 8. PoC 생성·환경 구성·실행 자체의 실패는 verdict 없이 `BLOCKED | FAILED`이며 `FALSE | HOLD`로 변환하지 않습니다.

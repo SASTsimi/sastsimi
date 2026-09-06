@@ -34,6 +34,28 @@ foreach ($file in $markdownFiles) {
     }
 }
 
+# Keep the R7 LLM component name and code identity unambiguous. Build the
+# obsolete spellings in pieces so this validator does not match itself.
+$obsoleteDynamicAgentPatterns = @(
+    'R7' + ' Agent',
+    'R7_' + 'AGENT',
+    'R7' + ' Reproduction' + ' Agent',
+    'Sandbox' + ' Agent',
+    '(?<!Dynamic )' + 'Reproduction' + ' Agent',
+    '동적 재현' + ' Agent',
+    '동적검증' + ' Agent',
+    '동적 검증' + ' Agent',
+    '재현 ' + '에이전트'
+)
+foreach ($file in $markdownFiles) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    foreach ($pattern in $obsoleteDynamicAgentPatterns) {
+        if ([regex]::IsMatch($text, $pattern)) {
+            Add-Failure "non-canonical Dynamic Reproduction Agent name: $($file.FullName)"
+        }
+    }
+}
+
 $diagramPath = Join-Path $repoRoot 'docs/architecture-v5/13-architecture-diagrams.md'
 $wikiDiagramPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/diagrams.md'
 $diagramText = Get-Content -Raw -Encoding UTF8 -LiteralPath $diagramPath
@@ -416,7 +438,7 @@ foreach ($rule in $requiredBindingRules) {
 $reviewRemediationPatterns = @(
     @{
         Name = 'dynamic state requires request and uses an exact result pointer when a result exists'
-        Pattern = '(?s)동적 재현을 요청하면 `DynamicReproductionState.request_ref`.*?current generation의 exact `DynamicReproductionRequest`.*?`SUCCEEDED \| PARTIAL \| BLOCKED \| FAILED \| CANCELLED`에는 Reproduction Session Manager가 확정한 exact `DynamicReproductionResult\.record_id`가 필수.*?Agent 호출 전 정책 차단도 Session Manager가 최소 `AgentLog`와 결과'
+        Pattern = '(?s)동적 재현을 요청하면 `DynamicReproductionState.request_ref`.*?current generation의 exact `DynamicReproductionRequest`.*?`SUCCEEDED \| PARTIAL \| BLOCKED \| FAILED \| CANCELLED`에는 Reproduction Session Manager가 확정한 exact `DynamicReproductionResult\.record_id`가 필수.*?Dynamic Reproduction Agent 호출 전 정책 차단도 Session Manager가 최소 `AgentLog`와 결과'
     },
     @{
         Name = 'dynamic PARTIAL uses structured limitations without fake errors'
@@ -787,11 +809,11 @@ $requiredActionRequesterBindings = [ordered]@{
     CANCEL_WORK = 'ORCHESTRATION, VERIFICATION, PRIMITIVE_ADMISSION_RUNTIME, REPRODUCTION_SESSION_MANAGER, RECOVERY'
     READ_CODE = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, TECHNICAL_GATE'
     RUN_TOOL = 'REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR'
-    CALL_LLM = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, POLICY_PARSER, R7_AGENT'
+    CALL_LLM = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, POLICY_PARSER, DYNAMIC_REPRODUCTION'
     FETCH_POLICY = 'POLICY_COLLECTOR'
     REQUEST_DYNAMIC_REPRO = 'VERIFICATION'
     RUN_SANDBOX = 'R7_SETUP_AUTOMATION'
-    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, POLICY_PARSER, PRIMITIVE_ADMISSION_RUNTIME, R7_AGENT, R7_SETUP_AUTOMATION, SANDBOX_CONTROLLER, REPRODUCTION_SESSION_MANAGER, RECOVERY'
+    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, POLICY_PARSER, PRIMITIVE_ADMISSION_RUNTIME, DYNAMIC_REPRODUCTION, R7_SETUP_AUTOMATION, SANDBOX_CONTROLLER, REPRODUCTION_SESSION_MANAGER, RECOVERY'
     CALL_TECHNICAL_GATE = 'VERIFICATION'
     CALL_RULE_SCOPE_GATE = 'VERIFICATION'
     CREATE_REPORT_DRAFT = 'VERIFICATION'
@@ -847,8 +869,8 @@ foreach ($block in @($llmSpecBlock, $llmRequestBlock)) {
     if (-not $block.Contains('CHAINING')) {
         Add-Failure 'CHAINING missing from LLM call role enum'
     }
-    if (-not $block.Contains('R7_AGENT')) {
-        Add-Failure 'R7_AGENT missing from LLM call role enum'
+    if (-not $block.Contains('DYNAMIC_REPRODUCTION')) {
+        Add-Failure 'DYNAMIC_REPRODUCTION missing from LLM call role enum'
     }
 }
 $dynamicReproductionResultBlock = [regex]::Match($contractText, '(?ms)^DynamicReproductionResult:\s*(.*?)^```').Groups[1].Value
@@ -980,7 +1002,7 @@ foreach ($obsoleteR8PolicyRule in @(
 if ($contractText -match 'POLICY_BLOCKED[^\r\n]*정적·찬반[^\r\n]*`ACCEPT`') {
     Add-Failure 'POLICY_BLOCKED without a validated PoC must not reach Technical ACCEPT'
 }
-if (-not $contractText.Contains('Sandbox 실행 Agent가 호출되기 전 정책 차단도 `agent_invoked=false`와 `POLICY_BLOCKED` event를 가진 로그·결과로 확정할 수 있다.')) {
+if (-not $contractText.Contains('Sandbox 안의 Dynamic Reproduction Agent가 호출되기 전 정책 차단도 `agent_invoked=false`와 `POLICY_BLOCKED` event를 가진 로그·결과로 확정할 수 있다.')) {
     Add-Failure 'policy block before Agent invocation must still produce an AgentLog and dynamic result'
 }
 $reportDraftBlock = [regex]::Match($contractText, '(?ms)^ReportDraft:\s*(.*?)^```').Groups[1].Value
@@ -1036,7 +1058,7 @@ $authorityScenarioMarkers = @(
     'Sandbox 내부 command가 host·Docker socket·secret·미허용 egress에 접근하거나 출처 불명 endpoint·외부 계정을 대상으로 삼음'
     '동적 결과의 recipe·환경·AgentLog·candidate·PoC·cleanup attempt 또는 digest가 다름'
     '`COMMAND_STARTED`와 `COMMAND_FINISHED`의 command ref·digest·action·attempt·environment가 다르거나 redaction이 유효하지 않음'
-    'Verification 또는 R7 Agent가 `DynamicReproductionResult`를 직접 저장'
+    'Verification 또는 Dynamic Reproduction Agent가 `DynamicReproductionResult`를 직접 저장'
 )
 foreach ($marker in $authorityScenarioMarkers) {
     if (-not $securityText.Contains($marker)) {
@@ -1051,11 +1073,11 @@ $sandboxReviewPatterns = @(
     },
     @{
         Name = 'ReproductionPlan is strategy rather than an execution allowlist'
-        Pattern = '(?s)`ReproductionPlan`은 R7 Agent가.*?`requested_evidence`는 비어 있을 수 있는 참고 목표.*?allowlist가 아니다.*?plan에는 실행 mode, exact command·step·payload·PoC·cleanup 지시를 넣지 않는다.*?실제 수행 사실은 `AgentLog`에 남긴다'
+        Pattern = '(?s)`ReproductionPlan`은 Dynamic Reproduction Agent가.*?`requested_evidence`는 비어 있을 수 있는 참고 목표.*?allowlist가 아니다.*?plan에는 실행 mode, exact command·step·payload·PoC·cleanup 지시를 넣지 않는다.*?실제 수행 사실은 `AgentLog`에 남긴다'
     },
     @{
         Name = 'AgentLog is durable append-only and attempt isolated'
-        Pattern = '(?s)비-LLM `Reproduction Session Manager`는.*?durable append-only `AgentLog`.*?`agent_invoked`는 외부 경계 승인 뒤 Sandbox 안에서 실행하는 R7 Agent 단계.*?`event_id`는 시스템 전체에서 고유.*?`sequence`는 attempt별 1부터 엄격히 증가.*?시작과 종료 event는 동일한 `action_id`.*?종료된 이전 attempt의 늦은 event는 current log나 결과에 붙이지 않는다'
+        Pattern = '(?s)비-LLM `Reproduction Session Manager`는.*?durable append-only `AgentLog`.*?`agent_invoked`는 외부 경계 승인 뒤 Sandbox 안에서 실행하는 Dynamic Reproduction Agent 단계.*?`event_id`는 시스템 전체에서 고유.*?`sequence`는 attempt별 1부터 엄격히 증가.*?시작과 종료 event는 동일한 `action_id`.*?종료된 이전 attempt의 늦은 event는 current log나 결과에 붙이지 않는다'
     },
     @{
         Name = 'dynamic result save repeats same-attempt provenance checks'
@@ -1091,7 +1113,7 @@ $sandboxReviewPatterns = @(
     },
     @{
         Name = 'Dynamic records have distinct R6 and R7 owners'
-        Pattern = '(?s)`dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`.*?`environment_requirements -> EnvironmentRequirements -> R7_AGENT`.*?`reproduction_plan -> ReproductionPlan -> R7_AGENT`.*?`environment_recipe -> EnvironmentRecipe -> R7_SETUP_AUTOMATION`.*?`sandbox_command_record -> SandboxCommandRecord -> REPRODUCTION_SESSION_MANAGER`.*?`agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`.*?`poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`.*?`dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`'
+        Pattern = '(?s)`dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`.*?`environment_requirements -> EnvironmentRequirements -> DYNAMIC_REPRODUCTION`.*?`reproduction_plan -> ReproductionPlan -> DYNAMIC_REPRODUCTION`.*?`environment_recipe -> EnvironmentRecipe -> R7_SETUP_AUTOMATION`.*?`sandbox_command_record -> SandboxCommandRecord -> REPRODUCTION_SESSION_MANAGER`.*?`agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`.*?`poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`.*?`dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`'
     },
     @{
         Name = 'R7 sandbox and R8 lifecycle profiles have distinct exact contracts'
@@ -1103,7 +1125,7 @@ $sandboxReviewPatterns = @(
     },
     @{
         Name = 'Dynamic retry lifecycle distinguishes session and external resume'
-        Pattern = '(?s)같은 R7 Agent session의 command·PoC·환경 조정.*?상태 전이나 새 attempt를 만들지 않는다.*?새 `attempt_id`, `trigger=RETRY`.*?새 `attempt_id`, `trigger=RESUME`.*?과거 attempt artifact를 current 결과에 섞지 않는다'
+        Pattern = '(?s)같은 Dynamic Reproduction Agent session의 command·PoC·환경 조정.*?상태 전이나 새 attempt를 만들지 않는다.*?새 `attempt_id`, `trigger=RETRY`.*?새 `attempt_id`, `trigger=RESUME`.*?과거 attempt artifact를 current 결과에 섞지 않는다'
     },
     @{
         Name = 'same-attempt policy provenance links SandboxPolicyDecision, AgentLog and DynamicReproductionResult'
@@ -1122,12 +1144,12 @@ foreach ($rule in $sandboxReviewPatterns) {
 
 $environmentHandoffPatterns = @(
     @{
-        Name = 'R6 owns the immutable request and R7 Agent owns requirements and plan'
-        Pattern = '(?s)`DynamicReproductionRequest`는 R6 Verification.*?불변 record.*?`EnvironmentRequirements`와 `ReproductionPlan`은 R7 Reproduction Agent'
+        Name = 'R6 owns the immutable request and Dynamic Reproduction Agent owns requirements and plan'
+        Pattern = '(?s)`DynamicReproductionRequest`는 R6 Verification.*?불변 record.*?`EnvironmentRequirements`와 `ReproductionPlan`은 Dynamic Reproduction Agent'
     },
     @{
         Name = 'reproduction plan binds current exact requirements'
-        Pattern = '(?s)`ReproductionPlan`은 R7 Agent가.*?`sandbox_profile_ref`는 R6 request와 exact match.*?`environment_requirements_ref`는 같은 R7 attempt의 current requirements'
+        Pattern = '(?s)`ReproductionPlan`은 Dynamic Reproduction Agent가.*?`sandbox_profile_ref`는 R6 request와 exact match.*?`environment_requirements_ref`는 같은 R7 attempt의 current requirements'
     },
     @{
         Name = 'RUN_SANDBOX freezes the exact request, requirements, plan, and profiles'
@@ -1143,7 +1165,7 @@ $environmentHandoffPatterns = @(
     },
     @{
         Name = 'environment mismatch is resolved or returned without a false verdict'
-        Pattern = '(?s)필수 item에 확인된 값 차이 또는 미확인이 있으면 환경 status는 `MISMATCH`.*?setup·비교 자체의 오류가 있으면 `ERROR`.*?필수 환경 요구사항 불일치.*?같은 R7 Agent session이면 현재 attempt.*?session 재시작은 새 `attempt_id`·`trigger=RETRY`.*?외부 수정 대기 해소 뒤 재개는 새 `attempt_id`·`trigger=RESUME`.*?한도 소진이면 `FAILED`'
+        Pattern = '(?s)필수 item에 확인된 값 차이 또는 미확인이 있으면 환경 status는 `MISMATCH`.*?setup·비교 자체의 오류가 있으면 `ERROR`.*?필수 환경 요구사항 불일치.*?같은 Dynamic Reproduction Agent session이면 현재 attempt.*?session 재시작은 새 `attempt_id`·`trigger=RETRY`.*?외부 수정 대기 해소 뒤 재개는 새 `attempt_id`·`trigger=RESUME`.*?한도 소진이면 `FAILED`'
     },
     @{
         Name = 'environment recipe is immutable and digest bound'
@@ -1991,8 +2013,8 @@ $requiredValidatedPocContractMarkers = @(
     'request_ref: StoredDataRef',
     'poc_candidate_ref: StoredDataRef | null',
     '`dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`',
-    '`environment_requirements -> EnvironmentRequirements -> R7_AGENT`',
-    '`reproduction_plan -> ReproductionPlan -> R7_AGENT`',
+    '`environment_requirements -> EnvironmentRequirements -> DYNAMIC_REPRODUCTION`',
+    '`reproduction_plan -> ReproductionPlan -> DYNAMIC_REPRODUCTION`',
     '`environment_recipe -> EnvironmentRecipe -> R7_SETUP_AUTOMATION`',
     '`agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`',
     '`poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`',
@@ -2841,7 +2863,7 @@ $dynamicLifecycleDocuments = @(
     @{ Name = 'ISSUE_CATALOG'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/review/ISSUE_CATALOG.md')) }
 )
 foreach ($doc in $dynamicLifecycleDocuments) {
-    foreach ($marker in @('같은 R7 Agent session', 'trigger=RETRY', 'trigger=RESUME')) {
+    foreach ($marker in @('같은 Dynamic Reproduction Agent session', 'trigger=RETRY', 'trigger=RESUME')) {
         if (-not $doc.Text.Contains($marker)) {
             Add-Failure "$($doc.Name) is missing dynamic lifecycle distinction: $marker"
         }

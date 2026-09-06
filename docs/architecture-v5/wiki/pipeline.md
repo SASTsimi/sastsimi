@@ -19,7 +19,7 @@
 9. Verification의 코드 위치 기반 on-demand retrieval
 10. 운영 Verification의 독립 Pro/Con 병렬 검증
 11. initial `TRUE | FALSE | HOLD`
-12. initial TRUE이면 Verification이 `POC_CONFIRMATION`, 판정에 실행 근거가 필요하면 `VERDICT_EVIDENCE` 요청 → R7 Agent가 requirements·간단한 plan 생성 → Controller 외부 경계 검사 → Setup Automation과 Agent의 격리 실행 → Session Manager가 AgentLog·validated PoC·동적 결과 확정; generation당 동적 work는 하나
+12. initial TRUE이면 Verification이 `POC_CONFIRMATION`, 판정에 실행 근거가 필요하면 `VERDICT_EVIDENCE` 요청 → Dynamic Reproduction Agent가 requirements·간단한 plan 생성 → Controller 외부 경계 검사 → Setup Automation과 Agent의 격리 실행 → Session Manager가 AgentLog·validated PoC·동적 결과 확정; generation당 동적 work는 하나
 13. 성공한 `SUPPORTED` 실행과 validated PoC를 가진 final TRUE 또는 근거 기반 final FALSE/HOLD; 생성·환경·실행 실패는 verdict 없이 BLOCKED/FAILED
 14. FALSE terminal / HOLD는 `required_primitive_candidates`가 하나 이상일 때만 `inputs + result=null` Primitive admission, 후보가 없으면 Primitive·Chaining 없음 / TRUE는 R5-01 `CWE_LABELING` work에서 exact Verification에 대응하는 current `CWELabel` 생성
 15. final TRUE와 그 Verification을 직접 가리키는 current CWELabel을 Technical Evidence Gate Agent가 검토
