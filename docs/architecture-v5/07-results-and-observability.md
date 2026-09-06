@@ -24,7 +24,7 @@
 | `primitives` | `required_primitive_candidates`가 비어 있지 않은 HOLD의 result 없는 조건, Technical-accepted이며 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW`를 가진 TRUE 능력과 exact Verification·Gate·admission provenance. 잇기 재료는 그 Primitive뿐 아니라 `source_primitive_match_id` 계보의 모든 result Primitive도 current `ALLOW`여야 한다 |
 | `chaining` | `ChainingResult`, upstream result→downstream input match와 child proposal validation state |
 | `gates` | Technical 및 Rule Scope Impact review와 서로 exact pair인 Verification·current CWELabel·정책 input revision refs |
-| `policies` | 정책 parser 결과, `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 수집 결과, 공식 `ProgramPolicyRecord`과 source·freshness refs |
+| `policies` | run 초기화에서 program별로 준비한 정책 parser 결과, `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 수집 결과, 공식 `ProgramPolicyRecord`과 source·freshness·`parser_version` refs |
 | `reports` | 신뢰 runtime이 exact chain에서 정규화한 current/과거 `Finding` revision, 허용된 내부 `ReportDraft`와 두 Gate가 공통으로 본 CWELabel revision ref |
 | `actions` | `ActionRequest`, validator의 `ActionDecision`, check와 일회성 사용·outcome refs |
 | `invocations` | normalized `LLMInvocationLog`와 safe provider/session metadata |

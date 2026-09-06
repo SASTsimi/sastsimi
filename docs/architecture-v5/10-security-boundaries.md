@@ -103,11 +103,16 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 
 ## 6. 프로그램 정책 신뢰 경계
 
-- Policy Collector는 확인 가능한 공식 source만 `ProgramPolicyRecord`로 사용하고 source 확인 결과와 parser 실행 결과를 exact reference로 남긴다.
+- 정책 준비는 hypothesis별이 아니라 program별 작업이며 run 초기화에서 정적 근거 준비·공통 환경 준비와 병렬로 수행한다. 같은 run·program에서 collection/parsing은 1회, 다른 run에서도 current·fresh하고 parser version이 일치하면 재사용한다. Rule Scope Gate는 Technical `ACCEPT` 이후 준비된 current `ProgramPolicyRecord`를 소비하며 Gate evaluation order는 유지한다.
+- Policy Collector는 확인 가능한 공식 source만 `ProgramPolicyRecord`로 사용하고 source 확인 결과와 parser 실행 결과를 exact reference로 남긴다. Parser output 자체는 authoritative policy evidence가 아니다.
 - 저장소 문서, 검색 snippet, 오래된 모델 지식과 비공식 요약을 공식 rule로 승격하지 않는다.
-- source URL/reference, 게시자 확인 근거, parser 이름·버전·결과, 수집 시각, 누락과 freshness 기준·근거·만료 시각을 보존한다.
-- `PolicyCollectionResult`는 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`를 구분한다. 공식 정책 부재를 확인한 경우에만 `ABSENT_CONFIRMED`이고, fetch·parser 실패는 `COLLECTION_FAILED`이며 Rule Scope review를 만들지 않는다.
-- 공식 자료가 없음을 확인했거나 `ProgramPolicyRecord.freshness_status=STALE | UNVERIFIED`이면 `UNCERTAIN + DENY`다. 오래된 record는 감사용으로 보존할 수 있지만 `PASS | ALLOW` 근거로 사용하지 않는다.
+- source URL/reference, 게시자 확인 근거, parser 이름·버전·결과, 수집 시각, 누락과 freshness 기준·근거·만료 시각을 보존한다. 각 Gate-relevant `PolicyItem`에는 `source_ref`와 `source_locator`가 있어야 한다.
+- Parser는 asset scope, vulnerability type/eligibility, testing restrictions, reward/bounty conditions, impact criteria를 서로 구분해 구조화한다. `reward_conditions`는 technical reportability나 `report_permission`과 같은 의미가 아니다.
+- `PolicyCollectionResult`는 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`를 구분한다. 공식 source 확인 결과 해당 정책/항목 부재를 확인한 경우에만 `ABSENT_CONFIRMED`이고, fetch 실패(collection failure)와 원문 수집 후 parser 실패(parser failure)는 `COLLECTION_FAILED`이며 Rule Scope review를 만들지 않는다. `COLLECTION_FAILED`는 정책 부재를 의미하지 않는다.
+- collection failure 또는 parser failure를 `VerificationResult.FALSE` 또는 `VerificationResult.HOLD`로 변환하지 않는다. Policy 준비 실패는 policy-dependent action(Sandbox restriction precheck, Rule Scope Gate decision, Reporter)만 fail-closed시키고 기술적 Verification verdict와 분리한다.
+- 공식 자료가 없음을 확인했거나 `ProgramPolicyRecord.freshness_status=STALE | UNVERIFIED`이면 `UNCERTAIN + DENY`다. 오래된 record는 감사용으로 보존할 수 있지만 `PASS | ALLOW` 근거로 사용하지 않는다. current record가 `STALE | UNVERIFIED`가 되거나 parser version이 달라지면 그 record로 만든 기존 `PASS | ALLOW` Rule Scope 결과를 current 결과로 재사용하지 않는다.
+- Rule Scope Gate는 structured `ProgramPolicyRecord` + `source_ref + source_locator`의 공식 원문 + 현재 hypothesis/verification 사실을 함께 사용하고, 원문을 확인할 수 없거나 Parser 결과와 모순되면 fail-closed(`UNCERTAIN + DENY`, `PolicyMissingInfo(area=SOURCE, blocks_allow=true)`)한다.
+- `ProgramPolicyRecord`는 program-level artifact다. 같은 program의 여러 hypothesis는 각각 별도 `RuleScopeImpactReview`를 만들되 같은 current record를 재사용하고, 정책 parsing 결과를 hypothesis-specific verdict로 저장하지 않는다.
 - 확정 판단은 실제 정책 항목과 코드·동적 근거를 `RuleScopeEvidenceLink`로 연결한다. 판단을 막는 누락은 `PolicyMissingInfo`로 구조화하고 `blocks_allow=true`이면 공개 허용을 차단한다.
 
 ## 7. 근거·권한 연결
@@ -337,6 +342,11 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N42 | result Primitive에 current `admission_decision_ref`가 없거나 다른 Verification의 decision을 참조 | `SAVE_RESULT` 거절; same analysis·workspace·commit·hypothesis·Verification의 current ALLOW decision 요구 |
 | N43 | 이미 COMMITTED된 Chaining 자식·손자 뒤 부모 admission이 `DENY`로 변경됨 | `source_admission_refs`와 `source_primitive_match_id` 계보를 따라 파생 Primitive를 current index에서 제거하고 새 Verification·Gate·Primitive·Reporter 사용 차단; 과거 verdict와 결과는 감사 이력으로만 보존 |
 | N44 | `ChainingResult.source_admission_refs`가 실제 match의 direct·ancestor ALLOW decision 합집합과 다름 | `SAVE_RESULT` 거절; 누락·추가·중복·다른 계보 reference를 바로잡기 전 child 등록 금지 |
+| N45 | run 초기화 정책 준비(collection 또는 parser)가 실패했는데 그 hypothesis의 `VerificationResult`를 `FALSE | HOLD`로 저장하거나 기술적 hypothesis를 제거 | verdict 변경·hypothesis 제거 거절; `COLLECTION_FAILED`를 보존하고 policy-dependent action(Sandbox precheck, Rule Scope Gate, Reporter)만 fail-closed |
+| N46 | current `ProgramPolicyRecord`가 `STALE | UNVERIFIED`가 되었는데 그 record로 만든 이전 `PASS | ALLOW` Rule Scope 결과를 current decision으로 재사용 | `STALE_RESULT` 거절; `POLICY_FETCH` 재수행으로 새 current record를 만들고 Rule Scope 결과를 새로 생성 |
+| N47 | current parser version이 record의 `parser_version`과 다른데 기존 structured policy와 그 Rule Scope 결과를 그대로 사용 | 재파싱 요구; parser-version 불일치를 revision/CAS invalidation으로 처리하고 stale 결과 재사용 차단 |
+| N48 | Parser 정규화 결과가 `source_ref + source_locator`의 공식 원문과 모순되거나 원문 확인 불가인데 Parser 값으로 `PASS | ALLOW` 출력 | fail-closed: 해당 영역 `UNCERTAIN`, `report_permission=DENY`, `PolicyMissingInfo(area=SOURCE, blocks_allow=true)`; Parser output을 authoritative evidence로 취급 금지 |
+| N49 | 같은 program의 여러 hypothesis가 서로 다른 `ProgramPolicyRecord`를 쓰거나 정책 parsing 결과를 hypothesis-specific verdict로 저장 | 같은 current program-level record 재사용을 강제하고, Rule Scope 판정은 hypothesis마다 별도 `RuleScopeImpactReview`로만 저장 |
 
 ## 남는 위험
 

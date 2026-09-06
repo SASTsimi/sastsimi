@@ -10,7 +10,10 @@
 | `contract` | 파트 사이의 입출력 약속 | 어떤 데이터를 누가 만들고 누가 받는지 포함합니다. |
 | `Repository Loader` | 저장소를 로컬로 가져오고 분석할 commit을 준비하는 프로그램 | 별도 저장소 복사본을 만들지 않습니다. |
 | `CodeWorkspace` | AST와 SAST가 읽는 실행별 로컬 코드 폴더 | `workspace_id`와 `commit_id`로 구분합니다. |
-| `ProgramPolicyRecord` | 공식 버그바운티 정책을 확인해 남긴 기록 | 저장소 코드 복사본이 아니며 공식 출처와 수집 시각을 기록합니다. |
+| `Policy Collector` | run 초기화에서 program별 공식 정책 원문을 수집하는 비-LLM 구성요소 | `PolicyCollectionResult`와 `ProgramPolicyRecord`를 만들지만 scope/reportability를 판단하지 않습니다. |
+| `Policy Parser` | 수집된 공식 원문을 구조화하는 LLM 구성요소 | asset scope·vulnerability eligibility·testing restriction·reward condition·impact criteria를 구분하며 output 자체는 authoritative evidence가 아닙니다. |
+| `ProgramPolicyRecord` | 공식 버그바운티 정책을 확인해 구조화한 program별 기록 | run 초기화에서 준비해 여러 hypothesis가 재사용합니다. 저장소 코드 복사본이 아니며 공식 출처·수집 시각·`parser_version`을 기록합니다. |
+| `reward_conditions` | 프로그램의 보상 산정·지급 조건 정책 항목 | 보고서 context 정보일 뿐 `report_permission`이나 technical reportability와 같은 의미가 아닙니다. |
 | `freshness_status` | 정책을 현재 자료로 믿을 수 있는지 나타내는 상태 | `STALE` 또는 `UNVERIFIED`이면 보고 허용에 쓰지 않고 `UNCERTAIN + DENY`로 처리합니다. |
 | `handoff_readiness` | Technical Gate 결과를 다음 단계에 전달해도 되는지 나타내는 값 | `ACCEPT`일 때만 `READY`이며 `REVISE | REJECT`는 `NOT_READY`입니다. |
 | `StoredDataRef` | 도구가 만든 결과 파일이나 기록을 가리키는 번호 | 내부 저장 경로 대신 결과 번호와 내용 hash를 사용합니다. 저장된 결과 수정본을 가리킬 때는 `record_id`도 넣습니다. |
@@ -127,7 +130,7 @@
 | stale `Finding` | 생성 뒤 Verification generation/revision·CWELabel·두 Gate·동적 결과·validated PoC·고정 정책 record가 바뀌어 더는 current가 아닌 Finding | 감사 이력으로 보존하지만 새 Reporter 실행에 재사용하지 않습니다. R4의 revision·current pointer·CAS 규칙으로 차단합니다. |
 | `Gate` | 다음 단계로 보내도 되는지 확인하는 검토 단계 | Verification 판정을 직접 바꾸지 않습니다. |
 | `Technical Evidence Gate` | 판정과 코드·실행 근거가 서로 맞는지 확인하는 기술 검토 | 공식 정책을 읽지 않으므로 금지 테스트 여부는 판단하지 않습니다. 코드 경로·동적 결과·제한 조건의 연결을 확인합니다. |
-| `Rule Scope Impact Gate` | 공식 정책 범위·금지 테스트 여부와 실제 영향을 확인하는 검토 | 금지 테스트 위반은 별도 필드로 판단해 TRUE Primitive admission에 전달하고, 다른 결과는 Reporter 가능성에 적용합니다. 공식 정책이 없으면 추측하지 않습니다. |
+| `Rule Scope Impact Gate` | run 초기화에서 준비된 current `ProgramPolicyRecord`와 그 공식 원문·현재 hypothesis 사실로 정책 범위·금지 테스트 여부와 실제 영향을 hypothesis마다 확인하는 검토 | 금지 테스트 위반은 별도 필드로 판단해 TRUE Primitive admission에 전달하고, 다른 결과는 Reporter 가능성에 적용합니다. 공식 정책이 없으면 추측하지 않고, 원문 확인 불가·Parser 모순 시 fail-closed합니다. |
 | `PolicyItem` | 공식 정책에서 뽑은 항목 하나와 원문 위치를 묶은 데이터 | 반드시 공식 출처 기록으로 다시 확인할 수 있어야 합니다. |
 | `VerificationAssignment` | 한 가설의 내부 검증 흐름을 맡은 논리 owner의 저장 기록 | 같은 역할의 다른 Agent가 아니라 ACTIVE assignment와 일치하는 owner만 Gate·보완·보고 요청을 제안할 수 있습니다. |
 | `REVISE` | 부족한 근거를 같은 Verification owner가 새 Verification work에서 보완한 뒤 새 revision으로 다시 검토하라는 결과 | provider retry나 동일 입력 재투표가 아니며 오래된 Gate 결과를 재사용하지 않습니다. |

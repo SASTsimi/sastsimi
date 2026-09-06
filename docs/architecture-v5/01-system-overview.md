@@ -18,7 +18,7 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 |---:|---|---|
 | 1 | 저장소 입력 | repository reference |
 | 2 | 저장소 clone과 commit checkout | `CodeWorkspace` |
-| 3 | AST parse와 SAST 도구 병렬 실행 | raw AST/SAST outputs, `ToolRunResult`, 규칙 기반 도구의 `RuleExecutionRecord` |
+| 3 | AST parse와 SAST 도구 병렬 실행. repository·버그바운티 program이 확정되면 program별 official policy collection → LLM policy parsing과 공통 Docker/환경 준비도 같은 run 초기화 단계에서 병렬로 시작 | raw AST/SAST outputs, `ToolRunResult`, 규칙 기반 도구의 `RuleExecutionRecord`, program별 `PolicyCollectionResult`와 `FOUND`이면 current `ProgramPolicyRecord` |
 | 4 | 정적 사실 정규화 | exact 규칙 실행 기록을 연결한 `StaticFactBundle` |
 | 5 | 초기 가설 생성 실행 | Orchestration이 Hypothesis work 시작 |
 | 6 | 저비용 가설 생성 모델 호출 | constrained invocation |
@@ -32,7 +32,7 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 | 14 | 판정별 분기와 CWE 분류 | FALSE terminal / HOLD는 `required_primitive_candidates`가 하나 이상일 때만 inputs-only Primitive admission, 후보가 없으면 Primitive·Chaining 없음 / TRUE는 R5-01 `CWE_LABELING`이 exact Verification에 맞는 current `CWELabel` 생성 |
 | 15 | TRUE 기술 근거 검토 | `TechnicalEvidenceReview` |
 | 16 | Technical `REVISE` 보완 loop | same Verification owner, 새 Verification과 반드시 다시 평가한 새 CWELabel revision |
-| 17 | Technical `ACCEPT` TRUE의 정책 수집·Rule Scope 검토와 체이닝 재료 사용 결정 | 독립 `testing_restriction_compliance`, `PrimitiveAdmissionDecision=ALLOW | DENY`; `ALLOW`일 때만 result가 있는 `Primitive` admission |
+| 17 | Technical `ACCEPT` TRUE의 Rule Scope 검토(run 초기화에서 준비된 current `ProgramPolicyRecord` 소비)와 체이닝 재료 사용 결정 | 독립 `testing_restriction_compliance`, `PrimitiveAdmissionDecision=ALLOW | DENY`; `ALLOW`일 때만 result가 있는 `Primitive` admission |
 | 18 | direct·parent chain의 current ALLOW 결정을 고정한 Primitive 체이닝 | upstream result가 downstream input을 근거 있게 충족하고 `source_admission_refs`를 보존한 `ChainingResult` |
 | 19 | 신뢰 runtime이 exact chain에서 current Finding을 정규화하고 공식 규칙·범위·영향의 보고 조건을 적용 | Finding은 두 Gate가 검토한 결과를 정규화한 record이며 새 verdict가 아님. 금지 테스트 위반 외의 Rule Scope 판단은 Primitive 자격이 아니라 보고 가능성만 변경 |
 | 20 | 체이닝·검증 중 새 주장 전역 등록 | `origin=CHAINING | VERIFICATION` proposal, 새 Verification 배정 |
@@ -42,9 +42,11 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 ## 주요 실행 흐름
 
 ```text
-Repository Loader -> CodeWorkspace
+Repository Loader + bug bounty program confirmed
   ├─ AST Parser ─┐
-  └─ SAST Tools ─┴─> StaticFactBundle
+  ├─ SAST Tools ─┴─> StaticFactBundle
+  ├─ Policy Collector -> Policy Parser -> current ProgramPolicyRecord   (program-level, run init)
+  └─ common Docker/environment preparation
                            │
                            v
 Orchestration -> Hypothesis Agent -> trusted validation and registration
@@ -65,7 +67,7 @@ Orchestration -> Hypothesis Agent -> trusted validation and registration
                                   -> Chaining                │ REVISE -> same Verification
                                                              │ ACCEPT
                                                              v
-                                            policy collection -> Rule Scope Impact Gate
+                            Rule Scope Impact Gate (reads run-init current ProgramPolicyRecord)
                                                              │
                                            ┌─────────────────┴─────────────────┐
                                            v                                   v
@@ -97,6 +99,8 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | Repository Loader | 실행별 `git clone`, `commit_id` checkout과 HEAD 확인 | 실행 중 작업공간 변경 또는 다른 commit 혼합 |
 | AST/SAST runners | 구조·규칙 일치·경로 후보 수집, 규칙별 선택·실행·raw 탐지 수 기록 | 취약점 최종 판정 또는 미실행·확인 불가를 0건으로 변경 |
 | Static Fact Normalizer | 공통 entity/location/path 표현 생성 | 증거가 없는 의미 확정 |
+| Policy Collector | 비-LLM component. run 초기화에서 program별 공식 정책 원문 수집과 `PolicyCollectionResult`·`ProgramPolicyRecord` 생산, source authenticity 확인 | 정책 의미 판단, 저장소 문서·모델 기억을 공식 정책으로 승격 |
+| Policy Parser | LLM component. 수집된 공식 원문을 asset scope·vulnerability eligibility·testing restriction·reward condition·impact criteria로 구조화 | 원문에 없는 기준 생성, 정규화로 의미 확대, Rule/Scope/Impact verdict |
 | Context Retrieval Service | 같은 `workspace_id`와 `commit_id`에서 제한된 추가 문맥 조회 | 작업공간 밖 무제한 repository dump |
 | Orchestration Agent | proposal 검증·전역 가설 등록·Verification 배정·가설 간 병렬성 | 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정 또는 Finding 공개 |
 | Hypothesis Agent | schema-constrained 가설 후보 생성 | verdict·Finding·exploitability 확정 |
@@ -111,7 +115,7 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | Chaining Agent | current ALLOW인 direct·parent material만 사용해 upstream Primitive `result`→downstream Primitive `input` matching과 chained proposal 생성 | 일반 research, dynamic, Gate, verdict, CWE, report 확정 |
 | R5-01 CWE Labeling | final TRUE의 root cause·Evidence·taxonomy를 평가해 exact Verification에 묶인 current `CWELabel` 생성 | Verification verdict 변경, 과거 label 재사용 또는 Technical Gate 결과 생성 |
 | Technical Evidence Gate | 기술적 연결성과 handoff 품질 검토 | Verification verdict 직접 변경 |
-| Rule Scope Impact Gate | 공식 정책·scope·실질 impact·전달 권한과 금지 테스트 위반 여부를 독립 필드로 검토 | 공식 자료 없는 추정 승인 또는 Primitive 직접 저장·삭제 |
+| Rule Scope Impact Gate | run 초기화에서 준비된 current `ProgramPolicyRecord`와 그 공식 원문·현재 hypothesis/verification 사실로 scope·실질 impact·전달 권한과 금지 테스트 위반 여부를 hypothesis마다 독립 필드로 검토 | 공식 자료 없는 추정 승인, 정책 수집 실행, Primitive 직접 저장·삭제 |
 | Reporter Agent | 통과한 결과의 보고서 초안 작성 | 공개 또는 제출 |
 | Runtime Validator | action의 schema·권한·순서·예산·실행 범위 검사 | 취약점·CWE·정책 의미 판단 |
 | Result Stores | 결과·로그·PoC·오류·debug 저장 | secret와 불필요한 전체 코드 저장 |
@@ -136,9 +140,10 @@ Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제�
 ## 병렬성과 종료 조건
 
 - AST와 복수 SAST 실행은 tool별 `work_id`와 `attempt_id`로 병렬화할 수 있다. 정규화는 모든 기대 작업의 종료 상태를 확인하고, 일부 실패면 `DataGap`과 오류를 포함한 `PARTIAL` 여부를 명시한다.
+- program별 official policy collection → LLM policy parsing(`POLICY_FETCH`)은 repository·program 확정 시 정적 도구·환경 준비와 병렬로 시작한다. 같은 run·같은 program에서 한 번만 수행하고, 다른 run에서도 current·fresh하고 parser version이 일치하면 재사용한다. 이 준비 실패는 policy-dependent action만 fail-closed시키며 가설 verdict를 바꾸지 않는다.
 - 서로 독립된 가설의 Verification은 가설별 예산 범위에서 병렬화할 수 있다. 한 가설의 실패가 다른 가설을 자동 취소하지 않는다.
 - 운영(`PRODUCTION`)에서는 한 가설의 Pro/Con을 서로 다른 work와 NEW session으로 항상 병렬화하고 Verification이 두 결과를 확인해 합류한다. 예산 부족이나 실행 오류로 한쪽이 없으면 final verdict를 만들지 않고 work를 중단한다. `BASIC | CONDITIONAL_DEBATE`와 skip은 격리된 평가(`EVALUATION`)에서만 허용한다.
-- 같은 가설의 `workspace_id`와 `commit_id`, final Verification, R5-01의 current CWELabel, Technical Gate, 정책 수집·Rule Scope Gate, Primitive admission과 Reporter 순서는 의존성을 지킨다. 새 Verification에는 값이 같아도 새 label revision과 그 revision을 가리키는 새 admission decision이 필요하다.
+- 같은 가설의 `workspace_id`와 `commit_id`, final Verification, R5-01의 current CWELabel, Technical Gate, Rule Scope Gate, Primitive admission과 Reporter 순서는 의존성을 지킨다. Rule Scope Gate는 이 순서 안에서 run 초기화에서 준비된 current `ProgramPolicyRecord`를 소비할 뿐 정책 수집을 실행하지 않는다. 새 Verification에는 값이 같아도 새 label revision과 그 revision을 가리키는 새 admission decision이 필요하다.
 - 한 Verification generation에는 동적 재현 work를 하나만 만든다. 같은 R7 Agent session의 command·PoC·환경 조정은 현재 attempt를 유지한다. session 재시작만 같은 work의 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개만 새 `attempt_id`·`trigger=RESUME`를 사용하며, Technical Gate의 `REVISE`로 새 generation이 시작된 경우에만 새 동적 재현 한도를 부여한다.
 - 실행 상태는 `WorkExecutionState`가 관리하고 가설 판정·Gate 결과·보고서 상태와 분리한다. 같은 `dedupe_key` 요청은 한 `work_id`로만 반영한다.
 - `COMMITTED` marker와 종료 상태 pointer가 같은 결과를 가리킨 뒤에만 다음 단계를 호출한다. `PREPARED`, 취소된 attempt, 오래된 revision과 늦은 결과는 다음 단계에서 읽지 않는다.

@@ -15,9 +15,12 @@ Architecture v5의 전체 처리 순서와 역할·데이터 관계를 그림으
 ```mermaid
 flowchart TB
     S01[1 Repository input] --> S02[2 Repository Loader git clone and commit checkout]
-    S02 --> WORK[CodeWorkspace READY]
+    S02 --> WORK[CodeWorkspace READY and bug bounty program confirmed]
     WORK --> S03A[3 AST parse]
     WORK --> S03B[3 SAST tools]
+    WORK --> S03P[3 Policy Collector and Parser program-level at run init]
+    WORK --> S03D[3 Common Docker and environment preparation]
+    S03P --> PPREP[Current ProgramPolicyRecord or ABSENT_CONFIRMED or COLLECTION_FAILED]
     S03A --> S04[4 StaticFactBundle]
     S03B --> S04
     S04 --> S05[5 Orchestration starts initial hypothesis work]
@@ -68,7 +71,8 @@ flowchart TB
     S15 -->|REVISE| S16[16 Same assignment starts new Verification work and revision]
     S16 --> S09
     S15 -->|REJECT| S22[22 Store results logs PoC errors debug]
-    S15 -->|ACCEPT| S17[17 Policy collection and Rule Scope review]
+    S15 -->|ACCEPT| S17[17 Rule Scope review reads run-init current ProgramPolicyRecord]
+    PPREP -.-> S17
     S17 --> ADEC{PrimitiveAdmissionDecision}
     ADEC -->|ALLOW| PADMIT[Result Primitive admitted]
     ADEC -->|DENY confirmed prohibited test| S22
@@ -225,7 +229,8 @@ flowchart TB
     TECH -->|REVISE| SAME[Same assignment new Verification work and revision]
     SAME --> VR
     TECH -->|REJECT| NOCHAIN[No Chaining]
-    TECH -->|ACCEPT| COLLECT[PolicyCollectionResult]
+    PREP0[Run start Policy Collector and Parser program-level] -.-> COLLECT
+    TECH -->|ACCEPT| COLLECT[Read run-init PolicyCollectionResult]
     COLLECT -->|FOUND or ABSENT_CONFIRMED| RULE[Rule Scope Impact Gate]
     COLLECT -->|COLLECTION_FAILED| ADMIT[Primitive Admission Runtime]
     RULE --> ADMIT
@@ -262,7 +267,8 @@ flowchart TB
     BACK --> NEWGEN[New Verification generation and new validated PoC]
     NEWGEN --> VR
     TS -->|REJECT| BLOCK[Report blocked]
-    TS -->|ACCEPT| COLLECT[PolicyCollectionResult]
+    PREP0[Run start Policy Collector and Parser program-level] -.-> COLLECT
+    TS -->|ACCEPT| COLLECT[Read run-init PolicyCollectionResult]
     COLLECT -->|FOUND plus current policy| RULE[Rule Scope Impact Gate Agent]
     COLLECT -->|ABSENT_CONFIRMED| UNCERTAIN[Rule and scope UNCERTAIN permission DENY]
     COLLECT -->|COLLECTION_FAILED| ARUN[R4 Primitive Admission Runtime]

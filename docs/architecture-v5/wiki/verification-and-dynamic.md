@@ -44,7 +44,7 @@ token과 전체 시간·판정 변화·HOLD 해소·새 후보 수는 `Verificat
 - `FALSE`: named falsification이 가설을 반증함
 - `HOLD`: 핵심 문맥·환경·조건이 부족하거나 충돌함
 
-판정 뒤 흐름도 다릅니다. `FALSE`는 terminal이며 Primitive와 Chaining으로 가지 않습니다. `HOLD`는 `required_primitive_candidates`가 하나 이상일 때만 후보 전체를 `inputs`로, `result=null`로 가진 Primitive를 Gate 없이 저장합니다. 후보가 없으면 Primitive와 Chaining work를 만들지 않고 HOLD 처리를 끝냅니다. `TRUE`는 validated PoC와 R5-01이 그 exact Verification에 맞춰 만든 current `CWELabel`을 Technical Gate가 `ACCEPT`한 뒤 정책 확인으로 갑니다. 금지 테스트 위반이 확정되지 않아 current admission이 `ALLOW`인 경우에만 제공 능력별 `result` Primitive가 됩니다. 다른 Rule Scope 판단은 Reporter만 제어합니다.
+판정 뒤 흐름도 다릅니다. `FALSE`는 terminal이며 Primitive와 Chaining으로 가지 않습니다. `HOLD`는 `required_primitive_candidates`가 하나 이상일 때만 후보 전체를 `inputs`로, `result=null`로 가진 Primitive를 Gate 없이 저장합니다. 후보가 없으면 Primitive와 Chaining work를 만들지 않고 HOLD 처리를 끝냅니다. `TRUE`는 validated PoC와 R5-01이 그 exact Verification에 맞춰 만든 current `CWELabel`을 Technical Gate가 `ACCEPT`한 뒤, Rule Scope Gate가 run 초기화에서 program별로 준비된 current `ProgramPolicyRecord`를 소비해 검토합니다(Gate 실행 순서는 유지). 금지 테스트 위반이 확정되지 않아 current admission이 `ALLOW`인 경우에만 제공 능력별 `result` Primitive가 됩니다. 다른 Rule Scope 판단은 Reporter만 제어합니다.
 
 ### verdict 이후 수명주기
 

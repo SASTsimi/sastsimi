@@ -2446,6 +2446,69 @@ foreach ($rule in $requiredPolicyContractRules) {
     }
 }
 
+# R5-02 policy preparation-timing: policy collection/parsing is a run-init,
+# program-level POLICY_FETCH activity running in parallel with static/environment
+# preparation. Rule Scope Gate consumes the prepared current ProgramPolicyRecord
+# after Technical ACCEPT; the Gate evaluation order is unchanged. These checks
+# guard against regressing to "collect policy after Technical ACCEPT" and against
+# re-placing POLICY_FETCH as work executed at 22-step step 17.
+$policyPreparationTimingMarkers = @(
+    @{ Name = 'gate doc has the policy preparation-timing section'; Text = $gateText; Marker = '## 정책 준비 시점' },
+    @{ Name = 'gate doc keeps Gate evaluation order while moving preparation'; Text = $gateText; Marker = '바뀌는 것은 **Policy의 준비 시점**이며 **Gate evaluation order는 바뀌지 않는다**' },
+    @{ Name = 'gate doc: Rule Scope Gate consumes the prepared record'; Text = $gateText; Marker = 'Rule Scope Gate는 Technical `ACCEPT` 이후 이미 준비된 current `ProgramPolicyRecord`를 소비한다.' },
+    @{ Name = 'gate Wiki: no new collection/parsing at Gate time'; Text = $gateWikiText; Marker = '정책 수집·파싱(`POLICY_FETCH`) 자체는 이 시점에 새로 실행하지 않는다' },
+    @{ Name = 'contract doc: program-level run-init preparation'; Text = $contractText; Marker = 'run 초기화 단계에서 `POLICY_FETCH` work가 정적 근거 준비·공통 환경 준비와 병렬로 시작' },
+    @{ Name = 'module map runs POLICY_FETCH in run-init step 3'; Text = $moduleMapText; Marker = '병렬로 program별 `POLICY_FETCH`' },
+    @{ Name = 'module map step 17 does not re-run POLICY_FETCH'; Text = $moduleMapText; Marker = '이 단계에서 `POLICY_FETCH`를 새로 실행하지 않음' },
+    @{ Name = 'canonical diagram consumes the run-init policy result'; Text = $diagramText; Marker = 'Read run-init PolicyCollectionResult' },
+    @{ Name = 'wiki diagram consumes the run-init policy result'; Text = $wikiDiagramText; Marker = 'Read run-init PolicyCollectionResult' }
+)
+foreach ($rule in $policyPreparationTimingMarkers) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing R5-02 policy preparation-timing rule: $($rule.Name)"
+    }
+}
+
+# Obsolete present-tense "collect/parse policy after Technical ACCEPT" phrasing
+# must not return. (The 05 doc may describe the *former* behaviour in the past
+# tense; these patterns match only the stale present-tense forms.)
+$policyTimingRegressionDocs = @(
+    @{ Name = '05 gate doc'; Text = $gateText },
+    @{ Name = 'gate Wiki'; Text = $gateWikiText },
+    @{ Name = 'overview'; Text = $overviewText },
+    @{ Name = 'pipeline Wiki'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/pipeline.md')) },
+    @{ Name = 'module map'; Text = $moduleMapText }
+)
+$policyTimingRegressionPatterns = @(
+    '정책 수집과 Rule Scope 검토를 진행',
+    'ACCEPT하면 정책 수집',
+    'ACCEPT하면 정책을 수집',
+    'ACCEPT하면 공식 정책 수집',
+    'ACCEPT 뒤 정책 수집',
+    'ACCEPT 뒤 공식 정책 수집',
+    'ACCEPT 이후 정책 수집',
+    'ACCEPT 이후 공식 정책 수집'
+)
+foreach ($doc in $policyTimingRegressionDocs) {
+    foreach ($pattern in $policyTimingRegressionPatterns) {
+        if ($doc.Text.Contains($pattern)) {
+            Add-Failure "obsolete post-ACCEPT policy collection phrasing in $($doc.Name): $pattern"
+        }
+    }
+}
+
+# The 22-step module map step 17 row must not register POLICY_FETCH as its work,
+# and step 3 must keep starting the run-init POLICY_FETCH.
+$moduleMapStep17Row = [regex]::Match($moduleMapText, '(?m)^\| 17\.[^\r\n]*$').Value
+if ($moduleMapStep17Row -and ($moduleMapStep17Row -match 'POLICY_FETCH') -and ($moduleMapStep17Row -notmatch '새로 실행하지 않')) {
+    Add-Failure 'module map step 17 row registers POLICY_FETCH as executed work; policy collection/parsing belongs to run-init step 3'
+}
+$moduleMapStep3Row = [regex]::Match($moduleMapText, '(?m)^\| 3\.[^\r\n]*$').Value
+if ($moduleMapStep3Row -and ($moduleMapStep3Row -notmatch 'POLICY_FETCH')) {
+    Add-Failure 'module map step 3 row no longer starts run-init POLICY_FETCH'
+}
+Write-Output "R5-02 policy preparation-timing rules: $($policyPreparationTimingMarkers.Count)"
+
 $primitiveAdmissionDecisionPath = Join-Path $repoRoot 'docs/review/decisions/ADR-011-testing-restriction-primitive-admission.md'
 if (-not (Test-Path -LiteralPath $primitiveAdmissionDecisionPath)) {
     Add-Failure 'missing ADR-011 testing restriction primitive admission decision'

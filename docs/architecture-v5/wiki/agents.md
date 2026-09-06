@@ -17,12 +17,14 @@
 | R7 Setup Automation | recipe·image·container 생성/재사용/재생성과 정리 실제 수행 | Agent 분석, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
 | Sandbox Controller | R7 `sandbox_profile_ref`의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 강제 | 내부 command allowlist, R7 profile 값, R8 잔여 예산·새 attempt, 재현 전략 또는 최종 verdict 판단 |
 | Reproduction Session Manager | 실제 event의 append-only AgentLog, same-attempt validated PoC와 동적 결과 확정 | Agent 호출·command·retry·cleanup 전략 결정 또는 다른 attempt 혼합 |
+| Policy Collector (비-LLM) | run 초기화에서 program별 공식 정책 원문 수집·source authenticity 확인, `PolicyCollectionResult`·`ProgramPolicyRecord` 생산 | 정책 의미 판단, 비공식 자료 승격 |
+| Policy Parser (LLM) | 수집된 공식 원문을 asset scope·vulnerability eligibility·testing restriction·reward condition·impact criteria로 구조화 | 원문에 없는 기준 생성, 정규화로 의미 확대, verdict |
 | Pro | 가설 성립 근거 탐색 | 최종 verdict |
 | Con | 반증·보호·도달 불가·restriction 탐색 | 최종 verdict |
 | Chaining | upstream Primitive 결과→downstream Primitive 입력 matching과 새 가설 제안 | 일반 research, dynamic, REVISE, verdict/CWE/Gate/Finding/report 확정 |
 | R5-01 CWE Labeling | final TRUE를 exact CWE 분류 record로 정리 | Verification verdict 변경, 과거 label 재사용, Gate 판정 생성 |
 | Technical Evidence Gate | verdict-evidence·코드/동적 연결·CWE·restriction 검토 | verdict 변경 |
-| Rule Scope Impact Gate | 공식 rule/scope·금지 테스트·실제 impact·report permission 검토 | 공식 자료 없는 추정 승인 |
+| Rule Scope Impact Gate | run 초기화에서 준비된 current `ProgramPolicyRecord`와 그 공식 원문·현재 hypothesis 사실로 rule/scope·금지 테스트·실제 impact·report permission을 hypothesis마다 검토 | 공식 자료 없는 추정 승인, 정책 수집 실행, Parser 값 무검증 신뢰 |
 | Primitive Admission Runtime | Rule Scope의 금지 테스트 판정과 정책 수집 상태를 정해진 표로 바꿔 체이닝 재료 사용 허용·거절 | 정책 원문 재해석, Gate 결과 변경 |
 | Reporter | 통과한 근거로 내부 보고서 초안 작성 | 새 근거 확정, 제출·공개 |
 
@@ -37,7 +39,8 @@ Sandbox Controller checks external boundary → Setup Automation prepares recipe
 R7 Agent creates PoC candidate and autonomously runs it → Session Manager stores AgentLog and same-attempt result → Verification final verdict
 HOLD + required candidates → inputs plus null result Primitive → Chaining
 HOLD + no required candidates → no Primitive and no Chaining work
-TRUE → R5-01 CWE_LABELING → current CWELabel → Technical Gate → policy and Rule Scope review
+run init: repository + program confirmed → POLICY_FETCH (program-level, parallel with static prep) → current ProgramPolicyRecord
+TRUE → R5-01 CWE_LABELING → current CWELabel → Technical Gate → Rule Scope review reads run-init current ProgramPolicyRecord
 Technical-accepted TRUE → PrimitiveAdmissionDecision ALLOW → result Primitive → Chaining
 Rule Scope review committed → trusted runtime normalizes current Finding (any review_status)
 Verification or Chaining material claim → new hypothesis → new Verification

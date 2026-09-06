@@ -159,15 +159,25 @@ Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 `r
 
 사용이 허용된 TRUE만 제공 능력마다 `result`가 있는 Primitive를 만들고, `admission_decision_ref`로 같은 Verification의 current 허용 결정을 가리킵니다. `PrimitiveIndexState`는 current Verification과 현재 사용할 수 있는 Primitive refs만 가리킵니다. Chaining work는 시작할 때 읽은 index, Primitive와 admission decision의 정확한 수정본을 함께 고정합니다. 실제 match가 직접 또는 부모 체인을 통해 사용한 admission 집합은 `source_admission_refs`로 남깁니다. 일반 index 갱신과 사용하지 않은 후보의 decision 변경은 진행 중 work를 바꾸지 않지만, 실제 사용한 decision이 금지 테스트 위반으로 `DENY`가 되면 해당 Primitive를 index에서 빼고 이전 결정을 사용하는 진행 중 결과도 `STALE_RESULT`로 거절합니다. 이미 저장된 자식·손자 결과는 감사 이력으로만 남기며 새 Verification·Gate·Primitive·Reporter 입력에서 제외합니다.
 
+## 정책은 run 초기화에서 program별로 준비합니다
+
+정책 수집·파싱은 hypothesis별이 아니라 program별 작업입니다. repository와 버그바운티 program이 확정되면 run 초기화에서 정적 준비와 병렬로 `POLICY_FETCH` work가 current `ProgramPolicyRecord`를 준비하고, Sandbox 실행 precheck와 각 hypothesis의 Rule Scope Gate가 이를 재사용합니다. 같은 run·program에서 한 번만 수행하고, 다른 run에서도 `freshness_status=CURRENT`이고 parser version이 일치하면 재사용합니다. Gate evaluation 순서는 바뀌지 않습니다.
+
+`ProgramPolicyRecord`는 asset scope, vulnerability type/eligibility, testing restrictions, reward/bounty conditions(`reward_conditions`), impact criteria를 서로 구분해 저장합니다. `reward_conditions`는 보상 정보일 뿐 `report_permission`과 같은 의미가 아닙니다.
+
 ## 정책 수집 실패와 정책 부재를 구분합니다
 
 정책 수집 결과는 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED` 중 하나입니다.
 
 - `FOUND`: 공식 정책을 찾았고 구조화한 정책 record까지 연결했습니다.
-- `ABSENT_CONFIRMED`: 공식 출처를 실제로 확인했지만 사용할 정책이 없음을 확인했습니다. Gate는 `UNCERTAIN + DENY`로 기록할 수 있습니다.
-- `COLLECTION_FAILED`: 접속 또는 parser가 실패해 정책 유무를 확인하지 못했습니다. 이 경우 Rule Scope Gate 결과를 만들지 않습니다.
+- `ABSENT_CONFIRMED`: 공식 출처를 실제로 확인했지만 사용할 정책/항목이 없음을 확인했습니다. Gate는 `UNCERTAIN + DENY`로 기록할 수 있습니다.
+- `COLLECTION_FAILED`: 정책을 가져오지 못한 상태이며 정책 부재를 의미하지 않습니다. fetch 실패(collection failure)와 원문 수집 후 parser 실패(parser failure)를 원인으로 구분하되 두 경우 모두 Rule Scope Gate 결과를 만들지 않습니다.
 
-정책 record에는 공식 출처 확인 근거, parser 이름과 버전, 최신성 검사 기준·근거·만료 시각을 남깁니다. `CURRENT`는 이 값이 모두 있고 아직 만료되지 않았을 때만 가능합니다. 기준값과 재수집 주기는 R8 설정을 사용하고, Runtime Validator는 Gate와 Reporter 호출 직전에 만료 여부를 다시 검사합니다.
+어느 준비 실패도 `VerificationResult`의 verdict(`FALSE | HOLD`)로 바꾸지 않고 policy-dependent action만 fail-closed합니다.
+
+정책 record에는 공식 출처 확인 근거, parser 이름과 버전, 최신성 검사 기준·근거·만료 시각을 남깁니다. `CURRENT`는 이 값이 모두 있고 아직 만료되지 않았을 때만 가능합니다. 기준값과 재수집 주기는 R8 설정을 사용하고, Runtime Validator는 Gate와 Reporter 호출 직전에 만료 여부를 다시 검사합니다. current record가 `STALE | UNVERIFIED`가 되거나 parser version이 달라지면 그 record로 만든 기존 `PASS | ALLOW` Rule Scope 결과를 current 결과로 재사용하지 않습니다.
+
+Parser output 자체는 authoritative policy evidence가 아닙니다. Rule Scope Gate는 필요하면 `PolicyItem.source_ref + source_locator`의 공식 원문을 직접 확인해 Parser 정규화가 원문과 일치하는지 검증하고, 원문을 확인할 수 없거나 모순되면 fail-closed(`UNCERTAIN + DENY`)합니다.
 
 Rule Scope Gate가 `PASS`, `FAIL`, `SUFFICIENT`, `INSUFFICIENT`를 선택하면 `RuleScopeEvidenceLink`로 실제 정책 항목과 코드·실행 근거를 연결해야 합니다. 정보가 부족하면 `PolicyMissingInfo`에 부족한 영역과 이유를 남깁니다. 그 누락이 공개 허용을 막는 항목이면 `blocks_allow=true`로 기록하고 `ALLOW`를 저장하지 않습니다.
 
@@ -182,7 +192,8 @@ Rule Scope Gate가 `PASS`, `FAIL`, `SUFFICIENT`, `INSUFFICIENT`를 선택하면 
 - `PlaybookApplication`: 한 Verification work에서 선택한 policy·playbook과 플레이북 질문에 발급한 실제 `question_id`를 고정한 기록입니다.
 - `CandidateRef`: 아직 검증되지 않은 우회·대체 경로·영향 확대 후보입니다. 새 주장이면 별도 가설로 검증하기 전까지 확정 결과로 쓰지 않습니다.
 - `VerificationMetrics`: debate의 token·시간·판정 변화와 새로 발견한 항목 수를 저장합니다. 제공되지 않은 token은 `null`입니다.
-- `PolicyItem`: 공식 정책의 항목 하나와 원문을 다시 찾을 수 있는 출처 위치를 연결합니다.
+- `PolicyItem`: 공식 정책의 항목 하나와 원문을 다시 찾을 수 있는 출처 위치(`source_ref` + `source_locator`)를 연결합니다.
+- `ProgramPolicyRecord`: program별 구조화 정책입니다. asset scope·vulnerability eligibility·testing restriction·`reward_conditions`·impact criteria를 구분하고 `parser_version`으로 재파싱 필요 여부를 판단합니다.
 - `PolicyCollectionResult`: 정책을 찾음·공식 부재 확인·수집 실패를 서로 다른 상태로 저장합니다.
 - `PolicyMissingInfo`: 정책 판단에 무엇이 부족한지와 공개 허용을 막는지를 구조화해 저장합니다.
 - `PrimitiveAdmissionDecision`: exact 기술 검토와 정책 확인 결과를 연결해 TRUE Primitive를 체이닝에 사용할 수 있는지 기록합니다.

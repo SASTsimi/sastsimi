@@ -26,7 +26,9 @@ Verification Agent는 배정받은 한 가설 안에서 검증 흐름 전체를 
 8. HOLD면 Primitive `inputs`가 될 부족 조건을, TRUE면 Technical `ACCEPT` 뒤 R4 admission runtime이 평가할 Primitive `result` 후보 능력을 기록한다. FALSE는 Primitive 후보를 만들지 않는다.
 9. 새 endpoint·sink·권한 경계·공격 단계·독립 impact를 발견하면 `HypothesisProposal(origin=VERIFICATION)`으로 분리한다.
 10. final TRUE를 확정하면 R5-01 `CWE_LABELING` work를 요청한다. R5-01이 exact Verification에 맞는 current `CWELabel`을 확정한 뒤 Technical Evidence Gate를 요청한다. `REVISE`면 같은 Verification owner가 새 Verification을 만들고 R5-01이 CWE 정렬을 다시 평가해 새 label revision을 만든 뒤 다시 제출한다.
-11. HOLD의 부족 조건은 result 없는 Primitive로 즉시 Chaining에 넘길 수 있고, TRUE는 exact Technical `ACCEPT` 뒤 같은 chain의 Rule Scope 또는 정책 수집 결과로 R4가 current `PrimitiveAdmissionDecision=ALLOW`를 확정한 경우 result Primitive로 넘길 수 있다. Rule·Scope·Impact 결과는 현재 보고 경로에 별도로 적용한다.
+11. HOLD의 부족 조건은 result 없는 Primitive로 즉시 Chaining에 넘길 수 있고, TRUE는 exact Technical `ACCEPT` 뒤 같은 chain의 Rule Scope 또는 run 초기화에서 준비된 정책 수집 결과로 R4가 current `PrimitiveAdmissionDecision=ALLOW`를 확정한 경우 result Primitive로 넘길 수 있다. Rule·Scope·Impact 결과는 현재 보고 경로에 별도로 적용한다.
+
+hypothesis generation·Verification·Chaining은 program scope를 이유로 기술적 hypothesis를 제거하거나 verdict를 바꾸지 않는다. 실제 scope/reportability 판단은 hypothesis마다 Rule Scope Gate가 수행하며, 프로그램 정책 준비 실패도 policy-dependent action만 fail-closed시키고 기술적 `TRUE | FALSE | HOLD`와 분리한다.
 
 ### Chaining-origin 가설의 검증 시작점 복구
 

@@ -361,7 +361,7 @@ Chaining work는 새 Primitive 저장을 계기로 등록한다. `PRIMITIVE_UPDA
 | `PRIMITIVE_UPDATE` | non-empty `required_primitive_candidates`를 가진 final HOLD의 Verification 또는 Technical `ACCEPT` 뒤 정책 확인을 마친 admission runtime | `PRIMITIVE_ADMISSION_RUNTIME` | `PrimitiveAdmissionDecision`, 허용된 `Primitive`와 가설별 `PrimitiveIndexState` revision |
 | `CHAINING` | Verification handoff 뒤 Chaining runtime | Chaining runtime | `ChainingResult` |
 | `CWE_LABEL` | final TRUE를 확정한 Verification workflow 뒤 trusted runtime | R5-01 `CWE_LABELING` | current final TRUE를 직접 가리키는 `CWELabel` 한 개 |
-| `POLICY_FETCH` | Rule Scope Gate 준비 runtime | 공식 정책 수집 runtime | `PolicyParserResult`, `PolicyCollectionResult`, `FOUND`이면 `ProgramPolicyRecord` |
+| `POLICY_FETCH` | run 초기화 정책 준비 runtime (repository·program 확정 시 program별 1회) | 공식 정책 수집 runtime | `PolicyParserResult`, `PolicyCollectionResult`, `FOUND`이면 `ProgramPolicyRecord` |
 | `TECHNICAL_GATE` | Verification runtime | Technical Gate runtime | `TechnicalEvidenceReview` |
 | `RULE_SCOPE_GATE` | Verification runtime | Rule Scope Gate runtime | `RuleScopeImpactReview` |
 | `FINDING_NORMALIZE` | Verification trusted runtime | Verification trusted runtime의 Finding normalization service | `Finding` 한 개 |
@@ -515,7 +515,7 @@ Gate와 Reporter action의 기존 check는 다음 exact revision을 검사한다
 R5-01 `CWE_LABELING`의 `CALL_LLM`은 current `CWE_LABEL` work의 active attempt에서만 허용한다. action·`LLMCallSpec.context_refs`와 immutable prompt payload에는 current final TRUE `VerificationResult`, 그 result의 evidence closure와 사용할 taxonomy revision을 정확히 고정한다. 다른 Verification·generation·가설·commit의 label이나 evidence, 과거 CWE 출력은 current 분류 근거로 넣지 않는다. Runtime Validator는 호출 직전 이 exact 입력과 parent Verification work를 다시 확인하고, 바뀌면 decision을 `EXPIRED`로 만들어 새 work 또는 action을 요구한다.
 
 - Technical Gate의 `REVISION`은 action `input_refs`와 call spec context가 final `VerificationResult(verdict=TRUE)`와 `CWELabel`의 정확한 `record_id`·`content_hash`를 가리키는지 검사한다. 이 TRUE의 `dynamic_request_ref`, `dynamic_result_ref`, `poc_ref`는 current Verification generation의 exact request, `SUCCEEDED + SUPPORTED` 결과와 validated PoC를 가리켜야 한다. Gate 출력의 `TechnicalEvidenceReview.verification_result_ref`와 `cwe_label_ref`도 바로 이 두 record를 가리켜야 한다. `GATE_ORDER`는 모든 결과가 현재 work에서 `COMMITTED`됐고 final인지 검사한다. validated PoC가 없는 TRUE, HOLD와 FALSE는 Technical Gate action을 만들 수 없다.
-- Rule Scope Gate의 `REVISION`은 같은 Verification·current CWELabel revision, `RuleScopeImpactReview.technical_review_ref`가 가리킬 exact `TechnicalEvidenceReview`, Gate가 사용할 exact `PolicyCollectionResult`와 `FOUND`일 때 current `ProgramPolicyRecord`를 검사한다. `GATE_ORDER`는 Technical review가 그 두 revision을 검토한 `ACCEPT`이고 Verification verdict가 `TRUE`이며 정책 수집 결과가 `COLLECTION_FAILED`가 아닌지 검사한다.
+- Rule Scope Gate의 `REVISION`은 같은 Verification·current CWELabel revision, `RuleScopeImpactReview.technical_review_ref`가 가리킬 exact `TechnicalEvidenceReview`, Gate가 사용할 exact `PolicyCollectionResult`와 `FOUND`일 때 current `ProgramPolicyRecord`를 검사한다. 이 정책 입력은 run 초기화에서 program별로 준비한 current artifact이며 Gate 호출이 새 collection을 실행하지 않는다. `GATE_ORDER`는 Technical review가 그 두 revision을 검토한 `ACCEPT`이고 Verification verdict가 `TRUE`이며 정책 수집 결과가 `COLLECTION_FAILED`가 아닌지 검사한다. Gate 실행 순서(Verification TRUE → Technical `ACCEPT` → Rule Scope Gate → Finding/Reporter)는 정책 준비 시점 변경과 무관하게 유지한다.
 - Reporter의 `REVISION`은 Reporter action, call spec과 context가 current non-stale Finding, 두 Gate가 실제로 검토한 같은 Verification·CWELabel revision, exact Technical·Rule Scope review와 존재하는 정책 revision을 가리키는지 검사한다. `REPORT_READY`는 current non-stale Finding이 존재하고, 그와 별개로 그 exact `RuleScopeImpactReview`가 `review_status == PASS`, `rule_compliance == PASS`, `scope_compliance == PASS`, `testing_restriction_compliance == PASS`, `security_impact == SUFFICIENT`, `report_permission == ALLOW`를 각각 만족하는지 검사한다. slash shorthand로 축약하지 않고 각 field를 확인한다.
 
 세 hypothesis-local stage action의 `requested_by`는 VERIFICATION이다. runtime은 action의 `meta.hypothesis_id`, 현재 `HypothesisProcessState.verification_assignment_ref`, 그 ACTIVE `VerificationAssignment.owner_identity_ref`와 `ActionRequest.requester_identity_ref`를 exact 비교한다. 배정되지 않은 Verification-role identity나 superseded assignment가 요청하면 `AUTHORITY_DENIED`다. `CALL_TECHNICAL_GATE`의 REVISE output은 같은 assignment owner에게만 전달한다. `CALL_RULE_SCOPE_GATE`와 `CREATE_REPORT_DRAFT`도 그 owner가 제안하되 Runtime Validator가 exact Gate 순서와 보고 조건을 다시 검사한다. CHAINING이나 ORCHESTRATION이 이 stage action을 요청하면 `AUTHORITY_DENIED`다.
@@ -1675,6 +1675,8 @@ TechnicalEvidenceReview:
 
 공식 프로그램 정책의 파싱·수집 결과, 정규화된 정책 기록과 두 번째 Gate가 정책 범위·규칙·실제 영향을 검토한 결과입니다. Policy Parser만 `PolicyParserResult`를, Policy Collector만 `PolicyCollectionResult`와 수집에 성공한 `ProgramPolicyRecord`를 생산한다. `RULE_SCOPE_GATE`는 이 artifact를 입력으로 읽을 뿐 수집·파싱 결과를 만들거나 수정하지 않는다.
 
+정책 수집·파싱은 hypothesis별 작업이 아니라 program별 작업이다. repository와 버그바운티 program이 확정되는 run 초기화 단계에서 `POLICY_FETCH` work가 정적 근거 준비·공통 환경 준비와 병렬로 시작해 current `ProgramPolicyRecord`(또는 `ABSENT_CONFIRMED | COLLECTION_FAILED`)를 준비한다. 같은 run의 같은 `program_id`에 대한 collection/parsing은 한 번만 수행하고, 이후 Sandbox 실행 precheck와 각 hypothesis의 Rule Scope Gate가 그 준비된 결과를 재사용한다. 다른 run에서도 `freshness_status=CURRENT`이고 parser version이 일치하는 결과는 재사용할 수 있다. 정책 준비 실패는 policy-dependent action만 fail-closed시키며 `VerificationResult`의 verdict를 바꾸지 않는다. 자세한 소비 조건·authority boundary는 [05. 이중 LLM Gate와 보고](05-llm-gate-and-reporting.md)가 소유한다.
+
 ```yaml
 PolicyItem:
   policy_item_id: string
@@ -1727,8 +1729,10 @@ ProgramPolicyRecord:
   accepted_vulnerability_classes: [PolicyItem]
   excluded_vulnerability_classes: [PolicyItem]
   testing_restrictions: [PolicyItem]
+  reward_conditions: [PolicyItem]
   impact_criteria: [PolicyItem]
   disclosure_requirements: [PolicyItem]
+  parser_version: string
   source_refs: [StoredDataRef]
   source_checks: [PolicySourceCheck]
   parser_result_refs: [StoredDataRef]
@@ -1751,15 +1755,23 @@ PolicyCollectionResult:
   completed_at: timestamp
 ```
 
-`PolicyItem.policy_item_id`는 한 `ProgramPolicyRecord` 안에서 유일하다. `value`에는 비교할 asset·취약점 분류·제한·기준 값을, `conditions`에는 그 값이 적용되는 조건을 넣는다. `source_ref`는 `ProgramPolicyRecord.source_refs`에도 포함된 공식 자료를 가리키고 `source_locator`는 문서 안에서 해당 항목을 다시 찾을 수 있는 절·anchor·페이지 정보다. 출처와 연결되지 않은 항목은 공식 정책 사실로 사용하지 않고 `PolicyMissingInfo`에 남긴다.
+`PolicyItem.policy_item_id`는 한 `ProgramPolicyRecord` 안에서 유일하다. `value`에는 비교할 asset·취약점 분류·제한·기준 값을, `conditions`에는 그 값이 적용되는 조건을 넣는다. `source_ref`는 `ProgramPolicyRecord.source_refs`에도 포함된 공식 자료를 가리키고 `source_locator`는 문서 안에서 해당 항목을 다시 찾을 수 있는 절·anchor·페이지 정보다. 출처와 연결되지 않은 항목은 공식 정책 사실로 사용하지 않고 `PolicyMissingInfo`에 남긴다. `source_ref`와 `source_locator`는 Parser 정규화 결과가 아니라 원문을 재확인할 수 있는 공식 근거이며, Parser output 자체를 authoritative policy evidence로 취급하지 않는다.
+
+`ProgramPolicyRecord`는 다음 의미 영역을 서로 구분해 저장한다. `in_scope_assets`·`out_of_scope_assets`는 asset scope, `accepted_vulnerability_classes`·`excluded_vulnerability_classes`는 vulnerability type/eligibility, `testing_restrictions`는 허용·금지된 검증/테스트 방법, `reward_conditions`는 reward/bounty 조건, `impact_criteria`는 최소 impact 기준이다. `reward_conditions`는 보상 산정 정보일 뿐 technical reportability나 `report_permission`과 같은 의미가 아니다. `parser_version`은 이 record의 구조화 정책을 만든 Parser version이며 `parser_result_refs`가 가리키는 성공한 `PolicyParserResult`의 `parser_version`과 일치해야 한다.
 
 `PolicySourceCheck`는 source URL 문자열만 믿지 않고 공식 게시자와 원문 reference를 확인한 결과다. `source_id`는 한 정책 record 안에서 유일하고 `source_ref`는 `source_refs`에 정확히 한 번 포함된다. `source_checks[].source_ref` 집합과 `source_refs`는 set-equal해야 하며 `freshness_status=CURRENT`인 record는 모든 source check가 `VERIFIED`이고 각 check에 하나 이상의 확인 근거가 있어야 한다. 검색 snippet, 모델 기억과 비공식 요약은 `VERIFIED` 출처가 아니다.
 
 `PolicyParserResult`는 공식 원문을 어떤 parser 버전으로 읽었는지 기록한다. `SUCCEEDED`이면 `parsed_output_ref`가 필수이고 `error_ids=[]`, `FAILED | INVALID_OUTPUT`이면 하나 이상의 `error_ids`가 필요하다. parser 결과를 합쳐 정책 record를 만들 때 `parser_result_refs`는 사용한 성공 결과만 가리키고 각 `source_ref`는 `ProgramPolicyRecord.source_refs`에 포함되어야 한다. 원문·parser 결과·구조화 정책을 “최신값”으로 다시 찾지 않고 exact reference로 연결한다.
 
+`ProgramPolicyRecord`의 조립·저장 authority가 비-LLM Policy Collector(result-owner `POLICY_COLLECTOR`)에 있더라도, 정책 의미의 해석·정규화·구조화 authority는 LLM Policy Parser에 있다. 조립 단계는 successful `PolicyParserResult`의 structured output을 재해석하거나 확대하지 않고 exact reference로 취합하며, 공식 source 수집·authenticity·provenance 보존만 Collector가 담당한다.
+
+원문(`source_ref`)은 수집했지만 Parser가 구조화에 실패한 parser failure는 fetch 자체가 실패한 collection failure와 구분한다. 두 경우 모두 `PolicyCollectionResult.status=COLLECTION_FAILED`이지만 parser failure에서는 실제로 확인한 `official_source_refs`와 실패한 `PolicyParserResult` reference·`error_ids`를 보존하고, collection failure에서는 fetch 단계의 `error_ids`만 남는다. 어느 실패도 `VerificationResult.FALSE | HOLD`로 변환하지 않으며 policy-dependent decision만 fail-closed 처리한다.
+
 `PolicyCollectionResult`는 “정책을 찾음”, “공식 출처를 확인했지만 정책이 없음을 확인함”, “수집 실행이 실패함”을 구분한다. `FOUND`이면 `policy_record_ref`가 필수이고 `error_ids=[]`다. `ABSENT_CONFIRMED`이면 `policy_record_ref=null`, 하나 이상의 공식 출처와 `gap_ids`가 필요하고 `error_ids=[]`다. `COLLECTION_FAILED`이면 `policy_record_ref=null`과 하나 이상의 `error_ids`가 필요하며 Rule Scope Gate work와 review를 만들지 않는다. `FOUND | ABSENT_CONFIRMED`의 `parser_result_refs`는 하나 이상이고 모두 `status=SUCCEEDED`인 exact parser 결과를 가리킨다. `FOUND`에서는 collection의 `official_source_refs`, `parser_result_refs`가 정책 record의 `source_refs`, `parser_result_refs`와 각각 set-equal해야 한다. `COLLECTION_FAILED`의 두 reference 목록은 실패 전 실제로 확인·실행한 범위만 담으며 비어 있을 수 있다. 수집 실패를 `ABSENT_CONFIRMED`로 바꾸지 않는다.
 
 `freshness_status=CURRENT`이면 `freshness_criterion_ref`, 하나 이상의 `freshness_evidence_refs`, `freshness_checked_at`과 미래의 `freshness_valid_until`이 모두 필수다. freshness 기준값과 재수집 주기는 R8이 승인한 versioned 설정만 사용한다. 기준을 넘었으면 `STALE`, 확인 자체가 실패했거나 기준을 적용할 수 없으면 `UNVERIFIED`다. 두 상태 모두 `freshness_warning` 또는 `PolicyMissingInfo(area=FRESHNESS, blocks_allow=true)`에 이유가 있어야 하며 Gate의 `PASS | ALLOW` 근거로 사용할 수 없다. Runtime Validator는 `CALL_RULE_SCOPE_GATE` decision 생성 시점과 provider 호출 직전에 `freshness_valid_until`을 다시 확인한다. Reporter도 action 승인과 호출 직전에 같은 정책 revision이 여전히 CURRENT인지 확인하고 만료되면 과거 Gate·draft를 재사용하지 않는다. 기준 설정의 의미·임곗값·재수집 운영은 R8, 정책 해석은 R5, exact field와 만료 차단은 R4 책임이다.
+
+각 `RuleScopeImpactReview`는 사용한 exact `ProgramPolicyRecord` revision을 `policy_record_ref.record_id`로 추적한다. 그 record가 이후 `STALE | UNVERIFIED`가 되거나, current parser version이 record의 `parser_version`과 달라지거나, 정책 원문·parser 결과·정책 내용이 새 exact revision이 되면 그 record에 의존해 만든 기존 `PASS | ALLOW` Rule Scope 결과를 current decision으로 재사용하지 않는다. `POLICY_FETCH`는 필요한 collection/parsing만 다시 수행해 새 current record를 만들고, downstream은 [05. 이중 LLM Gate와 보고](05-llm-gate-and-reporting.md)와 §11의 revision/CAS 계약으로 stale 결과 재사용을 차단한다.
 
 `COLLECTION_FAILED`에서는 `RULE_SCOPE_GATE` work를 등록·호출하지 않고 `RuleScopeImpactReview`를 생성하지 않으며, 이를 `UNCERTAIN + DENY`로 변환하지 않는다.
 
@@ -1806,6 +1818,8 @@ RuleScopeEvidenceLink:
 Rule·Scope·Impact 판단은 별도 condition/projection 또는 execution-fact schema를 만들지 않고 current final `VerificationResult`의 canonical evidence와 exact transitive reference closure를 직접 소비한다. 동적 사실을 사용할 때에는 `dynamic_result_ref`가 고정한 current generation·same-attempt artifact와 `AgentLogEvent` 연결만 인정하며, 다른 revision·generation·attempt의 artifact나 stale event를 섞지 않는다. 실행되지 않았거나 policy block·environment precheck stop으로 생성되지 않은 artifact는 요구하지 않는다. `PolicyMissingInfo`는 이 closure와 정책 provenance만으로 판단할 수 없는 사항을 구조화하며, Gate가 새로운 Verification 사실이나 child-impact 연결을 만들지 않는다.
 
 `ABSENT_CONFIRMED`이거나 `ProgramPolicyRecord`의 핵심 출처가 누락되면 Gate를 실제 호출할 수 있는 입력 상태에서 `UNCERTAIN + DENY`다. `freshness_status=STALE | UNVERIFIED`이면 `rule_compliance`, `scope_compliance`, `testing_restriction_compliance`, `review_status`는 `UNCERTAIN`, permission은 `DENY`다. 누락은 구조화된 `missing_information`과 관련 provenance로 설명한다. 이 상태에서 Reporter용 `PASS | ALLOW`를 반환하면 invalid지만 R4 admission runtime은 `testing_restriction_compliance=UNCERTAIN`을 확정 위반으로 바꾸지 않고 `ALLOW`로 매핑한다. 반면 `COLLECTION_FAILED`는 이 review 경로에 들어오지 않으며 review 자체가 없다.
+
+`ProgramPolicyRecord`는 program-level artifact이므로 같은 program의 여러 hypothesis(H1·H2·H3)는 각각 별도 `RuleScopeImpactReview`를 만들되 같은 current `ProgramPolicyRecord`를 재사용한다. 정책 parsing 결과를 hypothesis-specific verdict로 저장하지 않는다. Gate는 확정 판단마다 structured `ProgramPolicyRecord`, `source_ref + source_locator`가 가리키는 공식 원문, 현재 hypothesis/verification 사실을 함께 사용한다. 공식 원문을 확인할 수 없거나 Parser 정규화 결과가 원문과 모순되면 해당 판단 영역을 `UNCERTAIN`, `report_permission=DENY`로 두고 `PolicyMissingInfo(area=SOURCE, blocks_allow=true)`에 근거를 남긴다. Parser 값을 그대로 신뢰해 `PASS | ALLOW`를 만들지 않는다.
 
 ## 10. LLM invocation records
 

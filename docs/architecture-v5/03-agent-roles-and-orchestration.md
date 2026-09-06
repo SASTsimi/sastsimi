@@ -24,6 +24,7 @@ HypothesisProposal validation
 Orchestration Agent의 주요 책임은 다음과 같다.
 
 - `analysis_id`와 전역 분석 계획 관리
+- repository와 버그바운티 program이 확정되면 정적 근거 준비와 병렬로 program별 `POLICY_FETCH` 준비(Policy Collector → Policy Parser) 트리거. 같은 run·program에서 1회, 다른 run의 current·fresh 결과는 재사용
 - INITIAL·VERIFICATION·CHAINING proposal의 schema/semantic validation 요청
 - 검증된 proposal의 중복 후보 검색과 필요 시 LLM 중복 검토 요청
 - 중복이 아닌 proposal의 `hypothesis_id` 등록
@@ -122,6 +123,8 @@ Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하
 | Orchestration Agent | 전역 분석 계획·proposal 등록·가설 배정·가설 간 병렬화 | 없음 | 전체 진행 상태 요약 | 없음 | 없음 |
 | Hypothesis Agent | 취약점 가설 | 없음 | static 사실을 입력으로 읽음 | 없음 | 없음 |
 | Playbook Registry Runtime | R6가 작성한 플레이북과 사람이 승인한 적용 정책을 versioned record로 등록하고 Verification work별 `PlaybookApplication` 생성 | 없음 | exact proposal의 유형 후보·policy·playbook revision | schema·선택·질문 ID·current pointer 검사 | 운영 지원 유형과 적용 mapping 승인 |
+| Policy Collector | run 초기화에서 program별 공식 정책 원문 수집·source authenticity 확인 | `PolicyCollectionResult`, `FOUND`이면 `ProgramPolicyRecord` (비-LLM) | 공식 source와 원문 | 없음 | 없음 |
+| Policy Parser | 수집된 공식 원문의 구조화 요청 | `PolicyParserResult` (LLM) | 수집된 공식 원문만 | 없음 | 없음 |
 | Pro·Con Agent | 찬성·반대 근거 | 없음 | 자기 역할의 근거 | 없음 | 없음 |
 | Verification Agent | Context·Pro/Con, 목적·목표·필요 환경을 담은 `DynamicReproductionRequest`, 두 Gate·Reporter·Chaining 요청, material child proposal | `TRUE | FALSE | HOLD` | static·Pro·Con·COMMITTED dynamic 근거와 Gate 보완 요청 | 없음 | 없음 |
 | R7 Agent | `EnvironmentRequirements`·간단한 `ReproductionPlan`·PoC candidate·동적 근거 해석 | 없음 | R6 요청과 Sandbox 안의 실제 관측 | 없음 | 없음 |
@@ -131,12 +134,12 @@ Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하
 | R5-01 CWE Labeling | CWE 후보와 근거 | current `CWELabel` revision 생성 | exact final TRUE Verification | 없음 | 없음 |
 | Chaining Agent | upstream Primitive `result`→downstream Primitive `input` match와 chained proposal | 없음 | exact Primitive, Verification·Technical provenance와 코드 근거 | 없음 | 없음 |
 | Technical Evidence Gate Agent | 구체적인 보완 요청 | 없음 | verdict·근거·코드 흐름·CWE | 없음 | 없음 |
-| Rule Scope Impact Gate Agent | 정책 누락·보완 사유 | `PASS | FAIL | UNCERTAIN`, `ALLOW | DENY` | 공식 정책·scope·impact | 없음 | 없음 |
+| Rule Scope Impact Gate Agent | 정책 누락·보완 사유 | `PASS | FAIL | UNCERTAIN`, `ALLOW | DENY` | run 초기화에서 준비된 current `ProgramPolicyRecord` + 그 공식 원문 + 현재 hypothesis/verification 사실 (hypothesis마다 별도 evaluation) | 없음 | 없음 |
 | Primitive Admission Runtime | 없음 | 없음 | exact Technical review·정책 수집·Rule Scope의 전용 테스트 제한 판정 | `PrimitiveAdmissionDecision`, 허용된 Primitive와 current index 확정 | 없음 |
 | Reporter Agent | 내부 보고서 문장·구성 | 없음 | 통과한 결과와 두 Gate | 없음 | 없음 |
 | Runtime Validator | 허용 가능한 대체 action 안내 | 없음 | 실행 전제와 exact reference | action 허용·차단 | 없음 |
 
-Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 호출 순서, 기술 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 확정하지 않는다. R6 담당은 플레이북 내용과 유형 mapping 후보를 작성할 수 있지만 운영 지원 목록을 활성화하지 않는다. Playbook Registry Runtime은 사람 승인 뒤 policy를 등록하고 exact proposal의 `vulnerability_type_candidates`를 읽어 결정 규칙대로 playbook과 질문 집합을 고정할 뿐 취약점 유형이나 verdict를 새로 판단하지 않는다. Verification Agent는 hypothesis-local 다음 작업을 선택하고 `DynamicReproductionRequest`와 최종 verdict를 생산하지만 프로그램 enforcement를 우회하거나 Sandbox를 직접 실행하지 못한다. R7 Agent는 exact `EnvironmentRequirements`, mode·exact command가 없는 `ReproductionPlan`, PoC candidate와 동적 근거 해석을 만든다. Setup Automation은 저장소 선언을 우선한 immutable recipe와 image·container·cleanup을 수행한다. Sandbox Controller는 Sandbox 밖의 강제 경계만 검사하며 컨테이너 내부 command allowlist를 운영하지 않는다. 비-LLM Reproduction Session Manager는 실제 event를 append-only `AgentLog`에 기록하고 같은 attempt의 plan·recipe·환경·candidate·실행 digest만으로 validated PoC와 동적 결과를 확정한다. R7 구성요소는 R6 요청 목적과 최종 verdict를 바꾸지 않는다. Rule Scope Gate는 공식 정책에서 테스트 제한의 의미를 독립 필드로 판단하고, Primitive Admission Runtime은 그 값과 exact 정책 수집 상태를 정해진 표에 대입할 뿐 정책을 재해석하지 않는다. Runtime Validator는 값의 생산자가 맞는지, 필요한 선행 record와 상태가 있는지, exact revision과 실행 범위가 허용됐는지만 확인하며 환경 의미나 domain 값을 대신 만들지 않는다.
+Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 호출 순서, 기술 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 확정하지 않는다. R6 담당은 플레이북 내용과 유형 mapping 후보를 작성할 수 있지만 운영 지원 목록을 활성화하지 않는다. Playbook Registry Runtime은 사람 승인 뒤 policy를 등록하고 exact proposal의 `vulnerability_type_candidates`를 읽어 결정 규칙대로 playbook과 질문 집합을 고정할 뿐 취약점 유형이나 verdict를 새로 판단하지 않는다. Verification Agent는 hypothesis-local 다음 작업을 선택하고 `DynamicReproductionRequest`와 최종 verdict를 생산하지만 프로그램 enforcement를 우회하거나 Sandbox를 직접 실행하지 못한다. R7 Agent는 exact `EnvironmentRequirements`, mode·exact command가 없는 `ReproductionPlan`, PoC candidate와 동적 근거 해석을 만든다. Setup Automation은 저장소 선언을 우선한 immutable recipe와 image·container·cleanup을 수행한다. Sandbox Controller는 Sandbox 밖의 강제 경계만 검사하며 컨테이너 내부 command allowlist를 운영하지 않는다. 비-LLM Reproduction Session Manager는 실제 event를 append-only `AgentLog`에 기록하고 같은 attempt의 plan·recipe·환경·candidate·실행 digest만으로 validated PoC와 동적 결과를 확정한다. R7 구성요소는 R6 요청 목적과 최종 verdict를 바꾸지 않는다. Policy Collector와 Policy Parser는 run 초기화에서 program별 정책 artifact를 준비하지만 scope·reportability를 판단하지 않으며, Parser output 자체는 authoritative policy evidence가 아니다. Rule Scope Gate는 이 준비된 current `ProgramPolicyRecord`를 hypothesis마다 소비하되 필요하면 `source_ref + source_locator`의 공식 원문을 직접 확인해 Parser 정규화가 원문과 일치하는지 검증하고, 원문을 확인할 수 없거나 모순되면 fail-closed(`UNCERTAIN + DENY`)한다. hypothesis generation·Verification·Chaining은 program scope를 이유로 기술적 hypothesis를 제거하지 않고, 실제 scope/reportability 판단은 hypothesis마다 Rule Scope Gate가 수행한다. Rule Scope Gate는 공식 정책에서 테스트 제한의 의미를 독립 필드로 판단하고, Primitive Admission Runtime은 그 값과 exact 정책 수집 상태를 정해진 표에 대입할 뿐 정책을 재해석하지 않는다. Runtime Validator는 값의 생산자가 맞는지, 필요한 선행 record와 상태가 있는지, exact revision과 실행 범위가 허용됐는지만 확인하며 환경 의미나 domain 값을 대신 만들지 않는다.
 
 ReportDraft 이후의 검토·수정·제출·공개는 이 역할표와 Agent action lifecycle 밖에서 사람이 수행한다. 자동화는 사람 검토 상태나 공개 결정을 만들지 않는다.
 
@@ -182,6 +185,7 @@ Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서
 | 병렬 구간 | 분리 단위 | 합류 조건 | 일부 실패 처리 |
 |---|---|---|---|
 | AST와 SAST | tool별 `work_id` | 기대한 tool의 종료 상태와 output/error 확인 | 하나 이상의 신뢰 결과가 있으면 `DataGap`을 포함한 `PARTIAL` 정규화 가능 |
+| 정적 준비와 program 정책 준비 | `STATIC_*` work와 program별 `POLICY_FETCH` work | 정적 준비와 정책 준비는 서로를 차단하지 않고 독립 완료 | 정책 준비 실패는 `COLLECTION_FAILED`로 남기고 가설 verdict를 바꾸지 않으며 policy-dependent action만 fail-closed |
 | 가설 검증 | `hypothesis_id`별 work | 각 가설은 자기 final Verification까지 독립 | 한 가설 오류가 다른 가설을 취소하지 않으며 분석은 `PARTIAL` 가능 |
 | Pro와 Con | 같은 가설의 역할별 child work·NEW session | 운영은 같은 hypothesis·policy·playbook·application 질문 집합의 exact Pro·Con 결과를 모두 확인; 평가 생략은 명시된 mode와 skip reason 확인 | 필수 결과 누락·application 불일치 시 final 판정을 만들지 않고 부모 Verification을 대기 또는 실패 처리 |
 | chaining 후보 | child proposal별 work | exact match lineage, match 조합 중복·ancestor 재사용·R8 전체 예산 검사를 통과한 proposal만 등록 | 거절 사유를 저장하고 부모 verdict 유지 |
@@ -192,16 +196,20 @@ Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서
 
 ## 바꿀 수 없는 직렬 순서
 
+program별 policy collection → parsing은 run 초기화에서 정적 근거 준비·공통 환경 준비와 병렬로 수행하고, 아래 가설별 직렬 구간은 그 준비 결과(current `ProgramPolicyRecord` 또는 `PolicyCollectionResult`)를 소비만 한다. 정책의 준비 시점이 바뀔 뿐 Gate evaluation order는 그대로다.
+
 한 가설의 다음 구간은 병렬화하지 않는다.
 
 ```text
+run init: repository + program 확정 -> POLICY_FETCH (program별 1회) -> current ProgramPolicyRecord | ABSENT_CONFIRMED | COLLECTION_FAILED
+   (정적 근거 준비·공통 Docker/환경 준비와 병렬; 다른 run의 current·fresh 결과는 재사용)
+
 final TRUE VerificationResult with current generation SUCCEEDED + SUPPORTED reproduction and validated PoC
 -> R5-01 CWE_LABELING work
 -> current CWELabel bound to that exact Verification
 -> Technical Evidence Gate
 -> Technical ACCEPT와 TRUE 확인
--> PolicyCollectionResult
--> Rule Scope Impact Gate review 또는 COLLECTION_FAILED
+-> Rule Scope Impact Gate review 또는 COLLECTION_FAILED   (run-init current ProgramPolicyRecord + 공식 원문 소비)
 -> PrimitiveAdmissionDecision
    -> ALLOW: result Primitive admission + Chaining handoff
    -> DENY: no result Primitive

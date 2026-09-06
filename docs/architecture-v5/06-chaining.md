@@ -53,7 +53,7 @@ status는 따로 저장하지 않는다. `result=null`이면 HOLD에서 나온 �
 
 체이닝 재료 자격은 세 가지를 확인해 정한다 — `result`가 있는 Primitive일 것, 그 Primitive의 current `PrimitiveAdmissionDecision.decision=ALLOW`일 것, 그리고 직접 부모와 `source_primitive_match_id` 계보를 따라 도달하는 모든 result Primitive도 current `ALLOW`일 것. Chaining Agent는 `rule_compliance`나 `evidence_links`를 읽어 금지 테스트 위반을 추정하지 않는다. 위반 판정과 그 결론은 admission decision이 이미 담고 있다.
 
-Rule Scope의 나머지 판정은 보고 가능성만 가른다. 범위 밖 자산, 영향 부족, 중복, 프로그램 정책 부족, 보상 대상 클래스 아님은 체이닝을 막지 않는다. 확정된 금지 테스트 위반으로 `DENY`가 된 경우만 재료에서 제외된다. 정책상 보고할 수 없는 능력이라도 그것을 발판으로 삼는 다른 취약점은 보고 대상일 수 있기 때문이다.
+Rule Scope의 나머지 판정은 보고 가능성만 가른다. 범위 밖 자산, 영향 부족, 중복, 프로그램 정책 부족, `reward_conditions`상 보상 대상 클래스 아님은 체이닝을 막지 않는다. 확정된 금지 테스트 위반으로 `DENY`가 된 경우만 재료에서 제외된다. 정책상 보고할 수 없는 능력이라도 그것을 발판으로 삼는 다른 취약점은 보고 대상일 수 있기 때문이다. Chaining도 program scope를 이유로 기술적 hypothesis를 제거하지 않으며, run 초기화에서 준비된 정책의 collection/parser 실패를 verdict나 chaining 자격 변경으로 바꾸지 않는다.
 
 Chaining work를 시작할 때 Runtime은 사용 가능한 Primitive뿐 아니라 그 Primitive와 부모 체인의 current `ALLOW` decision reference도 `WorkExecutionState.input_refs`에 함께 고정한다. `source_admission_refs`에는 실제 match에 사용한 Primitive와 그 계보에서 재귀적으로 도달한 모든 admission decision을 중복 없이 기록하며, 이 목록은 실제 사용한 decision 집합과 정확히 같아야 한다.
 
