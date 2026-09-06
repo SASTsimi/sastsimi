@@ -200,7 +200,10 @@ program별 정책 준비(collection → parsing)는 실행 시작 runtime이 wor
 한 가설의 다음 구간은 병렬화하지 않는다.
 
 ```text
-run init: repository + program 확정 -> 실행 시작 runtime이 POLICY_FETCH 등록 (analysis·program별 1회) -> RunPolicyState (CURRENT | ABSENT | UNVERIFIED)
+run init: repository + program 확정
+   -> 실행 시작 runtime(RunInitializationService / Orchestration runtime)이 POLICY_FETCH 등록 (analysis·program별 1회)
+   -> Policy Collector -> Policy Parser
+   -> RunPolicyState 준비 완료 결과: CURRENT | ABSENT | UNVERIFIED | BLOCKED | FAILED
    (정적 근거 준비·공통 Docker/환경 준비와 병렬; 실행 간에는 run-neutral PolicyCacheRecord만 재사용하고, 새 analysis마다 새 RunPolicyState·PolicyCollectionResult·ProgramPolicyRecord를 생성해 current run에 귀속)
 
 final TRUE VerificationResult with current generation SUCCEEDED + SUPPORTED reproduction and validated PoC
@@ -209,7 +212,8 @@ final TRUE VerificationResult with current generation SUCCEEDED + SUPPORTED repr
 -> Technical Evidence Gate
 -> Technical ACCEPT와 TRUE 확인
 -> current RunPolicyState의 PolicyCollectionResult
--> Rule Scope Impact Gate review 또는 COLLECTION_FAILED   (run에 고정한 정책 + 공식 원문 소비)
+   ├─ FOUND | ABSENT_CONFIRMED -> Rule Scope Impact Gate review   (run에 고정한 정책 + 공식 원문 소비)
+   └─ COLLECTION_FAILED -> Rule Scope Gate·Reporter 미호출; 정책 준비 실패로만 기록하고 Verification verdict를 FALSE | HOLD로 바꾸지 않음
 -> PrimitiveAdmissionDecision
    -> ALLOW: result Primitive admission + Chaining handoff
    -> DENY: no result Primitive
