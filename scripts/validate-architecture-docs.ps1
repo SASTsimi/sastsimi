@@ -942,6 +942,41 @@ foreach ($rule in $requiredR8CommonContractRules) {
         Add-Failure "missing R8 common contract rule: $rule"
     }
 }
+
+$requiredR8PolicyOperationalRules = @(
+    '기본 `freshness_ttl`은 `CURRENT | ABSENT` 모두 24시간이며 R8이 승인한 versioned `freshness_criterion_ref`로만 바꾼다.',
+    '`ETag`, `Last-Modified`와 공식 출처 재확인 기록은 최신성 근거이고, 원문 `content_hash`는 확인한 내용의 식별자이며 `parser_version`은 cache 호환성과 재파싱 조건이다.',
+    '실행 간 재사용 여부는 run-neutral `PolicyCacheRecord`로 판단하며 다른 analysis의 `RunPolicyState`를 직접 재사용하지 않는다.',
+    'TTL 만료와 Parser 변경은 다음 run 시작의 cache 선택에만 적용하고, 확정된 `RunPolicyState`는 같은 run에서 다시 만료시키거나 교체하지 않는다.',
+    'Policy Collect는 최초 1회 뒤 최대 2회의 추가 재시도, Policy Parse는 최초 1회 뒤 provider·형식 오류에 최대 3회의 추가 재시도를 허용한다.',
+    '재시도 가능 오류는 같은 `POLICY_FETCH` work를 `BLOCKED`로 두고 새 attempt로 재개하며, 추가 재시도 소진 또는 복구 불가는 `FAILED`로 끝낸다.',
+    '정책 상태 재사용률의 분모는 current run의 exact `RunPolicyState`를 사용할 수 있었던 `RUN_SANDBOX | RULE_SCOPE_GATE` work 수이고, 분자는 추가 Collect·Parse 없이 그 exact state를 사용한 work 수다.',
+    '정책 재사용률의 분모는 run 시작 때 exact 호환성 검사를 통과한 유효 cache가 있던 `POLICY_FETCH` work 수이고, 분자는 추가 Collect·Parse 없이 그 cache로 run-local 결과를 만든 work 수다.',
+    '`LOCAL_ONLY` Sandbox는 policy freshness를 허가 근거로 사용하지 않으므로 정책 준비 실패·미확인·만료만으로 막거나 취소하지 않는다.'
+)
+foreach ($rule in $requiredR8PolicyOperationalRules) {
+    if (-not $resultText.Contains($rule)) {
+        Add-Failure "missing R8 policy operational rule: $rule"
+    }
+}
+
+$resultsWikiText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/results.md')
+if (-not $resultsWikiText.Contains('freshness·cache 재사용·Collect/Parse 한도와 실패 관측')) {
+    Add-Failure 'results Wiki is missing R8 policy freshness and reuse observability'
+}
+
+foreach ($obsoleteR8PolicyRule in @(
+    '| `parser_version` | LLM Policy Parser 흐름·프롬프트/스키마 버전. 바뀌면 재파싱 |',
+    '같은 `analysis`가 아니라도, 저장소가 가리키는 `program_id`에 **아직 유효한** `CURRENT|ABSENT` state가 있고',
+    '`policy_generation`은 최초 1, 만료 후 재준비 시 +1',
+    'Runtime Validator는 `RUN_SANDBOX` / `CALL_RULE_SCOPE_GATE` / `CREATE_REPORT_DRAFT` 직전마다 `RunPolicyState.freshness_valid_until`을 다시 본다',
+    'STALE/UNVERIFIED 또는 `freshness_valid_until` 경과로 Sandbox/Gate/Reporter가 막히거나 generation이 올라간 횟수',
+    '실행 중 `policy_generation`이 증가한 뒤'
+)) {
+    if ($resultText.Contains($obsoleteR8PolicyRule)) {
+        Add-Failure "obsolete R8 policy rule remains: $obsoleteR8PolicyRule"
+    }
+}
 if ($contractText -match 'POLICY_BLOCKED[^\r\n]*정적·찬반[^\r\n]*`ACCEPT`') {
     Add-Failure 'POLICY_BLOCKED without a validated PoC must not reach Technical ACCEPT'
 }
@@ -2541,6 +2576,7 @@ $requiredPolicyContractRules = @(
     @{ Name = 'CURRENT policy has enforceable freshness'; Text = $contractText; Marker = '`ProgramPolicyRecord.freshness_status=CURRENT`이면 `freshness_criterion_ref`, 하나 이상의 `freshness_evidence_refs`, `freshness_checked_at`과 run 시작 시점보다 미래인 `freshness_valid_until`이 모두 필수다.' },
     @{ Name = 'R8 owns freshness criteria'; Text = $contractText; Marker = 'freshness 기준값은 R8이 승인한 versioned 설정만 사용한다.' },
     @{ Name = 'Gate guide keeps R8 freshness ownership'; Text = $gateText; Marker = '최신성 기준값은 R8이 승인한 versioned 설정을 사용하고 R5는 그 결과를 정책 의미로 해석한다.' },
+    @{ Name = 'Gate ALLOW uses the frozen run-start policy state'; Text = $gateText; Marker = '이 조건은 Gate 시점에 TTL을 다시 계산한다는 뜻이 아니다.' },
     @{ Name = 'Gate Wiki distinguishes collection failure'; Text = $gateWikiText; Marker = '`COLLECTION_FAILED`는 Rule Scope review를 만들지 않습니다.' },
     @{ Name = 'Gate diagram routes collection failure through admission runtime'; Text = $diagramText; Marker = 'COLLECT -->|COLLECTION_FAILED| ARUN[R4 Primitive Admission Runtime]' },
     @{ Name = 'Gate evidence links are complete'; Text = $contractText; Marker = '`PASS | FAIL | SUFFICIENT | INSUFFICIENT`인 각 판단 영역은 같은 area의 `RuleScopeEvidenceLink`를 하나 이상 가져야 한다.' },
@@ -2764,6 +2800,7 @@ Write-Output "R4-03 exact requester bindings: $($requiredActionRequesterBindings
 Write-Output "R4-03 ActionCheck types: $($requiredActionChecks.Count)"
 Write-Output "R4-03 AnalysisRunResult handoff fields: $($requiredAnalysisResultFields.Count)"
 Write-Output "R8 common contract rules: $($requiredR8CommonContractRules.Count)"
+Write-Output "R8 policy operational rules: $($requiredR8PolicyOperationalRules.Count)"
 Write-Output 'R5-03 ReportDraft safety fields: 8'
 Write-Output 'R4-03 exact LLM call blocks: 2'
 Write-Output "R4-03 authority errors: $($requiredAuthorityErrors.Count)"
