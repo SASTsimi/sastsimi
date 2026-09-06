@@ -78,9 +78,9 @@ Agent 또는 service의 제안
 
 프로그램 검사기는 이 두 Gate의 순서와 입력 수정본만 확인합니다. Gate 결론은 LLM Gate가 만듭니다. 정책 준비 시점은 run 초기화(program별, 정적 준비와 병렬)로 앞당겨졌지만 Gate evaluation 순서는 그대로이며, Rule Scope Gate는 Technical `ACCEPT` 이후 준비된 current `ProgramPolicyRecord`를 소비합니다. 공식 정책 부재를 확인한 `ABSENT_CONFIRMED`이면 Rule Scope 결과는 `UNCERTAIN + DENY`이며 Reporter를 부르지 않습니다. 정책을 가져오지 못한 `COLLECTION_FAILED`(fetch 실패 또는 parser 실패)이면 Rule Scope 결과 자체를 만들지 않고, 어느 경우도 `VerificationResult` verdict를 바꾸지 않습니다.
 
-Sandbox 실행 전 restriction precheck와 Rule Scope Gate는 같은 준비된 `testing_restrictions`를 서로 다른 목적으로 읽습니다. precheck는 계획한 방법이 허용되는지 사전 확인하는 R7/Sandbox 판단이고, `testing_restriction_compliance`는 실제 수행 사실을 정책과 비교한 authoritative 판정입니다.
+Sandbox Controller는 bug bounty program testing restriction의 의미 준수 여부를 판정하지 않습니다. 실행 전에는 `sandbox_profile_ref`의 isolation·egress·resource·external-boundary만 강제하고, Sandbox 안에서 Agent가 고른 command·PoC를 program-policy allowlist처럼 해석하지 않습니다. 공식 testing restriction과 실제 수행 행위의 의미 비교는 Rule Scope Gate의 `testing_restriction_compliance`가 담당하는 유일한 authoritative 판정입니다. `SandboxPolicyDecision`의 `ALLOW`는 external/live target testing 허가가 아닙니다.
 
-Gate를 실제 호출하기 직전에도 검사한 입력 수정본이 그대로인지 다시 확인합니다. Technical Gate는 exact Verification과 이를 직접 가리키는 current CWELabel을, Rule Scope Gate는 여기에 같은 Technical 검토와 exact 정책 수집 결과·존재하는 정책 record를, Reporter는 두 Gate가 검토한 동일한 결과 묶음을 사용해야 합니다. 중간에 하나라도 바뀌거나 정책 최신성이 만료되면 기존 허가는 만료되고 새 요청이 필요합니다.
+Gate를 실제 호출하기 직전에도 검사한 입력 수정본이 그대로인지 다시 확인합니다. Technical Gate는 exact Verification과 이를 직접 가리키는 current CWELabel을, Rule Scope Gate는 여기에 같은 Technical 검토와 exact 정책 수집 결과·존재하는 정책 record를, Reporter는 두 Gate가 검토한 동일한 결과 묶음을 사용해야 합니다. 중간에 검토한 입력 수정본이 하나라도 바뀌면 기존 허가는 만료되고 새 요청이 필요합니다. 정책은 run 초기화에서 고정한 exact revision을 쓰므로 run 도중 정책 최신성을 다시 검사하지 않습니다.
 
 Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아닙니다. 같은 가설의 Verification owner가 직접 받고, Verification 또는 CWE가 실제로 보완된 새 수정본이 생겨야 새 Gate 작업을 시작할 수 있습니다. Orchestration이나 Chaining이 목적지를 다시 고르지 않습니다. 로그인 실패나 잘못된 출력의 제한 재시도와 이 보완 재검토는 별개입니다.
 

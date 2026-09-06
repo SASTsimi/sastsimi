@@ -114,22 +114,23 @@ Runtime Validator는 `REVISE`를 만든 기존 action·decision을 다시 사용
 
 - **Policy Collector**는 비-LLM component이며 공식 정책 원문을 수집해 `PolicyCollectionResult`와 (`FOUND`이면) `ProgramPolicyRecord`를 생산한다.
 - **Policy Parser**는 LLM component이며 수집된 공식 원문을 구조화해 `PolicyParserResult`를 생산한다.
-- 같은 run에서 같은 `program_id`에 대한 collection/parsing은 한 번만 수행한다. 이후 Sandbox 실행 restriction precheck와 각 hypothesis의 Rule Scope Gate가 그 준비된 결과를 재사용한다.
-- 다른 run에서도 `freshness_status=CURRENT`이고 current parser version과 일치하는 결과는 재사용할 수 있다.
-- 정책이 변경·만료되었거나 freshness 검증에 실패했거나 Parser version이 변경되면 필요한 collection/parsing을 다시 수행한다.
+- 같은 run에서 같은 `program_id`에 대한 collection/parsing은 한 번만 수행한다. run-init에서 확정한 정책은 그 run이 끝날 때까지 동일한 exact revision을 유지하고, 각 hypothesis의 Rule Scope Gate가 그 고정된 결과를 정책 의미 판정에 소비한다.
+- `freshness_status=CURRENT`, parser version, 정책 변경 감지는 **새 analysis run을 시작할 때** 이전 run이 남긴 정책 자료를 다시 쓸 수 있는지 판단하는 조건이다. 사용 가능하면 그 자료를 근거로 새 run 소유의 정책 record를, 사용 불가하면 새 collect + parse로 새 run 소유의 정책 record를 만든다.
+- 같은 run 도중에는 freshness 재계산, parser version 재검사, `POLICY_FETCH` 재실행, collection/parsing 재실행, `ProgramPolicyRecord` 교체, `policy_generation` 증가를 하지 않는다. Gate·Reporter는 run-init에서 고정한 exact revision을 소비할 뿐 freshness를 다시 계산하지 않는다.
+- run 도중 공식 정책 변경이 별도로 확인되면 현재 정책 reference를 바꾸지 않고, 새 Rule Scope policy-semantic 판정·Reporter·disclosure 등 policy-dependent downstream 작업을 fail-closed로 차단하며 갱신된 정책은 새 analysis run에서 준비한다. isolated `LOCAL_ONLY` Sandbox reproduction은 이 정책 변경·freshness 만료 때문에 자동 차단하거나 만료 처리하지 않는다.
 - policy collection/parsing 실패를 `VerificationResult`의 `FALSE | HOLD`로 변환하지 않는다.
 - hypothesis generation/Verification/Chaining은 program scope를 이유로 기술적 hypothesis를 제거하지 않는다. 실제 scope/reportability 판단은 hypothesis마다 Rule Scope Gate가 수행한다.
 
 Rule Scope Gate는 Technical `ACCEPT` 이후 이미 준비된 current `ProgramPolicyRecord`를 소비한다. Gate evaluation order(Verification final TRUE → Technical Evidence Gate ACCEPT → Rule Scope Gate → Finding / Reporter)는 준비 시점 변경과 무관하게 유지한다.
 
-### Sandbox restriction precheck와 Rule Scope Gate의 authority boundary
+### Sandbox 실행 경계와 Rule Scope Gate의 authority boundary
 
-같은 준비된 `ProgramPolicyRecord.testing_restrictions`를 두 지점이 서로 다른 목적으로 읽는다.
+- **Sandbox Controller**는 bug bounty program testing restriction의 semantic compliance를 판정하지 않는다. 실행 전에는 `sandbox_profile_ref`와 실행 안전 계약에 따라 host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace 격리와 CPU·RAM·disk·PID·timeout 같은 isolation/safety/external-boundary만 강제하고, Sandbox 안에서 Agent가 고른 command·package·PoC를 program-policy allowlist처럼 의미 해석하지 않는다.
+- **Rule Scope Gate의 `testing_restriction_compliance`**는 실제 수행한 execution facts와 공식 program testing restriction을 비교한 유일한 authoritative semantic 판정이며, R4 admission과 Reporter 자격의 근거다.
+- `SandboxPolicyDecision`의 `ALLOW | DENY`는 외부 격리 경계 판정일 뿐 program policy submission·reportability 판단이 아니고, `POLICY_BLOCKED`은 isolation/safety/external-boundary enforcement 실패이지 `testing_restriction_compliance=FAIL`이 아니다.
+- `execution_scope=LOCAL_ONLY` Sandbox 실행 허용은 external/live target testing 허가를 의미하지 않는다.
 
-- **Sandbox 실행 전 restriction precheck**는 계획한 재현/검증 방법이 정책상 허용되는지 사전 확인하는 R7/Sandbox 도메인 판단이며, 위반이 예상되면 실행을 진행하지 않는다. 이 precheck는 authoritative compliance verdict가 아니다.
-- **Rule Scope Gate의 `testing_restriction_compliance`**는 실제 수행한 execution facts와 정책을 비교한 authoritative 판정이며, R4 admission과 Reporter 자격의 근거다.
-
-취약점 자체가 in-scope인 것과 실제 검증/테스트 방법이 정책상 허용되는 것은 별개의 판단이다.
+취약점 자체가 in-scope인 것과 실제 검증/테스트 방법이 정책에 부합하는지는 별개의 판단이며, 후자의 authoritative 판정자는 Rule Scope Gate다.
 
 ## Gate 2: Rule Scope Impact Gate Agent
 
@@ -157,7 +158,7 @@ Parser는 최소한 다음 의미 영역을 서로 구분해 구조화한다. �
 |---|---|---|---|
 | asset scope | `in_scope_assets`, `out_of_scope_assets` | 어떤 repository·application·asset·endpoint·package·version이 대상인지 | `scope_compliance` |
 | vulnerability type / eligibility | `accepted_vulnerability_classes`, `excluded_vulnerability_classes` | 어떤 취약점 class가 보고 적격/부적격인지 | `rule_compliance`와 `scope_compliance`의 class 축 |
-| testing restrictions | `testing_restrictions` | 허용·금지된 검증/테스트·재현 방법 | Sandbox precheck(사전)와 `testing_restriction_compliance`(사후 authoritative) |
+| testing restrictions | `testing_restrictions` | 허용·금지된 검증/테스트·재현 방법 | Rule Scope Gate의 `testing_restriction_compliance` (실제 수행 사실 대비 authoritative 판정) |
 | reward / bounty conditions | `reward_conditions` | 보상 산정·지급 조건 | 보고서 context 정보. `report_permission`이나 technical reportability와 동일하게 취급하지 않는다 |
 | impact criteria | `impact_criteria` | 프로그램이 요구하는 최소 impact·severity 기준 | `security_impact` |
 
@@ -183,10 +184,10 @@ R8이 승인한 적용 기준을 함께 기록한 판정이다. source-native cu
 
 freshness 판정은 `freshness_checked_at`, 승인된 criterion reference, 하나 이상의 source-native 또는 수집 시각 evidence reference와 해당 판정을 유효하게 사용할 수 있는 미래의 `freshness_valid_until`을 함께 가진 assertion이어야
 한다. R5는 모든 정책에 임의의 TTL을 만들지 않는다. criterion을 정할 수 없거나 currentness 확인이
-끝나지 않으면 `UNVERIFIED + DENY`다. runtime은 정책 의미를 판단하지 않고 Gate 2 action 허가·실제 호출
-직전과 Reporter action 허가·실제 호출 직전에 같은 exact policy
-revision이 아직 `CURRENT`인지 검사한다. stale이 되거나 currentness가 깨지면 기존 Gate 2 결과를
-새 downstream action에 재사용하지 않는다.
+끝나지 않으면 `UNVERIFIED + DENY`다. 정책은 analysis run 시작 시 확정한 exact revision을 run 종료까지
+그대로 사용한다. Gate 2와 Reporter는 run-init에서 고정한 exact policy revision을 소비하며 freshness를
+다시 계산하지 않는다. freshness와 parser version은 다음 analysis run을 시작할 때 이전 결과 재사용 여부를
+판단하는 조건일 뿐이며, run 도중 정책 revision을 교체하거나 새 collection/parsing을 실행하지 않는다.
 
 저장소 문서나 모델 기억을 공식 정책으로 자동 승격하지 않는다. 정책 수집은 다음 상태를 계속 구분한다.
 
@@ -195,7 +196,7 @@ revision이 아직 `CURRENT`인지 검사한다. stale이 되거나 currentness�
 - `COLLECTION_FAILED`: 공식 정책을 가져오지 못한 상태다. 정책 부재를 의미하지 않는다. 하나 이상의 `AnalysisError`를 기록하고 Rule Scope Gate work·review·Reporter를 만들지 않으며 `UNCERTAIN + DENY`로 변환하지 않는다.
 - **Parser failure**: 원문(`source_ref`)은 수집했지만 LLM Policy Parser가 구조화에 실패한 경우다. collection failure와 구분해 실패한 `PolicyParserResult` reference·`error_ids`와 확인한 공식 source를 보존한다. 공통 R4 enum상 `PolicyCollectionResult.status`는 `COLLECTION_FAILED`이지만 원인이 다르다.
 
-`COLLECTION_FAILED`(collection failure 또는 parser failure)를 `VerificationResult.FALSE` 또는 `VerificationResult.HOLD`로 변환하지 않는다. Policy 준비 실패는 policy-dependent action(Sandbox restriction precheck, Rule Scope Gate decision, Reporter)만 fail-closed시키며 기술적 Verification verdict와 분리한다.
+`COLLECTION_FAILED`(collection failure 또는 parser failure)를 `VerificationResult.FALSE` 또는 `VerificationResult.HOLD`로 변환하지 않는다. Policy 준비 실패는 program-policy semantic dependency가 있는 작업(Rule Scope Gate의 policy-semantic 판정, Reporter, disclosure/report downstream)만 fail-closed시키며 기술적 Verification verdict와 분리한다. Sandbox Controller의 isolation/safety enforcement 자체는 program policy freshness·availability에 종속되지 않는다.
 
 `FOUND`라도 핵심 자료가 누락되거나 `freshness_status=STALE | UNVERIFIED`이면 최신 정책으로 취급하지 않는다. 최신성 기준값과 재수집 주기는 R8이 승인한 versioned 설정을 사용하고 R5는 그 결과를 정책 의미로 해석한다. stale·미검증 상태의 Gate 결과는 항상 `UNCERTAIN + DENY`다.
 
@@ -210,15 +211,13 @@ ProgramPolicyRecord
  └─ H3 Rule Scope Gate
 ```
 
-Policy parsing 결과를 hypothesis-specific verdict로 저장하지 않는다. 각 `RuleScopeImpactReview`는 사용한 exact/current `ProgramPolicyRecord` reference(`policy_record_ref.record_id`)를 추적한다.
+Policy parsing 결과를 hypothesis-specific verdict로 저장하지 않는다. 같은 run의 모든 hypothesis는 run-init에서 고정한 동일한 exact `ProgramPolicyRecord` revision을 공유하며, 각 `RuleScopeImpactReview`는 그 exact reference(`policy_record_ref.record_id`)를 추적한다.
 
-현재 `ProgramPolicyRecord`가 `STALE | UNVERIFIED`이면 해당 정책을 사용해 생성한 기존 `PASS | ALLOW` Rule Scope 결과를 current 결과로 재사용할 수 없다. 다음 경우에도 기존 structured policy와 그에 의존한 Rule Scope 결과를 재사용하지 않고 필요한 만큼 reparse/재수집한다.
+freshness와 parser version은 **새 analysis run을 시작할 때** 이전 run이 남긴 정책 결과를 다시 쓸 수 있는지 판단하는 조건이다. 새 run 시작 시 이전 정책 결과가 `freshness_status=CURRENT`이고 current parser version과 호환되면 그 자료를 근거로 새 run 소유의 정책 artifacts를 만들고, 그렇지 않으면 새 collect + parse로 새 run 소유의 정책 artifacts를 만든다.
 
-- Parser version 변경: current parser version이 record의 `parser_version`과 다르면 재파싱하고, 이전 structured policy로 만든 Rule Scope 결과는 current가 아니다.
-- policy expiration/change: 원문·정책 내용이 바뀌면 새 exact revision으로 취급한다.
-- freshness verification failure: `freshness_status`가 `STALE | UNVERIFIED`가 된다.
+같은 run 도중에는 freshness 재계산, parser version 재검사, 새 `POLICY_FETCH` 실행, `ProgramPolicyRecord` 교체, `policy_generation` 증가를 하지 않는다. run 도중 공식 정책 변경이 별도로 확인되면 현재 정책 reference를 바꾸지 않고, 새 Rule Scope policy-semantic 판정·Reporter·disclosure 등 policy-dependent downstream 작업을 fail-closed로 차단하며 갱신된 정책은 새 analysis run에서 준비한다. isolated `LOCAL_ONLY` Sandbox reproduction은 이 정책 변경 때문에 자동 차단하거나 만료 처리하지 않는다.
 
-이 invalidation은 §8의 revision/CAS·stale enforcement 공통 계약과 정합하게 처리하며 R5가 별도 규칙을 새로 만들지 않는다.
+`UNVERIFIED`(freshness 기준을 적용·확인하지 못함)와 공식 정책 부재를 확인한 `ABSENT_CONFIRMED`이면 Rule Scope는 `UNCERTAIN`, `report_permission=DENY`다.
 
 Policy Parser만 `PolicyParserResult`를, Policy Collector만 `PolicyCollectionResult`와 `ProgramPolicyRecord`를 생산한다. R5는 이 exact artifact를 입력으로 받아 Rule·Scope·Impact 의미만 판정한다.
 
@@ -409,7 +408,8 @@ authenticity `VERIFIED` 또는 freshness `CURRENT`를 부여하지 않는다. �
 | official source fetch 실패 (collection failure) | `POLICY_FETCH_ERROR`; `COLLECTION_FAILED`; 성공한 Gate review 없음; verdict 미변경 |
 | 원문 수집 후 parser 실행 실패 (parser failure) | `POLICY_PARSE_ERROR`; 확인한 official source 보존; `COLLECTION_FAILED`; POLICY-stage `AnalysisError`; `UNCERTAIN`으로 변환 금지; verdict 미변경 |
 | Parser 정규화 결과가 `source_ref + source_locator` 원문과 모순 또는 원문 확인 불가 | fail-closed: 해당 영역 `UNCERTAIN`, `report_permission=DENY`, `PolicyMissingInfo(area=SOURCE, blocks_allow=true)` |
-| current `ProgramPolicyRecord`가 `STALE | UNVERIFIED` 또는 parser version 불일치 | 그 record에 의존한 기존 `PASS | ALLOW` Rule Scope 결과를 current로 재사용 불가; 필요한 collection/parsing 재수행 |
+| run 시작 시 이전 정책 자료가 `STALE`이거나 parser version 비호환 | 그 자료를 재사용하지 않고 새 collect + parse로 새 run 소유 정책 record 생성 (run 도중 재수행 아님) |
+| run 도중 공식 정책 변경 감지 또는 `UNVERIFIED` | 현재 run 정책 reference 교체 금지; 새 Rule Scope 판정·Reporter 등 policy-dependent downstream fail-closed(`UNCERTAIN + DENY`), 갱신 정책은 새 analysis run에서 준비; `LOCAL_ONLY` Sandbox는 미영향 |
 | malformed parser output 또는 존재하지 않는 record/hash를 Gate 출력이 참조 | `INVALID_OUTPUT` |
 | 지원하지 않는 parser/policy schema MAJOR | `SCHEMA_UNSUPPORTED`; malformed output과 구분 |
 | Gate 시작 전 요구 exact revision과 전달 revision 불일치 | `RECORD_REVISION_MISMATCH`; 선행 Gate/status 자체가 없거나 순서가 틀리면 `GATE_ORDER_INVALID` |
@@ -556,9 +556,10 @@ cookie·authorization secret, 불필요한 PII, 내부 secret과 private/raw rea
 chain-of-thought 성격의 비공개 원문을 `content_ref`에 넣지 않는다. 민감정보를 먼저 저장하고 나중에
 제거하는 흐름은 허용하지 않는다. 이 검사는 `ReportDraft.redaction_status=PASSED`와 일치해야 한다.
 
-ReportDraft가 참조한 `Finding`, `VerificationResult`, `CWELabel`, `TechnicalEvidenceReview`,
-`RuleScopeImpactReview` 또는 `ProgramPolicyRecord` 중 하나라도 새 current revision으로 바뀌면 기존 초안은
-감사 기록으로만 남고 `AnalysisRunResult.report_draft_refs`의 current 결과로 사용할 수 없다. 새 exact
+ReportDraft가 참조한 `Finding`, `VerificationResult`, `CWELabel`, `TechnicalEvidenceReview`
+또는 `RuleScopeImpactReview` 중 하나라도 새 current revision으로 바뀌면 기존 초안은
+감사 기록으로만 남고 `AnalysisRunResult.report_draft_refs`의 current 결과로 사용할 수 없다. 정책
+revision은 run에 고정되므로 이 트리거에 포함하지 않는다. 새 exact
 dependency chain에서 필요한 Gate와 Reporter 흐름을 다시 수행해 새 ReportDraft를 만든다. Reporter는
 공통 `Finding`/`FindingCandidate` schema나 lifecycle을 재설계하지 않으며 current Finding이 없으면
 `CREATE_REPORT_DRAFT`를 허용하지 않고 `report_draft_refs=[]`와 기존 `REPORT_NOT_READY` 오류·상태 원인을

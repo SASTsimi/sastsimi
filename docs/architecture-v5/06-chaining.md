@@ -57,9 +57,9 @@ Rule Scope의 나머지 판정은 보고 가능성만 가른다. 범위 밖 자�
 
 Chaining work를 시작할 때 Runtime은 사용 가능한 Primitive뿐 아니라 그 Primitive와 부모 체인의 current `ALLOW` decision reference도 `WorkExecutionState.input_refs`에 함께 고정한다. `source_admission_refs`에는 실제 match에 사용한 Primitive와 그 계보에서 재귀적으로 도달한 모든 admission decision을 중복 없이 기록하며, 이 목록은 실제 사용한 decision 집합과 정확히 같아야 한다.
 
-결과를 저장하기 직전에 실제로 사용한 decision을 다시 확인한다. 하나라도 current가 아니거나 `DENY`로 바뀌었으면 `STALE_RESULT`로 저장을 거절하고 새 자식 가설을 만들지 않는다. 이때 기존 가설의 verdict를 `FALSE`나 `HOLD`로 바꾸지 않는다. 실제 match에 사용하지 않은 후보의 decision 변경만으로는 진행 중인 결과를 무효화하지 않는다.
+결과를 저장하기 직전에 실제로 사용한 decision을 다시 확인한다. 같은 run의 Verification·Technical review 또는 Rule Scope review에서 실제 검증 근거가 수정되어 decision 하나라도 current가 아니거나 `DENY`로 바뀌었으면 `STALE_RESULT`로 저장을 거절하고 새 자식 가설을 만들지 않는다. 이때 기존 가설의 verdict를 `FALSE`나 `HOLD`로 바꾸지 않는다. 정책 freshness 만료·parser version 변경과 실제 match에 사용하지 않은 후보의 decision 변경만으로는 진행 중인 결과를 무효화하지 않는다.
 
-이미 만들어진 자식과 그 아래 세대도 같은 계보 확인을 받는다. 부모의 admission이 나중에 `DENY`로 바뀌면 파생 결과는 감사 기록으로만 보존하고 새 Verification·Gate·Primitive·Reporter 입력으로 사용하지 않는다.
+이미 만들어진 자식과 그 아래 세대도 같은 계보 확인을 받는다. 같은 run에서 부모의 실제 검증 근거가 수정되어 admission이 `DENY`로 바뀌면 파생 결과는 감사 기록으로만 보존하고 새 Verification·Gate·Primitive·Reporter 입력으로 사용하지 않는다. 정책 갱신은 다음 analysis run에서만 적용하므로 정책 revision 변경만으로 현재 run의 부모 admission을 소급 교체하지 않는다.
 
 Technical Gate는 자기 입력으로 확인할 수 있는 근거 품질을 판단한다 — validated PoC가 실제로 연결되는지(`dynamic_linkage`), 실제 경로가 근거와 이어지는지(`code_flow_linkage`), restrictions가 정확히 표현됐는지(`restriction_assessment`). 하나라도 통과하지 못한 TRUE는 체이닝에 들어가지 않는다. 부모의 제약 서술이 부정확하면 그 오류가 자식 가설의 `Restriction` 합집합으로 그대로 승계되기 때문이다.
 

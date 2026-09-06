@@ -32,9 +32,9 @@ Parser가 구조화하는 정책 영역은 최소한 asset scope(`in_scope_asset
 
 각 Gate-relevant `PolicyItem`에는 `source_ref`(Collector가 보존한 공식 source)와 `source_locator`(원문 위치)가 있어야 합니다. Gate는 structured `ProgramPolicyRecord` + `source_ref + source_locator`의 공식 원문 + 현재 hypothesis/verification 사실을 함께 사용하고, 필요하면 원문을 직접 확인해 Parser 정규화가 원문과 일치하는지 검증합니다. 원문을 확인할 수 없거나 Parser 결과와 모순되면 fail-closed하여 해당 영역을 `UNCERTAIN`, permission을 `DENY`로 두고 `PolicyMissingInfo(area=SOURCE, blocks_allow=true)`에 근거를 남깁니다.
 
-`ProgramPolicyRecord`는 program-level artifact이므로 같은 program의 여러 hypothesis(H1·H2·H3)는 각각 별도 Rule Scope Gate evaluation을 수행하되 같은 current `ProgramPolicyRecord`를 재사용하고, 정책 parsing 결과를 hypothesis-specific verdict로 저장하지 않습니다. 각 review는 사용한 exact `policy_record_ref.record_id`를 추적합니다. 그 record가 `STALE | UNVERIFIED`가 되거나 current parser version과 `parser_version`이 달라지면 그 record로 만든 기존 `PASS | ALLOW` Rule Scope 결과를 current 결과로 재사용하지 않고 필요한 collection/parsing을 다시 수행합니다.
+`ProgramPolicyRecord`는 program-level artifact이므로 같은 program의 여러 hypothesis(H1·H2·H3)는 각각 별도 Rule Scope Gate evaluation을 수행하되 같은 current `ProgramPolicyRecord`를 재사용하고, 정책 parsing 결과를 hypothesis-specific verdict로 저장하지 않습니다. 각 review는 사용한 exact `policy_record_ref.record_id`를 추적합니다. 이 revision은 run에 고정되어 같은 run 안에서 교체되지 않으며, `STALE | UNVERIFIED` 여부와 parser version 변경은 다음 analysis run이 이전 정책 자료를 재사용할지 판단하는 조건입니다. run 도중 공식 정책 변경이 확인되면 현재 정책 reference를 바꾸거나 `POLICY_FETCH`를 다시 실행하지 않고 policy-dependent downstream(새 Rule Scope 판정·Reporter·disclosure)을 fail-closed(`UNCERTAIN + DENY`)하며 갱신 정책은 새 analysis run에서 준비합니다.
 
-Rule Scope 결과에는 `policy_collection_result_ref`로 정책 수집 결과를 고정하고, 자신이 읽은 Verification, Technical review, CWELabel과 존재하는 정책 record의 정확한 `record_id`를 남깁니다. Rule·Scope·Impact와 독립된 `testing_restriction_compliance: PASS | FAIL | UNCERTAIN` 판정은 실제 정책 항목과 코드·실행 근거에 연결하고, 부족한 정보는 어느 판단을 막는지 구조화해 남깁니다. 입력 중 하나라도 수정되거나 정책 최신성이 만료되면 이전 Rule Scope 결과를 재사용하지 않습니다.
+Rule Scope 결과에는 `policy_collection_result_ref`로 정책 수집 결과를 고정하고, 자신이 읽은 Verification, Technical review, CWELabel과 존재하는 정책 record의 정확한 `record_id`를 남깁니다. Rule·Scope·Impact와 독립된 `testing_restriction_compliance: PASS | FAIL | UNCERTAIN` 판정은 실제 정책 항목과 코드·실행 근거에 연결하고, 부족한 정보는 어느 판단을 막는지 구조화해 남깁니다. Verification·Technical review 등 검증 근거 입력이 수정되면 이전 Rule Scope 결과를 재사용하지 않으며, run 도중 정책 freshness를 다시 계산하지는 않습니다.
 
 Technical Gate가 `ACCEPT`할 때 검토한 Verification/CWELabel과 Gate 2의 두 exact input revision은 각각 같아야 하며, Gate는 Verification verdict나 hypothesis를 수정하지 않습니다.
 
@@ -50,7 +50,7 @@ Rule은 eligibility·허용/제외 class·금지 testing method·명시 rule을,
 
 공식 정책 자료의 실제 부재가 확인되거나 authenticity·핵심 정보가 부족하면 관련 항목은 `UNCERTAIN`이고 permission은 `DENY`다. freshness는 R8이 승인한 source-native 유효성 기준 또는 필요한 프로그램별 threshold를 만족할 때만 `CURRENT`다. threshold가 필요한데 미확정이거나 적용 기준이 없으면 `UNVERIFIED + DENY`이며 최근 fetch만으로 `CURRENT`를 만들지 않는다. 저장소 문서나 모델 기억으로 공식 정책을 추정하지 않는다. source URL, 수집 원문, parser version/output과 각 PolicyItem의 원문 locator를 보존한다.
 
-기존 `ProgramPolicyRecord`의 freshness 상태와 확인 시각을 사용한다. Gate 2와 Reporter의 action 허가·실제 호출 직전에 exact policy revision이 여전히 `CURRENT`인지 다시 검사하며 stale Gate 2 결과는 Reporter에 재사용하지 않는다. R5-02가 독립 freshness schema나 공통 TTL을 만들지 않고 기준이 없으면 `UNVERIFIED + DENY`다.
+run 시작 시 확정한 `ProgramPolicyRecord`의 freshness 상태와 확인 시각을 그대로 사용한다. Gate 2와 Reporter는 run-init에서 고정한 같은 exact policy revision을 소비하며 run 도중 freshness를 다시 계산하지 않는다. 검증 근거 입력 수정으로 Gate 2 결과가 오래되면 그 결과를 Reporter에 재사용하지 않는다. R5-02가 독립 freshness schema나 공통 TTL을 만들지 않고 기준이 없으면 `UNVERIFIED + DENY`다.
 
 정책 수집은 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`를 구분한다. `FOUND`는 exact parser result·공식 source와 `ProgramPolicyRecord`를 연결한다. 실제 부재를 확인한 `ABSENT_CONFIRMED`만 provenance/DataGap에 근거한 정상 `UNCERTAIN + DENY`가 될 수 있다. `COLLECTION_FAILED`는 AnalysisError와 함께 `AnalysisRunResult`에 남기지만 Gate work를 호출하지 않고 `RuleScopeImpactReview`를 생성하지 않는다. 따라서 downstream Reporter도 진행할 수 없다.
 
