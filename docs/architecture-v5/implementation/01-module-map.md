@@ -194,6 +194,8 @@ work/output 표에는 `CodeWorkspace`, `ToolRunResult`, schema-valid `Hypothesis
 
 현재 공통 계약의 `RUN_SANDBOX`는 가설별 exact `DynamicReproductionRequest`, `EnvironmentRequirements`, `ReproductionPlan`과 attempt를 요구한다. 따라서 가설이 만들어지기 전 Docker baseline 준비에 이 action을 그대로 사용하거나 `EnvironmentRecipe`·`SandboxEnvironment`를 미리 생성하면 기존 R4·R7 계약을 위반한다.
 
+실제 pull/build를 수행한다면 가설별 `RUN_SANDBOX`와 분리된 run-init 전용 action type·requester·실행 권한 및 R7 강제 상한·R8 실행 예산의 exact 설정 reference를 B5에서 확정한다. 이 계약이 생기기 전에는 readiness 확인처럼 host Docker 상태를 바꾸지 않는 검사만 허용한다.
+
 - R3 책임: workspace READY 뒤 세 branch를 등록하고 서로의 성공을 잘못된 join 조건으로 만들지 않는 orchestration mapping 확정
 - R7 책임: 사전 준비가 실제 Docker build인지 image pull/cache warm인지, 재사용 가능한 대상이 read-only content-addressed layer로 제한되는지와 network·CPU·RAM·disk·PID·요청 가능 최대 시간 강제 상한 확정
 - R4 책임: 실제 host Docker 동작이 필요하다면 requester, action type, exact input, output/log, 상태·retry·취소·권한 검사와 저장 여부 확정

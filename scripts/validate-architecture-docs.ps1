@@ -2628,6 +2628,7 @@ $requiredR301RunInitFanoutRules = @(
     '예산이 부족하면 Docker baseline 준비를 시작하지 않거나 중단하고 `SKIPPED` 사유를 남긴다.',
     'Docker baseline의 실패·중단·건너뜀만으로 분석을 `PARTIAL | FAILED` 또는 가설 `FALSE`로 바꾸지 않는다.',
     '`DynamicReproductionLifecycleProfile`은 가설별 `DYNAMIC_REPRO` 전용이므로 run-init Docker 준비에 재사용하지 않는다.',
+    '실제 pull/build를 수행한다면 가설별 `RUN_SANDBOX`와 분리된 run-init 전용 action type·requester·실행 권한 및 R7 강제 상한·R8 실행 예산의 exact 설정 reference를 B5에서 확정한다.',
     '`HIT | MISS | PREPARED | FAILED | SKIPPED`를 서로 다른 관측값으로 남기고 `MISS`를 실패로 집계하지 않는다.',
     '측정하지 못한 disk·network 사용량은 추정값으로 채우지 않고 `null`과 측정 불가 사유를 남긴다.',
     'B5. run-init Docker baseline 준비의 action·result binding'
