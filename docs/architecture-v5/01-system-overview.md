@@ -10,15 +10,15 @@
 
 ## 목표와 경계
 
-SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git commit을 checkout한 뒤 정적 사실을 수집한다. 이후 LLM Agent가 가설 생성·검증·기술 검토·프로그램 정책 검토·보고서 초안을 단계적으로 수행한다. 정적 분석 도구와 LLM 출력 모두 단독으로 Finding이 되지 않는다. Agent 자동화는 `ReportDraft` 생성과 `AnalysisRunResult` 확정 뒤 끝나며, 그 이후 검토·수정·제출·공개는 시스템 밖에서 사람이 수행한다.
+SASTSIMI v5는 승인된 내부 `program_id` 하나와 저장소를 `AnalysisStartRequest`로 입력받는다. 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git commit을 checkout한 뒤 AST·SAST와 실행 단위 정책 준비를 독립 병렬 실행한다. 이후 LLM Agent가 가설 생성·검증·기술 검토·프로그램 정책 검토·보고서 초안을 단계적으로 수행한다. 정적 분석 도구와 LLM 출력 모두 단독으로 Finding이 되지 않는다. Agent 자동화는 `ReportDraft` 생성과 `AnalysisRunResult` 확정 뒤 끝나며, 그 이후 검토·수정·제출·공개는 시스템 밖에서 사람이 수행한다.
 
 ## 정본 22단계
 
 | 단계 | 처리 | 주 산출물 또는 조건 |
 |---:|---|---|
-| 1 | 저장소 입력 | repository reference |
+| 1 | 저장소와 분석할 프로그램 입력. 내부 `program_id` 하나를 명시하며 같은 저장소의 다른 프로그램은 별도 run으로 요청 | `AnalysisStartRequest` |
 | 2 | 저장소 clone과 commit checkout | `CodeWorkspace` |
-| 3 | AST parse와 SAST 도구 병렬 실행 | raw AST/SAST outputs, `ToolRunResult`, 규칙 기반 도구의 `RuleExecutionRecord` |
+| 3 | AST·SAST와 실행 단위 정책 준비를 독립 병렬 실행. 정책은 run 시작 때 exact cache 재사용 또는 새 수집·파싱 중 하나로 준비 | raw AST/SAST outputs, `ToolRunResult`, `RuleExecutionRecord`; `RunPolicyState`, `PolicyCacheRecord`, policy source/parser/collection records |
 | 4 | 정적 사실 정규화 | exact 규칙 실행 기록을 연결한 `StaticFactBundle` |
 | 5 | 초기 가설 생성 실행 | Orchestration이 Hypothesis work 시작 |
 | 6 | 저비용 가설 생성 모델 호출 | constrained invocation |
@@ -32,7 +32,7 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 | 14 | 판정별 분기와 CWE 분류 | FALSE terminal / HOLD는 `required_primitive_candidates`가 하나 이상일 때만 inputs-only Primitive admission, 후보가 없으면 Primitive·Chaining 없음 / TRUE는 R5-01 `CWE_LABELING`이 exact Verification에 맞는 current `CWELabel` 생성 |
 | 15 | TRUE 기술 근거 검토 | `TechnicalEvidenceReview` |
 | 16 | Technical `REVISE` 보완 loop | same Verification owner, 새 Verification과 반드시 다시 평가한 새 CWELabel revision |
-| 17 | Technical `ACCEPT` TRUE의 정책 수집·Rule Scope 검토와 체이닝 재료 사용 결정 | 독립 `testing_restriction_compliance`, `PrimitiveAdmissionDecision=ALLOW | DENY`; `ALLOW`일 때만 result가 있는 `Primitive` admission |
+| 17 | Technical `ACCEPT` TRUE가 실행 초기에 고정한 정책으로 Rule Scope 검토와 체이닝 재료 사용 결정 | 독립 `testing_restriction_compliance`, `PrimitiveAdmissionDecision=ALLOW | DENY`; `ALLOW`일 때만 result가 있는 `Primitive` admission |
 | 18 | direct·parent chain의 current ALLOW 결정을 고정한 Primitive 체이닝 | upstream result가 downstream input을 근거 있게 충족하고 `source_admission_refs`를 보존한 `ChainingResult` |
 | 19 | 신뢰 runtime이 exact chain에서 current Finding을 정규화하고 공식 규칙·범위·영향의 보고 조건을 적용 | Finding은 두 Gate가 검토한 결과를 정규화한 record이며 새 verdict가 아님. 금지 테스트 위반 외의 Rule Scope 판단은 Primitive 자격이 아니라 보고 가능성만 변경 |
 | 20 | 체이닝·검증 중 새 주장 전역 등록 | `origin=CHAINING | VERIFICATION` proposal, 새 Verification 배정 |
@@ -44,7 +44,10 @@ SASTSIMI v5는 저장소를 실행별 로컬 폴더에 clone하고 지정한 Git
 ```text
 Repository Loader -> CodeWorkspace
   ├─ AST Parser ─┐
-  └─ SAST Tools ─┴─> StaticFactBundle
+  ├─ SAST Tools ─┴─> StaticFactBundle
+  └─ Policy preparation -> valid PolicyCacheRecord reuse or Collector -> Parser
+                         -> new RunPolicyState
+          (정적 사실과 별도, run 시작에 한 번 준비해 모든 가설이 공유)
                            │
                            v
 Orchestration -> Hypothesis Agent -> trusted validation and registration
@@ -65,7 +68,7 @@ Orchestration -> Hypothesis Agent -> trusted validation and registration
                                   -> Chaining                │ REVISE -> same Verification
                                                              │ ACCEPT
                                                              v
-                                            policy collection -> Rule Scope Impact Gate
+                                             current RunPolicyState -> Rule Scope Impact Gate
                                                              │
                                            ┌─────────────────┴─────────────────┐
                                            v                                   v
@@ -105,6 +108,7 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | R7 Agent | exact request에서 requirements·간단한 plan·PoC candidate·동적 근거 해석 생산 | R6 목적 변경, 외부 경계 우회 또는 최종 verdict 판단 |
 | R7 Setup Automation | recipe·image·container 생성/재사용/재생성·환경 비교·cleanup 실제 수행 | Agent 판단, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
 | Sandbox Controller | R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 강제 | 내부 command allowlist 운영, R7 profile 값 결정, R8 잔여 예산·새 attempt 결정, 재현 전략·환경 의미·최종 verdict 변경 |
+| Policy Collector / Policy Parser | Collector는 공식 원문을 비-LLM으로 수집·검증하고, Parser는 exact 원문을 `PolicyParserResult`로 구조화하며, Collector가 이를 취합해 실행 단위 `RunPolicyState` 확정 | 정책을 `StaticFactBundle`에 넣기, scope로 가설 사전 삭제, Rule Scope 최종 의미 판정 |
 | Reproduction Session Manager | 실제 event를 append-only AgentLog로 저장하고 same-attempt validated PoC·동적 결과 확정 | Agent 호출·command·retry·cleanup 전략 결정 또는 다른 attempt 혼합 |
 | Primitive Admission Runtime | exact Technical review·정책 수집·Rule Scope의 전용 테스트 제한 판정을 정해진 표로 변환해 `PrimitiveAdmissionDecision`과 허용된 Primitive 확정 | 정책 원문 해석, Gate 판정 변경 또는 `DENY` 결과의 Primitive 생성 |
 | Primitive DB | required candidate가 있는 HOLD의 inputs-only Primitive와 current admission `ALLOW`인 Technical-accepted TRUE의 result Primitive exact revision 검색 | 작업 queue, candidate가 없는 HOLD나 Gate 전·admission `DENY` TRUE 저장 또는 자동 Finding 생성 |
@@ -135,10 +139,11 @@ Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제�
 
 ## 병렬성과 종료 조건
 
-- AST와 복수 SAST 실행은 tool별 `work_id`와 `attempt_id`로 병렬화할 수 있다. 정규화는 모든 기대 작업의 종료 상태를 확인하고, 일부 실패면 `DataGap`과 오류를 포함한 `PARTIAL` 여부를 명시한다.
+- AST와 복수 SAST 실행은 tool별 `work_id`와 `attempt_id`로 병렬화할 수 있다. 분석 단위 `POLICY_FETCH`도 이 흐름과 독립 병렬 실행하지만 `StaticFactBundle`의 입력이나 성공 조건은 아니다. 정규화는 모든 기대 정적 작업의 종료 상태를 확인하고, 일부 실패면 `DataGap`과 오류를 포함한 `PARTIAL` 여부를 명시한다.
+- 정책 준비는 가설마다 반복하지 않는다. 같은 실행·프로그램에는 `(analysis_id, program_id, work_type=POLICY_FETCH)` 기준 active work 하나와 `RunPolicyState` 하나만 둔다. run 시작 때 compatible `PolicyCacheRecord`를 한 번 조회해 재사용하거나 새로 수집·파싱하고, cache hit에서도 현재 run의 state와 collection·policy record를 새로 만든다. Rule Scope는 준비 완료 때 run에 고정한 exact revision을 사용하고, 각 Sandbox는 실행 요청 당시 관측한 exact revision을 감사 reference로 남긴다. 정책 준비 retry는 같은 work의 새 attempt로 기록하며, 완료된 attempt마다 최대 하나의 `PolicyCollectionResult`를 남긴다. 최종 state는 그중 선택한 exact result 하나를 가리키고 이전 실패 결과는 감사 이력으로만 보존한다.
 - 서로 독립된 가설의 Verification은 가설별 예산 범위에서 병렬화할 수 있다. 한 가설의 실패가 다른 가설을 자동 취소하지 않는다.
 - 운영(`PRODUCTION`)에서는 한 가설의 Pro/Con을 서로 다른 work와 NEW session으로 항상 병렬화하고 Verification이 두 결과를 확인해 합류한다. 예산 부족이나 실행 오류로 한쪽이 없으면 final verdict를 만들지 않고 work를 중단한다. `BASIC | CONDITIONAL_DEBATE`와 skip은 격리된 평가(`EVALUATION`)에서만 허용한다.
-- 같은 가설의 `workspace_id`와 `commit_id`, final Verification, R5-01의 current CWELabel, Technical Gate, 정책 수집·Rule Scope Gate, Primitive admission과 Reporter 순서는 의존성을 지킨다. 새 Verification에는 값이 같아도 새 label revision과 그 revision을 가리키는 새 admission decision이 필요하다.
+- 같은 가설의 `workspace_id`와 `commit_id`, final Verification, R5-01의 current CWELabel, Technical Gate, current 정책·Rule Scope Gate, Primitive admission과 Reporter 순서는 의존성을 지킨다. 새 Verification에는 값이 같아도 새 label revision과 그 revision을 가리키는 새 admission decision이 필요하다.
 - 한 Verification generation에는 동적 재현 work를 하나만 만든다. 같은 R7 Agent session의 command·PoC·환경 조정은 현재 attempt를 유지한다. session 재시작만 같은 work의 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개만 새 `attempt_id`·`trigger=RESUME`를 사용하며, Technical Gate의 `REVISE`로 새 generation이 시작된 경우에만 새 동적 재현 한도를 부여한다.
 - 실행 상태는 `WorkExecutionState`가 관리하고 가설 판정·Gate 결과·보고서 상태와 분리한다. 같은 `dedupe_key` 요청은 한 `work_id`로만 반영한다.
 - `COMMITTED` marker와 종료 상태 pointer가 같은 결과를 가리킨 뒤에만 다음 단계를 호출한다. `PREPARED`, 취소된 attempt, 오래된 revision과 늦은 결과는 다음 단계에서 읽지 않는다.

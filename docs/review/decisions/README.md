@@ -48,3 +48,4 @@
 | [ADR-010](./ADR-010-static-fact-kind-partition.md) | StaticFactBundle 사실 종류별 분할과 방어 후보 의미 | ACCEPTED | #3, #5, #7, #9 | R4 공통 계약 보완 |
 | [ADR-011](./ADR-011-testing-restriction-primitive-admission.md) | 금지 테스트 위반과 Primitive 체이닝 자격 분리 | ACCEPTED | #2, #5, PR #52, PR #88 | R4 공통 계약 보완 |
 | [ADR-012](./ADR-012-primitive-match-duplicate-key.md) | Primitive match 중복 판정 키와 순회 단위 | PROPOSED | ADR-005 | `docs: replace chaining fingerprint with match reference key` |
+| [ADR-013](./ADR-013-run-policy-preparation-and-reuse.md) | 실행 단위 정책 준비·재사용과 Sandbox 사전 확인 | PROPOSED | #1, #4, #10 | 이 ADR을 추가하는 PR에서 검토 |

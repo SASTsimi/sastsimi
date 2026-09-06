@@ -16,16 +16,16 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 
 ## 전체 흐름을 쉽게 나누면
 
-1. **입력과 코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다. 규칙 기반 SAST는 검사 0건·미실행·확인 불가를 구분해 기록합니다.
+1. **입력·코드 사실·정책 준비**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST·SAST와 공식 정책 준비를 별도 work로 병렬 실행합니다. 정책은 실행당 한 번 준비해 가설들이 공유하며 `StaticFactBundle`에는 넣지 않습니다.
 2. **가설과 검증**: LLM이 취약점 가능성을 제안하고, Orchestration이 등록·배정한 뒤 Verification Agent가 코드·찬성·반대 근거를 검토하고 필요한 동적 재현 목적을 R7에 요청합니다.
 3. **동적 재현과 연계 탐색**: R7 Agent가 환경·간단한 plan을 준비하고 외부 경계 안의 Docker에서 PoC를 자율 실행합니다. Session Manager가 AgentLog·validated PoC·동적 결과를 확정합니다. 모든 final TRUE에는 validated PoC가 필요합니다. HOLD는 하나 이상의 `required_primitive_candidates`가 있을 때만 Primitive matching에 사용하고, 후보가 없으면 Primitive와 Chaining 작업을 만들지 않습니다. TRUE는 Technical `ACCEPT` 뒤 공식 정책의 금지 테스트 위반 여부를 별도로 확인해 `PrimitiveAdmissionDecision=ALLOW`인 경우에만 사용합니다.
 4. **CWE와 최종 검토·자동화 종료**: R5-01이 final TRUE마다 exact Verification에 맞는 current CWELabel을 만들고 기술 근거와 공식 정책을 차례로 검토한 뒤, Reporter가 내부 초안을 만들고 결과를 저장하면 Agent 자동화가 끝납니다.
 
 ## 정확한 22단계 기준 흐름
 
-1. 저장소를 입력받는다.
+1. 저장소와 승인된 내부 `program_id` 하나를 `AnalysisStartRequest`로 입력한다.
 2. `Repository Loader`가 저장소를 `git clone`하고 분석할 `commit_id`를 checkout해 `CodeWorkspace`를 준비한다.
-3. AST parse와 SAST 도구를 병렬 실행하고 `ToolRunResult`와 규칙 기반 도구의 `RuleExecutionRecord`를 저장한다.
+3. AST·SAST와 실행 단위 정책 준비를 서로 독립적으로 병렬 실행한다. Policy Collector는 공식 원문을 수집하고 LLM Policy Parser가 exact 원문을 `PolicyParserResult`로 구조화하면, Collector가 이를 검증·취합해 `RunPolicyState`를 확정한다.
 4. 결과를 exact 규칙 실행 기록이 연결된 `StaticFactBundle`로 정규화한다.
 5. Orchestration Agent가 초기 가설 생성 실행을 시작한다.
 6. 저비용 Hypothesis Agent를 호출한다.
@@ -39,7 +39,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 14. `FALSE`는 terminal로 끝낸다. `HOLD`는 `required_primitive_candidates`가 하나 이상일 때만 전체 후보를 `inputs`로, `result=null`로 둔 Primitive를 저장해 Chaining 자격을 준다. 후보가 비어 있으면 Primitive와 Chaining work 없이 HOLD 처리를 끝낸다. TRUE는 R5-01 `CWE_LABELING` work에서 exact Verification에 대응하는 current `CWELabel`을 만든다.
 15. validated PoC와 `SUCCEEDED + SUPPORTED` 동적 결과가 연결된 final TRUE와 그 Verification을 직접 가리키는 current CWELabel만 Technical Evidence Gate Agent가 검토한다.
 16. `REVISE`이면 같은 Verification owner가 근거를 보완해 새 Verification을 만들고 R5-01이 CWE를 다시 평가해 새 label revision으로 제출한다. CWE 값이 같아도 이전 label은 재사용하지 않는다.
-17. Technical `ACCEPT`인 exact TRUE는 공식 정책 수집과 Rule Scope 검토를 진행한다. Rule Scope는 금지 테스트 위반 여부를 `testing_restriction_compliance`로 다른 판단과 분리하고, 비-LLM Primitive Admission Runtime은 이를 `PrimitiveAdmissionDecision=ALLOW | DENY`로 기계적으로 변환한다. `ALLOW`일 때만 제공 능력을 result로 가진 Primitive를 저장한다.
+17. Technical `ACCEPT`인 exact TRUE는 실행 초기에 준비한 current `RunPolicyState`를 재사용해 Rule Scope 검토를 진행한다. Rule Scope는 금지 테스트 위반 여부를 `testing_restriction_compliance`로 다른 판단과 분리하고, 비-LLM Primitive Admission Runtime은 이를 `PrimitiveAdmissionDecision=ALLOW | DENY`로 기계적으로 변환한다. `ALLOW`일 때만 제공 능력을 result로 가진 Primitive를 저장한다.
 18. Chaining Agent가 direct·parent chain의 current `ALLOW` decision을 함께 고정한 Primitive만 읽고, upstream result가 downstream input을 실제 코드 근거로 충족하는지 방향성 있게 matching한다.
 19. Rule Scope Impact Gate Agent의 나머지 공식 규칙·범위·실질 영향 판단은 보고 가능성에만 적용한다. 금지 테스트 위반이 확정된 `DENY`는 result Primitive와 Chaining을 막지만, 그 밖의 scope·impact·보고 실패는 Primitive 자격을 없애지 않는다.
 20. Verification-origin 또는 Chaining-origin material claim은 trusted validation 뒤 새 가설로 등록하고 새 Verification을 배정한다.
@@ -60,6 +60,8 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 - Verification과 Chaining이 발견한 새 material claim은 각각 `origin=VERIFICATION | CHAINING`인 새 가설로 등록되어 처음부터 검증된다. 부모 판정은 바뀌지 않는다.
 - R5-01 `CWE_LABELING`은 final TRUE와 Gate 사이에서 exact Verification에 맞는 current `CWELabel`을 만드는 유일한 생산자다. Technical Evidence Gate와 Rule Scope Impact Gate는 서로 다른 LLM 검토 단계이며 어느 Gate도 Verification verdict나 CWELabel을 직접 바꾸지 않는다. Rule Scope Gate는 금지 테스트 여부를 독립 필드로 판단하고, 비-LLM Primitive Admission Runtime은 그 값을 정책 해석 없이 정해진 표에 대입한다.
 - 공식 프로그램 정책이 없으면 rule/scope를 추정하지 않으며 보고서 전달 권한은 `DENY`다.
+- 공식 정책은 가설마다 다시 수집하지 않는다. 비-LLM Collector가 원문과 출처를 고정하고 LLM Parser가 구조화한다. 새 run 시작 때 exact `PolicyCacheRecord`가 호환되고 유효하면 재사용하고 아니면 새로 수집·파싱한다. 분석마다 새 `RunPolicyState`를 만들고 준비 완료 뒤 run 종료까지 같은 정책 reference를 유지한다. 정책은 코드 사실이나 Hypothesis 사전 scope 필터가 아니다.
+- Sandbox는 `LOCAL_ONLY`와 외부 격리 경계를 강제하고 요청 당시 정책 reference를 감사용으로 기록하지만 정책 의미·scope·보고 가능성을 대신 판정하지 않는다. 정책이 `PREPARING | BLOCKED | FAILED | UNVERIFIED`여도 검증 가능한 clone·same-attempt mock/fixture와 격리 network만 쓰는 로컬 재현은 가능하다. freshness와 parser version은 다음 run 시작 시 재사용 여부를 판단하며, 같은 run의 정책을 교체하지 않는다.
 - Membership session과 API provider는 공통 adapter 경계를 사용한다. Membership path는 feasibility/security 검토 전 experimental이며, provider 전환은 명시적으로 기록하고 조용한 failover는 금지한다.
 - Reporter는 `ReportDraft`를 만드는 마지막 Agent다. 이후 신뢰 runtime이 `AnalysisRunResult`를 확정하면 자동화가 끝난다.
 - 모든 LLM 출력은 비신뢰 입력이다. 신뢰 경계 안의 Runtime Validator가 schema·호출 권한·상태 전이·예산·provider/session·Gate 순서·Reporter 전제조건을 강제하고, Runtime Validator가 exact R7 `sandbox_profile_ref`와 R8 `DynamicReproductionLifecycleProfile` revision을 고정하고 호출 전 잔여 시간·새 attempt 한도를 검사한다. Sandbox Controller는 R7 profile의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다.
