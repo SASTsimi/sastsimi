@@ -314,11 +314,17 @@ R6는 다음 항목을 가진 `DynamicReproductionRequest`만 만든다.
 
 `POC_CONFIRMATION`은 정적·Pro·Con으로 initial TRUE가 나온 뒤 실제 PoC로 확인하는 목적이다. `VERDICT_EVIDENCE`는 실행 관측이 있어야 최종 판정을 내릴 수 있을 때 사용한다. R6는 목적과 필요한 조건만 정하며 `EnvironmentRequirements`, `ReproductionPlan`, recipe, command 또는 PoC를 생산하지 않는다.
 
+R6는 공식 프로그램 정책을 직접 수집하거나 해석하지 않으며 `DynamicReproductionRequest`에도 정책 reference를 복사하지 않는다. 정책 준비와 동적 재현 요청은 서로 독립적으로 진행할 수 있다. 정책 준비가 끝나지 않았더라도 R6의 정적·Pro·Con 검증은 계속 진행한다.
+
+R6가 동적 재현을 요청하면 trusted runtime이 해당 `DYNAMIC_REPRO` work의 `WorkExecutionState.input_refs`에 같은 프로그램의 exact `PolicyCollectionResult`를 고정한다. `PolicyCollectionResult.status=FOUND`이면 그 결과가 가리키는 current exact `ProgramPolicyRecord`와 해당 record의 `parser_result_refs`도 함께 고정한다. Sandbox에서 적용할 금지 테스트 항목은 `ProgramPolicyRecord.testing_restrictions[].policy_item_id`로 식별한다.
+
+정책 수집·파싱·최신성 확인이 진행 중이면 동적 work만 `BLOCKED`, `waiting_for=[DEPENDENCY]`로 대기한다. 이 대기는 정적·Pro·Con 검증을 중단시키지 않는다. 정책 준비 실패·정책 부재·정책 불확실성·정책 만료는 가설의 반증 근거가 아니므로 `FALSE | HOLD`로 변환하지 않는다.
+
 R7 내부 책임은 다음처럼 나눈다.
 
 - **R7 Agent**: 요청을 환경 조건으로 구체화하고, 재현 전략·PoC candidate·command·관찰·동적 근거 해석을 만든다.
 - **R7 Setup Automation**: 저장소 선언을 우선한 recipe, image build, container 생성·재사용·재생성과 cleanup을 실제 수행한다.
-- **Sandbox Controller**: R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다. R7 profile 값, R8 잔여 예산·새 attempt 또는 내부 command allowlist는 정하지 않는다.
+- **Sandbox Controller**: R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다. 또한 trusted runtime이 `DYNAMIC_REPRO` work에 고정한 exact `PolicyCollectionResult`, current `ProgramPolicyRecord`, parser 결과와 `testing_restrictions[].policy_item_id`를 확인해 실행하려는 테스트 방법이 허용되는지 판정한다. Controller는 정책 원문을 새로 수집하거나 자연어 정책을 다시 해석하지 않는다.
 - **Reproduction Session Manager**: runtime/tool/lifecycle event를 append-only `AgentLog`로 기록하고 같은 attempt의 validated PoC와 `DynamicReproductionResult`를 확정하는 비-LLM result owner다.
 
 R7은 `SUPPORTED | DISPROVED | INCONCLUSIVE` 동적 관측만 반환하며 최종 `TRUE | FALSE | HOLD`는 계속 R6가 판단한다. Session Manager는 Agent 호출·중단, command 허용, retry 또는 cleanup 전략을 결정하지 않는다.
@@ -346,7 +352,7 @@ Sandbox 안에서는 Agent가 환경 설정, 저장소에 필요한 package, 계
 - `POC_CONFIRMATION`과 `VERDICT_EVIDENCE`를 같은 generation에서 각각 별도 work로 실행하지 않는다.
 - 같은 Agent session 안의 command·PoC·환경 조정은 같은 attempt의 event다.
 - session 재시작이 필요한 일시 오류는 R8 한도가 남아 있으면 실패 attempt를 보존하고 같은 work의 새 `attempt_id`, `trigger=RETRY`로 재시도한다. 같은 session 조정에는 새 attempt를 만들지 않고, 외부 대기가 없으므로 work를 `BLOCKED`로 두지 않는다.
-- `BLOCKED`는 외부 설정·정책·승인 또는 resource profile 변경을 기다릴 때만 사용한다. 해결 뒤 같은 work의 새 `attempt_id`, `trigger=RESUME`를 만든다.
+- `BLOCKED`는 외부 설정·정책 준비·승인 또는 resource profile 변경을 기다릴 때만 사용한다. 정책 수집·파싱·최신성 확인이 진행 중이면 `waiting_for=[DEPENDENCY]`로 두고 Sandbox attempt와 R7 Agent를 시작하지 않는다. 준비가 완료되면 exact 정책 입력을 work에 고정한 뒤 같은 work의 새 `attempt_id`, `trigger=RESUME`를 만든다.
 - 복구할 수 없거나 retry 한도를 소진하면 Session Manager가 `FAILED + INCONCLUSIVE`를 확정한다.
 - Technical Gate `REVISE`는 새 Verification generation이므로 새 동적 재현 work 하나를 허용한다.
 
@@ -358,6 +364,9 @@ Sandbox 안에서는 Agent가 환경 설정, 저장소에 필요한 package, 계
 - `event_id`는 전역 고유, `sequence`는 attempt별 증가 값이며 시작·종료 event는 같은 `action_id`를 사용한다.
 - crash 뒤에도 이미 확정한 event는 남고, 이전 attempt의 늦은 event는 current attempt에 섞지 않는다.
 - Sandbox 실행 Agent 호출 전 정책 차단도 `agent_invoked=false`, exact 정책 결정과 `POLICY_BLOCKED` event를 가진 결과로 남긴다.
+- `SandboxPolicyDecision`은 실제 검사한 exact `PolicyCollectionResult`, `ProgramPolicyRecord`와 `testing_restriction_item_ids`를 기록한다. `ALLOW`는 `FOUND`인 collection, `CURRENT`인 policy record와 실행 방법에 적용되는 금지 테스트 항목 검사를 모두 통과했을 때만 가능하다.
+- 정책이 준비 중이면 아직 `SandboxPolicyDecision`이나 실행 결과를 만들지 않고 work를 `BLOCKED`로 유지한다.
+- `ABSENT_CONFIRMED`, `COLLECTION_FAILED`, parser 실패, `STALE | UNVERIFIED` 정책 또는 금지 테스트 위반으로 안전한 실행을 허가할 수 없으면 Sandbox를 시작하지 않는다. 복구 가능하면 `BLOCKED`, 복구 불가능하면 `FAILED`로 끝내며 final verdict와 Technical Gate 입력을 만들지 않는다.
 - recipe·환경·AgentLog·candidate·validated PoC와 결과는 같은 work·attempt에 연결한다. baseline recipe ref만 과거 성공 baseline을 가리킬 수 있다.
 
 ### PoC candidate와 validated PoC
@@ -380,7 +389,7 @@ Sandbox 안에서는 Agent가 환경 설정, 저장소에 필요한 package, 계
 
 `DynamicReproductionResult.hypothesis_outcome`은 동적 관측 요약이며 최종 verdict가 아니다. `SUPPORTED | DISPROVED`에는 실제 관측을 가리키는 `hypothesis_evidence_refs`가 필요하다. `DISPROVED`일 때만 `hypothesis_disproved=true`와 `disproof_evidence_refs`를 사용한다. 오류·빈 출력·exit code만으로는 반증이나 FALSE를 만들 수 없다. 실패 결과의 `failure_category`는 비교 가능한 범주, `failure_reason`은 민감정보를 제거한 구체적인 자유형 설명이다. plan의 부족·모순은 `plan_issues`에 직접 포함한다.
 
-`DynamicReproductionState.dynamic_result_ref`, `WorkExecutionState.output_refs`와 `TransitionCommit.output_refs`는 같은 exact `DynamicReproductionResult.meta.record_id`를 가리키는 current 반환 동적 결과만 R6에 전달한다. current 반환 결과에는 비종료 상태인 `BLOCKED`가 포함될 수 있고 R6는 이를 대기·복구 판단에 읽을 수 있지만, final `VerificationResult`나 Technical Gate를 포함한 Gate 입력으로 사용할 수 없다. R6는 자격을 갖춘 결과를 소비해 final verdict를 만들지만 R7 산출물을 대신 생산하지 않는다. current generation의 exact request, `SUCCEEDED + SUPPORTED` 결과와 validated `poc_ref` 중 하나라도 없으면 final TRUE 저장과 Technical Gate 호출을 모두 차단한다.
+`DynamicReproductionState.dynamic_result_ref`, `WorkExecutionState.output_refs`와 `TransitionCommit.output_refs`는 같은 exact `DynamicReproductionResult.meta.record_id`를 가리키는 current 반환 동적 결과만 R6에 전달한다. current 반환 결과에는 비종료 상태인 `BLOCKED`가 포함될 수 있고 R6는 이를 대기·복구 판단에 읽을 수 있지만, final `VerificationResult`나 Technical Gate를 포함한 Gate 입력으로 사용할 수 없다. R6는 자격을 갖춘 결과를 소비해 final verdict를 만들지만 R7 산출물을 대신 생산하지 않는다. current generation의 exact request, `SUCCEEDED + SUPPORTED` 결과, validated `poc_ref`, 그리고 실제 Sandbox 실행을 허가한 current exact `SandboxPolicyDecision(decision=ALLOW)` 중 하나라도 없으면 final TRUE 저장과 Technical Gate 호출을 모두 차단한다. R6는 `DynamicReproductionResult.policy_decision_ref`를 따라 실제 실행에 사용된 정책 revision을 추적하지만 정책의 의미를 다시 판단하지 않는다.
 
 ## Technical `REVISE` 처리
 
