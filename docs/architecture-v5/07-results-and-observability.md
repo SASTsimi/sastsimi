@@ -182,7 +182,7 @@ token 상한은 없다. 분석 전체·모든 Agent·호출마다 동일하다. 
 
 ### Sandbox 정책 상한 (Sandbox Controller → `SANDBOX_POLICY_DENIED`)
 
-R7 `sandbox_profile_ref(data_kind=sandbox_profile)`가 network·격리와 CPU·RAM·디스크·PID·요청 가능 최대 시간을 소유한다. 구체 수치는 R7이 확정한다. 요청이 허용 범위를 넘으면 실행 중 timeout이 아니라 **입장 거절**(2번)이다. Runtime Validator는 current `RunPolicyState`, exact R7 sandbox profile과 R8 `DynamicReproductionLifecycleProfile(data_kind=dynamic_reproduction_lifecycle_profile)` revision, 현재 work·attempt를 고정한다. `RUN_SANDBOX.input_refs`와 `ActionDecision.checked_config_refs`에는 policy state와 두 profile이 모두 있고, `ActionRequest.run_policy_state_ref`·`SandboxPolicyDecision.run_policy_state_ref`, R7 profile refs와 R8 profile refs가 각각 같은 exact revision을 가리켜야 한다. Runtime Validator는 정책 만료와 R8 호출 전 잔여 시간·새 attempt 한도를, Sandbox Controller는 `LOCAL_ONLY`·R7 입장 정책·수치를 강제한다.
+R7 `sandbox_profile_ref(data_kind=sandbox_profile)`가 network·격리와 CPU·RAM·디스크·PID·요청 가능 최대 시간을 소유한다. 구체 수치는 R7이 확정한다. 요청이 허용 범위를 넘으면 실행 중 timeout이 아니라 **입장 거절**(2번)이다. Runtime Validator는 exact R7 sandbox profile과 R8 `DynamicReproductionLifecycleProfile(data_kind=dynamic_reproduction_lifecycle_profile)` revision, 현재 work·attempt를 authorization input으로 고정한다. `RUN_SANDBOX.input_refs`와 `ActionDecision.checked_config_refs`에는 두 profile이 모두 있고 각 R7/R8 profile reference가 같은 exact revision을 가리켜야 한다. `ActionRequest.run_policy_state_ref`와 `SandboxPolicyDecision.run_policy_state_ref`는 요청 당시 관측한 same exact policy state를 감사 provenance로 가리키되 `input_refs`·`checked_config_refs`에는 중복하지 않는다. Runtime Validator는 R8 호출 전 잔여 시간·새 attempt 한도를, Sandbox Controller는 검증 가능한 clone/same-attempt mock·fixture·격리 network를 포함한 `LOCAL_ONLY`·R7 입장 정책·수치를 강제한다. policy state 변경만으로 local-only action을 만료시키지 않는다.
 
 | 항목 | 상한 (초안) | 위반 시 |
 |---|---|---|

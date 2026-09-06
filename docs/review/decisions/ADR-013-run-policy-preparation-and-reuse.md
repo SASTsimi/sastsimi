@@ -46,7 +46,7 @@ Repository Loader가 `CodeWorkspace.status=READY`를 확정하면 AST·SAST work
 - `STALE`: `freshness_valid_until`이 지남
 - `UNVERIFIED`: 최신성 기준을 적용하거나 확인하지 못함
 
-과거 revision은 덮어쓰지 않고 감사 이력으로 보존합니다. 만료되면 `policy_generation`을 1 증가시켜 새 work를 만듭니다. 새 결과를 확정하기 전에는 만료 상태를 명시한 `LOCAL_ONLY` Sandbox와 `UNCERTAIN + DENY` Rule Scope만 허용하고 Reporter와 `PASS | ALLOW`에는 사용할 수 없습니다.
+과거 revision은 덮어쓰지 않고 감사 이력으로 보존합니다. 만료되면 `policy_generation`을 1 증가시켜 새 work를 만듭니다. `PREPARING` 중이거나 새 결과를 확정하기 전에도 프로그램 정책과 무관한 외부 격리 경계를 통과한 `LOCAL_ONLY` Sandbox는 허용할 수 있습니다. Rule Scope는 `PREPARING` 동안 기다리고, `STALE | UNVERIFIED`에서는 `UNCERTAIN + DENY`만 허용합니다. Reporter와 `PASS | ALLOW`에는 최신성이 유효한 current 정책만 사용할 수 있습니다.
 
 ### 4. 정책은 정적 사실이나 가설 사전 필터가 아닙니다
 
@@ -56,26 +56,27 @@ Hypothesis Agent는 scope 안의 가능성만 생성하도록 제한하지 않�
 
 ### 5. Sandbox는 강제할 수 있는 안전 경계만 확인합니다
 
-모든 `RUN_SANDBOX` 요청은 current `RunPolicyState` exact revision을 고정합니다. Sandbox Controller는 다음을 확인합니다.
+모든 `RUN_SANDBOX` 요청은 요청 당시 관측한 `RunPolicyState` exact revision을 감사 reference로 고정합니다. 이 reference는 프로그램 정책의 최신성으로 Sandbox 권한을 넓히기 위한 입력이 아닙니다. Sandbox Controller는 다음을 확인합니다.
 
 - 실행 범위가 `LOCAL_ONLY`인지
-- clone한 코드, mock과 fixture만 사용하며 live program asset이나 외부 계정에 접근하지 않는지
+- clone한 코드는 current `CodeWorkspace.workspace_id + commit_id`에서 만든 Sandbox 내부 복사본인지
+- mock과 fixture는 같은 R7 work·attempt에서 생성되어 exact environment·AgentLog·artifact reference로 추적되는지
+- 공격 대상 endpoint가 loopback 또는 현재 격리 network 안의 container인지, 출처 불명 endpoint·외부 계정·live program asset을 사용하지 않는지
 - Docker daemon/socket, host mount·namespace, secret, 다른 workspace와 허용되지 않은 egress가 차단됐는지
-- exact request, plan, Sandbox profile, R8 lifecycle profile과 policy state가 같은 action에 연결됐는지
+- exact request, plan, Sandbox profile과 R8 lifecycle profile이 같은 action에 연결되고, policy state·collection·policy record는 실행 당시 exact provenance로 서로 일치하는지
 
-현재 아키텍처에서 live target testing은 허용하지 않습니다. 정책이 `ABSENT | BLOCKED | FAILED | STALE`이어도 기존 default-deny Sandbox profile 안의 순수 로컬 재현은 별도 기술 경계 판단으로 진행할 수 있지만, 정책 의존 외부 작업은 허용하지 않습니다.
+현재 아키텍처에서 live target testing은 허용하지 않습니다. 경로·endpoint·계정·fixture의 출처를 위 exact reference로 증명하지 못하면 live로 간주해 거절합니다. network는 default-deny이고, 승인된 package registry egress는 dependency 준비에만 쓰며 공격 대상 통신과 분리해 기록합니다. 정책이 `PREPARING | ABSENT | BLOCKED | FAILED | STALE | UNVERIFIED`여도 이 기술 경계를 통과한 순수 로컬 재현은 기다리지 않고 진행할 수 있지만, 외부 target 작업은 허용하지 않습니다.
 
 Sandbox Controller는 공식 정책의 의미, 가설의 scope 또는 보고 가능성을 판정하지 않습니다. 실제 수행한 `AgentLog`와 정책의 testing restriction이 일치하는지는 Technical `ACCEPT` 뒤 Rule Scope Gate가 LLM으로 검토합니다.
 
 ### 6. 만료는 action 직전에 다시 확인합니다
 
-R8이 승인한 versioned freshness 기준으로 `freshness_valid_until`을 계산합니다. 정책을 찾은 `CURRENT`뿐 아니라 공식 정책 부재를 확인한 `ABSENT`에도 기준·확인 시각·확인 근거·만료 시각이 필요합니다. Runtime Validator는 최소한 다음 시점에 exact policy state를 다시 확인합니다.
+R8이 승인한 versioned freshness 기준으로 `freshness_valid_until`을 계산합니다. 정책을 찾은 `CURRENT`뿐 아니라 공식 정책 부재를 확인한 `ABSENT`에도 기준·확인 시각·확인 근거·만료 시각이 필요합니다. Runtime Validator는 프로그램 정책 판단을 실제로 소비하는 다음 시점에 exact policy state를 다시 확인합니다.
 
-- `RUN_SANDBOX` 승인 직전
 - `CALL_RULE_SCOPE_GATE` 승인과 실제 호출 직전
 - `CREATE_REPORT_DRAFT` 승인과 실제 호출 직전
 
-만료된 state는 `STALE`로 전환하고 기존 `UNUSED` action은 `EXPIRED`로 끝낸 뒤 새 policy generation 준비를 시작합니다. 새 action은 `LOCAL_ONLY` Sandbox와 `UNCERTAIN + DENY` Rule Scope에만 허용하고 `CREATE_REPORT_DRAFT`는 거절합니다. 이미 끝난 로컬 재현은 실행 당시 policy state와 함께 보존합니다. 이후 새 정책 revision이 생기면 Rule Scope Gate는 새 current 정책과 실제 실행 기록을 비교하고, 과거 Gate·Finding·ReportDraft는 새 입력에 재사용하지 않습니다.
+만료된 state는 `STALE`로 전환하고 새 policy generation 준비를 시작합니다. 아직 사용하지 않은 Rule Scope·Reporter action은 `EXPIRED`로 끝내고, 새 current 정책이 준비될 때까지 Reporter와 `PASS | ALLOW`를 거절합니다. `RUN_SANDBOX`는 항상 `LOCAL_ONLY` 경계로 허가되므로 정책 pointer·freshness 변경만으로 기존 decision을 만료시키지 않습니다. 실행 당시 exact policy state는 `SandboxPolicyDecision`에 감사 이력으로 보존합니다. 이후 새 정책 revision이 생기면 Rule Scope Gate는 새 current 정책과 실제 실행 기록을 비교하고, 과거 Gate·Finding·ReportDraft는 새 입력에 재사용하지 않습니다.
 
 ### 7. 오류를 취약점 판정으로 바꾸지 않습니다
 
@@ -103,7 +104,7 @@ R8이 승인한 versioned freshness 기준으로 `freshness_valid_until`을 계�
 
 ## Compatibility
 
-`RunPolicyState`, `PolicyParserResult.llm_invocation_ref`, `SandboxPolicyDecision`의 정책 필드, `POLICY_PARSER` 역할과 `AnalysisRunResult.run_policy_state_ref`는 새 필수 계약입니다. 새 MAJOR schema에서 시작하며 과거 record에 현재 정책 pointer나 LLM 호출 reference를 추정해 채우지 않습니다.
+`RunPolicyState`, `PolicyParserResult.llm_invocation_ref`, `SandboxPolicyDecision`의 정책 provenance, `POLICY_PARSER` 역할, `ReportDraft.run_policy_state_ref`와 `AnalysisRunResult.run_policy_state_ref`는 새 필수 계약입니다. 새 MAJOR schema에서 시작하며 과거 record에 현재 정책 pointer나 LLM 호출 reference를 추정해 채우지 않습니다.
 
 ## Merge order
 

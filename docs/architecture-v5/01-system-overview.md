@@ -139,7 +139,7 @@ Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제�
 ## 병렬성과 종료 조건
 
 - AST와 복수 SAST 실행은 tool별 `work_id`와 `attempt_id`로 병렬화할 수 있다. 분석 단위 `POLICY_FETCH`도 이 흐름과 독립 병렬 실행하지만 `StaticFactBundle`의 입력이나 성공 조건은 아니다. 정규화는 모든 기대 정적 작업의 종료 상태를 확인하고, 일부 실패면 `DataGap`과 오류를 포함한 `PARTIAL` 여부를 명시한다.
-- 정책 준비는 가설마다 반복하지 않는다. 같은 실행·프로그램·policy generation에는 active work 하나와 current `RunPolicyState` 하나만 두고, 만료 전 모든 Sandbox와 Rule Scope가 exact revision을 공유한다.
+- 정책 준비는 가설마다 반복하지 않는다. 같은 실행·프로그램·policy generation에는 active work 하나와 current `RunPolicyState` 하나만 둔다. Rule Scope는 호출 당시 current exact revision을 사용하고, 각 Sandbox는 실행 요청 당시 관측한 exact revision을 감사 reference로 남긴다.
 - 서로 독립된 가설의 Verification은 가설별 예산 범위에서 병렬화할 수 있다. 한 가설의 실패가 다른 가설을 자동 취소하지 않는다.
 - 운영(`PRODUCTION`)에서는 한 가설의 Pro/Con을 서로 다른 work와 NEW session으로 항상 병렬화하고 Verification이 두 결과를 확인해 합류한다. 예산 부족이나 실행 오류로 한쪽이 없으면 final verdict를 만들지 않고 work를 중단한다. `BASIC | CONDITIONAL_DEBATE`와 skip은 격리된 평가(`EVALUATION`)에서만 허용한다.
 - 같은 가설의 `workspace_id`와 `commit_id`, final Verification, R5-01의 current CWELabel, Technical Gate, current 정책·Rule Scope Gate, Primitive admission과 Reporter 순서는 의존성을 지킨다. 새 Verification에는 값이 같아도 새 label revision과 그 revision을 가리키는 새 admission decision이 필요하다.

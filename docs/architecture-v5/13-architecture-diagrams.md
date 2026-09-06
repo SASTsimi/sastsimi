@@ -46,11 +46,11 @@ flowchart TB
     DREQ2 --> DWAUTH
     DWAUTH --> DR7[R7 Agent creates Requirements and simple Plan]
     DR7 --> DAUTH[Runtime authorizes external Sandbox boundary]
-    RPS -. current exact policy state .-> DAUTH
+    RPS -. observed policy audit reference .-> DAUTH
     DAUTH --> DCTRL[Controller checks host Docker secret egress resource boundaries]
     DCTRL --> DPD[Exact SandboxPolicyDecision]
     DPD -->|Pass| DENV[Setup Automation builds recipe and prepares clean environment]
-    DPD -->|Policy blocked| DSTOP[Attempt cannot complete no verdict]
+    DPD -->|Sandbox boundary denied| DSTOP[Attempt cannot complete no verdict]
     DENV --> DRUN[R7 Agent autonomously creates and runs PoC in Sandbox]
     DRUN --> DLOG[Session Manager appends actual events to AgentLog]
     DLOG --> DASM[Session Manager binds same-attempt recipe environment candidate and evidence]
@@ -65,7 +65,7 @@ flowchart TB
     DADJUST --> DR7
     DSTOP -->|Session restart: new attempt trigger=RETRY| DRETRY[Restart same work with new attempt]
     DRETRY --> DR7
-    DSTOP -->|External condition| DWAIT[BLOCKED until input policy or resource change]
+    DSTOP -->|External condition| DWAIT[BLOCKED until profile input or resource change]
     DWAIT -->|Condition resolved: new attempt trigger=RESUME| DRESUME[Resume same work with new attempt]
     DRESUME --> DR7
     DSTOP -->|Unrecoverable| S22
@@ -195,12 +195,12 @@ flowchart TB
     CREQ --> ONE[Runtime allows one work per Verification generation]
     VREQ --> ONE
     ONE --> R7PLAN[R7 Agent creates Requirements and simple Plan]
-    RPS4[Current RunPolicyState] -. exact run policy input .-> AUTH
+    RPS4[Observed RunPolicyState] -. exact audit reference .-> AUTH
     R7PLAN --> AUTH[Runtime authorizes external Sandbox boundary]
     AUTH --> CTRL[Controller checks host Docker secret egress and resource boundaries]
     CTRL --> PDEC[Exact SandboxPolicyDecision]
     PDEC -->|Pass| ENV[Setup Automation builds recipe and prepares clean environment]
-    PDEC -->|Policy blocked| FAIL[Attempt cannot complete no final verdict]
+    PDEC -->|Sandbox boundary denied| FAIL[Attempt cannot complete no final verdict]
     ENV --> AGENT[R7 Agent autonomously creates and runs PoC]
     AGENT --> LOG[Session Manager appends AgentLog events]
     LOG --> ASSEMBLER[Session Manager validates same-attempt provenance]
@@ -449,7 +449,7 @@ flowchart LR
     DOMAIN[Verification Gates and Reporter keep domain decisions] -. not decided by validator .-> CHECK
 ```
 
-Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 Setup Automation 권한·상태·예산·exact request·current requirements·current exact plan·current `RunPolicyState`·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` revision을 고정한다. policy state, plan 또는 profile revision이 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 처리한다. `LOCAL_ONLY`와 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 외부 경계는 Sandbox Controller가 검사하고 내부 command는 Agent가 자율적으로 정한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
+Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 Setup Automation 권한·상태·예산·exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` revision을 authorization input으로 고정한다. 요청 당시 `RunPolicyState`는 감사 reference로 기록하며 policy pointer·freshness 변경만으로 local-only decision을 만료시키지 않는다. plan·profile 또는 실행 대상·network·mount·secret 경계가 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 처리한다. `LOCAL_ONLY`와 검증 가능한 clone/same-attempt mock·fixture·격리 network, host·Docker daemon/socket·mount/namespace·secret·egress·workspace 외부 경계는 Sandbox Controller가 검사하고 내부 command는 Agent가 자율적으로 정한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
 
 ## 13. ReportDraft와 Agent 자동화 종료 경계
 

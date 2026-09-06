@@ -69,7 +69,7 @@ Repository input
 → initial TRUE면 POC_CONFIRMATION, 판정 근거가 필요하면 VERDICT_EVIDENCE 요청을 R6가 생성
 → Runtime Validator가 같은 Verification generation의 동적 work가 하나인지 확인
 → R7 Agent가 EnvironmentRequirements·ReproductionPlan·PoC candidate 생성
-→ Sandbox Controller가 current RunPolicyState와 LOCAL_ONLY를 고정하고 host·Docker·secret·egress 등 외부 격리 경계 검사
+→ Sandbox Controller가 요청 당시 RunPolicyState를 감사 reference로 남기고 LOCAL_ONLY·host·Docker·secret·egress 등 외부 격리 경계 검사
 → R7 Setup Automation이 image·container·환경·정리를 관리하고 Agent가 Sandbox 안에서 PoC candidate를 만들고 재현을 자율 실행
 → 비-LLM Reproduction Session Manager가 같은 attempt의 AgentLog·recipe·환경·candidate·validated PoC를 결과로 묶어 반환
 → final TRUE / FALSE / HOLD

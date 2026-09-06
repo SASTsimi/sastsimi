@@ -26,7 +26,7 @@ final TRUE `VerificationResult`의 찬반 근거, 실제 코드·호출·데이�
 
 Technical `ACCEPT`인 `TRUE`만 current `RunPolicyState`가 가리키는 정책 수집 결과와 함께 검토합니다. 정책 수집은 `FOUND`, `ABSENT_CONFIRMED`, `COLLECTION_FAILED`를 구분합니다. `FOUND`이면 exact `ProgramPolicyRecord`도 함께 읽고, `ABSENT_CONFIRMED`이면 정책을 추정하지 않고 `UNCERTAIN + DENY`로 검토할 수 있습니다. `COLLECTION_FAILED`는 Rule Scope review를 만들지 않습니다.
 
-Sandbox는 같은 state를 exact reference로 기록하고 `LOCAL_ONLY`·live asset·외부 계정·egress 차단을 확인합니다. Sandbox Controller가 정책 문장의 뜻이나 report permission을 정하지는 않습니다. 실제 수행 기록과 testing restriction의 의미 비교는 Rule Scope Gate가 담당합니다. 만료되면 기존 action을 `EXPIRED`로 끝내고 새 policy generation 준비를 시작합니다. 그동안 새 action은 `LOCAL_ONLY` Sandbox와 `UNCERTAIN + DENY` Rule Scope만 허용하며 Reporter는 차단합니다.
+Sandbox는 요청 당시 state를 exact 감사 reference로 기록하고 `LOCAL_ONLY`·출처 불명/live asset·외부 계정·egress 차단을 확인합니다. `PREPARING`이어도 current CodeWorkspace clone·same-attempt mock/fixture·격리 network만 사용하는 로컬 재현은 진행할 수 있습니다. Sandbox Controller가 정책 문장의 뜻이나 report permission을 정하지는 않습니다. policy state 변경만으로 local-only action을 만료시키지 않으며, 실제 수행 기록과 Gate 호출 당시 current testing restriction의 의미 비교는 Rule Scope Gate가 담당합니다. 정책이 만료되면 새 policy generation 준비를 시작하고 Rule Scope·Reporter의 기존 미사용 action을 `EXPIRED`로 끝냅니다. 새 current 정책 전에는 Rule Scope가 `UNCERTAIN + DENY`만 가능하며 Reporter는 차단됩니다.
 
 Rule Scope 결과에는 `run_policy_state_ref`와 `policy_collection_result_ref`로 Gate가 실제 읽은 실행 정책 상태와 수집 결과를 고정하고, 자신이 읽은 Verification, Technical review, CWELabel과 존재하는 정책 record의 정확한 `record_id`를 남깁니다. Rule·Scope·Impact와 독립된 `testing_restriction_compliance: PASS | FAIL | UNCERTAIN` 판정은 실제 정책 항목과 코드·실행 근거에 연결하고, 부족한 정보는 어느 판단을 막는지 구조화해 남깁니다. 입력 중 하나라도 수정되거나 정책 최신성이 바뀌면 이전 Rule Scope 결과를 새 downstream action에 재사용하지 않습니다.
 
@@ -84,11 +84,11 @@ TRUE
 + permission ALLOW
 ```
 
-Reporter는 위 6축 정책 조건을 모두 만족하고, 그와 별개로 current non-stale Finding이 있으며 exact revision closure와 `REPORT_READY`, 동일 ACTIVE Verification owner를 runtime이 확인한 때만 내부 ReportDraft를 만든다. Finding이 있어도 6축 중 하나가 미달이면 Reporter만 차단하고 Finding은 보존한다. 두 Gate가 검토한 CWELabel과 보고서 초안의 `cwe_label_ref.record_id`가 다르면 초안을 만들지 않는다. 이 upstream 중 하나가 새 revision으로 바뀌면 기존 초안은 감사 기록으로만 남고 새 Gate·Reporter 결과가 나오기 전까지 current 결과로 쓸 수 없다. 두 Gate와 Reporter 모두 외부 제출·공개 권한이 없다.
+Reporter는 위 6축 정책 조건을 모두 만족하고, 그와 별개로 current non-stale Finding이 있으며 exact revision closure와 `REPORT_READY`, 동일 ACTIVE Verification owner를 runtime이 확인한 때만 내부 ReportDraft를 만든다. Finding이 있어도 6축 중 하나가 미달이면 Reporter만 차단하고 Finding은 보존한다. 보고서 초안의 `cwe_label_ref`는 두 Gate가 검토한 CWELabel과, `run_policy_state_ref`는 Rule Scope review가 사용한 current policy state와 exact match해야 한다. action 승인·실제 호출·저장 직전에 policy freshness도 다시 확인한다. 이 upstream 중 하나가 새 revision으로 바뀌거나 정책이 만료되면 기존 초안은 감사 기록으로만 남고 새 Gate·Reporter 결과가 나오기 전까지 current 결과로 쓸 수 없다. 두 Gate와 Reporter 모두 외부 제출·공개 권한이 없다.
 
 Reporter는 검증된 사실을 합성·표현할 뿐 새 vulnerability fact, attack path, reproduction/PoC 성공,
 policy·scope 판단이나 upstream보다 강한 severity·exploitability·security impact를 만들지 않습니다.
-주요 claim은 current Finding과 두 Gate가 실제 검토한 exact Verification·CWE·정책·Dynamic/PoC revision으로
+주요 claim은 current Finding과 두 Gate가 실제 검토한 exact Verification·CWE·`RunPolicyState`·정책·Dynamic/PoC revision으로
 추적해야 하며, 별도로 최신 결과를 검색해 연결하지 않습니다. Dynamic/PoC 표시는 Verification의 exact
 `dynamic_result_ref`와 R7에서 이미 validated된 `poc_ref`만 소비하고, request·plan·requirements와 존재하는
 policy·environment·AgentLog·PoC·cleanup을 다른 attempt와 섞지 않습니다. Reporter는 이 무결성이나 실행

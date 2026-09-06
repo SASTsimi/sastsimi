@@ -933,7 +933,7 @@ if (-not $contractText.Contains('Sandbox 실행 Agent가 호출되기 전 정책
     Add-Failure 'policy block before Agent invocation must still produce an AgentLog and dynamic result'
 }
 $reportDraftBlock = [regex]::Match($contractText, '(?ms)^ReportDraft:\s*(.*?)^```').Groups[1].Value
-foreach ($field in @('finding_ref:', 'dynamic_result_ref:', 'poc_ref:', 'restrictions:', 'limitations:', 'unresolved_conditions:', 'redaction_status: PASSED')) {
+foreach ($field in @('finding_ref:', 'dynamic_result_ref:', 'poc_ref:', 'run_policy_state_ref:', 'restrictions:', 'limitations:', 'unresolved_conditions:', 'redaction_status: PASSED')) {
     if (-not $reportDraftBlock.Contains($field)) {
         Add-Failure "missing ReportDraft safety field: $field"
     }
@@ -981,8 +981,8 @@ $authorityScenarioMarkers = @(
     '`SAVE_RESULT` 검사 뒤 candidate bytes를 바꿈',
     '실행 오류만 든 `FALSE` 후보를 저장',
     '다른 역할이 만든 결과 후보를 저장'
-    '`RUN_SANDBOX` 허가 뒤 request·requirements·current exact plan·`sandbox_profile_ref`·`DynamicReproductionLifecycleProfile` revision 중 하나가 바뀜'
-    'Sandbox 내부 command가 host·Docker socket·secret·미허용 egress에 접근하려 함'
+    '`RUN_SANDBOX` 허가 뒤 request·requirements·current exact plan·`sandbox_profile_ref`·`DynamicReproductionLifecycleProfile` revision 또는 실행 대상·network·mount·secret 경계 중 하나가 바뀜'
+    'Sandbox 내부 command가 host·Docker socket·secret·미허용 egress에 접근하거나 출처 불명 endpoint·외부 계정을 대상으로 삼음'
     '동적 결과의 recipe·환경·AgentLog·candidate·PoC·cleanup attempt 또는 digest가 다름'
     '`COMMAND_STARTED`와 `COMMAND_FINISHED`의 command ref·digest·action·attempt·environment가 다르거나 redaction이 유효하지 않음'
     'Verification 또는 R7 Agent가 `DynamicReproductionResult`를 직접 저장'
@@ -2377,7 +2377,7 @@ $requiredPolicyContractFields = @(
     @{ Contract = 'PolicyMissingInfo'; Block = $policyMissingInfoBlock; Fields = @('missing_info_id: string', 'area: RULE | SCOPE | IMPACT | SOURCE | FRESHNESS | TESTING_RESTRICTION', 'blocks_allow: boolean', 'description: string', 'policy_item_ids: [string]', 'evidence_refs: [StoredDataRef]') },
     @{ Contract = 'RuleScopeEvidenceLink'; Block = $ruleScopeEvidenceLinkBlock; Fields = @('link_id: string', 'area: RULE | SCOPE | IMPACT | TESTING_RESTRICTION', 'policy_item_ids: [string]', 'evidence_refs: [StoredDataRef]') },
     @{ Contract = 'ProgramPolicyRecord'; Block = $programPolicyRecordBlock; Fields = @('source_checks: [PolicySourceCheck]', 'parser_result_refs: [StoredDataRef]', 'freshness_criterion_ref: StoredDataRef | null', 'freshness_evidence_refs: [StoredDataRef]', 'freshness_valid_until: timestamp | null', 'missing_information: [PolicyMissingInfo]') },
-    @{ Contract = 'SandboxPolicyDecision'; Block = $sandboxPolicyDecisionBlock; Fields = @('run_policy_state_ref: StoredDataRef', 'policy_collection_result_ref: StoredDataRef | null', 'policy_record_ref: StoredDataRef | null', 'execution_scope: LOCAL_ONLY', 'policy_freshness: CURRENT | ABSENT | STALE | UNVERIFIED | COLLECTION_FAILED') },
+    @{ Contract = 'SandboxPolicyDecision'; Block = $sandboxPolicyDecisionBlock; Fields = @('run_policy_state_ref: StoredDataRef', 'policy_collection_result_ref: StoredDataRef | null', 'policy_record_ref: StoredDataRef | null', 'execution_scope: LOCAL_ONLY', 'observed_policy_status: PREPARING | CURRENT | ABSENT | BLOCKED | FAILED | STALE | UNVERIFIED') },
     @{ Contract = 'RuleScopeImpactReview'; Block = $ruleScopeImpactReviewBlock; Fields = @('run_policy_state_ref: StoredDataRef', 'policy_collection_result_ref: StoredDataRef', 'testing_restriction_compliance: PASS | FAIL | UNCERTAIN', 'evidence_links: [RuleScopeEvidenceLink]', 'missing_information: [PolicyMissingInfo]') }
     @{ Contract = 'PrimitiveAdmissionDecision'; Block = $primitiveAdmissionDecisionBlock; Fields = @('meta: RecordMeta', 'verification_result_ref: StoredDataRef', 'technical_review_ref: StoredDataRef', 'policy_collection_result_ref: StoredDataRef', 'rule_scope_review_ref: StoredDataRef | null', 'testing_restriction_compliance: PASS | FAIL | UNCERTAIN | NOT_EVALUATED', 'decision: ALLOW | DENY', 'reason_code: TESTING_RESTRICTION_PASSED | TESTING_RESTRICTION_UNCERTAIN | POLICY_COLLECTION_FAILED | TESTING_RESTRICTION_VIOLATION') }
     @{ Contract = 'Primitive'; Block = $primitiveBlock; Fields = @('admission_decision_ref: StoredDataRef | null') }
@@ -2421,20 +2421,25 @@ $requiredRunPolicyPreparationRules = @(
     @{ Name = 'one active policy work per run and program'; Text = $contractText; Marker = '`(analysis_id, program_id, work_type=POLICY_FETCH, policy_generation)` unique key' },
     @{ Name = 'policy parser result binds invocation'; Text = $policyParserResultBlock; Marker = 'llm_invocation_ref: StoredDataRef' },
     @{ Name = 'policy parser owner is separate from collector'; Text = $contractText; Marker = '`policy_parser_result -> PolicyParserResult -> POLICY_PARSER`, `policy_collection_result -> PolicyCollectionResult -> POLICY_COLLECTOR`' },
-    @{ Name = 'sandbox uses a run policy state'; Text = $contractText; Marker = '`RUN_SANDBOX`는 current `RunPolicyState` exact revision을 입력으로 고정한다.' },
+    @{ Name = 'sandbox records observed run policy state'; Text = $contractText; Marker = '`RUN_SANDBOX`는 요청 당시 관측한 `RunPolicyState` exact revision을 감사 reference로 고정한다.' },
     @{ Name = 'sandbox policy is local only'; Text = $contractText; Marker = '`execution_scope=LOCAL_ONLY`만 허용하며 프로그램의 live asset·외부 계정·허용되지 않은 egress에 접근하지 않는다.' },
     @{ Name = 'sandbox controller does not replace scope gate'; Text = $contractText; Marker = 'Sandbox Controller는 Rule Scope의 정책 의미·보고 가능성을 판정하지 않는다.' },
-    @{ Name = 'freshness is checked before sandbox and gate'; Text = $contractText; Marker = '`RUN_SANDBOX`, `CALL_RULE_SCOPE_GATE`, `CREATE_REPORT_DRAFT` 승인 직전마다 `RunPolicyState.freshness_valid_until`을 다시 검사한다.' },
+    @{ Name = 'freshness is checked before policy consumers'; Text = $contractText; Marker = '`CALL_RULE_SCOPE_GATE`와 `CREATE_REPORT_DRAFT` 승인 직전 및 실제 LLM 호출 직전에 `RunPolicyState.freshness_valid_until`을 다시 검사한다.' },
+    @{ Name = 'preparing policy does not block local sandbox'; Text = $contractText; Marker = '`PREPARING | BLOCKED | FAILED | STALE | UNVERIFIED`에서도 격리된 clone·same-attempt mock·fixture만 사용하는 로컬 재현은 기다리지 않고 진행할 수 있다.' },
+    @{ Name = 'policy freshness does not expire local sandbox'; Text = $contractText; Marker = 'policy state 변경·완료·만료만으로 기존 local-only action을 `EXPIRED`로 만들지 않는다.' },
     @{ Name = 'confirmed absence also expires'; Text = $contractText; Marker = '`RunPolicyState.status=ABSENT`에도 같은 종류의 freshness 필드가 모두 필요하므로 공식 정책 부재 확인을 무기한 재사용하지 않는다.' },
     @{ Name = 'Rule Scope review binds run policy state'; Text = $ruleScopeImpactReviewBlock; Marker = 'run_policy_state_ref: StoredDataRef' },
-    @{ Name = 'stale policy is limited to safe paths'; Text = $contractText; Marker = '그동안 새 action은 `LOCAL_ONLY` Sandbox와 `UNCERTAIN + DENY` Rule Scope에만 허용하고 `CREATE_REPORT_DRAFT`는 거절한다.' },
+    @{ Name = 'stale policy blocks report and allow'; Text = $contractText; Marker = '아직 쓰지 않은 Rule Scope·Reporter action은 `EXPIRED`로 확정하고, 새 current 결과 전까지 Rule Scope는 `UNCERTAIN + DENY`만 허용하며 Reporter는 거절한다.' },
+    @{ Name = 'Reporter binds current run policy state'; Text = $contractText; Marker = 'Rule Scope review의 `run_policy_state_ref.record_id`가 ReportDraft와 Reporter action·call spec이 고정한 `run_policy_state_ref.record_id`와 같고' },
     @{ Name = 'overview shows parallel policy preparation'; Text = $overviewText; Marker = 'AST·SAST와 실행 단위 정책 준비를 독립 병렬 실행' },
     @{ Name = 'module map separates policy preparation'; Text = $moduleMapText; Marker = '실행 단위 정책 준비(정적 분석과 병렬)' },
     @{ Name = 'canonical diagram includes run policy state'; Text = $diagramText; Marker = 'RPS[RunPolicyState]' },
     @{ Name = 'Wiki explains single policy preparation'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/pipeline.md')); Marker = '정책은 가설마다 다시 가져오지 않습니다.' },
     @{ Name = 'security scenarios reject policy as static fact'; Text = $securityText; Marker = '| N45 | 정책 record를 `StaticFactBundle`에 넣거나 정책으로 Hypothesis proposal을 사전 삭제 |' },
-    @{ Name = 'security scenarios reject external sandbox access'; Text = $securityText; Marker = '| N46 | `RUN_SANDBOX`가 current `RunPolicyState` 없이 live asset·외부 계정·허용되지 않은 egress에 접근 |' },
-    @{ Name = 'security scenarios reject stale policy use'; Text = $securityText; Marker = '| N47 | 만료된 `RunPolicyState`를 최신 정책처럼 새 Sandbox·Rule Scope·Reporter action에 재사용 |' }
+    @{ Name = 'security scenarios reject external sandbox access'; Text = $securityText; Marker = '| N46 | `RUN_SANDBOX`가 출처를 증명하지 못한 endpoint·계정·fixture, live asset 또는 허용되지 않은 egress에 접근 |' },
+    @{ Name = 'security scenarios allow local sandbox while preparing'; Text = $securityText; Marker = '| N46-A | policy state가 `PREPARING`인 local-only Sandbox 요청 |' },
+    @{ Name = 'security scenarios separate stale policy from sandbox auth'; Text = $securityText; Marker = '| N47 | 만료된 `RunPolicyState`를 최신 정책처럼 Rule Scope·Reporter action에 재사용하거나, policy state 변경만으로 local-only Sandbox action을 취소 |' },
+    @{ Name = 'security scenarios bind Reporter policy state'; Text = $securityText; Marker = '| N48 | ReportDraft의 `run_policy_state_ref`가 Rule Scope review와 다르거나 더 이상 current/fresh하지 않음 |' }
 )
 foreach ($rule in $requiredRunPolicyPreparationRules) {
     if (-not $rule.Text.Contains($rule.Marker)) {
@@ -2624,7 +2629,7 @@ Write-Output "R4-03 exact requester bindings: $($requiredActionRequesterBindings
 Write-Output "R4-03 ActionCheck types: $($requiredActionChecks.Count)"
 Write-Output "R4-03 AnalysisRunResult handoff fields: $($requiredAnalysisResultFields.Count)"
 Write-Output "R8 common contract rules: $($requiredR8CommonContractRules.Count)"
-Write-Output 'R5-03 ReportDraft safety fields: 7'
+Write-Output 'R5-03 ReportDraft safety fields: 8'
 Write-Output 'R4-03 exact LLM call blocks: 2'
 Write-Output "R4-03 authority errors: $($requiredAuthorityErrors.Count)"
 Write-Output "R4-03 authority scenarios: $($authorityScenarioMarkers.Count)"
