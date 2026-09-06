@@ -1423,10 +1423,22 @@ SandboxPolicyDecision:
   request_ref: StoredDataRef
   sandbox_profile_ref: StoredDataRef
   resource_profile_ref: StoredDataRef
+  policy_collection_result_ref: StoredDataRef
+  policy_record_ref: StoredDataRef | null
+  policy_parser_result_refs: [StoredDataRef]
+  testing_restriction_item_ids: [string]
   decision: ALLOW | DENY
   reason_codes: [string]
   checked_boundary_refs: [StoredDataRef]
   decided_at: timestamp
+
+`DynamicReproductionRequest`에는 정책 reference를 넣지 않는다. trusted runtime은 `DYNAMIC_REPRO` work를 실행 가능한 상태로 전환하기 전에 같은 프로그램의 exact `PolicyCollectionResult`를 `WorkExecutionState.input_refs`에 고정한다. collection이 `FOUND`이면 `policy_record_ref`가 가리키는 current exact `ProgramPolicyRecord`와 그 record의 `parser_result_refs`도 같은 work 입력에 고정한다.
+
+`SandboxPolicyDecision.policy_collection_result_ref`, `policy_record_ref`, `policy_parser_result_refs`는 해당 work에 고정된 exact reference와 일치해야 한다. `testing_restriction_item_ids`는 검사한 `ProgramPolicyRecord.testing_restrictions[].policy_item_id`의 부분집합이며 중복을 허용하지 않는다. 문자열로 정책을 다시 해석하거나 최신 정책을 임의로 다시 조회해 결정하지 않는다.
+
+`decision=ALLOW`는 collection이 `FOUND`, policy record가 `CURRENT`, parser 결과가 모두 `SUCCEEDED`이고 실행 방법에 적용되는 testing restriction 검사가 통과한 경우에만 가능하다. 정책 준비 중에는 decision을 만들지 않고 work를 `BLOCKED`, `waiting_for=[DEPENDENCY]`로 유지한다. `ABSENT_CONFIRMED`, `COLLECTION_FAILED`, parser 실패, `STALE | UNVERIFIED` 또는 금지 테스트 위반으로 실행을 허가할 수 없으면 `decision=DENY`로 기록한다.
+
+정책 준비 실패·부재·불확실성·만료와 `decision=DENY`는 `FALSE | HOLD`의 근거가 아니다. 안전한 Sandbox 실행이 불가능하면 동적 work와 Verification을 복구 가능성에 따라 `BLOCKED | FAILED`로 처리하고 final `VerificationResult`를 저장하지 않는다.
 
 SandboxCommandRecord:
   meta: RecordMeta
@@ -1533,7 +1545,7 @@ DynamicReproductionResult:
   elapsed_ms: integer
 ```
 
-`status`는 재현 작업이 어디까지 진행됐는지, `hypothesis_outcome`은 실제 동적 관측이 가설과 어떤 관계인지 나타낸다. R7의 outcome은 동적 실행 결과에 대한 판단이며 최종 `TRUE | FALSE | HOLD`가 아니다. 최종 취약점 판정은 R6 Verification이 정적·Pro·Con·동적 근거를 함께 읽고 결정한다.
+`status`는 재현 작업이 어디까지 진행됐는지, `hypothesis_outcome`은 실제 동적 관측이 가설과 어떤 관계인지 나타낸다. `status=SUCCEEDED`인 결과의 `policy_decision_ref`는 같은 work·attempt에서 실제 Sandbox 실행을 허가한 `SandboxPolicyDecision(decision=ALLOW)` exact revision을 가리켜야 한다. 해당 decision의 정책 reference는 `DYNAMIC_REPRO` work의 고정된 정책 입력과 일치해야 한다. 정책 decision이 없거나 `DENY`, stale 또는 다른 정책 revision을 가리키면 실행 결과와 validated PoC를 final TRUE 근거로 사용할 수 없다. R7의 outcome은 동적 실행 결과에 대한 판단이며 최종 `TRUE | FALSE | HOLD`가 아니다. 최종 취약점 판정은 R6 Verification이 정적·Pro·Con·동적 근거를 함께 읽고 결정한다.
 
 `DynamicReproductionRequest`는 R6 Verification이 R7에 무엇을 왜 재현할지 전달하는 불변 record다. `verification_assignment_ref`, `verification_generation`과 `hypothesis_ref`는 current Verification work와 exact match한다. `POC_CONFIRMATION`은 `initial_verdict=TRUE`, `VERDICT_EVIDENCE`는 동적 근거가 더 필요한 `initial_verdict=HOLD`에 사용한다. R7은 request의 purpose·goal·가설·필수 환경 조건과 `sandbox_profile_ref`를 변경하지 않는다.
 
