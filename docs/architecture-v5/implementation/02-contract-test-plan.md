@@ -9,7 +9,7 @@
 - R3 역할 담당: 윤희섭 (@YHS-Sec, 표시 닉네임 @v1sion).
 - 공통 아키텍처 검토·대행 수행: 김태현 (@taehyeon-git). 다른 담당자가 작성한 PR을 R3 본인의 구현 실적으로 표시하지 않는다.
 - 상위 [#4](https://github.com/SASTsimi/sastsimi/issues/4), 본 작업 [#25](https://github.com/SASTsimi/sastsimi/issues/25), 선행 [#24](https://github.com/SASTsimi/sastsimi/issues/24), 후속 [#89](https://github.com/SASTsimi/sastsimi/issues/89)·[#92](https://github.com/SASTsimi/sastsimi/issues/92).
-- 작성·대조 기준 main: `0cae9bdc5161efb68a3fdc15cb72ec12e3a3440e` (2026-09-06 조회).
+- 작성·대조 기준 main: `9c7a5a19c5e32c3f752bc40a32aaf86441be4d01` (2026-09-07 조회).
 - 선행 정본: [01-module-map.md](01-module-map.md). 현재 파이프라인은 **22단계**다. 옛 23단계 댓글을 그대로 구현하지 않는다.
 - [#25 작성 범위 댓글](https://github.com/SASTsimi/sastsimi/issues/25#issuecomment-5556392596)을 문서화하며, 이전 `db1ec85` 댓글의 OK/BAD 이력은 §7에서 연결한다.
 - main 이후 변경이나 미병합 PR을 확정 계약으로 취급하지 않는다. 아래 PR 묶음은 해당 HEAD에만 적용되는 제안/미결정 시험이다.
@@ -36,9 +36,10 @@ R3는 입력·검사·예상 결과를 구체화한다. 새로운 schema·enum·
 | [#100](https://github.com/SASTsimi/sastsimi/pull/100) | R7 lifecycle·실행/cleanup 기록과 같은 attempt의 연결 |
 | [#101](https://github.com/SASTsimi/sastsimi/pull/101) | FINDING_NORMALIZE·FindingIndexState·CAS; Finding 생성과 Reporter 자격 분리 |
 | [#102](https://github.com/SASTsimi/sastsimi/pull/102) | 자식 결과를 부모 verdict/impact에 흡수하지 않음 |
-| [#103](https://github.com/SASTsimi/sastsimi/pull/103) | 자식 등록 전 시작점 검사와 등록 후 Context 전 계보 재검사 구분 |
+| [#103](https://github.com/SASTsimi/sastsimi/pull/103) | 자식 등록 전 시작점 검사와 Context 조회 시 exact 부모 reference 검사 구분 |
 | [#105](https://github.com/SASTsimi/sastsimi/pull/105) | match triple 중복 key, trigger/pool 처리 책임, 구조화 no_match_reasons |
 | [#60](https://github.com/SASTsimi/sastsimi/pull/60) | token 계획값을 사용량 중단 상한으로 쓰지 않음; R7 입장 정책과 R8 lifecycle 분리 |
+| [#113](https://github.com/SASTsimi/sastsimi/pull/113) | Dynamic Reproduction Agent 명칭, program policy의 감사 전용 연결, SandboxProfile 외부 경계와 새 generation 규칙 |
 
 ADR의 자체 승인 상태와 PR 병합 여부는 별개다. 예를 들어 #105 관련 ADR-012의 PROPOSED 표기를 본 문서가 ACCEPTED로 바꾸지 않는다.
 
@@ -90,12 +91,12 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **F-HYP (가설 등록·배정)**: current COMMITTED StaticFactBundle B1과 INITIAL proposal candidate HP1, exact 근거 refs·질문·제약·missing information을 준비한다. 등록 뒤 H-A와 ACTIVE Assignment AS1이 생긴다. Verification 등록은 H-A/HP1/PlaybookPolicy PP1/VerificationPlaybook PB1을 고정하고 PlaybookApplication PA1을 생성한다. 각 시험은 등록 전/후 중 본문이 지정한 지점에서 시작한다.
 - **F-LLM (Prompt·Provider·session·권한)**: 정상 역할 HYPOTHESIS의 consumer work K-H/active attempt A-H. exact template/payload P1/LLMCallSpec S1/ProviderProfile PV1 및 ALLOW 후 USED decision AD1을 준비한다. 실제 outbound request O1은 S1과 필드별 동일하다. fake adapter는 미리 정한 성공/실패 응답만 반환한다. PR97의 Registry 세부 필드는 F-PR에서만 사용한다.
 - **F-VER (Pro/Con·최종 판정·REVISE)**: ACTIVE owner AS1, hypothesis H-A=VERIFYING, VERIFICATION work KV1/generation G1, 같은 고정 B1/CTX1/PP1/PB1/PA1 및 versioned debate 설정 DP1. 기본 run은 `purpose=PRODUCTION`, `verification_mode=ALWAYS_DEBATE`, `debate_triggers=[]`, `debate_skip_reason=null`이다. PRO work KP1/attempt AP1/session SP1과 CON KC1/AC1/SC1은 서로 다르며 common input hash DH1만 동일하다. 각각의 result EPRO1/ECON1은 자기 work의 COMMITTED output. final TRUE용 DX1/POC1은 F-DYN의 정상 chain이다. 평가 변형은 별도 `purpose=EVALUATION` run과 비어 있지 않은 exact `eval_config_refs`를 사용하며 운영 결과와 섞지 않는다.
-- **F-DYN (동적 재현·Sandbox·PoC)**: H-A의 verification generation G1 아래 R6가 만든 exact DynamicReproductionRequest DQ1과 단 하나의 DYNAMIC_REPRO work KD1을 준비한다. 현재 attempt ADYN1에서 R7 Agent는 requirements ER1·plan PL1·candidate PC1·동적 관측 해석을 만들고, R7 Setup Automation은 recipe RC1·image/container 환경 ENV1·CleanupResult CL1을 만든다. Sandbox Controller는 외부 안전 경계와 exact 정책 revision을 검사한 SandboxPolicyDecision SPD1을 만들며, Reproduction Session Manager는 append-only AgentLog LOG1·validated PoC POC1·DynamicReproductionResult DX1을 확정한다. 각 record의 producer identity와 result-owner registry가 이 구분과 같고 candidate·command·environment·관찰·정책·cleanup은 같은 work/attempt로 연결된다. R6 request의 producer attempt와 R7 실행 attempt를 같다고 강요하지 않는다. recipe baseline 재사용은 새 attempt binding과 previous environment를 따로 검사한다.
+- **F-DYN (동적 재현·Sandbox·PoC)**: H-A의 verification generation G1 아래 R6가 만든 exact DynamicReproductionRequest DQ1과 단 하나의 DYNAMIC_REPRO work KD1을 준비한다. 현재 attempt ADYN1에서 Dynamic Reproduction Agent는 requirements ER1·plan PL1·candidate PC1·동적 관측 해석을 만들고, R7 Setup Automation은 recipe RC1·image/container 환경 ENV1·CleanupResult CL1을 만든다. Sandbox Controller는 exact SandboxProfile SP1의 host·Docker·mount·namespace·secret·egress·workspace 외부 경계를 검사한 SandboxPolicyDecision SPD1을 만들며, Reproduction Session Manager는 append-only AgentLog LOG1·validated PoC POC1·DynamicReproductionResult DX1을 확정한다. RunPolicyState RPS1은 RUN_SANDBOX 시점의 감사 reference로만 기록하고 KD1 불변 입력이나 Controller 허가 조건에 넣지 않는다. 각 record의 producer identity와 result-owner registry가 이 구분과 같고 candidate·command·environment·관찰·SandboxProfile·cleanup은 같은 work/attempt로 연결된다. R6 request의 producer attempt와 동적 재현 실행 attempt를 같다고 강요하지 않는다. recipe baseline 재사용은 새 attempt binding과 previous environment를 따로 검사한다.
 - **F-GAT (CWE·두 Gate·정책·Finding)**: H-A TERMINAL, exact final TRUE V1, current generation DX1(SUCCEEDED,SUPPORTED)/POC1, V1을 직접 가리키는 current CWELabel CW1. Technical TG1(ACCEPT)은 V1/CW1을, 정책 수집 COL1과 RuleScope RS1은 같은 V1/CW1/TG1/policy chain을 참조한다. 기본 COL1=FOUND/ProgramPolicyRecord POL1 존재. 기본 RS1 6축은 PASS/PASS/PASS/PASS/SUFFICIENT/ALLOW. 각 case가 지정한 완료 직전부터 시작한다.
 - **F-CHN (Primitive·Chaining·자식)**: 같은 R-A/W-A/C-A의 가설 HA(TRUE)와 HB(HOLD), 각각 current Primitive PRA(result 있음)/PRB(inputs 있음,result=null), initial origins. PRA는 Technical ACCEPT와 current ALLOW admission ADA를 가진다. PrimitiveUpdate COMMITTED 뒤 trigger/index refs를 고정한 CHAINING work KCH1(RUNNING/active ACH1), pair PRA.result→PRB.inputs의 draft_id를 matched_input_id로 사용한다. ancestor 추가 변형에는 source match와 parent hypothesis/result를 모두 연결한다.
 - **F-REP (Reporter·집계·사람 경계)**: F-GAT 정상 closure에서 trusted Finding normalization이 만든 current Finding FN1 및 FindingIndexState FI1. Reporter가 참조하는 V1/CW1/TG1/RS1/COL1/POL1/DX1/POC1이 모두 동일. ReportDraft 후보 RD1에 restriction/limitation/provenance 보존. 기본 종료 run에는 RUNNING work/미복구 PREPARED/잘못된 pointer가 없고 다른 실패도 없다. 변형마다 필요한 부분만 변경한다.
 - **F-BUD (예산·관측성)**: AnalysisRunState 시작 때 versioned eval_config_refs ESET1 고정. 작업 ActionDecision.checked_config_refs는 필요한 정확한 부분집합, budget/lifecycle/sandbox profile은 각각 별도 ref. monotonic 실행 시간과 provider가 공개한 usage만 입력한다. token 계획값과 실제 사용량, R7 입장 보호 설정과 R8 실행 lifecycle 한도를 분리한다.
-- **F-PR (미병합 Provider·Prompt 제안 시험)**: 기준 main 공통 fixture에 #96@a8d8a4e 및 #97@83f7797 문서에서 제안한 profile/Registry/assessment/tool-loop slot을 덧붙인 별도 계획 fixture다. 실제 profile/template/schema/validator 파일이 존재하거나 실행 가능하다는 뜻이 아니다. PR 시험은 본문의 pending 상태를 그대로 따른다.
+- **F-PR (미병합 Provider·Prompt 제안 시험)**: 기준 main 공통 fixture에 #96·#97의 검토 freeze SHA가 가리키는 문서에서 제안한 profile/Registry/assessment/tool-loop slot을 덧붙인 별도 계획 fixture다. 실행할 때 두 PR의 exact freeze SHA를 fixture manifest에 기록하며 서로 다른 revision을 섞지 않는다. 실제 profile/template/schema/validator 파일이 존재하거나 실행 가능하다는 뜻이 아니다. PR 시험은 본문의 pending 상태를 그대로 따른다.
 
 ## 3. 22단계 coverage 색인
 
@@ -894,11 +895,11 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-DYN-001 / 정상 / 요청·recipe·AgentLog·PoC 정상 연결
 - **2. 단계·계약 경계**: 11–13; 동적 재현·Sandbox·PoC
-- **3. producer → consumer**: R6 요청 → R7 Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(외부 경계·정책 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
+- **3. producer → consumer**: R6 요청 → Dynamic Reproduction Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(SandboxProfile 외부 경계 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
 - **4. 선행 상태·exact refs**: F-DYN(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: 같은 verification generation의 exact R6 request 아래 역할별 producer가 자기 record를 만든다. 정상 DX1은 `status=SUCCEEDED`, `hypothesis_outcome=SUPPORTED`, `agent_invoked=true`이고 LOG1이 exact PC1 revision·content_digest를 실제 실행해 지지 관측을 만든다. POC1의 request·plan·recipe·environment·log·candidate·execution action/digest는 DX1과 같은 work/attempt에서 exact match하며 생성 자원이 있으면 CL1도 같은 attempt에 연결된다.
-- **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 외부 경계·정책 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 R7 Agent
-- **7. 허용·차단·격리 기대**: Session Manager가 producer identity, `SUCCEEDED + SUPPORTED + agent_invoked=true`, same-attempt candidate·command·environment·관찰·digest와 cleanup을 확인한 뒤에만 POC1과 DX1을 확정한다. R7 Agent가 recipe/environment/validated PoC/final result를 직접 저장하려 하면 차단한다.
+- **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 SandboxProfile 외부 경계 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 Dynamic Reproduction Agent
+- **7. 허용·차단·격리 기대**: Session Manager가 producer identity, `SUCCEEDED + SUPPORTED + agent_invoked=true`, same-attempt candidate·command·environment·관찰·digest와 cleanup을 확인한 뒤에만 POC1과 DX1을 확정한다. Dynamic Reproduction Agent가 recipe/environment/validated PoC/final result를 직접 저장하려 하면 차단한다.
 - **8. work·attempt·가설 기대**: DYNAMIC_REPRO work/attempt SUCCEEDED; R6는 아직 최종 판정 전 VERIFYING.
 - **9. 오류·DataGap 기대**: 없음
 - **10. 저장·갱신 금지 pointer**: dynamic result·validated poc_ref·AgentLog·environment/recipe/candidate refs·cleanup 결과와 COMMITTED pointer 일치.
@@ -910,10 +911,10 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-DYN-002 / 부정 / 같은 generation의 중복 dynamic work
 - **2. 단계·계약 경계**: 11–13; 동적 재현·Sandbox·PoC
-- **3. producer → consumer**: R6 요청 → R7 Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(외부 경계·정책 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
+- **3. producer → consumer**: R6 요청 → Dynamic Reproduction Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(SandboxProfile 외부 경계 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
 - **4. 선행 상태·exact refs**: F-DYN(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: 동일 verification generation에 두 개의 서로 다른 DYNAMIC_REPRO work를 등록하려 한다.
-- **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 외부 경계·정책 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 R7 Agent
+- **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 SandboxProfile 외부 경계 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 Dynamic Reproduction Agent
 - **7. 허용·차단·격리 기대**: 기존 logical work 재사용/중복 등록 거절; 일반 retry는 새 work가 아님.
 - **8. work·attempt·가설 기대**: 기존 work·attempt 상태 유지; 두 번째 active dynamic work 없음.
 - **9. 오류·DataGap 기대**: 중복 등록 경계 Q-02
@@ -926,14 +927,14 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-DYN-003 / 부정 / Sandbox 밖 강제 경계 우회
 - **2. 단계·계약 경계**: 11–13; 동적 재현·Sandbox·PoC
-- **3. producer → consumer**: R6 요청 → R7 Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(외부 경계·정책 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
+- **3. producer → consumer**: R6 요청 → Dynamic Reproduction Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(SandboxProfile 외부 경계 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
 - **4. 선행 상태·exact refs**: F-DYN(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
-- **5. 정상/잘못된 fixture**: Controller 검사 없이 host command·Docker socket·비허용 mount/egress·외부 대상·외부 계정 사용을 요청한다. 별도 변형은 plan을 내부 command allowlist로 강제하거나 R6가 exact command를 지시하고, current 프로그램 정책 제한 또는 승인된 로컬 전용 범위 없이 실행한다.
-- **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 외부 경계·정책 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 R7 Agent
-- **7. 허용·차단·격리 기대**: 외부 실행 경계·정책 provenance 우회 차단; R6는 목적 요청, R7 Agent는 허가된 Sandbox 안의 실행 방식을 정하되 Policy Parser 결과를 임의 재해석하지 않는다. 명확한 금지 조건은 Sandbox 시작 전 차단하고, 정책 부재·불확실은 R4·R5가 승인한 로컬 전용 범위 밖으로 넓히지 않는다. LLM이 직접 host 도구를 실행하지 않는다.
-- **8. work·attempt·가설 기대**: 정책 차단 실행은 실제 대기/실패 계약 적용; R6 final verdict 없음.
+- **5. 정상/잘못된 fixture**: Controller 검사 없이 host command·Docker socket·비허용 mount/namespace·secret·egress·다른 workspace 사용을 요청한다. 별도 변형은 plan을 내부 command allowlist로 강제하거나 R6가 exact command를 지시한다. 반대 변형은 program policy가 `ABSENT | UNVERIFIED | BLOCKED | FAILED`여도 exact SandboxProfile 외부 경계를 지키는 `LOCAL_ONLY` 실행을 제출한다.
+- **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 SandboxProfile 외부 경계 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 Dynamic Reproduction Agent
+- **7. 허용·차단·격리 기대**: exact SandboxProfile 외부 경계 우회만 Controller가 차단한다. R6는 목적만 요청하고 Dynamic Reproduction Agent가 허가된 Sandbox 안의 실행 방식을 정한다. Controller는 program policy나 container 내부 command 의미를 다시 판정하지 않으며, policy 준비 상태만으로 `LOCAL_ONLY` 실행을 차단하지 않는다. LLM이 직접 host 도구를 실행하지 않는다.
+- **8. work·attempt·가설 기대**: SandboxProfile 외부 경계 차단은 실제 대기 가능성에 따라 BLOCKED 또는 FAILED이며 R6 final verdict는 없다. program policy 상태만 다른 정상 LOCAL_ONLY fixture는 같은 work를 계속할 수 있다.
 - **9. 오류·DataGap 기대**: SANDBOX_POLICY_DENIED / ACTION_NOT_ALLOWED; plan schema 매핑 Q-02
-- **10. 저장·갱신 금지 pointer**: 적용한 exact 정책 revision과 실행 방식·egress·대상·계정·요청 방법을 SPD1.checked_boundary_refs와 LOG1 input refs에서 추적하고 DX1.policy_decision_ref로 같은 SPD1에 연결한다. 차단 action·최소 AgentLog·반환 dynamic result를 정책 계약대로 기록하며 실제 host 실행은 없다.
+- **10. 저장·갱신 금지 pointer**: 적용한 exact SandboxProfile·DynamicReproductionLifecycleProfile을 action checked refs와 SPD1에서 추적하고 DX1.policy_decision_ref로 같은 SPD1에 연결한다. RunPolicyState는 별도 audit ref로만 남긴다. 차단 action·최소 AgentLog·반환 dynamic result를 경계 계약대로 기록하며 실제 host 실행은 없다.
 - **11. FALSE 변환 금지**: 입력 위반·조회/호출/실행 오류·정책 차단·예산/저장 실패를 새 FALSE 근거로 사용하지 않음. 이미 존재하는 부모/가설 verdict는 해당 case의 명시적 검증 경로 외에는 변경하지 않음.
 - **12. 실행 계층**: contract / integration / security-negative
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R7·R4·R6·R8. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
@@ -942,11 +943,11 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-DYN-004 / 부정 / 실행 실패를 반증으로 오인
 - **2. 단계·계약 경계**: 11–13; 동적 재현·Sandbox·PoC
-- **3. producer → consumer**: R6 요청 → R7 Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(외부 경계·정책 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
+- **3. producer → consumer**: R6 요청 → Dynamic Reproduction Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(SandboxProfile 외부 경계 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
 - **4. 선행 상태·exact refs**: F-DYN(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
-- **5. 정상/잘못된 fixture**: 정책 차단·환경 구성 실패·container 실패·timeout을 각각 주입하고 DISPROVED/FALSE/HOLD 또는 non-null poc_ref를 제출한다. 정책 revision이 실행 전에 바뀌었는데 기존 ALLOW/SPD1을 재사용하는 변형도 포함한다.
-- **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 외부 경계·정책 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 R7 Agent
-- **7. 허용·차단·격리 기대**: 실행 실패와 기술적 반증을 구분해 제출 거절; 신뢰 관측 없는 verdict 금지. 실행 전 정책 revision 변경은 기존 허가를 만료시키고 current 정책에 대한 새 action/decision을 요구한다.
+- **5. 정상/잘못된 fixture**: SandboxProfile 외부 경계 차단·환경 구성 실패·container 실패·timeout을 각각 주입하고 DISPROVED/FALSE/HOLD 또는 non-null poc_ref를 제출한다. 실행 전에 exact request 또는 SandboxProfile revision이 바뀌었는데 기존 ALLOW/SPD1이나 기존 work를 재사용하는 변형도 포함한다.
+- **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 SandboxProfile 외부 경계 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 Dynamic Reproduction Agent
+- **7. 허용·차단·격리 기대**: 실행 실패와 기술적 반증을 구분해 제출 거절하고 신뢰 관측 없는 verdict를 금지한다. exact request 또는 SandboxProfile revision 변경은 기존 action/decision을 만료시키며, 기존 immutable work를 RESUME하지 않고 새 Verification generation과 새 동적 work를 요구한다.
 - **8. work·attempt·가설 기대**: 외부 대기 BLOCKED, session 재시작 가능 RETRY, 소진/복구불가 FAILED를 원인별 적용; hypothesis final result 없음.
 - **9. 오류·DataGap 기대**: 실제 SANDBOX/PROVIDER/POLICY 오류·DataGap. 상태 조합 세부 Q-02
 - **10. 저장·갱신 금지 pointer**: poc_ref=null, 최소 log·failure 원인·dynamic result/history 보존; validated/current final verdict 생성 금지.
@@ -958,10 +959,10 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-DYN-005 / 부정 / PoC candidate와 validated PoC 분리
 - **2. 단계·계약 경계**: 11–13; 동적 재현·Sandbox·PoC
-- **3. producer → consumer**: R6 요청 → R7 Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(외부 경계·정책 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
+- **3. producer → consumer**: R6 요청 → Dynamic Reproduction Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(SandboxProfile 외부 경계 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
 - **4. 선행 상태·exact refs**: F-DYN(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: candidate만 존재하거나 `status!=SUCCEEDED`, `hypothesis_outcome!=SUPPORTED`, `agent_invoked=false`인데 poc_ref를 non-null로 제출한다. 별도 변형은 LOG1에 exact candidate revision·content_digest의 실제 실행 event가 없거나 candidate·command·environment·관찰 중 하나를 다른 work/attempt ref로 바꾼다.
-- **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 외부 경계·정책 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 R7 Agent
+- **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 SandboxProfile 외부 경계 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 Dynamic Reproduction Agent
 - **7. 허용·차단·격리 기대**: 다섯 확정 조건을 모두 만족하지 않으면 `poc_ref=null`이어야 한다. candidate를 validated PoC로 승격하거나 latest lookup·추정으로 누락 연결을 채우는 저장은 차단한다.
 - **8. work·attempt·가설 기대**: 실제 실행 상태는 보존; 가짜 TRUE/Gate 경로 진입 없음.
 - **9. 오류·DataGap 기대**: semantic INVALID_OUTPUT; 참조 세부 Q-02
@@ -974,10 +975,10 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-DYN-006 / 부정 / 옛 attempt·digest·변조 AgentLog
 - **2. 단계·계약 경계**: 11–13; 동적 재현·Sandbox·PoC
-- **3. producer → consumer**: R6 요청 → R7 Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(외부 경계·정책 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
+- **3. producer → consumer**: R6 요청 → Dynamic Reproduction Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(SandboxProfile 외부 경계 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
 - **4. 선행 상태·exact refs**: F-DYN(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: 이전 attempt candidate/log/PoC 혼합, 다른 image digest, AgentLog event 수정·삭제·재정렬/sequence/action 불일치, exact candidate revision 또는 content_digest 불일치, command·environment·관찰 ref의 work/attempt 불일치를 각각 주입한다.
-- **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 외부 경계·정책 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 R7 Agent
+- **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 SandboxProfile 외부 경계 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 Dynamic Reproduction Agent
 - **7. 허용·차단·격리 기대**: same-attempt·candidate revision·content/command digest·environment·관찰·append-only provenance 검사로 PoC/result commit을 차단한다. 승인된 baseline recipe 재사용은 현재 attempt의 새 recipe/environment binding과 previous_environment_ref 확인 후 별도 허용한다.
 - **8. work·attempt·가설 기대**: current attempt의 정상 성공 확정 금지; 가설 판정 불변.
 - **9. 오류·DataGap 기대**: STALE_RESULT 및 provenance/sequence 세부 Q-02
@@ -990,14 +991,14 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-DYN-007 / 정상 / 같은 session의 자율 조정
 - **2. 단계·계약 경계**: 11–13; 동적 재현·Sandbox·PoC
-- **3. producer → consumer**: R6 요청 → R7 Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(외부 경계·정책 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
+- **3. producer → consumer**: R6 요청 → Dynamic Reproduction Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(SandboxProfile 외부 경계 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
 - **4. 선행 상태·exact refs**: F-DYN(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: Agent가 Sandbox 안에서 command→관찰→PoC/환경 수정→재실행한다.
-- **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 외부 경계·정책 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 R7 Agent
+- **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 SandboxProfile 외부 경계 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 Dynamic Reproduction Agent
 - **7. 허용·차단·격리 기대**: 외부 경계와 예산 내에서 같은 work·attempt/session event로 기록. 매 명령마다 새 attempt 만들지 않음.
 - **8. work·attempt·가설 기대**: DYNAMIC_REPRO work/attempt RUNNING 유지; 완료 때만 결과 확정.
 - **9. 오류·DataGap 기대**: 정상 조정은 실행 오류로 억지 변환하지 않음
-- **10. 저장·갱신 금지 pointer**: append-only AgentLog/action/observation 연결. R7 Agent 결론과 Session Manager 조립을 분리.
+- **10. 저장·갱신 금지 pointer**: append-only AgentLog/action/observation 연결. Dynamic Reproduction Agent 결론과 Session Manager 조립을 분리.
 - **11. FALSE 변환 금지**: 입력 위반·조회/호출/실행 오류·정책 차단·예산/저장 실패를 새 FALSE 근거로 사용하지 않음. 이미 존재하는 부모/가설 verdict는 해당 case의 명시적 검증 경로 외에는 변경하지 않음.
 - **12. 실행 계층**: contract / integration / security-negative
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R7·R4·R6·R8. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
@@ -1006,12 +1007,12 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-DYN-008 / 정상·부정 / session 재시작과 외부 대기 재개
 - **2. 단계·계약 경계**: 11–13; 동적 재현·Sandbox·PoC
-- **3. producer → consumer**: R6 요청 → R7 Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(외부 경계·정책 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
+- **3. producer → consumer**: R6 요청 → Dynamic Reproduction Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(SandboxProfile 외부 경계 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
 - **4. 선행 상태·exact refs**: F-DYN(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
-- **5. 정상/잘못된 fixture**: A: session crash 후 외부 입력 없이 새 시도 가능하며 runtime이 환경을 STATE_UNCERTAIN으로 강제한다. B: 재인증·정책·외부 설정 변경 대기 후 조건 해결. C: 실행 전 정책 revision 변경 뒤 기존 policy decision을 재사용한다.
-- **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 외부 경계·정책 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 R7 Agent
-- **7. 허용·차단·격리 기대**: A RUNNING→READY→RUNNING, 새 attempt trigger=RETRY이며 clean container 재생성 필요. B BLOCKED→READY→RUNNING, 새 attempt trigger=RESUME. C는 기존 허가 만료 후 current 정책에 대한 새 판정 전 실행 금지. 모든 경로에 한도·cleanup 검사가 필요하다.
-- **8. work·attempt·가설 기대**: 같은 work_id 유지; 과거 attempt 종료/history, 새 active attempt 하나; final verdict 없음.
+- **5. 정상/잘못된 fixture**: A: session crash 후 외부 입력 없이 새 시도 가능하며 runtime이 환경을 STATE_UNCERTAIN으로 강제한다. B: 현재 work 입력을 바꾸지 않는 재인증·외부 환경 정비·resource 확보 대기 후 조건이 해결된다. C: exact request 또는 SandboxProfile revision을 바꾼 뒤 기존 work와 policy decision을 재사용한다. D: program policy 준비 상태만 달라진 LOCAL_ONLY work를 불필요하게 중단한다.
+- **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 SandboxProfile 외부 경계 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 Dynamic Reproduction Agent
+- **7. 허용·차단·격리 기대**: A는 RUNNING→READY→RUNNING, 새 attempt `trigger=RETRY`이며 clean container를 재생성한다. B는 input_refs/input_hash가 같을 때만 BLOCKED→READY→RUNNING과 `trigger=RESUME`를 허용한다. C는 기존 action을 만료시키고 새 Verification generation·새 동적 work로 분리한다. D는 program policy 상태를 Sandbox 허가 조건으로 쓰지 않고 기존 LOCAL_ONLY 실행을 계속한다. 모든 경로에 한도·cleanup 검사가 필요하다.
+- **8. work·attempt·가설 기대**: A/B는 같은 work_id에서 과거 attempt 종료/history와 새 active attempt 하나를 유지한다. C는 기존 work를 재개하지 않고 새 generation/work를 등록한다. final verdict는 없다.
 - **9. 오류·DataGap 기대**: 이전 오류 보존; 한도 소진 BUDGET_EXCEEDED 또는 해당 종료 오류
 - **10. 저장·갱신 금지 pointer**: 이전 log/결과 보존, 새 환경/provenance 연결. BLOCKED work.finished_at=null이지만 반환된 attempt 결과의 finished_at은 기록.
 - **11. FALSE 변환 금지**: 입력 위반·조회/호출/실행 오류·정책 차단·예산/저장 실패를 새 FALSE 근거로 사용하지 않음. 이미 존재하는 부모/가설 verdict는 해당 case의 명시적 검증 경로 외에는 변경하지 않음.
@@ -1020,13 +1021,13 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 #### R3-CT-DYN-009 — R7 구성요소별 생산 권한 분리
 
-- **1. ID·유형·설명**: R3-CT-DYN-009 / 정상·부정 / R7 Agent·Setup Automation·Controller·Session Manager 생산 책임 분리
+- **1. ID·유형·설명**: R3-CT-DYN-009 / 정상·부정 / Dynamic Reproduction Agent·Setup Automation·Controller·Session Manager 생산 책임 분리
 - **2. 단계·계약 경계**: 11–13; R7 result-owner registry·SAVE_RESULT authority·동적 결과 조립
-- **3. producer → consumer**: R7 Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(외부 경계·정책 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
+- **3. producer → consumer**: Dynamic Reproduction Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(SandboxProfile 외부 경계 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
 - **4. 선행 상태·exact refs**: F-DYN(§2.3)의 정상 역할별 record와 같은 KD1/ADYN1. 각 action requested_by, result kind, schema와 result-owner registry를 exact revision으로 고정한다.
-- **5. 정상/잘못된 fixture**: 정상은 네 구성요소가 자기 소유 결과만 생산한다. 부정 변형은 R7 Agent가 recipe/environment/cleanup/PoCBundle/DynamicReproductionResult를 저장하거나, Setup Automation이 AgentLog/판정, Controller가 recipe/result, Session Manager가 requirements/plan/candidate/실행 전략을 생산한다.
+- **5. 정상/잘못된 fixture**: 정상은 네 구성요소가 자기 소유 결과만 생산한다. 부정 변형은 Dynamic Reproduction Agent가 recipe/environment/cleanup/PoCBundle/DynamicReproductionResult를 저장하거나, Setup Automation이 AgentLog/판정, Controller가 recipe/result, Session Manager가 requirements/plan/candidate/실행 전략을 생산한다.
 - **6. 검사 주체**: Runtime Validator의 requested_by·action·result-kind·schema·owner·input refs 검사 + State Store의 단일 producer 검사
-- **7. 허용·차단·격리 기대**: 정상 역할별 결과만 저장·조립 허용. 권한 밖 결과는 provider/host 실행 또는 저장 전에 차단하며 Session Manager가 R7 Agent의 동적 해석을 새 결론으로 바꾸지 않는다.
+- **7. 허용·차단·격리 기대**: 정상 역할별 결과만 저장·조립 허용. 권한 밖 결과는 provider/host 실행 또는 저장 전에 차단하며 Session Manager가 Dynamic Reproduction Agent의 동적 해석을 새 결론으로 바꾸지 않는다.
 - **8. work·attempt·가설 기대**: 잘못된 producer의 action/result는 DYNAMIC_REPRO 성공으로 연결되지 않는다. 기존 current attempt와 가설은 실제 실패 전파 규칙 외에는 불변이다.
 - **9. 오류·DataGap 기대**: `AUTHORITY_DENIED | ACTION_NOT_ALLOWED` 또는 result-owner 위반. exact 조합은 Q-02.
 - **10. 저장·갱신 금지 pointer**: 권한 밖 record·current pointer·validated PoC·final dynamic result 저장 금지. 거절 trace에는 요청 역할·result kind·expected owner를 비밀 없이 기록한다.
@@ -1038,7 +1039,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-DYN-010 / 정상·부정 / validated PoC의 상태·관측·same-attempt 완전성
 - **2. 단계·계약 경계**: 12–13; PoCCandidate 실행 → PoCBundle 확정 → DynamicReproductionResult.poc_ref
-- **3. producer → consumer**: R7 Agent candidate·Setup Automation environment·Runtime command/observation → Session Manager PoCBundle/result → R6
+- **3. producer → consumer**: Dynamic Reproduction Agent candidate·Setup Automation environment·Runtime command/observation → Session Manager PoCBundle/result → R6
 - **4. 선행 상태·exact refs**: F-DYN(§2.3)의 정상 DQ1/PL1/RC1/ENV1/PC1/LOG1/POC1/DX1. PC1 revision과 content_digest, 실행 command/action, 환경과 관찰 refs를 ADYN1에 고정한다.
 - **5. 정상/잘못된 fixture**: 정상은 `status=SUCCEEDED`, `hypothesis_outcome=SUPPORTED`, `agent_invoked=true`, same-attempt LOG1의 PC1 exact revision·content_digest 실제 실행과 지지 관측, candidate·command·environment·observation exact 연결을 모두 만족한다. 부정 변형은 이 다섯 조건을 하나씩 제거·변조한다.
 - **6. 검사 주체**: Session Manager의 PoCBundle/result 조립 검사 + Runtime Validator의 status/outcome/agent event/exact ref·digest·work/attempt 검사
@@ -1050,19 +1051,19 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **12. 실행 계층**: contract / integration / E2E / security-negative
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R7·R4·R6·R5. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
 
-#### R3-CT-DYN-011 — 실행 전 정책 revision과 provenance
+#### R3-CT-DYN-011 — SandboxProfile 경계와 program policy 감사 분리
 
-- **1. ID·유형·설명**: R3-CT-DYN-011 / 정상·부정 / 프로그램 정책 제한·실행 방식·Sandbox 판정의 exact 연결
-- **2. 단계·계약 경계**: 12; current 정책 확인 → RUN_SANDBOX action/decision → SandboxPolicyDecision·AgentLog·dynamic result
-- **3. producer → consumer**: 승인된 Policy Collector/Runtime 정책 입력 → Sandbox Controller·Setup Automation·Session Manager → R6
-- **4. 선행 상태·exact refs**: DQ1과 current exact 정책 revision POL-DYN1, R7 SandboxProfile, R8 lifecycle profile을 RUN_SANDBOX input/checked refs에 고정한다. 허용 범위는 실행 방식·egress·대상·계정·요청 방법을 식별하며 R7 Agent가 정책 문장을 새 권한으로 해석하지 않는다.
-- **5. 정상/잘못된 fixture**: 정상은 current 정책과 profile이 허용한 로컬 대상만 실행하고 같은 POL-DYN1을 SPD1.checked_boundary_refs, LOG1 input refs와 DX1.policy_decision_ref→SPD1 경로로 추적한다. 부정 변형은 명확한 금지 조건 실행, 정책 부재·불확실 상태에서 승인 범위 밖 외부 대상/계정/egress 사용, 정책 확인 생략, refs 불일치, 실행 전 POL-DYN1이 새 revision으로 바뀌었는데 기존 허가 재사용이다.
-- **6. 검사 주체**: Runtime Validator의 current revision·action 만료·exact refs 검사 + Sandbox Controller의 외부 정책 경계 검사 + Session Manager provenance 검사; 정책 의미·허용 기본 범위는 R4·R5 검토
-- **7. 허용·차단·격리 기대**: 정상만 실행 허용. 명확한 금지는 Sandbox 전 차단한다. 정책 부재·불확실은 R4·R5가 정한 로컬 전용 범위를 넘기지 않으며 임의 ALLOW로 바꾸지 않는다. revision 변경 시 기존 UNUSED/기존 허가를 만료시키고 새 판정을 요구한다.
-- **8. work·attempt·가설 기대**: 차단은 실제 외부 조건에 따라 BLOCKED/FAILED 계약을 적용하고 `agent_invoked=false`; 정책 재판정 전 새 Sandbox 실행·재현 성공 없음.
-- **9. 오류·DataGap 기대**: `POLICY_BLOCKED`, `SANDBOX_POLICY_DENIED`, stale/expired decision 또는 Q-02. 정책 없음·불확실과 명확한 금지를 같은 상태로 추정하지 않는다.
-- **10. 저장·갱신 금지 pointer**: exact policy decision·차단 event·AgentLog·dynamic result를 보존하되 `poc_ref=null`. old policy 허가로 environment/current result·Gate pointer를 갱신하지 않는다.
-- **11. FALSE 변환 금지**: 정책 차단·부재·불확실·revision 변경은 가설 반증이 아니며 `DISPROVED | FALSE`로 전환하지 않는다.
+- **1. ID·유형·설명**: R3-CT-DYN-011 / 정상·부정 / SandboxProfile 외부 경계 판정과 RunPolicyState 감사 reference 분리
+- **2. 단계·계약 경계**: 12; RUN_SANDBOX action/decision → SandboxPolicyDecision·AgentLog·dynamic result
+- **3. producer → consumer**: R7 SandboxProfile registry·R8 lifecycle profile registry·Runtime 감사 context → Sandbox Controller·Setup Automation·Session Manager → R6
+- **4. 선행 상태·exact refs**: DQ1, current ER1·PL1, exact SandboxProfile SP1과 DynamicReproductionLifecycleProfile LP1을 RUN_SANDBOX input/checked refs에 고정한다. current RunPolicyState RPS1은 별도 audit ref로만 기록하고 KD1 input_refs/input_hash·Controller 허가·R6 verdict 근거에는 넣지 않는다.
+- **5. 정상/잘못된 fixture**: 정상 A는 SP1이 허용한 LOCAL_ONLY 실행과 SPD1→LOG1→DX1 same-attempt 연결이다. 정상 B는 RPS1이 `ABSENT | UNVERIFIED | BLOCKED | FAILED`여도 SP1 경계를 지키면 실행한다. 부정 변형은 SP1 없는 실행, host/Docker/mount/namespace/secret/egress/workspace 위반, SPD1 refs 불일치, `POLICY_BLOCKED`인데 `decision!=DENY`, program policy 상태만으로 Controller가 차단하는 경우다.
+- **6. 검사 주체**: Runtime Validator의 exact config·action·audit ref 분리 검사 + Sandbox Controller의 SandboxProfile 외부 경계 검사 + Session Manager same-attempt provenance 검사
+- **7. 허용·차단·격리 기대**: SP1 경계를 지킨 A/B만 허용한다. 외부 경계 위반은 Agent 시작 전에 `POLICY_BLOCKED + SANDBOX_POLICY_DENIED`로 차단하지만 program policy의 testing restriction은 여기서 해석하지 않고 Technical ACCEPT 뒤 Rule Scope Gate가 검토한다.
+- **8. work·attempt·가설 기대**: 외부 경계 차단은 대기 가능한 동일 입력 조건이면 BLOCKED, 최종 거절이면 FAILED이고 `agent_invoked=false`다. program policy 상태만으로 work를 중단하거나 새 attempt를 만들지 않는다.
+- **9. 오류·DataGap 기대**: 외부 경계 위반은 `POLICY_BLOCKED`와 `SANDBOX_POLICY_DENIED`; audit/current reference 불일치는 Q-02. program policy 없음·불확실은 이 오류로 바꾸지 않는다.
+- **10. 저장·갱신 금지 pointer**: exact SPD1·차단 event·AgentLog·dynamic result와 audit RPS1을 보존하되 외부 경계 차단이면 `poc_ref=null`. program policy를 DQ1이나 KD1 immutable input으로 복사하지 않는다.
+- **11. FALSE 변환 금지**: 외부 경계 차단, policy 부재·불확실과 audit reference 문제는 가설 반증이 아니며 `DISPROVED | FALSE | HOLD`로 전환하지 않는다.
 - **12. 실행 계층**: contract / integration / E2E / security-negative
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R7·R4·R5·R6·R8. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
 
@@ -1245,23 +1246,23 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **7. 허용·차단·격리 기대**: R1 의미 검사를 통과한 match를 저장하고 child proposal 후보 생성. result가 없는 쌍을 TRUE result처럼 사용 안 함.
 - **8. work·attempt·가설 기대**: CHAINING work/attempt SUCCEEDED; 부모 TRUE/HOLD 유지; child는 아직 final verdict 없음.
 - **9. 오류·DataGap 기대**: 없음
-- **10. 저장·갱신 금지 pointer**: ChainingResult/input/considered refs·실제 사용 source_admission_refs·match·restriction 기록.
+- **10. 저장·갱신 금지 pointer**: ChainingResult의 work 시작 시 고정한 `considered_primitive_refs`, 실제 match 입력의 `input_primitive_refs`, source result·parent refs, match와 restriction을 정확히 기록한다.
 - **11. FALSE 변환 금지**: 입력 위반·조회/호출/실행 오류·정책 차단·예산/저장 실패를 새 FALSE 근거로 사용하지 않음. 이미 존재하는 부모/가설 verdict는 해당 case의 명시적 검증 경로 외에는 변경하지 않음.
 - **12. 실행 계층**: contract / integration / security-negative
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R1·R4·R6·R2·R5. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
 
-#### R3-CT-CHN-003 — 금지·오래된 직접/조상 admission
+#### R3-CT-CHN-003 — 등록되지 않은 DENY·stale Primitive 주입
 
-- **1. ID·유형·설명**: R3-CT-CHN-003 / 부정 / 금지·오래된 직접/조상 admission
+- **1. ID·유형·설명**: R3-CT-CHN-003 / 부정 / current PrimitiveIndexState에 없는 DENY·stale Primitive 주입
 - **2. 단계·계약 경계**: 14, 18, 20, 자식의 9; Primitive·Chaining·자식
 - **3. producer → consumer**: Primitive Runtime → Chaining Agent·Runtime → Registry·Assignment·Context Service
 - **4. 선행 상태·exact refs**: F-CHN(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
-- **5. 정상/잘못된 fixture**: 실제 match가 쓰는 direct 또는 ancestor decision을 DENY/stale로 바꾼 뒤 저장하거나 child를 사용한다.
+- **5. 정상/잘못된 fixture**: `PrimitiveAdmissionDecision=DENY`여서 등록되지 않은 result Primitive, 과거 index에만 있던 Primitive 또는 work 시작 때 고정하지 않은 Primitive를 match/result/child 입력에 주입한다. 이미 current index에 등록된 Primitive의 admission을 run 중 다시 판정하는 변형은 만들지 않는다.
 - **6. 검사 주체**: Runtime Validator의 admission·집합·계보·중복 검사 + R1 match 의미 검사 + Context lineage 검사
-- **7. 허용·차단·격리 기대**: 결과 저장/child 사용 차단, current descendant index 무효화; 진행 중 부적격 downstream 취소.
-- **8. work·attempt·가설 기대**: 해당 downstream CANCELLED 또는 등록 거절; 기존 부모 verdict 불변.
+- **7. 허용·차단·격리 기대**: 고정 입력에 없는 Primitive를 사용한 결과 저장과 child 등록을 차단한다. 등록된 Primitive의 admission을 다시 확인하거나 이미 만들어진 자식·후손을 취소하지 않는다.
+- **8. work·attempt·가설 기대**: 잘못된 결과·child 등록만 거절하고 기존 work 입력, 부모·후손 상태와 verdict는 불변이다.
 - **9. 오류·DataGap 기대**: STALE_RESULT; admission 거절 세부 Q-02
-- **10. 저장·갱신 금지 pointer**: history 삭제 금지; stale descendant를 current/최종 집계에서 제외.
+- **10. 저장·갱신 금지 pointer**: history 삭제 금지. 잘못 주입한 Primitive·match·child를 current 결과나 집계에 연결하지 않는다.
 - **11. FALSE 변환 금지**: 입력 위반·조회/호출/실행 오류·정책 차단·예산/저장 실패를 새 FALSE 근거로 사용하지 않음. 이미 존재하는 부모/가설 verdict는 해당 case의 명시적 검증 경로 외에는 변경하지 않음.
 - **12. 실행 계층**: contract / integration / security-negative
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R1·R4·R6·R2·R5. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
@@ -1272,12 +1273,12 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **2. 단계·계약 경계**: 14, 18, 20, 자식의 9; Primitive·Chaining·자식
 - **3. producer → consumer**: Primitive Runtime → Chaining Agent·Runtime → Registry·Assignment·Context Service
 - **4. 선행 상태·exact refs**: F-CHN(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
-- **5. 정상/잘못된 fixture**: work 시작 때 후보 A/B/C 고정, 실제 match는 A→B. C admission/index만 변경한다.
+- **5. 정상/잘못된 fixture**: work 시작 때 current index에서 후보 A/B/C를 고정하고 실제 match는 A→B다. 이후 새 Primitive D가 등록되어 index revision만 갱신된다.
 - **6. 검사 주체**: Runtime Validator의 admission·집합·계보·중복 검사 + R1 match 의미 검사 + Context lineage 검사
-- **7. 허용·차단·격리 기대**: 실제 사용하지 않은 C 변경만으로 A→B 결과를 거절하지 않음. 실제 사용 closure는 다시 확인.
+- **7. 허용·차단·격리 기대**: 이후 index revision에 D가 추가됐다는 이유만으로 A→B 결과를 거절하지 않는다. D는 다음 Chaining work에서 처리하고 현재 결과는 시작 때 고정한 A/B/C 집합으로만 검사한다.
 - **8. work·attempt·가설 기대**: 유효 CHAINING 결과 성공 허용; 부모 판정 불변.
 - **9. 오류·DataGap 기대**: 없음
-- **10. 저장·갱신 금지 pointer**: considered는 시작 고정 집합 보존; source_admission_refs는 실제 A/B와 조상만 정확히 기록.
+- **10. 저장·갱신 금지 pointer**: `considered_primitive_refs`는 시작 고정 A/B/C를 보존하고 `input_primitive_refs`에는 실제 match에 쓴 A/B만 기록한다. 나중에 추가된 D를 현재 결과에 섞지 않는다.
 - **11. FALSE 변환 금지**: 입력 위반·조회/호출/실행 오류·정책 차단·예산/저장 실패를 새 FALSE 근거로 사용하지 않음. 이미 존재하는 부모/가설 verdict는 해당 case의 명시적 검증 경로 외에는 변경하지 않음.
 - **12. 실행 계층**: contract / integration / security-negative
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R1·R4·R6·R2·R5. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
@@ -1288,7 +1289,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **2. 단계·계약 경계**: 14, 18, 20, 자식의 9; Primitive·Chaining·자식
 - **3. producer → consumer**: Primitive Runtime → Chaining Agent·Runtime → Registry·Assignment·Context Service
 - **4. 선행 상태·exact refs**: F-CHN(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
-- **5. 정상/잘못된 fixture**: considered에서 후보 누락, 관계없는 admission 추가, 필요한 ancestor ref 누락, excluded_lineage_refs를 기대 집합과 다르게 만든다.
+- **5. 정상/잘못된 fixture**: considered에서 시작 후보 누락·추가, input_primitive_refs와 실제 match 불일치, source/parent ref 합집합 불일치, `excluded_lineage_refs`를 가장 깊은 성립 match에서 계산한 기대 집합과 다르게 만든다.
 - **6. 검사 주체**: Runtime Validator의 admission·집합·계보·중복 검사 + R1 match 의미 검사 + Context lineage 검사
 - **7. 허용·차단·격리 기대**: 각 set-equality/lineage 검사로 저장 차단. 의미 없다고 임의로 후보/제외 사유를 지우지 않음.
 - **8. work·attempt·가설 기대**: 성공/current CHAINING 결과 없음; 부모 판정 불변.
@@ -1330,15 +1331,15 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **12. 실행 계층**: contract / integration / security-negative
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R1·R4·R6·R2·R5. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
 
-#### R3-CT-CHN-008 — 자식 등록 전 시작점·등록 후 계보 재검사
+#### R3-CT-CHN-008 — 자식 등록 전 시작점·Context exact 계보 검사
 
-- **1. ID·유형·설명**: R3-CT-CHN-008 / 정상·부정 / 자식 등록 전 시작점·등록 후 계보 재검사
+- **1. ID·유형·설명**: R3-CT-CHN-008 / 정상·부정 / 자식 등록 전 시작점과 Context exact 부모 reference 검사
 - **2. 단계·계약 경계**: 14, 18, 20, 자식의 9; Primitive·Chaining·자식
 - **3. producer → consumer**: Primitive Runtime → Chaining Agent·Runtime → Registry·Assignment·Context Service
 - **4. 선행 상태·exact refs**: F-CHN(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
-- **5. 정상/잘못된 fixture**: 정상 match의 entity/location 시작점으로 child 등록. 변형 A 등록 전 시작점 없음/잘못된 commit, B 등록 뒤 Context 전 조상 stale.
+- **5. 정상/잘못된 fixture**: 정상 match의 entity/location 시작점으로 child를 등록하고 Context가 `source_primitive_match_id`를 따라 exact 부모 Primitive·Verification·entity/location을 읽는다. 변형 A는 등록 전 시작점 없음/잘못된 commit, B는 Context 요청에 다른 record revision·workspace·commit 또는 끊어진 부모 reference를 주입한다.
 - **6. 검사 주체**: Runtime Validator의 admission·집합·계보·중복 검사 + R1 match 의미 검사 + Context lineage 검사
-- **7. 허용·차단·격리 기대**: A Validator/Registry/Assignment가 등록·배정 차단. B Context Service가 조회 전 계보 재검사·차단. 정상이면 새 hypothesis로 전체 검증.
+- **7. 허용·차단·격리 기대**: A는 Validator/Registry/Assignment가 등록·배정을 차단한다. B는 Context Service가 요청에 고정된 exact reference 불일치를 차단한다. 부모 admission을 다시 판정하지 않으며 정상이면 새 hypothesis로 전체 검증한다.
 - **8. work·attempt·가설 기대**: 정상 child REGISTERED→VERIFYING; 부모 상태 유지. 실패 child는 부적격 다음 단계 진행 안 함.
 - **9. 오류·DataGap 기대**: STALE_RESULT / 시작점 오류 Q-02
 - **10. 저장·갱신 금지 pointer**: 정상 parent/source_match/exact entity refs 연결; 등록 전 실패는 새 가설 없음. 자식 결과를 부모 verdict/impact에 흡수 금지.
@@ -1474,7 +1475,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **4. 선행 상태·exact refs**: F-BUD(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: run eval_config_refs 전체, 작업 checked_config_refs 부분집합, final 전체 집합을 맞춘다. 변형은 profile 교체/누락, R8 한도를 R7 host 격리 완화 근거로 사용.
 - **6. 검사 주체**: Runtime Validator BUDGET/config 검사 + 관측 기록 검증
-- **7. 허용·차단·격리 기대**: 정상 exact 설정 보존; 바뀐/누락 설정·Sandbox 정책 완화는 거절.
+- **7. 허용·차단·격리 기대**: 정상 exact 설정 보존; 바뀐/누락 설정·SandboxProfile 외부 경계 완화는 거절.
 - **8. work·attempt·가설 기대**: 정상 작업 진행; 위반 작업 시작/최종 집계 차단, 가설 불변.
 - **9. 오류·DataGap 기대**: revision/config 오류 Q-02; 입장 정책 SANDBOX_POLICY_DENIED
 - **10. 저장·갱신 금지 pointer**: final eval_config_refs는 초기 집합과 set-equal. R7 policy와 R8 lifecycle record 각각 보존.
@@ -1588,7 +1589,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 | COM-007~010 | claim 경쟁·취소·늦은 결과·상태 충돌 | active attempt 하나, old 결과 격리, terminal work 재활성 금지 |
 | HYP-002/005 | dedupe 계산·work/application 저장 사이 | 기존 work 재사용, application만 남거나 work만 활성화되지 않음 |
 | VER-002 | 한 child 종료 뒤 부모 상태 반영 전 | 합성/새 final 금지, 부모 BLOCKED/FAILED 전파 |
-| DYN-006~012 | AgentLog 기록·session crash·PoC 검증·정책 변경·container 생성/정리 전후 | same-attempt 계보, RETRY/RESUME, exact policy·PoC, 재생성·cleanup 완전성 |
+| DYN-006~012 | AgentLog 기록·session crash·PoC 검증·request/profile 변경·container 생성/정리 전후 | same-attempt 계보, RETRY/RESUME와 새 generation 분리, exact SandboxProfile·PoC, 재생성·cleanup 완전성 |
 | VER-007 | REVISE generation·새 work 확정 사이 | 같은 owner, 새 application/질문/ProCon, old final 자동 승격 금지 |
 | GAT-008/CHN-003 | Finding/Primitive current index CAS·계보 무효화 사이 | stale 결과가 Reporter·자식·최종 집계에 들어가지 않음 |
 | REP-003/005 | draft 저장 중 upstream 변경·최종 run 확정 전 | exact chain 재검사, 미해결 journal/work 없는 종료 |
@@ -1621,11 +1622,11 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 | BAD-62 | GAT-005 | COLLECTION_FAILED와 ABSENT_CONFIRMED 분리 |
 | BAD-63 | GAT-004 | 부재 확인 시 policy ref null·UNCERTAIN/DENY |
 | BAD-64 | GAT-006, CHN-003 | DENY Primitive 사용 금지 |
-| BAD-65 | CHN-003/005 | 실제 사용 direct/ancestor refs 재검사 |
+| BAD-65 | CHN-003/005 | work가 고정하지 않은 Primitive와 잘못된 계보 제외 집합 차단 |
 | BAD-66 | COM-006/007, REP-003/005 | 미확정·취소·stale 결과의 보고/집계 금지 |
 | 옛 BAD-31/32 관련 설명 | DYN-003 | Controller를 container 내부 command allowlist 검사기로 구현하지 않음 |
 | 옛 BAD-38/39 관련 설명 | GAT-004/005, REP-002 | 공식 부재와 수집 실패 구분, Gate 우회 금지 |
-| 옛 OK-10 관련 설명 | DYN-003/004 | 정책 차단 시 최소 log/decision/result, FALSE 아님 |
+| 옛 OK-10 관련 설명 | DYN-003/004 | SandboxProfile 외부 경계 차단 시 최소 log/decision/result, FALSE 아님 |
 
 현재 남아 있는 댓글에 전체 상세 본문이 없는 OK-01~12/BAD-01~50은 원래 의미를 임의로 복원하지 않았다. 위에서 직접 설명이 남은 항목만 연결했다. 따라서 옛 번호의 모든 내용이 그대로 복구됐다고 주장하지 않는다. 현재 요구사항 coverage는 §3 및 #25 본문으로 확인한다.
 
@@ -1653,7 +1654,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - 정책 수집 실패는 공식 부재가 아니다. 빈 정책 record로 Gate를 억지 호출하지 않는다.
 - Finding 생성, 6축 Reporter readiness, Primitive admission은 서로 다른 검사다.
 - 토큰 계획값은 강제 중단 상한이 아니다. 미확정 시간/비용/work 수치를 문서에서 임의로 확정하지 않는다.
-- source admission이 바뀌었다는 이유만으로 모든 진행 Chaining을 취소하지 않는다. 실제 사용 direct/ancestor 관계를 확인하되, admission 재판정·회수 경로 자체는 #108 결정 전 임의 구현하지 않는다.
+- Primitive admission은 등록 시점의 1회 판정이다. Chaining은 current index에서 시작 때 고정한 exact Primitive 집합만 검사하고 부모 admission을 다시 판정하거나 등록된 Primitive·자식을 회수하지 않는다.
 
 ## 9. 필수 교차 검토와 완료 조건
 
