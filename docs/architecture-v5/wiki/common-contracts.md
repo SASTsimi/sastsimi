@@ -163,7 +163,7 @@ Primitive도 exact revision을 사용합니다. HOLD는 final Verification의 `r
 
 ## 정책은 run 초기화에서 program별로 준비합니다
 
-정책 수집·파싱은 hypothesis별이 아니라 program별 작업입니다. repository와 버그바운티 program이 확정되면 run 초기화에서 정적 준비와 병렬로 `POLICY_FETCH` work가 current `ProgramPolicyRecord`를 준비하고, 각 hypothesis의 Rule Scope Gate가 이를 정책 의미 판정에 재사용합니다. 같은 run·program에서 한 번만 수행하고, 다른 run에서도 `freshness_status=CURRENT`이고 parser version이 일치하면 재사용합니다. Gate evaluation 순서는 바뀌지 않습니다.
+정책 수집·파싱은 hypothesis별이 아니라 analysis 실행 단위 작업입니다. repository와 버그바운티 program이 확정되면 run 초기화에서 정적 준비와 병렬로 실행 시작 runtime이 `POLICY_FETCH` work를 등록해 실행 단위 `RunPolicyState`를 준비하고, 각 hypothesis의 Rule Scope Gate가 run에 고정된 이를 정책 의미 판정에 소비합니다. 같은 run·program에서 한 번만 수행합니다. 분석 실행 간에는 run-neutral `PolicyCacheRecord`만 재사용하며, 새 analysis에서는 cache hit 여부와 무관하게 새 `RunPolicyState`·`PolicyCollectionResult`·`ProgramPolicyRecord`를 생성해 current run에 귀속합니다. 이전 run의 이 객체 자체는 재사용하지 않습니다. Gate evaluation 순서는 바뀌지 않습니다.
 
 `ProgramPolicyRecord`는 asset scope, vulnerability type/eligibility, testing restrictions, reward/bounty conditions(`reward_conditions`), impact criteria를 서로 구분해 저장합니다. `reward_conditions`는 보상 정보일 뿐 `report_permission`과 같은 의미가 아닙니다.
 

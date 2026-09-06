@@ -100,8 +100,8 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | Repository Loader | 실행별 `git clone`, `commit_id` checkout과 HEAD 확인 | 실행 중 작업공간 변경 또는 다른 commit 혼합 |
 | AST/SAST runners | 구조·규칙 일치·경로 후보 수집, 규칙별 선택·실행·raw 탐지 수 기록 | 취약점 최종 판정 또는 미실행·확인 불가를 0건으로 변경 |
 | Static Fact Normalizer | 공통 entity/location/path 표현 생성 | 증거가 없는 의미 확정 |
-| Policy Collector | 비-LLM component. run 초기화에서 program별 공식 정책 원문 수집과 `PolicyCollectionResult`·`ProgramPolicyRecord` 생산, source authenticity 확인 | 정책 의미 판단, 저장소 문서·모델 기억을 공식 정책으로 승격 |
-| Policy Parser | LLM component. 수집된 공식 원문을 asset scope·vulnerability eligibility·testing restriction·reward condition·impact criteria로 구조화 | 원문에 없는 기준 생성, 정규화로 의미 확대, Rule/Scope/Impact verdict |
+| Policy Collector | 비-LLM component. run 시작 때 program별 공식 정책 원문 수집·source authenticity 확인, run-neutral `PolicyCacheRecord` 조회, run-local `PolicyCollectionResult`·`ProgramPolicyRecord`·실행 단위 `RunPolicyState` 확정 | 정책 의미 판단, 저장소 문서·모델 기억을 공식 정책으로 승격, `StaticFactBundle`에 정책 삽입 |
+| Policy Parser | LLM component. Policy Collector가 저장한 exact 원문을 asset scope·vulnerability eligibility·testing restriction·reward condition·impact criteria로 구조화 | 원문에 없는 기준 생성, 정규화로 의미 확대, Rule/Scope/Impact verdict, 정책 record 조립·저장 |
 | Context Retrieval Service | 같은 `workspace_id`와 `commit_id`에서 제한된 추가 문맥 조회 | 작업공간 밖 무제한 repository dump |
 | Orchestration Agent | proposal 검증·전역 가설 등록·Verification 배정·가설 간 병렬성 | 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정 또는 Finding 공개 |
 | Hypothesis Agent | schema-constrained 가설 후보 생성 | verdict·Finding·exploitability 확정 |
@@ -110,7 +110,6 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | R7 Agent | exact request에서 requirements·간단한 plan·PoC candidate·동적 근거 해석 생산 | R6 목적 변경, 외부 경계 우회 또는 최종 verdict 판단 |
 | R7 Setup Automation | recipe·image·container 생성/재사용/재생성·환경 비교·cleanup 실제 수행 | Agent 판단, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
 | Sandbox Controller | R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 강제 | 내부 command allowlist 운영, R7 profile 값 결정, R8 잔여 예산·새 attempt 결정, 재현 전략·환경 의미·최종 verdict 변경 |
-| Policy Collector / Policy Parser | Collector는 공식 원문을 비-LLM으로 수집·검증하고, Parser는 exact 원문을 `PolicyParserResult`로 구조화하며, Collector가 이를 취합해 실행 단위 `RunPolicyState` 확정 | 정책을 `StaticFactBundle`에 넣기, scope로 가설 사전 삭제, Rule Scope 최종 의미 판정 |
 | Reproduction Session Manager | 실제 event를 append-only AgentLog로 저장하고 same-attempt validated PoC·동적 결과 확정 | Agent 호출·command·retry·cleanup 전략 결정 또는 다른 attempt 혼합 |
 | Primitive Admission Runtime | exact Technical review·정책 수집·Rule Scope의 전용 테스트 제한 판정을 정해진 표로 변환해 `PrimitiveAdmissionDecision`과 허용된 Primitive 확정 | 정책 원문 해석, Gate 판정 변경 또는 `DENY` 결과의 Primitive 생성 |
 | Primitive DB | required candidate가 있는 HOLD의 inputs-only Primitive와 current admission `ALLOW`인 Technical-accepted TRUE의 result Primitive exact revision 검색 | 작업 queue, candidate가 없는 HOLD나 Gate 전·admission `DENY` TRUE 저장 또는 자동 Finding 생성 |

@@ -24,7 +24,6 @@ HypothesisProposal validation
 Orchestration Agent의 주요 책임은 다음과 같다.
 
 - `analysis_id`와 전역 분석 계획 관리
-- repository와 버그바운티 program이 확정되면 정적 근거 준비와 병렬로 program별 `POLICY_FETCH` 준비(Policy Collector → Policy Parser) 트리거. 같은 run·program에서 1회, 다른 run의 current·fresh 결과는 재사용
 - INITIAL·VERIFICATION·CHAINING proposal의 schema/semantic validation 요청
 - 검증된 proposal의 중복 후보 검색과 필요 시 LLM 중복 검토 요청
 - 중복이 아닌 proposal의 `hypothesis_id` 등록
@@ -122,10 +121,9 @@ Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하
 |---|---|---|---|---|---|
 | Orchestration Agent | 전역 분석 계획·proposal 등록·가설 배정·가설 간 병렬화 | 없음 | 전체 진행 상태 요약 | 없음 | 없음 |
 | Hypothesis Agent | 취약점 가설 | 없음 | static 사실을 입력으로 읽음 | 없음 | 없음 |
-| Policy Collector / Policy Parser | Collector는 공식 원문 수집, Parser는 exact 원문 구조화 | Parser만 구조화된 정책 후보 생성 | 공식 출처·source hash·parser provenance | 없음 | 정책 기준·만료 임곗값 승인 |
 | Playbook Registry Runtime | R6가 작성한 플레이북과 사람이 승인한 적용 정책을 versioned record로 등록하고 Verification work별 `PlaybookApplication` 생성 | 없음 | exact proposal의 유형 후보·policy·playbook revision | schema·선택·질문 ID·current pointer 검사 | 운영 지원 유형과 적용 mapping 승인 |
-| Policy Collector | run 초기화에서 program별 공식 정책 원문 수집·source authenticity 확인 | `PolicyCollectionResult`, `FOUND`이면 `ProgramPolicyRecord` (비-LLM) | 공식 source와 원문 | 없음 | 없음 |
-| Policy Parser | 수집된 공식 원문의 구조화 요청 | `PolicyParserResult` (LLM) | 수집된 공식 원문만 | 없음 | 없음 |
+| Policy Collector | 비-LLM. run 시작 때 program별 공식 정책 원문 수집·source authenticity 확인, run-neutral `PolicyCacheRecord` 조회, run-local `PolicyCollectionResult`·(`FOUND`이면) `ProgramPolicyRecord`·`RunPolicyState` 확정 | `PolicyCollectionResult`, `ProgramPolicyRecord`, `RunPolicyState`, 성공 준비면 `PolicyCacheRecord` | 공식 source·source hash·parser provenance | 없음 | 없음 |
+| Policy Parser | LLM. Policy Collector가 저장한 exact 원문을 구조화 | `PolicyParserResult` | 수집된 공식 원문만 | 없음 | 없음 |
 | Pro·Con Agent | 찬성·반대 근거 | 없음 | 자기 역할의 근거 | 없음 | 없음 |
 | Verification Agent | Context·Pro/Con, 목적·목표·필요 환경을 담은 `DynamicReproductionRequest`, 두 Gate·Reporter·Chaining 요청, material child proposal | `TRUE | FALSE | HOLD` | static·Pro·Con·COMMITTED dynamic 근거와 Gate 보완 요청 | 없음 | 없음 |
 | R7 Agent | `EnvironmentRequirements`·간단한 `ReproductionPlan`·PoC candidate·동적 근거 해석 | 없음 | R6 요청과 Sandbox 안의 실제 관측 | 없음 | 없음 |
@@ -197,13 +195,13 @@ Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서
 
 ## 바꿀 수 없는 직렬 순서
 
-program별 policy collection → parsing은 run 초기화에서 정적 근거 준비·공통 환경 준비와 병렬로 수행하고, 아래 가설별 직렬 구간은 그 준비 결과(current `ProgramPolicyRecord` 또는 `PolicyCollectionResult`)를 소비만 한다. 정책의 준비 시점이 바뀔 뿐 Gate evaluation order는 그대로다.
+program별 정책 준비(collection → parsing)는 실행 시작 runtime이 workspace 준비 뒤 정적 근거 준비·공통 환경 준비와 병렬로 등록하고, 아래 가설별 직렬 구간은 run에 고정된 정책 상태(`RunPolicyState`가 가리키는 `PolicyCollectionResult`·`ProgramPolicyRecord`)를 소비만 한다. 정책의 준비 시점이 바뀔 뿐 Gate evaluation order는 그대로다.
 
 한 가설의 다음 구간은 병렬화하지 않는다.
 
 ```text
-run init: repository + program 확정 -> POLICY_FETCH (program별 1회) -> current ProgramPolicyRecord | ABSENT_CONFIRMED | COLLECTION_FAILED
-   (정적 근거 준비·공통 Docker/환경 준비와 병렬; 다른 run의 current·fresh 결과는 재사용)
+run init: repository + program 확정 -> 실행 시작 runtime이 POLICY_FETCH 등록 (analysis·program별 1회) -> RunPolicyState (CURRENT | ABSENT | UNVERIFIED)
+   (정적 근거 준비·공통 Docker/환경 준비와 병렬; 실행 간에는 run-neutral PolicyCacheRecord만 재사용하고, 새 analysis마다 새 RunPolicyState·PolicyCollectionResult·ProgramPolicyRecord를 생성해 current run에 귀속)
 
 final TRUE VerificationResult with current generation SUCCEEDED + SUPPORTED reproduction and validated PoC
 -> R5-01 CWE_LABELING work

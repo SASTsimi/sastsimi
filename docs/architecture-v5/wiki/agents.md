@@ -19,8 +19,6 @@
 | R7 Setup Automation | recipe·image·container 생성/재사용/재생성과 정리 실제 수행 | Agent 분석, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
 | Sandbox Controller | R7 `sandbox_profile_ref`의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 강제 | 내부 command allowlist, R7 profile 값, R8 잔여 예산·새 attempt, 재현 전략 또는 최종 verdict 판단 |
 | Reproduction Session Manager | 실제 event의 append-only AgentLog, same-attempt validated PoC와 동적 결과 확정 | Agent 호출·command·retry·cleanup 전략 결정 또는 다른 attempt 혼합 |
-| Policy Collector (비-LLM) | run 초기화에서 program별 공식 정책 원문 수집·source authenticity 확인, `PolicyCollectionResult`·`ProgramPolicyRecord` 생산 | 정책 의미 판단, 비공식 자료 승격 |
-| Policy Parser (LLM) | 수집된 공식 원문을 asset scope·vulnerability eligibility·testing restriction·reward condition·impact criteria로 구조화 | 원문에 없는 기준 생성, 정규화로 의미 확대, verdict |
 | Pro | 가설 성립 근거 탐색 | 최종 verdict |
 | Con | 반증·보호·도달 불가·restriction 탐색 | 최종 verdict |
 | Chaining | upstream Primitive 결과→downstream Primitive 입력 matching과 새 가설 제안 | 일반 research, dynamic, REVISE, verdict/CWE/Gate/Finding/report 확정 |

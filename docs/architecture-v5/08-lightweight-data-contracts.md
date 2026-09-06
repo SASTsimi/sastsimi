@@ -1760,7 +1760,7 @@ TechnicalEvidenceReview:
 
 공식 프로그램 정책의 파싱·수집 결과, 정규화된 정책 기록과 두 번째 Gate가 정책 범위·규칙·실제 영향을 검토한 결과입니다. Policy Parser만 `PolicyParserResult`를, Policy Collector만 `PolicyCollectionResult`와 수집에 성공한 `ProgramPolicyRecord`를 생산한다. `RULE_SCOPE_GATE`는 이 artifact를 입력으로 읽을 뿐 수집·파싱 결과를 만들거나 수정하지 않는다.
 
-정책 수집·파싱은 hypothesis별 작업이 아니라 program별 작업이다. repository와 버그바운티 program이 확정되는 run 초기화 단계에서 `POLICY_FETCH` work가 정적 근거 준비·공통 환경 준비와 병렬로 시작해 current `ProgramPolicyRecord`(또는 `ABSENT_CONFIRMED | COLLECTION_FAILED`)를 준비한다. 같은 run의 같은 `program_id`에 대한 collection/parsing은 한 번만 수행하고, 이후 각 hypothesis의 Rule Scope Gate가 그 준비된 결과를 정책 의미 판정에 재사용한다. 다른 run에서도 `freshness_status=CURRENT`이고 parser version이 일치하는 결과는 재사용할 수 있다. 정책 준비 실패는 policy-dependent action만 fail-closed시키며 `VerificationResult`의 verdict를 바꾸지 않는다. 자세한 소비 조건·authority boundary는 [05. 이중 LLM Gate와 보고](05-llm-gate-and-reporting.md)가 소유한다.
+정책 수집·파싱은 hypothesis별 작업이 아니라 analysis 실행 단위 작업이다. repository와 버그바운티 program이 확정되는 run 초기화 단계에서 `POLICY_FETCH` work가 정적 근거 준비·공통 환경 준비와 병렬로 시작해 실행 단위 `RunPolicyState`와 그것이 가리키는 `PolicyCollectionResult`·(`FOUND`이면) `ProgramPolicyRecord`를 준비한다. 같은 run의 같은 `program_id`에 대한 collection/parsing은 한 번만 수행하고, 이후 각 hypothesis의 Rule Scope Gate가 run에 고정된 그 결과를 정책 의미 판정에 소비한다. 분석 실행 간에는 run-neutral `PolicyCacheRecord`만 재사용하며, 새 analysis에서는 cache hit 여부와 무관하게 새 `RunPolicyState`·`PolicyCollectionResult`·`ProgramPolicyRecord`를 생성해 current run에 귀속한다. 이전 analysis/run의 `RunPolicyState`·`PolicyCollectionResult`·`ProgramPolicyRecord` 객체 자체는 재사용하지 않는다. 정책 준비 실패는 program-policy semantic 의존 action만 fail-closed시키며 `VerificationResult`의 verdict를 바꾸지 않는다. 자세한 소비 조건·authority boundary는 [05. 이중 LLM Gate와 보고](05-llm-gate-and-reporting.md)가 소유한다.
 
 ```yaml
 PolicyItem:
