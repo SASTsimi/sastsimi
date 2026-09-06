@@ -2492,7 +2492,7 @@ $requiredRunPolicyPreparationRules = @(
     @{ Name = 'overview shows parallel policy preparation'; Text = $overviewText; Marker = 'AST·SAST와 실행 단위 정책 준비를 독립 병렬 실행' },
     @{ Name = 'overview shows run neutral policy cache'; Text = $overviewText; Marker = '`PolicyCacheRecord`' },
     @{ Name = 'architecture hub explains policy cache'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/README.md')); Marker = '`PolicyCacheRecord`' },
-    @{ Name = 'module map separates policy preparation'; Text = $moduleMapText; Marker = '실행 단위 정책 준비(정적 분석과 병렬)' },
+    @{ Name = 'module map separates policy preparation'; Text = $moduleMapText; Marker = '`PolicyPreparationService.prepare`의 분석 단위 `POLICY_FETCH`' },
     @{ Name = 'module map includes run neutral policy cache'; Text = $moduleMapText; Marker = 'run-neutral cache' },
     @{ Name = 'canonical diagram includes run policy state'; Text = $diagramText; Marker = 'RPS[RunPolicyState]' },
     @{ Name = 'canonical diagram separates parser output from collector finalization'; Text = $diagramText; Marker = 'PREADY{Collector validates collection and freshness}' },
@@ -2611,6 +2611,31 @@ foreach ($obsoletePolicyLifecycleRule in @(
 )) {
     if ($activeDocumentationText.Contains($obsoletePolicyLifecycleRule)) {
         Add-Failure "obsolete mid-run policy replacement rule remains: $obsoletePolicyLifecycleRule"
+    }
+}
+
+$requiredR301RunInitFanoutRules = @(
+    'run-init fan-out은 정적 분석, 정책 준비, Docker baseline 준비의 세 branch를 서로 기다리지 않고 시작한다.',
+    'Policy Collector·Policy Parser 정책 준비',
+    'Docker baseline 준비는 가설별 동적 재현을 대신하지 않는 사전 최적화다.',
+    'run-init Docker branch는 `EnvironmentRecipe`, `SandboxEnvironment`, `AgentLog`, PoC candidate 또는 validated PoC를 생산하지 않는다.',
+    '가설 간 writable container를 공유하지 않는다.',
+    'Docker branch가 실패하거나 준비 결과를 신뢰할 수 없으면 R7 Setup Automation이 Step 12에서 clean 환경을 새로 만든다.',
+    'R3 runtime은 세 branch의 등록과 상태 관측만 담당하고 Docker image·container를 직접 만들지 않는다.',
+    'R7은 network 접근과 CPU·RAM·disk·PID·요청 가능 최대 시간 등 Docker 실행의 강제 상한을 소유한다.',
+    'R8은 분석 전체와 branch의 시간·비용·work·retry 예산 및 실제 자원 사용량·성공률 평가를 소유한다.',
+    '세 branch는 병렬로 실행되어도 분석 전체 120분과 전체 비용·work 예산을 함께 사용한다.',
+    '예산이 부족하면 Docker baseline 준비를 시작하지 않거나 중단하고 `SKIPPED` 사유를 남긴다.',
+    'Docker baseline의 실패·중단·건너뜀만으로 분석을 `PARTIAL | FAILED` 또는 가설 `FALSE`로 바꾸지 않는다.',
+    '`DynamicReproductionLifecycleProfile`은 가설별 `DYNAMIC_REPRO` 전용이므로 run-init Docker 준비에 재사용하지 않는다.',
+    '실제 pull/build를 수행한다면 가설별 `RUN_SANDBOX`와 분리된 run-init 전용 action type·requester·실행 권한 및 R7 강제 상한·R8 실행 예산의 exact 설정 reference를 B5에서 확정한다.',
+    '`HIT | MISS | PREPARED | FAILED | SKIPPED`를 서로 다른 관측값으로 남기고 `MISS`를 실패로 집계하지 않는다.',
+    '측정하지 못한 disk·network 사용량은 추정값으로 채우지 않고 `null`과 측정 불가 사유를 남긴다.',
+    'B5. run-init Docker baseline 준비의 action·result binding'
+)
+foreach ($marker in $requiredR301RunInitFanoutRules) {
+    if (-not $moduleMapText.Contains($marker)) {
+        Add-Failure "missing R3-01 run-init fan-out rule: $marker"
     }
 }
 
@@ -2783,6 +2808,7 @@ Write-Output "StaticFactBundle cross-document rules: $($requiredStaticFactBundle
 Write-Output "Static layer Primitive admission rules: $($requiredStaticPrimitiveAdmissionRules.Count)"
 Write-Output "R4 policy contract blocks: $($requiredPolicyContractFields.Count)"
 Write-Output "R4 policy contract rules: $($requiredPolicyContractRules.Count)"
+Write-Output "R3-01 run-init fan-out rules: $($requiredR301RunInitFanoutRules.Count)"
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {
