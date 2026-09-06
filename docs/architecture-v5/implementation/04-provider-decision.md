@@ -8,7 +8,7 @@
 
 ## 1. 기준과 결론
 
-- 작성 기준 `main`: `0cae9bdc5161efb68a3fdc15cb72ec12e3a3440e`
+- 작성 기준 `main`: `9c7a5a19c5e32c3f752bc40a32aaf86441be4d01`
 - 연결 Issue: [R3-04 #90](https://github.com/SASTsimi/sastsimi/issues/90)
 - 후속 결정: [R3-06 #92](https://github.com/SASTsimi/sastsimi/issues/92)
 - 공식 문서 확인일: 2026-09-05
@@ -133,20 +133,20 @@ class LLMProviderAdapter(Protocol):
 
 기능이 없는 adapter가 성공한 것처럼 빈 값을 채우면 안 된다. 공개되지 않은 usage, request ID 또는 session ID는 추정하지 않고 `null`과 capability 상태로 남긴다.
 
-### 3.1 R7의 Runtime 관리형 tool loop
+### 3.1 Dynamic Reproduction Agent의 Runtime 관리형 tool loop
 
-R7의 환경 요구사항·재현 계획 작성은 Sandbox 실행 전 일반 LLM 호출이며 tool을 쓰지 않는다. 외부 경계가 허용되고 R7 Setup Automation이 container를 준비한 뒤에만 R7 실행 task가 Runtime 관리형 tool loop를 사용할 수 있다.
+Dynamic Reproduction Agent의 환경 요구사항·재현 계획 작성은 Sandbox 실행 전 일반 LLM 호출이며 tool을 쓰지 않는다. 외부 경계가 허용되고 R7 Setup Automation이 container를 준비한 뒤에만 동적 재현 실행 task가 Runtime 관리형 tool loop를 사용할 수 있다.
 
 ```text
-R7 Agent structured turn
+Dynamic Reproduction Agent structured turn
 → SASTSIMI Runtime이 role·work·attempt·environment·tool policy 검사
 → Sandbox Controller가 승인한 in-container 통로로만 실행
 → Session Manager가 command와 관찰을 append-only AgentLog에 기록
-→ redacted 결과를 같은 R7 논리 session의 다음 PromptPayload에 비신뢰 데이터로 전달
+→ redacted 결과를 같은 동적 재현 논리 session의 다음 PromptPayload에 비신뢰 데이터로 전달
 → 완료·차단·실패·취소 또는 한도 도달까지 반복
 ```
 
-Provider adapter는 명령을 직접 실행하지 않고 구조화된 R7 turn을 전달한다. host filesystem, Docker daemon/socket, 임의 network, secret 또는 다른 workspace 접근을 provider tool로 우회할 수 없다. `R7_AGENT` 실행 경로에서는 `runtime_tool_loop=SUPPORTED`인 exact ProviderProfile만 선택한다. `UNSUPPORTED | UNVERIFIED`이면 다른 역할에서 사용할 수 있는 profile이어도 R7 실행 task에는 배정하지 않고 호출 전에 `CAPABILITY_UNSUPPORTED`로 거절한다.
+Provider adapter는 명령을 직접 실행하지 않고 구조화된 동적 재현 turn을 전달한다. host filesystem, Docker daemon/socket, 임의 network, secret 또는 다른 workspace 접근을 provider tool로 우회할 수 없다. `DYNAMIC_REPRODUCTION` 실행 경로에서는 `runtime_tool_loop=SUPPORTED`인 exact ProviderProfile만 선택한다. `UNSUPPORTED | UNVERIFIED`이면 다른 역할에서 사용할 수 있는 profile이어도 동적 재현 실행 task에는 배정하지 않고 호출 전에 `CAPABILITY_UNSUPPORTED`로 거절한다.
 
 ## 4. 네 연결 경로
 

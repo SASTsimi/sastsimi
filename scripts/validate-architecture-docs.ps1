@@ -3007,7 +3007,7 @@ if (-not $providerCapabilityBlock.Contains('runtime_tool_loop:')) {
 foreach ($marker in @(
     'provider 내장 tool은 계속 차단',
     'SASTSIMI Runtime이 model의 구조화된 요청을 받아',
-    '`R7_AGENT` 실행 경로에서는 `runtime_tool_loop=SUPPORTED`',
+    '`DYNAMIC_REPRODUCTION` 실행 경로에서는 `runtime_tool_loop=SUPPORTED`',
     '`PVD-16`'
 )) {
     if (-not $providerDecisionText.Contains($marker)) {
