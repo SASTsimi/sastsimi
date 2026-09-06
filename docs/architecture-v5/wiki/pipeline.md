@@ -24,7 +24,7 @@
 14. FALSE terminal / HOLD는 `required_primitive_candidates`가 하나 이상일 때만 `inputs + result=null` Primitive admission, 후보가 없으면 Primitive·Chaining 없음 / TRUE는 R5-01 `CWE_LABELING` work에서 exact Verification에 대응하는 current `CWELabel` 생성
 15. final TRUE와 그 Verification을 직접 가리키는 current CWELabel을 Technical Evidence Gate Agent가 검토
 16. `REVISE`이면 같은 Verification owner가 새 Verification을 만들고 R5-01이 CWE 정렬을 다시 평가해 새 label revision 생성 후 재제출
-17. Technical `ACCEPT` 뒤 실행 초기에 고정한 정책으로 Rule Scope를 확인하고, 금지 테스트 위반이 확정되지 않아 `PrimitiveAdmissionDecision=ALLOW`인 exact TRUE만 result Primitive로 admission
+17. Technical `ACCEPT` 뒤 실행 초기에 고정한 정책과 그 공식 원문·현재 hypothesis 사실로 Rule Scope를 hypothesis마다 확인하고, 금지 테스트 위반이 확정되지 않아 `PrimitiveAdmissionDecision=ALLOW`인 exact TRUE만 result Primitive로 admission (Gate 실행 순서는 준비 시점 변경과 무관하게 유지)
 18. Chaining Agent가 work 시작 시 current ALLOW decision과 함께 고정한 exact Primitive를 사용해 upstream result가 downstream의 특정 input을 충족하는지 matching
 19. Rule Scope review가 `COMMITTED`되면 신뢰 runtime이 exact chain에서 current Finding을 정규화(review_status·permission 값 무관, `COLLECTION_FAILED`이면 Finding 없음)하고, 나머지 공식 규칙·범위·영향 판단을 보고 가능성에 적용; 금지 테스트 위반 외의 실패는 ALLOW Primitive 자격을 없애지 않음
 20. Verification-origin 또는 Chaining-origin 새 주장을 trusted validation·전역 등록하고 새 Verification 배정

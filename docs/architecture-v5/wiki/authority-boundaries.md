@@ -78,7 +78,9 @@ Agent 또는 service의 제안
 1. Technical Evidence Gate
 2. Rule Scope Impact Gate
 
-프로그램 검사기는 이 두 Gate의 순서와 입력 수정본만 확인합니다. Gate 결론은 LLM Gate가 만듭니다. 공식 정책 부재를 확인한 `ABSENT_CONFIRMED`이면 Rule Scope 결과는 `UNCERTAIN + DENY`이며 Reporter를 부르지 않습니다. 정책 수집·parser가 실패한 `COLLECTION_FAILED`이면 Rule Scope 결과 자체를 만들지 않습니다.
+프로그램 검사기는 이 두 Gate의 순서와 입력 수정본만 확인합니다. Gate 결론은 LLM Gate가 만듭니다. 정책 준비 시점은 run 초기화(program별, 정적 준비와 병렬)로 앞당겨졌지만 Gate evaluation 순서는 그대로이며, Rule Scope Gate는 Technical `ACCEPT` 이후 준비된 current `ProgramPolicyRecord`를 소비합니다. 공식 정책 부재를 확인한 `ABSENT_CONFIRMED`이면 Rule Scope 결과는 `UNCERTAIN + DENY`이며 Reporter를 부르지 않습니다. 정책을 가져오지 못한 `COLLECTION_FAILED`(fetch 실패 또는 parser 실패)이면 Rule Scope 결과 자체를 만들지 않고, 어느 경우도 `VerificationResult` verdict를 바꾸지 않습니다.
+
+Sandbox Controller는 bug bounty program testing restriction의 의미 준수 여부를 판정하지 않습니다. 전달받은 `sandbox_profile_ref` 경계와 `execution_scope=LOCAL_ONLY`만 강제하고, Sandbox 안에서 Agent가 고른 command·PoC를 program-policy allowlist처럼 해석하지 않습니다. 현재 architecture에서 실행 범위는 항상 `LOCAL_ONLY`이며 external/live execution은 지원하지 않습니다. 공식 testing restriction과 실제 수행 행위의 의미 비교는 Rule Scope Gate의 `testing_restriction_compliance`가 담당하는 유일한 authoritative semantic 판정이며, `SandboxPolicyDecision`의 `ALLOW`는 `LOCAL_ONLY` 경계 통과일 뿐 보고 가능성·제출 허가나 external/live testing 허가가 아닙니다.
 
 Gate를 실제 호출하기 직전에도 검사한 입력 수정본이 그대로인지 다시 확인합니다. Technical Gate는 exact Verification과 이를 직접 가리키는 current CWELabel을, Rule Scope Gate는 여기에 같은 Technical 검토와 run에 고정한 exact 정책 수집 결과·존재하는 정책 record를, Reporter는 두 Gate가 검토한 동일한 결과 묶음을 사용해야 합니다. 중간에 claim-relevant 입력 reference가 바뀌면 기존 허가는 만료되고 새 요청이 필요합니다. 정책 freshness는 다음 run의 재사용 판단에 쓰며 같은 run의 reference를 교체하지 않습니다.
 

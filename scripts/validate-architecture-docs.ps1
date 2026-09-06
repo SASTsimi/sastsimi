@@ -1104,6 +1104,14 @@ $sandboxReviewPatterns = @(
     @{
         Name = 'Dynamic retry lifecycle distinguishes session and external resume'
         Pattern = '(?s)같은 R7 Agent session의 command·PoC·환경 조정.*?상태 전이나 새 attempt를 만들지 않는다.*?새 `attempt_id`, `trigger=RETRY`.*?새 `attempt_id`, `trigger=RESUME`.*?과거 attempt artifact를 current 결과에 섞지 않는다'
+    },
+    @{
+        Name = 'same-attempt policy provenance links SandboxPolicyDecision, AgentLog and DynamicReproductionResult'
+        Pattern = '(?s)같은 `DYNAMIC_REPRO` attempt 안에서 정책 provenance는 exact reference로 이어진다.*?`AgentLog`의 `SESSION_STARTED` event.*?`input_refs`에는 그 attempt에 고정한 exact `SandboxPolicyDecision`.*?`DynamicReproductionResult\.policy_decision_ref`는 `AgentLog`가 그 attempt에 고정한 exact `SandboxPolicyDecision`과 동일.*?`agent_log_ref`는 같은 attempt의 `AgentLog` exact revision.*?latest lookup으로 다른 attempt의 policy decision·log·result를 보정하지 않는다'
+    },
+    @{
+        Name = 'execution scope is local only with no active external path'
+        Pattern = '(?s)현재 architecture에서 `execution_scope`는 정책 상태와 무관하게 항상 `LOCAL_ONLY`이며 external/live 대상·계정·egress 실행 경로는 지원하지 않는다.*?정책이 `CURRENT`·verified여도 external/live execution으로 승격하지 않는다'
     }
 )
 foreach ($rule in $sandboxReviewPatterns) {
@@ -2509,6 +2517,9 @@ $requiredRunPolicyPreparationRules = @(
     @{ Name = 'run policy state selects one collection result'; Text = $contractText; Marker = '`RunPolicyState.collection_result_ref`는 현재 state revision을 만든 attempt의 exact `PolicyCollectionResult` 하나만 가리킨다.' },
     @{ Name = 'unverified policy state requires a completed collection'; Text = $contractText; Marker = '`RunPolicyState.status=UNVERIFIED`는 `collection_result_ref`가 필수이며 exact `PolicyCollectionResult.status=FOUND | ABSENT_CONFIRMED` 중 하나를 가리킨다.' },
     @{ Name = 'unfinished policy collection is not unverified'; Text = $contractText; Marker = '수집 결과를 만들기 전에 중단되었으면 `UNVERIFIED`로 끝내지 않고 실제 복구 가능성에 따라 `BLOCKED | FAILED`로 기록한다.' },
+    @{ Name = 'blocked policy state is a resumable wait not a terminal result'; Text = $contractText; Marker = 'retry 또는 외부 입력을 기다리면 `BLOCKED`, 복구 불가능하거나 retry를 소진하면 `FAILED`이며 둘 다 실제 `PolicyCollectionResult.status=COLLECTION_FAILED` 결과가 있으면 그 exact reference를 보존한다.' },
+    @{ Name = 'special admission path requires the exact COLLECTION_FAILED result'; Text = $contractText; Marker = '이 `NOT_EVALUATED + ALLOW` 특별 경로는 `RunPolicyState.collection_result_ref != null`이고 그 exact `PolicyCollectionResult.status=COLLECTION_FAILED`일 때만 허용하며' },
+    @{ Name = 'null collection result stops policy-dependent downstream'; Text = $contractText; Marker = '`collection_result_ref=null`(collection 결과 확정 전 `PREPARING | BLOCKED | FAILED`)이면 exact `PolicyCollectionResult`가 없으므로 `RuleScopeImpactReview`도 `PrimitiveAdmissionDecision`도 만들지 않고 Reporter도 진행하지 않으며' },
     @{ Name = 'early run result may omit policy state'; Text = $contractText; Marker = '`CodeWorkspace.status=READY` 전에 종료된 `FAILED | CANCELLED` 결과는 `run_policy_state_ref=null`을 허용한다.' },
     @{ Name = 'post-ready run result binds policy state'; Text = $contractText; Marker = '`CodeWorkspace.status=READY` 뒤 정책 준비를 시작한 실행은 종료 상태와 관계없이 `run_policy_state_ref`가 필수다.' },
     @{ Name = 'policy parser result binds invocation'; Text = $policyParserResultBlock; Marker = 'llm_invocation_ref: StoredDataRef' },
@@ -2628,6 +2639,68 @@ foreach ($rule in $requiredPolicyContractRules) {
     }
 }
 
+# R5-02 policy preparation-timing: policy preparation is a run-init, analysis-scoped
+# POLICY_FETCH activity (see the canonical RunPolicyState / PolicyCacheRecord rules
+# above). Rule Scope Gate consumes the frozen run policy after Technical ACCEPT and
+# the Gate evaluation order is unchanged. These checks keep the "## 정책 준비 시점"
+# section and the run-fixed Gate-order invariant, and guard against regressing to
+# "collect policy after Technical ACCEPT".
+$policyPreparationTimingMarkers = @(
+    @{ Name = 'gate doc has the policy preparation-timing section'; Text = $gateText; Marker = '## 정책 준비 시점' },
+    @{ Name = 'gate doc keeps Gate evaluation order while moving preparation'; Text = $gateText; Marker = '바뀌는 것은 **Policy의 준비 시점**이며 **Gate evaluation order는 바뀌지 않는다**' },
+    @{ Name = 'gate doc: Rule Scope Gate consumes the frozen run policy'; Text = $gateText; Marker = 'Rule Scope Gate는 Technical `ACCEPT` 이후 실행 초기에 고정한 current `RunPolicyState`가 가리키는 정책을 소비한다.' },
+    @{ Name = 'gate Wiki keeps Gate evaluation order'; Text = $gateWikiText; Marker = '**Gate evaluation order는 바뀌지 않습니다**' },
+    @{ Name = 'module map step 3 registers run-init POLICY_FETCH'; Text = $moduleMapText; Marker = '`PolicyPreparationService.prepare`의 분석 단위 `POLICY_FETCH`' }
+)
+foreach ($rule in $policyPreparationTimingMarkers) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing R5-02 policy preparation-timing rule: $($rule.Name)"
+    }
+}
+
+# Obsolete present-tense "collect/parse policy after Technical ACCEPT" phrasing
+# must not return. (The 05 doc may describe the *former* behaviour in the past
+# tense; these patterns match only the stale present-tense forms.)
+$policyTimingRegressionDocs = @(
+    @{ Name = '05 gate doc'; Text = $gateText },
+    @{ Name = 'gate Wiki'; Text = $gateWikiText },
+    @{ Name = 'overview'; Text = $overviewText },
+    @{ Name = 'pipeline Wiki'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/pipeline.md')) },
+    @{ Name = 'module map'; Text = $moduleMapText }
+)
+$policyTimingRegressionPatterns = @(
+    '정책 수집과 Rule Scope 검토를 진행',
+    'ACCEPT하면 정책 수집',
+    'ACCEPT하면 정책을 수집',
+    'ACCEPT하면 공식 정책 수집',
+    'ACCEPT 뒤 정책 수집',
+    'ACCEPT 뒤 공식 정책 수집',
+    'ACCEPT 이후 정책 수집',
+    'ACCEPT 이후 공식 정책 수집'
+)
+foreach ($doc in $policyTimingRegressionDocs) {
+    foreach ($pattern in $policyTimingRegressionPatterns) {
+        if ($doc.Text.Contains($pattern)) {
+            Add-Failure "obsolete post-ACCEPT policy collection phrasing in $($doc.Name): $pattern"
+        }
+    }
+}
+
+# The 22-step module map step 17 row must not register POLICY_FETCH as its work,
+# and step 3 must keep starting the run-init POLICY_FETCH.
+$moduleMapStep17Row = [regex]::Match($moduleMapText, '(?m)^\| 17\.[^\r\n]*$').Value
+if ($moduleMapStep17Row -and ($moduleMapStep17Row -match 'POLICY_FETCH') -and ($moduleMapStep17Row -notmatch '새로 실행하지 않|새 collection/parsing 없음|Step 3의 `POLICY_FETCH`')) {
+    Add-Failure 'module map step 17 row registers POLICY_FETCH as executed work; policy collection/parsing belongs to run-init step 3'
+}
+$moduleMapStep3Row = [regex]::Match($moduleMapText, '(?m)^\| 3\.[^\r\n]*$').Value
+if ($moduleMapStep3Row -and ($moduleMapStep3Row -notmatch 'POLICY_FETCH')) {
+    Add-Failure 'module map step 3 row no longer starts run-init POLICY_FETCH'
+}
+Write-Output "R5-02 policy preparation-timing rules: $($policyPreparationTimingMarkers.Count)"
+
+# origin/main (docs(r4): freeze policy revisions within each run): no active doc may
+# describe a mid-run policy replacement / admission recompute on a new policy
+# revision. Policy is frozen for the life of an analysis run.
 foreach ($obsoletePolicyLifecycleRule in @(
     '`STALE` 또는 `UNVERIFIED`이면 보고 허용에 쓰지 않고 `UNCERTAIN + DENY`로 처리합니다.',
     '정책 수집이나 Rule Scope review가 새 current revision으로 바뀌면',

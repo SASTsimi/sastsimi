@@ -103,15 +103,19 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 
 ## 6. 프로그램 정책 신뢰 경계
 
-- workspace가 준비되면 비-LLM Policy Collector와 LLM Policy Parser의 분석 단위 `POLICY_FETCH`를 정적 도구와 독립 병렬 실행한다. `(analysis_id, program_id, work_type=POLICY_FETCH)` 기준 active work 하나만 두고 가설별 수집·파싱을 금지한다.
+- workspace가 준비되면 비-LLM Policy Collector와 LLM Policy Parser의 분석 단위 `POLICY_FETCH`를 정적 도구와 독립 병렬 실행한다. `(analysis_id, program_id, work_type=POLICY_FETCH)` 기준 active work 하나만 두고 가설별 수집·파싱을 금지한다. Rule Scope Gate는 Technical `ACCEPT` 이후 준비된 정책을 소비하며 Gate evaluation order는 유지한다.
 - 새 run의 정책 준비는 `PolicyCacheRecord`를 정확히 한 번 조회한다. program, source 설정 hash, Parser 이름·버전, freshness 기준 hash, run 시작 시 유효기간과 cache closure의 모든 exact reference가 맞을 때만 재사용한다. cache miss·검증 실패는 새 원문 수집·Parser 호출로 진행하며 실패 결과는 cache로 게시하지 않는다.
-- Policy Collector는 확인 가능한 공식 source만 원문으로 저장하고 source 확인 결과와 exact bytes/hash를 남긴다. Policy Parser는 그 exact 원문만 구조화하며 호출 기록을 `PolicyParserResult.llm_invocation_ref`로 남긴다.
+- Policy Collector는 확인 가능한 공식 source만 원문으로 저장하고 source 확인 결과와 exact bytes/hash를 남긴다. Policy Parser는 그 exact 원문만 구조화하며 호출 기록을 `PolicyParserResult.llm_invocation_ref`로 남긴다. Parser output 자체는 authoritative policy evidence가 아니다.
 - cache hit에서도 이전 run의 `RunPolicyState`를 재사용하지 않고 현재 run의 새 state와 collection·policy record를 만든다. 다른 run의 원문·Parser reference는 선택한 cache closure와 exact match할 때만 허용한다. `RunPolicyState`가 같은 실행의 collection/policy record를 고정한다. 정책은 `StaticFactBundle`이나 Hypothesis 사전 scope 필터가 아니다.
 - 저장소 문서, 검색 snippet, 오래된 모델 지식과 비공식 요약을 공식 rule로 승격하지 않는다.
-- source URL/reference, 게시자 확인 근거, parser 이름·버전·결과, 수집 시각, 누락과 freshness 기준·근거·만료 시각을 보존한다.
-- `PolicyCollectionResult`는 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`를 구분한다. 공식 정책 부재를 확인한 경우에만 `ABSENT_CONFIRMED`이고, fetch·parser 실패는 `COLLECTION_FAILED`이며 Rule Scope review를 만들지 않는다.
+- source URL/reference, 게시자 확인 근거, parser 이름·버전·결과, 수집 시각, 누락과 freshness 기준·근거·만료 시각을 보존한다. 각 Gate-relevant `PolicyItem`에는 `source_ref`와 `source_locator`가 있어야 한다.
+- Parser는 asset scope, vulnerability type/eligibility, testing restrictions, reward/bounty conditions, impact criteria를 서로 구분해 구조화한다. `reward_conditions`는 technical reportability나 `report_permission`과 같은 의미가 아니다.
+- `PolicyCollectionResult`는 `FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`를 구분한다. 공식 정책 부재를 확인한 경우에만 `ABSENT_CONFIRMED`이고, fetch·parser 실패는 `COLLECTION_FAILED`이며 Rule Scope review를 만들지 않는다. `COLLECTION_FAILED`는 정책 부재를 의미하지 않는다.
+- collection failure 또는 parser failure를 `VerificationResult.FALSE` 또는 `VerificationResult.HOLD`로 변환하지 않는다. 정책 준비 실패는 program-policy semantic 의존 작업(Rule Scope Gate의 policy-semantic 판정, Reporter, disclosure/report downstream)만 fail-closed시키고 기술적 Verification verdict와 분리한다.
 - 공식 자료가 없음을 확인했거나 `RunPolicyState.status=UNVERIFIED`이면 `UNCERTAIN + DENY`다. run 시작 때 stale로 판정한 과거 record는 감사용으로 보존할 수 있지만 current state나 `PASS | ALLOW` 근거로 사용하지 않는다.
 - Runtime Validator는 Rule Scope·Reporter action 승인과 실제 provider 호출 직전에 준비 완료 때 고정한 exact `RunPolicyState`와 같은지 확인한다. freshness 만료와 parser version 변경은 다음 analysis run을 시작할 때 재사용 여부를 판단하는 조건이고 현재 run의 state를 바꾸지 않는다. `PREPARING` state는 Rule Scope·Reporter 입력으로 사용하지 않고 준비 완료를 기다린다. local-only Sandbox는 프로그램 정책 freshness에 권한을 의존하지 않으므로 준비 중에도 실행할 수 있고, 외부 정책 변경 신호만으로 기존 action을 취소하지 않는다. 이미 허가·완료한 순수 로컬 재현은 실행 당시 exact state와 함께 보존한다.
+- Rule Scope Gate는 structured 정책 record + `source_ref + source_locator`의 공식 원문 + 현재 hypothesis/verification 사실을 함께 사용하고, 원문을 확인할 수 없거나 Parser 결과와 모순되면 fail-closed(`UNCERTAIN + DENY`, `PolicyMissingInfo(area=SOURCE, blocks_allow=true)`)한다. 같은 program의 여러 hypothesis는 각각 별도 `RuleScopeImpactReview`를 만들되 run에 고정한 같은 정책 state를 재사용하고, 정책 parsing 결과를 hypothesis-specific verdict로 저장하지 않는다.
+- Sandbox Controller는 bug bounty program testing restriction의 semantic compliance를 판정하지 않는다. Sandbox 안에서 Agent가 고른 command·package·PoC를 program-policy allowlist처럼 의미 해석하지 않으며, 공식 program testing restriction과 실제 수행 행위의 의미 비교는 Rule Scope Gate의 `testing_restriction_compliance`가 유일한 authoritative 판정자다. `SandboxPolicyDecision`의 `ALLOW`는 보고 가능성·제출 허가가 아니고, `POLICY_BLOCKED`은 Sandbox profile 외부 경계 위반이지 `testing_restriction_compliance=FAIL`이 아니다.
 - 확정 판단은 실제 정책 항목과 코드·동적 근거를 `RuleScopeEvidenceLink`로 연결한다. 판단을 막는 누락은 `PolicyMissingInfo`로 구조화하고 `blocks_allow=true`이면 공개 허용을 차단한다.
 
 ## 7. 근거·권한 연결
@@ -289,8 +293,8 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N1-a | final HOLD + `required_primitive_candidates=[]` | Primitive와 Chaining work를 만들지 않고 HOLD 처리 종료 |
 | N2 | final FALSE | terminal internal result; Primitive와 Chaining work 생성 금지 |
 | N3 | final TRUE, Gate 미실행 | result Primitive admission과 Chaining 금지 |
-| N4 | TRUE + Technical `ACCEPT`, 정책 수집 또는 Rule Scope 검토가 아직 종료되지 않음 | result Primitive와 Chaining을 아직 허용하지 않고 admission 입력 완료를 기다림; Finding 정규화 전이므로 Reporter도 금지 |
-| N4-a | TRUE + Technical `ACCEPT`, 정책 `COLLECTION_FAILED`로 Rule Scope review 없음 | `PrimitiveAdmissionDecision=NOT_EVALUATED + ALLOW`; Rule Scope review가 없어 current Finding을 만들지 않고 Reporter 금지 |
+| N4 | TRUE + Technical `ACCEPT`, 정책 수집 또는 Rule Scope 검토가 아직 종료되지 않음 | result Primitive와 Chaining을 아직 허용하지 않고 admission 입력 완료를 기다림; Finding 정규화 전이므로 Reporter도 금지. `RunPolicyState.collection_result_ref=null`(collection 결과 확정 전 `PREPARING | BLOCKED | FAILED`)이면 exact `PolicyCollectionResult`가 없어 Rule Scope Gate·Primitive Admission·Reporter를 모두 진행하지 않고, 재개 가능하면 정책 준비 완료를 기다림 |
+| N4-a | TRUE + Technical `ACCEPT`, `RunPolicyState.collection_result_ref != null`이고 그 exact `PolicyCollectionResult.status=COLLECTION_FAILED`라 Rule Scope review 없음 | `PrimitiveAdmissionDecision=NOT_EVALUATED + ALLOW`, `reason_code=POLICY_COLLECTION_FAILED`; Rule Scope review가 없어 current Finding을 만들지 않고 Reporter 금지. `RunPolicyState.status`(`BLOCKED | FAILED` 포함)만으로 이 경로를 진행하지 않음 |
 | N5 | TRUE + Technical `ACCEPT` + Rule Scope의 다른 판단 `FAIL | UNCERTAIN | DENY`, testing restriction은 `PASS | UNCERTAIN` | `PrimitiveAdmissionDecision=ALLOW`; result Primitive와 Chaining 자격 유지. Rule Scope review가 존재하므로 신뢰 runtime이 current Finding을 정규화하되 `report_permission=DENY`이면 Reporter만 차단하고 Finding은 보존 |
 | N6 | TRUE + Technical `ACCEPT` + Rule Scope review가 Reporter 6축 readiness 전부 충족 | `PrimitiveAdmissionDecision=ALLOW`; result Primitive와 Chaining 자격 유지, current Finding 정규화 후 Reporter 조건 평가 허용 |
 | N6-a | current Finding 존재 후 Verification generation·CWELabel·두 Gate·동적 결과·PoC·고정 정책 중 하나가 새 revision으로 변경 | 기존 Finding은 감사 이력으로만 남고 stale 처리; 새 exact chain에서 Finding 재정규화 전까지 Reporter 금지 |
@@ -349,6 +353,8 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | N49 | 다른 program·source 설정·Parser 버전·freshness 기준의 cache를 쓰거나 cache closure 밖의 cross-run 정책 reference를 연결 | cache 거절 후 같은 `POLICY_FETCH`에서 새 수집·파싱; 일반 artifact의 cross-run 재사용은 `STALE_RESULT` |
 | N50 | `AnalysisStartRequest.program_id`가 없거나 catalog에서 사용할 수 없거나, 저장소의 여러 프로그램 중 하나를 선택하지 않음 | `INPUT_ERROR`로 요청 거절; `analysis_id`, `AnalysisRunState`, work를 만들지 않고 내부 `program_id` 하나를 명시한 새 요청 요구 |
 | N51 | `RunPolicyState.status=UNVERIFIED`인데 `collection_result_ref=null`이거나 collection status가 `FOUND | ABSENT_CONFIRMED`가 아님 | state 저장과 Rule Scope 호출을 거절하고, collection 이전 중단은 `BLOCKED | FAILED`로 기록 |
+| N52 | Parser 정규화 결과가 `source_ref + source_locator`의 공식 원문과 모순되거나 원문 확인 불가인데 Parser 값으로 `PASS | ALLOW` 출력 | fail-closed: 해당 영역 `UNCERTAIN`, `report_permission=DENY`, `PolicyMissingInfo(area=SOURCE, blocks_allow=true)`; Parser output을 authoritative evidence로 취급 금지 |
+| N53 | run 초기화 정책 준비(collection 또는 parser)가 실패했는데 그 hypothesis의 `VerificationResult`를 `FALSE | HOLD`로 저장하거나 기술적 hypothesis를 제거 | verdict 변경·hypothesis 제거 거절; `COLLECTION_FAILED`를 보존하고 program-policy semantic 작업(Rule Scope Gate·Reporter·disclosure downstream)만 fail-closed; Sandbox isolation/safety enforcement는 미영향 |
 
 ## 남는 위험
 
