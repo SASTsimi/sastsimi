@@ -60,6 +60,7 @@
 | [`ADR-013-run-policy-preparation-and-reuse.md`](./review/decisions/ADR-013-run-policy-preparation-and-reuse.md) | 정책을 실행 초기에 한 번 준비해 가설들이 공유하고, run 안에서는 고정하며 다음 run 시작 때 exact cache를 재사용할지 판단하는 제안입니다. | R4·R5·R7·R8 담당 | 검토 중 결정 |
 | [`ADR-012-primitive-match-duplicate-key.md`](./review/decisions/ADR-012-primitive-match-duplicate-key.md) | Primitive match의 중복 판정 키와 순회 단위를 정하는 제안을 설명합니다. | R1·R4 담당 | 검토 중 결정 |
 | [`ADR-014-primitive-admission-single-decision.md`](./review/decisions/ADR-014-primitive-admission-single-decision.md) | Primitive admission을 등록 시점의 1회 판정으로 확정하고 회수 절차를 두지 않는 현재 결정을 설명합니다. ADR-011의 회수 부분을 대체합니다. | R1·R4·R5·R6·R8 담당 | 확정 결정 |
+| [`ADR-015-r3-implementation-baseline.md`](./review/decisions/ADR-015-r3-implementation-baseline.md) | 한 명 구현을 위한 언어·저장·파일 구조·CLI·CI의 단일안을 설명합니다. | R1~R8·전체 구현 담당 | 검토 중 결정 |
 
 ## Architecture v5 기술 기준 문서
 
@@ -69,7 +70,6 @@
 | [`01-system-overview.md`](./architecture-v5/01-system-overview.md) | 저장소 입력부터 Agent 자동화 종료와 이후 사람 판단까지 전체 22단계를 설명합니다. | PM·모든 역할 담당자 | 기준 문서 |
 | [`02-static-fact-layer.md`](./architecture-v5/02-static-fact-layer.md) | AST와 SAST 결과를 LLM이 사용할 코드 사실로 정리하는 방법을 설명합니다. | 정적분석·탐색·검증 담당 | 기준 문서 |
 | [`03-agent-roles-and-orchestration.md`](./architecture-v5/03-agent-roles-and-orchestration.md) | 비-LLM Orchestration Runtime의 전역 등록·배정과 Verification의 가설 내부 제어권을 포함해 각 구성요소 역할을 설명합니다. | PM·LLM 역할·통합 담당 | 기준 문서 |
-| [`implementation/05-prompt-runtime.md`](./architecture-v5/implementation/05-prompt-runtime.md) | 11개 LLM 역할의 프롬프트 등록·조립·전달·출력 검증과 작성 책임을 설명합니다. | R1~R8·통합 구현 담당 | 구현 인계 설계 |
 | [`04-verification-and-dynamic-reproduction.md`](./architecture-v5/04-verification-and-dynamic-reproduction.md) | Verification이 가설 내부 Context·찬반·동적 재현·판정·Gate 보완을 관리하는 절차를 설명합니다. | 검증·동적검증 담당 | 기준 문서 |
 | [`verification-playbooks.md`](./architecture-v5/verification-playbooks.md) | 공통 및 웹 취약점 유형별 확인 항목, 반증 질문과 필요한 정적·동적 근거를 정의합니다. | 검증·정적분석·동적검증·Gate 담당 | 기준 문서 |
 | [`05-llm-gate-and-reporting.md`](./architecture-v5/05-llm-gate-and-reporting.md) | 기술 근거와 공식 정책을 검토하고 보고서 초안을 만드는 조건을 설명합니다. | Gate·검증·PM 담당 | 기준 문서 |
@@ -88,9 +88,12 @@
 
 | 파일 | 쉽게 말하면 | 주로 읽는 사람 | 구분 |
 |---|---|---|---|
+| [`implementation/README.md`](./architecture-v5/implementation/README.md) | R3-01~R3-06 구현 인계 문서를 어떤 순서로 읽고 무엇을 기준으로 삼는지 설명합니다. | 전체 구현 담당자·R1~R8 검토자 | 구현 인계 안내 |
 | [`implementation/01-module-map.md`](./architecture-v5/implementation/01-module-map.md) | 정본 22단계를 실행 모듈, 입력·출력, 저장 위치, 오류와 테스트에 연결합니다. | 전체 구현 담당자·R1~R8 검토자 | 구현 준비 기준 |
 | [`implementation/02-contract-test-plan.md`](./architecture-v5/implementation/02-contract-test-plan.md) | 파트 사이의 계약을 정상·실패·권한 위반 입력으로 어떻게 시험할지 case별로 설명합니다. | 전체 구현 담당자·R1~R8 검토자 | 구현 전 시험 계획 |
 | [`implementation/04-provider-decision.md`](./architecture-v5/implementation/04-provider-decision.md) | OpenAI·Codex·Anthropic·Claude를 API Key 또는 공식 구독 로그인으로 연결하는 네 경로와 실제 검증 기준을 설명합니다. | R3·R4·R8·LLM 역할 담당 | 구현 인계 설계 |
+| [`implementation/05-prompt-runtime.md`](./architecture-v5/implementation/05-prompt-runtime.md) | Prompt Registry·Builder와 11개 LLM 역할의 입력·출력·검사·작성 책임을 설명합니다. | R1~R8·통합 구현 담당 | 구현 인계 설계 |
+| [`implementation/06-implementation-baseline.md`](./architecture-v5/implementation/06-implementation-baseline.md) | 실제 언어·repository 구조·저장·복구·설정·CLI·CI와 한 명 구현 순서를 확정합니다. | 전체 구현 담당자·R1~R8 검토자 | 물리 구현 기준선 |
 
 ## Architecture v5 쉬운 Wiki
 

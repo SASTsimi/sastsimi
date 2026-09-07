@@ -50,3 +50,4 @@
 | [ADR-012](./ADR-012-primitive-match-duplicate-key.md) | Primitive match 중복 판정 키와 순회 단위 | PROPOSED | ADR-005 | `docs: replace chaining fingerprint with match reference key` |
 | [ADR-013](./ADR-013-run-policy-preparation-and-reuse.md) | 실행 단위 정책 준비·재사용과 Sandbox 사전 확인 | PROPOSED | #1, #4, #10 | 이 ADR을 추가하는 PR에서 검토 |
 | [ADR-014](./ADR-014-primitive-admission-single-decision.md) | Primitive admission을 등록 시점 1회 판정으로 확정 | ACCEPTED | #108, ADR-011, PR #102 | ADR-011의 회수 결정을 대체하고 회수 절차를 제거; 매핑·`Primitive.admission_decision_ref`는 유지. `docs: make primitive admission a one-time decision` |
+| [ADR-015](./ADR-015-r3-implementation-baseline.md) | R3 단일 애플리케이션 구현 기준선 | PROPOSED | #4, #92 | R3-06 Draft PR에서 검토; PR #107 병합 뒤 기준 SHA 재확정 |
