@@ -77,7 +77,7 @@ ProviderCapabilities:
   runtime_tool_loop: SUPPORTED | UNSUPPORTED | UNVERIFIED
 ```
 
-`runtime_tool_loop`은 provider나 구독 client의 파일·명령·web tool을 켠다는 뜻이 아니다. 모델이 SASTSIMI가 정한 구조화 출력으로 다음 Sandbox 작업을 제안하고, **SASTSIMI Runtime이 model의 구조화된 요청을 받아** Runtime Validator와 Sandbox Controller를 통과한 명령만 R7의 격리 container 안에서 실행한 뒤 결과를 다음 호출의 비신뢰 입력으로 돌려줄 수 있는지를 뜻한다. 같은 R7 work·attempt의 논리 session, exact input reference, 호출·명령·관찰 로그와 취소·시간 제한을 끝까지 유지할 수 있어야 `SUPPORTED`다.
+`runtime_tool_loop`은 provider나 구독 client의 파일·명령·web tool을 켠다는 뜻이 아니다. 모델이 SASTSIMI가 정한 구조화 출력으로 다음 Sandbox 작업을 제안하고, **SASTSIMI Runtime이 model의 구조화된 요청을 받아** Runtime Validator와 Sandbox Controller를 통과한 명령만 R7의 격리 container 안에서 실행한 뒤 결과를 다음 호출의 비신뢰 입력으로 돌려줄 수 있는지를 뜻한다. Runtime Validator는 요청 역할·현재 `DYNAMIC_REPRO` work·attempt·상태와 exact 설정 reference를 검사하고, Sandbox Controller는 host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace 같은 Sandbox 외부 경계를 강제한다. Reproduction Session Manager는 실제 사용한 exact `SandboxPolicyDecision`을 같은 attempt의 `AgentLog`와 `DynamicReproductionResult.policy_decision_ref`에 연결한다. 같은 R7 work·attempt의 논리 session, exact input reference, 호출·명령·관찰 로그와 취소·시간 제한을 끝까지 유지할 수 있어야 `SUPPORTED`다.
 
 비밀값, cookie, OAuth token, browser profile 경로와 실제 session credential은 `ProviderProfile`에 저장하지 않는다. `credential_source`는 비밀값의 종류와 주입 경계만 설명한다.
 
@@ -146,7 +146,7 @@ Dynamic Reproduction Agent structured turn
 → 완료·차단·실패·취소 또는 한도 도달까지 반복
 ```
 
-Provider adapter는 명령을 직접 실행하지 않고 구조화된 동적 재현 turn을 전달한다. host filesystem, Docker daemon/socket, 임의 network, secret 또는 다른 workspace 접근을 provider tool로 우회할 수 없다. `DYNAMIC_REPRODUCTION` 실행 경로에서는 `runtime_tool_loop=SUPPORTED`인 exact ProviderProfile만 선택한다. `UNSUPPORTED | UNVERIFIED`이면 다른 역할에서 사용할 수 있는 profile이어도 동적 재현 실행 task에는 배정하지 않고 호출 전에 `CAPABILITY_UNSUPPORTED`로 거절한다.
+Provider adapter는 명령을 직접 실행하지 않고 구조화된 동적 재현 turn을 전달한다. host filesystem, Docker daemon/socket, 임의 network, secret 또는 다른 workspace 접근을 provider tool로 우회할 수 없다. 현재 `DYNAMIC_REPRO` work에서 `agent_role=DYNAMIC_REPRODUCTION`으로 실행되는 Sandbox 반복 호출 경로에는 `runtime_tool_loop=SUPPORTED`인 exact ProviderProfile만 선택한다. 여기서 `DYNAMIC_REPRO`는 작업 종류이고 `DYNAMIC_REPRODUCTION`은 Dynamic Reproduction Agent의 역할·생산자 enum이며, `R7_AGENT` 같은 새 별칭을 만들지 않는다. `UNSUPPORTED | UNVERIFIED`이면 다른 역할에서 사용할 수 있는 profile이어도 동적 재현 실행 task에는 배정하지 않고 호출 전에 `CAPABILITY_UNSUPPORTED`로 거절한다.
 
 ## 4. 네 연결 경로
 
@@ -277,9 +277,9 @@ Agent 코드와 prompt template에 모델명을 넣지 않는다. Runtime은 mod
 | `PVD-13` | 구독 client 격리 | 실제 저장소 접근, command·file·web tool, MCP·hook·plugin·추가 instruction·ambient secret 사용이 모두 차단 |
 | `PVD-14` | 환경 binding | local용 profile을 CI·shared server에서 사용하면 호출 전 거절하고 exact profile로 환경을 복원 가능 |
 | `PVD-15` | 이용 범위·약관 | 인증 종류·계정 유형·실행 환경·내부/서비스 사용 목적이 provider의 현재 공식 허용 범위와 일치하고 검토 근거를 보존 |
-| `PVD-16` | R7 Runtime tool loop | provider 내장 tool을 끈 상태에서 구조화된 command 제안 → Runtime 검사 → 격리 container 실행 → redacted 결과 재입력이 같은 work·attempt·논리 session과 AgentLog에 연결되며 host·Docker·secret·다른 workspace 접근은 차단 |
+| `PVD-16` | R7 Runtime tool loop | provider 내장 tool을 끈 상태에서 구조화된 command 제안 → Runtime Validator가 역할·현재 `DYNAMIC_REPRO` work·attempt·상태·exact 설정 reference 검사 → Sandbox Controller가 외부 경계를 통과한 명령만 격리 container에서 실행 → redacted 결과 재입력. 이 전체가 같은 work·attempt·논리 session에 속하고, 실제 `SandboxPolicyDecision`이 `AgentLog`와 `DynamicReproductionResult.policy_decision_ref`에서 추적되며 host·Docker daemon/socket·secret·다른 workspace 접근은 차단 |
 
-일반 역할에 쓸 profile을 `SUPPORTED`로 올리려면 `PVD-01`–`PVD-15`가 그 조합에서 통과해야 한다. R7 Sandbox 실행에 허용하려면 여기에 `PVD-16`도 통과해야 하며 그때만 `runtime_tool_loop=SUPPORTED`로 기록한다. API 경로의 `PVD-13`은 client tool이 없음을 확인해 `NOT_APPLICABLE`로 기록할 수 있지만 생략하지 않는다.
+일반 역할에 쓸 profile을 `SUPPORTED`로 올리려면 `PVD-01`–`PVD-15`가 그 조합에서 통과해야 한다. R7 Sandbox 실행에 허용하려면 여기에 `PVD-16`도 통과해야 하며 그때만 `runtime_tool_loop=SUPPORTED`로 기록한다. Issue #90도 R7 실행 지원을 완료했다고 판단하기 전에는 `PVD-16`의 통과 증거를 종료 조건에 포함한다. API 경로의 `PVD-13`은 client tool이 없음을 확인해 `NOT_APPLICABLE`로 기록할 수 있지만 생략하지 않는다.
 
 - exact client/SDK version과 model ID
 - 실행 환경과 인증 종류

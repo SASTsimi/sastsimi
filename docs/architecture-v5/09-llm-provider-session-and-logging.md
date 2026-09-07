@@ -30,7 +30,7 @@ Agent Runtime은 역할·structured-output 요구·context reference·budget·se
 
 네 후보 경로와 환경별 지원 판정·시험 기준은 [R3-04 Provider 결정](./implementation/04-provider-decision.md)을 따른다. API Key와 구독 session은 서로 바꿔 쓸 수 있는 credential이 아니다. 실제 선택 단위는 `provider + product + transport + auth_mode + client version + model + environment`를 고정한 versioned `ProviderProfile` revision이다. Codex 구독에서 Claude 구독으로 바꾼다는 말은 같은 client에서 model 문자열만 바꾸는 것이 아니라 다른 profile과 adapter의 새 호출을 시작한다는 뜻이다.
 
-Dynamic Reproduction Agent의 Sandbox 실행은 provider 내장 file·command·web tool을 켜지 않는다. 모델은 구조화된 동적 재현 turn만 반환하고 SASTSIMI Runtime이 권한·상태·exact work/attempt·Sandbox 경계를 검사한 뒤 in-container 실행 통로로 전달한다. 이 반복 경로는 `runtime_tool_loop=SUPPORTED`인 exact ProviderProfile만 사용할 수 있으며 명령·관찰은 같은 attempt의 `AgentLog`와 호출 log에 연결한다.
+Dynamic Reproduction Agent의 Sandbox 실행은 provider 내장 file·command·web tool을 켜지 않는다. 모델은 구조화된 동적 재현 turn만 반환하고 SASTSIMI Runtime이 권한·상태·exact work/attempt·Sandbox 경계를 검사한 뒤 in-container 실행 통로로 전달한다. 이 반복 경로는 현재 `DYNAMIC_REPRO` work에서 `agent_role=DYNAMIC_REPRODUCTION`으로 실행되며, `runtime_tool_loop=SUPPORTED`인 exact ProviderProfile만 사용할 수 있다. `DYNAMIC_REPRO`는 작업 종류이고 `DYNAMIC_REPRODUCTION`은 역할·생산자 enum이다. 명령·관찰과 실제 `SandboxPolicyDecision`은 같은 attempt의 호출 log·`AgentLog`·`DynamicReproductionResult.policy_decision_ref`에 연결한다.
 
 ## provider 호출 전 권한 검사
 

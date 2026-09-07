@@ -3028,14 +3028,19 @@ if (-not $providerCapabilityBlock.Contains('runtime_tool_loop:')) {
 foreach ($marker in @(
     'provider 내장 tool은 계속 차단',
     'SASTSIMI Runtime이 model의 구조화된 요청을 받아',
-    '`DYNAMIC_REPRODUCTION` 실행 경로에서는 `runtime_tool_loop=SUPPORTED`',
-    '`PVD-16`'
+    '현재 `DYNAMIC_REPRO` work에서 `agent_role=DYNAMIC_REPRODUCTION`',
+    '`DYNAMIC_REPRO`는 작업 종류이고 `DYNAMIC_REPRODUCTION`은 Dynamic Reproduction Agent의 역할·생산자 enum',
+    'Runtime Validator는 요청 역할·현재 `DYNAMIC_REPRO` work·attempt·상태와 exact 설정 reference를 검사',
+    'Sandbox Controller는 host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace 같은 Sandbox 외부 경계를 강제',
+    'exact `SandboxPolicyDecision`을 같은 attempt의 `AgentLog`와 `DynamicReproductionResult.policy_decision_ref`에 연결',
+    '`PVD-16`',
+    'Issue #90도 R7 실행 지원을 완료했다고 판단하기 전에는 `PVD-16`의 통과 증거를 종료 조건에 포함'
 )) {
     if (-not $providerDecisionText.Contains($marker)) {
         Add-Failure "missing R7 runtime-managed tool-loop provider rule: $marker"
     }
 }
-Write-Output 'R3-04 provider runtime tool-loop rules: 4'
+Write-Output 'R3-04 provider runtime tool-loop rules: 9'
 
 $forbiddenR8OwnershipMarkers = @(
     '그 R8 profile의 수치',
