@@ -26,8 +26,8 @@ SASTSIMI v5는 승인된 내부 `program_id` 하나와 저장소를 `AnalysisSta
 | 8 | 가설별 Verification owner 할당 | `VulnerabilityHypothesis` + ACTIVE `VerificationAssignment` |
 | 9 | Verification이 위치 기반 코드 문맥 조회 | `CodeContextRequest/Response` |
 | 10 | 운영 Verification이 Pro/Con을 독립 병렬 실행 | supporting/counter evidence |
-| 11 | 정적·Pro·Con 근거로 초기 판정 | initial `TRUE | FALSE | HOLD`; initial TRUE는 아직 최종 TRUE가 아님 |
-| 12 | Verification이 목적을 적은 동적 재현 요청을 만들고, Dynamic Reproduction Agent가 환경 요구사항·간단한 plan을 만든다. 외부 경계를 통과하면 Setup Automation이 Sandbox를 준비하고 Dynamic Reproduction Agent가 PoC candidate·command·관찰·재시도를 자율 수행하며 Session Manager가 결과를 확정한다. | `DynamicReproductionRequest`, `EnvironmentRequirements`, `ReproductionPlan`, `EnvironmentRecipe`, `AgentLog`, `DynamicReproductionResult` |
+| 11 | 정적·Pro·Con과 current 플레이북 적용으로 초기 경로 결정 | `VerificationInitialAssessment`; initial TRUE의 PoC 확인, 판정용 동적 근거, 동적 실행 없는 final FALSE/HOLD 합성 중 하나 |
+| 12 | 필요한 경우 Verification이 목적을 적은 동적 재현 요청을 만들고, Dynamic Reproduction Agent가 실제 의존성 파일로 환경 요구사항·간단한 plan을 만든다. 외부 경계를 통과하면 Setup Automation이 Sandbox를 준비하고 Agent가 구조화된 tool request로 PoC·command·관찰·재시도를 반복하며 Session Manager가 결과를 확정한다. | `DynamicReproductionRequest`, `EnvironmentRequirements`, `ReproductionPlan`, `DynamicReproductionToolRequest`, `EnvironmentRecipe`, `AgentLog`, `DynamicReproductionResult` |
 | 13 | 동적 결과를 반영해 최종 판정과 material claim 분리 | final TRUE에는 재현 성공을 가리키는 validated `poc_ref` 필수; optional `origin=VERIFICATION` proposal |
 | 14 | 판정별 분기와 CWE 분류 | FALSE terminal / HOLD는 `required_primitive_candidates`가 하나 이상일 때만 inputs-only Primitive admission, 후보가 없으면 Primitive·Chaining 없음 / TRUE는 R5-01 `CWE_LABELING`이 exact Verification에 맞는 current `CWELabel` 생성 |
 | 15 | TRUE 기술 근거 검토 | `TechnicalEvidenceReview` |
@@ -53,13 +53,13 @@ Repository Loader + bug bounty program confirmed
 Orchestration Runtime -> Hypothesis Agent -> trusted validation and registration
                                                         │ assign only
                                                         v
-       on-demand context -> Verification owner -> Pro/Con -> initial verdict
-                                                │ initial TRUE or dynamic evidence needed
+       on-demand context -> Verification owner -> Pro/Con -> ASSESS_INITIAL
+                                                │ PoC confirmation or dynamic evidence
                                                 v
-                         DynamicReproductionRequest -> R7 requirements/simple plan
+                         DynamicReproductionRequest -> R7 dependency context/plan
                                                 -> external boundary check
-                                                -> autonomous PoC execution + AgentLog
-                                                -> Session Manager final result
+                                                -> structured Sandbox turns + AgentLog
+                                                -> R7 conclusion -> Session Manager result
                                       │
                    ┌──────────────────┼────────────────────┐
                    v                  v                    v
@@ -105,9 +105,9 @@ Orchestration Runtime은 전역 work 준비, 검증된 가설 등록과 Verifica
 | Context Retrieval Service | 같은 `workspace_id`와 `commit_id`에서 제한된 추가 문맥 조회 | 작업공간 밖 무제한 repository dump |
 | Orchestration Runtime | Hypothesis work 등록, proposal 검증 요청, 전역 가설 등록·Verification 배정·가설 간 병렬성 관리 | LLM 판단, 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정 또는 Finding 공개 |
 | Hypothesis Agent | schema-constrained 가설 후보 생성 | verdict·Finding·exploitability 확정 |
-| Verification Agent | 가설 내부 Context·Pro/Con, 동적 재현 목적·목표·필요 환경을 담은 `DynamicReproductionRequest`, 최종 판정·REVISE·Gate·Chaining 흐름과 material child proposal | `EnvironmentRequirements`·`ReproductionPlan`·PoC·동적 결과 직접 생산, Sandbox 실행 또는 새 주장의 무검증 승격 |
+| Verification Agent | 가설 내부 Context·Pro/Con, `VerificationInitialAssessment`, 필요한 동적 재현 목적·목표·환경을 담은 `DynamicReproductionRequest`, 최종 판정·REVISE·Gate·Chaining 흐름과 material child proposal | `EnvironmentRequirements`·`ReproductionPlan`·PoC·동적 결과 직접 생산, Sandbox 실행 또는 새 주장의 무검증 승격 |
 | Pro Agent와 Con Agent | 독립적인 성립·반박 근거 조사 | 동일 session 공유 |
-| Dynamic Reproduction Agent | exact request에서 requirements·간단한 plan·PoC candidate·동적 근거 해석 생산 | R6 목적 변경, 외부 경계 우회 또는 최종 verdict 판단 |
+| Dynamic Reproduction Agent | exact request와 실제 의존성 파일에서 requirements·간단한 plan·PoC candidate·Sandbox tool request·동적 근거 해석 생산 | R6 목적 변경, 외부 경계 우회 또는 최종 verdict 판단 |
 | Reproduction Setup Automation | recipe·image·container 생성/재사용/재생성·환경 비교·cleanup 실제 수행 | Dynamic Reproduction Agent의 판단, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
 | Sandbox Controller | R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 강제 | 내부 command allowlist 운영, R7 profile 값 결정, R8 잔여 예산·새 attempt 결정, 재현 전략·환경 의미·최종 verdict 변경 |
 | Reproduction Session Manager | 실제 event를 append-only AgentLog로 저장하고 same-attempt validated PoC·동적 결과 확정 | Dynamic Reproduction Agent 호출·command·retry·cleanup 전략 결정 또는 다른 attempt 혼합 |

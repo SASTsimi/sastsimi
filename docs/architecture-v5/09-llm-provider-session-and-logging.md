@@ -45,7 +45,9 @@ Dynamic Reproduction Agent의 Sandbox 실행은 provider 내장 file·command·w
 - `SESSION`: NEW/RESUME/AUTO, parent session, retry/failover 선행 호출
 - `REDACTION`: prompt와 context에 credential·절대 경로·금지 정보가 없는지
 
-모든 check가 `PASS`인 `ActionDecision=ALLOW`를 runtime이 `USED`로 claim한 뒤에만 `LLMInvocationRequest`를 만든다. 요청의 `action_decision_ref`는 그 exact claim revision, `call_spec_ref`와 `provider_profile_ref`는 검사한 exact spec과 versioned provider profile revision을 가리킨다. runtime은 provider 호출 직전에 role·model·session·context·prompt·output schema·token budget 계획값·timeout이 spec과 모두 같은지 다시 검사한다. 이 equality는 요청 변조를 막는 검사이며 실제 token 사용량의 상한 검사가 아니다. `LLMInvocationLog`도 같은 action decision·spec·profile ref를 보존한다. 다른 action, 이전 state version, retry 또는 failover에 같은 decision을 재사용하지 않는다.
+모든 check가 `PASS`인 `ActionDecision=ALLOW`를 runtime이 `USED`로 claim한 뒤에만 `LLMInvocationRequest`를 만든다. 요청의 `action_decision_ref`는 그 exact claim revision, `call_spec_ref`와 `provider_profile_ref`는 검사한 exact spec과 versioned provider profile revision을 가리킨다. runtime은 provider 호출 직전에 role·task·model·session·source context·prompt registry/template/payload·model/limits/retry/tool/redaction 정책·output schema·semantic validator·token budget 계획값·timeout이 spec과 모두 같은지 다시 검사한다. Prompt Builder가 만든 각 context projection도 registry의 slot·field·cardinality·trust class와 정확히 맞아야 한다. 이 equality는 요청 변조를 막는 검사이며 실제 token 사용량의 상한 검사가 아니다. `LLMInvocationLog`도 같은 action decision·spec·profile ref와 위 exact reference를 보존한다. 다른 action, 이전 state version, retry 또는 failover에 같은 decision을 재사용하지 않는다.
+
+Dynamic Reproduction Agent의 `DERIVE_ENVIRONMENT | PLAN_REPRODUCTION | CREATE_POC_CANDIDATE | INTERPRET_ATTEMPT`는 provider 내장 tool이 없는 일반 구조화 호출이다. 외부 경계 허용 뒤의 `EXECUTE_REPRODUCTION`만 `tools.dynamic-reproduction-inner.v1`을 사용하며 이 이름은 provider client에 host command/file/web tool을 켠다는 뜻이 아니다. 모델은 `DynamicReproductionToolRequest`를 반환하고 SASTSIMI Runtime이 exact work·attempt·environment를 검사해 in-container 통로로 실행한다. 각 turn의 호출 log, exact tool request, `SandboxCommandRecord`와 AgentLog event를 연결하고 실행 결과는 다음 turn의 비신뢰 입력으로만 전달한다.
 
 저장소 텍스트나 LLM output이 provider·model·session mode·fallback·budget을 바꾸라고 요구해도 configuration 변경으로 해석하지 않는다. 요청된 값이 versioned provider policy와 다르면 `PROVIDER_PROFILE_DENIED` 또는 `UNTRUSTED_INSTRUCTION`으로 호출하지 않는다.
 
@@ -126,6 +128,8 @@ API 방식이 허용되어도 특정 provider를 기본값으로 확정하는 �
 |---|---|
 | 같은 역할·같은 가설의 추가 retrieval | `RESUME` 가능 |
 | 같은 Verification의 Technical Gate revision 대응 | `RESUME` 가능 |
+| 같은 `DYNAMIC_REPRO` work·attempt의 `EXECUTE_REPRODUCTION` 첫 turn | `NEW` |
+| 같은 `DYNAMIC_REPRO` work·attempt의 `EXECUTE_REPRODUCTION` 후속 turn | `RESUME` |
 | 서로 다른 hypothesis | `NEW` |
 | Pro와 Con | `AUTO` 사용 금지, 각각 명시적 `NEW` |
 | Verification과 Technical Gate | `NEW` |
@@ -134,6 +138,8 @@ API 방식이 허용되어도 특정 provider를 기본값으로 확정하는 �
 | Gate와 Reporter | `NEW` |
 
 정책은 설정 가능하며 실제 결정, 이유, parent session reference를 기록한다. session reuse는 반복 context token을 줄일 수 있지만 confirmation bias와 prompt contamination을 키울 수 있으므로 품질·비용 평가 없이 광범위하게 적용하지 않는다.
+
+`EXECUTE_REPRODUCTION`의 AUTO는 위 두 행으로만 결정한다. 첫 turn은 `parent_session_ref=null`인 새 session이고, 후속 turn은 같은 work·attempt에서 바로 앞 성공 turn의 exact `session_ref`만 이어 쓴다. 새 attempt·다른 work·다른 가설 또는 session 재시작은 다시 `NEW`다. 이 규칙은 Dynamic Reproduction의 명령·관찰 반복을 잇기 위한 것이며 다른 Agent의 session 재사용 권한을 넓히지 않는다.
 
 Pro/Con 독립성은 설정으로 완화할 수 없는 예외다. 두 역할의 `CALL_LLM` action은 `requested_by`, call spec role과 일치해야 하고 action `session_mode=NEW`, spec `session_policy=NEW`, `parent_session_ref=null`이어야 `SESSION` check를 통과한다. 두 호출은 서로 다른 `llm_call_id`와 실제 `session_ref`, 각자의 action·decision을 사용한다. provider가 session ID를 노출하지 않아도 adapter가 호출별로 서로 다른 불투명 local `session_ref`를 만든다. retry·repair·failover도 같은 역할의 새 `NEW` session으로 만들고 상대 역할의 session·output·decision을 predecessor, parent 또는 context로 사용하지 않는다.
 
@@ -155,8 +161,9 @@ Pro/Con prompt는 trusted prompt builder가 역할별 template과 허용된 공�
 Logging Proxy는 다음만 기록한다.
 
 - exposed request/response artifact reference
-- provider/model/role/session metadata
-- 실제 전달된 context와 retrieved code locations
+- provider/model/role/task/session metadata
+- 실제 사용한 prompt registry/template/payload와 model·limits·retry·tool·redaction·schema·validator exact reference
+- 실제 전달된 source/projected context와 retrieved code locations
 - exposed tool-call trace
 - parsed output exact reference, schema error와 repair attempt
 - status, 공개 usage, elapsed, retry/failover relation

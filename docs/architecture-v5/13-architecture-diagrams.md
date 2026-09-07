@@ -44,11 +44,11 @@ flowchart TB
     S07 --> S08[8 Runtime stores ACTIVE VerificationAssignment]
     S08 --> S09[9 Verification requests on-demand context]
     S09 --> S10[10 Production Verification runs independent Pro and Con]
-    S10 --> S11[11 Initial TRUE FALSE HOLD]
+    S10 --> S11[11 ASSESS_INITIAL chooses next path]
     S11 --> S12{12 Dynamic work required}
-    S12 -->|Complete static and debate FALSE or HOLD| S13[13 Final verdict and material claim split]
-    S12 -->|Initial TRUE| DREQ[Verification requests POC_CONFIRMATION]
-    S12 -->|Execution evidence needed| DREQ2[Verification requests VERDICT_EVIDENCE]
+    S12 -->|FINALIZE_WITHOUT_DYNAMIC| S13[13 Final FALSE or HOLD and material claim split]
+    S12 -->|POC_CONFIRMATION| DREQ[Verification requests POC_CONFIRMATION]
+    S12 -->|VERDICT_EVIDENCE| DREQ2[Verification requests VERDICT_EVIDENCE]
     DREQ --> DWAUTH[Runtime allows one dynamic work per generation]
     DREQ2 --> DWAUTH
     DWAUTH --> DR7[Dynamic Reproduction Agent creates Requirements and simple Plan]
@@ -58,9 +58,10 @@ flowchart TB
     DCTRL --> DPD[Exact SandboxPolicyDecision]
     DPD -->|Pass| DENV[Setup Automation builds recipe and prepares clean environment]
     DPD -->|Sandbox boundary denied| DSTOP[Attempt cannot complete no verdict]
-    DENV --> DRUN[Dynamic Reproduction Agent autonomously creates and runs PoC in Sandbox]
+    DENV --> DRUN[Dynamic Reproduction Agent creates PoC and emits structured Sandbox turns]
     DRUN --> DLOG[Session Manager appends actual events to AgentLog]
-    DLOG --> DASM[Session Manager binds same-attempt recipe environment candidate and evidence]
+    DLOG --> DCONC[Dynamic Reproduction Agent writes conclusion from stored observations]
+    DCONC --> DASM[Session Manager checks conclusion and same-attempt provenance]
     DASM --> DRES[Dynamic result and validated PoC only on supported success]
     DRES --> DOUT{Observed outcome}
     DOUT -->|SUPPORTED| POCOK{Validated PoC and supported result}
@@ -69,7 +70,7 @@ flowchart TB
     DOUT -->|DISPROVED or INCONCLUSIVE| S13
     DOUT -->|Execution failure| DSTOP
     DSTOP -->|Same Dynamic Reproduction Agent session: adjust command PoC environment; current attempt| DADJUST[Continue current attempt]
-    DADJUST --> DR7
+    DADJUST --> DRUN
     DSTOP -->|Session restart: new attempt trigger=RETRY| DRETRY[Restart same work with new attempt]
     DRETRY --> DR7
     DSTOP -->|External condition| DWAIT[BLOCKED until profile input or resource change]
@@ -196,11 +197,11 @@ flowchart TB
     CON --> SYN
     BASIC --> SYN
     BASIC -. no Gate Primitive or Reporter .-> METRICS[Evaluation metrics only]
-    SYN --> INITIAL[Initial TRUE FALSE HOLD]
+    SYN --> INITIAL[ASSESS_INITIAL chooses next path]
     INITIAL --> DYN{Dynamic work required}
-    DYN -->|Complete static and debate FALSE or HOLD| FINAL[Final VerificationResult]
-    DYN -->|Initial TRUE| CREQ[R6 request POC_CONFIRMATION]
-    DYN -->|Execution evidence needed| VREQ[R6 request VERDICT_EVIDENCE]
+    DYN -->|FINALIZE_WITHOUT_DYNAMIC| FINAL[Final FALSE or HOLD VerificationResult]
+    DYN -->|POC_CONFIRMATION| CREQ[R6 request POC_CONFIRMATION]
+    DYN -->|VERDICT_EVIDENCE| VREQ[R6 request VERDICT_EVIDENCE]
     CREQ --> ONE[Runtime allows one work per Verification generation]
     VREQ --> ONE
     ONE --> R7PLAN[Dynamic Reproduction Agent creates Requirements and simple Plan]
@@ -210,9 +211,10 @@ flowchart TB
     CTRL --> PDEC[Exact SandboxPolicyDecision]
     PDEC -->|Pass| ENV[Setup Automation builds recipe and prepares clean environment]
     PDEC -->|Sandbox boundary denied| FAIL[Attempt cannot complete no final verdict]
-    ENV --> AGENT[Dynamic Reproduction Agent autonomously creates and runs PoC]
+    ENV --> AGENT[Dynamic Reproduction Agent creates PoC and emits structured Sandbox turns]
     AGENT --> LOG[Session Manager appends AgentLog events]
-    LOG --> ASSEMBLER[Session Manager validates same-attempt provenance]
+    LOG --> CONCLUSION[Dynamic Reproduction Agent writes conclusion from stored observations]
+    CONCLUSION --> ASSEMBLER[Session Manager checks conclusion and same-attempt provenance]
     ASSEMBLER --> DRESULT[Dynamic result with candidate evidence and nullable validated PoC]
     DRESULT --> OBS{Observed outcome}
     OBS -->|SUPPORTED with validated PoC| SYN2[Verification re-synthesizes evidence]
@@ -220,7 +222,7 @@ flowchart TB
     OBS -->|DISPROVED or INCONCLUSIVE| SYN2
     OBS -->|Execution failure| FAIL
     FAIL -->|Same Dynamic Reproduction Agent session: adjust command PoC environment; current attempt| ADJUST[Continue current attempt]
-    ADJUST --> R7PLAN
+    ADJUST --> AGENT
     FAIL -->|Session restart: new attempt trigger=RETRY| R7RETRY[Restart same work with new attempt]
     R7RETRY --> R7PLAN
     FAIL -->|External condition| WAIT[BLOCKED until condition changes]

@@ -187,6 +187,8 @@ work/output 표에는 `CodeWorkspace`, `ToolRunResult`, schema-valid `Hypothesis
 
 Orchestration Runtime은 비-LLM 전역 제어 구성요소로 확정했다. Runtime은 work·attempt·ID 생성, schema-valid proposal 등록 요청, Verification 배정 요청과 전체 상태 관측만 담당한다. 취약점 가설 생성은 `Hypothesis Agent`, 가설별 다음 작업과 verdict는 `Verification Agent`가 담당한다. 모든 등록·배정·상태 변경은 Runtime Validator와 state store가 최종 강제한다.
 
+- 해결 내용: R3-05 #91은 별도 Orchestration prompt를 두지 않고, Hypothesis Agent가 proposal과 중복 결론을 만들며 Orchestration runtime은 등록·배정·상태·권한 enforcement만 수행하도록 고정했다.
+- 유지 조건: R3-06 #92의 구현 기준선과 실제 module wiring도 이 분리를 그대로 따라야 한다.
 - LLM entry point 없음: Orchestration Runtime에는 prompt, provider 설정과 `LLMCallSpec.agent_role`을 배정하지 않는다.
 - 근거: 공통 `LLMCallSpec.agent_role`에는 `ORCHESTRATION`이 없고 R3-05 prompt registry에도 Orchestration prompt를 두지 않는다.
 - 완료: 번호 문서·Wiki·Mermaid·구현 지도의 명칭과 권한 경계를 같은 의미로 통일했다.
@@ -203,7 +205,7 @@ Orchestration Runtime은 비-LLM 전역 제어 구성요소로 확정했다. Run
 - R8 책임: 분석 전체와 Docker baseline branch의 시간·비용·work·retry 예산, 실제 disk·network 사용량과 cache `HIT | MISS | PREPARED | FAILED | SKIPPED` 지표 확정. disk·network 허용 상한은 R7 소유이며 측정 불가 사용량은 추정하지 않음
 - 완료 기준: 가설 전 Docker 동작이 Runtime Validator와 Sandbox 외부 경계를 우회하지 않고, Step 12의 attempt-local recipe·환경·로그·PoC와 혼동되지 않으며, 분석 전체 120분과 전체 비용·work 예산 안에서만 실행됨. 예산 부족이면 낮은 우선순위 baseline을 건너뛰거나 중단하고, 실패·중단·건너뜀만으로 static·policy·verdict 또는 분석 상태를 바꾸지 않는 자동 검증이 존재함. B5의 별도 exact 예산 설정 reference는 가설별 `DynamicReproductionLifecycleProfile`을 재사용하지 않음
 
-B3·B5 Blocker는 R3-06 최종 구현 기준을 닫기 전에 해결해야 한다. 해결 전에도 R3-02·R3-03의 테스트 설계는 시작할 수 있지만 실제 production pipeline 구현 완료를 선언할 수 없다. B4는 비-LLM Orchestration Runtime으로 확정되어 더 이상 구현 차단 사항이 아니다.
+B1과 B4는 R3-05에서 해결했고, B2는 이 문서에 기록된 R5·R4 결정으로 완료됐다. B3·B5 Blocker는 R3-06 최종 구현 기준을 닫기 전에 해결해야 한다. 해결 전에도 R3-02·R3-03의 테스트 설계는 시작할 수 있지만 실제 production pipeline 구현 완료를 선언할 수 없다.
 
 ## 8. 역할별 필수 검토 범위
 
