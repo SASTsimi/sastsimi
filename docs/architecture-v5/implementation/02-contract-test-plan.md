@@ -9,7 +9,7 @@
 - R3 역할 담당: 윤희섭 (@YHS-Sec, 표시 닉네임 @v1sion).
 - 공통 아키텍처 검토·대행 수행: 김태현 (@taehyeon-git). 다른 담당자가 작성한 PR을 R3 본인의 구현 실적으로 표시하지 않는다.
 - 상위 [#4](https://github.com/SASTsimi/sastsimi/issues/4), 본 작업 [#25](https://github.com/SASTsimi/sastsimi/issues/25), 선행 [#24](https://github.com/SASTsimi/sastsimi/issues/24), 후속 [#89](https://github.com/SASTsimi/sastsimi/issues/89)·[#92](https://github.com/SASTsimi/sastsimi/issues/92).
-- 작성·대조 기준 main: `64062aec3f9ea190df93d2e5eb240c036371cd65` (2026-09-07 조회).
+- 작성·대조 기준 main: `6122567c7203c5fb601d795db9a8bc0ee1606aeb` (2026-09-07 조회).
 - 선행 정본: [01-module-map.md](01-module-map.md). 현재 파이프라인은 **22단계**다. 옛 23단계 댓글을 그대로 구현하지 않는다.
 - [#25 작성 범위 댓글](https://github.com/SASTsimi/sastsimi/issues/25#issuecomment-5556392596)을 문서화하며, 이전 `db1ec85` 댓글의 OK/BAD 이력은 §7에서 연결한다.
 - main 이후 변경이나 미병합 PR을 확정 계약으로 취급하지 않는다. 아래 PR 묶음에서는 #96으로 병합된 Provider 계약과 아직 미병합인 #97 Prompt 제안을 구분한다.
@@ -42,6 +42,7 @@ R3는 입력·검사·예상 결과를 구체화한다. 새로운 schema·enum·
 | [#60](https://github.com/SASTsimi/sastsimi/pull/60) | token 계획값을 사용량 중단 상한으로 쓰지 않음; R7 입장 정책과 R8 lifecycle 분리 |
 | [#113](https://github.com/SASTsimi/sastsimi/pull/113) | Dynamic Reproduction Agent 명칭, program policy의 감사 전용 연결, SandboxProfile 외부 경계와 새 generation 규칙 |
 | [#96](https://github.com/SASTsimi/sastsimi/pull/96) | ProviderProfile·CapabilityTestResult·API/공식 구독 인증 경로·runtime tool-loop 지원 판정 계약 |
+| [main@6122567](https://github.com/SASTsimi/sastsimi/commit/6122567c7203c5fb601d795db9a8bc0ee1606aeb) | `Orchestration Runtime`을 비-LLM 구성요소로 확정하고 Hypothesis Agent·Verification Agent와 권한 분리 |
 
 ADR의 자체 승인 상태와 PR 병합 여부는 별개다. 예를 들어 #105 관련 ADR-012의 PROPOSED 표기를 본 문서가 ACCEPTED로 바꾸지 않는다.
 
@@ -513,13 +514,13 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **12. 실행 계층**: contract / integration
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R1·R4·R6. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
 
-#### R3-CT-HYP-004 — 무효 proposal과 Orchestration 판정 금지
+#### R3-CT-HYP-004 — 무효 proposal과 Orchestration Runtime 판정 금지
 
-- **1. ID·유형·설명**: R3-CT-HYP-004 / 부정 / 무효 proposal과 Orchestration 판정 금지
+- **1. ID·유형·설명**: R3-CT-HYP-004 / 부정 / 무효 proposal과 Orchestration Runtime 판정 금지
 - **2. 단계·계약 경계**: 5–8, 20; 가설 등록·배정
 - **3. producer → consumer**: Hypothesis/Verification/Chaining proposal producer → Proposal Validator·Hypothesis Registry·Assignment Runtime
 - **4. 선행 상태·exact refs**: F-HYP(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
-- **5. 정상/잘못된 fixture**: 필수 반증 질문/근거 누락 output, 허용되지 않은 origin, Orchestration이 final TRUE 저장을 각각 시도한다.
+- **5. 정상/잘못된 fixture**: 필수 반증 질문/근거 누락 output, 허용되지 않은 origin, 비-LLM Orchestration Runtime이 final TRUE 저장을 각각 시도한다.
 - **6. 검사 주체**: schema/semantic validator + trusted Registry·Assignment Runtime; 의미 중복 판단은 해당 LLM 역할
 - **7. 허용·차단·격리 기대**: schema/semantic/authority 검사로 거절; 순서 조정 모듈이 전문 판정을 대신하지 않음.
 - **8. work·attempt·가설 기대**: 해당 proposal 처리 실패/거절; 기존 가설 영향 없음; 새 final verdict 없음.
@@ -797,10 +798,10 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-VER-008 / 정상·부정 / 운영 목적의 Debate mode 강제
 - **2. 단계·계약 경계**: 1, 5, 8, 10; AnalysisRunState purpose·Verification 등록·Debate preflight
-- **3. producer → consumer**: Analysis Entry의 고정 purpose·versioned Debate 설정 → Orchestration / Verification Runtime
+- **3. producer → consumer**: Analysis Entry의 고정 purpose·versioned Debate 설정 → Orchestration Runtime / Verification Runtime
 - **4. 선행 상태·exact refs**: F-VER(§2.3)의 정상 `purpose=PRODUCTION`, DP1과 exact run/work/application refs. 각 변형은 mode만 바꾸고 다른 입력은 고정한다.
 - **5. 정상/잘못된 fixture**: A는 `PRODUCTION + ALWAYS_DEBATE`; B는 `PRODUCTION + BASIC`; C는 `PRODUCTION + CONDITIONAL_DEBATE`. B/C가 평가에서 가능하다는 이유로 운영 run에 사용되는지 검사한다.
-- **6. 검사 주체**: Analysis Entry + Orchestration / Runtime Validator의 purpose·mode preflight; R6는 mode 허용 규칙의 의미 검토
+- **6. 검사 주체**: Analysis Entry + Orchestration Runtime / Runtime Validator의 purpose·mode preflight; R6는 mode 허용 규칙의 의미 검토
 - **7. 허용·차단·격리 기대**: A만 Analysis/Verification 등록과 두 child 준비 허용. B/C는 Provider 호출 전에 분석 또는 Verification 등록을 차단하며 `ALWAYS_DEBATE`로 조용히 바꿔 계속하지 않는다.
 - **8. work·attempt·가설 기대**: A는 정상 Verification 진행. B/C에는 유효 Verification child work·attempt·final result를 만들지 않고 기존 가설 verdict를 변경하지 않는다.
 - **9. 오류·DataGap 기대**: purpose·mode 계약 위반. exact 오류·상태 매핑은 Q-02이며 `FALSE | HOLD` 근거가 아니다.
@@ -813,10 +814,10 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-VER-009 / 부정 / 운영 ALWAYS_DEBATE 실행 완전성과 예산 부족
 - **2. 단계·계약 경계**: 8, 10, 13; Debate preflight·두 child 실행·final 합성
-- **3. producer → consumer**: Orchestration / PRO·CON child work → Verification join·final 저장
+- **3. producer → consumer**: Verification owner의 요청 → PRO·CON child work → Debate Join Runtime → Verification final 저장
 - **4. 선행 상태·exact refs**: F-VER(§2.3)의 운영 `ALWAYS_DEBATE`; 정상은 두 최초 호출을 시작할 권한·시간·비용·호출/work 예산이 있고 triggers는 `[]`, skip reason은 `null`이다.
 - **5. 정상/잘못된 fixture**: A는 Pro와 Con 모두 실행·합류. B는 Pro만 실행, C는 Con만 실행, D는 Pro/Con 시작 전 실제 비-token 예산 부족인데 한쪽 또는 둘 다 생략하고 final 후보를 제출한다. 별도 변형으로 `debate_triggers`를 채우거나 skip reason을 기록한다.
-- **6. 검사 주체**: R8 budget preflight + Orchestration child 등록 + Runtime Validator exact join + R6 semantic validator
+- **6. 검사 주체**: R8 budget preflight + Verification owner의 child 등록 요청 + Runtime Validator·Debate Join Runtime exact join + R6 semantic validator
 - **7. 허용·차단·격리 기대**: A만 final 합성 진행. B/C는 누락 child 때문에 저장 차단. D는 어느 child도 시작하지 않고 현재 Verification을 실제 예산 상태로 중단한다. mode를 BASIC으로 낮추거나 단독 결과로 계속하지 않는다.
 - **8. work·attempt·가설 기대**: B/C는 누락 child 복구 가능성에 따라 부모 BLOCKED 또는 실패 전파 계약을 적용하고 hypothesis는 임의 TERMINAL이 되지 않는다. D는 `BUDGET_EXCEEDED`, final result 없음. 새 예산 승인 시 새 work 규칙을 따른다.
 - **9. 오류·DataGap 기대**: D는 `BUDGET_EXCEEDED`; B/C 및 mode 기록 모순의 exact 오류는 Q-02. token 계획 초과·usage 미제공만으로 D를 만들지 않는다.
@@ -845,10 +846,10 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-VER-011 / 정상·부정 / 평가 CONDITIONAL_DEBATE·BASIC 기록 정합성
 - **2. 단계·계약 경계**: 8, 10, 13; EVALUATION Debate 정책·Pro/Con 실행·VerificationResult 기록
-- **3. producer → consumer**: versioned Debate trigger 평가 → Orchestration / PRO·CON → VerificationResult 저장 검사
+- **3. producer → consumer**: versioned Debate trigger 평가 → PRO·CON child work → Debate Join Runtime → VerificationResult 저장 검사
 - **4. 선행 상태·exact refs**: `purpose=EVALUATION`, exact DP-EVAL1과 eval_config_refs를 고정한다. trigger code는 승인된 설정에 있는 값만 사용하며 중복 없이 기록한다.
 - **5. 정상/잘못된 fixture**: 정상 A는 CONDITIONAL+trigger 충족+두 Agent 실행+충족 code+skip null, 정상 B는 CONDITIONAL+trigger 없음+미실행+`[]`+`NO_TRIGGER_MATCH`, 정상 C는 BASIC+미실행+`[]`+`MODE_BASIC`. 부정 변형은 trigger가 있는데 생략, trigger가 없는데 실행, 실행하면서 skip reason 기록, 생략하면서 skip reason null, BASIC에서 호출 또는 임의 trigger 기록이다.
-- **6. 검사 주체**: trusted trigger evaluator + Orchestration 호출 spy + Runtime Validator + R6 semantic validator
+- **6. 검사 주체**: trusted trigger evaluator + PRO·CON 호출 spy + Runtime Validator·Debate Join Runtime + R6 semantic validator
 - **7. 허용·차단·격리 기대**: A~C의 정확한 조합만 평가 결과 저장 허용. 부정 변형은 Provider 호출 전 또는 결과 저장 전에 차단하며 Runtime이 trigger/skip reason을 추정 보정하지 않는다.
 - **8. work·attempt·가설 기대**: A는 두 child 성공 뒤 평가 합성, B/C는 child work 없이 평가 Verification만 정상 완료 가능. 부정 변형은 current 평가 result로 연결하지 않는다.
 - **9. 오류·DataGap 기대**: mode·trigger·skip 기록 semantic 위반. exact 오류는 Q-02이며 운영 FALSE/HOLD와 무관하다.
@@ -1673,7 +1674,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 | Q-01 | module map B3: CodeWorkspace/ToolRunResult/HypothesisProposal/AnalysisRunResult 저장 연결 공백. #97은 INITIAL proposal 저장 제안을 추가했으나 main 미반영 | 새 result-kind registry인지 기존 전용 저장 경계인지, 유일 producer·정확한 저장 action·단일 output·current pointer·원자 경계 확정. VERIFICATION/CHAINING nested child proposal의 독립 record 등록도 별도 확인 | R4 @taehyeon-git, R2/R1/R8. STA-001/HYP-001/REP-001 및 #89/#92 물리 저장 기대값 확정 전 필요. [이미 남긴 질문](https://github.com/SASTsimi/sastsimi/issues/92#issuecomment-5556395217)에 연결 |
 | Q-02 | 공통 문서의 확인 가능한 오류는 사용했지만 각 schema 필드/권한/reference 거절이 어떤 exact code·ActionCheck·상태 전파를 쓰는지 case별 매핑은 불완전 | 기존 오류 재사용과 전용 오류 필요 여부를 R4가 결정. 검사 실패와 실제 work 실행 실패를 분리하고 error stage/retryable/related refs를 확정 | R4+해당 owner. 본문에서 Q-02로 표시한 case의 실행 가능한 assertion 작성 전 해결; 문서 초안은 진행 가능 |
 | Q-03 | deterministic JSON+SHA-256은 #92 제안; executable schema version/fixture bytes는 아직 없음 | Unicode/숫자/null/시간/key 순서·hash 대상 bytes·동일 값 직렬화 fixture를 승인. 단순 key 정렬만으로 모든 runtime 동일 hash를 가정하지 않음 | R4·R3·R8. 실제 schema registry·정상 fixture 및 content hash 기대값 확정 전 필요 |
-| Q-04 | #96 Provider role/spec/profile/action 경계는 merge commit `64062ae`로 main에 반영됐다. B4 Prompt Registry·Builder와 일부 Orchestration 표현은 #97 제안에 의존 | main Provider 계약과 #97 Prompt 제안을 분리해 대조한다. 실제 profile 발급에는 provider 지원 시험이 필요하며 특정 모델/구독 경로를 실제 사용 가능하다고 단정하지 않음 | R4·R3·R7·R8, 전문 prompt owner. main Provider case는 계획으로 활성화하고 #97 전용 case는 병합 SHA에서 재대조 |
+| Q-04 | #96 Provider role/spec/profile/action 경계는 merge commit `64062ae`로, 비-LLM Orchestration Runtime 경계는 main `6122567`로 반영됐다. Prompt Registry·Builder 세부 구조는 #97 제안에 의존 | main의 Provider·Orchestration Runtime 계약과 #97 Prompt 제안을 분리해 대조한다. 실제 profile 발급에는 provider 지원 시험이 필요하며 특정 모델/구독 경로를 실제 사용 가능하다고 단정하지 않음 | R4·R3·R7·R8, 전문 prompt owner. main Provider·Orchestration case는 계획으로 활성화하고 #97 전용 case는 병합 SHA에서 재대조 |
 | Q-05 | #97@`a9fd2e1`은 최초 Chaining의 빈 조상 결과 집합에 `lineage_results=OPTIONAL_MANY`를 적용하고 cardinality 최소 개수와 exact closure 검사를 추가함 | PR-003의 빈 집합 허용, PR-004의 필요한 실제 조상 누락·관계없는 결과 추가 차단을 함께 유지. 아직 main 미병합이므로 병합 SHA에서 재대조 | R1 @baeseungwon1010·R4 @taehyeon-git. [수정 요청](https://github.com/SASTsimi/sastsimi/pull/97#issuecomment-5556385502)은 제안 문서상 보완됐고 main 활성화 확인만 남음 |
 | Q-06 | #96은 `64062ae`로 main에 반영됐고 #97@`a9fd2e1`은 열려 있음 | #97을 최신 main에 동기화할 때 main Provider 계약과 양쪽 validator 규칙·출력을 함께 보존해 다시 실행. 문서 검사만으로 runtime 동작을 보증하지 않음 | #97 작성자·R3. 실제 #97 병합 SHA를 통합 Provider/Prompt 시험 기준으로 기록할 때 완료 |
 
