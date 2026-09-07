@@ -227,7 +227,7 @@ Claude Agent SDK는 이번 네 adapter 범위에서 제외한다. Agent SDK는 M
 
 Issue에서 요구한 `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`는 OpenAI 경로의 접근 확인 후보로 사용한다. 이름이 문서나 설정에 있다는 사실만으로 접근 가능하다고 표시하지 않고, 실제 계정·client·환경별 probe에 성공한 model ID만 route로 등록한다. Claude 모델도 같은 방식으로 실제 접근 결과 뒤에 exact model ID를 등록한다.
 
-첫 구현의 **제안 기본값**은 `openai.responses.api-key.v1`이다. 이는 최종 승인이나 성능 우위를 뜻하지 않는다. 네 경로의 smoke test와 R4 계약 검토, R8 품질·비용 평가가 끝난 뒤 #92에서 실제 기본 profile revision과 지원 상태를 확정한다.
+첫 구현의 **제안 기본값**은 `openai.responses.api-key.v1`이다. 이는 최종 승인이나 성능 우위를 뜻하지 않는다. 네 경로의 smoke test와 R4 계약 구현 검증, R8 품질·비용 평가가 끝난 뒤 **구현 단계의 별도 Issue·PR**에서 실제 기본 profile revision과 지원 상태를 확정한다. 그 증거가 통과하기 전에는 운영용 `SUPPORTED` 또는 `ACTIVE`로 전환하지 않는다.
 
 ## 6. 모델 변경과 Provider 전환
 

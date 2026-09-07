@@ -318,7 +318,8 @@ $obsoleteFinalReviewPhrases = @(
     '역할별 검토는 아직 남아',
     '이 PR을 만들었다는 이유로 #89나 상위 #4를 바로 닫지 않는다',
     '이 문서만으로 #90을 닫지 않는다',
-    '이 문서 작성만으로 #91을 닫지 않는다'
+    '이 문서 작성만으로 #91을 닫지 않는다',
+    '#92에서 실제 기본 profile revision과 지원 상태를 확정'
 )
 foreach ($file in $approvedStatusFiles | Select-Object -Unique) {
     $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
