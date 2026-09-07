@@ -1243,6 +1243,36 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
     )) {
         if (-not $promptRuntimeText.Contains($requiredRule)) { Add-Failure "R3-05 RULE_SCOPE_GATE run policy binding is missing: $requiredRule" }
     }
+
+    $cweLabelingTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| CWE_LABELING / `CLASSIFY` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('verification: VerificationResult($)', 'pro: EvidenceAgentResult(role=PRO', 'con: EvidenceAgentResult(role=CON', 'facts: StaticFactBundle($)', 'contexts: CodeContextResponse($)` OPTIONAL_MANY', 'dynamic_request: DynamicReproductionRequest($)', 'dynamic: DynamicReproductionResult($)', 'poc: PoCBundle($)', 'taxonomy: cwe_taxonomy($)')) {
+        if (-not $cweLabelingTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 CWE_LABELING row is missing current evidence input: $requiredInput" }
+    }
+
+    $technicalGateTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| TECHNICAL_GATE / `REVIEW` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('hypothesis: VulnerabilityHypothesis($)', 'verification: VerificationResult($)', 'cwe: CWELabel($)', 'pro: EvidenceAgentResult(role=PRO', 'con: EvidenceAgentResult(role=CON', 'facts: StaticFactBundle($)', 'contexts: CodeContextResponse($)` OPTIONAL_MANY', 'dynamic_request: DynamicReproductionRequest($)', 'dynamic: DynamicReproductionResult($)', 'poc: PoCBundle($)', 'sandbox_policy: SandboxPolicyDecision($)', 'environment_recipe: EnvironmentRecipe($)', 'environment: SandboxEnvironment($)', 'agent_log: AgentLog($)')) {
+        if (-not $technicalGateTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 TECHNICAL_GATE row is missing exact evidence input: $requiredInput" }
+    }
+    if ($technicalGateTaskRow.Contains('exact transitive evidence refs')) {
+        Add-Failure 'R3-05 TECHNICAL_GATE row still uses a non-executable evidence shorthand'
+    }
+
+    foreach ($requiredInput in @('hypothesis: VulnerabilityHypothesis($)', 'pro: EvidenceAgentResult(role=PRO', 'con: EvidenceAgentResult(role=CON', 'facts: StaticFactBundle($)', 'contexts: CodeContextResponse($)` OPTIONAL_MANY', 'dynamic_request: DynamicReproductionRequest($)', 'dynamic: DynamicReproductionResult($)', 'poc: PoCBundle($)', 'sandbox_policy: SandboxPolicyDecision($)', 'environment_recipe: EnvironmentRecipe($)', 'environment: SandboxEnvironment($)', 'agent_log: AgentLog($)', 'official_sources: official_policy_source($)` REQUIRED_MANY')) {
+        if (-not $ruleScopeTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 RULE_SCOPE_GATE row is missing evidence or official-source input: $requiredInput" }
+    }
+
+    $reporterTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| REPORTER / `CREATE_DRAFT` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('finding: Finding($)', 'verification: VerificationResult($)', 'technical: TechnicalEvidenceReview($)', 'scope: RuleScopeImpactReview($)', 'cwe: CWELabel($)', 'run_policy_state: RunPolicyState($)', 'collection: PolicyCollectionResult($)', 'policy: ProgramPolicyRecord($)', 'dynamic: DynamicReproductionResult($)', 'poc: PoCBundle($)', 'sandbox_policy: SandboxPolicyDecision($)', 'environment_recipe: EnvironmentRecipe($)', 'environment: SandboxEnvironment($)', 'agent_log: AgentLog($)')) {
+        if (-not $reporterTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 REPORTER row is missing exact report input: $requiredInput" }
+    }
+
+    foreach ($requiredRule in @(
+        'CWE Labeling·Technical Gate·Rule Scope Gate·Reporter의 네 task에서 사용하는 evidence slot은 current final TRUE `VerificationResult`가 가리키는 direct·transitive evidence closure와 set-equal해야 한다.',
+        '`official_sources`는 `PolicyCollectionResult.official_source_refs`와 set-equal해야 하며',
+        'Reporter의 `run_policy_state`, `collection`, `policy`는 Rule Scope review가 사용한 exact frozen chain과 같아야 한다.'
+    )) {
+        if (-not $promptRuntimeText.Contains($requiredRule)) { Add-Failure "R3-05 R5 prompt closure rule is missing: $requiredRule" }
+    }
     foreach ($cardinalityRule in @(
         '`REQUIRED_ONE`은 정확히 1개',
         '`OPTIONAL_ONE`은 0개 또는 1개',
@@ -3550,6 +3580,7 @@ Write-Output "Static layer Primitive admission rules: $($requiredStaticPrimitive
 Write-Output "R4 policy contract blocks: $($requiredPolicyContractFields.Count)"
 Write-Output "R4 policy contract rules: $($requiredPolicyContractRules.Count)"
 Write-Output 'R3-05 reviewed prompt contract rules: initial assessment, Chaining lineage, Dynamic Reproduction staged loop'
+Write-Output 'R3-05 R5 prompt closure rules: CWE Labeling, Technical Gate, Rule Scope Gate, Reporter'
 Write-Output "R6 program-policy boundary rules: $($requiredR6PolicyBoundaryRules.Count)"
 Write-Output "R6 POLICY_BLOCKED semantic rules: $($requiredR6PolicyBlockedSemantics.Count)"
 Write-Output "R3-01 run-init fan-out rules: $($requiredR301RunInitFanoutRules.Count)"
