@@ -1242,7 +1242,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **2. 단계·계약 경계**: 17, 19; Rule Scope semantic, evidence link와 missing information
 - **3. producer → consumer**: Policy Collector·Policy Parser·Technical ACCEPT → Rule Scope Impact Gate Agent → Primitive Admission/Reporter runtime
 - **4. 선행 상태·exact refs**: F-GAT(§2.3)의 current RPS1/COL1/POL1과 TG1. POL1의 각 PolicyItem은 공식 `source_ref + source_locator`를 가지며 RS1은 같은 exact policy/result revision만 사용한다.
-- **5. 정상/잘못된 fixture**: 정상은 PASS/FAIL/SUFFICIENT/INSUFFICIENT인 각 판단 영역에 같은 area의 유일한 `RuleScopeEvidenceLink`와 실제 policy item·evidence를 연결하고, UNCERTAIN 영역에는 대응 `PolicyMissingInfo`를 둔다. 부정 변형은 link 누락·중복, 존재하지 않는 policy_item_id, 빈 evidence, area 불일치, source_ref/source_locator 누락, parser output만 공식 근거로 사용, 원문과 parser 모순인데 PASS/ALLOW, UNCERTAIN인데 missing_information 없음, `blocks_allow=true`인데 ALLOW, reward_conditions만으로 ALLOW를 각각 시험한다.
+- **5. 정상/잘못된 fixture**: 정상은 PASS/FAIL/SUFFICIENT/INSUFFICIENT인 각 판단 영역에 같은 area의 `RuleScopeEvidenceLink`를 하나 이상 두고 실제 policy item·evidence를 연결하며, 각 `link_id`는 review 안에서 유일하게 유지한다. UNCERTAIN 영역에는 대응 `PolicyMissingInfo`를 하나 이상 둔다. 부정 변형은 필요한 area의 link 누락, 중복 `link_id`, 존재하지 않는 policy_item_id, 빈 evidence, area 불일치, source_ref/source_locator 누락, parser output만 공식 근거로 사용, 원문과 parser 모순인데 PASS/ALLOW, UNCERTAIN인데 missing_information 없음, `blocks_allow=true`인데 ALLOW, reward_conditions만으로 ALLOW를 각각 시험한다. 같은 area에 서로 다른 유효 link가 여러 개 있다는 이유만으로 거절하지 않는다.
 - **6. 검사 주체**: Runtime Validator의 ID·reference·area·revision 집합 검사 + R5 Rule Scope semantic validator
 - **7. 허용·차단·격리 기대**: 정확한 link/missing-information 조합만 저장한다. 공식 원문 확인 불가·parser 모순은 해당 영역 `UNCERTAIN`, `report_permission=DENY`, `PolicyMissingInfo(area=SOURCE, blocks_allow=true)`로 fail-closed한다. 이를 PASS/ALLOW로 위장한 output은 invalid다.
 - **8. work·attempt·가설 기대**: 유효 review work는 실제 결론과 무관하게 SUCCEEDED일 수 있고 hypothesis TRUE는 유지한다. invalid review는 current로 확정하지 않으며 Primitive admission·Finding·Reporter를 진행하지 않는다.
@@ -1257,8 +1257,8 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **1. ID·유형·설명**: R3-CT-GAT-011 / 정상·부정 / Finding normalization이 upstream 조건·근거·주장 강도를 보존
 - **2. 단계·계약 경계**: 19; Rule Scope COMMITTED → Finding normalization → current index
 - **3. producer → consumer**: Verification trusted runtime의 Finding normalization service → FindingIndexState·Reporter
-- **4. 선행 상태·exact refs**: F-GAT(§2.3)의 same-generation exact closure와 해당 가설의 expected revision을 가진 `FindingIndexState`. 정상 candidate FN1의 expected set은 final Verification의 evidence transitive closure와 restriction·limitation·unresolved-condition source/path 합집합이다.
-- **5. 정상/잘못된 fixture**: 정상은 `evidence_refs`와 `condition_sources`가 expected set과 중복 없이 set-equal하고 upstream claim 강도 이하인 Finding이다. 부정 변형은 condition 하나 삭제·완화, evidence 누락·추가·다른 generation 혼합, 실패한 PoC candidate나 미검증 child를 사실로 승격, upstream보다 강한 impact/exploitability 또는 새 공격 경로 생성이다.
+- **4. 선행 상태·exact refs**: F-GAT(§2.3)의 same-generation exact closure와 해당 가설의 expected revision을 가진 `FindingIndexState`. 정상 candidate FN1에는 final Verification의 evidence transitive closure인 `evidence_expected_set`과 restriction·limitation·unresolved condition의 exact source-ref/path tuple인 별도 `condition_expected_set`을 준비한다.
+- **5. 정상/잘못된 fixture**: 정상은 `evidence_refs`가 `evidence_expected_set`과, `condition_sources`가 `condition_expected_set`과 각각 중복 없이 set-equal하고 upstream claim 강도 이하인 Finding이다. 부정 변형은 condition 하나 삭제·완화, evidence 누락·추가·다른 generation 혼합, 실패한 PoC candidate나 미검증 child를 사실로 승격, upstream보다 강한 impact/exploitability 또는 새 공격 경로 생성이다.
 - **6. 검사 주체**: Finding normalization semantic validator + Runtime Validator의 exact closure·set-equality·current index CAS 검사
 - **7. 허용·차단·격리 기대**: 정상 Finding만 COMMITTED/current가 된다. 모든 부정 변형은 저장·current 승격을 차단하며 normalizer가 새 취약점 사실·공격 경로·영향을 만들지 않는다.
 - **8. work·attempt·가설 기대**: 정상 FINDING_NORMALIZE는 SUCCEEDED이고 hypothesis TRUE는 유지한다. 실패 normalization은 기존 Finding history를 보존하며 Reporter work를 성공시키지 않는다.
