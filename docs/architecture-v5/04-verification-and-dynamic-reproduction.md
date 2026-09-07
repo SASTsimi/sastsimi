@@ -253,7 +253,7 @@ TRUE의 필요 조건은 별도 HOLD Primitive로 만들지 않는다. admission
 
 Chaining 결과를 저장할 때는 work가 고정한 Primitive·index reference와 결과가 맞는지 확인한다. 고정하지 않은 reference가 섞이면 `STALE_RESULT`로 거절한다. admission은 Primitive 등록 시점의 1회 판정이므로 저장 시점에 다시 확인하지 않으며, 기존 부모 `VerificationResult.verdict`도 변경하지 않는다.
 
-새 Verification generation이 만들어지면 이전 dynamic result·validated PoC·`CWELabel`·Technical review를 새 generation에 재사용하지 않는다. 기존 record는 감사 이력으로 보존하되 새 Gate 입력으로 쓰지 않는다. 새 generation은 Technical `REVISE`에서만 만들어지고 그 시점에는 Rule Scope review·admission decision·result Primitive가 아직 없으므로, 이미 등록된 Primitive를 되돌리는 경우는 생기지 않는다. child proposal이나 Chaining 결과도 부모 `VerificationResult.verdict`를 변경하지 않는다.
+새 Verification generation이 만들어지면 이전 dynamic result·validated PoC·`CWELabel`·Technical review를 새 generation에 재사용하지 않는다. 기존 record는 감사 이력으로 보존하되 새 Gate 입력으로 쓰지 않는다. 새 generation은 검증 중 exact 동적 입력을 교체하는 `DYNAMIC_INPUT_CHANGED` 또는 Technical `REVISE`에서 만들 수 있다. 두 경로 모두 Technical `ACCEPT`와 Rule Scope review·admission decision·result Primitive 등록 전에만 허용되므로 이미 등록된 Primitive를 되돌리는 경우는 생기지 않는다. child proposal이나 Chaining 결과도 부모 `VerificationResult.verdict`를 변경하지 않는다.
 
 ### Initial verdict와 final verdict
 

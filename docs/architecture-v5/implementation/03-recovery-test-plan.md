@@ -409,11 +409,11 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 #### R3-REC-WRK-008 — 예산 reservation·commit·release 중 종료
 
 - **1. ID·단계·work**: R3-REC-WRK-008; 모든 외부 실행 직전·직후 / 해당 work·attempt. CT 연결: BUD-001/002/003/006.
-- **2. 중단 전 상태·current**: WORKSPACE_PREP 변형은 `AnalysisRunState.execution_budget_profile_ref`의 ACTIVE run-level profile, 그 뒤 변형은 ACTIVE `BudgetProfileBinding`과 exact work-kind limit, committed ledger 합계와 active reservation 집합을 고정한다. 새 action은 아직 미claim 또는 reservation을 가진 상태다.
+- **2. 중단 전 상태·current**: WORKSPACE_PREP 변형은 `AnalysisRunState.execution_budget_profile_ref`의 ACTIVE run-level profile, 그 뒤 변형은 같은 `analysis_id`의 ACTIVE `BudgetProfileBinding`과 exact work-kind limit, committed ledger 합계와 active reservation 집합을 고정한다. 같은 purpose의 다른 analysis에는 별도 execution profile·binding·ledger를 두며 새 action은 아직 미claim 또는 자기 analysis의 reservation을 가진 상태다.
 - **3. work·attempt·generation·input**: 같은 analysis/action/work/attempt와 exact reservation_id, profile refs, reserved units, 실제 usage evidence를 연결한다.
 - **4. 저장된 record·artifact·marker**: `BudgetReservation(RESERVED | COMMITTED | RELEASED)`, 선택적 `BudgetLedgerEntry`, action claim/side-effect/usage marker를 지점별로 남긴다.
 - **5. 정확한 장애 주입 지점**: A reservation 전, B RESERVED 저장 뒤 action claim 전, C 외부 side effect 뒤 usage 저장 전, D ledger 저장과 COMMITTED 전이 사이, E 실행 전 거절 뒤 RELEASED 전, F commit/release 직후 응답 전 종료한다.
-- **6. 재시작 검사 조건**: reservation 상태, ledger unique key, action claim/attempt 상태, durable side-effect·usage evidence, WORKSPACE_PREP의 run-level execution profile 또는 후속 work의 full binding·exact work-kind limit과 remaining 계산을 확인한다.
+- **6. 재시작 검사 조건**: reservation 상태, ledger unique key, action claim/attempt 상태, durable side-effect·usage evidence, WORKSPACE_PREP의 run-level execution profile 또는 후속 work의 full binding·exact work-kind limit과 remaining 계산을 확인한다. registry와 ledger 조회는 `analysis_id`를 필수로 사용하고 같은 purpose의 다른 analysis current pointer나 reservation을 반환하지 않는지 함께 확인한다.
 - **7. 복구 조치**: A는 새 reserve부터 시작한다. B/E에서 미실행이 증명되면 같은 reservation을 RELEASED로 끝낸다. D/F는 기존 ledger/state를 멱등 재투영한다. C처럼 실제 사용 여부를 증명하지 못하면 release·재실행하지 않고 `BLOCKED + waiting_for=BUDGET`으로 둔다. Recovery가 가격·사용량을 추정하지 않는다.
 - **8. 기대 state·current/격리 결과**: reservation 하나당 ledger entry 최대 하나, terminal reservation 전이 한 번, action claim 최대 한 번이다. 동시 재시작도 unique constraint로 두 번째 debit을 거절한다.
 - **9. 다음 단계 호출**: 안전한 reservation 상태가 확인되기 전 새 attempt·Provider·Sandbox·도구 호출은 0건이다.

@@ -408,6 +408,7 @@ bootstrap → 위 concrete 구현을 조립
 
 ```python
 RecordRef = RunStoredDataRef | StoredDataRef | PolicyCacheRef
+BudgetScopeRef = RunStoredDataRef | StoredDataRef
 
 class RecordStore(Protocol):
     def get_exact(self, ref: RecordRef) -> Record: ...
@@ -436,7 +437,7 @@ class BudgetLedgerPort(Protocol):
     def reserve(self, request: BudgetReservationRequest) -> BudgetReservation: ...
     def commit_usage(self, request: BudgetCommitRequest) -> BudgetLedgerEntry: ...
     def release(self, request: BudgetReleaseRequest) -> BudgetReservation: ...
-    def remaining(self, profile_ref: StoredDataRef, analysis_id: str) -> BudgetRemaining: ...
+    def remaining(self, budget_scope_ref: BudgetScopeRef, analysis_id: str) -> BudgetRemaining: ...
 
 class SandboxPort(Protocol):
     async def prepare(self, request: SandboxPrepareRequest) -> SandboxEnvironment: ...
@@ -447,7 +448,7 @@ class SandboxPort(Protocol):
 내부 application service의 최소 진입점은 다음과 같다. 이 service도 저장소나 외부 도구를 직접 만들지 않고 위 port와 Runtime Validator를 주입받는다.
 
 ```python
-BudgetProfile = ExecutionBudgetProfile | WorkBudgetProfile | VerificationBudgetProfile | DynamicReproductionLifecycleProfile
+BudgetProfile = ExecutionBudgetProfile | WorkBudgetProfile | VerificationBudgetProfile | DynamicReproductionLifecycleProfile | BudgetProfileBinding
 AnalysisPurpose = Literal["PRODUCTION", "EVALUATION"]
 
 class PolicyPreparationService:
@@ -455,16 +456,17 @@ class PolicyPreparationService:
 
 class BudgetProfileRegistry:
     def publish_draft(self, profile: BudgetProfile) -> RecordRef: ...
-    def pin_execution_for_run(self, analysis_ref: RunStoredDataRef, approval_ref: RunStoredDataRef | StoredDataRef) -> ExecutionBudgetProfile: ...
-    def activate(self, binding_ref: StoredDataRef, approval_ref: StoredDataRef) -> BudgetProfileBinding: ...
-    def current(self, purpose: AnalysisPurpose) -> BudgetProfileBinding | None: ...
+    def pin_execution_for_run(self, analysis_id: str, purpose: AnalysisPurpose, approval_ref: RunStoredDataRef | StoredDataRef) -> RunStoredDataRef: ...
+    def activate_for_run(self, analysis_state_ref: RunStoredDataRef, binding_ref: StoredDataRef, approval_ref: RunStoredDataRef | StoredDataRef) -> StoredDataRef: ...
+    def current_execution(self, analysis_id: str) -> RunStoredDataRef | None: ...
+    def current_binding(self, analysis_id: str) -> StoredDataRef | None: ...
 
 class EvaluationService:
     async def run(self, config_ref: StoredDataRef) -> EvaluationRunResult: ...
     def compare(self, result_refs: list[StoredDataRef]) -> EvaluationRecommendation: ...
 ```
 
-`BudgetProfileRegistry.pin_execution_for_run`은 `analysis_id` 발급 직후 같은 purpose의 승인된 실행 전체 예산을 run-local `ExecutionBudgetProfile`로 고정한다. 이 exact ref가 있어야 `WORKSPACE_PREP`을 시작할 수 있다. `activate`는 workspace READY 뒤 R8 승인과 사람 승인 exact reference, 같은 purpose의 execution·work-kind·Verification·dynamic profile 상태·revision·구성을 검사한 뒤에만 full ACTIVE binding revision을 만들고 `AnalysisRunState.budget_binding_ref`를 갱신한다. `EvaluationService`는 Orchestration Runtime의 일반 분석 시작 경로를 호출해 `purpose=EVALUATION` analysis만 만들 수 있다. R8 Evaluation Runtime은 평가 결과를 집계·저장할 뿐 일반 `WorkExecutionState`를 직접 등록하거나 변경하지 않으며, 운영 registry current pointer도 바꾸지 않는다.
+`BudgetProfileRegistry.pin_execution_for_run`은 새로 발급한 `analysis_id`와 purpose를 받아 승인 근거에 맞는 run-local `ExecutionBudgetProfile`을 만들고 그 exact `RunStoredDataRef`를 반환한다. Orchestration Runtime은 같은 분석 시작 transaction에서 이 reference를 첫 `AnalysisRunState.execution_budget_profile_ref`에 기록하며, 그 transaction이 확정되기 전에는 `WORKSPACE_PREP`을 등록하지 않는다. `publish_draft`는 `status=DRAFT`만 받아 full binding 초안을 포함한 profile record를 만들 수 있고 이를 직접 ACTIVE로 만들지 않는다. `activate_for_run`은 workspace READY인 exact `AnalysisRunState`와 binding 초안, R8·사람 승인 reference를 받아 execution·work-kind·Verification·dynamic profile의 analysis·workspace·commit·purpose·상태·revision을 검사한다. 통과한 경우에만 승인 reference를 보존한 full ACTIVE binding revision과 `AnalysisRunState.budget_binding_ref` 갱신을 같은 CAS transaction으로 확정하고 exact `StoredDataRef`를 반환한다. `current_execution`과 `current_binding`은 반드시 `analysis_id`로 조회하며 purpose만으로 다른 실행의 current pointer를 찾지 않는다. `EvaluationService`는 Orchestration Runtime의 일반 분석 시작 경로를 호출해 `purpose=EVALUATION` analysis만 만들 수 있다. R8 Evaluation Runtime은 평가 결과를 집계·저장할 뿐 일반 `WorkExecutionState`를 직접 등록하거나 변경하지 않으며, 운영 registry current pointer도 바꾸지 않는다.
 
 Protocol은 raw SDK client, SQLAlchemy Session, Docker client와 host path를 반환하지 않는다. `LLMProviderAdapter.invoke`는 schema·semantic 검사 전의 결과를 반환할 수 있지만 domain output 저장 권한은 없다.
 
@@ -742,7 +744,7 @@ YAML은 `safe_load`만 사용하고 tag·object constructor·merge key를 거절
 
 ### 12.4 R8 예산·평가 구현
 
-예산은 `runtime/budget_registry.py`, `runtime/budget_service.py`와 `ports/budget_ledger.py`를 통해서만 게시·검사·차감한다. R8 owner가 profile 내용을 승인하면 trusted `BudgetProfileRegistry`가 exact `ExecutionBudgetProfile`, 역할·작업 종류별 `WorkBudgetProfile`, `VerificationBudgetProfile`, `DynamicReproductionLifecycleProfile`과 `BudgetProfileBinding` revision을 저장한다. `analysis_id` 생성 직후에는 run-local execution profile을 먼저 고정해 `WORKSPACE_PREP`만 허용하고, workspace READY 뒤 purpose별 full ACTIVE binding을 최대 하나 고정한 뒤 나머지 work를 시작한다. Runtime Validator는 후속 action마다 full binding과 선택한 exact work-kind limit을 `checked_config_refs`에 고정한다. 숫자가 아직 승인되지 않은 profile은 `DRAFT`이고 새 실행을 허용하지 않으며, 07번 역할표의 숫자를 코드 상수나 숨은 별도 설정으로 사용하지 않는다.
+예산은 `runtime/budget_registry.py`, `runtime/budget_service.py`와 `ports/budget_ledger.py`를 통해서만 게시·검사·차감한다. R8 owner가 profile 내용을 승인하면 trusted `BudgetProfileRegistry`가 exact `ExecutionBudgetProfile`, 역할·작업 종류별 `WorkBudgetProfile`, `VerificationBudgetProfile`, `DynamicReproductionLifecycleProfile`과 `BudgetProfileBinding` revision을 저장한다. `analysis_id` 생성 직후에는 그 analysis의 run-local execution profile을 먼저 고정해 `WORKSPACE_PREP`만 허용하고, workspace READY 뒤 같은 analysis의 full ACTIVE binding을 최대 하나 고정한 뒤 나머지 work를 시작한다. 같은 purpose의 분석이 동시에 실행돼도 각 analysis는 자기 execution profile·binding·reservation·ledger만 조회한다. Runtime Validator는 후속 action마다 full binding과 선택한 exact work-kind limit을 `checked_config_refs`에 고정한다. 숫자가 아직 승인되지 않은 profile은 `DRAFT`이고 새 실행을 허용하지 않으며, 07번 역할표의 숫자를 코드 상수나 숨은 별도 설정으로 사용하지 않는다.
 
 ```text
 WORKSPACE_PREP: run-level ACTIVE execution profile 확인

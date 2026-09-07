@@ -893,7 +893,7 @@ foreach ($contract in @(
     @{ Name = 'WorkBudgetLimit'; Block = $workBudgetLimitBlock; Fields = @('limit_key:', 'work_type:', 'operation_kind:', 'agent_role:', 'timeout_ms:', 'max_attempts:', 'max_calls_per_work:', 'max_items_per_work:') },
     @{ Name = 'WorkBudgetProfile'; Block = $workBudgetProfileBlock; Fields = @('meta:', 'profile_key:', 'purpose:', 'limits:', 'unlisted_operation:', 'status:') },
     @{ Name = 'VerificationBudgetProfile'; Block = $verificationBudgetProfileBlock; Fields = @('meta:', 'profile_key:', 'max_verification_elapsed_ms:', 'max_work_per_verification:', 'max_llm_calls_per_verification:', 'max_retries_per_work:', 'max_parallel_evidence_calls:', 'status:') },
-    @{ Name = 'BudgetProfileBinding'; Block = $budgetProfileBindingBlock; Fields = @('meta:', 'binding_key:', 'purpose:', 'execution_budget_profile_ref:', 'work_budget_profile_ref:', 'verification_budget_profile_ref:', 'dynamic_lifecycle_profile_ref:', 'status:', 'approved_by:', 'approved_at:') },
+    @{ Name = 'BudgetProfileBinding'; Block = $budgetProfileBindingBlock; Fields = @('meta:', 'binding_key:', 'purpose:', 'execution_budget_profile_ref:', 'work_budget_profile_ref:', 'verification_budget_profile_ref:', 'dynamic_lifecycle_profile_ref:', 'status:', 'approval_ref:', 'approved_by:', 'approved_at:') },
     @{ Name = 'BudgetUnits'; Block = $budgetUnitsBlock; Fields = @('elapsed_ms:', 'work_count:', 'llm_call_count:', 'retry_count:', 'cost_minor_units:', 'currency:') },
     @{ Name = 'BudgetReservation'; Block = $budgetReservationBlock; Fields = @('meta:', 'reservation_id:', 'budget_binding_ref:', 'action_ref:', 'work_ref:', 'requested_units:', 'status:', 'ledger_entry_ref:', 'reserved_at:', 'finalized_at:') },
     @{ Name = 'BudgetLedgerEntry'; Block = $budgetLedgerEntryBlock; Fields = @('meta:', 'ledger_entry_id:', 'reservation_ref:', 'budget_binding_ref:', 'action_ref:', 'work_ref:', 'actual_units:', 'usage_refs:', 'sequence:', 'committed_at:') },
@@ -3857,11 +3857,56 @@ $budgetBootstrapRules = @(
     @{ Name = 'implementation budget profile'; Text = $r306BaselineText; Marker = 'BudgetProfile = ExecutionBudgetProfile | WorkBudgetProfile | VerificationBudgetProfile | DynamicReproductionLifecycleProfile' },
     @{ Name = 'implementation bootstrap'; Text = $r306BaselineText; Marker = 'WORKSPACE_PREP: run-level ACTIVE execution profile 확인' },
     @{ Name = 'common contracts Wiki'; Text = $commonWikiText; Marker = '07번 역할표의 숫자는 `WorkBudgetProfile`의 DRAFT 후보' },
+    @{ Name = 'common contracts Wiki'; Text = $commonWikiText; Marker = '같은 purpose의 분석이 동시에 실행돼도 `analysis_id`별 current binding과 ledger를 분리' },
     @{ Name = 'glossary work profile'; Text = $glossaryText; Marker = '| `WorkBudgetProfile` |' }
 )
 foreach ($rule in $budgetBootstrapRules) {
     if (-not $rule.Text.Contains($rule.Marker)) {
         Add-Failure "$($rule.Name) is missing budget bootstrap/work-kind alignment: $($rule.Marker)"
+    }
+}
+$budgetPublicInterfaceRules = @(
+    'BudgetScopeRef = RunStoredDataRef | StoredDataRef',
+    'BudgetProfile = ExecutionBudgetProfile | WorkBudgetProfile | VerificationBudgetProfile | DynamicReproductionLifecycleProfile | BudgetProfileBinding',
+    'def remaining(self, budget_scope_ref: BudgetScopeRef, analysis_id: str) -> BudgetRemaining:',
+    'def pin_execution_for_run(self, analysis_id: str, purpose: AnalysisPurpose, approval_ref: RunStoredDataRef | StoredDataRef) -> RunStoredDataRef:',
+    'def activate_for_run(self, analysis_state_ref: RunStoredDataRef, binding_ref: StoredDataRef, approval_ref: RunStoredDataRef | StoredDataRef) -> StoredDataRef:',
+    'def current_execution(self, analysis_id: str) -> RunStoredDataRef | None:',
+    'def current_binding(self, analysis_id: str) -> StoredDataRef | None:'
+)
+foreach ($marker in $budgetPublicInterfaceRules) {
+    if (-not $r306BaselineText.Contains($marker)) {
+        Add-Failure "R3-06 budget public interface is not closed over exact run/binding refs: $marker"
+    }
+}
+if ($r306BaselineText.Contains('def current(self, purpose: AnalysisPurpose)')) {
+    Add-Failure 'R3-06 budget binding lookup must be scoped by analysis_id, not purpose alone'
+}
+foreach ($marker in @(
+    '같은 `analysis_id`에서 full `ACTIVE` binding은 최대 하나다.',
+    '서로 다른 analysis의 profile·binding·reservation·ledger를 섞지 않는다.'
+)) {
+    if (-not $contractText.Contains($marker)) {
+        Add-Failure "08 budget binding scope is incomplete: $marker"
+    }
+}
+
+$primitiveAdmissionSingleDecisionPath = Join-Path $repoRoot 'docs/review/decisions/ADR-014-primitive-admission-single-decision.md'
+$primitiveAdmissionSingleDecisionText = Get-Content -Raw -Encoding UTF8 -LiteralPath $primitiveAdmissionSingleDecisionPath
+$generationTimingRules = @(
+    @{ Name = '04 verification'; Text = $verificationText },
+    @{ Name = '08 common contract'; Text = $contractText },
+    @{ Name = 'ADR-014'; Text = $primitiveAdmissionSingleDecisionText },
+    @{ Name = 'FINDINGS H-009'; Text = $findingsText }
+)
+foreach ($rule in $generationTimingRules) {
+    foreach ($marker in @('`DYNAMIC_INPUT_CHANGED`', 'Technical `REVISE`', 'Technical `ACCEPT`')) {
+        if (-not $rule.Text.Contains($marker)) {
+            Add-Failure "$($rule.Name) is missing the complete pre-admission generation timing rule: $marker"
+        }
+    }
+    if ($rule.Text.Contains('새 generation은 Technical `REVISE`에서만 만들어')) {
+        Add-Failure "$($rule.Name) still says only Technical REVISE can create a generation"
     }
 }
 if ([regex]::IsMatch($contractText, '(?mi)^\s+(usage|resources):\s*map(?:\s*\|\s*null)?\s*$')) {

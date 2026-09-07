@@ -80,7 +80,7 @@ clone 전에 생긴 오류 로그와 전체 debug trace는 `RunStoredDataRef`로
 
 `SAVE_RESULT(result_kind=verification_result)`는 verdict별 최소 구조를 검사합니다. `TRUE`는 실제 reference가 연결된 supporting evidence, `FALSE`는 근거가 있는 `DISPROVED`, `HOLD`는 하나 이상의 `unresolved_conditions`와 정상적으로 확인한 범위를 설명하는 실제 evidence reference가 필요합니다. 오류·timeout·빈 Context·예산 초과 기록만으로 어떤 final verdict도 저장할 수 없습니다. Runtime Validator는 구조·reference·완료 상태만 검사합니다. final `TRUE` 근거의 의미적 충분성은 Technical Evidence Gate가 exact final TRUE revision을 대상으로 검토하며, `FALSE | HOLD`는 Technical Gate 입력이 아닙니다.
 
-예산 설정은 실행 순환을 피하면서도 무예산 실행을 허용하지 않습니다. `analysis_id`를 만든 직후 run-level `ExecutionBudgetProfile`을 고정해야 최초 `WORKSPACE_PREP`을 시작할 수 있습니다. workspace와 commit이 준비되면 전체·역할/작업별·Verification·동적 재현 예산을 묶은 exact `BudgetProfileBinding`을 고정한 뒤 정적 도구와 정책 준비를 포함한 나머지 작업을 시작합니다. 07번 역할표의 숫자는 `WorkBudgetProfile`의 DRAFT 후보이고, R8과 사람이 승인한 ACTIVE revision만 사용합니다. profile이나 해당 작업의 limit을 정확히 찾을 수 없으면 작업을 실행하지 않고 예산 입력을 기다립니다.
+예산 설정은 실행 순환을 피하면서도 무예산 실행을 허용하지 않습니다. `analysis_id`를 만든 직후 run-level `ExecutionBudgetProfile`을 고정해야 최초 `WORKSPACE_PREP`을 시작할 수 있습니다. workspace와 commit이 준비되면 전체·역할/작업별·Verification·동적 재현 예산을 묶은 exact `BudgetProfileBinding`을 고정한 뒤 정적 도구와 정책 준비를 포함한 나머지 작업을 시작합니다. 같은 purpose의 분석이 동시에 실행돼도 `analysis_id`별 current binding과 ledger를 분리하며, ACTIVE binding에는 R8·사람의 exact 승인 reference를 보존합니다. 07번 역할표의 숫자는 `WorkBudgetProfile`의 DRAFT 후보이고, R8과 사람이 승인한 ACTIVE revision만 사용합니다. profile이나 해당 작업의 limit을 정확히 찾을 수 없으면 작업을 실행하지 않고 예산 입력을 기다립니다.
 
 검증 플레이북은 `logical_record_id`로 식별하고 내용이 바뀔 때마다 새 `record_id`, 증가한 `revision_number`와 새 `content_hash`를 만듭니다. `VerificationResult.playbook_ref`는 실제 사용한 exact 플레이북 revision을 가리키며 final Verification 합성 호출과 저장 요청도 같은 reference를 사용해야 합니다. 새 플레이북 revision이 생겨도 과거 판정의 reference는 바꾸지 않습니다.
 
