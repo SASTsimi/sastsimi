@@ -1,6 +1,6 @@
 # SASTSIMI Architecture v5 Wiki
 
-이 Wiki는 Architecture v5의 **검토 중인 설계 초안(`candidate baseline`)을 쉽게 이해하기 위한 요약**입니다. 실제 기준은 [v5 설계 허브](../README.md)와 번호 문서를 따릅니다. Wiki만 수정해서 새로운 입출력 약속, 상태나 승인 결정을 만들 수 없습니다.
+이 Wiki는 승인된 Architecture v5 구현 기준 설계를 쉽게 이해하기 위한 요약입니다. 실제 기준은 [v5 설계 허브](../README.md)와 번호 문서를 따릅니다. Wiki만 수정해서 새로운 입출력 약속, 상태나 승인 결정을 만들 수 없습니다.
 
 모르는 단어는 [쉬운 용어집](../../GLOSSARY.md)에서 확인하세요.
 
@@ -25,8 +25,7 @@ AST와 SAST가 코드 사실을 모으면 Hypothesis Agent가 취약점 가능�
 
 ## 현재 상태
 
-- 설계 작성: `DESIGN_AUTHORED`
-- 독립 검토: `REVIEW_REQUIRED`
+- 설계: `DESIGN_APPROVED`
 - 구현: `NOT_IMPLEMENTED`
 
 [v4에서 v5로의 설계 계보](../11-migration-from-v4.md)는 과거 결정의 맥락만 설명한다. Wiki는 새로운 정책·상태·계약을 만들지 않으며, 번호 문서와 불일치하면 번호 문서와 [검토 결정 기록](../../review/decisions/README.md)을 우선한다.

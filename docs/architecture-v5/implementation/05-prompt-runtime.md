@@ -4,7 +4,7 @@
 - **누가 읽어야 하나요?** R1·R5·R6·R7의 프롬프트 작성자, R2 입력 자료 담당자, R3 통합 구현자, R4 계약 담당자와 R8 평가 담당자가 읽습니다.
 - **읽은 뒤 무엇을 결정해야 하나요?** 각 역할의 첫 prompt revision, 입출력 schema, session 정책, 검증 함수와 평가 fixture를 승인합니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 1. 기준과 핵심 결론
 

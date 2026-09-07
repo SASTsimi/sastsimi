@@ -6,7 +6,7 @@
 
 정확한 데이터 이름은 유지하며, 뜻은 [쉬운 용어집](../GLOSSARY.md)에서 확인할 수 있습니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 목표와 경계
 

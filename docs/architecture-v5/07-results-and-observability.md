@@ -6,7 +6,7 @@
 
 `observability`는 실행 상태와 오류를 확인할 수 있는 기록을 뜻합니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 목표
 

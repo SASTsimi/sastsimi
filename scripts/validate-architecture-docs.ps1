@@ -251,10 +251,64 @@ foreach ($requiredFindingMarker in @(
     '| B-007 | RESOLVED |',
     '| B-008 | RESOLVED |',
     '현재 열린 Blocker는 0개입니다.',
+    '| H-003 | RESOLVED |',
+    '| H-004 | RESOLVED |',
+    '| H-005 | RESOLVED |',
+    '현재 열린 High는 0개입니다.',
     '| H-011 | RESOLVED |'
 )) {
     if (-not $findingsText.Contains($requiredFindingMarker)) {
         Add-Failure "FINDINGS status is not synchronized with implementation blockers: $requiredFindingMarker"
+    }
+}
+
+# Final approval is a documentation state transition, not an implementation
+# success claim. Keep the exact content freeze, role issue state, accepted ADRs
+# and NOT_IMPLEMENTED boundary mechanically aligned.
+$finalApprovalPath = Join-Path $repoRoot 'docs/review/FINAL_ARCHITECTURE_V5_APPROVAL.md'
+if (-not (Test-Path -LiteralPath $finalApprovalPath)) {
+    Add-Failure 'missing Architecture v5 final approval record'
+} else {
+    $finalApprovalText = Get-Content -Raw -Encoding UTF8 -LiteralPath $finalApprovalPath
+    foreach ($marker in @(
+        '07bd6549a676419c0e720f940ba7abd1b82aea0d',
+        'PR #116',
+        'Issue #92',
+        'R1~R8 상위 Issue #2~#9 모두 `CLOSED`',
+        '문서 구조·계약 추적: **PASS**',
+        '열린 Architecture Blocker/High: **0**',
+        '설계 상태: **DESIGN_APPROVED**',
+        '구현 상태: **NOT_IMPLEMENTED**',
+        '정확한 PR head'
+    )) {
+        if (-not $finalApprovalText.Contains($marker)) {
+            Add-Failure "final approval record is missing: $marker"
+        }
+    }
+}
+
+if ([regex]::IsMatch($findingsText, '(?m)^\|\s*[BH]-\d+\s*\|\s*(OPEN|IN_PROGRESS)\s*\|')) {
+    Add-Failure 'FINDINGS still contains an open or in-progress Blocker/High item'
+}
+
+$issueTrackerText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/review/ISSUE_TRACKER.md')
+foreach ($issueNumber in 2..9) {
+    if (-not [regex]::IsMatch($issueTrackerText, "(?m)^\| R$($issueNumber - 1) .*\[#${issueNumber}\].*\| CLOSED")) {
+        Add-Failure "Issue tracker does not show role Issue #$issueNumber as CLOSED"
+    }
+}
+
+$approvedStatusFiles = @(
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'README.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'docs/README.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/README.md'))
+) + @(
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5') -Recurse -File -Filter '*.md'
+)
+foreach ($file in $approvedStatusFiles | Select-Object -Unique) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    if ($text.Contains('DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED')) {
+        Add-Failure "approved Architecture v5 document still has review-required status: $($file.FullName)"
     }
 }
 $openQuestionsText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/governance/OPEN_QUESTIONS.md')
@@ -1233,7 +1287,7 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
     Add-Failure 'missing R3-05 prompt runtime design'
 } else {
     $promptRuntimeText = Get-Content -Raw -Encoding UTF8 -LiteralPath $promptRuntimePath
-    foreach ($marker in @('DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED', 'PromptRegistryEntry', 'PromptPayload', 'POLICY_PARSER', 'DYNAMIC_REPRODUCTION', 'OpenAI API, Codex 구독, Anthropic API, Claude 구독', '`PMT-01`', '`PMT-15`', 'Orchestration 자체의 별도 LLM prompt는 만들지 않는다', '한 호출당 한 result kind의 structured output artifact 하나', 'DynamicReproductionConclusion', '#90에서 채택된 각 adapter profile fixture', 'HypothesisProposal[]', 'model.hypothesis.generate-initial.quality-v1', 'model.hypothesis.duplicate-review.quality-v1', 'model.verification.technical-revise.quality-v1', 'model.dynamic-reproduction.interpret-attempt.quality-v1', 'PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', '/sanitizer_candidates', '/validator_candidates')) {
+    foreach ($marker in @('DESIGN_APPROVED / NOT_IMPLEMENTED', 'PromptRegistryEntry', 'PromptPayload', 'POLICY_PARSER', 'DYNAMIC_REPRODUCTION', 'OpenAI API, Codex 구독, Anthropic API, Claude 구독', '`PMT-01`', '`PMT-15`', 'Orchestration 자체의 별도 LLM prompt는 만들지 않는다', '한 호출당 한 result kind의 structured output artifact 하나', 'DynamicReproductionConclusion', '#90에서 채택된 각 adapter profile fixture', 'HypothesisProposal[]', 'model.hypothesis.generate-initial.quality-v1', 'model.hypothesis.duplicate-review.quality-v1', 'model.verification.technical-revise.quality-v1', 'model.dynamic-reproduction.interpret-attempt.quality-v1', 'PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', '/sanitizer_candidates', '/validator_candidates')) {
         if (-not $promptRuntimeText.Contains($marker)) {
             Add-Failure "R3-05 prompt runtime is missing marker: $marker"
         }
@@ -3154,7 +3208,7 @@ if (-not (Test-Path -LiteralPath $runPolicyPreparationDecisionPath)) {
     Add-Failure 'missing ADR-013 run policy preparation and reuse decision'
 } else {
     $runPolicyPreparationDecisionText = Get-Content -Raw -Encoding UTF8 -LiteralPath $runPolicyPreparationDecisionPath
-    foreach ($marker in @('상태: `PROPOSED`', '실행당 한 번', 'Policy Collector', 'Policy Parser', '`RunPolicyState`', '`LOCAL_ONLY`', '`freshness_valid_until`', 'R5-02', 'R7', 'R8')) {
+    foreach ($marker in @('상태: `ACCEPTED`', '실행당 한 번', 'Policy Collector', 'Policy Parser', '`RunPolicyState`', '`LOCAL_ONLY`', '`freshness_valid_until`', 'R5-02', 'R7', 'R8')) {
         if (-not $runPolicyPreparationDecisionText.Contains($marker)) {
             Add-Failure "ADR-013 is missing decision marker: $marker"
         }
@@ -3668,7 +3722,7 @@ foreach ($requiredFile in @($r306BaselinePath, $r306IndexPath, $r306AdrPath, $r3
 if (Test-Path -LiteralPath $r306BaselinePath) {
     $r306BaselineText = Get-Content -Raw -Encoding UTF8 -LiteralPath $r306BaselinePath
     $requiredR306Markers = @(
-        '> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**',
+        '> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**',
         'Python `>=3.12,<3.13`',
         '`uv.lock`',
         '`provider_profile_ref + model`',
@@ -3680,8 +3734,8 @@ if (Test-Path -LiteralPath $r306BaselinePath) {
         '별도 Repository Snapshot 모듈을 만들지 않는다',
         '외부 message queue 제품을 도입하지 않는다',
         '구현 차단 `DEFERRED`: 없음',
-        'PR #107',
-        '35729d3185cf46cdbf9c94ce2be646ae11f26446',
+        'PR #116',
+        '07bd6549a676419c0e720f940ba7abd1b82aea0d',
         '## 5. 실제 repository 구조',
         '## 6. 허용 의존 방향',
         '## 10. 저장·transaction·복구',
@@ -3772,7 +3826,7 @@ if (Test-Path -LiteralPath $r306IndexPath) {
 
 if (Test-Path -LiteralPath $r306AdrPath) {
     $r306AdrText = Get-Content -Raw -Encoding UTF8 -LiteralPath $r306AdrPath
-    foreach ($marker in @('상태: `PROPOSED`', '## Context', '## Options', '## Decision', '## Consequences', '## Verification')) {
+    foreach ($marker in @('상태: `ACCEPTED`', '## Context', '## Options', '## Decision', '## Consequences', '## Verification')) {
         if (-not $r306AdrText.Contains($marker)) {
             Add-Failure "ADR-015 is missing: $marker"
         }

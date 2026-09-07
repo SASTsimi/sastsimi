@@ -6,11 +6,11 @@
 
 전문용어는 [쉬운 용어집](../GLOSSARY.md)에서 확인할 수 있습니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
-Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않습니다. 정적 분석은 LLM Agent가 검증할 취약점 가설을 만들 때 참고하는 코드 사실을 제공합니다. 이 문서 묶음은 **검토 중인 설계 초안(`candidate baseline`)**이며 아직 승인된 최종 설계, 구현 완료 또는 성능 개선을 뜻하지 않습니다.
+Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않습니다. 정적 분석은 LLM Agent가 검증할 취약점 가설을 만들 때 참고하는 코드 사실을 제공합니다. 이 문서 묶음은 역할별 검토와 전체 문서 추적 검토를 마친 **구현 기준 설계**입니다. 설계 승인은 구현 완료, Provider 지원 확인, 실제 취약점 탐지 성능 또는 Sandbox 보안 시험 완료를 뜻하지 않습니다.
 
-번호 문서 `01`–`13`이 설계 의미의 기준입니다. Wiki는 빠르게 이해하기 위한 쉬운 요약이며 새로운 입출력 약속이나 결정을 만들 수 없습니다. 검토 결정은 이 저장소의 Issue, 설계 결정 기록(`ADR`)과 PR에서 먼저 확정합니다. 승인된 설계 commit만 별도 PR로 구현 저장소에 반영합니다.
+번호 문서 `01`–`13`이 설계 의미의 기준입니다. Wiki는 빠르게 이해하기 위한 쉬운 요약이며 새로운 입출력 약속이나 결정을 만들 수 없습니다. 변경 결정은 이 저장소의 Issue, 설계 결정 기록(`ADR`)과 PR에서 먼저 확정합니다. 최종 승인 범위와 구현 전 후속 조건은 [Architecture v5 최종 승인 기록](../review/FINAL_ARCHITECTURE_V5_APPROVAL.md)을 따릅니다.
 
 [`implementation/`](./implementation/README.md) 문서는 번호 문서의 의미를 실제 모듈·테스트·물리 기술로 옮기는 구현 준비 자료입니다. 번호 문서와 충돌하면 번호 문서와 공통 계약이 우선하며, 발견한 계약 빈틈은 담당 역할 Issue에서 먼저 해결합니다.
 
@@ -104,4 +104,4 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 
 ## 문서 적용 범위
 
-이 디렉터리는 v5 candidate baseline의 번호 문서를 보관한다. 이 저장소의 검토가 끝나기 전에는 승인된 정본이 아니다. v4는 [설계 계보 문서](./11-migration-from-v4.md)에 요약된 역사적 맥락일 뿐 현재 파이프라인을 정의하지 않는다. 실제 adapter, sandbox, Primitive DB, 정책 수집기, Agent와 Gate 구현은 별도 구현·보안 검토·평가가 필요하다.
+이 디렉터리는 승인된 v5 구현 기준의 번호 문서를 보관한다. v4는 [설계 계보 문서](./11-migration-from-v4.md)에 요약된 역사적 맥락일 뿐 현재 파이프라인을 정의하지 않는다. 실제 adapter, sandbox, Primitive DB, 정책 수집기, Agent와 Gate 구현은 별도 구현·보안 검토·평가가 필요하다.

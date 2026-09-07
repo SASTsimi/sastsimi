@@ -6,7 +6,7 @@
 
 `provider`는 LLM 서비스 연결 방식이고 `session`은 로그인 또는 대화 상태입니다. `logging`은 호출과 오류를 남기는 기록입니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 목표
 

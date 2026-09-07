@@ -4,7 +4,7 @@
 - **누가 읽어야 하나요?** R3 통합 구현자, R4 공통 계약 담당자, R8 평가 담당자와 각 LLM Agent 담당자가 읽습니다.
 - **읽은 뒤 무엇을 결정해야 하나요?** 네 연결 경로의 실제 시험 결과를 확인하고 환경별 `SUPPORTED | EXPERIMENTAL | REJECTED` 상태와 첫 기본 Provider를 승인합니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 1. 기준과 결론
 

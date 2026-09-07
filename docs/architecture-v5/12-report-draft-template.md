@@ -6,7 +6,7 @@
 
 `Finding`은 이미 검증된 upstream 결과를 하나의 current 취약점 결과로 정규화한 record이고 `ReportDraft`는 Reporter가 그 Finding 중 보고 조건까지 통과한 결과로 만드는 내부 초안입니다. Finding 생성과 Reporter eligibility는 별개 조건이며, Finding 생성 조건과 lifecycle은 [05. 이중 LLM Gate와 보고](05-llm-gate-and-reporting.md)의 "Finding 생성과 lifecycle"을 따릅니다. 이 초안이 마지막 Agent 산출물이며 자동 외부 제출을 허용하지 않습니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 Reporter Agent는 다음 조건이 모두 참일 때만 이 내부 초안을 작성한다.
 

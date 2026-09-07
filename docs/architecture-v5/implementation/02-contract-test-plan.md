@@ -1,6 +1,6 @@
 # R3-02. 파트 간 계약 준수·부정 테스트 계획
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 >
 > 정상·실패 입력을 어떻게 검사할지 정리한 **검토용 설계 초안**이다. 이 문서에 적은 fixture, 검사기, 자동 테스트와 실제 Provider·Sandbox 실행은 아직 구현·실행하지 않았다. 문서 검사 통과는 프로그램 시험 통과가 아니다.
 

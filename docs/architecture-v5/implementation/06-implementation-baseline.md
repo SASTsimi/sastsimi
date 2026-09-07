@@ -4,7 +4,7 @@
 - **누가 읽어야 하나요?** 한 명의 전체 구현 담당자와 R1~R8 역할 검토자가 읽습니다.
 - **읽은 뒤 무엇을 결정해야 하나요?** 아래 단일 구현안을 승인하거나, 바꾸려는 항목과 영향받는 계약·시험을 구체적으로 지적해야 합니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 1. 문서 권한과 현재 상태
 
@@ -27,7 +27,7 @@
 - [R3-04 Provider 결정](./04-provider-decision.md): API Key·구독 로그인 연결 후보와 capability 시험
 - [R3-05 Prompt Runtime](./05-prompt-runtime.md): Prompt Registry·Builder·11개 LLM 역할과 출력 검증
 
-현재 branch의 기준 `main`은 PR #107을 병합한 `35729d3185cf46cdbf9c94ce2be646ae11f26446`이다. Issue #89 종료도 확인했다. 필수 역할 검토가 끝난 최신 head를 최종 review-freeze SHA로 기록해야 한다. 이 문서의 기술 선택은 Draft PR에서 검토할 단일안이며, [ADR-015](../../review/decisions/ADR-015-r3-implementation-baseline.md)는 최종 승인 전까지 `PROPOSED`다.
+R3-06을 병합한 PR #116과 Issue #92·R3 상위 Issue #4의 종료를 확인했다. Architecture v5 최종 승인에서 고정한 내용 기준 `main`은 `07bd6549a676419c0e720f940ba7abd1b82aea0d`다. 필수 역할 검토를 마쳤으므로 이 문서의 기술 선택과 [ADR-015](../../review/decisions/ADR-015-r3-implementation-baseline.md)는 구현 기준 `ACCEPTED`다. 실제 라이브러리 설치·Provider 연결·Docker 실행과 품질 시험은 여전히 `NOT_IMPLEMENTED`다.
 
 - 구현 차단 `DEFERRED`: 없음
 - 실제 코드: 없음
@@ -85,24 +85,24 @@ Agent별 서버, 분산 scheduler와 외부 message queue 제품을 도입하지
 
 ## 3. 기술 결정 요약
 
-이 표의 `PROPOSED`는 Draft PR의 단일 채택안이다. PR #107 동기화와 필수 검토를 마친 최종 review-freeze commit에서 `ACCEPTED`로 바꾸고, 그 commit을 병합 대상으로 사용한다.
+이 표의 `ACCEPTED`는 구현에서 따라야 할 선택을 확정했다는 뜻이다. 정확한 package patch version과 외부 도구 version은 실제 구현의 lock과 승인된 profile에 고정하며, 설치·실행 성공을 미리 주장하지 않는다.
 
 | 영역 | 단일안 | 상태 | 선택 이유 | 채택하지 않는 첫 구현안 |
 |---|---|---|---|---|
-| 언어 | 64-bit CPython, Python `>=3.12,<3.13` | PROPOSED | Pydantic 2, 표준 `tomllib`, async I/O와 타입 도구를 안정적으로 사용 | 다중 언어 core, Python 3.13 즉시 채택 |
-| dependency | `uv` + `pyproject.toml` + 커밋된 `uv.lock` | PROPOSED | 한 명 구현자가 설치·lock·실행 명령을 하나로 유지 | requirements 파일 중복, 런타임 자동 설치 |
-| 품질 도구 | Ruff format/lint, mypy strict, pytest | PROPOSED | 빠른 로컬 검증과 CI 명령 통일 | formatter·linter 복수 조합 |
-| schema | Pydantic 2 계열 + JSON Schema 2020-12 | PROPOSED | 공통 Python type과 외부 JSON 계약을 함께 생성 | dict 직접 조립, 역할별 독립 schema 정의 |
-| JSON hash | SASTSIMI Canonical JSON v1 + SHA-256 | PROPOSED | work dedupe와 exact content reference를 동일 bytes로 계산 | 기본 `json.dumps()` 출력에 의존 |
-| 상태 DB | SQLite + SQLAlchemy 2 계열 | PROPOSED | 로컬 단일 host transaction·constraint·CAS를 명시적으로 구현 | PostgreSQL, 문서 DB, in-memory 상태 |
-| migration | Alembic + revision별 upgrade/downgrade | PROPOSED | DB 변경 이력·검토·rollback 명령 표준화 | 앱 시작 시 임의 schema 변경 |
-| 큰 artifact | 로컬 content-addressed file store | PROPOSED | 큰 raw output·PoC·log를 DB blob과 분리하고 hash로 검증 | 모든 데이터를 SQLite blob에 저장 |
-| 동시성 | `asyncio` bounded task + SQLite claim | PROPOSED | 외부 I/O 병렬성과 가설별 제한 병렬 처리 | Celery·RabbitMQ·Kafka |
-| CLI | 표준 `argparse` | PROPOSED | 첫 구현 의존성 최소화와 명시적 exit code | Web/API 우선, CLI framework 추가 |
-| 설정 | TOML + 승인된 YAML registry + 환경 변수 secret | PROPOSED | 사람이 읽는 설정, prompt/playbook registry와 secret 분리 | Python 설정 코드, 저장소의 `.env` 비밀값 |
-| 외부 실행 | `asyncio.create_subprocess_exec`, `shell=False` | PROPOSED | Git·CodeQL·OpenGrep·Docker 명령 인자 경계와 취소 가능 | shell 문자열 연결, LLM의 직접 command 실행 |
-| 로그 | 표준 logging 기반 JSON Lines | PROPOSED | secret redaction 뒤 구조화 event를 파일·CI에서 동일 처리 | 자유 형식 로그만 저장, hidden reasoning 저장 |
-| 초기 UI | CLI | PROPOSED | core와 계약을 먼저 안정화 | Web UI·HTTP server 동시 구현 |
+| 언어 | 64-bit CPython, Python `>=3.12,<3.13` | ACCEPTED | Pydantic 2, 표준 `tomllib`, async I/O와 타입 도구를 안정적으로 사용 | 다중 언어 core, Python 3.13 즉시 채택 |
+| dependency | `uv` + `pyproject.toml` + 커밋된 `uv.lock` | ACCEPTED | 한 명 구현자가 설치·lock·실행 명령을 하나로 유지 | requirements 파일 중복, 런타임 자동 설치 |
+| 품질 도구 | Ruff format/lint, mypy strict, pytest | ACCEPTED | 빠른 로컬 검증과 CI 명령 통일 | formatter·linter 복수 조합 |
+| schema | Pydantic 2 계열 + JSON Schema 2020-12 | ACCEPTED | 공통 Python type과 외부 JSON 계약을 함께 생성 | dict 직접 조립, 역할별 독립 schema 정의 |
+| JSON hash | SASTSIMI Canonical JSON v1 + SHA-256 | ACCEPTED | work dedupe와 exact content reference를 동일 bytes로 계산 | 기본 `json.dumps()` 출력에 의존 |
+| 상태 DB | SQLite + SQLAlchemy 2 계열 | ACCEPTED | 로컬 단일 host transaction·constraint·CAS를 명시적으로 구현 | PostgreSQL, 문서 DB, in-memory 상태 |
+| migration | Alembic + revision별 upgrade/downgrade | ACCEPTED | DB 변경 이력·검토·rollback 명령 표준화 | 앱 시작 시 임의 schema 변경 |
+| 큰 artifact | 로컬 content-addressed file store | ACCEPTED | 큰 raw output·PoC·log를 DB blob과 분리하고 hash로 검증 | 모든 데이터를 SQLite blob에 저장 |
+| 동시성 | `asyncio` bounded task + SQLite claim | ACCEPTED | 외부 I/O 병렬성과 가설별 제한 병렬 처리 | Celery·RabbitMQ·Kafka |
+| CLI | 표준 `argparse` | ACCEPTED | 첫 구현 의존성 최소화와 명시적 exit code | Web/API 우선, CLI framework 추가 |
+| 설정 | TOML + 승인된 YAML registry + 환경 변수 secret | ACCEPTED | 사람이 읽는 설정, prompt/playbook registry와 secret 분리 | Python 설정 코드, 저장소의 `.env` 비밀값 |
+| 외부 실행 | `asyncio.create_subprocess_exec`, `shell=False` | ACCEPTED | Git·CodeQL·OpenGrep·Docker 명령 인자 경계와 취소 가능 | shell 문자열 연결, LLM의 직접 command 실행 |
+| 로그 | 표준 logging 기반 JSON Lines | ACCEPTED | secret redaction 뒤 구조화 event를 파일·CI에서 동일 처리 | 자유 형식 로그만 저장, hidden reasoning 저장 |
+| 초기 UI | CLI | ACCEPTED | core와 계약을 먼저 안정화 | Web UI·HTTP server 동시 구현 |
 
 각 Python package의 정확한 patch version은 `uv.lock`, 각 외부 실행 도구의 정확한 version은 승인된 tool profile에 고정한다. “2 계열” 같은 범위는 설계 호환 범위이며 실제 실행은 lock과 profile의 exact version만 허용한다.
 
@@ -988,17 +988,12 @@ PR 필수 job은 1~7이다. 실제 credential·외부 서비스가 필요한 8�
 
 각 검토는 검토한 commit SHA와 담당 section을 남긴다. “전체적으로 문제없음”만으로 필수 검토를 대신하지 않는다.
 
-## 22. 최종 검토와 동기화
+## 22. 최종 검토와 동기화 결과
 
-Draft PR을 Ready로 바꾸기 전에 다음을 수행한다.
+1. PR #116이 `main`의 `07bd6549a676419c0e720f940ba7abd1b82aea0d`로 병합됐다.
+2. R3-03 복구 계획의 `RQ-01`~`RQ-10`은 §10.7의 확정 기준을 가리킨다.
+3. Issue #89, Issue #92와 R3 상위 Issue #4가 모두 종료됐다.
+4. Primitive가 COMMITTED된 뒤에만 Chaining을 시작하는 규칙과 R1~R8 역할 경계를 최종 기준에 보존했다.
+5. 최종 승인 PR은 위 내용 SHA를 고정하고 전체 validator와 diff check를 다시 실행한다.
 
-1. PR #107 병합 결과가 들어간 `main`과 이 branch의 기준 SHA가 같은지 확인한다.
-2. R3-03 복구 계획의 `RQ-01`~`RQ-10`이 §10.7의 확정 기준을 가리키는지 확인한다.
-3. Issue #89가 종료됐는지 확인한다. 2026-09-08 확인 결과 `CLOSED`다.
-4. 종료 시점의 최신 `main`을 이 branch에 다시 반영한다.
-5. R1이 지적한 Primitive COMMITTED 뒤 Chaining 시작 규칙이 남아 있는지 확인한다.
-6. 기준 SHA를 최종 최신 `main` commit으로 갱신한다.
-7. 전체 validator·diff check를 다시 실행한다.
-8. R1~R8 review-freeze 기록을 받는다.
-
-이 동기화 전에는 PR을 병합하거나 Issue #92를 닫지 않는다.
+이 완료 기록은 설계와 구현 준비 기준의 확정이다. 실제 모듈·시험·Provider·Sandbox가 구현됐다는 뜻은 아니다.

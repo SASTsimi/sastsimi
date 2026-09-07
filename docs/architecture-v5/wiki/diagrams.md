@@ -8,7 +8,7 @@ Architecture v5의 전체 처리 순서와 역할·데이터 관계를 그림으
 
 모르는 이름은 [쉬운 용어집](../../GLOSSARY.md)에서 확인하세요.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 1. 정본 22단계 파이프라인
 

@@ -4,7 +4,7 @@
 - **누가 읽어야 하나요?** 전체 구현 담당자와 R1·R2·R4·R5·R6·R7·R8 역할 검토자가 읽습니다.
 - **읽은 뒤 무엇을 결정해야 하나요?** 각 단계의 구현 위치와 연결 계약이 맞는지 검토하고, 아래 미확정 항목을 담당 Issue에서 확정해야 합니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 1. 기준과 문서의 권한
 

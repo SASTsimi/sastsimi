@@ -1,12 +1,14 @@
 # ADR-012. Primitive match 중복 판정을 exact reference 조합으로 정한다
 
-- 상태: `PROPOSED`
+- 상태: `ACCEPTED`
 - 결정일: 2026-09-06
-- 기준 main: `ef8e1ad`
+- 기준 main: `0cae9bdc5161efb68a3fdc15cb72ec12e3a3440e` (PR #105 병합)
 - 결정 담당: LLM 탐색·체이닝(R1)
 - 함께 검토할 역할: PM·아키텍처·워크플로(R4), 데이터·평가·예산(R8)
 - 연결 Issue/PR: #104, PR #105, ADR-005
-- 반영 commit: `docs: replace chaining fingerprint with match reference key`
+- 반영 commit: `0cae9bdc5161efb68a3fdc15cb72ec12e3a3440e`
+
+Issue #104 종료와 PR #105 병합으로 결정과 정본 반영을 확인했다. 실제 저장소 unique constraint와 중복 부정 시험은 구현 단계에서 검증한다.
 
 ## Context
 

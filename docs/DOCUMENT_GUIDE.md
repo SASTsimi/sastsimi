@@ -44,6 +44,7 @@
 | [`docs/review/ISSUE_CATALOG.md`](./review/ISSUE_CATALOG.md) | 역할별 상위 Issue에서 무엇을 검토하고 어떤 하위 Issue를 만들지 자세히 설명합니다. | 역할 담당자 | 기준 문서 |
 | [`docs/review/R4-04_CROSS_REVIEW.md`](./review/R4-04_CROSS_REVIEW.md) | R4-04에서 역할별로 무엇을 확인하고 어떤 GitHub 기록을 승인으로 인정하는지 설명합니다. | R1~R8 담당자·최종 검토 담당자 | 검토 기록 |
 | [`docs/review/FINDINGS.md`](./review/FINDINGS.md) | 현재 설계에서 발견된 큰 문제와 해결 조건을 정리합니다. | PM·문제 담당자 | 기준 문서 |
+| [`docs/review/FINAL_ARCHITECTURE_V5_APPROVAL.md`](./review/FINAL_ARCHITECTURE_V5_APPROVAL.md) | 최종 설계 내용 SHA, 종단 시나리오 추적 결과, 승인 범위와 구현 전 후속 조건을 기록합니다. | R1~R8 담당자·구현 담당자 | 최종 승인 기록 |
 | [`docs/review/PROVENANCE.md`](./review/PROVENANCE.md) | Architecture v5 파일을 어디에서 가져왔는지와 원본 해시를 기록합니다. | PM·최종 검토 담당자 | 기준 기록 |
 | [`docs/review/decisions/README.md`](./review/decisions/README.md) | 팀이 확정한 중요한 설계 결정과 근거를 기록하는 방법을 설명합니다. | 결정 담당자·검토자 | 기준 문서 |
 | [`ADR-001-verification-owned-chaining-admission.md`](./review/decisions/ADR-001-verification-owned-chaining-admission.md) | Verification 중심 제어권을 정한 과거 결정입니다. Primitive와 체이닝 부분은 ADR-005가 대체했습니다. | R1·R4·R6·Gate 담당 | 대체된 이력 |
@@ -57,10 +58,10 @@
 | [`ADR-009-r5-01-cwe-labeling-provenance.md`](./review/decisions/ADR-009-r5-01-cwe-labeling-provenance.md) | CWE 라벨을 새 Verification마다 다시 평가하고 exact revision에 연결하는 현재 결정을 설명합니다. | R4·R5·R6 담당 | 확정 결정 |
 | [`ADR-010-static-fact-kind-partition.md`](./review/decisions/ADR-010-static-fact-kind-partition.md) | StaticFactBundle의 사실 종류와 sanitizer·validator 후보를 분리해 전달하는 현재 결정을 설명합니다. | R2·R4·R6·R8 담당 | 확정 결정 |
 | [`ADR-011-testing-restriction-primitive-admission.md`](./review/decisions/ADR-011-testing-restriction-primitive-admission.md) | 금지된 테스트 위반만 TRUE Primitive 체이닝 자격을 막도록 전용 판정과 admission 결정을 분리한 결정입니다. 회수 절차는 ADR-014가 대체했고 전용 판정·매핑은 유지됩니다. | R1·R4·R5 담당 | 대체된 이력 |
-| [`ADR-013-run-policy-preparation-and-reuse.md`](./review/decisions/ADR-013-run-policy-preparation-and-reuse.md) | 정책을 실행 초기에 한 번 준비해 가설들이 공유하고, run 안에서는 고정하며 다음 run 시작 때 exact cache를 재사용할지 판단하는 제안입니다. | R4·R5·R7·R8 담당 | 검토 중 결정 |
-| [`ADR-012-primitive-match-duplicate-key.md`](./review/decisions/ADR-012-primitive-match-duplicate-key.md) | Primitive match의 중복 판정 키와 순회 단위를 정하는 제안을 설명합니다. | R1·R4 담당 | 검토 중 결정 |
+| [`ADR-013-run-policy-preparation-and-reuse.md`](./review/decisions/ADR-013-run-policy-preparation-and-reuse.md) | 정책을 실행 초기에 한 번 준비해 가설들이 공유하고, run 안에서는 고정하며 다음 run 시작 때 exact cache를 재사용할지 판단하는 확정 결정을 설명합니다. | R4·R5·R7·R8 담당 | 확정 결정 |
+| [`ADR-012-primitive-match-duplicate-key.md`](./review/decisions/ADR-012-primitive-match-duplicate-key.md) | Primitive match의 중복 판정 키와 순회 단위를 정한 확정 결정을 설명합니다. | R1·R4 담당 | 확정 결정 |
 | [`ADR-014-primitive-admission-single-decision.md`](./review/decisions/ADR-014-primitive-admission-single-decision.md) | Primitive admission을 등록 시점의 1회 판정으로 확정하고 회수 절차를 두지 않는 현재 결정을 설명합니다. ADR-011의 회수 부분을 대체합니다. | R1·R4·R5·R6·R8 담당 | 확정 결정 |
-| [`ADR-015-r3-implementation-baseline.md`](./review/decisions/ADR-015-r3-implementation-baseline.md) | 한 명 구현을 위한 언어·저장·파일 구조·CLI·CI의 단일안을 설명합니다. | R1~R8·전체 구현 담당 | 검토 중 결정 |
+| [`ADR-015-r3-implementation-baseline.md`](./review/decisions/ADR-015-r3-implementation-baseline.md) | 한 명 구현을 위한 언어·저장·파일 구조·CLI·CI의 확정 기준을 설명합니다. | R1~R8·전체 구현 담당 | 확정 결정 |
 
 ## Architecture v5 기술 기준 문서
 
