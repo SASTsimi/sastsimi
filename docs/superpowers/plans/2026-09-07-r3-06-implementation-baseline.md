@@ -8,12 +8,12 @@
 
 **Tech Stack:** Markdown, PowerShell architecture validator, Git, GitHub Issue/PR
 
-**Spec:** GitHub Issue #92 및 `docs/architecture-v5/implementation/01-module-map.md`, `02-contract-test-plan.md`, PR #107의 `03-recovery-test-plan.md`, `04-provider-decision.md`, `05-prompt-runtime.md`
+**Spec:** GitHub Issue #92 및 `docs/architecture-v5/implementation/01-module-map.md`, `02-contract-test-plan.md`, `03-recovery-test-plan.md`, `04-provider-decision.md`, `05-prompt-runtime.md`
 
 ## Global Constraints
 
 - 기준 branch는 최신 `origin/main`에서 만든 `docs/r3-06-implementation-baseline`이다.
-- PR은 PR #107과 Issue #89가 끝나기 전까지 Draft로 유지한다.
+- PR #107은 `35729d3`으로 main에 병합됐고 Issue #89도 종료됐다. R1~R8 필수 검토가 끝날 때까지 이 PR은 Draft로 유지한다.
 - Agent 역할은 Provider·모델과 분리하고 별도 모델 전용 profile 객체를 만들지 않는다.
 - 모델은 exact `provider_profile_ref`와 `LLMCallSpec.model`로 선택한다.
 - 공식 역할명과 실행 식별값은 `docs/GLOSSARY.md`를 따른다.
@@ -84,7 +84,7 @@
 - Produces: 구현 담당자와 역할 검토자가 읽을 순서·권한·상태를 찾는 단일 인덱스
 
 - [x] **Step 1:** `01`~`06`의 목적, 독자, 결정 범위와 읽는 순서를 implementation README에 기록한다.
-- [x] **Step 2:** `03-recovery-test-plan.md`는 PR #107 병합 전 dependency 상태임을 표시한다.
+- [x] **Step 2:** 병합된 `03-recovery-test-plan.md`를 실제 링크로 연결하고 RQ-01~RQ-10을 `06`의 확정 구현 기준과 대조한다.
 - [x] **Step 3:** Architecture README에 구현 인계 묶음과 `06` 정본 역할을 연결한다.
 - [x] **Step 4:** DOCUMENT_GUIDE에 implementation README, `06`과 ADR-015를 추가한다.
 
@@ -101,5 +101,5 @@
 - [x] **Step 2:** 폐기 용어, 고정 모델, 잘못된 Agent 이름, 미확정 구현 차단 표현과 끊어진 상대 링크를 검색한다.
 - [x] **Step 3:** `scripts/validate-architecture-docs.ps1`과 `git diff --check`를 실행한다.
 - [x] **Step 4:** 변경 통계와 diff를 다시 읽어 기존 역할·데이터·상태 의미 변경이 없는지 확인한다.
-- [ ] **Step 5:** 검증 결과와 PR #107 dependency를 포함해 commit하고 branch를 push한다.
-- [ ] **Step 6:** `Closes #92`, `Refs #4, #24, #25, #89, #90, #91`, `Depends on #107`을 포함한 Draft PR을 생성한다.
+- [x] **Step 5:** 검증 결과와 PR #107 병합·Issue #89 종료 기준을 포함해 commit하고 branch를 push한다.
+- [ ] **Step 6:** `Closes #92`, `Refs #4, #24, #25, #89, #90, #91`, 병합된 PR #107을 포함한 Draft PR을 생성한다.

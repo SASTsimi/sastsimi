@@ -14,7 +14,7 @@
 
 1. [01. 모듈 맵](./01-module-map.md) — 전체 22단계를 실행 주체, 입력·출력, 저장, 오류와 test 위치에 연결합니다.
 2. [02. 계약 시험 계획](./02-contract-test-plan.md) — 각 계약의 정상·실패·권한 위반 fixture와 기대 결과를 정의합니다.
-3. `./03-recovery-test-plan.md` — 중단·재시도·복구 시험입니다. 현재 [PR #107](https://github.com/SASTsimi/sastsimi/pull/107)에 있으며 병합 후 이 항목을 실제 링크로 바꿉니다.
+3. [03. 복구 시험 계획](./03-recovery-test-plan.md) — 중단·재시도·복구 시험과 장애 주입 지점을 설명합니다. PR #107 병합본이며 RQ-01~RQ-10의 물리 기준은 `06` §10.7에 연결됩니다.
 4. [04. Provider 결정](./04-provider-decision.md) — API Key·구독 로그인 연결 후보와 실제 지원 판정 시험을 설명합니다.
 5. [05. Prompt Runtime](./05-prompt-runtime.md) — Prompt Registry·Builder와 11개 LLM 역할의 입력·출력 검증을 설명합니다.
 6. [06. 구현 기준선](./06-implementation-baseline.md) — 위 설계를 실제 언어·파일 구조·저장·설정·CLI·CI와 구현 순서로 확정합니다.
@@ -25,14 +25,13 @@
 - Agent 판단 기준 변경: 해당 역할 번호 문서와 역할 담당자 검토가 먼저입니다.
 - Provider·session 변경: `09`, 구현 문서 `04`·`05`와 R3·R4·R8 검토가 필요합니다.
 - 저장 제품·파일 구조·CLI·CI 변경: 구현 문서 `06`과 ADR을 수정합니다.
-- recovery 기대값 변경: PR #107 병합 뒤 구현 문서 `03`과 `06`을 함께 수정합니다.
+- recovery 기대값 변경: 구현 문서 `03`의 시나리오와 `06`의 물리 복구 기준을 함께 수정합니다.
 
-## 현재 선행 조건
+## 현재 완료 상태와 남은 조건
 
-- PR #107 병합과 Issue #89 종료
-- #107 병합 뒤 `06`의 기준 main SHA 갱신
+- PR #107 병합과 Issue #89 종료: 완료
+- PR #107 병합 commit `35729d3`을 반영하고 `06`의 기준 SHA 갱신: 완료
 - R1~R8 역할별 section 검토와 review-freeze SHA 기록
 - 문서 validator와 `git diff --check` 통과
 
-이 조건 전에는 R3-06 PR을 Ready 또는 구현 기준 `ACCEPTED`로 표시하지 않습니다.
-
+남은 역할별 검토와 최종 검증 전에는 R3-06 PR을 Ready 또는 구현 기준 `ACCEPTED`로 표시하지 않습니다.

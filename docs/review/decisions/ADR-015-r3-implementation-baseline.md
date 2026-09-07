@@ -2,7 +2,7 @@
 
 - 상태: `PROPOSED`
 - 제안일: 2026-09-07
-- 기준 main: `0c1b59b5f74fb2c76171167940640d10ca5155b0`
+- 기준 main: `35729d3185cf46cdbf9c94ce2be646ae11f26446` (PR #107 병합)
 - 결정 담당: 구현·통합(R3, `@YHS-Sec`), PM·공통 아키텍처(R4, `@taehyeon-git`)
 - 반드시 확인할 역할: R1 `@baeseungwon1010`, R2 `@zv9uvr`, R5 `@kimhr8463`, R6 `@UltraPeachKeen`, R7 `@Potatonion`, R8 `@gitterable`
 - 연결 Issue/PR: #4, #24, #25, #89, #90, #91, #92, PR #107, 이 ADR을 추가하는 Draft PR
@@ -92,7 +92,7 @@ R3-04의 실제 capability 시험을 통과하지 않은 ProviderProfile은 ACTI
 
 - Architecture 문서 validator가 구현 기준선·인덱스·이 ADR의 존재와 핵심 결정을 확인한다.
 - `git diff --check`와 상대 링크 검사를 통과한다.
-- R3-02 계약 시험과 PR #107 복구 시험을 물리 table·artifact·CLI 결정에 연결한다.
+- R3-02 계약 시험과 병합된 R3-03 복구 시험을 물리 table·artifact·CLI 결정에 연결한다.
 - R1~R8이 자기 영역 section과 검토 commit SHA를 기록한다.
-- PR #107 병합 뒤 최신 main 기준으로 재검증한다.
-- PR #107 동기화와 필수 검토를 마친 최종 review-freeze commit에서 상태를 `ACCEPTED`로 바꾸고 decisions README의 기준 commit·PR 정보를 갱신한 뒤 병합한다.
+- PR #107 병합과 Issue #89 종료를 반영한 최신 main 기준으로 재검증한다.
+- 필수 역할 검토를 마친 최종 review-freeze commit에서 상태를 `ACCEPTED`로 바꾸고 decisions README의 기준 commit·PR 정보를 갱신한 뒤 병합한다.

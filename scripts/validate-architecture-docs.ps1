@@ -3587,8 +3587,9 @@ foreach ($marker in $forbiddenR8OwnershipMarkers) {
 $r306BaselinePath = Join-Path $repoRoot 'docs/architecture-v5/implementation/06-implementation-baseline.md'
 $r306IndexPath = Join-Path $repoRoot 'docs/architecture-v5/implementation/README.md'
 $r306AdrPath = Join-Path $repoRoot 'docs/review/decisions/ADR-015-r3-implementation-baseline.md'
+$r303RecoveryPath = Join-Path $repoRoot 'docs/architecture-v5/implementation/03-recovery-test-plan.md'
 
-foreach ($requiredFile in @($r306BaselinePath, $r306IndexPath, $r306AdrPath)) {
+foreach ($requiredFile in @($r306BaselinePath, $r306IndexPath, $r306AdrPath, $r303RecoveryPath)) {
     if (-not (Test-Path -LiteralPath $requiredFile)) {
         Add-Failure "R3-06 required document is missing: $requiredFile"
     }
@@ -3610,10 +3611,12 @@ if (Test-Path -LiteralPath $r306BaselinePath) {
         '외부 message queue 제품을 도입하지 않는다',
         '구현 차단 `DEFERRED`: 없음',
         'PR #107',
+        '35729d3185cf46cdbf9c94ce2be646ae11f26446',
         '## 5. 실제 repository 구조',
         '## 6. 허용 의존 방향',
         '## 10. 저장·transaction·복구',
         '#### 10.2.1 핵심 result owner와 current 선택점',
+        '### 10.7 R3-03 복구 질문의 확정 기준',
         'trusted proposal 출력 검증 runtime이 source 결과 확정 전에 전역 ID를 한 번 부여하며',
         'ORCHESTRATION 등록 runtime은 COMMITTED source 안의 같은 ID·문장·목록·순서를 별도 immutable record에 그대로 저장한다.',
         '## 16. CLI 계약',
@@ -3636,6 +3639,24 @@ if (Test-Path -LiteralPath $r306BaselinePath) {
     }
     if ([regex]::IsMatch($r306BaselineText, '(?mi)\b(TBD|TODO)\b')) {
         Add-Failure 'R3-06 implementation baseline contains an unresolved implementation placeholder'
+    }
+}
+
+if (Test-Path -LiteralPath $r303RecoveryPath) {
+    $r303RecoveryText = Get-Content -Raw -Encoding UTF8 -LiteralPath $r303RecoveryPath
+    foreach ($marker in @(
+        '## 8. R3-06에서 확정한 복구 기준',
+        '| RQ-01 저장 프로토콜·core output | `RESOLVED` |',
+        '| RQ-04 worker·외부 호출 불확실성 | `RESOLVED` |',
+        '| RQ-10 동적 입력 변경 후 후속 전이 | `RESOLVED` |',
+        'R3-REC-DYN-010 — exact request 또는 SandboxProfile 변경 뒤 RESUME 차단과 새 generation'
+    )) {
+        if (-not $r303RecoveryText.Contains($marker)) {
+            Add-Failure "R3-03 recovery plan is not aligned with R3-06: $marker"
+        }
+    }
+    if ($r303RecoveryText.Contains('## 8. 미결정 계약과 담당자 확인')) {
+        Add-Failure 'R3-03 recovery plan still presents resolved RQ items as undecided'
     }
 }
 

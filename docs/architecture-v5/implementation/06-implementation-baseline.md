@@ -23,11 +23,11 @@
 
 - [R3-01 모듈 맵](./01-module-map.md): 정본 22단계의 주체·입출력·저장·오류 연결
 - [R3-02 계약 시험 계획](./02-contract-test-plan.md): 정상·부정 fixture와 계약 시험
-- `./03-recovery-test-plan.md`: 중단·재시도·복구 시험 계획. 현재 [PR #107](https://github.com/SASTsimi/sastsimi/pull/107)에서 검토 중이며 병합 뒤 이 문서의 기준 SHA와 복구 항목을 다시 대조한다.
+- [R3-03 복구 시험 계획](./03-recovery-test-plan.md): 중단·재시도·복구 시험. PR #107 병합 결과를 이 기준선의 물리 저장·CLI·복구 결정과 대조했다.
 - [R3-04 Provider 결정](./04-provider-decision.md): API Key·구독 로그인 연결 후보와 capability 시험
 - [R3-05 Prompt Runtime](./05-prompt-runtime.md): Prompt Registry·Builder·11개 LLM 역할과 출력 검증
 
-현재 branch의 기준 `main`은 `0c1b59b5f74fb2c76171167940640d10ca5155b0`이다. PR #107 병합 뒤 최신 `main`을 반영하고 이 SHA를 최종 review-freeze SHA로 교체해야 한다. 이 문서의 기술 선택은 Draft PR에서 검토할 단일안이며, [ADR-015](../../review/decisions/ADR-015-r3-implementation-baseline.md)는 병합 전까지 `PROPOSED`다.
+현재 branch의 기준 `main`은 PR #107을 병합한 `35729d3185cf46cdbf9c94ce2be646ae11f26446`이다. Issue #89 종료도 확인했다. 필수 역할 검토가 끝난 최신 head를 최종 review-freeze SHA로 기록해야 한다. 이 문서의 기술 선택은 Draft PR에서 검토할 단일안이며, [ADR-015](../../review/decisions/ADR-015-r3-implementation-baseline.md)는 최종 승인 전까지 `PROPOSED`다.
 
 - 구현 차단 `DEFERRED`: 없음
 - 실제 코드: 없음
@@ -576,7 +576,7 @@ proposal의 의미와 문장은 Hypothesis·Verification·Chaining 역할이 만
 7. unresolved corruption은 `RECOVERY_FAILED`로 run을 차단한다.
 8. 없는 근거, command 종료 event, PoC와 verdict를 복구 과정에서 만들지 않는다.
 
-세부 recovery fixture는 PR #107의 `03-recovery-test-plan.md`를 병합한 뒤 연결한다.
+세부 recovery fixture는 [R3-03 복구 시험 계획](./03-recovery-test-plan.md)의 `R3-REC-*` ID를 사용한다.
 
 ### 10.6 migration
 
@@ -586,6 +586,25 @@ proposal의 의미와 문장은 Hypothesis·Verification·Chaining 역할이 만
 - downgrade가 record 의미를 잃으면 실행 전 백업을 요구하고 자동 실행을 거절한다.
 - MAJOR contract 변경은 새 column/table에 저장하고 과거 record를 추정 backfill하지 않는다.
 - CI는 빈 DB upgrade, 직전 release upgrade, downgrade 후 재-upgrade와 데이터 보존을 시험한다.
+
+### 10.7 R3-03 복구 질문의 확정 기준
+
+R3-03의 `RQ-01`~`RQ-10`은 아래 기준으로 구현한다. 이는 구현을 막는 미결정 목록이 아니라, 실제 fixture가 확인할 승인 후보 기준이다.
+
+| RQ | 확정 기준 |
+|---|---|
+| `RQ-01` 저장 | §10.3의 staging → hash → `PREPARED` → CAS → atomic rename → SQLite transaction B → `COMMITTED` 순서를 사용한다. 파일은 rename 전에 flush·file sync하고, 시작 복구가 orphan·DB pointer·hash를 전수 대조한다. 네 core result owner와 current 선택점은 §10.2.1을 따른다. |
+| `RQ-02` 오류 | §8.4의 우선순위로 한 개의 근본 `AnalysisError.code`를 선택하고 모든 실패 check는 `ActionCheck`에 남긴다. 원인을 알 수 없거나 안전한 복구를 입증하지 못하면 `stage=RECOVERY`, `code=RECOVERY_FAILED`로 후속 소비를 차단한다. |
+| `RQ-03` migration | Alembic revision만 schema를 바꾼다. 앱 시작 중 자동 migration은 금지하고 pending·중단·현재 revision 불일치 시 exit 3으로 멈춘다. 검증된 upgrade/downgrade만 실행하며 의미 손실 rollback은 백업과 사람 승인이 없으면 거절한다. |
+| `RQ-04` worker·외부 호출 불확실성 | SQLite의 `worker_id + lease_expires_at + state_version`을 한 transaction에서 비교해 lease를 회수한다. 외부 요청 전송 뒤 결과를 모르면 exact provider request ID로 공식 상태 조회가 가능할 때만 재조정한다. 조회·idempotency를 증명할 수 없으면 자동 재전송하지 않고 `RECOVERY_FAILED`, `BLOCKED`, `waiting_for=INPUT`으로 사람의 명시적 재시도·failover 결정을 기다린다. |
+| `RQ-05` cancel·resume | `resume`은 같은 입력을 유지한 non-terminal `BLOCKED` run의 허용 work만 재개한다. `CANCELLED | COMPLETE | PARTIAL | FAILED` run은 되살리지 않는다. 같은 입력을 다시 실행하려면 사용자가 새 `run`을 요청해 새 `analysis_id`를 만든다. cancelled 조회는 exit 7, terminal 재개 요청은 exit 2다. |
+| `RQ-06` 시간·비용 | attempt 실행 중 monotonic elapsed를 durable heartbeat 구간별로 누적하고 process off·BLOCKED 대기는 제외한다. crash 직전 미기록 구간과 provider가 주지 않은 usage는 `null`·불명 사유로 보존한다. 새 비용·시간 work는 COMMITTED ledger와 reservation으로 잔여 한도를 입증할 때만 시작하고, 입증하지 못하면 `BLOCKED + waiting_for=BUDGET`이다. token usage 미제공만으로 차단하지 않는다. |
+| `RQ-07` repair | schema·semantic 실패 응답과 validation error를 먼저 durable invocation log로 남긴다. 각 repair는 같은 domain work의 새 `WorkAttempt`, `llm_call_id`, spec, action, decision과 `NEW` session을 사용하고 바로 앞 invalid call을 연결한다. 성공 output 하나만 current로 확정하며 중단·소진 시 invalid output을 승격하지 않는다. |
+| `RQ-08` Sandbox 재생성·cleanup | health 또는 소유 상태를 확인할 수 없으면 `STATE_UNCERTAIN`으로 새 environment binding을 만들고 기존 writable container를 재사용하지 않는다. 자원은 analysis·hypothesis·work·attempt ownership label과 exact environment ref가 모두 맞을 때만 정리한다. cleanup 재호출은 같은 자원에 멱등이고, 실패·불확실 자원은 quarantine하여 다음 실행에 연결하지 않는다. |
+| `RQ-09` AgentLog append | 같은 `event_id`와 같은 canonical hash의 재전달은 기존 durable ACK를 반환한다. 같은 ID의 다른 bytes 또는 같은 attempt의 같은 sequence에 다른 event가 오면 `RECOVERY_FAILED`로 거절한다. start만 있고 finish가 없으면 미확인 상태로 남기고 finish를 만들지 않으며 environment를 `STATE_UNCERTAIN`으로 처리한다. |
+| `RQ-10` 동적 입력 변경 | request 또는 Sandbox profile exact revision 변경이 필요하면 기존 dynamic work를 종료 history로 남긴다. 같은 ACTIVE Verification owner가 CAS로 `verification_generation + 1`, 새 VERIFICATION work·application·Pro/Con을 등록하고 필요하면 새 DynamicReproductionRequest와 새 DYNAMIC_REPRO work를 만든다. 과거 action·attempt·environment·PoC·CWE·Gate는 재사용하지 않으며 Recovery가 의미 결정을 대신 만들지 않는다. |
+
+adapter별 실제 request 상태 조회·idempotency, filesystem directory sync와 Docker health probe 지원 여부는 capability 시험 결과로 기록한다. 지원하지 않는 기능은 위 fail-closed 경로를 사용하며, 시험 미실행을 지원 성공으로 표시하지 않는다.
 
 ## 11. 설정과 secret
 
@@ -861,16 +880,16 @@ PR 필수 job은 1~7이다. 실제 credential·외부 서비스가 필요한 8�
 
 각 검토는 검토한 commit SHA와 담당 section을 남긴다. “전체적으로 문제없음”만으로 필수 검토를 대신하지 않는다.
 
-## 22. PR #107 병합 후 최종 동기화
+## 22. 최종 검토와 동기화
 
 Draft PR을 Ready로 바꾸기 전에 다음을 수행한다.
 
-1. PR #107을 병합하고 Issue #89 완료 조건을 확인한다.
-2. 이 branch에 최신 `main`을 반영한다.
-3. `./03-recovery-test-plan.md`를 implementation README의 실제 링크로 바꾼다.
-4. recovery card의 저장 기술·table·artifact·migration·CLI 기대값을 이 문서와 대조한다.
+1. PR #107 병합 결과가 들어간 `main`과 이 branch의 기준 SHA가 같은지 확인한다.
+2. R3-03 복구 계획의 `RQ-01`~`RQ-10`이 §10.7의 확정 기준을 가리키는지 확인한다.
+3. Issue #89가 종료됐는지 확인한다. 2026-09-08 확인 결과 `CLOSED`다.
+4. 종료 시점의 최신 `main`을 이 branch에 다시 반영한다.
 5. R1이 지적한 Primitive COMMITTED 뒤 Chaining 시작 규칙이 남아 있는지 확인한다.
-6. 기준 SHA를 최종 `main` merge commit으로 갱신한다.
+6. 기준 SHA를 최종 최신 `main` commit으로 갱신한다.
 7. 전체 validator·diff check를 다시 실행한다.
 8. R1~R8 review-freeze 기록을 받는다.
 
