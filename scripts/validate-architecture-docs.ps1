@@ -1191,8 +1191,8 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
     foreach ($obsoleteExample in @('data_kind: evidence_agent_result', '"/restrictions"')) {
         if ($promptRuntimeText.Contains($obsoleteExample)) { Add-Failure "R3-05 prompt runtime uses invalid registration example field: $obsoleteExample" }
     }
-    $proTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| PRO / `COLLECT_SUPPORT`.*$').Value
-    $conTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| CON / `COLLECT_COUNTEREVIDENCE`.*$').Value
+    $proTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| PRO / `COLLECT_SUPPORT` \| `config/prompts/templates/.*$').Value
+    $conTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| CON / `COLLECT_COUNTEREVIDENCE` \| `config/prompts/templates/.*$').Value
     foreach ($rowRule in @(
         @{ Name = 'PRO'; Text = $proTaskRow },
         @{ Name = 'CON'; Text = $conTaskRow }
@@ -1272,6 +1272,21 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
         'Reporter의 `run_policy_state`, `collection`, `policy`는 Rule Scope review가 사용한 exact frozen chain과 같아야 한다.'
     )) {
         if (-not $promptRuntimeText.Contains($requiredRule)) { Add-Failure "R3-05 R5 prompt closure rule is missing: $requiredRule" }
+    }
+
+    $promptSettingRows = [regex]::Matches($promptRuntimeText, '(?m)^\| (?<role>[A-Z_]+) / `(?<task>[A-Z_]+)` \| `model\.[^`]+` \|')
+    $promptTaskRows = [regex]::Matches($promptRuntimeText, '(?m)^\| (?<role>[A-Z_]+) / `(?<task>[A-Z_]+)` \| `config/prompts/templates/[^`]+` \|')
+    $settingKeys = @($promptSettingRows | ForEach-Object { "$($_.Groups['role'].Value)/$($_.Groups['task'].Value)" })
+    $taskKeys = @($promptTaskRows | ForEach-Object { "$($_.Groups['role'].Value)/$($_.Groups['task'].Value)" })
+    if ($settingKeys.Count -ne 19 -or (@($settingKeys | Sort-Object -Unique)).Count -ne 19) {
+        Add-Failure "R3-05 common setting table must contain 19 unique agent_role/task_kind pairs; found $($settingKeys.Count) rows and $((@($settingKeys | Sort-Object -Unique)).Count) unique pairs"
+    }
+    if ($taskKeys.Count -ne 19 -or (@($taskKeys | Sort-Object -Unique)).Count -ne 19) {
+        Add-Failure "R3-05 task table must contain 19 unique agent_role/task_kind pairs; found $($taskKeys.Count) rows and $((@($taskKeys | Sort-Object -Unique)).Count) unique pairs"
+    }
+    $promptPairDiff = @(Compare-Object -ReferenceObject $settingKeys -DifferenceObject $taskKeys)
+    if ($promptPairDiff.Count -ne 0) {
+        Add-Failure "R3-05 common settings and task rows do not have the same agent_role/task_kind pairs: $($promptPairDiff | ForEach-Object { "$($_.SideIndicator)$($_.InputObject)" } | Sort-Object | Join-String -Separator ', ')"
     }
     foreach ($cardinalityRule in @(
         '`REQUIRED_ONE`은 정확히 1개',

@@ -197,8 +197,8 @@ PromptContextBinding:
 |---|---|---|---|---|---|---|---|
 | HYPOTHESIS / `GENERATE_INITIAL` | `model.hypothesis.generate-initial.quality-v1` | `providers.r3-04-accepted-v1` | `limits.hypothesis.v1` | `retry.standard.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
 | HYPOTHESIS / `DUPLICATE_REVIEW` | `model.hypothesis.duplicate-review.quality-v1` | `providers.r3-04-accepted-v1` | `limits.hypothesis.v1` | `retry.standard.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
-| PRO | `model.pro.quality-v1` | `providers.r3-04-accepted-v1` | `limits.pro.v1` | `retry.debate.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
-| CON | `model.con.quality-v1` | `providers.r3-04-accepted-v1` | `limits.con.v1` | `retry.debate.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
+| PRO / `COLLECT_SUPPORT` | `model.pro.quality-v1` | `providers.r3-04-accepted-v1` | `limits.pro.v1` | `retry.debate.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
+| CON / `COLLECT_COUNTEREVIDENCE` | `model.con.quality-v1` | `providers.r3-04-accepted-v1` | `limits.con.v1` | `retry.debate.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
 | VERIFICATION / `ASSESS_INITIAL` | `model.verification.assess-initial.quality-v1` | `providers.r3-04-accepted-v1` | `limits.verification.v1` | `retry.verification.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
 | VERIFICATION / `CREATE_DYNAMIC_REQUEST` | `model.verification.create-dynamic-request.quality-v1` | `providers.r3-04-accepted-v1` | `limits.verification.v1` | `retry.verification.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
 | VERIFICATION / `FINAL_VERDICT` | `model.verification.final-verdict.quality-v1` | `providers.r3-04-accepted-v1` | `limits.verification.v1` | `retry.verification.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
@@ -209,11 +209,11 @@ PromptContextBinding:
 | DYNAMIC_REPRODUCTION / `CREATE_POC_CANDIDATE` | `model.dynamic-reproduction.create-poc-candidate.quality-v1` | `providers.r3-04-accepted-v1` | `limits.dynamic-reproduction.v1` | `retry.dynamic-reproduction.v1` | `tools.none.v1` | `redaction.sandbox.v1` | NEW |
 | DYNAMIC_REPRODUCTION / `EXECUTE_REPRODUCTION` | `model.dynamic-reproduction.execute-reproduction.quality-v1` | `providers.r3-04-accepted-v1` | `limits.dynamic-reproduction.v1` | `retry.dynamic-reproduction.v1` | `tools.dynamic-reproduction-inner.v1` | `redaction.sandbox.v1` | NEW then same logical session turns |
 | DYNAMIC_REPRODUCTION / `INTERPRET_ATTEMPT` | `model.dynamic-reproduction.interpret-attempt.quality-v1` | `providers.r3-04-accepted-v1` | `limits.dynamic-reproduction.v1` | `retry.dynamic-reproduction.v1` | `tools.none.v1` | `redaction.sandbox.v1` | NEW |
-| CHAINING | `model.chaining.quality-v1` | `providers.r3-04-accepted-v1` | `limits.chaining.v1` | `retry.standard.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
-| CWE_LABELING | `model.cwe.quality-v1` | `providers.r3-04-accepted-v1` | `limits.cwe.v1` | `retry.standard.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
-| TECHNICAL_GATE | `model.technical-gate.quality-v1` | `providers.r3-04-accepted-v1` | `limits.technical-gate.v1` | `retry.gate.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
-| RULE_SCOPE_GATE | `model.rule-scope-gate.quality-v1` | `providers.r3-04-accepted-v1` | `limits.rule-scope-gate.v1` | `retry.gate.v1` | `tools.none.v1` | `redaction.policy.v1` | NEW |
-| REPORTER | `model.reporter.quality-v1` | `providers.r3-04-accepted-v1` | `limits.reporter.v1` | `retry.standard.v1` | `tools.none.v1` | `redaction.report.v1` | NEW |
+| CHAINING / `MATCH_PRIMITIVES` | `model.chaining.quality-v1` | `providers.r3-04-accepted-v1` | `limits.chaining.v1` | `retry.standard.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
+| CWE_LABELING / `CLASSIFY` | `model.cwe.quality-v1` | `providers.r3-04-accepted-v1` | `limits.cwe.v1` | `retry.standard.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
+| TECHNICAL_GATE / `REVIEW` | `model.technical-gate.quality-v1` | `providers.r3-04-accepted-v1` | `limits.technical-gate.v1` | `retry.gate.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
+| RULE_SCOPE_GATE / `REVIEW` | `model.rule-scope-gate.quality-v1` | `providers.r3-04-accepted-v1` | `limits.rule-scope-gate.v1` | `retry.gate.v1` | `tools.none.v1` | `redaction.policy.v1` | NEW |
+| REPORTER / `CREATE_DRAFT` | `model.reporter.quality-v1` | `providers.r3-04-accepted-v1` | `limits.reporter.v1` | `retry.standard.v1` | `tools.none.v1` | `redaction.report.v1` | NEW |
 
 `providers.r3-04-accepted-v1`에는 #90의 시험과 검토를 통과한 exact ProviderProfile만 들어간다. #90에서 승인된 profile이 없으면 이 설정도 `DRAFT`이며 어떤 역할도 호출하지 않는다. 따라서 네 후보 adapter를 모두 지원한다고 가정하지 않는다. 표의 각 행은 별도 immutable `PromptRegistryEntry`이고, 그 record의 `agent_role + task_kind`는 아래 task 행과 정확히 하나씩 대응한다. 같은 역할의 여러 task도 각자 독립된 `provider_profile_refs`를 가지며 primary 하나와 사전에 허용한 fallback만 둔다. 실제 model ID, timeout, token 계획값, 호출·repair 횟수는 R8 평가와 #92 승인 전까지 `DRAFT` 설정에 임의 값으로 채우지 않는다.
 
