@@ -1288,6 +1288,26 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
     if ($promptPairDiff.Count -ne 0) {
         Add-Failure "R3-05 common settings and task rows do not have the same agent_role/task_kind pairs: $($promptPairDiff | ForEach-Object { "$($_.SideIndicator)$($_.InputObject)" } | Sort-Object | Join-String -Separator ', ')"
     }
+    foreach ($requiredHeading in @(
+        'Hypothesis Agent',
+        'Pro Agent',
+        'Con Agent',
+        'Verification Agent',
+        'Policy Parser Agent',
+        'Dynamic Reproduction Agent',
+        'Chaining Agent',
+        'CWE Labeling',
+        'Technical Gate',
+        'Rule Scope Impact Gate',
+        'Reporter'
+    )) {
+        if (-not [regex]::IsMatch($promptRuntimeText, "(?m)^### 4\.[0-9]+ $([regex]::Escape($requiredHeading))")) {
+            Add-Failure "R3-05 role-specific section is missing: $requiredHeading"
+        }
+    }
+    if (-not $promptRuntimeText.Contains('task 행에서 cardinality를 별도로 쓰지 않은 slot은 `REQUIRED_ONE`이다.')) {
+        Add-Failure 'R3-05 task table does not define the default cardinality for an unmarked input slot'
+    }
     foreach ($cardinalityRule in @(
         '`REQUIRED_ONE`은 정확히 1개',
         '`OPTIONAL_ONE`은 0개 또는 1개',

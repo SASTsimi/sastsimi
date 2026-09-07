@@ -247,7 +247,7 @@ PromptContextBinding:
 
 위 `schema.*`, `validator.*`, `model.*`, `limits.*`, `retry.*`, `tools.*`, `redaction.*`, provider set은 `config/prompts/registry.yaml`에서 각 exact record reference로 resolve된다. 파일이나 logical key가 존재해도 exact reference·상태·검토자가 맞지 않으면 `ACTIVE`로 만들지 않는다. 모든 입력 slot의 기본 trust class는 `UNTRUSTED_DATA`이며 별도 표기가 없는 한 그대로다.
 
-`PromptInputSlot.cardinality`의 개수 의미는 고정한다. `REQUIRED_ONE`은 정확히 1개, `OPTIONAL_ONE`은 0개 또는 1개, `REQUIRED_MANY`는 1개 이상, `OPTIONAL_MANY`는 0개 이상이다. 목록이 비어도 정상인 입력에 `REQUIRED_MANY`를 사용해 가짜 record를 채워 넣어서는 안 된다.
+task 행에서 cardinality를 별도로 쓰지 않은 slot은 `REQUIRED_ONE`이다. `PromptInputSlot.cardinality`의 개수 의미는 고정한다. `REQUIRED_ONE`은 정확히 1개, `OPTIONAL_ONE`은 0개 또는 1개, `REQUIRED_MANY`는 1개 이상, `OPTIONAL_MANY`는 0개 이상이다. 목록이 비어도 정상인 입력에 `REQUIRED_MANY`를 사용해 가짜 record를 채워 넣어서는 안 된다.
 
 Pro와 Con의 공통 slot은 이름만 같은 것이 아니라 `source_ref + projected_data_ref + field_paths`의 중복 없는 집합이 exact하게 같아야 한다. `debate_config`는 R6가 승인한 versioned Debate 규칙 record, `verification_budget_profile`은 R8이 승인한 이 Verification의 공통 시간·호출·자원 예산 record다. 두 data kind의 실제 schema와 ACTIVE record가 확정되기 전에는 Pro/Con registry entry도 `DRAFT`다. 역할별 `ExecutionLimits`는 개별 LLM 호출 한도이고 이 공통 budget profile을 대신하지 않는다. trusted runtime은 위 공통 slot 전체의 canonical reference 집합으로 `debate_input_hash`를 계산하며 상대 역할의 결과·호출·session은 포함하지 않는다.
 
@@ -281,7 +281,15 @@ Pro와 Con의 공통 slot은 이름만 같은 것이 아니라 `source_ref + pro
 
 Runtime은 initial assessment의 의미를 대신 해석하지 않는다. `POC_CONFIRMATION | VERDICT_EVIDENCE`면 `CREATE_DYNAMIC_REQUEST`, `FINALIZE_WITHOUT_DYNAMIC`이면 동적 work 없이 `FINAL_VERDICT`를 호출한다. assessment는 final Verification이나 Gate 입력이 아니며, 같은 work·generation의 exact policy·playbook·application·Pro·Con과 맞지 않으면 사용하지 않는다.
 
-### 4.5 Dynamic Reproduction Agent — R7
+### 4.5 Policy Parser Agent — R5
+
+- `policy-parser.parse-official-policy`: Policy Collector가 고정한 exact 공식 원문 하나를 `PolicyParserResult`로 구조화
+- 필수 금지: 원문 밖 검색·모델 기억·저장소 지시문으로 정책 보충, `RunPolicyState`·`ProgramPolicyRecord`·Gate 결과·보고 허용 여부 생성
+- 기본 session: 공식 원문별 `NEW`
+
+Policy Parser는 정책 원문의 내용을 구조화할 뿐 출처 진위·수집 완료·현재 정책 pointer를 확정하지 않는다. 비-LLM Policy Collector가 parser 결과를 검증·취합해 `PolicyCollectionResult`, 존재하면 `ProgramPolicyRecord`, 그리고 run의 `RunPolicyState`를 확정한다. Parser 결과 자체는 공식 정책 근거가 아니며 Rule Scope Gate가 exact 원문과 다시 대조한다.
+
+### 4.6 Dynamic Reproduction Agent — R7
 
 - `r7.derive-environment`: exact `DynamicReproductionRequest`에서 `EnvironmentRequirements` 하나를 생성
 - `r7.plan-reproduction`: exact request와 requirements에서 `ReproductionPlan` 하나를 생성
@@ -301,7 +309,7 @@ Session Manager는 `DynamicReproductionConclusion`을 실제 AgentLog·환경·c
 
 이 역할은 `ActionRequest.requested_by=DYNAMIC_REPRODUCTION`과 일치해야 하므로 `LLMCallSpec`, request와 log의 `agent_role`에도 `DYNAMIC_REPRODUCTION`이 반드시 포함된다.
 
-### 4.6 Chaining Agent — R1
+### 4.7 Chaining Agent — R1
 
 - `chaining.match-primitives`: exact eligible Primitive 집합에서 result→input match와 그 match에서 나온 `HypothesisProposal(origin=CHAINING)`을 포함한 `ChainingResult` 생성
 - 필수 금지: Primitive admission 변경, 부모 verdict 변경, 직접 자식 등록
@@ -309,7 +317,7 @@ Session Manager는 `DynamicReproductionConclusion`을 실제 AgentLog·환경·c
 
 `indexes`는 같은 analysis·workspace·commit의 current `PrimitiveIndexState` revision 전부이며 `REQUIRED_MANY`다. Runtime은 각 index의 `primitive_refs`를 펼쳐 `considered`와 정확히 맞춘다. `lineage_hypotheses`와 `lineage_results`는 considered Primitive의 `source_hypothesis_id → VulnerabilityHypothesis.source_primitive_match_id → ChainingResult.primitive_match_candidates` 경로를 양방향으로 따라 조상 제외를 계산하는 데 필요한 최소 계보다. `lineage_results`는 `OPTIONAL_MANY`이므로 모든 considered Primitive가 INITIAL-origin이고 `source_primitive_match_id=null`인 최초 체이닝에서는 빈 목록이 정상이다. CHAINING-origin 조상이 하나라도 있으면 Runtime이 계산한 필요한 exact `ChainingResult` closure를 모두 넣어야 한다. Runtime이 계산한 필요한 계보 closure와 두 slot이 set-equal하지 않으면 누락뿐 아니라 관계없는 추가 결과도 차단한다. admission은 Primitive 등록 시점의 1회 판정으로 확정되므로 Chaining prompt 입력에 넣거나 다시 판정하지 않는다.
 
-### 4.7 CWE Labeling — R5-01
+### 4.8 CWE Labeling — R5-01
 
 - `cwe-labeling.classify`: current final TRUE `VerificationResult`, evidence closure와 taxonomy revision으로 current `CWELabel` 생성
 - 필수 금지: Verification verdict·근거 수정, 과거 label을 새 Verification의 current label로 재사용
@@ -317,13 +325,13 @@ Session Manager는 `DynamicReproductionConclusion`을 실제 AgentLog·환경·c
 
 CWE Labeling·Technical Gate·Rule Scope Gate·Reporter의 네 task에서 사용하는 evidence slot은 current final TRUE `VerificationResult`가 가리키는 direct·transitive evidence closure와 set-equal해야 한다. 여기서 closure는 exact Pro·Con 결과, StaticFactBundle과 사용한 CodeContextResponse, current generation의 DynamicReproductionRequest·DynamicReproductionResult·validated PoC, 그리고 각 task 표에 명시한 same-attempt Sandbox provenance다. Builder는 각 source record의 실제 data kind를 보존한 별도 binding을 만들고, 누락·관계없는 추가·다른 generation·stale revision을 호출 전에 거절한다. CWE Labeling은 이 closure와 taxonomy를 읽어 label을 분류하지만 Verification이나 근거를 고치지 않는다.
 
-### 4.8 Technical Gate — R5-02
+### 4.9 Technical Gate — R5-02
 
 - `technical-gate.review`: exact final TRUE Verification과 current CWELabel의 근거 연결·재현·라벨 정합성을 `TechnicalEvidenceReview`로 검토
 - 필수 금지: 새 사실·verdict·CWE 생성, Rule·Scope·Impact 판단
 - 기본 session: Gate work마다 `NEW`; `REVISE` 뒤 새 Verification·CWE revision 없이는 재호출 금지
 
-### 4.9 Rule Scope Impact Gate — R5-02
+### 4.10 Rule Scope Impact Gate — R5-02
 
 - `rule-scope-gate.review`: Technical `ACCEPT` 결과와 이번 analysis run에 고정한 exact `RunPolicyState`, 그 state가 가리키는 collection·공식 정책 record로 `RuleScopeImpactReview` 생성
 - 필수 금지: 정책 수집 실패를 정책 부재로 변환, 기술 verdict 수정, 외부 공개 승인
@@ -333,7 +341,7 @@ Runtime은 `run_policy_state`, `collection`과 존재하는 `policy`가 같은 r
 
 `official_sources`는 `PolicyCollectionResult.official_source_refs`와 set-equal해야 하며, `FOUND`이면 `ProgramPolicyRecord.source_refs`와도 set-equal해야 한다. 각 binding은 `source_ref + source_locator`로 다시 찾을 수 있는 exact redacted 원문과 content hash를 제공한다. Rule Scope Gate는 `tools.none.v1`이므로 prompt에 없는 원문을 검색하거나 모델 기억으로 채우지 않는다. 원문이 누락되거나 parser 결과와 모순되면 해당 영역을 `UNCERTAIN + DENY`로 처리하며 `PASS | ALLOW`를 만들지 않는다.
 
-### 4.10 Reporter — R5-03
+### 4.11 Reporter — R5-03
 
 - `reporter.create-draft`: 두 Gate를 통과한 exact finding·근거·CWE·PoC·제약으로 `ReportDraft` 생성
 - 필수 금지: 누락 근거 보충, stale draft 재사용, 사람 검토·제출·공개 수행
