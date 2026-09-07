@@ -107,6 +107,93 @@ foreach ($file in $currentOperationalMarkdownFiles) {
     }
 }
 
+# Keep display names, LLM/non-LLM identity, and machine-facing role values in
+# one glossary table. Short names are allowed only as the documented aliases;
+# the ambiguous formal spellings below must not reappear in current documents.
+$glossaryPath = Join-Path $repoRoot 'docs/GLOSSARY.md'
+$glossaryText = Get-Content -Raw -Encoding UTF8 -LiteralPath $glossaryPath
+$requiredComponentNameMarkers = @(
+    '## 구성요소 공식 이름',
+    '| `Pro Agent` | LLM | `PRO` | `Pro` |',
+    '| `Con Agent` | LLM | `CON` | `Con` |',
+    '| `CWE Labeling Agent` | LLM | `CWE_LABELING` | `CWE Labeling` |',
+    '| `Technical Evidence Gate Agent` | LLM | `TECHNICAL_GATE` | `Technical Gate` |',
+    '| `Rule Scope Impact Gate Agent` | LLM | `RULE_SCOPE_GATE` | `Rule Scope Gate` |',
+    '| `Reproduction Setup Automation` | 비-LLM | `REPRODUCTION_SETUP_AUTOMATION` | `Setup Automation` |',
+    '| `Reproduction Session Manager` | 비-LLM | `REPRODUCTION_SESSION_MANAGER` | `Session Manager` |',
+    '`Primitive DB`는 특정 DB 제품이나 별도 데이터베이스 모듈의 이름이 아니라',
+    '| `SUPERSEDED` | 변경 이력을 보존한 과거 문서이며 현재 구현 계약으로 사용하지 않습니다. 문서 상단의 현재 정본 링크를 따릅니다. |'
+)
+foreach ($marker in $requiredComponentNameMarkers) {
+    if (-not $glossaryText.Contains($marker)) {
+        Add-Failure "missing canonical component-name glossary marker: $marker"
+    }
+}
+
+$ambiguousCurrentComponentNames = @(
+    'Pro/Con Agents',
+    'Pro·Con Agent',
+    'R5-01 CWE Labeling',
+    'Technical Gate Agent Runtime',
+    'Technical Gate runtime',
+    'Rule Scope Gate Agent',
+    'Rule Scope Gate runtime',
+    'Rule Scope Agent',
+    ('R7 Sandbox Setup' + ' Automation'),
+    ('R7 Setup' + ' Automation')
+)
+$obsoleteReproductionSetupIdentity = 'R7_' + 'SETUP_AUTOMATION'
+foreach ($file in $currentOperationalMarkdownFiles) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    foreach ($name in $ambiguousCurrentComponentNames) {
+        if ($text.Contains($name)) {
+            Add-Failure "ambiguous current component name '$name': $($file.FullName)"
+        }
+    }
+    if ($text.Contains('FindingCandidate')) {
+        Add-Failure "FindingCandidate must not look like a separate contract object: $($file.FullName)"
+    }
+    if ($text.Contains($obsoleteReproductionSetupIdentity)) {
+        Add-Failure "obsolete Reproduction Setup Automation identity '$obsoleteReproductionSetupIdentity': $($file.FullName)"
+    }
+    foreach ($snapshotPhrase in @('공통 입력 snapshot', 'CAS snapshot')) {
+        if ($text.Contains($snapshotPhrase)) {
+            Add-Failure "removed Snapshot module terminology remains in current document '$snapshotPhrase': $($file.FullName)"
+        }
+    }
+}
+
+foreach ($file in $markdownFiles) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    if ($text.Contains('opengrep')) {
+        Add-Failure "non-canonical OpenGrep product spelling: $($file.FullName)"
+    }
+}
+
+$supersededSpecRequirements = @(
+    @{
+        Path = 'docs/superpowers/specs/2026-08-28-r4-03-authority-boundary-design.md'
+        Markers = @('> 상태: **SUPERSEDED**', '../../architecture-v5/03-agent-roles-and-orchestration.md', '../../architecture-v5/04-verification-and-dynamic-reproduction.md', '../../architecture-v5/08-lightweight-data-contracts.md', '../../architecture-v5/10-security-boundaries.md')
+    },
+    @{
+        Path = 'docs/superpowers/specs/2026-08-31-role-boundary-alignment-design.md'
+        Markers = @('> 상태: **SUPERSEDED**', '../../architecture-v5/03-agent-roles-and-orchestration.md', '../../architecture-v5/04-verification-and-dynamic-reproduction.md', '../../architecture-v5/08-lightweight-data-contracts.md')
+    },
+    @{
+        Path = 'docs/superpowers/specs/2026-09-03-r6-r7-poc-required-design.md'
+        Markers = @('> 상태: **SUPERSEDED**', '../../architecture-v5/04-verification-and-dynamic-reproduction.md', '../../architecture-v5/08-lightweight-data-contracts.md', '../../review/decisions/ADR-007-r7-autonomous-reproduction-session.md')
+    }
+)
+foreach ($requirement in $supersededSpecRequirements) {
+    $path = Join-Path $repoRoot $requirement.Path
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    foreach ($marker in $requirement.Markers) {
+        if (-not $text.Contains($marker)) {
+            Add-Failure "superseded historical spec is missing marker '$marker': $($requirement.Path)"
+        }
+    }
+}
+
 $agentRolesPath = Join-Path $repoRoot 'docs/architecture-v5/03-agent-roles-and-orchestration.md'
 $agentRolesText = Get-Content -Raw -Encoding UTF8 -LiteralPath $agentRolesPath
 $requiredOrchestrationBoundaryMarkers = @(
@@ -932,8 +1019,8 @@ $requiredActionRequesterBindings = [ordered]@{
     CALL_LLM = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, POLICY_PARSER, DYNAMIC_REPRODUCTION'
     FETCH_POLICY = 'POLICY_COLLECTOR'
     REQUEST_DYNAMIC_REPRO = 'VERIFICATION'
-    RUN_SANDBOX = 'R7_SETUP_AUTOMATION'
-    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, POLICY_PARSER, PRIMITIVE_ADMISSION_RUNTIME, DYNAMIC_REPRODUCTION, R7_SETUP_AUTOMATION, SANDBOX_CONTROLLER, REPRODUCTION_SESSION_MANAGER, RECOVERY'
+    RUN_SANDBOX = 'REPRODUCTION_SETUP_AUTOMATION'
+    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, POLICY_PARSER, PRIMITIVE_ADMISSION_RUNTIME, DYNAMIC_REPRODUCTION, REPRODUCTION_SETUP_AUTOMATION, SANDBOX_CONTROLLER, REPRODUCTION_SESSION_MANAGER, RECOVERY'
     CALL_TECHNICAL_GATE = 'VERIFICATION'
     CALL_RULE_SCOPE_GATE = 'VERIFICATION'
     CREATE_REPORT_DRAFT = 'VERIFICATION'
@@ -1233,7 +1320,7 @@ $sandboxReviewPatterns = @(
     },
     @{
         Name = 'Dynamic records have distinct R6 and R7 owners'
-        Pattern = '(?s)`dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`.*?`environment_requirements -> EnvironmentRequirements -> DYNAMIC_REPRODUCTION`.*?`reproduction_plan -> ReproductionPlan -> DYNAMIC_REPRODUCTION`.*?`environment_recipe -> EnvironmentRecipe -> R7_SETUP_AUTOMATION`.*?`sandbox_command_record -> SandboxCommandRecord -> REPRODUCTION_SESSION_MANAGER`.*?`agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`.*?`poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`.*?`dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`'
+        Pattern = '(?s)`dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`.*?`environment_requirements -> EnvironmentRequirements -> DYNAMIC_REPRODUCTION`.*?`reproduction_plan -> ReproductionPlan -> DYNAMIC_REPRODUCTION`.*?`environment_recipe -> EnvironmentRecipe -> REPRODUCTION_SETUP_AUTOMATION`.*?`sandbox_command_record -> SandboxCommandRecord -> REPRODUCTION_SESSION_MANAGER`.*?`agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`.*?`poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`.*?`dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`'
     },
     @{
         Name = 'R7 sandbox and R8 lifecycle profiles have distinct exact contracts'
@@ -2135,7 +2222,7 @@ $requiredValidatedPocContractMarkers = @(
     '`dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`',
     '`environment_requirements -> EnvironmentRequirements -> DYNAMIC_REPRODUCTION`',
     '`reproduction_plan -> ReproductionPlan -> DYNAMIC_REPRODUCTION`',
-    '`environment_recipe -> EnvironmentRecipe -> R7_SETUP_AUTOMATION`',
+    '`environment_recipe -> EnvironmentRecipe -> REPRODUCTION_SETUP_AUTOMATION`',
     '`agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`',
     '`poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`',
     '`dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`',
@@ -3011,7 +3098,7 @@ $requiredR301RunInitFanoutRules = @(
     'Docker baseline 준비는 가설별 동적 재현을 대신하지 않는 사전 최적화다.',
     'run-init Docker branch는 `EnvironmentRecipe`, `SandboxEnvironment`, `AgentLog`, PoC candidate 또는 validated PoC를 생산하지 않는다.',
     '가설 간 writable container를 공유하지 않는다.',
-    'Docker branch가 실패하거나 준비 결과를 신뢰할 수 없으면 R7 Setup Automation이 Step 12에서 clean 환경을 새로 만든다.',
+    'Docker branch가 실패하거나 준비 결과를 신뢰할 수 없으면 Reproduction Setup Automation이 Step 12에서 clean 환경을 새로 만든다.',
     'R3 runtime은 세 branch의 등록과 상태 관측만 담당하고 Docker image·container를 직접 만들지 않는다.',
     'R7은 network 접근과 CPU·RAM·disk·PID·요청 가능 최대 시간 등 Docker 실행의 강제 상한을 소유한다.',
     'R8은 분석 전체와 branch의 시간·비용·work·retry 예산 및 실제 자원 사용량·성공률 평가를 소유한다.',

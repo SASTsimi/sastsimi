@@ -15,7 +15,7 @@ R6는 “무엇을 왜 재현할지”만 요청합니다. Dynamic Reproduction 
 1. `ReproductionPlan`에는 목적·가설·환경 요구사항·재현 목표·전략 요약과 선택적 `requested_evidence`만 둡니다. `LIMITED_REPRO | FULL_REPRO`, exact step·command·payload·cleanup allowlist는 제거합니다.
 2. Dynamic Reproduction Agent는 Sandbox 안에서 환경 설정, 저장소에 필요한 package, 계정, fixture/mock, PoC, command·관찰·재시도를 자율적으로 정합니다.
 3. Runtime Validator는 exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` revision을 고정합니다. Sandbox Controller는 R7 `sandbox_profile_ref`의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하며 내부 command allowlist나 profile 값은 결정하지 않습니다. R8 lifecycle profile의 호출 전 잔여 시간·새 attempt 한도는 Runtime Validator가 강제합니다.
-4. R7 Setup Automation이 실제 image build, container 생성·재사용·재생성과 cleanup을 맡습니다.
+4. Reproduction Setup Automation이 실제 image build, container 생성·재사용·재생성과 cleanup을 맡습니다.
 5. 비-LLM Reproduction Session Manager가 runtime/tool/lifecycle event를 durable append-only `AgentLog`에 기록하고 validated PoC와 `DynamicReproductionResult`를 확정합니다.
 6. R6의 최종 `TRUE | FALSE | HOLD` 권한과 모든 TRUE의 validated PoC 의무는 유지합니다. R7은 `SUPPORTED | DISPROVED | INCONCLUSIVE`만 반환합니다.
 

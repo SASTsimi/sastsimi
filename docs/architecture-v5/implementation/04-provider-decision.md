@@ -135,7 +135,7 @@ class LLMProviderAdapter(Protocol):
 
 ### 3.1 Dynamic Reproduction Agent의 Runtime 관리형 tool loop
 
-Dynamic Reproduction Agent의 환경 요구사항·재현 계획 작성은 Sandbox 실행 전 일반 LLM 호출이며 tool을 쓰지 않는다. 외부 경계가 허용되고 R7 Setup Automation이 container를 준비한 뒤에만 동적 재현 실행 task가 Runtime 관리형 tool loop를 사용할 수 있다.
+Dynamic Reproduction Agent의 환경 요구사항·재현 계획 작성은 Sandbox 실행 전 일반 LLM 호출이며 tool을 쓰지 않는다. 외부 경계가 허용되고 Reproduction Setup Automation이 container를 준비한 뒤에만 동적 재현 실행 task가 Runtime 관리형 tool loop를 사용할 수 있다.
 
 ```text
 Dynamic Reproduction Agent structured turn

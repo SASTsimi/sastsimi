@@ -2,6 +2,32 @@
 
 이 문서는 프로젝트 문서에서 자주 쓰는 기술 용어를 쉬운 말로 설명합니다. 데이터 이름과 상태값은 구현할 때 정확히 맞아야 하므로 영문 이름을 없애지 않고 쉬운 설명과 함께 사용합니다.
 
+## 구성요소 공식 이름
+
+아래 표의 이름을 문서·Issue·구현에서 공식 이름으로 사용합니다. 허용 약칭은 이 표의 공식 이름에만 대응하며 설명과 다이어그램에서 반복을 줄일 때 사용할 수 있지만, schema 이름이나 코드 역할값을 대신하지 않습니다. `R5-01`, `R7` 같은 값만으로는 구성요소를 식별하지 않으며, 표에 적힌 전체 공식 이름과 함께 쓸 때만 담당 영역을 나타냅니다.
+
+| 공식 이름 | LLM 여부 | 코드 역할값 또는 실행 식별값 | 허용 약칭 |
+|---|---|---|---|
+| `Orchestration Runtime` | 비-LLM | `ORCHESTRATION` | `Orchestration` |
+| `Hypothesis Agent` | LLM | `HYPOTHESIS` | `Hypothesis` |
+| `Verification Agent` | LLM | `VERIFICATION` | `Verification` |
+| `Pro Agent` | LLM | `PRO` | `Pro` |
+| `Con Agent` | LLM | `CON` | `Con` |
+| `Dynamic Reproduction Agent` | LLM | `DYNAMIC_REPRODUCTION` | `Dynamic Reproduction` |
+| `CWE Labeling Agent` | LLM | `CWE_LABELING` | `CWE Labeling` |
+| `Chaining Agent` | LLM | `CHAINING` | `Chaining` |
+| `Technical Evidence Gate Agent` | LLM | `TECHNICAL_GATE` | `Technical Gate` |
+| `Rule Scope Impact Gate Agent` | LLM | `RULE_SCOPE_GATE` | `Rule Scope Gate` |
+| `Reporter Agent` | LLM | `REPORTER` | `Reporter` |
+| `Policy Parser Agent` | LLM | `POLICY_PARSER` | `Policy Parser` |
+| `Reproduction Setup Automation` | 비-LLM | `REPRODUCTION_SETUP_AUTOMATION` | `Setup Automation` |
+| `Sandbox Controller` | 비-LLM | `SANDBOX_CONTROLLER` | `Controller` |
+| `Reproduction Session Manager` | 비-LLM | `REPRODUCTION_SESSION_MANAGER` | `Session Manager` |
+| `Primitive Admission Runtime` | 비-LLM | `PRIMITIVE_ADMISSION_RUNTIME` | `Admission Runtime` |
+| `Runtime Validator` | 비-LLM | action 검사기이며 Agent 역할값 없음 | 약칭 없음 |
+
+`Pro Agent`와 `Con Agent`는 한 구성요소의 두 모드가 아니라 서로의 결과를 보지 않고 실행하는 별도 LLM 역할입니다. Gate 이름에서 `Technical Evidence`와 `Rule Scope Impact`는 서로 다른 검토 범위를 뜻하므로 생략한 약칭은 문맥이 분명할 때만 사용합니다.
+
 ## 분석 흐름과 데이터
 
 | 용어 | 쉽게 말하면 | 사용할 때 주의할 점 |
@@ -94,7 +120,7 @@
 | `poc_candidate_ref` | Dynamic Reproduction Agent가 작성했거나 실행을 시도한 PoC 초안 번호 | 실패한 시도에도 남을 수 있으며 검증된 PoC가 아닙니다. |
 | `poc_ref` | 실제 실행에 성공해 가설을 지지한 validated PoC 번호 | 같은 attempt의 AgentLog가 exact candidate와 digest 실행을 입증할 때만 생기며 모든 final TRUE에 필수입니다. |
 | `agent_invoked` | 외부 경계 승인을 받은 뒤 Sandbox 안의 Dynamic Reproduction Agent 실행 단계가 실제로 시작됐는지 나타내는 값 | 사전 requirements·plan 작성 호출과 구분하며 AgentLog의 `AGENT_STARTED` event와 반드시 일치해야 합니다. |
-| `AgentLog` | Dynamic Reproduction Agent·도구·환경 구성 과정에서 실제로 일어난 일을 순서대로 남긴 기록 | 비-LLM Session Manager가 append-only로 저장해 이전 event를 지우거나 다른 attempt와 섞지 않습니다. |
+| `AgentLog` | Dynamic Reproduction Agent·도구·환경 구성 과정에서 실제로 일어난 일을 순서대로 남긴 기록 | 비-LLM Reproduction Session Manager가 append-only로 저장해 이전 event를 지우거나 다른 attempt와 섞지 않습니다. |
 | `EnvironmentRecipe` | Docker 실행 환경을 다시 만들 수 있는 불변 build 방법 | 시작 image digest와 실제 완성 image digest를 구분하고 저장소가 선언한 의존성을 우선합니다. |
 | `EnvironmentRequirements` | R7이 R6 요청을 실제 환경 구성·검사 항목으로 구체화한 조건 묶음 | 역할·인증 방식·데이터·DB/service·fixture/mock·버전·Health Check를 근거와 함께 기록합니다. |
 | `environment_requirements_ref` | ReproductionPlan과 recipe가 사용하는 정확한 환경 요구사항 수정본 번호 | 오래된 수정본이나 다른 attempt의 요구사항을 재사용하지 않습니다. |
@@ -118,6 +144,7 @@
 | `Orchestration Runtime` | 가설 work를 시작하고 검증된 가설을 등록해 Verification에 배정하는 비-LLM 전역 제어 구성요소 | LLM prompt나 모델을 사용하지 않으며 가설 내용·verdict·CWE·Gate·보고서 내용을 판단하지 않습니다. |
 | `PrimitiveDraft` | 연계 공격의 입력 조건 또는 실행 뒤 얻는 결과를 표현한 작은 데이터 | 코드 entity, 필요하면 저장소에 정의된 권한 값, 근거와 쉬운 설명을 함께 둡니다. |
 | `Primitive` | 한 가설의 필요한 입력들과 실행 결과를 한 형식으로 묶은 연계 재료 | HOLD는 `result=null`, TRUE는 Technical `ACCEPT`와 current admission `ALLOW` 뒤 `result`가 있습니다. `REQUIRED/PROVIDED` 같은 별도 종류 필드는 저장하지 않습니다. |
+| `Primitive DB` | current Primitive의 정확한 수정본을 찾기 위한 논리 인덱스와 저장 관점 | `Primitive DB`는 특정 DB 제품이나 별도 데이터베이스 모듈의 이름이 아니라 기존 record store와 `PrimitiveIndexState` 위에 구현하는 논리적 조회 경계입니다. 새 DB 제품을 반드시 도입하라는 뜻이 아닙니다. |
 | `PrimitiveAdmissionDecision` | TRUE 결과를 체이닝 재료로 써도 되는지 프로그램이 `ALLOW | DENY`로 기록한 값 | Rule Scope의 전용 금지 테스트 판정과 정책 수집 상태를 정해진 표로 변환하며 정책 뜻을 새로 해석하지 않습니다. |
 | `PrimitiveIndexState` | 가설의 현재 Verification과 그 가설이 등록한 Primitive 수정본들을 가리키는 목록 | 별도 전용 version 필드 없이 공통 `RecordMeta` revision과 원자적 current pointer 갱신을 사용합니다. |
 | `PrimitiveMatchCandidate` | 한 Primitive의 결과가 다른 Primitive의 특정 입력을 채울 수 있는지 나타낸 미검증 후보 | `upstream_result_ref`, `downstream_input_ref`, `matched_input_id`와 실제 근거를 기록하며 아직 취약점 확정 결과가 아닙니다. |
@@ -135,8 +162,8 @@
 | current `Finding` | 한 가설의 현재 exact chain(final TRUE·validated PoC·current CWELabel·Technical `ACCEPT`·current Rule Scope review)에 묶인 Finding revision | Reporter는 이 값이 있어야 호출되며, 6축 정책 readiness와는 별개 조건입니다. |
 | stale `Finding` | 생성 뒤 Verification generation/revision·CWELabel·두 Gate·동적 결과·validated PoC·고정 정책 record가 바뀌어 더는 current가 아닌 Finding | 감사 이력으로 보존하지만 새 Reporter 실행에 재사용하지 않습니다. R4의 revision·current pointer·CAS 규칙으로 차단합니다. |
 | `Gate` | 다음 단계로 보내도 되는지 확인하는 검토 단계 | Verification 판정을 직접 바꾸지 않습니다. |
-| `Technical Evidence Gate` | 판정과 코드·실행 근거가 서로 맞는지 확인하는 기술 검토 | 공식 정책을 읽지 않으므로 금지 테스트 여부는 판단하지 않습니다. 코드 경로·동적 결과·제한 조건의 연결을 확인합니다. |
-| `Rule Scope Impact Gate` | run 초기화에서 준비된 current `ProgramPolicyRecord`와 그 공식 원문·현재 hypothesis 사실로 정책 범위·금지 테스트 여부와 실제 영향을 hypothesis마다 확인하는 검토 | 금지 테스트 위반은 별도 필드로 판단해 TRUE Primitive admission에 전달하고, 다른 결과는 Reporter 가능성에 적용합니다. 공식 정책이 없으면 추측하지 않고, 원문 확인 불가·Parser 모순 시 fail-closed합니다. |
+| `Technical Evidence Gate` | Technical Evidence Gate Agent가 판정과 코드·실행 근거가 서로 맞는지 확인하는 기술 검토 단계 | 공식 정책을 읽지 않으므로 금지 테스트 여부는 판단하지 않습니다. 코드 경로·동적 결과·제한 조건의 연결을 확인합니다. |
+| `Rule Scope Impact Gate` | Rule Scope Impact Gate Agent가 run 초기화에서 준비된 current `ProgramPolicyRecord`와 그 공식 원문·현재 hypothesis 사실로 정책 범위·금지 테스트 여부와 실제 영향을 hypothesis마다 확인하는 검토 단계 | 금지 테스트 위반은 별도 필드로 판단해 TRUE Primitive admission에 전달하고, 다른 결과는 Reporter 가능성에 적용합니다. 공식 정책이 없으면 추측하지 않고, 원문 확인 불가·Parser 모순 시 fail-closed합니다. |
 | `PolicyItem` | 공식 정책에서 뽑은 항목 하나와 원문 위치를 묶은 데이터 | 반드시 공식 출처 기록으로 다시 확인할 수 있어야 합니다. |
 | `VerificationAssignment` | 한 가설의 내부 검증 흐름을 맡은 논리 owner의 저장 기록 | 같은 역할의 다른 Agent가 아니라 ACTIVE assignment와 일치하는 owner만 Gate·보완·보고 요청을 제안할 수 있습니다. |
 | `REVISE` | 부족한 근거를 같은 Verification owner가 새 Verification work에서 보완한 뒤 새 revision으로 다시 검토하라는 결과 | provider retry나 동일 입력 재투표가 아니며 오래된 Gate 결과를 재사용하지 않습니다. |
@@ -152,7 +179,7 @@
 | `runtime validator` | 프로그램 내부 실행 범위 검사기 | 데이터 형식, 상태 순서, 예산과 권한을 강제하지만 취약점·CWE·정책 의미는 판단하지 않습니다. |
 | `sandbox` | 다른 시스템과 격리해 안전하게 코드를 실행하는 환경 | host, 비밀정보와 범위 밖 네트워크 접근을 막습니다. |
 | `Sandbox Controller` | 격리 환경 밖의 안전 경계를 강제하는 모듈 | R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하며 내부 command allowlist, R7 profile 값, R8 잔여 예산·새 attempt는 결정하지 않습니다. |
-| `R7 Setup Automation` | Docker image·container·환경 재생성과 정리를 실제 수행하는 비-LLM 모듈 | Dynamic Reproduction Agent가 Docker daemon을 직접 다루지 않도록 격리된 실행 통로를 제공합니다. |
+| `Reproduction Setup Automation` | Docker image·container·환경 재생성과 정리를 실제 수행하는 비-LLM 모듈 | Dynamic Reproduction Agent가 Docker daemon을 직접 다루지 않도록 격리된 실행 통로를 제공합니다. |
 | `Reproduction Session Manager` | 한 동적 재현 attempt의 실제 event와 최종 결과를 확정하는 비-LLM 모듈 | AgentLog, validated PoC와 DynamicReproductionResult의 result owner이며 Dynamic Reproduction Agent의 실행 전략은 결정하지 않습니다. |
 | `provider` | LLM을 제공하는 서비스나 연결 방식 | API 방식과 회원 로그인 방식을 같은 경계에서 관리합니다. |
 | `session` | LLM 서비스와 이어지는 로그인 또는 대화 상태 | 인증정보와 session 비밀값을 일반 로그에 남기지 않습니다. |
@@ -175,6 +202,7 @@
 | `DESIGN_AUTHORED` | 설계 초안이 작성되었습니다. |
 | `REVIEW_REQUIRED` | 팀 검토와 독립 검토가 더 필요합니다. |
 | `NOT_IMPLEMENTED` | 실행 코드는 아직 구현되지 않았습니다. |
+| `SUPERSEDED` | 변경 이력을 보존한 과거 문서이며 현재 구현 계약으로 사용하지 않습니다. 문서 상단의 현재 정본 링크를 따릅니다. |
 | 기준 문서 | 실제 설계 의미와 계약을 판단할 때 우선하는 문서입니다. |
 | 쉬운 요약 | 기준 문서를 빠르게 이해하도록 돕는 설명이며 새 규칙을 만들지 않습니다. |
 | 작업 기록 | 설계와 문서를 어떻게 바꿨는지 남긴 계획·검토 기록입니다. |

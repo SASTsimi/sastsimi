@@ -287,7 +287,7 @@ target/asset/version/endpoint, Impact에는 공식 criterion과 verified impact 
 fact reference가 모두 필요하다. 필요한 근거가 없으면 `UNCERTAIN`이며 explanation 문자열은 exact
 provenance를 대신하지 않는다.
 
-공식 정책 부재를 확인한 `ABSENT_CONFIRMED`이거나 current `RunPolicyState.status=UNVERIFIED`이면 Rule Scope Gate Agent가 정책을 추정하지 않고 최소한 `rule_compliance=UNCERTAIN`, `scope_compliance=UNCERTAIN`, `testing_restriction_compliance=UNCERTAIN`, `review_status=UNCERTAIN`, `report_permission=DENY`와 구조화된 `missing_information`을 판단해 반환한다. impact도 검토할 근거가 부족하면 `security_impact=UNCERTAIN`이다. review의 `run_policy_state_ref`는 Gate action이 고정한 exact state를 가리킨다. run 시작 때 stale로 판정한 과거 record는 감사 기록으로 보존하지만 current state나 Reporter의 `PASS | ALLOW` 근거로 사용하지 않는다. 수집 자체가 실패한 `COLLECTION_FAILED`는 review를 만들지 않으며 R4 admission runtime이 `NOT_EVALUATED + ALLOW`로 기록한다.
+공식 정책 부재를 확인한 `ABSENT_CONFIRMED`이거나 current `RunPolicyState.status=UNVERIFIED`이면 Rule Scope Impact Gate Agent가 정책을 추정하지 않고 최소한 `rule_compliance=UNCERTAIN`, `scope_compliance=UNCERTAIN`, `testing_restriction_compliance=UNCERTAIN`, `review_status=UNCERTAIN`, `report_permission=DENY`와 구조화된 `missing_information`을 판단해 반환한다. impact도 검토할 근거가 부족하면 `security_impact=UNCERTAIN`이다. review의 `run_policy_state_ref`는 Gate action이 고정한 exact state를 가리킨다. run 시작 때 stale로 판정한 과거 record는 감사 기록으로 보존하지만 current state나 Reporter의 `PASS | ALLOW` 근거로 사용하지 않는다. 수집 자체가 실패한 `COLLECTION_FAILED`는 review를 만들지 않으며 R4 admission runtime이 `NOT_EVALUATED + ALLOW`로 기록한다.
 
 각 확정 판정은 `RuleScopeEvidenceLink`를 통해 exact `PolicyItem`과 evidence reference에 연결한다. 핵심 정책·근거 누락은 구조화된 `PolicyMissingInfo`에 보존하고 `ALLOW`를 금지한다. Runtime Validator는 설명 문자열에서 정책 의미나 중요도를 새로 추론하지 않는다.
 
@@ -531,7 +531,7 @@ ReportDraft가 참조한 `Finding`, `VerificationResult`, `CWELabel`, `Technical
 `RuleScopeImpactReview` 또는 그 밖의 claim-relevant upstream 중 하나라도 새 current revision으로 바뀌면 기존 초안은
 감사 기록으로만 남고 `AnalysisRunResult.report_draft_refs`의 current 결과로 사용할 수 없다. 새 exact
 dependency chain에서 필요한 Gate와 Reporter 흐름을 다시 수행해 새 ReportDraft를 만든다. 같은 run의 `RunPolicyState`와 `ProgramPolicyRecord`는 준비 완료 뒤 바뀌지 않으며, run 종료 뒤 freshness 만료는 다음 run의 재사용을 거절하는 조건이다. Reporter는
-공통 `Finding`/`FindingCandidate` schema나 lifecycle을 재설계하지 않으며 current Finding이 없으면
+공통 `Finding` schema나 lifecycle을 재설계하지 않으며, 저장 전 후보도 별도 데이터 객체가 아닌 동일 `Finding` schema를 사용한다. current Finding이 없으면
 `CREATE_REPORT_DRAFT`를 허용하지 않고 `report_draft_refs=[]`와 기존 `REPORT_NOT_READY` 오류·상태 원인을
 유지한다.
 

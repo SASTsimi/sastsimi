@@ -19,7 +19,7 @@ Runtime Validator의 `RUN_SANDBOX ALLOW`는 호출 권한·상태·예산과 exa
 - Runtime Validator는 R7 호출 전제와 current reference만 검사한다.
 - Sandbox Controller는 R7 `sandbox_profile_ref`의 host·Docker daemon·mount/namespace·secret·network egress·CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하고 exact `sandbox_policy_decision`을 저장한다. R8 lifecycle profile의 호출 전 잔여 시간·새 attempt 한도는 Runtime Validator가 강제한다.
 - Sandbox Controller는 Sandbox 생성·폐기, Dynamic Reproduction Agent 호출, command 허용·거절, 실행 순서, retry와 cleanup을 수행하지 않는다.
-- R7 Sandbox Setup Automation이 승인된 정책을 사용해 image build, clean Sandbox 생성과 lifecycle cleanup을 수행한다.
+- Reproduction Setup Automation이 승인된 정책을 사용해 image build, clean Sandbox 생성과 lifecycle cleanup을 수행한다.
 - Dynamic Reproduction Agent는 Sandbox 내부 환경·package·PoC·command·관찰·retry를 자율적으로 결정한다.
 - 기존 Dynamic Reproduction Agent tool runtime과 Sandbox lifecycle automation은 실제 action event를 방출한다.
 - Reproduction Session Manager는 이 event를 append-only로 수동 기록하고, Agent 의미 초안과 runtime 사실을 최종 `DynamicReproductionResult` 문서로 확정한다.

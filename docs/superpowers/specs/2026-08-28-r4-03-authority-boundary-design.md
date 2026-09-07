@@ -1,6 +1,8 @@
 # R4-03 프로그램 검사기와 사람·LLM 권한 경계 설계
 
-> **대체 안내(2026-09-03):** 이 문서의 Human Review 자동화 계약은 `2026-09-03-r5-04-removal-design.md`로 대체됐습니다. 이 파일은 당시 설계 기록이며 현재 구현 기준이 아닙니다.
+> 상태: **SUPERSEDED**
+>
+> 이 문서는 당시 권한 경계 설계 기록이며 현재 구현 계약이 아닙니다. Human Review 자동화 제거뿐 아니라 Research 역할, R6/R7 동적 재현 책임과 현재 구성요소 이름도 이후 바뀌었습니다. 현재 정본은 [Agent 역할과 오케스트레이션](../../architecture-v5/03-agent-roles-and-orchestration.md), [검증과 동적 재현](../../architecture-v5/04-verification-and-dynamic-reproduction.md), [경량 데이터 계약](../../architecture-v5/08-lightweight-data-contracts.md), [보안·신뢰 경계](../../architecture-v5/10-security-boundaries.md)를 따릅니다.
 
 ## 상태
 
@@ -47,7 +49,7 @@ runtime validator는 취약점 진위, CWE 내용, 공식 정책 해석 또는 �
 |---|---|---|---|---|---|
 | 비-LLM Orchestration Runtime | 정해진 전이표에 따른 work 등록·배정 요청, 병렬화, retry 후보 처리 | 없음 | 진행 상태 요약 | 없음 | 없음 |
 | Hypothesis Agent | 취약점 가설 | 없음 | static 사실을 입력으로 읽음 | 없음 | 없음 |
-| Pro·Con Agent | 찬성·반대 근거 | 없음 | 자기 역할의 근거 | 없음 | 없음 |
+| Pro Agent와 Con Agent | 찬성·반대 근거 | 없음 | 각자 자기 역할의 근거 | 없음 | 없음 |
 | Verification Agent | 동적 재현·Research 요청 | `TRUE | FALSE | HOLD` | Pro·Con·static·dynamic 근거 | 없음 | 없음 |
 | CWE Labeling | CWE 후보와 근거 | CWE label revision 생성 | Verification 결과 | 없음 | 없음 |
 | Research Agent | bypass·alternate path·chain 후보 | 없음 | 기존 verdict와 Primitive | 없음 | 없음 |

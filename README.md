@@ -70,7 +70,7 @@ Repository input
 → Runtime Validator가 같은 Verification generation의 동적 work가 하나인지 확인
 → Dynamic Reproduction Agent가 EnvironmentRequirements·ReproductionPlan·PoC candidate 생성
 → Sandbox Controller가 요청 당시 RunPolicyState를 감사 reference로 남기고 LOCAL_ONLY·host·Docker·secret·egress 등 외부 격리 경계 검사
-→ R7 Setup Automation이 image·container·환경·정리를 관리하고 Dynamic Reproduction Agent가 Sandbox 안에서 PoC candidate를 만들고 재현을 자율 실행
+→ Reproduction Setup Automation이 image·container·환경·정리를 관리하고 Dynamic Reproduction Agent가 Sandbox 안에서 PoC candidate를 만들고 재현을 자율 실행
 → 비-LLM Reproduction Session Manager가 같은 attempt의 AgentLog·recipe·환경·candidate·validated PoC를 결과로 묶어 반환
 → final TRUE / FALSE / HOLD
 → final TRUE는 재현에 성공한 validated PoC가 있을 때만 저장하고 Technical Gate로 전달
