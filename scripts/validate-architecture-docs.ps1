@@ -56,6 +56,27 @@ foreach ($file in $markdownFiles) {
     }
 }
 
+# Keep the role name independent from model cost and Korean shorthand. The
+# canonical display name is Hypothesis Agent; HYPOTHESIS and HypothesisProposal
+# remain the machine-facing role and output contract names.
+$obsoleteHypothesisAgentPatterns = @(
+    ('Low-' + 'cost Hypothesis Agent'),
+    ('저비용 Hypothesis' + ' Agent'),
+    ('가설 ' + 'Agent'),
+    ('가설 ' + '에이전트'),
+    ('탐색 ' + 'Agent'),
+    ('탐색 ' + '에이전트'),
+    ('Hypothesis Generation' + ' Agent')
+)
+foreach ($file in $markdownFiles) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    foreach ($pattern in $obsoleteHypothesisAgentPatterns) {
+        if ([regex]::IsMatch($text, [regex]::Escape($pattern), [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+            Add-Failure "non-canonical Hypothesis Agent name '$pattern': $($file.FullName)"
+        }
+    }
+}
+
 $diagramPath = Join-Path $repoRoot 'docs/architecture-v5/13-architecture-diagrams.md'
 $wikiDiagramPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/diagrams.md'
 $diagramText = Get-Content -Raw -Encoding UTF8 -LiteralPath $diagramPath
@@ -3015,6 +3036,7 @@ if ($gitCheckExitCode -ne 0) {
 }
 
 Write-Output "Markdown files: $($markdownFiles.Count)"
+Write-Output "Canonical Hypothesis Agent aliases blocked: $($obsoleteHypothesisAgentPatterns.Count)"
 Write-Output "Mermaid blocks: $($diagramBlocks.Count) canonical / $($wikiDiagramBlocks.Count) Wiki"
 Write-Output 'Finding lifecycle Rule Scope -> FINDING_NORMALIZE bypass guard: canonical + Wiki'
 Write-Output "R4-02 required contract names: $($requiredContractNames.Count)"
