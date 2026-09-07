@@ -93,9 +93,14 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 
 ## 구현 준비 문서
 
+전체 읽기 순서와 상태는 [구현 준비 문서 안내](./implementation/README.md)에서 확인합니다.
+
 1. [R3-01 22단계 구현 모듈·입출력·저장 위치 매핑](./implementation/01-module-map.md) — 각 단계를 실제 프로그램 경계와 테스트 책임으로 옮긴 문서입니다.
 2. [R3-02 파트 간 계약 준수·부정 테스트 계획](./implementation/02-contract-test-plan.md) — 정상·오류·권한 위반 입력에서 각 모듈이 무엇을 허용하고 차단해야 하는지 case별로 정리한 문서입니다.
-3. [R3-04 LLM Provider·인증 경로 결정](./implementation/04-provider-decision.md) — OpenAI·Codex·Anthropic·Claude의 API Key·공식 구독 연결 경계와 지원 판정 시험을 정리한 문서입니다.
+3. [R3-03 상태·복구 시험 계획](./implementation/03-recovery-test-plan.md) — 중단·재시도·복구와 오래된 결과 격리 시험을 정리한 문서입니다.
+4. [R3-04 LLM Provider·인증 경로 결정](./implementation/04-provider-decision.md) — OpenAI·Codex·Anthropic·Claude의 API Key·공식 구독 연결 경계와 지원 판정 시험을 정리한 문서입니다.
+5. [R3-05 Agent 프롬프트 등록·조립·전달 구조](./implementation/05-prompt-runtime.md) — 11개 LLM 역할의 프롬프트와 공통 검증 구조를 정리한 문서입니다.
+6. [R3-06 구현 기술·파일 구조·저장·설정·실행 기준선](./implementation/06-implementation-baseline.md) — 한 명의 구현 담당자가 코드 작업을 시작할 기술과 순서를 정리한 문서입니다.
 
 ## 문서 적용 범위
 

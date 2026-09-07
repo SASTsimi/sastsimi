@@ -1369,7 +1369,9 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
         if (-not $promptRuntimeText.Contains($requiredMarker)) { Add-Failure "R3-05 prompt runtime is missing R7 staged execution rule: $requiredMarker" }
     }
 
-    $dynamicExecuteSettingRow = [regex]::Match($promptRuntimeText, '(?m)^\| DYNAMIC_REPRODUCTION / `EXECUTE_REPRODUCTION` \| `model\.[^\r\n]+$').Value
+    $dynamicExecuteSettingRow = ($promptRuntimeText -split "`r?`n" | Where-Object {
+        $_.StartsWith('| DYNAMIC_REPRODUCTION / `EXECUTE_REPRODUCTION` |')
+    } | Select-Object -First 1)
     if (-not $dynamicExecuteSettingRow.EndsWith('| AUTO |')) {
         Add-Failure 'R3-05 EXECUTE_REPRODUCTION registry session policy must use the valid AUTO enum'
     }
@@ -3666,6 +3668,38 @@ Write-Output "R4 policy contract blocks: $($requiredPolicyContractFields.Count)"
 Write-Output "R4 policy contract rules: $($requiredPolicyContractRules.Count)"
 Write-Output 'R3-05 reviewed prompt contract rules: initial assessment, Chaining lineage, Dynamic Reproduction staged loop'
 Write-Output 'R3-05 R5 prompt closure rules: CWE Labeling, Technical Gate, Rule Scope Gate, Reporter'
+$implementationBaselinePath = Join-Path $repoRoot 'docs/architecture-v5/implementation/06-implementation-baseline.md'
+$implementationIndexPath = Join-Path $repoRoot 'docs/architecture-v5/implementation/README.md'
+if (-not (Test-Path -LiteralPath $implementationBaselinePath)) {
+    $failures.Add('Missing R3-06 implementation baseline')
+} else {
+    $implementationBaselineText = Get-Content -Raw -Encoding UTF8 -LiteralPath $implementationBaselinePath
+    @(
+        '35729d3185cf46cdbf9c94ce2be646ae11f26446',
+        'DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED',
+        'src/sastsimi/static_analysis/repository_loader.py',
+        'src/sastsimi/static_analysis/context_retrieval.py',
+        'in-process bounded worker',
+        'provider_profile_ref + model',
+        'CWE Labeling → Technical Gate → Rule Scope Gate → Reporter',
+        '구현 차단 `DEFERRED`'
+    ) | ForEach-Object {
+        if (-not $implementationBaselineText.Contains($_)) {
+            $failures.Add("R3-06 baseline missing marker: $_")
+        }
+    }
+}
+if (-not (Test-Path -LiteralPath $implementationIndexPath)) {
+    $failures.Add('Missing implementation document index')
+} else {
+    $implementationIndexText = Get-Content -Raw -Encoding UTF8 -LiteralPath $implementationIndexPath
+    @('01-module-map.md', '02-contract-test-plan.md', '03-recovery-test-plan.md', '04-provider-decision.md', '05-prompt-runtime.md', '06-implementation-baseline.md') | ForEach-Object {
+        if (-not $implementationIndexText.Contains($_)) {
+            $failures.Add("Implementation index missing document: $_")
+        }
+    }
+}
+Write-Output 'R3-06 implementation baseline and index rules checked'
 Write-Output "R6 program-policy boundary rules: $($requiredR6PolicyBoundaryRules.Count)"
 Write-Output "R6 POLICY_BLOCKED semantic rules: $($requiredR6PolicyBlockedSemantics.Count)"
 Write-Output "R3-01 run-init fan-out rules: $($requiredR301RunInitFanoutRules.Count)"

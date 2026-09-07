@@ -90,7 +90,11 @@
 |---|---|---|---|
 | [`implementation/01-module-map.md`](./architecture-v5/implementation/01-module-map.md) | 정본 22단계를 실행 모듈, 입력·출력, 저장 위치, 오류와 테스트에 연결합니다. | 전체 구현 담당자·R1~R8 검토자 | 구현 준비 기준 |
 | [`implementation/02-contract-test-plan.md`](./architecture-v5/implementation/02-contract-test-plan.md) | 파트 사이의 계약을 정상·실패·권한 위반 입력으로 어떻게 시험할지 case별로 설명합니다. | 전체 구현 담당자·R1~R8 검토자 | 구현 전 시험 계획 |
+| [`implementation/03-recovery-test-plan.md`](./architecture-v5/implementation/03-recovery-test-plan.md) | 중단·재시도·복구와 오래된 결과 격리 시험을 설명합니다. | R3·R4·R6·R7 통합 검토자 | 구현 전 시험 계획 |
 | [`implementation/04-provider-decision.md`](./architecture-v5/implementation/04-provider-decision.md) | OpenAI·Codex·Anthropic·Claude를 API Key 또는 공식 구독 로그인으로 연결하는 네 경로와 실제 검증 기준을 설명합니다. | R3·R4·R8·LLM 역할 담당 | 구현 인계 설계 |
+| [`implementation/05-prompt-runtime.md`](./architecture-v5/implementation/05-prompt-runtime.md) | 11개 LLM 역할의 프롬프트 등록·조립·전달과 출력 검증 구조를 설명합니다. | R1~R8·통합 구현 담당 | 구현 인계 설계 |
+| [`implementation/06-implementation-baseline.md`](./architecture-v5/implementation/06-implementation-baseline.md) | 기술, 전체 파일 구조, 저장·복구, 설정, CLI, CI와 한 명의 구현 순서를 확정합니다. | R1~R8·통합 구현 담당 | 구현 시작 기준선 |
+| [`implementation/README.md`](./architecture-v5/implementation/README.md) | R3 구현 준비 문서의 읽는 순서와 실제 구현 여부를 안내합니다. | 전체 구현·검토 담당 | 쉬운 안내 |
 
 ## Architecture v5 쉬운 Wiki
 
