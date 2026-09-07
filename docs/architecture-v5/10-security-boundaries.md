@@ -29,7 +29,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - 지원하지 않는 schema MAJOR는 `SCHEMA_UNSUPPORTED`로 거절한다. 같은 `logical_record_id`가 아니거나 바로 이전 revision과 이어지지 않는 수정본은 `RECORD_REVISION_MISMATCH`로 거절하고 자동 변환·병합하지 않는다. `RunMeta`의 workspace·commit은 `null`에서 실제 값으로만 바인딩할 수 있고, 코드 근거 `RecordMeta`에서는 두 값이 필수·불변이다.
 - 저장된 record를 가리키는 `StoredDataRef.record_id`는 참조 대상 revision의 workspace·commit·내용 hash와 일치해야 하고, 가설별 대상 record의 `RecordMeta.hypothesis_id`도 현재 가설과 같아야 한다. run-neutral 정책 cache만 전용 `PolicyCacheRef`를 사용하며 일반 artifact를 이 예외로 통과시키지 않는다. Technical Gate가 검토한 Verification revision이나 Rule Scope Gate가 검토한 Verification·Technical·run에 고정한 정책 revision이 바뀌면 이전 Gate 결과를 재사용하지 않는다.
 - `Restriction.fact_refs`는 exact final `StaticFactBundle` revision과 그 안의 실제 `fact_id`를 가리켜야 한다. fact/evidence reference가 모두 비어 있거나 다른 workspace·commit을 가리키는 restriction은 저장하지 않는다. proposal의 같은 `fact_id`를 `observed_facts`와 restriction 근거 양쪽에 중복 분류하지 않는다.
-- 가설 중복 비교는 trusted runtime이 같은 analysis·workspace·commit의 등록 가설만 비교 후보로 좁힌 뒤 HYPOTHESIS `CALL_LLM`에 exact proposal·후보 reference를 고정한다. LLM은 후보 밖 가설을 중복 대상으로 선택할 권한이 없고 Orchestration은 review 결과를 만들거나 바꿀 수 없다.
+- 가설 중복 비교는 trusted runtime이 같은 analysis·workspace·commit의 등록 가설만 비교 후보로 좁힌 뒤 HYPOTHESIS `CALL_LLM`에 exact proposal·후보 reference를 고정한다. LLM은 후보 밖 가설을 중복 대상으로 선택할 권한이 없고 Orchestration Runtime은 review 결과를 만들거나 바꿀 수 없다.
 
 ## 1.1 상태·동시성·복구 경계
 
@@ -53,7 +53,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - claim 뒤 중단됐으면 기존 decision을 다시 사용하지 않는다. 중단 오류와 실행 outcome 유무를 기록하고 새 action을 요청한다.
 - 한 `ActionRequest`에는 하나의 logical `ActionDecision`만 만들고 concurrent validator는 unique action-ref 제약으로 같은 decision을 반환한다.
 - 실제 LLM call은 검사한 immutable `LLMCallSpec`과 field-by-field 같아야 한다. Gate와 Reporter는 자기 stage action이 호출까지 허가하며 별도 `CALL_LLM`으로 우회하지 않는다.
-- Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 있지만 가설 내부 호출, verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 저장할 권한이 없다. Verification이 가설 내부 다음 작업을 선택해도 모든 action은 같은 Runtime Validator 검사를 통과해야 한다.
+- Orchestration Runtime은 schema-valid proposal의 전역 등록과 Verification 배정을 요청하는 비-LLM 전역 제어 구성요소다. 가설 내부 호출, verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 판단하거나 저장할 권한이 없으며 모든 등록·배정·상태 변경은 Runtime Validator와 state store 검사를 통과해야 한다. Verification이 가설 내부 다음 작업을 선택해도 모든 action은 같은 검사를 통과해야 한다.
 - Runtime Validator는 역할과 실행 전제를 검사하지만 취약점 진위·CWE 적절성·정책 의미를 대신 판단하지 않는다.
 
 ## 2. 저장소와 외부 텍스트는 비신뢰 데이터
@@ -90,9 +90,9 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - network는 default-deny이고 versioned profile이 허용한 egress만 연다. package 설치도 승인된 registry egress 안에서만 가능하다.
 - production credential, 실제 개인정보와 범위 밖 target을 사용하지 않는다. 환경 요구사항·실제 값·Health Check·AgentLog에도 credential·cookie·token·password 원문을 넣지 않고 필요한 경우 secret store의 불투명 handle만 연결한다.
 - R6의 `REQUEST_DYNAMIC_REPRO`는 Runtime Validator가 현재 Verification generation, exact request, 권한·상태·예산과 generation당 하나의 동적 work 제한을 확인한 뒤 R7에 전달한다.
-- `RUN_SANDBOX`는 Runtime Validator가 R7 Setup Automation의 권한·상태·예산, exact `DynamicReproductionRequest`·current `EnvironmentRequirements`·current exact `ReproductionPlan`·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile`을 확인하고 action `input_refs`와 `checked_config_refs`에 같은 exact revision을 고정한 `ActionDecision=ALLOW` 뒤 Sandbox Controller로 전달한다. 요청 당시 exact `RunPolicyState`는 전용 field와 Sandbox decision에 감사 reference로 기록하되 authorization input·checked config로 중복 사용하지 않는다. plan, profile 또는 실제 외부 경계 입력이 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 처리하고 새 action을 만들지만, policy pointer·freshness 변경만으로 local-only decision을 만료시키지 않는다. 이 ALLOW는 정책 의미 검토나 Docker 실행 성공을 뜻하지 않는다.
+- `RUN_SANDBOX`는 Runtime Validator가 Reproduction Setup Automation의 권한·상태·예산, exact `DynamicReproductionRequest`·current `EnvironmentRequirements`·current exact `ReproductionPlan`·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile`을 확인하고 action `input_refs`와 `checked_config_refs`에 같은 exact revision을 고정한 `ActionDecision=ALLOW` 뒤 Sandbox Controller로 전달한다. 요청 당시 exact `RunPolicyState`는 전용 field와 Sandbox decision에 감사 reference로 기록하되 authorization input·checked config로 중복 사용하지 않는다. plan, profile 또는 실제 외부 경계 입력이 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 처리하고 새 action을 만들지만, policy pointer·freshness 변경만으로 local-only decision을 만료시키지 않는다. 이 ALLOW는 정책 의미 검토나 Docker 실행 성공을 뜻하지 않는다.
 - Sandbox Controller는 `execution_scope=LOCAL_ONLY`와 R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리, CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하고 exact `sandbox_policy_decision`을 저장한다. clone은 current `CodeWorkspace`에서 만든 Sandbox 내부 복사본, mock·fixture는 같은 work·attempt에서 생성되어 exact environment·AgentLog·artifact로 추적되는 것만 허용한다. 공격 대상 endpoint는 loopback 또는 현재 격리 network의 container address만 허용하고 출처를 증명하지 못한 endpoint·계정·데이터는 live로 간주해 차단한다. network는 default-deny이며 승인된 package registry egress는 dependency 준비에만 쓰고 공격 대상 통신과 분리해 기록한다. R8 lifecycle profile의 호출 전 잔여 시간·새 attempt 한도는 Runtime Validator가 강제한다. 컨테이너 내부 command·package·PoC를 allowlist로 검사하거나 프로그램 정책 의미를 판정하지 않는다.
-- Sandbox 외부 경계를 통과하면 R7 Setup Automation이 저장소 선언을 우선한 recipe로 image build, container 생성·재사용·재생성과 cleanup을 수행한다. Docker build와 실행은 분석용 `CodeWorkspace`를 직접 수정하지 않고 Sandbox 내부 복사본에서 수행한다.
+- Sandbox 외부 경계를 통과하면 Reproduction Setup Automation이 저장소 선언을 우선한 recipe로 image build, container 생성·재사용·재생성과 cleanup을 수행한다. Docker build와 실행은 분석용 `CodeWorkspace`를 직접 수정하지 않고 Sandbox 내부 복사본에서 수행한다.
 - Dynamic Reproduction Agent는 격리된 container 안에서 환경 설정, package, 계정, fixture/mock, PoC, command, 관찰과 재시도를 자율적으로 정한다. Dynamic Reproduction Agent는 Docker daemon을 직접 제어하지 않고 Setup Automation의 in-container 실행 통로만 사용한다.
 - 같은 가설·work에서는 영향 있는 상태·설정 변화가 없을 때만 container를 재사용한다. `STATE_CHANGED | CONFIG_CHANGED | STATE_UNCERTAIN`이면 재생성하며 crash·비정상 종료·사후 Health Check 실패는 runtime이 `STATE_UNCERTAIN`으로 강제한다.
 - 비-LLM Reproduction Session Manager가 실제 event를 durable append-only `AgentLog`에 기록한다. 전역 고유 `event_id`, attempt별 증가 `sequence`를 강제한다. `COMMAND_STARTED`와 `COMMAND_FINISHED`는 같은 exact `SandboxCommandRecord`·digest, `action_id`, attempt, environment·recipe를 가리키며 secret 원문 대신 opaque ref를 쓴 redaction 상태가 유효해야 한다. 이전 attempt의 늦은 event는 current 결과에 섞지 않는다.
@@ -149,7 +149,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | repository prompt injection | instruction/data 분리, 최소 context, output validation |
 | SAST hit 자동 승격 | fact-only 정규화, Verification |
 | 규칙 실행 기록이 없어도 “검사 결과 0건”으로 해석 | exact `RuleExecutionRecord` 확인, 미실행·확인 불가와 0건 분리 |
-| 저비용 모델의 과도한 확정 | fixed hypothesis schema, 금지 assertion, `INVALID_OUTPUT` |
+| LLM의 근거 없는 과도한 확정 | fixed hypothesis schema, 금지 assertion, `INVALID_OUTPUT` |
 | LLM 확증 편향 | 운영상 항상 실행하는 독립 Pro/Con, 역할 간 NEW session, 두 Gate |
 | session contamination | `NEW/RESUME/AUTO` policy와 결정 logging |
 | 잘못된 path 연결 | location retrieval와 Technical Gate linkage 검토 |
@@ -218,7 +218,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 
 | 입력·사건 | Runtime Validator가 확인할 것 | 기대 차단 결과 |
 |---|---|---|
-| Orchestration이 `TRUE`를 저장하려 함 | `requested_by`, 저장 result kind | `AUTHORITY_DENIED`, verdict 미변경 |
+| Orchestration Runtime이 `TRUE`를 저장하려 함 | `requested_by`, 저장 result kind | `AUTHORITY_DENIED`, verdict 미변경 |
 | Hypothesis Agent가 final verdict를 출력 | 역할별 output schema | `INVALID_OUTPUT`, proposal만 사용 가능 |
 | Technical Gate가 Verification verdict를 바꾸려 함 | Gate output과 input verdict | `ACTION_NOT_ALLOWED`, 기존 verdict 보존 |
 | Technical Gate가 `CWELabel`을 생성·수정하거나 새 CWE를 저장하려 함 | `cwe_label` result-owner와 `requested_by` | `AUTHORITY_DENIED`, R5-01의 current label 보존 |

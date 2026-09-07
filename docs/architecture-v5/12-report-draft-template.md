@@ -23,7 +23,7 @@ current final Verification TRUE
 + report_permission ALLOW
 ```
 
-Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비-LLM Runtime Validator가 위 조건, exact input revision, 현재 state version과 redaction을 확인해 `ALLOW`한 요청만 실행한다. Reporter나 Orchestration의 자연어 출력은 이 조건을 바꾸지 못한다.
+Reporter 호출은 `CREATE_REPORT_DRAFT` `ActionRequest`로만 요청한다. 비-LLM Runtime Validator가 위 조건, exact input revision, 현재 state version과 redaction을 확인해 `ALLOW`한 요청만 실행한다. Reporter의 자연어 출력이나 Orchestration Runtime의 제어 요청은 이 조건을 바꾸지 못한다.
 
 `current Finding`은 신뢰 runtime이 두 Gate가 검토한 exact chain에서 정규화한 record다. Finding이 없거나 stale이면 6축 정책 조건이 모두 `PASS/ALLOW`여도 Reporter를 호출하지 않는다. 반대로 Finding이 존재해도 정책 조건 중 하나가 미달이면 Reporter만 차단하고 Finding은 감사 결과로 남긴다.
 
@@ -104,9 +104,9 @@ security impact는 exact upstream evidence보다 강하게 표현하지 않는�
 
 ### Debate
 
-- 모드와 trigger: `{BASIC | CONDITIONAL_DEBATE | ALWAYS_DEBATE / reasons}`
-- 독립 Pro/Con 결과: `{summary or documented skip reason}`
-- 전후 verdict/HOLD/bypass 변화: `{comparison}`
+- 모드: `ALWAYS_DEBATE`
+- 독립 Pro/Con 결과: `{각 Agent의 결과 요약과 exact reference}`
+- 최종 TRUE 판정에 반영한 방식: `{comparison}`
 
 ### Verification 판정
 
@@ -116,9 +116,9 @@ security impact는 exact upstream evidence보다 강하게 표현하지 않는�
 
 | question_id | 질문 | 결과 | 근거 |
 |---|---|---|---|
-| `{question id}` | `{필수 조건을 반증하기 위한 질문}` | `{DISPROVED | NOT_DISPROVED | INCONCLUSIVE}` | `{evidence refs or unresolved reason}` |
+| `{question id}` | `{필수 조건을 반증하기 위한 질문}` | `{NOT_DISPROVED | INCONCLUSIVE}` | `{evidence refs or unresolved reason}` |
 
-`FALSE` 초안은 적어도 하나의 근거 있는 `DISPROVED` 결과와 판정의 연결을 표시한다. `NOT_DISPROVED`를 취약점 성립 증거로 표현하지 않는다.
+FALSE와 HOLD, 동적 실행이 실패·차단·취소·불충분한 가설은 ReportDraft를 만들지 않는다. 이 절은 final TRUE에 도달하기 전 검토했던 반증 질문과, 그 반박을 어떤 근거로 해소했는지만 기록한다. `NOT_DISPROVED`를 취약점 성립 증거로 표현하지 않는다.
 
 ## 7. 동적 재현과 PoC
 
@@ -127,19 +127,19 @@ security impact는 exact upstream evidence보다 강하게 표현하지 않는�
 - R7 재현 전략: `{strategy_summary}`
 - Docker 환경: `{image digest and relevant configuration}`
 - 전제: `{account, data, route or build condition}`
-- 실행 상태: `{SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED}`
-- 실패 분류: `{NONE | POLICY_BLOCKED | EXTERNAL_CONFIGURATION | PLAN | ENVIRONMENT_SETUP | DEPENDENCY | AGENT | EXECUTION | OBSERVATION | TIMEOUT | RESOURCE_LIMIT | RETRY_LIMIT | INTERNAL}`
-- 실패 상세 사유: `{failure_reason string or null}`
-- Dynamic Reproduction Agent 호출 여부: `{agent_invoked}`
-- AgentLog reference: `{agent_log_ref.record_id; 정책 단계에서 차단된 경우에도 Session Manager가 남기는 필수 reference이며 null 불가}`
+- 실행 상태: `SUCCEEDED`
+- 실패 분류: `NONE`
+- 실패 상세 사유: `null`
+- Dynamic Reproduction Agent 호출 여부: `true`
+- AgentLog reference: `{agent_log_ref.record_id; 같은 attempt의 실행과 관측을 증명하는 필수 reference}`
 - 환경 생성 또는 재사용 여부: `{SandboxEnvironment.container_action: CREATED | REUSED; environment_ref가 있을 때}`
-- 실제 환경 reference: `{environment_ref.record_id or null}`
-- 환경 recipe reference: `{environment_recipe_ref.record_id or null}`
+- 실제 환경 reference: `{environment_ref.record_id}`
+- 환경 recipe reference: `{environment_recipe_ref.record_id}`
 - 관측 references: `{observation_refs}`
 - cleanup 필요 여부와 상태: `{cleanup_required / cleanup_status}`
 - cleanup reference: `{cleanup_ref.record_id or null}`
 - 동일 결과 provenance: `{request_ref, reproduction_plan_ref와 그 plan의 environment_requirements_ref, policy_decision_ref, environment_ref, agent_log_ref, poc_candidate_ref, poc_ref, cleanup_ref의 exact revision/hash; request, plan, environment, AgentLog, PoC candidate, validated PoC, cleanup은 모두 동일 reproduction attempt에 속해야 함}`
-- 관측 결과: `{SUPPORTED | DISPROVED | INCONCLUSIVE}`
+- 관측 결과: `SUPPORTED`
 - PoC candidate reference: `{poc_candidate_ref.record_id}`
 - validated PoC reference: `{poc_ref.record_id; R7이 exact candidate revision/digest의 POC_EXECUTION_STARTED와 POC_EXECUTION_FINISHED, 지지 observation 및 SUCCEEDED + SUPPORTED를 연결해 확정한 값만 사용}`
 - 가설 연결: `{hypothesis evidence refs와 관측이 지지·반증하는 정확한 claim}`
@@ -163,12 +163,7 @@ security impact는 exact upstream evidence보다 강하게 표현하지 않는�
 
 실제 credential, session cookie, API key와 개인정보를 포함하지 않는다.
 환경의 존재와 식별은 `environment_ref`로, 생성 또는 재사용 여부는 `SandboxEnvironment.container_action=CREATED | REUSED`로 기록한다.
-`agent_log_ref`는 정책 단계에서 차단되어 `agent_invoked=false`인 경우에도 Session Manager가 남기는 필수 reference이며 `null`을 허용하지 않는다. `agent_invoked=false`이거나, `agent_invoked=true`인데 동일 attempt의 exact `agent_log_ref`와 `AgentLog`
-event가 실제 PoC 실행·관측을 뒷받침하지 않거나, 상태가 `BLOCKED`이면 성공 단계처럼 채우지 않는다.
-Reporter는 R7이 확정하고 Verification의 exact `dynamic_result_ref`에 연결한 request·plan·requirements와
-environment·policy·AgentLog·PoC·cleanup provenance를 그대로 따라 실제 미실행·차단·제한 상태와
-관측 범위를 기록한다. request, plan, `environment_ref`, `agent_log_ref`, PoC candidate, validated PoC, `cleanup_ref`는 모두 동일한 reproduction attempt에 속해야 한다. 서로 다른 attempt의 artifact를 섞거나 이 무결성을 새로 판정하지 않으며, 특히 `agent_log_ref`·`environment_ref`·PoC·cleanup reference의 attempt가 하나라도 다르면 fail-closed 처리한다.
-환경·실행 실패를 취약점 부재로 해석하지 않는다.
+Reporter는 final TRUE가 직접 가리키는 current `DynamicReproductionResult(status=SUCCEEDED, hypothesis_outcome=SUPPORTED)`와 validated `poc_ref`만 사용한다. request, plan, `environment_ref`, `agent_log_ref`, PoC candidate, validated PoC, `cleanup_ref`는 모두 동일한 reproduction attempt에 속해야 한다. 서로 다른 attempt의 artifact를 섞거나 이 무결성을 새로 판정하지 않으며, 하나라도 다르면 fail-closed 처리하고 ReportDraft를 만들지 않는다. 과거 실패·차단·취소 attempt는 감사 이력으로만 보존하며 current 성공 필드를 채우는 데 재사용하지 않는다.
 
 ## 8. CWE
 

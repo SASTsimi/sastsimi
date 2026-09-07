@@ -46,7 +46,7 @@ NOT_IMPLEMENTED
 쉽게 나누면 다음과 같습니다.
 
 1. **코드 사실 수집**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST와 SAST를 함께 실행합니다. SAST 규칙별로 검사 0건·미실행·확인 불가를 구분합니다.
-2. **가설 생성과 검증**: Orchestration이 가설을 등록해 Verification에 배정하고, Verification이 찬성·반대 근거와 필요한 후속 작업을 관리합니다.
+2. **가설 생성과 검증**: 비-LLM Orchestration Runtime이 Hypothesis Agent의 가설 형식과 중복을 확인한 뒤 등록해 Verification에 배정하고, Verification이 찬성·반대 근거와 필요한 후속 작업을 관리합니다.
 3. **필요한 경우 재현**: Verification 판단에 따라 Docker 격리 환경에서 제한적으로 공격 흐름을 재현합니다.
 4. **판정별 연계 탐색**: HOLD에 하나 이상의 `required_primitive_candidates`가 있으면 그 필요 조건을 연결 재료로 사용합니다. 후보가 없으면 Primitive와 Chaining 작업을 만들지 않습니다. TRUE의 제공 능력은 validated PoC와 Technical `ACCEPT` 뒤 공식 정책의 금지 테스트 위반 여부를 따로 확인하고, `PrimitiveAdmissionDecision=ALLOW`일 때만 연결해 새 가설을 만듭니다. 다른 Rule Scope 판단은 보고 가능성에 적용합니다.
 5. **근거·정책 검토와 자동화 종료**: 두 Gate를 통과한 결과만 보고서 초안으로 만들고, 결과와 디버깅 정보를 저장한 뒤 Agent 자동화를 끝냅니다.
@@ -64,13 +64,13 @@ Repository input
 → ToolRunResult와 규칙별 RuleExecutionRecord
 → exact 규칙 실행 기록이 연결된 StaticFactBundle
 → constrained HypothesisProposal
-→ Orchestration이 가설을 등록하고 가설별 Verification owner를 배정
+→ Orchestration Runtime이 가설을 등록하고 가설별 Verification owner를 배정
 → Verification이 on-demand context와 운영 기본 Pro/Con 병렬 검증 관리
 → initial TRUE면 POC_CONFIRMATION, 판정 근거가 필요하면 VERDICT_EVIDENCE 요청을 R6가 생성
 → Runtime Validator가 같은 Verification generation의 동적 work가 하나인지 확인
 → Dynamic Reproduction Agent가 EnvironmentRequirements·ReproductionPlan·PoC candidate 생성
 → Sandbox Controller가 요청 당시 RunPolicyState를 감사 reference로 남기고 LOCAL_ONLY·host·Docker·secret·egress 등 외부 격리 경계 검사
-→ R7 Setup Automation이 image·container·환경·정리를 관리하고 Dynamic Reproduction Agent가 Sandbox 안에서 PoC candidate를 만들고 재현을 자율 실행
+→ Reproduction Setup Automation이 image·container·환경·정리를 관리하고 Dynamic Reproduction Agent가 Sandbox 안에서 PoC candidate를 만들고 재현을 자율 실행
 → 비-LLM Reproduction Session Manager가 같은 attempt의 AgentLog·recipe·환경·candidate·validated PoC를 결과로 묶어 반환
 → final TRUE / FALSE / HOLD
 → final TRUE는 재현에 성공한 validated PoC가 있을 때만 저장하고 Technical Gate로 전달

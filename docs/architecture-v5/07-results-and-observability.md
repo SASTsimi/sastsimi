@@ -148,11 +148,13 @@ Sandbox ENV/POLICY/EXEC/TIMEOUT은 동적 work의 `BLOCKED | FAILED`다. 최종 
 | usage | token 숫자를 서비스가 안 줌 | 없음 + 이유. 지어내지 않음 |
 | 수집 금지 | 비밀번호·세션 비밀·숨은 생각을 평가/로그로 모은 횟수 | 0. `S-REDACT`는 가리기 실패 장면. 이건 모으지 말 것 |
 
+Agent 이름에는 모델의 가격·성능 등급을 붙이지 않는다. `Hypothesis Agent`를 포함한 모든 LLM 역할은 고정 Provider나 모델을 전제하지 않는다. R8은 같은 corpus와 합격 기준으로 `provider_profile_ref + model` 조합을 비교해 품질 기준을 만족한 조합만 비용 최적화 후보로 제안한다. 실제 사용 조합은 model을 포함한 exact `ProviderProfile` revision과 호출별 `LLMCallSpec.model`로 승인·기록하며 두 값은 같아야 한다. 모델 변경은 Agent 역할 변경으로 기록하지 않는다.
+
 연결 발견사항: H-003.
 
 ## 정책 최신성·재사용 (R8 versioned)
 
-정책 준비는 가설 Agent가 아니다. `CodeWorkspace.status=READY` 뒤 분석 단위 `POLICY_FETCH`가 AST/SAST와 병렬로 한 번 등록되고, 준비가 끝난 `RunPolicyState`를 그 run의 모든 가설이 공유한다. R8은 **다음 run에서 cache를 다시 쓸 기준**, **Collect/Parse 시간·재시도**, **재사용·실패 지표**를 정한다. 기준과 숫자는 `freshness_criterion_ref`가 가리키는 versioned R8 설정이며 아래 값은 **교차 전 초안**이다.
+정책 준비는 Hypothesis Agent의 역할이 아니다. `CodeWorkspace.status=READY` 뒤 분석 단위 `POLICY_FETCH`가 AST/SAST와 병렬로 한 번 등록되고, 준비가 끝난 `RunPolicyState`를 그 run의 모든 가설이 공유한다. R8은 **다음 run에서 cache를 다시 쓸 기준**, **Collect/Parse 시간·재시도**, **재사용·실패 지표**를 정한다. 기준과 숫자는 `freshness_criterion_ref`가 가리키는 versioned R8 설정이며 아래 값은 **교차 전 초안**이다.
 
 ### 최신성 근거와 Parser 호환성
 
@@ -210,7 +212,7 @@ Sandbox **동적 결과**의 `PARTIAL`은 공격 경로를 일부 실행해 신�
 
 아래 숫자는 **제안(교차 전)** 초안이다. 측정값이 아니다. 담당 확인 전에 확정이 아니다. 시간은 벽시계 1회다. `—`는 이 열에 해당 없음이다. token 열은 없다.
 
-Orchestration은 가설 등록·Verification 배정까지만 한다. 찬반·Docker **호출 전 잔여 예산**과 새 attempt 수는 R8 `DynamicReproductionLifecycleProfile`, 상자 외부 접근·격리와 CPU·RAM·디스크·PID·요청 가능 최대 시간은 R7 `sandbox_profile_ref`를 따른다.
+Orchestration Runtime은 가설 등록·Verification 배정까지만 한다. 찬반·Docker **호출 전 잔여 예산**과 새 attempt 수는 R8 `DynamicReproductionLifecycleProfile`, 상자 외부 접근·격리와 CPU·RAM·디스크·PID·요청 가능 최대 시간은 R7 `sandbox_profile_ref`를 따른다.
 
 `REVISE`는 같은 요청을 다시 보내는 재시도가 아니다. Technical Gate가 근거 보완을 요구하면 같은 Verification owner가 새 검증 세대·새 Gate work를 만든다. provider 오류·`INVALID_OUTPUT` 재시도와 칸을 섞지 않는다. Reporter는 `REVISE`를 판정하지 않는다.
 
@@ -224,7 +226,7 @@ token 상한은 없다. 분석 전체·모든 Agent·호출마다 동일하다. 
 | AST/SAST (`RUN_TOOL`) | 도구당 900초 | 1 | 파이프라인 3단계. 도구마다 work 하나. 같은 workspace에서 병렬. 도구 자체 timeout은 이 칸을 넘지 않는다. `02` 예시·도구 설정은 R2가 맞춘다. 실패·timeout ≠ 0건·안전함·FALSE | 그 도구 work 중단. `PARTIAL`/`FAILED` 가능. FALSE 아님 | 김나연 |
 | Policy Collect | 60초 | 추가 2회(최초 포함 총 3 attempt) | 비-LLM. 승인된 공식 URL만. 원문 bytes/hash·ETag·Last-Modified·게시 주체 고정. 가설마다 호출하지 않음. `(analysis_id, program_id, work_type=POLICY_FETCH)`당 active 1 | 재시도 가능이면 같은 work `BLOCKED`, 소진·복구 불가면 `FAILED`와 실제 `COLLECTION_FAILED`. FALSE/HOLD 아님 | 성병찬 |
 | Policy Parse | 180초 | provider·형식 오류 추가 3회(최초 포함 총 4 attempt) | LLM `POLICY_PARSER`. Collector가 고정한 exact 원문만. token 상한 없음(관측만). 모델 기억·검색 snippet·README로 정책 승격 금지 | 재시도 가능이면 같은 work `BLOCKED`, 소진·복구 불가면 `FAILED`; Rule Scope·Reporter 없음. FALSE/HOLD 아님 | 성병찬 |
-| Hypothesis | 180초 | 4 | — | 그 의심 중단, FALSE 아님 | 배승원 |
+| Hypothesis Agent | 180초 | 4 | — | 그 의심 중단, FALSE 아님 | 배승원 |
 | 코드 다시 꺼내기 | 45초 | — | 가설당 조회 24회. 같은 요청 재시도가 아니라 한 가설의 `code_request_id` 누적 상한이다. 다른 위치·관계 요청도 센다. 깊이 5, 조각 32개, 요청당 256KiB | 빈칸/조회 오류. FALSE 아님 | 김나연 |
 | Verification / debate | 종합 240초 / 찬반 각 180초 | 의심마다 찬반 각 1회 | 서로 다른 대화. Docker 요청 예산은 이 칸 | 초과 ≠ FALSE. 찬반 생략은 운영 불합격 | 임채민 |
 | Chaining | 120초 | — | 체이닝 전용 짝·깊이 한도 없음. result→input 비교. 전역 시간·비용·work 예산만. 순환 검사 아님. 조상 Primitive 재사용 제외는 예산 중단이 아님 | 전역 예산 소진 시 `stop_reasons`, 부모 불변. FALSE 아님 | 배승원 |
@@ -421,7 +423,7 @@ Verification work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`과 fi
 
 최종 분석 결과에는 repository, nullable `commit_id`·`workspace_id`, `started_at`, `finished_at`, `elapsed_ms`, INITIAL·VERIFICATION·CHAINING·invalid hypothesis 수, 중복 판정과 exact `hypothesis_duplicate_review_refs`, verdict별 수, `failed_hypothesis_count`, 두 Gate별 수, 동적 재현 request·result·recipe·환경·AgentLog·PoC candidate·validated PoC·cleanup·report refs, current `run_policy_state_ref`, 정책 parser·수집 결과·공식 정책 record refs, Primitive/Chaining 요약, LLM·static·sandbox 자원, work state·attempt·transition commit·action decision refs, 반복·예산 중단 이유, 모든 오류와 `RunStoredDataRef` debug trace를 포함한다. 실패한 PoC candidate도 validated PoC로 승격하지 않은 채 request·attempt·AgentLog와 함께 추적한다. `failed_hypothesis_count`는 final verdict 없이 `HypothesisProcessState.status=FAILED`로 끝난 가설 수이며 verdict별 수와 섞지 않는다. `COMPLETE | PARTIAL`이면 workspace·commit이 필수이고 clone·checkout 전 `FAILED | CANCELLED`이면 비어 있을 수 있다.
 
-필요한 Agent 작업과 trusted-runtime 결과 정규화가 종료되면 신뢰 runtime이 exact `AnalysisRunResult`를 만든다. Reporter가 실행된 경우에는 current `ReportDraft`를 포함하고, Reporter가 차단된 경우에는 `report_draft_refs=[]`와 차단 원인을 보존한다. 이 결과에는 Finding·Verification, 두 Gate, 정책·CWE, 동적 재현 request·result·recipe·환경·AgentLog·PoC candidate·redacted validated PoC·cleanup, current ReportDraft, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. current Finding은 두 Gate가 검토한 exact chain을 신뢰 runtime이 정규화한 record이며 새 verdict가 아니다. `report_permission=DENY` 등 정책 조건 미달로 Reporter가 차단돼도 current Finding은 `finding_refs`에 남고 `report_draft_refs=[]`로 종료 원인을 보존한다. Rule Scope review가 없거나(정책 `COLLECTION_FAILED`) chain이 아직 정규화 전이면 `finding_refs=[]`이며 이때도 Reporter를 호출하지 않고 관련 `REPORT_NOT_READY` 오류·상태를 보존한다. 결과와 `AnalysisRunState`를 atomic하게 확정하면 Agent 자동화가 끝난다.
+필요한 Agent 작업과 trusted-runtime 결과 정규화가 종료되면 신뢰 runtime이 exact `AnalysisRunResult`를 만든다. Reporter가 실행된 경우에는 current `ReportDraft`를 포함하고, Reporter가 차단된 경우에는 `report_draft_refs=[]`와 차단 원인을 보존한다. 이 결과에는 Finding·Verification, 두 Gate, 정책·CWE, 동적 재현 request·result·recipe·환경·AgentLog·Dynamic Reproduction Agent 해석·PoC candidate·redacted validated PoC·cleanup, current ReportDraft, 자원, 오류·DataGap·HOLD 조건과 LLM 호출·action decision·work state/attempt·transition commit·debug trace reference를 함께 보존한다. `dynamic_reproduction_conclusion_refs`는 각 동적 결과가 가리키는 non-null exact conclusion의 중복 없는 집합이며, Agent가 실행되지 않았거나 결론 전에 실패한 실행을 위해 가짜 conclusion을 만들지 않는다. 각 Sandbox turn은 `LLMInvocationLog.parsed_output_ref → DynamicReproductionToolRequest → SandboxCommandRecord/AgentLog`로 복원하며, 동적 결과의 outcome·evidence·linkage·limitations는 exact conclusion과 같아야 한다. current Finding은 두 Gate가 검토한 exact chain을 신뢰 runtime이 정규화한 record이며 새 verdict가 아니다. `report_permission=DENY` 등 정책 조건 미달로 Reporter가 차단돼도 current Finding은 `finding_refs`에 남고 `report_draft_refs=[]`로 종료 원인을 보존한다. Rule Scope review가 없거나(정책 `COLLECTION_FAILED`) chain이 아직 정규화 전이면 `finding_refs=[]`이며 이때도 Reporter를 호출하지 않고 관련 `REPORT_NOT_READY` 오류·상태를 보존한다. 결과와 `AnalysisRunState`를 atomic하게 확정하면 Agent 자동화가 끝난다.
 
 ReportDraft가 가리킨 Finding·Verification·CWELabel·두 Gate·정책 중 하나라도 새 current revision으로 바뀌면 그 초안은 즉시 감사 이력으로만 남고 `AnalysisRunResult.report_draft_refs`의 current 목록에서 제외한다. 새 exact dependency chain으로 Gate와 Reporter를 다시 실행해 새 초안을 만들기 전에는 current 결과로 사용할 수 없다. 자동화 종료 뒤 사람의 검토·수정·제출·공개는 이 저장 lifecycle 밖에서 수행하며, 자동 action이나 상태를 만들지 않는다.
 
@@ -494,15 +496,15 @@ Context 조회 실패·timeout·권한 오류는 다음 기준으로 처리한�
 | `RATE_LIMITED` | provider adapter | LLM 호출 지연·중단 | 일반 work는 backoff 또는 명시적 fallback. `DYNAMIC_REPRO`는 같은 session 해결 시 현재 attempt, session 재시작 시 새 attempt, 외부 대기만 `BLOCKED` |
 | `TIMED_OUT` | 각 runtime | 해당 작업 시간 초과 | 일반 work는 예산 안에서 새 시도 또는 중단. `DYNAMIC_REPRO`는 같은 session 해결 시 현재 attempt, session 재시작 시 새 attempt, 외부 대기만 `BLOCKED` |
 | `POC_GENERATION_FAILED` | Dynamic Reproduction Agent | validated PoC와 final verdict 없음 | 같은 session의 현재 attempt에서 자율 조정하거나 session 재시작이 필요할 때만 R8 한도 안의 새 attempt; 외부 대기만 `BLOCKED`, 불가능하면 `FAILED + INCONCLUSIVE` |
-| `SANDBOX_ERROR` | R7 Setup Automation·Session Manager | validated PoC와 final verdict 없음 | 자율 retry와 외부 `BLOCKED`를 구분하고 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE` |
-| `ENVIRONMENT_MISMATCH` | R7 Setup Automation | 필수 조건이 다르거나 확인되지 않음 | Dynamic Reproduction Agent가 recipe를 자율 보완하고 exact 차이·plan issue·AgentLog를 보존 |
+| `SANDBOX_ERROR` | Reproduction Setup Automation·Session Manager | validated PoC와 final verdict 없음 | 자율 retry와 외부 `BLOCKED`를 구분하고 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE` |
+| `ENVIRONMENT_MISMATCH` | Reproduction Setup Automation | 필수 조건이 다르거나 확인되지 않음 | Dynamic Reproduction Agent가 recipe를 자율 보완하고 exact 차이·plan issue·AgentLog를 보존 |
 | `CHAINING_ERROR` | Chaining runtime | matching 실패, 부모 verdict 유지 | 제한 retry 또는 no-match/실패 기록 |
-| `TECHNICAL_GATE_ERROR` | Technical Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
+| `TECHNICAL_GATE_ERROR` | Technical Evidence Gate Agent 호출 경계 | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
 | `POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 수집 결과 `COLLECTION_FAILED`; 성공한 Rule Scope review 없음 | 공식 출처 재확인 뒤 같은 정책 work 재시도 또는 실패 종료 |
 | `POLICY_PARSE_ERROR` | 정책 수집 계층 | parser 실행 실패와 `COLLECTION_FAILED`; 성공한 Rule Scope review 없음 | 원문·parser 버전 확인 뒤 새 parser attempt |
 | `RULE_SCOPE_GATE_ERROR` | 정책·영향 Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
 | `REPORT_ERROR` | Reporter runtime | 초안 `FAILED`, 기술 판정 유지 | 조건 보존 후 초안 재작성 |
-| `BUDGET_EXCEEDED` | Orchestration runtime | 작업 중단과 남은 검증 조건을 Verification에 전달; 분석은 `PARTIAL` 가능 | 운영 Pro/Con 등 필수 검증을 끝내지 못했다면 final verdict 없이 work를 중단하고, 새 예산 승인 뒤 새 attempt에서만 재시도 |
+| `BUDGET_EXCEEDED` | Orchestration Runtime | 작업 중단과 남은 검증 조건을 Verification에 전달; 분석은 `PARTIAL` 가능 | 운영 Pro/Con 등 필수 검증을 끝내지 못했다면 final verdict 없이 work를 중단하고, 새 예산 승인 뒤 새 attempt에서만 재시도 |
 | `CANCELLED` | 사용자·runtime | 해당 작업 또는 분석 `CANCELLED` | 자동 재시도 금지 |
 | `SCHEMA_UNSUPPORTED` | schema validator | 해당 record 사용 금지 | 지원 schema로 다시 생성 |
 | `RECORD_REVISION_MISMATCH` | record validator | revision 자동 병합 금지 | 올바른 이전 revision에서 재생성 |

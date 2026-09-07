@@ -156,7 +156,7 @@ NoMatchReason:
 
 새 가설은 `HypothesisProposal(origin=CHAINING)`으로 만든다. proposal의 `source_primitive_match_id`는 자신을 만든 candidate ID와 같고, `parent_hypothesis_ids`는 그 candidate의 부모 set과 같아야 한다. Chaining Agent는 새 코드 사실을 만들지 않으므로 `observed_facts=[]`만 허용한다. `target_entities`·`target_locations`·`suspected_path`는 비어 있을 수 있지만, 값을 넣으면 부모 Primitive의 exact entity·location 계보에서 얻을 수 있어야 한다. Verification이 시작할 entity나 location을 부모 계보에서 하나도 복원할 수 없으면 proposal 등록과 배정을 거절한다.
 
-proposal의 `restrictions`는 입력 Primitive 양쪽에 있는 Restriction 객체의 중복 없는 합집합이다. 같은 `restriction_id`는 canonical content가 완전히 같을 때 한 번만 유지하고, ID는 같은데 statement나 근거 reference가 다르면 계약 충돌로 거절한다. trusted runtime이 schema·semantic·workspace·commit·exact Primitive·중복·조상 재사용·예산을 검사한 뒤 새 `hypothesis_id`로 등록한다. Orchestration Agent는 등록된 가설에 새 Verification Agent를 배정하고 child는 전체 Verification 파이프라인을 처음부터 거친다.
+proposal의 `restrictions`는 입력 Primitive 양쪽에 있는 Restriction 객체의 중복 없는 합집합이다. 같은 `restriction_id`는 canonical content가 완전히 같을 때 한 번만 유지하고, ID는 같은데 statement나 근거 reference가 다르면 계약 충돌로 거절한다. trusted validation이 schema·semantic·workspace·commit·exact Primitive·중복·조상 재사용·예산을 검사한 뒤 Orchestration Runtime이 새 `hypothesis_id`로 등록하고 새 Verification Agent를 배정한다. child는 전체 Verification 파이프라인을 처음부터 거친다.
 
 ### 자식 가설의 내용
 
@@ -195,7 +195,7 @@ Verification이 새 endpoint, sink, authorization boundary, 별도 auth bypass, 
 Verification
 -> HypothesisProposal(origin=VERIFICATION)
 -> trusted validation and global registration
--> Orchestration assigns Verification
+-> Orchestration Runtime assigns Verification
 -> full Verification pipeline
 ```
 
@@ -233,4 +233,4 @@ Verification은 proposal을 만들 수 있지만 `hypothesis_id`를 직접 발�
 
 사슬에서 나온 Finding은 재료가 된 Finding 밑에 중첩해 저장하지 않는다. 한 부모가 여러 자식의 재료가 되고 부모 자신도 독립 Finding이라 중첩이 성립하지 않으며, HOLD 부모는 Finding이 없어 자리가 빈다. Finding은 평평하게 둔다.
 
-재료 계보는 별도 저장 필드가 아니라 기존 참조를 따라 복원한다. 자식의 `VulnerabilityHypothesis.parent_hypothesis_ids`와 `source_primitive_match_id`가 `PrimitiveMatchCandidate`를 거쳐 재료가 된 upstream Primitive와 그 `source_hypothesis_id`에 닿는다. TRUE 부모는 그 `hypothesis_id`로 자기 Finding에 이르고, HOLD 부모는 Finding이 없으므로 `hypothesis_id`와 exact `VerificationResult` reference에서 멈춘다. `FindingCandidate`에 이 계보를 직접 저장하는 새 reference field는 두지 않는다. 이 경로는 결과를 열람하거나 재분석할 때 쓰는 정보이며 `ReportDraft`에는 싣지 않는다.
+재료 계보는 별도 저장 필드가 아니라 기존 참조를 따라 복원한다. 자식의 `VulnerabilityHypothesis.parent_hypothesis_ids`와 `source_primitive_match_id`가 `PrimitiveMatchCandidate`를 거쳐 재료가 된 upstream Primitive와 그 `source_hypothesis_id`에 닿는다. TRUE 부모는 그 `hypothesis_id`로 자기 Finding에 이르고, HOLD 부모는 Finding이 없으므로 `hypothesis_id`와 exact `VerificationResult` reference에서 멈춘다. 저장 전 `Finding` 후보에 이 계보를 직접 저장하는 새 reference field는 두지 않는다. 이 후보는 별도 schema나 domain object가 아니라 기존 `Finding` schema를 쓰는 `SAVE_RESULT.candidate_result_ref`다. 이 경로는 결과를 열람하거나 재분석할 때 쓰는 정보이며 `ReportDraft`에는 싣지 않는다.
