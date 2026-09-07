@@ -397,7 +397,7 @@ bootstrap → 위 concrete 구현을 조립
 8. `reporting`은 current contract와 LLM role port를 조합하지만 외부 공개 adapter를 갖지 않는다.
 9. `evaluation`은 production workflow를 직접 호출하지 않고 `purpose=EVALUATION` runtime 경로와 exact 평가 설정만 사용한다.
 10. `interfaces/cli`는 application service만 호출한다.
-11. concrete wiring은 `src/sastsimi/bootstrap.py` 하나에서 수행한다. 이 파일은 구현 시 tree에 추가한다.
+11. concrete wiring은 위 repository tree에 포함된 `src/sastsimi/bootstrap.py` 하나에서 수행한다.
 12. import cycle은 CI의 architecture dependency test로 차단한다.
 
 `bootstrap.py`는 생성 순서와 dependency injection만 담당한다. 취약점 판단, state 전이와 권한 검사를 구현하지 않는다.
@@ -447,7 +447,7 @@ class SandboxPort(Protocol):
 내부 application service의 최소 진입점은 다음과 같다. 이 service도 저장소나 외부 도구를 직접 만들지 않고 위 port와 Runtime Validator를 주입받는다.
 
 ```python
-BudgetProfile = ExecutionBudgetProfile | VerificationBudgetProfile | DynamicReproductionLifecycleProfile
+BudgetProfile = ExecutionBudgetProfile | WorkBudgetProfile | VerificationBudgetProfile | DynamicReproductionLifecycleProfile
 AnalysisPurpose = Literal["PRODUCTION", "EVALUATION"]
 
 class PolicyPreparationService:
@@ -455,6 +455,7 @@ class PolicyPreparationService:
 
 class BudgetProfileRegistry:
     def publish_draft(self, profile: BudgetProfile) -> RecordRef: ...
+    def pin_execution_for_run(self, analysis_ref: RunStoredDataRef, approval_ref: RunStoredDataRef | StoredDataRef) -> ExecutionBudgetProfile: ...
     def activate(self, binding_ref: StoredDataRef, approval_ref: StoredDataRef) -> BudgetProfileBinding: ...
     def current(self, purpose: AnalysisPurpose) -> BudgetProfileBinding | None: ...
 
@@ -463,7 +464,7 @@ class EvaluationService:
     def compare(self, result_refs: list[StoredDataRef]) -> EvaluationRecommendation: ...
 ```
 
-`BudgetProfileRegistry.activate`는 R8 승인과 사람 승인 exact reference, 같은 purpose의 profile 상태·revision·구성을 검사한 뒤에만 새 ACTIVE binding revision을 만든다. `EvaluationService`는 Orchestration Runtime의 일반 분석 시작 경로를 호출해 `purpose=EVALUATION` analysis만 만들 수 있다. R8 Evaluation Runtime은 평가 결과를 집계·저장할 뿐 일반 `WorkExecutionState`를 직접 등록하거나 변경하지 않으며, 운영 registry current pointer도 바꾸지 않는다.
+`BudgetProfileRegistry.pin_execution_for_run`은 `analysis_id` 발급 직후 같은 purpose의 승인된 실행 전체 예산을 run-local `ExecutionBudgetProfile`로 고정한다. 이 exact ref가 있어야 `WORKSPACE_PREP`을 시작할 수 있다. `activate`는 workspace READY 뒤 R8 승인과 사람 승인 exact reference, 같은 purpose의 execution·work-kind·Verification·dynamic profile 상태·revision·구성을 검사한 뒤에만 full ACTIVE binding revision을 만들고 `AnalysisRunState.budget_binding_ref`를 갱신한다. `EvaluationService`는 Orchestration Runtime의 일반 분석 시작 경로를 호출해 `purpose=EVALUATION` analysis만 만들 수 있다. R8 Evaluation Runtime은 평가 결과를 집계·저장할 뿐 일반 `WorkExecutionState`를 직접 등록하거나 변경하지 않으며, 운영 registry current pointer도 바꾸지 않는다.
 
 Protocol은 raw SDK client, SQLAlchemy Session, Docker client와 host path를 반환하지 않는다. `LLMProviderAdapter.invoke`는 schema·semantic 검사 전의 결과를 반환할 수 있지만 domain output 저장 권한은 없다.
 
@@ -471,7 +472,7 @@ Protocol은 raw SDK client, SQLAlchemy Session, Docker client와 host path를 �
 
 `PolicySourcePort`는 Program Catalog가 승인한 공식 URL과 source 설정만 받아 raw bytes·최종 URL·조회 시각·ETag·Last-Modified·게시 주체 근거를 반환한다. `policy/adapters/official_http.py`가 HTTP 구현이고, `Policy Collector`만 이를 호출해 exact 원문과 `PolicyCollectionResult`를 생산한다. `Policy Parser`는 Collector가 저장한 원문을 구조화한 `PolicyParserResult`만 만들며 `RunPolicyState`·`ProgramPolicyRecord`를 저장하지 않는다. 시험은 `tests/unit/policy/`, `tests/integration/test_run_policy_preparation.py`, `tests/contract/test_policy_source_port.py`, `tests/security_negative/test_unapproved_policy_source.py`에 둔다.
 
-`BudgetLedgerPort`는 R8 trusted Budget Profile Registry가 게시한 exact profile만 사용한다. `BudgetService`는 새 work·attempt·외부 호출 전에 reservation을 원자 생성하고 실행 뒤 실제 사용량을 한 번만 commit하거나 미사용 예약을 release한다. profile 또는 잔여량을 입증할 수 없으면 실행을 시작하지 않고 `BLOCKED + waiting_for=BUDGET`으로 둔다. token 사용량 하나가 제공되지 않았다는 이유만으로 차단하지 않는다. reservation·ledger·profile table과 migration은 `storage/models.py`, `storage/repositories.py`, `migrations/versions/`에 두고, 동시 예약·취소·crash·중복 commit은 `tests/integration/budget/`와 `tests/security_negative/test_budget_double_debit.py`에서 검사한다.
+`BudgetLedgerPort`는 R8 trusted Budget Profile Registry가 게시한 exact profile만 사용한다. `BudgetService`는 `WORKSPACE_PREP`에는 `AnalysisRunState.execution_budget_profile_ref`의 run-level profile을, workspace READY 이후 모든 work에는 full `BudgetProfileBinding`을 사용한다. 후속 실행에서는 `WorkBudgetProfile`의 trusted `operation_kind`·역할 한도와 분석 전체·Verification·dynamic 한도를 함께 검사하고 가장 먼저 소진되는 제한을 적용한다. 새 work·attempt·외부 호출 전에 reservation을 원자 생성하고 실행 뒤 실제 사용량을 한 번만 commit하거나 미사용 예약을 release한다. 필요한 profile, 작업별 limit 또는 잔여량을 입증할 수 없으면 실행을 시작하지 않고 `BLOCKED + waiting_for=BUDGET`으로 둔다. token 사용량 하나가 제공되지 않았다는 이유만으로 차단하지 않는다. reservation·ledger·profile table과 migration은 `storage/models.py`, `storage/repositories.py`, `migrations/versions/`에 두고, bootstrap·작업별 한도 선택·동시 예약·취소·crash·중복 commit은 `tests/integration/budget/`와 `tests/security_negative/test_budget_double_debit.py`에서 검사한다.
 
 ## 8. schema·직렬화·ID
 
@@ -667,7 +668,7 @@ R3-03의 `RQ-01`~`RQ-10`은 아래 기준으로 구현한다. 이는 구현을 �
 | `RQ-03` migration | Alembic revision만 schema를 바꾼다. 앱 시작 중 자동 migration은 금지하고 pending·중단·현재 revision 불일치 시 exit 3으로 멈춘다. 검증된 upgrade/downgrade만 실행하며 의미 손실 rollback은 백업과 사람 승인이 없으면 거절한다. |
 | `RQ-04` worker·외부 호출 불확실성 | SQLite의 `worker_id + lease_expires_at + state_version`을 한 transaction에서 비교해 lease를 회수한다. 외부 요청 전송 뒤 결과를 모르면 exact provider request ID로 공식 상태 조회가 가능할 때만 재조정한다. 조회·idempotency를 증명할 수 없으면 자동 재전송하지 않고 `RECOVERY_FAILED`, `BLOCKED`, `waiting_for=INPUT`으로 사람의 명시적 재시도·failover 결정을 기다린다. |
 | `RQ-05` cancel·resume | `resume`은 같은 입력을 유지한 non-terminal `BLOCKED` run의 허용 work만 재개한다. `CANCELLED | COMPLETE | PARTIAL | FAILED` run은 되살리지 않는다. 같은 입력을 다시 실행하려면 사용자가 새 `run`을 요청해 새 `analysis_id`를 만든다. cancelled 조회는 exit 7, terminal 재개 요청은 exit 2다. |
-| `RQ-06` 시간·비용 | R8 trusted registry의 exact ACTIVE `BudgetProfileBinding`을 고정한다. attempt 실행 중 monotonic elapsed를 durable heartbeat 구간별로 누적하고 process off·BLOCKED 대기는 제외한다. 새 work·attempt·외부 호출은 `BudgetService`가 COMMITTED ledger와 active reservation을 한 transaction에서 읽고 reservation을 만든 뒤에만 시작한다. 성공·실패로 자원을 썼으면 actual usage를 한 번 commit하고, 실행 전 취소·거절이면 release한다. 같은 reservation의 중복 debit은 unique constraint로 차단한다. profile·가격·잔여량을 입증하지 못하면 `BLOCKED + waiting_for=BUDGET`, 실제 한도 소진만 `BUDGET_EXCEEDED`다. crash 직전 미기록 구간과 provider가 주지 않은 token usage는 구조화된 unavailable 사유로 보존하며 token usage 미제공만으로 차단하지 않는다. |
+| `RQ-06` 시간·비용 | `analysis_id` 발급 직후 exact ACTIVE run-level `ExecutionBudgetProfile`을 고정하고 이것으로만 `WORKSPACE_PREP`을 허용한다. workspace READY 뒤 exact ACTIVE `BudgetProfileBinding`을 고정하며, 이 binding은 execution·work-kind·Verification·dynamic profile을 모두 가리킨다. 후속 work는 trusted operation/role에 맞는 `WorkBudgetLimit` 하나와 적용 가능한 상위 한도를 함께 검사한다. attempt 실행 중 monotonic elapsed를 durable heartbeat 구간별로 누적하고 process off·BLOCKED 대기는 제외한다. 새 work·attempt·외부 호출은 `BudgetService`가 COMMITTED ledger와 active reservation을 한 transaction에서 읽고 reservation을 만든 뒤에만 시작한다. 성공·실패로 자원을 썼으면 actual usage를 한 번 commit하고, 실행 전 취소·거절이면 release한다. 같은 reservation의 중복 debit은 unique constraint로 차단한다. profile·작업별 limit·가격·잔여량을 입증하지 못하면 `BLOCKED + waiting_for=BUDGET`, 실제 한도 소진만 `BUDGET_EXCEEDED`다. crash 직전 미기록 구간과 provider가 주지 않은 token usage는 구조화된 unavailable 사유로 보존하며 token usage 미제공만으로 차단하지 않는다. |
 | `RQ-07` repair | schema·semantic 실패 응답과 validation error를 먼저 durable invocation log로 남긴다. 각 repair는 같은 domain work의 새 `WorkAttempt`, `llm_call_id`, spec, action, decision과 `NEW` session을 사용하고 바로 앞 invalid call을 연결한다. 성공 output 하나만 current로 확정하며 중단·소진 시 invalid output을 승격하지 않는다. |
 | `RQ-08` Sandbox 재생성·cleanup | health 또는 소유 상태를 확인할 수 없으면 `STATE_UNCERTAIN`으로 새 environment binding을 만들고 기존 writable container를 재사용하지 않는다. 자원은 analysis·hypothesis·work·attempt ownership label과 exact environment ref가 모두 맞을 때만 정리한다. cleanup 재호출은 같은 자원에 멱등이고, 실패·불확실 자원은 quarantine하여 다음 실행에 연결하지 않는다. |
 | `RQ-09` AgentLog append | 같은 `event_id`와 같은 canonical hash의 재전달은 기존 durable ACK를 반환한다. 같은 ID의 다른 bytes 또는 같은 attempt의 같은 sequence에 다른 event가 오면 `RECOVERY_FAILED`로 거절한다. start만 있고 finish가 없으면 미확인 상태로 남기고 finish를 만들지 않으며 environment를 `STATE_UNCERTAIN`으로 처리한다. |
@@ -741,10 +742,11 @@ YAML은 `safe_load`만 사용하고 tag·object constructor·merge key를 거절
 
 ### 12.4 R8 예산·평가 구현
 
-예산은 `runtime/budget_registry.py`, `runtime/budget_service.py`와 `ports/budget_ledger.py`를 통해서만 게시·검사·차감한다. R8 owner가 profile 내용을 승인하면 trusted `BudgetProfileRegistry`가 exact `ExecutionBudgetProfile`, `VerificationBudgetProfile`, `DynamicReproductionLifecycleProfile`과 `BudgetProfileBinding` revision을 저장하고 purpose별 ACTIVE binding을 최대 하나로 유지한다. Runtime Validator는 action마다 그 ACTIVE binding을 `checked_config_refs`에 고정한다. 숫자가 아직 승인되지 않은 profile은 `DRAFT`이고 새 실행을 허용하지 않으며, 코드에 임의 기본값을 두지 않는다.
+예산은 `runtime/budget_registry.py`, `runtime/budget_service.py`와 `ports/budget_ledger.py`를 통해서만 게시·검사·차감한다. R8 owner가 profile 내용을 승인하면 trusted `BudgetProfileRegistry`가 exact `ExecutionBudgetProfile`, 역할·작업 종류별 `WorkBudgetProfile`, `VerificationBudgetProfile`, `DynamicReproductionLifecycleProfile`과 `BudgetProfileBinding` revision을 저장한다. `analysis_id` 생성 직후에는 run-local execution profile을 먼저 고정해 `WORKSPACE_PREP`만 허용하고, workspace READY 뒤 purpose별 full ACTIVE binding을 최대 하나 고정한 뒤 나머지 work를 시작한다. Runtime Validator는 후속 action마다 full binding과 선택한 exact work-kind limit을 `checked_config_refs`에 고정한다. 숫자가 아직 승인되지 않은 profile은 `DRAFT`이고 새 실행을 허용하지 않으며, 07번 역할표의 숫자를 코드 상수나 숨은 별도 설정으로 사용하지 않는다.
 
 ```text
-ACTIVE budget binding 확인
+WORKSPACE_PREP: run-level ACTIVE execution profile 확인
+후속 work: full ACTIVE binding + exact work-kind limit 확인
 → COMMITTED ledger + active reservation으로 잔여량 계산
 → BudgetReservation=RESERVED를 atomic 생성
 → action claim과 실제 실행
@@ -807,7 +809,7 @@ R6 DynamicReproductionRequest
 - Agent가 같은 session에서 command·PoC·관찰을 조정하는 것은 같은 attempt다. container 상태를 신뢰할 수 없을 때의 재생성도 AgentLog에 이전·새 환경을 연결하고 같은 session 정책이 허용하는 범위에서는 같은 attempt로 처리한다.
 - provider·process crash로 session을 다시 시작하면 같은 work의 새 `attempt_id`, `trigger=RETRY`다. 끝난 attempt의 실패 결과·log는 history에 남고 current 결과로 합치지 않는다.
 - 재인증·승인·외부 환경·resource처럼 runtime 밖 조건을 기다리면 work를 `BLOCKED`로 두고, 조건이 해결된 뒤 같은 input으로 새 `attempt_id`, `trigger=RESUME`를 사용한다.
-- `DynamicReproductionRequest` 또는 `sandbox_profile_ref`의 exact revision이 바뀌면 retry/resume이 아니다. 기존 work를 수정하지 않고 새 Verification generation과 새 `DYNAMIC_REPRO` work를 만든다.
+- current `DynamicReproductionRequest`를 교체해야 하거나 승인된 새 `sandbox_profile_ref`를 적용해야 하면 retry/resume이 아니다. 같은 ACTIVE Verification owner가 old current 입력과 exact 변경 근거를 고정해 새 generation을 요청한다. runtime은 old work 종료와 새 Verification·application·질문·Pro/Con을 원자 확정하며, 새 Pro·Con과 초기 판단 뒤 여전히 필요할 때만 새 request와 `DYNAMIC_REPRO` work를 만든다.
 - run-init에서는 Docker image·container를 준비하지 않는다. R7의 모든 변경 작업은 current 가설의 exact request·generation·attempt 안에서만 허용한다.
 
 ## 15. Gate·Chaining·Reporter 구현 경계

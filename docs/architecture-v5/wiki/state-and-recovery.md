@@ -75,7 +75,7 @@ Context 조회 실패·timeout·권한 오류가 있어도 정상 근거로 모�
 
 동적 재현은 같은 단어의 뜻을 구분해야 합니다.
 
-- 동적 환경 구성 실패: 필수 환경이 다르거나 확인되지 않은 상태입니다. 가설 반증이 아니며, R7이 같은 session에서 스스로 고칠 수 있으면 현재 attempt에서 계속합니다. session 재시작이 필요할 때만 같은 work의 새 `attempt_id`·`trigger=RETRY`를 만들고, 현재 work 입력을 바꾸지 않는 재인증·승인·외부 환경 정비·resource 확보를 기다릴 때만 `BLOCKED`이며 해소 뒤에는 새 `attempt_id`·`trigger=RESUME`로 재개합니다. 프로그램 정책 준비 상태 자체는 `LOCAL_ONLY` 실행의 대기 조건이 아닙니다. request나 profile exact revision이 바뀌면 기존 work를 재개하지 않습니다. 복구 불가능하거나 한도를 소진하면 verdict 없이 `FAILED`입니다.
+- 동적 환경 구성 실패: 필수 환경이 다르거나 확인되지 않은 상태입니다. 가설 반증이 아니며, R7이 같은 session에서 스스로 고칠 수 있으면 현재 attempt에서 계속합니다. session 재시작이 필요할 때만 같은 work의 새 `attempt_id`·`trigger=RETRY`를 만들고, 현재 work 입력을 바꾸지 않는 재인증·승인·외부 환경 정비·resource 확보를 기다릴 때만 `BLOCKED`이며 해소 뒤에는 새 `attempt_id`·`trigger=RESUME`로 재개합니다. 프로그램 정책 준비 상태 자체는 `LOCAL_ONLY` 실행의 대기 조건이 아닙니다. current request 교체 또는 승인된 새 profile 적용이 필요하면 기존 work를 재개하지 않고 같은 ACTIVE Verification owner가 새 generation 전이를 요청합니다. runtime은 old work 종료와 새 application·질문·Pro/Con·current pointer를 원자 확정하고, 새 초기 판단 뒤 필요할 때만 새 request와 동적 work를 만듭니다. 복구는 이 결정을 새로 내리지 않고 저장된 전이만 멱등 재생합니다. 복구 불가능하거나 한도를 소진하면 verdict 없이 `FAILED`입니다.
 - 동적 결과 `PARTIAL`: 일부 공격 단계를 실행해 믿을 수 있는 관측을 얻었지만 환경 차이 같은 한계가 남은 상태입니다. 결과의 `limitations`가 빠진 범위를 설명하므로 실제 오류가 없다면 오류나 `DataGap`을 억지로 만들지 않습니다.
 - 동적 work `BLOCKED`: 현재 work 입력을 바꾸지 않는 재인증·승인·외부 환경 정비·resource 확보를 기다리는 상태입니다. 프로그램 정책 준비 상태 자체에는 사용하지 않습니다. R7이 내부에서 해결할 수 있는 PoC 생성·환경 구성·실행 문제에도 사용하지 않습니다. validated PoC와 final verdict는 없으며 `FALSE | HOLD`로 바꾸지 않습니다.
 - 공통 작업 `BLOCKED`: 재시도·인증·승인·입력을 기다리는 중이며 아직 끝나지 않은 상태입니다.
@@ -87,7 +87,7 @@ Gate 작업은 시작할 때 읽은 Verification, current CWELabel, 앞 Gate와 
 
 ## retry는 실패를 지우지 않습니다
 
-일반 작업에서 재시도 전에 외부 조건을 기다려야 하면 작업은 `BLOCKED`가 됩니다. `DYNAMIC_REPRO`에서 같은 Dynamic Reproduction Agent session의 command·PoC·환경 조정은 현재 attempt에 실패와 후속 event를 남기고 계속합니다. session 재시작이 필요한 work-level retry만 같은 work의 새 `attempt_id`·`trigger=RETRY`를 만듭니다. `DYNAMIC_REPRO`는 현재 work의 `input_refs/input_hash`를 바꾸지 않는 외부 조건을 기다릴 때만 `BLOCKED`를 사용합니다. 조건 해소 뒤에는 새 `attempt_id`·`trigger=RESUME`로 재개하고, exact request나 profile reference가 바뀌면 새 Verification generation과 새 동적 work를 만듭니다.
+일반 작업에서 재시도 전에 외부 조건을 기다려야 하면 작업은 `BLOCKED`가 됩니다. `DYNAMIC_REPRO`에서 같은 Dynamic Reproduction Agent session의 command·PoC·환경 조정은 현재 attempt에 실패와 후속 event를 남기고 계속합니다. session 재시작이 필요한 work-level retry만 같은 work의 새 `attempt_id`·`trigger=RETRY`를 만듭니다. `DYNAMIC_REPRO`는 현재 work의 `input_refs/input_hash`를 바꾸지 않는 외부 조건을 기다릴 때만 `BLOCKED`를 사용합니다. 조건 해소 뒤에는 새 `attempt_id`·`trigger=RESUME`로 재개합니다. exact request를 교체하거나 승인된 새 profile reference를 적용해야 하면 새 Verification generation에서 Pro·Con과 초기 판단부터 다시 수행하며, 그 판단이 필요하다고 할 때만 새 request와 동적 work를 만듭니다.
 
 - 인증 실패: 사용자 재인증 대기
 - 호출량 제한: 정한 시간만큼 대기

@@ -189,8 +189,10 @@
 | `token` | LLM이 입력과 출력을 처리할 때 쓰는 계산 단위 | 실제 사용량을 관측하며 token만으로 실행을 자르지 않습니다. |
 | `token_budget` | 한 LLM 호출의 예상 token 사용량을 적는 선택 계획값 | 강제 상한이 아니며 값이 없거나 실제 사용량이 더 많아도 token만으로 차단하지 않습니다. |
 | `budget` | 시간, 비용, 호출, 재시도, 작업 수와 실행 자원에 둔 한도 | 초과를 취약점 `FALSE`로 바꾸지 않습니다. |
-| `BudgetProfileBinding` | 이번 실행 목적에 사용할 전체·검증·동적 재현 예산 정책의 정확한 수정본 묶음 | R8 승인 `ACTIVE` 묶음이 없으면 새 작업을 시작하지 않습니다. |
-| `BudgetReservation` | 병렬 실행 전에 사용할 몫을 미리 잡아 두는 기록 | 실제 사용하면 한 번만 확정하고 실행 전에 취소되면 해제합니다. 사용 여부가 불명확하면 임의 해제하지 않습니다. |
+| `ExecutionBudgetProfile` | 분석 전체의 시간·비용·작업·호출·재시도·병렬 한도를 담은 실행 예산 설정 | `analysis_id` 생성 직후 run-local exact revision을 고정하며, 최초 `WORKSPACE_PREP`도 이 설정 없이는 시작하지 않습니다. |
+| `WorkBudgetProfile` | 역할·작업 종류별 시간·attempt·호출·조회 한도를 담은 versioned 설정 | 07번 역할표의 숫자는 후보일 뿐이며 R8·사람 승인을 받은 `ACTIVE` exact revision만 실행에 사용합니다. |
+| `BudgetProfileBinding` | workspace 준비 뒤 이번 실행 목적에 사용할 전체·작업별·검증·동적 재현 예산 정책의 정확한 수정본 묶음 | 최초 `WORKSPACE_PREP`은 run-level 실행 예산으로만 시작하고, 이후 작업은 R8 승인 `ACTIVE` full binding이 없으면 시작하지 않습니다. |
+| `BudgetReservation` | 실행 전에 사용할 몫을 미리 잡아 두는 기록 | 최초 작업공간 준비는 run-level 실행 예산, 이후 작업은 full 예산 묶음을 가리킵니다. 실제 사용하면 한 번만 확정하고 실행 전에 취소되면 해제하며, 사용 여부가 불명확하면 임의 해제하지 않습니다. |
 | `BudgetLedgerEntry` | 실제 사용한 시간·비용·호출·작업을 누적한 장부 항목 | 같은 reservation을 두 번 차감하지 않습니다. |
 | `UsageMeasurement` | Provider 호출 한 건의 token·비용과 그 값의 출처를 적는 공통 형식 | Provider가 값을 주지 않으면 0으로 추정하지 않고 미제공 이유를 남깁니다. |
 | `ResourceUsageSummary` | 분석 또는 평가 전체의 시간·작업·호출·비용 집계 | 확인된 값과 확인할 수 없는 값을 구분합니다. |

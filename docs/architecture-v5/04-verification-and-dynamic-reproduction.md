@@ -357,9 +357,9 @@ Sandbox 안에서는 Dynamic Reproduction Agent가 환경 설정, 저장소에 �
 - `POC_CONFIRMATION`과 `VERDICT_EVIDENCE`를 같은 generation에서 각각 별도 work로 실행하지 않는다.
 - 같은 Dynamic Reproduction Agent session 안의 command·PoC·환경 조정은 같은 attempt의 event다.
 - session 재시작이 필요한 일시 오류는 R8 한도가 남아 있으면 실패 attempt를 보존하고 같은 work의 새 `attempt_id`, `trigger=RETRY`로 재시도한다. 같은 session 조정에는 새 attempt를 만들지 않고, 외부 대기가 없으므로 work를 `BLOCKED`로 두지 않는다.
-- `BLOCKED`는 current work 입력을 바꾸지 않는 재인증·승인·외부 환경 정비·resource 확보를 기다릴 때만 사용한다. 프로그램 정책 준비 상태 자체는 `LOCAL_ONLY` 실행의 대기 사유가 아니다. 실제 외부 조건이 해결되고 `input_refs/input_hash`가 그대로이면 같은 work의 새 `attempt_id`, `trigger=RESUME`를 만든다. exact request나 profile reference를 바꿔야 하면 기존 work를 재개하지 않고 새 Verification generation과 새 동적 work를 만든다.
+- `BLOCKED`는 current work 입력을 바꾸지 않는 재인증·승인·외부 환경 정비·resource 확보를 기다릴 때만 사용한다. 프로그램 정책 준비 상태 자체는 `LOCAL_ONLY` 실행의 대기 사유가 아니다. 실제 외부 조건이 해결되고 `input_refs/input_hash`가 그대로이면 같은 work의 새 `attempt_id`, `trigger=RESUME`를 만든다. exact request를 교체해야 하거나 승인된 새 profile reference를 써야 하면 기존 work를 재개하지 않는다. 같은 ACTIVE Verification owner가 `RESTART_VERIFICATION_GENERATION`을 요청하고 runtime이 old Verification·dynamic work를 닫아 새 generation·PlaybookApplication·질문·Pro/Con을 원자 등록한다. 새 Pro·Con과 초기 판단 뒤 여전히 필요할 때만 새 request와 generation당 하나의 새 동적 work를 별도 등록한다.
 - 복구할 수 없거나 retry 한도를 소진하면 Session Manager가 `FAILED + INCONCLUSIVE`를 확정한다.
-- Technical Gate `REVISE`는 새 Verification generation이므로 새 동적 재현 work 하나를 허용한다.
+- Technical Gate `REVISE`도 별도의 새 Verification generation이므로, 새 Pro·Con과 초기 판단 뒤 필요할 때 동적 재현 work 하나를 허용한다.
 
 
 ### AgentLog와 결과 확정
@@ -439,6 +439,7 @@ final `VerificationResult` 후보를 저장하기 전에 trusted runtime은 `SAV
 | `VerificationInitialAssessment.next_step=VERDICT_EVIDENCE`, `proposed_verdict=HOLD` | `DynamicReproductionRequest.purpose=VERDICT_EVIDENCE` | 판정 근거와 PoC 생성을 한 번의 동적 work에서 함께 수행한다. `DynamicReproductionResult.hypothesis_outcome=SUPPORTED`이면 같은 validated PoC를 `VerificationResult.verdict=TRUE`에 사용하며 별도 PoC work를 만들지 않는다. |
 | `VerificationInitialAssessment.next_step=FINALIZE_WITHOUT_DYNAMIC`, `proposed_verdict=FALSE \| HOLD` | 요청하지 않음 | 같은 assessment를 입력으로 동적 work 없이 final 결과를 합성할 수 있다. `TRUE`는 만들 수 없다. |
 | 같은 `verification_generation`에 동적 work가 이미 등록됨 | 두 번째 요청 금지 | 기존 work의 current attempt 또는 허용된 retry 결과만 기다린다. |
+| current request 교체 또는 승인된 새 Sandbox profile 적용이 필요함 | 기존 work RESUME 금지 | 같은 ACTIVE Verification owner가 변경 근거를 고정해 `RESTART_VERIFICATION_GENERATION`을 요청한다. runtime이 old work를 닫고 새 generation·application·질문·Pro/Con을 원자 등록하며, 새 초기 판단 뒤 필요할 때만 새 request와 동적 work를 만든다. |
 | Technical Gate `REVISE`로 새 `verification_generation`이 시작됨 | 필요 목적을 다시 결정 | 이전 `verification_generation`의 request·result·PoC를 재사용하지 않고 새 `verification_generation`에서 최대 한 번 요청한다. |
 
 두 목적이 모두 필요해 보이면 assessment가 `VERDICT_EVIDENCE` 하나를 선택한다. 한 `verification_generation`에서 `purpose=POC_CONFIRMATION`과 `purpose=VERDICT_EVIDENCE`를 연속으로 요청하지 않는다. `CREATE_DYNAMIC_REQUEST`는 같은 generation의 exact assessment·policy·playbook·application을 입력으로 사용하고 assessment와 같은 purpose·initial verdict만 출력한다. R6가 만드는 불변 `DynamicReproductionRequest`에는 `verification_assignment_ref`, `verification_generation`, `hypothesis_ref`, `purpose`, `initial_verdict`, `goal`, `environment_needs`, `sandbox_profile_ref`, `code_refs`, `static_evidence_refs`, `pro_evidence_ref`, `con_evidence_ref`를 기록한다. `EnvironmentRequirements`, `ReproductionPlan`, recipe, command, payload와 PoC는 R7 책임이므로 R6 request에 미리 확정하지 않는다.

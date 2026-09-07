@@ -171,6 +171,8 @@ AnalysisRunState:
   purpose: PRODUCTION | EVALUATION
   eval_config_refs: [RunStoredDataRef | StoredDataRef]
   program_id: string
+  execution_budget_profile_ref: RunStoredDataRef
+  budget_binding_ref: StoredDataRef | null
   workspace_id: string | null
   commit_id: string | null
   workspace_ref: RunStoredDataRef | null
@@ -250,7 +252,7 @@ ReportProcessState:
   elapsed_ms: integer
 ```
 
-`AnalysisRunState.program_id`는 검증된 `AnalysisStartRequest.program_id`와 같고 분석 요청을 승인된 Program Catalog의 정확히 한 프로그램과 연결한다. `program_id`가 없거나 승인된 catalog에서 하나로 해석되지 않으면 분석을 시작하지 않는다. 한 분석에는 프로그램 하나만 허용하고 시작 뒤에는 바꾸지 않는다. `AnalysisRunState`는 처음에는 `workspace_id: null`, `commit_id: null`, `workspace_ref=null`일 수 있다. Repository Loader가 첫 `CodeWorkspace` revision을 저장하면 같은 atomic transition에서 `workspace_id`와 exact `workspace_ref`를 기록하고, checkout을 확인한 `READY` revision을 저장하면 그 revision으로 `workspace_ref`를 갱신하면서 `commit_id`를 기록한다. `workspace_id`와 실제 `commit_id`는 같은 분석에서 값이 생긴 뒤 바꾸지 않는다. 이후 cleanup이 `REMOVED` revision을 만들면 `workspace_ref`만 그 revision으로 갱신하고 ID 연결은 보존한다. `COMPLETE`와 `PARTIAL`은 두 ID가 모두 필요하고, clone·checkout 전 `FAILED | CANCELLED`는 둘 중 하나 또는 모두가 `null`일 수 있다. 코드 근거 record는 두 ID가 모두 있고 exact `workspace_ref`가 가리키는 `CodeWorkspace.status=READY`일 때만 만들 수 있다.
+`AnalysisRunState.program_id`는 검증된 `AnalysisStartRequest.program_id`와 같고 분석 요청을 승인된 Program Catalog의 정확히 한 프로그램과 연결한다. `program_id`가 없거나 승인된 catalog에서 하나로 해석되지 않으면 분석을 시작하지 않는다. 한 분석에는 프로그램 하나만 허용하고 시작 뒤에는 바꾸지 않는다. `execution_budget_profile_ref`는 `analysis_id` 발급 직후 trusted Budget Profile Registry가 같은 purpose의 승인 원본에서 run-local로 고정한 exact `ExecutionBudgetProfile(status=ACTIVE)`을 가리킨다. 이 reference가 없으면 `WORKSPACE_PREP`도 시작하지 않는다. `budget_binding_ref`는 workspace·commit 준비 전에는 `null`이고, `CodeWorkspace.status=READY` 뒤 full `BudgetProfileBinding(status=ACTIVE)`을 확정하면 그 exact revision을 가리킨다. full binding이 고정되기 전에는 `STATIC_TOOL | POLICY_FETCH`를 포함한 후속 work를 등록하지 않는다. `AnalysisRunState`는 처음에는 `workspace_id: null`, `commit_id: null`, `workspace_ref=null`일 수 있다. Repository Loader가 첫 `CodeWorkspace` revision을 저장하면 같은 atomic transition에서 `workspace_id`와 exact `workspace_ref`를 기록하고, checkout을 확인한 `READY` revision을 저장하면 그 revision으로 `workspace_ref`를 갱신하면서 `commit_id`를 기록한다. `workspace_id`와 실제 `commit_id`는 같은 분석에서 값이 생긴 뒤 바꾸지 않는다. 이후 cleanup이 `REMOVED` revision을 만들면 `workspace_ref`만 그 revision으로 갱신하고 ID 연결은 보존한다. `COMPLETE`와 `PARTIAL`은 두 ID가 모두 필요하고, clone·checkout 전 `FAILED | CANCELLED`는 둘 중 하나 또는 모두가 `null`일 수 있다. 코드 근거 record는 두 ID가 모두 있고 exact `workspace_ref`가 가리키는 `CodeWorkspace.status=READY`일 때만 만들 수 있다.
 
 `RunPolicyState`는 같은 실행에서 모든 가설이 공유하는 정책 준비 pointer다. `source_config_ref`, `parser_name`, `parser_version`은 run 시작 때 고정한다. `PREPARING`에서는 `preparation_source=null`일 수 있고 collection·policy·cache와 freshness reference가 모두 null이며 freshness evidence는 빈 목록이다. 이 상태는 Rule Scope Gate와 Reporter 입력으로 사용할 수 없지만, 프로그램 정책과 무관하게 외부 격리를 강제하는 `LOCAL_ONLY` Sandbox에는 실행 당시 상태를 남기는 감사 reference로 사용할 수 있다. `CURRENT`는 exact `PolicyCollectionResult(status=FOUND)`와 run 시작 시 재사용 조건을 통과한 exact `ProgramPolicyRecord(freshness_status=CURRENT)`를 가리킨다. `ABSENT`는 exact `ABSENT_CONFIRMED` collection만 가리키고 `policy_record_ref=null`이지만, “공식 정책이 없음”이라는 확인도 오래될 수 있으므로 R8의 exact freshness criterion, 확인 시각·근거와 미래의 `freshness_valid_until`이 모두 필수다. `CURRENT | ABSENT`에는 `preparation_source`와 exact `policy_cache_ref`가 필수다. `CURRENT`의 네 freshness 필드는 policy record의 값과 exact match한다. 최신성 확인을 완료하지 못했거나 기준을 적용할 수 없으면 `UNVERIFIED`다. `RunPolicyState.status=UNVERIFIED`는 `collection_result_ref`가 필수이며 exact `PolicyCollectionResult.status=FOUND | ABSENT_CONFIRMED` 중 하나를 가리킨다. 이때 `preparation_source=COLLECTED`, `policy_cache_ref=null`이고, collection이 `FOUND`이면 `policy_record_ref`는 같은 exact `ProgramPolicyRecord(freshness_status=UNVERIFIED)`를 가리키며 `ABSENT_CONFIRMED`이면 null이다. 수집 결과를 만들기 전에 중단되었으면 `UNVERIFIED`로 끝내지 않고 실제 복구 가능성에 따라 `BLOCKED | FAILED`로 기록한다. retry 또는 외부 입력을 기다리면 `BLOCKED`, 복구 불가능하거나 retry를 소진하면 `FAILED`이며 둘 다 실제 `PolicyCollectionResult.status=COLLECTION_FAILED` 결과가 있으면 그 exact reference를 보존한다. 정책 준비 재시도는 같은 `POLICY_FETCH` work의 새 attempt로 기록하며 별도 generation을 만들지 않는다. `RunPolicyState.collection_result_ref`는 현재 state revision을 만든 attempt의 exact `PolicyCollectionResult` 하나만 가리킨다. `PREPARING | BLOCKED | FAILED`에서 결과를 만들기 전에 중단된 attempt라면 null일 수 있다.
 
@@ -412,7 +414,7 @@ Chaining work는 새 Primitive 저장을 계기로 등록한다. `PRIMITIVE_UPDA
 
 같은 owner가 새 work에서 보완을 마치면 새 `VerificationResult`와 새 VERIFICATION work의 `SUCCEEDED`, `HypothesisProcessState.status=TERMINAL`, 새 `verification_result_ref`, `verification_work_ref=null`을 한 atomic commit으로 확정한다. final TRUE이면 R5-01 `CWE_LABELING`이 새 `CWE_LABEL` work에서 root cause·Evidence·taxonomy 정렬을 반드시 다시 평가하고 새 Verification을 직접 가리키는 새 `CWELabel` revision을 확정한 뒤에만 Technical Gate work를 등록한다. CWE 값이 이전과 같아도 과거 label `record_id`를 재사용하지 않는다. 새 Gate 작업은 달라진 `input_refs`, `input_hash`, `dedupe_key`, `work_id`를 사용하고 첫 `WorkAttempt`는 새 `attempt_id`, `attempt_number=1`, `trigger=INITIAL`을 사용한다. 이전 Gate review와 새 review는 `RecordMeta.previous_record_id`로 이어지는 같은 논리 record의 revision chain에 남긴다. 반대로 provider timeout이나 일시 오류처럼 domain input이 바뀌지 않은 일반 retry는 같은 `work_id`·`dedupe_key`·`input_hash`를 유지하고 새 `attempt_id`와 `trigger=RETRY`를 사용한다. 동일 입력의 새 attempt만 만들어 `REVISE`를 다시 투표하거나 과거 Gate·CWE reference를 새 Verification revision에 재사용하는 것은 금지한다.
 
-`DYNAMIC_INPUT_CHANGED` 전이는 위 Technical `REVISE`와 별개다. 현재 가설이 `VERIFYING`이고 current `DYNAMIC_REPRO`의 exact `DynamicReproductionRequest` 또는 `sandbox_profile_ref`를 바꿔야 할 때만 같은 ACTIVE `VerificationAssignment` owner가 `ActionRequest(action_type=RESTART_VERIFICATION_GENERATION, requested_by=VERIFICATION)`을 요청한다. `reason`에 허용하는 값은 `DYNAMIC_REQUEST_REVISION_CHANGED | SANDBOX_PROFILE_REVISION_CHANGED`뿐이다. action `input_refs`에는 current exact `HypothesisProcessState`, ACTIVE assignment, 부모 `VERIFICATION` work, `DYNAMIC_REPRO` work, old request·old profile과 현재 `PlaybookPolicy`·`VerificationPlaybook`을 중복 없이 고정한다. 새 profile revision이 이미 승인돼 있다면 그 exact reference도 고정하지만, 새 `DynamicReproductionRequest`는 새 generation의 Pro·Con과 `VerificationInitialAssessment` 뒤에만 만들므로 전이 action의 선행 입력으로 요구하지 않는다. 단순 `RunPolicyState` freshness 변화, provider retry, 같은 request 안의 recipe·candidate 수정은 이 전이를 허용하지 않는다.
+`DYNAMIC_INPUT_CHANGED` 전이는 위 Technical `REVISE`와 별개다. 현재 가설이 `VERIFYING`이고 current `DYNAMIC_REPRO`의 exact `DynamicReproductionRequest`를 교체해야 하거나 승인된 새 `sandbox_profile_ref`로 바꿔야 할 때만 같은 ACTIVE `VerificationAssignment` owner가 `ActionRequest(action_type=RESTART_VERIFICATION_GENERATION, requested_by=VERIFICATION)`을 요청한다. `generation_restart_reason`은 `DYNAMIC_REQUEST_REPLACEMENT_REQUIRED | SANDBOX_PROFILE_REVISION_CHANGED` 중 하나이며, `generation_restart_basis_refs`에는 사람이 승인했거나 trusted runtime이 확정한 변경 근거 exact reference를 하나 이상 고정한다. action `input_refs`에는 current exact `HypothesisProcessState`, ACTIVE assignment, 부모 `VERIFICATION` work, `DYNAMIC_REPRO` work, old request·old profile과 현재 `PlaybookPolicy`·`VerificationPlaybook`, 변경 근거를 중복 없이 고정한다. request 교체 사유이면 `dynamic_request_ref`와 `sandbox_profile_ref`는 각각 old current request·profile을 가리키고 아직 존재하지 않는 새 request reference를 요구하거나 허용하지 않는다. profile 변경 사유이면 `dynamic_request_ref`는 old current request, `input_refs`는 old profile과 새 profile을 모두 포함하고 `sandbox_profile_ref`는 승인된 새 exact profile을 가리켜야 하며 두 profile reference는 달라야 한다. 새 `DynamicReproductionRequest`는 어느 사유에서도 새 generation의 Pro·Con과 `VerificationInitialAssessment` 뒤에만 만든다. 단순 `RunPolicyState` freshness 변화, provider retry, 같은 request 안의 recipe·candidate 수정은 이 전이를 허용하지 않는다.
 
 Runtime Validator는 process가 `VERIFYING`, action의 expected generation이 current generation, `expected_state_version`이 부모 VERIFICATION work의 current state version, old dynamic work·active attempt·request·profile이 current pointer와 일치하고 assignment owner가 여전히 ACTIVE인지 CAS로 확인한다. 허용되면 외부 부작용 없는 한 SQLite transaction에서 다음을 모두 수행한다: (1) old dynamic active attempt와 `DYNAMIC_REPRO` work를 `CANCELLED + stop_reason=INPUT_SUPERSEDED`로 닫고, (2) old 부모 `VERIFICATION` work의 active attempt와 work도 같은 이유로 `CANCELLED`로 닫고, (3) `verification_generation+1`의 새 VERIFICATION work, 새 `PlaybookApplication`, 새 application 질문 ID, 새 `PRO_EVIDENCE`·`CON_EVIDENCE` child work를 등록하고, (4) `HypothesisProcessState.status=VERIFYING`, `verification_work_ref=새 work`, generation을 새 값으로 갱신하며, (5) 새 `DynamicReproductionState(status=NOT_REQUESTED, dynamic_work_ref=null, request_ref=null, dynamic_result_ref=null)`를 current로 바꾼다. `HypothesisProcessState.verification_result_ref`는 전환 전 값이 `null`이면 계속 `null`, Technical `REVISE`로 보완 중이어서 직전 final result를 보존하고 있었다면 그 exact history reference를 그대로 유지하되 새 generation의 current final로 취급하지 않는다. 새 request와 새 dynamic work는 새 Pro·Con·`VerificationInitialAssessment` 뒤 R6가 여전히 동적 재현이 필요하다고 판단할 때 별도 정상 전이로 만든다.
 
@@ -452,7 +454,7 @@ current Finding 저장은 `RULE_SCOPE_GATE`의 `SUCCEEDED`와 review의 `COMMITT
 | `BLOCKED` | `BLOCKED` | current work 입력을 바꾸지 않는 재인증·승인·외부 환경 정비·resource 확보를 기다린다. 조건 해결 뒤 같은 work의 새 `attempt_id`, `trigger=RESUME`로 재개하며 final verdict와 Gate는 없다. 프로그램 정책 준비 상태 자체는 `LOCAL_ONLY` 실행의 대기 조건이 아니다. |
 | `CANCELLED` | `CANCELLED` | 취소 이유와 취소 결과를 같은 transition에서 저장한다. 취소 확정 뒤 늦은 결과는 격리한다. |
 
-R7이 스스로 해결할 수 있는 command·PoC·환경 조정은 `BLOCKED` 사유가 아니며 같은 session의 현재 attempt 안에서 수행한다. session 재시작이 필요하면 `RUNNING -> READY -> RUNNING`과 새 `attempt_id`, `trigger=RETRY`를 사용한다. 이때 끝난 실패 attempt의 `DynamicReproductionResult(status=FAILED)`와 `AnalysisError.retryable=true`는 해당 attempt의 output history에 보존하지만 validated PoC나 R6 final verdict로 소비하지 않는다. 공통 `WorkExecutionState.status=BLOCKED`는 재인증, 승인, 외부 환경 정비나 resource 확보처럼 현재 work의 불변 입력을 바꾸지 않는 실제 외부 조건을 기다리는 비종료 상태다. 프로그램 정책의 준비 상태 자체는 `LOCAL_ONLY` Sandbox work를 `BLOCKED`로 만드는 조건이 아니다. `BLOCKED -> READY -> RUNNING` 재개는 기존 work의 `input_refs`와 `input_hash`가 그대로일 때만 허용한다. 재개할 때는 같은 work에서 새 `attempt_id`, `trigger=RESUME`를 사용한다. `DynamicReproductionRequest`, `sandbox_profile_ref`처럼 work 입력의 exact revision이 바뀌면 기존 work에 추가하거나 덮어쓰지 않고 새 Verification generation과 새 `DYNAMIC_REPRO` work를 만든다. action 단계의 checked config만 바뀌었다면 기존 `UNUSED` decision을 `EXPIRED`로 확정하고 같은 work에서 새 action·decision을 만들되 work 입력은 바꾸지 않는다.
+R7이 스스로 해결할 수 있는 command·PoC·환경 조정은 `BLOCKED` 사유가 아니며 같은 session의 현재 attempt 안에서 수행한다. session 재시작이 필요하면 `RUNNING -> READY -> RUNNING`과 새 `attempt_id`, `trigger=RETRY`를 사용한다. 이때 끝난 실패 attempt의 `DynamicReproductionResult(status=FAILED)`와 `AnalysisError.retryable=true`는 해당 attempt의 output history에 보존하지만 validated PoC나 R6 final verdict로 소비하지 않는다. 공통 `WorkExecutionState.status=BLOCKED`는 재인증, 승인, 외부 환경 정비나 resource 확보처럼 현재 work의 불변 입력을 바꾸지 않는 실제 외부 조건을 기다리는 비종료 상태다. 프로그램 정책의 준비 상태 자체는 `LOCAL_ONLY` Sandbox work를 `BLOCKED`로 만드는 조건이 아니다. `BLOCKED -> READY -> RUNNING` 재개는 기존 work의 `input_refs`와 `input_hash`가 그대로일 때만 허용한다. 재개할 때는 같은 work에서 새 `attempt_id`, `trigger=RESUME`를 사용한다. current `DynamicReproductionRequest`를 교체해야 하거나 승인된 새 `sandbox_profile_ref`를 적용해야 하면 기존 work에 추가하거나 덮어쓰지 않는다. 같은 ACTIVE Verification owner의 전용 전이로 새 Verification generation·application·질문·Pro/Con을 먼저 만들고, 새 초기 판단이 동적 재현을 요구할 때만 새 request와 `DYNAMIC_REPRO` work를 등록한다. action 단계의 checked config만 바뀌었다면 기존 `UNUSED` decision을 `EXPIRED`로 확정하고 같은 work에서 새 action·decision을 만들되 work 입력은 바꾸지 않는다.
 
 작업 모듈과 Agent는 등록 또는 상태 변경을 요청할 뿐 직접 확정하지 않는다. 모든 행의 `StateTransition` 승인과 저장은 신뢰 경계 안의 state transition validator와 state store가 담당한다. Orchestration Runtime은 비-LLM 전역 제어 구성요소이며 자연어 출력을 만들지 않는다. 모든 LLM Agent의 자연어 출력은 상태 변경 명령으로 직접 실행하지 않는다.
 
@@ -506,6 +508,8 @@ ActionRequest:
   work_ref: RunStoredDataRef | StoredDataRef | null
   expected_state_version: integer | null
   expected_verification_generation: integer | null
+  generation_restart_reason: DYNAMIC_REQUEST_REPLACEMENT_REQUIRED | SANDBOX_PROFILE_REVISION_CHANGED | null
+  generation_restart_basis_refs: [RunStoredDataRef | StoredDataRef]
   input_refs: [RunStoredDataRef | StoredDataRef | PolicyCacheRef]
   dynamic_request_ref: StoredDataRef | null
   reproduction_plan_ref: StoredDataRef | null
@@ -552,7 +556,7 @@ ActionDecision:
 
 `requester_identity_ref`는 LLM output에서 복사하지 않고 신뢰 runtime이 현재 인증된 Agent service identity에서 넣는다. 그 identity에 등록된 역할이 `requested_by`와 다르면 `AUTHORITY` check는 `FAIL`이다. `ActionRequest`는 해당 요청을 가리키는 `ActionDecision`이 하나라도 저장된 뒤에는 수정하지 않는다. 입력, 실행 범위 또는 설정을 바꾸려면 새 `action_id`와 새 request record를 만든다. `action_ref.record_id`는 검사한 정확한 `ActionRequest` revision을 가리킨다. `ActionDecision.meta`는 action과 같은 metadata 종류와 analysis·workspace·commit·hypothesis를 유지한다. `work_ref`가 있으면 `expected_state_version`이 필수이고 validator가 읽은 현재 work version과 같아야 한다.
 
-`expected_verification_generation`은 `RESTART_VERIFICATION_GENERATION`에서만 필수이며 다른 action에서는 `null`이다. 이 값은 action이 읽은 current `HypothesisProcessState.verification_generation`과 같아야 하고 successor는 정확히 1 큰 generation만 허용한다.
+`expected_verification_generation`, `generation_restart_reason`과 하나 이상의 `generation_restart_basis_refs`는 `RESTART_VERIFICATION_GENERATION`에서만 필수이며 다른 action에서는 각각 `null`, `null`, 빈 목록이다. expected generation은 action이 읽은 current `HypothesisProcessState.verification_generation`과 같아야 하고 successor는 정확히 1 큰 generation만 허용한다. `DYNAMIC_REQUEST_REPLACEMENT_REQUIRED`는 새 request가 이미 존재한다는 뜻이 아니라 old current request를 더 이상 같은 generation에서 사용할 수 없다는 뜻이다. validator는 old request와 변경 근거를 검사하고 새 request reference를 입력으로 받지 않는다. `SANDBOX_PROFILE_REVISION_CHANGED`는 old/new profile exact reference와 변경 근거를 검사한다. 일반 자유형 `reason`은 사람이 읽는 설명이며 이 닫힌 enum이나 exact 근거 검사를 대신하지 않는다.
 
 action type별 `required_checks`는 아래 표와 정확히 같아야 한다. `check_results`에는 각 필수 check가 중복 없이 한 번씩 있어야 한다. 하나라도 `FAIL`이면 `decision=DENY`, `valid_until=null`, `use_status=NOT_USED`와 하나 이상의 `error_ids`가 필요하다. 모두 `PASS`일 때만 `ALLOW`이며 최초 revision은 `valid_until>decided_at`, `use_status=UNUSED`, `used_at=null`, `expired_at=null`, `expire_reason=null`, 빈 `outcome_refs`와 빈 `error_ids`를 사용한다. `valid_until`의 최대 길이는 action·provider·Sandbox별 versioned runtime policy에서 제한한다.
 
@@ -661,7 +665,7 @@ Orchestration Runtime은 schema-valid proposal의 전역 등록과 Verification 
 - `result_kind=dynamic_reproduction_request`이면 VERIFICATION만 저장할 수 있다. `POC_CONFIRMATION`은 `initial_verdict=TRUE`, `VERDICT_EVIDENCE`는 `initial_verdict=HOLD`만 허용한다. production에서는 same-generation ACTIVE assignment, exact hypothesis, 비어 있지 않은 goal·environment needs·code/static refs와 exact Pro·Con refs가 필수다. request를 만든 호출은 같은 work·generation의 `VerificationInitialAssessment`, `PlaybookPolicy`, `VerificationPlaybook`, `PlaybookApplication` exact revision을 입력으로 사용해야 하고, assessment의 다음 경로·proposed verdict와 request의 purpose·initial verdict가 일치해야 한다. Runtime Validator는 한 Verification generation에는 `DYNAMIC_REPRO` work를 최대 하나만 허용하고 두 purpose를 동시에 또는 순차 등록하려는 요청을 `ACTION_NOT_ALLOWED`로 거절한다.
 - `result_kind=cwe_label`이면 R5-01 `CWE_LABELING`만 저장할 수 있다. candidate의 `verification_result_ref`는 current `HypothesisProcessState.verification_result_ref`와 같고 `verdict=TRUE`인 final COMMITTED result여야 한다. `verification_generation`은 current process state와 부모 `VERIFICATION` work의 generation, `cwe_labeling_work_id`와 `meta.attempt_id`는 current `CWE_LABEL` work와 성공 attempt, `llm_call_id`는 exact Verification을 context로 사용해 candidate를 만든 성공한 `CWE_LABELING` 호출과 일치해야 한다. `evidence_refs`는 그 Verification의 direct·transitive evidence closure 안의 exact current reference만 허용한다. `(analysis_id, hypothesis_id, verification_generation, verification_result_ref.record_id, work_type=CWE_LABEL)`당 work와 COMMITTED output은 하나뿐이며 work `output_refs`가 이 label 한 개를 가리켜야 한다. `FALSE | HOLD`, 실패한 CWE work, 다른 generation·Verification·가설·commit의 label과 오래된 label 재사용은 거절한다.
 - `result_kind=policy_parser_result`이면 POLICY_PARSER만 저장할 수 있고, `result_kind=run_policy_state | policy_collection_result | program_policy_record`이면 POLICY_COLLECTOR만 저장할 수 있다. parser 결과는 실행한 exact parser 이름·버전, `llm_invocation_ref`와 원문 `source_ref`를 보존한다. `FOUND`이면 `policy_record_ref`가 필수이고 `error_ids=[]`다. `ABSENT_CONFIRMED`이면 `policy_record_ref=null`, 하나 이상의 공식 출처와 `gap_ids`가 필요하고 `error_ids=[]`다. `COLLECTION_FAILED`이면 `policy_record_ref=null`과 하나 이상의 `error_ids`가 필요하며 Rule Scope Gate work와 review를 만들지 않는다. `FOUND`의 정책 record는 collection result가 가리키는 parser·공식 출처와 exact match해야 하며, 수집 실패를 공식 정책 부재로 바꾸지 않는다. `RunPolicyState`의 `CURRENT | ABSENT`는 R8 freshness criterion·확인 시각·확인 근거·미래 만료 시각을 모두 가져야 한다. `UNVERIFIED` state는 `preparation_source=COLLECTED`, `policy_cache_ref=null`, exact `FOUND | ABSENT_CONFIRMED` collection을 요구한다. `FOUND`이면 같은 attempt의 `ProgramPolicyRecord(freshness_status=UNVERIFIED)`가 필수이고 `ABSENT_CONFIRMED`이면 policy record가 null이어야 한다. 이 조합을 만족하지 않거나 collection 이전에 멈춘 candidate는 `UNVERIFIED`로 저장하지 않는다.
-- `result_kind=budget_reservation | budget_ledger_entry`이면 `BUDGET_RUNTIME`만 저장할 수 있다. reservation은 current exact action·work·ACTIVE budget binding과 남은 COMMITTED ledger를 같은 transaction에서 검사하며, 같은 reservation으로 ledger entry를 둘 이상 만들거나 `COMMITTED | RELEASED`를 되돌리면 저장하지 않는다. 실제 사용 여부를 확인할 수 없는 crash 결과를 임의 release하거나 0원으로 확정하지 않는다.
+- `result_kind=budget_reservation | budget_ledger_entry`이면 `BUDGET_RUNTIME`만 저장할 수 있다. reservation은 current exact action·work와 남은 COMMITTED ledger를 같은 transaction에서 검사한다. `WORKSPACE_PREP`이면 `AnalysisRunState.execution_budget_profile_ref`의 ACTIVE run-level profile, 그 뒤 work이면 `AnalysisRunState.budget_binding_ref`의 full ACTIVE binding과 trusted work/action에서 고른 exact `WorkBudgetLimit`이 필수다. 같은 reservation으로 ledger entry를 둘 이상 만들거나 `COMMITTED | RELEASED`를 되돌리면 저장하지 않는다. 실제 사용 여부를 확인할 수 없는 crash 결과를 임의 release하거나 0원으로 확정하지 않는다.
 - `result_kind=evaluation_run_result | evaluation_recommendation`이면 `R8_EVALUATION_RUNTIME`만 저장할 수 있다. evaluation result의 config와 모든 analysis result는 `purpose=EVALUATION`이고 같은 exact corpus·ground truth·grader·provider·model·session·prompt 설정을 가져야 한다. recommendation은 정확히 한 COMMITTED evaluation result를 가리키며 운영 current pointer를 변경하지 않는다. `ACCEPT_FOR_PRODUCTION`은 R8 평가 기준을 모두 통과한 result에만 허용하고 실제 PRODUCTION Prompt Registry 활성화는 trusted Prompt Registry Runtime의 별도 revision이다.
 - `result_kind=rule_scope_impact_review`이면 RULE_SCOPE_GATE만 저장할 수 있다. `policy_collection_result_ref`는 Gate가 사용한 exact `PolicyCollectionResult`를 가리킨다. `FOUND`이면 `policy_record_ref`가 그 수집 결과의 exact 정책 record여야 하고, `ABSENT_CONFIRMED`이면 `policy_record_ref=null`, Rule·Scope·review·testing restriction은 `UNCERTAIN`, permission은 `DENY`여야 한다. `COLLECTION_FAILED`에는 review candidate 자체를 저장하지 않는다. `rule_compliance`와 `testing_restriction_compliance`는 독립된 판정 축이다. 후자가 `PASS | FAIL`이면 같은 area의 `RuleScopeEvidenceLink`가 하나 이상 필요하고, `UNCERTAIN`이면 `area=TESTING_RESTRICTION`인 `PolicyMissingInfo`가 필요하다. link의 존재만으로 PASS나 FAIL을 추정하지 않는다. 다른 판단 영역도 `PASS | FAIL | SUFFICIENT | INSUFFICIENT`이면 같은 area의 link가 필요하다. link의 policy item은 exact 정책 record 안에 존재하고 evidence reference는 실제 판단 근거여야 한다. `UNCERTAIN` 영역에는 대응하는 `PolicyMissingInfo`가 필요하고, `blocks_allow=true`인 `PolicyMissingInfo`가 하나라도 있으면 `report_permission=ALLOW`를 저장하지 않는다. Runtime Validator는 ID·reference·status 조합을 검사하고 정책 해석의 타당성은 Rule Scope Impact Gate가 판단한다.
 - `result_kind=report_draft`이면 REPORTER만 저장할 수 있고 candidate의 `action_decision_ref`는 같은 초안을 허용한 exact `CREATE_REPORT_DRAFT` decision을 가리켜야 한다. `finding_ref`, Verification·CWELabel·두 Gate·정책, 존재하는 동적 결과·PoC reference는 action `input_refs`와 current upstream record에 정확히 일치해야 한다. `restrictions`와 `unresolved_conditions`는 Verification의 값을 빠짐없이 보존하고 `limitations`는 연결된 동적 결과와 Gate가 남긴 제한을 빠뜨리지 않는다. `redaction_status=PASSED`와 action의 `REDACTION=PASS`가 모두 확인되지 않으면 저장을 거절한다.
@@ -897,6 +901,8 @@ Context 조회 실패·timeout·권한 오류가 발생하면 실패 사건은 `
 이 문서에 나열한 enum은 모두 닫힌 enum이다. 따라서 소비자는 목록에 없는 값을 추정해서 처리하지 않는다. 소비자는 지원하지 않는 MAJOR를 추정해서 읽지 않고 `SCHEMA_UNSUPPORTED`를 기록한다. 알 수 없는 선택 필드는 보존하거나 무시할 수 있지만 새 의미를 만들지 않는다. schema 변경을 이유로 기존 record를 덮어쓰지 않고 같은 `logical_record_id` 아래 새 `record_id`, `created_at`과 증가한 `revision_number`를 만든다.
 
 `RuleExecutionRecord` 추가, `ToolRunResult.tool_kind`·규칙 기반 `rule_execution_ref`와 `ToolSource.attempt_id` 의무화는 기존 운영 결과의 유효 조건을 바꾸므로 새 MAJOR schema로 적용한다. 이전 MAJOR의 `ToolRunResult`에 규칙 hit이 없다는 이유로 `EXECUTED + hit_count=0`을 추정해 채우지 않는다. 이전 결과는 감사 이력으로 보존할 수 있지만 새 규칙 실행률 계산이나 “검사했지만 탐지 없음”의 근거로 자동 승격하지 않는다.
+
+`AnalysisRunState.execution_budget_profile_ref`·`budget_binding_ref`, `ActionRequest.generation_restart_reason`·`generation_restart_basis_refs`, `WorkBudgetProfile`과 `BudgetProfileBinding.work_budget_profile_ref`는 실행 허용 조건과 저장 의미를 바꾸는 필수 계약이므로 새 MAJOR schema와 migration으로 적용한다. 과거 record에 당시 사용하지 않은 예산 profile이나 동적 입력 변경 근거를 current 값으로 추정해 채우지 않는다. migration 뒤에도 exact provenance를 입증하지 못하는 과거 실행은 새 work의 current budget·generation restart 입력으로 사용할 수 없다.
 
 `sanitizer_candidates`, `validator_candidates`, `other_facts`를 필수 목록으로 추가하고 종류별 분할·전체 `fact_id` 유일성을 의무화하는 변경은 StaticFactBundle 새 MAJOR schema로 적용한다. 이전 MAJOR record에 누락 목록을 빈 배열로 추정하거나 `OTHER` 사실의 위치를 임의로 정하지 않는다. 이전 record는 감사 이력으로만 보존하며 새 Hypothesis·Verification 입력으로 자동 승격하지 않는다.
 
@@ -1339,7 +1345,7 @@ decision의 `meta`는 `PRIMITIVE_UPDATE` current attempt와 같은 `attempt_id`�
 
 같은 analysis run에서 policy collection·record revision은 최초 확정 뒤 교체하지 않는다. 정책 freshness 만료와 parser version 변경은 다음 analysis run을 시작할 때 재사용 여부를 판단하는 조건이다. 같은 run에서 새 정책을 수집·파싱하거나 새 정책 revision으로 admission을 다시 계산하지 않는다. 실행 중 공식 정책 변경이 별도로 확인되면 현재 정책 reference를 바꾸지 않고 정책 의존 후속 작업을 중단하며, 갱신된 정책은 새 analysis run에서 준비한다.
 
-한 Verification generation에는 하나의 `PrimitiveAdmissionDecision.logical_record_id`만 둔다. admission은 Primitive 등록 시점의 1회 판정이며 run 안에서 다시 판정하지 않는다. 정책 collection·record revision은 위와 같이 run에 고정되고, Rule Scope review는 exact `VerificationResult`·Technical review·`CWELabel`·정책 수집 결과를 domain input set으로 고정한다. 입력이 같으면 같은 `dedupe_key`로 기존 work가 반환되고, 입력이 달라지려면 새 Verification revision이 필요한데 그것은 Technical `REVISE` 경로여서 result Primitive가 아직 없다. 파이프라인이 중단되었다가 재개되어도 같다 — 재개는 미완료 work를 이어서 실행하는 것이지 확정된 결과를 되돌리거나 admission을 다시 판정하는 절차가 아니다. 그러므로 등록된 Primitive를 회수하거나 같은 Verification의 decision을 뒤집는 절차를 두지 않는다. 정책이나 판정이 실제로 달라졌다면 다음 run에서 새로 판정한다.
+한 Verification generation에는 하나의 `PrimitiveAdmissionDecision.logical_record_id`만 둔다. admission은 Primitive 등록 시점의 1회 판정이며 run 안에서 다시 판정하지 않는다. 정책 collection·record revision은 위와 같이 run에 고정되고, Rule Scope review는 exact `VerificationResult`·Technical review·`CWELabel`·정책 수집 결과를 domain input set으로 고정한다. 입력이 같으면 같은 `dedupe_key`로 기존 work가 반환된다. 새 Verification generation은 `DYNAMIC_INPUT_CHANGED` 또는 Technical `REVISE`로 만들 수 있지만 둘 다 Technical `ACCEPT`와 result Primitive 등록 이전에만 허용되므로 그 시점에는 회수할 result Primitive가 아직 없다. 파이프라인이 중단되었다가 재개되어도 같다 — 재개는 미완료 work를 이어서 실행하는 것이지 확정된 결과를 되돌리거나 admission을 다시 판정하는 절차가 아니다. 그러므로 등록된 Primitive를 회수하거나 같은 Verification의 decision을 뒤집는 절차를 두지 않는다. 정책이나 판정이 실제로 달라졌다면 다음 run에서 새로 판정한다.
 
 가설마다 하나인 `PrimitiveIndexState`는 current final Verification과 그 가설이 등록한 모든 Primitive exact reference를 가리킨다. HOLD Primitive는 admission decision 없이 등록되고 TRUE의 result Primitive는 admission `ALLOW`일 때만 등록되므로, index 소속은 "등록되었다"는 뜻이며 자격을 다시 판정한 결과가 아니다. 전용 `state_version`, Primitive 내부 status와 사후 `SUPERSEDED` lifecycle은 사용하지 않는다. 동시 쓰기 손실은 공통 immutable record 규칙으로 막는다. 새 revision은 바로 전 `record_id`와 연속된 `meta.revision_number`를 사용하고 current pointer를 atomic하게 바꾼다. index 갱신은 Primitive를 더하기만 하며 등록된 Primitive를 빼는 경로를 두지 않는다. 새 revision이 생겨도 기존 work 입력을 바꾸지 않는다.
 
@@ -1499,6 +1505,9 @@ ExecutionBudgetProfile:
   meta: RunMeta
   profile_key: string
   purpose: PRODUCTION | EVALUATION
+  approval_ref: RunStoredDataRef | StoredDataRef | null
+  approved_by: string | null
+  approved_at: timestamp | null
   max_analysis_elapsed_ms: integer
   max_total_cost_minor_units: integer
   currency: string
@@ -1507,6 +1516,24 @@ ExecutionBudgetProfile:
   max_total_llm_calls: integer
   max_total_retries: integer
   max_parallel_work: integer
+  status: DRAFT | ACTIVE | RETIRED
+
+WorkBudgetLimit:
+  limit_key: string
+  work_type: WORKSPACE_PREP | STATIC_TOOL | STATIC_NORMALIZE | HYPOTHESIS_PROPOSAL | CONTEXT_RETRIEVAL | PRO_EVIDENCE | CON_EVIDENCE | VERIFICATION | DYNAMIC_REPRO | PRIMITIVE_UPDATE | CHAINING | CWE_LABEL | POLICY_FETCH | TECHNICAL_GATE | RULE_SCOPE_GATE | FINDING_NORMALIZE | REPORT_DRAFT
+  operation_kind: WORKSPACE_PREP | STATIC_TOOL | STATIC_NORMALIZE | POLICY_COLLECT | POLICY_PARSE | HYPOTHESIS_GENERATE | CONTEXT_RETRIEVAL | PRO_EVIDENCE | CON_EVIDENCE | VERIFICATION_SYNTHESIS | PRIMITIVE_UPDATE | CHAINING | DYNAMIC_REPRO | CWE_LABELING | TECHNICAL_GATE | RULE_SCOPE_GATE | FINDING_NORMALIZE | REPORTER
+  agent_role: HYPOTHESIS | PRO | CON | VERIFICATION | CWE_LABELING | CHAINING | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER | POLICY_PARSER | DYNAMIC_REPRODUCTION | REPOSITORY_LOADER | STATIC_ANALYSIS | POLICY_COLLECTOR | null
+  timeout_ms: integer | null
+  max_attempts: integer | null
+  max_calls_per_work: integer | null
+  max_items_per_work: integer | null
+
+WorkBudgetProfile:
+  meta: RecordMeta with hypothesis_id null and attempt_id null
+  profile_key: string
+  purpose: PRODUCTION | EVALUATION
+  limits: [WorkBudgetLimit]
+  unlisted_operation: DENY
   status: DRAFT | ACTIVE | RETIRED
 
 VerificationBudgetProfile:
@@ -1524,6 +1551,7 @@ BudgetProfileBinding:
   binding_key: string
   purpose: PRODUCTION | EVALUATION
   execution_budget_profile_ref: RunStoredDataRef
+  work_budget_profile_ref: StoredDataRef
   verification_budget_profile_ref: StoredDataRef
   dynamic_lifecycle_profile_ref: StoredDataRef
   status: DRAFT | ACTIVE | RETIRED
@@ -1541,7 +1569,7 @@ BudgetUnits:
 BudgetReservation:
   meta: RunMeta | RecordMeta
   reservation_id: string
-  budget_binding_ref: StoredDataRef
+  budget_binding_ref: RunStoredDataRef | StoredDataRef
   action_ref: RunStoredDataRef | StoredDataRef
   work_ref: RunStoredDataRef | StoredDataRef
   requested_units: BudgetUnits
@@ -1554,7 +1582,7 @@ BudgetLedgerEntry:
   meta: RunMeta | RecordMeta
   ledger_entry_id: string
   reservation_ref: RunStoredDataRef | StoredDataRef
-  budget_binding_ref: StoredDataRef
+  budget_binding_ref: RunStoredDataRef | StoredDataRef
   action_ref: RunStoredDataRef | StoredDataRef
   work_ref: RunStoredDataRef | StoredDataRef
   actual_units: BudgetUnits
@@ -1563,7 +1591,7 @@ BudgetLedgerEntry:
   committed_at: timestamp
 
 BudgetRemaining:
-  budget_binding_ref: StoredDataRef
+  budget_binding_ref: RunStoredDataRef | StoredDataRef
   as_of_sequence: integer
   available_units: BudgetUnits
   active_reservation_count: integer
@@ -1768,7 +1796,11 @@ DynamicReproductionResult:
   elapsed_ms: integer
 ```
 
-R8 trusted Budget Profile Registry만 `ExecutionBudgetProfile`, `VerificationBudgetProfile`, `DynamicReproductionLifecycleProfile`과 이를 묶는 `BudgetProfileBinding`을 게시한다. `ACTIVE` binding은 같은 purpose의 `ACTIVE` global profile과 `ACTIVE` Verification profile, `ACTIVE` dynamic lifecycle profile exact revision을 하나씩 가리켜야 한다. 운영 숫자는 R8 승인 전 임의로 채우지 않으며, 승인된 `ACTIVE` binding이 없으면 분석 시작 이후 새 work·attempt·외부 호출을 시작하지 않고 `BLOCKED + waiting_for=BUDGET`으로 둔다. `DRAFT | RETIRED` profile 또는 이름만 같은 다른 revision은 사용할 수 없다. 승인된 한도를 바꾸려면 해당 profile의 새 revision과 R8 승인이 필요하다.
+R8 trusted Budget Profile Registry만 `ExecutionBudgetProfile`, `WorkBudgetProfile`, `VerificationBudgetProfile`, `DynamicReproductionLifecycleProfile`과 이를 묶는 `BudgetProfileBinding`을 게시한다. `ExecutionBudgetProfile.status=ACTIVE`이면 R8·사람 승인을 가리키는 non-null `approval_ref`, `approved_by`, `approved_at`이 필수이고 trusted registry가 이 근거와 profile 내용을 대조한다. `WorkBudgetProfile`은 07번의 역할·작업 종류별 시간·attempt·호출·조회 한도를 담는 versioned 설정이다. `work_type`, `operation_kind`와 `agent_role`은 trusted runtime이 실제 work/action에서 결정하며 Agent가 임의 문자열로 고르지 않는다. 같은 profile 안의 `limit_key`와 `(work_type, operation_kind, agent_role)`은 중복될 수 없고 적용 대상은 정확히 하나로 해석되어야 한다. 해당 한도와 분석 전체·Verification·동적 lifecycle 한도는 모두 적용하며 서로 다른 한도가 같은 자원을 제한하면 더 먼저 소진되는 한도를 따른다. 07번 표의 숫자는 이 profile의 DRAFT 후보이지 코드 상수나 별도 숨은 설정이 아니다. R8 승인과 사람 승인을 받은 exact revision만 `ACTIVE`가 될 수 있고 `DRAFT` 숫자로 실행하지 않는다.
+
+예산 bootstrap은 두 단계다. `analysis_id` 발급 직후 같은 purpose의 run-local `ExecutionBudgetProfile(status=ACTIVE)`을 `AnalysisRunState.execution_budget_profile_ref`에 원자적으로 고정한 뒤에만 `WORKSPACE_PREP`을 등록한다. 이 최초 work와 그 attempt에는 full `BudgetProfileBinding` 대신 이 exact run-level profile을 사용해 분석 전체 시간·비용·work·병렬 한도를 검사하고 reservation/ledger를 같은 run scope에 기록한다. 이때 `BudgetReservation | BudgetLedgerEntry | BudgetRemaining.budget_binding_ref`는 예외적으로 그 `RunStoredDataRef`를 가리키며, workspace READY 뒤에는 exact `BudgetProfileBinding`의 `StoredDataRef`만 가리킨다. `CodeWorkspace.status=READY`가 된 뒤 trusted registry가 같은 execution profile과 `ACTIVE` Work·Verification·dynamic profile을 묶은 full `BudgetProfileBinding`을 만들고 `AnalysisRunState.budget_binding_ref`에 고정한다. 그 뒤 `STATIC_TOOL | POLICY_FETCH`를 포함한 모든 후속 work·attempt·외부 호출은 이 full binding 없이는 시작하지 않는다. `WORKSPACE_PREP` 외 예외는 없다. 이렇게 workspace가 있어야 만들 수 있는 `RecordMeta` binding을 workspace 생성 전에 요구하는 순환을 피하면서 최초 작업도 무예산으로 실행하지 않는다.
+
+`ACTIVE` binding은 같은 purpose의 `ACTIVE` global execution profile, `ACTIVE` work-kind profile, `ACTIVE` Verification profile, `ACTIVE` dynamic lifecycle profile exact revision을 하나씩 가리켜야 한다. 운영 숫자는 R8 승인 전 임의로 채우지 않는다. `DRAFT | RETIRED` profile 또는 이름만 같은 다른 revision은 사용할 수 없다. 승인된 한도를 바꾸려면 해당 profile의 새 revision과 R8 승인이 필요하다. full binding 또는 work-kind limit을 확인할 수 없으면 후속 실행은 `BLOCKED + waiting_for=BUDGET`이다.
 
 Budget Runtime은 새 실행 전에 남은 COMMITTED ledger와 active reservation을 같은 transaction에서 계산해 `BudgetReservation(status=RESERVED)`을 만든 뒤에만 action을 claim한다. 실행이 실제 자원을 사용하면 정확히 한 `BudgetLedgerEntry`를 append하고 같은 transaction에서 reservation을 `COMMITTED`로 바꾼다. 실행 전 취소·거절이면 `RELEASED`로 바꾸며 ledger entry를 만들지 않는다. `(analysis_id, reservation_id)`와 `BudgetLedgerEntry.reservation_ref`는 unique이고 `COMMITTED | RELEASED`를 되돌리지 않는다. 같은 reservation의 재전달은 기존 결과를 반환하며 비용을 두 번 차감하지 않는다. crash 전후에는 RESERVED·실제 side effect·usage record를 대조해 안전하게 확정하거나, 사용 여부를 알 수 없으면 release·재실행하지 않고 `BLOCKED + waiting_for=BUDGET`으로 둔다.
 
@@ -1936,7 +1968,7 @@ TechnicalEvidenceReview:
 
 `action_decision_ref.record_id`는 `CALL_TECHNICAL_GATE`를 허가하고 `USED`로 claim한 decision revision을 가리킨다. 실행 결과를 기록한 이후 decision revision의 `outcome_refs`에는 같은 call spec을 실행한 `TECHNICAL_GATE` `LLMInvocationLog`와 현재 review가 각각 한 번 포함되고, log의 `parsed_output_ref.record_id`가 현재 review를 가리켜야 한다. review는 log를 역참조하지 않아 content hash 순환을 만들지 않는다. `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 필수이며 각각 정확히 한 final `VerificationResult(verdict=TRUE)`와 R5-01이 그 result를 대상으로 만든 current `CWELabel` revision을 가리킨다. `CWELabel.verification_result_ref`는 review의 `verification_result_ref`와 exact match하고 label의 `verification_generation`은 current process state와 같아야 한다. label을 만든 `CWE_LABEL` work는 `SUCCEEDED`이고 유일한 output이 이 `cwe_label_ref`여야 한다. `FALSE | HOLD` 또는 `HypothesisProcessState.status=FAILED`인 가설에는 CWE work, Technical Gate work와 review를 만들 수 없다. runtime은 두 대상의 `record_id`, `workspace_id`, `commit_id`, `hypothesis_id`와 `content_hash`를 확인한다. Verification 또는 CWELabel이 새 revision으로 바뀌면 이전 `TechnicalEvidenceReview`를 재사용할 수 없고 새 CWE 평가와 Gate 호출이 필요하다. Technical review는 `VerificationResult.verdict`나 `CWELabel`을 생성·수정·덮어쓰지 않는다.
 
-`status=ACCEPT`는 `handoff_readiness=READY`, `status=REVISE | REJECT`는 `handoff_readiness=NOT_READY`만 허용한다. `DynamicReproductionResult(status=BLOCKED | FAILED, failure_category=POLICY_BLOCKED)`는 Sandbox profile의 외부 격리 경계 위반이지 가설 반증이나 Technical `REJECT`가 아니다. validated PoC가 없으므로 final `VerificationResult`를 만들거나 Technical Gate를 호출하지 않는다. current work의 `input_refs/input_hash`를 바꾸지 않는 외부 조건을 기다릴 수 있을 때만 같은 동적 work와 Verification을 `BLOCKED`로 유지한다. exact request나 profile reference 변경이 필요하면 기존 work를 수정·재개하지 않고 새 Verification generation과 새 동적 work를 만든다. 복구 불가능하거나 한도를 소진하면 verdict 없이 `FAILED`로 끝낸다. 프로그램 정책 준비·freshness·testing restriction은 이 `POLICY_BLOCKED`의 원인이 아니며 어떤 경우에도 외부 경계 차단을 가설 `FALSE | HOLD`로 변환하지 않는다.
+`status=ACCEPT`는 `handoff_readiness=READY`, `status=REVISE | REJECT`는 `handoff_readiness=NOT_READY`만 허용한다. `DynamicReproductionResult(status=BLOCKED | FAILED, failure_category=POLICY_BLOCKED)`는 Sandbox profile의 외부 격리 경계 위반이지 가설 반증이나 Technical `REJECT`가 아니다. validated PoC가 없으므로 final `VerificationResult`를 만들거나 Technical Gate를 호출하지 않는다. current work의 `input_refs/input_hash`를 바꾸지 않는 외부 조건을 기다릴 수 있을 때만 같은 동적 work와 Verification을 `BLOCKED`로 유지한다. exact request를 교체하거나 승인된 새 profile reference를 적용해야 하면 기존 work를 수정·재개하지 않고 새 Verification generation에서 Pro·Con과 초기 판단을 다시 수행하며, 그 판단이 요구할 때만 새 request와 동적 work를 만든다. 복구 불가능하거나 한도를 소진하면 verdict 없이 `FAILED`로 끝낸다. 프로그램 정책 준비·freshness·testing restriction은 이 `POLICY_BLOCKED`의 원인이 아니며 어떤 경우에도 외부 경계 차단을 가설 `FALSE | HOLD`로 변환하지 않는다.
 
 ## 9. PolicyParserResult, PolicyCollectionResult, ProgramPolicyRecord과 RuleScopeImpactReview
 

@@ -803,7 +803,9 @@ $requiredActionRequestFields = @(
     'provider_profile_ref:',
     'sandbox_profile_ref:',
     'resource_profile_ref:',
-    'expected_verification_generation:'
+    'expected_verification_generation:',
+    'generation_restart_reason:',
+    'generation_restart_basis_refs:'
 )
 foreach ($field in $requiredActionRequestFields) {
     if (-not $actionRequestBlock.Contains($field)) {
@@ -818,7 +820,9 @@ $environmentRequirementsBlock = [regex]::Match($contractText, '(?ms)^Environment
 $reproductionPlanBlock = [regex]::Match($contractText, '(?ms)^ReproductionPlan:\s*(.*?)^SandboxProfile:').Groups[1].Value
 $sandboxProfileBlock = [regex]::Match($contractText, '(?ms)^SandboxProfile:\s*(.*?)^DynamicReproductionLifecycleProfile:').Groups[1].Value
 $resourceLifecycleProfileBlock = [regex]::Match($contractText, '(?ms)^DynamicReproductionLifecycleProfile:\s*(.*?)^ExecutionBudgetProfile:').Groups[1].Value
-$executionBudgetProfileBlock = [regex]::Match($contractText, '(?ms)^ExecutionBudgetProfile:\s*(.*?)^VerificationBudgetProfile:').Groups[1].Value
+$executionBudgetProfileBlock = [regex]::Match($contractText, '(?ms)^ExecutionBudgetProfile:\s*(.*?)^WorkBudgetLimit:').Groups[1].Value
+$workBudgetLimitBlock = [regex]::Match($contractText, '(?ms)^WorkBudgetLimit:\s*(.*?)^WorkBudgetProfile:').Groups[1].Value
+$workBudgetProfileBlock = [regex]::Match($contractText, '(?ms)^WorkBudgetProfile:\s*(.*?)^VerificationBudgetProfile:').Groups[1].Value
 $verificationBudgetProfileBlock = [regex]::Match($contractText, '(?ms)^VerificationBudgetProfile:\s*(.*?)^BudgetProfileBinding:').Groups[1].Value
 $budgetProfileBindingBlock = [regex]::Match($contractText, '(?ms)^BudgetProfileBinding:\s*(.*?)^BudgetUnits:').Groups[1].Value
 $budgetUnitsBlock = [regex]::Match($contractText, '(?ms)^BudgetUnits:\s*(.*?)^BudgetReservation:').Groups[1].Value
@@ -885,9 +889,11 @@ foreach ($field in @('meta:', 'preflight_budget_ref:', 'preflight_budget_source:
     }
 }
 foreach ($contract in @(
-    @{ Name = 'ExecutionBudgetProfile'; Block = $executionBudgetProfileBlock; Fields = @('meta:', 'profile_key:', 'purpose:', 'max_analysis_elapsed_ms:', 'max_total_cost_minor_units:', 'currency:', 'pricing_revision_ref:', 'max_total_work:', 'max_total_llm_calls:', 'max_total_retries:', 'max_parallel_work:', 'status:') },
+    @{ Name = 'ExecutionBudgetProfile'; Block = $executionBudgetProfileBlock; Fields = @('meta:', 'profile_key:', 'purpose:', 'approval_ref:', 'approved_by:', 'approved_at:', 'max_analysis_elapsed_ms:', 'max_total_cost_minor_units:', 'currency:', 'pricing_revision_ref:', 'max_total_work:', 'max_total_llm_calls:', 'max_total_retries:', 'max_parallel_work:', 'status:') },
+    @{ Name = 'WorkBudgetLimit'; Block = $workBudgetLimitBlock; Fields = @('limit_key:', 'work_type:', 'operation_kind:', 'agent_role:', 'timeout_ms:', 'max_attempts:', 'max_calls_per_work:', 'max_items_per_work:') },
+    @{ Name = 'WorkBudgetProfile'; Block = $workBudgetProfileBlock; Fields = @('meta:', 'profile_key:', 'purpose:', 'limits:', 'unlisted_operation:', 'status:') },
     @{ Name = 'VerificationBudgetProfile'; Block = $verificationBudgetProfileBlock; Fields = @('meta:', 'profile_key:', 'max_verification_elapsed_ms:', 'max_work_per_verification:', 'max_llm_calls_per_verification:', 'max_retries_per_work:', 'max_parallel_evidence_calls:', 'status:') },
-    @{ Name = 'BudgetProfileBinding'; Block = $budgetProfileBindingBlock; Fields = @('meta:', 'binding_key:', 'purpose:', 'execution_budget_profile_ref:', 'verification_budget_profile_ref:', 'dynamic_lifecycle_profile_ref:', 'status:', 'approved_by:', 'approved_at:') },
+    @{ Name = 'BudgetProfileBinding'; Block = $budgetProfileBindingBlock; Fields = @('meta:', 'binding_key:', 'purpose:', 'execution_budget_profile_ref:', 'work_budget_profile_ref:', 'verification_budget_profile_ref:', 'dynamic_lifecycle_profile_ref:', 'status:', 'approved_by:', 'approved_at:') },
     @{ Name = 'BudgetUnits'; Block = $budgetUnitsBlock; Fields = @('elapsed_ms:', 'work_count:', 'llm_call_count:', 'retry_count:', 'cost_minor_units:', 'currency:') },
     @{ Name = 'BudgetReservation'; Block = $budgetReservationBlock; Fields = @('meta:', 'reservation_id:', 'budget_binding_ref:', 'action_ref:', 'work_ref:', 'requested_units:', 'status:', 'ledger_entry_ref:', 'reserved_at:', 'finalized_at:') },
     @{ Name = 'BudgetLedgerEntry'; Block = $budgetLedgerEntryBlock; Fields = @('meta:', 'ledger_entry_id:', 'reservation_ref:', 'budget_binding_ref:', 'action_ref:', 'work_ref:', 'actual_units:', 'usage_refs:', 'sequence:', 'committed_at:') },
@@ -1519,6 +1525,12 @@ foreach ($field in $requiredAnalysisResultFields) {
 if (-not $analysisRunResultBlock.Contains('eval_config_refs: [RunStoredDataRef | StoredDataRef]')) {
     Add-Failure 'AnalysisRunResult.eval_config_refs must use exact versioned references'
 }
+if (-not $analysisRunStateBlock.Contains('execution_budget_profile_ref: RunStoredDataRef')) {
+    Add-Failure 'AnalysisRunState.execution_budget_profile_ref must pin the run-level bootstrap budget'
+}
+if (-not $analysisRunStateBlock.Contains('budget_binding_ref: StoredDataRef | null')) {
+    Add-Failure 'AnalysisRunState.budget_binding_ref must pin the full post-workspace budget binding'
+}
 if (-not $analysisRunResultBlock.Contains('resources: ResourceUsageSummary')) {
     Add-Failure 'AnalysisRunResult.resources must use ResourceUsageSummary'
 }
@@ -1535,7 +1547,8 @@ $requiredR8CommonContractRules = @(
     '분석 종료 시 `AnalysisRunResult.eval_config_refs`는 시작 상태의 전체 집합과 중복 없이 set-equal해야 하며 빠진 값·추가 값·이름만 같은 다른 revision을 허용하지 않는다.',
     '두 `purpose=EVALUATION` 결과는 `eval_config_refs`가 exact reference 기준으로 set-equal할 때만 직접 비교한다.',
     '이 목록과 오프라인 사람 정답은 평가용 provenance일 뿐 Gate·Primitive·Reporter 입력이나 자동화된 Human Review 결정이 아니다.',
-    '승인된 `ACTIVE` binding이 없으면 분석 시작 이후 새 work·attempt·외부 호출을 시작하지 않고 `BLOCKED + waiting_for=BUDGET`으로 둔다.',
+    '이 reference가 없으면 `WORKSPACE_PREP`도 시작하지 않는다.',
+    'full binding 또는 work-kind limit을 확인할 수 없으면 후속 실행은 `BLOCKED + waiting_for=BUDGET`이다.',
     '같은 reservation의 재전달은 기존 결과를 반환하며 비용을 두 번 차감하지 않는다.',
     'Provider Profile Validation(`PVD-01`~`PVD-16`)은 profile이 기술적으로 호출 가능한지만 증명하며 취약점 분석 품질 승인이 아니다.',
     '`purpose=EVALUATION` 분석과 그 결과는 별도 analysis identity와 exact `eval_config_refs`를 유지한다.',
@@ -3785,18 +3798,70 @@ $r302ContractTestPath = Join-Path $repoRoot 'docs/architecture-v5/implementation
 $r302ContractTestText = Get-Content -Raw -Encoding UTF8 -LiteralPath $r302ContractTestPath
 $reviewAlignmentFiles = @(
     'docs/architecture-v5/03-agent-roles-and-orchestration.md',
+    'docs/architecture-v5/04-verification-and-dynamic-reproduction.md',
     'docs/architecture-v5/05-llm-gate-and-reporting.md',
+    'docs/architecture-v5/07-results-and-observability.md',
     'docs/architecture-v5/08-lightweight-data-contracts.md',
+    'docs/architecture-v5/09-llm-provider-session-and-logging.md',
     'docs/architecture-v5/implementation/01-module-map.md',
     'docs/architecture-v5/implementation/02-contract-test-plan.md',
     'docs/architecture-v5/implementation/03-recovery-test-plan.md',
     'docs/architecture-v5/implementation/05-prompt-runtime.md',
-    'docs/architecture-v5/implementation/06-implementation-baseline.md'
+    'docs/architecture-v5/implementation/06-implementation-baseline.md',
+    'docs/architecture-v5/wiki/gate-and-reporting.md',
+    'docs/architecture-v5/wiki/state-and-recovery.md',
+    'docs/architecture-v5/wiki/verification-and-dynamic.md'
 )
 $reviewAlignmentText = ($reviewAlignmentFiles | ForEach-Object { Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot $_) }) -join "`n"
 foreach ($obsoleteRunInitPhrase in @('공통 환경 준비', '정적·정책·Docker 준비 병렬')) {
     if ($reviewAlignmentText.Contains($obsoleteRunInitPhrase)) {
         Add-Failure "reviewed current documents still contain obsolete run-init Docker wording: $obsoleteRunInitPhrase"
+    }
+}
+foreach ($obsoleteDynamicGenerationPhrase in @(
+    'DYNAMIC_REQUEST_REVISION_CHANGED',
+    '새 Verification generation과 새 동적 work',
+    '새 Verification generation·새 동적 work',
+    '새 Verification generation의 새 동적 work',
+    '새 Verification generation과 새 `DYNAMIC_REPRO` work'
+)) {
+    if ($reviewAlignmentText.Contains($obsoleteDynamicGenerationPhrase) -or $verificationText.Contains($obsoleteDynamicGenerationPhrase)) {
+        Add-Failure "obsolete dynamic generation reason remains: $obsoleteDynamicGenerationPhrase"
+    }
+}
+$dynamicGenerationAlignmentRules = @(
+    @{ Name = '03 authority'; Text = $agentRolesText; Marker = '`RESTART_VERIFICATION_GENERATION`은 같은 가설·generation의 ACTIVE Verification owner만' },
+    @{ Name = '04 verification'; Text = $verificationText; Marker = '새 Pro·Con과 초기 판단 뒤 여전히 필요할 때만 새 request' },
+    @{ Name = '08 action reason'; Text = $contractText; Marker = 'generation_restart_reason: DYNAMIC_REQUEST_REPLACEMENT_REQUIRED | SANDBOX_PROFILE_REVISION_CHANGED | null' },
+    @{ Name = '08 action basis'; Text = $contractText; Marker = 'generation_restart_basis_refs: [RunStoredDataRef | StoredDataRef]' },
+    @{ Name = 'verification Wiki'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/verification-and-dynamic.md')); Marker = '새 Pro·Con과 초기 판단 뒤 여전히 필요할 때만 새 request' },
+    @{ Name = 'state Wiki'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/state-and-recovery.md')); Marker = '복구는 이 결정을 새로 내리지 않고 저장된 전이만 멱등 재생합니다.' },
+    @{ Name = 'implementation baseline'; Text = $r306BaselineText; Marker = 'old current 입력과 exact 변경 근거를 고정해 새 generation을 요청' },
+    @{ Name = 'Gate policy-blocked path'; Text = $gateText; Marker = '그 판단이 동적 재현을 요구할 때만 새 request와 동적 work를 만든다.' },
+    @{ Name = 'results dynamic-input path'; Text = $resultText; Marker = '여전히 필요할 때만 새 request와 동적 work를 만든다.' },
+    @{ Name = 'provider recovery path'; Text = $providerText; Marker = '여전히 필요할 때만 새 request와 동적 work를 만든다.' },
+    @{ Name = 'module map dynamic path'; Text = $moduleMapText; Marker = '여전히 필요할 때만 새 request와 동적 work를 만든다.' },
+    @{ Name = 'Gate Wiki dynamic-input path'; Text = $gateWikiText; Marker = '여전히 필요할 때만 새 request와 동적 work를 만듭니다.' }
+)
+foreach ($rule in $dynamicGenerationAlignmentRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "$($rule.Name) is missing dynamic input generation alignment: $($rule.Marker)"
+    }
+}
+
+$budgetBootstrapRules = @(
+    @{ Name = '07 work limits'; Text = $resultText; Marker = '`WorkBudgetProfile.limits`의 `work_type + operation_kind`' },
+    @{ Name = '08 run bootstrap'; Text = $contractText; Marker = '`WORKSPACE_PREP` 외 예외는 없다.' },
+    @{ Name = '08 work profile'; Text = $contractText; Marker = 'WorkBudgetProfile:' },
+    @{ Name = '08 full binding'; Text = $contractText; Marker = 'work_budget_profile_ref: StoredDataRef' },
+    @{ Name = 'implementation budget profile'; Text = $r306BaselineText; Marker = 'BudgetProfile = ExecutionBudgetProfile | WorkBudgetProfile | VerificationBudgetProfile | DynamicReproductionLifecycleProfile' },
+    @{ Name = 'implementation bootstrap'; Text = $r306BaselineText; Marker = 'WORKSPACE_PREP: run-level ACTIVE execution profile 확인' },
+    @{ Name = 'common contracts Wiki'; Text = $commonWikiText; Marker = '07번 역할표의 숫자는 `WorkBudgetProfile`의 DRAFT 후보' },
+    @{ Name = 'glossary work profile'; Text = $glossaryText; Marker = '| `WorkBudgetProfile` |' }
+)
+foreach ($rule in $budgetBootstrapRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "$($rule.Name) is missing budget bootstrap/work-kind alignment: $($rule.Marker)"
     }
 }
 if ([regex]::IsMatch($contractText, '(?mi)^\s+(usage|resources):\s*map(?:\s*\|\s*null)?\s*$')) {
@@ -3806,6 +3871,7 @@ foreach ($marker in @(
     'R3-CT-COM-015 — RecordStore 공통 참조와 domain 제한',
     'R3-CT-DYN-013 — 동적 입력 변경의 새 Verification generation 전이',
     'R3-CT-BUD-006 — 예산 reservation 원자성·중복 차감 방지',
+    'R3-CT-BUD-007 — 예산 bootstrap과 역할·작업별 한도 선택',
     'R3-CT-EVAL-001 — 재현 가능한 평가 실행과 정규화된 자원 기록',
     'R3-CT-EVAL-002 — capability 증거와 품질 승인 분리',
     'R3-CT-EVAL-003 — 평가 비교·추천의 exact provenance'

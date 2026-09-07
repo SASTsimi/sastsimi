@@ -409,11 +409,11 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 #### R3-REC-WRK-008 — 예산 reservation·commit·release 중 종료
 
 - **1. ID·단계·work**: R3-REC-WRK-008; 모든 외부 실행 직전·직후 / 해당 work·attempt. CT 연결: BUD-001/002/003/006.
-- **2. 중단 전 상태·current**: ACTIVE `BudgetProfileBinding`, committed ledger 합계와 active reservation 집합을 고정한다. 새 action은 아직 미claim 또는 reservation을 가진 상태다.
+- **2. 중단 전 상태·current**: WORKSPACE_PREP 변형은 `AnalysisRunState.execution_budget_profile_ref`의 ACTIVE run-level profile, 그 뒤 변형은 ACTIVE `BudgetProfileBinding`과 exact work-kind limit, committed ledger 합계와 active reservation 집합을 고정한다. 새 action은 아직 미claim 또는 reservation을 가진 상태다.
 - **3. work·attempt·generation·input**: 같은 analysis/action/work/attempt와 exact reservation_id, profile refs, reserved units, 실제 usage evidence를 연결한다.
 - **4. 저장된 record·artifact·marker**: `BudgetReservation(RESERVED | COMMITTED | RELEASED)`, 선택적 `BudgetLedgerEntry`, action claim/side-effect/usage marker를 지점별로 남긴다.
 - **5. 정확한 장애 주입 지점**: A reservation 전, B RESERVED 저장 뒤 action claim 전, C 외부 side effect 뒤 usage 저장 전, D ledger 저장과 COMMITTED 전이 사이, E 실행 전 거절 뒤 RELEASED 전, F commit/release 직후 응답 전 종료한다.
-- **6. 재시작 검사 조건**: reservation 상태, ledger unique key, action claim/attempt 상태, durable side-effect·usage evidence, 같은 profile revision과 remaining 계산을 확인한다.
+- **6. 재시작 검사 조건**: reservation 상태, ledger unique key, action claim/attempt 상태, durable side-effect·usage evidence, WORKSPACE_PREP의 run-level execution profile 또는 후속 work의 full binding·exact work-kind limit과 remaining 계산을 확인한다.
 - **7. 복구 조치**: A는 새 reserve부터 시작한다. B/E에서 미실행이 증명되면 같은 reservation을 RELEASED로 끝낸다. D/F는 기존 ledger/state를 멱등 재투영한다. C처럼 실제 사용 여부를 증명하지 못하면 release·재실행하지 않고 `BLOCKED + waiting_for=BUDGET`으로 둔다. Recovery가 가격·사용량을 추정하지 않는다.
 - **8. 기대 state·current/격리 결과**: reservation 하나당 ledger entry 최대 하나, terminal reservation 전이 한 번, action claim 최대 한 번이다. 동시 재시작도 unique constraint로 두 번째 debit을 거절한다.
 - **9. 다음 단계 호출**: 안전한 reservation 상태가 확인되기 전 새 attempt·Provider·Sandbox·도구 호출은 0건이다.
@@ -654,10 +654,10 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 
 - **1. ID·단계·work**: R3-REC-DYN-010; 10–13 / 기존 VERIFICATION·DYNAMIC_REPRO의 입력 변경 감지, old work 종료와 새 Verification generation. CT 연결: DYN-004/008/011/013.
 - **2. 중단 전 상태·current**: H1은 VERIFYING이고 G1의 ACTIVE Verification owner, old VERIFICATION work KV1, DYNAMIC_REPRO work KD1·attempt AD1, DQ1·SP1, `HypothesisProcessState.current_generation=G1`, `DynamicReproductionState.verification_generation=G1`과 current pointers가 고정돼 있다. DQ2 또는 SP2가 필요한 상황을 각각 만든다.
-- **3. work·attempt·generation·input**: action은 `RESTART_VERIFICATION_GENERATION`, requester는 같은 H1/G1의 ACTIVE Verification owner, reason은 `DYNAMIC_REQUEST_REVISION_CHANGED | SANDBOX_PROFILE_REVISION_CHANGED`다. old process/assignment/work/attempt/request/profile/application/playbook exact refs, `expected_verification_generation=G1`, expected state version을 고정한다. RunPolicyState만 달라지는 변형은 입력 변경으로 취급하지 않는다.
+- **3. work·attempt·generation·input**: action은 `RESTART_VERIFICATION_GENERATION`, requester는 같은 H1/G1의 ACTIVE Verification owner, `generation_restart_reason`은 `DYNAMIC_REQUEST_REPLACEMENT_REQUIRED | SANDBOX_PROFILE_REVISION_CHANGED`다. old process/assignment/work/attempt/request/profile/application/playbook exact refs, 하나 이상의 `generation_restart_basis_refs`, `expected_verification_generation=G1`, expected state version을 고정한다. request 교체 사유는 새 DQ2를 선행 입력으로 요구하지 않고 old DQ1과 변경 근거만 검사한다. profile 사유는 old SP1과 승인된 새 SP2 exact ref가 실제로 다름을 검사한다. RunPolicyState만 달라지는 변형은 입력 변경으로 취급하지 않는다.
 - **4. 저장된 record·artifact·marker**: G1의 old action/decision/attempt/environment/AgentLog/result/PoC/CWE/Gate history와 변경 사유를 보존한다. G2 transaction이 COMMITTED되기 전 새 current pointer나 일부 G2 work는 보이지 않아야 한다.
 - **5. 정확한 장애 주입 지점**: A action 저장 전, B validator ALLOW 뒤 transaction 전, C old attempt/work CANCELLED 처리 중, D G2/VERIFICATION/Application/질문/Pro·Con 생성 중, E process pointer 갱신 중, F 새 DynamicReproductionState 초기화 중, G transaction commit 직후 응답 전 종료한다. 같은 expected generation으로 두 요청을 동시에 보내는 변형도 둔다.
-- **6. 재시작 검사 조건**: ACTIVE Verification owner, H1 VERIFYING, expected generation/state version, old current closure, reason과 실제 ref 차이, action USED 여부, `(hypothesis_id, expected_generation)` successor unique key를 확인한다.
+- **6. 재시작 검사 조건**: ACTIVE Verification owner, H1 VERIFYING, expected generation/state version, old current closure, 닫힌 사유와 exact 변경 근거를 확인한다. request 교체는 새 request ref 없이 교체 필요 근거를, profile 변경은 old/new exact profile 차이를 검사한다. 이어서 action USED 여부와 `(hypothesis_id, expected_generation)` successor unique key를 확인한다.
 - **7. 복구 조치**: B 이전은 같은 요청을 재검사한다. C–F는 SQLite transaction rollback 때문에 G1 current를 유지한다. G는 LLM·Sandbox를 다시 실행하지 않고 기존 G2와 USED action을 반환한다. Recovery는 DQ/SP 변경 필요나 새 질문 의미를 결정하지 않고 저장된 ACTIVE Verification 요청만 멱등 재생한다.
 - **8. 기대 state·current/격리 결과**: commit 뒤 KV1/KD1 active attempt·work는 `CANCELLED/INPUT_SUPERSEDED`, G1은 history다. G2 VERIFICATION work, 새 PlaybookApplication, 전역 고유 질문, 독립 Pro/Con work, process pointer가 함께 current가 되고 G2 DynamicReproductionState는 `NOT_REQUESTED`, request/work/result refs null이다. 중복 요청은 G3를 만들지 않는다.
 - **9. 다음 단계 호출**: G2 전이가 COMMITTED되기 전 호출은 0건이다. 이후 새 Pro/Con·initial assessment를 먼저 수행하고, G2가 동적 재현을 요구할 때만 새 DQ2/KD2를 별도 전이로 만든다. old result로 final TRUE·CWE·Gate·Primitive·Reporter를 호출하지 않는다.

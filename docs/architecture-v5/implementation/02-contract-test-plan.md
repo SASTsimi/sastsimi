@@ -984,7 +984,7 @@ Q-01~Q-07의 구현 결정은 R3-06 기준선과 최신 공통 계약에서 해�
 - **4. 선행 상태·exact refs**: F-DYN(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: SandboxProfile 외부 경계 차단·환경 구성 실패·container 실패·timeout을 각각 주입하고 DISPROVED/FALSE/HOLD 또는 non-null poc_ref를 제출한다. 실행 전에 exact request 또는 SandboxProfile revision이 바뀌었는데 기존 ALLOW/SPD1이나 기존 work를 재사용하는 변형도 포함한다.
 - **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 SandboxProfile 외부 경계 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 Dynamic Reproduction Agent
-- **7. 허용·차단·격리 기대**: 실행 실패와 기술적 반증을 구분해 제출 거절하고 신뢰 관측 없는 verdict를 금지한다. exact request 또는 SandboxProfile revision 변경은 기존 action/decision을 만료시키며, 기존 immutable work를 RESUME하지 않고 새 Verification generation과 새 동적 work를 요구한다.
+- **7. 허용·차단·격리 기대**: 실행 실패와 기술적 반증을 구분해 제출 거절하고 신뢰 관측 없는 verdict를 금지한다. exact request 교체 또는 승인된 새 SandboxProfile 적용은 기존 action/decision을 만료시키며, 기존 immutable work를 RESUME하지 않고 새 Verification generation의 Pro·Con·초기 판단을 요구한다. 새 판단이 동적 재현을 선택할 때만 새 request와 동적 work를 등록한다.
 - **8. work·attempt·가설 기대**: 외부 대기 BLOCKED, session 재시작 가능 RETRY, 소진/복구불가 FAILED를 원인별 적용; hypothesis final result 없음.
 - **9. 오류·DataGap 기대**: 실제 SANDBOX/PROVIDER/POLICY 오류·DataGap. 상태 조합 세부 Q-02
 - **10. 저장·갱신 금지 pointer**: poc_ref=null, 최소 log·failure 원인·dynamic result/history 보존; validated/current final verdict 생성 금지.
@@ -1048,7 +1048,7 @@ Q-01~Q-07의 구현 결정은 R3-06 기준선과 최신 공통 계약에서 해�
 - **4. 선행 상태·exact refs**: F-DYN(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: A: session crash 후 외부 입력 없이 새 시도 가능하며 runtime이 환경을 STATE_UNCERTAIN으로 강제한다. B: 현재 work 입력을 바꾸지 않는 재인증·외부 환경 정비·resource 확보 대기 후 조건이 해결된다. C: exact request 또는 SandboxProfile revision을 바꾼 뒤 기존 work와 policy decision을 재사용한다. D: program policy 준비 상태만 달라진 LOCAL_ONLY work를 불필요하게 중단한다.
 - **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 SandboxProfile 외부 경계 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 Dynamic Reproduction Agent
-- **7. 허용·차단·격리 기대**: A는 RUNNING→READY→RUNNING, 새 attempt `trigger=RETRY`이며 clean container를 재생성한다. B는 input_refs/input_hash가 같을 때만 BLOCKED→READY→RUNNING과 `trigger=RESUME`를 허용한다. C는 기존 action을 만료시키고 새 Verification generation·새 동적 work로 분리한다. D는 program policy 상태를 Sandbox 허가 조건으로 쓰지 않고 기존 LOCAL_ONLY 실행을 계속한다. 모든 경로에 한도·cleanup 검사가 필요하다.
+- **7. 허용·차단·격리 기대**: A는 RUNNING→READY→RUNNING, 새 attempt `trigger=RETRY`이며 clean container를 재생성한다. B는 input_refs/input_hash가 같을 때만 BLOCKED→READY→RUNNING과 `trigger=RESUME`를 허용한다. C는 기존 action을 만료시키고 새 Verification generation의 Pro·Con·초기 판단으로 분리하며, 그 판단이 필요하다고 할 때만 새 request와 동적 work를 만든다. D는 program policy 상태를 Sandbox 허가 조건으로 쓰지 않고 기존 LOCAL_ONLY 실행을 계속한다. 모든 경로에 한도·cleanup 검사가 필요하다.
 - **8. work·attempt·가설 기대**: A/B는 같은 work_id에서 과거 attempt 종료/history와 새 active attempt 하나를 유지한다. C는 기존 work를 재개하지 않고 새 generation/work를 등록한다. final verdict는 없다.
 - **9. 오류·DataGap 기대**: 이전 오류 보존; 한도 소진 BUDGET_EXCEEDED 또는 해당 종료 오류
 - **10. 저장·갱신 금지 pointer**: 이전 log/결과 보존, 새 환경/provenance 연결. BLOCKED work.finished_at=null이지만 반환된 attempt 결과의 finished_at은 기록.
@@ -1125,9 +1125,9 @@ Q-01~Q-07의 구현 결정은 R3-06 기준선과 최신 공통 계약에서 해�
 - **1. ID·유형·설명**: R3-CT-DYN-013 / 정상·부정 / `DynamicReproductionRequest` 또는 Sandbox profile revision 변경 시 old work 재개를 막고 새 검증 세대를 원자 생성
 - **2. 단계·계약 경계**: 10–13; `RESTART_VERIFICATION_GENERATION`과 `HypothesisProcessState`·`DynamicReproductionState`
 - **3. producer → consumer**: 같은 가설의 ACTIVE Verification owner → Runtime Validator·GenerationTransitionService → 새 Verification/Pro/Con
-- **4. 선행 상태·exact refs**: 가설 H1의 G1이 VERIFYING이고 old VERIFICATION work·DYNAMIC_REPRO work/attempt, DQ1, SP1, current process/dynamic pointer가 모두 G1에 연결돼 있다. 변경 사유는 `DYNAMIC_REQUEST_REVISION_CHANGED | SANDBOX_PROFILE_REVISION_CHANGED` 중 하나다.
-- **5. 정상/잘못된 fixture**: 정상은 exact old/current refs와 expected state version·generation을 가진 단일 요청이다. 부정 변형은 Orchestration·Recovery requester, 근거 없는 사유, old ref 일부 누락, stale generation/version, 같은 요청 동시 2회, old dynamic work RESUME을 각각 시도한다.
-- **6. 검사 주체**: Runtime Validator의 requester·reason·CAS·exact closure 검사 + GenerationTransitionService의 단일 SQLite transaction·unique successor 검사
+- **4. 선행 상태·exact refs**: 가설 H1의 G1이 VERIFYING이고 old VERIFICATION work·DYNAMIC_REPRO work/attempt, DQ1, SP1, current process/dynamic pointer가 모두 G1에 연결돼 있다. `generation_restart_reason`은 `DYNAMIC_REQUEST_REPLACEMENT_REQUIRED | SANDBOX_PROFILE_REVISION_CHANGED` 중 하나이고 승인된 exact `generation_restart_basis_refs`가 있다. 첫 사유에서는 DQ2가 아직 없고, 둘째 사유에서는 승인된 SP2가 있으며 SP1과 exact revision이 다르다.
+- **5. 정상/잘못된 fixture**: 정상은 exact old/current refs, 변경 근거와 expected state version·generation을 가진 단일 요청이다. request 교체 fixture는 old DQ1과 변경 근거만 고정하고 존재하지 않는 DQ2를 요구하지 않는다. profile fixture는 old SP1과 새 SP2를 모두 고정하고 `sandbox_profile_ref=SP2`로 둔다. 부정 변형은 Orchestration·Recovery requester, 근거 없는 사유, request 교체 사유에 미리 만든 DQ2 연결, profile 사유인데 같은 SP1 재사용, old ref 일부 누락, stale generation/version, 같은 요청 동시 2회, old dynamic work RESUME을 각각 시도한다.
+- **6. 검사 주체**: Runtime Validator의 requester·닫힌 사유·변경 근거·CAS·exact closure 검사 + GenerationTransitionService의 단일 SQLite transaction·unique successor 검사
 - **7. 허용·차단·격리 기대**: 정상만 old active attempts/work를 `CANCELLED/INPUT_SUPERSEDED`로 닫고 G2 Verification work, PlaybookApplication, 새 질문 ID, 독립 Pro/Con work와 G2 process/dynamic state를 한 번 생성한다. old RESUME, Recovery의 의미 결정, 중복 successor는 차단한다.
 - **8. work·attempt·가설 기대**: H1은 계속 VERIFYING이고 G1은 history다. G2의 동적 상태는 `NOT_REQUESTED`이며 request/work/result refs는 null이다. 새 Pro/Con과 assessment 뒤 동적 재현이 필요할 때만 G2의 새 request/work를 만든다.
 - **9. 오류·DataGap 기대**: `AUTHORITY_DENIED | ACTION_NOT_ALLOWED | STATE_VERSION_CONFLICT | STALE_RESULT | RECORD_REVISION_MISMATCH` 중 실제 첫 실패 원인을 기록한다.
@@ -1637,9 +1637,9 @@ Q-01~Q-07의 구현 결정은 R3-06 기준선과 최신 공통 계약에서 해�
 - **1. ID·유형·설명**: R3-CT-BUD-006 / 정상·부정 / 실행 전 예약과 실제 사용 commit·미실행 release가 한 번만 반영되는지 확인
 - **2. 단계·계약 경계**: 1–22 외부 호출 전후; `BudgetProfileBinding`·`BudgetReservation`·`BudgetLedgerEntry`
 - **3. producer → consumer**: R8 trusted Budget Profile Registry → Budget Runtime·Runtime Validator → work/attempt·Result Aggregator
-- **4. 선행 상태·exact refs**: 같은 purpose의 ACTIVE execution/verification/dynamic profile exact revision을 묶은 ACTIVE binding과 초기 ledger를 고정한다.
+- **4. 선행 상태·exact refs**: 같은 purpose의 ACTIVE execution/work-kind/verification/dynamic profile exact revision을 묶은 ACTIVE binding과 초기 ledger를 고정한다. `WORKSPACE_PREP` 변형은 아직 binding이 없고 `AnalysisRunState.execution_budget_profile_ref`의 run-level ACTIVE execution profile만 고정한다.
 - **5. 정상/잘못된 fixture**: 정상 A는 reserve→실행→actual commit, 정상 B는 reserve→실행 전 거절→release다. 부정 변형은 같은 reservation 재전달, 두 worker 동시 reserve, commit/release 직전·직후 crash, 실제 side effect 여부 불명, profile/가격/잔여량 미확정, 실제 한도 소진을 각각 시험한다.
-- **6. 검사 주체**: BudgetService의 transaction·unique constraint·idempotency 검사 + Runtime Validator의 ACTIVE binding·remaining 검사
+- **6. 검사 주체**: BudgetService의 transaction·unique constraint·idempotency 검사 + Runtime Validator의 bootstrap execution profile 또는 full ACTIVE binding·exact WorkBudgetLimit·remaining 검사
 - **7. 허용·차단·격리 기대**: 한 reservation에는 ledger entry 최대 하나이고 COMMITTED/RELEASED는 되돌리지 않는다. 중복 전달은 기존 결과를 반환한다. 사용 여부를 증명할 수 없는 crash와 profile·가격·잔여량 불명은 `BLOCKED + waiting_for=BUDGET`, 실제 승인 한도 소진만 `BUDGET_EXCEEDED`다.
 - **8. work·attempt·가설 기대**: reservation 성공 뒤에만 action을 claim한다. 차단·중복·crash 복구로 새 무기록 attempt나 두 번째 비용 차감을 만들지 않으며 가설 verdict는 바꾸지 않는다.
 - **9. 오류·DataGap 기대**: 실제 원인에 따라 `BUDGET_EXCEEDED`, budget evidence unavailable 또는 storage/conflict 오류를 보존한다. token usage 미제공만으로는 차단하지 않는다.
@@ -1647,6 +1647,22 @@ Q-01~Q-07의 구현 결정은 R3-06 기준선과 최신 공통 계약에서 해�
 - **11. FALSE 변환 금지**: 예산 차단·소진·복구 불확실성은 취약점 반증이 아니다.
 - **12. 실행 계층**: unit / contract / integration / concurrency / crash-recovery
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R8·R4와 각 호출 owner. R8은 profile·가격·집계 의미를 승인한다.
+
+#### R3-CT-BUD-007 — 예산 bootstrap과 역할·작업별 한도 선택
+
+- **1. ID·유형·설명**: R3-CT-BUD-007 / 정상·부정 / workspace 전후에 올바른 예산 설정을 사용하고 07 역할표의 한도를 exact WorkBudgetProfile에서 선택하는지 확인
+- **2. 단계·계약 경계**: 분석 시작·WORKSPACE_PREP·run-init 이후 모든 work; `AnalysisRunState`·`ExecutionBudgetProfile`·`WorkBudgetProfile`·`BudgetProfileBinding`
+- **3. producer → consumer**: R8 trusted Budget Profile Registry → Analysis Runtime·BudgetService·Runtime Validator
+- **4. 선행 상태·exact refs**: 같은 purpose의 승인된 run-level execution profile E1과, workspace READY 뒤 E1·Work WBP1·Verification V1·dynamic D1을 묶은 full binding B1을 준비한다. WBP1에는 trusted operation/role마다 중복 없는 limit이 있다.
+- **5. 정상/잘못된 fixture**: 정상 A는 E1을 run state에 고정한 뒤 WORKSPACE_PREP만 시작하고 bootstrap reservation·ledger의 `budget_binding_ref`를 E1에 연결한다. 정상 B는 workspace READY 뒤 B1을 고정한 뒤 POLICY_COLLECT와 POLICY_PARSE가 서로 다른 exact limit을 선택하고 이후 reservation·ledger ref를 B1에 연결한다. 부정 변형은 E1 없이 WORKSPACE_PREP, workspace 전 RecordMeta binding 요구, workspace READY 뒤 binding 없이 STATIC_TOOL, DRAFT profile, 누락·중복 limit, Agent가 work_type·operation_kind·role을 바꾼 요청이다.
+- **6. 검사 주체**: Budget Profile Registry의 approval·purpose·revision·uniqueness 검사 + BudgetService의 trusted operation mapping·strictest-limit 검사 + Runtime Validator
+- **7. 허용·차단·격리 기대**: WORKSPACE_PREP은 E1만으로 허용하되 full binding이 필요한 다른 work는 허용하지 않는다. workspace READY 뒤에는 B1과 정확히 하나의 work-kind limit이 있어야 한다. DRAFT·누락·중복·조작은 `BLOCKED + waiting_for=BUDGET` 또는 schema/config 오류로 실행 전에 차단한다.
+- **8. work·attempt·가설 기대**: bootstrap 순환 없이 workspace work 하나만 시작한다. full binding 전 static/policy work는 0건이며, 승인 뒤 각 work가 자기 operation/role limit을 사용한다.
+- **9. 오류·DataGap 기대**: 실제 전체 또는 작업별 한도 소진만 `BUDGET_EXCEEDED`; profile·mapping·limit 불명은 budget waiting/config 오류다.
+- **10. 저장·갱신 금지 pointer**: 07 표 숫자를 코드 상수로 사용하거나 Agent 입력의 role 문자열로 limit을 고르지 않는다. DRAFT를 ACTIVE처럼 쓰지 않고 다른 purpose/profile revision을 섞지 않는다.
+- **11. FALSE 변환 금지**: bootstrap·설정·작업별 예산 오류는 취약점 반증이 아니다.
+- **12. 실행 계층**: unit / contract / integration / concurrency / security-negative
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R8·R4. R8은 operation/role mapping과 수치 revision을 승인한다.
 
 ### EVAL. R8 평가 실행·운영 승격
 

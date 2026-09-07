@@ -203,14 +203,14 @@ Policy Collect는 최초 1회 뒤 최대 2회의 추가 재시도, Policy Parse�
 상자 **시간**이 부족한 이유는 셋이다. 1번 R8 잔여 예산과 2번 R7 입장 상한은 서로 다른 장부·실패 코드이며, 3번은 승인 뒤 실행 timeout이다.
 
 1. **호출 전** 이 분석·Sandbox work의 runtime 예산이 이미 없음 → Runtime Validator `BUDGET_EXCEEDED`. 동적 결과 `PARTIAL` 금지.
-2. **요청한** 상자 시간이 R7 `sandbox_profile_ref`의 입장 상한(아래 표)보다 김 → Sandbox Controller `SANDBOX_POLICY_DENIED`. 이 exact 입력으로는 해소할 수 없는 경계 위반이므로 Dynamic Reproduction Agent를 시작하지 않고 `agent_invoked=false`, `FAILED + POLICY_BLOCKED + INCONCLUSIVE`로 끝낸다. 요청 시간이나 profile reference를 바꾸려면 기존 work를 재개하지 않고 새 Verification generation의 새 동적 work로 처리한다.
+2. **요청한** 상자 시간이 R7 `sandbox_profile_ref`의 입장 상한(아래 표)보다 김 → Sandbox Controller `SANDBOX_POLICY_DENIED`. 이 exact 입력으로는 해소할 수 없는 경계 위반이므로 Dynamic Reproduction Agent를 시작하지 않고 `agent_invoked=false`, `FAILED + POLICY_BLOCKED + INCONCLUSIVE`로 끝낸다. 요청 조건을 교체하거나 승인된 새 profile reference를 적용하려면 기존 work를 재개하지 않고 새 Verification generation에서 Pro·Con과 초기 판단을 다시 수행한 뒤, 여전히 필요할 때만 새 request와 동적 work를 만든다.
 3. **승인된** 시간 안에서 Agent가 실행 중 시계가 끝남 → `FAILED + TIMEOUT` + `INCONCLUSIVE`. `agent_invoked=true`. `agent_log_ref`와 당시 관측을 남긴다.
 
 R7 `sandbox_profile_ref`가 승인한 실행 시간에 환경 구성·Health Check·실행·관측·cleanup을 포함해도, **실행 timeout이 났다고 cleanup을 생략하지 않는다.** 실행이 끝난 뒤 별도 제한된 cleanup/recovery를 하고, 자원이 생겼으면 `cleanup_status=SUCCEEDED | FAILED`다. 자원을 만들지 못한 Sandbox profile 외부 격리 경계 차단만 `NOT_REQUIRED`가 될 수 있다.
 
 Sandbox **동적 결과**의 `PARTIAL`은 공격 경로를 일부 실행해 신뢰할 관측이 있을 때만 쓴다. 환경 구성 중이거나 실행 시작 전에 예산 또는 Sandbox profile 외부 격리 경계에 막히면 `PARTIAL`이 아니다.
 
-아래 숫자는 **제안(교차 전)** 초안이다. 측정값이 아니다. 담당 확인 전에 확정이 아니다. 시간은 벽시계 1회다. `—`는 이 열에 해당 없음이다. token 열은 없다.
+아래 숫자는 **제안(교차 전)** 초안이다. 측정값이 아니며 이 표 자체가 실행 설정도 아니다. R8과 사람이 승인한 exact `WorkBudgetProfile` revision에 옮겨져 `BudgetProfileBinding.work_budget_profile_ref`로 고정된 값만 실행에 사용한다. `DRAFT` 값은 실행할 수 없다. 시간은 벽시계 1회다. `—`는 이 열에 해당 없음이다. token 열은 없다.
 
 Orchestration Runtime은 가설 등록·Verification 배정까지만 한다. 찬반·Docker **호출 전 잔여 예산**과 새 attempt 수는 R8 `DynamicReproductionLifecycleProfile`, 상자 외부 접근·격리와 CPU·RAM·디스크·PID·요청 가능 최대 시간은 R7 `sandbox_profile_ref`를 따른다.
 
@@ -220,7 +220,7 @@ Orchestration Runtime은 가설 등록·Verification 배정까지만 한다. 찬
 
 token 상한은 없다. 분석 전체·모든 Agent·호출마다 동일하다. 아래는 시간·횟수·조회 초안이다. **분석 1회 벽시계는 120분이다.** 비용과 전체 work 수 한도는 versioned R8 정책에서 관리하며 현재 미확정이다. 그 두 숫자는 지어 넣지 않는다.
 
-예산 사용 순서는 `ACTIVE binding 확인 → reservation → 실행 → 실제 사용 commit 또는 실행 전 release`다. reservation·ledger는 같은 reservation을 두 번 차감하지 않는 unique constraint를 사용한다. 취소·동시 실행·crash 뒤 사용 여부 불명 상태를 임의로 release하거나 0원 처리하지 않는다. LLM usage는 `UsageMeasurement`, 최종 집계는 `ResourceUsageSummary`로 기록하며 실제값 출처, 미제공 사유, 비용·통화와 가격 기준 revision을 함께 남긴다. token usage 미제공만으로는 작업을 막지 않는다.
+예산 사용 순서는 `WORKSPACE_PREP이면 run-level ExecutionBudgetProfile, 그 뒤에는 ACTIVE full binding과 exact WorkBudgetLimit 확인 → reservation → 실행 → 실제 사용 commit 또는 실행 전 release`다. 07번의 각 역할 행은 `WorkBudgetProfile.limits`의 `work_type + operation_kind`와 선택적 `agent_role`로 연결한다. BudgetService는 trusted work/action에서 이 세 값을 정하고, 작업별 한도와 분석 전체·Verification·dynamic lifecycle 한도를 함께 검사해 먼저 소진되는 제한을 적용한다. 해당 행을 정확히 하나로 고를 수 없거나 profile이 `DRAFT | RETIRED`이면 실행하지 않는다. reservation·ledger는 같은 reservation을 두 번 차감하지 않는 unique constraint를 사용한다. 취소·동시 실행·crash 뒤 사용 여부 불명 상태를 임의로 release하거나 0원 처리하지 않는다. LLM usage는 `UsageMeasurement`, 최종 집계는 `ResourceUsageSummary`로 기록하며 실제값 출처, 미제공 사유, 비용·통화와 가격 기준 revision을 함께 남긴다. token usage 미제공만으로는 작업을 막지 않는다.
 
 | 역할 | 시간 | 재시도 (같은 요청) | 기타 | 초과 시 | 같이 정할 사람 |
 |---|---|---|---|---|---|
@@ -243,7 +243,7 @@ R7 `sandbox_profile_ref(data_kind=sandbox_profile)`가 network·격리와 CPU·R
 
 | 항목 | 상한 (초안) | 위반 시 |
 |---|---|---|
-| 시간 | R7 `sandbox_profile_ref`가 정한 요청 가능 최대. mode 구분 없음 | `SANDBOX_POLICY_DENIED`, Dynamic Reproduction Agent 미시작, `agent_invoked=false`. 같은 exact 입력으로 해소 가능한 외부 조건을 기다릴 때만 `BLOCKED`, 상한 초과처럼 request/profile 변경이 필요한 위반은 `FAILED` 뒤 새 Verification generation·동적 work로 처리. 최종 판정 없음. FALSE 아님 |
+| 시간 | R7 `sandbox_profile_ref`가 정한 요청 가능 최대. mode 구분 없음 | `SANDBOX_POLICY_DENIED`, Dynamic Reproduction Agent 미시작, `agent_invoked=false`. 같은 exact 입력으로 해소 가능한 외부 조건을 기다릴 때만 `BLOCKED`, 상한 초과처럼 request/profile 변경이 필요한 위반은 `FAILED` 뒤 새 Verification generation에서 Pro·Con·초기 판단부터 다시 수행하고 필요할 때만 새 동적 work를 등록. 최종 판정 없음. FALSE 아님 |
 | 네트워크·외부 접근 | `sandbox_profile_ref`의 default-deny와 승인된 egress·mount·namespace·secret 경계 | 위와 같음 |
 | CPU | R7 `sandbox_profile_ref`가 정한 값 | 위와 같음 |
 | RAM | R7 `sandbox_profile_ref`가 정한 값 | 위와 같음 |

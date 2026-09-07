@@ -252,7 +252,7 @@ PromptContextBinding:
 
 task 행에서 cardinality를 별도로 쓰지 않은 slot은 `REQUIRED_ONE`이다. `PromptInputSlot.cardinality`의 개수 의미는 고정한다. `REQUIRED_ONE`은 정확히 1개, `OPTIONAL_ONE`은 0개 또는 1개, `REQUIRED_MANY`는 1개 이상, `OPTIONAL_MANY`는 0개 이상이다. 목록이 비어도 정상인 입력에 `REQUIRED_MANY`를 사용해 가짜 record를 채워 넣어서는 안 된다.
 
-Pro와 Con의 공통 slot은 이름만 같은 것이 아니라 `source_ref + projected_data_ref + field_paths`의 중복 없는 집합이 exact하게 같아야 한다. `debate_config`는 R6가 승인한 versioned Debate 규칙 record, `verification_budget_profile`은 08번의 `VerificationBudgetProfile`을 data kind `verification_budget_profile`로 저장한 R8 승인 record다. exact ACTIVE `BudgetProfileBinding`이 이 profile을 가리키기 전에는 Pro/Con registry entry도 운영 `ACTIVE`가 될 수 없다. 역할별 `ExecutionLimits`는 개별 LLM 호출 한도이고 이 공통 budget profile을 대신하지 않는다. trusted runtime은 위 공통 slot 전체의 canonical reference 집합으로 `debate_input_hash`를 계산하며 상대 역할의 결과·호출·session은 포함하지 않는다.
+Pro와 Con의 공통 slot은 이름만 같은 것이 아니라 `source_ref + projected_data_ref + field_paths`의 중복 없는 집합이 exact하게 같아야 한다. `debate_config`는 R6가 승인한 versioned Debate 규칙 record, `verification_budget_profile`은 08번의 `VerificationBudgetProfile`을 data kind `verification_budget_profile`로 저장한 R8 승인 record다. exact ACTIVE `BudgetProfileBinding`이 이 profile과 `WorkBudgetProfile`을 함께 가리키고, trusted runtime이 Pro·Con의 `work_type + operation_kind + agent_role`에 맞는 exact `WorkBudgetLimit`을 고르기 전에는 Pro/Con registry entry도 운영 `ACTIVE`가 될 수 없다. 역할별 `ExecutionLimits`는 개별 LLM 호출 한도이고 이 공통 budget profile이나 작업별 한도를 대신하지 않는다. trusted runtime은 위 공통 slot 전체의 canonical reference 집합으로 `debate_input_hash`를 계산하며 상대 역할의 결과·호출·session은 포함하지 않는다.
 
 ### 4.1 Hypothesis Agent — R1
 
