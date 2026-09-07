@@ -1,5 +1,9 @@
 # R6–R7 PoC 필수화와 생산 권한 변경 설계
 
+> 상태: **SUPERSEDED**
+>
+> 이 문서는 모든 TRUE에 validated PoC를 요구하게 된 변경 이력을 보존하지만 현재 구현 계약은 아닙니다. 이후 R7 자율 재현 구조에서 `LIMITED_REPRO | FULL_REPRO`, exact step/command 중심 plan과 `SandboxStepLog`가 제거되고 결과 확정 주체가 Reproduction Session Manager로 바뀌었습니다. 현재 정본은 [검증과 동적 재현](../../architecture-v5/04-verification-and-dynamic-reproduction.md), [경량 데이터 계약](../../architecture-v5/08-lightweight-data-contracts.md), [ADR-007](../../review/decisions/ADR-007-r7-autonomous-reproduction-session.md)을 따릅니다.
+
 ## 상태
 
 - 승인일: 2026-09-03

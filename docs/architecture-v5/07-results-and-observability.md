@@ -499,7 +499,7 @@ Context 조회 실패·timeout·권한 오류는 다음 기준으로 처리한�
 | `SANDBOX_ERROR` | R7 Setup Automation·Session Manager | validated PoC와 final verdict 없음 | 자율 retry와 외부 `BLOCKED`를 구분하고 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE` |
 | `ENVIRONMENT_MISMATCH` | R7 Setup Automation | 필수 조건이 다르거나 확인되지 않음 | Dynamic Reproduction Agent가 recipe를 자율 보완하고 exact 차이·plan issue·AgentLog를 보존 |
 | `CHAINING_ERROR` | Chaining runtime | matching 실패, 부모 verdict 유지 | 제한 retry 또는 no-match/실패 기록 |
-| `TECHNICAL_GATE_ERROR` | Technical Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
+| `TECHNICAL_GATE_ERROR` | Technical Evidence Gate Agent 호출 경계 | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
 | `POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 수집 결과 `COLLECTION_FAILED`; 성공한 Rule Scope review 없음 | 공식 출처 재확인 뒤 같은 정책 work 재시도 또는 실패 종료 |
 | `POLICY_PARSE_ERROR` | 정책 수집 계층 | parser 실행 실패와 `COLLECTION_FAILED`; 성공한 Rule Scope review 없음 | 원문·parser 버전 확인 뒤 새 parser attempt |
 | `RULE_SCOPE_GATE_ERROR` | 정책·영향 Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |

@@ -325,7 +325,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ---
 
-## R5 — 이중 Gate·FindingCandidate·ReportDraft
+## R5 — 이중 Gate·Finding·ReportDraft
 
 - 실제 Issue: [#6](https://github.com/SASTsimi/sastsimi/issues/6)
 

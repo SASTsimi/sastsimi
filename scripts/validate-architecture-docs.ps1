@@ -107,6 +107,88 @@ foreach ($file in $currentOperationalMarkdownFiles) {
     }
 }
 
+# Keep display names, LLM/non-LLM identity, and machine-facing role values in
+# one glossary table. Short names are allowed only as the documented aliases;
+# the ambiguous formal spellings below must not reappear in current documents.
+$glossaryPath = Join-Path $repoRoot 'docs/GLOSSARY.md'
+$glossaryText = Get-Content -Raw -Encoding UTF8 -LiteralPath $glossaryPath
+$requiredComponentNameMarkers = @(
+    '## 구성요소 공식 이름',
+    '| `Pro Agent` | LLM | `PRO` | `Pro` |',
+    '| `Con Agent` | LLM | `CON` | `Con` |',
+    '| `CWE Labeling Agent` | LLM | `CWE_LABELING` | `CWE Labeling` |',
+    '| `Technical Evidence Gate Agent` | LLM | `TECHNICAL_GATE` | `Technical Gate` |',
+    '| `Rule Scope Impact Gate Agent` | LLM | `RULE_SCOPE_GATE` | `Rule Scope Gate` |',
+    '| `R7 Setup Automation` | 비-LLM | `R7_SETUP_AUTOMATION` | `Setup Automation` |',
+    '| `Reproduction Session Manager` | 비-LLM | `REPRODUCTION_SESSION_MANAGER` | `Session Manager` |',
+    '`Primitive DB`는 특정 DB 제품이나 별도 데이터베이스 모듈의 이름이 아니라',
+    '| `SUPERSEDED` | 변경 이력을 보존한 과거 문서이며 현재 구현 계약으로 사용하지 않습니다. 문서 상단의 현재 정본 링크를 따릅니다. |'
+)
+foreach ($marker in $requiredComponentNameMarkers) {
+    if (-not $glossaryText.Contains($marker)) {
+        Add-Failure "missing canonical component-name glossary marker: $marker"
+    }
+}
+
+$ambiguousCurrentComponentNames = @(
+    'Pro/Con Agents',
+    'Pro·Con Agent',
+    'R5-01 CWE Labeling',
+    'Technical Gate Agent Runtime',
+    'Technical Gate runtime',
+    'Rule Scope Gate Agent',
+    'Rule Scope Gate runtime',
+    'Rule Scope Agent',
+    'R7 Sandbox Setup Automation'
+)
+foreach ($file in $currentOperationalMarkdownFiles) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    foreach ($name in $ambiguousCurrentComponentNames) {
+        if ($text.Contains($name)) {
+            Add-Failure "ambiguous current component name '$name': $($file.FullName)"
+        }
+    }
+    if ($text.Contains('FindingCandidate')) {
+        Add-Failure "FindingCandidate must not look like a separate contract object: $($file.FullName)"
+    }
+    foreach ($snapshotPhrase in @('공통 입력 snapshot', 'CAS snapshot')) {
+        if ($text.Contains($snapshotPhrase)) {
+            Add-Failure "removed Snapshot module terminology remains in current document '$snapshotPhrase': $($file.FullName)"
+        }
+    }
+}
+
+foreach ($file in $markdownFiles) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    if ($text.Contains('opengrep')) {
+        Add-Failure "non-canonical OpenGrep product spelling: $($file.FullName)"
+    }
+}
+
+$supersededSpecRequirements = @(
+    @{
+        Path = 'docs/superpowers/specs/2026-08-28-r4-03-authority-boundary-design.md'
+        Markers = @('> 상태: **SUPERSEDED**', '../../architecture-v5/03-agent-roles-and-orchestration.md', '../../architecture-v5/04-verification-and-dynamic-reproduction.md', '../../architecture-v5/08-lightweight-data-contracts.md', '../../architecture-v5/10-security-boundaries.md')
+    },
+    @{
+        Path = 'docs/superpowers/specs/2026-08-31-role-boundary-alignment-design.md'
+        Markers = @('> 상태: **SUPERSEDED**', '../../architecture-v5/03-agent-roles-and-orchestration.md', '../../architecture-v5/04-verification-and-dynamic-reproduction.md', '../../architecture-v5/08-lightweight-data-contracts.md')
+    },
+    @{
+        Path = 'docs/superpowers/specs/2026-09-03-r6-r7-poc-required-design.md'
+        Markers = @('> 상태: **SUPERSEDED**', '../../architecture-v5/04-verification-and-dynamic-reproduction.md', '../../architecture-v5/08-lightweight-data-contracts.md', '../../review/decisions/ADR-007-r7-autonomous-reproduction-session.md')
+    }
+)
+foreach ($requirement in $supersededSpecRequirements) {
+    $path = Join-Path $repoRoot $requirement.Path
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    foreach ($marker in $requirement.Markers) {
+        if (-not $text.Contains($marker)) {
+            Add-Failure "superseded historical spec is missing marker '$marker': $($requirement.Path)"
+        }
+    }
+}
+
 $agentRolesPath = Join-Path $repoRoot 'docs/architecture-v5/03-agent-roles-and-orchestration.md'
 $agentRolesText = Get-Content -Raw -Encoding UTF8 -LiteralPath $agentRolesPath
 $requiredOrchestrationBoundaryMarkers = @(

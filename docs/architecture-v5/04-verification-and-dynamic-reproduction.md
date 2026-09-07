@@ -137,9 +137,9 @@ mode와 실행·생략 기록은 다음 조합만 허용한다.
 
 운영 분석에서는 named falsification으로 빠르게 반증될 가능성이 있거나 duplicate/unsupported 후보여도 Pro/Con을 생략하지 않는다. 예산이 부족하면 `BUDGET_EXCEEDED`로 현재 Verification work를 중단하며 Pro/Con을 생략한 final verdict를 만들지 않는다. 새 예산이 승인된 새 work에서만 이어서 검증한다.
 
-### 공통 입력 snapshot과 독립 호출
+### 공통 입력 기준 묶음과 독립 호출
 
-Verification은 호출 전에 current ACTIVE `VerificationAssignment`, exact `VulnerabilityHypothesis`와 proposal, `workspace_id`, `commit_id`, 코드 경로·Context·정적 근거·인증 및 방어 로직 reference, 반증 질문, 검증 항목, 사람이 승인한 exact `PlaybookPolicy`, 선택한 `VerificationPlaybook`과 work별 `PlaybookApplication`, versioned Debate·budget 설정을 하나의 공통 입력 snapshot으로 고정한다. canonical JSON으로 만든 이 공통 입력의 SHA-256을 `debate_input_hash`로 사용한다. 역할별 system instruction·prompt template·worker와 session/call ID는 hash에서 제외한다. Pro와 Con의 `LLMCallSpec.context_refs`는 이 공통 reference 집합과 exact match해야 하며, 역할별 prompt payload와 output schema가 달라도 입력 가설·코드·policy·playbook·application revision과 질문 ID 집합, `debate_input_hash`는 같아야 한다.
+Verification은 호출 전에 current ACTIVE `VerificationAssignment`, exact `VulnerabilityHypothesis`와 proposal, `workspace_id`, `commit_id`, 코드 경로·Context·정적 근거·인증 및 방어 로직 reference, 반증 질문, 검증 항목, 사람이 승인한 exact `PlaybookPolicy`, 선택한 `VerificationPlaybook`과 work별 `PlaybookApplication`, versioned Debate·budget 설정을 하나의 공통 입력 기준 묶음으로 고정한다. canonical JSON으로 만든 이 공통 입력의 SHA-256을 `debate_input_hash`로 사용한다. 이는 별도 Snapshot 모듈이나 코드 복사본이 아니라 두 Agent가 같은 입력을 받았는지 확인하는 불변 reference 집합이다. 역할별 system instruction·prompt template·worker와 session/call ID는 hash에서 제외한다. Pro와 Con의 `LLMCallSpec.context_refs`는 이 공통 reference 집합과 exact match해야 하며, 역할별 prompt payload와 output schema가 달라도 입력 가설·코드·policy·playbook·application revision과 질문 ID 집합, `debate_input_hash`는 같아야 한다.
 
 Pro와 Con은 context contamination을 막기 위해 항상 서로 다른 `NEW` session에서 시작한다. 각 호출은 `requested_by=PRO | CON`, 같은 역할의 `LLMCallSpec.agent_role`, `session_mode=NEW`, `session_policy=NEW`, `parent_session_ref=null`과 서로 다른 `work_id`·`attempt_id`·`llm_call_id`·spec·action·decision·실제 session을 사용한다. provider가 session ID를 주지 않으면 adapter가 호출마다 서로 다른 local `session_ref`를 발급한다.
 
@@ -152,12 +152,12 @@ trusted prompt builder는 고정된 공통 입력 reference와 역할별 instruc
 | 순서 | 처리 | 다음 단계 조건 |
 |---|---|---|
 | 1. preflight | purpose·mode, assignment owner, exact 공통 입력, provider/session 정책과 R8 budget profile을 검사한다. | 운영에서는 두 최초 호출을 모두 시작할 예산과 권한이 있어야 한다. 하나라도 준비되지 않으면 어느 호출도 시작하지 않는다. |
-| 2. dispatch | Pro와 Con의 work·call spec·action을 각각 만들고 두 호출을 병렬 실행한다. | 두 호출은 같은 공통 입력 snapshot과 서로 다른 identity·NEW session을 사용한다. |
+| 2. dispatch | Pro와 Con의 work·call spec·action을 각각 만들고 두 호출을 병렬 실행한다. | 두 호출은 같은 공통 입력 기준 묶음과 서로 다른 identity·NEW session을 사용한다. |
 | 3. collect | Pro와 Con이 각각 exact `EvidenceAgentResult(role=PRO | CON)`를 별도 record로 저장하고, child work output·성공 attempt·`llm_call_id`·`LLMInvocationResult`·`LLMInvocationLog.parsed_output_ref`를 같은 result revision에 연결한다. | 한쪽 결과를 다른 쪽 입력으로 전달하지 않으며 각 결과가 schema-valid·`COMMITTED`여야 한다. |
 | 4. join | 두 child work가 모두 `SUCCEEDED`이고, 두 결과가 같은 analysis·가설·부모 Verification work·generation·`debate_input_hash`를 가리키는지 확인한다. | 조건을 모두 만족한 exact Pro 결과 하나와 Con 결과 하나만 Verification 합성 입력으로 사용한다. |
 | 5. synthesize | Verification만 두 결과와 직접 확인한 근거를 읽고 `VerificationResult.pro_evidence_ref`, `con_evidence_ref`, `debate_input_hash`에 exact 연결을 남긴다. | final 합성용 `LLMCallSpec.context_refs`와 `SAVE_RESULT.input_refs`에도 두 result reference를 각각 한 번 넣으며, 단독 결과로 운영 final verdict를 만들지 않는다. |
 
-한쪽이 `FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED`이면 성공한 반대쪽 결과만으로 합성하지 않는다. 재시도할 수 있으면 실패한 Pro/Con child work와 부모 Verification work를 실제 대기 이유를 가진 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지한다. 허용된 repair·retry·provider failover는 실패한 역할에서만 수행할 수 있고, 같은 공통 입력 snapshot을 유지하는 동안에는 먼저 성공한 반대쪽의 COMMITTED 결과를 보존할 수 있다. retry와 failover도 새 `attempt_id`·`llm_call_id`·spec·action·decision·`NEW` session을 만들고 같은 역할의 바로 앞 허용 실패만 predecessor로 연결한다. 실패한 역할의 retry가 성공하고 두 current child 결과가 join 조건을 모두 만족할 때만 부모 Verification을 다시 진행한다.
+한쪽이 `FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED`이면 성공한 반대쪽 결과만으로 합성하지 않는다. 재시도할 수 있으면 실패한 Pro/Con child work와 부모 Verification work를 실제 대기 이유를 가진 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지한다. 허용된 repair·retry·provider failover는 실패한 역할에서만 수행할 수 있고, 같은 공통 입력 기준 묶음을 유지하는 동안에는 먼저 성공한 반대쪽의 COMMITTED 결과를 보존할 수 있다. retry와 failover도 새 `attempt_id`·`llm_call_id`·spec·action·decision·`NEW` session을 만들고 같은 역할의 바로 앞 허용 실패만 predecessor로 연결한다. 실패한 역할의 retry가 성공하고 두 current child 결과가 join 조건을 모두 만족할 때만 부모 Verification을 다시 진행한다.
 
 공통 입력의 가설·Context·코드·policy·playbook·application revision, application 질문 ID 집합 또는 Verification generation이 바뀌면 이전 Pro/Con output을 새 snapshot과 섞지 않는다. 기존 결과는 stale로 보존하고 새 Verification work에서 두 역할을 다시 호출한다. 부모가 취소·교체·종료된 뒤 늦게 도착한 child 결과도 `STALE_RESULT`로 격리한다.
 

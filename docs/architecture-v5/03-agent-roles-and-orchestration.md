@@ -126,13 +126,13 @@ Orchestration Runtime은 상태 변경을 단독 확정하지 않는다. 작업 
 | Playbook Registry Runtime | R6가 작성한 플레이북과 사람이 승인한 적용 정책을 versioned record로 등록하고 Verification work별 `PlaybookApplication` 생성 | 없음 | exact proposal의 유형 후보·policy·playbook revision | schema·선택·질문 ID·current pointer 검사 | 운영 지원 유형과 적용 mapping 승인 |
 | Policy Collector | 비-LLM. run 시작 때 program별 공식 정책 원문 수집·source authenticity 확인, run-neutral `PolicyCacheRecord` 조회, run-local `PolicyCollectionResult`·(`FOUND`이면) `ProgramPolicyRecord`·`RunPolicyState` 확정 | `PolicyCollectionResult`, `ProgramPolicyRecord`, `RunPolicyState`, 성공 준비면 `PolicyCacheRecord` | 공식 source·source hash·parser provenance | 없음 | 없음 |
 | Policy Parser | LLM. Policy Collector가 저장한 exact 원문을 구조화 | `PolicyParserResult` | 수집된 공식 원문만 | 없음 | 없음 |
-| Pro·Con Agent | 찬성·반대 근거 | 없음 | 자기 역할의 근거 | 없음 | 없음 |
+| Pro Agent와 Con Agent | 찬성·반대 근거 | 없음 | 각자 자기 역할의 근거 | 없음 | 없음 |
 | Verification Agent | Context·Pro/Con, 목적·목표·필요 환경을 담은 `DynamicReproductionRequest`, 두 Gate·Reporter·Chaining 요청, material child proposal | `TRUE | FALSE | HOLD` | static·Pro·Con·COMMITTED dynamic 근거와 Gate 보완 요청 | 없음 | 없음 |
 | Dynamic Reproduction Agent | `EnvironmentRequirements`·간단한 `ReproductionPlan`·PoC candidate·동적 근거 해석 | 없음 | R6 요청과 Sandbox 안의 실제 관측 | 없음 | 없음 |
 | R7 Setup Automation | image build, container 생성·재사용·재생성, 환경 비교와 cleanup 실행 | 없음 | recipe, 실제 환경과 Health Check | host·Docker 권한은 없음 | 없음 |
 | Sandbox Controller | 없음 | 없음 | 요청 당시 `RunPolicyState` 감사 reference, `LOCAL_ONLY`, R7 `sandbox_profile_ref`의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 강제 | 출처 불명/live asset·외부 계정·허용되지 않은 egress를 사용하는 Sandbox 시작 차단 | 정책 의미·freshness·scope·보고 가능성, R7 profile 값·R8 잔여 예산·새 attempt 결정 없음 |
 | Reproduction Session Manager | 없음 | 없음 | runtime/tool/lifecycle event와 같은 attempt의 plan·recipe·환경·PoC provenance | append-only `AgentLog`, validated PoC와 `DynamicReproductionResult` 확정 | 없음 |
-| R5-01 CWE Labeling | CWE 후보와 근거 | current `CWELabel` revision 생성 | exact final TRUE Verification | 없음 | 없음 |
+| CWE Labeling Agent (R5-01 담당) | CWE 후보와 근거 | current `CWELabel` revision 생성 | exact final TRUE Verification | 없음 | 없음 |
 | Chaining Agent | upstream Primitive `result`→downstream Primitive `input` match와 chained proposal | 없음 | exact Primitive, Verification·Technical provenance와 코드 근거 | 없음 | 없음 |
 | Technical Evidence Gate Agent | 구체적인 보완 요청 | 없음 | verdict·근거·코드 흐름·CWE | 없음 | 없음 |
 | Rule Scope Impact Gate Agent | 정책 누락·보완 사유 | `PASS | FAIL | UNCERTAIN`, `ALLOW | DENY` | run 초기화에서 준비된 current `ProgramPolicyRecord` + 그 공식 원문 + 현재 hypothesis/verification 사실 (hypothesis마다 별도 evaluation) | 없음 | 없음 |
