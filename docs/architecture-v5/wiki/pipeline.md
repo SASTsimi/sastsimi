@@ -13,7 +13,7 @@
 3. AST·SAST와 실행 단위 정책 준비를 독립 병렬 실행. 정적 도구는 `RuleExecutionRecord`를 만들고, Policy Parser는 `PolicyParserResult`를 만들고 Policy Collector가 이를 검증·취합해 current `RunPolicyState`를 확정
 4. exact 규칙 실행 기록이 연결된 `StaticFactBundle` 생성
 5. Orchestration Agent가 초기 가설 생성 시작
-6. 저비용 Hypothesis Agent 호출
+6. Hypothesis Agent 호출
 7. schema-valid INITIAL proposal 검증·전역 등록
 8. 가설별 ACTIVE VerificationAssignment 저장과 owner 할당
 9. Verification의 코드 위치 기반 on-demand retrieval

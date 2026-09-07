@@ -36,9 +36,9 @@ Orchestration Agent의 주요 책임은 다음과 같다.
 
 Orchestration Agent는 한 가설 안에서 Pro/Con·동적 재현·두 Gate·Reporter·Chaining의 호출 여부나 Technical `REVISE` 목적지를 결정하지 않는다. 논리 작업의 상태, `work_id`·`dedupe_key`, 활성 attempt, compare-and-set, atomic output binding과 실제 action 허가는 신뢰 경계 안의 비-LLM runtime이 관리한다.
 
-## 저비용 Hypothesis Agent
+## Hypothesis Agent
 
-Hypothesis Agent에는 비용 효율적인 모델을 배치할 수 있지만, 모델 가격과 무관하게 출력 권한은 제한한다. 입력은 `StaticFactBundle`의 요약·reference와 필요한 최소 fragment다. 정책 record는 입력에 섞지 않으며 scope를 이유로 기술 가설을 사전 삭제하지 않는다. 출력은 자유 형식 분석문이 아니라 `HypothesisProposal[]`이다.
+`Hypothesis Agent`는 모델의 가격·성능 등급과 분리된 공식 역할명이다. 어떤 `ModelProfile`을 사용해도 출력 권한은 동일하게 제한한다. 입력은 `StaticFactBundle`의 요약·reference와 필요한 최소 fragment다. 정책 record는 입력에 섞지 않으며 scope를 이유로 기술 가설을 사전 삭제하지 않는다. 출력은 자유 형식 분석문이 아니라 `HypothesisProposal[]`이다.
 
 각 proposal은 반드시 다음을 포함한다.
 

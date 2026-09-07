@@ -44,7 +44,7 @@
 
 | v4 또는 초기 v5 개념 | 수정 v5 |
 |---|---|
-| 자유 형식 Exploration | constrained low-cost Hypothesis Agent |
+| 자유 형식 Exploration | Hypothesis Agent + 제한된 출력 schema |
 | Analyst/Skeptic quorum | Verification + 조건부 독립 Pro/Con |
 | 선택 code fragment 전달 | 같은 workspace와 commit의 on-demand location retrieval |
 | Semantic Judge/Synthesis | bypass-aware Verification Agent |

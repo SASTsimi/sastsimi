@@ -32,7 +32,7 @@ flowchart TB
     S03B --> S04
     S04 --> S05[5 Orchestration starts initial hypothesis work]
     S05 --> RUNTIME[[Trusted Runtime Validator]]
-    RUNTIME --> S06[6 Low-cost Hypothesis Agent]
+    RUNTIME --> S06[6 Hypothesis Agent]
     S06 --> S07[7 Validate deduplicate and register INITIAL proposals]
     S07 --> S08[8 Runtime stores ACTIVE VerificationAssignment]
     S08 --> S09[9 Verification requests on-demand context]
@@ -140,7 +140,7 @@ empty, truncated, gap와 error는 `TRUE | FALSE | HOLD`의 근거로 자동 변�
 
 ```mermaid
 flowchart TB
-    FACTS[StaticFactBundle refs] --> HA[Low-cost Hypothesis Agent]
+    FACTS[StaticFactBundle refs] --> HA[Hypothesis Agent]
     HA --> RAW[Candidate output]
     RAW --> SCHEMA{Syntax schema enums locations valid}
     SCHEMA -->|Yes| ASSERT{HYPOTHESIS_ONLY and NON_FINAL}
