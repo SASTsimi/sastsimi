@@ -242,7 +242,7 @@ PromptContextBinding:
 | CHAINING / `MATCH_PRIMITIVES` | `config/prompts/templates/chaining/match-primitives/1.0.0.md` | `indexes: PrimitiveIndexState($) REQUIRED_MANY`; `considered: Primitive($)` REQUIRED_MANY; `lineage_hypotheses: VulnerabilityHypothesis(/meta,/origin,/parent_hypothesis_ids,/source_primitive_match_id)` REQUIRED_MANY; `lineage_results: ChainingResult(/primitive_match_candidates,/input_primitive_refs)` OPTIONAL_MANY | `schema.chaining-result.next-major` / `validator.chaining-result.v1` / `chaining_result` | R1 / R3,R4,R5,R8 / `PMT-CHN-01` |
 | CWE_LABELING / `CLASSIFY` | `config/prompts/templates/cwe_labeling/classify/1.0.0.md` | `verification: VerificationResult($)`; `taxonomy: cwe_taxonomy($)` | `schema.cwe-label.next-major` / `validator.cwe-label.v1` / `cwe_label` | R5 / R3,R4,R6,R8 / `PMT-CWE-01` |
 | TECHNICAL_GATE / `REVIEW` | `config/prompts/templates/technical_gate/review/1.0.0.md` | `verification: VerificationResult($)`; `cwe: CWELabel($)`; exact transitive evidence refs | `schema.technical-evidence-review.next-major` / `validator.technical-gate.v1` / `technical_evidence_review` | R5 / R1,R3,R4,R6,R7,R8 / `PMT-TG-01` |
-| RULE_SCOPE_GATE / `REVIEW` | `config/prompts/templates/rule_scope_gate/review/1.0.0.md` | `verification: VerificationResult($)`; `technical: TechnicalEvidenceReview($)`; `cwe: CWELabel($)`; `collection: PolicyCollectionResult($)`; `policy: ProgramPolicyRecord($)` OPTIONAL_ONE | `schema.rule-scope-impact-review.next-major` / `validator.rule-scope-gate.v1` / `rule_scope_impact_review` | R5 / R3,R4,R6,R8 / `PMT-RSG-01` |
+| RULE_SCOPE_GATE / `REVIEW` | `config/prompts/templates/rule_scope_gate/review/1.0.0.md` | `verification: VerificationResult($)`; `technical: TechnicalEvidenceReview($)`; `cwe: CWELabel($)`; `run_policy_state: RunPolicyState($)`; `collection: PolicyCollectionResult($)`; `policy: ProgramPolicyRecord($)` OPTIONAL_ONE | `schema.rule-scope-impact-review.next-major` / `validator.rule-scope-gate.v1` / `rule_scope_impact_review` | R5 / R3,R4,R6,R8 / `PMT-RSG-01` |
 | REPORTER / `CREATE_DRAFT` | `config/prompts/templates/reporter/create-draft/1.0.0.md` | `finding: finding($)`; `verification: VerificationResult($)`; `technical: TechnicalEvidenceReview($)`; `scope: RuleScopeImpactReview($)`; `cwe: CWELabel($)`; `policy: ProgramPolicyRecord($)`; `dynamic: DynamicReproductionResult($)`; `poc: PoCBundle($)` | `schema.report-draft.next-major` / `validator.report-draft.v1` / `report_draft` | R5 / R1,R3,R4,R6,R7,R8 / `PMT-REP-01` |
 
 위 `schema.*`, `validator.*`, `model.*`, `limits.*`, `retry.*`, `tools.*`, `redaction.*`, provider set은 `config/prompts/registry.yaml`에서 각 exact record reference로 resolve된다. 파일이나 logical key가 존재해도 exact reference·상태·검토자가 맞지 않으면 `ACTIVE`로 만들지 않는다. 모든 입력 slot의 기본 trust class는 `UNTRUSTED_DATA`이며 별도 표기가 없는 한 그대로다.
@@ -323,9 +323,11 @@ Session Manager는 `DynamicReproductionConclusion`을 실제 AgentLog·환경·c
 
 ### 4.9 Rule Scope Impact Gate — R5-02
 
-- `rule-scope-gate.review`: Technical `ACCEPT` 결과와 공식 정책 record로 `RuleScopeImpactReview` 생성
+- `rule-scope-gate.review`: Technical `ACCEPT` 결과와 이번 analysis run에 고정한 exact `RunPolicyState`, 그 state가 가리키는 collection·공식 정책 record로 `RuleScopeImpactReview` 생성
 - 필수 금지: 정책 수집 실패를 정책 부재로 변환, 기술 verdict 수정, 외부 공개 승인
 - 기본 session: Gate work마다 `NEW`
+
+Runtime은 `run_policy_state`, `collection`과 존재하는 `policy`가 같은 run의 exact reference chain인지 검사한다. `RuleScopeImpactReview.run_policy_state_ref`는 입력 state와 같아야 하며, state가 가리키지 않는 collection·policy를 추가하거나 freshness·generation을 다른 record에서 조합하면 호출과 결과 저장을 거절한다.
 
 ### 4.10 Reporter — R5-03
 

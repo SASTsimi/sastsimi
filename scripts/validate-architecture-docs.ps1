@@ -1232,6 +1232,17 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
     if ($chainingTaskRow.Contains('PrimitiveAdmissionDecision')) {
         Add-Failure 'R3-05 CHAINING prompt must not re-read PrimitiveAdmissionDecision'
     }
+
+    $ruleScopeTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| RULE_SCOPE_GATE / `REVIEW` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('run_policy_state: RunPolicyState($)', 'collection: PolicyCollectionResult($)', 'policy: ProgramPolicyRecord($)` OPTIONAL_ONE')) {
+        if (-not $ruleScopeTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 RULE_SCOPE_GATE row is missing run policy input: $requiredInput" }
+    }
+    foreach ($requiredRule in @(
+        '`RuleScopeImpactReview.run_policy_state_ref`는 입력 state와 같아야 하며',
+        'state가 가리키지 않는 collection·policy를 추가하거나 freshness·generation을 다른 record에서 조합하면 호출과 결과 저장을 거절한다.'
+    )) {
+        if (-not $promptRuntimeText.Contains($requiredRule)) { Add-Failure "R3-05 RULE_SCOPE_GATE run policy binding is missing: $requiredRule" }
+    }
     foreach ($cardinalityRule in @(
         '`REQUIRED_ONE`은 정확히 1개',
         '`OPTIONAL_ONE`은 0개 또는 1개',
