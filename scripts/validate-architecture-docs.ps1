@@ -1262,7 +1262,7 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
     }
 
     $reporterTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| REPORTER / `CREATE_DRAFT` \| `config/prompts/templates/.*$').Value
-    foreach ($requiredInput in @('finding: Finding($)', 'verification: VerificationResult($)', 'technical: TechnicalEvidenceReview($)', 'scope: RuleScopeImpactReview($)', 'cwe: CWELabel($)', 'run_policy_state: RunPolicyState($)', 'collection: PolicyCollectionResult($)', 'policy: ProgramPolicyRecord($)', 'dynamic: DynamicReproductionResult($)', 'poc: PoCBundle($)', 'sandbox_policy: SandboxPolicyDecision($)', 'environment_recipe: EnvironmentRecipe($)', 'environment: SandboxEnvironment($)', 'agent_log: AgentLog($)')) {
+    foreach ($requiredInput in @('finding: Finding($)', 'verification: VerificationResult($)', 'technical: TechnicalEvidenceReview($)', 'scope: RuleScopeImpactReview($)', 'cwe: CWELabel($)', 'pro: EvidenceAgentResult(role=PRO', 'con: EvidenceAgentResult(role=CON', 'facts: StaticFactBundle($)', 'contexts: CodeContextResponse($)` OPTIONAL_MANY', 'dynamic_request: DynamicReproductionRequest($)', 'run_policy_state: RunPolicyState($)', 'collection: PolicyCollectionResult($)', 'policy: ProgramPolicyRecord($)', 'dynamic: DynamicReproductionResult($)', 'poc: PoCBundle($)', 'sandbox_policy: SandboxPolicyDecision($)', 'environment_recipe: EnvironmentRecipe($)', 'environment: SandboxEnvironment($)', 'agent_log: AgentLog($)')) {
         if (-not $reporterTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 REPORTER row is missing exact report input: $requiredInput" }
     }
 
