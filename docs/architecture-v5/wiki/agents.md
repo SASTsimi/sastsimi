@@ -16,7 +16,7 @@
 | Policy Parser | Policy Collector가 저장한 exact 원문을 구조화 | Rule Scope 결론·보고 허용 판단, 원문에 없는 정책 추정 |
 | Verification | 한 가설의 Context·Pro/Con, 목적별 `DynamicReproductionRequest`, 반환 결과 소비·판정·Gate 보완·Chaining handoff와 material child 제안 | 환경 요구사항·실행 계획·PoC·동적 결과 생산, Sandbox 직접 실행, 새 claim 무검증 승격 |
 | Dynamic Reproduction Agent | 환경 요구사항·간단한 계획·PoC 초안·동적 근거 해석, Sandbox 안의 자율 실행 | R6 요청 변경, 외부 경계 우회 또는 최종 verdict 판단 |
-| R7 Setup Automation | recipe·image·container 생성/재사용/재생성과 정리 실제 수행 | Dynamic Reproduction Agent 분석, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
+| Reproduction Setup Automation | recipe·image·container 생성/재사용/재생성과 정리 실제 수행 | Dynamic Reproduction Agent 분석, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
 | Sandbox Controller | R7 `sandbox_profile_ref`의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 강제 | 내부 command allowlist, R7 profile 값, R8 잔여 예산·새 attempt, 재현 전략 또는 최종 verdict 판단 |
 | Reproduction Session Manager | 실제 event의 append-only AgentLog, same-attempt validated PoC와 동적 결과 확정 | Dynamic Reproduction Agent 호출·command·retry·cleanup 전략 결정 또는 다른 attempt 혼합 |
 | Pro | 가설 성립 근거 탐색 | 최종 verdict |

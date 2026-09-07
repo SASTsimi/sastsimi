@@ -20,7 +20,7 @@
 | `Rule Scope Impact Gate Agent` | LLM | `RULE_SCOPE_GATE` | `Rule Scope Gate` |
 | `Reporter Agent` | LLM | `REPORTER` | `Reporter` |
 | `Policy Parser Agent` | LLM | `POLICY_PARSER` | `Policy Parser` |
-| `R7 Setup Automation` | 비-LLM | `R7_SETUP_AUTOMATION` | `Setup Automation` |
+| `Reproduction Setup Automation` | 비-LLM | `REPRODUCTION_SETUP_AUTOMATION` | `Setup Automation` |
 | `Sandbox Controller` | 비-LLM | `SANDBOX_CONTROLLER` | `Controller` |
 | `Reproduction Session Manager` | 비-LLM | `REPRODUCTION_SESSION_MANAGER` | `Session Manager` |
 | `Primitive Admission Runtime` | 비-LLM | `PRIMITIVE_ADMISSION_RUNTIME` | `Admission Runtime` |
@@ -179,7 +179,7 @@
 | `runtime validator` | 프로그램 내부 실행 범위 검사기 | 데이터 형식, 상태 순서, 예산과 권한을 강제하지만 취약점·CWE·정책 의미는 판단하지 않습니다. |
 | `sandbox` | 다른 시스템과 격리해 안전하게 코드를 실행하는 환경 | host, 비밀정보와 범위 밖 네트워크 접근을 막습니다. |
 | `Sandbox Controller` | 격리 환경 밖의 안전 경계를 강제하는 모듈 | R7 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하며 내부 command allowlist, R7 profile 값, R8 잔여 예산·새 attempt는 결정하지 않습니다. |
-| `R7 Setup Automation` | Docker image·container·환경 재생성과 정리를 실제 수행하는 비-LLM 모듈 | Dynamic Reproduction Agent가 Docker daemon을 직접 다루지 않도록 격리된 실행 통로를 제공합니다. |
+| `Reproduction Setup Automation` | Docker image·container·환경 재생성과 정리를 실제 수행하는 비-LLM 모듈 | Dynamic Reproduction Agent가 Docker daemon을 직접 다루지 않도록 격리된 실행 통로를 제공합니다. |
 | `Reproduction Session Manager` | 한 동적 재현 attempt의 실제 event와 최종 결과를 확정하는 비-LLM 모듈 | AgentLog, validated PoC와 DynamicReproductionResult의 result owner이며 Dynamic Reproduction Agent의 실행 전략은 결정하지 않습니다. |
 | `provider` | LLM을 제공하는 서비스나 연결 방식 | API 방식과 회원 로그인 방식을 같은 경계에서 관리합니다. |
 | `session` | LLM 서비스와 이어지는 로그인 또는 대화 상태 | 인증정보와 session 비밀값을 일반 로그에 남기지 않습니다. |

@@ -51,7 +51,7 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] 새 Verification revision 또는 generation에는 CWE 값을 유지해도 새 label revision을 만들며 과거 label은 history로만 보존합니다.
 - [ ] Technical Gate는 Verification과 이를 직접 가리키는 current CWELabel exact pair만 읽고 label을 생성·수정하지 않습니다.
 - [ ] `ReproductionPlan`에 mode·exact command·step·payload·cleanup allowlist가 없고 선택적 `requested_evidence`가 Dynamic Reproduction Agent의 추가 관찰을 막지 않습니다.
-- [ ] R7 Setup Automation은 recipe의 base/built image digest를 구분하고 실제 `sandbox_environment`에 container instance·생성/재사용 사유·requirement별 비교를 남깁니다.
+- [ ] Reproduction Setup Automation은 recipe의 base/built image digest를 구분하고 실제 `sandbox_environment`에 container instance·생성/재사용 사유·requirement별 비교를 남깁니다.
 - [ ] Runtime Validator는 exact request·current requirements·current exact plan·R7 `sandbox_profile_ref`·exact R8 `DynamicReproductionLifecycleProfile`을 고정하고 호출 전 잔여 시간·새 attempt 한도를 검사합니다. Sandbox Controller는 R7 profile의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하며 내부 command allowlist를 운영하지 않습니다.
 - [ ] Reproduction Session Manager만 append-only `AgentLog`, validated PoC와 `DynamicReproductionResult`를 확정합니다.
 - [ ] Chaining Agent는 upstream Primitive의 `result`→downstream Primitive의 특정 `input` matching만 수행하고 일반 research·동적 재현·Gate 보완을 하지 않습니다.

@@ -31,7 +31,7 @@ Runtime Validator는 취약점이 맞는지 새로 판단하는 Gate가 아닙�
 | 내부 보고서 초안 | Reporter Agent | Gate 우회·외부 제출 |
 | 일반 실행 허용·차단과 current request·requirements Sandbox 호출 전제 확인 | Runtime Validator | 환경 의미·취약점·CWE·정책 또는 Sandbox 외부 경계 판단 |
 | Sandbox 외부 격리 경계 검사 | Sandbox Controller | 정책 의미·scope·보고 가능성, 환경 요구사항·재현 전략·내부 command·취약점 판정 변경 |
-| recipe·image·container·환경 비교·cleanup 실행 | R7 Setup Automation | Dynamic Reproduction Agent의 취약점 해석, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
+| recipe·image·container·환경 비교·cleanup 실행 | Reproduction Setup Automation | Dynamic Reproduction Agent의 취약점 해석, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
 | Sandbox 안에서 command·PoC·관찰·재시도 선택 | Dynamic Reproduction Agent | 외부 격리 경계 변경 또는 최종 verdict 판단 |
 | AgentLog·validated PoC·동적 결과 확정 | Reproduction Session Manager | Dynamic Reproduction Agent 실행 전략 결정, 다른 attempt 자료 혼합 또는 참조만으로 성공 판단 |
 

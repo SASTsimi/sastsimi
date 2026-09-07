@@ -90,7 +90,7 @@ run-init Docker branch는 `CodeWorkspace.status=READY` 뒤 저장소 선언을 �
 - Docker branch는 Step 12의 가설별 `DYNAMIC_REPRO`가 시작될 때까지 합류를 요구하지 않는다. 준비된 layer가 있어도 R7은 current request·requirements·plan·attempt에 맞는 새 binding과 clean 실행 경계를 만들어야 한다.
 - run-init Docker branch는 `EnvironmentRecipe`, `SandboxEnvironment`, `AgentLog`, PoC candidate 또는 validated PoC를 생산하지 않는다. 이들은 모두 Step 12의 current 가설·generation·attempt 산출물이다.
 - 가설 간 writable container를 공유하지 않는다. 공통으로 재사용할 수 있는 것은 content-addressed read-only image layer뿐이며 실제 `built_image_digest`와 사용 사실은 Step 12의 attempt-local record에서 다시 고정한다.
-- Docker branch가 실패하거나 준비 결과를 신뢰할 수 없으면 R7 Setup Automation이 Step 12에서 clean 환경을 새로 만든다. 이 실패는 정적 결과, 정책 상태 또는 취약점 verdict를 바꾸지 않는다.
+- Docker branch가 실패하거나 준비 결과를 신뢰할 수 없으면 Reproduction Setup Automation이 Step 12에서 clean 환경을 새로 만든다. 이 실패는 정적 결과, 정책 상태 또는 취약점 verdict를 바꾸지 않는다.
 - R7은 network 접근과 CPU·RAM·disk·PID·요청 가능 최대 시간 등 Docker 실행의 강제 상한을 소유한다. R8은 분석 전체와 branch의 시간·비용·work·retry 예산 및 실제 자원 사용량·성공률 평가를 소유한다. B5는 두 설정의 exact reference를 별도로 정해야 한다.
 - 세 branch는 병렬로 실행되어도 분석 전체 120분과 전체 비용·work 예산을 함께 사용한다. Docker baseline은 선택적·낮은 우선순위 최적화이므로 정적 분석·정책 준비·가설 검증에 필요한 예산을 먼저 소비하지 않는다.
 - 예산이 부족하면 Docker baseline 준비를 시작하지 않거나 중단하고 `SKIPPED` 사유를 남긴다. Docker baseline의 실패·중단·건너뜀만으로 분석을 `PARTIAL | FAILED` 또는 가설 `FALSE`로 바꾸지 않는다. 실제 재현이 필요하면 Step 12에서 clean 환경을 준비한다.

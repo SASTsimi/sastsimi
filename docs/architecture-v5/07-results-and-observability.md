@@ -496,8 +496,8 @@ Context 조회 실패·timeout·권한 오류는 다음 기준으로 처리한�
 | `RATE_LIMITED` | provider adapter | LLM 호출 지연·중단 | 일반 work는 backoff 또는 명시적 fallback. `DYNAMIC_REPRO`는 같은 session 해결 시 현재 attempt, session 재시작 시 새 attempt, 외부 대기만 `BLOCKED` |
 | `TIMED_OUT` | 각 runtime | 해당 작업 시간 초과 | 일반 work는 예산 안에서 새 시도 또는 중단. `DYNAMIC_REPRO`는 같은 session 해결 시 현재 attempt, session 재시작 시 새 attempt, 외부 대기만 `BLOCKED` |
 | `POC_GENERATION_FAILED` | Dynamic Reproduction Agent | validated PoC와 final verdict 없음 | 같은 session의 현재 attempt에서 자율 조정하거나 session 재시작이 필요할 때만 R8 한도 안의 새 attempt; 외부 대기만 `BLOCKED`, 불가능하면 `FAILED + INCONCLUSIVE` |
-| `SANDBOX_ERROR` | R7 Setup Automation·Session Manager | validated PoC와 final verdict 없음 | 자율 retry와 외부 `BLOCKED`를 구분하고 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE` |
-| `ENVIRONMENT_MISMATCH` | R7 Setup Automation | 필수 조건이 다르거나 확인되지 않음 | Dynamic Reproduction Agent가 recipe를 자율 보완하고 exact 차이·plan issue·AgentLog를 보존 |
+| `SANDBOX_ERROR` | Reproduction Setup Automation·Session Manager | validated PoC와 final verdict 없음 | 자율 retry와 외부 `BLOCKED`를 구분하고 한도 소진·복구 불가면 `FAILED + INCONCLUSIVE` |
+| `ENVIRONMENT_MISMATCH` | Reproduction Setup Automation | 필수 조건이 다르거나 확인되지 않음 | Dynamic Reproduction Agent가 recipe를 자율 보완하고 exact 차이·plan issue·AgentLog를 보존 |
 | `CHAINING_ERROR` | Chaining runtime | matching 실패, 부모 verdict 유지 | 제한 retry 또는 no-match/실패 기록 |
 | `TECHNICAL_GATE_ERROR` | Technical Evidence Gate Agent 호출 경계 | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
 | `POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 수집 결과 `COLLECTION_FAILED`; 성공한 Rule Scope review 없음 | 공식 출처 재확인 뒤 같은 정책 work 재시도 또는 실패 종료 |
