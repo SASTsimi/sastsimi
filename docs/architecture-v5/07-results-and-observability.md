@@ -148,7 +148,7 @@ Sandbox ENV/POLICY/EXEC/TIMEOUT은 동적 work의 `BLOCKED | FAILED`다. 최종 
 | usage | token 숫자를 서비스가 안 줌 | 없음 + 이유. 지어내지 않음 |
 | 수집 금지 | 비밀번호·세션 비밀·숨은 생각을 평가/로그로 모은 횟수 | 0. `S-REDACT`는 가리기 실패 장면. 이건 모으지 말 것 |
 
-Agent 이름에는 모델의 가격·성능 등급을 붙이지 않는다. `Hypothesis Agent`도 고정 모델을 전제하지 않으며, R8이 같은 corpus와 합격 기준으로 비교해 품질 기준을 만족한 `ModelProfile`만 비용 최적화 후보로 제안한다. 실제 profile 활성화는 승인된 versioned 설정으로 남긴다.
+Agent 이름에는 모델의 가격·성능 등급을 붙이지 않는다. `Hypothesis Agent`도 고정 모델을 전제하지 않으며, R8이 같은 corpus와 합격 기준으로 비교해 품질 기준을 만족한 model·환경 조합만 비용 최적화 후보로 제안한다. 실제 사용 조합은 model을 포함한 exact `ProviderProfile` revision으로 승인하고 활성화한다.
 
 연결 발견사항: H-003.
 
