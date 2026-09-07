@@ -310,14 +310,14 @@ credential·cookie·token·원문 인증 파일은 증거로 첨부하지 않는
 - Anthropic Commercial Terms: <https://www.anthropic.com/legal/commercial-terms>
 - Claude Code 인증·credential 사용 범위: <https://code.claude.com/docs/en/legal-and-compliance>
 
-## 10. 미완료 증거와 종료 조건
+## 10. 설계 완료와 구현 전 활성화 조건
 
-이 문서만으로 #90을 닫지 않는다. 다음 증거가 없기 때문이다.
+Issue #90의 Provider 선택·연동 구조 설계는 완료됐다. 다만 다음 실제 시험 증거가 없으므로, 해당 Provider profile을 운영용 `SUPPORTED` 또는 `ACTIVE`로 표시해서는 안 된다.
 
 - 네 경로별 실제 `PVD-01`–`PVD-15` 결과와, R7 Sandbox 실행에 허용할 profile의 `PVD-16` 결과
 - 역할별 필요한 model의 실제 계정 접근 범위
 - private CI의 credential 격리·취소·동시성 검증
 - R8의 동일 fixture 품질·시간·사용량 비교
-- R4의 profile·session·retry·failover·secret·log 계약 승인
+- R4의 profile·session·retry·failover·secret·log 계약 구현 검증
 
 위 증거가 준비되면 model·환경 조합마다 별도 ProviderProfile을 발급한다. `EXPERIMENTAL`을 `SUPPORTED`로 바꾸는 새 revision에는 시험 증거와 검토 기준 SHA가 반드시 있어야 한다.

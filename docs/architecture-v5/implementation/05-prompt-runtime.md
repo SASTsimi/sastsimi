@@ -490,9 +490,9 @@ repair prompt는 invalid 응답 전체를 신뢰 지시문으로 넣지 않는�
 
 각 역할 template은 최소 한 개 정상 fixture, schema 실패, semantic 실패, prompt injection, stale reference 사례를 가져야 한다. Pro/Con, Gate, R7은 위 공통 사례에 역할별 금지 행동 사례를 추가한다.
 
-## 12. 완료 조건
+## 12. 설계 완료와 구현 전 활성화 조건
 
-이 문서 작성만으로 #91을 닫지 않는다. 다음이 모두 필요하다.
+Issue #91의 Prompt Registry·조립·전달 구조 설계는 완료됐다. 다만 다음 구현물과 시험 증거가 모두 준비되기 전에는 어떤 prompt revision도 운영 `ACTIVE`로 표시해서는 안 된다.
 
 - 11개 역할의 초기 registry entry·template·output schema·semantic validator 확정
 - `DYNAMIC_REPRODUCTION`이 spec·request·log와 권한 표에서 일치
@@ -502,6 +502,6 @@ repair prompt는 invalid 응답 전체를 신뢰 지시문으로 넣지 않는�
 - 각 역할 정상·실패·injection fixture
 - R3-04의 각 채택 adapter에서 provider 동등성 통합 시험
 - R1·R2·R4·R5·R6·R7·R8의 자기 경계 검토 기록
-- #92에 실제 파일 구조, 활성 revision과 구현 시작 기준선 반영
+- #92에서 확정한 파일 구조에 registry·template·validator를 구현하고, 활성 revision과 구현 기준선 연결
 
 구현 전까지는 이 문서의 상태를 `NOT_IMPLEMENTED`로 유지한다. 특정 template이 검토됐더라도 해당 registry entry와 시험 증거 없이 운영 `ACTIVE`로 표시하지 않는다.

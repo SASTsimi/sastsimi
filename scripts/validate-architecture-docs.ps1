@@ -312,6 +312,23 @@ foreach ($file in $approvedStatusFiles | Select-Object -Unique) {
     }
 }
 
+$obsoleteFinalReviewPhrases = @(
+    '지금은 **설계 검토 단계**',
+    '미결정 계약의 답변과 역할별 검토가 남아',
+    '역할별 검토는 아직 남아',
+    '이 PR을 만들었다는 이유로 #89나 상위 #4를 바로 닫지 않는다',
+    '이 문서만으로 #90을 닫지 않는다',
+    '이 문서 작성만으로 #91을 닫지 않는다'
+)
+foreach ($file in $approvedStatusFiles | Select-Object -Unique) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    foreach ($phrase in $obsoleteFinalReviewPhrases) {
+        if ($text.Contains($phrase)) {
+            Add-Failure "approved Architecture v5 document still describes final design review as pending: $($file.FullName) -> $phrase"
+        }
+    }
+}
+
 foreach ($statusRequirement in @(
     @{ Path = 'README.md'; Marker = 'DESIGN_APPROVED' },
     @{ Path = 'docs/architecture-v5/README.md'; Marker = '> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**' },
@@ -3652,7 +3669,7 @@ $activeArchitectureText = $activeDocumentationText
 $providerDecisionPath = Join-Path $repoRoot 'docs/architecture-v5/implementation/04-provider-decision.md'
 $providerDecisionText = if (Test-Path -LiteralPath $providerDecisionPath) { Get-Content -LiteralPath $providerDecisionPath -Raw -Encoding UTF8 } else { '' }
 $providerCapabilityBlock = [regex]::Match($providerDecisionText, '(?ms)^ProviderCapabilities:\s*(.*?)^```').Groups[1].Value
-$providerExitSection = [regex]::Match($providerDecisionText, '(?ms)^## 10\. 미완료 증거와 종료 조건\s*(.*)$').Groups[1].Value
+$providerExitSection = [regex]::Match($providerDecisionText, '(?ms)^## 10\. 설계 완료와 구현 전 활성화 조건\s*(.*)$').Groups[1].Value
 $architectureReadmeText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/README.md')
 
 if ([string]::IsNullOrWhiteSpace($providerDecisionText)) {
