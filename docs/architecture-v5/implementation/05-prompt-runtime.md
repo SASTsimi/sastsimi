@@ -8,7 +8,7 @@
 
 ## 1. 기준과 핵심 결론
 
-- 작성 기준 `main`: `9c7a5a19c5e32c3f752bc40a32aaf86441be4d01`
+- 작성 기준 `main`: `9e0a7efc73d9a9b1e83d6e70049c6d35ab8fa8b1`
 - 연결 Issue: [R3-05 #91](https://github.com/SASTsimi/sastsimi/issues/91)
 - Provider 연결 결정: [R3-04 #90](https://github.com/SASTsimi/sastsimi/issues/90)
 - 최종 구현 기준선: [R3-06 #92](https://github.com/SASTsimi/sastsimi/issues/92)
@@ -141,7 +141,6 @@ PromptRegistryEntry:
     - rule_scope_impact_review
   output_schema_ref: StoredDataRef
   session_policy: NEW
-  model_profile_ref: StoredDataRef
   provider_profile_refs: [StoredDataRef]
   execution_limits_ref: StoredDataRef
   retry_policy_ref: StoredDataRef
@@ -158,7 +157,7 @@ PromptRegistryEntry:
 
 `input_slots`는 slot별 data kind, 노출할 JSON Pointer, 필수 개수와 신뢰 등급을 정한다. `"$"`는 해당 record 전체를 허용할 때만 단독으로 사용한다. Builder는 허용 field만 새 `projected_data_ref`에 canonical serialization하며 원본 exact `source_ref`도 함께 남긴다.
 
-`model_profile_ref`는 역할별 model route, `provider_profile_refs`는 #90에서 검증된 허용 연결 경로, `execution_limits_ref`는 token 계획값·timeout·동시성 한도, `retry_policy_ref`는 repair·retry·explicit failover 조건을 고정한다. `output_schema_ref`, `semantic_validator_ref`, `tool_policy_ref`와 `redaction_policy_ref`도 versioned record다. 실제 호출은 이 목록 중 하나의 exact `provider_profile_ref + model`을 `LLMCallSpec`에 기록한다. Provider가 바뀌어도 template와 판단 기준은 그대로이며, profile 목록 변경은 새 registry revision과 재검토가 필요하다. tool policy의 `allowed_tools=[]`는 tool 사용 금지, `result_kind`는 성공 출력의 유일한 저장 계약을 뜻한다.
+`provider_profile_refs`는 #90에서 model·environment 조합까지 검증된 허용 `ProviderProfile` revision을 primary부터 explicit fallback 순서로 고정한다. `execution_limits_ref`는 token 계획값·timeout·동시성 한도, `retry_policy_ref`는 repair·retry·explicit failover 조건을 고정한다. `output_schema_ref`, `semantic_validator_ref`, `tool_policy_ref`와 `redaction_policy_ref`도 versioned record다. 실제 호출은 이 목록 중 하나의 exact `provider_profile_ref`와 그 profile의 `model`을 `LLMCallSpec`에 기록한다. Provider가 바뀌어도 template와 판단 기준은 그대로이며, profile 목록 변경은 새 registry revision과 재검토가 필요하다. tool policy의 `allowed_tools=[]`는 tool 사용 금지, `result_kind`는 성공 출력의 유일한 저장 계약을 뜻한다.
 
 `PromptPayload`는 한 번의 호출에 실제로 조립한 불변 입력이다.
 
@@ -194,7 +193,7 @@ PromptContextBinding:
 
 아래 이름은 repository에서 사람이 찾는 logical key다. 운영 시작 때 각 key를 immutable record로 등록하고 registry에는 생성된 exact `StoredDataRef`를 넣는다. key 문자열을 reference 대신 사용하지 않는다.
 
-| 역할 / task | model profile key | provider set | limits | retry | tool | redaction | session |
+| 역할 / task | provider selection key | provider set | limits | retry | tool | redaction | session |
 |---|---|---|---|---|---|---|---|
 | HYPOTHESIS / `GENERATE_INITIAL` | `model.hypothesis.generate-initial.quality-v1` | `providers.r3-04-accepted-v1` | `limits.hypothesis.v1` | `retry.standard.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
 | HYPOTHESIS / `DUPLICATE_REVIEW` | `model.hypothesis.duplicate-review.quality-v1` | `providers.r3-04-accepted-v1` | `limits.hypothesis.v1` | `retry.standard.v1` | `tools.none.v1` | `redaction.default.v1` | NEW |
@@ -216,7 +215,7 @@ PromptContextBinding:
 | RULE_SCOPE_GATE | `model.rule-scope-gate.quality-v1` | `providers.r3-04-accepted-v1` | `limits.rule-scope-gate.v1` | `retry.gate.v1` | `tools.none.v1` | `redaction.policy.v1` | NEW |
 | REPORTER | `model.reporter.quality-v1` | `providers.r3-04-accepted-v1` | `limits.reporter.v1` | `retry.standard.v1` | `tools.none.v1` | `redaction.report.v1` | NEW |
 
-`providers.r3-04-accepted-v1`에는 #90의 시험과 검토를 통과한 exact ProviderProfile만 들어간다. #90에서 승인된 profile이 없으면 이 설정도 `DRAFT`이며 어떤 역할도 호출하지 않는다. 따라서 네 후보 adapter를 모두 지원한다고 가정하지 않는다. 표의 각 행은 별도 immutable `ModelProfile` record이고, 그 record의 `agent_role + task_kind`는 아래 task 행과 정확히 하나씩 대응한다. 같은 역할이라도 여러 task가 한 ModelProfile을 공유하지 않는다. 각 `ModelProfile.routes`는 이 provider set의 부분집합이며 primary 하나와 사전에 허용한 fallback만 둔다. 실제 model ID, timeout, token 계획값, 호출·repair 횟수는 R8 평가와 #92 승인 전까지 `DRAFT` 설정에 임의 값으로 채우지 않는다.
+`providers.r3-04-accepted-v1`에는 #90의 시험과 검토를 통과한 exact ProviderProfile만 들어간다. #90에서 승인된 profile이 없으면 이 설정도 `DRAFT`이며 어떤 역할도 호출하지 않는다. 따라서 네 후보 adapter를 모두 지원한다고 가정하지 않는다. 표의 각 행은 별도 immutable `PromptRegistryEntry`이고, 그 record의 `agent_role + task_kind`는 아래 task 행과 정확히 하나씩 대응한다. 같은 역할의 여러 task도 각자 독립된 `provider_profile_refs`를 가지며 primary 하나와 사전에 허용한 fallback만 둔다. 실제 model ID, timeout, token 계획값, 호출·repair 횟수는 R8 평가와 #92 승인 전까지 `DRAFT` 설정에 임의 값으로 채우지 않는다.
 
 첫 기준선은 모두 `NEW`다. 이후 같은 Verification의 Technical `REVISE`에서 `AUTO | RESUME`을 채택하려면 독립성·stale context·비용 비교 시험과 R4/R6 승인을 거친 새 registry·model/session policy revision이 필요하다.
 
@@ -240,7 +239,7 @@ PromptContextBinding:
 | DYNAMIC_REPRODUCTION / `CREATE_POC_CANDIDATE` | `config/prompts/templates/dynamic_reproduction/create-poc-candidate/1.0.0.md` | `request: DynamicReproductionRequest($)`; `plan: ReproductionPlan($)`; `environment: SandboxEnvironment(/meta,/request_ref,/reproduction_plan_ref,/requirements_ref,/status,/checks,/limitations)` | `schema.poc-candidate.next-major` / `validator.poc-candidate.v1` / `poc_candidate` | R7 / R3,R4,R6,R8 / `PMT-R7-03` |
 | DYNAMIC_REPRODUCTION / `EXECUTE_REPRODUCTION` | `config/prompts/templates/dynamic_reproduction/execute-reproduction/1.0.0.md` | `request: DynamicReproductionRequest($)`; `requirements: EnvironmentRequirements($)`; `plan: ReproductionPlan($)`; `environment: SandboxEnvironment($)`; `candidate: PoCCandidate($)` OPTIONAL_ONE; `agent_log: AgentLog(/request_ref,/events)`; `prior_turns: DynamicReproductionToolRequest($)` OPTIONAL_MANY; `observations: dynamic_observation($)` OPTIONAL_MANY | `schema.dynamic-reproduction-tool-request.next-major` / `validator.dynamic-reproduction-tool-request.v1` / `dynamic_reproduction_tool_request` | R7 / R3,R4,R6,R8 / `PMT-R7-05` |
 | DYNAMIC_REPRODUCTION / `INTERPRET_ATTEMPT` | `config/prompts/templates/dynamic_reproduction/interpret-attempt/1.0.0.md` | `request: DynamicReproductionRequest($)`; `plan: ReproductionPlan($)`; `environment: SandboxEnvironment($)`; `candidate: PoCCandidate($)` OPTIONAL_ONE; `agent_log: AgentLog(/request_ref,/events)`; `observations: dynamic_observation($)` OPTIONAL_MANY | `schema.dynamic-reproduction-conclusion.next-major` / `validator.dynamic-reproduction-conclusion.v1` / `dynamic_reproduction_conclusion` | R7 / R3,R4,R6,R8 / `PMT-R7-04` |
-| CHAINING / `MATCH_PRIMITIVES` | `config/prompts/templates/chaining/match-primitives/1.0.0.md` | `indexes: PrimitiveIndexState($) REQUIRED_MANY`; `considered: Primitive($)` REQUIRED_MANY; `admission: PrimitiveAdmissionDecision($)` REQUIRED_MANY; `lineage_hypotheses: VulnerabilityHypothesis(/meta,/origin,/parent_hypothesis_ids,/source_primitive_match_id)` REQUIRED_MANY; `lineage_results: ChainingResult(/primitive_match_candidates,/input_primitive_refs)` OPTIONAL_MANY | `schema.chaining-result.next-major` / `validator.chaining-result.v1` / `chaining_result` | R1 / R3,R4,R5,R8 / `PMT-CHN-01` |
+| CHAINING / `MATCH_PRIMITIVES` | `config/prompts/templates/chaining/match-primitives/1.0.0.md` | `indexes: PrimitiveIndexState($) REQUIRED_MANY`; `considered: Primitive($)` REQUIRED_MANY; `lineage_hypotheses: VulnerabilityHypothesis(/meta,/origin,/parent_hypothesis_ids,/source_primitive_match_id)` REQUIRED_MANY; `lineage_results: ChainingResult(/primitive_match_candidates,/input_primitive_refs)` OPTIONAL_MANY | `schema.chaining-result.next-major` / `validator.chaining-result.v1` / `chaining_result` | R1 / R3,R4,R5,R8 / `PMT-CHN-01` |
 | CWE_LABELING / `CLASSIFY` | `config/prompts/templates/cwe_labeling/classify/1.0.0.md` | `verification: VerificationResult($)`; `taxonomy: cwe_taxonomy($)` | `schema.cwe-label.next-major` / `validator.cwe-label.v1` / `cwe_label` | R5 / R3,R4,R6,R8 / `PMT-CWE-01` |
 | TECHNICAL_GATE / `REVIEW` | `config/prompts/templates/technical_gate/review/1.0.0.md` | `verification: VerificationResult($)`; `cwe: CWELabel($)`; exact transitive evidence refs | `schema.technical-evidence-review.next-major` / `validator.technical-gate.v1` / `technical_evidence_review` | R5 / R1,R3,R4,R6,R7,R8 / `PMT-TG-01` |
 | RULE_SCOPE_GATE / `REVIEW` | `config/prompts/templates/rule_scope_gate/review/1.0.0.md` | `verification: VerificationResult($)`; `technical: TechnicalEvidenceReview($)`; `cwe: CWELabel($)`; `collection: PolicyCollectionResult($)`; `policy: ProgramPolicyRecord($)` OPTIONAL_ONE | `schema.rule-scope-impact-review.next-major` / `validator.rule-scope-gate.v1` / `rule_scope_impact_review` | R5 / R3,R4,R6,R8 / `PMT-RSG-01` |
@@ -308,7 +307,7 @@ Session Manager는 `DynamicReproductionConclusion`을 실제 AgentLog·환경·c
 - 필수 금지: Primitive admission 변경, 부모 verdict 변경, 직접 자식 등록
 - 기본 session: match batch마다 `NEW`
 
-`indexes`는 같은 analysis·workspace·commit의 current `PrimitiveIndexState` revision 전부이며 `REQUIRED_MANY`다. Runtime은 각 index의 `primitive_refs`를 펼쳐 `considered`와 정확히 맞춘다. `lineage_hypotheses`와 `lineage_results`는 considered Primitive의 `source_hypothesis_id → VulnerabilityHypothesis.source_primitive_match_id → ChainingResult.primitive_match_candidates` 경로를 양방향으로 따라 조상 제외를 계산하는 데 필요한 최소 계보다. `lineage_results`는 `OPTIONAL_MANY`이므로 모든 considered Primitive가 INITIAL-origin이고 `source_primitive_match_id=null`인 최초 체이닝에서는 빈 목록이 정상이다. CHAINING-origin 조상이 하나라도 있으면 Runtime이 계산한 필요한 exact `ChainingResult` closure를 모두 넣어야 한다. Runtime이 계산한 필요한 계보 closure와 두 slot이 set-equal하지 않으면 누락뿐 아니라 관계없는 추가 결과도 차단한다. admission 계보는 work 등록 때 이미 검사하므로 이 두 slot에 중복해서 넣지 않는다.
+`indexes`는 같은 analysis·workspace·commit의 current `PrimitiveIndexState` revision 전부이며 `REQUIRED_MANY`다. Runtime은 각 index의 `primitive_refs`를 펼쳐 `considered`와 정확히 맞춘다. `lineage_hypotheses`와 `lineage_results`는 considered Primitive의 `source_hypothesis_id → VulnerabilityHypothesis.source_primitive_match_id → ChainingResult.primitive_match_candidates` 경로를 양방향으로 따라 조상 제외를 계산하는 데 필요한 최소 계보다. `lineage_results`는 `OPTIONAL_MANY`이므로 모든 considered Primitive가 INITIAL-origin이고 `source_primitive_match_id=null`인 최초 체이닝에서는 빈 목록이 정상이다. CHAINING-origin 조상이 하나라도 있으면 Runtime이 계산한 필요한 exact `ChainingResult` closure를 모두 넣어야 한다. Runtime이 계산한 필요한 계보 closure와 두 slot이 set-equal하지 않으면 누락뿐 아니라 관계없는 추가 결과도 차단한다. admission은 Primitive 등록 시점의 1회 판정으로 확정되므로 Chaining prompt 입력에 넣거나 다시 판정하지 않는다.
 
 ### 4.7 CWE Labeling — R5-01
 
@@ -334,7 +333,7 @@ Session Manager는 `DynamicReproductionConclusion`을 실제 AgentLog·환경·c
 - 필수 금지: 누락 근거 보충, stale draft 재사용, 사람 검토·제출·공개 수행
 - 기본 session: report work마다 `NEW`
 
-Orchestration, Runtime Validator, Prompt Registry Runtime, Playbook Registry Runtime, R7 Setup Automation, Sandbox Controller, Reproduction Session Manager, Primitive Admission Runtime과 저장소 계층은 LLM Agent가 아니다. 따라서 이 역할들을 위한 prompt를 만들지 않는다. 문서에서 쓰는 “Orchestration Agent”는 사용자에게 보이는 전역 분석 조정 기능의 이름이며, 실제 등록·중복 후보 축소·배정·상태 전이·권한 검사는 비-LLM runtime이 수행한다. 즉, Orchestration 자체의 별도 LLM prompt는 만들지 않는다.
+Orchestration Runtime, Runtime Validator, Prompt Registry Runtime, Playbook Registry Runtime, Reproduction Setup Automation, Sandbox Controller, Reproduction Session Manager, Primitive Admission Runtime과 저장소 계층은 LLM Agent가 아니다. 따라서 이 역할들을 위한 prompt를 만들지 않는다. 전역 분석 조정과 실제 등록·중복 후보 축소·배정·상태 전이·권한 검사는 비-LLM Orchestration Runtime이 수행한다. 즉, Orchestration 자체의 별도 LLM prompt는 만들지 않는다.
 
 ## 5. Template 필수 구성
 
@@ -375,7 +374,7 @@ runtime은 호출 직전에 다음 equality를 검사한다.
 - template exact revision과 version이 같은가
 - context binding set이 registry의 허용 목록 안이고 필수 slot이 모두 있는가
 - 각 binding의 source·projected reference, field projection, cardinality와 trust class가 slot 계약과 같은가
-- model profile·provider profile·execution limits·retry·redaction 정책이 registry의 exact revision과 같은가
+- provider profile·model·execution limits·retry·redaction 정책이 registry의 exact revision과 같은가
 - spec·request·payload·log의 registry/template/payload reference가 같은가
 - output schema와 semantic validator가 registry entry와 같은가
 - session 정책과 provider capability가 해당 역할 요구를 만족하는가

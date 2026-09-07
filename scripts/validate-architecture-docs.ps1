@@ -56,6 +56,213 @@ foreach ($file in $markdownFiles) {
     }
 }
 
+# Keep the role name independent from model cost and Korean shorthand. The
+# canonical display name is Hypothesis Agent; HYPOTHESIS and HypothesisProposal
+# remain the machine-facing role and output contract names.
+$obsoleteHypothesisAgentPatterns = @(
+    ('Low-' + 'cost Hypothesis Agent'),
+    ('저비용 Hypothesis' + ' Agent'),
+    ('저비용 가설 ' + '생성'),
+    ('가설 ' + 'Agent'),
+    ('가설 ' + '에이전트'),
+    ('가설 생성 ' + 'Agent'),
+    ('가설 생성 ' + '에이전트'),
+    ('탐색 ' + 'Agent'),
+    ('탐색 ' + '에이전트'),
+    ('Hypothesis Generation' + ' Agent')
+)
+foreach ($file in $markdownFiles) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    foreach ($pattern in $obsoleteHypothesisAgentPatterns) {
+        if ([regex]::IsMatch($text, [regex]::Escape($pattern), [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+            Add-Failure "non-canonical Hypothesis Agent name '$pattern': $($file.FullName)"
+        }
+    }
+}
+
+# Current operational documents use one non-LLM name for global workflow
+# control. Orchestration is not an LLM role and therefore has no prompt or
+# agent_role enum. Historical decision/spec records are intentionally excluded.
+$currentOperationalMarkdownFiles = @(
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'README.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'CONTRIBUTING.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'docs/GLOSSARY.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'docs/DOCUMENT_GUIDE.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'docs/README.md'))
+) + @(
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5') -Recurse -File -Filter '*.md'
+) + @(
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/governance') -Recurse -File -Filter '*.md'
+) + @(
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/review') -Recurse -File -Filter '*.md' |
+        Where-Object { $_.FullName -notmatch '[\\/]decisions[\\/]' }
+)
+foreach ($file in $currentOperationalMarkdownFiles) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    if ($text.Contains('Orchestration Agent')) {
+        Add-Failure "current document still treats non-LLM Orchestration Runtime as an Agent: $($file.FullName)"
+    }
+    if ($text.Contains('Model' + 'Profile')) {
+        Add-Failure "undefined ModelProfile term; use provider_profile_ref + model: $($file.FullName)"
+    }
+}
+
+# Keep display names, LLM/non-LLM identity, and machine-facing role values in
+# one glossary table. Short names are allowed only as the documented aliases;
+# the ambiguous formal spellings below must not reappear in current documents.
+$glossaryPath = Join-Path $repoRoot 'docs/GLOSSARY.md'
+$glossaryText = Get-Content -Raw -Encoding UTF8 -LiteralPath $glossaryPath
+$requiredComponentNameMarkers = @(
+    '## 구성요소 공식 이름',
+    '| `Pro Agent` | LLM | `PRO` | `Pro` |',
+    '| `Con Agent` | LLM | `CON` | `Con` |',
+    '| `CWE Labeling Agent` | LLM | `CWE_LABELING` | `CWE Labeling` |',
+    '| `Technical Evidence Gate Agent` | LLM | `TECHNICAL_GATE` | `Technical Gate` |',
+    '| `Rule Scope Impact Gate Agent` | LLM | `RULE_SCOPE_GATE` | `Rule Scope Gate` |',
+    '| `Reproduction Setup Automation` | 비-LLM | `REPRODUCTION_SETUP_AUTOMATION` | `Setup Automation` |',
+    '| `Reproduction Session Manager` | 비-LLM | `REPRODUCTION_SESSION_MANAGER` | `Session Manager` |',
+    '`Primitive DB`는 특정 DB 제품이나 별도 데이터베이스 모듈의 이름이 아니라',
+    '| `SUPERSEDED` | 변경 이력을 보존한 과거 문서이며 현재 구현 계약으로 사용하지 않습니다. 문서 상단의 현재 정본 링크를 따릅니다. |'
+)
+foreach ($marker in $requiredComponentNameMarkers) {
+    if (-not $glossaryText.Contains($marker)) {
+        Add-Failure "missing canonical component-name glossary marker: $marker"
+    }
+}
+
+$ambiguousCurrentComponentNames = @(
+    'Pro/Con Agents',
+    'Pro·Con Agent',
+    'R5-01 CWE Labeling',
+    'Technical Gate Agent Runtime',
+    'Technical Gate runtime',
+    'Rule Scope Gate Agent',
+    'Rule Scope Gate runtime',
+    'Rule Scope Agent',
+    ('R7 Sandbox Setup' + ' Automation'),
+    ('R7 Setup' + ' Automation')
+)
+$obsoleteReproductionSetupIdentity = 'R7_' + 'SETUP_AUTOMATION'
+foreach ($file in $currentOperationalMarkdownFiles) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    foreach ($name in $ambiguousCurrentComponentNames) {
+        if ($text.Contains($name)) {
+            Add-Failure "ambiguous current component name '$name': $($file.FullName)"
+        }
+    }
+    if ($text.Contains('FindingCandidate')) {
+        Add-Failure "FindingCandidate must not look like a separate contract object: $($file.FullName)"
+    }
+    if ($text.Contains($obsoleteReproductionSetupIdentity)) {
+        Add-Failure "obsolete Reproduction Setup Automation identity '$obsoleteReproductionSetupIdentity': $($file.FullName)"
+    }
+    foreach ($snapshotPhrase in @('공통 입력 snapshot', 'CAS snapshot')) {
+        if ($text.Contains($snapshotPhrase)) {
+            Add-Failure "removed Snapshot module terminology remains in current document '$snapshotPhrase': $($file.FullName)"
+        }
+    }
+}
+
+foreach ($file in $markdownFiles) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    if ($text.Contains('opengrep')) {
+        Add-Failure "non-canonical OpenGrep product spelling: $($file.FullName)"
+    }
+}
+
+$supersededSpecRequirements = @(
+    @{
+        Path = 'docs/superpowers/specs/2026-08-28-r4-03-authority-boundary-design.md'
+        Markers = @('> 상태: **SUPERSEDED**', '../../architecture-v5/03-agent-roles-and-orchestration.md', '../../architecture-v5/04-verification-and-dynamic-reproduction.md', '../../architecture-v5/08-lightweight-data-contracts.md', '../../architecture-v5/10-security-boundaries.md')
+    },
+    @{
+        Path = 'docs/superpowers/specs/2026-08-31-role-boundary-alignment-design.md'
+        Markers = @('> 상태: **SUPERSEDED**', '../../architecture-v5/03-agent-roles-and-orchestration.md', '../../architecture-v5/04-verification-and-dynamic-reproduction.md', '../../architecture-v5/08-lightweight-data-contracts.md')
+    },
+    @{
+        Path = 'docs/superpowers/specs/2026-09-03-r6-r7-poc-required-design.md'
+        Markers = @('> 상태: **SUPERSEDED**', '../../architecture-v5/04-verification-and-dynamic-reproduction.md', '../../architecture-v5/08-lightweight-data-contracts.md', '../../review/decisions/ADR-007-r7-autonomous-reproduction-session.md')
+    }
+)
+foreach ($requirement in $supersededSpecRequirements) {
+    $path = Join-Path $repoRoot $requirement.Path
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    foreach ($marker in $requirement.Markers) {
+        if (-not $text.Contains($marker)) {
+            Add-Failure "superseded historical spec is missing marker '$marker': $($requirement.Path)"
+        }
+    }
+}
+
+$agentRolesPath = Join-Path $repoRoot 'docs/architecture-v5/03-agent-roles-and-orchestration.md'
+$agentRolesText = Get-Content -Raw -Encoding UTF8 -LiteralPath $agentRolesPath
+$requiredOrchestrationBoundaryMarkers = @(
+    '## Orchestration Runtime',
+    '비-LLM 전역 제어 구성요소',
+    'Orchestration Runtime에는 LLM prompt, provider 설정, `agent_role`을 배정하지 않는다.'
+)
+foreach ($marker in $requiredOrchestrationBoundaryMarkers) {
+    if (-not $agentRolesText.Contains($marker)) {
+        Add-Failure "missing Orchestration Runtime boundary marker: $marker"
+    }
+}
+
+$providerContractText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/09-llm-provider-session-and-logging.md')
+foreach ($requiredProviderContractMarker in @(
+    'Agent의 이름·역할·입출력 계약은 특정 Provider 또는 모델에 종속되지 않는다.',
+    'exact `ProviderProfile` revision을 가리키는 `provider_profile_ref`, 모델은 `LLMCallSpec.model`로 호출 시점에 함께 고정한다.',
+    '모델 변경은 Agent 역할 변경을 의미하지 않는다.'
+)) {
+    if (-not $providerContractText.Contains($requiredProviderContractMarker)) {
+        Add-Failure "missing provider/model independence rule: $requiredProviderContractMarker"
+    }
+}
+
+$reportTemplatePath = Join-Path $repoRoot 'docs/architecture-v5/12-report-draft-template.md'
+$reportTemplateText = Get-Content -Raw -Encoding UTF8 -LiteralPath $reportTemplatePath
+foreach ($obsoleteReportTemplateText in @(
+    ('`FALSE` ' + '초안'),
+    ('{BASIC | CONDITIONAL_' + 'DEBATE | ALWAYS_DEBATE / reasons}'),
+    ('{SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED}'),
+    ('{DISPROVED | NOT_' + 'DISPROVED | INCONCLUSIVE}')
+)) {
+    if ($reportTemplateText.Contains($obsoleteReportTemplateText)) {
+        Add-Failure "Reporter TRUE-only template contains unreachable state: $obsoleteReportTemplateText"
+    }
+}
+foreach ($requiredReportTemplateText in @(
+    '- 모드: `ALWAYS_DEBATE`',
+    '- 실행 상태: `SUCCEEDED`',
+    '- 관측 결과: `SUPPORTED`',
+    'FALSE와 HOLD, 동적 실행이 실패·차단·취소·불충분한 가설은 ReportDraft를 만들지 않는다.'
+)) {
+    if (-not $reportTemplateText.Contains($requiredReportTemplateText)) {
+        Add-Failure "Reporter TRUE-only template is missing marker: $requiredReportTemplateText"
+    }
+}
+
+$findingsPath = Join-Path $repoRoot 'docs/review/FINDINGS.md'
+$findingsText = Get-Content -Raw -Encoding UTF8 -LiteralPath $findingsPath
+foreach ($requiredFindingMarker in @(
+    '| B-007 | OPEN |',
+    '| B-008 | OPEN |',
+    '현재 열린 Blocker는 2개입니다.',
+    '| H-011 | RESOLVED |'
+)) {
+    if (-not $findingsText.Contains($requiredFindingMarker)) {
+        Add-Failure "FINDINGS status is not synchronized with implementation blockers: $requiredFindingMarker"
+    }
+}
+$openQuestionsText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/governance/OPEN_QUESTIONS.md')
+foreach ($requiredOpenQuestionMarker in @(
+    '일부 core output의 저장 연결 확정',
+    '분석 시작 단계 Docker baseline 준비의 실행 계약 확정'
+)) {
+    if (-not $openQuestionsText.Contains($requiredOpenQuestionMarker)) {
+        Add-Failure "OPEN_QUESTIONS is missing an implementation Blocker: $requiredOpenQuestionMarker"
+    }
+}
+
 $diagramPath = Join-Path $repoRoot 'docs/architecture-v5/13-architecture-diagrams.md'
 $wikiDiagramPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/diagrams.md'
 $diagramText = Get-Content -Raw -Encoding UTF8 -LiteralPath $diagramPath
@@ -828,8 +1035,8 @@ $requiredActionRequesterBindings = [ordered]@{
     CALL_LLM = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, POLICY_PARSER, DYNAMIC_REPRODUCTION'
     FETCH_POLICY = 'POLICY_COLLECTOR'
     REQUEST_DYNAMIC_REPRO = 'VERIFICATION'
-    RUN_SANDBOX = 'R7_SETUP_AUTOMATION'
-    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, POLICY_PARSER, PRIMITIVE_ADMISSION_RUNTIME, DYNAMIC_REPRODUCTION, R7_SETUP_AUTOMATION, SANDBOX_CONTROLLER, REPRODUCTION_SESSION_MANAGER, RECOVERY'
+    RUN_SANDBOX = 'REPRODUCTION_SETUP_AUTOMATION'
+    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, POLICY_PARSER, PRIMITIVE_ADMISSION_RUNTIME, DYNAMIC_REPRODUCTION, REPRODUCTION_SETUP_AUTOMATION, SANDBOX_CONTROLLER, REPRODUCTION_SESSION_MANAGER, RECOVERY'
     CALL_TECHNICAL_GATE = 'VERIFICATION'
     CALL_RULE_SCOPE_GATE = 'VERIFICATION'
     CREATE_REPORT_DRAFT = 'VERIFICATION'
@@ -873,8 +1080,6 @@ foreach ($field in $requiredActionDecisionFields) {
 
 $promptRegistryBlock = [regex]::Match($contractText, '(?ms)^PromptRegistryEntry:\s*(.*?)^PromptContextBinding:').Groups[1].Value
 $promptPayloadBlock = [regex]::Match($contractText, '(?ms)^PromptPayload:\s*(.*?)^LLMCallSpec:').Groups[1].Value
-$modelRouteBlock = [regex]::Match($contractText, '(?ms)^ModelRoute:\s*(.*?)^ModelProfile:').Groups[1].Value
-$modelProfileBlock = [regex]::Match($contractText, '(?ms)^ModelProfile:\s*(.*?)^ExecutionLimits:').Groups[1].Value
 $executionLimitsBlock = [regex]::Match($contractText, '(?ms)^ExecutionLimits:\s*(.*?)^LLMRetryPolicy:').Groups[1].Value
 $retryPolicyBlock = [regex]::Match($contractText, '(?ms)^LLMRetryPolicy:\s*(.*?)^LLMToolPolicy:').Groups[1].Value
 $toolPolicyBlock = [regex]::Match($contractText, '(?ms)^LLMToolPolicy:\s*(.*?)^PromptRedactionPolicy:').Groups[1].Value
@@ -885,8 +1090,6 @@ $promptInputSlotBlock = [regex]::Match($contractText, '(?ms)^PromptInputSlot:\s*
 $promptContextBindingBlock = [regex]::Match($contractText, '(?ms)^PromptContextBinding:\s*(.*?)^PromptPayload:').Groups[1].Value
 
 foreach ($contract in @(
-    @{ Name = 'ModelRoute'; Block = $modelRouteBlock; Fields = @('provider_profile_ref:', 'model:', 'priority:', 'use:', 'required_capabilities:') },
-    @{ Name = 'ModelProfile'; Block = $modelProfileBlock; Fields = @('meta:', 'profile_key:', 'agent_role:', 'task_kind:', 'routes:', 'status:') },
     @{ Name = 'ExecutionLimits'; Block = $executionLimitsBlock; Fields = @('meta:', 'limits_key:', 'token_budget:', 'timeout_ms:', 'max_parallel_calls:', 'max_calls_per_work:') },
     @{ Name = 'LLMRetryPolicy'; Block = $retryPolicyBlock; Fields = @('meta:', 'policy_key:', 'max_schema_repairs:', 'max_semantic_repairs:', 'max_retries:', 'max_failovers:', 'retryable_statuses:') },
     @{ Name = 'LLMToolPolicy'; Block = $toolPolicyBlock; Fields = @('meta:', 'policy_key:', 'allowed_tools:', 'forbidden_actions:', 'sandbox_only:') },
@@ -901,7 +1104,7 @@ foreach ($contract in @(
     }
 }
 
-foreach ($field in @('meta:', 'prompt_key:', 'agent_role:', 'task_kind:', 'template_ref:', 'template_version:', 'input_slots:', 'forbidden_context_kinds:', 'output_schema_ref:', 'session_policy:', 'model_profile_ref:', 'provider_profile_refs:', 'execution_limits_ref:', 'retry_policy_ref:', 'semantic_validator_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'result_kind:', 'status:', 'owner_role:', 'reviewer_roles:')) {
+foreach ($field in @('meta:', 'prompt_key:', 'agent_role:', 'task_kind:', 'template_ref:', 'template_version:', 'input_slots:', 'forbidden_context_kinds:', 'output_schema_ref:', 'session_policy:', 'provider_profile_refs:', 'execution_limits_ref:', 'retry_policy_ref:', 'semantic_validator_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'result_kind:', 'status:', 'owner_role:', 'reviewer_roles:')) {
     if (-not $promptRegistryBlock.Contains($field)) {
         Add-Failure "missing PromptRegistryEntry field: $field"
     }
@@ -921,7 +1124,7 @@ foreach ($role in $requiredPromptRoles) {
 $llmSpecBlock = [regex]::Match($contractText, '(?ms)^LLMCallSpec:\s*(.*?)^LLMInvocationRequest:').Groups[1].Value
 $llmRequestBlock = [regex]::Match($contractText, '(?ms)^LLMInvocationRequest:\s*(.*?)^```').Groups[1].Value
 foreach ($block in @($llmSpecBlock, $llmRequestBlock)) {
-    foreach ($field in @('llm_call_id:', 'agent_role:', 'task_kind:', 'provider_profile_ref:', 'model:', 'session_policy:', 'context_refs:', 'prompt_registry_entry_ref:', 'prompt_key:', 'prompt_template_ref:', 'prompt_template_version:', 'prompt_payload_ref:', 'model_profile_ref:', 'execution_limits_ref:', 'retry_policy_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'semantic_validator_ref:', 'output_schema_ref:', 'output_schema:', 'token_budget:', 'timeout_ms:')) {
+    foreach ($field in @('llm_call_id:', 'agent_role:', 'task_kind:', 'provider_profile_ref:', 'model:', 'session_policy:', 'context_refs:', 'prompt_registry_entry_ref:', 'prompt_key:', 'prompt_template_ref:', 'prompt_template_version:', 'prompt_payload_ref:', 'execution_limits_ref:', 'retry_policy_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'semantic_validator_ref:', 'output_schema_ref:', 'output_schema:', 'token_budget:', 'timeout_ms:')) {
         if (-not $block.Contains($field)) {
             Add-Failure "missing exact LLM call field: $field"
         }
@@ -957,7 +1160,7 @@ if (-not $llmRequestBlock.Contains('call_spec_ref:')) {
     Add-Failure 'LLMInvocationRequest missing call_spec_ref'
 }
 $llmLogBlock = [regex]::Match($contractText, '(?ms)^LLMInvocationLog:\s*(.*?)^```').Groups[1].Value
-foreach ($field in @('agent_role:', 'task_kind:', 'provider_profile_ref:', 'model:', 'prompt_registry_entry_ref:', 'prompt_key:', 'prompt_template_ref:', 'prompt_template_version:', 'prompt_payload_ref:', 'model_profile_ref:', 'execution_limits_ref:', 'retry_policy_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'semantic_validator_ref:', 'output_schema_ref:', 'context_refs:', 'parsed_output_ref:')) {
+foreach ($field in @('agent_role:', 'task_kind:', 'provider_profile_ref:', 'model:', 'prompt_registry_entry_ref:', 'prompt_key:', 'prompt_template_ref:', 'prompt_template_version:', 'prompt_payload_ref:', 'execution_limits_ref:', 'retry_policy_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'semantic_validator_ref:', 'output_schema_ref:', 'context_refs:', 'parsed_output_ref:')) {
     if (-not $llmLogBlock.Contains($field)) {
         Add-Failure "LLMInvocationLog missing prompt trace field: $field"
     }
@@ -970,7 +1173,7 @@ $promptRuntimePath = Join-Path $repoRoot 'docs/architecture-v5/implementation/05
 if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
     Add-Failure 'missing R3-05 prompt runtime design'
 } else {
-    $promptRuntimeText = Get-Content -Raw -LiteralPath $promptRuntimePath
+    $promptRuntimeText = Get-Content -Raw -Encoding UTF8 -LiteralPath $promptRuntimePath
     foreach ($marker in @('DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED', 'PromptRegistryEntry', 'PromptPayload', 'POLICY_PARSER', 'DYNAMIC_REPRODUCTION', 'OpenAI API, Codex 구독, Anthropic API, Claude 구독', '`PMT-01`', '`PMT-15`', 'Orchestration 자체의 별도 LLM prompt는 만들지 않는다', '한 호출당 한 result kind의 structured output artifact 하나', 'DynamicReproductionConclusion', '#90에서 채택된 각 adapter profile fixture', 'HypothesisProposal[]', 'model.hypothesis.generate-initial.quality-v1', 'model.hypothesis.duplicate-review.quality-v1', 'model.verification.technical-revise.quality-v1', 'model.dynamic-reproduction.interpret-attempt.quality-v1', 'PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', '/sanitizer_candidates', '/validator_candidates')) {
         if (-not $promptRuntimeText.Contains($marker)) {
             Add-Failure "R3-05 prompt runtime is missing marker: $marker"
@@ -1026,6 +1229,9 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
     foreach ($requiredInput in @('indexes: PrimitiveIndexState($) REQUIRED_MANY', 'lineage_hypotheses: VulnerabilityHypothesis(', 'lineage_results: ChainingResult(/primitive_match_candidates,/input_primitive_refs)` OPTIONAL_MANY')) {
         if (-not $chainingTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 CHAINING row is missing lineage input: $requiredInput" }
     }
+    if ($chainingTaskRow.Contains('PrimitiveAdmissionDecision')) {
+        Add-Failure 'R3-05 CHAINING prompt must not re-read PrimitiveAdmissionDecision'
+    }
     foreach ($cardinalityRule in @(
         '`REQUIRED_ONE`은 정확히 1개',
         '`OPTIONAL_ONE`은 0개 또는 1개',
@@ -1078,8 +1284,8 @@ foreach ($marker in @(
 )) {
     if (-not $contractText.Contains($marker)) { Add-Failure "missing reviewed prompt contract rule: $marker" }
 }
-$promptAgentWikiText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/agents.md')
-$promptContractWikiText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/common-contracts.md')
+$promptAgentWikiText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/agents.md')
+$promptContractWikiText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/common-contracts.md')
 foreach ($rule in @(
     @{ Name = 'Agent Wiki links prompt runtime'; Text = $promptAgentWikiText; Marker = '[R3-05 Agent 프롬프트 구조](../implementation/05-prompt-runtime.md)' },
     @{ Name = 'Agent Wiki names eleven LLM roles'; Text = $promptAgentWikiText; Marker = '프롬프트가 필요한 역할은 Hypothesis, Pro, Con, Verification, Policy Parser, Dynamic Reproduction Agent, Chaining, CWE Labeling, Technical Gate, Rule Scope Gate, Reporter의 11개입니다.' },
@@ -1223,7 +1429,7 @@ foreach ($code in $requiredAuthorityErrors) {
 }
 
 $authorityScenarioMarkers = @(
-    'Orchestration이 `TRUE`를 저장하려 함',
+    'Orchestration Runtime이 `TRUE`를 저장하려 함',
     'Hypothesis Agent가 final verdict를 출력',
     'Technical Gate가 Verification verdict를 바꾸려 함',
     'Technical Gate 없이 Rule Scope Gate 호출',
@@ -1306,7 +1512,7 @@ $sandboxReviewPatterns = @(
     },
     @{
         Name = 'Dynamic records have distinct R6 and R7 owners'
-        Pattern = '(?s)`dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`.*?`environment_requirements -> EnvironmentRequirements -> DYNAMIC_REPRODUCTION`.*?`reproduction_plan -> ReproductionPlan -> DYNAMIC_REPRODUCTION`.*?`environment_recipe -> EnvironmentRecipe -> R7_SETUP_AUTOMATION`.*?`sandbox_command_record -> SandboxCommandRecord -> REPRODUCTION_SESSION_MANAGER`.*?`agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`.*?`poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`.*?`dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`'
+        Pattern = '(?s)`dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`.*?`environment_requirements -> EnvironmentRequirements -> DYNAMIC_REPRODUCTION`.*?`reproduction_plan -> ReproductionPlan -> DYNAMIC_REPRODUCTION`.*?`environment_recipe -> EnvironmentRecipe -> REPRODUCTION_SETUP_AUTOMATION`.*?`sandbox_command_record -> SandboxCommandRecord -> REPRODUCTION_SESSION_MANAGER`.*?`agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`.*?`poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`.*?`dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`'
     },
     @{
         Name = 'R7 sandbox and R8 lifecycle profiles have distinct exact contracts'
@@ -2062,7 +2268,7 @@ foreach ($marker in $verificationChainingScenarioMarkers) {
 }
 
 $requiredVerificationChainingRules = @(
-    'Orchestration Agent는 한 가설 안에서 Pro/Con·동적 재현·두 Gate·Reporter·Chaining의 호출 여부나 Technical `REVISE` 목적지를 결정하지 않는다.',
+    'Orchestration Runtime은 정해진 전이표와 검증 결과에 따라 work를 등록·배정할 뿐, 한 가설 안에서 Pro/Con·동적 재현·두 Gate·Reporter·Chaining의 호출 여부나 Technical `REVISE` 목적지를 판단하지 않는다.',
     '같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 전달',
     'Gate 전 TRUE는 result가 있는 Primitive가 될 수 없다.',
     'origin=VERIFICATION',
@@ -2208,7 +2414,7 @@ $requiredValidatedPocContractMarkers = @(
     '`dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`',
     '`environment_requirements -> EnvironmentRequirements -> DYNAMIC_REPRODUCTION`',
     '`reproduction_plan -> ReproductionPlan -> DYNAMIC_REPRODUCTION`',
-    '`environment_recipe -> EnvironmentRecipe -> R7_SETUP_AUTOMATION`',
+    '`environment_recipe -> EnvironmentRecipe -> REPRODUCTION_SETUP_AUTOMATION`',
     '`agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`',
     '`poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`',
     '`dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`',
@@ -3084,7 +3290,7 @@ $requiredR301RunInitFanoutRules = @(
     'Docker baseline 준비는 가설별 동적 재현을 대신하지 않는 사전 최적화다.',
     'run-init Docker branch는 `EnvironmentRecipe`, `SandboxEnvironment`, `AgentLog`, PoC candidate 또는 validated PoC를 생산하지 않는다.',
     '가설 간 writable container를 공유하지 않는다.',
-    'Docker branch가 실패하거나 준비 결과를 신뢰할 수 없으면 R7 Setup Automation이 Step 12에서 clean 환경을 새로 만든다.',
+    'Docker branch가 실패하거나 준비 결과를 신뢰할 수 없으면 Reproduction Setup Automation이 Step 12에서 clean 환경을 새로 만든다.',
     'R3 runtime은 세 branch의 등록과 상태 관측만 담당하고 Docker image·container를 직접 만들지 않는다.',
     'R7은 network 접근과 CPU·RAM·disk·PID·요청 가능 최대 시간 등 Docker 실행의 강제 상한을 소유한다.',
     'R8은 분석 전체와 branch의 시간·비용·work·retry 예산 및 실제 자원 사용량·성공률 평가를 소유한다.',
@@ -3187,6 +3393,64 @@ foreach ($marker in $resultContractMarkers) {
 
 $activeArchitectureText = $activeDocumentationText
 
+$providerDecisionPath = Join-Path $repoRoot 'docs/architecture-v5/implementation/04-provider-decision.md'
+$providerDecisionText = if (Test-Path -LiteralPath $providerDecisionPath) { Get-Content -LiteralPath $providerDecisionPath -Raw -Encoding UTF8 } else { '' }
+$providerCapabilityBlock = [regex]::Match($providerDecisionText, '(?ms)^ProviderCapabilities:\s*(.*?)^```').Groups[1].Value
+$providerExitSection = [regex]::Match($providerDecisionText, '(?ms)^## 10\. 미완료 증거와 종료 조건\s*(.*)$').Groups[1].Value
+$architectureReadmeText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/README.md')
+
+if ([string]::IsNullOrWhiteSpace($providerDecisionText)) {
+    Add-Failure 'missing R3-04 provider decision document'
+}
+if (-not $providerCapabilityBlock.Contains('runtime_tool_loop:')) {
+    Add-Failure 'ProviderCapabilities must declare runtime_tool_loop support'
+}
+foreach ($marker in @(
+    'provider 내장 tool은 계속 차단',
+    'SASTSIMI Runtime이 model의 구조화된 요청을 받아',
+    '현재 `DYNAMIC_REPRO` work에서 `agent_role=DYNAMIC_REPRODUCTION`',
+    '`DYNAMIC_REPRO`는 작업 종류이고 `DYNAMIC_REPRODUCTION`은 Dynamic Reproduction Agent의 역할·생산자 enum',
+    'Runtime Validator는 요청 역할·현재 `DYNAMIC_REPRO` work·attempt·상태와 exact 설정 reference를 검사',
+    'Sandbox Controller는 host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace 같은 Sandbox 외부 경계를 강제',
+    'exact `SandboxPolicyDecision`을 같은 attempt의 `AgentLog`와 `DynamicReproductionResult.policy_decision_ref`에 연결',
+    '`PVD-16`',
+    'Issue #90도 R7 실행 지원을 완료했다고 판단하기 전에는 `PVD-16`의 통과 증거를 종료 조건에 포함'
+)) {
+    if (-not $providerDecisionText.Contains($marker)) {
+        Add-Failure "missing R7 runtime-managed tool-loop provider rule: $marker"
+    }
+}
+Write-Output 'R3-04 provider runtime tool-loop rules: 9'
+
+foreach ($marker in @(
+    'ProviderCapabilities:',
+    'ProviderValidationTest:',
+    'ProviderValidationEvidence:',
+    'ClientExecutionProfile:',
+    'ProviderProfile:',
+    'meta: RecordMeta with hypothesis_id null and attempt_id null',
+    'runtime_tool_loop: SUPPORTED | UNSUPPORTED | UNVERIFIED',
+    'data_kind=provider_profile',
+    '이전 분석의 `StoredDataRef`를 재사용하지 않는다',
+    '`ClientExecutionProfile.verification_evidence_ref`',
+    'ProviderProfile.model`과 같아야 한다',
+    'PROVIDER_PROFILE_DENIED | CAPABILITY_UNSUPPORTED'
+)) {
+    if (-not $contractText.Contains($marker)) {
+        Add-Failure "missing canonical ProviderProfile contract marker in 08: $marker"
+    }
+}
+if ($activeDocumentationText.Contains('ModelProfile')) {
+    Add-Failure 'obsolete or undefined ModelProfile term remains; use ProviderProfile.model'
+}
+if (-not $providerExitSection.Contains('`PVD-16` 결과')) {
+    Add-Failure 'R3-04 closing conditions must require PVD-16 evidence for R7-enabled profiles'
+}
+if (-not $architectureReadmeText.Contains('./implementation/04-provider-decision.md')) {
+    Add-Failure 'Architecture v5 README must link the R3-04 provider decision document'
+}
+Write-Output 'R4 ProviderProfile canonical contract rules: 15'
+
 $forbiddenR8OwnershipMarkers = @(
     '그 R8 profile의 수치',
     'R8 profile의 CPU',
@@ -3208,6 +3472,7 @@ if ($gitCheckExitCode -ne 0) {
 }
 
 Write-Output "Markdown files: $($markdownFiles.Count)"
+Write-Output "Canonical Hypothesis Agent aliases blocked: $($obsoleteHypothesisAgentPatterns.Count)"
 Write-Output "Mermaid blocks: $($diagramBlocks.Count) canonical / $($wikiDiagramBlocks.Count) Wiki"
 Write-Output 'Finding lifecycle Rule Scope -> FINDING_NORMALIZE bypass guard: canonical + Wiki'
 Write-Output "R4-02 required contract names: $($requiredContractNames.Count)"

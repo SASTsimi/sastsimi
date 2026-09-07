@@ -17,7 +17,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 ## 전체 흐름을 쉽게 나누면
 
 1. **입력·코드 사실·정책 준비**: 저장소를 실행별 로컬 폴더에 clone하고 분석할 commit을 checkout한 뒤 AST·SAST와 공식 정책 준비를 별도 work로 병렬 실행합니다. 정책은 실행당 한 번 준비해 가설들이 공유하며 `StaticFactBundle`에는 넣지 않습니다.
-2. **가설과 검증**: LLM이 취약점 가능성을 제안하고, Orchestration이 등록·배정한 뒤 Verification Agent가 코드·찬성·반대 근거를 검토하고 필요한 동적 재현 목적을 R7에 요청합니다.
+2. **가설과 검증**: Hypothesis Agent가 취약점 가능성을 제안하고, 비-LLM Orchestration Runtime이 검증·등록·배정한 뒤 Verification Agent가 코드·찬성·반대 근거를 검토하고 필요한 동적 재현 목적을 R7에 요청합니다.
 3. **동적 재현과 연계 탐색**: Dynamic Reproduction Agent가 환경·간단한 plan을 준비하고 외부 경계 안의 Docker에서 PoC를 자율 실행합니다. Session Manager가 AgentLog·validated PoC·동적 결과를 확정합니다. 모든 final TRUE에는 validated PoC가 필요합니다. HOLD는 하나 이상의 `required_primitive_candidates`가 있을 때만 Primitive matching에 사용하고, 후보가 없으면 Primitive와 Chaining 작업을 만들지 않습니다. TRUE는 Technical `ACCEPT` 뒤 run 초기화에서 준비된 공식 정책의 금지 테스트 위반 여부를 별도로 확인해 `PrimitiveAdmissionDecision=ALLOW`인 경우에만 사용합니다.
 4. **CWE와 최종 검토·자동화 종료**: R5-01이 final TRUE마다 exact Verification에 맞는 current CWELabel을 만들고 기술 근거와 공식 정책을 차례로 검토한 뒤, Reporter가 내부 초안을 만들고 결과를 저장하면 Agent 자동화가 끝납니다.
 
@@ -27,8 +27,8 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 2. `Repository Loader`가 저장소를 `git clone`하고 분석할 `commit_id`를 checkout해 `CodeWorkspace`를 준비한다.
 3. AST·SAST와 실행 단위 정책 준비를 서로 독립적으로 병렬 실행한다. Policy Collector는 공식 원문을 수집하고 LLM Policy Parser가 exact 원문을 `PolicyParserResult`로 구조화하면, Collector가 이를 검증·취합해 `RunPolicyState`를 확정한다.
 4. 결과를 exact 규칙 실행 기록이 연결된 `StaticFactBundle`로 정규화한다.
-5. Orchestration Agent가 초기 가설 생성 실행을 시작한다.
-6. 저비용 Hypothesis Agent를 호출한다.
+5. Orchestration Runtime이 초기 가설 work를 등록하고 Hypothesis Agent 호출을 요청한다.
+6. Hypothesis Agent를 호출한다.
 7. schema-valid `HypothesisProposal(origin=INITIAL)`을 전역 등록한다.
 8. 각 등록 가설에 Verification owner를 할당하고 가설 내부 제어권을 넘긴다.
 9. Verification이 entity·위치·경로를 기준으로 필요한 코드 문맥을 조회한다.
@@ -94,6 +94,8 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 ## 구현 준비 문서
 
 1. [R3-01 22단계 구현 모듈·입출력·저장 위치 매핑](./implementation/01-module-map.md) — 각 단계를 실제 프로그램 경계와 테스트 책임으로 옮긴 문서입니다.
+2. [R3-02 파트 간 계약 준수·부정 테스트 계획](./implementation/02-contract-test-plan.md) — 정상·오류·권한 위반 입력에서 각 모듈이 무엇을 허용하고 차단해야 하는지 case별로 정리한 문서입니다.
+3. [R3-04 LLM Provider·인증 경로 결정](./implementation/04-provider-decision.md) — OpenAI·Codex·Anthropic·Claude의 API Key·공식 구독 연결 경계와 지원 판정 시험을 정리한 문서입니다.
 
 ## 문서 적용 범위
 

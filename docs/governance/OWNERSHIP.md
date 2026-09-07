@@ -38,7 +38,7 @@
 - R7은 요청 목적·가설을 바꾸지 않습니다. R7 sandbox policy owner는 `sandbox_profile_ref`의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 소유·확정합니다. `RUN_SANDBOX`는 요청 당시 `RunPolicyState`를 감사 reference로 기록하고 `LOCAL_ONLY`를 강제합니다. current CodeWorkspace clone·same-attempt mock/fixture·격리 network만 허용하며 출처 불명/live asset·외부 계정·허용되지 않은 egress를 차단합니다. 정책 freshness 변화만으로 local-only 허가를 취소하지 않으며, Sandbox 안에서 command·PoC·관찰·재시도를 자율적으로 선택해도 이 입장 경계를 우회할 수 없습니다.
 - 모든 final TRUE에는 `SUCCEEDED + SUPPORTED` 동적 결과와 validated `poc_ref`가 필요합니다. 같은 Dynamic Reproduction Agent session의 command·PoC·환경 조정은 현재 attempt를 유지하고, session 재시작만 같은 work의 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개만 새 `attempt_id`·`trigger=RESUME`를 사용합니다. 대기 중에만 `BLOCKED`이며 복구 불가능하거나 한도를 소진하면 verdict 없는 `FAILED`로 끝내고 `FALSE | HOLD`로 바꾸지 않습니다.
 - R8은 `DynamicReproductionLifecycleProfile(data_kind=dynamic_reproduction_lifecycle_profile)`의 호출 전 work 잔여 시간 검사와 새 attempt 한도만 소유합니다. 초안은 새 attempt 4회(최초 별도, 총 5회)이며 같은 session 조정은 세지 않습니다. trusted resource policy registry runtime이 승인된 immutable revision을 게시하고 Runtime Validator가 `BUDGET_EXCEEDED`와 attempt 한도를 강제합니다.
-- Technical `REVISE`는 Orchestration이나 R7이 목적지를 고르지 않고 같은 ACTIVE `VerificationAssignment`의 R6 owner에게 돌아갑니다.
+- Technical `REVISE`는 Orchestration Runtime이나 R7이 목적지를 고르지 않고 같은 ACTIVE `VerificationAssignment`의 R6 owner에게 돌아갑니다.
 - R5-02 Rule Scope Gate는 공식 정책과 실제 재현 근거를 읽고 금지 테스트 위반 여부를 독립 `testing_restriction_compliance`로 판단합니다. 일반 `rule_compliance`나 `TESTING_RESTRICTION` link 존재만으로 이 값을 대신 추정하지 않습니다. `source_ref + source_locator`의 공식 원문을 확인할 수 없거나 Parser 정규화가 원문과 모순되면 해당 영역을 fail-closed(`UNCERTAIN + DENY`)하고, `reward_conditions`를 `report_permission`과 같은 의미로 취급하지 않으며, Gate evaluation order는 정책 준비 시점 변경과 무관하게 유지합니다.
 - 정책 준비는 workspace가 준비된 뒤 정적 도구와 독립 병렬로 실행당 한 번 수행합니다. 비-LLM Policy Collector는 run 시작 때 exact `PolicyCacheRecord`를 재사용하거나 공식 원문·출처·hash를 새로 수집하고, LLM Policy Parser는 cache miss에서만 exact 원문을 구조화합니다. 매 분석의 새 `RunPolicyState`를 같은 실행의 모든 가설이 공유하며 준비 완료 뒤 run 종료까지 정책 reference를 바꾸지 않습니다. 준비 실패(`COLLECTION_FAILED`, parser failure)는 program-policy semantic dependency가 있는 작업만 fail-closed시키고 `VerificationResult` verdict와 분리합니다. 정책을 StaticFactBundle이나 Hypothesis 사전 scope 필터로 사용하지 않습니다.
 - R5-02는 Parser 항목과 Rule Scope 의미 경계를, R7은 `LOCAL_ONLY` Sandbox 강제 가능성을, R8은 run 시작의 freshness 기준·cache hit/miss·거절 사유와 수집 retry·timeout 지표를 확인합니다. R4는 run-neutral cache·run-local state의 exact schema와 reference, 단일 active work, run 중 정책 불변과 새 run 요구 조건을 유지합니다.
@@ -77,7 +77,7 @@ PM은 하위 Issue를 대신 세세하게 작성하지 않습니다. PM은 역�
 ## 권한 분리
 
 - Hypothesis Agent는 verdict·Finding을 만들지 않습니다.
-- Orchestration Agent는 proposal을 검증·등록하고 Verification 배정을 제안하지만 가설 내부 작업을 선택하지 않습니다. 실제 owner는 trusted runtime의 ACTIVE `VerificationAssignment`로 저장합니다.
+- 비-LLM Orchestration Runtime은 trusted validation을 통과한 proposal을 등록하고 Verification을 배정하지만 가설 내부 작업을 선택하지 않습니다. 실제 owner는 ACTIVE `VerificationAssignment`로 저장합니다.
 - Verification Agent가 가설 내부 Context·찬반·동적 재현·Gate 보완 흐름과 기술 verdict를 소유하지만 Runtime Validator를 우회하거나 외부 공개를 결정하지 않습니다. `REVISE`도 같은 assignment owner의 새 VERIFICATION work로 처리합니다.
 - Chaining Agent는 upstream Primitive의 `result`가 downstream Primitive의 특정 `input`을 충족하는 match와 새 가설만 제안합니다. 조상 계보의 Primitive를 현재 후보에서 제외하고, work 시작 시 고정한 exact Primitive·index reference와 다른 결과는 저장할 수 없습니다. 시작 뒤 current index가 갱신된 사실만으로 진행 중 work를 무효화하지 않습니다.
 - R5-01 `CWE_LABELING`은 final TRUE마다 exact Verification revision을 직접 가리키는 current `CWELabel`을 만듭니다. 새 Verification에는 같은 CWE를 유지해도 새 label revision이 필요합니다.

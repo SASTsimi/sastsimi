@@ -6,11 +6,11 @@
 
 | ID | 쉬운 의미 | 누가 처음 만드나요? |
 |---|---|---|
-| `analysis_id` | 전체 분석 한 번의 번호 | Orchestration runtime |
+| `analysis_id` | 전체 분석 한 번의 번호 | Orchestration Runtime |
 | `workspace_id` | 로컬에서 분석하는 코드 폴더 번호 | Repository Loader |
 | `commit_id` | 분석한 Git commit | Repository Loader가 checkout 뒤 확인 |
 | `hypothesis_id` | 검증할 취약점 가설 번호 | proposal 검증을 통과시킨 runtime |
-| `work_id` | 같은 논리 작업을 처음부터 끝까지 묶는 번호 | Orchestration runtime |
+| `work_id` | 같은 논리 작업을 처음부터 끝까지 묶는 번호 | Orchestration Runtime |
 | `attempt_id` | 재시도 가능한 작업 한 번의 번호 | 작업을 시작하는 runtime |
 | `llm_call_id` | LLM 호출 한 번의 번호 | Agent Runtime |
 | `record_id` | 저장한 결과 한 개의 번호 | 결과를 저장하는 runtime |

@@ -1,5 +1,9 @@
 # Architecture v5 역할별 상위 Issue 경계 정합화 설계
 
+> 상태: **SUPERSEDED**
+>
+> 이 문서는 당시 설계 변경 과정을 보존한 작업 기록이며 현재 구현 계약이 아닙니다. 특히 R6의 `LIMITED_REPRO | FULL_REPRO` 선택, R6의 `ReproductionPlan` 생산, `SandboxStepLog`는 현재 설계에서 제거됐습니다. 현재 정본은 [Agent 역할과 오케스트레이션](../../architecture-v5/03-agent-roles-and-orchestration.md), [검증과 동적 재현](../../architecture-v5/04-verification-and-dynamic-reproduction.md), [경량 데이터 계약](../../architecture-v5/08-lightweight-data-contracts.md)을 따릅니다.
+
 ## 목적
 
 GitHub 상위 Issue `#1–#10`과 저장소의 역할 안내 문서가 Architecture v5의 현재 제어권을 같은 뜻으로 설명하도록 맞춘다. 특히 동적 재현에서 R6 Verification과 R7 Sandbox의 판단·실행 책임을 분리하고, 서로 연결되는 역할에는 정확한 입력·출력과 교차 검토 지점을 함께 적는다.

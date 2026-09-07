@@ -8,21 +8,21 @@
 
 모르는 단어는 [쉬운 용어집](../../GLOSSARY.md)에서 확인하세요.
 
-| Agent | 쉽게 말한 핵심 책임 | 직접 할 수 없는 일 |
+| 구성요소 | 쉽게 말한 핵심 책임 | 직접 할 수 없는 일 |
 |---|---|---|
-| Orchestration | proposal 검증·중복 후보 조회·전역 가설 등록·Verification 배정 제안 | 중복 결론 생성, 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정, runtime enforcement, Finding·공개 결정 |
-| Hypothesis | schema-valid `HYPOTHESIS_ONLY` 제안과 후보가 있을 때 `HypothesisDuplicateReview` 생성 | 후보 목록 밖 중복 대상 선택, verdict, Finding, exploitability 확정 |
+| Orchestration Runtime | 비-LLM 전역 제어: proposal 형식 검사·중복 후보 조회·전역 가설 등록 요청·Verification 배정 요청 | LLM prompt·provider·`agent_role` 사용, 중복 결론 생성, 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정, Runtime Validator 우회, Finding·공개 결정 |
+| Hypothesis Agent | schema-valid `HYPOTHESIS_ONLY` 제안과 후보가 있을 때 `HypothesisDuplicateReview` 생성 | 후보 목록 밖 중복 대상 선택, verdict, Finding, exploitability 확정 |
 | Policy Collector | 공식 정책 원문과 출처 근거를 수집하고 exact 원문·hash를 저장 | 정책 의미·scope·보고 허용 판단 |
 | Policy Parser | Policy Collector가 저장한 exact 원문을 구조화 | Rule Scope 결론·보고 허용 판단, 원문에 없는 정책 추정 |
 | Verification | 한 가설의 Context·Pro/Con, 목적별 `DynamicReproductionRequest`, 반환 결과 소비·판정·Gate 보완·Chaining handoff와 material child 제안 | 환경 요구사항·실행 계획·PoC·동적 결과 생산, Sandbox 직접 실행, 새 claim 무검증 승격 |
 | Dynamic Reproduction Agent | 환경 요구사항·간단한 계획·PoC 초안·동적 근거 해석, Sandbox 안의 자율 실행 | R6 요청 변경, 외부 경계 우회 또는 최종 verdict 판단 |
-| R7 Setup Automation | recipe·image·container 생성/재사용/재생성과 정리 실제 수행 | Dynamic Reproduction Agent 분석, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
+| Reproduction Setup Automation | recipe·image·container 생성/재사용/재생성과 정리 실제 수행 | Dynamic Reproduction Agent 분석, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
 | Sandbox Controller | R7 `sandbox_profile_ref`의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 강제 | 내부 command allowlist, R7 profile 값, R8 잔여 예산·새 attempt, 재현 전략 또는 최종 verdict 판단 |
 | Reproduction Session Manager | 실제 event의 append-only AgentLog, same-attempt validated PoC와 동적 결과 확정 | Dynamic Reproduction Agent 호출·command·retry·cleanup 전략 결정 또는 다른 attempt 혼합 |
 | Pro | 가설 성립 근거 탐색 | 최종 verdict |
 | Con | 반증·보호·도달 불가·restriction 탐색 | 최종 verdict |
 | Chaining | upstream Primitive 결과→downstream Primitive 입력 matching과 새 가설 제안 | 일반 research, dynamic, REVISE, verdict/CWE/Gate/Finding/report 확정 |
-| R5-01 CWE Labeling | final TRUE를 exact CWE 분류 record로 정리 | Verification verdict 변경, 과거 label 재사용, Gate 판정 생성 |
+| CWE Labeling Agent (R5-01 담당) | final TRUE를 exact CWE 분류 record로 정리 | Verification verdict 변경, 과거 label 재사용, Gate 판정 생성 |
 | Technical Evidence Gate | verdict-evidence·코드/동적 연결·CWE·restriction 검토 | verdict 변경 |
 | Rule Scope Impact Gate | run 초기화에서 준비된 current `ProgramPolicyRecord`와 그 공식 원문·현재 hypothesis 사실로 rule/scope·금지 테스트·실제 impact·report permission을 hypothesis마다 검토 | 공식 자료 없는 추정 승인, 정책 수집 실행, Parser 값 무검증 신뢰 |
 | Primitive Admission Runtime | Rule Scope의 금지 테스트 판정과 정책 수집 상태를 정해진 표로 바꿔 체이닝 재료 사용 허용·거절 | 정책 원문 재해석, Gate 결과 변경 |
@@ -31,9 +31,9 @@
 ```text
 Policy Collector → collect exact official policy source and provenance
 Policy Parser → structure the collected exact source → PolicyParserResult → Policy Collector validates and commits RunPolicyState
-Orchestration → proposal validation → runtime narrows duplicate candidates
-Hypothesis → compare exact candidates when needed → registration or duplicate stop
-Orchestration → assign Verification for registered hypotheses
+Orchestration Runtime → proposal validation → narrow duplicate candidates
+Hypothesis Agent → compare exact candidates when needed → registration or duplicate stop
+Orchestration Runtime → request Verification assignment for registered hypotheses
 Verification → context → Pro and Con → initial assessment
 Initial assessment → PoC confirmation request / verdict evidence request / final FALSE or HOLD synthesis
 R7 planning before Sandbox → dependency file contents → EnvironmentRequirements and simple ReproductionPlan
