@@ -48,7 +48,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 | Dynamic Reproduction Agent 같은 session의 자율 조정 | work·attempt·session | 해당 실행 event/관찰 | `EXECUTE_REPRODUCTION` 첫 turn은 `NEW`, 같은 work·attempt의 후속 turn만 `RESUME`; command·PoC·환경 조정과 same-session container 재생성은 새 attempt를 만들지 않음 |
 | Dynamic Reproduction Agent session 재시작 | work_id·verification generation | 새 attempt, trigger=RETRY | RUNNING→READY→RUNNING. 고정 입력을 유지하고 R8 한도가 남아 있어야 함 |
 | 동적 재현 외부 조건 해소 후 재개 | work_id·고정 input refs/hash | 새 attempt, trigger=RESUME | BLOCKED→READY→RUNNING. 실제 waiting_for 조건이 해소되고 input refs/hash가 그대로여야 함 |
-| 동적 request/profile 변경 | hypothesis_id·ACTIVE Verification owner | 새 verification generation·새 DYNAMIC_REPRO work | 기존 work의 RETRY·RESUME 금지. 과거 action·decision·attempt를 새 입력에 재사용하지 않음 |
+| 동적 request/profile 변경 | hypothesis_id·기존 Verification history | 후속 generation·work 생성 방식은 RQ-10 | 기존 work의 RETRY·RESUME과 과거 action·decision·attempt 재사용은 금지. 정본 전이가 확정되기 전 새 generation을 자동 생성하지 않음 |
 | Technical REVISE | hypothesis_id·ACTIVE Verification owner | 새 verification generation·VERIFICATION work·application·질문·Pro/Con, TRUE면 새 dynamic/PoC/CWE | 종료 work 부활 또는 이전 결과 자동 승격 금지 |
 | 새 material claim | 부모 history·계보 | 등록 검증을 거친 새 hypothesis_id와 검증 흐름 | 자식 결과를 부모 verdict/impact에 합치지 않음 |
 | 사람이 승인한 새 논리 실행 | 과거 terminal history | 증가한 work_generation·새 work_id, 승인된 run 경계 | 기존 terminal work 자체를 RUNNING으로 되돌리지 않음 |
@@ -101,7 +101,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 
 - 서로 다른 producer work의 attempt ID를 같게 강요하지 않는다. 같은 결과 chain의 각 record는 자기 producer의 올바른 attempt에 묶는다.
 - same work retry는 고정 PlaybookApplication/질문을 유지한다. 새 policy 게시만으로 중간 입력을 바꾸지 않는다.
-- `DYNAMIC_REPRO`의 `BLOCKED → RESUME`은 work의 `input_refs/input_hash`가 그대로일 때만 허용한다. exact DynamicReproductionRequest 또는 SandboxProfile revision을 바꿔야 하면 기존 work를 재개하지 않고 새 Verification generation과 새 dynamic work를 만든다.
+- `DYNAMIC_REPRO`의 `BLOCKED → RESUME`은 work의 `input_refs/input_hash`가 그대로일 때만 허용한다. exact DynamicReproductionRequest 또는 SandboxProfile revision을 바꿔야 하면 기존 work를 재개하지 않는다. 그 뒤 새 Verification generation·dynamic work를 만드는 전이는 현재 정본에 실행 절차가 없으므로 RQ-10에서 확정하기 전 자동 수행하지 않는다.
 - 결과 저장 거절과 work 실행 실패를 구분한다. 단순 부정 입력 거절 때문에 정상 가설을 임의 FAILED/FALSE로 바꾸지 않는다.
 - **실행 오류·timeout·예산·정책 차단은 FALSE/HOLD의 근거가 아니다.** 정상 필수 검증 완료와 실제 반증이면 R6 FALSE, 정상 관측 불충분이면 R6 HOLD가 가능한 것은 별도다.
 - 모든 새 외부 실행 전에 exact 설정·권한·R8 잔여 시간/비용/work/새 attempt 한도를 검사한다. token 계획 초과만으로 중단하지 않으며 제공되지 않은 usage는 null이다.
@@ -116,6 +116,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 
 | 단계 | 주요 중단·복구 시험 |
 |---|---|
+| 전 단계 공통 | STO-008 migration, WRK-003 취소·결과 경합 |
 | 1 시작·설정 | WRK-001/004/006, E2E-001 |
 | 2 clone/checkout | FLW-001, STO-001/007/009 |
 | 3 run-init 정적·정책·Docker 준비 병렬 | FLW-001/005, STO-007, WRK-006 |
@@ -634,19 +635,19 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **11. R8 예산·시간·비용**: projection 복구는 새 attempt·새 Sandbox 실행이 아니므로 usage·elapsed를 중복 집계하지 않는다.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R6·R7·R8. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
-#### R3-REC-DYN-010 — exact request 또는 SandboxProfile 변경 뒤 잘못된 RESUME
+#### R3-REC-DYN-010 — exact request 또는 SandboxProfile 변경 뒤 RESUME 차단
 
-- **1. ID·단계·work**: R3-REC-DYN-010; 12·16 / 기존 DYNAMIC_REPRO 종료와 새 Verification generation. CT 연결: DYN-004/008/011, VER-007.
+- **1. ID·단계·work**: R3-REC-DYN-010; 12 / 기존 DYNAMIC_REPRO의 입력 변경 필요 감지와 RESUME 차단. 후속 generation 전이는 RQ-10. CT 연결: DYN-004/008/011.
 - **2. 중단 전 상태·current**: G1의 KD1이 BLOCKED이고 DQ1·SP1·IHD1이 고정돼 있다. 복구 전 exact DynamicReproductionRequest를 DQ2로 바꾸거나 SandboxProfile을 SP2로 바꿔야 하는 상황을 각각 만든다.
-- **3. work·attempt·generation·input**: old G1/KD1/AD1/DQ1/SP1/IHD1과 proposed G2/KD2/DQ2 또는 SP2를 분리한다. RunPolicyState만 달라지는 변형은 request/profile 변경 변형으로 취급하지 않는다.
-- **4. 저장된 record·artifact·marker**: G1 BLOCKED state·old action/decision/attempt/history, 새 입력 필요 사유. G2는 장애 지점에 따라 미등록·PREPARED·COMMITTED 중 하나다.
-- **5. 정확한 장애 주입 지점**: A 변경 필요 확인 뒤 새 generation 등록 전, B G2 등록 PREPARED 뒤, C G2 commit 뒤 새 work projection 전 종료한다. old KD1에 RESUME을 제출하는 부정 변형도 실행한다.
-- **6. 재시작 검사 조건**: old KD1 `input_refs/input_hash`, DQ1/SP1과 requested DQ2/SP2 차이, ACTIVE Verification owner, generation·dedupe·old action decision의 USED/EXPIRED 상태를 확인한다.
-- **7. 복구 조치**: KD1을 RESUME하지 않는다. G2와 새 KD2를 atomic하게 등록하고 새 action/decision/attempt를 만든다. G2가 COMMITTED면 재투영하고 미완료면 재검증 또는 ABORTED한다.
-- **8. 기대 state·current/격리 결과**: G1 artifact는 history, G2/KD2만 current다. old ALLOW/SandboxPolicyDecision/attempt/result를 새 입력에 복사하지 않는다. program policy 상태만 달라졌고 DQ1/SP1/IHD1이 같으면 불필요한 새 generation도 만들지 않는다.
-- **9. 다음 단계 호출**: 새 generation의 Pro·Con·initial 판단과 필요한 새 dynamic work가 완료되기 전 final TRUE·CWE·Gate를 호출하지 않는다.
+- **3. work·attempt·generation·input**: old G1/KD1/AD1/DQ1/SP1/IHD1과 필요한 DQ2 또는 SP2의 차이를 분리한다. RunPolicyState만 달라지는 변형은 request/profile 변경 변형으로 취급하지 않는다. 후속 G2/KD2는 아직 정상 fixture로 만들지 않는다.
+- **4. 저장된 record·artifact·marker**: G1 BLOCKED state·old action/decision/attempt/history와 새 입력 필요 사유. 정본 전이가 확정되기 전 G2·KD2·새 current pointer는 없다.
+- **5. 정확한 장애 주입 지점**: 변경 필요 확인 전후와 old KD1에 RESUME action을 제출하기 직전·거절 기록 도중에 종료한다. 정의되지 않은 G2 등록·commit 성공은 기대 fixture로 두지 않는다.
+- **6. 재시작 검사 조건**: old KD1 `input_refs/input_hash`, DQ1/SP1과 필요한 DQ2/SP2 차이, old action decision의 USED/EXPIRED 상태를 확인한다. 후속 generation 생성 가능 여부는 RQ-10 결정 전 검사하지 않는다.
+- **7. 복구 조치**: KD1을 RESUME하지 않고 입력 불일치와 차단 상태를 보존한다. Recovery가 G2·새 KD2·새 action/decision/attempt를 임의로 만들지 않는다. 후속 처리 절차는 RQ-10에서 정본화한 뒤 별도 fixture로 추가한다.
+- **8. 기대 state·current/격리 결과**: G1 artifact는 history로 보존되고 old ALLOW/SandboxPolicyDecision/attempt/result를 바뀐 입력에 복사하지 않는다. 대체 current generation/work는 RQ-10 해결 전 미결정이다. program policy 상태만 달라졌고 DQ1/SP1/IHD1이 같으면 불필요한 변경 전이도 만들지 않는다.
+- **9. 다음 단계 호출**: 후속 정본 전이가 없어 input mismatch가 해소되지 않은 동안 dynamic 실행·final TRUE·CWE·Gate 호출은 0건이다.
 - **10. 기대 오류·관측 log**: old work RESUME은 `STALE_RESULT` 또는 `STATE_TRANSITION_INVALID`, old decision 재사용은 `ACTION_NOT_ALLOWED`다. 정확한 code는 RQ-02에서 확정한다.
-- **11. R8 예산·시간·비용**: G2는 별도 Verification generation 한도를 적용한다. old attempt usage를 G2 실행 usage로 중복 계산하지 않는다.
+- **11. R8 예산·시간·비용**: 차단 확인 자체로 새 generation·attempt 실행 usage를 만들지 않는다. 후속 실행 예산 적용 방식은 RQ-10과 함께 확정한다.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R6·R7·R8. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-DYN-011 — validated PoC same-attempt provenance 복구
@@ -1015,6 +1016,7 @@ RQ 표는 새 GitHub 이슈나 이미 받은 승인 기록이 아니다. #92에 
 | RQ-07 repair 저장 경계 | invalid output 소비 금지, 제한된 repair와 실제 새 invocation 기록 유지 | repair 내부 단계·로그 durable 범위와 retry/새 attempt의 exact 대응, 소진/중단 후 이어가기 조건. 미병합 옛 #62 댓글을 정본으로 사용하지 않음 | R4·R3·R6/R1·R8. current 08/09 및 #91 구현 설계와 일치하는 fixture/호출 trace 확정 |
 | RQ-08 Sandbox 재생성·cleanup | same-attempt provenance, 실제 자원 있으면 NOT_REQUIRED 금지, 외부 보호 완화 금지 | 실제 backend의 건강 상태·자원 소유·중복 cleanup·실패 격리/다음 실행 허용 기준. R7 정상 재구성과 session 재시작 분기 | R7 @Potatonion·R4·R8. 실제 dependency 시험 전 image/profile/cleanup log 기준 승인 |
 | RQ-09 append 재전달 | AgentLog durable prefix·전역 event ID·attempt sequence·old event current 첨부 금지 | durable ACK 직전 종료 후 같은 event 재전달의 idempotent 처리, start만 있고 finish 미확인인 command의 복구 기록. finish event를 조작해 채우지 않음 | R7·R4. exact event 재전달/충돌/실제 관측 미확인 시 기대값 확정 |
+| RQ-10 동적 입력 변경 후 후속 전이 | exact DynamicReproductionRequest 또는 SandboxProfile이 바뀌면 기존 `DYNAMIC_REPRO` work를 RETRY·RESUME하지 않고 old decision·attempt·result를 재사용하지 않음 | `VERIFYING` 상태에서 새 Verification generation·dynamic work를 만들 수 있는 정본 전이, 또는 기존 work를 종료하고 Technical `REVISE` 등 승인된 경로로 이동하는 방식. `08-lightweight-data-contracts.md`의 generation CAS·입력 변경·Primitive admission 근거를 함께 맞춰야 함 | R4·R6·R7·R1·R3. `08`의 관련 전이와 authority가 확정되기 전 DYN-010은 차단까지만 자동 assertion하고 후속 성공 fixture 구현 보류 |
 
 ### 8.1 이미 해결된 내용과 구분
 
