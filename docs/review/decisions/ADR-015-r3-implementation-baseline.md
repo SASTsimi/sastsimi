@@ -51,6 +51,13 @@ Option A를 채택할 단일안으로 제안한다.
 - 공식 SDK/CLI와 `asyncio.create_subprocess_exec(shell=False)` adapter
 - exact `provider_profile_ref + model`; 특정 모델 ID를 역할에 고정하지 않음
 - 별도 Repository Snapshot 모듈과 외부 message queue 제품 없음
+- `RecordStore`의 transport 참조는 `RecordRef = RunStoredDataRef | StoredDataRef | PolicyCacheRef`로 통합하되, 각 domain validator가 허용 reference 종류와 scope를 I/O 전에 제한
+- 공식 정책 수집은 `PolicySourcePort`와 `policy/adapters/official_http.py` 뒤에 두고 Policy Collector만 원문·수집 결과를 소유
+- 예산은 R8 trusted profile registry, `BudgetProfileBinding`, `BudgetReservation`과 append-only ledger로 예약·확정·해제하며 중복 차감을 unique constraint로 차단
+- R8 평가는 운영 분석과 분리된 `purpose=EVALUATION` 경로와 전용 service·runner·CLI를 사용하고, Provider capability 증거만으로 운영 Prompt를 활성화하지 않음
+- 운영 Prompt 활성화는 exact R8 품질 추천과 사람 승인을 요구하며 특정 Provider·모델을 역할에 고정하지 않음
+- 동적 request 또는 Sandbox profile revision 변경은 Technical `REVISE`와 구분한 `RESTART_VERIFICATION_GENERATION` action으로 처리하고, old work 종료와 새 application·질문·Pro/Con·current pointer를 한 transaction으로 확정
+- run-init은 정적 분석과 정책 준비만 시작하며 Docker 준비는 current 가설의 승인된 동적 재현 경로에서만 수행
 
 R3-04의 실제 capability 시험을 통과하지 않은 ProviderProfile은 ACTIVE로 만들지 않는다. 구현 순서는 fake adapter 뒤 API adapter 한 경로부터 시작하되, 이것을 운영 지원 완료나 품질 우위로 표현하지 않는다.
 
@@ -63,6 +70,7 @@ R3-04의 실제 capability 시험을 통과하지 않은 ProviderProfile은 ACTI
 - SQLite transaction·constraint와 TransitionCommit을 함께 사용해 중복·stale·부분 저장을 차단할 수 있다.
 - 큰 artifact를 DB에서 분리하면서 exact content hash와 provenance를 유지한다.
 - Web/API나 서버 DB가 필요해져도 port 구현을 추가하는 migration 경로가 남는다.
+- 예산 예약과 평가 provenance가 명시되어 동시 실행·crash·운영 승격에서 중복 비용과 평가 결과의 운영 오염을 차단할 수 있다.
 
 ### Negative
 
@@ -70,6 +78,7 @@ R3-04의 실제 capability 시험을 통과하지 않은 ProviderProfile은 ACTI
 - SQLite와 file store 사이에는 물리적 단일 transaction이 없으므로 PREPARED journal과 startup recovery가 필수다.
 - Provider·Docker·static tool의 실제 설치와 capability 증거는 별도 검증이 필요하다.
 - async 외부 호출과 짧은 sync DB transaction의 경계를 storage service가 엄격히 지켜야 한다.
+- 예약·ledger·평가 result·recommendation용 table과 migration, crash recovery test가 초기 구현 범위에 추가된다.
 
 ### Rejected implications
 
@@ -93,6 +102,7 @@ R3-04의 실제 capability 시험을 통과하지 않은 ProviderProfile은 ACTI
 - Architecture 문서 validator가 구현 기준선·인덱스·이 ADR의 존재와 핵심 결정을 확인한다.
 - `git diff --check`와 상대 링크 검사를 통과한다.
 - R3-02 계약 시험과 병합된 R3-03 복구 시험을 물리 table·artifact·CLI 결정에 연결한다.
+- `R3-CT-COM-015`, `R3-CT-DYN-013`, `R3-CT-BUD-006`, `R3-CT-EVAL-001`~`003`과 `R3-REC-WRK-008`, `R3-REC-DYN-010`이 참조·세대 전이·예산·평가·복구 결정을 검증한다.
 - R1~R8이 자기 영역 section과 검토 commit SHA를 기록한다.
 - PR #107 병합과 Issue #89 종료를 반영한 최신 main 기준으로 재검증한다.
 - 필수 역할 검토를 마친 최종 review-freeze commit에서 상태를 `ACCEPTED`로 바꾸고 decisions README의 기준 commit·PR 정보를 갱신한 뒤 병합한다.

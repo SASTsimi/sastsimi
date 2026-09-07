@@ -111,7 +111,7 @@ Q-01~Q-07의 구현 결정은 R3-06 기준선과 최신 공통 계약에서 해�
 |---|---|---|
 | 1 | 분석 시작·설정·run identity | COM-001~004, BUD-003~005 |
 | 2 | clone/checkout·READY | STA-001 |
-| 3 | AST/SAST·정책·Docker readiness 병렬 준비 | COM-014, STA-002~005, BUD-004~005 |
+| 3 | AST/SAST·정책 두 branch 병렬 준비(Docker 준비 없음) | COM-014, STA-002~005, BUD-004~005 |
 | 4 | 정규화·오류/gap 합류 | STA-002~006, COM-011~013 |
 | 5 | 초기 work 등록·고정 입력 | HYP-001~002 |
 | 6 | Hypothesis 호출 | LLM-001~008 |
@@ -363,6 +363,22 @@ Q-01~Q-07의 구현 결정은 R3-06 기준선과 최신 공통 계약에서 해�
 - **11. FALSE 변환 금지**: action 거절을 취약점 `FALSE | HOLD`, static·policy 실패 또는 분석 성공 근거로 사용하지 않는다.
 - **12. 실행 계층**: contract / integration / security-negative
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R4 @taehyeon-git; R7·R8. R7은 실제 Docker 준비가 Step 12에만 존재하는지 검토한다.
+
+#### R3-CT-COM-015 — RecordStore 공통 참조와 domain 제한
+
+- **1. ID·유형·설명**: R3-CT-COM-015 / 정상·부정 / 저장소 API가 세 참조 유형을 읽되 소비 계약이 허용한 참조만 받는지 확인
+- **2. 단계·계약 경계**: 1–22 공통; `RecordRef = RunStoredDataRef | StoredDataRef | PolicyCacheRef`와 domain validator
+- **3. producer → consumer**: 각 record producer → RecordStore → 해당 domain consumer
+- **4. 선행 상태·exact refs**: 정상 run-local ref, hypothesis-scoped ref, policy cache ref를 각각 실제 record·content hash와 연결한다.
+- **5. 정상/잘못된 fixture**: RecordStore는 세 유형을 모두 조회할 수 있다. 부정 변형은 `EvidenceAgentResult` 입력에 `PolicyCacheRef`, policy cache 조회에 `StoredDataRef`, 다른 run의 `RunStoredDataRef`를 전달한다.
+- **6. 검사 주체**: schema validator + RecordStore type dispatch + 각 domain semantic validator + Runtime Validator
+- **7. 허용·차단·격리 기대**: 저장소가 지원하는 참조라는 이유만으로 domain 사용을 허용하지 않는다. 허용 유형·scope·hash가 모두 맞는 조회만 성공하고 나머지는 I/O 전에 차단한다.
+- **8. work·attempt·가설 기대**: 부정 fixture는 새 work·attempt·가설 verdict를 만들지 않고 기존 current pointer도 바꾸지 않는다.
+- **9. 오류·DataGap 기대**: 공통 오류 목록의 `RECORD_REVISION_MISMATCH`를 기록하고 안전한 debug detail로 reference 종류 또는 scope 불일치를 구분한다. 새 오류 코드를 임의로 추가하지 않는다.
+- **10. 저장·갱신 금지 pointer**: 잘못된 참조를 읽은 결과, latest 대체 결과, cache-to-domain 변환 record를 저장하지 않는다.
+- **11. FALSE 변환 금지**: 참조 유형·scope 위반은 취약점 반증이 아니다.
+- **12. 실행 계층**: unit / contract / integration / security-negative
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R4와 적용 domain owner. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
 
 ### STA. 저장소·정적 분석·Context
 
@@ -1104,6 +1120,22 @@ Q-01~Q-07의 구현 결정은 R3-06 기준선과 최신 공통 계약에서 해�
 - **12. 실행 계층**: unit / contract / integration / E2E / security-negative
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R7·R4·R6·R8. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
 
+#### R3-CT-DYN-013 — 동적 입력 변경의 새 Verification generation 전이
+
+- **1. ID·유형·설명**: R3-CT-DYN-013 / 정상·부정 / `DynamicReproductionRequest` 또는 Sandbox profile revision 변경 시 old work 재개를 막고 새 검증 세대를 원자 생성
+- **2. 단계·계약 경계**: 10–13; `RESTART_VERIFICATION_GENERATION`과 `HypothesisProcessState`·`DynamicReproductionState`
+- **3. producer → consumer**: 같은 가설의 ACTIVE Verification owner → Runtime Validator·GenerationTransitionService → 새 Verification/Pro/Con
+- **4. 선행 상태·exact refs**: 가설 H1의 G1이 VERIFYING이고 old VERIFICATION work·DYNAMIC_REPRO work/attempt, DQ1, SP1, current process/dynamic pointer가 모두 G1에 연결돼 있다. 변경 사유는 `DYNAMIC_REQUEST_REVISION_CHANGED | SANDBOX_PROFILE_REVISION_CHANGED` 중 하나다.
+- **5. 정상/잘못된 fixture**: 정상은 exact old/current refs와 expected state version·generation을 가진 단일 요청이다. 부정 변형은 Orchestration·Recovery requester, 근거 없는 사유, old ref 일부 누락, stale generation/version, 같은 요청 동시 2회, old dynamic work RESUME을 각각 시도한다.
+- **6. 검사 주체**: Runtime Validator의 requester·reason·CAS·exact closure 검사 + GenerationTransitionService의 단일 SQLite transaction·unique successor 검사
+- **7. 허용·차단·격리 기대**: 정상만 old active attempts/work를 `CANCELLED/INPUT_SUPERSEDED`로 닫고 G2 Verification work, PlaybookApplication, 새 질문 ID, 독립 Pro/Con work와 G2 process/dynamic state를 한 번 생성한다. old RESUME, Recovery의 의미 결정, 중복 successor는 차단한다.
+- **8. work·attempt·가설 기대**: H1은 계속 VERIFYING이고 G1은 history다. G2의 동적 상태는 `NOT_REQUESTED`이며 request/work/result refs는 null이다. 새 Pro/Con과 assessment 뒤 동적 재현이 필요할 때만 G2의 새 request/work를 만든다.
+- **9. 오류·DataGap 기대**: `AUTHORITY_DENIED | ACTION_NOT_ALLOWED | STATE_VERSION_CONFLICT | STALE_RESULT | RECORD_REVISION_MISMATCH` 중 실제 첫 실패 원인을 기록한다.
+- **10. 저장·갱신 금지 pointer**: G1 action·attempt·environment·AgentLog·result·PoC·CWE·Gate는 history로만 남긴다. G2 current input, final TRUE, Gate/Reporter로 복사하지 않는다. 기존 Technical REVISE history가 있다면 그대로 보존하되 이번 전이 원인으로 위조하지 않는다.
+- **11. FALSE 변환 금지**: 입력 변경과 전이 충돌은 기술적 반증이나 HOLD가 아니다.
+- **12. 실행 계층**: unit / contract / integration / concurrency / security-negative
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R4·R6·R7·R8. R6은 새 질문·Pro/Con 재실행 의미, R7은 old dynamic 격리를 승인한다.
+
 ### GAT. CWE·두 Gate·정책·Finding
 
 근거: 05·06·08·10. 모든 사례는 **미실행 / 역할 검토 필요**.
@@ -1599,6 +1631,74 @@ Q-01~Q-07의 구현 결정은 R3-06 기준선과 최신 공통 계약에서 해�
 - **11. FALSE 변환 금지**: 수집·Parser·예산·저장 실패를 `ABSENT_CONFIRMED`, `FALSE | HOLD`, 정적 분석 성공으로 바꾸지 않는다. `LOCAL_ONLY` Sandbox는 정책 준비 실패만으로 차단하지 않는다.
 - **12. 실행 계층**: unit / contract / integration / E2E
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R8·R4·R5. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
+
+#### R3-CT-BUD-006 — 예산 reservation 원자성·중복 차감 방지
+
+- **1. ID·유형·설명**: R3-CT-BUD-006 / 정상·부정 / 실행 전 예약과 실제 사용 commit·미실행 release가 한 번만 반영되는지 확인
+- **2. 단계·계약 경계**: 1–22 외부 호출 전후; `BudgetProfileBinding`·`BudgetReservation`·`BudgetLedgerEntry`
+- **3. producer → consumer**: R8 trusted Budget Profile Registry → Budget Runtime·Runtime Validator → work/attempt·Result Aggregator
+- **4. 선행 상태·exact refs**: 같은 purpose의 ACTIVE execution/verification/dynamic profile exact revision을 묶은 ACTIVE binding과 초기 ledger를 고정한다.
+- **5. 정상/잘못된 fixture**: 정상 A는 reserve→실행→actual commit, 정상 B는 reserve→실행 전 거절→release다. 부정 변형은 같은 reservation 재전달, 두 worker 동시 reserve, commit/release 직전·직후 crash, 실제 side effect 여부 불명, profile/가격/잔여량 미확정, 실제 한도 소진을 각각 시험한다.
+- **6. 검사 주체**: BudgetService의 transaction·unique constraint·idempotency 검사 + Runtime Validator의 ACTIVE binding·remaining 검사
+- **7. 허용·차단·격리 기대**: 한 reservation에는 ledger entry 최대 하나이고 COMMITTED/RELEASED는 되돌리지 않는다. 중복 전달은 기존 결과를 반환한다. 사용 여부를 증명할 수 없는 crash와 profile·가격·잔여량 불명은 `BLOCKED + waiting_for=BUDGET`, 실제 승인 한도 소진만 `BUDGET_EXCEEDED`다.
+- **8. work·attempt·가설 기대**: reservation 성공 뒤에만 action을 claim한다. 차단·중복·crash 복구로 새 무기록 attempt나 두 번째 비용 차감을 만들지 않으며 가설 verdict는 바꾸지 않는다.
+- **9. 오류·DataGap 기대**: 실제 원인에 따라 `BUDGET_EXCEEDED`, budget evidence unavailable 또는 storage/conflict 오류를 보존한다. token usage 미제공만으로는 차단하지 않는다.
+- **10. 저장·갱신 금지 pointer**: 임의 가격·0원 추정·중복 ledger·불명 reservation 자동 release를 금지한다. final resources는 committed ledger와 구조화된 unavailable 사유만 집계한다.
+- **11. FALSE 변환 금지**: 예산 차단·소진·복구 불확실성은 취약점 반증이 아니다.
+- **12. 실행 계층**: unit / contract / integration / concurrency / crash-recovery
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R8·R4와 각 호출 owner. R8은 profile·가격·집계 의미를 승인한다.
+
+### EVAL. R8 평가 실행·운영 승격
+
+근거: 07·08·09·10·R3-06 §12.4. 모든 사례는 **미실행 / 역할 검토 필요**다.
+
+#### R3-CT-EVAL-001 — 재현 가능한 평가 실행과 정규화된 자원 기록
+
+- **1. ID·유형·설명**: R3-CT-EVAL-001 / 정상·부정 / 고정 corpus·Provider·Prompt·설정으로 평가하고 구조화된 결과를 남김
+- **2. 단계·계약 경계**: 운영 run 밖 `sastsimi eval run`; `EvaluationRunConfig` → `EvaluationRunResult`
+- **3. producer → consumer**: R8 Evaluation Runtime → 평가 저장소·비교기·사람 검토
+- **4. 선행 상태·exact refs**: corpus, prompt EVALUATION entry, provider profile, model, budget binding, grader refs를 exact revision으로 고정한다.
+- **5. 정상/잘못된 fixture**: 정상은 같은 config hash의 결과와 metric·`ResourceUsageSummary`를 생성한다. 부정 변형은 ref 누락/변조, 서로 다른 corpus 혼합, loose map usage/resources, provider 미제공 token을 0으로 추정하는 경우다.
+- **6. 검사 주체**: EvaluationService·schema validator·RecordStore exact-ref 검사
+- **7. 허용·차단·격리 기대**: 재현 가능한 exact closure만 결과로 확정한다. 미제공 token/cost는 구조화된 unavailable 사유로 남기고 알려진 값처럼 계산하지 않는다.
+- **8. work·attempt·가설 기대**: 평가용 work·결과는 production AnalysisRunState·current hypothesis/finding/report pointer를 바꾸지 않는다.
+- **9. 오류·DataGap 기대**: schema/ref/config 오류 또는 측정 unavailable 사유를 그대로 기록한다.
+- **10. 저장·갱신 금지 pointer**: 평가 실행이 PromptRegistry PRODUCTION entry나 운영 설정을 직접 생성·활성화하지 않는다.
+- **11. FALSE 변환 금지**: 평가 실패는 분석 가설 판정이 아니다.
+- **12. 실행 계층**: unit / contract / integration / CLI
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R8·R4와 평가 대상 역할 owner.
+
+#### R3-CT-EVAL-002 — capability 증거와 품질 승인 분리
+
+- **1. ID·유형·설명**: R3-CT-EVAL-002 / 정상·부정 / Provider Validation Dataset 통과만으로 운영 Prompt를 활성화하지 않음
+- **2. 단계·계약 경계**: Provider capability 검증·R8 품질 평가·Prompt Registry activation
+- **3. producer → consumer**: R3 Provider validation → R8 Evaluation Runtime·사람 승인 → PromptRegistry trusted runtime
+- **4. 선행 상태·exact refs**: capability가 SUPPORTED인 ProviderProfile과 EVALUATION purpose PromptRegistryEntry, R8 acceptance 기준을 고정한다.
+- **5. 정상/잘못된 fixture**: 정상은 exact evaluation result를 가리키는 `EvaluationRecommendation.decision=ACCEPT_FOR_PRODUCTION`과 사람 승인을 거쳐 의미가 같은 새 PRODUCTION entry를 활성화한다. 부정 변형은 capability 증거만 사용, 평가 result/recommendation stale, `REJECT | NEEDS_MORE_EVIDENCE`, 다른 prompt/model/corpus 결과, 사람 승인 누락이다.
+- **6. 검사 주체**: PromptRegistry trusted runtime + R8 evaluation acceptance validator + Runtime Validator purpose/ref 검사
+- **7. 허용·차단·격리 기대**: capability는 호출 가능성만 증명한다. 모든 exact 품질·승인 조건을 만족한 경우에만 PRODUCTION ACTIVE를 허용하고 나머지는 EVALUATION에 둔다.
+- **8. work·attempt·가설 기대**: 거절된 승격은 운영 work·가설을 만들지 않고 기존 production pointer를 유지한다.
+- **9. 오류·DataGap 기대**: `AUTHORITY_DENIED | STALE_RESULT | RECORD_REVISION_MISMATCH` 또는 품질 미승인 사유를 기록한다.
+- **10. 저장·갱신 금지 pointer**: 평가 runtime이 production current pointer를 직접 교체하지 않고, 과거 acceptance를 새 revision에 재사용하지 않는다.
+- **11. FALSE 변환 금지**: Provider·Prompt 품질 미승인은 취약점 반증이 아니다.
+- **12. 실행 계층**: contract / integration / security-negative
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R8·R4와 Prompt 대상 역할 owner.
+
+#### R3-CT-EVAL-003 — 평가 비교·추천의 exact provenance
+
+- **1. ID·유형·설명**: R3-CT-EVAL-003 / 정상·부정 / 여러 평가 결과 비교와 추천이 같은 기준을 정확히 가리키는지 확인
+- **2. 단계·계약 경계**: `sastsimi eval compare`; `EvaluationRunResult[]` → `EvaluationRecommendation`
+- **3. producer → consumer**: R8 Evaluation Runtime → 사람 승인·PromptRegistry trusted runtime
+- **4. 선행 상태·exact refs**: 같은 corpus·grader·acceptance criterion 아래 비교 가능한 결과와 차이가 명시된 model/provider/prompt refs를 고정한다.
+- **5. 정상/잘못된 fixture**: 정상은 비교 집합·metric·비용/시간·결정 사유를 exact ref로 남긴다. 부정 변형은 다른 corpus/criterion 결과를 설명 없이 비교, 누락 결과, 이름만 같은 최신 revision 치환이다.
+- **6. 검사 주체**: EvaluationComparator·RecommendationService·exact-ref validator
+- **7. 허용·차단·격리 기대**: 비교 가능성과 모든 근거가 입증된 추천만 확정한다. 비교 불가 결과는 분리하거나 INCONCLUSIVE로 남긴다.
+- **8. work·attempt·가설 기대**: 추천은 운영 분석 상태와 독립이며 자동으로 work를 재실행하지 않는다.
+- **9. 오류·DataGap 기대**: 비교 기준 불일치·stale/missing reference를 구조화해 기록한다.
+- **10. 저장·갱신 금지 pointer**: 비교기·추천기가 production pointer를 직접 변경하거나 metric을 임의 보정하지 않는다.
+- **11. FALSE 변환 금지**: 평가 비교 결과는 취약점 판정이 아니다.
+- **12. 실행 계층**: unit / contract / integration / CLI / security-negative
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R8·R4와 평가 대상 역할 owner.
 
 ## 5. main Provider 계약과 미병합 Prompt 제안 card
 

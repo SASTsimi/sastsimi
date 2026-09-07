@@ -649,7 +649,7 @@ foreach ($rule in $requiredBindingRules) {
 $reviewRemediationPatterns = @(
     @{
         Name = 'dynamic state requires request and uses an exact result pointer when a result exists'
-        Pattern = '(?s)동적 재현을 요청하면 `DynamicReproductionState.request_ref`.*?current generation의 exact `DynamicReproductionRequest`.*?`SUCCEEDED \| PARTIAL \| BLOCKED \| FAILED \| CANCELLED`에는 Reproduction Session Manager가 확정한 exact `DynamicReproductionResult\.record_id`가 필수.*?Dynamic Reproduction Agent 호출 전 Sandbox profile 외부 격리 경계 차단도 Session Manager가 최소 `AgentLog`와 결과'
+        Pattern = '(?s)`DynamicReproductionState\.verification_generation`.*?current `HypothesisProcessState\.verification_generation`.*?동적 재현을 요청하면 `dynamic_work_ref`와 `request_ref`가 current generation의 exact `DYNAMIC_REPRO` work와 `DynamicReproductionRequest`.*?`SUCCEEDED \| PARTIAL \| BLOCKED \| FAILED \| CANCELLED`에는 Reproduction Session Manager가 확정한 exact `DynamicReproductionResult\.record_id`가 필수.*?Dynamic Reproduction Agent 호출 전 Sandbox profile 외부 격리 경계 차단도 Session Manager가 최소 `AgentLog`와 결과'
     },
     @{
         Name = 'dynamic PARTIAL uses structured limitations without fake errors'
@@ -779,6 +779,7 @@ $requiredActionTypes = @(
     'CHANGE_WORK_STATE',
     'START_ATTEMPT',
     'CANCEL_WORK',
+    'RESTART_VERIFICATION_GENERATION',
     'READ_CODE',
     'RUN_TOOL',
     'CALL_LLM',
@@ -801,7 +802,8 @@ $requiredActionRequestFields = @(
     'llm_call_spec_ref:',
     'provider_profile_ref:',
     'sandbox_profile_ref:',
-    'resource_profile_ref:'
+    'resource_profile_ref:',
+    'expected_verification_generation:'
 )
 foreach ($field in $requiredActionRequestFields) {
     if (-not $actionRequestBlock.Contains($field)) {
@@ -815,7 +817,14 @@ $environmentRequirementBlock = [regex]::Match($contractText, '(?ms)^EnvironmentR
 $environmentRequirementsBlock = [regex]::Match($contractText, '(?ms)^EnvironmentRequirements:\s*(.*?)^ReproductionPlan:').Groups[1].Value
 $reproductionPlanBlock = [regex]::Match($contractText, '(?ms)^ReproductionPlan:\s*(.*?)^SandboxProfile:').Groups[1].Value
 $sandboxProfileBlock = [regex]::Match($contractText, '(?ms)^SandboxProfile:\s*(.*?)^DynamicReproductionLifecycleProfile:').Groups[1].Value
-$resourceLifecycleProfileBlock = [regex]::Match($contractText, '(?ms)^DynamicReproductionLifecycleProfile:\s*(.*?)^EnvironmentRecipe:').Groups[1].Value
+$resourceLifecycleProfileBlock = [regex]::Match($contractText, '(?ms)^DynamicReproductionLifecycleProfile:\s*(.*?)^ExecutionBudgetProfile:').Groups[1].Value
+$executionBudgetProfileBlock = [regex]::Match($contractText, '(?ms)^ExecutionBudgetProfile:\s*(.*?)^VerificationBudgetProfile:').Groups[1].Value
+$verificationBudgetProfileBlock = [regex]::Match($contractText, '(?ms)^VerificationBudgetProfile:\s*(.*?)^BudgetProfileBinding:').Groups[1].Value
+$budgetProfileBindingBlock = [regex]::Match($contractText, '(?ms)^BudgetProfileBinding:\s*(.*?)^BudgetUnits:').Groups[1].Value
+$budgetUnitsBlock = [regex]::Match($contractText, '(?ms)^BudgetUnits:\s*(.*?)^BudgetReservation:').Groups[1].Value
+$budgetReservationBlock = [regex]::Match($contractText, '(?ms)^BudgetReservation:\s*(.*?)^BudgetLedgerEntry:').Groups[1].Value
+$budgetLedgerEntryBlock = [regex]::Match($contractText, '(?ms)^BudgetLedgerEntry:\s*(.*?)^BudgetRemaining:').Groups[1].Value
+$budgetRemainingBlock = [regex]::Match($contractText, '(?ms)^BudgetRemaining:\s*(.*?)^EnvironmentRecipe:').Groups[1].Value
 $environmentRecipeBlock = [regex]::Match($contractText, '(?ms)^EnvironmentRecipe:\s*(.*?)^EnvironmentCheck:').Groups[1].Value
 $environmentCheckBlock = [regex]::Match($contractText, '(?ms)^EnvironmentCheck:\s*(.*?)^SandboxEnvironment:').Groups[1].Value
 $sandboxEnvironmentBlock = [regex]::Match($contractText, '(?ms)^SandboxEnvironment:\s*(.*?)^PlanIssueItem:').Groups[1].Value
@@ -873,6 +882,19 @@ foreach ($field in @('meta:', 'network_mode:', 'allowed_egress_refs:', 'isolatio
 foreach ($field in @('meta:', 'preflight_budget_ref:', 'preflight_budget_source:', 'max_new_attempts:', 'created_at:')) {
     if (-not $resourceLifecycleProfileBlock.Contains($field)) {
         Add-Failure "missing DynamicReproductionLifecycleProfile field: $field"
+    }
+}
+foreach ($contract in @(
+    @{ Name = 'ExecutionBudgetProfile'; Block = $executionBudgetProfileBlock; Fields = @('meta:', 'profile_key:', 'purpose:', 'max_analysis_elapsed_ms:', 'max_total_cost_minor_units:', 'currency:', 'pricing_revision_ref:', 'max_total_work:', 'max_total_llm_calls:', 'max_total_retries:', 'max_parallel_work:', 'status:') },
+    @{ Name = 'VerificationBudgetProfile'; Block = $verificationBudgetProfileBlock; Fields = @('meta:', 'profile_key:', 'max_verification_elapsed_ms:', 'max_work_per_verification:', 'max_llm_calls_per_verification:', 'max_retries_per_work:', 'max_parallel_evidence_calls:', 'status:') },
+    @{ Name = 'BudgetProfileBinding'; Block = $budgetProfileBindingBlock; Fields = @('meta:', 'binding_key:', 'purpose:', 'execution_budget_profile_ref:', 'verification_budget_profile_ref:', 'dynamic_lifecycle_profile_ref:', 'status:', 'approved_by:', 'approved_at:') },
+    @{ Name = 'BudgetUnits'; Block = $budgetUnitsBlock; Fields = @('elapsed_ms:', 'work_count:', 'llm_call_count:', 'retry_count:', 'cost_minor_units:', 'currency:') },
+    @{ Name = 'BudgetReservation'; Block = $budgetReservationBlock; Fields = @('meta:', 'reservation_id:', 'budget_binding_ref:', 'action_ref:', 'work_ref:', 'requested_units:', 'status:', 'ledger_entry_ref:', 'reserved_at:', 'finalized_at:') },
+    @{ Name = 'BudgetLedgerEntry'; Block = $budgetLedgerEntryBlock; Fields = @('meta:', 'ledger_entry_id:', 'reservation_ref:', 'budget_binding_ref:', 'action_ref:', 'work_ref:', 'actual_units:', 'usage_refs:', 'sequence:', 'committed_at:') },
+    @{ Name = 'BudgetRemaining'; Block = $budgetRemainingBlock; Fields = @('budget_binding_ref:', 'as_of_sequence:', 'available_units:', 'active_reservation_count:') }
+)) {
+    foreach ($field in $contract.Fields) {
+        if (-not $contract.Block.Contains($field)) { Add-Failure "missing $($contract.Name) field: $field" }
     }
 }
 foreach ($field in @('meta:', 'request_ref:', 'environment_requirements_ref:', 'recipe_source_ref:', 'source_refs:', 'base_image_digest:', 'built_image_digest:', 'baseline_recipe_ref:', 'build_disposition:', 'created_at:')) {
@@ -1011,6 +1033,7 @@ $requiredActionCheckBindings = [ordered]@{
     CHANGE_WORK_STATE = 'SCHEMA, AUTHORITY, IDENTITY, STATE'
     START_ATTEMPT = 'SCHEMA, AUTHORITY, STATE, BUDGET'
     CANCEL_WORK = 'SCHEMA, AUTHORITY, IDENTITY, STATE'
+    RESTART_VERIFICATION_GENERATION = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET'
     READ_CODE = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, BUDGET, FILE_PATH'
     RUN_TOOL = 'SCHEMA, AUTHORITY, REVISION, BUDGET, TOOL, FILE_PATH'
     CALL_LLM = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, REDACTION'
@@ -1034,13 +1057,14 @@ $requiredActionRequesterBindings = [ordered]@{
     CHANGE_WORK_STATE = 'ORCHESTRATION, VERIFICATION, PRIMITIVE_ADMISSION_RUNTIME, REPRODUCTION_SESSION_MANAGER, RECOVERY'
     START_ATTEMPT = 'ORCHESTRATION, VERIFICATION, PRIMITIVE_ADMISSION_RUNTIME, REPRODUCTION_SESSION_MANAGER, RECOVERY'
     CANCEL_WORK = 'ORCHESTRATION, VERIFICATION, PRIMITIVE_ADMISSION_RUNTIME, REPRODUCTION_SESSION_MANAGER, RECOVERY'
+    RESTART_VERIFICATION_GENERATION = 'VERIFICATION, RECOVERY'
     READ_CODE = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, TECHNICAL_GATE'
     RUN_TOOL = 'REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR'
     CALL_LLM = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, POLICY_PARSER, DYNAMIC_REPRODUCTION'
     FETCH_POLICY = 'POLICY_COLLECTOR'
     REQUEST_DYNAMIC_REPRO = 'VERIFICATION'
     RUN_SANDBOX = 'REPRODUCTION_SETUP_AUTOMATION'
-    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, POLICY_PARSER, PRIMITIVE_ADMISSION_RUNTIME, DYNAMIC_REPRODUCTION, REPRODUCTION_SETUP_AUTOMATION, SANDBOX_CONTROLLER, REPRODUCTION_SESSION_MANAGER, RECOVERY'
+    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, POLICY_PARSER, PRIMITIVE_ADMISSION_RUNTIME, DYNAMIC_REPRODUCTION, REPRODUCTION_SETUP_AUTOMATION, SANDBOX_CONTROLLER, REPRODUCTION_SESSION_MANAGER, BUDGET_RUNTIME, R8_EVALUATION_RUNTIME, RECOVERY'
     CALL_TECHNICAL_GATE = 'VERIFICATION'
     CALL_RULE_SCOPE_GATE = 'VERIFICATION'
     CREATE_REPORT_DRAFT = 'VERIFICATION'
@@ -1082,6 +1106,25 @@ foreach ($field in $requiredActionDecisionFields) {
     }
 }
 
+$usageMeasurementBlock = [regex]::Match($contractText, '(?ms)^UsageMeasurement:\s*(.*?)^ResourceUsageSummary:').Groups[1].Value
+$resourceUsageSummaryBlock = [regex]::Match($contractText, '(?ms)^ResourceUsageSummary:\s*(.*?)^EvaluationRunConfig:').Groups[1].Value
+$evaluationRunConfigBlock = [regex]::Match($contractText, '(?ms)^EvaluationRunConfig:\s*(.*?)^EvaluationMetric:').Groups[1].Value
+$evaluationMetricBlock = [regex]::Match($contractText, '(?ms)^EvaluationMetric:\s*(.*?)^EvaluationRunResult:').Groups[1].Value
+$evaluationRunResultBlock = [regex]::Match($contractText, '(?ms)^EvaluationRunResult:\s*(.*?)^EvaluationRecommendation:').Groups[1].Value
+$evaluationRecommendationBlock = [regex]::Match($contractText, '(?ms)^EvaluationRecommendation:\s*(.*?)^```').Groups[1].Value
+foreach ($contract in @(
+    @{ Name = 'UsageMeasurement'; Block = $usageMeasurementBlock; Fields = @('token_source:', 'input_tokens:', 'output_tokens:', 'total_tokens:', 'token_unavailable_reason:', 'provider_units:', 'cost_source:', 'cost_minor_units:', 'currency:', 'pricing_revision_ref:', 'cost_unavailable_reason:') },
+    @{ Name = 'ResourceUsageSummary'; Block = $resourceUsageSummaryBlock; Fields = @('elapsed_ms:', 'work_count:', 'attempt_count:', 'retry_count:', 'llm_call_count:', 'dynamic_attempt_count:', 'cost_minor_units:', 'currency:', 'pricing_revision_refs:', 'usage_measurement_refs:', 'usage_complete:', 'unavailable_reasons:') },
+    @{ Name = 'EvaluationRunConfig'; Block = $evaluationRunConfigBlock; Fields = @('meta:', 'evaluation_config_id:', 'comparison_group_id:', 'corpus_refs:', 'ground_truth_refs:', 'grader_refs:', 'provider_profile_ref:', 'model:', 'session_policy:', 'prompt_registry_entry_ref:', 'execution_budget_profile_ref:', 'output_schema_ref:') },
+    @{ Name = 'EvaluationMetric'; Block = $evaluationMetricBlock; Fields = @('metric_key:', 'value:', 'unit:', 'sample_count:', 'evidence_refs:') },
+    @{ Name = 'EvaluationRunResult'; Block = $evaluationRunResultBlock; Fields = @('meta:', 'evaluation_run_id:', 'config_ref:', 'analysis_result_refs:', 'grader_result_refs:', 'metrics:', 'usage:', 'status:', 'error_ids:', 'started_at:', 'finished_at:') },
+    @{ Name = 'EvaluationRecommendation'; Block = $evaluationRecommendationBlock; Fields = @('meta:', 'recommendation_id:', 'evaluation_result_ref:', 'target_provider_profile_ref:', 'target_model:', 'target_session_policy:', 'target_prompt_registry_entry_ref:', 'decision:', 'rationale:', 'decided_by:', 'decided_at:') }
+)) {
+    foreach ($field in $contract.Fields) {
+        if (-not $contract.Block.Contains($field)) { Add-Failure "missing $($contract.Name) field: $field" }
+    }
+}
+
 $promptRegistryBlock = [regex]::Match($contractText, '(?ms)^PromptRegistryEntry:\s*(.*?)^PromptContextBinding:').Groups[1].Value
 $promptPayloadBlock = [regex]::Match($contractText, '(?ms)^PromptPayload:\s*(.*?)^LLMCallSpec:').Groups[1].Value
 $executionLimitsBlock = [regex]::Match($contractText, '(?ms)^ExecutionLimits:\s*(.*?)^LLMRetryPolicy:').Groups[1].Value
@@ -1108,12 +1151,12 @@ foreach ($contract in @(
     }
 }
 
-foreach ($field in @('meta:', 'prompt_key:', 'agent_role:', 'task_kind:', 'template_ref:', 'template_version:', 'input_slots:', 'forbidden_context_kinds:', 'output_schema_ref:', 'session_policy:', 'provider_profile_refs:', 'execution_limits_ref:', 'retry_policy_ref:', 'semantic_validator_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'result_kind:', 'status:', 'owner_role:', 'reviewer_roles:')) {
+foreach ($field in @('meta:', 'prompt_key:', 'agent_role:', 'task_kind:', 'purpose:', 'template_ref:', 'template_version:', 'input_slots:', 'forbidden_context_kinds:', 'output_schema_ref:', 'session_policy:', 'provider_profile_refs:', 'execution_limits_ref:', 'retry_policy_ref:', 'semantic_validator_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'result_kind:', 'quality_evaluation_ref:', 'status:', 'owner_role:', 'reviewer_roles:')) {
     if (-not $promptRegistryBlock.Contains($field)) {
         Add-Failure "missing PromptRegistryEntry field: $field"
     }
 }
-foreach ($field in @('meta:', 'registry_entry_ref:', 'prompt_key:', 'agent_role:', 'task_kind:', 'template_ref:', 'template_version:', 'context_bindings:', 'rendered_prompt_ref:', 'output_schema_ref:')) {
+foreach ($field in @('meta:', 'registry_entry_ref:', 'prompt_key:', 'agent_role:', 'task_kind:', 'purpose:', 'template_ref:', 'template_version:', 'context_bindings:', 'rendered_prompt_ref:', 'output_schema_ref:')) {
     if (-not $promptPayloadBlock.Contains($field)) {
         Add-Failure "missing PromptPayload field: $field"
     }
@@ -1128,7 +1171,7 @@ foreach ($role in $requiredPromptRoles) {
 $llmSpecBlock = [regex]::Match($contractText, '(?ms)^LLMCallSpec:\s*(.*?)^LLMInvocationRequest:').Groups[1].Value
 $llmRequestBlock = [regex]::Match($contractText, '(?ms)^LLMInvocationRequest:\s*(.*?)^```').Groups[1].Value
 foreach ($block in @($llmSpecBlock, $llmRequestBlock)) {
-    foreach ($field in @('llm_call_id:', 'agent_role:', 'task_kind:', 'provider_profile_ref:', 'model:', 'session_policy:', 'context_refs:', 'prompt_registry_entry_ref:', 'prompt_key:', 'prompt_template_ref:', 'prompt_template_version:', 'prompt_payload_ref:', 'execution_limits_ref:', 'retry_policy_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'semantic_validator_ref:', 'output_schema_ref:', 'output_schema:', 'token_budget:', 'timeout_ms:')) {
+    foreach ($field in @('llm_call_id:', 'agent_role:', 'task_kind:', 'purpose:', 'provider_profile_ref:', 'model:', 'session_policy:', 'context_refs:', 'prompt_registry_entry_ref:', 'prompt_key:', 'prompt_template_ref:', 'prompt_template_version:', 'prompt_payload_ref:', 'execution_limits_ref:', 'retry_policy_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'semantic_validator_ref:', 'output_schema_ref:', 'output_schema:', 'token_budget:', 'timeout_ms:')) {
         if (-not $block.Contains($field)) {
             Add-Failure "missing exact LLM call field: $field"
         }
@@ -1163,8 +1206,14 @@ foreach ($blockInfo in @(
 if (-not $llmRequestBlock.Contains('call_spec_ref:')) {
     Add-Failure 'LLMInvocationRequest missing call_spec_ref'
 }
+$llmResultBlock = [regex]::Match($contractText, '(?ms)^LLMInvocationResult:\s*(.*?)^```').Groups[1].Value
+foreach ($field in @('llm_call_id:', 'purpose:', 'provider:', 'model:', 'usage: UsageMeasurement | null', 'elapsed_ms:', 'status:')) {
+    if (-not $llmResultBlock.Contains($field)) {
+        Add-Failure "LLMInvocationResult missing normalized invocation field: $field"
+    }
+}
 $llmLogBlock = [regex]::Match($contractText, '(?ms)^LLMInvocationLog:\s*(.*?)^```').Groups[1].Value
-foreach ($field in @('agent_role:', 'task_kind:', 'provider_profile_ref:', 'model:', 'prompt_registry_entry_ref:', 'prompt_key:', 'prompt_template_ref:', 'prompt_template_version:', 'prompt_payload_ref:', 'execution_limits_ref:', 'retry_policy_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'semantic_validator_ref:', 'output_schema_ref:', 'context_refs:', 'parsed_output_ref:')) {
+foreach ($field in @('agent_role:', 'task_kind:', 'purpose:', 'provider_profile_ref:', 'model:', 'prompt_registry_entry_ref:', 'prompt_key:', 'prompt_template_ref:', 'prompt_template_version:', 'prompt_payload_ref:', 'execution_limits_ref:', 'retry_policy_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'semantic_validator_ref:', 'output_schema_ref:', 'context_refs:', 'parsed_output_ref:', 'usage: UsageMeasurement | null')) {
     if (-not $llmLogBlock.Contains($field)) {
         Add-Failure "LLMInvocationLog missing prompt trace field: $field"
     }
@@ -1470,6 +1519,9 @@ foreach ($field in $requiredAnalysisResultFields) {
 if (-not $analysisRunResultBlock.Contains('eval_config_refs: [RunStoredDataRef | StoredDataRef]')) {
     Add-Failure 'AnalysisRunResult.eval_config_refs must use exact versioned references'
 }
+if (-not $analysisRunResultBlock.Contains('resources: ResourceUsageSummary')) {
+    Add-Failure 'AnalysisRunResult.resources must use ResourceUsageSummary'
+}
 
 $contextLimitsBlock = [regex]::Match($contractText, '(?ms)^ContextRetrievalLimits:\s*(.*?)^```').Groups[1].Value
 if ($contextLimitsBlock.Contains('token_budget:')) {
@@ -1482,7 +1534,12 @@ $requiredR8CommonContractRules = @(
     '`AnalysisRunResult.purpose=PRODUCTION`이면 `eval_config_refs=[]`이고 평가 설정을 생산 판정·Gate·Primitive admission·Reporter의 입력으로 사용하지 않는다.',
     '분석 종료 시 `AnalysisRunResult.eval_config_refs`는 시작 상태의 전체 집합과 중복 없이 set-equal해야 하며 빠진 값·추가 값·이름만 같은 다른 revision을 허용하지 않는다.',
     '두 `purpose=EVALUATION` 결과는 `eval_config_refs`가 exact reference 기준으로 set-equal할 때만 직접 비교한다.',
-    '이 목록과 오프라인 사람 정답은 평가용 provenance일 뿐 Gate·Primitive·Reporter 입력이나 자동화된 Human Review 결정이 아니다.'
+    '이 목록과 오프라인 사람 정답은 평가용 provenance일 뿐 Gate·Primitive·Reporter 입력이나 자동화된 Human Review 결정이 아니다.',
+    '승인된 `ACTIVE` binding이 없으면 분석 시작 이후 새 work·attempt·외부 호출을 시작하지 않고 `BLOCKED + waiting_for=BUDGET`으로 둔다.',
+    '같은 reservation의 재전달은 기존 결과를 반환하며 비용을 두 번 차감하지 않는다.',
+    'Provider Profile Validation(`PVD-01`~`PVD-16`)은 profile이 기술적으로 호출 가능한지만 증명하며 취약점 분석 품질 승인이 아니다.',
+    '`purpose=EVALUATION` 분석과 그 결과는 별도 analysis identity와 exact `eval_config_refs`를 유지한다.',
+    'registry entry, PromptPayload, `LLMCallSpec`, request와 current `AnalysisRunState.purpose`는 모두 같은 `purpose`여야 한다.'
 )
 foreach ($rule in $requiredR8CommonContractRules) {
     if (-not $contractText.Contains($rule)) {
@@ -3615,6 +3672,17 @@ if (Test-Path -LiteralPath $r306BaselinePath) {
         '## 5. 실제 repository 구조',
         '## 6. 허용 의존 방향',
         '## 10. 저장·transaction·복구',
+        'RecordRef = RunStoredDataRef | StoredDataRef | PolicyCacheRef',
+        '`PolicySourcePort`',
+        '`BudgetLedgerPort`',
+        'budget_registry.py',
+        'context_retrieval.py',
+        '`RESTART_VERIFICATION_GENERATION`',
+        'BudgetReservation',
+        '`EvaluationRunConfig`',
+        '`EvaluationRecommendation`',
+        '`UsageMeasurement`',
+        '`ResourceUsageSummary`',
         '#### 10.2.1 핵심 result owner와 current 선택점',
         '### 10.7 R3-03 복구 질문의 확정 기준',
         'trusted proposal 출력 검증 runtime이 source 결과 확정 전에 전역 ID를 한 번 부여하며',
@@ -3639,6 +3707,9 @@ if (Test-Path -LiteralPath $r306BaselinePath) {
     }
     if ([regex]::IsMatch($r306BaselineText, '(?mi)\b(TBD|TODO)\b')) {
         Add-Failure 'R3-06 implementation baseline contains an unresolved implementation placeholder'
+    }
+    if ($r306BaselineText.Contains('context_service.py')) {
+        Add-Failure 'R3-06 implementation baseline uses the obsolete context_service.py module name'
     }
 }
 
@@ -3709,6 +3780,43 @@ foreach ($indexRequirement in @(
     }
 }
 Write-Output 'R3-06 implementation baseline rules: 3 files + canonical decisions and indexes'
+
+$r302ContractTestPath = Join-Path $repoRoot 'docs/architecture-v5/implementation/02-contract-test-plan.md'
+$r302ContractTestText = Get-Content -Raw -Encoding UTF8 -LiteralPath $r302ContractTestPath
+$reviewAlignmentFiles = @(
+    'docs/architecture-v5/03-agent-roles-and-orchestration.md',
+    'docs/architecture-v5/05-llm-gate-and-reporting.md',
+    'docs/architecture-v5/08-lightweight-data-contracts.md',
+    'docs/architecture-v5/implementation/01-module-map.md',
+    'docs/architecture-v5/implementation/02-contract-test-plan.md',
+    'docs/architecture-v5/implementation/03-recovery-test-plan.md',
+    'docs/architecture-v5/implementation/05-prompt-runtime.md',
+    'docs/architecture-v5/implementation/06-implementation-baseline.md'
+)
+$reviewAlignmentText = ($reviewAlignmentFiles | ForEach-Object { Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot $_) }) -join "`n"
+foreach ($obsoleteRunInitPhrase in @('공통 환경 준비', '정적·정책·Docker 준비 병렬')) {
+    if ($reviewAlignmentText.Contains($obsoleteRunInitPhrase)) {
+        Add-Failure "reviewed current documents still contain obsolete run-init Docker wording: $obsoleteRunInitPhrase"
+    }
+}
+if ([regex]::IsMatch($contractText, '(?mi)^\s+(usage|resources):\s*map(?:\s*\|\s*null)?\s*$')) {
+    Add-Failure 'LLM usage or final resources still uses an unstructured map contract'
+}
+foreach ($marker in @(
+    'R3-CT-COM-015 — RecordStore 공통 참조와 domain 제한',
+    'R3-CT-DYN-013 — 동적 입력 변경의 새 Verification generation 전이',
+    'R3-CT-BUD-006 — 예산 reservation 원자성·중복 차감 방지',
+    'R3-CT-EVAL-001 — 재현 가능한 평가 실행과 정규화된 자원 기록',
+    'R3-CT-EVAL-002 — capability 증거와 품질 승인 분리',
+    'R3-CT-EVAL-003 — 평가 비교·추천의 exact provenance'
+)) {
+    if (-not $r302ContractTestText.Contains($marker)) {
+        Add-Failure "R3-02 review-remediation test is missing: $marker"
+    }
+}
+if (-not $r303RecoveryText.Contains('R3-REC-WRK-008 — 예산 reservation·commit·release 중 종료')) {
+    Add-Failure 'R3-03 budget reservation recovery scenario is missing'
+}
 
 $savedErrorAction = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'

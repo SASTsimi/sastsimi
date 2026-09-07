@@ -103,3 +103,21 @@
 - [x] **Step 4:** 변경 통계와 diff를 다시 읽어 기존 역할·데이터·상태 의미 변경이 없는지 확인한다.
 - [x] **Step 5:** 검증 결과와 PR #107 병합·Issue #89 종료 기준을 포함해 commit하고 branch를 push한다.
 - [x] **Step 6:** `Closes #92`, `Refs #4, #24, #25, #89, #90, #91`, 병합된 PR #107을 포함한 Draft PR [#116](https://github.com/SASTsimi/sastsimi/pull/116)을 생성한다.
+
+### Task 6: R1·R2·R4·R5·R6·R7·R8 검토 의견 반영
+
+**Files:**
+- Modify: Architecture 03·05·07·08, implementation 01·02·03·05·06, ADR-015, validator
+
+**Interfaces:**
+- Consumes: PR #116의 역할별 검토 의견
+- Produces: 동적 입력 변경, R7 실행 순서, 정책 수집, 공통 참조, 예산·평가와 Prompt 운영 승격의 구현 가능한 기준선
+
+- [x] **Step 1:** run-init에서 Docker 준비를 제거하고 R7 실행 순서를 requirements/plan → validator/controller → setup → Agent → Session Manager로 고정한다.
+- [x] **Step 2:** request/profile revision 변경을 Technical REVISE와 분리하고 old Verification·dynamic 종료와 새 generation·application·질문·Pro/Con·current pointer를 한 transaction으로 확정한다.
+- [x] **Step 3:** Chaining 출력명을 `ChainingResult.chained_hypothesis_proposals`로, Context 모듈명을 `context_retrieval.py`로 고정한다.
+- [x] **Step 4:** `PolicySourcePort`·Policy Collector 구현 위치와 책임, `RecordRef` transport type과 domain별 허용 제한을 추가한다.
+- [x] **Step 5:** R8 예산 profile·binding·reservation·ledger와 crash·동시성·중복 차감 방지 계약을 추가한다.
+- [x] **Step 6:** R8 평가 service·runner·CLI·result·recommendation과 EVALUATION/PRODUCTION 격리, capability 증거와 품질 승인을 분리한다.
+- [x] **Step 7:** LLM 사용량·최종 자원 집계를 `UsageMeasurement`·`ResourceUsageSummary`로 구조화하고 미제공 값을 추정하지 않는다.
+- [x] **Step 8:** 계약·복구·security-negative 시험과 validator를 확장하고 전체 검증을 다시 실행한다.

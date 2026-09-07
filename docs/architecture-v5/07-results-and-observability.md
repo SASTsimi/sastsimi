@@ -197,7 +197,7 @@ Policy Collect는 최초 1회 뒤 최대 2회의 추가 재시도, Policy Parse�
 
 한도는 두 종류다. 둘 다 가설 `FALSE`(구멍 없음)가 아니다.
 
-1. **실행 예산** — 벽시계 시간, 호출, 재시도, 조회 깊이·조각, **비용, 분석 전체 work 수**. Runtime Validator가 `ActionCheck.BUDGET`으로 검사한다. 실패 코드는 `BUDGET_EXCEEDED`다. 해당 work를 중단한다. 분석 run은 `PARTIAL`일 수 있다. **token 상한은 분석 전체·모든 Agent·호출마다 두지 않는다.** `LLMCallSpec.token_budget` 칸이 계약에 있어도 R8 절단 상한이 아니라 관측·계획용이다. token을 넘겨 `BUDGET_EXCEEDED`로 자르지 않는다. 사용량은 관측만 한다. 조금만 더 쓰면 취약점을 찾을 수 있는데 잘리면 안 된다. **체이닝 전용 짝·깊이·조합 한도도 두지 않는다.** 잇기도 이 전역 시간·재시도·조회·비용·work 예산만 따른다. **분석 전체 벽시계는 120분(7200초)이다.** 소진 시 새 work를 시작하지 않는다. 분석은 `PARTIAL`일 수 있다. FALSE가 아니다. **비용과 전체 work 수 숫자는 임의로 정하지 않는다.** versioned R8 정책에서 관리하며 현재 미확정이다.
+1. **실행 예산** — 벽시계 시간, 호출, 재시도, 조회 깊이·조각, **비용, 분석 전체 work 수**. R8 trusted registry의 exact ACTIVE `BudgetProfileBinding`이 `ExecutionBudgetProfile`, `VerificationBudgetProfile`, `DynamicReproductionLifecycleProfile`을 묶고 Runtime Validator가 `ActionCheck.BUDGET`으로 검사한다. 새 실행 전에는 `BudgetReservation`, 실제 사용 뒤에는 append-only `BudgetLedgerEntry`를 남긴다. 승인된 profile·가격·잔여량을 입증할 수 없으면 `BLOCKED + waiting_for=BUDGET`, 실제 한도 소진만 `BUDGET_EXCEEDED`다. 분석 run은 `PARTIAL`일 수 있다. **token 상한은 분석 전체·모든 Agent·호출마다 두지 않는다.** `LLMCallSpec.token_budget` 칸이 계약에 있어도 R8 절단 상한이 아니라 관측·계획용이다. token을 넘겨 `BUDGET_EXCEEDED`로 자르지 않는다. 사용량은 관측만 한다. 조금만 더 쓰면 취약점을 찾을 수 있는데 잘리면 안 된다. **체이닝 전용 짝·깊이·조합 한도도 두지 않는다.** 잇기도 이 전역 시간·재시도·조회·비용·work 예산만 따른다. **분석 전체 벽시계는 120분(7200초)이다.** 소진 시 새 work를 시작하지 않는다. 분석은 `PARTIAL`일 수 있다. FALSE가 아니다. **비용과 전체 work 수 숫자는 임의로 정하지 않는다.** R8이 새 profile revision에서 승인하기 전에는 운영 ACTIVE로 만들지 않는다.
 2. **Sandbox 정책 상한** — R7 소유 `sandbox_profile_ref`가 network·mount·namespace·secret 등 외부 접근·격리와 상자 입장용 CPU·RAM·디스크·PID·요청 가능 최대 시간을 정한다. Sandbox Controller가 이 정책·수치를 강제하며 초과는 `SANDBOX_POLICY_DENIED`, Dynamic Reproduction Agent 미시작이다. R8 소유 `DynamicReproductionLifecycleProfile`은 호출 전 work 잔여 시간과 새 attempt 한도만 맡고 Runtime Validator가 `BUDGET_EXCEEDED`와 attempt 제한을 강제한다. 환경 구성 실패·실행 실패·실행 중 timeout은 기존 환경·실행 오류로 남기며 두 코드를 섞지 않는다.
 
 상자 **시간**이 부족한 이유는 셋이다. 1번 R8 잔여 예산과 2번 R7 입장 상한은 서로 다른 장부·실패 코드이며, 3번은 승인 뒤 실행 timeout이다.
@@ -219,6 +219,8 @@ Orchestration Runtime은 가설 등록·Verification 배정까지만 한다. 찬
 ### 실행 예산 (Runtime Validator → `BUDGET_EXCEEDED`)
 
 token 상한은 없다. 분석 전체·모든 Agent·호출마다 동일하다. 아래는 시간·횟수·조회 초안이다. **분석 1회 벽시계는 120분이다.** 비용과 전체 work 수 한도는 versioned R8 정책에서 관리하며 현재 미확정이다. 그 두 숫자는 지어 넣지 않는다.
+
+예산 사용 순서는 `ACTIVE binding 확인 → reservation → 실행 → 실제 사용 commit 또는 실행 전 release`다. reservation·ledger는 같은 reservation을 두 번 차감하지 않는 unique constraint를 사용한다. 취소·동시 실행·crash 뒤 사용 여부 불명 상태를 임의로 release하거나 0원 처리하지 않는다. LLM usage는 `UsageMeasurement`, 최종 집계는 `ResourceUsageSummary`로 기록하며 실제값 출처, 미제공 사유, 비용·통화와 가격 기준 revision을 함께 남긴다. token usage 미제공만으로는 작업을 막지 않는다.
 
 | 역할 | 시간 | 재시도 (같은 요청) | 기타 | 초과 시 | 같이 정할 사람 |
 |---|---|---|---|---|---|

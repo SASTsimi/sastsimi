@@ -119,7 +119,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 | 전 단계 공통 | STO-008 migration, WRK-003 취소·결과 경합 |
 | 1 시작·설정 | WRK-001/004/006, E2E-001 |
 | 2 clone/checkout | FLW-001, STO-001/007/009 |
-| 3 run-init 정적·정책·Docker 준비 병렬 | FLW-001/005, STO-007, WRK-006 |
+| 3 run-init 정적·정책 두 branch 병렬(Docker 준비 없음) | FLW-001/005, STO-007, WRK-006 |
 | 4 정규화 | STO-001~006, FLW-001 |
 | 5 초기 work 준비 | WRK-001/007 |
 | 6 Hypothesis 호출 | LLM-001~003/006, WRK-002 |
@@ -406,6 +406,21 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R8; Verification는 R6. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
+#### R3-REC-WRK-008 — 예산 reservation·commit·release 중 종료
+
+- **1. ID·단계·work**: R3-REC-WRK-008; 모든 외부 실행 직전·직후 / 해당 work·attempt. CT 연결: BUD-001/002/003/006.
+- **2. 중단 전 상태·current**: ACTIVE `BudgetProfileBinding`, committed ledger 합계와 active reservation 집합을 고정한다. 새 action은 아직 미claim 또는 reservation을 가진 상태다.
+- **3. work·attempt·generation·input**: 같은 analysis/action/work/attempt와 exact reservation_id, profile refs, reserved units, 실제 usage evidence를 연결한다.
+- **4. 저장된 record·artifact·marker**: `BudgetReservation(RESERVED | COMMITTED | RELEASED)`, 선택적 `BudgetLedgerEntry`, action claim/side-effect/usage marker를 지점별로 남긴다.
+- **5. 정확한 장애 주입 지점**: A reservation 전, B RESERVED 저장 뒤 action claim 전, C 외부 side effect 뒤 usage 저장 전, D ledger 저장과 COMMITTED 전이 사이, E 실행 전 거절 뒤 RELEASED 전, F commit/release 직후 응답 전 종료한다.
+- **6. 재시작 검사 조건**: reservation 상태, ledger unique key, action claim/attempt 상태, durable side-effect·usage evidence, 같은 profile revision과 remaining 계산을 확인한다.
+- **7. 복구 조치**: A는 새 reserve부터 시작한다. B/E에서 미실행이 증명되면 같은 reservation을 RELEASED로 끝낸다. D/F는 기존 ledger/state를 멱등 재투영한다. C처럼 실제 사용 여부를 증명하지 못하면 release·재실행하지 않고 `BLOCKED + waiting_for=BUDGET`으로 둔다. Recovery가 가격·사용량을 추정하지 않는다.
+- **8. 기대 state·current/격리 결과**: reservation 하나당 ledger entry 최대 하나, terminal reservation 전이 한 번, action claim 최대 한 번이다. 동시 재시작도 unique constraint로 두 번째 debit을 거절한다.
+- **9. 다음 단계 호출**: 안전한 reservation 상태가 확인되기 전 새 attempt·Provider·Sandbox·도구 호출은 0건이다.
+- **10. 기대 오류·관측 log**: actual exhausted만 `BUDGET_EXCEEDED`; 증거 불명은 budget waiting/block 사유, storage 충돌은 실제 오류를 기록한다. token usage 미제공만으로 차단하지 않는다.
+- **11. R8 예산·시간·비용**: 복구 재투영은 새 사용량이 아니다. 동일 reservation의 재전달로 elapsed·cost·work·call을 두 번 집계하지 않는다.
+- **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R8·R4와 해당 실행 owner. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
+
 ### LLM. 인증·Provider·Pro/Con
 
 #### R3-REC-LLM-001 — AUTH_REQUIRED 뒤 재인증
@@ -637,17 +652,17 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 
 #### R3-REC-DYN-010 — exact request 또는 SandboxProfile 변경 뒤 RESUME 차단과 새 generation
 
-- **1. ID·단계·work**: R3-REC-DYN-010; 12 / 기존 DYNAMIC_REPRO의 입력 변경 필요 감지, RESUME 차단과 새 Verification generation. CT 연결: DYN-004/008/011.
-- **2. 중단 전 상태·current**: G1의 KD1이 BLOCKED이고 DQ1·SP1·IHD1이 고정돼 있다. 복구 전 exact DynamicReproductionRequest를 DQ2로 바꾸거나 SandboxProfile을 SP2로 바꿔야 하는 상황을 각각 만든다.
-- **3. work·attempt·generation·input**: old G1/KD1/AD1/DQ1/SP1/IHD1과 필요한 DQ2 또는 SP2의 차이를 분리한다. RunPolicyState만 달라지는 변형은 request/profile 변경 변형으로 취급하지 않는다. 새 G2/KV2는 새 application·질문·Pro/Con을 고정하고 G2가 동적 재현을 요구할 때만 DQ2/KD2를 만든다.
-- **4. 저장된 record·artifact·marker**: G1 BLOCKED state·old action/decision/attempt/history와 새 입력 필요 사유. 새 전이가 COMMITTED되기 전 G2·KV2·KD2·새 current pointer는 없다.
-- **5. 정확한 장애 주입 지점**: 변경 필요 확인 전후, old KD1 RESUME 거절 기록 도중, G2/KV2 atomic 등록 전후와 DQ2/KD2 등록 전후에 각각 종료한다.
-- **6. 재시작 검사 조건**: old KD1 `input_refs/input_hash`, DQ1/SP1과 필요한 DQ2/SP2 차이, old action decision의 USED/EXPIRED 상태, ACTIVE Verification owner와 expected generation/state version을 확인한다.
-- **7. 복구 조치**: KD1을 RESUME하지 않고 입력 불일치와 history를 보존한다. Recovery는 의미 결정을 만들지 않는다. 같은 ACTIVE Verification owner의 요청을 Runtime Validator가 검사한 뒤 G2·KV2·새 application·Pro/Con을 한 전이로 등록하고, G2 판단이 동적 재현을 요구할 때 DQ2·KD2를 별도 전이로 만든다.
-- **8. 기대 state·current/격리 결과**: G1 artifact와 old ALLOW/SandboxPolicyDecision/attempt/result는 history이고 G2에 복사하지 않는다. G2의 새 work·application·request·dynamic 결과만 current가 될 수 있다. program policy 상태만 달라졌고 DQ1/SP1/IHD1이 같으면 불필요한 generation도 만들지 않는다.
-- **9. 다음 단계 호출**: G2 VERIFICATION 전이가 COMMITTED되기 전 dynamic 실행·final TRUE·CWE·Gate 호출은 0건이다. 이후에는 G2의 새 Pro/Con·판정 순서를 따른다.
-- **10. 기대 오류·관측 log**: old work RESUME은 `STALE_RESULT` 또는 `STATE_TRANSITION_INVALID`, old decision 재사용은 `ACTION_NOT_ALLOWED`다. 여러 위반이면 R3-06 §8.4 우선순위를 적용한다.
-- **11. R8 예산·시간·비용**: 차단 확인 자체로 새 generation·attempt 실행 usage를 만들지 않는다. G2의 새 work는 호출 전에 남은 versioned 시간·비용·work 한도를 새로 검사한다.
+- **1. ID·단계·work**: R3-REC-DYN-010; 10–13 / 기존 VERIFICATION·DYNAMIC_REPRO의 입력 변경 감지, old work 종료와 새 Verification generation. CT 연결: DYN-004/008/011/013.
+- **2. 중단 전 상태·current**: H1은 VERIFYING이고 G1의 ACTIVE Verification owner, old VERIFICATION work KV1, DYNAMIC_REPRO work KD1·attempt AD1, DQ1·SP1, `HypothesisProcessState.current_generation=G1`, `DynamicReproductionState.verification_generation=G1`과 current pointers가 고정돼 있다. DQ2 또는 SP2가 필요한 상황을 각각 만든다.
+- **3. work·attempt·generation·input**: action은 `RESTART_VERIFICATION_GENERATION`, requester는 같은 H1/G1의 ACTIVE Verification owner, reason은 `DYNAMIC_REQUEST_REVISION_CHANGED | SANDBOX_PROFILE_REVISION_CHANGED`다. old process/assignment/work/attempt/request/profile/application/playbook exact refs, `expected_verification_generation=G1`, expected state version을 고정한다. RunPolicyState만 달라지는 변형은 입력 변경으로 취급하지 않는다.
+- **4. 저장된 record·artifact·marker**: G1의 old action/decision/attempt/environment/AgentLog/result/PoC/CWE/Gate history와 변경 사유를 보존한다. G2 transaction이 COMMITTED되기 전 새 current pointer나 일부 G2 work는 보이지 않아야 한다.
+- **5. 정확한 장애 주입 지점**: A action 저장 전, B validator ALLOW 뒤 transaction 전, C old attempt/work CANCELLED 처리 중, D G2/VERIFICATION/Application/질문/Pro·Con 생성 중, E process pointer 갱신 중, F 새 DynamicReproductionState 초기화 중, G transaction commit 직후 응답 전 종료한다. 같은 expected generation으로 두 요청을 동시에 보내는 변형도 둔다.
+- **6. 재시작 검사 조건**: ACTIVE Verification owner, H1 VERIFYING, expected generation/state version, old current closure, reason과 실제 ref 차이, action USED 여부, `(hypothesis_id, expected_generation)` successor unique key를 확인한다.
+- **7. 복구 조치**: B 이전은 같은 요청을 재검사한다. C–F는 SQLite transaction rollback 때문에 G1 current를 유지한다. G는 LLM·Sandbox를 다시 실행하지 않고 기존 G2와 USED action을 반환한다. Recovery는 DQ/SP 변경 필요나 새 질문 의미를 결정하지 않고 저장된 ACTIVE Verification 요청만 멱등 재생한다.
+- **8. 기대 state·current/격리 결과**: commit 뒤 KV1/KD1 active attempt·work는 `CANCELLED/INPUT_SUPERSEDED`, G1은 history다. G2 VERIFICATION work, 새 PlaybookApplication, 전역 고유 질문, 독립 Pro/Con work, process pointer가 함께 current가 되고 G2 DynamicReproductionState는 `NOT_REQUESTED`, request/work/result refs null이다. 중복 요청은 G3를 만들지 않는다.
+- **9. 다음 단계 호출**: G2 전이가 COMMITTED되기 전 호출은 0건이다. 이후 새 Pro/Con·initial assessment를 먼저 수행하고, G2가 동적 재현을 요구할 때만 새 DQ2/KD2를 별도 전이로 만든다. old result로 final TRUE·CWE·Gate·Primitive·Reporter를 호출하지 않는다.
+- **10. 기대 오류·관측 log**: wrong requester/reason은 `AUTHORITY_DENIED | ACTION_NOT_ALLOWED`, stale version/generation은 `STATE_VERSION_CONFLICT | STALE_RESULT`, old RESUME은 `STATE_TRANSITION_INVALID`, old action 재사용은 `ACTION_NOT_ALLOWED`다. 여러 위반이면 R3-06 §8.4 우선순위를 적용한다.
+- **11. R8 예산·시간·비용**: rollback·멱등 반환은 새 사용량이 아니다. G2의 실제 새 work/attempt/LLM 호출은 각각 실행 전 ACTIVE budget binding과 reservation을 새로 검사한다.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R6·R7·R8. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-DYN-011 — validated PoC same-attempt provenance 복구

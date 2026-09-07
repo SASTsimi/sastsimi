@@ -62,6 +62,10 @@ LLM 역할 11개는 분석·분류·검토·초안 작성을 수행한다.
 - `Runtime Validator`: action·상태·권한·exact reference 검사
 - `Prompt Registry Runtime`: 승인된 prompt 설정 선택
 - `Playbook Registry Runtime`: 승인된 플레이북 적용
+- `Policy Preparation Service`·`Policy Collector`: run-init 정책 work 등록·상태 관찰과 공식 원문 수집·cache·run-local 정책 결과 확정
+- `Context Retrieval Service`: exact workspace·commit 범위의 코드 문맥 조회
+- `Budget Runtime`·`Budget Profile Registry`: R8 승인 profile 게시, 실행 전 예약과 실제 사용 장부 확정
+- `R8 Evaluation Runtime`: 격리된 평가 실행·비교·추천 결과 확정
 - `Reproduction Setup Automation`: recipe·image·container·cleanup 실행
 - `Sandbox Controller`: Sandbox 밖의 강제 경계 검사
 - `Reproduction Session Manager`: event 기록과 동적 결과 확정
@@ -156,6 +160,9 @@ sastsimi/
 │     │  ├─ gates.py
 │     │  ├─ chaining.py
 │     │  ├─ reporting.py
+│     │  ├─ policy.py
+│     │  ├─ budget.py
+│     │  ├─ evaluation.py
 │     │  └─ schema_export.py
 │     ├─ ports/
 │     │  ├─ clock.py
@@ -165,13 +172,18 @@ sastsimi/
 │     │  ├─ artifact_store.py
 │     │  ├─ llm_provider.py
 │     │  ├─ static_tool.py
+│     │  ├─ policy_source.py
+│     │  ├─ budget_ledger.py
 │     │  └─ sandbox.py
 │     ├─ runtime/
 │     │  ├─ work_service.py
 │     │  ├─ attempt_service.py
 │     │  ├─ action_validator.py
 │     │  ├─ transition_service.py
+│     │  ├─ generation_transition.py
 │     │  ├─ recovery_service.py
+│     │  ├─ budget_registry.py
+│     │  ├─ budget_service.py
 │     │  ├─ worker_pool.py
 │     │  └─ errors.py
 │     ├─ orchestration/
@@ -222,7 +234,13 @@ sastsimi/
 │     │  ├─ codeql_adapter.py
 │     │  ├─ open_grep_adapter.py
 │     │  ├─ normalizer.py
-│     │  └─ context_service.py
+│     │  └─ context_retrieval.py
+│     ├─ policy/
+│     │  ├─ preparation_service.py
+│     │  ├─ collector.py
+│     │  ├─ cache_service.py
+│     │  └─ adapters/
+│     │     └─ official_http.py
 │     ├─ sandbox/
 │     │  ├─ setup_automation.py
 │     │  ├─ controller.py
@@ -238,6 +256,11 @@ sastsimi/
 │     │  ├─ finding_normalizer.py
 │     │  ├─ primitive_admission.py
 │     │  └─ report_workflow.py
+│     ├─ evaluation/
+│     │  ├─ service.py
+│     │  ├─ runner.py
+│     │  ├─ grader.py
+│     │  └─ recommendation.py
 │     ├─ config/
 │     │  ├─ models.py
 │     │  ├─ loader.py
@@ -247,6 +270,7 @@ sastsimi/
 │        └─ cli/
 │           ├─ main.py
 │           ├─ commands.py
+│           ├─ evaluation_commands.py
 │           ├─ output.py
 │           └─ exit_codes.py
 ├─ tests/
@@ -267,7 +291,8 @@ sastsimi/
 ├─ evals/
 │  ├─ corpus/
 │  ├─ graders/
-│  └─ scenarios/
+│  ├─ scenarios/
+│  └─ configs/
 ├─ migrations/
 │  ├─ env.py
 │  └─ versions/
@@ -292,8 +317,10 @@ sastsimi/
 | `prompts/` | registry·loader·builder·redaction·schema/의미 검사 연결 | 역할 담당자의 판단 기준을 임의 작성 |
 | `agents/` | 11개 LLM 역할의 얇은 wrapper와 output parser | DB·Docker 직접 호출, 전역 ID·상태 발급 |
 | `static_analysis/` | Git·AST·CodeQL·OpenGrep·Context 실행과 사실 정규화 | 취약점 verdict 생성 |
+| `policy/` | 공식 정책 source 수집·cache 호환성 검사·run-local 정책 준비. LLM Policy Parser 호출 결과를 검증·취합 | Rule Scope·보고 허용 의미 판정, R3 run-init이 정책 record를 대신 생산 |
 | `sandbox/` | R7 환경·실행·event·PoC provenance | 최종 `TRUE | FALSE | HOLD`, Gate·정책 의미 판정 |
 | `reporting/` | CWE·두 Gate 호출 흐름, Finding 정규화, admission, ReportDraft 연결 | 사람 승인·외부 제출·공개 |
+| `evaluation/` | R8 corpus 실행, grader 호출, 품질·시간·사용량·비용 결과와 채택 제안 생성 | 운영 Finding·Primitive·ReportDraft current pointer 변경, Provider capability를 품질 승인으로 간주 |
 | `config/` | versioned 설정, precedence와 secret handle | raw secret 저장, untrusted 입력의 설정 변경 |
 | `interfaces/cli/` | 사용자 입력·출력과 exit code | DB table·artifact path 직접 조작 |
 | `tests/` | 자동 시험과 fake | 운영 credential·실제 비공개 저장소 포함 |
@@ -348,11 +375,13 @@ agents → contracts, ports, prompts
 runtime → contracts, ports, config
 orchestration → contracts, ports, runtime
 reporting → contracts, ports, runtime, agents
+policy → contracts, ports, runtime, agents, config
+evaluation → contracts, ports, runtime, agents, config
 providers → contracts, ports, config
 static_analysis → contracts, ports, config
 sandbox → contracts, ports, config
 storage → contracts, ports, config
-interfaces/cli → orchestration, runtime
+interfaces/cli → orchestration, runtime, evaluation
 bootstrap → 위 concrete 구현을 조립
 ```
 
@@ -363,11 +392,13 @@ bootstrap → 위 concrete 구현을 조립
 3. `agents`는 `contracts`, `ports`, `prompts`의 public interface만 사용한다.
 4. `runtime`은 `contracts`, `ports`, `config`를 사용하며 전문 의미를 판정하지 않는다.
 5. `orchestration`은 `runtime` service와 port를 호출하지만 concrete storage·provider·Docker adapter를 import하지 않는다.
-6. `static_analysis`, `providers`, `sandbox`, `storage`는 port 구현이다. 서로를 직접 호출하지 않는다.
-7. `reporting`은 current contract와 LLM role port를 조합하지만 외부 공개 adapter를 갖지 않는다.
-8. `interfaces/cli`는 application service만 호출한다.
-9. concrete wiring은 `src/sastsimi/bootstrap.py` 하나에서 수행한다. 이 파일은 구현 시 tree에 추가한다.
-10. import cycle은 CI의 architecture dependency test로 차단한다.
+6. `static_analysis`, `providers`, `sandbox`, `storage`와 `policy/adapters`는 port 구현이다. 서로를 직접 호출하지 않는다.
+7. `policy`는 `PolicySourcePort`로 공식 원문을 가져오고 Policy Parser를 runtime을 통해 호출한다. R3 run-init은 `PolicyPreparationService` 등록·상태 관찰만 하고 정책 record를 생산하지 않는다.
+8. `reporting`은 current contract와 LLM role port를 조합하지만 외부 공개 adapter를 갖지 않는다.
+9. `evaluation`은 production workflow를 직접 호출하지 않고 `purpose=EVALUATION` runtime 경로와 exact 평가 설정만 사용한다.
+10. `interfaces/cli`는 application service만 호출한다.
+11. concrete wiring은 `src/sastsimi/bootstrap.py` 하나에서 수행한다. 이 파일은 구현 시 tree에 추가한다.
+12. import cycle은 CI의 architecture dependency test로 차단한다.
 
 `bootstrap.py`는 생성 순서와 dependency injection만 담당한다. 취약점 판단, state 전이와 권한 검사를 구현하지 않는다.
 
@@ -376,9 +407,11 @@ bootstrap → 위 concrete 구현을 조립
 구체 구현은 다음 Protocol 경계를 유지한다. 함수명은 물리 구현 기준이며 데이터 의미는 `contracts` 정본을 따른다.
 
 ```python
+RecordRef = RunStoredDataRef | StoredDataRef | PolicyCacheRef
+
 class RecordStore(Protocol):
-    def get_exact(self, ref: StoredDataRef) -> Record: ...
-    def stage_record(self, record: Record) -> StoredDataRef: ...
+    def get_exact(self, ref: RecordRef) -> Record: ...
+    def stage_record(self, record: Record) -> RecordRef: ...
     def commit_transition(self, request: TransitionCommitRequest) -> TransitionCommit: ...
 
 class ArtifactStore(Protocol):
@@ -396,13 +429,49 @@ class StaticToolAdapter(Protocol):
     async def run(self, request: StaticToolRequest) -> ToolRunResult: ...
     async def cancel(self, attempt_id: str) -> CancellationResult: ...
 
+class PolicySourcePort(Protocol):
+    async def fetch_official(self, request: OfficialPolicyFetchRequest) -> OfficialPolicySource: ...
+
+class BudgetLedgerPort(Protocol):
+    def reserve(self, request: BudgetReservationRequest) -> BudgetReservation: ...
+    def commit_usage(self, request: BudgetCommitRequest) -> BudgetLedgerEntry: ...
+    def release(self, request: BudgetReleaseRequest) -> BudgetReservation: ...
+    def remaining(self, profile_ref: StoredDataRef, analysis_id: str) -> BudgetRemaining: ...
+
 class SandboxPort(Protocol):
     async def prepare(self, request: SandboxPrepareRequest) -> SandboxEnvironment: ...
     async def execute(self, request: ApprovedSandboxCommand) -> SandboxCommandRecord: ...
     async def cleanup(self, request: SandboxCleanupRequest) -> CleanupResult: ...
 ```
 
+내부 application service의 최소 진입점은 다음과 같다. 이 service도 저장소나 외부 도구를 직접 만들지 않고 위 port와 Runtime Validator를 주입받는다.
+
+```python
+BudgetProfile = ExecutionBudgetProfile | VerificationBudgetProfile | DynamicReproductionLifecycleProfile
+AnalysisPurpose = Literal["PRODUCTION", "EVALUATION"]
+
+class PolicyPreparationService:
+    async def start_or_reuse(self, analysis_ref: RunStoredDataRef) -> WorkExecutionState: ...
+
+class BudgetProfileRegistry:
+    def publish_draft(self, profile: BudgetProfile) -> RecordRef: ...
+    def activate(self, binding_ref: StoredDataRef, approval_ref: StoredDataRef) -> BudgetProfileBinding: ...
+    def current(self, purpose: AnalysisPurpose) -> BudgetProfileBinding | None: ...
+
+class EvaluationService:
+    async def run(self, config_ref: StoredDataRef) -> EvaluationRunResult: ...
+    def compare(self, result_refs: list[StoredDataRef]) -> EvaluationRecommendation: ...
+```
+
+`BudgetProfileRegistry.activate`는 R8 승인과 사람 승인 exact reference, 같은 purpose의 profile 상태·revision·구성을 검사한 뒤에만 새 ACTIVE binding revision을 만든다. `EvaluationService`는 Orchestration Runtime의 일반 분석 시작 경로를 호출해 `purpose=EVALUATION` analysis만 만들 수 있다. R8 Evaluation Runtime은 평가 결과를 집계·저장할 뿐 일반 `WorkExecutionState`를 직접 등록하거나 변경하지 않으며, 운영 registry current pointer도 바꾸지 않는다.
+
 Protocol은 raw SDK client, SQLAlchemy Session, Docker client와 host path를 반환하지 않는다. `LLMProviderAdapter.invoke`는 schema·semantic 검사 전의 결과를 반환할 수 있지만 domain output 저장 권한은 없다.
+
+`RecordRef`는 저장 계층의 공통 transport type일 뿐 domain별 허용 reference를 넓히지 않는다. `CodeWorkspace`·`AnalysisRunResult` 같은 run-level record는 `RunStoredDataRef`, 코드·가설·검증 결과는 `StoredDataRef`, 실행 간 정책 cache는 `PolicyCacheRef`만 사용한다. repository adapter는 요청한 record kind와 reference 종류가 맞지 않으면 I/O 전에 `RECORD_REVISION_MISMATCH`로 거절한다. `tests/contract/test_record_ref_kinds.py`와 `tests/security_negative/test_cross_domain_record_ref.py`에서 세 reference의 정상 경로와 교차 사용 거절을 각각 확인한다.
+
+`PolicySourcePort`는 Program Catalog가 승인한 공식 URL과 source 설정만 받아 raw bytes·최종 URL·조회 시각·ETag·Last-Modified·게시 주체 근거를 반환한다. `policy/adapters/official_http.py`가 HTTP 구현이고, `Policy Collector`만 이를 호출해 exact 원문과 `PolicyCollectionResult`를 생산한다. `Policy Parser`는 Collector가 저장한 원문을 구조화한 `PolicyParserResult`만 만들며 `RunPolicyState`·`ProgramPolicyRecord`를 저장하지 않는다. 시험은 `tests/unit/policy/`, `tests/integration/test_run_policy_preparation.py`, `tests/contract/test_policy_source_port.py`, `tests/security_negative/test_unapproved_policy_source.py`에 둔다.
+
+`BudgetLedgerPort`는 R8 trusted Budget Profile Registry가 게시한 exact profile만 사용한다. `BudgetService`는 새 work·attempt·외부 호출 전에 reservation을 원자 생성하고 실행 뒤 실제 사용량을 한 번만 commit하거나 미사용 예약을 release한다. profile 또는 잔여량을 입증할 수 없으면 실행을 시작하지 않고 `BLOCKED + waiting_for=BUDGET`으로 둔다. token 사용량 하나가 제공되지 않았다는 이유만으로 차단하지 않는다. reservation·ledger·profile table과 migration은 `storage/models.py`, `storage/repositories.py`, `migrations/versions/`에 두고, 동시 예약·취소·crash·중복 commit은 `tests/integration/budget/`와 `tests/security_negative/test_budget_double_debit.py`에서 검사한다.
 
 ## 8. schema·직렬화·ID
 
@@ -445,8 +514,8 @@ sha256: 957b116406dddaf7928bd028a12602346873237f935f866530949547422122da
 
 ### 8.3 ID 생성
 
-- `analysis_id`, `workspace_id`, `hypothesis_id`, `work_id`, `attempt_id`, `stored_data_id`, `record_id`, `action_id`, `transition_id`, `transition_commit_id`, `event_id`, `llm_call_id`, `question_id`는 trusted runtime의 `IdGenerator`가 UUID4를 발급한다.
-- LLM은 `proposal_id`, `question_id`, `validation_id`를 발급하지 않는다. trusted proposal 출력 검증 runtime이 source candidate를 source 결과에 넣기 전에 이 ID를 한 번 부여한다. ORCHESTRATION 등록 runtime은 source 결과가 COMMITTED된 뒤 같은 ID와 내용을 정본 record에 그대로 사용하며 다시 발급하지 않는다.
+- `analysis_id`, `workspace_id`, `hypothesis_id`, `work_id`, `attempt_id`, `record_id`, `action_id`, `event_id`, `llm_call_id`는 `IdGenerator`가 발급하는 대표 예시다. 이것은 완전 목록이 아니며, 각 ID의 정확한 생성 주체·유일 범위·재사용 규칙은 [08 공통 계약의 식별자 표](../08-lightweight-data-contracts.md#식별자-생성저장참조-기준)가 유일한 정본이다. 구현은 별도 목록을 만들어 그 표와 경쟁시키지 않는다.
+- LLM은 `proposal_id`, `question_id`, `validation_id`를 발급하지 않는다. 08번 표가 지정한 trusted 출력 검증 runtime 또는 application 생성 runtime이 source candidate를 source 결과에 넣기 전에 ID를 한 번 부여한다. ORCHESTRATION 등록 runtime은 source 결과가 COMMITTED된 뒤 같은 ID와 내용을 정본 record에 그대로 사용하며 다시 발급하지 않는다.
 - `logical_record_id`는 최초 record 생성 시 발급하고 후속 revision이 보존한다.
 - `program_id`는 승인된 Program Catalog가 발급하며, `commit_id`는 Git이 확정한 commit hash이므로 UUID로 다시 만들지 않는다.
 - `dedupe_key`, `content_hash`, `input_hash`는 정해진 canonical bytes의 SHA-256이며 임의 ID가 아니다.
@@ -598,11 +667,11 @@ R3-03의 `RQ-01`~`RQ-10`은 아래 기준으로 구현한다. 이는 구현을 �
 | `RQ-03` migration | Alembic revision만 schema를 바꾼다. 앱 시작 중 자동 migration은 금지하고 pending·중단·현재 revision 불일치 시 exit 3으로 멈춘다. 검증된 upgrade/downgrade만 실행하며 의미 손실 rollback은 백업과 사람 승인이 없으면 거절한다. |
 | `RQ-04` worker·외부 호출 불확실성 | SQLite의 `worker_id + lease_expires_at + state_version`을 한 transaction에서 비교해 lease를 회수한다. 외부 요청 전송 뒤 결과를 모르면 exact provider request ID로 공식 상태 조회가 가능할 때만 재조정한다. 조회·idempotency를 증명할 수 없으면 자동 재전송하지 않고 `RECOVERY_FAILED`, `BLOCKED`, `waiting_for=INPUT`으로 사람의 명시적 재시도·failover 결정을 기다린다. |
 | `RQ-05` cancel·resume | `resume`은 같은 입력을 유지한 non-terminal `BLOCKED` run의 허용 work만 재개한다. `CANCELLED | COMPLETE | PARTIAL | FAILED` run은 되살리지 않는다. 같은 입력을 다시 실행하려면 사용자가 새 `run`을 요청해 새 `analysis_id`를 만든다. cancelled 조회는 exit 7, terminal 재개 요청은 exit 2다. |
-| `RQ-06` 시간·비용 | attempt 실행 중 monotonic elapsed를 durable heartbeat 구간별로 누적하고 process off·BLOCKED 대기는 제외한다. crash 직전 미기록 구간과 provider가 주지 않은 usage는 `null`·불명 사유로 보존한다. 새 비용·시간 work는 COMMITTED ledger와 reservation으로 잔여 한도를 입증할 때만 시작하고, 입증하지 못하면 `BLOCKED + waiting_for=BUDGET`이다. token usage 미제공만으로 차단하지 않는다. |
+| `RQ-06` 시간·비용 | R8 trusted registry의 exact ACTIVE `BudgetProfileBinding`을 고정한다. attempt 실행 중 monotonic elapsed를 durable heartbeat 구간별로 누적하고 process off·BLOCKED 대기는 제외한다. 새 work·attempt·외부 호출은 `BudgetService`가 COMMITTED ledger와 active reservation을 한 transaction에서 읽고 reservation을 만든 뒤에만 시작한다. 성공·실패로 자원을 썼으면 actual usage를 한 번 commit하고, 실행 전 취소·거절이면 release한다. 같은 reservation의 중복 debit은 unique constraint로 차단한다. profile·가격·잔여량을 입증하지 못하면 `BLOCKED + waiting_for=BUDGET`, 실제 한도 소진만 `BUDGET_EXCEEDED`다. crash 직전 미기록 구간과 provider가 주지 않은 token usage는 구조화된 unavailable 사유로 보존하며 token usage 미제공만으로 차단하지 않는다. |
 | `RQ-07` repair | schema·semantic 실패 응답과 validation error를 먼저 durable invocation log로 남긴다. 각 repair는 같은 domain work의 새 `WorkAttempt`, `llm_call_id`, spec, action, decision과 `NEW` session을 사용하고 바로 앞 invalid call을 연결한다. 성공 output 하나만 current로 확정하며 중단·소진 시 invalid output을 승격하지 않는다. |
 | `RQ-08` Sandbox 재생성·cleanup | health 또는 소유 상태를 확인할 수 없으면 `STATE_UNCERTAIN`으로 새 environment binding을 만들고 기존 writable container를 재사용하지 않는다. 자원은 analysis·hypothesis·work·attempt ownership label과 exact environment ref가 모두 맞을 때만 정리한다. cleanup 재호출은 같은 자원에 멱등이고, 실패·불확실 자원은 quarantine하여 다음 실행에 연결하지 않는다. |
 | `RQ-09` AgentLog append | 같은 `event_id`와 같은 canonical hash의 재전달은 기존 durable ACK를 반환한다. 같은 ID의 다른 bytes 또는 같은 attempt의 같은 sequence에 다른 event가 오면 `RECOVERY_FAILED`로 거절한다. start만 있고 finish가 없으면 미확인 상태로 남기고 finish를 만들지 않으며 environment를 `STATE_UNCERTAIN`으로 처리한다. |
-| `RQ-10` 동적 입력 변경 | request 또는 Sandbox profile exact revision 변경이 필요하면 기존 dynamic work를 종료 history로 남긴다. 같은 ACTIVE Verification owner가 CAS로 `verification_generation + 1`, 새 VERIFICATION work·application·Pro/Con을 등록하고 필요하면 새 DynamicReproductionRequest와 새 DYNAMIC_REPRO work를 만든다. 과거 action·attempt·environment·PoC·CWE·Gate는 재사용하지 않으며 Recovery가 의미 결정을 대신 만들지 않는다. |
+| `RQ-10` 동적 입력 변경 | Technical `REVISE`와 별도인 `RESTART_VERIFICATION_GENERATION` action을 같은 ACTIVE Verification owner만 요청한다. current process가 `VERIFYING`이고 reason이 request/profile exact revision 변경일 때 expected generation·부모 state version·old work/attempt/pointer를 CAS한다. 한 SQLite transaction에서 old DYNAMIC_REPRO·부모 VERIFICATION active attempt와 work를 `CANCELLED/INPUT_SUPERSEDED`로 닫고, generation+1의 새 VERIFICATION work·PlaybookApplication·질문·Pro/Con, 새 `DynamicReproductionState(NOT_REQUESTED)`와 두 current pointer를 확정한다. 기존 `verification_result_ref`가 null이면 유지하고 Technical REVISE 보완 중의 직전 final ref도 history reference로만 그대로 둔다. 새 request/dynamic work는 새 Pro·Con·initial assessment 뒤 별도 생성한다. old action·attempt·environment·PoC·CWE·Gate는 history로 격리하고, generation당 successor unique와 한 transaction으로 crash 전 rollback/후 complete를 보장한다. Recovery는 저장된 exact action을 재투영할 뿐 입력 변경 의미를 판단하지 않는다. |
 
 adapter별 실제 request 상태 조회·idempotency, filesystem directory sync와 Docker health probe 지원 여부는 capability 시험 결과로 기록한다. 지원하지 않는 기능은 위 fail-closed 경로를 사용하며, 시험 미실행을 지원 성공으로 표시하지 않는다.
 
@@ -649,7 +718,7 @@ YAML은 `safe_load`만 사용하고 tag·object constructor·merge key를 거절
 4. Dynamic Reproduction의 runtime tool loop에 쓰려면 `PVD-16`도 통과해야 한다.
 5. 구독 로그인과 다른 API Provider는 같은 port의 별도 adapter로 추가한다.
 
-여기서 “첫 구현 순서”는 운영 기본 Provider 확정이나 품질 우위를 뜻하지 않는다. 통과한 ProviderProfile이 없으면 prompt registry entry는 `DRAFT`이고 실제 LLM 호출을 시작하지 않는다.
+여기서 “첫 구현 순서”는 운영 기본 Provider 확정이나 품질 우위를 뜻하지 않는다. 통과한 ProviderProfile이 없으면 prompt registry entry는 `DRAFT`이고 실제 LLM 호출을 시작하지 않는다. PVD를 통과한 profile은 먼저 `purpose=EVALUATION` entry에서만 사용할 수 있으며, 이것만으로 PRODUCTION entry를 활성화하지 않는다.
 
 ### 12.2 모델 선택
 
@@ -662,12 +731,42 @@ YAML은 `safe_load`만 사용하고 tag·object constructor·merge key를 거절
 
 ### 12.3 Prompt
 
-- `agent_role + task_kind`마다 ACTIVE registry entry는 최대 하나다.
+- `agent_role + task_kind + purpose`마다 ACTIVE registry entry는 최대 하나다.
 - template, context slot, output schema, semantic validator, provider refs, limits, retry, tool, redaction, session policy를 exact reference로 고정한다.
+- EVALUATION entry는 평가 run에서만 사용하고, PRODUCTION ACTIVE entry는 같은 실행 의미를 검증한 exact R8 `ACCEPT_FOR_PRODUCTION` recommendation과 사람 승인을 요구한다.
 - Pro와 Con은 같은 `debate_input_hash`, 서로 다른 template·call ID·`NEW` session을 사용한다.
 - repository·정책 원문·도구 출력·이전 LLM 결과는 `UNTRUSTED_DATA`다.
 - schema failure와 semantic failure는 domain output 미저장 후 제한 repair로 처리한다.
 - 비-LLM 구성요소용 prompt entry는 만들지 않는다.
+
+### 12.4 R8 예산·평가 구현
+
+예산은 `runtime/budget_registry.py`, `runtime/budget_service.py`와 `ports/budget_ledger.py`를 통해서만 게시·검사·차감한다. R8 owner가 profile 내용을 승인하면 trusted `BudgetProfileRegistry`가 exact `ExecutionBudgetProfile`, `VerificationBudgetProfile`, `DynamicReproductionLifecycleProfile`과 `BudgetProfileBinding` revision을 저장하고 purpose별 ACTIVE binding을 최대 하나로 유지한다. Runtime Validator는 action마다 그 ACTIVE binding을 `checked_config_refs`에 고정한다. 숫자가 아직 승인되지 않은 profile은 `DRAFT`이고 새 실행을 허용하지 않으며, 코드에 임의 기본값을 두지 않는다.
+
+```text
+ACTIVE budget binding 확인
+→ COMMITTED ledger + active reservation으로 잔여량 계산
+→ BudgetReservation=RESERVED를 atomic 생성
+→ action claim과 실제 실행
+→ 실제 사용이면 BudgetLedgerEntry append + reservation COMMITTED
+→ 실행 전 취소·거절이면 reservation RELEASED
+```
+
+- profile이나 비용·잔여량을 확인할 수 없으면 `BLOCKED + waiting_for=BUDGET`이며 새 side effect를 만들지 않는다.
+- 승인 한도를 실제로 소진한 경우만 `BUDGET_EXCEEDED`다.
+- 같은 `reservation_id`에는 ledger entry가 최대 하나이고 commit/release 재호출은 기존 terminal 결과를 반환한다.
+- crash 뒤 실제 사용 여부를 확인할 수 없으면 예약을 임의 해제하거나 0원으로 확정하지 않는다.
+- token usage 미제공은 구조화된 unavailable 사유로 남기며, 그것만으로 호출을 차단하지 않는다.
+- `LLMInvocationResult`·`LLMInvocationLog`는 `UsageMeasurement`, 최종 결과는 `ResourceUsageSummary`를 사용한다. 비용은 금액·통화·가격 revision과 함께 기록한다.
+
+R8 평가는 `evaluation/service.py`가 `evals/configs/`의 exact `EvaluationRunConfig`를 읽어 `evaluation/runner.py`에 전달한다. runner는 같은 corpus·ground truth·grader·output schema·budget을 고정하고 비교 대상의 Provider·model·session·prompt 조합만 바꾼 `purpose=EVALUATION` 분석을 실행한다. `evaluation/grader.py`가 사람 정답과 결과를 비교하고 `evaluation/recommendation.py`가 `EvaluationRunResult`와 `EvaluationRecommendation`을 만든다.
+
+- CLI는 `sastsimi eval run <config-ref>`, `sastsimi eval result <evaluation-run-id>`, `sastsimi eval compare <evaluation-run-id>...`를 제공한다.
+- 평가 설정·결과·추천은 record/artifact store에 exact reference로 저장한다.
+- PVD 통과는 기술적 호출 가능성만 뜻한다. 평가 전 조합은 `PromptRegistryEntry(purpose=EVALUATION)`에서만 사용할 수 있다.
+- `PromptRegistryEntry(purpose=PRODUCTION,status=ACTIVE)`는 exact `ACCEPT_FOR_PRODUCTION` 추천과 사람 승인이 있어야 한다.
+- Evaluation Runtime은 운영 Finding·Primitive·Gate·ReportDraft와 production registry current pointer를 바꾸지 못한다.
+- 시험은 `tests/unit/evaluation/`, `tests/integration/evaluation/`, `tests/e2e/test_evaluation_comparison.py`, `tests/security_negative/test_evaluation_production_isolation.py`에 둔다.
 
 ## 13. 정적 도구와 외부 process
 
@@ -688,11 +787,13 @@ YAML은 `safe_load`만 사용하고 tag·object constructor·merge key를 거절
 
 ```text
 R6 DynamicReproductionRequest
-→ Dynamic Reproduction Agent가 requirements·plan·candidate·tool request·conclusion 생성
-→ Runtime Validator가 action과 exact 입력 검사
+→ Dynamic Reproduction Agent가 Sandbox 경계 밖에서 requirements·plan 생성
+→ Runtime Validator가 action·exact 입력·예산 검사
 → Sandbox Controller가 외부 격리 경계 검사
-→ Reproduction Setup Automation이 image·container·cleanup 실행
-→ Reproduction Session Manager가 AgentLog와 실제 결과 확정
+→ Reproduction Setup Automation이 승인된 recipe·image·container·environment 준비
+→ 승인된 Sandbox 안에서 Dynamic Reproduction Agent가 candidate·tool request·command·관찰 생성·실행
+→ Dynamic Reproduction Agent가 실행 관측에 대한 conclusion 생성
+→ Reproduction Session Manager가 실제 AgentLog와 대조해 validated PoC·DynamicReproductionResult 확정
 → R6가 DynamicReproductionResult를 소비해 final verdict 결정
 ```
 
@@ -725,7 +826,7 @@ current final TRUE Verification
 - Technical `REVISE`는 같은 ACTIVE Verification owner의 새 generation으로 직접 돌아간다.
 - `FALSE | HOLD`는 CWE·두 Gate·Reporter 입력이 아니다.
 - Rule Scope 결과와 testing restriction mapping은 Primitive Admission Runtime이 기계적으로 적용한다.
-- Chaining Agent가 낸 material child proposal은 전역 runtime이 새 가설로 등록하고 전체 Verification을 다시 수행한다.
+- Chaining Agent가 낸 `ChainingResult.chained_hypothesis_proposals`는 전역 runtime이 `origin=CHAINING` 새 가설로 등록하고 전체 Verification을 다시 수행한다. `VerificationResult.material_child_proposals`는 `origin=VERIFICATION` 출력이므로 이 경로와 섞지 않는다.
 - Reporter는 current final `TRUE`, current CWE, 두 Gate와 exact Finding만 소비한다.
 - `ReportDraft`에서 Agent 자동화가 끝난다. 사람 검토·수정·제출·공개용 자동 state/action/API를 만들지 않는다.
 
@@ -740,6 +841,9 @@ sastsimi status <analysis-id> [--watch]
 sastsimi cancel <analysis-id>
 sastsimi resume <analysis-id>
 sastsimi result <analysis-id> --format json|summary
+sastsimi eval run <config-ref>
+sastsimi eval result <evaluation-run-id>
+sastsimi eval compare <evaluation-run-id>...
 sastsimi cleanup <analysis-id> [--artifacts] [--workspace]
 sastsimi db current
 sastsimi db upgrade [revision]

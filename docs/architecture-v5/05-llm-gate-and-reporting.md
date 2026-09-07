@@ -103,7 +103,7 @@ Runtime Validator는 `REVISE`를 만든 기존 action·decision을 다시 사용
 
 ## 정책 준비 시점
 
-정책 준비는 hypothesis별 작업이 아니라 **실행(analysis run) 단위 작업**이다. `CodeWorkspace.status=READY` 뒤 정적 근거 준비·공통 환경 준비와 독립 병렬로 `POLICY_FETCH` work가 시작한다.
+정책 준비는 hypothesis별 작업이 아니라 **실행(analysis run) 단위 작업**이다. `CodeWorkspace.status=READY` 뒤 정적 근거 준비와 독립 병렬로 `POLICY_FETCH` work가 시작한다. run-init에는 Docker image·container 준비 branch가 없으며 실제 준비는 exact 동적 요청이 생긴 가설의 `DYNAMIC_REPRO` 단계에서만 수행한다.
 
 - **Policy Collector**는 비-LLM component이며 공식 정책 원문과 출처 근거·hash를 고정하고 `PolicyCollectionResult`와 (`FOUND`이면) `ProgramPolicyRecord`를 생산한다. **Policy Parser**는 LLM component이며 그 exact 원문만 구조화해 `PolicyParserResult`를 생산한다. 이어서 Collector가 이를 검증·취합해 실행 단위 `RunPolicyState`를 확정한다.
 - `(analysis_id, program_id, work_type=POLICY_FETCH)` 기준 active work와 `RunPolicyState`는 각각 하나만 두고 hypothesis별 수집·파싱을 하지 않는다.

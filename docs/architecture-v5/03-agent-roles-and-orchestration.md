@@ -203,7 +203,7 @@ Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서
 
 ## 바꿀 수 없는 직렬 순서
 
-program별 정책 준비(collection → parsing)는 실행 시작 runtime이 workspace 준비 뒤 정적 근거 준비·공통 환경 준비와 병렬로 등록하고, 아래 가설별 직렬 구간은 run에 고정된 정책 상태(`RunPolicyState`가 가리키는 `PolicyCollectionResult`·`ProgramPolicyRecord`)를 소비만 한다. 정책의 준비 시점이 바뀔 뿐 Gate evaluation order는 그대로다.
+program별 정책 준비(collection → parsing)는 실행 시작 runtime이 workspace 준비 뒤 정적 근거 준비와 독립 branch로 병렬 등록하고, 아래 가설별 직렬 구간은 run에 고정된 정책 상태(`RunPolicyState`가 가리키는 `PolicyCollectionResult`·`ProgramPolicyRecord`)를 소비만 한다. run-init에는 Docker image·container 준비 branch가 없으며, Docker 준비는 exact `DynamicReproductionRequest`가 생긴 가설의 `DYNAMIC_REPRO` 단계에서만 시작한다. 정책의 준비 시점이 바뀔 뿐 Gate evaluation order는 그대로다.
 
 한 가설의 다음 구간은 병렬화하지 않는다.
 
