@@ -20,8 +20,8 @@ SASTSIMI v5는 승인된 내부 `program_id` 하나와 저장소를 `AnalysisSta
 | 2 | 저장소 clone과 commit checkout | `CodeWorkspace` |
 | 3 | AST·SAST와 실행 단위 정책 준비를 독립 병렬 실행. 정책은 run 시작 때 exact cache 재사용 또는 새 수집·파싱 중 하나로 준비 | raw AST/SAST outputs, `ToolRunResult`, `RuleExecutionRecord`; `RunPolicyState`, `PolicyCacheRecord`, policy source/parser/collection records |
 | 4 | 정적 사실 정규화 | exact 규칙 실행 기록을 연결한 `StaticFactBundle` |
-| 5 | 초기 가설 생성 실행 | Orchestration이 Hypothesis work 시작 |
-| 6 | 저비용 가설 생성 모델 호출 | constrained invocation |
+| 5 | 초기 가설 work 준비 | Orchestration Runtime이 `HYPOTHESIS_PROPOSAL` work 등록 |
+| 6 | Hypothesis Agent 호출 | 호출 시점의 exact `provider_profile_ref + model`을 사용하는 constrained invocation |
 | 7 | 출력 검증과 전역 등록 | schema-valid `HypothesisProposal(origin=INITIAL)` 또는 `INVALID_OUTPUT` |
 | 8 | 가설별 Verification owner 할당 | `VulnerabilityHypothesis` + ACTIVE `VerificationAssignment` |
 | 9 | Verification이 위치 기반 코드 문맥 조회 | `CodeContextRequest/Response` |
@@ -50,7 +50,7 @@ Repository Loader + bug bounty program confirmed
           (정적 사실과 별도, run 시작에 한 번 준비해 모든 가설이 공유)
                            │
                            v
-Orchestration -> Hypothesis Agent -> trusted validation and registration
+Orchestration Runtime -> Hypothesis Agent -> trusted validation and registration
                                                         │ assign only
                                                         v
        on-demand context -> Verification owner -> Pro/Con -> initial verdict
@@ -82,7 +82,7 @@ Orchestration -> Hypothesis Agent -> trusted validation and registration
 
 Verification material claim -> origin=VERIFICATION proposal ┐
 Chaining match -> origin=CHAINING proposal ------------------┴-> trusted registration
-                                                               -> Orchestration assigns Verification
+                                                               -> Orchestration Runtime assigns Verification
 
 current Finding -> Reporter -> ReportDraft -> AnalysisRunResult -> Agent automation end
 ```
@@ -93,7 +93,7 @@ Technical Evidence Gate의 `REVISE`는 같은 가설의 Verification owner에게
 
 ## 구성 요소와 책임
 
-Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배정을 제안·조정하지만 가설 내부 다음 작업이나 enforcement authority를 갖지 않는다. 가설 내부 다음 작업은 Verification owner가 선택한다. 신뢰 경계 안의 비-LLM Runtime Validator가 schema, 호출 권한, 상태 전이, 예산, 병렬성, provider/session 정책, Gate 순서와 Reporter 호출 전제조건을 강제한다. Runtime Validator는 R7 `sandbox_profile_ref`와 exact R8 `DynamicReproductionLifecycleProfile` revision을 고정하고, 호출 전 잔여 시간·새 attempt 한도를 검사한다. Sandbox Controller는 R7 profile의 host·Docker·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하며 내부 command allowlist를 운영하지 않는다. 모든 LLM 출력은 validation 전까지 비신뢰 입력이다.
+Orchestration Runtime은 전역 work 준비, 검증된 가설 등록과 Verification 배정을 수행하는 비-LLM 구성요소이며 가설 내부 다음 작업이나 domain 판단 권한을 갖지 않는다. 가설 내부 다음 작업은 Verification owner가 선택한다. 신뢰 경계 안의 비-LLM Runtime Validator가 schema, 호출 권한, 상태 전이, 예산, 병렬성, provider/session 정책, Gate 순서와 Reporter 호출 전제조건을 강제한다. Runtime Validator는 R7 `sandbox_profile_ref`와 exact R8 `DynamicReproductionLifecycleProfile` revision을 고정하고, 호출 전 잔여 시간·새 attempt 한도를 검사한다. Sandbox Controller는 R7 profile의 host·Docker·mount/namespace·secret·egress·workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하며 내부 command allowlist를 운영하지 않는다. 모든 LLM 출력은 validation 전까지 비신뢰 입력이다.
 
 | 구성 요소 | 책임 | 금지 경계 |
 |---|---|---|
@@ -103,7 +103,7 @@ Orchestration Agent는 전역 분석 계획, 가설 등록과 Verification 배�
 | Policy Collector | 비-LLM component. run 시작 때 program별 공식 정책 원문 수집·source authenticity 확인, run-neutral `PolicyCacheRecord` 조회, run-local `PolicyCollectionResult`·`ProgramPolicyRecord`·실행 단위 `RunPolicyState` 확정 | 정책 의미 판단, 저장소 문서·모델 기억을 공식 정책으로 승격, `StaticFactBundle`에 정책 삽입 |
 | Policy Parser | LLM component. Policy Collector가 저장한 exact 원문을 asset scope·vulnerability eligibility·testing restriction·reward condition·impact criteria로 구조화 | 원문에 없는 기준 생성, 정규화로 의미 확대, Rule/Scope/Impact verdict, 정책 record 조립·저장 |
 | Context Retrieval Service | 같은 `workspace_id`와 `commit_id`에서 제한된 추가 문맥 조회 | 작업공간 밖 무제한 repository dump |
-| Orchestration Agent | proposal 검증·전역 가설 등록·Verification 배정·가설 간 병렬성 | 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정 또는 Finding 공개 |
+| Orchestration Runtime | Hypothesis work 등록, proposal 검증 요청, 전역 가설 등록·Verification 배정·가설 간 병렬성 관리 | LLM 판단, 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정 또는 Finding 공개 |
 | Hypothesis Agent | schema-constrained 가설 후보 생성 | verdict·Finding·exploitability 확정 |
 | Verification Agent | 가설 내부 Context·Pro/Con, 동적 재현 목적·목표·필요 환경을 담은 `DynamicReproductionRequest`, 최종 판정·REVISE·Gate·Chaining 흐름과 material child proposal | `EnvironmentRequirements`·`ReproductionPlan`·PoC·동적 결과 직접 생산, Sandbox 실행 또는 새 주장의 무검증 승격 |
 | Pro/Con Agents | 독립적인 성립·반박 근거 조사 | 동일 session 공유 |
@@ -148,7 +148,7 @@ Agent와 실행 서비스는 부작용이 있는 일을 `ActionRequest`로 제�
 - 한 Verification generation에는 동적 재현 work를 하나만 만든다. 같은 Dynamic Reproduction Agent session의 command·PoC·환경 조정은 현재 attempt를 유지한다. session 재시작만 같은 work의 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개만 새 `attempt_id`·`trigger=RESUME`를 사용하며, Technical Gate의 `REVISE`로 새 generation이 시작된 경우에만 새 동적 재현 한도를 부여한다.
 - 실행 상태는 `WorkExecutionState`가 관리하고 가설 판정·Gate 결과·보고서 상태와 분리한다. 같은 `dedupe_key` 요청은 한 `work_id`로만 반영한다.
 - `COMMITTED` marker와 종료 상태 pointer가 같은 결과를 가리킨 뒤에만 다음 단계를 호출한다. `PREPARED`, 취소된 attempt, 오래된 revision과 늦은 결과는 다음 단계에서 읽지 않는다.
-- 모든 초기·파생 가설이 종료 상태에 도달하고 atomic 저장·복구가 끝나면 Orchestration run을 닫는다.
+- 모든 초기·파생 가설이 종료 상태에 도달하고 atomic 저장·복구가 끝나면 Orchestration Runtime이 run을 닫는다.
 - chaining 전용 깊이·개수·호출·조합·token 상한은 두지 않는다. 전체 실행 중단 사유는 R8의 전체 시간·비용·work 예산 소진뿐이며 이유를 기록한다. 이미 담당 work가 검토한 match 조합은 다시 검토하지 않지만 이는 해당 조합만 건너뛰는 처리이며 `FALSE`·`HOLD`·`no_match_reasons`·`AnalysisRunResult.stop_reasons` 어느 것으로도 바꾸지 않는다. token 사용량은 관측하되 초과만으로 새 가설을 차단하지 않는다.
 
 최종 분석 상태는 다음 의미를 갖는다.

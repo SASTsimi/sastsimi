@@ -57,13 +57,15 @@
 | `ActionDecision` | 프로그램 검사기가 action을 허용하거나 막은 결과 | 요청 하나당 logical decision 하나이며 exact action과 state version에 한 번만 사용합니다. |
 | `LLMCallSpec` | 실제 LLM 호출에 쓸 model·prompt·context·형식·예산·시간을 묶은 수정 불가 명세 | 허가 뒤 호출 내용을 바꾸지 못하게 합니다. |
 | `ProviderProfile` | LLM 회사·상품·연결 방식·인증·client version·model·실행 환경과 확인된 기능을 묶은 수정 불가 설정 | 실제 호출은 이 설정의 정확한 수정본을 사용하며 모델 전용 profile 객체를 따로 만들지 않습니다. |
+| `provider_profile_ref` | 이번 LLM 호출에 사용할 exact `ProviderProfile` 수정본을 가리키는 번호 | Agent 역할을 정하는 값이 아니며 `LLMCallSpec.model`과 함께 호출 시점에 고정합니다. |
+| `model` | 이번 LLM 호출에서 사용할 실제 모델 이름 | 모델을 바꿔도 Agent의 이름·역할·입출력 계약은 바뀌지 않습니다. |
 
 ## 가설과 검증
 
 | 용어 | 쉽게 말하면 | 사용할 때 주의할 점 |
 |---|---|---|
 | `Hypothesis` | 검증이 필요한 취약점 가능성 | 아직 확정 취약점이나 Finding이 아닙니다. |
-| `Hypothesis Agent` | 정적 사실을 조합해 검증할 취약점 가설을 제안하는 LLM 역할 | 공식 역할명입니다. 모델 가격·성능 등급은 이름에 붙이지 않고 `ProviderProfile.model`과 R8 평가로 관리합니다. |
+| `Hypothesis Agent` | 정적 사실을 조합해 검증할 취약점 가설을 제안하는 LLM 역할 | 공식 역할명입니다. 모델 가격·성능 등급은 이름에 붙이지 않습니다. 실제 Provider와 모델은 호출의 `provider_profile_ref`와 `LLMCallSpec.model`로 선택하며 R8 평가를 통과해야 합니다. |
 | `HypothesisDuplicateReview` | 새 가설 제안이 기존 등록 가설과 같은지 LLM이 비교해 남긴 결과 | 프로그램이 먼저 좁힌 exact 후보만 비교하며, 애매하거나 검토에 실패하면 탐지 누락을 막기 위해 새 가설로 등록합니다. |
 | `Verification` | 배정된 가설 안에서 코드·찬반·동적 근거와 보완 흐름을 관리해 판정하는 과정 | 다음 작업은 선택하지만 Runtime Validator의 실행 검사를 우회하거나 공개를 결정하지 않습니다. |
 | `VerificationPlaybook` | 취약점 유형별로 빠뜨리지 말아야 할 확인 항목과 반증 질문을 묶은 수정 가능한 절차 | 플레이북이 등록됐다는 이유만으로 운영 지원 유형이 되지는 않습니다. |
@@ -113,7 +115,7 @@
 | 용어 | 쉽게 말하면 | 사용할 때 주의할 점 |
 |---|---|---|
 | `Agent` | 한 가지 분석 역할을 맡는 LLM 작업 단위 | 프로그램의 강제 규칙이나 사람의 결정을 대신하지 않습니다. |
-| `Orchestration` | 가설 제안을 확인·등록하고 각 가설에 Verification을 배정하는 전역 조정 기능 | 배정 뒤 가설 내부 Pro/Con·동적 재현·Gate·Chaining을 결정하지 않습니다. |
+| `Orchestration Runtime` | 가설 work를 시작하고 검증된 가설을 등록해 Verification에 배정하는 비-LLM 전역 제어 구성요소 | LLM prompt나 모델을 사용하지 않으며 가설 내용·verdict·CWE·Gate·보고서 내용을 판단하지 않습니다. |
 | `PrimitiveDraft` | 연계 공격의 입력 조건 또는 실행 뒤 얻는 결과를 표현한 작은 데이터 | 코드 entity, 필요하면 저장소에 정의된 권한 값, 근거와 쉬운 설명을 함께 둡니다. |
 | `Primitive` | 한 가설의 필요한 입력들과 실행 결과를 한 형식으로 묶은 연계 재료 | HOLD는 `result=null`, TRUE는 Technical `ACCEPT`와 current admission `ALLOW` 뒤 `result`가 있습니다. `REQUIRED/PROVIDED` 같은 별도 종류 필드는 저장하지 않습니다. |
 | `PrimitiveAdmissionDecision` | TRUE 결과를 체이닝 재료로 써도 되는지 프로그램이 `ALLOW | DENY`로 기록한 값 | Rule Scope의 전용 금지 테스트 판정과 정책 수집 상태를 정해진 표로 변환하며 정책 뜻을 새로 해석하지 않습니다. |

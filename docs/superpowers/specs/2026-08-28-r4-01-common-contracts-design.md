@@ -26,7 +26,7 @@
 
 | 식별자 | 생성 주체 | 유일 범위 | 변경·재사용 | 정본 저장 위치 |
 |---|---|---|---|---|
-| `analysis_id` | Orchestration runtime | 전체 시스템 | 변경·재사용 금지 | `runs` |
+| `analysis_id` | Orchestration Runtime | 전체 시스템 | 변경·재사용 금지 | `runs` |
 | `workspace_id` | Repository Loader | 전체 시스템 | 변경·재사용 금지 | `CodeWorkspace`와 `runs` |
 | `commit_id` | checkout 뒤 Repository Loader가 확인 | Git 저장소 | 같은 commit을 여러 분석에서 참조 가능, 값 변경 금지 | `CodeWorkspace`, 코드 위치와 모든 핵심 결과 |
 | `stored_data_id` | 결과 저장 계층 | 전체 시스템 | 변경·재사용 금지 | 각 논리 저장 영역 |
@@ -91,9 +91,9 @@ proposal 출력 검증 runtime은 각 named falsification 질문에 전역 `ques
 
 | 계층 | 정본 record.field | 정본 상태 | 소유 주체 | 다른 계층에 미치는 영향 |
 |---|---|---|---|---|
-| 분석 실행 | `AnalysisRunState.status` | `RUNNING | COMPLETE | PARTIAL | FAILED | CANCELLED` | Orchestration runtime | 가설 verdict를 직접 만들지 않음 |
+| 분석 실행 | `AnalysisRunState.status` | `RUNNING | COMPLETE | PARTIAL | FAILED | CANCELLED` | Orchestration Runtime | 가설 verdict를 직접 만들지 않음 |
 | proposal 검증 | `ProposalProcessState.status` | `PROPOSED | SCHEMA_VALID | INVALID_OUTPUT | CANCELLED` | 출력 검증 runtime | 아직 `hypothesis_id`가 없음 |
-| 등록 가설 처리 | `HypothesisProcessState.status` | `REGISTERED | ASSIGNED | VERIFYING | TERMINAL | CANCELLED` | Orchestration runtime | 기술 판정과 분리 |
+| 등록 가설 처리 | `HypothesisProcessState.status` | `REGISTERED | ASSIGNED | VERIFYING | TERMINAL | CANCELLED` | Orchestration Runtime | 기술 판정과 분리 |
 | 기술 판정 | `VerificationResult.verdict` | `TRUE | FALSE | HOLD` | Verification Agent | 오류 상태와 분리 |
 | 동적 재현 | `DynamicReproductionState.status` | `NOT_REQUESTED | RUNNING | SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED` | Sandbox runtime | `FAILED`만으로 `FALSE` 금지 |
 | LLM 호출 | `LLMInvocationResult.status` | `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED | CANCELLED` | Agent Runtime과 provider adapter | 가설 verdict로 변환 금지 |
@@ -120,7 +120,7 @@ proposal 검증 상태의 `meta.hypothesis_id`는 항상 `null`이다. `SCHEMA_V
 ### AnalysisError
 
 - 생산자: 모든 runtime·adapter·sandbox·Gate·Reporter
-- 소비자: Orchestration runtime, 결과 집계, 운영자·사람 검토
+- 소비자: Orchestration Runtime, 결과 집계, 운영자·사람 검토
 - 필수 정보: `error_id`, `stage`, `code`, `safe_message`, retry 가능 여부, 관련 record, 발생 시각
 - `safe_message`에는 credential, 절대 로컬 경로, 개인정보와 session secret을 넣지 않는다. 원본 오류는 별도 접근 통제·redaction·보존 정책이 적용된 artifact로 분리한다.
 - 모든 오류는 `AnalysisRunResult.errors`와 debug trace에 전달한다. 특정 가설·호출·동적 실행 오류는 해당 전문 결과에도 포함하거나 `related_record_ids`로 연결한다.

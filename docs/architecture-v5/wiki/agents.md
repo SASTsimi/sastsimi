@@ -8,10 +8,10 @@
 
 모르는 단어는 [쉬운 용어집](../../GLOSSARY.md)에서 확인하세요.
 
-| Agent | 쉽게 말한 핵심 책임 | 직접 할 수 없는 일 |
+| 구성요소 | 쉽게 말한 핵심 책임 | 직접 할 수 없는 일 |
 |---|---|---|
-| Orchestration | proposal 검증·중복 후보 조회·전역 가설 등록·Verification 배정 제안 | 중복 결론 생성, 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정, runtime enforcement, Finding·공개 결정 |
-| Hypothesis | schema-valid `HYPOTHESIS_ONLY` 제안과 후보가 있을 때 `HypothesisDuplicateReview` 생성 | 후보 목록 밖 중복 대상 선택, verdict, Finding, exploitability 확정 |
+| Orchestration Runtime | 비-LLM 전역 제어: proposal 형식 검사·중복 후보 조회·전역 가설 등록 요청·Verification 배정 요청 | LLM prompt·provider·`agent_role` 사용, 중복 결론 생성, 가설 내부 Pro/Con·dynamic·Gate·Chaining 결정, Runtime Validator 우회, Finding·공개 결정 |
+| Hypothesis Agent | schema-valid `HYPOTHESIS_ONLY` 제안과 후보가 있을 때 `HypothesisDuplicateReview` 생성 | 후보 목록 밖 중복 대상 선택, verdict, Finding, exploitability 확정 |
 | Policy Collector | 공식 정책 원문과 출처 근거를 수집하고 exact 원문·hash를 저장 | 정책 의미·scope·보고 허용 판단 |
 | Policy Parser | Policy Collector가 저장한 exact 원문을 구조화 | Rule Scope 결론·보고 허용 판단, 원문에 없는 정책 추정 |
 | Verification | 한 가설의 Context·Pro/Con, 목적별 `DynamicReproductionRequest`, 반환 결과 소비·판정·Gate 보완·Chaining handoff와 material child 제안 | 환경 요구사항·실행 계획·PoC·동적 결과 생산, Sandbox 직접 실행, 새 claim 무검증 승격 |
@@ -31,9 +31,9 @@
 ```text
 Policy Collector → collect exact official policy source and provenance
 Policy Parser → structure the collected exact source → PolicyParserResult → Policy Collector validates and commits RunPolicyState
-Orchestration → proposal validation → runtime narrows duplicate candidates
-Hypothesis → compare exact candidates when needed → registration or duplicate stop
-Orchestration → assign Verification for registered hypotheses
+Orchestration Runtime → proposal validation → narrow duplicate candidates
+Hypothesis Agent → compare exact candidates when needed → registration or duplicate stop
+Orchestration Runtime → request Verification assignment for registered hypotheses
 Verification → context → Pro and Con → DynamicReproductionRequest
 R7 planning → EnvironmentRequirements and simple ReproductionPlan
 Runtime Validator → enforce one dynamic work per generation → authorize Sandbox call

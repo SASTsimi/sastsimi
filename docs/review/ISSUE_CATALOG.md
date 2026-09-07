@@ -259,7 +259,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 쉽게 말하면
 
-전체 파트가 같은 상태 이름과 데이터 형식을 사용하도록 중앙 기준을 정한다. Orchestration의 전역 등록·배정과 Verification의 가설 내부 제어권을 나누고, 오류나 재시도를 어떻게 기록할지, LLM 제안과 프로그램 강제 규칙 및 Agent 자동화 종료 경계를 관리한다.
+전체 파트가 같은 상태 이름과 데이터 형식을 사용하도록 중앙 기준을 정한다. 비-LLM Orchestration Runtime의 전역 등록·배정과 Verification의 가설 내부 제어권을 나누고, 오류나 재시도를 어떻게 기록할지, LLM 제안과 프로그램 강제 규칙 및 Agent 자동화 종료 경계를 관리한다.
 
 ### 담당자가 나눌 수 있는 하위 Issue 예시
 
@@ -288,9 +288,9 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 확인할 권한 경계
 
-- Orchestration은 proposal 검증·전역 등록·Verification 배정까지만 담당하고, 가설 내부 다음 행동은 Verification이 제안·조정한다.
+- 비-LLM Orchestration Runtime은 proposal 검증·전역 등록 요청·Verification 배정 요청까지만 담당하고, 가설 내부 다음 행동은 Verification이 제안·조정한다.
 - Verification ownership과 관계없이 LLM이 아닌 프로그램 내부 규칙 검사기(`runtime validator`)가 action 규칙 준수를 강제한다.
-- PM/Orchestration은 가설 내부 Pro/Con·dynamic·Gate·Chaining, verdict, CWE, Gate result, 공식 정책 또는 공개 결정을 대신하지 않는다.
+- PM/Orchestration Runtime은 가설 내부 Pro/Con·dynamic·Gate·Chaining, verdict, CWE, Gate result, 공식 정책 또는 공개 결정을 대신하지 않는다.
 - silent provider/model failover와 repository prompt에 의한 policy 변경을 금지한다.
 - Runtime Validator는 action의 호출 권한·상태·예산·reference 범위를 강제하며 verdict·CWE·정책 의미를 대신 판단하지 않는다. Sandbox의 image·command·file·network·resource·cleanup 세부 정책은 R7의 Sandbox Controller가 전담한다.
 - Reporter는 안전 요구사항을 지킨 내부 초안만 만들고 이후 Agent action을 계속하지 않는다. 사람의 검토·수정·제출·공개는 자동화 밖이다.
@@ -310,7 +310,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] 같은 요청은 canonical `dedupe_key`로 기존 `work_id`를 재사용하고 한 work에는 active attempt가 하나임
 - [ ] 상태 변경은 `state_version` compare-and-set을 사용하고 stale·취소·다른 workspace/commit 결과를 거절함
 - [ ] 중복·ancestor 재사용·repair/Gate revision과 R8 전역 time/cost/work budget의 enforcement owner가 비-LLM Runtime Validator로, Sandbox 세부 정책의 enforcement owner가 Sandbox Controller로 명시됨. token은 관측값이며 초과·누락만으로 action을 차단하지 않음
-- [ ] Technical `REVISE`가 Orchestration을 경유해 재배정되지 않고 같은 ACTIVE VerificationAssignment owner의 새 VERIFICATION work로 돌아감
+- [ ] Technical `REVISE`가 Orchestration Runtime을 경유해 재배정되지 않고 같은 ACTIVE VerificationAssignment owner의 새 VERIFICATION work로 돌아감
 - [ ] non-empty `required_primitive_candidates`를 가진 HOLD의 `inputs + result=null`과 Technical-accepted + 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW` TRUE의 `inputs + result` Primitive 등록 시점 1회 admission 규칙이 있으며, 빈 HOLD 후보에는 Primitive·Chaining work가 없음
 - [ ] persistence/recovery/atomicity/idempotency 계약이 합의되고 `TERMINAL`·`DRAFTED` 상태가 정확한 결과 `record_id`를 가리킴
 - [ ] 결과 record 저장과 종료 상태 변경 중 하나만 성공했을 때의 crash-resume 복구와 오래되거나 취소된 결과의 연결 거절 규칙이 있음
@@ -376,7 +376,7 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 - 새 Verification에는 CWE 값이 같아도 exact Verification을 가리키는 새 label revision을 확정한다.
 - Gate 1은 final TRUE에서만, Gate 2는 같은 `TRUE + Technical ACCEPT`에서만 호출한다.
 - 공식 정책이 없거나 핵심 정보가 누락되면 `UNCERTAIN + DENY`다.
-- Technical `REVISE`는 Orchestration이나 R7이 목적지를 고르지 않고 같은 ACTIVE `VerificationAssignment`의 R6 owner에게 직접 돌아간다.
+- Technical `REVISE`는 Orchestration Runtime이나 R7이 목적지를 고르지 않고 같은 ACTIVE `VerificationAssignment`의 R6 owner에게 직접 돌아간다.
 - Reporter는 새 공격 주장을 만들거나 외부 제출·공개를 수행하지 않으며 ReportDraft 뒤 자동 Agent 작업을 만들지 않는다.
 
 ### 필수 교차 리뷰
@@ -684,7 +684,7 @@ R6의 `DynamicReproductionRequest`를 받아 Dynamic Reproduction Agent가 먼�
 R8 평가/예산 기준 ─┐
                     ├─> R4 중앙 계약·runtime enforcement
 R4 ─────────────────┼─> R2 workspace/static/context
-R2 + R4 + R8 ───────┴─> R1-A Hypothesis
+R2 + R4 + R8 ───────┴─> R1-A Hypothesis Agent
 R1-A + R2 + R4 + R8 ──> R6 Verification
 R6 DynamicReproductionRequest + R4 runtime + R8 budget ─> R7 requirements/simple plan, external boundary, autonomous Sandbox reproduction and AgentLog
 R7 COMMITTED dynamic result ──────────────────> R6 final Verification

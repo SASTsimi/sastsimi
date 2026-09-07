@@ -6,7 +6,14 @@
 
 ## Blocker
 
-현재 이 문서에서 관리하는 열린 Blocker는 없습니다.
+1. 일부 core output의 저장 연결 확정
+   - 무엇을 정해야 하나: `CodeWorkspace`, `ToolRunResult`, schema-valid `HypothesisProposal`, `AnalysisRunResult`를 어떤 저장 entry point와 `result_kind`로 저장하고, 누가 유일하게 생산하며, current pointer와 atomic commit을 어떻게 갱신할지 정합니다.
+   - 정하지 않으면 생기는 문제: 구현마다 저장 주체와 완료 시점이 달라져 결과는 생겼지만 work가 끝나지 않았거나, 반대로 저장되지 않은 결과를 다음 단계가 읽을 수 있습니다.
+   - 담당 역할과 Issue: R4 공통 계약이 확정하고 R2·R3·R8이 소비 관점에서 검토합니다. [#5](https://github.com/SASTsimi/sastsimi/issues/5), [#4](https://github.com/SASTsimi/sastsimi/issues/4)
+2. 분석 시작 단계 Docker baseline 준비의 실행 계약 확정
+   - 무엇을 정해야 하나: 가설 생성 전 Docker 준비가 실제 image pull·build·cache 변경을 수행한다면 run-init 전용 action, requester, exact input/output, retry·취소, R7 보안 상한과 R8 예산을 정합니다. 이 계약 전에는 Docker 상태를 바꾸지 않는 readiness 확인만 허용합니다.
+   - 정하지 않으면 생기는 문제: 가설별 exact `DynamicReproductionRequest`와 attempt가 필요한 `RUN_SANDBOX`를 우회하거나, 사전 준비 결과를 실제 재현 성공 근거로 잘못 사용할 수 있습니다.
+   - 담당 역할과 Issue: R3가 병렬 branch를, R4가 공통 action·상태·저장을, R7이 Sandbox 외부 경계와 자원 상한을, R8이 실행 예산을 확정합니다. [#4](https://github.com/SASTsimi/sastsimi/issues/4), [#5](https://github.com/SASTsimi/sastsimi/issues/5), [#8](https://github.com/SASTsimi/sastsimi/issues/8), [#9](https://github.com/SASTsimi/sastsimi/issues/9)
 
 ## 이번에 확정한 운영 사항
 
@@ -32,7 +39,7 @@
 
 | 번호 | 쉽게 말하면 무엇을 정해야 하나 | 정확한 기술 항목 |
 |---|---|---|
-| 1 | 역할별로 어떤 LLM 서비스와 모델을 쓸지 정합니다. | provider/model profile과 공식 지원 범위 |
+| 1 | 역할별로 어떤 LLM 서비스와 모델을 쓸지 정합니다. | `provider_profile_ref`가 가리키는 provider 설정과 호출 시점의 `model`, 공식 지원 범위 |
 | 2 | 회원 로그인·API 인증정보와 로그인 상태를 어디까지 저장할지 정합니다. | Membership/API credential와 session 저장 경계 |
 | 3 | 새 대화, 이어서 대화, 자동 선택을 어떻게 비교하고 기본 한도를 얼마로 할지 정합니다. | `NEW / RESUME / AUTO` 평가와 기본 limit |
 | 4 | LLM이 잘못된 형식으로 답했을 때 몇 번 고치게 할지와 구조화된 출력의 합격 기준을 정합니다. | Hypothesis schema repair 횟수와 structured-output 합격 기준 |

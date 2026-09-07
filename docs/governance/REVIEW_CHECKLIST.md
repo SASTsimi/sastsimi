@@ -40,7 +40,7 @@ R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않�
 - [ ] Pro와 Con은 독립 NEW session을 사용합니다.
 - [ ] 새 우회·영향·연계 공격(`bypass/impact/chain`) 주장은 새 가설로 재검증합니다.
 - [ ] Primitive DB는 queue 또는 Finding 저장소가 아닙니다.
-- [ ] Orchestration은 proposal 검증·등록·Verification 배정 뒤 가설 내부 호출을 결정하지 않습니다.
+- [ ] 비-LLM Orchestration Runtime은 proposal 검증·등록 요청·Verification 배정 요청 뒤 가설 내부 호출을 결정하지 않습니다.
 - [ ] Verification이 Context·Pro/Con·동적 재현·판정·Technical `REVISE`·Gate 제출과 Chaining handoff를 소유합니다.
 - [ ] R6 Verification은 목적·목표·필요 환경·Sandbox profile·근거 reference를 가진 exact `DynamicReproductionRequest`만 만들고, Dynamic Reproduction Agent가 외부 경계 검사 전에 이를 가리키는 `EnvironmentRequirements`·간단한 `ReproductionPlan`을 만듭니다. PoC candidate는 경계 승인 뒤 Sandbox 실행 단계에서 만듭니다.
 - [ ] `EnvironmentRequirements`는 애플리케이션 조건이고 `sandbox_profile_ref`는 Sandbox 보안 정책이며 서로 대신하지 않습니다.

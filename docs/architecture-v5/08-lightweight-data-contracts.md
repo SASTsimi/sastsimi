@@ -101,14 +101,14 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 
 | 식별자 | 누가 만드나요? | 어디까지 유일한가요? | 어디에 저장하나요? | 변경·재사용 규칙 |
 |---|---|---|---|---|
-| `analysis_id` | Orchestration runtime | 전체 시스템 | `runs`, 모든 `RunMeta`와 `RecordMeta` | 변경·재사용 금지 |
+| `analysis_id` | Orchestration Runtime | 전체 시스템 | `runs`, 모든 `RunMeta`와 `RecordMeta` | 변경·재사용 금지 |
 | `workspace_id` | Repository Loader | 전체 시스템 | `CodeWorkspace`, `runs`, 코드 근거 record | 변경·재사용 금지 |
 | `commit_id` | Git에서 checkout한 commit을 Repository Loader가 확인 | `repository_url`이 가리키는 Git 저장소 | `CodeWorkspace`, `CodeLocation`, `StoredDataRef`, `RecordMeta` | 외부 Git 객체 ID다. 같은 commit은 여러 분석에서 다시 참조할 수 있으나 값은 변경 금지 |
 | `stored_data_id` | 결과 저장 계층 | 전체 시스템 | 해당 논리 저장 영역과 `RunStoredDataRef` 또는 `StoredDataRef` | 변경·재사용 금지 |
 | `record_id` | record 저장 직전 runtime | 전체 시스템 | 각 `RunMeta`·`RecordMeta`와 정확한 revision을 가리키는 `StoredDataRef` | revision마다 새 값 |
 | `logical_record_id` | 논리 결과를 처음 저장하는 runtime | 전체 시스템 | 각 `RunMeta`와 `RecordMeta` | 같은 논리 결과의 모든 revision에서 같은 값 유지 |
 | `hypothesis_id` | proposal 검증을 통과시킨 runtime | 전체 시스템 | `hypotheses`와 가설별 `RecordMeta` | 변경·재사용 금지 |
-| `work_id` | 논리 작업을 등록하는 Orchestration runtime | 전체 시스템 | `WorkExecutionState`, 모든 `WorkAttempt`와 `StateTransition` | 같은 입력의 retry에서는 유지하고 입력 revision이 달라지면 새 값 |
+| `work_id` | 논리 작업을 등록하는 Orchestration Runtime | 전체 시스템 | `WorkExecutionState`, 모든 `WorkAttempt`와 `StateTransition` | 같은 입력의 retry에서는 유지하고 입력 revision이 달라지면 새 값 |
 | `attempt_id` | 재시도 가능한 작업을 시작하는 runtime | 전체 시스템 | 해당 결과와 debug trace | 시도마다 새 값 |
 | `transition_id` | 상태 변경을 승인하는 runtime | 전체 시스템 | `StateTransition`과 debug trace | 승인된 상태 변경마다 새 값 |
 | `transition_commit_id` | 결과와 상태를 함께 확정하는 저장 runtime | 전체 시스템 | `TransitionCommit` journal | atomic 저장 시도마다 새 값 |
@@ -147,11 +147,11 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 
 | 상태 계층 | 소유 record와 field | 허용 값 | 상태를 만드는 주체 | 반드시 분리할 의미 |
 |---|---|---|---|---|
-| 분석 실행 | `AnalysisRunState.status` | `RUNNING | COMPLETE | PARTIAL | FAILED | CANCELLED` | Orchestration runtime | 가설 verdict가 아님 |
+| 분석 실행 | `AnalysisRunState.status` | `RUNNING | COMPLETE | PARTIAL | FAILED | CANCELLED` | Orchestration Runtime | 가설 verdict가 아님 |
 | 실행 정책 준비 | `RunPolicyState.status` | `PREPARING | CURRENT | ABSENT | BLOCKED | FAILED | UNVERIFIED` | 정책 준비 runtime | 정적 사실·가설 verdict·Rule Scope 판정이 아님 |
 | 공통 실행 작업 | `WorkExecutionState.status` | `PENDING | READY | RUNNING | BLOCKED | SUCCEEDED | PARTIAL | FAILED | CANCELLED` | 신뢰 경계 안의 runtime | 전문 결과·가설 verdict와 분리 |
 | proposal 검증 | `ProposalProcessState.status` | `PROPOSED | SCHEMA_VALID | DUPLICATE | INVALID_OUTPUT | CANCELLED` | 출력 검증 runtime | 아직 `hypothesis_id`가 없는 상태 |
-| 등록 가설 처리 | `HypothesisProcessState.status` | `REGISTERED | ASSIGNED | VERIFYING | TERMINAL | FAILED | CANCELLED` | Orchestration runtime | `TRUE | FALSE | HOLD`와 분리 |
+| 등록 가설 처리 | `HypothesisProcessState.status` | `REGISTERED | ASSIGNED | VERIFYING | TERMINAL | FAILED | CANCELLED` | Orchestration Runtime | `TRUE | FALSE | HOLD`와 분리 |
 | Finding current 상태 | `FindingIndexState.status` | `EMPTY | CURRENT | STALE` | Verification trusted runtime의 Finding normalization service | Finding 의미·Reporter readiness와 분리 |
 | 기술 판정 | `VerificationResult.verdict` | `TRUE | FALSE | HOLD` | Verification Agent | 오류·정보 부족 상태와 분리 |
 | 동적 재현 | `DynamicReproductionState.status` | `NOT_REQUESTED | RUNNING | SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED` | Reproduction Session Manager | `FAILED`만으로 가설 반증 금지 |
@@ -261,7 +261,7 @@ ReportProcessState:
 
 진행 중인 상태는 `finished_at: null`이다. 종료 상태는 `finished_at`이 필수이며 `elapsed_ms`는 시작부터 종료까지 monotonic clock으로 계산한다. `NOT_REQUESTED`는 `started_at: null`, `finished_at: null`, `elapsed_ms: 0`이다. `DynamicReproductionState.status=BLOCKED`는 같은 work가 재시도 또는 외부 설정 수정을 기다리는 비종료 상태이므로 `finished_at: null`을 유지한다. `SUCCEEDED | PARTIAL | FAILED | CANCELLED`로 work를 닫을 때만 `finished_at`을 기록한다. 반면 각 `DynamicReproductionResult`는 한 attempt의 종료 기록이므로 해당 결과의 `finished_at`은 `null`일 수 없다.
 
-`VerificationAssignment`은 Orchestration의 배정 제안을 신뢰 runtime이 검사한 뒤 만드는 저장 record다. `owner_identity_ref`는 한 hypothesis-local workflow의 논리 owner를 가리키며 Agent가 자기 출력으로 만들 수 없다. 최초 배정은 `assignment_generation=1`, `status=ACTIVE`다. 운영상 owner 교체가 필요하면 trusted recovery 또는 사람 승인 절차가 이전 assignment를 `SUPERSEDED`로 만들고 새 generation을 원자적으로 활성화한다. Technical `REVISE` 자체는 owner 교체 사유가 아니며 같은 ACTIVE assignment를 유지한다.
+`VerificationAssignment`은 비-LLM Orchestration Runtime이 등록 가설과 runtime policy를 바탕으로 배정을 요청하고 Runtime Validator가 허가한 뒤 만드는 저장 record다. Orchestration Runtime은 취약점 의미를 판단하거나 LLM 자연어 출력으로 배정을 확정하지 않는다. `owner_identity_ref`는 한 hypothesis-local workflow의 논리 owner를 가리키며 Agent가 자기 출력으로 만들 수 없다. 최초 배정은 `assignment_generation=1`, `status=ACTIVE`다. 운영상 owner 교체가 필요하면 trusted recovery 또는 사람 승인 절차가 이전 assignment를 `SUPERSEDED`로 만들고 새 generation을 원자적으로 활성화한다. Technical `REVISE` 자체는 owner 교체 사유가 아니며 같은 ACTIVE assignment를 유지한다.
 
 `HypothesisProcessState.status=REGISTERED`에서는 assignment·work·result reference가 `null`이고 `verification_generation=0`이다. `ASSIGNED | VERIFYING | TERMINAL | FAILED`에는 ACTIVE `verification_assignment_ref`가 필수다. `VERIFYING`은 현재 generation의 `verification_work_ref`가 필수이며, 최초 검증 전 `verification_result_ref=null`, Technical `REVISE` 보완 중에는 직전 final result ref를 유지할 수 있다. `TERMINAL`이면 `verification_work_ref=null`이고 `verification_result_ref.record_id`가 현재 가설의 exact final `VerificationResult` revision을 가리켜야 한다. `FAILED`는 검증 절차가 허용된 재시도를 소진했거나 복구 불가능한 오류로 끝나 final verdict를 만들지 못한 종료 상태다. 이때 `verification_work_ref`는 같은 `VERIFICATION` work의 `FAILED` revision을 가리키고 `verification_result_ref=null`이며, 오류와 미확인 범위는 해당 work·transition·최종 분석 결과에 보존한다. 동적 재현을 요청하면 `DynamicReproductionState.request_ref`는 current generation의 exact `DynamicReproductionRequest`를 가리킨다. `SUCCEEDED | PARTIAL | BLOCKED | FAILED | CANCELLED`에는 Reproduction Session Manager가 확정한 exact `DynamicReproductionResult.record_id`가 필수다. Dynamic Reproduction Agent 호출 전 Sandbox profile 외부 격리 경계 차단도 Session Manager가 최소 `AgentLog`와 결과를 만들기 때문에 결과 reference를 생략하지 않는다. 자동 retry 중간 attempt의 실패 결과는 해당 `WorkAttempt.output_refs`와 로그에만 보존하고, R6에 반환하는 `dynamic_result_ref`는 최종 성공·부분 완료·외부 대기·최종 실패·취소 결과만 가리킨다. `NOT_REQUESTED`에서는 두 reference가 모두 `null`이고, `RUNNING`에서는 request가 필수이며 반환할 final result는 아직 `null`이다. `ReportProcessState.status=DRAFTED`이면 `report_draft_ref.record_id`가 필수이며 정확히 하나인 `ReportDraft` revision을 가리키고, `NOT_REQUESTED | FAILED`이면 `report_draft_ref=null`이다.
 
@@ -410,13 +410,13 @@ Chaining work는 새 Primitive 저장을 계기로 등록한다. `PRIMITIVE_UPDA
 | `work_type` | 등록 요청 주체 | 실행·출력 생산자 | `SUCCEEDED` 또는 `PARTIAL`이 가리키는 결과 |
 |---|---|---|---|
 | `WORKSPACE_PREP` | 분석 입력 runtime | Repository Loader | 준비된 `CodeWorkspace` |
-| `STATIC_TOOL` | Orchestration runtime | AST/SAST runner | `ToolRunResult`, 규칙 기반 도구이면 exact `RuleExecutionRecord` |
-| `STATIC_NORMALIZE` | Orchestration runtime | Static Fact Normalizer | `StaticFactBundle` |
+| `STATIC_TOOL` | Orchestration Runtime | AST/SAST runner | `ToolRunResult`, 규칙 기반 도구이면 exact `RuleExecutionRecord` |
+| `STATIC_NORMALIZE` | Orchestration Runtime | Static Fact Normalizer | `StaticFactBundle` |
 | `HYPOTHESIS_PROPOSAL` | global registration runtime | Hypothesis·Verification·Chaining 출력 검증 runtime | schema-valid `HypothesisProposal[]` |
 | `CONTEXT_RETRIEVAL` | 허용된 Agent Runtime | Context Retrieval Service | `CodeContextResponse` |
 | `PRO_EVIDENCE` | Verification runtime | Pro Agent | exact `EvidenceAgentResult(role=PRO)` |
 | `CON_EVIDENCE` | Verification runtime | Con Agent | exact `EvidenceAgentResult(role=CON)` |
-| `VERIFICATION` | Orchestration의 배정 뒤 Verification runtime | Verification runtime | final `VerificationResult` |
+| `VERIFICATION` | Orchestration Runtime의 배정 뒤 Verification runtime | Verification runtime | final `VerificationResult` |
 | `DYNAMIC_REPRO` | Verification의 `REQUEST_DYNAMIC_REPRO`를 Runtime Validator가 허가 | Dynamic Reproduction Agent·Setup Automation·Sandbox Controller, 결과는 Reproduction Session Manager | request·plan·recipe·환경·AgentLog·PoC가 같은 attempt로 연결된 `DynamicReproductionResult` |
 | `PRIMITIVE_UPDATE` | non-empty `required_primitive_candidates`를 가진 final HOLD의 Verification 또는 Technical `ACCEPT` 뒤 정책 확인을 마친 admission runtime | `PRIMITIVE_ADMISSION_RUNTIME` | `PrimitiveAdmissionDecision`, 허용된 `Primitive`와 가설별 `PrimitiveIndexState` revision |
 | `CHAINING` | Verification handoff 뒤 Chaining runtime | Chaining runtime | `ChainingResult` |
@@ -441,7 +441,7 @@ current Finding 저장은 `RULE_SCOPE_GATE`의 `SUCCEEDED`와 review의 `COMMITT
 
 R7이 스스로 해결할 수 있는 command·PoC·환경 조정은 `BLOCKED` 사유가 아니며 같은 session의 현재 attempt 안에서 수행한다. session 재시작이 필요하면 `RUNNING -> READY -> RUNNING`과 새 `attempt_id`, `trigger=RETRY`를 사용한다. 이때 끝난 실패 attempt의 `DynamicReproductionResult(status=FAILED)`와 `AnalysisError.retryable=true`는 해당 attempt의 output history에 보존하지만 validated PoC나 R6 final verdict로 소비하지 않는다. 공통 `WorkExecutionState.status=BLOCKED`는 재인증, 승인, 외부 환경 정비나 resource 확보처럼 현재 work의 불변 입력을 바꾸지 않는 실제 외부 조건을 기다리는 비종료 상태다. 프로그램 정책의 준비 상태 자체는 `LOCAL_ONLY` Sandbox work를 `BLOCKED`로 만드는 조건이 아니다. `BLOCKED -> READY -> RUNNING` 재개는 기존 work의 `input_refs`와 `input_hash`가 그대로일 때만 허용한다. 재개할 때는 같은 work에서 새 `attempt_id`, `trigger=RESUME`를 사용한다. `DynamicReproductionRequest`, `sandbox_profile_ref`처럼 work 입력의 exact revision이 바뀌면 기존 work에 추가하거나 덮어쓰지 않고 새 Verification generation과 새 `DYNAMIC_REPRO` work를 만든다. action 단계의 checked config만 바뀌었다면 기존 `UNUSED` decision을 `EXPIRED`로 확정하고 같은 work에서 새 action·decision을 만들되 work 입력은 바꾸지 않는다.
 
-작업 모듈과 Agent는 등록 또는 상태 변경을 요청할 뿐 직접 확정하지 않는다. 모든 행의 `StateTransition` 승인과 저장은 신뢰 경계 안의 state transition validator와 state store가 담당한다. Orchestration Agent의 자연어 출력은 상태 변경 명령으로 직접 실행하지 않는다.
+작업 모듈과 Agent는 등록 또는 상태 변경을 요청할 뿐 직접 확정하지 않는다. 모든 행의 `StateTransition` 승인과 저장은 신뢰 경계 안의 state transition validator와 state store가 담당한다. Orchestration Runtime은 비-LLM 전역 제어 구성요소이며 자연어 출력을 만들지 않는다. 모든 LLM Agent의 자연어 출력은 상태 변경 명령으로 직접 실행하지 않는다.
 
 결과 record, `StateTransition`과 그 결과를 가리키는 종료 상태는 하나의 논리적 atomic transition으로 확정한다. 저장 제품이 한 transaction을 지원하면 같은 transaction에서 처리한다. 지원하지 않으면 `TransitionCommit` journal을 사용한다. `PREPARED` 출력은 격리 상태이며 다음 단계가 읽을 수 없다. state store는 현재 version·active attempt·입력이 그대로라는 조건을 compare-and-set으로 확인하면서 unique `(work_id, target_state_version)` key의 `COMMITTED` revision을 append한다. 경쟁 중 하나만 성공하며 이 marker가 논리적 확정점이다. runtime은 marker를 `WorkExecutionState`와 전문 상태 pointer에 투영한다. 소비자는 COMMITTED marker와 두 pointer가 모두 같은 output을 가리킬 때만 진행한다. marker 뒤 projection 전에 중단되면 recovery가 marker를 재적용한다. version 충돌, 취소 또는 검증 실패는 `ABORTED`이며 output을 최신 상태에 연결하지 않는다.
 
@@ -608,7 +608,7 @@ Technical Gate가 `REVISE`를 확정하면 그 Gate action과 decision은 이미
 
 `Dynamic Reproduction Agent`는 문서 표시 이름이고 `DYNAMIC_REPRODUCTION`은 동일 구성요소의 정식 역할·생산자 enum이다. `ActionRequest.requested_by`, LLM 호출의 `agent_role`, `AgentLogEvent.actor`와 result-owner registry는 모두 이 enum을 사용한다. 이 역할값 변경은 기존 저장 record를 조용히 다른 값으로 읽는 호환 별칭이 아니다. 구현에서는 새 MAJOR schema로 전환하고 과거 record를 감사 이력으로 보존하며, 명시적 migration을 거치지 않은 이전 역할값은 current action·result 입력으로 사용하지 않는다.
 
-Orchestration은 전역 proposal 등록과 Verification 배정을 제안할 수 있지만 hypothesis-local 작업, Verification verdict, CWE, 두 Gate 결과, 정책 해석과 ReportDraft 내용을 생산하지 못한다. Verification은 hypothesis-local 작업을 제안하지만 실제 실행·저장 권한은 Runtime Validator를 통과해야 한다. 각 전문 결과는 위 표의 `SAVE_RESULT` 허용 역할 중에서도 해당 result kind를 소유한 역할만 저장한다. 예를 들어 `RuleExecutionRecord`는 STATIC_ANALYSIS, `VerificationResult`는 VERIFICATION, `CWELabel`은 R5-01 `CWE_LABELING`, `ChainingResult`는 CHAINING, `TechnicalEvidenceReview`는 TECHNICAL_GATE, `RuleScopeImpactReview`는 RULE_SCOPE_GATE, `PrimitiveAdmissionDecision`과 `Primitive`는 `PRIMITIVE_ADMISSION_RUNTIME`, `ReportDraft`는 REPORTER만 생산한다. `PRIMITIVE_ADMISSION_RUNTIME`은 LLM Agent가 아니라 exact Gate·정책 수집 상태를 아래 결정표에 대입하는 신뢰 runtime이며 정책 의미를 새로 해석하지 않는다. runtime validator는 값의 생산자·schema·선행 reference를 확인하지만 취약점 진위·CWE 적절성·정책 의미를 대신 판정하지 않는다.
+Orchestration Runtime은 schema-valid proposal의 전역 등록과 Verification 배정을 요청하는 비-LLM 전역 제어 구성요소다. hypothesis-local 작업, Verification verdict, CWE, 두 Gate 결과, 정책 해석과 ReportDraft 내용을 생산하지 못하고 Runtime Validator와 state store를 우회해 등록·배정을 확정하지 못한다. Verification은 hypothesis-local 작업을 제안하지만 실제 실행·저장 권한은 Runtime Validator를 통과해야 한다. 각 전문 결과는 위 표의 `SAVE_RESULT` 허용 역할 중에서도 해당 result kind를 소유한 역할만 저장한다. 예를 들어 `RuleExecutionRecord`는 STATIC_ANALYSIS, `VerificationResult`는 VERIFICATION, `CWELabel`은 R5-01 `CWE_LABELING`, `ChainingResult`는 CHAINING, `TechnicalEvidenceReview`는 TECHNICAL_GATE, `RuleScopeImpactReview`는 RULE_SCOPE_GATE, `PrimitiveAdmissionDecision`과 `Primitive`는 `PRIMITIVE_ADMISSION_RUNTIME`, `ReportDraft`는 REPORTER만 생산한다. `PRIMITIVE_ADMISSION_RUNTIME`은 LLM Agent가 아니라 exact Gate·정책 수집 상태를 아래 결정표에 대입하는 신뢰 runtime이며 정책 의미를 새로 해석하지 않는다. runtime validator는 값의 생산자·schema·선행 reference를 확인하지만 취약점 진위·CWE 적절성·정책 의미를 대신 판정하지 않는다.
 
 `ActionCheck.check_type=BUDGET`은 versioned runtime policy의 시간·비용·호출·work·retry·repair·Gate 보완 한도만 검사한다. `LLMCallSpec.token_budget=null`, provider usage 미제공 또는 실제 token 사용량이 계획값을 넘었다는 이유만으로 check를 `FAIL`로 만들거나 `DENY`하지 않는다. 이 check의 실제 실패는 `AnalysisError(stage=ORCHESTRATION, code=BUDGET_EXCEEDED)`로 기록한다. 가설 verdict나 LLM `INVALID_OUTPUT`으로 바꾸지 않으며, 운영 Verification의 Pro/Con 중 하나라도 실행할 비-token 예산이 없으면 두 호출과 final result 저장을 시작하지 않는다.
 
@@ -840,17 +840,17 @@ Context 조회 실패·timeout·권한 오류가 발생하면 실패 사건은 `
 
 | `stage` | 주 생산자 | 반드시 받는 소비자 | 기본 전달·처리 규칙 |
 |---|---|---|---|
-| `INPUT` | 입력 validator | Orchestration runtime, `AnalysisRunResult` | 분석 시작 전 거절 사유를 저장하고 verdict를 만들지 않음 |
-| `REPOSITORY` | Repository Loader | Orchestration runtime, `AnalysisRunResult` | clone·checkout 실패는 실행 상태에 반영하고 가설 verdict를 만들지 않음 |
-| `STATIC_ANALYSIS` | AST/SAST runner와 normalizer | Orchestration runtime, 정적 결과, `AnalysisRunResult` | 사용 가능한 결과와 오류를 함께 전달하고 필요하면 실행을 `PARTIAL`로 표시 |
+| `INPUT` | 입력 validator | Orchestration Runtime, `AnalysisRunResult` | 분석 시작 전 거절 사유를 저장하고 verdict를 만들지 않음 |
+| `REPOSITORY` | Repository Loader | Orchestration Runtime, `AnalysisRunResult` | clone·checkout 실패는 실행 상태에 반영하고 가설 verdict를 만들지 않음 |
+| `STATIC_ANALYSIS` | AST/SAST runner와 normalizer | Orchestration Runtime, 정적 결과, `AnalysisRunResult` | 사용 가능한 결과와 오류를 함께 전달하고 필요하면 실행을 `PARTIAL`로 표시 |
 | `CONTEXT` | Context Retrieval Service | 요청 Agent, 관련 Verification work·존재하는 검증 결과, `AnalysisRunResult` | 실패는 `AnalysisError`, 확인하지 못한 범위는 `DataGap`으로 함께 전달한다. 정상 근거로 필수 검증을 완료했을 때만 verdict를 허용하고 오류 자체를 `TRUE | FALSE | HOLD`의 근거로 사용하지 않음 |
-| `ORCHESTRATION` | Orchestration runtime | `AnalysisRunResult`, 운영 debug trace | 예산·순서·할당 실패를 기록하고 이미 존재하는 verdict를 바꾸지 않음 |
-| `AGENT` | Agent Runtime | Orchestration runtime, 해당 Agent 결과, `AnalysisRunResult` | invalid output과 Agent 실행 실패를 별도 기록하고 자동 FALSE 금지 |
+| `ORCHESTRATION` | Orchestration Runtime | `AnalysisRunResult`, 운영 debug trace | 예산·순서·할당 실패를 기록하고 이미 존재하는 verdict를 바꾸지 않음 |
+| `AGENT` | Agent Runtime | Orchestration Runtime, 해당 Agent 결과, `AnalysisRunResult` | invalid output과 Agent 실행 실패를 별도 기록하고 자동 FALSE 금지 |
 | `PROVIDER` | LLM provider adapter | Agent Runtime, 해당 invocation, `AnalysisRunResult` | 인증·rate limit·timeout을 호출 상태로 전달하고 자동 FALSE 금지 |
 | `SANDBOX` | Sandbox runtime | Verification, 동적 결과, Technical Gate, `AnalysisRunResult` | 실행 실패와 실제 반증을 분리해 전달 |
 | `POLICY` | 정책 수집 계층 | Rule Scope Impact Gate, `AnalysisRunResult` | 공식 정책 부족 시 `UNCERTAIN + DENY` 판단에 전달 |
-| `GATE` | 두 Gate runtime | Orchestration runtime, 해당 Gate 결과, `AnalysisRunResult` | Gate 실패 시 Reporter 호출을 막고 Verification verdict는 유지 |
-| `REPORT` | Reporter runtime | Orchestration runtime, `ReportProcessState`, `AnalysisRunResult` | 초안 실패를 저장하고 공개 상태를 만들지 않음 |
+| `GATE` | 두 Gate runtime | Orchestration Runtime, 해당 Gate 결과, `AnalysisRunResult` | Gate 실패 시 Reporter 호출을 막고 Verification verdict는 유지 |
+| `REPORT` | Reporter runtime | Orchestration Runtime, `ReportProcessState`, `AnalysisRunResult` | 초안 실패를 저장하고 공개 상태를 만들지 않음 |
 | `AUTHORITY` | Runtime Validator·Sandbox Controller | 요청 주체, `AnalysisRunResult`, debug trace | Runtime 권한·provider·Gate·Reporter 차단과 Controller의 Sandbox profile 외부 격리 경계 차단을 구분해 기록하고 domain 판단은 바꾸지 않음 |
 
 모든 `AnalysisError`는 `AnalysisRunResult.errors`와 운영 debug trace에 전달한다. 특정 가설·호출·동적 실행과 관련된 오류는 해당 전문 결과에도 포함하거나 `related_record_ids`로 연결한다. 오류를 누락하거나 성공 상태로 바꾸어 전달하지 않는다.
@@ -908,7 +908,7 @@ SAST severity와 tool message는 verdict가 아니다.
 
 ## 2. HypothesisProposal과 VulnerabilityHypothesis
 
-가설 생성 Agent가 제안한 후보와, 프로그램이 형식을 확인한 뒤 검증 대상으로 등록한 가설을 구분합니다.
+Hypothesis Agent가 제안한 후보와, 프로그램이 형식을 확인한 뒤 검증 대상으로 등록한 가설을 구분합니다.
 
 ```yaml
 FalsificationQuestion:
@@ -1020,7 +1020,7 @@ CodeContextResponse:
   consumed_token_estimate: integer | null
 ```
 
-요청과 응답의 `meta.workspace_id` 또는 `meta.commit_id`가 다르거나, 이 값이 `CodeWorkspace`와 일치하지 않으면 `WORKSPACE_MISMATCH`로 기록하고 근거에 사용하지 않는다. 모든 limit은 0보다 커야 한다. `max_requests_per_hypothesis`는 같은 가설의 누적 요청 한도이며 Orchestration runtime이 `code_request_id` 수로 강제한다. empty/truncated/gap/error는 안전함 또는 `TRUE | FALSE | HOLD`를 뜻하지 않는다. `truncated=true`이면 `CONTEXT_TRUNCATED` gap이 반드시 있어야 한다. 조회 실패·timeout·권한 오류가 있으면 응답의 `errors`에 `AnalysisError(stage=CONTEXT)`를 넣고 그 오류 때문에 확인하지 못한 범위를 `gaps`의 `DataGap(stage=CONTEXT)`으로 함께 남긴다.
+요청과 응답의 `meta.workspace_id` 또는 `meta.commit_id`가 다르거나, 이 값이 `CodeWorkspace`와 일치하지 않으면 `WORKSPACE_MISMATCH`로 기록하고 근거에 사용하지 않는다. 모든 limit은 0보다 커야 한다. `max_requests_per_hypothesis`는 같은 가설의 누적 요청 한도이며 Orchestration Runtime이 `code_request_id` 수로 강제한다. empty/truncated/gap/error는 안전함 또는 `TRUE | FALSE | HOLD`를 뜻하지 않는다. `truncated=true`이면 `CONTEXT_TRUNCATED` gap이 반드시 있어야 한다. 조회 실패·timeout·권한 오류가 있으면 응답의 `errors`에 `AnalysisError(stage=CONTEXT)`를 넣고 그 오류 때문에 확인하지 못한 범위를 `gaps`의 `DataGap(stage=CONTEXT)`으로 함께 남긴다.
 
 일부 요청이 실패했어도 제한 retry·대체 조회 또는 다른 정상 근거로 가설의 모든 `validation_checks`, 모든 반증 질문과 운영 Pro/Con을 완료했다면 Verification은 실제 근거에 따라 final `TRUE | FALSE | HOLD`를 만들 수 있다. 필수 Context나 운영 Pro/Con을 확보하지 못해 검증 절차 자체를 완료하지 못했다면 final `VerificationResult`를 만들지 않는다. 재시도할 수 있으면 해당 Verification work를 `BLOCKED`로 두고 `HypothesisProcessState.status=VERIFYING`을 유지한다. 허용된 재시도를 소진했거나 복구할 수 없으면 같은 atomic transition에서 work와 가설 처리 상태를 `FAILED`로 남긴다.
 
@@ -2226,7 +2226,7 @@ FindingIndexState:
 
 `condition_sources`는 이 exact upstream closure의 restriction / limitation / unresolved condition을 빠짐없이 가리킨다. `source_ref`는 조건을 담은 immutable record의 exact `StoredDataRef`, `source_path`는 그 revision 안의 항목을 가리키는 JSON Pointer다. kind·reference·path 조합은 중복 없이 보존하고 경로의 실제 값과 종류를 검증한다. 별도 조건 record나 새 요약 claim을 만들지 않으며 Reporter는 원문 값과 provenance를 그대로 해석해 기존 `restrictions`·`limitations`·`unresolved_conditions`에 전달한다. 조건이 없을 때만 빈 목록이다.
 
-`result_kind=finding`의 유일한 저장 주체는 Verification trusted runtime의 비-LLM Finding normalization service다. registry의 `finding -> Finding -> VERIFICATION`은 기존 역할 enum을 재사용하지만 `requested_by=VERIFICATION`만으로 권한을 주지 않는다. `AUTHORITY`는 versioned result-owner registry에 고정된 이 service의 exact `requester_identity_ref`와 현재 ACTIVE Verification assignment 연결을 검사한다. Verification Agent, Rule Scope Gate, Reporter, Orchestration은 Finding을 직접 저장하거나 pointer를 바꿀 수 없다. recovery는 승인된 service identity와 journal을 복구할 뿐 다른 생산자로 새 Finding을 만들지 않는다. 이 작업은 새 autonomous Agent role, 새 `action_type` 또는 새 producer enum을 추가하지 않는다. 구체 binding은 [구현 모듈 맵](implementation/01-module-map.md) B2에 확정한다.
+`result_kind=finding`의 유일한 저장 주체는 Verification trusted runtime의 비-LLM Finding normalization service다. registry의 `finding -> Finding -> VERIFICATION`은 기존 역할 enum을 재사용하지만 `requested_by=VERIFICATION`만으로 권한을 주지 않는다. `AUTHORITY`는 versioned result-owner registry에 고정된 이 service의 exact `requester_identity_ref`와 현재 ACTIVE Verification assignment 연결을 검사한다. Verification Agent, Rule Scope Gate, Reporter, Orchestration Runtime은 Finding을 직접 저장하거나 pointer를 바꿀 수 없다. recovery는 승인된 service identity와 journal을 복구할 뿐 다른 생산자로 새 Finding을 만들지 않는다. 이 작업은 새 autonomous Agent role, 새 `action_type` 또는 새 producer enum을 추가하지 않는다. 구체 binding은 [구현 모듈 맵](implementation/01-module-map.md) B2에 확정한다.
 
 `FINDING_NORMALIZE`는 `subject_type=HYPOTHESIS`, `subject_id=meta.hypothesis_id`이며 `parent_work_ref`는 성공한 current `RULE_SCOPE_GATE` exact work다. service가 기존 VERIFICATION authority로 work를 등록·실행하고 `SAVE_RESULT(result_kind=finding)`을 요청한다. domain `input_refs`에는 위 exact upstream closure, current `HypothesisProcessState`, ACTIVE assignment, `FindingIndexState`의 expected revision을 고정한다. 최초 등록 전에 service가 가설별 EMPTY index를 unique key로 생성한다. `input_hash`는 모든 exact input reference를 포함하고 `dedupe_key`는 가설·Verification generation·upstream exact chain으로 계산한다. 같은 chain의 재전달은 기존 work/commit을 반환하며 retry는 기존 attempt 규칙을 따른다. upstream이 바뀌면 새 work generation·work ID·input hash를 사용한다. LLM call spec과 별도 Gate 호출은 없다.
 
