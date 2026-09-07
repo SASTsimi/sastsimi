@@ -41,7 +41,7 @@
 
 ### 1. 역할 경계
 
-- Orchestration Agent는 proposal 검증·전역 가설 등록·Verification 배정까지만 담당한다.
+- 비-LLM Orchestration Runtime은 proposal 검증·전역 가설 등록·Verification 배정까지만 담당한다.
 - trusted runtime은 배정 결과를 ACTIVE `VerificationAssignment`로 저장하며, 같은 역할의 다른 identity가 아니라 그 논리 owner만 가설 내부 action을 요청할 수 있다.
 - Verification Agent는 배정된 가설의 Context·Pro/Con·동적 재현·근거 종합·판정·material child·Technical Gate 제출·REVISE·Chaining handoff를 소유한다. REVISE는 같은 assignment의 새 VERIFICATION work와 `TERMINAL -> VERIFYING` 전이로 처리한다.
 - Runtime Validator는 action 권한, exact revision, 상태, 예산, provider/session과 Gate/Reporter 전제를 강제한다. Sandbox의 상세 enforcement 결정은 이 ADR의 결정 범위가 아니며 [ADR-002](./ADR-002-sandbox-policy-enforcement.md)에서 별도로 관리한다.

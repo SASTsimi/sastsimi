@@ -4,13 +4,15 @@
 - **누가 읽어야 하나요?** LLM 탐색·체이닝, 검증, PM과 통합 개발 담당자가 읽습니다.
 - **읽은 뒤 무엇을 확인하거나 결정하나요?** 각 Agent가 만들 수 있는 결과와 가질 수 없는 권한, 호출·실패 처리 순서를 확인합니다.
 
-`Orchestration`은 여러 Agent의 호출 순서와 상태를 조정하는 기능입니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
+`Orchestration Runtime`은 여러 Agent의 작업 순서와 상태를 관리하는 비-LLM 프로그램 구성요소입니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
 
 > 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
 
-## Orchestration Agent
+## Orchestration Runtime
 
-Orchestration Agent는 분석 전체와 가설 목록을 관리하는 global control-plane이다. 한 가설에 대한 책임은 proposal 검증·전역 등록·Verification 배정에서 끝난다. 배정 뒤 Context, Pro/Con, 동적 재현, 판정, Gate `REVISE`와 Chaining handoff를 선택하는 주체는 그 가설의 Verification owner다.
+Orchestration Runtime은 분석 전체와 가설 목록을 관리하는 비-LLM 전역 제어 구성요소다. current `StaticFactBundle`이 준비되면 `HYPOTHESIS_PROPOSAL` work를 등록하고, Runtime Validator가 허용한 `CALL_LLM(requested_by=HYPOTHESIS)`으로 Hypothesis Agent를 호출한다. Agent가 반환한 proposal은 trusted validation과 중복 검토를 거친 뒤에만 전역 가설로 등록되고 Verification에 배정된다. 배정 뒤 Context, Pro/Con, 동적 재현, 판정, Gate `REVISE`와 Chaining handoff를 선택하는 주체는 그 가설의 Verification owner다.
+
+Orchestration Runtime에는 LLM prompt, provider 설정, `agent_role`을 배정하지 않는다. 자연어를 해석해 실행 순서를 바꾸지 않으며, LLM 판단은 Hypothesis Agent·Verification Agent·Pro Agent·Con Agent·Dynamic Reproduction Agent·CWE Labeling Agent·Chaining Agent·두 Gate Agent·Reporter Agent·Policy Parser Agent의 명시된 입력과 출력 안에서만 수행한다.
 
 ```text
 HypothesisProposal validation
@@ -21,7 +23,7 @@ HypothesisProposal validation
 -> hypothesis-local control transfers to Verification
 ```
 
-Orchestration Agent의 주요 책임은 다음과 같다.
+Orchestration Runtime의 주요 책임은 다음과 같다.
 
 - `analysis_id`와 전역 분석 계획 관리
 - INITIAL·VERIFICATION·CHAINING proposal의 schema/semantic validation 요청
@@ -34,11 +36,11 @@ Orchestration Agent의 주요 책임은 다음과 같다.
 - R8 전체 시간·비용·work 예산과 체이닝 match 조합 중복·ancestor 재사용 제외 적용 요청. token 사용량은 관측하지만 상한으로 차단하지 않음
 - 실패와 `INVALID_OUTPUT`을 숨기지 않고 분석 결과에 보존
 
-Orchestration Agent는 한 가설 안에서 Pro/Con·동적 재현·두 Gate·Reporter·Chaining의 호출 여부나 Technical `REVISE` 목적지를 결정하지 않는다. 논리 작업의 상태, `work_id`·`dedupe_key`, 활성 attempt, compare-and-set, atomic output binding과 실제 action 허가는 신뢰 경계 안의 비-LLM runtime이 관리한다.
+Orchestration Runtime은 정해진 전이표와 검증 결과에 따라 work를 등록·배정할 뿐, 한 가설 안에서 Pro/Con·동적 재현·두 Gate·Reporter·Chaining의 호출 여부나 Technical `REVISE` 목적지를 판단하지 않는다. 논리 작업의 상태, `work_id`·`dedupe_key`, 활성 attempt, compare-and-set, atomic output binding과 실제 action 허가는 Runtime Validator와 신뢰 저장 계층이 검사·확정한다. Orchestration Runtime도 이 검사를 우회할 수 없다.
 
 ## Hypothesis Agent
 
-`Hypothesis Agent`는 모델의 가격·성능 등급과 분리된 공식 역할명이다. 어떤 exact `ProviderProfile` revision의 model을 사용해도 출력 권한은 동일하게 제한한다. 입력은 `StaticFactBundle`의 요약·reference와 필요한 최소 fragment다. 정책 record는 입력에 섞지 않으며 scope를 이유로 기술 가설을 사전 삭제하지 않는다. 출력은 자유 형식 분석문이 아니라 `HypothesisProposal[]`이다.
+`Hypothesis Agent`는 모델의 가격·성능 등급과 분리된 공식 역할명이다. 실제 Provider와 모델은 호출마다 exact `ProviderProfile`을 가리키는 `provider_profile_ref`와 `LLMCallSpec.model`로 고정하고 두 model 값이 같아야 한다. 어떤 조합을 선택해도 Agent의 이름·역할·입출력 계약과 출력 권한은 바뀌지 않는다. 입력은 `StaticFactBundle`의 요약·reference와 필요한 최소 fragment다. 정책 record는 입력에 섞지 않으며 scope를 이유로 기술 가설을 사전 삭제하지 않는다. 출력은 자유 형식 분석문이 아니라 `HypothesisProposal[]`이다.
 
 각 proposal은 반드시 다음을 포함한다.
 
@@ -113,13 +115,13 @@ Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하
 
 `PENDING -> READY -> RUNNING` 뒤에는 `SUCCEEDED | PARTIAL | FAILED | CANCELLED`로 끝나거나, 재시도·인증·승인·입력·예산 조건을 기다릴 때 `BLOCKED`로 이동한다. `BLOCKED`는 조건을 충족하면 `READY`가 되지만 종료 상태는 되돌리지 않는다. 일반적인 재시도 가능 attempt 실패는 attempt 자체를 `FAILED`로 보존하고 work를 `BLOCKED`로 둔다. 단, `DYNAMIC_REPRO`에서 같은 Dynamic Reproduction Agent session의 command·PoC·환경 조정은 현재 attempt의 event로 계속 기록한다. session 재시작이 필요한 work-level retry만 같은 work를 `RUNNING -> READY -> RUNNING`으로 넘겨 새 attempt를 시작한다. 현재 work의 불변 입력을 바꾸지 않는 외부 조건을 기다릴 때만 `BLOCKED` 뒤 `trigger=RESUME`인 새 attempt로 재개한다. exact request나 profile reference를 바꿔야 하면 기존 work를 재개하지 않는다. 어느 경우에도 이전 실패를 삭제하지 않는다.
 
-상태 변경을 실제로 승인·저장하는 주체는 Orchestration Agent가 아니라 신뢰 경계 안의 runtime이다. 작업 모듈은 결과와 다음 상태를 요청하고 runtime이 schema, 현재 `state_version`, 활성 attempt, 입력 hash, workspace·commit·가설, 예산과 권한을 검사한 뒤 `StateTransition`을 저장한다.
+Orchestration Runtime은 상태 변경을 단독 확정하지 않는다. 작업 모듈과 Orchestration Runtime은 결과와 다음 상태를 요청하고, Runtime Validator와 state store가 schema, 현재 `state_version`, 활성 attempt, 입력 hash, workspace·commit·가설, 예산과 권한을 검사한 뒤 `StateTransition`을 저장한다.
 
 ## 역할별 권한 경계
 
 | 역할 | 제안 | 직접 판단 | 검토 | 프로그램 강제 | 사람만 결정 |
 |---|---|---|---|---|---|
-| Orchestration Agent | 전역 분석 계획·proposal 등록·가설 배정·가설 간 병렬화 | 없음 | 전체 진행 상태 요약 | 없음 | 없음 |
+| Orchestration Runtime | 없음 | 없음 | 검증된 proposal·작업 상태·예산 | work 등록, ID 발급, 가설 등록·Verification 배정과 가설 간 병렬화 요청. 실제 허가·저장은 Runtime Validator와 state store가 확정 | 없음 |
 | Hypothesis Agent | 취약점 가설 | 없음 | static 사실을 입력으로 읽음 | 없음 | 없음 |
 | Playbook Registry Runtime | R6가 작성한 플레이북과 사람이 승인한 적용 정책을 versioned record로 등록하고 Verification work별 `PlaybookApplication` 생성 | 없음 | exact proposal의 유형 후보·policy·playbook revision | schema·선택·질문 ID·current pointer 검사 | 운영 지원 유형과 적용 mapping 승인 |
 | Policy Collector | 비-LLM. run 시작 때 program별 공식 정책 원문 수집·source authenticity 확인, run-neutral `PolicyCacheRecord` 조회, run-local `PolicyCollectionResult`·(`FOUND`이면) `ProgramPolicyRecord`·`RunPolicyState` 확정 | `PolicyCollectionResult`, `ProgramPolicyRecord`, `RunPolicyState`, 성공 준비면 `PolicyCacheRecord` | 공식 source·source hash·parser provenance | 없음 | 없음 |
@@ -140,7 +142,7 @@ Verification-origin과 Chaining-origin proposal은 직접 부모 ID를 보존하
 
 문서와 구현에서 R7 소유 LLM 구성요소의 정식 이름은 `Dynamic Reproduction Agent`, 역할·생산자 enum은 `DYNAMIC_REPRODUCTION`이다. `R7`은 팀 담당 영역을 나타내는 표지일 뿐 Agent 이름이나 runtime identity가 아니다. `R7_SETUP_AUTOMATION`은 image·container·cleanup을 수행하는 별도 비-LLM 구성요소이므로 `DYNAMIC_REPRODUCTION`과 합치지 않는다.
 
-Orchestration Agent는 전역 등록과 배정을 제안하지만 hypothesis-local 호출 순서, 기술 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 확정하지 않는다. 실행 시작 runtime은 workspace 준비 뒤 static work와 분석 단위 policy work를 독립 병렬 등록한다. 비-LLM Policy Collector는 run 시작 때 exact `PolicyCacheRecord`를 한 번 검사해 재사용하거나 공식 원문을 고정하고, cache miss에서만 LLM Policy Parser가 exact 원문을 구조화한다. 같은 실행의 모든 가설은 새 `RunPolicyState`를 공유하며 준비 완료 뒤 정책 reference는 run 종료까지 바뀌지 않는다. 정책은 StaticFactBundle이나 Hypothesis 사전 scope 필터가 아니다. R6 담당은 플레이북 내용과 유형 mapping 후보를 작성할 수 있지만 운영 지원 목록을 활성화하지 않는다. Playbook Registry Runtime은 사람 승인 뒤 policy를 등록하고 exact proposal의 `vulnerability_type_candidates`를 읽어 결정 규칙대로 playbook과 질문 집합을 고정할 뿐 취약점 유형이나 verdict를 새로 판단하지 않는다. Verification Agent는 hypothesis-local 다음 작업을 선택하고 `DynamicReproductionRequest`와 최종 verdict를 생산하지만 프로그램 enforcement를 우회하거나 Sandbox를 직접 실행하지 못한다. Dynamic Reproduction Agent는 exact `EnvironmentRequirements`, mode·exact command가 없는 `ReproductionPlan`, PoC candidate와 동적 근거 해석을 만든다. Setup Automation은 저장소 선언을 우선한 immutable recipe와 image·container·cleanup을 수행한다. Sandbox Controller는 요청 당시 policy state를 감사 reference로 남기고 Sandbox 밖의 강제 경계만 검사하며 컨테이너 내부 command allowlist나 Rule Scope 의미 판정을 운영하지 않는다. 비-LLM Reproduction Session Manager는 실제 event를 append-only `AgentLog`에 기록하고 같은 attempt의 plan·recipe·환경·candidate·실행 digest만으로 validated PoC와 동적 결과를 확정한다. R7 구성요소는 R6 요청 목적과 최종 verdict를 바꾸지 않는다. Policy Parser output 자체는 authoritative policy evidence가 아니며, Rule Scope Gate는 이 준비된 정책을 hypothesis마다 소비하되 필요하면 `source_ref + source_locator`의 공식 원문을 직접 확인해 정규화 모순 시 fail-closed(`UNCERTAIN + DENY`)한다. hypothesis generation·Verification·Chaining은 program scope를 이유로 기술적 hypothesis를 제거하지 않고, 실제 scope/reportability 판단은 hypothesis마다 Rule Scope Gate가 수행한다. Rule Scope Gate는 공식 정책에서 테스트 제한의 의미를 독립 필드로 판단하고, Primitive Admission Runtime은 그 값과 exact 정책 수집 상태를 정해진 표에 대입할 뿐 정책을 재해석하지 않는다. Runtime Validator는 값의 생산자가 맞는지, 필요한 선행 record와 상태가 있는지, exact revision과 실행 범위가 허용됐는지만 확인하며 환경 의미나 domain 값을 대신 만들지 않는다.
+Orchestration Runtime은 trusted validation을 통과한 proposal의 전역 등록과 배정을 요청하지만 hypothesis-local 호출 순서, 기술 verdict, CWE, 두 Gate 결과, 공식 정책 의미, 보고 가능 여부와 공개 여부를 확정하지 않는다. 실행 시작 runtime은 workspace 준비 뒤 static work와 분석 단위 policy work를 독립 병렬 등록한다. 비-LLM Policy Collector는 run 시작 때 exact `PolicyCacheRecord`를 한 번 검사해 재사용하거나 공식 원문을 고정하고, cache miss에서만 LLM Policy Parser가 exact 원문을 구조화한다. 같은 실행의 모든 가설은 새 `RunPolicyState`를 공유하며 준비 완료 뒤 정책 reference는 run 종료까지 바뀌지 않는다. 정책은 StaticFactBundle이나 Hypothesis 사전 scope 필터가 아니다. R6 담당은 플레이북 내용과 유형 mapping 후보를 작성할 수 있지만 운영 지원 목록을 활성화하지 않는다. Playbook Registry Runtime은 사람 승인 뒤 policy를 등록하고 exact proposal의 `vulnerability_type_candidates`를 읽어 결정 규칙대로 playbook과 질문 집합을 고정할 뿐 취약점 유형이나 verdict를 새로 판단하지 않는다. Verification Agent는 hypothesis-local 다음 작업을 선택하고 `DynamicReproductionRequest`와 최종 verdict를 생산하지만 프로그램 enforcement를 우회하거나 Sandbox를 직접 실행하지 못한다. Dynamic Reproduction Agent는 exact `EnvironmentRequirements`, mode·exact command가 없는 `ReproductionPlan`, PoC candidate와 동적 근거 해석을 만든다. Setup Automation은 저장소 선언을 우선한 immutable recipe와 image·container·cleanup을 수행한다. Sandbox Controller는 요청 당시 policy state를 감사 reference로 남기고 Sandbox 밖의 강제 경계만 검사하며 컨테이너 내부 command allowlist나 Rule Scope 의미 판정을 운영하지 않는다. 비-LLM Reproduction Session Manager는 실제 event를 append-only `AgentLog`에 기록하고 같은 attempt의 plan·recipe·환경·candidate·실행 digest만으로 validated PoC와 동적 결과를 확정한다. R7 구성요소는 R6 요청 목적과 최종 verdict를 바꾸지 않는다. Policy Parser output 자체는 authoritative policy evidence가 아니며, Rule Scope Gate는 이 준비된 정책을 hypothesis마다 소비하되 필요하면 `source_ref + source_locator`의 공식 원문을 직접 확인해 정규화 모순 시 fail-closed(`UNCERTAIN + DENY`)한다. hypothesis generation·Verification·Chaining은 program scope를 이유로 기술적 hypothesis를 제거하지 않고, 실제 scope/reportability 판단은 hypothesis마다 Rule Scope Gate가 수행한다. Rule Scope Gate는 공식 정책에서 테스트 제한의 의미를 독립 필드로 판단하고, Primitive Admission Runtime은 그 값과 exact 정책 수집 상태를 정해진 표에 대입할 뿐 정책을 재해석하지 않는다. Runtime Validator는 값의 생산자가 맞는지, 필요한 선행 record와 상태가 있는지, exact revision과 실행 범위가 허용됐는지만 확인하며 환경 의미나 domain 값을 대신 만들지 않는다.
 
 ReportDraft 이후의 검토·수정·제출·공개는 이 역할표와 Agent action lifecycle 밖에서 사람이 수행한다. 자동화는 사람 검토 상태나 공개 결정을 만들지 않는다.
 
@@ -203,7 +205,7 @@ program별 정책 준비(collection → parsing)는 실행 시작 runtime이 wor
 
 ```text
 run init: repository + program 확정
-   -> 실행 시작 runtime(RunInitializationService / Orchestration runtime)이 POLICY_FETCH 등록 (analysis·program별 1회)
+   -> 실행 시작 runtime(RunInitializationService / Orchestration Runtime)이 POLICY_FETCH 등록 (analysis·program별 1회)
    -> Policy Collector -> Policy Parser
    -> RunPolicyState (PREPARING 동안 준비 진행)
         ├─ CURRENT | ABSENT | UNVERIFIED : 해당 run의 정책 준비 확정
@@ -277,4 +279,4 @@ Pro와 Con은 session만 분리하지 않는다. trusted prompt builder가 같�
 
 ## prompt-injection 경계
 
-저장소 내용, 도구 message, README와 주석, 모든 LLM output, provider 응답과 Sandbox output은 모두 비신뢰 분석 데이터다. Agent instruction이나 실행 권한으로 승격하지 않는다. Orchestration은 system instruction과 data 구분을 유지하고 Runtime Validator가 structured output과 action policy를 검사한다. Sandbox Controller는 비신뢰 입력이 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 exact `DynamicReproductionLifecycleProfile`의 수치 한도를 바꾸지 못하게 한다. 비신뢰 입력은 provider·model·session·Gate 순서·budget·Reporter와 자동화 종료 경계도 변경하지 못한다. 이런 변경 지시는 `UNTRUSTED_INSTRUCTION`으로 기록하고 실행하지 않는다.
+저장소 내용, 도구 message, README와 주석, 모든 LLM output, provider 응답과 Sandbox output은 모두 비신뢰 분석 데이터다. Agent instruction이나 실행 권한으로 승격하지 않는다. Orchestration Runtime은 system instruction과 data 구분을 유지하고 Runtime Validator가 structured output과 action policy를 검사한다. Sandbox Controller는 비신뢰 입력이 `sandbox_profile_ref`의 host·Docker daemon/socket·mount/namespace·secret·egress·workspace 격리와 exact `DynamicReproductionLifecycleProfile`의 수치 한도를 바꾸지 못하게 한다. 비신뢰 입력은 provider·model·session·Gate 순서·budget·Reporter와 자동화 종료 경계도 변경하지 못한다. 이런 변경 지시는 `UNTRUSTED_INSTRUCTION`으로 기록하고 실행하지 않는다.

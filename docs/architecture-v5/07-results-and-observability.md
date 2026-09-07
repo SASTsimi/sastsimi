@@ -148,7 +148,7 @@ Sandbox ENV/POLICY/EXEC/TIMEOUT은 동적 work의 `BLOCKED | FAILED`다. 최종 
 | usage | token 숫자를 서비스가 안 줌 | 없음 + 이유. 지어내지 않음 |
 | 수집 금지 | 비밀번호·세션 비밀·숨은 생각을 평가/로그로 모은 횟수 | 0. `S-REDACT`는 가리기 실패 장면. 이건 모으지 말 것 |
 
-Agent 이름에는 모델의 가격·성능 등급을 붙이지 않는다. `Hypothesis Agent`도 고정 모델을 전제하지 않으며, R8이 같은 corpus와 합격 기준으로 비교해 품질 기준을 만족한 model·환경 조합만 비용 최적화 후보로 제안한다. 실제 사용 조합은 model을 포함한 exact `ProviderProfile` revision으로 승인하고 활성화한다.
+Agent 이름에는 모델의 가격·성능 등급을 붙이지 않는다. `Hypothesis Agent`를 포함한 모든 LLM 역할은 고정 Provider나 모델을 전제하지 않는다. R8은 같은 corpus와 합격 기준으로 `provider_profile_ref + model` 조합을 비교해 품질 기준을 만족한 조합만 비용 최적화 후보로 제안한다. 실제 사용 조합은 model을 포함한 exact `ProviderProfile` revision과 호출별 `LLMCallSpec.model`로 승인·기록하며 두 값은 같아야 한다. 모델 변경은 Agent 역할 변경으로 기록하지 않는다.
 
 연결 발견사항: H-003.
 
@@ -212,7 +212,7 @@ Sandbox **동적 결과**의 `PARTIAL`은 공격 경로를 일부 실행해 신�
 
 아래 숫자는 **제안(교차 전)** 초안이다. 측정값이 아니다. 담당 확인 전에 확정이 아니다. 시간은 벽시계 1회다. `—`는 이 열에 해당 없음이다. token 열은 없다.
 
-Orchestration은 가설 등록·Verification 배정까지만 한다. 찬반·Docker **호출 전 잔여 예산**과 새 attempt 수는 R8 `DynamicReproductionLifecycleProfile`, 상자 외부 접근·격리와 CPU·RAM·디스크·PID·요청 가능 최대 시간은 R7 `sandbox_profile_ref`를 따른다.
+Orchestration Runtime은 가설 등록·Verification 배정까지만 한다. 찬반·Docker **호출 전 잔여 예산**과 새 attempt 수는 R8 `DynamicReproductionLifecycleProfile`, 상자 외부 접근·격리와 CPU·RAM·디스크·PID·요청 가능 최대 시간은 R7 `sandbox_profile_ref`를 따른다.
 
 `REVISE`는 같은 요청을 다시 보내는 재시도가 아니다. Technical Gate가 근거 보완을 요구하면 같은 Verification owner가 새 검증 세대·새 Gate work를 만든다. provider 오류·`INVALID_OUTPUT` 재시도와 칸을 섞지 않는다. Reporter는 `REVISE`를 판정하지 않는다.
 
@@ -226,7 +226,7 @@ token 상한은 없다. 분석 전체·모든 Agent·호출마다 동일하다. 
 | AST/SAST (`RUN_TOOL`) | 도구당 900초 | 1 | 파이프라인 3단계. 도구마다 work 하나. 같은 workspace에서 병렬. 도구 자체 timeout은 이 칸을 넘지 않는다. `02` 예시·도구 설정은 R2가 맞춘다. 실패·timeout ≠ 0건·안전함·FALSE | 그 도구 work 중단. `PARTIAL`/`FAILED` 가능. FALSE 아님 | 김나연 |
 | Policy Collect | 60초 | 추가 2회(최초 포함 총 3 attempt) | 비-LLM. 승인된 공식 URL만. 원문 bytes/hash·ETag·Last-Modified·게시 주체 고정. 가설마다 호출하지 않음. `(analysis_id, program_id, work_type=POLICY_FETCH)`당 active 1 | 재시도 가능이면 같은 work `BLOCKED`, 소진·복구 불가면 `FAILED`와 실제 `COLLECTION_FAILED`. FALSE/HOLD 아님 | 성병찬 |
 | Policy Parse | 180초 | provider·형식 오류 추가 3회(최초 포함 총 4 attempt) | LLM `POLICY_PARSER`. Collector가 고정한 exact 원문만. token 상한 없음(관측만). 모델 기억·검색 snippet·README로 정책 승격 금지 | 재시도 가능이면 같은 work `BLOCKED`, 소진·복구 불가면 `FAILED`; Rule Scope·Reporter 없음. FALSE/HOLD 아님 | 성병찬 |
-| Hypothesis | 180초 | 4 | — | 그 의심 중단, FALSE 아님 | 배승원 |
+| Hypothesis Agent | 180초 | 4 | — | 그 의심 중단, FALSE 아님 | 배승원 |
 | 코드 다시 꺼내기 | 45초 | — | 가설당 조회 24회. 같은 요청 재시도가 아니라 한 가설의 `code_request_id` 누적 상한이다. 다른 위치·관계 요청도 센다. 깊이 5, 조각 32개, 요청당 256KiB | 빈칸/조회 오류. FALSE 아님 | 김나연 |
 | Verification / debate | 종합 240초 / 찬반 각 180초 | 의심마다 찬반 각 1회 | 서로 다른 대화. Docker 요청 예산은 이 칸 | 초과 ≠ FALSE. 찬반 생략은 운영 불합격 | 임채민 |
 | Chaining | 120초 | — | 체이닝 전용 짝·깊이 한도 없음. result→input 비교. 전역 시간·비용·work 예산만. 순환 검사 아님. 조상 Primitive 재사용 제외는 예산 중단이 아님 | 전역 예산 소진 시 `stop_reasons`, 부모 불변. FALSE 아님 | 배승원 |
@@ -504,7 +504,7 @@ Context 조회 실패·timeout·권한 오류는 다음 기준으로 처리한�
 | `POLICY_PARSE_ERROR` | 정책 수집 계층 | parser 실행 실패와 `COLLECTION_FAILED`; 성공한 Rule Scope review 없음 | 원문·parser 버전 확인 뒤 새 parser attempt |
 | `RULE_SCOPE_GATE_ERROR` | 정책·영향 Gate runtime | 보고서 단계 차단 | Gate 재시도 또는 사람 확인 |
 | `REPORT_ERROR` | Reporter runtime | 초안 `FAILED`, 기술 판정 유지 | 조건 보존 후 초안 재작성 |
-| `BUDGET_EXCEEDED` | Orchestration runtime | 작업 중단과 남은 검증 조건을 Verification에 전달; 분석은 `PARTIAL` 가능 | 운영 Pro/Con 등 필수 검증을 끝내지 못했다면 final verdict 없이 work를 중단하고, 새 예산 승인 뒤 새 attempt에서만 재시도 |
+| `BUDGET_EXCEEDED` | Orchestration Runtime | 작업 중단과 남은 검증 조건을 Verification에 전달; 분석은 `PARTIAL` 가능 | 운영 Pro/Con 등 필수 검증을 끝내지 못했다면 final verdict 없이 work를 중단하고, 새 예산 승인 뒤 새 attempt에서만 재시도 |
 | `CANCELLED` | 사용자·runtime | 해당 작업 또는 분석 `CANCELLED` | 자동 재시도 금지 |
 | `SCHEMA_UNSUPPORTED` | schema validator | 해당 record 사용 금지 | 지원 schema로 다시 생성 |
 | `RECORD_REVISION_MISMATCH` | record validator | revision 자동 병합 금지 | 올바른 이전 revision에서 재생성 |

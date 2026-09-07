@@ -141,12 +141,13 @@ Pro/Con prompt는 trusted prompt builder가 역할별 template과 허용된 공�
 
 성공한 Pro/Con 호출의 `LLMInvocationResult.parsed_output_ref`와 `LLMInvocationLog.parsed_output_ref`는 각각 exact `EvidenceAgentResult(role=PRO | CON)` revision을 가리킨다. 해당 child work의 `output_refs`도 같은 result를 가리키며, result는 invocation record나 종료 work revision을 역참조하지 않는다. 부모 Verification의 final 합성 호출은 같은 부모·generation·`debate_input_hash`의 두 exact result reference만 context에 포함한다.
 
-## 역할별 모델 선택
+## 역할별 Provider와 모델 선택
 
-- Hypothesis Agent를 포함한 모든 LLM 역할은 역할명과 분리된 exact `ProviderProfile` revision을 사용한다. 모델 전용 profile record를 따로 만들지 않으며, 선택한 model은 `ProviderProfile.model`과 `LLMCallSpec.model`에 같은 값으로 고정한다.
+- Agent의 이름·역할·입출력 계약은 특정 Provider 또는 모델에 종속되지 않는다.
+- 실제 LLM Provider와 인증·전송 설정은 exact `ProviderProfile` revision을 가리키는 `provider_profile_ref`, 모델은 `LLMCallSpec.model`로 호출 시점에 함께 고정한다. 모델 전용 profile record를 따로 만들지 않으며 `ProviderProfile.model`과 `LLMCallSpec.model`은 같은 값이어야 한다. 모델 변경은 Agent 역할 변경을 의미하지 않는다.
 - Policy Parser는 가설별 session이 아니라 분석 단위 policy work의 `NEW` session을 사용하고, 비-LLM Collector가 고정한 exact 공식 원문 reference만 context로 받는다. Parser 호출·provider·model·prompt·schema와 결과는 `PolicyParserResult.llm_invocation_ref`로 연결한다.
-- Verification, Chaining과 두 Gate에는 과업 위험도에 맞는 별도 profile을 구성할 수 있다.
-- 역할별 profile은 과업 요구와 R8의 동일 corpus 평가 결과로 선택한다.
+- Verification, Chaining과 두 Gate에는 과업 위험도에 맞는 서로 다른 `provider_profile_ref + model` 조합을 구성할 수 있다.
+- 역할별 조합은 과업 요구와 R8의 동일 corpus 평가 결과로 선택한다.
 - 모델·provider 변경은 versioned configuration과 evaluation 대상으로 관리한다.
 
 ## Logging Proxy와 fallback parser
@@ -169,7 +170,7 @@ hidden chain-of-thought를 요구·수집·복원하지 않는다. 사용자에�
 
 LLM 호출 상태는 `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED | CANCELLED`다. 이 상태는 provider 호출의 결과이며 취약점 가설의 `TRUE | FALSE | HOLD`와 별개다.
 
-| 호출 상태 | 쉬운 의미 | Orchestration 처리 |
+| 호출 상태 | 쉬운 의미 | Orchestration Runtime 처리 |
 |---|---|---|
 | `SUCCEEDED` | 호출과 공통 형식 변환이 끝남 | schema·semantic 검증 후 다음 단계 진행 |
 | `FAILED` | provider 또는 adapter가 호출을 끝내지 못함 | 오류 저장, 허용된 retry 검토 |
@@ -182,7 +183,7 @@ LLM 호출 상태는 `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIM
 1. Runtime이 adapter capability와 인증 사용 가능 여부를 확인한다.
    - Dynamic Reproduction Agent의 Sandbox 실행 task이면 `runtime_tool_loop=SUPPORTED`를 추가로 확인하고, 사전 requirements·plan 작성 호출에는 Sandbox tool policy를 부여하지 않는다.
 2. 호출할 수 없으면 `AUTH_REQUIRED` 또는 명시적 provider error를 반환한다.
-3. Orchestration은 어떤 LLM 호출 상태도 가설 `FALSE`로 바꾸지 않는다.
+3. Orchestration Runtime은 어떤 LLM 호출 상태도 가설 `FALSE`로 바꾸지 않는다.
 4. 제한 retry, 사용자 재인증 또는 구성된 explicit fallback을 선택한다.
 5. 모든 시도는 독립 `llm_call_id`로 저장하고 같은 논리 요청의 `work_id`·`dedupe_key`는 유지한다. 일반 work는 새 `attempt_id`를 사용하지만, `DYNAMIC_REPRO`의 same-session 후속 호출은 현재 attempt에 기록한다.
 6. 일반 work의 retry 가능한 실패는 work를 `BLOCKED`로 두고 `FAILED` attempt와 오류를 보존한다. `DYNAMIC_REPRO`는 같은 Dynamic Reproduction Agent session에서 해결할 수 있으면 현재 attempt에 실패 invocation을 남기고 계속하며, session 재시작이 필요할 때만 같은 work의 새 attempt를 만든다. 현재 work의 `input_refs/input_hash`를 바꾸지 않는 인증·승인·외부 환경 정비·resource 확보 대기만 `BLOCKED`와 `waiting_for`를 사용한다.

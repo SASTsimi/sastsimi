@@ -21,10 +21,10 @@ Runtime Validator는 취약점이 맞는지 새로 판단하는 Gate가 아닙�
 | 취약점 가설 | Hypothesis Agent | 확정 Finding 생성 |
 | 공식 정책 원문 수집 | 비-LLM Policy Collector | 저장소 문서·검색 snippet·모델 기억을 공식 원문으로 승격 |
 | 공식 정책 구조화 | LLM Policy Parser | Rule Scope 결론·Primitive admission·보고 허용 결정 |
-| `TRUE | FALSE | HOLD` | Verification Agent | Orchestration·Runtime이 대신 판정 |
+| `TRUE | FALSE | HOLD` | Verification Agent | Orchestration Runtime이 대신 판정 |
 | 재현 목적·목표·필요 환경 요청과 최종 verdict | R6 Verification | R7이 요청 목적이나 verdict를 변경 |
 
-| CWE label | CWE Labeling | Orchestration이 임의 확정 |
+| CWE label | CWE Labeling | Orchestration Runtime이 임의 확정 |
 | 기술 근거 검토 | Technical Evidence Gate | Verification verdict 변경 |
 | 공식 정책·scope·impact·report permission | Rule Scope Impact Gate | 정책 없는 `ALLOW` 추정 |
 | current Finding 정규화(두 Gate exact chain을 하나의 취약점 record로) | 신뢰 runtime | 새 verdict·impact 생성, Reporter eligibility와 혼동, stale Finding 재사용 |
@@ -35,7 +35,7 @@ Runtime Validator는 취약점이 맞는지 새로 판단하는 Gate가 아닙�
 | Sandbox 안에서 command·PoC·관찰·재시도 선택 | Dynamic Reproduction Agent | 외부 격리 경계 변경 또는 최종 verdict 판단 |
 | AgentLog·validated PoC·동적 결과 확정 | Reproduction Session Manager | Dynamic Reproduction Agent 실행 전략 결정, 다른 attempt 자료 혼합 또는 참조만으로 성공 판단 |
 
-Orchestration Agent는 proposal 검증·전역 등록·Verification 배정을 조정하지만 배정 뒤 가설 내부 Context·Pro/Con·dynamic·Gate·Chaining, verdict, CWE, 정책 해석, 보고 가능 여부와 공개 여부를 정하지 않습니다. Verification이 가설 내부 다음 작업을 정해도 프로그램 검사를 우회할 수 없습니다.
+Orchestration Runtime은 prompt·provider·`agent_role`이 없는 비-LLM 전역 제어 구성요소입니다. schema-valid proposal의 전역 등록과 Verification 배정을 요청하지만, 배정 뒤 가설 내부 Context·Pro/Con·dynamic·Gate·Chaining, verdict, CWE, 정책 해석, 보고 가능 여부와 공개 여부를 정하지 않습니다. 등록·배정·상태 변경은 Runtime Validator와 state store가 최종 강제하며, Verification이 가설 내부 다음 작업을 정해도 이 검사를 우회할 수 없습니다.
 
 ## 실행 전에는 action 검사를 합니다
 
@@ -84,7 +84,7 @@ Sandbox Controller는 bug bounty program testing restriction의 의미 준수 �
 
 Gate를 실제 호출하기 직전에도 검사한 입력 수정본이 그대로인지 다시 확인합니다. Technical Gate는 exact Verification과 이를 직접 가리키는 current CWELabel을, Rule Scope Gate는 여기에 같은 Technical 검토와 run에 고정한 exact 정책 수집 결과·존재하는 정책 record를, Reporter는 두 Gate가 검토한 동일한 결과 묶음을 사용해야 합니다. 중간에 claim-relevant 입력 reference가 바뀌면 기존 허가는 만료되고 새 요청이 필요합니다. 정책 freshness는 다음 run의 재사용 판단에 쓰며 같은 run의 reference를 교체하지 않습니다.
 
-Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아닙니다. 같은 가설의 Verification owner가 직접 받고, Verification 또는 CWE가 실제로 보완된 새 수정본이 생겨야 새 Gate 작업을 시작할 수 있습니다. Orchestration이나 Chaining이 목적지를 다시 고르지 않습니다. 로그인 실패나 잘못된 출력의 제한 재시도와 이 보완 재검토는 별개입니다.
+Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아닙니다. 같은 가설의 Verification owner가 직접 받고, Verification 또는 CWE가 실제로 보완된 새 수정본이 생겨야 새 Gate 작업을 시작할 수 있습니다. Orchestration Runtime이나 Chaining이 목적지를 다시 고르지 않습니다. 로그인 실패나 잘못된 출력의 제한 재시도와 이 보완 재검토는 별개입니다.
 
 공식 정책의 뜻과 `UNCERTAIN + DENY` 판단은 Rule Scope Gate가 담당합니다. 프로그램 검사기는 그 판단을 대신하지 않고 필수 항목과 정확한 출처 연결만 확인한 뒤 Reporter 호출을 막습니다.
 

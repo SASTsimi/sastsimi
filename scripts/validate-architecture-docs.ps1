@@ -62,8 +62,11 @@ foreach ($file in $markdownFiles) {
 $obsoleteHypothesisAgentPatterns = @(
     ('Low-' + 'cost Hypothesis Agent'),
     ('저비용 Hypothesis' + ' Agent'),
+    ('저비용 가설 ' + '생성'),
     ('가설 ' + 'Agent'),
     ('가설 ' + '에이전트'),
+    ('가설 생성 ' + 'Agent'),
+    ('가설 생성 ' + '에이전트'),
     ('탐색 ' + 'Agent'),
     ('탐색 ' + '에이전트'),
     ('Hypothesis Generation' + ' Agent')
@@ -74,6 +77,102 @@ foreach ($file in $markdownFiles) {
         if ([regex]::IsMatch($text, [regex]::Escape($pattern), [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
             Add-Failure "non-canonical Hypothesis Agent name '$pattern': $($file.FullName)"
         }
+    }
+}
+
+# Current operational documents use one non-LLM name for global workflow
+# control. Orchestration is not an LLM role and therefore has no prompt or
+# agent_role enum. Historical decision/spec records are intentionally excluded.
+$currentOperationalMarkdownFiles = @(
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'README.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'CONTRIBUTING.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'docs/GLOSSARY.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'docs/DOCUMENT_GUIDE.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'docs/README.md'))
+) + @(
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5') -Recurse -File -Filter '*.md'
+) + @(
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/governance') -Recurse -File -Filter '*.md'
+) + @(
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/review') -Recurse -File -Filter '*.md' |
+        Where-Object { $_.FullName -notmatch '[\\/]decisions[\\/]' }
+)
+foreach ($file in $currentOperationalMarkdownFiles) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    if ($text.Contains('Orchestration Agent')) {
+        Add-Failure "current document still treats non-LLM Orchestration Runtime as an Agent: $($file.FullName)"
+    }
+    if ($text.Contains('Model' + 'Profile')) {
+        Add-Failure "undefined ModelProfile term; use provider_profile_ref + model: $($file.FullName)"
+    }
+}
+
+$agentRolesPath = Join-Path $repoRoot 'docs/architecture-v5/03-agent-roles-and-orchestration.md'
+$agentRolesText = Get-Content -Raw -Encoding UTF8 -LiteralPath $agentRolesPath
+$requiredOrchestrationBoundaryMarkers = @(
+    '## Orchestration Runtime',
+    '비-LLM 전역 제어 구성요소',
+    'Orchestration Runtime에는 LLM prompt, provider 설정, `agent_role`을 배정하지 않는다.'
+)
+foreach ($marker in $requiredOrchestrationBoundaryMarkers) {
+    if (-not $agentRolesText.Contains($marker)) {
+        Add-Failure "missing Orchestration Runtime boundary marker: $marker"
+    }
+}
+
+$providerContractText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/09-llm-provider-session-and-logging.md')
+foreach ($requiredProviderContractMarker in @(
+    'Agent의 이름·역할·입출력 계약은 특정 Provider 또는 모델에 종속되지 않는다.',
+    'exact `ProviderProfile` revision을 가리키는 `provider_profile_ref`, 모델은 `LLMCallSpec.model`로 호출 시점에 함께 고정한다.',
+    '모델 변경은 Agent 역할 변경을 의미하지 않는다.'
+)) {
+    if (-not $providerContractText.Contains($requiredProviderContractMarker)) {
+        Add-Failure "missing provider/model independence rule: $requiredProviderContractMarker"
+    }
+}
+
+$reportTemplatePath = Join-Path $repoRoot 'docs/architecture-v5/12-report-draft-template.md'
+$reportTemplateText = Get-Content -Raw -Encoding UTF8 -LiteralPath $reportTemplatePath
+foreach ($obsoleteReportTemplateText in @(
+    ('`FALSE` ' + '초안'),
+    ('{BASIC | CONDITIONAL_' + 'DEBATE | ALWAYS_DEBATE / reasons}'),
+    ('{SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED}'),
+    ('{DISPROVED | NOT_' + 'DISPROVED | INCONCLUSIVE}')
+)) {
+    if ($reportTemplateText.Contains($obsoleteReportTemplateText)) {
+        Add-Failure "Reporter TRUE-only template contains unreachable state: $obsoleteReportTemplateText"
+    }
+}
+foreach ($requiredReportTemplateText in @(
+    '- 모드: `ALWAYS_DEBATE`',
+    '- 실행 상태: `SUCCEEDED`',
+    '- 관측 결과: `SUPPORTED`',
+    'FALSE와 HOLD, 동적 실행이 실패·차단·취소·불충분한 가설은 ReportDraft를 만들지 않는다.'
+)) {
+    if (-not $reportTemplateText.Contains($requiredReportTemplateText)) {
+        Add-Failure "Reporter TRUE-only template is missing marker: $requiredReportTemplateText"
+    }
+}
+
+$findingsPath = Join-Path $repoRoot 'docs/review/FINDINGS.md'
+$findingsText = Get-Content -Raw -Encoding UTF8 -LiteralPath $findingsPath
+foreach ($requiredFindingMarker in @(
+    '| B-007 | OPEN |',
+    '| B-008 | OPEN |',
+    '현재 열린 Blocker는 2개입니다.',
+    '| H-011 | RESOLVED |'
+)) {
+    if (-not $findingsText.Contains($requiredFindingMarker)) {
+        Add-Failure "FINDINGS status is not synchronized with implementation blockers: $requiredFindingMarker"
+    }
+}
+$openQuestionsText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/governance/OPEN_QUESTIONS.md')
+foreach ($requiredOpenQuestionMarker in @(
+    '일부 core output의 저장 연결 확정',
+    '분석 시작 단계 Docker baseline 준비의 실행 계약 확정'
+)) {
+    if (-not $openQuestionsText.Contains($requiredOpenQuestionMarker)) {
+        Add-Failure "OPEN_QUESTIONS is missing an implementation Blocker: $requiredOpenQuestionMarker"
     }
 }
 
@@ -1051,7 +1150,7 @@ foreach ($code in $requiredAuthorityErrors) {
 }
 
 $authorityScenarioMarkers = @(
-    'Orchestration이 `TRUE`를 저장하려 함',
+    'Orchestration Runtime이 `TRUE`를 저장하려 함',
     'Hypothesis Agent가 final verdict를 출력',
     'Technical Gate가 Verification verdict를 바꾸려 함',
     'Technical Gate 없이 Rule Scope Gate 호출',
@@ -1890,7 +1989,7 @@ foreach ($marker in $verificationChainingScenarioMarkers) {
 }
 
 $requiredVerificationChainingRules = @(
-    'Orchestration Agent는 한 가설 안에서 Pro/Con·동적 재현·두 Gate·Reporter·Chaining의 호출 여부나 Technical `REVISE` 목적지를 결정하지 않는다.',
+    'Orchestration Runtime은 정해진 전이표와 검증 결과에 따라 work를 등록·배정할 뿐, 한 가설 안에서 Pro/Con·동적 재현·두 Gate·Reporter·Chaining의 호출 여부나 Technical `REVISE` 목적지를 판단하지 않는다.',
     '같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 전달',
     'Gate 전 TRUE는 result가 있는 Primitive가 될 수 없다.',
     'origin=VERIFICATION',

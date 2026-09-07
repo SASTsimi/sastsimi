@@ -45,7 +45,7 @@ runtime validator는 취약점 진위, CWE 내용, 공식 정책 해석 또는 �
 
 | 역할 | 제안할 수 있음 | 직접 판단할 수 있음 | 검토할 수 있음 | 강제할 수 있음 | 사람만 결정 |
 |---|---|---|---|---|---|
-| Orchestration Agent | 실행 계획, 다음 작업, 병렬화, retry 후보 | 없음 | 진행 상태 요약 | 없음 | 없음 |
+| 비-LLM Orchestration Runtime | 정해진 전이표에 따른 work 등록·배정 요청, 병렬화, retry 후보 처리 | 없음 | 진행 상태 요약 | 없음 | 없음 |
 | Hypothesis Agent | 취약점 가설 | 없음 | static 사실을 입력으로 읽음 | 없음 | 없음 |
 | Pro·Con Agent | 찬성·반대 근거 | 없음 | 자기 역할의 근거 | 없음 | 없음 |
 | Verification Agent | 동적 재현·Research 요청 | `TRUE | FALSE | HOLD` | Pro·Con·static·dynamic 근거 | 없음 | 없음 |
@@ -57,7 +57,7 @@ runtime validator는 취약점 진위, CWE 내용, 공식 정책 해석 또는 �
 | Runtime Validator | 허용 가능한 대체 action 안내 | 없음 | 실행 전제와 exact reference | 실행 허용·차단 | 없음 |
 | Human Reviewer | 재검증·보완 요청 | 외부 제출·공개 결정 | 전체 결과 묶음 | 외부 공개 승인 | `DISCLOSE | REVISE | WITHHOLD | NEED_MORE_VALIDATION` |
 
-Orchestration Agent는 `TRUE/FALSE/HOLD`, CWE, Gate 결과, 공식 정책의 의미, 보고 가능 여부와 공개 여부를 확정할 수 없다. runtime validator도 이 값을 대신 정하지 않고, 해당 값을 만들 권한이 있는 역할과 필요한 선행 record가 맞는지만 검사한다.
+Orchestration Runtime은 `TRUE/FALSE/HOLD`, CWE, Gate 결과, 공식 정책의 의미, 보고 가능 여부와 공개 여부를 확정할 수 없다. Runtime Validator도 이 값을 대신 정하지 않고, 해당 값을 만들 권한이 있는 역할과 필요한 선행 record가 맞는지만 검사한다.
 
 ## 실행 요청과 검사 결과
 
