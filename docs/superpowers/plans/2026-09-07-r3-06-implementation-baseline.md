@@ -102,4 +102,4 @@
 - [x] **Step 3:** `scripts/validate-architecture-docs.ps1`과 `git diff --check`를 실행한다.
 - [x] **Step 4:** 변경 통계와 diff를 다시 읽어 기존 역할·데이터·상태 의미 변경이 없는지 확인한다.
 - [x] **Step 5:** 검증 결과와 PR #107 병합·Issue #89 종료 기준을 포함해 commit하고 branch를 push한다.
-- [ ] **Step 6:** `Closes #92`, `Refs #4, #24, #25, #89, #90, #91`, 병합된 PR #107을 포함한 Draft PR을 생성한다.
+- [x] **Step 6:** `Closes #92`, `Refs #4, #24, #25, #89, #90, #91`, 병합된 PR #107을 포함한 Draft PR [#116](https://github.com/SASTsimi/sastsimi/pull/116)을 생성한다.
