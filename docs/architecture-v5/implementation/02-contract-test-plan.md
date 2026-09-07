@@ -9,10 +9,10 @@
 - R3 역할 담당: 윤희섭 (@YHS-Sec, 표시 닉네임 @v1sion).
 - 공통 아키텍처 검토·대행 수행: 김태현 (@taehyeon-git). 다른 담당자가 작성한 PR을 R3 본인의 구현 실적으로 표시하지 않는다.
 - 상위 [#4](https://github.com/SASTsimi/sastsimi/issues/4), 본 작업 [#25](https://github.com/SASTsimi/sastsimi/issues/25), 선행 [#24](https://github.com/SASTsimi/sastsimi/issues/24), 후속 [#89](https://github.com/SASTsimi/sastsimi/issues/89)·[#92](https://github.com/SASTsimi/sastsimi/issues/92).
-- 작성·대조 기준 main: `9c7a5a19c5e32c3f752bc40a32aaf86441be4d01` (2026-09-07 조회).
+- 작성·대조 기준 main: `64062aec3f9ea190df93d2e5eb240c036371cd65` (2026-09-07 조회).
 - 선행 정본: [01-module-map.md](01-module-map.md). 현재 파이프라인은 **22단계**다. 옛 23단계 댓글을 그대로 구현하지 않는다.
 - [#25 작성 범위 댓글](https://github.com/SASTsimi/sastsimi/issues/25#issuecomment-5556392596)을 문서화하며, 이전 `db1ec85` 댓글의 OK/BAD 이력은 §7에서 연결한다.
-- main 이후 변경이나 미병합 PR을 확정 계약으로 취급하지 않는다. 아래 PR 묶음은 해당 HEAD에만 적용되는 제안/미결정 시험이다.
+- main 이후 변경이나 미병합 PR을 확정 계약으로 취급하지 않는다. 아래 PR 묶음에서는 #96으로 병합된 Provider 계약과 아직 미병합인 #97 Prompt 제안을 구분한다.
 
 여기서 **계약**은 모듈이 데이터를 주고받을 때 지켜야 할 형식·의미·권한·순서의 약속이다. **fixture**는 테스트에 넣을 예제 데이터, **producer/consumer**는 데이터 생산자/소비자, **current pointer**는 현재 유효한 결과를 가리키는 연결이다. **revision**은 같은 논리 기록의 새 버전, **attempt**는 같은 작업의 한 번의 실행 시도다. **CAS**는 예상한 상태 버전과 실제 저장 버전이 같을 때만 변경하는 검사다. **atomic commit**은 결과와 상태를 일부만 성공시키지 않고 하나의 확정 경계로 처리하는 것이다.
 
@@ -38,8 +38,10 @@ R3는 입력·검사·예상 결과를 구체화한다. 새로운 schema·enum·
 | [#102](https://github.com/SASTsimi/sastsimi/pull/102) | 자식 결과를 부모 verdict/impact에 흡수하지 않음 |
 | [#103](https://github.com/SASTsimi/sastsimi/pull/103) | 자식 등록 전 시작점 검사와 Context 조회 시 exact 부모 reference 검사 구분 |
 | [#105](https://github.com/SASTsimi/sastsimi/pull/105) | match triple 중복 key, trigger/pool 처리 책임, 구조화 no_match_reasons |
+| [#109](https://github.com/SASTsimi/sastsimi/pull/109) | Primitive admission을 등록 시점 1회 판정으로 확정하고 등록 뒤 재판정·회수 절차 제거 |
 | [#60](https://github.com/SASTsimi/sastsimi/pull/60) | token 계획값을 사용량 중단 상한으로 쓰지 않음; R7 입장 정책과 R8 lifecycle 분리 |
 | [#113](https://github.com/SASTsimi/sastsimi/pull/113) | Dynamic Reproduction Agent 명칭, program policy의 감사 전용 연결, SandboxProfile 외부 경계와 새 generation 규칙 |
+| [#96](https://github.com/SASTsimi/sastsimi/pull/96) | ProviderProfile·CapabilityTestResult·API/공식 구독 인증 경로·runtime tool-loop 지원 판정 계약 |
 
 ADR의 자체 승인 상태와 PR 병합 여부는 별개다. 예를 들어 #105 관련 ADR-012의 PROPOSED 표기를 본 문서가 ACCEPTED로 바꾸지 않는다.
 
@@ -92,11 +94,11 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **F-LLM (Prompt·Provider·session·권한)**: 정상 역할 HYPOTHESIS의 consumer work K-H/active attempt A-H. exact template/payload P1/LLMCallSpec S1/ProviderProfile PV1 및 ALLOW 후 USED decision AD1을 준비한다. 실제 outbound request O1은 S1과 필드별 동일하다. fake adapter는 미리 정한 성공/실패 응답만 반환한다. PR97의 Registry 세부 필드는 F-PR에서만 사용한다.
 - **F-VER (Pro/Con·최종 판정·REVISE)**: ACTIVE owner AS1, hypothesis H-A=VERIFYING, VERIFICATION work KV1/generation G1, 같은 고정 B1/CTX1/PP1/PB1/PA1 및 versioned debate 설정 DP1. 기본 run은 `purpose=PRODUCTION`, `verification_mode=ALWAYS_DEBATE`, `debate_triggers=[]`, `debate_skip_reason=null`이다. PRO work KP1/attempt AP1/session SP1과 CON KC1/AC1/SC1은 서로 다르며 common input hash DH1만 동일하다. 각각의 result EPRO1/ECON1은 자기 work의 COMMITTED output. final TRUE용 DX1/POC1은 F-DYN의 정상 chain이다. 평가 변형은 별도 `purpose=EVALUATION` run과 비어 있지 않은 exact `eval_config_refs`를 사용하며 운영 결과와 섞지 않는다.
 - **F-DYN (동적 재현·Sandbox·PoC)**: H-A의 verification generation G1 아래 R6가 만든 exact DynamicReproductionRequest DQ1과 단 하나의 DYNAMIC_REPRO work KD1을 준비한다. 현재 attempt ADYN1에서 Dynamic Reproduction Agent는 requirements ER1·plan PL1·candidate PC1·동적 관측 해석을 만들고, R7 Setup Automation은 recipe RC1·image/container 환경 ENV1·CleanupResult CL1을 만든다. Sandbox Controller는 exact SandboxProfile SP1의 host·Docker·mount·namespace·secret·egress·workspace 외부 경계를 검사한 SandboxPolicyDecision SPD1을 만들며, Reproduction Session Manager는 append-only AgentLog LOG1·validated PoC POC1·DynamicReproductionResult DX1을 확정한다. RunPolicyState RPS1은 RUN_SANDBOX 시점의 감사 reference로만 기록하고 KD1 불변 입력이나 Controller 허가 조건에 넣지 않는다. 각 record의 producer identity와 result-owner registry가 이 구분과 같고 candidate·command·environment·관찰·SandboxProfile·cleanup은 같은 work/attempt로 연결된다. R6 request의 producer attempt와 동적 재현 실행 attempt를 같다고 강요하지 않는다. recipe baseline 재사용은 새 attempt binding과 previous environment를 따로 검사한다.
-- **F-GAT (CWE·두 Gate·정책·Finding)**: H-A TERMINAL, exact final TRUE V1, current generation DX1(SUCCEEDED,SUPPORTED)/POC1, V1을 직접 가리키는 current CWELabel CW1. Technical TG1(ACCEPT)은 V1/CW1을, 정책 수집 COL1과 RuleScope RS1은 같은 V1/CW1/TG1/policy chain을 참조한다. 기본 COL1=FOUND/ProgramPolicyRecord POL1 존재. 기본 RS1 6축은 PASS/PASS/PASS/PASS/SUFFICIENT/ALLOW. 각 case가 지정한 완료 직전부터 시작한다.
+- **F-GAT (CWE·두 Gate·정책·Finding)**: H-A TERMINAL, exact final TRUE V1, current generation DX1(SUCCEEDED,SUPPORTED)/POC1, V1을 직접 가리키는 current CWELabel CW1. 실행 시작 때 `POLICY_FETCH`가 확정한 current RunPolicyState RPS1은 COL1과 POL1을 가리킨다. Technical TG1(ACCEPT)은 V1/CW1을, 그 뒤 RuleScope RS1은 같은 V1/CW1/TG1/RPS1/COL1/POL1 chain을 참조한다. 기본 COL1=FOUND/ProgramPolicyRecord POL1 존재. 기본 RS1 6축은 PASS/PASS/PASS/PASS/SUFFICIENT/ALLOW. 각 case가 지정한 완료 직전부터 시작한다.
 - **F-CHN (Primitive·Chaining·자식)**: 같은 R-A/W-A/C-A의 가설 HA(TRUE)와 HB(HOLD), 각각 current Primitive PRA(result 있음)/PRB(inputs 있음,result=null), initial origins. PRA는 Technical ACCEPT와 current ALLOW admission ADA를 가진다. PrimitiveUpdate COMMITTED 뒤 trigger/index refs를 고정한 CHAINING work KCH1(RUNNING/active ACH1), pair PRA.result→PRB.inputs의 draft_id를 matched_input_id로 사용한다. ancestor 추가 변형에는 source match와 parent hypothesis/result를 모두 연결한다.
 - **F-REP (Reporter·집계·사람 경계)**: F-GAT 정상 closure에서 trusted Finding normalization이 만든 current Finding FN1 및 FindingIndexState FI1. Reporter가 참조하는 V1/CW1/TG1/RS1/COL1/POL1/DX1/POC1이 모두 동일. ReportDraft 후보 RD1에 restriction/limitation/provenance 보존. 기본 종료 run에는 RUNNING work/미복구 PREPARED/잘못된 pointer가 없고 다른 실패도 없다. 변형마다 필요한 부분만 변경한다.
-- **F-BUD (예산·관측성)**: AnalysisRunState 시작 때 versioned eval_config_refs ESET1 고정. 작업 ActionDecision.checked_config_refs는 필요한 정확한 부분집합, budget/lifecycle/sandbox profile은 각각 별도 ref. monotonic 실행 시간과 provider가 공개한 usage만 입력한다. token 계획값과 실제 사용량, R7 입장 보호 설정과 R8 실행 lifecycle 한도를 분리한다.
-- **F-PR (미병합 Provider·Prompt 제안 시험)**: 기준 main 공통 fixture에 #96·#97의 검토 freeze SHA가 가리키는 문서에서 제안한 profile/Registry/assessment/tool-loop slot을 덧붙인 별도 계획 fixture다. 실행할 때 두 PR의 exact freeze SHA를 fixture manifest에 기록하며 서로 다른 revision을 섞지 않는다. 실제 profile/template/schema/validator 파일이 존재하거나 실행 가능하다는 뜻이 아니다. PR 시험은 본문의 pending 상태를 그대로 따른다.
+- **F-BUD (예산·관측성)**: AnalysisRunState 시작 때 versioned eval_config_refs ESET1 고정. 작업 ActionDecision.checked_config_refs는 필요한 정확한 부분집합, budget/lifecycle/sandbox profile은 각각 별도 ref. monotonic 실행 시간과 provider가 공개한 usage만 입력한다. token 계획값과 실제 사용량, R7 입장 보호 설정과 R8 실행 lifecycle 한도를 분리한다. 정책 변형에는 program/source/Parser/freshness 설정이 정확히 맞고 run 시작 시 유효한 PolicyCacheRecord PCACHE1과, 별도 cache miss·만료·설정 불일치·closure 손상 fixture를 사용한다. Collect·Parse 재시도 횟수는 fixture가 고정한 versioned R8 설정을 따른다.
+- **F-PR (Provider main·미병합 Prompt 제안 시험)**: 기준 main의 #96 ProviderProfile·capability·runtime tool-loop 계약에 #97 HEAD `a9fd2e14edb9f52465947151e0208718a42d83e7`이 제안한 Prompt Registry·assessment slot을 덧붙인 계획 fixture다. 실행할 때 main과 #97의 exact SHA를 fixture manifest에 기록하며 서로 다른 revision을 섞지 않는다. Provider 계약이 main에 있다는 사실은 실제 adapter/profile/template/schema/validator가 구현·지원된다는 뜻이 아니며, #97 전용 필드는 병합 전 main 합격 조건으로 승격하지 않는다.
 
 ## 3. 22단계 coverage 색인
 
@@ -104,9 +106,9 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 | 단계 | 확인 대상 | 계획 ID 묶음 |
 |---|---|---|
-| 1 | 분석 시작·설정·run identity | COM-001~004, BUD-003 |
+| 1 | 분석 시작·설정·run identity | COM-001~004, BUD-003~005 |
 | 2 | clone/checkout·READY | STA-001 |
-| 3 | AST/SAST 병렬·실행 이력 | STA-002~005 |
+| 3 | AST/SAST·정책 준비 병렬 실행 이력 | STA-002~005, BUD-004~005 |
 | 4 | 정규화·오류/gap 합류 | STA-002~006, COM-011~013 |
 | 5 | 초기 work 등록·고정 입력 | HYP-001~002 |
 | 6 | Hypothesis 호출 | LLM-001~008 |
@@ -114,18 +116,18 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 | 8 | Verification 배정·application·운영 mode preflight | HYP-001/005, VER-001/008 |
 | 9 | Context·자식 계보 | STA-006~007, CHN-008 |
 | 10 | Pro/Con 정책·독립·합류 | VER-001~004, VER-008~011 |
-| 11 | initial 판단·동적 요청 | VER-006/009/011, DYN-001~002; PR-002는 제안 |
-| 12 | R7 동적 실행·정책·PoC·container lifecycle | DYN-001~012; PR-001/005는 제안 |
+| 11 | initial 판단·동적 요청 | VER-006/009/011, DYN-001~002; PR-002의 Prompt 부분은 제안 |
+| 12 | R7 동적 실행·정책·PoC·container lifecycle | DYN-001~012; PR-001의 Provider 조건은 main, PR-005의 Prompt 부분은 제안 |
 | 13 | 최종 판정·근거 집합 완전성 | VER-005~006, VER-009~013 |
 | 14 | FALSE/HOLD/TRUE 분기·CWE | CHN-001, GAT-001~003 |
 | 15 | Technical Gate | GAT-001~003 |
 | 16 | REVISE 새 generation | VER-007 |
-| 17 | 정책·Rule Scope·admission | GAT-004~006 |
+| 17 | 정책·Rule Scope·admission | GAT-004~006, BUD-004~005 |
 | 18 | Primitive·Chaining | CHN-001~007; PR-003~004 미병합 제안 |
 | 19 | Finding 정규화·보고 자격 | GAT-007~008, REP-002 |
 | 20 | 새 material child 등록 | HYP-001~004, CHN-008 |
 | 21 | ReportDraft | REP-001~004 |
-| 22 | 집계·자동화 종료 | REP-001/005, COM-006/012, BUD-003 |
+| 22 | 집계·자동화 종료 | REP-001/005, COM-006/012, BUD-003~005 |
 
 표의 축약 ID 앞에는 모두 `R3-CT-`를 붙인다. 식별자·상태·권한·비밀·예산 검사는 해당되는 모든 단계에 공통 적용한다.
 
@@ -1091,9 +1093,9 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-GAT-001 / 정상 / TRUE→CWE→Technical→Rule Scope 정상 순서
 - **2. 단계·계약 경계**: 14–17, 19; CWE·두 Gate·정책·Finding
-- **3. producer → consumer**: Verification → CWE_LABELING → TECHNICAL_GATE → Policy Collector·RULE_SCOPE_GATE → Admission/Finding trusted runtime
+- **3. producer → consumer**: run-init Policy Collector·Policy Parser → RunPolicyState; Verification → CWE_LABELING → TECHNICAL_GATE → RULE_SCOPE_GATE → Admission/Finding trusted runtime
 - **4. 선행 상태·exact refs**: F-GAT(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
-- **5. 정상/잘못된 fixture**: final TRUE와 current validated PoC→동일 Verification CWE→Technical ACCEPT→FOUND 정책→Rule Scope PASS/ALLOW fixture를 순서대로 공급한다.
+- **5. 정상/잘못된 fixture**: run 시작의 `POLICY_FETCH`가 FOUND collection·ProgramPolicyRecord·current RunPolicyState를 먼저 고정한다. 이후 final TRUE와 current validated PoC→동일 Verification CWE→Technical ACCEPT→고정한 정책을 읽는 Rule Scope PASS/ALLOW fixture를 순서대로 공급한다.
 - **6. 검사 주체**: Runtime Validator·domain semantic validator·Finding normalizer; Gate 의미 판단은 R5 LLM
 - **7. 허용·차단·격리 기대**: 각 exact 선행 결과와 owner action을 확인하고 다음 work 허용. Gate 의미는 R5 담당.
 - **8. work·attempt·가설 기대**: 각 해당 work/attempt SUCCEEDED; 가설 TERMINAL TRUE 유지.
@@ -1107,7 +1109,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-GAT-002 / 부정 / 잘못된 verdict·CWE·Gate 순서
 - **2. 단계·계약 경계**: 14–17, 19; CWE·두 Gate·정책·Finding
-- **3. producer → consumer**: Verification → CWE_LABELING → TECHNICAL_GATE → Policy Collector·RULE_SCOPE_GATE → Admission/Finding trusted runtime
+- **3. producer → consumer**: run-init Policy Collector·Policy Parser → RunPolicyState; Verification → CWE_LABELING → TECHNICAL_GATE → RULE_SCOPE_GATE → Admission/Finding trusted runtime
 - **4. 선행 상태·exact refs**: F-GAT(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: FALSE/HOLD/실패 가설에 CWE/Gate, CWE 없는 Technical, 오래된 CWE, Technical 이전 Rule Scope, Gate가 CWE 직접 수정하는 변형.
 - **6. 검사 주체**: Runtime Validator·domain semantic validator·Finding normalizer; Gate 의미 판단은 R5 LLM
@@ -1123,7 +1125,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-GAT-003 / 부정 / CWE나 Gate 호출 장애
 - **2. 단계·계약 경계**: 14–17, 19; CWE·두 Gate·정책·Finding
-- **3. producer → consumer**: Verification → CWE_LABELING → TECHNICAL_GATE → Policy Collector·RULE_SCOPE_GATE → Admission/Finding trusted runtime
+- **3. producer → consumer**: run-init Policy Collector·Policy Parser → RunPolicyState; Verification → CWE_LABELING → TECHNICAL_GATE → RULE_SCOPE_GATE → Admission/Finding trusted runtime
 - **4. 선행 상태·exact refs**: F-GAT(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: final TRUE 이후 CWE 또는 Technical 호출이 timeout/auth/invalid output으로 실패한다.
 - **6. 검사 주체**: Runtime Validator·domain semantic validator·Finding normalizer; Gate 의미 판단은 R5 LLM
@@ -1139,7 +1141,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-GAT-004 / 정상·부정 / 공식 정책 부재 확인
 - **2. 단계·계약 경계**: 14–17, 19; CWE·두 Gate·정책·Finding
-- **3. producer → consumer**: Verification → CWE_LABELING → TECHNICAL_GATE → Policy Collector·RULE_SCOPE_GATE → Admission/Finding trusted runtime
+- **3. producer → consumer**: run-init Policy Collector·Policy Parser → RunPolicyState; Verification → CWE_LABELING → TECHNICAL_GATE → RULE_SCOPE_GATE → Admission/Finding trusted runtime
 - **4. 선행 상태·exact refs**: F-GAT(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: 공식 근거로 PolicyCollectionResult=ABSENT_CONFIRMED, policy_record_ref=null. 변형은 정책 record를 붙이거나 PASS/ALLOW 보고 허용.
 - **6. 검사 주체**: Runtime Validator·domain semantic validator·Finding normalizer; Gate 의미 판단은 R5 LLM
@@ -1155,7 +1157,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-GAT-005 / 정상·부정 / 정책 수집 실패는 공식 부재 아님
 - **2. 단계·계약 경계**: 14–17, 19; CWE·두 Gate·정책·Finding
-- **3. producer → consumer**: Verification → CWE_LABELING → TECHNICAL_GATE → Policy Collector·RULE_SCOPE_GATE → Admission/Finding trusted runtime
+- **3. producer → consumer**: run-init Policy Collector·Policy Parser → RunPolicyState; Verification → CWE_LABELING → TECHNICAL_GATE → RULE_SCOPE_GATE → Admission/Finding trusted runtime
 - **4. 선행 상태·exact refs**: F-GAT(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: PolicyCollectionResult=COLLECTION_FAILED; 변형은 ABSENT_CONFIRMED/PASS로 위장하거나 Rule Scope 호출.
 - **6. 검사 주체**: Runtime Validator·domain semantic validator·Finding normalizer; Gate 의미 판단은 R5 LLM
@@ -1171,7 +1173,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-GAT-006 / 정상·부정 / Primitive admission과 보고 자격 분리
 - **2. 단계·계약 경계**: 14–17, 19; CWE·두 Gate·정책·Finding
-- **3. producer → consumer**: Verification → CWE_LABELING → TECHNICAL_GATE → Policy Collector·RULE_SCOPE_GATE → Admission/Finding trusted runtime
+- **3. producer → consumer**: run-init Policy Collector·Policy Parser → RunPolicyState; Verification → CWE_LABELING → TECHNICAL_GATE → RULE_SCOPE_GATE → Admission/Finding trusted runtime
 - **4. 선행 상태·exact refs**: F-GAT(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: Rule Scope testing restriction PASS/UNCERTAIN/FAIL을 각각 사용. 다른 보고 축은 별개로 실패시킨다.
 - **6. 검사 주체**: Runtime Validator·domain semantic validator·Finding normalizer; Gate 의미 판단은 R5 LLM
@@ -1187,7 +1189,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-GAT-007 / 정상 / Finding 생성과 Reporter 차단 양립
 - **2. 단계·계약 경계**: 14–17, 19; CWE·두 Gate·정책·Finding
-- **3. producer → consumer**: Verification → CWE_LABELING → TECHNICAL_GATE → Policy Collector·RULE_SCOPE_GATE → Admission/Finding trusted runtime
+- **3. producer → consumer**: run-init Policy Collector·Policy Parser → RunPolicyState; Verification → CWE_LABELING → TECHNICAL_GATE → RULE_SCOPE_GATE → Admission/Finding trusted runtime
 - **4. 선행 상태·exact refs**: F-GAT(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: current TRUE+dynamic/PoC+CWE+Technical ACCEPT+Rule Scope review가 있고 report_permission=DENY이다.
 - **6. 검사 주체**: Runtime Validator·domain semantic validator·Finding normalizer; Gate 의미 판단은 R5 LLM
@@ -1203,7 +1205,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 - **1. ID·유형·설명**: R3-CT-GAT-008 / 정상·부정 / Finding producer·closure·current index 검사
 - **2. 단계·계약 경계**: 14–17, 19; CWE·두 Gate·정책·Finding
-- **3. producer → consumer**: Verification → CWE_LABELING → TECHNICAL_GATE → Policy Collector·RULE_SCOPE_GATE → Admission/Finding trusted runtime
+- **3. producer → consumer**: run-init Policy Collector·Policy Parser → RunPolicyState; Verification → CWE_LABELING → TECHNICAL_GATE → RULE_SCOPE_GATE → Admission/Finding trusted runtime
 - **4. 선행 상태·exact refs**: F-GAT(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: R5 Gate/LLM이 Finding을 직접 저장, core upstream 누락, 서로 다른 Verification refs 혼합, CAS 경쟁을 각각 시험. 정상 정책 비종속 hypothesis_id=null도 별도 시험.
 - **6. 검사 주체**: Runtime Validator·domain semantic validator·Finding normalizer; Gate 의미 판단은 R5 LLM
@@ -1405,9 +1407,9 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **2. 단계·계약 경계**: 19, 21–22; Reporter·집계·사람 경계
 - **3. producer → consumer**: current Finding/Gates → Reporter → Result Aggregator; 사람 공개는 자동화 밖
 - **4. 선행 상태·exact refs**: F-REP(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
-- **5. 정상/잘못된 fixture**: draft에서 restriction/limitation/provenance 삭제 또는 secret 포함. Reporter가 외부 제출/공개 action을 제안한다.
+- **5. 정상/잘못된 fixture**: draft에서 restriction/limitation/provenance 삭제 또는 secret 포함, upstream 근거보다 강한 security impact 주장, 검증되지 않은 동적 재현·PoC 성공 주장, upstream에 없는 새 공격 경로 생성을 각각 시험한다. Reporter가 외부 제출/공개 action을 제안하는 변형도 둔다.
 - **6. 검사 주체**: Runtime Validator REPORT_READY/REVISION/REDACTION + Reporter semantic validator + finalization 검사
-- **7. 허용·차단·격리 기대**: semantic/redaction 검사로 부적격 draft 차단; 공개/제출은 자동 파이프라인 범위 밖, 사람 권한 대행 금지.
+- **7. 허용·차단·격리 기대**: semantic/claim-strength/redaction 검사로 부적격 draft 차단; Reporter는 upstream 근거보다 강한 주장을 만들지 못한다. 공개/제출은 자동 파이프라인 범위 밖이며 사람 권한을 대행하지 않는다.
 - **8. work·attempt·가설 기대**: 보고 성공 처리 없음; run 종료 뒤 새 Agent action 없음; 기존 판정 불변.
 - **9. 오류·DataGap 기대**: REPORT_ERROR / ACTION_NOT_ALLOWED; redaction 세부 Q-02
 - **10. 저장·갱신 금지 pointer**: 안전한 오류 log만; 비밀 원문/공개 요청 전송 금지. 사람 승인 기록을 Agent가 생성하지 않음.
@@ -1483,23 +1485,55 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **12. 실행 계층**: unit / contract / integration
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R8·R4·R7. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
 
-## 5. 미병합 PR 기준 별도 card
+#### R3-CT-BUD-004 — 정책 cache 선택·freshness·run-local 고정
 
-[#96](https://github.com/SASTsimi/sastsimi/pull/96) HEAD `a8d8a4ea08918ef789133002699ed34813758a31`, [#97](https://github.com/SASTsimi/sastsimi/pull/97) HEAD `83f77977619cf210fe3e266b8a0f6bb462d3c266`. 둘 다 작성 시점 열림/미병합이다. 이 묶음은 main 통과 조건으로 섞지 않는다. #97 최신 HEAD에서는 [본인 수정 요청](https://github.com/SASTsimi/sastsimi/pull/97#issuecomment-5556385502)의 빈 최초 계보 문제가 `OPTIONAL_MANY`와 exact closure 검사로 보완됐다. 실제 병합 뒤 main 기준으로 다시 대조한다.
+- **1. ID·유형·설명**: R3-CT-BUD-004 / 정상·부정 / run 시작의 정책 cache 선택과 freshness·고정 규칙
+- **2. 단계·계약 경계**: 1, 3, 17, 22; `POLICY_FETCH`·PolicyCacheRecord·RunPolicyState·Rule Scope
+- **3. producer → consumer**: 실행 시작 runtime → Policy Collector·Policy Parser → current RunPolicyState → Rule Scope Gate·Reporter·관측 지표
+- **4. 선행 상태·exact refs**: F-BUD(§2.3)의 PCACHE1과 exact program/source 설정·Parser 이름/버전·freshness criterion, AnalysisRunState.started_at을 고정한다. 각 부정 변형은 5번의 한 조건만 변경한다.
+- **5. 정상/잘못된 fixture**: 정상 cache hit은 새 run 시작 때 cache를 정확히 한 번 조회하고 program·source 설정 hash·Parser 이름/버전·freshness criterion hash·`freshness_valid_until > started_at`·closure를 모두 만족한다. 이때 추가 Collect·Parse 없이 현재 run의 새 `PolicyCollectionResult`, `ProgramPolicyRecord`(FOUND일 때), `RunPolicyState`를 `REUSED_CACHE`로 만든다. 부정 변형은 cache 없음, 시작 시 만료, source/Parser/freshness 설정 불일치, target/content hash/schema/closure 손상을 각각 주고 cache를 거절해 같은 `POLICY_FETCH` work에서 새 Collect·Parse로 전환한다. 준비 완료 뒤 같은 run에서 TTL 만료·Parser 배포가 발생해도 고정 state를 교체하지 않는 변형도 둔다.
+- **6. 검사 주체**: Policy Collector의 cache 호환성·closure 검사, Runtime Validator의 exact ref·atomic commit 검사, R8 metric/config 검사
+- **7. 허용·차단·격리 기대**: 정상 hit은 새 Parser 호출 없이 run-local 결과만 확정한다. invalid cache는 거절 이유를 trace에 남기고 새 준비 경로만 허용한다. 과거 RunPolicyState 직접 재사용, run 중 cache 재조회·state 교체, invalid cache의 Gate/Reporter 직접 소비는 차단한다.
+- **8. work·attempt·가설 기대**: analysis·program별 active `POLICY_FETCH` work 하나. 정상 hit/miss 성공은 실제 준비 결과에 맞게 SUCCEEDED이고 가설 verdict에 영향 없음. run 중 freshness 변화로 새 policy work/generation을 만들지 않는다.
+- **9. 오류·DataGap 기대**: cache miss·비호환은 수집 실행 오류가 아니라 구조화된 거절 이유다. 손상된 closure를 성공 cache로 사용하면 STALE_RESULT 계열 exact-reference 위반이며 세부 code는 Q-02다.
+- **10. 저장·갱신 금지 pointer**: cache hit에서도 다른 run의 state를 current로 복사하지 않는다. current-run collection·policy·state를 같은 TransitionCommit으로 확정하고, cache miss/거절이면 PCACHE1을 새 run의 policy_cache_ref로 연결하지 않는다. 준비 완료 뒤 current pointer 교체 금지.
+- **11. FALSE 변환 금지**: cache 없음·만료·불일치·손상과 freshness 변화는 가설 `FALSE | HOLD`가 아니다. 로컬 전용 Sandbox 결과도 이 이유만으로 폐기하지 않는다.
+- **12. 실행 계층**: unit / contract / integration / security-negative
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R8·R4·R5. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
 
-### PR. 미병합 Provider·Prompt 제안 시험
+#### R3-CT-BUD-005 — Policy Collect·Parse 재시도와 실패 관측
 
-근거: PR #96@a8d8a4e·#97@83f7797 (main 아님). 모든 사례는 **미실행 / 역할 검토 필요**.
+- **1. ID·유형·설명**: R3-CT-BUD-005 / 정상·부정 / Policy Collect·Parse의 versioned 재시도 한도와 실패 결과
+- **2. 단계·계약 경계**: 1, 3, 17, 22; `POLICY_FETCH` attempt lifecycle·예산·관측성
+- **3. producer → consumer**: R8 versioned retry 설정 → Runtime Validator·Policy Collector·Policy Parser → RunPolicyState·AnalysisRunResult·metrics
+- **4. 선행 상태·exact refs**: F-BUD(§2.3)의 current R8 설정과 하나의 `POLICY_FETCH` work를 사용한다. 현재 후보 기준은 Collect 최초 1회 뒤 추가 2회, Parse 최초 1회 뒤 추가 3회이며 실제 fixture는 승인된 설정 revision의 값을 exact하게 고정한다.
+- **5. 정상/잘못된 fixture**: 재시도 가능 Collect 또는 Parse 오류 뒤 같은 work의 새 attempt가 허용 한도 안에서 성공하는 정상 변형, 허용된 추가 횟수를 모두 소진하는 변형, 복구 불가능 오류 변형, 전체 run 예산이 호출 전에 이미 소진된 변형을 각각 시험한다. attempt별 `PolicyCollectionResult` 최대 1개, 성공하지 못한 Parser/collection 이력, fetch failure와 parser failure 구분도 확인한다.
+- **6. 검사 주체**: Runtime Validator BUDGET/state 검사, Policy Collector·Policy Parser result validator, TransitionCommit·관측 집계 검사
+- **7. 허용·차단·격리 기대**: 재시도 가능하면 같은 work를 BLOCKED로 두고 새 attempt로 재개한다. 한도 소진·복구 불가능은 FAILED와 `COLLECTION_FAILED`로 끝낸다. 성공하지 못한 attempt와 `COLLECTION_FAILED | UNVERIFIED` 결과를 cache로 게시하거나 Rule Scope Gate·Reporter 입력으로 쓰지 않는다.
+- **8. work·attempt·가설 기대**: 새 policy work/generation을 만들지 않고 active attempt는 하나만 둔다. 종료 실패 뒤 재활성화하지 않으며 이미 존재하는 기술 가설·판정은 바꾸지 않는다.
+- **9. 오류·DataGap 기대**: fetch/parser 원인별 `POLICY_FETCH_ERROR`와 실제 error refs를 보존한다. 전체 run 예산 사전 소진일 때만 `BUDGET_EXCEEDED`를 적용하고, 재시도 횟수 소진을 정책 부재로 바꾸지 않는다.
+- **10. 저장·갱신 금지 pointer**: 완료된 attempt마다 collection 결과 최대 하나, final RunPolicyState는 선택한 exact collection 하나만 가리킨다. 실패 이력은 AnalysisRunResult에 남기되 current policy/cache/Gate pointer로 승격하지 않는다.
+- **11. FALSE 변환 금지**: 수집·Parser·예산·저장 실패를 `ABSENT_CONFIRMED`, `FALSE | HOLD`, 정적 분석 성공으로 바꾸지 않는다. `LOCAL_ONLY` Sandbox는 정책 준비 실패만으로 차단하지 않는다.
+- **12. 실행 계층**: unit / contract / integration / E2E
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R8·R4·R5. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
+
+## 5. main Provider 계약과 미병합 Prompt 제안 card
+
+[#96](https://github.com/SASTsimi/sastsimi/pull/96)은 merge commit `64062aec3f9ea190df93d2e5eb240c036371cd65`로 main에 반영됐다. 따라서 ProviderProfile·capability·runtime tool-loop 조건은 main 계약으로 시험한다. [#97](https://github.com/SASTsimi/sastsimi/pull/97)은 HEAD `a9fd2e14edb9f52465947151e0208718a42d83e7`의 미병합 Prompt 제안이다. #97 최신 HEAD에서는 [본인 수정 요청](https://github.com/SASTsimi/sastsimi/pull/97#issuecomment-5556385502)의 빈 최초 계보 문제가 `OPTIONAL_MANY`와 exact closure 검사로 보완됐다. #97 전용 Registry·Builder 필드는 병합 뒤 main 기준으로 다시 대조하기 전에는 main 통과 조건으로 승격하지 않는다.
+
+### PR. Provider 계약·Prompt 제안 시험
+
+근거: main #96 merge `64062ae`·미병합 #97@`a9fd2e1`. 모든 사례는 **미실행 / 역할 검토 필요**이며, 각 card에서 main 조건과 제안 조건을 구분한다.
 
 #### R3-CT-PR-001 — Provider 지원 판정과 runtime tool-loop
 
-- **1. ID·유형·설명**: R3-CT-PR-001 / PR 제안 / Provider 지원 판정과 runtime tool-loop / #96 HEAD 기준 제안·미병합
-- **2. 단계·계약 경계**: 6, 10–13, 18; 미병합 Provider·Prompt 제안 시험
-- **3. producer → consumer**: PR #96 Provider 경계·PR #97 Prompt Builder → 해당 역할 wrapper
+- **1. ID·유형·설명**: R3-CT-PR-001 / main 계약 계획 / Provider 지원 판정과 runtime tool-loop / #96 병합 main 기준
+- **2. 단계·계약 경계**: 6, 10–13, 18; Provider 계약 시험
+- **3. producer → consumer**: main ProviderProfile·capability registry·Provider Adapter·Runtime tool-loop → 해당 역할 wrapper
 - **4. 선행 상태·exact refs**: F-PR(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
-- **5. 정상/잘못된 fixture**: #96의 후보 profile, 미시험 profile, runtime_tool_loop 미지원 profile로 R7 execution task를 시도한다.
-- **6. 검사 주체**: 제안된 schema/semantic validator·Runtime tool-loop; 아직 구현되지 않음
-- **7. 허용·차단·격리 기대**: 제안 기준: 시험 전 profile 발급/운영 지원 선언 금지; R7 실행은 검증된 SUPPORTED capability만 선택.
+- **5. 정상/잘못된 fixture**: main 계약을 만족하는 승인 profile, 미시험 profile, runtime_tool_loop 미지원 profile로 R7 execution task를 시도한다.
+- **6. 검사 주체**: main schema/semantic validator·Runtime tool-loop; 아직 구현되지 않음
+- **7. 허용·차단·격리 기대**: 실제 capability 시험 전 profile 발급/운영 지원 선언 금지; R7 실행은 검증된 SUPPORTED capability만 선택.
 - **8. work·attempt·가설 기대**: 미지원 호출 차단; domain work·가설 성공 판정 없음.
 - **9. 오류·DataGap 기대**: 제안 schema/오류 Q-04
 - **10. 저장·갱신 금지 pointer**: PVD-16 등 시험 증거가 있을 때만 profile 참조. fake test가 실제 인증/약관 검증을 대신하지 않음.
@@ -1510,8 +1544,8 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 #### R3-CT-PR-002 — initial assessment와 exact playbook 입력
 
 - **1. ID·유형·설명**: R3-CT-PR-002 / PR 제안 / initial assessment와 exact playbook 입력 / #97 HEAD 기준 제안·미병합
-- **2. 단계·계약 경계**: 6, 10–13, 18; 미병합 Provider·Prompt 제안 시험
-- **3. producer → consumer**: PR #96 Provider 경계·PR #97 Prompt Builder → 해당 역할 wrapper
+- **2. 단계·계약 경계**: 6, 10–13, 18; main Provider·미병합 Prompt 제안 시험
+- **3. producer → consumer**: main Provider 경계·PR #97 Prompt Builder → 해당 역할 wrapper
 - **4. 선행 상태·exact refs**: F-PR(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: #97 ASSESS_INITIAL/CREATE_DYNAMIC_REQUEST에 current policy/playbook/application을 넣고 다른 work application으로 교체한다.
 - **6. 검사 주체**: 제안된 schema/semantic validator·Runtime tool-loop; 아직 구현되지 않음
@@ -1526,12 +1560,12 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 #### R3-CT-PR-003 — 최초 Chaining의 빈 lineage_results
 
 - **1. ID·유형·설명**: R3-CT-PR-003 / PR 제안 / 최초 Chaining의 빈 lineage_results / #97 최신 HEAD 보완 확인
-- **2. 단계·계약 경계**: 6, 10–13, 18; 미병합 Provider·Prompt 제안 시험
-- **3. producer → consumer**: PR #96 Provider 경계·PR #97 Prompt Builder → 해당 역할 wrapper
+- **2. 단계·계약 경계**: 6, 10–13, 18; main Provider·미병합 Prompt 제안 시험
+- **3. producer → consumer**: main Provider 경계·PR #97 Prompt Builder → 해당 역할 wrapper
 - **4. 선행 상태·exact refs**: F-PR(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: INITIAL TRUE와 INITIAL HOLD, 둘 다 source_primitive_match_id=null, 필요한 과거 ChainingResult 집합이 비어 있음.
 - **6. 검사 주체**: 제안된 schema/semantic validator·Runtime tool-loop; 아직 구현되지 않음
-- **7. 허용·차단·격리 기대**: #97@83f7797 제안 기준으로 `lineage_results=[]`를 허용한다. `OPTIONAL_MANY`는 0개 이상이며 관계없는 결과로 개수만 맞추지 않는다. 아직 main 미병합이므로 main 구현 통과 기준으로 활성화하지 않는다.
+- **7. 허용·차단·격리 기대**: #97@`a9fd2e1` 제안 기준으로 `lineage_results=[]`를 허용한다. `OPTIONAL_MANY`는 0개 이상이며 관계없는 결과로 개수만 맞추지 않는다. 아직 main 미병합이므로 main 구현 통과 기준으로 활성화하지 않는다.
 - **8. work·attempt·가설 기대**: 제안 기준 정상 호출 진행; 부모 TRUE/HOLD와 source_primitive_match_id=null 유지. 실제 호출 가능 판정은 #97 병합·구현 뒤 수행한다.
 - **9. 오류·DataGap 기대**: 정상 없음. PR 제안 활성화 전 main에는 해당 Registry 구현이 없다는 상태를 보존한다.
 - **10. 저장·갱신 금지 pointer**: fixture 설계만 보존; 관련 없는 과거 결과를 억지 삽입 금지.
@@ -1542,14 +1576,14 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 #### R3-CT-PR-004 — 필요한 계보 누락·관계없는 계보 추가
 
 - **1. ID·유형·설명**: R3-CT-PR-004 / PR 제안 / 필요한 계보 누락·관계없는 계보 추가 / #97 계보/cardinality 후속 확인
-- **2. 단계·계약 경계**: 6, 10–13, 18; 미병합 Provider·Prompt 제안 시험
-- **3. producer → consumer**: PR #96 Provider 경계·PR #97 Prompt Builder → 해당 역할 wrapper
+- **2. 단계·계약 경계**: 6, 10–13, 18; main Provider·미병합 Prompt 제안 시험
+- **3. producer → consumer**: main Provider 경계·PR #97 Prompt Builder → 해당 역할 wrapper
 - **4. 선행 상태·exact refs**: F-PR(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: CHAINING-origin 조상이 있는 입력에서 필요한 ChainingResult를 하나 빼거나 무관한 결과를 추가한다.
 - **6. 검사 주체**: 제안된 schema/semantic validator·Runtime tool-loop; 아직 구현되지 않음
 - **7. 허용·차단·격리 기대**: 제안 closure set과 정확히 같지 않으면 거절. 빈 집합 허용과 필요한 조상 누락 허용은 다름.
 - **8. work·attempt·가설 기대**: 호출/저장 성공 처리 없음; 부모 판정 불변.
-- **9. 오류·DataGap 기대**: #97@83f7797 제안의 closure semantic 거절; exact 오류 매핑은 Q-04
+- **9. 오류·DataGap 기대**: #97@`a9fd2e1` 제안의 closure semantic 거절; exact 오류 매핑은 Q-04
 - **10. 저장·갱신 금지 pointer**: 거절 trace와 expected/actual 참조 집합. 무관 결과로 cardinality만 맞추지 않음.
 - **11. FALSE 변환 금지**: 입력 위반·조회/호출/실행 오류·정책 차단·예산/저장 실패를 새 FALSE 근거로 사용하지 않음. 이미 존재하는 부모/가설 verdict는 해당 case의 명시적 검증 경로 외에는 변경하지 않음.
 - **12. 실행 계층**: contract / integration / security-negative (후속 구현)
@@ -1557,9 +1591,9 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 #### R3-CT-PR-005 — R7 단계별 도구·의존성·결론 연결
 
-- **1. ID·유형·설명**: R3-CT-PR-005 / PR 제안 / R7 단계별 도구·의존성·결론 연결 / #96/#97 HEAD 기준 제안·미병합
-- **2. 단계·계약 경계**: 6, 10–13, 18; 미병합 Provider·Prompt 제안 시험
-- **3. producer → consumer**: PR #96 Provider 경계·PR #97 Prompt Builder → 해당 역할 wrapper
+- **1. ID·유형·설명**: R3-CT-PR-005 / main·PR 혼합 계획 / R7 단계별 도구·의존성·결론 연결 / main Provider·#97 Prompt 제안 기준
+- **2. 단계·계약 경계**: 6, 10–13, 18; Provider 계약·Prompt 제안 시험
+- **3. producer → consumer**: main Provider 경계·PR #97 Prompt Builder → 해당 역할 wrapper
 - **4. 선행 상태·exact refs**: F-PR(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: #97의 환경/plan 작성은 실제 dependency context, 실행은 Runtime tool-loop, 해석은 log/관찰 입력으로 구성. 결론과 조립 결과 outcome 불일치 변형 추가.
 - **6. 검사 주체**: 제안된 schema/semantic validator·Runtime tool-loop; 아직 구현되지 않음
@@ -1581,7 +1615,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 4. STA/HYP/VER/DYN/GAT/CHN/REP 순으로 contract→integration을 연결한다. 도구와 LLM의 의미 결과는 fixture로 주입하며 runtime이 의미를 대신 판정하지 않게 검사한다.
 5. #89에서 아래 장애 시나리오를 같은 fixture·test ID에 연결한다.
 6. fake E2E와 security-negative를 실행한 뒤 별도 실제 dependency capability 시험을 한다.
-7. 실제 실행한 case/variant 수, 실행 SHA, schema/profile refs, 통과·실패·건너뜀, log 위치를 결과표로 기록한다. 지금 단계에서 ‘87개 테스트 통과’라고 쓰지 않는다.
+7. 실제 실행한 case/variant 수, 실행 SHA, schema/profile refs, 통과·실패·건너뜀, log 위치를 결과표로 기록한다. 지금 단계에서 ‘89개 테스트 통과’라고 쓰지 않는다.
 
 | 본 문서 경계 | #89에 연결할 중단 지점 | 복구 후 확인 |
 |---|---|---|
@@ -1639,10 +1673,9 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 | Q-01 | module map B3: CodeWorkspace/ToolRunResult/HypothesisProposal/AnalysisRunResult 저장 연결 공백. #97은 INITIAL proposal 저장 제안을 추가했으나 main 미반영 | 새 result-kind registry인지 기존 전용 저장 경계인지, 유일 producer·정확한 저장 action·단일 output·current pointer·원자 경계 확정. VERIFICATION/CHAINING nested child proposal의 독립 record 등록도 별도 확인 | R4 @taehyeon-git, R2/R1/R8. STA-001/HYP-001/REP-001 및 #89/#92 물리 저장 기대값 확정 전 필요. [이미 남긴 질문](https://github.com/SASTsimi/sastsimi/issues/92#issuecomment-5556395217)에 연결 |
 | Q-02 | 공통 문서의 확인 가능한 오류는 사용했지만 각 schema 필드/권한/reference 거절이 어떤 exact code·ActionCheck·상태 전파를 쓰는지 case별 매핑은 불완전 | 기존 오류 재사용과 전용 오류 필요 여부를 R4가 결정. 검사 실패와 실제 work 실행 실패를 분리하고 error stage/retryable/related refs를 확정 | R4+해당 owner. 본문에서 Q-02로 표시한 case의 실행 가능한 assertion 작성 전 해결; 문서 초안은 진행 가능 |
 | Q-03 | deterministic JSON+SHA-256은 #92 제안; executable schema version/fixture bytes는 아직 없음 | Unicode/숫자/null/시간/key 순서·hash 대상 bytes·동일 값 직렬화 fixture를 승인. 단순 key 정렬만으로 모든 runtime 동일 hash를 가정하지 않음 | R4·R3·R8. 실제 schema registry·정상 fixture 및 content hash 기대값 확정 전 필요 |
-| Q-04 | B1 R7 role enum·B4 Orchestration 표현 및 Provider/Prompt 구체 구조는 #96/#97 제안에 의존 | 병합 후 main의 role/spec/registry/action owner 정합성 재대조. 실제 profile 발급에는 provider 지원 시험 필요. 특정 모델/구독 경로가 실제 사용 가능하다고 단정하지 않음 | R4·R3·R7·R8, 전문 prompt owner. PR card와 실제 provider 의미 동등성 시험 활성화 전 필요 |
-| Q-05 | #97@83f7797은 최초 Chaining의 빈 조상 결과 집합에 `lineage_results=OPTIONAL_MANY`를 적용하고 cardinality 최소 개수와 exact closure 검사를 추가함 | PR-003의 빈 집합 허용, PR-004의 필요한 실제 조상 누락·관계없는 결과 추가 차단을 함께 유지. 아직 main 미병합이므로 병합 SHA에서 재대조 | R1 @baeseungwon1010·R4 @taehyeon-git. [수정 요청](https://github.com/SASTsimi/sastsimi/pull/97#issuecomment-5556385502)은 제안 문서상 보완됐고 main 활성화 확인만 남음 |
-| Q-06 | #96@a8d8a4e와 #97@83f7797은 각각 main 기준 clean이며 두 HEAD의 로컬 가상 병합도 content conflict 없이 문서 검사 `Failures: 0` | 한 PR 실제 병합 후 다른 PR을 새 main과 동기화하고 양쪽 validator 규칙·출력을 보존해 다시 실행. 문서 검사만으로 runtime 동작을 보증하지 않음 | 두 PR 작성자·R3. 실제 병합 SHA를 통합 Provider/Prompt 시험 기준으로 기록할 때 완료 |
-| Q-07 | [#108](https://github.com/SASTsimi/sastsimi/issues/108)은 Primitive admission을 등록 시점 1회 판정으로 둘지, 이후 회수 가능한 current revision으로 유지할지 재검토 중 | 결정 전에는 GAT-006·CHN-003/005의 stale/DENY 재검사 기대를 삭제하거나 새 회수 trigger를 임의로 만들지 않음. 정책 수집 주기·PrimitiveIndexState 의미·Admission Runtime 유지 여부를 역할 결정에 맞춰 갱신 | R1·R4·R5 중심 결정, R3는 결정 후 #106·#107 fixture와 #92 구현 기준을 동기화 |
+| Q-04 | #96 Provider role/spec/profile/action 경계는 merge commit `64062ae`로 main에 반영됐다. B4 Prompt Registry·Builder와 일부 Orchestration 표현은 #97 제안에 의존 | main Provider 계약과 #97 Prompt 제안을 분리해 대조한다. 실제 profile 발급에는 provider 지원 시험이 필요하며 특정 모델/구독 경로를 실제 사용 가능하다고 단정하지 않음 | R4·R3·R7·R8, 전문 prompt owner. main Provider case는 계획으로 활성화하고 #97 전용 case는 병합 SHA에서 재대조 |
+| Q-05 | #97@`a9fd2e1`은 최초 Chaining의 빈 조상 결과 집합에 `lineage_results=OPTIONAL_MANY`를 적용하고 cardinality 최소 개수와 exact closure 검사를 추가함 | PR-003의 빈 집합 허용, PR-004의 필요한 실제 조상 누락·관계없는 결과 추가 차단을 함께 유지. 아직 main 미병합이므로 병합 SHA에서 재대조 | R1 @baeseungwon1010·R4 @taehyeon-git. [수정 요청](https://github.com/SASTsimi/sastsimi/pull/97#issuecomment-5556385502)은 제안 문서상 보완됐고 main 활성화 확인만 남음 |
+| Q-06 | #96은 `64062ae`로 main에 반영됐고 #97@`a9fd2e1`은 열려 있음 | #97을 최신 main에 동기화할 때 main Provider 계약과 양쪽 validator 규칙·출력을 함께 보존해 다시 실행. 문서 검사만으로 runtime 동작을 보증하지 않음 | #97 작성자·R3. 실제 #97 병합 SHA를 통합 Provider/Prompt 시험 기준으로 기록할 때 완료 |
 
 ### 8.1 main 해석 시 주의할 항목
 
@@ -1670,7 +1703,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 검토자는 ‘좋습니다’뿐 아니라 검토한 문서 commit SHA, 담당 case IDs, 수정 요구/미결정 항목을 남긴다. 자동 문서 검사는 담당자의 승인을 대신하지 않는다.
 
-- [x] 기준 main과 현재 22단계 연결, 87개 case card 초안 작성
+- [x] 기준 main과 현재 22단계 연결, 89개 case card 초안 작성
 - [x] case별 13개 필수 항목과 계획 fixture·저장 효과 명시
 - [x] 정상·부정·보안·오류·예산 및 미병합 PR 시험 분리
 - [x] 알려진 이전 OK/BAD 이력과 #89 복구 연결

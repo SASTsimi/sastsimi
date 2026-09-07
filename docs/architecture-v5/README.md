@@ -94,7 +94,8 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 ## 구현 준비 문서
 
 1. [R3-01 22단계 구현 모듈·입출력·저장 위치 매핑](./implementation/01-module-map.md) — 각 단계를 실제 프로그램 경계와 테스트 책임으로 옮긴 문서입니다.
-2. [R3-04 LLM Provider·인증 경로 결정](./implementation/04-provider-decision.md) — OpenAI·Codex·Anthropic·Claude의 API Key·공식 구독 연결 경계와 지원 판정 시험을 정리한 문서입니다.
+2. [R3-02 파트 간 계약 준수·부정 테스트 계획](./implementation/02-contract-test-plan.md) — 정상·오류·권한 위반 입력에서 각 모듈이 무엇을 허용하고 차단해야 하는지 case별로 정리한 문서입니다.
+3. [R3-04 LLM Provider·인증 경로 결정](./implementation/04-provider-decision.md) — OpenAI·Codex·Anthropic·Claude의 API Key·공식 구독 연결 경계와 지원 판정 시험을 정리한 문서입니다.
 
 ## 문서 적용 범위
 
