@@ -56,13 +56,14 @@
 | `ActionCheck` | 실행 전에 확인하는 권한·상태·예산·도구 같은 검사 하나 | action마다 필요한 검사를 빠뜨리지 않습니다. |
 | `ActionDecision` | 프로그램 검사기가 action을 허용하거나 막은 결과 | 요청 하나당 logical decision 하나이며 exact action과 state version에 한 번만 사용합니다. |
 | `LLMCallSpec` | 실제 LLM 호출에 쓸 model·prompt·context·형식·예산·시간을 묶은 수정 불가 명세 | 허가 뒤 호출 내용을 바꾸지 못하게 합니다. |
+| `ProviderProfile` | LLM 회사·상품·연결 방식·인증·client version·model·실행 환경과 확인된 기능을 묶은 수정 불가 설정 | 실제 호출은 이 설정의 정확한 수정본을 사용하며 모델 전용 profile 객체를 따로 만들지 않습니다. |
 
 ## 가설과 검증
 
 | 용어 | 쉽게 말하면 | 사용할 때 주의할 점 |
 |---|---|---|
 | `Hypothesis` | 검증이 필요한 취약점 가능성 | 아직 확정 취약점이나 Finding이 아닙니다. |
-| `Hypothesis Agent` | 정적 사실을 조합해 검증할 취약점 가설을 제안하는 LLM 역할 | 공식 역할명입니다. 모델 가격·성능 등급은 이름에 붙이지 않고 별도 `ModelProfile`과 R8 평가로 관리합니다. |
+| `Hypothesis Agent` | 정적 사실을 조합해 검증할 취약점 가설을 제안하는 LLM 역할 | 공식 역할명입니다. 모델 가격·성능 등급은 이름에 붙이지 않고 `ProviderProfile.model`과 R8 평가로 관리합니다. |
 | `HypothesisDuplicateReview` | 새 가설 제안이 기존 등록 가설과 같은지 LLM이 비교해 남긴 결과 | 프로그램이 먼저 좁힌 exact 후보만 비교하며, 애매하거나 검토에 실패하면 탐지 누락을 막기 위해 새 가설로 등록합니다. |
 | `Verification` | 배정된 가설 안에서 코드·찬반·동적 근거와 보완 흐름을 관리해 판정하는 과정 | 다음 작업은 선택하지만 Runtime Validator의 실행 검사를 우회하거나 공개를 결정하지 않습니다. |
 | `VerificationPlaybook` | 취약점 유형별로 빠뜨리지 말아야 할 확인 항목과 반증 질문을 묶은 수정 가능한 절차 | 플레이북이 등록됐다는 이유만으로 운영 지원 유형이 되지는 않습니다. |

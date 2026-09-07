@@ -8,7 +8,7 @@
 
 ## 1. 기준과 결론
 
-- 작성 기준 `main`: `9c7a5a19c5e32c3f752bc40a32aaf86441be4d01`
+- 작성 기준 `main`: `ea2a5269913510a498f24102431103440c00523b`
 - 연결 Issue: [R3-04 #90](https://github.com/SASTsimi/sastsimi/issues/90)
 - 후속 결정: [R3-06 #92](https://github.com/SASTsimi/sastsimi/issues/92)
 - 공식 문서 확인일: 2026-09-05
@@ -28,11 +28,11 @@ SASTSIMI는 Agent를 특정 회사·상품·인증 방식에 묶지 않는다. �
 
 ## 2. 공통 선택 단위
 
-`ProviderProfile`은 다음 값을 한 revision으로 묶는 versioned configuration이다. 식별자와 revision은 새 방식을 만들지 않고 공통 `RecordMeta`를 사용한다. `provider_profile_ref`는 이 record의 exact `StoredDataRef(record_id + content_hash)`다.
+`ProviderProfile`은 다음 값을 한 revision으로 묶는 versioned configuration이다. 공통 필드 정본은 [08. 경량 데이터 계약](../08-lightweight-data-contracts.md)의 `ProviderProfile`이며, 이 문서는 연결별 선택·시험 방법만 보충한다. `meta`는 `hypothesis_id=null`, `attempt_id=null`인 공통 `RecordMeta`를 사용하고 `provider_profile_ref`는 이 record의 exact `StoredDataRef(record_id + content_hash)`다. 모델 전용 profile record를 따로 만들지 않으며 model은 이 profile 안에 포함한다.
 
 ```yaml
 ProviderProfile:
-  meta: RecordMeta
+  meta: RecordMeta with hypothesis_id null and attempt_id null
   profile_key: string
   provider: OPENAI | ANTHROPIC
   product: OPENAI_API | CODEX | ANTHROPIC_API | CLAUDE_CODE
@@ -48,7 +48,7 @@ ProviderProfile:
   validation_evidence_ref: StoredDataRef
   client_execution_profile_ref: StoredDataRef | null
   limitations: [string]
-  checked_at: RFC3339 UTC timestamp
+  checked_at: timestamp
   evidence_urls: [string]
 ```
 
@@ -85,7 +85,7 @@ ProviderCapabilities:
 
 ```yaml
 ClientExecutionProfile:
-  meta: RecordMeta
+  meta: RecordMeta with hypothesis_id null and attempt_id null
   execution_key: string
   working_directory_mode: ISOLATED_EMPTY
   filesystem_mode: NO_REPOSITORY_ACCESS
@@ -314,7 +314,7 @@ credential·cookie·token·원문 인증 파일은 증거로 첨부하지 않는
 
 이 문서만으로 #90을 닫지 않는다. 다음 증거가 없기 때문이다.
 
-- 네 경로별 실제 `PVD-01`–`PVD-15` 결과
+- 네 경로별 실제 `PVD-01`–`PVD-15` 결과와, R7 Sandbox 실행에 허용할 profile의 `PVD-16` 결과
 - 역할별 필요한 model의 실제 계정 접근 범위
 - private CI의 credential 격리·취소·동시성 검증
 - R8의 동일 fixture 품질·시간·사용량 비교

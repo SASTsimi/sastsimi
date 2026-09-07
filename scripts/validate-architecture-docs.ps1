@@ -3018,6 +3018,8 @@ $activeArchitectureText = $activeDocumentationText
 $providerDecisionPath = Join-Path $repoRoot 'docs/architecture-v5/implementation/04-provider-decision.md'
 $providerDecisionText = if (Test-Path -LiteralPath $providerDecisionPath) { Get-Content -LiteralPath $providerDecisionPath -Raw } else { '' }
 $providerCapabilityBlock = [regex]::Match($providerDecisionText, '(?ms)^ProviderCapabilities:\s*(.*?)^```').Groups[1].Value
+$providerExitSection = [regex]::Match($providerDecisionText, '(?ms)^## 10\. 미완료 증거와 종료 조건\s*(.*)$').Groups[1].Value
+$architectureReadmeText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/README.md')
 
 if ([string]::IsNullOrWhiteSpace($providerDecisionText)) {
     Add-Failure 'missing R3-04 provider decision document'
@@ -3041,6 +3043,35 @@ foreach ($marker in @(
     }
 }
 Write-Output 'R3-04 provider runtime tool-loop rules: 9'
+
+foreach ($marker in @(
+    'ProviderCapabilities:',
+    'ProviderValidationTest:',
+    'ProviderValidationEvidence:',
+    'ClientExecutionProfile:',
+    'ProviderProfile:',
+    'meta: RecordMeta with hypothesis_id null and attempt_id null',
+    'runtime_tool_loop: SUPPORTED | UNSUPPORTED | UNVERIFIED',
+    'data_kind=provider_profile',
+    '이전 분석의 `StoredDataRef`를 재사용하지 않는다',
+    '`ClientExecutionProfile.verification_evidence_ref`',
+    'ProviderProfile.model`과 같아야 한다',
+    'PROVIDER_PROFILE_DENIED | CAPABILITY_UNSUPPORTED'
+)) {
+    if (-not $contractText.Contains($marker)) {
+        Add-Failure "missing canonical ProviderProfile contract marker in 08: $marker"
+    }
+}
+if ($activeDocumentationText.Contains('ModelProfile')) {
+    Add-Failure 'obsolete or undefined ModelProfile term remains; use ProviderProfile.model'
+}
+if (-not $providerExitSection.Contains('`PVD-16` 결과')) {
+    Add-Failure 'R3-04 closing conditions must require PVD-16 evidence for R7-enabled profiles'
+}
+if (-not $architectureReadmeText.Contains('./implementation/04-provider-decision.md')) {
+    Add-Failure 'Architecture v5 README must link the R3-04 provider decision document'
+}
+Write-Output 'R4 ProviderProfile canonical contract rules: 15'
 
 $forbiddenR8OwnershipMarkers = @(
     '그 R8 profile의 수치',
