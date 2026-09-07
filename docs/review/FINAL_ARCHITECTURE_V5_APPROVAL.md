@@ -4,7 +4,7 @@
 - **누가 읽어야 하나요?** R1~R8 역할 담당자, 전체 구현 담당자와 최종 검토자가 읽습니다.
 - **읽은 뒤 무엇을 확인하나요?** Final PR의 정확한 head를 검토했는지, 구현이 따라야 할 기준과 아직 증명하지 않은 항목을 구분합니다.
 
-> 제안 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 >
 > 이 상태는 이 기록을 포함한 Final PR이 병합될 때 효력이 생깁니다.
 

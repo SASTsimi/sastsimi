@@ -311,6 +311,21 @@ foreach ($file in $approvedStatusFiles | Select-Object -Unique) {
         Add-Failure "approved Architecture v5 document still has review-required status: $($file.FullName)"
     }
 }
+
+foreach ($statusRequirement in @(
+    @{ Path = 'README.md'; Marker = 'DESIGN_APPROVED' },
+    @{ Path = 'docs/architecture-v5/README.md'; Marker = '> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**' },
+    @{ Path = 'docs/review/decisions/ADR-012-primitive-match-duplicate-key.md'; Marker = '상태: `ACCEPTED`' },
+    @{ Path = 'docs/review/decisions/ADR-013-run-policy-preparation-and-reuse.md'; Marker = '상태: `ACCEPTED`' },
+    @{ Path = 'docs/review/decisions/ADR-015-r3-implementation-baseline.md'; Marker = '상태: `ACCEPTED`' },
+    @{ Path = 'docs/DOCUMENT_GUIDE.md'; Marker = './review/FINAL_ARCHITECTURE_V5_APPROVAL.md' }
+)) {
+    $path = Join-Path $repoRoot $statusRequirement.Path
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    if (-not $text.Contains($statusRequirement.Marker)) {
+        Add-Failure "final approval status is not synchronized: $($statusRequirement.Path) -> $($statusRequirement.Marker)"
+    }
+}
 $openQuestionsText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/governance/OPEN_QUESTIONS.md')
 foreach ($requiredOpenQuestionMarker in @(
     '현재 구현 시작을 막는 미결정 Blocker는 없습니다.',
