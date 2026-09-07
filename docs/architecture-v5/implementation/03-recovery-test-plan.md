@@ -8,7 +8,7 @@
 
 - 담당: R3 윤희섭 (@YHS-Sec, @v1sion). 공통 아키텍처 검토·대행 수행: 김태현 (@taehyeon-git).
 - 본 작업: [#89](https://github.com/SASTsimi/sastsimi/issues/89). 상위 [#4](https://github.com/SASTsimi/sastsimi/issues/4), 선행 [#24](https://github.com/SASTsimi/sastsimi/issues/24)·[#25](https://github.com/SASTsimi/sastsimi/issues/25), 후속 [#92](https://github.com/SASTsimi/sastsimi/issues/92).
-- main 대조 기준: `0c1b59b5f74fb2c76171167940640d10ca5155b0` (2026-09-07 조회).
+- main 대조 기준: `35729d3185cf46cdbf9c94ce2be646ae11f26446` (PR #107 병합 commit, R3-06에서 재대조).
 - #25 시험 계획 의존성: [PR #106](https://github.com/SASTsimi/sastsimi/pull/106), 최종 HEAD `0e2e7fef3699692d6c849fa770127b349b0e076b`, main 병합 commit `9e0a7efc73d9a9b1e83d6e70049c6d35ab8fa8b1`.
 - Prompt 실행 구조 의존성: [PR #97](https://github.com/SASTsimi/sastsimi/pull/97), 최종 HEAD `fbf023691073cce7cd9ced421b69e219b5c5c8d9`, main 병합 commit `0c1b59b5f74fb2c76171167940640d10ca5155b0`.
 - **#106과 #97은 main에 병합됐다.** 이번 문서는 병합된 최종 계약을 기준으로 CT ID·fixture·역할명·Prompt 입력·복구 기대값을 다시 대조한다.
@@ -48,7 +48,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 | Dynamic Reproduction Agent 같은 session의 자율 조정 | work·attempt·session | 해당 실행 event/관찰 | `EXECUTE_REPRODUCTION` 첫 turn은 `NEW`, 같은 work·attempt의 후속 turn만 `RESUME`; command·PoC·환경 조정과 same-session container 재생성은 새 attempt를 만들지 않음 |
 | Dynamic Reproduction Agent session 재시작 | work_id·verification generation | 새 attempt, trigger=RETRY | RUNNING→READY→RUNNING. 고정 입력을 유지하고 R8 한도가 남아 있어야 함 |
 | 동적 재현 외부 조건 해소 후 재개 | work_id·고정 input refs/hash | 새 attempt, trigger=RESUME | BLOCKED→READY→RUNNING. 실제 waiting_for 조건이 해소되고 input refs/hash가 그대로여야 함 |
-| 동적 request/profile 변경 | hypothesis_id·기존 Verification history | 후속 generation·work 생성 방식은 RQ-10 | 기존 work의 RETRY·RESUME과 과거 action·decision·attempt 재사용은 금지. 정본 전이가 확정되기 전 새 generation을 자동 생성하지 않음 |
+| 동적 request/profile 변경 | hypothesis_id·기존 Verification history | 같은 ACTIVE Verification owner가 CAS로 새 generation·VERIFICATION work·application·Pro/Con을 생성 | 기존 work의 RETRY·RESUME과 과거 action·decision·attempt·PoC·CWE·Gate 재사용 금지. R3-06 §10.7 RQ-10 적용 |
 | Technical REVISE | hypothesis_id·ACTIVE Verification owner | 새 verification generation·VERIFICATION work·application·질문·Pro/Con, TRUE면 새 dynamic/PoC/CWE | 종료 work 부활 또는 이전 결과 자동 승격 금지 |
 | 새 material claim | 부모 history·계보 | 등록 검증을 거친 새 hypothesis_id와 검증 흐름 | 자식 결과를 부모 verdict/impact에 합치지 않음 |
 | 사람이 승인한 새 논리 실행 | 과거 terminal history | 증가한 work_generation·새 work_id, 승인된 run 경계 | 기존 terminal work 자체를 RUNNING으로 되돌리지 않음 |
@@ -101,7 +101,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 
 - 서로 다른 producer work의 attempt ID를 같게 강요하지 않는다. 같은 결과 chain의 각 record는 자기 producer의 올바른 attempt에 묶는다.
 - same work retry는 고정 PlaybookApplication/질문을 유지한다. 새 policy 게시만으로 중간 입력을 바꾸지 않는다.
-- `DYNAMIC_REPRO`의 `BLOCKED → RESUME`은 work의 `input_refs/input_hash`가 그대로일 때만 허용한다. exact DynamicReproductionRequest 또는 SandboxProfile revision을 바꿔야 하면 기존 work를 재개하지 않는다. 그 뒤 새 Verification generation·dynamic work를 만드는 전이는 현재 정본에 실행 절차가 없으므로 RQ-10에서 확정하기 전 자동 수행하지 않는다.
+- `DYNAMIC_REPRO`의 `BLOCKED → RESUME`은 work의 `input_refs/input_hash`가 그대로일 때만 허용한다. exact DynamicReproductionRequest 또는 SandboxProfile revision을 바꿔야 하면 기존 work를 재개하지 않는다. 같은 ACTIVE Verification owner가 CAS로 새 generation·VERIFICATION work·application·Pro/Con을 만들고, 필요하면 새 request와 dynamic work를 만드는 R3-06 §10.7 RQ-10을 적용한다.
 - 결과 저장 거절과 work 실행 실패를 구분한다. 단순 부정 입력 거절 때문에 정상 가설을 임의 FAILED/FALSE로 바꾸지 않는다.
 - **실행 오류·timeout·예산·정책 차단은 FALSE/HOLD의 근거가 아니다.** 정상 필수 검증 완료와 실제 반증이면 R6 FALSE, 정상 관측 불충분이면 R6 HOLD가 가능한 것은 별도다.
 - 모든 새 외부 실행 전에 exact 설정·권한·R8 잔여 시간/비용/work/새 attempt 한도를 검사한다. token 계획 초과만으로 중단하지 않으며 제공되지 않은 usage는 null이다.
@@ -119,7 +119,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 | 전 단계 공통 | STO-008 migration, WRK-003 취소·결과 경합 |
 | 1 시작·설정 | WRK-001/004/006, E2E-001 |
 | 2 clone/checkout | FLW-001, STO-001/007/009 |
-| 3 run-init 정적·정책·Docker 준비 병렬 | FLW-001/005, STO-007, WRK-006 |
+| 3 run-init 정적·정책 두 branch 병렬(Docker 준비 없음) | FLW-001/005, STO-007, WRK-006 |
 | 4 정규화 | STO-001~006, FLW-001 |
 | 5 초기 work 준비 | WRK-001/007 |
 | 6 Hypothesis 호출 | LLM-001~003/006, WRK-002 |
@@ -161,7 +161,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **8. 기대 state·current/격리 결과**: current=r0 유지. 종료된 프로세스를 A1 실행 중이라고 무기한 믿지 않음; 실패 원인 기록 후 retry/중단 정책, 새 domain 성공 없음.
 - **9. 다음 단계 호출**: r1 소비 금지; 다른 독립 작업은 자기 안전 조건 충족 때만 가능.
 - **10. 기대 오류·관측 log**: STORAGE/RECOVERY 원인 기록; 자동 복구 안전성 미증명 시 RECOVERY_FAILED. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-01.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-01.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4; STA는 R2, 저장·시간은 R8. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-STO-002 — hash 검증 전 종료·hash 불일치
@@ -176,7 +176,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **8. 기대 state·current/격리 결과**: 정상은 검증 후 저장 경로 재진입; 불일치는 r0 유지. 성공/실패 pointer 분리.
 - **9. 다음 단계 호출**: 완전한 COMMITTED 및 pointer 일치 전 소비 금지.
 - **10. 기대 오류·관측 log**: hash 검증 오류의 exact code RQ-02; 안전성 판단 불가 RECOVERY_FAILED. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-01/02.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-01/02.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4; STA는 R2, 저장·시간은 R8. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-STO-003 — PREPARED 직전·직후 종료
@@ -191,7 +191,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **8. 기대 state·current/격리 결과**: commit 가능하면 r1/target v+1로 한 번 확정. 충돌/취소/검증 실패면 ABORTED, current=r0. 아직 불확실하면 소비 차단.
 - **9. 다음 단계 호출**: PREPARED 상태에서 도구/Gate/Reporter/다음 소비 불가.
 - **10. 기대 오류·관측 log**: 충돌 STATE_VERSION_CONFLICT, stale STALE_RESULT, 복구 불명 RECOVERY_FAILED. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-01.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-01.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4; STA는 R2, 저장·시간은 R8. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-STO-004 — COMMITTED marker 뒤 pointer 투영 전 종료
@@ -236,7 +236,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **8. 기대 state·current/격리 결과**: 신뢰할 수 있는 마지막 commit 유지. 검증 불가 상태는 RECOVERY_FAILED; 가설 final/보고 성공을 합성하지 않음.
 - **9. 다음 단계 호출**: 정확한 binding 회복 전 후속 차단.
 - **10. 기대 오류·관측 log**: RECORD_REVISION_MISMATCH 또는 RECOVERY_FAILED; 세부 RQ-02. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-01/02.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-01/02.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4; STA는 R2, 저장·시간은 R8. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-STO-007 — 여러 output의 한쪽만 보임
@@ -251,22 +251,22 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **8. 기대 state·current/격리 결과**: ToolRunResult/rule record/commit 동일 연결이 복구되면 해당 도구 상태 유지. 저장 entry point 세부는 RQ-01.
 - **9. 다음 단계 호출**: 정규화 합류는 두 결과 확인 뒤 허용.
 - **10. 기대 오류·관측 log**: STORAGE/RECOVERY 원인; 안전성 미증명 RECOVERY_FAILED. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-01.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-01.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4; STA는 R2, 저장·시간은 R8. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-STO-008 — migration 도중 종료와 rollback
 
 - **1. ID·단계·work**: R3-REC-STO-008; domain work 시작 전 / 저장소 migration. CT 연결: COM-004/012.
 - **2. 중단 전 상태·current**: 이 card는 공통 STO 기준(§3.3)을 덮어쓴다. domain work 시작 전이므로 `work_id`, `attempt_id`, `hypothesis_id`, `verification_generation`, CodeWorkspace와 분석 commit은 아직 존재한다고 가정하지 않는다. 시작 조건은 이전 schema version으로 저장된 기존 immutable record와 저장소 metadata·backup뿐이다.
-- **3. work·attempt·generation·input**: domain work·attempt 입력은 없다. 이전/목표 schema version, 적용할 migration 식별 정보, 저장소 상태와 승인된 설정만 사용한다. migration 자체의 ID·journal·transaction 필드와 실행 authority는 #92/RQ-03에서 확정하기 전 미결정이며, 기존 `WorkType`을 임의로 재사용하지 않는다.
+- **3. work·attempt·generation·input**: domain work·attempt 입력은 없다. 이전/목표 Alembic revision, migration journal, 저장소 상태와 승인된 설정만 사용한다. migration은 별도 운영 명령이며 기존 `WorkType`을 임의로 재사용하지 않는다.
 - **4. 저장된 record·artifact·marker**: 이전 schema version·기존 immutable records·선택 기술이 제공하는 migration marker와 backup. marker·journal·transaction 구조가 정해지지 않은 상태에서 `WorkAttempt`나 `TransitionCommit`을 migration 기록으로 가장하지 않는다.
 - **5. 정확한 장애 주입 지점**: schema migration의 준비/부분 적용/완료 기록 전 지점별로 종료한다. 별도 rollback 불가능 변형.
 - **6. 재시작 검사 조건**: 선택 DB의 실제 원자성·schema marker·하위호환·artifact 해석 가능성·backup 여부.
-- **7. 복구 조치**: #92에서 migration 프로토콜 확정 전에는 자동 rollback 성공을 가정하지 않음. 검증된 forward/rollback만 허용, 불가능하면 시작 차단·수동 복구.
-- **8. 기대 state·current/격리 결과**: 기존 근거/history 보존; 손상 schema를 정상으로 열지 않음. migration 복구가 끝나기 전 새 analysis·domain work·attempt·current output을 만들지 않는다. 구체 DB 상태 기대값은 RQ-03에서 확정한다.
+- **7. 복구 조치**: R3-06 §10.6·§10.7 RQ-03에 따라 검증된 forward/rollback만 허용한다. 의미 손실 rollback은 백업과 사람 승인이 없으면 거절하고, 불가능하면 시작 차단·수동 복구한다.
+- **8. 기대 state·current/격리 결과**: 기존 근거/history 보존; 손상 schema를 정상으로 열지 않음. migration 복구가 끝나기 전 새 analysis·domain work·attempt·current output을 만들지 않는다.
 - **9. 다음 단계 호출**: schema/기록 호환성 검증 완료 전 도메인 work 실행 금지.
 - **10. 기대 오류·관측 log**: RECOVERY_FAILED, migration 원인 코드 RQ-02. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: domain work·attempt가 없으므로 분석 work 예산이나 LLM usage를 만들지 않는다. migration 자체의 시간·자원 한도와 재실행 계측은 저장 방식과 함께 RQ-03에서 확정한다.
+- **11. R8 예산·시간·비용**: domain work·attempt가 없으므로 분석 work 예산이나 LLM usage를 만들지 않는다. migration 작업 시간과 자원은 운영 log로 별도 계측한다.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4; STA는 R2, 저장·시간은 R8. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-STO-009 — DB·artifact 일부를 읽지 못함
@@ -281,7 +281,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **8. 기대 state·current/격리 결과**: current라 쓰인 pointer도 소비 가능하다고 간주하지 않음. 신뢰 history는 보존, 자동 domain 성공 없음.
 - **9. 다음 단계 호출**: 영향받는 downstream/Gate/Reporter/최종화 차단.
 - **10. 기대 오류·관측 log**: RECOVERY_FAILED 및 실제 STORAGE 오류; FALSE 생성 금지. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-01/02.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-01/02.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4; STA는 R2, 저장·시간은 R8. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-STO-010 — 복구 전에 Gate·Reporter·최종화 요청
@@ -313,7 +313,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **8. 기대 state·current/격리 결과**: 동일 work에 active attempt 최대 하나; 재시도하면 이전 종료 기록과 새 ID. 가설 자동 판정 없음.
 - **9. 다음 단계 호출**: claim/복구 확정 전 provider/tool 중복 호출 금지.
 - **10. 기대 오류·관측 log**: STATE_VERSION_CONFLICT; uncertain execution RQ-04. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-04.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-04.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R8; Verification는 R6. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-WRK-002 — timeout 후 새 시도 중 이전 응답 도착
@@ -354,11 +354,11 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **4. 저장된 record·artifact·marker**: 과거 terminal work·result·fail/cancel 기록, 과거 call chain.
 - **5. 정확한 장애 주입 지점**: FAILED/CANCELLED/SUCCEEDED work를 resume 명령으로 RUNNING 전환 시도. 별도 사람의 새 논리 실행 승인 fixture.
 - **6. 재시작 검사 조건**: work_generation·새 work_id·명시적 승인·run 종료 상태·예산/config 권한.
-- **7. 복구 조치**: terminal work rollback 금지. 동일 입력 새 논리 실행은 승인된 새 work_generation+새 work로 관계 기록. 취소 run의 CLI 새 run/재개 semantics는 RQ-05 확정 전 자동 재개 금지.
+- **7. 복구 조치**: terminal work rollback 금지. non-terminal `BLOCKED`이고 입력이 같을 때만 `resume`한다. terminal run에서 동일 입력을 다시 실행하려면 사용자가 새 `run`을 요청해 새 `analysis_id`를 만들며, 기존 run을 자동 재개하지 않는다.
 - **8. 기대 state·current/격리 결과**: 옛 terminal 상태 유지. 승인된 새 실행은 새 식별자/독립 호출; 취소 invocation predecessor 재사용 금지.
 - **9. 다음 단계 호출**: 유효 새 run/work 등록 조건 충족 뒤만 가능.
 - **10. 기대 오류·관측 log**: STATE_TRANSITION_INVALID / INVOCATION_CHAIN_INVALID; run 재시작 세부 RQ-05. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-05.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-05.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R8; Verification는 R6. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-WRK-005 — 재시작 중 identity·generation·입력 변경
@@ -388,7 +388,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **8. 기대 state·current/격리 결과**: 한도 소진은 추가 fan-out/attempt 금지, 해당 정리/종료 규칙; 가설 FALSE 없음.
 - **9. 다음 단계 호출**: 예산 확인 없는 호출 0건; 부분 유효 결과는 오류 포함 보존.
 - **10. 기대 오류·관측 log**: BUDGET_EXCEEDED; 측정 불확실성은 RQ-06. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-06.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-06.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R8; Verification는 R6. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-WRK-007 — work·application 등록 중 종료·재전달
@@ -405,6 +405,21 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **10. 기대 오류·관측 log**: STORAGE/RECOVERY 원인 또는 conflict; exact code RQ-02. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
 - **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R8; Verification는 R6. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
+
+#### R3-REC-WRK-008 — 예산 reservation·commit·release 중 종료
+
+- **1. ID·단계·work**: R3-REC-WRK-008; 모든 외부 실행 직전·직후 / 해당 work·attempt. CT 연결: BUD-001/002/003/006.
+- **2. 중단 전 상태·current**: WORKSPACE_PREP 변형은 `AnalysisRunState.execution_budget_profile_ref`의 ACTIVE run-level profile, 그 뒤 변형은 같은 `analysis_id`의 ACTIVE `BudgetProfileBinding`과 exact work-kind limit, committed ledger 합계와 active reservation 집합을 고정한다. 같은 purpose의 다른 analysis에는 별도 execution profile·binding·ledger를 두며 새 action은 아직 미claim 또는 자기 analysis의 reservation을 가진 상태다.
+- **3. work·attempt·generation·input**: 같은 analysis/action/work/attempt와 exact reservation_id, profile refs, reserved units, 실제 usage evidence를 연결한다.
+- **4. 저장된 record·artifact·marker**: `BudgetReservation(RESERVED | COMMITTED | RELEASED)`, 선택적 `BudgetLedgerEntry`, action claim/side-effect/usage marker를 지점별로 남긴다.
+- **5. 정확한 장애 주입 지점**: A reservation 전, B RESERVED 저장 뒤 action claim 전, C 외부 side effect 뒤 usage 저장 전, D ledger 저장과 COMMITTED 전이 사이, E 실행 전 거절 뒤 RELEASED 전, F commit/release 직후 응답 전 종료한다.
+- **6. 재시작 검사 조건**: reservation 상태, ledger unique key, action claim/attempt 상태, durable side-effect·usage evidence, WORKSPACE_PREP의 run-level execution profile 또는 후속 work의 full binding·exact work-kind limit과 remaining 계산을 확인한다. registry와 ledger 조회는 `analysis_id`를 필수로 사용하고 같은 purpose의 다른 analysis current pointer나 reservation을 반환하지 않는지 함께 확인한다.
+- **7. 복구 조치**: A는 새 reserve부터 시작한다. B/E에서 미실행이 증명되면 같은 reservation을 RELEASED로 끝낸다. D/F는 기존 ledger/state를 멱등 재투영한다. C처럼 실제 사용 여부를 증명하지 못하면 release·재실행하지 않고 `BLOCKED + waiting_for=BUDGET`으로 둔다. Recovery가 가격·사용량을 추정하지 않는다.
+- **8. 기대 state·current/격리 결과**: reservation 하나당 ledger entry 최대 하나, terminal reservation 전이 한 번, action claim 최대 한 번이다. 동시 재시작도 unique constraint로 두 번째 debit을 거절한다.
+- **9. 다음 단계 호출**: 안전한 reservation 상태가 확인되기 전 새 attempt·Provider·Sandbox·도구 호출은 0건이다.
+- **10. 기대 오류·관측 log**: actual exhausted만 `BUDGET_EXCEEDED`; 증거 불명은 budget waiting/block 사유, storage 충돌은 실제 오류를 기록한다. token usage 미제공만으로 차단하지 않는다.
+- **11. R8 예산·시간·비용**: 복구 재투영은 새 사용량이 아니다. 동일 reservation의 재전달로 elapsed·cost·work·call을 두 번 집계하지 않는다.
+- **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R8·R4와 해당 실행 owner. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 ### LLM. 인증·Provider·Pro/Con
 
@@ -435,7 +450,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **8. 기대 state·current/격리 결과**: 기존 실패 history 보존; 허용 retry/실패 상태 정책. 사용량·비용 중복 집계 금지.
 - **9. 다음 단계 호출**: 조건·예산 확인 전 호출 금지, 다음 모듈은 성공 commit 뒤.
 - **10. 기대 오류·관측 log**: INVOCATION_CHAIN_INVALID / ACTION_NOT_ALLOWED, 원래 RATE_LIMITED. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-04.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-04.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R6·R8; 해당 prompt owner. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-LLM-003 — invalid output repair 중 종료·소진
@@ -450,7 +465,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **8. 기대 state·current/격리 결과**: 유효 output 확정 전 work SUCCEEDED/가설 final 금지. 복구불가 또는 한도 소진은 해당 FAILED 전파.
 - **9. 다음 단계 호출**: invalid candidate 후속 소비 0건.
 - **10. 기대 오류·관측 log**: INVALID_OUTPUT; 복구 불명 RECOVERY_FAILED. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-07.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-07.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R6·R8; 해당 prompt owner. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-LLM-004 — Pro/Con 한쪽 종료와 부모 반영 사이
@@ -495,7 +510,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **8. 기대 state·current/격리 결과**: usage null은 허용될 수 있음; parser로 필수 참조 검증 불가이면 실패/복구 중단, 가설 FALSE 아님.
 - **9. 다음 단계 호출**: 신뢰 가능한 parsed output·필수 refs가 확인된 경우만 진행.
 - **10. 기대 오류·관측 log**: provider/parser 원인 RQ-02; 복구 안전성 불명 RECOVERY_FAILED. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-02/08.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-02/08.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R6·R8; 해당 prompt owner. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 ### DYN. Sandbox·AgentLog·PoC·cleanup
@@ -557,7 +572,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **8. 기대 state·current/격리 결과**: 유효 current attempt 환경만 사용; old log/PoC를 새 결과에 섞지 않음. 실패 자체 verdict 없음.
 - **9. 다음 단계 호출**: 재검증된 환경·SandboxProfile·예산 확인 전에는 실행 금지.
 - **10. 기대 오류·관측 log**: SANDBOX 원인·환경 상태 event. 복구 증명 불가 RECOVERY_FAILED. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-08.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-08.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R7·R4·R6·R8. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-DYN-005 — 동일 session 조정·RETRY·RESUME 분리
@@ -587,7 +602,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **8. 기대 state·current/격리 결과**: 검증 가능한 log만 보존, 새 attempt면 별도 sequence/session 연결. 미완성 실행은 성공/PoC 증거 아님.
 - **9. 다음 단계 호출**: log/provenance 확인 전 current dynamic result 소비 금지.
 - **10. 기대 오류·관측 log**: STALE_RESULT 또는 log/provenance 오류 RQ-02; 불명 RECOVERY_FAILED. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-09.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-09.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R7·R4·R6·R8. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-DYN-007 — candidate·validated PoC 확정 전 종료
@@ -617,7 +632,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **8. 기대 state·current/격리 결과**: cleanup_required=true이면 SUCCEEDED/FAILED+exact ref, 없을 때만 false/NOT_REQUIRED. 성공 기록 없이 깨끗하다고 선언하지 않음.
 - **9. 다음 단계 호출**: cleanup 불확실/실패에서 새 환경 재사용이나 정상 완료는 R7/R4 확정 조건 전 차단.
 - **10. 기대 오류·관측 log**: 실제 cleanup failure와 refs 보존; FAILED를 지우거나 FALSE 근거로 사용 안 함. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-08.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-08.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R7·R4·R6·R8. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-DYN-009 — 동적 결과 commit과 R6 current pointer 사이 종료
@@ -635,19 +650,19 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **11. R8 예산·시간·비용**: projection 복구는 새 attempt·새 Sandbox 실행이 아니므로 usage·elapsed를 중복 집계하지 않는다.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R6·R7·R8. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
-#### R3-REC-DYN-010 — exact request 또는 SandboxProfile 변경 뒤 RESUME 차단
+#### R3-REC-DYN-010 — exact request 또는 SandboxProfile 변경 뒤 RESUME 차단과 새 generation
 
-- **1. ID·단계·work**: R3-REC-DYN-010; 12 / 기존 DYNAMIC_REPRO의 입력 변경 필요 감지와 RESUME 차단. 후속 generation 전이는 RQ-10. CT 연결: DYN-004/008/011.
-- **2. 중단 전 상태·current**: G1의 KD1이 BLOCKED이고 DQ1·SP1·IHD1이 고정돼 있다. 복구 전 exact DynamicReproductionRequest를 DQ2로 바꾸거나 SandboxProfile을 SP2로 바꿔야 하는 상황을 각각 만든다.
-- **3. work·attempt·generation·input**: old G1/KD1/AD1/DQ1/SP1/IHD1과 필요한 DQ2 또는 SP2의 차이를 분리한다. RunPolicyState만 달라지는 변형은 request/profile 변경 변형으로 취급하지 않는다. 후속 G2/KD2는 아직 정상 fixture로 만들지 않는다.
-- **4. 저장된 record·artifact·marker**: G1 BLOCKED state·old action/decision/attempt/history와 새 입력 필요 사유. 정본 전이가 확정되기 전 G2·KD2·새 current pointer는 없다.
-- **5. 정확한 장애 주입 지점**: 변경 필요 확인 전후와 old KD1에 RESUME action을 제출하기 직전·거절 기록 도중에 종료한다. 정의되지 않은 G2 등록·commit 성공은 기대 fixture로 두지 않는다.
-- **6. 재시작 검사 조건**: old KD1 `input_refs/input_hash`, DQ1/SP1과 필요한 DQ2/SP2 차이, old action decision의 USED/EXPIRED 상태를 확인한다. 후속 generation 생성 가능 여부는 RQ-10 결정 전 검사하지 않는다.
-- **7. 복구 조치**: KD1을 RESUME하지 않고 입력 불일치와 차단 상태를 보존한다. Recovery가 G2·새 KD2·새 action/decision/attempt를 임의로 만들지 않는다. 후속 처리 절차는 RQ-10에서 정본화한 뒤 별도 fixture로 추가한다.
-- **8. 기대 state·current/격리 결과**: G1 artifact는 history로 보존되고 old ALLOW/SandboxPolicyDecision/attempt/result를 바뀐 입력에 복사하지 않는다. 대체 current generation/work는 RQ-10 해결 전 미결정이다. program policy 상태만 달라졌고 DQ1/SP1/IHD1이 같으면 불필요한 변경 전이도 만들지 않는다.
-- **9. 다음 단계 호출**: 후속 정본 전이가 없어 input mismatch가 해소되지 않은 동안 dynamic 실행·final TRUE·CWE·Gate 호출은 0건이다.
-- **10. 기대 오류·관측 log**: old work RESUME은 `STALE_RESULT` 또는 `STATE_TRANSITION_INVALID`, old decision 재사용은 `ACTION_NOT_ALLOWED`다. 정확한 code는 RQ-02에서 확정한다.
-- **11. R8 예산·시간·비용**: 차단 확인 자체로 새 generation·attempt 실행 usage를 만들지 않는다. 후속 실행 예산 적용 방식은 RQ-10과 함께 확정한다.
+- **1. ID·단계·work**: R3-REC-DYN-010; 10–13 / 기존 VERIFICATION·DYNAMIC_REPRO의 입력 변경 감지, old work 종료와 새 Verification generation. CT 연결: DYN-004/008/011/013.
+- **2. 중단 전 상태·current**: H1은 VERIFYING이고 G1의 ACTIVE Verification owner, old VERIFICATION work KV1, DYNAMIC_REPRO work KD1·attempt AD1, DQ1·SP1, `HypothesisProcessState.current_generation=G1`, `DynamicReproductionState.verification_generation=G1`과 current pointers가 고정돼 있다. DQ2 또는 SP2가 필요한 상황을 각각 만든다.
+- **3. work·attempt·generation·input**: action은 `RESTART_VERIFICATION_GENERATION`, requester는 같은 H1/G1의 ACTIVE Verification owner, `generation_restart_reason`은 `DYNAMIC_REQUEST_REPLACEMENT_REQUIRED | SANDBOX_PROFILE_REVISION_CHANGED`다. old process/assignment/work/attempt/request/profile/application/playbook exact refs, 하나 이상의 `generation_restart_basis_refs`, `expected_verification_generation=G1`, expected state version을 고정한다. request 교체 사유는 새 DQ2를 선행 입력으로 요구하지 않고 old DQ1과 변경 근거만 검사한다. profile 사유는 old SP1과 승인된 새 SP2 exact ref가 실제로 다름을 검사한다. RunPolicyState만 달라지는 변형은 입력 변경으로 취급하지 않는다.
+- **4. 저장된 record·artifact·marker**: G1의 old action/decision/attempt/environment/AgentLog/result/PoC/CWE/Gate history와 변경 사유를 보존한다. G2 transaction이 COMMITTED되기 전 새 current pointer나 일부 G2 work는 보이지 않아야 한다.
+- **5. 정확한 장애 주입 지점**: A action 저장 전, B validator ALLOW 뒤 transaction 전, C old attempt/work CANCELLED 처리 중, D G2/VERIFICATION/Application/질문/Pro·Con 생성 중, E process pointer 갱신 중, F 새 DynamicReproductionState 초기화 중, G transaction commit 직후 응답 전 종료한다. 같은 expected generation으로 두 요청을 동시에 보내는 변형도 둔다.
+- **6. 재시작 검사 조건**: ACTIVE Verification owner, H1 VERIFYING, expected generation/state version, old current closure, 닫힌 사유와 exact 변경 근거를 확인한다. request 교체는 새 request ref 없이 교체 필요 근거를, profile 변경은 old/new exact profile 차이를 검사한다. 이어서 action USED 여부와 `(hypothesis_id, expected_generation)` successor unique key를 확인한다.
+- **7. 복구 조치**: B 이전은 같은 요청을 재검사한다. C–F는 SQLite transaction rollback 때문에 G1 current를 유지한다. G는 LLM·Sandbox를 다시 실행하지 않고 기존 G2와 USED action을 반환한다. Recovery는 DQ/SP 변경 필요나 새 질문 의미를 결정하지 않고 저장된 ACTIVE Verification 요청만 멱등 재생한다.
+- **8. 기대 state·current/격리 결과**: commit 뒤 KV1/KD1 active attempt·work는 `CANCELLED/INPUT_SUPERSEDED`, G1은 history다. G2 VERIFICATION work, 새 PlaybookApplication, 전역 고유 질문, 독립 Pro/Con work, process pointer가 함께 current가 되고 G2 DynamicReproductionState는 `NOT_REQUESTED`, request/work/result refs null이다. 중복 요청은 G3를 만들지 않는다.
+- **9. 다음 단계 호출**: G2 전이가 COMMITTED되기 전 호출은 0건이다. 이후 새 Pro/Con·initial assessment를 먼저 수행하고, G2가 동적 재현을 요구할 때만 새 DQ2/KD2를 별도 전이로 만든다. old result로 final TRUE·CWE·Gate·Primitive·Reporter를 호출하지 않는다.
+- **10. 기대 오류·관측 log**: wrong requester/reason은 `AUTHORITY_DENIED | ACTION_NOT_ALLOWED`, stale version/generation은 `STATE_VERSION_CONFLICT | STALE_RESULT`, old RESUME은 `STATE_TRANSITION_INVALID`, old action 재사용은 `ACTION_NOT_ALLOWED`다. 여러 위반이면 R3-06 §8.4 우선순위를 적용한다.
+- **11. R8 예산·시간·비용**: rollback·멱등 반환은 새 사용량이 아니다. G2의 실제 새 work/attempt/LLM 호출은 각각 실행 전 ACTIVE budget binding과 reservation을 새로 검사한다.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R6·R7·R8. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-DYN-011 — validated PoC same-attempt provenance 복구
@@ -679,7 +694,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **8. 기대 state·current/격리 결과**: STATIC_NORMALIZE의 단일 bundle와 commit이 일치. Context는 성공/신뢰 부분/실패 분리; 가설 판정 자동 변경 없음.
 - **9. 다음 단계 호출**: 완전한 binding 및 허용된 partial 근거 확인 뒤 초기 가설/검증 진행.
 - **10. 기대 오류·관측 log**: CLONE_FAILED/CHECKOUT_FAILED/WORKSPACE_CHANGED 또는 DataGap/AnalysisError 실제 원인. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-01.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-01.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R5·R6·R8; 정적 R2, Chaining R1, 동적 R7. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-FLW-002 — final TRUE와 상태 확정 도중 종료
@@ -709,7 +724,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **8. 기대 state·current/격리 결과**: CWE/TG work output 단일 record. 호출 실패가 기존 TRUE를 FALSE로 바꾸지 않음.
 - **9. 다음 단계 호출**: ACCEPT exact 확정 전 Rule Scope 금지; 정책 수집 성공/부재 구분 후 적법 호출.
 - **10. 기대 오류·관측 log**: 호출 원인·STALE_RESULT·STATE_VERSION_CONFLICT; uncertain call RQ-04. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-04.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-04.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R5·R6·R8; 정적 R2, Chaining R1, 동적 R7. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-FLW-004 — REVISE commit와 새 generation 작업 복구
@@ -769,7 +784,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **8. 기대 state·current/격리 결과**: 같은 match/child를 중복 생성하지 않는다. 등록된 Primitive·기존 child를 사후 admission 재판정으로 회수하지 않는다. child는 새 HC로 전체 검증하고 부모 verdict/impact는 불변이다. 저장 registry는 #106 Q-01 및 본 문서 RQ-01 영향 표시.
 - **9. 다음 단계 호출**: 등록/계보/Context 검증 완료 전 child 검증 시작/후속 소비 금지.
 - **10. 기대 오류·관측 log**: STALE_RESULT, 중복 match는 ORCHESTRATION AnalysisError(정확한 code RQ-02); 정상 no-match로 위장 금지. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-01/02.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-01/02.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R5·R6·R8; 정적 R2, Chaining R1, 동적 R7. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-FLW-008 — Finding 정규화·upstream invalidation 경합
@@ -799,7 +814,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **8. 기대 state·current/격리 결과**: REPORT_DRAFT SUCCEEDED와 DRAFTED 같은 draft. final run/state/pointer 일치; report 없으면 이유 포함 empty list 허용. Agent 자동화 종료.
 - **9. 다음 단계 호출**: 미해결 RUNNING/PREPARED/pointer가 있으면 최종화 금지; 종료 뒤 새 Agent/외부 공개 action 없음.
 - **10. 기대 오류·관측 log**: REPORT_NOT_READY / STALE_RESULT / RECOVERY_FAILED, exact aggregation 오류 RQ-02. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-01/02.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: R3-06 §10.7 RQ-01/02.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R5·R6·R8; 정적 R2, Chaining R1, 동적 R7. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 ## 6. 최소 E2E 복구 10묶음
@@ -820,7 +835,7 @@ fake provider·fake static tool·fake Sandbox로 먼저 구성할 계획이다. 
 - **8. 기대 state·current/격리 결과**: 모든 work/commit/pointer 정합. 정상 TRUE 보고 경로는 COMPLETE·내부 draft; 다른 분기는 이유와 결과 집합을 사실대로 보존.
 - **9. 다음 단계 호출**: 정상 선행 조건이 충족된 경로만 실행; 외부 공개 없음.
 - **10. 기대 오류·관측 log**: 없음(정상 fixture); 발견된 mismatch는 시험 실패. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: 선행 REC card의 미결정 항목을 상속.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: 선행 REC card와 R3-06 §10.7.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R5·R6·R7·R8, 연결 경로 R1·R2. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-E2E-002 — LLM timeout 뒤 retry 성공
@@ -835,7 +850,7 @@ fake provider·fake static tool·fake Sandbox로 먼저 구성할 계획이다. 
 - **8. 기대 state·current/격리 결과**: 후속 정상 결과만 current, 실패 trace 보존. 최종 run 상태는 실제 실패 집계 규칙에 따름.
 - **9. 다음 단계 호출**: 새 유효 commit 뒤 흐름 재개.
 - **10. 기대 오류·관측 log**: 원래 timeout/ATTEMPT_NOT_ACTIVE 보존; FALSE 없음. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: 선행 REC card의 미결정 항목을 상속.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: 선행 REC card와 R3-06 §10.7.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R5·R6·R7·R8, 연결 경로 R1·R2. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-E2E-003 — 재시도 소진·판정 미생성
@@ -850,7 +865,7 @@ fake provider·fake static tool·fake Sandbox로 먼저 구성할 계획이다. 
 - **8. 기대 state·current/격리 결과**: 실패 가설 verification_result_ref=null; TRUE/FALSE/HOLD 새 생성 없음. run FAILED/PARTIAL 선택은 유효 다른 결과에 따름.
 - **9. 다음 단계 호출**: 해당 가설 CWE/Gate/Reporter 없음.
 - **10. 기대 오류·관측 log**: BUDGET_EXCEEDED 또는 실제 최종 실패 코드; 전체 history 보존. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: 선행 REC card의 미결정 항목을 상속.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: 선행 REC card와 R3-06 §10.7.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R5·R6·R7·R8, 연결 경로 R1·R2. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-E2E-004 — 저장 중 crash 뒤 resume
@@ -865,7 +880,7 @@ fake provider·fake static tool·fake Sandbox로 먼저 구성할 계획이다. 
 - **8. 기대 state·current/격리 결과**: 성공 복구는 같은 확정 결과 한 개, 불확실 복구는 RECOVERY_FAILED. 증거 없이 성공으로 간주하지 않음.
 - **9. 다음 단계 호출**: 안전한 commit+pointer 일치 후만 재개.
 - **10. 기대 오류·관측 log**: 해당 STO 원인, 실패를 verdict로 변환 금지. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: 선행 REC card의 미결정 항목을 상속.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: 선행 REC card와 R3-06 §10.7.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R5·R6·R7·R8, 연결 경로 R1·R2. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-E2E-005 — 사용자 취소·늦은 결과
@@ -880,7 +895,7 @@ fake provider·fake static tool·fake Sandbox로 먼저 구성할 계획이다. 
 - **8. 기대 state·current/격리 결과**: CANCELLED work/run을 몰래 재개하지 않음; current에 취소 뒤 output 없음.
 - **9. 다음 단계 호출**: 새 run은 별도 승인된 절차, 기존 자동화 계속 안 함.
 - **10. 기대 오류·관측 log**: STALE_RESULT·정리 실패는 별도 보존. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: 선행 REC card의 미결정 항목을 상속.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: 선행 REC card와 R3-06 §10.7.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R5·R6·R7·R8, 연결 경로 R1·R2. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-E2E-006 — 동적 재현 실패 뒤 새 attempt·validated PoC
@@ -895,7 +910,7 @@ fake provider·fake static tool·fake Sandbox로 먼저 구성할 계획이다. 
 - **8. 기대 state·current/격리 결과**: 새 DX/validated PoC만 current; 기존 candidate·log는 history. R6가 유효 근거로만 final TRUE.
 - **9. 다음 단계 호출**: 새 current TRUE/CWE/Gate 조건 후 보고 가능.
 - **10. 기대 오류·관측 log**: 과거 Sandbox 실패 보존, old PoC 섞이면 STALE_RESULT. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: 선행 REC card의 미결정 항목을 상속.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: 선행 REC card와 R3-06 §10.7.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R5·R6·R7·R8, 연결 경로 R1·R2. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-E2E-007 — Technical REVISE 새 generation 완주
@@ -910,7 +925,7 @@ fake provider·fake static tool·fake Sandbox로 먼저 구성할 계획이다. 
 - **8. 기대 state·current/격리 결과**: 새 final/current chain만 G2 자격. old 결과를 최신 generation으로 바꾸지 않음.
 - **9. 다음 단계 호출**: 새 Technical ACCEPT와 정책/보고 조건 후만 다음 단계.
 - **10. 기대 오류·관측 log**: stale/revision 오류 없으면 정상; 과거 REVISE 기록 유지. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: 선행 REC card의 미결정 항목을 상속.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: 선행 REC card와 R3-06 §10.7.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R5·R6·R7·R8, 연결 경로 R1·R2. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-E2E-008 — HOLD·Chaining child 복구
@@ -925,7 +940,7 @@ fake provider·fake static tool·fake Sandbox로 먼저 구성할 계획이다. 
 - **8. 기대 state·current/격리 결과**: 부모 판정 불변, child 독립; 빈 HOLD는 work 없이 종료. PR 입력 계약 미해결이면 관련 실행은 미구현/차단으로 보고.
 - **9. 다음 단계 호출**: lineage 확인 전 child Context/검증 금지.
 - **10. 기대 오류·관측 log**: STALE_RESULT/중복 구현 오류; 정상 no-match와 구분. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: 선행 REC card의 미결정 항목을 상속.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: 선행 REC card와 R3-06 §10.7.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R5·R6·R7·R8, 연결 경로 R1·R2. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-E2E-009 — Rule Scope DENY·Finding-only 종료
@@ -940,7 +955,7 @@ fake provider·fake static tool·fake Sandbox로 먼저 구성할 계획이다. 
 - **8. 기대 state·current/격리 결과**: current Finding 유지, report_draft_refs=[]로 적법 종료 가능. DENY는 기술 FALSE가 아님.
 - **9. 다음 단계 호출**: Reporter/외부 공개 호출 없음.
 - **10. 기대 오류·관측 log**: 실제 보고 시도에는 REPORT_NOT_READY; DENY 자체 실행 오류 아님. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: 선행 REC card의 미결정 항목을 상속.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: 선행 REC card와 R3-06 §10.7.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R5·R6·R7·R8, 연결 경로 R1·R2. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-E2E-010 — 보고서 확정·자동화 종료 후 중복 재시작
@@ -955,7 +970,7 @@ fake provider·fake static tool·fake Sandbox로 먼저 구성할 계획이다. 
 - **8. 기대 state·current/격리 결과**: report/run 결과 개수·현재 refs 불변, 추가 LLM/Sandbox 호출 0건. 실제 공개는 시스템 밖 사람 절차.
 - **9. 다음 단계 호출**: 자동화 종료; 공개/제출 자동 action 없음.
 - **10. 기대 오류·관측 log**: 불일치면 RECOVERY_FAILED, 정상은 새 오류 없음. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: 선행 REC card의 미결정 항목을 상속.
+- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 적용 기준: 선행 REC card와 R3-06 §10.7.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R5·R6·R7·R8, 연결 경로 R1·R2. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 ## 7. 실제 시험 구현 계획과 증거 형식
@@ -1001,22 +1016,22 @@ fake provider·fake static tool·fake Sandbox로 먼저 구성할 계획이다. 
 
 외부 호출이 실제로 실행됐는지 모르는 상태에서는 ‘정확히 한 번 실행 보장’을 선언하지 않는다. 알려진 COMMITTED 재투영의 무중복과 uncertain provider 요청 처리는 별개로 검증한다(RQ-04).
 
-## 8. 미결정 계약과 담당자 확인
+## 8. R3-06에서 확정한 복구 기준
 
-RQ 표는 새 GitHub 이슈나 이미 받은 승인 기록이 아니다. #92에 이미 남긴 [저장 계약 질문](https://github.com/SASTsimi/sastsimi/issues/92#issuecomment-5556395217), #106의 Q 항목과 연결한다.
+`RQ-01`~`RQ-10`은 runtime enum이 아니라 복구 설계 항목을 추적하는 문서 ID다. 구현 기준은 [R3-06 §10.7](./06-implementation-baseline.md#107-r3-03-복구-질문의-확정-기준)과 아래 표로 확정하며, 각 역할 검토자는 자기 영역의 실제 구현 가능성과 기존 계약 보존 여부를 확인한다.
 
-| 항목 | 현재 확정된 경계 | 결정이 필요한 부분·선택지 | 담당·영향·해결 조건 |
+| 항목 | 상태 | 확정 기준 | 필수 검토 |
 |---|---|---|---|
-| RQ-01 저장 프로토콜·core output | PREPARED 소비 금지, COMMITTED 확정·CAS·재투영, 공통 output binding | 물리 staging/DB/durable ACK/orphan 정리와 PREPARED 재확정 조건. CodeWorkspace/ToolRunResult/proposal/AnalysisRunResult 저장 entry point·producer·current/atomic 경계. nested child proposal 독립 저장도 별도 | R4 @taehyeon-git, R2/R1/R8, #92·#106 Q-01. core output별 복구 가능한 exact journal과 단일 확정 경계 문서화 전 구현 보류 |
-| RQ-02 오류/거절 상태 매핑 | STALE_RESULT, ATTEMPT_NOT_ACTIVE, STATE_VERSION_CONFLICT, STATE_TRANSITION_INVALID, RECOVERY_FAILED 등 기존 의미 | 각 실패 지점의 exact code·stage·retryable·related refs 및 work 상태 전파. 새 enum을 임의로 만들지 않고 기존 계약 재사용/추가 여부 확인 | R4+전문 owner. 각 card의 자동 assertion 구현 전 확정 |
-| RQ-03 migration·rollback | 구 schema/손상 데이터를 성공으로 읽지 않음, immutable history 보존 | SQLite 등 실제 선택 제품의 transaction·schema version·backup·forward/rollback 가능 지점과 rollback 불가 시 복구 절차 | R3·R4·R8, #92. STO-008을 실제 DB별 fixture와 기대 상태로 구체화 |
-| RQ-04 worker·외부 호출 불확실성 | active attempt 단일성·USED decision 재사용 금지·journal 우선 | worker 사망 판별/claim 복구, 요청 전송 후 응답 미기록 시 공식 조회·provider idempotency 지원 여부 또는 안전 중단. 지원 근거 없이 재전송하면 중복 실행 위험 | R3·R4·R8, provider는 #90. adapter별 관측 가능한 증거·처리 기준 확정; 모르면 안전 중단 |
-| RQ-05 취소 run·사용자 진입점 | terminal work를 되살리지 않음, 새 논리 실행은 명시 승인·새 work generation | CLI resume/cancel의 run 수준 조건·새 analysis 필요 여부·기존 결과 접근·반환 코드·run 종료 status 선택 기준 | R3·R4·R8, #92. 이미 CANCELLED인 run의 자동 재개를 허용하지 않는 안전 기본값 유지 |
-| RQ-06 crash 중 시간·비용 | completed attempt elapsed 합산, block/process off 시간 별도, token 계획값 강제 상한 아님, 미제공 usage null | 미완료 attempt의 마지막 관측 이후 비용/시간 불확실성, monotonic clock 재시작 후 기준과 새 호출 허용 여부. 추정값을 실측으로 쓰지 않음 | R8 @gitterable·R4. unknown 표시·잔여 예산 판단·실행 차단 기준 확정 |
-| RQ-07 repair 저장 경계 | invalid output 소비 금지, 제한된 repair와 실제 새 invocation 기록 유지 | repair 내부 단계·로그 durable 범위와 retry/새 attempt의 exact 대응, 소진/중단 후 이어가기 조건. 미병합 옛 #62 댓글을 정본으로 사용하지 않음 | R4·R3·R6/R1·R8. current 08/09 및 #91 구현 설계와 일치하는 fixture/호출 trace 확정 |
-| RQ-08 Sandbox 재생성·cleanup | same-attempt provenance, 실제 자원 있으면 NOT_REQUIRED 금지, 외부 보호 완화 금지 | 실제 backend의 건강 상태·자원 소유·중복 cleanup·실패 격리/다음 실행 허용 기준. R7 정상 재구성과 session 재시작 분기 | R7 @Potatonion·R4·R8. 실제 dependency 시험 전 image/profile/cleanup log 기준 승인 |
-| RQ-09 append 재전달 | AgentLog durable prefix·전역 event ID·attempt sequence·old event current 첨부 금지 | durable ACK 직전 종료 후 같은 event 재전달의 idempotent 처리, start만 있고 finish 미확인인 command의 복구 기록. finish event를 조작해 채우지 않음 | R7·R4. exact event 재전달/충돌/실제 관측 미확인 시 기대값 확정 |
-| RQ-10 동적 입력 변경 후 후속 전이 | exact DynamicReproductionRequest 또는 SandboxProfile이 바뀌면 기존 `DYNAMIC_REPRO` work를 RETRY·RESUME하지 않고 old decision·attempt·result를 재사용하지 않음 | `VERIFYING` 상태에서 새 Verification generation·dynamic work를 만들 수 있는 정본 전이, 또는 기존 work를 종료하고 Technical `REVISE` 등 승인된 경로로 이동하는 방식. `08-lightweight-data-contracts.md`의 generation CAS·입력 변경·Primitive admission 근거를 함께 맞춰야 함 | R4·R6·R7·R1·R3. `08`의 관련 전이와 authority가 확정되기 전 DYN-010은 차단까지만 자동 assertion하고 후속 성공 fixture 구현 보류 |
+| RQ-01 저장 프로토콜·core output | `RESOLVED` | SQLite metadata transaction과 content-addressed artifact의 staging → hash → `PREPARED` → CAS → atomic rename → `COMMITTED` → current 재투영 순서를 사용한다. core result owner와 current 선택점은 R3-06 §10.2.1을 따른다. | R4, R2·R1·R8 |
+| RQ-02 오류/거절 상태 매핑 | `RESOLVED` | R3-06 §8.4 우선순위로 근본 `AnalysisError.code` 하나를 선택하고 모든 실패 검사는 `ActionCheck`에 남긴다. 안전한 복구를 입증하지 못하면 `RECOVERY_FAILED`로 후속 소비를 막는다. | R4와 각 전문 owner |
+| RQ-03 migration·rollback | `RESOLVED` | Alembic revision만 schema를 변경한다. pending·중단·revision 불일치 상태에서는 앱을 시작하지 않으며, 검증된 upgrade/downgrade만 실행한다. 의미 손실 rollback은 백업과 사람 승인 없이는 거절한다. | R3·R4·R8 |
+| RQ-04 worker·외부 호출 불확실성 | `RESOLVED` | SQLite lease와 `state_version` CAS로 worker claim을 회수한다. 외부 전송 뒤 결과가 불명확하면 exact request ID의 공식 조회가 가능할 때만 재조정하고, 아니면 자동 재전송하지 않고 `RECOVERY_FAILED`와 `BLOCKED + waiting_for=INPUT`으로 명시적 결정을 기다린다. | R3·R4·R8, Provider는 R3-04 |
+| RQ-05 취소 run·사용자 진입점 | `RESOLVED` | `resume`은 입력이 같은 non-terminal `BLOCKED` run만 대상으로 한다. terminal run은 되살리지 않고, 재실행은 새 `analysis_id`의 새 `run`으로 시작한다. | R3·R4·R8 |
+| RQ-06 crash 중 시간·비용 | `RESOLVED` | durable heartbeat에 기록된 monotonic 실행 구간만 누적하고 process off·BLOCKED 대기는 제외한다. 미기록 구간과 provider 미제공 usage는 `null`과 사유로 남긴다. hard budget 잔여량을 입증하지 못하면 새 work를 시작하지 않는다. | R8·R4 |
+| RQ-07 repair 저장 경계 | `RESOLVED` | invalid 응답과 validation error를 먼저 durable log에 남긴다. 각 repair는 새 `WorkAttempt`·`llm_call_id`·spec·action·decision·`NEW` session으로 실행하고, 성공 output 하나만 current로 확정한다. | R3·R4·R6·R1·R8 |
+| RQ-08 Sandbox 재생성·cleanup | `RESOLVED` | 건강·소유 상태를 확인할 수 없으면 `STATE_UNCERTAIN`으로 새 environment binding을 만들고 기존 writable container를 재사용하지 않는다. 정확한 ownership label과 environment ref가 일치하는 자원만 멱등 정리하며, 실패 자원은 격리한다. | R7·R4·R8 |
+| RQ-09 append 재전달 | `RESOLVED` | 같은 `event_id`와 canonical hash는 기존 ACK를 반환한다. 같은 ID/sequence의 다른 bytes는 `RECOVERY_FAILED`로 거절한다. finish가 없는 event에는 종료 사실을 만들어 넣지 않고 environment를 `STATE_UNCERTAIN`으로 처리한다. | R7·R4 |
+| RQ-10 동적 입력 변경 후 후속 전이 | `RESOLVED` | 기존 dynamic work는 history로 종료한다. 같은 ACTIVE Verification owner가 CAS로 새 generation·VERIFICATION work·application·Pro/Con을 만들고, 필요할 때만 새 request와 dynamic work를 만든다. 과거 action·attempt·environment·PoC·CWE·Gate는 재사용하지 않는다. | R4·R6·R7·R1·R3 |
 
 ### 8.1 이미 해결된 내용과 구분
 
@@ -1026,7 +1041,7 @@ RQ 표는 새 GitHub 이슈나 이미 받은 승인 기록이 아니다. #92에 
 - match 중복 키는 분석 scope의 (upstream_result_ref, downstream_input_ref, matched_input_id)다. 예전 fingerprint 문구를 그대로 사용하지 않는다.
 - Primitive admission은 등록 시점의 1회 판정이다. Chaining 시작 뒤 index revision이 증가해도 고정한 후보에는 영향이 없고, 등록된 Primitive·자식을 사후 판정으로 회수하지 않는다.
 - 최초 Chaining의 `lineage_results`는 빈 목록을 허용하고, CHAINING-origin 조상이 있는 경우에만 계산한 exact lineage closure를 요구하도록 병합된 #97 최종 HEAD `fbf0236`에서 정리됐다. Primitive admission은 등록 시점의 1회 판정이므로 Chaining Prompt 입력에 넣거나 다시 판정하지 않는다.
-- 모든 RQ가 해결되기 전에도 논리 복구 시험 계획은 검토할 수 있다. 다만 미정 세부 기대값을 프로그램 구현 완료·실행 PASS라고 보고할 수 없다.
+- 위 RQ 기준은 문서상 확정됐지만 실제 runtime·migration·Provider·Sandbox 시험은 아직 수행하지 않았다. 문서 확정과 구현·실행 PASS를 혼동하지 않는다.
 
 ## 9. 역할별 검토·완료 조건
 
@@ -1049,15 +1064,15 @@ RQ 표는 새 GitHub 이슈나 이미 받은 승인 기록이 아니다. #92에 
 - [x] 장애 card 43개 + 최소 E2E card 10개 작성
 - [x] case별 12개 필수 항목과 상태·current/격리·후속 호출 기준 작성
 - [x] fake 장애 주입과 실제 dependency 시험 분리
-- [x] 저장/오류/복구 미결정 계약을 RQ 항목으로 분리
+- [x] 저장/오류/복구 질문을 RQ 항목으로 분리하고 R3-06 §10.7에서 구현 기준 확정
 - [x] 병합된 #106 최종 HEAD `0e2e7fe` 기준으로 의존 ID/fixture 재대조
 - [x] 병합된 #97 최종 HEAD `fbf0236` 기준으로 역할명·Prompt lineage·Sandbox tool-loop 재대조
 - [ ] R4·R5·R6·R7·R8 및 영향받는 R1/R2 검토 기록 확보
-- [ ] 구현을 막는 RQ 항목의 exact 기대값/저장 경계 확정
-- [ ] 최종 main SHA에서 정합성 재확인 후 #89 완료 조건 판단
+- [x] 구현을 막는 RQ 항목의 exact 기대값·저장 경계 확정
+- [x] PR #107 병합 commit `35729d3` 기준 정합성 재확인
 
 체크된 항목은 문서 작성 여부일 뿐 실행 시험 통과가 아니다. 실제 fixture·runtime·Recovery code·migration·자동 시험·실제 Provider/Sandbox 검증은 아직 구현/수행하지 않았다. 이 PR을 만들었다는 이유로 #89나 상위 #4를 바로 닫지 않는다.
 
 ## 10. 발표·상태 보고용 요약
 
-세부 장애·복구 card 43개와 전체 흐름 E2E card 10개를 계획으로 정리했다. 저장 준비 상태의 결과는 다음 단계에 넘기지 않고, 이미 확정된 기록은 같은 기록으로 상태를 복원하도록 검사 지점을 정했다. 실제 복구 프로그램이나 자동 테스트는 아직 만들지 않았고, 저장 방식·일부 오류/불확실 실행 처리와 담당자 검토가 남아 있다.
+세부 장애·복구 card 43개와 전체 흐름 E2E card 10개를 계획으로 정리했다. 저장 준비 상태의 결과는 다음 단계에 넘기지 않고, 이미 확정된 기록은 같은 기록으로 상태를 복원하도록 검사 지점을 정했다. 저장·오류·불확실 실행의 구현 기준은 R3-06에서 확정했지만, 실제 복구 프로그램·자동 테스트·Provider/Sandbox 시험과 역할별 검토는 아직 남아 있다.

@@ -173,6 +173,7 @@ Agent 또는 service의 제안
 - 시간·비용·work·retry·repair·Gate 보완 예산. token 사용량과 `LLMCallSpec.token_budget`은 관측·계획 정보이며 token 초과·누락만으로 `DENY`하지 않음
 - 일반 도구 action의 허용 tool과 workspace 안의 file path
 - `REQUEST_DYNAMIC_REPRO` 호출자의 Verification 권한·현재 generation·요청 reference·상태·예산과 generation당 하나의 동적 재현 work 제한
+- `RESTART_VERIFICATION_GENERATION`은 같은 가설·generation의 ACTIVE Verification owner만 `VERIFYING` 중 요청한다. current request 교체 필요 또는 승인된 profile revision 변경의 exact 근거, expected generation·부모 state version·old current closure를 검사하고, 허용되면 old Verification·dynamic work 종료와 새 generation·application·질문·Pro/Con·current pointer를 한 CAS transaction으로 확정한다. Recovery는 저장된 action을 재생할 뿐 변경 필요성을 판단하지 않는다.
 - `RUN_SANDBOX` 호출자의 Reproduction Setup Automation 권한·exact `DynamicReproductionRequest`·current `EnvironmentRequirements`·current exact `ReproductionPlan`·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile`, 상태·예산. 두 profile은 action `input_refs`와 `checked_config_refs`에 같은 exact revision으로 고정한다. policy state는 요청 당시 exact 감사 reference로만 기록한다. Runtime Validator는 R8 잔여 시간·새 attempt를, Sandbox Controller는 `LOCAL_ONLY`·검증 가능한 clone/same-attempt mock·fixture·격리 network·R7 입장 수치를 강제하고 실제 애플리케이션 환경 값은 R7이 비교
 - provider/model/profile, NEW/RESUME/AUTO와 explicit failover
 - Verification work 등록 시 exact hypothesis→proposal, `PlaybookPolicy`, 선택된 `VerificationPlaybook`과 `PlaybookApplication`을 함께 고정하고, 직접 검증·Pro·Con·최종 합성이 같은 application 질문 집합을 사용하는지 검사
@@ -185,7 +186,7 @@ Agent 또는 service의 제안
 
 Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서 품질을 평가하지 않는다. 그것은 Verification, 두 LLM Gate와 Reporter의 역할이다.
 
-`REQUEST_DYNAMIC_REPRO`의 `ActionDecision=ALLOW`는 현재 Verification generation에 하나의 `DYNAMIC_REPRO` work를 등록한다. `RUN_SANDBOX`의 `ActionDecision=ALLOW`는 exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` 범위에서 로컬 전용 외부 격리 경계를 만들 권한만 부여한다. 요청 당시 `RunPolicyState`는 `SandboxPolicyDecision`에 exact 감사 reference로 연결한다. plan·profile·실행 대상·network·mount·secret 경계가 바뀌면 기존 `UNUSED` decision은 `EXPIRED`이고 새 action이 필요하지만, policy pointer·freshness 변경만으로 local-only decision을 취소하지 않는다. Sandbox Controller는 출처 불명/live asset·외부 계정·허용되지 않은 egress를 차단하지만 정책 의미나 보고 가능성을 판정하지 않는다. Setup Automation은 통과한 범위에서 image·container·cleanup을 수행한다. Dynamic Reproduction Agent가 Sandbox 안에서 command·PoC·관찰과 재시도를 자율적으로 선택하며, Session Manager가 실제 event를 기록한다. 실행 뒤 `SAVE_RESULT`는 policy decision·plan·recipe·실제 환경·AgentLog·candidate·validated PoC가 같은 attempt인지 다시 대조한다. 마지막 대조는 환경 의미나 취약점 판단을 반복하는 검사가 아니라 결과 무결성 확인이다.
+`REQUEST_DYNAMIC_REPRO`의 `ActionDecision=ALLOW`는 현재 Verification generation에 하나의 `DYNAMIC_REPRO` work를 등록한다. current request 교체 또는 승인된 새 profile 적용이 필요하면 같은 owner가 `RESTART_VERIFICATION_GENERATION`을 요청한다. request 교체 사유는 old request와 exact 변경 근거만 고정하며 아직 존재하지 않는 새 request를 요구하지 않고, profile 변경은 old/new exact profile이 실제로 다른지 검사한다. 새 generation에는 application·질문·Pro/Con부터 등록하고 새 request/work는 초기 판단 뒤 필요할 때만 만든다. `RUN_SANDBOX`의 `ActionDecision=ALLOW`는 exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` 범위에서 로컬 전용 외부 격리 경계를 만들 권한만 부여한다. 요청 당시 `RunPolicyState`는 `SandboxPolicyDecision`에 exact 감사 reference로 연결한다. plan·profile·실행 대상·network·mount·secret 경계가 바뀌면 기존 `UNUSED` decision은 `EXPIRED`이고 새 action이 필요하지만, policy pointer·freshness 변경만으로 local-only decision을 취소하지 않는다. Sandbox Controller는 출처 불명/live asset·외부 계정·허용되지 않은 egress를 차단하지만 정책 의미나 보고 가능성을 판정하지 않는다. Setup Automation은 통과한 범위에서 image·container·cleanup을 수행한다. Dynamic Reproduction Agent가 Sandbox 안에서 command·PoC·관찰과 재시도를 자율적으로 선택하며, Session Manager가 실제 event를 기록한다. 실행 뒤 `SAVE_RESULT`는 policy decision·plan·recipe·실제 환경·AgentLog·candidate·validated PoC가 같은 attempt인지 다시 대조한다. 마지막 대조는 환경 의미나 취약점 판단을 반복하는 검사가 아니라 결과 무결성 확인이다.
 
 ## 병렬 실행과 결과 합류
 
@@ -203,7 +204,7 @@ Runtime Validator는 취약점 진위, CWE 적절성, 정책 내용과 보고서
 
 ## 바꿀 수 없는 직렬 순서
 
-program별 정책 준비(collection → parsing)는 실행 시작 runtime이 workspace 준비 뒤 정적 근거 준비·공통 환경 준비와 병렬로 등록하고, 아래 가설별 직렬 구간은 run에 고정된 정책 상태(`RunPolicyState`가 가리키는 `PolicyCollectionResult`·`ProgramPolicyRecord`)를 소비만 한다. 정책의 준비 시점이 바뀔 뿐 Gate evaluation order는 그대로다.
+program별 정책 준비(collection → parsing)는 실행 시작 runtime이 workspace 준비 뒤 정적 근거 준비와 독립 branch로 병렬 등록하고, 아래 가설별 직렬 구간은 run에 고정된 정책 상태(`RunPolicyState`가 가리키는 `PolicyCollectionResult`·`ProgramPolicyRecord`)를 소비만 한다. run-init에는 Docker image·container 준비 branch가 없으며, Docker 준비는 exact `DynamicReproductionRequest`가 생긴 가설의 `DYNAMIC_REPRO` 단계에서만 시작한다. 정책의 준비 시점이 바뀔 뿐 Gate evaluation order는 그대로다.
 
 한 가설의 다음 구간은 병렬화하지 않는다.
 

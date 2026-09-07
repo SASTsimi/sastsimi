@@ -103,6 +103,7 @@ PromptRegistryEntry:
   prompt_key: verification.final-verdict
   agent_role: VERIFICATION
   task_kind: FINAL_VERDICT
+  purpose: PRODUCTION
   template_ref: StoredDataRef
   template_version: 1.0.0
   input_slots:
@@ -149,6 +150,7 @@ PromptRegistryEntry:
   redaction_policy_ref: StoredDataRef
   result_kind: verification_result
   status: DRAFT
+  quality_evaluation_ref: StoredDataRef | null
   owner_role: R6
   reviewer_roles: [R3, R4, R7, R8]
 ```
@@ -157,7 +159,7 @@ PromptRegistryEntry:
 
 `input_slots`는 slot별 data kind, 노출할 JSON Pointer, 필수 개수와 신뢰 등급을 정한다. `"$"`는 해당 record 전체를 허용할 때만 단독으로 사용한다. Builder는 허용 field만 새 `projected_data_ref`에 canonical serialization하며 원본 exact `source_ref`도 함께 남긴다.
 
-`provider_profile_refs`는 #90에서 model·environment 조합까지 검증된 허용 `ProviderProfile` revision을 primary부터 explicit fallback 순서로 고정한다. `execution_limits_ref`는 token 계획값·timeout·동시성 한도, `retry_policy_ref`는 repair·retry·explicit failover 조건을 고정한다. `output_schema_ref`, `semantic_validator_ref`, `tool_policy_ref`와 `redaction_policy_ref`도 versioned record다. 실제 호출은 이 목록 중 하나의 exact `provider_profile_ref`와 그 profile의 `model`을 `LLMCallSpec`에 기록한다. Provider가 바뀌어도 template와 판단 기준은 그대로이며, profile 목록 변경은 새 registry revision과 재검토가 필요하다. tool policy의 `allowed_tools=[]`는 tool 사용 금지, `result_kind`는 성공 출력의 유일한 저장 계약을 뜻한다.
+`provider_profile_refs`는 #90에서 model·environment 조합까지 기술 capability를 검증한 허용 `ProviderProfile` revision을 primary부터 explicit fallback 순서로 고정한다. 이 PVD 통과는 품질 승인이 아니다. `purpose=EVALUATION` entry는 격리된 평가에서 사용할 수 있지만, `purpose=PRODUCTION,status=ACTIVE` entry는 동일한 실행 의미를 검증한 R8 `EvaluationRecommendation(decision=ACCEPT_FOR_PRODUCTION)` exact revision이 `quality_evaluation_ref`에 있어야 한다. trusted Prompt Registry Runtime만 사람 승인 뒤 운영 revision을 활성화한다. `execution_limits_ref`는 token 계획값·timeout·동시성 한도, `retry_policy_ref`는 repair·retry·explicit failover 조건을 고정한다. `output_schema_ref`, `semantic_validator_ref`, `tool_policy_ref`와 `redaction_policy_ref`도 versioned record다. 실제 호출은 이 목록 중 하나의 exact `provider_profile_ref`와 그 profile의 `model`을 `LLMCallSpec`에 기록한다. Provider가 바뀌어도 template와 판단 기준은 그대로이며, profile 목록 변경은 새 registry revision과 재검토가 필요하다. tool policy의 `allowed_tools=[]`는 tool 사용 금지, `result_kind`는 성공 출력의 유일한 저장 계약을 뜻한다.
 
 `PromptPayload`는 한 번의 호출에 실제로 조립한 불변 입력이다.
 
@@ -168,6 +170,7 @@ PromptPayload:
   prompt_key: string
   agent_role: HYPOTHESIS | VERIFICATION | PRO | CON | CWE_LABELING | CHAINING | TECHNICAL_GATE | RULE_SCOPE_GATE | REPORTER | POLICY_PARSER | DYNAMIC_REPRODUCTION
   task_kind: string
+  purpose: EVALUATION | PRODUCTION
   template_ref: StoredDataRef
   template_version: string
   context_bindings: [PromptContextBinding]
@@ -215,7 +218,7 @@ PromptContextBinding:
 | RULE_SCOPE_GATE / `REVIEW` | `model.rule-scope-gate.quality-v1` | `providers.r3-04-accepted-v1` | `limits.rule-scope-gate.v1` | `retry.gate.v1` | `tools.none.v1` | `redaction.policy.v1` | NEW |
 | REPORTER / `CREATE_DRAFT` | `model.reporter.quality-v1` | `providers.r3-04-accepted-v1` | `limits.reporter.v1` | `retry.standard.v1` | `tools.none.v1` | `redaction.report.v1` | NEW |
 
-`providers.r3-04-accepted-v1`에는 #90의 시험과 검토를 통과한 exact ProviderProfile만 들어간다. #90에서 승인된 profile이 없으면 이 설정도 `DRAFT`이며 어떤 역할도 호출하지 않는다. 따라서 네 후보 adapter를 모두 지원한다고 가정하지 않는다. 표의 각 행은 별도 immutable `PromptRegistryEntry`이고, 그 record의 `agent_role + task_kind`는 아래 task 행과 정확히 하나씩 대응한다. 같은 역할의 여러 task도 각자 독립된 `provider_profile_refs`를 가지며 primary 하나와 사전에 허용한 fallback만 둔다. 실제 model ID, timeout, token 계획값, 호출·repair 횟수는 R8 평가와 #92 승인 전까지 `DRAFT` 설정에 임의 값으로 채우지 않는다.
+`providers.r3-04-accepted-v1`에는 #90의 기술 capability 시험과 검토를 통과한 exact ProviderProfile만 들어간다. #90에서 승인된 profile이 없으면 이 설정도 `DRAFT`이며 어떤 역할도 호출하지 않는다. 따라서 네 후보 adapter를 모두 지원한다고 가정하지 않는다. 표의 각 행은 별도 immutable `PromptRegistryEntry`이고, 그 record의 `agent_role + task_kind + purpose`는 아래 task 행과 정확히 하나씩 대응한다. 먼저 같은 실행 의미의 `purpose=EVALUATION` entry로 R8 평가를 수행하고, 합격 recommendation과 사람 승인이 있어야 `purpose=PRODUCTION,status=ACTIVE` revision을 만든다. 같은 역할의 여러 task도 각자 독립된 `provider_profile_refs`를 가지며 primary 하나와 사전에 허용한 fallback만 둔다. 실제 model ID, timeout, token 계획값, 호출·repair 횟수는 R8 평가와 #92 승인 전까지 운영 `DRAFT` 설정에 임의 값으로 채우지 않는다.
 
 첫 기준선은 반복형 `EXECUTE_REPRODUCTION`을 제외하고 모두 `NEW`다. `EXECUTE_REPRODUCTION`의 `session_policy=AUTO`는 첫 turn이면 `NEW`, 같은 dynamic work·attempt의 후속 turn이면 바로 앞 성공 turn의 exact `session_ref`를 `parent_session_ref`로 둔 `RESUME`으로만 해석한다. 새 attempt, 다른 work·가설, 실패한 선행 turn 뒤 session 재시작은 새 `NEW` session이다. 이 예외 밖에서 같은 Verification의 Technical `REVISE` 등에 `AUTO | RESUME`을 채택하려면 독립성·stale context·비용 비교 시험과 R4/R6 승인을 거친 새 registry·model/session policy revision이 필요하다.
 
@@ -249,7 +252,7 @@ PromptContextBinding:
 
 task 행에서 cardinality를 별도로 쓰지 않은 slot은 `REQUIRED_ONE`이다. `PromptInputSlot.cardinality`의 개수 의미는 고정한다. `REQUIRED_ONE`은 정확히 1개, `OPTIONAL_ONE`은 0개 또는 1개, `REQUIRED_MANY`는 1개 이상, `OPTIONAL_MANY`는 0개 이상이다. 목록이 비어도 정상인 입력에 `REQUIRED_MANY`를 사용해 가짜 record를 채워 넣어서는 안 된다.
 
-Pro와 Con의 공통 slot은 이름만 같은 것이 아니라 `source_ref + projected_data_ref + field_paths`의 중복 없는 집합이 exact하게 같아야 한다. `debate_config`는 R6가 승인한 versioned Debate 규칙 record, `verification_budget_profile`은 R8이 승인한 이 Verification의 공통 시간·호출·자원 예산 record다. 두 data kind의 실제 schema와 ACTIVE record가 확정되기 전에는 Pro/Con registry entry도 `DRAFT`다. 역할별 `ExecutionLimits`는 개별 LLM 호출 한도이고 이 공통 budget profile을 대신하지 않는다. trusted runtime은 위 공통 slot 전체의 canonical reference 집합으로 `debate_input_hash`를 계산하며 상대 역할의 결과·호출·session은 포함하지 않는다.
+Pro와 Con의 공통 slot은 이름만 같은 것이 아니라 `source_ref + projected_data_ref + field_paths`의 중복 없는 집합이 exact하게 같아야 한다. `debate_config`는 R6가 승인한 versioned Debate 규칙 record, `verification_budget_profile`은 08번의 `VerificationBudgetProfile`을 data kind `verification_budget_profile`로 저장한 R8 승인 record다. exact ACTIVE `BudgetProfileBinding`이 이 profile과 `WorkBudgetProfile`을 함께 가리키고, trusted runtime이 Pro·Con의 `work_type + operation_kind + agent_role`에 맞는 exact `WorkBudgetLimit`을 고르기 전에는 Pro/Con registry entry도 운영 `ACTIVE`가 될 수 없다. 역할별 `ExecutionLimits`는 개별 LLM 호출 한도이고 이 공통 budget profile이나 작업별 한도를 대신하지 않는다. trusted runtime은 위 공통 slot 전체의 canonical reference 집합으로 `debate_input_hash`를 계산하며 상대 역할의 결과·호출·session은 포함하지 않는다.
 
 ### 4.1 Hypothesis Agent — R1
 
@@ -459,7 +462,7 @@ repair prompt는 invalid 응답 전체를 신뢰 지시문으로 넣지 않는�
 
 | test ID | 확인할 내용 | 통과 기준 |
 |---|---|---|
-| `PMT-01` | registry 유일성 | `agent_role + task_kind`의 ACTIVE entry가 정확히 하나 |
+| `PMT-01` | registry 유일성 | `agent_role + task_kind + purpose`의 ACTIVE entry가 정확히 하나 |
 | `PMT-02` | exact template | version 문자열이 같아도 hash가 다르면 호출 차단 |
 | `PMT-03` | 허용 context | 금지 data kind·다른 workspace/commit/hypothesis ref 차단 |
 | `PMT-04` | 필수 slot | 누락 시 provider 호출 전 실패 |
@@ -479,6 +482,8 @@ repair prompt는 invalid 응답 전체를 신뢰 지시문으로 넣지 않는�
 | `PMT-18` | R7 stage/tool policy | requirements·plan·candidate·interpret는 provider tool 없음, execute만 승인된 Sandbox 내부 Runtime tool loop 사용 |
 | `PMT-19` | R7 conclusion binding | 동적 결과의 outcome·evidence·linkage·limitations가 exact conclusion과 다르면 저장 거절 |
 | `PMT-20` | repository dependency content | Dockerfile·README·manifest·lockfile의 actual redacted content와 context ref 집합이 같고 누락은 gap/error로 전달 |
+| `PMT-21` | 기술 capability와 운영 품질 분리 | PVD만 통과한 조합은 EVALUATION에서만 사용하고, exact R8 ACCEPT recommendation이 없는 PRODUCTION ACTIVE는 호출 전 차단 |
+| `PMT-22` | 평가·운영 purpose 일치 | registry·payload·spec·request·log와 AnalysisRunState purpose가 다르면 provider 호출 전 차단 |
 | `PMT-CHN-EMPTY-LINEAGE` | 최초 체이닝 | INITIAL TRUE와 INITIAL HOLD만 있고 과거 ChainingResult가 없으면 빈 `lineage_results`로 호출 허용 |
 | `PMT-CHN-MISSING-LINEAGE` | 계보 누락 | CHAINING-origin 조상이 있는데 필요한 exact ChainingResult가 하나라도 빠지면 호출 전 차단 |
 | `PMT-CHN-EXTRA-LINEAGE` | 관계없는 계보 추가 | 실제 조상이 아닌 ChainingResult가 추가되면 계산한 closure와 불일치하므로 호출 전 차단 |

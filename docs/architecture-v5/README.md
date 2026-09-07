@@ -12,7 +12,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 
 번호 문서 `01`–`13`이 설계 의미의 기준입니다. Wiki는 빠르게 이해하기 위한 쉬운 요약이며 새로운 입출력 약속이나 결정을 만들 수 없습니다. 검토 결정은 이 저장소의 Issue, 설계 결정 기록(`ADR`)과 PR에서 먼저 확정합니다. 승인된 설계 commit만 별도 PR로 구현 저장소에 반영합니다.
 
-`implementation/` 문서는 번호 문서의 의미를 실제 모듈·테스트 단위로 옮기는 구현 준비 자료입니다. 번호 문서와 충돌하면 번호 문서와 공통 계약이 우선하며, 발견한 계약 빈틈은 담당 역할 Issue에서 먼저 해결합니다.
+[`implementation/`](./implementation/README.md) 문서는 번호 문서의 의미를 실제 모듈·테스트·물리 기술로 옮기는 구현 준비 자료입니다. 번호 문서와 충돌하면 번호 문서와 공통 계약이 우선하며, 발견한 계약 빈틈은 담당 역할 Issue에서 먼저 해결합니다.
 
 ## 전체 흐름을 쉽게 나누면
 
@@ -93,9 +93,14 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 
 ## 구현 준비 문서
 
+먼저 [구현 인계 문서 안내](./implementation/README.md)에서 읽는 순서와 선행 조건을 확인합니다.
+
 1. [R3-01 22단계 구현 모듈·입출력·저장 위치 매핑](./implementation/01-module-map.md) — 각 단계를 실제 프로그램 경계와 테스트 책임으로 옮긴 문서입니다.
 2. [R3-02 파트 간 계약 준수·부정 테스트 계획](./implementation/02-contract-test-plan.md) — 정상·오류·권한 위반 입력에서 각 모듈이 무엇을 허용하고 차단해야 하는지 case별로 정리한 문서입니다.
-3. [R3-04 LLM Provider·인증 경로 결정](./implementation/04-provider-decision.md) — OpenAI·Codex·Anthropic·Claude의 API Key·공식 구독 연결 경계와 지원 판정 시험을 정리한 문서입니다.
+3. [R3-03 중단·재시도·복구 시험 계획](./implementation/03-recovery-test-plan.md) — 장애 지점, 안전한 재시도와 current 결과 복구를 정리한 문서입니다.
+4. [R3-04 LLM Provider·인증 경로 결정](./implementation/04-provider-decision.md) — OpenAI·Codex·Anthropic·Claude의 API Key·공식 구독 연결 경계와 지원 판정 시험을 정리한 문서입니다.
+5. [R3-05 Prompt Runtime](./implementation/05-prompt-runtime.md) — Prompt Registry·Builder와 11개 LLM 역할의 입력·출력 검증을 정리한 문서입니다.
+6. [R3-06 구현 기준선](./implementation/06-implementation-baseline.md) — 언어·repository 구조·저장·설정·CLI·CI와 한 명 구현 순서를 확정하는 문서입니다.
 
 ## 문서 적용 범위
 

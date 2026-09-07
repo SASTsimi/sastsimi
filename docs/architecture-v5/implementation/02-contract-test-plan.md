@@ -89,7 +89,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 7. 정상 기준 fixture가 먼저 schema/semantic 검사를 통과한 뒤, 부정 시험은 지정한 값만 한 번에 변경.
 8. state/DB/artifact/외부 호출 전후 비교 자료. 이전 시험 잔여 state를 다음 시험에 공유하지 않음.
 
-정확한 serialization/필드별 오류/저장 경계가 없는 부분은 Q-01~Q-04를, run-init Docker baseline의 변경 권한과 결과 경계는 Q-07을 해결한 뒤 executable fixture를 만든다. 본 문서에 예제 fixture가 있다고 실제 테스트 데이터를 만들었다고 보고하지 않는다.
+Q-01~Q-07의 구현 결정은 R3-06 기준선과 최신 공통 계약에서 해결했다. 아래 case 설명에 남은 `Q-*` 표시는 구현자가 §8의 확정 매핑을 적용해야 한다는 추적 표식이며 미결정 오류 코드가 아니다. 본 문서에 예제 fixture가 있다고 실제 테스트 데이터를 만들었다고 보고하지 않는다.
 
 - **F-COM (공통 참조·상태·저장)**: 독립 run R-A, 준비된 workspace W-A/commit C-A, 가설 H-A(해당 시험에 필요할 때만), consumer work K-A(RUNNING, active_attempt=A-A, state_version=v). ref R1은 immutable record r1/hash h1, COMMITTED marker와 producer output이 같은 r1을 가리킨다. 이전 r0는 history에만 있다.
 - **F-STA (저장소·정적 분석·Context)**: run R-A, CodeWorkspace W-A/C-A가 READY. AST/CodeQL/OpenGrep는 K-AST/K-CQL/K-OG와 서로 다른 attempt를 사용한다. 각 raw artifact·ToolRunResult·규칙 도구의 RuleExecutionRecord가 같은 workspace/commit과 자기 도구 attempt에 연결된다. 정규화 bundle B1, Context 요청 QCTX1/응답 CTX1/fragment X1은 이 코드 범위를 사용한다. 아직 가설이 없는 정적 단계에서는 hypothesis_id=null.
@@ -111,7 +111,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 |---|---|---|
 | 1 | 분석 시작·설정·run identity | COM-001~004, BUD-003~005 |
 | 2 | clone/checkout·READY | STA-001 |
-| 3 | AST/SAST·정책·Docker readiness 병렬 준비 | COM-014, STA-002~005, BUD-004~005 |
+| 3 | AST/SAST·정책 두 branch 병렬 준비(Docker 준비 없음) | COM-014, STA-002~005, BUD-004~005 |
 | 4 | 정규화·오류/gap 합류 | STA-002~006, COM-011~013 |
 | 5 | 초기 work 등록·고정 입력 | HYP-001~002 |
 | 6 | Hypothesis 호출 | LLM-001~008 |
@@ -348,21 +348,37 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **12. 실행 계층**: contract / integration / security-negative
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R4; 적용 모듈 owner. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
 
-#### R3-CT-COM-014 — run-init Docker baseline 권한 경계
+#### R3-CT-COM-014 — run-init Docker 미실행 경계
 
-- **1. ID·유형·설명**: R3-CT-COM-014 / 정상·부정·미결정 경계 / 가설 전 Docker 준비가 동적 재현 권한을 우회하지 않는지 확인
-- **2. 단계·계약 경계**: 3, 12; run-init 세 갈래 병렬 준비와 가설별 DYNAMIC_REPRO 분리
-- **3. producer → consumer**: R3 RunInitializationService → static·policy·Docker readiness branch; 상태를 바꾸는 Docker 준비는 B5 확정 뒤 R4 Runtime Validator·R7 실행 구성요소가 소비
-- **4. 선행 상태·exact refs**: READY CodeWorkspace와 아직 hypothesis·DynamicReproductionRequest·EnvironmentRequirements·ReproductionPlan·동적 attempt가 없는 run. static·policy branch 입력은 각 정본 계약대로 고정하며 Docker branch의 state-changing action/result binding은 Q-07 전에는 존재하지 않는다.
-- **5. 정상/잘못된 fixture**: 정상은 세 branch를 독립 등록하되 Docker 쪽은 host 상태를 바꾸지 않는 readiness 확인만 수행하고, 실패·건너뜀과 무관하게 static·policy를 계속한다. 부정 변형은 가설 전에 `RUN_SANDBOX`를 재사용하거나 image pull/build, container 생성, `EnvironmentRecipe`·`SandboxEnvironment` 생산, 가설별 `DynamicReproductionLifecycleProfile` 재사용을 시도한다.
-- **6. 검사 주체**: R3 fan-out/join 검사 + R4 Runtime Validator의 action·requester·선행 reference 검사; B5가 정할 실제 Docker 준비 권한·result-owner 검사는 Q-07 해결 전 미구현
-- **7. 허용·차단·격리 기대**: 읽기 전용 readiness 확인은 static·policy와 독립적으로 끝낼 수 있다. state-changing 변형은 Docker host 작업 전에 차단하며 Step 12의 recipe·환경·AgentLog·PoC로 승격하지 않는다. readiness 실패·미지원·건너뜀은 다른 두 branch의 성공 조건이 아니며 이를 막지 않는다.
-- **8. work·attempt·가설 기대**: static·policy work는 자기 상태를 독립 유지한다. B5 전 Docker branch에는 authoritative domain work/output을 만들지 않으며 가설 상태·verdict도 없다. B5가 별도 work를 정하면 이 case의 정상 fixture·상태 기대를 새 계약 revision에 맞춰 갱신한다.
-- **9. 오류·DataGap 기대**: `RUN_SANDBOX` 선행조건·권한 우회는 ACTION_NOT_ALLOWED. readiness 실패의 exact 상태·오류·관측 record는 Q-07에서 확정하며 FALSE | HOLD 근거가 아니다.
-- **10. 저장·갱신 금지 pointer**: B5 전에는 run-init 확인으로 `EnvironmentRecipe`, `SandboxEnvironment`, `DynamicReproductionResult`, PoC와 해당 current pointer를 만들지 않는다. 허용된 안전한 readiness 관측의 저장 여부도 Q-07에서 정하며 동적 재현 결과로 재사용하지 않는다.
-- **11. FALSE 변환 금지**: Docker readiness 실패·미지원·정책/예산 차단과 action 거절을 취약점 `FALSE | HOLD`, static/policy 실패 또는 분석 성공 근거로 사용하지 않는다.
-- **12. 실행 계층**: contract / integration / security-negative (Q-07 해결 뒤 executable fixture 확정)
-- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R4 @taehyeon-git; R7·R8. 계정과 검토 범위는 §9. B5 owner들이 실제 action·출력·예산 의미를 승인해야 함.
+- **1. ID·유형·설명**: R3-CT-COM-014 / 정상·부정 / 가설 전 run-init이 Docker 상태를 바꾸거나 동적 재현 권한을 우회하지 않는지 확인
+- **2. 단계·계약 경계**: 3, 12; run-init의 static·policy 두 branch와 가설별 DYNAMIC_REPRO 분리
+- **3. producer → consumer**: R3 RunInitializationService → static·policy branch. Docker는 exact DynamicReproductionRequest가 생긴 뒤 R7 구성요소만 사용한다.
+- **4. 선행 상태·exact refs**: READY CodeWorkspace와 아직 hypothesis·DynamicReproductionRequest·동적 attempt가 없는 run. static·policy branch 입력은 각 정본 계약대로 고정한다.
+- **5. 정상/잘못된 fixture**: 정상은 static·policy 두 branch만 독립 등록한다. 부정 변형은 가설 전에 Docker image pull/build/cache warm, container 생성, `RUN_SANDBOX`, `EnvironmentRequirements`·`ReproductionPlan`·`EnvironmentRecipe`·`SandboxEnvironment` 생산 또는 가설별 `DynamicReproductionLifecycleProfile` 사용을 시도한다.
+- **6. 검사 주체**: R3 fan-out/join 검사와 R4 Runtime Validator의 action·requester·선행 reference 검사
+- **7. 허용·차단·격리 기대**: static·policy 두 branch는 계속 실행한다. 모든 Docker 변형은 host 작업 전에 `ACTION_NOT_ALLOWED`로 차단하고 Step 12의 recipe·환경·AgentLog·PoC로 승격하지 않는다.
+- **8. work·attempt·가설 기대**: static·policy work만 자기 상태를 독립 유지한다. Docker용 run-init work·attempt·가설 상태·verdict는 생기지 않는다.
+- **9. 오류·DataGap 기대**: 금지된 `RUN_SANDBOX`와 Docker 상태 변경 요청은 `ACTION_NOT_ALLOWED`다. 이 오류는 `FALSE | HOLD` 근거가 아니다.
+- **10. 저장·갱신 금지 pointer**: run-init으로 Docker domain output, cache 성공 record, `EnvironmentRecipe`, `SandboxEnvironment`, `DynamicReproductionResult`, PoC와 관련 current pointer를 만들지 않는다.
+- **11. FALSE 변환 금지**: action 거절을 취약점 `FALSE | HOLD`, static·policy 실패 또는 분석 성공 근거로 사용하지 않는다.
+- **12. 실행 계층**: contract / integration / security-negative
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R4 @taehyeon-git; R7·R8. R7은 실제 Docker 준비가 Step 12에만 존재하는지 검토한다.
+
+#### R3-CT-COM-015 — RecordStore 공통 참조와 domain 제한
+
+- **1. ID·유형·설명**: R3-CT-COM-015 / 정상·부정 / 저장소 API가 세 참조 유형을 읽되 소비 계약이 허용한 참조만 받는지 확인
+- **2. 단계·계약 경계**: 1–22 공통; `RecordRef = RunStoredDataRef | StoredDataRef | PolicyCacheRef`와 domain validator
+- **3. producer → consumer**: 각 record producer → RecordStore → 해당 domain consumer
+- **4. 선행 상태·exact refs**: 정상 run-local ref, hypothesis-scoped ref, policy cache ref를 각각 실제 record·content hash와 연결한다.
+- **5. 정상/잘못된 fixture**: RecordStore는 세 유형을 모두 조회할 수 있다. 부정 변형은 `EvidenceAgentResult` 입력에 `PolicyCacheRef`, policy cache 조회에 `StoredDataRef`, 다른 run의 `RunStoredDataRef`를 전달한다.
+- **6. 검사 주체**: schema validator + RecordStore type dispatch + 각 domain semantic validator + Runtime Validator
+- **7. 허용·차단·격리 기대**: 저장소가 지원하는 참조라는 이유만으로 domain 사용을 허용하지 않는다. 허용 유형·scope·hash가 모두 맞는 조회만 성공하고 나머지는 I/O 전에 차단한다.
+- **8. work·attempt·가설 기대**: 부정 fixture는 새 work·attempt·가설 verdict를 만들지 않고 기존 current pointer도 바꾸지 않는다.
+- **9. 오류·DataGap 기대**: 공통 오류 목록의 `RECORD_REVISION_MISMATCH`를 기록하고 안전한 debug detail로 reference 종류 또는 scope 불일치를 구분한다. 새 오류 코드를 임의로 추가하지 않는다.
+- **10. 저장·갱신 금지 pointer**: 잘못된 참조를 읽은 결과, latest 대체 결과, cache-to-domain 변환 record를 저장하지 않는다.
+- **11. FALSE 변환 금지**: 참조 유형·scope 위반은 취약점 반증이 아니다.
+- **12. 실행 계층**: unit / contract / integration / security-negative
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R4와 적용 domain owner. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
 
 ### STA. 저장소·정적 분석·Context
 
@@ -377,9 +393,9 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **5. 정상/잘못된 fixture**: 성공 fixture는 요청 commit과 실제 HEAD 일치. 변형: clone 실패, checkout 실패, READY 전 STATIC_TOOL 호출, 준비 뒤 HEAD 변경.
 - **6. 검사 주체**: 도구 adapter + schema validator + Context 경계 검사 + Runtime Validator
 - **7. 허용·차단·격리 기대**: 정상만 분석 진입; 실패/변경 workspace의 정적 실행 차단.
-- **8. work·attempt·가설 기대**: 성공 WORKSPACE_PREP 종료 후 도구 준비; clone/checkout 실패는 분석 FAILED, 가설 없음. 정확한 저장 경계 Q-01.
+- **8. work·attempt·가설 기대**: 성공 WORKSPACE_PREP 종료 후 도구 준비; clone/checkout 실패는 분석 FAILED, 가설 없음. 성공·실패 `CodeWorkspace` revision과 work·run pointer는 같은 `TransitionCommit`에서 확정한다.
 - **9. 오류·DataGap 기대**: CLONE_FAILED / CHECKOUT_FAILED / WORKSPACE_CHANGED; 준비 전 호출 Q-02
-- **10. 저장·갱신 금지 pointer**: CodeWorkspace/registry 성공 연결은 Q-01 결정 필요; 실패 오류는 runs, 절대 local path/secret 노출 금지.
+- **10. 저장·갱신 금지 pointer**: `AnalysisRunState.workspace_ref`는 exact `CodeWorkspace` revision만 가리킨다. 실패 오류는 runs에 보존하고 절대 local path/secret은 노출하지 않는다.
 - **11. FALSE 변환 금지**: 입력 위반·조회/호출/실행 오류·정책 차단·예산/저장 실패를 새 FALSE 근거로 사용하지 않음. 이미 존재하는 부모/가설 verdict는 해당 case의 명시적 검증 경로 외에는 변경하지 않음.
 - **12. 실행 계층**: contract / integration / security-negative
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R2·R4·R6·R8. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
@@ -490,12 +506,12 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **2. 단계·계약 경계**: 5–8, 20; 가설 등록·배정
 - **3. producer → consumer**: Hypothesis/Verification/Chaining proposal producer → Proposal Validator·Hypothesis Registry·Assignment Runtime
 - **4. 선행 상태·exact refs**: F-HYP(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
-- **5. 정상/잘못된 fixture**: 정상 schema·근거·질문을 가진 새 INITIAL proposal, 기존 중복 없음.
+- **5. 정상/잘못된 fixture**: 정상 schema·근거·질문을 가진 새 INITIAL proposal candidate와 기존 중복 없음. trusted 출력 검증 runtime이 source result 확정 전에 proposal·질문·검증 항목 ID를 한 번 부여한 fixture를 사용한다. 부정 변형은 전역 등록 runtime이 source에 없던 ID를 새로 발급하거나 기존 ID·문장·목록·순서를 바꾸는 경우다.
 - **6. 검사 주체**: schema/semantic validator + trusted Registry·Assignment Runtime; 의미 중복 판단은 해당 LLM 역할
-- **7. 허용·차단·격리 기대**: 검증된 proposal을 등록하고 새 hypothesis_id와 ACTIVE Verification owner 배정.
+- **7. 허용·차단·격리 기대**: source 결과가 COMMITTED된 뒤 그 안의 exact proposal ID와 내용을 별도 record로 등록하고 새 hypothesis_id와 ACTIVE Verification owner를 배정한다. 부정 변형은 등록을 차단한다.
 - **8. work·attempt·가설 기대**: proposal 등록, hypothesis REGISTERED 후 해당 배정 흐름; 새 VERIFICATION 준비, final verdict 없음.
-- **9. 오류·DataGap 기대**: 없음; proposal 독립 저장 권한 Q-01
-- **10. 저장·갱신 금지 pointer**: hypotheses/process/assignment/work의 정확한 연결. 저장 identity는 Q-01 해결 후 구현.
+- **9. 오류·DataGap 기대**: 정상은 없음. source 미확정·ID 재발급·내용 변경은 실제 선행 위반에 따라 `ACTION_NOT_ALLOWED | RECORD_REVISION_MISMATCH`다.
+- **10. 저장·갱신 금지 pointer**: ORCHESTRATION만 exact source proposal을 별도 record로 저장하고 hypotheses/process/assignment/work를 연결한다. source에 없던 proposal이나 새 ID로 current pointer를 만들지 않는다.
 - **11. FALSE 변환 금지**: 입력 위반·조회/호출/실행 오류·정책 차단·예산/저장 실패를 새 FALSE 근거로 사용하지 않음. 이미 존재하는 부모/가설 verdict는 해당 case의 명시적 검증 경로 외에는 변경하지 않음.
 - **12. 실행 계층**: contract / integration
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R1·R4·R6. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
@@ -968,7 +984,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **4. 선행 상태·exact refs**: F-DYN(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: SandboxProfile 외부 경계 차단·환경 구성 실패·container 실패·timeout을 각각 주입하고 DISPROVED/FALSE/HOLD 또는 non-null poc_ref를 제출한다. 실행 전에 exact request 또는 SandboxProfile revision이 바뀌었는데 기존 ALLOW/SPD1이나 기존 work를 재사용하는 변형도 포함한다.
 - **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 SandboxProfile 외부 경계 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 Dynamic Reproduction Agent
-- **7. 허용·차단·격리 기대**: 실행 실패와 기술적 반증을 구분해 제출 거절하고 신뢰 관측 없는 verdict를 금지한다. exact request 또는 SandboxProfile revision 변경은 기존 action/decision을 만료시키며, 기존 immutable work를 RESUME하지 않고 새 Verification generation과 새 동적 work를 요구한다.
+- **7. 허용·차단·격리 기대**: 실행 실패와 기술적 반증을 구분해 제출 거절하고 신뢰 관측 없는 verdict를 금지한다. exact request 교체 또는 승인된 새 SandboxProfile 적용은 기존 action/decision을 만료시키며, 기존 immutable work를 RESUME하지 않고 새 Verification generation의 Pro·Con·초기 판단을 요구한다. 새 판단이 동적 재현을 선택할 때만 새 request와 동적 work를 등록한다.
 - **8. work·attempt·가설 기대**: 외부 대기 BLOCKED, session 재시작 가능 RETRY, 소진/복구불가 FAILED를 원인별 적용; hypothesis final result 없음.
 - **9. 오류·DataGap 기대**: 실제 SANDBOX/PROVIDER/POLICY 오류·DataGap. 상태 조합 세부 Q-02
 - **10. 저장·갱신 금지 pointer**: poc_ref=null, 최소 log·failure 원인·dynamic result/history 보존; validated/current final verdict 생성 금지.
@@ -1032,7 +1048,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **4. 선행 상태·exact refs**: F-DYN(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
 - **5. 정상/잘못된 fixture**: A: session crash 후 외부 입력 없이 새 시도 가능하며 runtime이 환경을 STATE_UNCERTAIN으로 강제한다. B: 현재 work 입력을 바꾸지 않는 재인증·외부 환경 정비·resource 확보 대기 후 조건이 해결된다. C: exact request 또는 SandboxProfile revision을 바꾼 뒤 기존 work와 policy decision을 재사용한다. D: program policy 준비 상태만 달라진 LOCAL_ONLY work를 불필요하게 중단한다.
 - **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 SandboxProfile 외부 경계 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 Dynamic Reproduction Agent
-- **7. 허용·차단·격리 기대**: A는 RUNNING→READY→RUNNING, 새 attempt `trigger=RETRY`이며 clean container를 재생성한다. B는 input_refs/input_hash가 같을 때만 BLOCKED→READY→RUNNING과 `trigger=RESUME`를 허용한다. C는 기존 action을 만료시키고 새 Verification generation·새 동적 work로 분리한다. D는 program policy 상태를 Sandbox 허가 조건으로 쓰지 않고 기존 LOCAL_ONLY 실행을 계속한다. 모든 경로에 한도·cleanup 검사가 필요하다.
+- **7. 허용·차단·격리 기대**: A는 RUNNING→READY→RUNNING, 새 attempt `trigger=RETRY`이며 clean container를 재생성한다. B는 input_refs/input_hash가 같을 때만 BLOCKED→READY→RUNNING과 `trigger=RESUME`를 허용한다. C는 기존 action을 만료시키고 새 Verification generation의 Pro·Con·초기 판단으로 분리하며, 그 판단이 필요하다고 할 때만 새 request와 동적 work를 만든다. D는 program policy 상태를 Sandbox 허가 조건으로 쓰지 않고 기존 LOCAL_ONLY 실행을 계속한다. 모든 경로에 한도·cleanup 검사가 필요하다.
 - **8. work·attempt·가설 기대**: A/B는 같은 work_id에서 과거 attempt 종료/history와 새 active attempt 하나를 유지한다. C는 기존 work를 재개하지 않고 새 generation/work를 등록한다. final verdict는 없다.
 - **9. 오류·DataGap 기대**: 이전 오류 보존; 한도 소진 BUDGET_EXCEEDED 또는 해당 종료 오류
 - **10. 저장·갱신 금지 pointer**: 이전 log/결과 보존, 새 환경/provenance 연결. BLOCKED work.finished_at=null이지만 반환된 attempt 결과의 finished_at은 기록.
@@ -1103,6 +1119,22 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **11. FALSE 변환 금지**: container·Health Check·cleanup 실패는 동적 실행 오류이지 기술적 반증이 아니다.
 - **12. 실행 계층**: unit / contract / integration / E2E / security-negative
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R7·R4·R6·R8. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
+
+#### R3-CT-DYN-013 — 동적 입력 변경의 새 Verification generation 전이
+
+- **1. ID·유형·설명**: R3-CT-DYN-013 / 정상·부정 / `DynamicReproductionRequest` 또는 Sandbox profile revision 변경 시 old work 재개를 막고 새 검증 세대를 원자 생성
+- **2. 단계·계약 경계**: 10–13; `RESTART_VERIFICATION_GENERATION`과 `HypothesisProcessState`·`DynamicReproductionState`
+- **3. producer → consumer**: 같은 가설의 ACTIVE Verification owner → Runtime Validator·GenerationTransitionService → 새 Verification/Pro/Con
+- **4. 선행 상태·exact refs**: 가설 H1의 G1이 VERIFYING이고 old VERIFICATION work·DYNAMIC_REPRO work/attempt, DQ1, SP1, current process/dynamic pointer가 모두 G1에 연결돼 있다. `generation_restart_reason`은 `DYNAMIC_REQUEST_REPLACEMENT_REQUIRED | SANDBOX_PROFILE_REVISION_CHANGED` 중 하나이고 승인된 exact `generation_restart_basis_refs`가 있다. 첫 사유에서는 DQ2가 아직 없고, 둘째 사유에서는 승인된 SP2가 있으며 SP1과 exact revision이 다르다.
+- **5. 정상/잘못된 fixture**: 정상은 exact old/current refs, 변경 근거와 expected state version·generation을 가진 단일 요청이다. request 교체 fixture는 old DQ1과 변경 근거만 고정하고 존재하지 않는 DQ2를 요구하지 않는다. profile fixture는 old SP1과 새 SP2를 모두 고정하고 `sandbox_profile_ref=SP2`로 둔다. 부정 변형은 Orchestration·Recovery requester, 근거 없는 사유, request 교체 사유에 미리 만든 DQ2 연결, profile 사유인데 같은 SP1 재사용, old ref 일부 누락, stale generation/version, 같은 요청 동시 2회, old dynamic work RESUME을 각각 시도한다.
+- **6. 검사 주체**: Runtime Validator의 requester·닫힌 사유·변경 근거·CAS·exact closure 검사 + GenerationTransitionService의 단일 SQLite transaction·unique successor 검사
+- **7. 허용·차단·격리 기대**: 정상만 old active attempts/work를 `CANCELLED/INPUT_SUPERSEDED`로 닫고 G2 Verification work, PlaybookApplication, 새 질문 ID, 독립 Pro/Con work와 G2 process/dynamic state를 한 번 생성한다. old RESUME, Recovery의 의미 결정, 중복 successor는 차단한다.
+- **8. work·attempt·가설 기대**: H1은 계속 VERIFYING이고 G1은 history다. G2의 동적 상태는 `NOT_REQUESTED`이며 request/work/result refs는 null이다. 새 Pro/Con과 assessment 뒤 동적 재현이 필요할 때만 G2의 새 request/work를 만든다.
+- **9. 오류·DataGap 기대**: `AUTHORITY_DENIED | ACTION_NOT_ALLOWED | STATE_VERSION_CONFLICT | STALE_RESULT | RECORD_REVISION_MISMATCH` 중 실제 첫 실패 원인을 기록한다.
+- **10. 저장·갱신 금지 pointer**: G1 action·attempt·environment·AgentLog·result·PoC·CWE·Gate는 history로만 남긴다. G2 current input, final TRUE, Gate/Reporter로 복사하지 않는다. 기존 Technical REVISE history가 있다면 그대로 보존하되 이번 전이 원인으로 위조하지 않는다.
+- **11. FALSE 변환 금지**: 입력 변경과 전이 충돌은 기술적 반증이나 HOLD가 아니다.
+- **12. 실행 계층**: unit / contract / integration / concurrency / security-negative
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R4·R6·R7·R8. R6은 새 질문·Pro/Con 재실행 의미, R7은 old dynamic 격리를 승인한다.
 
 ### GAT. CWE·두 Gate·정책·Finding
 
@@ -1446,8 +1478,8 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **6. 검사 주체**: Runtime Validator REPORT_READY/REVISION/REDACTION + Reporter semantic validator + finalization 검사
 - **7. 허용·차단·격리 기대**: Reporter가 근거 범위 내 내부 draft 생성; Aggregator가 exact current 결과를 확정하면 Agent 자동화 종료.
 - **8. work·attempt·가설 기대**: REPORT_DRAFT work/attempt SUCCEEDED, ReportProcessState DRAFTED; run COMPLETE(부분 실패 없는 fixture), 가설 TRUE.
-- **9. 오류·DataGap 기대**: 없음; 최종 집계 저장 authority는 Q-01
-- **10. 저장·갱신 금지 pointer**: ReportDraft·report pointer·COMMITTED; AnalysisRunResult/state/result pointer 연결은 Q-01 결정 뒤 구현.
+- **9. 오류·DataGap 기대**: 없음. 최종 집계 저장 authority는 비-LLM ORCHESTRATION run finalization runtime이다.
+- **10. 저장·갱신 금지 pointer**: ReportDraft·report pointer는 COMMITTED exact record를 가리킨다. `AnalysisRunResult`, 종료 `AnalysisRunState`와 `analysis_result_ref`를 한 `TransitionCommit`에서 함께 확정한다.
 - **11. FALSE 변환 금지**: 입력 위반·조회/호출/실행 오류·정책 차단·예산/저장 실패를 새 FALSE 근거로 사용하지 않음. 이미 존재하는 부모/가설 verdict는 해당 case의 명시적 검증 경로 외에는 변경하지 않음.
 - **12. 실행 계층**: contract / integration / E2E / security-negative
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R5·R4·R6·R8. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
@@ -1600,6 +1632,90 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **12. 실행 계층**: unit / contract / integration / E2E
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R8·R4·R5. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
 
+#### R3-CT-BUD-006 — 예산 reservation 원자성·중복 차감 방지
+
+- **1. ID·유형·설명**: R3-CT-BUD-006 / 정상·부정 / 실행 전 예약과 실제 사용 commit·미실행 release가 한 번만 반영되는지 확인
+- **2. 단계·계약 경계**: 1–22 외부 호출 전후; `BudgetProfileBinding`·`BudgetReservation`·`BudgetLedgerEntry`
+- **3. producer → consumer**: R8 trusted Budget Profile Registry → Budget Runtime·Runtime Validator → work/attempt·Result Aggregator
+- **4. 선행 상태·exact refs**: 같은 purpose의 ACTIVE execution/work-kind/verification/dynamic profile exact revision을 묶은 ACTIVE binding과 초기 ledger를 고정한다. `WORKSPACE_PREP` 변형은 아직 binding이 없고 `AnalysisRunState.execution_budget_profile_ref`의 run-level ACTIVE execution profile만 고정한다.
+- **5. 정상/잘못된 fixture**: 정상 A는 reserve→실행→actual commit, 정상 B는 reserve→실행 전 거절→release다. 부정 변형은 같은 reservation 재전달, 두 worker 동시 reserve, commit/release 직전·직후 crash, 실제 side effect 여부 불명, profile/가격/잔여량 미확정, 실제 한도 소진을 각각 시험한다.
+- **6. 검사 주체**: BudgetService의 transaction·unique constraint·idempotency 검사 + Runtime Validator의 bootstrap execution profile 또는 full ACTIVE binding·exact WorkBudgetLimit·remaining 검사
+- **7. 허용·차단·격리 기대**: 한 reservation에는 ledger entry 최대 하나이고 COMMITTED/RELEASED는 되돌리지 않는다. 중복 전달은 기존 결과를 반환한다. 사용 여부를 증명할 수 없는 crash와 profile·가격·잔여량 불명은 `BLOCKED + waiting_for=BUDGET`, 실제 승인 한도 소진만 `BUDGET_EXCEEDED`다.
+- **8. work·attempt·가설 기대**: reservation 성공 뒤에만 action을 claim한다. 차단·중복·crash 복구로 새 무기록 attempt나 두 번째 비용 차감을 만들지 않으며 가설 verdict는 바꾸지 않는다.
+- **9. 오류·DataGap 기대**: 실제 원인에 따라 `BUDGET_EXCEEDED`, budget evidence unavailable 또는 storage/conflict 오류를 보존한다. token usage 미제공만으로는 차단하지 않는다.
+- **10. 저장·갱신 금지 pointer**: 임의 가격·0원 추정·중복 ledger·불명 reservation 자동 release를 금지한다. final resources는 committed ledger와 구조화된 unavailable 사유만 집계한다.
+- **11. FALSE 변환 금지**: 예산 차단·소진·복구 불확실성은 취약점 반증이 아니다.
+- **12. 실행 계층**: unit / contract / integration / concurrency / crash-recovery
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R8·R4와 각 호출 owner. R8은 profile·가격·집계 의미를 승인한다.
+
+#### R3-CT-BUD-007 — 예산 bootstrap과 역할·작업별 한도 선택
+
+- **1. ID·유형·설명**: R3-CT-BUD-007 / 정상·부정 / workspace 전후에 올바른 예산 설정을 사용하고 07 역할표의 한도를 exact WorkBudgetProfile에서 선택하는지 확인
+- **2. 단계·계약 경계**: 분석 시작·WORKSPACE_PREP·run-init 이후 모든 work; `AnalysisRunState`·`ExecutionBudgetProfile`·`WorkBudgetProfile`·`BudgetProfileBinding`
+- **3. producer → consumer**: R8 trusted Budget Profile Registry → Analysis Runtime·BudgetService·Runtime Validator
+- **4. 선행 상태·exact refs**: 같은 purpose지만 서로 다른 `analysis_id`를 가진 두 run R1/R2를 준비한다. 각 run은 자기 승인 근거로 만든 run-level execution profile E1/E2를 가지며, workspace READY 뒤에는 같은 analysis·workspace·commit의 E1·Work WBP1·Verification V1·dynamic D1을 묶은 B1과 E2·WBP2·V2·D2를 묶은 B2를 각각 준비한다. 각 Work profile에는 trusted operation/role마다 중복 없는 limit이 있다.
+- **5. 정상/잘못된 fixture**: 정상 A는 `pin_execution_for_run`이 반환한 exact E1 `RunStoredDataRef`를 R1의 첫 state에 고정한 뒤 WORKSPACE_PREP만 시작하고 bootstrap reservation·ledger의 `budget_binding_ref`를 E1에 연결한다. 정상 B는 workspace READY 뒤 `activate_for_run`이 exact B1 `StoredDataRef`를 반환하고 같은 CAS transaction에서 R1의 `budget_binding_ref`를 갱신한다. B1은 activation 입력과 같은 exact `approval_ref`를 보존하며 POLICY_COLLECT와 POLICY_PARSE는 서로 다른 exact limit을 선택한다. 정상 C는 같은 purpose의 R1/R2를 병렬 실행해 `current_execution(analysis_id)`와 `current_binding(analysis_id)`이 E1/B1과 E2/B2를 각각 반환하는지 확인한다. 부정 변형은 E1 없이 WORKSPACE_PREP, workspace 전 RecordMeta binding 요구, workspace READY 뒤 binding 없이 STATIC_TOOL, DRAFT profile, ACTIVE binding의 null·불일치 approval ref, 누락·중복 limit, Agent가 work_type·operation_kind·role을 바꾼 요청, purpose만으로 current binding 조회, R1의 binding·reservation·ledger에 R2 profile이나 reference를 섞는 경우다.
+- **6. 검사 주체**: Budget Profile Registry의 approval·purpose·revision·uniqueness 검사 + BudgetService의 trusted operation mapping·strictest-limit 검사 + Runtime Validator
+- **7. 허용·차단·격리 기대**: WORKSPACE_PREP은 자기 analysis의 E1만으로 허용하되 full binding이 필요한 다른 work는 허용하지 않는다. workspace READY 뒤에는 같은 analysis의 B1과 정확히 하나의 work-kind limit이 있어야 한다. purpose가 같아도 다른 analysis의 E2/B2는 사용할 수 없다. DRAFT·누락·중복·조작·교차 실행 reference는 `BLOCKED + waiting_for=BUDGET` 또는 schema/config 오류로 실행 전에 차단한다.
+- **8. work·attempt·가설 기대**: bootstrap 순환 없이 workspace work 하나만 시작한다. full binding 전 static/policy work는 0건이며, 승인 뒤 각 work가 자기 operation/role limit을 사용한다.
+- **9. 오류·DataGap 기대**: 실제 전체 또는 작업별 한도 소진만 `BUDGET_EXCEEDED`; profile·mapping·limit 불명은 budget waiting/config 오류다.
+- **10. 저장·갱신 금지 pointer**: 07 표 숫자를 코드 상수로 사용하거나 Agent 입력의 role 문자열로 limit을 고르지 않는다. DRAFT를 ACTIVE처럼 쓰지 않고 다른 purpose/profile revision을 섞지 않는다.
+- **11. FALSE 변환 금지**: bootstrap·설정·작업별 예산 오류는 취약점 반증이 아니다.
+- **12. 실행 계층**: unit / contract / integration / concurrency / security-negative
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R8·R4. R8은 operation/role mapping과 수치 revision을 승인한다.
+
+### EVAL. R8 평가 실행·운영 승격
+
+근거: 07·08·09·10·R3-06 §12.4. 모든 사례는 **미실행 / 역할 검토 필요**다.
+
+#### R3-CT-EVAL-001 — 재현 가능한 평가 실행과 정규화된 자원 기록
+
+- **1. ID·유형·설명**: R3-CT-EVAL-001 / 정상·부정 / 고정 corpus·Provider·Prompt·설정으로 평가하고 구조화된 결과를 남김
+- **2. 단계·계약 경계**: 운영 run 밖 `sastsimi eval run`; `EvaluationRunConfig` → `EvaluationRunResult`
+- **3. producer → consumer**: R8 Evaluation Runtime → 평가 저장소·비교기·사람 검토
+- **4. 선행 상태·exact refs**: corpus, prompt EVALUATION entry, provider profile, model, budget binding, grader refs를 exact revision으로 고정한다.
+- **5. 정상/잘못된 fixture**: 정상은 같은 config hash의 결과와 metric·`ResourceUsageSummary`를 생성한다. 부정 변형은 ref 누락/변조, 서로 다른 corpus 혼합, loose map usage/resources, provider 미제공 token을 0으로 추정하는 경우다.
+- **6. 검사 주체**: EvaluationService·schema validator·RecordStore exact-ref 검사
+- **7. 허용·차단·격리 기대**: 재현 가능한 exact closure만 결과로 확정한다. 미제공 token/cost는 구조화된 unavailable 사유로 남기고 알려진 값처럼 계산하지 않는다.
+- **8. work·attempt·가설 기대**: 평가용 work·결과는 production AnalysisRunState·current hypothesis/finding/report pointer를 바꾸지 않는다.
+- **9. 오류·DataGap 기대**: schema/ref/config 오류 또는 측정 unavailable 사유를 그대로 기록한다.
+- **10. 저장·갱신 금지 pointer**: 평가 실행이 PromptRegistry PRODUCTION entry나 운영 설정을 직접 생성·활성화하지 않는다.
+- **11. FALSE 변환 금지**: 평가 실패는 분석 가설 판정이 아니다.
+- **12. 실행 계층**: unit / contract / integration / CLI
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R8·R4와 평가 대상 역할 owner.
+
+#### R3-CT-EVAL-002 — capability 증거와 품질 승인 분리
+
+- **1. ID·유형·설명**: R3-CT-EVAL-002 / 정상·부정 / Provider Validation Dataset 통과만으로 운영 Prompt를 활성화하지 않음
+- **2. 단계·계약 경계**: Provider capability 검증·R8 품질 평가·Prompt Registry activation
+- **3. producer → consumer**: R3 Provider validation → R8 Evaluation Runtime·사람 승인 → PromptRegistry trusted runtime
+- **4. 선행 상태·exact refs**: capability가 SUPPORTED인 ProviderProfile과 EVALUATION purpose PromptRegistryEntry, R8 acceptance 기준을 고정한다.
+- **5. 정상/잘못된 fixture**: 정상은 exact evaluation result를 가리키는 `EvaluationRecommendation.decision=ACCEPT_FOR_PRODUCTION`과 사람 승인을 거쳐 의미가 같은 새 PRODUCTION entry를 활성화한다. 부정 변형은 capability 증거만 사용, 평가 result/recommendation stale, `REJECT | NEEDS_MORE_EVIDENCE`, 다른 prompt/model/corpus 결과, 사람 승인 누락이다.
+- **6. 검사 주체**: PromptRegistry trusted runtime + R8 evaluation acceptance validator + Runtime Validator purpose/ref 검사
+- **7. 허용·차단·격리 기대**: capability는 호출 가능성만 증명한다. 모든 exact 품질·승인 조건을 만족한 경우에만 PRODUCTION ACTIVE를 허용하고 나머지는 EVALUATION에 둔다.
+- **8. work·attempt·가설 기대**: 거절된 승격은 운영 work·가설을 만들지 않고 기존 production pointer를 유지한다.
+- **9. 오류·DataGap 기대**: `AUTHORITY_DENIED | STALE_RESULT | RECORD_REVISION_MISMATCH` 또는 품질 미승인 사유를 기록한다.
+- **10. 저장·갱신 금지 pointer**: 평가 runtime이 production current pointer를 직접 교체하지 않고, 과거 acceptance를 새 revision에 재사용하지 않는다.
+- **11. FALSE 변환 금지**: Provider·Prompt 품질 미승인은 취약점 반증이 아니다.
+- **12. 실행 계층**: contract / integration / security-negative
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R8·R4와 Prompt 대상 역할 owner.
+
+#### R3-CT-EVAL-003 — 평가 비교·추천의 exact provenance
+
+- **1. ID·유형·설명**: R3-CT-EVAL-003 / 정상·부정 / 여러 평가 결과 비교와 추천이 같은 기준을 정확히 가리키는지 확인
+- **2. 단계·계약 경계**: `sastsimi eval compare`; `EvaluationRunResult[]` → `EvaluationRecommendation`
+- **3. producer → consumer**: R8 Evaluation Runtime → 사람 승인·PromptRegistry trusted runtime
+- **4. 선행 상태·exact refs**: 같은 corpus·grader·acceptance criterion 아래 비교 가능한 결과와 차이가 명시된 model/provider/prompt refs를 고정한다.
+- **5. 정상/잘못된 fixture**: 정상은 비교 집합·metric·비용/시간·결정 사유를 exact ref로 남긴다. 부정 변형은 다른 corpus/criterion 결과를 설명 없이 비교, 누락 결과, 이름만 같은 최신 revision 치환이다.
+- **6. 검사 주체**: EvaluationComparator·RecommendationService·exact-ref validator
+- **7. 허용·차단·격리 기대**: 비교 가능성과 모든 근거가 입증된 추천만 확정한다. 비교 불가 결과는 분리하거나 INCONCLUSIVE로 남긴다.
+- **8. work·attempt·가설 기대**: 추천은 운영 분석 상태와 독립이며 자동으로 work를 재실행하지 않는다.
+- **9. 오류·DataGap 기대**: 비교 기준 불일치·stale/missing reference를 구조화해 기록한다.
+- **10. 저장·갱신 금지 pointer**: 비교기·추천기가 production pointer를 직접 변경하거나 metric을 임의 보정하지 않는다.
+- **11. FALSE 변환 금지**: 평가 비교 결과는 취약점 판정이 아니다.
+- **12. 실행 계층**: unit / contract / integration / CLI / security-negative
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R8·R4와 평가 대상 역할 owner.
+
 ## 5. main Provider 계약과 미병합 Prompt 제안 card
 
 [#96](https://github.com/SASTsimi/sastsimi/pull/96)은 merge commit `64062aec3f9ea190df93d2e5eb240c036371cd65`로 main에 반영됐다. 따라서 ProviderProfile·capability·runtime tool-loop 조건은 main 계약으로 시험한다. [#97](https://github.com/SASTsimi/sastsimi/pull/97)은 HEAD `a9fd2e14edb9f52465947151e0208718a42d83e7`의 미병합 Prompt 제안이다. #97 최신 HEAD에서는 [본인 수정 요청](https://github.com/SASTsimi/sastsimi/pull/97#issuecomment-5556385502)의 빈 최초 계보 문제가 `OPTIONAL_MANY`와 exact closure 검사로 보완됐다. #97 전용 Registry·Builder 필드는 병합 뒤 main 기준으로 다시 대조하기 전에는 main 통과 조건으로 승격하지 않는다.
@@ -1692,7 +1808,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 이번 PR은 설계 문서만 추가한다. 아래는 **이후 구현 순서 제안**이며 현재 구현 완료 목록이 아니다.
 
-1. R4와 정상 fixture의 ID/refs/schema/state/commit graph 및 Q 항목을 확정한다. 특히 B5/Q-07 전에는 run-init Docker branch를 상태 변경 작업으로 구현하지 않는다.
+1. R3-06과 공통 계약이 확정한 ID/refs/schema/state/commit graph 및 §8의 Q 결정 매핑을 정상 fixture에 적용한다. run-init에는 Docker branch를 구현하지 않는다.
 2. 테스트 전용 저장소·정상 manifest·fake provider/static tool/Sandbox와 외부 호출 spy를 만든다. 운영 계정·외부 공격 대상은 사용하지 않는다.
 3. COM의 schema/reference/state 검사를 먼저 구현한다. 정상 fixture도 거절되는 잘못된 validator를 막기 위해 정상·부정 시험을 짝으로 실행한다.
 4. STA/HYP/VER/DYN/GAT/CHN/REP 순으로 contract→integration을 연결한다. 도구와 LLM의 의미 결과는 fixture로 주입하며 runtime이 의미를 대신 판정하지 않게 검사한다.
@@ -1704,7 +1820,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 |---|---|---|
 | COM-006/011/012 | artifact staging/hash/PREPARED/COMMITTED 전후 | 미확정 결과 소비 금지, marker와 pointer 일치, 중복 투영 방지 |
 | COM-007~010 | claim 경쟁·취소·늦은 결과·상태 충돌 | active attempt 하나, old 결과 격리, terminal work 재활성 금지 |
-| COM-014 | run-init Docker readiness와 향후 B5 상태 변경 경계 | 가설 전 `RUN_SANDBOX`·image/container·동적 결과 생성 금지, static·policy branch 독립 유지 |
+| COM-014 | run-init과 가설별 동적 재현 경계 | 가설 전 `RUN_SANDBOX`·image/container·동적 결과 생성 금지, static·policy 두 branch 독립 유지 |
 | HYP-002/005 | dedupe 계산·work/application 저장 사이 | 기존 work 재사용, application만 남거나 work만 활성화되지 않음 |
 | VER-002 | 한 child 종료 뒤 부모 상태 반영 전 | 합성/새 final 금지, 부모 BLOCKED/FAILED 전파 |
 | DYN-006~012 | AgentLog 기록·session crash·PoC 검증·request/profile 변경·container 생성/정리 전후 | same-attempt 계보, RETRY/RESUME와 새 generation 분리, exact SandboxProfile·PoC, 재생성·cleanup 완전성 |
@@ -1726,7 +1842,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 | OK-15 | DYN-001, VER-005 | SUPPORTED+validated PoC와 current generation |
 | OK-16 | GAT-005/006 | admission과 보고 자격 분리, COLLECTION_FAILED 별도 |
 | OK-17 | GAT-006, CHN-003 | FAIL→DENY, 기존 verdict 유지 |
-| OK-18 | REP-001 | Finding/CWE/two-Gate/policy exact chain 및 최종 저장 Q-01 |
+| OK-18 | REP-001 | Finding/CWE/two-Gate/policy exact chain 및 ORCHESTRATION 최종 저장 binding |
 | BAD-51 | VER-002 | 한쪽 실패·합류 차단·부모 전파 |
 | BAD-52 | VER-003, LLM-003 | 상대 역할의 결과/session/log 차단 |
 | BAD-53 | VER-004, HYP-005 | 실제 고정 입력 혼합은 stale; 최신 policy 게시만으로 교체하지 않음 |
@@ -1748,19 +1864,19 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 현재 남아 있는 댓글에 전체 상세 본문이 없는 OK-01~12/BAD-01~50은 원래 의미를 임의로 복원하지 않았다. 위에서 직접 설명이 남은 항목만 연결했다. 따라서 옛 번호의 모든 내용이 그대로 복구됐다고 주장하지 않는다. 현재 요구사항 coverage는 §3 및 #25 본문으로 확인한다.
 
-## 8. 미결정·검토 요청
+## 8. 추적 결정과 적용 기준
 
-아래는 **새로 만든 GitHub 이슈가 아니라 문서 내 추적 항목**이다. unresolved 항목을 해결했다고 표시하거나 임의 오류를 구현하지 않는다.
+아래는 **새로 만든 GitHub 이슈가 아니라 문서 내 추적 항목**이다. R3-06에서 구현 결정을 확정했으며, 실제 시험 구현은 오른쪽 적용 기준을 따라야 한다. Provider capability처럼 실제 환경에서만 확인할 수 있는 값은 지원 성공을 미리 주장하지 않는다.
 
-| ID | 현재 근거·설계 | 확인할 핵심·선택지 | 담당·영향·완료 조건 |
+| ID | 확정 상태·근거 | 결정 | 구현 적용 기준 |
 |---|---|---|---|
-| Q-01 | module map B3: CodeWorkspace/ToolRunResult/HypothesisProposal/AnalysisRunResult 저장 연결 공백. #97은 INITIAL proposal 저장 제안을 추가했으나 main 미반영 | 새 result-kind registry인지 기존 전용 저장 경계인지, 유일 producer·정확한 저장 action·단일 output·current pointer·원자 경계 확정. VERIFICATION/CHAINING nested child proposal의 독립 record 등록도 별도 확인 | R4 @taehyeon-git, R2/R1/R8. STA-001/HYP-001/REP-001 및 #89/#92 물리 저장 기대값 확정 전 필요. [이미 남긴 질문](https://github.com/SASTsimi/sastsimi/issues/92#issuecomment-5556395217)에 연결 |
-| Q-02 | 공통 문서의 확인 가능한 오류는 사용했지만 각 schema 필드/권한/reference 거절이 어떤 exact code·ActionCheck·상태 전파를 쓰는지 case별 매핑은 불완전 | 기존 오류 재사용과 전용 오류 필요 여부를 R4가 결정. 검사 실패와 실제 work 실행 실패를 분리하고 error stage/retryable/related refs를 확정 | R4+해당 owner. 본문에서 Q-02로 표시한 case의 실행 가능한 assertion 작성 전 해결; 문서 초안은 진행 가능 |
-| Q-03 | deterministic JSON+SHA-256은 #92 제안; executable schema version/fixture bytes는 아직 없음 | Unicode/숫자/null/시간/key 순서·hash 대상 bytes·동일 값 직렬화 fixture를 승인. 단순 key 정렬만으로 모든 runtime 동일 hash를 가정하지 않음 | R4·R3·R8. 실제 schema registry·정상 fixture 및 content hash 기대값 확정 전 필요 |
-| Q-04 | #96 Provider role/spec/profile/action 경계는 merge commit `64062ae`로, 비-LLM Orchestration Runtime 경계는 main `6122567`로 반영됐다. current main `750287e`의 공식 구성요소 이름을 사용하며 Prompt Registry·Builder 세부 구조는 #97 제안에 의존 | main의 Provider·Orchestration Runtime 계약과 #97 Prompt 제안을 분리해 대조한다. 실제 profile 발급에는 provider 지원 시험이 필요하며 특정 모델/구독 경로를 실제 사용 가능하다고 단정하지 않음 | R4·R3·R7·R8, 전문 prompt owner. main Provider·Orchestration case는 계획으로 활성화하고 #97 전용 case는 병합 SHA에서 재대조 |
-| Q-05 | #97@`a9fd2e1`은 최초 Chaining의 빈 조상 결과 집합에 `lineage_results=OPTIONAL_MANY`를 적용하고 cardinality 최소 개수와 exact closure 검사를 추가함 | PR-003의 빈 집합 허용, PR-004의 필요한 실제 조상 누락·관계없는 결과 추가 차단을 함께 유지. 아직 main 미병합이므로 병합 SHA에서 재대조 | R1 @baeseungwon1010·R4 @taehyeon-git. [수정 요청](https://github.com/SASTsimi/sastsimi/pull/97#issuecomment-5556385502)은 제안 문서상 보완됐고 main 활성화 확인만 남음 |
-| Q-06 | #96은 `64062ae`로 main에 반영됐고 #97@`a9fd2e1`은 열려 있음 | #97을 최신 main에 동기화할 때 main Provider 계약과 양쪽 validator 규칙·출력을 함께 보존해 다시 실행. 문서 검사만으로 runtime 동작을 보증하지 않음 | #97 작성자·R3. 실제 #97 병합 SHA를 통합 Provider/Prompt 시험 기준으로 기록할 때 완료 |
-| Q-07 | module map B5: 가설 전 Docker baseline 준비는 현재 `RUN_SANDBOX`와 가설별 동적 result 계약을 사용할 수 없음 | 실제 pull/build/cache warm을 할지 먼저 결정하고, 필요하면 run-init 전용 requester·action type·exact 입력·output/log·상태·retry·취소·저장, R7 강제 상한과 R8 예산 reference를 확정. 확정 전에는 host 상태를 바꾸지 않는 readiness 확인만 허용 | R3·R4 @taehyeon-git·R7·R8. COM-014의 state-changing 정상 fixture와 Step 3 Docker branch 구현 전 해결; R3-02 문서 병합과는 분리하되 production pipeline 완료 전 필수 |
+| Q-01 | RESOLVED — `08` result-owner registry와 module map B3 | CodeWorkspace·ToolRunResult·HypothesisProposal·AnalysisRunResult의 유일 producer, `SAVE_RESULT`, current 선택점과 atomic output binding을 확정했다. proposal ID는 trusted source 출력 검증 때 한 번 부여하고, source result COMMITTED 뒤 ORCHESTRATION 등록 runtime이 같은 ID와 내용을 별도 record로 저장한다. | STA-001/HYP-001/REP-001은 각 exact source/work/attempt와 COMMITTED transition을 검사한다. |
+| Q-02 | RESOLVED — R3-06 §8.4 | schema, 사람 입력, LLM 출력, authority, action, workspace, revision/hash, stale, attempt, CAS, 상태, budget과 외부 실행 실패의 코드 선택 순서를 확정했다. | 본문의 Q-02 표식은 이 순서로 기대 code와 모든 ActionCheck를 fixture에 구체화한다. 메시지 문자열로 분기하지 않는다. |
+| Q-03 | RESOLVED — R3-06 §8.2 | `canonical-json-v1`의 null·시간·정수·Unicode·key·배열·UTF-8·hash 규칙과 exact bytes/hash 최소 fixture를 확정했다. | contract fixture가 같은 bytes/hash와 금지 입력 거절을 검증한다. canonicalizer 변경은 ADR·migration이 필요하다. |
+| Q-04 | RESOLVED — main `0c1b59b`, R3-04·R3-05·R3-06 | ProviderProfile과 `provider_profile_ref + model`, 11개 역할, 비-LLM Orchestration Runtime, Prompt Registry·Builder 경계를 통합했다. | 실제 profile은 PVD capability 통과 전 ACTIVE/SUPPORTED로 만들지 않는다. 미지원은 설계 미결정이 아니라 실제 시험 결과다. |
+| Q-05 | RESOLVED — PR #97 merge `0c1b59b` | 최초 Chaining은 빈 `lineage_results`, 조상이 있으면 계산한 exact closure와 set-equal을 요구한다. | PR-003은 빈 집합을 허용하고 PR-004는 필요한 조상 누락·관계없는 추가를 모두 거절한다. |
+| Q-06 | RESOLVED — PR #97 merge `0c1b59b` | Provider 계약과 Prompt Runtime validator 규칙을 최신 main에서 함께 보존했다. | 통합 Provider/Prompt fixture는 문서 SHA가 아니라 실제 exact profile·registry·call spec reference를 사용한다. |
+| Q-07 | RESOLVED — module map B5, R3-06 | run-init Docker baseline branch를 제거했다. Docker pull/build/cache warm/container는 exact 동적 요청이 생긴 Step 12에서만 수행한다. | COM-014는 run-init의 모든 Docker 상태 변경을 `ACTION_NOT_ALLOWED`로 거절하고 static·policy 두 branch가 독립적으로 계속되는지 검사한다. |
 
 ### 8.1 main 해석 시 주의할 항목
 

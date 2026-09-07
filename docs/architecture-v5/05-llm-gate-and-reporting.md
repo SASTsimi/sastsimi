@@ -93,7 +93,7 @@ technical_evidence_review:
 
 `ACCEPT`는 `handoff_readiness=READY`, `REVISE | REJECT`는 `handoff_readiness=NOT_READY`와 함께 사용한다. 여기서 `READY`는 동일 exact Verification revision을 Gate 2 입력으로 전달할 수 있다는 뜻이며 Reporter나 그 이후 단계를 허가하지 않는다. 이 조합이 맞지 않으면 Gate output을 저장하지 않는다.
 
-`POLICY_BLOCKED`는 `SandboxProfile`의 외부 격리 경계 위반 때문에 Dynamic Reproduction Agent를 시작하지 못한 상태다. `DynamicReproductionResult(status=BLOCKED | FAILED, failure_category=POLICY_BLOCKED)`는 가설 반증이 아니며 validated PoC가 없으므로 final TRUE를 저장하거나 Technical Gate를 호출할 수 없다. current work의 `input_refs/input_hash`를 바꾸지 않는 외부 조건 해소를 기다릴 수 있을 때만 Verification과 동적 work를 `BLOCKED`로 유지한다. exact request나 profile reference를 바꿔야 하면 기존 work를 수정·재개하지 않고 새 Verification generation과 새 동적 work를 만들며, 복구 불가능하거나 한도를 소진하면 verdict 없이 `FAILED + INCONCLUSIVE`로 끝낸다. 이 외부 경계 차단을 `FALSE | HOLD` 또는 Gate의 `REJECT` 근거로 바꾸지 않는다. 프로그램 정책 준비·freshness·testing restriction은 `LOCAL_ONLY` 동적 work의 `POLICY_BLOCKED` 사유가 아니다.
+`POLICY_BLOCKED`는 `SandboxProfile`의 외부 격리 경계 위반 때문에 Dynamic Reproduction Agent를 시작하지 못한 상태다. `DynamicReproductionResult(status=BLOCKED | FAILED, failure_category=POLICY_BLOCKED)`는 가설 반증이 아니며 validated PoC가 없으므로 final TRUE를 저장하거나 Technical Gate를 호출할 수 없다. current work의 `input_refs/input_hash`를 바꾸지 않는 외부 조건 해소를 기다릴 수 있을 때만 Verification과 동적 work를 `BLOCKED`로 유지한다. exact request를 교체하거나 승인된 새 profile reference를 적용해야 하면 기존 work를 수정·재개하지 않고 새 Verification generation에서 Pro·Con과 초기 판단을 다시 수행하며, 그 판단이 동적 재현을 요구할 때만 새 request와 동적 work를 만든다. 복구 불가능하거나 한도를 소진하면 verdict 없이 `FAILED + INCONCLUSIVE`로 끝낸다. 이 외부 경계 차단을 `FALSE | HOLD` 또는 Gate의 `REJECT` 근거로 바꾸지 않는다. 프로그램 정책 준비·freshness·testing restriction은 `LOCAL_ONLY` 동적 work의 `POLICY_BLOCKED` 사유가 아니다.
 
 `verification_result_ref.record_id`와 `cwe_label_ref.record_id`는 Gate가 실제로 읽은 `VerificationResult`와 `CWELabel` revision을 각각 고정한다. runtime은 Gate와 두 대상의 `workspace_id`, `commit_id`, `hypothesis_id`, `record_id`, `content_hash`를 확인하고 `CWELabel.verification_result_ref`가 Gate의 `verification_result_ref`와 정확히 같은지 검사한다. label의 generation·work·attempt·invocation이 current CWE work와 다르거나 과거 Verification의 label이면 호출·저장을 차단한다. Verification 또는 CWELabel이 수정되면 이전 `ACCEPT`를 새 revision에 재사용하지 않고 R5-01 CWE 평가와 Gate를 새로 실행한다.
 
@@ -103,7 +103,7 @@ Runtime Validator는 `REVISE`를 만든 기존 action·decision을 다시 사용
 
 ## 정책 준비 시점
 
-정책 준비는 hypothesis별 작업이 아니라 **실행(analysis run) 단위 작업**이다. `CodeWorkspace.status=READY` 뒤 정적 근거 준비·공통 환경 준비와 독립 병렬로 `POLICY_FETCH` work가 시작한다.
+정책 준비는 hypothesis별 작업이 아니라 **실행(analysis run) 단위 작업**이다. `CodeWorkspace.status=READY` 뒤 정적 근거 준비와 독립 병렬로 `POLICY_FETCH` work가 시작한다. run-init에는 Docker image·container 준비 branch가 없으며 실제 준비는 exact 동적 요청이 생긴 가설의 `DYNAMIC_REPRO` 단계에서만 수행한다.
 
 - **Policy Collector**는 비-LLM component이며 공식 정책 원문과 출처 근거·hash를 고정하고 `PolicyCollectionResult`와 (`FOUND`이면) `ProgramPolicyRecord`를 생산한다. **Policy Parser**는 LLM component이며 그 exact 원문만 구조화해 `PolicyParserResult`를 생산한다. 이어서 Collector가 이를 검증·취합해 실행 단위 `RunPolicyState`를 확정한다.
 - `(analysis_id, program_id, work_type=POLICY_FETCH)` 기준 active work와 `RunPolicyState`는 각각 하나만 두고 hypothesis별 수집·파싱을 하지 않는다.

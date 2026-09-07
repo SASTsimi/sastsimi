@@ -42,7 +42,7 @@
 - `EXECUTED`에서만 `hit_count`를 0 이상의 정수로 저장합니다. `EXECUTED + hit_count=0`이 실행 후 탐지 0건입니다.
 - 미실행·확인 불가 상태에는 `hit_count=null`과 이유를 저장합니다.
 - `CodeFact`가 없다는 사실만으로 실행 여부나 0건을 추정하지 않습니다.
-- `CodeFact.producer.attempt_id`는 자신을 만든 exact `ToolRunResult.attempt_id`와 같아야 합니다.
+- `CodeFact.producer.attempt_id`는 자신을 만든 exact `ToolRunResult.meta.attempt_id`와 같아야 합니다.
 - retry는 새 `attempt_id`와 새 record를 사용하고 이전 attempt의 수치를 합치지 않습니다.
 - `RuleExecutionRecord`는 STATIC_ANALYSIS만 생산합니다. LLM Agent는 읽을 수 있지만 만들거나 수정할 수 없습니다.
 

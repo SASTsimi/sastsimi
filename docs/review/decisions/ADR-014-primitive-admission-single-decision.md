@@ -26,7 +26,7 @@
 
 **`CWELabel`.** 새 Verification generation에서만 새 revision이 만들어집니다.
 
-**`VerificationResult`.** 새 generation은 Technical `REVISE`에서만 만들어집니다. `REVISE`는 `ACCEPT`의 대안이므로 그 시점에는 admission도 result Primitive도 아직 없습니다. PR #102가 자식 impact 흡수를 제거해 Technical `ACCEPT` 이후 같은 Verification을 다시 여는 경로도 없어졌습니다.
+**`VerificationResult`.** 새 generation은 검증 중 exact 동적 입력을 교체하는 `DYNAMIC_INPUT_CHANGED` 또는 Technical `REVISE`에서 만들어집니다. 두 경로 모두 Technical `ACCEPT` 이전에만 허용되므로 그 시점에는 admission도 result Primitive도 아직 없습니다. PR #102가 자식 impact 흡수를 제거해 Technical `ACCEPT` 이후 같은 Verification을 다시 여는 경로도 없어졌습니다.
 
 **중단·재개.** 파이프라인이 중단되었다가 재개되어도 이미 저장된 Primitive는 취소하지 않습니다. `Primitive`는 불변 append-only record이고 재개는 미완료 work를 이어서 실행하는 것이지 확정된 결과를 되돌리거나 admission을 다시 판정하는 절차가 아닙니다.
 

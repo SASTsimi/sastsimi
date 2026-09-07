@@ -64,7 +64,7 @@ CodeQL·OpenGrep처럼 규칙을 실행하는 도구는 `ToolRunResult.tool_kind
 - `NOT_SELECTED + NOT_EXECUTED`: 분석 계획에서 제외해 실행하지 않았다.
 - `SELECTED + UNKNOWN`: 오류나 실행 기록 부족으로 실제 실행 여부를 확인할 수 없다.
 
-도구 실패·timeout·실행 기록 누락을 `EXECUTED + hit_count=0`으로 바꾸지 않는다. `CodeFact.producer.attempt_id`는 자신을 만든 exact `ToolRunResult.attempt_id`와 같아야 한다. `producer.rule_id`는 hit이 생겼을 때만 존재하므로 `CodeFact`가 없다는 사실만으로 규칙을 실행했거나 결과가 0건이었다고 추정하지 않는다. 정확한 필드·상태 조합과 retry 규칙은 [경량 데이터 계약](./08-lightweight-data-contracts.md)의 `RuleExecutionRecord`를 따른다.
+도구 실패·timeout·실행 기록 누락을 `EXECUTED + hit_count=0`으로 바꾸지 않는다. `CodeFact.producer.attempt_id`는 자신을 만든 exact `ToolRunResult.meta.attempt_id`와 같아야 한다. `producer.rule_id`는 hit이 생겼을 때만 존재하므로 `CodeFact`가 없다는 사실만으로 규칙을 실행했거나 결과가 0건이었다고 추정하지 않는다. 정확한 필드·상태 조합과 retry 규칙은 [경량 데이터 계약](./08-lightweight-data-contracts.md)의 `RuleExecutionRecord`를 따른다.
 
 `ToolRunResult.status`는 다음 의미를 갖는다.
 

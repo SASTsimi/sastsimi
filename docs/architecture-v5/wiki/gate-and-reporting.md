@@ -18,7 +18,7 @@ Technical Gate는 이 label이 Verification 근거와 맞는지 검토하지만 
 
 final TRUE `VerificationResult`의 찬반 근거, 실제 코드·호출·데이터 흐름, 현재 generation의 `DynamicReproductionRequest`·성공한 동적 결과·validated PoC, CWE와 restriction을 검토한다. FALSE와 HOLD는 이 Gate를 호출하지 않는다. 각 exact revision을 고정하며 하나라도 수정되면 기존 Gate 결과를 재사용하지 않는다. 출력은 `ACCEPT | REVISE | REJECT`와 별도 `handoff_readiness: READY | NOT_READY`다. `ACCEPT`는 `READY`, 나머지는 `NOT_READY`만 허용하며 verdict를 직접 바꾸지 않는다. `REVISE`는 같은 Verification owner에게 직접 돌아가며, 새 generation에서 TRUE를 다시 만들려면 새 동적 결과와 validated PoC도 필요하다.
 
-동적 재현이 Sandbox profile의 외부 격리 경계에 막힌 것은 `FALSE`나 Gate의 `REJECT` 근거가 아닙니다. 하지만 validated PoC가 없으므로 final TRUE와 Technical Gate 입력을 만들 수 없습니다. current work의 불변 입력을 바꾸지 않는 외부 조건을 기다릴 때만 동적 work를 `BLOCKED`로 유지합니다. exact request나 profile reference를 바꿔야 하면 새 Verification generation과 새 동적 work를 만들고, 복구 불가능하면 verdict 없이 `FAILED`로 끝냅니다. 프로그램 정책 준비·freshness·testing restriction은 `LOCAL_ONLY` 실행의 차단 사유가 아닙니다.
+동적 재현이 Sandbox profile의 외부 격리 경계에 막힌 것은 `FALSE`나 Gate의 `REJECT` 근거가 아닙니다. 하지만 validated PoC가 없으므로 final TRUE와 Technical Gate 입력을 만들 수 없습니다. current work의 불변 입력을 바꾸지 않는 외부 조건을 기다릴 때만 동적 work를 `BLOCKED`로 유지합니다. exact request를 교체하거나 승인된 새 profile reference를 적용해야 하면 새 Verification generation에서 Pro·Con과 초기 판단부터 다시 수행하고, 여전히 필요할 때만 새 request와 동적 work를 만듭니다. 복구 불가능하면 verdict 없이 `FAILED`로 끝냅니다. 프로그램 정책 준비·freshness·testing restriction은 `LOCAL_ONLY` 실행의 차단 사유가 아닙니다.
 
 ## 2. 공식 정책·범위·영향 검토(`Rule Scope Impact Gate`)
 
