@@ -8,10 +8,10 @@
 
 - 담당: R3 윤희섭 (@YHS-Sec, @v1sion). 공통 아키텍처 검토·대행 수행: 김태현 (@taehyeon-git).
 - 본 작업: [#89](https://github.com/SASTsimi/sastsimi/issues/89). 상위 [#4](https://github.com/SASTsimi/sastsimi/issues/4), 선행 [#24](https://github.com/SASTsimi/sastsimi/issues/24)·[#25](https://github.com/SASTsimi/sastsimi/issues/25), 후속 [#92](https://github.com/SASTsimi/sastsimi/issues/92).
-- main 대조 기준: `9c7a5a19c5e32c3f752bc40a32aaf86441be4d01` (2026-09-07 조회).
-- #25 시험 계획 의존성: [PR #106](https://github.com/SASTsimi/sastsimi/pull/106), review freeze HEAD `5ea4e6e`.
-- Prompt 실행 구조 의존성: [PR #97](https://github.com/SASTsimi/sastsimi/pull/97), review freeze HEAD `a9fd2e1`.
-- **#106과 #97은 작성 시점 열림·미병합**이다. 이번 문서는 두 review freeze HEAD를 설계 초안으로 참조하며 승인된 main 계약이라고 주장하지 않는다. 어느 PR이든 수정되면 ID·fixture·역할명·기대값을 다시 대조하고, #107은 두 PR 뒤에 병합한다.
+- main 대조 기준: `0c1b59b5f74fb2c76171167940640d10ca5155b0` (2026-09-07 조회).
+- #25 시험 계획 의존성: [PR #106](https://github.com/SASTsimi/sastsimi/pull/106), 최종 HEAD `0e2e7fef3699692d6c849fa770127b349b0e076b`, main 병합 commit `9e0a7efc73d9a9b1e83d6e70049c6d35ab8fa8b1`.
+- Prompt 실행 구조 의존성: [PR #97](https://github.com/SASTsimi/sastsimi/pull/97), 최종 HEAD `fbf023691073cce7cd9ced421b69e219b5c5c8d9`, main 병합 commit `0c1b59b5f74fb2c76171167940640d10ca5155b0`.
+- **#106과 #97은 main에 병합됐다.** 이번 문서는 병합된 최종 계약을 기준으로 CT ID·fixture·역할명·Prompt 입력·복구 기대값을 다시 대조한다.
 - 이번 변경은 `03-recovery-test-plan.md` 한 파일이다. #106의 02 문서를 복사해 다른 PR에서 다시 추가하지 않는다.
 
 #25는 **잘못된 입력을 어디서 막는지**, #89는 **그 검사를 하거나 저장하는 도중 프로그램이 멈춰도 같은 안전 조건이 유지되는지**를 다룬다. 실제 설계는 22단계이며, 분기 때문에 한 가설이 모든 22단계를 순서대로 한 번씩 거치는 구조는 아니다.
@@ -45,7 +45,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 |---|---|---|---|
 | COMMITTED 재투영 | 같은 marker·record·논리 결과 | 필요한 상태 projection만 복원 | 도구/LLM 재호출·새 결과 revision 생성 아님 |
 | 일반 work retry | 같은 work_id·고정 입력 | 새 attempt, LLM이면 새 call/spec/action/decision/session | 실패 attempt 보존. retryable 일반 work는 BLOCKED 경로, 모든 work에 RUNNING→READY 허용 금지 |
-| Dynamic Reproduction Agent 같은 session의 자율 조정 | work·attempt·session | 해당 실행 event/관찰 | command·PoC·환경 조정과 same-session container 재생성은 새 attempt를 만들지 않음 |
+| Dynamic Reproduction Agent 같은 session의 자율 조정 | work·attempt·session | 해당 실행 event/관찰 | `EXECUTE_REPRODUCTION` 첫 turn은 `NEW`, 같은 work·attempt의 후속 turn만 `RESUME`; command·PoC·환경 조정과 same-session container 재생성은 새 attempt를 만들지 않음 |
 | Dynamic Reproduction Agent session 재시작 | work_id·verification generation | 새 attempt, trigger=RETRY | RUNNING→READY→RUNNING. 고정 입력을 유지하고 R8 한도가 남아 있어야 함 |
 | 동적 재현 외부 조건 해소 후 재개 | work_id·고정 input refs/hash | 새 attempt, trigger=RESUME | BLOCKED→READY→RUNNING. 실제 waiting_for 조건이 해소되고 input refs/hash가 그대로여야 함 |
 | 동적 request/profile 변경 | hypothesis_id·ACTIVE Verification owner | 새 verification generation·새 DYNAMIC_REPRO work | 기존 work의 RETRY·RESUME 금지. 과거 action·decision·attempt를 새 입력에 재사용하지 않음 |
@@ -93,7 +93,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **STO 기준 (F-COM/F-STA)**: work K1=RUNNING, active attempt A1, state_version=v, input hash IH1. current output은 마지막 확정 r0. 새 결과 r1은 단계별 staging 후보이며 COMMITTED 전에는 current 아님. analysis R1/workspace W1/commit C1, K1/A1/G1(가설 작업일 때만)/IH1; r0/h0, r1/h1 및 T1(expected=v,target=v+1). 이름은 설계 별명이며 실제 ID·hash는 미생성.
 - **WRK 기준 (F-COM/F-HYP/F-BUD)**: 같은 analysis/가설에 논리 work K1 하나, 이전 attempt A0 history, 현재 A1. case가 READY/종료/취소를 지정하면 그 상태가 우선. 확정된 current r0 외 늦은 응답은 후보. R1/W1/C1/H1/G1, K1, A0/A1, IH1, state_version=v, 고정 configuration E1, application PA1. 모든 결과는 자기 producer work의 attempt와 연결.
 - **LLM 기준 (F-LLM/F-VER)**: 일반 K1/A1 RUNNING 또는 부모 KV1과 PRO KP1/AP1, CON KC1/AC1. 고정 공통 입력 DH1/application PA1, 각 역할 NEW session과 별도 call/decision. final result는 아직 없음. R1/W1/C1/H1/G1; spec S1/payload P1/profile PV1/USED decision AD1; Pro/Con DH1 동일, work·attempt·session은 각각 독립.
-- **DYN 기준 (F-DYN)**: R6 exact request DQ1이 generation G1에 고정됨. dynamic work KD1 하나, 실행 attempt AD1, session SD1. requirements ER1/plan PL1/recipe RC1/environment ENV1/log L1/candidate PC1/PoC POC1와 DynamicReproductionResult DX1은 case의 저장 지점까지만 존재한다. R1/W1/C1/H1/G1, KD1/AD1/IHD1, exact DQ1, R7 소유 SandboxProfile SP1, R8 lifecycle LP1, command record CMD1/digest CD1을 사용한다. RunPolicyState RPS1은 RUN_SANDBOX 시점의 감사 reference일 뿐 KD1의 불변 입력·Controller 허가·R6 verdict 근거가 아니다. request 생산 attempt와 동적 실행 attempt는 같을 필요가 없다.
+- **DYN 기준 (F-DYN)**: R6 exact request DQ1이 generation G1에 고정됨. dynamic work KD1 하나, 실행 attempt AD1, session SD1. `EXECUTE_REPRODUCTION`의 첫 turn은 `session_policy=AUTO`가 `NEW`로, 같은 work·attempt의 후속 turn은 직전 성공 session을 부모로 둔 `RESUME`으로 해석된다. requirements ER1/plan PL1/recipe RC1/environment ENV1/log L1/candidate PC1/PoC POC1와 DynamicReproductionResult DX1은 case의 저장 지점까지만 존재한다. R1/W1/C1/H1/G1, KD1/AD1/IHD1, exact DQ1, R7 소유 SandboxProfile SP1, R8 lifecycle LP1, command record CMD1/digest CD1을 사용한다. RunPolicyState RPS1은 RUN_SANDBOX 시점의 감사 reference일 뿐 KD1의 불변 입력·Controller 허가·R6 verdict 근거가 아니다. request 생산 attempt와 동적 실행 attempt는 같을 필요가 없다.
 - **FLW 기준 (F-STA/F-VER/F-GAT/F-CHN/F-REP)**: 해당 단계 직전까지의 exact COMMITTED 결과만 준비. H1 final TRUE이면 V1/DX1/POC1/CW1/TG1/RS1의 current chain을 사용한다. HOLD 가설 HH와 새 child HC는 서로 다른 hypothesis_id로 구분한다. 동일 R1/W1/C1을 쓰며, Finding FN1/index FI1과 Primitive PRA/PRB·match M1·child HC는 각 source record를 정확히 가리킨다.
 - **E2E 기준 (F-STA/F-HYP/F-VER/F-DYN/F-GAT/F-CHN/F-REP/F-BUD)**: 새 run R1에서 시작. 중간 장애 전까지는 각 단계의 정상 COMMITTED chain. TRUE/HOLD/FALSE는 미리 정한 전문 결과 fixture이고 runtime이 직접 판정하지 않음. 동일 R1/W1/C1, 각 가설 Hn/generation Gn/work Kn/attempt An/고정 input hash IHn. schema/profile과 case별 장애 지점은 아래 연결된 REC card를 따름.
 
@@ -546,7 +546,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 
 #### R3-REC-DYN-004 — container crash·상태 변경·불확실 환경
 
-- **1. ID·단계·work**: R3-REC-DYN-004; 12 / DYNAMIC_REPRO. CT 연결: DYN-004/006/008.
+- **1. ID·단계·work**: R3-REC-DYN-004; 12 / DYNAMIC_REPRO. CT 연결: DYN-004/006/008/012.
 - **2. 중단 전 상태·current**: DYN 기준(§3.3): R6 exact request DQ1이 generation G1에 고정됨. dynamic work KD1 하나, 실행 attempt AD1, session SD1. requirements ER1/plan PL1/recipe RC1/environment ENV1/log L1/candidate PC1/PoC POC1는 case의 저장 지점까지만 존재. 5번이 지정한 시작 지점이 우선한다.
 - **3. work·attempt·generation·input**: R1/W1/C1/H1/G1, KD1/AD1/IHD1, exact DQ1, SandboxProfile SP1, R8 lifecycle LP1, command record CMD1/digest CD1. request 생산 attempt와 동적 실행 attempt는 같을 필요 없음. 자세한 정상 graph는 F-DYN(#106 §2.3).
 - **4. 저장된 record·artifact·marker**: 실행 event 일부·old environment/recipe·Sandbox 경계/관측 기록. command 종료 여부는 불명일 수 있음.
@@ -561,7 +561,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 
 #### R3-REC-DYN-005 — 동일 session 조정·RETRY·RESUME 분리
 
-- **1. ID·단계·work**: R3-REC-DYN-005; 12 / DYNAMIC_REPRO. CT 연결: DYN-007/008, COM-010, BUD-002.
+- **1. ID·단계·work**: R3-REC-DYN-005; 12 / DYNAMIC_REPRO. CT 연결: DYN-007/008/012, COM-010, BUD-002.
 - **2. 중단 전 상태·current**: DYN 기준(§3.3): R6 exact request DQ1이 generation G1에 고정됨. dynamic work KD1 하나, 실행 attempt AD1, session SD1. requirements ER1/plan PL1/recipe RC1/environment ENV1/log L1/candidate PC1/PoC POC1는 case의 저장 지점까지만 존재. 5번이 지정한 시작 지점이 우선한다.
 - **3. work·attempt·generation·input**: R1/W1/C1/H1/G1, KD1/AD1/IHD1, exact DQ1, SandboxProfile SP1, R8 lifecycle LP1, command record CMD1/digest CD1. request 생산 attempt와 동적 실행 attempt는 같을 필요 없음. 자세한 정상 graph는 F-DYN(#106 §2.3).
 - **4. 저장된 record·artifact·marker**: A 현재 attempt event, B 실패 attempt history, C BLOCKED waiting_for. 각각 마지막 durable refs.
@@ -606,7 +606,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 
 #### R3-REC-DYN-008 — cleanup 중 종료·잘못된 NOT_REQUIRED
 
-- **1. ID·단계·work**: R3-REC-DYN-008; 12 / DYNAMIC_REPRO. CT 연결: DYN-001/003/004/006.
+- **1. ID·단계·work**: R3-REC-DYN-008; 12 / DYNAMIC_REPRO. CT 연결: DYN-001/003/004/006/012.
 - **2. 중단 전 상태·current**: DYN 기준(§3.3): R6 exact request DQ1이 generation G1에 고정됨. dynamic work KD1 하나, 실행 attempt AD1, session SD1. requirements ER1/plan PL1/recipe RC1/environment ENV1/log L1/candidate PC1/PoC POC1는 case의 저장 지점까지만 존재. 5번이 지정한 시작 지점이 우선한다.
 - **3. work·attempt·generation·input**: R1/W1/C1/H1/G1, KD1/AD1/IHD1, exact DQ1, SandboxProfile SP1, R8 lifecycle LP1, command record CMD1/digest CD1. request 생산 attempt와 동적 실행 attempt는 같을 필요 없음. 자세한 정상 graph는 F-DYN(#106 §2.3).
 - **4. 저장된 record·artifact·marker**: exact 자원 식별자·cleanup 요청/결과/refs·attempt log. 목록 밖 host 자원은 범위 밖.
@@ -670,7 +670,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 
 - **1. ID·단계·work**: R3-REC-FLW-001; 2·3·4·9 / WORKSPACE_PREP·STATIC_TOOL·STATIC_NORMALIZE·CONTEXT_RETRIEVAL. CT 연결: STA-001~007, COM-011/012.
 - **2. 중단 전 상태·current**: FLW 기준(§3.3): 해당 단계 직전까지의 exact COMMITTED 결과만 준비. H1은 final TRUE chain, HOLD 가설 HH와 새 child HC는 서로 다른 hypothesis_id를 사용한다. 5번이 지정한 시작 지점이 우선한다.
-- **3. work·attempt·generation·input**: 동일 R1/W1/C1; V1↔CW1↔TG1↔RS1↔정책 COL1/POL1 exact chain; Finding FN1/index FI1. Primitive PRA/PRB·match M1·child HC는 각 source record를 가리킴. 자세한 정상 graph는 F-STA/F-VER/F-GAT/F-CHN/F-REP(#106 §2.3).
+- **3. work·attempt·generation·input**: 동일 R1/W1/C1; V1↔CW1↔TG1↔RS1↔RunPolicyState RPS1↔COL1/POL1 exact chain; Finding FN1/index FI1. Primitive PRA/PRB·match M1·child HC는 각 source record를 가리킴. 자세한 정상 graph는 F-STA/F-VER/F-GAT/F-CHN/F-REP(#106 §2.3).
 - **4. 저장된 record·artifact·marker**: 도구별 immutable results/rule records와 current bundle/Context 후보; 일부 도구 실패 변형.
 - **5. 정확한 장애 주입 지점**: AST만 완료한 시점·SAST 결과 합류 중·Context fragment 저장 직후 종료.
 - **6. 재시작 검사 조건**: 모든 기대 tool 상태·각 자기 attempt·W/C refs·gaps/errors·Context 경로/한도·재개 중 HEAD 동일성.
@@ -685,7 +685,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 
 - **1. ID·단계·work**: R3-REC-FLW-002; 13 / VERIFICATION. CT 연결: VER-005/006, COM-011/012.
 - **2. 중단 전 상태·current**: FLW 기준(§3.3): 해당 단계 직전까지의 exact COMMITTED 결과만 준비. H1은 final TRUE chain, HOLD 가설 HH와 새 child HC는 서로 다른 hypothesis_id를 사용한다. 5번이 지정한 시작 지점이 우선한다.
-- **3. work·attempt·generation·input**: 동일 R1/W1/C1; V1↔CW1↔TG1↔RS1↔정책 COL1/POL1 exact chain; Finding FN1/index FI1. Primitive PRA/PRB·match M1·child HC는 각 source record를 가리킴. 자세한 정상 graph는 F-STA/F-VER/F-GAT/F-CHN/F-REP(#106 §2.3).
+- **3. work·attempt·generation·input**: 동일 R1/W1/C1; V1↔CW1↔TG1↔RS1↔RunPolicyState RPS1↔COL1/POL1 exact chain; Finding FN1/index FI1. Primitive PRA/PRB·match M1·child HC는 각 source record를 가리킴. 자세한 정상 graph는 F-STA/F-VER/F-GAT/F-CHN/F-REP(#106 §2.3).
 - **4. 저장된 record·artifact·marker**: V1 후보 또는 COMMITTED final transition; current generation DX1/validated POC1와 Pro/Con refs.
 - **5. 정확한 장애 주입 지점**: VerificationResult 저장 후 VERIFICATION SUCCEEDED/Hypothesis TERMINAL pointer 확정 전 종료.
 - **6. 재시작 검사 조건**: 필수 검증 완료·current generation·DX1 SUCCEEDED/SUPPORTED·PoC·output/전문 pointer 결합.
@@ -698,9 +698,9 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 
 #### R3-REC-FLW-003 — CWE·Technical 결과와 고정 정책 Gate 사이 종료
 
-- **1. ID·단계·work**: R3-REC-FLW-003; 14·15·17 / CWE_LABEL·TECHNICAL_GATE·RULE_SCOPE_GATE. CT 연결: GAT-001/002/003.
+- **1. ID·단계·work**: R3-REC-FLW-003; 14·15·17 / CWE_LABEL·TECHNICAL_GATE·RULE_SCOPE_GATE. CT 연결: GAT-001/002/003/009.
 - **2. 중단 전 상태·current**: FLW 기준(§3.3): 해당 단계 직전까지의 exact COMMITTED 결과만 준비. H1은 final TRUE chain, HOLD 가설 HH와 새 child HC는 서로 다른 hypothesis_id를 사용한다. 5번이 지정한 시작 지점이 우선한다.
-- **3. work·attempt·generation·input**: 동일 R1/W1/C1; V1↔CW1↔TG1↔RS1↔정책 COL1/POL1 exact chain; Finding FN1/index FI1. Primitive PRA/PRB·match M1·child HC는 각 source record를 가리킴. 자세한 정상 graph는 F-STA/F-VER/F-GAT/F-CHN/F-REP(#106 §2.3).
+- **3. work·attempt·generation·input**: 동일 R1/W1/C1; V1↔CW1↔TG1↔RS1↔RunPolicyState RPS1↔COL1/POL1 exact chain; Finding FN1/index FI1. Primitive PRA/PRB·match M1·child HC는 각 source record를 가리킴. 자세한 정상 graph는 F-STA/F-VER/F-GAT/F-CHN/F-REP(#106 §2.3).
 - **4. 저장된 record·artifact·marker**: CW1/TG1 exact work/marker·input refs; 다음 단계 work 등록 유무.
 - **5. 정확한 장애 주입 지점**: CWE result commit 전후, Technical ACCEPT commit 뒤 run-init에서 이미 고정한 RunPolicyState를 Rule Scope 입력에 결합하기 전 종료.
 - **6. 재시작 검사 조건**: CWE→V1, TG1→V1/CW1 domain input exact equality·현재 검증·dedupe·권한.
@@ -715,7 +715,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 
 - **1. ID·단계·work**: R3-REC-FLW-004; 16 및 새 검증 / VERIFICATION·PRO_EVIDENCE·CON_EVIDENCE. CT 연결: VER-007, HYP-005, COM-011/012.
 - **2. 중단 전 상태·current**: FLW 기준(§3.3): 해당 단계 직전까지의 exact COMMITTED 결과만 준비. H1은 final TRUE chain, HOLD 가설 HH와 새 child HC는 서로 다른 hypothesis_id를 사용한다. 5번이 지정한 시작 지점이 우선한다.
-- **3. work·attempt·generation·input**: 동일 R1/W1/C1; V1↔CW1↔TG1↔RS1↔정책 COL1/POL1 exact chain; Finding FN1/index FI1. Primitive PRA/PRB·match M1·child HC는 각 source record를 가리킴. 자세한 정상 graph는 F-STA/F-VER/F-GAT/F-CHN/F-REP(#106 §2.3).
+- **3. work·attempt·generation·input**: 동일 R1/W1/C1; V1↔CW1↔TG1↔RS1↔RunPolicyState RPS1↔COL1/POL1 exact chain; Finding FN1/index FI1. Primitive PRA/PRB·match M1·child HC는 각 source record를 가리킴. 자세한 정상 graph는 F-STA/F-VER/F-GAT/F-CHN/F-REP(#106 §2.3).
 - **4. 저장된 record·artifact·marker**: 과거 V1/CW1/TG1 history, ACTIVE owner, 새 generation G2/work KV2/application/질문 candidate.
 - **5. 정확한 장애 주입 지점**: Technical REVISE 확정 뒤 새 generation/VERIFICATION 등록 transaction 전·중·후 종료.
 - **6. 재시작 검사 조건**: 같은 owner·generation 증가·새 work id·atomic application/input refs·parent pointer.
@@ -728,9 +728,9 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 
 #### R3-REC-FLW-005 — run-init 정책 준비와 Rule Scope 소비 중 종료
 
-- **1. ID·단계·work**: R3-REC-FLW-005; 3·17 / POLICY_FETCH·RULE_SCOPE_GATE·PRIMITIVE_UPDATE. CT 연결: GAT-001/004/005/006/007, REP-002.
+- **1. ID·단계·work**: R3-REC-FLW-005; 3·17 / POLICY_FETCH·RULE_SCOPE_GATE·PRIMITIVE_UPDATE. CT 연결: GAT-001/004/005/006/007/010, REP-002, BUD-004/005.
 - **2. 중단 전 상태·current**: FLW 기준(§3.3): 해당 단계 직전까지의 exact COMMITTED 결과만 준비. H1은 final TRUE chain, HOLD 가설 HH와 새 child HC는 서로 다른 hypothesis_id를 사용한다. 5번이 지정한 시작 지점이 우선한다.
-- **3. work·attempt·generation·input**: 동일 R1/W1/C1; V1↔CW1↔TG1↔RS1↔정책 COL1/POL1 exact chain; Finding FN1/index FI1. Primitive PRA/PRB·match M1·child HC는 각 source record를 가리킴. 자세한 정상 graph는 F-STA/F-VER/F-GAT/F-CHN/F-REP(#106 §2.3).
+- **3. work·attempt·generation·input**: 동일 R1/W1/C1; V1↔CW1↔TG1↔RS1↔RunPolicyState RPS1↔COL1/POL1 exact chain; Finding FN1/index FI1. Primitive PRA/PRB·match M1·child HC는 각 source record를 가리킴. 자세한 정상 graph는 F-STA/F-VER/F-GAT/F-CHN/F-REP(#106 §2.3).
 - **4. 저장된 record·artifact·marker**: Step 3의 RunPolicyState·parser/collection 결과, FOUND이면 policy, 부재이면 policy null, 실패이면 review 없음. Step 17은 같은 run의 고정 reference만 소비한다.
 - **5. 정확한 장애 주입 지점**: A run-init `POLICY_FETCH`의 parser·collection·RunPolicyState/cache atomic commit 전후, B `COLLECTION_FAILED`, C `ABSENT_CONFIRMED`, D Technical ACCEPT 뒤 Rule Scope review commit 전후 종료를 각각 시험한다.
 - **6. 재시작 검사 조건**: POLICY_FETCH work의 attempt·output binding, `AnalysisRunState.run_policy_state_ref`, 공식 출처/수집 상태·cache provenance, Step 17 review domain refs·Primitive admission 별도 의미를 확인한다.
@@ -745,22 +745,22 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 
 - **1. ID·단계·work**: R3-REC-FLW-006; 14·17·18 / PRIMITIVE_UPDATE·CHAINING. CT 연결: GAT-006, CHN-001/003.
 - **2. 중단 전 상태·current**: FLW 기준(§3.3): 해당 단계 직전까지의 exact COMMITTED 결과만 준비. H1은 final TRUE chain, HOLD 가설 HH와 새 child HC는 서로 다른 hypothesis_id를 사용한다. 5번이 지정한 시작 지점이 우선한다.
-- **3. work·attempt·generation·input**: 동일 R1/W1/C1; V1↔CW1↔TG1↔RS1↔정책 COL1/POL1 exact chain; Finding FN1/index FI1. Primitive PRA/PRB·match M1·child HC는 각 source record를 가리킴. 자세한 정상 graph는 F-STA/F-VER/F-GAT/F-CHN/F-REP(#106 §2.3).
+- **3. work·attempt·generation·input**: 동일 R1/W1/C1; V1↔CW1↔TG1↔RS1↔RunPolicyState RPS1↔COL1/POL1 exact chain; Finding FN1/index FI1. Primitive PRA/PRB·match M1·child HC는 각 source record를 가리킴. 자세한 정상 graph는 F-STA/F-VER/F-GAT/F-CHN/F-REP(#106 §2.3).
 - **4. 저장된 record·artifact·marker**: decision/Primitive/index candidate와 commit 또는 이전 ALLOW index. 기존 부모 verdict.
 - **5. 정확한 장애 주입 지점**: TRUE admission/Primitive/index atomic commit의 각 경계와 HOLD Primitive/index commit 경계에서 종료한다. `DENY`라서 Primitive를 만들지 않는 경로와 HOLD 빈 후보도 별도 변형으로 둔다.
 - **6. 재시작 검사 조건**: 해당 TRUE Technical ACCEPT·current testing 결정·target index/version·single commit output binding.
 - **7. 복구 조치**: 새 COMMITTED 전체를 재투영한다. DENY면 새 result Primitive와 index 추가가 없고, 이미 등록된 Primitive를 제거하거나 admission을 다시 판정하지 않는다. HOLD nonempty는 decision 없이 Primitive와 index를 함께 확정하고, empty는 새 work 생성 자체가 없다.
 - **8. 기대 state·current/격리 결과**: 유효 admission/Primitive/index 한 묶음만 current; 과거 history 보존, 부모 TRUE/HOLD 불변.
-- **9. 다음 단계 호출**: index/필수 invalidation 반영 전 Chaining 금지.
+- **9. 다음 단계 호출**: Primitive와 PrimitiveIndexState 갱신이 같은 TransitionCommit으로 `COMMITTED`되기 전에는 Chaining을 시작하지 않는다. `PREPARED`이거나 pointer 일부만 반영된 상태이면 소비를 차단하고, exact commit과 pointer 묶음의 복구가 끝난 뒤 진행한다.
 - **10. 기대 오류·관측 log**: STATE_VERSION_CONFLICT / STALE_RESULT; 정책 DENY는 FALSE 아님. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
 - **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4·R5·R6·R8; 정적 R2, Chaining R1, 동적 R7. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-FLW-007 — Chaining 고정 입력·match·child 등록 중 종료
 
-- **1. ID·단계·work**: R3-REC-FLW-007; 18·20·9 / CHAINING·HYPOTHESIS_PROPOSAL·VERIFICATION·CONTEXT_RETRIEVAL. CT 연결: CHN-002~008, HYP-001/002.
+- **1. ID·단계·work**: R3-REC-FLW-007; 18·20·9 / CHAINING·HYPOTHESIS_PROPOSAL·VERIFICATION·CONTEXT_RETRIEVAL. CT 연결: CHN-002~009, HYP-001/002.
 - **2. 중단 전 상태·current**: FLW 기준(§3.3): 해당 단계 직전까지의 exact COMMITTED 결과만 준비. H1은 final TRUE chain, HOLD 가설 HH와 새 child HC는 서로 다른 hypothesis_id를 사용한다. 5번이 지정한 시작 지점이 우선한다.
-- **3. work·attempt·generation·input**: 동일 R1/W1/C1; V1↔CW1↔TG1↔RS1↔정책 COL1/POL1 exact chain; Finding FN1/index FI1. Primitive PRA/PRB·match M1·child HC는 각 source record를 가리킴. 자세한 정상 graph는 F-STA/F-VER/F-GAT/F-CHN/F-REP(#106 §2.3).
+- **3. work·attempt·generation·input**: 동일 R1/W1/C1; V1↔CW1↔TG1↔RS1↔RunPolicyState RPS1↔COL1/POL1 exact chain; Finding FN1/index FI1. Primitive PRA/PRB·match M1·child HC는 각 source record를 가리킴. 자세한 정상 graph는 F-STA/F-VER/F-GAT/F-CHN/F-REP(#106 §2.3).
 - **4. 저장된 record·artifact·marker**: work 시작 때 고정한 index revision과 considered Primitive refs, match triple/owner, child registration 여부. admission은 등록 시점 1회 판정 이력으로만 남고 Chaining 입력에서 다시 검사하지 않는다.
 - **5. 정확한 장애 주입 지점**: candidate 조회 후 index 변경, match 저장 뒤 child 등록 전, child 등록 후 Context 전 각각 종료.
 - **6. 재시작 검사 조건**: 시작 때 고정하지 않은 Primitive 주입 여부·index revision 단순 증가·triple 중복·pool 처리 책임·시작점 entity/location·등록 후 lineage를 확인한다.
@@ -773,9 +773,9 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 
 #### R3-REC-FLW-008 — Finding 정규화·upstream invalidation 경합
 
-- **1. ID·단계·work**: R3-REC-FLW-008; 19 / FINDING_NORMALIZE·upstream invalidation. CT 연결: GAT-007/008, REP-002/003/005.
+- **1. ID·단계·work**: R3-REC-FLW-008; 19 / FINDING_NORMALIZE·upstream invalidation. CT 연결: GAT-007/008/011, REP-002/003/005.
 - **2. 중단 전 상태·current**: FLW 기준(§3.3): 해당 단계 직전까지의 exact COMMITTED 결과만 준비. H1은 final TRUE chain, HOLD 가설 HH와 새 child HC는 서로 다른 hypothesis_id를 사용한다. 5번이 지정한 시작 지점이 우선한다.
-- **3. work·attempt·generation·input**: 동일 R1/W1/C1; V1↔CW1↔TG1↔RS1↔정책 COL1/POL1 exact chain; Finding FN1/index FI1. Primitive PRA/PRB·match M1·child HC는 각 source record를 가리킴. 자세한 정상 graph는 F-STA/F-VER/F-GAT/F-CHN/F-REP(#106 §2.3).
+- **3. work·attempt·generation·input**: 동일 R1/W1/C1; V1↔CW1↔TG1↔RS1↔RunPolicyState RPS1↔COL1/POL1 exact chain; Finding FN1/index FI1. Primitive PRA/PRB·match M1·child HC는 각 source record를 가리킴. 자세한 정상 graph는 F-STA/F-VER/F-GAT/F-CHN/F-REP(#106 §2.3).
 - **4. 저장된 record·artifact·marker**: Finding 정규화 journal·단일 Finding output 또는 upstream journal의 dependent index invalidation·old FN1 history.
 - **5. 정확한 장애 주입 지점**: Finding COMMITTED 뒤 FI1 projection 전, upstream 변경으로 STALE invalidation 투영 전 각각 종료.
 - **6. 재시작 검사 조건**: 전용 VERIFICATION service identity·ACTIVE owner·upstream exact closure·work CAS·index expected record/version.
@@ -790,7 +790,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 
 - **1. ID·단계·work**: R3-REC-FLW-009; 21·22 / REPORT_DRAFT·run finalization. CT 연결: REP-001~005, COM-012, BUD-003.
 - **2. 중단 전 상태·current**: FLW 기준(§3.3): 해당 단계 직전까지의 exact COMMITTED 결과만 준비. H1은 final TRUE chain, HOLD 가설 HH와 새 child HC는 서로 다른 hypothesis_id를 사용한다. 5번이 지정한 시작 지점이 우선한다.
-- **3. work·attempt·generation·input**: 동일 R1/W1/C1; V1↔CW1↔TG1↔RS1↔정책 COL1/POL1 exact chain; Finding FN1/index FI1. Primitive PRA/PRB·match M1·child HC는 각 source record를 가리킴. 자세한 정상 graph는 F-STA/F-VER/F-GAT/F-CHN/F-REP(#106 §2.3).
+- **3. work·attempt·generation·input**: 동일 R1/W1/C1; V1↔CW1↔TG1↔RS1↔RunPolicyState RPS1↔COL1/POL1 exact chain; Finding FN1/index FI1. Primitive PRA/PRB·match M1·child HC는 각 source record를 가리킴. 자세한 정상 graph는 F-STA/F-VER/F-GAT/F-CHN/F-REP(#106 §2.3).
 - **4. 저장된 record·artifact·marker**: draft candidate/COMMITTED report transition, run 결과 candidate/marker, outstanding work/journal 목록.
 - **5. 정확한 장애 주입 지점**: draft bytes 저장 전후 upstream revision 변경, AnalysisRunResult commit 직전/후 pointer 투영 전 종료.
 - **6. 재시작 검사 조건**: report exact chain·6축/redaction·ReportProcessState binding·모든 work 정리·current finding/lineage·run config 집합.
@@ -1023,7 +1023,7 @@ RQ 표는 새 GitHub 이슈나 이미 받은 승인 기록이 아니다. #92에 
 - policy COLLECTION_FAILED는 ABSENT_CONFIRMED가 아니다. 전자는 RuleScope/Finding 없음, 후자는 current review에 따른 Finding 정규화 가능·Reporter DENY다.
 - match 중복 키는 분석 scope의 (upstream_result_ref, downstream_input_ref, matched_input_id)다. 예전 fingerprint 문구를 그대로 사용하지 않는다.
 - Primitive admission은 등록 시점의 1회 판정이다. Chaining 시작 뒤 index revision이 증가해도 고정한 후보에는 영향이 없고, 등록된 Primitive·자식을 사후 판정으로 회수하지 않는다.
-- 최초 Chaining의 `lineage_results`는 빈 목록을 허용하고, CHAINING-origin 조상이 있는 경우에만 계산한 exact lineage closure를 요구하도록 #97 review freeze HEAD `a9fd2e1`에서 정리됐다.
+- 최초 Chaining의 `lineage_results`는 빈 목록을 허용하고, CHAINING-origin 조상이 있는 경우에만 계산한 exact lineage closure를 요구하도록 병합된 #97 최종 HEAD `fbf0236`에서 정리됐다. Primitive admission은 등록 시점의 1회 판정이므로 Chaining Prompt 입력에 넣거나 다시 판정하지 않는다.
 - 모든 RQ가 해결되기 전에도 논리 복구 시험 계획은 검토할 수 있다. 다만 미정 세부 기대값을 프로그램 구현 완료·실행 PASS라고 보고할 수 없다.
 
 ## 9. 역할별 검토·완료 조건
@@ -1048,8 +1048,8 @@ RQ 표는 새 GitHub 이슈나 이미 받은 승인 기록이 아니다. #92에 
 - [x] case별 12개 필수 항목과 상태·current/격리·후속 호출 기준 작성
 - [x] fake 장애 주입과 실제 dependency 시험 분리
 - [x] 저장/오류/복구 미결정 계약을 RQ 항목으로 분리
-- [x] #106 review freeze HEAD `5ea4e6e` 기준으로 의존 ID/fixture 재대조
-- [x] #97 review freeze HEAD `a9fd2e1` 기준으로 역할명·Prompt lineage·Sandbox tool-loop 재대조
+- [x] 병합된 #106 최종 HEAD `0e2e7fe` 기준으로 의존 ID/fixture 재대조
+- [x] 병합된 #97 최종 HEAD `fbf0236` 기준으로 역할명·Prompt lineage·Sandbox tool-loop 재대조
 - [ ] R4·R5·R6·R7·R8 및 영향받는 R1/R2 검토 기록 확보
 - [ ] 구현을 막는 RQ 항목의 exact 기대값/저장 경계 확정
 - [ ] 최종 main SHA에서 정합성 재확인 후 #89 완료 조건 판단
