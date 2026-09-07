@@ -257,16 +257,16 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 #### R3-REC-STO-008 — migration 도중 종료와 rollback
 
 - **1. ID·단계·work**: R3-REC-STO-008; domain work 시작 전 / 저장소 migration. CT 연결: COM-004/012.
-- **2. 중단 전 상태·current**: STO 기준(§3.3): work K1=RUNNING, active attempt A1, state_version=v, input hash IH1. current output은 마지막 확정 r0. 새 결과 r1은 단계별 staging 후보이며 COMMITTED 전에는 current 아님. 5번이 지정한 시작 지점이 우선한다.
-- **3. work·attempt·generation·input**: analysis R1/workspace W1/commit C1, K1/A1/G1(가설 작업일 때만)/IH1; r0/h0, r1/h1 및 T1(expected=v,target=v+1). 이름은 설계 별명이며 실제 ID·hash는 미생성. 자세한 정상 graph는 F-COM/F-STA(#106 §2.3).
-- **4. 저장된 record·artifact·marker**: 이전 schema version·기존 immutable records, migration 상태는 선택 기술에 따라 미정.
+- **2. 중단 전 상태·current**: 이 card는 공통 STO 기준(§3.3)을 덮어쓴다. domain work 시작 전이므로 `work_id`, `attempt_id`, `hypothesis_id`, `verification_generation`, CodeWorkspace와 분석 commit은 아직 존재한다고 가정하지 않는다. 시작 조건은 이전 schema version으로 저장된 기존 immutable record와 저장소 metadata·backup뿐이다.
+- **3. work·attempt·generation·input**: domain work·attempt 입력은 없다. 이전/목표 schema version, 적용할 migration 식별 정보, 저장소 상태와 승인된 설정만 사용한다. migration 자체의 ID·journal·transaction 필드와 실행 authority는 #92/RQ-03에서 확정하기 전 미결정이며, 기존 `WorkType`을 임의로 재사용하지 않는다.
+- **4. 저장된 record·artifact·marker**: 이전 schema version·기존 immutable records·선택 기술이 제공하는 migration marker와 backup. marker·journal·transaction 구조가 정해지지 않은 상태에서 `WorkAttempt`나 `TransitionCommit`을 migration 기록으로 가장하지 않는다.
 - **5. 정확한 장애 주입 지점**: schema migration의 준비/부분 적용/완료 기록 전 지점별로 종료한다. 별도 rollback 불가능 변형.
 - **6. 재시작 검사 조건**: 선택 DB의 실제 원자성·schema marker·하위호환·artifact 해석 가능성·backup 여부.
 - **7. 복구 조치**: #92에서 migration 프로토콜 확정 전에는 자동 rollback 성공을 가정하지 않음. 검증된 forward/rollback만 허용, 불가능하면 시작 차단·수동 복구.
-- **8. 기대 state·current/격리 결과**: 기존 근거/history 보존; 손상 schema를 정상으로 열지 않음. 구체 DB 상태 기대값 RQ-03.
+- **8. 기대 state·current/격리 결과**: 기존 근거/history 보존; 손상 schema를 정상으로 열지 않음. migration 복구가 끝나기 전 새 analysis·domain work·attempt·current output을 만들지 않는다. 구체 DB 상태 기대값은 RQ-03에서 확정한다.
 - **9. 다음 단계 호출**: schema/기록 호환성 검증 완료 전 도메인 work 실행 금지.
 - **10. 기대 오류·관측 log**: RECOVERY_FAILED, migration 원인 코드 RQ-02. 복구 전후 exact refs·journal·검사 사유를 안전한 trace에 연결한다. secret/없는 관측은 기록하지 않는다.
-- **11. R8 예산·시간·비용**: §3.4의 고정 profile·잔여 시간/비용/work/새 attempt 한도 적용. 재투영은 새 실행이 아니며 usage·elapsed 중복 집계 금지. token 계획값/미제공 usage만으로 중단하지 않음. 미결정: RQ-03.
+- **11. R8 예산·시간·비용**: domain work·attempt가 없으므로 분석 work 예산이나 LLM usage를 만들지 않는다. migration 자체의 시간·자원 한도와 재실행 계측은 저장 방식과 함께 RQ-03에서 확정한다.
 - **12. 구현자·필수 리뷰**: R3 윤희섭 @YHS-Sec. R4; STA는 R2, 저장·시간은 R8. 계정·담당 의미는 §9. 실제 구현/교차 검토 미완료.
 
 #### R3-REC-STO-009 — DB·artifact 일부를 읽지 못함
