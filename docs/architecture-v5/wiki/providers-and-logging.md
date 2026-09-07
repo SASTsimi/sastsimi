@@ -52,7 +52,7 @@ LLM 호출은 상위 `work_id`의 한 attempt로 실행한다. 재시도 가능�
 - `RESUME`: 명시한 parent session 재사용
 - `AUTO`: 역할·가설 관계로 결정
 
-같은 역할·가설의 추가 retrieval과 같은 Verification owner의 Gate revision 보완은 RESUME 가능하다. 다른 가설, Pro/Con 상호 간, Verification/Chaining/Gates/Reporter 사이에는 NEW가 기본이다. 실제 결정과 token 절감·confirmation bias·prompt contamination 비교 지표를 남긴다.
+같은 역할·가설의 추가 retrieval과 같은 Verification owner의 Gate revision 보완은 RESUME 가능하다. 다른 가설, Pro/Con 상호 간, Verification/Chaining/Gates/Reporter 사이에는 NEW가 기본이다. `EXECUTE_REPRODUCTION`의 `AUTO`만 같은 동적 work·attempt의 첫 turn을 `NEW`, 후속 turn을 `RESUME`으로 정합니다. 새 attempt·다른 work·가설 또는 session 재시작은 다시 `NEW`입니다. 실제 결정과 token 절감·confirmation bias·prompt contamination 비교 지표를 남긴다.
 
 ## Logging
 

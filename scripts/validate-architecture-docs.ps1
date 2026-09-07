@@ -206,6 +206,10 @@ foreach ($marker in $requiredOrchestrationBoundaryMarkers) {
         Add-Failure "missing Orchestration Runtime boundary marker: $marker"
     }
 }
+$orchestrationResponsibilityParagraphs = [regex]::Matches($agentRolesText, '(?m)^Orchestration Runtime은 trusted validation을 통과한 proposal의 전역 등록과 배정을 요청하지만')
+if ($orchestrationResponsibilityParagraphs.Count -ne 1) {
+    Add-Failure "agent role document must contain exactly one current Orchestration responsibility paragraph; found $($orchestrationResponsibilityParagraphs.Count)"
+}
 
 $providerContractText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/09-llm-provider-session-and-logging.md')
 foreach ($requiredProviderContractMarker in @(
@@ -1209,11 +1213,6 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
     foreach ($requiredInput in @('VerificationAssignment($)', 'HypothesisProcessState(', 'VulnerabilityHypothesis($)', 'HypothesisProposal($)', 'PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', 'data_kind=pro_evidence_result', 'data_kind=con_evidence_result')) {
         if (-not $finalVerdictTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 FINAL_VERDICT row is missing required input: $requiredInput" }
     }
-    $technicalReviseTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| VERIFICATION / `TECHNICAL_REVISE` \| `config/prompts/templates/.*$').Value
-    foreach ($requiredInput in @('`assignment`', '`process`', '`proposal`', '`policy`', '`playbook`', '`application`', '`debate_config`', '`budget_profile`')) {
-        if (-not $technicalReviseTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 TECHNICAL_REVISE row is missing current exact input: $requiredInput" }
-    }
-
     $initialAssessmentTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| VERIFICATION / `ASSESS_INITIAL` \| `config/prompts/templates/.*$').Value
     foreach ($requiredInput in @('PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', 'data_kind=pro_evidence_result', 'data_kind=con_evidence_result', 'verification_initial_assessment', 'PMT-VER-00')) {
         if (-not $initialAssessmentTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 ASSESS_INITIAL row is missing required contract: $requiredInput" }
@@ -1272,6 +1271,33 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
         'Reporter의 `run_policy_state`, `collection`, `policy`는 Rule Scope review가 사용한 exact frozen chain과 같아야 한다.'
     )) {
         if (-not $promptRuntimeText.Contains($requiredRule)) { Add-Failure "R3-05 R5 prompt closure rule is missing: $requiredRule" }
+    }
+
+    $technicalReviseTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| VERIFICATION / `TECHNICAL_REVISE` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @(
+        'previous: VerificationResult($)',
+        'review: TechnicalEvidenceReview(/status,/revision_requests,/verification_result_ref,/cwe_label_ref)',
+        'assignment: VerificationAssignment($)',
+        'process: HypothesisProcessState(/status,/verification_assignment_ref,/verification_generation,/verification_work_ref)',
+        'hypothesis: VulnerabilityHypothesis($)',
+        'proposal: HypothesisProposal($)',
+        'facts: StaticFactBundle($)',
+        'contexts: CodeContextResponse($)` OPTIONAL_MANY',
+        'policy: PlaybookPolicy($)',
+        'playbook: VerificationPlaybook($)',
+        'application: PlaybookApplication($)',
+        'debate_config: debate_config($)',
+        'budget_profile: verification_budget_profile($)',
+        'pro: EvidenceAgentResult(role=PRO, data_kind=pro_evidence_result)',
+        'con: EvidenceAgentResult(role=CON, data_kind=con_evidence_result)',
+        'assessment: VerificationInitialAssessment($)',
+        'dynamic: DynamicReproductionResult($)` OPTIONAL_ONE',
+        'poc: PoCBundle($)` OPTIONAL_ONE'
+    )) {
+        if (-not $technicalReviseTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 TECHNICAL_REVISE row is missing executable input: $requiredInput" }
+    }
+    if ($technicalReviseTaskRow.Contains('FINAL_VERDICT와 같은 slot')) {
+        Add-Failure 'R3-05 TECHNICAL_REVISE row still uses a non-executable input shorthand'
     }
 
     $promptSettingRows = [regex]::Matches($promptRuntimeText, '(?m)^\| (?<role>[A-Z_]+) / `(?<task>[A-Z_]+)` \| `model\.[^`]+` \|')
@@ -1341,6 +1367,30 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
         'DynamicReproductionResult의 `hypothesis_outcome`, `hypothesis_evidence_refs`, `hypothesis_linkage`, `limitations`'
     )) {
         if (-not $promptRuntimeText.Contains($requiredMarker)) { Add-Failure "R3-05 prompt runtime is missing R7 staged execution rule: $requiredMarker" }
+    }
+
+    $dynamicExecuteSettingRow = [regex]::Match($promptRuntimeText, '(?m)^\| DYNAMIC_REPRODUCTION / `EXECUTE_REPRODUCTION` \| `model\.[^\r\n]+$').Value
+    if (-not $dynamicExecuteSettingRow.EndsWith('| AUTO |')) {
+        Add-Failure 'R3-05 EXECUTE_REPRODUCTION registry session policy must use the valid AUTO enum'
+    }
+    if (-not $promptRuntimeText.Contains('`EXECUTE_REPRODUCTION`의 `session_policy=AUTO`는 첫 turn이면 `NEW`, 같은 dynamic work·attempt의 후속 turn이면 바로 앞 성공 turn의 exact `session_ref`를 `parent_session_ref`로 둔 `RESUME`으로만 해석한다.')) {
+        Add-Failure 'R3-05 EXECUTE_REPRODUCTION AUTO session interpretation is missing'
+    }
+    if (-not $contractText.Contains('`agent_role=DYNAMIC_REPRODUCTION`, `task_kind=EXECUTE_REPRODUCTION`, `session_policy=AUTO`')) {
+        Add-Failure 'common prompt contract is missing the Dynamic Reproduction AUTO session invariant'
+    }
+    if (-not $providerContractText.Contains('| 같은 `DYNAMIC_REPRO` work·attempt의 `EXECUTE_REPRODUCTION` 첫 turn | `NEW` |')) {
+        Add-Failure 'provider session policy table is missing the first Dynamic Reproduction turn rule'
+    }
+    if (-not $providerContractText.Contains('| 같은 `DYNAMIC_REPRO` work·attempt의 `EXECUTE_REPRODUCTION` 후속 turn | `RESUME` |')) {
+        Add-Failure 'provider session policy table is missing the follow-up Dynamic Reproduction turn rule'
+    }
+    if (-not $agentRolesText.Contains('`EXECUTE_REPRODUCTION`만 `session_policy=AUTO`를 사용해 같은 work·attempt의 첫 turn을 `NEW`, 후속 turn을 `RESUME`으로 제한한다.')) {
+        Add-Failure 'agent-role contract is missing the limited Dynamic Reproduction AUTO exception'
+    }
+    $providerWikiText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/providers-and-logging.md')
+    if (-not $providerWikiText.Contains('`EXECUTE_REPRODUCTION`의 `AUTO`만 같은 동적 work·attempt의 첫 turn을 `NEW`, 후속 turn을 `RESUME`으로 정합니다.')) {
+        Add-Failure 'provider Wiki is missing the limited Dynamic Reproduction AUTO exception'
     }
 }
 
