@@ -89,7 +89,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 7. 정상 기준 fixture가 먼저 schema/semantic 검사를 통과한 뒤, 부정 시험은 지정한 값만 한 번에 변경.
 8. state/DB/artifact/외부 호출 전후 비교 자료. 이전 시험 잔여 state를 다음 시험에 공유하지 않음.
 
-정확한 serialization/필드별 오류/저장 경계가 없는 부분은 Q-01~Q-04를 해결한 뒤 executable fixture를 만든다. 본 문서에 예제 fixture가 있다고 실제 테스트 데이터를 만들었다고 보고하지 않는다.
+정확한 serialization/필드별 오류/저장 경계가 없는 부분은 Q-01~Q-04를, run-init Docker baseline의 변경 권한과 결과 경계는 Q-07을 해결한 뒤 executable fixture를 만든다. 본 문서에 예제 fixture가 있다고 실제 테스트 데이터를 만들었다고 보고하지 않는다.
 
 - **F-COM (공통 참조·상태·저장)**: 독립 run R-A, 준비된 workspace W-A/commit C-A, 가설 H-A(해당 시험에 필요할 때만), consumer work K-A(RUNNING, active_attempt=A-A, state_version=v). ref R1은 immutable record r1/hash h1, COMMITTED marker와 producer output이 같은 r1을 가리킨다. 이전 r0는 history에만 있다.
 - **F-STA (저장소·정적 분석·Context)**: run R-A, CodeWorkspace W-A/C-A가 READY. AST/CodeQL/OpenGrep는 K-AST/K-CQL/K-OG와 서로 다른 attempt를 사용한다. 각 raw artifact·ToolRunResult·규칙 도구의 RuleExecutionRecord가 같은 workspace/commit과 자기 도구 attempt에 연결된다. 정규화 bundle B1, Context 요청 QCTX1/응답 CTX1/fragment X1은 이 코드 범위를 사용한다. 아직 가설이 없는 정적 단계에서는 hypothesis_id=null.
@@ -111,7 +111,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 |---|---|---|
 | 1 | 분석 시작·설정·run identity | COM-001~004, BUD-003~005 |
 | 2 | clone/checkout·READY | STA-001 |
-| 3 | AST/SAST·정책 준비 병렬 실행 이력 | STA-002~005, BUD-004~005 |
+| 3 | AST/SAST·정책·Docker readiness 병렬 준비 | COM-014, STA-002~005, BUD-004~005 |
 | 4 | 정규화·오류/gap 합류 | STA-002~006, COM-011~013 |
 | 5 | 초기 work 등록·고정 입력 | HYP-001~002 |
 | 6 | Hypothesis 호출 | LLM-001~008 |
@@ -347,6 +347,22 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 - **11. FALSE 변환 금지**: 입력 위반·조회/호출/실행 오류·정책 차단·예산/저장 실패를 새 FALSE 근거로 사용하지 않음. 이미 존재하는 부모/가설 verdict는 해당 case의 명시적 검증 경로 외에는 변경하지 않음.
 - **12. 실행 계층**: contract / integration / security-negative
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R4; 적용 모듈 owner. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
+
+#### R3-CT-COM-014 — run-init Docker baseline 권한 경계
+
+- **1. ID·유형·설명**: R3-CT-COM-014 / 정상·부정·미결정 경계 / 가설 전 Docker 준비가 동적 재현 권한을 우회하지 않는지 확인
+- **2. 단계·계약 경계**: 3, 12; run-init 세 갈래 병렬 준비와 가설별 DYNAMIC_REPRO 분리
+- **3. producer → consumer**: R3 RunInitializationService → static·policy·Docker readiness branch; 상태를 바꾸는 Docker 준비는 B5 확정 뒤 R4 Runtime Validator·R7 실행 구성요소가 소비
+- **4. 선행 상태·exact refs**: READY CodeWorkspace와 아직 hypothesis·DynamicReproductionRequest·EnvironmentRequirements·ReproductionPlan·동적 attempt가 없는 run. static·policy branch 입력은 각 정본 계약대로 고정하며 Docker branch의 state-changing action/result binding은 Q-07 전에는 존재하지 않는다.
+- **5. 정상/잘못된 fixture**: 정상은 세 branch를 독립 등록하되 Docker 쪽은 host 상태를 바꾸지 않는 readiness 확인만 수행하고, 실패·건너뜀과 무관하게 static·policy를 계속한다. 부정 변형은 가설 전에 `RUN_SANDBOX`를 재사용하거나 image pull/build, container 생성, `EnvironmentRecipe`·`SandboxEnvironment` 생산, 가설별 `DynamicReproductionLifecycleProfile` 재사용을 시도한다.
+- **6. 검사 주체**: R3 fan-out/join 검사 + R4 Runtime Validator의 action·requester·선행 reference 검사; B5가 정할 실제 Docker 준비 권한·result-owner 검사는 Q-07 해결 전 미구현
+- **7. 허용·차단·격리 기대**: 읽기 전용 readiness 확인은 static·policy와 독립적으로 끝낼 수 있다. state-changing 변형은 Docker host 작업 전에 차단하며 Step 12의 recipe·환경·AgentLog·PoC로 승격하지 않는다. readiness 실패·미지원·건너뜀은 다른 두 branch의 성공 조건이 아니며 이를 막지 않는다.
+- **8. work·attempt·가설 기대**: static·policy work는 자기 상태를 독립 유지한다. B5 전 Docker branch에는 authoritative domain work/output을 만들지 않으며 가설 상태·verdict도 없다. B5가 별도 work를 정하면 이 case의 정상 fixture·상태 기대를 새 계약 revision에 맞춰 갱신한다.
+- **9. 오류·DataGap 기대**: `RUN_SANDBOX` 선행조건·권한 우회는 ACTION_NOT_ALLOWED. readiness 실패의 exact 상태·오류·관측 record는 Q-07에서 확정하며 FALSE | HOLD 근거가 아니다.
+- **10. 저장·갱신 금지 pointer**: B5 전에는 run-init 확인으로 `EnvironmentRecipe`, `SandboxEnvironment`, `DynamicReproductionResult`, PoC와 해당 current pointer를 만들지 않는다. 허용된 안전한 readiness 관측의 저장 여부도 Q-07에서 정하며 동적 재현 결과로 재사용하지 않는다.
+- **11. FALSE 변환 금지**: Docker readiness 실패·미지원·정책/예산 차단과 action 거절을 취약점 `FALSE | HOLD`, static/policy 실패 또는 분석 성공 근거로 사용하지 않는다.
+- **12. 실행 계층**: contract / integration / security-negative (Q-07 해결 뒤 executable fixture 확정)
+- **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R4 @taehyeon-git; R7·R8. 계정과 검토 범위는 §9. B5 owner들이 실제 action·출력·예산 의미를 승인해야 함.
 
 ### STA. 저장소·정적 분석·Context
 
@@ -1676,18 +1692,19 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 이번 PR은 설계 문서만 추가한다. 아래는 **이후 구현 순서 제안**이며 현재 구현 완료 목록이 아니다.
 
-1. R4와 정상 fixture의 ID/refs/schema/state/commit graph 및 Q 항목을 확정한다.
+1. R4와 정상 fixture의 ID/refs/schema/state/commit graph 및 Q 항목을 확정한다. 특히 B5/Q-07 전에는 run-init Docker branch를 상태 변경 작업으로 구현하지 않는다.
 2. 테스트 전용 저장소·정상 manifest·fake provider/static tool/Sandbox와 외부 호출 spy를 만든다. 운영 계정·외부 공격 대상은 사용하지 않는다.
 3. COM의 schema/reference/state 검사를 먼저 구현한다. 정상 fixture도 거절되는 잘못된 validator를 막기 위해 정상·부정 시험을 짝으로 실행한다.
 4. STA/HYP/VER/DYN/GAT/CHN/REP 순으로 contract→integration을 연결한다. 도구와 LLM의 의미 결과는 fixture로 주입하며 runtime이 의미를 대신 판정하지 않게 검사한다.
 5. #89에서 아래 장애 시나리오를 같은 fixture·test ID에 연결한다.
 6. fake E2E와 security-negative를 실행한 뒤 별도 실제 dependency capability 시험을 한다.
-7. 실제 실행한 case/variant 수, 실행 SHA, schema/profile refs, 통과·실패·건너뜀, log 위치를 결과표로 기록한다. 지금 단계에서 ‘93개 테스트 통과’라고 쓰지 않는다.
+7. 실제 실행한 case/variant 수, 실행 SHA, schema/profile refs, 통과·실패·건너뜀, log 위치를 결과표로 기록한다. 지금 단계에서 ‘94개 테스트 통과’라고 쓰지 않는다.
 
 | 본 문서 경계 | #89에 연결할 중단 지점 | 복구 후 확인 |
 |---|---|---|
 | COM-006/011/012 | artifact staging/hash/PREPARED/COMMITTED 전후 | 미확정 결과 소비 금지, marker와 pointer 일치, 중복 투영 방지 |
 | COM-007~010 | claim 경쟁·취소·늦은 결과·상태 충돌 | active attempt 하나, old 결과 격리, terminal work 재활성 금지 |
+| COM-014 | run-init Docker readiness와 향후 B5 상태 변경 경계 | 가설 전 `RUN_SANDBOX`·image/container·동적 결과 생성 금지, static·policy branch 독립 유지 |
 | HYP-002/005 | dedupe 계산·work/application 저장 사이 | 기존 work 재사용, application만 남거나 work만 활성화되지 않음 |
 | VER-002 | 한 child 종료 뒤 부모 상태 반영 전 | 합성/새 final 금지, 부모 BLOCKED/FAILED 전파 |
 | DYN-006~012 | AgentLog 기록·session crash·PoC 검증·request/profile 변경·container 생성/정리 전후 | same-attempt 계보, RETRY/RESUME와 새 generation 분리, exact SandboxProfile·PoC, 재생성·cleanup 완전성 |
@@ -1743,6 +1760,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 | Q-04 | #96 Provider role/spec/profile/action 경계는 merge commit `64062ae`로, 비-LLM Orchestration Runtime 경계는 main `6122567`로 반영됐다. current main `750287e`의 공식 구성요소 이름을 사용하며 Prompt Registry·Builder 세부 구조는 #97 제안에 의존 | main의 Provider·Orchestration Runtime 계약과 #97 Prompt 제안을 분리해 대조한다. 실제 profile 발급에는 provider 지원 시험이 필요하며 특정 모델/구독 경로를 실제 사용 가능하다고 단정하지 않음 | R4·R3·R7·R8, 전문 prompt owner. main Provider·Orchestration case는 계획으로 활성화하고 #97 전용 case는 병합 SHA에서 재대조 |
 | Q-05 | #97@`a9fd2e1`은 최초 Chaining의 빈 조상 결과 집합에 `lineage_results=OPTIONAL_MANY`를 적용하고 cardinality 최소 개수와 exact closure 검사를 추가함 | PR-003의 빈 집합 허용, PR-004의 필요한 실제 조상 누락·관계없는 결과 추가 차단을 함께 유지. 아직 main 미병합이므로 병합 SHA에서 재대조 | R1 @baeseungwon1010·R4 @taehyeon-git. [수정 요청](https://github.com/SASTsimi/sastsimi/pull/97#issuecomment-5556385502)은 제안 문서상 보완됐고 main 활성화 확인만 남음 |
 | Q-06 | #96은 `64062ae`로 main에 반영됐고 #97@`a9fd2e1`은 열려 있음 | #97을 최신 main에 동기화할 때 main Provider 계약과 양쪽 validator 규칙·출력을 함께 보존해 다시 실행. 문서 검사만으로 runtime 동작을 보증하지 않음 | #97 작성자·R3. 실제 #97 병합 SHA를 통합 Provider/Prompt 시험 기준으로 기록할 때 완료 |
+| Q-07 | module map B5: 가설 전 Docker baseline 준비는 현재 `RUN_SANDBOX`와 가설별 동적 result 계약을 사용할 수 없음 | 실제 pull/build/cache warm을 할지 먼저 결정하고, 필요하면 run-init 전용 requester·action type·exact 입력·output/log·상태·retry·취소·저장, R7 강제 상한과 R8 예산 reference를 확정. 확정 전에는 host 상태를 바꾸지 않는 readiness 확인만 허용 | R3·R4 @taehyeon-git·R7·R8. COM-014의 state-changing 정상 fixture와 Step 3 Docker branch 구현 전 해결; R3-02 문서 병합과는 분리하되 production pipeline 완료 전 필수 |
 
 ### 8.1 main 해석 시 주의할 항목
 
@@ -1760,7 +1778,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 | 역할 | 계정 | 요청할 검토 |
 |---|---|---|
-| R4 공통 계약 | @taehyeon-git | COM 전체, 모든 상태/오류/authority/current·atomic 경계, Q-01~04 |
+| R4 공통 계약 | @taehyeon-git | COM 전체, 모든 상태/오류/authority/current·atomic 경계, Q-01~04·Q-07 |
 | R1 탐색·Chaining | @baeseungwon1010 | HYP/CHN, 최초 빈 계보/처리 책임/중복 키·자식 |
 | R2 정적분석·Context | @zv9uvr | STA, rule 실행 이력·참조·Context·등록 후 lineage |
 | R5 CWE·Gate·Reporter | @kimhr8463 | GAT/REP, Finding·6축·정책 수집/부재·제약 보존 |
@@ -1770,7 +1788,7 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 검토자는 ‘좋습니다’뿐 아니라 검토한 문서 commit SHA, 담당 case IDs, 수정 요구/미결정 항목을 남긴다. 자동 문서 검사는 담당자의 승인을 대신하지 않는다.
 
-- [x] 기준 main과 현재 22단계 연결, 93개 case card 초안 작성
+- [x] 기준 main과 현재 22단계 연결, 94개 case card 초안 작성
 - [x] case별 13개 필수 항목과 계획 fixture·저장 효과 명시
 - [x] 정상·부정·보안·오류·예산 및 미병합 PR 시험 분리
 - [x] 알려진 이전 OK/BAD 이력과 #89 복구 연결
@@ -1784,4 +1802,4 @@ ID는 `R3-CT-<묶음>-<세 자리 번호>`이며 삭제된 번호를 다른 의�
 
 ## 10. 현재 상태 한 줄 요약
 
-22단계 모듈 사이에서 무엇을 허용·차단·보존해야 하는지 계획을 작성했다. 현재 산출물은 검토용 Markdown 문서이며, 미결정 계약의 답변과 역할별 검토가 남아 있고 실제 자동 테스트·프로그램은 아직 구현하지 않았다.
+22단계 모듈 사이에서 무엇을 허용·차단·보존해야 하는지 94개 case로 계획을 작성했다. 현재 산출물은 검토용 Markdown 문서이며, 미결정 계약의 답변과 역할별 검토가 남아 있고 실제 자동 테스트·프로그램은 아직 구현하지 않았다.
