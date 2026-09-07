@@ -28,7 +28,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 3. AST·SAST와 실행 단위 정책 준비를 서로 독립적으로 병렬 실행한다. Policy Collector는 공식 원문을 수집하고 LLM Policy Parser가 exact 원문을 `PolicyParserResult`로 구조화하면, Collector가 이를 검증·취합해 `RunPolicyState`를 확정한다.
 4. 결과를 exact 규칙 실행 기록이 연결된 `StaticFactBundle`로 정규화한다.
 5. Orchestration Agent가 초기 가설 생성 실행을 시작한다.
-6. 저비용 Hypothesis Agent를 호출한다.
+6. Hypothesis Agent를 호출한다.
 7. schema-valid `HypothesisProposal(origin=INITIAL)`을 전역 등록한다.
 8. 각 등록 가설에 Verification owner를 할당하고 가설 내부 제어권을 넘긴다.
 9. Verification이 entity·위치·경로를 기준으로 필요한 코드 문맥을 조회한다.
@@ -94,6 +94,7 @@ Architecture v5는 정적 분석 결과를 최종 판정으로 사용하지 않�
 ## 구현 준비 문서
 
 1. [R3-01 22단계 구현 모듈·입출력·저장 위치 매핑](./implementation/01-module-map.md) — 각 단계를 실제 프로그램 경계와 테스트 책임으로 옮긴 문서입니다.
+2. [R3-04 LLM Provider·인증 경로 결정](./implementation/04-provider-decision.md) — OpenAI·Codex·Anthropic·Claude의 API Key·공식 구독 연결 경계와 지원 판정 시험을 정리한 문서입니다.
 
 ## 문서 적용 범위
 

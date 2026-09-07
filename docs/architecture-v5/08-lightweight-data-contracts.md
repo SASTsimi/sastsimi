@@ -1950,6 +1950,89 @@ Rule·Scope·Impact 판단은 별도 condition/projection 또는 execution-fact 
 
 각 LLM 호출의 요청, 응답, 모델·세션 정보, 사용량과 오류를 다시 확인할 수 있게 남기는 기록입니다.
 
+실제 LLM 연결 선택은 다음 공통 설정 record를 사용한다. 모델 전용 profile record를 따로 만들지 않으며 model은 `ProviderProfile`에 포함한다.
+
+```yaml
+ProviderCapabilities:
+  non_interactive: SUPPORTED | UNSUPPORTED | UNVERIFIED
+  structured_output: SUPPORTED | UNSUPPORTED | UNVERIFIED
+  new_session: SUPPORTED | UNSUPPORTED | UNVERIFIED
+  resume_session: SUPPORTED | UNSUPPORTED | UNVERIFIED
+  parallel_calls: SUPPORTED | UNSUPPORTED | UNVERIFIED
+  cancellation: SUPPORTED | UNSUPPORTED | UNVERIFIED
+  timeout_detection: SUPPORTED | UNSUPPORTED | UNVERIFIED
+  auth_expiry_detection: SUPPORTED | UNSUPPORTED | UNVERIFIED
+  rate_limit_detection: SUPPORTED | UNSUPPORTED | UNVERIFIED
+  request_id: SUPPORTED | UNSUPPORTED | UNVERIFIED
+  token_usage: SUPPORTED | UNSUPPORTED | UNVERIFIED
+  session_metadata: SUPPORTED | UNSUPPORTED | UNVERIFIED
+  runtime_tool_loop: SUPPORTED | UNSUPPORTED | UNVERIFIED
+
+ProviderValidationTest:
+  test_id: PVD-01 | PVD-02 | PVD-03 | PVD-04 | PVD-05 | PVD-06 | PVD-07 | PVD-08 | PVD-09 | PVD-10 | PVD-11 | PVD-12 | PVD-13 | PVD-14 | PVD-15 | PVD-16
+  result: PASS | FAIL | NOT_APPLICABLE
+  evidence_refs: [StoredDataRef]
+  safe_summary: string
+
+ProviderValidationEvidence:
+  meta: RecordMeta with hypothesis_id null and attempt_id null
+  profile_key: string
+  provider: OPENAI | ANTHROPIC
+  product: OPENAI_API | CODEX | ANTHROPIC_API | CLAUDE_CODE
+  transport: RESPONSES_API | CODEX_CLIENT | MESSAGES_API | CLAUDE_CODE_CLIENT
+  model: string
+  environment: PERSONAL_LOCAL | TEAM_LOCAL | PRIVATE_CI | SHARED_SERVER
+  auth_mode: API_KEY | SUBSCRIPTION_LOGIN
+  client_name: string
+  client_version: string
+  tests: [ProviderValidationTest]
+  checked_at: timestamp
+  checked_by: string
+
+ClientExecutionProfile:
+  meta: RecordMeta with hypothesis_id null and attempt_id null
+  execution_key: string
+  working_directory_mode: ISOLATED_EMPTY
+  filesystem_mode: NO_REPOSITORY_ACCESS
+  tool_mode: DISABLED
+  mcp_mode: DISABLED
+  hooks_mode: DISABLED
+  plugin_mode: DISABLED
+  instruction_sources: EXPLICIT_SASTSIMI_PAYLOAD_ONLY
+  environment_variable_allowlist: [string]
+  network_policy_ref: StoredDataRef
+  provider_fallback: DISABLED
+  verification_evidence_ref: StoredDataRef
+
+ProviderProfile:
+  meta: RecordMeta with hypothesis_id null and attempt_id null
+  profile_key: string
+  provider: OPENAI | ANTHROPIC
+  product: OPENAI_API | CODEX | ANTHROPIC_API | CLAUDE_CODE
+  transport: RESPONSES_API | CODEX_CLIENT | MESSAGES_API | CLAUDE_CODE_CLIENT
+  model: string
+  environment: PERSONAL_LOCAL | TEAM_LOCAL | PRIVATE_CI | SHARED_SERVER
+  auth_mode: API_KEY | SUBSCRIPTION_LOGIN
+  credential_source: ENVIRONMENT | SECRET_STORE | OFFICIAL_CLIENT_SESSION
+  client_name: string
+  client_version: string
+  capabilities: ProviderCapabilities
+  support_status: SUPPORTED | EXPERIMENTAL | REJECTED
+  validation_evidence_ref: StoredDataRef
+  client_execution_profile_ref: StoredDataRef | null
+  limitations: [string]
+  checked_at: timestamp
+  evidence_urls: [string]
+```
+
+세 record는 `ProviderValidationEvidence`에 `data_kind=provider_validation_evidence`, `ClientExecutionProfile`에 `data_kind=client_execution_profile`, `ProviderProfile`에 `data_kind=provider_profile`을 사용하며 `meta.record_type`도 각각 같은 값이다. 셋은 취약점 결과가 아니므로 Agent의 `SAVE_RESULT` 대상이 아니다. R3의 신뢰 Provider Profile Registry runtime만 실제 시험 결과와 사람 승인을 바탕으로 `CodeWorkspace.status=READY`인 현재 분석에 immutable record를 게시하며, R8은 품질·시간·사용량 비교 결과를 제안할 수 있지만 profile을 직접 활성화하지 않는다. 같은 승인 설정을 다른 분석에서 쓰더라도 새 `RecordMeta`와 exact reference로 다시 고정하며, 이전 분석의 `StoredDataRef`를 재사용하지 않는다. `profile_key`와 `execution_key`는 사람이 읽는 등록 이름일 뿐 exact reference가 아니다.
+
+`ProviderProfile.validation_evidence_ref`는 같은 provider·product·transport·model·environment·auth mode·client name/version을 시험한 exact `ProviderValidationEvidence`를 가리켜야 한다. 일반 Agent용 `SUPPORTED | EXPERIMENTAL` profile은 `PVD-01`–`PVD-15` 결과가 모두 `PASS` 또는 문서가 허용한 `NOT_APPLICABLE`이어야 한다. `runtime_tool_loop=SUPPORTED`이고 R7 Sandbox 실행에 사용할 profile은 `PVD-16=PASS`도 필수다. `REJECTED`도 실패 또는 금지 근거를 가진 validation record를 연결한다. 시험 전 후보에는 `ProviderProfile`을 발급하지 않는다.
+
+API profile은 `client_execution_profile_ref=null`이어야 한다. 구독 profile은 같은 client version과 environment를 고정하고 격리를 검증한 exact `ClientExecutionProfile`이 필수다. `ClientExecutionProfile.verification_evidence_ref`는 해당 client·version·environment의 `PVD-13` 격리 시험을 포함한 exact `ProviderValidationEvidence`를 가리킨다. credential·cookie·token·browser profile 경로와 실제 session 비밀은 세 record와 일반 로그에 저장하지 않는다.
+
+`LLMCallSpec.provider_profile_ref`와 이를 복사하는 action·request·log reference는 같은 current analysis·workspace·commit에 고정된 exact `ProviderProfile` revision을 가리킨다. `LLMCallSpec.model`과 실제 request·log의 model은 `ProviderProfile.model`과 같아야 한다. 역할에 필요한 capability가 `SUPPORTED`가 아니거나 profile의 환경·인증 방식·client version이 실제 실행과 다르면 `PROVIDER_PROFILE_DENIED | CAPABILITY_UNSUPPORTED` 중 실제 원인으로 호출 전에 거절한다. retry나 failover에서 profile·model·인증·환경이 달라지면 새 `llm_call_id`, `LLMCallSpec`, action, decision과 session을 만들고 이전 exact reference를 재사용하지 않는다.
+
 ```yaml
 LLMCallSpec:
   meta: RecordMeta

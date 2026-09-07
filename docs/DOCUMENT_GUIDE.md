@@ -88,6 +88,7 @@
 | 파일 | 쉽게 말하면 | 주로 읽는 사람 | 구분 |
 |---|---|---|---|
 | [`implementation/01-module-map.md`](./architecture-v5/implementation/01-module-map.md) | 정본 22단계를 실행 모듈, 입력·출력, 저장 위치, 오류와 테스트에 연결합니다. | 전체 구현 담당자·R1~R8 검토자 | 구현 준비 기준 |
+| [`implementation/04-provider-decision.md`](./architecture-v5/implementation/04-provider-decision.md) | OpenAI·Codex·Anthropic·Claude를 API Key 또는 공식 구독 로그인으로 연결하는 네 경로와 실제 검증 기준을 설명합니다. | R3·R4·R8·LLM 역할 담당 | 구현 인계 설계 |
 
 ## Architecture v5 쉬운 Wiki
 

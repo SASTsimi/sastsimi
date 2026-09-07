@@ -148,11 +148,13 @@ Sandbox ENV/POLICY/EXEC/TIMEOUT은 동적 work의 `BLOCKED | FAILED`다. 최종 
 | usage | token 숫자를 서비스가 안 줌 | 없음 + 이유. 지어내지 않음 |
 | 수집 금지 | 비밀번호·세션 비밀·숨은 생각을 평가/로그로 모은 횟수 | 0. `S-REDACT`는 가리기 실패 장면. 이건 모으지 말 것 |
 
+Agent 이름에는 모델의 가격·성능 등급을 붙이지 않는다. `Hypothesis Agent`도 고정 모델을 전제하지 않으며, R8이 같은 corpus와 합격 기준으로 비교해 품질 기준을 만족한 model·환경 조합만 비용 최적화 후보로 제안한다. 실제 사용 조합은 model을 포함한 exact `ProviderProfile` revision으로 승인하고 활성화한다.
+
 연결 발견사항: H-003.
 
 ## 정책 최신성·재사용 (R8 versioned)
 
-정책 준비는 가설 Agent가 아니다. `CodeWorkspace.status=READY` 뒤 분석 단위 `POLICY_FETCH`가 AST/SAST와 병렬로 한 번 등록되고, 준비가 끝난 `RunPolicyState`를 그 run의 모든 가설이 공유한다. R8은 **다음 run에서 cache를 다시 쓸 기준**, **Collect/Parse 시간·재시도**, **재사용·실패 지표**를 정한다. 기준과 숫자는 `freshness_criterion_ref`가 가리키는 versioned R8 설정이며 아래 값은 **교차 전 초안**이다.
+정책 준비는 Hypothesis Agent의 역할이 아니다. `CodeWorkspace.status=READY` 뒤 분석 단위 `POLICY_FETCH`가 AST/SAST와 병렬로 한 번 등록되고, 준비가 끝난 `RunPolicyState`를 그 run의 모든 가설이 공유한다. R8은 **다음 run에서 cache를 다시 쓸 기준**, **Collect/Parse 시간·재시도**, **재사용·실패 지표**를 정한다. 기준과 숫자는 `freshness_criterion_ref`가 가리키는 versioned R8 설정이며 아래 값은 **교차 전 초안**이다.
 
 ### 최신성 근거와 Parser 호환성
 

@@ -56,6 +56,27 @@ foreach ($file in $markdownFiles) {
     }
 }
 
+# Keep the role name independent from model cost and Korean shorthand. The
+# canonical display name is Hypothesis Agent; HYPOTHESIS and HypothesisProposal
+# remain the machine-facing role and output contract names.
+$obsoleteHypothesisAgentPatterns = @(
+    ('Low-' + 'cost Hypothesis Agent'),
+    ('저비용 Hypothesis' + ' Agent'),
+    ('가설 ' + 'Agent'),
+    ('가설 ' + '에이전트'),
+    ('탐색 ' + 'Agent'),
+    ('탐색 ' + '에이전트'),
+    ('Hypothesis Generation' + ' Agent')
+)
+foreach ($file in $markdownFiles) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    foreach ($pattern in $obsoleteHypothesisAgentPatterns) {
+        if ([regex]::IsMatch($text, [regex]::Escape($pattern), [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+            Add-Failure "non-canonical Hypothesis Agent name '$pattern': $($file.FullName)"
+        }
+    }
+}
+
 $diagramPath = Join-Path $repoRoot 'docs/architecture-v5/13-architecture-diagrams.md'
 $wikiDiagramPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/diagrams.md'
 $diagramText = Get-Content -Raw -Encoding UTF8 -LiteralPath $diagramPath
@@ -2994,6 +3015,64 @@ foreach ($marker in $resultContractMarkers) {
 
 $activeArchitectureText = $activeDocumentationText
 
+$providerDecisionPath = Join-Path $repoRoot 'docs/architecture-v5/implementation/04-provider-decision.md'
+$providerDecisionText = if (Test-Path -LiteralPath $providerDecisionPath) { Get-Content -LiteralPath $providerDecisionPath -Raw } else { '' }
+$providerCapabilityBlock = [regex]::Match($providerDecisionText, '(?ms)^ProviderCapabilities:\s*(.*?)^```').Groups[1].Value
+$providerExitSection = [regex]::Match($providerDecisionText, '(?ms)^## 10\. 미완료 증거와 종료 조건\s*(.*)$').Groups[1].Value
+$architectureReadmeText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/README.md')
+
+if ([string]::IsNullOrWhiteSpace($providerDecisionText)) {
+    Add-Failure 'missing R3-04 provider decision document'
+}
+if (-not $providerCapabilityBlock.Contains('runtime_tool_loop:')) {
+    Add-Failure 'ProviderCapabilities must declare runtime_tool_loop support'
+}
+foreach ($marker in @(
+    'provider 내장 tool은 계속 차단',
+    'SASTSIMI Runtime이 model의 구조화된 요청을 받아',
+    '현재 `DYNAMIC_REPRO` work에서 `agent_role=DYNAMIC_REPRODUCTION`',
+    '`DYNAMIC_REPRO`는 작업 종류이고 `DYNAMIC_REPRODUCTION`은 Dynamic Reproduction Agent의 역할·생산자 enum',
+    'Runtime Validator는 요청 역할·현재 `DYNAMIC_REPRO` work·attempt·상태와 exact 설정 reference를 검사',
+    'Sandbox Controller는 host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace 같은 Sandbox 외부 경계를 강제',
+    'exact `SandboxPolicyDecision`을 같은 attempt의 `AgentLog`와 `DynamicReproductionResult.policy_decision_ref`에 연결',
+    '`PVD-16`',
+    'Issue #90도 R7 실행 지원을 완료했다고 판단하기 전에는 `PVD-16`의 통과 증거를 종료 조건에 포함'
+)) {
+    if (-not $providerDecisionText.Contains($marker)) {
+        Add-Failure "missing R7 runtime-managed tool-loop provider rule: $marker"
+    }
+}
+Write-Output 'R3-04 provider runtime tool-loop rules: 9'
+
+foreach ($marker in @(
+    'ProviderCapabilities:',
+    'ProviderValidationTest:',
+    'ProviderValidationEvidence:',
+    'ClientExecutionProfile:',
+    'ProviderProfile:',
+    'meta: RecordMeta with hypothesis_id null and attempt_id null',
+    'runtime_tool_loop: SUPPORTED | UNSUPPORTED | UNVERIFIED',
+    'data_kind=provider_profile',
+    '이전 분석의 `StoredDataRef`를 재사용하지 않는다',
+    '`ClientExecutionProfile.verification_evidence_ref`',
+    'ProviderProfile.model`과 같아야 한다',
+    'PROVIDER_PROFILE_DENIED | CAPABILITY_UNSUPPORTED'
+)) {
+    if (-not $contractText.Contains($marker)) {
+        Add-Failure "missing canonical ProviderProfile contract marker in 08: $marker"
+    }
+}
+if ($activeDocumentationText.Contains('ModelProfile')) {
+    Add-Failure 'obsolete or undefined ModelProfile term remains; use ProviderProfile.model'
+}
+if (-not $providerExitSection.Contains('`PVD-16` 결과')) {
+    Add-Failure 'R3-04 closing conditions must require PVD-16 evidence for R7-enabled profiles'
+}
+if (-not $architectureReadmeText.Contains('./implementation/04-provider-decision.md')) {
+    Add-Failure 'Architecture v5 README must link the R3-04 provider decision document'
+}
+Write-Output 'R4 ProviderProfile canonical contract rules: 15'
+
 $forbiddenR8OwnershipMarkers = @(
     '그 R8 profile의 수치',
     'R8 profile의 CPU',
@@ -3015,6 +3094,7 @@ if ($gitCheckExitCode -ne 0) {
 }
 
 Write-Output "Markdown files: $($markdownFiles.Count)"
+Write-Output "Canonical Hypothesis Agent aliases blocked: $($obsoleteHypothesisAgentPatterns.Count)"
 Write-Output "Mermaid blocks: $($diagramBlocks.Count) canonical / $($wikiDiagramBlocks.Count) Wiki"
 Write-Output 'Finding lifecycle Rule Scope -> FINDING_NORMALIZE bypass guard: canonical + Wiki'
 Write-Output "R4-02 required contract names: $($requiredContractNames.Count)"

@@ -149,7 +149,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | repository prompt injection | instruction/data 분리, 최소 context, output validation |
 | SAST hit 자동 승격 | fact-only 정규화, Verification |
 | 규칙 실행 기록이 없어도 “검사 결과 0건”으로 해석 | exact `RuleExecutionRecord` 확인, 미실행·확인 불가와 0건 분리 |
-| 저비용 모델의 과도한 확정 | fixed hypothesis schema, 금지 assertion, `INVALID_OUTPUT` |
+| LLM의 근거 없는 과도한 확정 | fixed hypothesis schema, 금지 assertion, `INVALID_OUTPUT` |
 | LLM 확증 편향 | 운영상 항상 실행하는 독립 Pro/Con, 역할 간 NEW session, 두 Gate |
 | session contamination | `NEW/RESUME/AUTO` policy와 결정 logging |
 | 잘못된 path 연결 | location retrieval와 Technical Gate linkage 검토 |
