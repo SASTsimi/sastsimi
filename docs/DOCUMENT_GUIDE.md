@@ -128,6 +128,8 @@ Wiki는 번호 문서의 쉬운 요약입니다. Wiki만 수정해 새로운 규
 | 파일 | 쉽게 말하면 | 구분 |
 |---|---|---|
 | [`docs/superpowers/README.md`](./superpowers/README.md) | 아래 specs·plans가 현재 계약이 아니라 과거 설계·작업 기록임을 설명하고 현재 정본 위치를 안내합니다. | 작업 기록 안내 |
+| [`2026-09-08-sastsimi-maintainable-implementation-design.md`](./superpowers/specs/2026-09-08-sastsimi-maintainable-implementation-design.md) | 승인된 설계를 유지보수 가능한 코드 구조와 PR 순서로 옮기는 기준입니다. | 현재 구현 설계 |
+| [`2026-09-08-sastsimi-complete-implementation.md`](./superpowers/plans/2026-09-08-sastsimi-complete-implementation.md) | 전체 구현 Task, 의존 순서, 파일 책임, 시험과 병합 조건을 설명합니다. | 현재 구현 계획 |
 | [`2026-08-27-role-review-governance.md`](./superpowers/plans/2026-08-27-role-review-governance.md) | 초기 역할별 Issue와 협업·승인 규칙 연결 작업 계획입니다. | 작업 기록 |
 | [`2026-08-27-team-role-issue-readability.md`](./superpowers/plans/2026-08-27-team-role-issue-readability.md) | 팀원·GitHub 계정 연결과 Issue 문장 단순화 작업 계획입니다. | 작업 기록 |
 | [`2026-08-27-collaboration-and-readable-docs-design.md`](./superpowers/specs/2026-08-27-collaboration-and-readable-docs-design.md) | 담당자 생성 하위 Issue와 쉬운 문서 체계를 정의한 설계입니다. | 작업 기록 |
