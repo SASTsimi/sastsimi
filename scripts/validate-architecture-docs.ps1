@@ -289,6 +289,56 @@ if (-not (Test-Path -LiteralPath $finalApprovalPath)) {
     }
 }
 
+# R6 produces DynamicReproductionRequest before R7 starts its execution
+# attempt.  The exact current-generation request is an immutable input to R7;
+# only artifacts produced by R7 are required to share the DYNAMIC_REPRO
+# work/attempt.  Guard the canonical R5-facing documents against collapsing
+# these two attempt identities again.
+$dynamicRequestAttemptSeparationMarker = 'R6가 생산한 exact `DynamicReproductionRequest`는 current Verification generation의 입력으로 고정하지만, 그 생산 attempt를 R7 `DYNAMIC_REPRO` 실행 attempt와 같다고 요구하지 않는다.'
+$dynamicRequestAttemptSeparationFiles = @(
+    'docs/architecture-v5/04-verification-and-dynamic-reproduction.md',
+    'docs/architecture-v5/05-llm-gate-and-reporting.md',
+    'docs/architecture-v5/08-lightweight-data-contracts.md',
+    'docs/architecture-v5/10-security-boundaries.md',
+    'docs/architecture-v5/12-report-draft-template.md',
+    'docs/review/decisions/ADR-007-r7-autonomous-reproduction-session.md'
+)
+foreach ($relativePath in $dynamicRequestAttemptSeparationFiles) {
+    $path = Join-Path $repoRoot $relativePath
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    if (-not $text.Contains($dynamicRequestAttemptSeparationMarker)) {
+        Add-Failure "R6 request/R7 attempt boundary is not explicit: $relativePath"
+    }
+}
+
+$dynamicRequestAttemptBoundaryScanFiles = $dynamicRequestAttemptSeparationFiles + @(
+    'docs/architecture-v5/wiki/results.md',
+    'docs/architecture-v5/implementation/02-contract-test-plan.md',
+    'docs/architecture-v5/implementation/03-recovery-test-plan.md'
+)
+$obsoleteSameAttemptPhrases = @(
+    'validated PoC의 request·plan·recipe·environment·AgentLog·candidate·실행 action은 모두 결과와 같은 attempt여야 한다.',
+    'request, plan, `environment_ref`, `agent_log_ref`, PoC candidate, validated PoC, `cleanup_ref`는 모두 동일한 reproduction attempt에 속해야 한다.',
+    'request·plan·recipe·환경·AgentLog·PoC가 같은 attempt로 연결된 `DynamicReproductionResult`',
+    '`request_ref`, `reproduction_plan_ref`, `environment_recipe_ref`와 `requirements_ref`는 같은 attempt의 exact record를 가리킨다.',
+    'request·plan·recipe·실제 환경·AgentLog·PoC candidate·validated PoC는 같은 analysis·workspace·commit·hypothesis·work·attempt를 가리킨다.',
+    'request·plan·recipe·environment·AgentLog·candidate·validated PoC와 dynamic result는 같은 work·attempt에 연결합니다.',
+    'request, plan, environment, AgentLog, PoC candidate, validated PoC, cleanup은 모두 동일 reproduction attempt에 속해야 함',
+    '동적 결과에서는 request·plan·recipe·환경·AgentLog·PoC와 attempt가 서로 맞는지 확인합니다.',
+    'POC1의 request·plan·recipe·environment·log·candidate·execution action/digest는 DX1과 같은 work/attempt에서 exact match',
+    'same-attempt exact request·plan·recipe·environment·AgentLog·candidate revision/digest·실행 action·지지 관찰·validated 요건·commit binding',
+    'request·plan·recipe·environment·AgentLog·candidate exact revision/digest·action·SUPPORTED 관찰·PoCBundle·DX1이 모두 AD1에 연결'
+)
+foreach ($relativePath in $dynamicRequestAttemptBoundaryScanFiles) {
+    $path = Join-Path $repoRoot $relativePath
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    foreach ($phrase in $obsoleteSameAttemptPhrases) {
+        if ($text.Contains($phrase)) {
+            Add-Failure "obsolete same-attempt rule still includes the R6 request: $relativePath -> $phrase"
+        }
+    }
+}
+
 if ([regex]::IsMatch($findingsText, '(?m)^\|\s*[BH]-\d+\s*\|\s*(OPEN|IN_PROGRESS)\s*\|')) {
     Add-Failure 'FINDINGS still contains an open or in-progress Blocker/High item'
 }

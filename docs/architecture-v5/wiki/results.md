@@ -34,7 +34,7 @@ Proxy가 어려운 membership 호출은 raw session log → provider parser → 
 
 Context 조회 실패·timeout·권한 오류는 `AnalysisError`로, 그 때문에 확인하지 못한 범위는 `DataGap`으로 함께 찾을 수 있어야 합니다. 일부 조회 실패가 있어도 모든 `validation_checks`를 실제 근거로 완료했다면 판정을 저장할 수 있습니다. 하나라도 완료하지 못했으면 final `VerificationResult`는 저장하지 않고, 재시도 가능 여부에 따라 가설을 `VERIFYING`으로 유지하거나 work와 함께 `FAILED`로 끝냅니다. 실패 가설 수는 verdict 수와 섞지 않고 `failed_hypothesis_count`로 따로 보입니다.
 
-동적 결과에서는 request·plan·recipe·환경·AgentLog·PoC와 attempt가 서로 맞는지 확인합니다. Sandbox profile 외부 격리 경계 차단이면 exact `SandboxPolicyDecision`과 AgentLog가 필수입니다. 프로그램 정책 준비 상태나 testing restriction 판단과는 다른 결과입니다. `poc_candidate_ref`는 작성하거나 실행을 시도한 자료이고, `SUCCEEDED + SUPPORTED`이며 같은 attempt의 AgentLog가 exact candidate digest 실행을 증명할 때만 validated `poc_ref`를 가집니다. 모든 final TRUE는 이 validated PoC를 가져야 합니다.
+동적 결과에서는 current Verification generation의 exact R6 request가 고정됐는지 먼저 확인합니다. 이 request를 만든 R6 attempt와 R7 실행 attempt는 같을 필요가 없습니다. 대신 plan·recipe·환경·AgentLog·PoC는 모두 같은 R7 `DYNAMIC_REPRO` work·attempt에 연결되어야 합니다. Sandbox profile 외부 격리 경계 차단이면 exact `SandboxPolicyDecision`과 AgentLog가 필수입니다. 프로그램 정책 준비 상태나 testing restriction 판단과는 다른 결과입니다. `poc_candidate_ref`는 작성하거나 실행을 시도한 자료이고, `SUCCEEDED + SUPPORTED`이며 같은 attempt의 AgentLog가 exact candidate digest 실행을 증명할 때만 validated `poc_ref`를 가집니다. 모든 final TRUE는 이 validated PoC를 가져야 합니다.
 
 상세 내용은 [결과 저장과 관측성](../07-results-and-observability.md)을 따른다.
 ID 생성 주체, 상태 계층과 gap/error 차이는 [공통 ID·상태·오류](common-contracts.md)에서 쉽게 확인할 수 있다. 병렬 합류, 재시도, 늦은 결과와 crash-resume은 [상태·병렬 실행·재시도·복구](state-and-recovery.md)를 따른다.
