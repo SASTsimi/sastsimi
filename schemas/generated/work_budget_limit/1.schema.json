@@ -1,0 +1,157 @@
+{
+  "$defs": {
+    "BudgetAgentRole": {
+      "enum": [
+        "HYPOTHESIS",
+        "PRO",
+        "CON",
+        "VERIFICATION",
+        "CWE_LABELING",
+        "CHAINING",
+        "TECHNICAL_GATE",
+        "RULE_SCOPE_GATE",
+        "REPORTER",
+        "POLICY_PARSER",
+        "DYNAMIC_REPRODUCTION",
+        "REPOSITORY_LOADER",
+        "STATIC_ANALYSIS",
+        "POLICY_COLLECTOR"
+      ],
+      "title": "BudgetAgentRole",
+      "type": "string"
+    },
+    "OperationKind": {
+      "enum": [
+        "WORKSPACE_PREP",
+        "STATIC_TOOL",
+        "STATIC_NORMALIZE",
+        "POLICY_COLLECT",
+        "POLICY_PARSE",
+        "HYPOTHESIS_GENERATE",
+        "CONTEXT_RETRIEVAL",
+        "PRO_EVIDENCE",
+        "CON_EVIDENCE",
+        "VERIFICATION_SYNTHESIS",
+        "PRIMITIVE_UPDATE",
+        "CHAINING",
+        "DYNAMIC_REPRO",
+        "CWE_LABELING",
+        "TECHNICAL_GATE",
+        "RULE_SCOPE_GATE",
+        "FINDING_NORMALIZE",
+        "REPORTER"
+      ],
+      "title": "OperationKind",
+      "type": "string"
+    },
+    "WorkType": {
+      "enum": [
+        "WORKSPACE_PREP",
+        "STATIC_TOOL",
+        "STATIC_NORMALIZE",
+        "HYPOTHESIS_PROPOSAL",
+        "CONTEXT_RETRIEVAL",
+        "PRO_EVIDENCE",
+        "CON_EVIDENCE",
+        "VERIFICATION",
+        "DYNAMIC_REPRO",
+        "PRIMITIVE_UPDATE",
+        "CHAINING",
+        "CWE_LABEL",
+        "POLICY_FETCH",
+        "TECHNICAL_GATE",
+        "RULE_SCOPE_GATE",
+        "FINDING_NORMALIZE",
+        "REPORT_DRAFT"
+      ],
+      "title": "WorkType",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "agent_role": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BudgetAgentRole"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "limit_key": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Limit Key",
+      "type": "string"
+    },
+    "max_attempts": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Max Attempts"
+    },
+    "max_calls_per_work": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Max Calls Per Work"
+    },
+    "max_items_per_work": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Max Items Per Work"
+    },
+    "operation_kind": {
+      "$ref": "#/$defs/OperationKind"
+    },
+    "timeout_ms": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Timeout Ms"
+    },
+    "work_type": {
+      "$ref": "#/$defs/WorkType"
+    }
+  },
+  "required": [
+    "limit_key",
+    "work_type",
+    "operation_kind",
+    "agent_role",
+    "timeout_ms",
+    "max_attempts",
+    "max_calls_per_work",
+    "max_items_per_work"
+  ],
+  "title": "WorkBudgetLimit",
+  "type": "object"
+}

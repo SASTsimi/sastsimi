@@ -1,0 +1,72 @@
+{
+  "$defs": {
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "commit_id": {
+      "$ref": "#/$defs/CommitId"
+    },
+    "content_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Hash",
+      "type": "string"
+    },
+    "data_kind": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Data Kind",
+      "type": "string"
+    },
+    "record_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stored_data_id": {
+      "$ref": "#/$defs/StoredDataId"
+    },
+    "workspace_id": {
+      "$ref": "#/$defs/WorkspaceId"
+    }
+  },
+  "required": [
+    "stored_data_id",
+    "data_kind",
+    "content_hash",
+    "workspace_id",
+    "commit_id",
+    "record_id"
+  ],
+  "title": "StoredDataRef",
+  "type": "object"
+}
