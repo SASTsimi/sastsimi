@@ -1,5 +1,6 @@
 import ast
 import importlib.util
+from enum import Enum, auto
 from pathlib import Path
 
 import pytest
@@ -60,102 +61,241 @@ DYNAMIC_NAMES = frozenset({"__import__", "eval", "exec"})
 DYNAMIC_ATTRIBUTES = DYNAMIC_NAMES | {"import_module", "load_module", "exec_module"}
 
 
-def reject_dynamic_access(tree: ast.AST) -> None:
-    namespaces = {"__builtins__"}
-    getters = {"getattr"}
-    mappings = {"vars"}
-    nodes = list(ast.walk(tree))
-    for node in nodes:
-        if isinstance(node, ast.Import):
-            namespaces.update(
-                alias.asname or alias.name.split(".")[0]
-                for alias in node.names
-                if alias.name.split(".")[0] in DYNAMIC_MODULES
-            )
-        elif isinstance(node, ast.ImportFrom) and node.module == "builtins":
-            for alias in node.names:
-                if alias.name == "getattr":
-                    getters.add(alias.asname or alias.name)
-                elif alias.name == "vars":
-                    mappings.add(alias.asname or alias.name)
+class Access(Enum):
+    ORDINARY = auto()
+    NAMESPACE = auto()
+    GETATTR = auto()
+    VARS = auto()
+    SCOPE_FUNCTION = auto()
+    SCOPE_MAPPING = auto()
+    MEMBER_GET = auto()
+    SCOPE_GET = auto()
+    FORBIDDEN = auto()
 
-    def known_namespace(expression: ast.AST) -> bool:
-        if isinstance(expression, ast.Name):
-            return expression.id in namespaces
-        if isinstance(expression, ast.Attribute):
-            return expression.attr == "__dict__" and known_namespace(expression.value)
-        if isinstance(expression, ast.Call):
-            return (
-                accessor(expression.func, mappings, "vars")
-                and bool(expression.args)
-                and known_namespace(expression.args[0])
-            ) or (
-                accessor(expression.func, getters, "getattr")
-                and len(expression.args) >= 2
-                and isinstance(expression.args[1], ast.Constant)
-                and expression.args[1].value == "__dict__"
-                and known_namespace(expression.args[0])
-            )
-        if isinstance(expression, ast.Subscript):
-            return (
-                isinstance(expression.slice, ast.Constant)
-                and expression.slice.value == "__builtins__"
-                and isinstance(expression.value, ast.Call)
-                and isinstance(expression.value.func, ast.Name)
-                and expression.value.func.id in {"globals", "locals"}
-            )
-        return False
 
-    def accessor(expression: ast.AST, aliases: set[str], name: str) -> bool:
-        return (isinstance(expression, ast.Name) and expression.id in aliases) or (
-            isinstance(expression, ast.Attribute)
-            and expression.attr == name
-            and known_namespace(expression.value)
+BUILTIN_ACCESS = {
+    "__builtins__": Access.NAMESPACE,
+    "__import__": Access.FORBIDDEN,
+    "eval": Access.FORBIDDEN,
+    "exec": Access.FORBIDDEN,
+    "getattr": Access.GETATTR,
+    "vars": Access.VARS,
+    "globals": Access.SCOPE_FUNCTION,
+    "locals": Access.SCOPE_FUNCTION,
+}
+
+
+class LocalBindings(ast.NodeVisitor):
+    """Collect Python function-local names, excluding nested lexical bodies."""
+
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+        self.external: set[str] = set()
+        self.globals: set[str] = set()
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            self.names.add(node.id)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        self.names.update(
+            alias.asname or alias.name.split(".")[0] for alias in node.names
         )
 
-    # Follow simple binding captures; the access is checked even without a call.
-    changed = True
-    while changed:
-        changed = False
-        for node in nodes:
-            if not isinstance(node, ast.Assign):
-                continue
-            for target in node.targets:
-                if not isinstance(target, ast.Name):
-                    continue
-                for aliases, name in (
-                    (namespaces, ""),
-                    (getters, "getattr"),
-                    (mappings, "vars"),
-                ):
-                    captured = (
-                        known_namespace(node.value)
-                        if aliases is namespaces
-                        else accessor(node.value, aliases, name)
-                    )
-                    if captured and target.id not in aliases:
-                        aliases.add(target.id)
-                        changed = True
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        self.names.update(alias.asname or alias.name for alias in node.names)
 
-    for node in nodes:
-        if isinstance(node, ast.Name) and node.id in DYNAMIC_NAMES:
-            raise ValueError("Dynamic imports require explicit architecture review")
-        if isinstance(node, ast.Attribute) and node.attr in DYNAMIC_ATTRIBUTES:
-            raise ValueError("Dynamic import attribute access is not allowed")
-        if isinstance(node, ast.Subscript) and known_namespace(node.value):
-            member = node.slice.value if isinstance(node.slice, ast.Constant) else None
-            if not isinstance(member, str) or member in DYNAMIC_ATTRIBUTES:
-                raise ValueError("Import namespace lookup cannot prove a safe member")
-        if not isinstance(node, ast.Call) or len(node.args) < 2:
-            continue
-        if accessor(node.func, getters, "getattr"):
-            member = (
-                node.args[1].value if isinstance(node.args[1], ast.Constant) else None
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self.names.add(node.name)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.names.add(node.name)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        pass
+
+    def visit_Global(self, node: ast.Global) -> None:
+        self.external.update(node.names)
+        self.globals.update(node.names)
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        self.external.update(node.names)
+
+
+class ImportAccessChecker(ast.NodeVisitor):
+    """Track explicit namespace/accessor captures within lexical binding maps.
+
+    This is bounded source analysis, not evaluation of arbitrary calls, data
+    structures or control flow. Ordinary Python reflection/dispatch is allowed.
+    """
+
+    def __init__(self) -> None:
+        self.bindings = dict(BUILTIN_ACCESS)
+        self.module_bindings = self.bindings
+        self.class_enclosing: dict[str, Access] | None = None
+
+    @staticmethod
+    def member(node: ast.AST | None) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        return None
+
+    @staticmethod
+    def namespace_member(member: str | None) -> Access:
+        if member is None or member in DYNAMIC_ATTRIBUTES:
+            return Access.FORBIDDEN
+        if member in {"__dict__", "__builtins__"}:
+            return Access.NAMESPACE
+        return BUILTIN_ACCESS.get(member, Access.ORDINARY)
+
+    def access(self, node: ast.AST | None) -> Access:
+        """Classify a value without executing it; policy is enforced by visit."""
+        if isinstance(node, ast.Name):
+            return self.bindings.get(node.id, Access.ORDINARY)
+        if isinstance(node, ast.Attribute):
+            if node.attr in DYNAMIC_ATTRIBUTES:
+                return Access.FORBIDDEN
+            owner = self.access(node.value)
+            if owner == Access.NAMESPACE:
+                return (
+                    Access.MEMBER_GET
+                    if node.attr == "get"
+                    else self.namespace_member(node.attr)
+                )
+            if owner == Access.SCOPE_MAPPING and node.attr == "get":
+                return Access.SCOPE_GET
+        if isinstance(node, ast.Subscript):
+            owner = self.access(node.value)
+            member = self.member(node.slice)
+            if owner == Access.NAMESPACE:
+                return self.namespace_member(member)
+            if owner == Access.SCOPE_MAPPING and member == "__builtins__":
+                return Access.NAMESPACE
+        if isinstance(node, ast.Call):
+            callee = self.access(node.func)
+            first = node.args[0] if node.args else None
+            if callee == Access.MEMBER_GET:
+                return self.namespace_member(self.member(first))
+            if callee == Access.SCOPE_GET and self.member(first) == "__builtins__":
+                return Access.NAMESPACE
+            if callee == Access.SCOPE_FUNCTION:
+                return Access.SCOPE_MAPPING
+            if callee == Access.VARS and self.access(first) == Access.NAMESPACE:
+                return Access.NAMESPACE
+            if callee == Access.GETATTR and len(node.args) >= 2:
+                member = self.member(node.args[1])
+                if self.access(first) == Access.NAMESPACE:
+                    return self.namespace_member(member)
+                if member in DYNAMIC_ATTRIBUTES:
+                    return Access.FORBIDDEN
+        return Access.ORDINARY
+
+    def check_expression(self, node: ast.AST) -> None:
+        self.generic_visit(node)
+        if self.access(node) == Access.FORBIDDEN:
+            raise ValueError("Dynamic import/execution machinery requires review")
+
+    visit_Name = check_expression
+    visit_Attribute = check_expression
+    visit_Subscript = check_expression
+    visit_Call = check_expression
+
+    def bind(self, target: ast.AST, value: Access) -> None:
+        if isinstance(target, ast.Name):
+            self.bindings[target.id] = value
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                self.bind(element, Access.ORDINARY)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.visit(node.value)
+        value = self.access(node.value)
+        for target in node.targets:
+            self.bind(target, value)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self.visit(node.annotation)
+        if node.value is not None:
+            self.visit(node.value)
+            self.bind(node.target, self.access(node.value))
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            self.bindings[alias.asname or alias.name.split(".")[0]] = (
+                Access.NAMESPACE
+                if alias.name.split(".")[0] in DYNAMIC_MODULES
+                else Access.ORDINARY
             )
-            if (isinstance(member, str) and member in DYNAMIC_ATTRIBUTES) or (
-                not isinstance(member, str) and known_namespace(node.args[0])
-            ):
-                raise ValueError("Dynamic import member lookup is not allowed")
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        for alias in node.names:
+            value = (
+                self.namespace_member(alias.name)
+                if not node.level and node.module in DYNAMIC_MODULES
+                else Access.ORDINARY
+            )
+            if value == Access.FORBIDDEN:
+                raise ValueError("Dynamic import machinery binding is not allowed")
+            self.bindings[alias.asname or alias.name] = value
+
+    def function_scope(self, args: ast.arguments, body: list[ast.AST]) -> None:
+        local = LocalBindings()
+        for statement in body:
+            local.visit(statement)
+        parameters = [*args.posonlyargs, *args.args, *args.kwonlyargs]
+        if args.vararg is not None:
+            parameters.append(args.vararg)
+        if args.kwarg is not None:
+            parameters.append(args.kwarg)
+        shadowed = (local.names - local.external) | {arg.arg for arg in parameters}
+        enclosing = self.bindings
+        class_enclosing = self.class_enclosing
+        lexical_parent = enclosing if class_enclosing is None else class_enclosing
+        self.bindings = {**lexical_parent, **dict.fromkeys(shadowed, Access.ORDINARY)}
+        for name in local.globals:
+            self.bindings[name] = self.module_bindings.get(name, Access.ORDINARY)
+        self.class_enclosing = None
+        try:
+            for statement in body:
+                self.visit(statement)
+        finally:
+            self.bindings = enclosing
+            self.class_enclosing = class_enclosing
+
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        self.visit(node.args)
+        if node.returns is not None:
+            self.visit(node.returns)
+        self.bindings[node.name] = Access.ORDINARY
+        self.function_scope(node.args, list(node.body))
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self.visit(node.args)
+        self.function_scope(node.args, [node.body])
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for expression in [*node.decorator_list, *node.bases, *node.keywords]:
+            self.visit(expression)
+        self.bindings[node.name] = Access.ORDINARY
+        enclosing, class_enclosing = self.bindings, self.class_enclosing
+        if self.class_enclosing is None:
+            self.class_enclosing = enclosing
+        self.bindings = dict(enclosing)
+        try:
+            for statement in node.body:
+                self.visit(statement)
+        finally:
+            self.bindings, self.class_enclosing = enclosing, class_enclosing
+
+
+def reject_dynamic_access(tree: ast.AST) -> None:
+    ImportAccessChecker().visit(tree)
 
 
 def imports(source: str, module: str) -> list[str]:
@@ -376,4 +516,117 @@ def test_cross_package_private_import_is_rejected() -> None:
     ],
 )
 def test_benign_reflection_and_factory_dispatch_are_allowed(source: str) -> None:
+    assert violations(source, "sastsimi.providers.fake") == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import importlib; vars(importlib).get('import_module')('sastsimi.storage')",
+        "import builtins as core; core.__dict__.get('__import__')('sastsimi.storage')",
+        (
+            "from builtins import __dict__ as table; "
+            "table['__import__']('sastsimi.storage')"
+        ),
+        (
+            "import builtins; other: object = builtins; member='__import__'; "
+            "getattr(other, member)('sastsimi.storage')"
+        ),
+        "from builtins import __dict__ as table; table.get(member)('sastsimi.storage')",
+        "import builtins as core; lookup = core.__dict__.get; lookup(member)",
+        (
+            "import builtins as core\n"
+            "def invoke(name):\n"
+            "    def unrelated():\n"
+            "        core = object()\n"
+            "    return getattr(core, name)\n"
+        ),
+        (
+            "def invoke(core, name):\n"
+            "    import builtins as core\n"
+            "    return getattr(core, name)\n"
+        ),
+        (
+            "def outer():\n"
+            "    import builtins as core\n"
+            "    def inner(name):\n"
+            "        return getattr(core, name)\n"
+        ),
+    ],
+)
+def test_known_import_mapping_and_scope_captures_rejected(source: str) -> None:
+    assert violations(source, "sastsimi.providers.fake")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "factories.get(kind)('relative')",
+        "from builtins import __dict__ as table; table.get('len')(items)",
+        "from builtins import __dict__ as table; table['len'](items)",
+        "other: object = config; getattr(other, member)",
+        "import builtins as core; core = config; getattr(core, name)",
+        (
+            "import builtins as core\n"
+            "def invoke(core, name):\n"
+            "    return getattr(core, name)\n"
+        ),
+        "import builtins as core; invoke = lambda core, name: getattr(core, name)",
+        (
+            "import builtins as core\n"
+            "def invoke(name):\n"
+            "    core = config\n"
+            "    return getattr(core, name)\n"
+        ),
+        (
+            "import builtins as core\n"
+            "def invoke(name):\n"
+            "    core: object = config\n"
+            "    return getattr(core, name)\n"
+        ),
+        (
+            "import builtins as core\n"
+            "def invoke(name):\n"
+            "    import logging as core\n"
+            "    return getattr(core, name)\n"
+        ),
+    ],
+)
+def test_unrelated_mapping_and_lexical_shadowing_allowed(source: str) -> None:
+    assert violations(source, "sastsimi.providers.fake") == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import builtins as core; core: object; getattr(core, member)",
+        (
+            "import builtins as core\n"
+            "def outer(core):\n"
+            "    def inner(name):\n"
+            "        global core\n"
+            "        return getattr(core, name)\n"
+        ),
+        (
+            "import builtins as core\n"
+            "class Example:\n"
+            "    core = config\n"
+            "    def invoke(self, name):\n"
+            "        return getattr(core, name)\n"
+        ),
+    ],
+)
+def test_annotation_and_scope_declarations_preserve_import_binding(source: str) -> None:
+    assert violations(source, "sastsimi.providers.fake")
+
+
+def test_class_field_is_not_a_method_lexical_binding() -> None:
+    source = (
+        "import builtins\n"
+        "core = config\n"
+        "class Example:\n"
+        "    core = builtins\n"
+        "    def invoke(self, name):\n"
+        "        return getattr(core, name)\n"
+    )
     assert violations(source, "sastsimi.providers.fake") == []

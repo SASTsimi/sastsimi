@@ -44,7 +44,7 @@ Missing future suites and real capability probes are not reported as passed.
 Initial RED: 68 failed, 1 passed with the package absent and forbidden import
 fixtures exposing the permissive checker. Additional AST RED: 4 failed, 72 passed
 for cycle, dynamic-import and private-import bypasses. Final local GREEN:
-117 passed, Ruff clean, mypy strict clean across 19 Python files, Architecture
+140 passed, Ruff clean, mypy strict clean across 19 Python files, Architecture
 validator 0 failures and inventory/link audit 0 missing links.
 
 Local verification uses Windows and CPython 3.12.10 with uv 0.12.5. Dependency
@@ -74,3 +74,12 @@ Checks target actual import/exec members and captures, including reflective
 lookup on known import namespaces. An additional two failing alias/dictionary
 fixtures were fixed before verification. Targeted GREEN: 51 passed; full GREEN:
 117 passed. The round-1 blanket reflection/computed-call restrictions are removed.
+
+Independent review fix round 3 added known-namespace dictionary get/imported
+dictionary/annotated binding coverage and lexical shadowing pairs. Initial RED:
+12 failed, 58 passed. Annotation-only, global declaration and method-scope
+self-review fixtures added another RED of 4 failed, 70 passed.
+The checker now separates namespace/accessor classification, function-local name
+collection, lexical binding updates, access policy and ordinary import targets.
+It does not evaluate arbitrary calls, runtime dictionary contents or control flow.
+Targeted GREEN: 74 passed; full GREEN: 140 passed.
