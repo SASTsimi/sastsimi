@@ -33,7 +33,7 @@
 | 파일 | 쉽게 말하면 | 주로 읽는 사람 | 구분 |
 |---|---|---|---|
 | [`docs/governance/OWNERSHIP.md`](./governance/OWNERSHIP.md) | 역할별 담당자, 담당 문서, 검토자와 권한 경계를 정리합니다. | PM·역할 담당자 | 기준 문서 |
-| [`docs/governance/OPEN_QUESTIONS.md`](./governance/OPEN_QUESTIONS.md) | 아직 결정하지 못한 사항과 결정하지 않았을 때의 영향을 모읍니다. | PM·관련 역할 담당자 | 기준 문서 |
+| [`docs/governance/OPEN_QUESTIONS.md`](./governance/OPEN_QUESTIONS.md) | 승인된 설계 안에서 구현·운영 전에 채울 실제 설정과 시험 증거를 모읍니다. | PM·관련 역할 담당자 | 기준 문서 |
 | [`docs/governance/REVIEW_CHECKLIST.md`](./governance/REVIEW_CHECKLIST.md) | 파트 검토와 최종 검토에서 빠뜨리면 안 되는 항목을 확인합니다. | 작성자·검토자 | 기준 문서 |
 
 ## 검토 업무와 기록
@@ -44,13 +44,13 @@
 | [`docs/review/ISSUE_CATALOG.md`](./review/ISSUE_CATALOG.md) | 역할별 상위 Issue에서 무엇을 검토하고 어떤 하위 Issue를 만들지 자세히 설명합니다. | 역할 담당자 | 기준 문서 |
 | [`docs/review/R4-04_CROSS_REVIEW.md`](./review/R4-04_CROSS_REVIEW.md) | R4-04에서 역할별로 무엇을 확인하고 어떤 GitHub 기록을 승인으로 인정하는지 설명합니다. | R1~R8 담당자·최종 검토 담당자 | 검토 기록 |
 | [`docs/review/FINDINGS.md`](./review/FINDINGS.md) | 현재 설계에서 발견된 큰 문제와 해결 조건을 정리합니다. | PM·문제 담당자 | 기준 문서 |
-| [`docs/review/FINAL_ARCHITECTURE_V5_APPROVAL.md`](./review/FINAL_ARCHITECTURE_V5_APPROVAL.md) | 검토 시작 기준 main, PR 본문의 정확한 승인 대상 head, 종단 시나리오와 구현 전 후속 조건을 기록합니다. | R1~R8 담당자·구현 담당자 | 최종 승인 기록 |
+| [`docs/review/FINAL_ARCHITECTURE_V5_APPROVAL.md`](./review/FINAL_ARCHITECTURE_V5_APPROVAL.md) | 검토 시작 기준 main, Final PR의 정확한 head·merge commit, 종단 시나리오와 구현 전 후속 조건을 기록합니다. | R1~R8 담당자·구현 담당자 | 최종 승인 기록 |
 | [`docs/review/PROVENANCE.md`](./review/PROVENANCE.md) | Architecture v5 파일을 어디에서 가져왔는지와 원본 해시를 기록합니다. | PM·최종 검토 담당자 | 기준 기록 |
 | [`docs/review/decisions/README.md`](./review/decisions/README.md) | 팀이 확정한 중요한 설계 결정과 근거를 기록하는 방법을 설명합니다. | 결정 담당자·검토자 | 기준 문서 |
 | [`ADR-001-verification-owned-chaining-admission.md`](./review/decisions/ADR-001-verification-owned-chaining-admission.md) | Verification 중심 제어권을 정한 과거 결정입니다. Primitive와 체이닝 부분은 ADR-005가 대체했습니다. | R1·R4·R6·Gate 담당 | 대체된 이력 |
-| [`ADR-002-sandbox-policy-enforcement.md`](./review/decisions/ADR-002-sandbox-policy-enforcement.md) | Sandbox 정책 판정·실행·결과 조립의 권한 분리 제안을 설명합니다. | R4·R6·R7 담당 | 검토 중 결정 |
-| [`ADR-003-r6-r7-environment-requirements-handoff.md`](./review/decisions/ADR-003-r6-r7-environment-requirements-handoff.md) | R6가 환경 요구사항과 계획을 만들던 과거 결정을 보존합니다. ADR-004가 대체했습니다. | R4·R6·R7 담당 | 대체된 이력 |
-| [`ADR-004-r6-request-r7-poc-production.md`](./review/decisions/ADR-004-r6-request-r7-poc-production.md) | R6는 재현을 요청하고 R7은 환경·계획·PoC를 만들며 모든 TRUE에 validated PoC가 필요하다는 현재 결정을 설명합니다. | R4·R6·R7·Gate 담당 | 확정 결정 |
+| [`ADR-002-sandbox-policy-enforcement.md`](./review/decisions/ADR-002-sandbox-policy-enforcement.md) | 과거 Sandbox 정책 판정·실행·결과 조립 분리안을 보존합니다. 현재 구조는 ADR-007이 대체했습니다. | R4·R6·R7 담당 | 대체된 이력 |
+| [`ADR-003-r6-r7-environment-requirements-handoff.md`](./review/decisions/ADR-003-r6-r7-environment-requirements-handoff.md) | R6가 환경 요구사항과 계획을 만들던 과거 결정을 보존합니다. ADR-004를 거쳐 ADR-007이 대체했습니다. | R4·R6·R7 담당 | 대체된 이력 |
+| [`ADR-004-r6-request-r7-poc-production.md`](./review/decisions/ADR-004-r6-request-r7-poc-production.md) | R6 요청·R7 mode 기반 재현의 과거 결정을 보존합니다. validated PoC 의무는 유지되지만 현재 자율 재현 구조는 ADR-007을 따릅니다. | R4·R6·R7·Gate 담당 | 대체된 이력 |
 | [`ADR-005-unified-primitive-chaining.md`](./review/decisions/ADR-005-unified-primitive-chaining.md) | HOLD와 TRUE를 하나의 Primitive로 표현하고 결과→입력 matching, Technical admission, 계보 기반 순환 방지를 정한 현재 결정을 설명합니다. | R1·R4·R6·R8·Gate 담당 | 확정 결정 |
 | [`ADR-006-static-rule-execution-record.md`](./review/decisions/ADR-006-static-rule-execution-record.md) | SAST 규칙의 실행 0건·미실행·확인 불가를 구분하고 ToolRunResult와 연결하는 현재 결정을 설명합니다. | R2·R4·R8 담당 | 확정 결정 |
 | [`ADR-007-r7-autonomous-reproduction-session.md`](./review/decisions/ADR-007-r7-autonomous-reproduction-session.md) | Dynamic Reproduction Agent의 Sandbox 내부 자율 재현과 Session Manager의 로그·결과 확정 책임을 설명합니다. | R4·R6·R7·R8 담당 | 확정 결정 |
@@ -127,6 +127,7 @@ Wiki는 번호 문서의 쉬운 요약입니다. Wiki만 수정해 새로운 규
 
 | 파일 | 쉽게 말하면 | 구분 |
 |---|---|---|
+| [`docs/superpowers/README.md`](./superpowers/README.md) | 아래 specs·plans가 현재 계약이 아니라 과거 설계·작업 기록임을 설명하고 현재 정본 위치를 안내합니다. | 작업 기록 안내 |
 | [`2026-08-27-role-review-governance.md`](./superpowers/plans/2026-08-27-role-review-governance.md) | 초기 역할별 Issue와 협업·승인 규칙 연결 작업 계획입니다. | 작업 기록 |
 | [`2026-08-27-team-role-issue-readability.md`](./superpowers/plans/2026-08-27-team-role-issue-readability.md) | 팀원·GitHub 계정 연결과 Issue 문장 단순화 작업 계획입니다. | 작업 기록 |
 | [`2026-08-27-collaboration-and-readable-docs-design.md`](./superpowers/specs/2026-08-27-collaboration-and-readable-docs-design.md) | 담당자 생성 하위 Issue와 쉬운 문서 체계를 정의한 설계입니다. | 작업 기록 |

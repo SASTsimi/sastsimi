@@ -10,7 +10,7 @@
 
 - 작성 기준 `main`: `ea2a5269913510a498f24102431103440c00523b`
 - 연결 Issue: [R3-04 #90](https://github.com/SASTsimi/sastsimi/issues/90)
-- 후속 결정: [R3-06 #92](https://github.com/SASTsimi/sastsimi/issues/92)
+- 구현 기준선: [R3-06 #92](https://github.com/SASTsimi/sastsimi/issues/92) (`CLOSED`)
 - 공식 문서 확인일: 2026-09-05
 
 SASTSIMI는 Agent를 특정 회사·상품·인증 방식에 묶지 않는다. 모든 LLM 호출은 하나의 `LLMProviderAdapter` port를 사용하고, 실제 경로는 수정할 수 없는 `ProviderProfile` revision으로 고른다.
@@ -279,7 +279,7 @@ Agent 코드와 prompt template에 모델명을 넣지 않는다. Runtime은 mod
 | `PVD-15` | 이용 범위·약관 | 인증 종류·계정 유형·실행 환경·내부/서비스 사용 목적이 provider의 현재 공식 허용 범위와 일치하고 검토 근거를 보존 |
 | `PVD-16` | R7 Runtime tool loop | provider 내장 tool을 끈 상태에서 구조화된 command 제안 → Runtime Validator가 역할·현재 `DYNAMIC_REPRO` work·attempt·상태·exact 설정 reference 검사 → Sandbox Controller가 외부 경계를 통과한 명령만 격리 container에서 실행 → redacted 결과 재입력. 이 전체가 같은 work·attempt·논리 session에 속하고, 실제 `SandboxPolicyDecision`이 `AgentLog`와 `DynamicReproductionResult.policy_decision_ref`에서 추적되며 host·Docker daemon/socket·secret·다른 workspace 접근은 차단 |
 
-일반 역할에 쓸 profile을 `SUPPORTED`로 올리려면 `PVD-01`–`PVD-15`가 그 조합에서 통과해야 한다. R7 Sandbox 실행에 허용하려면 여기에 `PVD-16`도 통과해야 하며 그때만 `runtime_tool_loop=SUPPORTED`로 기록한다. Issue #90도 R7 실행 지원을 완료했다고 판단하기 전에는 `PVD-16`의 통과 증거를 종료 조건에 포함한다. API 경로의 `PVD-13`은 client tool이 없음을 확인해 `NOT_APPLICABLE`로 기록할 수 있지만 생략하지 않는다.
+일반 역할에 쓸 profile을 `SUPPORTED`로 올리려면 `PVD-01`–`PVD-15`가 그 조합에서 통과해야 한다. R7 Sandbox 실행에 허용하려면 여기에 `PVD-16`도 통과해야 하며 그때만 `runtime_tool_loop=SUPPORTED`로 기록한다. Issue #90은 연결 구조의 설계 완료로 종료됐지만, 실제 R7 실행 지원을 선언하려면 별도 구현 Issue·PR에서 `PVD-16` 통과 증거를 요구한다. API 경로의 `PVD-13`은 client tool이 없음을 확인해 `NOT_APPLICABLE`로 기록할 수 있지만 생략하지 않는다.
 
 - exact client/SDK version과 model ID
 - 실행 환경과 인증 종류

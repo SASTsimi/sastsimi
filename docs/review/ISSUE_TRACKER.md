@@ -13,7 +13,7 @@ GitHub가 실제 상태, 담당자와 토론의 기준입니다. 이 문서는 �
 
 | 구분 | 역할·목적 | GitHub Issue | 역할 담당자 / GitHub 배정 상태 | 작업 브랜치 | 우선 검토할 문서 | 반드시 함께 검토할 역할 | 현재 상태 |
 |---|---|---|---|---|---|---|---|
-| 전체 관리 | Architecture v5 전체 검토·승인 관리 | [#1](https://github.com/SASTsimi/sastsimi/issues/1) | 김태현 `@taehyeon-git` 배정, 윤희섭 `@YHS-Sec` 공동 역할 담당 | — | `README.md`, `docs/architecture-v5/README.md`, 협업·검토 문서 | R1–R8, 최종 검토·승인 담당자 | OPEN — #10 병합·종료 뒤 마감 |
+| 전체 관리 | Architecture v5 전체 검토·승인 관리 | [#1](https://github.com/SASTsimi/sastsimi/issues/1) | 김태현 `@taehyeon-git` 배정, 윤희섭 `@YHS-Sec` 공동 역할 담당 | — | `README.md`, `docs/architecture-v5/README.md`, 협업·검토 문서 | R1–R8, 최종 검토·승인 담당자 | FINAL AUDIT — #10·PR #117 종료 확인 뒤 `main` 감사 중 |
 | R1 | 최초 가설·통합 Primitive의 upstream result→downstream input Chaining | [#2](https://github.com/SASTsimi/sastsimi/issues/2) | 배승원 `@baeseungwon1010` | — | `03`, `06`, `08`, `09`, `13` | R2, R6, R4, R8 | CLOSED — 2026-09-05 |
 | R2 | AST/SAST 정적 사실·위치 기반 분석 정보 | [#3](https://github.com/SASTsimi/sastsimi/issues/3) | 김나연 `@zv9uvr` | — | `02`, `07`, `08`, `10`, `13` | R1, R6, R4, R3 | CLOSED — 2026-09-05 |
 | R3 | 통합 구현 가능성·계약 준수 테스트 | [#4](https://github.com/SASTsimi/sastsimi/issues/4) | 김태현 `@taehyeon-git` 배정, 윤희섭 `@YHS-Sec` 공동 역할 담당 | — | `01`, `03`, `08`, `09`, `10`, `11`, `13`, `implementation/` | R4, 변경 영향 역할, R8 | CLOSED — PR #116·Issue #92 완료, 2026-09-08 |
@@ -22,7 +22,7 @@ GitHub가 실제 상태, 담당자와 토론의 기준입니다. 이 문서는 �
 | R6 | 찬반 근거·목적별 `DynamicReproductionRequest`·반환 결과 소비·최종 판정 | [#7](https://github.com/SASTsimi/sastsimi/issues/7) | 임채민 `@UltraPeachKeen` | — | `03`, `04`, `07`, `08`, `13` | R2, R7, R1, R4, R5, R8 | CLOSED — PR #103 병합, 2026-09-06 |
 | R7 | Dynamic Reproduction Agent requirements·간단한 plan·PoC, Setup recipe·환경·정리, Controller 외부 경계, Session Manager AgentLog·validated PoC·결과 확정 | [#8](https://github.com/SASTsimi/sastsimi/issues/8) | 조근석 `@Potatonion` | — | `04`, `07`, `08`, `10`, `13` | R6, R4, R8, R3, R5 | CLOSED — 2026-09-05 |
 | R8 | 평가 corpus·지표·예산 profile | [#9](https://github.com/SASTsimi/sastsimi/issues/9) | 성병찬 `@gitterable` | — | `04`, `06`, `07`, `08`, `09` | R4, 각 LLM 역할, R3 | CLOSED — 2026-09-05 |
-| 최종 | 전체 교차 시나리오·고정 commit SHA·최종 승인 | [#10](https://github.com/SASTsimi/sastsimi/issues/10) | 최종 검토·승인 담당자 김태현 `@taehyeon-git` | `final/architecture-v5-approval` | 전체 기준 문서·Wiki·Mermaid·발견사항 | R1–R8 담당자 전원. PR 작성자의 R3·R4 검토는 `@YHS-Sec`이 수행 | FINAL REVIEW — 검토 시작 기준 main `07bd6549a676419c0e720f940ba7abd1b82aea0d`, 승인 대상은 PR 본문의 exact head |
+| 최종 | 전체 교차 시나리오·고정 commit SHA·최종 승인 | [#10](https://github.com/SASTsimi/sastsimi/issues/10) | 최종 검토·승인 담당자 김태현 `@taehyeon-git` | — | 전체 기준 문서·Wiki·Mermaid·발견사항 | R1–R8 담당자 전원. PR 작성자의 R3·R4 검토는 `@YHS-Sec`이 수행 | CLOSED — PR #117 head `0647514...`, merge commit `2de1f67...`, 2026-09-08 |
 
 번호 문서는 `docs/architecture-v5/` 아래 파일을 뜻합니다. 세부 입력·출력, 금지 권한과 완료 조건은 [ISSUE_CATALOG.md](./ISSUE_CATALOG.md)에 있습니다.
 
@@ -43,6 +43,6 @@ R4-04의 역할별 확인 범위, 승인으로 인정하는 기록과 병합 조
 9. R1–R8이 끝나면 #10에서 전체 시나리오와 검토 대상을 고정한 commit SHA를 확인합니다.
 10. 설계 상태 변경은 별도의 최종 승인 PR에서만 수행합니다.
 
-역할별 설계 검토는 완료됐고 #10의 별도 Final PR에서 상태와 전체 추적 기록을 확정합니다. 설계 승인은 구현 완료, 실제 Provider 지원, 취약점 탐지 성능 또는 Sandbox 보안 시험 성공을 의미하지 않습니다.
+역할별 설계 검토와 #10의 Final PR #117 병합은 완료됐습니다. 설계 승인은 구현 완료, 실제 Provider 지원, 취약점 탐지 성능 또는 Sandbox 보안 시험 성공을 의미하지 않습니다.
 
 GitHub 담당자 지정 상태는 실제 Issue 화면을 확인해 적었습니다. #3 `@zv9uvr`, #6 `@kimhr8463`, #7 `@UltraPeachKeen`을 해당 역할의 실제 계정으로 확정했습니다. `@YHS-Sec`은 #1·#4·#5의 공동 역할 담당자이며 GitHub 공동 assignee 지정 여부는 역할 확정과 별개입니다. #10은 김태현 `@taehyeon-git`이 최종 검토·승인 담당자로 관리합니다.

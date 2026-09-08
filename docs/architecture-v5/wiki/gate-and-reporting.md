@@ -100,6 +100,10 @@ policy·environment·AgentLog·PoC·cleanup을 다른 attempt와 섞지 않습�
 limitation을 빠짐없이 보존하고 실행·환경 실패를 취약점 부재로 바꾸지 않습니다. 저장 전
 secret·불필요한 PII·private/raw reasoning을 제거한 `REDACTION=PASS`가 필요합니다.
 
+보고서 본문에 적은 모든 `path:line`은 exact Verification의 `EvidenceClaim.code_locations`에 있는 같은
+workspace·commit·file·line이어야 합니다. 다른 commit의 위치나 upstream에 없는 줄을 쓰면
+`INVALID_OUTPUT`·`REPORT_ERROR`로 초안 저장을 막습니다.
+
 프로그램 검사기는 Gate 결론을 대신 내리지 않습니다. Verification이 Gate 호출을 제안하더라도 정확한
 입력·LLM call spec, Technical-accepted TRUE의 current admission decision과 Reporter 조건을 검사합니다.
 금지 테스트 위반이 확정되면 result Primitive admission을 거절하고, 그 밖의 Rule Scope 판단은 보고

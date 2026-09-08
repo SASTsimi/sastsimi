@@ -2,23 +2,23 @@
 
 - **이 문서는 무엇을 설명하나요?** Architecture v5의 정본 22단계를 실제 프로그램 모듈, 입력·출력 계약, 실행 권한, 저장 위치와 테스트 단위에 연결합니다.
 - **누가 읽어야 하나요?** 전체 구현 담당자와 R1·R2·R4·R5·R6·R7·R8 역할 검토자가 읽습니다.
-- **읽은 뒤 무엇을 결정해야 하나요?** 각 단계의 구현 위치와 연결 계약이 맞는지 검토하고, 아래 미확정 항목을 담당 Issue에서 확정해야 합니다.
+- **읽은 뒤 무엇을 결정해야 하나요?** 승인된 단계·모듈·입출력·권한 경계를 구현에서 그대로 지키고, 아래 해결 기록의 안전 조건을 시험해야 합니다.
 
 > 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 1. 기준과 문서의 권한
 
-- 작성 기준 선행 PR: [R4 정책 준비 #110](https://github.com/SASTsimi/sastsimi/pull/110) `bf3aa5aa8d1413f97bdc95123b9e4848a8302d3f`
-- 작성 시점 `main`: `af6ffc0e81752bbf7e621f2ba3f3f6bafc7c1947`. #110 병합 뒤 이 문서의 기준 SHA를 실제 merge commit으로 갱신한다.
+- 최초 작성 기준 선행 PR: [R4 정책 준비 #110](https://github.com/SASTsimi/sastsimi/pull/110) `bf3aa5aa8d1413f97bdc95123b9e4848a8302d3f`
+- 최종 승인 기준: [Architecture v5 최종 승인 기록](../../review/FINAL_ARCHITECTURE_V5_APPROVAL.md)의 PR #117 head와 merge commit
 - 연결 Issue: [R3-01 #24](https://github.com/SASTsimi/sastsimi/issues/24)
 - 상위 Issue: [R3 #4](https://github.com/SASTsimi/sastsimi/issues/4)
-- 후속 Issue: [R3-02 #25](https://github.com/SASTsimi/sastsimi/issues/25), [R3-03 #89](https://github.com/SASTsimi/sastsimi/issues/89), [R3-05 #91](https://github.com/SASTsimi/sastsimi/issues/91), [R3-06 #92](https://github.com/SASTsimi/sastsimi/issues/92)
+- 완료된 연결 Issue: [R3-02 #25](https://github.com/SASTsimi/sastsimi/issues/25), [R3-03 #89](https://github.com/SASTsimi/sastsimi/issues/89), [R3-05 #91](https://github.com/SASTsimi/sastsimi/issues/91), [R3-06 #92](https://github.com/SASTsimi/sastsimi/issues/92)
 
 이 문서는 번호 문서 `01`–`13`의 설계 의미를 구현 단위로 옮긴다. 데이터 이름과 상태 의미가 다르면 [08. 경량 데이터 계약](../08-lightweight-data-contracts.md)이 우선하고, 전체 순서는 [01. 시스템 개요](../01-system-overview.md)가 우선한다. 이 문서는 새 field·enum·판정 기준을 단독으로 만들지 않는다.
 
-직접 대조한 정본은 같은 기준 commit의 [01. 시스템 개요](../01-system-overview.md), [02. 정적 사실 계층](../02-static-fact-layer.md), [03. Agent와 Orchestration](../03-agent-roles-and-orchestration.md), [04. 검증과 동적 재현](../04-verification-and-dynamic-reproduction.md), [05. Gate와 보고](../05-llm-gate-and-reporting.md), [06. Chaining](../06-chaining.md), [07. 결과와 관측성](../07-results-and-observability.md), [08. 경량 데이터 계약](../08-lightweight-data-contracts.md), [09. LLM 연결과 기록](../09-llm-provider-session-and-logging.md), [10. 보안 경계](../10-security-boundaries.md)다. 이 문서들의 revision 기준은 위 `main` commit SHA 하나로 고정한다.
+직접 대조한 정본은 [01. 시스템 개요](../01-system-overview.md), [02. 정적 사실 계층](../02-static-fact-layer.md), [03. Agent와 Orchestration](../03-agent-roles-and-orchestration.md), [04. 검증과 동적 재현](../04-verification-and-dynamic-reproduction.md), [05. Gate와 보고](../05-llm-gate-and-reporting.md), [06. Chaining](../06-chaining.md), [07. 결과와 관측성](../07-results-and-observability.md), [08. 경량 데이터 계약](../08-lightweight-data-contracts.md), [09. LLM 연결과 기록](../09-llm-provider-session-and-logging.md), [10. 보안 경계](../10-security-boundaries.md)다. 현재 revision 기준은 최종 승인 기록이 가리키는 exact commit이다.
 
-여기 적은 `entry point`는 구현자가 호출 경계를 이해하기 위한 **논리 이름**이다. 최종 Python package와 함수 이름은 R3-06에서 확정한다. 저장 위치도 현재는 [07. 결과 저장과 관측성](../07-results-and-observability.md)의 논리 영역을 사용하며 SQLite·artifact store 같은 물리 제품은 R3-06에서 확정한다.
+여기 적은 `entry point`는 구현자가 호출 경계를 이해하기 위한 **논리 이름**이다. Python package·module·저장 adapter 구조와 물리 저장 기준은 [R3-06 구현 기준선](06-implementation-baseline.md)에서 확정했다. 이 문서의 논리 이름과 R3-06의 실제 구조가 다르게 보이면 R3-06의 port·package 매핑을 따른다.
 
 ## 2. 구현 전체에서 지켜야 하는 조건
 
@@ -52,7 +52,7 @@
 - `상태·오류`: 성공·부분 성공·실패·취소, retry와 오류 전달
 - `시험·검토`: 구현할 테스트 위치, 정본 문서와 역할 검토자
 
-`테스트 위치`는 R3-06에서 확정할 package 구조를 기준으로 한 요구 경로다. R3-06에서 이름을 바꾸더라도 테스트 책임과 시나리오는 빠뜨릴 수 없다.
+`테스트 위치`는 R3-06에서 확정한 package 구조를 기준으로 한 요구 경로다. 구현 중 세부 함수 이름을 조정하더라도 테스트 책임과 시나리오는 빠뜨릴 수 없다.
 
 ## 4. 정본 22단계 구현 매핑
 
@@ -125,7 +125,7 @@ R3-06은 다음 조건을 동적 재현 회귀 시험에 포함한다.
 | Reproduction Session Manager | 실제 event와 exact `SandboxCommandRecord`를 append-only AgentLog로 기록하고 동적 결과·validated PoC 확정 | Dynamic Reproduction Agent의 실행 전략·retry·cleanup 판단 | 12 |
 | Result Aggregator | current exact 결과와 오류·자원을 `AnalysisRunResult`로 묶음 | 새 Agent 판단·사람 공개 결정 | 22 |
 
-의존 방향은 `interfaces → orchestration/runtime → domain service → provider/tool adapter → storage adapter`로 둔다. Contract Models는 모든 계층이 읽을 수 있지만 provider·tool·storage 구현을 import하지 않는다. Agent는 구체 DB·Docker·provider SDK를 직접 호출하지 않고 runtime port를 사용한다. 최종 package 이름은 R3-06에서 확정한다.
+의존 방향은 `interfaces → orchestration/runtime → domain service → provider/tool adapter → storage adapter`로 둔다. Contract Models는 모든 계층이 읽을 수 있지만 provider·tool·storage 구현을 import하지 않는다. Agent는 구체 DB·Docker·provider SDK를 직접 호출하지 않고 runtime port를 사용한다. 최종 package 구조와 이름은 [R3-06 구현 기준선](06-implementation-baseline.md)에서 확정했다.
 
 ## 6. 논리 저장과 pointer 규칙
 
@@ -148,9 +148,9 @@ R3-06은 다음 조건을 동적 재현 회귀 시험에 포함한다.
 
 구조화 record와 큰 artifact를 같은 저장 제품에 억지로 넣지 않는다. 저장 제품이 단일 transaction을 제공하지 않으면 `TransitionCommit(PREPARED/COMMITTED/ABORTED)`을 논리적 확정점으로 사용한다. current pointer는 편의를 위한 투영이며 COMMITTED marker보다 강한 근거가 아니다.
 
-## 7. 구현 전에 해결해야 하는 계약 빈틈
+## 7. 구현 기준선에서 해결한 계약 빈틈
 
-아래 항목은 이 문서 작성 중 최신 `main`에서 직접 확인한 사항이다. R3-01이 임의로 새 공통 계약을 만들지 않고 담당 Issue로 넘긴다.
+아래 항목은 이 문서 작성 중 발견한 빈틈과 최종 해결 결과다. 현재 구현은 각 `RESOLVED` 결론을 따라야 하며, 다시 바꾸려면 새 Issue·ADR·영향 역할 검토가 필요하다.
 
 ### B1. Dynamic Reproduction Agent의 LLM role enum 불일치 — 해결됨
 
@@ -163,7 +163,7 @@ R3-06은 다음 조건을 동적 재현 회귀 시험에 포함한다.
 
 Step 19는 `RULE_SCOPE_GATE` 성공 뒤 전용 비-LLM `FINDING_NORMALIZE` work를 실행한다. canonical schema와 atomic 저장 계약은 [08. 경량 데이터 계약](../08-lightweight-data-contracts.md)의 Finding canonical schema와 current pointer 절을 따른다.
 
-- **R5 확정([R5-03 후속이슈], `05-llm-gate-and-reporting.md` "Finding 생성과 lifecycle", `08` §11)**: Finding은 새 Agent·Gate가 아니라 신뢰 runtime이 이미 `COMMITTED`된 exact upstream을 조립하는 정규화 record다. 생성 closure = final TRUE Verification + current generation `SUCCEEDED + SUPPORTED` 동적 결과 + validated `poc_ref` + 그 Verification을 직접 가리키는 current `CWELabel` + `TechnicalEvidenceReview.status=ACCEPT` + 같은 chain의 current `RuleScopeImpactReview`(`review_status`·`report_permission` 값 무관, `COLLECTION_FAILED`이면 Finding 없음). upstream record의 `meta.workspace_id`·`meta.commit_id` 일치. hypothesis-local artifact에 대해서만 동일 `meta.hypothesis_id`를 요구한다. `ProgramPolicyRecord`, `PolicyCollectionResult` 등 hypothesis 비종속 정책 record에는 `hypothesis_id` 일치를 요구하지 않으며, 기존 exact `StoredDataRef`, `meta.workspace_id`·`meta.commit_id` 및 policy revision/provenance 계약으로 검증한다. `CWELabel`·`TechnicalEvidenceReview`·`RuleScopeImpactReview`가 같은 `verification_result_ref`를 가리키고 그것이 current `HypothesisProcessState.verification_result_ref`와 동일, generation 정합성은 새 field 없이 기존 `HypothesisProcessState`·`VERIFICATION` work generation·`CWELabel.verification_generation` 계약으로 확인, `restrictions`·`unresolved_conditions`와 evidence transitive closure 보존. Finding 존재는 Reporter의 6축 정책 readiness와 별개 축이다. stale 조건 = Verification generation/revision·CWELabel·두 Gate 재생성·동적 결과·validated PoC·고정 정책 record 변경.
+- **R5 확정(R5-03 후속 검토, 현재 main 반영; `05-llm-gate-and-reporting.md` "Finding 생성과 lifecycle", `08` §11)**: Finding은 새 Agent·Gate가 아니라 신뢰 runtime이 이미 `COMMITTED`된 exact upstream을 조립하는 정규화 record다. 생성 closure = final TRUE Verification + current generation `SUCCEEDED + SUPPORTED` 동적 결과 + validated `poc_ref` + 그 Verification을 직접 가리키는 current `CWELabel` + `TechnicalEvidenceReview.status=ACCEPT` + 같은 chain의 current `RuleScopeImpactReview`(`review_status`·`report_permission` 값 무관, `COLLECTION_FAILED`이면 Finding 없음). upstream record의 `meta.workspace_id`·`meta.commit_id` 일치. hypothesis-local artifact에 대해서만 동일 `meta.hypothesis_id`를 요구한다. `ProgramPolicyRecord`, `PolicyCollectionResult` 등 hypothesis 비종속 정책 record에는 `hypothesis_id` 일치를 요구하지 않으며, 기존 exact `StoredDataRef`, `meta.workspace_id`·`meta.commit_id` 및 policy revision/provenance 계약으로 검증한다. `CWELabel`·`TechnicalEvidenceReview`·`RuleScopeImpactReview`가 같은 `verification_result_ref`를 가리키고 그것이 current `HypothesisProcessState.verification_result_ref`와 동일, generation 정합성은 새 field 없이 기존 `HypothesisProcessState`·`VERIFICATION` work generation·`CWELabel.verification_generation` 계약으로 확인, `restrictions`·`unresolved_conditions`와 evidence transitive closure 보존. Finding 존재는 Reporter의 6축 정책 readiness와 별개 축이다. stale 조건 = Verification generation/revision·CWELabel·두 Gate 재생성·동적 결과·validated PoC·고정 정책 record 변경.
 - **R4 확정(storage binding)**: `result_kind=finding`, registry `finding -> Finding -> VERIFICATION`; 유일 생산 identity는 Verification trusted runtime의 Finding normalization service다. 기존 `SAVE_RESULT`를 사용하고 work의 단일 Finding output·`SUCCEEDED`·가설별 `FindingIndexState` current pointer를 `TransitionCommit`과 CAS로 확정한다. Rule Scope output은 review 한 개를 유지한다. 저장 전 후보는 별도 이름·schema·domain record가 아니며 같은 `Finding` schema를 사용하는 `candidate_result_ref`다.
 - upstream 변경은 index를 atomic stale invalidation하고 immutable Finding history를 보존한다. Reporter는 current non-stale Finding만 소비한다. `AnalysisRunResult.finding_refs`는 current index 집합이며 Reporter blocked이면 `report_draft_refs=[]`로 정상 종료할 수 있다. Finding eligibility·Reporter 6축·Primitive admission·Chaining 계약은 그대로 유지한다.
 - 완료 기준 충족: schema, output binding, owner identity, pointer/revision/CAS, recovery와 Finding-only 종료를 08에 확정했다. 새 autonomous Agent·LLM Gate·action type·producer enum은 추가하지 않는다.
@@ -254,9 +254,9 @@ B1~B5의 구현 시작 Blocker는 모두 해결됐다. 이 결정은 구현 가�
 - [x] Reporter 호출에 필요한 Rule Scope의 여섯 판정 축을 필드명과 값으로 표시했다.
 - [x] 별도 저장소 사본 생성 모듈이나 message queue 제품을 전제로 하지 않았다.
 - [x] R3-01에서 발견한 공통 계약 빈틈의 담당 역할을 정하고 R3-06에서 구현 차단 항목을 해결했다.
-- [ ] R1·R2·R4·R5·R6·R7·R8 교차 검토가 최신 PR head를 기준으로 완료됐다.
+- [x] R1·R2·R4·R5·R6·R7·R8 교차 검토가 Final PR #117의 exact head를 기준으로 완료됐다.
 - [x] B1의 `DYNAMIC_REPRODUCTION` identity가 공통 LLM call 계약에 반영됐다.
 - [x] B3·B5 Blocker가 R3-06과 공통 계약에서 해결됐다.
-- [x] B2의 Finding 의미·생성 closure·claim 제한·stale 조건을 R5가 확정했다([R5-03 후속이슈], `05`/`08`). R4는 `FINDING_NORMALIZE`·VERIFICATION service owner·`FindingIndexState`·CAS binding과 Finding-only 종료를 08에 확정했다.
+- [x] B2의 Finding 의미·생성 closure·claim 제한·stale 조건을 R5가 후속 검토로 확정해 현재 `05`/`08`에 반영했다. R4는 `FINDING_NORMALIZE`·VERIFICATION service owner·`FindingIndexState`·CAS binding과 Finding-only 종료를 08에 확정했다.
 
 이 문서는 구현 모듈 경계를 설명하는 설계 산출물이며 실제 runtime 코드가 구현되었다는 뜻은 아니다.

@@ -1,6 +1,8 @@
 # Architecture v5 역할별 Issue 카탈로그
 
-이 문서는 역할별 상위 Issue에서 무엇을 검토했고 어떤 세부 하위 Issue로 나눴는지 안내합니다. 실제 Issue와 담당자 상태는 [Issue 현황](./ISSUE_TRACKER.md)에서 확인합니다. 역할별 설계 검토는 끝났고 Final Issue #10에서 구현 기준 설계 상태를 확정합니다. 실행 코드(`runtime`) 구현은 아직 범위 밖입니다. 모르는 기술 용어는 [쉬운 용어집](../GLOSSARY.md)에서 확인합니다.
+이 문서는 역할별 상위 Issue에서 무엇을 검토했고 어떤 세부 하위 Issue로 나눴는지 안내합니다. 실제 Issue와 담당자 상태는 [Issue 현황](./ISSUE_TRACKER.md)에서 확인합니다. 역할별 설계 검토와 Final Issue #10·PR #117을 통한 구현 기준 설계 승인은 완료됐습니다. 실행 코드(`runtime`) 구현은 아직 범위 밖입니다. 모르는 기술 용어는 [쉬운 용어집](../GLOSSARY.md)에서 확인합니다.
+
+아래 체크박스는 각 Issue를 진행할 때 사용한 **완료 조건 원본**을 보존합니다. 현재 완료 여부는 체크박스 모양이 아니라 `ISSUE_TRACKER.md`, GitHub Issue 상태와 `FINAL_ARCHITECTURE_V5_APPROVAL.md`를 기준으로 판단합니다.
 
 ## 공통 작업 방식
 
@@ -33,7 +35,7 @@
 
 ### 쉽게 말하면
 
-팀원별 설계 검토가 따로 놀지 않도록 R1–R8의 작업, 교차 리뷰와 마지막 전체 검토를 한곳에서 관리한다. 이 Epic이 끝나야 구현을 시작할 설계 기준을 확정할 수 있다.
+팀원별 설계 검토가 따로 놀지 않도록 R1–R8의 작업, 교차 리뷰와 마지막 전체 검토를 한곳에서 관리했다. 이 Epic에서 구현을 시작할 설계 기준을 확정했다.
 
 ### 목적
 
@@ -338,7 +340,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - `[R5-01] CWE labeling과 기술 근거 Gate의 입력·출력·보완 요청 기준 확정`
 - `[R5-02] 공식 정책·범위·영향 검토 기준 확정`
 - `[R5-03] Finding과 안전한 보고서 초안 생성 및 자동화 종료 조건 확인`
-- `[R5-03 후속이슈] Finding 생성 lifecycle 및 Reporter handoff 확정`
+- `[R5-03 후속 검토] Finding 생성 lifecycle 및 Reporter handoff 확정` — 현재 main 반영 완료
 
 R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다. 기존 사람 검토 자동화 작업은 제거했으며, 출처 추적·오래된 참조 차단·restriction/limitation 보존·민감정보 제거 요구는 R5-03에 포함한다.
 
@@ -346,7 +348,7 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 
 - 기존 `[R5-03]`(PR #59, `main` `a1edf51`)에서 Technical/Rule Scope Gate 뒤 Reporter·`ReportDraft` 계약, claim traceability, restriction/limitation/redaction, 자동화 종료 경계를 완료했다. 이 이력은 유지한다.
 - 이후 R3-01 구현 모듈 맵이 B2로, Reporter가 `current Finding`을 필수 입력으로 요구하는 반면 그 Finding을 누가·언제·어떤 조건으로 생성·저장·current로 확정하는지 lifecycle이 연결돼 있지 않음을 확인했다.
-- `[R5-03 후속이슈]`에서 새 R5 기능이나 Agent 추가 없이, 기존 Architecture v5 계약 안에서 이 Finding 생성 lifecycle을 보완한다. R5는 Finding의 의미·생성 exact upstream closure·claim strength 제한·restriction 보존·Finding↔Reporter handoff 조건·stale Finding 의미를 확정하고, 저장 action/work/schema/current pointer/CAS는 R4 trusted runtime 계약을 재사용하며 owner 협의 필요 부분(B2 storage binding)을 명시한다.
+- `[R5-03 후속 검토]`에서 새 R5 기능이나 Agent를 추가하지 않고 기존 Architecture v5 계약 안에서 Finding 생성 lifecycle을 보완했다. R5는 Finding의 의미·생성 exact upstream closure·claim strength 제한·restriction 보존·Finding↔Reporter handoff 조건·stale Finding 의미를 확정했고, 저장 action/work/schema/current pointer/CAS는 R4 trusted runtime 계약을 재사용한다. B2 storage binding도 현재 main에 반영됐다.
 - 변경 문서: `01`, `03`, `05`, `07`, `08`, `10`, `12`, `13`, `implementation/01-module-map.md`, `GLOSSARY.md`, 관련 wiki. 기존 Gate/Primitive/Chaining/6축 readiness/redaction/claim-strength/ReportDraft 이후 종료 계약은 변경하지 않는다.
 
 ### 역할 소유권
@@ -622,14 +624,14 @@ R6의 `DynamicReproductionRequest`를 받아 Dynamic Reproduction Agent가 먼�
 
 ### 쉽게 말하면
 
-각 파트 문서를 따로 읽는 데서 끝내지 않고 실제 분석 한 건이 처음부터 마지막까지 모순 없이 흐르는지 팀 전체가 확인한다. 각 파트가 서로 교차 검토하고, 검토할 commit을 고정한 뒤 최종 검토·승인 담당자가 최신 상태를 확인해야 최종 승인 PR로 넘어갈 수 있다.
+각 파트 문서를 따로 읽는 데서 끝내지 않고 실제 분석 한 건이 처음부터 마지막까지 모순 없이 흐르는지 팀 전체가 확인했다. 각 파트의 교차 검토와 고정된 commit 확인 결과는 Final PR #117과 최종 승인 기록에 보존한다.
 
 ### 역할 소유권
 
 - 담당 역할: 최종 검토·승인 담당자
 - GitHub 담당자: 김태현 `@taehyeon-git`
 - 필수 참여자: `@baeseungwon1010`, `@zv9uvr`, `@taehyeon-git`, `@YHS-Sec`, `@kimhr8463`, `@UltraPeachKeen`, `@Potatonion`, `@gitterable`
-- 전제: R1–R8 완료, 열린 Blocker/High 0, 최종 승인 PR에 freeze SHA 게시
+- 완료 근거: R1–R8 완료, 열린 Blocker/High 0, Final PR #117 exact head와 merge commit 기록
 
 ### 필수 시나리오
 

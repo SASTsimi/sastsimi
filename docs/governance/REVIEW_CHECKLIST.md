@@ -2,6 +2,8 @@
 
 이 문서는 역할별 작업과 전체 설계 검토에서 빠뜨리면 안 되는 항목을 확인합니다. 모르는 용어는 [쉬운 용어집](../GLOSSARY.md)에서 확인하세요.
 
+아래 빈 체크박스는 다음 설계 변경과 구현 검토에서 복사해 사용하는 **재사용 체크리스트**입니다. 현재 Architecture v5의 완료 상태를 뜻하지 않으며, 완료 결과는 [최종 승인 기록](../review/FINAL_ARCHITECTURE_V5_APPROVAL.md)과 [Issue 현황](../review/ISSUE_TRACKER.md)을 따릅니다.
+
 전체 검토 현황은 [PM 전체 관리 Issue #1](https://github.com/SASTsimi/sastsimi/issues/1)과 [실제 Issue 현황](../review/ISSUE_TRACKER.md)에서 확인하고, 마지막 전체 흐름 검토는 [최종 Issue #10](https://github.com/SASTsimi/sastsimi/issues/10)에서 수행합니다.
 
 R4-04는 체크박스를 미리 채우는 방식으로 완료 처리하지 않습니다. [R4-04 교차 검토 기록](../review/R4-04_CROSS_REVIEW.md)에 연결된 실제 GitHub 승인과 마지막 검토 commit을 확인한 뒤에만 Issue #16과 상위 Issue #5를 닫습니다.

@@ -1,5 +1,7 @@
 # Architecture v5 Role Boundary Alignment Implementation Plan
 
+> **SUPERSEDED — 역사적 작업 계획:** 이 문서는 당시 R6가 `ReproductionPlan`과 실행 mode를 만들던 구조를 적용하기 위한 기록입니다. 현재 R6는 `DynamicReproductionRequest`만 만들고, R7 Dynamic Reproduction Agent가 plan·환경·PoC 후보를 구성합니다. 현재 계약은 [`../../architecture-v5/README.md`](../../architecture-v5/README.md), [`../../architecture-v5/04-verification-and-dynamic-reproduction.md`](../../architecture-v5/04-verification-and-dynamic-reproduction.md), [`../../review/decisions/ADR-007-r7-autonomous-reproduction-session.md`](../../review/decisions/ADR-007-r7-autonomous-reproduction-session.md)를 따릅니다.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** GitHub 상위 Issue `#1–#10`과 Architecture v5 역할 문서가 R1–R8의 판단·생산·실행·강제 책임을 같은 의미로 설명하게 한다.

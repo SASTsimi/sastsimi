@@ -1,8 +1,8 @@
-# Architecture v5 미결정 사항
+# Architecture v5 구현·운영 전 남은 설정과 증거
 
-이 문서는 아직 팀이 결정하지 못한 내용을 모아 둡니다. 실제 토론, 담당자, 기한과 결정 결과는 [PM 전체 관리 Issue #1](https://github.com/SASTsimi/sastsimi/issues/1)과 [실제 Issue 현황](../review/ISSUE_TRACKER.md)에서 관리합니다. 결정한 내용은 관련 기준 문서와 PR에 반영해야 합니다.
+Architecture v5의 구조·역할·공통 계약은 승인됐습니다. 이 문서는 설계를 다시 정하는 미결정 목록이 아니라, 실제 코드를 만들고 기능을 켜기 전에 채워야 할 설정값과 시험 증거를 모아 둡니다. 과거 승인 과정은 [PM 전체 관리 Issue #1](https://github.com/SASTsimi/sastsimi/issues/1), [최종 Issue #10](https://github.com/SASTsimi/sastsimi/issues/10)과 [Issue 현황](../review/ISSUE_TRACKER.md)에 보존합니다. 새 구현 결정은 별도 구현 Issue·PR에 남깁니다.
 
-각 항목은 ‘무엇을 정해야 하는가’, ‘정하지 않으면 어떤 문제가 생기는가’, ‘누가 어느 Issue에서 다루는가’ 순서로 읽으면 됩니다.
+각 항목은 ‘실제로 채울 값이나 증거’, ‘미완료 시 차단할 기능’, ‘확인할 역할’ 순서로 읽으면 됩니다.
 
 ## Blocker
 
@@ -31,7 +31,7 @@ PR #116 병합과 Issue #92·R3 상위 Issue #4 종료로 구현 기준 설계�
    - 외부인의 코드 사용·수정·재배포 또는 외부 기여를 공식적으로 허용하기 전에는 라이선스와 기여 범위를 정해야 합니다.
    - 결정 전에는 `LICENSE` 파일을 추가하지 않습니다. 오픈소스 공개를 결정할 때 Apache-2.0 같은 후보를 비교하고 `LICENSE`와 `CONTRIBUTING.md`에 함께 반영합니다.
    - 참고: [GitHub의 저장소 라이선스 안내](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/licensing-a-repository)
-   - 담당 역할과 Issue: 저장소 관리 담당, [#5](https://github.com/SASTsimi/sastsimi/issues/5)
+   - 담당 역할: 저장소 관리 담당. 외부 공개를 준비할 때 별도 Issue를 만듭니다. 완료된 설계 Issue #5를 다시 열어 관리하지 않습니다.
 
 ## 구현·운영에서 채울 실제 설정과 증거
 
@@ -52,10 +52,10 @@ PR #116 병합과 Issue #92·R3 상위 Issue #4 종료로 구현 기준 설계�
 | 11 | 두 Gate가 사용할 질문, 보완 반복 횟수와 평가 자료를 정합니다. | Gate prompt, revision limit와 dataset |
 | 12 | LLM 호출 기록에서 비밀정보를 가리고 얼마나 보관할지 정합니다. | logging proxy/parser, redaction, retention, access control |
 | 13 | 데이터를 저장하고 버전을 바꿀 때 호환성을 어떻게 지킬지 정합니다. | serialization, schema versioning, result storage |
-| 14 | clone한 코드 폴더·파일·코드 위치를 같은 분석과 commit에 묶는 식별 규칙을 정합니다. | `CodeWorkspace`, `workspace_id`, `commit_id`, `StoredDataRef`, `CodeLocation`, `CodeSymbol` 계약 |
-| 15 | 병렬 실행·재시도·중단 복구 중 같은 작업이 중복 처리되지 않도록 정합니다. | atomic state transition, idempotency, crash resume |
+| 14 | 승인된 식별 규칙을 실제 clone·경로 조회 코드와 시험으로 증명합니다. | 확정된 `CodeWorkspace`, `workspace_id`, `commit_id`, `StoredDataRef`, `CodeLocation`, `CodeSymbol` 계약 구현 |
+| 15 | 승인된 중복 방지·복구 규칙을 실제 저장소와 장애 주입 시험으로 증명합니다. | 확정된 atomic state transition, idempotency, crash resume 계약 구현 |
 | 16 | 회원제 LLM 연결이 공식적으로 허용되고 안정적으로 동작하는지 확인할 종료 조건을 정합니다. | Membership adapter 지원·약관·동시성·session/log 검증 |
-| 17 | Docker 실행과 공식 정책 수집에서 생길 위협과 대응을 별도 결정 기록으로 남깁니다. | daemon/image/build provenance, policy 인증·freshness threat model/ADR |
+| 17 | 승인된 Docker·정책 수집 위협 대응이 실제로 차단되는지 부정 시험합니다. | daemon/image/build provenance, policy 인증·freshness·Parser failure 시험 |
 | 18 | 세션·Gate·모델 선택이 실제 품질을 높이는지 같은 예제로 비교할 합격선을 정합니다. | versioned corpus, 지표와 acceptance threshold |
 
 ## 어느 역할이 구현에서 확인하나요?

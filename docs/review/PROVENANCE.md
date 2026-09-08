@@ -4,7 +4,7 @@
 
 ## 중요 고지
 
-이 검토 중인 설계 초안(`candidate baseline`)은 소스 저장소의 **commit되지 않은 작업 폴더(`working tree`)**에서 2026-08-27(Asia/Seoul)에 가져왔습니다. 아래 branch와 HEAD는 당시 작업 위치만 설명합니다. 이 파일들이 해당 commit에 포함되었다는 뜻은 아닙니다.
+현재 승인된 설계의 최초 재료였던 당시 검토 초안(`candidate baseline`)은 소스 저장소의 **commit되지 않은 작업 폴더(`working tree`)**에서 2026-08-27(Asia/Seoul)에 가져왔습니다. 아래 branch와 HEAD는 당시 작업 위치만 설명합니다. 이 파일들이 해당 commit에 포함되었다는 뜻은 아니며, 현재 구현 기준은 이 원본 해시가 아니라 [최종 승인 기록](./FINAL_ARCHITECTURE_V5_APPROVAL.md)이 가리키는 SASTSIMI 저장소의 승인본입니다.
 
 | 항목 | 값 |
 |---|---|

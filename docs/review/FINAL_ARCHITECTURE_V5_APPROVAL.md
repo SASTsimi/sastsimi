@@ -6,19 +6,22 @@
 
 > 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 >
-> 이 상태는 이 기록을 포함한 Final PR이 병합될 때 효력이 생깁니다.
+> 이 상태는 Final PR #117이 병합된 2026-09-08부터 유효합니다.
 
 ## 1. 고정한 검토 대상
 
 - 검토 시작 기준 `main`: `07bd6549a676419c0e720f940ba7abd1b82aea0d`
 - 마지막 설계 병합: [PR #116](https://github.com/SASTsimi/sastsimi/pull/116), R3-06 구현 기준선
+- 최종 승인 PR: [PR #117](https://github.com/SASTsimi/sastsimi/pull/117)
+- 최종 승인 PR head: `0647514f9d3d288fbedfa983c5b828d88c909df8`
+- 최종 승인 merge commit: `2de1f6767d8bc25ee7383adacb3082b4ff761f8a`
 - 완료 확인: Issue #92와 R3 상위 Issue #4
 - 역할별 완료 확인: R1~R8 상위 Issue #2~#9 모두 `CLOSED`
-- 최종 관리: [Issue #10](https://github.com/SASTsimi/sastsimi/issues/10), [PM Epic #1](https://github.com/SASTsimi/sastsimi/issues/1)
+- 최종 관리: [Issue #10](https://github.com/SASTsimi/sastsimi/issues/10)은 PR #117 병합으로 `CLOSED`; [PM Epic #1](https://github.com/SASTsimi/sastsimi/issues/1)은 병합 뒤 `main` 최종 감사를 마치고 종료
 
-`07bd654...`은 마지막 선행 설계 PR까지 병합한 **검토 시작 기준 main SHA**입니다. 이 Final PR은 새 기능·field·enum·상태 전이·권한·Agent 역할을 추가하지 않지만, 최종 리뷰에서 발견한 기존 계약의 모호함을 바로잡은 수정과 승인 상태·검토 기록을 함께 포함합니다. 최종 승인 대상은 PR 본문에 기록한 정확한 head SHA이며, 모든 최종 리뷰는 그 head를 대상으로 합니다.
+`07bd654...`은 마지막 선행 설계 PR까지 병합한 **검토 시작 기준 main SHA**입니다. Final PR #117은 새 기능·field·enum·상태 전이·권한·Agent 역할을 추가하지 않았지만, 최종 리뷰에서 발견한 기존 계약의 모호함을 바로잡은 수정과 승인 상태·검토 기록을 함께 포함했습니다. 승인 대상은 위에 기록한 정확한 PR head `0647514...`이고, GitHub가 만든 merge commit은 `2de1f67...`입니다.
 
-Final PR에 새 commit이 생기면 PR 본문의 head SHA를 갱신합니다. 설계 의미가 바뀌었다면 영향을 받는 역할의 기존 승인은 무효이며 다시 확인해야 합니다. 오탈자나 상태 기록만 바뀌었더라도 최종 검토자는 새 head와 diff를 다시 확인합니다.
+승인 뒤 설계 의미가 바뀌면 새 Issue·ADR·PR에서 영향을 받는 역할의 검토를 다시 받아야 합니다. 상태·링크·완료 기록만 고치는 유지보수 변경도 `main`에서 문서 검사와 diff를 다시 확인하고 감사 기록을 남깁니다.
 
 ## 2. 승인 범위
 
@@ -48,7 +51,7 @@ Final PR에 새 commit이 생기면 PR 본문의 head SHA를 갱신합니다. �
 | 열린 Blocker 0 | PASS | `FINDINGS.md`의 Blocker 모두 `RESOLVED` |
 | 열린 High 0 | PASS | H-003~005를 안전한 기본값·비활성화 조건으로 닫고 실제 시험은 아래 후속 항목으로 분리 |
 | Medium/Low의 담당·재검토 시점 | PASS | §6과 `FINDINGS.md`에 owner와 활성화 전 조건 기록 |
-| 기준 문서 자동 검사 | PASS | 검토 시작 기준 main과 Final PR head에서 `validate-architecture-docs.ps1` 실패 0 |
+| 기준 문서 자동 검사 | PASS | 검토 시작 기준 main, PR #117 head와 merge 뒤 `main`에서 `validate-architecture-docs.ps1` 실패 0 |
 
 ## 4. 전체 흐름 문서 추적 결과
 
@@ -89,6 +92,7 @@ Final PR에 새 commit이 생기면 PR 본문의 head SHA를 갱신합니다. �
 | F-19 | 금지 테스트 위반은 result Primitive를 막고, 다른 scope·impact 실패는 보고 가능성만 막음 | PASS | `05`, `06`, `08`, ADR-011, ADR-014 |
 | F-20 | Finding normalization은 Rule Scope review 결과 뒤 항상 수행하고 Reporter는 current TRUE Finding만 처리 | PASS | `05`, `08`, `12`, `13` |
 | F-21 | 선행 Verification·CWE·Gate·정책 revision이 바뀌면 기존 ReportDraft를 current 결과에 재사용하지 않음 | PASS | `05`, `08`, `10`, `12` |
+| F-21A | ReportDraft 본문의 모든 `path:line`이 exact Verification의 실제 `EvidenceClaim.code_locations`와 같은 workspace·commit·file·line인지 저장 전에 검사 | PASS | `05`, `08`, `10`, `12`, 구현 `02` |
 
 ### 4.4 Primitive·Chaining·종료
 
@@ -102,9 +106,9 @@ Final PR에 새 commit이 생기면 PR 본문의 head SHA를 갱신합니다. �
 | F-27 | 인증 실패·rate limit·session 오류가 취약점 verdict가 되지 않고 exact profile·model·prompt·schema가 추적됨 | PASS | `07`, `08`, `09` |
 | F-28 | `ReportDraft`와 `AnalysisRunResult` 확정 뒤 Agent 자동화가 끝나며 검토·수정·제출·공개는 사람 책임 | PASS | `01`, `05`, `08`, `10`, `12`, `13` |
 
-## 5. 역할별 Final PR 확인
+## 5. 역할별 최종 확인 범위
 
-역할별 상위 Issue 종료는 담당 설계의 완료 근거지만 Final PR head에 대한 승인과 같지 않습니다. 다음 담당자가 정확한 Final PR head에서 자기 영역과 인접 계약이 상태 변경 중 보존됐는지 확인합니다.
+역할별 상위 Issue 종료는 담당 설계의 완료 근거입니다. 아래 표는 승인 뒤 설계를 변경할 때 다시 확인해야 할 범위를 고정합니다.
 
 | 역할 | 최종 확인 담당 | 확인 범위 |
 |---|---|---|
@@ -117,7 +121,7 @@ Final PR에 새 commit이 생기면 PR 본문의 head SHA를 갱신합니다. �
 | R7 | `@Potatonion` | Dynamic Reproduction Agent·Reproduction Setup Automation·Controller·Session Manager |
 | R8 | `@gitterable` | 평가·예산·운영 활성화 기준 |
 
-실제 승인 여부와 검토한 head SHA는 Final PR의 GitHub review·댓글을 기준으로 판단합니다. 이 표를 수정해 승인을 대신하지 않습니다.
+PR #117의 실제 승인과 대화는 GitHub review·댓글에 보존합니다. 이 표는 사람의 GitHub 승인을 대신하지 않으며, 이후 변경에서 누가 무엇을 다시 확인해야 하는지 정하는 기준입니다.
 
 ## 6. 구현·운영 전 후속 조건
 
@@ -136,7 +140,7 @@ Final PR에 새 commit이 생기면 PR 본문의 head SHA를 갱신합니다. �
 - 열린 Architecture Blocker/High: **0**
 - 설계 상태: **DESIGN_APPROVED**
 - 구현 상태: **NOT_IMPLEMENTED**
-- Final PR 병합 조건: 정확한 PR head에서 문서 검사와 diff 검사를 통과하고, 요청된 역할별 검토에서 미해결 `CHANGES_REQUESTED`가 없어야 함
-- 병합 뒤 처리: `Closes #10`으로 최종 Issue를 닫고, PM은 #10 종료 근거를 확인한 뒤 Epic #1을 마감
+- 최종 승인 근거: PR #117 exact head `0647514...`에서 문서 검사와 diff 검사를 통과했고 미해결 `CHANGES_REQUESTED` 없이 merge commit `2de1f67...`로 병합됨
+- 병합 뒤 처리: Issue #10은 자동 종료됐고, PM Epic #1은 아래 post-merge `main` 감사 완료 뒤 마감
 
 이 승인은 “완벽한 제품”이나 “취약점 탐지 성능 검증” 선언이 아닙니다. 구현자가 임의로 다시 해석하지 않아도 되는 설계 기준을 고정하고, 실제 코드와 운영 기능은 위 시험을 통과하기 전까지 안전하게 비활성화하는 결정입니다.

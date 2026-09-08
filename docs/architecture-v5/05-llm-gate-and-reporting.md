@@ -333,7 +333,7 @@ Verification, policy 또는 관련 upstream의 새 revision이 생긴 경우, �
 남지만 새 revision의 Reporter 요청에는 사용할 수
 없으며 공통 revision/runtime validation이 재사용을 차단한다.
 
-### 권한 경계와 추가 결정 필요
+### 권한 경계와 구현 시 확인할 책임
 
 Gate 2는 Verification verdict나 부모 가설 판정을 변경하지 않고 새 취약점·공격 경로·child
 proposal·공식 정책·impact를 만들지 않는다. 미검증 child proposal을 verified impact로 승격하거나
@@ -363,13 +363,13 @@ child가 부모와 별개로 성립하는 취약점·impact이면 child 자신�
 - R7: 실제 PoC/재현 행위와 testing restriction 비교에 필요한 execution metadata, 미확정 PoC 정책
 - R8: 공식 source authenticity/provenance 수집, freshness threshold·재수집 정책과 Rule/Scope/Impact
   평가 추적 지표, 공통 DataGap·freshness assertion·schema MAJOR/migration 계약
-- 공통 계약: exact direct/transitive input과 `StoredDataRef` 검증. parser 실행 실패를 기존 어느
-  `AnalysisError.code`로 정규화할지와 policy collection result 저장 record는 R4/R8 절차에서 결정
+- 공통 계약: exact direct/transitive input과 `StoredDataRef` 검증. parser 실행 실패는 아래 확정된
+  `POLICY_PARSE_ERROR`로 정규화하고 policy collection result는 공통 result-owner·atomic 저장 계약을 따른다.
 
 ProgramPolicyRecord/RuleScopeImpactReview의 호환되지 않는 이전 schema MAJOR는 current Gate input으로
 자동 사용하지 않고 `SCHEMA_UNSUPPORTED`로 거절한다. 기존 record를 덮어쓰지 않고 current schema의
 새 revision을 만들며 실제 schema version을 input identity/hash에 포함한다. migration만으로
-authenticity `VERIFIED` 또는 freshness `CURRENT`를 부여하지 않는다. 구체 MAJOR 번호는 R4/R8이 정한다.
+authenticity `VERIFIED` 또는 freshness `CURRENT`를 부여하지 않는다. 구체 MAJOR 숫자는 실제 schema registry를 처음 만드는 구현 commit에서 R4·R8 검토를 거쳐 한 번 할당한다. 숫자를 할당하기 전에는 해당 record 생산·소비 기능을 활성화하지 않으며, 이는 승인된 호환성 규칙을 바꾸는 새 설계 결정이 아니다.
 
 ### 정책·Gate 오류 매핑
 
@@ -499,6 +499,13 @@ Dynamic/PoC 주장은 Verification이 실제 참조한 exact `dynamic_result_ref
 runtime은 같은 workspace·commit·hypothesis, `record_id`, `content_hash`와 revision chain을 검사하며,
 Reporter가 저장소에서 가장 최신처럼 보이는 별도 결과를 다시 검색해 연결하거나 서로 다른 revision의
 유리한 근거를 조합해서는 안 된다.
+
+Reporter output validator는 `content_ref` 본문에 코드 위치로 적은 모든 `path:line`을 추출해, exact
+`verification_result_ref`의 `supporting_evidence | counter_evidence`에 있는 `EvidenceClaim.code_locations`
+중 같은 `workspace_id + commit_id + file_path + line` 위치와 일치하는지 검사한다. 범위로 표현한 위치는
+해당 `CodeLocation.start_line..end_line` 안에 있어야 한다. upstream에 없는 위치를 쓰거나 다른 commit의
+위치를 섞으면 `INVALID_OUTPUT`과 `REPORT_ERROR`로 기록하고 `ReportDraft`를 저장하지 않는다. 이 검사는
+새 취약점 사실을 판단하지 않고 Reporter가 검증된 위치를 정확히 옮겼는지만 확인한다.
 
 Reporter는 R7이 이미 확정한 `DynamicReproductionResult`의 request·plan·requirements 연결과 존재하는
 policy·environment·`AgentLog`·PoC candidate·validated PoC·cleanup provenance만 그대로 소비한다.

@@ -152,7 +152,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | LLM의 근거 없는 과도한 확정 | fixed hypothesis schema, 금지 assertion, `INVALID_OUTPUT` |
 | LLM 확증 편향 | 운영상 항상 실행하는 독립 Pro/Con, 역할 간 NEW session, 두 Gate |
 | session contamination | `NEW/RESUME/AUTO` policy와 결정 logging |
-| 잘못된 path 연결 | location retrieval와 Technical Gate linkage 검토 |
+| 잘못된 path 연결 | location retrieval와 Technical Gate linkage 검토; ReportDraft 본문의 모든 `path:line`을 exact Verification의 `EvidenceClaim.code_locations`와 대조 |
 | Verification/Chaining 후보의 오승격 | origin을 구분한 새 hypothesis로 전체 재검증 |
 | Gate 전 TRUE의 체이닝 오염 | Technical `ACCEPT` 전 result Primitive admission 금지 |
 | 정책 판단과 기술 재료 자격 혼합 | Rule Scope의 전용 테스트 제한 판정만 `PrimitiveAdmissionDecision`에 전달하고 다른 정책·scope·impact 판정은 Reporter에만 적용 |
@@ -240,6 +240,7 @@ Reporter work와 `ReportDraft`가 확정되면 신뢰 runtime이 `AnalysisRunRes
 | Agent가 사람 검토·외부 제출·공개 action을 요청 | action registry와 요청 역할 | `ACTION_NOT_ALLOWED`, 해당 action 미실행 |
 | 선행 결과가 바뀐 오래된 ReportDraft를 current 결과로 사용 | Finding·Verification·CWELabel·두 Gate·정책 exact revision | `STALE_RESULT`, 새 Gate·Reporter work 요구 |
 | restriction·limitation 또는 redaction 상태가 빠진 초안을 저장 | ReportDraft 필수 필드와 `CREATE_REPORT_DRAFT` 검사 결과 | `SAVE_RESULT` 거절, 누락을 보존한 새 초안 요구 |
+| ReportDraft 본문의 `path:line`이 exact Verification의 코드 위치에 없거나 다른 commit 위치임 | 본문의 위치와 `verification_result_ref`가 가리키는 `EvidenceClaim.code_locations`의 workspace·commit·file·line | `INVALID_OUTPUT`·`REPORT_ERROR`, 초안 저장과 current pointer 갱신 거절 |
 | 같은 ActionRequest를 동시에 두 번 검사 | unique `action_ref.record_id -> decision_id` | 기존 decision 반환, action 한 번만 claim |
 | Gate 또는 Reporter가 별도 CALL_LLM으로 우회 | requester 역할과 stage action·call spec | `ACTION_NOT_ALLOWED`, stage action부터 새로 요청 |
 | Technical Gate `REVISE` 뒤 같은 입력으로 재투표 | Verification·CWELabel `record_id`와 domain input hash, 이전 decision 사용 상태 | `ACTION_NOT_ALLOWED`, 보완된 Verification과 새 current CWELabel로 새 work·action 요구 |

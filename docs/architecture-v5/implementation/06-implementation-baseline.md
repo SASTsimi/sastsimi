@@ -27,7 +27,7 @@
 - [R3-04 Provider 결정](./04-provider-decision.md): API Key·구독 로그인 연결 후보와 capability 시험
 - [R3-05 Prompt Runtime](./05-prompt-runtime.md): Prompt Registry·Builder·11개 LLM 역할과 출력 검증
 
-R3-06을 병합한 PR #116과 Issue #92·R3 상위 Issue #4의 종료를 확인했다. Architecture v5 최종 승인 검토를 시작한 `main`은 `07bd6549a676419c0e720f940ba7abd1b82aea0d`다. 리뷰에서 기존 계약을 명확히 한 수정까지 포함한 실제 승인 대상은 Final PR 본문의 exact head로 식별한다. 필수 역할 검토를 마쳤으므로 이 문서의 기술 선택과 [ADR-015](../../review/decisions/ADR-015-r3-implementation-baseline.md)는 구현 기준 `ACCEPTED`다. 실제 라이브러리 설치·Provider 연결·Docker 실행과 품질 시험은 여전히 `NOT_IMPLEMENTED`다.
+R3-06을 병합한 PR #116과 Issue #92·R3 상위 Issue #4의 종료를 확인했다. Architecture v5 최종 승인 검토를 시작한 `main`은 `07bd6549a676419c0e720f940ba7abd1b82aea0d`다. 리뷰에서 기존 계약을 명확히 한 수정까지 포함한 승인 대상은 Final PR #117 head `0647514f9d3d288fbedfa983c5b828d88c909df8`이고 merge commit은 `2de1f6767d8bc25ee7383adacb3082b4ff761f8a`다. 필수 역할 검토를 마쳤으므로 이 문서의 기술 선택과 [ADR-015](../../review/decisions/ADR-015-r3-implementation-baseline.md)는 구현 기준 `ACCEPTED`다. 실제 라이브러리 설치·Provider 연결·Docker 실행과 품질 시험은 여전히 `NOT_IMPLEMENTED`다.
 
 - 구현 차단 `DEFERRED`: 없음
 - 실제 코드: 없음
@@ -994,6 +994,6 @@ PR 필수 job은 1~7이다. 실제 credential·외부 서비스가 필요한 8�
 2. R3-03 복구 계획의 `RQ-01`~`RQ-10`은 §10.7의 확정 기준을 가리킨다.
 3. Issue #89, Issue #92와 R3 상위 Issue #4가 모두 종료됐다.
 4. Primitive가 COMMITTED된 뒤에만 Chaining을 시작하는 규칙과 R1~R8 역할 경계를 최종 기준에 보존했다.
-5. 최종 승인 PR은 위 main SHA를 검토 시작 기준으로 기록하고, PR 본문의 exact head에서 전체 validator와 diff check를 다시 실행한다.
+5. Final PR #117은 위 main SHA를 검토 시작 기준으로 사용했고, exact head `0647514...`와 merge 뒤 `main`에서 전체 validator와 diff check를 실행했다.
 
 이 완료 기록은 설계와 구현 준비 기준의 확정이다. 실제 모듈·시험·Provider·Sandbox가 구현됐다는 뜻은 아니다.

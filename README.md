@@ -8,7 +8,7 @@ SASTSIMI는 정적 분석 도구가 모은 코드 정보를 LLM이 검토하고,
 
 - AST와 SAST는 코드에서 찾은 사실을 제공합니다. 취약점 여부를 최종 판단하지 않습니다.
 - LLM Agent는 취약점 가능성을 제안하고 코드·실행 근거를 검토합니다.
-- Docker sandbox(다른 시스템과 격리된 실행 환경)는 필요한 경우에만 사용합니다.
+- Docker sandbox(다른 시스템과 격리된 실행 환경)는 동적 근거가 필요하거나 final `TRUE`를 PoC로 확인할 때 사용합니다. validated PoC가 없는 결과는 final `TRUE`가 될 수 없습니다.
 - Gate(다음 단계로 보내도 되는지 확인하는 검토 단계)는 근거와 공식 정책을 확인합니다.
 - Reporter의 `ReportDraft`가 마지막 Agent 산출물입니다. 결과 저장 뒤 자동화가 끝나며 외부 공개 여부는 사람이 결정합니다.
 - **설계 검토는 완료**됐으며 실행 코드는 아직 없습니다.
@@ -131,7 +131,7 @@ main  ← Architecture v5 approved design baseline
 
 전체 절차는 [CONTRIBUTING.md](./CONTRIBUTING.md)를 따릅니다.
 
-검토 현황과 역할별 작업은 [PM 전체 관리 Issue #1](https://github.com/SASTsimi/sastsimi/issues/1), [실제 Issue 현황](./docs/review/ISSUE_TRACKER.md), [역할별 작업 안내](./docs/review/ISSUE_CATALOG.md)에서 확인합니다. 작업을 막는 문제(`Blocker`)와 중요한 문제(`High`)가 모두 해결되어야 최종 승인 PR을 열 수 있습니다. 중간·낮은 문제는 담당자와 후속 계획을 명확히 남겨야 합니다.
+완료된 설계 검토와 역할별 작업은 [PM 전체 관리 Issue #1](https://github.com/SASTsimi/sastsimi/issues/1), [실제 Issue 현황](./docs/review/ISSUE_TRACKER.md), [역할별 작업 안내](./docs/review/ISSUE_CATALOG.md)에서 확인합니다. 후속 설계 변경도 작업을 막는 문제(`Blocker`)와 중요한 문제(`High`)를 해결하고, 중간·낮은 문제의 담당자와 계획을 명확히 남긴 뒤 승인해야 합니다.
 
 ## 담당 영역
 

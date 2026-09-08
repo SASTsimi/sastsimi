@@ -92,6 +92,11 @@ security impact는 exact upstream evidence보다 강하게 표현하지 않는�
 
 `{각 단계가 동일 workspace_id와 commit_id에서 연결되는 근거와 CodeLocation}`
 
+본문의 모든 `{path:line}`은 `verification_result_ref`가 가리키는 `EvidenceClaim.code_locations` 중 같은
+`workspace_id`, `commit_id`, `file_path`와 일치하고 해당 `start_line..end_line` 범위 안에 있어야 한다.
+Reporter output validator가 이를 확인하며, upstream에 없는 위치나 다른 commit의 위치가 있으면
+`INVALID_OUTPUT`·`REPORT_ERROR`로 처리하고 초안을 저장하지 않는다.
+
 ## 6. 검증 근거
 
 ### 찬성 근거

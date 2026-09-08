@@ -194,6 +194,30 @@ foreach ($requirement in $supersededSpecRequirements) {
     }
 }
 
+$historicalWorkRecordRequirements = @(
+    @{
+        Path = 'docs/superpowers/README.md'
+        Markers = @('역사적 작업 기록', '현재 공통 계약이나 구현 기준이 아닙니다.', '../architecture-v5/README.md', '../review/FINAL_ARCHITECTURE_V5_APPROVAL.md')
+    },
+    @{
+        Path = 'docs/superpowers/plans/2026-08-31-role-boundary-alignment.md'
+        Markers = @('SUPERSEDED — 역사적 작업 계획', '../../architecture-v5/04-verification-and-dynamic-reproduction.md', '../../review/decisions/ADR-007-r7-autonomous-reproduction-session.md')
+    }
+)
+foreach ($requirement in $historicalWorkRecordRequirements) {
+    $path = Join-Path $repoRoot $requirement.Path
+    if (-not (Test-Path -LiteralPath $path)) {
+        Add-Failure "missing historical work record notice: $($requirement.Path)"
+        continue
+    }
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    foreach ($marker in $requirement.Markers) {
+        if (-not $text.Contains($marker)) {
+            Add-Failure "historical work record is missing marker '$marker': $($requirement.Path)"
+        }
+    }
+}
+
 $agentRolesPath = Join-Path $repoRoot 'docs/architecture-v5/03-agent-roles-and-orchestration.md'
 $agentRolesText = Get-Content -Raw -Encoding UTF8 -LiteralPath $agentRolesPath
 $requiredOrchestrationBoundaryMarkers = @(
@@ -263,8 +287,8 @@ foreach ($requiredFindingMarker in @(
 }
 
 # Final approval is a documentation state transition, not an implementation
-# success claim. Keep the review-start main, exact PR-head approval target,
-# role issue state, accepted ADRs and NOT_IMPLEMENTED boundary aligned.
+# success claim. Keep the review-start main, merged Final PR identity, role
+# issue state, accepted ADRs and NOT_IMPLEMENTED boundary aligned.
 $finalApprovalPath = Join-Path $repoRoot 'docs/review/FINAL_ARCHITECTURE_V5_APPROVAL.md'
 if (-not (Test-Path -LiteralPath $finalApprovalPath)) {
     Add-Failure 'missing Architecture v5 final approval record'
@@ -274,6 +298,10 @@ if (-not (Test-Path -LiteralPath $finalApprovalPath)) {
         '검토 시작 기준 `main`',
         '07bd6549a676419c0e720f940ba7abd1b82aea0d',
         'PR #116',
+        'PR #117',
+        '0647514f9d3d288fbedfa983c5b828d88c909df8',
+        '2de1f6767d8bc25ee7383adacb3082b4ff761f8a',
+        '2026-09-08부터 유효',
         'Issue #92',
         'R1~R8 상위 Issue #2~#9 모두 `CLOSED`',
         '문서 구조·계약 추적: **PASS**',
@@ -282,8 +310,9 @@ if (-not (Test-Path -LiteralPath $finalApprovalPath)) {
         '구현 상태: **NOT_IMPLEMENTED**',
         '정확한 PR head',
         '최종 리뷰에서 발견한 기존 계약의 모호함을 바로잡은 수정',
-        '최종 승인 대상은 PR 본문에 기록한 정확한 head SHA',
+        '승인 대상은 위에 기록한 정확한 PR head',
         'current generation의 exact `DynamicReproductionRequest`와 같은 `DYNAMIC_REPRO` 실행 attempt의 recipe·환경·AgentLog·candidate·command digest를 요구',
+        '| F-21A | ReportDraft 본문의 모든 `path:line`이 exact Verification의 실제 `EvidenceClaim.code_locations`와 같은 workspace·commit·file·line인지 저장 전에 검사 | PASS |',
         '| F-19 | 금지 테스트 위반은 result Primitive를 막고, 다른 scope·impact 실패는 보고 가능성만 막음 | PASS | `05`, `06`, `08`, ADR-011, ADR-014 |'
     )) {
         if (-not $finalApprovalText.Contains($marker)) {
@@ -302,10 +331,10 @@ if (-not (Test-Path -LiteralPath $finalApprovalPath)) {
 }
 
 $finalApprovalBaselineMarkers = @{
-    'docs/DOCUMENT_GUIDE.md' = '검토 시작 기준 main'
-    'docs/review/ISSUE_TRACKER.md' = '검토 시작 기준 main'
-    'docs/architecture-v5/implementation/README.md' = '최종 승인 검토 시작 기준 main'
-    'docs/architecture-v5/implementation/06-implementation-baseline.md' = '실제 승인 대상은 Final PR 본문의 exact head'
+    'docs/DOCUMENT_GUIDE.md' = 'Final PR의 정확한 head·merge commit'
+    'docs/review/ISSUE_TRACKER.md' = 'CLOSED — PR #117 head'
+    'docs/architecture-v5/implementation/README.md' = 'Final PR #117 head'
+    'docs/architecture-v5/implementation/06-implementation-baseline.md' = 'Final PR #117 head'
 }
 foreach ($relativePath in $finalApprovalBaselineMarkers.Keys) {
     $path = Join-Path $repoRoot $relativePath
@@ -381,6 +410,9 @@ foreach ($issueNumber in 2..9) {
         Add-Failure "Issue tracker does not show role Issue #$issueNumber as CLOSED"
     }
 }
+if (-not [regex]::IsMatch($issueTrackerText, '(?m)^\| 최종 .*\[#10\].*\| CLOSED — PR #117 head')) {
+    Add-Failure 'Issue tracker does not show final Issue #10 as CLOSED by PR #117'
+}
 
 $approvedStatusFiles = @(
     (Get-Item -LiteralPath (Join-Path $repoRoot 'README.md')),
@@ -430,11 +462,60 @@ foreach ($statusRequirement in @(
 }
 $openQuestionsText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/governance/OPEN_QUESTIONS.md')
 foreach ($requiredOpenQuestionMarker in @(
+    '# Architecture v5 구현·운영 전 남은 설정과 증거',
+    '설계를 다시 정하는 미결정 목록이 아니라',
     '현재 구현 시작을 막는 미결정 Blocker는 없습니다.',
     'run-init Docker baseline branch 제거'
 )) {
     if (-not $openQuestionsText.Contains($requiredOpenQuestionMarker)) {
         Add-Failure "OPEN_QUESTIONS is missing an implementation Blocker: $requiredOpenQuestionMarker"
+    }
+}
+
+$implementationContractTestPath = Join-Path $repoRoot 'docs/architecture-v5/implementation/02-contract-test-plan.md'
+$implementationContractTestText = Get-Content -Raw -Encoding UTF8 -LiteralPath $implementationContractTestPath
+foreach ($marker in @(
+    'PR #97 merge `0c1b59b`',
+    'Provider·Prompt main 계약 시험',
+    'Q-02는 해결됐으며'
+)) {
+    if (-not $implementationContractTestText.Contains($marker)) {
+        Add-Failure "implementation contract test plan is missing finalized marker: $marker"
+    }
+}
+foreach ($obsoleteMarker in @(
+    '미병합 Prompt 제안',
+    '#97 HEAD 기준 제안·미병합',
+    '아직 main 미병합',
+    'ADR-012의 PROPOSED 표기',
+    'main·PR 혼합 계획'
+)) {
+    if ($implementationContractTestText.Contains($obsoleteMarker)) {
+        Add-Failure "implementation contract test plan still treats a merged contract as pending: $obsoleteMarker"
+    }
+}
+foreach ($obsoleteMarker in @('미실행 / 역할 검토 필요', '미실행 / 검토 필요')) {
+    foreach ($relativePath in @(
+        'docs/architecture-v5/implementation/02-contract-test-plan.md',
+        'docs/architecture-v5/implementation/03-recovery-test-plan.md'
+    )) {
+        $text = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot $relativePath)
+        if ($text.Contains($obsoleteMarker)) {
+            Add-Failure "implementation test plan confuses completed design review with pending execution: $relativePath -> $obsoleteMarker"
+        }
+    }
+}
+
+$documentGuideText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/DOCUMENT_GUIDE.md')
+foreach ($marker in @(
+    'ADR-002-sandbox-policy-enforcement.md',
+    'ADR-004-r6-request-r7-poc-production.md',
+    '현재 구조는 ADR-007이 대체했습니다.',
+    '현재 자율 재현 구조는 ADR-007을 따릅니다.',
+    'docs/superpowers/README.md'
+)) {
+    if (-not $documentGuideText.Contains($marker)) {
+        Add-Failure "document guide is missing final-history guidance: $marker"
     }
 }
 
@@ -1775,6 +1856,45 @@ $reportDraftBlock = [regex]::Match($contractText, '(?ms)^ReportDraft:\s*(.*?)^``
 foreach ($field in @('finding_ref:', 'dynamic_result_ref:', 'poc_ref:', 'run_policy_state_ref:', 'restrictions:', 'limitations:', 'unresolved_conditions:', 'redaction_status: PASSED')) {
     if (-not $reportDraftBlock.Contains($field)) {
         Add-Failure "missing ReportDraft safety field: $field"
+    }
+}
+
+$reportDraftCodeLocationRequirements = @(
+    @{ Path = 'docs/architecture-v5/05-llm-gate-and-reporting.md'; Marker = 'Reporter output validator는 `content_ref` 본문에 코드 위치로 적은 모든 `path:line`을 추출' },
+    @{ Path = 'docs/architecture-v5/08-lightweight-data-contracts.md'; Marker = '`content_ref` 본문에 코드 위치로 적은 모든 `path:line`은 exact `verification_result_ref`의 `EvidenceClaim.code_locations`' },
+    @{ Path = 'docs/architecture-v5/10-security-boundaries.md'; Marker = 'ReportDraft 본문의 `path:line`이 exact Verification의 코드 위치에 없거나 다른 commit 위치임' },
+    @{ Path = 'docs/architecture-v5/12-report-draft-template.md'; Marker = 'Reporter output validator가 이를 확인하며' },
+    @{ Path = 'docs/architecture-v5/wiki/gate-and-reporting.md'; Marker = '보고서 본문에 적은 모든 `path:line`은 exact Verification의 `EvidenceClaim.code_locations`' },
+    @{ Path = 'docs/architecture-v5/implementation/02-contract-test-plan.md'; Marker = 'exact Verification의 `EvidenceClaim.code_locations`에 없는 위치나 다른 commit의 위치' },
+    @{ Path = 'docs/review/r5-03-r2-cross-review.md'; Marker = '> **최종 해결:**' }
+)
+foreach ($requirement in $reportDraftCodeLocationRequirements) {
+    $path = Join-Path $repoRoot $requirement.Path
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    if (-not $text.Contains($requirement.Marker)) {
+        Add-Failure "ReportDraft code-location traceability is not synchronized: $($requirement.Path)"
+    }
+}
+
+$moduleMapText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/implementation/01-module-map.md')
+foreach ($marker in @(
+    'Final PR #117의 exact head',
+    '## 7. 구현 기준선에서 해결한 계약 빈틈',
+    '[x] R1·R2·R4·R5·R6·R7·R8 교차 검토'
+)) {
+    if (-not $moduleMapText.Contains($marker)) {
+        Add-Failure "implementation module map is missing finalized state: $marker"
+    }
+}
+foreach ($obsoleteMarker in @(
+    '아래 미확정 항목을 담당 Issue에서 확정',
+    '#110 병합 뒤 이 문서의 기준 SHA를 실제 merge commit으로 갱신',
+    '최종 package 이름은 R3-06에서 확정',
+    '[R5-03 후속이슈]',
+    '[ ] R1·R2·R4·R5·R6·R7·R8 교차 검토'
+)) {
+    if ($moduleMapText.Contains($obsoleteMarker)) {
+        Add-Failure "implementation module map still describes completed work as pending: $obsoleteMarker"
     }
 }
 
@@ -3772,7 +3892,7 @@ foreach ($marker in @(
     'Sandbox Controller는 host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace 같은 Sandbox 외부 경계를 강제',
     'exact `SandboxPolicyDecision`을 같은 attempt의 `AgentLog`와 `DynamicReproductionResult.policy_decision_ref`에 연결',
     '`PVD-16`',
-    'Issue #90도 R7 실행 지원을 완료했다고 판단하기 전에는 `PVD-16`의 통과 증거를 종료 조건에 포함'
+    '실제 R7 실행 지원을 선언하려면 별도 구현 Issue·PR에서 `PVD-16` 통과 증거를 요구'
 )) {
     if (-not $providerDecisionText.Contains($marker)) {
         Add-Failure "missing R7 runtime-managed tool-loop provider rule: $marker"
