@@ -59,7 +59,8 @@
 - Second re-review head: `22ff86a2b5b75dd819eca7d00faac02a616674b5`; Critical `0`, Important `1` distinct issue
 - Third re-review head: `6afd654c9ffc70da152291f78ee56beb02bbf92a`; Critical `0`, Important `1` distinct issue
 - Remediation: missing ports and producers, exact canonical port signatures, T08+T09 join, full fake 22-step coverage, current CWE ownership, canonical reporting placement and atomic Primitive admission/Primitive/index ownership including COLLECTION_FAILED, trusted Provider/Prompt registry split, candidate Provider activation order, exact evaluation comparison, no-open-SQLite-transaction test, dynamic schema inventory, plan status, real CLI, Sandbox limits, early document CI and cross-platform command fixed
-- Status: fixes applied; same-head re-review pending
+- Substantive final review head: `491f5e3393151f6c02691d1d4235758821fe2838`; both reviewers Critical `0`, Important `0`
+- Status: `APPROVED_FOR_IMPLEMENTATION`; approval metadata commit requires same-head confirmation in PR #120
 
 ## Blocked or deferred evidence
 

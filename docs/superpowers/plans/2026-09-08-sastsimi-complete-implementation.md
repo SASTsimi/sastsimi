@@ -2,10 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-- 상태: `DRAFT_FOR_REVIEW`
+- 상태: `APPROVED_FOR_IMPLEMENTATION`
 - 기준 `main`: `5657fc7b51af33271a940af37ca48bbfcdc14553`
 - 검토 PR: [#120](https://github.com/SASTsimi/sastsimi/pull/120)
-- 승인 조건: 최종 변경 SHA에 대한 독립 검토에서 `Critical 0 / Important 0`을 확인한 뒤 `APPROVED_FOR_IMPLEMENTATION`으로 전환
+- 승인 근거: substantive review SHA `491f5e3393151f6c02691d1d4235758821fe2838`에서 두 독립 검토 모두 `Critical 0 / Important 0`; 승인 상태 전환 커밋은 PR #120의 최종 HEAD 검토로 확인
 
 **Goal:** 승인된 Architecture v5를 설치·실행·복구·검증할 수 있는 유지보수 가능한 SASTSIMI Python 프로그램으로 완성한다.
 

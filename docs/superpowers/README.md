@@ -8,10 +8,10 @@
 
 이 폴더에는 현재 구현을 제어하는 자료와 설계 과정의 역사적 작업 기록이 함께 있습니다. 문서 상단의 상태와 아래 목록으로 구분합니다.
 
-현재 구현 자료 후보는 다음 두 파일입니다. 파일 상단 상태가 `APPROVED_FOR_IMPLEMENTATION`인 자료만 실행 기준이며, `DRAFT_FOR_REVIEW`는 검토 중인 초안입니다.
+현재 구현 자료는 다음 두 파일입니다. 파일 상단 상태가 `APPROVED_FOR_IMPLEMENTATION`인 자료만 실행 기준이며, `DRAFT_FOR_REVIEW`는 검토 중인 초안입니다.
 
 - [`specs/2026-09-08-sastsimi-maintainable-implementation-design.md`](./specs/2026-09-08-sastsimi-maintainable-implementation-design.md): 승인된 유지보수 구현 구조
-- [`plans/2026-09-08-sastsimi-complete-implementation.md`](./plans/2026-09-08-sastsimi-complete-implementation.md): 전체 Task·PR 의존 순서와 완료 조건을 검토 중인 마스터 계획
+- [`plans/2026-09-08-sastsimi-complete-implementation.md`](./plans/2026-09-08-sastsimi-complete-implementation.md): 승인된 전체 Task·PR 의존 순서와 완료 조건
 
 그 밖의 완료된 기존 문서는 당시 검토한 대안, 변경 순서와 PR 상태를 남긴 역사적 기록입니다.
 
