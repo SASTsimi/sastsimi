@@ -8,7 +8,7 @@ from typing import TextIO
 from sastsimi.config.loader import ConfigError as ConfigError
 from sastsimi.config.loader import load_config
 from sastsimi.config.models import AppConfig
-from sastsimi.logging import SafeJsonFormatter, safe_event
+from sastsimi.logging import SafeJsonHandler, safe_event
 
 
 def build_config(
@@ -19,8 +19,7 @@ def build_config(
 
 def build_diagnostic_logger(stream: TextIO, level: str) -> logging.Logger:
     logger = logging.Logger("sastsimi", level=level)
-    handler = logging.StreamHandler(stream)
-    handler.setFormatter(SafeJsonFormatter())
+    handler = SafeJsonHandler(stream)
     logger.addHandler(handler)
     return logger
 

@@ -6,7 +6,7 @@ import pytest
 
 
 def test_recursive_safe_json_lines() -> None:
-    from sastsimi.logging import SafeJsonFormatter, safe_event
+    from sastsimi.logging import SafeJsonHandler, safe_event
 
     sentinel = "TEST_ONLY_REGISTERED_SECRET"
     fields = {
@@ -26,8 +26,7 @@ def test_recursive_safe_json_lines() -> None:
         "password_text": "TEST_ONLY_PASSWORD",
     }
     stream = io.StringIO()
-    handler = logging.StreamHandler(stream)
-    handler.setFormatter(SafeJsonFormatter(secrets=(sentinel,)))
+    handler = SafeJsonHandler(stream, secrets=(sentinel,))
     logger = logging.Logger("isolated")
     logger.addHandler(handler)
     logger.info(safe_event("config_loaded", fields, trace_id="trace-1"))
@@ -102,3 +101,101 @@ def test_unlabelled_sensitive_strings_redacted(value: str) -> None:
     assert value not in raw
     assert "TEST_ONLY" not in raw
     assert "synthetic" not in raw
+
+
+def test_encoding_failure_never_dumps_record_or_traceback(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from sastsimi.bootstrap import build_diagnostic_logger
+    from sastsimi.logging import safe_event
+
+    buffer = io.BytesIO()
+    with io.TextIOWrapper(buffer, encoding="ascii", errors="strict") as stream:
+        logger = build_diagnostic_logger(stream, "INFO")
+        logger.info(
+            safe_event(
+                "encoding_check",
+                {
+                    "message": "한글",
+                    "cookie": "TEST_ONLY_COOKIE_ENCODING",
+                    "password": "TEST_ONLY_PASSWORD_ENCODING",
+                    "path": "/home/synthetic/private",
+                    "windows_path": r"C:\Users\synthetic\private",
+                },
+            )
+        )
+        assert buffer.getvalue() == b""
+    output = capsys.readouterr()
+    assert output.out == ""
+    for forbidden in [
+        "TEST_ONLY",
+        "/home/",
+        "C:",
+        "Traceback",
+        "Message: SafeEvent",
+        "File ",
+    ]:
+        assert forbidden not in output.err
+    assert json.loads(output.err)["event"] == "log_delivery_failed"
+
+
+@pytest.mark.parametrize("failure", ["write", "flush"])
+@pytest.mark.parametrize("raise_exceptions", [True, False])
+def test_stream_failure_never_dumps_record_or_traceback(
+    failure: str,
+    raise_exceptions: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from sastsimi.bootstrap import build_diagnostic_logger
+    from sastsimi.logging import safe_event
+
+    class BrokenStream(io.StringIO):
+        def write(self, text: str) -> int:
+            if failure == "write":
+                raise OSError("TEST_ONLY_IO_ERROR /home/synthetic/private")
+            return super().write(text)
+
+        def flush(self) -> None:
+            if failure == "flush":
+                raise OSError(r"TEST_ONLY_IO_ERROR C:\Users\synthetic\private")
+            super().flush()
+
+    monkeypatch.setattr(logging, "raiseExceptions", raise_exceptions)
+    stream = BrokenStream()
+    logger = build_diagnostic_logger(stream, "INFO")
+    logger.error(safe_event("io_check", {"cookie": "TEST_ONLY_COOKIE_IO"}))
+    output = capsys.readouterr()
+    combined = stream.getvalue() + output.out + output.err
+    for forbidden in [
+        "TEST_ONLY",
+        "/home/",
+        "C:",
+        "Traceback",
+        "Message: SafeEvent",
+        "File ",
+    ]:
+        assert forbidden not in combined
+    assert json.loads(output.err)["event"] == "log_delivery_failed"
+
+
+def test_safe_event_repr_does_not_expose_fields_or_identifiers() -> None:
+    from sastsimi.logging import safe_event
+
+    event = safe_event(
+        "event",
+        {"message": "TEST_ONLY_REGISTERED_AT_EMISSION", "cookie": "TEST_ONLY_COOKIE"},
+        trace_id="TEST_ONLY_TRACE",
+    )
+    assert "TEST_ONLY" not in repr(event)
+
+
+def test_diagnostic_logger_preserves_benign_unicode_and_relative_paths() -> None:
+    from sastsimi.bootstrap import build_diagnostic_logger
+    from sastsimi.logging import safe_event
+
+    stream = io.StringIO()
+    logger = build_diagnostic_logger(stream, "INFO")
+    logger.info(safe_event("event", {"message": "한글", "path": "src/example.py"}))
+    event = json.loads(stream.getvalue())
+    assert event["fields"] == {"message": "한글", "path": "src/example.py"}

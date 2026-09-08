@@ -8,8 +8,10 @@ import json
 import logging
 import math
 import re
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TextIO
 
 _REDACTED = "[REDACTED]"
 _SENSITIVE_KEY = re.compile(
@@ -62,11 +64,15 @@ def _sanitize(value: object, secrets: tuple[str, ...], depth: int = 0) -> object
     raise UnsafeLogEvent("Unsupported event value")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class SafeEvent:
     name: str
     fields: Mapping[str, object]
     trace_id: str | None = None
+
+    def __repr__(self) -> str:
+        # Registered secrets may only become known at emission time.
+        return "SafeEvent(<redacted>)"
 
 
 def safe_event(
@@ -109,3 +115,36 @@ class SafeJsonFormatter(logging.Formatter):
                 '{"event":"log_event_rejected","fields":{},'
                 '"level":"ERROR","trace_id":null}'
             )
+
+
+class SafeJsonHandler(logging.Handler):
+    """Own serialization and delivery errors without raw logging.handleError.
+
+    The caller owns the stream. A failed write may already have delivered a
+    partial sanitized line, so do not retry it. Report only a constant event
+    to stderr; if stderr also fails, abandon the diagnostic without recursion.
+    """
+
+    def __init__(self, stream: TextIO, *, secrets: tuple[str, ...] = ()) -> None:
+        super().__init__()
+        self._stream = stream
+        self.setFormatter(SafeJsonFormatter(secrets=secrets))
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._stream.write(self.format(record) + "\n")
+            self._stream.flush()
+        except Exception:
+            self.handleError(record)
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        # Never call super(): stdlib prints record.msg, traceback and host paths.
+        # Do not interpolate the record, exception, stream or configured secrets.
+        try:
+            sys.stderr.write(
+                '{"event":"log_delivery_failed","fields":{},'
+                '"level":"ERROR","trace_id":null}\n'
+            )
+            sys.stderr.flush()
+        except Exception:
+            pass
