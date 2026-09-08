@@ -23,6 +23,7 @@ from .budget import (
 )
 from .records import PolicyCacheMeta, RecordMeta, RunMeta
 from .refs import PolicyCacheRef, RunStoredDataRef, StoredDataRef
+from .result_registry import RESULT_REGISTRY
 from .work import StateTransition, TransitionCommit, WorkAttempt, WorkExecutionState
 
 CORE_SCHEMAS: Mapping[str, type[BaseModel]] = MappingProxyType(
@@ -56,7 +57,9 @@ CORE_SCHEMAS: Mapping[str, type[BaseModel]] = MappingProxyType(
 
 def schema_documents() -> dict[str, bytes]:
     documents = {}
-    for kind, model in sorted(CORE_SCHEMAS.items()):
+    schemas = dict(CORE_SCHEMAS)
+    schemas.update({kind: binding.model for kind, binding in RESULT_REGISTRY.items()})
+    for kind, model in sorted(schemas.items()):
         schema = model.model_json_schema(by_alias=False, mode="validation")
         schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
         documents[f"{kind}/1.schema.json"] = (

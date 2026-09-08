@@ -5,7 +5,6 @@ from typing import Any
 
 import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError
-from test_core_models import action, decision, meta, mutations, ref, work
 
 from sastsimi.contracts.actions import (
     ActionDecision,
@@ -20,6 +19,14 @@ from sastsimi.contracts.work import (
     WorkExecutionState,
     validate_commit_transition,
     validate_transition_context,
+)
+from tests.unit.contracts.test_core_models import (
+    action,
+    decision,
+    meta,
+    mutations,
+    ref,
+    work,
 )
 
 

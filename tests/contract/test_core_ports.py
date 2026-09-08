@@ -20,6 +20,7 @@ from sastsimi.contracts.refs import (
 )
 from sastsimi.contracts.work import TransitionCommit
 from sastsimi.ports import (
+    ApprovedSandboxCommand,
     ArtifactStore,
     BoundaryRecord,
     BudgetCommitRequest,
@@ -27,15 +28,24 @@ from sastsimi.ports import (
     BudgetReleaseRequest,
     BudgetReservationRequest,
     CancellationResult,
+    CleanupResult,
     Clock,
     IdGenerator,
     LLMProviderAdapter,
+    OfficialPolicyFetchRequest,
+    OfficialPolicySource,
     PolicySourcePort,
     Record,
     RecordStore,
+    SandboxCleanupRequest,
+    SandboxCommandRecord,
+    SandboxEnvironment,
     SandboxPort,
+    SandboxPrepareRequest,
     StagedArtifact,
     StaticToolAdapter,
+    StaticToolRequest,
+    ToolRunResult,
     TransitionCommitRequest,
     UnitOfWork,
     WorkContext,
@@ -121,30 +131,32 @@ class FakeLlm:
 
 
 class FakePolicy:
-    async def fetch_official(self, request: BoundaryRecord) -> BoundaryRecord:
-        return request
+    async def fetch_official(
+        self, request: OfficialPolicyFetchRequest
+    ) -> OfficialPolicySource:
+        raise NotImplementedError
 
 
 class FakeStatic:
     async def probe(self, profile_ref: StoredDataRef) -> BoundaryRecord:
         return BoundaryRecord(ref=profile_ref)
 
-    async def run(self, request: BoundaryRecord) -> BoundaryRecord:
-        return request
+    async def run(self, request: StaticToolRequest) -> ToolRunResult:
+        raise NotImplementedError
 
     async def cancel(self, attempt_id: str) -> CancellationResult:
         return CancellationResult(cancelled=True, reason=None)
 
 
 class FakeSandbox:
-    async def prepare(self, request: BoundaryRecord) -> BoundaryRecord:
-        return request
+    async def prepare(self, request: SandboxPrepareRequest) -> SandboxEnvironment:
+        raise NotImplementedError
 
-    async def execute(self, request: BoundaryRecord) -> BoundaryRecord:
-        return request
+    async def execute(self, request: ApprovedSandboxCommand) -> SandboxCommandRecord:
+        raise NotImplementedError
 
-    async def cleanup(self, request: BoundaryRecord) -> BoundaryRecord:
-        return request
+    async def cleanup(self, request: SandboxCleanupRequest) -> CleanupResult:
+        raise NotImplementedError
 
 
 class FakeBudget:
@@ -209,11 +221,6 @@ async def test_async_boundaries_are_awaitable() -> None:
     value = BoundaryRecord(ref=ref)
     assert (await llm.probe(value)).ref == ref
     assert (await llm.invoke(value)).ref == ref
-    assert (await policy.fetch_official(value)).ref == ref
-    assert (await sandbox.prepare(value)).ref == ref
-    assert (await sandbox.execute(value)).ref == ref
-    assert (await sandbox.cleanup(value)).ref == ref
-    assert (await static.run(value)).ref == ref
     assert (await static.cancel("a1")).cancelled
     assert (await llm.cancel("call")).cancelled
     assert clock.now().utcoffset() is not None

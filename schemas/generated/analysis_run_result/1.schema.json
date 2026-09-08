@@ -1,0 +1,1016 @@
+{
+  "$defs": {
+    "AnalysisError": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "code": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Code",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "error_id": {
+          "$ref": "#/$defs/ErrorId"
+        },
+        "related_record_ids": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Related Record Ids",
+          "type": "array"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "safe_message": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Safe Message",
+          "type": "string"
+        },
+        "stage": {
+          "enum": [
+            "INPUT",
+            "REPOSITORY",
+            "STATIC_ANALYSIS",
+            "CONTEXT",
+            "ORCHESTRATION",
+            "AGENT",
+            "PROVIDER",
+            "SANDBOX",
+            "POLICY",
+            "GATE",
+            "REPORT",
+            "STATE",
+            "STORAGE",
+            "RECOVERY",
+            "AUTHORITY"
+          ],
+          "title": "Stage",
+          "type": "string"
+        },
+        "work_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "error_id",
+        "stage",
+        "code",
+        "safe_message",
+        "retryable",
+        "work_id",
+        "attempt_id",
+        "related_record_ids",
+        "created_at"
+      ],
+      "title": "AnalysisError",
+      "type": "object"
+    },
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "BudgetScopeRef": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunStoredDataRef"
+        },
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        }
+      ]
+    },
+    "CodeLocation": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "end_column": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "End Column"
+        },
+        "end_line": {
+          "minimum": 1,
+          "title": "End Line",
+          "type": "integer"
+        },
+        "file_path": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "File Path",
+          "type": "string"
+        },
+        "start_column": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Start Column"
+        },
+        "start_line": {
+          "minimum": 1,
+          "title": "Start Line",
+          "type": "integer"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "commit_id",
+        "file_path",
+        "start_line",
+        "start_column",
+        "end_line",
+        "end_column"
+      ],
+      "title": "CodeLocation",
+      "type": "object"
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "DataGap": {
+      "additionalProperties": false,
+      "properties": {
+        "affected_languages": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Affected Languages",
+          "type": "array"
+        },
+        "affected_locations": {
+          "items": {
+            "$ref": "#/$defs/CodeLocation"
+          },
+          "title": "Affected Locations",
+          "type": "array"
+        },
+        "affected_paths": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Affected Paths",
+          "type": "array"
+        },
+        "code": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Code",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "description": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Description",
+          "type": "string"
+        },
+        "gap_id": {
+          "$ref": "#/$defs/GapId"
+        },
+        "reason": {
+          "enum": [
+            "MISSING",
+            "FAILED",
+            "TRUNCATED",
+            "UNSUPPORTED",
+            "BLOCKED",
+            "TIMEOUT"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "related_record_ids": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Related Record Ids",
+          "type": "array"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "stage": {
+          "enum": [
+            "REPOSITORY",
+            "STATIC_ANALYSIS",
+            "CONTEXT",
+            "DYNAMIC",
+            "POLICY"
+          ],
+          "title": "Stage",
+          "type": "string"
+        }
+      },
+      "required": [
+        "gap_id",
+        "stage",
+        "code",
+        "reason",
+        "description",
+        "affected_paths",
+        "affected_languages",
+        "affected_locations",
+        "retryable",
+        "related_record_ids",
+        "created_at"
+      ],
+      "title": "DataGap",
+      "type": "object"
+    },
+    "ErrorId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "ErrorId",
+      "type": "string"
+    },
+    "GapId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "GapId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "PolicyCacheRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "const": "policy_cache_record",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "program_id": {
+          "$ref": "#/$defs/ProgramId"
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "record_id",
+        "content_hash",
+        "program_id",
+        "schema_version"
+      ],
+      "title": "PolicyCacheRef",
+      "type": "object"
+    },
+    "ProgramId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "ProgramId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "ResourceUsageSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_count": {
+          "minimum": 0,
+          "title": "Attempt Count",
+          "type": "integer"
+        },
+        "cost_minor_units": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cost Minor Units"
+        },
+        "currency": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Currency"
+        },
+        "dynamic_attempt_count": {
+          "minimum": 0,
+          "title": "Dynamic Attempt Count",
+          "type": "integer"
+        },
+        "elapsed_ms": {
+          "minimum": 0,
+          "title": "Elapsed Ms",
+          "type": "integer"
+        },
+        "llm_call_count": {
+          "minimum": 0,
+          "title": "Llm Call Count",
+          "type": "integer"
+        },
+        "pricing_revision_refs": {
+          "items": {
+            "$ref": "#/$defs/BudgetScopeRef"
+          },
+          "title": "Pricing Revision Refs",
+          "type": "array"
+        },
+        "retry_count": {
+          "minimum": 0,
+          "title": "Retry Count",
+          "type": "integer"
+        },
+        "unavailable_reasons": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Unavailable Reasons",
+          "type": "array"
+        },
+        "usage_complete": {
+          "title": "Usage Complete",
+          "type": "boolean"
+        },
+        "usage_measurement_refs": {
+          "items": {
+            "$ref": "#/$defs/BudgetScopeRef"
+          },
+          "title": "Usage Measurement Refs",
+          "type": "array"
+        },
+        "work_count": {
+          "minimum": 0,
+          "title": "Work Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "elapsed_ms",
+        "work_count",
+        "attempt_count",
+        "retry_count",
+        "llm_call_count",
+        "dynamic_attempt_count",
+        "cost_minor_units",
+        "currency",
+        "pricing_revision_refs",
+        "usage_measurement_refs",
+        "usage_complete",
+        "unavailable_reasons"
+      ],
+      "title": "ResourceUsageSummary",
+      "type": "object"
+    },
+    "RunMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id"
+      ],
+      "title": "RunMeta",
+      "type": "object"
+    },
+    "RunStoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "analysis_id",
+        "record_id"
+      ],
+      "title": "RunStoredDataRef",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "WorkId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkId",
+      "type": "string"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "action_decision_refs": {
+      "items": {
+        "$ref": "#/$defs/BudgetScopeRef"
+      },
+      "title": "Action Decision Refs",
+      "type": "array"
+    },
+    "agent_log_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Agent Log Refs",
+      "type": "array"
+    },
+    "cleanup_result_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Cleanup Result Refs",
+      "type": "array"
+    },
+    "commit_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommitId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cwe_label_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Cwe Label Refs",
+      "type": "array"
+    },
+    "debug_trace_ref": {
+      "$ref": "#/$defs/RunStoredDataRef"
+    },
+    "dynamic_reproduction_conclusion_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Dynamic Reproduction Conclusion Refs",
+      "type": "array"
+    },
+    "dynamic_request_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Dynamic Request Refs",
+      "type": "array"
+    },
+    "dynamic_result_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Dynamic Result Refs",
+      "type": "array"
+    },
+    "elapsed_ms": {
+      "minimum": 0,
+      "title": "Elapsed Ms",
+      "type": "integer"
+    },
+    "environment_recipe_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Environment Recipe Refs",
+      "type": "array"
+    },
+    "errors": {
+      "items": {
+        "$ref": "#/$defs/AnalysisError"
+      },
+      "title": "Errors",
+      "type": "array"
+    },
+    "eval_config_refs": {
+      "items": {
+        "$ref": "#/$defs/BudgetScopeRef"
+      },
+      "title": "Eval Config Refs",
+      "type": "array"
+    },
+    "failed_hypothesis_count": {
+      "minimum": 0,
+      "title": "Failed Hypothesis Count",
+      "type": "integer"
+    },
+    "finding_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Finding Refs",
+      "type": "array"
+    },
+    "finished_at": {
+      "format": "date-time",
+      "title": "Finished At",
+      "type": "string"
+    },
+    "gaps": {
+      "items": {
+        "$ref": "#/$defs/DataGap"
+      },
+      "title": "Gaps",
+      "type": "array"
+    },
+    "gate_counts": {
+      "additionalProperties": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "title": "Gate Counts",
+      "type": "object"
+    },
+    "hypothesis_counts": {
+      "additionalProperties": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "title": "Hypothesis Counts",
+      "type": "object"
+    },
+    "hypothesis_duplicate_review_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Hypothesis Duplicate Review Refs",
+      "type": "array"
+    },
+    "llm_invocation_log_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Llm Invocation Log Refs",
+      "type": "array"
+    },
+    "meta": {
+      "$ref": "#/$defs/RunMeta"
+    },
+    "poc_candidate_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Poc Candidate Refs",
+      "type": "array"
+    },
+    "poc_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Poc Refs",
+      "type": "array"
+    },
+    "policy_cache_refs": {
+      "items": {
+        "$ref": "#/$defs/PolicyCacheRef"
+      },
+      "title": "Policy Cache Refs",
+      "type": "array"
+    },
+    "policy_collection_result_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Policy Collection Result Refs",
+      "type": "array"
+    },
+    "policy_parser_result_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Policy Parser Result Refs",
+      "type": "array"
+    },
+    "policy_record_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Policy Record Refs",
+      "type": "array"
+    },
+    "primitive_and_chaining_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Primitive And Chaining Refs",
+      "type": "array"
+    },
+    "program_id": {
+      "$ref": "#/$defs/ProgramId"
+    },
+    "purpose": {
+      "enum": [
+        "PRODUCTION",
+        "EVALUATION"
+      ],
+      "title": "Purpose",
+      "type": "string"
+    },
+    "report_draft_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Report Draft Refs",
+      "type": "array"
+    },
+    "repository_url": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Repository Url",
+      "type": "string"
+    },
+    "resources": {
+      "$ref": "#/$defs/ResourceUsageSummary"
+    },
+    "rule_scope_review_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Rule Scope Review Refs",
+      "type": "array"
+    },
+    "run_policy_state_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sandbox_environment_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Sandbox Environment Refs",
+      "type": "array"
+    },
+    "sandbox_policy_decision_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Sandbox Policy Decision Refs",
+      "type": "array"
+    },
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "COMPLETE",
+        "PARTIAL",
+        "FAILED",
+        "CANCELLED"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "stop_reasons": {
+      "items": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "title": "Stop Reasons",
+      "type": "array"
+    },
+    "technical_review_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Technical Review Refs",
+      "type": "array"
+    },
+    "transition_commit_refs": {
+      "items": {
+        "$ref": "#/$defs/BudgetScopeRef"
+      },
+      "title": "Transition Commit Refs",
+      "type": "array"
+    },
+    "verdict_counts": {
+      "additionalProperties": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "title": "Verdict Counts",
+      "type": "object"
+    },
+    "verification_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Verification Refs",
+      "type": "array"
+    },
+    "work_attempt_refs": {
+      "items": {
+        "$ref": "#/$defs/BudgetScopeRef"
+      },
+      "title": "Work Attempt Refs",
+      "type": "array"
+    },
+    "work_state_refs": {
+      "items": {
+        "$ref": "#/$defs/BudgetScopeRef"
+      },
+      "title": "Work State Refs",
+      "type": "array"
+    },
+    "workspace_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkspaceId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "workspace_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunStoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "meta",
+    "purpose",
+    "repository_url",
+    "program_id",
+    "workspace_id",
+    "commit_id",
+    "workspace_ref",
+    "status",
+    "hypothesis_counts",
+    "hypothesis_duplicate_review_refs",
+    "failed_hypothesis_count",
+    "verdict_counts",
+    "gate_counts",
+    "finding_refs",
+    "verification_refs",
+    "cwe_label_refs",
+    "technical_review_refs",
+    "rule_scope_review_refs",
+    "run_policy_state_ref",
+    "policy_cache_refs",
+    "policy_collection_result_refs",
+    "policy_parser_result_refs",
+    "policy_record_refs",
+    "dynamic_request_refs",
+    "dynamic_result_refs",
+    "environment_recipe_refs",
+    "sandbox_environment_refs",
+    "agent_log_refs",
+    "dynamic_reproduction_conclusion_refs",
+    "sandbox_policy_decision_refs",
+    "cleanup_result_refs",
+    "primitive_and_chaining_refs",
+    "poc_candidate_refs",
+    "poc_refs",
+    "report_draft_refs",
+    "llm_invocation_log_refs",
+    "action_decision_refs",
+    "work_state_refs",
+    "work_attempt_refs",
+    "transition_commit_refs",
+    "eval_config_refs",
+    "stop_reasons",
+    "errors",
+    "gaps",
+    "resources",
+    "started_at",
+    "finished_at",
+    "elapsed_ms",
+    "debug_trace_ref"
+  ],
+  "title": "AnalysisRunResult",
+  "type": "object"
+}

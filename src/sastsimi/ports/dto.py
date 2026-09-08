@@ -8,9 +8,24 @@ or provider/runtime implementation is introduced here.
 from dataclasses import dataclass
 from typing import Protocol
 
+from sastsimi.contracts.actions import ActionRequest
 from sastsimi.contracts.budget import BudgetLedgerEntry, BudgetReservation
+from sastsimi.contracts.dynamic import CleanupResult as CleanupResult
+from sastsimi.contracts.dynamic import (
+    DynamicReproductionRequest,
+    DynamicReproductionToolRequest,
+    EnvironmentRequirements,
+    ReproductionPlan,
+    SandboxPolicyDecision,
+)
+from sastsimi.contracts.dynamic import SandboxCommandRecord as SandboxCommandRecord
+from sastsimi.contracts.dynamic import SandboxEnvironment as SandboxEnvironment
+from sastsimi.contracts.ids import ProgramId
+from sastsimi.contracts.policy import PolicySourceCheck
 from sastsimi.contracts.records import RecordMetadata
-from sastsimi.contracts.refs import RecordRef
+from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef
+from sastsimi.contracts.static import CodeWorkspace
+from sastsimi.contracts.static import ToolRunResult as ToolRunResult
 from sastsimi.contracts.work import (
     StateTransition,
     TransitionCommit,
@@ -74,18 +89,52 @@ class BudgetReleaseRequest:
     reservation: BudgetReservation
 
 
+# T09 provider invocation types remain intentionally reference-only.
 type ProviderProfile = BoundaryRecord
 type CapabilityProbeResult = BoundaryRecord
 type LLMInvocationRequest = BoundaryRecord
 type LLMInvocationResult = BoundaryRecord
-type OfficialPolicyFetchRequest = BoundaryRecord
-type OfficialPolicySource = BoundaryRecord
+# Capability probing belongs to the later static adapter implementation.
 type ToolCapabilityResult = BoundaryRecord
-type StaticToolRequest = BoundaryRecord
-type ToolRunResult = BoundaryRecord
-type SandboxPrepareRequest = BoundaryRecord
-type SandboxEnvironment = BoundaryRecord
-type ApprovedSandboxCommand = BoundaryRecord
-type SandboxCommandRecord = BoundaryRecord
-type SandboxCleanupRequest = BoundaryRecord
-type CleanupResult = BoundaryRecord
+
+
+@dataclass(frozen=True)
+class StaticToolRequest:
+    action: ActionRequest
+    workspace: CodeWorkspace
+    analysis_config_ref: StoredDataRef
+    rule_catalog_ref: StoredDataRef | None
+
+
+@dataclass(frozen=True)
+class OfficialPolicyFetchRequest:
+    action: ActionRequest
+    program_id: ProgramId
+    source_config_ref: BudgetScopeRef
+
+
+@dataclass(frozen=True)
+class OfficialPolicySource:
+    source_check: PolicySourceCheck
+    content: bytes
+
+
+@dataclass(frozen=True)
+class SandboxPrepareRequest:
+    request: DynamicReproductionRequest
+    requirements: EnvironmentRequirements
+    plan: ReproductionPlan
+    boundary_decision: SandboxPolicyDecision
+
+
+@dataclass(frozen=True)
+class ApprovedSandboxCommand:
+    tool_request: DynamicReproductionToolRequest
+    boundary_decision: SandboxPolicyDecision
+
+
+@dataclass(frozen=True)
+class SandboxCleanupRequest:
+    request: DynamicReproductionRequest
+    environments: tuple[SandboxEnvironment, ...]
+    resource_refs: tuple[StoredDataRef, ...]

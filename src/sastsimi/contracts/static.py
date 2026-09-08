@@ -1,0 +1,508 @@
+"""Static observations and context contracts (§08); observations are not verdicts."""
+
+import re
+from typing import Annotated, Literal, Self
+
+from pydantic import AfterValidator, AwareDatetime, model_validator
+
+from ._domain import DomainRecord, SafeDiagnostic, exact, exact_set, same_scope, unique
+from .base import ContractModel, NonEmptyStr, NonNegativeInt, PositiveInt
+from .closure import validate_committed_output
+from .ids import AnalysisId, AttemptId, CommitId, ErrorId, GapId, WorkId, WorkspaceId
+from .records import RunMeta
+from .refs import StoredDataRef, require_record_ref
+from .work import TransitionCommit, WorkAttempt, WorkExecutionState, WorkType
+
+
+def git_path(value: str) -> str:
+    if (
+        "\\" in value
+        or re.match(r"^[A-Za-z]:", value)
+        or any(part in {"", ".", ".."} for part in value.split("/"))
+    ):
+        raise ValueError("INVALID_GIT_PATH")
+    return value
+
+
+GitPath = Annotated[NonEmptyStr, AfterValidator(git_path)]
+
+
+class CodeWorkspace(ContractModel):
+    meta: RunMeta
+    workspace_id: WorkspaceId
+    analysis_id: AnalysisId
+    repository_url: NonEmptyStr
+    commit_id: CommitId | None
+    status: Literal["PREPARING", "READY", "FAILED", "REMOVED"]
+
+    @model_validator(mode="after")
+    def workspace_shape(self) -> Self:
+        if (
+            type(self.meta) is not RunMeta
+            or self.meta.record_type != "code_workspace"
+            or self.analysis_id != self.meta.analysis_id
+        ):
+            raise ValueError("METADATA_SCOPE_MISMATCH")
+        if (self.status == "READY" and self.commit_id is None) or (
+            self.status == "PREPARING" and self.commit_id is not None
+        ):
+            raise ValueError("WORKSPACE_NOT_READY")
+        return self
+
+
+class CodeLocation(ContractModel):
+    workspace_id: WorkspaceId
+    commit_id: CommitId
+    file_path: GitPath
+    start_line: PositiveInt
+    start_column: PositiveInt | None
+    end_line: PositiveInt
+    end_column: PositiveInt | None
+
+    @model_validator(mode="after")
+    def range_shape(self) -> Self:
+        if self.end_line < self.start_line or (self.start_column is None) != (
+            self.end_column is None
+        ):
+            raise ValueError("INVALID_CODE_RANGE")
+        if (
+            self.start_line == self.end_line
+            and self.start_column is not None
+            and self.end_column is not None
+            and self.end_column <= self.start_column
+        ):
+            raise ValueError("INVALID_CODE_RANGE")
+        return self
+
+
+class CodeSymbol(ContractModel):
+    symbol_id: NonEmptyStr
+    symbol_kind: Literal[
+        "FILE", "MODULE", "TYPE", "CALLABLE", "DATA", "ROUTE", "CONFIG"
+    ]
+    native_kind: NonEmptyStr | None
+    name: NonEmptyStr
+    location: CodeLocation
+
+
+class DataGap(ContractModel):
+    gap_id: GapId
+    stage: Literal["REPOSITORY", "STATIC_ANALYSIS", "CONTEXT", "DYNAMIC", "POLICY"]
+    code: NonEmptyStr
+    reason: Literal[
+        "MISSING", "FAILED", "TRUNCATED", "UNSUPPORTED", "BLOCKED", "TIMEOUT"
+    ]
+    description: NonEmptyStr
+    affected_paths: tuple[GitPath, ...]
+    affected_languages: tuple[NonEmptyStr, ...]
+    affected_locations: tuple[CodeLocation, ...]
+    retryable: bool
+    related_record_ids: tuple[NonEmptyStr, ...]
+    created_at: AwareDatetime
+
+
+class AnalysisError(ContractModel):
+    error_id: ErrorId
+    stage: Literal[
+        "INPUT",
+        "REPOSITORY",
+        "STATIC_ANALYSIS",
+        "CONTEXT",
+        "ORCHESTRATION",
+        "AGENT",
+        "PROVIDER",
+        "SANDBOX",
+        "POLICY",
+        "GATE",
+        "REPORT",
+        "STATE",
+        "STORAGE",
+        "RECOVERY",
+        "AUTHORITY",
+    ]
+    code: NonEmptyStr
+    safe_message: SafeDiagnostic
+    retryable: bool
+    work_id: WorkId | None
+    attempt_id: AttemptId | None
+    related_record_ids: tuple[NonEmptyStr, ...]
+    created_at: AwareDatetime
+
+
+class ToolSource(ContractModel):
+    attempt_id: AttemptId
+    tool_name: NonEmptyStr
+    tool_version: NonEmptyStr
+    rule_id: NonEmptyStr | None
+    raw_result_ref: StoredDataRef
+
+
+class CodeFact(ContractModel):
+    fact_id: NonEmptyStr
+    fact_kind: Literal[
+        "SOURCE",
+        "SINK",
+        "SANITIZER",
+        "VALIDATOR",
+        "AUTH_CHECK",
+        "PERMISSION_CHECK",
+        "OTHER",
+    ]
+    symbol_id: NonEmptyStr | None
+    location: CodeLocation
+    producer: ToolSource
+
+
+class CodeFactRef(ContractModel):
+    bundle_ref: StoredDataRef
+    fact_id: NonEmptyStr
+
+    @model_validator(mode="after")
+    def bundle_kind(self) -> Self:
+        require_record_ref(self.bundle_ref, "static_fact_bundle")
+        return self
+
+
+class Restriction(ContractModel):
+    restriction_id: NonEmptyStr
+    statement: NonEmptyStr
+    fact_refs: tuple[CodeFactRef, ...]
+    evidence_refs: tuple[StoredDataRef, ...]
+
+    @model_validator(mode="after")
+    def supported(self) -> Self:
+        if not self.fact_refs and not self.evidence_refs:
+            raise ValueError("RESTRICTION_EVIDENCE_REQUIRED")
+        unique(self.fact_refs)
+        unique(self.evidence_refs)
+        return self
+
+
+class CodeRelation(ContractModel):
+    relation_id: NonEmptyStr
+    relation_kind: Literal[
+        "CALL", "DATA_FLOW", "IMPORT", "INHERITANCE", "ROUTE_BINDING", "OTHER"
+    ]
+    from_symbol_id: NonEmptyStr | None
+    from_location: CodeLocation
+    to_symbol_id: NonEmptyStr | None
+    to_location: CodeLocation
+    producer: ToolSource
+
+
+class ToolCoverage(ContractModel):
+    analyzed_paths: tuple[GitPath, ...]
+    skipped_paths: tuple[GitPath, ...]
+    analyzed_languages: tuple[NonEmptyStr, ...]
+    skipped_languages: tuple[NonEmptyStr, ...]
+    notes: tuple[NonEmptyStr, ...]
+
+
+class RuleExecutionItem(ContractModel):
+    rule_id: NonEmptyStr
+    selection_status: Literal["SELECTED", "NOT_SELECTED"]
+    execution_status: Literal["EXECUTED", "NOT_EXECUTED", "UNKNOWN"]
+    hit_count: NonNegativeInt | None
+    reason: (
+        Literal[
+            "NOT_SELECTED",
+            "TOOL_FAILURE",
+            "UNSUPPORTED",
+            "CANCELLED",
+            "TELEMETRY_MISSING",
+            "OTHER",
+        ]
+        | None
+    )
+    detail: NonEmptyStr | None
+
+    @model_validator(mode="after")
+    def execution_shape(self) -> Self:
+        if self.selection_status == "NOT_SELECTED":
+            valid = (
+                self.execution_status == "NOT_EXECUTED"
+                and self.hit_count is None
+                and self.reason == "NOT_SELECTED"
+            )
+        elif self.execution_status == "EXECUTED":
+            valid = self.hit_count is not None and self.reason is None
+        else:
+            reasons = (
+                {"TOOL_FAILURE", "OTHER", "TELEMETRY_MISSING"}
+                if self.execution_status == "UNKNOWN"
+                else {"TOOL_FAILURE", "UNSUPPORTED", "CANCELLED", "OTHER"}
+            )
+            valid = self.hit_count is None and self.reason in reasons
+        if (
+            not valid
+            or (self.reason is None and self.detail is not None)
+            or (self.reason == "OTHER" and self.detail is None)
+        ):
+            raise ValueError("RULE_EXECUTION_INCONSISTENT")
+        return self
+
+
+class RuleExecutionRecord(DomainRecord):
+    KIND = "rule_execution_record"
+    HYPOTHESIS = False
+    tool_name: NonEmptyStr
+    tool_version: NonEmptyStr
+    analysis_config_ref: StoredDataRef
+    rule_catalog_ref: StoredDataRef
+    selected_rule_packs: tuple[NonEmptyStr, ...]
+    rules: tuple[RuleExecutionItem, ...]
+
+    @model_validator(mode="after")
+    def catalog_shape(self) -> Self:
+        if not self.rules:
+            raise ValueError("RULE_CATALOG_EMPTY")
+        unique(rule.rule_id for rule in self.rules)
+        return self
+
+
+class ToolRunResult(DomainRecord):
+    KIND = "tool_run_result"
+    HYPOTHESIS = False
+    tool_name: NonEmptyStr
+    tool_version: NonEmptyStr
+    tool_kind: Literal["STRUCTURE", "RULE_BASED"]
+    status: Literal["SUCCEEDED", "PARTIAL", "FAILED", "SKIPPED"]
+    coverage: ToolCoverage
+    rule_execution_ref: StoredDataRef | None
+    raw_result_ref: StoredDataRef | None
+    gaps: tuple[DataGap, ...]
+    errors: tuple[AnalysisError, ...]
+    started_at: AwareDatetime
+    finished_at: AwareDatetime
+    elapsed_ms: NonNegativeInt
+
+    @model_validator(mode="after")
+    def result_shape(self) -> Self:
+        if self.finished_at < self.started_at:
+            raise ValueError("INVALID_TIME_RANGE")
+        if self.tool_kind == "STRUCTURE" and self.rule_execution_ref is not None:
+            raise ValueError("RULE_EXECUTION_INCONSISTENT")
+        if (
+            self.tool_kind == "RULE_BASED"
+            and self.rule_execution_ref is None
+            and self.status != "FAILED"
+        ):
+            raise ValueError("RULE_EXECUTION_REQUIRED")
+        if self.rule_execution_ref is not None:
+            require_record_ref(self.rule_execution_ref, "rule_execution_record")
+        if self.status != "SUCCEEDED" and not self.gaps:
+            raise ValueError("STATIC_COVERAGE_UNEXPLAINED")
+        if self.status == "FAILED" and not self.errors:
+            raise ValueError("STATIC_ERROR_REQUIRED")
+        if self.status in {"SUCCEEDED", "PARTIAL"} and self.raw_result_ref is None:
+            raise ValueError("RAW_RESULT_REQUIRED")
+        return self
+
+
+FACT_PARTITIONS = {
+    "source_candidates": {"SOURCE"},
+    "sink_candidates": {"SINK"},
+    "sanitizer_candidates": {"SANITIZER"},
+    "validator_candidates": {"VALIDATOR"},
+    "auth_and_permission_checks": {"AUTH_CHECK", "PERMISSION_CHECK"},
+    "other_facts": {"OTHER"},
+}
+
+
+class StaticFactBundle(DomainRecord):
+    KIND = "static_fact_bundle"
+    HYPOTHESIS = False
+    ATTEMPT = False
+    entities: tuple[CodeSymbol, ...]
+    locations: tuple[CodeLocation, ...]
+    source_candidates: tuple[CodeFact, ...]
+    sink_candidates: tuple[CodeFact, ...]
+    sanitizer_candidates: tuple[CodeFact, ...]
+    validator_candidates: tuple[CodeFact, ...]
+    auth_and_permission_checks: tuple[CodeFact, ...]
+    other_facts: tuple[CodeFact, ...]
+    call_edges: tuple[CodeRelation, ...]
+    data_flow_candidates: tuple[CodeRelation, ...]
+    route_bindings: tuple[CodeRelation, ...]
+    tool_runs: tuple[ToolRunResult, ...]
+    gaps: tuple[DataGap, ...]
+    errors: tuple[AnalysisError, ...]
+
+    def facts(self) -> tuple[CodeFact, ...]:
+        return tuple(fact for name in FACT_PARTITIONS for fact in getattr(self, name))
+
+    @model_validator(mode="after")
+    def partition_and_provenance(self) -> Self:
+        facts = self.facts()
+        unique(fact.fact_id for fact in facts)
+        unique(entity.symbol_id for entity in self.entities)
+        unique(run.meta.attempt_id for run in self.tool_runs)
+        for name, kinds in FACT_PARTITIONS.items():
+            if any(fact.fact_kind not in kinds for fact in getattr(self, name)):
+                raise ValueError("FACT_KIND_PARTITION")
+        relations = (*self.call_edges, *self.data_flow_candidates, *self.route_bindings)
+        unique(relation.relation_id for relation in relations)
+        symbols = {entity.symbol_id for entity in self.entities}
+        observations: tuple[CodeFact | CodeRelation, ...] = (*facts, *relations)
+        for item in observations:
+            ids = (
+                (item.symbol_id,)
+                if isinstance(item, CodeFact)
+                else (item.from_symbol_id, item.to_symbol_id)
+            )
+            if any(sid is not None and sid not in symbols for sid in ids):
+                raise ValueError("SYMBOL_REFERENCE_MISSING")
+            runs = [
+                run
+                for run in self.tool_runs
+                if run.meta.attempt_id == item.producer.attempt_id
+            ]
+            if len(runs) != 1:
+                raise ValueError("PRODUCER_ATTEMPT_MISMATCH")
+            run = runs[0]
+            if (run.tool_name, run.tool_version, run.raw_result_ref) != (
+                item.producer.tool_name,
+                item.producer.tool_version,
+                item.producer.raw_result_ref,
+            ):
+                raise ValueError("PRODUCER_REFERENCE_MISMATCH")
+            if run.tool_kind == "STRUCTURE" and item.producer.rule_id is not None:
+                raise ValueError("RULE_EXECUTION_INCONSISTENT")
+        return self
+
+
+def validate_rule_execution(
+    run: ToolRunResult, record: RuleExecutionRecord, catalog_rule_ids: tuple[str, ...]
+) -> None:
+    if run.rule_execution_ref is None:
+        raise ValueError("RULE_EXECUTION_REQUIRED")
+    exact(run.rule_execution_ref, record, run.meta)
+    same_scope(run.meta, record.meta, attempt=True)
+    if (run.tool_name, run.tool_version) != (record.tool_name, record.tool_version):
+        raise ValueError("PRODUCER_REFERENCE_MISMATCH")
+    exact_set((rule.rule_id for rule in record.rules), catalog_rule_ids)
+    selected = [rule for rule in record.rules if rule.selection_status == "SELECTED"]
+    if run.status == "SUCCEEDED" and (
+        not selected or any(rule.execution_status != "EXECUTED" for rule in selected)
+    ):
+        raise ValueError("RULE_EXECUTION_INCONSISTENT")
+    if run.status == "SKIPPED" and any(
+        rule.execution_status == "EXECUTED" for rule in record.rules
+    ):
+        raise ValueError("RULE_EXECUTION_INCONSISTENT")
+
+
+def validate_static_current(
+    bundle: StaticFactBundle,
+    bundle_ref: StoredDataRef,
+    workspace: CodeWorkspace,
+    work: WorkExecutionState,
+    commit: TransitionCommit,
+    rule_records: tuple[RuleExecutionRecord, ...],
+    *,
+    attempt: WorkAttempt,
+) -> None:
+    validate_committed_output(
+        bundle,
+        bundle_ref,
+        work,
+        attempt,
+        commit,
+        expected_work_type=WorkType.STATIC_NORMALIZE,
+    )
+    if workspace.status != "READY" or (
+        workspace.analysis_id,
+        workspace.workspace_id,
+        workspace.commit_id,
+    ) != (bundle.meta.analysis_id, bundle.meta.workspace_id, bundle.meta.commit_id):
+        raise ValueError("WORKSPACE_NOT_READY")
+    if (
+        work.work_type != "STATIC_NORMALIZE"
+        or work.status != "SUCCEEDED"
+        or commit.state != "COMMITTED"
+        or commit.work_id != work.work_id
+    ):
+        raise ValueError("STATIC_NORMALIZATION_NOT_COMMITTED")
+    exact_set(work.output_refs, (bundle_ref,))
+    exact_set(commit.output_refs, (bundle_ref,))
+    for fact in bundle.facts():
+        if fact.producer.rule_id is not None:
+            records = [
+                record
+                for record in rule_records
+                if record.meta.attempt_id == fact.producer.attempt_id
+            ]
+            if len(records) != 1:
+                raise ValueError("RULE_EXECUTION_REQUIRED")
+            record = records[0]
+            run = next(
+                run
+                for run in bundle.tool_runs
+                if run.meta.attempt_id == fact.producer.attempt_id
+            )
+            if run.rule_execution_ref is None:
+                raise ValueError("RULE_EXECUTION_REQUIRED")
+            exact(run.rule_execution_ref, record, bundle.meta)
+            matches = [
+                rule for rule in record.rules if rule.rule_id == fact.producer.rule_id
+            ]
+            if (
+                len(matches) != 1
+                or matches[0].execution_status != "EXECUTED"
+                or not matches[0].hit_count
+            ):
+                raise ValueError("FACT_WITHOUT_RAW_HIT")
+
+
+class ContextRetrievalLimits(ContractModel):
+    max_depth: PositiveInt
+    max_fragments: PositiveInt
+    max_bytes: PositiveInt
+    max_requests_per_hypothesis: PositiveInt
+    timeout_ms: PositiveInt
+
+
+class CodeContextRequest(DomainRecord):
+    KIND = "code_context_request"
+    HYPOTHESIS = True
+    code_request_id: NonEmptyStr
+    action_decision_ref: StoredDataRef
+    requested_entities: tuple[CodeSymbol, ...]
+    requested_locations: tuple[CodeLocation, ...]
+    relation_query: tuple[
+        Literal[
+            "CALLERS", "CALLEES", "DATA_FLOW_NEIGHBORS", "AUTH_GUARDS", "ROUTE_BINDINGS"
+        ],
+        ...,
+    ]
+    reason: NonEmptyStr
+    limits: ContextRetrievalLimits
+
+
+class CodeContextResponse(DomainRecord):
+    KIND = "code_context_response"
+    HYPOTHESIS = True
+    code_request_id: NonEmptyStr
+    entities: tuple[CodeSymbol, ...]
+    locations: tuple[CodeLocation, ...]
+    code_fragment_refs: tuple[StoredDataRef, ...]
+    discovered_relations: tuple[CodeRelation, ...]
+    gaps: tuple[DataGap, ...]
+    errors: tuple[AnalysisError, ...]
+    truncated: bool
+    returned_fragment_count: NonNegativeInt
+    returned_bytes: NonNegativeInt
+    consumed_token_estimate: NonNegativeInt | None
+
+    @model_validator(mode="after")
+    def coverage_shape(self) -> Self:
+        if self.returned_fragment_count != len(self.code_fragment_refs):
+            raise ValueError("FRAGMENT_COUNT_MISMATCH")
+        if self.truncated and not any(
+            gap.stage == "CONTEXT" and gap.code == "CONTEXT_TRUNCATED"
+            for gap in self.gaps
+        ):
+            raise ValueError("CONTEXT_GAP_REQUIRED")
+        if self.errors and not any(gap.stage == "CONTEXT" for gap in self.gaps):
+            raise ValueError("CONTEXT_GAP_REQUIRED")
+        return self
