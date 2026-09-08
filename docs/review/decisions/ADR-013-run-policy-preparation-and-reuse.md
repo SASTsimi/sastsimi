@@ -1,12 +1,15 @@
 # ADR-013. 실행 단위 정책 준비·재사용과 Sandbox 사전 확인
 
-- 상태: `PROPOSED`
+- 상태: `ACCEPTED`
 - 제안일: 2026-09-06
 - 기준 main: `af6ffc0e81752bbf7e621f2ba3f3f6bafc7c1947`
 - 결정 담당: PM·아키텍처·공통 계약(R4, `@taehyeon-git`)
 - 반드시 확인할 역할: Gate·정책(R5-02, `@kimhr8463`), 동적 재현·Sandbox(R7, `@Potatonion`), 데이터·평가·최신성(R8, `@gitterable`)
 - 후속 반영 역할: 구현·LLM 연결(R3, `@YHS-Sec`), Verification 요청(R6, `@UltraPeachKeen`), 탐색·체이닝(R1, `@baeseungwon1010`), 정적 분석(R2, `@zv9uvr`)
-- 연결 Issue/PR: #1, #4, #10, 이 ADR을 추가하는 PR
+- 연결 Issue/PR: #1, #4, #10, PR #110
+- 반영 commit: `a6c33497af2b8f5b4ca8d9faceda43682974c8fb`
+
+PR #110 병합과 R3~R8 역할 문서 반영을 확인해 설계 결정을 승인했다. 실제 공식 출처 수집, freshness 값과 Docker 외부 경계 시험은 구현 단계의 활성화 전 증거로 남긴다.
 
 ## Context
 
@@ -88,7 +91,7 @@ R8이 승인한 versioned freshness 기준으로 `freshness_valid_until`을 계�
 
 정책 수집·Parser 실패, 최신성 확인 실패와 사전 검사 차단은 `FALSE | HOLD`가 아닙니다. 정적 분석과 기술 검증 결과는 그대로 보존합니다. `PolicyCollectionResult.status=COLLECTION_FAILED`에서는 `RunPolicyState.status=BLOCKED | FAILED` 중 실제 상태를 사용하고 Rule Scope review와 Reporter를 만들지 않습니다. 정책 부재를 공식 확인한 `ABSENT_CONFIRMED`만 기존 계약대로 `UNCERTAIN + DENY` review를 만들 수 있습니다.
 
-## 팀 확인 요청
+## 승인 때 확인한 역할 범위
 
 ### R5-02 확인
 
@@ -112,7 +115,7 @@ R8이 승인한 versioned freshness 기준으로 `freshness_valid_until`을 계�
 
 `PolicyCacheMeta`, `PolicyCacheRef`, `PolicyCacheRecord`, `RunPolicyState`, `AnalysisRunState.program_id`, `PolicyParserResult.llm_invocation_ref`, `SandboxPolicyDecision`의 정책 provenance, `POLICY_PARSER` 역할, `ReportDraft.run_policy_state_ref`, `AnalysisRunResult.program_id`·`policy_cache_refs`와 nullable `run_policy_state_ref`는 새 계약입니다. `CodeWorkspace.status=READY` 뒤 정책 준비를 시작했다면 결과의 state reference는 필수지만, 그 전에 끝난 실패·취소에는 null을 허용합니다. 새 MAJOR schema에서 시작하며 과거 record에 현재 정책 pointer, cache provenance나 LLM 호출 reference를 추정해 채우지 않습니다.
 
-## Merge order
+## 반영 순서
 
 1. 이 R4 공통 계약 PR을 R5-02·R7·R8이 확인합니다.
 2. R5-02와 R8이 정책 의미·최신성 세부 기준을 반영합니다.
@@ -120,3 +123,5 @@ R8이 승인한 versioned freshness 기준으로 `freshness_valid_until`을 계�
 4. R7이 Sandbox 입력·로그·강제 경계를 반영합니다.
 5. R6가 동적 요청과 policy state 연결을 확인하고 R1·R2가 정책을 가설 사전 필터나 StaticFactBundle로 사용하지 않는지 확인합니다.
 6. R4가 정본·Wiki·검증 시나리오를 최종 교차 검토합니다.
+
+위 순서는 R1~R8 역할 Issue와 연결 PR의 병합으로 완료됐다. 후속 구현에서 의미를 바꾸려면 새 ADR과 영향 역할 재검토가 필요하다.

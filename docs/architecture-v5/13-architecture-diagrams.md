@@ -15,7 +15,7 @@
 - 점선 화살표는 검토·보완·새 가설처럼 기본 흐름으로 되돌아가는 관계를 나타냅니다.
 - `TRUE / FALSE / HOLD` 같은 영문 상태값은 구현에서 정확히 맞춰야 하므로 그림에서 그대로 사용합니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 1. 정본 22단계 파이프라인
 

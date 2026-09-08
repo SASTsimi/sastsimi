@@ -6,7 +6,7 @@
 
 `Orchestration Runtime`은 여러 Agent의 작업 순서와 상태를 관리하는 비-LLM 프로그램 구성요소입니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 역할별 prompt의 등록 이름, template, 허용 입력, 출력 schema와 검증 방식은 [R3-05 Agent 프롬프트 구조](./implementation/05-prompt-runtime.md)를 따른다. 운영 prompt는 Markdown 문장만으로 완성되지 않으며 `PromptRegistryEntry + template exact revision + PromptPayload + output schema/semantic validator`를 한 묶음으로 승인한다.
 

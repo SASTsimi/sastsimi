@@ -6,7 +6,7 @@
 
 `retrieval`은 필요한 코드를 위치 기준으로 다시 가져오는 작업입니다. 다른 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 정적 분석의 역할
 

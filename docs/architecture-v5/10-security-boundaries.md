@@ -6,7 +6,7 @@
 
 `sandbox`는 다른 시스템과 격리된 실행 환경이고 `redaction`은 로그·보고서의 비밀정보를 가리는 처리입니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 신뢰 실행 경계
 
@@ -96,7 +96,7 @@ v5는 계약·정책·무결성 artifact를 아키텍처의 중심으로 확대�
 - Dynamic Reproduction Agent는 격리된 container 안에서 환경 설정, package, 계정, fixture/mock, PoC, command, 관찰과 재시도를 자율적으로 정한다. Dynamic Reproduction Agent는 Docker daemon을 직접 제어하지 않고 Setup Automation의 in-container 실행 통로만 사용한다.
 - 같은 가설·work에서는 영향 있는 상태·설정 변화가 없을 때만 container를 재사용한다. `STATE_CHANGED | CONFIG_CHANGED | STATE_UNCERTAIN`이면 재생성하며 crash·비정상 종료·사후 Health Check 실패는 runtime이 `STATE_UNCERTAIN`으로 강제한다.
 - 비-LLM Reproduction Session Manager가 실제 event를 durable append-only `AgentLog`에 기록한다. 전역 고유 `event_id`, attempt별 증가 `sequence`를 강제한다. `COMMAND_STARTED`와 `COMMAND_FINISHED`는 같은 exact `SandboxCommandRecord`·digest, `action_id`, attempt, environment·recipe를 가리키며 secret 원문 대신 opaque ref를 쓴 redaction 상태가 유효해야 한다. 이전 attempt의 늦은 event는 current 결과에 섞지 않는다.
-- request·plan·recipe·실제 환경·AgentLog·PoC candidate·validated PoC는 같은 analysis·workspace·commit·hypothesis·work·attempt를 가리킨다. 성공한 baseline recipe 재사용은 exact baseline ref와 동일 built image digest를 가진 current-attempt binding으로 기록한다.
+- R6가 생산한 exact `DynamicReproductionRequest`는 current Verification generation의 입력으로 고정하지만, 그 생산 attempt를 R7 `DYNAMIC_REPRO` 실행 attempt와 같다고 요구하지 않는다. request와 R7 결과는 같은 analysis·workspace·commit·hypothesis·Verification generation을 가리키고, plan·recipe·실제 환경·AgentLog·PoC candidate·validated PoC는 같은 R7 work·attempt를 가리킨다. 성공한 baseline recipe 재사용은 exact baseline ref와 동일 built image digest를 가진 current-attempt binding으로 기록한다.
 - validated PoC 없이 `TRUE` 저장 또는 Technical Gate 호출을 요청하면 Runtime Validator가 거절한다. validated `poc_ref`는 `SUCCEEDED + SUPPORTED`이고 same-attempt AgentLog가 exact candidate revision·digest의 실제 실행을 입증할 때만 허용한다.
 - 정리 대상이 하나도 생기지 않았을 때만 `cleanup_status=NOT_REQUIRED`다. Sandbox profile 외부 격리 경계 차단 전에 build·container·network·volume·임시 파일이 생겼다면 정리 성공 또는 실패와 exact cleanup reference를 기록한다.
 - 환경·Sandbox profile 외부 격리 경계·Dynamic Reproduction Agent·PoC 생성·실행 실패는 가설 `FALSE | HOLD`가 아니다. 같은 Dynamic Reproduction Agent session의 조정은 현재 attempt에 기록하고, session 재시작이 필요한 retry만 새 attempt를 사용한다. current work의 불변 입력을 바꾸지 않는 외부 조건을 기다릴 때만 `BLOCKED`이며 조건 해결 뒤에는 같은 work에서 `trigger=RESUME`인 새 attempt를 시작한다. exact request나 profile reference 변경이 필요하면 기존 work를 재개하지 않는다. 한도 소진 또는 복구 불가 시 `FAILED + INCONCLUSIVE`로 종료하고 과거 attempt 결과를 current 성공 근거로 사용하지 않는다. 프로그램 정책 준비 상태는 `LOCAL_ONLY` 실행의 대기·차단 사유가 아니다.

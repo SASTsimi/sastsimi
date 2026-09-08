@@ -11,7 +11,7 @@
 - 핵심 결과 네 종류의 `SAVE_RESULT` result-owner, exact pointer와 atomic commit 연결
 - run-init Docker baseline branch 제거와 실제 Docker 준비를 가설별 `DYNAMIC_REPRO`로 한정하는 경계
 
-실제 Provider capability, 평가 합격선과 Docker 보안 시험처럼 구현·운영 증거가 필요한 항목은 아래 담당 Issue에서 계속 확인합니다. 미실행 시험을 성공으로 표시하지 않습니다.
+PR #116 병합과 Issue #92·R3 상위 Issue #4 종료로 구현 기준 설계까지 확정했습니다. 실제 Provider capability, 평가 실행과 Docker 보안 시험처럼 코드와 실행 환경이 있어야 얻을 수 있는 증거는 아래 담당 역할이 구현 단계에서 확인합니다. 미실행 시험을 성공으로 표시하지 않으며, 통과 전 기능은 문서의 fail-closed 기본값으로 비활성화합니다.
 
 ## 이번에 확정한 운영 사항
 
@@ -33,7 +33,9 @@
    - 참고: [GitHub의 저장소 라이선스 안내](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/licensing-a-repository)
    - 담당 역할과 Issue: 저장소 관리 담당, [#5](https://github.com/SASTsimi/sastsimi/issues/5)
 
-## 구현 전 필수 결정
+## 구현·운영에서 채울 실제 설정과 증거
+
+아래 항목은 Architecture v5의 구조를 다시 정해야 하는 Blocker가 아닙니다. 승인된 schema·권한·실패 규칙 안에서 실제 설정값과 시험 증거를 만들기 위한 구현 작업입니다. 운영 활성화 조건을 만족하지 못하면 해당 기능을 켜지 않습니다.
 
 | 번호 | 쉽게 말하면 무엇을 정해야 하나 | 정확한 기술 항목 |
 |---|---|---|
@@ -56,9 +58,9 @@
 | 17 | Docker 실행과 공식 정책 수집에서 생길 위협과 대응을 별도 결정 기록으로 남깁니다. | daemon/image/build provenance, policy 인증·freshness threat model/ADR |
 | 18 | 세션·Gate·모델 선택이 실제 품질을 높이는지 같은 예제로 비교할 합격선을 정합니다. | versioned corpus, 지표와 acceptance threshold |
 
-## 어느 Issue에서 결정하나요?
+## 어느 역할이 구현에서 확인하나요?
 
-| 결정 영역 | 담당 역할별 상위 Issue |
+| 구현·검증 영역 | 담당 역할과 완료된 설계 Issue |
 |---|---|
 | provider/model, membership/session, 상태 저장·복구 | [R3 #4](https://github.com/SASTsimi/sastsimi/issues/4), [R4 #5](https://github.com/SASTsimi/sastsimi/issues/5) |
 | Hypothesis, Primitive와 Chaining 한도 | [R1 #2](https://github.com/SASTsimi/sastsimi/issues/2) |
@@ -80,3 +82,5 @@
 - 목표 날짜
 - 최종 결정과 근거
 - 반영한 PR과 commit
+
+설계 의미를 바꾸지 않는 실제 시험 결과와 설정 revision은 구현 Issue·PR에 남깁니다. field·enum·권한·상태 전이를 바꿔야 하면 새 ADR과 영향 역할 검토를 먼저 진행합니다.

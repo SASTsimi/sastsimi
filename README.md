@@ -11,33 +11,31 @@ SASTSIMI는 정적 분석 도구가 모은 코드 정보를 LLM이 검토하고,
 - Docker sandbox(다른 시스템과 격리된 실행 환경)는 필요한 경우에만 사용합니다.
 - Gate(다음 단계로 보내도 되는지 확인하는 검토 단계)는 근거와 공식 정책을 확인합니다.
 - Reporter의 `ReportDraft`가 마지막 Agent 산출물입니다. 결과 저장 뒤 자동화가 끝나며 외부 공개 여부는 사람이 결정합니다.
-- 지금은 **설계 검토 단계**이며 실행 코드는 아직 없습니다.
+- **설계 검토는 완료**됐으며 실행 코드는 아직 없습니다.
 
 모르는 용어는 [쉬운 용어집](./docs/GLOSSARY.md), 각 파일의 목적은 [전체 문서 지도](./docs/DOCUMENT_GUIDE.md)에서 확인할 수 있습니다.
 
 ## 현재 단계
 
 ```text
-DESIGN_AUTHORED
-REVIEW_REQUIRED
+DESIGN_APPROVED
 NOT_IMPLEMENTED
 ```
 
-- v5 설계 초안은 별도 작업 폴더에서 가져온 **검토 중인 설계 초안(`candidate baseline`)**입니다.
-- 각 파트 담당자가 자신의 영역과 인접 계약을 검토하는 단계입니다.
-- 설계 검토가 끝나기 전에는 Architecture PASS, 구현 완료 또는 runtime-ready를 주장하지 않습니다.
+- Architecture v5는 R1~R8 역할 검토와 전체 문서 추적 검토를 거쳐 **구현 기준 설계**로 승인되었습니다.
+- `DESIGN_APPROVED`는 문서의 역할·흐름·계약을 구현 기준으로 확정했다는 뜻이며, 실행 코드나 보안 성능을 검증했다는 뜻이 아닙니다.
+- 실제 Provider 연결, 평가, Docker 보안 시험과 전체 실행은 아직 `NOT_IMPLEMENTED`입니다.
 - 자동 분석 결과를 외부에 제출하거나 공개하지 않습니다. 최종 공개 여부는 사람이 결정합니다.
 
 ## 현재 목표
 
-첫 번째 목표는 코드를 바로 구현하는 것이 아니라 다음을 먼저 완성하는 것입니다.
+승인된 설계를 기준으로 다음 단계의 구현과 검증을 진행합니다.
 
-1. LLM 중심 분석 파이프라인의 단계와 역할 경계를 팀 전체가 동일하게 이해합니다.
-2. 정적 분석, 가설 생성, Verification 중심 검증, 동적 재현, 두 검토 단계(`Gate`)와 보고 사이의 입출력 약속을 명확히 합니다.
-3. 보류된 가설의 입력 조건과 Technical Gate가 승인한 공격 결과를 연결하는 연계 탐색(`Primitive DB`와 `Chaining Agent`) 규칙을 검토합니다.
-4. 회원 로그인·API 방식의 LLM 연결(`provider`), 로그인·대화 상태(`session`), 실행 기록(`logging`)과 비용·평가 정책을 구현 가능한 수준으로 구체화합니다.
-5. 파트 간 모순과 Blocker/High 이슈를 제거한 뒤 전체 설계를 승인합니다.
-6. 승인된 설계를 기준으로 구현 계획과 검증 계획을 별도 수립합니다.
+1. 공통 계약을 Pydantic·JSON Schema와 저장 구조로 구현합니다.
+2. 정적 분석, 가설 생성, Verification, 동적 재현, 두 Gate와 Reporter를 승인된 순서로 연결합니다.
+3. 실제 Provider·모델 조합은 capability 시험과 R8 평가를 통과한 exact 설정만 활성화합니다.
+4. Docker Sandbox의 외부 경계와 복구·중복·오류 시나리오를 구현 시험으로 확인합니다.
+5. 구현 결과가 문서 계약과 달라져야 한다면 코드를 임의로 우회하지 않고 새 Issue·ADR·PR로 설계를 변경합니다.
 
 가져온 원본은 commit에 포함되지 않은 작업 폴더의 파일이었습니다. 따라서 특정 commit에서 나온 파일이라고 주장하지 않습니다. 원본 상태와 파일별 SHA-256은 [가져온 출처 기록](./docs/review/PROVENANCE.md)에 남깁니다. 이 저장소에서 승인된 설계 commit만 별도 PR을 통해 구현 저장소로 전달합니다.
 
@@ -91,7 +89,7 @@ LLM Agent의 출력은 그대로 믿지 않습니다. 프로그램 내부 규칙
 
 ## 설계 검토 운영 방식
 
-이 프로젝트는 **main의 공개 초안 + 파트별 PR** 방식으로 설계를 완성합니다.
+이 프로젝트는 **main의 승인된 기준 + 파트별 변경 PR** 방식으로 설계를 관리합니다.
 
 ### Issue와 작업의 관계
 
@@ -113,7 +111,7 @@ LLM Agent의 출력은 그대로 믿지 않습니다. 프로그램 내부 규칙
 8. #2–#9가 끝나면 #10에서 전체 흐름을 검토합니다.
 
 ```text
-main  ← Architecture v5 candidate baseline
+main  ← Architecture v5 approved design baseline
 ├─ review/static-context
 ├─ review/hypothesis-research
 ├─ review/integration-feasibility
@@ -124,12 +122,12 @@ main  ← Architecture v5 candidate baseline
 └─ review/data-evaluation
 ```
 
-- 전체 설계 초안은 `main`에서 누구나 확인할 수 있게 유지합니다.
+- 승인된 전체 설계는 `main`에서 누구나 확인할 수 있게 유지합니다.
 - 각 담당자는 먼저 자기 세부 작업의 하위 Issue를 만들고, 최신 `main`에서 파트 브랜치를 만든 뒤 `main` 대상으로 PR을 엽니다.
 - 하나의 파트 PR은 담당 영역과 필요한 인접 계약만 수정합니다.
 - 입력을 제공하는 파트와 결과를 소비하는 파트의 교차 리뷰를 받습니다.
-- Blocker/High가 0이 된 뒤 전체 시나리오 검토를 수행합니다.
-- 설계 상태 변경은 모든 파트 검토가 끝난 뒤 별도의 최종 승인 PR에서 수행합니다.
+- 설계 의미를 바꾸는 후속 작업은 영향 역할의 교차 검토와 새 승인 근거를 남깁니다.
+- 구현 PR은 설계 변경과 섞지 않고, 승인된 계약을 시험으로 증명합니다.
 
 전체 절차는 [CONTRIBUTING.md](./CONTRIBUTING.md)를 따릅니다.
 
@@ -145,16 +143,16 @@ main  ← Architecture v5 candidate baseline
 | PM·아키텍처·워크플로 | 김태현 ([@taehyeon-git](https://github.com/taehyeon-git)), 윤희섭 ([@YHS-Sec](https://github.com/YHS-Sec)) | 전체 구조, 공통 입출력 계약, 사람·LLM 경계, 병렬·직렬 흐름과 오류 정책 |
 | Gate·Finding·보고서 | 김혜령 ([@kimhr8463](https://github.com/kimhr8463)) | R5-01 CWE 분류와 기술 근거 검토, R5-02 정책 범위 검토, R5-03 내부 Finding과 안전한 보고서 초안 작성 |
 | 검증·반박·플레이북 | 임채민 ([@UltraPeachKeen](https://github.com/UltraPeachKeen)) | 가설별 Context·찬반, 동적 재현 목적·목표 요청, 반환 결과 소비, 최종 판정·Gate 보완 |
-| 동적검증·Sandbox | 조근석 ([@Potatonion](https://github.com/Potatonion)) | Dynamic Reproduction Agent의 환경 요구사항·간단한 plan·자율 PoC 실행, Setup Automation의 Docker 환경·정리, Controller 외부 경계, Session Manager의 AgentLog·validated PoC·동적 결과 확정 |
+| 동적검증·Sandbox | 조근석 ([@Potatonion](https://github.com/Potatonion)) | Dynamic Reproduction Agent의 환경 요구사항·간단한 plan·자율 PoC 실행, Reproduction Setup Automation의 Docker 환경·정리, Sandbox Controller 외부 경계, Reproduction Session Manager의 AgentLog·validated PoC·동적 결과 확정 |
 | 데이터·평가·예산 | 성병찬 ([@gitterable](https://github.com/gitterable)) | 평가 데이터·품질 지표와 예산 profile 설계; 실제 예산 강제는 trusted runtime 담당 |
 
 R5-01 `CWE_LABELING`은 final TRUE마다 exact Verification에 대응하는 current `CWELabel`을 만듭니다. 같은 CWE가 유지돼도 새 Verification이면 새 label revision이 필요합니다. Gate는 Verification verdict나 CWELabel을 변경하거나 공개를 승인하지 않습니다. Reporter는 보고서 초안만 작성하고 이후 Agent 자동화는 종료됩니다. 사람의 검토·수정·제출·공개는 이 자동화 밖에서 진행합니다.
 
 동적 재현의 역할 연결은 `R6의 목적별 DynamicReproductionRequest → R4 Runtime Validator의 generation별 단일 work 검사 → Dynamic Reproduction Agent의 requirements·간단한 plan → Sandbox Controller의 외부 경계 검사 → Setup Automation과 Dynamic Reproduction Agent의 PoC candidate 생성·격리 실행 → Reproduction Session Manager의 AgentLog·validated PoC·동적 결과 확정 → R6의 최종 판정`입니다. R6는 R7 산출물을 대신 만들지 않고, R7은 가설 verdict를 결정하지 않습니다. validated PoC가 없는 TRUE는 저장하거나 Technical Gate로 보낼 수 없습니다.
 
-## 설계 초안
+## 승인된 설계
 
-Architecture v5 candidate baseline과 파생 Wiki는 `main`에서 확인하고 파트별 PR로 검토합니다.
+Architecture v5 구현 기준 설계와 파생 Wiki는 `main`에서 확인합니다. 최종 승인 근거와 실제 구현 전 후속 조건은 [최종 승인 기록](./docs/review/FINAL_ARCHITECTURE_V5_APPROVAL.md)을 따릅니다.
 
 - [Architecture v5 design hub](./docs/architecture-v5/README.md)
 - [역할별 검토 Issue 구조](./docs/review/ISSUE_CATALOG.md)

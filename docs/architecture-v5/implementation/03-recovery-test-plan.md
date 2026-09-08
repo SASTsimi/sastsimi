@@ -1,6 +1,6 @@
 # R3-03. 중단·재시도·복구 통합 시험 계획
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 >
 > 프로그램이 중간에 멈췄을 때 어떤 기록을 확인하고 어디서 다시 시작해야 하는지 정리한 **검토용 설계 초안**이다. 실제 runtime·복구 코드·fixture·자동 테스트를 구현하거나 실행한 결과가 아니다.
 
@@ -612,7 +612,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **3. work·attempt·generation·input**: R1/W1/C1/H1/G1, KD1/AD1/IHD1, exact DQ1, SandboxProfile SP1, R8 lifecycle LP1, command record CMD1/digest CD1. request 생산 attempt와 동적 실행 attempt는 같을 필요 없음. 자세한 정상 graph는 F-DYN(#106 §2.3).
 - **4. 저장된 record·artifact·marker**: 각 단계의 PC1/실제 관찰/log; validated POC1 후보 또는 완전 COMMITTED DX1·POC1 pair.
 - **5. 정확한 장애 주입 지점**: candidate 생성/실행 실패, 정상 DISPROVED/INCONCLUSIVE, POC 검증 후 dynamic commit 직전을 각각 시험.
-- **6. 재시작 검사 조건**: same-attempt exact request·plan·recipe·environment·AgentLog·candidate revision/digest·실행 action·지지 관찰·validated 요건·commit binding.
+- **6. 재시작 검사 조건**: current generation의 exact R6 request ref를 유지하고, plan·recipe·environment·AgentLog·candidate revision/digest·실행 action·지지 관찰·validated 요건·commit binding이 같은 R7 work·attempt인지 검사한다. request 생산 attempt는 R7 실행 attempt와 같을 필요가 없다.
 - **7. 복구 조치**: candidate만 있으면 승격하지 않는다. `SUCCEEDED + SUPPORTED`이고 위 same-attempt closure를 모두 재검증한 확정 pair만 소비한다. 실패 candidate는 history로 남기고 실패를 정상 INCONCLUSIVE로 위장하지 않는다.
 - **8. 기대 state·current/격리 결과**: 정상 DISPROVED/INCONCLUSIVE는 poc_ref=null; 실제 관측·검증 완료 후에만 R6 FALSE/HOLD 가능. 실행 오류는 final 없음.
 - **9. 다음 단계 호출**: TRUE/Gate는 current generation의 정상 DX1+POC1 exact commit 후만 허용.
@@ -672,7 +672,7 @@ R3는 장애 지점과 검사 기대값을 설계한다. R4가 상태·권한·a
 - **3. work·attempt·generation·input**: 모든 validated PoC 구성요소는 R1/W1/C1/H1/G1/KD1/AD1과 exact candidate revision·content digest·실행 action·환경 digest를 공유한다.
 - **4. 저장된 record·artifact·marker**: candidate·command start/finish·SUPPORTED 관찰·AgentLog durable prefix, POC1/DX1 candidate와 transition 상태. old attempt A0의 동일해 보이는 candidate·digest도 부정 fixture로 둔다.
 - **5. 정확한 장애 주입 지점**: A candidate 작성 뒤 실행 전, B 실행 start 뒤 finish 전, C 지지 관찰 뒤 PoCBundle commit 전, D POC1 commit 뒤 DX1 commit 전, E DX1 commit 뒤 R6 pointer 전 종료한다.
-- **6. 재시작 검사 조건**: request·plan·recipe·environment·AgentLog·candidate exact revision/digest·action·SUPPORTED 관찰·PoCBundle·DX1이 모두 AD1에 연결되는지, log가 실제 실행과 redaction을 입증하는지 검사한다.
+- **6. 재시작 검사 조건**: POC1·DX1이 current generation의 exact R6 request DQ1을 함께 가리키는지 검사하되 DQ1의 생산 attempt를 AD1과 같다고 요구하지 않는다. plan·recipe·environment·AgentLog·candidate exact revision/digest·action·SUPPORTED 관찰·PoCBundle·DX1은 모두 R7 실행 attempt AD1에 연결되고, log가 실제 실행과 redaction을 입증해야 한다.
 - **7. 복구 조치**: 완전한 COMMITTED closure만 validated `poc_ref`로 재투영한다. candidate·부분 log·old attempt 결과를 PoC로 승격하지 않고, 없는 finish/관찰 event를 생성하지 않는다.
 - **8. 기대 state·current/격리 결과**: `SUCCEEDED + SUPPORTED + agent_invoked=true`와 same-attempt closure를 모두 만족할 때만 DX1.poc_ref=POC1이다. 실패·DISPROVED·INCONCLUSIVE·불완전 log에서는 validated poc_ref=null이다.
 - **9. 다음 단계 호출**: validated PoC와 exact DX1이 current generation에 함께 확정되기 전 R6 final TRUE와 Technical Gate 호출은 0건이다.
@@ -1067,12 +1067,12 @@ fake provider·fake static tool·fake Sandbox로 먼저 구성할 계획이다. 
 - [x] 저장/오류/복구 질문을 RQ 항목으로 분리하고 R3-06 §10.7에서 구현 기준 확정
 - [x] 병합된 #106 최종 HEAD `0e2e7fe` 기준으로 의존 ID/fixture 재대조
 - [x] 병합된 #97 최종 HEAD `fbf0236` 기준으로 역할명·Prompt lineage·Sandbox tool-loop 재대조
-- [ ] R4·R5·R6·R7·R8 및 영향받는 R1/R2 검토 기록 확보
+- [x] R1~R8 역할 검토와 Issue #10 최종 교차 검토 기준 연결
 - [x] 구현을 막는 RQ 항목의 exact 기대값·저장 경계 확정
 - [x] PR #107 병합 commit `35729d3` 기준 정합성 재확인
 
-체크된 항목은 문서 작성 여부일 뿐 실행 시험 통과가 아니다. 실제 fixture·runtime·Recovery code·migration·자동 시험·실제 Provider/Sandbox 검증은 아직 구현/수행하지 않았다. 이 PR을 만들었다는 이유로 #89나 상위 #4를 바로 닫지 않는다.
+체크된 항목은 설계 문서 완료 여부일 뿐 실행 시험 통과가 아니다. #89와 상위 #4의 설계 범위는 종료됐지만, 실제 fixture·runtime·Recovery code·migration·자동 시험·실제 Provider/Sandbox 검증은 아직 구현/수행하지 않았다.
 
 ## 10. 발표·상태 보고용 요약
 
-세부 장애·복구 card 43개와 전체 흐름 E2E card 10개를 계획으로 정리했다. 저장 준비 상태의 결과는 다음 단계에 넘기지 않고, 이미 확정된 기록은 같은 기록으로 상태를 복원하도록 검사 지점을 정했다. 저장·오류·불확실 실행의 구현 기준은 R3-06에서 확정했지만, 실제 복구 프로그램·자동 테스트·Provider/Sandbox 시험과 역할별 검토는 아직 남아 있다.
+세부 장애·복구 card 43개와 전체 흐름 E2E card 10개를 계획으로 정리했다. 저장 준비 상태의 결과는 다음 단계에 넘기지 않고, 이미 확정된 기록은 같은 기록으로 상태를 복원하도록 검사 지점을 정했다. 저장·오류·불확실 실행의 구현 기준과 역할별 문서 검토는 완료했지만, 실제 복구 프로그램·자동 테스트·Provider/Sandbox 시험은 아직 남아 있다.

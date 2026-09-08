@@ -49,7 +49,7 @@ R6는 “무엇을 왜 재현할지”만 요청합니다. Dynamic Reproduction 
 
 - `poc_candidate_ref`는 Dynamic Reproduction Agent가 작성했거나 실행을 시도한 candidate입니다. 실패해도 같은 attempt의 AgentLog와 함께 남길 수 있습니다.
 - validated `poc_ref`는 `SUCCEEDED + SUPPORTED`, `agent_invoked=true`, exact candidate revision·digest의 실제 실행 event가 모두 있을 때만 생성합니다.
-- request·plan·recipe·environment·AgentLog·candidate·validated PoC와 dynamic result는 같은 work·attempt에 연결합니다. 과거 baseline recipe ref만 명시된 예외입니다.
+- R6가 생산한 exact `DynamicReproductionRequest`는 current Verification generation의 입력으로 고정하지만, 그 생산 attempt를 R7 `DYNAMIC_REPRO` 실행 attempt와 같다고 요구하지 않는다. plan·recipe·environment·AgentLog·candidate·validated PoC와 dynamic result는 같은 R7 work·attempt에 연결합니다. 과거 baseline recipe ref만 명시된 예외입니다.
 - 환경 실패, Sandbox profile 외부 격리 경계 차단, candidate 생성/실행 실패, timeout, `DISPROVED | INCONCLUSIVE`이면 `poc_ref=null`입니다.
 - current generation의 exact request, `SUCCEEDED + SUPPORTED` 결과와 validated PoC 중 하나라도 없으면 R6 final TRUE 저장과 Technical Gate 호출을 막습니다.
 

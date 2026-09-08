@@ -1,11 +1,14 @@
 # ADR-015. R3 단일 애플리케이션 구현 기준선
 
-- 상태: `PROPOSED`
+- 상태: `ACCEPTED`
 - 제안일: 2026-09-07
-- 기준 main: `35729d3185cf46cdbf9c94ce2be646ae11f26446` (PR #107 병합)
+- 기준 main: `07bd6549a676419c0e720f940ba7abd1b82aea0d` (PR #116 병합)
 - 결정 담당: 구현·통합(R3, `@YHS-Sec`), PM·공통 아키텍처(R4, `@taehyeon-git`)
 - 반드시 확인할 역할: R1 `@baeseungwon1010`, R2 `@zv9uvr`, R5 `@kimhr8463`, R6 `@UltraPeachKeen`, R7 `@Potatonion`, R8 `@gitterable`
-- 연결 Issue/PR: #4, #24, #25, #89, #90, #91, #92, PR #107, 이 ADR을 추가하는 Draft PR
+- 연결 Issue/PR: #4, #24, #25, #89, #90, #91, #92, PR #107, PR #116
+- 반영 commit: `07bd6549a676419c0e720f940ba7abd1b82aea0d`
+
+PR #116 병합과 Issue #92·R3 상위 Issue #4 종료를 확인해 이 단일안을 구현 기준으로 승인했다. Provider capability, 품질 평가, Docker 보안과 전체 실행은 실제 구현에서 별도로 증명해야 한다.
 
 ## Context
 
@@ -38,7 +41,7 @@ Architecture v5 번호 문서는 역할·데이터·상태·권한을 정했고 
 
 ## Decision
 
-Option A를 채택할 단일안으로 제안한다.
+Option A를 구현 기준 단일안으로 채택한다.
 
 - 64-bit CPython `>=3.12,<3.13`
 - `uv`, `pyproject.toml`, 커밋된 `uv.lock`
@@ -104,5 +107,5 @@ R3-04의 실제 capability 시험을 통과하지 않은 ProviderProfile은 ACTI
 - R3-02 계약 시험과 병합된 R3-03 복구 시험을 물리 table·artifact·CLI 결정에 연결한다.
 - `R3-CT-COM-015`, `R3-CT-DYN-013`, `R3-CT-BUD-006`~`007`, `R3-CT-EVAL-001`~`003`과 `R3-REC-WRK-008`, `R3-REC-DYN-010`이 참조·세대 전이·예산 bootstrap·작업별 한도·평가·복구 결정을 검증한다.
 - R1~R8이 자기 영역 section과 검토 commit SHA를 기록한다.
-- PR #107 병합과 Issue #89 종료를 반영한 최신 main 기준으로 재검증한다.
-- 필수 역할 검토를 마친 최종 review-freeze commit에서 상태를 `ACCEPTED`로 바꾸고 decisions README의 기준 commit·PR 정보를 갱신한 뒤 병합한다.
+- PR #116 병합과 Issue #92·R3 상위 Issue #4 종료를 반영한 `07bd6549a676419c0e720f940ba7abd1b82aea0d` 기준으로 최종 문서 검증을 수행한다.
+- 승인 뒤 구현이 이 결정을 바꿔야 하면 새 ADR에서 migration·보안·시험 영향을 다시 검토한다.

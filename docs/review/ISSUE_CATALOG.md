@@ -1,6 +1,6 @@
 # Architecture v5 역할별 Issue 카탈로그
 
-이 문서는 역할별 상위 Issue에서 무엇을 검토하고 어떤 세부 하위 Issue를 만들지 안내합니다. 실제 Issue와 담당자 상태는 [Issue 현황](./ISSUE_TRACKER.md)에서 확인합니다. 현재 단계는 **설계 검토**이며 실행 코드(`runtime`) 구현은 범위 밖입니다. 역할 담당자와 실제 GitHub 계정, 최종 검토·승인 담당자는 모두 정해졌습니다. 모르는 기술 용어는 [쉬운 용어집](../GLOSSARY.md)에서 확인합니다.
+이 문서는 역할별 상위 Issue에서 무엇을 검토했고 어떤 세부 하위 Issue로 나눴는지 안내합니다. 실제 Issue와 담당자 상태는 [Issue 현황](./ISSUE_TRACKER.md)에서 확인합니다. 역할별 설계 검토는 끝났고 Final Issue #10에서 구현 기준 설계 상태를 확정합니다. 실행 코드(`runtime`) 구현은 아직 범위 밖입니다. 모르는 기술 용어는 [쉬운 용어집](../GLOSSARY.md)에서 확인합니다.
 
 ## 공통 작업 방식
 
@@ -26,7 +26,7 @@
 
 ---
 
-## 전체 관리 Issue — Architecture v5 검토 중 설계 초안 승인 준비
+## 전체 관리 Issue — Architecture v5 구현 기준 설계 승인
 
 - 실제 Issue: [#1](https://github.com/SASTsimi/sastsimi/issues/1)
 - 진행 담당: 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec`
@@ -66,7 +66,7 @@
 - [ ] HOLD는 `required_primitive_candidates`가 하나 이상일 때만 `inputs + result=null` Primitive로 연결 후보가 되고, 후보가 비어 있으면 Primitive·Chaining work가 생기지 않음. TRUE는 validated PoC·Technical `ACCEPT`·current admission `ALLOW` 뒤에만 `inputs + result` Primitive로 연결되며 FALSE는 체이닝되지 않음
 - [ ] 모든 Blocker/High가 닫히고 Medium은 명시적으로 처리됨
 - [ ] freeze commit SHA, 역할 간 교차 검토와 최종 검토·승인 담당자의 최신 확인 기록이 있음
-- [ ] 별도 승인 PR 전까지 `REVIEW_REQUIRED / NOT_IMPLEMENTED`를 유지함
+- [ ] 별도 최종 승인 PR에서만 `DESIGN_APPROVED / NOT_IMPLEMENTED`로 상태를 변경함
 
 ---
 
@@ -203,7 +203,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 쉽게 말하면
 
-각 파트의 설계가 실제 코드 모듈로 이어질 수 있는지 확인하고, 모듈 사이의 입력·출력과 오류가 서로 맞는지 테스트 계획을 만든다. 현재는 설계 검토 단계이므로 전체 코드를 구현하는 것이 아니라 **구현 가능한 설계인지 확인하는 작업**이다.
+각 파트의 설계가 실제 코드 모듈로 이어질 수 있는지 확인하고, 모듈 사이의 입력·출력과 오류가 서로 맞는지 테스트 계획을 만든다. 이 역할의 설계 검토는 완료됐으며, 현재 승인 상태는 **구현 가능한 설계를 확정했지만 실제 코드는 아직 만들지 않은 상태**다.
 
 ### 담당자가 나눌 수 있는 하위 Issue 예시
 

@@ -251,10 +251,181 @@ foreach ($requiredFindingMarker in @(
     '| B-007 | RESOLVED |',
     '| B-008 | RESOLVED |',
     '현재 열린 Blocker는 0개입니다.',
+    '| H-003 | RESOLVED |',
+    '| H-004 | RESOLVED |',
+    '| H-005 | RESOLVED |',
+    '현재 열린 High는 0개입니다.',
     '| H-011 | RESOLVED |'
 )) {
     if (-not $findingsText.Contains($requiredFindingMarker)) {
         Add-Failure "FINDINGS status is not synchronized with implementation blockers: $requiredFindingMarker"
+    }
+}
+
+# Final approval is a documentation state transition, not an implementation
+# success claim. Keep the review-start main, exact PR-head approval target,
+# role issue state, accepted ADRs and NOT_IMPLEMENTED boundary aligned.
+$finalApprovalPath = Join-Path $repoRoot 'docs/review/FINAL_ARCHITECTURE_V5_APPROVAL.md'
+if (-not (Test-Path -LiteralPath $finalApprovalPath)) {
+    Add-Failure 'missing Architecture v5 final approval record'
+} else {
+    $finalApprovalText = Get-Content -Raw -Encoding UTF8 -LiteralPath $finalApprovalPath
+    foreach ($marker in @(
+        '검토 시작 기준 `main`',
+        '07bd6549a676419c0e720f940ba7abd1b82aea0d',
+        'PR #116',
+        'Issue #92',
+        'R1~R8 상위 Issue #2~#9 모두 `CLOSED`',
+        '문서 구조·계약 추적: **PASS**',
+        '열린 Architecture Blocker/High: **0**',
+        '설계 상태: **DESIGN_APPROVED**',
+        '구현 상태: **NOT_IMPLEMENTED**',
+        '정확한 PR head',
+        '최종 리뷰에서 발견한 기존 계약의 모호함을 바로잡은 수정',
+        '최종 승인 대상은 PR 본문에 기록한 정확한 head SHA',
+        'current generation의 exact `DynamicReproductionRequest`와 같은 `DYNAMIC_REPRO` 실행 attempt의 recipe·환경·AgentLog·candidate·command digest를 요구',
+        '| F-19 | 금지 테스트 위반은 result Primitive를 막고, 다른 scope·impact 실패는 보고 가능성만 막음 | PASS | `05`, `06`, `08`, ADR-011, ADR-014 |'
+    )) {
+        if (-not $finalApprovalText.Contains($marker)) {
+            Add-Failure "final approval record is missing: $marker"
+        }
+    }
+
+    foreach ($obsoleteMarker in @(
+        '승인 상태와 검토 기록만 변경합니다',
+        'Final PR이 상태 변경만 하는지'
+    )) {
+        if ($finalApprovalText.Contains($obsoleteMarker)) {
+            Add-Failure "final approval record still misstates the PR diff: $obsoleteMarker"
+        }
+    }
+}
+
+$finalApprovalBaselineMarkers = @{
+    'docs/DOCUMENT_GUIDE.md' = '검토 시작 기준 main'
+    'docs/review/ISSUE_TRACKER.md' = '검토 시작 기준 main'
+    'docs/architecture-v5/implementation/README.md' = '최종 승인 검토 시작 기준 main'
+    'docs/architecture-v5/implementation/06-implementation-baseline.md' = '실제 승인 대상은 Final PR 본문의 exact head'
+}
+foreach ($relativePath in $finalApprovalBaselineMarkers.Keys) {
+    $path = Join-Path $repoRoot $relativePath
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    $marker = $finalApprovalBaselineMarkers[$relativePath]
+    if (-not $text.Contains($marker)) {
+        Add-Failure "final approval baseline/head boundary is not synchronized: $relativePath"
+    }
+}
+
+# R6 produces DynamicReproductionRequest before R7 starts its execution
+# attempt.  The exact current-generation request is an immutable input to R7;
+# only artifacts produced by R7 are required to share the DYNAMIC_REPRO
+# work/attempt.  Guard the canonical R5-facing documents against collapsing
+# these two attempt identities again.
+$dynamicRequestAttemptSeparationMarker = 'R6가 생산한 exact `DynamicReproductionRequest`는 current Verification generation의 입력으로 고정하지만, 그 생산 attempt를 R7 `DYNAMIC_REPRO` 실행 attempt와 같다고 요구하지 않는다.'
+$dynamicRequestAttemptSeparationFiles = @(
+    'docs/architecture-v5/04-verification-and-dynamic-reproduction.md',
+    'docs/architecture-v5/05-llm-gate-and-reporting.md',
+    'docs/architecture-v5/08-lightweight-data-contracts.md',
+    'docs/architecture-v5/10-security-boundaries.md',
+    'docs/architecture-v5/12-report-draft-template.md',
+    'docs/review/decisions/ADR-007-r7-autonomous-reproduction-session.md'
+)
+foreach ($relativePath in $dynamicRequestAttemptSeparationFiles) {
+    $path = Join-Path $repoRoot $relativePath
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    if (-not $text.Contains($dynamicRequestAttemptSeparationMarker)) {
+        Add-Failure "R6 request/R7 attempt boundary is not explicit: $relativePath"
+    }
+}
+
+$dynamicRequestAttemptBoundaryScanFiles = $dynamicRequestAttemptSeparationFiles + @(
+    'docs/architecture-v5/wiki/results.md',
+    'docs/architecture-v5/implementation/02-contract-test-plan.md',
+    'docs/architecture-v5/implementation/03-recovery-test-plan.md'
+)
+$obsoleteSameAttemptPhrases = @(
+    'validated PoC의 request·plan·recipe·environment·AgentLog·candidate·실행 action은 모두 결과와 같은 attempt여야 한다.',
+    'request, plan, `environment_ref`, `agent_log_ref`, PoC candidate, validated PoC, `cleanup_ref`는 모두 동일한 reproduction attempt에 속해야 한다.',
+    'request·plan·recipe·환경·AgentLog·PoC가 같은 attempt로 연결된 `DynamicReproductionResult`',
+    '`request_ref`, `reproduction_plan_ref`, `environment_recipe_ref`와 `requirements_ref`는 같은 attempt의 exact record를 가리킨다.',
+    'request·plan·recipe·실제 환경·AgentLog·PoC candidate·validated PoC는 같은 analysis·workspace·commit·hypothesis·work·attempt를 가리킨다.',
+    'request·plan·recipe·environment·AgentLog·candidate·validated PoC와 dynamic result는 같은 work·attempt에 연결합니다.',
+    'request, plan, environment, AgentLog, PoC candidate, validated PoC, cleanup은 모두 동일 reproduction attempt에 속해야 함',
+    '동적 결과에서는 request·plan·recipe·환경·AgentLog·PoC와 attempt가 서로 맞는지 확인합니다.',
+    'POC1의 request·plan·recipe·environment·log·candidate·execution action/digest는 DX1과 같은 work/attempt에서 exact match',
+    'same-attempt exact request·plan·recipe·environment·AgentLog·candidate revision/digest·실행 action·지지 관찰·validated 요건·commit binding',
+    'request·plan·recipe·environment·AgentLog·candidate exact revision/digest·action·SUPPORTED 관찰·PoCBundle·DX1이 모두 AD1에 연결',
+    'request·purpose·plan·recipe·정책·환경·AgentLog·candidate·validated PoC·cleanup의 same-attempt 조합',
+    '전부 같은 request·work·attempt·digest에 속함',
+    'tool request는 같은 attempt의 exact request·plan·READY 환경·현재 AgentLog를 사용한',
+    '같은 attempt의 request·plan·환경·candidate·관찰을 사용한 성공한',
+    '`poc_ref`의 request·plan·recipe·environment·log·candidate·digest·attempt 중 하나라도 결과와 다름'
+)
+foreach ($relativePath in $dynamicRequestAttemptBoundaryScanFiles) {
+    $path = Join-Path $repoRoot $relativePath
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    foreach ($phrase in $obsoleteSameAttemptPhrases) {
+        if ($text.Contains($phrase)) {
+            Add-Failure "obsolete same-attempt rule still includes the R6 request: $relativePath -> $phrase"
+        }
+    }
+}
+
+if ([regex]::IsMatch($findingsText, '(?m)^\|\s*[BH]-\d+\s*\|\s*(OPEN|IN_PROGRESS)\s*\|')) {
+    Add-Failure 'FINDINGS still contains an open or in-progress Blocker/High item'
+}
+
+$issueTrackerText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/review/ISSUE_TRACKER.md')
+foreach ($issueNumber in 2..9) {
+    if (-not [regex]::IsMatch($issueTrackerText, "(?m)^\| R$($issueNumber - 1) .*\[#${issueNumber}\].*\| CLOSED")) {
+        Add-Failure "Issue tracker does not show role Issue #$issueNumber as CLOSED"
+    }
+}
+
+$approvedStatusFiles = @(
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'README.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'docs/README.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/README.md'))
+) + @(
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5') -Recurse -File -Filter '*.md'
+)
+foreach ($file in $approvedStatusFiles | Select-Object -Unique) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    if ($text.Contains('DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED')) {
+        Add-Failure "approved Architecture v5 document still has review-required status: $($file.FullName)"
+    }
+}
+
+$obsoleteFinalReviewPhrases = @(
+    '지금은 **설계 검토 단계**',
+    '미결정 계약의 답변과 역할별 검토가 남아',
+    '역할별 검토는 아직 남아',
+    '이 PR을 만들었다는 이유로 #89나 상위 #4를 바로 닫지 않는다',
+    '이 문서만으로 #90을 닫지 않는다',
+    '이 문서 작성만으로 #91을 닫지 않는다',
+    '#92에서 실제 기본 profile revision과 지원 상태를 확정'
+)
+foreach ($file in $approvedStatusFiles | Select-Object -Unique) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    foreach ($phrase in $obsoleteFinalReviewPhrases) {
+        if ($text.Contains($phrase)) {
+            Add-Failure "approved Architecture v5 document still describes final design review as pending: $($file.FullName) -> $phrase"
+        }
+    }
+}
+
+foreach ($statusRequirement in @(
+    @{ Path = 'README.md'; Marker = 'DESIGN_APPROVED' },
+    @{ Path = 'docs/architecture-v5/README.md'; Marker = '> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**' },
+    @{ Path = 'docs/review/decisions/ADR-012-primitive-match-duplicate-key.md'; Marker = '상태: `ACCEPTED`' },
+    @{ Path = 'docs/review/decisions/ADR-013-run-policy-preparation-and-reuse.md'; Marker = '상태: `ACCEPTED`' },
+    @{ Path = 'docs/review/decisions/ADR-015-r3-implementation-baseline.md'; Marker = '상태: `ACCEPTED`' },
+    @{ Path = 'docs/DOCUMENT_GUIDE.md'; Marker = './review/FINAL_ARCHITECTURE_V5_APPROVAL.md' }
+)) {
+    $path = Join-Path $repoRoot $statusRequirement.Path
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    if (-not $text.Contains($statusRequirement.Marker)) {
+        Add-Failure "final approval status is not synchronized: $($statusRequirement.Path) -> $($statusRequirement.Marker)"
     }
 }
 $openQuestionsText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/governance/OPEN_QUESTIONS.md')
@@ -1233,7 +1404,7 @@ if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
     Add-Failure 'missing R3-05 prompt runtime design'
 } else {
     $promptRuntimeText = Get-Content -Raw -Encoding UTF8 -LiteralPath $promptRuntimePath
-    foreach ($marker in @('DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED', 'PromptRegistryEntry', 'PromptPayload', 'POLICY_PARSER', 'DYNAMIC_REPRODUCTION', 'OpenAI API, Codex 구독, Anthropic API, Claude 구독', '`PMT-01`', '`PMT-15`', 'Orchestration 자체의 별도 LLM prompt는 만들지 않는다', '한 호출당 한 result kind의 structured output artifact 하나', 'DynamicReproductionConclusion', '#90에서 채택된 각 adapter profile fixture', 'HypothesisProposal[]', 'model.hypothesis.generate-initial.quality-v1', 'model.hypothesis.duplicate-review.quality-v1', 'model.verification.technical-revise.quality-v1', 'model.dynamic-reproduction.interpret-attempt.quality-v1', 'PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', '/sanitizer_candidates', '/validator_candidates')) {
+    foreach ($marker in @('DESIGN_APPROVED / NOT_IMPLEMENTED', 'PromptRegistryEntry', 'PromptPayload', 'POLICY_PARSER', 'DYNAMIC_REPRODUCTION', 'OpenAI API, Codex 구독, Anthropic API, Claude 구독', '`PMT-01`', '`PMT-15`', 'Orchestration 자체의 별도 LLM prompt는 만들지 않는다', '한 호출당 한 result kind의 structured output artifact 하나', 'DynamicReproductionConclusion', '#90에서 채택된 각 adapter profile fixture', 'HypothesisProposal[]', 'model.hypothesis.generate-initial.quality-v1', 'model.hypothesis.duplicate-review.quality-v1', 'model.verification.technical-revise.quality-v1', 'model.dynamic-reproduction.interpret-attempt.quality-v1', 'PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', '/sanitizer_candidates', '/validator_candidates')) {
         if (-not $promptRuntimeText.Contains($marker)) {
             Add-Failure "R3-05 prompt runtime is missing marker: $marker"
         }
@@ -1676,7 +1847,7 @@ $sandboxReviewPatterns = @(
     },
     @{
         Name = 'dynamic result save repeats same-attempt provenance checks'
-        Pattern = '(?s)`SAVE_RESULT\(requested_by=REPRODUCTION_SESSION_MANAGER, result_kind=dynamic_reproduction_result\)`.*?request·purpose·plan·recipe·정책·환경·AgentLog·candidate·validated PoC·cleanup의 same-attempt 조합을 다시 확인'
+        Pattern = '(?s)`SAVE_RESULT\(requested_by=REPRODUCTION_SESSION_MANAGER, result_kind=dynamic_reproduction_result\)`.*?current Verification generation의 exact R6 request reference와 purpose가 결과에 그대로 연결.*?plan·recipe·정책 결정·환경·AgentLog·candidate·validated PoC·cleanup과 동적 결과가 같은 R7 `DYNAMIC_REPRO` work·attempt'
     },
     @{
         Name = 'Session Manager owns logs validated PoCs and dynamic results'
@@ -3154,7 +3325,7 @@ if (-not (Test-Path -LiteralPath $runPolicyPreparationDecisionPath)) {
     Add-Failure 'missing ADR-013 run policy preparation and reuse decision'
 } else {
     $runPolicyPreparationDecisionText = Get-Content -Raw -Encoding UTF8 -LiteralPath $runPolicyPreparationDecisionPath
-    foreach ($marker in @('상태: `PROPOSED`', '실행당 한 번', 'Policy Collector', 'Policy Parser', '`RunPolicyState`', '`LOCAL_ONLY`', '`freshness_valid_until`', 'R5-02', 'R7', 'R8')) {
+    foreach ($marker in @('상태: `ACCEPTED`', '실행당 한 번', 'Policy Collector', 'Policy Parser', '`RunPolicyState`', '`LOCAL_ONLY`', '`freshness_valid_until`', 'R5-02', 'R7', 'R8')) {
         if (-not $runPolicyPreparationDecisionText.Contains($marker)) {
             Add-Failure "ADR-013 is missing decision marker: $marker"
         }
@@ -3583,7 +3754,7 @@ $activeArchitectureText = $activeDocumentationText
 $providerDecisionPath = Join-Path $repoRoot 'docs/architecture-v5/implementation/04-provider-decision.md'
 $providerDecisionText = if (Test-Path -LiteralPath $providerDecisionPath) { Get-Content -LiteralPath $providerDecisionPath -Raw -Encoding UTF8 } else { '' }
 $providerCapabilityBlock = [regex]::Match($providerDecisionText, '(?ms)^ProviderCapabilities:\s*(.*?)^```').Groups[1].Value
-$providerExitSection = [regex]::Match($providerDecisionText, '(?ms)^## 10\. 미완료 증거와 종료 조건\s*(.*)$').Groups[1].Value
+$providerExitSection = [regex]::Match($providerDecisionText, '(?ms)^## 10\. 설계 완료와 구현 전 활성화 조건\s*(.*)$').Groups[1].Value
 $architectureReadmeText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/README.md')
 
 if ([string]::IsNullOrWhiteSpace($providerDecisionText)) {
@@ -3668,7 +3839,7 @@ foreach ($requiredFile in @($r306BaselinePath, $r306IndexPath, $r306AdrPath, $r3
 if (Test-Path -LiteralPath $r306BaselinePath) {
     $r306BaselineText = Get-Content -Raw -Encoding UTF8 -LiteralPath $r306BaselinePath
     $requiredR306Markers = @(
-        '> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**',
+        '> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**',
         'Python `>=3.12,<3.13`',
         '`uv.lock`',
         '`provider_profile_ref + model`',
@@ -3680,8 +3851,8 @@ if (Test-Path -LiteralPath $r306BaselinePath) {
         '별도 Repository Snapshot 모듈을 만들지 않는다',
         '외부 message queue 제품을 도입하지 않는다',
         '구현 차단 `DEFERRED`: 없음',
-        'PR #107',
-        '35729d3185cf46cdbf9c94ce2be646ae11f26446',
+        'PR #116',
+        '07bd6549a676419c0e720f940ba7abd1b82aea0d',
         '## 5. 실제 repository 구조',
         '## 6. 허용 의존 방향',
         '## 10. 저장·transaction·복구',
@@ -3772,7 +3943,7 @@ if (Test-Path -LiteralPath $r306IndexPath) {
 
 if (Test-Path -LiteralPath $r306AdrPath) {
     $r306AdrText = Get-Content -Raw -Encoding UTF8 -LiteralPath $r306AdrPath
-    foreach ($marker in @('상태: `PROPOSED`', '## Context', '## Options', '## Decision', '## Consequences', '## Verification')) {
+    foreach ($marker in @('상태: `ACCEPTED`', '## Context', '## Options', '## Decision', '## Consequences', '## Verification')) {
         if (-not $r306AdrText.Contains($marker)) {
             Add-Failure "ADR-015 is missing: $marker"
         }

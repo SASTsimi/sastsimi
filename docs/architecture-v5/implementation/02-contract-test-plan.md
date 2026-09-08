@@ -1,6 +1,6 @@
 # R3-02. 파트 간 계약 준수·부정 테스트 계획
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 >
 > 정상·실패 입력을 어떻게 검사할지 정리한 **검토용 설계 초안**이다. 이 문서에 적은 fixture, 검사기, 자동 테스트와 실제 Provider·Sandbox 실행은 아직 구현·실행하지 않았다. 문서 검사 통과는 프로그램 시험 통과가 아니다.
 
@@ -934,7 +934,7 @@ Q-01~Q-07의 구현 결정은 R3-06 기준선과 최신 공통 계약에서 해�
 - **2. 단계·계약 경계**: 11–13; 동적 재현·Sandbox·PoC
 - **3. producer → consumer**: R6 요청 → Dynamic Reproduction Agent(requirements·plan·candidate·해석) / Setup Automation(recipe·image·container·cleanup) / Sandbox Controller(SandboxProfile 외부 경계 판정) / Reproduction Session Manager(log·validated PoC·dynamic result) → R6
 - **4. 선행 상태·exact refs**: F-DYN(§2.3)의 정상 상태와 exact ref 묶음. 5번이 지정한 시작 지점·변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
-- **5. 정상/잘못된 fixture**: 같은 verification generation의 exact R6 request 아래 역할별 producer가 자기 record를 만든다. 정상 DX1은 `status=SUCCEEDED`, `hypothesis_outcome=SUPPORTED`, `agent_invoked=true`이고 LOG1이 exact PC1 revision·content_digest를 실제 실행해 지지 관측을 만든다. POC1의 request·plan·recipe·environment·log·candidate·execution action/digest는 DX1과 같은 work/attempt에서 exact match하며 생성 자원이 있으면 CL1도 같은 attempt에 연결된다.
+- **5. 정상/잘못된 fixture**: 같은 verification generation의 exact R6 request 아래 역할별 producer가 자기 record를 만든다. request producer attempt는 R7 실행 attempt와 달라도 된다. 정상 DX1은 `status=SUCCEEDED`, `hypothesis_outcome=SUPPORTED`, `agent_invoked=true`이고 LOG1이 exact PC1 revision·content_digest를 실제 실행해 지지 관측을 만든다. POC1과 DX1은 같은 exact request ref를 사용하고, plan·recipe·environment·log·candidate·execution action/digest는 같은 R7 work/attempt에서 exact match하며 생성 자원이 있으면 CL1도 그 attempt에 연결된다.
 - **6. 검사 주체**: Runtime Validator의 producer/authority 검사 + Sandbox Controller의 SandboxProfile 외부 경계 검사 + Setup Automation lifecycle 검사 + Session Manager same-attempt/provenance/result-owner 검사; 관측 의미는 Dynamic Reproduction Agent
 - **7. 허용·차단·격리 기대**: Session Manager가 producer identity, `SUCCEEDED + SUPPORTED + agent_invoked=true`, same-attempt candidate·command·environment·관찰·digest와 cleanup을 확인한 뒤에만 POC1과 DX1을 확정한다. Dynamic Reproduction Agent가 recipe/environment/validated PoC/final result를 직접 저장하려 하면 차단한다.
 - **8. work·attempt·가설 기대**: DYNAMIC_REPRO work/attempt SUCCEEDED; R6는 아직 최종 판정 전 VERIFYING.
@@ -1909,13 +1909,13 @@ Q-01~Q-07의 구현 결정은 R3-06 기준선과 최신 공통 계약에서 해�
 - [x] 정상·부정·보안·오류·예산 및 미병합 PR 시험 분리
 - [x] 알려진 이전 OK/BAD 이력과 #89 복구 연결
 - [x] 계약 부족을 Q 항목과 기존 질문으로 분리
-- [ ] 각 Q 항목의 담당자 답변과 정확한 오류/저장 기대값 반영
-- [ ] R1·R2·R4·R5·R6·R7·R8 교차 검토 기록 확보
-- [ ] 최신 main 또는 병합 완료 SHA에서 최종 대조
-- [ ] #25 전체 완료 조건 충족 후 이슈 종료 여부 확인
+- [x] 각 Q 항목의 설계 답변과 정확한 오류/저장 기대값 반영
+- [x] R1~R8 역할 검토와 Issue #10 최종 교차 검토 기준 연결
+- [x] PR #116 병합 commit `07bd654` 기준으로 최종 대조
+- [x] #25 설계·시험 계획 범위 완료 및 이슈 종료 확인
 
 위의 체크된 항목은 **문서 초안 작성 여부**만 표시한다. 실제 fixture 파일·자동 테스트·Provider 인증·Sandbox 실행·복구 코드는 하나도 완료 표시하지 않는다. #25는 테스트 계획 이슈이므로 실행 코드 구현 자체를 이 문서 PR의 완료 실적으로 주장하지 않는다.
 
 ## 10. 현재 상태 한 줄 요약
 
-22단계 모듈 사이에서 무엇을 허용·차단·보존해야 하는지 94개 case로 계획을 작성했다. 현재 산출물은 검토용 Markdown 문서이며, 미결정 계약의 답변과 역할별 검토가 남아 있고 실제 자동 테스트·프로그램은 아직 구현하지 않았다.
+22단계 모듈 사이에서 무엇을 허용·차단·보존해야 하는지 94개 case로 계획을 작성했고, 설계 답변과 역할별 문서 검토를 완료했다. 현재 산출물은 승인된 구현 기준 Markdown 문서이며, 실제 fixture·자동 테스트·프로그램은 아직 구현하지 않았다.

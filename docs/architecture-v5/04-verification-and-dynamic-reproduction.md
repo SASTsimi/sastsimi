@@ -6,7 +6,7 @@
 
 `Verification`은 가설을 근거로 확인하는 과정이고 `verdict`는 그 기술 판정입니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## Verification의 목적과 제어권
 
@@ -376,7 +376,7 @@ Sandbox 안에서는 Dynamic Reproduction Agent가 환경 설정, 저장소에 �
 
 - `poc_candidate_ref`는 Dynamic Reproduction Agent가 작성했거나 실행을 시도한 PoC다. 실패한 시도도 같은 attempt의 작성·실행 event와 함께 보존할 수 있다.
 - validated `poc_ref`는 `status=SUCCEEDED`, `hypothesis_outcome=SUPPORTED`, `agent_invoked=true`이고 AgentLog가 exact candidate revision·digest를 실제 실행한 사실을 보여 줄 때만 만든다.
-- validated PoC의 request·plan·recipe·environment·AgentLog·candidate·실행 action은 모두 결과와 같은 attempt여야 한다.
+- R6가 생산한 exact `DynamicReproductionRequest`는 current Verification generation의 입력으로 고정하지만, 그 생산 attempt를 R7 `DYNAMIC_REPRO` 실행 attempt와 같다고 요구하지 않는다. validated PoC의 plan·recipe·environment·AgentLog·candidate·실행 action은 모두 결과와 같은 R7 work·attempt여야 한다.
 - 환경 실패, Sandbox profile 외부 격리 경계 차단, candidate 생성·실행 실패, timeout, `DISPROVED | INCONCLUSIVE`에서는 `poc_ref=null`이다.
 - reference가 존재한다는 사실만으로 성공을 추론하지 않는다.
 

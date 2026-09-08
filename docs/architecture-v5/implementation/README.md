@@ -4,7 +4,7 @@
 - **누가 읽어야 하나요?** 전체 구현 담당자와 R1~R8 역할 검토자가 읽습니다.
 - **읽은 뒤 무엇을 결정해야 하나요?** 자신의 구현·검토 범위에 해당하는 문서와 아직 남은 선행 조건을 확인합니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 문서 권한
 
@@ -29,9 +29,9 @@
 
 ## 현재 완료 상태와 남은 조건
 
-- PR #107 병합과 Issue #89 종료: 완료
-- PR #107 병합 commit `35729d3`을 반영하고 `06`의 기준 SHA 갱신: 완료
-- R1~R8 역할별 section 검토와 review-freeze SHA 기록
-- 문서 validator와 `git diff --check` 통과
+- PR #116 병합과 Issue #92·R3 상위 Issue #4 종료: 완료
+- R1~R8 역할 Issue #2~#9 종료: 완료
+- 최종 승인 검토 시작 기준 main: `07bd6549a676419c0e720f940ba7abd1b82aea0d`; 실제 승인 대상은 Final PR 본문에 기록한 exact head
+- Architecture v5 전체 문서 추적과 validator·`git diff --check`: 최종 승인 PR에서 확인
 
-남은 역할별 검토와 최종 검증 전에는 R3-06 PR을 Ready 또는 구현 기준 `ACCEPTED`로 표시하지 않습니다.
+`DESIGN_APPROVED`는 이 문서를 구현 기준으로 사용할 수 있다는 뜻입니다. Provider capability, 평가 결과, Docker 보안 시험과 실제 실행 코드는 아직 `NOT_IMPLEMENTED`이며 해당 기능을 활성화하기 전에 문서에 적힌 시험을 통과해야 합니다.

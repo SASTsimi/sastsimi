@@ -6,7 +6,7 @@
 
 `Gate`는 다음 단계로 보내도 되는지 확인하는 검토 단계입니다. Gate는 검증 판정을 바꾸지 않고 Reporter는 외부 공개를 결정하지 않습니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 목적과 순서
 
@@ -231,7 +231,7 @@ Gate 2가 사용하는 R6-owned 검증 완료 impact는 exact final `Verificatio
 
 R7 Dynamic Reproduction/PoC의 testing restriction 검토는 R7이 실제 수행했다고 기록한 target, environment, command/method, network target, automation, account/privilege, production 여부, state change와 destructive action만 정책과 비교한다. current provenance는 `DynamicReproductionRequest -> EnvironmentRequirements -> ReproductionPlan -> Dynamic Reproduction Agent -> AgentLog -> Reproduction Session Manager -> DynamicReproductionResult`다. Gate 2는 `VerificationResult.dynamic_request_ref`와 `dynamic_result_ref`에서 current-generation exact request와 result를 고정하고, result의 exact `reproduction_plan_ref`와 같은 attempt의 `agent_log_ref`, 실제 `environment_ref`·`environment_recipe_ref`, observation, candidate/validated PoC와 cleanup reference를 따라 execution facts를 읽는다. `AgentLogEvent.event_type`, `input_refs`, output/observation reference, status·exit code와 연결 artifact가 실제 명령·네트워크 대상·계정/권한·환경·상태 변경을 입증하며, 실행 여부는 canonical `agent_invoked`로 확인한다. Gate 2는 이 closure를 환경 적합성이나 R7 정책 판정을 다시 심사하기 위해 읽지 않고 testing restriction과 비교할 실제 수행 사실의 identity만 확인한다.
 
-`agent_invoked=false`인 Sandbox profile 외부 격리 경계 사전 차단에서도 같은 attempt의 exact `AgentLog`와 `POLICY_BLOCKED` event가 필요하지만, 계획이나 request의 목표를 수행 사실로 보지 않는다. Dynamic Reproduction Agent가 시작됐다면 성공·실패·취소와 관계없이 같은 attempt의 exact `AgentLog`가 필요하며, 실제 완료되거나 실패한 event와 생성된 artifact만 사용한다. `poc_ref` 존재만으로 실행을 주장할 수 없고, current dynamic attempt의 exact PoC bundle이 AgentLog의 `POC_EXECUTION_STARTED | POC_EXECUTION_FINISHED`, observation과 `DynamicReproductionResult`에 같은 revision 또는 digest로 연결된 경우만 실제 PoC 행위다. request·requirements·plan·policy decision·recipe·environment·AgentLog·PoC·cleanup·dynamic result 중 다른 revision, generation 또는 attempt를 섞거나 latest lookup으로 보정하면 기존 공통 revision/error 계약으로 거절한다.
+`agent_invoked=false`인 Sandbox profile 외부 격리 경계 사전 차단에서도 같은 attempt의 exact `AgentLog`와 `POLICY_BLOCKED` event가 필요하지만, 계획이나 request의 목표를 수행 사실로 보지 않는다. Dynamic Reproduction Agent가 시작됐다면 성공·실패·취소와 관계없이 같은 attempt의 exact `AgentLog`가 필요하며, 실제 완료되거나 실패한 event와 생성된 artifact만 사용한다. `poc_ref` 존재만으로 실행을 주장할 수 없고, current dynamic attempt의 exact PoC bundle이 AgentLog의 `POC_EXECUTION_STARTED | POC_EXECUTION_FINISHED`, observation과 `DynamicReproductionResult`에 같은 revision 또는 digest로 연결된 경우만 실제 PoC 행위다. R6가 생산한 exact `DynamicReproductionRequest`는 current Verification generation의 입력으로 고정하지만, 그 생산 attempt를 R7 `DYNAMIC_REPRO` 실행 attempt와 같다고 요구하지 않는다. current-generation request가 아니거나, requirements·plan·policy decision·recipe·environment·AgentLog·PoC·cleanup·dynamic result의 revision·generation·R7 work·attempt가 서로 맞지 않거나, latest lookup으로 보정하면 기존 공통 revision/error 계약으로 거절한다.
 
 Gate 2는 별도 실행 사실 목록을 만들지 않고 exact `verification_result_ref -> dynamic_result_ref`의 canonical transitive reference closure를 소비한다. 정책 판단에 중요한 실제 행위를 선택적으로 빼 결과를 바꿀 수 없고, current generation과 same-attempt의 실제 수행 artifact만 인정한다. 반대로 실행되지 않은 attack/PoC step, `agent_invoked=false`인 실행 fact, observation 연결 없는 PoC는 사용하지 않는다. Sandbox profile 외부 격리 경계 사전 차단 또는 environment precheck로 artifact가 생성되지 않았다면 존재하지 않는 artifact reference를 요구하지 않는다. Runtime Validator는 reference closure, artifact 존재와 lifecycle을 검사하고 정책 의미는 재판정하지 않는다.
 
@@ -502,7 +502,7 @@ Reporter가 저장소에서 가장 최신처럼 보이는 별도 결과를 다�
 
 Reporter는 R7이 이미 확정한 `DynamicReproductionResult`의 request·plan·requirements 연결과 존재하는
 policy·environment·`AgentLog`·PoC candidate·validated PoC·cleanup provenance만 그대로 소비한다.
-request, plan, `environment_ref`, `agent_log_ref`, PoC candidate, validated PoC, `cleanup_ref`는 모두 동일한 reproduction attempt에 속해야 한다. 서로 다른 attempt의 artifact를 섞거나 누락된 reference를 다른 실행에서 보충하지 않으며, 특히 `agent_log_ref`·`environment_ref`·PoC·cleanup reference의 attempt가 하나라도 다르면 fail-closed 처리한다. 이 무결성을
+R6가 생산한 exact `DynamicReproductionRequest`는 current Verification generation의 입력으로 고정하지만, 그 생산 attempt를 R7 `DYNAMIC_REPRO` 실행 attempt와 같다고 요구하지 않는다. plan, `environment_ref`, `agent_log_ref`, PoC candidate, validated PoC, `cleanup_ref`는 모두 동일한 R7 `DYNAMIC_REPRO` work·attempt에 속해야 한다. 서로 다른 R7 attempt의 artifact를 섞거나 누락된 reference를 다른 실행에서 보충하지 않으며, 특히 `agent_log_ref`·`environment_ref`·PoC·cleanup reference의 attempt가 하나라도 다르면 fail-closed 처리한다. 이 무결성을
 새로 판정하거나 `poc_candidate_ref`를 validated PoC로 승격하지 않는다. validated `poc_ref`는 R7에서
 exact `poc_candidate_ref`와 같은 bundle revision/digest, `AgentLog`의 실제 `POC_EXECUTION_STARTED`와 `POC_EXECUTION_FINISHED`, 지지
 observation 및 `SUCCEEDED + SUPPORTED`가 연결되어 확정된 reference라는 의미로만 표시한다.

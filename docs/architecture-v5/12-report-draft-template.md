@@ -6,7 +6,7 @@
 
 `Finding`은 이미 검증된 upstream 결과를 하나의 current 취약점 결과로 정규화한 record이고 `ReportDraft`는 Reporter가 그 Finding 중 보고 조건까지 통과한 결과로 만드는 내부 초안입니다. Finding 생성과 Reporter eligibility는 별개 조건이며, Finding 생성 조건과 lifecycle은 [05. 이중 LLM Gate와 보고](05-llm-gate-and-reporting.md)의 "Finding 생성과 lifecycle"을 따릅니다. 이 초안이 마지막 Agent 산출물이며 자동 외부 제출을 허용하지 않습니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 Reporter Agent는 다음 조건이 모두 참일 때만 이 내부 초안을 작성한다.
 
@@ -138,7 +138,7 @@ FALSE와 HOLD, 동적 실행이 실패·차단·취소·불충분한 가설은 R
 - 관측 references: `{observation_refs}`
 - cleanup 필요 여부와 상태: `{cleanup_required / cleanup_status}`
 - cleanup reference: `{cleanup_ref.record_id or null}`
-- 동일 결과 provenance: `{request_ref, reproduction_plan_ref와 그 plan의 environment_requirements_ref, policy_decision_ref, environment_ref, agent_log_ref, poc_candidate_ref, poc_ref, cleanup_ref의 exact revision/hash; request, plan, environment, AgentLog, PoC candidate, validated PoC, cleanup은 모두 동일 reproduction attempt에 속해야 함}`
+- 동일 결과 provenance: `{request_ref, reproduction_plan_ref와 그 plan의 environment_requirements_ref, policy_decision_ref, environment_ref, agent_log_ref, poc_candidate_ref, poc_ref, cleanup_ref의 exact revision/hash; request_ref는 current Verification generation의 exact R6 request이고, plan·environment·AgentLog·PoC candidate·validated PoC·cleanup은 모두 동일 R7 DYNAMIC_REPRO work·attempt에 속해야 함}`
 - 관측 결과: `SUPPORTED`
 - PoC candidate reference: `{poc_candidate_ref.record_id}`
 - validated PoC reference: `{poc_ref.record_id; R7이 exact candidate revision/digest의 POC_EXECUTION_STARTED와 POC_EXECUTION_FINISHED, 지지 observation 및 SUCCEEDED + SUPPORTED를 연결해 확정한 값만 사용}`
@@ -163,7 +163,7 @@ FALSE와 HOLD, 동적 실행이 실패·차단·취소·불충분한 가설은 R
 
 실제 credential, session cookie, API key와 개인정보를 포함하지 않는다.
 환경의 존재와 식별은 `environment_ref`로, 생성 또는 재사용 여부는 `SandboxEnvironment.container_action=CREATED | REUSED`로 기록한다.
-Reporter는 final TRUE가 직접 가리키는 current `DynamicReproductionResult(status=SUCCEEDED, hypothesis_outcome=SUPPORTED)`와 validated `poc_ref`만 사용한다. request, plan, `environment_ref`, `agent_log_ref`, PoC candidate, validated PoC, `cleanup_ref`는 모두 동일한 reproduction attempt에 속해야 한다. 서로 다른 attempt의 artifact를 섞거나 이 무결성을 새로 판정하지 않으며, 하나라도 다르면 fail-closed 처리하고 ReportDraft를 만들지 않는다. 과거 실패·차단·취소 attempt는 감사 이력으로만 보존하며 current 성공 필드를 채우는 데 재사용하지 않는다.
+Reporter는 final TRUE가 직접 가리키는 current `DynamicReproductionResult(status=SUCCEEDED, hypothesis_outcome=SUPPORTED)`와 validated `poc_ref`만 사용한다. R6가 생산한 exact `DynamicReproductionRequest`는 current Verification generation의 입력으로 고정하지만, 그 생산 attempt를 R7 `DYNAMIC_REPRO` 실행 attempt와 같다고 요구하지 않는다. plan, `environment_ref`, `agent_log_ref`, PoC candidate, validated PoC, `cleanup_ref`는 모두 동일한 R7 `DYNAMIC_REPRO` work·attempt에 속해야 한다. 서로 다른 R7 attempt의 artifact를 섞거나 이 무결성을 새로 판정하지 않으며, 하나라도 다르면 fail-closed 처리하고 ReportDraft를 만들지 않는다. 과거 실패·차단·취소 attempt는 감사 이력으로만 보존하며 current 성공 필드를 채우는 데 재사용하지 않는다.
 
 ## 8. CWE
 

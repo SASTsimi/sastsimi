@@ -4,7 +4,7 @@
 - **누가 읽어야 하나요?** R3 통합 구현자, R4 공통 계약 담당자, R8 평가 담당자와 각 LLM Agent 담당자가 읽습니다.
 - **읽은 뒤 무엇을 결정해야 하나요?** 네 연결 경로의 실제 시험 결과를 확인하고 환경별 `SUPPORTED | EXPERIMENTAL | REJECTED` 상태와 첫 기본 Provider를 승인합니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 1. 기준과 결론
 
@@ -227,7 +227,7 @@ Claude Agent SDK는 이번 네 adapter 범위에서 제외한다. Agent SDK는 M
 
 Issue에서 요구한 `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`는 OpenAI 경로의 접근 확인 후보로 사용한다. 이름이 문서나 설정에 있다는 사실만으로 접근 가능하다고 표시하지 않고, 실제 계정·client·환경별 probe에 성공한 model ID만 route로 등록한다. Claude 모델도 같은 방식으로 실제 접근 결과 뒤에 exact model ID를 등록한다.
 
-첫 구현의 **제안 기본값**은 `openai.responses.api-key.v1`이다. 이는 최종 승인이나 성능 우위를 뜻하지 않는다. 네 경로의 smoke test와 R4 계약 검토, R8 품질·비용 평가가 끝난 뒤 #92에서 실제 기본 profile revision과 지원 상태를 확정한다.
+첫 구현의 **제안 기본값**은 `openai.responses.api-key.v1`이다. 이는 최종 승인이나 성능 우위를 뜻하지 않는다. 네 경로의 smoke test와 R4 계약 구현 검증, R8 품질·비용 평가가 끝난 뒤 **구현 단계의 별도 Issue·PR**에서 실제 기본 profile revision과 지원 상태를 확정한다. 그 증거가 통과하기 전에는 운영용 `SUPPORTED` 또는 `ACTIVE`로 전환하지 않는다.
 
 ## 6. 모델 변경과 Provider 전환
 
@@ -310,14 +310,14 @@ credential·cookie·token·원문 인증 파일은 증거로 첨부하지 않는
 - Anthropic Commercial Terms: <https://www.anthropic.com/legal/commercial-terms>
 - Claude Code 인증·credential 사용 범위: <https://code.claude.com/docs/en/legal-and-compliance>
 
-## 10. 미완료 증거와 종료 조건
+## 10. 설계 완료와 구현 전 활성화 조건
 
-이 문서만으로 #90을 닫지 않는다. 다음 증거가 없기 때문이다.
+Issue #90의 Provider 선택·연동 구조 설계는 완료됐다. 다만 다음 실제 시험 증거가 없으므로, 해당 Provider profile을 운영용 `SUPPORTED` 또는 `ACTIVE`로 표시해서는 안 된다.
 
 - 네 경로별 실제 `PVD-01`–`PVD-15` 결과와, R7 Sandbox 실행에 허용할 profile의 `PVD-16` 결과
 - 역할별 필요한 model의 실제 계정 접근 범위
 - private CI의 credential 격리·취소·동시성 검증
 - R8의 동일 fixture 품질·시간·사용량 비교
-- R4의 profile·session·retry·failover·secret·log 계약 승인
+- R4의 profile·session·retry·failover·secret·log 계약 구현 검증
 
 위 증거가 준비되면 model·환경 조합마다 별도 ProviderProfile을 발급한다. `EXPERIMENTAL`을 `SUPPORTED`로 바꾸는 새 revision에는 시험 증거와 검토 기준 SHA가 반드시 있어야 한다.
