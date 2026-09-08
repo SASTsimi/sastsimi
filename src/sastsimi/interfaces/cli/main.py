@@ -37,6 +37,12 @@ def main(argv: list[str] | None = None) -> int:
         "doctor", help="read-only foundation host checks", allow_abbrev=False
     )
     doctor_parser.add_argument("--format", choices=["text", "json"])
+    db_parser = subparsers.add_parser(
+        "db", help="explicit database maintenance", allow_abbrev=False
+    )
+    db_commands = db_parser.add_subparsers(dest="db_command", required=True)
+    upgrade_parser = db_commands.add_parser("upgrade", allow_abbrev=False)
+    upgrade_parser.add_argument("--format", choices=["text", "json"])
     try:
         args = parser.parse_args(argv)
         if args.format is not None:
@@ -52,7 +58,11 @@ def main(argv: list[str] | None = None) -> int:
         }
         config = bootstrap.build_config(args.config, overrides)
         output_format = config.output_format
-        code = ExitCode.OK if commands.doctor() else ExitCode.CAPABILITY_UNSUPPORTED
+        if args.command == "db":
+            bootstrap.upgrade_database(config.data_dir)
+            code = ExitCode.OK
+        else:
+            code = ExitCode.OK if commands.doctor() else ExitCode.CAPABILITY_UNSUPPORTED
         emit_result(
             code, output_format, sys.stdout if code == ExitCode.OK else sys.stderr
         )
