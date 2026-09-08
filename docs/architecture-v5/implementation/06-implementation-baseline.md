@@ -174,6 +174,7 @@ sastsimi/
 │     │  ├─ static_tool.py
 │     │  ├─ policy_source.py
 │     │  ├─ budget_ledger.py
+│     │  ├─ work_handler.py
 │     │  └─ sandbox.py
 │     ├─ runtime/
 │     │  ├─ work_service.py
@@ -192,6 +193,15 @@ sastsimi/
 │     │  ├─ hypothesis_workflow.py
 │     │  ├─ verification_assignment.py
 │     │  └─ result_aggregation.py
+│     ├─ verification/
+│     │  ├─ debate_service.py
+│     │  ├─ service.py
+│     │  ├─ verdict_router.py
+│     │  └─ revision_workflow.py
+│     ├─ reproduction/
+│     │  └─ service.py
+│     ├─ chaining/
+│     │  └─ service.py
 │     ├─ storage/
 │     │  ├─ database.py
 │     │  ├─ models.py
@@ -312,6 +322,9 @@ sastsimi/
 | `ports/` | 외부·저장 경계 Protocol | 구체 adapter 생성, domain 판단 |
 | `runtime/` | work·attempt·Action·transition·복구·bounded worker | 취약점·CWE·정책 의미 판정 |
 | `orchestration/` | 분석 시작, 전역 work 등록, 가설 등록·배정, 전체 결과 집계 | hypothesis-local verdict·Gate 목적지 판단 |
+| `verification/` | Debate·initial/final 검증·판정별 work 요청·Technical REVISE 흐름 | Agent 권한 확장, concrete reporting·chaining import |
+| `reproduction/` | R6 요청과 R7 실행 구성요소의 동적 재현 순서 연결 | Sandbox Controller·Session Manager 권한 대체, final verdict 생성 |
+| `chaining/` | exact Primitive 조회·matching·새 가설 proposal 전달 | Primitive admission 의미 변경, 전체 Verification 생략 |
 | `storage/` | SQLite·artifact·migration·무결성 구현 | domain 결과 의미 변경 |
 | `providers/` | 공식 API·CLI·SDK 전송과 공통 결과 정규화 | prompt 판단 기준 변경, 내장 tool로 host 접근 |
 | `prompts/` | registry·loader·builder·redaction·schema/의미 검사 연결 | 역할 담당자의 판단 기준을 임의 작성 |
@@ -363,6 +376,19 @@ sastsimi/
 
 `schemas/generated/`는 source Pydantic model과 함께 검토하기 위해 commit한다. runtime 결과는 예제처럼 보여도 fixtures로 자동 승격하지 않고 redaction·소유권·재현성 검토를 거친 별도 PR에서만 추가한다. 저장소 라이선스와 외부 재사용 범위는 governance 결정이며 내부 구현 기준선이 임의로 만들거나 바꾸지 않는다.
 
+### 5.4 업무 흐름 서비스의 exact module
+
+[ADR-016](../../review/decisions/ADR-016-maintainable-workflow-packages.md)은 승인된 유지보수 구현 설계의 물리 위치를 반영한다. 경로는 `src/sastsimi/` 기준이며 서비스 이름과 기존 권한은 유지한다.
+
+| 서비스 | module | 책임 |
+|---|---|---|
+| `DebateService` | `verification/debate_service.py` | 같은 입력의 Pro·Con child work fan-out과 결과 join |
+| `VerificationService` | `verification/service.py` | initial assessment와 최종 검증 결과 합성 |
+| `VerdictRouter` | `verification/verdict_router.py` | final FALSE·HOLD·TRUE에 맞는 다음 work 등록 요청 생성 |
+| `RevisionWorkflow` | `verification/revision_workflow.py` | Technical `REVISE`의 같은 owner·새 generation 전환 |
+| `DynamicReproductionService` | `reproduction/service.py` | R6 요청과 R7 구성요소의 실행 순서 연결 |
+| `ChainingService` | `chaining/service.py` | exact Primitive index 고정, Chaining 호출과 새 proposal 전달 |
+
 ## 6. 허용 의존 방향
 
 아래 `A → B`는 A가 B의 public interface를 import할 수 있다는 뜻이다.
@@ -374,6 +400,9 @@ prompts → contracts, ports, config
 agents → contracts, ports, prompts
 runtime → contracts, ports, config
 orchestration → contracts, ports, runtime
+verification → contracts, ports, runtime, agents
+reproduction → contracts, ports, runtime, agents
+chaining → contracts, ports, runtime, agents
 reporting → contracts, ports, runtime, agents
 policy → contracts, ports, runtime, agents, config
 evaluation → contracts, ports, runtime, agents, config
@@ -401,6 +430,10 @@ bootstrap → 위 concrete 구현을 조립
 12. import cycle은 CI의 architecture dependency test로 차단한다.
 
 `bootstrap.py`는 생성 순서와 dependency injection만 담당한다. 취약점 판단, state 전이와 권한 검사를 구현하지 않는다.
+
+실행 호출 흐름은 이 Python import allowlist와 구분한다. runtime worker는 `ports/work_handler.py`의 `WorkHandler` port만 호출하며 업무 흐름 concrete service를 import하지 않는다. 업무 흐름은 주입된 port와 runtime public interface를 사용한다. 실제 handler 선택과 concrete instance 연결은 worker registry와 `bootstrap.py`의 dependency injection으로 수행한다.
+
+`VerdictRouter`는 `reporting`이나 `chaining`의 concrete service를 import하지 않는다. `VerdictRouter`는 current final result를 읽어 정본의 `ActionRequest`와 work 등록 요청을 runtime public interface에 제출한다. Runtime Validator의 허가 전에는 CWE·Primitive·Chaining work를 만들지 않는다. `tests/contract/test_architecture_imports.py`는 이 import 경계와 외부 adapter 간 직접 의존 금지를 검사한다.
 
 ## 7. public interface 기준
 

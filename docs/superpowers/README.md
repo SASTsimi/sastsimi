@@ -16,6 +16,7 @@
 현재 Task의 실행 순서와 검증 근거는 아래 자식 계획에서 확인합니다. 자식 계획은 위 두 현재 구현 자료의 기술 의미를 바꾸지 않습니다.
 
 - [`plans/implementation/01-repository-cleanup.md`](./plans/implementation/01-repository-cleanup.md): T01 문서 인벤토리, 파일별 삭제 allowlist, 탐색 경로와 문서 CI 실행 계획
+- [`plans/implementation/02-architecture-boundary-correction.md`](./plans/implementation/02-architecture-boundary-correction.md): T02 exact workflow module·import 경계, ADR-015 정본 동기화와 RED/GREEN 검증 계획
 
 그 밖의 완료된 기존 문서는 당시 검토한 대안, 변경 순서와 PR 상태를 남긴 역사적 기록입니다.
 

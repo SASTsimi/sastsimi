@@ -216,7 +216,7 @@ run init: repository + program 확정
         ├─ CURRENT | ABSENT | UNVERIFIED : 해당 run의 정책 준비 확정
         ├─ BLOCKED : retry 또는 외부 조건 해소를 기다리는 재개 대기 (확정 아님; policy-dependent downstream 진행 금지)
         └─ FAILED  : 복구 불가능한 policy preparation failure
-   (정적 근거 준비·공통 Docker/환경 준비와 병렬; 실행 간에는 run-neutral PolicyCacheRecord만 재사용하고, 새 analysis마다 새 RunPolicyState·PolicyCollectionResult·ProgramPolicyRecord를 생성해 current run에 귀속)
+   (정적 근거 준비와 병렬; Docker 준비는 current 가설의 승인된 DYNAMIC_REPRO에서만 수행한다. 실행 간에는 run-neutral PolicyCacheRecord만 재사용하고, 새 analysis마다 새 RunPolicyState·PolicyCollectionResult·ProgramPolicyRecord를 생성해 current run에 귀속)
 
 final TRUE VerificationResult with current generation SUCCEEDED + SUPPORTED reproduction and validated PoC
 -> R5-01 CWE_LABELING work

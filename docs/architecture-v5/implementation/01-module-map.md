@@ -125,7 +125,34 @@ R3-06은 다음 조건을 동적 재현 회귀 시험에 포함한다.
 | Reproduction Session Manager | 실제 event와 exact `SandboxCommandRecord`를 append-only AgentLog로 기록하고 동적 결과·validated PoC 확정 | Dynamic Reproduction Agent의 실행 전략·retry·cleanup 판단 | 12 |
 | Result Aggregator | current exact 결과와 오류·자원을 `AnalysisRunResult`로 묶음 | 새 Agent 판단·사람 공개 결정 | 22 |
 
-의존 방향은 `interfaces → orchestration/runtime → domain service → provider/tool adapter → storage adapter`로 둔다. Contract Models는 모든 계층이 읽을 수 있지만 provider·tool·storage 구현을 import하지 않는다. Agent는 구체 DB·Docker·provider SDK를 직접 호출하지 않고 runtime port를 사용한다. 최종 package 구조와 이름은 [R3-06 구현 기준선](06-implementation-baseline.md)에서 확정했다.
+### 5.1 업무 흐름 서비스의 exact module
+
+아래 경로는 `src/sastsimi/` 기준이다. [ADR-016](../../review/decisions/ADR-016-maintainable-workflow-packages.md)은 기존 22단계 서비스의 물리 위치만 고정하며 새 Agent나 권한을 만들지 않는다.
+
+| 서비스 | module | 책임 |
+|---|---|---|
+| `DebateService` | `verification/debate_service.py` | 같은 입력의 Pro·Con child work fan-out과 결과 join |
+| `VerificationService` | `verification/service.py` | initial assessment와 최종 검증 결과 합성 |
+| `VerdictRouter` | `verification/verdict_router.py` | final FALSE·HOLD·TRUE에 맞는 다음 work 등록 요청 생성 |
+| `RevisionWorkflow` | `verification/revision_workflow.py` | Technical `REVISE`의 같은 owner·새 generation 전환 |
+| `DynamicReproductionService` | `reproduction/service.py` | R6 요청과 R7 구성요소의 실행 순서 연결 |
+| `ChainingService` | `chaining/service.py` | exact Primitive index 고정, Chaining 호출과 새 proposal 전달 |
+
+### 5.2 실행 호출 흐름과 Python import 방향
+
+실행 중 CLI는 application service에 요청하고, runtime worker는 `WorkHandler` port로 선택한 업무 흐름을 실행한다. 업무 흐름은 공개 runtime interface와 주입된 port를 사용하며, 실제 Provider·도구·저장 adapter는 허가된 요청을 처리한다. 이 호출 순서는 Python import 방향이 아니다. 외부 adapter끼리는 직접 호출하지 않는다.
+
+아래 화살표는 왼쪽 package에서 오른쪽의 public interface만 import할 수 있음을 뜻한다. 전체 allowlist는 [R3-06 구현 기준선 §6](06-implementation-baseline.md#6-허용-의존-방향)을 따른다.
+
+```text
+verification → contracts, ports, runtime, agents
+reproduction → contracts, ports, runtime, agents
+chaining → contracts, ports, runtime, agents
+```
+
+`VerdictRouter`는 `reporting`이나 `chaining`의 concrete service를 import하지 않는다. `VerdictRouter`는 current final result를 읽어 정본의 `ActionRequest`와 work 등록 요청을 runtime public interface에 제출한다. Runtime Validator의 허가 전에는 CWE·Primitive·Chaining work를 만들지 않는다. 실제 handler 선택과 concrete instance 연결은 worker registry와 `bootstrap.py`의 dependency injection으로 수행한다.
+
+`contracts`는 다른 SASTSIMI package를 import하지 않는다. Agent는 DB·SQLAlchemy·Docker SDK·Provider SDK와 전역 상태를 직접 사용하지 않는다. runtime worker는 `WorkHandler` port만 호출하고 `bootstrap.py`는 생성·주입만 담당하며 상태 전이·취약점 판정·권한 검사를 구현하지 않는다. 이 경계는 `tests/contract/test_architecture_imports.py`에서 검사한다.
 
 ## 6. 논리 저장과 pointer 규칙
 

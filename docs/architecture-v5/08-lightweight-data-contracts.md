@@ -2766,6 +2766,8 @@ Reporter가 허용된 경로에서는 current `ReportDraft` 저장과 해당 `RE
 
 `failed_hypothesis_count`는 종료 시점에 `HypothesisProcessState.status=FAILED`인 가설 수와 정확히 같아야 하며 이 가설은 current `verdict_counts`에 포함하지 않는다. 최초 검증에서 실패했다면 current final `VerificationResult` 자체가 없다. Technical `REVISE` 뒤 보완 검증이 실패한 경우에는 이전 Verification·Gate revision을 `verification_refs`와 `technical_review_refs`에 감사 기록으로 보존할 수 있지만 superseded history일 뿐 current verdict·Gate·Primitive·Reporter 입력으로 집계하지 않는다. 연결된 실패 work·attempt·transition, `errors`와 `gaps`로 원인을 추적한다. 실패 가설이 하나라도 있으면 분석 전체를 성공으로 숨기지 않으며 완료된 다른 가설이 있더라도 `AnalysisRunResult.status=PARTIAL`로 기록한다.
 
-## 구현 단계에서 결정할 것
+## 확정된 구현 기준과 남은 설정·시험
 
-serialization format, schema language/versioning, database/index, Primitive vocabulary, structured output 합격 기준과 정량 limit은 구현 전 ADR과 평가 corpus로 확정한다. 정책 source 수집 구현 경계는 R3-06/ADR-015에서 `PolicySourcePort`·비-LLM Policy Collector·공식 HTTP adapter·Policy Parser 분리로 확정됐다. 구체적인 승인 URL과 인증 방식은 Program Catalog의 versioned source 설정이 정하며, 구현자가 임의 source를 추가하지 않는다. 이 설계의 field 목록을 곧바로 모든 서비스의 영구 API로 간주하지 않는다.
+[R3-06 구현 기준선](implementation/06-implementation-baseline.md)과 [ADR-015](../review/decisions/ADR-015-r3-implementation-baseline.md)는 SASTSIMI Canonical JSON v1 + SHA-256, Pydantic 2 + JSON Schema 2020-12, schema versioning·migration 규칙, SQLite + SQLAlchemy 2, Alembic, 큰 artifact의 content-addressed file store를 확정했다. domain model과 persistence model은 분리하며, 저장·index·current pointer와 복구는 이 기준선의 transaction·CAS·journal 규칙을 구현하고 시험한다. 직렬화 형식이나 저장 제품을 다시 선택하는 단계가 아니다.
+
+Primitive vocabulary, structured output 합격 기준과 정량 limit은 승인된 계약 안에서 versioned 설정과 평가 corpus로 구체화하고 검증한다. 정책 source 수집 구현 경계는 R3-06/ADR-015에서 `PolicySourcePort`·비-LLM Policy Collector·공식 HTTP adapter·Policy Parser 분리로 확정됐다. 구체적인 승인 URL과 인증 방식은 Program Catalog의 versioned source 설정이 정하며, 구현자가 임의 source를 추가하지 않는다. field·enum·권한·Gate 의미의 변경은 별도 ADR과 영향 역할 검토를 요구한다.

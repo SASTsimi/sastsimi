@@ -4307,6 +4307,96 @@ Write-Output 'R3-05 R5 prompt closure rules: CWE Labeling, Technical Gate, Rule 
 Write-Output "R6 program-policy boundary rules: $($requiredR6PolicyBoundaryRules.Count)"
 Write-Output "R6 POLICY_BLOCKED semantic rules: $($requiredR6PolicyBlockedSemantics.Count)"
 Write-Output "R3-01 run-init fan-out rules: $($requiredR301RunInitFanoutRules.Count)"
+# T02: document contracts for physical workflow boundaries, independent of
+# role/schema validators above. Literal mappings come from the approved spec.
+function Assert-MaintainableWorkflowBoundaries {
+    $moduleMapPath = 'docs/architecture-v5/implementation/01-module-map.md'
+    $baselinePath = 'docs/architecture-v5/implementation/06-implementation-baseline.md'
+    $adrPath = 'docs/review/decisions/ADR-016-maintainable-workflow-packages.md'
+    $workflowModules = [ordered]@{
+        DebateService = 'verification/debate_service.py'
+        VerificationService = 'verification/service.py'
+        VerdictRouter = 'verification/verdict_router.py'
+        RevisionWorkflow = 'verification/revision_workflow.py'
+        DynamicReproductionService = 'reproduction/service.py'
+        ChainingService = 'chaining/service.py'
+    }
+    foreach ($relativePath in @($moduleMapPath, $baselinePath, $adrPath)) {
+        $path = Join-Path $repoRoot $relativePath
+        if (-not (Test-Path -LiteralPath $path)) {
+            Add-Failure "T02 workflow boundary document missing: $relativePath"
+            continue
+        }
+        $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+        foreach ($entry in $workflowModules.GetEnumerator()) {
+            $rows = @([regex]::Matches($text, ('(?m)^\|\s*`' + [regex]::Escape($entry.Key) + '`\s*\|\s*`(?<module>[^`]+)`\s*\|')))
+            if ($rows.Count -ne 1 -or $rows[0].Groups['module'].Value -cne $entry.Value) {
+                Add-Failure "T02 exact workflow module: $relativePath must map $($entry.Key) once to $($entry.Value)"
+            }
+        }
+        foreach ($package in @('verification', 'reproduction', 'chaining')) {
+            $rows = @([regex]::Matches($text, ('(?m)^' + $package + '\s*(?:->|→)\s*(?<imports>[^\r\n]+)')))
+            if ($rows.Count -ne 1 -or $rows[0].Groups['imports'].Value.Trim() -cne 'contracts, ports, runtime, agents') {
+                Add-Failure "T02 workflow import allowlist: $relativePath must allow $package -> contracts, ports, runtime, agents only"
+            }
+        }
+        $routingRules = [ordered]@{
+            'no concrete reporting/chaining imports' = '`VerdictRouter`[^\r\n]*`reporting`[^\r\n]*`chaining`[^\r\n]*import하지 않는다'
+            'submit existing requests to runtime public interface' = '`VerdictRouter`[^\r\n]*`ActionRequest`[^\r\n]*work 등록 요청[^\r\n]*runtime public interface'
+            'validator authorization before downstream work' = 'Runtime Validator의 허가 전에는 CWE·Primitive·Chaining work를 만들지 않는다'
+            'worker registry and bootstrap injection' = 'worker registry[^\r\n]*`bootstrap.py`[^\r\n]*dependency injection'
+        }
+        foreach ($rule in $routingRules.GetEnumerator()) {
+            if ($text -notmatch $rule.Value) {
+                Add-Failure "T02 VerdictRouter boundary ($($rule.Key)): $relativePath"
+            }
+        }
+    }
+
+    # Only current canonical/governance documents are subject to stale wording
+    # rejection. Historical alternatives and the correction spec are evidence.
+    $stalePatterns = [ordered]@{
+        'undecided serialization/schema/database' = 'serialization format, schema language/versioning, database/index'
+        'undecided result storage' = 'serialization, schema versioning, result storage'
+        'run-init common Docker preparation' = '공통 Docker/환경 준비'
+        'adapter-to-adapter import chain' = 'interfaces → orchestration/runtime → domain service → provider/tool adapter → storage adapter'
+    }
+    $currentFiles = @(
+        Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5') -Recurse -File -Filter '*.md'
+        Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/governance') -Recurse -File -Filter '*.md'
+    )
+    foreach ($file in $currentFiles) {
+        $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+        foreach ($rule in $stalePatterns.GetEnumerator()) {
+            if ($text.Contains($rule.Value)) {
+                Add-Failure "T02 stale boundary ($($rule.Key)): $($file.FullName)"
+            }
+        }
+    }
+    foreach ($relativePath in @('docs/architecture-v5/08-lightweight-data-contracts.md', 'docs/governance/OPEN_QUESTIONS.md')) {
+        $text = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot $relativePath)
+        foreach ($marker in @('Canonical JSON v1', 'Pydantic 2', 'JSON Schema 2020-12', 'SQLite', 'SQLAlchemy 2', 'Alembic', 'content-addressed file', 'ADR-015')) {
+            if (-not $text.Contains($marker)) {
+                Add-Failure "T02 settled storage baseline missing '$marker': $relativePath"
+            }
+        }
+    }
+    if (Test-Path -LiteralPath (Join-Path $repoRoot $adrPath)) {
+        $text = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot $adrPath)
+        foreach ($marker in @('상태: `ACCEPTED`', '## Context', '## Options', '## Decision', '## Consequences', '## Compatibility', '## Verification', 'Agent 권한', 'schema field', 'Gate', 'Primitive', 'validated PoC', '#124')) {
+            if (-not $text.Contains($marker)) {
+                Add-Failure "T02 ADR-016 decision/compatibility missing '$marker'"
+            }
+        }
+    }
+    $indexText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/review/decisions/README.md')
+    if ($indexText -notmatch '(?m)^\| \[ADR-016\]\(\./ADR-016-maintainable-workflow-packages\.md\) \|[^\r\n]+\| ACCEPTED \|') {
+        Add-Failure 'T02 ADR index must list ADR-016 with its accepted implementation decision'
+    }
+}
+
+Assert-MaintainableWorkflowBoundaries
+Write-Output 'T02 maintainable workflow boundary checks: 6 exact modules, import allowlists, router authorization, settled storage and stale wording'
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {
