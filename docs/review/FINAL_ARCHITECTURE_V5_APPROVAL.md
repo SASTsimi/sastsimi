@@ -10,13 +10,13 @@
 
 ## 1. 고정한 검토 대상
 
-- 내용 기준 `main`: `07bd6549a676419c0e720f940ba7abd1b82aea0d`
+- 검토 시작 기준 `main`: `07bd6549a676419c0e720f940ba7abd1b82aea0d`
 - 마지막 설계 병합: [PR #116](https://github.com/SASTsimi/sastsimi/pull/116), R3-06 구현 기준선
 - 완료 확인: Issue #92와 R3 상위 Issue #4
 - 역할별 완료 확인: R1~R8 상위 Issue #2~#9 모두 `CLOSED`
 - 최종 관리: [Issue #10](https://github.com/SASTsimi/sastsimi/issues/10), [PM Epic #1](https://github.com/SASTsimi/sastsimi/issues/1)
 
-`07bd654...`은 역할·데이터·흐름을 고정한 **내용 SHA**입니다. 이 Final PR은 새 기능·field·enum·상태 전이·권한·Agent 역할을 만들지 않고 승인 상태와 검토 기록만 변경합니다. Final PR의 정확한 head SHA는 PR 본문에 기록하며, 모든 최종 리뷰는 그 head를 대상으로 합니다.
+`07bd654...`은 마지막 선행 설계 PR까지 병합한 **검토 시작 기준 main SHA**입니다. 이 Final PR은 새 기능·field·enum·상태 전이·권한·Agent 역할을 추가하지 않지만, 최종 리뷰에서 발견한 기존 계약의 모호함을 바로잡은 수정과 승인 상태·검토 기록을 함께 포함합니다. 최종 승인 대상은 PR 본문에 기록한 정확한 head SHA이며, 모든 최종 리뷰는 그 head를 대상으로 합니다.
 
 Final PR에 새 commit이 생기면 PR 본문의 head SHA를 갱신합니다. 설계 의미가 바뀌었다면 영향을 받는 역할의 기존 승인은 무효이며 다시 확인해야 합니다. 오탈자나 상태 기록만 바뀌었더라도 최종 검토자는 새 head와 diff를 다시 확인합니다.
 
@@ -48,7 +48,7 @@ Final PR에 새 commit이 생기면 PR 본문의 head SHA를 갱신합니다. �
 | 열린 Blocker 0 | PASS | `FINDINGS.md`의 Blocker 모두 `RESOLVED` |
 | 열린 High 0 | PASS | H-003~005를 안전한 기본값·비활성화 조건으로 닫고 실제 시험은 아래 후속 항목으로 분리 |
 | Medium/Low의 담당·재검토 시점 | PASS | §6과 `FINDINGS.md`에 owner와 활성화 전 조건 기록 |
-| 기준 문서 자동 검사 | PASS | 기준 SHA에서 `validate-architecture-docs.ps1` 실패 0, Final PR head에서 다시 실행 |
+| 기준 문서 자동 검사 | PASS | 검토 시작 기준 main과 Final PR head에서 `validate-architecture-docs.ps1` 실패 0 |
 
 ## 4. 전체 흐름 문서 추적 결과
 
@@ -111,7 +111,7 @@ Final PR에 새 commit이 생기면 PR 본문의 head SHA를 갱신합니다. �
 | R1 | `@baeseungwon1010` | Hypothesis·Primitive·Chaining·새 가설 재검증 |
 | R2 | `@zv9uvr` | clone·AST/SAST·StaticFactBundle·Context |
 | R3 | `@YHS-Sec` | 구현 기준선·Provider·Prompt·복구·통합. PR 작성자의 R4 공동 검토도 수행 |
-| R4 | `@YHS-Sec` | 공통 ID·상태·exact reference·권한·Final PR이 상태 변경만 하는지 |
+| R4 | `@YHS-Sec` | 공통 ID·상태·exact reference·권한·리뷰 중 계약 명확화와 승인 기록이 실제 diff와 일치하는지 |
 | R5 | `@kimhr8463` | CWE·두 Gate·Finding·Reporter·정책 경계 |
 | R6 | `@UltraPeachKeen` | Pro·Con·Verification·동적 요청·final verdict |
 | R7 | `@Potatonion` | Dynamic Reproduction Agent·Reproduction Setup Automation·Controller·Session Manager |

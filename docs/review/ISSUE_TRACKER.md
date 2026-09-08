@@ -22,7 +22,7 @@ GitHub가 실제 상태, 담당자와 토론의 기준입니다. 이 문서는 �
 | R6 | 찬반 근거·목적별 `DynamicReproductionRequest`·반환 결과 소비·최종 판정 | [#7](https://github.com/SASTsimi/sastsimi/issues/7) | 임채민 `@UltraPeachKeen` | — | `03`, `04`, `07`, `08`, `13` | R2, R7, R1, R4, R5, R8 | CLOSED — PR #103 병합, 2026-09-06 |
 | R7 | Dynamic Reproduction Agent requirements·간단한 plan·PoC, Setup recipe·환경·정리, Controller 외부 경계, Session Manager AgentLog·validated PoC·결과 확정 | [#8](https://github.com/SASTsimi/sastsimi/issues/8) | 조근석 `@Potatonion` | — | `04`, `07`, `08`, `10`, `13` | R6, R4, R8, R3, R5 | CLOSED — 2026-09-05 |
 | R8 | 평가 corpus·지표·예산 profile | [#9](https://github.com/SASTsimi/sastsimi/issues/9) | 성병찬 `@gitterable` | — | `04`, `06`, `07`, `08`, `09` | R4, 각 LLM 역할, R3 | CLOSED — 2026-09-05 |
-| 최종 | 전체 교차 시나리오·고정 commit SHA·최종 승인 | [#10](https://github.com/SASTsimi/sastsimi/issues/10) | 최종 검토·승인 담당자 김태현 `@taehyeon-git` | `final/architecture-v5-approval` | 전체 기준 문서·Wiki·Mermaid·발견사항 | R1–R8 담당자 전원. PR 작성자의 R3·R4 검토는 `@YHS-Sec`이 수행 | FINAL REVIEW — 내용 기준 SHA `07bd6549a676419c0e720f940ba7abd1b82aea0d` |
+| 최종 | 전체 교차 시나리오·고정 commit SHA·최종 승인 | [#10](https://github.com/SASTsimi/sastsimi/issues/10) | 최종 검토·승인 담당자 김태현 `@taehyeon-git` | `final/architecture-v5-approval` | 전체 기준 문서·Wiki·Mermaid·발견사항 | R1–R8 담당자 전원. PR 작성자의 R3·R4 검토는 `@YHS-Sec`이 수행 | FINAL REVIEW — 검토 시작 기준 main `07bd6549a676419c0e720f940ba7abd1b82aea0d`, 승인 대상은 PR 본문의 exact head |
 
 번호 문서는 `docs/architecture-v5/` 아래 파일을 뜻합니다. 세부 입력·출력, 금지 권한과 완료 조건은 [ISSUE_CATALOG.md](./ISSUE_CATALOG.md)에 있습니다.
 

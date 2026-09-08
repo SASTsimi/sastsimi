@@ -263,14 +263,15 @@ foreach ($requiredFindingMarker in @(
 }
 
 # Final approval is a documentation state transition, not an implementation
-# success claim. Keep the exact content freeze, role issue state, accepted ADRs
-# and NOT_IMPLEMENTED boundary mechanically aligned.
+# success claim. Keep the review-start main, exact PR-head approval target,
+# role issue state, accepted ADRs and NOT_IMPLEMENTED boundary aligned.
 $finalApprovalPath = Join-Path $repoRoot 'docs/review/FINAL_ARCHITECTURE_V5_APPROVAL.md'
 if (-not (Test-Path -LiteralPath $finalApprovalPath)) {
     Add-Failure 'missing Architecture v5 final approval record'
 } else {
     $finalApprovalText = Get-Content -Raw -Encoding UTF8 -LiteralPath $finalApprovalPath
     foreach ($marker in @(
+        '검토 시작 기준 `main`',
         '07bd6549a676419c0e720f940ba7abd1b82aea0d',
         'PR #116',
         'Issue #92',
@@ -280,12 +281,38 @@ if (-not (Test-Path -LiteralPath $finalApprovalPath)) {
         '설계 상태: **DESIGN_APPROVED**',
         '구현 상태: **NOT_IMPLEMENTED**',
         '정확한 PR head',
+        '최종 리뷰에서 발견한 기존 계약의 모호함을 바로잡은 수정',
+        '최종 승인 대상은 PR 본문에 기록한 정확한 head SHA',
         'current generation의 exact `DynamicReproductionRequest`와 같은 `DYNAMIC_REPRO` 실행 attempt의 recipe·환경·AgentLog·candidate·command digest를 요구',
         '| F-19 | 금지 테스트 위반은 result Primitive를 막고, 다른 scope·impact 실패는 보고 가능성만 막음 | PASS | `05`, `06`, `08`, ADR-011, ADR-014 |'
     )) {
         if (-not $finalApprovalText.Contains($marker)) {
             Add-Failure "final approval record is missing: $marker"
         }
+    }
+
+    foreach ($obsoleteMarker in @(
+        '승인 상태와 검토 기록만 변경합니다',
+        'Final PR이 상태 변경만 하는지'
+    )) {
+        if ($finalApprovalText.Contains($obsoleteMarker)) {
+            Add-Failure "final approval record still misstates the PR diff: $obsoleteMarker"
+        }
+    }
+}
+
+$finalApprovalBaselineMarkers = @{
+    'docs/DOCUMENT_GUIDE.md' = '검토 시작 기준 main'
+    'docs/review/ISSUE_TRACKER.md' = '검토 시작 기준 main'
+    'docs/architecture-v5/implementation/README.md' = '최종 승인 검토 시작 기준 main'
+    'docs/architecture-v5/implementation/06-implementation-baseline.md' = '실제 승인 대상은 Final PR 본문의 exact head'
+}
+foreach ($relativePath in $finalApprovalBaselineMarkers.Keys) {
+    $path = Join-Path $repoRoot $relativePath
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    $marker = $finalApprovalBaselineMarkers[$relativePath]
+    if (-not $text.Contains($marker)) {
+        Add-Failure "final approval baseline/head boundary is not synchronized: $relativePath"
     }
 }
 

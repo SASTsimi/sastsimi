@@ -31,7 +31,7 @@
 
 - PR #116 병합과 Issue #92·R3 상위 Issue #4 종료: 완료
 - R1~R8 역할 Issue #2~#9 종료: 완료
-- 구현 기준 설계의 내용 고정 SHA: `07bd6549a676419c0e720f940ba7abd1b82aea0d`
+- 최종 승인 검토 시작 기준 main: `07bd6549a676419c0e720f940ba7abd1b82aea0d`; 실제 승인 대상은 Final PR 본문에 기록한 exact head
 - Architecture v5 전체 문서 추적과 validator·`git diff --check`: 최종 승인 PR에서 확인
 
 `DESIGN_APPROVED`는 이 문서를 구현 기준으로 사용할 수 있다는 뜻입니다. Provider capability, 평가 결과, Docker 보안 시험과 실제 실행 코드는 아직 `NOT_IMPLEMENTED`이며 해당 기능을 활성화하기 전에 문서에 적힌 시험을 통과해야 합니다.
