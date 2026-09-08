@@ -125,6 +125,7 @@ foreach ($relativePath in $trackedMarkdown) {
 
 $validatorPath = Join-Path $repositoryFullPath 'scripts/validate-architecture-docs.ps1'
 $validatorText = if (Test-Path -LiteralPath $validatorPath) { Get-Content -Raw -Encoding UTF8 -LiteralPath $validatorPath } else { '' }
+$validatorGlobalMarkdownScan = $validatorText -match '(?s)\$markdownFiles\s*=\s*Get-ChildItem.*?-Recurse.*?-Filter\s+''\*\.md'''
 $finalApprovalRelativePath = 'docs/review/FINAL_ARCHITECTURE_V5_APPROVAL.md'
 $finalApprovalPath = Join-Path $repositoryFullPath $finalApprovalRelativePath
 $finalApprovalText = if (Test-Path -LiteralPath $finalApprovalPath) { Get-Content -Raw -Encoding UTF8 -LiteralPath $finalApprovalPath } else { '' }
@@ -143,8 +144,11 @@ $inventory = foreach ($relativePath in $trackedMarkdown) {
     } | ForEach-Object { $_.Key } | Sort-Object -Unique)
 
     $validatorReferences = @()
+    if ($validatorGlobalMarkdownScan) {
+        $validatorReferences += 'scripts/validate-architecture-docs.ps1 (global Markdown scan; deletion-blocking)'
+    }
     if (Find-TextReference -Text $validatorText -RelativePath $relativePath) {
-        $validatorReferences += 'scripts/validate-architecture-docs.ps1'
+        $validatorReferences += 'scripts/validate-architecture-docs.ps1 (literal path/basename reference)'
     }
 
     $finalApprovalReferences = @()
@@ -184,6 +188,7 @@ $inventory = foreach ($relativePath in $trackedMarkdown) {
 }
 
 Write-Output "Tracked Markdown files: $($inventory.Count)"
+Write-Output "Architecture validator global Markdown scan: $validatorGlobalMarkdownScan"
 foreach ($record in $inventory) {
     Write-Output "Path: $($record.Path)"
     Write-Output "  InboundLinks: $($record.InboundLinks -join '; ')"

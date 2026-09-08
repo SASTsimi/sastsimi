@@ -19,7 +19,7 @@
 | [Issue 화면 설정](../.github/ISSUE_TEMPLATE/config.yml) | GitHub Issue 작성 화면의 선택 항목을 설정합니다. | 저장소 관리 담당 | 보조 파일 |
 | [PR 작성 양식](../.github/PULL_REQUEST_TEMPLATE.md) | PR에 목적·영향·검증 내용을 빠뜨리지 않도록 기본 양식을 제공합니다. | PR 작성자·검토자 | 보조 파일 |
 | [`scripts/validate-architecture-docs.ps1`](../scripts/validate-architecture-docs.ps1) | Markdown 링크·Mermaid 사본, R4 상태·복구·권한 계약과 운영 Pro/Con 결과 연결 누락을 한 번에 검사합니다. | 문서 작성자·검토자 | 검증 도구 |
-| [`scripts/audit-doc-inventory.ps1`](../scripts/audit-doc-inventory.ps1) | Git-tracked Markdown별 inbound link, validator·최종 승인·provenance·ADR 참조를 보여 주고, required reference가 있는 삭제 allowlist를 거절합니다. `-CheckLinks`로 로컬 Markdown 링크 누락도 검사합니다. | 문서 작성자·검토자 | 검증 도구 |
+| [`scripts/audit-doc-inventory.ps1`](../scripts/audit-doc-inventory.ps1) | Git-tracked Markdown별 inbound link, validator·최종 승인·provenance·ADR 참조를 보여 주고, 현재 validator의 전역 Markdown scan과 literal 참조를 구분해 표시합니다. 어느 validator 의존도든 삭제 allowlist를 거절합니다. `-CheckLinks`로 로컬 Markdown 링크 누락도 검사합니다. | 문서 작성자·검토자 | 검증 도구 |
 | [문서 CI](../.github/workflows/docs.yml) | Windows와 Ubuntu에서 Architecture validator, 문서 인벤토리·링크 검사와 diff 검사를 실행합니다. | PR 작성자·검토자 | 보조 파일 |
 
 ## 문서 안내와 공통 용어
