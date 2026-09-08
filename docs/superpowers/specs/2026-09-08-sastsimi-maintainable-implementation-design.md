@@ -1,6 +1,7 @@
 # SASTSIMI 유지보수 중심 구현 전환 설계
 
-- 상태: `DRAFT_FOR_REVIEW`
+- 상태: `APPROVED_FOR_IMPLEMENTATION`
+- 승인 근거: PR #119, merge commit `5657fc7b51af33271a940af37ca48bbfcdc14553`
 - 기준 `main`: `691585cd4bd26d6f7bc4d173868e5a710d829126`
 - 구현 기준: Architecture v5 `DESIGN_APPROVED / NOT_IMPLEMENTED`
 - 범위: 저장소 정리, 구현 패키지 경계, 구현·검토·PR 순서
