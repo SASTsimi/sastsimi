@@ -31,16 +31,19 @@ Architecture v5의 역할·데이터·상태·보안 계약을 실제 Python 프
 - `docs/governance/`, `docs/GLOSSARY.md`, `docs/DOCUMENT_GUIDE.md`
 - 쉬운 설명을 제공하는 Architecture v5 Wiki
 
-### 현재 작업 트리에서 제거
+### 현재 작업 트리에서 제거할 수 있는 항목
 
-`docs/superpowers/plans/`와 `docs/superpowers/specs/`의 완료된 과거 설계 작업 문서는 Architecture v5 정본이나 구현 입력이 아니다. 첫 정리 PR에서 다음 원칙으로 정리한다.
+완료된 과거 설계 작업 문서는 Architecture v5 정본이나 구현 입력이 아니지만, 현재 validator와 provenance가 일부 파일을 검토 이력으로 요구한다. 따라서 `docs/superpowers/plans/`와 `docs/superpowers/specs/`를 폴더 단위로 일괄 삭제하지 않는다.
 
-- 현재 구현 설계와 실행 계획만 유지한다.
-- 완료된 과거 계획·초안은 현재 작업 트리에서 제거한다.
-- 삭제 전 현재 정본이나 ADR에만 남아 있는 결정이 없는지 검색한다.
-- 필요한 결정은 정본 또는 ACCEPTED ADR 링크로 바꾼 뒤 제거한다.
-- 삭제된 문서는 Git history에서 계속 복구·조회할 수 있다.
-- `DOCUMENT_GUIDE.md`가 삭제한 파일을 계속 안내하지 않도록 함께 수정한다.
+첫 정리 PR은 삭제 후보를 파일별 allowlist로 명시하고 다음 조건을 모두 만족한 파일만 제거한다.
+
+- 정본·ACCEPTED ADR·최종 승인 문서가 해당 파일의 내용에 의존하지 않는다.
+- `rg`로 확인한 inbound link가 없거나 새 정본·ADR 링크로 안전하게 교체됐다.
+- Architecture validator가 해당 파일을 요구하지 않도록 provenance 검사를 안전하게 이전했다.
+- `DOCUMENT_GUIDE.md`와 `docs/superpowers/README.md`를 같은 PR에서 동기화했다.
+- clean checkout에서 문서 validator, 로컬 Markdown 링크 검사와 `git diff --check`가 통과한다.
+
+조건을 하나라도 입증하지 못한 기록은 삭제하지 않고 현재 위치에 보존한다. Git history에서 조회할 수 있다는 이유만으로 현재 validator가 요구하는 승인 증거를 제거하지 않는다.
 
 ### 이동 또는 이름 변경
 
@@ -182,28 +185,30 @@ bootstrap -> 모든 concrete 구현의 생성·주입
 
 첫 코드 PR 전에 다음을 문서에서 정리한다.
 
-1. `08-lightweight-data-contracts.md`의 “serialization·schema·database가 아직 미정”이라는 과거 문장을 ADR-015에서 확정한 Canonical JSON v1·Pydantic·SQLite·Alembic 기준으로 바꾼다.
+1. `08-lightweight-data-contracts.md`와 `docs/governance/OPEN_QUESTIONS.md`에 남은 “serialization·schema·database·result storage가 아직 미정”이라는 과거 문장을 ADR-015에서 확정한 Canonical JSON v1·Pydantic·SQLite·Alembic·artifact store 기준으로 바꾼다.
 2. `03-agent-roles-and-orchestration.md`의 run-init “공통 Docker/환경 준비” 표현을 제거한다. Docker는 current 가설의 승인된 `DYNAMIC_REPRO`에서만 준비한다.
 3. module map의 `DebateService`, `VerificationService`, `DynamicReproductionService`, `VerdictRouter`, `RevisionWorkflow`, `ChainingService`를 `verification/`, `reproduction/`, `chaining/`에 연결한다.
 4. dependency 설명을 runtime 호출 흐름과 Python import 방향으로 나눠 concrete adapter 직접 import 오해를 막는다.
-5. 이 물리 구조 보완을 새 ACCEPTED ADR로 기록하고 Architecture validator에 회귀 검사를 추가한다.
+5. 저장소 전체를 검색해 같은 과거 표현이 남지 않았는지 확인한다. 역사 문서에는 현재 정본으로 오해하지 않도록 상태와 정본 링크가 있는지 검사한다.
+6. 이 물리 구조 보완을 새 ACCEPTED ADR로 기록하고 Architecture validator에 회귀 검사를 추가한다.
 
 이 수정은 Agent, schema field, enum, verdict, Gate 또는 권한을 바꾸지 않는다.
 
 ## 11. PR 진행 순서
 
-1. 저장소 문서 정리와 구현 경계 ADR
-2. Python foundation, lock, CLI skeleton, logging, lint·type·pytest·CI
-3. 공통 Pydantic 계약, canonical JSON, generated schema
-4. SQLite·Alembic·artifact·work/attempt·action·transition·복구
-5. fake adapter 기반 한 가설 22단계 vertical slice
-6. Repository Loader·AST·CodeQL·OpenGrep·StaticFactBundle
-7. Provider port 첫 실제 API adapter·Prompt Runtime·Agent wrapper
-8. R6 Verification과 R7 동적 재현·validated PoC
-9. CWE·두 Gate·Finding·Reporter
-10. Primitive Admission·Chaining·다중 가설 병렬 처리
-11. 예산·취소·재시도·복구·security-negative 통합
-12. 실제 Provider·정적 도구·Docker capability와 평가 corpus E2E
+1. 저장소 정리: 파일별 삭제 allowlist, 문서 인덱스·provenance·validator 동기화만 수행
+2. 구현 경계 보정: stale 정본 표현 수정, 업무 흐름 package ADR, module map·의존 방향·validator 반영
+3. Python foundation, lock, CLI skeleton, logging, lint·type·pytest·CI
+4. 공통 Pydantic 계약, canonical JSON, generated schema
+5. SQLite·Alembic·artifact·work/attempt·action·transition·복구
+6. fake adapter 기반 한 가설 22단계 vertical slice
+7. Repository Loader·AST·CodeQL·OpenGrep·StaticFactBundle
+8. Provider port 첫 실제 API adapter·Prompt Runtime·Agent wrapper
+9. R6 Verification과 R7 동적 재현·validated PoC
+10. CWE·두 Gate·Finding·Reporter
+11. Primitive Admission·Chaining·다중 가설 병렬 처리
+12. 예산·취소·재시도·복구·security-negative 통합
+13. 실제 Provider·정적 도구·Docker capability와 평가 corpus E2E
 
 각 PR은 하나의 책임만 가지며 앞 PR의 public contract가 병합된 뒤 그 계약에 의존하는 PR을 시작한다. 서로 같은 공통 파일을 수정하지 않는 조사·fixture 준비만 병렬로 진행한다.
 
