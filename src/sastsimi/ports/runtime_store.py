@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from sastsimi.contracts.actions import ActionDecision, ActionRequest
+from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.budget import BudgetProfileBinding, ExecutionBudgetProfile
 from sastsimi.contracts.refs import RecordRef, RunStoredDataRef, StoredDataRef
 from sastsimi.contracts.work import StateTransition, WorkAttempt, WorkExecutionState
@@ -32,15 +34,34 @@ class AttemptPort(Protocol):
 
 
 class ActionAuthorizationPort(Protocol):
+    def mark_dispatched(
+        self,
+        decision_ref: RecordRef,
+        provider_request_id: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> None: ...
+    def mark_returned(self, decision_ref: RecordRef) -> None: ...
+    def authorize(
+        self,
+        action: ActionRequest,
+        work: WorkExecutionState | None = None,
+        reservation_ref: RecordRef | None = None,
+    ) -> ActionDecision: ...
     def claim_external(
         self, work_id: str, decision_ref: RecordRef, reservation_ref: RecordRef | None
     ) -> None: ...
 
 
 class BudgetRegistryPort(Protocol):
-    def pin_execution(self, profile: ExecutionBudgetProfile) -> RunStoredDataRef: ...
+    def pin_execution(
+        self, profile: ExecutionBudgetProfile, state: AnalysisRunState | None = None
+    ) -> RunStoredDataRef: ...
+    def current_state(self, analysis_id: str) -> AnalysisRunState: ...
     def pin_binding(
-        self, binding: BudgetProfileBinding, workspace_ref: RunStoredDataRef
+        self,
+        binding: BudgetProfileBinding,
+        workspace_ref: RunStoredDataRef,
+        analysis_state_ref: RunStoredDataRef | None = None,
     ) -> StoredDataRef: ...
 
 

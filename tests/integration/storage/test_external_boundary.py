@@ -19,9 +19,11 @@ from tests.integration.storage.test_work import (
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("port", ["LLM", "STATIC_TOOL", "POLICY_HTTP", "DOCKER"])
-async def test_external_wait_has_no_sqlite_write_transaction(
-    tmp_path: Path, port: str
+@pytest.mark.parametrize(
+    "response_label", ["LLM", "STATIC_TOOL", "POLICY_HTTP", "DOCKER"]
+)
+async def test_shared_invocation_boundary_releases_sqlite_before_await(
+    tmp_path: Path, response_label: str
 ) -> None:
     from sastsimi.runtime.external_call_service import ExternalCallService
 
@@ -29,7 +31,7 @@ async def test_external_wait_has_no_sqlite_write_transaction(
     work = attempts.start(
         transition, attempt, prior_reservation, "worker", NOW + timedelta(seconds=30)
     )
-    # One generic external invocation boundary wraps each later port adapter.
+    # Labels exercise the shared boundary, not real provider/process adapters.
     decision_ref = authorization(
         h,
         ActionType.READ_CODE,
@@ -46,7 +48,7 @@ async def test_external_wait_has_no_sqlite_write_transaction(
         reservation_id="external-reservation",
         work_ref=reference(work).model_dump(mode="json"),
         action_ref=decision_action(h, decision_ref).model_dump(mode="json"),
-        requested_units=units(),
+        requested_units=units(elapsed_ms=1, cost_minor_units=1),
     )
     reserved = works.validator.budget.reserve(
         BudgetReservationRequest(
@@ -58,7 +60,7 @@ async def test_external_wait_has_no_sqlite_write_transaction(
     async def external_port() -> str:
         entered.set()
         await release.wait()
-        return port
+        return response_label
 
     service = ExternalCallService(works.validator)
     with pytest.raises(ValueError, match="BUDGET"):
@@ -76,7 +78,7 @@ async def test_external_wait_has_no_sqlite_write_transaction(
             )
     finally:
         release.set()
-    assert await task == port
+    assert await task == response_label
     with pytest.raises(ValueError, match="USED"):
         await service.invoke(
             str(work.work_id), decision_ref, reference(reserved), external_port

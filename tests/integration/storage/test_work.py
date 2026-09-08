@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
@@ -33,8 +34,8 @@ def setup_services(h: Harness) -> tuple[object, object, object]:
     from sastsimi.storage.budget_service import BudgetService
     from sastsimi.storage.work_service import WorkService
 
-    registry = BudgetProfileRegistry(h.records)
-    registry.pin_execution(h.execution(max_work=10))
+    registry = BudgetProfileRegistry(h.records, h.clock, h.ids)
+    h.pin_execution(registry, h.execution(max_work=10))
     budget = BudgetService(h.records, registry, h.clock, h.ids)
     validator = RuntimeValidator(h.records, budget, h.clock, h.ids)
     work_service = WorkService(h.records, validator, h.clock, h.ids)
@@ -86,6 +87,7 @@ def authorization(
     ref = h.records.stage_record(result)
     with h.database.write() as connection:
         h.records.publish(connection, ref)
+    h.issue_fixture_decision(result)
     assert isinstance(ref, (RunStoredDataRef, StoredDataRef))
     return ref
 
@@ -105,8 +107,8 @@ def test_work_requires_reservation_and_duplicate_registration_returns_existing(
     from sastsimi.storage.work_service import WorkService
 
     h = Harness(tmp_path)
-    registry = BudgetProfileRegistry(h.records)
-    scope = registry.pin_execution(h.execution())
+    registry = BudgetProfileRegistry(h.records, h.clock, h.ids)
+    scope = h.pin_execution(registry, h.execution())
     budget = BudgetService(h.records, registry, h.clock, h.ids)
     service = WorkService(
         h.records, RuntimeValidator(h.records, budget, h.clock, h.ids), h.clock, h.ids
@@ -134,6 +136,7 @@ def test_work_requires_reservation_and_duplicate_registration_returns_existing(
 
 def start_fixture(
     tmp_path: Path,
+    input_factory: Callable[[Harness], tuple[RecordRef, ...]] | None = None,
 ) -> tuple[
     Harness, WorkService, AttemptService, StateTransition, WorkAttempt, BudgetScopeRef
 ]:
@@ -144,8 +147,8 @@ def start_fixture(
     from sastsimi.storage.work_service import WorkService
 
     h = Harness(tmp_path)
-    registry = BudgetProfileRegistry(h.records)
-    scope = registry.pin_execution(h.execution(max_work=10))
+    registry = BudgetProfileRegistry(h.records, h.clock, h.ids)
+    scope = h.pin_execution(registry, h.execution(max_work=10))
     budget = BudgetService(h.records, registry, h.clock, h.ids)
     service = WorkService(
         h.records, RuntimeValidator(h.records, budget, h.clock, h.ids), h.clock, h.ids
@@ -156,6 +159,25 @@ def start_fixture(
             connection, reservation.reservation.work_ref, candidate=True
         )
     assert isinstance(work, WorkExecutionState)
+    if input_factory is not None:
+        from sastsimi.contracts.canonical_json import content_hash
+        from sastsimi.contracts.ids import RecordId
+
+        refs = input_factory(h)
+        work = work.model_copy(
+            update={
+                "meta": work.meta.model_copy(
+                    update={"record_id": RecordId("input-work")}
+                ),
+                "input_refs": refs,
+                "input_hash": content_hash(refs),
+            }
+        )
+        reservation = BudgetReservationRequest(
+            reservation.reservation.model_copy(
+                update={"work_ref": h.records.stage_record(work)}
+            )
+        )
     decision_ref = authorization(h, ActionType.REGISTER_WORK, "register")
     reserved = budget.reserve(
         BudgetReservationRequest(

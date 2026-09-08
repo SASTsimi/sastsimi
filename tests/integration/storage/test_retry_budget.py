@@ -48,8 +48,8 @@ def test_retry_attempt_requires_a_reserved_retry_unit(
     ready = works.make_ready(StateTransition.model_validate_json(json.dumps(data)))
     decision = authorization(h, ActionType.START_ATTEMPT, "retry", reference(ready), 5)
     original = h.reservation(
-        works.validator.budget.registry.pin_execution(
-            h.execution(max_work=10)
+        h.pin_execution(
+            works.validator.budget.registry, h.execution(max_work=10)
         ).model_dump(mode="json"),
         "retry-reservation",
     ).reservation.model_dump(mode="json")

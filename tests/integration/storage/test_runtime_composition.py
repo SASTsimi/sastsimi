@@ -17,7 +17,7 @@ def test_runtime_composition_requires_explicit_migration_and_runs_recovery(
         build_runtime(
             tmp_path, WorkspaceId("w1"), CommitId("c1"), TestClock(), TestIds()
         )
-    upgrade(Database(tmp_path / "state.sqlite3"))
+    upgrade(Database(tmp_path / "db" / "sastsimi.sqlite3"))
     runtime = build_runtime(
         tmp_path, WorkspaceId("w1"), CommitId("c1"), TestClock(), TestIds()
     )

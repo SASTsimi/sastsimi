@@ -20,18 +20,18 @@ def test_full_binding_requires_ready_workspace_and_all_active_exact_profiles(
     from sastsimi.storage.budget_registry import BudgetProfileRegistry
 
     h = Harness(tmp_path)
-    registry = BudgetProfileRegistry(h.records)
-    execution = registry.pin_execution(h.execution())
+    registry = BudgetProfileRegistry(h.records, h.clock, h.ids)
+    execution = h.pin_execution(registry, h.execution())
     binding, workspace = h.binding(execution.model_dump(mode="json"))
-    scope = registry.pin_binding(
-        binding, RunStoredDataRef.model_validate_json(json.dumps(workspace))
+    scope = h.pin_binding(
+        registry, binding, RunStoredDataRef.model_validate_json(json.dumps(workspace))
     )
     with h.database.engine.connect() as connection:
         assert registry.execution(connection, scope, "a1").profile_key == "approved"
     other = binding.model_copy(update={"status": ProfileStatus.RETIRED})
     with pytest.raises(ValueError, match="ACTIVE"):
-        registry.pin_binding(
-            other, RunStoredDataRef.model_validate_json(json.dumps(workspace))
+        h.pin_binding(
+            registry, other, RunStoredDataRef.model_validate_json(json.dumps(workspace))
         )
 
 
@@ -46,8 +46,8 @@ def test_post_workspace_reservation_denies_execution_only_and_unlisted_operation
     from tests.unit.contracts.test_core_models import work
 
     h = Harness(tmp_path)
-    registry = BudgetProfileRegistry(h.records)
-    execution = registry.pin_execution(h.execution())
+    registry = BudgetProfileRegistry(h.records, h.clock, h.ids)
+    execution = h.pin_execution(registry, h.execution())
     binding, workspace = h.binding(execution.model_dump(mode="json"))
     ledger = BudgetService(h.records, registry, h.clock, h.ids)
     initial = h.reservation(execution.model_dump(mode="json"), work_count=1).reservation
@@ -60,8 +60,8 @@ def test_post_workspace_reservation_denies_execution_only_and_unlisted_operation
         )
     )
     exact_work = h.records.stage_record(candidate)
-    scope = registry.pin_binding(
-        binding, RunStoredDataRef.model_validate_json(json.dumps(workspace))
+    scope = h.pin_binding(
+        registry, binding, RunStoredDataRef.model_validate_json(json.dumps(workspace))
     )
     data = initial.model_dump(mode="json")
     data.update(
@@ -99,13 +99,13 @@ def test_inactive_or_unpinned_budget_cannot_reserve(tmp_path: Path) -> None:
     from sastsimi.storage.budget_service import BudgetService
 
     h = Harness(tmp_path)
-    registry = BudgetProfileRegistry(h.records)
+    registry = BudgetProfileRegistry(h.records, h.clock, h.ids)
     profile = h.execution()
     request = h.reservation(h.publish(profile), work_count=1)
     ledger = BudgetService(h.records, registry, h.clock, h.ids)
     with pytest.raises(ValueError, match="BUDGET"):
         ledger.reserve(request)
-    registry.pin_execution(profile)
+    h.pin_execution(registry, profile)
     assert ledger.reserve(request).status == "RESERVED"
 
 
@@ -116,8 +116,8 @@ def test_concurrent_reservations_cannot_overbook_and_restart_preserves_unknown(
     from sastsimi.storage.budget_service import BudgetService
 
     h = Harness(tmp_path)
-    registry = BudgetProfileRegistry(h.records)
-    scope = registry.pin_execution(h.execution(max_work=1))
+    registry = BudgetProfileRegistry(h.records, h.clock, h.ids)
+    scope = h.pin_execution(registry, h.execution(max_work=1))
     ledger = BudgetService(h.records, registry, h.clock, h.ids)
     requests = [
         h.reservation(scope.model_dump(mode="json"), name, work_count=1)
@@ -149,8 +149,8 @@ def test_usage_is_committed_once_and_preexecution_release_restores_units(
     from sastsimi.storage.budget_service import BudgetService
 
     h = Harness(tmp_path)
-    registry = BudgetProfileRegistry(h.records)
-    scope = registry.pin_execution(h.execution())
+    registry = BudgetProfileRegistry(h.records, h.clock, h.ids)
+    scope = h.pin_execution(registry, h.execution())
     ledger = BudgetService(h.records, registry, h.clock, h.ids)
     reserved = ledger.reserve(
         h.reservation(scope.model_dump(mode="json"), work_count=1)

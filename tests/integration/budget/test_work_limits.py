@@ -26,8 +26,8 @@ def test_zero_work_limit_denies_operation(
     tmp_path: Path, action_type: str, limit_name: str
 ) -> None:
     h = Harness(tmp_path)
-    registry = BudgetProfileRegistry(h.records)
-    execution = registry.pin_execution(h.execution())
+    registry = BudgetProfileRegistry(h.records, h.clock, h.ids)
+    execution = h.pin_execution(registry, h.execution())
     binding, workspace = h.binding(execution.model_dump(mode="json"))
     limit_record = h.records.get_exact(binding.work_budget_profile_ref)
     assert isinstance(limit_record, WorkBudgetProfile)
@@ -39,8 +39,8 @@ def test_zero_work_limit_denies_operation(
         WorkBudgetProfile.model_validate_json(json.dumps(limits))
     )
     binding = BudgetProfileBinding.model_validate_json(json.dumps(binding_data))
-    scope = registry.pin_binding(
-        binding, RunStoredDataRef.model_validate_json(json.dumps(workspace))
+    scope = h.pin_binding(
+        registry, binding, RunStoredDataRef.model_validate_json(json.dumps(workspace))
     )
     candidate = WorkExecutionState.model_validate_json(
         json.dumps(
@@ -75,6 +75,7 @@ def test_zero_work_limit_denies_operation(
         work_ref=work_ref.model_dump(mode="json"),
         action_ref=action_ref,
     )
+    initial["requested_units"].update(elapsed_ms=1, cost_minor_units=1)
     ledger = BudgetService(h.records, registry, h.clock, h.ids)
     with pytest.raises(ValueError, match="BUDGET_EXCEEDED"):
         ledger.reserve(

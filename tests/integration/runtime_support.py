@@ -21,6 +21,7 @@ from sastsimi.ports.dto import BudgetReservationRequest, Record
 from sastsimi.storage.database import Database
 from sastsimi.storage.migrations import upgrade
 from sastsimi.storage.repositories import SQLiteRecordStore
+from tests.integration.trusted_fixture import FixtureEvidence
 from tests.unit.contracts.test_core_models import action, meta, work
 
 NOW = datetime(2026, 9, 7, tzinfo=UTC)
@@ -29,9 +30,10 @@ NOW = datetime(2026, 9, 7, tzinfo=UTC)
 class TestClock:
     __test__ = False
     tick = 0
+    wall_time = NOW
 
     def now(self) -> datetime:
-        return NOW
+        return self.wall_time
 
     def monotonic_ms(self) -> int:
         return self.tick
@@ -66,9 +68,10 @@ def units(**changes: Any) -> dict[str, Any]:
 
 class Harness:
     def __init__(self, root: Path) -> None:
-        self.database = Database(root / "runtime.db")
+        self.database = Database(root / "db" / "sastsimi.sqlite3")
         upgrade(self.database)
-        self.records = SQLiteRecordStore(self.database)
+        self.evidence = FixtureEvidence()
+        self.records = SQLiteRecordStore(self.database, self.evidence)
         self.clock = TestClock()
         self.ids = TestIds()
 
@@ -77,6 +80,108 @@ class Harness:
         with self.database.write() as connection:
             self.records.publish(connection, exact)
         return exact.model_dump(mode="json")
+
+    def analysis(self, profile: ExecutionBudgetProfile) -> Any:
+        from sastsimi.contracts.analysis import AnalysisRunState
+        from sastsimi.storage.codec import reference
+
+        return AnalysisRunState.model_validate_json(
+            json.dumps(
+                dict(
+                    meta=metadata("analysis_run_state", "run-state"),
+                    purpose=profile.purpose.value,
+                    eval_config_refs=[],
+                    program_id="program",
+                    execution_budget_profile_ref=reference(profile).model_dump(
+                        mode="json"
+                    ),
+                    budget_binding_ref=None,
+                    workspace_id=None,
+                    commit_id=None,
+                    workspace_ref=None,
+                    run_policy_state_ref=None,
+                    status="RUNNING",
+                    analysis_result_ref=None,
+                    started_at="2026-09-07T00:00:00Z",
+                    finished_at=None,
+                    elapsed_ms=0,
+                )
+            )
+        )
+
+    def pin_execution(self, registry: Any, profile: ExecutionBudgetProfile) -> Any:
+        from sastsimi.contracts.canonical_json import content_hash
+
+        self.evidence.approvals.add(content_hash(profile))
+        return registry.pin_execution(profile, self.analysis(profile))
+
+    def pin_binding(
+        self, registry: Any, binding: BudgetProfileBinding, workspace_ref: Any
+    ) -> Any:
+        from sastsimi.contracts.analysis import AnalysisRunState
+        from sastsimi.contracts.canonical_json import content_hash
+        from sastsimi.storage.codec import reference
+        from sastsimi.storage.records import next_meta
+        from sastsimi.storage.run_states import save_run
+
+        state = registry.current_state(str(binding.meta.analysis_id))
+        workspace = self.records.get_exact(workspace_ref)
+        assert isinstance(workspace, CodeWorkspace)
+        if state.workspace_ref != workspace_ref:
+            updated = AnalysisRunState.model_validate(
+                state.model_dump()
+                | dict(
+                    meta=next_meta(state.meta, self.clock, self.ids),
+                    workspace_ref=workspace_ref,
+                    workspace_id=workspace.workspace_id,
+                    commit_id=workspace.commit_id,
+                )
+            )
+            with self.database.write() as connection:
+                save_run(self.records, connection, updated, state)
+            state = updated
+        self.evidence.approvals.add(content_hash(binding))
+        return registry.pin_binding(binding, workspace_ref, reference(state))
+
+    def issue_fixture_decision(self, record: Record) -> None:
+        from sqlalchemy import insert, select
+
+        from sastsimi.contracts.actions import ActionDecision
+        from sastsimi.contracts.canonical_json import canonical_bytes
+        from sastsimi.storage import models
+        from sastsimi.storage.codec import reference
+
+        assert isinstance(record, ActionDecision)
+        from sastsimi.contracts.actions import RequesterRole
+
+        decision_ref = reference(record)
+        from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef
+
+        assert isinstance(decision_ref, (RunStoredDataRef, StoredDataRef))
+        self.evidence.identities[decision_ref] = RequesterRole.RECOVERY
+        request = self.records.get_exact(record.action_ref)
+        assert isinstance(request, ActionRequest)
+        with self.database.write() as connection:
+            if not connection.execute(
+                select(models.action_requests).where(
+                    models.action_requests.c.action_id == str(request.action_id)
+                )
+            ).first():
+                connection.execute(
+                    insert(models.action_requests).values(
+                        action_id=str(request.action_id),
+                        request_ref=canonical_bytes(record.action_ref).decode(),
+                        decision_ref=canonical_bytes(reference(record)).decode(),
+                    )
+                )
+                for check in record.check_results:
+                    connection.execute(
+                        insert(models.action_checks).values(
+                            action_id=str(request.action_id),
+                            check_type=check.check_type.value,
+                            payload=canonical_bytes(check).decode(),
+                        )
+                    )
 
     def execution(self, max_work: int = 2) -> ExecutionBudgetProfile:
         source = ActionRequest.model_validate_json(

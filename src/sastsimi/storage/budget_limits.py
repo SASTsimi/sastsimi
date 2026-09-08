@@ -1,8 +1,21 @@
 """Trusted operation selection independent of caller supplied quantities."""
 
-from sastsimi.contracts.actions import ActionRequest, RequesterRole
+from sastsimi.contracts.actions import ActionRequest, ActionType, RequesterRole
 from sastsimi.contracts.budget import BudgetAgentRole, OperationKind
 from sastsimi.contracts.work import WorkType
+
+EXTERNAL_ACTIONS = frozenset(
+    {
+        ActionType.READ_CODE,
+        ActionType.RUN_TOOL,
+        ActionType.CALL_LLM,
+        ActionType.FETCH_POLICY,
+        ActionType.RUN_SANDBOX,
+        ActionType.CALL_TECHNICAL_GATE,
+        ActionType.CALL_RULE_SCOPE_GATE,
+        ActionType.CREATE_REPORT_DRAFT,
+    }
+)
 
 OPERATIONS = {
     WorkType.WORKSPACE_PREP: (

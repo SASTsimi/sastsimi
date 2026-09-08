@@ -14,8 +14,8 @@ from tests.integration.runtime_support import Harness, metadata, units
 
 def test_changed_entry_id_cannot_debit_same_reservation_twice(tmp_path: Path) -> None:
     h = Harness(tmp_path)
-    registry = BudgetProfileRegistry(h.records)
-    scope = registry.pin_execution(h.execution())
+    registry = BudgetProfileRegistry(h.records, h.clock, h.ids)
+    scope = h.pin_execution(registry, h.execution())
     service = BudgetService(h.records, registry, h.clock, h.ids)
     reservation = service.reserve(
         h.reservation(scope.model_dump(mode="json"), work_count=1)
@@ -93,8 +93,8 @@ def test_zero_work_reservation_cannot_authorize_new_work(tmp_path: Path) -> None
     from tests.integration.storage.test_work import authorization, decision_action
 
     h = Harness(tmp_path)
-    registry = BudgetProfileRegistry(h.records)
-    scope = registry.pin_execution(h.execution())
+    registry = BudgetProfileRegistry(h.records, h.clock, h.ids)
+    scope = h.pin_execution(registry, h.execution())
     budget = BudgetService(h.records, registry, h.clock, h.ids)
     works = WorkService(
         h.records, RuntimeValidator(h.records, budget, h.clock, h.ids), h.clock, h.ids

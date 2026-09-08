@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from sqlalchemy import text
 
 from sastsimi.contracts.actions import ActionType
 from sastsimi.contracts.ids import CommitId, WorkspaceId
+from sastsimi.contracts.refs import RecordRef
 from sastsimi.contracts.static import CodeWorkspace
 from sastsimi.contracts.work import StateTransition, TransitionCommit
 from sastsimi.ports.dto import TransitionCommitRequest
@@ -21,12 +23,17 @@ class SimulatedCrash(BaseException):
 
 
 def completion(
-    tmp_path: Path, *, authorize_output: bool = True
+    tmp_path: Path,
+    *,
+    authorize_output: bool = True,
+    input_factory: Callable[[Harness], tuple[RecordRef, ...]] | None = None,
 ) -> tuple[Harness, TransitionService, TransitionCommitRequest]:
     from sastsimi.storage.artifact_store import LocalArtifactStore
     from sastsimi.storage.transition_service import TransitionService
 
-    h, works, attempts, transition, attempt, reservation = start_fixture(tmp_path)
+    h, works, attempts, transition, attempt, reservation = start_fixture(
+        tmp_path, input_factory
+    )
     running = attempts.start(
         transition, attempt, reservation, "worker", NOW + timedelta(seconds=30)
     )

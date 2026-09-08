@@ -29,7 +29,7 @@ from sastsimi.storage.codec import REF_ADAPTER, encode
 from sastsimi.storage.repositories import SQLiteRecordStore
 
 from .budget_hierarchy import check_hierarchy
-from .budget_limits import operation
+from .budget_limits import EXTERNAL_ACTIONS, operation
 from .budget_registry import BudgetProfileRegistry
 from .records import next_meta
 
@@ -82,7 +82,9 @@ class BudgetService:
             work = self.records.resolve(
                 connection, reservation.work_ref, candidate=True
             )
-            action = self.records.resolve(connection, reservation.action_ref)
+            action = self.records.resolve(
+                connection, reservation.action_ref, candidate=True
+            )
             if (
                 not isinstance(work, WorkExecutionState)
                 or work.meta.analysis_id != reservation.meta.analysis_id
@@ -92,6 +94,7 @@ class BudgetService:
                 raise ValueError("BUDGET analysis/work mismatch")
             if not isinstance(action, ActionRequest):
                 raise ValueError("BUDGET requires exact action")
+            self.records.publish(connection, reservation.action_ref)
             self.validate_operation(connection, reservation, work, action)
             remaining = self.available(
                 connection,
@@ -120,6 +123,7 @@ class BudgetService:
                     payload=encode(reservation),
                     initial_ref=canonical_bytes(ref).decode(),
                     claimed=0,
+                    item_count=self.records.evidence.item_count(action, work),
                 )
             )
             return reservation
@@ -132,18 +136,82 @@ class BudgetService:
         action: ActionRequest,
     ) -> None:
         scope = self.records.resolve(connection, reservation.budget_binding_ref)
+        if isinstance(scope, BudgetProfileBinding):
+            self.registry.validate_binding(connection, scope)
+            check_hierarchy(self.records, connection, reservation, work, action, scope)
+        if action.action_type in EXTERNAL_ACTIONS:
+            execution_profile = self.registry.execution(
+                connection, reservation.budget_binding_ref, str(work.meta.analysis_id)
+            )
+            remaining = self.available(
+                connection,
+                reservation.budget_binding_ref,
+                str(work.meta.analysis_id),
+                exclude_reservation=str(reservation.reservation_id),
+            )
+            applicable = ("elapsed_ms", "cost_minor_units") + (
+                ("llm_call_count",)
+                if action.action_type
+                in {
+                    ActionType.CALL_LLM,
+                    ActionType.CALL_TECHNICAL_GATE,
+                    ActionType.CALL_RULE_SCOPE_GATE,
+                    ActionType.CREATE_REPORT_DRAFT,
+                }
+                else ()
+            )
+            if any(
+                getattr(remaining.available_units, name) <= 0 for name in applicable
+            ):
+                raise ValueError("BUDGET_EXCEEDED: execution capacity exhausted")
+            if not self.records.evidence.pricing(execution_profile) or any(
+                getattr(reservation.requested_units, name) <= 0 for name in applicable
+            ):
+                raise ValueError(
+                    "BLOCKED waiting_for=BUDGET: "
+                    "positive execution/pricing proof required"
+                )
         if work.work_type == WorkType.WORKSPACE_PREP:
             if isinstance(scope, BudgetProfileBinding):
                 raise ValueError("BUDGET bootstrap requires run execution profile")
             return
         if not isinstance(scope, BudgetProfileBinding):
             raise ValueError("BUDGET requires full ACTIVE binding")
-        self.registry.validate_binding(connection, scope)
-        check_hierarchy(self.records, connection, reservation, work, action, scope)
         profile = self.records.resolve(connection, scope.work_budget_profile_ref)
         assert isinstance(profile, WorkBudgetProfile)
         kind, role = operation(work.work_type, action)
         limit = select_work_limit(profile, work.work_type, kind, role)
+        count_items = self.records.evidence.item_count(action, work)
+        if limit.max_items_per_work is None or count_items is None or count_items < 0:
+            raise ValueError(
+                "BLOCKED waiting_for=BUDGET: trusted item admission unavailable"
+            )
+        if count_items > limit.max_items_per_work:
+            raise ValueError("BUDGET_EXCEEDED: work items")
+        admitted_items = count_items
+        for row in connection.execute(
+            select(models.budget_reservations).where(
+                models.budget_reservations.c.analysis_id == str(work.meta.analysis_id),
+                models.budget_reservations.c.status != "RELEASED",
+                models.budget_reservations.c.reservation_id
+                != str(reservation.reservation_id),
+            )
+        ).mappings():
+            prior = BudgetReservation.model_validate_json(row["payload"])
+            prior_work = self.records.resolve(
+                connection, prior.work_ref, candidate=True
+            )
+            if (
+                isinstance(prior_work, WorkExecutionState)
+                and prior_work.work_id == work.work_id
+            ):
+                if row["item_count"] is None:
+                    raise ValueError(
+                        "BLOCKED waiting_for=BUDGET: item history unproven"
+                    )
+                admitted_items += row["item_count"]
+        if admitted_items > limit.max_items_per_work:
+            raise ValueError("BUDGET_EXCEEDED: cumulative work items")
         if action.action_type == ActionType.START_ATTEMPT:
             ceiling = limit.max_attempts
             kinds = {ActionType.START_ATTEMPT}
@@ -204,7 +272,12 @@ class BudgetService:
             raise ValueError("BUDGET_EXCEEDED: work timeout")
 
     def available(
-        self, connection: Connection, scope: BudgetScopeRef, analysis_id: str
+        self,
+        connection: Connection,
+        scope: BudgetScopeRef,
+        analysis_id: str,
+        *,
+        exclude_reservation: str | None = None,
     ) -> BudgetRemaining:
         profile = self.registry.execution(connection, scope, analysis_id)
         limits = dict(
@@ -231,9 +304,11 @@ class BudgetService:
                 )
             ).scalars()
         ]
-        used = [r.requested_units for r in reservations] + [
-            entry.actual_units for entry in entries
-        ]
+        used = [
+            r.requested_units
+            for r in reservations
+            if str(r.reservation_id) != exclude_reservation
+        ] + [entry.actual_units for entry in entries]
         remaining = {
             key: max(0, limit - sum(getattr(units, key) for units in used))
             for key, limit in limits.items()

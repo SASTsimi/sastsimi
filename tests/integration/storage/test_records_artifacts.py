@@ -38,7 +38,9 @@ def test_artifact_is_durable_scoped_and_every_read_rechecks_hash(
 ) -> None:
     from sastsimi.storage.artifact_store import LocalArtifactStore
 
-    store = LocalArtifactStore(tmp_path, WorkspaceId("w1"), CommitId("c1"))
+    store = LocalArtifactStore(
+        tmp_path / "artifacts", WorkspaceId("w1"), CommitId("c1")
+    )
     staged = store.stage_bytes(b"evidence", "text/plain")
     assert list((tmp_path / "staging").iterdir())
     ref = store.commit(staged)

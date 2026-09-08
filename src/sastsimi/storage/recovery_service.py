@@ -3,21 +3,16 @@
 from datetime import datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from sastsimi.contracts.actions import (
-    REQUIRED_CHECKS,
-    ActionCheck,
-    ActionDecision,
     ActionRequest,
     ActionType,
-    CheckResult,
     Decision,
     RequesterRole,
-    UseStatus,
 )
 from sastsimi.contracts.ids import (
     ActionId,
-    DecisionId,
     LogicalRecordId,
     RecordId,
     TransitionCommitId,
@@ -68,13 +63,22 @@ class RecoveryService:
             return RecoveryReport(
                 integrity.checked_artifacts, integrity.quarantined_artifacts, blocked
             )
-        except (ValueError, OSError, LookupError) as error:
+        except (ValueError, OSError, LookupError, SQLAlchemyError) as error:
             database.recovery_failed = True
             raise ValueError("RECOVERY_FAILED: " + str(error)) from error
 
     def expired_leases(self) -> int:
         service = self.transitions.works
         with service.records.database.engine.connect() as connection:
+            uncertain = set(
+                connection.execute(
+                    select(models.external_dispatches.c.work_id).where(
+                        models.external_dispatches.c.dispatched_at.is_not(None),
+                        models.external_dispatches.c.returned_at.is_(None),
+                        models.external_dispatches.c.reconciled_at.is_(None),
+                    )
+                ).scalars()
+            )
             expired = [
                 WorkExecutionState.model_validate_json(row["payload"])
                 for row in connection.execute(
@@ -82,17 +86,18 @@ class RecoveryService:
                         models.work_states.c.status == "RUNNING"
                     )
                 ).mappings()
-                if row["lease_expires_at"] is not None
-                and datetime.fromisoformat(row["lease_expires_at"])
-                <= service.clock.now()
+                if row["work_id"] in uncertain
+                or (
+                    row["lease_expires_at"] is not None
+                    and datetime.fromisoformat(row["lease_expires_at"])
+                    <= service.clock.now()
+                )
             ]
         for work in expired:
             self.block_uncertain(work)
         return len(expired)
 
     def block_uncertain(self, work: WorkExecutionState) -> None:
-        from datetime import timedelta
-
         service = self.transitions.works
         identity = self.recovery_identity_ref
         if identity is None:
@@ -145,41 +150,9 @@ class RecoveryService:
                 requested_at=now,
             )
         )
-        checks = tuple(sorted(REQUIRED_CHECKS[ActionType.CHANGE_WORK_STATE]))
-        decision = ActionDecision.model_validate(
-            dict(
-                meta=meta("action_decision"),
-                decision_id=service.ids.new(DecisionId),
-                action_ref=reference(action),
-                decision=Decision.ALLOW,
-                required_checks=checks,
-                check_results=tuple(
-                    ActionCheck(
-                        check_type=check,
-                        result=CheckResult.PASS,
-                        reason_code="EXPIRED_LEASE",
-                        safe_message="Block uncertain expired attempt",
-                    )
-                    for check in checks
-                ),
-                checked_state_version=work.state_version,
-                checked_config_refs=(),
-                valid_until=now + timedelta(seconds=30),
-                error_ids=(),
-                use_status=UseStatus.UNUSED,
-                used_at=None,
-                expired_at=None,
-                expire_reason=None,
-                outcome_refs=(),
-                decided_at=now,
-            )
-        )
-        with service.records.database.write() as connection:
-            service.records.resolve(connection, identity)
-            for record in (action, decision):
-                service.records.publish(
-                    connection, service.records.stage(connection, record)
-                )
+        decision = service.validator.authorize(action, work)
+        if decision.decision != Decision.ALLOW:
+            raise ValueError("Recovery identity authorization denied")
         transition = StateTransition.model_validate(
             dict(
                 meta=meta("state_transition"),

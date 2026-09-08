@@ -22,11 +22,11 @@ def test_post_workspace_action_must_pin_checked_binding_and_work_profile(
     tmp_path: Path,
 ) -> None:
     h = Harness(tmp_path)
-    registry = BudgetProfileRegistry(h.records)
-    execution = registry.pin_execution(h.execution())
+    registry = BudgetProfileRegistry(h.records, h.clock, h.ids)
+    execution = h.pin_execution(registry, h.execution())
     binding, workspace = h.binding(execution.model_dump(mode="json"))
-    scope = registry.pin_binding(
-        binding, RunStoredDataRef.model_validate_json(json.dumps(workspace))
+    scope = h.pin_binding(
+        registry, binding, RunStoredDataRef.model_validate_json(json.dumps(workspace))
     )
     budget = BudgetService(h.records, registry, h.clock, h.ids)
     candidate = WorkExecutionState.model_validate_json(

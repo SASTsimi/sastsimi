@@ -8,12 +8,15 @@ from typing import TextIO
 from sastsimi.config.loader import ConfigError as ConfigError
 from sastsimi.config.loader import load_config
 from sastsimi.config.models import AppConfig
+from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.ids import CommitId, WorkspaceId
 from sastsimi.contracts.refs import BudgetScopeRef
 from sastsimi.logging import SafeJsonHandler, safe_event
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
+from sastsimi.ports.trusted_evidence import TrustedEvidencePort
 from sastsimi.runtime.services import RuntimeServices
+from sastsimi.storage.schema_version import MigrationRequired as MigrationRequired
 
 
 def build_config(
@@ -33,11 +36,25 @@ def build_diagnostic_logger(stream: TextIO, level: str) -> logging.Logger:
 diagnostic_event = safe_event
 
 
-def upgrade_database(data_dir: Path) -> None:
+def upgrade_database(data_dir: Path, revision: str = "head") -> None:
     from sastsimi.storage.database import Database
     from sastsimi.storage.migrations import upgrade
 
-    upgrade(Database(data_dir / "state.sqlite3"))
+    upgrade(Database(RuntimePaths(data_dir).database), revision)
+
+
+def database_command(data_dir: Path, command: str, revision: str | None) -> str:
+    from sastsimi.storage.database import Database
+    from sastsimi.storage.migrations import current, downgrade, upgrade
+
+    database = Database(RuntimePaths(data_dir).database)
+    if command == "current":
+        return current(database)
+    if command == "upgrade":
+        upgrade(database, revision or "head")
+    else:
+        downgrade(database, revision or "base")
+    return revision or "head"
 
 
 def build_runtime(
@@ -47,6 +64,7 @@ def build_runtime(
     clock: Clock,
     ids: IdGenerator,
     recovery_identity_ref: BudgetScopeRef | None = None,
+    evidence: TrustedEvidencePort | None = None,
 ) -> RuntimeServices:
     from sastsimi.runtime.action_validator import RuntimeValidator
     from sastsimi.runtime.attempt_service import AttemptService
@@ -70,11 +88,12 @@ def build_runtime(
     from sastsimi.storage.unit_of_work import SQLiteUnitOfWork
     from sastsimi.storage.work_service import WorkService as SQLiteWorks
 
-    database = Database(data_dir / "state.sqlite3")
+    paths = RuntimePaths(data_dir)
+    database = Database(paths.database)
     database.check_ready()
-    records = SQLiteRecordStore(database)
-    artifacts = LocalArtifactStore(data_dir / "artifacts", workspace_id, commit_id)
-    registry = SQLiteRegistry(records)
+    records = SQLiteRecordStore(database, evidence)
+    artifacts = LocalArtifactStore(paths.artifacts, workspace_id, commit_id)
+    registry = SQLiteRegistry(records, clock, ids)
     budget = SQLiteBudget(records, registry, clock, ids)
     authorization = SQLiteValidator(records, budget, clock, ids)
     works = SQLiteWorks(records, authorization, clock, ids)

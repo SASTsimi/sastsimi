@@ -9,6 +9,7 @@ from sastsimi.contracts.records import validate_revision
 from sastsimi.contracts.refs import RecordRef
 from sastsimi.contracts.work import TransitionCommit
 from sastsimi.ports.dto import Record, TransitionCommitRequest
+from sastsimi.ports.trusted_evidence import TrustedEvidencePort, UnprovenEvidence
 
 from . import models
 from .codec import REF_ADAPTER, decode, encode, reference
@@ -16,8 +17,11 @@ from .database import Database
 
 
 class SQLiteRecordStore:
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self, database: Database, evidence: TrustedEvidencePort | None = None
+    ) -> None:
         self.database = database
+        self.evidence = evidence or UnprovenEvidence()
         self.transition_writer: (
             Callable[[TransitionCommitRequest], TransitionCommit] | None
         ) = None

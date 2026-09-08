@@ -16,6 +16,13 @@
       "source_model": "sastsimi.contracts.evaluation.AnalysisRunResult"
     },
     {
+      "owner": "ORCHESTRATION",
+      "result_kind": "analysis_run_state",
+      "schema": "generated/analysis_run_state/1.schema.json",
+      "schema_name": "AnalysisRunState",
+      "source_model": "sastsimi.contracts.analysis.AnalysisRunState"
+    },
+    {
       "owner": "BUDGET_RUNTIME",
       "result_kind": "budget_ledger_entry",
       "schema": "generated/budget_ledger_entry/1.schema.json",

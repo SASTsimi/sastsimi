@@ -21,8 +21,8 @@ from tests.unit.contracts.test_core_models import action, work
 
 def test_verification_ancestor_work_budget_blocks_reservation(tmp_path: Path) -> None:
     h = Harness(tmp_path)
-    registry = BudgetProfileRegistry(h.records)
-    execution = registry.pin_execution(h.execution())
+    registry = BudgetProfileRegistry(h.records, h.clock, h.ids)
+    execution = h.pin_execution(registry, h.execution())
     binding, workspace = h.binding(execution.model_dump(mode="json"))
     profile = h.records.get_exact(binding.work_budget_profile_ref)
     assert isinstance(profile, WorkBudgetProfile)
@@ -50,8 +50,8 @@ def test_verification_ancestor_work_budget_blocks_reservation(tmp_path: Path) ->
         ),
     )
     binding = BudgetProfileBinding.model_validate_json(json.dumps(binding_data))
-    scope = registry.pin_binding(
-        binding, RunStoredDataRef.model_validate_json(json.dumps(workspace))
+    scope = h.pin_binding(
+        registry, binding, RunStoredDataRef.model_validate_json(json.dumps(workspace))
     )
     candidate = WorkExecutionState.model_validate_json(
         json.dumps(

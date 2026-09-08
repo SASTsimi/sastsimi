@@ -69,6 +69,65 @@ def verify(
                     ):
                         raise ValueError("HASH_MISMATCH: nested artifact reference")
                     digests.add(digest)
+        for pointer in connection.execute(select(models.current_records)).mappings():
+            wire = connection.execute(
+                select(models.records.c.ref).where(
+                    models.records.c.record_id == pointer["record_id"]
+                )
+            ).scalar_one()
+            current = records.resolve(connection, REF_ADAPTER.validate_json(wire))
+            expected_version = (
+                current.state_version
+                if isinstance(current, WorkExecutionState)
+                else current.meta.revision_number
+            )
+            if (
+                str(current.meta.logical_record_id) != pointer["logical_record_id"]
+                or pointer["state_version"] != expected_version
+            ):
+                raise ValueError("CURRENT_POINTER_MISMATCH")
+        journal_outputs: dict[str, tuple[int, str]] = {}
+        for payload in connection.execute(
+            select(models.transition_commits.c.payload).where(
+                models.transition_commits.c.state == "COMMITTED"
+            )
+        ).scalars():
+            journal = TransitionCommit.model_validate_json(payload)
+            for ref in journal.output_refs:
+                output = records.resolve(connection, ref)
+                logical_id = str(output.meta.logical_record_id)
+                entry = (output.meta.revision_number, str(output.meta.record_id))
+                if (
+                    logical_id not in journal_outputs
+                    or journal_outputs[logical_id][0] < entry[0]
+                ):
+                    journal_outputs[logical_id] = entry
+                output_pointer = (
+                    connection.execute(
+                        select(models.current_records).where(
+                            models.current_records.c.logical_record_id
+                            == str(output.meta.logical_record_id)
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if (
+                    output_pointer is None
+                    or output_pointer["state_version"] < output.meta.revision_number
+                ):
+                    raise ValueError("CURRENT_POINTER_MISMATCH: committed output")
+        for logical_id, expected in journal_outputs.items():
+            actual = connection.execute(
+                select(
+                    models.current_records.c.state_version,
+                    models.current_records.c.record_id,
+                ).where(models.current_records.c.logical_record_id == logical_id)
+            ).one()
+            if tuple(actual) != expected:
+                raise ValueError(
+                    "CURRENT_POINTER_MISMATCH: unjournaled domain revision"
+                )
         for row in connection.execute(select(models.work_states)).mappings():
             work = WorkExecutionState.model_validate_json(row["payload"])
             pointer = (
@@ -88,6 +147,17 @@ def verify(
             ) != (work.state_version, work.state_version, str(work.meta.record_id)):
                 raise ValueError("CURRENT_POINTER_MISMATCH")
             records.resolve(connection, reference(work))
+            if work.status.value == "RUNNING":
+                active_payload = connection.execute(
+                    select(models.work_attempts.c.payload).where(
+                        models.work_attempts.c.attempt_id == str(work.active_attempt_id)
+                    )
+                ).scalar()
+                if active_payload is None:
+                    raise ValueError("ATTEMPT_NOT_ACTIVE")
+                active = WorkAttempt.model_validate_json(active_payload)
+                if active.status.value != "RUNNING" or active.work_id != work.work_id:
+                    raise ValueError("ATTEMPT_NOT_ACTIVE")
             if work.last_transition_commit_ref is not None and work.status.value in {
                 "SUCCEEDED",
                 "PARTIAL",
@@ -120,16 +190,17 @@ def verify(
     quarantined = 0
     if not quarantine:
         return IntegrityReport(len(digests), 0)
-    for path in (artifacts.root / "sha256").iterdir():
-        if path.is_file() and path.name not in digests:
+    for path in (artifacts.root / "sha256").glob("*/*"):
+        claimed_digest = path.parent.name + path.name
+        if path.is_file() and claimed_digest not in digests:
             actual_digest = hashlib.sha256(path.read_bytes()).hexdigest()
             # Orphans are never exposed; preserve even corrupt bytes for investigation.
             quarantine_name = (
-                path.name
-                if actual_digest == path.name
-                else path.name + "-" + actual_digest
+                claimed_digest
+                if actual_digest == claimed_digest
+                else claimed_digest + "-" + actual_digest
             )
-            destination = artifacts.root / "quarantine" / quarantine_name
+            destination = artifacts.paths.quarantine / quarantine_name
             if destination.exists():
                 if destination.read_bytes() != path.read_bytes():
                     raise ValueError("Conflicting quarantined artifact")
@@ -137,5 +208,5 @@ def verify(
             else:
                 os.replace(path, destination)
             quarantined += 1
-    sync_directory(artifacts.root / "quarantine")
+    sync_directory(artifacts.paths.quarantine)
     return IntegrityReport(len(digests), quarantined)

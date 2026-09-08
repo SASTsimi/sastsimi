@@ -6,10 +6,12 @@ from collections.abc import Callable
 from sqlalchemy import Connection, insert, select, update
 
 from sastsimi.contracts.actions import ActionType
+from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.refs import RecordRef
 from sastsimi.contracts.result_registry import validate_result_owner
+from sastsimi.contracts.static import CodeWorkspace
 from sastsimi.contracts.work import (
     AttemptStatus,
     CommitState,
@@ -27,7 +29,9 @@ from sastsimi.storage import models
 from sastsimi.storage.artifact_store import LocalArtifactStore
 from sastsimi.storage.codec import REF_ADAPTER, encode, reference
 
+from .current_inputs import check_current_input
 from .records import next_meta
+from .run_states import get_run, save_run
 from .work_service import WorkService
 
 
@@ -47,9 +51,7 @@ class TransitionService:
             raise ValueError("Initial journal must be PREPARED")
         records = self.works.records
         refs = tuple(reference(record) for record in request.records)
-        if len(set(refs)) != len(refs) or any(
-            ref not in refs for ref in request.commit.output_refs
-        ):
+        if len(set(refs)) != len(refs) or set(refs) != set(request.commit.output_refs):
             raise ValueError("OUTPUT_BINDING_MISMATCH")
         binding = content_hash([request.transition, request.commit, refs])
         table = models.transition_commits
@@ -80,6 +82,7 @@ class TransitionService:
             self.artifacts.stage_bytes(encode(record).encode(), "application/json")
         self.checkpoint("staging")
         with records.database.write() as connection:
+            self.check(connection, request)
             records.publish(connection, records.stage(connection, request.transition))
             records.publish(connection, records.stage(connection, request.commit))
             wire = dict(
@@ -108,6 +111,9 @@ class TransitionService:
     def check(
         self, connection: Connection, request: TransitionCommitRequest
     ) -> WorkExecutionState:
+        refs = tuple(reference(record) for record in request.records)
+        if len(set(refs)) != len(refs) or set(refs) != set(request.commit.output_refs):
+            raise ValueError("OUTPUT_BINDING_MISMATCH")
         work = self.works.get(str(request.commit.work_id), connection)
         row = (
             connection.execute(
@@ -132,11 +138,11 @@ class TransitionService:
             work,
         )
         for ref in work.input_refs:
-            self.works.records.resolve(connection, ref)
+            check_current_input(self.works.records, connection, ref)
         for record in request.records:
             if not isinstance(record, ContractModel):
                 raise ValueError("OUTPUT_SCHEMA_MISMATCH")
-            if action.candidate_result_ref not in request.commit.output_refs:
+            if reference(record) != action.candidate_result_ref:
                 raise ValueError("OUTPUT_BINDING_MISMATCH")
             validate_result_owner(record.meta.record_type, record, action.requested_by)
             meta = record.meta
@@ -187,6 +193,20 @@ class TransitionService:
             for record in request.records:
                 records.publish(connection, reference(record))
                 self.publish_pointer(connection, reference(record))
+                if isinstance(record, CodeWorkspace):
+                    state = get_run(connection, str(record.analysis_id))
+                    updated_state = AnalysisRunState.model_validate(
+                        state.model_dump()
+                        | dict(
+                            meta=next_meta(
+                                state.meta, self.works.clock, self.works.ids
+                            ),
+                            workspace_ref=reference(record),
+                            workspace_id=record.workspace_id,
+                            commit_id=record.commit_id,
+                        )
+                    )
+                    save_run(records, connection, updated_state, state)
             self.works.validator.record_outcome(
                 connection, claimed, committed.output_refs
             )
@@ -199,7 +219,7 @@ class TransitionService:
                     connection.execute(
                         insert(models.artifacts).values(
                             content_hash=digest,
-                            path="sha256/" + digest,
+                            path="sha256/" + digest[:2] + "/" + digest[2:],
                         )
                     )
             terminal = request.commit.target_status.value != "BLOCKED"

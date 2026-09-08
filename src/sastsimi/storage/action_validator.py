@@ -11,6 +11,7 @@ from sastsimi.contracts.actions import (
     validate_decision_for_action,
 )
 from sastsimi.contracts.budget import BudgetProfileBinding, BudgetReservation
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import RecordRef
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.clock import Clock
@@ -20,10 +21,34 @@ from sastsimi.storage.codec import encode, reference
 from sastsimi.storage.repositories import SQLiteRecordStore
 
 from .budget_service import BudgetService
+from .dispatches import mark_dispatched, mark_returned, reject_uncertain
 from .records import next_meta
 
 
 class RuntimeValidator:
+    def mark_dispatched(
+        self,
+        decision_ref: RecordRef,
+        provider_request_id: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> None:
+        mark_dispatched(
+            self.records, self.clock, decision_ref, provider_request_id, idempotency_key
+        )
+
+    def mark_returned(self, decision_ref: RecordRef) -> None:
+        mark_returned(self.records, self.clock, decision_ref)
+
+    def authorize(
+        self,
+        action: ActionRequest,
+        work: WorkExecutionState | None = None,
+        reservation_ref: RecordRef | None = None,
+    ) -> ActionDecision:
+        from .authorization import authorize
+
+        return authorize(self, action, work, reservation_ref)
+
     def claim_external(
         self, work_id: str, decision_ref: RecordRef, reservation_ref: RecordRef | None
     ) -> None:
@@ -36,12 +61,42 @@ class RuntimeValidator:
                 )
             ).scalar_one()
             work = WorkExecutionState.model_validate_json(payload)
+            reject_uncertain(connection, work_id)
             if work.status.value != "RUNNING":
                 raise ValueError("ATTEMPT_NOT_ACTIVE")
             decision = self.records.resolve(connection, decision_ref)
             if not isinstance(decision, ActionDecision):
                 raise ValueError("ACTION_INVALID")
             action = self.records.resolve(connection, decision.action_ref)
+            existing = (
+                connection.execute(
+                    select(models.external_dispatches).where(
+                        models.external_dispatches.c.decision_ref
+                        == canonical_bytes(decision_ref).decode()
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if existing is not None:
+                if (
+                    decision.valid_until is None
+                    or self.clock.now() > decision.valid_until
+                ):
+                    raise ValueError("ACTION_EXPIRED_OR_DENIED")
+                if (
+                    existing["dispatched_at"] is None
+                    and existing["reservation_ref"]
+                    == canonical_bytes(reservation_ref).decode()
+                    and existing["attempt_id"] == str(work.active_attempt_id)
+                ):
+                    if not isinstance(action, ActionRequest):
+                        raise ValueError("ACTION_INVALID")
+                    self.check_reservation(
+                        connection, reservation_ref, action, work, allow_claimed=True
+                    )
+                    return
+                raise ValueError("ACTION_ALREADY_USED")
             allowed = {
                 ActionType.READ_CODE,
                 ActionType.RUN_TOOL,
@@ -64,6 +119,16 @@ class RuntimeValidator:
                 work,
                 reservation_ref,
                 needs_budget=True,
+            )
+            connection.execute(
+                insert(models.external_dispatches).values(
+                    action_id=str(action.action_id),
+                    work_id=work_id,
+                    attempt_id=str(work.active_attempt_id),
+                    decision_ref=canonical_bytes(decision_ref).decode(),
+                    reservation_ref=canonical_bytes(reservation_ref).decode(),
+                    prepared_at=self.clock.now().isoformat(),
+                )
             )
 
     def __init__(
@@ -93,6 +158,15 @@ class RuntimeValidator:
         action = self.records.resolve(connection, decision.action_ref)
         if not isinstance(action, ActionRequest) or action.action_type != kind:
             raise ValueError("ACTION_TYPE_MISMATCH")
+        issued = connection.execute(
+            select(models.action_requests.c.decision_ref).where(
+                models.action_requests.c.action_id == str(action.action_id)
+            )
+        ).scalar()
+        from .codec import REF_ADAPTER
+
+        if issued is None or REF_ADAPTER.validate_json(issued) != decision_ref:
+            raise ValueError("AUTHORITY_DENIED: decision was not issued by validator")
         validate_decision_for_action(decision, kind)
         if (
             decision.decision != Decision.ALLOW
@@ -148,6 +222,8 @@ class RuntimeValidator:
         ref: RecordRef | None,
         action: ActionRequest,
         work: WorkExecutionState,
+        *,
+        allow_claimed: bool = False,
     ) -> BudgetReservation:
         if ref is None:
             raise ValueError("BUDGET reservation required")
@@ -180,7 +256,11 @@ class RuntimeValidator:
             .mappings()
             .first()
         )
-        if row is None or row["status"] != "RESERVED" or row["claimed"]:
+        if (
+            row is None
+            or row["status"] != "RESERVED"
+            or (row["claimed"] and not allow_claimed)
+        ):
             raise ValueError("BUDGET reservation is unavailable or already claimed")
         if (
             reservation.action_ref != reference(action)

@@ -16,6 +16,14 @@ class ExternalCallService:
         decision_ref: RecordRef,
         reservation_ref: RecordRef | None,
         operation: Callable[[], Awaitable[T]],
+        *,
+        provider_request_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> T:
         self.authorization.claim_external(work_id, decision_ref, reservation_ref)
-        return await operation()
+        self.authorization.mark_dispatched(
+            decision_ref, provider_request_id, idempotency_key
+        )
+        result = await operation()
+        self.authorization.mark_returned(decision_ref)
+        return result

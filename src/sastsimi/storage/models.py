@@ -11,6 +11,43 @@ from sqlalchemy import (
 )
 
 metadata = MetaData()
+external_dispatches = Table(
+    "external_dispatches",
+    metadata,
+    Column("action_id", Text, primary_key=True),
+    Column("work_id", Text, nullable=False),
+    Column("attempt_id", Text, nullable=False),
+    Column("decision_ref", Text, nullable=False),
+    Column("reservation_ref", Text, nullable=False),
+    Column("prepared_at", Text, nullable=False),
+    Column("dispatched_at", Text),
+    Column("returned_at", Text),
+    Column("provider_request_id", Text),
+    Column("idempotency_key", Text),
+    Column("reconciled_at", Text),
+)
+analysis_runs = Table(
+    "analysis_runs",
+    metadata,
+    Column("analysis_id", Text, primary_key=True),
+    Column("payload", Text, nullable=False),
+)
+action_requests = Table(
+    "action_requests",
+    metadata,
+    Column("action_id", Text, primary_key=True),
+    Column("request_ref", Text, nullable=False),
+    Column("decision_ref", Text, nullable=False),
+)
+action_checks = Table(
+    "action_checks",
+    metadata,
+    Column(
+        "action_id", Text, ForeignKey("action_requests.action_id"), primary_key=True
+    ),
+    Column("check_type", Text, primary_key=True),
+    Column("payload", Text, nullable=False),
+)
 records = Table(
     "records",
     metadata,
@@ -54,6 +91,7 @@ budget_reservations = Table(
     Column("payload", Text, nullable=False),
     Column("initial_ref", Text, nullable=False),
     Column("claimed", Integer, nullable=False, default=0),
+    Column("item_count", Integer),
 )
 budget_ledger_entries = Table(
     "budget_ledger_entries",

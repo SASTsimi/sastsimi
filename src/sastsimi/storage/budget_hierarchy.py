@@ -10,10 +10,13 @@ from sastsimi.contracts.budget import (
     BudgetUnits,
     DynamicReproductionLifecycleProfile,
     VerificationBudgetProfile,
+    WorkBudgetProfile,
+    select_work_limit,
 )
 from sastsimi.contracts.work import WorkExecutionState, WorkType
 
 from . import models
+from .budget_limits import EXTERNAL_ACTIONS, operation
 from .repositories import SQLiteRecordStore
 
 
@@ -50,6 +53,12 @@ def check_hierarchy(
     scope_units: list[BudgetUnits] = [reservation.requested_units]
     work_units: list[BudgetUnits] = [reservation.requested_units]
     attempts = 1 if action.action_type == ActionType.START_ATTEMPT else 0
+    evidence_calls = (
+        1
+        if work.work_type in {WorkType.PRO_EVIDENCE, WorkType.CON_EVIDENCE}
+        and action.action_type in EXTERNAL_ACTIONS
+        else 0
+    )
     for payload in connection.execute(
         select(models.budget_reservations.c.payload).where(
             models.budget_reservations.c.analysis_id == str(work.meta.analysis_id),
@@ -61,6 +70,16 @@ def check_hierarchy(
             continue
         other_work = records.resolve(connection, other.work_ref, candidate=True)
         assert isinstance(other_work, WorkExecutionState)
+        other_action = records.resolve(connection, other.action_ref)
+        if (
+            evidence_calls
+            and other.status.value == "RESERVED"
+            and other_work.work_type in {WorkType.PRO_EVIDENCE, WorkType.CON_EVIDENCE}
+            and verification_root(records, connection, other_work) == root
+            and isinstance(other_action, ActionRequest)
+            and other_action.action_type in EXTERNAL_ACTIONS
+        ):
+            evidence_calls += 1
         units = other.requested_units
         if other.ledger_entry_ref is not None:
             entry = records.resolve(connection, other.ledger_entry_ref)
@@ -92,5 +111,32 @@ def check_hierarchy(
             > profile.max_retries_per_work
         ):
             raise ValueError("BUDGET_EXCEEDED: retries per work")
-    if work.work_type == WorkType.DYNAMIC_REPRO and attempts > dynamic.max_new_attempts:
+    if evidence_calls > profile.max_parallel_evidence_calls:
+        raise ValueError("BUDGET_EXCEEDED: parallel evidence calls")
+    if (
+        work.work_type == WorkType.DYNAMIC_REPRO
+        and attempts > dynamic.max_new_attempts + 1
+    ):
         raise ValueError("BUDGET_EXCEEDED: dynamic attempts")
+    if work.work_type == WorkType.DYNAMIC_REPRO:
+        preflight = records.resolve(connection, dynamic.preflight_budget_ref)
+        if (
+            not isinstance(preflight, WorkBudgetProfile)
+            or dynamic.preflight_budget_ref != binding.work_budget_profile_ref
+            or dynamic.preflight_budget_source != "WORK_REMAINING_TIME"
+        ):
+            raise ValueError(
+                "BLOCKED waiting_for=BUDGET: preflight evidence unavailable"
+            )
+        kind, role = operation(work.work_type, action)
+        work_maximum = select_work_limit(
+            preflight, work.work_type, kind, role
+        ).timeout_ms
+        if work_maximum is None:
+            raise ValueError("BLOCKED waiting_for=BUDGET: work timeout unavailable")
+        previous_elapsed = sum(units.elapsed_ms for units in work_units[1:])
+        if (
+            previous_elapsed >= work_maximum
+            or reservation.requested_units.elapsed_ms > work_maximum - previous_elapsed
+        ):
+            raise ValueError("BUDGET_EXCEEDED: dynamic remaining time")

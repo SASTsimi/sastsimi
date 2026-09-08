@@ -17,6 +17,7 @@ from sastsimi.contracts.work import (
 from sastsimi.storage import models
 from sastsimi.storage.codec import encode
 
+from .dispatches import reject_uncertain
 from .records import next_meta
 from .work_service import WorkService
 
@@ -34,10 +35,21 @@ class AttemptService:
         lease_expires_at: datetime,
     ) -> WorkExecutionState:
         service = self.works
+        if (
+            attempt.status.value != "RUNNING"
+            or attempt.finished_at is not None
+            or attempt.output_refs
+            or attempt.error_ids
+            or attempt.gap_ids
+        ):
+            raise ValueError(
+                "ATTEMPT_NOT_ACTIVE: start requires a fresh RUNNING attempt"
+            )
         if not worker_id or lease_expires_at <= service.clock.now():
             raise ValueError("Invalid worker lease")
         with service.records.database.write() as connection:
             previous = service.get(str(transition.work_id), connection)
+            reject_uncertain(connection, str(previous.work_id))
             validate_transition_context(transition, previous)
             if (
                 previous.status != WorkStatus.READY
