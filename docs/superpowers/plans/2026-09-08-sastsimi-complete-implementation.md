@@ -139,7 +139,7 @@ class LLMProviderAdapter(Protocol):
     async def cancel(self, invocation_id: str) -> CancellationResult: ...
 
 class PolicySourcePort(Protocol):
-    async def fetch(self, request: PolicyFetchRequest) -> PolicyFetchResult: ...
+    async def fetch_official(self, request: OfficialPolicyFetchRequest) -> OfficialPolicySource: ...
 
 class StaticToolAdapter(Protocol):
     async def probe(self, profile_ref: StoredDataRef) -> ToolCapabilityResult: ...
@@ -153,8 +153,9 @@ class SandboxPort(Protocol):
 
 class BudgetLedgerPort(Protocol):
     def reserve(self, request: BudgetReservationRequest) -> BudgetReservation: ...
-    def commit_usage(self, request: BudgetUsageCommitRequest) -> BudgetLedgerEntry: ...
-    def release(self, reservation_ref: StoredDataRef) -> BudgetLedgerEntry: ...
+    def commit_usage(self, request: BudgetCommitRequest) -> BudgetLedgerEntry: ...
+    def release(self, request: BudgetReleaseRequest) -> BudgetReservation: ...
+    def remaining(self, budget_scope_ref: BudgetScopeRef, analysis_id: str) -> BudgetRemaining: ...
 ```
 
 `runtime/worker_pool.py`는 `WorkHandler`만 호출한다. handler instance의 `WorkType` 연결은 `bootstrap.py`에서 수행한다. `VerdictRouter`는 reporting·chaining concrete module을 import하지 않고 runtime public service에 typed work 등록 요청만 제출한다.
@@ -318,6 +319,7 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 - [ ] full ACTIVE BudgetProfileBinding과 reservation 없이 후속 work·attempt·외부 호출이 차단되는 시험을 작성한다.
 - [ ] 동시 reservation, usage commit 1회, release와 crash 후 불명확 예약 보존을 구현한다.
 - [ ] stale·late 결과가 current pointer를 변경하지 못하게 CAS와 TransitionCommit을 구현한다.
+- [ ] LLM·정적 도구·정책 HTTP·Docker port가 대기 중일 때 SQLite write transaction이 열려 있지 않아 두 번째 connection이 정상 기록 가능한지 검사한다.
 - [ ] 전체 artifact hash 검사와 orphan recovery를 구현한다.
 - [ ] R3·R4·R8 검토 뒤 PR을 병합한다.
 
@@ -368,23 +370,23 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 
 **Files:**
 - Create: `docs/superpowers/plans/implementation/09-provider-prompt-runtime.md`
-- Create: `src/sastsimi/providers/base.py`, `normalization.py`, `openai_api.py`, `registry.py`
-- Create: `src/sastsimi/prompts/registry.py`, `loader.py`, `builder.py`, `redaction.py`, `validation.py`, `activation.py`
-- Create: `src/sastsimi/runtime/llm_call_service.py`
+- Create: `src/sastsimi/providers/base.py`, `normalization.py`, `openai_api.py`
+- Create: `src/sastsimi/prompts/registry.py`, `loader.py`, `builder.py`, `redaction.py`, `validation.py`
+- Create: `src/sastsimi/runtime/llm_call_service.py`, `provider_profile_registry.py`, `prompt_registry.py`
 - Create: `config/prompts/registry.yaml`, `src/sastsimi/prompts/templates/`
 - Create: `tests/contract/prompts/`, `tests/integration/providers/`, `tests/security_negative/test_prompt_injection.py`
 
 **Interfaces:**
 - Consumes: `LLMProviderAdapter`, ProviderProfile·PromptRegistryEntry·PromptPayload·LLMCallSpec contracts
-- Produces: 기본 비활성 Provider registry, fake와 한 API adapter의 probe/invoke/cancel, trusted Prompt registry 전이, immutable prompt payload와 structured output 검사
+- Produces: 비활성 후보 adapter 목록, fake와 한 API adapter의 probe/invoke/cancel, trusted Provider Profile Registry·Prompt Registry 전이, immutable prompt payload와 structured output 검사
 
-- [ ] 미검증 profile이 호출되지 않는 capability 시험을 작성한다.
+- [ ] PVD와 사람 승인 전 후보 adapter에는 `ProviderProfile`을 발급하지 않고 domain 호출에 사용하지 못하는 시험을 작성한다.
 - [ ] registry/template/schema/validator hash와 purpose mismatch 실패 시험을 작성한다.
 - [ ] untrusted data가 instruction으로 승격되지 않는 projection 시험을 작성한다.
 - [ ] schema·semantic repair가 새 call/action/session을 만드는지 시험한다.
 - [ ] API credential 원문이 record·artifact·log에 남지 않는지 검사한다.
 - [ ] retry·fallback은 고정된 정책에 있을 때만 새 action/attempt로 실행하고, 조용한 Provider·model 변경을 금지한다.
-- [ ] Prompt template은 평가 근거와 사람 승인 없이는 `PRODUCTION`으로 활성화되지 않는 전이 시험을 작성한다.
+- [ ] 기술 검증된 exact ProviderProfile로만 `EVALUATION` Prompt entry를 활성화하고, 평가 추천과 사람 승인 없이는 `PRODUCTION` Prompt entry를 `ACTIVE`로 만들지 않는 전이 시험을 작성한다.
 - [ ] Issue #118 prompt 결과를 canonical template 한곳에 연결하고 중복 문서를 만들지 않는다.
 - [ ] R1·R3·R4·R8 검토 뒤 PR을 병합한다.
 
@@ -437,16 +439,17 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 - Create: `docs/superpowers/plans/implementation/12-gates-reporting.md`
 - Create: `src/sastsimi/agents/cwe_labeling.py`, `technical_gate.py`, `rule_scope_gate.py`, `policy_parser.py`, `reporter.py`
 - Create: `src/sastsimi/reporting/`
-- Create: `src/sastsimi/policy/program_catalog.py`, `preparation_service.py`, `collector.py`, `cache.py`, `official_http.py`
+- Create: `src/sastsimi/policy/program_catalog.py`, `preparation_service.py`, `collector.py`, `cache_service.py`, `adapters/official_http.py`
 - Create: `tests/integration/reporting/`, `tests/security_negative/test_stale_report.py`
 
 **Interfaces:**
-- Consumes: Program Catalog entry, PolicySourcePort, current final TRUE, validated PoC, current CWE
-- Produces: run-init에 고정된 RunPolicyState, Technical review, Rule Scope review, Primitive admission, current Finding와 ReportDraft
+- Consumes: Program Catalog entry, PolicySourcePort, current final TRUE와 validated PoC
+- Produces: run-init에 고정된 RunPolicyState, 해당 Verification을 직접 가리키는 current CWELabel, Technical review, Rule Scope review, Primitive admission, current Finding와 ReportDraft
 
 - [ ] 새 Verification에 stale CWE·Gate·Finding·ReportDraft를 재사용하는 실패 시험을 작성한다.
 - [ ] run 시작 때 정책 준비를 정적 분석과 병렬 실행하고, 공식 출처·cache provenance로 확정한 RunPolicyState를 같은 run 동안 고정한다.
 - [ ] Program Catalog 조회·Policy Collector·공식 HTTP adapter·cache fallback과 최신성 만료를 각각 시험한다.
+- [ ] final TRUE마다 `CWE_LABELING` work가 current Verification exact revision을 직접 가리키는 새 CWELabel을 만들고, generation이 바뀌면 같은 CWE라도 새 provenance revision으로 재평가하는지 검사한다.
 - [ ] Technical REVISE가 verdict를 변경하지 않고 같은 owner 새 generation으로 돌아가게 한다.
 - [ ] policy 수집 실패와 공식 정책 부재를 다른 상태로 보존한다.
 - [ ] testing restriction FAIL만 Primitive admission DENY로 매핑한다.
@@ -462,10 +465,11 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 - Create: `tests/integration/chaining/`, `tests/security_negative/test_chaining_provenance.py`
 
 **Interfaces:**
-- Consumes: admission ALLOW TRUE Primitive와 required candidate가 있는 HOLD Primitive의 exact index
-- Produces: directional matches, no-match reasons, duplicate key와 `origin=CHAINING` 새 proposal
+- Consumes: final TRUE + current `PrimitiveAdmissionDecision=ALLOW`, 또는 `required_primitive_candidates`가 있는 final HOLD
+- Produces: Primitive, atomic current PrimitiveIndexState revision, directional matches, no-match reasons, duplicate key와 `origin=CHAINING` 새 proposal
 
 - [ ] FALSE, candidate 없는 HOLD와 restriction DENY TRUE가 index에 들어가지 않는 시험을 작성한다.
+- [ ] TRUE는 같은 exact result chain의 current ALLOW admission을, HOLD는 required candidate를 검사한 뒤 Primitive와 새 index revision을 같은 transition으로 확정한다.
 - [ ] upstream result가 downstream input을 충족하는 방향만 match하게 구현한다.
 - [ ] 고정한 considered refs, exclusion pair, lineage와 source result closure를 검사한다.
 - [ ] TRUE+TRUE와 TRUE+HOLD child를 자동 TRUE가 아닌 새 가설로 등록한다.
@@ -521,17 +525,18 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 
 **Interfaces:**
 - Consumes: capability probe 계약과 격리된 evaluation path
-- Produces: 비활성 후보 adapter의 conformance 결과, PVD evidence, tool profile, EvaluationRunResult와 사람이 승인할 수 있는 activation recommendation
+- Produces: 비활성 후보 adapter의 conformance 결과, PVD evidence, trusted runtime이 게시한 ProviderProfile, tool profile, EvaluationRunResult와 사람이 승인할 수 있는 Prompt activation recommendation
 
 - [ ] 실제 credential 없이 default test가 외부 호출을 하지 않는지 검사한다.
 - [ ] 후보 adapter는 먼저 비활성 상태로 구현하고 공통 probe/invoke/cancel·오류 정규화 conformance 시험을 통과시킨다.
 - [ ] OpenAI API·Codex 회원제·Anthropic API·Claude 회원제 각각을 공식 지원 경로로 구현 가능한지 검증하며, 미지원 또는 credential 부재는 `BLOCKED` 증거로 남기고 지원을 주장하지 않는다.
+- [ ] PVD exact evidence와 사람 승인이 있는 후보만 trusted Provider Profile Registry가 `SUPPORTED | EXPERIMENTAL | REJECTED` ProviderProfile로 게시하며, ProviderProfile에 Prompt의 `ACTIVE` 상태를 넣지 않는다.
 - [ ] exact environment·client·model 조합의 PVD-01~15를 기록한다.
 - [ ] dynamic tool loop 대상에는 PVD-16을 추가로 실행한다.
 - [ ] Git·AST·CodeQL·OpenGrep·Docker exact version probe를 기록한다.
-- [ ] 같은 corpus·grader·budget에서 Provider·model·prompt 조합을 비교한다.
+- [ ] 같은 `comparison_group_id` 안에서 `corpus_refs`, `ground_truth_refs`, `grader_refs`, output schema와 budget profile을 exact set-equal로 고정하고, 비교 축 외 Provider·model·session·prompt 입력도 같은 경우만 비교한다.
 - [ ] CLI에서 Provider/tool capability 실행, evaluation 실행·결과 조회·비교를 명시적으로 시작할 수 있게 한다.
-- [ ] capability와 evaluation 성공만으로 `PRODUCTION ACTIVE`가 되지 않고 R8 recommendation과 사람 승인이 모두 있어야 exact profile·model·prompt revision을 활성화하도록 검사한다.
+- [ ] PVD를 통과한 ProviderProfile로 `EVALUATION` Prompt entry를 사용하고, exact `ACCEPT_FOR_PRODUCTION` R8 recommendation과 사람 승인이 모두 있어야 trusted Prompt Registry Runtime이 실행 의미가 같은 새 `PRODUCTION ACTIVE` entry revision을 만들도록 검사한다.
 - [ ] R3·R7·R8 및 역할 소유자 검토 뒤 PR을 병합한다.
 
 ### Task 17: Release candidate and final integration

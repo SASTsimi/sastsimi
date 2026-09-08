@@ -55,7 +55,8 @@
 - Initial review head: `871f549b876c0aaec372e43454ae3f753df61c30`
 - Reviewers: `/root/master_plan_review`, `/root/master_plan_execution_audit`
 - Initial findings: Critical `0`, Important `8` distinct issues
-- Remediation: missing ports and producers, T08+T09 join, full fake 22-step coverage, candidate Provider activation order, dynamic schema inventory, plan status, real CLI, Sandbox limits, early document CI and cross-platform command fixed
+- First re-review head: `392a18ea834641236b7b1515128d8f563eaf77b6`; Critical `0`, Important `5` distinct issues
+- Remediation: missing ports and producers, exact canonical port signatures, T08+T09 join, full fake 22-step coverage, current CWE/Primitive ownership, trusted Provider/Prompt registry split, candidate Provider activation order, exact evaluation comparison, no-open-SQLite-transaction test, dynamic schema inventory, plan status, real CLI, Sandbox limits, early document CI and cross-platform command fixed
 - Status: fixes applied; same-head re-review pending
 
 ## Blocked or deferred evidence
