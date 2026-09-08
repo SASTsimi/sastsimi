@@ -44,7 +44,7 @@ Missing future suites and real capability probes are not reported as passed.
 Initial RED: 68 failed, 1 passed with the package absent and forbidden import
 fixtures exposing the permissive checker. Additional AST RED: 4 failed, 72 passed
 for cycle, dynamic-import and private-import bypasses. Final local GREEN:
-140 passed, Ruff clean, mypy strict clean across 19 Python files, Architecture
+141 passed, Ruff clean, mypy strict clean across 20 Python files, Architecture
 validator 0 failures and inventory/link audit 0 missing links.
 
 Local verification uses Windows and CPython 3.12.10 with uv 0.12.5. Dependency
@@ -83,3 +83,11 @@ The checker now separates namespace/accessor classification, function-local name
 collection, lexical binding updates, access policy and ordinary import targets.
 It does not evaluate arbitrary calls, runtime dictionary contents or control flow.
 Targeted GREEN: 74 passed; full GREEN: 140 passed.
+
+CI fix round 4 reproduced the shell-expression error reported by GitHub run
+34214777740 with a static regression (1 failed). All shell selections are now
+fixed literals: ordinary commands use pwsh, while the two documentation checks
+select Windows PowerShell or PowerShell Core through mutually exclusive runner
+conditions. The OS matrix remains Ubuntu 24.04 / Windows Server 2022.
+Targeted GREEN: 1 passed; full GREEN: 141 passed. Actual GitHub execution remains
+controller-owned; local static validation does not substitute for hosted CI.
