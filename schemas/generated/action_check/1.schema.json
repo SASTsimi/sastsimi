@@ -1,0 +1,61 @@
+{
+  "$defs": {
+    "CheckResult": {
+      "enum": [
+        "PASS",
+        "FAIL"
+      ],
+      "title": "CheckResult",
+      "type": "string"
+    },
+    "CheckType": {
+      "enum": [
+        "SCHEMA",
+        "AUTHORITY",
+        "IDENTITY",
+        "REVISION",
+        "STATE",
+        "BUDGET",
+        "TOOL",
+        "FILE_PATH",
+        "PROVIDER",
+        "SESSION",
+        "GATE_ORDER",
+        "REPORT_READY",
+        "REDACTION"
+      ],
+      "title": "CheckType",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "check_type": {
+      "$ref": "#/$defs/CheckType"
+    },
+    "reason_code": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Reason Code",
+      "type": "string"
+    },
+    "result": {
+      "$ref": "#/$defs/CheckResult"
+    },
+    "safe_message": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Safe Message",
+      "type": "string"
+    }
+  },
+  "required": [
+    "check_type",
+    "result",
+    "reason_code",
+    "safe_message"
+  ],
+  "title": "ActionCheck",
+  "type": "object"
+}

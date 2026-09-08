@@ -1,0 +1,658 @@
+{
+  "$defs": {
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "BudgetScopeRef": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunStoredDataRef"
+        },
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        }
+      ]
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ErrorId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "ErrorId",
+      "type": "string"
+    },
+    "GapId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "GapId",
+      "type": "string"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "PolicyCacheRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "const": "policy_cache_record",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "program_id": {
+          "$ref": "#/$defs/ProgramId"
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "record_id",
+        "content_hash",
+        "program_id",
+        "schema_version"
+      ],
+      "title": "PolicyCacheRef",
+      "type": "object"
+    },
+    "ProgramId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "ProgramId",
+      "type": "string"
+    },
+    "ProposalId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "ProposalId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "RecordRef": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunStoredDataRef"
+        },
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "$ref": "#/$defs/PolicyCacheRef"
+        }
+      ]
+    },
+    "ReportId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "ReportId",
+      "type": "string"
+    },
+    "RunMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id"
+      ],
+      "title": "RunMeta",
+      "type": "object"
+    },
+    "RunStoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "analysis_id",
+        "record_id"
+      ],
+      "title": "RunStoredDataRef",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "SubjectType": {
+      "enum": [
+        "ANALYSIS",
+        "PROPOSAL",
+        "HYPOTHESIS",
+        "REPORT"
+      ],
+      "title": "SubjectType",
+      "type": "string"
+    },
+    "WaitingFor": {
+      "enum": [
+        "RETRY",
+        "AUTH",
+        "APPROVAL",
+        "INPUT",
+        "BUDGET",
+        "DEPENDENCY"
+      ],
+      "title": "WaitingFor",
+      "type": "string"
+    },
+    "WorkId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkId",
+      "type": "string"
+    },
+    "WorkStatus": {
+      "enum": [
+        "PENDING",
+        "READY",
+        "RUNNING",
+        "BLOCKED",
+        "SUCCEEDED",
+        "PARTIAL",
+        "FAILED",
+        "CANCELLED"
+      ],
+      "title": "WorkStatus",
+      "type": "string"
+    },
+    "WorkType": {
+      "enum": [
+        "WORKSPACE_PREP",
+        "STATIC_TOOL",
+        "STATIC_NORMALIZE",
+        "HYPOTHESIS_PROPOSAL",
+        "CONTEXT_RETRIEVAL",
+        "PRO_EVIDENCE",
+        "CON_EVIDENCE",
+        "VERIFICATION",
+        "DYNAMIC_REPRO",
+        "PRIMITIVE_UPDATE",
+        "CHAINING",
+        "CWE_LABEL",
+        "POLICY_FETCH",
+        "TECHNICAL_GATE",
+        "RULE_SCOPE_GATE",
+        "FINDING_NORMALIZE",
+        "REPORT_DRAFT"
+      ],
+      "title": "WorkType",
+      "type": "string"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "active_attempt_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AttemptId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "dedupe_key": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Dedupe Key",
+      "type": "string"
+    },
+    "elapsed_ms": {
+      "minimum": 0,
+      "title": "Elapsed Ms",
+      "type": "integer"
+    },
+    "error_ids": {
+      "items": {
+        "$ref": "#/$defs/ErrorId"
+      },
+      "title": "Error Ids",
+      "type": "array"
+    },
+    "finished_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Finished At"
+    },
+    "gap_ids": {
+      "items": {
+        "$ref": "#/$defs/GapId"
+      },
+      "title": "Gap Ids",
+      "type": "array"
+    },
+    "input_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Input Hash",
+      "type": "string"
+    },
+    "input_refs": {
+      "items": {
+        "$ref": "#/$defs/RecordRef"
+      },
+      "title": "Input Refs",
+      "type": "array"
+    },
+    "last_transition_commit_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BudgetScopeRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "last_transition_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BudgetScopeRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "meta": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunMeta"
+        },
+        {
+          "$ref": "#/$defs/RecordMeta"
+        }
+      ],
+      "title": "Meta"
+    },
+    "output_refs": {
+      "items": {
+        "$ref": "#/$defs/RecordRef"
+      },
+      "title": "Output Refs",
+      "type": "array"
+    },
+    "parent_work_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BudgetScopeRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Started At"
+    },
+    "state_version": {
+      "minimum": 1,
+      "title": "State Version",
+      "type": "integer"
+    },
+    "status": {
+      "$ref": "#/$defs/WorkStatus"
+    },
+    "stop_reason": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Stop Reason"
+    },
+    "subject_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        {
+          "$ref": "#/$defs/ProposalId"
+        },
+        {
+          "$ref": "#/$defs/HypothesisId"
+        },
+        {
+          "$ref": "#/$defs/ReportId"
+        }
+      ],
+      "title": "Subject Id"
+    },
+    "subject_type": {
+      "$ref": "#/$defs/SubjectType"
+    },
+    "trigger_primitive_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "waiting_for": {
+      "items": {
+        "$ref": "#/$defs/WaitingFor"
+      },
+      "title": "Waiting For",
+      "type": "array"
+    },
+    "work_generation": {
+      "minimum": 1,
+      "title": "Work Generation",
+      "type": "integer"
+    },
+    "work_id": {
+      "$ref": "#/$defs/WorkId"
+    },
+    "work_type": {
+      "$ref": "#/$defs/WorkType"
+    }
+  },
+  "required": [
+    "meta",
+    "work_id",
+    "parent_work_ref",
+    "work_type",
+    "subject_type",
+    "subject_id",
+    "work_generation",
+    "status",
+    "state_version",
+    "last_transition_ref",
+    "last_transition_commit_ref",
+    "active_attempt_id",
+    "input_hash",
+    "dedupe_key",
+    "trigger_primitive_ref",
+    "input_refs",
+    "output_refs",
+    "gap_ids",
+    "error_ids",
+    "waiting_for",
+    "stop_reason",
+    "started_at",
+    "finished_at",
+    "elapsed_ms"
+  ],
+  "title": "WorkExecutionState",
+  "type": "object"
+}

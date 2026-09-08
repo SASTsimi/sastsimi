@@ -1,0 +1,62 @@
+{
+  "$defs": {
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "analysis_id": {
+      "$ref": "#/$defs/AnalysisId"
+    },
+    "content_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Hash",
+      "type": "string"
+    },
+    "data_kind": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Data Kind",
+      "type": "string"
+    },
+    "record_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stored_data_id": {
+      "$ref": "#/$defs/StoredDataId"
+    }
+  },
+  "required": [
+    "stored_data_id",
+    "data_kind",
+    "content_hash",
+    "analysis_id",
+    "record_id"
+  ],
+  "title": "RunStoredDataRef",
+  "type": "object"
+}

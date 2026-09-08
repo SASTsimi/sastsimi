@@ -258,6 +258,8 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 
 ### Task 4: Core contracts and canonical serialization
 
+Implementation record: [T04 core contracts](implementation/04-core-contracts.md).
+
 **Files:**
 - Create: `docs/superpowers/plans/implementation/04-core-contracts.md`
 - Create: `src/sastsimi/contracts/ids.py`, `refs.py`, `records.py`, `work.py`, `actions.py`, `budget.py`, `canonical_json.py`, `schema_export.py`
