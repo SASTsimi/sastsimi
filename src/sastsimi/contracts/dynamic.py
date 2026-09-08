@@ -1,10 +1,20 @@
 """R6 requests, R7 execution records and PoC provenance (§08.7)."""
 
-from typing import Literal, Self
+from collections.abc import Mapping
+from typing import Annotated, Literal, Self
 
-from pydantic import AwareDatetime, model_validator
+from pydantic import AfterValidator, AwareDatetime, model_validator
 
-from ._domain import DomainRecord, SafeDiagnostic, exact, exact_set, same_scope, unique
+from ._domain import (
+    DomainRecord,
+    SafeDiagnostic,
+    exact,
+    exact_set,
+    safe_diagnostic,
+    same_scope,
+    unique,
+    walk,
+)
 from .base import ContractModel, NonEmptyStr, NonNegativeInt, PositiveInt, Sha256
 from .canonical_json import content_hash
 from .ids import ActionId
@@ -74,9 +84,9 @@ class EnvironmentRequirement(ContractModel):
     kind: NeedKind
     name: NonEmptyStr
     required: bool
-    expected: NonEmptyStr | None
+    expected: SafeDiagnostic | None
     expected_ref: StoredDataRef | None
-    alternatives: tuple[NonEmptyStr, ...]
+    alternatives: tuple[SafeDiagnostic, ...]
     check_ref: StoredDataRef | None
     secret_ref: StoredDataRef | None
     source_refs: tuple[StoredDataRef, ...]
@@ -145,9 +155,9 @@ class EnvironmentRecipe(DynamicRecord):
 class EnvironmentCheck(ContractModel):
     requirement_id: NonEmptyStr
     status: Literal["MATCH", "MISMATCH", "NOT_CHECKED", "ERROR"]
-    actual: NonEmptyStr | None
+    actual: SafeDiagnostic | None
     actual_ref: StoredDataRef | None
-    difference: NonEmptyStr | None
+    difference: SafeDiagnostic | None
     evidence_refs: tuple[StoredDataRef, ...]
     check_result_ref: StoredDataRef | None
 
@@ -252,9 +262,9 @@ class SandboxPolicyDecision(DynamicRecord):
 
 
 class SandboxCommandInput(ContractModel):
-    executable: NonEmptyStr
-    arguments: tuple[str, ...]
-    working_directory: NonEmptyStr
+    executable: SafeDiagnostic
+    arguments: tuple[Annotated[str, AfterValidator(safe_diagnostic)], ...]
+    working_directory: SafeDiagnostic
     environment_binding_refs: tuple[StoredDataRef, ...]
     stdin_ref: StoredDataRef | None
     secret_refs: tuple[StoredDataRef, ...]
@@ -263,6 +273,19 @@ class SandboxCommandInput(ContractModel):
     def secret_handles(self) -> Self:
         if any(ref.data_kind != "secret_handle" for ref in self.secret_refs):
             raise ValueError("SECRET_HANDLE_REQUIRED")
+        for index, argument in enumerate(self.arguments[:-1]):
+            if argument.lower().lstrip("-") in {
+                "password",
+                "token",
+                "cookie",
+                "authorization",
+                "api-key",
+                "api_key",
+            }:
+                if self.arguments[index + 1] not in {"[REDACTED]", "<redacted>"}:
+                    raise ValueError("UNSAFE_DIAGNOSTIC")
+        if self.stdin_ref is not None:
+            safe_diagnostic(self.stdin_ref.stored_data_id.root)
         return self
 
 
@@ -346,6 +369,16 @@ class AgentLogEvent(ContractModel):
 
     @model_validator(mode="after")
     def command_shape(self) -> Self:
+        for field, kind in (
+            ("command_ref", "sandbox_command_record"),
+            ("tool_request_ref", "dynamic_reproduction_tool_request"),
+            ("environment_ref", "sandbox_environment"),
+            ("environment_recipe_ref", "environment_recipe"),
+            ("poc_candidate_ref", "poc_candidate"),
+        ):
+            reference = getattr(self, field)
+            if reference is not None:
+                require_record_ref(reference, kind)
         command = self.event_type in {"COMMAND_STARTED", "COMMAND_FINISHED"}
         if any(
             (value is not None) != command
@@ -562,7 +595,9 @@ class DynamicReproductionResult(DynamicRecord):
         if successful and (not self.agent_invoked or self.agent_conclusion_ref is None):
             raise ValueError("DYNAMIC_CONCLUSION_REQUIRED")
         if self.status == "PARTIAL" and (
-            not self.observation_refs or not self.limitations
+            not self.observation_refs
+            or not self.hypothesis_evidence_refs
+            or not self.limitations
         ):
             raise ValueError("PARTIAL_EVIDENCE_REQUIRED")
         if not self.agent_invoked and self.agent_conclusion_ref is not None:
@@ -678,6 +713,38 @@ def validate_environment(
                 raise ValueError("ENVIRONMENT_DIFFERENCE_REQUIRED")
 
 
+def validate_environment_requirements(
+    request: DynamicReproductionRequest,
+    requirements: EnvironmentRequirements,
+    *,
+    need_bindings: Mapping[str, tuple[str, ...]] | None = None,
+) -> None:
+    """Bind each request need to concrete requirement IDs; never judge free text."""
+    exact(requirements.request_ref, request, requirements.meta)
+    same_scope(request.meta, requirements.meta)
+    bindings = (
+        need_bindings
+        if need_bindings is not None
+        else {need.need_id: (need.need_id,) for need in request.environment_needs}
+    )
+    if set(bindings) != {need.need_id for need in request.environment_needs}:
+        raise ValueError("ENVIRONMENT_NEED_COVERAGE")
+    items = {item.requirement_id: item for item in requirements.items}
+    for need in request.environment_needs:
+        ids = bindings[need.need_id]
+        if not ids or len(set(ids)) != len(ids):
+            raise ValueError("ENVIRONMENT_NEED_COVERAGE")
+        for requirement_id in ids:
+            item = items.get(requirement_id)
+            if (
+                item is None
+                or item.kind != need.kind
+                or (need.required and not item.required)
+                or not set(need.source_refs) <= set(item.source_refs)
+            ):
+                raise ValueError("ENVIRONMENT_NEED_COVERAGE")
+
+
 def validate_dynamic_closure(
     result: DynamicReproductionResult,
     request: DynamicReproductionRequest,
@@ -692,6 +759,14 @@ def validate_dynamic_closure(
     conclusion: DynamicReproductionConclusion | None = None,
     policy: SandboxPolicyDecision | None = None,
     cleanup: CleanupResult | None = None,
+    resolved_evidence: Mapping[StoredDataRef, DomainRecord] | None = None,
+    command_records: tuple[SandboxCommandRecord, ...] = (),
+    tool_requests: tuple[DynamicReproductionToolRequest, ...] = (),
+    attempt_environments: tuple[SandboxEnvironment, ...] = (),
+    attempt_recipes: tuple[EnvironmentRecipe, ...] = (),
+    requirements: EnvironmentRequirements | None = None,
+    need_bindings: Mapping[str, tuple[str, ...]] | None = None,
+    attempt_resource_refs: tuple[StoredDataRef, ...] = (),
 ) -> None:
     exact(result.request_ref, request, result.meta)
     same_scope(result.meta, request.meta)  # R6 producer attempt differs from R7.
@@ -729,30 +804,20 @@ def validate_dynamic_closure(
         plan.sandbox_profile_ref,
     ) != (request.purpose, request.hypothesis_ref, request.sandbox_profile_ref):
         raise ValueError("DYNAMIC_PLAN_REQUEST_MISMATCH")
+    if plan is not None:
+        if requirements is None:
+            raise ValueError("ENVIRONMENT_REQUIREMENTS_MISSING")
+        exact(plan.environment_requirements_ref, requirements, result.meta)
+        same_scope(result.meta, requirements.meta, attempt=True)
+        validate_environment_requirements(
+            request, requirements, need_bindings=need_bindings
+        )
+        if environment is not None and recipe is not None:
+            validate_environment(environment, requirements, plan, recipe)
     if policy is not None:
-        if (result.agent_invoked and policy.decision != "ALLOW") or (
-            result.failure_category == "POLICY_BLOCKED" and policy.decision != "DENY"
-        ):
-            raise ValueError("SANDBOX_POLICY_DECISION_MISMATCH")
-        if not any(
-            event.event_type in {"SESSION_STARTED", "POLICY_BLOCKED"}
-            and result.policy_decision_ref in event.input_refs
-            for event in log.events
-        ):
-            raise ValueError("SANDBOX_POLICY_LOG_MISMATCH")
+        validate_boundary_binding(result, request, log, policy)
     if conclusion is not None:
-        if (
-            result.hypothesis_outcome,
-            result.hypothesis_linkage,
-            result.limitations,
-        ) != (
-            conclusion.proposed_outcome,
-            conclusion.hypothesis_linkage,
-            conclusion.limitations,
-        ):
-            raise ValueError("DYNAMIC_CONCLUSION_DRIFT")
-        exact_set(result.hypothesis_evidence_refs, conclusion.hypothesis_evidence_refs)
-        exact_set(result.observation_refs, conclusion.observation_refs)
+        validate_conclusion_binding(result, conclusion)
     if candidate is not None and not any(
         event.poc_candidate_ref == result.poc_candidate_ref
         and event.event_type in {"POC_CANDIDATE_CREATED", "POC_EXECUTION_STARTED"}
@@ -787,5 +852,254 @@ def validate_dynamic_closure(
         ]
         if len(executions) != 1 or not poc.evidence_refs:
             raise ValueError("POC_EXECUTION_REQUIRED")
+        validate_execution_support(result, poc, executions[0], resolved_evidence or {})
     if cleanup is not None and cleanup.status != result.cleanup_status:
         raise ValueError("CLEANUP_STATUS_MISMATCH")
+    environments = (*attempt_environments, *((environment,) if environment else ()))
+    recipes = (*attempt_recipes, *((recipe,) if recipe else ()))
+    validate_cleanup_coverage(result, log, cleanup, environments, attempt_resource_refs)
+    validate_command_log(
+        log, request, plan, command_records, tool_requests, environments, recipes
+    )
+
+
+def validate_boundary_binding(
+    result: DynamicReproductionResult,
+    request: DynamicReproductionRequest,
+    log: AgentLog,
+    policy: SandboxPolicyDecision,
+) -> None:
+    if (
+        policy.action_decision_ref != result.action_decision_ref
+        or policy.sandbox_profile_ref != request.sandbox_profile_ref
+    ):
+        raise ValueError("SANDBOX_POLICY_BINDING_MISMATCH")
+    if (result.agent_invoked and policy.decision != "ALLOW") or (
+        result.failure_category == "POLICY_BLOCKED" and policy.decision != "DENY"
+    ):
+        raise ValueError("SANDBOX_POLICY_DECISION_MISMATCH")
+    if not any(
+        event.event_type in {"SESSION_STARTED", "POLICY_BLOCKED"}
+        and result.policy_decision_ref in event.input_refs
+        for event in log.events
+    ):
+        raise ValueError("SANDBOX_POLICY_LOG_MISMATCH")
+
+
+def validate_conclusion_binding(
+    result: DynamicReproductionResult, conclusion: DynamicReproductionConclusion
+) -> None:
+    if any(
+        getattr(conclusion, field) != getattr(result, field)
+        for field in ("reproduction_plan_ref", "environment_ref", "poc_candidate_ref")
+    ):
+        raise ValueError("DYNAMIC_CONCLUSION_ARTIFACT_MISMATCH")
+    if (result.hypothesis_outcome, result.hypothesis_linkage, result.limitations) != (
+        conclusion.proposed_outcome,
+        conclusion.hypothesis_linkage,
+        conclusion.limitations,
+    ):
+        raise ValueError("DYNAMIC_CONCLUSION_DRIFT")
+    exact_set(result.hypothesis_evidence_refs, conclusion.hypothesis_evidence_refs)
+    exact_set(result.observation_refs, conclusion.observation_refs)
+
+
+def validate_command_log(
+    log: AgentLog,
+    request: DynamicReproductionRequest,
+    plan: ReproductionPlan | None,
+    command_records: tuple[SandboxCommandRecord, ...],
+    tool_requests: tuple[DynamicReproductionToolRequest, ...],
+    environments: tuple[SandboxEnvironment, ...],
+    recipes: tuple[EnvironmentRecipe, ...],
+) -> None:
+    for start in (
+        event for event in log.events if event.event_type == "COMMAND_STARTED"
+    ):
+        finishes = [
+            event
+            for event in log.events
+            if event.event_type == "COMMAND_FINISHED"
+            and event.action_id == start.action_id
+        ]
+        records = [
+            record
+            for record in command_records
+            if start.command_ref is not None
+            and record.meta.record_id == start.command_ref.record_id
+        ]
+        requests = [
+            record
+            for record in tool_requests
+            if start.tool_request_ref is not None
+            and record.meta.record_id == start.tool_request_ref.record_id
+        ]
+        envs = [
+            record
+            for record in environments
+            if start.environment_ref is not None
+            and record.meta.record_id == start.environment_ref.record_id
+        ]
+        builds = [
+            record
+            for record in recipes
+            if start.environment_recipe_ref is not None
+            and record.meta.record_id == start.environment_recipe_ref.record_id
+        ]
+        if plan is None or any(
+            len(items) != 1 for items in (finishes, records, requests, envs, builds)
+        ):
+            raise ValueError("COMMAND_CLOSURE_MISSING")
+        validate_command_closure(
+            start,
+            finishes[0],
+            requests[0],
+            records[0],
+            request,
+            plan,
+            envs[0],
+            builds[0],
+        )
+
+
+def validate_cleanup_coverage(
+    result: DynamicReproductionResult,
+    log: AgentLog,
+    cleanup: CleanupResult | None,
+    environments: tuple[SandboxEnvironment, ...],
+    resources: tuple[StoredDataRef, ...],
+) -> None:
+    refs = {
+        event.environment_ref
+        for event in log.events
+        if event.environment_ref is not None
+    }
+    if result.environment_ref is not None:
+        refs.add(result.environment_ref)
+    if (refs or environments or resources) and (
+        not result.cleanup_required or cleanup is None
+    ):
+        raise ValueError("CLEANUP_COVERAGE_MISMATCH")
+    if cleanup is None:
+        return
+    if (
+        not refs <= set(cleanup.environment_refs)
+        or {ref.record_id for ref in cleanup.environment_refs}
+        != {item.meta.record_id for item in environments}
+        or set(cleanup.resource_refs) != set(resources)
+    ):
+        raise ValueError("CLEANUP_COVERAGE_MISMATCH")
+    unique(cleanup.environment_refs)
+    unique(cleanup.resource_refs)
+    for reference in cleanup.environment_refs:
+        targets = [
+            item for item in environments if item.meta.record_id == reference.record_id
+        ]
+        if len(targets) != 1:
+            raise ValueError("CLEANUP_ENVIRONMENT_UNRESOLVED")
+        exact(reference, targets[0], result.meta)
+        same_scope(result.meta, targets[0].meta, attempt=True)
+        if targets[0].request_ref != result.request_ref:
+            raise ValueError("DYNAMIC_REQUEST_MISMATCH")
+
+
+def validate_command_closure(
+    start: AgentLogEvent,
+    finish: AgentLogEvent,
+    tool: DynamicReproductionToolRequest,
+    command: SandboxCommandRecord,
+    request: DynamicReproductionRequest,
+    plan: ReproductionPlan,
+    environment: SandboxEnvironment,
+    recipe: EnvironmentRecipe,
+) -> None:
+    if (start.event_type, finish.event_type) != (
+        "COMMAND_STARTED",
+        "COMMAND_FINISHED",
+    ) or (
+        start.action_id != finish.action_id
+        or start.action_id != command.action_id
+        or start.sequence >= finish.sequence
+        or start.occurred_at > finish.occurred_at
+    ):
+        raise ValueError("COMMAND_ACTION_MISMATCH")
+    for event in (start, finish):
+        for ref, target in (
+            (event.command_ref, command),
+            (event.tool_request_ref, tool),
+            (event.environment_ref, environment),
+            (event.environment_recipe_ref, recipe),
+        ):
+            if ref is None:
+                raise ValueError("COMMAND_CLOSURE_MISSING")
+            exact(ref, target, command.meta)
+        if (event.command_digest, event.redaction_status) != (
+            command.command_digest,
+            command.redaction_status,
+        ):
+            raise ValueError("COMMAND_CONTENT_MISMATCH")
+    for record in (tool, plan, environment, recipe):
+        same_scope(command.meta, record.meta, attempt=True)
+        if record.request_ref != command.request_ref:
+            raise ValueError("DYNAMIC_REQUEST_MISMATCH")
+    exact(command.request_ref, request, command.meta)
+    same_scope(command.meta, request.meta)
+    exact(command.tool_request_ref, tool, command.meta)
+    exact(command.reproduction_plan_ref, plan, command.meta)
+    exact(command.environment_ref, environment, command.meta)
+    exact(command.environment_recipe_ref, recipe, command.meta)
+    if (
+        tool.action != "RUN_COMMAND"
+        or environment.status != "READY"
+        or tool.environment_ref != command.environment_ref
+        or tool.reproduction_plan_ref != command.reproduction_plan_ref
+        or environment.environment_recipe_ref != command.environment_recipe_ref
+        or environment.reproduction_plan_ref != command.reproduction_plan_ref
+    ):
+        raise ValueError("COMMAND_PROVENANCE_MISMATCH")
+    command_fields = {
+        name: getattr(command, name) for name in SandboxCommandInput.model_fields
+    }
+    if tool.command is None or content_hash(tool.command) != content_hash(
+        command_fields
+    ):
+        raise ValueError("COMMAND_CONTENT_MISMATCH")
+
+
+def validate_execution_support(
+    result: DynamicReproductionResult,
+    poc: PoCBundle,
+    execution: AgentLogEvent,
+    resolved: Mapping[StoredDataRef, DomainRecord],
+) -> None:
+    if (execution.environment_ref, execution.environment_recipe_ref) != (
+        result.environment_ref,
+        result.environment_recipe_ref,
+    ):
+        raise ValueError("POC_EXECUTION_ENVIRONMENT_MISMATCH")
+    outputs = set(execution.output_refs)
+    if not outputs:
+        raise ValueError("POC_EXECUTION_EVIDENCE_MISMATCH")
+    for roots in (poc.evidence_refs, result.hypothesis_evidence_refs):
+        pending = list(roots)
+        seen: set[StoredDataRef] = set()
+        while pending:
+            ref = pending.pop()
+            if ref in seen:
+                continue
+            seen.add(ref)
+            if ref.record_id is None:
+                continue
+            target = resolved.get(ref)
+            if target is None:
+                raise ValueError("POC_EXECUTION_EVIDENCE_MISMATCH")
+            exact(ref, target, result.meta)
+            for value in walk(target):
+                if (
+                    isinstance(value, ContractModel)
+                    and "evidence_refs" in type(value).model_fields
+                ):
+                    field = "evidence_refs"
+                    pending.extend(getattr(value, field))
+        if not seen & outputs:
+            raise ValueError("POC_EXECUTION_EVIDENCE_MISMATCH")

@@ -1,8 +1,8 @@
 """Verification and independent Pro/Con evidence; exact joins remain pure."""
 
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from pydantic import AwareDatetime, model_validator
+from pydantic import AfterValidator, AwareDatetime, model_validator
 
 from ._domain import DomainRecord, exact, exact_set, same_scope, unique
 from .actions import SessionMode
@@ -14,6 +14,19 @@ from .refs import StoredDataRef, require_record_ref
 from .static import AnalysisError, CodeLocation, CodeSymbol, Restriction
 
 type Verdict = Literal["TRUE", "FALSE", "HOLD"]
+
+
+def actual_evidence_ref(ref: StoredDataRef) -> StoredDataRef:
+    if ref.data_kind in {
+        "analysis_error",
+        "data_gap",
+        "verification_initial_assessment",
+    }:
+        raise ValueError("ERROR_IS_NOT_EVIDENCE")
+    return ref
+
+
+EvidenceRef = Annotated[StoredDataRef, AfterValidator(actual_evidence_ref)]
 
 
 class PlaybookQuestionTemplate(ContractModel):
@@ -119,7 +132,7 @@ class VerificationInitialAssessment(DomainRecord):
     ]
     proposed_verdict: Verdict
     rationale: NonEmptyStr
-    evidence_refs: tuple[StoredDataRef, ...]
+    evidence_refs: tuple[EvidenceRef, ...]
     unresolved_conditions: tuple[NonEmptyStr, ...]
     llm_call_id: NonEmptyStr
 
@@ -143,7 +156,7 @@ class EvidenceClaim(ContractModel):
     claim_id: NonEmptyStr
     statement: NonEmptyStr
     source_role: Literal["VERIFICATION", "PRO", "CON"]
-    evidence_refs: tuple[StoredDataRef, ...]
+    evidence_refs: tuple[EvidenceRef, ...]
     code_locations: tuple[CodeLocation, ...]
     limitations: tuple[NonEmptyStr, ...]
 
@@ -198,7 +211,7 @@ class CandidateRef(ContractModel):
     source_hypothesis_ids: tuple[HypothesisId, ...]
     target_entities: tuple[CodeSymbol, ...]
     target_locations: tuple[CodeLocation, ...]
-    evidence_refs: tuple[StoredDataRef, ...]
+    evidence_refs: tuple[EvidenceRef, ...]
     missing_information: tuple[NonEmptyStr, ...]
     candidate_state: Literal["UNVALIDATED"]
 
@@ -207,7 +220,7 @@ class PrimitiveDraft(ContractModel):
     draft_id: NonEmptyStr
     entity_refs: tuple[CodeSymbol, ...]
     privilege_level: NonEmptyStr | None
-    evidence_refs: tuple[StoredDataRef, ...]
+    evidence_refs: tuple[EvidenceRef, ...]
     description: NonEmptyStr
 
     @model_validator(mode="after")
@@ -234,14 +247,14 @@ class VerificationMetrics(ContractModel):
 class FalsificationResult(ContractModel):
     question_id: NonEmptyStr
     outcome: Literal["DISPROVED", "NOT_DISPROVED", "INCONCLUSIVE"]
-    evidence_refs: tuple[StoredDataRef, ...]
+    evidence_refs: tuple[EvidenceRef, ...]
     rationale: NonEmptyStr
 
 
 class ValidationCheckResult(ContractModel):
     validation_id: NonEmptyStr
     completion: Literal["COMPLETE", "INCOMPLETE"]
-    evidence_refs: tuple[StoredDataRef, ...]
+    evidence_refs: tuple[EvidenceRef, ...]
     summary: NonEmptyStr
 
 
@@ -467,6 +480,7 @@ def validate_playbook_application(
     policy: PlaybookPolicy,
     playbook: VerificationPlaybook,
 ) -> None:
+    same_scope(application.meta, hypothesis.meta)
     for ref, target in (
         (application.hypothesis_ref, hypothesis),
         (application.proposal_ref, proposal),
@@ -524,9 +538,12 @@ def validate_verification_closure(
     purpose: Literal["PRODUCTION", "EVALUATION"] = "PRODUCTION",
 ) -> None:
     same_scope(result.meta, hypothesis.meta)
+    same_scope(result.meta, application.meta)
     exact(result.playbook_application_ref, application, result.meta)
     exact(application.hypothesis_ref, hypothesis, result.meta)
     exact(hypothesis.proposal_ref, proposal, result.meta)
+    if application.proposal_ref != hypothesis.proposal_ref:
+        raise ValueError("PROPOSAL_REFERENCE_MISMATCH")
     if (
         application.verification_work_id != current_work_id
         or application.verification_generation != current_generation

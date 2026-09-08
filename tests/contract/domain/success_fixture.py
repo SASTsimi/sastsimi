@@ -130,6 +130,7 @@ def dynamic_success() -> dict[str, Any]:
             agent_log_ref=bound(log),
             candidate_ref=bound(candidate),
             execution_action_id="execute",
+            evidence_refs=[ref("observation", record=False)],
         ),
     )
     cleanup = wire(

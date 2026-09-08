@@ -13,6 +13,7 @@ from .policy import (
     PolicyMissingInfo,
     ProgramPolicyRecord,
     RunPolicyState,
+    validate_policy_freshness,
 )
 from .refs import StoredDataRef
 from .verification import VerificationResult
@@ -198,6 +199,12 @@ def validate_rule_scope_gate(
     if collection.status == "COLLECTION_FAILED":
         raise ValueError("COLLECTION_FAILED_GATE_FORBIDDEN")
     if (
+        state.status not in {"CURRENT", "ABSENT", "UNVERIFIED"}
+        or (state.status == "CURRENT" and collection.status != "FOUND")
+        or (state.status == "ABSENT" and collection.status != "ABSENT_CONFIRMED")
+    ):
+        raise ValueError("POLICY_STATE_STATUS_MISMATCH")
+    if (
         state.collection_result_ref != review.policy_collection_result_ref
         or state.policy_record_ref != review.policy_record_ref
         or collection.policy_record_ref != review.policy_record_ref
@@ -205,6 +212,7 @@ def validate_rule_scope_gate(
     ):
         raise ValueError("GATE_POLICY_CLOSURE_MISMATCH")
     if policy is not None:
+        validate_policy_freshness(state, policy)
         if review.policy_record_ref is None:
             raise ValueError("POLICY_RECORD_REQUIRED")
         exact(review.policy_record_ref, policy, review.meta)

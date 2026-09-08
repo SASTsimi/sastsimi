@@ -1,8 +1,10 @@
 """Evaluation provenance, safe usage and terminal run summaries (§08.9.1/11)."""
 
+from collections import Counter
 from collections.abc import Mapping
+from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, Self, cast
 
 from pydantic import (
     AfterValidator,
@@ -14,19 +16,88 @@ from pydantic import (
 
 from ._domain import DomainRecord, exact, exact_set, unique, walk
 from .base import ContractModel, NonEmptyStr, NonNegativeInt
+from .chaining import Primitive, PrimitiveIndexState
+from .closure import validate_committed_output
 from .dynamic import DynamicReproductionResult
-from .ids import CommitId, ErrorId, ProgramId, WorkspaceId
-from .policy import RunPolicyState
-from .records import RunMeta
+from .gates import CWELabel
+from .ids import CommitId, ErrorId, HypothesisId, ProgramId, WorkspaceId
+from .policy import PolicyCacheRecord, PolicyCollectionResult, RunPolicyState
+from .records import PolicyCacheMeta, RecordMeta, RunMeta
 from .refs import (
     BudgetScopeRef,
     PolicyCacheRef,
+    RecordRef,
     RunStoredDataRef,
     StoredDataRef,
+    require_record_ref,
     validate_ref_scope,
 )
-from .reporting import FindingIndexState
+from .reporting import Finding, FindingIndexState, ReportDraft
 from .static import AnalysisError, CodeWorkspace, DataGap
+from .verification import VerificationResult
+from .work import TransitionCommit, WorkAttempt, WorkExecutionState, WorkType
+
+RUN_INVENTORY_KINDS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        "hypothesis_duplicate_review_refs": frozenset({"hypothesis_duplicate_review"}),
+        "finding_refs": frozenset({"finding"}),
+        "verification_refs": frozenset({"verification_result"}),
+        "cwe_label_refs": frozenset({"cwe_label"}),
+        "technical_review_refs": frozenset({"technical_evidence_review"}),
+        "rule_scope_review_refs": frozenset({"rule_scope_impact_review"}),
+        "policy_cache_refs": frozenset({"policy_cache_record"}),
+        "policy_collection_result_refs": frozenset({"policy_collection_result"}),
+        "policy_parser_result_refs": frozenset({"policy_parser_result"}),
+        "policy_record_refs": frozenset({"program_policy_record"}),
+        "dynamic_request_refs": frozenset({"dynamic_reproduction_request"}),
+        "dynamic_result_refs": frozenset({"dynamic_reproduction_result"}),
+        "environment_recipe_refs": frozenset({"environment_recipe"}),
+        "sandbox_environment_refs": frozenset({"sandbox_environment"}),
+        "agent_log_refs": frozenset({"agent_log"}),
+        "dynamic_reproduction_conclusion_refs": frozenset(
+            {"dynamic_reproduction_conclusion"}
+        ),
+        "sandbox_policy_decision_refs": frozenset({"sandbox_policy_decision"}),
+        "cleanup_result_refs": frozenset({"cleanup_result"}),
+        "primitive_and_chaining_refs": frozenset(
+            {
+                "primitive_admission_decision",
+                "primitive_index_state",
+                "primitive",
+                "chaining_result",
+            }
+        ),
+        "poc_candidate_refs": frozenset({"poc_candidate"}),
+        "poc_refs": frozenset({"poc_bundle"}),
+        "report_draft_refs": frozenset({"report_draft"}),
+        "llm_invocation_log_refs": frozenset({"llm_invocation_log"}),
+        "action_decision_refs": frozenset({"action_decision"}),
+        "work_state_refs": frozenset({"work_execution_state"}),
+        "work_attempt_refs": frozenset({"work_attempt"}),
+        "transition_commit_refs": frozenset({"transition_commit"}),
+    }
+)
+
+
+@dataclass(frozen=True)
+class ResolvedAnalysisInventory:
+    """Trusted finalization snapshot; no latest-pointer lookup or inferred records."""
+
+    records: Mapping[RecordRef, ContractModel]
+    expected_refs: Mapping[str, tuple[RecordRef, ...]]
+    current_verification_refs: Mapping[HypothesisId, StoredDataRef]
+    verification_generations: Mapping[HypothesisId, int]
+
+    def __post_init__(self) -> None:
+        for field in (
+            "records",
+            "expected_refs",
+            "current_verification_refs",
+            "verification_generations",
+        ):
+            object.__setattr__(
+                self, field, MappingProxyType(dict(getattr(self, field)))
+            )
 
 
 def freeze_counts(value: Mapping[str, int]) -> Mapping[str, int]:
@@ -44,13 +115,42 @@ FrozenCounts = Annotated[
 ]
 
 
+def freeze_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: freeze_json(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(freeze_json(item) for item in value)
+    return value
+
+
+def freeze_provider_units(value: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+    return cast(Mapping[str, JsonValue], freeze_json(value))
+
+
+def thaw_json(value: object) -> JsonValue:
+    if isinstance(value, Mapping):
+        return {str(key): thaw_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [thaw_json(item) for item in value]
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    raise ValueError("INVALID_PROVIDER_UNIT")
+
+
+FrozenProviderUnits = Annotated[
+    Mapping[str, JsonValue],
+    AfterValidator(freeze_provider_units),
+    PlainSerializer(thaw_json),
+]
+
+
 class UsageMeasurement(ContractModel):
     token_source: Literal["PROVIDER_REPORTED", "ADAPTER_REPORTED", "UNAVAILABLE"]
     input_tokens: NonNegativeInt | None
     output_tokens: NonNegativeInt | None
     total_tokens: NonNegativeInt | None
     token_unavailable_reason: NonEmptyStr | None
-    provider_units: dict[str, JsonValue]
+    provider_units: FrozenProviderUnits
     cost_source: Literal[
         "PROVIDER_REPORTED",
         "PRICING_REVISION_CALCULATED",
@@ -259,6 +359,10 @@ class AnalysisRunResult(ContractModel):
         for name in type(self).model_fields:
             if name.endswith("_refs"):
                 unique(getattr(self, name))
+        for field, kinds in RUN_INVENTORY_KINDS.items():
+            for reference in getattr(self, field):
+                if reference.data_kind not in kinds or reference.record_id is None:
+                    raise ValueError("INVENTORY_KIND_MISMATCH")
         for item in walk(self):
             if isinstance(item, RunStoredDataRef):
                 validate_ref_scope(item, self.meta)
@@ -327,9 +431,12 @@ def validate_analysis_current(
     *,
     pinned_eval_refs: tuple[BudgetScopeRef, ...],
     expected_failed_hypothesis_count: int,
+    inventory: ResolvedAnalysisInventory,
 ) -> None:
     from .canonical_json import content_hash
     from .refs import validate_exact_ref
+
+    validate_run_inventory(result, inventory)
 
     if result.failed_hypothesis_count != expected_failed_hypothesis_count:
         raise ValueError("FAILED_HYPOTHESIS_COUNT_MISMATCH")
@@ -378,4 +485,166 @@ def validate_analysis_current(
             for dynamic in dynamics
             if dynamic.agent_conclusion_ref is not None
         ),
+    )
+
+
+def validate_run_inventory(
+    result: AnalysisRunResult, inventory: ResolvedAnalysisInventory
+) -> None:
+    from .canonical_json import content_hash
+    from .refs import validate_exact_ref
+
+    fields = {*RUN_INVENTORY_KINDS, "eval_config_refs"}
+    if set(inventory.expected_refs) != fields:
+        raise ValueError("INVENTORY_FIELDS_MISMATCH")
+    caches = [
+        inventory.records.get(reference) for reference in result.policy_cache_refs
+    ]
+    cache_parser_refs = {
+        ref
+        for cache in caches
+        if isinstance(cache, PolicyCacheRecord)
+        for ref in cache.parser_result_refs
+    }
+    for field in fields:
+        exact_set(getattr(result, field), inventory.expected_refs[field])
+        for reference in getattr(result, field):
+            target = inventory.records.get(reference)
+            if target is None:
+                raise ValueError("INVENTORY_RECORD_UNRESOLVED")
+            metadata_field = "meta"
+            metadata = getattr(target, metadata_field, None)
+            if not isinstance(metadata, (RunMeta, RecordMeta, PolicyCacheMeta)):
+                raise ValueError("INVENTORY_RECORD_METADATA_REQUIRED")
+            consumer = result.meta.analysis_id
+            if (
+                field == "policy_parser_result_refs"
+                and reference in cache_parser_refs
+                and isinstance(metadata, RunMeta)
+            ):
+                consumer = metadata.analysis_id
+            require_record_ref(reference)
+            validate_exact_ref(
+                reference, metadata, content_hash(target), analysis_id=consumer
+            )
+    current: dict[HypothesisId, VerificationResult] = {}
+    for hypothesis_id, reference in inventory.current_verification_refs.items():
+        target = inventory.records.get(reference)
+        if (
+            reference not in result.verification_refs
+            or not isinstance(target, VerificationResult)
+            or target.meta.hypothesis_id != hypothesis_id
+        ):
+            raise ValueError("CURRENT_VERIFICATION_MISMATCH")
+        current[hypothesis_id] = target
+    counts: Counter[str] = Counter(record.verdict for record in current.values())
+    if any(
+        result.verdict_counts.get(verdict, 0) != counts.get(verdict, 0)
+        for verdict in ("TRUE", "FALSE", "HOLD")
+    ):
+        raise ValueError("CURRENT_VERDICT_COUNTS_MISMATCH")
+    labels: set[HypothesisId] = set()
+    works = [inventory.records[ref] for ref in result.work_state_refs]
+    attempts = [inventory.records[ref] for ref in result.work_attempt_refs]
+    commits = [inventory.records[ref] for ref in result.transition_commit_refs]
+    for reference in result.cwe_label_refs:
+        label = inventory.records[reference]
+        if not isinstance(label, CWELabel) or label.meta.hypothesis_id is None:
+            raise ValueError("CURRENT_CWE_VERIFICATION_MISMATCH")
+        hypothesis_id = label.meta.hypothesis_id
+        if (
+            hypothesis_id in labels
+            or hypothesis_id not in current
+            or current[hypothesis_id].verdict != "TRUE"
+            or label.verification_result_ref
+            != inventory.current_verification_refs[hypothesis_id]
+            or label.verification_generation
+            != inventory.verification_generations.get(hypothesis_id)
+        ):
+            raise ValueError("CURRENT_CWE_VERIFICATION_MISMATCH")
+        labels.add(hypothesis_id)
+        producing = [
+            work
+            for work in works
+            if isinstance(work, WorkExecutionState)
+            and work.work_type == WorkType.CWE_LABEL
+            and work.output_refs == (reference,)
+        ]
+        if len(producing) != 1:
+            raise ValueError("CURRENT_CWE_WORK_MISSING")
+        work = producing[0]
+        matching_attempts = [
+            attempt
+            for attempt in attempts
+            if isinstance(attempt, WorkAttempt)
+            and attempt.work_id == work.work_id
+            and attempt.attempt_id == label.meta.attempt_id
+        ]
+        matching_commits = [
+            commit
+            for commit in commits
+            if isinstance(commit, TransitionCommit)
+            and commit.work_id == work.work_id
+            and commit.attempt_id == label.meta.attempt_id
+        ]
+        if len(matching_attempts) != 1 or len(matching_commits) != 1:
+            raise ValueError("CURRENT_CWE_WORK_MISSING")
+        validate_committed_output(
+            label,
+            reference,
+            work,
+            matching_attempts[0],
+            matching_commits[0],
+            expected_work_type=WorkType.CWE_LABEL,
+        )
+    for reference in (*result.finding_refs, *result.report_draft_refs):
+        target = inventory.records[reference]
+        if (
+            not isinstance(target, (Finding, ReportDraft))
+            or target.meta.hypothesis_id is None
+            or target.verification_result_ref
+            != inventory.current_verification_refs.get(target.meta.hypothesis_id)
+        ):
+            raise ValueError("CURRENT_REPORT_VERIFICATION_MISMATCH")
+    primitive_refs: list[StoredDataRef] = []
+    listed_primitives: list[StoredDataRef] = []
+    for reference in result.primitive_and_chaining_refs:
+        target = inventory.records[reference]
+        if isinstance(target, PrimitiveIndexState):
+            if (
+                target.meta.hypothesis_id is None
+                or target.current_verification_ref
+                != inventory.current_verification_refs.get(target.meta.hypothesis_id)
+            ):
+                raise ValueError("CURRENT_PRIMITIVE_VERIFICATION_MISMATCH")
+            primitive_refs.extend(target.primitive_refs)
+        elif isinstance(target, Primitive):
+            listed_primitives.append(reference)
+    exact_set(listed_primitives, primitive_refs)
+    collections = [
+        inventory.records[ref] for ref in result.policy_collection_result_refs
+    ]
+    if any(
+        not isinstance(record, PolicyCollectionResult)
+        or record.program_id != result.program_id
+        for record in collections
+    ):
+        raise ValueError("POLICY_PROGRAM_MISMATCH")
+    exact_set(
+        result.policy_record_refs,
+        {
+            record.policy_record_ref
+            for record in collections
+            if isinstance(record, PolicyCollectionResult)
+            and record.policy_record_ref is not None
+        },
+    )
+    exact_set(
+        result.policy_parser_result_refs,
+        {
+            ref
+            for record in collections
+            if isinstance(record, PolicyCollectionResult)
+            for ref in record.parser_result_refs
+        },
     )

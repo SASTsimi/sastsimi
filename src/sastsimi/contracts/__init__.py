@@ -83,6 +83,7 @@ from .evaluation import EvaluationMetric as EvaluationMetric
 from .evaluation import EvaluationRecommendation as EvaluationRecommendation
 from .evaluation import EvaluationRunConfig as EvaluationRunConfig
 from .evaluation import EvaluationRunResult as EvaluationRunResult
+from .evaluation import ResolvedAnalysisInventory as ResolvedAnalysisInventory
 from .evaluation import ResourceUsageSummary as ResourceUsageSummary
 from .evaluation import UsageMeasurement as UsageMeasurement
 from .gates import CWELabel as CWELabel

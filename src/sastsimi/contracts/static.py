@@ -1,6 +1,7 @@
 """Static observations and context contracts (§08); observations are not verdicts."""
 
 import re
+from collections.abc import Mapping
 from typing import Annotated, Literal, Self
 
 from pydantic import AfterValidator, AwareDatetime, model_validator
@@ -11,7 +12,13 @@ from .closure import validate_committed_output
 from .ids import AnalysisId, AttemptId, CommitId, ErrorId, GapId, WorkId, WorkspaceId
 from .records import RunMeta
 from .refs import StoredDataRef, require_record_ref
-from .work import TransitionCommit, WorkAttempt, WorkExecutionState, WorkType
+from .work import (
+    TransitionCommit,
+    WorkAttempt,
+    WorkExecutionState,
+    WorkStatus,
+    WorkType,
+)
 
 
 def git_path(value: str) -> str:
@@ -401,6 +408,8 @@ def validate_static_current(
     rule_records: tuple[RuleExecutionRecord, ...],
     *,
     attempt: WorkAttempt,
+    rule_catalogs: Mapping[StoredDataRef, tuple[str, ...]] | None = None,
+    analysis_config_ref: StoredDataRef | None = None,
 ) -> None:
     validate_committed_output(
         bundle,
@@ -409,6 +418,7 @@ def validate_static_current(
         attempt,
         commit,
         expected_work_type=WorkType.STATIC_NORMALIZE,
+        allowed_statuses=frozenset({WorkStatus.SUCCEEDED, WorkStatus.PARTIAL}),
     )
     if workspace.status != "READY" or (
         workspace.analysis_id,
@@ -418,13 +428,37 @@ def validate_static_current(
         raise ValueError("WORKSPACE_NOT_READY")
     if (
         work.work_type != "STATIC_NORMALIZE"
-        or work.status != "SUCCEEDED"
+        or work.status not in {"SUCCEEDED", "PARTIAL"}
         or commit.state != "COMMITTED"
         or commit.work_id != work.work_id
     ):
         raise ValueError("STATIC_NORMALIZATION_NOT_COMMITTED")
+    if work.status == "PARTIAL" and not (
+        bundle.gaps
+        or bundle.errors
+        or any(run.gaps or run.errors for run in bundle.tool_runs)
+    ):
+        raise ValueError("STATIC_COVERAGE_UNEXPLAINED")
     exact_set(work.output_refs, (bundle_ref,))
     exact_set(commit.output_refs, (bundle_ref,))
+    for run in bundle.tool_runs:
+        if run.rule_execution_ref is None:
+            continue
+        records = [
+            record
+            for record in rule_records
+            if record.meta.record_id == run.rule_execution_ref.record_id
+        ]
+        if len(records) != 1:
+            raise ValueError("RULE_EXECUTION_REQUIRED")
+        record = records[0]
+        if (
+            rule_catalogs is None
+            or record.rule_catalog_ref not in rule_catalogs
+            or record.analysis_config_ref != analysis_config_ref
+        ):
+            raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
+        validate_rule_execution(run, record, rule_catalogs[record.rule_catalog_ref])
     for fact in bundle.facts():
         if fact.producer.rule_id is not None:
             records = [

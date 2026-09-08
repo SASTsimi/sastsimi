@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import TYPE_CHECKING, Literal, Self
 
 from pydantic import AwareDatetime, model_validator
@@ -371,3 +372,40 @@ def validate_chaining_closure(
                     raise ValueError("RESTRICTION_ID_CONFLICT")
                 restrictions[restriction.restriction_id] = restriction
         exact_set(proposal.restrictions, restrictions.values())
+        validate_chained_derivation(
+            proposal,
+            by_ref[canonical_bytes(proposal_match.upstream_result_ref)],
+            by_ref[canonical_bytes(proposal_match.downstream_input_ref)],
+            proposal_match.matched_input_id,
+        )
+
+
+def validate_chained_derivation(
+    proposal: HypothesisProposal,
+    upstream: Primitive,
+    downstream: Primitive,
+    matched_input_id: str,
+) -> None:
+    drafts = (
+        *upstream.inputs,
+        *downstream.inputs,
+        *((upstream.result,) if upstream.result else ()),
+        *((downstream.result,) if downstream.result else ()),
+    )
+    entities = {entity for draft in drafts for entity in draft.entity_refs}
+    locations = {entity.location for entity in entities}
+    if (
+        not entities
+        or not set(proposal.target_entities) <= entities
+        or not set(proposal.target_locations) <= locations
+        or any(item not in locations for item in proposal.suspected_path)
+    ):
+        raise ValueError("CHAINING_DERIVATION_MISMATCH")
+    remaining = (
+        *upstream.inputs,
+        *(draft for draft in downstream.inputs if draft.draft_id != matched_input_id),
+    )
+    if Counter(proposal.assumptions) != Counter(
+        draft.description for draft in remaining
+    ):
+        raise ValueError("CHAINING_ASSUMPTION_MISMATCH")

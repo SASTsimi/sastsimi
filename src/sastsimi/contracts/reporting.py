@@ -131,11 +131,19 @@ def evidence_closure(
         for ref in (verification.pro_evidence_ref, verification.con_evidence_ref)
         if ref is not None
     ]
-    roots.extend(
-        ref
-        for claim in (*verification.supporting_evidence, *verification.counter_evidence)
-        for ref in claim.evidence_refs
-    )
+    for field in (
+        "supporting_evidence",
+        "counter_evidence",
+        "validation_results",
+        "falsification_results",
+        "required_primitive_candidates",
+        "provided_primitive_candidates",
+        "bypass_candidates",
+        "impact_escalation_candidates",
+    ):
+        roots.extend(
+            ref for item in getattr(verification, field) for ref in item.evidence_refs
+        )
     visited: dict[bytes, StoredDataRef] = {}
     pending = list(roots)
     while pending:

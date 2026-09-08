@@ -141,6 +141,35 @@ def test_cache_reuse_preserves_original_policy_and_parser_closure() -> None:
         cache=cache,
         started_at=datetime(2026, 9, 8, tzinfo=UTC),
     )
+    for patch in (
+        dict(freshness_status="UNVERIFIED"),
+        dict(freshness_evidence_refs=[ref("unrelated", record=False)]),
+        dict(freshness_valid_until="2026-09-10T00:00:00Z"),
+    ):
+        changed_policy = wire(
+            ProgramPolicyRecord, new_policy.model_dump(mode="json") | patch
+        )
+        changed_collection = wire(
+            PolicyCollectionResult,
+            new_collection.model_dump(mode="json")
+            | dict(policy_record_ref=bound(changed_policy)),
+        )
+        changed_state = wire(
+            RunPolicyState,
+            state.model_dump(mode="json")
+            | dict(
+                policy_record_ref=bound(changed_policy),
+                collection_result_ref=bound(changed_collection),
+            ),
+        )
+        with pytest.raises(ValueError, match="POLICY_STATE_FRESHNESS_MISMATCH"):
+            validate_run_policy(
+                changed_state,
+                changed_collection,
+                changed_policy,
+                cache=cache,
+                started_at=datetime(2026, 9, 8, tzinfo=UTC),
+            )
     with pytest.raises(ValueError, match="POLICY_SOURCE_STALE"):
         validate_policy_cache_reuse(
             cache,

@@ -388,12 +388,33 @@ def validate_run_policy(
         raise ValueError("POLICY_RECORD_REQUIRED")
     if policy is not None and state.policy_record_ref is not None:
         exact(state.policy_record_ref, policy, state.meta)
-        if policy.freshness_status == "STALE":
-            raise ValueError("STALE_RESULT")
+        validate_policy_freshness(state, policy)
     if state.status in {"CURRENT", "ABSENT"} and (
         state.freshness_valid_until is None or state.freshness_valid_until <= started_at
     ):
         raise ValueError("POLICY_SOURCE_STALE")
+
+
+def validate_policy_freshness(
+    state: RunPolicyState, policy: ProgramPolicyRecord
+) -> None:
+    expected = {"CURRENT": "CURRENT", "UNVERIFIED": "UNVERIFIED"}.get(state.status)
+    if expected is None or policy.freshness_status != expected:
+        raise ValueError("POLICY_STATE_FRESHNESS_MISMATCH")
+    if (
+        state.program_id != policy.program_id
+        or state.parser_version != policy.parser_version
+        or state.preparation_source != policy.preparation_source
+    ):
+        raise ValueError("POLICY_STATE_FRESHNESS_MISMATCH")
+    for field in (
+        "freshness_criterion_ref",
+        "freshness_checked_at",
+        "freshness_valid_until",
+        "freshness_evidence_refs",
+    ):
+        if getattr(state, field) != getattr(policy, field):
+            raise ValueError("POLICY_STATE_FRESHNESS_MISMATCH")
 
 
 def validate_policy_cache_reuse(
