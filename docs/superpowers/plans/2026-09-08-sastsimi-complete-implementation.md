@@ -462,15 +462,17 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 **Files:**
 - Create: `docs/superpowers/plans/implementation/13-primitive-chaining.md`
 - Create: `src/sastsimi/agents/chaining.py`, `src/sastsimi/chaining/service.py`
-- Create: `src/sastsimi/chaining/primitive_admission.py`
+- Create: `src/sastsimi/reporting/primitive_admission.py`
 - Create: `tests/integration/chaining/`, `tests/security_negative/test_chaining_provenance.py`
 
 **Interfaces:**
-- Consumes: final TRUE + Technical ACCEPT + current Rule Scope·frozen policy, 또는 `required_primitive_candidates`가 있는 final HOLD
+- Consumes: TRUE는 final result + Technical ACCEPT + RunPolicyState + exact PolicyCollectionResult + 조건부 RuleScopeImpactReview, HOLD는 `required_primitive_candidates`
 - Produces: TRUE의 PrimitiveAdmissionDecision, 허용 TRUE/HOLD Primitive, atomic current PrimitiveIndexState revision, directional matches, no-match reasons, duplicate key와 `origin=CHAINING` 새 proposal
 
 - [ ] FALSE, candidate 없는 HOLD와 restriction DENY TRUE가 index에 들어가지 않는 시험을 작성한다.
-- [ ] trusted PrimitiveAdmissionRuntime은 TRUE의 exact result chain·Technical ACCEPT·Rule Scope·frozen policy를 받아 testing restriction FAIL만 DENY로 매핑한다.
+- [ ] reporting package의 trusted PrimitiveAdmissionRuntime은 TRUE의 exact result chain·Technical ACCEPT·frozen RunPolicyState·PolicyCollectionResult를 검사한다.
+- [ ] `FOUND | ABSENT_CONFIRMED` collection에는 current RuleScopeImpactReview가 필수이고 testing restriction FAIL만 DENY로 매핑한다.
+- [ ] `COLLECTION_FAILED`에는 Rule Scope 없이 `NOT_EVALUATED + ALLOW`를 기록하며, PolicyCollectionResult 자체가 없으면 decision·Primitive·index를 만들지 않는다.
 - [ ] TRUE는 PrimitiveAdmissionDecision과, ALLOW일 때의 Primitive·새 PrimitiveIndexState를 하나의 `PRIMITIVE_UPDATE` COMMITTED transition으로 확정한다.
 - [ ] HOLD는 admission decision 없이 required candidate를 검사한 Primitive와 새 PrimitiveIndexState를 하나의 transition으로 확정한다.
 - [ ] Chaining Agent와 ChainingService는 확정된 Primitive와 work 시작 때 고정한 PrimitiveIndexState만 소비하며 admission·Primitive를 생산하지 않는다.
