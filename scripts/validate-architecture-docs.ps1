@@ -279,7 +279,9 @@ if (-not (Test-Path -LiteralPath $finalApprovalPath)) {
         '열린 Architecture Blocker/High: **0**',
         '설계 상태: **DESIGN_APPROVED**',
         '구현 상태: **NOT_IMPLEMENTED**',
-        '정확한 PR head'
+        '정확한 PR head',
+        'current generation의 exact `DynamicReproductionRequest`와 같은 `DYNAMIC_REPRO` 실행 attempt의 recipe·환경·AgentLog·candidate·command digest를 요구',
+        '| F-19 | 금지 테스트 위반은 result Primitive를 막고, 다른 scope·impact 실패는 보고 가능성만 막음 | PASS | `05`, `06`, `08`, ADR-011, ADR-014 |'
     )) {
         if (-not $finalApprovalText.Contains($marker)) {
             Add-Failure "final approval record is missing: $marker"

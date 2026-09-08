@@ -73,7 +73,7 @@ Final PR에 새 commit이 생기면 PR 본문의 head SHA를 갱신합니다. �
 | F-08 | 운영 Pro·Con이 같은 입력 hash와 서로 다른 NEW session으로 병렬 실행되고 한쪽 누락 시 verdict가 없음 | PASS | `04`, `08`, `09` |
 | F-09 | R6는 목적·목표·환경 조건을 요청하고 R7이 requirements·plan·PoC·동적 근거를 생산 | PASS | `04`, `08`, ADR-007 |
 | F-10 | 한 Verification generation에 동적 work 하나만 만들고 retry는 같은 work의 새 attempt로 추적 | PASS | `04`, `07`, `08` |
-| F-11 | PoC candidate와 validated PoC를 구분하고 같은 attempt의 request·recipe·환경·AgentLog·digest를 요구 | PASS | `04`, `07`, `08`, `10` |
+| F-11 | PoC candidate와 validated PoC를 구분하고, current generation의 exact `DynamicReproductionRequest`와 같은 `DYNAMIC_REPRO` 실행 attempt의 recipe·환경·AgentLog·candidate·command digest를 요구 | PASS | `04`, `07`, `08`, `10` |
 | F-12 | 모든 final TRUE에 `SUCCEEDED + SUPPORTED` 동적 결과와 validated PoC가 필요 | PASS | `04`, `05`, `08` |
 | F-13 | 실제 반증은 `FALSE`, 정상 실행했지만 불충분하면 `HOLD`, 환경·정책 경계·Provider 실패면 verdict 없이 `BLOCKED | FAILED` | PASS | `04`, `07`, `08`, `10` |
 | F-14 | 늦은 이전 attempt 결과, 바뀐 request·profile과 stale PoC를 current 결과로 저장하지 않음 | PASS | `07`, `08`, 구현 `02`·`03` |
@@ -86,7 +86,7 @@ Final PR에 새 commit이 생기면 PR 본문의 head SHA를 갱신합니다. �
 | F-16 | Technical Evidence Gate Agent는 final TRUE·current CWE pair만 검토하고 verdict·label을 직접 바꾸지 않음 | PASS | `05`, `08`, `10` |
 | F-17 | Technical `REVISE`가 같은 Verification owner로 돌아가 새 generation·근거·CWE revision을 만들게 함 | PASS | `03`, `04`, `05`, `08` |
 | F-18 | 공식 정책 부재는 `UNCERTAIN + DENY`, 수집 실패는 Gate 미호출, 오래되거나 확인 못한 cache는 허용 근거가 아님 | PASS | `05`, `08`, `10`, ADR-013 |
-| F-19 | 금지 테스트 위반은 result Primitive를 막고, 다른 scope·impact 실패는 보고 가능성만 막음 | PASS | `05`, `06`, `08`, ADR-014 |
+| F-19 | 금지 테스트 위반은 result Primitive를 막고, 다른 scope·impact 실패는 보고 가능성만 막음 | PASS | `05`, `06`, `08`, ADR-011, ADR-014 |
 | F-20 | Finding normalization은 Rule Scope review 결과 뒤 항상 수행하고 Reporter는 current TRUE Finding만 처리 | PASS | `05`, `08`, `12`, `13` |
 | F-21 | 선행 Verification·CWE·Gate·정책 revision이 바뀌면 기존 ReportDraft를 current 결과에 재사용하지 않음 | PASS | `05`, `08`, `10`, `12` |
 
