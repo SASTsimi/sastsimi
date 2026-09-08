@@ -52,53 +52,125 @@ RULES: dict[str, frozenset[str]] = {
     ),
 }
 
-# Reflection cannot prove a static dependency target. Reject access to import
-# machinery before aliasing, and require callable syntax with a named target.
-# This is a source architecture rule, not a sandbox for hostile Python code.
+# Reject actual import/code-execution members, including references captured as
+# aliases. Ordinary reflection and registry dispatch are not dependency edges.
+# This is an architecture rule, not a sandbox or general Python syntax policy.
 DYNAMIC_MODULES = frozenset({"importlib", "builtins"})
-DYNAMIC_NAMES = frozenset(
-    {
-        "__import__",
-        "__builtins__",
-        "eval",
-        "exec",
-        "compile",
-        "getattr",
-        "globals",
-        "locals",
-        "vars",
-    }
-)
-DYNAMIC_ATTRIBUTES = (DYNAMIC_NAMES - {"compile"}) | {
-    "import_module",
-    "load_module",
-    "exec_module",
-    "__dict__",
-    "__getattribute__",
-    "__getattr__",
-    "__globals__",
-}
+DYNAMIC_NAMES = frozenset({"__import__", "eval", "exec"})
+DYNAMIC_ATTRIBUTES = DYNAMIC_NAMES | {"import_module", "load_module", "exec_module"}
+
+
+def reject_dynamic_access(tree: ast.AST) -> None:
+    namespaces = {"__builtins__"}
+    getters = {"getattr"}
+    mappings = {"vars"}
+    nodes = list(ast.walk(tree))
+    for node in nodes:
+        if isinstance(node, ast.Import):
+            namespaces.update(
+                alias.asname or alias.name.split(".")[0]
+                for alias in node.names
+                if alias.name.split(".")[0] in DYNAMIC_MODULES
+            )
+        elif isinstance(node, ast.ImportFrom) and node.module == "builtins":
+            for alias in node.names:
+                if alias.name == "getattr":
+                    getters.add(alias.asname or alias.name)
+                elif alias.name == "vars":
+                    mappings.add(alias.asname or alias.name)
+
+    def known_namespace(expression: ast.AST) -> bool:
+        if isinstance(expression, ast.Name):
+            return expression.id in namespaces
+        if isinstance(expression, ast.Attribute):
+            return expression.attr == "__dict__" and known_namespace(expression.value)
+        if isinstance(expression, ast.Call):
+            return (
+                accessor(expression.func, mappings, "vars")
+                and bool(expression.args)
+                and known_namespace(expression.args[0])
+            ) or (
+                accessor(expression.func, getters, "getattr")
+                and len(expression.args) >= 2
+                and isinstance(expression.args[1], ast.Constant)
+                and expression.args[1].value == "__dict__"
+                and known_namespace(expression.args[0])
+            )
+        if isinstance(expression, ast.Subscript):
+            return (
+                isinstance(expression.slice, ast.Constant)
+                and expression.slice.value == "__builtins__"
+                and isinstance(expression.value, ast.Call)
+                and isinstance(expression.value.func, ast.Name)
+                and expression.value.func.id in {"globals", "locals"}
+            )
+        return False
+
+    def accessor(expression: ast.AST, aliases: set[str], name: str) -> bool:
+        return (isinstance(expression, ast.Name) and expression.id in aliases) or (
+            isinstance(expression, ast.Attribute)
+            and expression.attr == name
+            and known_namespace(expression.value)
+        )
+
+    # Follow simple binding captures; the access is checked even without a call.
+    changed = True
+    while changed:
+        changed = False
+        for node in nodes:
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                for aliases, name in (
+                    (namespaces, ""),
+                    (getters, "getattr"),
+                    (mappings, "vars"),
+                ):
+                    captured = (
+                        known_namespace(node.value)
+                        if aliases is namespaces
+                        else accessor(node.value, aliases, name)
+                    )
+                    if captured and target.id not in aliases:
+                        aliases.add(target.id)
+                        changed = True
+
+    for node in nodes:
+        if isinstance(node, ast.Name) and node.id in DYNAMIC_NAMES:
+            raise ValueError("Dynamic imports require explicit architecture review")
+        if isinstance(node, ast.Attribute) and node.attr in DYNAMIC_ATTRIBUTES:
+            raise ValueError("Dynamic import attribute access is not allowed")
+        if isinstance(node, ast.Subscript) and known_namespace(node.value):
+            member = node.slice.value if isinstance(node.slice, ast.Constant) else None
+            if not isinstance(member, str) or member in DYNAMIC_ATTRIBUTES:
+                raise ValueError("Import namespace lookup cannot prove a safe member")
+        if not isinstance(node, ast.Call) or len(node.args) < 2:
+            continue
+        if accessor(node.func, getters, "getattr"):
+            member = (
+                node.args[1].value if isinstance(node.args[1], ast.Constant) else None
+            )
+            if (isinstance(member, str) and member in DYNAMIC_ATTRIBUTES) or (
+                not isinstance(member, str) and known_namespace(node.args[0])
+            ):
+                raise ValueError("Dynamic import member lookup is not allowed")
 
 
 def imports(source: str, module: str) -> list[str]:
     targets: list[str] = []
     package = module.rsplit(".", 1)[0]
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Name) and node.id in DYNAMIC_NAMES:
-            raise ValueError("Dynamic imports require explicit architecture review")
-        if isinstance(node, ast.Attribute) and node.attr in DYNAMIC_ATTRIBUTES:
-            raise ValueError("Dynamic import attribute access is not allowed")
-        if isinstance(node, ast.Call) and not isinstance(
-            node.func, (ast.Name, ast.Attribute)
-        ):
-            raise ValueError("Computed callable targets require architecture review")
+    tree = ast.parse(source)
+    reject_dynamic_access(tree)
+    for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            if any(alias.name.split(".")[0] in DYNAMIC_MODULES for alias in node.names):
-                raise ValueError("Dynamic import machinery is not allowed")
             targets.extend(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             base = node.module or ""
-            if base.split(".")[0] in DYNAMIC_MODULES:
+            if base.split(".")[0] in DYNAMIC_MODULES and any(
+                alias.name in DYNAMIC_ATTRIBUTES for alias in node.names
+            ):
                 raise ValueError("Dynamic import machinery is not allowed")
             if node.level:
                 base = importlib.util.resolve_name("." * node.level + base, package)
@@ -247,13 +319,31 @@ def test_import_cycles_fail_even_within_allowed_package() -> None:
         "from builtins import __import__ as load; load('sastsimi.storage')",
         "import builtins as core; core.__import__('sastsimi.storage')",
         "import builtins as core; load = core.__import__; load('sastsimi.storage')",
-        "from builtins import getattr as lookup; lookup(obj, name)('sastsimi.storage')",
-        "getattr(obj, name)('sastsimi.storage')",
+        (
+            "from builtins import getattr as lookup; "
+            "lookup(obj, '__import__')('sastsimi.storage')"
+        ),
+        "getattr(obj, '__import__')('sastsimi.storage')",
         "obj.__import__('sastsimi.storage')",
         "obj.import_module(module_name)",
         "globals()['__builtins__']['__import__']('sastsimi.storage')",
         "eval(expression)",
         "exec(expression)",
+        "from importlib import import_module as load; load('sastsimi.storage')",
+        "import importlib as machinery; loader = machinery.import_module",
+        "import builtins as core; getattr(core, name)('sastsimi.storage')",
+        "import builtins as core; vars(core)['__import__']('sastsimi.storage')",
+        "import builtins as core; core.__dict__['__import__']('sastsimi.storage')",
+        "lookup = getattr; lookup(obj, '__import__')('sastsimi.storage')",
+        (
+            "import builtins as core; lookup = core.getattr; "
+            "lookup(core, '__import__')('sastsimi.storage')"
+        ),
+        (
+            "import builtins as core; "
+            "getattr(core, '__dict__')['__import__']('sastsimi.storage')"
+        ),
+        "import builtins as core; other = core; getattr(other, name)",
     ],
 )
 def test_dynamic_imports_cannot_bypass_boundary(source: str) -> None:
@@ -264,3 +354,26 @@ def test_cross_package_private_import_is_rejected() -> None:
     assert violations(
         "from sastsimi.runtime import _private", "sastsimi.verification.service"
     )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import logging; getattr(logging, 'INFO')",
+        "vars(config)",
+        "factories['local']('relative')",
+        "factories.get('local')('relative')",
+        "getattr(config, field_name)",
+        "getattr(adapter, method_name)('relative')",
+        "from builtins import getattr as lookup; lookup(config, field_name)",
+        "from builtins import len as size; size(items)",
+        "import builtins as core; core.len(items)",
+        "import builtins as core; getattr(core, 'len')(items)",
+        "import importlib.metadata as metadata; metadata.version('sastsimi')",
+        "config.__dict__['path']",
+        "lookup = getattr; lookup(config, field_name)",
+        "import builtins as core; lookup = core.getattr; lookup(config, field_name)",
+    ],
+)
+def test_benign_reflection_and_factory_dispatch_are_allowed(source: str) -> None:
+    assert violations(source, "sastsimi.providers.fake") == []

@@ -44,7 +44,7 @@ Missing future suites and real capability probes are not reported as passed.
 Initial RED: 68 failed, 1 passed with the package absent and forbidden import
 fixtures exposing the permissive checker. Additional AST RED: 4 failed, 72 passed
 for cycle, dynamic-import and private-import bypasses. Final local GREEN:
-94 passed, Ruff clean, mypy strict clean across 19 Python files, Architecture
+117 passed, Ruff clean, mypy strict clean across 19 Python files, Architecture
 validator 0 failures and inventory/link audit 0 missing links.
 
 Local verification uses Windows and CPython 3.12.10 with uv 0.12.5. Dependency
@@ -66,3 +66,11 @@ a fixed failure event and never prints raw records or traceback details.
 SafeEvent repr hides fields and identifiers. Import enforcement rejects builtin
 import machinery/aliases, reflective import/exec access and computed call targets.
 Targeted GREEN: 47 passed; full GREEN: 94 passed.
+
+Independent review fix round 2 narrowed the import guard after 11 positive
+fixtures failed: ordinary getattr/vars, named factory dispatch and benign
+builtin/metadata use do not create dependency edges and are now allowed.
+Checks target actual import/exec members and captures, including reflective
+lookup on known import namespaces. An additional two failing alias/dictionary
+fixtures were fixed before verification. Targeted GREEN: 51 passed; full GREEN:
+117 passed. The round-1 blanket reflection/computed-call restrictions are removed.
