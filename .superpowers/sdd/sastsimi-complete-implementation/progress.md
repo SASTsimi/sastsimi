@@ -37,7 +37,7 @@
 | T07 Fake vertical slice | `PENDING` | dedicated implementation Agent | R1~R8 contract reviewers | independent E2E reviewer | created after T06 | — | — |
 | T08 Static fact layer | `PENDING` | dedicated implementation Agent | R2/R3/R4/R8 | independent process/security reviewer | created after T07 | — | — |
 | T09 Provider and Prompt Runtime | `PENDING` | dedicated implementation Agent | R1/R3/R4/R8 | independent credential/security reviewer | created after T07 | — | — |
-| T10 LLM verification roles | `PENDING` | dedicated implementation Agent | R3/R4/R6/R8 | independent role-isolation reviewer | created after T09 | — | — |
+| T10 LLM verification roles | `PENDING` | dedicated implementation Agent | R3/R4/R6/R8 | independent role-isolation reviewer | created after both T08 and T09 | — | — |
 | T11 Dynamic reproduction | `PENDING` | dedicated implementation Agent | R3/R4/R6/R7/R8 | independent Sandbox reviewer | created after T10 | — | — |
 | T12 Gates and reporting | `PENDING` | dedicated implementation Agent | R3/R4/R5/R6/R8 | independent policy/report reviewer | created after T11 | — | — |
 | T13 Primitive and Chaining | `PENDING` | dedicated implementation Agent | R1/R4/R5/R6/R8 | independent lineage reviewer | created after T12 | — | — |
@@ -51,7 +51,12 @@
 - Branch: `docs/sastsimi-complete-implementation-plan`
 - Base: `5657fc7b51af33271a940af37ca48bbfcdc14553`
 - Plan file: `docs/superpowers/plans/2026-09-08-sastsimi-complete-implementation.md`
-- Status: plan 작성과 self-review 진행 중
+- PR: [#120](https://github.com/SASTsimi/sastsimi/pull/120)
+- Initial review head: `871f549b876c0aaec372e43454ae3f753df61c30`
+- Reviewers: `/root/master_plan_review`, `/root/master_plan_execution_audit`
+- Initial findings: Critical `0`, Important `8` distinct issues
+- Remediation: missing ports and producers, T08+T09 join, full fake 22-step coverage, candidate Provider activation order, dynamic schema inventory, plan status, real CLI, Sandbox limits, early document CI and cross-platform command fixed
+- Status: fixes applied; same-head re-review pending
 
 ## Blocked or deferred evidence
 
@@ -74,4 +79,3 @@
 2. Create the implementation parent Epic and T01 child Issue.
 3. Write `implementation/01-repository-cleanup.md`.
 4. Execute T01 with separate implementation and review Agents.
-

@@ -2,6 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+- 상태: `DRAFT_FOR_REVIEW`
+- 기준 `main`: `5657fc7b51af33271a940af37ca48bbfcdc14553`
+- 검토 PR: [#120](https://github.com/SASTsimi/sastsimi/pull/120)
+- 승인 조건: 최종 변경 SHA에 대한 독립 검토에서 `Critical 0 / Important 0`을 확인한 뒤 `APPROVED_FOR_IMPLEMENTATION`으로 전환
+
 **Goal:** 승인된 Architecture v5를 설치·실행·복구·검증할 수 있는 유지보수 가능한 SASTSIMI Python 프로그램으로 완성한다.
 
 **Architecture:** CPython 3.12 단일 프로세스 모듈형 애플리케이션을 사용한다. 공통 계약과 port를 안쪽에 두고 LLM Provider, 정적 도구, SQLite, 파일 artifact와 Docker는 adapter로 분리하며, 가설 내부 업무 흐름은 `verification/`, `reproduction/`, `chaining/`에 둔다.
@@ -119,6 +124,12 @@ class ArtifactStore(Protocol):
     def commit(self, staged: StagedArtifact) -> StoredDataRef: ...
     def open_verified(self, ref: StoredDataRef) -> BinaryIO: ...
 
+class UnitOfWork(Protocol):
+    records: RecordStore
+    artifacts: ArtifactStore
+    def commit(self, request: TransitionCommitRequest) -> TransitionCommit: ...
+    def rollback(self) -> None: ...
+
 class WorkHandler(Protocol):
     async def execute(self, context: WorkContext) -> WorkHandlerResult: ...
 
@@ -126,6 +137,9 @@ class LLMProviderAdapter(Protocol):
     async def probe(self, profile: ProviderProfile) -> CapabilityProbeResult: ...
     async def invoke(self, request: LLMInvocationRequest) -> LLMInvocationResult: ...
     async def cancel(self, invocation_id: str) -> CancellationResult: ...
+
+class PolicySourcePort(Protocol):
+    async def fetch(self, request: PolicyFetchRequest) -> PolicyFetchResult: ...
 
 class StaticToolAdapter(Protocol):
     async def probe(self, profile_ref: StoredDataRef) -> ToolCapabilityResult: ...
@@ -136,9 +150,16 @@ class SandboxPort(Protocol):
     async def prepare(self, request: SandboxPrepareRequest) -> SandboxEnvironment: ...
     async def execute(self, request: ApprovedSandboxCommand) -> SandboxCommandRecord: ...
     async def cleanup(self, request: SandboxCleanupRequest) -> CleanupResult: ...
+
+class BudgetLedgerPort(Protocol):
+    def reserve(self, request: BudgetReservationRequest) -> BudgetReservation: ...
+    def commit_usage(self, request: BudgetUsageCommitRequest) -> BudgetLedgerEntry: ...
+    def release(self, reservation_ref: StoredDataRef) -> BudgetLedgerEntry: ...
 ```
 
 `runtime/worker_pool.py`는 `WorkHandler`만 호출한다. handler instance의 `WorkType` 연결은 `bootstrap.py`에서 수행한다. `VerdictRouter`는 reporting·chaining concrete module을 import하지 않고 runtime public service에 typed work 등록 요청만 제출한다.
+
+`PolicyPreparationService`와 `BudgetProfileRegistry`는 외부 adapter가 아니라 application service다. 전자는 Task 12의 `policy/`가, 후자는 Task 6의 `runtime/`이 생산한다. 뒤 Task는 위 port와 service를 새로 정의하지 않고 주입받아 사용한다.
 
 ## 4. Task와 PR 의존 순서
 
@@ -150,9 +171,8 @@ T01 repository cleanup
               -> T05 domain contracts
                   -> T06 storage, state, budget, recovery
                       -> T07 fake 22-step vertical slice
-                          -> T08 real static fact layer
-                          -> T09 provider and prompt runtime
-                              -> T10 LLM verification roles
+                          +-> T08 real static fact layer ----+
+                          +-> T09 provider and prompt runtime +-> T10 LLM verification roles
                                   -> T11 dynamic reproduction
                                       -> T12 CWE, gates, finding, reporter
                                           -> T13 primitive and chaining
@@ -169,6 +189,7 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 **Files:**
 - Create: `docs/superpowers/plans/implementation/01-repository-cleanup.md`
 - Create: `scripts/audit-doc-inventory.ps1`
+- Create: `.github/workflows/docs.yml`
 - Modify: `docs/DOCUMENT_GUIDE.md`
 - Modify: `docs/README.md`
 - Modify: `docs/superpowers/README.md`
@@ -184,6 +205,7 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 - [ ] allowlist 파일만 제거하고 모든 index를 수정한다.
 - [ ] `powershell -File scripts/validate-architecture-docs.ps1`와 새 inventory 검사를 실행한다.
 - [ ] clean clone 또는 clean linked worktree에서 로컬 Markdown link 0 missing을 확인한다.
+- [ ] Windows와 Ubuntu에서 Architecture validator·inventory·link·`git diff --check`만 실행하는 최소 문서 CI를 추가한다.
 - [ ] 독립 문서·provenance 검토 뒤 PR을 병합한다.
 
 ### Task 2: Canonical boundary correction
@@ -240,6 +262,7 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 - Create: `src/sastsimi/contracts/ids.py`, `refs.py`, `records.py`, `work.py`, `actions.py`, `budget.py`, `canonical_json.py`, `schema_export.py`
 - Create: `src/sastsimi/ports/clock.py`, `id_generator.py`, `work_handler.py`, `record_store.py`, `artifact_store.py`, `budget_ledger.py`
 - Create: `tests/unit/contracts/`, `tests/contract/test_record_ref_kinds.py`, `tests/contract/test_canonical_json.py`
+- Create: `src/sastsimi/ports/unit_of_work.py`, `llm_provider.py`, `static_tool.py`, `policy_source.py`, `sandbox.py`
 - Create: `schemas/generated/` outputs
 
 **Interfaces:**
@@ -251,6 +274,7 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 - [ ] `extra='forbid'`, timezone-aware datetime, strict enum과 explicit null을 공통 base에 구현한다.
 - [ ] canonical serializer와 content hash 자기 포함 거절을 구현한다.
 - [ ] run-level ExecutionBudgetProfile과 work-level profile·binding·reservation·ledger 계약을 구현한다.
+- [ ] UnitOfWork·LLM Provider·정적 도구·정책 출처·Sandbox·Budget Ledger port와 fake contract 시험을 구현한다.
 - [ ] generated JSON Schema가 source model과 동일한지 재생성 diff 시험을 추가한다.
 - [ ] R4·R8 계약 검토 뒤 PR을 병합한다.
 
@@ -272,7 +296,7 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 - [ ] Hypothesis·Pro/Con·Verification·dynamic·PoC provenance validator를 구현한다.
 - [ ] CWE·두 Gate·Finding·ReportDraft와 Primitive·Chaining exact closure validator를 구현한다.
 - [ ] Policy·Evaluation·usage·error record를 구현한다.
-- [ ] 전체 schema export와 138개 정본 선언 대응표를 검사한다.
+- [ ] result-owner registry와 schema inventory를 스크립트로 생성하고 현재 항목의 100%가 source model·export schema·owner와 연결되는지 검사한다.
 - [ ] R1·R2·R4·R5·R6·R7·R8 영역 검토 뒤 PR을 병합한다.
 
 ### Task 6: Storage, state, budget and recovery
@@ -303,16 +327,19 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 - Create: `docs/superpowers/plans/implementation/07-fake-vertical-slice.md`
 - Create: `src/sastsimi/orchestration/`, `verification/`, `reproduction/`, `chaining/`, `reporting/`, `policy/`, `evaluation/`
 - Create: `src/sastsimi/providers/fake.py`, `static_analysis/fake.py`, `sandbox/fake.py`
-- Create: `tests/e2e/test_fake_true_pipeline.py`, `test_fake_false_pipeline.py`, `test_fake_hold_pipeline.py`, `test_fake_revise_pipeline.py`
+- Create: `src/sastsimi/interfaces/cli/analyze.py`, `results.py`, `reports.py`
+- Create: `tests/e2e/test_fake_true_pipeline.py`, `test_fake_false_pipeline.py`, `test_fake_hold_pipeline.py`, `test_fake_revise_pipeline.py`, `test_fake_chaining_pipeline.py`
 
 **Interfaces:**
 - Consumes: Tasks 4~6의 모든 contract·runtime·storage
-- Produces: deterministic fake로 실제 저장·Action·예산을 통과하는 한 가설 22단계
+- Produces: deterministic fake handler로 실제 저장·Action·예산을 통과하는 정본 22단계와 실행 가능한 analyze/results/report CLI
 
 - [ ] final TRUE에 current validated PoC가 없으면 실패하는 E2E부터 작성한다.
 - [ ] FALSE falsification evidence와 HOLD unresolved condition 부정 시험을 작성한다.
 - [ ] ACTIVE 예산 binding과 reservation을 사용하는 deterministic fake adapter를 구현한다.
-- [ ] Hypothesis → Pro/Con → Verification → dynamic → CWE → 두 Gate → Finding → ReportDraft를 연결한다.
+- [ ] run-init 정책 준비와 정적 분석 병렬 fan-out부터 Hypothesis → Pro/Con → Verification → dynamic → CWE → 두 Gate → Primitive admission → Primitive/index → Chaining/no-match → Finding → ReportDraft까지 22단계를 연결한다.
+- [ ] no-match 종료와 material child proposal 재등록 중 적어도 한 경로가 동일 runtime/port를 통과하는지 검사한다.
+- [ ] CLI에서 분석 시작, 진행·결과 조회와 ReportDraft 조회를 fake pipeline에 연결한다.
 - [ ] Technical REVISE가 같은 owner의 새 generation과 새 dynamic·PoC·CWE를 요구하는지 시험한다.
 - [ ] ReportDraft 뒤 외부 제출 action이 존재하지 않는지 검사한다.
 - [ ] 저장된 AnalysisRunResult의 결과·오류·시간·usage·가설 수 closure를 검사한다.
@@ -341,20 +368,23 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 
 **Files:**
 - Create: `docs/superpowers/plans/implementation/09-provider-prompt-runtime.md`
-- Create: `src/sastsimi/providers/base.py`, `normalization.py`, `openai_api.py`
-- Create: `src/sastsimi/prompts/registry.py`, `loader.py`, `builder.py`, `redaction.py`, `validation.py`
+- Create: `src/sastsimi/providers/base.py`, `normalization.py`, `openai_api.py`, `registry.py`
+- Create: `src/sastsimi/prompts/registry.py`, `loader.py`, `builder.py`, `redaction.py`, `validation.py`, `activation.py`
+- Create: `src/sastsimi/runtime/llm_call_service.py`
 - Create: `config/prompts/registry.yaml`, `src/sastsimi/prompts/templates/`
 - Create: `tests/contract/prompts/`, `tests/integration/providers/`, `tests/security_negative/test_prompt_injection.py`
 
 **Interfaces:**
 - Consumes: `LLMProviderAdapter`, ProviderProfile·PromptRegistryEntry·PromptPayload·LLMCallSpec contracts
-- Produces: fake와 한 API adapter의 probe/invoke/cancel, immutable prompt payload와 structured output 검사
+- Produces: 기본 비활성 Provider registry, fake와 한 API adapter의 probe/invoke/cancel, trusted Prompt registry 전이, immutable prompt payload와 structured output 검사
 
 - [ ] 미검증 profile이 호출되지 않는 capability 시험을 작성한다.
 - [ ] registry/template/schema/validator hash와 purpose mismatch 실패 시험을 작성한다.
 - [ ] untrusted data가 instruction으로 승격되지 않는 projection 시험을 작성한다.
 - [ ] schema·semantic repair가 새 call/action/session을 만드는지 시험한다.
 - [ ] API credential 원문이 record·artifact·log에 남지 않는지 검사한다.
+- [ ] retry·fallback은 고정된 정책에 있을 때만 새 action/attempt로 실행하고, 조용한 Provider·model 변경을 금지한다.
+- [ ] Prompt template은 평가 근거와 사람 승인 없이는 `PRODUCTION`으로 활성화되지 않는 전이 시험을 작성한다.
 - [ ] Issue #118 prompt 결과를 canonical template 한곳에 연결하고 중복 문서를 만들지 않는다.
 - [ ] R1·R3·R4·R8 검토 뒤 PR을 병합한다.
 
@@ -370,6 +400,7 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 - Consumes: Prompt Runtime, Context service, runtime work/action services
 - Produces: 등록 가능한 Hypothesis proposal, 독립 Pro/Con, Verification initial/final result와 REVISE request
 
+- [ ] T08 Context service와 T09 Prompt Runtime이 모두 병합되지 않으면 이 Task를 시작하지 않는다.
 - [ ] Pro/Con이 같은 input hash와 서로 다른 NEW session을 사용하는 시험을 작성한다.
 - [ ] 한 역할이 상대 결과를 읽으면 `CROSS_ROLE_INPUT_DENIED`가 되는 시험을 작성한다.
 - [ ] 질문 누락·중복, falsification 없는 FALSE, unresolved condition 없는 HOLD를 거절한다.
@@ -391,10 +422,12 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 - Produces: EnvironmentRequirements, plan, recipe, environment, AgentLog, candidate, validated PoC와 DynamicReproductionResult
 
 - [ ] live asset, host mount, Docker socket, secret와 비허용 egress 차단 시험을 작성한다.
+- [ ] non-root user, 최소 Linux capability, default-deny network와 CPU·RAM·disk·PID·wall-time 한도를 profile 밖에서 완화할 수 없는지 검사한다.
 - [ ] candidate 존재만으로 validated PoC가 되지 않는 시험을 작성한다.
 - [ ] same attempt의 command start/finish, environment, recipe와 digest가 모두 맞을 때만 PoC를 검증한다.
 - [ ] crash·health check 실패 시 STATE_UNCERTAIN 재생성과 AgentLog 연결을 구현한다.
 - [ ] policy 차단·환경 실패·timeout을 FALSE/HOLD로 바꾸지 않는다.
+- [ ] cleanup 실패를 성공으로 숨기지 않고 잔존 container·network·volume을 탐지·기록·재정리하는 시험을 작성한다.
 - [ ] 의도적으로 취약한 프로젝트 관리 fixture에서만 실제 Docker E2E를 수행한다.
 - [ ] R7·R6·R3·R4·R8 보안 검토 뒤 PR을 병합한다.
 
@@ -403,14 +436,17 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 **Files:**
 - Create: `docs/superpowers/plans/implementation/12-gates-reporting.md`
 - Create: `src/sastsimi/agents/cwe_labeling.py`, `technical_gate.py`, `rule_scope_gate.py`, `policy_parser.py`, `reporter.py`
-- Create: `src/sastsimi/reporting/`, `src/sastsimi/policy/`
+- Create: `src/sastsimi/reporting/`
+- Create: `src/sastsimi/policy/program_catalog.py`, `preparation_service.py`, `collector.py`, `cache.py`, `official_http.py`
 - Create: `tests/integration/reporting/`, `tests/security_negative/test_stale_report.py`
 
 **Interfaces:**
-- Consumes: current final TRUE, validated PoC, current CWE, RunPolicyState
-- Produces: Technical review, Rule Scope review, Primitive admission, current Finding와 ReportDraft
+- Consumes: Program Catalog entry, PolicySourcePort, current final TRUE, validated PoC, current CWE
+- Produces: run-init에 고정된 RunPolicyState, Technical review, Rule Scope review, Primitive admission, current Finding와 ReportDraft
 
 - [ ] 새 Verification에 stale CWE·Gate·Finding·ReportDraft를 재사용하는 실패 시험을 작성한다.
+- [ ] run 시작 때 정책 준비를 정적 분석과 병렬 실행하고, 공식 출처·cache provenance로 확정한 RunPolicyState를 같은 run 동안 고정한다.
+- [ ] Program Catalog 조회·Policy Collector·공식 HTTP adapter·cache fallback과 최신성 만료를 각각 시험한다.
 - [ ] Technical REVISE가 verdict를 변경하지 않고 같은 owner 새 generation으로 돌아가게 한다.
 - [ ] policy 수집 실패와 공식 정책 부재를 다른 상태로 보존한다.
 - [ ] testing restriction FAIL만 Primitive admission DENY로 매핑한다.
@@ -477,20 +513,25 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 
 **Files:**
 - Create: `docs/superpowers/plans/implementation/16-capability-evaluation.md`
-- Add: 승인된 Provider·tool adapter와 `tests/capability/`
+- Create: `src/sastsimi/providers/codex_subscription.py`, `anthropic_api.py`, `claude_subscription.py`
+- Add: 후보 Provider·tool adapter와 `tests/capability/`
 - Create: `src/sastsimi/evaluation/`, `evals/`
+- Create: `src/sastsimi/interfaces/cli/eval.py`, `provider.py`, `tools.py`
 - Update: provider/profile registry와 사용자 설정 문서
 
 **Interfaces:**
 - Consumes: capability probe 계약과 격리된 evaluation path
-- Produces: PVD evidence, tool profile, EvaluationRunResult와 사람 승인 가능한 recommendation
+- Produces: 비활성 후보 adapter의 conformance 결과, PVD evidence, tool profile, EvaluationRunResult와 사람이 승인할 수 있는 activation recommendation
 
 - [ ] 실제 credential 없이 default test가 외부 호출을 하지 않는지 검사한다.
+- [ ] 후보 adapter는 먼저 비활성 상태로 구현하고 공통 probe/invoke/cancel·오류 정규화 conformance 시험을 통과시킨다.
+- [ ] OpenAI API·Codex 회원제·Anthropic API·Claude 회원제 각각을 공식 지원 경로로 구현 가능한지 검증하며, 미지원 또는 credential 부재는 `BLOCKED` 증거로 남기고 지원을 주장하지 않는다.
 - [ ] exact environment·client·model 조합의 PVD-01~15를 기록한다.
 - [ ] dynamic tool loop 대상에는 PVD-16을 추가로 실행한다.
 - [ ] Git·AST·CodeQL·OpenGrep·Docker exact version probe를 기록한다.
 - [ ] 같은 corpus·grader·budget에서 Provider·model·prompt 조합을 비교한다.
-- [ ] capability 성공만으로 PRODUCTION ACTIVE가 되지 않게 검사한다.
+- [ ] CLI에서 Provider/tool capability 실행, evaluation 실행·결과 조회·비교를 명시적으로 시작할 수 있게 한다.
+- [ ] capability와 evaluation 성공만으로 `PRODUCTION ACTIVE`가 되지 않고 R8 recommendation과 사람 승인이 모두 있어야 exact profile·model·prompt revision을 활성화하도록 검사한다.
 - [ ] R3·R7·R8 및 역할 소유자 검토 뒤 PR을 병합한다.
 
 ### Task 17: Release candidate and final integration
@@ -526,16 +567,16 @@ uv run pytest tests/contract -q
 uv run pytest tests/integration -q
 uv run pytest tests/e2e -q
 uv run pytest tests/security_negative -q
-powershell -File scripts/validate-architecture-docs.ps1
+pwsh -File scripts/validate-architecture-docs.ps1
 git diff --check origin/main...HEAD
 ```
 
-해당 디렉터리가 아직 생기지 않은 초기 PR은 존재하는 범위만 실행하고 PR 본문에 미실행 이유를 적는다. capability job은 명시 실행이며 skip을 성공으로 기록하지 않는다.
+T01과 T02는 T01에서 추가한 최소 문서 CI와 로컬 Architecture validator·inventory·link·diff 검사를 병합 조건으로 사용한다. T03부터는 전체 CI를 사용하되 아직 생성되지 않은 시험 디렉터리는 존재하는 범위만 실행하고 PR 본문에 미실행 이유를 적는다. Windows 로컬 명령은 `powershell -ExecutionPolicy Bypass -File ...`, Ubuntu CI 명령은 `pwsh -File ...`로 실행한다. capability job은 명시 실행이며 skip을 성공으로 기록하지 않는다.
 
 ## 6. PR 완료 판정
 
 - branch가 최신 `origin/main`을 포함한다.
-- required CI가 성공한다.
+- 현재 Task가 생산한 required CI(T01~T02 문서 CI, T03 이후 전체 CI)가 성공한다.
 - merge conflict가 없다.
 - Critical 0, Important 0이다.
 - Architecture 계약 위반과 security blocker가 없다.
@@ -544,4 +585,3 @@ git diff --check origin/main...HEAD
 - 최종 검토 SHA와 PR HEAD가 같다.
 - 병합 뒤 새 main에서 smoke test가 성공한다.
 - 진행 기록에 Issue, PR, commit, CI와 다음 Task를 갱신한다.
-
