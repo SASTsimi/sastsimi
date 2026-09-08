@@ -20,9 +20,6 @@ jobs:
             shell: pwsh
           - os: windows-2022
             shell: powershell
-    defaults:
-      run:
-        shell: ${{ matrix.shell }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,24 +30,32 @@ jobs:
           architecture: x64
       - uses: astral-sh/setup-uv@v6
       - name: Install frozen dependencies
+        shell: ${{ matrix.shell }}
         run: uv sync --frozen --all-groups
       - name: Format
+        shell: ${{ matrix.shell }}
         run: uv run ruff format --check .
       - name: Lint
+        shell: ${{ matrix.shell }}
         run: uv run ruff check .
       - name: Strict types
+        shell: ${{ matrix.shell }}
         run: uv run mypy --strict src tests
       - name: All existing suites
+        shell: ${{ matrix.shell }}
         run: uv run pytest tests -q
       - name: Architecture validator
+        shell: ${{ matrix.shell }}
         run: |
-          & '${{ matrix.shell }}' -NoProfile -ExecutionPolicy Bypass -File scripts/validate-architecture-docs.ps1
+          & ./scripts/validate-architecture-docs.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Inventory and links
+        shell: ${{ matrix.shell }}
         run: |
-          & '${{ matrix.shell }}' -NoProfile -File scripts/audit-doc-inventory.ps1 -RepositoryRoot . -CheckLinks
+          & ./scripts/audit-doc-inventory.ps1 -RepositoryRoot . -CheckLinks
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify actual commit-range whitespace
+        shell: ${{ matrix.shell }}
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
