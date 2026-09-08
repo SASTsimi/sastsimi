@@ -41,7 +41,11 @@ def test_full_budget_binding_schema_requires_workspace_metadata() -> None:
 def test_committed_schema_exports_have_no_drift() -> None:
     root = Path(__file__).resolve().parents[3] / "schemas" / "generated"
     check_schemas(root)
-    assert {path.parent.name for path in root.rglob("*.schema.json")} == EXPECTED_KINDS
+    from sastsimi.contracts.result_registry import RESULT_REGISTRY
+
+    assert {
+        path.parent.name for path in root.rglob("*.schema.json")
+    } == EXPECTED_KINDS | set(RESULT_REGISTRY)
 
 
 def test_transition_schemas_only_publish_valid_target_states() -> None:

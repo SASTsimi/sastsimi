@@ -1,0 +1,333 @@
+{
+  "$defs": {
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "DynamicPurpose": {
+      "enum": [
+        "POC_CONFIRMATION",
+        "VERDICT_EVIDENCE"
+      ],
+      "type": "string"
+    },
+    "EnvironmentNeed": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Description",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/NeedKind"
+        },
+        "need_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Need Id",
+          "type": "string"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "source_refs": {
+          "items": {
+            "$ref": "#/$defs/StoredDataRef"
+          },
+          "title": "Source Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "need_id",
+        "kind",
+        "description",
+        "required",
+        "source_refs"
+      ],
+      "title": "EnvironmentNeed",
+      "type": "object"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "NeedKind": {
+      "enum": [
+        "APP_ROLE",
+        "AUTH",
+        "DATA",
+        "DATABASE",
+        "SERVICE",
+        "FIXTURE",
+        "MOCK",
+        "VERSION",
+        "HEALTH_CHECK"
+      ],
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "code_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Code Refs",
+      "type": "array"
+    },
+    "con_evidence_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "environment_needs": {
+      "items": {
+        "$ref": "#/$defs/EnvironmentNeed"
+      },
+      "title": "Environment Needs",
+      "type": "array"
+    },
+    "goal": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Goal",
+      "type": "string"
+    },
+    "hypothesis_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "initial_verdict": {
+      "enum": [
+        "TRUE",
+        "HOLD"
+      ],
+      "title": "Initial Verdict",
+      "type": "string"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordMeta"
+    },
+    "pro_evidence_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "purpose": {
+      "$ref": "#/$defs/DynamicPurpose"
+    },
+    "sandbox_profile_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "static_evidence_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Static Evidence Refs",
+      "type": "array"
+    },
+    "verification_assignment_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "verification_generation": {
+      "minimum": 1,
+      "title": "Verification Generation",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "meta",
+    "verification_assignment_ref",
+    "verification_generation",
+    "hypothesis_ref",
+    "purpose",
+    "initial_verdict",
+    "goal",
+    "environment_needs",
+    "sandbox_profile_ref",
+    "code_refs",
+    "static_evidence_refs",
+    "pro_evidence_ref",
+    "con_evidence_ref",
+    "created_at"
+  ],
+  "title": "DynamicReproductionRequest",
+  "type": "object"
+}
