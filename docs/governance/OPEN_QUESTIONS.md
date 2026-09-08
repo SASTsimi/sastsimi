@@ -13,6 +13,8 @@ Architecture v5의 구조·역할·공통 계약은 승인됐습니다. 이 문�
 
 PR #116 병합과 Issue #92·R3 상위 Issue #4 종료로 구현 기준 설계까지 확정했습니다. 실제 Provider capability, 평가 실행과 Docker 보안 시험처럼 코드와 실행 환경이 있어야 얻을 수 있는 증거는 아래 담당 역할이 구현 단계에서 확인합니다. 미실행 시험을 성공으로 표시하지 않으며, 통과 전 기능은 문서의 fail-closed 기본값으로 비활성화합니다.
 
+[ADR-015](../review/decisions/ADR-015-r3-implementation-baseline.md)의 저장·직렬화 결정과 [ADR-016](../review/decisions/ADR-016-maintainable-workflow-packages.md)의 업무 흐름 package·import 경계를 구현 기준으로 사용합니다. ADR-016은 승인된 유지보수 구현 설계의 물리 위치를 정본에 연결하며 Agent 권한이나 Gate 의미를 바꾸지 않습니다.
+
 ## 이번에 확정한 운영 사항
 
 1. 담당자 계정
@@ -51,7 +53,7 @@ PR #116 병합과 Issue #92·R3 상위 Issue #4 종료로 구현 기준 설계�
 | 10 | 공식 정책의 출처별 최대 허용 나이와 확인 방법을 정합니다. 공통 처리 규칙은 이미 확정되어, run 시작 때 오래된 cache는 재사용하지 않고 최신성을 확인하지 못한 현재 run은 `UNCERTAIN + DENY`입니다. | `ProgramPolicyRecord` source·freshness threshold·collector failure; `STALE cache -> 새 수집`, `UNVERIFIED run -> UNCERTAIN + DENY` 고정 |
 | 11 | 두 Gate가 사용할 질문, 보완 반복 횟수와 평가 자료를 정합니다. | Gate prompt, revision limit와 dataset |
 | 12 | LLM 호출 기록에서 비밀정보를 가리고 얼마나 보관할지 정합니다. | logging proxy/parser, redaction, retention, access control |
-| 13 | 데이터를 저장하고 버전을 바꿀 때 호환성을 어떻게 지킬지 정합니다. | serialization, schema versioning, result storage |
+| 13 | 확정된 직렬화·저장·버전 호환 규칙을 구현하고 migration·복구 시험으로 증명합니다. | ADR-015: Canonical JSON v1 + SHA-256, Pydantic 2 + JSON Schema 2020-12, schema versioning, SQLite + SQLAlchemy 2, Alembic, content-addressed file store |
 | 14 | 승인된 식별 규칙을 실제 clone·경로 조회 코드와 시험으로 증명합니다. | 확정된 `CodeWorkspace`, `workspace_id`, `commit_id`, `StoredDataRef`, `CodeLocation`, `CodeSymbol` 계약 구현 |
 | 15 | 승인된 중복 방지·복구 규칙을 실제 저장소와 장애 주입 시험으로 증명합니다. | 확정된 atomic state transition, idempotency, crash resume 계약 구현 |
 | 16 | 회원제 LLM 연결이 공식적으로 허용되고 안정적으로 동작하는지 확인할 종료 조건을 정합니다. | Membership adapter 지원·약관·동시성·session/log 검증 |

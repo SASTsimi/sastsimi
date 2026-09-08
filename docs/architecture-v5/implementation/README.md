@@ -19,6 +19,8 @@
 5. [05. Prompt Runtime](./05-prompt-runtime.md) — Prompt Registry·Builder와 11개 LLM 역할의 입력·출력 검증을 설명합니다.
 6. [06. 구현 기준선](./06-implementation-baseline.md) — 위 설계를 실제 언어·파일 구조·저장·설정·CLI·CI와 구현 순서로 확정합니다.
 
+업무 흐름 서비스 6개의 exact module과 import 경계는 `01` §5와 `06` §5.4·6에 연결되어 있습니다. [ADR-016](../../review/decisions/ADR-016-maintainable-workflow-packages.md)은 PR #119에서 승인한 `verification/`, `reproduction/`, `chaining/`의 물리 위치를 기록하며 기존 Agent·Gate 권한을 바꾸지 않습니다.
+
 ## 어떤 문서를 먼저 수정하나요?
 
 - field·enum·필수값 변경: `08-lightweight-data-contracts.md`와 R4 검토가 먼저입니다.

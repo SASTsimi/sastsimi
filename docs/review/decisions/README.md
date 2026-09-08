@@ -51,3 +51,4 @@
 | [ADR-013](./ADR-013-run-policy-preparation-and-reuse.md) | 실행 단위 정책 준비·재사용과 Sandbox 사전 확인 | ACCEPTED | #1, #4, #10 | PR #110 / `a6c3349` |
 | [ADR-014](./ADR-014-primitive-admission-single-decision.md) | Primitive admission을 등록 시점 1회 판정으로 확정 | ACCEPTED | #108, ADR-011, PR #102 | ADR-011의 회수 결정을 대체하고 회수 절차를 제거; 매핑·`Primitive.admission_decision_ref`는 유지. `docs: make primitive admission a one-time decision` |
 | [ADR-015](./ADR-015-r3-implementation-baseline.md) | R3 단일 애플리케이션 구현 기준선 | ACCEPTED | #4, #92 | PR #116 / `07bd654` |
+| [ADR-016](./ADR-016-maintainable-workflow-packages.md) | 유지보수 가능한 업무 흐름 package 경계 | ACCEPTED | #124 | 결정 승인 PR #119 / `5657fc7`; T02 정본 반영 검토·병합은 별도 추적 |
