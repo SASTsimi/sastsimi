@@ -44,7 +44,7 @@ Missing future suites and real capability probes are not reported as passed.
 Initial RED: 68 failed, 1 passed with the package absent and forbidden import
 fixtures exposing the permissive checker. Additional AST RED: 4 failed, 72 passed
 for cycle, dynamic-import and private-import bypasses. Final local GREEN:
-76 passed, Ruff clean, mypy strict clean across 19 Python files, Architecture
+94 passed, Ruff clean, mypy strict clean across 19 Python files, Architecture
 validator 0 failures and inventory/link audit 0 missing links.
 
 Local verification uses Windows and CPython 3.12.10 with uv 0.12.5. Dependency
@@ -58,3 +58,11 @@ Examples: `sastsimi doctor --format json` and
 `sastsimi --config approved.toml --log-level DEBUG doctor`.
 Global flags precede the command. Docker/provider support is never inferred
 from these foundation checks.
+
+Independent review fix round 1 reproduced unsafe stdlib logging error fallback
+and builtin dynamic-import bypasses (17 failed, 30 passed targeted RED).
+SafeJsonHandler now owns serialization/write/flush failure handling, emits only
+a fixed failure event and never prints raw records or traceback details.
+SafeEvent repr hides fields and identifiers. Import enforcement rejects builtin
+import machinery/aliases, reflective import/exec access and computed call targets.
+Targeted GREEN: 47 passed; full GREEN: 94 passed.

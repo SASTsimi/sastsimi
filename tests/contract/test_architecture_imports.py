@@ -52,23 +52,53 @@ RULES: dict[str, frozenset[str]] = {
     ),
 }
 
+# Reflection cannot prove a static dependency target. Reject access to import
+# machinery before aliasing, and require callable syntax with a named target.
+# This is a source architecture rule, not a sandbox for hostile Python code.
+DYNAMIC_MODULES = frozenset({"importlib", "builtins"})
+DYNAMIC_NAMES = frozenset(
+    {
+        "__import__",
+        "__builtins__",
+        "eval",
+        "exec",
+        "compile",
+        "getattr",
+        "globals",
+        "locals",
+        "vars",
+    }
+)
+DYNAMIC_ATTRIBUTES = (DYNAMIC_NAMES - {"compile"}) | {
+    "import_module",
+    "load_module",
+    "exec_module",
+    "__dict__",
+    "__getattribute__",
+    "__getattr__",
+    "__globals__",
+}
+
 
 def imports(source: str, module: str) -> list[str]:
     targets: list[str] = []
     package = module.rsplit(".", 1)[0]
     for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Name) and node.id == "__import__":
+        if isinstance(node, ast.Name) and node.id in DYNAMIC_NAMES:
             raise ValueError("Dynamic imports require explicit architecture review")
+        if isinstance(node, ast.Attribute) and node.attr in DYNAMIC_ATTRIBUTES:
+            raise ValueError("Dynamic import attribute access is not allowed")
+        if isinstance(node, ast.Call) and not isinstance(
+            node.func, (ast.Name, ast.Attribute)
+        ):
+            raise ValueError("Computed callable targets require architecture review")
         if isinstance(node, ast.Import):
-            if any(
-                alias.name == "importlib" or alias.name.startswith("importlib.")
-                for alias in node.names
-            ):
+            if any(alias.name.split(".")[0] in DYNAMIC_MODULES for alias in node.names):
                 raise ValueError("Dynamic import machinery is not allowed")
             targets.extend(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             base = node.module or ""
-            if base == "importlib" or base.startswith("importlib."):
+            if base.split(".")[0] in DYNAMIC_MODULES:
                 raise ValueError("Dynamic import machinery is not allowed")
             if node.level:
                 base = importlib.util.resolve_name("." * node.level + base, package)
@@ -213,6 +243,17 @@ def test_import_cycles_fail_even_within_allowed_package() -> None:
     [
         '__import__("sastsimi.storage")',
         'import importlib; importlib.import_module("sastsimi.storage")',
+        "import builtins; builtins.__import__('sastsimi.storage')",
+        "from builtins import __import__ as load; load('sastsimi.storage')",
+        "import builtins as core; core.__import__('sastsimi.storage')",
+        "import builtins as core; load = core.__import__; load('sastsimi.storage')",
+        "from builtins import getattr as lookup; lookup(obj, name)('sastsimi.storage')",
+        "getattr(obj, name)('sastsimi.storage')",
+        "obj.__import__('sastsimi.storage')",
+        "obj.import_module(module_name)",
+        "globals()['__builtins__']['__import__']('sastsimi.storage')",
+        "eval(expression)",
+        "exec(expression)",
     ],
 )
 def test_dynamic_imports_cannot_bypass_boundary(source: str) -> None:
