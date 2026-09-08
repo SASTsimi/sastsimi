@@ -4346,8 +4346,13 @@ function Assert-MaintainableWorkflowBoundaries {
             'validator authorization before downstream work' = 'Runtime Validator의 허가 전에는 CWE·Primitive·Chaining work를 만들지 않는다'
             'worker registry and bootstrap injection' = 'worker registry[^\r\n]*`bootstrap.py`[^\r\n]*dependency injection'
         }
+        # Markdown soft wraps do not change prose meaning. Normalize only the
+        # prose input, retaining paragraph boundaries and the raw table checks.
+        $routingProse = ([regex]::Split($text, '\r?\n[ \t]*\r?\n') | ForEach-Object {
+            [regex]::Replace($_, '\s+', ' ').Trim()
+        }) -join "`n`n"
         foreach ($rule in $routingRules.GetEnumerator()) {
-            if ($text -notmatch $rule.Value) {
+            if ($routingProse -notmatch $rule.Value) {
                 Add-Failure "T02 VerdictRouter boundary ($($rule.Key)): $relativePath"
             }
         }
