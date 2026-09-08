@@ -13,7 +13,7 @@ GitHub가 실제 상태, 담당자와 토론의 기준입니다. 이 문서는 �
 
 | 구분 | 역할·목적 | GitHub Issue | 역할 담당자 / GitHub 배정 상태 | 작업 브랜치 | 우선 검토할 문서 | 반드시 함께 검토할 역할 | 현재 상태 |
 |---|---|---|---|---|---|---|---|
-| 전체 관리 | Architecture v5 전체 검토·승인 관리 | [#1](https://github.com/SASTsimi/sastsimi/issues/1) | 김태현 `@taehyeon-git` 배정, 윤희섭 `@YHS-Sec` 공동 역할 담당 | — | `README.md`, `docs/architecture-v5/README.md`, 협업·검토 문서 | R1–R8, 최종 검토·승인 담당자 | FINAL AUDIT — #10·PR #117 종료 확인 뒤 `main` 감사 중 |
+| 전체 관리 | Architecture v5 전체 검토·승인 관리 | [#1](https://github.com/SASTsimi/sastsimi/issues/1) | 김태현 `@taehyeon-git` 배정, 윤희섭 `@YHS-Sec` 공동 역할 담당 | — | `README.md`, `docs/architecture-v5/README.md`, 협업·검토 문서 | R1–R8, 최종 검토·승인 담당자 | CLOSED — PR #117 병합 뒤 `main` 감사 commit `8afd377...`, 2026-09-08 |
 | R1 | 최초 가설·통합 Primitive의 upstream result→downstream input Chaining | [#2](https://github.com/SASTsimi/sastsimi/issues/2) | 배승원 `@baeseungwon1010` | — | `03`, `06`, `08`, `09`, `13` | R2, R6, R4, R8 | CLOSED — 2026-09-05 |
 | R2 | AST/SAST 정적 사실·위치 기반 분석 정보 | [#3](https://github.com/SASTsimi/sastsimi/issues/3) | 김나연 `@zv9uvr` | — | `02`, `07`, `08`, `10`, `13` | R1, R6, R4, R3 | CLOSED — 2026-09-05 |
 | R3 | 통합 구현 가능성·계약 준수 테스트 | [#4](https://github.com/SASTsimi/sastsimi/issues/4) | 김태현 `@taehyeon-git` 배정, 윤희섭 `@YHS-Sec` 공동 역할 담당 | — | `01`, `03`, `08`, `09`, `10`, `11`, `13`, `implementation/` | R4, 변경 영향 역할, R8 | CLOSED — PR #116·Issue #92 완료, 2026-09-08 |

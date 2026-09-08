@@ -17,7 +17,7 @@
 - 최종 승인 merge commit: `2de1f6767d8bc25ee7383adacb3082b4ff761f8a`
 - 완료 확인: Issue #92와 R3 상위 Issue #4
 - 역할별 완료 확인: R1~R8 상위 Issue #2~#9 모두 `CLOSED`
-- 최종 관리: [Issue #10](https://github.com/SASTsimi/sastsimi/issues/10)은 PR #117 병합으로 `CLOSED`; [PM Epic #1](https://github.com/SASTsimi/sastsimi/issues/1)은 병합 뒤 `main` 최종 감사를 마치고 종료
+- 최종 관리: [Issue #10](https://github.com/SASTsimi/sastsimi/issues/10)은 PR #117 병합으로 `CLOSED`; [PM Epic #1](https://github.com/SASTsimi/sastsimi/issues/1)은 post-merge `main` 감사 commit `8afd37794ac581039d626f1df52f1be06533b13a` 확인 뒤 `CLOSED`
 
 `07bd654...`은 마지막 선행 설계 PR까지 병합한 **검토 시작 기준 main SHA**입니다. Final PR #117은 새 기능·field·enum·상태 전이·권한·Agent 역할을 추가하지 않았지만, 최종 리뷰에서 발견한 기존 계약의 모호함을 바로잡은 수정과 승인 상태·검토 기록을 함께 포함했습니다. 승인 대상은 위에 기록한 정확한 PR head `0647514...`이고, GitHub가 만든 merge commit은 `2de1f67...`입니다.
 
@@ -134,13 +134,25 @@ PR #117의 실제 승인과 대화는 GitHub review·댓글에 보존합니다. 
 | 저장소 라이선스와 외부 기여 범위 | 저장소 관리 담당 | 외부 재사용·기여를 허용하기 전 | 라이선스 권한을 추정하지 않음 |
 | Docsify CDN version pin과 offline rendering | 문서 관리 담당 | offline 배포 또는 장기 문서 배포 전 | 번호 문서를 정본으로 사용 |
 
-## 7. 최종 판정
+## 7. Post-merge main 감사
+
+Final PR #117 병합 뒤 merge commit `2de1f6767d8bc25ee7383adacb3082b4ff761f8a`를 새 작업 없이 직접 다시 검토했다. 발견한 문제는 core Agent 흐름을 바꾸는 문제가 아니라 완료 상태·과거 기록·출력 검증 설명의 불일치였으며, 감사 수정 commit `8afd37794ac581039d626f1df52f1be06533b13a`에서 다음과 같이 정리했다.
+
+- PR #97 Prompt 계약을 아직 미병합 제안으로 표시하던 구현 시험 문서를 실제 merge 상태로 수정
+- Final PR #117의 exact head·merge commit과 Issue #10 종료 상태를 기준 문서에 동기화
+- superseded R6/R7 작업 계획과 과거 ADR이 현재 정본처럼 보이지 않도록 현재 정본 링크와 문서 지위를 명시
+- `ReportDraft.content_ref` 본문의 모든 `path:line`을 exact Verification의 `EvidenceClaim.code_locations`와 대조하고, 다른 workspace·commit·file·line이면 `INVALID_OUTPUT`·`REPORT_ERROR`로 저장을 차단하는 규칙과 시험 추가
+- `OPEN_QUESTIONS`를 설계 미결정 목록이 아니라 구현·운영 전 설정과 실제 시험 증거 목록으로 정리
+
+감사 commit에서 문서 validator 실패 0, 로컬 Markdown 링크 누락 0, 홀수 code fence 0, Git 충돌 표시 0, 공통 schema 중복 선언 0, 정본/Wiki Mermaid 13/13을 확인했다. 이 수정은 새 Agent·field·enum·상태 전이·권한을 추가하지 않았고, 기존 Reporter의 “검증된 사실만 정확히 표현” 규칙을 실행 가능한 출력 검사로 명확히 했다. 이 증거로 PM Epic #1을 종료했다.
+
+## 8. 최종 판정
 
 - 문서 구조·계약 추적: **PASS**
 - 열린 Architecture Blocker/High: **0**
 - 설계 상태: **DESIGN_APPROVED**
 - 구현 상태: **NOT_IMPLEMENTED**
 - 최종 승인 근거: PR #117 exact head `0647514...`에서 문서 검사와 diff 검사를 통과했고 미해결 `CHANGES_REQUESTED` 없이 merge commit `2de1f67...`로 병합됨
-- 병합 뒤 처리: Issue #10은 자동 종료됐고, PM Epic #1은 아래 post-merge `main` 감사 완료 뒤 마감
+- 종료 상태: Issue #10과 PM Epic #1 모두 `CLOSED`; 열린 설계 Issue·PR 없음
 
 이 승인은 “완벽한 제품”이나 “취약점 탐지 성능 검증” 선언이 아닙니다. 구현자가 임의로 다시 해석하지 않아도 되는 설계 기준을 고정하고, 실제 코드와 운영 기능은 위 시험을 통과하기 전까지 안전하게 비활성화하는 결정입니다.

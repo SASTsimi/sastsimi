@@ -301,6 +301,7 @@ if (-not (Test-Path -LiteralPath $finalApprovalPath)) {
         'PR #117',
         '0647514f9d3d288fbedfa983c5b828d88c909df8',
         '2de1f6767d8bc25ee7383adacb3082b4ff761f8a',
+        '8afd37794ac581039d626f1df52f1be06533b13a',
         '2026-09-08부터 유효',
         'Issue #92',
         'R1~R8 상위 Issue #2~#9 모두 `CLOSED`',
@@ -313,6 +314,8 @@ if (-not (Test-Path -LiteralPath $finalApprovalPath)) {
         '승인 대상은 위에 기록한 정확한 PR head',
         'current generation의 exact `DynamicReproductionRequest`와 같은 `DYNAMIC_REPRO` 실행 attempt의 recipe·환경·AgentLog·candidate·command digest를 요구',
         '| F-21A | ReportDraft 본문의 모든 `path:line`이 exact Verification의 실제 `EvidenceClaim.code_locations`와 같은 workspace·commit·file·line인지 저장 전에 검사 | PASS |',
+        '## 7. Post-merge main 감사',
+        'Issue #10과 PM Epic #1 모두 `CLOSED`',
         '| F-19 | 금지 테스트 위반은 result Primitive를 막고, 다른 scope·impact 실패는 보고 가능성만 막음 | PASS | `05`, `06`, `08`, ADR-011, ADR-014 |'
     )) {
         if (-not $finalApprovalText.Contains($marker)) {
@@ -412,6 +415,9 @@ foreach ($issueNumber in 2..9) {
 }
 if (-not [regex]::IsMatch($issueTrackerText, '(?m)^\| 최종 .*\[#10\].*\| CLOSED — PR #117 head')) {
     Add-Failure 'Issue tracker does not show final Issue #10 as CLOSED by PR #117'
+}
+if (-not [regex]::IsMatch($issueTrackerText, '(?m)^\| 전체 관리 .*\[#1\].*\| CLOSED — PR #117 병합 뒤 `main` 감사 commit `8afd377')) {
+    Add-Failure 'Issue tracker does not show PM Epic #1 as CLOSED by the post-merge main audit'
 }
 
 $approvedStatusFiles = @(
