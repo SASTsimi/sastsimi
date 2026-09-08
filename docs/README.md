@@ -10,6 +10,13 @@
 4. [실제 Issue 현황](./review/ISSUE_TRACKER.md) — GitHub Issue, 담당자와 진행 상태를 보여 줍니다.
 5. [Architecture v5 설계 입구](./architecture-v5/README.md) — 전체 기술 흐름과 번호 문서를 안내합니다.
 
+## 역할별 빠른 탐색 경로
+
+- **구현 담당자**: [Architecture v5 설계 입구](./architecture-v5/README.md) → [구현 인계 안내](./architecture-v5/implementation/README.md) → [유지보수 구현 설계](./superpowers/specs/2026-09-08-sastsimi-maintainable-implementation-design.md) → [현재 Task 순서](./superpowers/plans/2026-09-08-sastsimi-complete-implementation.md) 순서로 읽습니다.
+- **문서 작성자·검토자**: [전체 문서 지도](./DOCUMENT_GUIDE.md)에서 문서 지위를 확인한 뒤 [문서 인벤토리 감사](../scripts/audit-doc-inventory.ps1), [Architecture validator](../scripts/validate-architecture-docs.ps1), [문서 CI](../.github/workflows/docs.yml)를 실행합니다.
+- **설계 결정·승인 검토자**: [설계 결정 기록](./review/decisions/README.md)의 `ACCEPTED` ADR → [최종 승인 기록](./review/FINAL_ARCHITECTURE_V5_APPROVAL.md) → [출처 기록](./review/PROVENANCE.md) 순서로 정확한 결정과 승인 근거를 확인합니다.
+- **과거 변경 근거 확인자**: [설계·구현 작업 기록 안내](./superpowers/README.md)에서 역사 문서의 지위를 먼저 확인합니다. 역사 문서는 현재 기술 계약을 바꾸지 않습니다.
+
 ## 문서 종류
 
 - **기준 문서**: `docs/architecture-v5/01`부터 `13`까지의 번호 문서입니다. 실제 설계 의미와 데이터 형식은 이 문서를 우선합니다.

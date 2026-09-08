@@ -19,6 +19,8 @@
 | [Issue 화면 설정](../.github/ISSUE_TEMPLATE/config.yml) | GitHub Issue 작성 화면의 선택 항목을 설정합니다. | 저장소 관리 담당 | 보조 파일 |
 | [PR 작성 양식](../.github/PULL_REQUEST_TEMPLATE.md) | PR에 목적·영향·검증 내용을 빠뜨리지 않도록 기본 양식을 제공합니다. | PR 작성자·검토자 | 보조 파일 |
 | [`scripts/validate-architecture-docs.ps1`](../scripts/validate-architecture-docs.ps1) | Markdown 링크·Mermaid 사본, R4 상태·복구·권한 계약과 운영 Pro/Con 결과 연결 누락을 한 번에 검사합니다. | 문서 작성자·검토자 | 검증 도구 |
+| [`scripts/audit-doc-inventory.ps1`](../scripts/audit-doc-inventory.ps1) | Git-tracked Markdown별 inbound link, validator·최종 승인·provenance·ADR 참조를 보여 주고, required reference가 있는 삭제 allowlist를 거절합니다. `-CheckLinks`로 로컬 Markdown 링크 누락도 검사합니다. | 문서 작성자·검토자 | 검증 도구 |
+| [문서 CI](../.github/workflows/docs.yml) | Windows와 Ubuntu에서 Architecture validator, 문서 인벤토리·링크 검사와 diff 검사를 실행합니다. | PR 작성자·검토자 | 보조 파일 |
 
 ## 문서 안내와 공통 용어
 
@@ -130,6 +132,7 @@ Wiki는 번호 문서의 쉬운 요약입니다. Wiki만 수정해 새로운 규
 | [`docs/superpowers/README.md`](./superpowers/README.md) | 아래 specs·plans의 승인된 현재 구현 자료와 과거 기록을 구분하고 정본 위치를 안내합니다. | 작업 기록 안내 |
 | [`2026-09-08-sastsimi-maintainable-implementation-design.md`](./superpowers/specs/2026-09-08-sastsimi-maintainable-implementation-design.md) | 승인된 설계를 유지보수 가능한 코드 구조와 PR 순서로 옮기는 기준입니다. | 현재 구현 설계 |
 | [`2026-09-08-sastsimi-complete-implementation.md`](./superpowers/plans/2026-09-08-sastsimi-complete-implementation.md) | 승인된 전체 구현 Task, 의존 순서, 파일 책임, 시험과 병합 조건을 설명합니다. | 현재 구현 계획 |
+| [`implementation/01-repository-cleanup.md`](./superpowers/plans/implementation/01-repository-cleanup.md) | T01의 문서 인벤토리, 파일별 삭제 allowlist, 탐색 경로와 문서 CI 실행 근거를 설명합니다. | 현재 Task 실행 계획 |
 | [`2026-08-27-role-review-governance.md`](./superpowers/plans/2026-08-27-role-review-governance.md) | 초기 역할별 Issue와 협업·승인 규칙 연결 작업 계획입니다. | 작업 기록 |
 | [`2026-08-27-team-role-issue-readability.md`](./superpowers/plans/2026-08-27-team-role-issue-readability.md) | 팀원·GitHub 계정 연결과 Issue 문장 단순화 작업 계획입니다. | 작업 기록 |
 | [`2026-08-27-collaboration-and-readable-docs-design.md`](./superpowers/specs/2026-08-27-collaboration-and-readable-docs-design.md) | 담당자 생성 하위 Issue와 쉬운 문서 체계를 정의한 설계입니다. | 작업 기록 |

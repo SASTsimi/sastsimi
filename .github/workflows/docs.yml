@@ -1,0 +1,40 @@
+name: Documentation
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  verify-documents:
+    name: docs (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Architecture documents (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-architecture-docs.ps1
+      - name: Audit inventory and local Markdown links (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File scripts/audit-doc-inventory.ps1 -RepositoryRoot . -CheckLinks
+      - name: Check document diff whitespace (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: git diff --check
+      - name: Validate Architecture documents (Ubuntu)
+        if: runner.os == 'Linux'
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/validate-architecture-docs.ps1
+      - name: Audit inventory and local Markdown links (Ubuntu)
+        if: runner.os == 'Linux'
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/audit-doc-inventory.ps1 -RepositoryRoot . -CheckLinks
+      - name: Check document diff whitespace (Ubuntu)
+        if: runner.os == 'Linux'
+        shell: pwsh
+        run: git diff --check

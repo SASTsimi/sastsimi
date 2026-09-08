@@ -13,6 +13,10 @@
 - [`specs/2026-09-08-sastsimi-maintainable-implementation-design.md`](./specs/2026-09-08-sastsimi-maintainable-implementation-design.md): 승인된 유지보수 구현 구조
 - [`plans/2026-09-08-sastsimi-complete-implementation.md`](./plans/2026-09-08-sastsimi-complete-implementation.md): 승인된 전체 Task·PR 의존 순서와 완료 조건
 
+현재 Task의 실행 순서와 검증 근거는 아래 자식 계획에서 확인합니다. 자식 계획은 위 두 현재 구현 자료의 기술 의미를 바꾸지 않습니다.
+
+- [`plans/implementation/01-repository-cleanup.md`](./plans/implementation/01-repository-cleanup.md): T01 문서 인벤토리, 파일별 삭제 allowlist, 탐색 경로와 문서 CI 실행 계획
+
 그 밖의 완료된 기존 문서는 당시 검토한 대안, 변경 순서와 PR 상태를 남긴 역사적 기록입니다.
 
 - `specs/`: 특정 변경을 검토할 당시의 설계 제안과 근거
@@ -26,3 +30,5 @@
 4. [`docs/review/FINAL_ARCHITECTURE_V5_APPROVAL.md`](../review/FINAL_ARCHITECTURE_V5_APPROVAL.md)의 최종 승인 기록
 
 과거 문서를 삭제하지 않는 이유는 결정 과정과 변경 근거를 추적하기 위해서입니다. 과거 문서의 명령문이나 상태 표현을 현재 작업 지시로 사용하면 안 됩니다.
+
+역사 문서를 지우려면 먼저 [`scripts/audit-doc-inventory.ps1`](../../scripts/audit-doc-inventory.ps1)에서 후보별 inbound link, Architecture validator, 최종 승인, provenance, ADR 참조가 모두 없는지 확인합니다. 이 T01의 exact 삭제 allowlist는 비어 있습니다. 따라서 역사 문서는 보존하며, 이후 PR도 파일별로 같은 증거를 제시할 때만 삭제할 수 있습니다.
