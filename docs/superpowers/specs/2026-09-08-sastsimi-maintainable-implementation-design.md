@@ -107,6 +107,19 @@ src/sastsimi/
 
 `verification/`, `reproduction/`, `chaining/`은 새 Agent나 새 권한이 아니다. 기존 설계에 있던 업무 흐름 서비스의 물리 위치만 고정한다.
 
+서비스의 exact 위치는 다음과 같이 고정한다.
+
+| 서비스 | module | 책임 |
+|---|---|---|
+| `DebateService` | `verification/debate_service.py` | 같은 입력의 Pro·Con child work fan-out과 결과 join |
+| `VerificationService` | `verification/service.py` | initial assessment와 최종 검증 결과 합성 |
+| `VerdictRouter` | `verification/verdict_router.py` | final FALSE·HOLD·TRUE에 맞는 다음 work 등록 요청 생성 |
+| `RevisionWorkflow` | `verification/revision_workflow.py` | Technical `REVISE`의 같은 owner·새 generation 전환 |
+| `DynamicReproductionService` | `reproduction/service.py` | R6 요청과 R7 구성요소의 실행 순서 연결 |
+| `ChainingService` | `chaining/service.py` | exact Primitive index 고정, Chaining 호출과 새 proposal 전달 |
+
+`VerdictRouter`는 `reporting`이나 `chaining`의 concrete service를 import하지 않는다. current final result를 읽어 정본에 이미 정의된 `ActionRequest`와 work 등록 요청을 runtime public interface에 제출할 뿐이며, Runtime Validator의 허가 전에는 CWE·Primitive·Chaining work를 만들지 않는다. 실제 handler 선택과 concrete instance 연결은 worker registry와 `bootstrap.py`의 dependency injection으로 수행한다.
+
 ## 5. 의존 방향
 
 아래 화살표는 왼쪽 package가 오른쪽 package의 공개 인터페이스를 import할 수 있다는 뜻이다.
@@ -190,7 +203,8 @@ bootstrap -> 모든 concrete 구현의 생성·주입
 3. module map의 `DebateService`, `VerificationService`, `DynamicReproductionService`, `VerdictRouter`, `RevisionWorkflow`, `ChainingService`를 `verification/`, `reproduction/`, `chaining/`에 연결한다.
 4. dependency 설명을 runtime 호출 흐름과 Python import 방향으로 나눠 concrete adapter 직접 import 오해를 막는다.
 5. 저장소 전체를 검색해 같은 과거 표현이 남지 않았는지 확인한다. 역사 문서에는 현재 정본으로 오해하지 않도록 상태와 정본 링크가 있는지 검사한다.
-6. 이 물리 구조 보완을 새 ACCEPTED ADR로 기록하고 Architecture validator에 회귀 검사를 추가한다.
+6. 서비스와 module의 exact mapping, 특히 concrete reporting·chaining import가 금지된 `VerdictRouter` 경계를 기록한다.
+7. 이 물리 구조 보완을 새 ACCEPTED ADR로 기록하고 Architecture validator에 회귀 검사를 추가한다.
 
 이 수정은 Agent, schema field, enum, verdict, Gate 또는 권한을 바꾸지 않는다.
 
@@ -199,15 +213,15 @@ bootstrap -> 모든 concrete 구현의 생성·주입
 1. 저장소 정리: 파일별 삭제 allowlist, 문서 인덱스·provenance·validator 동기화만 수행
 2. 구현 경계 보정: stale 정본 표현 수정, 업무 흐름 package ADR, module map·의존 방향·validator 반영
 3. Python foundation, lock, CLI skeleton, logging, lint·type·pytest·CI
-4. 공통 Pydantic 계약, canonical JSON, generated schema
-5. SQLite·Alembic·artifact·work/attempt·action·transition·복구
-6. fake adapter 기반 한 가설 22단계 vertical slice
+4. 공통 Pydantic 계약, canonical JSON, generated schema와 run-level·work-level 예산 계약
+5. SQLite·Alembic·artifact·work/attempt·action·transition·복구와 최소 Budget Registry·binding·reservation·ledger
+6. fake adapter 기반 한 가설 22단계 vertical slice. 모든 work는 실제 ACTIVE 예산 binding과 reservation을 통과
 7. Repository Loader·AST·CodeQL·OpenGrep·StaticFactBundle
 8. Provider port 첫 실제 API adapter·Prompt Runtime·Agent wrapper
 9. R6 Verification과 R7 동적 재현·validated PoC
 10. CWE·두 Gate·Finding·Reporter
 11. Primitive Admission·Chaining·다중 가설 병렬 처리
-12. 예산·취소·재시도·복구·security-negative 통합
+12. 예산 한도·동시 예약·이중 차감, 취소·재시도·복구·security-negative 추가 강화
 13. 실제 Provider·정적 도구·Docker capability와 평가 corpus E2E
 
 각 PR은 하나의 책임만 가지며 앞 PR의 public contract가 병합된 뒤 그 계약에 의존하는 PR을 시작한다. 서로 같은 공통 파일을 수정하지 않는 조사·fixture 준비만 병렬로 진행한다.
