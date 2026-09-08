@@ -327,7 +327,12 @@ $obsoleteSameAttemptPhrases = @(
     '동적 결과에서는 request·plan·recipe·환경·AgentLog·PoC와 attempt가 서로 맞는지 확인합니다.',
     'POC1의 request·plan·recipe·environment·log·candidate·execution action/digest는 DX1과 같은 work/attempt에서 exact match',
     'same-attempt exact request·plan·recipe·environment·AgentLog·candidate revision/digest·실행 action·지지 관찰·validated 요건·commit binding',
-    'request·plan·recipe·environment·AgentLog·candidate exact revision/digest·action·SUPPORTED 관찰·PoCBundle·DX1이 모두 AD1에 연결'
+    'request·plan·recipe·environment·AgentLog·candidate exact revision/digest·action·SUPPORTED 관찰·PoCBundle·DX1이 모두 AD1에 연결',
+    'request·purpose·plan·recipe·정책·환경·AgentLog·candidate·validated PoC·cleanup의 same-attempt 조합',
+    '전부 같은 request·work·attempt·digest에 속함',
+    'tool request는 같은 attempt의 exact request·plan·READY 환경·현재 AgentLog를 사용한',
+    '같은 attempt의 request·plan·환경·candidate·관찰을 사용한 성공한',
+    '`poc_ref`의 request·plan·recipe·environment·log·candidate·digest·attempt 중 하나라도 결과와 다름'
 )
 foreach ($relativePath in $dynamicRequestAttemptBoundaryScanFiles) {
     $path = Join-Path $repoRoot $relativePath
@@ -1815,7 +1820,7 @@ $sandboxReviewPatterns = @(
     },
     @{
         Name = 'dynamic result save repeats same-attempt provenance checks'
-        Pattern = '(?s)`SAVE_RESULT\(requested_by=REPRODUCTION_SESSION_MANAGER, result_kind=dynamic_reproduction_result\)`.*?request·purpose·plan·recipe·정책·환경·AgentLog·candidate·validated PoC·cleanup의 same-attempt 조합을 다시 확인'
+        Pattern = '(?s)`SAVE_RESULT\(requested_by=REPRODUCTION_SESSION_MANAGER, result_kind=dynamic_reproduction_result\)`.*?current Verification generation의 exact R6 request reference와 purpose가 결과에 그대로 연결.*?plan·recipe·정책 결정·환경·AgentLog·candidate·validated PoC·cleanup과 동적 결과가 같은 R7 `DYNAMIC_REPRO` work·attempt'
     },
     @{
         Name = 'Session Manager owns logs validated PoCs and dynamic results'
