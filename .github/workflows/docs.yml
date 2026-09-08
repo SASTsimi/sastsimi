@@ -1,0 +1,61 @@
+name: Documentation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify-documents:
+    name: docs (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Determine documentation diff range
+        id: diff-range
+        shell: pwsh
+        run: |
+          if ('${{ github.event_name }}' -eq 'pull_request') {
+            $base = '${{ github.event.pull_request.base.sha }}'
+            $head = '${{ github.event.pull_request.head.sha }}'
+          }
+          else {
+            $base = '${{ github.event.before }}'
+            $head = '${{ github.sha }}'
+          }
+          if ($base -notmatch '^[0-9a-f]{40}$' -or $head -notmatch '^[0-9a-f]{40}$') {
+            throw "Expected base and head commit SHAs, got base=$base head=$head"
+          }
+          git cat-file -e "$base^{commit}"
+          git cat-file -e "$head^{commit}"
+          "range=$base...$head" >> $env:GITHUB_OUTPUT
+      - name: Validate Architecture documents (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-architecture-docs.ps1
+      - name: Audit inventory and local Markdown links (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -NoProfile -File scripts/audit-doc-inventory.ps1 -RepositoryRoot . -CheckLinks
+      - name: Check document diff whitespace (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: git diff --check "${{ steps.diff-range.outputs.range }}"
+      - name: Validate Architecture documents (Ubuntu)
+        if: runner.os == 'Linux'
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/validate-architecture-docs.ps1
+      - name: Audit inventory and local Markdown links (Ubuntu)
+        if: runner.os == 'Linux'
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/audit-doc-inventory.ps1 -RepositoryRoot . -CheckLinks
+      - name: Check document diff whitespace (Ubuntu)
+        if: runner.os == 'Linux'
+        shell: pwsh
+        run: git diff --check "${{ steps.diff-range.outputs.range }}"
