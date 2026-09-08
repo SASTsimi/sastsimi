@@ -444,7 +444,7 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 
 **Interfaces:**
 - Consumes: Program Catalog entry, PolicySourcePort, current final TRUE와 validated PoC
-- Produces: run-init에 고정된 RunPolicyState, 해당 Verification을 직접 가리키는 current CWELabel, Technical review, Rule Scope review, Primitive admission, current Finding와 ReportDraft
+- Produces: run-init에 고정된 RunPolicyState, 해당 Verification을 직접 가리키는 current CWELabel, Technical review, Rule Scope review, current Finding와 ReportDraft
 
 - [ ] 새 Verification에 stale CWE·Gate·Finding·ReportDraft를 재사용하는 실패 시험을 작성한다.
 - [ ] run 시작 때 정책 준비를 정적 분석과 병렬 실행하고, 공식 출처·cache provenance로 확정한 RunPolicyState를 같은 run 동안 고정한다.
@@ -452,7 +452,7 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 - [ ] final TRUE마다 `CWE_LABELING` work가 current Verification exact revision을 직접 가리키는 새 CWELabel을 만들고, generation이 바뀌면 같은 CWE라도 새 provenance revision으로 재평가하는지 검사한다.
 - [ ] Technical REVISE가 verdict를 변경하지 않고 같은 owner 새 generation으로 돌아가게 한다.
 - [ ] policy 수집 실패와 공식 정책 부재를 다른 상태로 보존한다.
-- [ ] testing restriction FAIL만 Primitive admission DENY로 매핑한다.
+- [ ] testing restriction과 다른 scope·impact 값을 Primitive 결정으로 선저장하지 않고 exact Rule Scope 결과로 Task 13에 넘긴다.
 - [ ] 다른 scope·impact 실패는 Finding을 보존하고 Reporter만 차단한다.
 - [ ] ReportDraft의 모든 `path:line`을 EvidenceClaim 위치와 대조한다.
 - [ ] R5·R3·R4·R6·R8 검토 뒤 PR을 병합한다.
@@ -462,14 +462,18 @@ T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파
 **Files:**
 - Create: `docs/superpowers/plans/implementation/13-primitive-chaining.md`
 - Create: `src/sastsimi/agents/chaining.py`, `src/sastsimi/chaining/service.py`
+- Create: `src/sastsimi/chaining/primitive_admission.py`
 - Create: `tests/integration/chaining/`, `tests/security_negative/test_chaining_provenance.py`
 
 **Interfaces:**
-- Consumes: final TRUE + current `PrimitiveAdmissionDecision=ALLOW`, 또는 `required_primitive_candidates`가 있는 final HOLD
-- Produces: Primitive, atomic current PrimitiveIndexState revision, directional matches, no-match reasons, duplicate key와 `origin=CHAINING` 새 proposal
+- Consumes: final TRUE + Technical ACCEPT + current Rule Scope·frozen policy, 또는 `required_primitive_candidates`가 있는 final HOLD
+- Produces: TRUE의 PrimitiveAdmissionDecision, 허용 TRUE/HOLD Primitive, atomic current PrimitiveIndexState revision, directional matches, no-match reasons, duplicate key와 `origin=CHAINING` 새 proposal
 
 - [ ] FALSE, candidate 없는 HOLD와 restriction DENY TRUE가 index에 들어가지 않는 시험을 작성한다.
-- [ ] TRUE는 같은 exact result chain의 current ALLOW admission을, HOLD는 required candidate를 검사한 뒤 Primitive와 새 index revision을 같은 transition으로 확정한다.
+- [ ] trusted PrimitiveAdmissionRuntime은 TRUE의 exact result chain·Technical ACCEPT·Rule Scope·frozen policy를 받아 testing restriction FAIL만 DENY로 매핑한다.
+- [ ] TRUE는 PrimitiveAdmissionDecision과, ALLOW일 때의 Primitive·새 PrimitiveIndexState를 하나의 `PRIMITIVE_UPDATE` COMMITTED transition으로 확정한다.
+- [ ] HOLD는 admission decision 없이 required candidate를 검사한 Primitive와 새 PrimitiveIndexState를 하나의 transition으로 확정한다.
+- [ ] Chaining Agent와 ChainingService는 확정된 Primitive와 work 시작 때 고정한 PrimitiveIndexState만 소비하며 admission·Primitive를 생산하지 않는다.
 - [ ] upstream result가 downstream input을 충족하는 방향만 match하게 구현한다.
 - [ ] 고정한 considered refs, exclusion pair, lineage와 source result closure를 검사한다.
 - [ ] TRUE+TRUE와 TRUE+HOLD child를 자동 TRUE가 아닌 새 가설로 등록한다.
