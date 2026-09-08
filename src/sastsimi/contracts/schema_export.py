@@ -21,9 +21,11 @@ from .budget import (
     WorkBudgetLimit,
     WorkBudgetProfile,
 )
+from .dynamic import SandboxProfile
 from .records import PolicyCacheMeta, RecordMeta, RunMeta
 from .refs import PolicyCacheRef, RunStoredDataRef, StoredDataRef
 from .result_registry import RESULT_REGISTRY
+from .verification import PlaybookPolicy, VerificationPlaybook
 from .work import StateTransition, TransitionCommit, WorkAttempt, WorkExecutionState
 
 CORE_SCHEMAS: Mapping[str, type[BaseModel]] = MappingProxyType(
@@ -41,6 +43,9 @@ CORE_SCHEMAS: Mapping[str, type[BaseModel]] = MappingProxyType(
         "action_request": ActionRequest,
         "action_check": ActionCheck,
         "action_decision": ActionDecision,
+        "sandbox_profile": SandboxProfile,
+        "playbook_policy": PlaybookPolicy,
+        "verification_playbook": VerificationPlaybook,
         "execution_budget_profile": ExecutionBudgetProfile,
         "work_budget_limit": WorkBudgetLimit,
         "work_budget_profile": WorkBudgetProfile,

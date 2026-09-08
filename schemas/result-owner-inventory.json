@@ -16,6 +16,13 @@
       "source_model": "sastsimi.contracts.evaluation.AnalysisRunResult"
     },
     {
+      "owner": "ORCHESTRATION",
+      "result_kind": "analysis_run_state",
+      "schema": "generated/analysis_run_state/1.schema.json",
+      "schema_name": "AnalysisRunState",
+      "source_model": "sastsimi.contracts.analysis.AnalysisRunState"
+    },
+    {
       "owner": "BUDGET_RUNTIME",
       "result_kind": "budget_ledger_entry",
       "schema": "generated/budget_ledger_entry/1.schema.json",
@@ -126,6 +133,13 @@
       "schema": "generated/hypothesis_duplicate_review/1.schema.json",
       "schema_name": "HypothesisDuplicateReview",
       "source_model": "sastsimi.contracts.hypothesis.HypothesisDuplicateReview"
+    },
+    {
+      "owner": "ORCHESTRATION",
+      "result_kind": "hypothesis_process_state",
+      "schema": "generated/hypothesis_process_state/1.schema.json",
+      "schema_name": "HypothesisProcessState",
+      "source_model": "sastsimi.contracts.hypothesis.HypothesisProcessState"
     },
     {
       "owner": "ORCHESTRATION",
@@ -273,6 +287,13 @@
       "schema": "generated/tool_run_result/1.schema.json",
       "schema_name": "ToolRunResult",
       "source_model": "sastsimi.contracts.static.ToolRunResult"
+    },
+    {
+      "owner": "ORCHESTRATION",
+      "result_kind": "verification_assignment",
+      "schema": "generated/verification_assignment/1.schema.json",
+      "schema_name": "VerificationAssignment",
+      "source_model": "sastsimi.contracts.hypothesis.VerificationAssignment"
     },
     {
       "owner": "VERIFICATION",

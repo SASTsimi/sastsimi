@@ -19,6 +19,7 @@
 - [`plans/implementation/02-architecture-boundary-correction.md`](./plans/implementation/02-architecture-boundary-correction.md): T02 exact workflow module·import 경계, ADR-015 정본 동기화와 RED/GREEN 검증 계획
 
 - [T03 application foundation](./plans/implementation/03-application-foundation.md): Python package, doctor, typed config, safe logging, import 계약과 core CI 실행 계획
+- [T06 persistent runtime and recovery](./plans/implementation/06-storage-runtime-recovery.md): SQLite/Alembic, exact record·artifact, work/attempt CAS, budget ledger와 startup recovery 구현·검증 근거
 
 그 밖의 완료된 기존 문서는 당시 검토한 대안, 변경 순서와 PR 상태를 남긴 역사적 기록입니다.
 

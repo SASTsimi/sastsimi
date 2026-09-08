@@ -7,7 +7,13 @@ from sastsimi.interfaces.cli.exit_codes import ExitCode
 
 
 def emit_result(
-    code: ExitCode, output_format: str, stream: TextIO, *, trace_id: str | None = None
+    code: ExitCode,
+    output_format: str,
+    stream: TextIO,
+    *,
+    trace_id: str | None = None,
+    command: str = "doctor",
+    revision: str | None = None,
 ) -> None:
     messages = {
         ExitCode.OK: (
@@ -26,12 +32,19 @@ def emit_result(
         ),
     }
     data: dict[str, object] = {"message": messages[code]}
+    if command.startswith("db "):
+        data["message"] = (
+            "Database command completed."
+            if code == ExitCode.OK
+            else "Database migration unavailable; verify the revision and backup."
+        )
+        data["revision"] = revision
     if trace_id is not None:
         data["trace_id"] = trace_id
     if output_format == "json":
         envelope = {
             "schema_version": 1,
-            "command": "doctor",
+            "command": command,
             "status": "ok" if code == ExitCode.OK else "error",
             "code": code.name,
             "data": data,
@@ -39,5 +52,8 @@ def emit_result(
         stream.write(json.dumps(envelope, sort_keys=True) + "\n")
     else:
         stream.write(
-            messages[code] + (f" Trace: {trace_id}" if trace_id else "") + "\n"
+            str(data["message"])
+            + (f" Revision: {revision}" if revision else "")
+            + (f" Trace: {trace_id}" if trace_id else "")
+            + "\n"
         )

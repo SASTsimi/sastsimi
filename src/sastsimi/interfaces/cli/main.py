@@ -24,6 +24,7 @@ class _Parser(argparse.ArgumentParser):
 
 def main(argv: list[str] | None = None) -> int:
     output_format = "text"
+    command_name = "doctor"
     parser = _Parser(prog="sastsimi", allow_abbrev=False)
     parser.add_argument("--config", type=Path, help="explicit approved versioned TOML")
     parser.add_argument(
@@ -37,6 +38,18 @@ def main(argv: list[str] | None = None) -> int:
         "doctor", help="read-only foundation host checks", allow_abbrev=False
     )
     doctor_parser.add_argument("--format", choices=["text", "json"])
+    db_parser = subparsers.add_parser(
+        "db", help="explicit database maintenance", allow_abbrev=False
+    )
+    db_commands = db_parser.add_subparsers(dest="db_command", required=True)
+    upgrade_parser = db_commands.add_parser("upgrade", allow_abbrev=False)
+    upgrade_parser.add_argument("revision", nargs="?", default="head")
+    upgrade_parser.add_argument("--format", choices=["text", "json"])
+    current_parser = db_commands.add_parser("current", allow_abbrev=False)
+    current_parser.add_argument("--format", choices=["text", "json"])
+    downgrade_parser = db_commands.add_parser("downgrade", allow_abbrev=False)
+    downgrade_parser.add_argument("revision")
+    downgrade_parser.add_argument("--format", choices=["text", "json"])
     try:
         args = parser.parse_args(argv)
         if args.format is not None:
@@ -52,7 +65,22 @@ def main(argv: list[str] | None = None) -> int:
         }
         config = bootstrap.build_config(args.config, overrides)
         output_format = config.output_format
-        code = ExitCode.OK if commands.doctor() else ExitCode.CAPABILITY_UNSUPPORTED
+        if args.command == "db":
+            command_name = "db " + args.db_command
+            revision = bootstrap.database_command(
+                config.data_dir, args.db_command, getattr(args, "revision", None)
+            )
+            emit_result(
+                ExitCode.OK,
+                output_format,
+                sys.stdout,
+                command=command_name,
+                revision=revision,
+            )
+            return int(ExitCode.OK)
+            code = ExitCode.OK
+        else:
+            code = ExitCode.OK if commands.doctor() else ExitCode.CAPABILITY_UNSUPPORTED
         emit_result(
             code, output_format, sys.stdout if code == ExitCode.OK else sys.stderr
         )
@@ -62,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
     except _InputError:
         code = ExitCode.INPUT_ERROR
     except bootstrap.ConfigError:
+        code = ExitCode.CONFIG_ERROR
+    except bootstrap.MigrationRequired:
         code = ExitCode.CONFIG_ERROR
     except Exception:
         trace_id = "trace-" + str(uuid4())
@@ -73,5 +103,5 @@ def main(argv: list[str] | None = None) -> int:
             ExitCode.INTERNAL_ERROR, output_format, sys.stderr, trace_id=trace_id
         )
         return int(ExitCode.INTERNAL_ERROR)
-    emit_result(code, output_format, sys.stderr)
+    emit_result(code, output_format, sys.stderr, command=command_name)
     return int(code)
