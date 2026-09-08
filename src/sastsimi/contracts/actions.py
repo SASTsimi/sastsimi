@@ -7,7 +7,7 @@ from pydantic import AwareDatetime, field_validator, model_validator
 
 from .base import ContractModel, NonEmptyStr, NonNegativeInt, PositiveInt
 from .ids import ActionId, DecisionId, ErrorId
-from .records import validate_revision
+from .records import RecordMeta, validate_revision
 from .refs import BudgetScopeRef, RecordRef, StoredDataRef, require_record_ref
 from .work import ScopedRecord
 
@@ -327,6 +327,12 @@ class ActionRequest(ScopedRecord):
                 )
         if llm and self.work_ref is None:
             raise ValueError("LLM action requires current work")
+        if (
+            self.action_type == ActionType.CALL_LLM
+            and self.requested_by in {RequesterRole.PRO, RequesterRole.CON}
+            and self.session_mode != SessionMode.NEW
+        ):
+            raise ValueError("PRO and CON CALL_LLM require session_mode=NEW")
         if self.llm_call_spec_ref:
             require_record_ref(self.llm_call_spec_ref, "llm_call_spec")
         if self.provider_profile_ref:
@@ -349,22 +355,30 @@ class ActionRequest(ScopedRecord):
         dynamic = self.action_type in {
             ActionType.REQUEST_DYNAMIC_REPRO,
             ActionType.RUN_SANDBOX,
+            ActionType.RESTART_VERIFICATION_GENERATION,
         }
         if dynamic != (self.dynamic_request_ref is not None):
             raise ValueError(
-                "Dynamic request required only for dynamic request/sandbox actions"
+                "Dynamic request required for request, sandbox and generation restart"
             )
         if self.dynamic_request_ref:
             require_record_ref(self.dynamic_request_ref, "dynamic_reproduction_request")
         sandbox = self.action_type == ActionType.RUN_SANDBOX
         for value in (
             self.reproduction_plan_ref,
-            self.sandbox_profile_ref,
             self.resource_profile_ref,
             self.run_policy_state_ref,
         ):
             if sandbox != (value is not None):
                 raise ValueError("RUN_SANDBOX requires plan and profile/audit refs")
+        if (sandbox or restart) != (self.sandbox_profile_ref is not None):
+            raise ValueError(
+                "Sandbox profile required only for sandbox or generation restart"
+            )
+        if self.sandbox_profile_ref is not None:
+            require_record_ref(self.sandbox_profile_ref, "sandbox_profile")
+        if restart:
+            self._validate_restart_inputs()
         if not sandbox and (
             self.image_digest is not None
             or self.network_targets
@@ -403,6 +417,64 @@ class ActionRequest(ScopedRecord):
             if self.run_policy_state_ref in self.input_refs:
                 raise ValueError("run_policy_state_ref is audit-only, not input_refs")
         return self
+
+    def _validate_restart_inputs(self) -> None:
+        """Validate local shape; current/approved/old provenance needs resolution."""
+        ref: RecordRef | None
+        if (
+            self.requested_by != RequesterRole.VERIFICATION
+            or not isinstance(self.meta, RecordMeta)
+            or self.meta.hypothesis_id is None
+            or self.work_ref is None
+        ):
+            raise ValueError(
+                "Generation restart requires hypothesis-local VERIFICATION "
+                "and current work"
+            )
+        if len(set(self.input_refs)) != len(self.input_refs):
+            raise ValueError("Generation restart input_refs must be unique")
+        for ref in self.input_refs:
+            require_record_ref(ref)
+        for ref in (
+            self.work_ref,
+            self.dynamic_request_ref,
+            self.sandbox_profile_ref,
+            *self.generation_restart_basis_refs,
+        ):
+            if ref is None or self.input_refs.count(ref) != 1:
+                raise ValueError(
+                    "Generation restart must fix work, old request, profile "
+                    "and each basis exactly once"
+                )
+        for kind, count in (
+            ("hypothesis_process_state", 1),
+            ("verification_assignment", 1),
+            ("work_execution_state", 2),
+            ("dynamic_reproduction_request", 1),
+            ("playbook_policy", 1),
+            ("verification_playbook", 1),
+        ):
+            if sum(ref.data_kind == kind for ref in self.input_refs) != count:
+                raise ValueError(
+                    f"Generation restart requires {count} exact {kind} inputs"
+                )
+        profiles = [
+            ref for ref in self.input_refs if ref.data_kind == "sandbox_profile"
+        ]
+        profile_count = (
+            2
+            if self.generation_restart_reason
+            == GenerationRestartReason.SANDBOX_PROFILE_REVISION_CHANGED
+            else 1
+        )
+        if (
+            len(profiles) != profile_count
+            or len({ref.record_id for ref in profiles}) != profile_count
+        ):
+            raise ValueError(
+                "Request replacement fixes one old profile; "
+                "profile change fixes distinct old/new revisions"
+            )
 
 
 class ActionCheck(ContractModel):
@@ -494,6 +566,49 @@ def validate_decision_for_action(
         raise ValueError("Required-check set differs from action type")
 
 
+def validate_generation_restart_context(
+    action: ActionRequest,
+    *,
+    current_request_ref: StoredDataRef,
+    current_profile_ref: BudgetScopeRef,
+    approved_profile_ref: BudgetScopeRef | None = None,
+) -> None:
+    """Compare against trusted current/approved refs supplied after resolution."""
+    if action.action_type != ActionType.RESTART_VERIFICATION_GENERATION:
+        raise ValueError("Expected a generation restart action")
+    require_record_ref(current_request_ref, "dynamic_reproduction_request")
+    require_record_ref(current_profile_ref, "sandbox_profile")
+    if (
+        action.dynamic_request_ref != current_request_ref
+        or action.input_refs.count(current_profile_ref) != 1
+    ):
+        raise ValueError(
+            "Generation restart must retain the old current request/profile"
+        )
+    if (
+        action.generation_restart_reason
+        == GenerationRestartReason.DYNAMIC_REQUEST_REPLACEMENT_REQUIRED
+    ):
+        if (
+            action.sandbox_profile_ref != current_profile_ref
+            or approved_profile_ref is not None
+        ):
+            raise ValueError(
+                "Request replacement must retain the current sandbox profile"
+            )
+    else:
+        if approved_profile_ref is None:
+            raise ValueError("Profile change requires the approved new exact profile")
+        require_record_ref(approved_profile_ref, "sandbox_profile")
+        if (
+            approved_profile_ref == current_profile_ref
+            or action.sandbox_profile_ref != approved_profile_ref
+        ):
+            raise ValueError(
+                "Profile change must select the approved new sandbox profile"
+            )
+
+
 def validate_decision_revision(
     previous: ActionDecision, current: ActionDecision
 ) -> None:
@@ -518,6 +633,12 @@ def validate_decision_revision(
     }
     if current.use_status not in allowed.get(previous.use_status, set()):
         raise ValueError("Decision use state cannot be reopened")
+    if (
+        previous.use_status == UseStatus.UNUSED
+        and current.use_status == UseStatus.USED
+        and current.outcome_refs
+    ):
+        raise ValueError("First USED claim must have empty outcome_refs")
     if current.outcome_refs[: len(previous.outcome_refs)] != previous.outcome_refs:
         raise ValueError("Decision outcomes must be append-only")
     if previous.use_status == UseStatus.USED and current.used_at != previous.used_at:

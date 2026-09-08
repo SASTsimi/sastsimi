@@ -93,9 +93,27 @@ def test_valid_action_shapes(kind: str) -> None:
         )
     if kind == "RESTART_VERIFICATION_GENERATION":
         data.update(
+            meta=meta(True, hypothesis_id="h1"),
+            requested_by="VERIFICATION",
             expected_verification_generation=1,
             generation_restart_reason="DYNAMIC_REQUEST_REPLACEMENT_REQUIRED",
             generation_restart_basis_refs=[ref("basis", True)],
+            dynamic_request_ref=ref("dynamic_reproduction_request", True),
+            sandbox_profile_ref=ref("sandbox_profile", True),
+            input_refs=[
+                ref(name, True)
+                for name in (
+                    "hypothesis_process_state",
+                    "verification_assignment",
+                    "work_execution_state",
+                    "dynamic_reproduction_request",
+                    "sandbox_profile",
+                    "playbook_policy",
+                    "verification_playbook",
+                    "basis",
+                )
+            ]
+            + [ref(code=True) | {"record_id": "dynamic-work"}],
         )
     if kind in {"REQUEST_DYNAMIC_REPRO", "RUN_SANDBOX"}:
         data["dynamic_request_ref"] = ref("dynamic_reproduction_request", True)

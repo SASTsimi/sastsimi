@@ -7,7 +7,10 @@ from datetime import UTC, datetime
 from enum import Enum
 from uuid import UUID
 
-from pydantic import BaseModel, RootModel
+from pydantic import BaseModel
+
+from .base import ContractModel
+from .ids import OpaqueId
 
 CANONICAL_JSON_VERSION = "canonical-json-v1"
 type SetListPolicy = Mapping[tuple[str, ...], str | None]
@@ -17,7 +20,14 @@ def _normalize(
     value: object, policy: SetListPolicy, path: tuple[str, ...], reject_hash: bool
 ) -> object:
     if isinstance(value, BaseModel):
-        if isinstance(value, RootModel):
+        if not isinstance(value, (ContractModel, OpaqueId)):
+            raise TypeError("Canonical JSON requires a contract model")
+        if (
+            value.__pydantic_extra__
+            or value.__dict__.keys() - type(value).model_fields.keys()
+        ):
+            raise ValueError("Canonical contract models cannot contain extra members")
+        if isinstance(value, OpaqueId):
             return _normalize(value.root, policy, path, reject_hash)
         # Reading fields avoids custom JSON serializers coercing forbidden floats.
         value = {name: getattr(value, name) for name in type(value).model_fields}

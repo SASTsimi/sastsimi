@@ -14,6 +14,9 @@ from .actions import SessionMode as SessionMode
 from .actions import UseStatus as UseStatus
 from .actions import validate_decision_for_action as validate_decision_for_action
 from .actions import validate_decision_revision as validate_decision_revision
+from .actions import (
+    validate_generation_restart_context as validate_generation_restart_context,
+)
 from .base import ContractModel as ContractModel
 from .base import NonEmptyStr as NonEmptyStr
 from .base import NonNegativeInt as NonNegativeInt
@@ -106,4 +109,5 @@ from .work import WorkStatus as WorkStatus
 from .work import WorkType as WorkType
 from .work import validate_attempt_context as validate_attempt_context
 from .work import validate_commit_transition as validate_commit_transition
+from .work import validate_parent_work as validate_parent_work
 from .work import validate_transition_context as validate_transition_context

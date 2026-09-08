@@ -4,6 +4,7 @@ from typing import Any, Self
 from pydantic import AwareDatetime, ValidationInfo, field_validator, model_validator
 
 from .base import ContractModel, NonEmptyStr, NonNegativeInt, PositiveInt, Sha256
+from .canonical_json import content_hash
 from .ids import (
     AnalysisId,
     AttemptId,
@@ -24,6 +25,7 @@ from .refs import (
     RunStoredDataRef,
     StoredDataRef,
     require_record_ref,
+    validate_exact_ref,
     validate_ref_scope,
 )
 
@@ -270,9 +272,15 @@ class WorkExecutionState(ScopedRecord):
             WorkType.CON_EVIDENCE,
             WorkType.DYNAMIC_REPRO,
             WorkType.CWE_LABEL,
+            WorkType.FINDING_NORMALIZE,
         }
         if (self.work_type in children) != (self.parent_work_ref is not None):
-            raise ValueError("Parent required only for Verification child work")
+            raise ValueError("Parent required only for declared child work types")
+        if (
+            self.work_type == WorkType.FINDING_NORMALIZE
+            and self.subject_type != SubjectType.HYPOTHESIS
+        ):
+            raise ValueError("FINDING_NORMALIZE requires a hypothesis subject")
         if (self.work_type == WorkType.CHAINING) != (
             self.trigger_primitive_ref is not None
         ):
@@ -346,6 +354,8 @@ class StateTransition(ScopedRecord):
             raise ValueError("STATE_TRANSITION_INVALID")
         if self.new_state_version != self.expected_state_version + 1:
             raise ValueError("State version must increase by exactly one")
+        if self.to_status == TransitionTargetStatus.RUNNING and self.attempt_id is None:
+            raise ValueError("Starting RUNNING requires the new attempt_id")
         require_record_ref(self.action_decision_ref, "action_decision")
         _attempt_meta(self.meta, self.attempt_id)
         return self
@@ -388,6 +398,7 @@ def validate_transition_context(
     *,
     retry_trigger: AttemptTrigger | None = None,
 ) -> None:
+    _validate_metadata_scope(transition.meta, work.meta)
     if (
         transition.work_id != work.work_id
         or transition.expected_state_version != work.state_version
@@ -447,6 +458,13 @@ def validate_attempt_context(
 def validate_commit_transition(
     commit: TransitionCommit, transition: StateTransition
 ) -> None:
+    _validate_metadata_scope(commit.meta, transition.meta)
+    validate_exact_ref(
+        commit.transition_ref,
+        transition.meta,
+        content_hash(transition),
+        analysis_id=commit.meta.analysis_id,
+    )
     pairs = (
         (commit.work_id, transition.work_id),
         (commit.expected_state_version, transition.expected_state_version),
@@ -460,3 +478,45 @@ def validate_commit_transition(
     )
     if any(left != right for left, right in pairs):
         raise ValueError("TransitionCommit does not match exact StateTransition")
+
+
+def _validate_metadata_scope(
+    left: RunMeta | RecordMeta, right: RunMeta | RecordMeta
+) -> None:
+    if type(left) is not type(right) or left.analysis_id != right.analysis_id:
+        raise ValueError("Metadata kind or analysis scope mismatch")
+    if isinstance(left, RecordMeta) and isinstance(right, RecordMeta):
+        if (left.workspace_id, left.commit_id, left.hypothesis_id) != (
+            right.workspace_id,
+            right.commit_id,
+            right.hypothesis_id,
+        ):
+            raise ValueError("Metadata workspace/commit/hypothesis scope mismatch")
+
+
+def validate_parent_work(child: WorkExecutionState, parent: WorkExecutionState) -> None:
+    """Validate a resolved exact parent; storage still verifies current pointers."""
+    if child.parent_work_ref is None:
+        raise ValueError("Child work requires its exact parent reference")
+    _validate_metadata_scope(child.meta, parent.meta)
+    validate_exact_ref(
+        child.parent_work_ref,
+        parent.meta,
+        content_hash(parent),
+        analysis_id=child.meta.analysis_id,
+    )
+    if (
+        child.subject_type != parent.subject_type
+        or child.subject_id != parent.subject_id
+    ):
+        raise ValueError("Parent and child hypothesis subjects must match")
+    if child.work_type == WorkType.FINDING_NORMALIZE:
+        if (
+            parent.work_type != WorkType.RULE_SCOPE_GATE
+            or parent.status != WorkStatus.SUCCEEDED
+        ):
+            raise ValueError(
+                "FINDING_NORMALIZE requires a successful RULE_SCOPE_GATE parent"
+            )
+    elif parent.work_type != WorkType.VERIFICATION:
+        raise ValueError("Verification child requires a VERIFICATION parent")

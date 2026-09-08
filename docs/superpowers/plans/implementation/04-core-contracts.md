@@ -89,3 +89,20 @@ Ruff lint and strict mypy passed for all 48 Python files. Generated schema drift
 check passed. Architecture validation reported 0 failures and the document
 inventory/link audit reported 0 missing local links. Windows temporary-directory
 access required elevated test execution; uv used the ignored `.cache/uv` path.
+
+## Independent review fixes — round 1
+
+Finding normalization now accepts its required hypothesis-local Rule Scope Gate
+parent; `validate_parent_work` checks the resolved exact successful parent.
+Transition/context and commit validators compare metadata scopes, and the commit
+validator verifies the exact transition digest. Entering RUNNING requires a new
+attempt identity. Generation restart fixes the canonical old request and old/new
+profile inputs according to its reason; `validate_generation_restart_context`
+compares them with trusted current/approved references after resolution.
+Pro/Con LLM calls require NEW sessions, and the first USED claim has no outcomes.
+Canonical serialization rejects foreign or extra-bearing Pydantic models so
+hidden fields cannot evade digest or unsupported-number checks.
+
+Round 1 verification: 26 new regression tests; 118 focused and 259 total tests
+passed. Ruff and strict mypy passed for 49 files. Regeneration produced no schema
+diff because these changes enforce contextual/semantic rules on existing fields.
