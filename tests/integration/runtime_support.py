@@ -147,7 +147,7 @@ class Harness:
         from sqlalchemy import insert, select
 
         from sastsimi.contracts.actions import ActionDecision
-        from sastsimi.contracts.canonical_json import canonical_bytes
+        from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
         from sastsimi.storage import models
         from sastsimi.storage.codec import reference
 
@@ -161,6 +161,7 @@ class Harness:
         self.evidence.identities[decision_ref] = RequesterRole.RECOVERY
         request = self.records.get_exact(record.action_ref)
         assert isinstance(request, ActionRequest)
+        self.evidence.identities[request.requester_identity_ref] = request.requested_by
         with self.database.write() as connection:
             if not connection.execute(
                 select(models.action_requests).where(
@@ -172,6 +173,21 @@ class Harness:
                         action_id=str(request.action_id),
                         request_ref=canonical_bytes(record.action_ref).decode(),
                         decision_ref=canonical_bytes(reference(record)).decode(),
+                    )
+                )
+                outputs = (
+                    (request.candidate_result_ref,)
+                    if request.candidate_result_ref
+                    else ()
+                )
+                connection.execute(
+                    insert(models.action_output_closures).values(
+                        action_id=str(request.action_id),
+                        decision_ref=canonical_bytes(decision_ref).decode(),
+                        output_refs=canonical_bytes(outputs).decode(),
+                        content_hash=content_hash(
+                            [record.action_ref, decision_ref, outputs]
+                        ),
                     )
                 )
                 for check in record.check_results:

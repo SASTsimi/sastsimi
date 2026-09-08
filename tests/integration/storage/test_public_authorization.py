@@ -37,9 +37,9 @@ def test_public_validator_derives_denial_and_persists_checks(tmp_path: Path) -> 
     assert runtime.validator.authorize(request) == decision
 
 
-@pytest.mark.parametrize("forged", [False, True])
+@pytest.mark.parametrize("forged", [False, True, "revoked"])
 def test_public_bootstrap_authorizes_work_but_rejects_caller_pass(
-    tmp_path: Path, forged: bool
+    tmp_path: Path, forged: bool | str
 ) -> None:
     h = Harness(tmp_path)
     profile = h.execution()
@@ -78,7 +78,7 @@ def test_public_bootstrap_authorizes_work_but_rejects_caller_pass(
     )
     reserved = runtime.budget.reserve(BudgetReservationRequest(reservation))
     reserved_ref = records.stage_record(reserved)
-    if forged:
+    if forged is True:
         forged_decision = ActionDecision.model_validate_json(
             json.dumps(
                 decision(
@@ -96,6 +96,13 @@ def test_public_bootstrap_authorizes_work_but_rejects_caller_pass(
         approved = runtime.validator.authorize(request, candidate, reserved_ref)
         assert approved.decision == "ALLOW"
         assert approved.checked_config_refs == (scope,)
+        if forged == "revoked":
+            h.evidence.identities[profile.approval_ref] = RequesterRole.HYPOTHESIS
+            with pytest.raises(ValueError, match="AUTHORITY_DENIED"):
+                runtime.work.register(
+                    candidate, records.stage_record(approved), reserved_ref
+                )
+            return
         registered = runtime.work.register(
             candidate, records.stage_record(approved), reserved_ref
         )

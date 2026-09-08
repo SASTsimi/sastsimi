@@ -151,6 +151,11 @@ def make(name: str, kind: str | None = None) -> dict[str, Any]:
         ]
     if name == "HypothesisDuplicateReview":
         value["candidate_hypothesis_refs"] = [ref("vulnerability_hypothesis")]
+    if name == "HypothesisProcessState":
+        value["meta"] = meta(kind, hypothesis="h1", attempt=None)
+        value["verification_generation"] = 0
+    if name == "VerificationAssignment":
+        value["meta"] = meta(kind, hypothesis="h1", attempt=None)
     if name == "PrimitiveAdmissionDecision":
         value["rule_scope_review_ref"] = ref("rule_scope_impact_review")
     if name == "Primitive":

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef
 from sastsimi.contracts.work import TransitionCommit, WorkAttempt, WorkExecutionState
 
@@ -128,6 +129,41 @@ def verify(
                 raise ValueError(
                     "CURRENT_POINTER_MISMATCH: unjournaled domain revision"
                 )
+        for row in connection.execute(select(models.analysis_runs)).mappings():
+            state = AnalysisRunState.model_validate_json(row["payload"])
+            exact_state = records.resolve(connection, reference(state))
+            run_pointer = connection.execute(
+                select(
+                    models.current_records.c.record_id,
+                    models.current_records.c.state_version,
+                ).where(
+                    models.current_records.c.logical_record_id
+                    == str(state.meta.logical_record_id)
+                )
+            ).first()
+            if (
+                state != exact_state
+                or str(state.meta.analysis_id) != row["analysis_id"]
+                or run_pointer is None
+                or tuple(run_pointer)
+                != (str(state.meta.record_id), state.meta.revision_number)
+            ):
+                raise ValueError("CURRENT_POINTER_MISMATCH: analysis projection")
+            for _, record_id in journal_outputs.values():
+                wire = connection.execute(
+                    select(models.records.c.ref).where(
+                        models.records.c.record_id == record_id
+                    )
+                ).scalar_one()
+                ref = REF_ADAPTER.validate_json(wire)
+                if (
+                    ref.data_kind == "code_workspace"
+                    and getattr(ref, "analysis_id", None) == state.meta.analysis_id
+                ):
+                    if state.workspace_ref != ref:
+                        raise ValueError(
+                            "CURRENT_POINTER_MISMATCH: analysis workspace companion"
+                        )
         for row in connection.execute(select(models.work_states)).mappings():
             work = WorkExecutionState.model_validate_json(row["payload"])
             pointer = (

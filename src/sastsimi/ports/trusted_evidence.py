@@ -4,11 +4,14 @@ from typing import Protocol
 
 from sastsimi.contracts.actions import ActionRequest, CheckType, RequesterRole
 from sastsimi.contracts.budget import BudgetProfileBinding, ExecutionBudgetProfile
-from sastsimi.contracts.refs import BudgetScopeRef
+from sastsimi.contracts.refs import BudgetScopeRef, RecordRef
 from sastsimi.contracts.work import WorkExecutionState
 
 
 class TrustedEvidencePort(Protocol):
+    def authorized_outputs(
+        self, action: ActionRequest
+    ) -> tuple[RecordRef, ...] | None: ...
     def identity_role(self, ref: BudgetScopeRef) -> RequesterRole | None: ...
     def approved(
         self, profile: ExecutionBudgetProfile | BudgetProfileBinding
@@ -23,6 +26,9 @@ class TrustedEvidencePort(Protocol):
 
 
 class UnprovenEvidence:
+    def authorized_outputs(self, action: ActionRequest) -> tuple[RecordRef, ...] | None:
+        return None
+
     def identity_role(self, ref: BudgetScopeRef) -> RequesterRole | None:
         return None
 

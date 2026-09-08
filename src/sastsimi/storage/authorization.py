@@ -15,21 +15,23 @@ from sastsimi.contracts.actions import (
     ActionType,
     CheckResult,
     CheckType,
-    RequesterRole,
 )
 from sastsimi.contracts.budget import BudgetProfileBinding, BudgetReservation
-from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.ids import DecisionId, ErrorId, LogicalRecordId, RecordId
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef
-from sastsimi.contracts.result_registry import RESULT_REGISTRY
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
 
 from . import models
+from .action_context import check_owner
+from .action_policy import check_role
 from .codec import REF_ADAPTER, reference
 from .current_inputs import check_current_input
+from .output_closures import derive_outputs
 from .repositories import SQLiteRecordStore
+from .stage_policy import check_stage
 
 
 class AuthorizationContext(Protocol):
@@ -78,6 +80,7 @@ def authorize(
             resolved = records.resolve(connection, action.work_ref)
             work = resolved if isinstance(resolved, WorkExecutionState) else None
         config_refs: list[BudgetScopeRef] = []
+        outputs: tuple[RecordRef, ...] = ()
         checks = []
         for kind in sorted(
             REQUIRED_CHECKS[action.action_type], key=lambda value: value.value
@@ -89,25 +92,18 @@ def authorize(
                     raise ValueError("RECOVERY_FAILED")
                 if kind == CheckType.AUTHORITY:
                     role = records.evidence.identity_role(action.requester_identity_ref)
-                    if role != action.requested_by:
-                        raise ValueError("AUTHORITY_DENIED")
-                    if action.action_type == ActionType.SAVE_RESULT:
-                        binding = RESULT_REGISTRY.get(action.result_kind or "")
-                        if binding is None or binding.owner != role:
-                            raise ValueError("AUTHORITY_DENIED")
-                    elif action.action_type in {
-                        ActionType.REGISTER_WORK,
-                        ActionType.START_ATTEMPT,
-                        ActionType.CHANGE_WORK_STATE,
-                        ActionType.CANCEL_WORK,
-                    } and role not in {
-                        RequesterRole.ORCHESTRATION,
-                        RequesterRole.RECOVERY,
-                    }:
-                        raise ValueError("AUTHORITY_DENIED")
+                    check_role(action, role)
                 elif kind in {CheckType.IDENTITY, CheckType.STATE, CheckType.REVISION}:
                     if work is None or action.meta.analysis_id != work.meta.analysis_id:
                         raise ValueError("IDENTITY_MISMATCH")
+                    check_owner(records, connection, action, work)
+                    check_stage(records, connection, action, work)
+                    if action.action_type == ActionType.RUN_SANDBOX:
+                        assert action.sandbox_profile_ref is not None
+                        assert action.resource_profile_ref is not None
+                        config_refs.extend(
+                            (action.sandbox_profile_ref, action.resource_profile_ref)
+                        )
                     if action.work_ref is not None:
                         current_payload = connection.execute(
                             select(models.work_states.c.payload).where(
@@ -145,7 +141,9 @@ def authorize(
                                 scope.dynamic_lifecycle_profile_ref,
                             )
                         )
-                elif kind != CheckType.SCHEMA:
+                elif kind == CheckType.SCHEMA:
+                    outputs = derive_outputs(records, connection, action)
+                else:
                     evidence = records.evidence.action_evidence(action, kind)
                     if evidence is None:
                         raise ValueError(kind.value + "_UNPROVEN")
@@ -205,6 +203,14 @@ def authorize(
                 action_id=str(action.action_id),
                 request_ref=canonical_bytes(request_ref).decode(),
                 decision_ref=canonical_bytes(decision_ref).decode(),
+            )
+        )
+        connection.execute(
+            insert(models.action_output_closures).values(
+                action_id=str(action.action_id),
+                decision_ref=canonical_bytes(decision_ref).decode(),
+                output_refs=canonical_bytes(outputs).decode(),
+                content_hash=content_hash([request_ref, decision_ref, outputs]),
             )
         )
         for check in checks:

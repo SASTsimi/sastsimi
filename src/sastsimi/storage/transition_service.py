@@ -5,7 +5,7 @@ from collections.abc import Callable
 
 from sqlalchemy import Connection, insert, select, update
 
-from sastsimi.contracts.actions import ActionType
+from sastsimi.contracts.actions import ActionRequest, ActionType, RequesterRole
 from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
@@ -30,6 +30,7 @@ from sastsimi.storage.artifact_store import LocalArtifactStore
 from sastsimi.storage.codec import REF_ADAPTER, encode, reference
 
 from .current_inputs import check_current_input
+from .output_closures import read_outputs
 from .records import next_meta
 from .run_states import get_run, save_run
 from .work_service import WorkService
@@ -139,11 +140,13 @@ class TransitionService:
         )
         for ref in work.input_refs:
             check_current_input(self.works.records, connection, ref)
+        if refs and set(refs) != set(
+            read_outputs(connection, action, request.transition.action_decision_ref)
+        ):
+            raise ValueError("OUTPUT_BINDING_MISMATCH")
         for record in request.records:
             if not isinstance(record, ContractModel):
                 raise ValueError("OUTPUT_SCHEMA_MISMATCH")
-            if reference(record) != action.candidate_result_ref:
-                raise ValueError("OUTPUT_BINDING_MISMATCH")
             validate_result_owner(record.meta.record_type, record, action.requested_by)
             meta = record.meta
             if (
@@ -223,6 +226,20 @@ class TransitionService:
                         )
                     )
             terminal = request.commit.target_status.value != "BLOCKED"
+            waiting = WaitingFor.INPUT
+            action = records.resolve(connection, claimed.action_ref)
+            if (
+                isinstance(action, ActionRequest)
+                and action.requested_by == RequesterRole.RECOVERY
+            ):
+                dispatched = connection.execute(
+                    select(models.external_dispatches.c.action_id).where(
+                        models.external_dispatches.c.work_id == str(previous.work_id),
+                        models.external_dispatches.c.dispatched_at.is_not(None),
+                    )
+                ).first()
+                if dispatched is None:
+                    waiting = WaitingFor.RETRY
             work = WorkExecutionState.model_validate(
                 previous.model_dump()
                 | dict(
@@ -237,7 +254,7 @@ class TransitionService:
                     error_ids=committed.error_ids,
                     finished_at=self.works.clock.now() if terminal else None,
                     stop_reason=request.transition.cause,
-                    waiting_for=() if terminal else (WaitingFor.INPUT,),
+                    waiting_for=() if terminal else (waiting,),
                 )
             )
             if previous.active_attempt_id is not None:

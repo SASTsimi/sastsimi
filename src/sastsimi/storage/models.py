@@ -48,6 +48,16 @@ action_checks = Table(
     Column("check_type", Text, primary_key=True),
     Column("payload", Text, nullable=False),
 )
+action_output_closures = Table(
+    "action_output_closures",
+    metadata,
+    Column(
+        "action_id", Text, ForeignKey("action_requests.action_id"), primary_key=True
+    ),
+    Column("decision_ref", Text, nullable=False),
+    Column("output_refs", Text, nullable=False),
+    Column("content_hash", Text, nullable=False),
+)
 records = Table(
     "records",
     metadata,

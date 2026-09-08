@@ -135,6 +135,29 @@ class BudgetService:
         work: WorkExecutionState,
         action: ActionRequest,
     ) -> None:
+        remaining = self.available(
+            connection,
+            reservation.budget_binding_ref,
+            str(work.meta.analysis_id),
+            exclude_reservation=str(reservation.reservation_id),
+        )
+        if any(
+            getattr(reservation.requested_units, key)
+            > getattr(remaining.available_units, key)
+            for key in UNIT_FIELDS
+        ):
+            raise ValueError("BUDGET_EXCEEDED: requested capacity no longer fits")
+        if action.action_type in {ActionType.REGISTER_WORK, ActionType.START_ATTEMPT}:
+            if any(
+                getattr(remaining.available_units, key) <= 0
+                for key in (
+                    "elapsed_ms",
+                    "cost_minor_units",
+                    "llm_call_count",
+                    "work_count",
+                )
+            ):
+                raise ValueError("BUDGET_EXCEEDED: executable capacity exhausted")
         scope = self.records.resolve(connection, reservation.budget_binding_ref)
         if isinstance(scope, BudgetProfileBinding):
             self.registry.validate_binding(connection, scope)

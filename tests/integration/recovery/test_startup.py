@@ -45,7 +45,7 @@ def test_record_and_pointer_corruption_blocks_recovery(tmp_path: Path) -> None:
         RecoveryService(transitions).recover()
 
 
-def test_expired_external_lease_preserves_unknown_reservation_and_blocks_work(
+def test_expired_undispatched_lease_preserves_reservation_and_allows_retry(
     tmp_path: Path,
 ) -> None:
     from sqlalchemy import text
@@ -63,7 +63,7 @@ def test_expired_external_lease_preserves_unknown_reservation_and_blocks_work(
     assert report.blocked_work == 1
     work = transitions.works.get("reserve-work")
     assert work.status == "BLOCKED"
-    assert work.waiting_for == ("INPUT",)
+    assert work.waiting_for == ("RETRY",)
     assert work.output_refs == ()
     with h.database.engine.connect() as connection:
         assert (

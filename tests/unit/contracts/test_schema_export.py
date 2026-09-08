@@ -18,6 +18,7 @@ EXPECTED_KINDS = {
     "action_request",
     "action_check",
     "action_decision",
+    "sandbox_profile",
     "execution_budget_profile",
     "work_budget_limit",
     "work_budget_profile",

@@ -5,7 +5,7 @@ from typing import Literal, Self
 from pydantic import AwareDatetime, PositiveInt, model_validator
 
 from ._domain import DomainRecord, exact, exact_set, same_scope, unique
-from .base import ContractModel, NonEmptyStr
+from .base import ContractModel, NonEmptyStr, NonNegativeInt
 from .ids import HypothesisId, ProposalId
 from .refs import StoredDataRef, require_record_ref
 from .static import (
@@ -140,6 +140,67 @@ class VerificationAssignment(DomainRecord):
             raise ValueError("ASSIGNMENT_PREVIOUS_REQUIRED")
         if self.previous_assignment_ref is not None:
             require_record_ref(self.previous_assignment_ref, self.KIND)
+        return self
+
+
+class HypothesisProcessState(DomainRecord):
+    """Canonical current owner/generation projection; mutation belongs to workflows."""
+
+    KIND = "hypothesis_process_state"
+    HYPOTHESIS = True
+    ATTEMPT = False
+    proposal_ref: StoredDataRef
+    status: Literal[
+        "REGISTERED", "ASSIGNED", "VERIFYING", "TERMINAL", "FAILED", "CANCELLED"
+    ]
+    verification_assignment_ref: StoredDataRef | None
+    verification_generation: NonNegativeInt
+    verification_work_ref: StoredDataRef | None
+    verification_result_ref: StoredDataRef | None
+    started_at: AwareDatetime
+    finished_at: AwareDatetime | None
+    elapsed_ms: NonNegativeInt
+
+    @model_validator(mode="after")
+    def process_shape(self) -> Self:
+        terminal = self.status in {"TERMINAL", "FAILED", "CANCELLED"}
+        if terminal != (self.finished_at is not None):
+            raise ValueError("PROCESS_TERMINAL_TIME_MISMATCH")
+        if self.status == "REGISTERED" and (
+            self.verification_generation != 0
+            or any(
+                ref is not None
+                for ref in (
+                    self.verification_assignment_ref,
+                    self.verification_work_ref,
+                    self.verification_result_ref,
+                )
+            )
+        ):
+            raise ValueError("REGISTERED_PROCESS_HAS_NO_ASSIGNMENT")
+        if (
+            self.status in {"ASSIGNED", "VERIFYING", "TERMINAL", "FAILED"}
+            and self.verification_assignment_ref is None
+        ):
+            raise ValueError("PROCESS_ASSIGNMENT_REQUIRED")
+        if (
+            self.status in {"VERIFYING", "FAILED"}
+            and self.verification_work_ref is None
+        ):
+            raise ValueError("PROCESS_WORK_REQUIRED")
+        if self.status == "TERMINAL" and (
+            self.verification_work_ref is not None
+            or self.verification_result_ref is None
+        ):
+            raise ValueError("TERMINAL_PROCESS_RESULT_REQUIRED")
+        if self.status == "FAILED" and self.verification_result_ref is not None:
+            raise ValueError("FAILED_PROCESS_HAS_NO_VERDICT")
+        for ref, kind in (
+            (self.verification_assignment_ref, "verification_assignment"),
+            (self.verification_work_ref, "work_execution_state"),
+        ):
+            if ref is not None:
+                require_record_ref(ref, kind)
         return self
 
 

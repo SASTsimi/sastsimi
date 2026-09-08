@@ -50,6 +50,8 @@ def authorization(
     version: int | None = None,
     **changes: Any,
 ) -> BudgetScopeRef:
+    if kind == ActionType.READ_CODE and "requested_by" not in changes:
+        changes["requested_by"] = "HYPOTHESIS"
     request = ActionRequest.model_validate_json(
         json.dumps(
             action(

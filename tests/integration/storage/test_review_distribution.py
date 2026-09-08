@@ -84,3 +84,32 @@ def test_runtime_uses_frozen_directory_layout(tmp_path: Path) -> None:
     assert (tmp_path / "db" / "sastsimi.sqlite3").is_file()
     assert (tmp_path / "staging").is_dir()
     assert (tmp_path / "quarantine").is_dir()
+
+
+def test_db_current_reports_valid_older_revision(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    args = ["--data-dir", str(tmp_path), "db"]
+    assert main([*args, "upgrade", "0001_runtime", "--format", "json"]) == 0
+    capsys.readouterr()
+    assert main([*args, "current", "--format", "json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["data"]["revision"] == "0001_runtime"
+    assert result["command"] == "db current"
+
+
+def test_refused_lossy_downgrade_is_configuration_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tests.integration.runtime_support import Harness
+
+    h = Harness(tmp_path)
+    h.execution()
+    assert (
+        main(
+            ["--data-dir", str(tmp_path), "db", "downgrade", "base", "--format", "json"]
+        )
+        == 3
+    )
+    result = json.loads(capsys.readouterr().err)
+    assert result["command"] == "db downgrade"

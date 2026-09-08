@@ -22,7 +22,7 @@ def canonical_inventory() -> dict[str, tuple[str, str]]:
 
 def test_every_approved_result_has_model_owner_and_export() -> None:
     expected = canonical_inventory()
-    assert len(expected) == 41
+    assert len(expected) == 43
     assert importlib.util.find_spec("sastsimi.contracts.result_registry") is not None, (
         f"Missing result registry for {len(expected)} canonical result kinds"
     )

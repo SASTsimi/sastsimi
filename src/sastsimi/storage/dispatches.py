@@ -27,43 +27,41 @@ def reject_uncertain(connection: Connection, work_id: str) -> None:
 def mark_dispatched(
     records: SQLiteRecordStore,
     clock: Clock,
+    connection: Connection,
     decision_ref: RecordRef,
     provider_request_id: str | None,
     idempotency_key: str | None,
 ) -> None:
-    with records.database.write() as connection:
-        table = models.external_dispatches
-        row = (
-            connection.execute(
-                select(table).where(
-                    table.c.decision_ref == canonical_bytes(decision_ref).decode()
-                )
-            )
-            .mappings()
-            .one()
-        )
-        reject_uncertain(connection, row["work_id"])
-        active = connection.execute(
-            select(models.work_states.c.active_attempt_id).where(
-                models.work_states.c.work_id == row["work_id"],
-                models.work_states.c.status == "RUNNING",
-            )
-        ).scalar()
-        if active != row["attempt_id"]:
-            raise ValueError("ATTEMPT_NOT_ACTIVE")
-        result = connection.execute(
-            update(table)
-            .where(
-                table.c.action_id == row["action_id"], table.c.dispatched_at.is_(None)
-            )
-            .values(
-                dispatched_at=clock.now().isoformat(),
-                provider_request_id=provider_request_id,
-                idempotency_key=idempotency_key,
+    table = models.external_dispatches
+    row = (
+        connection.execute(
+            select(table).where(
+                table.c.decision_ref == canonical_bytes(decision_ref).decode()
             )
         )
-        if result.rowcount != 1:
-            raise ValueError("ACTION_ALREADY_USED")
+        .mappings()
+        .one()
+    )
+    reject_uncertain(connection, row["work_id"])
+    active = connection.execute(
+        select(models.work_states.c.active_attempt_id).where(
+            models.work_states.c.work_id == row["work_id"],
+            models.work_states.c.status == "RUNNING",
+        )
+    ).scalar()
+    if active != row["attempt_id"]:
+        raise ValueError("ATTEMPT_NOT_ACTIVE")
+    result = connection.execute(
+        update(table)
+        .where(table.c.action_id == row["action_id"], table.c.dispatched_at.is_(None))
+        .values(
+            dispatched_at=clock.now().isoformat(),
+            provider_request_id=provider_request_id,
+            idempotency_key=idempotency_key,
+        )
+    )
+    if result.rowcount != 1:
+        raise ValueError("ACTION_ALREADY_USED")
 
 
 def mark_returned(

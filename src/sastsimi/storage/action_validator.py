@@ -20,9 +20,13 @@ from sastsimi.storage import models
 from sastsimi.storage.codec import encode, reference
 from sastsimi.storage.repositories import SQLiteRecordStore
 
+from .action_context import check_owner
+from .action_policy import check_role
 from .budget_service import BudgetService
+from .current_inputs import check_current_input
 from .dispatches import mark_dispatched, mark_returned, reject_uncertain
 from .records import next_meta
+from .stage_policy import check_stage
 
 
 class RuntimeValidator:
@@ -32,9 +36,57 @@ class RuntimeValidator:
         provider_request_id: str | None = None,
         idempotency_key: str | None = None,
     ) -> None:
-        mark_dispatched(
-            self.records, self.clock, decision_ref, provider_request_id, idempotency_key
-        )
+        from .codec import REF_ADAPTER
+
+        with self.records.database.write() as connection:
+            row = (
+                connection.execute(
+                    select(models.external_dispatches).where(
+                        models.external_dispatches.c.decision_ref
+                        == canonical_bytes(decision_ref).decode()
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            decision = self.records.resolve(connection, decision_ref)
+            if (
+                not isinstance(decision, ActionDecision)
+                or decision.valid_until is None
+                or self.clock.now() > decision.valid_until
+            ):
+                raise ValueError("ACTION_EXPIRED_OR_DENIED")
+            action = self.records.resolve(connection, decision.action_ref)
+            assert isinstance(action, ActionRequest)
+            payload = connection.execute(
+                select(models.work_states.c.payload).where(
+                    models.work_states.c.work_id == row["work_id"]
+                )
+            ).scalar_one()
+            work = WorkExecutionState.model_validate_json(payload)
+            check_role(
+                action,
+                self.records.evidence.identity_role(action.requester_identity_ref),
+            )
+            check_owner(self.records, connection, action, work)
+            check_stage(self.records, connection, action, work)
+            for ref in (*work.input_refs, *action.input_refs):
+                check_current_input(self.records, connection, ref)
+            self.check_reservation(
+                connection,
+                REF_ADAPTER.validate_json(row["reservation_ref"]),
+                action,
+                work,
+                allow_claimed=True,
+            )
+            mark_dispatched(
+                self.records,
+                self.clock,
+                connection,
+                decision_ref,
+                provider_request_id,
+                idempotency_key,
+            )
 
     def mark_returned(self, decision_ref: RecordRef) -> None:
         mark_returned(self.records, self.clock, decision_ref)
@@ -158,6 +210,11 @@ class RuntimeValidator:
         action = self.records.resolve(connection, decision.action_ref)
         if not isinstance(action, ActionRequest) or action.action_type != kind:
             raise ValueError("ACTION_TYPE_MISMATCH")
+        check_role(
+            action, self.records.evidence.identity_role(action.requester_identity_ref)
+        )
+        check_owner(self.records, connection, action, work)
+        check_stage(self.records, connection, action, work)
         issued = connection.execute(
             select(models.action_requests.c.decision_ref).where(
                 models.action_requests.c.action_id == str(action.action_id)
@@ -192,7 +249,8 @@ class RuntimeValidator:
             or decision.checked_state_version != work.state_version
         ):
             raise ValueError("STATE_VERSION_CONFLICT")
-        for ref in action.input_refs:
+        for ref in (*work.input_refs, *action.input_refs):
+            check_current_input(self.records, connection, ref)
             resolved = self.records.resolve(connection, ref)
             if (
                 getattr(resolved.meta, "analysis_id", work.meta.analysis_id)

@@ -4,6 +4,7 @@ from importlib.resources import files
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from alembic.util.exc import CommandError
 from sqlalchemy import inspect, text
 
@@ -32,8 +33,22 @@ def check_revision(database: Database) -> None:
 
 
 def current(database: Database) -> str:
-    check_revision(database)
-    return HEAD
+    with database.engine.connect() as connection:
+        if "alembic_version" not in inspect(connection).get_table_names():
+            raise MigrationRequired("Pending migration; run sastsimi db upgrade")
+        revisions = list(
+            connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalars()
+        )
+    if len(revisions) != 1:
+        raise MigrationRequired("Pending or unknown migration revision")
+    revision = str(revisions[0])
+    try:
+        ScriptDirectory.from_config(config(database)).get_revision(revision)
+    except CommandError as error:
+        raise MigrationRequired("Unknown migration revision") from error
+    return revision
 
 
 def upgrade(database: Database, revision: str = "head") -> None:
@@ -52,7 +67,7 @@ def downgrade(database: Database, revision: str = "base") -> None:
             if table != "alembic_version":
                 quoted = connection.dialect.identifier_preparer.quote(table)
                 if connection.execute(text(f"SELECT count(*) FROM {quoted}")).scalar():
-                    raise ValueError(
+                    raise MigrationRequired(
                         "Lossy downgrade requires a verified backup "
                         "and explicit approval"
                     )
