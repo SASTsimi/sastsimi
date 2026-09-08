@@ -9,6 +9,9 @@ from sastsimi.contracts.work import WorkExecutionState
 
 
 class TrustedEvidencePort(Protocol):
+    def generation_restart_evidence(
+        self, action: ActionRequest
+    ) -> tuple[BudgetScopeRef, ...] | None: ...
     def authorized_outputs(
         self, action: ActionRequest
     ) -> tuple[RecordRef, ...] | None: ...
@@ -26,6 +29,11 @@ class TrustedEvidencePort(Protocol):
 
 
 class UnprovenEvidence:
+    def generation_restart_evidence(
+        self, action: ActionRequest
+    ) -> tuple[BudgetScopeRef, ...] | None:
+        return None
+
     def authorized_outputs(self, action: ActionRequest) -> tuple[RecordRef, ...] | None:
         return None
 

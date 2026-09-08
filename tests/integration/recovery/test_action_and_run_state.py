@@ -114,3 +114,14 @@ def test_public_recovery_rejects_detached_analysis_companion(
             )
     with pytest.raises(ValueError, match="RECOVERY_FAILED"):
         build_runtime(tmp_path, None, None, h.clock, h.ids, evidence=h.evidence)
+
+
+def test_public_recovery_rejects_missing_entire_analysis_projection(
+    tmp_path: Path,
+) -> None:
+    h, adapter, prepared = completion(tmp_path)
+    adapter.commit(prepared)
+    with h.database.write() as connection:
+        connection.execute(text("DELETE FROM analysis_runs WHERE analysis_id='a1'"))
+    with pytest.raises(ValueError, match="RECOVERY_FAILED"):
+        build_runtime(tmp_path, None, None, h.clock, h.ids, evidence=h.evidence)

@@ -70,6 +70,9 @@ def verify(
                     ):
                         raise ValueError("HASH_MISMATCH: nested artifact reference")
                     digests.add(digest)
+        required_analyses = set(
+            connection.execute(select(models.work_states.c.analysis_id)).scalars()
+        )
         for pointer in connection.execute(select(models.current_records)).mappings():
             wire = connection.execute(
                 select(models.records.c.ref).where(
@@ -77,6 +80,8 @@ def verify(
                 )
             ).scalar_one()
             current = records.resolve(connection, REF_ADAPTER.validate_json(wire))
+            if isinstance(current, AnalysisRunState):
+                required_analyses.add(str(current.meta.analysis_id))
             expected_version = (
                 current.state_version
                 if isinstance(current, WorkExecutionState)
@@ -94,6 +99,7 @@ def verify(
             )
         ).scalars():
             journal = TransitionCommit.model_validate_json(payload)
+            required_analyses.add(str(journal.meta.analysis_id))
             for ref in journal.output_refs:
                 output = records.resolve(connection, ref)
                 logical_id = str(output.meta.logical_record_id)
@@ -129,7 +135,10 @@ def verify(
                 raise ValueError(
                     "CURRENT_POINTER_MISMATCH: unjournaled domain revision"
                 )
-        for row in connection.execute(select(models.analysis_runs)).mappings():
+        projections = list(connection.execute(select(models.analysis_runs)).mappings())
+        if not required_analyses.issubset({row["analysis_id"] for row in projections}):
+            raise ValueError("CURRENT_POINTER_MISMATCH: analysis projection missing")
+        for row in projections:
             state = AnalysisRunState.model_validate_json(row["payload"])
             exact_state = records.resolve(connection, reference(state))
             run_pointer = connection.execute(

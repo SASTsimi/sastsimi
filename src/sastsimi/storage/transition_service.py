@@ -30,6 +30,7 @@ from sastsimi.storage.artifact_store import LocalArtifactStore
 from sastsimi.storage.codec import REF_ADAPTER, encode, reference
 
 from .current_inputs import check_current_input
+from .lease_recovery import retire_undispatched, uncertain
 from .output_closures import read_outputs
 from .records import next_meta
 from .run_states import get_run, save_run
@@ -232,14 +233,11 @@ class TransitionService:
                 isinstance(action, ActionRequest)
                 and action.requested_by == RequesterRole.RECOVERY
             ):
-                dispatched = connection.execute(
-                    select(models.external_dispatches.c.action_id).where(
-                        models.external_dispatches.c.work_id == str(previous.work_id),
-                        models.external_dispatches.c.dispatched_at.is_not(None),
-                    )
-                ).first()
-                if dispatched is None:
+                if not uncertain(connection, previous):
                     waiting = WaitingFor.RETRY
+                    retire_undispatched(
+                        connection, self.works.validator.budget, previous
+                    )
             work = WorkExecutionState.model_validate(
                 previous.model_dump()
                 | dict(

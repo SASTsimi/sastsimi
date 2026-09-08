@@ -48,10 +48,15 @@ def capacity_fixture(
     assert isinstance(profile, WorkBudgetProfile)
     data = profile.model_dump(mode="json")
     data["meta"] = metadata("work_budget_profile", "capacity-limits", code=True)
-    role = "DYNAMIC_REPRODUCTION" if work_type == "DYNAMIC_REPRO" else "PRO"
+    role = {
+        "DYNAMIC_REPRO": "DYNAMIC_REPRODUCTION",
+        "VERIFICATION": "VERIFICATION",
+    }.get(work_type, "PRO")
     data["limits"][0].update(
         work_type=work_type,
-        operation_kind=work_type,
+        operation_kind="VERIFICATION_SYNTHESIS"
+        if work_type == "VERIFICATION"
+        else work_type,
         agent_role=role,
         max_attempts=10,
         max_calls_per_work=10,

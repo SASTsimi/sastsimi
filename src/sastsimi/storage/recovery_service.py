@@ -33,6 +33,7 @@ from sastsimi.storage import models
 from sastsimi.storage.codec import reference
 from sastsimi.storage.integrity import verify
 
+from .lease_recovery import uncertain
 from .transition_service import TransitionService
 
 
@@ -70,15 +71,6 @@ class RecoveryService:
     def expired_leases(self) -> int:
         service = self.transitions.works
         with service.records.database.engine.connect() as connection:
-            uncertain = set(
-                connection.execute(
-                    select(models.external_dispatches.c.work_id).where(
-                        models.external_dispatches.c.dispatched_at.is_not(None),
-                        models.external_dispatches.c.returned_at.is_(None),
-                        models.external_dispatches.c.reconciled_at.is_(None),
-                    )
-                ).scalars()
-            )
             expired = [
                 WorkExecutionState.model_validate_json(row["payload"])
                 for row in connection.execute(
@@ -86,7 +78,9 @@ class RecoveryService:
                         models.work_states.c.status == "RUNNING"
                     )
                 ).mappings()
-                if row["work_id"] in uncertain
+                if uncertain(
+                    connection, WorkExecutionState.model_validate_json(row["payload"])
+                )
                 or (
                     row["lease_expires_at"] is not None
                     and datetime.fromisoformat(row["lease_expires_at"])
@@ -103,6 +97,10 @@ class RecoveryService:
         if identity is None:
             raise ValueError("Recovery identity is required to close an expired lease")
         now = service.clock.now()
+        with service.records.database.engine.connect() as connection:
+            cause = (
+                "RECOVERY_FAILED" if uncertain(connection, work) else "LEASE_EXPIRED"
+            )
 
         def meta(kind: str) -> dict[str, object]:
             data = work.meta.model_dump()
@@ -146,7 +144,7 @@ class RecoveryService:
                 image_digest=None,
                 network_targets=(),
                 resource_limits=None,
-                reason="RECOVERY_FAILED: external outcome unknown",
+                reason=cause,
                 requested_at=now,
             )
         )
@@ -164,7 +162,7 @@ class RecoveryService:
                 expected_state_version=work.state_version,
                 new_state_version=work.state_version + 1,
                 attempt_id=work.active_attempt_id,
-                cause="RECOVERY_FAILED",
+                cause=cause,
                 output_refs=(),
                 gap_ids=(),
                 error_ids=(),

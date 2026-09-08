@@ -19,6 +19,8 @@ EXPECTED_KINDS = {
     "action_check",
     "action_decision",
     "sandbox_profile",
+    "playbook_policy",
+    "verification_playbook",
     "execution_budget_profile",
     "work_budget_limit",
     "work_budget_profile",

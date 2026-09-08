@@ -65,6 +65,9 @@ def test_public_hypothesis_control_requires_current_owner_and_generation(
     from sastsimi.contracts.hypothesis import HypothesisProcessState
 
     h = Harness(tmp_path)
+    from sastsimi.storage.budget_registry import BudgetProfileRegistry
+
+    h.pin_execution(BudgetProfileRegistry(h.records, h.clock, h.ids), h.execution())
     identity = StoredDataRef.model_validate_json(json.dumps(ref("identity", True)))
     h.evidence.identities[identity] = RequesterRole.VERIFICATION
     target = WorkExecutionState.model_validate_json(

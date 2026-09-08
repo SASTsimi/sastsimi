@@ -29,6 +29,7 @@ from . import models
 from .action_context import current_process
 from .codec import reference
 from .repositories import SQLiteRecordStore
+from .restart_policy import check_restart
 from .run_states import get_run
 
 R7_ROLES = frozenset(
@@ -79,6 +80,26 @@ def check_stage(
     action: ActionRequest,
     work: WorkExecutionState,
 ) -> None:
+    if (
+        action.requested_by == RequesterRole.CWE_LABELING
+        or action.action_type
+        in {
+            ActionType.CALL_TECHNICAL_GATE,
+            ActionType.CALL_RULE_SCOPE_GATE,
+            ActionType.CREATE_REPORT_DRAFT,
+        }
+        or action.result_kind
+        in {
+            "cwe_label",
+            "technical_evidence_review",
+            "rule_scope_impact_review",
+            "finding",
+            "report_draft",
+        }
+    ) and current_process(records, connection, work).status != "TERMINAL":
+        raise ValueError("STALE_RESULT: final admission requires TERMINAL process")
+    if action.action_type == ActionType.RESTART_VERIFICATION_GENERATION:
+        check_restart(records, connection, action, work)
     expected_work = STAGE_WORKS.get(action.action_type)
     if expected_work is not None and (
         work.work_type.value != expected_work
