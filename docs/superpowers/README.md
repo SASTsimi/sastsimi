@@ -18,6 +18,8 @@
 - [`plans/implementation/01-repository-cleanup.md`](./plans/implementation/01-repository-cleanup.md): T01 문서 인벤토리, 파일별 삭제 allowlist, 탐색 경로와 문서 CI 실행 계획
 - [`plans/implementation/02-architecture-boundary-correction.md`](./plans/implementation/02-architecture-boundary-correction.md): T02 exact workflow module·import 경계, ADR-015 정본 동기화와 RED/GREEN 검증 계획
 
+- [T03 application foundation](./plans/implementation/03-application-foundation.md): Python package, doctor, typed config, safe logging, import 계약과 core CI 실행 계획
+
 그 밖의 완료된 기존 문서는 당시 검토한 대안, 변경 순서와 PR 상태를 남긴 역사적 기록입니다.
 
 - `specs/`: 특정 변경을 검토할 당시의 설계 제안과 근거

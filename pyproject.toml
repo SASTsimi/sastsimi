@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling>=1.25,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sastsimi"
+version = "0.1.0"
+description = "Architecture v5 application foundation"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "pydantic>=2.8,<3",
+  "sqlalchemy>=2.0,<3",
+  "alembic>=1.13,<2",
+  "PyYAML>=6,<7",
+  "platformdirs>=4,<5",
+]
+
+[project.scripts]
+sastsimi = "sastsimi.interfaces.cli.main:main"
+
+[dependency-groups]
+dev = ["pytest>=8,<9", "pytest-asyncio>=0.24,<1", "ruff>=0.12,<1", "mypy>=1.11,<2"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sastsimi"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_default_fixture_loop_scope = "function"

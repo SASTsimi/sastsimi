@@ -1,0 +1,88 @@
+name: Application foundation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: core (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: astral-sh/setup-uv@v6
+      - name: Install frozen dependencies
+        run: uv sync --frozen --all-groups
+      - name: Format
+        run: uv run ruff format --check .
+      - name: Lint
+        run: uv run ruff check .
+      - name: Strict types
+        run: uv run mypy --strict src tests
+      - name: All existing suites
+        run: uv run pytest tests -q
+      - name: Architecture validator (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          & ./scripts/validate-architecture-docs.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Architecture validator (PowerShell Core)
+        if: runner.os != 'Windows'
+        shell: pwsh
+        run: |
+          & ./scripts/validate-architecture-docs.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Inventory and links (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          & ./scripts/audit-doc-inventory.ps1 -RepositoryRoot . -CheckLinks
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Inventory and links (PowerShell Core)
+        if: runner.os != 'Windows'
+        shell: pwsh
+        run: |
+          & ./scripts/audit-doc-inventory.ps1 -RepositoryRoot . -CheckLinks
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify actual commit-range whitespace
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+          PUSH_HEAD: ${{ github.sha }}
+        run: |
+          if ($env:EVENT_NAME -eq 'pull_request') {
+            $rangeBase = $env:PR_BASE
+            $rangeHead = $env:PR_HEAD
+          } else {
+            $rangeBase = $env:PUSH_BASE
+            $rangeHead = $env:PUSH_HEAD
+          }
+          foreach ($sha in @($rangeBase, $rangeHead)) {
+            if ($sha -notmatch '^[0-9a-f]{40}$' -or $sha -eq ('0' * 40)) {
+              throw 'Expected an existing base and head commit'
+            }
+            git cat-file -e "$sha^{commit}"
+            if ($LASTEXITCODE -ne 0) { throw 'Commit is missing from full checkout' }
+          }
+          git diff --check "$rangeBase..$rangeHead"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
