@@ -573,6 +573,8 @@ def validate_run_inventory(
         if len(producing) != 1:
             raise ValueError("CURRENT_CWE_WORK_MISSING")
         work = producing[0]
+        if label.cwe_labeling_work_id != work.work_id:
+            raise ValueError("CURRENT_CWE_WORK_MISMATCH")
         matching_attempts = [
             attempt
             for attempt in attempts

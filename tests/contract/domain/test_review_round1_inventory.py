@@ -33,7 +33,10 @@ def test_r16_authoritative_inventory_rejects_unrelated_record_kind(field: str) -
         wire(AnalysisRunResult, value)
 
 
-def test_r16_resolves_full_inventory_and_current_verification_cwe() -> None:
+@pytest.mark.parametrize("labeling_work_id", ["cwe-work", "unrelated-work"])
+def test_r16_resolves_full_inventory_and_current_verification_cwe(
+    labeling_work_id: str,
+) -> None:
     from sastsimi.contracts.base import ContractModel
     from sastsimi.contracts.evaluation import (
         ResolvedAnalysisInventory,
@@ -65,7 +68,10 @@ def test_r16_resolves_full_inventory_and_current_verification_cwe() -> None:
     label = wire(
         CWELabel,
         make("CWELabel", "cwe_label")
-        | dict(verification_result_ref=bound(verification)),
+        | dict(
+            verification_result_ref=bound(verification),
+            cwe_labeling_work_id=labeling_work_id,
+        ),
     )
     attempt = wire(
         WorkAttempt,
@@ -164,6 +170,19 @@ def test_r16_resolves_full_inventory_and_current_verification_cwe() -> None:
         verification_generations={verification.meta.hypothesis_id: 1},
     )
     result = wire(AnalysisRunResult, value)
+    if labeling_work_id != "cwe-work":
+        with pytest.raises(ValueError, match="CURRENT_CWE_WORK_MISMATCH"):
+            validate_analysis_current(
+                result,
+                None,
+                None,
+                (),
+                (chain["result"],),
+                pinned_eval_refs=(),
+                expected_failed_hypothesis_count=0,
+                inventory=inventory,
+            )
+        return
     validate_analysis_current(
         result,
         None,

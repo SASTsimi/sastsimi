@@ -1,5 +1,6 @@
 """R6 requests, R7 execution records and PoC provenance (§08.7)."""
 
+import re
 from collections.abc import Mapping
 from typing import Annotated, Literal, Self
 
@@ -261,16 +262,42 @@ class SandboxPolicyDecision(DynamicRecord):
         return self
 
 
+def safe_command_value(value: str) -> str:
+    """Container paths are valid; reject recognizable secrets and host escapes.
+
+    This is persisted-command hygiene, not an execution allowlist or a substitute
+    for the Sandbox Controller's mount, namespace, daemon and egress isolation.
+    """
+    if re.search(
+        r"[A-Za-z]:[\\/]|\\\\"
+        r"|\b(?:bearer|basic)\s+\S+"
+        r"|\b(?:password|token|cookie|authorization|api[_-]?key)\s*[:=]"
+        r"|\b(?:docker|containerd|podman)\.sock\b"
+        r"|\bhost\.(?:docker|containers)\.internal\b"
+        r"|/host(?:/|$)|/proc/(?:1|self)/(?:root|ns)(?:/|$)"
+        r"|\b(?:source|src)=/(?:,|$)|(?:^|\s)/:/"
+        r"|--(?:pid|network|ipc)(?:=|\s+)host\b|--privileged\b",
+        value,
+        re.IGNORECASE,
+    ):
+        raise ValueError("UNSAFE_DIAGNOSTIC")
+    return value
+
+
+SafeCommandValue = Annotated[NonEmptyStr, AfterValidator(safe_command_value)]
+
+
 class SandboxCommandInput(ContractModel):
-    executable: SafeDiagnostic
-    arguments: tuple[Annotated[str, AfterValidator(safe_diagnostic)], ...]
-    working_directory: SafeDiagnostic
+    executable: SafeCommandValue
+    arguments: tuple[Annotated[str, AfterValidator(safe_command_value)], ...]
+    working_directory: SafeCommandValue
     environment_binding_refs: tuple[StoredDataRef, ...]
     stdin_ref: StoredDataRef | None
     secret_refs: tuple[StoredDataRef, ...]
 
     @model_validator(mode="after")
     def secret_handles(self) -> Self:
+        safe_command_value(" ".join(self.arguments))
         if any(ref.data_kind != "secret_handle" for ref in self.secret_refs):
             raise ValueError("SECRET_HANDLE_REQUIRED")
         for index, argument in enumerate(self.arguments[:-1]):
@@ -859,7 +886,15 @@ def validate_dynamic_closure(
     recipes = (*attempt_recipes, *((recipe,) if recipe else ()))
     validate_cleanup_coverage(result, log, cleanup, environments, attempt_resource_refs)
     validate_command_log(
-        log, request, plan, command_records, tool_requests, environments, recipes
+        log,
+        request,
+        plan,
+        command_records,
+        tool_requests,
+        environments,
+        recipes,
+        require_completion=result.status in {"SUCCEEDED", "PARTIAL"}
+        or bool(result.hypothesis_evidence_refs),
     )
 
 
@@ -912,6 +947,8 @@ def validate_command_log(
     tool_requests: tuple[DynamicReproductionToolRequest, ...],
     environments: tuple[SandboxEnvironment, ...],
     recipes: tuple[EnvironmentRecipe, ...],
+    *,
+    require_completion: bool = True,
 ) -> None:
     for start in (
         event for event in log.events if event.event_type == "COMMAND_STARTED"
@@ -946,19 +983,23 @@ def validate_command_log(
             if start.environment_recipe_ref is not None
             and record.meta.record_id == start.environment_recipe_ref.record_id
         ]
-        if plan is None or any(
-            len(items) != 1 for items in (finishes, records, requests, envs, builds)
+        if (
+            plan is None
+            or len(finishes) > 1
+            or (require_completion and not finishes)
+            or any(len(items) != 1 for items in (records, requests, envs, builds))
         ):
             raise ValueError("COMMAND_CLOSURE_MISSING")
         validate_command_closure(
             start,
-            finishes[0],
+            finishes[0] if finishes else None,
             requests[0],
             records[0],
             request,
             plan,
             envs[0],
             builds[0],
+            require_completion=require_completion,
         )
 
 
@@ -1005,25 +1046,33 @@ def validate_cleanup_coverage(
 
 def validate_command_closure(
     start: AgentLogEvent,
-    finish: AgentLogEvent,
+    finish: AgentLogEvent | None,
     tool: DynamicReproductionToolRequest,
     command: SandboxCommandRecord,
     request: DynamicReproductionRequest,
     plan: ReproductionPlan,
     environment: SandboxEnvironment,
     recipe: EnvironmentRecipe,
+    *,
+    require_completion: bool = True,
 ) -> None:
-    if (start.event_type, finish.event_type) != (
-        "COMMAND_STARTED",
-        "COMMAND_FINISHED",
-    ) or (
-        start.action_id != finish.action_id
+    if finish is None and require_completion:
+        raise ValueError("COMMAND_CLOSURE_MISSING")
+    if (
+        start.event_type != "COMMAND_STARTED"
         or start.action_id != command.action_id
-        or start.sequence >= finish.sequence
-        or start.occurred_at > finish.occurred_at
+        or (
+            finish is not None
+            and (
+                finish.event_type != "COMMAND_FINISHED"
+                or start.action_id != finish.action_id
+                or start.sequence >= finish.sequence
+                or start.occurred_at > finish.occurred_at
+            )
+        )
     ):
         raise ValueError("COMMAND_ACTION_MISMATCH")
-    for event in (start, finish):
+    for event in (start, *((finish,) if finish else ())):
         for ref, target in (
             (event.command_ref, command),
             (event.tool_request_ref, tool),
@@ -1094,6 +1143,12 @@ def validate_execution_support(
             if target is None:
                 raise ValueError("POC_EXECUTION_EVIDENCE_MISMATCH")
             exact(ref, target, result.meta)
+            same_scope(
+                result.meta,
+                target.meta,
+                hypothesis=target.meta.hypothesis_id is not None,
+                attempt=isinstance(target, DynamicRecord),
+            )
             for value in walk(target):
                 if (
                     isinstance(value, ContractModel)

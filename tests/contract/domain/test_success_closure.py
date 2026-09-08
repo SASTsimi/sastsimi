@@ -25,6 +25,7 @@ def check_dynamic(chain: dict[str, Any]) -> None:
         chain["request"],
         chain["log"],
         generation=1,
+        resolved_evidence=chain.get("resolved_evidence", {}),
         attempt_environments=chain.get("attempt_environments", ()),
         attempt_resource_refs=chain.get("attempt_resource_refs", ()),
         command_records=chain.get("command_records", ()),
