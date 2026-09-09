@@ -1,0 +1,65 @@
+{
+  "expectation_schema_version": "r7-validation-expectation.v1",
+  "case_id": "r7-execution-cancelled-v2",
+  "expected_record_projections": {
+    "CL1": {
+      "record_type": "cleanup_result",
+      "producer": "REPRODUCTION_SETUP_AUTOMATION",
+      "fields": {"request_ref": "DQ1", "environment_refs": ["ENV1"], "resource_refs": ["container-r7-001"], "status": "SUCCEEDED", "failure_reason": null}
+    },
+    "LOG1-final": {
+      "record_type": "agent_log",
+      "producer": "REPRODUCTION_SESSION_MANAGER",
+      "fields": {"request_ref": "DQ1"}
+    },
+    "DX1": {
+      "record_type": "dynamic_reproduction_result",
+      "producer": "REPRODUCTION_SESSION_MANAGER",
+      "fields": {
+        "action_decision_ref": "AD1",
+        "request_ref": "DQ1",
+        "reproduction_plan_ref": "PL1",
+        "purpose": "POC_CONFIRMATION",
+        "policy_decision_ref": "SPD1",
+        "agent_invoked": true,
+        "agent_log_ref": "LOG1-final",
+        "agent_conclusion_ref": null,
+        "environment_recipe_ref": "RC1",
+        "environment_ref": "ENV1",
+        "poc_candidate_ref": "PC1",
+        "poc_ref": null,
+        "observation_refs": [],
+        "status": "CANCELLED",
+        "failure_category": "EXECUTION",
+        "plan_issues": [],
+        "hypothesis_outcome": "INCONCLUSIVE",
+        "hypothesis_evidence_refs": [],
+        "hypothesis_disproved": false,
+        "disproof_evidence_refs": [],
+        "plan_execution_status": "EXECUTABLE",
+        "cleanup_required": true,
+        "cleanup_status": "SUCCEEDED",
+        "cleanup_ref": "CL1"
+      }
+    }
+  },
+  "assertions": [
+    {"target": ["TR1", "PC1", "ENV1", "LOG1-final", "CL1", "DX1"], "operator": "SAME_SCOPE", "value": "case.scope"},
+    {"target": "LOG1-final.events[*].sequence", "operator": "CONTAINS", "value": [1, 2, 3, 4, 5, 6, 7, 8]},
+    {"target": "LOG1-final.events[*].event_type", "operator": "CONTAINS", "value": ["CLEANUP_STARTED", "CLEANUP_FINISHED", "SESSION_FINISHED"]},
+    {"target": "DX1.failure_reason", "operator": "CONTAINS", "value": ["runtime", "cancelled", "before an observation"]},
+    {"target": "DX1.limitations", "operator": "CONTAINS", "value": ["PoC execution did not complete", "no supporting observation was recorded"]},
+    {"target": "DX1.agent_conclusion_ref", "operator": "ABSENT"},
+    {"target": "DX1.observation_refs", "operator": "EXCLUDES", "value": ["OBS-LATE-1"]},
+    {"target": "DX1.hypothesis_evidence_refs", "operator": "EXCLUDES", "value": ["OBS-LATE-1"]},
+    {"target": "late_output.disposition", "operator": "EQUALS", "value": "STALE_RESULT"},
+    {"target": ["DynamicReproductionConclusion", "PoCBundle", "VerificationResult", "TechnicalGate", "RuleScopeGate"], "operator": "ABSENT"}
+  ],
+  "must_not_claim": [
+    "FINISH was returned or INTERPRET_ATTEMPT completed",
+    "the hypothesis was disproved",
+    "the late output belongs to the committed cancelled result",
+    "PC1 is a validated PoC",
+    "cleanup was unnecessary"
+  ]
+}

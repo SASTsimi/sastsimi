@@ -1,0 +1,221 @@
+{
+  "case_schema_version": "r7-validation-case.v1",
+  "case_id": "r7-environment-ready-v2",
+  "case_layer": "LLM_AND_RUNTIME_INTEGRATION",
+  "source": {
+    "type": "SYNTHETIC_FIXTURE_WITH_VERIFIED_EXECUTION",
+    "fixture_path": "docs/handoff/R7/validation/fixture",
+    "verified_with": "Python 3.12.13 and Flask 3.1.2"
+  },
+  "scope": {
+    "analysis_id": "AN-R7-1",
+    "workspace_id": "WS-R7-1",
+    "commit_id": "synthetic-flask-traversal-v1",
+    "hypothesis_id": "H-R7-1",
+    "verification_generation": 1,
+    "work_id": "KD1",
+    "attempt_id": "ADYN1"
+  },
+  "records": {
+    "request": {
+      "record_id": "DQ1",
+      "purpose": "POC_CONFIRMATION",
+      "initial_verdict": "TRUE",
+      "goal": "Determine whether an untrusted report name can read a file outside the reports directory in the isolated fixture.",
+      "environment_needs": [
+        {
+          "need_id": "need-runtime",
+          "kind": "VERSION",
+          "description": "Use the Python and Flask versions declared by the fixture.",
+          "required": true,
+          "source_refs": [
+            "FR-PYPROJECT"
+          ]
+        },
+        {
+          "need_id": "need-probe",
+          "kind": "FIXTURE",
+          "description": "Provide the local probe file used to distinguish traversal from a normal report read.",
+          "required": true,
+          "source_refs": [
+            "FR-FIXTURE-README",
+            "FR-PROBE"
+          ]
+        },
+        {
+          "need_id": "need-health",
+          "kind": "HEALTH_CHECK",
+          "description": "Confirm that a normal report can be read before testing traversal.",
+          "required": true,
+          "source_refs": [
+            "FR-FIXTURE-README"
+          ]
+        }
+      ],
+      "sandbox_profile_ref": "SP1",
+      "code_refs": [
+        "FR-APP",
+        "FR-REPRODUCE"
+      ],
+      "static_evidence_refs": [
+        "EV-STATIC-1"
+      ]
+    },
+    "dependency_context": {
+      "record_id": "CTX-DEP1",
+      "workspace_id": "WS-R7-1",
+      "commit_id": "synthetic-flask-traversal-v1",
+      "code_fragment_refs": [
+        "FR-PYPROJECT",
+        "FR-UVLOCK-FLASK",
+        "FR-FIXTURE-README"
+      ]
+    },
+    "dependency_files": [
+      {
+        "ref": "FR-PYPROJECT",
+        "path": "fixture/pyproject.toml",
+        "content_hash": "sha256:cf4612f1621648ce728972e57c637a43c6dc061a3cb2e9333d09646037b04486",
+        "content": "[project]\nname = \"r7-path-traversal-fixture\"\nversion = \"1.0.0\"\nrequires-python = \">=3.12,<3.13\"\ndependencies = [\"Flask==3.1.2\"]\n"
+      },
+      {
+        "ref": "FR-UVLOCK-FLASK",
+        "path": "fixture/uv.lock",
+        "content_hash": "sha256:36b4a538f312df6e87ddf49a7b1205210ae773b3076d7b21b4f1f842d54e4cdc",
+        "content": "version = 1\nrevision = 3\nrequires-python = \"==3.12.*\"\n\n[[package]]\nname = \"blinker\"\nversion = \"1.9.0\"\nsource = { registry = \"https://pypi.org/simple\" }\nsdist = { url = \"https://files.pythonhosted.org/packages/21/28/9b3f50ce0e048515135495f198351908d99540d69bfdc8c1d15b73dc55ce/blinker-1.9.0.tar.gz\", hash = \"sha256:b4ce2265a7abece45e7cc896e98dbebe6cead56bcf805a3d23136d145f5445bf\", size = 22460, upload-time = \"2024-11-08T17:25:47.436Z\" }\nwheels = [\n    { url = \"https://files.pythonhosted.org/packages/10/cb/f2ad4230dc2eb1a74edf38f1a38b9b52277f75bef262d8908e60d957e13c/blinker-1.9.0-py3-none-any.whl\", hash = \"sha256:ba0efaa9080b619ff2f3459d1d500c57bddea4a6b424b60a91141db6fd2f08bc\", size = 8458, upload-time = \"2024-11-08T17:25:46.184Z\" },\n]\n\n[[package]]\nname = \"click\"\nversion = \"8.5.0\"\nsource = { registry = \"https://pypi.org/simple\" }\nsdist = { url = \"https://files.pythonhosted.org/packages/c7/0e/7fa0ef50764b67090eca4114772a2abf8b6148198475e54c660b97caeee6/click-8.5.0.tar.gz\", hash = \"sha256:ba0d2089de75ea0310e2dde03160e6ca10009947fb95a182f9b54021bb272e34\", size = 382235, upload-time = \"2026-08-26T13:33:14.56Z\" }\nwheels = [\n    { url = \"https://files.pythonhosted.org/packages/58/50/6c0d534c5f134586a8e1ba4e330569e32f057e33372ae556463212fb4cd3/click-8.5.0-py3-none-any.whl\", hash = \"sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360\", size = 125251, upload-time = \"2026-08-26T13:33:12.928Z\" },\n]\n\n[[package]]\nname = \"flask\"\nversion = \"3.1.2\"\nsource = { registry = \"https://pypi.org/simple\" }\ndependencies = [\n    { name = \"blinker\" },\n    { name = \"click\" },\n    { name = \"itsdangerous\" },\n    { name = \"jinja2\" },\n    { name = \"markupsafe\" },\n    { name = \"werkzeug\" },\n]\nsdist = { url = \"https://files.pythonhosted.org/packages/dc/6d/cfe3c0fcc5e477df242b98bfe186a4c34357b4847e87ecaef04507332dab/flask-3.1.2.tar.gz\", hash = \"sha256:bf656c15c80190ed628ad08cdfd3aaa35beb087855e2f494910aa3774cc4fd87\", size = 720160, upload-time = \"2025-08-19T21:03:21.205Z\" }\nwheels = [\n    { url = \"https://files.pythonhosted.org/packages/ec/f9/7f9263c5695f4bd0023734af91bedb2ff8209e8de6ead162f35d8dc762fd/flask-3.1.2-py3-none-any.whl\", hash = \"sha256:ca1d8112ec8a6158cc29ea4858963350011b5c846a414cdb7a954aa9e967d03c\", size = 103308, upload-time = \"2025-08-19T21:03:19.499Z\" },\n]\n\n[[package]]\nname = \"itsdangerous\"\nversion = \"2.2.0\"\nsource = { registry = \"https://pypi.org/simple\" }\nsdist = { url = \"https://files.pythonhosted.org/packages/9c/cb/8ac0172223afbccb63986cc25049b154ecfb5e85932587206f42317be31d/itsdangerous-2.2.0.tar.gz\", hash = \"sha256:e0050c0b7da1eea53ffaf149c0cfbb5c6e2e2b69c4bef22c81fa6eb73e5f6173\", size = 54410, upload-time = \"2024-04-16T21:28:15.614Z\" }\nwheels = [\n    { url = \"https://files.pythonhosted.org/packages/04/96/92447566d16df59b2a776c0fb82dbc4d9e07cd95062562af01e408583fc4/itsdangerous-2.2.0-py3-none-any.whl\", hash = \"sha256:c6242fc49e35958c8b15141343aa660db5fc54d4f13a1db01a3f5891b98700ef\", size = 16234, upload-time = \"2024-04-16T21:28:14.499Z\" },\n]\n\n[[package]]\nname = \"jinja2\"\nversion = \"3.1.6\"\nsource = { registry = \"https://pypi.org/simple\" }\ndependencies = [\n    { name = \"markupsafe\" },\n]\nsdist = { url = \"https://files.pythonhosted.org/packages/df/bf/f7da0350254c0ed7c72f3e33cef02e048281fec7ecec5f032d4aac52226b/jinja2-3.1.6.tar.gz\", hash = \"sha256:0137fb05990d35f1275a587e9aee6d56da821fc83491a0fb838183be43f66d6d\", size = 245115, upload-time = \"2025-03-05T20:05:02.478Z\" }\nwheels = [\n    { url = \"https://files.pythonhosted.org/packages/62/a1/3d680cbfd5f4b8f15abc1d571870c5fc3e594bb582bc3b64ea099db13e56/jinja2-3.1.6-py3-none-any.whl\", hash = \"sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67\", size = 134899, upload-time = \"2025-03-05T20:05:00.369Z\" },\n]\n\n[[package]]\nname = \"markupsafe\"\nversion = \"3.0.3\"\nsource = { registry = \"https://pypi.org/simple\" }\nsdist = { url = \"https://files.pythonhosted.org/packages/7e/99/7690b6d4034fffd95959cbe0c02de8deb3098cc577c67bb6a24fe5d7caa7/markupsafe-3.0.3.tar.gz\", hash = \"sha256:722695808f4b6457b320fdc131280796bdceb04ab50fe1795cd540799ebe1698\", size = 80313, upload-time = \"2025-09-27T18:37:40.426Z\" }\nwheels = [\n    { url = \"https://files.pythonhosted.org/packages/5a/72/147da192e38635ada20e0a2e1a51cf8823d2119ce8883f7053879c2199b5/markupsafe-3.0.3-cp312-cp312-macosx_10_13_x86_64.whl\", hash = \"sha256:d53197da72cc091b024dd97249dfc7794d6a56530370992a5e1a08983ad9230e\", size = 11615, upload-time = \"2025-09-27T18:36:30.854Z\" },\n    { url = \"https://files.pythonhosted.org/packages/9a/81/7e4e08678a1f98521201c3079f77db69fb552acd56067661f8c2f534a718/markupsafe-3.0.3-cp312-cp312-macosx_11_0_arm64.whl\", hash = \"sha256:1872df69a4de6aead3491198eaf13810b565bdbeec3ae2dc8780f14458ec73ce\", size = 12020, upload-time = \"2025-09-27T18:36:31.971Z\" },\n    { url = \"https://files.pythonhosted.org/packages/1e/2c/799f4742efc39633a1b54a92eec4082e4f815314869865d876824c257c1e/markupsafe-3.0.3-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl\", hash = \"sha256:3a7e8ae81ae39e62a41ec302f972ba6ae23a5c5396c8e60113e9066ef893da0d\", size = 24332, upload-time = \"2025-09-27T18:36:32.813Z\" },\n    { url = \"https://files.pythonhosted.org/packages/3c/2e/8d0c2ab90a8c1d9a24f0399058ab8519a3279d1bd4289511d74e909f060e/markupsafe-3.0.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl\", hash = \"sha256:d6dd0be5b5b189d31db7cda48b91d7e0a9795f31430b7f271219ab30f1d3ac9d\", size = 22947, upload-time = \"2025-09-27T18:36:33.86Z\" },\n    { url = \"https://files.pythonhosted.org/packages/2c/54/887f3092a85238093a0b2154bd629c89444f395618842e8b0c41783898ea/markupsafe-3.0.3-cp312-cp312-manylinux_2_31_riscv64.manylinux_2_39_riscv64.whl\", hash = \"sha256:94c6f0bb423f739146aec64595853541634bde58b2135f27f61c1ffd1cd4d16a\", size = 21962, upload-time = \"2025-09-27T18:36:35.099Z\" },\n    { url = \"https://files.pythonhosted.org/packages/c9/2f/336b8c7b6f4a4d95e91119dc8521402461b74a485558d8f238a68312f11c/markupsafe-3.0.3-cp312-cp312-musllinux_1_2_aarch64.whl\", hash = \"sha256:be8813b57049a7dc738189df53d69395eba14fb99345e0a5994914a3864c8a4b\", size = 23760, upload-time = \"2025-09-27T18:36:36.001Z\" },\n    { url = \"https://files.pythonhosted.org/packages/32/43/67935f2b7e4982ffb50a4d169b724d74b62a3964bc1a9a527f5ac4f1ee2b/markupsafe-3.0.3-cp312-cp312-musllinux_1_2_riscv64.whl\", hash = \"sha256:83891d0e9fb81a825d9a6d61e3f07550ca70a076484292a70fde82c4b807286f\", size = 21529, upload-time = \"2025-09-27T18:36:36.906Z\" },\n    { url = \"https://files.pythonhosted.org/packages/89/e0/4486f11e51bbba8b0c041098859e869e304d1c261e59244baa3d295d47b7/markupsafe-3.0.3-cp312-cp312-musllinux_1_2_x86_64.whl\", hash = \"sha256:77f0643abe7495da77fb436f50f8dab76dbc6e5fd25d39589a0f1fe6548bfa2b\", size = 23015, upload-time = \"2025-09-27T18:36:37.868Z\" },\n    { url = \"https://files.pythonhosted.org/packages/2f/e1/78ee7a023dac597a5825441ebd17170785a9dab23de95d2c7508ade94e0e/markupsafe-3.0.3-cp312-cp312-win32.whl\", hash = \"sha256:d88b440e37a16e651bda4c7c2b930eb586fd15ca7406cb39e211fcff3bf3017d\", size = 14540, upload-time = \"2025-09-27T18:36:38.761Z\" },\n    { url = \"https://files.pythonhosted.org/packages/aa/5b/bec5aa9bbbb2c946ca2733ef9c4ca91c91b6a24580193e891b5f7dbe8e1e/markupsafe-3.0.3-cp312-cp312-win_amd64.whl\", hash = \"sha256:26a5784ded40c9e318cfc2bdb30fe164bdb8665ded9cd64d500a34fb42067b1c\", size = 15105, upload-time = \"2025-09-27T18:36:39.701Z\" },\n    { url = \"https://files.pythonhosted.org/packages/e5/f1/216fc1bbfd74011693a4fd837e7026152e89c4bcf3e77b6692fba9923123/markupsafe-3.0.3-cp312-cp312-win_arm64.whl\", hash = \"sha256:35add3b638a5d900e807944a078b51922212fb3dedb01633a8defc4b01a3c85f\", size = 13906, upload-time = \"2025-09-27T18:36:40.689Z\" },\n]\n\n[[package]]\nname = \"r7-path-traversal-fixture\"\nversion = \"1.0.0\"\nsource = { virtual = \".\" }\ndependencies = [\n    { name = \"flask\" },\n]\n\n[package.metadata]\nrequires-dist = [{ name = \"flask\", specifier = \"==3.1.2\" }]\n\n[[package]]\nname = \"werkzeug\"\nversion = \"3.1.8\"\nsource = { registry = \"https://pypi.org/simple\" }\ndependencies = [\n    { name = \"markupsafe\" },\n]\nsdist = { url = \"https://files.pythonhosted.org/packages/dd/b2/381be8cfdee792dd117872481b6e378f85c957dd7c5bca38897b08f765fd/werkzeug-3.1.8.tar.gz\", hash = \"sha256:9bad61a4268dac112f1c5cd4630a56ede601b6ed420300677a869083d70a4c44\", size = 875852, upload-time = \"2026-04-02T18:49:14.268Z\" }\nwheels = [\n    { url = \"https://files.pythonhosted.org/packages/93/8c/2e650f2afeb7ee576912636c23ddb621c91ac6a98e66dc8d29c3c69446e1/werkzeug-3.1.8-py3-none-any.whl\", hash = \"sha256:63a77fb8892bf28ebc3178683445222aa500e48ebad5ec77b0ad80f8726b1f50\", size = 226459, upload-time = \"2026-04-02T18:49:12.72Z\" },\n]\n"
+      },
+      {
+        "ref": "FR-FIXTURE-README",
+        "path": "fixture/README.md",
+        "content_hash": "sha256:c3cd76a96ddb471a068b1b7c0db26e5768bb48d1360ecc6461efc85a91945fd8",
+        "content": "# R7 path traversal validation fixture\n\nThis project is a synthetic local-only Flask application. It contains a\ndeliberate path traversal flaw for evaluating R7 dynamic reproduction behavior.\n\nHealth Check:\n\n```text\nuv run --project . python reproduce.py public.txt\n```\n\nReproduction probe:\n\n```text\nuv run --project . python reproduce.py ../fixtures/probe.txt\n```\n"
+      }
+    ],
+    "project_artifacts": [
+      {
+        "ref": "FR-APP",
+        "path": "fixture/app.py",
+        "content_hash": "sha256:40b564d40b6ed3e6b745dea2a1bcf732cedca4f580b0c20db1c1b6343ddf7647"
+      },
+      {
+        "ref": "FR-REPRODUCE",
+        "path": "fixture/reproduce.py",
+        "content_hash": "sha256:13d762221a7ab81d6e3f8c887c7fde239e3f7c6a298f108709effacc5317e267"
+      },
+      {
+        "ref": "FR-PROBE",
+        "path": "fixture/fixtures/probe.txt",
+        "content_hash": "sha256:c9aaa1acc01e7ee00fce2ce977470d2bb5d04af086b3d44bb9b5340e9bf9e4be"
+      }
+    ],
+    "sandbox_profile": {
+      "record_id": "SP1",
+      "execution_scope": "LOCAL_ONLY",
+      "network_mode": "DEFAULT_DENY"
+    },
+    "lifecycle_profile": {
+      "record_id": "LP1",
+      "new_attempt_budget_remaining": 1
+    },
+    "run_policy_state": {
+      "record_id": "RPS1",
+      "status": "CURRENT"
+    },
+    "action_request": {
+      "record_id": "AR1",
+      "requested_by": "REPRODUCTION_SETUP_AUTOMATION",
+      "action_type": "RUN_SANDBOX",
+      "input_refs": [
+        "DQ1",
+        "ER1",
+        "PL1",
+        "SP1",
+        "LP1"
+      ],
+      "dynamic_request_ref": "DQ1",
+      "reproduction_plan_ref": "PL1",
+      "sandbox_profile_ref": "SP1",
+      "resource_profile_ref": "LP1",
+      "run_policy_state_ref": "RPS1",
+      "network_targets": []
+    },
+    "action_decision": {
+      "record_id": "AD1",
+      "action_ref": "AR1",
+      "decision": "ALLOW",
+      "required_checks": ["SCHEMA", "AUTHORITY", "IDENTITY", "REVISION", "STATE", "BUDGET"],
+      "check_results": [
+        {"check_type": "SCHEMA", "result": "PASS"},
+        {"check_type": "AUTHORITY", "result": "PASS"},
+        {"check_type": "IDENTITY", "result": "PASS"},
+        {"check_type": "REVISION", "result": "PASS"},
+        {"check_type": "STATE", "result": "PASS"},
+        {"check_type": "BUDGET", "result": "PASS"}
+      ],
+      "checked_config_refs": ["SP1", "LP1"],
+      "use_status": "USED",
+      "error_ids": [],
+      "outcome_refs": []
+    }
+  },
+  "steps": [
+    {
+      "step_id": "derive-environment",
+      "producer": "DYNAMIC_REPRODUCTION",
+      "task_kind": "DERIVE_ENVIRONMENT",
+      "input_slots": {
+        "request": "DQ1",
+        "dependency_context": "CTX-DEP1",
+        "dependency_files": [
+          "FR-PYPROJECT",
+          "FR-UVLOCK-FLASK",
+          "FR-FIXTURE-README"
+        ]
+      },
+      "output_ref": "ER1"
+    },
+    {
+      "step_id": "plan-reproduction",
+      "producer": "DYNAMIC_REPRODUCTION",
+      "task_kind": "PLAN_REPRODUCTION",
+      "input_slots": {
+        "request": "DQ1",
+        "requirements": "ER1",
+        "dependency_context": "CTX-DEP1",
+        "dependency_files": [
+          "FR-PYPROJECT",
+          "FR-UVLOCK-FLASK",
+          "FR-FIXTURE-README"
+        ]
+      },
+      "output_ref": "PL1"
+    },
+    {
+      "step_id": "admit-and-prepare-sandbox",
+      "producer": "TRUSTED_RUNTIME",
+      "operation": "RUN_SANDBOX",
+      "input_refs": [
+        "DQ1",
+        "ER1",
+        "PL1",
+        "SP1",
+        "LP1"
+      ],
+      "run_policy_state_ref": "RPS1",
+      "action_decision_ref": "AD1",
+      "policy_decision_ref": "SPD1",
+      "recipe_ref": "RC1",
+      "environment_ref": "ENV1",
+      "observations": {
+        "python_version": "3.12.13",
+        "flask_version": "3.1.2",
+        "probe_file": "fixtures/probe.txt",
+        "health_check_exit_code": 0,
+        "health_check_stdout_contains": "PUBLIC_REPORT",
+        "resources_created": [
+          "container-r7-001"
+        ]
+      }
+    }
+  ]
+}

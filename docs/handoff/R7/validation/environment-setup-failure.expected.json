@@ -1,0 +1,87 @@
+{
+  "expectation_schema_version": "r7-validation-expectation.v1",
+  "case_id": "r7-environment-setup-failure-v2",
+  "expected_record_projections": {
+    "ENV-FAIL-1": {
+      "record_type": "sandbox_environment",
+      "producer": "REPRODUCTION_SETUP_AUTOMATION",
+      "fields": {
+        "request_ref": "DQ1",
+        "reproduction_plan_ref": "PL1",
+        "environment_recipe_ref": "RC1",
+        "requirements_ref": "ER1",
+        "status": "MISMATCH",
+        "checks": [
+          {"requirement_id": "req-python", "status": "MISMATCH", "actual": "3.11.9"},
+          {"requirement_id": "req-flask", "status": "MATCH", "actual": "3.1.2"},
+          {"requirement_id": "req-probe", "status": "MATCH", "actual": "fixtures/probe.txt"},
+          {"requirement_id": "req-health", "status": "NOT_CHECKED", "actual": null}
+        ]
+      }
+    },
+    "CL1": {
+      "record_type": "cleanup_result",
+      "producer": "REPRODUCTION_SETUP_AUTOMATION",
+      "fields": {"request_ref": "DQ1", "environment_refs": ["ENV-FAIL-1"], "resource_refs": ["container-r7-fail-001"], "status": "SUCCEEDED", "failure_reason": null}
+    },
+    "LOG1": {
+      "record_type": "agent_log",
+      "producer": "REPRODUCTION_SESSION_MANAGER",
+      "fields": {
+        "request_ref": "DQ1",
+        "events": [
+          {"event_id": "E1", "sequence": 1, "action_id": "SESSION-1", "event_type": "SESSION_STARTED", "actor": "REPRODUCTION_SESSION_MANAGER", "input_refs": ["SPD1"]},
+          {"event_id": "E2", "sequence": 2, "action_id": "SETUP-1", "event_type": "ERROR", "actor": "REPRODUCTION_SETUP_AUTOMATION", "output_refs": ["ENV-FAIL-1"]},
+          {"event_id": "E3", "sequence": 3, "action_id": "CLEANUP-1", "event_type": "CLEANUP_STARTED", "actor": "REPRODUCTION_SETUP_AUTOMATION", "environment_ref": "ENV-FAIL-1"},
+          {"event_id": "E4", "sequence": 4, "action_id": "CLEANUP-1", "event_type": "CLEANUP_FINISHED", "actor": "REPRODUCTION_SETUP_AUTOMATION", "output_refs": ["CL1"]},
+          {"event_id": "E5", "sequence": 5, "action_id": "SESSION-1", "event_type": "SESSION_FINISHED", "actor": "REPRODUCTION_SESSION_MANAGER"}
+        ]
+      }
+    },
+    "DX1": {
+      "record_type": "dynamic_reproduction_result",
+      "producer": "REPRODUCTION_SESSION_MANAGER",
+      "fields": {
+        "action_decision_ref": "AD1",
+        "request_ref": "DQ1",
+        "reproduction_plan_ref": "PL1",
+        "purpose": "POC_CONFIRMATION",
+        "policy_decision_ref": "SPD1",
+        "agent_invoked": false,
+        "agent_log_ref": "LOG1",
+        "agent_conclusion_ref": null,
+        "environment_recipe_ref": "RC1",
+        "environment_ref": "ENV-FAIL-1",
+        "poc_candidate_ref": null,
+        "poc_ref": null,
+        "observation_refs": [],
+        "status": "FAILED",
+        "failure_category": "ENVIRONMENT_SETUP",
+        "plan_issues": [],
+        "hypothesis_outcome": "INCONCLUSIVE",
+        "hypothesis_evidence_refs": [],
+        "hypothesis_disproved": false,
+        "disproof_evidence_refs": [],
+        "plan_execution_status": "EXECUTABLE",
+        "cleanup_required": true,
+        "cleanup_status": "SUCCEEDED",
+        "cleanup_ref": "CL1"
+      }
+    }
+  },
+  "assertions": [
+    {"target": ["ENV-FAIL-1", "CL1", "LOG1", "DX1"], "operator": "SAME_SCOPE", "value": "case.scope"},
+    {"target": "ENV-FAIL-1.checks[*].requirement_id", "operator": "CONTAINS", "value": ["req-python", "req-flask", "req-probe", "req-health"]},
+    {"target": "LOG1.events[*].event_type", "operator": "EXCLUDES", "value": ["AGENT_STARTED"]},
+    {"target": "DX1.failure_reason", "operator": "CONTAINS", "value": ["Python 3.11.9", ">=3.12,<3.13", "retry budget"]},
+    {"target": "DX1.limitations", "operator": "CONTAINS", "value": ["Sandbox Agent did not start", "Health Check was not run"]},
+    {"target": ["VerificationResult", "TechnicalGate", "RuleScopeGate"], "operator": "ABSENT"}
+  ],
+  "must_not_claim": [
+    "the hypothesis was disproved",
+    "the environment failure is dynamic counterevidence",
+    "the Dynamic Reproduction Agent ran inside the Sandbox",
+    "a PoC candidate or validated PoC exists",
+    "cleanup was unnecessary"
+  ]
+}

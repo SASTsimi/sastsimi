@@ -1,0 +1,89 @@
+{
+  "expectation_schema_version": "r7-validation-expectation.v1",
+  "case_id": "r7-cleanup-failure-v2",
+  "expected_record_projections": {
+    "POC1": {
+      "record_type": "poc_bundle",
+      "producer": "REPRODUCTION_SESSION_MANAGER",
+      "fields": {
+        "request_ref": "DQ1",
+        "reproduction_plan_ref": "PL1",
+        "environment_recipe_ref": "RC1",
+        "environment_ref": "ENV1",
+        "agent_log_ref": "LOG1-final",
+        "candidate_ref": "PC1",
+        "candidate_digest": "sha256:13d762221a7ab81d6e3f8c887c7fde239e3f7c6a298f108709effacc5317e267",
+        "execution_action_id": "POC-EXEC-1",
+        "evidence_refs": ["OBS-PROBE-1"]
+      }
+    },
+    "CL1": {
+      "record_type": "cleanup_result",
+      "producer": "REPRODUCTION_SETUP_AUTOMATION",
+      "fields": {
+        "request_ref": "DQ1",
+        "environment_refs": ["ENV1"],
+        "resource_refs": ["container-r7-001", "network-r7-001"],
+        "status": "FAILED"
+      }
+    },
+    "LOG1-final": {
+      "record_type": "agent_log",
+      "producer": "REPRODUCTION_SESSION_MANAGER",
+      "fields": {"request_ref": "DQ1"}
+    },
+    "DX1": {
+      "record_type": "dynamic_reproduction_result",
+      "producer": "REPRODUCTION_SESSION_MANAGER",
+      "fields": {
+        "action_decision_ref": "AD1",
+        "request_ref": "DQ1",
+        "reproduction_plan_ref": "PL1",
+        "purpose": "POC_CONFIRMATION",
+        "policy_decision_ref": "SPD1",
+        "agent_invoked": true,
+        "agent_log_ref": "LOG1-final",
+        "agent_conclusion_ref": "CONCLUSION1",
+        "environment_recipe_ref": "RC1",
+        "environment_ref": "ENV1",
+        "poc_candidate_ref": "PC1",
+        "poc_ref": "POC1",
+        "observation_refs": ["OBS-PROBE-1"],
+        "status": "SUCCEEDED",
+        "failure_category": "NONE",
+        "failure_reason": null,
+        "plan_issues": [],
+        "hypothesis_outcome": "SUPPORTED",
+        "hypothesis_evidence_refs": ["OBS-PROBE-1"],
+        "hypothesis_disproved": false,
+        "disproof_evidence_refs": [],
+        "plan_execution_status": "EXECUTABLE",
+        "cleanup_required": true,
+        "cleanup_status": "FAILED",
+        "cleanup_ref": "CL1"
+      }
+    }
+  },
+  "assertions": [
+    {"target": ["PC1", "TR1", "TR2", "OBS-PROBE-1", "CONCLUSION1", "LOG1-final", "POC1", "CL1", "DX1"], "operator": "SAME_SCOPE", "value": "case.scope"},
+    {"target": "POC1", "operator": "PRODUCED_BY", "value": "REPRODUCTION_SESSION_MANAGER"},
+    {"target": "CL1", "operator": "PRODUCED_BY", "value": "REPRODUCTION_SETUP_AUTOMATION"},
+    {"target": "DX1", "operator": "PRODUCED_BY", "value": "REPRODUCTION_SESSION_MANAGER"},
+    {"target": "POC1.candidate_digest", "operator": "EQUALS", "value_from": "PC1.content_digest"},
+    {"target": "POC1.execution_action_id", "operator": "EQUALS", "value": "POC-EXEC-1"},
+    {"target": "POC1.evidence_refs", "operator": "CONTAINS", "value": ["OBS-PROBE-1"]},
+    {"target": "LOG1-final.events[*].sequence", "operator": "CONTAINS", "value": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]},
+    {"target": "LOG1-final.events[*].event_type", "operator": "CONTAINS", "value": ["CLEANUP_STARTED", "CLEANUP_FINISHED", "SESSION_FINISHED"]},
+    {"target": "CL1.failure_reason", "operator": "CONTAINS", "value": ["network-r7-001", "could not be removed"]},
+    {"target": "DX1.hypothesis_linkage", "operator": "EQUALS", "value_from": "CONCLUSION1.hypothesis_linkage"},
+    {"target": "DX1.limitations", "operator": "EQUALS", "value_from": "CONCLUSION1.limitations"},
+    {"target": "DX1.hypothesis_outcome", "operator": "EQUALS", "value": "SUPPORTED"},
+    {"target": "DX1.cleanup_status", "operator": "EQUALS", "value": "FAILED"}
+  ],
+  "must_not_claim": [
+    "R7 directly performed or finalized cleanup",
+    "cleanup failure disproved the hypothesis or changed it to INCONCLUSIVE",
+    "cleanup failure invalidated POC1",
+    "cleanup succeeded or no resource remains"
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "case_schema_version": "r7-validation-case.v1",
+  "case_id": "r7-environment-setup-failure-v2",
+  "case_layer": "TRUSTED_RUNTIME_INTEGRATION",
+  "source": {
+    "type": "SYNTHETIC_RUNTIME_FAILURE",
+    "fixture_path": "docs/handoff/R7/validation/fixture"
+  },
+  "scope": {
+    "analysis_id": "AN-R7-1",
+    "workspace_id": "WS-R7-1",
+    "commit_id": "synthetic-flask-traversal-v1",
+    "hypothesis_id": "H-R7-1",
+    "verification_generation": 1,
+    "work_id": "KD1",
+    "attempt_id": "ADYN1"
+  },
+  "records": {
+    "request": {"record_id": "DQ1", "purpose": "POC_CONFIRMATION", "sandbox_profile_ref": "SP1"},
+    "requirements": {
+      "record_id": "ER1",
+      "request_ref": "DQ1",
+      "items": [
+        {"requirement_id": "req-python", "kind": "VERSION", "required": true, "expected": ">=3.12,<3.13"},
+        {"requirement_id": "req-flask", "kind": "VERSION", "required": true, "expected": "Flask==3.1.2"},
+        {"requirement_id": "req-probe", "kind": "FIXTURE", "required": true, "expected": "fixtures/probe.txt"},
+        {"requirement_id": "req-health", "kind": "HEALTH_CHECK", "required": true, "expected": "A normal report read returns status 200 with PUBLIC_REPORT."}
+      ]
+    },
+    "plan": {"record_id": "PL1", "request_ref": "DQ1", "environment_requirements_ref": "ER1", "sandbox_profile_ref": "SP1"},
+    "sandbox_profile": {"record_id": "SP1", "network_mode": "DEFAULT_DENY"},
+    "lifecycle_profile": {"record_id": "LP1", "new_attempt_budget_remaining": 0},
+    "run_policy_state": {"record_id": "RPS1", "status": "CURRENT"},
+    "fixture_source": {"record_id": "FR-PYPROJECT", "path": "fixture/pyproject.toml", "content_hash": "sha256:cf4612f1621648ce728972e57c637a43c6dc061a3cb2e9333d09646037b04486"},
+    "action_request": {"record_id": "AR1", "requested_by": "REPRODUCTION_SETUP_AUTOMATION", "action_type": "RUN_SANDBOX", "input_refs": ["DQ1", "ER1", "PL1", "SP1", "LP1"], "dynamic_request_ref": "DQ1", "reproduction_plan_ref": "PL1", "sandbox_profile_ref": "SP1", "resource_profile_ref": "LP1", "run_policy_state_ref": "RPS1", "network_targets": []},
+    "action_decision": {"record_id": "AD1", "action_ref": "AR1", "decision": "ALLOW", "required_checks": ["SCHEMA", "AUTHORITY", "IDENTITY", "REVISION", "STATE", "BUDGET"], "check_results": [{"check_type": "SCHEMA", "result": "PASS"}, {"check_type": "AUTHORITY", "result": "PASS"}, {"check_type": "IDENTITY", "result": "PASS"}, {"check_type": "REVISION", "result": "PASS"}, {"check_type": "STATE", "result": "PASS"}, {"check_type": "BUDGET", "result": "PASS"}], "checked_config_refs": ["SP1", "LP1"], "use_status": "USED", "error_ids": [], "outcome_refs": []},
+    "policy_decision": {"record_id": "SPD1", "action_decision_ref": "AD1", "decision": "ALLOW", "request_ref": "DQ1", "sandbox_profile_ref": "SP1", "resource_profile_ref": "LP1", "run_policy_state_ref": "RPS1", "observed_policy_status": "CURRENT", "execution_scope": "LOCAL_ONLY"},
+    "recipe": {"record_id": "RC1", "request_ref": "DQ1", "environment_requirements_ref": "ER1", "recipe_source_ref": "FR-PYPROJECT", "build_disposition": "BUILT"}
+  },
+  "stimulus": {
+    "operation": "PREPARE_SANDBOX_ENVIRONMENT",
+    "producer": "REPRODUCTION_SETUP_AUTOMATION",
+    "environment_ref": "ENV-FAIL-1",
+    "checks": [
+      {"requirement_id": "req-python", "status": "MISMATCH", "actual": "3.11.9", "difference": "Python >=3.12,<3.13 is required."},
+      {"requirement_id": "req-flask", "status": "MATCH", "actual": "3.1.2", "difference": null},
+      {"requirement_id": "req-probe", "status": "MATCH", "actual": "fixtures/probe.txt", "difference": null},
+      {"requirement_id": "req-health", "status": "NOT_CHECKED", "actual": null, "difference": "Health Check was not run after the required Python version mismatch."}
+    ],
+    "resources_created": ["container-r7-fail-001"],
+    "sandbox_agent_started": false,
+    "new_attempt_budget_remaining": 0,
+    "cleanup_injection": {
+      "cleanup_ref": "CL1",
+      "status": "SUCCEEDED",
+      "resource_refs": ["container-r7-fail-001"],
+      "failure_reason": null
+    }
+  }
+}

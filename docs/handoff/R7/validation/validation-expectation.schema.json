@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sastsimi.local/schemas/r7-validation-expectation.v1.json",
+  "title": "R7 validation expectation draft",
+  "type": "object",
+  "required": ["expectation_schema_version", "case_id", "expected_record_projections", "assertions", "must_not_claim"],
+  "properties": {
+    "expectation_schema_version": {"const": "r7-validation-expectation.v1"},
+    "case_id": {"type": "string", "minLength": 1},
+    "expected_record_projections": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["record_type", "producer", "fields"],
+        "properties": {
+          "record_type": {"type": "string", "minLength": 1},
+          "producer": {"type": "string", "minLength": 1},
+          "fields": {"type": "object"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "assertions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["target", "operator"],
+        "properties": {
+          "target": {
+            "oneOf": [
+              {"type": "string", "minLength": 1},
+              {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}
+            ]
+          },
+          "operator": {"enum": ["EQUALS", "NON_NULL", "ABSENT", "CONTAINS", "ALL_EQUAL", "EXCLUDES", "SAME_SCOPE", "PRODUCED_BY"]},
+          "value": {},
+          "value_from": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "must_not_claim": {"type": "array", "items": {"type": "string", "minLength": 1}}
+  },
+  "additionalProperties": false
+}

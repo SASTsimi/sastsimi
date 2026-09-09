@@ -20,6 +20,14 @@ limits, retry policy, and redaction policy.
    request per turn in the same logical session and attempt
 6. [`INTERPRET_ATTEMPT`](./interpret-attempt.md), only after `FINISH`
 
+## Validation drafts
+
+[`validation/`](./validation/) contains one reusable local-only code fixture and
+paired input/expected JSON cases for environment readiness, environment setup
+failure, execution cancellation, and post-run cleanup state. The expected files
+fix stable schema and ownership conditions while expressing variable natural
+language through required evidence and prohibited-claim assertions.
+
 ## Review points
 
 - Confirm the common role and Sandbox boundary without reducing execution-stage
