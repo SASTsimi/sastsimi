@@ -17,6 +17,7 @@ from sastsimi.contracts.llm import (
     PromptPayload,
     PromptRedactionPolicy,
     PromptRegistryEntry,
+    ProviderCapabilities,
     ProviderProfile,
     ProviderValidationEvidence,
     SemanticValidatorSpec,
@@ -24,6 +25,7 @@ from sastsimi.contracts.llm import (
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.ports.configuration_registry import ConfigurationRegistryPort
+from sastsimi.ports.dto import CapabilityProbeResult
 
 
 class ConfigurationRegistry:
@@ -54,8 +56,15 @@ class ConfigurationRegistry:
     ) -> StoredDataRef:
         return self.registry.register_provider_validation(record)
 
-    def register_provider_profile(self, record: ProviderProfile) -> StoredDataRef:
-        return self.registry.register_provider_profile(record)
+    def derive_provider_capabilities(
+        self, record: ProviderValidationEvidence
+    ) -> ProviderCapabilities:
+        return self.registry.derive_provider_capabilities(record)
+
+    def register_provider_profile(
+        self, record: ProviderProfile, probe: CapabilityProbeResult
+    ) -> StoredDataRef:
+        return self.registry.register_provider_profile(record, probe)
 
     def register_client_execution(
         self, record: ClientExecutionProfile

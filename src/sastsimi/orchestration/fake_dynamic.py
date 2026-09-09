@@ -1,7 +1,9 @@
 """Deterministic dynamic-reproduction orchestration stages."""
 
+from __future__ import annotations
+
 import asyncio
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any
 
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.budget import (
@@ -14,11 +16,13 @@ from sastsimi.contracts.dynamic import (
     DynamicReproductionConclusion,
     DynamicReproductionRequest,
     DynamicReproductionResult,
+    DynamicReproductionToolRequest,
     EnvironmentRecipe,
     EnvironmentRequirements,
     PoCBundle,
     PoCCandidate,
     ReproductionPlan,
+    SandboxCommandRecord,
     SandboxEnvironment,
     SandboxPolicyDecision,
     SandboxProfile,
@@ -30,7 +34,12 @@ from sastsimi.contracts.verification import (
 )
 from sastsimi.orchestration.fake_base import ANALYSIS_ID
 from sastsimi.orchestration.fake_configuration import register_fake_llm_call
-from sastsimi.ports.dto import SandboxPrepareRequest
+from sastsimi.ports.dto import (
+    ApprovedSandboxCommand,
+    Record,
+    SandboxCleanupRequest,
+    SandboxPrepareRequest,
+)
 
 from .fake_base import FakeStageService
 from .fake_provider_runtime import (
@@ -38,8 +47,65 @@ from .fake_provider_runtime import (
     persist_fake_invocation,
 )
 
+if TYPE_CHECKING:
+    from .fake_base import FakePipelineBase
+    from .fake_setup import FakeSetupStages
+
 
 class FakeDynamicStages(FakeStageService):
+    def __init__(self, host: FakePipelineBase, setup: FakeSetupStages) -> None:
+        super().__init__(host)
+        self._setup = setup
+
+    def _agent_intermediate(
+        self,
+        *,
+        candidate: Record,
+        work: Any,
+        scope: StoredDataRef,
+        identity: StoredDataRef,
+        result_kind: str,
+        context_refs: tuple[StoredDataRef, ...],
+    ) -> tuple[Record, StoredDataRef]:
+        assert self.runtime is not None and self.runner is not None
+        call_ref, provider_ref = register_fake_llm_call(
+            self.runtime,
+            self.evidence,
+            self._record_meta,
+            self._artifact,
+            self.clock.now(),
+            self.provider_probe,
+            runner=self.runner,
+            scope=scope,
+            orchestration_identity=identity,
+            role="DYNAMIC_REPRODUCTION",
+            result_kind=result_kind,
+            context_refs=context_refs,
+        )
+        self.evidence.identities[identity] = RequesterRole.DYNAMIC_REPRODUCTION
+        record, invocation = invoke_fake_provider(
+            runtime=self.runtime,
+            runner=self.runner,
+            work=work,
+            scope=scope,
+            identity=identity,
+            action_role=RequesterRole.DYNAMIC_REPRODUCTION,
+            action_type="CALL_LLM",
+            call_spec_ref=call_ref,
+            provider_profile_ref=provider_ref,
+            artifact=self._stored_artifact,
+            build_output=lambda _decision: candidate,
+            provider_invoke=self.provider_invoke,
+        )
+        ref = self._setup._publish_intermediate(
+            work,
+            identity,
+            RequesterRole.DYNAMIC_REPRODUCTION,
+            record,
+        )
+        persist_fake_invocation(self.runtime, invocation, ref)
+        return record, ref
+
     def _evidence_result(
         self,
         *,
@@ -127,7 +193,7 @@ class FakeDynamicStages(FakeStageService):
                 )
             )
         )
-        request_ref = self._publish_intermediate(
+        request_ref = self._setup._publish_intermediate(
             verification_work,
             owner_ref,
             RequesterRole.VERIFICATION,
@@ -158,10 +224,7 @@ class FakeDynamicStages(FakeStageService):
         runner = self.runner
 
         def meta(kind: str) -> dict[str, Any]:
-            return cast(
-                dict[str, Any],
-                runner.metadata(dynamic_work.meta, kind, attempt_id=attempt_id),
-            )
+            return runner.metadata(dynamic_work.meta, kind, attempt_id=attempt_id)
 
         requirements = EnvironmentRequirements.model_validate_json(
             canonical_bytes(
@@ -172,12 +235,16 @@ class FakeDynamicStages(FakeStageService):
                 )
             )
         )
-        requirements_ref = self._publish_intermediate(
-            dynamic_work,
-            dynamic_identity,
-            RequesterRole.DYNAMIC_REPRODUCTION,
-            requirements,
+        requirements_record, requirements_ref = self._agent_intermediate(
+            candidate=requirements,
+            work=dynamic_work,
+            scope=scope,
+            identity=dynamic_identity,
+            result_kind="environment_requirements",
+            context_refs=(request_ref,),
         )
+        assert isinstance(requirements_record, EnvironmentRequirements)
+        requirements = requirements_record
         plan = ReproductionPlan.model_validate_json(
             canonical_bytes(
                 dict(
@@ -193,12 +260,16 @@ class FakeDynamicStages(FakeStageService):
                 )
             )
         )
-        plan_ref = self._publish_intermediate(
-            dynamic_work,
-            dynamic_identity,
-            RequesterRole.DYNAMIC_REPRODUCTION,
-            plan,
+        plan_record, plan_ref = self._agent_intermediate(
+            candidate=plan,
+            work=dynamic_work,
+            scope=scope,
+            identity=dynamic_identity,
+            result_kind="reproduction_plan",
+            context_refs=(request_ref, requirements_ref),
         )
+        assert isinstance(plan_record, ReproductionPlan)
+        plan = plan_record
         recipe = EnvironmentRecipe.model_validate_json(
             canonical_bytes(
                 dict(
@@ -215,7 +286,7 @@ class FakeDynamicStages(FakeStageService):
                 )
             )
         )
-        recipe_ref = self._publish_intermediate(
+        recipe_ref = self._setup._publish_intermediate(
             dynamic_work,
             dynamic_identity,
             RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
@@ -316,7 +387,7 @@ class FakeDynamicStages(FakeStageService):
                 )
             )
         )
-        policy_ref = self._publish_intermediate(
+        policy_ref = self._setup._publish_intermediate(
             dynamic_work,
             dynamic_identity,
             RequesterRole.SANDBOX_CONTROLLER,
@@ -327,12 +398,9 @@ class FakeDynamicStages(FakeStageService):
         )
 
         async def prepare_environment() -> SandboxEnvironment:
-            return cast(
-                SandboxEnvironment,
-                await self.sandbox_prepare(
-                    SandboxPrepareRequest(request, requirements, plan, policy),
-                    environment,
-                ),
+            return await self.sandbox_prepare(
+                SandboxPrepareRequest(request, requirements, plan, policy),
+                environment,
             )
 
         returned_environment: SandboxEnvironment = asyncio.run(
@@ -347,7 +415,7 @@ class FakeDynamicStages(FakeStageService):
         self.runner.account(sandbox_reservation, sandbox_units)
         if returned_environment != environment:
             raise ValueError("FAKE_SANDBOX_ENVIRONMENT_MISMATCH")
-        environment_ref = self._publish_intermediate(
+        environment_ref = self._setup._publish_intermediate(
             dynamic_work,
             dynamic_identity,
             RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
@@ -367,21 +435,210 @@ class FakeDynamicStages(FakeStageService):
                 )
             )
         )
-        candidate_ref = self._publish_intermediate(
+        candidate_record, candidate_ref = self._agent_intermediate(
+            candidate=candidate,
+            work=dynamic_work,
+            scope=scope,
+            identity=dynamic_identity,
+            result_kind="poc_candidate",
+            context_refs=(request_ref, plan_ref, environment_ref),
+        )
+        assert isinstance(candidate_record, PoCCandidate)
+        candidate = candidate_record
+        tool_candidate = DynamicReproductionToolRequest.model_validate_json(
+            canonical_bytes(
+                dict(
+                    meta=meta("dynamic_reproduction_tool_request"),
+                    request_ref=request_ref,
+                    reproduction_plan_ref=plan_ref,
+                    environment_ref=environment_ref,
+                    turn_number=1,
+                    action="RUN_COMMAND",
+                    command=dict(
+                        executable="python",
+                        arguments=("poc.py",),
+                        working_directory="/workspace",
+                        environment_binding_refs=(),
+                        stdin_ref=candidate.content_ref,
+                        secret_refs=(),
+                    ),
+                    poc_candidate_ref=None,
+                    recreate_reason=None,
+                    rationale="Execute the exact persisted PoC candidate",
+                    llm_call_id="pending-tool-request-call",
+                )
+            )
+        )
+        tool_record, tool_ref = self._agent_intermediate(
+            candidate=tool_candidate,
+            work=dynamic_work,
+            scope=scope,
+            identity=dynamic_identity,
+            result_kind="dynamic_reproduction_tool_request",
+            context_refs=(request_ref, plan_ref, environment_ref, candidate_ref),
+        )
+        assert isinstance(tool_record, DynamicReproductionToolRequest)
+        tool_request = tool_record
+
+        command_identity = tool_ref
+        self.evidence.identities[command_identity] = (
+            RequesterRole.REPRODUCTION_SETUP_AUTOMATION
+        )
+        command_action = self.runner.action(
+            dynamic_work,
+            command_identity,
+            "REPRODUCTION_SETUP_AUTOMATION",
+            "RUN_SANDBOX",
+            input_refs=(
+                request_ref,
+                requirements_ref,
+                plan_ref,
+                sandbox_ref,
+                resource_ref,
+                environment_ref,
+                recipe_ref,
+                tool_ref,
+                candidate_ref,
+            ),
+            dynamic_request_ref=request_ref,
+            reproduction_plan_ref=plan_ref,
+            sandbox_profile_ref=sandbox_ref,
+            resource_profile_ref=resource_ref,
+            run_policy_state_ref=run_policy_state_ref,
+            image_digest=recipe.built_image_digest,
+            network_targets=(),
+            resource_limits={
+                "cpu_limit_millicores": sandbox.cpu_limit_millicores,
+                "memory_limit_bytes": sandbox.memory_limit_bytes,
+                "disk_limit_bytes": sandbox.disk_limit_bytes,
+                "pid_limit": sandbox.pid_limit,
+                "requested_execution_ms": sandbox.max_requested_execution_ms,
+            },
+        )
+        command_units = self.runner.units(elapsed_ms=1, cost_minor_units=1)
+        command_reservation = self.runner.reserve(
+            dynamic_work, scope, command_action, command_units
+        )
+        command_decision = self.runner.authorize(
+            dynamic_work, command_action, command_reservation
+        )
+        claimed_command_decision = self.runtime.validator.claim_external(
+            str(dynamic_work.work_id),
+            command_decision,
+            reference(command_reservation),
+        )
+        assert isinstance(claimed_command_decision, StoredDataRef)
+        command_policy = SandboxPolicyDecision.model_validate_json(
+            canonical_bytes(
+                dict(
+                    meta=meta("sandbox_policy_decision"),
+                    action_decision_ref=claimed_command_decision,
+                    request_ref=request_ref,
+                    sandbox_profile_ref=sandbox_ref,
+                    resource_profile_ref=resource_ref,
+                    run_policy_state_ref=run_policy_state_ref,
+                    policy_collection_result_ref=None,
+                    policy_record_ref=None,
+                    execution_scope="LOCAL_ONLY",
+                    observed_policy_status="PREPARING",
+                    decision="ALLOW",
+                    reason_codes=("LOCAL_BOUNDARY_OK",),
+                    checked_boundary_refs=(environment_ref, tool_ref),
+                    decided_at=self.clock.now(),
+                )
+            )
+        )
+        policy_ref = self._setup._publish_intermediate(
             dynamic_work,
             dynamic_identity,
-            RequesterRole.DYNAMIC_REPRODUCTION,
-            candidate,
+            RequesterRole.SANDBOX_CONTROLLER,
+            command_policy,
+        )
+        policy = command_policy
+        assert tool_request.command is not None
+        command_fields = tool_request.command.model_dump()
+        command_candidate = SandboxCommandRecord.model_validate_json(
+            canonical_bytes(
+                dict(
+                    meta=meta("sandbox_command_record"),
+                    request_ref=request_ref,
+                    action_id=command_action.action_id,
+                    tool_request_ref=tool_ref,
+                    reproduction_plan_ref=plan_ref,
+                    environment_recipe_ref=recipe_ref,
+                    environment_ref=environment_ref,
+                    command_digest=content_hash(command_fields),
+                    redaction_status="NOT_REQUIRED",
+                    created_at=self.clock.now(),
+                    **command_fields,
+                )
+            )
+        )
+
+        async def execute_command() -> SandboxCommandRecord:
+            return await self.sandbox_execute(
+                ApprovedSandboxCommand(tool_request, policy), command_candidate
+            )
+
+        returned_command: SandboxCommandRecord = asyncio.run(
+            self.runtime.external.invoke(
+                str(dynamic_work.work_id),
+                command_decision,
+                reference(command_reservation),
+                execute_command,
+                idempotency_key=str(command_action.action_id),
+            )
+        )
+        self.runner.account(command_reservation, command_units)
+        if returned_command != command_candidate:
+            raise ValueError("FAKE_SANDBOX_COMMAND_MISMATCH")
+        command_ref = self._setup._publish_intermediate(
+            dynamic_work,
+            dynamic_identity,
+            RequesterRole.REPRODUCTION_SESSION_MANAGER,
+            returned_command,
         )
         observation = self._artifact("observation")
+        cleanup_candidate = CleanupResult.model_validate_json(
+            canonical_bytes(
+                dict(
+                    meta=meta("cleanup_result"),
+                    request_ref=request_ref,
+                    environment_refs=(environment_ref,),
+                    resource_refs=(),
+                    status="SUCCEEDED",
+                    failure_reason=None,
+                    finished_at=self.clock.now(),
+                )
+            )
+        )
+
+        async def cleanup_environment() -> CleanupResult:
+            return await self.sandbox_cleanup(
+                SandboxCleanupRequest(request, (environment,), ()), cleanup_candidate
+            )
+
+        cleanup = asyncio.run(cleanup_environment())
+        if cleanup != cleanup_candidate:
+            raise ValueError("FAKE_SANDBOX_CLEANUP_MISMATCH")
+        cleanup_ref = self._setup._publish_intermediate(
+            dynamic_work,
+            dynamic_identity,
+            RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
+            cleanup,
+        )
         events = []
         for sequence, (event_type, action_id) in enumerate(
             (
                 ("SESSION_STARTED", "session"),
                 ("AGENT_STARTED", "agent"),
                 ("POC_CANDIDATE_CREATED", "candidate"),
-                ("POC_EXECUTION_STARTED", "execute"),
-                ("POC_EXECUTION_FINISHED", "execute"),
+                ("COMMAND_STARTED", command_action.action_id),
+                ("COMMAND_FINISHED", command_action.action_id),
+                ("POC_EXECUTION_STARTED", command_action.action_id),
+                ("POC_EXECUTION_FINISHED", command_action.action_id),
+                ("CLEANUP_STARTED", "cleanup"),
+                ("CLEANUP_FINISHED", "cleanup"),
                 ("AGENT_FINISHED", "agent"),
                 ("SESSION_FINISHED", "session"),
             ),
@@ -399,13 +656,23 @@ class FakeDynamicStages(FakeStageService):
                     poc_candidate_ref=candidate_ref
                     if event_type.startswith("POC_")
                     else None,
-                    tool_request_ref=None,
-                    command_ref=None,
-                    command_digest=None,
-                    redaction_status=None,
+                    tool_request_ref=tool_ref
+                    if event_type.startswith("COMMAND_")
+                    else None,
+                    command_ref=command_ref
+                    if event_type.startswith("COMMAND_")
+                    else None,
+                    command_digest=returned_command.command_digest
+                    if event_type.startswith("COMMAND_")
+                    else None,
+                    redaction_status=returned_command.redaction_status
+                    if event_type.startswith("COMMAND_")
+                    else None,
                     input_refs=(policy_ref,) if event_type == "SESSION_STARTED" else (),
                     output_refs=(observation,)
                     if event_type == "POC_EXECUTION_FINISHED"
+                    else (cleanup_ref,)
+                    if event_type == "CLEANUP_FINISHED"
                     else (),
                     exit_code=0 if event_type == "POC_EXECUTION_FINISHED" else None,
                     safe_message="Deterministic fake event",
@@ -417,7 +684,7 @@ class FakeDynamicStages(FakeStageService):
                 dict(meta=meta("agent_log"), request_ref=request_ref, events=events)
             )
         )
-        log_ref = self._publish_intermediate(
+        log_ref = self._setup._publish_intermediate(
             dynamic_work,
             dynamic_identity,
             RequesterRole.REPRODUCTION_SESSION_MANAGER,
@@ -446,6 +713,7 @@ class FakeDynamicStages(FakeStageService):
             self._record_meta,
             self._artifact,
             self.clock.now(),
+            self.provider_probe,
             runner=self.runner,
             scope=scope,
             orchestration_identity=dynamic_identity,
@@ -476,7 +744,7 @@ class FakeDynamicStages(FakeStageService):
         )
         assert isinstance(conclusion_record, DynamicReproductionConclusion)
         conclusion = conclusion_record
-        conclusion_ref = self._publish_intermediate(
+        conclusion_ref = self._setup._publish_intermediate(
             dynamic_work,
             dynamic_identity,
             RequesterRole.DYNAMIC_REPRODUCTION,
@@ -494,42 +762,23 @@ class FakeDynamicStages(FakeStageService):
                     agent_log_ref=log_ref,
                     candidate_ref=candidate_ref,
                     candidate_digest=candidate.content_digest,
-                    execution_action_id="execute",
+                    execution_action_id=command_action.action_id,
                     evidence_refs=(observation,),
                     validated_at=self.clock.now(),
                 )
             )
         )
-        poc_ref = self._publish_intermediate(
+        poc_ref = self._setup._publish_intermediate(
             dynamic_work,
             dynamic_identity,
             RequesterRole.REPRODUCTION_SESSION_MANAGER,
             poc,
         )
-        cleanup = CleanupResult.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=meta("cleanup_result"),
-                    request_ref=request_ref,
-                    environment_refs=(environment_ref,),
-                    resource_refs=(),
-                    status="SUCCEEDED",
-                    failure_reason=None,
-                    finished_at=self.clock.now(),
-                )
-            )
-        )
-        cleanup_ref = self._publish_intermediate(
-            dynamic_work,
-            dynamic_identity,
-            RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
-            cleanup,
-        )
         result = DynamicReproductionResult.model_validate_json(
             canonical_bytes(
                 dict(
                     meta=meta("dynamic_reproduction_result"),
-                    action_decision_ref=claimed_sandbox_decision,
+                    action_decision_ref=claimed_command_decision,
                     request_ref=request_ref,
                     reproduction_plan_ref=plan_ref,
                     purpose="POC_CONFIRMATION",

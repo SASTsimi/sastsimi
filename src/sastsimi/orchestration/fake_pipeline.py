@@ -5,12 +5,16 @@ from pathlib import Path
 
 from sastsimi.contracts.evaluation import AnalysisRunResult
 from sastsimi.contracts.reporting import ReportDraft
+from sastsimi.ports.verification_assembly import VerificationAssemblyPort
 from sastsimi.runtime.services import RuntimeServices
 
 from .fake_base import (
     NoMatchBuilder,
     PolicyFetcher,
     ProviderInvoker,
+    ProviderProber,
+    SandboxCleaner,
+    SandboxExecutor,
     SandboxPreparer,
     StaticInvoker,
 )
@@ -26,10 +30,14 @@ class FakePipeline:
         runtime_builder: Callable[..., RuntimeServices],
         database_upgrader: Callable[[Path], None],
         provider_invoke: ProviderInvoker,
+        provider_probe: ProviderProber,
         static_invoke: StaticInvoker,
         sandbox_prepare: SandboxPreparer,
+        sandbox_execute: SandboxExecutor,
+        sandbox_cleanup: SandboxCleaner,
         policy_fetch: PolicyFetcher,
         no_match_builder: NoMatchBuilder,
+        verification_assembly: VerificationAssemblyPort,
         persisted_result: AnalysisRunResult | None = None,
         persisted_reports: tuple[ReportDraft, ...] = (),
     ) -> None:
@@ -38,10 +46,14 @@ class FakePipeline:
             runtime_builder,
             database_upgrader,
             provider_invoke,
+            provider_probe,
             static_invoke,
             sandbox_prepare,
+            sandbox_execute,
+            sandbox_cleanup,
             policy_fetch,
             no_match_builder,
+            verification_assembly,
             persisted_result=persisted_result,
             persisted_reports=persisted_reports,
         )

@@ -17,7 +17,7 @@ from sastsimi.contracts.gates import (
 )
 from sastsimi.contracts.hypothesis import (
     HypothesisProcessState,
-    HypothesisProposal,
+    ProposalProcessState,
 )
 from sastsimi.contracts.policy import (
     RunPolicyState,
@@ -163,25 +163,43 @@ class FakeFinalizationStages(FakeStageService):
         hypothesis_counts: Counter[str] = Counter(
             str(item.status) for item in processes
         )
-        proposals = tuple(
+        proposal_states = tuple(
             item
             for item in self.runtime.queries.current_records(
-                str(ANALYSIS_ID), "hypothesis_proposal"
+                str(ANALYSIS_ID), "proposal_process_state"
             )
-            if isinstance(item, HypothesisProposal)
+            if isinstance(item, ProposalProcessState)
         )
         hypothesis_counts.update(
             {
                 "TOTAL": len(processes),
-                "PROPOSAL_TOTAL": len(proposals),
-                "REGISTERED": len(processes),
-                "DUPLICATE": 0,
-                "INVALID_OUTPUT": 0,
-                "CANCELLED": 0,
-                "DUPLICATE_UNIQUE": 0,
-                "DUPLICATE_UNCERTAIN": 0,
-                "CHECK_FAILED": 0,
-                "INVALID_DUPLICATE_TARGET": 0,
+                "PROPOSAL_TOTAL": len(proposal_states),
+                "REGISTERED": sum(
+                    item.status == "SCHEMA_VALID" for item in proposal_states
+                ),
+                "DUPLICATE": sum(
+                    item.status == "DUPLICATE" for item in proposal_states
+                ),
+                "INVALID_OUTPUT": sum(
+                    item.status == "INVALID_OUTPUT" for item in proposal_states
+                ),
+                "CANCELLED": sum(
+                    item.status == "CANCELLED" for item in proposal_states
+                ),
+                "DUPLICATE_UNIQUE": sum(
+                    item.registration_reason == "UNIQUE" for item in proposal_states
+                ),
+                "DUPLICATE_UNCERTAIN": sum(
+                    item.registration_reason == "UNCERTAIN" for item in proposal_states
+                ),
+                "CHECK_FAILED": sum(
+                    item.registration_reason == "CHECK_FAILED"
+                    for item in proposal_states
+                ),
+                "INVALID_DUPLICATE_TARGET": sum(
+                    item.registration_reason == "INVALID_DUPLICATE_TARGET"
+                    for item in proposal_states
+                ),
             }
         )
         ledger = tuple(
@@ -197,6 +215,19 @@ class FakeFinalizationStages(FakeStageService):
             state.execution_budget_profile_ref
         )
         assert isinstance(execution, ExecutionBudgetProfile)
+        debug_trace_ref = self.runtime.unit_of_work.artifacts.commit_run(
+            self.runtime.unit_of_work.artifacts.stage_bytes(
+                canonical_bytes(
+                    {
+                        "analysis_id": str(ANALYSIS_ID),
+                        "work_count": len(current_work),
+                        "verdict_counts": dict(verdicts),
+                    }
+                ),
+                "application/json",
+            ),
+            ANALYSIS_ID,
+        )
         result = AnalysisRunResult.model_validate_json(
             canonical_bytes(
                 dict(
@@ -238,7 +269,7 @@ class FakeFinalizationStages(FakeStageService):
                     started_at=state.started_at,
                     finished_at=self.clock.now(),
                     elapsed_ms=0,
-                    debug_trace_ref=self._artifact("debug_trace", run=True),
+                    debug_trace_ref=debug_trace_ref,
                     **inventory_fields,
                 )
             )
@@ -256,8 +287,8 @@ class FakeFinalizationStages(FakeStageService):
         )
         self.evidence.identities[owner] = RequesterRole.ORCHESTRATION
         self.runtime.finalization.finalize(result)
-        self._result = result
-        self._reports = tuple(
+        self._host._result = result
+        self._host._reports = tuple(
             item
             for item in self.runtime.queries.current_records(
                 str(ANALYSIS_ID), "report_draft"

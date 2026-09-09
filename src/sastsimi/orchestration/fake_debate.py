@@ -14,7 +14,7 @@ from sastsimi.orchestration.fake_support import FakeEvidence
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 
-from .fake_base import ProviderInvoker
+from .fake_base import ProviderInvoker, ProviderProber
 from .fake_provider_runtime import invoke_fake_provider, persist_fake_invocation
 
 
@@ -46,6 +46,7 @@ def run_fake_debate(
         ProEvidenceResult | ConEvidenceResult,
     ],
     provider_invoke: ProviderInvoker,
+    provider_probe: ProviderProber,
 ) -> FakeDebateResult:
     """Register both branches first, then invoke each real fake provider path."""
     if (
@@ -80,6 +81,7 @@ def run_fake_debate(
             record_meta,
             artifact,
             now(),
+            provider_probe,
             runner=runner,
             scope=scope,
             orchestration_identity=identity,

@@ -192,16 +192,17 @@ def test_chaining_rejects_stale_index_and_cross_generation_atomically(
             trigger_primitive_ref=primitive_ref,
         )
 
-    stale_work = scenario.runner.start(
-        state.budget_binding_ref,
-        verification.meta,
-        "CHAINING",
-        "ANALYSIS",
-        "fake-analysis",
-        identity,
-        inputs=(stale_ref, primitive_ref),
-        trigger_primitive_ref=primitive_ref,
-    )
+    with pytest.raises(ValueError, match="STALE_RESULT"):
+        scenario.runner.start(
+            state.budget_binding_ref,
+            verification.meta,
+            "CHAINING",
+            "ANALYSIS",
+            "fake-analysis",
+            identity,
+            inputs=(stale_ref, primitive_ref),
+            trigger_primitive_ref=primitive_ref,
+        )
 
     work = scenario.runner.start(
         state.budget_binding_ref,
@@ -221,24 +222,9 @@ def test_chaining_rejects_stale_index_and_cross_generation_atomically(
     )
     assert isinstance(chaining_identity, StoredDataRef)
     scenario.evidence.identities[chaining_identity] = RequesterRole.CHAINING
-    stale_candidate = no_match_result(
-        meta=scenario.runner.metadata(
-            stale_work.meta,
-            "chaining_result",
-            attempt_id=stale_work.active_attempt_id,
-        ),
-        primitive_ref=primitive_ref,
-    )
     before = scenario.runtime.queries.current_records(
         "fake-analysis", "chaining_result"
     )
-    with pytest.raises(ValueError, match="STALE_RESULT"):
-        scenario.runner.complete(
-            stale_work,
-            chaining_identity,
-            "CHAINING",
-            (stale_candidate,),
-        )
 
     candidate = no_match_result(
         meta=scenario.runner.metadata(
@@ -255,3 +241,71 @@ def test_chaining_rejects_stale_index_and_cross_generation_atomically(
         scenario.runtime.queries.current_records("fake-analysis", "chaining_result")
         == before
     )
+
+
+def test_chaining_accepts_the_pinned_index_after_an_unrelated_append(
+    tmp_path: Path,
+) -> None:
+    scenario = build_fake_pipeline(tmp_path)._scenario
+    verification = scenario._verification("TRUE")
+    scenario._post_true(verification, stop_after_chaining=True)
+    assert scenario.runtime is not None and scenario.runner is not None
+    state = scenario.runtime.budget_registry.current_state("fake-analysis")
+    assert state.budget_binding_ref is not None
+    identity = next(
+        ref
+        for ref, role in scenario.evidence.identities.items()
+        if role == RequesterRole.ORCHESTRATION and isinstance(ref, StoredDataRef)
+    )
+    (pinned_index,) = scenario.runtime.queries.current_records(
+        "fake-analysis", "primitive_index_state"
+    )
+    (primitive,) = scenario.runtime.queries.current_records(
+        "fake-analysis", "primitive"
+    )
+    pinned_ref = reference(pinned_index)
+    primitive_ref = reference(primitive)
+    assert isinstance(pinned_ref, StoredDataRef)
+    assert isinstance(primitive_ref, StoredDataRef)
+    work = scenario.runner.start(
+        state.budget_binding_ref,
+        verification.meta,
+        "CHAINING",
+        "ANALYSIS",
+        "fake-analysis",
+        identity,
+        inputs=(pinned_ref, primitive_ref),
+        trigger_primitive_ref=primitive_ref,
+    )
+
+    # A later admission appends to the current index while this work retains its
+    # exact immutable start snapshot.
+    scenario._post_true(verification, stop_after_chaining=True)
+    (advanced_index,) = scenario.runtime.queries.current_records(
+        "fake-analysis", "primitive_index_state"
+    )
+    assert reference(advanced_index) != pinned_ref
+
+    chaining_identity = reference(
+        scenario.runtime.queries.current_records(
+            "fake-analysis", "rule_scope_impact_review"
+        )[0]
+    )
+    assert isinstance(chaining_identity, StoredDataRef)
+    scenario.evidence.identities[chaining_identity] = RequesterRole.CHAINING
+    candidate = no_match_result(
+        meta=scenario.runner.metadata(
+            work.meta,
+            "chaining_result",
+            attempt_id=work.active_attempt_id,
+        ),
+        primitive_ref=primitive_ref,
+    )
+
+    completed = scenario.runner.complete(
+        work,
+        chaining_identity,
+        "CHAINING",
+        (candidate,),
+    )
+    assert completed.status == "SUCCEEDED"

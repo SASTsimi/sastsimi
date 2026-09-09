@@ -477,7 +477,6 @@ class VerificationRegistrationService:
                 proposal_ref,
                 policy_ref,
                 playbook_ref,
-                expected_process_ref,
             ):
                 current(records, connection, ref)
             review = records.resolve(connection, technical_review_ref)
@@ -549,7 +548,30 @@ class VerificationRegistrationService:
                 application = records.resolve(connection, app_refs[0])
                 if not isinstance(application, PlaybookApplication):
                     raise ValueError("TECHNICAL_REVISE_CLOSURE_MISMATCH")
-                current_process_ref = reference(process)
+                current_process_wire = connection.execute(
+                    select(models.records.c.ref)
+                    .join(
+                        models.current_records,
+                        models.current_records.c.record_id
+                        == models.records.c.record_id,
+                    )
+                    .where(
+                        models.current_records.c.logical_record_id
+                        == str(process.meta.logical_record_id)
+                    )
+                ).scalar_one()
+                current_process = records.resolve(
+                    connection, REF_ADAPTER.validate_json(current_process_wire)
+                )
+                if (
+                    not isinstance(current_process, HypothesisProcessState)
+                    or current_process.verification_work_ref != reference(existing)
+                    or current_process.verification_generation != generation
+                    or current_process.verification_assignment_ref
+                    != process.verification_assignment_ref
+                ):
+                    raise ValueError("TECHNICAL_REVISE_CLOSURE_MISMATCH")
+                current_process_ref = reference(current_process)
                 assert isinstance(current_process_ref, StoredDataRef)
                 return VerificationRegistration(
                     existing,
@@ -557,6 +579,7 @@ class VerificationRegistrationService:
                     process.verification_assignment_ref,
                     current_process_ref,
                 )
+            current(records, connection, expected_process_ref)
             work_id = works.ids.new(WorkId)
             types = proposal.vulnerability_type_candidates
             mappings = {

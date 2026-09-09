@@ -8,8 +8,10 @@ from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.hypothesis import (
     HypothesisProposal,
+    ProposalProcessState,
     validate_hypothesis_registration,
 )
+from sastsimi.contracts.refs import reference
 from sastsimi.contracts.static import StaticFactBundle
 from tests.contract.domain.canonical_fixtures import make
 from tests.integration.storage.test_intermediate_publication import (
@@ -70,9 +72,14 @@ def test_initial_proposal_derives_hypothesis_process_and_empty_finding_index(
     (hypothesis,) = runtime.queries.current_records("a1", "vulnerability_hypothesis")
     (process,) = runtime.queries.current_records("a1", "hypothesis_process_state")
     (index,) = runtime.queries.current_records("a1", "finding_index_state")
+    (proposal_state,) = runtime.queries.current_records("a1", "proposal_process_state")
     validate_hypothesis_registration(hypothesis, proposal)
     assert process.status == "REGISTERED" and process.verification_generation == 0
     assert index.status == "EMPTY"
+    assert isinstance(proposal_state, ProposalProcessState)
+    assert proposal_state.status == "SCHEMA_VALID"
+    assert proposal_state.registration_reason == "NO_CANDIDATES"
+    assert proposal_state.proposal_ref == reference(proposal)
     assert (
         hypothesis.meta.hypothesis_id
         == process.meta.hypothesis_id

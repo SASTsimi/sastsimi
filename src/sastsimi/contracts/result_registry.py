@@ -32,6 +32,7 @@ from .hypothesis import (
     HypothesisDuplicateReview,
     HypothesisProcessState,
     HypothesisProposal,
+    ProposalProcessState,
     VerificationAssignment,
 )
 from .policy import (
@@ -104,6 +105,11 @@ RESULT_REGISTRY = build_registry(
         ("static_fact_bundle", StaticFactBundle, RequesterRole.STATIC_ANALYSIS),
         ("rule_execution_record", RuleExecutionRecord, RequesterRole.STATIC_ANALYSIS),
         ("hypothesis_proposal", HypothesisProposal, RequesterRole.ORCHESTRATION),
+        (
+            "proposal_process_state",
+            ProposalProcessState,
+            RequesterRole.ORCHESTRATION,
+        ),
         (
             "hypothesis_duplicate_review",
             HypothesisDuplicateReview,

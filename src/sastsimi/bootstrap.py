@@ -67,22 +67,46 @@ def database_command(data_dir: Path, command: str, revision: str | None) -> str:
 def build_fake_pipeline(data_dir: Path) -> FakePipeline:
     """Compose the deterministic local fake vertical slice."""
     from sastsimi.chaining import no_match_result
-    from sastsimi.contracts.dynamic import SandboxEnvironment
-    from sastsimi.contracts.llm import LLMInvocationRequest, LLMInvocationResult
+    from sastsimi.contracts.dynamic import (
+        CleanupResult,
+        SandboxCommandRecord,
+        SandboxEnvironment,
+    )
+    from sastsimi.contracts.llm import (
+        LLMInvocationRequest,
+        LLMInvocationResult,
+        ProviderValidationEvidence,
+    )
     from sastsimi.contracts.refs import reference
     from sastsimi.contracts.static import ToolRunResult
     from sastsimi.orchestration.fake_pipeline import FakePipeline
     from sastsimi.policy import FakePolicySource
-    from sastsimi.ports.dto import SandboxPrepareRequest, StaticToolRequest
+    from sastsimi.ports.dto import (
+        ApprovedSandboxCommand,
+        CapabilityProbeResult,
+        SandboxCleanupRequest,
+        SandboxPrepareRequest,
+        StaticToolRequest,
+    )
     from sastsimi.providers.fake import FakeProviderAdapter
-    from sastsimi.reproduction import require_prepared_environment
+    from sastsimi.reproduction import (
+        require_cleanup_result,
+        require_executed_command,
+        require_prepared_environment,
+    )
     from sastsimi.sandbox.fake import FakeSandboxAdapter
     from sastsimi.static_analysis.fake import FakeStaticToolAdapter
+    from sastsimi.verification import FakeVerificationAssembly
 
     async def provider_invoke(
         request: LLMInvocationRequest, result: LLMInvocationResult
     ) -> LLMInvocationResult:
         return await FakeProviderAdapter({reference(request): result}).invoke(request)
+
+    async def provider_probe(
+        candidate: ProviderValidationEvidence,
+    ) -> CapabilityProbeResult:
+        return await FakeProviderAdapter({}).probe(candidate)
 
     async def static_invoke(
         request: StaticToolRequest, result: ToolRunResult
@@ -102,6 +126,28 @@ def build_fake_pipeline(data_dir: Path) -> FakePipeline:
         returned = await adapter.prepare(request)
         return require_prepared_environment(request, environment, returned)
 
+    async def sandbox_execute(
+        request: ApprovedSandboxCommand, command: SandboxCommandRecord
+    ) -> SandboxCommandRecord:
+        adapter = FakeSandboxAdapter(
+            environments={},
+            commands={reference(request.tool_request): command},
+            cleanups={},
+        )
+        return require_executed_command(
+            request, command, await adapter.execute(request)
+        )
+
+    async def sandbox_cleanup(
+        request: SandboxCleanupRequest, cleanup: CleanupResult
+    ) -> CleanupResult:
+        adapter = FakeSandboxAdapter(
+            environments={},
+            commands={},
+            cleanups={reference(request.request): cleanup},
+        )
+        return require_cleanup_result(request, cleanup, await adapter.cleanup(request))
+
     async def policy_fetch(source_ref: StoredDataRef) -> StoredDataRef:
         return await FakePolicySource(source_ref).fetch()
 
@@ -111,10 +157,14 @@ def build_fake_pipeline(data_dir: Path) -> FakePipeline:
         build_runtime,
         upgrade_database,
         provider_invoke,
+        provider_probe,
         static_invoke,
         sandbox_prepare,
+        sandbox_execute,
+        sandbox_cleanup,
         policy_fetch,
         no_match_result,
+        FakeVerificationAssembly(),
         persisted_result=result,
         persisted_reports=reports,
     )
@@ -292,6 +342,7 @@ def build_runtime(
                 ids,
                 analysis_finalization_identity_ref,
                 authorization,
+                artifacts,
             )
         ),
     )

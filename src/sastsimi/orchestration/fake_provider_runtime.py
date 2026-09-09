@@ -5,8 +5,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import cast
+
+from pydantic import BaseModel
 
 from sastsimi.contracts.actions import RequesterRole
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.llm import (
     LLMCallSpec,
     LLMInvocationLog,
@@ -43,6 +47,7 @@ def invoke_fake_provider(
     artifact: Callable[[str], StoredDataRef],
     build_output: Callable[[StoredDataRef], Record],
     provider_invoke: ProviderInvoker,
+    bind_request: Callable[[Record, StoredDataRef], Record] | None = None,
 ) -> tuple[Record, FakeInvocation]:
     """Invoke one configured fake call and return its not-yet-published output."""
     from sastsimi.contracts.work import WorkExecutionState
@@ -61,6 +66,7 @@ def invoke_fake_provider(
         llm_call_spec_ref=call_spec_ref,
         provider_profile_ref=provider_profile_ref,
         session_mode="NEW",
+        input_refs=spec.context_refs,
     )
     units = runner.units(elapsed_ms=1, llm_call_count=1, cost_minor_units=1)
     reservation = runner.reserve(work, scope, action, units)
@@ -72,9 +78,6 @@ def invoke_fake_provider(
         if not isinstance(claimed_ref, StoredDataRef):
             raise ValueError("FAKE_PROVIDER_DECISION_SCOPE_MISMATCH")
         output = build_output(claimed_ref)
-        output_ref = runtime.unit_of_work.records.stage_record(output)
-        if not isinstance(output_ref, StoredDataRef):
-            raise ValueError("FAKE_PROVIDER_OUTPUT_SCOPE_MISMATCH")
         request = LLMInvocationRequest.model_validate(
             spec.model_dump()
             | dict(
@@ -87,6 +90,20 @@ def invoke_fake_provider(
                 call_spec_ref=call_spec_ref,
             )
         )
+        request_ref = reference(request)
+        if not isinstance(request_ref, StoredDataRef):
+            raise ValueError("FAKE_PROVIDER_REQUEST_SCOPE_MISMATCH")
+        if bind_request is not None:
+            output = bind_request(output, request_ref)
+        if isinstance(output, BaseModel) and "llm_call_id" in type(output).model_fields:
+            output = cast(
+                Record,
+                output.model_copy(update={"llm_call_id": spec.llm_call_id}),
+            )
+        output_ref = reference(output)
+        if not isinstance(output_ref, StoredDataRef):
+            raise ValueError("FAKE_PROVIDER_OUTPUT_SCOPE_MISMATCH")
+        response_ref = _artifact_bytes(runtime, canonical_bytes(output))
         result = LLMInvocationResult.model_validate(
             dict(
                 meta=runner.metadata(
@@ -101,7 +118,7 @@ def invoke_fake_provider(
                 model=profile.model,
                 actual_session_mode="NEW",
                 session_ref=f"fake-session-{spec.llm_call_id}",
-                response_ref=artifact(f"response-{spec.llm_call_id}"),
+                response_ref=response_ref,
                 parsed_output_ref=output_ref,
                 usage=dict(
                     token_source="PROVIDER_REPORTED",
@@ -123,6 +140,20 @@ def invoke_fake_provider(
             )
         )
         returned = await provider_invoke(request, result)
+        if (
+            returned.status != "SUCCEEDED"
+            or returned.safe_error is not None
+            or returned.parsed_output_ref != output_ref
+            or returned.response_ref != response_ref
+            or returned.llm_call_id != spec.llm_call_id
+            or returned.purpose != spec.purpose
+            or returned.provider != profile.provider
+            or returned.model != profile.model
+            or returned.actual_session_mode != "NEW"
+            or returned.session_ref != f"fake-session-{spec.llm_call_id}"
+            or returned.usage is None
+        ):
+            raise ValueError("FAKE_PROVIDER_OUTPUT_MISMATCH")
         return output, request, returned
 
     payload, _claimed = asyncio.run(
@@ -136,6 +167,7 @@ def invoke_fake_provider(
     )
     output, request, result = payload
     runner.account(reservation, units)
+    request_bytes_ref = _artifact_bytes(runtime, canonical_bytes(request))
     log = LLMInvocationLog.model_validate(
         dict(
             meta=runner.metadata(
@@ -166,7 +198,7 @@ def invoke_fake_provider(
             output_schema_ref=spec.output_schema_ref,
             context_refs=spec.context_refs,
             retrieved_code_locations=(),
-            exposed_request_ref=artifact(f"request-{spec.llm_call_id}"),
+            exposed_request_ref=request_bytes_ref,
             exposed_response_ref=result.response_ref,
             parsed_output_ref=result.parsed_output_ref,
             tool_calls=(),
@@ -185,6 +217,11 @@ def invoke_fake_provider(
         )
     )
     return output, FakeInvocation(request, result, log)
+
+
+def _artifact_bytes(runtime: RuntimeServices, data: bytes) -> StoredDataRef:
+    staged = runtime.unit_of_work.artifacts.stage_bytes(data, "application/json")
+    return runtime.unit_of_work.artifacts.commit(staged)
 
 
 def persist_fake_invocation(

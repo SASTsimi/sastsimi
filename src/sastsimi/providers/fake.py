@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 from types import MappingProxyType
 
+from sastsimi.contracts.llm import ProviderValidationEvidence
 from sastsimi.contracts.refs import RecordRef, reference
 from sastsimi.ports.dto import (
     BoundaryRecord,
@@ -10,7 +11,6 @@ from sastsimi.ports.dto import (
     CapabilityProbeResult,
     LLMInvocationRequest,
     LLMInvocationResult,
-    ProviderProfile,
 )
 
 
@@ -27,11 +27,24 @@ class FakeProviderAdapter:
         except KeyError as error:
             raise ValueError("FAKE_INVOCATION_NOT_CONFIGURED") from error
 
-    async def probe(self, profile: ProviderProfile) -> CapabilityProbeResult:
-        profile_ref = (
-            profile.ref if isinstance(profile, BoundaryRecord) else reference(profile)
+    async def probe(
+        self, candidate: ProviderValidationEvidence
+    ) -> CapabilityProbeResult:
+        tests = tuple(
+            test.model_copy(
+                update={
+                    "result": "NOT_APPLICABLE" if test.test_id == "PVD-13" else "PASS",
+                    "safe_summary": (
+                        "API subscription isolation is not applicable"
+                        if test.test_id == "PVD-13"
+                        else "Deterministic fake adapter probe passed"
+                    ),
+                }
+            )
+            for test in candidate.tests
         )
-        return BoundaryRecord(profile_ref)
+        evidence = candidate.model_copy(update={"tests": tests})
+        return CapabilityProbeResult(evidence=evidence)
 
     async def cancel(self, invocation_id: str) -> CancellationResult:
         return CancellationResult(False, "No asynchronous external fake process exists")

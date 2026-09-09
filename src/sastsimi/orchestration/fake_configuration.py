@@ -1,5 +1,6 @@
 """Deterministic, host-approved configuration graph for fake LLM stages."""
 
+import asyncio
 from collections.abc import Callable
 from datetime import datetime
 
@@ -26,12 +27,22 @@ from sastsimi.contracts.llm import (
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef
 from sastsimi.orchestration.fake_support import FakeEvidence
+from sastsimi.ports.dto import CapabilityProbeResult
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
+
+from .fake_base import ProviderProber
 
 
 def _approved(evidence: FakeEvidence, record: object) -> None:
     evidence.llm_approvals.add(content_hash(record))
+
+
+def _artifact_bytes(
+    runtime: RuntimeServices, data: bytes, media_type: str = "application/json"
+) -> StoredDataRef:
+    staged = runtime.unit_of_work.artifacts.stage_bytes(data, media_type)
+    return runtime.unit_of_work.artifacts.commit(staged)
 
 
 def register_fake_llm_call(
@@ -40,6 +51,7 @@ def register_fake_llm_call(
     metadata: Callable[[str], RecordMeta],
     artifact: Callable[[str], RecordRef],
     now: datetime,
+    provider_probe: ProviderProber,
     *,
     runner: WorkflowRunner,
     scope: StoredDataRef,
@@ -50,7 +62,7 @@ def register_fake_llm_call(
 ) -> tuple[StoredDataRef, StoredDataRef]:
     """Publish one exact typed configuration closure and return call/provider refs."""
 
-    validation = ProviderValidationEvidence.model_validate_json(
+    probe_candidate = ProviderValidationEvidence.model_validate_json(
         canonical_bytes(
             dict(
                 meta=metadata("provider_validation_evidence"),
@@ -66,9 +78,9 @@ def register_fake_llm_call(
                 tests=tuple(
                     dict(
                         test_id=f"PVD-{index:02d}",
-                        result="PASS",
+                        result="NOT_APPLICABLE",
                         evidence_refs=(_stored(artifact(f"pvd-{index:02d}")),),
-                        safe_summary="Deterministic fake adapter probe passed",
+                        safe_summary="Pending deterministic adapter probe",
                     )
                     for index in range(1, 17)
                 ),
@@ -77,26 +89,14 @@ def register_fake_llm_call(
             )
         )
     )
+
+    async def execute_probe() -> CapabilityProbeResult:
+        return await provider_probe(probe_candidate)
+
+    probe = asyncio.run(execute_probe())
+    validation = probe.evidence
     _approved(evidence, validation)
     validation_ref = runtime.configuration.register_provider_validation(validation)
-    capabilities = {
-        name: "SUPPORTED"
-        for name in (
-            "non_interactive",
-            "structured_output",
-            "new_session",
-            "resume_session",
-            "parallel_calls",
-            "cancellation",
-            "timeout_detection",
-            "auth_expiry_detection",
-            "rate_limit_detection",
-            "request_id",
-            "token_usage",
-            "session_metadata",
-            "runtime_tool_loop",
-        )
-    }
     provider = ProviderProfile.model_validate_json(
         canonical_bytes(
             dict(
@@ -111,7 +111,9 @@ def register_fake_llm_call(
                 client_name="sastsimi-fake",
                 client_version="1",
                 credential_source="ENVIRONMENT",
-                capabilities=capabilities,
+                capabilities=runtime.configuration.derive_provider_capabilities(
+                    validation
+                ),
                 support_status="SUPPORTED",
                 validation_evidence_ref=validation_ref,
                 client_execution_profile_ref=None,
@@ -122,7 +124,7 @@ def register_fake_llm_call(
         )
     )
     _approved(evidence, provider)
-    provider_ref = runtime.configuration.register_provider_profile(provider)
+    provider_ref = runtime.configuration.register_provider_profile(provider, probe)
 
     limits = ExecutionLimits(
         meta=metadata("execution_limits"),
@@ -194,10 +196,19 @@ def register_fake_llm_call(
         )
         for index, ref in enumerate(context_refs, 1)
     )
+    template_ref = _artifact_bytes(
+        runtime,
+        (
+            f"role={role}\ntask={result_kind}\n"
+            "Use each ordered context binding exactly once and return the "
+            "configured schema.\n"
+        ).encode(),
+        "text/plain",
+    )
     prompt_fields = dict(
         agent_role=role,
         task_kind=result_kind,
-        template_ref=_stored(artifact(f"template-{role.lower()}")),
+        template_ref=template_ref,
         template_version="1",
         input_slots=input_slots,
         forbidden_context_kinds=("credential",),
@@ -368,6 +379,30 @@ def register_fake_llm_call(
     )
     _approved(evidence, prompt)
     prompt_ref = runtime.configuration.register_prompt_entry(prompt)
+    projected_refs = tuple(
+        _artifact_bytes(
+            runtime,
+            canonical_bytes(
+                {
+                    "ordinal": index,
+                    "source_ref": ref,
+                    "field_paths": ("$",),
+                }
+            ),
+        )
+        for index, ref in enumerate(context_refs, 1)
+    )
+    rendered_prompt_ref = _artifact_bytes(
+        runtime,
+        canonical_bytes(
+            {
+                "template_ref": template_ref,
+                "role": role,
+                "task_kind": result_kind,
+                "ordered_context_refs": context_refs,
+            }
+        ),
+    )
     payload = PromptPayload.model_validate_json(
         canonical_bytes(
             dict(
@@ -384,26 +419,25 @@ def register_fake_llm_call(
                         slot=f"context-{index}",
                         data_kind=ref.data_kind,
                         source_ref=ref,
-                        projected_data_ref=_stored(
-                            artifact(f"projected-{role.lower()}-{index}")
-                        ),
+                        projected_data_ref=projected_refs[index - 1],
                         field_paths=("$",),
                         trust_class="UNTRUSTED_DATA",
                     )
                     for index, ref in enumerate(context_refs, 1)
                 ),
-                rendered_prompt_ref=_stored(artifact(f"rendered-{role.lower()}")),
+                rendered_prompt_ref=rendered_prompt_ref,
                 output_schema_ref=schema_ref,
             )
         )
     )
     _approved(evidence, payload)
     payload_ref = runtime.configuration.register_prompt_payload(payload)
+    call_meta = metadata("llm_call_spec")
     call = LLMCallSpec.model_validate_json(
         canonical_bytes(
             dict(
-                meta=metadata("llm_call_spec"),
-                llm_call_id=f"fake-{role.lower()}-call",
+                meta=call_meta,
+                llm_call_id=f"fake-{role.lower()}-{call_meta.record_id}",
                 agent_role=role,
                 task_kind=result_kind,
                 purpose="PRODUCTION",

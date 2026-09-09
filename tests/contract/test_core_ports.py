@@ -11,16 +11,18 @@ from sastsimi.contracts.budget import (
     BudgetReservation,
 )
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.ids import OpaqueId
+from sastsimi.contracts.ids import AnalysisId, OpaqueId
 from sastsimi.contracts.llm import (
     LLMInvocationRequest,
     LLMInvocationResult,
     ProviderProfile,
+    ProviderValidationEvidence,
 )
 from sastsimi.contracts.records import RecordMeta, RecordMetadata, RunMeta
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
     RecordRef,
+    RunStoredDataRef,
     StoredDataRef,
     reference,
     validate_exact_ref,
@@ -109,7 +111,12 @@ class FakeArtifacts:
     def commit(self, staged: StagedArtifact) -> StoredDataRef:
         raise NotImplementedError
 
-    def open_verified(self, ref: StoredDataRef) -> BinaryIO:
+    def commit_run(
+        self, staged: StagedArtifact, analysis_id: AnalysisId
+    ) -> RunStoredDataRef:
+        raise NotImplementedError
+
+    def open_verified(self, ref: StoredDataRef | RunStoredDataRef) -> BinaryIO:
         return BytesIO(b"verified")
 
 
@@ -130,8 +137,10 @@ class FakeHandler:
 
 
 class FakeLlm:
-    async def probe(self, profile: ProviderProfile) -> CapabilityProbeResult:
-        return BoundaryRecord(ref=reference(profile))
+    async def probe(
+        self, candidate: ProviderValidationEvidence
+    ) -> CapabilityProbeResult:
+        return CapabilityProbeResult(evidence=candidate)
 
     async def invoke(self, request: LLMInvocationRequest) -> LLMInvocationResult:
         return LLMInvocationResult.model_validate(
@@ -249,12 +258,15 @@ async def test_async_boundaries_are_awaitable() -> None:
         "provider_validation_evidence"
     )
     profile = ProviderProfile.model_validate_json(canonical_bytes(profile_payload))
+    candidate = ProviderValidationEvidence.model_validate_json(
+        canonical_bytes(make("ProviderValidationEvidence"))
+    )
     request = LLMInvocationRequest.model_validate_json(
         canonical_bytes(make("LLMInvocationRequest", "llm_invocation_request"))
     )
     profile_ref = reference(profile)
     assert isinstance(profile_ref, StoredDataRef)
-    assert (await llm.probe(profile)).ref == profile_ref
+    assert (await llm.probe(candidate)).evidence == candidate
     assert (await llm.invoke(request)).llm_call_id == request.llm_call_id
     assert (await static.probe(profile_ref)).ref == profile_ref
     assert (await static.cancel("a1")).cancelled

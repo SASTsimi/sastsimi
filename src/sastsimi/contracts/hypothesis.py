@@ -90,6 +90,75 @@ class HypothesisProposal(HypothesisShape):
         return self
 
 
+class ProposalProcessState(DomainRecord):
+    """Trusted pre-hypothesis validation and duplicate-registration state."""
+
+    KIND = "proposal_process_state"
+    HYPOTHESIS = False
+    ATTEMPT = False
+    proposal_ref: StoredDataRef
+    status: Literal[
+        "PROPOSED", "SCHEMA_VALID", "DUPLICATE", "INVALID_OUTPUT", "CANCELLED"
+    ]
+    duplicate_review_ref: StoredDataRef | None
+    duplicate_of_hypothesis_ref: StoredDataRef | None
+    registration_reason: Literal[
+        "NOT_CHECKED",
+        "NO_CANDIDATES",
+        "UNIQUE",
+        "UNCERTAIN",
+        "CHECK_FAILED",
+        "INVALID_DUPLICATE_TARGET",
+        "DUPLICATE",
+    ]
+    started_at: AwareDatetime
+    finished_at: AwareDatetime | None
+    elapsed_ms: NonNegativeInt
+
+    @model_validator(mode="after")
+    def process_shape(self) -> Self:
+        if self.meta.hypothesis_id is not None or self.meta.attempt_id is not None:
+            raise ValueError("PROPOSAL_PROCESS_SCOPE_MISMATCH")
+        require_record_ref(self.proposal_ref, "hypothesis_proposal")
+        unfinished = self.status == "PROPOSED"
+        if unfinished != (self.finished_at is None):
+            raise ValueError("PROPOSAL_PROCESS_TIME_MISMATCH")
+        if unfinished and (
+            self.registration_reason != "NOT_CHECKED"
+            or self.duplicate_review_ref is not None
+            or self.duplicate_of_hypothesis_ref is not None
+        ):
+            raise ValueError("PROPOSAL_PROCESS_STATE_MISMATCH")
+        if self.status == "SCHEMA_VALID":
+            if self.registration_reason not in {
+                "NO_CANDIDATES",
+                "UNIQUE",
+                "UNCERTAIN",
+                "CHECK_FAILED",
+                "INVALID_DUPLICATE_TARGET",
+            }:
+                raise ValueError("PROPOSAL_REGISTRATION_REASON_MISMATCH")
+            reviewed = self.registration_reason in {"UNIQUE", "UNCERTAIN"}
+            if reviewed != (self.duplicate_review_ref is not None) or (
+                self.duplicate_of_hypothesis_ref is not None
+            ):
+                raise ValueError("PROPOSAL_DUPLICATE_REVIEW_MISMATCH")
+        elif self.status == "DUPLICATE":
+            if (
+                self.registration_reason != "DUPLICATE"
+                or self.duplicate_review_ref is None
+                or self.duplicate_of_hypothesis_ref is None
+            ):
+                raise ValueError("PROPOSAL_DUPLICATE_REVIEW_MISMATCH")
+        elif self.status in {"INVALID_OUTPUT", "CANCELLED"} and (
+            self.registration_reason != "NOT_CHECKED"
+            or self.duplicate_review_ref is not None
+            or self.duplicate_of_hypothesis_ref is not None
+        ):
+            raise ValueError("PROPOSAL_PROCESS_STATE_MISMATCH")
+        return self
+
+
 class HypothesisDuplicateReview(DomainRecord):
     KIND = "hypothesis_duplicate_review"
     HYPOTHESIS = False

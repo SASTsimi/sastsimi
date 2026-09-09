@@ -21,6 +21,7 @@ from sastsimi.storage.codec import encode
 from sastsimi.storage.repositories import SQLiteRecordStore
 
 from .action_validator import RuntimeValidator
+from .current_inputs import check_current_input
 from .dynamic_state import advance_dynamic_work
 from .records import next_meta
 from .verification_state import advance_verification_work
@@ -91,6 +92,18 @@ class WorkService:
                 if not isinstance(parent, WorkExecutionState):
                     raise ValueError("Invalid parent work")
                 validate_parent_work(work, parent)
+            # Chaining owns an immutable Primitive-index snapshot.  The snapshot
+            # must be current when the work is registered, but an append after
+            # registration must not invalidate an in-flight result.
+            if work.work_type == "CHAINING":
+                for input_ref in work.input_refs:
+                    if input_ref.data_kind == "primitive_index_state":
+                        check_current_input(
+                            self.records,
+                            connection,
+                            input_ref,
+                            force=True,
+                        )
             self.validator.claim(
                 connection,
                 decision_ref,

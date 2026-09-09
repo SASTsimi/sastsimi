@@ -272,7 +272,12 @@ class RuntimeValidator:
             raise ValueError("STATE_VERSION_CONFLICT")
         for ref in (*work.input_refs, *action.input_refs):
             check_current_input(self.records, connection, ref)
-            resolved = self.records.resolve(connection, ref)
+            try:
+                resolved = self.records.resolve(connection, ref)
+            except LookupError:
+                if isinstance(ref, StoredDataRef) and ref.record_id is None:
+                    continue
+                raise
             if (
                 getattr(resolved.meta, "analysis_id", work.meta.analysis_id)
                 != work.meta.analysis_id
@@ -474,6 +479,7 @@ class RuntimeValidator:
                 or log.call_spec_ref != request.call_spec_ref
                 or result.parsed_output_ref != output_ref
                 or log.parsed_output_ref != output_ref
+                or tuple(action.input_refs) != tuple(spec.context_refs)
             ):
                 raise ValueError("INVOCATION_ACTION_MISMATCH")
             request_fields = (

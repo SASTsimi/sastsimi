@@ -1,12 +1,15 @@
 """CWE, gates, primitives, chaining, reporting and finalization stages."""
 
+from collections.abc import Callable
 from typing import Literal
 
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.chaining import (
+    ChainingResult,
     Primitive,
     PrimitiveAdmissionDecision,
+    PrimitiveIndexState,
 )
 from sastsimi.contracts.dynamic import (
     DynamicReproductionResult,
@@ -30,16 +33,69 @@ from sastsimi.contracts.reporting import Finding, ReportDraft, condition_sources
 from sastsimi.contracts.verification import (
     VerificationResult,
 )
+from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.ports.dto import Record
 
 from .fake_base import ANALYSIS_ID, COMMIT_ID, WORKSPACE_ID, FakeStageService
 from .fake_configuration import register_fake_llm_call
 from .fake_provider_runtime import (
+    FakeInvocation,
     invoke_fake_provider,
     persist_fake_invocation,
 )
 
 
 class FakeGateStages(FakeStageService):
+    def _gate_output(
+        self,
+        work: object,
+        scope: StoredDataRef,
+        identity: StoredDataRef,
+        config_role: RequesterRole,
+        action_type: str,
+        build_output: Callable[[StoredDataRef], Record],
+    ) -> tuple[Record, FakeInvocation]:
+        assert self.runtime is not None and self.runner is not None
+        if not isinstance(work, WorkExecutionState):
+            raise TypeError("Gate provider requires a running work")
+        self.evidence.identities[identity] = RequesterRole.VERIFICATION
+        result_kind = {
+            "CALL_TECHNICAL_GATE": "technical_evidence_review",
+            "CALL_RULE_SCOPE_GATE": "rule_scope_impact_review",
+            "CREATE_REPORT_DRAFT": "report_draft",
+        }[action_type]
+        call_ref, provider_ref = register_fake_llm_call(
+            self.runtime,
+            self.evidence,
+            self._record_meta,
+            lambda kind: self._artifact(kind, record=True),
+            self.clock.now(),
+            self.provider_probe,
+            runner=self.runner,
+            scope=scope,
+            orchestration_identity=identity,
+            role=config_role.value,
+            result_kind=result_kind,
+            context_refs=tuple(
+                ref for ref in work.input_refs if isinstance(ref, StoredDataRef)
+            ),
+        )
+        self.evidence.identities[identity] = RequesterRole.VERIFICATION
+        return invoke_fake_provider(
+            runtime=self.runtime,
+            runner=self.runner,
+            work=work,
+            scope=scope,
+            identity=identity,
+            action_role=RequesterRole.VERIFICATION,
+            action_type=action_type,
+            call_spec_ref=call_ref,
+            provider_profile_ref=provider_ref,
+            artifact=self._stored_artifact,
+            build_output=build_output,
+            provider_invoke=self.provider_invoke,
+        )
+
     def _post_true(
         self,
         verification: VerificationResult,
@@ -47,6 +103,7 @@ class FakeGateStages(FakeStageService):
         technical_status: Literal["ACCEPT", "REVISE"] = "ACCEPT",
         admission_decision: Literal["ALLOW", "DENY"] = "ALLOW",
         publish_denied_primitive: bool = False,
+        stop_after_chaining: bool = False,
     ) -> TechnicalEvidenceReview:
         assert self.runtime is not None and self.runner is not None
         state = self.runtime.budget_registry.current_state(str(ANALYSIS_ID))
@@ -128,6 +185,7 @@ class FakeGateStages(FakeStageService):
             self._record_meta,
             self._artifact,
             self.clock.now(),
+            self.provider_probe,
             runner=self.runner,
             scope=scope,
             orchestration_identity=cwe_identity,
@@ -456,6 +514,7 @@ class FakeGateStages(FakeStageService):
         (primitive_index,) = self.runtime.queries.current_records(
             str(ANALYSIS_ID), "primitive_index_state"
         )
+        assert isinstance(primitive_index, PrimitiveIndexState)
         primitive_index_ref = reference(primitive_index)
         assert isinstance(primitive_index_ref, StoredDataRef)
 
@@ -466,21 +525,62 @@ class FakeGateStages(FakeStageService):
             "ANALYSIS",
             str(ANALYSIS_ID),
             orchestrator_ref,
-            inputs=(primitive_index_ref, primitive_ref),
+            inputs=(primitive_index_ref, *primitive_index.primitive_refs),
             trigger_primitive_ref=primitive_ref,
             generation=generation,
         )
         chaining_identity = review_ref
         self.evidence.identities[chaining_identity] = RequesterRole.CHAINING
-        chaining = self.no_match_builder(
+        chaining_candidate = self.no_match_builder(
             meta=self.runner.metadata(
                 chaining_work.meta,
                 "chaining_result",
                 attempt_id=chaining_work.active_attempt_id,
             ),
-            primitive_ref=primitive_ref,
+            primitive_refs=primitive_index.primitive_refs,
         )
-        self.runner.complete(chaining_work, chaining_identity, "CHAINING", (chaining,))
+        chaining_call_ref, chaining_provider_ref = register_fake_llm_call(
+            self.runtime,
+            self.evidence,
+            self._record_meta,
+            self._artifact,
+            self.clock.now(),
+            self.provider_probe,
+            runner=self.runner,
+            scope=scope,
+            orchestration_identity=chaining_identity,
+            role="CHAINING",
+            result_kind="chaining_result",
+            context_refs=tuple(
+                ref
+                for ref in chaining_work.input_refs
+                if isinstance(ref, StoredDataRef)
+            ),
+        )
+        self.evidence.identities[chaining_identity] = RequesterRole.CHAINING
+        chaining_record, chaining_invocation = invoke_fake_provider(
+            runtime=self.runtime,
+            runner=self.runner,
+            work=chaining_work,
+            scope=scope,
+            identity=chaining_identity,
+            action_role=RequesterRole.CHAINING,
+            action_type="CALL_LLM",
+            call_spec_ref=chaining_call_ref,
+            provider_profile_ref=chaining_provider_ref,
+            artifact=self._stored_artifact,
+            build_output=lambda _decision: chaining_candidate,
+            provider_invoke=self.provider_invoke,
+        )
+        assert isinstance(chaining_record, ChainingResult)
+        chaining_work = self.runner.complete(
+            chaining_work, chaining_identity, "CHAINING", (chaining_record,)
+        )
+        chaining_ref = chaining_work.output_refs[0]
+        assert isinstance(chaining_ref, StoredDataRef)
+        persist_fake_invocation(self.runtime, chaining_invocation, chaining_ref)
+        if stop_after_chaining:
+            return technical
 
         finding_work = self.runner.start(
             scope,

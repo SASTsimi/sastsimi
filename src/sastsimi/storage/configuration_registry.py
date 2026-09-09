@@ -18,6 +18,7 @@ from sastsimi.contracts.evaluation import (
     EvaluationRunResult,
 )
 from sastsimi.contracts.llm import (
+    Capability,
     ClientExecutionProfile,
     ExecutionLimits,
     LLMCallSpec,
@@ -27,13 +28,14 @@ from sastsimi.contracts.llm import (
     PromptPayload,
     PromptRedactionPolicy,
     PromptRegistryEntry,
+    ProviderCapabilities,
     ProviderProfile,
     ProviderValidationEvidence,
     SemanticValidatorSpec,
 )
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
-from sastsimi.ports.dto import Record
+from sastsimi.ports.dto import CapabilityProbeResult, Record
 
 from . import models
 from .codec import reference
@@ -167,11 +169,56 @@ class ConfigurationRegistry:
             test.result == "FAIL" or not test.evidence_refs for test in record.tests
         ):
             raise ValueError("PROVIDER_VALIDATION_INCOMPLETE")
+        allowed_na = {"PVD-13"} if record.auth_mode == "API_KEY" else set()
+        if all(test.result == "NOT_APPLICABLE" for test in record.tests) or any(
+            test.result == "NOT_APPLICABLE" and test.test_id not in allowed_na
+            for test in record.tests
+        ):
+            raise ValueError("PROVIDER_VALIDATION_INCOMPLETE")
         approved = self.records.evidence.llm_configuration_approved
         return self._publish(record, approved)
 
-    def register_provider_profile(self, record: ProviderProfile) -> StoredDataRef:
+    def derive_provider_capabilities(
+        self, record: ProviderValidationEvidence
+    ) -> ProviderCapabilities:
+        """Derive the conservative capability set from exact PVD outcomes."""
+        validation = ProviderValidationEvidence.model_validate(record)
+        tests: dict[str, str] = {
+            str(test.test_id): str(test.result) for test in validation.tests
+        }
+
+        def supported(test_id: str) -> Capability:
+            return "SUPPORTED" if tests.get(test_id) == "PASS" else "UNVERIFIED"
+
+        return ProviderCapabilities(
+            non_interactive=supported("PVD-01"),
+            structured_output=supported("PVD-03"),
+            new_session=supported("PVD-04"),
+            # PASS proves correct explicit behavior for unsupported RESUME,
+            # cancellation and absent request IDs; it does not imply support.
+            resume_session="UNSUPPORTED",
+            parallel_calls=supported("PVD-06"),
+            cancellation="UNSUPPORTED",
+            timeout_detection=supported("PVD-07"),
+            auth_expiry_detection=supported("PVD-08"),
+            rate_limit_detection=supported("PVD-08"),
+            request_id="UNSUPPORTED",
+            token_usage=supported("PVD-12"),
+            session_metadata=supported("PVD-12"),
+            runtime_tool_loop=supported("PVD-16"),
+        )
+
+    def register_provider_profile(
+        self, record: ProviderProfile, probe: CapabilityProbeResult
+    ) -> StoredDataRef:
         record = ProviderProfile.model_validate(record)
+        derived_capabilities = self.derive_provider_capabilities(probe.evidence)
+        if (
+            probe.evidence != ProviderValidationEvidence.model_validate(probe.evidence)
+            or record.capabilities != derived_capabilities
+            or record.validation_evidence_ref != reference(probe.evidence)
+        ):
+            raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH")
         with self.records.database.engine.connect() as connection:
             validation = self.records.resolve(
                 connection, record.validation_evidence_ref
@@ -194,8 +241,25 @@ class ConfigurationRegistry:
             ):
                 raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH")
             tests = {test.test_id: test for test in validation.tests}
-            if record.capabilities.runtime_tool_loop == "SUPPORTED" and (
-                "PVD-16" not in tests or tests["PVD-16"].result != "PASS"
+            capability_tests = {
+                "non_interactive": "PVD-04",
+                "structured_output": "PVD-03",
+                "new_session": "PVD-04",
+                "resume_session": "PVD-05",
+                "parallel_calls": "PVD-06",
+                "cancellation": "PVD-07",
+                "timeout_detection": "PVD-07",
+                "auth_expiry_detection": "PVD-08",
+                "rate_limit_detection": "PVD-08",
+                "request_id": "PVD-12",
+                "token_usage": "PVD-12",
+                "session_metadata": "PVD-12",
+                "runtime_tool_loop": "PVD-16",
+            }
+            if any(
+                getattr(record.capabilities, capability) == "SUPPORTED"
+                and (test_id not in tests or tests[test_id].result != "PASS")
+                for capability, test_id in capability_tests.items()
             ):
                 raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH")
         if record.support_status != "SUPPORTED":
@@ -363,8 +427,12 @@ class ConfigurationRegistry:
         ):
             raise ValueError("QUALITY_EVIDENCE_MISMATCH")
         config = self.records.resolve(connection, evaluation.config_ref)
+        provider = self.records.resolve(
+            connection, recommendation.target_provider_profile_ref
+        )
         if (
             not isinstance(config, EvaluationRunConfig)
+            or not isinstance(provider, ProviderProfile)
             or config.provider_profile_ref != recommendation.target_provider_profile_ref
             or config.model != recommendation.target_model
             or config.session_policy != recommendation.target_session_policy
@@ -373,6 +441,11 @@ class ConfigurationRegistry:
             or config.output_schema_ref != record.output_schema_ref
             or recommendation.target_provider_profile_ref
             not in record.provider_profile_refs
+            or recommendation.target_model != provider.model
+            or recommendation.target_session_policy != record.session_policy
+            or config.provider_profile_ref not in record.provider_profile_refs
+            or config.model != provider.model
+            or config.session_policy != record.session_policy
         ):
             raise ValueError("QUALITY_EVIDENCE_MISMATCH")
 
@@ -489,9 +562,9 @@ class ConfigurationRegistry:
             payload_context = tuple(
                 binding.source_ref for binding in payload.context_bindings
             )
-            if any(left != right for left, right in exact_pairs) or set(
-                record.context_refs
-            ) != set(payload_context):
+            if any(left != right for left, right in exact_pairs) or (
+                record.context_refs != payload_context
+            ):
                 raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
         approved = self.records.evidence.llm_configuration_approved
         return self._publish(record, approved)

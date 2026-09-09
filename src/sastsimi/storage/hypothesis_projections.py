@@ -7,6 +7,7 @@ from sastsimi.contracts.chaining import ChainingResult
 from sastsimi.contracts.hypothesis import (
     HypothesisProcessState,
     HypothesisProposal,
+    ProposalProcessState,
     VulnerabilityHypothesis,
     validate_hypothesis_registration,
     validate_proposal_facts,
@@ -232,4 +233,26 @@ def hypothesis_projection(
             )
         )
     )
-    return (hypothesis, process, index)
+    proposal_state = ProposalProcessState.model_validate_json(
+        canonical_bytes(
+            dict(
+                meta=fresh_meta(
+                    proposal.meta,
+                    "proposal_process_state",
+                    works.clock,
+                    works.ids,
+                    hypothesis_id=None,
+                    attempt_id=None,
+                ),
+                proposal_ref=reference(proposal),
+                status="SCHEMA_VALID",
+                duplicate_review_ref=None,
+                duplicate_of_hypothesis_ref=None,
+                registration_reason="NO_CANDIDATES",
+                started_at=proposal.meta.created_at,
+                finished_at=works.clock.now(),
+                elapsed_ms=0,
+            )
+        )
+    )
+    return (proposal_state, hypothesis, process, index)

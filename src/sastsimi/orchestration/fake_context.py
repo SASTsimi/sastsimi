@@ -24,11 +24,12 @@ def retrieve_fake_context(
     service_identity: StoredDataRef,
     metadata: RecordMetadata,
     hypothesis_id: str,
+    generation: int,
     inputs: tuple[StoredDataRef, ...],
     location: CodeLocation,
     fragment_ref: StoredDataRef,
 ) -> tuple[CodeContextResponse, StoredDataRef]:
-    evidence.identities[identity] = RequesterRole.ORCHESTRATION
+    evidence.identities[identity] = RequesterRole.VERIFICATION
     work = runner.start(
         scope,
         metadata,
@@ -36,14 +37,16 @@ def retrieve_fake_context(
         "HYPOTHESIS",
         hypothesis_id,
         identity,
+        role="VERIFICATION",
         inputs=inputs,
+        generation=generation,
     )
-    evidence.identities[identity] = RequesterRole.HYPOTHESIS
+    evidence.identities[identity] = RequesterRole.VERIFICATION
 
     action = runner.action(
         work,
         identity,
-        "HYPOTHESIS",
+        "VERIFICATION",
         "READ_CODE",
         file_paths=(str(location.file_path),),
     )

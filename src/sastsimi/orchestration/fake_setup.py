@@ -41,6 +41,7 @@ from sastsimi.contracts.verification import (
     PlaybookPolicy,
     VerificationPlaybook,
 )
+from sastsimi.ports.dto import Record
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 
 from .fake_base import (
@@ -59,8 +60,8 @@ from .fake_provider_runtime import (
 
 class FakeSetupStages(FakeStageService):
     def _execution(self) -> ExecutionBudgetProfile:
-        approval = self._artifact("approval", run=True, record=True)
-        pricing = self._artifact("pricing", run=True, record=True)
+        approval = self._opaque_run_ref("approval")
+        pricing = self._opaque_run_ref("pricing")
         return ExecutionBudgetProfile.model_validate_json(
             canonical_bytes(
                 dict(
@@ -126,10 +127,13 @@ class FakeSetupStages(FakeStageService):
         self.database_upgrader(self.data_dir)
         execution = self._execution()
         work_profile = self._work_profile()
+        context_profile = self._work_profile()
         execution_ref = reference(execution)
         owner_ref = reference(work_profile)
+        context_identity_ref = reference(context_profile)
         assert isinstance(execution_ref, RunStoredDataRef)
         assert isinstance(owner_ref, StoredDataRef)
+        assert isinstance(context_identity_ref, StoredDataRef)
         self.evidence.approvals.add(content_hash(execution))
         self.evidence.identities[execution_ref] = RequesterRole.ORCHESTRATION
         self.evidence.identities[owner_ref] = RequesterRole.VERIFICATION
@@ -140,10 +144,13 @@ class FakeSetupStages(FakeStageService):
             self.clock,
             self.ids,
             evidence=self.evidence,
-            context_service_identity_ref=owner_ref,
+            context_service_identity_ref=context_identity_ref,
             finding_service_identity_ref=owner_ref,
             analysis_finalization_identity_ref=owner_ref,
         )
+        self.evidence.budget_approvals.add(content_hash(context_profile))
+        self.runtime.configuration.register_work_budget(context_profile)
+        self.context_service_identity_ref = context_identity_ref
         initial = AnalysisRunState.model_validate_json(
             canonical_bytes(
                 dict(
@@ -361,6 +368,7 @@ class FakeSetupStages(FakeStageService):
             self._record_meta,
             self._artifact,
             self.clock.now(),
+            self.provider_probe,
             runner=self.runner,
             scope=scope,
             orchestration_identity=orchestrator_ref,
@@ -490,7 +498,7 @@ class FakeSetupStages(FakeStageService):
         self.runner.account(fetch_reservation, fetch_units)
         freshness = self._artifact("freshness_evidence")
         criterion = self._artifact("freshness_criterion", record=True)
-        parser = PolicyParserResult.model_validate_json(
+        parser_candidate = PolicyParserResult.model_validate_json(
             canonical_bytes(
                 dict(
                     meta=self.runner.metadata(
@@ -502,9 +510,7 @@ class FakeSetupStages(FakeStageService):
                     parser_name="fake-policy-parser",
                     parser_version="1",
                     source_ref=official,
-                    llm_invocation_ref=self._artifact(
-                        "policy_llm_invocation", record=True
-                    ),
+                    llm_invocation_ref=official,
                     parsed_output_ref=self._artifact("parsed_policy"),
                     status="SUCCEEDED",
                     error_ids=(),
@@ -512,9 +518,48 @@ class FakeSetupStages(FakeStageService):
                 )
             )
         )
+        call_ref, provider_ref = register_fake_llm_call(
+            self.runtime,
+            self.evidence,
+            self._record_meta,
+            self._artifact,
+            self.clock.now(),
+            self.provider_probe,
+            runner=self.runner,
+            scope=scope,
+            orchestration_identity=orchestrator_ref,
+            role="POLICY_PARSER",
+            result_kind="policy_parser_result",
+            context_refs=(official,),
+        )
+        self.evidence.identities[orchestrator_ref] = RequesterRole.POLICY_PARSER
+
+        def bind_parser_request(output: Record, request_ref: StoredDataRef) -> Record:
+            if not isinstance(output, PolicyParserResult):
+                raise TypeError("FAKE_POLICY_PARSER_OUTPUT_MISMATCH")
+            return output.model_copy(update={"llm_invocation_ref": request_ref})
+
+        parser_record, parser_invocation = invoke_fake_provider(
+            runtime=self.runtime,
+            runner=self.runner,
+            work=work,
+            scope=scope,
+            identity=orchestrator_ref,
+            action_role=RequesterRole.POLICY_PARSER,
+            action_type="CALL_LLM",
+            call_spec_ref=call_ref,
+            provider_profile_ref=provider_ref,
+            artifact=self._stored_artifact,
+            build_output=lambda _decision: parser_candidate,
+            bind_request=bind_parser_request,
+            provider_invoke=self.provider_invoke,
+        )
+        assert isinstance(parser_record, PolicyParserResult)
+        parser = parser_record
         parser_ref = self._publish_intermediate(
             work, orchestrator_ref, RequesterRole.POLICY_PARSER, parser
         )
+        persist_fake_invocation(self.runtime, parser_invocation, parser_ref)
         checked = self.clock.now()
         policy = ProgramPolicyRecord.model_validate_json(
             canonical_bytes(

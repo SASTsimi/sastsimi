@@ -9,8 +9,10 @@ from sastsimi.bootstrap import build_runtime
 from sastsimi.contracts.actions import ActionDecision, ActionRequest, RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.evaluation import AnalysisRunResult
+from sastsimi.contracts.ids import AnalysisId
 from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
 from sastsimi.contracts.static import AnalysisError
+from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.storage.analysis_finalization import AnalysisFinalizationService
 from sastsimi.storage.run_states import get_run
 from tests.contract.domain.canonical_fixtures import make
@@ -19,12 +21,12 @@ from tests.integration.runtime_support import Harness
 from tests.integration.storage.test_work import start_fixture
 
 
-def _result() -> AnalysisRunResult:
+def _result(artifacts: ArtifactStore) -> AnalysisRunResult:
     value = make("AnalysisRunResult") | {
         "program_id": "program",
         "started_at": "2026-09-07T00:00:00Z",
-        "finished_at": "2026-09-07T00:00:01Z",
-        "elapsed_ms": 1000,
+        "finished_at": "2026-09-07T00:00:00Z",
+        "elapsed_ms": 0,
     }
     value["resources"] = value["resources"] | {
         "elapsed_ms": 0,
@@ -34,6 +36,10 @@ def _result() -> AnalysisRunResult:
         "llm_call_count": 0,
         "dynamic_attempt_count": 0,
     }
+    staged = artifacts.stage_bytes(b"deterministic finalization trace\n", "text/plain")
+    value["debug_trace_ref"] = artifacts.commit_run(
+        staged, AnalysisId("a1")
+    ).model_dump()
     return AnalysisRunResult.model_validate_json(canonical_bytes(value))
 
 
@@ -55,7 +61,7 @@ def test_finalization_validates_inventory_and_closes_run_atomically(
         analysis_finalization_identity_ref=identity_ref,
     )
     h.pin_execution(runtime.budget_registry, profile)
-    result = _result()
+    result = _result(runtime.unit_of_work.artifacts)
 
     result_ref = runtime.finalization.finalize(result)
 
@@ -98,7 +104,7 @@ def test_finalization_rejects_fabricated_resource_summary_atomically(
         analysis_finalization_identity_ref=identity_ref,
     )
     h.pin_execution(runtime.budget_registry, profile)
-    result = _result()
+    result = _result(runtime.unit_of_work.artifacts)
     invalid = result.model_copy(
         update={"resources": result.resources.model_copy(update={"work_count": 1})}
     )
@@ -132,7 +138,7 @@ def test_finalization_rejects_count_usage_and_error_fabrication(
         analysis_finalization_identity_ref=identity_ref,
     )
     h.pin_execution(runtime.budget_registry, profile)
-    result = _result()
+    result = _result(runtime.unit_of_work.artifacts)
     fabricated_error = AnalysisError.model_validate_json(
         canonical_bytes(make("AnalysisError"))
     )
@@ -172,7 +178,7 @@ def test_finalization_denies_untrusted_callers(tmp_path: Path) -> None:
     runtime = build_runtime(tmp_path, None, None, h.clock, h.ids, evidence=h.evidence)
     profile = h.execution()
     h.pin_execution(runtime.budget_registry, profile)
-    result = _result()
+    result = _result(runtime.unit_of_work.artifacts)
 
     with pytest.raises(ValueError, match="trusted finalization identity"):
         runtime.finalization.finalize(result)
@@ -194,7 +200,7 @@ def test_finalization_rejects_a_nonterminal_work(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="ANALYSIS_WORK_NOT_QUIESCENT"):
-        runtime.finalization.finalize(_result())
+        runtime.finalization.finalize(_result(runtime.unit_of_work.artifacts))
 
     assert runtime.budget_registry.current_state("a1").status == "RUNNING"
 
@@ -217,7 +223,7 @@ def test_finalization_crash_rolls_back_result_action_and_run_pointer(
         analysis_finalization_identity_ref=identity_ref,
     )
     h.pin_execution(runtime.budget_registry, profile)
-    result = _result()
+    result = _result(runtime.unit_of_work.artifacts)
 
     def crash(_name: str) -> None:
         raise RuntimeError("simulated finalization crash")
@@ -257,10 +263,11 @@ def test_finalization_rejects_an_unresolved_transition_journal(
         h.ids,
         identity_ref,
         transitions.works.validator,
+        transitions.artifacts,
     )
 
     with pytest.raises(ValueError, match="ANALYSIS_TRANSITION_UNRESOLVED"):
-        finalization.finalize(_result())
+        finalization.finalize(_result(transitions.artifacts))
 
     with h.database.engine.connect() as connection:
         assert get_run(connection, "a1").status == "RUNNING"

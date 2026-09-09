@@ -1,9 +1,10 @@
 """Evidence, dynamic reproduction and Verification generation stages."""
 
-from collections.abc import Callable
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from sastsimi.contracts.actions import RequesterRole
-from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.gates import (
     TechnicalEvidenceReview,
 )
@@ -18,21 +19,31 @@ from sastsimi.contracts.verification import (
     VerificationInitialAssessment,
     VerificationResult,
 )
-from sastsimi.contracts.work import WorkExecutionState
-from sastsimi.ports.dto import Record
+from sastsimi.ports.verification_assembly import VerificationGenerationInputs
 
 from .fake_base import ANALYSIS_ID, FakeStageService
 from .fake_configuration import register_fake_llm_call
 from .fake_context import retrieve_fake_context
 from .fake_debate import run_fake_debate
-from .fake_provider_runtime import (
-    FakeInvocation,
-    invoke_fake_provider,
-    persist_fake_invocation,
-)
+from .fake_provider_runtime import invoke_fake_provider, persist_fake_invocation
+
+if TYPE_CHECKING:
+    from .fake_base import FakePipelineBase
+    from .fake_dynamic import FakeDynamicStages
+    from .fake_setup import FakeSetupStages
 
 
 class FakeVerificationStages(FakeStageService):
+    def __init__(
+        self,
+        host: FakePipelineBase,
+        setup: FakeSetupStages,
+        dynamic: FakeDynamicStages,
+    ) -> None:
+        super().__init__(host)
+        self._setup = setup
+        self._dynamic = dynamic
+
     def _revised_verification(
         self,
         prior: VerificationResult,
@@ -99,17 +110,19 @@ class FakeVerificationStages(FakeStageService):
         )
         evidence_ref = reference(bundle)
         assert isinstance(evidence_ref, StoredDataRef)
+        assert self.context_service_identity_ref is not None
         _context, context_ref = retrieve_fake_context(
             runtime=self.runtime,
             runner=self.runner,
             evidence=self.evidence,
             scope=scope,
-            identity=proposal_ref,
-            service_identity=owner_ref,
+            identity=owner_ref,
+            service_identity=self.context_service_identity_ref,
             metadata=hypothesis.meta,
             hypothesis_id=str(hypothesis.meta.hypothesis_id),
+            generation=verification_work.work_generation,
             inputs=(hypothesis_ref, evidence_ref),
-            location=self._location(),
+            location=self._setup._location(),
             fragment_ref=self._stored_artifact("revised-code-fragment"),
         )
         debate_inputs = (hypothesis_ref, evidence_ref, context_ref)
@@ -127,43 +140,45 @@ class FakeVerificationStages(FakeStageService):
             artifact=self._artifact,
             stored_artifact=self._stored_artifact,
             now=self.clock.now,
-            build_evidence=lambda role, work, parent, inputs: self._evidence_result(
-                role=role,
-                work=work,
-                parent_work=parent,
-                debate_inputs=inputs,
+            build_evidence=lambda role, work, parent, inputs: (
+                self._dynamic._evidence_result(
+                    role=role,
+                    work=work,
+                    parent_work=parent,
+                    debate_inputs=inputs,
+                )
             ),
             provider_invoke=self.provider_invoke,
+            provider_probe=self.provider_probe,
         )
         pro = debate.pro
         pro_ref, con_ref = debate.pro_ref, debate.con_ref
         app_ref = reference(registered.application)
         assert isinstance(app_ref, StoredDataRef)
         observation = self._artifact("observation")
-        assessment_candidate = VerificationInitialAssessment.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=self.runner.metadata(
-                        verification_work.meta,
-                        "verification_initial_assessment",
-                        attempt_id=verification_work.active_attempt_id,
-                    ),
-                    verification_work_id=verification_work.work_id,
-                    verification_generation=verification_work.work_generation,
-                    hypothesis_ref=hypothesis_ref,
-                    policy_ref=application.policy_ref,
-                    playbook_ref=application.playbook_ref,
-                    playbook_application_ref=app_ref,
-                    pro_evidence_ref=pro_ref,
-                    con_evidence_ref=con_ref,
-                    next_step="POC_CONFIRMATION",
-                    proposed_verdict="TRUE",
-                    rationale="The revised generation closed the request",
-                    evidence_refs=(evidence_ref,),
-                    unresolved_conditions=(),
-                    llm_call_id="fake-revised-synthesis",
-                )
-            )
+        assert isinstance(observation, StoredDataRef)
+        generation_inputs = VerificationGenerationInputs(
+            work_id=verification_work.work_id,
+            generation=verification_work.work_generation,
+            hypothesis_ref=hypothesis_ref,
+            policy_ref=application.policy_ref,
+            playbook_ref=application.playbook_ref,
+            application_ref=app_ref,
+            pro_ref=pro_ref,
+            con_ref=con_ref,
+            debate_input_hash=pro.debate_input_hash,
+            evidence_ref=evidence_ref,
+            location=self._setup._location(),
+        )
+        assessment_candidate = self.verification_assembly.build_initial_assessment(
+            meta=self.runner.metadata(
+                verification_work.meta,
+                "verification_initial_assessment",
+                attempt_id=verification_work.active_attempt_id,
+            ),
+            inputs=generation_inputs,
+            verdict="TRUE",
+            revised=True,
         )
         synthesis_call_ref, synthesis_provider_ref = register_fake_llm_call(
             self.runtime,
@@ -171,12 +186,13 @@ class FakeVerificationStages(FakeStageService):
             self._record_meta,
             self._artifact,
             self.clock.now(),
+            self.provider_probe,
             runner=self.runner,
             scope=scope,
             orchestration_identity=owner_ref,
             role="VERIFICATION",
             result_kind="verification_initial_assessment",
-            context_refs=debate_inputs,
+            context_refs=(*debate_inputs, pro_ref, con_ref),
         )
         self.evidence.identities[owner_ref] = RequesterRole.VERIFICATION
         assessment_record, synthesis_invocation = invoke_fake_provider(
@@ -212,7 +228,7 @@ class FakeVerificationStages(FakeStageService):
         )
         assert isinstance(assessment_ref, StoredDataRef)
         persist_fake_invocation(self.runtime, synthesis_invocation, assessment_ref)
-        request, dynamic, poc = self._dynamic_chain(
+        request, dynamic, poc = self._dynamic._dynamic_chain(
             scope=scope,
             owner_ref=owner_ref,
             orchestrator_ref=orchestrator_ref,
@@ -223,93 +239,25 @@ class FakeVerificationStages(FakeStageService):
             pro_ref=pro_ref,
             con_ref=con_ref,
         )
-        final = VerificationResult.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=self.runner.metadata(
-                        verification_work.meta,
-                        "verification_result",
-                        attempt_id=verification_work.active_attempt_id,
-                    ),
-                    playbook_ref=application.playbook_ref,
-                    playbook_application_ref=app_ref,
-                    verification_mode="ALWAYS_DEBATE",
-                    debate_triggers=(),
-                    debate_skip_reason=None,
-                    debate_input_hash=pro.debate_input_hash,
-                    pro_evidence_ref=pro_ref,
-                    con_evidence_ref=con_ref,
-                    supporting_evidence=(
-                        dict(
-                            claim_id="fake-revised-poc",
-                            statement="The revised PoC reached the sink",
-                            source_role="VERIFICATION",
-                            evidence_refs=(observation,),
-                            code_locations=(self._location(),),
-                            limitations=(),
-                        ),
-                    ),
-                    counter_evidence=(),
-                    falsification_results=(
-                        dict(
-                            question_id="reachability",
-                            outcome="NOT_DISPROVED",
-                            evidence_refs=(evidence_ref,),
-                            rationale="The revised proof is supported",
-                        ),
-                    ),
-                    validation_results=(
-                        dict(
-                            validation_id="path",
-                            completion="COMPLETE",
-                            evidence_refs=(evidence_ref,),
-                            summary="The revised exact path was checked",
-                        ),
-                    ),
-                    initial_verdict="TRUE",
-                    dynamic_request_ref=reference(request),
-                    dynamic_result_ref=reference(dynamic),
-                    poc_ref=reference(poc),
-                    verdict="TRUE",
-                    verdict_rationale="Deterministic revised fake outcome",
-                    restrictions=(),
-                    bypass_candidates=(),
-                    required_primitive_candidates=(
-                        dict(
-                            draft_id="fake-input",
-                            entity_refs=(),
-                            privilege_level=None,
-                            evidence_refs=(observation,),
-                            description="Attacker-controlled input",
-                        ),
-                    ),
-                    provided_primitive_candidates=(
-                        dict(
-                            draft_id="fake-output",
-                            entity_refs=(),
-                            privilege_level="application",
-                            evidence_refs=(observation,),
-                            description="Validated revised sink execution",
-                        ),
-                    ),
-                    impact_escalation_candidates=(),
-                    material_child_proposals=(),
-                    unresolved_conditions=(),
-                    metrics=dict(
-                        pro_tokens=1,
-                        con_tokens=1,
-                        synthesis_tokens=1,
-                        elapsed_ms=1,
-                        verdict_changed_after_debate=False,
-                        hold_resolved=False,
-                        false_positive_reduction_candidate=False,
-                        new_bypass_count=0,
-                        new_restriction_count=0,
-                        new_falsification_count=0,
-                    ),
-                    errors=(),
-                )
-            )
+        request_ref = reference(request)
+        dynamic_ref = reference(dynamic)
+        poc_ref = reference(poc)
+        assert isinstance(request_ref, StoredDataRef)
+        assert isinstance(dynamic_ref, StoredDataRef)
+        assert isinstance(poc_ref, StoredDataRef)
+        final = self.verification_assembly.build_result(
+            meta=self.runner.metadata(
+                verification_work.meta,
+                "verification_result",
+                attempt_id=verification_work.active_attempt_id,
+            ),
+            inputs=generation_inputs,
+            verdict="TRUE",
+            dynamic_request_ref=request_ref,
+            dynamic_result_ref=dynamic_ref,
+            poc_ref=poc_ref,
+            observation_ref=observation,
+            revised=True,
         )
         self.evidence.identities[owner_ref] = RequesterRole.VERIFICATION
         verification_work = self.runner.complete(
@@ -317,52 +265,3 @@ class FakeVerificationStages(FakeStageService):
         )
         self._verification_work_ref = reference(verification_work)
         return final
-
-    def _gate_output(
-        self,
-        work: object,
-        scope: StoredDataRef,
-        identity: StoredDataRef,
-        config_role: RequesterRole,
-        action_type: str,
-        build_output: Callable[[StoredDataRef], Record],
-    ) -> tuple[Record, FakeInvocation]:
-        assert self.runtime is not None and self.runner is not None
-        if not isinstance(work, WorkExecutionState):
-            raise TypeError("Gate provider requires a running work")
-        self.evidence.identities[identity] = RequesterRole.VERIFICATION
-        result_kind = {
-            "CALL_TECHNICAL_GATE": "technical_evidence_review",
-            "CALL_RULE_SCOPE_GATE": "rule_scope_impact_review",
-            "CREATE_REPORT_DRAFT": "report_draft",
-        }[action_type]
-        call_ref, provider_ref = register_fake_llm_call(
-            self.runtime,
-            self.evidence,
-            self._record_meta,
-            lambda kind: self._artifact(kind, record=True),
-            self.clock.now(),
-            runner=self.runner,
-            scope=scope,
-            orchestration_identity=identity,
-            role=config_role.value,
-            result_kind=result_kind,
-            context_refs=tuple(
-                ref for ref in work.input_refs if isinstance(ref, StoredDataRef)
-            ),
-        )
-        self.evidence.identities[identity] = RequesterRole.VERIFICATION
-        return invoke_fake_provider(
-            runtime=self.runtime,
-            runner=self.runner,
-            work=work,
-            scope=scope,
-            identity=identity,
-            action_role=RequesterRole.VERIFICATION,
-            action_type=action_type,
-            call_spec_ref=call_ref,
-            provider_profile_ref=provider_ref,
-            artifact=self._stored_artifact,
-            build_output=build_output,
-            provider_invoke=self.provider_invoke,
-        )

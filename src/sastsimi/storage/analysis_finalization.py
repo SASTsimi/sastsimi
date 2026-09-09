@@ -27,9 +27,9 @@ from sastsimi.contracts.evaluation import (
 )
 from sastsimi.contracts.gates import TechnicalEvidenceReview
 from sastsimi.contracts.hypothesis import (
-    HypothesisDuplicateReview,
     HypothesisProcessState,
-    HypothesisProposal,
+    ProposalProcessState,
+    VerificationAssignment,
 )
 from sastsimi.contracts.ids import ActionId, LogicalRecordId, RecordId
 from sastsimi.contracts.policy import RunPolicyState
@@ -41,6 +41,7 @@ from sastsimi.contracts.work import (
     WorkAttempt,
     WorkExecutionState,
 )
+from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.dto import Record
 from sastsimi.ports.id_generator import IdGenerator
@@ -73,6 +74,7 @@ class AnalysisFinalizationService:
         ids: IdGenerator,
         identity_ref: BudgetScopeRef | None,
         authorization: RuntimeValidator,
+        artifacts: ArtifactStore,
         checkpoint: Callable[[str], None] | None = None,
     ) -> None:
         self.records = records
@@ -80,6 +82,7 @@ class AnalysisFinalizationService:
         self.ids = ids
         self.identity_ref = identity_ref
         self.authorization = authorization
+        self.artifacts = artifacts
         self.checkpoint = checkpoint or (lambda _name: None)
 
     def _finalization_action(
@@ -283,7 +286,13 @@ class AnalysisFinalizationService:
     ) -> None:
         works = [item for item in current if isinstance(item, WorkExecutionState)]
         if connection.execute(
-            select(models.external_dispatches.c.action_id).where(
+            select(models.external_dispatches.c.action_id)
+            .join(
+                models.work_states,
+                models.work_states.c.work_id == models.external_dispatches.c.work_id,
+            )
+            .where(
+                models.work_states.c.analysis_id == str(result.meta.analysis_id),
                 models.external_dispatches.c.dispatched_at.is_not(None),
                 models.external_dispatches.c.returned_at.is_(None),
                 models.external_dispatches.c.reconciled_at.is_(None),
@@ -291,8 +300,14 @@ class AnalysisFinalizationService:
         ).first():
             raise ValueError("ANALYSIS_EXTERNAL_DISPATCH_UNRESOLVED")
         if connection.execute(
-            select(models.transition_commits.c.transition_commit_id).where(
-                models.transition_commits.c.state == "PREPARED"
+            select(models.transition_commits.c.transition_commit_id)
+            .join(
+                models.work_states,
+                models.work_states.c.work_id == models.transition_commits.c.work_id,
+            )
+            .where(
+                models.work_states.c.analysis_id == str(result.meta.analysis_id),
+                models.transition_commits.c.state == "PREPARED",
             )
         ).first():
             raise ValueError("ANALYSIS_TRANSITION_UNRESOLVED")
@@ -301,34 +316,79 @@ class AnalysisFinalizationService:
         processes = [
             item for item in current if isinstance(item, HypothesisProcessState)
         ]
+        proposal_states = [
+            item for item in current if isinstance(item, ProposalProcessState)
+        ]
+        assignments = [
+            item
+            for item in current
+            if isinstance(item, VerificationAssignment) and item.status == "ACTIVE"
+        ]
+        if any(
+            process.status not in {"TERMINAL", "FAILED", "CANCELLED"}
+            for process in processes
+        ) or any(
+            not any(
+                process.meta.hypothesis_id == assignment.meta.hypothesis_id
+                and process.verification_assignment_ref == reference(assignment)
+                for process in processes
+            )
+            for assignment in assignments
+        ):
+            raise ValueError("ANALYSIS_HYPOTHESIS_NOT_TERMINAL")
         hypothesis_counts = Counter(str(process.status) for process in processes)
-        if processes:
+        if processes or proposal_states:
             hypothesis_counts["TOTAL"] = len(processes)
-            proposals = [
-                item for item in current if isinstance(item, HypothesisProposal)
-            ]
-            duplicate_reviews = [
-                item for item in current if isinstance(item, HypothesisDuplicateReview)
-            ]
             hypothesis_counts.update(
                 {
-                    "PROPOSAL_TOTAL": len(proposals),
-                    "REGISTERED": len(processes),
-                    "DUPLICATE": 0,
-                    "INVALID_OUTPUT": 0,
-                    "CANCELLED": 0,
+                    "PROPOSAL_TOTAL": len(proposal_states),
+                    "REGISTERED": sum(
+                        item.status == "SCHEMA_VALID" for item in proposal_states
+                    ),
+                    "DUPLICATE": sum(
+                        item.status == "DUPLICATE" for item in proposal_states
+                    ),
+                    "INVALID_OUTPUT": sum(
+                        item.status == "INVALID_OUTPUT" for item in proposal_states
+                    ),
+                    "CANCELLED": sum(
+                        item.status == "CANCELLED" for item in proposal_states
+                    ),
                     "DUPLICATE_UNIQUE": sum(
-                        item.decision == "UNIQUE" for item in duplicate_reviews
+                        item.registration_reason == "UNIQUE" for item in proposal_states
                     ),
                     "DUPLICATE_UNCERTAIN": sum(
-                        item.decision == "UNCERTAIN" for item in duplicate_reviews
+                        item.registration_reason == "UNCERTAIN"
+                        for item in proposal_states
                     ),
-                    "CHECK_FAILED": 0,
-                    "INVALID_DUPLICATE_TARGET": 0,
+                    "CHECK_FAILED": sum(
+                        item.registration_reason == "CHECK_FAILED"
+                        for item in proposal_states
+                    ),
+                    "INVALID_DUPLICATE_TARGET": sum(
+                        item.registration_reason == "INVALID_DUPLICATE_TARGET"
+                        for item in proposal_states
+                    ),
                 }
             )
         if dict(hypothesis_counts) != dict(result.hypothesis_counts):
             raise ValueError("HYPOTHESIS_COUNTS_MISMATCH")
+        if proposal_states:
+            if (
+                hypothesis_counts["PROPOSAL_TOTAL"]
+                != hypothesis_counts["REGISTERED"]
+                + hypothesis_counts["DUPLICATE"]
+                + hypothesis_counts["INVALID_OUTPUT"]
+                + hypothesis_counts["CANCELLED"]
+                or hypothesis_counts["REGISTERED"] != len(processes)
+                or set(result.hypothesis_duplicate_review_refs)
+                != {
+                    item.duplicate_review_ref
+                    for item in proposal_states
+                    if item.duplicate_review_ref is not None
+                }
+            ):
+                raise ValueError("HYPOTHESIS_COUNTS_MISMATCH")
         gate_counts: Counter[str] = Counter()
         for wire in connection.execute(
             select(models.records.c.ref)
@@ -410,10 +470,13 @@ class AnalysisFinalizationService:
             raise ValueError("ANALYSIS_ERROR_CLOSURE_MISMATCH")
         if {str(item.gap_id): item for item in result.gaps} != gaps:
             raise ValueError("ANALYSIS_GAP_CLOSURE_MISMATCH")
-        if result.elapsed_ms != int(
-            (result.finished_at - result.started_at).total_seconds() * 1000
+        if (
+            result.elapsed_ms
+            != int((result.finished_at - result.started_at).total_seconds() * 1000)
+            or result.finished_at != self.clock.now()
         ):
             raise ValueError("ANALYSIS_ELAPSED_MISMATCH")
+        self.artifacts.open_verified(result.debug_trace_ref).read()
 
     def finalize(self, result: AnalysisRunResult) -> RunStoredDataRef:
         result = AnalysisRunResult.model_validate(result)

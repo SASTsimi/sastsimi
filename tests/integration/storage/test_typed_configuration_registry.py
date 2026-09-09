@@ -9,10 +9,15 @@ from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.dynamic import SandboxProfile
 from sastsimi.contracts.llm import (
     LLMCallSpec,
+    LLMInvocationLog,
+    LLMInvocationRequest,
+    LLMInvocationResult,
+    PromptRegistryEntry,
     ProviderProfile,
     ProviderValidationEvidence,
 )
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
+from sastsimi.ports.dto import CapabilityProbeResult
 from sastsimi.storage.codec import reference
 from tests.contract.domain.canonical_fixtures import make
 from tests.integration.runtime_support import Harness
@@ -70,16 +75,44 @@ def test_typed_registries_require_family_evidence_and_exact_closure(
     )
     profile = ProviderProfile.model_validate_json(
         canonical_bytes(
-            make("ProviderProfile") | {"validation_evidence_ref": reference(validation)}
+            make("ProviderProfile")
+            | {
+                "validation_evidence_ref": reference(validation),
+                "capabilities": configs.derive_provider_capabilities(validation),
+            }
         )
     )
     h.evidence.llm_configuration_approvals.update(
         {content_hash(validation), content_hash(profile)}
     )
+    probe = CapabilityProbeResult(validation)
     with pytest.raises(LookupError, match="Exact record is not published"):
-        configs.register_provider_profile(profile)
+        configs.register_provider_profile(profile, probe)
     assert configs.register_provider_validation(validation) == reference(validation)
-    assert configs.register_provider_profile(profile) == reference(profile)
+    assert configs.register_provider_profile(profile, probe) == reference(profile)
+
+    all_na = validation.model_copy(
+        update={
+            "tests": tuple(
+                test.model_copy(update={"result": "NOT_APPLICABLE"})
+                for test in validation.tests
+            )
+        }
+    )
+    h.evidence.llm_configuration_approvals.add(content_hash(all_na))
+    with pytest.raises(ValueError, match="PROVIDER_VALIDATION_INCOMPLETE"):
+        configs.register_provider_validation(all_na)
+
+    false_capability = profile.model_copy(
+        update={
+            "capabilities": profile.capabilities.model_copy(
+                update={"cancellation": "SUPPORTED"}
+            )
+        }
+    )
+    h.evidence.llm_configuration_approvals.add(content_hash(false_capability))
+    with pytest.raises(ValueError, match="PROVIDER_CONFIGURATION_CLOSURE_MISMATCH"):
+        configs.register_provider_profile(false_capability, probe)
 
     sandbox = SandboxProfile.model_validate_json(
         canonical_bytes(make("SandboxProfile"))
@@ -115,3 +148,40 @@ def test_llm_call_spec_rejects_every_cross_record_mismatch(tmp_path: Path) -> No
             pipeline.runtime.configuration.register_call_spec(
                 target.model_copy(update=changes)
             )
+
+    active_entries = tuple(
+        item
+        for item in pipeline.runtime.queries.current_records(
+            "fake-analysis", "prompt_registry_entry"
+        )
+        if isinstance(item, PromptRegistryEntry)
+        and item.purpose == "PRODUCTION"
+        and item.status == "ACTIVE"
+    )
+    first_entry, second_entry = active_entries[:2]
+    assert second_entry.quality_evaluation_ref is not None
+    with pytest.raises(ValueError, match="QUALITY_EVIDENCE_MISMATCH"):
+        pipeline.runtime.configuration.register_prompt_entry(
+            first_entry.model_copy(
+                update={"quality_evaluation_ref": second_entry.quality_evaluation_ref}
+            )
+        )
+
+    published = pipeline.runtime.queries.published_records("fake-analysis")
+    requests = tuple(
+        item for item in published if isinstance(item, LLMInvocationRequest)
+    )
+    results = tuple(item for item in published if isinstance(item, LLMInvocationResult))
+    logs = tuple(item for item in published if isinstance(item, LLMInvocationLog))
+    request = requests[0]
+    result = next(item for item in results if item.llm_call_id == request.llm_call_id)
+    log = next(item for item in logs if item.llm_call_id == request.llm_call_id)
+    foreign_request = requests[1]
+    assert result.parsed_output_ref is not None
+    with pytest.raises(ValueError, match="INVOCATION_ACTION_MISMATCH"):
+        pipeline.runtime.validator.record_invocation(
+            request.model_copy(update={"call_spec_ref": foreign_request.call_spec_ref}),
+            result,
+            log,
+            result.parsed_output_ref,
+        )

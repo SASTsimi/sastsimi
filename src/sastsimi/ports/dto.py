@@ -26,6 +26,7 @@ from sastsimi.contracts.llm import (
 )
 from sastsimi.contracts.llm import LLMInvocationResult as LLMInvocationResult
 from sastsimi.contracts.llm import ProviderProfile as ProviderProfile
+from sastsimi.contracts.llm import ProviderValidationEvidence
 from sastsimi.contracts.policy import PolicySourceCheck
 from sastsimi.contracts.records import RecordMetadata
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef
@@ -94,8 +95,14 @@ class BudgetReleaseRequest:
     reservation: BudgetReservation
 
 
-type CapabilityProbeResult = BoundaryRecord
-# Capability probing belongs to the later static adapter implementation.
+@dataclass(frozen=True)
+class CapabilityProbeResult:
+    """Narrow, non-persisted provider-boundary probe result."""
+
+    evidence: ProviderValidationEvidence
+
+
+# Static tool capability probing belongs to the later static adapter implementation.
 type ToolCapabilityResult = BoundaryRecord
 
 

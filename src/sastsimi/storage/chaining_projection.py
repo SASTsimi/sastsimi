@@ -17,7 +17,6 @@ from sastsimi.ports.dto import Record
 
 from . import models
 from .codec import REF_ADAPTER
-from .stage_policy import current as require_current
 from .stage_policy import resolved
 from .work_service import WorkService
 
@@ -54,8 +53,6 @@ def validate_chaining_output(
         resolved(works.records, connection, ref, PrimitiveIndexState)
         for ref in index_refs
     )
-    for ref in index_refs:
-        require_current(works.records, connection, ref)
     pinned_from_indexes = tuple(
         primitive_ref for index in indexes for primitive_ref in index.primitive_refs
     )
