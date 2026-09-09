@@ -20,6 +20,7 @@
 - `commit_id`(`99c66f2`)는 이 sample-app만 담은 별도 git 저장소의 실제 커밋 해시이며, SASTsimi repo의 커밋이 아닙니다.
 - `route_bindings`를 만든 도구(`py_ast_route_scan`)는 정식 도구가 아니라 Python 표준 `ast` 모듈로 직접 짠 최소 추출 스크립트입니다. "codeql이 실패해도 다른 도구 결과는 버리지 않는다"는 02번 규칙을 실제로 보여주기 위한 용도로만 넣었고, 실제 R2 구현에서는 별도 route 추출 도구로 대체될 예정입니다.
 - 모든 `content_hash`는 실제 파일의 sha256이며 직접 계산한 값입니다(임의로 만든 값 아님). 다만 `rule_execution_ref.content_hash`는 자기 자신(RuleExecutionRecord)을 가리키는 순환 참조라 이 자료에서는 `<computed_at_write_time:...>`로 표시했습니다 — 실제 저장 시점에 그 레코드 JSON 자체의 해시로 채워야 합니다.
+- `tool_runs[].meta`는 PR #116([R3-06] 구현 기준선·파일 구조·실행 순서 최종 확정) 병합 이후 스키마를 기준으로 작성했습니다. `ToolRunResult`가 flat `attempt_id: string`에서 `meta: RecordMeta without hypothesis, with attempt`로 바뀐 것을 `docs/architecture-v5/08-lightweight-data-contracts.md`(현재 main 기준 L803-804)로 직접 확인하고 `normal.expected.json`/`failure.expected.json`의 `tool_runs[]`에 반영했습니다. `record_id`/`logical_record_id`는 `trr-r2verify-<normal|failure>-00N` 형식으로 새로 부여했습니다.
 
 ## 근거
 
@@ -45,7 +46,8 @@
 1. `route_bindings`를 만드는 실제 도구가 아직 없습니다 — 이 자료의 `py_ast_route_scan`은 임시 스텁입니다. 실제 어떤 도구·방식으로 route binding을 추출할지는 별도 논의가 필요합니다. → 검토: R3(구현), R2
 2. `StaticFactBundle.meta`가 08번 스키마상 "RecordMeta without hypothesis/attempt"인데, 02번 문서 자체 예시는 `hypothesis_id: null`을 포함하고 있어 두 문서 사이에 사소한 불일치가 있습니다. 이 자료는 08번(canonical 스키마)을 따랐습니다. 02번 예시를 08과 맞출지는 별도 확인이 필요합니다. → 검토: R2, R4
 3. AST/SAST 실행 예산(900초/재시도 1회, `07`, PR #99)은 아직 "제안(교차 전) 초안" 상태입니다. 이 자료의 `elapsed_ms`(정상 4500ms, 실패 200ms)는 그 예산 안에 있다는 것만 보여줄 뿐, 예산 자체의 확정 여부와는 무관합니다.
-4. **[R3-06/PR #116 이후 갱신 필요]** PR #116 병합으로 `ToolRunResult.meta`가 flat `attempt_id: string`에서 `RecordMeta without hypothesis, with attempt`로 바뀌었습니다. 이 자료의 `normal.expected.json`/`failure.expected.json`은 그 이전 스키마를 기준으로 만들어져 현재 main 기준으로는 한 단계 낡은 상태입니다. PR로 제출하기 전 최신 스키마로 갱신이 필요합니다.
+4. `ToolRunResult`가 `SUCCEEDED`인데도 커버리지가 완전하지 않은 경우(예: `normal.expected.json`의 `py_ast_route_scan`—`coverage.notes`에 "route decorator만 구조적으로 추출하는 최소 스텁"이라고 명시된 상태)에도 `gaps: []`를 그대로 둔 게 맞는지 확실하지 않습니다. 실행 실패(`FAILED`)가 아니라 도구 자체의 알려진 한계로 생기는 분석 공백을 `coverage.notes`(자유 서술)로만 남길지, 아니면 `DataGap`으로도 명시적으로 남겨야 하는지—남긴다면 `DataGap.code`를 어떤 값으로 정할지—기준이 필요합니다. → 검토: R2, R3
+5. **[R3-06/PR #116 반영 완료]** PR #116 병합으로 바뀐 `ToolRunResult.meta`(flat `attempt_id: string` → `RecordMeta without hypothesis, with attempt`)는 `docs/architecture-v5/08-lightweight-data-contracts.md` 최신 main과 대조해 `normal.expected.json`/`failure.expected.json`에 반영했습니다(출처 섹션 참고). 더 이상 미결정 사항이 아닙니다.
 
 ## 재현 방법
 

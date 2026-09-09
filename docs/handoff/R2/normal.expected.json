@@ -178,7 +178,19 @@
     ],
     "tool_runs": [
       {
-        "attempt_id": "attempt-codeql-verify-001",
+        "meta": {
+          "record_id": "trr-r2verify-normal-001",
+          "logical_record_id": "trr-r2verify-normal-001",
+          "record_type": "tool_run_result",
+          "schema_version": "1.0.0",
+          "analysis_id": "analysis-r2verify-001",
+          "workspace_id": "ws-r2verify-001",
+          "commit_id": "99c66f2",
+          "attempt_id": "attempt-codeql-verify-001",
+          "revision_number": 1,
+          "previous_record_id": null,
+          "created_at": "2026-09-05T16:26:50Z"
+        },
         "tool_name": "codeql",
         "tool_version": "2.26.4",
         "tool_kind": "RULE_BASED",
@@ -217,7 +229,19 @@
         "elapsed_ms": 4500
       },
       {
-        "attempt_id": "attempt-astscan-verify-001",
+        "meta": {
+          "record_id": "trr-r2verify-normal-002",
+          "logical_record_id": "trr-r2verify-normal-002",
+          "record_type": "tool_run_result",
+          "schema_version": "1.0.0",
+          "analysis_id": "analysis-r2verify-001",
+          "workspace_id": "ws-r2verify-001",
+          "commit_id": "99c66f2",
+          "attempt_id": "attempt-astscan-verify-001",
+          "revision_number": 1,
+          "previous_record_id": null,
+          "created_at": "2026-09-05T16:26:50Z"
+        },
         "tool_name": "py_ast_route_scan",
         "tool_version": "python-3.11.15",
         "tool_kind": "STRUCTURE",
