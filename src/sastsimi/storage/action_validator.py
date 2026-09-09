@@ -64,6 +64,13 @@ class RuntimeValidator:
                 )
             ).scalar_one()
             work = WorkExecutionState.model_validate_json(payload)
+            if (
+                action.action_type == ActionType.READ_CODE
+                and work.work_type == "CONTEXT_RETRIEVAL"
+            ):
+                from .context_policy import require_context_request
+
+                require_context_request(self.records, connection, action, work)
             check_role(
                 action,
                 self.records.evidence.identity_role(action.requester_identity_ref),
@@ -103,7 +110,7 @@ class RuntimeValidator:
 
     def claim_external(
         self, work_id: str, decision_ref: RecordRef, reservation_ref: RecordRef | None
-    ) -> None:
+    ) -> RecordRef:
         with self.records.database.write() as connection:
             if self.records.database.recovery_failed:
                 raise ValueError("RECOVERY_FAILED")
@@ -147,7 +154,13 @@ class RuntimeValidator:
                     self.check_reservation(
                         connection, reservation_ref, action, work, allow_claimed=True
                     )
-                    return
+                    payload = connection.execute(
+                        select(models.action_decisions.c.payload).where(
+                            models.action_decisions.c.action_id
+                            == str(action.action_id),
+                        )
+                    ).scalar_one()
+                    return reference(ActionDecision.model_validate_json(payload))
                 raise ValueError("ACTION_ALREADY_USED")
             allowed = {
                 ActionType.READ_CODE,
@@ -164,7 +177,7 @@ class RuntimeValidator:
                 or action.action_type not in allowed
             ):
                 raise ValueError("ACTION_TYPE_MISMATCH")
-            self.claim(
+            claimed = self.claim(
                 connection,
                 decision_ref,
                 action.action_type,
@@ -182,6 +195,7 @@ class RuntimeValidator:
                     prepared_at=self.clock.now().isoformat(),
                 )
             )
+            return reference(claimed)
 
     def __init__(
         self,

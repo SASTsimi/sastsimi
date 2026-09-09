@@ -1,6 +1,7 @@
-from typing import Literal
+from typing import Literal, Protocol
 
 from .base import ContractModel, NonEmptyStr, SchemaVersion, Sha256
+from .canonical_json import content_hash
 from .ids import AnalysisId, CommitId, ProgramId, RecordId, StoredDataId, WorkspaceId
 from .records import PolicyCacheMeta, RecordMeta, RecordMetadata, RunMeta
 
@@ -33,6 +34,33 @@ class PolicyCacheRef(ContractModel):
 
 type RecordRef = RunStoredDataRef | StoredDataRef | PolicyCacheRef
 type BudgetScopeRef = RunStoredDataRef | StoredDataRef
+
+
+class ReferencedRecord(Protocol):
+    @property
+    def meta(self) -> RecordMetadata: ...
+
+
+def reference(record: ReferencedRecord) -> RecordRef:
+    """Construct the canonical exact reference for a validated record."""
+    common = dict(
+        stored_data_id=StoredDataId(str(record.meta.record_id)),
+        data_kind=record.meta.record_type,
+        content_hash=content_hash(record),
+        record_id=record.meta.record_id,
+    )
+    meta = record.meta
+    if isinstance(meta, RecordMeta):
+        return StoredDataRef.model_validate(
+            common | dict(workspace_id=meta.workspace_id, commit_id=meta.commit_id)
+        )
+    if isinstance(meta, RunMeta):
+        return RunStoredDataRef.model_validate(
+            common | dict(analysis_id=meta.analysis_id)
+        )
+    return PolicyCacheRef.model_validate(
+        common | dict(program_id=meta.program_id, schema_version=meta.schema_version)
+    )
 
 
 def require_record_ref(ref: RecordRef, data_kind: str | None = None) -> None:

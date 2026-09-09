@@ -33,5 +33,5 @@ class RuntimeValidator:
 
     def claim_external(
         self, work_id: str, decision_ref: RecordRef, reservation_ref: RecordRef | None
-    ) -> None:
-        self.authorization.claim_external(work_id, decision_ref, reservation_ref)
+    ) -> RecordRef:
+        return self.authorization.claim_external(work_id, decision_ref, reservation_ref)

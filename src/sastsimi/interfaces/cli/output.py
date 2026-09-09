@@ -57,3 +57,24 @@ def emit_result(
             + (f" Trace: {trace_id}" if trace_id else "")
             + "\n"
         )
+
+
+def emit_data(
+    output_format: str,
+    stream: TextIO,
+    *,
+    command: str,
+    data: dict[str, object],
+) -> None:
+    """Emit deterministic domain command data without diagnostic internals."""
+    if output_format == "json":
+        envelope = {
+            "schema_version": 1,
+            "command": command,
+            "status": "ok",
+            "code": ExitCode.OK.name,
+            "data": data,
+        }
+        stream.write(json.dumps(envelope, sort_keys=True) + "\n")
+        return
+    stream.write(json.dumps(data, sort_keys=True) + "\n")

@@ -21,11 +21,29 @@ from .budget import (
     WorkBudgetLimit,
     WorkBudgetProfile,
 )
-from .dynamic import SandboxProfile
+from .chaining import PrimitiveIndexState
+from .dynamic import DynamicReproductionState, SandboxProfile
+from .hypothesis import VulnerabilityHypothesis
+from .llm import (
+    ClientExecutionProfile,
+    ExecutionLimits,
+    LLMCallSpec,
+    LLMRetryPolicy,
+    LLMToolPolicy,
+    OutputSchemaSpec,
+    PromptPayload,
+    PromptRedactionPolicy,
+    PromptRegistryEntry,
+    ProviderProfile,
+    ProviderValidationEvidence,
+    SemanticValidatorSpec,
+)
 from .records import PolicyCacheMeta, RecordMeta, RunMeta
 from .refs import PolicyCacheRef, RunStoredDataRef, StoredDataRef
+from .reporting import FindingIndexState
 from .result_registry import RESULT_REGISTRY
-from .verification import PlaybookPolicy, VerificationPlaybook
+from .static import CodeContextRequest
+from .verification import PlaybookApplication, PlaybookPolicy, VerificationPlaybook
 from .work import StateTransition, TransitionCommit, WorkAttempt, WorkExecutionState
 
 CORE_SCHEMAS: Mapping[str, type[BaseModel]] = MappingProxyType(
@@ -44,6 +62,24 @@ CORE_SCHEMAS: Mapping[str, type[BaseModel]] = MappingProxyType(
         "action_check": ActionCheck,
         "action_decision": ActionDecision,
         "sandbox_profile": SandboxProfile,
+        "code_context_request": CodeContextRequest,
+        "vulnerability_hypothesis": VulnerabilityHypothesis,
+        "playbook_application": PlaybookApplication,
+        "dynamic_reproduction_state": DynamicReproductionState,
+        "primitive_index_state": PrimitiveIndexState,
+        "finding_index_state": FindingIndexState,
+        "provider_validation_evidence": ProviderValidationEvidence,
+        "client_execution_profile": ClientExecutionProfile,
+        "provider_profile": ProviderProfile,
+        "execution_limits": ExecutionLimits,
+        "llm_retry_policy": LLMRetryPolicy,
+        "llm_tool_policy": LLMToolPolicy,
+        "prompt_redaction_policy": PromptRedactionPolicy,
+        "output_schema_spec": OutputSchemaSpec,
+        "semantic_validator_spec": SemanticValidatorSpec,
+        "prompt_registry_entry": PromptRegistryEntry,
+        "prompt_payload": PromptPayload,
+        "llm_call_spec": LLMCallSpec,
         "playbook_policy": PlaybookPolicy,
         "verification_playbook": VerificationPlaybook,
         "execution_budget_profile": ExecutionBudgetProfile,

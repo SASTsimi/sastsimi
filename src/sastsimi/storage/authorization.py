@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import timedelta
 from typing import Protocol
 
@@ -53,10 +54,16 @@ def authorize(
     action: ActionRequest,
     work: WorkExecutionState | None,
     reservation_ref: RecordRef | None,
+    *,
+    _connection: Connection | None = None,
 ) -> ActionDecision:
     records = validator.records
     action = ActionRequest.model_validate(action)
-    with records.database.write() as connection:
+    with (
+        records.database.write()
+        if _connection is None
+        else nullcontext(_connection) as connection
+    ):
         prior = (
             connection.execute(
                 select(models.action_requests).where(

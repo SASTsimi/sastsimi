@@ -16,6 +16,7 @@ from .dynamic import (
     DynamicReproductionConclusion,
     DynamicReproductionRequest,
     DynamicReproductionResult,
+    DynamicReproductionToolRequest,
     EnvironmentRecipe,
     EnvironmentRequirements,
     PoCBundle,
@@ -42,8 +43,19 @@ from .policy import (
 )
 from .refs import StoredDataRef
 from .reporting import Finding, ReportDraft
-from .static import CodeWorkspace, RuleExecutionRecord, StaticFactBundle, ToolRunResult
-from .verification import ConEvidenceResult, ProEvidenceResult, VerificationResult
+from .static import (
+    CodeContextResponse,
+    CodeWorkspace,
+    RuleExecutionRecord,
+    StaticFactBundle,
+    ToolRunResult,
+)
+from .verification import (
+    ConEvidenceResult,
+    ProEvidenceResult,
+    VerificationInitialAssessment,
+    VerificationResult,
+)
 
 
 @dataclass(frozen=True)
@@ -83,6 +95,11 @@ RESULT_REGISTRY = build_registry(
             RequesterRole.ORCHESTRATION,
         ),
         ("code_workspace", CodeWorkspace, RequesterRole.REPOSITORY_LOADER),
+        (
+            "code_context_response",
+            CodeContextResponse,
+            RequesterRole.CONTEXT_RETRIEVAL_SERVICE,
+        ),
         ("tool_run_result", ToolRunResult, RequesterRole.STATIC_ANALYSIS),
         ("static_fact_bundle", StaticFactBundle, RequesterRole.STATIC_ANALYSIS),
         ("rule_execution_record", RuleExecutionRecord, RequesterRole.STATIC_ANALYSIS),
@@ -95,6 +112,16 @@ RESULT_REGISTRY = build_registry(
         ("pro_evidence_result", ProEvidenceResult, RequesterRole.PRO),
         ("con_evidence_result", ConEvidenceResult, RequesterRole.CON),
         ("verification_result", VerificationResult, RequesterRole.VERIFICATION),
+        (
+            "verification_initial_assessment",
+            VerificationInitialAssessment,
+            RequesterRole.VERIFICATION,
+        ),
+        (
+            "dynamic_reproduction_tool_request",
+            DynamicReproductionToolRequest,
+            RequesterRole.DYNAMIC_REPRODUCTION,
+        ),
         (
             "primitive_admission_decision",
             PrimitiveAdmissionDecision,

@@ -26,7 +26,7 @@ class OutputEvidence(FixtureEvidence):
 
 
 @pytest.mark.parametrize("extra", [False, True, "corrupted"])
-def test_public_authorized_policy_companions_are_atomic(
+def test_policy_companions_cannot_escape_exact_closure_or_foreign_work(
     tmp_path: Path, extra: bool | str
 ) -> None:
     h, _, original = completion(tmp_path)
@@ -73,7 +73,6 @@ def test_public_authorized_policy_companions_are_atomic(
                     "WHERE action_id='policy-finish'"
                 )
             )
-    approved_outputs = evidence.closure
     # Host evidence changes after issuance cannot change its durable exact closure.
     evidence.closure = ()
     assert (
@@ -97,8 +96,10 @@ def test_public_authorized_policy_companions_are_atomic(
         with pytest.raises(ValueError, match="OUTPUT_BINDING"):
             runtime.transitions.commit(request)
     else:
-        committed = runtime.transitions.commit(request)
-        assert committed.output_refs == approved_outputs
-        assert runtime.transitions.commit(request) == committed
+        # This fixture is REPO_LOAD, not POLICY_FETCH. An authorized output set
+        # cannot bypass the owning work or the atomic AnalysisRunState projection.
+        with pytest.raises(ValueError, match="POLICY_STATE_CLOSURE_MISMATCH"):
+            runtime.transitions.commit(request)
         for record in outputs:
-            assert runtime.unit_of_work.records.get_exact(reference(record)) == record
+            with pytest.raises(LookupError):
+                runtime.unit_of_work.records.get_exact(reference(record))

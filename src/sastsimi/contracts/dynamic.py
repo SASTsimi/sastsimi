@@ -22,6 +22,79 @@ from .ids import ActionId
 from .records import validate_revision
 from .refs import StoredDataRef, require_record_ref
 
+
+class DynamicReproductionState(DomainRecord):
+    """Current generation projection, owned by Reproduction Session Manager."""
+
+    KIND = "dynamic_reproduction_state"
+    HYPOTHESIS = True
+    ATTEMPT = False
+    verification_generation: PositiveInt
+    dynamic_work_ref: StoredDataRef | None
+    status: Literal[
+        "NOT_REQUESTED",
+        "RUNNING",
+        "SUCCEEDED",
+        "PARTIAL",
+        "FAILED",
+        "BLOCKED",
+        "CANCELLED",
+    ]
+    request_ref: StoredDataRef | None
+    dynamic_result_ref: StoredDataRef | None
+    started_at: AwareDatetime | None
+    finished_at: AwareDatetime | None
+    elapsed_ms: NonNegativeInt
+
+    @model_validator(mode="after")
+    def state_shape(self) -> Self:
+        if self.status == "NOT_REQUESTED":
+            if (
+                any(
+                    value is not None
+                    for value in (
+                        self.dynamic_work_ref,
+                        self.request_ref,
+                        self.dynamic_result_ref,
+                        self.started_at,
+                        self.finished_at,
+                    )
+                )
+                or self.elapsed_ms != 0
+            ):
+                raise ValueError("DYNAMIC_STATE_NOT_REQUESTED")
+            return self
+        if any(
+            value is None
+            for value in (
+                self.dynamic_work_ref,
+                self.request_ref,
+                self.started_at,
+            )
+        ):
+            raise ValueError("DYNAMIC_STATE_EXECUTION_REQUIRED")
+        if (self.status == "RUNNING") != (self.dynamic_result_ref is None):
+            raise ValueError("DYNAMIC_STATE_RESULT_REQUIRED")
+        if (self.status in {"SUCCEEDED", "PARTIAL", "FAILED", "CANCELLED"}) != (
+            self.finished_at is not None
+        ):
+            raise ValueError("DYNAMIC_STATE_TERMINAL_TIME")
+        if (
+            self.finished_at is not None
+            and self.started_at is not None
+            and self.finished_at < self.started_at
+        ):
+            raise ValueError("DYNAMIC_STATE_TIME_RANGE")
+        for ref, kind in (
+            (self.dynamic_work_ref, "work_execution_state"),
+            (self.request_ref, "dynamic_reproduction_request"),
+            (self.dynamic_result_ref, "dynamic_reproduction_result"),
+        ):
+            if ref is not None:
+                require_record_ref(ref, kind)
+        return self
+
+
 type NeedKind = Literal[
     "APP_ROLE",
     "AUTH",

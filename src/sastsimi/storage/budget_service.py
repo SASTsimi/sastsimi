@@ -1,5 +1,7 @@
 """Atomic ledger; uncertain usage stays reserved across restarts."""
 
+from contextlib import nullcontext
+
 from sqlalchemy import Connection, insert, select, update
 
 from sastsimi.contracts.actions import ActionRequest, ActionType
@@ -57,9 +59,18 @@ class BudgetService:
             ids,
         )
 
-    def reserve(self, request: BudgetReservationRequest) -> BudgetReservation:
+    def reserve(
+        self,
+        request: BudgetReservationRequest,
+        *,
+        _connection: Connection | None = None,
+    ) -> BudgetReservation:
         reservation = BudgetReservation.model_validate(request.reservation)
-        with self.records.database.write() as connection:
+        with (
+            self.records.database.write()
+            if _connection is None
+            else nullcontext(_connection) as connection
+        ):
             table = models.budget_reservations
             existing = (
                 connection.execute(
@@ -353,9 +364,15 @@ class BudgetService:
             connection.exec_driver_sql("BEGIN")
             return self.available(connection, budget_scope_ref, analysis_id)
 
-    def commit_usage(self, request: BudgetCommitRequest) -> BudgetLedgerEntry:
+    def commit_usage(
+        self, request: BudgetCommitRequest, *, _connection: Connection | None = None
+    ) -> BudgetLedgerEntry:
         entry = BudgetLedgerEntry.model_validate(request.entry)
-        with self.records.database.write() as connection:
+        with (
+            self.records.database.write()
+            if _connection is None
+            else nullcontext(_connection) as connection
+        ):
             initial = self.records.resolve(connection, entry.reservation_ref)
             if not isinstance(initial, BudgetReservation):
                 raise ValueError("Expected exact reservation")

@@ -136,6 +136,7 @@ from .refs import PolicyCacheRef as PolicyCacheRef
 from .refs import RecordRef as RecordRef
 from .refs import RunStoredDataRef as RunStoredDataRef
 from .refs import StoredDataRef as StoredDataRef
+from .refs import reference as reference
 from .refs import require_record_ref as require_record_ref
 from .refs import validate_exact_ref as validate_exact_ref
 from .refs import validate_ref_scope as validate_ref_scope
