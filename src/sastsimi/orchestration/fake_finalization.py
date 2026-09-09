@@ -1,4 +1,4 @@
-"""CWE, gates, primitives, chaining, reporting and finalization stages."""
+"""Authoritative fake result assembly and finalization coordination."""
 
 from collections import Counter
 from typing import Any
@@ -17,6 +17,7 @@ from sastsimi.contracts.gates import (
 )
 from sastsimi.contracts.hypothesis import (
     HypothesisProcessState,
+    HypothesisProposal,
 )
 from sastsimi.contracts.policy import (
     RunPolicyState,
@@ -26,12 +27,10 @@ from sastsimi.contracts.reporting import ReportDraft
 from sastsimi.contracts.verification import (
     VerificationResult,
 )
-
-from .fake_base import ANALYSIS_ID, PROGRAM_ID
-from .fake_gates import FakeGateStages
+from sastsimi.orchestration.fake_base import ANALYSIS_ID, PROGRAM_ID, FakeStageService
 
 
-class FakeFinalizationStages(FakeGateStages):
+class FakeFinalizationStages(FakeStageService):
     def _inventory(self, field: str) -> tuple[RecordRef, ...]:
         assert self.runtime is not None
         if field == "policy_cache_refs":
@@ -119,7 +118,7 @@ class FakeFinalizationStages(FakeGateStages):
                 refs.append(reference(record))
         return tuple(refs)
 
-    def _finish(self, verdict: str) -> AnalysisRunResult:
+    def _result_candidate(self, verdict: str) -> AnalysisRunResult:
         assert self.runtime is not None
         state = self.runtime.budget_registry.current_state(str(ANALYSIS_ID))
         inventory_fields = {
@@ -138,9 +137,14 @@ class FakeFinalizationStages(FakeGateStages):
         )
         attempt_refs = self._inventory("work_attempt_refs")
         verdicts: Counter[str] = Counter()
-        for process in self.runtime.queries.current_records(
-            str(ANALYSIS_ID), "hypothesis_process_state"
-        ):
+        processes = tuple(
+            item
+            for item in self.runtime.queries.current_records(
+                str(ANALYSIS_ID), "hypothesis_process_state"
+            )
+            if isinstance(item, HypothesisProcessState)
+        )
+        for process in processes:
             if (
                 isinstance(process, HypothesisProcessState)
                 and process.verification_result_ref is not None
@@ -156,6 +160,30 @@ class FakeFinalizationStages(FakeGateStages):
             if isinstance(item, TechnicalEvidenceReview)
         )
         gate_counts = Counter(item.status for item in technical_reviews)
+        hypothesis_counts: Counter[str] = Counter(
+            str(item.status) for item in processes
+        )
+        proposals = tuple(
+            item
+            for item in self.runtime.queries.current_records(
+                str(ANALYSIS_ID), "hypothesis_proposal"
+            )
+            if isinstance(item, HypothesisProposal)
+        )
+        hypothesis_counts.update(
+            {
+                "TOTAL": len(processes),
+                "PROPOSAL_TOTAL": len(proposals),
+                "REGISTERED": len(processes),
+                "DUPLICATE": 0,
+                "INVALID_OUTPUT": 0,
+                "CANCELLED": 0,
+                "DUPLICATE_UNIQUE": 0,
+                "DUPLICATE_UNCERTAIN": 0,
+                "CHECK_FAILED": 0,
+                "INVALID_DUPLICATE_TARGET": 0,
+            }
+        )
         ledger = tuple(
             item
             for item in self.runtime.queries.published_records(str(ANALYSIS_ID))
@@ -180,7 +208,7 @@ class FakeFinalizationStages(FakeGateStages):
                     commit_id=state.commit_id,
                     workspace_ref=state.workspace_ref,
                     status="COMPLETE",
-                    hypothesis_counts={"TOTAL": 1, "TERMINAL": 1},
+                    hypothesis_counts=dict(hypothesis_counts),
                     failed_hypothesis_count=0,
                     verdict_counts=dict(verdicts),
                     gate_counts=dict(gate_counts),
@@ -209,12 +237,17 @@ class FakeFinalizationStages(FakeGateStages):
                     ),
                     started_at=state.started_at,
                     finished_at=self.clock.now(),
-                    elapsed_ms=1,
+                    elapsed_ms=0,
                     debug_trace_ref=self._artifact("debug_trace", run=True),
                     **inventory_fields,
                 )
             )
         )
+        return result
+
+    def _finish(self, verdict: str) -> AnalysisRunResult:
+        assert self.runtime is not None
+        result = self._result_candidate(verdict)
         # The configured finalizer identity is the verification owner.
         owner = next(
             ref

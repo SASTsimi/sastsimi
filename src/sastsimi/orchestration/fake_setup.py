@@ -1,5 +1,6 @@
 """Budget, workspace, static-analysis and frozen-policy setup stages."""
 
+import asyncio
 from datetime import timedelta
 from typing import Any
 
@@ -30,12 +31,16 @@ from sastsimi.contracts.policy import (
 )
 from sastsimi.contracts.records import PolicyCacheMeta
 from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
-from sastsimi.contracts.static import CodeLocation, CodeWorkspace, StaticFactBundle
+from sastsimi.contracts.static import (
+    CodeLocation,
+    CodeWorkspace,
+    StaticFactBundle,
+    ToolRunResult,
+)
 from sastsimi.contracts.verification import (
     PlaybookPolicy,
     VerificationPlaybook,
 )
-from sastsimi.contracts.work import WorkType
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 
 from .fake_base import (
@@ -43,11 +48,16 @@ from .fake_base import (
     COMMIT_ID,
     PROGRAM_ID,
     WORKSPACE_ID,
-    FakePipelineBase,
+    FakeStageService,
+)
+from .fake_configuration import register_fake_llm_call
+from .fake_provider_runtime import (
+    invoke_fake_provider,
+    persist_fake_invocation,
 )
 
 
-class FakeSetupStages(FakePipelineBase):
+class FakeSetupStages(FakeStageService):
     def _execution(self) -> ExecutionBudgetProfile:
         approval = self._artifact("approval", run=True, record=True)
         pricing = self._artifact("pricing", run=True, record=True)
@@ -86,7 +96,6 @@ class FakeSetupStages(FakePipelineBase):
                 max_items_per_work=100,
             )
             for work, (operation, role) in WORK_OPERATIONS.items()
-            if work != WorkType.CONTEXT_RETRIEVAL
         ]
         limits.append(
             dict(
@@ -131,6 +140,7 @@ class FakeSetupStages(FakePipelineBase):
             self.clock,
             self.ids,
             evidence=self.evidence,
+            context_service_identity_ref=owner_ref,
             finding_service_identity_ref=owner_ref,
             analysis_finalization_identity_ref=owner_ref,
         )
@@ -257,7 +267,11 @@ class FakeSetupStages(FakePipelineBase):
         )
 
     def _prepare_hypothesis(
-        self, scope: StoredDataRef, orchestrator_ref: StoredDataRef
+        self,
+        scope: StoredDataRef,
+        orchestrator_ref: StoredDataRef,
+        tool_runs: tuple[ToolRunResult, ...],
+        tool_run_refs: tuple[StoredDataRef, ...],
     ) -> tuple[HypothesisProposal, StaticFactBundle]:
         assert self.runtime is not None and self.runner is not None
         self.evidence.identities[orchestrator_ref] = RequesterRole.ORCHESTRATION
@@ -268,6 +282,7 @@ class FakeSetupStages(FakePipelineBase):
             "ANALYSIS",
             str(ANALYSIS_ID),
             orchestrator_ref,
+            inputs=tool_run_refs,
         )
         bundle = StaticFactBundle.model_validate_json(
             canonical_bytes(
@@ -284,7 +299,7 @@ class FakeSetupStages(FakePipelineBase):
                     call_edges=(),
                     data_flow_candidates=(),
                     route_bindings=(),
-                    tool_runs=(),
+                    tool_runs=tool_runs,
                     gaps=(),
                     errors=(),
                 )
@@ -340,9 +355,44 @@ class FakeSetupStages(FakePipelineBase):
                 )
             )
         )
-        self.runner.complete(
+        call_ref, provider_ref = register_fake_llm_call(
+            self.runtime,
+            self.evidence,
+            self._record_meta,
+            self._artifact,
+            self.clock.now(),
+            runner=self.runner,
+            scope=scope,
+            orchestration_identity=orchestrator_ref,
+            role="HYPOTHESIS",
+            result_kind="hypothesis_proposal",
+            context_refs=tuple(
+                ref for ref in static_work.output_refs if isinstance(ref, StoredDataRef)
+            ),
+        )
+        self.evidence.identities[orchestrator_ref] = RequesterRole.HYPOTHESIS
+        proposal_record, invocation = invoke_fake_provider(
+            runtime=self.runtime,
+            runner=self.runner,
+            work=proposal_work,
+            scope=scope,
+            identity=orchestrator_ref,
+            action_role=RequesterRole.HYPOTHESIS,
+            action_type="CALL_LLM",
+            call_spec_ref=call_ref,
+            provider_profile_ref=provider_ref,
+            artifact=self._stored_artifact,
+            build_output=lambda _decision: proposal,
+            provider_invoke=self.provider_invoke,
+        )
+        assert isinstance(proposal_record, HypothesisProposal)
+        self.evidence.identities[orchestrator_ref] = RequesterRole.ORCHESTRATION
+        proposal_work = self.runner.complete(
             proposal_work, orchestrator_ref, "ORCHESTRATION", (proposal,)
         )
+        proposal_ref = proposal_work.output_refs[0]
+        assert isinstance(proposal_ref, StoredDataRef)
+        persist_fake_invocation(self.runtime, invocation, proposal_ref)
         return proposal, bundle
 
     def _playbooks(self) -> tuple[StoredDataRef, StoredDataRef]:
@@ -408,19 +458,36 @@ class FakeSetupStages(FakePipelineBase):
         return published
 
     def _prepare_policy(
-        self, scope: StoredDataRef, orchestrator_ref: StoredDataRef
+        self,
+        scope: StoredDataRef,
+        orchestrator_ref: StoredDataRef,
+        work: Any | None = None,
     ) -> RunPolicyState:
         assert self.runtime is not None and self.runner is not None
         self.evidence.identities[orchestrator_ref] = RequesterRole.ORCHESTRATION
-        work = self.runner.start(
-            scope,
-            self._record_meta("fake_policy_stage"),
-            "POLICY_FETCH",
-            "ANALYSIS",
-            str(ANALYSIS_ID),
-            orchestrator_ref,
-        )
+        if work is None:
+            work = self._start_policy_work(scope, orchestrator_ref)
         official = self._artifact("official_policy")
+        self.evidence.identities[orchestrator_ref] = RequesterRole.POLICY_COLLECTOR
+        fetch_action = self.runner.action(
+            work, orchestrator_ref, "POLICY_COLLECTOR", "FETCH_POLICY"
+        )
+        fetch_units = self.runner.units(elapsed_ms=1, cost_minor_units=1)
+        fetch_reservation = self.runner.reserve(work, scope, fetch_action, fetch_units)
+        fetch_decision = self.runner.authorize(work, fetch_action, fetch_reservation)
+
+        if not isinstance(official, StoredDataRef):
+            raise ValueError("FAKE_POLICY_ARTIFACT_SCOPE_MISMATCH")
+        asyncio.run(
+            self.runtime.external.invoke(
+                str(work.work_id),
+                fetch_decision,
+                reference(fetch_reservation),
+                lambda: self.policy_fetch(official),
+                idempotency_key=str(fetch_action.action_id),
+            )
+        )
+        self.runner.account(fetch_reservation, fetch_units)
         freshness = self._artifact("freshness_evidence")
         criterion = self._artifact("freshness_criterion", record=True)
         parser = PolicyParserResult.model_validate_json(
@@ -584,3 +651,17 @@ class FakeSetupStages(FakePipelineBase):
         finally:
             self.evidence.next_outputs = None
         return state
+
+    def _start_policy_work(
+        self, scope: StoredDataRef, orchestrator_ref: StoredDataRef
+    ) -> Any:
+        assert self.runner is not None
+        self.evidence.identities[orchestrator_ref] = RequesterRole.ORCHESTRATION
+        return self.runner.start(
+            scope,
+            self._record_meta("fake_policy_stage"),
+            "POLICY_FETCH",
+            "ANALYSIS",
+            str(ANALYSIS_ID),
+            orchestrator_ref,
+        )

@@ -37,6 +37,9 @@ EXPECTED_KINDS = {
     "prompt_registry_entry",
     "prompt_payload",
     "llm_call_spec",
+    "llm_invocation_request",
+    "llm_invocation_result",
+    "llm_invocation_log",
     "playbook_policy",
     "verification_playbook",
     "execution_budget_profile",
@@ -49,6 +52,7 @@ EXPECTED_KINDS = {
     "budget_reservation",
     "budget_ledger_entry",
     "budget_remaining",
+    "evaluation_run_config",
 }
 
 

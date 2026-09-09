@@ -23,11 +23,15 @@ from .budget import (
 )
 from .chaining import PrimitiveIndexState
 from .dynamic import DynamicReproductionState, SandboxProfile
+from .evaluation import EvaluationRunConfig
 from .hypothesis import VulnerabilityHypothesis
 from .llm import (
     ClientExecutionProfile,
     ExecutionLimits,
     LLMCallSpec,
+    LLMInvocationLog,
+    LLMInvocationRequest,
+    LLMInvocationResult,
     LLMRetryPolicy,
     LLMToolPolicy,
     OutputSchemaSpec,
@@ -80,6 +84,10 @@ CORE_SCHEMAS: Mapping[str, type[BaseModel]] = MappingProxyType(
         "prompt_registry_entry": PromptRegistryEntry,
         "prompt_payload": PromptPayload,
         "llm_call_spec": LLMCallSpec,
+        "llm_invocation_request": LLMInvocationRequest,
+        "llm_invocation_result": LLMInvocationResult,
+        "llm_invocation_log": LLMInvocationLog,
+        "evaluation_run_config": EvaluationRunConfig,
         "playbook_policy": PlaybookPolicy,
         "verification_playbook": VerificationPlaybook,
         "execution_budget_profile": ExecutionBudgetProfile,

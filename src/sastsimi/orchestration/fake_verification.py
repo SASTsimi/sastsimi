@@ -1,7 +1,6 @@
 """Evidence, dynamic reproduction and Verification generation stages."""
 
-import asyncio
-from typing import Any
+from collections.abc import Callable
 
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -16,18 +15,24 @@ from sastsimi.contracts.hypothesis import (
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.static import StaticFactBundle
 from sastsimi.contracts.verification import (
-    ConEvidenceResult,
-    ProEvidenceResult,
     VerificationInitialAssessment,
     VerificationResult,
 )
+from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.ports.dto import Record
 
-from .fake_base import ANALYSIS_ID
+from .fake_base import ANALYSIS_ID, FakeStageService
 from .fake_configuration import register_fake_llm_call
-from .fake_verification_initial import FakeInitialVerificationStages
+from .fake_context import retrieve_fake_context
+from .fake_debate import run_fake_debate
+from .fake_provider_runtime import (
+    FakeInvocation,
+    invoke_fake_provider,
+    persist_fake_invocation,
+)
 
 
-class FakeVerificationStages(FakeInitialVerificationStages):
+class FakeVerificationStages(FakeStageService):
     def _revised_verification(
         self,
         prior: VerificationResult,
@@ -94,49 +99,48 @@ class FakeVerificationStages(FakeInitialVerificationStages):
         )
         evidence_ref = reference(bundle)
         assert isinstance(evidence_ref, StoredDataRef)
-        evidence_results: list[ProEvidenceResult | ConEvidenceResult] = []
-        identities = (orchestrator_ref, proposal_ref)
-        for role, identity in zip(("PRO", "CON"), identities, strict=True):
-            self.evidence.identities[identity] = RequesterRole(role)
-            child = self.runner.start(
-                scope,
-                verification_work.meta,
-                f"{role}_EVIDENCE",
-                "HYPOTHESIS",
-                str(hypothesis.meta.hypothesis_id),
-                owner_ref,
-                role="VERIFICATION",
-                inputs=(evidence_ref,),
-                parent=reference(verification_work),
-                generation=verification_work.work_generation,
-            )
-            result = self._evidence_result(
-                role=role,
-                work=child,
-                parent_work=verification_work,
-                evidence_ref=evidence_ref,
-            )
-            self.runner.complete(child, identity, role, (result,))
-            evidence_results.append(result)
-        pro, con = evidence_results
-        pro_ref, con_ref = reference(pro), reference(con)
-        app_ref = reference(registered.application)
-        assert isinstance(pro_ref, StoredDataRef)
-        assert isinstance(con_ref, StoredDataRef)
-        assert isinstance(app_ref, StoredDataRef)
-        request, dynamic, poc = self._dynamic_chain(
+        _context, context_ref = retrieve_fake_context(
+            runtime=self.runtime,
+            runner=self.runner,
+            evidence=self.evidence,
+            scope=scope,
+            identity=proposal_ref,
+            service_identity=owner_ref,
+            metadata=hypothesis.meta,
+            hypothesis_id=str(hypothesis.meta.hypothesis_id),
+            inputs=(hypothesis_ref, evidence_ref),
+            location=self._location(),
+            fragment_ref=self._stored_artifact("revised-code-fragment"),
+        )
+        debate_inputs = (hypothesis_ref, evidence_ref, context_ref)
+        debate = run_fake_debate(
+            runtime=self.runtime,
+            runner=self.runner,
+            evidence=self.evidence,
             scope=scope,
             owner_ref=owner_ref,
             orchestrator_ref=orchestrator_ref,
+            proposal_ref=proposal_ref,
             verification_work=verification_work,
-            assignment_ref=registered.assignment_ref,
-            hypothesis_ref=hypothesis_ref,
-            evidence_ref=evidence_ref,
-            pro_ref=pro_ref,
-            con_ref=con_ref,
+            debate_inputs=debate_inputs,
+            record_meta=self._record_meta,
+            artifact=self._artifact,
+            stored_artifact=self._stored_artifact,
+            now=self.clock.now,
+            build_evidence=lambda role, work, parent, inputs: self._evidence_result(
+                role=role,
+                work=work,
+                parent_work=parent,
+                debate_inputs=inputs,
+            ),
+            provider_invoke=self.provider_invoke,
         )
+        pro = debate.pro
+        pro_ref, con_ref = debate.pro_ref, debate.con_ref
+        app_ref = reference(registered.application)
+        assert isinstance(app_ref, StoredDataRef)
         observation = self._artifact("observation")
-        assessment = VerificationInitialAssessment.model_validate_json(
+        assessment_candidate = VerificationInitialAssessment.model_validate_json(
             canonical_bytes(
                 dict(
                     meta=self.runner.metadata(
@@ -161,6 +165,36 @@ class FakeVerificationStages(FakeInitialVerificationStages):
                 )
             )
         )
+        synthesis_call_ref, synthesis_provider_ref = register_fake_llm_call(
+            self.runtime,
+            self.evidence,
+            self._record_meta,
+            self._artifact,
+            self.clock.now(),
+            runner=self.runner,
+            scope=scope,
+            orchestration_identity=owner_ref,
+            role="VERIFICATION",
+            result_kind="verification_initial_assessment",
+            context_refs=debate_inputs,
+        )
+        self.evidence.identities[owner_ref] = RequesterRole.VERIFICATION
+        assessment_record, synthesis_invocation = invoke_fake_provider(
+            runtime=self.runtime,
+            runner=self.runner,
+            work=verification_work,
+            scope=scope,
+            identity=owner_ref,
+            action_role=RequesterRole.VERIFICATION,
+            action_type="CALL_LLM",
+            call_spec_ref=synthesis_call_ref,
+            provider_profile_ref=synthesis_provider_ref,
+            artifact=self._stored_artifact,
+            build_output=lambda _decision: assessment_candidate,
+            provider_invoke=self.provider_invoke,
+        )
+        assert isinstance(assessment_record, VerificationInitialAssessment)
+        assessment = assessment_record
         save = self.runner.action(
             verification_work,
             owner_ref,
@@ -171,10 +205,23 @@ class FakeVerificationStages(FakeInitialVerificationStages):
                 assessment
             ),
         )
-        self.runtime.intermediate.publish(
+        (assessment_ref,) = self.runtime.intermediate.publish(
             str(verification_work.work_id),
             self.runner.authorize(verification_work, save),
             (assessment,),
+        )
+        assert isinstance(assessment_ref, StoredDataRef)
+        persist_fake_invocation(self.runtime, synthesis_invocation, assessment_ref)
+        request, dynamic, poc = self._dynamic_chain(
+            scope=scope,
+            owner_ref=owner_ref,
+            orchestrator_ref=orchestrator_ref,
+            verification_work=verification_work,
+            assignment_ref=registered.assignment_ref,
+            hypothesis_ref=hypothesis_ref,
+            evidence_ref=evidence_ref,
+            pro_ref=pro_ref,
+            con_ref=con_ref,
         )
         final = VerificationResult.model_validate_json(
             canonical_bytes(
@@ -271,15 +318,18 @@ class FakeVerificationStages(FakeInitialVerificationStages):
         self._verification_work_ref = reference(verification_work)
         return final
 
-    def _gate_decision(
+    def _gate_output(
         self,
-        work: Any,
+        work: object,
         scope: StoredDataRef,
         identity: StoredDataRef,
         config_role: RequesterRole,
         action_type: str,
-    ) -> StoredDataRef:
+        build_output: Callable[[StoredDataRef], Record],
+    ) -> tuple[Record, FakeInvocation]:
         assert self.runtime is not None and self.runner is not None
+        if not isinstance(work, WorkExecutionState):
+            raise TypeError("Gate provider requires a running work")
         self.evidence.identities[identity] = RequesterRole.VERIFICATION
         result_kind = {
             "CALL_TECHNICAL_GATE": "technical_evidence_review",
@@ -292,38 +342,27 @@ class FakeVerificationStages(FakeInitialVerificationStages):
             self._record_meta,
             lambda kind: self._artifact(kind, record=True),
             self.clock.now(),
+            runner=self.runner,
+            scope=scope,
+            orchestration_identity=identity,
             role=config_role.value,
             result_kind=result_kind,
+            context_refs=tuple(
+                ref for ref in work.input_refs if isinstance(ref, StoredDataRef)
+            ),
         )
-        action = self.runner.action(
-            work,
-            identity,
-            "VERIFICATION",
-            action_type,
-            llm_call_spec_ref=call_ref,
+        self.evidence.identities[identity] = RequesterRole.VERIFICATION
+        return invoke_fake_provider(
+            runtime=self.runtime,
+            runner=self.runner,
+            work=work,
+            scope=scope,
+            identity=identity,
+            action_role=RequesterRole.VERIFICATION,
+            action_type=action_type,
+            call_spec_ref=call_ref,
             provider_profile_ref=provider_ref,
-            session_mode="NEW",
+            artifact=self._stored_artifact,
+            build_output=build_output,
+            provider_invoke=self.provider_invoke,
         )
-        usage = self.runner.units(
-            elapsed_ms=1,
-            llm_call_count=1,
-            cost_minor_units=1,
-        )
-        reservation = self.runner.reserve(work, scope, action, usage)
-        decision = self.runner.authorize(work, action, reservation)
-
-        async def accepted() -> str:
-            return "fake-gate-accepted"
-
-        asyncio.run(
-            self.runtime.external.invoke(
-                str(work.work_id),
-                decision,
-                reference(reservation),
-                accepted,
-                idempotency_key=str(action.action_id),
-            )
-        )
-        self.runner.account(reservation, usage)
-        assert isinstance(decision, StoredDataRef)
-        return decision

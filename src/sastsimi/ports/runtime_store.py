@@ -7,6 +7,11 @@ from typing import Protocol
 from sastsimi.contracts.actions import ActionDecision, ActionRequest
 from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.budget import BudgetProfileBinding, ExecutionBudgetProfile
+from sastsimi.contracts.llm import (
+    LLMInvocationLog,
+    LLMInvocationRequest,
+    LLMInvocationResult,
+)
 from sastsimi.contracts.refs import RecordRef, RunStoredDataRef, StoredDataRef
 from sastsimi.contracts.work import StateTransition, WorkAttempt, WorkExecutionState
 
@@ -50,6 +55,13 @@ class ActionAuthorizationPort(Protocol):
     def claim_external(
         self, work_id: str, decision_ref: RecordRef, reservation_ref: RecordRef | None
     ) -> RecordRef: ...
+    def record_invocation(
+        self,
+        request: LLMInvocationRequest,
+        result: LLMInvocationResult,
+        log: LLMInvocationLog,
+        output_ref: StoredDataRef,
+    ) -> StoredDataRef: ...
 
 
 class BudgetRegistryPort(Protocol):

@@ -6,6 +6,7 @@ from sastsimi.contracts.budget import (
     WorkBudgetProfile,
 )
 from sastsimi.contracts.dynamic import SandboxProfile
+from sastsimi.contracts.evaluation import EvaluationRunConfig
 from sastsimi.contracts.llm import (
     ClientExecutionProfile,
     ExecutionLimits,
@@ -89,6 +90,9 @@ class ConfigurationRegistry:
 
     def register_call_spec(self, record: LLMCallSpec) -> StoredDataRef:
         return self.registry.register_call_spec(record)
+
+    def register_evaluation_config(self, record: EvaluationRunConfig) -> StoredDataRef:
+        return self.registry.register_evaluation_config(record)
 
     def register_sandbox_profile(self, record: SandboxProfile) -> StoredDataRef:
         return self.registry.register_sandbox_profile(record)

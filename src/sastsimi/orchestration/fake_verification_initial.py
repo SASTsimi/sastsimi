@@ -6,24 +6,82 @@ from sastsimi.contracts.hypothesis import (
     HypothesisProcessState,
     VulnerabilityHypothesis,
 )
-from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.ids import RecordId, StoredDataId
+from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
+from sastsimi.contracts.static import CodeWorkspace
 from sastsimi.contracts.verification import (
-    ConEvidenceResult,
-    ProEvidenceResult,
     VerificationInitialAssessment,
     VerificationResult,
 )
 
-from .fake_base import ANALYSIS_ID
-from .fake_dynamic import FakeDynamicStages
+from .fake_base import ANALYSIS_ID, FakeStageService
+from .fake_configuration import register_fake_llm_call
+from .fake_context import retrieve_fake_context
+from .fake_debate import run_fake_debate
+from .fake_provider_runtime import (
+    invoke_fake_provider,
+    persist_fake_invocation,
+)
+from .fake_static_runtime import execute_fake_static_work, register_fake_static_works
 
 
-class FakeInitialVerificationStages(FakeDynamicStages):
-    def _verification(self, verdict: str) -> VerificationResult:
+class FakeInitialVerificationStages(FakeStageService):
+    def _verification(
+        self,
+        verdict: str,
+        *,
+        invalid_poc: bool = False,
+        material_child: bool = False,
+    ) -> VerificationResult:
         scope, owner_ref, orchestrator_ref = self._bootstrap()
         assert self.runtime is not None and self.runner is not None
-        self._prepare_policy(scope, orchestrator_ref)
-        proposal, bundle = self._prepare_hypothesis(scope, orchestrator_ref)
+        run_state = self.runtime.budget_registry.current_state(str(ANALYSIS_ID))
+        assert run_state.workspace_ref is not None
+        workspace = self.runtime.unit_of_work.records.get_exact(run_state.workspace_ref)
+        assert isinstance(workspace, CodeWorkspace)
+        workspace_ref = reference(workspace)
+        assert isinstance(workspace_ref, RunStoredDataRef)
+        static_works = register_fake_static_works(
+            runner=self.runner,
+            evidence=self.evidence,
+            scope=scope,
+            identity=orchestrator_ref,
+            workspace=workspace,
+            workspace_ref=workspace_ref,
+            metadata=self._record_meta("static_tool_stage"),
+        )
+        policy_work = self._start_policy_work(scope, orchestrator_ref)
+        analysis_config_ref = self._stored_artifact("static-analysis-config")
+        rule_catalog_ref = self._stored_artifact("static-rule-catalog")
+        static_outputs = tuple(
+            execute_fake_static_work(
+                runtime=self.runtime,
+                runner=self.runner,
+                evidence=self.evidence,
+                scope=scope,
+                identity=orchestrator_ref,
+                work=work,
+                workspace=workspace,
+                analysis_config_ref=analysis_config_ref,
+                rule_catalog_ref=rule_catalog_ref,
+                tool_name=tool_name,
+                tool_kind=tool_kind,
+                raw_result_ref=self._stored_artifact(f"raw-{tool_name}"),
+                static_invoke=self.static_invoke,
+            )
+            for work, tool_name, tool_kind in zip(
+                static_works,
+                ("fake-ast", "fake-sast"),
+                ("STRUCTURE", "RULE_BASED"),
+                strict=True,
+            )
+        )
+        self._prepare_policy(scope, orchestrator_ref, policy_work)
+        tool_runs = tuple(item[0] for item in static_outputs)
+        tool_run_refs = tuple(item[1] for item in static_outputs)
+        proposal, bundle = self._prepare_hypothesis(
+            scope, orchestrator_ref, tool_runs, tool_run_refs
+        )
         (hypothesis,) = self.runtime.queries.current_records(
             str(ANALYSIS_ID), "vulnerability_hypothesis"
         )
@@ -32,6 +90,8 @@ class FakeInitialVerificationStages(FakeDynamicStages):
         )
         assert isinstance(hypothesis, VulnerabilityHypothesis)
         assert isinstance(process, HypothesisProcessState)
+        hypothesis_id = hypothesis.meta.hypothesis_id
+        assert hypothesis_id is not None
         hypothesis_ref = reference(hypothesis)
         proposal_ref = reference(proposal)
         process_ref = reference(process)
@@ -56,90 +116,52 @@ class FakeInitialVerificationStages(FakeDynamicStages):
         )
         evidence_ref = reference(bundle)
         assert isinstance(evidence_ref, StoredDataRef)
-        evidence_results: list[ProEvidenceResult | ConEvidenceResult] = []
-        identities = (orchestrator_ref, proposal_ref)
-        for role, identity in zip(("PRO", "CON"), identities, strict=True):
-            self.evidence.identities[identity] = RequesterRole(role)
-            child = self.runner.start(
-                scope,
-                verification_work.meta,
-                f"{role}_EVIDENCE",
-                "HYPOTHESIS",
-                str(hypothesis.meta.hypothesis_id),
-                owner_ref,
-                role="VERIFICATION",
-                inputs=(evidence_ref,),
-                parent=reference(verification_work),
-            )
-            result = self._evidence_result(
+        _context, context_ref = retrieve_fake_context(
+            runtime=self.runtime,
+            runner=self.runner,
+            evidence=self.evidence,
+            scope=scope,
+            identity=proposal_ref,
+            service_identity=owner_ref,
+            metadata=hypothesis.meta,
+            hypothesis_id=str(hypothesis.meta.hypothesis_id),
+            inputs=(hypothesis_ref, evidence_ref),
+            location=self._location(),
+            fragment_ref=self._stored_artifact("code-fragment"),
+        )
+        debate_inputs = (hypothesis_ref, evidence_ref, context_ref)
+        debate = run_fake_debate(
+            runtime=self.runtime,
+            runner=self.runner,
+            evidence=self.evidence,
+            scope=scope,
+            owner_ref=owner_ref,
+            orchestrator_ref=orchestrator_ref,
+            proposal_ref=proposal_ref,
+            verification_work=verification_work,
+            debate_inputs=debate_inputs,
+            record_meta=self._record_meta,
+            artifact=self._artifact,
+            stored_artifact=self._stored_artifact,
+            now=self.clock.now,
+            build_evidence=lambda role, work, parent, inputs: self._evidence_result(
                 role=role,
-                work=child,
-                parent_work=verification_work,
-                evidence_ref=evidence_ref,
-            )
-            self.runner.complete(child, identity, role, (result,))
-            evidence_results.append(result)
-        pro, con = evidence_results
-        pro_ref, con_ref = reference(pro), reference(con)
+                work=work,
+                parent_work=parent,
+                debate_inputs=inputs,
+            ),
+            provider_invoke=self.provider_invoke,
+        )
+        pro = debate.pro
+        pro_ref, con_ref = debate.pro_ref, debate.con_ref
         application_ref = reference(registered.application)
-        assert isinstance(pro_ref, StoredDataRef)
-        assert isinstance(con_ref, StoredDataRef)
         assert isinstance(application_ref, StoredDataRef)
-        dynamic_request_ref = None
-        dynamic_result_ref = None
-        poc_ref = None
-        supporting_evidence: tuple[dict[str, object], ...] = ()
-        required_primitives: tuple[dict[str, object], ...] = ()
-        provided_primitives: tuple[dict[str, object], ...] = ()
-        if verdict == "TRUE":
-            request, dynamic, poc = self._dynamic_chain(
-                scope=scope,
-                owner_ref=owner_ref,
-                orchestrator_ref=orchestrator_ref,
-                verification_work=verification_work,
-                assignment_ref=registered.assignment_ref,
-                hypothesis_ref=hypothesis_ref,
-                evidence_ref=evidence_ref,
-                pro_ref=pro_ref,
-                con_ref=con_ref,
-            )
-            dynamic_request_ref = reference(request)
-            dynamic_result_ref = reference(dynamic)
-            poc_ref = reference(poc)
-            supporting_evidence = (
-                dict(
-                    claim_id="fake-executed-poc",
-                    statement="The deterministic PoC reached the sink",
-                    source_role="VERIFICATION",
-                    evidence_refs=(self._artifact("observation"),),
-                    code_locations=(self._location(),),
-                    limitations=(),
-                ),
-            )
-            required_primitives = (
-                dict(
-                    draft_id="fake-input",
-                    entity_refs=(),
-                    privilege_level=None,
-                    evidence_refs=(self._artifact("observation"),),
-                    description="Attacker-controlled input",
-                ),
-            )
-            provided_primitives = (
-                dict(
-                    draft_id="fake-output",
-                    entity_refs=(),
-                    privilege_level="application",
-                    evidence_refs=(self._artifact("observation"),),
-                    description="Validated sink execution",
-                ),
-            )
         falsification_outcome = {
             "FALSE": "DISPROVED",
             "HOLD": "INCONCLUSIVE",
             "TRUE": "NOT_DISPROVED",
         }[verdict]
-        assessment = VerificationInitialAssessment.model_validate_json(
+        assessment_candidate = VerificationInitialAssessment.model_validate_json(
             canonical_bytes(
                 dict(
                     meta=self.runner.metadata(
@@ -168,6 +190,36 @@ class FakeInitialVerificationStages(FakeDynamicStages):
                 )
             )
         )
+        synthesis_call_ref, synthesis_provider_ref = register_fake_llm_call(
+            self.runtime,
+            self.evidence,
+            self._record_meta,
+            self._artifact,
+            self.clock.now(),
+            runner=self.runner,
+            scope=scope,
+            orchestration_identity=owner_ref,
+            role="VERIFICATION",
+            result_kind="verification_initial_assessment",
+            context_refs=debate_inputs,
+        )
+        self.evidence.identities[owner_ref] = RequesterRole.VERIFICATION
+        assessment_record, synthesis_invocation = invoke_fake_provider(
+            runtime=self.runtime,
+            runner=self.runner,
+            work=verification_work,
+            scope=scope,
+            identity=owner_ref,
+            action_role=RequesterRole.VERIFICATION,
+            action_type="CALL_LLM",
+            call_spec_ref=synthesis_call_ref,
+            provider_profile_ref=synthesis_provider_ref,
+            artifact=self._stored_artifact,
+            build_output=lambda _decision: assessment_candidate,
+            provider_invoke=self.provider_invoke,
+        )
+        assert isinstance(assessment_record, VerificationInitialAssessment)
+        assessment = assessment_record
         save = self.runner.action(
             verification_work,
             owner_ref,
@@ -178,11 +230,70 @@ class FakeInitialVerificationStages(FakeDynamicStages):
                 assessment
             ),
         )
-        self.runtime.intermediate.publish(
+        (assessment_ref,) = self.runtime.intermediate.publish(
             str(verification_work.work_id),
             self.runner.authorize(verification_work, save),
             (assessment,),
         )
+        assert isinstance(assessment_ref, StoredDataRef)
+        persist_fake_invocation(self.runtime, synthesis_invocation, assessment_ref)
+        dynamic_request_ref = None
+        dynamic_result_ref = None
+        poc_ref = None
+        supporting_evidence: tuple[dict[str, object], ...] = ()
+        required_primitives: tuple[dict[str, object], ...] = ()
+        provided_primitives: tuple[dict[str, object], ...] = ()
+        if verdict == "TRUE":
+            request, dynamic, poc = self._dynamic_chain(
+                scope=scope,
+                owner_ref=owner_ref,
+                orchestrator_ref=orchestrator_ref,
+                verification_work=verification_work,
+                assignment_ref=registered.assignment_ref,
+                hypothesis_ref=hypothesis_ref,
+                evidence_ref=evidence_ref,
+                pro_ref=pro_ref,
+                con_ref=con_ref,
+            )
+            dynamic_request_ref = reference(request)
+            dynamic_result_ref = reference(dynamic)
+            poc_ref = reference(poc)
+            if invalid_poc:
+                assert isinstance(poc_ref, StoredDataRef)
+                poc_ref = poc_ref.model_copy(
+                    update={
+                        "record_id": RecordId("fake-missing-poc"),
+                        "stored_data_id": StoredDataId("fake-missing-poc"),
+                    }
+                )
+            supporting_evidence = (
+                dict(
+                    claim_id="fake-executed-poc",
+                    statement="The deterministic PoC reached the sink",
+                    source_role="VERIFICATION",
+                    evidence_refs=(self._artifact("observation"),),
+                    code_locations=(self._location(),),
+                    limitations=(),
+                ),
+            )
+            required_primitives = (
+                dict(
+                    draft_id="fake-input",
+                    entity_refs=(),
+                    privilege_level=None,
+                    evidence_refs=(self._artifact("observation"),),
+                    description="Attacker-controlled input",
+                ),
+            )
+            provided_primitives = (
+                dict(
+                    draft_id="fake-output",
+                    entity_refs=(),
+                    privilege_level="application",
+                    evidence_refs=(self._artifact("observation"),),
+                    description="Validated sink execution",
+                ),
+            )
         final = VerificationResult.model_validate_json(
             canonical_bytes(
                 dict(
@@ -228,7 +339,44 @@ class FakeInitialVerificationStages(FakeDynamicStages):
                     required_primitive_candidates=required_primitives,
                     provided_primitive_candidates=provided_primitives,
                     impact_escalation_candidates=(),
-                    material_child_proposals=(),
+                    material_child_proposals=(
+                        (
+                            dict(
+                                meta=self.runner.metadata(
+                                    verification_work.meta,
+                                    "hypothesis_proposal",
+                                    attempt_id=verification_work.active_attempt_id,
+                                ),
+                                proposal_id="fake-material-child",
+                                proposal_state="HYPOTHESIS_ONLY",
+                                assertion_mode="NON_FINAL",
+                                origin="VERIFICATION",
+                                vulnerability_type_candidates=(),
+                                target_entities=(),
+                                target_locations=(self._location(),),
+                                suspected_path=(self._location(),),
+                                observed_facts=(),
+                                assumptions=("A separate sink may be reachable",),
+                                restrictions=(),
+                                falsification_questions=(
+                                    dict(
+                                        question_id="child-reachability",
+                                        question="Can the separate sink be reached?",
+                                    ),
+                                ),
+                                validation_checks=(
+                                    dict(
+                                        validation_id="child-path",
+                                        instruction="Validate the separate exact path",
+                                    ),
+                                ),
+                                parent_hypothesis_ids=(hypothesis_id,),
+                                source_primitive_match_id=None,
+                            ),
+                        )
+                        if material_child
+                        else ()
+                    ),
                     unresolved_conditions=("Reachability",)
                     if verdict == "HOLD"
                     else (),

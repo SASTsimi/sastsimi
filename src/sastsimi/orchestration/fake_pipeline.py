@@ -1,26 +1,60 @@
 """Thin public coordinator for deterministic fake analysis scenarios."""
 
+from collections.abc import Callable
+from pathlib import Path
+
 from sastsimi.contracts.evaluation import AnalysisRunResult
+from sastsimi.contracts.reporting import ReportDraft
+from sastsimi.runtime.services import RuntimeServices
 
-from .fake_finalization import FakeFinalizationStages
+from .fake_base import (
+    NoMatchBuilder,
+    PolicyFetcher,
+    ProviderInvoker,
+    SandboxPreparer,
+    StaticInvoker,
+)
+from .fake_scenario_runtime import FakeScenarioRuntime
 
 
-class FakePipeline(FakeFinalizationStages):
-    def analyze(self, *, scenario: str = "TRUE") -> AnalysisRunResult:
-        if self._result.status == "COMPLETE":
-            return self._result
-        normalized = scenario.upper()
-        if normalized == "TRUE_WITHOUT_POC":
-            raise ValueError("POC current validated PoC is required for TRUE")
-        if normalized not in {"TRUE", "FALSE", "HOLD", "REVISE", "CHAINING"}:
-            raise ValueError(f"UNKNOWN_FAKE_SCENARIO: {scenario}")
-        verification = self._verification(
-            "TRUE" if normalized in {"TRUE", "REVISE", "CHAINING"} else normalized
+class FakePipeline:
+    """Public query/command facade composed around the internal stage runtime."""
+
+    def __init__(
+        self,
+        data_dir: Path,
+        runtime_builder: Callable[..., RuntimeServices],
+        database_upgrader: Callable[[Path], None],
+        provider_invoke: ProviderInvoker,
+        static_invoke: StaticInvoker,
+        sandbox_prepare: SandboxPreparer,
+        policy_fetch: PolicyFetcher,
+        no_match_builder: NoMatchBuilder,
+        persisted_result: AnalysisRunResult | None = None,
+        persisted_reports: tuple[ReportDraft, ...] = (),
+    ) -> None:
+        self._scenario = FakeScenarioRuntime(
+            data_dir,
+            runtime_builder,
+            database_upgrader,
+            provider_invoke,
+            static_invoke,
+            sandbox_prepare,
+            policy_fetch,
+            no_match_builder,
+            persisted_result=persisted_result,
+            persisted_reports=persisted_reports,
         )
-        if normalized == "REVISE":
-            revision = self._post_true(verification, technical_status="REVISE")
-            verification = self._revised_verification(verification, revision)
-            self._post_true(verification)
-        elif normalized in {"TRUE", "CHAINING"}:
-            self._post_true(verification)
-        return self._finish("TRUE" if normalized == "CHAINING" else normalized)
+
+    @property
+    def runtime(self) -> RuntimeServices | None:
+        return self._scenario.runtime
+
+    def analyze(self, *, scenario: str = "TRUE") -> AnalysisRunResult:
+        return self._scenario.analyze(scenario=scenario)
+
+    def results(self) -> AnalysisRunResult:
+        return self._scenario.results()
+
+    def reports(self) -> tuple[ReportDraft, ...]:
+        return self._scenario.reports()

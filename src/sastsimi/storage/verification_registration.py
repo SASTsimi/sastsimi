@@ -93,7 +93,7 @@ class VerificationRegistrationService:
                 )
             records.resolve(connection, requester_identity_ref)
             records.resolve(connection, owner_identity_ref)
-            for ref in (hypothesis_ref, policy_ref, playbook_ref, expected_process_ref):
+            for ref in (hypothesis_ref, policy_ref, playbook_ref):
                 current(records, connection, ref)
             hypothesis = records.resolve(connection, hypothesis_ref)
             proposal = records.resolve(connection, proposal_ref)
@@ -140,16 +140,39 @@ class VerificationRegistrationService:
             ).scalar()
             if old is not None:
                 work = WorkExecutionState.model_validate_json(old)
+                current_process_ref_raw = connection.execute(
+                    select(models.records.c.ref)
+                    .join(
+                        models.current_records,
+                        models.current_records.c.record_id
+                        == models.records.c.record_id,
+                    )
+                    .where(
+                        models.current_records.c.logical_record_id
+                        == str(process.meta.logical_record_id)
+                    )
+                ).scalar_one_or_none()
+                if current_process_ref_raw is None:
+                    raise ValueError("REGISTRATION_INPUT_MISMATCH")
+                current_process_ref = REF_ADAPTER.validate_json(current_process_ref_raw)
+                current_process = records.resolve(connection, current_process_ref)
+                if not isinstance(current_process, HypothesisProcessState):
+                    raise ValueError("REGISTRATION_INPUT_MISMATCH")
                 app_refs = [
                     ref
                     for ref in work.input_refs
                     if ref.data_kind == "playbook_application"
                 ]
-                if len(app_refs) != 1 or process.verification_assignment_ref is None:
+                if (
+                    len(app_refs) != 1
+                    or current_process.verification_assignment_ref is None
+                    or current_process.verification_work_ref != reference(work)
+                    or current_process.verification_generation != generation
+                ):
                     raise ValueError("REGISTRATION_INPUT_MISMATCH")
                 application = records.resolve(connection, app_refs[0])
                 assignment = records.resolve(
-                    connection, process.verification_assignment_ref
+                    connection, current_process.verification_assignment_ref
                 )
                 if (
                     not isinstance(application, PlaybookApplication)
@@ -165,12 +188,18 @@ class VerificationRegistrationService:
                 validate_playbook_application(
                     application, hypothesis, proposal, policy, book
                 )
+                existing_assignment_ref = current_process.verification_assignment_ref
+                if not isinstance(
+                    existing_assignment_ref, StoredDataRef
+                ) or not isinstance(current_process_ref, StoredDataRef):
+                    raise ValueError("REGISTRATION_ASSIGNMENT_SCOPE_MISMATCH")
                 return VerificationRegistration(
                     work,
                     application,
-                    process.verification_assignment_ref,
-                    expected_process_ref,
+                    existing_assignment_ref,
+                    current_process_ref,
                 )
+            current(records, connection, expected_process_ref)
             if process.status != "REGISTERED" or process.verification_generation != 0:
                 raise ValueError("REGISTRATION_STATE_MISMATCH")
             work_id = works.ids.new(WorkId)

@@ -40,7 +40,6 @@ def validate_primitive_outputs(
     if (
         work.work_type != "PRIMITIVE_UPDATE"
         or len(admissions) != 1
-        or not primitives
         or len(outputs) != len(primitives) + 1
     ):
         raise ValueError("PRIMITIVE_EXACT_OUTPUT_REQUIRED")
@@ -94,6 +93,12 @@ def validate_primitive_outputs(
     ):
         raise ValueError("STALE_RESULT: current Verification required")
     validate_admission(admission, verification, technical, collection, state, review)
+    if admission.decision == "DENY":
+        if primitives:
+            raise ValueError("PRIMITIVE_DENY_MUST_NOT_PUBLISH")
+        return ()
+    if not primitives:
+        raise ValueError("PRIMITIVE_ALLOW_REQUIRES_PRIMITIVE")
     admission_ref = reference(admission)
     for primitive in primitives:
         if primitive.admission_decision_ref != admission_ref:

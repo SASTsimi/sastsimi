@@ -5,7 +5,6 @@ from typing import Literal
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.chaining import (
-    ChainingResult,
     Primitive,
     PrimitiveAdmissionDecision,
 )
@@ -32,16 +31,22 @@ from sastsimi.contracts.verification import (
     VerificationResult,
 )
 
-from .fake_base import ANALYSIS_ID, COMMIT_ID, WORKSPACE_ID
-from .fake_verification import FakeVerificationStages
+from .fake_base import ANALYSIS_ID, COMMIT_ID, WORKSPACE_ID, FakeStageService
+from .fake_configuration import register_fake_llm_call
+from .fake_provider_runtime import (
+    invoke_fake_provider,
+    persist_fake_invocation,
+)
 
 
-class FakeGateStages(FakeVerificationStages):
+class FakeGateStages(FakeStageService):
     def _post_true(
         self,
         verification: VerificationResult,
         *,
         technical_status: Literal["ACCEPT", "REVISE"] = "ACCEPT",
+        admission_decision: Literal["ALLOW", "DENY"] = "ALLOW",
+        publish_denied_primitive: bool = False,
     ) -> TechnicalEvidenceReview:
         assert self.runtime is not None and self.runner is not None
         state = self.runtime.budget_registry.current_state(str(ANALYSIS_ID))
@@ -117,28 +122,58 @@ class FakeGateStages(FakeVerificationStages):
                 attempt_id=cwe_work.active_attempt_id,
             )
         )
-        label = CWELabel.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=label_meta,
-                    verification_result_ref=verification_ref,
-                    verification_generation=cwe_work.work_generation,
-                    cwe_labeling_work_id=cwe_work.work_id,
-                    llm_call_id="fake-cwe-call",
-                    primary="CWE-79",
-                    alternatives=(),
-                    taxonomy_version="4.16",
-                    rationale="The executed path reaches an unsafe sink",
-                    evidence_refs=(observation,),
-                    uncertainty=None,
-                )
-            )
+        call_ref, provider_ref = register_fake_llm_call(
+            self.runtime,
+            self.evidence,
+            self._record_meta,
+            self._artifact,
+            self.clock.now(),
+            runner=self.runner,
+            scope=scope,
+            orchestration_identity=cwe_identity,
+            role="CWE_LABELING",
+            result_kind="cwe_label",
+            context_refs=(verification_ref,),
         )
+        self.evidence.identities[cwe_identity] = RequesterRole.CWE_LABELING
+        label_record, cwe_invocation = invoke_fake_provider(
+            runtime=self.runtime,
+            runner=self.runner,
+            work=cwe_work,
+            scope=scope,
+            identity=cwe_identity,
+            action_role=RequesterRole.CWE_LABELING,
+            action_type="CALL_LLM",
+            call_spec_ref=call_ref,
+            provider_profile_ref=provider_ref,
+            artifact=self._stored_artifact,
+            build_output=lambda _decision: CWELabel.model_validate_json(
+                canonical_bytes(
+                    dict(
+                        meta=label_meta,
+                        verification_result_ref=verification_ref,
+                        verification_generation=cwe_work.work_generation,
+                        cwe_labeling_work_id=cwe_work.work_id,
+                        llm_call_id="fake-cwe-call",
+                        primary="CWE-79",
+                        alternatives=(),
+                        taxonomy_version="4.16",
+                        rationale="The executed path reaches an unsafe sink",
+                        evidence_refs=(observation,),
+                        uncertainty=None,
+                    )
+                )
+            ),
+            provider_invoke=self.provider_invoke,
+        )
+        assert isinstance(label_record, CWELabel)
+        label = label_record
         cwe_work = self.runner.complete(
             cwe_work, cwe_identity, "CWE_LABELING", (label,)
         )
         label_ref = cwe_work.output_refs[0]
         assert isinstance(label_ref, StoredDataRef)
+        persist_fake_invocation(self.runtime, cwe_invocation, label_ref)
 
         technical_work = self.runner.start(
             scope,
@@ -163,13 +198,6 @@ class FakeGateStages(FakeVerificationStages):
             self.runtime.unit_of_work.records.get_exact(binding_ref)
         )
         assert isinstance(technical_identity, StoredDataRef)
-        technical_decision = self._gate_decision(
-            technical_work,
-            scope,
-            owner_ref,
-            RequesterRole.TECHNICAL_GATE,
-            "CALL_TECHNICAL_GATE",
-        )
         prior_reviews = tuple(
             item
             for item in self.runtime.queries.current_records(
@@ -189,34 +217,43 @@ class FakeGateStages(FakeVerificationStages):
                 attempt_id=technical_work.active_attempt_id,
             )
         )
-        technical = TechnicalEvidenceReview.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=technical_meta,
-                    action_decision_ref=technical_decision,
-                    verification_result_ref=verification_ref,
-                    cwe_label_ref=label_ref,
-                    status=technical_status,
-                    evidence_verdict_alignment="The PoC supports TRUE",
-                    code_flow_linkage="The reviewed path is exact",
-                    dynamic_linkage="The exact PoC execution is linked",
-                    cwe_assessment="CWE-79 is consistent",
-                    restriction_assessment="No restrictions apply",
-                    handoff_readiness="READY"
-                    if technical_status == "ACCEPT"
-                    else "NOT_READY",
-                    revision_requests=()
-                    if technical_status == "ACCEPT"
-                    else ("Re-run the dynamic proof in a new generation",),
-                    verification_requests=()
-                    if technical_status == "ACCEPT"
-                    else ("Produce a new generation PoC",),
-                    rationale="All technical evidence is closed"
-                    if technical_status == "ACCEPT"
-                    else "Technical revision requires a fresh generation",
+        technical_record, technical_invocation = self._gate_output(
+            technical_work,
+            scope,
+            owner_ref,
+            RequesterRole.TECHNICAL_GATE,
+            "CALL_TECHNICAL_GATE",
+            lambda technical_decision: TechnicalEvidenceReview.model_validate_json(
+                canonical_bytes(
+                    dict(
+                        meta=technical_meta,
+                        action_decision_ref=technical_decision,
+                        verification_result_ref=verification_ref,
+                        cwe_label_ref=label_ref,
+                        status=technical_status,
+                        evidence_verdict_alignment="The PoC supports TRUE",
+                        code_flow_linkage="The reviewed path is exact",
+                        dynamic_linkage="The exact PoC execution is linked",
+                        cwe_assessment="CWE-79 is consistent",
+                        restriction_assessment="No restrictions apply",
+                        handoff_readiness="READY"
+                        if technical_status == "ACCEPT"
+                        else "NOT_READY",
+                        revision_requests=()
+                        if technical_status == "ACCEPT"
+                        else ("Re-run the dynamic proof in a new generation",),
+                        verification_requests=()
+                        if technical_status == "ACCEPT"
+                        else ("Produce a new generation PoC",),
+                        rationale="All technical evidence is closed"
+                        if technical_status == "ACCEPT"
+                        else "Technical revision requires a fresh generation",
+                    )
                 )
-            )
+            ),
         )
+        assert isinstance(technical_record, TechnicalEvidenceReview)
+        technical = technical_record
         self.evidence.identities[technical_identity] = RequesterRole.TECHNICAL_GATE
         technical_work = self.runner.complete(
             technical_work,
@@ -226,6 +263,7 @@ class FakeGateStages(FakeVerificationStages):
         )
         technical_ref = technical_work.output_refs[0]
         assert isinstance(technical_ref, StoredDataRef)
+        persist_fake_invocation(self.runtime, technical_invocation, technical_ref)
         if technical_status == "REVISE":
             return technical
 
@@ -266,13 +304,6 @@ class FakeGateStages(FakeVerificationStages):
         )
         rule_identity = reference(policy_record)
         assert isinstance(rule_identity, StoredDataRef)
-        rule_decision = self._gate_decision(
-            rule_work,
-            scope,
-            owner_ref,
-            RequesterRole.RULE_SCOPE_GATE,
-            "CALL_RULE_SCOPE_GATE",
-        )
         links = tuple(
             dict(
                 link_id=f"fake-{area.lower()}",
@@ -282,39 +313,56 @@ class FakeGateStages(FakeVerificationStages):
             )
             for area in ("RULE", "SCOPE", "IMPACT", "TESTING_RESTRICTION")
         )
-        review = RuleScopeImpactReview.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=self.runner.metadata(
-                        rule_work.meta,
-                        "rule_scope_impact_review",
-                        attempt_id=rule_work.active_attempt_id,
-                    ),
-                    action_decision_ref=rule_decision,
-                    verification_result_ref=verification_ref,
-                    technical_review_ref=technical_ref,
-                    cwe_label_ref=label_ref,
-                    run_policy_state_ref=state.run_policy_state_ref,
-                    policy_collection_result_ref=policy_state.collection_result_ref,
-                    policy_record_ref=policy_state.policy_record_ref,
-                    review_status="PASS",
-                    rule_compliance="PASS",
-                    scope_compliance="PASS",
-                    testing_restriction_compliance="PASS",
-                    security_impact="SUFFICIENT",
-                    report_permission="ALLOW",
-                    evidence_links=links,
-                    reasons=(),
-                    missing_information=(),
-                )
-            )
+        rule_meta = self.runner.metadata(
+            rule_work.meta,
+            "rule_scope_impact_review",
+            attempt_id=rule_work.active_attempt_id,
         )
+        review_record, rule_invocation = self._gate_output(
+            rule_work,
+            scope,
+            owner_ref,
+            RequesterRole.RULE_SCOPE_GATE,
+            "CALL_RULE_SCOPE_GATE",
+            lambda rule_decision: RuleScopeImpactReview.model_validate_json(
+                canonical_bytes(
+                    dict(
+                        meta=rule_meta,
+                        action_decision_ref=rule_decision,
+                        verification_result_ref=verification_ref,
+                        technical_review_ref=technical_ref,
+                        cwe_label_ref=label_ref,
+                        run_policy_state_ref=state.run_policy_state_ref,
+                        policy_collection_result_ref=policy_state.collection_result_ref,
+                        policy_record_ref=policy_state.policy_record_ref,
+                        review_status=(
+                            "PASS" if admission_decision == "ALLOW" else "FAIL"
+                        ),
+                        rule_compliance="PASS",
+                        scope_compliance="PASS",
+                        testing_restriction_compliance=(
+                            "PASS" if admission_decision == "ALLOW" else "FAIL"
+                        ),
+                        security_impact="SUFFICIENT",
+                        report_permission=(
+                            "ALLOW" if admission_decision == "ALLOW" else "DENY"
+                        ),
+                        evidence_links=links,
+                        reasons=(),
+                        missing_information=(),
+                    )
+                )
+            ),
+        )
+        assert isinstance(review_record, RuleScopeImpactReview)
+        review = review_record
         self.evidence.identities[rule_identity] = RequesterRole.RULE_SCOPE_GATE
         rule_work = self.runner.complete(
             rule_work, rule_identity, "RULE_SCOPE_GATE", (review,)
         )
         review_ref = rule_work.output_refs[0]
         assert isinstance(review_ref, StoredDataRef)
+        persist_fake_invocation(self.runtime, rule_invocation, review_ref)
 
         primitive_work = self.runner.start(
             scope,
@@ -347,9 +395,15 @@ class FakeGateStages(FakeVerificationStages):
                     technical_review_ref=technical_ref,
                     policy_collection_result_ref=policy_state.collection_result_ref,
                     rule_scope_review_ref=review_ref,
-                    testing_restriction_compliance="PASS",
-                    decision="ALLOW",
-                    reason_code="TESTING_RESTRICTION_PASSED",
+                    testing_restriction_compliance=(
+                        "PASS" if admission_decision == "ALLOW" else "FAIL"
+                    ),
+                    decision=admission_decision,
+                    reason_code=(
+                        "TESTING_RESTRICTION_PASSED"
+                        if admission_decision == "ALLOW"
+                        else "TESTING_RESTRICTION_VIOLATION"
+                    ),
                     decided_at=self.clock.now(),
                 )
             )
@@ -381,16 +435,29 @@ class FakeGateStages(FakeVerificationStages):
         )
         primitive_ref = reference(primitive)
         assert isinstance(primitive_ref, StoredDataRef)
-        self.evidence.next_outputs = (admission_ref, primitive_ref)
+        outputs = (
+            (admission, primitive)
+            if admission_decision == "ALLOW" or publish_denied_primitive
+            else (admission,)
+        )
+        self.evidence.next_outputs = tuple(reference(item) for item in outputs)
         try:
             primitive_work = self.runner.complete(
                 primitive_work,
                 primitive_identity,
                 "PRIMITIVE_ADMISSION_RUNTIME",
-                (admission, primitive),
+                outputs,
             )
         finally:
             self.evidence.next_outputs = None
+        if admission_decision == "DENY":
+            return technical
+
+        (primitive_index,) = self.runtime.queries.current_records(
+            str(ANALYSIS_ID), "primitive_index_state"
+        )
+        primitive_index_ref = reference(primitive_index)
+        assert isinstance(primitive_index_ref, StoredDataRef)
 
         chaining_work = self.runner.start(
             scope,
@@ -399,38 +466,19 @@ class FakeGateStages(FakeVerificationStages):
             "ANALYSIS",
             str(ANALYSIS_ID),
             orchestrator_ref,
-            inputs=(primitive_ref,),
+            inputs=(primitive_index_ref, primitive_ref),
             trigger_primitive_ref=primitive_ref,
             generation=generation,
         )
         chaining_identity = review_ref
         self.evidence.identities[chaining_identity] = RequesterRole.CHAINING
-        chaining = ChainingResult.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=self.runner.metadata(
-                        chaining_work.meta,
-                        "chaining_result",
-                        attempt_id=chaining_work.active_attempt_id,
-                    ),
-                    source_result_refs=(),
-                    considered_primitive_refs=(primitive_ref,),
-                    input_primitive_refs=(),
-                    primitive_match_candidates=(),
-                    chained_hypothesis_proposals=(),
-                    excluded_lineage_refs=(),
-                    no_match_reasons=(
-                        dict(
-                            upstream_result_ref=primitive_ref,
-                            downstream_input_ref=primitive_ref,
-                            checked_input_id="fake-input",
-                            reason_code="ENTITY_UNRELATED",
-                            detail="No distinct downstream primitive exists",
-                        ),
-                    ),
-                    errors=(),
-                )
-            )
+        chaining = self.no_match_builder(
+            meta=self.runner.metadata(
+                chaining_work.meta,
+                "chaining_result",
+                attempt_id=chaining_work.active_attempt_id,
+            ),
+            primitive_ref=primitive_ref,
         )
         self.runner.complete(chaining_work, chaining_identity, "CHAINING", (chaining,))
 
@@ -501,40 +549,48 @@ class FakeGateStages(FakeVerificationStages):
             generation=generation,
         )
         report_identity = primitive_ref
-        report_decision = self._gate_decision(
+        report_meta = self.runner.metadata(
+            report_work.meta,
+            "report_draft",
+            attempt_id=report_work.active_attempt_id,
+        )
+        draft_record, report_invocation = self._gate_output(
             report_work,
             scope,
             owner_ref,
             RequesterRole.REPORTER,
             "CREATE_REPORT_DRAFT",
-        )
-        draft = ReportDraft.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=self.runner.metadata(
-                        report_work.meta,
-                        "report_draft",
-                        attempt_id=report_work.active_attempt_id,
-                    ),
-                    action_decision_ref=report_decision,
-                    finding_ref=finding_ref,
-                    verification_result_ref=verification_ref,
-                    technical_review_ref=technical_ref,
-                    rule_scope_impact_review_ref=review_ref,
-                    cwe_label_ref=label_ref,
-                    run_policy_state_ref=state.run_policy_state_ref,
-                    policy_record_ref=policy_state.policy_record_ref,
-                    dynamic_result_ref=verification.dynamic_result_ref,
-                    poc_ref=verification.poc_ref,
-                    content_ref=self._artifact("report_content", record=True),
-                    restrictions=verification.restrictions,
-                    limitations=(),
-                    unresolved_conditions=(),
-                    redaction_status="PASSED",
-                    draft_status="DRAFTED",
+            lambda report_decision: ReportDraft.model_validate_json(
+                canonical_bytes(
+                    dict(
+                        meta=report_meta,
+                        action_decision_ref=report_decision,
+                        finding_ref=finding_ref,
+                        verification_result_ref=verification_ref,
+                        technical_review_ref=technical_ref,
+                        rule_scope_impact_review_ref=review_ref,
+                        cwe_label_ref=label_ref,
+                        run_policy_state_ref=state.run_policy_state_ref,
+                        policy_record_ref=policy_state.policy_record_ref,
+                        dynamic_result_ref=verification.dynamic_result_ref,
+                        poc_ref=verification.poc_ref,
+                        content_ref=self._artifact("report_content", record=True),
+                        restrictions=verification.restrictions,
+                        limitations=(),
+                        unresolved_conditions=(),
+                        redaction_status="PASSED",
+                        draft_status="DRAFTED",
+                    )
                 )
-            )
+            ),
         )
+        assert isinstance(draft_record, ReportDraft)
+        draft = draft_record
         self.evidence.identities[report_identity] = RequesterRole.REPORTER
-        self.runner.complete(report_work, report_identity, "REPORTER", (draft,))
+        report_work = self.runner.complete(
+            report_work, report_identity, "REPORTER", (draft,)
+        )
+        report_ref = report_work.output_refs[0]
+        assert isinstance(report_ref, StoredDataRef)
+        persist_fake_invocation(self.runtime, report_invocation, report_ref)
         return technical

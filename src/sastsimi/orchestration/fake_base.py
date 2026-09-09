@@ -1,9 +1,14 @@
 """Shared deterministic state, metadata and persisted query facade."""
 
-from collections.abc import Callable
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any, Protocol
 
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
+from sastsimi.contracts.chaining import ChainingResult
+from sastsimi.contracts.dynamic import SandboxEnvironment
 from sastsimi.contracts.evaluation import AnalysisRunResult
 from sastsimi.contracts.ids import (
     AnalysisId,
@@ -13,9 +18,12 @@ from sastsimi.contracts.ids import (
     RecordId,
     WorkspaceId,
 )
+from sastsimi.contracts.llm import LLMInvocationRequest, LLMInvocationResult
 from sastsimi.contracts.records import RecordMeta, RunMeta
 from sastsimi.contracts.refs import RecordRef, RunStoredDataRef, StoredDataRef
 from sastsimi.contracts.reporting import ReportDraft
+from sastsimi.contracts.static import ToolRunResult
+from sastsimi.ports.dto import SandboxPrepareRequest, StaticToolRequest
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 
@@ -26,6 +34,36 @@ WORKSPACE_ID = WorkspaceId("fake-workspace")
 COMMIT_ID = CommitId("fake-commit")
 PROGRAM_ID = ProgramId("fake-program")
 
+type ProviderInvoker = Callable[
+    [LLMInvocationRequest, LLMInvocationResult], Awaitable[LLMInvocationResult]
+]
+type StaticInvoker = Callable[
+    [StaticToolRequest, ToolRunResult], Awaitable[ToolRunResult]
+]
+type SandboxPreparer = Callable[
+    [SandboxPrepareRequest, SandboxEnvironment], Awaitable[SandboxEnvironment]
+]
+type PolicyFetcher = Callable[[StoredDataRef], Awaitable[StoredDataRef]]
+
+
+class NoMatchBuilder(Protocol):
+    def __call__(
+        self, *, meta: dict[str, Any], primitive_ref: StoredDataRef
+    ) -> ChainingResult: ...
+
+
+class FakeStageService:
+    """Delegate shared state and sibling-stage calls through one runtime host."""
+
+    def __init__(self, host: FakePipelineBase) -> None:
+        object.__setattr__(self, "_host", host)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._host, name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        setattr(self._host, name, value)
+
 
 class FakePipelineBase:
     def __init__(
@@ -33,19 +71,30 @@ class FakePipelineBase:
         data_dir: Path,
         runtime_builder: Callable[..., RuntimeServices],
         database_upgrader: Callable[[Path], None],
+        provider_invoke: ProviderInvoker,
+        static_invoke: StaticInvoker,
+        sandbox_prepare: SandboxPreparer,
+        policy_fetch: PolicyFetcher,
+        no_match_builder: NoMatchBuilder,
         persisted_result: AnalysisRunResult | None = None,
         persisted_reports: tuple[ReportDraft, ...] = (),
     ) -> None:
         self.data_dir = data_dir
         self.runtime_builder = runtime_builder
         self.database_upgrader = database_upgrader
+        self.provider_invoke = provider_invoke
+        self.static_invoke = static_invoke
+        self.sandbox_prepare = sandbox_prepare
+        self.policy_fetch = policy_fetch
+        self.no_match_builder = no_match_builder
         self.clock = FakeClock()
         self.ids = FakeIds()
         self.evidence = FakeEvidence()
         self.runtime: RuntimeServices | None = None
         self.runner: WorkflowRunner | None = None
         self._verification_work_ref: RecordRef | None = None
-        self._result = persisted_result or self._snapshot_result()
+        self._artifact_refs: dict[str, StoredDataRef] = {}
+        self._result = persisted_result
         self._reports = persisted_reports
 
     def _run_meta(self, kind: str) -> RunMeta:
@@ -91,6 +140,17 @@ class FakePipelineBase:
     def _artifact(
         self, kind: str, *, run: bool = False, record: bool = False
     ) -> RecordRef:
+        if not run and self.runtime is not None:
+            cached = self._artifact_refs.get(kind)
+            if cached is not None:
+                return cached
+            data = f"sastsimi deterministic fake artifact: {kind}\n".encode()
+            staged = self.runtime.unit_of_work.artifacts.stage_bytes(
+                data, "application/octet-stream"
+            )
+            committed = self.runtime.unit_of_work.artifacts.commit(staged)
+            self._artifact_refs[kind] = committed
+            return committed
         payload: dict[str, object] = dict(
             stored_data_id=f"fake-{kind}",
             data_kind=kind,
@@ -103,56 +163,15 @@ class FakePipelineBase:
         payload.update(workspace_id=WORKSPACE_ID, commit_id=COMMIT_ID)
         return StoredDataRef.model_validate_json(canonical_bytes(payload))
 
-    def _snapshot_result(self) -> AnalysisRunResult:
-        metadata = self._run_meta("analysis_run_result")
-        empty_fields = {
-            name: ()
-            for name in AnalysisRunResult.model_fields
-            if name.endswith("_refs")
-        }
-        return AnalysisRunResult.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=metadata,
-                    purpose="PRODUCTION",
-                    repository_url="https://example.invalid/fake",
-                    program_id=PROGRAM_ID,
-                    workspace_id=None,
-                    commit_id=None,
-                    workspace_ref=None,
-                    status="FAILED",
-                    hypothesis_counts={},
-                    failed_hypothesis_count=0,
-                    verdict_counts={},
-                    gate_counts={},
-                    run_policy_state_ref=None,
-                    stop_reasons=(),
-                    errors=(),
-                    gaps=(),
-                    resources=dict(
-                        elapsed_ms=0,
-                        work_count=0,
-                        attempt_count=0,
-                        retry_count=0,
-                        llm_call_count=0,
-                        dynamic_attempt_count=0,
-                        cost_minor_units=0,
-                        currency="USD",
-                        pricing_revision_refs=(),
-                        usage_measurement_refs=(),
-                        usage_complete=True,
-                        unavailable_reasons=(),
-                    ),
-                    started_at=self.clock.now(),
-                    finished_at=self.clock.now(),
-                    elapsed_ms=0,
-                    debug_trace_ref=self._artifact("debug_trace", run=True),
-                    **empty_fields,
-                )
-            )
-        )
+    def _stored_artifact(self, kind: str) -> StoredDataRef:
+        ref = self._artifact(kind)
+        if not isinstance(ref, StoredDataRef):
+            raise ValueError("FAKE_ARTIFACT_SCOPE_MISMATCH")
+        return ref
 
     def results(self) -> AnalysisRunResult:
+        if self._result is None:
+            raise LookupError("ANALYSIS_RESULT_NOT_FOUND")
         return self._result
 
     def reports(self) -> tuple[ReportDraft, ...]:

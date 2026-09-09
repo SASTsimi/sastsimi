@@ -165,10 +165,10 @@ def test_registration_returns_same_work_application_and_questions_on_duplicate(
         **arguments, expected_process_ref=reference(process)
     )
     count = h.ids.index
-    with pytest.raises(ValueError, match="STALE_RESULT"):
-        runtime.verification_registration.register(
-            **arguments, expected_process_ref=reference(process)
-        )
+    lost_response_retry = runtime.verification_registration.register(
+        **arguments, expected_process_ref=reference(process)
+    )
+    assert lost_response_retry == result
     assert h.ids.index == count
     duplicate = runtime.verification_registration.register(
         **arguments, expected_process_ref=result.process_ref

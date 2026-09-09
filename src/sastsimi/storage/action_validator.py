@@ -12,7 +12,14 @@ from sastsimi.contracts.actions import (
 )
 from sastsimi.contracts.budget import BudgetProfileBinding, BudgetReservation
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.refs import RecordRef
+from sastsimi.contracts.llm import (
+    LLMCallSpec,
+    LLMInvocationLog,
+    LLMInvocationRequest,
+    LLMInvocationResult,
+    ProviderProfile,
+)
+from sastsimi.contracts.refs import RecordRef, StoredDataRef
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
@@ -418,3 +425,123 @@ class RuntimeValidator:
             .values(payload=encode(completed))
         )
         return completed
+
+    def record_invocation(
+        self,
+        request: LLMInvocationRequest,
+        result: LLMInvocationResult,
+        log: LLMInvocationLog,
+        output_ref: StoredDataRef,
+    ) -> StoredDataRef:
+        """Persist normalized provenance and bind it to the used external action."""
+        with self.records.database.write() as connection:
+            initial = self.records.resolve(connection, request.action_decision_ref)
+            if not isinstance(initial, ActionDecision):
+                raise ValueError("INVOCATION_ACTION_MISMATCH")
+            payload = connection.execute(
+                select(models.action_decisions.c.payload).where(
+                    models.action_decisions.c.decision_id == str(initial.decision_id)
+                )
+            ).scalar_one_or_none()
+            if payload is None:
+                raise ValueError("INVOCATION_ACTION_NOT_USED")
+            claimed = ActionDecision.model_validate_json(payload)
+            claimed_ref = reference(claimed)
+            action = self.records.resolve(connection, claimed.action_ref)
+            spec = self.records.resolve(connection, request.call_spec_ref)
+            profile = (
+                self.records.resolve(connection, spec.provider_profile_ref)
+                if isinstance(spec, LLMCallSpec)
+                else None
+            )
+            output = self.records.resolve(connection, output_ref)
+            if (
+                not isinstance(action, ActionRequest)
+                or action.action_type
+                not in {
+                    ActionType.CALL_LLM,
+                    ActionType.CALL_TECHNICAL_GATE,
+                    ActionType.CALL_RULE_SCOPE_GATE,
+                    ActionType.CREATE_REPORT_DRAFT,
+                }
+                or action.llm_call_spec_ref != request.call_spec_ref
+                or action.provider_profile_ref != request.provider_profile_ref
+                or not isinstance(spec, LLMCallSpec)
+                or not isinstance(profile, ProviderProfile)
+                or reference(output) != output_ref
+                or request.action_decision_ref != claimed_ref
+                or log.action_decision_ref != claimed_ref
+                or log.call_spec_ref != request.call_spec_ref
+                or result.parsed_output_ref != output_ref
+                or log.parsed_output_ref != output_ref
+            ):
+                raise ValueError("INVOCATION_ACTION_MISMATCH")
+            request_fields = (
+                "llm_call_id",
+                "agent_role",
+                "task_kind",
+                "purpose",
+                "provider_profile_ref",
+                "model",
+                "session_policy",
+                "parent_session_ref",
+                "context_refs",
+                "prompt_registry_entry_ref",
+                "prompt_key",
+                "prompt_template_ref",
+                "prompt_template_version",
+                "prompt_payload_ref",
+                "execution_limits_ref",
+                "retry_policy_ref",
+                "tool_policy_ref",
+                "redaction_policy_ref",
+                "semantic_validator_ref",
+                "output_schema_ref",
+                "output_schema",
+                "token_budget",
+                "timeout_ms",
+            )
+            log_fields = tuple(
+                name
+                for name in request_fields
+                if name not in {"output_schema", "token_budget", "timeout_ms"}
+            )
+            if any(
+                getattr(request, name) != getattr(spec, name) for name in request_fields
+            ) or any(getattr(log, name) != getattr(spec, name) for name in log_fields):
+                raise ValueError("INVOCATION_CONFIGURATION_MISMATCH")
+            if (
+                result.llm_call_id != spec.llm_call_id
+                or result.purpose != spec.purpose
+                or result.model != spec.model
+                or result.provider != profile.provider
+                or log.provider != profile.provider
+                or log.session_ref != result.session_ref
+                or log.status != result.status
+                or log.usage != result.usage
+            ):
+                raise ValueError("INVOCATION_RESULT_MISMATCH")
+            for item in (request, result, log):
+                item_ref = self.records.stage(connection, item)
+                self.records.publish(connection, item_ref)
+            log_ref = reference(log)
+            if not isinstance(log_ref, StoredDataRef):
+                raise ValueError("INVOCATION_SCOPE_MISMATCH")
+            if (
+                connection.execute(
+                    select(models.current_records.c.record_id).where(
+                        models.current_records.c.logical_record_id
+                        == str(log.meta.logical_record_id)
+                    )
+                ).scalar_one_or_none()
+                is None
+            ):
+                connection.execute(
+                    insert(models.current_records).values(
+                        logical_record_id=str(log.meta.logical_record_id),
+                        record_id=str(log.meta.record_id),
+                        state_version=1,
+                    )
+                )
+            self.record_outcome(connection, claimed, (log_ref, output_ref))
+            return log_ref

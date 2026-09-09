@@ -21,6 +21,11 @@ from sastsimi.contracts.dynamic import (
 from sastsimi.contracts.dynamic import SandboxCommandRecord as SandboxCommandRecord
 from sastsimi.contracts.dynamic import SandboxEnvironment as SandboxEnvironment
 from sastsimi.contracts.ids import ProgramId
+from sastsimi.contracts.llm import (
+    LLMInvocationRequest as LLMInvocationRequest,
+)
+from sastsimi.contracts.llm import LLMInvocationResult as LLMInvocationResult
+from sastsimi.contracts.llm import ProviderProfile as ProviderProfile
 from sastsimi.contracts.policy import PolicySourceCheck
 from sastsimi.contracts.records import RecordMetadata
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef
@@ -89,11 +94,7 @@ class BudgetReleaseRequest:
     reservation: BudgetReservation
 
 
-# T09 provider invocation types remain intentionally reference-only.
-type ProviderProfile = BoundaryRecord
 type CapabilityProbeResult = BoundaryRecord
-type LLMInvocationRequest = BoundaryRecord
-type LLMInvocationResult = BoundaryRecord
 # Capability probing belongs to the later static adapter implementation.
 type ToolCapabilityResult = BoundaryRecord
 

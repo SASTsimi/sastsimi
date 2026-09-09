@@ -2,6 +2,7 @@
 
 from sqlalchemy import Connection, select
 
+from sastsimi.contracts.chaining import ChainingResult
 from sastsimi.contracts.closure import validate_committed_output
 from sastsimi.contracts.dynamic import DynamicReproductionResult, PoCBundle
 from sastsimi.contracts.gates import (
@@ -30,6 +31,7 @@ type CommittedDomainOutput = (
     | CWELabel
     | RuleScopeImpactReview
     | TechnicalEvidenceReview
+    | ChainingResult
 )
 
 

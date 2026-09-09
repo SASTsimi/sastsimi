@@ -35,7 +35,7 @@ from .context_policy import check_context_response
 from .current_inputs import check_current_input
 from .dynamic_projection import dynamic_projection
 from .finding_projection import finding_index_projection, validate_finding_output
-from .hypothesis_projections import initial_hypothesis_projection
+from .hypothesis_projections import hypothesis_projection
 from .intermediate_policy import prepublished_output
 from .lease_recovery import retire_undispatched, uncertain
 from .output_closures import read_outputs
@@ -210,7 +210,7 @@ class TransitionService:
         run_policy_projection(
             self.works, connection, work, request.records, publish=False
         )
-        initial_hypothesis_projection(
+        hypothesis_projection(
             self.works, connection, work, request.records, publish=False
         )
         verification_projection(
@@ -291,7 +291,7 @@ class TransitionService:
             run_policy_projection(
                 self.works, connection, previous, request.records, publish=True
             )
-            for projection in initial_hypothesis_projection(
+            for projection in hypothesis_projection(
                 self.works, connection, previous, request.records, publish=True
             ):
                 projection_ref = records.stage(connection, projection)

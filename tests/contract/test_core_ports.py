@@ -10,12 +10,19 @@ from sastsimi.contracts.budget import (
     BudgetRemaining,
     BudgetReservation,
 )
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import OpaqueId
+from sastsimi.contracts.llm import (
+    LLMInvocationRequest,
+    LLMInvocationResult,
+    ProviderProfile,
+)
 from sastsimi.contracts.records import RecordMeta, RecordMetadata, RunMeta
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
     RecordRef,
     StoredDataRef,
+    reference,
     validate_exact_ref,
 )
 from sastsimi.contracts.work import TransitionCommit
@@ -28,6 +35,7 @@ from sastsimi.ports import (
     BudgetReleaseRequest,
     BudgetReservationRequest,
     CancellationResult,
+    CapabilityProbeResult,
     CleanupResult,
     Clock,
     IdGenerator,
@@ -52,6 +60,8 @@ from sastsimi.ports import (
     WorkHandler,
     WorkHandlerResult,
 )
+from tests.contract.domain.canonical_fixtures import make
+from tests.contract.domain.fixtures import ref as fixture_ref
 
 
 class FakeClock:
@@ -120,11 +130,31 @@ class FakeHandler:
 
 
 class FakeLlm:
-    async def probe(self, profile: BoundaryRecord) -> BoundaryRecord:
-        return profile
+    async def probe(self, profile: ProviderProfile) -> CapabilityProbeResult:
+        return BoundaryRecord(ref=reference(profile))
 
-    async def invoke(self, request: BoundaryRecord) -> BoundaryRecord:
-        return request
+    async def invoke(self, request: LLMInvocationRequest) -> LLMInvocationResult:
+        return LLMInvocationResult.model_validate(
+            {
+                "meta": request.meta.model_copy(
+                    update={"record_type": "llm_invocation_result"}
+                ),
+                "llm_call_id": request.llm_call_id,
+                "purpose": request.purpose,
+                "status": "FAILED",
+                "provider": "fake",
+                "model": request.model,
+                "actual_session_mode": "NEW",
+                "session_ref": None,
+                "response_ref": None,
+                "parsed_output_ref": None,
+                "usage": None,
+                "started_at": request.meta.created_at,
+                "finished_at": request.meta.created_at,
+                "elapsed_ms": 0,
+                "safe_error": "fake boundary",
+            }
+        )
 
     async def cancel(self, invocation_id: str) -> CancellationResult:
         return CancellationResult(cancelled=True, reason=None)
@@ -213,14 +243,20 @@ def test_protocol_substitutability(port: type[object], implementation: object) -
 @pytest.mark.asyncio
 async def test_async_boundaries_are_awaitable() -> None:
     from sastsimi.contracts.ids import AnalysisId
-    from sastsimi.contracts.refs import RunStoredDataRef
 
-    ref = RunStoredDataRef.model_validate_json(
-        '{"stored_data_id":"s1","data_kind":"provider_profile","content_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","analysis_id":"a1","record_id":"r1"}'
+    profile_payload = make("ProviderProfile", "provider_profile")
+    profile_payload["validation_evidence_ref"] = fixture_ref(
+        "provider_validation_evidence"
     )
-    value = BoundaryRecord(ref=ref)
-    assert (await llm.probe(value)).ref == ref
-    assert (await llm.invoke(value)).ref == ref
+    profile = ProviderProfile.model_validate_json(canonical_bytes(profile_payload))
+    request = LLMInvocationRequest.model_validate_json(
+        canonical_bytes(make("LLMInvocationRequest", "llm_invocation_request"))
+    )
+    profile_ref = reference(profile)
+    assert isinstance(profile_ref, StoredDataRef)
+    assert (await llm.probe(profile)).ref == profile_ref
+    assert (await llm.invoke(request)).llm_call_id == request.llm_call_id
+    assert (await static.probe(profile_ref)).ref == profile_ref
     assert (await static.cancel("a1")).cancelled
     assert (await llm.cancel("call")).cancelled
     assert clock.now().utcoffset() is not None

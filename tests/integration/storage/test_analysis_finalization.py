@@ -1,29 +1,40 @@
 """Trusted exact terminal analysis projection."""
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from sastsimi.bootstrap import build_runtime
-from sastsimi.contracts.actions import RequesterRole
+from sastsimi.contracts.actions import ActionDecision, ActionRequest, RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.evaluation import AnalysisRunResult
-from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
+from sastsimi.contracts.static import AnalysisError
+from sastsimi.storage.analysis_finalization import AnalysisFinalizationService
+from sastsimi.storage.run_states import get_run
 from tests.contract.domain.canonical_fixtures import make
+from tests.integration.recovery.test_transitions import SimulatedCrash, completion
 from tests.integration.runtime_support import Harness
+from tests.integration.storage.test_work import start_fixture
 
 
 def _result() -> AnalysisRunResult:
-    return AnalysisRunResult.model_validate_json(
-        canonical_bytes(
-            make("AnalysisRunResult")
-            | {
-                "program_id": "program",
-                "started_at": "2026-09-07T00:00:00Z",
-                "finished_at": "2026-09-07T00:00:01Z",
-            }
-        )
-    )
+    value = make("AnalysisRunResult") | {
+        "program_id": "program",
+        "started_at": "2026-09-07T00:00:00Z",
+        "finished_at": "2026-09-07T00:00:01Z",
+        "elapsed_ms": 1000,
+    }
+    value["resources"] = value["resources"] | {
+        "elapsed_ms": 0,
+        "work_count": 0,
+        "attempt_count": 0,
+        "retry_count": 0,
+        "llm_call_count": 0,
+        "dynamic_attempt_count": 0,
+    }
+    return AnalysisRunResult.model_validate_json(canonical_bytes(value))
 
 
 def test_finalization_validates_inventory_and_closes_run_atomically(
@@ -31,16 +42,8 @@ def test_finalization_validates_inventory_and_closes_run_atomically(
 ) -> None:
     h = Harness(tmp_path)
     profile = h.execution()
-    identity_ref = StoredDataRef.model_validate(
-        {
-            "stored_data_id": "analysis-finalizer",
-            "data_kind": "analysis_finalizer_identity",
-            "content_hash": "a" * 64,
-            "record_id": "analysis-finalizer",
-            "workspace_id": "w1",
-            "commit_id": "c1",
-        }
-    )
+    identity_ref = reference(profile)
+    assert isinstance(identity_ref, (RunStoredDataRef, StoredDataRef))
     h.evidence.identities[identity_ref] = RequesterRole.ORCHESTRATION
     runtime = build_runtime(
         tmp_path,
@@ -60,7 +63,108 @@ def test_finalization_validates_inventory_and_closes_run_atomically(
     assert state.status == "FAILED"
     assert state.analysis_result_ref == result_ref
     assert state in runtime.queries.published_records("a1")
+    published = runtime.queries.published_records("a1")
+    (action,) = tuple(
+        item
+        for item in published
+        if isinstance(item, ActionRequest) and item.result_kind == "analysis_run_result"
+    )
+    decisions = tuple(
+        item
+        for item in published
+        if isinstance(item, ActionDecision) and item.action_ref == reference(action)
+    )
+    final_decision = max(decisions, key=lambda item: item.meta.revision_number)
+    assert final_decision.use_status == "USED"
+    assert final_decision.outcome_refs == (result_ref,)
     assert runtime.finalization.finalize(result) == result_ref
+
+
+def test_finalization_rejects_fabricated_resource_summary_atomically(
+    tmp_path: Path,
+) -> None:
+    h = Harness(tmp_path)
+    profile = h.execution()
+    identity_ref = reference(profile)
+    assert isinstance(identity_ref, (RunStoredDataRef, StoredDataRef))
+    h.evidence.identities[identity_ref] = RequesterRole.ORCHESTRATION
+    runtime = build_runtime(
+        tmp_path,
+        None,
+        None,
+        h.clock,
+        h.ids,
+        evidence=h.evidence,
+        analysis_finalization_identity_ref=identity_ref,
+    )
+    h.pin_execution(runtime.budget_registry, profile)
+    result = _result()
+    invalid = result.model_copy(
+        update={"resources": result.resources.model_copy(update={"work_count": 1})}
+    )
+
+    with pytest.raises(ValueError, match="ANALYSIS_RESOURCE_SUMMARY_MISMATCH"):
+        runtime.finalization.finalize(invalid)
+
+    state = runtime.budget_registry.current_state("a1")
+    assert state.status == "RUNNING"
+    assert not any(
+        isinstance(item, AnalysisRunResult)
+        for item in runtime.queries.published_records("a1")
+    )
+
+
+def test_finalization_rejects_count_usage_and_error_fabrication(
+    tmp_path: Path,
+) -> None:
+    h = Harness(tmp_path)
+    profile = h.execution()
+    identity_ref = reference(profile)
+    assert isinstance(identity_ref, (RunStoredDataRef, StoredDataRef))
+    h.evidence.identities[identity_ref] = RequesterRole.ORCHESTRATION
+    runtime = build_runtime(
+        tmp_path,
+        None,
+        None,
+        h.clock,
+        h.ids,
+        evidence=h.evidence,
+        analysis_finalization_identity_ref=identity_ref,
+    )
+    h.pin_execution(runtime.budget_registry, profile)
+    result = _result()
+    fabricated_error = AnalysisError.model_validate_json(
+        canonical_bytes(make("AnalysisError"))
+    )
+    invalid_candidates = (
+        (
+            result.model_copy(update={"hypothesis_counts": {"TOTAL": 1}}),
+            "HYPOTHESIS_COUNTS_MISMATCH",
+        ),
+        (
+            result.model_copy(
+                update={
+                    "resources": result.resources.model_copy(
+                        update={"usage_complete": True, "unavailable_reasons": ()}
+                    )
+                }
+            ),
+            "ANALYSIS_RESOURCE_SUMMARY_MISMATCH",
+        ),
+        (
+            result.model_copy(update={"errors": (fabricated_error,)}),
+            "ANALYSIS_ERROR_CLOSURE_MISMATCH",
+        ),
+    )
+
+    for candidate, expected_error in invalid_candidates:
+        with pytest.raises(ValueError, match=expected_error):
+            runtime.finalization.finalize(candidate)
+        assert runtime.budget_registry.current_state("a1").status == "RUNNING"
+        assert not any(
+            isinstance(item, AnalysisRunResult)
+            for item in runtime.queries.published_records("a1")
+        )
 
 
 def test_finalization_denies_untrusted_callers(tmp_path: Path) -> None:
@@ -72,3 +176,91 @@ def test_finalization_denies_untrusted_callers(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="trusted finalization identity"):
         runtime.finalization.finalize(result)
+
+
+def test_finalization_rejects_a_nonterminal_work(tmp_path: Path) -> None:
+    h, _works, _attempts, _transition, _attempt, _reservation = start_fixture(tmp_path)
+    with h.database.engine.connect() as connection:
+        identity_ref = get_run(connection, "a1").execution_budget_profile_ref
+    h.evidence.identities[identity_ref] = RequesterRole.ORCHESTRATION
+    runtime = build_runtime(
+        tmp_path,
+        None,
+        None,
+        h.clock,
+        h.ids,
+        evidence=h.evidence,
+        analysis_finalization_identity_ref=identity_ref,
+    )
+
+    with pytest.raises(ValueError, match="ANALYSIS_WORK_NOT_QUIESCENT"):
+        runtime.finalization.finalize(_result())
+
+    assert runtime.budget_registry.current_state("a1").status == "RUNNING"
+
+
+def test_finalization_crash_rolls_back_result_action_and_run_pointer(
+    tmp_path: Path,
+) -> None:
+    h = Harness(tmp_path)
+    profile = h.execution()
+    identity_ref = reference(profile)
+    assert isinstance(identity_ref, (RunStoredDataRef, StoredDataRef))
+    h.evidence.identities[identity_ref] = RequesterRole.ORCHESTRATION
+    runtime = build_runtime(
+        tmp_path,
+        None,
+        None,
+        h.clock,
+        h.ids,
+        evidence=h.evidence,
+        analysis_finalization_identity_ref=identity_ref,
+    )
+    h.pin_execution(runtime.budget_registry, profile)
+    result = _result()
+
+    def crash(_name: str) -> None:
+        raise RuntimeError("simulated finalization crash")
+
+    finalization = cast(AnalysisFinalizationService, runtime.finalization.store)
+    finalization.checkpoint = crash
+    with pytest.raises(RuntimeError, match="simulated finalization crash"):
+        runtime.finalization.finalize(result)
+
+    assert runtime.budget_registry.current_state("a1").status == "RUNNING"
+    assert not any(
+        isinstance(item, (AnalysisRunResult, ActionDecision))
+        for item in runtime.queries.published_records("a1")
+    )
+    finalization.checkpoint = lambda _name: None
+    assert runtime.finalization.finalize(result) == reference(result)
+
+
+def test_finalization_rejects_an_unresolved_transition_journal(
+    tmp_path: Path,
+) -> None:
+    h, transitions, request = completion(tmp_path)
+
+    def crash(name: str) -> None:
+        if name == "PREPARED":
+            raise SimulatedCrash(name)
+
+    transitions.checkpoint = crash
+    with pytest.raises(SimulatedCrash):
+        transitions.commit(request)
+    with h.database.engine.connect() as connection:
+        identity_ref = get_run(connection, "a1").execution_budget_profile_ref
+    h.evidence.identities[identity_ref] = RequesterRole.ORCHESTRATION
+    finalization = AnalysisFinalizationService(
+        h.records,
+        h.clock,
+        h.ids,
+        identity_ref,
+        transitions.works.validator,
+    )
+
+    with pytest.raises(ValueError, match="ANALYSIS_TRANSITION_UNRESOLVED"):
+        finalization.finalize(_result())
+
+    with h.database.engine.connect() as connection:
+        assert get_run(connection, "a1").status == "RUNNING"

@@ -2,9 +2,8 @@
 
 from pathlib import Path
 
-from sastsimi.bootstrap import build_fake_pipeline
+from sastsimi.bootstrap import load_fake_progress
 
 
 def run(data_dir: Path) -> dict[str, object]:
-    result = build_fake_pipeline(data_dir).results()
-    return result.model_dump(mode="json")
+    return load_fake_progress(data_dir)

@@ -274,6 +274,9 @@ class WorkflowRunner:
         parent: RecordRef | None = None,
         trigger_primitive_ref: RecordRef | None = None,
     ) -> WorkExecutionState:
+        metadata_analysis_id = getattr(metadata, "analysis_id", None)
+        if subject_type == "ANALYSIS" and subject_id != str(metadata_analysis_id):
+            raise ValueError("ANALYSIS_SCOPE_MISMATCH")
         work_id = self.ids.new(WorkId)
         candidate = WorkExecutionState.model_validate_json(
             canonical_bytes(
@@ -306,6 +309,19 @@ class WorkflowRunner:
             )
         )
         records = self.runtime.unit_of_work.records
+        for input_ref in inputs:
+            try:
+                input_record = records.get_exact(input_ref)
+            except (LookupError, ValueError):
+                continue
+            input_analysis_id = getattr(
+                getattr(input_record, "meta", None), "analysis_id", None
+            )
+            if (
+                input_analysis_id is not None
+                and input_analysis_id != candidate.meta.analysis_id
+            ):
+                raise ValueError("ANALYSIS_SCOPE_MISMATCH")
         request = self.action(candidate, identity, role, "REGISTER_WORK")
         reservation = self.reserve(candidate, scope, request, self.units(work_count=1))
         registered = self.runtime.work.register(

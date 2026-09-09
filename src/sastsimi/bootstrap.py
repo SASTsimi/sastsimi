@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, TextIO
+from typing import TYPE_CHECKING, TextIO, cast
 
 from sastsimi.config.loader import ConfigError as ConfigError
 from sastsimi.config.loader import load_config
@@ -66,13 +66,55 @@ def database_command(data_dir: Path, command: str, revision: str | None) -> str:
 
 def build_fake_pipeline(data_dir: Path) -> FakePipeline:
     """Compose the deterministic local fake vertical slice."""
+    from sastsimi.chaining import no_match_result
+    from sastsimi.contracts.dynamic import SandboxEnvironment
+    from sastsimi.contracts.llm import LLMInvocationRequest, LLMInvocationResult
+    from sastsimi.contracts.refs import reference
+    from sastsimi.contracts.static import ToolRunResult
     from sastsimi.orchestration.fake_pipeline import FakePipeline
+    from sastsimi.policy import FakePolicySource
+    from sastsimi.ports.dto import SandboxPrepareRequest, StaticToolRequest
+    from sastsimi.providers.fake import FakeProviderAdapter
+    from sastsimi.reproduction import require_prepared_environment
+    from sastsimi.sandbox.fake import FakeSandboxAdapter
+    from sastsimi.static_analysis.fake import FakeStaticToolAdapter
+
+    async def provider_invoke(
+        request: LLMInvocationRequest, result: LLMInvocationResult
+    ) -> LLMInvocationResult:
+        return await FakeProviderAdapter({reference(request): result}).invoke(request)
+
+    async def static_invoke(
+        request: StaticToolRequest, result: ToolRunResult
+    ) -> ToolRunResult:
+        return await FakeStaticToolAdapter({reference(request.action): result}).run(
+            request
+        )
+
+    async def sandbox_prepare(
+        request: SandboxPrepareRequest, environment: SandboxEnvironment
+    ) -> SandboxEnvironment:
+        adapter = FakeSandboxAdapter(
+            environments={reference(request.request): environment},
+            commands={},
+            cleanups={},
+        )
+        returned = await adapter.prepare(request)
+        return require_prepared_environment(request, environment, returned)
+
+    async def policy_fetch(source_ref: StoredDataRef) -> StoredDataRef:
+        return await FakePolicySource(source_ref).fetch()
 
     result, reports = _load_fake_outputs(data_dir)
     return FakePipeline(
         data_dir,
         build_runtime,
         upgrade_database,
+        provider_invoke,
+        static_invoke,
+        sandbox_prepare,
+        policy_fetch,
+        no_match_result,
         persisted_result=result,
         persisted_reports=reports,
     )
@@ -81,8 +123,8 @@ def build_fake_pipeline(data_dir: Path) -> FakePipeline:
 def _load_fake_outputs(
     data_dir: Path,
 ) -> tuple[AnalysisRunResult | None, tuple[ReportDraft, ...]]:
-    from sastsimi.contracts.evaluation import AnalysisRunResult
-    from sastsimi.contracts.reporting import ReportDraft
+    from sastsimi.evaluation import persisted_analysis_result
+    from sastsimi.reporting import persisted_report_drafts
     from sastsimi.storage.database import Database
     from sastsimi.storage.queries import RuntimeQueries
     from sastsimi.storage.repositories import SQLiteRecordStore
@@ -92,18 +134,65 @@ def _load_fake_outputs(
         return None, ()
     database = Database(path)
     database.check_ready()
-    queries = RuntimeQueries(SQLiteRecordStore(database))
-    results = tuple(
+    records = SQLiteRecordStore(database)
+    queries = RuntimeQueries(records)
+    reports = persisted_report_drafts(queries, "fake-analysis")
+    return persisted_analysis_result(queries, "fake-analysis"), reports
+
+
+def load_fake_progress(data_dir: Path) -> dict[str, object]:
+    """Read only durable fake-run progress; never synthesize a terminal result."""
+    import json
+    from collections import Counter
+
+    from sastsimi.contracts.analysis import AnalysisRunState
+    from sastsimi.contracts.canonical_json import canonical_bytes
+    from sastsimi.contracts.evaluation import AnalysisRunResult
+    from sastsimi.contracts.work import WorkExecutionState
+    from sastsimi.storage.database import Database
+    from sastsimi.storage.queries import RuntimeQueries
+    from sastsimi.storage.repositories import SQLiteRecordStore
+
+    path = RuntimePaths(data_dir).database
+    not_found: dict[str, object] = {
+        "analysis_id": "fake-analysis",
+        "status": "NOT_FOUND",
+        "work_counts": {},
+    }
+    if not path.exists():
+        return not_found
+    database = Database(path)
+    database.check_ready()
+    records = SQLiteRecordStore(database)
+    queries = RuntimeQueries(records)
+    runs = tuple(
         item
-        for item in queries.published_records("fake-analysis")
-        if isinstance(item, AnalysisRunResult)
+        for item in queries.current_records("fake-analysis", "analysis_run_state")
+        if isinstance(item, AnalysisRunState)
     )
-    reports = tuple(
+    if not runs:
+        return not_found
+    state = runs[-1]
+    if state.analysis_result_ref is not None:
+        result = records.get_exact(state.analysis_result_ref)
+        if not isinstance(result, AnalysisRunResult):
+            raise ValueError("ANALYSIS_RESULT_KIND_MISMATCH")
+        payload = json.loads(canonical_bytes(result))
+        if not isinstance(payload, dict):
+            raise TypeError("ANALYSIS_RESULT_OBJECT_REQUIRED")
+        return cast(dict[str, object], payload)
+    works = tuple(
         item
-        for item in queries.current_records("fake-analysis", "report_draft")
-        if isinstance(item, ReportDraft)
+        for item in queries.current_records("fake-analysis", "work_execution_state")
+        if isinstance(item, WorkExecutionState)
     )
-    return (results[-1] if results else None), reports
+    counts = Counter(str(work.status) for work in works)
+    status = "BLOCKED" if counts.get("BLOCKED", 0) else "RUNNING"
+    return {
+        "analysis_id": str(state.meta.analysis_id),
+        "status": status,
+        "work_counts": dict(sorted(counts.items())),
+    }
 
 
 def build_runtime(
@@ -116,7 +205,7 @@ def build_runtime(
     evidence: TrustedEvidencePort | None = None,
     context_service_identity_ref: BudgetScopeRef | None = None,
     finding_service_identity_ref: StoredDataRef | None = None,
-    analysis_finalization_identity_ref: StoredDataRef | None = None,
+    analysis_finalization_identity_ref: BudgetScopeRef | None = None,
 ) -> RuntimeServices:
     from sastsimi.runtime.action_validator import RuntimeValidator
     from sastsimi.runtime.analysis_finalization import AnalysisFinalizationService
@@ -198,7 +287,11 @@ def build_runtime(
         ConfigurationRegistry(SQLiteConfigurationRegistry(records)),
         AnalysisFinalizationService(
             SQLiteAnalysisFinalization(
-                records, clock, ids, analysis_finalization_identity_ref
+                records,
+                clock,
+                ids,
+                analysis_finalization_identity_ref,
+                authorization,
             )
         ),
     )

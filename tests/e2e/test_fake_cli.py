@@ -8,6 +8,18 @@ import pytest
 from sastsimi.interfaces.cli.main import main
 
 
+def test_results_reports_persisted_not_found_for_missing_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["--data-dir", str(tmp_path), "results", "--format", "json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["data"] == {
+        "analysis_id": "fake-analysis",
+        "status": "NOT_FOUND",
+        "work_counts": {},
+    }
+
+
 def test_fake_cli_analyze_results_and_reports(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

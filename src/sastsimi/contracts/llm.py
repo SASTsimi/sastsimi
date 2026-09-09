@@ -6,7 +6,9 @@ from pydantic import AwareDatetime, model_validator
 
 from ._domain import DomainRecord, unique
 from .base import ContractModel, NonEmptyStr, NonNegativeInt, PositiveInt
+from .evaluation import UsageMeasurement
 from .refs import StoredDataRef, require_record_ref
+from .static import CodeLocation
 
 type Capability = Literal["SUPPORTED", "UNSUPPORTED", "UNVERIFIED"]
 type LLMRole = Literal[
@@ -342,4 +344,121 @@ class LLMCallSpec(LLMRecord):
             self.session_policy != "NEW" or self.parent_session_ref is not None
         ):
             raise ValueError("EVIDENCE_NEW_SESSION_REQUIRED")
+        return self
+
+
+class LLMInvocationRequest(LLMRecord):
+    KIND = "llm_invocation_request"
+    llm_call_id: NonEmptyStr
+    action_decision_ref: StoredDataRef
+    call_spec_ref: StoredDataRef
+    agent_role: LLMRole
+    task_kind: NonEmptyStr
+    purpose: Purpose
+    provider_profile_ref: StoredDataRef
+    model: NonEmptyStr
+    session_policy: SessionPolicy
+    parent_session_ref: NonEmptyStr | None
+    context_refs: tuple[StoredDataRef, ...]
+    prompt_registry_entry_ref: StoredDataRef
+    prompt_key: NonEmptyStr
+    prompt_template_ref: StoredDataRef
+    prompt_template_version: NonEmptyStr
+    prompt_payload_ref: StoredDataRef
+    execution_limits_ref: StoredDataRef
+    retry_policy_ref: StoredDataRef
+    tool_policy_ref: StoredDataRef
+    redaction_policy_ref: StoredDataRef
+    semantic_validator_ref: StoredDataRef
+    output_schema_ref: StoredDataRef
+    output_schema: NonEmptyStr
+    token_budget: NonNegativeInt | None
+    timeout_ms: PositiveInt
+
+
+class LLMInvocationResult(LLMRecord):
+    KIND = "llm_invocation_result"
+    llm_call_id: NonEmptyStr
+    purpose: Purpose
+    status: InvocationStatus
+    provider: NonEmptyStr
+    model: NonEmptyStr
+    actual_session_mode: Literal["NEW", "RESUMED"]
+    session_ref: NonEmptyStr | None
+    response_ref: StoredDataRef | None
+    parsed_output_ref: StoredDataRef | None
+    usage: UsageMeasurement | None
+    started_at: AwareDatetime
+    finished_at: AwareDatetime
+    elapsed_ms: NonNegativeInt
+    safe_error: NonEmptyStr | None
+
+    @model_validator(mode="after")
+    def result_shape(self) -> Self:
+        if self.finished_at < self.started_at or (
+            self.status == "SUCCEEDED"
+            and (self.parsed_output_ref is None or self.safe_error is not None)
+        ):
+            raise ValueError("INVOCATION_RESULT_MISMATCH")
+        return self
+
+
+class LLMInvocationLog(LLMRecord):
+    KIND = "llm_invocation_log"
+    llm_call_id: NonEmptyStr
+    action_decision_ref: StoredDataRef
+    call_spec_ref: StoredDataRef
+    agent_role: LLMRole
+    task_kind: NonEmptyStr
+    purpose: Purpose
+    provider_profile_ref: StoredDataRef
+    provider: NonEmptyStr
+    model: NonEmptyStr
+    session_policy: SessionPolicy
+    session_ref: NonEmptyStr | None
+    parent_session_ref: NonEmptyStr | None
+    prompt_registry_entry_ref: StoredDataRef
+    prompt_key: NonEmptyStr
+    prompt_template_ref: StoredDataRef
+    prompt_template_version: NonEmptyStr
+    prompt_payload_ref: StoredDataRef
+    execution_limits_ref: StoredDataRef
+    retry_policy_ref: StoredDataRef
+    tool_policy_ref: StoredDataRef
+    redaction_policy_ref: StoredDataRef
+    semantic_validator_ref: StoredDataRef
+    output_schema_ref: StoredDataRef
+    context_refs: tuple[StoredDataRef, ...]
+    retrieved_code_locations: tuple[CodeLocation, ...]
+    exposed_request_ref: StoredDataRef
+    exposed_response_ref: StoredDataRef | None
+    parsed_output_ref: StoredDataRef | None
+    tool_calls: tuple[StoredDataRef, ...]
+    usage: UsageMeasurement | None
+    started_at: AwareDatetime
+    finished_at: AwareDatetime
+    elapsed_ms: NonNegativeInt
+    retry_count: NonNegativeInt
+    status: InvocationStatus
+    safe_error: NonEmptyStr | None
+    validation_errors: tuple[NonEmptyStr, ...]
+    repair_attempts: NonNegativeInt
+    retry_of_llm_call_id: NonEmptyStr | None
+    failover_from_llm_call_id: NonEmptyStr | None
+    redaction_result: Literal["APPLIED", "NOT_REQUIRED", "FAILED"]
+
+    @model_validator(mode="after")
+    def log_shape(self) -> Self:
+        if (
+            self.finished_at < self.started_at
+            or (
+                self.retry_of_llm_call_id is not None
+                and self.failover_from_llm_call_id is not None
+            )
+            or (
+                self.status == "SUCCEEDED"
+                and (self.parsed_output_ref is None or self.safe_error is not None)
+            )
+        ):
+            raise ValueError("INVOCATION_LOG_MISMATCH")
         return self
