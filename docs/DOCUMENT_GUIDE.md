@@ -19,6 +19,8 @@
 | [Issue 화면 설정](../.github/ISSUE_TEMPLATE/config.yml) | GitHub Issue 작성 화면의 선택 항목을 설정합니다. | 저장소 관리 담당 | 보조 파일 |
 | [PR 작성 양식](../.github/PULL_REQUEST_TEMPLATE.md) | PR에 목적·영향·검증 내용을 빠뜨리지 않도록 기본 양식을 제공합니다. | PR 작성자·검토자 | 보조 파일 |
 | [`scripts/validate-architecture-docs.ps1`](../scripts/validate-architecture-docs.ps1) | Markdown 링크·Mermaid 사본, R4 상태·복구·권한 계약과 운영 Pro/Con 결과 연결 누락을 한 번에 검사합니다. | 문서 작성자·검토자 | 검증 도구 |
+| [`scripts/audit-doc-inventory.ps1`](../scripts/audit-doc-inventory.ps1) | Git-tracked Markdown별 inbound link, validator·최종 승인·provenance·ADR 참조를 보여 주고, 현재 validator의 전역 Markdown scan과 literal 참조를 구분해 표시합니다. 어느 validator 의존도든 삭제 allowlist를 거절합니다. `-CheckLinks`로 로컬 Markdown 링크 누락도 검사합니다. | 문서 작성자·검토자 | 검증 도구 |
+| [문서 CI](../.github/workflows/docs.yml) | Windows와 Ubuntu에서 Architecture validator, 문서 인벤토리·링크 검사와 diff 검사를 실행합니다. | PR 작성자·검토자 | 보조 파일 |
 
 ## 문서 안내와 공통 용어
 
@@ -33,7 +35,7 @@
 | 파일 | 쉽게 말하면 | 주로 읽는 사람 | 구분 |
 |---|---|---|---|
 | [`docs/governance/OWNERSHIP.md`](./governance/OWNERSHIP.md) | 역할별 담당자, 담당 문서, 검토자와 권한 경계를 정리합니다. | PM·역할 담당자 | 기준 문서 |
-| [`docs/governance/OPEN_QUESTIONS.md`](./governance/OPEN_QUESTIONS.md) | 아직 결정하지 못한 사항과 결정하지 않았을 때의 영향을 모읍니다. | PM·관련 역할 담당자 | 기준 문서 |
+| [`docs/governance/OPEN_QUESTIONS.md`](./governance/OPEN_QUESTIONS.md) | 승인된 설계 안에서 구현·운영 전에 채울 실제 설정과 시험 증거를 모읍니다. | PM·관련 역할 담당자 | 기준 문서 |
 | [`docs/governance/REVIEW_CHECKLIST.md`](./governance/REVIEW_CHECKLIST.md) | 파트 검토와 최종 검토에서 빠뜨리면 안 되는 항목을 확인합니다. | 작성자·검토자 | 기준 문서 |
 
 ## 검토 업무와 기록
@@ -44,19 +46,24 @@
 | [`docs/review/ISSUE_CATALOG.md`](./review/ISSUE_CATALOG.md) | 역할별 상위 Issue에서 무엇을 검토하고 어떤 하위 Issue를 만들지 자세히 설명합니다. | 역할 담당자 | 기준 문서 |
 | [`docs/review/R4-04_CROSS_REVIEW.md`](./review/R4-04_CROSS_REVIEW.md) | R4-04에서 역할별로 무엇을 확인하고 어떤 GitHub 기록을 승인으로 인정하는지 설명합니다. | R1~R8 담당자·최종 검토 담당자 | 검토 기록 |
 | [`docs/review/FINDINGS.md`](./review/FINDINGS.md) | 현재 설계에서 발견된 큰 문제와 해결 조건을 정리합니다. | PM·문제 담당자 | 기준 문서 |
+| [`docs/review/FINAL_ARCHITECTURE_V5_APPROVAL.md`](./review/FINAL_ARCHITECTURE_V5_APPROVAL.md) | 검토 시작 기준 main, Final PR의 정확한 head·merge commit, 종단 시나리오와 구현 전 후속 조건을 기록합니다. | R1~R8 담당자·구현 담당자 | 최종 승인 기록 |
 | [`docs/review/PROVENANCE.md`](./review/PROVENANCE.md) | Architecture v5 파일을 어디에서 가져왔는지와 원본 해시를 기록합니다. | PM·최종 검토 담당자 | 기준 기록 |
 | [`docs/review/decisions/README.md`](./review/decisions/README.md) | 팀이 확정한 중요한 설계 결정과 근거를 기록하는 방법을 설명합니다. | 결정 담당자·검토자 | 기준 문서 |
 | [`ADR-001-verification-owned-chaining-admission.md`](./review/decisions/ADR-001-verification-owned-chaining-admission.md) | Verification 중심 제어권을 정한 과거 결정입니다. Primitive와 체이닝 부분은 ADR-005가 대체했습니다. | R1·R4·R6·Gate 담당 | 대체된 이력 |
-| [`ADR-002-sandbox-policy-enforcement.md`](./review/decisions/ADR-002-sandbox-policy-enforcement.md) | Sandbox 정책 판정·실행·결과 조립의 권한 분리 제안을 설명합니다. | R4·R6·R7 담당 | 검토 중 결정 |
-| [`ADR-003-r6-r7-environment-requirements-handoff.md`](./review/decisions/ADR-003-r6-r7-environment-requirements-handoff.md) | R6가 환경 요구사항과 계획을 만들던 과거 결정을 보존합니다. ADR-004가 대체했습니다. | R4·R6·R7 담당 | 대체된 이력 |
-| [`ADR-004-r6-request-r7-poc-production.md`](./review/decisions/ADR-004-r6-request-r7-poc-production.md) | R6는 재현을 요청하고 R7은 환경·계획·PoC를 만들며 모든 TRUE에 validated PoC가 필요하다는 현재 결정을 설명합니다. | R4·R6·R7·Gate 담당 | 확정 결정 |
+| [`ADR-002-sandbox-policy-enforcement.md`](./review/decisions/ADR-002-sandbox-policy-enforcement.md) | 과거 Sandbox 정책 판정·실행·결과 조립 분리안을 보존합니다. 현재 구조는 ADR-007이 대체했습니다. | R4·R6·R7 담당 | 대체된 이력 |
+| [`ADR-003-r6-r7-environment-requirements-handoff.md`](./review/decisions/ADR-003-r6-r7-environment-requirements-handoff.md) | R6가 환경 요구사항과 계획을 만들던 과거 결정을 보존합니다. ADR-004를 거쳐 ADR-007이 대체했습니다. | R4·R6·R7 담당 | 대체된 이력 |
+| [`ADR-004-r6-request-r7-poc-production.md`](./review/decisions/ADR-004-r6-request-r7-poc-production.md) | R6 요청·R7 mode 기반 재현의 과거 결정을 보존합니다. validated PoC 의무는 유지되지만 현재 자율 재현 구조는 ADR-007을 따릅니다. | R4·R6·R7·Gate 담당 | 대체된 이력 |
 | [`ADR-005-unified-primitive-chaining.md`](./review/decisions/ADR-005-unified-primitive-chaining.md) | HOLD와 TRUE를 하나의 Primitive로 표현하고 결과→입력 matching, Technical admission, 계보 기반 순환 방지를 정한 현재 결정을 설명합니다. | R1·R4·R6·R8·Gate 담당 | 확정 결정 |
 | [`ADR-006-static-rule-execution-record.md`](./review/decisions/ADR-006-static-rule-execution-record.md) | SAST 규칙의 실행 0건·미실행·확인 불가를 구분하고 ToolRunResult와 연결하는 현재 결정을 설명합니다. | R2·R4·R8 담당 | 확정 결정 |
-| [`ADR-007-r7-autonomous-reproduction-session.md`](./review/decisions/ADR-007-r7-autonomous-reproduction-session.md) | R7 Agent의 Sandbox 내부 자율 재현과 Session Manager의 로그·결과 확정 책임을 설명합니다. | R4·R6·R7·R8 담당 | 확정 결정 |
+| [`ADR-007-r7-autonomous-reproduction-session.md`](./review/decisions/ADR-007-r7-autonomous-reproduction-session.md) | Dynamic Reproduction Agent의 Sandbox 내부 자율 재현과 Session Manager의 로그·결과 확정 책임을 설명합니다. | R4·R6·R7·R8 담당 | 확정 결정 |
 | [`ADR-008-hypothesis-restriction-duplicate-contract.md`](./review/decisions/ADR-008-hypothesis-restriction-duplicate-contract.md) | 가설 제한 조건의 exact 근거와 LLM 중복 판정·실패 처리 lifecycle을 설명합니다. | R1·R2·R3·R4·R6·R8 담당 | 확정 결정 |
 | [`ADR-009-r5-01-cwe-labeling-provenance.md`](./review/decisions/ADR-009-r5-01-cwe-labeling-provenance.md) | CWE 라벨을 새 Verification마다 다시 평가하고 exact revision에 연결하는 현재 결정을 설명합니다. | R4·R5·R6 담당 | 확정 결정 |
 | [`ADR-010-static-fact-kind-partition.md`](./review/decisions/ADR-010-static-fact-kind-partition.md) | StaticFactBundle의 사실 종류와 sanitizer·validator 후보를 분리해 전달하는 현재 결정을 설명합니다. | R2·R4·R6·R8 담당 | 확정 결정 |
-| [`ADR-011-testing-restriction-primitive-admission.md`](./review/decisions/ADR-011-testing-restriction-primitive-admission.md) | 금지된 테스트 위반만 TRUE Primitive 체이닝 자격을 막도록 전용 판정과 admission 결정을 분리한 현재 결정을 설명합니다. | R1·R4·R5 담당 | 확정 결정 |
+| [`ADR-011-testing-restriction-primitive-admission.md`](./review/decisions/ADR-011-testing-restriction-primitive-admission.md) | 금지된 테스트 위반만 TRUE Primitive 체이닝 자격을 막도록 전용 판정과 admission 결정을 분리한 결정입니다. 회수 절차는 ADR-014가 대체했고 전용 판정·매핑은 유지됩니다. | R1·R4·R5 담당 | 대체된 이력 |
+| [`ADR-013-run-policy-preparation-and-reuse.md`](./review/decisions/ADR-013-run-policy-preparation-and-reuse.md) | 정책을 실행 초기에 한 번 준비해 가설들이 공유하고, run 안에서는 고정하며 다음 run 시작 때 exact cache를 재사용할지 판단하는 확정 결정을 설명합니다. | R4·R5·R7·R8 담당 | 확정 결정 |
+| [`ADR-012-primitive-match-duplicate-key.md`](./review/decisions/ADR-012-primitive-match-duplicate-key.md) | Primitive match의 중복 판정 키와 순회 단위를 정한 확정 결정을 설명합니다. | R1·R4 담당 | 확정 결정 |
+| [`ADR-014-primitive-admission-single-decision.md`](./review/decisions/ADR-014-primitive-admission-single-decision.md) | Primitive admission을 등록 시점의 1회 판정으로 확정하고 회수 절차를 두지 않는 현재 결정을 설명합니다. ADR-011의 회수 부분을 대체합니다. | R1·R4·R5·R6·R8 담당 | 확정 결정 |
+| [`ADR-015-r3-implementation-baseline.md`](./review/decisions/ADR-015-r3-implementation-baseline.md) | 한 명 구현을 위한 언어·저장·파일 구조·CLI·CI의 확정 기준을 설명합니다. | R1~R8·전체 구현 담당 | 확정 결정 |
 
 ## Architecture v5 기술 기준 문서
 
@@ -65,7 +72,7 @@
 | [`docs/architecture-v5/README.md`](./architecture-v5/README.md) | Architecture v5 전체 흐름과 번호 문서의 읽는 순서를 소개합니다. | 모든 설계 참여자 | 기준 문서 |
 | [`01-system-overview.md`](./architecture-v5/01-system-overview.md) | 저장소 입력부터 Agent 자동화 종료와 이후 사람 판단까지 전체 22단계를 설명합니다. | PM·모든 역할 담당자 | 기준 문서 |
 | [`02-static-fact-layer.md`](./architecture-v5/02-static-fact-layer.md) | AST와 SAST 결과를 LLM이 사용할 코드 사실로 정리하는 방법을 설명합니다. | 정적분석·탐색·검증 담당 | 기준 문서 |
-| [`03-agent-roles-and-orchestration.md`](./architecture-v5/03-agent-roles-and-orchestration.md) | Orchestration의 전역 등록·배정과 Verification의 가설 내부 제어권을 포함해 각 Agent 역할을 설명합니다. | PM·LLM 역할·통합 담당 | 기준 문서 |
+| [`03-agent-roles-and-orchestration.md`](./architecture-v5/03-agent-roles-and-orchestration.md) | 비-LLM Orchestration Runtime의 전역 등록·배정과 Verification의 가설 내부 제어권을 포함해 각 구성요소 역할을 설명합니다. | PM·LLM 역할·통합 담당 | 기준 문서 |
 | [`04-verification-and-dynamic-reproduction.md`](./architecture-v5/04-verification-and-dynamic-reproduction.md) | Verification이 가설 내부 Context·찬반·동적 재현·판정·Gate 보완을 관리하는 절차를 설명합니다. | 검증·동적검증 담당 | 기준 문서 |
 | [`verification-playbooks.md`](./architecture-v5/verification-playbooks.md) | 공통 및 웹 취약점 유형별 확인 항목, 반증 질문과 필요한 정적·동적 근거를 정의합니다. | 검증·정적분석·동적검증·Gate 담당 | 기준 문서 |
 | [`05-llm-gate-and-reporting.md`](./architecture-v5/05-llm-gate-and-reporting.md) | 기술 근거와 공식 정책을 검토하고 보고서 초안을 만드는 조건을 설명합니다. | Gate·검증·PM 담당 | 기준 문서 |
@@ -84,7 +91,12 @@
 
 | 파일 | 쉽게 말하면 | 주로 읽는 사람 | 구분 |
 |---|---|---|---|
+| [`implementation/README.md`](./architecture-v5/implementation/README.md) | R3-01~R3-06 구현 인계 문서를 어떤 순서로 읽고 무엇을 기준으로 삼는지 설명합니다. | 전체 구현 담당자·R1~R8 검토자 | 구현 인계 안내 |
 | [`implementation/01-module-map.md`](./architecture-v5/implementation/01-module-map.md) | 정본 22단계를 실행 모듈, 입력·출력, 저장 위치, 오류와 테스트에 연결합니다. | 전체 구현 담당자·R1~R8 검토자 | 구현 준비 기준 |
+| [`implementation/02-contract-test-plan.md`](./architecture-v5/implementation/02-contract-test-plan.md) | 파트 사이의 계약을 정상·실패·권한 위반 입력으로 어떻게 시험할지 case별로 설명합니다. | 전체 구현 담당자·R1~R8 검토자 | 구현 전 시험 계획 |
+| [`implementation/04-provider-decision.md`](./architecture-v5/implementation/04-provider-decision.md) | OpenAI·Codex·Anthropic·Claude를 API Key 또는 공식 구독 로그인으로 연결하는 네 경로와 실제 검증 기준을 설명합니다. | R3·R4·R8·LLM 역할 담당 | 구현 인계 설계 |
+| [`implementation/05-prompt-runtime.md`](./architecture-v5/implementation/05-prompt-runtime.md) | Prompt Registry·Builder와 11개 LLM 역할의 입력·출력·검사·작성 책임을 설명합니다. | R1~R8·통합 구현 담당 | 구현 인계 설계 |
+| [`implementation/06-implementation-baseline.md`](./architecture-v5/implementation/06-implementation-baseline.md) | 실제 언어·repository 구조·저장·복구·설정·CLI·CI와 한 명 구현 순서를 확정합니다. | 전체 구현 담당자·R1~R8 검토자 | 물리 구현 기준선 |
 
 ## Architecture v5 쉬운 Wiki
 
@@ -111,12 +123,16 @@ Wiki는 번호 문서의 쉬운 요약입니다. Wiki만 수정해 새로운 규
 | [`wiki/serve.ps1`](./architecture-v5/wiki/serve.ps1) | 로컬 컴퓨터에서 Wiki를 실행하는 PowerShell 스크립트입니다. | Wiki 확인자 | 보조 파일 |
 | [`wiki/.nojekyll`](./architecture-v5/wiki/.nojekyll) | GitHub Pages가 Wiki 파일을 그대로 제공하도록 알리는 빈 설정 파일입니다. | 저장소 관리 담당 | 보조 파일 |
 
-## 설계·작업 과정 기록
+## 현재 구현 자료와 설계·작업 과정 기록
 
-아래 문서는 작업을 어떻게 설계하고 진행했는지 남기는 기록입니다. Architecture v5 기술 의미의 기준으로 사용하지 않습니다.
+아래에는 현재 구현을 준비하는 문서와 과거 기록이 함께 있습니다. 파일 상단 상태가 `APPROVED_FOR_IMPLEMENTATION`인 문서만 실행 기준입니다. `DRAFT_FOR_REVIEW`는 아직 검토 중이며, 그 밖의 과거 문서는 현재 계약이 아닙니다. 어느 경우에도 Architecture v5 기술 의미는 번호 문서·승인 ADR·구현 기준선을 우선합니다.
 
 | 파일 | 쉽게 말하면 | 구분 |
 |---|---|---|
+| [`docs/superpowers/README.md`](./superpowers/README.md) | 아래 specs·plans의 승인된 현재 구현 자료와 과거 기록을 구분하고 정본 위치를 안내합니다. | 작업 기록 안내 |
+| [`2026-09-08-sastsimi-maintainable-implementation-design.md`](./superpowers/specs/2026-09-08-sastsimi-maintainable-implementation-design.md) | 승인된 설계를 유지보수 가능한 코드 구조와 PR 순서로 옮기는 기준입니다. | 현재 구현 설계 |
+| [`2026-09-08-sastsimi-complete-implementation.md`](./superpowers/plans/2026-09-08-sastsimi-complete-implementation.md) | 승인된 전체 구현 Task, 의존 순서, 파일 책임, 시험과 병합 조건을 설명합니다. | 현재 구현 계획 |
+| [`implementation/01-repository-cleanup.md`](./superpowers/plans/implementation/01-repository-cleanup.md) | T01의 문서 인벤토리, 파일별 삭제 allowlist, 탐색 경로와 문서 CI 실행 근거를 설명합니다. | 현재 Task 실행 계획 |
 | [`2026-08-27-role-review-governance.md`](./superpowers/plans/2026-08-27-role-review-governance.md) | 초기 역할별 Issue와 협업·승인 규칙 연결 작업 계획입니다. | 작업 기록 |
 | [`2026-08-27-team-role-issue-readability.md`](./superpowers/plans/2026-08-27-team-role-issue-readability.md) | 팀원·GitHub 계정 연결과 Issue 문장 단순화 작업 계획입니다. | 작업 기록 |
 | [`2026-08-27-collaboration-and-readable-docs-design.md`](./superpowers/specs/2026-08-27-collaboration-and-readable-docs-design.md) | 담당자 생성 하위 Issue와 쉬운 문서 체계를 정의한 설계입니다. | 작업 기록 |

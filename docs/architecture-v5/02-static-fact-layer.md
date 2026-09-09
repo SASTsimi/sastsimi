@@ -6,7 +6,7 @@
 
 `retrieval`은 필요한 코드를 위치 기준으로 다시 가져오는 작업입니다. 다른 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 정적 분석의 역할
 
@@ -64,7 +64,7 @@ CodeQL·OpenGrep처럼 규칙을 실행하는 도구는 `ToolRunResult.tool_kind
 - `NOT_SELECTED + NOT_EXECUTED`: 분석 계획에서 제외해 실행하지 않았다.
 - `SELECTED + UNKNOWN`: 오류나 실행 기록 부족으로 실제 실행 여부를 확인할 수 없다.
 
-도구 실패·timeout·실행 기록 누락을 `EXECUTED + hit_count=0`으로 바꾸지 않는다. `CodeFact.producer.attempt_id`는 자신을 만든 exact `ToolRunResult.attempt_id`와 같아야 한다. `producer.rule_id`는 hit이 생겼을 때만 존재하므로 `CodeFact`가 없다는 사실만으로 규칙을 실행했거나 결과가 0건이었다고 추정하지 않는다. 정확한 필드·상태 조합과 retry 규칙은 [경량 데이터 계약](./08-lightweight-data-contracts.md)의 `RuleExecutionRecord`를 따른다.
+도구 실패·timeout·실행 기록 누락을 `EXECUTED + hit_count=0`으로 바꾸지 않는다. `CodeFact.producer.attempt_id`는 자신을 만든 exact `ToolRunResult.meta.attempt_id`와 같아야 한다. `producer.rule_id`는 hit이 생겼을 때만 존재하므로 `CodeFact`가 없다는 사실만으로 규칙을 실행했거나 결과가 0건이었다고 추정하지 않는다. 정확한 필드·상태 조합과 retry 규칙은 [경량 데이터 계약](./08-lightweight-data-contracts.md)의 `RuleExecutionRecord`를 따른다.
 
 `ToolRunResult.status`는 다음 의미를 갖는다.
 
@@ -75,13 +75,15 @@ CodeQL·OpenGrep처럼 규칙을 실행하는 도구는 `ToolRunResult.tool_kind
 
 한 도구가 `FAILED | SKIPPED`여도 다른 도구의 사용 가능한 사실을 버리지 않는다. 이때 전체 묶음에는 해당 `ToolRunResult`, 존재하는 `RuleExecutionRecord`, `DataGap`, 필요한 `AnalysisError`가 함께 있어야 한다. retry는 같은 `work_id`의 새 `attempt_id`와 새 규칙 실행 record를 사용하며 이전 시도의 규칙 상태나 탐지 수를 합치지 않는다.
 
+AST/SAST 도구 실행(`RUN_TOOL`) 자체의 시간 한도는 현재 R8-03 제안 초안 기준으로 도구당 900초, 같은 요청 재시도 1회다(`07-results-and-observability.md`의 "실행 예산" 표, `AST/SAST (RUN_TOOL)` 행 참고). 이 표 전체가 "제안(교차 전) 초안"이므로 이 값도 실측·확정값이 아닌 잠정값이며, 실제 실행에서는 versioned R8 예산 설정의 정확한 revision을 기준으로 검사한다. 같은 `CodeWorkspace` 안에서 도구마다 별도 work로 병렬 실행하며, 도구 자체 timeout은 이 한도를 넘지 않는다. 이 한도를 넘겨 중단된 work는 `PARTIAL | FAILED`가 될 수 있으며, 위 `ToolRunResult.status` 규칙과 마찬가지로 `hit_count=0`·안전함·`FALSE`의 근거로 자동 해석하지 않는다.
+
 ## source reachability 판단
 
-분석 계획은 어떤 rule 묶음으로 codeql·opengrep을 실행해 `source`/`sink` 후보(`CodeFact.fact_kind: SOURCE | SINK`)를 수집할지 — 즉 사실 수집의 범위 — 를 정한다. 이 rule 선택은 취약점을 판정하거나 유형을 확정하는 과정이 아니라 어떤 사실을 모을지 정하는 과정이다. 실제 `vulnerability_type_candidates`는 Hypothesis Agent가 정적 사실을 조합해 만들며, SAST rule 매치와 severity는 최종 취약점 판정이 아니다(위 "정적 분석의 역할" 참고).
+분석 계획은 어떤 rule 묶음으로 CodeQL·OpenGrep을 실행해 `source`/`sink` 후보(`CodeFact.fact_kind: SOURCE | SINK`)를 수집할지 — 즉 사실 수집의 범위 — 를 정한다. 이 rule 선택은 취약점을 판정하거나 유형을 확정하는 과정이 아니라 어떤 사실을 모을지 정하는 과정이다. 실제 `vulnerability_type_candidates`는 Hypothesis Agent가 정적 사실을 조합해 만들며, SAST rule 매치와 severity는 최종 취약점 판정이 아니다(위 "정적 분석의 역할" 참고).
 
 rule을 실제로 실행했는지는 위 `RuleExecutionRecord`로 추적한다. `SELECTED + EXECUTED + hit_count=0`(실행했지만 0건)과 `NOT_SELECTED + NOT_EXECUTED`(애초에 미실행)를 구분하고, 확인할 수 없는 경우는 `UNKNOWN`으로 남긴다 — **Issue #82**에서 분리했던 이 공백은 [ADR-006](../review/decisions/ADR-006-static-rule-execution-record.md)로 확정됐다.
 
-codeql·opengrep이 rule 매치로 만든 source 후보는 "이 위치에 이런 패턴이 있다"는 사실만 담을 뿐, 실제로 공격자가 조작 가능한 유저 입력에서 그 위치까지 도달 가능한 경로가 있는지는 담지 않는다. 이 경로는 AST가 만든 call·data-flow 그래프로 판단한다.
+CodeQL·OpenGrep이 rule 매치로 만든 source 후보는 "이 위치에 이런 패턴이 있다"는 사실만 담을 뿐, 실제로 공격자가 조작 가능한 유저 입력에서 그 위치까지 도달 가능한 경로가 있는지는 담지 않는다. 이 경로는 AST가 만든 call·data-flow 그래프로 판단한다.
 
 - 요청 진입점(`StaticFactBundle.route_bindings`의 `CodeRelation(relation_kind=ROUTE_BINDING)`으로 식별된 handler 파라미터 등)에서 source 후보까지 이어지는 `CodeRelation(relation_kind=DATA_FLOW)` 경로가 있으면 그 관계를 `StaticFactBundle.data_flow_candidates`에 근거로 남긴다.
 - `data_flow_candidates`에 해당 근거가 없다는 사실은 서로 다른 두 상태를 가리킬 수 있으므로 섞어 기록하지 않는다. AST의 call/data-flow 분석도 결국 하나의 도구 실행이므로 위 `ToolRunResult.status` 규칙을 그대로 따른다.

@@ -6,7 +6,7 @@
 - **누가 읽어야 하나요?** R6 검증 담당과 Pro·Con·R7·Gate·구현 담당자가 읽습니다.
 - **읽은 뒤 무엇을 확인하거나 결정하나요?** 적용할 플레이북의 확인 항목, 반증 질문과 필요한 정적·동적 근거를 확인합니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 적용 원칙
 

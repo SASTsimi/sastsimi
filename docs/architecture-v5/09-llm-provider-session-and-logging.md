@@ -6,7 +6,7 @@
 
 `provider`는 LLM 서비스 연결 방식이고 `session`은 로그인 또는 대화 상태입니다. `logging`은 호출과 오류를 남기는 기록입니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 목표
 
@@ -18,11 +18,19 @@ Agent 역할을 특정 로그인 방식이나 API에 결합하지 않고, provid
 Agent Runtime
 → LLM Logging Proxy
 → LLMProviderAdapter
-   ├─ MembershipSessionAdapter
-   └─ APIProviderAdapter
+   ├─ APIProviderAdapter
+   │  ├─ OpenAIResponsesApiAdapter
+   │  └─ AnthropicMessagesApiAdapter
+   └─ MembershipSessionAdapter
+      ├─ CodexSubscriptionAdapter
+      └─ ClaudeSubscriptionAdapter
 ```
 
 Agent Runtime은 역할·structured-output 요구·context reference·budget·session policy를 요청한다. Adapter는 provider별 인증·호출·오류·usage를 공통 결과로 정규화한다. Logging Proxy는 양쪽에서 노출된 요청·응답·tool trace와 실제 선택을 `LLMInvocationLog`로 연결한다.
+
+네 후보 경로와 환경별 지원 판정·시험 기준은 [R3-04 Provider 결정](./implementation/04-provider-decision.md)을 따른다. API Key와 구독 session은 서로 바꿔 쓸 수 있는 credential이 아니다. 실제 선택 단위는 `provider + product + transport + auth_mode + client version + model + environment`를 고정한 versioned `ProviderProfile` revision이다. Codex 구독에서 Claude 구독으로 바꾼다는 말은 같은 client에서 model 문자열만 바꾸는 것이 아니라 다른 profile과 adapter의 새 호출을 시작한다는 뜻이다.
+
+Dynamic Reproduction Agent의 Sandbox 실행은 provider 내장 file·command·web tool을 켜지 않는다. 모델은 구조화된 동적 재현 turn만 반환하고 SASTSIMI Runtime이 권한·상태·exact work/attempt·Sandbox 경계를 검사한 뒤 in-container 실행 통로로 전달한다. 이 반복 경로는 현재 `DYNAMIC_REPRO` work에서 `agent_role=DYNAMIC_REPRODUCTION`으로 실행되며, `runtime_tool_loop=SUPPORTED`인 exact ProviderProfile만 사용할 수 있다. `DYNAMIC_REPRO`는 작업 종류이고 `DYNAMIC_REPRODUCTION`은 역할·생산자 enum이다. 명령·관찰과 실제 `SandboxPolicyDecision`은 같은 attempt의 호출 log·`AgentLog`·`DynamicReproductionResult.policy_decision_ref`에 연결한다.
 
 ## provider 호출 전 권한 검사
 
@@ -37,7 +45,9 @@ Agent Runtime은 역할·structured-output 요구·context reference·budget·se
 - `SESSION`: NEW/RESUME/AUTO, parent session, retry/failover 선행 호출
 - `REDACTION`: prompt와 context에 credential·절대 경로·금지 정보가 없는지
 
-모든 check가 `PASS`인 `ActionDecision=ALLOW`를 runtime이 `USED`로 claim한 뒤에만 `LLMInvocationRequest`를 만든다. 요청의 `action_decision_ref`는 그 exact claim revision, `call_spec_ref`와 `provider_profile_ref`는 검사한 exact spec과 versioned provider profile revision을 가리킨다. runtime은 provider 호출 직전에 role·model·session·context·prompt·output schema·token budget 계획값·timeout이 spec과 모두 같은지 다시 검사한다. 이 equality는 요청 변조를 막는 검사이며 실제 token 사용량의 상한 검사가 아니다. `LLMInvocationLog`도 같은 action decision·spec·profile ref를 보존한다. 다른 action, 이전 state version, retry 또는 failover에 같은 decision을 재사용하지 않는다.
+모든 check가 `PASS`인 `ActionDecision=ALLOW`를 runtime이 `USED`로 claim한 뒤에만 `LLMInvocationRequest`를 만든다. 요청의 `action_decision_ref`는 그 exact claim revision, `call_spec_ref`와 `provider_profile_ref`는 검사한 exact spec과 versioned provider profile revision을 가리킨다. runtime은 provider 호출 직전에 role·task·model·session·source context·prompt registry/template/payload·model/limits/retry/tool/redaction 정책·output schema·semantic validator·token budget 계획값·timeout이 spec과 모두 같은지 다시 검사한다. Prompt Builder가 만든 각 context projection도 registry의 slot·field·cardinality·trust class와 정확히 맞아야 한다. 이 equality는 요청 변조를 막는 검사이며 실제 token 사용량의 상한 검사가 아니다. `LLMInvocationLog`도 같은 action decision·spec·profile ref와 위 exact reference를 보존한다. 다른 action, 이전 state version, retry 또는 failover에 같은 decision을 재사용하지 않는다.
+
+Dynamic Reproduction Agent의 `DERIVE_ENVIRONMENT | PLAN_REPRODUCTION | CREATE_POC_CANDIDATE | INTERPRET_ATTEMPT`는 provider 내장 tool이 없는 일반 구조화 호출이다. 외부 경계 허용 뒤의 `EXECUTE_REPRODUCTION`만 `tools.dynamic-reproduction-inner.v1`을 사용하며 이 이름은 provider client에 host command/file/web tool을 켠다는 뜻이 아니다. 모델은 `DynamicReproductionToolRequest`를 반환하고 SASTSIMI Runtime이 exact work·attempt·environment를 검사해 in-container 통로로 실행한다. 각 turn의 호출 log, exact tool request, `SandboxCommandRecord`와 AgentLog event를 연결하고 실행 결과는 다음 turn의 비신뢰 입력으로만 전달한다.
 
 저장소 텍스트나 LLM output이 provider·model·session mode·fallback·budget을 바꾸라고 요구해도 configuration 변경으로 해석하지 않는다. 요청된 값이 versioned provider policy와 다르면 `PROVIDER_PROFILE_DENIED` 또는 `UNTRUSTED_INSTRUCTION`으로 호출하지 않는다.
 
@@ -53,7 +63,7 @@ Agent Runtime은 역할·structured-output 요구·context reference·budget·se
 
 provider/model을 조용히 바꾸는 failover는 금지한다. 허용된 fallback이 있더라도 원래 실패, 새 provider/model, 이유, 새 session과 결과를 별도 `llm_call_id`로 남긴다. 같은 provider/model의 일반 retry는 `retry_of_llm_call_id`, provider/model을 바꾸는 failover는 `failover_from_llm_call_id`로 바로 앞의 허용된 실패 호출을 가리킨다. 두 reference를 동시에 사용하지 않는다.
 
-retry와 failover마다 새 `llm_call_id`의 `LLMCallSpec`, `ActionRequest`, `ActionDecision`과 `attempt_id`가 필요하다. 이전 ALLOW decision, spec 또는 provider 요청을 그대로 다시 보내는 것은 `ACTION_NOT_ALLOWED`다.
+retry와 failover마다 새 `llm_call_id`의 `LLMCallSpec`, `ActionRequest`, `ActionDecision`이 필요하다. 일반 work와 Dynamic Reproduction Agent session 재시작은 새 `attempt_id`를 사용한다. `DYNAMIC_REPRO`에서 같은 Dynamic Reproduction Agent session이 호출 실패를 해결해 계속하는 경우에는 현재 `attempt_id`에 실패 invocation과 후속 호출을 모두 기록한다. 이전 ALLOW decision, spec 또는 provider 요청을 그대로 다시 보내는 것은 `ACTION_NOT_ALLOWED`다.
 
 선행 호출 status는 다음과 같이 제한한다.
 
@@ -69,7 +79,7 @@ retry와 failover마다 새 `llm_call_id`의 `LLMCallSpec`, `ActionRequest`, `Ac
 
 retry/failover 선행 호출은 같은 분석·가설·역할의 바로 앞 호출이어야 한다. `SUCCEEDED`, `CANCELLED`, 존재하지 않는 호출, 더 이전 호출, 자기 자신과 이후 호출을 연결하면 `INVOCATION_CHAIN_INVALID`다.
 
-LLM 호출은 상위 `WorkExecutionState`의 한 attempt 안에서 실행한다. 호출이 성공하면 runtime은 structured-output 검증과 output 저장을 끝낸 뒤에만 work를 `SUCCEEDED` 또는 다음 전문 상태로 확정한다. 재시도 가능한 호출 실패라면 `WorkAttempt.status=FAILED`와 `LLMInvocationLog`를 저장하고 work는 `BLOCKED`로 이동한다. `waiting_for` 조건을 충족한 뒤 `READY -> RUNNING`으로 새 `attempt_id`를 발급한다. 재시도할 수 없거나 한도를 모두 사용한 경우에만 work를 최종 `FAILED`로 끝낸다.
+LLM 호출은 상위 `WorkExecutionState`의 한 attempt 안에서 실행한다. 호출이 성공하면 runtime은 structured-output 검증과 output 저장을 끝낸 뒤에만 work를 `SUCCEEDED` 또는 다음 전문 상태로 확정한다. 일반 work의 재시도 가능한 호출 실패는 `WorkAttempt.status=FAILED`와 `LLMInvocationLog`를 저장하고 work를 `BLOCKED`로 이동한 뒤, `waiting_for` 조건을 충족하면 `READY -> RUNNING`으로 새 `attempt_id`를 발급한다. `DYNAMIC_REPRO`는 예외다. Dynamic Reproduction Agent가 같은 session에서 해결 가능한 호출 실패는 현재 attempt에 실패 invocation을 기록하고 계속한다. session 재시작이 필요하면 같은 work의 새 `attempt_id`를 사용한다. `DYNAMIC_REPRO`는 현재 work의 `input_refs/input_hash`를 바꾸지 않는 인증·승인·외부 환경 정비·resource 확보를 기다릴 때만 `BLOCKED`로 이동한다. exact request나 profile reference를 바꿔야 하면 기존 work를 재개하지 않으며, retry 불가능 또는 한도 소진이면 `FAILED`로 끝낸다.
 
 ## MembershipSessionAdapter
 
@@ -83,6 +93,13 @@ LLM 호출은 상위 `WorkExecutionState`의 한 attempt 안에서 실행한다.
 
 UI 자동화나 session 재사용이 공식 지원 범위 밖이라면 구현 완료로 표시하지 않는다. raw cookie, token, browser profile path를 결과에 포함하지 않는다.
 
+- `CodexSubscriptionAdapter`는 ChatGPT 계정으로 공식 로그인한 Codex CLI/SDK 경계만 사용한다.
+- `ClaudeSubscriptionAdapter`는 Claude 계정으로 공식 로그인한 Claude Code CLI의 `claude -p` 경계만 사용한다. Claude Agent SDK는 이번 네 adapter 범위에 포함하지 않으며 도입하려면 별도 product·transport·adapter와 client 격리 검토가 필요하다.
+- 어느 adapter도 client credential 파일을 직접 파싱하거나 token을 추출해 일반 HTTP client에 전달하지 않는다.
+- 구독 plan, workspace, client와 rollout에 따라 모델 접근 범위가 다를 수 있으므로 실제 시험을 마친 model·environment 조합마다 별도 profile revision을 사용한다.
+- 구독 client는 실제 저장소가 아닌 격리된 빈 working directory에서 실행하고 redacted PromptPayload만 받는다. exact `ClientExecutionProfile`로 file·command·web tool, MCP·hook·plugin·project/user instruction·provider fallback과 불필요한 환경 변수를 fail-closed로 끈다.
+- 사용 중인 client version에서 이 격리를 강제하고 부정 시험할 수 없으면 Membership adapter를 호출하지 않는다.
+
 ## APIProviderAdapter
 
 - 공식 API/SDK를 통한 호출 경계
@@ -92,6 +109,10 @@ UI 자동화나 session 재사용이 공식 지원 범위 밖이라면 구현 �
 - key 부재는 membership adapter 선택과 별개의 configuration 상태
 
 API 방식이 허용되어도 특정 provider를 기본값으로 확정하는 것은 별도 ADR 대상이다.
+
+- `OpenAIResponsesApiAdapter`는 OpenAI Responses API와 해당 API 조직·project의 model 접근 권한을 사용한다.
+- `AnthropicMessagesApiAdapter`는 Anthropic Messages API와 해당 workspace의 model 접근 권한을 사용한다.
+- API Key 경로도 provider가 다르면 별도 credential과 profile을 사용하며 key를 다른 provider에 재사용하지 않는다.
 
 ## SessionPolicy
 
@@ -107,6 +128,8 @@ API 방식이 허용되어도 특정 provider를 기본값으로 확정하는 �
 |---|---|
 | 같은 역할·같은 가설의 추가 retrieval | `RESUME` 가능 |
 | 같은 Verification의 Technical Gate revision 대응 | `RESUME` 가능 |
+| 같은 `DYNAMIC_REPRO` work·attempt의 `EXECUTE_REPRODUCTION` 첫 turn | `NEW` |
+| 같은 `DYNAMIC_REPRO` work·attempt의 `EXECUTE_REPRODUCTION` 후속 turn | `RESUME` |
 | 서로 다른 hypothesis | `NEW` |
 | Pro와 Con | `AUTO` 사용 금지, 각각 명시적 `NEW` |
 | Verification과 Technical Gate | `NEW` |
@@ -116,17 +139,21 @@ API 방식이 허용되어도 특정 provider를 기본값으로 확정하는 �
 
 정책은 설정 가능하며 실제 결정, 이유, parent session reference를 기록한다. session reuse는 반복 context token을 줄일 수 있지만 confirmation bias와 prompt contamination을 키울 수 있으므로 품질·비용 평가 없이 광범위하게 적용하지 않는다.
 
+`EXECUTE_REPRODUCTION`의 AUTO는 위 두 행으로만 결정한다. 첫 turn은 `parent_session_ref=null`인 새 session이고, 후속 turn은 같은 work·attempt에서 바로 앞 성공 turn의 exact `session_ref`만 이어 쓴다. 새 attempt·다른 work·다른 가설 또는 session 재시작은 다시 `NEW`다. 이 규칙은 Dynamic Reproduction의 명령·관찰 반복을 잇기 위한 것이며 다른 Agent의 session 재사용 권한을 넓히지 않는다.
+
 Pro/Con 독립성은 설정으로 완화할 수 없는 예외다. 두 역할의 `CALL_LLM` action은 `requested_by`, call spec role과 일치해야 하고 action `session_mode=NEW`, spec `session_policy=NEW`, `parent_session_ref=null`이어야 `SESSION` check를 통과한다. 두 호출은 서로 다른 `llm_call_id`와 실제 `session_ref`, 각자의 action·decision을 사용한다. provider가 session ID를 노출하지 않아도 adapter가 호출별로 서로 다른 불투명 local `session_ref`를 만든다. retry·repair·failover도 같은 역할의 새 `NEW` session으로 만들고 상대 역할의 session·output·decision을 predecessor, parent 또는 context로 사용하지 않는다.
 
 Pro/Con prompt는 trusted prompt builder가 역할별 template과 허용된 공통 입력 reference만 사용해 immutable `prompt_payload_ref`로 만든다. 두 역할은 같은 `debate_input_hash`를 공유하지만 서로의 `EvidenceAgentResult`, 결론, session, action/decision, work·attempt·call log를 `context_refs`, prompt payload, predecessor/parent, 결과 저장소 조회, retrieval/tool 요청이나 tool output으로 받을 수 없다. 호출 직전과 결과 저장 전에 이 경계를 검사하며 위반하면 `CROSS_ROLE_INPUT_DENIED`로 합류를 중단한다.
 
 성공한 Pro/Con 호출의 `LLMInvocationResult.parsed_output_ref`와 `LLMInvocationLog.parsed_output_ref`는 각각 exact `EvidenceAgentResult(role=PRO | CON)` revision을 가리킨다. 해당 child work의 `output_refs`도 같은 result를 가리키며, result는 invocation record나 종료 work revision을 역참조하지 않는다. 부모 Verification의 final 합성 호출은 같은 부모·generation·`debate_input_hash`의 두 exact result reference만 context에 포함한다.
 
-## 역할별 모델 선택
+## 역할별 Provider와 모델 선택
 
-- Hypothesis Agent에는 저비용 모델 profile을 구성할 수 있다.
-- Verification, Chaining과 두 Gate에는 과업 위험도에 맞는 별도 profile을 구성할 수 있다.
-- 특정 역할의 가격 등급이 정확도를 보장하지 않는다.
+- Agent의 이름·역할·입출력 계약은 특정 Provider 또는 모델에 종속되지 않는다.
+- 실제 LLM Provider와 인증·전송 설정은 exact `ProviderProfile` revision을 가리키는 `provider_profile_ref`, 모델은 `LLMCallSpec.model`로 호출 시점에 함께 고정한다. 모델 전용 profile record를 따로 만들지 않으며 `ProviderProfile.model`과 `LLMCallSpec.model`은 같은 값이어야 한다. 모델 변경은 Agent 역할 변경을 의미하지 않는다.
+- Policy Parser는 가설별 session이 아니라 분석 단위 policy work의 `NEW` session을 사용하고, 비-LLM Collector가 고정한 exact 공식 원문 reference만 context로 받는다. Parser 호출·provider·model·prompt·schema와 결과는 `PolicyParserResult.llm_invocation_ref`로 연결한다.
+- Verification, Chaining과 두 Gate에는 과업 위험도에 맞는 서로 다른 `provider_profile_ref + model` 조합을 구성할 수 있다.
+- 역할별 조합은 과업 요구와 R8의 동일 corpus 평가 결과로 선택한다.
 - 모델·provider 변경은 versioned configuration과 evaluation 대상으로 관리한다.
 
 ## Logging Proxy와 fallback parser
@@ -134,8 +161,9 @@ Pro/Con prompt는 trusted prompt builder가 역할별 template과 허용된 공�
 Logging Proxy는 다음만 기록한다.
 
 - exposed request/response artifact reference
-- provider/model/role/session metadata
-- 실제 전달된 context와 retrieved code locations
+- provider/model/role/task/session metadata
+- 실제 사용한 prompt registry/template/payload와 model·limits·retry·tool·redaction·schema·validator exact reference
+- 실제 전달된 source/projected context와 retrieved code locations
 - exposed tool-call trace
 - parsed output exact reference, schema error와 repair attempt
 - status, 공개 usage, elapsed, retry/failover relation
@@ -149,7 +177,7 @@ hidden chain-of-thought를 요구·수집·복원하지 않는다. 사용자에�
 
 LLM 호출 상태는 `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIMITED | AUTH_REQUIRED | CANCELLED`다. 이 상태는 provider 호출의 결과이며 취약점 가설의 `TRUE | FALSE | HOLD`와 별개다.
 
-| 호출 상태 | 쉬운 의미 | Orchestration 처리 |
+| 호출 상태 | 쉬운 의미 | Orchestration Runtime 처리 |
 |---|---|---|
 | `SUCCEEDED` | 호출과 공통 형식 변환이 끝남 | schema·semantic 검증 후 다음 단계 진행 |
 | `FAILED` | provider 또는 adapter가 호출을 끝내지 못함 | 오류 저장, 허용된 retry 검토 |
@@ -160,12 +188,13 @@ LLM 호출 상태는 `SUCCEEDED | FAILED | INVALID_OUTPUT | TIMED_OUT | RATE_LIM
 | `CANCELLED` | 사용자 또는 runtime이 취소함 | 취소 기록 후 실행 종료 |
 
 1. Runtime이 adapter capability와 인증 사용 가능 여부를 확인한다.
+   - Dynamic Reproduction Agent의 Sandbox 실행 task이면 `runtime_tool_loop=SUPPORTED`를 추가로 확인하고, 사전 requirements·plan 작성 호출에는 Sandbox tool policy를 부여하지 않는다.
 2. 호출할 수 없으면 `AUTH_REQUIRED` 또는 명시적 provider error를 반환한다.
-3. Orchestration은 어떤 LLM 호출 상태도 가설 `FALSE`로 바꾸지 않는다.
+3. Orchestration Runtime은 어떤 LLM 호출 상태도 가설 `FALSE`로 바꾸지 않는다.
 4. 제한 retry, 사용자 재인증 또는 구성된 explicit fallback을 선택한다.
-5. 모든 시도는 독립 `llm_call_id`와 `attempt_id`로 저장하고 같은 논리 요청의 `work_id`·`dedupe_key`는 유지한다.
-6. retry 가능한 실패는 work를 `BLOCKED`로 두고 `FAILED` attempt와 오류를 보존한다. `AUTH_REQUIRED`는 재인증, `RATE_LIMITED`는 backoff, `INVALID_OUTPUT`은 제한된 repair 조건을 `waiting_for`와 함께 기록한다.
-7. 조건을 충족하면 work를 `READY`로 전환하고 새 `attempt_id`에서 후속 호출을 시작한다. 후속 호출은 위 표에서 허용한 바로 앞의 실패 호출 reference와 1씩 증가하는 `retry_count`를 저장하며, runtime은 status·같은 분석·가설·역할·호출 순서와 순환이 없는지 검사한다.
+5. 모든 시도는 독립 `llm_call_id`로 저장하고 같은 논리 요청의 `work_id`·`dedupe_key`는 유지한다. 일반 work는 새 `attempt_id`를 사용하지만, `DYNAMIC_REPRO`의 same-session 후속 호출은 현재 attempt에 기록한다.
+6. 일반 work의 retry 가능한 실패는 work를 `BLOCKED`로 두고 `FAILED` attempt와 오류를 보존한다. `DYNAMIC_REPRO`는 같은 Dynamic Reproduction Agent session에서 해결할 수 있으면 현재 attempt에 실패 invocation을 남기고 계속하며, session 재시작이 필요할 때만 같은 work의 새 attempt를 만든다. 현재 work의 `input_refs/input_hash`를 바꾸지 않는 인증·승인·외부 환경 정비·resource 확보 대기만 `BLOCKED`와 `waiting_for`를 사용한다.
+7. 외부 조건을 충족하면 work를 `READY`로 전환하고 새 `attempt_id`에서 후속 호출을 시작한다. `DYNAMIC_REPRO`의 외부 조건 해소 뒤 재개는 기존 `input_refs/input_hash`가 그대로일 때만 `trigger=RESUME`, session 재시작은 `trigger=RETRY`를 사용한다. exact request를 교체하거나 승인된 새 profile reference를 적용해야 하면 새 Verification generation에서 Pro·Con과 초기 판단부터 다시 수행하고, 여전히 필요할 때만 새 request와 동적 work를 만든다. 후속 호출은 위 표에서 허용한 바로 앞의 실패 호출 reference와 1씩 증가하는 `retry_count`를 저장하며, runtime은 status·같은 분석·가설·역할·호출 순서와 순환이 없는지 검사한다.
 8. work나 분석이 `CANCELLED`이면 도착한 응답을 `STALE_RESULT`로 격리하고 output pointer, Gate와 Reporter 입력에 연결하지 않는다.
 
 인증·rate limit·형식·provider 오류가 발생한 `LLMInvocationResult`는 실행 오류다. 그 호출만을 이유로 `SAVE_RESULT` action이 `VerificationResult.verdict=FALSE`를 만들려고 하면 Runtime Validator가 거절한다. `FALSE`는 final Verification의 named falsification과 실제 `DISPROVED` 근거가 있을 때만 별도로 저장할 수 있다.

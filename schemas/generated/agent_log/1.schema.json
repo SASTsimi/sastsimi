@@ -1,0 +1,407 @@
+{
+  "$defs": {
+    "ActionId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "ActionId",
+      "type": "string"
+    },
+    "AgentLogEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "action_id": {
+          "$ref": "#/$defs/ActionId"
+        },
+        "actor": {
+          "enum": [
+            "DYNAMIC_REPRODUCTION",
+            "REPRODUCTION_SETUP_AUTOMATION",
+            "TOOL_RUNTIME",
+            "SANDBOX_CONTROLLER",
+            "REPRODUCTION_SESSION_MANAGER"
+          ],
+          "title": "Actor",
+          "type": "string"
+        },
+        "command_digest": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Command Digest"
+        },
+        "command_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StoredDataRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "environment_recipe_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StoredDataRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "environment_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StoredDataRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "event_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_type": {
+          "enum": [
+            "SESSION_STARTED",
+            "AGENT_STARTED",
+            "AGENT_FINISHED",
+            "COMMAND_STARTED",
+            "COMMAND_FINISHED",
+            "POC_CANDIDATE_CREATED",
+            "POC_EXECUTION_STARTED",
+            "POC_EXECUTION_FINISHED",
+            "OBSERVATION_RECORDED",
+            "SANDBOX_RECREATE_REQUESTED",
+            "SANDBOX_RECREATED",
+            "CLEANUP_STARTED",
+            "CLEANUP_FINISHED",
+            "POLICY_BLOCKED",
+            "ERROR",
+            "SESSION_FINISHED"
+          ],
+          "title": "Event Type",
+          "type": "string"
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Exit Code"
+        },
+        "input_refs": {
+          "items": {
+            "$ref": "#/$defs/StoredDataRef"
+          },
+          "title": "Input Refs",
+          "type": "array"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "title": "Occurred At",
+          "type": "string"
+        },
+        "output_refs": {
+          "items": {
+            "$ref": "#/$defs/StoredDataRef"
+          },
+          "title": "Output Refs",
+          "type": "array"
+        },
+        "poc_candidate_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StoredDataRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "redaction_status": {
+          "anyOf": [
+            {
+              "enum": [
+                "REDACTED",
+                "NOT_REQUIRED"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Redaction Status"
+        },
+        "safe_message": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Safe Message"
+        },
+        "sequence": {
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "tool_request_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StoredDataRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "event_id",
+        "sequence",
+        "action_id",
+        "event_type",
+        "actor",
+        "environment_ref",
+        "environment_recipe_ref",
+        "poc_candidate_ref",
+        "tool_request_ref",
+        "command_ref",
+        "command_digest",
+        "redaction_status",
+        "input_refs",
+        "output_refs",
+        "exit_code",
+        "safe_message",
+        "occurred_at"
+      ],
+      "title": "AgentLogEvent",
+      "type": "object"
+    },
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "events": {
+      "items": {
+        "$ref": "#/$defs/AgentLogEvent"
+      },
+      "title": "Events",
+      "type": "array"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordMeta"
+    },
+    "request_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    }
+  },
+  "required": [
+    "meta",
+    "request_ref",
+    "events"
+  ],
+  "title": "AgentLog",
+  "type": "object"
+}

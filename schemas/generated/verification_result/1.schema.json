@@ -1,0 +1,1434 @@
+{
+  "$defs": {
+    "AnalysisError": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "code": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Code",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "error_id": {
+          "$ref": "#/$defs/ErrorId"
+        },
+        "related_record_ids": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Related Record Ids",
+          "type": "array"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "safe_message": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Safe Message",
+          "type": "string"
+        },
+        "stage": {
+          "enum": [
+            "INPUT",
+            "REPOSITORY",
+            "STATIC_ANALYSIS",
+            "CONTEXT",
+            "ORCHESTRATION",
+            "AGENT",
+            "PROVIDER",
+            "SANDBOX",
+            "POLICY",
+            "GATE",
+            "REPORT",
+            "STATE",
+            "STORAGE",
+            "RECOVERY",
+            "AUTHORITY"
+          ],
+          "title": "Stage",
+          "type": "string"
+        },
+        "work_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "error_id",
+        "stage",
+        "code",
+        "safe_message",
+        "retryable",
+        "work_id",
+        "attempt_id",
+        "related_record_ids",
+        "created_at"
+      ],
+      "title": "AnalysisError",
+      "type": "object"
+    },
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "CandidateRef": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Candidate Id",
+          "type": "string"
+        },
+        "candidate_state": {
+          "const": "UNVALIDATED",
+          "title": "Candidate State",
+          "type": "string"
+        },
+        "candidate_type": {
+          "enum": [
+            "BYPASS",
+            "ALTERNATE_PATH",
+            "IMPACT_ESCALATION"
+          ],
+          "title": "Candidate Type",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/StoredDataRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "missing_information": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Missing Information",
+          "type": "array"
+        },
+        "source_hypothesis_ids": {
+          "items": {
+            "$ref": "#/$defs/HypothesisId"
+          },
+          "title": "Source Hypothesis Ids",
+          "type": "array"
+        },
+        "statement": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Statement",
+          "type": "string"
+        },
+        "target_entities": {
+          "items": {
+            "$ref": "#/$defs/CodeSymbol"
+          },
+          "title": "Target Entities",
+          "type": "array"
+        },
+        "target_locations": {
+          "items": {
+            "$ref": "#/$defs/CodeLocation"
+          },
+          "title": "Target Locations",
+          "type": "array"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "candidate_type",
+        "statement",
+        "source_hypothesis_ids",
+        "target_entities",
+        "target_locations",
+        "evidence_refs",
+        "missing_information",
+        "candidate_state"
+      ],
+      "title": "CandidateRef",
+      "type": "object"
+    },
+    "CodeFact": {
+      "additionalProperties": false,
+      "properties": {
+        "fact_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Fact Id",
+          "type": "string"
+        },
+        "fact_kind": {
+          "enum": [
+            "SOURCE",
+            "SINK",
+            "SANITIZER",
+            "VALIDATOR",
+            "AUTH_CHECK",
+            "PERMISSION_CHECK",
+            "OTHER"
+          ],
+          "title": "Fact Kind",
+          "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/CodeLocation"
+        },
+        "producer": {
+          "$ref": "#/$defs/ToolSource"
+        },
+        "symbol_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Symbol Id"
+        }
+      },
+      "required": [
+        "fact_id",
+        "fact_kind",
+        "symbol_id",
+        "location",
+        "producer"
+      ],
+      "title": "CodeFact",
+      "type": "object"
+    },
+    "CodeFactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "bundle_ref": {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        "fact_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Fact Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bundle_ref",
+        "fact_id"
+      ],
+      "title": "CodeFactRef",
+      "type": "object"
+    },
+    "CodeLocation": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "end_column": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "End Column"
+        },
+        "end_line": {
+          "minimum": 1,
+          "title": "End Line",
+          "type": "integer"
+        },
+        "file_path": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "File Path",
+          "type": "string"
+        },
+        "start_column": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Start Column"
+        },
+        "start_line": {
+          "minimum": 1,
+          "title": "Start Line",
+          "type": "integer"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "commit_id",
+        "file_path",
+        "start_line",
+        "start_column",
+        "end_line",
+        "end_column"
+      ],
+      "title": "CodeLocation",
+      "type": "object"
+    },
+    "CodeRelation": {
+      "additionalProperties": false,
+      "properties": {
+        "from_location": {
+          "$ref": "#/$defs/CodeLocation"
+        },
+        "from_symbol_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "From Symbol Id"
+        },
+        "producer": {
+          "$ref": "#/$defs/ToolSource"
+        },
+        "relation_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Relation Id",
+          "type": "string"
+        },
+        "relation_kind": {
+          "enum": [
+            "CALL",
+            "DATA_FLOW",
+            "IMPORT",
+            "INHERITANCE",
+            "ROUTE_BINDING",
+            "OTHER"
+          ],
+          "title": "Relation Kind",
+          "type": "string"
+        },
+        "to_location": {
+          "$ref": "#/$defs/CodeLocation"
+        },
+        "to_symbol_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "To Symbol Id"
+        }
+      },
+      "required": [
+        "relation_id",
+        "relation_kind",
+        "from_symbol_id",
+        "from_location",
+        "to_symbol_id",
+        "to_location",
+        "producer"
+      ],
+      "title": "CodeRelation",
+      "type": "object"
+    },
+    "CodeSymbol": {
+      "additionalProperties": false,
+      "properties": {
+        "location": {
+          "$ref": "#/$defs/CodeLocation"
+        },
+        "name": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Name",
+          "type": "string"
+        },
+        "native_kind": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Native Kind"
+        },
+        "symbol_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Symbol Id",
+          "type": "string"
+        },
+        "symbol_kind": {
+          "enum": [
+            "FILE",
+            "MODULE",
+            "TYPE",
+            "CALLABLE",
+            "DATA",
+            "ROUTE",
+            "CONFIG"
+          ],
+          "title": "Symbol Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol_id",
+        "symbol_kind",
+        "native_kind",
+        "name",
+        "location"
+      ],
+      "title": "CodeSymbol",
+      "type": "object"
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ErrorId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "ErrorId",
+      "type": "string"
+    },
+    "EvidenceClaim": {
+      "additionalProperties": false,
+      "properties": {
+        "claim_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Claim Id",
+          "type": "string"
+        },
+        "code_locations": {
+          "items": {
+            "$ref": "#/$defs/CodeLocation"
+          },
+          "title": "Code Locations",
+          "type": "array"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/StoredDataRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "limitations": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Limitations",
+          "type": "array"
+        },
+        "source_role": {
+          "enum": [
+            "VERIFICATION",
+            "PRO",
+            "CON"
+          ],
+          "title": "Source Role",
+          "type": "string"
+        },
+        "statement": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Statement",
+          "type": "string"
+        }
+      },
+      "required": [
+        "claim_id",
+        "statement",
+        "source_role",
+        "evidence_refs",
+        "code_locations",
+        "limitations"
+      ],
+      "title": "EvidenceClaim",
+      "type": "object"
+    },
+    "FalsificationQuestion": {
+      "additionalProperties": false,
+      "properties": {
+        "question": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Question",
+          "type": "string"
+        },
+        "question_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Question Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "question_id",
+        "question"
+      ],
+      "title": "FalsificationQuestion",
+      "type": "object"
+    },
+    "FalsificationResult": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/StoredDataRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "outcome": {
+          "enum": [
+            "DISPROVED",
+            "NOT_DISPROVED",
+            "INCONCLUSIVE"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "question_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Question Id",
+          "type": "string"
+        },
+        "rationale": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Rationale",
+          "type": "string"
+        }
+      },
+      "required": [
+        "question_id",
+        "outcome",
+        "evidence_refs",
+        "rationale"
+      ],
+      "title": "FalsificationResult",
+      "type": "object"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "HypothesisProposal": {
+      "additionalProperties": false,
+      "properties": {
+        "assertion_mode": {
+          "const": "NON_FINAL",
+          "title": "Assertion Mode",
+          "type": "string"
+        },
+        "assumptions": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Assumptions",
+          "type": "array"
+        },
+        "falsification_questions": {
+          "items": {
+            "$ref": "#/$defs/FalsificationQuestion"
+          },
+          "title": "Falsification Questions",
+          "type": "array"
+        },
+        "meta": {
+          "$ref": "#/$defs/RecordMeta"
+        },
+        "observed_facts": {
+          "items": {
+            "$ref": "#/$defs/CodeFact"
+          },
+          "title": "Observed Facts",
+          "type": "array"
+        },
+        "origin": {
+          "enum": [
+            "INITIAL",
+            "VERIFICATION",
+            "CHAINING"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "parent_hypothesis_ids": {
+          "items": {
+            "$ref": "#/$defs/HypothesisId"
+          },
+          "title": "Parent Hypothesis Ids",
+          "type": "array"
+        },
+        "proposal_id": {
+          "$ref": "#/$defs/ProposalId"
+        },
+        "proposal_state": {
+          "const": "HYPOTHESIS_ONLY",
+          "title": "Proposal State",
+          "type": "string"
+        },
+        "restrictions": {
+          "items": {
+            "$ref": "#/$defs/Restriction"
+          },
+          "title": "Restrictions",
+          "type": "array"
+        },
+        "source_primitive_match_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source Primitive Match Id"
+        },
+        "suspected_path": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CodeRelation"
+              },
+              {
+                "$ref": "#/$defs/CodeLocation"
+              }
+            ]
+          },
+          "title": "Suspected Path",
+          "type": "array"
+        },
+        "target_entities": {
+          "items": {
+            "$ref": "#/$defs/CodeSymbol"
+          },
+          "title": "Target Entities",
+          "type": "array"
+        },
+        "target_locations": {
+          "items": {
+            "$ref": "#/$defs/CodeLocation"
+          },
+          "title": "Target Locations",
+          "type": "array"
+        },
+        "validation_checks": {
+          "items": {
+            "$ref": "#/$defs/ValidationCheck"
+          },
+          "title": "Validation Checks",
+          "type": "array"
+        },
+        "vulnerability_type_candidates": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Vulnerability Type Candidates",
+          "type": "array"
+        }
+      },
+      "required": [
+        "meta",
+        "origin",
+        "target_entities",
+        "target_locations",
+        "suspected_path",
+        "falsification_questions",
+        "validation_checks",
+        "parent_hypothesis_ids",
+        "source_primitive_match_id",
+        "proposal_id",
+        "proposal_state",
+        "assertion_mode",
+        "vulnerability_type_candidates",
+        "observed_facts",
+        "assumptions",
+        "restrictions"
+      ],
+      "title": "HypothesisProposal",
+      "type": "object"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "PrimitiveDraft": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Description",
+          "type": "string"
+        },
+        "draft_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Draft Id",
+          "type": "string"
+        },
+        "entity_refs": {
+          "items": {
+            "$ref": "#/$defs/CodeSymbol"
+          },
+          "title": "Entity Refs",
+          "type": "array"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/StoredDataRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "privilege_level": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Privilege Level"
+        }
+      },
+      "required": [
+        "draft_id",
+        "entity_refs",
+        "privilege_level",
+        "evidence_refs",
+        "description"
+      ],
+      "title": "PrimitiveDraft",
+      "type": "object"
+    },
+    "ProposalId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "ProposalId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "Restriction": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/StoredDataRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "fact_refs": {
+          "items": {
+            "$ref": "#/$defs/CodeFactRef"
+          },
+          "title": "Fact Refs",
+          "type": "array"
+        },
+        "restriction_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Restriction Id",
+          "type": "string"
+        },
+        "statement": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Statement",
+          "type": "string"
+        }
+      },
+      "required": [
+        "restriction_id",
+        "statement",
+        "fact_refs",
+        "evidence_refs"
+      ],
+      "title": "Restriction",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "ToolSource": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id": {
+          "$ref": "#/$defs/AttemptId"
+        },
+        "raw_result_ref": {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        "rule_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Rule Id"
+        },
+        "tool_name": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "tool_version": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Tool Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "attempt_id",
+        "tool_name",
+        "tool_version",
+        "rule_id",
+        "raw_result_ref"
+      ],
+      "title": "ToolSource",
+      "type": "object"
+    },
+    "ValidationCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "instruction": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Instruction",
+          "type": "string"
+        },
+        "validation_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Validation Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "validation_id",
+        "instruction"
+      ],
+      "title": "ValidationCheck",
+      "type": "object"
+    },
+    "ValidationCheckResult": {
+      "additionalProperties": false,
+      "properties": {
+        "completion": {
+          "enum": [
+            "COMPLETE",
+            "INCOMPLETE"
+          ],
+          "title": "Completion",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/StoredDataRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "summary": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Summary",
+          "type": "string"
+        },
+        "validation_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Validation Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "validation_id",
+        "completion",
+        "evidence_refs",
+        "summary"
+      ],
+      "title": "ValidationCheckResult",
+      "type": "object"
+    },
+    "Verdict": {
+      "enum": [
+        "TRUE",
+        "FALSE",
+        "HOLD"
+      ],
+      "type": "string"
+    },
+    "VerificationMetrics": {
+      "additionalProperties": false,
+      "properties": {
+        "con_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Con Tokens"
+        },
+        "elapsed_ms": {
+          "minimum": 0,
+          "title": "Elapsed Ms",
+          "type": "integer"
+        },
+        "false_positive_reduction_candidate": {
+          "title": "False Positive Reduction Candidate",
+          "type": "boolean"
+        },
+        "hold_resolved": {
+          "title": "Hold Resolved",
+          "type": "boolean"
+        },
+        "new_bypass_count": {
+          "minimum": 0,
+          "title": "New Bypass Count",
+          "type": "integer"
+        },
+        "new_falsification_count": {
+          "minimum": 0,
+          "title": "New Falsification Count",
+          "type": "integer"
+        },
+        "new_restriction_count": {
+          "minimum": 0,
+          "title": "New Restriction Count",
+          "type": "integer"
+        },
+        "pro_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Pro Tokens"
+        },
+        "synthesis_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Synthesis Tokens"
+        },
+        "verdict_changed_after_debate": {
+          "title": "Verdict Changed After Debate",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "pro_tokens",
+        "con_tokens",
+        "synthesis_tokens",
+        "elapsed_ms",
+        "verdict_changed_after_debate",
+        "hold_resolved",
+        "false_positive_reduction_candidate",
+        "new_bypass_count",
+        "new_restriction_count",
+        "new_falsification_count"
+      ],
+      "title": "VerificationMetrics",
+      "type": "object"
+    },
+    "WorkId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkId",
+      "type": "string"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "bypass_candidates": {
+      "items": {
+        "$ref": "#/$defs/CandidateRef"
+      },
+      "title": "Bypass Candidates",
+      "type": "array"
+    },
+    "con_evidence_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "counter_evidence": {
+      "items": {
+        "$ref": "#/$defs/EvidenceClaim"
+      },
+      "title": "Counter Evidence",
+      "type": "array"
+    },
+    "debate_input_hash": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Debate Input Hash"
+    },
+    "debate_skip_reason": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Debate Skip Reason"
+    },
+    "debate_triggers": {
+      "items": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "title": "Debate Triggers",
+      "type": "array"
+    },
+    "dynamic_request_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "dynamic_result_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "errors": {
+      "items": {
+        "$ref": "#/$defs/AnalysisError"
+      },
+      "title": "Errors",
+      "type": "array"
+    },
+    "falsification_results": {
+      "items": {
+        "$ref": "#/$defs/FalsificationResult"
+      },
+      "title": "Falsification Results",
+      "type": "array"
+    },
+    "impact_escalation_candidates": {
+      "items": {
+        "$ref": "#/$defs/CandidateRef"
+      },
+      "title": "Impact Escalation Candidates",
+      "type": "array"
+    },
+    "initial_verdict": {
+      "$ref": "#/$defs/Verdict"
+    },
+    "material_child_proposals": {
+      "items": {
+        "$ref": "#/$defs/HypothesisProposal"
+      },
+      "title": "Material Child Proposals",
+      "type": "array"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordMeta"
+    },
+    "metrics": {
+      "$ref": "#/$defs/VerificationMetrics"
+    },
+    "playbook_application_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "playbook_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "poc_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "pro_evidence_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "provided_primitive_candidates": {
+      "items": {
+        "$ref": "#/$defs/PrimitiveDraft"
+      },
+      "title": "Provided Primitive Candidates",
+      "type": "array"
+    },
+    "required_primitive_candidates": {
+      "items": {
+        "$ref": "#/$defs/PrimitiveDraft"
+      },
+      "title": "Required Primitive Candidates",
+      "type": "array"
+    },
+    "restrictions": {
+      "items": {
+        "$ref": "#/$defs/Restriction"
+      },
+      "title": "Restrictions",
+      "type": "array"
+    },
+    "supporting_evidence": {
+      "items": {
+        "$ref": "#/$defs/EvidenceClaim"
+      },
+      "title": "Supporting Evidence",
+      "type": "array"
+    },
+    "unresolved_conditions": {
+      "items": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "title": "Unresolved Conditions",
+      "type": "array"
+    },
+    "validation_results": {
+      "items": {
+        "$ref": "#/$defs/ValidationCheckResult"
+      },
+      "title": "Validation Results",
+      "type": "array"
+    },
+    "verdict": {
+      "$ref": "#/$defs/Verdict"
+    },
+    "verdict_rationale": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Verdict Rationale",
+      "type": "string"
+    },
+    "verification_mode": {
+      "enum": [
+        "BASIC",
+        "CONDITIONAL_DEBATE",
+        "ALWAYS_DEBATE"
+      ],
+      "title": "Verification Mode",
+      "type": "string"
+    }
+  },
+  "required": [
+    "meta",
+    "playbook_ref",
+    "playbook_application_ref",
+    "verification_mode",
+    "debate_triggers",
+    "debate_skip_reason",
+    "debate_input_hash",
+    "pro_evidence_ref",
+    "con_evidence_ref",
+    "supporting_evidence",
+    "counter_evidence",
+    "falsification_results",
+    "validation_results",
+    "initial_verdict",
+    "dynamic_request_ref",
+    "dynamic_result_ref",
+    "poc_ref",
+    "verdict",
+    "verdict_rationale",
+    "restrictions",
+    "bypass_candidates",
+    "required_primitive_candidates",
+    "provided_primitive_candidates",
+    "impact_escalation_candidates",
+    "material_child_proposals",
+    "unresolved_conditions",
+    "metrics",
+    "errors"
+  ],
+  "title": "VerificationResult",
+  "type": "object"
+}

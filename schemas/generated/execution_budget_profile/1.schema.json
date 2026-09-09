@@ -1,0 +1,322 @@
+{
+  "$defs": {
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "BudgetScopeRef": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunStoredDataRef"
+        },
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        }
+      ]
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "ProfileStatus": {
+      "enum": [
+        "DRAFT",
+        "ACTIVE",
+        "RETIRED"
+      ],
+      "title": "ProfileStatus",
+      "type": "string"
+    },
+    "Purpose": {
+      "enum": [
+        "PRODUCTION",
+        "EVALUATION"
+      ],
+      "title": "Purpose",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RunMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id"
+      ],
+      "title": "RunMeta",
+      "type": "object"
+    },
+    "RunStoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "analysis_id",
+        "record_id"
+      ],
+      "title": "RunStoredDataRef",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "approval_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BudgetScopeRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "approved_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Approved At"
+    },
+    "approved_by": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Approved By"
+    },
+    "currency": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Currency",
+      "type": "string"
+    },
+    "max_analysis_elapsed_ms": {
+      "minimum": 0,
+      "title": "Max Analysis Elapsed Ms",
+      "type": "integer"
+    },
+    "max_parallel_work": {
+      "minimum": 0,
+      "title": "Max Parallel Work",
+      "type": "integer"
+    },
+    "max_total_cost_minor_units": {
+      "minimum": 0,
+      "title": "Max Total Cost Minor Units",
+      "type": "integer"
+    },
+    "max_total_llm_calls": {
+      "minimum": 0,
+      "title": "Max Total Llm Calls",
+      "type": "integer"
+    },
+    "max_total_retries": {
+      "minimum": 0,
+      "title": "Max Total Retries",
+      "type": "integer"
+    },
+    "max_total_work": {
+      "minimum": 0,
+      "title": "Max Total Work",
+      "type": "integer"
+    },
+    "meta": {
+      "$ref": "#/$defs/RunMeta"
+    },
+    "pricing_revision_ref": {
+      "$ref": "#/$defs/BudgetScopeRef"
+    },
+    "profile_key": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Profile Key",
+      "type": "string"
+    },
+    "purpose": {
+      "$ref": "#/$defs/Purpose"
+    },
+    "status": {
+      "$ref": "#/$defs/ProfileStatus"
+    }
+  },
+  "required": [
+    "meta",
+    "approval_ref",
+    "approved_by",
+    "approved_at",
+    "status",
+    "profile_key",
+    "purpose",
+    "max_analysis_elapsed_ms",
+    "max_total_cost_minor_units",
+    "currency",
+    "pricing_revision_ref",
+    "max_total_work",
+    "max_total_llm_calls",
+    "max_total_retries",
+    "max_parallel_work"
+  ],
+  "title": "ExecutionBudgetProfile",
+  "type": "object"
+}

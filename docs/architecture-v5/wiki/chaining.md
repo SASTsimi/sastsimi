@@ -23,11 +23,11 @@ Chaining Agent는 `upstream_result_ref`가 `downstream_input_ref`의 `matched_in
 
 match 후보는 부모 가설·Verification, workspace·commit, 정확한 Primitive record와 근거를 고정한 `PrimitiveMatchCandidate`입니다. 이 후보는 `UNVALIDATED`이며, 의미 있는 연결이면 `HypothesisProposal(origin=CHAINING)`을 만들고 trusted validation·전역 등록 뒤 새 Verification을 배정합니다. 새 가설은 `source_primitive_match_id`로 자신을 만든 정확한 match를 가리키고, 양쪽 Primitive의 `Restriction` 객체를 중복 없이 합쳐 그대로 보존합니다. 같은 restriction ID의 내용이나 근거가 다르면 등록하지 않습니다.
 
-Runtime은 work를 시작할 때 조상 제외 전 전체 Primitive를 `considered_primitive_refs`로 고정합니다. result Primitive와 CHAINING에서 파생된 Primitive는 부모 match를 재귀 추적해 그때의 current `PrimitiveAdmissionDecision=ALLOW`도 함께 고정합니다. 실제 match에 사용된 Primitive만 `input_primitive_refs`에 남기므로 두 목록을 같은 의미로 사용하지 않습니다. 실제 입력의 direct·ancestor admission 집합은 `source_admission_refs`에 중복 없이 기록합니다. 일반적인 새 Primitive·index 변경과 사용하지 않은 후보의 decision 변경은 진행 중 입력을 바꾸지 않고 다음 work에서 처리합니다. 다만 실제 match가 사용한 admission decision이 오래됐거나 `DENY`로 바뀌면 금지된 근거가 자식·손자 가설로 번지지 않도록 진행 중 결과를 저장하지 않습니다. 이미 저장된 파생 결과는 감사 이력으로만 남기고 새 Verification·Gate·Primitive·Reporter 입력에서 제외합니다.
+Runtime은 work를 시작할 때 조상 제외 전 전체 Primitive를 `considered_primitive_refs`로 고정합니다. 실제 match에 사용된 Primitive만 `input_primitive_refs`에 남기므로 두 목록을 같은 의미로 사용하지 않습니다. 새 Primitive가 저장돼 index revision이 올라가는 것은 진행 중 입력을 바꾸지 않고 다음 work에서 처리합니다. work가 고정하지 않은 Primitive·index reference가 결과에 섞이면 저장하지 않습니다.
 
 `source_result_refs`와 각 match의 부모 가설·Verification 목록은 실제 match에 사용한 Primitive가 직접 가리키는 값만 중복 없이 모읍니다. 빠진 값, 관계없는 값, 다른 work의 값을 넣으면 결과를 저장하지 않습니다.
 
-`origin=CHAINING` 자식의 `observed_facts`는 빈 목록으로 고정합니다. Chaining Agent가 코드 사실을 새로 만들지 않고, 자식 Verification이 `source_primitive_match_id`를 따라 부모 Primitive의 entity와 location에서 다시 확인합니다. 부모 계보가 끊겨 검증 시작점을 찾을 수 없으면 자식 가설을 등록하지 않습니다.
+`origin=CHAINING` 자식의 `observed_facts`는 빈 목록으로 고정합니다. Chaining Agent가 코드 사실을 새로 만들지 않고, Context Retrieval Service가 `CONTEXT_RETRIEVAL` work에 고정된 exact proposal의 `source_primitive_match_id`를 따라 부모 Primitive에서 검증 시작점을 복구하고, 자식 Verification은 반환된 `CodeContextResponse`로 다시 확인합니다. 부모 계보가 끊겨 검증 시작점을 찾을 수 없으면 자식 가설을 등록하지 않습니다.
 
 일반 우회·대체 경로·영향 탐색, 동적 재현과 Technical `REVISE` 보완은 Verification이 담당합니다. 어느 child도 부모 판정을 바꾸지 않습니다.
 
@@ -45,6 +45,6 @@ Runtime은 work를 시작할 때 조상 제외 전 전체 Primitive를 `consider
 
 이 규칙은 순환 방지가 아닙니다 — record가 불변·append-only라 계보는 이미 DAG입니다. 상세 문서 §06대로, 같은 계보에서는 가장 깊은 후보부터 match를 검토하고 그 match가 실제로 성립한 뒤에만 그 후보의 양쪽(upstream·downstream) Primitive를 재귀 추적해 얻은 조상을 현재 순회의 후보에서 제외합니다. match가 성립하지 않으면 아무것도 제외하지 않고 얕은 후보를 그대로 검토합니다. 조상 쪽은 새 Primitive가 등장하기 전부터 이미 서로 연결이 확정돼 있었으므로, 가장 깊은 match가 성립한 시점에서 그 결론이 얕은 조합들의 결론을 이미 포함합니다. 대신 가장 깊은 조합의 자식 가설이 이후 검증에서 실패해도 제외된 얕은 조합은 다시 제안되지 않으며, 이는 중복 제안을 줄이는 대가로 의도적으로 수용한 미탐 위험입니다. 계보가 겹치지 않는 다른 Primitive의 재사용은 막지 않습니다. 실제 제외한 항목은 `excluded_lineage_refs`에 제외된 Primitive, 제외 근거가 된 같은 work의 Primitive와 `ANCESTOR_REUSE` 이유를 함께 남깁니다. Runtime은 이 기록을 고정된 `considered_primitive_refs`와 다시 비교해 누락·추가·잘못된 계보를 거절합니다. 별도 루트 ID나 깊이 숫자, 체이닝 전용 임의 깊이·호출·조합 한도는 저장하지 않습니다.
 
-체이닝 전용 depth·count·call·조합·token 상한은 두지 않습니다. R8의 전체 시간·비용·작업 예산, 중복 fingerprint와 조상 재사용은 Runtime Validator가 검사하며, 중단은 `FALSE`가 아닙니다. token은 사용량만 관측합니다.
+체이닝 전용 depth·count·call·조합·token 상한은 두지 않습니다. R8의 전체 시간·비용·작업 예산, 중복 match 조합과 조상 재사용은 Runtime Validator가 검사하며, 중단은 `FALSE`가 아닙니다. token은 사용량만 관측합니다.
 
 상세 내용은 [Primitive DB와 Chaining](../06-chaining.md)을 따릅니다.

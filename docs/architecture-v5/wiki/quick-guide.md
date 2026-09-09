@@ -11,10 +11,10 @@
 ## 핵심 변경
 
 - 정적 분석은 취약점 판단기가 아니라 LLM이 사용할 사실 수집 계층이다.
-- 저비용 가설 Agent는 ‘아직 최종 결과가 아님’을 뜻하는 `HYPOTHESIS_ONLY / NON_FINAL` 형식만 출력한다.
+- Hypothesis Agent는 ‘아직 최종 결과가 아님’을 뜻하는 `HYPOTHESIS_ONLY / NON_FINAL` 형식만 출력한다.
 - 필요한 코드는 같은 `workspace_id`와 `commit_id`에서 코드 요소·위치·경로를 기준으로 조회한다.
-- Orchestration은 가설을 검증·등록하고 Verification에 배정하는 데서 가설별 역할이 끝난다.
-- 검증(`Verification`)은 한 가설의 Context·찬반, 동적 재현 목적 요청·결과 소비·판정·Gate 보완·연계 handoff를 관리한다. R7 Agent는 환경 요구사항·간단한 재현 전략·PoC candidate를 만들고 Sandbox 안에서 명령·관찰·재시도를 자율적으로 정한다. Setup Automation이 환경을 만들고 Session Manager가 실제 기록과 결과를 확정한다. 모든 final TRUE에는 재현 성공과 validated PoC가 필요하며, 생성·환경·실행 실패는 verdict 없이 `BLOCKED | FAILED`다.
+- 비-LLM Orchestration Runtime은 가설 형식 검증·등록 요청과 Verification 배정 요청까지만 담당한다.
+- 검증(`Verification`)은 한 가설의 Context·찬반, 동적 재현 목적 요청·결과 소비·판정·Gate 보완·연계 handoff를 관리한다. Dynamic Reproduction Agent는 환경 요구사항·간단한 재현 전략·PoC candidate를 만들고 Sandbox 안에서 명령·관찰·재시도를 자율적으로 정한다. Setup Automation이 환경을 만들고 Session Manager가 실제 기록과 결과를 확정한다. 모든 final TRUE에는 재현 성공과 validated PoC가 필요하며, 생성·환경·실행 실패는 verdict 없이 `BLOCKED | FAILED`다.
 - 운영 기본값은 `ALWAYS_DEBATE`이며 모든 유효 가설에서 Pro/Con을 독립 NEW session으로 실행한다. BASIC과 조건부 debate는 격리된 평가 전용이다.
 - HOLD의 `required_primitive_candidates`가 하나 이상이면 전체 후보를 `inputs`, 결과를 `null`로 둔 Primitive를 저장한다. 후보가 비어 있으면 Primitive와 Chaining 작업을 만들지 않는다. TRUE는 validated PoC와 Technical `ACCEPT`가 있고 금지 테스트 위반이 확정되지 않아 current admission이 `ALLOW`인 exact revision만 `result`가 있는 Primitive가 된다. 한 Primitive의 result가 다른 Primitive의 특정 input을 충족할 때만 연결한다.
 - 기술 근거 검토와 공식 정책·영향 검토를 분리한다.
@@ -25,14 +25,15 @@
 ## 핵심 흐름
 
 ```text
-Repository → Repository Loader → CodeWorkspace → AST and SAST → StaticFactBundle
-→ constrained hypotheses → trusted registration → Orchestration assigns Verification
+Repository → Repository Loader → CodeWorkspace → AST·SAST와 정책 준비를 병렬 실행
+→ AST·SAST 결과는 StaticFactBundle로 정규화하고, Policy Parser는 PolicyParserResult를 만들며 Policy Collector가 검증·취합한 RunPolicyState를 run에 고정
+→ constrained hypotheses → trusted registration → Orchestration Runtime assigns Verification
 → Verification owns context → Pro/Con → POC_CONFIRMATION or VERDICT_EVIDENCE request
-→ R7 requirements and simple plan → external boundary approval → autonomous Sandbox reproduction and AgentLog
+→ Dynamic Reproduction Agent requirements and simple plan → external boundary approval → autonomous Sandbox reproduction and AgentLog
 → supported success and validated PoC → Verification TRUE; disproof or inconclusive → FALSE/HOLD
 → HOLD with required candidates → inputs plus null result Primitive → Chaining; no candidates → no Primitive and no Chaining work
 → TRUE → R5-01 CWE_LABELING이 exact Verification에 맞는 current CWELabel 생성
-→ Technical Gate → policy and Rule Scope check → PrimitiveAdmissionDecision
+→ Technical Gate → run에 고정한 RunPolicyState로 Rule Scope check → PrimitiveAdmissionDecision
 → ALLOW → result Primitive → Chaining → new hypothesis loop; DENY → no result Primitive
 → remaining Rule Scope fields → report eligibility
 → ReportDraft when allowed → AnalysisRunResult → Agent automation end

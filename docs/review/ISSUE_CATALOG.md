@@ -1,6 +1,8 @@
 # Architecture v5 역할별 Issue 카탈로그
 
-이 문서는 역할별 상위 Issue에서 무엇을 검토하고 어떤 세부 하위 Issue를 만들지 안내합니다. 실제 Issue와 담당자 상태는 [Issue 현황](./ISSUE_TRACKER.md)에서 확인합니다. 현재 단계는 **설계 검토**이며 실행 코드(`runtime`) 구현은 범위 밖입니다. 역할 담당자와 실제 GitHub 계정, 최종 검토·승인 담당자는 모두 정해졌습니다. 모르는 기술 용어는 [쉬운 용어집](../GLOSSARY.md)에서 확인합니다.
+이 문서는 역할별 상위 Issue에서 무엇을 검토했고 어떤 세부 하위 Issue로 나눴는지 안내합니다. 실제 Issue와 담당자 상태는 [Issue 현황](./ISSUE_TRACKER.md)에서 확인합니다. 역할별 설계 검토와 Final Issue #10·PR #117을 통한 구현 기준 설계 승인은 완료됐습니다. 실행 코드(`runtime`) 구현은 아직 범위 밖입니다. 모르는 기술 용어는 [쉬운 용어집](../GLOSSARY.md)에서 확인합니다.
+
+아래 체크박스는 각 Issue를 진행할 때 사용한 **완료 조건 원본**을 보존합니다. 현재 완료 여부는 체크박스 모양이 아니라 `ISSUE_TRACKER.md`, GitHub Issue 상태와 `FINAL_ARCHITECTURE_V5_APPROVAL.md`를 기준으로 판단합니다.
 
 ## 공통 작업 방식
 
@@ -26,14 +28,14 @@
 
 ---
 
-## 전체 관리 Issue — Architecture v5 검토 중 설계 초안 승인 준비
+## 전체 관리 Issue — Architecture v5 구현 기준 설계 승인
 
 - 실제 Issue: [#1](https://github.com/SASTsimi/sastsimi/issues/1)
 - 진행 담당: 김태현 `@taehyeon-git`, 윤희섭 `@YHS-Sec`
 
 ### 쉽게 말하면
 
-팀원별 설계 검토가 따로 놀지 않도록 R1–R8의 작업, 교차 리뷰와 마지막 전체 검토를 한곳에서 관리한다. 이 Epic이 끝나야 구현을 시작할 설계 기준을 확정할 수 있다.
+팀원별 설계 검토가 따로 놀지 않도록 R1–R8의 작업, 교차 리뷰와 마지막 전체 검토를 한곳에서 관리했다. Final PR #117 병합과 post-merge `main` 감사 뒤 이 Epic도 `CLOSED`됐으며, 구현을 시작할 설계 기준을 확정했다.
 
 ### 목적
 
@@ -66,7 +68,7 @@
 - [ ] HOLD는 `required_primitive_candidates`가 하나 이상일 때만 `inputs + result=null` Primitive로 연결 후보가 되고, 후보가 비어 있으면 Primitive·Chaining work가 생기지 않음. TRUE는 validated PoC·Technical `ACCEPT`·current admission `ALLOW` 뒤에만 `inputs + result` Primitive로 연결되며 FALSE는 체이닝되지 않음
 - [ ] 모든 Blocker/High가 닫히고 Medium은 명시적으로 처리됨
 - [ ] freeze commit SHA, 역할 간 교차 검토와 최종 검토·승인 담당자의 최신 확인 기록이 있음
-- [ ] 별도 승인 PR 전까지 `REVIEW_REQUIRED / NOT_IMPLEMENTED`를 유지함
+- [ ] 별도 최종 승인 PR에서만 `DESIGN_APPROVED / NOT_IMPLEMENTED`로 상태를 변경함
 
 ---
 
@@ -102,8 +104,8 @@
 
 ### 검토할 입력·출력
 
-- 입력: 최초 가설용 `StaticFactBundle` refs, `RecordMeta`, 전역 budget, current `Primitive`와 direct·ancestor ALLOW admission refs
-- 출력: schema-valid `HypothesisProposal[]`, `INVALID_OUTPUT`, `PrimitiveMatchCandidate`, `source_admission_refs`를 포함한 `ChainingResult`, chained proposal과 no-match 결과
+- 입력: 최초 가설용 `StaticFactBundle` refs, `RecordMeta`, 전역 budget, work 시작 시 index에서 읽어 고정한 `Primitive`
+- 출력: schema-valid `HypothesisProposal[]`, `INVALID_OUTPUT`, `PrimitiveMatchCandidate`, `ChainingResult`, chained proposal과 no-match 결과
 
 ### 확인할 권한 경계
 
@@ -203,7 +205,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 쉽게 말하면
 
-각 파트의 설계가 실제 코드 모듈로 이어질 수 있는지 확인하고, 모듈 사이의 입력·출력과 오류가 서로 맞는지 테스트 계획을 만든다. 현재는 설계 검토 단계이므로 전체 코드를 구현하는 것이 아니라 **구현 가능한 설계인지 확인하는 작업**이다.
+각 파트의 설계가 실제 코드 모듈로 이어질 수 있는지 확인하고, 모듈 사이의 입력·출력과 오류가 서로 맞는지 테스트 계획을 만든다. 이 역할의 설계 검토는 완료됐으며, 현재 승인 상태는 **구현 가능한 설계를 확정했지만 실제 코드는 아직 만들지 않은 상태**다.
 
 ### 담당자가 나눌 수 있는 하위 Issue 예시
 
@@ -259,7 +261,7 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 쉽게 말하면
 
-전체 파트가 같은 상태 이름과 데이터 형식을 사용하도록 중앙 기준을 정한다. Orchestration의 전역 등록·배정과 Verification의 가설 내부 제어권을 나누고, 오류나 재시도를 어떻게 기록할지, LLM 제안과 프로그램 강제 규칙 및 Agent 자동화 종료 경계를 관리한다.
+전체 파트가 같은 상태 이름과 데이터 형식을 사용하도록 중앙 기준을 정한다. 비-LLM Orchestration Runtime의 전역 등록·배정과 Verification의 가설 내부 제어권을 나누고, 오류나 재시도를 어떻게 기록할지, LLM 제안과 프로그램 강제 규칙 및 Agent 자동화 종료 경계를 관리한다.
 
 ### 담당자가 나눌 수 있는 하위 Issue 예시
 
@@ -288,9 +290,9 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ### 확인할 권한 경계
 
-- Orchestration은 proposal 검증·전역 등록·Verification 배정까지만 담당하고, 가설 내부 다음 행동은 Verification이 제안·조정한다.
+- 비-LLM Orchestration Runtime은 proposal 검증·전역 등록 요청·Verification 배정 요청까지만 담당하고, 가설 내부 다음 행동은 Verification이 제안·조정한다.
 - Verification ownership과 관계없이 LLM이 아닌 프로그램 내부 규칙 검사기(`runtime validator`)가 action 규칙 준수를 강제한다.
-- PM/Orchestration은 가설 내부 Pro/Con·dynamic·Gate·Chaining, verdict, CWE, Gate result, 공식 정책 또는 공개 결정을 대신하지 않는다.
+- PM/Orchestration Runtime은 가설 내부 Pro/Con·dynamic·Gate·Chaining, verdict, CWE, Gate result, 공식 정책 또는 공개 결정을 대신하지 않는다.
 - silent provider/model failover와 repository prompt에 의한 policy 변경을 금지한다.
 - Runtime Validator는 action의 호출 권한·상태·예산·reference 범위를 강제하며 verdict·CWE·정책 의미를 대신 판단하지 않는다. Sandbox의 image·command·file·network·resource·cleanup 세부 정책은 R7의 Sandbox Controller가 전담한다.
 - Reporter는 안전 요구사항을 지킨 내부 초안만 만들고 이후 Agent action을 계속하지 않는다. 사람의 검토·수정·제출·공개는 자동화 밖이다.
@@ -310,8 +312,8 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 - [ ] 같은 요청은 canonical `dedupe_key`로 기존 `work_id`를 재사용하고 한 work에는 active attempt가 하나임
 - [ ] 상태 변경은 `state_version` compare-and-set을 사용하고 stale·취소·다른 workspace/commit 결과를 거절함
 - [ ] 중복·ancestor 재사용·repair/Gate revision과 R8 전역 time/cost/work budget의 enforcement owner가 비-LLM Runtime Validator로, Sandbox 세부 정책의 enforcement owner가 Sandbox Controller로 명시됨. token은 관측값이며 초과·누락만으로 action을 차단하지 않음
-- [ ] Technical `REVISE`가 Orchestration을 경유해 재배정되지 않고 같은 ACTIVE VerificationAssignment owner의 새 VERIFICATION work로 돌아감
-- [ ] non-empty `required_primitive_candidates`를 가진 HOLD의 `inputs + result=null`과 Technical-accepted + 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW` TRUE의 `inputs + result` Primitive admission·supersede 규칙이 있으며, 빈 HOLD 후보에는 Primitive·Chaining work가 없음
+- [ ] Technical `REVISE`가 Orchestration Runtime을 경유해 재배정되지 않고 같은 ACTIVE VerificationAssignment owner의 새 VERIFICATION work로 돌아감
+- [ ] non-empty `required_primitive_candidates`를 가진 HOLD의 `inputs + result=null`과 Technical-accepted + 같은 Verification의 current `PrimitiveAdmissionDecision=ALLOW` TRUE의 `inputs + result` Primitive 등록 시점 1회 admission 규칙이 있으며, 빈 HOLD 후보에는 Primitive·Chaining work가 없음
 - [ ] persistence/recovery/atomicity/idempotency 계약이 합의되고 `TERMINAL`·`DRAFTED` 상태가 정확한 결과 `record_id`를 가리킴
 - [ ] 결과 record 저장과 종료 상태 변경 중 하나만 성공했을 때의 crash-resume 복구와 오래되거나 취소된 결과의 연결 거절 규칙이 있음
 - [ ] `TransitionCommit`이 `COMMITTED`된 결과만 downstream과 최종 결과에서 사용함
@@ -325,28 +327,36 @@ AST·CodeQL·OpenGrep 결과를 LLM이 바로 사용할 수 있도록 **파일 �
 
 ---
 
-## R5 — 이중 Gate·FindingCandidate·ReportDraft
+## R5 — 이중 Gate·Finding·ReportDraft
 
 - 실제 Issue: [#6](https://github.com/SASTsimi/sastsimi/issues/6)
 
 ### 쉽게 말하면
 
-검증 결과의 근거가 코드·동적 재현과 제대로 연결됐는지 확인하고, 공식 정책 범위 안에서 보고 가능한지 검토한다. 조건을 통과한 결과만 Finding과 보고서 초안으로 정리하며 **취약점 판정을 바꾸거나 외부 공개를 결정하지는 않는다**.
+검증 결과의 근거가 코드·동적 재현과 제대로 연결됐는지 확인하고, 공식 정책 범위와 영향을 검토한다. Technical ACCEPT 뒤 Rule Scope review가 정상적으로 COMMITTED된 결과는 그 review의 `PASS/FAIL/UNCERTAIN`·`report_permission` 값과 무관하게 신뢰 runtime이 exact upstream chain을 기반으로 current Finding으로 정규화하며, 그중 current non-stale Finding 존재와 Reporter 6축 readiness를 모두 충족한 경우에만 보고서 초안을 만든다. 따라서 `Finding 존재 + Reporter 차단 + ReportDraft 없음`은 정상 상태다. **취약점 판정을 바꾸거나 외부 공개를 결정하지는 않는다**.
 
 ### 담당자가 나눌 수 있는 하위 Issue 예시
 
 - `[R5-01] CWE labeling과 기술 근거 Gate의 입력·출력·보완 요청 기준 확정`
 - `[R5-02] 공식 정책·범위·영향 검토 기준 확정`
 - `[R5-03] Finding과 안전한 보고서 초안 생성 및 자동화 종료 조건 확인`
+- `[R5-03 후속 검토] Finding 생성 lifecycle 및 Reporter handoff 확정` — 현재 main 반영 완료
 
 R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다. 기존 사람 검토 자동화 작업은 제거했으며, 출처 추적·오래된 참조 차단·restriction/limitation 보존·민감정보 제거 요구는 R5-03에 포함한다.
+
+#### R5-03 이력과 후속이슈
+
+- 기존 `[R5-03]`(PR #59, `main` `a1edf51`)에서 Technical/Rule Scope Gate 뒤 Reporter·`ReportDraft` 계약, claim traceability, restriction/limitation/redaction, 자동화 종료 경계를 완료했다. 이 이력은 유지한다.
+- 이후 R3-01 구현 모듈 맵이 B2로, Reporter가 `current Finding`을 필수 입력으로 요구하는 반면 그 Finding을 누가·언제·어떤 조건으로 생성·저장·current로 확정하는지 lifecycle이 연결돼 있지 않음을 확인했다.
+- `[R5-03 후속 검토]`에서 새 R5 기능이나 Agent를 추가하지 않고 기존 Architecture v5 계약 안에서 Finding 생성 lifecycle을 보완했다. R5는 Finding의 의미·생성 exact upstream closure·claim strength 제한·restriction 보존·Finding↔Reporter handoff 조건·stale Finding 의미를 확정했고, 저장 action/work/schema/current pointer/CAS는 R4 trusted runtime 계약을 재사용한다. B2 storage binding도 현재 main에 반영됐다.
+- 변경 문서: `01`, `03`, `05`, `07`, `08`, `10`, `12`, `13`, `implementation/01-module-map.md`, `GLOSSARY.md`, 관련 wiki. 기존 Gate/Primitive/Chaining/6축 readiness/redaction/claim-strength/ReportDraft 이후 종료 계약은 변경하지 않는다.
 
 ### 역할 소유권
 
 - 담당 역할: Gate·Finding·보고서
 - 담당자: 김혜령 `@kimhr8463`
 - 주요 작업 브랜치: `review/gate-reporting`
-- 관련 흐름: final TRUE → R5-01 `CWE_LABELING` current label 생성 → 기술 근거 검토 → 공식 정책·영향 검토 → 안전한 보고서 초안 → 결과 저장 → Agent 자동화 종료
+- 관련 흐름: final TRUE → R5-01 `CWE_LABELING` current label 생성 → 기술 근거 검토 → 공식 정책·영향 검토 → 신뢰 runtime의 current Finding 정규화 → 안전한 보고서 초안 → 결과 저장 → Agent 자동화 종료
 
 ### 검토 문서
 
@@ -359,7 +369,7 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 ### 검토할 입력·출력
 
 - 입력: final VerificationResult, evidence, dynamic/PoC, restrictions, taxonomy와 official ProgramPolicyRecord
-- 출력: R5-01의 current CWELabel, TechnicalEvidenceReview, RuleScopeImpactReview, revision requests와 안전 요구사항을 충족한 ReportDraft
+- 출력: R5-01의 current CWELabel, TechnicalEvidenceReview, RuleScopeImpactReview, 신뢰 runtime이 exact chain에서 정규화한 current Finding, revision requests와 안전 요구사항을 충족한 ReportDraft
 
 ### 확인할 권한 경계
 
@@ -368,7 +378,7 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 - 새 Verification에는 CWE 값이 같아도 exact Verification을 가리키는 새 label revision을 확정한다.
 - Gate 1은 final TRUE에서만, Gate 2는 같은 `TRUE + Technical ACCEPT`에서만 호출한다.
 - 공식 정책이 없거나 핵심 정보가 누락되면 `UNCERTAIN + DENY`다.
-- Technical `REVISE`는 Orchestration이나 R7이 목적지를 고르지 않고 같은 ACTIVE `VerificationAssignment`의 R6 owner에게 직접 돌아간다.
+- Technical `REVISE`는 Orchestration Runtime이나 R7이 목적지를 고르지 않고 같은 ACTIVE `VerificationAssignment`의 R6 owner에게 직접 돌아간다.
 - Reporter는 새 공격 주장을 만들거나 외부 제출·공개를 수행하지 않으며 ReportDraft 뒤 자동 Agent 작업을 만들지 않는다.
 
 ### 필수 교차 리뷰
@@ -388,9 +398,13 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 - [ ] REVISE는 구체적인 새 evidence/revision을 요구하며 무한 재투표가 아님
 - [ ] REVISE는 같은 ACTIVE VerificationAssignment owner에게 직접 전달되고 새 VERIFICATION work·Verification/CWELabel revision 전에는 재호출되지 않음
 - [ ] result Primitive은 Technical `ACCEPT` + current `PrimitiveAdmissionDecision=ALLOW`를, Reporter는 Technical·Rule Scope의 별도 보고 조건 전체를 요구하며 두 자격을 혼합하지 않음
+- [ ] current Finding은 두 Gate가 검토한 exact chain을 신뢰 runtime이 정규화한 record이며 새 verdict·attack path·impact를 만들지 않고 claim 강도는 verified upstream 이하임
+- [ ] Finding 생성 조건(Rule Scope review 존재, 값 무관)과 Reporter 6축 readiness가 분리되어 `Finding 존재 + report_permission=DENY + ReportDraft 없음` 상태를 허용함
+- [ ] Verification generation/revision·CWELabel·두 Gate·동적 결과·PoC·고정 정책 변경이 Finding을 stale하게 만들고 새 generation에서 재사용되지 않음
+- [ ] 새 Finding Agent role이나 LLM Gate는 추가하지 않고, R4 trusted runtime의 전용 비-LLM `FINDING_NORMALIZE` work와 저장 binding을 사용함
 - [ ] policy source 인증·freshness·parser failure threat model/ADR 요구가 있음
 - [ ] 모순된 `ALLOW` 출력은 semantic `INVALID_OUTPUT`이며 Reporter가 차단됨
-- [ ] 보고서 Agent 호출 조건 `TRUE + ACCEPT + PASS + PASS + PASS + SUFFICIENT + ALLOW`를 프로그램 내부 규칙 검사기(`runtime validator`)가 강제함
+- [ ] 보고서 Agent 호출을 `runtime validator`가 다음 exact 조건 전부일 때만 허용함: `VerificationResult.final == TRUE`, `TechnicalEvidenceReview.status == ACCEPT`, current non-stale Finding 존재(Reporter의 별도 선행조건), 그리고 Reporter 6축 readiness `review_status == PASS` · `rule_compliance == PASS` · `scope_compliance == PASS` · `testing_restriction_compliance == PASS` · `security_impact == SUFFICIENT` · `report_permission == ALLOW` (`05-llm-gate-and-reporting.md` Reporter 호출 조건과 동일, Finding 생성 eligibility와 분리)
 - [ ] 핵심 report claim이 evidence/PoC/Gate/policy artifact로 추적됨
 - [ ] restriction·limitation·남은 불확실성이 초안에서 빠지거나 약화되지 않음
 - [ ] secret·PII·hidden chain-of-thought가 report와 trace에 포함되지 않음
@@ -438,7 +452,7 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 - 오류, empty retrieval와 sandbox setup failure를 `FALSE`로 만들지 않는다.
 - 별도 endpoint/sink/권한/impact를 기존 verdict에 몰래 합치지 않는다.
 - R6는 동적 재현 purpose·목표·필요 환경·Sandbox profile·근거 reference를 요청하지만 `EnvironmentRequirements`·`ReproductionPlan`·recipe·command·PoC·동적 결과를 생산하지 않는다. R7의 `COMMITTED` 결과만 소비한다.
-- 모든 TRUE에는 validated PoC가 필요하다. PoC 생성·환경 구성·실행 실패는 `FALSE | HOLD`가 아니다. R7이 자체 해결할 수 있으면 자동 retry하고, 외부 조건을 기다릴 때만 `BLOCKED`, 복구 불가능하거나 한도를 소진하면 verdict 없는 `FAILED`다.
+- 모든 TRUE에는 validated PoC가 필요하다. PoC 생성·환경 구성·실행 실패는 `FALSE | HOLD`가 아니다. 같은 Dynamic Reproduction Agent session의 조정은 현재 attempt, session 재시작은 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개는 새 `attempt_id`·`trigger=RESUME`이며 대기 중에만 `BLOCKED`다. 복구 불가능하거나 한도를 소진하면 verdict 없는 `FAILED`다.
 - Gate 결과·정책 의미·공개 결정을 대신 만들지 않는다. Gate·Reporter 호출을 제안해도 Runtime Validator 검사를 우회하지 않는다.
 
 ### 필수 교차 리뷰
@@ -458,7 +472,7 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 - [ ] initial/final verdict와 revision history가 분리됨
 - [ ] dynamic 실행 `status`, 관측 `hypothesis_outcome`, `hypothesis_disproved`와 Verification verdict가 구분됨
 - [ ] R6가 current generation의 exact `DynamicReproductionRequest`만 생산하고 R7의 `COMMITTED` 결과만 소비함
-- [ ] 한 Verification generation에 동적 work 하나만 있고 retry는 같은 work의 새 attempt이며, Technical `REVISE` 새 generation에는 한도가 새로 적용됨
+- [ ] 한 Verification generation에 동적 work 하나만 있고 같은 Dynamic Reproduction Agent session 조정은 현재 attempt, session 재시작은 같은 work의 `trigger=RETRY` 새 attempt, 외부 조건 해소 뒤 재개는 `trigger=RESUME` 새 attempt이며 Technical `REVISE` 새 generation에는 한도가 새로 적용됨
 - [ ] final TRUE는 현재 generation의 `SUCCEEDED + SUPPORTED` 동적 결과와 validated `poc_ref`를 요구함
 - [ ] PoC 생성·환경 구성·실행 실패는 final verdict와 Gate 없이 `BLOCKED | FAILED`이며 `FALSE | HOLD`로 바뀌지 않음
 - [ ] material new claim과 같은 가설의 작은 validation subtask 경계가 있음
@@ -472,13 +486,13 @@ R5 자동화는 세 번째 세부 작업의 `ReportDraft` 생성에서 끝난다
 
 ---
 
-## R7 — 자율 동적 재현 Agent·Clean Sandbox evidence
+## R7 — Dynamic Reproduction Agent·Clean Sandbox evidence
 
 - 실제 Issue: [#8](https://github.com/SASTsimi/sastsimi/issues/8)
 
 ### 쉽게 말하면
 
-R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `EnvironmentRequirements`와 간단한 `ReproductionPlan`을 만든다. Controller가 외부 경계를 허용하면 Setup Automation이 recipe·image·container·cleanup을 수행하고, Agent는 격리된 Docker 안에서 PoC candidate·command·관찰·재시도를 자율적으로 선택한다. Session Manager가 실제 AgentLog와 validated PoC·동적 결과를 같은 attempt로 확정한다.
+R6의 `DynamicReproductionRequest`를 받아 Dynamic Reproduction Agent가 먼저 exact `EnvironmentRequirements`와 간단한 `ReproductionPlan`을 만든다. Controller가 외부 경계를 허용하면 Setup Automation이 recipe·image·container·cleanup을 수행하고, Dynamic Reproduction Agent는 격리된 Docker 안에서 PoC candidate·command·관찰·재시도를 자율적으로 선택한다. Session Manager가 실제 AgentLog와 validated PoC·동적 결과를 같은 attempt로 확정한다.
 
 ### 하위 Issue
 
@@ -492,7 +506,7 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 - 담당 역할: 동적검증·Sandbox
 - 담당자: 조근석 `@Potatonion`
 - 주요 작업 브랜치: `review/dynamic-sandbox`
-- 관련 흐름: R6의 exact `DynamicReproductionRequest` 수신 → R7 Agent가 requirements·간단한 plan 생성 → Controller 외부 경계 검사 → Setup Automation의 recipe·환경 구성 → Agent 자율 재현 → Session Manager의 AgentLog·validated PoC·동적 결과 확정
+- 관련 흐름: R6의 exact `DynamicReproductionRequest` 수신 → Dynamic Reproduction Agent가 requirements·간단한 plan 생성 → Controller 외부 경계 검사 → Setup Automation의 recipe·환경 구성 → Dynamic Reproduction Agent 자율 재현 → Session Manager의 AgentLog·validated PoC·동적 결과 확정
 
 ### 검토 문서
 
@@ -502,16 +516,16 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 
 ### 검토할 입력·출력
 
-- 입력: R6가 생산하고 runtime이 확정한 exact `DynamicReproductionRequest`, 같은 hypothesis/workspace/commit/generation의 R7 실행 work/attempt, image digest와 승인된 target/network/resource policy
+- 입력: R6가 생산하고 runtime이 확정한 exact `DynamicReproductionRequest`, current `EnvironmentRequirements`, current exact `ReproductionPlan`, `sandbox_profile_ref`, exact `DynamicReproductionLifecycleProfile`, 같은 hypothesis/workspace/commit/generation의 R7 실행 work/attempt와 image digest
 - 출력: `EnvironmentRequirements`, 간단한 `ReproductionPlan`, `EnvironmentRecipe`, `poc_candidate_ref`, container lifecycle과 요구사항 비교를 담은 `SandboxEnvironment`, append-only `AgentLog`, `DynamicReproductionResult`, 성공 시 validated `poc_ref`, plan issue/limitation/cleanup/error
 
 ### 확인할 권한 경계
 
 - sandbox는 evidence만 생산하며 verdict를 결정하지 않는다.
 - R7은 R6 요청의 목적·가설·profile을 바꾸지 않지만 실행 가능한 requirements·간단한 plan·PoC candidate와 동적 해석을 만든다. plan은 mode나 exact command allowlist가 아니다.
-- Runtime Validator는 `RUN_SANDBOX` 호출 권한·상태·예산·current request/requirements를 검사하고, Sandbox Controller는 host·Docker daemon/socket·mount/namespace·secret·egress·workspace·R8 resource/lifecycle 외부 경계를 전담한다.
-- Setup Automation은 recipe·image·container·cleanup을 수행하고, R7 Agent는 Sandbox 안의 command·PoC·관찰·재시도를 자율적으로 정한다.
-- Reproduction Session Manager는 AgentLog를 append-only로 저장하고 same-attempt reference만으로 validated PoC와 `DynamicReproductionResult`를 확정한다.
+- Runtime Validator는 `RUN_SANDBOX` 호출 권한·상태·예산과 exact request·current requirements·current exact plan·R7 `sandbox_profile_ref`·exact R8 `DynamicReproductionLifecycleProfile` revision을 고정하고 호출 전 잔여 시간·새 attempt 한도를 검사한다. Sandbox Controller는 R7 profile의 외부 접근·격리와 CPU·RAM·disk·PID·요청 가능 최대 시간을 강제한다.
+- Setup Automation은 recipe·image·container·cleanup을 수행하고, Dynamic Reproduction Agent는 Sandbox 안의 command·PoC·관찰·재시도를 자율적으로 정한다.
+- Reproduction Session Manager는 AgentLog를 append-only로 저장하고 `COMMAND_STARTED`·`COMMAND_FINISHED`의 exact `SandboxCommandRecord`·digest·action·attempt·environment·redaction 일치와 same-attempt reference를 검사해 validated PoC와 `DynamicReproductionResult`를 확정한다.
 - R4는 request·requirements·plan·recipe·환경·AgentLog·candidate/validated PoC와 nullable reference·상태·result-owner 조합을 확정하고, R7은 실제 환경 구성·실행·관찰·정리 세부 절차를 정의한다.
 - version fallback은 R7이 exact requirements에 미리 적은 `alternatives`만 허용하며, 요구사항·환경 기록에 credential·cookie·token·password 원문을 저장하지 않는다.
 - host root/home, Docker socket, host process namespace, host secret, production credential와 범위 밖 target 접근을 금지한다.
@@ -521,7 +535,7 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 
 - R6 검증·반박: request와 outcome/최종 verdict 경계, 실패 결과 소비
 - R4 PM·아키텍처: producer authority·Session Manager·SAVE_RESULT 계약
-- R8 데이터·평가: resource/time/retry budget 값과 지표
+- R8 데이터·평가: `DynamicReproductionLifecycleProfile(data_kind=dynamic_reproduction_lifecycle_profile)`의 호출 전 잔여 시간·새 attempt 한도(초안 4회, 최초 별도 총 5회)와 revision 정책. CPU·RAM·disk·PID·요청 가능 최대 시간은 R7 `sandbox_profile_ref` 검토
 - R3 통합 개발: Docker Controller·recipe/image lifecycle·cleanup 구현 가능성
 - R5 Gate·보고: AgentLog·validated PoC·evidence와 Reporter 소비·redaction
 
@@ -533,9 +547,9 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 - [ ] R6 purpose와 R7 plan의 재현 목표·선택적인 requested evidence·실제 observable effect 연결이 명확함
 - [ ] exact request/requirements/plan/recipe/action/work/attempt가 일치하고 내부 command는 AgentLog로 추적되며 Sandbox 외부 경계를 넘지 않음
 - [ ] setup/execution/observation/policy/timeout failure와 반증이 다른 상태임
-- [ ] 필수 환경 불일치는 R7 Agent가 recipe·환경을 보완해 같은 work에서 자율 retry하고, 외부 수정이 필요할 때만 `BLOCKED`, 복구 불가능하거나 한도를 소진하면 `FAILED`로 끝내며 final verdict를 만들지 않음
+- [ ] 필수 환경 불일치는 같은 Dynamic Reproduction Agent session이면 현재 attempt에서 보완하고, session 재시작만 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개만 새 `attempt_id`·`trigger=RESUME`를 사용함. 대기 중에만 `BLOCKED`, 복구 불가능하거나 한도를 소진하면 `FAILED`로 끝내며 final verdict를 만들지 않음
 - [ ] 모든 requirement가 `SandboxEnvironment.checks`에 정확히 한 번 나타나고 차이·오류가 `failure_category`, 자유형 `failure_reason`, `plan_issues`와 일치함
-- [ ] workspace/commit, recipe, container, command, input, observation과 cleanup이 AgentLog와 hypothesis에 추적됨
+- [ ] workspace/commit, recipe, container, command, input, observation과 cleanup이 AgentLog와 hypothesis에 추적되며 command 시작·종료가 같은 exact command record·digest·action·attempt·environment와 유효한 redaction을 가리킴
 - [ ] Agent 미호출/호출, plan·recipe·환경 미생성/생성, cleanup 불필요/필요 조합이 R4 nullable reference 계약과 일치함
 - [ ] PoC candidate와 `SUCCEEDED + SUPPORTED`일 때만 생기는 validated PoC, Controller 정책 판정, 환경과 AgentLog의 R7 상세 artifact schema가 정의됨
 - [ ] escape/socket/secret/out-of-scope network negative scenario가 있음
@@ -610,14 +624,14 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 
 ### 쉽게 말하면
 
-각 파트 문서를 따로 읽는 데서 끝내지 않고 실제 분석 한 건이 처음부터 마지막까지 모순 없이 흐르는지 팀 전체가 확인한다. 각 파트가 서로 교차 검토하고, 검토할 commit을 고정한 뒤 최종 검토·승인 담당자가 최신 상태를 확인해야 최종 승인 PR로 넘어갈 수 있다.
+각 파트 문서를 따로 읽는 데서 끝내지 않고 실제 분석 한 건이 처음부터 마지막까지 모순 없이 흐르는지 팀 전체가 확인했다. 각 파트의 교차 검토와 고정된 commit 확인 결과는 Final PR #117과 최종 승인 기록에 보존한다.
 
 ### 역할 소유권
 
 - 담당 역할: 최종 검토·승인 담당자
 - GitHub 담당자: 김태현 `@taehyeon-git`
 - 필수 참여자: `@baeseungwon1010`, `@zv9uvr`, `@taehyeon-git`, `@YHS-Sec`, `@kimhr8463`, `@UltraPeachKeen`, `@Potatonion`, `@gitterable`
-- 전제: R1–R8 완료, 열린 Blocker/High 0, 최종 승인 PR에 freeze SHA 게시
+- 완료 근거: R1–R8 완료, 열린 Blocker/High 0, Final PR #117 exact head와 merge commit 기록
 
 ### 필수 시나리오
 
@@ -629,15 +643,15 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 | empty/truncated context | gap 또는 HOLD 가능; 자동 FALSE 금지 |
 | workspace 또는 commit 불일치 | context/dynamic evidence 폐기와 `WORKSPACE_MISMATCH` 기록 |
 | 상충 Pro/Con | 독립 NEW session과 근거 기반 verdict/HOLD |
-| PoC 생성·sandbox setup·실행 실패 | 자체 해결 가능하면 같은 work 자동 retry, 외부 조건 대기만 `BLOCKED`, 복구 불가능·한도 소진은 verdict 없는 `FAILED`; vulnerability FALSE/HOLD와 Gate 금지 |
-| 동적 재현 요청·계획 생성 | R6가 purpose·goal·needs를 요청하고 R7 Agent가 exact requirements와 mode·exact command가 없는 간단한 plan을 만든 뒤 runtime이 generation당 단일 work와 RUN_SANDBOX 외부 경계 입력을 검사 |
-| 동적 재현 실행·반환 | Controller 외부 경계 허용 뒤 Setup Automation이 환경을 만들고 R7 Agent가 PoC candidate·command·관찰·재시도를 자율 선택; Session Manager가 same-attempt AgentLog·validated PoC·동적 결과를 확정하고 R6가 최종 판정 |
-| 동적 plan·candidate 변경과 stale 실행 | 같은 attempt의 변경은 새 불변 revision과 AgentLog에 남기고 최종 결과가 exact revision을 가리켜야 함. request·requirements·profile·resource/lifecycle 또는 attempt가 바뀌면 기존 action/result를 재사용하지 않고 새 RUN_SANDBOX action 필요 |
+| PoC 생성·sandbox setup·실행 실패 | 같은 session 조정은 현재 attempt, session 재시작은 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개는 새 `attempt_id`·`trigger=RESUME`; 대기 중에만 `BLOCKED`, 복구 불가능·한도 소진은 verdict 없는 `FAILED`; vulnerability FALSE/HOLD와 Gate 금지 |
+| 동적 재현 요청·계획 생성 | R6가 purpose·goal·needs를 요청하고 Dynamic Reproduction Agent가 exact requirements와 mode·exact command가 없는 간단한 plan을 만든 뒤 runtime이 generation당 단일 work와 exact request·requirements·plan·`sandbox_profile_ref`·`DynamicReproductionLifecycleProfile`을 검사 |
+| 동적 재현 실행·반환 | Controller 외부 경계 허용 뒤 Setup Automation이 환경을 만들고 Dynamic Reproduction Agent가 PoC candidate·command·관찰·재시도를 자율 선택; Session Manager가 same-attempt AgentLog·validated PoC·동적 결과를 확정하고 R6가 최종 판정 |
+| 동적 plan·candidate 변경과 stale 실행 | 같은 attempt의 변경은 새 불변 revision과 AgentLog에 남기고 최종 결과가 exact revision을 가리켜야 함. request·requirements·plan·`sandbox_profile_ref`·`DynamicReproductionLifecycleProfile` revision 또는 attempt가 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 처리하고 action/result를 재사용하지 않으며 새 RUN_SANDBOX action 필요 |
 | HOLD + non-empty `required_primitive_candidates` | Gate 없이 전체 후보를 `inputs`, `result=null`로 둔 Primitive 저장과 Chaining 조회 |
 | HOLD + `required_primitive_candidates=[]` | Primitive를 저장하지 않고 Chaining work도 만들지 않은 채 HOLD 처리 종료 |
 | FALSE | terminal internal result; Primitive/Chaining 금지 |
 | Gate 전 TRUE | result Primitive admission과 Chaining 금지 |
-| Technical ACCEPT만 받은 TRUE | 정책 수집·Rule Scope의 금지 테스트 판정과 `PrimitiveAdmissionDecision`이 끝날 때까지 result Primitive·Chaining·Reporter 금지 |
+| Technical ACCEPT만 받은 TRUE | 실행 초기에 고정한 정책 확인·Rule Scope의 금지 테스트 판정과 `PrimitiveAdmissionDecision`이 끝날 때까지 result Primitive·Chaining·Reporter 금지 |
 | Verification 새 claim | `origin=VERIFICATION` child hypothesis로 8단계부터 재검증; parent 불변 |
 | TRUE result→HOLD input | upstream TRUE가 exact Technical-accepted·admission-allowed이고 그 result가 HOLD Primitive의 특정 input을 충족할 때만 `origin=CHAINING` child 생성 |
 | TRUE result→TRUE input | upstream result와 downstream TRUE Primitive의 특정 input이 근거로 연결될 때만 새 chain hypothesis 생성 |
@@ -646,7 +660,7 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 | chain budget/reuse | R8 전역 예산 중단 또는 ancestor 재사용 제외; FALSE 금지 |
 | Technical REVISE | 같은 ACTIVE VerificationAssignment owner의 새 VERIFICATION work로 직접 반환; 새 evidence/revision 전 result Primitive·Rule Scope·Reporter 차단 |
 | Chaining 시작 뒤 parent/index 새 revision 생성 | 진행 중인 work는 시작 시 고정한 exact reference로 계속 처리; 새 revision은 새 Chaining work에서 사용하고, 고정하지 않은 reference가 기존 결과에 섞인 경우만 `STALE_RESULT` 처리 |
-| 실제 match가 사용한 admission decision 변경 | direct·ancestor `source_admission_refs` 중 하나가 오래됐거나 `DENY`이면 진행 결과·새 child 사용 차단; 이미 저장된 파생 결과는 감사 이력으로만 보존 |
+| 등록 뒤 admission을 뒤집으려는 시도 | admission은 Primitive 등록 시점 1회 판정이므로 새 decision revision을 만들지 않음; 정책·판정이 달라졌으면 다음 run에서 새로 판정 |
 | Chaining의 일반 research 출력 | invalid output; bypass·impact·dynamic·Gate 보완은 Verification 책임 |
 | 모순된 ALLOW | semantic invalid; Reporter 차단 |
 | provider auth/rate-limit | explicit attempt/fallback; silent failover/FALSE 금지 |
@@ -672,7 +686,7 @@ R6의 `DynamicReproductionRequest`를 받아 R7 Agent가 먼저 exact `Environme
 R8 평가/예산 기준 ─┐
                     ├─> R4 중앙 계약·runtime enforcement
 R4 ─────────────────┼─> R2 workspace/static/context
-R2 + R4 + R8 ───────┴─> R1-A Hypothesis
+R2 + R4 + R8 ───────┴─> R1-A Hypothesis Agent
 R1-A + R2 + R4 + R8 ──> R6 Verification
 R6 DynamicReproductionRequest + R4 runtime + R8 budget ─> R7 requirements/simple plan, external boundary, autonomous Sandbox reproduction and AgentLog
 R7 COMMITTED dynamic result ──────────────────> R6 final Verification

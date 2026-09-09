@@ -1,0 +1,622 @@
+{
+  "$defs": {
+    "AnalysisError": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "code": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Code",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "error_id": {
+          "$ref": "#/$defs/ErrorId"
+        },
+        "related_record_ids": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Related Record Ids",
+          "type": "array"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "safe_message": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Safe Message",
+          "type": "string"
+        },
+        "stage": {
+          "enum": [
+            "INPUT",
+            "REPOSITORY",
+            "STATIC_ANALYSIS",
+            "CONTEXT",
+            "ORCHESTRATION",
+            "AGENT",
+            "PROVIDER",
+            "SANDBOX",
+            "POLICY",
+            "GATE",
+            "REPORT",
+            "STATE",
+            "STORAGE",
+            "RECOVERY",
+            "AUTHORITY"
+          ],
+          "title": "Stage",
+          "type": "string"
+        },
+        "work_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "error_id",
+        "stage",
+        "code",
+        "safe_message",
+        "retryable",
+        "work_id",
+        "attempt_id",
+        "related_record_ids",
+        "created_at"
+      ],
+      "title": "AnalysisError",
+      "type": "object"
+    },
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "CodeLocation": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "end_column": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "End Column"
+        },
+        "end_line": {
+          "minimum": 1,
+          "title": "End Line",
+          "type": "integer"
+        },
+        "file_path": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "File Path",
+          "type": "string"
+        },
+        "start_column": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Start Column"
+        },
+        "start_line": {
+          "minimum": 1,
+          "title": "Start Line",
+          "type": "integer"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace_id",
+        "commit_id",
+        "file_path",
+        "start_line",
+        "start_column",
+        "end_line",
+        "end_column"
+      ],
+      "title": "CodeLocation",
+      "type": "object"
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "DataGap": {
+      "additionalProperties": false,
+      "properties": {
+        "affected_languages": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Affected Languages",
+          "type": "array"
+        },
+        "affected_locations": {
+          "items": {
+            "$ref": "#/$defs/CodeLocation"
+          },
+          "title": "Affected Locations",
+          "type": "array"
+        },
+        "affected_paths": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Affected Paths",
+          "type": "array"
+        },
+        "code": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Code",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "description": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Description",
+          "type": "string"
+        },
+        "gap_id": {
+          "$ref": "#/$defs/GapId"
+        },
+        "reason": {
+          "enum": [
+            "MISSING",
+            "FAILED",
+            "TRUNCATED",
+            "UNSUPPORTED",
+            "BLOCKED",
+            "TIMEOUT"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "related_record_ids": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Related Record Ids",
+          "type": "array"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "stage": {
+          "enum": [
+            "REPOSITORY",
+            "STATIC_ANALYSIS",
+            "CONTEXT",
+            "DYNAMIC",
+            "POLICY"
+          ],
+          "title": "Stage",
+          "type": "string"
+        }
+      },
+      "required": [
+        "gap_id",
+        "stage",
+        "code",
+        "reason",
+        "description",
+        "affected_paths",
+        "affected_languages",
+        "affected_locations",
+        "retryable",
+        "related_record_ids",
+        "created_at"
+      ],
+      "title": "DataGap",
+      "type": "object"
+    },
+    "ErrorId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "ErrorId",
+      "type": "string"
+    },
+    "GapId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "GapId",
+      "type": "string"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "ToolCoverage": {
+      "additionalProperties": false,
+      "properties": {
+        "analyzed_languages": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Analyzed Languages",
+          "type": "array"
+        },
+        "analyzed_paths": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Analyzed Paths",
+          "type": "array"
+        },
+        "notes": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Notes",
+          "type": "array"
+        },
+        "skipped_languages": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Skipped Languages",
+          "type": "array"
+        },
+        "skipped_paths": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Skipped Paths",
+          "type": "array"
+        }
+      },
+      "required": [
+        "analyzed_paths",
+        "skipped_paths",
+        "analyzed_languages",
+        "skipped_languages",
+        "notes"
+      ],
+      "title": "ToolCoverage",
+      "type": "object"
+    },
+    "WorkId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkId",
+      "type": "string"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "coverage": {
+      "$ref": "#/$defs/ToolCoverage"
+    },
+    "elapsed_ms": {
+      "minimum": 0,
+      "title": "Elapsed Ms",
+      "type": "integer"
+    },
+    "errors": {
+      "items": {
+        "$ref": "#/$defs/AnalysisError"
+      },
+      "title": "Errors",
+      "type": "array"
+    },
+    "finished_at": {
+      "format": "date-time",
+      "title": "Finished At",
+      "type": "string"
+    },
+    "gaps": {
+      "items": {
+        "$ref": "#/$defs/DataGap"
+      },
+      "title": "Gaps",
+      "type": "array"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordMeta"
+    },
+    "raw_result_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rule_execution_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "SUCCEEDED",
+        "PARTIAL",
+        "FAILED",
+        "SKIPPED"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "tool_kind": {
+      "enum": [
+        "STRUCTURE",
+        "RULE_BASED"
+      ],
+      "title": "Tool Kind",
+      "type": "string"
+    },
+    "tool_name": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Tool Name",
+      "type": "string"
+    },
+    "tool_version": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Tool Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "meta",
+    "tool_name",
+    "tool_version",
+    "tool_kind",
+    "status",
+    "coverage",
+    "rule_execution_ref",
+    "raw_result_ref",
+    "gaps",
+    "errors",
+    "started_at",
+    "finished_at",
+    "elapsed_ms"
+  ],
+  "title": "ToolRunResult",
+  "type": "object"
+}

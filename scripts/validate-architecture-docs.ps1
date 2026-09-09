@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
@@ -14,7 +14,7 @@ $markdownFiles = Get-ChildItem -LiteralPath $repoRoot -Recurse -File -Filter '*.
     Where-Object { $_.FullName -notmatch '[\\/]\.git[\\/]' }
 
 foreach ($file in $markdownFiles) {
-    $text = Get-Content -Raw -LiteralPath $file.FullName
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
     $fenceCount = [regex]::Matches($text, '(?m)^```').Count
     if (($fenceCount % 2) -ne 0) {
         Add-Failure "unclosed Markdown fence: $($file.FullName)"
@@ -34,10 +34,501 @@ foreach ($file in $markdownFiles) {
     }
 }
 
+# Keep the R7 LLM component name and code identity unambiguous. Build the
+# obsolete spellings in pieces so this validator does not match itself.
+$obsoleteDynamicAgentPatterns = @(
+    'R7' + ' Agent',
+    'R7_' + 'AGENT',
+    'R7' + ' Reproduction' + ' Agent',
+    'Sandbox' + ' Agent',
+    '(?<!Dynamic )' + 'Reproduction' + ' Agent',
+    '동적 재현' + ' Agent',
+    '동적검증' + ' Agent',
+    '동적 검증' + ' Agent',
+    '재현 ' + '에이전트'
+)
+foreach ($file in $markdownFiles) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    foreach ($pattern in $obsoleteDynamicAgentPatterns) {
+        if ([regex]::IsMatch($text, $pattern)) {
+            Add-Failure "non-canonical Dynamic Reproduction Agent name: $($file.FullName)"
+        }
+    }
+}
+
+# Keep the role name independent from model cost and Korean shorthand. The
+# canonical display name is Hypothesis Agent; HYPOTHESIS and HypothesisProposal
+# remain the machine-facing role and output contract names.
+$obsoleteHypothesisAgentPatterns = @(
+    ('Low-' + 'cost Hypothesis Agent'),
+    ('저비용 Hypothesis' + ' Agent'),
+    ('저비용 가설 ' + '생성'),
+    ('가설 ' + 'Agent'),
+    ('가설 ' + '에이전트'),
+    ('가설 생성 ' + 'Agent'),
+    ('가설 생성 ' + '에이전트'),
+    ('탐색 ' + 'Agent'),
+    ('탐색 ' + '에이전트'),
+    ('Hypothesis Generation' + ' Agent')
+)
+foreach ($file in $markdownFiles) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    foreach ($pattern in $obsoleteHypothesisAgentPatterns) {
+        if ([regex]::IsMatch($text, [regex]::Escape($pattern), [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+            Add-Failure "non-canonical Hypothesis Agent name '$pattern': $($file.FullName)"
+        }
+    }
+}
+
+# Current operational documents use one non-LLM name for global workflow
+# control. Orchestration is not an LLM role and therefore has no prompt or
+# agent_role enum. Historical decision/spec records are intentionally excluded.
+$currentOperationalMarkdownFiles = @(
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'README.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'CONTRIBUTING.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'docs/GLOSSARY.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'docs/DOCUMENT_GUIDE.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'docs/README.md'))
+) + @(
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5') -Recurse -File -Filter '*.md'
+) + @(
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/governance') -Recurse -File -Filter '*.md'
+) + @(
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/review') -Recurse -File -Filter '*.md' |
+        Where-Object { $_.FullName -notmatch '[\\/]decisions[\\/]' }
+)
+foreach ($file in $currentOperationalMarkdownFiles) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    if ($text.Contains('Orchestration Agent')) {
+        Add-Failure "current document still treats non-LLM Orchestration Runtime as an Agent: $($file.FullName)"
+    }
+    if ($text.Contains('Model' + 'Profile')) {
+        Add-Failure "undefined ModelProfile term; use provider_profile_ref + model: $($file.FullName)"
+    }
+}
+
+# Keep display names, LLM/non-LLM identity, and machine-facing role values in
+# one glossary table. Short names are allowed only as the documented aliases;
+# the ambiguous formal spellings below must not reappear in current documents.
+$glossaryPath = Join-Path $repoRoot 'docs/GLOSSARY.md'
+$glossaryText = Get-Content -Raw -Encoding UTF8 -LiteralPath $glossaryPath
+$requiredComponentNameMarkers = @(
+    '## 구성요소 공식 이름',
+    '| `Pro Agent` | LLM | `PRO` | `Pro` |',
+    '| `Con Agent` | LLM | `CON` | `Con` |',
+    '| `CWE Labeling Agent` | LLM | `CWE_LABELING` | `CWE Labeling` |',
+    '| `Technical Evidence Gate Agent` | LLM | `TECHNICAL_GATE` | `Technical Gate` |',
+    '| `Rule Scope Impact Gate Agent` | LLM | `RULE_SCOPE_GATE` | `Rule Scope Gate` |',
+    '| `Reproduction Setup Automation` | 비-LLM | `REPRODUCTION_SETUP_AUTOMATION` | `Setup Automation` |',
+    '| `Reproduction Session Manager` | 비-LLM | `REPRODUCTION_SESSION_MANAGER` | `Session Manager` |',
+    '`Primitive DB`는 특정 DB 제품이나 별도 데이터베이스 모듈의 이름이 아니라',
+    '| `SUPERSEDED` | 변경 이력을 보존한 과거 문서이며 현재 구현 계약으로 사용하지 않습니다. 문서 상단의 현재 정본 링크를 따릅니다. |'
+)
+foreach ($marker in $requiredComponentNameMarkers) {
+    if (-not $glossaryText.Contains($marker)) {
+        Add-Failure "missing canonical component-name glossary marker: $marker"
+    }
+}
+
+$ambiguousCurrentComponentNames = @(
+    'Pro/Con Agents',
+    'Pro·Con Agent',
+    'R5-01 CWE Labeling',
+    'Technical Gate Agent Runtime',
+    'Technical Gate runtime',
+    'Rule Scope Gate Agent',
+    'Rule Scope Gate runtime',
+    'Rule Scope Agent',
+    ('R7 Sandbox Setup' + ' Automation'),
+    ('R7 Setup' + ' Automation')
+)
+$obsoleteReproductionSetupIdentity = 'R7_' + 'SETUP_AUTOMATION'
+foreach ($file in $currentOperationalMarkdownFiles) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    foreach ($name in $ambiguousCurrentComponentNames) {
+        if ($text.Contains($name)) {
+            Add-Failure "ambiguous current component name '$name': $($file.FullName)"
+        }
+    }
+    if ($text.Contains('FindingCandidate')) {
+        Add-Failure "FindingCandidate must not look like a separate contract object: $($file.FullName)"
+    }
+    if ($text.Contains($obsoleteReproductionSetupIdentity)) {
+        Add-Failure "obsolete Reproduction Setup Automation identity '$obsoleteReproductionSetupIdentity': $($file.FullName)"
+    }
+    foreach ($snapshotPhrase in @('공통 입력 snapshot', 'CAS snapshot')) {
+        if ($text.Contains($snapshotPhrase)) {
+            Add-Failure "removed Snapshot module terminology remains in current document '$snapshotPhrase': $($file.FullName)"
+        }
+    }
+}
+
+foreach ($file in $markdownFiles) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    if ($text.Contains('opengrep')) {
+        Add-Failure "non-canonical OpenGrep product spelling: $($file.FullName)"
+    }
+}
+
+$supersededSpecRequirements = @(
+    @{
+        Path = 'docs/superpowers/specs/2026-08-28-r4-03-authority-boundary-design.md'
+        Markers = @('> 상태: **SUPERSEDED**', '../../architecture-v5/03-agent-roles-and-orchestration.md', '../../architecture-v5/04-verification-and-dynamic-reproduction.md', '../../architecture-v5/08-lightweight-data-contracts.md', '../../architecture-v5/10-security-boundaries.md')
+    },
+    @{
+        Path = 'docs/superpowers/specs/2026-08-31-role-boundary-alignment-design.md'
+        Markers = @('> 상태: **SUPERSEDED**', '../../architecture-v5/03-agent-roles-and-orchestration.md', '../../architecture-v5/04-verification-and-dynamic-reproduction.md', '../../architecture-v5/08-lightweight-data-contracts.md')
+    },
+    @{
+        Path = 'docs/superpowers/specs/2026-09-03-r6-r7-poc-required-design.md'
+        Markers = @('> 상태: **SUPERSEDED**', '../../architecture-v5/04-verification-and-dynamic-reproduction.md', '../../architecture-v5/08-lightweight-data-contracts.md', '../../review/decisions/ADR-007-r7-autonomous-reproduction-session.md')
+    }
+)
+foreach ($requirement in $supersededSpecRequirements) {
+    $path = Join-Path $repoRoot $requirement.Path
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    foreach ($marker in $requirement.Markers) {
+        if (-not $text.Contains($marker)) {
+            Add-Failure "superseded historical spec is missing marker '$marker': $($requirement.Path)"
+        }
+    }
+}
+
+$historicalWorkRecordRequirements = @(
+    @{
+        Path = 'docs/superpowers/README.md'
+        Markers = @('역사적 작업 기록', '현재 공통 계약이나 구현 기준이 아닙니다.', '../architecture-v5/README.md', '../review/FINAL_ARCHITECTURE_V5_APPROVAL.md')
+    },
+    @{
+        Path = 'docs/superpowers/plans/2026-08-31-role-boundary-alignment.md'
+        Markers = @('SUPERSEDED — 역사적 작업 계획', '../../architecture-v5/04-verification-and-dynamic-reproduction.md', '../../review/decisions/ADR-007-r7-autonomous-reproduction-session.md')
+    }
+)
+foreach ($requirement in $historicalWorkRecordRequirements) {
+    $path = Join-Path $repoRoot $requirement.Path
+    if (-not (Test-Path -LiteralPath $path)) {
+        Add-Failure "missing historical work record notice: $($requirement.Path)"
+        continue
+    }
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    foreach ($marker in $requirement.Markers) {
+        if (-not $text.Contains($marker)) {
+            Add-Failure "historical work record is missing marker '$marker': $($requirement.Path)"
+        }
+    }
+}
+
+$agentRolesPath = Join-Path $repoRoot 'docs/architecture-v5/03-agent-roles-and-orchestration.md'
+$agentRolesText = Get-Content -Raw -Encoding UTF8 -LiteralPath $agentRolesPath
+$requiredOrchestrationBoundaryMarkers = @(
+    '## Orchestration Runtime',
+    '비-LLM 전역 제어 구성요소',
+    'Orchestration Runtime에는 LLM prompt, provider 설정, `agent_role`을 배정하지 않는다.'
+)
+foreach ($marker in $requiredOrchestrationBoundaryMarkers) {
+    if (-not $agentRolesText.Contains($marker)) {
+        Add-Failure "missing Orchestration Runtime boundary marker: $marker"
+    }
+}
+$orchestrationResponsibilityParagraphs = [regex]::Matches($agentRolesText, '(?m)^Orchestration Runtime은 trusted validation을 통과한 proposal의 전역 등록과 배정을 요청하지만')
+if ($orchestrationResponsibilityParagraphs.Count -ne 1) {
+    Add-Failure "agent role document must contain exactly one current Orchestration responsibility paragraph; found $($orchestrationResponsibilityParagraphs.Count)"
+}
+
+$providerContractText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/09-llm-provider-session-and-logging.md')
+foreach ($requiredProviderContractMarker in @(
+    'Agent의 이름·역할·입출력 계약은 특정 Provider 또는 모델에 종속되지 않는다.',
+    'exact `ProviderProfile` revision을 가리키는 `provider_profile_ref`, 모델은 `LLMCallSpec.model`로 호출 시점에 함께 고정한다.',
+    '모델 변경은 Agent 역할 변경을 의미하지 않는다.'
+)) {
+    if (-not $providerContractText.Contains($requiredProviderContractMarker)) {
+        Add-Failure "missing provider/model independence rule: $requiredProviderContractMarker"
+    }
+}
+
+$reportTemplatePath = Join-Path $repoRoot 'docs/architecture-v5/12-report-draft-template.md'
+$reportTemplateText = Get-Content -Raw -Encoding UTF8 -LiteralPath $reportTemplatePath
+foreach ($obsoleteReportTemplateText in @(
+    ('`FALSE` ' + '초안'),
+    ('{BASIC | CONDITIONAL_' + 'DEBATE | ALWAYS_DEBATE / reasons}'),
+    ('{SUCCEEDED | PARTIAL | FAILED | BLOCKED | CANCELLED}'),
+    ('{DISPROVED | NOT_' + 'DISPROVED | INCONCLUSIVE}')
+)) {
+    if ($reportTemplateText.Contains($obsoleteReportTemplateText)) {
+        Add-Failure "Reporter TRUE-only template contains unreachable state: $obsoleteReportTemplateText"
+    }
+}
+foreach ($requiredReportTemplateText in @(
+    '- 모드: `ALWAYS_DEBATE`',
+    '- 실행 상태: `SUCCEEDED`',
+    '- 관측 결과: `SUPPORTED`',
+    'FALSE와 HOLD, 동적 실행이 실패·차단·취소·불충분한 가설은 ReportDraft를 만들지 않는다.'
+)) {
+    if (-not $reportTemplateText.Contains($requiredReportTemplateText)) {
+        Add-Failure "Reporter TRUE-only template is missing marker: $requiredReportTemplateText"
+    }
+}
+
+$findingsPath = Join-Path $repoRoot 'docs/review/FINDINGS.md'
+$findingsText = Get-Content -Raw -Encoding UTF8 -LiteralPath $findingsPath
+foreach ($requiredFindingMarker in @(
+    '| B-007 | RESOLVED |',
+    '| B-008 | RESOLVED |',
+    '현재 열린 Blocker는 0개입니다.',
+    '| H-003 | RESOLVED |',
+    '| H-004 | RESOLVED |',
+    '| H-005 | RESOLVED |',
+    '현재 열린 High는 0개입니다.',
+    '| H-011 | RESOLVED |'
+)) {
+    if (-not $findingsText.Contains($requiredFindingMarker)) {
+        Add-Failure "FINDINGS status is not synchronized with implementation blockers: $requiredFindingMarker"
+    }
+}
+
+# Final approval is a documentation state transition, not an implementation
+# success claim. Keep the review-start main, merged Final PR identity, role
+# issue state, accepted ADRs and NOT_IMPLEMENTED boundary aligned.
+$finalApprovalPath = Join-Path $repoRoot 'docs/review/FINAL_ARCHITECTURE_V5_APPROVAL.md'
+if (-not (Test-Path -LiteralPath $finalApprovalPath)) {
+    Add-Failure 'missing Architecture v5 final approval record'
+} else {
+    $finalApprovalText = Get-Content -Raw -Encoding UTF8 -LiteralPath $finalApprovalPath
+    foreach ($marker in @(
+        '검토 시작 기준 `main`',
+        '07bd6549a676419c0e720f940ba7abd1b82aea0d',
+        'PR #116',
+        'PR #117',
+        '0647514f9d3d288fbedfa983c5b828d88c909df8',
+        '2de1f6767d8bc25ee7383adacb3082b4ff761f8a',
+        '8afd37794ac581039d626f1df52f1be06533b13a',
+        '2026-09-08부터 유효',
+        'Issue #92',
+        'R1~R8 상위 Issue #2~#9 모두 `CLOSED`',
+        '문서 구조·계약 추적: **PASS**',
+        '열린 Architecture Blocker/High: **0**',
+        '설계 상태: **DESIGN_APPROVED**',
+        '구현 상태: **NOT_IMPLEMENTED**',
+        '정확한 PR head',
+        '최종 리뷰에서 발견한 기존 계약의 모호함을 바로잡은 수정',
+        '승인 대상은 위에 기록한 정확한 PR head',
+        'current generation의 exact `DynamicReproductionRequest`와 같은 `DYNAMIC_REPRO` 실행 attempt의 recipe·환경·AgentLog·candidate·command digest를 요구',
+        '| F-21A | ReportDraft 본문의 모든 `path:line`이 exact Verification의 실제 `EvidenceClaim.code_locations`와 같은 workspace·commit·file·line인지 저장 전에 검사 | PASS |',
+        '## 7. Post-merge main 감사',
+        'Issue #10과 PM Epic #1 모두 `CLOSED`',
+        '| F-19 | 금지 테스트 위반은 result Primitive를 막고, 다른 scope·impact 실패는 보고 가능성만 막음 | PASS | `05`, `06`, `08`, ADR-011, ADR-014 |'
+    )) {
+        if (-not $finalApprovalText.Contains($marker)) {
+            Add-Failure "final approval record is missing: $marker"
+        }
+    }
+
+    foreach ($obsoleteMarker in @(
+        '승인 상태와 검토 기록만 변경합니다',
+        'Final PR이 상태 변경만 하는지'
+    )) {
+        if ($finalApprovalText.Contains($obsoleteMarker)) {
+            Add-Failure "final approval record still misstates the PR diff: $obsoleteMarker"
+        }
+    }
+}
+
+$finalApprovalBaselineMarkers = @{
+    'docs/DOCUMENT_GUIDE.md' = 'Final PR의 정확한 head·merge commit'
+    'docs/review/ISSUE_TRACKER.md' = 'CLOSED — PR #117 head'
+    'docs/architecture-v5/implementation/README.md' = 'Final PR #117 head'
+    'docs/architecture-v5/implementation/06-implementation-baseline.md' = 'Final PR #117 head'
+}
+foreach ($relativePath in $finalApprovalBaselineMarkers.Keys) {
+    $path = Join-Path $repoRoot $relativePath
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    $marker = $finalApprovalBaselineMarkers[$relativePath]
+    if (-not $text.Contains($marker)) {
+        Add-Failure "final approval baseline/head boundary is not synchronized: $relativePath"
+    }
+}
+
+# R6 produces DynamicReproductionRequest before R7 starts its execution
+# attempt.  The exact current-generation request is an immutable input to R7;
+# only artifacts produced by R7 are required to share the DYNAMIC_REPRO
+# work/attempt.  Guard the canonical R5-facing documents against collapsing
+# these two attempt identities again.
+$dynamicRequestAttemptSeparationMarker = 'R6가 생산한 exact `DynamicReproductionRequest`는 current Verification generation의 입력으로 고정하지만, 그 생산 attempt를 R7 `DYNAMIC_REPRO` 실행 attempt와 같다고 요구하지 않는다.'
+$dynamicRequestAttemptSeparationFiles = @(
+    'docs/architecture-v5/04-verification-and-dynamic-reproduction.md',
+    'docs/architecture-v5/05-llm-gate-and-reporting.md',
+    'docs/architecture-v5/08-lightweight-data-contracts.md',
+    'docs/architecture-v5/10-security-boundaries.md',
+    'docs/architecture-v5/12-report-draft-template.md',
+    'docs/review/decisions/ADR-007-r7-autonomous-reproduction-session.md'
+)
+foreach ($relativePath in $dynamicRequestAttemptSeparationFiles) {
+    $path = Join-Path $repoRoot $relativePath
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    if (-not $text.Contains($dynamicRequestAttemptSeparationMarker)) {
+        Add-Failure "R6 request/R7 attempt boundary is not explicit: $relativePath"
+    }
+}
+
+$dynamicRequestAttemptBoundaryScanFiles = $dynamicRequestAttemptSeparationFiles + @(
+    'docs/architecture-v5/wiki/results.md',
+    'docs/architecture-v5/implementation/02-contract-test-plan.md',
+    'docs/architecture-v5/implementation/03-recovery-test-plan.md'
+)
+$obsoleteSameAttemptPhrases = @(
+    'validated PoC의 request·plan·recipe·environment·AgentLog·candidate·실행 action은 모두 결과와 같은 attempt여야 한다.',
+    'request, plan, `environment_ref`, `agent_log_ref`, PoC candidate, validated PoC, `cleanup_ref`는 모두 동일한 reproduction attempt에 속해야 한다.',
+    'request·plan·recipe·환경·AgentLog·PoC가 같은 attempt로 연결된 `DynamicReproductionResult`',
+    '`request_ref`, `reproduction_plan_ref`, `environment_recipe_ref`와 `requirements_ref`는 같은 attempt의 exact record를 가리킨다.',
+    'request·plan·recipe·실제 환경·AgentLog·PoC candidate·validated PoC는 같은 analysis·workspace·commit·hypothesis·work·attempt를 가리킨다.',
+    'request·plan·recipe·environment·AgentLog·candidate·validated PoC와 dynamic result는 같은 work·attempt에 연결합니다.',
+    'request, plan, environment, AgentLog, PoC candidate, validated PoC, cleanup은 모두 동일 reproduction attempt에 속해야 함',
+    '동적 결과에서는 request·plan·recipe·환경·AgentLog·PoC와 attempt가 서로 맞는지 확인합니다.',
+    'POC1의 request·plan·recipe·environment·log·candidate·execution action/digest는 DX1과 같은 work/attempt에서 exact match',
+    'same-attempt exact request·plan·recipe·environment·AgentLog·candidate revision/digest·실행 action·지지 관찰·validated 요건·commit binding',
+    'request·plan·recipe·environment·AgentLog·candidate exact revision/digest·action·SUPPORTED 관찰·PoCBundle·DX1이 모두 AD1에 연결',
+    'request·purpose·plan·recipe·정책·환경·AgentLog·candidate·validated PoC·cleanup의 same-attempt 조합',
+    '전부 같은 request·work·attempt·digest에 속함',
+    'tool request는 같은 attempt의 exact request·plan·READY 환경·현재 AgentLog를 사용한',
+    '같은 attempt의 request·plan·환경·candidate·관찰을 사용한 성공한',
+    '`poc_ref`의 request·plan·recipe·environment·log·candidate·digest·attempt 중 하나라도 결과와 다름'
+)
+foreach ($relativePath in $dynamicRequestAttemptBoundaryScanFiles) {
+    $path = Join-Path $repoRoot $relativePath
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    foreach ($phrase in $obsoleteSameAttemptPhrases) {
+        if ($text.Contains($phrase)) {
+            Add-Failure "obsolete same-attempt rule still includes the R6 request: $relativePath -> $phrase"
+        }
+    }
+}
+
+if ([regex]::IsMatch($findingsText, '(?m)^\|\s*[BH]-\d+\s*\|\s*(OPEN|IN_PROGRESS)\s*\|')) {
+    Add-Failure 'FINDINGS still contains an open or in-progress Blocker/High item'
+}
+
+$issueTrackerText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/review/ISSUE_TRACKER.md')
+foreach ($issueNumber in 2..9) {
+    if (-not [regex]::IsMatch($issueTrackerText, "(?m)^\| R$($issueNumber - 1) .*\[#${issueNumber}\].*\| CLOSED")) {
+        Add-Failure "Issue tracker does not show role Issue #$issueNumber as CLOSED"
+    }
+}
+if (-not [regex]::IsMatch($issueTrackerText, '(?m)^\| 최종 .*\[#10\].*\| CLOSED — PR #117 head')) {
+    Add-Failure 'Issue tracker does not show final Issue #10 as CLOSED by PR #117'
+}
+if (-not [regex]::IsMatch($issueTrackerText, '(?m)^\| 전체 관리 .*\[#1\].*\| CLOSED — PR #117 병합 뒤 `main` 감사 commit `8afd377')) {
+    Add-Failure 'Issue tracker does not show PM Epic #1 as CLOSED by the post-merge main audit'
+}
+
+$approvedStatusFiles = @(
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'README.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'docs/README.md')),
+    (Get-Item -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/README.md'))
+) + @(
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5') -Recurse -File -Filter '*.md'
+)
+foreach ($file in $approvedStatusFiles | Select-Object -Unique) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    if ($text.Contains('DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED')) {
+        Add-Failure "approved Architecture v5 document still has review-required status: $($file.FullName)"
+    }
+}
+
+$obsoleteFinalReviewPhrases = @(
+    '지금은 **설계 검토 단계**',
+    '미결정 계약의 답변과 역할별 검토가 남아',
+    '역할별 검토는 아직 남아',
+    '이 PR을 만들었다는 이유로 #89나 상위 #4를 바로 닫지 않는다',
+    '이 문서만으로 #90을 닫지 않는다',
+    '이 문서 작성만으로 #91을 닫지 않는다',
+    '#92에서 실제 기본 profile revision과 지원 상태를 확정'
+)
+foreach ($file in $approvedStatusFiles | Select-Object -Unique) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+    foreach ($phrase in $obsoleteFinalReviewPhrases) {
+        if ($text.Contains($phrase)) {
+            Add-Failure "approved Architecture v5 document still describes final design review as pending: $($file.FullName) -> $phrase"
+        }
+    }
+}
+
+foreach ($statusRequirement in @(
+    @{ Path = 'README.md'; Marker = 'DESIGN_APPROVED' },
+    @{ Path = 'docs/architecture-v5/README.md'; Marker = '> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**' },
+    @{ Path = 'docs/review/decisions/ADR-012-primitive-match-duplicate-key.md'; Marker = '상태: `ACCEPTED`' },
+    @{ Path = 'docs/review/decisions/ADR-013-run-policy-preparation-and-reuse.md'; Marker = '상태: `ACCEPTED`' },
+    @{ Path = 'docs/review/decisions/ADR-015-r3-implementation-baseline.md'; Marker = '상태: `ACCEPTED`' },
+    @{ Path = 'docs/DOCUMENT_GUIDE.md'; Marker = './review/FINAL_ARCHITECTURE_V5_APPROVAL.md' }
+)) {
+    $path = Join-Path $repoRoot $statusRequirement.Path
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    if (-not $text.Contains($statusRequirement.Marker)) {
+        Add-Failure "final approval status is not synchronized: $($statusRequirement.Path) -> $($statusRequirement.Marker)"
+    }
+}
+$openQuestionsText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/governance/OPEN_QUESTIONS.md')
+foreach ($requiredOpenQuestionMarker in @(
+    '# Architecture v5 구현·운영 전 남은 설정과 증거',
+    '설계를 다시 정하는 미결정 목록이 아니라',
+    '현재 구현 시작을 막는 미결정 Blocker는 없습니다.',
+    'run-init Docker baseline branch 제거'
+)) {
+    if (-not $openQuestionsText.Contains($requiredOpenQuestionMarker)) {
+        Add-Failure "OPEN_QUESTIONS is missing an implementation Blocker: $requiredOpenQuestionMarker"
+    }
+}
+
+$implementationContractTestPath = Join-Path $repoRoot 'docs/architecture-v5/implementation/02-contract-test-plan.md'
+$implementationContractTestText = Get-Content -Raw -Encoding UTF8 -LiteralPath $implementationContractTestPath
+foreach ($marker in @(
+    'PR #97 merge `0c1b59b`',
+    'Provider·Prompt main 계약 시험',
+    'Q-02는 해결됐으며'
+)) {
+    if (-not $implementationContractTestText.Contains($marker)) {
+        Add-Failure "implementation contract test plan is missing finalized marker: $marker"
+    }
+}
+foreach ($obsoleteMarker in @(
+    '미병합 Prompt 제안',
+    '#97 HEAD 기준 제안·미병합',
+    '아직 main 미병합',
+    'ADR-012의 PROPOSED 표기',
+    'main·PR 혼합 계획'
+)) {
+    if ($implementationContractTestText.Contains($obsoleteMarker)) {
+        Add-Failure "implementation contract test plan still treats a merged contract as pending: $obsoleteMarker"
+    }
+}
+foreach ($obsoleteMarker in @('미실행 / 역할 검토 필요', '미실행 / 검토 필요')) {
+    foreach ($relativePath in @(
+        'docs/architecture-v5/implementation/02-contract-test-plan.md',
+        'docs/architecture-v5/implementation/03-recovery-test-plan.md'
+    )) {
+        $text = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot $relativePath)
+        if ($text.Contains($obsoleteMarker)) {
+            Add-Failure "implementation test plan confuses completed design review with pending execution: $relativePath -> $obsoleteMarker"
+        }
+    }
+}
+
+$documentGuideText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/DOCUMENT_GUIDE.md')
+foreach ($marker in @(
+    'ADR-002-sandbox-policy-enforcement.md',
+    'ADR-004-r6-request-r7-poc-production.md',
+    '현재 구조는 ADR-007이 대체했습니다.',
+    '현재 자율 재현 구조는 ADR-007을 따릅니다.',
+    'docs/superpowers/README.md'
+)) {
+    if (-not $documentGuideText.Contains($marker)) {
+        Add-Failure "document guide is missing final-history guidance: $marker"
+    }
+}
+
 $diagramPath = Join-Path $repoRoot 'docs/architecture-v5/13-architecture-diagrams.md'
 $wikiDiagramPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/diagrams.md'
-$diagramText = Get-Content -Raw -LiteralPath $diagramPath
-$wikiDiagramText = Get-Content -Raw -LiteralPath $wikiDiagramPath
+$diagramText = Get-Content -Raw -Encoding UTF8 -LiteralPath $diagramPath
+$wikiDiagramText = Get-Content -Raw -Encoding UTF8 -LiteralPath $wikiDiagramPath
 $mermaidPattern = '(?ms)^```mermaid\s*(.*?)^```'
 $diagramBlocks = [regex]::Matches($diagramText, $mermaidPattern) |
     ForEach-Object { $_.Groups[1].Value.Trim() }
@@ -57,8 +548,62 @@ if (-not $diagramText.Contains($declaredCount)) {
 if (-not $wikiDiagramText.Contains($declaredCount)) {
     Add-Failure "Wiki diagram count text is not '$declaredCount'"
 }
-if (-not $diagramText.Contains('RUNNING --> READY: immediate dynamic auto retry')) {
-    Add-Failure 'canonical state diagram is missing the DYNAMIC_REPRO immediate auto-retry transition'
+$requiredDynamicStateDiagramMarkers = @(
+    'RUNNING --> RUNNING: same session command PoC environment adjustment',
+    'RUNNING --> READY: session restart trigger RETRY',
+    'BLOCKED --> READY: external condition resolved trigger RESUME'
+)
+foreach ($marker in $requiredDynamicStateDiagramMarkers) {
+    if (-not $diagramText.Contains($marker)) {
+        Add-Failure "canonical state diagram is missing dynamic lifecycle marker: $marker"
+    }
+}
+
+# R5-03 Finding lifecycle: with a Rule Scope review present (FOUND or ABSENT_CONFIRMED)
+# the RuleScopeImpactReview is COMMITTED, so every Reporter-blocking Gate outcome
+# (UNCERTAIN, DENY, ...) must still pass through FINDING_NORMALIZE before Reporter
+# BLOCK. Any Mermaid block that models both ABSENT_CONFIRMED and FINDING_NORMALIZE
+# must not contain a direct edge from a Rule Scope branch node to the report-block
+# node. The COLLECTION_FAILED path (no RuleScopeImpactReview, no Finding) stays
+# allowed: its edge originates from the policy-collection node, not a Rule Scope
+# branch node.
+foreach ($diagramSource in @(
+    @{ Label = 'canonical'; Blocks = $diagramBlocks },
+    @{ Label = 'Wiki'; Blocks = $wikiDiagramBlocks }
+)) {
+    foreach ($block in $diagramSource.Blocks) {
+        if (($block -notmatch 'FINDING_NORMALIZE') -or ($block -notmatch 'ABSENT_CONFIRMED')) {
+            continue
+        }
+        $normMatch = [regex]::Match($block, '(\w+)\[FINDING_NORMALIZE')
+        $blockNodeMatch = [regex]::Match($block, '(\w+)\[Report blocked\]')
+        if (-not ($normMatch.Success -and $blockNodeMatch.Success)) {
+            Add-Failure "$($diagramSource.Label) Mermaid Finding lifecycle block is missing a FINDING_NORMALIZE or 'Report blocked' node"
+            continue
+        }
+        $normNode = $normMatch.Groups[1].Value
+        $blockNode = $blockNodeMatch.Groups[1].Value
+
+        # Rule Scope branch nodes: the target of the FOUND edge and the target of
+        # the ABSENT_CONFIRMED edge out of the policy-collection node.
+        $branchNodes = [regex]::Matches($block, '[-.=]+>\s*\|[^|]*(?:FOUND|ABSENT_CONFIRMED)[^|]*\|\s*(\w+)') |
+            ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique
+        if ($branchNodes.Count -eq 0) {
+            Add-Failure "$($diagramSource.Label) Mermaid Finding lifecycle block has no identifiable Rule Scope branch node"
+        }
+        foreach ($branchNode in $branchNodes) {
+            # An edge line from $branchNode to a target node id, allowing any
+            # connector style (-->, -.->, ==>) and an optional edge label, and
+            # tolerating an optional `[label]` shape declaration on the target.
+            $edge = '(?m)^\s*' + [regex]::Escape($branchNode) + '\s*[-.=]+>\s*(?:\|[^|]*\|\s*)?'
+            if ([regex]::IsMatch($block, ($edge + [regex]::Escape($blockNode) + '\b'))) {
+                Add-Failure "$($diagramSource.Label) Mermaid has a forbidden direct '$branchNode -> $blockNode' edge that bypasses FINDING_NORMALIZE on a Rule Scope review path"
+            }
+            if (-not [regex]::IsMatch($block, ($edge + [regex]::Escape($normNode) + '\b'))) {
+                Add-Failure "$($diagramSource.Label) Mermaid Rule Scope branch '$branchNode' no longer routes through FINDING_NORMALIZE ('$branchNode -> $normNode' edge missing)"
+            }
+        }
+    }
 }
 
 $activeContractPaths = @(
@@ -96,7 +641,7 @@ $forbiddenPatterns = @(
 foreach ($path in $activeContractPaths) {
     $files = Get-ChildItem -LiteralPath $path -Recurse -File -Filter '*.md'
     foreach ($file in $files) {
-        $text = Get-Content -Raw -LiteralPath $file.FullName
+        $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
         foreach ($pattern in $forbiddenPatterns) {
             if ($text.Contains($pattern)) {
                 Add-Failure "forbidden obsolete active contract '$pattern': $($file.FullName)"
@@ -105,7 +650,7 @@ foreach ($path in $activeContractPaths) {
     }
 }
 foreach ($filePath in @((Join-Path $repoRoot 'README.md'), (Join-Path $repoRoot 'docs/GLOSSARY.md'))) {
-    $text = Get-Content -Raw -LiteralPath $filePath
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $filePath
     foreach ($pattern in $forbiddenPatterns) {
         if ($text.Contains($pattern)) {
             Add-Failure "forbidden obsolete active contract '$pattern': $filePath"
@@ -142,7 +687,7 @@ $obsoleteUnifiedPrimitivePatterns = @(
     'REQUIRED Primitive'
 )
 foreach ($file in $activeUnifiedPrimitiveFiles) {
-    $text = Get-Content -Raw -LiteralPath $file.FullName
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
     foreach ($pattern in $obsoleteUnifiedPrimitivePatterns) {
         if ($text.Contains($pattern)) {
             Add-Failure "obsolete pre-ADR-005 Primitive term '$pattern': $($file.FullName)"
@@ -162,7 +707,7 @@ $obsoleteR7SchemaPatterns = @(
     'failure_reason=POLICY_BLOCKED'
 )
 foreach ($file in $activeUnifiedPrimitiveFiles) {
-    $text = Get-Content -Raw -LiteralPath $file.FullName
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
     foreach ($pattern in $obsoleteR7SchemaPatterns) {
         if ($text.Contains($pattern)) {
             Add-Failure "obsolete pre-ADR-007 R7 schema term '$pattern': $($file.FullName)"
@@ -171,11 +716,11 @@ foreach ($file in $activeUnifiedPrimitiveFiles) {
 }
 
 $contractPath = Join-Path $repoRoot 'docs/architecture-v5/08-lightweight-data-contracts.md'
-$contractText = Get-Content -Raw -LiteralPath $contractPath
+$contractText = Get-Content -Raw -Encoding UTF8 -LiteralPath $contractPath
 $overviewPath = Join-Path $repoRoot 'docs/architecture-v5/01-system-overview.md'
-$overviewText = Get-Content -Raw -LiteralPath $overviewPath
+$overviewText = Get-Content -Raw -Encoding UTF8 -LiteralPath $overviewPath
 $verificationPath = Join-Path $repoRoot 'docs/architecture-v5/04-verification-and-dynamic-reproduction.md'
-$verificationText = Get-Content -Raw -LiteralPath $verificationPath
+$verificationText = Get-Content -Raw -Encoding UTF8 -LiteralPath $verificationPath
 $activeDebateFiles = @(
     (Get-Item -LiteralPath (Join-Path $repoRoot 'README.md'))
 ) + @(
@@ -183,7 +728,7 @@ $activeDebateFiles = @(
 ) + @(
     Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/governance') -Recurse -File -Filter '*.md'
 )
-$activeDebateText = ($activeDebateFiles | ForEach-Object { Get-Content -Raw -LiteralPath $_.FullName }) -join "`n"
+$activeDebateText = ($activeDebateFiles | ForEach-Object { Get-Content -Raw -Encoding UTF8 -LiteralPath $_.FullName }) -join "`n"
 $requiredContractNames = @(
     'WorkExecutionState:',
     'WorkAttempt:',
@@ -362,7 +907,7 @@ foreach ($rule in $requiredBindingRules) {
 $reviewRemediationPatterns = @(
     @{
         Name = 'dynamic state requires request and uses an exact result pointer when a result exists'
-        Pattern = '(?s)동적 재현을 요청하면 `DynamicReproductionState.request_ref`.*?current generation의 exact `DynamicReproductionRequest`.*?`SUCCEEDED \| PARTIAL \| BLOCKED \| FAILED \| CANCELLED`에는 Reproduction Session Manager가 확정한 exact `DynamicReproductionResult\.record_id`가 필수.*?Agent 호출 전 정책 차단도 Session Manager가 최소 `AgentLog`와 결과'
+        Pattern = '(?s)`DynamicReproductionState\.verification_generation`.*?current `HypothesisProcessState\.verification_generation`.*?동적 재현을 요청하면 `dynamic_work_ref`와 `request_ref`가 current generation의 exact `DYNAMIC_REPRO` work와 `DynamicReproductionRequest`.*?`SUCCEEDED \| PARTIAL \| BLOCKED \| FAILED \| CANCELLED`에는 Reproduction Session Manager가 확정한 exact `DynamicReproductionResult\.record_id`가 필수.*?Dynamic Reproduction Agent 호출 전 Sandbox profile 외부 격리 경계 차단도 Session Manager가 최소 `AgentLog`와 결과'
     },
     @{
         Name = 'dynamic PARTIAL uses structured limitations without fake errors'
@@ -370,7 +915,7 @@ $reviewRemediationPatterns = @(
     },
     @{
         Name = 'dynamic autonomous retry is distinct from external blocking'
-        Pattern = '(?s)R7이 스스로 해결할 수 있는 command·PoC·환경 조정은 `BLOCKED` 사유가 아니며.*?`RUNNING -> READY -> RUNNING` 자동 retry.*?외부 조건이 해결되면 같은 `work_id`에서 새 `attempt_id`'
+        Pattern = '(?s)R7이 스스로 해결할 수 있는 command·PoC·환경 조정은 `BLOCKED` 사유가 아니며.*?같은 session의 현재 attempt.*?`RUNNING -> READY -> RUNNING`.*?`trigger=RETRY`.*?불변 입력을 바꾸지 않는 실제 외부 조건.*?`BLOCKED -> READY -> RUNNING`.*?`trigger=RESUME`'
     },
     @{
         Name = 'dynamic cancellation result is atomically bound and late output is stale'
@@ -400,14 +945,14 @@ foreach ($rule in $reviewRemediationPatterns) {
 }
 
 $resultPath = Join-Path $repoRoot 'docs/architecture-v5/07-results-and-observability.md'
-$resultText = Get-Content -Raw -LiteralPath $resultPath
+$resultText = Get-Content -Raw -Encoding UTF8 -LiteralPath $resultPath
 $staticPath = Join-Path $repoRoot 'docs/architecture-v5/02-static-fact-layer.md'
-$staticText = Get-Content -Raw -LiteralPath $staticPath
+$staticText = Get-Content -Raw -Encoding UTF8 -LiteralPath $staticPath
 $commonWikiPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/common-contracts.md'
-$commonWikiText = Get-Content -Raw -LiteralPath $commonWikiPath
-$authorityWikiText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/authority-boundaries.md')
+$commonWikiText = Get-Content -Raw -Encoding UTF8 -LiteralPath $commonWikiPath
+$authorityWikiText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/authority-boundaries.md')
 $chainingWikiPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/chaining.md'
-$chainingWikiText = Get-Content -Raw -LiteralPath $chainingWikiPath
+$chainingWikiText = Get-Content -Raw -Encoding UTF8 -LiteralPath $chainingWikiPath
 $requiredErrorCodes = @(
     'STATE_TRANSITION_INVALID',
     'STATE_VERSION_CONFLICT',
@@ -425,7 +970,7 @@ foreach ($code in $requiredErrorCodes) {
 }
 
 $securityPath = Join-Path $repoRoot 'docs/architecture-v5/10-security-boundaries.md'
-$securityText = Get-Content -Raw -LiteralPath $securityPath
+$securityText = Get-Content -Raw -Encoding UTF8 -LiteralPath $securityPath
 $negativeScenarioMarkers = @(
     '같은 가설 검증 요청이 동시에 두 번 도착',
     'retry 전 attempt 결과가 새 attempt보다 늦게 도착',
@@ -462,10 +1007,13 @@ $requiredR403ContractNames = @(
     'DynamicReproductionRequest:',
     'EnvironmentRequirements:',
     'ReproductionPlan:',
+    'SandboxProfile:',
+    'DynamicReproductionLifecycleProfile:',
     'EnvironmentRecipe:',
     'SandboxEnvironment:',
     'PlanIssueItem:',
     'SandboxPolicyDecision:',
+    'SandboxCommandRecord:',
     'CleanupResult:',
     'AgentLogEvent:',
     'AgentLog:',
@@ -489,6 +1037,7 @@ $requiredActionTypes = @(
     'CHANGE_WORK_STATE',
     'START_ATTEMPT',
     'CANCEL_WORK',
+    'RESTART_VERIFICATION_GENERATION',
     'READ_CODE',
     'RUN_TOOL',
     'CALL_LLM',
@@ -510,7 +1059,11 @@ $requiredActionRequestFields = @(
     'candidate_result_ref:',
     'llm_call_spec_ref:',
     'provider_profile_ref:',
-    'sandbox_profile_ref:'
+    'sandbox_profile_ref:',
+    'resource_profile_ref:',
+    'expected_verification_generation:',
+    'generation_restart_reason:',
+    'generation_restart_basis_refs:'
 )
 foreach ($field in $requiredActionRequestFields) {
     if (-not $actionRequestBlock.Contains($field)) {
@@ -522,16 +1075,29 @@ $environmentNeedBlock = [regex]::Match($contractText, '(?ms)^EnvironmentNeed:\s*
 $dynamicRequestBlock = [regex]::Match($contractText, '(?ms)^DynamicReproductionRequest:\s*(.*?)^EnvironmentRequirement:').Groups[1].Value
 $environmentRequirementBlock = [regex]::Match($contractText, '(?ms)^EnvironmentRequirement:\s*(.*?)^EnvironmentRequirements:').Groups[1].Value
 $environmentRequirementsBlock = [regex]::Match($contractText, '(?ms)^EnvironmentRequirements:\s*(.*?)^ReproductionPlan:').Groups[1].Value
-$reproductionPlanBlock = [regex]::Match($contractText, '(?ms)^ReproductionPlan:\s*(.*?)^EnvironmentRecipe:').Groups[1].Value
+$reproductionPlanBlock = [regex]::Match($contractText, '(?ms)^ReproductionPlan:\s*(.*?)^SandboxProfile:').Groups[1].Value
+$sandboxProfileBlock = [regex]::Match($contractText, '(?ms)^SandboxProfile:\s*(.*?)^DynamicReproductionLifecycleProfile:').Groups[1].Value
+$resourceLifecycleProfileBlock = [regex]::Match($contractText, '(?ms)^DynamicReproductionLifecycleProfile:\s*(.*?)^ExecutionBudgetProfile:').Groups[1].Value
+$executionBudgetProfileBlock = [regex]::Match($contractText, '(?ms)^ExecutionBudgetProfile:\s*(.*?)^WorkBudgetLimit:').Groups[1].Value
+$workBudgetLimitBlock = [regex]::Match($contractText, '(?ms)^WorkBudgetLimit:\s*(.*?)^WorkBudgetProfile:').Groups[1].Value
+$workBudgetProfileBlock = [regex]::Match($contractText, '(?ms)^WorkBudgetProfile:\s*(.*?)^VerificationBudgetProfile:').Groups[1].Value
+$verificationBudgetProfileBlock = [regex]::Match($contractText, '(?ms)^VerificationBudgetProfile:\s*(.*?)^BudgetProfileBinding:').Groups[1].Value
+$budgetProfileBindingBlock = [regex]::Match($contractText, '(?ms)^BudgetProfileBinding:\s*(.*?)^BudgetUnits:').Groups[1].Value
+$budgetUnitsBlock = [regex]::Match($contractText, '(?ms)^BudgetUnits:\s*(.*?)^BudgetReservation:').Groups[1].Value
+$budgetReservationBlock = [regex]::Match($contractText, '(?ms)^BudgetReservation:\s*(.*?)^BudgetLedgerEntry:').Groups[1].Value
+$budgetLedgerEntryBlock = [regex]::Match($contractText, '(?ms)^BudgetLedgerEntry:\s*(.*?)^BudgetRemaining:').Groups[1].Value
+$budgetRemainingBlock = [regex]::Match($contractText, '(?ms)^BudgetRemaining:\s*(.*?)^EnvironmentRecipe:').Groups[1].Value
 $environmentRecipeBlock = [regex]::Match($contractText, '(?ms)^EnvironmentRecipe:\s*(.*?)^EnvironmentCheck:').Groups[1].Value
 $environmentCheckBlock = [regex]::Match($contractText, '(?ms)^EnvironmentCheck:\s*(.*?)^SandboxEnvironment:').Groups[1].Value
 $sandboxEnvironmentBlock = [regex]::Match($contractText, '(?ms)^SandboxEnvironment:\s*(.*?)^PlanIssueItem:').Groups[1].Value
 $planIssueItemBlock = [regex]::Match($contractText, '(?ms)^PlanIssueItem:\s*(.*?)^SandboxPolicyDecision:').Groups[1].Value
-$sandboxPolicyDecisionBlock = [regex]::Match($contractText, '(?ms)^SandboxPolicyDecision:\s*(.*?)^CleanupResult:').Groups[1].Value
+$sandboxPolicyDecisionBlock = [regex]::Match($contractText, '(?ms)^SandboxPolicyDecision:\s*(.*?)^SandboxCommandRecord:').Groups[1].Value
+$sandboxCommandRecordBlock = [regex]::Match($contractText, '(?ms)^SandboxCommandRecord:\s*(.*?)^CleanupResult:').Groups[1].Value
 $cleanupResultBlock = [regex]::Match($contractText, '(?ms)^CleanupResult:\s*(.*?)^AgentLogEvent:').Groups[1].Value
 $agentLogEventBlock = [regex]::Match($contractText, '(?ms)^AgentLogEvent:\s*(.*?)^AgentLog:').Groups[1].Value
 $agentLogBlock = [regex]::Match($contractText, '(?ms)^AgentLog:\s*(.*?)^PoCCandidate:').Groups[1].Value
-$pocCandidateBlock = [regex]::Match($contractText, '(?ms)^PoCCandidate:\s*(.*?)^PoCBundle:').Groups[1].Value
+$pocCandidateBlock = [regex]::Match($contractText, '(?ms)^PoCCandidate:\s*(.*?)^DynamicReproductionConclusion:').Groups[1].Value
+$dynamicReproductionConclusionBlock = [regex]::Match($contractText, '(?ms)^DynamicReproductionConclusion:\s*(.*?)^PoCBundle:').Groups[1].Value
 $pocBundleBlock = [regex]::Match($contractText, '(?ms)^PoCBundle:\s*(.*?)^DynamicReproductionResult:').Groups[1].Value
 $dynamicResultBlock = [regex]::Match($contractText, '(?ms)^DynamicReproductionResult:\s*(.*?)^```').Groups[1].Value
 foreach ($field in @('need_id:', 'kind:', 'description:', 'required:', 'source_refs:')) {
@@ -568,6 +1134,31 @@ foreach ($fieldPattern in @('meta:\s*RecordMeta', 'request_ref:\s*StoredDataRef'
 foreach ($field in @('request_ref:', 'purpose:', 'hypothesis_ref:', 'environment_requirements_ref:', 'sandbox_profile_ref:', 'reproduction_goal:', 'strategy_summary:', 'requested_evidence:')) {
     if (-not $reproductionPlanBlock.Contains($field)) {
         Add-Failure "missing ReproductionPlan field: $field"
+    }
+}
+foreach ($field in @('meta:', 'network_mode:', 'allowed_egress_refs:', 'isolation_policy_refs:', 'cpu_limit_millicores:', 'memory_limit_bytes:', 'disk_limit_bytes:', 'pid_limit:', 'max_requested_execution_ms:', 'created_at:')) {
+    if (-not $sandboxProfileBlock.Contains($field)) {
+        Add-Failure "missing SandboxProfile field: $field"
+    }
+}
+foreach ($field in @('meta:', 'preflight_budget_ref:', 'preflight_budget_source:', 'max_new_attempts:', 'created_at:')) {
+    if (-not $resourceLifecycleProfileBlock.Contains($field)) {
+        Add-Failure "missing DynamicReproductionLifecycleProfile field: $field"
+    }
+}
+foreach ($contract in @(
+    @{ Name = 'ExecutionBudgetProfile'; Block = $executionBudgetProfileBlock; Fields = @('meta:', 'profile_key:', 'purpose:', 'approval_ref:', 'approved_by:', 'approved_at:', 'max_analysis_elapsed_ms:', 'max_total_cost_minor_units:', 'currency:', 'pricing_revision_ref:', 'max_total_work:', 'max_total_llm_calls:', 'max_total_retries:', 'max_parallel_work:', 'status:') },
+    @{ Name = 'WorkBudgetLimit'; Block = $workBudgetLimitBlock; Fields = @('limit_key:', 'work_type:', 'operation_kind:', 'agent_role:', 'timeout_ms:', 'max_attempts:', 'max_calls_per_work:', 'max_items_per_work:') },
+    @{ Name = 'WorkBudgetProfile'; Block = $workBudgetProfileBlock; Fields = @('meta:', 'profile_key:', 'purpose:', 'limits:', 'unlisted_operation:', 'status:') },
+    @{ Name = 'VerificationBudgetProfile'; Block = $verificationBudgetProfileBlock; Fields = @('meta:', 'profile_key:', 'max_verification_elapsed_ms:', 'max_work_per_verification:', 'max_llm_calls_per_verification:', 'max_retries_per_work:', 'max_parallel_evidence_calls:', 'status:') },
+    @{ Name = 'BudgetProfileBinding'; Block = $budgetProfileBindingBlock; Fields = @('meta:', 'binding_key:', 'purpose:', 'execution_budget_profile_ref:', 'work_budget_profile_ref:', 'verification_budget_profile_ref:', 'dynamic_lifecycle_profile_ref:', 'status:', 'approval_ref:', 'approved_by:', 'approved_at:') },
+    @{ Name = 'BudgetUnits'; Block = $budgetUnitsBlock; Fields = @('elapsed_ms:', 'work_count:', 'llm_call_count:', 'retry_count:', 'cost_minor_units:', 'currency:') },
+    @{ Name = 'BudgetReservation'; Block = $budgetReservationBlock; Fields = @('meta:', 'reservation_id:', 'budget_binding_ref:', 'action_ref:', 'work_ref:', 'requested_units:', 'status:', 'ledger_entry_ref:', 'reserved_at:', 'finalized_at:') },
+    @{ Name = 'BudgetLedgerEntry'; Block = $budgetLedgerEntryBlock; Fields = @('meta:', 'ledger_entry_id:', 'reservation_ref:', 'budget_binding_ref:', 'action_ref:', 'work_ref:', 'actual_units:', 'usage_refs:', 'sequence:', 'committed_at:') },
+    @{ Name = 'BudgetRemaining'; Block = $budgetRemainingBlock; Fields = @('budget_binding_ref:', 'as_of_sequence:', 'available_units:', 'active_reservation_count:') }
+)) {
+    foreach ($field in $contract.Fields) {
+        if (-not $contract.Block.Contains($field)) { Add-Failure "missing $($contract.Name) field: $field" }
     }
 }
 foreach ($field in @('meta:', 'request_ref:', 'environment_requirements_ref:', 'recipe_source_ref:', 'source_refs:', 'base_image_digest:', 'built_image_digest:', 'baseline_recipe_ref:', 'build_disposition:', 'created_at:')) {
@@ -617,10 +1208,13 @@ foreach ($fieldPattern in @(
 foreach ($field in @('meta:', 'action_decision_ref:', 'request_ref:', 'sandbox_profile_ref:', 'resource_profile_ref:', 'decision:', 'reason_codes:', 'checked_boundary_refs:', 'decided_at:')) {
     if (-not $sandboxPolicyDecisionBlock.Contains($field)) { Add-Failure "missing SandboxPolicyDecision field: $field" }
 }
+foreach ($field in @('meta:', 'action_id:', 'request_ref:', 'reproduction_plan_ref:', 'environment_recipe_ref:', 'environment_ref:', 'executable:', 'arguments:', 'working_directory:', 'environment_binding_refs:', 'stdin_ref:', 'secret_refs:', 'command_digest:', 'redaction_status:', 'created_at:')) {
+    if (-not $sandboxCommandRecordBlock.Contains($field)) { Add-Failure "missing SandboxCommandRecord field: $field" }
+}
 foreach ($field in @('meta:', 'request_ref:', 'environment_refs:', 'resource_refs:', 'status:', 'failure_reason:', 'finished_at:')) {
     if (-not $cleanupResultBlock.Contains($field)) { Add-Failure "missing CleanupResult field: $field" }
 }
-foreach ($field in @('event_id:', 'sequence:', 'action_id:', 'event_type:', 'actor:', 'environment_ref:', 'environment_recipe_ref:', 'poc_candidate_ref:', 'input_refs:', 'output_refs:', 'exit_code:', 'safe_message:', 'occurred_at:')) {
+foreach ($field in @('event_id:', 'sequence:', 'action_id:', 'event_type:', 'actor:', 'environment_ref:', 'environment_recipe_ref:', 'poc_candidate_ref:', 'command_ref:', 'command_digest:', 'redaction_status:', 'input_refs:', 'output_refs:', 'exit_code:', 'safe_message:', 'occurred_at:')) {
     if (-not $agentLogEventBlock.Contains($field)) { Add-Failure "missing AgentLogEvent field: $field" }
 }
 foreach ($field in @('meta:', 'request_ref:', 'events:')) {
@@ -628,8 +1222,22 @@ foreach ($field in @('meta:', 'request_ref:', 'events:')) {
         Add-Failure "missing AgentLog field: $field"
     }
 }
-foreach ($field in @('meta:', 'request_ref:', 'reproduction_plan_ref:', 'content_ref:', 'content_digest:', 'created_by_invocation_ref:', 'created_at:')) {
+foreach ($field in @('meta:', 'request_ref:', 'reproduction_plan_ref:', 'content_ref:', 'content_digest:', 'llm_call_id:', 'created_at:')) {
     if (-not $pocCandidateBlock.Contains($field)) { Add-Failure "missing PoCCandidate field: $field" }
+}
+foreach ($field in @('meta:', 'request_ref:', 'reproduction_plan_ref:', 'environment_ref:', 'poc_candidate_ref:', 'observation_refs:', 'proposed_outcome:', 'hypothesis_evidence_refs:', 'hypothesis_linkage:', 'limitations:', 'llm_call_id:')) {
+    if (-not $dynamicReproductionConclusionBlock.Contains($field)) { Add-Failure "missing DynamicReproductionConclusion field: $field" }
+}
+foreach ($marker in @(
+    'hypothesis_proposal -> HypothesisProposal -> ORCHESTRATION',
+    '`result_kind=hypothesis_proposal`은 schema-valid proposal을 전역 등록하는 비-LLM ORCHESTRATION runtime만 저장한다.',
+    '`PoCCandidate.llm_call_id`는 같은 analysis·hypothesis·work·attempt에서 candidate를 만든 성공한 `DYNAMIC_REPRODUCTION / CREATE_POC_CANDIDATE` 호출 ID와 같아야 한다.',
+    '`DynamicReproductionConclusion`은 Dynamic Reproduction Agent의 해석 제안이지 최종 실행 사실이나 취약점 판정이 아니다. `llm_call_id`는 같은 analysis·hypothesis·work·attempt의 성공한 `DYNAMIC_REPRODUCTION / INTERPRET_ATTEMPT` 호출 ID와 같아야 하고'
+)) {
+    if (-not $contractText.Contains($marker)) { Add-Failure "missing R3-05 result ownership or invocation marker: $marker" }
+}
+if ($contractText.Contains('created_by_invocation_ref')) {
+    Add-Failure 'obsolete reverse invocation reference remains in common contract'
 }
 foreach ($field in @('meta:', 'request_ref:', 'reproduction_plan_ref:', 'environment_recipe_ref:', 'environment_ref:', 'agent_log_ref:', 'candidate_ref:', 'candidate_digest:', 'execution_action_id:', 'evidence_refs:', 'validated_at:')) {
     if (-not $pocBundleBlock.Contains($field)) { Add-Failure "missing PoCBundle field: $field" }
@@ -643,6 +1251,7 @@ foreach ($fieldPattern in @(
     'policy_decision_ref:\s*StoredDataRef \| null',
     'agent_invoked:\s*boolean',
     'agent_log_ref:\s*StoredDataRef',
+    'agent_conclusion_ref:\s*StoredDataRef \| null',
     'environment_recipe_ref:\s*StoredDataRef \| null',
     'environment_ref:\s*StoredDataRef \| null',
     'poc_candidate_ref:\s*StoredDataRef \| null',
@@ -688,10 +1297,11 @@ $requiredActionCheckBindings = [ordered]@{
     CHANGE_WORK_STATE = 'SCHEMA, AUTHORITY, IDENTITY, STATE'
     START_ATTEMPT = 'SCHEMA, AUTHORITY, STATE, BUDGET'
     CANCEL_WORK = 'SCHEMA, AUTHORITY, IDENTITY, STATE'
+    RESTART_VERIFICATION_GENERATION = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET'
     READ_CODE = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, BUDGET, FILE_PATH'
     RUN_TOOL = 'SCHEMA, AUTHORITY, REVISION, BUDGET, TOOL, FILE_PATH'
     CALL_LLM = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET, PROVIDER, SESSION, REDACTION'
-    FETCH_POLICY = 'SCHEMA, AUTHORITY, BUDGET, TOOL, REDACTION'
+    FETCH_POLICY = 'SCHEMA, AUTHORITY, REVISION, STATE, BUDGET, TOOL, REDACTION'
     REQUEST_DYNAMIC_REPRO = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET'
     RUN_SANDBOX = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, BUDGET'
     SAVE_RESULT = 'SCHEMA, AUTHORITY, IDENTITY, REVISION, STATE, REDACTION'
@@ -711,13 +1321,14 @@ $requiredActionRequesterBindings = [ordered]@{
     CHANGE_WORK_STATE = 'ORCHESTRATION, VERIFICATION, PRIMITIVE_ADMISSION_RUNTIME, REPRODUCTION_SESSION_MANAGER, RECOVERY'
     START_ATTEMPT = 'ORCHESTRATION, VERIFICATION, PRIMITIVE_ADMISSION_RUNTIME, REPRODUCTION_SESSION_MANAGER, RECOVERY'
     CANCEL_WORK = 'ORCHESTRATION, VERIFICATION, PRIMITIVE_ADMISSION_RUNTIME, REPRODUCTION_SESSION_MANAGER, RECOVERY'
+    RESTART_VERIFICATION_GENERATION = 'VERIFICATION, RECOVERY'
     READ_CODE = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, TECHNICAL_GATE'
     RUN_TOOL = 'REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR'
-    CALL_LLM = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, R7_AGENT'
+    CALL_LLM = 'HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, POLICY_PARSER, DYNAMIC_REPRODUCTION'
     FETCH_POLICY = 'POLICY_COLLECTOR'
     REQUEST_DYNAMIC_REPRO = 'VERIFICATION'
-    RUN_SANDBOX = 'R7_SETUP_AUTOMATION'
-    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, PRIMITIVE_ADMISSION_RUNTIME, R7_AGENT, R7_SETUP_AUTOMATION, SANDBOX_CONTROLLER, REPRODUCTION_SESSION_MANAGER, RECOVERY'
+    RUN_SANDBOX = 'REPRODUCTION_SETUP_AUTOMATION'
+    SAVE_RESULT = 'ORCHESTRATION, HYPOTHESIS, PRO, CON, VERIFICATION, CWE_LABELING, CHAINING, TECHNICAL_GATE, RULE_SCOPE_GATE, REPORTER, REPOSITORY_LOADER, STATIC_ANALYSIS, POLICY_COLLECTOR, POLICY_PARSER, PRIMITIVE_ADMISSION_RUNTIME, DYNAMIC_REPRODUCTION, REPRODUCTION_SETUP_AUTOMATION, SANDBOX_CONTROLLER, REPRODUCTION_SESSION_MANAGER, BUDGET_RUNTIME, R8_EVALUATION_RUNTIME, RECOVERY'
     CALL_TECHNICAL_GATE = 'VERIFICATION'
     CALL_RULE_SCOPE_GATE = 'VERIFICATION'
     CREATE_REPORT_DRAFT = 'VERIFICATION'
@@ -759,10 +1370,72 @@ foreach ($field in $requiredActionDecisionFields) {
     }
 }
 
+$usageMeasurementBlock = [regex]::Match($contractText, '(?ms)^UsageMeasurement:\s*(.*?)^ResourceUsageSummary:').Groups[1].Value
+$resourceUsageSummaryBlock = [regex]::Match($contractText, '(?ms)^ResourceUsageSummary:\s*(.*?)^EvaluationRunConfig:').Groups[1].Value
+$evaluationRunConfigBlock = [regex]::Match($contractText, '(?ms)^EvaluationRunConfig:\s*(.*?)^EvaluationMetric:').Groups[1].Value
+$evaluationMetricBlock = [regex]::Match($contractText, '(?ms)^EvaluationMetric:\s*(.*?)^EvaluationRunResult:').Groups[1].Value
+$evaluationRunResultBlock = [regex]::Match($contractText, '(?ms)^EvaluationRunResult:\s*(.*?)^EvaluationRecommendation:').Groups[1].Value
+$evaluationRecommendationBlock = [regex]::Match($contractText, '(?ms)^EvaluationRecommendation:\s*(.*?)^```').Groups[1].Value
+foreach ($contract in @(
+    @{ Name = 'UsageMeasurement'; Block = $usageMeasurementBlock; Fields = @('token_source:', 'input_tokens:', 'output_tokens:', 'total_tokens:', 'token_unavailable_reason:', 'provider_units:', 'cost_source:', 'cost_minor_units:', 'currency:', 'pricing_revision_ref:', 'cost_unavailable_reason:') },
+    @{ Name = 'ResourceUsageSummary'; Block = $resourceUsageSummaryBlock; Fields = @('elapsed_ms:', 'work_count:', 'attempt_count:', 'retry_count:', 'llm_call_count:', 'dynamic_attempt_count:', 'cost_minor_units:', 'currency:', 'pricing_revision_refs:', 'usage_measurement_refs:', 'usage_complete:', 'unavailable_reasons:') },
+    @{ Name = 'EvaluationRunConfig'; Block = $evaluationRunConfigBlock; Fields = @('meta:', 'evaluation_config_id:', 'comparison_group_id:', 'corpus_refs:', 'ground_truth_refs:', 'grader_refs:', 'provider_profile_ref:', 'model:', 'session_policy:', 'prompt_registry_entry_ref:', 'execution_budget_profile_ref:', 'output_schema_ref:') },
+    @{ Name = 'EvaluationMetric'; Block = $evaluationMetricBlock; Fields = @('metric_key:', 'value:', 'unit:', 'sample_count:', 'evidence_refs:') },
+    @{ Name = 'EvaluationRunResult'; Block = $evaluationRunResultBlock; Fields = @('meta:', 'evaluation_run_id:', 'config_ref:', 'analysis_result_refs:', 'grader_result_refs:', 'metrics:', 'usage:', 'status:', 'error_ids:', 'started_at:', 'finished_at:') },
+    @{ Name = 'EvaluationRecommendation'; Block = $evaluationRecommendationBlock; Fields = @('meta:', 'recommendation_id:', 'evaluation_result_ref:', 'target_provider_profile_ref:', 'target_model:', 'target_session_policy:', 'target_prompt_registry_entry_ref:', 'decision:', 'rationale:', 'decided_by:', 'decided_at:') }
+)) {
+    foreach ($field in $contract.Fields) {
+        if (-not $contract.Block.Contains($field)) { Add-Failure "missing $($contract.Name) field: $field" }
+    }
+}
+
+$promptRegistryBlock = [regex]::Match($contractText, '(?ms)^PromptRegistryEntry:\s*(.*?)^PromptContextBinding:').Groups[1].Value
+$promptPayloadBlock = [regex]::Match($contractText, '(?ms)^PromptPayload:\s*(.*?)^LLMCallSpec:').Groups[1].Value
+$executionLimitsBlock = [regex]::Match($contractText, '(?ms)^ExecutionLimits:\s*(.*?)^LLMRetryPolicy:').Groups[1].Value
+$retryPolicyBlock = [regex]::Match($contractText, '(?ms)^LLMRetryPolicy:\s*(.*?)^LLMToolPolicy:').Groups[1].Value
+$toolPolicyBlock = [regex]::Match($contractText, '(?ms)^LLMToolPolicy:\s*(.*?)^PromptRedactionPolicy:').Groups[1].Value
+$redactionPolicyBlock = [regex]::Match($contractText, '(?ms)^PromptRedactionPolicy:\s*(.*?)^OutputSchemaSpec:').Groups[1].Value
+$outputSchemaSpecBlock = [regex]::Match($contractText, '(?ms)^OutputSchemaSpec:\s*(.*?)^SemanticValidatorSpec:').Groups[1].Value
+$semanticValidatorSpecBlock = [regex]::Match($contractText, '(?ms)^SemanticValidatorSpec:\s*(.*?)^PromptInputSlot:').Groups[1].Value
+$promptInputSlotBlock = [regex]::Match($contractText, '(?ms)^PromptInputSlot:\s*(.*?)^PromptRegistryEntry:').Groups[1].Value
+$promptContextBindingBlock = [regex]::Match($contractText, '(?ms)^PromptContextBinding:\s*(.*?)^PromptPayload:').Groups[1].Value
+
+foreach ($contract in @(
+    @{ Name = 'ExecutionLimits'; Block = $executionLimitsBlock; Fields = @('meta:', 'limits_key:', 'token_budget:', 'timeout_ms:', 'max_parallel_calls:', 'max_calls_per_work:') },
+    @{ Name = 'LLMRetryPolicy'; Block = $retryPolicyBlock; Fields = @('meta:', 'policy_key:', 'max_schema_repairs:', 'max_semantic_repairs:', 'max_retries:', 'max_failovers:', 'retryable_statuses:') },
+    @{ Name = 'LLMToolPolicy'; Block = $toolPolicyBlock; Fields = @('meta:', 'policy_key:', 'allowed_tools:', 'forbidden_actions:', 'sandbox_only:') },
+    @{ Name = 'PromptRedactionPolicy'; Block = $redactionPolicyBlock; Fields = @('meta:', 'policy_key:', 'remove_categories:', 'fail_closed:') },
+    @{ Name = 'OutputSchemaSpec'; Block = $outputSchemaSpecBlock; Fields = @('meta:', 'schema_key:', 'schema_artifact_ref:', 'result_kind:') },
+    @{ Name = 'SemanticValidatorSpec'; Block = $semanticValidatorSpecBlock; Fields = @('meta:', 'validator_key:', 'implementation_ref:', 'test_refs:') },
+    @{ Name = 'PromptInputSlot'; Block = $promptInputSlotBlock; Fields = @('slot:', 'data_kind:', 'field_paths:', 'cardinality:', 'trust_class:') },
+    @{ Name = 'PromptContextBinding'; Block = $promptContextBindingBlock; Fields = @('slot:', 'data_kind:', 'source_ref:', 'projected_data_ref:', 'field_paths:', 'trust_class:') }
+)) {
+    foreach ($field in $contract.Fields) {
+        if (-not $contract.Block.Contains($field)) { Add-Failure "missing $($contract.Name) field: $field" }
+    }
+}
+
+foreach ($field in @('meta:', 'prompt_key:', 'agent_role:', 'task_kind:', 'purpose:', 'template_ref:', 'template_version:', 'input_slots:', 'forbidden_context_kinds:', 'output_schema_ref:', 'session_policy:', 'provider_profile_refs:', 'execution_limits_ref:', 'retry_policy_ref:', 'semantic_validator_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'result_kind:', 'quality_evaluation_ref:', 'status:', 'owner_role:', 'reviewer_roles:')) {
+    if (-not $promptRegistryBlock.Contains($field)) {
+        Add-Failure "missing PromptRegistryEntry field: $field"
+    }
+}
+foreach ($field in @('meta:', 'registry_entry_ref:', 'prompt_key:', 'agent_role:', 'task_kind:', 'purpose:', 'template_ref:', 'template_version:', 'context_bindings:', 'rendered_prompt_ref:', 'output_schema_ref:')) {
+    if (-not $promptPayloadBlock.Contains($field)) {
+        Add-Failure "missing PromptPayload field: $field"
+    }
+}
+$requiredPromptRoles = @('HYPOTHESIS', 'PRO', 'CON', 'VERIFICATION', 'POLICY_PARSER', 'DYNAMIC_REPRODUCTION', 'CHAINING', 'CWE_LABELING', 'TECHNICAL_GATE', 'RULE_SCOPE_GATE', 'REPORTER')
+foreach ($role in $requiredPromptRoles) {
+    if (-not $promptRegistryBlock.Contains($role) -or -not $promptPayloadBlock.Contains($role)) {
+        Add-Failure "missing prompt role in registry or payload: $role"
+    }
+}
+
 $llmSpecBlock = [regex]::Match($contractText, '(?ms)^LLMCallSpec:\s*(.*?)^LLMInvocationRequest:').Groups[1].Value
 $llmRequestBlock = [regex]::Match($contractText, '(?ms)^LLMInvocationRequest:\s*(.*?)^```').Groups[1].Value
 foreach ($block in @($llmSpecBlock, $llmRequestBlock)) {
-    foreach ($field in @('llm_call_id:', 'agent_role:', 'provider_profile_ref:', 'model:', 'session_policy:', 'context_refs:', 'prompt_payload_ref:', 'output_schema:', 'token_budget:', 'timeout_ms:')) {
+    foreach ($field in @('llm_call_id:', 'agent_role:', 'task_kind:', 'purpose:', 'provider_profile_ref:', 'model:', 'session_policy:', 'context_refs:', 'prompt_registry_entry_ref:', 'prompt_key:', 'prompt_template_ref:', 'prompt_template_version:', 'prompt_payload_ref:', 'execution_limits_ref:', 'retry_policy_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'semantic_validator_ref:', 'output_schema_ref:', 'output_schema:', 'token_budget:', 'timeout_ms:')) {
         if (-not $block.Contains($field)) {
             Add-Failure "missing exact LLM call field: $field"
         }
@@ -773,7 +1446,19 @@ foreach ($block in @($llmSpecBlock, $llmRequestBlock)) {
     if (-not $block.Contains('CHAINING')) {
         Add-Failure 'CHAINING missing from LLM call role enum'
     }
+    if (-not $block.Contains('DYNAMIC_REPRODUCTION')) {
+        Add-Failure 'DYNAMIC_REPRODUCTION missing from LLM call role enum'
+    }
 }
+$dynamicReproductionResultBlock = [regex]::Match($contractText, '(?ms)^DynamicReproductionResult:\s*(.*?)^```').Groups[1].Value
+$dynamicPlanIssuesCount = [regex]::Matches($dynamicReproductionResultBlock, '(?m)^\s+plan_issues:').Count
+if ($dynamicPlanIssuesCount -ne 1) {
+    Add-Failure "DynamicReproductionResult.plan_issues must be defined exactly once; found $dynamicPlanIssuesCount"
+}
+if (-not $dynamicReproductionResultBlock.Contains('plan_issues: [PlanIssueItem]')) {
+    Add-Failure 'DynamicReproductionResult.plan_issues must use PlanIssueItem'
+}
+
 foreach ($blockInfo in @(
     @{ Name = 'LLMCallSpec'; Block = $llmSpecBlock },
     @{ Name = 'LLMInvocationRequest'; Block = $llmRequestBlock }
@@ -785,9 +1470,270 @@ foreach ($blockInfo in @(
 if (-not $llmRequestBlock.Contains('call_spec_ref:')) {
     Add-Failure 'LLMInvocationRequest missing call_spec_ref'
 }
+$llmResultBlock = [regex]::Match($contractText, '(?ms)^LLMInvocationResult:\s*(.*?)^```').Groups[1].Value
+foreach ($field in @('llm_call_id:', 'purpose:', 'provider:', 'model:', 'usage: UsageMeasurement | null', 'elapsed_ms:', 'status:')) {
+    if (-not $llmResultBlock.Contains($field)) {
+        Add-Failure "LLMInvocationResult missing normalized invocation field: $field"
+    }
+}
 $llmLogBlock = [regex]::Match($contractText, '(?ms)^LLMInvocationLog:\s*(.*?)^```').Groups[1].Value
-if (-not $llmLogBlock.Contains('parsed_output_ref:')) {
-    Add-Failure 'LLMInvocationLog missing parsed_output_ref'
+foreach ($field in @('agent_role:', 'task_kind:', 'purpose:', 'provider_profile_ref:', 'model:', 'prompt_registry_entry_ref:', 'prompt_key:', 'prompt_template_ref:', 'prompt_template_version:', 'prompt_payload_ref:', 'execution_limits_ref:', 'retry_policy_ref:', 'tool_policy_ref:', 'redaction_policy_ref:', 'semantic_validator_ref:', 'output_schema_ref:', 'context_refs:', 'parsed_output_ref:', 'usage: UsageMeasurement | null')) {
+    if (-not $llmLogBlock.Contains($field)) {
+        Add-Failure "LLMInvocationLog missing prompt trace field: $field"
+    }
+}
+if (-not $llmLogBlock.Contains('DYNAMIC_REPRODUCTION')) {
+    Add-Failure 'DYNAMIC_REPRODUCTION missing from LLMInvocationLog role enum'
+}
+
+$promptRuntimePath = Join-Path $repoRoot 'docs/architecture-v5/implementation/05-prompt-runtime.md'
+if (-not (Test-Path -LiteralPath $promptRuntimePath)) {
+    Add-Failure 'missing R3-05 prompt runtime design'
+} else {
+    $promptRuntimeText = Get-Content -Raw -Encoding UTF8 -LiteralPath $promptRuntimePath
+    foreach ($marker in @('DESIGN_APPROVED / NOT_IMPLEMENTED', 'PromptRegistryEntry', 'PromptPayload', 'POLICY_PARSER', 'DYNAMIC_REPRODUCTION', 'OpenAI API, Codex 구독, Anthropic API, Claude 구독', '`PMT-01`', '`PMT-15`', 'Orchestration 자체의 별도 LLM prompt는 만들지 않는다', '한 호출당 한 result kind의 structured output artifact 하나', 'DynamicReproductionConclusion', '#90에서 채택된 각 adapter profile fixture', 'HypothesisProposal[]', 'model.hypothesis.generate-initial.quality-v1', 'model.hypothesis.duplicate-review.quality-v1', 'model.verification.technical-revise.quality-v1', 'model.dynamic-reproduction.interpret-attempt.quality-v1', 'PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', '/sanitizer_candidates', '/validator_candidates')) {
+        if (-not $promptRuntimeText.Contains($marker)) {
+            Add-Failure "R3-05 prompt runtime is missing marker: $marker"
+        }
+    }
+    foreach ($task in @('GENERATE_INITIAL', 'DUPLICATE_REVIEW', 'COLLECT_SUPPORT', 'COLLECT_COUNTEREVIDENCE', 'ASSESS_INITIAL', 'CREATE_DYNAMIC_REQUEST', 'FINAL_VERDICT', 'TECHNICAL_REVISE', 'PARSE_OFFICIAL_POLICY', 'DERIVE_ENVIRONMENT', 'PLAN_REPRODUCTION', 'CREATE_POC_CANDIDATE', 'EXECUTE_REPRODUCTION', 'INTERPRET_ATTEMPT', 'MATCH_PRIMITIVES', 'CLASSIFY', 'CREATE_DRAFT')) {
+        if (-not $promptRuntimeText.Contains($task)) { Add-Failure "R3-05 prompt runtime is missing task registry row: $task" }
+    }
+    foreach ($testId in @('PMT-HYP-01', 'PMT-HYP-02', 'PMT-PRO-01', 'PMT-CON-01', 'PMT-VER-00', 'PMT-VER-01', 'PMT-VER-02', 'PMT-VER-03', 'PMT-POL-01', 'PMT-R7-01', 'PMT-R7-02', 'PMT-R7-03', 'PMT-R7-04', 'PMT-R7-05', 'PMT-CHN-01', 'PMT-CWE-01', 'PMT-TG-01', 'PMT-RSG-01', 'PMT-REP-01')) {
+        if (-not $promptRuntimeText.Contains($testId)) { Add-Failure "R3-05 prompt runtime is missing role fixture: $testId" }
+    }
+    foreach ($obsoletePointer in @('/relations', '/tool_coverage', '/bundle_hash')) {
+        if ($promptRuntimeText.Contains($obsoletePointer)) { Add-Failure "R3-05 prompt runtime uses nonexistent StaticFactBundle pointer: $obsoletePointer" }
+    }
+    foreach ($obsoleteExample in @('data_kind: evidence_agent_result', '"/restrictions"')) {
+        if ($promptRuntimeText.Contains($obsoleteExample)) { Add-Failure "R3-05 prompt runtime uses invalid registration example field: $obsoleteExample" }
+    }
+    $proTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| PRO / `COLLECT_SUPPORT` \| `config/prompts/templates/.*$').Value
+    $conTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| CON / `COLLECT_COUNTEREVIDENCE` \| `config/prompts/templates/.*$').Value
+    foreach ($rowRule in @(
+        @{ Name = 'PRO'; Text = $proTaskRow },
+        @{ Name = 'CON'; Text = $conTaskRow }
+    )) {
+        foreach ($requiredInput in @('VerificationAssignment($)', 'HypothesisProcessState(', 'VulnerabilityHypothesis($)', 'HypothesisProposal($)', 'StaticFactBundle(', 'CodeContextResponse($)', 'PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', 'debate_config($)', 'verification_budget_profile($)')) {
+            if (-not $rowRule.Text.Contains($requiredInput)) { Add-Failure "R3-05 $($rowRule.Name) task row is missing canonical debate input: $requiredInput" }
+        }
+    }
+    $dynamicRequestTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| VERIFICATION / `CREATE_DYNAMIC_REQUEST` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('VerificationAssignment($)', 'HypothesisProcessState(', 'VulnerabilityHypothesis($)', 'HypothesisProposal($)', 'data_kind=pro_evidence_result', 'data_kind=con_evidence_result')) {
+        if (-not $dynamicRequestTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 CREATE_DYNAMIC_REQUEST row is missing required input: $requiredInput" }
+    }
+    $finalVerdictTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| VERIFICATION / `FINAL_VERDICT` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('VerificationAssignment($)', 'HypothesisProcessState(', 'VulnerabilityHypothesis($)', 'HypothesisProposal($)', 'PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', 'data_kind=pro_evidence_result', 'data_kind=con_evidence_result')) {
+        if (-not $finalVerdictTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 FINAL_VERDICT row is missing required input: $requiredInput" }
+    }
+    $initialAssessmentTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| VERIFICATION / `ASSESS_INITIAL` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', 'data_kind=pro_evidence_result', 'data_kind=con_evidence_result', 'verification_initial_assessment', 'PMT-VER-00')) {
+        if (-not $initialAssessmentTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 ASSESS_INITIAL row is missing required contract: $requiredInput" }
+    }
+    foreach ($requiredInput in @('PlaybookPolicy($)', 'VerificationPlaybook($)', 'PlaybookApplication($)', 'VerificationInitialAssessment($)')) {
+        if (-not $dynamicRequestTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 CREATE_DYNAMIC_REQUEST row is missing assessment/playbook input: $requiredInput" }
+    }
+    if (-not $finalVerdictTaskRow.Contains('VerificationInitialAssessment($)')) {
+        Add-Failure 'R3-05 FINAL_VERDICT row is missing initial assessment input'
+    }
+
+    $chainingTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| CHAINING / `MATCH_PRIMITIVES` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('indexes: PrimitiveIndexState($) REQUIRED_MANY', 'lineage_hypotheses: VulnerabilityHypothesis(', 'lineage_results: ChainingResult(/primitive_match_candidates,/input_primitive_refs)` OPTIONAL_MANY')) {
+        if (-not $chainingTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 CHAINING row is missing lineage input: $requiredInput" }
+    }
+    if ($chainingTaskRow.Contains('PrimitiveAdmissionDecision')) {
+        Add-Failure 'R3-05 CHAINING prompt must not re-read PrimitiveAdmissionDecision'
+    }
+
+    $ruleScopeTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| RULE_SCOPE_GATE / `REVIEW` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('run_policy_state: RunPolicyState($)', 'collection: PolicyCollectionResult($)', 'policy: ProgramPolicyRecord($)` OPTIONAL_ONE')) {
+        if (-not $ruleScopeTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 RULE_SCOPE_GATE row is missing run policy input: $requiredInput" }
+    }
+    foreach ($requiredRule in @(
+        '`RuleScopeImpactReview.run_policy_state_ref`는 입력 state와 같아야 하며',
+        'state가 가리키지 않는 collection·policy를 추가하거나 freshness·generation을 다른 record에서 조합하면 호출과 결과 저장을 거절한다.'
+    )) {
+        if (-not $promptRuntimeText.Contains($requiredRule)) { Add-Failure "R3-05 RULE_SCOPE_GATE run policy binding is missing: $requiredRule" }
+    }
+
+    $cweLabelingTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| CWE_LABELING / `CLASSIFY` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('verification: VerificationResult($)', 'pro: EvidenceAgentResult(role=PRO', 'con: EvidenceAgentResult(role=CON', 'facts: StaticFactBundle($)', 'contexts: CodeContextResponse($)` OPTIONAL_MANY', 'dynamic_request: DynamicReproductionRequest($)', 'dynamic: DynamicReproductionResult($)', 'poc: PoCBundle($)', 'taxonomy: cwe_taxonomy($)')) {
+        if (-not $cweLabelingTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 CWE_LABELING row is missing current evidence input: $requiredInput" }
+    }
+
+    $technicalGateTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| TECHNICAL_GATE / `REVIEW` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('hypothesis: VulnerabilityHypothesis($)', 'verification: VerificationResult($)', 'cwe: CWELabel($)', 'pro: EvidenceAgentResult(role=PRO', 'con: EvidenceAgentResult(role=CON', 'facts: StaticFactBundle($)', 'contexts: CodeContextResponse($)` OPTIONAL_MANY', 'dynamic_request: DynamicReproductionRequest($)', 'dynamic: DynamicReproductionResult($)', 'poc: PoCBundle($)', 'sandbox_policy: SandboxPolicyDecision($)', 'environment_recipe: EnvironmentRecipe($)', 'environment: SandboxEnvironment($)', 'agent_log: AgentLog($)')) {
+        if (-not $technicalGateTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 TECHNICAL_GATE row is missing exact evidence input: $requiredInput" }
+    }
+    if ($technicalGateTaskRow.Contains('exact transitive evidence refs')) {
+        Add-Failure 'R3-05 TECHNICAL_GATE row still uses a non-executable evidence shorthand'
+    }
+
+    foreach ($requiredInput in @('hypothesis: VulnerabilityHypothesis($)', 'pro: EvidenceAgentResult(role=PRO', 'con: EvidenceAgentResult(role=CON', 'facts: StaticFactBundle($)', 'contexts: CodeContextResponse($)` OPTIONAL_MANY', 'dynamic_request: DynamicReproductionRequest($)', 'dynamic: DynamicReproductionResult($)', 'poc: PoCBundle($)', 'sandbox_policy: SandboxPolicyDecision($)', 'environment_recipe: EnvironmentRecipe($)', 'environment: SandboxEnvironment($)', 'agent_log: AgentLog($)', 'official_sources: official_policy_source($)` REQUIRED_MANY')) {
+        if (-not $ruleScopeTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 RULE_SCOPE_GATE row is missing evidence or official-source input: $requiredInput" }
+    }
+
+    $reporterTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| REPORTER / `CREATE_DRAFT` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @('finding: Finding($)', 'verification: VerificationResult($)', 'technical: TechnicalEvidenceReview($)', 'scope: RuleScopeImpactReview($)', 'cwe: CWELabel($)', 'pro: EvidenceAgentResult(role=PRO', 'con: EvidenceAgentResult(role=CON', 'facts: StaticFactBundle($)', 'contexts: CodeContextResponse($)` OPTIONAL_MANY', 'dynamic_request: DynamicReproductionRequest($)', 'run_policy_state: RunPolicyState($)', 'collection: PolicyCollectionResult($)', 'policy: ProgramPolicyRecord($)', 'dynamic: DynamicReproductionResult($)', 'poc: PoCBundle($)', 'sandbox_policy: SandboxPolicyDecision($)', 'environment_recipe: EnvironmentRecipe($)', 'environment: SandboxEnvironment($)', 'agent_log: AgentLog($)')) {
+        if (-not $reporterTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 REPORTER row is missing exact report input: $requiredInput" }
+    }
+
+    foreach ($requiredRule in @(
+        'CWE Labeling·Technical Gate·Rule Scope Gate·Reporter의 네 task에서 사용하는 evidence slot은 current final TRUE `VerificationResult`가 가리키는 direct·transitive evidence closure와 set-equal해야 한다.',
+        '`official_sources`는 `PolicyCollectionResult.official_source_refs`와 set-equal해야 하며',
+        'Reporter의 `run_policy_state`, `collection`, `policy`는 Rule Scope review가 사용한 exact frozen chain과 같아야 한다.'
+    )) {
+        if (-not $promptRuntimeText.Contains($requiredRule)) { Add-Failure "R3-05 R5 prompt closure rule is missing: $requiredRule" }
+    }
+
+    $technicalReviseTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| VERIFICATION / `TECHNICAL_REVISE` \| `config/prompts/templates/.*$').Value
+    foreach ($requiredInput in @(
+        'previous: VerificationResult($)',
+        'review: TechnicalEvidenceReview(/status,/revision_requests,/verification_result_ref,/cwe_label_ref)',
+        'assignment: VerificationAssignment($)',
+        'process: HypothesisProcessState(/status,/verification_assignment_ref,/verification_generation,/verification_work_ref)',
+        'hypothesis: VulnerabilityHypothesis($)',
+        'proposal: HypothesisProposal($)',
+        'facts: StaticFactBundle($)',
+        'contexts: CodeContextResponse($)` OPTIONAL_MANY',
+        'policy: PlaybookPolicy($)',
+        'playbook: VerificationPlaybook($)',
+        'application: PlaybookApplication($)',
+        'debate_config: debate_config($)',
+        'budget_profile: verification_budget_profile($)',
+        'pro: EvidenceAgentResult(role=PRO, data_kind=pro_evidence_result)',
+        'con: EvidenceAgentResult(role=CON, data_kind=con_evidence_result)',
+        'assessment: VerificationInitialAssessment($)',
+        'dynamic: DynamicReproductionResult($)` OPTIONAL_ONE',
+        'poc: PoCBundle($)` OPTIONAL_ONE'
+    )) {
+        if (-not $technicalReviseTaskRow.Contains($requiredInput)) { Add-Failure "R3-05 TECHNICAL_REVISE row is missing executable input: $requiredInput" }
+    }
+    if ($technicalReviseTaskRow.Contains('FINAL_VERDICT와 같은 slot')) {
+        Add-Failure 'R3-05 TECHNICAL_REVISE row still uses a non-executable input shorthand'
+    }
+
+    $promptSettingRows = [regex]::Matches($promptRuntimeText, '(?m)^\| (?<role>[A-Z_]+) / `(?<task>[A-Z_]+)` \| `model\.[^`]+` \|')
+    $promptTaskRows = [regex]::Matches($promptRuntimeText, '(?m)^\| (?<role>[A-Z_]+) / `(?<task>[A-Z_]+)` \| `config/prompts/templates/[^`]+` \|')
+    $settingKeys = @($promptSettingRows | ForEach-Object { "$($_.Groups['role'].Value)/$($_.Groups['task'].Value)" })
+    $taskKeys = @($promptTaskRows | ForEach-Object { "$($_.Groups['role'].Value)/$($_.Groups['task'].Value)" })
+    if ($settingKeys.Count -ne 19 -or (@($settingKeys | Sort-Object -Unique)).Count -ne 19) {
+        Add-Failure "R3-05 common setting table must contain 19 unique agent_role/task_kind pairs; found $($settingKeys.Count) rows and $((@($settingKeys | Sort-Object -Unique)).Count) unique pairs"
+    }
+    if ($taskKeys.Count -ne 19 -or (@($taskKeys | Sort-Object -Unique)).Count -ne 19) {
+        Add-Failure "R3-05 task table must contain 19 unique agent_role/task_kind pairs; found $($taskKeys.Count) rows and $((@($taskKeys | Sort-Object -Unique)).Count) unique pairs"
+    }
+    $promptPairDiff = @(Compare-Object -ReferenceObject $settingKeys -DifferenceObject $taskKeys)
+    if ($promptPairDiff.Count -ne 0) {
+        Add-Failure "R3-05 common settings and task rows do not have the same agent_role/task_kind pairs: $($promptPairDiff | ForEach-Object { "$($_.SideIndicator)$($_.InputObject)" } | Sort-Object | Join-String -Separator ', ')"
+    }
+    foreach ($requiredHeading in @(
+        'Hypothesis Agent',
+        'Pro Agent',
+        'Con Agent',
+        'Verification Agent',
+        'Policy Parser Agent',
+        'Dynamic Reproduction Agent',
+        'Chaining Agent',
+        'CWE Labeling',
+        'Technical Gate',
+        'Rule Scope Impact Gate',
+        'Reporter'
+    )) {
+        if (-not [regex]::IsMatch($promptRuntimeText, "(?m)^### 4\.[0-9]+ $([regex]::Escape($requiredHeading))")) {
+            Add-Failure "R3-05 role-specific section is missing: $requiredHeading"
+        }
+    }
+    if (-not $promptRuntimeText.Contains('task 행에서 cardinality를 별도로 쓰지 않은 slot은 `REQUIRED_ONE`이다.')) {
+        Add-Failure 'R3-05 task table does not define the default cardinality for an unmarked input slot'
+    }
+    foreach ($cardinalityRule in @(
+        '`REQUIRED_ONE`은 정확히 1개',
+        '`OPTIONAL_ONE`은 0개 또는 1개',
+        '`REQUIRED_MANY`는 1개 이상',
+        '`OPTIONAL_MANY`는 0개 이상'
+    )) {
+        if (-not $promptRuntimeText.Contains($cardinalityRule)) { Add-Failure "R3-05 prompt slot cardinality meaning is missing: $cardinalityRule" }
+        if (-not $contractText.Contains($cardinalityRule)) { Add-Failure "common PromptInputSlot cardinality meaning is missing: $cardinalityRule" }
+    }
+    foreach ($lineageScenario in @('PMT-CHN-EMPTY-LINEAGE', 'PMT-CHN-MISSING-LINEAGE', 'PMT-CHN-EXTRA-LINEAGE')) {
+        if (-not $promptRuntimeText.Contains($lineageScenario)) { Add-Failure "R3-05 Chaining lineage scenario is missing: $lineageScenario" }
+    }
+
+    $deriveEnvironmentTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| DYNAMIC_REPRODUCTION / `DERIVE_ENVIRONMENT` \| `config/prompts/templates/.*$').Value
+    $planReproductionTaskRow = [regex]::Match($promptRuntimeText, '(?m)^\| DYNAMIC_REPRODUCTION / `PLAN_REPRODUCTION` \| `config/prompts/templates/.*$').Value
+    foreach ($rowRule in @(
+        @{ Name = 'DERIVE_ENVIRONMENT'; Text = $deriveEnvironmentTaskRow },
+        @{ Name = 'PLAN_REPRODUCTION'; Text = $planReproductionTaskRow }
+    )) {
+        foreach ($requiredInput in @('dependency_context: CodeContextResponse($)', '`dependency_files: code_fragment($)` OPTIONAL_MANY')) {
+            if (-not $rowRule.Text.Contains($requiredInput)) { Add-Failure "R3-05 $($rowRule.Name) row is missing repository dependency content: $requiredInput" }
+        }
+    }
+
+    foreach ($requiredMarker in @(
+        'DYNAMIC_REPRODUCTION / `EXECUTE_REPRODUCTION`',
+        'schema.dynamic-reproduction-tool-request.next-major',
+        '`tools.none.v1`',
+        '`tools.dynamic-reproduction-inner.v1`',
+        '`PMT-R7-05`',
+        'DynamicReproductionResult의 `hypothesis_outcome`, `hypothesis_evidence_refs`, `hypothesis_linkage`, `limitations`'
+    )) {
+        if (-not $promptRuntimeText.Contains($requiredMarker)) { Add-Failure "R3-05 prompt runtime is missing R7 staged execution rule: $requiredMarker" }
+    }
+
+    $dynamicExecuteSettingRow = [regex]::Match($promptRuntimeText, '(?m)^\| DYNAMIC_REPRODUCTION / `EXECUTE_REPRODUCTION` \| `model\.[^\r\n]+\r?$').Value.TrimEnd("`r")
+    if (-not $dynamicExecuteSettingRow.EndsWith('| AUTO |')) {
+        Add-Failure 'R3-05 EXECUTE_REPRODUCTION registry session policy must use the valid AUTO enum'
+    }
+    if (-not $promptRuntimeText.Contains('`EXECUTE_REPRODUCTION`의 `session_policy=AUTO`는 첫 turn이면 `NEW`, 같은 dynamic work·attempt의 후속 turn이면 바로 앞 성공 turn의 exact `session_ref`를 `parent_session_ref`로 둔 `RESUME`으로만 해석한다.')) {
+        Add-Failure 'R3-05 EXECUTE_REPRODUCTION AUTO session interpretation is missing'
+    }
+    if (-not $contractText.Contains('`agent_role=DYNAMIC_REPRODUCTION`, `task_kind=EXECUTE_REPRODUCTION`, `session_policy=AUTO`')) {
+        Add-Failure 'common prompt contract is missing the Dynamic Reproduction AUTO session invariant'
+    }
+    if (-not $providerContractText.Contains('| 같은 `DYNAMIC_REPRO` work·attempt의 `EXECUTE_REPRODUCTION` 첫 turn | `NEW` |')) {
+        Add-Failure 'provider session policy table is missing the first Dynamic Reproduction turn rule'
+    }
+    if (-not $providerContractText.Contains('| 같은 `DYNAMIC_REPRO` work·attempt의 `EXECUTE_REPRODUCTION` 후속 turn | `RESUME` |')) {
+        Add-Failure 'provider session policy table is missing the follow-up Dynamic Reproduction turn rule'
+    }
+    if (-not $agentRolesText.Contains('`EXECUTE_REPRODUCTION`만 `session_policy=AUTO`를 사용해 같은 work·attempt의 첫 turn을 `NEW`, 후속 turn을 `RESUME`으로 제한한다.')) {
+        Add-Failure 'agent-role contract is missing the limited Dynamic Reproduction AUTO exception'
+    }
+    $providerWikiText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/providers-and-logging.md')
+    if (-not $providerWikiText.Contains('`EXECUTE_REPRODUCTION`의 `AUTO`만 같은 동적 work·attempt의 첫 turn을 `NEW`, 후속 turn을 `RESUME`으로 정합니다.')) {
+        Add-Failure 'provider Wiki is missing the limited Dynamic Reproduction AUTO exception'
+    }
+}
+
+$initialAssessmentBlock = [regex]::Match($contractText, '(?ms)^VerificationInitialAssessment:\s*(.*?)^EvidenceClaim:').Groups[1].Value
+foreach ($field in @('verification_work_id:', 'verification_generation:', 'hypothesis_ref:', 'policy_ref:', 'playbook_ref:', 'playbook_application_ref:', 'pro_evidence_ref:', 'con_evidence_ref:', 'next_step:', 'proposed_verdict:', 'evidence_refs:', 'llm_call_id:')) {
+    if (-not $initialAssessmentBlock.Contains($field)) { Add-Failure "VerificationInitialAssessment missing field: $field" }
+}
+$dynamicReproductionToolRequestBlock = [regex]::Match($contractText, '(?ms)^DynamicReproductionToolRequest:\s*(.*?)^PoCBundle:').Groups[1].Value
+foreach ($field in @('request_ref:', 'reproduction_plan_ref:', 'environment_ref:', 'action:', 'command:', 'poc_candidate_ref:', 'recreate_reason:', 'llm_call_id:')) {
+    if (-not $dynamicReproductionToolRequestBlock.Contains($field)) { Add-Failure "DynamicReproductionToolRequest missing field: $field" }
+}
+foreach ($marker in @(
+    '`verification_initial_assessment -> VerificationInitialAssessment -> VERIFICATION`',
+    '`dynamic_reproduction_tool_request -> DynamicReproductionToolRequest -> DYNAMIC_REPRODUCTION`',
+    'initial assessment를 final `VerificationResult`나 Gate 입력으로 사용하지 않는다',
+    'Session Manager는 이 네 값을 새로 판단하거나 바꾸지 않는다'
+)) {
+    if (-not $contractText.Contains($marker)) { Add-Failure "missing reviewed prompt contract rule: $marker" }
+}
+$promptAgentWikiText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/agents.md')
+$promptContractWikiText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/common-contracts.md')
+foreach ($rule in @(
+    @{ Name = 'Agent Wiki links prompt runtime'; Text = $promptAgentWikiText; Marker = '[R3-05 Agent 프롬프트 구조](../implementation/05-prompt-runtime.md)' },
+    @{ Name = 'Agent Wiki names eleven LLM roles'; Text = $promptAgentWikiText; Marker = '프롬프트가 필요한 역할은 Hypothesis, Pro, Con, Verification, Policy Parser, Dynamic Reproduction Agent, Chaining, CWE Labeling, Technical Gate, Rule Scope Gate, Reporter의 11개입니다.' },
+    @{ Name = 'Contract Wiki explains prompt registry'; Text = $promptContractWikiText; Marker = '`PromptRegistryEntry`: 역할·작업, template, 허용·금지 입력' },
+    @{ Name = 'Contract Wiki explains provider-neutral prompt'; Text = $promptContractWikiText; Marker = 'R3-04 시험에서 채택된 `ProviderProfile`만 실행할 수 있습니다.' }
+)) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing R3-05 Wiki synchronization rule: $($rule.Name)"
+    }
 }
 foreach ($pair in @(
     @{ Name = 'TechnicalEvidenceReview'; End = '## 9.' },
@@ -805,11 +1751,30 @@ foreach ($pair in @(
 }
 
 $analysisRunResultBlock = [regex]::Match($contractText, '(?ms)^AnalysisRunResult:\s*(.*?)^```').Groups[1].Value
+$analysisStartRequestBlock = [regex]::Match($contractText, '(?ms)^AnalysisStartRequest:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|^```|\z)').Groups[1].Value
 $analysisRunStateBlock = [regex]::Match($contractText, '(?ms)^AnalysisRunState:\s*(.*?)^ProposalProcessState:').Groups[1].Value
+if ([string]::IsNullOrWhiteSpace($analysisStartRequestBlock)) {
+    Add-Failure 'missing AnalysisStartRequest entry contract'
+} else {
+    foreach ($field in @('repository_ref: string', 'requested_git_ref: string', 'program_id: string', 'purpose: PRODUCTION | EVALUATION')) {
+        if (-not $analysisStartRequestBlock.Contains($field)) {
+            Add-Failure "AnalysisStartRequest is missing required field: $field"
+        }
+    }
+    if ($analysisStartRequestBlock.Contains('program_ids:') -or $analysisStartRequestBlock.Contains('program_namespace:') -or $analysisStartRequestBlock.Contains('external_program_id:')) {
+        Add-Failure 'AnalysisStartRequest must accept exactly one internal program_id, not a list or an external program key'
+    }
+}
 if (-not $analysisRunStateBlock.Contains('eval_config_refs: [RunStoredDataRef | StoredDataRef]')) {
     Add-Failure 'AnalysisRunState.eval_config_refs must freeze exact evaluation configuration references'
 }
-$requiredAnalysisResultFields = @('hypothesis_duplicate_review_refs:', 'finding_refs:', 'verification_refs:', 'cwe_label_refs:', 'technical_review_refs:', 'rule_scope_review_refs:', 'policy_record_refs:', 'dynamic_request_refs:', 'dynamic_result_refs:', 'environment_recipe_refs:', 'sandbox_environment_refs:', 'agent_log_refs:', 'sandbox_policy_decision_refs:', 'cleanup_result_refs:', 'poc_candidate_refs:', 'poc_refs:', 'report_draft_refs:', 'llm_invocation_log_refs:', 'action_decision_refs:', 'work_state_refs:', 'work_attempt_refs:', 'transition_commit_refs:', 'eval_config_refs:', 'debug_trace_ref:')
+if (-not $analysisRunStateBlock.Contains('run_policy_state_ref: StoredDataRef | null')) {
+    Add-Failure 'AnalysisRunState.run_policy_state_ref must track the exact current run policy state'
+}
+if (-not $analysisRunStateBlock.Contains('program_id: string')) {
+    Add-Failure 'AnalysisRunState.program_id must identify the program before the run starts'
+}
+$requiredAnalysisResultFields = @('hypothesis_duplicate_review_refs:', 'finding_refs:', 'verification_refs:', 'cwe_label_refs:', 'technical_review_refs:', 'rule_scope_review_refs:', 'policy_record_refs:', 'dynamic_request_refs:', 'dynamic_result_refs:', 'environment_recipe_refs:', 'sandbox_environment_refs:', 'agent_log_refs:', 'dynamic_reproduction_conclusion_refs:', 'sandbox_policy_decision_refs:', 'cleanup_result_refs:', 'poc_candidate_refs:', 'poc_refs:', 'report_draft_refs:', 'llm_invocation_log_refs:', 'action_decision_refs:', 'work_state_refs:', 'work_attempt_refs:', 'transition_commit_refs:', 'eval_config_refs:', 'debug_trace_ref:')
 foreach ($field in $requiredAnalysisResultFields) {
     if (-not $analysisRunResultBlock.Contains($field)) {
         Add-Failure "missing AnalysisRunResult handoff field: $field"
@@ -817,6 +1782,15 @@ foreach ($field in $requiredAnalysisResultFields) {
 }
 if (-not $analysisRunResultBlock.Contains('eval_config_refs: [RunStoredDataRef | StoredDataRef]')) {
     Add-Failure 'AnalysisRunResult.eval_config_refs must use exact versioned references'
+}
+if (-not $analysisRunStateBlock.Contains('execution_budget_profile_ref: RunStoredDataRef')) {
+    Add-Failure 'AnalysisRunState.execution_budget_profile_ref must pin the run-level bootstrap budget'
+}
+if (-not $analysisRunStateBlock.Contains('budget_binding_ref: StoredDataRef | null')) {
+    Add-Failure 'AnalysisRunState.budget_binding_ref must pin the full post-workspace budget binding'
+}
+if (-not $analysisRunResultBlock.Contains('resources: ResourceUsageSummary')) {
+    Add-Failure 'AnalysisRunResult.resources must use ResourceUsageSummary'
 }
 
 $contextLimitsBlock = [regex]::Match($contractText, '(?ms)^ContextRetrievalLimits:\s*(.*?)^```').Groups[1].Value
@@ -830,23 +1804,103 @@ $requiredR8CommonContractRules = @(
     '`AnalysisRunResult.purpose=PRODUCTION`이면 `eval_config_refs=[]`이고 평가 설정을 생산 판정·Gate·Primitive admission·Reporter의 입력으로 사용하지 않는다.',
     '분석 종료 시 `AnalysisRunResult.eval_config_refs`는 시작 상태의 전체 집합과 중복 없이 set-equal해야 하며 빠진 값·추가 값·이름만 같은 다른 revision을 허용하지 않는다.',
     '두 `purpose=EVALUATION` 결과는 `eval_config_refs`가 exact reference 기준으로 set-equal할 때만 직접 비교한다.',
-    '이 목록과 오프라인 사람 정답은 평가용 provenance일 뿐 Gate·Primitive·Reporter 입력이나 자동화된 Human Review 결정이 아니다.'
+    '이 목록과 오프라인 사람 정답은 평가용 provenance일 뿐 Gate·Primitive·Reporter 입력이나 자동화된 Human Review 결정이 아니다.',
+    '이 reference가 없으면 `WORKSPACE_PREP`도 시작하지 않는다.',
+    'full binding 또는 work-kind limit을 확인할 수 없으면 후속 실행은 `BLOCKED + waiting_for=BUDGET`이다.',
+    '같은 reservation의 재전달은 기존 결과를 반환하며 비용을 두 번 차감하지 않는다.',
+    'Provider Profile Validation(`PVD-01`~`PVD-16`)은 profile이 기술적으로 호출 가능한지만 증명하며 취약점 분석 품질 승인이 아니다.',
+    '`purpose=EVALUATION` 분석과 그 결과는 별도 analysis identity와 exact `eval_config_refs`를 유지한다.',
+    'registry entry, PromptPayload, `LLMCallSpec`, request와 current `AnalysisRunState.purpose`는 모두 같은 `purpose`여야 한다.'
 )
 foreach ($rule in $requiredR8CommonContractRules) {
     if (-not $contractText.Contains($rule)) {
         Add-Failure "missing R8 common contract rule: $rule"
     }
 }
+
+$requiredR8PolicyOperationalRules = @(
+    '기본 `freshness_ttl`은 `CURRENT | ABSENT` 모두 24시간이며 R8이 승인한 versioned `freshness_criterion_ref`로만 바꾼다.',
+    '`ETag`, `Last-Modified`와 공식 출처 재확인 기록은 최신성 근거이고, 원문 `content_hash`는 확인한 내용의 식별자이며 `parser_version`은 cache 호환성과 재파싱 조건이다.',
+    '실행 간 재사용 여부는 run-neutral `PolicyCacheRecord`로 판단하며 다른 analysis의 `RunPolicyState`를 직접 재사용하지 않는다.',
+    'TTL 만료와 Parser 변경은 다음 run 시작의 cache 선택에만 적용하고, 확정된 `RunPolicyState`는 같은 run에서 다시 만료시키거나 교체하지 않는다.',
+    'Policy Collect는 최초 1회 뒤 최대 2회의 추가 재시도, Policy Parse는 최초 1회 뒤 provider·형식 오류에 최대 3회의 추가 재시도를 허용한다.',
+    '재시도 가능 오류는 같은 `POLICY_FETCH` work를 `BLOCKED`로 두고 새 attempt로 재개하며, 추가 재시도 소진 또는 복구 불가는 `FAILED`로 끝낸다.',
+    '정책 상태 재사용률의 분모는 current run의 exact `RunPolicyState`를 사용할 수 있었던 `RUN_SANDBOX | RULE_SCOPE_GATE` work 수이고, 분자는 추가 Collect·Parse 없이 그 exact state를 사용한 work 수다.',
+    '정책 재사용률의 분모는 run 시작 때 exact 호환성 검사를 통과한 유효 cache가 있던 `POLICY_FETCH` work 수이고, 분자는 추가 Collect·Parse 없이 그 cache로 run-local 결과를 만든 work 수다.',
+    '`LOCAL_ONLY` Sandbox는 policy freshness를 허가 근거로 사용하지 않으므로 정책 준비 실패·미확인·만료만으로 막거나 취소하지 않는다.'
+)
+foreach ($rule in $requiredR8PolicyOperationalRules) {
+    if (-not $resultText.Contains($rule)) {
+        Add-Failure "missing R8 policy operational rule: $rule"
+    }
+}
+
+$resultsWikiText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/results.md')
+if (-not $resultsWikiText.Contains('freshness·cache 재사용·Collect/Parse 한도와 실패 관측')) {
+    Add-Failure 'results Wiki is missing R8 policy freshness and reuse observability'
+}
+
+foreach ($obsoleteR8PolicyRule in @(
+    '| `parser_version` | LLM Policy Parser 흐름·프롬프트/스키마 버전. 바뀌면 재파싱 |',
+    '같은 `analysis`가 아니라도, 저장소가 가리키는 `program_id`에 **아직 유효한** `CURRENT|ABSENT` state가 있고',
+    '`policy_generation`은 최초 1, 만료 후 재준비 시 +1',
+    'Runtime Validator는 `RUN_SANDBOX` / `CALL_RULE_SCOPE_GATE` / `CREATE_REPORT_DRAFT` 직전마다 `RunPolicyState.freshness_valid_until`을 다시 본다',
+    'STALE/UNVERIFIED 또는 `freshness_valid_until` 경과로 Sandbox/Gate/Reporter가 막히거나 generation이 올라간 횟수',
+    '실행 중 `policy_generation`이 증가한 뒤'
+)) {
+    if ($resultText.Contains($obsoleteR8PolicyRule)) {
+        Add-Failure "obsolete R8 policy rule remains: $obsoleteR8PolicyRule"
+    }
+}
 if ($contractText -match 'POLICY_BLOCKED[^\r\n]*정적·찬반[^\r\n]*`ACCEPT`') {
     Add-Failure 'POLICY_BLOCKED without a validated PoC must not reach Technical ACCEPT'
 }
-if (-not $contractText.Contains('Sandbox 실행 Agent가 호출되기 전 정책 차단도 `agent_invoked=false`와 `POLICY_BLOCKED` event를 가진 로그·결과로 확정할 수 있다.')) {
+if (-not $contractText.Contains('Sandbox 안의 Dynamic Reproduction Agent가 호출되기 전 Sandbox profile 외부 격리 경계 차단도 `agent_invoked=false`와 `POLICY_BLOCKED` event를 가진 로그·결과로 확정할 수 있다.')) {
     Add-Failure 'policy block before Agent invocation must still produce an AgentLog and dynamic result'
 }
 $reportDraftBlock = [regex]::Match($contractText, '(?ms)^ReportDraft:\s*(.*?)^```').Groups[1].Value
-foreach ($field in @('finding_ref:', 'dynamic_result_ref:', 'poc_ref:', 'restrictions:', 'limitations:', 'unresolved_conditions:', 'redaction_status: PASSED')) {
+foreach ($field in @('finding_ref:', 'dynamic_result_ref:', 'poc_ref:', 'run_policy_state_ref:', 'restrictions:', 'limitations:', 'unresolved_conditions:', 'redaction_status: PASSED')) {
     if (-not $reportDraftBlock.Contains($field)) {
         Add-Failure "missing ReportDraft safety field: $field"
+    }
+}
+
+$reportDraftCodeLocationRequirements = @(
+    @{ Path = 'docs/architecture-v5/05-llm-gate-and-reporting.md'; Marker = 'Reporter output validator는 `content_ref` 본문에 코드 위치로 적은 모든 `path:line`을 추출' },
+    @{ Path = 'docs/architecture-v5/08-lightweight-data-contracts.md'; Marker = '`content_ref` 본문에 코드 위치로 적은 모든 `path:line`은 exact `verification_result_ref`의 `EvidenceClaim.code_locations`' },
+    @{ Path = 'docs/architecture-v5/10-security-boundaries.md'; Marker = 'ReportDraft 본문의 `path:line`이 exact Verification의 코드 위치에 없거나 다른 commit 위치임' },
+    @{ Path = 'docs/architecture-v5/12-report-draft-template.md'; Marker = 'Reporter output validator가 이를 확인하며' },
+    @{ Path = 'docs/architecture-v5/wiki/gate-and-reporting.md'; Marker = '보고서 본문에 적은 모든 `path:line`은 exact Verification의 `EvidenceClaim.code_locations`' },
+    @{ Path = 'docs/architecture-v5/implementation/02-contract-test-plan.md'; Marker = 'exact Verification의 `EvidenceClaim.code_locations`에 없는 위치나 다른 commit의 위치' },
+    @{ Path = 'docs/review/r5-03-r2-cross-review.md'; Marker = '> **최종 해결:**' }
+)
+foreach ($requirement in $reportDraftCodeLocationRequirements) {
+    $path = Join-Path $repoRoot $requirement.Path
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+    if (-not $text.Contains($requirement.Marker)) {
+        Add-Failure "ReportDraft code-location traceability is not synchronized: $($requirement.Path)"
+    }
+}
+
+$moduleMapText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/implementation/01-module-map.md')
+foreach ($marker in @(
+    'Final PR #117의 exact head',
+    '## 7. 구현 기준선에서 해결한 계약 빈틈',
+    '[x] R1·R2·R4·R5·R6·R7·R8 교차 검토'
+)) {
+    if (-not $moduleMapText.Contains($marker)) {
+        Add-Failure "implementation module map is missing finalized state: $marker"
+    }
+}
+foreach ($obsoleteMarker in @(
+    '아래 미확정 항목을 담당 Issue에서 확정',
+    '#110 병합 뒤 이 문서의 기준 SHA를 실제 merge commit으로 갱신',
+    '최종 package 이름은 R3-06에서 확정',
+    '[R5-03 후속이슈]',
+    '[ ] R1·R2·R4·R5·R6·R7·R8 교차 검토'
+)) {
+    if ($moduleMapText.Contains($obsoleteMarker)) {
+        Add-Failure "implementation module map still describes completed work as pending: $obsoleteMarker"
     }
 }
 
@@ -868,7 +1922,7 @@ foreach ($code in $requiredAuthorityErrors) {
 }
 
 $authorityScenarioMarkers = @(
-    'Orchestration이 `TRUE`를 저장하려 함',
+    'Orchestration Runtime이 `TRUE`를 저장하려 함',
     'Hypothesis Agent가 final verdict를 출력',
     'Technical Gate가 Verification verdict를 바꾸려 함',
     'Technical Gate 없이 Rule Scope Gate 호출',
@@ -892,10 +1946,11 @@ $authorityScenarioMarkers = @(
     '`SAVE_RESULT` 검사 뒤 candidate bytes를 바꿈',
     '실행 오류만 든 `FALSE` 후보를 저장',
     '다른 역할이 만든 결과 후보를 저장'
-    '`RUN_SANDBOX` 허가 뒤 request·requirements·profile·resource/lifecycle revision이 바뀜'
-    'Sandbox 내부 command가 host·Docker socket·secret·미허용 egress에 접근하려 함'
+    '`RUN_SANDBOX` 허가 뒤 request·requirements·current exact plan·`sandbox_profile_ref`·`DynamicReproductionLifecycleProfile` revision 또는 실행 대상·network·mount·secret 경계 중 하나가 바뀜'
+    'Sandbox 내부 command가 host·Docker socket·secret·미허용 egress에 접근하거나 출처 불명 endpoint·외부 계정을 대상으로 삼음'
     '동적 결과의 recipe·환경·AgentLog·candidate·PoC·cleanup attempt 또는 digest가 다름'
-    'Verification 또는 R7 Agent가 `DynamicReproductionResult`를 직접 저장'
+    '`COMMAND_STARTED`와 `COMMAND_FINISHED`의 command ref·digest·action·attempt·environment가 다르거나 redaction이 유효하지 않음'
+    'Verification 또는 Dynamic Reproduction Agent가 `DynamicReproductionResult`를 직접 저장'
 )
 foreach ($marker in $authorityScenarioMarkers) {
     if (-not $securityText.Contains($marker)) {
@@ -905,20 +1960,20 @@ foreach ($marker in $authorityScenarioMarkers) {
 
 $sandboxReviewPatterns = @(
     @{
-        Name = 'Sandbox Controller enforces only the external isolation boundary'
-        Pattern = '(?s)`action_decision_ref`는 plan 입력 부족·모순.*?pre-boundary 결과에서만 `null`.*?`action_decision_ref\.record_id`는 R7 호출자의 권한·상태·예산.*?exact `DynamicReproductionRequest`.*?current `EnvironmentRequirements`.*?Sandbox Controller는 host, Docker daemon/socket, host mount·namespace, secret, 허용되지 않은 egress, 다른 workspace와 R8 resource profile/lifecycle.*?컨테이너 내부 command를 allowlist로 재판단하지 않는다'
+        Name = 'Sandbox Controller enforces the R7 sandbox admission boundary'
+        Pattern = '(?s)`action_decision_ref`는 plan 입력 부족·모순.*?pre-boundary 결과에서만 `null`.*?`action_decision_ref\.record_id`는 R7 호출자의 권한·상태·예산.*?exact `DynamicReproductionRequest`.*?current `EnvironmentRequirements`.*?Sandbox Controller는 R7 소유 `sandbox_profile_ref`의 host, Docker daemon/socket, host mount·namespace, secret, 허용되지 않은 egress, 다른 workspace 격리와 CPU·RAM·disk·PID·요청 가능 최대 시간 수치를 강제.*?컨테이너 내부 command를 allowlist로 재판단하지 않는다'
     },
     @{
         Name = 'ReproductionPlan is strategy rather than an execution allowlist'
-        Pattern = '(?s)`ReproductionPlan`은 R7 Agent가.*?`requested_evidence`는 비어 있을 수 있는 참고 목표.*?allowlist가 아니다.*?plan에는 실행 mode, exact command·step·payload·PoC·cleanup 지시를 넣지 않는다.*?실제 수행 사실은 `AgentLog`에 남긴다'
+        Pattern = '(?s)`ReproductionPlan`은 Dynamic Reproduction Agent가.*?`requested_evidence`는 비어 있을 수 있는 참고 목표.*?allowlist가 아니다.*?plan에는 실행 mode, exact command·step·payload·PoC·cleanup 지시를 넣지 않는다.*?실제 수행 사실은 `AgentLog`에 남긴다'
     },
     @{
         Name = 'AgentLog is durable append-only and attempt isolated'
-        Pattern = '(?s)비-LLM `Reproduction Session Manager`는.*?durable append-only `AgentLog`.*?`agent_invoked`는 외부 경계 승인 뒤 Sandbox 안에서 실행하는 R7 Agent 단계.*?`event_id`는 시스템 전체에서 고유.*?`sequence`는 attempt별 1부터 엄격히 증가.*?시작과 종료 event는 동일한 `action_id`.*?종료된 이전 attempt의 늦은 event는 current log나 결과에 붙이지 않는다'
+        Pattern = '(?s)비-LLM `Reproduction Session Manager`는.*?durable append-only `AgentLog`.*?`agent_invoked`는 외부 경계 승인 뒤 Sandbox 안에서 실행하는 Dynamic Reproduction Agent 단계.*?`event_id`는 시스템 전체에서 고유.*?`sequence`는 attempt별 1부터 엄격히 증가.*?시작과 종료 event는 동일한 `action_id`.*?종료된 이전 attempt의 늦은 event는 current log나 결과에 붙이지 않는다'
     },
     @{
         Name = 'dynamic result save repeats same-attempt provenance checks'
-        Pattern = '(?s)`SAVE_RESULT\(requested_by=REPRODUCTION_SESSION_MANAGER, result_kind=dynamic_reproduction_result\)`.*?request·purpose·plan·recipe·정책·환경·AgentLog·candidate·validated PoC·cleanup의 same-attempt 조합을 다시 확인'
+        Pattern = '(?s)`SAVE_RESULT\(requested_by=REPRODUCTION_SESSION_MANAGER, result_kind=dynamic_reproduction_result\)`.*?current Verification generation의 exact R6 request reference와 purpose가 결과에 그대로 연결.*?plan·recipe·정책 결정·환경·AgentLog·candidate·validated PoC·cleanup과 동적 결과가 같은 R7 `DYNAMIC_REPRO` work·attempt'
     },
     @{
         Name = 'Session Manager owns logs validated PoCs and dynamic results'
@@ -934,7 +1989,7 @@ $sandboxReviewPatterns = @(
     },
     @{
         Name = 'policy blocked result retains the exact Controller decision'
-        Pattern = '(?s)`failure_category=POLICY_BLOCKED`이면 `action_decision_ref`와 `policy_decision_ref`가 반드시 존재.*?`decision=DENY`.*?정책의 exact revision과 사유 코드를 확인'
+        Pattern = '(?s)`failure_category=POLICY_BLOCKED`이면 `action_decision_ref`와 `policy_decision_ref`가 반드시 존재.*?`decision=DENY`.*?`SandboxProfile`의 exact revision과 사유 코드를 확인'
     },
     @{
         Name = 'pre-boundary plan failure has no sandbox or policy decision'
@@ -950,7 +2005,27 @@ $sandboxReviewPatterns = @(
     },
     @{
         Name = 'Dynamic records have distinct R6 and R7 owners'
-        Pattern = '(?s)`dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`.*?`environment_requirements -> EnvironmentRequirements -> R7_AGENT`.*?`reproduction_plan -> ReproductionPlan -> R7_AGENT`.*?`environment_recipe -> EnvironmentRecipe -> R7_SETUP_AUTOMATION`.*?`agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`.*?`poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`.*?`dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`'
+        Pattern = '(?s)`dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`.*?`environment_requirements -> EnvironmentRequirements -> DYNAMIC_REPRODUCTION`.*?`reproduction_plan -> ReproductionPlan -> DYNAMIC_REPRODUCTION`.*?`environment_recipe -> EnvironmentRecipe -> REPRODUCTION_SETUP_AUTOMATION`.*?`sandbox_command_record -> SandboxCommandRecord -> REPRODUCTION_SESSION_MANAGER`.*?`agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`.*?`poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`.*?`dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`'
+    },
+    @{
+        Name = 'R7 sandbox and R8 lifecycle profiles have distinct exact contracts'
+        Pattern = '(?s)SandboxProfile:.*?cpu_limit_millicores: integer.*?memory_limit_bytes: integer.*?disk_limit_bytes: integer.*?pid_limit: integer.*?max_requested_execution_ms: integer.*?DynamicReproductionLifecycleProfile:.*?preflight_budget_source: WORK_REMAINING_TIME.*?max_new_attempts: integer.*?`data_kind=sandbox_profile`.*?R7 sandbox policy owner.*?`data_kind=dynamic_reproduction_lifecycle_profile`.*?R8 evaluation/budget owner.*?CPU·RAM·disk·PID·요청 가능 최대 시간은 이 R8 profile에 넣지 않는다.*?`ActionRequest.sandbox_profile_ref`.*?`SandboxPolicyDecision.sandbox_profile_ref`.*?`ActionRequest.resource_profile_ref`.*?`SandboxPolicyDecision.resource_profile_ref`'
+    },
+    @{
+        Name = 'AgentLog command events bind the same exact command'
+        Pattern = '(?s)SandboxCommandRecord:.*?tool_request_ref: StoredDataRef.*?command_digest: string.*?redaction_status: REDACTED \| NOT_REQUIRED.*?`COMMAND_STARTED`와 대응하는 `COMMAND_FINISHED`.*?동일한 exact `DynamicReproductionToolRequest`, `SandboxCommandRecord.command_ref`·`command_digest`, `action_id`, `environment_ref`, `environment_recipe_ref`.*?실제 실행한 executable·argv·working directory·환경 binding·stdin을 정본으로 보존.*?secret 원문은 저장하지 않고 opaque `secret_refs`.*?검사 실패 command나 log는 저장하지 않는다'
+    },
+    @{
+        Name = 'Dynamic retry lifecycle distinguishes session and external resume'
+        Pattern = '(?s)같은 Dynamic Reproduction Agent session의 command·PoC·환경 조정.*?상태 전이나 새 attempt를 만들지 않는다.*?새 `attempt_id`, `trigger=RETRY`.*?새 `attempt_id`, `trigger=RESUME`.*?과거 attempt artifact를 current 결과에 섞지 않는다'
+    },
+    @{
+        Name = 'same-attempt policy provenance links SandboxPolicyDecision, AgentLog and DynamicReproductionResult'
+        Pattern = '(?s)같은 `DYNAMIC_REPRO` attempt 안에서 Sandbox 경계 판정 provenance는 exact reference로 이어진다.*?`AgentLog`의 `SESSION_STARTED` event.*?`input_refs`에는 그 attempt에 고정한 exact `SandboxPolicyDecision`.*?`DynamicReproductionResult\.policy_decision_ref`는 `AgentLog`가 그 attempt에 고정한 exact `SandboxPolicyDecision`과 동일.*?`agent_log_ref`는 같은 attempt의 `AgentLog` exact revision.*?latest lookup으로 다른 attempt의 policy decision·log·result를 보정하지 않는다'
+    },
+    @{
+        Name = 'execution scope is local only with no active external path'
+        Pattern = '(?s)현재 architecture에서 `execution_scope`는 정책 상태와 무관하게 항상 `LOCAL_ONLY`이며 external/live 대상·계정·egress 실행 경로는 지원하지 않는다.*?정책이 `CURRENT`·verified여도 external/live execution으로 승격하지 않는다'
     }
 )
 foreach ($rule in $sandboxReviewPatterns) {
@@ -961,16 +2036,20 @@ foreach ($rule in $sandboxReviewPatterns) {
 
 $environmentHandoffPatterns = @(
     @{
-        Name = 'R6 owns the immutable request and R7 Agent owns requirements and plan'
-        Pattern = '(?s)`DynamicReproductionRequest`는 R6 Verification.*?불변 record.*?`EnvironmentRequirements`와 `ReproductionPlan`은 R7 Reproduction Agent'
+        Name = 'R6 owns the immutable request and Dynamic Reproduction Agent owns requirements and plan'
+        Pattern = '(?s)`DynamicReproductionRequest`는 R6 Verification.*?불변 record.*?`EnvironmentRequirements`와 `ReproductionPlan`은 Dynamic Reproduction Agent'
     },
     @{
         Name = 'reproduction plan binds current exact requirements'
-        Pattern = '(?s)`ReproductionPlan`은 R7 Agent가.*?`sandbox_profile_ref`는 R6 request와 exact match.*?`environment_requirements_ref`는 같은 R7 attempt의 current requirements'
+        Pattern = '(?s)`ReproductionPlan`은 Dynamic Reproduction Agent가.*?`sandbox_profile_ref`는 R6 request와 exact match.*?`environment_requirements_ref`는 같은 R7 attempt의 current requirements'
     },
     @{
-        Name = 'RUN_SANDBOX freezes only the external boundary inputs'
-        Pattern = '(?s)`RUN_SANDBOX` action `input_refs`에는 exact request·current `EnvironmentRequirements`·`sandbox_profile_ref`·R8 resource/lifecycle profile.*?plan·candidate·command는 Sandbox 안에서 만들어질 수 있으므로 RUN_SANDBOX 선행 allowlist나 exact action input으로 요구하지 않는다'
+        Name = 'RUN_SANDBOX freezes the exact request, requirements, plan, and profiles'
+        Pattern = '(?s)`ActionRequest\.reproduction_plan_ref`는 current `DYNAMIC_REPRO` work·attempt의 current exact `ReproductionPlan`.*?`RUN_SANDBOX` action `input_refs`에는 exact `DynamicReproductionRequest`·current `EnvironmentRequirements`·current exact `ReproductionPlan`·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile`.*?`resource_profile_ref`도 같은 profile revision'
+    },
+    @{
+        Name = 'pre-boundary plan is provenance and only PoC candidate and command are sandbox-generated'
+        Pattern = '(?s)`EnvironmentRequirements`와 `ReproductionPlan`은 외부 경계 검사 전에 생성.*?PoC candidate와 command만 경계 승인 후 Sandbox 내부에서 생성.*?경계 전에 만든 plan은 command allowlist가 아니라 실행 provenance'
     },
     @{
         Name = 'actual environment compares every requirement'
@@ -978,11 +2057,11 @@ $environmentHandoffPatterns = @(
     },
     @{
         Name = 'environment mismatch is resolved or returned without a false verdict'
-        Pattern = '(?s)필수 item에 확인된 값 차이 또는 미확인이 있으면 환경 status는 `MISMATCH`.*?setup·비교 자체의 오류가 있으면 `ERROR`.*?필수 환경 요구사항 불일치.*?자율 retry.*?외부 수정이 필요하면 `BLOCKED`.*?한도 소진이면 `FAILED`'
+        Pattern = '(?s)필수 item에 확인된 값 차이 또는 미확인이 있으면 환경 status는 `MISMATCH`.*?setup·비교 자체의 오류가 있으면 `ERROR`.*?필수 환경 요구사항 불일치.*?같은 Dynamic Reproduction Agent session이면 현재 attempt.*?session 재시작은 새 `attempt_id`·`trigger=RETRY`.*?외부 수정 대기 해소 뒤 재개는 새 `attempt_id`·`trigger=RESUME`.*?한도 소진이면 `FAILED`'
     },
     @{
         Name = 'environment recipe is immutable and digest bound'
-        Pattern = '(?s)`EnvironmentRecipe`는 저장소와 필요한 실행 환경.*?불변 build recipe.*?별도 Dependency Scanner나 R2 사전 package prefetch를 전제로 하지 않는다.*?`base_image_digest`는 시작 image.*?`built_image_digest`는 실제 build 또는 재사용한 완성 image'
+        Pattern = '(?s)`EnvironmentRecipe`는 current `DYNAMIC_REPRO` attempt의 binding record.*?불변 build recipe.*?`meta.hypothesis_id`와 `meta.attempt_id`는 반드시 현재 work·attempt 값.*?별도 Dependency Scanner나 R2 사전 package prefetch를 전제로 하지 않는다.*?`base_image_digest`는 시작 image.*?`built_image_digest`는 실제 build 또는 재사용한 완성 image.*?과거 성공 환경은 `baseline_recipe_ref`로만 참조.*?같은 `built_image_digest`를 가진 새 `EnvironmentRecipe` binding'
     },
     @{
         Name = 'container reuse is isolated and state aware'
@@ -1016,7 +2095,7 @@ $environmentNegativeMarkers = @(
     '오래된 EnvironmentRequirements revision을 재사용함',
     'PoC 생성·환경 구성·실행 실패를 `FALSE | HOLD`로 변환함',
     '환경 요구사항·실제 값에 credential·token 원문을 저장함',
-    'R7이 request·requirements·profile·resource/lifecycle을 바꾸고 Sandbox 외부 경계 재검사를 생략함'
+    'R7이 request·requirements·plan·`sandbox_profile_ref`·`DynamicReproductionLifecycleProfile`을 바꾸고 Sandbox 외부 경계 재검사를 생략함'
 )
 foreach ($marker in $environmentNegativeMarkers) {
     $rowPattern = '(?m)^\|\s*' + [regex]::Escape($marker) + '\s*\|'
@@ -1026,21 +2105,19 @@ foreach ($marker in $environmentNegativeMarkers) {
 }
 
 $orchestrationPath = Join-Path $repoRoot 'docs/architecture-v5/03-agent-roles-and-orchestration.md'
-$orchestrationText = Get-Content -Raw -LiteralPath $orchestrationPath
+$orchestrationText = Get-Content -Raw -Encoding UTF8 -LiteralPath $orchestrationPath
 $gatePath = Join-Path $repoRoot 'docs/architecture-v5/05-llm-gate-and-reporting.md'
-$gateText = Get-Content -Raw -LiteralPath $gatePath
+$gateText = Get-Content -Raw -Encoding UTF8 -LiteralPath $gatePath
 $chainingPath = Join-Path $repoRoot 'docs/architecture-v5/06-chaining.md'
-$chainingText = Get-Content -Raw -LiteralPath $chainingPath
+$chainingText = Get-Content -Raw -Encoding UTF8 -LiteralPath $chainingPath
 $requiredChainingAdmissionRules = @(
-    '체이닝 재료 자격은 세 가지를 확인해 정한다',
+    '체이닝 재료는 current `PrimitiveIndexState`에 등록된 Primitive다.',
+    'admission은 등록 시점의 1회 판정이라 등록된 Primitive는 run 안에서 자격을 잃지 않는다.',
     'current `PrimitiveAdmissionDecision.decision=ALLOW`',
     'Chaining Agent는 `rule_compliance`나 `evidence_links`를 읽어 금지 테스트 위반을 추정하지 않는다.',
     '확정된 금지 테스트 위반으로 `DENY`가 된 경우만 재료에서 제외된다.',
-    '`WorkExecutionState.input_refs`에 함께 고정한다',
-    '`source_admission_refs`에는 실제 match에 사용한 Primitive와 그 계보에서 재귀적으로 도달한 모든 admission decision을 중복 없이 기록하며',
-    '`STALE_RESULT`로 저장을 거절하고 새 자식 가설을 만들지 않는다',
-    '실제 match에 사용하지 않은 후보의 decision 변경만으로는 진행 중인 결과를 무효화하지 않는다.',
-    '부모의 admission이 나중에 `DENY`로 바뀌면 파생 결과는 감사 기록으로만 보존하고'
+    '고정하지 않은 Primitive나 index reference가 섞이면 `STALE_RESULT`로 거절하고 새 자식 가설을 만들지 않는다.',
+    '이미 만들어진 자식과 그 아래 세대는 부모 admission을 다시 확인받지 않는다.'
 )
 foreach ($rule in $requiredChainingAdmissionRules) {
     if (-not $chainingText.Contains($rule)) {
@@ -1048,8 +2125,8 @@ foreach ($rule in $requiredChainingAdmissionRules) {
     }
 }
 $chainingDocResultBlock = [regex]::Match($chainingText, '(?ms)^ChainingResult:\s*(.*?)^```').Groups[1].Value
-if (-not $chainingDocResultBlock.Contains('source_admission_refs:')) {
-    Add-Failure '06-chaining.md ChainingResult is missing field: source_admission_refs:'
+if ($chainingDocResultBlock.Contains('source_admission_refs:')) {
+    Add-Failure '06-chaining.md ChainingResult still contains obsolete field: source_admission_refs:'
 }
 $chainingPrimitiveBlock = [regex]::Match($chainingText, '(?ms)^Primitive:\s*(.*?)^```').Groups[1].Value
 if (-not $chainingPrimitiveBlock.Contains('admission_decision_ref:')) {
@@ -1057,7 +2134,7 @@ if (-not $chainingPrimitiveBlock.Contains('admission_decision_ref:')) {
 }
 
 $gateWikiPath = Join-Path $repoRoot 'docs/architecture-v5/wiki/gate-and-reporting.md'
-$gateWikiText = Get-Content -Raw -LiteralPath $gateWikiPath
+$gateWikiText = Get-Content -Raw -Encoding UTF8 -LiteralPath $gateWikiPath
 $requiredAuthorityRules = @(
     '## 역할별 권한 경계',
     '## action 요청과 실행',
@@ -1100,7 +2177,7 @@ $requiredR504CrossReviewRules = @(
     @{
         Name = 'policy-blocked dynamic reproduction is not automatic rejection or falsification'
         Text = $contractText
-        Marker = '`DynamicReproductionResult(status=BLOCKED | FAILED, failure_category=POLICY_BLOCKED)`는 가설 반증이나 Technical `REJECT`가 아니다.'
+        Marker = '`DynamicReproductionResult(status=BLOCKED | FAILED, failure_category=POLICY_BLOCKED)`는 Sandbox profile의 외부 격리 경계 위반이지 가설 반증이나 Technical `REJECT`가 아니다.'
     },
     @{
         Name = 'policy freshness is explicit in the shared contract'
@@ -1108,9 +2185,9 @@ $requiredR504CrossReviewRules = @(
         Marker = 'freshness_status: CURRENT | STALE | UNVERIFIED'
     },
     @{
-        Name = 'stale or unverified policy blocks report permission'
+        Name = 'stale input is rejected and unverified policy blocks report permission'
         Text = $contractText
-        Marker = '`FOUND`라도 핵심 출처가 누락되거나 정책이 `STALE | UNVERIFIED`이면 Rule·testing restriction·Scope·review는 `UNCERTAIN`, permission은 `DENY`이며 누락·최신성 문제를 구조화해 보존한다.'
+        Marker = 'run 시작 때 `STALE`로 판정한 기존 정책 record는 current `RunPolicyState`나 Gate 입력에 연결하지 않는다.'
     },
     @{
         Name = 'changed upstream revisions supersede report drafts'
@@ -1167,12 +2244,93 @@ foreach ($rule in $requiredAutomationBoundaryRules) {
     }
 }
 
+# R5-03 후속이슈: Finding 생성 lifecycle과 Reporter handoff.
+$requiredFindingLifecycleRules = @(
+    @{ Name = 'gate doc defines Finding as a trusted-runtime normalization record'; Text = $gateText; Marker = '`Finding`은 새 취약점 판정 Gate가 아니라, 이미 검증된 upstream 결과를 하나의 current 취약점 결과로 정규화해 저장하는 record다.' },
+    @{ Name = 'gate doc keeps Finding claim strength at or below verified upstream'; Text = $gateText; Marker = 'Finding의 모든 material claim 강도는 verified upstream evidence의 claim strength 이하여야 한다.' },
+    @{ Name = 'gate doc separates Finding existence from Reporter eligibility'; Text = $gateText; Marker = '`current Finding 존재 + Reporter 차단 + report_draft_refs=[]`' },
+    @{ Name = 'gate doc requires a current non-stale Finding for Reporter'; Text = $gateText; Marker = 'AND current non-stale Finding exists for this exact chain' },
+    @{ Name = 'gate doc defines the stale Finding lifecycle'; Text = $gateText; Marker = '### stale Finding' },
+    @{ Name = 'contract doc binds Finding to the committed exact chain without a new agent'; Text = $contractText; Marker = 'current Finding은 새 vulnerability verdict나 impact를 만드는 Gate가 아니라, 신뢰 runtime이 이미 `COMMITTED`된 exact upstream reference를 조립한 정규화 record다.' },
+    @{ Name = 'contract doc adds no new Finding agent, action_type, or producer enum'; Text = $contractText; Marker = '이 작업은 새 autonomous Agent role, 새 `action_type` 또는 새 producer enum을 추가하지 않는다.' },
+    @{ Name = 'contract doc resolves Finding storage binding in R4 B2'; Text = $contractText; Marker = '구체 binding은 [구현 모듈 맵](implementation/01-module-map.md) B2에 확정한다.' },
+    @{ Name = 'security doc rejects mixing Finding creation with Reporter readiness'; Text = $securityText; Marker = '| Finding 생성 조건을 Reporter 6축 readiness와 동일하게 취급 |' },
+    @{ Name = 'security doc blocks stale Finding reuse in Reporter'; Text = $securityText; Marker = '| Finding 정규화 전이거나 stale Finding으로 Reporter 호출 |' },
+    @{ Name = 'overview canonical flow puts current Finding before Reporter'; Text = $overviewText; Marker = 'current Finding -> Reporter -> ReportDraft -> AnalysisRunResult -> Agent automation end' },
+    @{ Name = 'canonical diagram shows trusted-runtime Finding normalization'; Text = $diagramText; Marker = 'NORM[FINDING_NORMALIZE - trusted runtime non-LLM work]' },
+    @{ Name = 'wiki diagram shows trusted-runtime Finding normalization'; Text = $wikiDiagramText; Marker = 'NORM[FINDING_NORMALIZE - trusted runtime non-LLM work]' },
+    @{ Name = 'gate wiki documents the Finding normalization step'; Text = $gateWikiText; Marker = '## Finding 정규화' }
+)
+foreach ($rule in $requiredFindingLifecycleRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing or weakened R5-03 follow-up Finding lifecycle rule: $($rule.Name)"
+    }
+}
+
+# R7 cross-review: Finding closure metadata scope and normalization work agreement.
+$findingClosurePaths = @(
+    '05-llm-gate-and-reporting.md',
+    '08-lightweight-data-contracts.md',
+    '10-security-boundaries.md',
+    'implementation/01-module-map.md',
+    'wiki/gate-and-reporting.md'
+)
+foreach ($path in $findingClosurePaths) {
+    $text = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot "docs/architecture-v5/$path")
+    foreach ($marker in @('hypothesis-local artifact에 대해서만 동일 `meta.hypothesis_id`', '`ProgramPolicyRecord`, `PolicyCollectionResult` 등 hypothesis 비종속 정책 record에는 `hypothesis_id` 일치를 요구하지 않으며', '기존 exact `StoredDataRef`, `meta.workspace_id`·`meta.commit_id` 및 policy revision/provenance 계약')) {
+        if (-not $text.Contains($marker)) { Add-Failure "missing Finding closure metadata scope in ${path}: $marker" }
+    }
+    if ($text -match 'upstream(?: record)?의? `meta.hypothesis_id`·`meta.workspace_id`·`meta.commit_id`') {
+        Add-Failure "unscoped Finding upstream hypothesis match in $path"
+    }
+}
+foreach ($text in @($gateWikiText, $diagramText, $wikiDiagramText)) {
+    foreach ($marker in @('RULE_SCOPE_GATE → FINDING_NORMALIZE → Reporter readiness', '비-LLM normalization work', '새 autonomous Agent나 LLM Gate가')) {
+        if (-not $text.Contains($marker)) { Add-Failure "missing Finding work cross-document rule: $marker" }
+    }
+    if ($text.Contains('Finding 생성은 새 Agent role·work·action을 추가하지 않으며')) {
+        Add-Failure 'obsolete no-new-work Finding contract'
+    }
+}
+Write-Output "Finding lifecycle cross-document checks: R7 closure scope (5 documents) and normalization work (Wiki + 2 diagrams)"
+
+# R4 Finding storage: schema, exclusive output binding and current-only finalization.
+$findingSchema = [regex]::Match($contractText, '(?ms)^Finding:\r?\n(.*?)^FindingConditionSource:').Groups[1].Value
+foreach ($field in @('meta: RecordMeta', 'verification_result_ref: StoredDataRef', 'dynamic_result_ref: StoredDataRef', 'poc_ref: StoredDataRef', 'cwe_label_ref: StoredDataRef', 'technical_review_ref: StoredDataRef', 'rule_scope_impact_review_ref: StoredDataRef', 'policy_collection_result_ref: StoredDataRef', 'policy_record_ref: StoredDataRef | null', 'evidence_refs: [StoredDataRef]', 'condition_sources: [FindingConditionSource]')) {
+    if (-not $findingSchema.Contains($field)) { Add-Failure "missing canonical Finding field: $field" }
+}
+$requiredFindingStorageRules = @(
+    'RULE_SCOPE_GATE | FINDING_NORMALIZE | REPORT_DRAFT',
+    '`RULE_SCOPE_GATE`의 `SUCCEEDED`는 정확히 하나의 `RuleScopeImpactReview.record_id`를 가리킨다.',
+    '`FINDING_NORMALIZE`의 `SUCCEEDED`는 정확히 하나의 `Finding.record_id`를 가리킨다.',
+    '`finding -> Finding -> VERIFICATION`',
+    'versioned result-owner registry에 고정된 이 service의 exact `requester_identity_ref`',
+    'source_path: string',
+    'status: EMPTY | CURRENT | STALE',
+    'stale_finding_ref: StoredDataRef | null',
+    'index의 expected `record_id`·`state_version`과 모든 upstream current pointer/generation을 함께 비교한다.',
+    'normalization commit과 invalidation은 같은 index CAS로 직렬화',
+    '`AnalysisRunResult.finding_refs`는 확정 시 각 `CURRENT` index',
+    '`current Finding 존재 + Reporter blocked + report_draft_refs=[]`는 정상적인 `AnalysisRunResult`다.',
+    '다른 필수 작업이 완료되면 `COMPLETE`가 가능하다.'
+)
+foreach ($rule in $requiredFindingStorageRules) {
+    if (-not $contractText.Contains($rule)) { Add-Failure "missing R4 Finding storage rule: $rule" }
+}
+$findingModuleText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/implementation/01-module-map.md')
+foreach ($rule in @('`FINDING_NORMALIZE`', '`finding -> Finding -> VERIFICATION`', '`FindingIndexState`', 'Reporter blocked이면 `report_draft_refs=[]`')) {
+    if (-not $findingModuleText.Contains($rule)) { Add-Failure "missing Finding module binding: $rule" }
+}
+foreach ($obsolete in @('Reporter가 current `ReportDraft`를 저장하고 해당 `REPORT_DRAFT` work를 종료한 뒤, 신뢰 runtime은', 'R4 storage binding 대기', '**R4 대기(storage binding)**')) {
+    if ($contractText.Contains($obsolete) -or $findingModuleText.Contains($obsolete)) { Add-Failure "obsolete Finding storage contract: $obsolete" }
+}
+Write-Output "R4 Finding storage rules: $($requiredFindingStorageRules.Count)"
+
 $requiredVerificationChainingContracts = @(
     'VerificationAssignment:',
     'verification_assignment_ref:',
     'ChainingResult:',
     'source_result_refs:',
-    'source_admission_refs:',
     'considered_primitive_refs:',
     'input_primitive_refs:',
     'primitive_match_candidates:',
@@ -1278,7 +2436,7 @@ $activeConfidenceChecks = @(
     @{ Path = $contractPath; Marker = 'confidence: LOW | MEDIUM | HIGH' }
 )
 foreach ($check in $activeConfidenceChecks) {
-    $activeText = Get-Content -Raw -LiteralPath $check.Path
+    $activeText = Get-Content -Raw -Encoding UTF8 -LiteralPath $check.Path
     if ($activeText.Contains($check.Marker)) {
         Add-Failure "obsolete active Hypothesis confidence contract remains: $($check.Marker)"
     }
@@ -1321,24 +2479,34 @@ foreach ($field in @('state_version:', 'active_required_refs:', 'active_provided
 }
 
 $primitiveMatchBlock = [regex]::Match($contractText, '(?ms)^PrimitiveMatchCandidate:\s*(.*?)^ChainingResult:').Groups[1].Value
-foreach ($field in @('upstream_result_ref:', 'downstream_input_ref:', 'matched_input_id:', 'parent_hypothesis_ids:', 'parent_verification_refs:', 'workspace_id:', 'commit_id:', 'normalized_fingerprint:', 'evidence_refs:', 'candidate_state: UNVALIDATED')) {
+foreach ($field in @('upstream_result_ref:', 'downstream_input_ref:', 'matched_input_id:', 'parent_hypothesis_ids:', 'parent_verification_refs:', 'workspace_id:', 'commit_id:', 'evidence_refs:', 'candidate_state: UNVALIDATED')) {
     if (-not $primitiveMatchBlock.Contains($field)) {
         Add-Failure "PrimitiveMatchCandidate is missing field: $field"
     }
 }
-foreach ($field in @('match_kind:', 'input_primitive_index_refs:', 'upstream_provided_ref:', 'matched_requirement_id:', 'asset_check:', 'entity_check:', 'endpoint_check:', 'privilege_check:', 'data_check:', 'attack_order_check:', 'restriction_check:', 'unresolved_conditions:')) {
+foreach ($field in @('normalized_fingerprint:', 'match_kind:', 'input_primitive_index_refs:', 'upstream_provided_ref:', 'matched_requirement_id:', 'asset_check:', 'entity_check:', 'endpoint_check:', 'privilege_check:', 'data_check:', 'attack_order_check:', 'restriction_check:', 'unresolved_conditions:')) {
     if ($primitiveMatchBlock.Contains($field)) {
         Add-Failure "PrimitiveMatchCandidate still contains obsolete field: $field"
     }
 }
 
+$noMatchReasonBlock = [regex]::Match($contractText, '(?ms)^NoMatchReason:\s*(.*?)^```').Groups[1].Value
+foreach ($field in @('upstream_result_ref:', 'downstream_input_ref:', 'checked_input_id:', 'reason_code:', 'detail:')) {
+    if (-not $noMatchReasonBlock.Contains($field)) {
+        Add-Failure "NoMatchReason is missing field: $field"
+    }
+}
+if ($noMatchReasonBlock.Contains('DUPLICATE_COMBINATION')) {
+    Add-Failure 'NoMatchReason must not treat an already-stored combination as a match failure'
+}
+
 $chainingResultBlock = [regex]::Match($contractText, '(?ms)^ChainingResult:\s*(.*?)^```').Groups[1].Value
-foreach ($field in @('source_result_refs:', 'source_admission_refs:', 'considered_primitive_refs:', 'input_primitive_refs:', 'primitive_match_candidates:', 'chained_hypothesis_proposals:', 'excluded_lineage_refs:', 'no_match_reasons:', 'errors:')) {
+foreach ($field in @('source_result_refs:', 'considered_primitive_refs:', 'input_primitive_refs:', 'primitive_match_candidates:', 'chained_hypothesis_proposals:', 'excluded_lineage_refs:', 'no_match_reasons:', 'errors:')) {
     if (-not $chainingResultBlock.Contains($field)) {
         Add-Failure "ChainingResult is missing field: $field"
     }
 }
-foreach ($field in @('trigger:', 'input_primitive_index_refs:', 'bounded_stop_reason:')) {
+foreach ($field in @('trigger:', 'input_primitive_index_refs:', 'bounded_stop_reason:', 'source_admission_refs:')) {
     if ($chainingResultBlock.Contains($field)) {
         Add-Failure "ChainingResult still contains obsolete field: $field"
     }
@@ -1346,18 +2514,149 @@ foreach ($field in @('trigger:', 'input_primitive_index_refs:', 'bounded_stop_re
 
 $requiredChainingExclusionRules = @(
     '`considered_primitive_refs`는 Runtime이 `REGISTER_WORK(work_type=CHAINING)`에서 고정한 exact Primitive 입력 집합과 set-equal하다.',
-    '`source_admission_refs`는 이 실제 사용 decision 집합과 중복 없이 set-equal해야 한다.',
-    '일반 index 갱신이나 실제 match에 사용하지 않은 후보의 decision 변경만으로는 기존 work를 거절하지 않지만, `source_admission_refs` 중 하나가 current가 아니거나 `DENY`로 바뀌면 오염된 재료의 사용을 막기 위해 진행 중인 결과를 거절한다.',
     '`input_primitive_refs`는 `primitive_match_candidates`의 upstream/downstream exact reference 합집합과 set-equal하다.',
-    '`considered_primitive_refs`, `input_primitive_refs`, `source_result_refs`, `source_admission_refs`와 candidate별 `parent_hypothesis_ids`, `parent_verification_refs`는 각각 중복이 없어야 한다.',
     '`source_result_refs`는 `input_primitive_refs`가 가리키는 Primitive들의 `source_verification_ref`와 non-null `technical_review_ref` 합집합과 set-equal하고 모두 같은 `SAVE_RESULT.input_refs`에 포함되어야 한다.',
     '각 candidate의 `parent_hypothesis_ids`는 그 upstream/downstream Primitive의 `source_hypothesis_id` 합집합, `parent_verification_refs`는 두 Primitive의 `source_verification_ref` 합집합과 각각 set-equal해야 한다.',
     '`excluded_primitive_ref`는 `considered_primitive_refs`에 포함되고 `input_primitive_refs`와 모든 match candidate reference에는 포함되지 않아야 한다.',
     '`excluded_by_ref`는 `considered_primitive_refs`와 `input_primitive_refs`에 모두 포함되고 같은 결과의 `excluded_primitive_ref` 집합에는 포함되지 않아야 한다.',
     'Runtime은 §06의 제외 규칙(성립한 match의 후보에서 양방향 재귀 탐색)으로 기대 제외 쌍을 다시 계산하고 `excluded_lineage_refs`와 set-equal한지 검사한다.',
     '`origin=CHAINING`이면 `observed_facts=[]`만 허용한다.',
-    '`ChainingResult.considered_primitive_refs`, `source_admission_refs`와 `excluded_lineage_refs` 추가는 기존 결과의 필수 필드를 바꾸므로 새 MAJOR schema로 배포한다.'
+    '`primitive_match_id`는 분석 전체에서 유일하고 같은 `(upstream_result_ref, downstream_input_ref, matched_input_id)` 조합도 중복 저장하지 않는다.',
+    '저장 계층은 `(analysis_id, upstream_result_ref, downstream_input_ref, matched_input_id)`를 unique key로 강제하며, 이는 담당 규칙이 지켜졌는지 확인하는 검사다.',
+    'Chaining work는 새 Primitive 저장을 계기로 등록한다.',
+    '`trigger_primitive_ref`는 `work_type=CHAINING`에서 필수이고 다른 모든 work type에서는 `null`이다.',
+    '한 조합의 담당은 두 Primitive 중 자기 후보 pool에 상대가 들어 있는 work다.',
+    'pool은 `REGISTER_WORK`가 COMMITTED된 index에서 고정하므로 실제 저장 순서를 그대로 따른다.',
+    '제약이 걸리면 담당 계산·pool 고정·`dedupe_key` 중 하나가 잘못된 구현 오류이므로 결과를 저장하지 않고 `AnalysisError(stage=ORCHESTRATION)`와 `WorkExecutionState.error_ids`에 남긴다.'
 )
+
+$requiredChainingNoMatchRules = @(
+    '`checked_input_id`는 downstream `inputs[].draft_id` 하나여야 한다.',
+    '같은 `(upstream_result_ref, downstream_input_ref, checked_input_id)` 조합은 한 결과에서 중복될 수 없고 `primitive_match_candidates`가 성립시킨 조합과 겹칠 수 없다.'
+)
+foreach ($rule in $requiredChainingNoMatchRules) {
+    if (-not $contractText.Contains($rule)) {
+        Add-Failure "missing exact NoMatchReason storage rule: $rule"
+    }
+}
+if (-not $chainingText.Contains('`checked_input_id`가 downstream Primitive의 실제 `inputs[].draft_id`인지')) {
+    Add-Failure 'chaining doc must mirror the NoMatchReason storage checks from the common contract'
+}
+if ($contractText.Contains('위반한 조합만 결과에서 빼') -or $chainingText.Contains('위반한 조합만 결과에서 빼')) {
+    Add-Failure 'duplicate match combinations must not define a partial-exclusion path alongside the reject rule'
+}
+# 회수 서술 회귀 검사 대상 문서.
+# 정본·wiki·구현 매핑·거버넌스 문서를 모두 본다.
+# ADR과 FINDINGS는 제거한 규칙을 근거로 인용하므로 제외한다.
+$narrativeDocs = @(
+    Get-ChildItem -Path (Join-Path $repoRoot 'docs') -Filter '*.md' -Recurse -File |
+        Where-Object {
+            $_.FullName -notmatch '[\\/](archive|decisions|superpowers)[\\/]' -and
+            $_.Name -ne 'FINDINGS.md'
+        } |
+        ForEach-Object { ($_.FullName.Substring($repoRoot.Length).TrimStart('\', '/')) -replace '\\', '/' }
+)
+if ($narrativeDocs.Count -lt 30) {
+    Add-Failure "narrative doc list for admission regression checks is empty or too small: $($narrativeDocs.Count)"
+}
+
+foreach ($phrase in @('direct·ancestor', 'direct/ancestor')) {
+    foreach ($docPath in $narrativeDocs) {
+        $text = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot $docPath)
+        if ($text.Contains($phrase)) {
+            Add-Failure "obsolete chaining admission-tracking phrase must not return: $phrase in $docPath"
+        }
+    }
+}
+# 회수 절차 서술은 06·08을 포함한 모든 문서에서 되살아나면 안 된다.
+# 백틱과 활용형 변형을 함께 잡기 위해 정규식으로 검사한다.
+$revocationPatterns = @(
+    'DENY.{0,3}로 바뀌',
+    'DENY.{0,3}가 되면',
+    'index에서 (제거|빠)',
+    '자격을 잃(?!지 않)',
+    '파생 (Primitive|결과)를 current',
+    'admission.{0,12}(재귀 확인|다시 확인한다)',
+    'source_admission_refs(?!`? 제거)',
+    '계보로 연결된 모든 result Primitive의 admission',
+    'Chaining 계보 invalidation',
+    'admission·invalidation',
+    'admission·supersede',
+    'Primitive 저장·제거',
+    '저장 시점에도 current index에 있는지',
+    '여전히 current index에 있는지',
+    'admissible lineage',
+    'lineage가 stale/DENY',
+    '계보가 여전히 current',
+    '계보를 다시 확인한다',
+    '계보가 등록 후 stale',
+    '계보 재검사',
+    '계보가 무효·stale',
+    'current 계보',
+    '부모 Primitive가 stale',
+    '계보의 current 상태',
+    '실제 사용 Primitive가 current index에 있을 때',
+    '`PrimitiveIndexState`가 허용한',
+    'current `PrimitiveIndexState`에 없음',
+    '`PrimitiveIndexState`에 있는 Primitive만',
+    'index에 남길 수 없'
+)
+# 저장 시점 재확인·계보 admission 서술은 FINDINGS에도 되살아나면 안 된다.
+# FINDINGS는 제거한 트리거를 근거로 인용하므로 위 목록에서 제외돼 있어, 이 네 문구만 따로 검사한다.
+$saveTimeRecheckPhrases = @(
+    '저장 시점에도 current index에 있는지',
+    '여전히 current index에 있는지',
+    'admissible lineage',
+    'lineage가 stale/DENY'
+)
+$findingsText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/review/FINDINGS.md')
+foreach ($phrase in $saveTimeRecheckPhrases) {
+    if ($findingsText.Contains($phrase)) {
+        Add-Failure "obsolete save-time recheck phrase must not return in FINDINGS: $phrase"
+    }
+}
+
+foreach ($pattern in $revocationPatterns) {
+    foreach ($docPath in $narrativeDocs) {
+        $text = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot $docPath)
+        if ($text -match $pattern) {
+            Add-Failure "obsolete admission revocation phrase must not return: /$pattern/ in $docPath"
+        }
+    }
+}
+foreach ($phrase in @('skip 기록', '이미 저장된 조합이라 건너뛴', '이미 저장된 조합이라 검토를 건너뛴')) {
+    if ($contractText.Contains($phrase) -or $chainingText.Contains($phrase)) {
+        Add-Failure "obsolete duplicate-skip phrase must not return: $phrase"
+    }
+}
+foreach ($rule in @(
+    '담당이 아닌 조합은 처음부터 검토 대상이 아니므로 여기 넣지 않고 별도 기록도 만들지 않는다.',
+    'unique key 충돌은 정상 중복이 아니라 구현 오류이므로 해당 `ChainingResult`를 저장하지 않고 `AnalysisError`와 work 오류로 남기며, `FALSE`·`HOLD`·`NoMatchReason`이나 전체 분석 중단으로 바꾸지 않는다.'
+)) {
+    if (-not $contractText.Contains($rule)) {
+        Add-Failure "missing exact duplicate-combination rule: $rule"
+    }
+}
+if ($contractText.Contains('meta.created_at`이 늦은 쪽') -or $chainingText.Contains('meta.created_at`이 늦은 쪽')) {
+    Add-Failure 'combination ownership must not depend on wall-clock created_at'
+}
+$workStateBlock = [regex]::Match($contractText, '(?ms)^WorkExecutionState:\s*(.*?)^WorkAttempt:').Groups[1].Value
+if (-not $workStateBlock.Contains('trigger_primitive_ref: StoredDataRef | null')) {
+    Add-Failure 'WorkExecutionState is missing field: trigger_primitive_ref'
+}
+foreach ($rule in @(
+    '`trigger_primitive_ref`는 `work_type=CHAINING`에서 필수이고 다른 모든 work type에서는 `null`이다.',
+    'CHAINING에서는 `considered_primitive_refs`와 `input_refs`에 각각 정확히 한 번 들어간다.',
+    '같은 MAJOR 안에서 MINOR로 올리고, 이전 MINOR 결과에는 `null`을 채우지 않고 감사 이력으로 보존한다.'
+)) {
+    if (-not $contractText.Contains($rule)) {
+        Add-Failure "missing exact trigger_primitive_ref rule: $rule"
+    }
+}
+
+if ($contractText.Contains('trigger_primitive_ref') -and -not $contractText.Contains('다른 모든 work type에서는 `null`이다')) {
+    Add-Failure 'trigger_primitive_ref scope is not fixed for non-CHAINING work types'
+}
 foreach ($rule in $requiredChainingExclusionRules) {
     if (-not $contractText.Contains($rule)) {
         Add-Failure "missing exact Chaining exclusion rule: $rule"
@@ -1368,8 +2667,7 @@ $requiredChainingWikiRules = @(
     '`considered_primitive_refs`',
     '`excluded_lineage_refs`',
     '`origin=CHAINING` 자식의 `observed_facts`는 빈 목록',
-    '`source_admission_refs`',
-    '일반적인 새 Primitive·index 변경과 사용하지 않은 후보의 decision 변경은 진행 중 입력을 바꾸지 않고 다음 work에서 처리합니다.'
+    '새 Primitive가 저장돼 index revision이 올라가는 것은 진행 중 입력을 바꾸지 않고 다음 work에서 처리합니다.'
 )
 foreach ($rule in $requiredChainingWikiRules) {
     if (-not ($chainingWikiText.Contains($rule) -or $commonWikiText.Contains($rule))) {
@@ -1392,12 +2690,12 @@ foreach ($rule in $requiredStaticPrimitiveAdmissionRules) {
     }
 }
 
-$decisionText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/review/decisions/ADR-001-verification-owned-chaining-admission.md')
+$decisionText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/review/decisions/ADR-001-verification-owned-chaining-admission.md')
 if ($decisionText.Contains('lookup 시 ACTIVE 확인')) {
     Add-Failure 'Chaining ADR still uses obsolete ACTIVE-based Primitive lookup'
 }
 
-$activeDocumentationText = (($markdownFiles | Where-Object { $_.FullName -notmatch '[\\/]archive[\\/]' } | ForEach-Object { Get-Content -Raw -LiteralPath $_.FullName }) -join "`n")
+$activeDocumentationText = (($markdownFiles | Where-Object { $_.FullName -notmatch '[\\/]archive[\\/]' } | ForEach-Object { Get-Content -Raw -Encoding UTF8 -LiteralPath $_.FullName }) -join "`n")
 foreach ($obsoleteRule in @(
     'current pointer 갱신으로 오래된 Chaining 결과를 거절',
     '원자적 current pointer 갱신 실패로 결과·child proposal을 `STALE_RESULT` 처리',
@@ -1433,10 +2731,10 @@ $verificationChainingScenarioMarkers = @(
     '| N3 | final TRUE, Gate 미실행 |',
     '| N4 | TRUE + Technical `ACCEPT`, 정책 수집 또는 Rule Scope 검토가 아직 종료되지 않음 |',
     '| N5 | TRUE + Technical `ACCEPT` + Rule Scope의 다른 판단 `FAIL | UNCERTAIN | DENY`, testing restriction은 `PASS | UNCERTAIN` |',
-    '| N6 | TRUE + Technical `ACCEPT` + Rule Scope `PASS/PASS/PASS/SUFFICIENT/ALLOW`, testing restriction `PASS` |',
+    '| N6 | TRUE + Technical `ACCEPT` + Rule Scope review가 Reporter 6축 readiness 전부 충족 |',
     '| N7 | result가 있는 TRUE Primitive + result가 없는 HOLD Primitive |',
     '| N8 | result가 있는 서로 다른 TRUE Primitive 둘 |',
-    '| N9 | TRUE+TRUE 입력 중 한 부모가 Technical 비정상이거나 direct·ancestor current `PrimitiveAdmissionDecision=ALLOW`를 충족하지 않음 |',
+    '| N9 | TRUE+TRUE 입력 중 한 부모가 Technical 비정상이거나 해당 work의 고정된 `considered_primitive_refs`에 없음 |',
     '| N10 | match의 entity 또는 privilege 충족 근거가 없음 |',
     '| N10-A | 성립한 match의 후보가 양방향 계보에서 이미 사용한 Primitive를 같은 결과에서 다시 사용 |',
     '| N10-B | `excluded_primitive_ref`가 고정된 `considered_primitive_refs` 밖이거나 실제 match에 다시 포함됨 |',
@@ -1463,7 +2761,7 @@ foreach ($marker in $verificationChainingScenarioMarkers) {
 }
 
 $requiredVerificationChainingRules = @(
-    'Orchestration Agent는 한 가설 안에서 Pro/Con·동적 재현·두 Gate·Reporter·Chaining의 호출 여부나 Technical `REVISE` 목적지를 결정하지 않는다.',
+    'Orchestration Runtime은 정해진 전이표와 검증 결과에 따라 work를 등록·배정할 뿐, 한 가설 안에서 Pro/Con·동적 재현·두 Gate·Reporter·Chaining의 호출 여부나 Technical `REVISE` 목적지를 판단하지 않는다.',
     '같은 hypothesis의 ACTIVE `VerificationAssignment` owner에게 전달',
     'Gate 전 TRUE는 result가 있는 Primitive가 될 수 없다.',
     'origin=VERIFICATION',
@@ -1607,9 +2905,9 @@ $requiredValidatedPocContractMarkers = @(
     'request_ref: StoredDataRef',
     'poc_candidate_ref: StoredDataRef | null',
     '`dynamic_reproduction_request -> DynamicReproductionRequest -> VERIFICATION`',
-    '`environment_requirements -> EnvironmentRequirements -> R7_AGENT`',
-    '`reproduction_plan -> ReproductionPlan -> R7_AGENT`',
-    '`environment_recipe -> EnvironmentRecipe -> R7_SETUP_AUTOMATION`',
+    '`environment_requirements -> EnvironmentRequirements -> DYNAMIC_REPRODUCTION`',
+    '`reproduction_plan -> ReproductionPlan -> DYNAMIC_REPRODUCTION`',
+    '`environment_recipe -> EnvironmentRecipe -> REPRODUCTION_SETUP_AUTOMATION`',
     '`agent_log -> AgentLog -> REPRODUCTION_SESSION_MANAGER`',
     '`poc_bundle -> PoCBundle -> REPRODUCTION_SESSION_MANAGER`',
     '`dynamic_reproduction_result -> DynamicReproductionResult -> REPRODUCTION_SESSION_MANAGER`',
@@ -1712,7 +3010,7 @@ $requiredRuleExecutionSemantics = @(
     @{ Name = 'zero hit is an executed rule'; Text = $contractText; Marker = '`hit_count=0`만이 “규칙을 실행했지만 탐지 결과가 0건”이라는 뜻이다.' },
     @{ Name = 'not executed and unknown never use zero'; Text = $contractText; Marker = '`NOT_EXECUTED | UNKNOWN`에서 `hit_count=0`을 쓰는 것도 금지한다.' },
     @{ Name = 'other reason requires detail'; Text = $contractText; Marker = '`reason=OTHER`이면 사람이 이해할 수 있는 비어 있지 않은 `detail`이 필수다.' },
-    @{ Name = 'CodeFact is bound to a tool attempt'; Text = $contractText; Marker = '`CodeFact.producer.attempt_id`는 이 사실을 만든 exact `ToolRunResult.attempt_id`와 같아야 한다.' },
+    @{ Name = 'CodeFact is bound to a tool attempt'; Text = $contractText; Marker = '`CodeFact.producer.attempt_id`는 이 사실을 만든 exact `ToolRunResult.meta.attempt_id`와 같아야 한다.' },
     @{ Name = 'missing CodeFact does not prove zero'; Text = $staticText; Marker = '`CodeFact`가 없다는 사실만으로 규칙을 실행했거나 결과가 0건이었다고 추정하지 않는다.' },
     @{ Name = 'retry keeps rule records separate'; Text = $contractText; Marker = '이전 attempt의 규칙 상태나 탐지 수를 합치지 않는다.' },
     @{ Name = 'R8 separates plan and execution coverage'; Text = $resultText; Marker = '실행 coverage는 `SELECTED` 규칙 중 `EXECUTED` 비율, 계획 coverage는 catalog 규칙 중 `SELECTED` 비율로 따로 계산' },
@@ -1740,14 +3038,14 @@ $ruleExecutionDecisionPath = Join-Path $repoRoot 'docs/review/decisions/ADR-006-
 if (-not (Test-Path -LiteralPath $ruleExecutionDecisionPath)) {
     Add-Failure 'missing ADR-006 static rule execution decision'
 } else {
-    $ruleExecutionDecisionText = Get-Content -Raw -LiteralPath $ruleExecutionDecisionPath
+    $ruleExecutionDecisionText = Get-Content -Raw -Encoding UTF8 -LiteralPath $ruleExecutionDecisionPath
     foreach ($marker in @('상태: `ACCEPTED`', 'RunMeta', 'RuleExecutionRecord', 'ToolRunResult.tool_kind', 'ToolSource.attempt_id', '새 MAJOR schema', 'R2:', 'R4:', 'R8:')) {
         if (-not $ruleExecutionDecisionText.Contains($marker)) {
             Add-Failure "ADR-006 is missing decision marker: $marker"
         }
     }
 }
-$decisionIndexText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/review/decisions/README.md')
+$decisionIndexText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/review/decisions/README.md')
 if (-not $decisionIndexText.Contains('[ADR-006](./ADR-006-static-rule-execution-record.md)')) {
     Add-Failure 'decision index is missing ADR-006'
 }
@@ -1785,9 +3083,9 @@ foreach ($rule in $requiredStaticFactBundleSemantics) {
     }
 }
 
-$glossaryText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/GLOSSARY.md')
-$reviewChecklistText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/governance/REVIEW_CHECKLIST.md')
-$issueCatalogText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/review/ISSUE_CATALOG.md')
+$glossaryText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/GLOSSARY.md')
+$reviewChecklistText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/governance/REVIEW_CHECKLIST.md')
+$issueCatalogText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/review/ISSUE_CATALOG.md')
 $requiredStaticFactBundleCrossDocumentRules = @(
     @{ Name = 'static layer declares sanitizer list'; Text = $staticText; Marker = 'sanitizer_candidates: []' },
     @{ Name = 'static layer declares validator list'; Text = $staticText; Marker = 'validator_candidates: []' },
@@ -1811,7 +3109,7 @@ $staticFactDecisionPath = Join-Path $repoRoot 'docs/review/decisions/ADR-010-sta
 if (-not (Test-Path -LiteralPath $staticFactDecisionPath)) {
     Add-Failure 'missing ADR-010 StaticFactBundle fact-kind partition decision'
 } else {
-    $staticFactDecisionText = Get-Content -Raw -LiteralPath $staticFactDecisionPath
+    $staticFactDecisionText = Get-Content -Raw -Encoding UTF8 -LiteralPath $staticFactDecisionPath
     foreach ($marker in @('상태: `ACCEPTED`', 'sanitizer_candidates', 'validator_candidates', 'other_facts', '새 MAJOR schema', 'R2:', 'R4:', 'R6:')) {
         if (-not $staticFactDecisionText.Contains($marker)) {
             Add-Failure "ADR-010 is missing decision marker: $marker"
@@ -1822,7 +3120,7 @@ $cweLabelDecisionPath = Join-Path $repoRoot 'docs/review/decisions/ADR-009-r5-01
 if (-not (Test-Path -LiteralPath $cweLabelDecisionPath)) {
     Add-Failure 'missing ADR-009 R5-01 CWE labeling provenance decision'
 } else {
-    $cweLabelDecisionText = Get-Content -Raw -LiteralPath $cweLabelDecisionPath
+    $cweLabelDecisionText = Get-Content -Raw -Encoding UTF8 -LiteralPath $cweLabelDecisionPath
     foreach ($marker in @('상태: `ACCEPTED`', 'R5-01', 'CWE_LABELING', 'verification_result_ref', 'verification_generation', 'cwe_labeling_work_id', 'llm_call_id', 'Technical Gate')) {
         if (-not $cweLabelDecisionText.Contains($marker)) {
             Add-Failure "ADR-009 is missing decision marker: $marker"
@@ -1864,7 +3162,7 @@ $requiredCweLabelCrossDocumentRules = @(
     },
     @{
         Name = 'Wiki quick guide names the exact R5-01 CWE stage'
-        Text = (Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/quick-guide.md'))
+        Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/quick-guide.md'))
         Marker = 'R5-01 CWE_LABELING이 exact Verification에 맞는 current CWELabel 생성'
     }
 )
@@ -1923,7 +3221,138 @@ foreach ($rule in $requiredPlaybookApplicationRules) {
     }
 }
 
-$verificationWikiText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/verification-and-dynamic.md')
+$verificationWikiText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/verification-and-dynamic.md')
+$moduleMapText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/implementation/01-module-map.md')
+
+$requiredChainingOriginRecoveryRules = @(
+    @{
+        Name = 'canonical separates pre-registration validation'
+        Text = $verificationText
+        Marker = 'Proposal Validator, Hypothesis Registry와 Assignment Runtime은 자식 가설을 등록하고 Verification을 배정하기 전에'
+    },
+    @{
+        Name = 'canonical assigns post-registration check to Context service'
+        Text = $verificationText
+        Marker = 'Context Retrieval Service가 실제 코드 조회 전에 proposal이 고정한 `source_primitive_match_id` 계보 reference를 확인한다.'
+    },
+    @{
+        Name = 'canonical prevents direct lineage lookup by Verification'
+        Text = $verificationText
+        Marker = 'R6 Verification Agent는 `PrimitiveMatchCandidate`와 부모 Primitive를 직접 DB에서 조회하거나'
+    },
+    @{
+    Name = 'canonical binds exact proposal to Context work'
+    Text = $verificationText
+    Marker = '`CONTEXT_RETRIEVAL` work에는 exact proposal을 함께 고정한다.'
+    },
+    @{
+        Name = 'contract assigns lineage lookup to Context service'
+        Text = $contractText
+        Marker = 'Context Retrieval Service가 `CONTEXT_RETRIEVAL` work에 고정된 exact proposal의 `source_primitive_match_id`를 읽어'
+    },
+    @{
+        Name = 'Wiki assigns lineage lookup to Context service'
+        Text = $verificationWikiText
+        Marker = 'Context Retrieval Service가 그 proposal에서 `source_primitive_match_id`를 읽어'
+    },
+    @{
+        Name = 'canonical resolves upstream result entities'
+        Text = $verificationText
+        Marker = 'upstream Primitive의 `result.entity_refs`'
+    },
+    @{
+        Name = 'canonical resolves matched downstream input entities'
+        Text = $verificationText
+        Marker = '`draft_id == matched_input_id`인 입력의 `entity_refs`'
+    },
+    @{
+        Name = 'canonical resolves upstream prerequisite entities'
+        Text = $verificationText
+        Marker = 'upstream Primitive 자신의 모든 `inputs[].entity_refs`'
+    },
+    @{
+        Name = 'canonical resolves remaining downstream entities'
+        Text = $verificationText
+        Marker = '`matched_input_id`로 선택되지 않은 나머지 `inputs[].entity_refs`'
+    },
+    @{
+        Name = 'canonical requires valid entity or location'
+        Text = $verificationText
+        Marker = '유효한 entity 또는 location을 최소 하나 이상 복구해야 한다.'
+    },
+    @{
+        Name = 'canonical uses proposal metadata scope'
+        Text = $verificationText
+        Marker = '`proposal.meta.workspace_id`와 `proposal.meta.commit_id`'
+    },
+    @{
+        Name = 'canonical rejects whole mismatched lineage'
+        Text = $verificationText
+        Marker = '일부 reference만 제외하고 계속하지 않고 계보 전체를 유효하지 않은 입력으로 처리한다.'
+    },
+    @{
+        Name = 'canonical stops stale context without verdict'
+        Text = $verificationText
+        Marker = 'final `VerificationResult`와 verdict 없이 중단한다.'
+    },
+    @{
+        Name = 'Wiki separates registration and retrieval checks'
+        Text = $verificationWikiText
+        Marker = '검사 시점을 등록 전과 등록 후로 나눕니다.'
+    },
+    @{
+        Name = 'Wiki assigns post-registration check to Context service'
+        Text = $verificationWikiText
+        Marker = 'Context Retrieval Service가 실제 코드 조회 전에 proposal이 고정한 계보 reference의 존재와 `content_hash`를 확인합니다.'
+    },
+    @{
+        Name = 'Wiki prevents direct DB lookup by Verification'
+        Text = $verificationWikiText
+        Marker = 'R6 Verification Agent는 부모 Primitive와 match candidate를 직접 DB에서 조회하거나'
+    },
+    @{
+        Name = 'Wiki includes both parent prerequisites'
+        Text = $verificationWikiText
+        Marker = 'upstream Primitive 자신의 모든 `inputs[].entity_refs`'
+    },
+    @{
+        Name = 'module Step 20 assigns pre-registration validation'
+        Text = $moduleMapText
+        Marker = 'Chaining-origin 등록 전에는 Proposal Validator·Hypothesis Registry·Assignment Runtime이'
+    },
+    @{
+        Name = 'module Step 9 assigns lineage recheck to Context service'
+        Text = $moduleMapText
+        Marker = 'Context Retrieval Service가 고정된 계보 reference를 확인하고 Context를 반환함'
+    },
+    @{
+        Name = 'registration test covers broken lineage'
+        Text = $moduleMapText
+        Marker = '`source_primitive_match_id` 계보가 끊기면 자식 가설을 등록하지 않는다.'
+    },
+    @{
+        Name = 'registration test covers upstream prerequisites'
+        Text = $moduleMapText
+        Marker = 'upstream Primitive의 `inputs[].entity_refs`가 복구 대상에서 누락되면 등록하지 않는다.'
+    },
+    @{
+        Name = 'context test covers pinned lineage reference mismatch'
+        Text = $moduleMapText
+        Marker = '등록 당시 고정한 match candidate 또는 부모 Primitive reference를 찾을 수 없거나 `content_hash`가 다르면 Context 조회를 중단한다.'
+    },
+    @{
+        Name = 'context test blocks final verdict'
+        Text = $moduleMapText
+        Marker = '실패한 Context work로 final `VerificationResult` 또는 `TRUE | FALSE | HOLD`를 만들지 않는다.'
+    }
+)
+
+foreach ($rule in $requiredChainingOriginRecoveryRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing Chaining-origin Verification recovery rule: $($rule.Name)"
+    }
+}
+
 $requiredPlaybookCrossDocumentRules = @(
     @{ Name = 'role document defines registry runtime'; Text = $orchestrationText; Marker = '| Playbook Registry Runtime |' },
     @{ Name = 'role document fixes one question set'; Text = $orchestrationText; Marker = '같은 application 질문 집합을 사용하는지 검사' },
@@ -1951,7 +3380,7 @@ foreach ($rule in $requiredPlaybookCrossDocumentRules) {
 
 $playbookGuidePath = Join-Path $repoRoot 'docs/architecture-v5/verification-playbooks.md'
 if (Test-Path -LiteralPath $playbookGuidePath) {
-    $playbookGuideText = Get-Content -Raw -LiteralPath $playbookGuidePath
+    $playbookGuideText = Get-Content -Raw -Encoding UTF8 -LiteralPath $playbookGuidePath
     $requiredPlaybookGuideRules = @(
         '`HypothesisProposal.vulnerability_type_candidates`',
         '`PlaybookPolicy`',
@@ -1974,9 +3403,14 @@ if (Test-Path -LiteralPath $playbookGuidePath) {
 $policySourceCheckBlock = [regex]::Match($contractText, '(?ms)^PolicySourceCheck:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $policyParserResultBlock = [regex]::Match($contractText, '(?ms)^PolicyParserResult:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $policyCollectionResultBlock = [regex]::Match($contractText, '(?ms)^PolicyCollectionResult:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$runPolicyStateBlock = [regex]::Match($contractText, '(?ms)^RunPolicyState:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$policyCacheMetaBlock = [regex]::Match($contractText, '(?ms)^PolicyCacheMeta:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$policyCacheRefBlock = [regex]::Match($contractText, '(?ms)^PolicyCacheRef:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$policyCacheRecordBlock = [regex]::Match($contractText, '(?ms)^PolicyCacheRecord:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $policyMissingInfoBlock = [regex]::Match($contractText, '(?ms)^PolicyMissingInfo:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $ruleScopeEvidenceLinkBlock = [regex]::Match($contractText, '(?ms)^RuleScopeEvidenceLink:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $programPolicyRecordBlock = [regex]::Match($contractText, '(?ms)^ProgramPolicyRecord:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
+$sandboxPolicyDecisionBlock = [regex]::Match($contractText, '(?ms)^SandboxPolicyDecision:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $ruleScopeImpactReviewBlock = [regex]::Match($contractText, '(?ms)^RuleScopeImpactReview:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $primitiveAdmissionDecisionBlock = [regex]::Match($contractText, '(?ms)^PrimitiveAdmissionDecision:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9_]*:|\z)').Groups[1].Value
 $gateRuleScopeImpactReviewBlock = [regex]::Match($gateText, '(?ms)^rule_scope_impact_review:\s*(.*?)^```').Groups[1].Value
@@ -1984,16 +3418,21 @@ $analysisRunResultPolicyBlock = [regex]::Match($contractText, '(?ms)^AnalysisRun
 
 $requiredPolicyContractFields = @(
     @{ Contract = 'PolicySourceCheck'; Block = $policySourceCheckBlock; Fields = @('source_id: string', 'source_ref: StoredDataRef', 'status: VERIFIED | UNVERIFIED', 'evidence_refs: [StoredDataRef]', 'checked_at: timestamp') },
-    @{ Contract = 'PolicyParserResult'; Block = $policyParserResultBlock; Fields = @('parser_result_id: string', 'parser_name: string', 'parser_version: string', 'source_ref: StoredDataRef', 'parsed_output_ref: StoredDataRef | null', 'status: SUCCEEDED | FAILED | INVALID_OUTPUT', 'error_ids: [string]', 'completed_at: timestamp') },
-    @{ Contract = 'PolicyCollectionResult'; Block = $policyCollectionResultBlock; Fields = @('collection_result_id: string', 'program_id: string', 'status: FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED', 'official_source_refs: [StoredDataRef]', 'parser_result_refs: [StoredDataRef]', 'policy_record_ref: StoredDataRef | null', 'gap_ids: [string]', 'error_ids: [string]', 'completed_at: timestamp') },
+    @{ Contract = 'PolicyParserResult'; Block = $policyParserResultBlock; Fields = @('meta: RecordMeta without hypothesis, with attempt', 'parser_result_id: string', 'parser_name: string', 'parser_version: string', 'source_ref: StoredDataRef', 'parsed_output_ref: StoredDataRef | null', 'status: SUCCEEDED | FAILED | INVALID_OUTPUT', 'error_ids: [string]', 'completed_at: timestamp') },
+    @{ Contract = 'RunPolicyState'; Block = $runPolicyStateBlock; Fields = @('meta: RecordMeta without hypothesis/attempt', 'program_id: string', 'status: PREPARING | CURRENT | ABSENT | BLOCKED | FAILED | UNVERIFIED', 'preparation_source: COLLECTED | REUSED_CACHE | null', 'source_config_ref: RunStoredDataRef | StoredDataRef', 'parser_name: string', 'parser_version: string', 'policy_work_ref: StoredDataRef', 'policy_cache_ref: PolicyCacheRef | null', 'collection_result_ref: StoredDataRef | null', 'policy_record_ref: StoredDataRef | null', 'freshness_criterion_ref: StoredDataRef | null', 'freshness_checked_at: timestamp | null', 'freshness_evidence_refs: [StoredDataRef]', 'freshness_valid_until: timestamp | null') },
+    @{ Contract = 'PolicyCacheMeta'; Block = $policyCacheMetaBlock; Fields = @('record_id: string', 'logical_record_id: string', 'record_type: policy_cache_record', 'schema_version: string', 'program_id: string', 'revision_number: integer', 'previous_record_id: string | null', 'created_at: timestamp') },
+    @{ Contract = 'PolicyCacheRef'; Block = $policyCacheRefBlock; Fields = @('stored_data_id: string', 'data_kind: policy_cache_record', 'record_id: string', 'content_hash: string', 'program_id: string', 'schema_version: string') },
+    @{ Contract = 'PolicyCacheRecord'; Block = $policyCacheRecordBlock; Fields = @('meta: PolicyCacheMeta', 'source_config_ref: RunStoredDataRef | StoredDataRef', 'parser_name: string', 'parser_version: string', 'collection_status: FOUND | ABSENT_CONFIRMED', 'collection_result_ref: StoredDataRef', 'parser_result_refs: [StoredDataRef]', 'policy_record_ref: StoredDataRef | null', 'freshness_criterion_ref: StoredDataRef', 'freshness_checked_at: timestamp', 'freshness_evidence_refs: [StoredDataRef]', 'freshness_valid_until: timestamp', 'published_at: timestamp') },
+    @{ Contract = 'PolicyCollectionResult'; Block = $policyCollectionResultBlock; Fields = @('meta: RecordMeta without hypothesis, with attempt', 'collection_result_id: string', 'program_id: string', 'preparation_source: COLLECTED | REUSED_CACHE', 'source_cache_ref: PolicyCacheRef | null', 'status: FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED', 'official_source_refs: [StoredDataRef]', 'parser_result_refs: [StoredDataRef]', 'policy_record_ref: StoredDataRef | null', 'gap_ids: [string]', 'error_ids: [string]', 'completed_at: timestamp') },
     @{ Contract = 'PolicyMissingInfo'; Block = $policyMissingInfoBlock; Fields = @('missing_info_id: string', 'area: RULE | SCOPE | IMPACT | SOURCE | FRESHNESS | TESTING_RESTRICTION', 'blocks_allow: boolean', 'description: string', 'policy_item_ids: [string]', 'evidence_refs: [StoredDataRef]') },
     @{ Contract = 'RuleScopeEvidenceLink'; Block = $ruleScopeEvidenceLinkBlock; Fields = @('link_id: string', 'area: RULE | SCOPE | IMPACT | TESTING_RESTRICTION', 'policy_item_ids: [string]', 'evidence_refs: [StoredDataRef]') },
-    @{ Contract = 'ProgramPolicyRecord'; Block = $programPolicyRecordBlock; Fields = @('source_checks: [PolicySourceCheck]', 'parser_result_refs: [StoredDataRef]', 'freshness_criterion_ref: StoredDataRef | null', 'freshness_evidence_refs: [StoredDataRef]', 'freshness_valid_until: timestamp | null', 'missing_information: [PolicyMissingInfo]') },
-    @{ Contract = 'RuleScopeImpactReview'; Block = $ruleScopeImpactReviewBlock; Fields = @('policy_collection_result_ref: StoredDataRef', 'testing_restriction_compliance: PASS | FAIL | UNCERTAIN', 'evidence_links: [RuleScopeEvidenceLink]', 'missing_information: [PolicyMissingInfo]') }
+    @{ Contract = 'ProgramPolicyRecord'; Block = $programPolicyRecordBlock; Fields = @('meta: RecordMeta without hypothesis, with attempt', 'preparation_source: COLLECTED | REUSED_CACHE', 'source_cache_ref: PolicyCacheRef | null', 'source_checks: [PolicySourceCheck]', 'parser_result_refs: [StoredDataRef]', 'freshness_criterion_ref: StoredDataRef | null', 'freshness_evidence_refs: [StoredDataRef]', 'freshness_valid_until: timestamp | null', 'missing_information: [PolicyMissingInfo]') },
+    @{ Contract = 'SandboxPolicyDecision'; Block = $sandboxPolicyDecisionBlock; Fields = @('run_policy_state_ref: StoredDataRef', 'policy_collection_result_ref: StoredDataRef | null', 'policy_record_ref: StoredDataRef | null', 'execution_scope: LOCAL_ONLY', 'observed_policy_status: PREPARING | CURRENT | ABSENT | BLOCKED | FAILED | UNVERIFIED') },
+    @{ Contract = 'RuleScopeImpactReview'; Block = $ruleScopeImpactReviewBlock; Fields = @('run_policy_state_ref: StoredDataRef', 'policy_collection_result_ref: StoredDataRef', 'testing_restriction_compliance: PASS | FAIL | UNCERTAIN', 'evidence_links: [RuleScopeEvidenceLink]', 'missing_information: [PolicyMissingInfo]') }
     @{ Contract = 'PrimitiveAdmissionDecision'; Block = $primitiveAdmissionDecisionBlock; Fields = @('meta: RecordMeta', 'verification_result_ref: StoredDataRef', 'technical_review_ref: StoredDataRef', 'policy_collection_result_ref: StoredDataRef', 'rule_scope_review_ref: StoredDataRef | null', 'testing_restriction_compliance: PASS | FAIL | UNCERTAIN | NOT_EVALUATED', 'decision: ALLOW | DENY', 'reason_code: TESTING_RESTRICTION_PASSED | TESTING_RESTRICTION_UNCERTAIN | POLICY_COLLECTION_FAILED | TESTING_RESTRICTION_VIOLATION') }
     @{ Contract = 'Primitive'; Block = $primitiveBlock; Fields = @('admission_decision_ref: StoredDataRef | null') }
-    @{ Contract = 'Gate guide RuleScopeImpactReview'; Block = $gateRuleScopeImpactReviewBlock; Fields = @('policy_collection_result_ref: StoredDataRef', 'evidence_links: [RuleScopeEvidenceLink]', 'missing_information: [PolicyMissingInfo]') }
-    @{ Contract = 'AnalysisRunResult'; Block = $analysisRunResultPolicyBlock; Fields = @('policy_collection_result_refs: [StoredDataRef]', 'policy_parser_result_refs: [StoredDataRef]') }
+    @{ Contract = 'Gate guide RuleScopeImpactReview'; Block = $gateRuleScopeImpactReviewBlock; Fields = @('run_policy_state_ref: StoredDataRef', 'policy_collection_result_ref: StoredDataRef', 'evidence_links: [RuleScopeEvidenceLink]', 'missing_information: [PolicyMissingInfo]') }
+    @{ Contract = 'AnalysisRunResult'; Block = $analysisRunResultPolicyBlock; Fields = @('program_id: string', 'run_policy_state_ref: StoredDataRef | null', 'policy_cache_refs: [PolicyCacheRef]', 'policy_collection_result_refs: [StoredDataRef]', 'policy_parser_result_refs: [StoredDataRef]') }
 )
 foreach ($contract in $requiredPolicyContractFields) {
     if ([string]::IsNullOrWhiteSpace($contract.Block)) {
@@ -2007,23 +3446,140 @@ foreach ($contract in $requiredPolicyContractFields) {
     }
 }
 
+$runPolicyPreparationDecisionPath = Join-Path $repoRoot 'docs/review/decisions/ADR-013-run-policy-preparation-and-reuse.md'
+if (-not (Test-Path -LiteralPath $runPolicyPreparationDecisionPath)) {
+    Add-Failure 'missing ADR-013 run policy preparation and reuse decision'
+} else {
+    $runPolicyPreparationDecisionText = Get-Content -Raw -Encoding UTF8 -LiteralPath $runPolicyPreparationDecisionPath
+    foreach ($marker in @('상태: `ACCEPTED`', '실행당 한 번', 'Policy Collector', 'Policy Parser', '`RunPolicyState`', '`LOCAL_ONLY`', '`freshness_valid_until`', 'R5-02', 'R7', 'R8')) {
+        if (-not $runPolicyPreparationDecisionText.Contains($marker)) {
+            Add-Failure "ADR-013 is missing decision marker: $marker"
+        }
+    }
+}
+$runPolicyPreparationDecisionIndexText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/review/decisions/README.md')
+if (-not $runPolicyPreparationDecisionIndexText.Contains('[ADR-013](./ADR-013-run-policy-preparation-and-reuse.md)')) {
+    Add-Failure 'decision index is missing ADR-013'
+}
+
+$requiredRunPolicyPreparationRules = @(
+    @{ Name = 'policy preparation starts beside static tools'; Text = $contractText; Marker = '`CodeWorkspace.status=READY`가 확정되면 `STATIC_TOOL` work들과 분석 단위 `POLICY_FETCH` work를 서로 독립적으로 등록해 병렬 실행한다.' },
+    @{ Name = 'policy fetch is not hypothesis local'; Text = $contractText; Marker = '`POLICY_FETCH`는 가설마다 만들지 않는다.' },
+    @{ Name = 'policy parser is an LLM role'; Text = $contractText; Marker = 'Policy Collector는 비-LLM으로 공식 원문을 가져오고, Policy Parser는 LLM으로 그 exact 원문만 구조화한다.' },
+    @{ Name = 'policy artifacts do not become static facts'; Text = $contractText; Marker = '정책 record는 `StaticFactBundle`에 넣지 않는다.' },
+    @{ Name = 'hypothesis generation is not scope filtered'; Text = $contractText; Marker = 'Hypothesis Agent는 정책 범위를 이유로 proposal을 삭제하거나 생성하지 않는 방식으로 제한하지 않는다.' },
+    @{ Name = 'one active policy work per run and program'; Text = $contractText; Marker = '`(analysis_id, program_id, work_type=POLICY_FETCH)` unique key' },
+    @{ Name = 'policy work is analysis scoped'; Text = $contractText; Marker = '`POLICY_FETCH`는 `subject_type=ANALYSIS`, `subject_id=analysis_id`를 사용한다.' },
+    @{ Name = 'program id is required before run start'; Text = $contractText; Marker = '`program_id`가 없거나 승인된 catalog에서 하나로 해석되지 않으면 분석을 시작하지 않는다.' },
+    @{ Name = 'analysis API accepts one internal program id'; Text = $contractText; Marker = '`AnalysisStartRequest`는 내부 `program_id` 하나만 받는다.' },
+    @{ Name = 'external program keys are catalog inputs'; Text = $contractText; Marker = '`program_namespace + external_program_id`는 Program Catalog 등록·조회 입력이며 `AnalysisStartRequest`의 대체 입력이 아니다.' },
+    @{ Name = 'multi-program repositories require separate runs'; Text = $contractText; Marker = '저장소 하나가 여러 프로그램에 연결돼 있으면 호출자가 하나를 선택하고 프로그램마다 별도 analysis run을 시작한다.' },
+    @{ Name = 'policy results bind the selected program'; Text = $contractText; Marker = '`PolicyCollectionResult.program_id`와 `ProgramPolicyRecord.program_id`는 시작 상태에 고정한 `program_id`와 같아야 한다.' },
+    @{ Name = 'run policy state is never reused across analyses'; Text = $contractText; Marker = '`RunPolicyState`는 다른 `analysis_id`에서 재사용하지 않는다.' },
+    @{ Name = 'policy cache is run neutral'; Text = $contractText; Marker = '정책 재사용 경로에서는 `PolicyCacheRecord`만 analysis·workspace·commit에 종속되지 않는 실행 간 재사용 record다.' },
+    @{ Name = 'cache selection happens only at run start'; Text = $contractText; Marker = '정책 캐시는 새 analysis run의 `POLICY_FETCH` 준비 단계에서 정확히 한 번만 조회한다.' },
+    @{ Name = 'cache reuse validates exact compatibility'; Text = $contractText; Marker = '`program_id`, source 설정 content hash, parser 이름·버전, freshness 기준 content hash가 모두 같고 `freshness_valid_until > AnalysisRunState.started_at`인 cache만 재사용한다.' },
+    @{ Name = 'policy cache has an exact logical key'; Text = $contractText; Marker = 'cache logical key는 `(program_id, source_config_ref.content_hash, parser_name, parser_version, freshness_criterion_ref.content_hash)`다.' },
+    @{ Name = 'cache miss performs fresh preparation'; Text = $contractText; Marker = '조건 하나라도 다르거나 reference target·content hash를 확인할 수 없으면 cache를 거절하고 같은 `POLICY_FETCH` work에서 공식 원문 수집과 Parser 호출을 수행한다.' },
+    @{ Name = 'cache reuse materializes run local records'; Text = $contractText; Marker = 'cache를 재사용해도 현재 analysis의 새 `PolicyCollectionResult`와, `FOUND`이면 새 `ProgramPolicyRecord`를 만들어 현재 run에 고정한다.' },
+    @{ Name = 'reused collection requires exact cache provenance'; Text = $contractText; Marker = '`preparation_source=REUSED_CACHE`는 `FOUND | ABSENT_CONFIRMED`에서만 허용하고 `source_cache_ref`가 필수다.' },
+    @{ Name = 'cache reuse does not invoke parser'; Text = $contractText; Marker = '`REUSED_CACHE` 경로는 새 `PolicyParserResult`나 LLM 호출을 만들지 않는다.' },
+    @{ Name = 'cache provenance is the only cross run policy exception'; Text = $contractText; Marker = '다른 analysis의 parser·공식 원문 reference는 current `RunPolicyState.policy_cache_ref`가 가리키는 cache closure와 정확히 같을 때만 허용한다.' },
+    @{ Name = 'policy consumers never read cache as policy input'; Text = $contractText; Marker = 'Rule Scope Gate·Reporter·Sandbox Controller는 `PolicyCacheRecord`를 정책 판단 입력으로 직접 읽지 않고 현재 run의 `RunPolicyState`와 run-local collection·policy record만 소비한다.' },
+    @{ Name = 'failed preparation is never cached'; Text = $contractText; Marker = '`COLLECTION_FAILED`, `BLOCKED`, `FAILED`, `UNVERIFIED` 준비 결과는 `PolicyCacheRecord`로 게시하지 않는다.' },
+    @{ Name = 'only verified terminal policy states are cached'; Text = $contractText; Marker = '`RunPolicyState.status=CURRENT | ABSENT`로 확정할 수 있을 때만 새 `PolicyCacheRecord`를 게시한다.' },
+    @{ Name = 'unverified policy commit excludes cache'; Text = $contractText; Marker = '`UNVERIFIED` 새 수집 경로는 exact collection·존재하는 policy record·final state만 같은 commit으로 확정하고 cache output을 포함하지 않는다.' },
+    @{ Name = 'policy cache and run state commit atomically'; Text = $contractText; Marker = '새 수집 경로는 current collection·존재하는 policy record·새 cache·final `RunPolicyState`를 하나의 `TransitionCommit` output으로 확정한다.' },
+    @{ Name = 'policy cache publication validates successful closure'; Text = $contractText; Marker = '`result_kind=policy_cache_record`는 `POLICY_COLLECTOR`만 저장하며 `FOUND | ABSENT_CONFIRMED`인 성공 collection과 exact parser·policy·freshness closure만 허용한다.' },
+    @{ Name = 'policy cache participates in atomic work records'; Text = $contractText; Marker = '`PolicyCacheRef`는 `POLICY_FETCH`의 work·attempt·transition·action input/output/candidate/outcome reference에만 추가한다.' },
+    @{ Name = 'prepared policy is frozen for the run'; Text = $contractText; Marker = '준비를 확정한 뒤 같은 run에서는 policy cache·collection·parser 결과·정책 record reference를 교체하지 않는다.' },
+    @{ Name = 'freshness only controls next-run reuse'; Text = $contractText; Marker = 'freshness 만료와 parser version 변경은 다음 analysis run을 시작할 때 정책 자료를 재사용할지 판단하는 조건이다.' },
+    @{ Name = 'policy retries remain in one work'; Text = $contractText; Marker = '정책 준비 재시도는 같은 `POLICY_FETCH` work의 새 attempt로 기록하며 별도 generation을 만들지 않는다.' },
+    @{ Name = 'policy collection results are attempt scoped'; Text = $contractText; Marker = '`PolicyCollectionResult`는 완료된 `POLICY_FETCH` attempt마다 최대 하나를 만들고 `meta.attempt_id`로 그 attempt를 고정한다.' },
+    @{ Name = 'fresh policy outputs share one attempt'; Text = $contractText; Marker = '`COLLECTED` 경로의 `PolicyParserResult`, `ProgramPolicyRecord`, `PolicyCollectionResult`는 같은 non-null `meta.attempt_id`를 사용한다.' },
+    @{ Name = 'cached parser provenance is not rewritten'; Text = $contractText; Marker = '`REUSED_CACHE` 경로는 현재 attempt의 collection·policy record만 새로 만들고 cache closure의 과거 Parser attempt reference를 그대로 보존한다.' },
+    @{ Name = 'policy result list plurality comes only from retries'; Text = $contractText; Marker = '`policy_collection_result_refs`가 복수형인 이유는 한 프로그램의 같은 `POLICY_FETCH` work가 재시도될 수 있기 때문이며 여러 프로그램을 뜻하지 않는다.' },
+    @{ Name = 'run policy state selects one collection result'; Text = $contractText; Marker = '`RunPolicyState.collection_result_ref`는 현재 state revision을 만든 attempt의 exact `PolicyCollectionResult` 하나만 가리킨다.' },
+    @{ Name = 'unverified policy state requires a completed collection'; Text = $contractText; Marker = '`RunPolicyState.status=UNVERIFIED`는 `collection_result_ref`가 필수이며 exact `PolicyCollectionResult.status=FOUND | ABSENT_CONFIRMED` 중 하나를 가리킨다.' },
+    @{ Name = 'unfinished policy collection is not unverified'; Text = $contractText; Marker = '수집 결과를 만들기 전에 중단되었으면 `UNVERIFIED`로 끝내지 않고 실제 복구 가능성에 따라 `BLOCKED | FAILED`로 기록한다.' },
+    @{ Name = 'blocked policy state is a resumable wait not a terminal result'; Text = $contractText; Marker = 'retry 또는 외부 입력을 기다리면 `BLOCKED`, 복구 불가능하거나 retry를 소진하면 `FAILED`이며 둘 다 실제 `PolicyCollectionResult.status=COLLECTION_FAILED` 결과가 있으면 그 exact reference를 보존한다.' },
+    @{ Name = 'special admission path requires the exact COLLECTION_FAILED result'; Text = $contractText; Marker = '이 `NOT_EVALUATED + ALLOW` 특별 경로는 `RunPolicyState.collection_result_ref != null`이고 그 exact `PolicyCollectionResult.status=COLLECTION_FAILED`일 때만 허용하며' },
+    @{ Name = 'null collection result stops policy-dependent downstream'; Text = $contractText; Marker = '`collection_result_ref=null`(collection 결과 확정 전 `PREPARING | BLOCKED | FAILED`)이면 exact `PolicyCollectionResult`가 없으므로 `RuleScopeImpactReview`도 `PrimitiveAdmissionDecision`도 만들지 않고 Reporter도 진행하지 않으며' },
+    @{ Name = 'early run result may omit policy state'; Text = $contractText; Marker = '`CodeWorkspace.status=READY` 전에 종료된 `FAILED | CANCELLED` 결과는 `run_policy_state_ref=null`을 허용한다.' },
+    @{ Name = 'post-ready run result binds policy state'; Text = $contractText; Marker = '`CodeWorkspace.status=READY` 뒤 정책 준비를 시작한 실행은 종료 상태와 관계없이 `run_policy_state_ref`가 필수다.' },
+    @{ Name = 'policy parser result binds invocation'; Text = $policyParserResultBlock; Marker = 'llm_invocation_ref: StoredDataRef' },
+    @{ Name = 'policy parser owner is separate from collector'; Text = $contractText; Marker = '`policy_parser_result -> PolicyParserResult -> POLICY_PARSER`, `policy_collection_result -> PolicyCollectionResult -> POLICY_COLLECTOR`' },
+    @{ Name = 'sandbox records observed run policy state'; Text = $contractText; Marker = '`RUN_SANDBOX`는 요청 당시 관측한 `RunPolicyState` exact revision을 감사 reference로 고정한다.' },
+    @{ Name = 'sandbox policy is local only'; Text = $contractText; Marker = '`execution_scope=LOCAL_ONLY`만 허용하며 프로그램의 live asset·외부 계정·허용되지 않은 egress에 접근하지 않는다.' },
+    @{ Name = 'sandbox controller does not replace scope gate'; Text = $contractText; Marker = 'Sandbox Controller는 Rule Scope의 정책 의미·보고 가능성을 판정하지 않는다.' },
+    @{ Name = 'policy consumers bind the frozen state'; Text = $contractText; Marker = '`CALL_RULE_SCOPE_GATE`와 `CREATE_REPORT_DRAFT`는 준비 완료 때 고정한 exact `RunPolicyState` reference와 일치하는지 검사한다.' },
+    @{ Name = 'Reporter checks the frozen current run policy state'; Text = $contractText; Marker = '그 state가 현재 실행의 current pointer이고, 준비 완료 시 `CURRENT`로 확정되어 현재 run에 고정된 exact state다.' },
+    @{ Name = 'preparing policy does not block local sandbox'; Text = $contractText; Marker = '`PREPARING | BLOCKED | FAILED | UNVERIFIED`에서도 격리된 clone·same-attempt mock·fixture만 사용하는 로컬 재현은 기다리지 않고 진행할 수 있다.' },
+    @{ Name = 'policy freshness does not expire local sandbox'; Text = $contractText; Marker = '외부 정책 변경 신호만으로 기존 local-only action을 `EXPIRED`로 만들지 않는다.' },
+    @{ Name = 'confirmed absence is not reused indefinitely'; Text = $contractText; Marker = '`RunPolicyState.status=ABSENT`에도 같은 종류의 freshness 필드가 모두 필요하므로 공식 정책 부재 확인을 다음 run에서 무기한 재사용하지 않는다.' },
+    @{ Name = 'Rule Scope review binds run policy state'; Text = $ruleScopeImpactReviewBlock; Marker = 'run_policy_state_ref: StoredDataRef' },
+    @{ Name = 'mid-run policy change requires a new run'; Text = $contractText; Marker = 'run 중 공식 정책 변경을 외부 신호로 확인해도 현재 reference를 교체하지 않고 정책 의존 단계를 차단한 뒤 새 analysis run을 요구한다.' },
+    @{ Name = 'Reporter binds current run policy state'; Text = $contractText; Marker = 'Rule Scope review의 `run_policy_state_ref.record_id`가 ReportDraft와 Reporter action·call spec이 고정한 `run_policy_state_ref.record_id`와 같고' },
+    @{ Name = 'overview shows parallel policy preparation'; Text = $overviewText; Marker = 'AST·SAST와 실행 단위 정책 준비를 독립 병렬 실행' },
+    @{ Name = 'overview shows run neutral policy cache'; Text = $overviewText; Marker = '`PolicyCacheRecord`' },
+    @{ Name = 'architecture hub explains policy cache'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/README.md')); Marker = '`PolicyCacheRecord`' },
+    @{ Name = 'module map separates policy preparation'; Text = $moduleMapText; Marker = '`PolicyPreparationService.prepare`의 분석 단위 `POLICY_FETCH`' },
+    @{ Name = 'module map includes run neutral policy cache'; Text = $moduleMapText; Marker = 'run-neutral cache' },
+    @{ Name = 'canonical diagram includes run policy state'; Text = $diagramText; Marker = 'RPS[RunPolicyState]' },
+    @{ Name = 'canonical diagram separates parser output from collector finalization'; Text = $diagramText; Marker = 'PREADY{Collector validates collection and freshness}' },
+    @{ Name = 'canonical diagram bypasses cache for unverified state'; Text = $diagramText; Marker = 'PUNC[Commit UNVERIFIED state without cache]' },
+    @{ Name = 'Wiki explains single policy preparation'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/pipeline.md')); Marker = '정책은 가설마다 다시 가져오지 않습니다.' },
+    @{ Name = 'Wiki explains exact policy cache reuse'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/pipeline.md')); Marker = '`PolicyCacheRecord`' },
+    @{ Name = 'agent Wiki keeps policy parser and state ownership separate'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/agents.md')); Marker = 'Policy Parser → structure the collected exact source → PolicyParserResult → Policy Collector validates and commits RunPolicyState' },
+    @{ Name = 'pipeline Wiki keeps policy parser and state ownership separate'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/pipeline.md')); Marker = 'Policy Parser는 `PolicyParserResult`를 만들고 Policy Collector가 이를 검증·취합해 current `RunPolicyState`를 확정' },
+    @{ Name = 'agent Wiki uses frozen policy after Technical Gate'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/agents.md')); Marker = 'TRUE → R5-01 CWE_LABELING → current CWELabel → Technical Gate → run에 고정한 RunPolicyState로 Rule Scope review' },
+    @{ Name = 'quick guide prepares policy beside static analysis'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/quick-guide.md')); Marker = 'Repository → Repository Loader → CodeWorkspace → AST·SAST와 정책 준비를 병렬 실행' },
+    @{ Name = 'quick guide uses frozen policy after Technical Gate'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/quick-guide.md')); Marker = '→ Technical Gate → run에 고정한 RunPolicyState로 Rule Scope check → PrimitiveAdmissionDecision' },
+    @{ Name = 'results Wiki includes run state and run-neutral policy cache'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/results.md')); Marker = '실행 단위 `RunPolicyState`, run-neutral `PolicyCacheRecord`, LLM 정책 parser 호출·결과' },
+    @{ Name = 'module map starts with an exact program selection'; Text = $moduleMapText; Marker = 'exact `AnalysisStartRequest`와 승인된 단일 `program_id`' },
+    @{ Name = 'module map uses frozen policy instead of Gate-time collection'; Text = $moduleMapText; Marker = 'CWE_LABELING → Technical Evidence Gate → run에 고정한 `RunPolicyState` 사용 → Rule Scope Impact Gate' },
+    @{ Name = 'invalid program selection creates no run'; Text = $resultText; Marker = '`INPUT_ERROR` | 입력 검증기 | 분석 요청 거절; `AnalysisRunState`·work 없음' },
+    @{ Name = 'ambiguous program selection scenario exists'; Text = $securityText; Marker = '| N50 | `AnalysisStartRequest.program_id`가 없거나 catalog에서 사용할 수 없거나, 저장소의 여러 프로그램 중 하나를 선택하지 않음 |' },
+    @{ Name = 'security scenarios reject policy as static fact'; Text = $securityText; Marker = '| N45 | 정책 record를 `StaticFactBundle`에 넣거나 정책으로 Hypothesis proposal을 사전 삭제 |' },
+    @{ Name = 'security scenarios reject external sandbox access'; Text = $securityText; Marker = '| N46 | `RUN_SANDBOX`가 출처를 증명하지 못한 endpoint·계정·fixture, live asset 또는 허용되지 않은 egress에 접근 |' },
+    @{ Name = 'security scenarios allow local sandbox while preparing'; Text = $securityText; Marker = '| N46-A | policy state가 `PREPARING`인 local-only Sandbox 요청 |' },
+    @{ Name = 'security scenarios separate next-run freshness from sandbox auth'; Text = $securityText; Marker = '| N47 | run 시작 때 만료된 정책 record를 재사용하거나, run 중 외부 정책 변경 신호를 이유로 current state를 교체하거나 local-only Sandbox action을 취소 |' },
+    @{ Name = 'security scenarios reject mismatched policy cache'; Text = $securityText; Marker = '| N49 | 다른 program·source 설정·Parser 버전·freshness 기준의 cache를 쓰거나 cache closure 밖의 cross-run 정책 reference를 연결 |' },
+    @{ Name = 'security scenarios reject unverified state without collection'; Text = $securityText; Marker = '| N51 | `RunPolicyState.status=UNVERIFIED`인데 `collection_result_ref=null`이거나 collection status가 `FOUND | ABSENT_CONFIRMED`가 아님 |' },
+    @{ Name = 'evaluation scenario covers policy cache'; Text = $resultText; Marker = '| S-POLICY-CACHE |' },
+    @{ Name = 'glossary explains policy cache'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/GLOSSARY.md')); Marker = '`PolicyCacheRecord`' },
+    @{ Name = 'security scenarios bind Reporter policy state'; Text = $securityText; Marker = '| N48 | ReportDraft의 `run_policy_state_ref`가 Rule Scope review 또는 run에 고정한 exact state와 다름 |' }
+)
+foreach ($rule in $requiredRunPolicyPreparationRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing R4 run policy preparation rule: $($rule.Name)"
+    }
+}
+
 $requiredPolicyContractRules = @(
-    @{ Name = 'policy result owners are registered'; Text = $contractText; Marker = '`policy_parser_result -> PolicyParserResult -> POLICY_COLLECTOR`, `policy_collection_result -> PolicyCollectionResult -> POLICY_COLLECTOR`, `program_policy_record -> ProgramPolicyRecord -> POLICY_COLLECTOR`' },
+    @{ Name = 'architecture hub starts with repository and one internal program'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/README.md')); Marker = '1. 저장소와 승인된 내부 `program_id` 하나를 `AnalysisStartRequest`로 입력한다.' },
+    @{ Name = 'agent Wiki lists the non-LLM Policy Collector'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/agents.md')); Marker = '| Policy Collector | 공식 정책 원문과 출처 근거를 수집하고 exact 원문·hash를 저장 | 정책 의미·scope·보고 허용 판단 |' },
+    @{ Name = 'agent Wiki lists the LLM Policy Parser'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/agents.md')); Marker = '| Policy Parser | Policy Collector가 저장한 exact 원문을 구조화 | Rule Scope 결론·보고 허용 판단, 원문에 없는 정책 추정 |' },
+    @{ Name = 'agent Wiki distinguishes Agents from support modules'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/agents.md')); Marker = '각 LLM Agent와 분석을 돕는 비-LLM 모듈' },
+    @{ Name = 'glossary keeps stale policy outside Gate input'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/GLOSSARY.md')); Marker = '`STALE`은 run 시작의 cache 재사용 판단에만 쓰며, 해당 record는 current `RunPolicyState`나 Gate 입력으로 연결하지 않습니다. `UNVERIFIED`인 run 정책은 `UNCERTAIN + DENY`로 처리합니다.' },
+    @{ Name = 'policy result owners are registered'; Text = $contractText; Marker = '`run_policy_state -> RunPolicyState -> POLICY_COLLECTOR`, `policy_cache_record -> PolicyCacheRecord -> POLICY_COLLECTOR`, `policy_parser_result -> PolicyParserResult -> POLICY_PARSER`, `policy_collection_result -> PolicyCollectionResult -> POLICY_COLLECTOR`, `program_policy_record -> ProgramPolicyRecord -> POLICY_COLLECTOR`' },
     @{ Name = 'FOUND requires a policy record'; Text = $contractText; Marker = '`FOUND`이면 `policy_record_ref`가 필수이고 `error_ids=[]`다.' },
     @{ Name = 'successful collection uses successful parsers'; Text = $contractText; Marker = '`FOUND | ABSENT_CONFIRMED`의 `parser_result_refs`는 하나 이상이고 모두 `status=SUCCEEDED`인 exact parser 결과를 가리킨다.' },
     @{ Name = 'FOUND binds collection and policy provenance'; Text = $contractText; Marker = '`FOUND`에서는 collection의 `official_source_refs`, `parser_result_refs`가 정책 record의 `source_refs`, `parser_result_refs`와 각각 set-equal해야 한다.' },
     @{ Name = 'confirmed absence is not a fetch failure'; Text = $contractText; Marker = '`ABSENT_CONFIRMED`이면 `policy_record_ref=null`, 하나 이상의 공식 출처와 `gap_ids`가 필요하고 `error_ids=[]`다.' },
     @{ Name = 'collection failure cannot produce a Gate review'; Text = $contractText; Marker = '`COLLECTION_FAILED`이면 `policy_record_ref=null`과 하나 이상의 `error_ids`가 필요하며 Rule Scope Gate work와 review를 만들지 않는다.' },
     @{ Name = 'Gate input includes the exact collection result'; Text = $contractText; Marker = '`policy_collection_result_ref`는 Gate가 사용한 exact `PolicyCollectionResult`를 가리킨다.' },
-    @{ Name = 'CURRENT policy has enforceable freshness'; Text = $contractText; Marker = '`freshness_status=CURRENT`이면 `freshness_criterion_ref`, 하나 이상의 `freshness_evidence_refs`, `freshness_checked_at`과 미래의 `freshness_valid_until`이 모두 필수다.' },
-    @{ Name = 'R8 owns freshness criteria'; Text = $contractText; Marker = 'freshness 기준값과 재수집 주기는 R8이 승인한 versioned 설정만 사용한다.' },
-    @{ Name = 'Gate guide keeps R8 freshness ownership'; Text = $gateText; Marker = '최신성 기준값과 재수집 주기는 R8이 승인한 versioned 설정을 사용하고 R5는 그 결과를 정책 의미로 해석한다.' },
+    @{ Name = 'CURRENT policy has enforceable freshness'; Text = $contractText; Marker = '`ProgramPolicyRecord.freshness_status=CURRENT`이면 `freshness_criterion_ref`, 하나 이상의 `freshness_evidence_refs`, `freshness_checked_at`과 run 시작 시점보다 미래인 `freshness_valid_until`이 모두 필수다.' },
+    @{ Name = 'R8 owns freshness criteria'; Text = $contractText; Marker = 'freshness 기준값은 R8이 승인한 versioned 설정만 사용한다.' },
+    @{ Name = 'Gate guide keeps R8 freshness ownership'; Text = $gateText; Marker = '최신성 기준값은 R8이 승인한 versioned 설정을 사용하고 R5는 그 결과를 정책 의미로 해석한다.' },
+    @{ Name = 'Gate ALLOW uses the frozen run-start policy state'; Text = $gateText; Marker = '이 조건은 Gate 시점에 TTL을 다시 계산한다는 뜻이 아니다.' },
     @{ Name = 'Gate Wiki distinguishes collection failure'; Text = $gateWikiText; Marker = '`COLLECTION_FAILED`는 Rule Scope review를 만들지 않습니다.' },
     @{ Name = 'Gate diagram routes collection failure through admission runtime'; Text = $diagramText; Marker = 'COLLECT -->|COLLECTION_FAILED| ARUN[R4 Primitive Admission Runtime]' },
     @{ Name = 'Gate evidence links are complete'; Text = $contractText; Marker = '`PASS | FAIL | SUFFICIENT | INSUFFICIENT`인 각 판단 영역은 같은 area의 `RuleScopeEvidenceLink`를 하나 이상 가져야 한다.' },
     @{ Name = 'blocking missing information denies ALLOW'; Text = $contractText; Marker = '`blocks_allow=true`인 `PolicyMissingInfo`가 하나라도 있으면 `report_permission=ALLOW`를 저장하지 않는다.' },
     @{ Name = 'policy fetch error does not become a successful Gate result'; Text = $resultText; Marker = '`POLICY_FETCH_ERROR` | 정책 수집 계층 | 정책 수집 결과 `COLLECTION_FAILED`; 성공한 Rule Scope review 없음' },
     @{ Name = 'policy parser error is distinct'; Text = $resultText; Marker = '`POLICY_PARSE_ERROR` | 정책 수집 계층 | parser 실행 실패와 `COLLECTION_FAILED`; 성공한 Rule Scope review 없음' },
+    @{ Name = 'stale policy source is a preparation diagnostic'; Text = $contractText; Marker = '`POLICY_SOURCE_STALE`은 새 run의 cache 거절·재수집 사유로만 사용하고 Rule Scope Gate나 Reporter에 직접 전달하지 않는다.' },
     @{ Name = 'policy collection negative scenario exists'; Text = $securityText; Marker = '| N35 | 정책 수집 실패를 정책 부재로 바꿔 `UNCERTAIN + DENY` review를 저장 |' },
     @{ Name = 'policy evidence negative scenario exists'; Text = $securityText; Marker = '| N36 | Rule·Scope·Impact 확정 판단에 사용한 정책 항목 또는 실제 근거 연결이 없음 |' },
     @{ Name = 'primitive admission decision owner is registered'; Text = $contractText; Marker = '`primitive_admission_decision -> PrimitiveAdmissionDecision -> PRIMITIVE_ADMISSION_RUNTIME`' },
@@ -2031,32 +3587,33 @@ $requiredPolicyContractRules = @(
     @{ Name = 'testing restriction verdict is independent'; Text = $contractText; Marker = '`testing_restriction_compliance`는 `rule_compliance`와 독립된 판정 축이다.' },
     @{ Name = 'confirmed prohibited testing denies admission'; Text = $contractText; Marker = '`testing_restriction_compliance=FAIL`이면 `decision=DENY`, `reason_code=TESTING_RESTRICTION_VIOLATION`만 허용하고 result Primitive를 만들지 않는다.' },
     @{ Name = 'policy collection failure keeps exact provenance'; Text = $contractText; Marker = '`COLLECTION_FAILED`이면 `rule_scope_review_ref=null`, `testing_restriction_compliance=NOT_EVALUATED`, `decision=ALLOW`, `reason_code=POLICY_COLLECTION_FAILED`로만 확정한다.' },
-    @{ Name = 'chaining registration pins direct and ancestor allowed decisions'; Text = $contractText; Marker = '이들에 직접·재귀적으로 연결된 current ALLOW decision exact reference를 함께 고정한다.' },
-    @{ Name = 'stale used admission blocks in-flight chaining'; Text = $contractText; Marker = '`source_admission_refs` 중 하나가 current가 아니거나 `DENY`로 바뀌면 오염된 재료의 사용을 막기 위해 진행 중인 결과를 거절한다.' },
-    @{ Name = 'derived hypothesis rechecks admission lineage'; Text = $contractText; Marker = '`origin=CHAINING` 가설의 새 Verification·Gate·Primitive update·Reporter work를 등록하거나 그 결과를 저장할 때도 trusted runtime은 같은 `source_primitive_match_id` 계보의 result Primitive admission decision을 재귀 확인한다.' },
-    @{ Name = 'committed descendants become audit only after denial'; Text = $contractText; Marker = '이미 COMMITTED된 Verification·Gate·Finding·ReportDraft는 감사 이력으로 남기되 current 결과나 외부 전달 가능 결과로 사용하지 않는다.' },
-    @{ Name = 'current run result excludes denied admission descendants'; Text = $contractText; Marker = '`ChainingResult.source_admission_refs` 중 하나라도 더 이상 current ALLOW가 아니면 해당 ChainingResult와 그 `source_primitive_match_id`에서 파생된 Primitive·Finding·ReportDraft를 current 목록에 넣지 않는다.' },
+    @{ Name = 'policy revision is frozen within an analysis run'; Text = $contractText; Marker = '같은 analysis run에서 policy collection·record revision은 최초 확정 뒤 교체하지 않는다.' },
+    @{ Name = 'freshness and parser changes only decide next-run reuse'; Text = $contractText; Marker = '정책 freshness 만료와 parser version 변경은 다음 analysis run을 시작할 때 재사용 여부를 판단하는 조건이다.' },
+    @{ Name = 'unpinned reference scenario exists'; Text = $securityText; Marker = '| N44 | Chaining 결과에 그 work가 고정하지 않은 index·Primitive reference가 섞임 |' },
+    @{ Name = 'ownership assigns R1 one-time admission consumption'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/governance/OWNERSHIP.md')); Marker = 'admission은 Primitive 등록 시점의 1회 판정이므로 체이닝이 이를 다시 확인하지 않습니다.' },
+    @{ Name = 'derived hypothesis does not recheck parent admission'; Text = $contractText; Marker = '`origin=CHAINING` 가설의 새 Verification·Gate·Primitive update·Reporter work를 등록하거나 그 결과를 저장할 때 trusted runtime은 부모 계보의 admission을 다시 확인하지 않는다.' },
+    @{ Name = 'admission is a one-time decision'; Text = $contractText; Marker = 'admission은 Primitive 등록 시점의 1회 판정이며 run 안에서 다시 판정하지 않는다.' },
+    @{ Name = 'admitted primitives are not revoked'; Text = $contractText; Marker = '그러므로 등록된 Primitive를 회수하거나 같은 Verification의 decision을 뒤집는 절차를 두지 않는다.' },
+    @{ Name = 'resume does not cancel stored primitives'; Text = $contractText; Marker = '재개는 미완료 work를 이어서 실행하는 것이지 확정된 결과를 되돌리거나 admission을 다시 판정하는 절차가 아니다.' },
+    @{ Name = 'index membership means registered'; Text = $contractText; Marker = 'index 소속은 "등록되었다"는 뜻이며 자격을 다시 판정한 결과가 아니다.' },
+    @{ Name = 'index updates only add'; Text = $contractText; Marker = 'index 갱신은 Primitive를 더하기만 하며 등록된 Primitive를 빼는 경로를 두지 않는다.' },
     @{ Name = 'report requires testing restriction pass'; Text = $contractText; Marker = 'testing_restriction_compliance PASS + scope_compliance PASS' },
     @{ Name = 'unrelated rule failure scenario exists'; Text = $securityText; Marker = '| N37 | 다른 규칙 때문에 `rule_compliance=FAIL`이지만 `testing_restriction_compliance=PASS` |' },
     @{ Name = 'prohibited testing scenario exists'; Text = $securityText; Marker = '| N38 | `testing_restriction_compliance=FAIL`인 Rule Scope review |' },
     @{ Name = 'ambiguous testing evidence scenario exists'; Text = $securityText; Marker = '| N39 | `TESTING_RESTRICTION` link만 있고 전용 판정이 없거나 판정과 link가 모순됨 |' },
     @{ Name = 'collection failure admission scenario exists'; Text = $securityText; Marker = '| N40 | 정책 수집이 `COLLECTION_FAILED`라 Rule Scope review가 없음 |' },
-    @{ Name = 'stale admission decision scenario exists'; Text = $securityText; Marker = '| N41 | Chaining work가 실제 match에 사용한 admission decision 뒤 current decision이 `DENY`로 변경됨 |' },
     @{ Name = 'missing admission reference scenario exists'; Text = $securityText; Marker = '| N42 | result Primitive에 current `admission_decision_ref`가 없거나 다른 Verification의 decision을 참조 |' },
-    @{ Name = 'committed descendant invalidation scenario exists'; Text = $securityText; Marker = '| N43 | 이미 COMMITTED된 Chaining 자식·손자 뒤 부모 admission이 `DENY`로 변경됨 |' },
-    @{ Name = 'source admission set mismatch scenario exists'; Text = $securityText; Marker = '| N44 | `ChainingResult.source_admission_refs`가 실제 match의 direct·ancestor ALLOW decision 합집합과 다름 |' },
     @{ Name = 'Wiki explains collection outcomes'; Text = $commonWikiText; Marker = '`FOUND | ABSENT_CONFIRMED | COLLECTION_FAILED`' },
+    @{ Name = 'common contract Wiki explains policy cache'; Text = $commonWikiText; Marker = '`PolicyCacheRecord`' },
     @{ Name = 'Wiki explains primitive admission decision'; Text = $commonWikiText; Marker = '`PrimitiveAdmissionDecision`은 TRUE 결과를 체이닝 재료로 사용해도 되는지 기록합니다.' },
     @{ Name = 'authority Wiki separates policy meaning and runtime derivation'; Text = $authorityWikiText; Marker = 'Rule Scope Gate가 테스트 제한의 의미를 판단하고, Runtime은 그 구조화된 판정으로 `PrimitiveAdmissionDecision`을 확정합니다.' },
-    @{ Name = 'overview requires admission ALLOW for result Primitive'; Text = $overviewText; Marker = 'current admission `ALLOW`인 Technical-accepted TRUE의 result Primitive exact revision 검색' },
+    @{ Name = 'overview requires admission ALLOW for result Primitive'; Text = $overviewText; Marker = 'admission `ALLOW`인 Technical-accepted TRUE의 result Primitive exact revision 검색' },
     @{ Name = 'orchestration fixes primitive admission order'; Text = $orchestrationText; Marker = '-> PrimitiveAdmissionDecision' },
-    @{ Name = 'architecture hub explains confirmed prohibited testing denial'; Text = (Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/README.md')); Marker = '금지 테스트 위반이 확정된 `DENY`는 result Primitive와 Chaining을 막지만' },
+    @{ Name = 'architecture hub explains confirmed prohibited testing denial'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/README.md')); Marker = '금지 테스트 위반이 확정된 `DENY`는 result Primitive와 Chaining을 막지만' },
     @{ Name = 'canonical diagram routes Technical ACCEPT through admission'; Text = $diagramText; Marker = 'ADEC{PrimitiveAdmissionDecision}' },
-    @{ Name = 'pipeline Wiki requires current admission ALLOW'; Text = (Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/pipeline.md')); Marker = 'TRUE는 Technical `ACCEPT`와 current admission `ALLOW` 뒤 들어간다.' },
-    @{ Name = 'Chaining Wiki pins current ALLOW decision lineage'; Text = $chainingWikiText; Marker = '실제 입력의 direct·ancestor admission 집합은 `source_admission_refs`에 중복 없이 기록합니다.' },
+    @{ Name = 'pipeline Wiki requires current admission ALLOW'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/pipeline.md')); Marker = 'TRUE는 Technical `ACCEPT`와 current admission `ALLOW` 뒤 들어간다.' },
     @{ Name = 'Gate Wiki separates testing restriction result'; Text = $gateWikiText; Marker = 'testing_restriction_compliance: `PASS | FAIL | UNCERTAIN`' },
-    @{ Name = 'ownership assigns R1 current admission consumption'; Text = (Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/governance/OWNERSHIP.md')); Marker = 'R1 Chaining은 result Primitive와 직접·부모 체인의 current `PrimitiveAdmissionDecision=ALLOW`를 함께 입력으로 고정' },
-    @{ Name = 'AnalysisRunResult policy refs use a new major'; Text = $contractText; Marker = '두 목록 추가는 `AnalysisRunResult`의 새 필수 필드이므로 새 MAJOR schema에서만 사용한다.' }
+    @{ Name = 'AnalysisRunResult policy refs use a new major'; Text = $contractText; Marker = '이 목록 추가는 `AnalysisRunResult`의 새 필수 필드이므로 새 MAJOR schema에서만 사용한다.' }
 )
 foreach ($rule in $requiredPolicyContractRules) {
     if (-not $rule.Text.Contains($rule.Marker)) {
@@ -2064,20 +3621,609 @@ foreach ($rule in $requiredPolicyContractRules) {
     }
 }
 
+# R5-02 policy preparation-timing: policy preparation is a run-init, analysis-scoped
+# POLICY_FETCH activity (see the canonical RunPolicyState / PolicyCacheRecord rules
+# above). Rule Scope Gate consumes the frozen run policy after Technical ACCEPT and
+# the Gate evaluation order is unchanged. These checks keep the "## 정책 준비 시점"
+# section and the run-fixed Gate-order invariant, and guard against regressing to
+# "collect policy after Technical ACCEPT".
+$policyPreparationTimingMarkers = @(
+    @{ Name = 'gate doc has the policy preparation-timing section'; Text = $gateText; Marker = '## 정책 준비 시점' },
+    @{ Name = 'gate doc keeps Gate evaluation order while moving preparation'; Text = $gateText; Marker = '바뀌는 것은 **Policy의 준비 시점**이며 **Gate evaluation order는 바뀌지 않는다**' },
+    @{ Name = 'gate doc: Rule Scope Gate consumes the frozen run policy'; Text = $gateText; Marker = 'Rule Scope Gate는 Technical `ACCEPT` 이후 실행 초기에 고정한 current `RunPolicyState`가 가리키는 정책을 소비한다.' },
+    @{ Name = 'gate Wiki keeps Gate evaluation order'; Text = $gateWikiText; Marker = '**Gate evaluation order는 바뀌지 않습니다**' },
+    @{ Name = 'module map step 3 registers run-init POLICY_FETCH'; Text = $moduleMapText; Marker = '`PolicyPreparationService.prepare`의 분석 단위 `POLICY_FETCH`' }
+)
+foreach ($rule in $policyPreparationTimingMarkers) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing R5-02 policy preparation-timing rule: $($rule.Name)"
+    }
+}
+
+# Obsolete present-tense "collect/parse policy after Technical ACCEPT" phrasing
+# must not return. (The 05 doc may describe the *former* behaviour in the past
+# tense; these patterns match only the stale present-tense forms.)
+$policyTimingRegressionDocs = @(
+    @{ Name = '05 gate doc'; Text = $gateText },
+    @{ Name = 'gate Wiki'; Text = $gateWikiText },
+    @{ Name = 'overview'; Text = $overviewText },
+    @{ Name = 'pipeline Wiki'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/pipeline.md')) },
+    @{ Name = 'module map'; Text = $moduleMapText }
+)
+$policyTimingRegressionPatterns = @(
+    '정책 수집과 Rule Scope 검토를 진행',
+    'ACCEPT하면 정책 수집',
+    'ACCEPT하면 정책을 수집',
+    'ACCEPT하면 공식 정책 수집',
+    'ACCEPT 뒤 정책 수집',
+    'ACCEPT 뒤 공식 정책 수집',
+    'ACCEPT 이후 정책 수집',
+    'ACCEPT 이후 공식 정책 수집'
+)
+foreach ($doc in $policyTimingRegressionDocs) {
+    foreach ($pattern in $policyTimingRegressionPatterns) {
+        if ($doc.Text.Contains($pattern)) {
+            Add-Failure "obsolete post-ACCEPT policy collection phrasing in $($doc.Name): $pattern"
+        }
+    }
+}
+
+# The 22-step module map step 17 row must not register POLICY_FETCH as its work,
+# and step 3 must keep starting the run-init POLICY_FETCH.
+$moduleMapStep17Row = [regex]::Match($moduleMapText, '(?m)^\| 17\.[^\r\n]*$').Value
+if ($moduleMapStep17Row -and ($moduleMapStep17Row -match 'POLICY_FETCH') -and ($moduleMapStep17Row -notmatch '새로 실행하지 않|새 collection/parsing 없음|Step 3의 `POLICY_FETCH`')) {
+    Add-Failure 'module map step 17 row registers POLICY_FETCH as executed work; policy collection/parsing belongs to run-init step 3'
+}
+$moduleMapStep3Row = [regex]::Match($moduleMapText, '(?m)^\| 3\.[^\r\n]*$').Value
+if ($moduleMapStep3Row -and ($moduleMapStep3Row -notmatch 'POLICY_FETCH')) {
+    Add-Failure 'module map step 3 row no longer starts run-init POLICY_FETCH'
+}
+Write-Output "R5-02 policy preparation-timing rules: $($policyPreparationTimingMarkers.Count)"
+
+# R6 dynamic reproduction must stay independent from program-policy semantics.
+# RunPolicyState is captured at RUN_SANDBOX time for audit only; it is not a
+# mutable DYNAMIC_REPRO work input or a LOCAL_ONLY authorization prerequisite.
+$providerText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/09-llm-provider-session-and-logging.md')
+$stateWikiText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/state-and-recovery.md')
+$requiredR6PolicyBoundaryRules = @(
+    @{ Name = 'R6 does not copy program policy into the dynamic request'; Text = $verificationText; Marker = 'R6는 공식 프로그램 정책을 직접 수집하거나 해석하지 않으며 `DynamicReproductionRequest`에도 정책 reference를 복사하지 않는다.' },
+    @{ Name = 'R6 Wiki keeps program policy out of the dynamic request'; Text = $verificationWikiText; Marker = 'R6는 프로그램 정책을 직접 수집하거나 해석하지 않고 `DynamicReproductionRequest`에도 정책 reference를 넣지 않습니다.' },
+    @{ Name = 'R6 keeps static and debate work independent from policy preparation'; Text = $verificationText; Marker = '프로그램 정책 준비 상태와 관계없이 정적·Pro·Con 검증과 `DynamicReproductionRequest` 생성은 계속할 수 있다.' },
+    @{ Name = 'R6 explains the audit-only RunPolicyState binding'; Text = $verificationText; Marker = '`RunPolicyState`는 `RUN_SANDBOX` 요청 시점에 별도 감사 reference로 기록하며 `DYNAMIC_REPRO` work의 불변 입력이나 R6 verdict 근거로 추가하지 않는다.' },
+    @{ Name = 'R6 resume preserves immutable work inputs'; Text = $contractText; Marker = '`BLOCKED -> READY -> RUNNING` 재개는 기존 work의 `input_refs`와 `input_hash`가 그대로일 때만 허용한다.' },
+    @{ Name = 'orchestration lifecycle preserves immutable dynamic-work inputs'; Text = $orchestrationText; Marker = '현재 work의 불변 입력을 바꾸지 않는 외부 조건을 기다릴 때만 `BLOCKED` 뒤 `trigger=RESUME`인 새 attempt로 재개한다.' },
+    @{ Name = 'provider retry lifecycle preserves immutable dynamic-work inputs'; Text = $providerText; Marker = '`DYNAMIC_REPRO`는 현재 work의 `input_refs/input_hash`를 바꾸지 않는 인증·승인·외부 환경 정비·resource 확보를 기다릴 때만 `BLOCKED`로 이동한다.' },
+    @{ Name = 'module map recovery preserves immutable dynamic-work inputs'; Text = $moduleMapText; Marker = '현재 work의 `input_refs/input_hash`를 바꾸지 않는 재인증·승인·외부 환경 정비·resource 확보 대기만 `BLOCKED` 후 `trigger=RESUME`인 새 attempt를 만든다.' },
+    @{ Name = 'state Wiki preserves immutable dynamic-work inputs'; Text = $stateWikiText; Marker = '`DYNAMIC_REPRO`는 현재 work의 `input_refs/input_hash`를 바꾸지 않는 외부 조건을 기다릴 때만 `BLOCKED`를 사용합니다.' }
+)
+foreach ($rule in $requiredR6PolicyBoundaryRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing R6 program-policy boundary rule: $($rule.Name)"
+    }
+}
+
+$requiredR6PolicyBlockedSemantics = @(
+    @{ Name = 'Gate defines POLICY_BLOCKED as an external Sandbox boundary failure'; Text = $gateText; Marker = '`POLICY_BLOCKED`는 `SandboxProfile`의 외부 격리 경계 위반 때문에 Dynamic Reproduction Agent를 시작하지 못한 상태다.' },
+    @{ Name = 'Common contract keeps POLICY_BLOCKED out of program-policy semantics'; Text = $contractText; Marker = '`DynamicReproductionResult(status=BLOCKED | FAILED, failure_category=POLICY_BLOCKED)`는 Sandbox profile의 외부 격리 경계 위반이지 가설 반증이나 Technical `REJECT`가 아니다.' },
+    @{ Name = 'Results scenario names the Sandbox profile boundary'; Text = $resultText; Marker = '| Sandbox profile 외부 격리 경계 차단 결과 |' },
+    @{ Name = 'Wiki names the Sandbox profile boundary'; Text = $gateWikiText; Marker = '동적 재현이 Sandbox profile의 외부 격리 경계에 막힌 것은 `FALSE`나 Gate의 `REJECT` 근거가 아닙니다.' },
+    @{ Name = 'Gate execution closure names the Sandbox profile pre-boundary stop'; Text = $gateText; Marker = 'Sandbox profile 외부 격리 경계 사전 차단 또는 environment precheck로 artifact가 생성되지 않았다면' },
+    @{ Name = 'Contract execution closure names the Sandbox profile pre-boundary stop'; Text = $contractText; Marker = 'Sandbox profile 외부 격리 경계 사전 차단·environment precheck stop으로 생성되지 않은 artifact는 요구하지 않는다.' },
+    @{ Name = 'Gate Wiki execution closure names the Sandbox profile pre-boundary stop'; Text = $gateWikiText; Marker = 'Sandbox profile 외부 격리 경계 사전 차단이나 environment precheck로 만들지 않은 artifact는 요구하지 않는다.' },
+    @{ Name = 'Common Wiki defines policy decision against an exact Sandbox profile'; Text = $commonWikiText; Marker = '`policy_decision_ref`: Controller가 어떤 exact Sandbox profile revision과 외부 경계 사유로 허용·차단했는지 가리킵니다.' }
+)
+foreach ($rule in $requiredR6PolicyBlockedSemantics) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "missing R6 POLICY_BLOCKED semantic rule: $($rule.Name)"
+    }
+}
+
+$obsoleteR6PolicyBlockedSemantics = @(
+    @{ Name = 'Gate calls POLICY_BLOCKED a program-policy failure'; Text = $gateText; Marker = '정책 때문에 실행하지 못했다는 뜻' },
+    @{ Name = 'Gate resumes immutable work after an external policy change'; Text = $gateText; Marker = '외부 정책·설정을 바꿀 수 있으면 Verification과 동적 work를 `BLOCKED`로 유지' },
+    @{ Name = 'Common contract resumes immutable work after a policy change'; Text = $contractText; Marker = '정책·외부 설정 수정이 가능하면 같은 동적 work와 Verification을 `BLOCKED`로 유지' },
+    @{ Name = 'Wiki ambiguously calls the boundary a Sandbox policy block'; Text = $gateWikiText; Marker = '동적 재현이 Sandbox 정책에 막힌 것은' },
+    @{ Name = 'Results ambiguously names a Sandbox policy block'; Text = $resultText; Marker = '| Sandbox 정책 차단 결과 |' },
+    @{ Name = 'Results waits for a changed immutable Sandbox profile'; Text = $resultText; Marker = '외부 profile 변경을 기다릴 때만 `BLOCKED`' },
+    @{ Name = 'Gate ambiguously says policy block in the execution closure'; Text = $gateText; Marker = 'policy block 또는 environment precheck' },
+    @{ Name = 'Contract ambiguously says policy block in the execution closure'; Text = $contractText; Marker = 'policy block·environment precheck' },
+    @{ Name = 'Gate Wiki ambiguously says policy block in the execution closure'; Text = $gateWikiText; Marker = 'policy block이나 environment precheck' },
+    @{ Name = 'Common Wiki calls a Sandbox profile revision a generic policy version'; Text = $commonWikiText; Marker = 'Controller가 어떤 정책 버전으로 왜 허용·차단했는지' }
+)
+foreach ($rule in $obsoleteR6PolicyBlockedSemantics) {
+    if ($rule.Text.Contains($rule.Marker)) {
+        Add-Failure "obsolete R6 POLICY_BLOCKED semantic remains: $($rule.Name)"
+    }
+}
+
+$obsoleteR6PolicyBoundaryPhrases = @(
+    '동적 work는 정책 준비가 끝날 때까지 `BLOCKED`로 기다립니다.',
+    'exact `PolicyCollectionResult`, current `ProgramPolicyRecord`와 parser 결과를 `DYNAMIC_REPRO` work 입력에 고정',
+    'Sandbox Controller는 그 정책 record의 `testing_restrictions` 중 실제 실행 방법에 적용되는 항목을 확인',
+    '외부 설정·정책·승인·resource 변경',
+    '외부 설정·승인·정책 또는 resource profile 변경',
+    '외부 설정·정책·승인 또는 resource profile 변경',
+    '재인증·정책 변경·외부 설정·resource profile 변경',
+    '정책·외부 설정·승인·resource profile 변경'
+)
+foreach ($phrase in $obsoleteR6PolicyBoundaryPhrases) {
+    if ($activeDocumentationText.Contains($phrase)) {
+        Add-Failure "obsolete R6 program-policy coupling remains: $phrase"
+    }
+}
+
+# origin/main (docs(r4): freeze policy revisions within each run): no active doc may
+# describe a mid-run policy replacement / admission recompute on a new policy
+# revision. Policy is frozen for the life of an analysis run.
+foreach ($obsoletePolicyLifecycleRule in @(
+    '`STALE` 또는 `UNVERIFIED`이면 보고 허용에 쓰지 않고 `UNCERTAIN + DENY`로 처리합니다.',
+    '정책 수집이나 Rule Scope review가 새 current revision으로 바뀌면',
+    '같은 run 안에서 ALLOW가 DENY로 바뀌면 admission runtime은',
+    '만료 뒤 재수집할 때만 1 증가한다',
+    '새 policy generation 준비',
+    '새 policy generation을 준비',
+    '실행 중 정책 generation',
+    'policy state가 새 revision 또는 generation으로 바뀔 때',
+    '`RunPolicyState.freshness_valid_until`을 다시 검사한다',
+    'freshness가 유효하다',
+    'Technical Gate → policy and Rule Scope review',
+    'Technical Gate → policy and Rule Scope check',
+    '현재 공통 계약에는 run-neutral 정책 캐시가 없으므로',
+    '분석 간 cache는 별도 계약 전 미지원'
+    'CWE_LABELING → Technical Evidence Gate → policy collection → Rule Scope Impact Gate'
+)) {
+    if ($activeDocumentationText.Contains($obsoletePolicyLifecycleRule)) {
+        Add-Failure "obsolete mid-run policy replacement rule remains: $obsoletePolicyLifecycleRule"
+    }
+}
+
+$requiredR301RunInitFanoutRules = @(
+    'R3 runtime은 정적 분석과 정책 준비를 독립 branch로 등록한다.',
+    'Policy Collector·Policy Parser 정책 준비',
+    'run-init에는 Docker image pull·build·cache warm·container 생성·PoC 실행 branch가 없다.',
+    '`EnvironmentRequirements`, `ReproductionPlan`, `EnvironmentRecipe`, `SandboxEnvironment`, `AgentLog`와 PoC는 Step 12의 current 가설·generation·attempt에서만 만든다.',
+    '가설 간 writable container를 공유하지 않는다.',
+    'Reproduction Setup Automation이 Step 12에서 승인된 current request와 profile을 사용해 clean 환경을 준비한다.',
+    'Docker를 사용할 수 없으면 실제 원인의 `BLOCKED | FAILED` 실행 결과를 남기고 `FALSE | HOLD`로 자동 변환하지 않는다.',
+    'B5. run-init Docker baseline 준비의 action·result binding — RESOLVED'
+)
+foreach ($marker in $requiredR301RunInitFanoutRules) {
+    if (-not $moduleMapText.Contains($marker)) {
+        Add-Failure "missing R3-01 run-init fan-out rule: $marker"
+    }
+}
+
 $primitiveAdmissionDecisionPath = Join-Path $repoRoot 'docs/review/decisions/ADR-011-testing-restriction-primitive-admission.md'
 if (-not (Test-Path -LiteralPath $primitiveAdmissionDecisionPath)) {
     Add-Failure 'missing ADR-011 testing restriction primitive admission decision'
 } else {
-    $primitiveAdmissionDecisionText = Get-Content -Raw -LiteralPath $primitiveAdmissionDecisionPath
-    foreach ($marker in @('상태: `ACCEPTED`', '`testing_restriction_compliance`', '`PrimitiveAdmissionDecision`', '`PRIMITIVE_ADMISSION_RUNTIME`', '`COLLECTION_FAILED`', 'R1:', 'R4:', 'R5-02:')) {
+    $primitiveAdmissionDecisionText = Get-Content -Raw -Encoding UTF8 -LiteralPath $primitiveAdmissionDecisionPath
+    foreach ($marker in @('상태: `SUPERSEDED`', '`testing_restriction_compliance`', '`PrimitiveAdmissionDecision`', '`PRIMITIVE_ADMISSION_RUNTIME`', '`COLLECTION_FAILED`', 'R1:', 'R4:', 'R5-02:')) {
         if (-not $primitiveAdmissionDecisionText.Contains($marker)) {
             Add-Failure "ADR-011 is missing decision marker: $marker"
         }
     }
 }
-$policyDecisionIndexText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'docs/review/decisions/README.md')
+$policyDecisionIndexText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/review/decisions/README.md')
 if (-not $policyDecisionIndexText.Contains('[ADR-011](./ADR-011-testing-restriction-primitive-admission.md)')) {
     Add-Failure 'decision index is missing ADR-011'
+}
+
+$dynamicLifecycleDocuments = @(
+    @{ Name = '08 common contract'; Text = $contractText },
+    @{ Name = '13 canonical diagrams'; Text = $diagramText },
+    @{ Name = 'Wiki diagrams'; Text = $wikiDiagramText },
+    @{ Name = 'verification Wiki'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/verification-and-dynamic.md')) },
+    @{ Name = 'OWNERSHIP'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/governance/OWNERSHIP.md')) },
+    @{ Name = 'ISSUE_CATALOG'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/review/ISSUE_CATALOG.md')) }
+)
+foreach ($doc in $dynamicLifecycleDocuments) {
+    foreach ($marker in @('같은 Dynamic Reproduction Agent session', 'trigger=RETRY', 'trigger=RESUME')) {
+        if (-not $doc.Text.Contains($marker)) {
+            Add-Failure "$($doc.Name) is missing dynamic lifecycle distinction: $marker"
+        }
+    }
+}
+foreach ($legacy in @('RUNNING --> READY: immediate dynamic auto retry', '외부 대기 없는 새 attempt', 'Autonomous retry same work new attempt')) {
+    if ($diagramText.Contains($legacy) -or $wikiDiagramText.Contains($legacy) -or $contractText.Contains($legacy)) {
+        Add-Failure "obsolete dynamic retry marker remains: $legacy"
+    }
+}
+
+$exactPlanDocuments = @(
+    @{ Name = '01 overview'; Text = $overviewText },
+    @{ Name = '03 orchestration'; Text = $orchestrationText },
+    @{ Name = '10 security'; Text = $securityText },
+    @{ Name = '13 diagrams'; Text = $diagramText },
+    @{ Name = 'Wiki common contracts'; Text = $commonWikiText },
+    @{ Name = 'ISSUE_CATALOG'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/review/ISSUE_CATALOG.md')) }
+)
+foreach ($doc in $exactPlanDocuments) {
+    if (-not $doc.Text.Contains('current exact plan') -and -not $doc.Text.Contains('current exact `ReproductionPlan`')) {
+        Add-Failure "$($doc.Name) is missing current exact ReproductionPlan binding"
+    }
+}
+foreach ($marker in @('`SandboxProfile`', '`data_kind=sandbox_profile`', '`DynamicReproductionLifecycleProfile`', '`data_kind=dynamic_reproduction_lifecycle_profile`', '`ActionRequest.sandbox_profile_ref`', '`ActionRequest.resource_profile_ref`', '`ActionDecision.checked_config_refs`', '`SandboxPolicyDecision.sandbox_profile_ref`', '`SandboxPolicyDecision.resource_profile_ref`')) {
+    if (-not $contractText.Contains($marker)) {
+        Add-Failure "missing R8 resource/lifecycle profile reference contract: $marker"
+    }
+}
+$glossaryText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/GLOSSARY.md')
+if (-not $glossaryText.Contains('R7이 소유·확정') -or -not $glossaryText.Contains('CPU·RAM·disk·PID·요청 가능 최대 시간') -or -not $glossaryText.Contains('호출 전 work 잔여 시간 검사 정책과 새 attempt 한도') -or -not $glossaryText.Contains('CPU·RAM·disk·PID·요청 가능 최대 시간은 포함하지 않습니다.')) {
+    Add-Failure 'glossary does not separate sandbox_profile_ref from the R8 resource/lifecycle profile'
+}
+foreach ($marker in @('SandboxCommandRecord:', 'command_ref: StoredDataRef | null', 'command_digest: string | null', '`sandbox_command_record -> SandboxCommandRecord -> REPRODUCTION_SESSION_MANAGER`')) {
+    if (-not $contractText.Contains($marker)) {
+        Add-Failure "missing AgentLog command trace contract: $marker"
+    }
+}
+if (-not $securityText.Contains('`COMMAND_STARTED`와 `COMMAND_FINISHED`의 command ref·digest·action·attempt·environment가 다르거나 redaction이 유효하지 않음')) {
+    Add-Failure 'security scenarios are missing command trace rejection'
+}
+# R7/R8 sandbox admission and lifecycle ownership must remain distinct.
+$resultContractText = Get-Content -Raw -Encoding UTF8 (Join-Path $repoRoot 'docs/architecture-v5/07-results-and-observability.md')
+$resultContractMarkers = @(
+    '초안은 새 attempt 4회(최초 1회 별도, 총 5회)',
+    '실행 **요청 전** 잔여 시간이 없으면 `BUDGET_EXCEEDED`',
+    '상자 시간이 R7 `sandbox_profile_ref`의 입장 상한(아래 표)보다 김 → Sandbox Controller `SANDBOX_POLICY_DENIED`',
+    'Agent가 실행 중 시계가 끝남 → `FAILED + TIMEOUT`',
+    '구체 수치는 R7이 확정한다'
+)
+foreach ($marker in $resultContractMarkers) {
+    if (-not $resultContractText.Contains($marker)) {
+        Add-Failure "missing R7/R8 sandbox admission marker in 07: $marker"
+    }
+}
+
+$activeArchitectureText = $activeDocumentationText
+
+$providerDecisionPath = Join-Path $repoRoot 'docs/architecture-v5/implementation/04-provider-decision.md'
+$providerDecisionText = if (Test-Path -LiteralPath $providerDecisionPath) { Get-Content -LiteralPath $providerDecisionPath -Raw -Encoding UTF8 } else { '' }
+$providerCapabilityBlock = [regex]::Match($providerDecisionText, '(?ms)^ProviderCapabilities:\s*(.*?)^```').Groups[1].Value
+$providerExitSection = [regex]::Match($providerDecisionText, '(?ms)^## 10\. 설계 완료와 구현 전 활성화 조건\s*(.*)$').Groups[1].Value
+$architectureReadmeText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/README.md')
+
+if ([string]::IsNullOrWhiteSpace($providerDecisionText)) {
+    Add-Failure 'missing R3-04 provider decision document'
+}
+if (-not $providerCapabilityBlock.Contains('runtime_tool_loop:')) {
+    Add-Failure 'ProviderCapabilities must declare runtime_tool_loop support'
+}
+foreach ($marker in @(
+    'provider 내장 tool은 계속 차단',
+    'SASTSIMI Runtime이 model의 구조화된 요청을 받아',
+    '현재 `DYNAMIC_REPRO` work에서 `agent_role=DYNAMIC_REPRODUCTION`',
+    '`DYNAMIC_REPRO`는 작업 종류이고 `DYNAMIC_REPRODUCTION`은 Dynamic Reproduction Agent의 역할·생산자 enum',
+    'Runtime Validator는 요청 역할·현재 `DYNAMIC_REPRO` work·attempt·상태와 exact 설정 reference를 검사',
+    'Sandbox Controller는 host·Docker daemon/socket·mount/namespace·secret·egress·다른 workspace 같은 Sandbox 외부 경계를 강제',
+    'exact `SandboxPolicyDecision`을 같은 attempt의 `AgentLog`와 `DynamicReproductionResult.policy_decision_ref`에 연결',
+    '`PVD-16`',
+    '실제 R7 실행 지원을 선언하려면 별도 구현 Issue·PR에서 `PVD-16` 통과 증거를 요구'
+)) {
+    if (-not $providerDecisionText.Contains($marker)) {
+        Add-Failure "missing R7 runtime-managed tool-loop provider rule: $marker"
+    }
+}
+Write-Output 'R3-04 provider runtime tool-loop rules: 9'
+
+foreach ($marker in @(
+    'ProviderCapabilities:',
+    'ProviderValidationTest:',
+    'ProviderValidationEvidence:',
+    'ClientExecutionProfile:',
+    'ProviderProfile:',
+    'meta: RecordMeta with hypothesis_id null and attempt_id null',
+    'runtime_tool_loop: SUPPORTED | UNSUPPORTED | UNVERIFIED',
+    'data_kind=provider_profile',
+    '이전 분석의 `StoredDataRef`를 재사용하지 않는다',
+    '`ClientExecutionProfile.verification_evidence_ref`',
+    'ProviderProfile.model`과 같아야 한다',
+    'PROVIDER_PROFILE_DENIED | CAPABILITY_UNSUPPORTED'
+)) {
+    if (-not $contractText.Contains($marker)) {
+        Add-Failure "missing canonical ProviderProfile contract marker in 08: $marker"
+    }
+}
+if ($activeDocumentationText.Contains('ModelProfile')) {
+    Add-Failure 'obsolete or undefined ModelProfile term remains; use ProviderProfile.model'
+}
+if (-not $providerExitSection.Contains('`PVD-16` 결과')) {
+    Add-Failure 'R3-04 closing conditions must require PVD-16 evidence for R7-enabled profiles'
+}
+if (-not $architectureReadmeText.Contains('./implementation/04-provider-decision.md')) {
+    Add-Failure 'Architecture v5 README must link the R3-04 provider decision document'
+}
+Write-Output 'R4 ProviderProfile canonical contract rules: 15'
+
+$forbiddenR8OwnershipMarkers = @(
+    '그 R8 profile의 수치',
+    'R8 profile의 CPU',
+    'R8이 CPU·RAM·디스크·PID 값을 확정',
+    'R8이 CPU·RAM·disk·PID 값을 확정'
+)
+foreach ($marker in $forbiddenR8OwnershipMarkers) {
+    if ($activeArchitectureText.Contains($marker)) {
+        Add-Failure "R8 must not own R7 sandbox admission limits: $marker"
+    }
+}
+
+# R3-06 turns the reviewed R3-01~R3-05 handoff documents into one physical
+# implementation baseline. Keep this check narrow: it verifies discoverability,
+# decided implementation boundaries and current names without redefining domain
+# contracts owned by Architecture 01~13.
+$r306BaselinePath = Join-Path $repoRoot 'docs/architecture-v5/implementation/06-implementation-baseline.md'
+$r306IndexPath = Join-Path $repoRoot 'docs/architecture-v5/implementation/README.md'
+$r306AdrPath = Join-Path $repoRoot 'docs/review/decisions/ADR-015-r3-implementation-baseline.md'
+$r303RecoveryPath = Join-Path $repoRoot 'docs/architecture-v5/implementation/03-recovery-test-plan.md'
+
+foreach ($requiredFile in @($r306BaselinePath, $r306IndexPath, $r306AdrPath, $r303RecoveryPath)) {
+    if (-not (Test-Path -LiteralPath $requiredFile)) {
+        Add-Failure "R3-06 required document is missing: $requiredFile"
+    }
+}
+
+if (Test-Path -LiteralPath $r306BaselinePath) {
+    $r306BaselineText = Get-Content -Raw -Encoding UTF8 -LiteralPath $r306BaselinePath
+    $requiredR306Markers = @(
+        '> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**',
+        'Python `>=3.12,<3.13`',
+        '`uv.lock`',
+        '`provider_profile_ref + model`',
+        'LLM 역할 11개',
+        '`Hypothesis Agent`',
+        '`Reproduction Setup Automation`',
+        '`Reproduction Session Manager`',
+        '`ReportDraft`에서 Agent 자동화가 끝난다',
+        '별도 Repository Snapshot 모듈을 만들지 않는다',
+        '외부 message queue 제품을 도입하지 않는다',
+        '구현 차단 `DEFERRED`: 없음',
+        'PR #116',
+        '07bd6549a676419c0e720f940ba7abd1b82aea0d',
+        '## 5. 실제 repository 구조',
+        '## 6. 허용 의존 방향',
+        '## 10. 저장·transaction·복구',
+        'RecordRef = RunStoredDataRef | StoredDataRef | PolicyCacheRef',
+        '`PolicySourcePort`',
+        '`BudgetLedgerPort`',
+        'budget_registry.py',
+        'context_retrieval.py',
+        '`RESTART_VERIFICATION_GENERATION`',
+        'BudgetReservation',
+        '`EvaluationRunConfig`',
+        '`EvaluationRecommendation`',
+        '`UsageMeasurement`',
+        '`ResourceUsageSummary`',
+        '#### 10.2.1 핵심 result owner와 current 선택점',
+        '### 10.7 R3-03 복구 질문의 확정 기준',
+        'trusted proposal 출력 검증 runtime이 source 결과 확정 전에 전역 ID를 한 번 부여하며',
+        'ORCHESTRATION 등록 runtime은 COMMITTED source 안의 같은 ID·문장·목록·순서를 별도 immutable record에 그대로 저장한다.',
+        '## 16. CLI 계약',
+        '## 17. 테스트와 CI',
+        '## 18. 한 명 구현 순서'
+    )
+    foreach ($marker in $requiredR306Markers) {
+        if (-not $r306BaselineText.Contains($marker)) {
+            Add-Failure "R3-06 implementation baseline is missing: $marker"
+        }
+    }
+    if ($r306BaselineText.Contains('Model' + 'Profile')) {
+        Add-Failure 'R3-06 implementation baseline must use provider_profile_ref + model instead of a model-only profile object'
+    }
+    if ($r306BaselineText.Contains('R7 Setup' + ' Automation')) {
+        Add-Failure 'R3-06 implementation baseline uses the obsolete R7 setup component name'
+    }
+    if ([regex]::IsMatch($r306BaselineText, '(?i)gpt-[0-9]|claude-[0-9]')) {
+        Add-Failure 'R3-06 implementation baseline must not hard-code a provider model ID'
+    }
+    if ([regex]::IsMatch($r306BaselineText, '(?mi)\b(TBD|TODO)\b')) {
+        Add-Failure 'R3-06 implementation baseline contains an unresolved implementation placeholder'
+    }
+    if ($r306BaselineText.Contains('context_service.py')) {
+        Add-Failure 'R3-06 implementation baseline uses the obsolete context_service.py module name'
+    }
+}
+
+if (Test-Path -LiteralPath $r303RecoveryPath) {
+    $r303RecoveryText = Get-Content -Raw -Encoding UTF8 -LiteralPath $r303RecoveryPath
+    foreach ($marker in @(
+        '## 8. R3-06에서 확정한 복구 기준',
+        '| RQ-01 저장 프로토콜·core output | `RESOLVED` |',
+        '| RQ-04 worker·외부 호출 불확실성 | `RESOLVED` |',
+        '| RQ-10 동적 입력 변경 후 후속 전이 | `RESOLVED` |',
+        'R3-REC-DYN-010 — exact request 또는 SandboxProfile 변경 뒤 RESUME 차단과 새 generation'
+    )) {
+        if (-not $r303RecoveryText.Contains($marker)) {
+            Add-Failure "R3-03 recovery plan is not aligned with R3-06: $marker"
+        }
+    }
+    if ($r303RecoveryText.Contains('## 8. 미결정 계약과 담당자 확인')) {
+        Add-Failure 'R3-03 recovery plan still presents resolved RQ items as undecided'
+    }
+}
+
+foreach ($requiredProposalRegistrationMarker in @(
+    '| `proposal_id` | proposal 출력 검증 runtime |',
+    '전역 등록 때 다시 발급하지 않음',
+    'ORCHESTRATION 등록 runtime은 source 결과가 COMMITTED된 뒤 그 안의 proposal ID·문장·목록·순서와 exact parent를 그대로 사용해 별도 immutable record로 저장하며 ID를 다시 발급하거나 Agent 문장을 수정하지 않는다.'
+)) {
+    if (-not $contractText.Contains($requiredProposalRegistrationMarker)) {
+        Add-Failure "proposal ID/registration boundary is missing: $requiredProposalRegistrationMarker"
+    }
+}
+
+if (Test-Path -LiteralPath $r306IndexPath) {
+    $r306IndexText = Get-Content -Raw -Encoding UTF8 -LiteralPath $r306IndexPath
+    foreach ($link in @(
+        './01-module-map.md',
+        './02-contract-test-plan.md',
+        './03-recovery-test-plan.md',
+        './04-provider-decision.md',
+        './05-prompt-runtime.md',
+        './06-implementation-baseline.md'
+    )) {
+        if (-not $r306IndexText.Contains($link)) {
+            Add-Failure "R3 implementation index is missing: $link"
+        }
+    }
+}
+
+if (Test-Path -LiteralPath $r306AdrPath) {
+    $r306AdrText = Get-Content -Raw -Encoding UTF8 -LiteralPath $r306AdrPath
+    foreach ($marker in @('상태: `ACCEPTED`', '## Context', '## Options', '## Decision', '## Consequences', '## Verification')) {
+        if (-not $r306AdrText.Contains($marker)) {
+            Add-Failure "ADR-015 is missing: $marker"
+        }
+    }
+}
+
+$documentGuideText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/DOCUMENT_GUIDE.md')
+foreach ($indexRequirement in @(
+    @{ Name = 'Architecture v5 README'; Text = $architectureReadmeText; Marker = './implementation/README.md' },
+    @{ Name = 'Architecture v5 README'; Text = $architectureReadmeText; Marker = './implementation/06-implementation-baseline.md' },
+    @{ Name = 'DOCUMENT_GUIDE'; Text = $documentGuideText; Marker = './architecture-v5/implementation/README.md' },
+    @{ Name = 'DOCUMENT_GUIDE'; Text = $documentGuideText; Marker = './architecture-v5/implementation/06-implementation-baseline.md' },
+    @{ Name = 'DOCUMENT_GUIDE'; Text = $documentGuideText; Marker = './review/decisions/ADR-015-r3-implementation-baseline.md' },
+    @{ Name = 'decision index'; Text = $decisionIndexText; Marker = './ADR-015-r3-implementation-baseline.md' }
+)) {
+    if (-not $indexRequirement.Text.Contains($indexRequirement.Marker)) {
+        Add-Failure "$($indexRequirement.Name) is missing the R3-06 link: $($indexRequirement.Marker)"
+    }
+}
+Write-Output 'R3-06 implementation baseline rules: 3 files + canonical decisions and indexes'
+
+$r302ContractTestPath = Join-Path $repoRoot 'docs/architecture-v5/implementation/02-contract-test-plan.md'
+$r302ContractTestText = Get-Content -Raw -Encoding UTF8 -LiteralPath $r302ContractTestPath
+$reviewAlignmentFiles = @(
+    'docs/architecture-v5/03-agent-roles-and-orchestration.md',
+    'docs/architecture-v5/04-verification-and-dynamic-reproduction.md',
+    'docs/architecture-v5/05-llm-gate-and-reporting.md',
+    'docs/architecture-v5/07-results-and-observability.md',
+    'docs/architecture-v5/08-lightweight-data-contracts.md',
+    'docs/architecture-v5/09-llm-provider-session-and-logging.md',
+    'docs/architecture-v5/implementation/01-module-map.md',
+    'docs/architecture-v5/implementation/02-contract-test-plan.md',
+    'docs/architecture-v5/implementation/03-recovery-test-plan.md',
+    'docs/architecture-v5/implementation/05-prompt-runtime.md',
+    'docs/architecture-v5/implementation/06-implementation-baseline.md',
+    'docs/architecture-v5/wiki/gate-and-reporting.md',
+    'docs/architecture-v5/wiki/state-and-recovery.md',
+    'docs/architecture-v5/wiki/verification-and-dynamic.md'
+)
+$reviewAlignmentText = ($reviewAlignmentFiles | ForEach-Object { Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot $_) }) -join "`n"
+foreach ($obsoleteRunInitPhrase in @('공통 환경 준비', '정적·정책·Docker 준비 병렬')) {
+    if ($reviewAlignmentText.Contains($obsoleteRunInitPhrase)) {
+        Add-Failure "reviewed current documents still contain obsolete run-init Docker wording: $obsoleteRunInitPhrase"
+    }
+}
+foreach ($obsoleteDynamicGenerationPhrase in @(
+    'DYNAMIC_REQUEST_REVISION_CHANGED',
+    '새 Verification generation과 새 동적 work',
+    '새 Verification generation·새 동적 work',
+    '새 Verification generation의 새 동적 work',
+    '새 Verification generation과 새 `DYNAMIC_REPRO` work'
+)) {
+    if ($reviewAlignmentText.Contains($obsoleteDynamicGenerationPhrase) -or $verificationText.Contains($obsoleteDynamicGenerationPhrase)) {
+        Add-Failure "obsolete dynamic generation reason remains: $obsoleteDynamicGenerationPhrase"
+    }
+}
+$dynamicGenerationAlignmentRules = @(
+    @{ Name = '03 authority'; Text = $agentRolesText; Marker = '`RESTART_VERIFICATION_GENERATION`은 같은 가설·generation의 ACTIVE Verification owner만' },
+    @{ Name = '04 verification'; Text = $verificationText; Marker = '새 Pro·Con과 초기 판단 뒤 여전히 필요할 때만 새 request' },
+    @{ Name = '08 action reason'; Text = $contractText; Marker = 'generation_restart_reason: DYNAMIC_REQUEST_REPLACEMENT_REQUIRED | SANDBOX_PROFILE_REVISION_CHANGED | null' },
+    @{ Name = '08 action basis'; Text = $contractText; Marker = 'generation_restart_basis_refs: [RunStoredDataRef | StoredDataRef]' },
+    @{ Name = 'verification Wiki'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/verification-and-dynamic.md')); Marker = '새 Pro·Con과 초기 판단 뒤 여전히 필요할 때만 새 request' },
+    @{ Name = 'state Wiki'; Text = (Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5/wiki/state-and-recovery.md')); Marker = '복구는 이 결정을 새로 내리지 않고 저장된 전이만 멱등 재생합니다.' },
+    @{ Name = 'implementation baseline'; Text = $r306BaselineText; Marker = 'old current 입력과 exact 변경 근거를 고정해 새 generation을 요청' },
+    @{ Name = 'Gate policy-blocked path'; Text = $gateText; Marker = '그 판단이 동적 재현을 요구할 때만 새 request와 동적 work를 만든다.' },
+    @{ Name = 'results dynamic-input path'; Text = $resultText; Marker = '여전히 필요할 때만 새 request와 동적 work를 만든다.' },
+    @{ Name = 'provider recovery path'; Text = $providerText; Marker = '여전히 필요할 때만 새 request와 동적 work를 만든다.' },
+    @{ Name = 'module map dynamic path'; Text = $moduleMapText; Marker = '여전히 필요할 때만 새 request와 동적 work를 만든다.' },
+    @{ Name = 'Gate Wiki dynamic-input path'; Text = $gateWikiText; Marker = '여전히 필요할 때만 새 request와 동적 work를 만듭니다.' }
+)
+foreach ($rule in $dynamicGenerationAlignmentRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "$($rule.Name) is missing dynamic input generation alignment: $($rule.Marker)"
+    }
+}
+
+$budgetBootstrapRules = @(
+    @{ Name = '07 work limits'; Text = $resultText; Marker = '`WorkBudgetProfile.limits`의 `work_type + operation_kind`' },
+    @{ Name = '08 run bootstrap'; Text = $contractText; Marker = '`WORKSPACE_PREP` 외 예외는 없다.' },
+    @{ Name = '08 work profile'; Text = $contractText; Marker = 'WorkBudgetProfile:' },
+    @{ Name = '08 full binding'; Text = $contractText; Marker = 'work_budget_profile_ref: StoredDataRef' },
+    @{ Name = 'implementation budget profile'; Text = $r306BaselineText; Marker = 'BudgetProfile = ExecutionBudgetProfile | WorkBudgetProfile | VerificationBudgetProfile | DynamicReproductionLifecycleProfile' },
+    @{ Name = 'implementation bootstrap'; Text = $r306BaselineText; Marker = 'WORKSPACE_PREP: run-level ACTIVE execution profile 확인' },
+    @{ Name = 'common contracts Wiki'; Text = $commonWikiText; Marker = '07번 역할표의 숫자는 `WorkBudgetProfile`의 DRAFT 후보' },
+    @{ Name = 'common contracts Wiki'; Text = $commonWikiText; Marker = '같은 purpose의 분석이 동시에 실행돼도 `analysis_id`별 current binding과 ledger를 분리' },
+    @{ Name = 'glossary work profile'; Text = $glossaryText; Marker = '| `WorkBudgetProfile` |' }
+)
+foreach ($rule in $budgetBootstrapRules) {
+    if (-not $rule.Text.Contains($rule.Marker)) {
+        Add-Failure "$($rule.Name) is missing budget bootstrap/work-kind alignment: $($rule.Marker)"
+    }
+}
+$budgetPublicInterfaceRules = @(
+    'BudgetScopeRef = RunStoredDataRef | StoredDataRef',
+    'BudgetProfile = ExecutionBudgetProfile | WorkBudgetProfile | VerificationBudgetProfile | DynamicReproductionLifecycleProfile | BudgetProfileBinding',
+    'def remaining(self, budget_scope_ref: BudgetScopeRef, analysis_id: str) -> BudgetRemaining:',
+    'def pin_execution_for_run(self, analysis_id: str, purpose: AnalysisPurpose, approval_ref: RunStoredDataRef | StoredDataRef) -> RunStoredDataRef:',
+    'def activate_for_run(self, analysis_state_ref: RunStoredDataRef, binding_ref: StoredDataRef, approval_ref: RunStoredDataRef | StoredDataRef) -> StoredDataRef:',
+    'def current_execution(self, analysis_id: str) -> RunStoredDataRef | None:',
+    'def current_binding(self, analysis_id: str) -> StoredDataRef | None:'
+)
+foreach ($marker in $budgetPublicInterfaceRules) {
+    if (-not $r306BaselineText.Contains($marker)) {
+        Add-Failure "R3-06 budget public interface is not closed over exact run/binding refs: $marker"
+    }
+}
+if ($r306BaselineText.Contains('def current(self, purpose: AnalysisPurpose)')) {
+    Add-Failure 'R3-06 budget binding lookup must be scoped by analysis_id, not purpose alone'
+}
+foreach ($marker in @(
+    '같은 `analysis_id`에서 full `ACTIVE` binding은 최대 하나다.',
+    '서로 다른 analysis의 profile·binding·reservation·ledger를 섞지 않는다.'
+)) {
+    if (-not $contractText.Contains($marker)) {
+        Add-Failure "08 budget binding scope is incomplete: $marker"
+    }
+}
+
+$primitiveAdmissionSingleDecisionPath = Join-Path $repoRoot 'docs/review/decisions/ADR-014-primitive-admission-single-decision.md'
+$primitiveAdmissionSingleDecisionText = Get-Content -Raw -Encoding UTF8 -LiteralPath $primitiveAdmissionSingleDecisionPath
+$generationTimingRules = @(
+    @{ Name = '04 verification'; Text = $verificationText },
+    @{ Name = '08 common contract'; Text = $contractText },
+    @{ Name = 'ADR-014'; Text = $primitiveAdmissionSingleDecisionText },
+    @{ Name = 'FINDINGS H-009'; Text = $findingsText }
+)
+foreach ($rule in $generationTimingRules) {
+    foreach ($marker in @('`DYNAMIC_INPUT_CHANGED`', 'Technical `REVISE`', 'Technical `ACCEPT`')) {
+        if (-not $rule.Text.Contains($marker)) {
+            Add-Failure "$($rule.Name) is missing the complete pre-admission generation timing rule: $marker"
+        }
+    }
+    if ($rule.Text.Contains('새 generation은 Technical `REVISE`에서만 만들어')) {
+        Add-Failure "$($rule.Name) still says only Technical REVISE can create a generation"
+    }
+}
+if ([regex]::IsMatch($contractText, '(?mi)^\s+(usage|resources):\s*map(?:\s*\|\s*null)?\s*$')) {
+    Add-Failure 'LLM usage or final resources still uses an unstructured map contract'
+}
+foreach ($marker in @(
+    'R3-CT-COM-015 — RecordStore 공통 참조와 domain 제한',
+    'R3-CT-DYN-013 — 동적 입력 변경의 새 Verification generation 전이',
+    'R3-CT-BUD-006 — 예산 reservation 원자성·중복 차감 방지',
+    'R3-CT-BUD-007 — 예산 bootstrap과 역할·작업별 한도 선택',
+    'R3-CT-EVAL-001 — 재현 가능한 평가 실행과 정규화된 자원 기록',
+    'R3-CT-EVAL-002 — capability 증거와 품질 승인 분리',
+    'R3-CT-EVAL-003 — 평가 비교·추천의 exact provenance'
+)) {
+    if (-not $r302ContractTestText.Contains($marker)) {
+        Add-Failure "R3-02 review-remediation test is missing: $marker"
+    }
+}
+if (-not $r303RecoveryText.Contains('R3-REC-WRK-008 — 예산 reservation·commit·release 중 종료')) {
+    Add-Failure 'R3-03 budget reservation recovery scenario is missing'
 }
 
 $savedErrorAction = $ErrorActionPreference
@@ -2090,7 +4236,9 @@ if ($gitCheckExitCode -ne 0) {
 }
 
 Write-Output "Markdown files: $($markdownFiles.Count)"
+Write-Output "Canonical Hypothesis Agent aliases blocked: $($obsoleteHypothesisAgentPatterns.Count)"
 Write-Output "Mermaid blocks: $($diagramBlocks.Count) canonical / $($wikiDiagramBlocks.Count) Wiki"
+Write-Output 'Finding lifecycle Rule Scope -> FINDING_NORMALIZE bypass guard: canonical + Wiki'
 Write-Output "R4-02 required contract names: $($requiredContractNames.Count)"
 Write-Output "R4 Pro/Con result fields: $($requiredEvidenceAgentResultFields.Count)"
 Write-Output "R4 Verification join fields: $($requiredVerificationDebateFields.Count)"
@@ -2109,7 +4257,8 @@ Write-Output "R4-03 exact requester bindings: $($requiredActionRequesterBindings
 Write-Output "R4-03 ActionCheck types: $($requiredActionChecks.Count)"
 Write-Output "R4-03 AnalysisRunResult handoff fields: $($requiredAnalysisResultFields.Count)"
 Write-Output "R8 common contract rules: $($requiredR8CommonContractRules.Count)"
-Write-Output 'R5-03 ReportDraft safety fields: 7'
+Write-Output "R8 policy operational rules: $($requiredR8PolicyOperationalRules.Count)"
+Write-Output 'R5-03 ReportDraft safety fields: 8'
 Write-Output 'R4-03 exact LLM call blocks: 2'
 Write-Output "R4-03 authority errors: $($requiredAuthorityErrors.Count)"
 Write-Output "R4-03 authority scenarios: $($authorityScenarioMarkers.Count)"
@@ -2133,6 +4282,7 @@ Write-Output 'HypothesisDuplicateReview required fields: 7'
 Write-Output 'ProposalProcessState duplicate fields: 3'
 Write-Output "Verification/Chaining scenarios: $($verificationChainingScenarioMarkers.Count)"
 Write-Output "Verification/Chaining semantic rules: $($requiredVerificationChainingRules.Count)"
+Write-Output "Chaining-origin recovery rules: $($requiredChainingOriginRecoveryRules.Count)"
 Write-Output "Production debate policy rules: $($requiredDebatePolicyRules.Count)"
 Write-Output "Context failure contract rules: $($requiredContextFailureRules.Count)"
 Write-Output "Validation completion contract rules: $($requiredVerificationCompletionRules.Count)"
@@ -2152,6 +4302,106 @@ Write-Output "StaticFactBundle cross-document rules: $($requiredStaticFactBundle
 Write-Output "Static layer Primitive admission rules: $($requiredStaticPrimitiveAdmissionRules.Count)"
 Write-Output "R4 policy contract blocks: $($requiredPolicyContractFields.Count)"
 Write-Output "R4 policy contract rules: $($requiredPolicyContractRules.Count)"
+Write-Output 'R3-05 reviewed prompt contract rules: initial assessment, Chaining lineage, Dynamic Reproduction staged loop'
+Write-Output 'R3-05 R5 prompt closure rules: CWE Labeling, Technical Gate, Rule Scope Gate, Reporter'
+Write-Output "R6 program-policy boundary rules: $($requiredR6PolicyBoundaryRules.Count)"
+Write-Output "R6 POLICY_BLOCKED semantic rules: $($requiredR6PolicyBlockedSemantics.Count)"
+Write-Output "R3-01 run-init fan-out rules: $($requiredR301RunInitFanoutRules.Count)"
+# T02: document contracts for physical workflow boundaries, independent of
+# role/schema validators above. Literal mappings come from the approved spec.
+function Assert-MaintainableWorkflowBoundaries {
+    $moduleMapPath = 'docs/architecture-v5/implementation/01-module-map.md'
+    $baselinePath = 'docs/architecture-v5/implementation/06-implementation-baseline.md'
+    $adrPath = 'docs/review/decisions/ADR-016-maintainable-workflow-packages.md'
+    $workflowModules = [ordered]@{
+        DebateService = 'verification/debate_service.py'
+        VerificationService = 'verification/service.py'
+        VerdictRouter = 'verification/verdict_router.py'
+        RevisionWorkflow = 'verification/revision_workflow.py'
+        DynamicReproductionService = 'reproduction/service.py'
+        ChainingService = 'chaining/service.py'
+    }
+    foreach ($relativePath in @($moduleMapPath, $baselinePath, $adrPath)) {
+        $path = Join-Path $repoRoot $relativePath
+        if (-not (Test-Path -LiteralPath $path)) {
+            Add-Failure "T02 workflow boundary document missing: $relativePath"
+            continue
+        }
+        $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
+        foreach ($entry in $workflowModules.GetEnumerator()) {
+            $rows = @([regex]::Matches($text, ('(?m)^\|\s*`' + [regex]::Escape($entry.Key) + '`\s*\|\s*`(?<module>[^`]+)`\s*\|')))
+            if ($rows.Count -ne 1 -or $rows[0].Groups['module'].Value -cne $entry.Value) {
+                Add-Failure "T02 exact workflow module: $relativePath must map $($entry.Key) once to $($entry.Value)"
+            }
+        }
+        foreach ($package in @('verification', 'reproduction', 'chaining')) {
+            $rows = @([regex]::Matches($text, ('(?m)^' + $package + '\s*(?:->|→)\s*(?<imports>[^\r\n]+)')))
+            if ($rows.Count -ne 1 -or $rows[0].Groups['imports'].Value.Trim() -cne 'contracts, ports, runtime, agents') {
+                Add-Failure "T02 workflow import allowlist: $relativePath must allow $package -> contracts, ports, runtime, agents only"
+            }
+        }
+        $routingRules = [ordered]@{
+            'no concrete reporting/chaining imports' = '`VerdictRouter`[^\r\n]*`reporting`[^\r\n]*`chaining`[^\r\n]*import하지 않는다'
+            'submit existing requests to runtime public interface' = '`VerdictRouter`[^\r\n]*`ActionRequest`[^\r\n]*work 등록 요청[^\r\n]*runtime public interface'
+            'validator authorization before downstream work' = 'Runtime Validator의 허가 전에는 CWE·Primitive·Chaining work를 만들지 않는다'
+            'worker registry and bootstrap injection' = 'worker registry[^\r\n]*`bootstrap.py`[^\r\n]*dependency injection'
+        }
+        # Markdown soft wraps do not change prose meaning. Normalize only the
+        # prose input, retaining paragraph boundaries and the raw table checks.
+        $routingProse = ([regex]::Split($text, '\r?\n[ \t]*\r?\n') | ForEach-Object {
+            [regex]::Replace($_, '\s+', ' ').Trim()
+        }) -join "`n`n"
+        foreach ($rule in $routingRules.GetEnumerator()) {
+            if ($routingProse -notmatch $rule.Value) {
+                Add-Failure "T02 VerdictRouter boundary ($($rule.Key)): $relativePath"
+            }
+        }
+    }
+
+    # Only current canonical/governance documents are subject to stale wording
+    # rejection. Historical alternatives and the correction spec are evidence.
+    $stalePatterns = [ordered]@{
+        'undecided serialization/schema/database' = 'serialization format, schema language/versioning, database/index'
+        'undecided result storage' = 'serialization, schema versioning, result storage'
+        'run-init common Docker preparation' = '공통 Docker/환경 준비'
+        'adapter-to-adapter import chain' = 'interfaces → orchestration/runtime → domain service → provider/tool adapter → storage adapter'
+    }
+    $currentFiles = @(
+        Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/architecture-v5') -Recurse -File -Filter '*.md'
+        Get-ChildItem -LiteralPath (Join-Path $repoRoot 'docs/governance') -Recurse -File -Filter '*.md'
+    )
+    foreach ($file in $currentFiles) {
+        $text = Get-Content -Raw -Encoding UTF8 -LiteralPath $file.FullName
+        foreach ($rule in $stalePatterns.GetEnumerator()) {
+            if ($text.Contains($rule.Value)) {
+                Add-Failure "T02 stale boundary ($($rule.Key)): $($file.FullName)"
+            }
+        }
+    }
+    foreach ($relativePath in @('docs/architecture-v5/08-lightweight-data-contracts.md', 'docs/governance/OPEN_QUESTIONS.md')) {
+        $text = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot $relativePath)
+        foreach ($marker in @('Canonical JSON v1', 'Pydantic 2', 'JSON Schema 2020-12', 'SQLite', 'SQLAlchemy 2', 'Alembic', 'content-addressed file', 'ADR-015')) {
+            if (-not $text.Contains($marker)) {
+                Add-Failure "T02 settled storage baseline missing '$marker': $relativePath"
+            }
+        }
+    }
+    if (Test-Path -LiteralPath (Join-Path $repoRoot $adrPath)) {
+        $text = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot $adrPath)
+        foreach ($marker in @('상태: `ACCEPTED`', '## Context', '## Options', '## Decision', '## Consequences', '## Compatibility', '## Verification', 'Agent 권한', 'schema field', 'Gate', 'Primitive', 'validated PoC', '#124')) {
+            if (-not $text.Contains($marker)) {
+                Add-Failure "T02 ADR-016 decision/compatibility missing '$marker'"
+            }
+        }
+    }
+    $indexText = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $repoRoot 'docs/review/decisions/README.md')
+    if ($indexText -notmatch '(?m)^\| \[ADR-016\]\(\./ADR-016-maintainable-workflow-packages\.md\) \|[^\r\n]+\| ACCEPTED \|') {
+        Add-Failure 'T02 ADR index must list ADR-016 with its accepted implementation decision'
+    }
+}
+
+Assert-MaintainableWorkflowBoundaries
+Write-Output 'T02 maintainable workflow boundary checks: 6 exact modules, import allowlists, router authorization, settled storage and stale wording'
 Write-Output "Failures: $($failures.Count)"
 
 if ($failures.Count -gt 0) {

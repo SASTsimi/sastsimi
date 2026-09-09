@@ -6,13 +6,13 @@
 
 `migration`은 이전 설계에서 새 설계로 옮기는 과정입니다. 이 문서는 참고용 계보이며 현재 흐름은 `01-system-overview.md`가 정합니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 > 이 문서는 비규범적 설계 계보와 향후 구현 migration 제안이다. 이 검토 저장소에는 v4 bundle이 포함되지 않으며 아래 비교가 v4 파일이나 구현의 존재를 의미하지 않는다.
 
 ## 전략
 
-원본 프로젝트의 v4 자료는 과거 설계와 검토 이력을 위한 historical bundle로 취급한다. 이 저장소의 v5는 candidate baseline이며 v4의 Gate PASS, 구현 상태 또는 계약을 자동 승계하지 않는다.
+원본 프로젝트의 v4 자료는 과거 설계와 검토 이력을 위한 historical bundle로 취급한다. 이 저장소의 v5는 승인된 구현 기준 설계이며 v4의 Gate PASS, 구현 상태 또는 계약을 자동 승계하지 않는다.
 
 ## 유지하는 의미
 
@@ -21,7 +21,7 @@
 | 같은 코드 버전 연결 | 실행별 clone과 `commit_id`로 facts, context, verdict, PoC 연결 |
 | AST/SAST 정규화 | LLM이 사용할 entity/location/path/auth 사실 계층 |
 | 역할 분리된 LLM 분석 | Hypothesis, Verification, Pro/Con, Chaining, 두 Gate, Reporter |
-| 격리된 동적 검증 | R6 목적별 요청 → R7 Agent 자율 재현·Setup Automation·Session Manager; 모든 final TRUE에 same-attempt validated PoC 필수 |
+| 격리된 동적 검증 | R6 목적별 요청 → Dynamic Reproduction Agent 자율 재현·Setup Automation·Session Manager; 모든 final TRUE에 same-attempt validated PoC 필수 |
 | 조건부 연계 탐색 | Primitive DB match가 새 가설만 생성 |
 | 자동화와 사람 과정의 분리 | 자동화는 ReportDraft·AnalysisRunResult에서 끝나고 이후 검토·제출·공개는 사람이 수행 |
 | 오류·근거·자원 보존 | normalized invocation과 run/debug records |
@@ -44,7 +44,7 @@
 
 | v4 또는 초기 v5 개념 | 수정 v5 |
 |---|---|
-| 자유 형식 Exploration | constrained low-cost Hypothesis Agent |
+| 자유 형식 Exploration | Hypothesis Agent + 제한된 출력 schema |
 | Analyst/Skeptic quorum | Verification + 조건부 독립 Pro/Con |
 | 선택 code fragment 전달 | 같은 workspace와 commit의 on-demand location retrieval |
 | Semantic Judge/Synthesis | bypass-aware Verification Agent |
@@ -78,12 +78,12 @@ v4 TRUE | FALSE | PENDING
 
 ## 문서 경로 변경
 
-- 이 저장소의 candidate baseline: `docs/architecture-v5/`
+- 이 저장소의 승인된 v5 구현 기준: `docs/architecture-v5/`
 - 파생·비규범적 Wiki: `docs/architecture-v5/wiki/`
 - v4 자료: 이 저장소에 복사하지 않으며 원본 프로젝트의 역사 자료로만 유지
 - 초기 v5 `09-membership-llm-connection.md`는 범위가 확장되어 `09-llm-provider-session-and-logging.md`로 이름을 바꿨다.
 
-이 v5는 아직 고정된 버전 계약이 아니므로 옛 09 경로를 active 문서로 유지하지 않는다. 저장소 내부 link는 새 경로를 사용한다.
+옛 09 경로는 승인된 v5 계약에 포함되지 않으므로 active 문서로 유지하지 않는다. 저장소 내부 link는 새 경로를 사용한다.
 
 ## 구현 migration 순서 제안
 

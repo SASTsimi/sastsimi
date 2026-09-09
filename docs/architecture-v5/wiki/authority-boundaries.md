@@ -19,20 +19,23 @@ Runtime Validator는 취약점이 맞는지 새로 판단하는 Gate가 아닙�
 | 결정 | 담당 | 다른 역할이 할 수 없는 일 |
 |---|---|---|
 | 취약점 가설 | Hypothesis Agent | 확정 Finding 생성 |
-| `TRUE | FALSE | HOLD` | Verification Agent | Orchestration·Runtime이 대신 판정 |
+| 공식 정책 원문 수집 | 비-LLM Policy Collector | 저장소 문서·검색 snippet·모델 기억을 공식 원문으로 승격 |
+| 공식 정책 구조화 | LLM Policy Parser | Rule Scope 결론·Primitive admission·보고 허용 결정 |
+| `TRUE | FALSE | HOLD` | Verification Agent | Orchestration Runtime이 대신 판정 |
 | 재현 목적·목표·필요 환경 요청과 최종 verdict | R6 Verification | R7이 요청 목적이나 verdict를 변경 |
 
-| CWE label | CWE Labeling | Orchestration이 임의 확정 |
+| CWE label | CWE Labeling | Orchestration Runtime이 임의 확정 |
 | 기술 근거 검토 | Technical Evidence Gate | Verification verdict 변경 |
 | 공식 정책·scope·impact·report permission | Rule Scope Impact Gate | 정책 없는 `ALLOW` 추정 |
+| current Finding 정규화(두 Gate exact chain을 하나의 취약점 record로) | 신뢰 runtime | 새 verdict·impact 생성, Reporter eligibility와 혼동, stale Finding 재사용 |
 | 내부 보고서 초안 | Reporter Agent | Gate 우회·외부 제출 |
 | 일반 실행 허용·차단과 current request·requirements Sandbox 호출 전제 확인 | Runtime Validator | 환경 의미·취약점·CWE·정책 또는 Sandbox 외부 경계 판단 |
-| Sandbox 외부 격리 경계 검사 | Sandbox Controller | 환경 요구사항·재현 전략·내부 command·취약점 판정 변경 |
-| recipe·image·container·환경 비교·cleanup 실행 | R7 Setup Automation | Agent의 취약점 해석, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
-| Sandbox 안에서 command·PoC·관찰·재시도 선택 | R7 Agent | 외부 격리 경계 변경 또는 최종 verdict 판단 |
-| AgentLog·validated PoC·동적 결과 확정 | Reproduction Session Manager | Agent 실행 전략 결정, 다른 attempt 자료 혼합 또는 참조만으로 성공 판단 |
+| Sandbox 외부 격리 경계 검사 | Sandbox Controller | 정책 의미·scope·보고 가능성, 환경 요구사항·재현 전략·내부 command·취약점 판정 변경 |
+| recipe·image·container·환경 비교·cleanup 실행 | Reproduction Setup Automation | Dynamic Reproduction Agent의 취약점 해석, host/Docker 직접 권한 부여 또는 최종 verdict 판단 |
+| Sandbox 안에서 command·PoC·관찰·재시도 선택 | Dynamic Reproduction Agent | 외부 격리 경계 변경 또는 최종 verdict 판단 |
+| AgentLog·validated PoC·동적 결과 확정 | Reproduction Session Manager | Dynamic Reproduction Agent 실행 전략 결정, 다른 attempt 자료 혼합 또는 참조만으로 성공 판단 |
 
-Orchestration Agent는 proposal 검증·전역 등록·Verification 배정을 조정하지만 배정 뒤 가설 내부 Context·Pro/Con·dynamic·Gate·Chaining, verdict, CWE, 정책 해석, 보고 가능 여부와 공개 여부를 정하지 않습니다. Verification이 가설 내부 다음 작업을 정해도 프로그램 검사를 우회할 수 없습니다.
+Orchestration Runtime은 prompt·provider·`agent_role`이 없는 비-LLM 전역 제어 구성요소입니다. schema-valid proposal의 전역 등록과 Verification 배정을 요청하지만, 배정 뒤 가설 내부 Context·Pro/Con·dynamic·Gate·Chaining, verdict, CWE, 정책 해석, 보고 가능 여부와 공개 여부를 정하지 않습니다. 등록·배정·상태 변경은 Runtime Validator와 state store가 최종 강제하며, Verification이 가설 내부 다음 작업을 정해도 이 검사를 우회할 수 없습니다.
 
 ## 실행 전에는 action 검사를 합니다
 
@@ -54,7 +57,7 @@ Agent 또는 service의 제안
 - Sandbox 재현 계획·단계·공격 입력·cleanup(실행 후 정리)과 image·network·resource
 - provider·model·session과 explicit failover
 - Technical Gate 다음 Rule Scope Gate라는 순서
-- Reporter를 부를 모든 조건
+- Reporter를 부를 모든 조건과 별개로 current non-stale Finding 존재
 - ReportDraft의 exact provenance, restriction·limitation 보존과 비밀정보 제거
 
 하나라도 실패하면 실행하지 않고 오류를 남깁니다. 한 요청에는 decision 하나만 만들고 ALLOW 결과는 exact 요청에 한 번만 씁니다. 허가 시간이 지나거나 호출자 권한·상태·비-token 예산·입력·설정이 바뀌면 `EXPIRED`(사용 전 만료)로 기록하고 새 요청부터 다시 검사합니다. 실제 LLM 호출의 model·prompt·context·token 계획값·시간도 검사한 `LLMCallSpec`과 같아야 하지만, token 계획값은 실행 상한이 아닙니다. Gate와 Reporter는 자기 stage action을 건너뛰고 별도 LLM 호출을 만들 수 없습니다.
@@ -75,11 +78,13 @@ Agent 또는 service의 제안
 1. Technical Evidence Gate
 2. Rule Scope Impact Gate
 
-프로그램 검사기는 이 두 Gate의 순서와 입력 수정본만 확인합니다. Gate 결론은 LLM Gate가 만듭니다. 공식 정책 부재를 확인한 `ABSENT_CONFIRMED`이면 Rule Scope 결과는 `UNCERTAIN + DENY`이며 Reporter를 부르지 않습니다. 정책 수집·parser가 실패한 `COLLECTION_FAILED`이면 Rule Scope 결과 자체를 만들지 않습니다.
+프로그램 검사기는 이 두 Gate의 순서와 입력 수정본만 확인합니다. Gate 결론은 LLM Gate가 만듭니다. 정책 준비 시점은 run 초기화(program별, 정적 준비와 병렬)로 앞당겨졌지만 Gate evaluation 순서는 그대로이며, Rule Scope Gate는 Technical `ACCEPT` 이후 준비된 current `ProgramPolicyRecord`를 소비합니다. 공식 정책 부재를 확인한 `ABSENT_CONFIRMED`이면 Rule Scope 결과는 `UNCERTAIN + DENY`이며 Reporter를 부르지 않습니다. 정책을 가져오지 못한 `COLLECTION_FAILED`(fetch 실패 또는 parser 실패)이면 Rule Scope 결과 자체를 만들지 않고, 어느 경우도 `VerificationResult` verdict를 바꾸지 않습니다.
 
-Gate를 실제 호출하기 직전에도 검사한 입력 수정본이 그대로인지 다시 확인합니다. Technical Gate는 exact Verification과 이를 직접 가리키는 current CWELabel을, Rule Scope Gate는 여기에 같은 Technical 검토와 exact 정책 수집 결과·존재하는 정책 record를, Reporter는 두 Gate가 검토한 동일한 결과 묶음을 사용해야 합니다. 중간에 하나라도 바뀌거나 정책 최신성이 만료되면 기존 허가는 만료되고 새 요청이 필요합니다.
+Sandbox Controller는 bug bounty program testing restriction의 의미 준수 여부를 판정하지 않습니다. 전달받은 `sandbox_profile_ref` 경계와 `execution_scope=LOCAL_ONLY`만 강제하고, Sandbox 안에서 Dynamic Reproduction Agent가 고른 command·PoC를 program-policy allowlist처럼 해석하지 않습니다. 현재 architecture에서 실행 범위는 항상 `LOCAL_ONLY`이며 external/live execution은 지원하지 않습니다. 공식 testing restriction과 실제 수행 행위의 의미 비교는 Rule Scope Gate의 `testing_restriction_compliance`가 담당하는 유일한 authoritative semantic 판정이며, `SandboxPolicyDecision`의 `ALLOW`는 `LOCAL_ONLY` 경계 통과일 뿐 보고 가능성·제출 허가나 external/live testing 허가가 아닙니다.
 
-Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아닙니다. 같은 가설의 Verification owner가 직접 받고, Verification 또는 CWE가 실제로 보완된 새 수정본이 생겨야 새 Gate 작업을 시작할 수 있습니다. Orchestration이나 Chaining이 목적지를 다시 고르지 않습니다. 로그인 실패나 잘못된 출력의 제한 재시도와 이 보완 재검토는 별개입니다.
+Gate를 실제 호출하기 직전에도 검사한 입력 수정본이 그대로인지 다시 확인합니다. Technical Gate는 exact Verification과 이를 직접 가리키는 current CWELabel을, Rule Scope Gate는 여기에 같은 Technical 검토와 run에 고정한 exact 정책 수집 결과·존재하는 정책 record를, Reporter는 두 Gate가 검토한 동일한 결과 묶음을 사용해야 합니다. 중간에 claim-relevant 입력 reference가 바뀌면 기존 허가는 만료되고 새 요청이 필요합니다. 정책 freshness는 다음 run의 재사용 판단에 쓰며 같은 run의 reference를 교체하지 않습니다.
+
+Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아닙니다. 같은 가설의 Verification owner가 직접 받고, Verification 또는 CWE가 실제로 보완된 새 수정본이 생겨야 새 Gate 작업을 시작할 수 있습니다. Orchestration Runtime이나 Chaining이 목적지를 다시 고르지 않습니다. 로그인 실패나 잘못된 출력의 제한 재시도와 이 보완 재검토는 별개입니다.
 
 공식 정책의 뜻과 `UNCERTAIN + DENY` 판단은 Rule Scope Gate가 담당합니다. 프로그램 검사기는 그 판단을 대신하지 않고 필수 항목과 정확한 출처 연결만 확인한 뒤 Reporter 호출을 막습니다.
 
@@ -93,11 +98,11 @@ Technical Gate의 `REVISE`는 같은 자료로 다시 투표하라는 뜻이 아
 
 결과 저장 요청에는 결과 종류와 검사할 후보 파일의 정확한 hash를 함께 넣습니다. 프로그램 검사기는 그 결과를 만들 권한이 있는 역할인지, 현재 작업·시도·코드 버전과 같은지 확인합니다. 검사 뒤 후보 내용이 바뀌거나 다른 역할이 저장하려 하면 거절합니다. 저장이 완료된 결과와 작업 종료 기록이 같은 `COMMITTED` 전이에 연결된 뒤에만 다음 단계가 읽습니다.
 
-동적 재현 전에는 R6 Verification이 목적·목표·필요 환경·Sandbox profile·근거를 `DynamicReproductionRequest`로 고정합니다. R7 Agent는 exact 요청을 읽어 `EnvironmentRequirements`와 mode·exact command가 없는 `ReproductionPlan`을 만듭니다. Runtime Validator는 현재 generation에 동적 work가 하나뿐인지와 current request/requirements를 확인하고, Sandbox Controller는 host·Docker·mount/namespace·secret·egress·workspace·resource/lifecycle 외부 경계만 검사합니다. Setup Automation은 recipe·image·container·cleanup을 맡고 Agent는 Sandbox 안에서 PoC candidate·command·관찰·재시도를 자율적으로 정합니다. Reproduction Session Manager는 같은 attempt의 실제 event를 `AgentLog`에 남기고 validated PoC와 결과를 확정합니다. 성공한 `SUCCEEDED + SUPPORTED` 실행만 validated `poc_ref`를 만들며, 모든 final TRUE와 Technical Gate 요청에 이 PoC가 필요합니다. 자율 retry는 외부 대기가 없으면 `BLOCKED`가 아니고, 실패·정책 차단·환경 오류는 `FALSE | HOLD`로 바꾸지 않습니다.
+동적 재현 전에는 R6 Verification이 목적·목표·필요 환경·Sandbox profile·근거를 `DynamicReproductionRequest`로 고정합니다. 정책은 workspace 준비 뒤 비-LLM Collector와 LLM Parser가 실행당 한 번 준비한 current `RunPolicyState`를 사용합니다. Dynamic Reproduction Agent는 exact 요청을 읽어 `EnvironmentRequirements`와 mode·exact command가 없는 `ReproductionPlan`을 만듭니다. Runtime Validator는 현재 generation에 동적 work가 하나뿐인지와 exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile`을 확인하며 R8 lifecycle profile의 호출 전 잔여 시간·새 attempt 한도를 검사합니다. 요청 당시 policy state는 감사 reference로 기록하되 freshness로 local-only 권한을 결정하지 않습니다. Sandbox Controller는 current CodeWorkspace clone·same-attempt mock/fixture·loopback 또는 격리 network만 공격 대상으로 인정하고, 출처 불명/live asset·외부 계정·허용되지 않은 egress와 R7 sandbox profile의 외부 접근·격리, CPU·RAM·disk·PID·요청 가능 최대 시간을 강제하지만 정책 의미는 판단하지 않습니다. 따라서 policy가 `PREPARING`이어도 로컬 재현을 진행할 수 있고 policy state 변경만으로 이미 허가한 local-only action을 취소하지 않습니다. Setup Automation은 recipe·image·container·cleanup을 맡고 Agent는 Sandbox 안에서 PoC candidate·command·관찰·재시도를 자율적으로 정합니다. Reproduction Session Manager는 같은 attempt의 실제 event를 `AgentLog`에 남기고 validated PoC와 결과를 확정합니다. 성공한 `SUCCEEDED + SUPPORTED` 실행만 validated `poc_ref`를 만들며, 모든 final TRUE와 Technical Gate 요청에 이 PoC가 필요합니다. 같은 Dynamic Reproduction Agent session의 command·PoC·환경 조정은 현재 attempt이고, session 재시작은 새 `attempt_id`·`trigger=RETRY`, 외부 조건 해소 뒤 재개는 새 `attempt_id`·`trigger=RESUME`입니다. 외부 대기 중에만 `BLOCKED`이며 실패·Sandbox 경계 차단·환경 오류는 `FALSE | HOLD`로 바꾸지 않습니다.
 
 ## 자동화가 끝나는 지점
 
-Reporter는 current Finding·Verification·CWELabel·두 Gate·정책을 정확히 참조하고 restriction·limitation·남은 불확실성과 redaction 결과를 보존한 `ReportDraft`를 만듭니다. 선행 결과가 바뀌면 기존 초안은 감사 이력으로만 남고 current 결과에서 제외합니다.
+Reporter는 current Finding·Verification·CWELabel·두 Gate, Rule Scope가 사용한 exact frozen `RunPolicyState`와 정책을 정확히 참조하고 restriction·limitation·남은 불확실성과 redaction 결과를 보존한 `ReportDraft`를 만듭니다. action 승인·호출·저장 때 run에 고정한 policy reference와 같은지 다시 확인하며, claim-relevant 선행 결과가 바뀌면 기존 초안은 감사 이력으로만 남고 current 결과에서 제외합니다. freshness 만료는 다음 run의 재사용 판단에 사용합니다.
 
 이 초안과 실행 결과·PoC·자원·오류·HOLD 조건·debug trace를 `AnalysisRunResult`에 확정하면 Agent 자동화가 끝납니다. 이후 검토·수정·제출·공개는 사람이 시스템 밖에서 수행하며, 이를 위한 Agent action이나 상태는 없습니다.
 

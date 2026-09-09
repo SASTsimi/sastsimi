@@ -8,41 +8,53 @@ Architecture v5의 전체 처리 순서와 역할·데이터 관계를 그림으
 
 모르는 이름은 [쉬운 용어집](../../GLOSSARY.md)에서 확인하세요.
 
-> 상태: **DESIGN_AUTHORED / REVIEW_REQUIRED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
 
 ## 1. 정본 22단계 파이프라인
 
 ```mermaid
 flowchart TB
-    S01[1 Repository input] --> S02[2 Repository Loader git clone and commit checkout]
+    S01[1 Repository and program_id input] --> S02[2 Repository Loader git clone and commit checkout]
     S02 --> WORK[CodeWorkspace READY]
     WORK --> S03A[3 AST parse]
     WORK --> S03B[3 SAST tools]
+    WORK --> PLOOK{3 Check exact PolicyCacheRecord once at run start}
+    PLOOK -->|Reusable| PMAT[Materialize current run policy records]
+    PLOOK -->|Miss or invalid| PCOL[Policy Collector fetches official source]
+    PCOL --> PPAR[LLM Policy Parser creates PolicyParserResult]
+    PPAR --> PREADY{Collector validates collection and freshness}
+    PREADY -->|CURRENT or ABSENT| PPUB[Publish immutable PolicyCacheRecord]
+    PREADY -->|UNVERIFIED| PUNC[Commit UNVERIFIED state without cache]
+    PPUB --> RPS[RunPolicyState]
+    PUNC --> RPS
+    PMAT --> RPS
     S03A --> S04[4 StaticFactBundle]
     S03B --> S04
-    S04 --> S05[5 Orchestration starts initial hypothesis work]
+    S04 --> S05[5 Orchestration Runtime starts initial hypothesis work]
     S05 --> RUNTIME[[Trusted Runtime Validator]]
-    RUNTIME --> S06[6 Low-cost Hypothesis Agent]
+    RUNTIME --> S06[6 Hypothesis Agent]
     S06 --> S07[7 Validate deduplicate and register INITIAL proposals]
     S07 --> S08[8 Runtime stores ACTIVE VerificationAssignment]
     S08 --> S09[9 Verification requests on-demand context]
     S09 --> S10[10 Production Verification runs independent Pro and Con]
-    S10 --> S11[11 Initial TRUE FALSE HOLD]
+    S10 --> S11[11 ASSESS_INITIAL chooses next path]
     S11 --> S12{12 Dynamic work required}
-    S12 -->|Complete static and debate FALSE or HOLD| S13[13 Final verdict and material claim split]
-    S12 -->|Initial TRUE| DREQ[Verification requests POC_CONFIRMATION]
-    S12 -->|Execution evidence needed| DREQ2[Verification requests VERDICT_EVIDENCE]
+    S12 -->|FINALIZE_WITHOUT_DYNAMIC| S13[13 Final FALSE or HOLD and material claim split]
+    S12 -->|POC_CONFIRMATION| DREQ[Verification requests POC_CONFIRMATION]
+    S12 -->|VERDICT_EVIDENCE| DREQ2[Verification requests VERDICT_EVIDENCE]
     DREQ --> DWAUTH[Runtime allows one dynamic work per generation]
     DREQ2 --> DWAUTH
-    DWAUTH --> DR7[R7 Agent creates Requirements and simple Plan]
+    DWAUTH --> DR7[Dynamic Reproduction Agent creates Requirements and simple Plan]
     DR7 --> DAUTH[Runtime authorizes external Sandbox boundary]
+    RPS -. observed policy audit reference .-> DAUTH
     DAUTH --> DCTRL[Controller checks host Docker secret egress resource boundaries]
     DCTRL --> DPD[Exact SandboxPolicyDecision]
     DPD -->|Pass| DENV[Setup Automation builds recipe and prepares clean environment]
-    DPD -->|Policy blocked| DSTOP[Attempt cannot complete no verdict]
-    DENV --> DRUN[R7 Agent autonomously creates and runs PoC in Sandbox]
+    DPD -->|Sandbox boundary denied| DSTOP[Attempt cannot complete no verdict]
+    DENV --> DRUN[Dynamic Reproduction Agent creates PoC and emits structured Sandbox turns]
     DRUN --> DLOG[Session Manager appends actual events to AgentLog]
-    DLOG --> DASM[Session Manager binds same-attempt recipe environment candidate and evidence]
+    DLOG --> DCONC[Dynamic Reproduction Agent writes conclusion from stored observations]
+    DCONC --> DASM[Session Manager checks conclusion and same-attempt provenance]
     DASM --> DRES[Dynamic result and validated PoC only on supported success]
     DRES --> DOUT{Observed outcome}
     DOUT -->|SUPPORTED| POCOK{Validated PoC and supported result}
@@ -50,9 +62,13 @@ flowchart TB
     POCOK -->|No| DSTOP
     DOUT -->|DISPROVED or INCONCLUSIVE| S13
     DOUT -->|Execution failure| DSTOP
-    DSTOP -->|Autonomous retry same work new attempt| DR7
-    DSTOP -->|External condition| DWAIT[BLOCKED until input policy or resource change]
-    DWAIT --> DR7
+    DSTOP -->|Same Dynamic Reproduction Agent session: adjust command PoC environment; current attempt| DADJUST[Continue current attempt]
+    DADJUST --> DRUN
+    DSTOP -->|Session restart: new attempt trigger=RETRY| DRETRY[Restart same work with new attempt]
+    DRETRY --> DR7
+    DSTOP -->|External condition| DWAIT[BLOCKED until profile input or resource change]
+    DWAIT -->|Condition resolved: new attempt trigger=RESUME| DRESUME[Resume same work with new attempt]
+    DRESUME --> DR7
     DSTOP -->|Unrecoverable| S22
     S13 --> S14{14 Final verdict}
     S14 -->|FALSE| CLOSED[Terminal internal result]
@@ -64,7 +80,8 @@ flowchart TB
     S15 -->|REVISE| S16[16 Same assignment starts new Verification work and revision]
     S16 --> S09
     S15 -->|REJECT| S22[22 Store results logs PoC errors debug]
-    S15 -->|ACCEPT| S17[17 Policy collection and Rule Scope review]
+    S15 -->|ACCEPT| S17[17 Use frozen run policy and run Rule Scope review]
+    RPS -. current exact policy state .-> S17
     S17 --> ADEC{PrimitiveAdmissionDecision}
     ADEC -->|ALLOW| PADMIT[Result Primitive admitted]
     ADEC -->|DENY confirmed prohibited test| S22
@@ -120,11 +137,11 @@ flowchart LR
 
 empty, truncated, gap와 error는 `TRUE | FALSE | HOLD`의 근거로 자동 변환하지 않는다. 일부 조회 실패가 있어도 정상 근거로 모든 검증 항목을 완료하면 판정할 수 있다. 필수 입력이 없지만 다시 시도할 수 있으면 work만 `BLOCKED`로 두고 가설은 `VERIFYING`을 유지한다. 더 시도할 수 없으면 work와 가설을 함께 `FAILED`로 끝내고 final `VerificationResult`를 만들지 않는다.
 
-## 3. 저비용 가설 생성과 출력 통제
+## 3. Hypothesis Agent 호출과 출력 통제
 
 ```mermaid
 flowchart TB
-    FACTS[StaticFactBundle refs] --> HA[Low-cost Hypothesis Agent]
+    FACTS[StaticFactBundle refs] --> HA[Hypothesis Agent]
     HA --> RAW[Candidate output]
     RAW --> SCHEMA{Syntax schema enums locations valid}
     SCHEMA -->|Yes| ASSERT{HYPOTHESIS_ONLY and NON_FINAL}
@@ -150,6 +167,8 @@ flowchart TB
 
 proposal은 observed facts, exact 근거가 연결된 restrictions, assumptions, falsification questions, 고유 `validation_id`가 있는 `validation_checks`를 분리한다. 같은 코드 사실은 observed fact와 restriction 근거 양쪽에 중복하지 않는다. 중복 비교 후보는 같은 analysis·workspace·commit에서 runtime이 좁히며, 후보 밖 중복 대상·호출 실패·형식 오류는 기록을 남기고 fail-open 등록한다. 등록된 가설은 전수 검증하며 점수로 선별하거나 순서를 매기지 않는다.
 
+Hypothesis Agent의 이름·역할·입출력 계약은 특정 Provider나 모델에 고정되지 않는다. 실제 호출은 해당 `provider_profile_ref`와 `model`을 사용하며, 모델 변경만으로 Agent 역할이나 가설 계약이 바뀌지 않는다.
+
 ## 4. 운영 상시 찬반 검증과 평가 모드
 
 ```mermaid
@@ -171,31 +190,37 @@ flowchart TB
     CON --> SYN
     BASIC --> SYN
     BASIC -. no Gate Primitive or Reporter .-> METRICS[Evaluation metrics only]
-    SYN --> INITIAL[Initial TRUE FALSE HOLD]
+    SYN --> INITIAL[ASSESS_INITIAL chooses next path]
     INITIAL --> DYN{Dynamic work required}
-    DYN -->|Complete static and debate FALSE or HOLD| FINAL[Final VerificationResult]
-    DYN -->|Initial TRUE| CREQ[R6 request POC_CONFIRMATION]
-    DYN -->|Execution evidence needed| VREQ[R6 request VERDICT_EVIDENCE]
+    DYN -->|FINALIZE_WITHOUT_DYNAMIC| FINAL[Final FALSE or HOLD VerificationResult]
+    DYN -->|POC_CONFIRMATION| CREQ[R6 request POC_CONFIRMATION]
+    DYN -->|VERDICT_EVIDENCE| VREQ[R6 request VERDICT_EVIDENCE]
     CREQ --> ONE[Runtime allows one work per Verification generation]
     VREQ --> ONE
-    ONE --> R7PLAN[R7 Agent creates Requirements and simple Plan]
+    ONE --> R7PLAN[Dynamic Reproduction Agent creates Requirements and simple Plan]
+    RPS4[Observed RunPolicyState] -. exact audit reference .-> AUTH
     R7PLAN --> AUTH[Runtime authorizes external Sandbox boundary]
     AUTH --> CTRL[Controller checks host Docker secret egress and resource boundaries]
     CTRL --> PDEC[Exact SandboxPolicyDecision]
     PDEC -->|Pass| ENV[Setup Automation builds recipe and prepares clean environment]
-    PDEC -->|Policy blocked| FAIL[Attempt cannot complete no final verdict]
-    ENV --> AGENT[R7 Agent autonomously creates and runs PoC]
+    PDEC -->|Sandbox boundary denied| FAIL[Attempt cannot complete no final verdict]
+    ENV --> AGENT[Dynamic Reproduction Agent creates PoC and emits structured Sandbox turns]
     AGENT --> LOG[Session Manager appends AgentLog events]
-    LOG --> ASSEMBLER[Session Manager validates same-attempt provenance]
+    LOG --> CONCLUSION[Dynamic Reproduction Agent writes conclusion from stored observations]
+    CONCLUSION --> ASSEMBLER[Session Manager checks conclusion and same-attempt provenance]
     ASSEMBLER --> DRESULT[Dynamic result with candidate evidence and nullable validated PoC]
     DRESULT --> OBS{Observed outcome}
     OBS -->|SUPPORTED with validated PoC| SYN2[Verification re-synthesizes evidence]
     OBS -->|SUPPORTED but PoC missing or invalid| FAIL
     OBS -->|DISPROVED or INCONCLUSIVE| SYN2
     OBS -->|Execution failure| FAIL
-    FAIL -->|Autonomous retry same work new attempt| R7PLAN
+    FAIL -->|Same Dynamic Reproduction Agent session: adjust command PoC environment; current attempt| ADJUST[Continue current attempt]
+    ADJUST --> AGENT
+    FAIL -->|Session restart: new attempt trigger=RETRY| R7RETRY[Restart same work with new attempt]
+    R7RETRY --> R7PLAN
     FAIL -->|External condition| WAIT[BLOCKED until condition changes]
-    WAIT --> R7PLAN
+    WAIT -->|Condition resolved: new attempt trigger=RESUME| R7RESUME[Resume same work with new attempt]
+    R7RESUME --> R7PLAN
     FAIL -->|Unrecoverable| NOFINAL[No final verdict and no Gate]
     SYN2 --> FINAL
     FINAL --> OUT[Restrictions candidates PrimitiveDraft and VERIFICATION origin child proposals]
@@ -217,7 +242,7 @@ flowchart TB
     TECH -->|REVISE| SAME[Same assignment new Verification work and revision]
     SAME --> VR
     TECH -->|REJECT| NOCHAIN[No Chaining]
-    TECH -->|ACCEPT| COLLECT[PolicyCollectionResult]
+    TECH -->|ACCEPT| COLLECT[Current RunPolicyState and PolicyCollectionResult]
     COLLECT -->|FOUND or ABSENT_CONFIRMED| RULE[Rule Scope Impact Gate]
     COLLECT -->|COLLECTION_FAILED| ADMIT[Primitive Admission Runtime]
     RULE --> ADMIT
@@ -231,10 +256,10 @@ flowchart TB
     MATCH -->|No| RECORD[ChainingResult with no material candidate]
     MATCH -->|Yes| CHAIN[Chaining Agent matching only]
     CHAIN --> NEW[HypothesisProposal origin CHAINING]
-    NEW --> LIMIT{Runtime validation ancestor reuse across lineage, duplicate fingerprint, and global budget}
+    NEW --> LIMIT{Runtime validation ancestor reuse across lineage, duplicate match combination, and global budget}
     LIMIT -->|Pass| REGISTER[Global registration]
     LIMIT -->|Fail| STOP[Reject or global budget stop]
-    REGISTER --> ORCH[Orchestration assigns Verification]
+    REGISTER --> ORCH[Orchestration Runtime assigns Verification]
     ORCH --> VERIFY[Full Verification pipeline]
     VMAT[Verification material claim] --> VNEW[HypothesisProposal origin VERIFICATION]
     VNEW --> LIMIT
@@ -254,7 +279,7 @@ flowchart TB
     BACK --> NEWGEN[New Verification generation and new validated PoC]
     NEWGEN --> VR
     TS -->|REJECT| BLOCK[Report blocked]
-    TS -->|ACCEPT| COLLECT[PolicyCollectionResult]
+    TS -->|ACCEPT| COLLECT[Current RunPolicyState and PolicyCollectionResult]
     COLLECT -->|FOUND plus current policy| RULE[Rule Scope Impact Gate Agent]
     COLLECT -->|ABSENT_CONFIRMED| UNCERTAIN[Rule and scope UNCERTAIN permission DENY]
     COLLECT -->|COLLECTION_FAILED| ARUN[R4 Primitive Admission Runtime]
@@ -264,9 +289,10 @@ flowchart TB
     ADEC -->|ALLOW| PRIMITIVE[Admit result Primitive for Chaining]
     ADEC -->|DENY| NOPRIMITIVE[No result Primitive]
     COLLECT -. COLLECTION_FAILED report unavailable .-> BLOCK
-    UNCERTAIN --> BLOCK
-    RULE --> READY{Review PASS Rule PASS Scope PASS Testing PASS Impact SUFFICIENT Permission ALLOW}
-    READY -->|No| BLOCK
+    RULE --> NORMF[FINDING_NORMALIZE - trusted runtime non-LLM work from exact chain]
+    UNCERTAIN --> NORMF
+    NORMF --> READY{Current Finding plus Review PASS Rule PASS Scope PASS Testing PASS Impact SUFFICIENT Permission ALLOW}
+    READY -->|No; Reporter blocked, current Finding kept| BLOCK
     READY -->|Yes| RREQ[Verification requests Reporter]
     RREQ --> REPORTER[Reporter Agent]
     REPORTER --> DRAFT[Internal ReportDraft]
@@ -308,7 +334,7 @@ provider/model과 실제 session 결정은 기록한다. trusted runtime이 허�
 flowchart LR
     STATIC[AST SAST facts] --> FACTS[(facts)]
     CONTEXT[Context retrieval] --> CONTEXTS[(contexts)]
-    AGENTS[Hypothesis Verification Pro Con] --> RESULTS[(hypotheses and verifications)]
+    AGENTS[Hypothesis Agent Verification Agent Pro Agent Con Agent] --> RESULTS[(hypotheses and verifications)]
     DYNAMIC[Docker and PoC] --> DYNSTORE[(dynamic artifacts)]
     PR[Primitive and Chaining] --> PRSTORE[(primitives and chaining)]
     GATES[Technical and Rule Scope Gates] --> GATESTORE[(gates and policies)]
@@ -363,12 +389,13 @@ stateDiagram-v2
     READY --> BLOCKED: prerequisite missing
     READY --> CANCELLED: cancelled
     RUNNING --> BLOCKED: external waiting condition
-    RUNNING --> READY: immediate dynamic auto retry
+    RUNNING --> RUNNING: same session command PoC environment adjustment
+    RUNNING --> READY: session restart trigger RETRY
     RUNNING --> SUCCEEDED: full output committed
     RUNNING --> PARTIAL: partial output committed
     RUNNING --> FAILED: terminal failure
     RUNNING --> CANCELLED: cancelled
-    BLOCKED --> READY: waiting condition resolved
+    BLOCKED --> READY: external condition resolved trigger RESUME
     BLOCKED --> FAILED: cannot continue
     BLOCKED --> CANCELLED: cancelled
     SUCCEEDED --> [*]
@@ -377,7 +404,7 @@ stateDiagram-v2
     CANCELLED --> [*]
 ```
 
-작업 상태는 전문 판정과 분리한다. 일반 retry가 외부 조건을 기다리면 work를 `BLOCKED`로 두고, 조건을 해결한 뒤 새 `attempt_id`로 다시 시작한다. `DYNAMIC_REPRO`가 외부 대기 없이 자체 해결할 수 있으면 `RUNNING -> READY -> RUNNING`으로 즉시 새 attempt를 시작한다. `SUCCEEDED | PARTIAL | FAILED | CANCELLED`는 되돌리지 않는다.
+작업 상태는 전문 판정과 분리한다. `DYNAMIC_REPRO`의 같은 Dynamic Reproduction Agent session 안 command·PoC·환경 조정은 `RUNNING`인 현재 attempt의 event로 남기며 새 attempt를 만들지 않는다. session 재시작이 필요할 때만 `RUNNING -> READY -> RUNNING`과 새 `attempt_id`, `trigger=RETRY`를 사용한다. 외부 조건을 기다리면 `BLOCKED`로 두고 해소 뒤 `BLOCKED -> READY -> RUNNING`과 새 `attempt_id`, `trigger=RESUME`를 사용한다. `SUCCEEDED | PARTIAL | FAILED | CANCELLED`는 되돌리지 않는다.
 
 ## 11. 중복 방지와 atomic 저장·복구
 
@@ -426,25 +453,28 @@ flowchart LR
     DOMAIN[Verification Gates and Reporter keep domain decisions] -. not decided by validator .-> CHECK
 ```
 
-Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 R7 Setup Automation 권한·상태·예산·exact request/requirements·R8 resource/lifecycle을 확인한다. host·Docker daemon/socket·mount/namespace·secret·egress·workspace 외부 경계는 Sandbox Controller가 검사하고 내부 command는 Agent가 자율적으로 정한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
+Runtime Validator는 schema·권한·ID·revision·상태·예산·일반 도구·경로·provider·Gate 순서·Reporter와 redaction 전제를 검사한다. `REQUEST_DYNAMIC_REPRO`에서는 current generation과 한 work 제한을, `RUN_SANDBOX`에서는 Reproduction Setup Automation 권한·상태·예산·exact request·current requirements·current exact plan·`sandbox_profile_ref`·exact `DynamicReproductionLifecycleProfile` revision을 authorization input으로 고정한다. 요청 당시 `RunPolicyState`는 감사 reference로 기록하며 policy pointer·freshness 변경만으로 local-only decision을 만료시키지 않는다. plan·profile 또는 실행 대상·network·mount·secret 경계가 바뀌면 기존 `UNUSED` decision을 `EXPIRED`로 처리한다. `LOCAL_ONLY`와 검증 가능한 clone/same-attempt mock·fixture·격리 network, host·Docker daemon/socket·mount/namespace·secret·egress·workspace 외부 경계는 Sandbox Controller가 검사하고 내부 command는 Dynamic Reproduction Agent가 자율적으로 정한다. 취약점 진위, CWE, 정책 의미와 보고서 내용은 판단하지 않는다.
 
 ## 13. ReportDraft와 Agent 자동화 종료 경계
 
 ```mermaid
 flowchart LR
-    FIND[Current Finding] --> REPORTER[R5-03 Reporter]
+    GATES[Technical ACCEPT and Rule Scope review on one exact chain] --> NORM[FINDING_NORMALIZE - trusted runtime non-LLM work]
+    NORM --> FIND[Current Finding]
+    FIND --> READYF{Reporter readiness}
+    READYF -->|Ready| REPORTER[R5-03 Reporter]
     VERIFY[Final Verification and CWE] --> REPORTER
-    GATES[Technical and Rule Scope reviews] --> REPORTER
     POLICY[Current policy record] --> REPORTER
     DYNAMIC[Current supported dynamic evidence and redacted validated PoC] --> REPORTER
     REPORTER --> DRAFT[ReportDraft with restrictions limitations and redaction passed]
     DRAFT --> FINAL[Trusted runtime atomically finalizes AnalysisRunResult and AnalysisRunState]
-    BLOCKED[No report-ready Finding] --> FINAL
+    FIND -. Finding exists but six-axis policy readiness fails .-> FINAL
+    BLOCKED[No current Finding normalized] --> FINAL
     FINAL --> END[Agent automation end]
     END -. outside Agent automation .-> HUMAN[Person-led review edit submit or disclose]
 ```
 
-ReportDraft는 마지막 Agent 산출물이다. `AnalysisRunResult`와 `AnalysisRunState`의 원자적 확정은 기존 결과와 로그를 묶는 신뢰 runtime 작업이며 새 LLM 판단이 아니다. 점선 뒤의 사람 검토·수정·제출·공개는 Agent action과 상태 계약 밖이다.
+`RULE_SCOPE_GATE → FINDING_NORMALIZE → Reporter readiness` 순서로 실행한다. `FINDING_NORMALIZE`는 trusted runtime의 전용 비-LLM normalization work이며 새 autonomous Agent나 LLM Gate가 아니다. current Finding은 두 Gate가 같은 exact chain에서 검토한 결과를 신뢰 runtime이 정규화한 record이며 새 verdict가 아니다. Finding 존재는 Reporter의 6축 정책 readiness와 별개 조건이라 `report_permission=DENY`여도 Finding은 보존되고 Reporter만 차단된다. ReportDraft는 마지막 Agent 산출물이다. `AnalysisRunResult`와 `AnalysisRunState`의 원자적 확정은 기존 결과와 로그를 묶는 신뢰 runtime 작업이며 새 LLM 판단이 아니다. 점선 뒤의 사람 검토·수정·제출·공개는 Agent action과 상태 계약 밖이다.
 
 ## Rendering check
 
