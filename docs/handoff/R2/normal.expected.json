@@ -1,0 +1,342 @@
+{
+  "static_fact_bundle": {
+    "meta": {
+      "record_id": "sfb-r2verify-normal-001",
+      "logical_record_id": "sfb-r2verify-normal-001",
+      "record_type": "static_fact_bundle",
+      "schema_version": "1.0.0",
+      "analysis_id": "analysis-r2verify-001",
+      "workspace_id": "ws-r2verify-001",
+      "commit_id": "99c66f2",
+      "revision_number": 1,
+      "previous_record_id": null,
+      "created_at": "2026-09-05T16:26:50Z"
+    },
+    "entities": [
+      {
+        "symbol_id": "sym-get-order",
+        "symbol_kind": "CALLABLE",
+        "native_kind": "function",
+        "name": "get_order",
+        "location": {
+          "workspace_id": "ws-r2verify-001",
+          "commit_id": "99c66f2",
+          "file_path": "src/orders.py",
+          "start_line": 12,
+          "start_column": 1,
+          "end_line": 18,
+          "end_column": 20
+        }
+      }
+    ],
+    "locations": [],
+    "source_candidates": [
+      {
+        "fact_id": "cf-src-001",
+        "fact_kind": "SOURCE",
+        "symbol_id": null,
+        "location": {
+          "workspace_id": "ws-r2verify-001",
+          "commit_id": "99c66f2",
+          "file_path": "src/orders.py",
+          "start_line": 12,
+          "start_column": 15,
+          "end_line": 12,
+          "end_column": 17
+        },
+        "producer": {
+          "attempt_id": "attempt-codeql-verify-001",
+          "tool_name": "codeql",
+          "tool_version": "2.26.4",
+          "rule_id": "py/sql-injection",
+          "raw_result_ref": {
+            "stored_data_id": "data-raw-r2verify-001",
+            "data_kind": "raw_tool_result",
+            "content_hash": "sha256:48b36c9ebc33498f5bee3589e745541c3338a4526fc080bfa5946332033863fe",
+            "workspace_id": "ws-r2verify-001",
+            "commit_id": "99c66f2",
+            "record_id": null
+          }
+        }
+      }
+    ],
+    "sink_candidates": [
+      {
+        "fact_id": "cf-sink-001",
+        "fact_kind": "SINK",
+        "symbol_id": null,
+        "location": {
+          "workspace_id": "ws-r2verify-001",
+          "commit_id": "99c66f2",
+          "file_path": "src/orders.py",
+          "start_line": 16,
+          "start_column": 20,
+          "end_line": 16,
+          "end_column": 25
+        },
+        "producer": {
+          "attempt_id": "attempt-codeql-verify-001",
+          "tool_name": "codeql",
+          "tool_version": "2.26.4",
+          "rule_id": "py/sql-injection",
+          "raw_result_ref": {
+            "stored_data_id": "data-raw-r2verify-001",
+            "data_kind": "raw_tool_result",
+            "content_hash": "sha256:48b36c9ebc33498f5bee3589e745541c3338a4526fc080bfa5946332033863fe",
+            "workspace_id": "ws-r2verify-001",
+            "commit_id": "99c66f2",
+            "record_id": null
+          }
+        }
+      }
+    ],
+    "sanitizer_candidates": [],
+    "validator_candidates": [],
+    "auth_and_permission_checks": [],
+    "other_facts": [],
+    "call_edges": [],
+    "data_flow_candidates": [
+      {
+        "relation_id": "cr-df-001",
+        "relation_kind": "DATA_FLOW",
+        "from_symbol_id": null,
+        "from_location": {
+          "workspace_id": "ws-r2verify-001",
+          "commit_id": "99c66f2",
+          "file_path": "src/orders.py",
+          "start_line": 12,
+          "start_column": 15,
+          "end_line": 12,
+          "end_column": 17
+        },
+        "to_symbol_id": null,
+        "to_location": {
+          "workspace_id": "ws-r2verify-001",
+          "commit_id": "99c66f2",
+          "file_path": "src/orders.py",
+          "start_line": 16,
+          "start_column": 20,
+          "end_line": 16,
+          "end_column": 25
+        },
+        "producer": {
+          "attempt_id": "attempt-codeql-verify-001",
+          "tool_name": "codeql",
+          "tool_version": "2.26.4",
+          "rule_id": "py/sql-injection",
+          "raw_result_ref": {
+            "stored_data_id": "data-raw-r2verify-001",
+            "data_kind": "raw_tool_result",
+            "content_hash": "sha256:48b36c9ebc33498f5bee3589e745541c3338a4526fc080bfa5946332033863fe",
+            "workspace_id": "ws-r2verify-001",
+            "commit_id": "99c66f2",
+            "record_id": null
+          }
+        }
+      }
+    ],
+    "route_bindings": [
+      {
+        "relation_id": "cr-rb-001",
+        "relation_kind": "ROUTE_BINDING",
+        "from_symbol_id": null,
+        "from_location": {
+          "workspace_id": "ws-r2verify-001",
+          "commit_id": "99c66f2",
+          "file_path": "src/orders.py",
+          "start_line": 11,
+          "start_column": 1,
+          "end_line": 11,
+          "end_column": null
+        },
+        "to_symbol_id": "sym-get-order",
+        "to_location": {
+          "workspace_id": "ws-r2verify-001",
+          "commit_id": "99c66f2",
+          "file_path": "src/orders.py",
+          "start_line": 12,
+          "start_column": 1,
+          "end_line": 18,
+          "end_column": 20
+        },
+        "producer": {
+          "attempt_id": "attempt-astscan-verify-001",
+          "tool_name": "py_ast_route_scan",
+          "tool_version": "python-3.11.15",
+          "rule_id": null,
+          "raw_result_ref": {
+            "stored_data_id": "data-raw-r2verify-003",
+            "data_kind": "raw_tool_result",
+            "content_hash": "sha256:6e41ca049c89c1ce164d1ffd93121cc4063257a5090aa40600be0ecd56b2a6ad",
+            "workspace_id": "ws-r2verify-001",
+            "commit_id": "99c66f2",
+            "record_id": null
+          }
+        },
+        "_note_ko": "route는 '/orders/<id>' (실제 @app.route 데코레이터 인자, python ast 모듈로 직접 파싱해 추출)."
+      }
+    ],
+    "tool_runs": [
+      {
+        "attempt_id": "attempt-codeql-verify-001",
+        "tool_name": "codeql",
+        "tool_version": "2.26.4",
+        "tool_kind": "RULE_BASED",
+        "status": "SUCCEEDED",
+        "coverage": {
+          "analyzed_paths": [
+            "src/orders.py"
+          ],
+          "skipped_paths": [],
+          "analyzed_languages": [
+            "python"
+          ],
+          "skipped_languages": [],
+          "notes": []
+        },
+        "rule_execution_ref": {
+          "stored_data_id": "rer-r2verify-normal-001",
+          "data_kind": "rule_execution_record",
+          "content_hash": "<computed_at_write_time:hash_of_sibling_rule_execution_record_json>",
+          "workspace_id": "ws-r2verify-001",
+          "commit_id": "99c66f2",
+          "record_id": null
+        },
+        "raw_result_ref": {
+          "stored_data_id": "data-raw-r2verify-001",
+          "data_kind": "raw_tool_result",
+          "content_hash": "sha256:48b36c9ebc33498f5bee3589e745541c3338a4526fc080bfa5946332033863fe",
+          "workspace_id": "ws-r2verify-001",
+          "commit_id": "99c66f2",
+          "record_id": null
+        },
+        "gaps": [],
+        "errors": [],
+        "started_at": "2026-09-05T16:26:46Z",
+        "finished_at": "2026-09-05T16:26:50Z",
+        "elapsed_ms": 4500
+      },
+      {
+        "attempt_id": "attempt-astscan-verify-001",
+        "tool_name": "py_ast_route_scan",
+        "tool_version": "python-3.11.15",
+        "tool_kind": "STRUCTURE",
+        "status": "SUCCEEDED",
+        "coverage": {
+          "analyzed_paths": [
+            "src/orders.py"
+          ],
+          "skipped_paths": [],
+          "analyzed_languages": [
+            "python"
+          ],
+          "skipped_languages": [],
+          "notes": [
+            "route decorator만 구조적으로 추출하는 최소 스텁. 실제 R2 구현 시 별도 route-binding 추출 도구로 대체 예정."
+          ]
+        },
+        "rule_execution_ref": null,
+        "raw_result_ref": {
+          "stored_data_id": "data-raw-r2verify-003",
+          "data_kind": "raw_tool_result",
+          "content_hash": "sha256:6e41ca049c89c1ce164d1ffd93121cc4063257a5090aa40600be0ecd56b2a6ad",
+          "workspace_id": "ws-r2verify-001",
+          "commit_id": "99c66f2",
+          "record_id": null
+        },
+        "gaps": [],
+        "errors": [],
+        "started_at": "2026-09-05T16:26:50Z",
+        "finished_at": "2026-09-05T16:26:50Z",
+        "elapsed_ms": 50
+      }
+    ],
+    "gaps": [],
+    "errors": []
+  },
+  "rule_execution_record_for_attempt-codeql-verify-001": {
+    "meta": {
+      "record_id": "rer-r2verify-normal-001",
+      "logical_record_id": "rer-r2verify-normal-001",
+      "record_type": "rule_execution_record",
+      "schema_version": "1.0.0",
+      "analysis_id": "analysis-r2verify-001",
+      "workspace_id": "ws-r2verify-001",
+      "commit_id": "99c66f2",
+      "attempt_id": "attempt-codeql-verify-001",
+      "revision_number": 1,
+      "previous_record_id": null,
+      "created_at": "2026-09-05T16:26:50Z"
+    },
+    "tool_name": "codeql",
+    "tool_version": "2.26.4",
+    "analysis_config_ref": {
+      "stored_data_id": "cfg-r2verify-001",
+      "data_kind": "analysis_config",
+      "content_hash": "sha256:6cd4cb38e785e2a7adc82c0ffe9e21c332f69e1015919813c447c38d9f32050f",
+      "workspace_id": "ws-r2verify-001",
+      "commit_id": "99c66f2",
+      "record_id": null
+    },
+    "rule_catalog_ref": {
+      "stored_data_id": "cat-r2verify-001",
+      "data_kind": "rule_catalog",
+      "content_hash": "sha256:b062b362e80fb63c3c6c10e47b33ea0bf64cf32645140d5fa6974a05f2425cf0",
+      "workspace_id": "ws-r2verify-001",
+      "commit_id": "99c66f2",
+      "record_id": null
+    },
+    "selected_rule_packs": [
+      "codeql/python-queries:Security/CWE-089"
+    ],
+    "rules": [
+      {
+        "rule_id": "py/sql-injection",
+        "selection_status": "SELECTED",
+        "execution_status": "EXECUTED",
+        "hit_count": 1,
+        "reason": null,
+        "detail": null
+      }
+    ]
+  },
+  "code_context_example_ko": "PDF가 요구한 '코드 문맥 전달 예시'. 위 source_candidates[0] 위치를 Verification이 CodeContextRequest로 다시 조회하면 아래 CodeContextResponse가 나갑니다 (02번 문서 예시와 같은 구조, 값은 이 fixture 기준 실측).",
+  "code_context_response_example": {
+    "code_request_id": "ctxreq-r2verify-001",
+    "meta": {
+      "analysis_id": "analysis-r2verify-001",
+      "workspace_id": "ws-r2verify-001",
+      "commit_id": "99c66f2",
+      "hypothesis_id": "hyp-r2verify-001"
+    },
+    "entities": [],
+    "locations": [
+      {
+        "workspace_id": "ws-r2verify-001",
+        "commit_id": "99c66f2",
+        "file_path": "src/orders.py",
+        "start_line": 12,
+        "start_column": 1,
+        "end_line": 18,
+        "end_column": null
+      }
+    ],
+    "code_fragment_refs": [
+      {
+        "stored_data_id": "data-code-r2verify-001",
+        "data_kind": "code_fragment",
+        "content_hash": "sha256:08d43bc1eb38b95b76186c3a0740196a5369a8f4e902ac782aece91ae14ac777",
+        "workspace_id": "ws-r2verify-001",
+        "commit_id": "99c66f2",
+        "record_id": null
+      }
+    ],
+    "discovered_relations": [],
+    "gaps": [],
+    "errors": [],
+    "truncated": false,
+    "returned_fragment_count": 1,
+    "returned_bytes": 571,
+    "consumed_token_estimate": 180
+  }
+}
