@@ -33,8 +33,13 @@ from sastsimi.contracts.llm import (
     ProviderValidationEvidence,
     SemanticValidatorSpec,
 )
+from sastsimi.contracts.prompt_projection import (
+    project_prompt_value,
+    render_prompt_bytes,
+)
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
+from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.dto import CapabilityProbeResult, Record
 
 from . import models
@@ -43,8 +48,9 @@ from .repositories import SQLiteRecordStore
 
 
 class ConfigurationRegistry:
-    def __init__(self, records: SQLiteRecordStore) -> None:
+    def __init__(self, records: SQLiteRecordStore, artifacts: ArtifactStore) -> None:
         self.records = records
+        self.artifacts = artifacts
 
     def _publish[T: Record](
         self, record: T, approved: Callable[[T], bool]
@@ -472,6 +478,7 @@ class ConfigurationRegistry:
                 raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
             slots = {slot.slot: slot for slot in entry.input_slots}
             seen: dict[str, int] = {}
+            projections: list[tuple[str, bytes]] = []
             for binding in record.context_bindings:
                 slot = slots.get(str(binding.slot))
                 if slot is None or any(
@@ -480,6 +487,21 @@ class ConfigurationRegistry:
                 ):
                     raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
                 seen[str(binding.slot)] = seen.get(str(binding.slot), 0) + 1
+                source_ref = binding.source_ref
+                if source_ref.record_id is None:
+                    with self.artifacts.open_verified(source_ref) as source:
+                        source_value: object = source.read().decode("utf-8")
+                else:
+                    source_value = self.records.resolve(connection, source_ref)
+                expected_projection = project_prompt_value(
+                    source_value, binding.field_paths
+                )
+                with self.artifacts.open_verified(
+                    binding.projected_data_ref
+                ) as projected:
+                    if projected.read() != expected_projection:
+                        raise ValueError("PROMPT_PROJECTION_MISMATCH")
+                projections.append((binding.slot, expected_projection))
             for slot in entry.input_slots:
                 count = seen.get(str(slot.slot), 0)
                 bounds = {
@@ -490,6 +512,13 @@ class ConfigurationRegistry:
                 }[slot.cardinality]
                 if count < bounds[0] or (bounds[1] is not None and count > bounds[1]):
                     raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
+            with self.artifacts.open_verified(record.template_ref) as template:
+                expected_render = render_prompt_bytes(
+                    template.read(), tuple(projections)
+                )
+            with self.artifacts.open_verified(record.rendered_prompt_ref) as rendered:
+                if rendered.read() != expected_render:
+                    raise ValueError("PROMPT_RENDER_MISMATCH")
         approved = self.records.evidence.llm_configuration_approved
         return self._publish(record, approved)
 

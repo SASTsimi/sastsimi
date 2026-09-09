@@ -84,6 +84,8 @@ def build_fake_pipeline(data_dir: Path) -> FakePipeline:
     from sastsimi.ports.dto import (
         ApprovedSandboxCommand,
         CapabilityProbeResult,
+        OfficialPolicyFetchRequest,
+        OfficialPolicySource,
         SandboxCleanupRequest,
         SandboxPrepareRequest,
         StaticToolRequest,
@@ -148,8 +150,10 @@ def build_fake_pipeline(data_dir: Path) -> FakePipeline:
         )
         return require_cleanup_result(request, cleanup, await adapter.cleanup(request))
 
-    async def policy_fetch(source_ref: StoredDataRef) -> StoredDataRef:
-        return await FakePolicySource(source_ref).fetch()
+    async def policy_fetch(
+        request: OfficialPolicyFetchRequest, expected: OfficialPolicySource
+    ) -> OfficialPolicySource:
+        return await FakePolicySource(expected).fetch_official(request)
 
     result, reports = _load_fake_outputs(data_dir)
     return FakePipeline(
@@ -334,7 +338,7 @@ def build_runtime(
         VerificationRegistrationService(SQLiteVerificationRegistration(transitions)),
         RuntimeQueries(SQLiteQueries(records)),
         DynamicRegistrationService(SQLiteDynamicRegistration(transitions)),
-        ConfigurationRegistry(SQLiteConfigurationRegistry(records)),
+        ConfigurationRegistry(SQLiteConfigurationRegistry(records, artifacts)),
         AnalysisFinalizationService(
             SQLiteAnalysisFinalization(
                 records,

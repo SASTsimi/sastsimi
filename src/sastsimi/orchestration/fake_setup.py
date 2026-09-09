@@ -26,6 +26,7 @@ from sastsimi.contracts.policy import (
     PolicyCacheRecord,
     PolicyCollectionResult,
     PolicyParserResult,
+    PolicySourceCheck,
     ProgramPolicyRecord,
     RunPolicyState,
 )
@@ -41,7 +42,7 @@ from sastsimi.contracts.verification import (
     PlaybookPolicy,
     VerificationPlaybook,
 )
-from sastsimi.ports.dto import Record
+from sastsimi.ports.dto import OfficialPolicyFetchRequest, OfficialPolicySource
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 
 from .fake_base import (
@@ -394,13 +395,13 @@ class FakeSetupStages(FakeStageService):
             provider_invoke=self.provider_invoke,
         )
         assert isinstance(proposal_record, HypothesisProposal)
+        persist_fake_invocation(self.runtime, invocation)
         self.evidence.identities[orchestrator_ref] = RequesterRole.ORCHESTRATION
         proposal_work = self.runner.complete(
             proposal_work, orchestrator_ref, "ORCHESTRATION", (proposal,)
         )
         proposal_ref = proposal_work.output_refs[0]
         assert isinstance(proposal_ref, StoredDataRef)
-        persist_fake_invocation(self.runtime, invocation, proposal_ref)
         return proposal, bundle
 
     def _playbooks(self) -> tuple[StoredDataRef, StoredDataRef]:
@@ -476,9 +477,15 @@ class FakeSetupStages(FakeStageService):
         if work is None:
             work = self._start_policy_work(scope, orchestrator_ref)
         official = self._artifact("official_policy")
+        source_config_ref = self._stored_artifact("policy_source_config")
+        freshness = self._artifact("freshness_evidence")
         self.evidence.identities[orchestrator_ref] = RequesterRole.POLICY_COLLECTOR
         fetch_action = self.runner.action(
-            work, orchestrator_ref, "POLICY_COLLECTOR", "FETCH_POLICY"
+            work,
+            orchestrator_ref,
+            "POLICY_COLLECTOR",
+            "FETCH_POLICY",
+            input_refs=(official, source_config_ref),
         )
         fetch_units = self.runner.units(elapsed_ms=1, cost_minor_units=1)
         fetch_reservation = self.runner.reserve(work, scope, fetch_action, fetch_units)
@@ -486,17 +493,37 @@ class FakeSetupStages(FakeStageService):
 
         if not isinstance(official, StoredDataRef):
             raise ValueError("FAKE_POLICY_ARTIFACT_SCOPE_MISMATCH")
-        asyncio.run(
+        with self.runtime.unit_of_work.artifacts.open_verified(official) as source:
+            source_content = source.read()
+        expected_source = OfficialPolicySource(
+            PolicySourceCheck.model_validate(
+                dict(
+                    source_id="fake-official",
+                    source_ref=official,
+                    source_url="https://example.invalid/policy",
+                    publisher="fixture",
+                    status="VERIFIED",
+                    evidence_refs=(freshness,),
+                    checked_at=self.clock.now(),
+                )
+            ),
+            source_content,
+        )
+        fetch_request = OfficialPolicyFetchRequest(
+            fetch_action, PROGRAM_ID, source_config_ref
+        )
+        fetched_source = asyncio.run(
             self.runtime.external.invoke(
                 str(work.work_id),
                 fetch_decision,
                 reference(fetch_reservation),
-                lambda: self.policy_fetch(official),
+                lambda: self.policy_fetch(fetch_request, expected_source),
                 idempotency_key=str(fetch_action.action_id),
             )
         )
         self.runner.account(fetch_reservation, fetch_units)
-        freshness = self._artifact("freshness_evidence")
+        if fetched_source != expected_source:
+            raise ValueError("FAKE_POLICY_SOURCE_MISMATCH")
         criterion = self._artifact("freshness_criterion", record=True)
         parser_candidate = PolicyParserResult.model_validate_json(
             canonical_bytes(
@@ -534,11 +561,6 @@ class FakeSetupStages(FakeStageService):
         )
         self.evidence.identities[orchestrator_ref] = RequesterRole.POLICY_PARSER
 
-        def bind_parser_request(output: Record, request_ref: StoredDataRef) -> Record:
-            if not isinstance(output, PolicyParserResult):
-                raise TypeError("FAKE_POLICY_PARSER_OUTPUT_MISMATCH")
-            return output.model_copy(update={"llm_invocation_ref": request_ref})
-
         parser_record, parser_invocation = invoke_fake_provider(
             runtime=self.runtime,
             runner=self.runner,
@@ -551,15 +573,17 @@ class FakeSetupStages(FakeStageService):
             provider_profile_ref=provider_ref,
             artifact=self._stored_artifact,
             build_output=lambda _decision: parser_candidate,
-            bind_request=bind_parser_request,
             provider_invoke=self.provider_invoke,
+            bind_request=lambda record, request_ref: PolicyParserResult.model_validate(
+                record
+            ).model_copy(update={"llm_invocation_ref": request_ref}),
         )
         assert isinstance(parser_record, PolicyParserResult)
+        persist_fake_invocation(self.runtime, parser_invocation)
         parser = parser_record
         parser_ref = self._publish_intermediate(
             work, orchestrator_ref, RequesterRole.POLICY_PARSER, parser
         )
-        persist_fake_invocation(self.runtime, parser_invocation, parser_ref)
         checked = self.clock.now()
         policy = ProgramPolicyRecord.model_validate_json(
             canonical_bytes(
@@ -589,17 +613,7 @@ class FakeSetupStages(FakeStageService):
                     disclosure_requirements=(),
                     parser_version="1",
                     source_refs=(official,),
-                    source_checks=(
-                        dict(
-                            source_id="fake-official",
-                            source_ref=official,
-                            source_url="https://example.invalid/policy",
-                            publisher="fixture",
-                            status="VERIFIED",
-                            evidence_refs=(freshness,),
-                            checked_at=checked,
-                        ),
-                    ),
+                    source_checks=(fetched_source.source_check,),
                     parser_result_refs=(parser_ref,),
                     freshness_criterion_ref=criterion,
                     freshness_evidence_refs=(freshness,),

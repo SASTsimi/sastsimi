@@ -46,6 +46,5 @@ class RuntimeValidator:
         request: LLMInvocationRequest,
         result: LLMInvocationResult,
         log: LLMInvocationLog,
-        output_ref: StoredDataRef,
     ) -> StoredDataRef:
-        return self.authorization.record_invocation(request, result, log, output_ref)
+        return self.authorization.record_invocation(request, result, log)

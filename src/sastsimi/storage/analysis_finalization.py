@@ -84,6 +84,8 @@ class AnalysisFinalizationService:
         self.authorization = authorization
         self.artifacts = artifacts
         self.checkpoint = checkpoint or (lambda _name: None)
+        self._started_monotonic_ms = clock.monotonic_ms()
+        self._sampled_candidates: dict[RecordRef, AnalysisRunResult] = {}
 
     def _finalization_action(
         self, result: AnalysisRunResult, candidate_ref: RunStoredDataRef
@@ -336,15 +338,39 @@ class AnalysisFinalizationService:
             for assignment in assignments
         ):
             raise ValueError("ANALYSIS_HYPOTHESIS_NOT_TERMINAL")
+        for process in processes:
+            if process.verification_assignment_ref is None:
+                if (
+                    process.status != "CANCELLED"
+                    or process.verification_generation != 0
+                ):
+                    raise ValueError("ANALYSIS_ASSIGNMENT_CLOSURE_MISMATCH")
+                continue
+            assignment = self.records.resolve(
+                connection, process.verification_assignment_ref
+            )
+            if (
+                not isinstance(assignment, VerificationAssignment)
+                or any(
+                    getattr(assignment.meta, name) != getattr(process.meta, name)
+                    for name in (
+                        "analysis_id",
+                        "workspace_id",
+                        "commit_id",
+                        "hypothesis_id",
+                    )
+                )
+                or (process.status != "CANCELLED" and assignment.status != "ACTIVE")
+                or assignment not in current
+            ):
+                raise ValueError("ANALYSIS_ASSIGNMENT_CLOSURE_MISMATCH")
         hypothesis_counts = Counter(str(process.status) for process in processes)
         if processes or proposal_states:
             hypothesis_counts["TOTAL"] = len(processes)
             hypothesis_counts.update(
                 {
                     "PROPOSAL_TOTAL": len(proposal_states),
-                    "REGISTERED": sum(
-                        item.status == "SCHEMA_VALID" for item in proposal_states
-                    ),
+                    "REGISTERED": len(processes),
                     "DUPLICATE": sum(
                         item.status == "DUPLICATE" for item in proposal_states
                     ),
@@ -371,6 +397,10 @@ class AnalysisFinalizationService:
                     ),
                 }
             )
+            # §08 proposal conservation: CANCELLED is pre-registration only.
+            hypothesis_counts["CANCELLED"] = sum(
+                item.status == "CANCELLED" for item in proposal_states
+            )
         if dict(hypothesis_counts) != dict(result.hypothesis_counts):
             raise ValueError("HYPOTHESIS_COUNTS_MISMATCH")
         if proposal_states:
@@ -379,7 +409,7 @@ class AnalysisFinalizationService:
                 != hypothesis_counts["REGISTERED"]
                 + hypothesis_counts["DUPLICATE"]
                 + hypothesis_counts["INVALID_OUTPUT"]
-                + hypothesis_counts["CANCELLED"]
+                + sum(item.status == "CANCELLED" for item in proposal_states)
                 or hypothesis_counts["REGISTERED"] != len(processes)
                 or set(result.hypothesis_duplicate_review_refs)
                 != {
@@ -470,12 +500,6 @@ class AnalysisFinalizationService:
             raise ValueError("ANALYSIS_ERROR_CLOSURE_MISMATCH")
         if {str(item.gap_id): item for item in result.gaps} != gaps:
             raise ValueError("ANALYSIS_GAP_CLOSURE_MISMATCH")
-        if (
-            result.elapsed_ms
-            != int((result.finished_at - result.started_at).total_seconds() * 1000)
-            or result.finished_at != self.clock.now()
-        ):
-            raise ValueError("ANALYSIS_ELAPSED_MISMATCH")
         self.artifacts.open_verified(result.debug_trace_ref).read()
 
     def finalize(self, result: AnalysisRunResult) -> RunStoredDataRef:
@@ -490,9 +514,10 @@ class AnalysisFinalizationService:
             state = get_run(connection, str(result.meta.analysis_id))
             result_ref = reference(result)
             if state.status != "RUNNING":
-                if state.analysis_result_ref == result_ref:
-                    assert isinstance(result_ref, RunStoredDataRef)
-                    return result_ref
+                terminal_candidate = self._sampled_candidates.get(result_ref, result)
+                if state.analysis_result_ref == reference(terminal_candidate):
+                    assert isinstance(state.analysis_result_ref, RunStoredDataRef)
+                    return state.analysis_result_ref
                 raise ValueError("ANALYSIS_ALREADY_TERMINAL")
             if (
                 result.program_id != state.program_id
@@ -500,6 +525,22 @@ class AnalysisFinalizationService:
                 or result.started_at != state.started_at
             ):
                 raise ValueError("ANALYSIS_RESULT_STATE_MISMATCH")
+            # One trusted sample is bound to the exact SAVE_RESULT candidate.
+            # Later authorization/claim clock reads cannot change its timestamps.
+            sampled = self._sampled_candidates.get(result_ref)
+            if sampled is None:
+                finished_at = self.clock.now()
+                elapsed_ms = state.elapsed_ms + max(
+                    0, self.clock.monotonic_ms() - self._started_monotonic_ms
+                )
+                sampled = result.model_copy(
+                    update={
+                        "finished_at": finished_at,
+                        "elapsed_ms": elapsed_ms,
+                    }
+                )
+                self._sampled_candidates[result_ref] = sampled
+            result = sampled
             workspace = (
                 self.records.resolve(connection, state.workspace_ref)
                 if state.workspace_ref is not None

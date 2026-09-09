@@ -125,7 +125,13 @@ class FakeVerificationStages(FakeStageService):
             location=self._setup._location(),
             fragment_ref=self._stored_artifact("revised-code-fragment"),
         )
-        debate_inputs = (hypothesis_ref, evidence_ref, context_ref)
+        debate_inputs = tuple(
+            ref
+            for ref in dict.fromkeys(
+                (*verification_work.input_refs, evidence_ref, context_ref)
+            )
+            if isinstance(ref, StoredDataRef)
+        )
         debate = run_fake_debate(
             runtime=self.runtime,
             runner=self.runner,
@@ -192,7 +198,13 @@ class FakeVerificationStages(FakeStageService):
             orchestration_identity=owner_ref,
             role="VERIFICATION",
             result_kind="verification_initial_assessment",
-            context_refs=(*debate_inputs, pro_ref, con_ref),
+            context_refs=tuple(
+                ref
+                for ref in dict.fromkeys(
+                    (*verification_work.input_refs, *debate_inputs, pro_ref, con_ref)
+                )
+                if isinstance(ref, StoredDataRef)
+            ),
         )
         self.evidence.identities[owner_ref] = RequesterRole.VERIFICATION
         assessment_record, synthesis_invocation = invoke_fake_provider(
@@ -211,6 +223,7 @@ class FakeVerificationStages(FakeStageService):
         )
         assert isinstance(assessment_record, VerificationInitialAssessment)
         assessment = assessment_record
+        persist_fake_invocation(self.runtime, synthesis_invocation)
         save = self.runner.action(
             verification_work,
             owner_ref,
@@ -227,7 +240,6 @@ class FakeVerificationStages(FakeStageService):
             (assessment,),
         )
         assert isinstance(assessment_ref, StoredDataRef)
-        persist_fake_invocation(self.runtime, synthesis_invocation, assessment_ref)
         request, dynamic, poc = self._dynamic._dynamic_chain(
             scope=scope,
             owner_ref=owner_ref,
@@ -238,6 +250,10 @@ class FakeVerificationStages(FakeStageService):
             evidence_ref=evidence_ref,
             pro_ref=pro_ref,
             con_ref=con_ref,
+            assessment_ref=assessment_ref,
+            policy_ref=application.policy_ref,
+            playbook_ref=application.playbook_ref,
+            application_ref=app_ref,
         )
         request_ref = reference(request)
         dynamic_ref = reference(dynamic)
@@ -245,7 +261,7 @@ class FakeVerificationStages(FakeStageService):
         assert isinstance(request_ref, StoredDataRef)
         assert isinstance(dynamic_ref, StoredDataRef)
         assert isinstance(poc_ref, StoredDataRef)
-        final = self.verification_assembly.build_result(
+        final_candidate = self.verification_assembly.build_result(
             meta=self.runner.metadata(
                 verification_work.meta,
                 "verification_result",
@@ -259,6 +275,54 @@ class FakeVerificationStages(FakeStageService):
             observation_ref=observation,
             revised=True,
         )
+        final_call_ref, final_provider_ref = register_fake_llm_call(
+            self.runtime,
+            self.evidence,
+            self._record_meta,
+            self._artifact,
+            self.clock.now(),
+            self.provider_probe,
+            runner=self.runner,
+            scope=scope,
+            orchestration_identity=owner_ref,
+            role="VERIFICATION",
+            result_kind="verification_result",
+            task_kind="FINAL_VERDICT",
+            context_refs=(
+                registered.assignment_ref,
+                hypothesis_ref,
+                proposal_ref,
+                assessment_ref,
+                evidence_ref,
+                application.policy_ref,
+                application.playbook_ref,
+                app_ref,
+                pro_ref,
+                con_ref,
+                dynamic_ref,
+                request_ref,
+                poc_ref,
+            ),
+        )
+        self.evidence.identities[owner_ref] = RequesterRole.VERIFICATION
+        final_record, final_invocation = invoke_fake_provider(
+            runtime=self.runtime,
+            runner=self.runner,
+            work=verification_work,
+            scope=scope,
+            identity=owner_ref,
+            action_role=RequesterRole.VERIFICATION,
+            action_type="CALL_LLM",
+            call_spec_ref=final_call_ref,
+            provider_profile_ref=final_provider_ref,
+            artifact=self._stored_artifact,
+            build_output=lambda _decision: final_candidate,
+            provider_invoke=self.provider_invoke,
+        )
+        if not isinstance(final_record, VerificationResult):
+            raise TypeError("FAKE_FINAL_VERDICT_OUTPUT_MISMATCH")
+        persist_fake_invocation(self.runtime, final_invocation)
+        final = final_record
         self.evidence.identities[owner_ref] = RequesterRole.VERIFICATION
         verification_work = self.runner.complete(
             verification_work, owner_ref, "VERIFICATION", (final,)

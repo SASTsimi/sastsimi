@@ -436,7 +436,6 @@ class RuntimeValidator:
         request: LLMInvocationRequest,
         result: LLMInvocationResult,
         log: LLMInvocationLog,
-        output_ref: StoredDataRef,
     ) -> StoredDataRef:
         """Persist normalized provenance and bind it to the used external action."""
         with self.records.database.write() as connection:
@@ -451,6 +450,18 @@ class RuntimeValidator:
             if payload is None:
                 raise ValueError("INVOCATION_ACTION_NOT_USED")
             claimed = ActionDecision.model_validate_json(payload)
+            exact_invocation_refs = tuple(
+                reference(item) for item in (request, result, log)
+            )
+            if all(ref in claimed.outcome_refs for ref in exact_invocation_refs):
+                for item, item_ref in zip(
+                    (request, result, log), exact_invocation_refs, strict=True
+                ):
+                    if self.records.resolve(connection, item_ref) != item:
+                        raise ValueError("INVOCATION_ACTION_MISMATCH")
+                replay_ref = reference(log)
+                assert isinstance(replay_ref, StoredDataRef)
+                return replay_ref
             claimed_ref = reference(claimed)
             action = self.records.resolve(connection, claimed.action_ref)
             spec = self.records.resolve(connection, request.call_spec_ref)
@@ -459,7 +470,6 @@ class RuntimeValidator:
                 if isinstance(spec, LLMCallSpec)
                 else None
             )
-            output = self.records.resolve(connection, output_ref)
             if (
                 not isinstance(action, ActionRequest)
                 or action.action_type
@@ -473,12 +483,11 @@ class RuntimeValidator:
                 or action.provider_profile_ref != request.provider_profile_ref
                 or not isinstance(spec, LLMCallSpec)
                 or not isinstance(profile, ProviderProfile)
-                or reference(output) != output_ref
                 or request.action_decision_ref != claimed_ref
                 or log.action_decision_ref != claimed_ref
                 or log.call_spec_ref != request.call_spec_ref
-                or result.parsed_output_ref != output_ref
-                or log.parsed_output_ref != output_ref
+                or result.parsed_output_ref is None
+                or log.parsed_output_ref != result.parsed_output_ref
                 or tuple(action.input_refs) != tuple(spec.context_refs)
             ):
                 raise ValueError("INVOCATION_ACTION_MISMATCH")
@@ -525,11 +534,75 @@ class RuntimeValidator:
                 or log.session_ref != result.session_ref
                 or log.status != result.status
                 or log.usage != result.usage
+                or result.status != "SUCCEEDED"
+                or result.safe_error is not None
+                or log.safe_error is not None
+                or log.validation_errors
+                or log.exposed_response_ref != result.response_ref
             ):
                 raise ValueError("INVOCATION_RESULT_MISMATCH")
+            assert result.parsed_output_ref is not None
+            candidate = self.records.resolve(
+                connection, result.parsed_output_ref, candidate=True
+            )
+            from sastsimi.contracts.llm import OutputSchemaSpec
+
+            schema = self.records.resolve(connection, spec.output_schema_ref)
+            if (
+                not isinstance(schema, OutputSchemaSpec)
+                or candidate.meta.record_type != schema.result_kind
+            ):
+                raise ValueError("INVOCATION_OUTPUT_MISMATCH")
+            if action.work_ref is None:
+                raise ValueError("INVOCATION_ACTION_MISMATCH")
+            work = self.records.resolve(connection, action.work_ref)
+            current_payload = connection.execute(
+                select(models.work_states.c.payload).where(
+                    models.work_states.c.work_id == str(getattr(work, "work_id", ""))
+                )
+            ).scalar_one_or_none()
+            if (
+                current_payload is None
+                or WorkExecutionState.model_validate_json(current_payload) != work
+                or not isinstance(work, WorkExecutionState)
+                or work.status != "RUNNING"
+                or claimed.use_status != UseStatus.USED
+            ):
+                raise ValueError("INVOCATION_SCOPE_MISMATCH")
+            if (
+                not isinstance(work, WorkExecutionState)
+                or any(
+                    getattr(item.meta, name, None) != getattr(work.meta, name, None)
+                    for item in (request, result, log, candidate)
+                    for name in (
+                        "analysis_id",
+                        "workspace_id",
+                        "commit_id",
+                        "hypothesis_id",
+                    )
+                )
+                or any(
+                    item.meta.attempt_id != work.active_attempt_id
+                    for item in (request, result, log)
+                )
+            ):
+                raise ValueError("INVOCATION_SCOPE_MISMATCH")
+            check_stage(self.records, connection, action, work)
+            from sastsimi.contracts.policy import PolicyParserResult
+
+            if isinstance(candidate, PolicyParserResult) and (
+                spec.agent_role != "POLICY_PARSER"
+                or spec.context_refs != (candidate.source_ref,)
+                or candidate.llm_invocation_ref != reference(request)
+            ):
+                raise ValueError("INVOCATION_POLICY_SOURCE_MISMATCH")
+            invocation_refs: list[StoredDataRef] = []
             for item in (request, result, log):
                 item_ref = self.records.stage(connection, item)
+                if not isinstance(item_ref, StoredDataRef):
+                    raise ValueError("INVOCATION_SCOPE_MISMATCH")
                 self.records.publish(connection, item_ref)
+                invocation_refs.append(item_ref)
             log_ref = reference(log)
             if not isinstance(log_ref, StoredDataRef):
                 raise ValueError("INVOCATION_SCOPE_MISMATCH")
@@ -549,5 +622,5 @@ class RuntimeValidator:
                         state_version=1,
                     )
                 )
-            self.record_outcome(connection, claimed, (log_ref, output_ref))
+            self.record_outcome(connection, claimed, tuple(invocation_refs))
             return log_ref

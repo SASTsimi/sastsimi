@@ -60,7 +60,6 @@ class ActionAuthorizationPort(Protocol):
         request: LLMInvocationRequest,
         result: LLMInvocationResult,
         log: LLMInvocationLog,
-        output_ref: StoredDataRef,
     ) -> StoredDataRef: ...
 
 

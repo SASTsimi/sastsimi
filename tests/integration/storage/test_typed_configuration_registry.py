@@ -12,6 +12,7 @@ from sastsimi.contracts.llm import (
     LLMInvocationLog,
     LLMInvocationRequest,
     LLMInvocationResult,
+    PromptPayload,
     PromptRegistryEntry,
     ProviderProfile,
     ProviderValidationEvidence,
@@ -176,6 +177,40 @@ def test_llm_call_spec_rejects_every_cross_record_mismatch(tmp_path: Path) -> No
     request = requests[0]
     result = next(item for item in results if item.llm_call_id == request.llm_call_id)
     log = next(item for item in logs if item.llm_call_id == request.llm_call_id)
+    payload = pipeline.runtime.unit_of_work.records.get_exact(
+        request.prompt_payload_ref
+    )
+    assert isinstance(payload, PromptPayload)
+    binding = payload.context_bindings[0]
+    source = pipeline.runtime.unit_of_work.records.get_exact(binding.source_ref)
+    with pipeline.runtime.unit_of_work.artifacts.open_verified(
+        binding.projected_data_ref
+    ) as projected:
+        assert projected.read() == canonical_bytes(source)
+    with pipeline.runtime.unit_of_work.artifacts.open_verified(
+        payload.rendered_prompt_ref
+    ) as rendered:
+        rendered_bytes = rendered.read()
+    assert canonical_bytes(source) in rendered_bytes
+    forged_projection = pipeline.runtime.unit_of_work.artifacts.commit(
+        pipeline.runtime.unit_of_work.artifacts.stage_bytes(
+            b'{"forged":true}', "application/json"
+        )
+    )
+    wrong_payload = payload.model_copy(
+        update={
+            "context_bindings": (
+                binding.model_copy(update={"projected_data_ref": forged_projection}),
+                *payload.context_bindings[1:],
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="PROMPT_PROJECTION_MISMATCH"):
+        pipeline.runtime.configuration.register_prompt_payload(wrong_payload)
+    with pytest.raises(ValueError, match="PROMPT_RENDER_MISMATCH"):
+        pipeline.runtime.configuration.register_prompt_payload(
+            payload.model_copy(update={"rendered_prompt_ref": forged_projection})
+        )
     foreign_request = requests[1]
     assert result.parsed_output_ref is not None
     with pytest.raises(ValueError, match="INVOCATION_ACTION_MISMATCH"):
@@ -183,5 +218,74 @@ def test_llm_call_spec_rejects_every_cross_record_mismatch(tmp_path: Path) -> No
             request.model_copy(update={"call_spec_ref": foreign_request.call_spec_ref}),
             result,
             log,
-            result.parsed_output_ref,
         )
+    # Exact action/spec/request equality cannot authorize another work's context.
+    from typing import cast
+
+    from sastsimi.contracts.actions import ActionDecision, ActionRequest
+    from sastsimi.contracts.work import WorkExecutionState
+    from sastsimi.storage.llm_context import check_llm_context
+    from sastsimi.storage.repositories import SQLiteRecordStore
+
+    records = cast(SQLiteRecordStore, pipeline.runtime.unit_of_work.records)
+    decision = records.get_exact(request.action_decision_ref)
+    policy_request = next(
+        item for item in requests if item.agent_role == "POLICY_PARSER"
+    )
+    other_decision = records.get_exact(policy_request.action_decision_ref)
+    assert isinstance(decision, ActionDecision) and isinstance(
+        other_decision, ActionDecision
+    )
+    action = records.get_exact(decision.action_ref)
+    other_action = records.get_exact(other_decision.action_ref)
+    assert isinstance(action, ActionRequest) and isinstance(other_action, ActionRequest)
+    assert other_action.work_ref is not None
+    other_work = records.get_exact(other_action.work_ref)
+    assert isinstance(other_work, WorkExecutionState)
+    with records.database.engine.connect() as connection:
+        with pytest.raises(ValueError, match="LLM_CONTEXT_WORK_MISMATCH"):
+            check_llm_context(
+                records,
+                connection,
+                action.model_copy(
+                    update={
+                        "work_ref": reference(other_work),
+                        "expected_state_version": other_work.state_version,
+                    }
+                ),
+                other_work,
+            )
+        # Isolate source ownership even when role, fixed-input order and spec agree.
+        from sastsimi.contracts.ids import HypothesisId, WorkId
+
+        pro_request = next(item for item in requests if item.agent_role == "PRO")
+        pro_decision = records.get_exact(pro_request.action_decision_ref)
+        assert isinstance(pro_decision, ActionDecision)
+        pro_action = records.get_exact(pro_decision.action_ref)
+        assert isinstance(pro_action, ActionRequest) and pro_action.work_ref is not None
+        pro_work = records.get_exact(pro_action.work_ref)
+        assert isinstance(pro_work, WorkExecutionState)
+        foreign_work = pro_work.model_copy(
+            update={
+                "work_id": WorkId("foreign-pro-work"),
+                "meta": pro_work.meta.model_copy(
+                    update={"hypothesis_id": HypothesisId("foreign-hypothesis")}
+                ),
+            }
+        )
+        with pytest.raises(ValueError, match="LLM_CONTEXT_WORK_MISMATCH"):
+            check_llm_context(
+                records,
+                connection,
+                pro_action.model_copy(
+                    update={
+                        "work_ref": reference(foreign_work),
+                    }
+                ),
+                foreign_work,
+            )
+
+    # A persisted invocation can be replayed after a crash without new IDs/outcomes.
+    assert pipeline.runtime.validator.record_invocation(
+        request, result, log
+    ) == reference(log)

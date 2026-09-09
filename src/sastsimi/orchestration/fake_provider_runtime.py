@@ -31,6 +31,7 @@ class FakeInvocation:
     request: LLMInvocationRequest
     result: LLMInvocationResult
     log: LLMInvocationLog
+    output: Record
 
 
 def invoke_fake_provider(
@@ -100,9 +101,6 @@ def invoke_fake_provider(
                 Record,
                 output.model_copy(update={"llm_call_id": spec.llm_call_id}),
             )
-        output_ref = reference(output)
-        if not isinstance(output_ref, StoredDataRef):
-            raise ValueError("FAKE_PROVIDER_OUTPUT_SCOPE_MISMATCH")
         response_ref = _artifact_bytes(runtime, canonical_bytes(output))
         result = LLMInvocationResult.model_validate(
             dict(
@@ -119,7 +117,7 @@ def invoke_fake_provider(
                 actual_session_mode="NEW",
                 session_ref=f"fake-session-{spec.llm_call_id}",
                 response_ref=response_ref,
-                parsed_output_ref=output_ref,
+                parsed_output_ref=reference(output),
                 usage=dict(
                     token_source="PROVIDER_REPORTED",
                     input_tokens=1,
@@ -143,7 +141,7 @@ def invoke_fake_provider(
         if (
             returned.status != "SUCCEEDED"
             or returned.safe_error is not None
-            or returned.parsed_output_ref != output_ref
+            or returned.parsed_output_ref != reference(output)
             or returned.response_ref != response_ref
             or returned.llm_call_id != spec.llm_call_id
             or returned.purpose != spec.purpose
@@ -216,7 +214,7 @@ def invoke_fake_provider(
             redaction_result="APPLIED",
         )
     )
-    return output, FakeInvocation(request, result, log)
+    return output, FakeInvocation(request, result, log, output)
 
 
 def _artifact_bytes(runtime: RuntimeServices, data: bytes) -> StoredDataRef:
@@ -225,8 +223,12 @@ def _artifact_bytes(runtime: RuntimeServices, data: bytes) -> StoredDataRef:
 
 
 def persist_fake_invocation(
-    runtime: RuntimeServices, invocation: FakeInvocation, output_ref: StoredDataRef
+    runtime: RuntimeServices, invocation: FakeInvocation
 ) -> StoredDataRef:
+    """Commit complete call provenance before any domain candidate is published."""
+    candidate_ref = runtime.unit_of_work.records.stage_record(invocation.output)
+    if candidate_ref != invocation.result.parsed_output_ref:
+        raise ValueError("INVOCATION_OUTPUT_MISMATCH")
     return runtime.validator.record_invocation(
-        invocation.request, invocation.result, invocation.log, output_ref
+        invocation.request, invocation.result, invocation.log
     )

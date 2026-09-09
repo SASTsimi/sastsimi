@@ -24,6 +24,10 @@ from sastsimi.contracts.llm import (
     ProviderValidationEvidence,
     SemanticValidatorSpec,
 )
+from sastsimi.contracts.prompt_projection import (
+    project_prompt_value,
+    render_prompt_bytes,
+)
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef
 from sastsimi.orchestration.fake_support import FakeEvidence
@@ -45,6 +49,14 @@ def _artifact_bytes(
     return runtime.unit_of_work.artifacts.commit(staged)
 
 
+def _source_projection(runtime: RuntimeServices, ref: StoredDataRef) -> bytes:
+    """Resolve `$` to the actual immutable source value used by the provider."""
+    if ref.record_id is not None:
+        return project_prompt_value(runtime.unit_of_work.records.get_exact(ref), ("$",))
+    with runtime.unit_of_work.artifacts.open_verified(ref) as source:
+        return project_prompt_value(source.read().decode("utf-8"), ("$",))
+
+
 def register_fake_llm_call(
     runtime: RuntimeServices,
     evidence: FakeEvidence,
@@ -58,6 +70,7 @@ def register_fake_llm_call(
     orchestration_identity: BudgetScopeRef,
     role: str,
     result_kind: str,
+    task_kind: str | None = None,
     context_refs: tuple[StoredDataRef, ...] = (),
 ) -> tuple[StoredDataRef, StoredDataRef]:
     """Publish one exact typed configuration closure and return call/provider refs."""
@@ -186,6 +199,7 @@ def register_fake_llm_call(
     schema_ref = runtime.configuration.register_output_schema(schema)
     semantic_ref = runtime.configuration.register_semantic_validator(semantic)
 
+    exact_task_kind = task_kind or result_kind
     input_slots = tuple(
         dict(
             slot=f"context-{index}",
@@ -199,7 +213,7 @@ def register_fake_llm_call(
     template_ref = _artifact_bytes(
         runtime,
         (
-            f"role={role}\ntask={result_kind}\n"
+            f"role={role}\ntask={exact_task_kind}\n"
             "Use each ordered context binding exactly once and return the "
             "configured schema.\n"
         ).encode(),
@@ -207,7 +221,7 @@ def register_fake_llm_call(
     )
     prompt_fields = dict(
         agent_role=role,
-        task_kind=result_kind,
+        task_kind=exact_task_kind,
         template_ref=template_ref,
         template_version="1",
         input_slots=input_slots,
@@ -379,29 +393,20 @@ def register_fake_llm_call(
     )
     _approved(evidence, prompt)
     prompt_ref = runtime.configuration.register_prompt_entry(prompt)
-    projected_refs = tuple(
-        _artifact_bytes(
-            runtime,
-            canonical_bytes(
-                {
-                    "ordinal": index,
-                    "source_ref": ref,
-                    "field_paths": ("$",),
-                }
-            ),
-        )
-        for index, ref in enumerate(context_refs, 1)
+    projected_bytes = tuple(_source_projection(runtime, ref) for ref in context_refs)
+    projected_refs = tuple(_artifact_bytes(runtime, data) for data in projected_bytes)
+    with runtime.unit_of_work.artifacts.open_verified(template_ref) as template:
+        template_bytes = template.read()
+    rendered_bytes = render_prompt_bytes(
+        template_bytes,
+        tuple(
+            (f"context-{index}", data) for index, data in enumerate(projected_bytes, 1)
+        ),
     )
     rendered_prompt_ref = _artifact_bytes(
         runtime,
-        canonical_bytes(
-            {
-                "template_ref": template_ref,
-                "role": role,
-                "task_kind": result_kind,
-                "ordered_context_refs": context_refs,
-            }
-        ),
+        rendered_bytes,
+        "text/plain",
     )
     payload = PromptPayload.model_validate_json(
         canonical_bytes(
@@ -410,7 +415,7 @@ def register_fake_llm_call(
                 registry_entry_ref=prompt_ref,
                 prompt_key=prompt.prompt_key,
                 agent_role=role,
-                task_kind=result_kind,
+                task_kind=exact_task_kind,
                 purpose="PRODUCTION",
                 template_ref=prompt.template_ref,
                 template_version=prompt.template_version,
@@ -439,7 +444,7 @@ def register_fake_llm_call(
                 meta=call_meta,
                 llm_call_id=f"fake-{role.lower()}-{call_meta.record_id}",
                 agent_role=role,
-                task_kind=result_kind,
+                task_kind=exact_task_kind,
                 purpose="PRODUCTION",
                 provider_profile_ref=provider_ref,
                 model=provider.model,

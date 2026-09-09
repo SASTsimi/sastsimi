@@ -1,5 +1,6 @@
 """Trusted exact terminal analysis projection."""
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -271,3 +272,145 @@ def test_finalization_rejects_an_unresolved_transition_journal(
 
     with h.database.engine.connect() as connection:
         assert get_run(connection, "a1").status == "RUNNING"
+
+
+def test_finalization_uses_one_sample_despite_moving_wall_clock(tmp_path: Path) -> None:
+    class MovingClock:
+        calls = 0
+        tick = 0
+
+        def now(self) -> datetime:
+            self.calls += 1
+            return datetime(2026, 9, 7, tzinfo=UTC) + timedelta(milliseconds=self.calls)
+
+        def monotonic_ms(self) -> int:
+            return self.tick
+
+    h = Harness(tmp_path)
+    profile = h.execution()
+    identity_ref = reference(profile)
+    assert isinstance(identity_ref, (RunStoredDataRef, StoredDataRef))
+    h.evidence.identities[identity_ref] = RequesterRole.ORCHESTRATION
+    clock = MovingClock()
+    runtime = build_runtime(
+        tmp_path,
+        None,
+        None,
+        clock,
+        h.ids,
+        evidence=h.evidence,
+        analysis_finalization_identity_ref=identity_ref,
+    )
+    h.pin_execution(runtime.budget_registry, profile)
+    state = runtime.budget_registry.current_state("a1")
+    candidate = _result(runtime.unit_of_work.artifacts).model_copy(
+        update={"started_at": state.started_at}
+    )
+    clock.tick = 77
+    final_ref = runtime.finalization.finalize(candidate)
+    final = runtime.unit_of_work.records.get_exact(final_ref)
+    assert isinstance(final, AnalysisRunResult)
+    assert final.elapsed_ms == 77
+    assert final.finished_at != clock.now()
+    state = runtime.budget_registry.current_state("a1")
+    assert state.elapsed_ms == 77
+    assert state.finished_at == final.finished_at
+    assert runtime.finalization.finalize(candidate) == final_ref
+
+
+@pytest.mark.parametrize("assigned", [False, True])
+def test_registered_hypothesis_cancellation_is_not_proposal_cancellation(
+    tmp_path: Path, assigned: bool
+) -> None:
+    from sastsimi.contracts.evaluation import ResolvedAnalysisInventory
+    from sastsimi.contracts.hypothesis import (
+        HypothesisProcessState,
+        ProposalProcessState,
+        VerificationAssignment,
+    )
+
+    h = Harness(tmp_path)
+    profile = h.execution()
+    identity = reference(profile)
+    assert isinstance(identity, (RunStoredDataRef, StoredDataRef))
+    h.evidence.identities[identity] = RequesterRole.ORCHESTRATION
+    runtime = build_runtime(
+        tmp_path,
+        None,
+        None,
+        h.clock,
+        h.ids,
+        evidence=h.evidence,
+        analysis_finalization_identity_ref=identity,
+    )
+    h.pin_execution(runtime.budget_registry, profile)
+    assignment = VerificationAssignment.model_validate_json(
+        canonical_bytes(make("VerificationAssignment"))
+    )
+    h.publish(assignment)
+    process = HypothesisProcessState.model_validate_json(
+        canonical_bytes(
+            make("HypothesisProcessState")
+            | {
+                "status": "CANCELLED",
+                "verification_generation": 1 if assigned else 0,
+                "verification_assignment_ref": reference(assignment)
+                if assigned
+                else None,
+                "finished_at": "2026-09-08T00:00:00Z",
+            }
+        )
+    )
+    proposal_state = ProposalProcessState.model_validate_json(
+        canonical_bytes(
+            make("ProposalProcessState")
+            | {
+                "status": "SCHEMA_VALID",
+                "registration_reason": "NO_CANDIDATES",
+                "duplicate_review_ref": None,
+                "duplicate_of_hypothesis_ref": None,
+                "finished_at": "2026-09-08T00:00:00Z",
+            }
+        )
+    )
+    candidate = _result(runtime.unit_of_work.artifacts).model_copy(
+        update={
+            "hypothesis_counts": {
+                "TOTAL": 1,
+                "PROPOSAL_TOTAL": 1,
+                "REGISTERED": 1,
+                "DUPLICATE": 0,
+                "INVALID_OUTPUT": 0,
+                "CANCELLED": 0,
+                "DUPLICATE_UNIQUE": 0,
+                "DUPLICATE_UNCERTAIN": 0,
+                "CHECK_FAILED": 0,
+                "INVALID_DUPLICATE_TARGET": 0,
+            }
+        }
+    )
+    finalization = cast(AnalysisFinalizationService, runtime.finalization.store)
+    inventory = ResolvedAnalysisInventory(
+        records={},
+        expected_refs={"work_attempt_refs": ()},
+        current_verification_refs={},
+        verification_generations={},
+    )
+    state = runtime.budget_registry.current_state("a1")
+    with h.database.engine.connect() as connection:
+        if assigned:
+            with pytest.raises(
+                ValueError, match="ANALYSIS_ASSIGNMENT_CLOSURE_MISMATCH"
+            ):
+                finalization._validate_readiness_and_summaries(
+                    connection, candidate, (process, proposal_state), inventory, state
+                )
+        finalization._validate_readiness_and_summaries(
+            connection,
+            candidate,
+            (process, proposal_state, assignment)
+            if assigned
+            else (process, proposal_state),
+            inventory,
+            state,
+        )

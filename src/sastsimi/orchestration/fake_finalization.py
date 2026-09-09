@@ -174,9 +174,7 @@ class FakeFinalizationStages(FakeStageService):
             {
                 "TOTAL": len(processes),
                 "PROPOSAL_TOTAL": len(proposal_states),
-                "REGISTERED": sum(
-                    item.status == "SCHEMA_VALID" for item in proposal_states
-                ),
+                "REGISTERED": len(processes),
                 "DUPLICATE": sum(
                     item.status == "DUPLICATE" for item in proposal_states
                 ),
@@ -201,6 +199,9 @@ class FakeFinalizationStages(FakeStageService):
                     for item in proposal_states
                 ),
             }
+        )
+        hypothesis_counts["CANCELLED"] = sum(
+            item.status == "CANCELLED" for item in proposal_states
         )
         ledger = tuple(
             item
@@ -286,7 +287,10 @@ class FakeFinalizationStages(FakeStageService):
             if ref.data_kind == "work_budget_profile"
         )
         self.evidence.identities[owner] = RequesterRole.ORCHESTRATION
-        self.runtime.finalization.finalize(result)
+        result_ref = self.runtime.finalization.finalize(result)
+        persisted = self.runtime.unit_of_work.records.get_exact(result_ref)
+        assert isinstance(persisted, AnalysisRunResult)
+        result = persisted
         self._host._result = result
         self._host._reports = tuple(
             item

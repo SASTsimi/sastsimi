@@ -86,7 +86,7 @@ def test_true_pipeline_closes_exact_report_without_submission(tmp_path: Path) ->
     assert action_counts["READ_CODE"] == 1
     assert action_counts["CALL_LLM"] >= 5
     assert action_counts["REQUEST_DYNAMIC_REPRO"] == 1
-    assert action_counts["RUN_SANDBOX"] == 2
+    assert action_counts["RUN_SANDBOX"] == 3
     assert action_counts["CALL_TECHNICAL_GATE"] == 1
     assert action_counts["CALL_RULE_SCOPE_GATE"] == 1
     assert action_counts["CREATE_REPORT_DRAFT"] == 1
@@ -144,6 +144,14 @@ def test_true_pipeline_closes_exact_report_without_submission(tmp_path: Path) ->
     assert record_sequence(assessment) < record_sequence(dynamic_request)
 
     logs = tuple(item for item in published if isinstance(item, LLMInvocationLog))
+    assert {log.task_kind for log in logs if log.agent_role == "VERIFICATION"} >= {
+        "CREATE_DYNAMIC_REQUEST",
+        "FINAL_VERDICT",
+    }
+    final_call = next(log for log in logs if log.task_kind == "FINAL_VERDICT")
+    assert final_call.parsed_output_ref in result.verification_refs
+    assert reference(assessment) in final_call.context_refs
+    assert reference(dynamic_request) in final_call.context_refs
     assert {log.agent_role for log in logs} >= {
         "POLICY_PARSER",
         "PRO",
@@ -375,6 +383,160 @@ def test_sandbox_mismatch_cannot_publish_command_or_dynamic_result(
         "agent_log",
         "dynamic_reproduction_result",
     ):
+        assert scenario.runtime.queries.current_records("fake-analysis", kind) == ()
+
+
+@pytest.mark.parametrize("mismatch", ["content", "source_check"])
+def test_policy_fetch_mismatch_publishes_nothing(tmp_path: Path, mismatch: str) -> None:
+    from dataclasses import replace
+
+    from sastsimi.ports.dto import OfficialPolicyFetchRequest, OfficialPolicySource
+
+    scenario = build_fake_pipeline(tmp_path)._scenario
+
+    async def wrong_source(
+        _request: OfficialPolicyFetchRequest, expected: OfficialPolicySource
+    ) -> OfficialPolicySource:
+        if mismatch == "content":
+            return replace(expected, content=b"substituted policy source")
+        return replace(
+            expected,
+            source_check=expected.source_check.model_copy(
+                update={"source_url": "https://wrong.invalid/policy"}
+            ),
+        )
+
+    scenario.policy_fetch = wrong_source
+    with pytest.raises(ValueError, match="FAKE_POLICY_SOURCE_MISMATCH"):
+        scenario.analyze(scenario="FALSE")
+    assert scenario.runtime is not None
+    for kind in ("policy_parser_result", "program_policy_record", "run_policy_state"):
+        assert scenario.runtime.queries.current_records("fake-analysis", kind) == ()
+
+
+def test_invocation_recording_crash_prevents_domain_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scenario = build_fake_pipeline(tmp_path)._scenario
+    invoke = scenario.provider_invoke
+
+    def crash(*_args: object) -> StoredDataRef:
+        raise RuntimeError("invocation recording crash")
+
+    async def inject_crash(
+        request: LLMInvocationRequest, expected: LLMInvocationResult
+    ) -> LLMInvocationResult:
+        assert scenario.runtime is not None
+        monkeypatch.setattr(scenario.runtime.validator, "record_invocation", crash)
+        return await invoke(request, expected)
+
+    scenario.provider_invoke = inject_crash
+    with pytest.raises(RuntimeError, match="invocation recording crash"):
+        scenario.analyze(scenario="FALSE")
+    assert scenario.runtime is not None
+    for kind in ("policy_parser_result", "program_policy_record", "llm_invocation_log"):
+        assert scenario.runtime.queries.current_records("fake-analysis", kind) == ()
+
+
+def test_crash_after_invocation_can_publish_exact_domain_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sastsimi.contracts.policy import PolicyParserResult
+
+    scenario = build_fake_pipeline(tmp_path)._scenario
+    invoke = scenario.provider_invoke
+
+    def crash(*_args: object) -> tuple[StoredDataRef, ...]:
+        raise RuntimeError("domain publication crash")
+
+    async def inject_crash(
+        request: LLMInvocationRequest, expected: LLMInvocationResult
+    ) -> LLMInvocationResult:
+        assert scenario.runtime is not None
+        monkeypatch.setattr(scenario.runtime.intermediate, "publish", crash)
+        return await invoke(request, expected)
+
+    scenario.provider_invoke = inject_crash
+    with pytest.raises(RuntimeError, match="domain publication crash"):
+        scenario.analyze(scenario="FALSE")
+    assert scenario.runtime is not None
+    runtime = scenario.runtime
+    assert (
+        runtime.queries.current_records("fake-analysis", "policy_parser_result") == ()
+    )
+    published = runtime.queries.published_records("fake-analysis")
+    (log,) = tuple(item for item in published if isinstance(item, LLMInvocationLog))
+    (request,) = tuple(
+        item for item in published if isinstance(item, LLMInvocationRequest)
+    )
+    (result,) = tuple(
+        item for item in published if isinstance(item, LLMInvocationResult)
+    )
+    assert runtime.validator.record_invocation(request, result, log) == reference(log)
+    assert log.parsed_output_ref is not None and log.exposed_response_ref is not None
+    with pytest.raises(LookupError):
+        runtime.unit_of_work.records.get_exact(log.parsed_output_ref)
+    with runtime.unit_of_work.artifacts.open_verified(
+        log.exposed_response_ref
+    ) as response:
+        candidate = PolicyParserResult.model_validate_json(response.read())
+    assert candidate.llm_invocation_ref == reference(request)
+    save = next(
+        item
+        for item in published
+        if isinstance(item, ActionRequest)
+        and item.result_kind == "policy_parser_result"
+    )
+    decision = next(
+        item
+        for item in published
+        if isinstance(item, ActionDecision) and item.action_ref == reference(save)
+    )
+    assert save.work_ref is not None
+    work = runtime.unit_of_work.records.get_exact(save.work_ref)
+    assert isinstance(work, WorkExecutionState)
+    monkeypatch.undo()
+    (published_ref,) = runtime.intermediate.publish(
+        str(work.work_id), reference(decision), (candidate,)
+    )
+    assert published_ref == log.parsed_output_ref
+
+
+@pytest.mark.parametrize("boundary", ["cleanup", "chaining"])
+def test_late_external_mismatch_prevents_publication(
+    tmp_path: Path, boundary: str
+) -> None:
+    from sastsimi.contracts.dynamic import CleanupResult
+    from sastsimi.ports.dto import SandboxCleanupRequest
+
+    scenario = build_fake_pipeline(tmp_path)._scenario
+    invoke = scenario.provider_invoke
+
+    async def wrong_cleanup(
+        _request: SandboxCleanupRequest, expected: CleanupResult
+    ) -> CleanupResult:
+        return expected.model_copy(update={"status": "FAILED"})
+
+    async def wrong_chaining(
+        request: LLMInvocationRequest, expected: LLMInvocationResult
+    ) -> LLMInvocationResult:
+        if request.agent_role == "CHAINING":
+            return expected.model_copy(update={"status": "FAILED"})
+        return await invoke(request, expected)
+
+    absent: tuple[str, ...]
+    if boundary == "cleanup":
+        scenario.sandbox_cleanup = wrong_cleanup
+        error = "FAKE_SANDBOX_CLEANUP_MISMATCH"
+        absent = ("cleanup_result", "agent_log", "dynamic_reproduction_result")
+    else:
+        scenario.provider_invoke = wrong_chaining
+        error = "FAKE_PROVIDER_OUTPUT_MISMATCH"
+        absent = ("chaining_result", "report_draft")
+    with pytest.raises(ValueError, match=error):
+        scenario.analyze(scenario="TRUE")
+    assert scenario.runtime is not None
+    for kind in absent:
         assert scenario.runtime.queries.current_records("fake-analysis", kind) == ()
 
 

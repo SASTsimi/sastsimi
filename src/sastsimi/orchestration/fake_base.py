@@ -34,6 +34,8 @@ from sastsimi.contracts.static import ToolRunResult
 from sastsimi.ports.dto import (
     ApprovedSandboxCommand,
     CapabilityProbeResult,
+    OfficialPolicyFetchRequest,
+    OfficialPolicySource,
     SandboxCleanupRequest,
     SandboxPrepareRequest,
     StaticToolRequest,
@@ -67,7 +69,9 @@ type SandboxExecutor = Callable[
 type SandboxCleaner = Callable[
     [SandboxCleanupRequest, CleanupResult], Awaitable[CleanupResult]
 ]
-type PolicyFetcher = Callable[[StoredDataRef], Awaitable[StoredDataRef]]
+type PolicyFetcher = Callable[
+    [OfficialPolicyFetchRequest, OfficialPolicySource], Awaitable[OfficialPolicySource]
+]
 
 
 class NoMatchBuilder(Protocol):

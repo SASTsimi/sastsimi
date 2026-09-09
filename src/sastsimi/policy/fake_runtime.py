@@ -2,12 +2,20 @@
 
 from dataclasses import dataclass
 
-from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.ports.dto import OfficialPolicyFetchRequest, OfficialPolicySource
 
 
 @dataclass(frozen=True)
 class FakePolicySource:
-    source_ref: StoredDataRef
+    source: OfficialPolicySource
 
-    async def fetch(self) -> StoredDataRef:
-        return self.source_ref
+    async def fetch_official(
+        self, request: OfficialPolicyFetchRequest
+    ) -> OfficialPolicySource:
+        if (
+            request.action.action_type != "FETCH_POLICY"
+            or self.source.source_check.source_ref not in request.action.input_refs
+            or request.source_config_ref not in request.action.input_refs
+        ):
+            raise ValueError("FAKE_POLICY_FETCH_REQUEST_MISMATCH")
+        return self.source

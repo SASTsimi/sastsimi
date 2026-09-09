@@ -117,11 +117,11 @@ def run_fake_debate(
         )
         if not isinstance(result, (ProEvidenceResult, ConEvidenceResult)):
             raise TypeError("FAKE_DEBATE_OUTPUT_MISMATCH")
+        persist_fake_invocation(runtime, invocation)
         completed = runner.complete(child, identity, role, (result,))
         output_ref = completed.output_refs[0]
         if not isinstance(output_ref, StoredDataRef):
             raise TypeError("FAKE_DEBATE_OUTPUT_SCOPE_MISMATCH")
-        persist_fake_invocation(runtime, invocation, output_ref)
         results.append(result)
 
     pro, con = results

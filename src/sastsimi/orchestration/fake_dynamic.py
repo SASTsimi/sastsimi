@@ -97,13 +97,13 @@ class FakeDynamicStages(FakeStageService):
             build_output=lambda _decision: candidate,
             provider_invoke=self.provider_invoke,
         )
+        persist_fake_invocation(self.runtime, invocation)
         ref = self._setup._publish_intermediate(
             work,
             identity,
             RequesterRole.DYNAMIC_REPRODUCTION,
             record,
         )
-        persist_fake_invocation(self.runtime, invocation, ref)
         return record, ref
 
     def _evidence_result(
@@ -149,6 +149,10 @@ class FakeDynamicStages(FakeStageService):
         evidence_ref: StoredDataRef,
         pro_ref: StoredDataRef,
         con_ref: StoredDataRef,
+        assessment_ref: StoredDataRef,
+        policy_ref: StoredDataRef,
+        playbook_ref: StoredDataRef,
+        application_ref: StoredDataRef,
     ) -> tuple[DynamicReproductionRequest, DynamicReproductionResult, PoCBundle]:
         assert self.runtime is not None and self.runner is not None
         sandbox = SandboxProfile.model_validate_json(
@@ -193,6 +197,51 @@ class FakeDynamicStages(FakeStageService):
                 )
             )
         )
+        request_call_ref, request_provider_ref = register_fake_llm_call(
+            self.runtime,
+            self.evidence,
+            self._record_meta,
+            self._artifact,
+            self.clock.now(),
+            self.provider_probe,
+            runner=self.runner,
+            scope=scope,
+            orchestration_identity=owner_ref,
+            role="VERIFICATION",
+            result_kind="dynamic_reproduction_request",
+            task_kind="CREATE_DYNAMIC_REQUEST",
+            context_refs=(
+                assignment_ref,
+                hypothesis_ref,
+                assessment_ref,
+                pro_ref,
+                con_ref,
+                evidence_ref,
+                policy_ref,
+                playbook_ref,
+                application_ref,
+                sandbox_ref,
+            ),
+        )
+        self.evidence.identities[owner_ref] = RequesterRole.VERIFICATION
+        request_record, request_invocation = invoke_fake_provider(
+            runtime=self.runtime,
+            runner=self.runner,
+            work=verification_work,
+            scope=scope,
+            identity=owner_ref,
+            action_role=RequesterRole.VERIFICATION,
+            action_type="CALL_LLM",
+            call_spec_ref=request_call_ref,
+            provider_profile_ref=request_provider_ref,
+            artifact=self._stored_artifact,
+            build_output=lambda _decision: request,
+            provider_invoke=self.provider_invoke,
+        )
+        if not isinstance(request_record, DynamicReproductionRequest):
+            raise TypeError("FAKE_DYNAMIC_REQUEST_OUTPUT_MISMATCH")
+        persist_fake_invocation(self.runtime, request_invocation)
+        request = request_record
         request_ref = self._setup._publish_intermediate(
             verification_work,
             owner_ref,
@@ -618,7 +667,41 @@ class FakeDynamicStages(FakeStageService):
                 SandboxCleanupRequest(request, (environment,), ()), cleanup_candidate
             )
 
-        cleanup = asyncio.run(cleanup_environment())
+        self.evidence.identities[dynamic_identity] = (
+            RequesterRole.REPRODUCTION_SETUP_AUTOMATION
+        )
+        cleanup_action = self.runner.action(
+            dynamic_work,
+            dynamic_identity,
+            "REPRODUCTION_SETUP_AUTOMATION",
+            "RUN_SANDBOX",
+            input_refs=(*sandbox_action.input_refs, environment_ref),
+            dynamic_request_ref=request_ref,
+            reproduction_plan_ref=plan_ref,
+            sandbox_profile_ref=sandbox_ref,
+            resource_profile_ref=resource_ref,
+            run_policy_state_ref=run_policy_state_ref,
+            image_digest=recipe.built_image_digest,
+            network_targets=(),
+            resource_limits=sandbox_action.resource_limits,
+        )
+        cleanup_units = self.runner.units(elapsed_ms=1, cost_minor_units=1)
+        cleanup_reservation = self.runner.reserve(
+            dynamic_work, scope, cleanup_action, cleanup_units
+        )
+        cleanup_decision = self.runner.authorize(
+            dynamic_work, cleanup_action, cleanup_reservation
+        )
+        cleanup = asyncio.run(
+            self.runtime.external.invoke(
+                str(dynamic_work.work_id),
+                cleanup_decision,
+                reference(cleanup_reservation),
+                cleanup_environment,
+                idempotency_key=str(cleanup_action.action_id),
+            )
+        )
+        self.runner.account(cleanup_reservation, cleanup_units)
         if cleanup != cleanup_candidate:
             raise ValueError("FAKE_SANDBOX_CLEANUP_MISMATCH")
         cleanup_ref = self._setup._publish_intermediate(
@@ -637,8 +720,8 @@ class FakeDynamicStages(FakeStageService):
                 ("COMMAND_FINISHED", command_action.action_id),
                 ("POC_EXECUTION_STARTED", command_action.action_id),
                 ("POC_EXECUTION_FINISHED", command_action.action_id),
-                ("CLEANUP_STARTED", "cleanup"),
-                ("CLEANUP_FINISHED", "cleanup"),
+                ("CLEANUP_STARTED", cleanup_action.action_id),
+                ("CLEANUP_FINISHED", cleanup_action.action_id),
                 ("AGENT_FINISHED", "agent"),
                 ("SESSION_FINISHED", "session"),
             ),
@@ -744,13 +827,13 @@ class FakeDynamicStages(FakeStageService):
         )
         assert isinstance(conclusion_record, DynamicReproductionConclusion)
         conclusion = conclusion_record
+        persist_fake_invocation(self.runtime, conclusion_invocation)
         conclusion_ref = self._setup._publish_intermediate(
             dynamic_work,
             dynamic_identity,
             RequesterRole.DYNAMIC_REPRODUCTION,
             conclusion,
         )
-        persist_fake_invocation(self.runtime, conclusion_invocation, conclusion_ref)
         poc = PoCBundle.model_validate_json(
             canonical_bytes(
                 dict(

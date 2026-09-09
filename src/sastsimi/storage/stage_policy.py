@@ -80,6 +80,10 @@ def check_stage(
     action: ActionRequest,
     work: WorkExecutionState,
 ) -> None:
+    if action.llm_call_spec_ref is not None:
+        from .llm_context import check_llm_context
+
+        check_llm_context(records, connection, action, work)
     if (
         action.requested_by == RequesterRole.CWE_LABELING
         or action.action_type

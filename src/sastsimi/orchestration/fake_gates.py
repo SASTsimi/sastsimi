@@ -226,12 +226,12 @@ class FakeGateStages(FakeStageService):
         )
         assert isinstance(label_record, CWELabel)
         label = label_record
+        persist_fake_invocation(self.runtime, cwe_invocation)
         cwe_work = self.runner.complete(
             cwe_work, cwe_identity, "CWE_LABELING", (label,)
         )
         label_ref = cwe_work.output_refs[0]
         assert isinstance(label_ref, StoredDataRef)
-        persist_fake_invocation(self.runtime, cwe_invocation, label_ref)
 
         technical_work = self.runner.start(
             scope,
@@ -312,6 +312,7 @@ class FakeGateStages(FakeStageService):
         )
         assert isinstance(technical_record, TechnicalEvidenceReview)
         technical = technical_record
+        persist_fake_invocation(self.runtime, technical_invocation)
         self.evidence.identities[technical_identity] = RequesterRole.TECHNICAL_GATE
         technical_work = self.runner.complete(
             technical_work,
@@ -321,7 +322,6 @@ class FakeGateStages(FakeStageService):
         )
         technical_ref = technical_work.output_refs[0]
         assert isinstance(technical_ref, StoredDataRef)
-        persist_fake_invocation(self.runtime, technical_invocation, technical_ref)
         if technical_status == "REVISE":
             return technical
 
@@ -414,13 +414,13 @@ class FakeGateStages(FakeStageService):
         )
         assert isinstance(review_record, RuleScopeImpactReview)
         review = review_record
+        persist_fake_invocation(self.runtime, rule_invocation)
         self.evidence.identities[rule_identity] = RequesterRole.RULE_SCOPE_GATE
         rule_work = self.runner.complete(
             rule_work, rule_identity, "RULE_SCOPE_GATE", (review,)
         )
         review_ref = rule_work.output_refs[0]
         assert isinstance(review_ref, StoredDataRef)
-        persist_fake_invocation(self.runtime, rule_invocation, review_ref)
 
         primitive_work = self.runner.start(
             scope,
@@ -573,12 +573,12 @@ class FakeGateStages(FakeStageService):
             provider_invoke=self.provider_invoke,
         )
         assert isinstance(chaining_record, ChainingResult)
+        persist_fake_invocation(self.runtime, chaining_invocation)
         chaining_work = self.runner.complete(
             chaining_work, chaining_identity, "CHAINING", (chaining_record,)
         )
         chaining_ref = chaining_work.output_refs[0]
         assert isinstance(chaining_ref, StoredDataRef)
-        persist_fake_invocation(self.runtime, chaining_invocation, chaining_ref)
         if stop_after_chaining:
             return technical
 
@@ -686,11 +686,11 @@ class FakeGateStages(FakeStageService):
         )
         assert isinstance(draft_record, ReportDraft)
         draft = draft_record
+        persist_fake_invocation(self.runtime, report_invocation)
         self.evidence.identities[report_identity] = RequesterRole.REPORTER
         report_work = self.runner.complete(
             report_work, report_identity, "REPORTER", (draft,)
         )
         report_ref = report_work.output_refs[0]
         assert isinstance(report_ref, StoredDataRef)
-        persist_fake_invocation(self.runtime, report_invocation, report_ref)
         return technical
