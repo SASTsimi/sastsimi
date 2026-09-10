@@ -5,7 +5,11 @@ import json
 import platform
 import sys
 import time
+from collections.abc import Callable
+from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -14,7 +18,11 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile
 from sastsimi.ports.dto import (
+    CancellationResult,
     MonotonicActionDeadline,
+    ProcessReceipt,
+    ProcessResult,
+    ProcessSpec,
     StaticToolObservation,
     StaticToolRequest,
     TrackedFile,
@@ -27,9 +35,11 @@ class FixedWorkspaceLocator:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.checks = 0
+        self.root_calls = 0
 
     def root_for(self, workspace: CodeWorkspace) -> Path:
         del workspace
+        self.root_calls += 1
         return self.root
 
     async def assert_unchanged(
@@ -37,6 +47,72 @@ class FixedWorkspaceLocator:
     ) -> None:
         del workspace, deadline
         self.checks += 1
+
+
+class FixedOutputRunner:
+    def __init__(
+        self,
+        root: Path,
+        payload: dict[str, Any],
+        before_return: Callable[[], None] | None = None,
+    ) -> None:
+        self.attempt_id = "at1"
+        self.output_root = root / "attempt"
+        self.output_root.mkdir(exist_ok=True)
+        self.workspace_root = root
+        self.payload = payload
+        self.before_return = before_return
+        self.calls: list[ProcessSpec] = []
+
+    async def run(self, spec: ProcessSpec) -> ProcessResult:
+        self.calls.append(spec)
+        if self.before_return is not None:
+            self.before_return()
+        raw = json.dumps(self.payload, sort_keys=True).encode()
+        receipt = ProcessReceipt(
+            invocation_id=spec.invocation_id,
+            attempt_id=spec.attempt_id,
+            command_fingerprint="f" * 64,
+            outcome="SUCCEEDED",
+            return_code=0,
+            stdout_name="stdout.bin",
+            stdout_size=len(raw),
+            stdout_sha256=hashlib.sha256(raw).hexdigest(),
+            stderr_name="stderr.bin",
+            stderr_size=0,
+            stderr_sha256=hashlib.sha256(b"").hexdigest(),
+            elapsed_ms=1,
+        )
+        return ProcessResult(
+            outcome="SUCCEEDED",
+            return_code=0,
+            stdout=raw,
+            stderr_tail=b"",
+            stdout_truncated=False,
+            stderr_truncated=False,
+            elapsed_ms=1,
+            receipt=receipt,
+            receipt_path=self.output_root / "receipt.json",
+        )
+
+    async def cancel(self, attempt_id: str) -> CancellationResult:
+        del attempt_id
+        return CancellationResult(cancelled=False, reason="NOT_RUNNING")
+
+
+def _empty_worker_payload(paths: tuple[str, ...]) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "parser_version": platform.python_version(),
+        "files": list(paths),
+        "analyzed_paths": list(paths),
+        "skipped_paths": [],
+        "symbols": [],
+        "facts": [],
+        "relations": [],
+        "gaps": [],
+        "errors": [],
+    }
 
 
 def _profile(executable: Path) -> StaticToolProfile:
@@ -164,6 +240,40 @@ async def _run(
         _request(paths), root, _profile(executable), deadline
     )
     return observation, locator
+
+
+def _fixed_adapter(
+    root: Path,
+    payload: dict[str, Any],
+    *,
+    tracked_files: tuple[TrackedFile, ...] | None = None,
+) -> tuple[Any, FixedWorkspaceLocator, FixedOutputRunner, StaticToolProfile]:
+    from sastsimi.static_analysis.ast_adapter import PythonAstProcessAdapter
+
+    executable = Path(sys.executable)
+    locator = FixedWorkspaceLocator(root)
+    runner = FixedOutputRunner(root, payload)
+    adapter = PythonAstProcessAdapter(
+        executable=executable,
+        worker_path=Path(__file__).parents[3]
+        / "src"
+        / "sastsimi"
+        / "static_analysis"
+        / "python_ast_worker.py",
+        process_runner=runner,
+        workspace_locator=locator,
+        tracked_files=tracked_files or _manifest(root, ("app.py",)),
+        monotonic_ns=time.monotonic_ns,
+    )
+    return adapter, locator, runner, _profile(executable)
+
+
+def _deadline() -> MonotonicActionDeadline:
+    return MonotonicActionDeadline(
+        action_id="ast-action",
+        started_ns=time.monotonic_ns(),
+        expires_ns=time.monotonic_ns() + 10_000_000_000,
+    )
 
 
 @pytest.mark.asyncio
@@ -541,3 +651,260 @@ async def test_post_decode_workspace_mutation_discards_observation(
         await adapter.execute(
             _request(("app.py",)), root, _profile(executable), deadline
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    [
+        "preparing",
+        "failed",
+        "null_commit",
+        "analysis_mismatch",
+        "commit_mismatch",
+        "workspace_mismatch",
+    ],
+)
+async def test_workspace_must_be_exact_ready_scope_before_locator_or_spawn(
+    tmp_path: Path, case: str
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "app.py").write_text("value = 1\n", encoding="utf-8")
+    payload = _empty_worker_payload(("app.py",))
+    adapter, locator, runner, tool_profile = _fixed_adapter(root, payload)
+    request = _request(("app.py",))
+    if case == "preparing":
+        workspace = request.workspace.model_copy(
+            update={"status": "PREPARING", "commit_id": None}
+        )
+        request = replace(request, workspace=workspace)
+    elif case == "failed":
+        request = replace(
+            request, workspace=request.workspace.model_copy(update={"status": "FAILED"})
+        )
+    elif case == "null_commit":
+        request = replace(
+            request, workspace=request.workspace.model_copy(update={"commit_id": None})
+        )
+    elif case in {"analysis_mismatch", "commit_mismatch"}:
+        field = "analysis_id" if case == "analysis_mismatch" else "commit_id"
+        value = "a2" if case == "analysis_mismatch" else "c2"
+        action = request.action.model_copy(
+            update={"meta": request.action.meta.model_copy(update={field: value})}
+        )
+        request = replace(request, action=action)
+    else:
+        action = request.action.model_copy(
+            update={
+                "meta": request.action.meta.model_copy(update={"workspace_id": "ws2"})
+            }
+        )
+        request = replace(request, action=action)
+
+    with pytest.raises(ValueError, match="STATIC_AST_EXECUTION_MISMATCH"):
+        await adapter.execute(request, root, tool_profile, _deadline())
+    assert locator.root_calls == 0
+    assert locator.checks == 0
+    assert runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_requested_manifest_duplicate_is_rejected_before_spawn(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "app.py").write_text("value = 1\n", encoding="utf-8")
+    payload = _empty_worker_payload(("app.py",))
+    adapter, _, runner, tool_profile = _fixed_adapter(root, payload)
+
+    with pytest.raises(ValueError, match="STATIC_AST_MANIFEST_MISMATCH"):
+        await adapter.execute(
+            _request(("app.py", "app.py")), root, tool_profile, _deadline()
+        )
+    assert runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_tracked_size_mismatch_is_blocked_before_spawn(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    target = root / "app.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    payload = _empty_worker_payload(("app.py",))
+    tracked = (
+        replace(_manifest(root, ("app.py",))[0], size_bytes=target.stat().st_size + 1),
+    )
+    adapter, _, runner, tool_profile = _fixed_adapter(
+        root, payload, tracked_files=tracked
+    )
+
+    observed = await adapter.execute(
+        _request(("app.py",)), root, tool_profile, _deadline()
+    )
+    assert observed.status == "SKIPPED"
+    assert observed.analyzed_paths == ()
+    assert observed.skipped_paths == ("app.py",)
+    assert {gap.code for gap in observed.gaps} == {"STATIC_MANIFEST_MISMATCH"}
+    assert runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_bound_file_size_change_during_worker_run_discards_output(
+    tmp_path: Path,
+) -> None:
+    from sastsimi.static_analysis.ast_adapter import PythonAstProcessAdapter
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    target = root / "app.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    payload = _empty_worker_payload(("app.py",))
+    executable = Path(sys.executable)
+    locator = FixedWorkspaceLocator(root)
+
+    def change_size() -> None:
+        target.write_text("value = 123456\n", encoding="utf-8")
+
+    runner = FixedOutputRunner(
+        root,
+        payload,
+        before_return=change_size,
+    )
+    adapter = PythonAstProcessAdapter(
+        executable=executable,
+        worker_path=Path(__file__).parents[3]
+        / "src"
+        / "sastsimi"
+        / "static_analysis"
+        / "python_ast_worker.py",
+        process_runner=runner,
+        workspace_locator=locator,
+        tracked_files=_manifest(root, ("app.py",)),
+        monotonic_ns=time.monotonic_ns,
+    )
+
+    observed = await adapter.execute(
+        _request(("app.py",)), root, _profile(executable), _deadline()
+    )
+    assert observed.status == "FAILED"
+    assert {error.code for error in observed.errors} == {"STATIC_AST_OUTPUT_INVALID"}
+
+
+def _foreign_location() -> dict[str, Any]:
+    return {
+        "file_path": "foreign.py",
+        "start_line": 1,
+        "start_column": 1,
+        "end_line": 1,
+        "end_column": 2,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    [
+        "files_foreign",
+        "files_missing",
+        "files_duplicate",
+        "partition_overlap",
+        "partition_incomplete",
+        "partition_duplicate",
+        "symbol_foreign",
+        "fact_foreign",
+        "relation_foreign",
+        "gap_path_foreign",
+        "gap_location_foreign",
+    ],
+)
+async def test_worker_output_must_be_exact_complete_safe_manifest_partition(
+    tmp_path: Path, case: str
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "app.py").write_text("value = 1\n", encoding="utf-8")
+    payload = deepcopy(_empty_worker_payload(("app.py",)))
+    location = _foreign_location()
+    if case == "files_foreign":
+        payload["files"] = ["foreign.py"]
+    elif case == "files_missing":
+        payload["files"] = []
+    elif case == "files_duplicate":
+        payload["files"] = ["app.py", "app.py"]
+    elif case == "partition_overlap":
+        payload["skipped_paths"] = ["app.py"]
+    elif case == "partition_incomplete":
+        payload["analyzed_paths"] = []
+    elif case == "partition_duplicate":
+        payload["analyzed_paths"] = ["app.py", "app.py"]
+    elif case == "symbol_foreign":
+        payload["symbols"] = [
+            {
+                "source_key": "symbol",
+                "symbol_kind": "FILE",
+                "native_kind": "PYTHON_FILE",
+                "name": "foreign.py",
+                "location": location,
+            }
+        ]
+    elif case == "fact_foreign":
+        payload["facts"] = [
+            {
+                "source_key": "fact",
+                "fact_kind": "SOURCE",
+                "symbol_source_key": None,
+                "location": location,
+                "rule_id": None,
+            }
+        ]
+    elif case == "relation_foreign":
+        payload["relations"] = [
+            {
+                "source_key": "relation",
+                "relation_kind": "DATA_FLOW",
+                "from_symbol_source_key": None,
+                "from_location": location,
+                "to_symbol_source_key": None,
+                "to_location": location,
+                "rule_id": None,
+            }
+        ]
+    elif case == "gap_path_foreign":
+        payload["gaps"] = [
+            {
+                "stage": "STATIC_ANALYSIS",
+                "code": "STATIC_PARSE_FAILED",
+                "reason": "FAILED",
+                "description": "bad",
+                "affected_paths": ["foreign.py"],
+                "affected_languages": ["Python"],
+                "affected_locations": [],
+                "retryable": False,
+            }
+        ]
+    else:
+        payload["gaps"] = [
+            {
+                "stage": "STATIC_ANALYSIS",
+                "code": "STATIC_PARSE_FAILED",
+                "reason": "FAILED",
+                "description": "bad",
+                "affected_paths": ["app.py"],
+                "affected_languages": ["Python"],
+                "affected_locations": [location],
+                "retryable": False,
+            }
+        ]
+    adapter, _, runner, tool_profile = _fixed_adapter(root, payload)
+
+    observed = await adapter.execute(
+        _request(("app.py",)), root, tool_profile, _deadline()
+    )
+    assert len(runner.calls) == 1
+    assert observed.status == "FAILED"
+    assert observed.symbols == ()
+    assert observed.facts == ()
+    assert observed.relations == ()
+    assert {error.code for error in observed.errors} == {"STATIC_AST_OUTPUT_INVALID"}

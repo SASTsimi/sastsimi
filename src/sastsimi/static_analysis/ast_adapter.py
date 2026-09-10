@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import stat
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, cast
 
@@ -38,6 +40,15 @@ class ProcessRunner(Protocol):
 
     async def run(self, spec: ProcessSpec) -> ProcessResult: ...
     async def cancel(self, attempt_id: str) -> CancellationResult: ...
+
+
+@dataclass(frozen=True)
+class _BoundTrackedFile:
+    git_path: str
+    absolute_path: Path
+    size_bytes: int
+    device: int
+    inode: int
 
 
 def _digest(path: Path) -> str:
@@ -326,9 +337,10 @@ class PythonAstProcessAdapter:
         started = self.monotonic_ns() // 1_000_000
         self._validate_execution(request, workspace_root, profile, deadline)
         await self.workspace_locator.assert_unchanged(request.workspace, deadline)
-        worker_paths, preflight_gaps = self._worker_manifest(
+        worker_manifest, preflight_gaps = self._worker_manifest(
             request.action.file_paths, workspace_root
         )
+        worker_paths = tuple(item.git_path for item in worker_manifest)
         if not worker_paths:
             await self.workspace_locator.assert_unchanged(request.workspace, deadline)
             return self._observation(
@@ -371,7 +383,8 @@ class PythonAstProcessAdapter:
             await self.workspace_locator.assert_unchanged(request.workspace, deadline)
             return self._process_failure(profile, result, preflight_gaps, started)
         try:
-            decoded = self._decode(result.stdout)
+            self._assert_bound_manifest(worker_manifest, workspace_root)
+            decoded = self._decode(result.stdout, worker_manifest)
         except (UnicodeError, json.JSONDecodeError, KeyError, ValueError, TypeError):
             await self.workspace_locator.assert_unchanged(request.workspace, deadline)
             return self._decode_failure(profile, result.stdout, preflight_gaps, started)
@@ -379,6 +392,10 @@ class PythonAstProcessAdapter:
             await self.workspace_locator.assert_unchanged(request.workspace, deadline)
             return self._decode_failure(profile, result.stdout, preflight_gaps, started)
         await self.workspace_locator.assert_unchanged(request.workspace, deadline)
+        try:
+            self._assert_bound_manifest(worker_manifest, workspace_root)
+        except ValueError:
+            return self._decode_failure(profile, result.stdout, preflight_gaps, started)
         gaps = (*preflight_gaps, *cast(tuple[CandidateGap, ...], decoded["gaps"]))
         analyzed = cast(tuple[str, ...], decoded["analyzed_paths"])
         skipped = tuple(
@@ -416,6 +433,17 @@ class PythonAstProcessAdapter:
     ) -> None:
         if not isinstance(request.action.meta, RecordMeta):
             raise ValueError("STATIC_AST_EXECUTION_MISMATCH")
+        workspace = request.workspace
+        action_meta = request.action.meta
+        if (
+            workspace.status != "READY"
+            or workspace.commit_id is None
+            or workspace.analysis_id != workspace.meta.analysis_id
+            or action_meta.analysis_id != workspace.analysis_id
+            or action_meta.workspace_id != workspace.workspace_id
+            or action_meta.commit_id != workspace.commit_id
+        ):
+            raise ValueError("STATIC_AST_EXECUTION_MISMATCH")
         attempt_id = request.action.meta.attempt_id
         located = self.workspace_locator.root_for(request.workspace).resolve(
             strict=True
@@ -435,12 +463,15 @@ class PythonAstProcessAdapter:
 
     def _worker_manifest(
         self, requested_paths: Sequence[str], workspace_root: Path
-    ) -> tuple[tuple[str, ...], tuple[CandidateGap, ...]]:
-        worker_paths = []
-        gaps = []
+    ) -> tuple[tuple[_BoundTrackedFile, ...], tuple[CandidateGap, ...]]:
+        if len(requested_paths) != len(set(requested_paths)):
+            raise ValueError("STATIC_AST_MANIFEST_MISMATCH")
+        worker_files: list[_BoundTrackedFile] = []
+        gaps: list[CandidateGap] = []
         root = workspace_root.resolve(strict=True)
-        for path in sorted(set(requested_paths)):
-            if path not in self.tracked_files:
+        for path in sorted(requested_paths):
+            tracked = self.tracked_files.get(path)
+            if tracked is None:
                 gaps.append(self._gap("STATIC_MANIFEST_MISMATCH", "BLOCKED", path))
                 continue
             if not path.endswith(".py"):
@@ -449,26 +480,76 @@ class PythonAstProcessAdapter:
                 )
                 continue
             pure = PurePosixPath(path)
-            candidate = root.joinpath(*pure.parts)
             if (
                 not path
                 or "\\" in path
                 or pure.is_absolute()
                 or any(part in {"", ".", ".."} for part in pure.parts)
-                or _link_like(candidate)
             ):
                 gaps.append(self._gap("STATIC_PATH_UNSAFE", "BLOCKED", path))
                 continue
+            candidate = root.joinpath(*pure.parts)
             try:
+                if self._path_chain_has_link(root, candidate):
+                    raise ValueError("STATIC_PATH_UNSAFE")
                 resolved = candidate.resolve(strict=True)
-            except OSError:
+                file_stat = candidate.stat(follow_symlinks=False)
+            except (OSError, ValueError):
                 gaps.append(self._gap("STATIC_PATH_UNSAFE", "BLOCKED", path))
                 continue
-            if not _inside(resolved, root) or not resolved.is_file():
+            if (
+                not _inside(resolved, root)
+                or not stat.S_ISREG(file_stat.st_mode)
+                or tracked.git_mode not in {"100644", "100755"}
+            ):
                 gaps.append(self._gap("STATIC_PATH_UNSAFE", "BLOCKED", path))
                 continue
-            worker_paths.append(path)
-        return tuple(worker_paths), tuple(gaps)
+            if file_stat.st_size != tracked.size_bytes:
+                gaps.append(self._gap("STATIC_MANIFEST_MISMATCH", "BLOCKED", path))
+                continue
+            worker_files.append(
+                _BoundTrackedFile(
+                    git_path=path,
+                    absolute_path=resolved,
+                    size_bytes=file_stat.st_size,
+                    device=file_stat.st_dev,
+                    inode=file_stat.st_ino,
+                )
+            )
+        return tuple(worker_files), tuple(gaps)
+
+    @staticmethod
+    def _path_chain_has_link(root: Path, candidate: Path) -> bool:
+        relative = candidate.relative_to(root)
+        current = root
+        for part in relative.parts:
+            current /= part
+            if _link_like(current):
+                return True
+        return False
+
+    def _assert_bound_manifest(
+        self, manifest: Sequence[_BoundTrackedFile], workspace_root: Path
+    ) -> None:
+        root = workspace_root.resolve(strict=True)
+        for item in manifest:
+            candidate = root.joinpath(*PurePosixPath(item.git_path).parts)
+            try:
+                if self._path_chain_has_link(root, candidate):
+                    raise ValueError("STATIC_AST_MANIFEST_MISMATCH")
+                resolved = candidate.resolve(strict=True)
+                file_stat = candidate.stat(follow_symlinks=False)
+            except OSError as error:
+                raise ValueError("STATIC_AST_MANIFEST_MISMATCH") from error
+            if (
+                resolved != item.absolute_path
+                or not _inside(resolved, root)
+                or not stat.S_ISREG(file_stat.st_mode)
+                or file_stat.st_size != item.size_bytes
+                or file_stat.st_dev != item.device
+                or file_stat.st_ino != item.inode
+            ):
+                raise ValueError("STATIC_AST_MANIFEST_MISMATCH")
 
     @staticmethod
     def _gap(code: str, reason: str, path: str) -> CandidateGap:
@@ -509,7 +590,9 @@ class PythonAstProcessAdapter:
             reason_code=reason,
         )
 
-    def _decode(self, raw: bytes) -> Mapping[str, object]:
+    def _decode(
+        self, raw: bytes, manifest: Sequence[_BoundTrackedFile]
+    ) -> Mapping[str, object]:
         value = json.loads(raw.decode("utf-8"))
         fields = frozenset(
             {
@@ -528,7 +611,7 @@ class PythonAstProcessAdapter:
         item = _closed(value, fields)
         if item["schema_version"] != 1:
             raise ValueError("STATIC_AST_OUTPUT_INVALID")
-        return {
+        decoded: dict[str, object] = {
             "parser_version": _text(item["parser_version"]),
             "files": _strings(item["files"]),
             "analyzed_paths": _strings(item["analyzed_paths"]),
@@ -539,6 +622,45 @@ class PythonAstProcessAdapter:
             "gaps": _gaps(item["gaps"]),
             "errors": _errors(item["errors"]),
         }
+        self._validate_decoded_manifest(decoded, manifest)
+        return decoded
+
+    @staticmethod
+    def _validate_decoded_manifest(
+        decoded: Mapping[str, object], manifest: Sequence[_BoundTrackedFile]
+    ) -> None:
+        expected = tuple(item.git_path for item in manifest)
+        allowed = frozenset(expected)
+        files = cast(tuple[str, ...], decoded["files"])
+        analyzed = cast(tuple[str, ...], decoded["analyzed_paths"])
+        skipped = cast(tuple[str, ...], decoded["skipped_paths"])
+        if (
+            files != expected
+            or len(analyzed) != len(set(analyzed))
+            or len(skipped) != len(set(skipped))
+            or set(analyzed).intersection(skipped)
+            or set(analyzed).union(skipped) != allowed
+            or any(path not in allowed for path in analyzed)
+            or any(path not in allowed for path in skipped)
+        ):
+            raise ValueError("STATIC_AST_OUTPUT_INVALID")
+
+        def require_location(location: CandidateLocation) -> None:
+            if location.file_path not in allowed:
+                raise ValueError("STATIC_AST_OUTPUT_INVALID")
+
+        for symbol in cast(tuple[CandidateSymbol, ...], decoded["symbols"]):
+            require_location(symbol.location)
+        for fact in cast(tuple[CandidateFact, ...], decoded["facts"]):
+            require_location(fact.location)
+        for relation in cast(tuple[CandidateRelation, ...], decoded["relations"]):
+            require_location(relation.from_location)
+            require_location(relation.to_location)
+        for gap in cast(tuple[CandidateGap, ...], decoded["gaps"]):
+            if any(path not in allowed for path in gap.affected_paths):
+                raise ValueError("STATIC_AST_OUTPUT_INVALID")
+            for location in gap.affected_locations:
+                require_location(location)
 
     def _process_failure(
         self,
