@@ -27,6 +27,7 @@ from sastsimi.ports.dto import (
     StaticToolRequest,
     TrackedFile,
 )
+from sastsimi.static_analysis.process import process_command_fingerprint
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import meta, ref
 
@@ -70,9 +71,11 @@ class FixedOutputRunner:
             self.before_return()
         raw = json.dumps(self.payload, sort_keys=True).encode()
         receipt = ProcessReceipt(
+            action_id=spec.deadline.action_id,
             invocation_id=spec.invocation_id,
+            command_kind=spec.command_kind,
             attempt_id=spec.attempt_id,
-            command_fingerprint="f" * 64,
+            command_fingerprint=process_command_fingerprint(spec),
             outcome="SUCCEEDED",
             return_code=0,
             stdout_name="stdout.bin",

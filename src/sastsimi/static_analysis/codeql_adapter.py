@@ -189,8 +189,7 @@ def _safe_regular_file(info: os.stat_result) -> bool:
         stat.S_ISREG(info.st_mode)
         and info.st_nlink == 1
         and not (
-            int(getattr(info, "st_file_attributes", 0))
-            & _FILE_ATTRIBUTE_REPARSE_POINT
+            int(getattr(info, "st_file_attributes", 0)) & _FILE_ATTRIBUTE_REPARSE_POINT
         )
         and int(getattr(info, "st_reparse_tag", 0)) == 0
     )
@@ -773,6 +772,7 @@ class CodeQLProcessAdapter:
             raise ValueError("CODEQL_ACTION_DEADLINE_MISMATCH")
         return ProcessSpec(
             invocation_id=f"{action_id}:codeql:{suffix}",
+            command_kind=f"codeql-{suffix}",
             attempt_id=attempt_id,
             argv=argv,
             cwd=cwd,

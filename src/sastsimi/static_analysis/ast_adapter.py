@@ -300,6 +300,7 @@ class PythonAstProcessAdapter:
             )
         spec = ProcessSpec(
             invocation_id=f"{deadline.action_id}:ast-probe",
+            command_kind="ast-probe",
             attempt_id=self.process_runner.attempt_id,
             argv=(
                 str(self.executable),
@@ -362,6 +363,7 @@ class PythonAstProcessAdapter:
             )
         spec = ProcessSpec(
             invocation_id=f"{request.action.action_id}:python-ast",
+            command_kind="ast-parse",
             attempt_id=self.process_runner.attempt_id,
             argv=(
                 str(self.executable),

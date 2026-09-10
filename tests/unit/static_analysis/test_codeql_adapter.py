@@ -29,6 +29,7 @@ from sastsimi.ports.dto import (
     StaticToolRequest,
     TrackedFile,
 )
+from sastsimi.static_analysis.process import process_command_fingerprint
 from sastsimi.storage.codec import reference
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import meta
@@ -66,9 +67,11 @@ def process_result(
     stdout: bytes = b"",
 ) -> ProcessResult:
     receipt = ProcessReceipt(
+        action_id=spec.deadline.action_id,
         invocation_id=spec.invocation_id,
+        command_kind=spec.command_kind,
         attempt_id=spec.attempt_id,
-        command_fingerprint=sha256(canonical_bytes(spec.argv)),
+        command_fingerprint=process_command_fingerprint(spec),
         outcome=outcome,  # type: ignore[arg-type]
         return_code=return_code,
         stdout_name="stdout",
