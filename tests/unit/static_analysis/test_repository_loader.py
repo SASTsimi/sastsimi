@@ -21,12 +21,21 @@ from sastsimi.ports.dto import (
     ProcessReceipt,
     ProcessResult,
     ProcessSpec,
+    RepositoryPreparation,
     WorkspaceStorageLease,
     WorkspaceStoragePolicy,
+    WorkspaceStorageUsage,
 )
 from sastsimi.static_analysis.process import AttemptOutputBudget, SafeProcessRunner
-from sastsimi.static_analysis.repository_loader import RepositoryLoader, WorkspaceGuard
-from sastsimi.static_analysis.workspace_storage import FixtureQuotaWorkspaceStorage
+from sastsimi.static_analysis.repository_loader import (
+    RepositoryLoader,
+    RepositoryRecoveryGuard,
+    WorkspaceGuard,
+)
+from sastsimi.static_analysis.workspace_storage import (
+    FixtureQuotaWorkspaceStorage,
+    WorkspaceQuotaExceeded,
+)
 from tests.integration.runtime_support import metadata
 
 
@@ -55,7 +64,9 @@ def result(
     spec: ProcessSpec, stdout: bytes = b"", outcome: str = "SUCCEEDED"
 ) -> ProcessResult:
     receipt = ProcessReceipt(
+        action_id=spec.deadline.action_id,
         invocation_id=spec.invocation_id,
+        command_kind=spec.command_kind,
         attempt_id=spec.attempt_id,
         command_fingerprint=hashlib.sha256(canonical_bytes(spec.argv)).hexdigest(),
         outcome=outcome,  # type: ignore[arg-type]
@@ -114,6 +125,7 @@ class QuotaCrossingRunner:
     def __init__(self) -> None:
         self.specs: list[ProcessSpec] = []
         self.cancelled = False
+        self.natural_finished = False
         self._cancelled = asyncio.Event()
 
     async def run(self, spec: ProcessSpec) -> ProcessResult:
@@ -122,7 +134,7 @@ class QuotaCrossingRunner:
         try:
             await asyncio.wait_for(self._cancelled.wait(), timeout=0.1)
         except TimeoutError:
-            pass
+            self.natural_finished = True
         return result(spec, outcome="CANCELLED" if self.cancelled else "SUCCEEDED")
 
     async def cancel(self, attempt_id: str) -> object:
@@ -130,6 +142,43 @@ class QuotaCrossingRunner:
         self.cancelled = True
         self._cancelled.set()
         return object()
+
+
+class EntryCountCrossingRunner(QuotaCrossingRunner):
+    async def run(self, spec: ProcessSpec) -> ProcessResult:
+        self.specs.append(spec)
+        for name in ("one", "two", "three"):
+            (spec.cwd / name).mkdir()
+        try:
+            await asyncio.wait_for(self._cancelled.wait(), timeout=0.1)
+        except TimeoutError:
+            self.natural_finished = True
+        return result(spec, outcome="CANCELLED" if self.cancelled else "SUCCEEDED")
+
+
+class FreeReserveCrossingStorage(FixtureQuotaWorkspaceStorage):
+    crossed = False
+
+    def enforce(self, lease: WorkspaceStorageLease) -> WorkspaceStorageUsage:
+        if self.crossed:
+            self.seal(lease, "FREE_RESERVE")
+            raise WorkspaceQuotaExceeded("WORKSPACE_QUOTA_EXCEEDED:FREE_RESERVE")
+        return super().enforce(lease)
+
+
+class FreeReserveCrossingRunner(QuotaCrossingRunner):
+    def __init__(self, storage: FreeReserveCrossingStorage) -> None:
+        super().__init__()
+        self.storage = storage
+
+    async def run(self, spec: ProcessSpec) -> ProcessResult:
+        self.specs.append(spec)
+        self.storage.crossed = True
+        try:
+            await asyncio.wait_for(self._cancelled.wait(), timeout=0.1)
+        except TimeoutError:
+            self.natural_finished = True
+        return result(spec, outcome="CANCELLED" if self.cancelled else "SUCCEEDED")
 
 
 class FailingAllocationStorage(FixtureQuotaWorkspaceStorage):
@@ -279,6 +328,85 @@ async def test_checkout_cap_plus_one_cancels_active_git_immediately(
 
     assert prepared.status == "FAILED"
     assert runner.cancelled
+    assert not runner.natural_finished
+    assert len(runner.specs) == 1
+
+
+@pytest.mark.asyncio
+async def test_file_count_crossing_cancels_active_git_before_natural_finish(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "git.exe"
+    executable.write_bytes(b"fixture")
+    output = tmp_path / "output"
+    output.mkdir()
+    runner = EntryCountCrossingRunner()
+    storage = FixtureQuotaWorkspaceStorage(
+        tmp_path / "leases", capacity_bytes=1_000_000
+    )
+    subject = RepositoryLoader(
+        storage=storage,
+        process_runner_factory=lambda _lease, _deadline, _output: runner,
+        git_executable=executable,
+        output_dir=output,
+        allow_local_file=True,
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+    now = time.monotonic_ns()
+
+    prepared = await subject.prepare(
+        submitted_source=source.as_uri(),
+        requested_ref="HEAD",
+        analysis_id="analysis",
+        workspace_id="workspace",
+        attempt_id="attempt",
+        policy_ref=quota_ref(),
+        policy=WorkspaceStoragePolicy("1.0", 100, 100, 2, 1),
+        deadline=MonotonicActionDeadline("action", now, now + 1_000_000_000),
+    )
+
+    assert prepared.status == "FAILED"
+    assert runner.cancelled
+    assert not runner.natural_finished
+    assert len(runner.specs) == 1
+
+
+@pytest.mark.asyncio
+async def test_free_reserve_crossing_cancels_active_git_before_natural_finish(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "git.exe"
+    executable.write_bytes(b"fixture")
+    output = tmp_path / "output"
+    output.mkdir()
+    storage = FreeReserveCrossingStorage(tmp_path / "leases", capacity_bytes=1_000_000)
+    runner = FreeReserveCrossingRunner(storage)
+    subject = RepositoryLoader(
+        storage=storage,
+        process_runner_factory=lambda _lease, _deadline, _output: runner,
+        git_executable=executable,
+        output_dir=output,
+        allow_local_file=True,
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+    now = time.monotonic_ns()
+
+    prepared = await subject.prepare(
+        submitted_source=source.as_uri(),
+        requested_ref="HEAD",
+        analysis_id="analysis",
+        workspace_id="workspace",
+        attempt_id="attempt",
+        policy_ref=quota_ref(),
+        policy=WorkspaceStoragePolicy("1.0", 100, 100, 10, 100),
+        deadline=MonotonicActionDeadline("action", now, now + 1_000_000_000),
+    )
+
+    assert prepared.status == "FAILED"
+    assert runner.cancelled
+    assert not runner.natural_finished
     assert len(runner.specs) == 1
 
 
@@ -603,3 +731,89 @@ async def test_workspace_guard_rejects_head_and_tracked_manifest_drift(
     )
     with pytest.raises(ValueError, match="WORKSPACE_MUTATED"):
         await moved.assert_unchanged(workspace, deadline)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation", (None, "HEAD", "DETACHED", "WORKTREE", "INDEX", "MANIFEST", "QUOTA")
+)
+async def test_repository_recovery_guard_rechecks_every_workspace_invariant(
+    tmp_path: Path, mutation: str | None
+) -> None:
+    storage = FixtureQuotaWorkspaceStorage(
+        tmp_path / "leases", capacity_bytes=3_000_001
+    )
+    policy = WorkspaceStoragePolicy("1.0", 1_000_000, 1_000_000, 10, 1)
+    lease = storage.allocate(
+        attempt_id="attempt",
+        workspace_id="workspace",
+        policy_ref=quota_ref(),
+        policy=policy,
+    )
+    (lease.root / "safe.py").write_text("value = 1", encoding="utf-8")
+    commit = "a" * 40
+    blob = "b" * 40
+    manifest = f"100644 {blob} 0\tsafe.py\0".encode()
+    fixture_root = tmp_path / "manifest-fixture"
+    fixture_root.mkdir()
+    fixture_loader, _ = loader(fixture_root, [])
+    tracked, _ = fixture_loader.build_manifest(lease.root, manifest)
+    outputs: list[bytes | str] = [
+        (("c" * 40 if mutation == "HEAD" else commit) + "\n").encode(),
+        b"" if mutation == "DETACHED" else "FAILED",
+        "FAILED" if mutation == "WORKTREE" else b"",
+        "FAILED" if mutation == "INDEX" else b"",
+        b"" if mutation == "MANIFEST" else manifest,
+    ]
+    active_runner = FakeRunner(outputs, [])
+    executable = tmp_path / "git.exe"
+    executable.write_bytes(b"fixture")
+    output = tmp_path / "guard-output"
+    output.mkdir()
+    workspace_guard = WorkspaceGuard(
+        roots={"workspace": lease.root},
+        manifests={"workspace": tracked},
+        process_runner_factory=lambda _root, _deadline: active_runner,
+        git_executable=executable,
+        output_dir=output,
+    )
+    now = time.monotonic_ns()
+    recovery_guard = RepositoryRecoveryGuard(
+        storage=storage,
+        workspace_guard=workspace_guard,
+        deadline_factory=lambda action_id, _attempt_id: MonotonicActionDeadline(
+            action_id, now, now + 1_000_000_000
+        ),
+    )
+    outcome = RepositoryPreparation(
+        analysis_id="analysis",
+        workspace_id="workspace",
+        repository_url="https://example.invalid/team/repo.git",
+        requested_ref="main",
+        status="READY",
+        resolved_commit_id=commit,
+        root=lease.root,
+        tracked_files=tracked,
+        gaps=(),
+        errors=(),
+        lease_id=lease.lease_id,
+    )
+    if mutation == "QUOTA":
+        for index in range(11):
+            (lease.root / f"entry-{index}").mkdir()
+
+    if mutation is None:
+        await recovery_guard.validate(
+            outcome,
+            action_id="action",
+            attempt_id="attempt",
+            process_receipts=(),
+        )
+    else:
+        with pytest.raises((ValueError, WorkspaceQuotaExceeded)):
+            await recovery_guard.validate(
+                outcome,
+                action_id="action",
+                attempt_id="attempt",
+                process_receipts=(),
+            )

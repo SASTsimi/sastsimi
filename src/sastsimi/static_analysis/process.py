@@ -253,7 +253,9 @@ def validate_receipt(path: Path, spec: ProcessSpec) -> ProcessReceipt:
             raise ValueError
         receipt = ProcessReceipt(**value)
         if (
-            receipt.invocation_id != spec.invocation_id
+            receipt.action_id != spec.deadline.action_id
+            or receipt.command_kind != spec.command_kind
+            or receipt.invocation_id != spec.invocation_id
             or receipt.attempt_id != spec.attempt_id
             or receipt.command_fingerprint
             != hashlib.sha256(canonical_bytes(spec.argv)).hexdigest()
@@ -435,7 +437,9 @@ class SafeProcessRunner:
         if outcome not in allowed_outcomes:
             raise ValueError("PROCESS_OUTCOME_INVALID")
         receipt = ProcessReceipt(
+            action_id=spec.deadline.action_id,
             invocation_id=spec.invocation_id,
+            command_kind=spec.command_kind,
             attempt_id=spec.attempt_id,
             command_fingerprint=hashlib.sha256(canonical_bytes(spec.argv)).hexdigest(),
             outcome=outcome,  # type: ignore[arg-type]

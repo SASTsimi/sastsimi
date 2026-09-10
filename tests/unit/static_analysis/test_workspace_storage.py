@@ -1,5 +1,7 @@
 """Attempt-owned workspace quota and cleanup behavior."""
 
+import os
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
@@ -125,8 +127,9 @@ def test_lease_is_private_attempt_owned_and_limit_crossing_seals_it(
     (lease.root / ".git").mkdir()
     (lease.root / ".git" / "objects").write_bytes(b"x" * 10)
     (lease.root / "one.py").write_bytes(b"y" * 20)
+    (lease.root / "empty-directory").mkdir()
     usage = storage.enforce(lease)
-    assert (usage.git_bytes, usage.checkout_bytes, usage.file_count) == (10, 20, 1)
+    assert (usage.git_bytes, usage.checkout_bytes, usage.file_count) == (10, 20, 2)
 
     (lease.root / "two.py").write_bytes(b"z")
     with pytest.raises(WorkspaceQuotaExceeded, match="CHECKOUT_BYTES"):
@@ -155,3 +158,43 @@ def test_cleanup_targets_only_registered_exact_lease(tmp_path: Path) -> None:
     assert outside.exists()
     storage.cleanup_or_quarantine(lease)
     assert not lease.root.exists()
+
+
+def test_checkout_entry_count_includes_directories_and_links_without_following(
+    tmp_path: Path,
+) -> None:
+    """Links and directories are checkout entries even when their targets are not."""
+    raw = policy_bytes(max_checkout_bytes=100, max_file_count=2, min_free_bytes=1)
+    ref = policy_ref(raw)
+    storage = FixtureQuotaWorkspaceStorage(tmp_path / "leases", capacity_bytes=200)
+    lease = storage.allocate(
+        attempt_id="attempt",
+        workspace_id="workspace",
+        policy_ref=ref,
+        policy=decode_workspace_storage_policy(ref, raw, "analysis"),
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "large.bin").write_bytes(b"x" * 150)
+
+    def link(name: str) -> None:
+        destination = lease.root / name
+        if os.name == "nt":
+            subprocess.run(
+                ("cmd", "/c", "mklink", "/J", str(destination), str(outside)),
+                check=True,
+                capture_output=True,
+            )
+        else:
+            destination.symlink_to(outside, target_is_directory=True)
+
+    link("linked-one")
+    link("linked-two")
+
+    usage = storage.enforce(lease)
+    assert usage.file_count == 2
+    assert usage.checkout_bytes == 0
+
+    link("linked-three")
+    with pytest.raises(WorkspaceQuotaExceeded, match="FILE_COUNT"):
+        storage.enforce(lease)

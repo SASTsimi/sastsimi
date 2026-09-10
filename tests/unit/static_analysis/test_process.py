@@ -63,6 +63,7 @@ def spec(root: Path, executable: Path, *, invocation: str = "invoke-1") -> Proce
     output.mkdir(parents=True, exist_ok=True)
     return ProcessSpec(
         invocation_id=invocation,
+        command_kind="fixture",
         attempt_id="attempt-1",
         argv=(str(executable), "a; echo injected", "$(whoami)"),
         cwd=root / "workspace",

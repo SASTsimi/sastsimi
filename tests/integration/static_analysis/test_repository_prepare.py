@@ -176,6 +176,27 @@ class FakeRepositoryLoader:
 
     async def prepare(self, **values: Any) -> RepositoryPreparation:
         self.calls += 1
+        deadline = values["deadline"]
+        attempt_id = str(values["attempt_id"])
+        self.process_receipts = tuple(
+            ProcessReceipt(
+                action_id=deadline.action_id,
+                invocation_id=f"{attempt_id}-{kind}",
+                command_kind=kind,
+                attempt_id=attempt_id,
+                command_fingerprint="f" * 64,
+                outcome="SUCCEEDED",
+                return_code=0,
+                stdout_name=f"{kind}.stdout",
+                stdout_size=0,
+                stdout_sha256="e" * 64,
+                stderr_name=f"{kind}.stderr",
+                stderr_size=0,
+                stderr_sha256="e" * 64,
+                elapsed_ms=1,
+            )
+            for kind in ("clone", "resolve", "checkout", "head", "manifest")
+        )
         return RepositoryPreparation(
             analysis_id=values["analysis_id"],
             workspace_id=values["workspace_id"],

@@ -25,6 +25,14 @@ changes required by the independent C1/I1/I2/I3 security findings:
   optional opaque `lease_id` to repository preparation/action-receipt transport.
   Receipts still must not persist an absolute root: recovery resolves the exact
   root from the trusted lease identity/locator and validates it before use.
+- `src/sastsimi/static_analysis/process.py` and the non-persisted
+  `ProcessSpec`/`ProcessReceipt` transport in `ports/dto.py` may add exact
+  action and command-kind binding plus a bounded no-follow receipt reader.
+  This is limited to resolving and validating every repository process receipt
+  during recovery; it does not change a persisted contract or activate a tool.
+  Its constructor conformance updates may touch only
+  `tests/unit/static_analysis/test_process.py` and
+  `tests/unit/static_analysis/test_process_windows.py`.
 
 No persisted contract, enum, schema, public CLI activation, or other Wave 1
 lane ownership changes are authorized by this amendment.

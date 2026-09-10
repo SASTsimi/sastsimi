@@ -280,11 +280,63 @@ class WorkspaceGuard:
         self, workspace: CodeWorkspace, deadline: MonotonicActionDeadline
     ) -> None:
         root = self.root_for(workspace)
+        await self._assert_repository_state(
+            root,
+            str(workspace.commit_id),
+            self._manifests.get(str(workspace.workspace_id)),
+            deadline,
+            require_detached=False,
+        )
+
+    async def assert_preparation_unchanged(
+        self,
+        outcome: RepositoryPreparation,
+        deadline: MonotonicActionDeadline,
+    ) -> None:
+        if (
+            outcome.status != "READY"
+            or outcome.root is None
+            or outcome.resolved_commit_id is None
+        ):
+            raise ValueError("WORKSPACE_MUTATED")
+        try:
+            configured = self._roots[outcome.workspace_id]
+            root = configured.resolve(strict=True)
+            reported = outcome.root.resolve(strict=True)
+        except (KeyError, OSError) as error:
+            raise ValueError("WORKSPACE_MUTATED") from error
+        if (
+            configured.is_symlink()
+            or outcome.root.is_symlink()
+            or root != reported
+            or not root.is_dir()
+        ):
+            raise ValueError("WORKSPACE_MUTATED")
+        await self._assert_repository_state(
+            root,
+            outcome.resolved_commit_id,
+            outcome.tracked_files,
+            deadline,
+            require_detached=True,
+        )
+
+    async def _assert_repository_state(
+        self,
+        root: Path,
+        commit_id: str,
+        expected_manifest: tuple[TrackedFile, ...] | None,
+        deadline: MonotonicActionDeadline,
+        *,
+        require_detached: bool,
+    ) -> None:
         runner = self._factory(root, deadline)
 
-        async def run(name: str, argv: tuple[str, ...]) -> ProcessResult:
+        async def run(
+            name: str, argv: tuple[str, ...], *, expect_failure: bool = False
+        ) -> ProcessResult:
             spec = ProcessSpec(
                 invocation_id=f"{deadline.action_id}-guard-{name}",
+                command_kind=f"guard-{name}",
                 attempt_id=deadline.action_id,
                 argv=(str(self._git), "-C", str(root), *argv),
                 cwd=root,
@@ -300,19 +352,65 @@ class WorkspaceGuard:
                 deadline=deadline,
             )
             result = await runner.run(spec)
-            if result.outcome != "SUCCEEDED" or result.return_code != 0:
+            succeeded = result.outcome == "SUCCEEDED" and result.return_code == 0
+            if succeeded == expect_failure:
                 raise ValueError("WORKSPACE_MUTATED")
             return result
 
         head = await run("head", ("rev-parse", "HEAD"))
-        if head.stdout.decode("ascii").strip().lower() != str(workspace.commit_id):
+        if head.stdout.decode("ascii").strip().lower() != commit_id:
             raise ValueError("WORKSPACE_MUTATED")
+        if require_detached:
+            await run("detached", ("symbolic-ref", "-q", "HEAD"), expect_failure=True)
         await run("worktree", ("diff", "--quiet", "HEAD", "--"))
         await run("index", ("diff", "--cached", "--quiet", "HEAD", "--"))
         listing = await run("manifest", ("ls-files", "--stage", "-z"))
         manifest, _ = _build_manifest(root, listing.stdout, self._sensitive_names)
-        if manifest != self._manifests.get(str(workspace.workspace_id)):
+        if manifest != expected_manifest:
             raise ValueError("WORKSPACE_MUTATED")
+
+
+type RecoveryDeadlineFactory = Callable[[str, str], MonotonicActionDeadline]
+
+
+class RepositoryRecoveryGuard:
+    """Re-resolve a lease, enforce quota, and re-prove exact Git state."""
+
+    def __init__(
+        self,
+        *,
+        storage: WorkspaceStoragePort,
+        workspace_guard: WorkspaceGuard,
+        deadline_factory: RecoveryDeadlineFactory,
+    ) -> None:
+        self._storage = storage
+        self._workspace_guard = workspace_guard
+        self._deadline_factory = deadline_factory
+
+    async def validate(
+        self,
+        outcome: RepositoryPreparation,
+        *,
+        action_id: str,
+        attempt_id: str,
+        process_receipts: tuple[ProcessReceipt, ...],
+    ) -> None:
+        del process_receipts
+        if outcome.lease_id is None or outcome.root is None:
+            raise ValueError("WORKSPACE_MUTATED")
+        lease = self._storage.resolve(outcome.lease_id)
+        if (
+            lease.attempt_id != attempt_id
+            or lease.workspace_id != outcome.workspace_id
+            or lease.root.resolve(strict=True) != outcome.root.resolve(strict=True)
+        ):
+            raise ValueError("WORKSPACE_MUTATED")
+        self._storage.enforce(lease)
+        deadline = self._deadline_factory(action_id, attempt_id)
+        if deadline.action_id != action_id:
+            raise ValueError("WORKSPACE_MUTATED")
+        await self._workspace_guard.assert_preparation_unchanged(outcome, deadline)
+        self._storage.enforce(lease)
 
 
 class RepositoryLoader:
@@ -369,6 +467,7 @@ class RepositoryLoader:
     ) -> ProcessSpec:
         return ProcessSpec(
             invocation_id=invocation,
+            command_kind=invocation.rsplit("-", 1)[-1],
             attempt_id=attempt_id,
             argv=(str(self.git_executable), *argv),
             cwd=root,

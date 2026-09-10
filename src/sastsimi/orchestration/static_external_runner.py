@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict
@@ -46,6 +47,66 @@ type WorkspacePolicyDecoder = Callable[
     [RunStoredDataRef, bytes, str], WorkspaceStoragePolicy
 ]
 
+_MAX_RECEIPT_BYTES = 64 * 1024
+_MAX_OBSERVATION_BYTES = 4 * 1024 * 1024
+_PROCESS_SEQUENCE = ("clone", "resolve", "checkout", "head", "manifest")
+
+
+def _file_identity(
+    details: os.stat_result,
+) -> tuple[int, int, int, int, int, int, int]:
+    return (
+        details.st_dev,
+        details.st_ino,
+        details.st_mode,
+        details.st_size,
+        details.st_mtime_ns,
+        details.st_nlink,
+        getattr(details, "st_file_attributes", 0),
+    )
+
+
+def _guarded_read(path: Path, limit: int) -> bytes:
+    """Read one private regular file without following/reusing another identity."""
+    descriptor = -1
+    try:
+        before = path.lstat()
+        attributes = getattr(before, "st_file_attributes", 0)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or attributes & 0x400
+            or before.st_size > limit
+        ):
+            raise ValueError
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        if (
+            _file_identity(opened) != _file_identity(before)
+            or opened.st_nlink != 1
+            or getattr(opened, "st_file_attributes", 0) & 0x400
+        ):
+            raise ValueError
+        chunks: list[bytes] = []
+        remaining = limit + 1
+        while remaining:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        after = path.lstat()
+        if len(raw) > limit or _file_identity(after) != _file_identity(opened):
+            raise ValueError
+        return raw
+    except (OSError, ValueError) as error:
+        raise ValueError("STATIC_ACTION_RECEIPT_INVALID") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
 
 class RepositoryLoaderPort(Protocol):
     process_receipts: tuple[ProcessReceipt, ...]
@@ -64,6 +125,17 @@ class RepositoryLoaderPort(Protocol):
     ) -> Awaitable[RepositoryPreparation]: ...
 
 
+class RepositoryRecoveryValidatorPort(Protocol):
+    async def validate(
+        self,
+        outcome: RepositoryPreparation,
+        *,
+        action_id: str,
+        attempt_id: str,
+        process_receipts: tuple[ProcessReceipt, ...],
+    ) -> None: ...
+
+
 class StaticExternalRunner:
     """Verify config, reserve, claim, dispatch, account, then publish."""
 
@@ -77,6 +149,7 @@ class StaticExternalRunner:
         monotonic_ns: object = time.monotonic_ns,
         checkpoint: Callable[[str], None] = lambda _stage: None,
         lease_root_resolver: Callable[[str], Path] | None = None,
+        recovery_validator: RepositoryRecoveryValidatorPort | None = None,
     ) -> None:
         self.runner = runner
         self.receipt_root = receipt_root
@@ -85,6 +158,7 @@ class StaticExternalRunner:
         self.monotonic_ns = monotonic_ns
         self.checkpoint = checkpoint
         self.lease_root_resolver = lease_root_resolver
+        self.recovery_validator = recovery_validator
 
     def _verified_policy(
         self, work: WorkExecutionState, policy_ref: RunStoredDataRef
@@ -221,7 +295,7 @@ class StaticExternalRunner:
             analysis_state=state,
         )
         input_refs = (preparing.workspace_ref, policy_ref)
-        receipt, outcome = self._read_receipt(
+        receipt, outcome, process_receipts = self._read_receipt(
             str(current.active_attempt_id), input_refs
         )
         action, decision, reservation = self._recovery_records(
@@ -233,10 +307,22 @@ class StaticExternalRunner:
             action.input_refs != input_refs
             or action.work_ref is None
             or action.work_ref.record_id != current.meta.record_id
+            or outcome.analysis_id != str(current.meta.analysis_id)
+            or outcome.workspace_id != str(workspace.workspace_id)
+            or outcome.repository_url != str(workspace.repository_url)
             or reservation.action_ref != action_ref
             or decision.action_ref != action_ref
         ):
             raise ValueError("REPOSITORY_RECOVERY_INVALID")
+        if outcome.status == "READY":
+            if self.recovery_validator is None:
+                raise ValueError("REPOSITORY_RECOVERY_GUARD_REQUIRED")
+            await self.recovery_validator.validate(
+                outcome,
+                action_id=receipt.action_id,
+                attempt_id=receipt.attempt_id,
+                process_receipts=process_receipts,
+            )
         try:
             self.runner.runtime.validator.mark_returned(decision_ref)
         except ValueError as error:
@@ -318,6 +404,9 @@ class StaticExternalRunner:
             or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", outcome.lease_id)
         ):
             raise ValueError("WORKSPACE_LEASE_INVALID")
+        self._validate_process_receipts(
+            action_id, attempt_id, outcome, process_receipts
+        )
         prefix = hashlib.sha256(action_id.encode()).hexdigest()[:24]
         observation = canonical_bytes(
             {
@@ -334,15 +423,20 @@ class StaticExternalRunner:
         )
         observation_name = prefix + ".repository.json"
         self._atomic_write(self.receipt_root / observation_name, observation)
+        process_hashes: list[str] = []
+        for process_receipt in process_receipts:
+            process_raw = canonical_bytes(asdict(process_receipt))
+            process_digest = hashlib.sha256(process_raw).hexdigest()
+            self._atomic_write(
+                self.receipt_root / f"{process_digest}.process.json", process_raw
+            )
+            process_hashes.append(process_digest)
         receipt = StaticActionReceipt(
             action_id=action_id,
             attempt_id=attempt_id,
             operation_kind="REPOSITORY_PREPARE",
             input_fingerprint=hashlib.sha256(canonical_bytes(input_refs)).hexdigest(),
-            process_receipt_hashes=tuple(
-                hashlib.sha256(canonical_bytes(asdict(item))).hexdigest()
-                for item in process_receipts
-            ),
+            process_receipt_hashes=tuple(process_hashes),
             observation_name=observation_name,
             observation_size=len(observation),
             observation_sha256=hashlib.sha256(observation).hexdigest(),
@@ -357,9 +451,15 @@ class StaticExternalRunner:
         self,
         attempt_id: str,
         input_refs: tuple[RecordRef, ...],
-    ) -> tuple[StaticActionReceipt, RepositoryPreparation]:
+    ) -> tuple[StaticActionReceipt, RepositoryPreparation, tuple[ProcessReceipt, ...]]:
         expected_fingerprint = hashlib.sha256(canonical_bytes(input_refs)).hexdigest()
-        matches: list[tuple[StaticActionReceipt, RepositoryPreparation]] = []
+        matches: list[
+            tuple[
+                StaticActionReceipt,
+                RepositoryPreparation,
+                tuple[ProcessReceipt, ...],
+            ]
+        ] = []
         try:
             root = self.receipt_root.resolve(strict=True)
             if self.receipt_root.is_symlink() or not root.is_dir():
@@ -367,9 +467,7 @@ class StaticExternalRunner:
             for target in root.glob("*.receipt.json"):
                 if target.is_symlink() or not target.is_file():
                     raise ValueError
-                raw = target.read_bytes()
-                if len(raw) > 64 * 1024:
-                    raise ValueError
+                raw = _guarded_read(target, _MAX_RECEIPT_BYTES)
                 value = json.loads(raw)
                 if not isinstance(value, dict) or set(value) != set(
                     StaticActionReceipt.__dataclass_fields__
@@ -422,7 +520,9 @@ class StaticExternalRunner:
                 ):
                     raise ValueError
                 observation_path = root / receipt.observation_name
-                observation = observation_path.read_bytes()
+                if receipt.observation_size > _MAX_OBSERVATION_BYTES:
+                    raise ValueError
+                observation = _guarded_read(observation_path, _MAX_OBSERVATION_BYTES)
                 if (
                     observation_path.is_symlink()
                     or not observation_path.is_file()
@@ -448,16 +548,124 @@ class StaticExternalRunner:
                 if canonical_bytes(payload) != observation:
                     raise ValueError
                 outcome = self._decode_observation(payload, receipt)
+                process_receipts = self._read_process_receipts(root, receipt)
+                self._validate_process_receipts(
+                    receipt.action_id,
+                    receipt.attempt_id,
+                    outcome,
+                    process_receipts,
+                )
                 if (
                     receipt.attempt_id == attempt_id
                     and receipt.input_fingerprint == expected_fingerprint
                 ):
-                    matches.append((receipt, outcome))
+                    matches.append((receipt, outcome, process_receipts))
         except (OSError, TypeError, json.JSONDecodeError, ValueError) as error:
             raise ValueError("STATIC_ACTION_RECEIPT_INVALID") from error
         if len(matches) != 1:
             raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
         return matches[0]
+
+    def _read_process_receipts(
+        self, root: Path, receipt: StaticActionReceipt
+    ) -> tuple[ProcessReceipt, ...]:
+        if len(set(receipt.process_receipt_hashes)) != len(
+            receipt.process_receipt_hashes
+        ):
+            raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
+        decoded: list[ProcessReceipt] = []
+        for digest in receipt.process_receipt_hashes:
+            raw = _guarded_read(root / f"{digest}.process.json", _MAX_RECEIPT_BYTES)
+            if hashlib.sha256(raw).hexdigest() != digest:
+                raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
+            try:
+                value = json.loads(raw)
+                decoded_receipt = self._decode_process_receipt(value)
+            except (TypeError, json.JSONDecodeError, ValueError) as error:
+                raise ValueError("STATIC_ACTION_RECEIPT_INVALID") from error
+            if canonical_bytes(asdict(decoded_receipt)) != raw:
+                raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
+            decoded.append(decoded_receipt)
+        return tuple(decoded)
+
+    def _decode_process_receipt(self, value: object) -> ProcessReceipt:
+        if not isinstance(value, dict) or set(value) != set(
+            ProcessReceipt.__dataclass_fields__
+        ):
+            raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
+        outcome = self._string(value["outcome"])
+        if outcome not in ("SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"):
+            raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
+        return_code = value["return_code"]
+        if return_code is not None and (
+            isinstance(return_code, bool) or not isinstance(return_code, int)
+        ):
+            raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
+        return ProcessReceipt(
+            action_id=self._string(value["action_id"]),
+            invocation_id=self._string(value["invocation_id"]),
+            command_kind=self._string(value["command_kind"]),
+            attempt_id=self._string(value["attempt_id"]),
+            command_fingerprint=self._string(value["command_fingerprint"]),
+            outcome=cast(
+                Literal["SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"],
+                outcome,
+            ),
+            return_code=return_code,
+            stdout_name=self._string(value["stdout_name"]),
+            stdout_size=self._non_negative_int(value["stdout_size"]),
+            stdout_sha256=self._string(value["stdout_sha256"]),
+            stderr_name=self._string(value["stderr_name"]),
+            stderr_size=self._non_negative_int(value["stderr_size"]),
+            stderr_sha256=self._string(value["stderr_sha256"]),
+            elapsed_ms=self._non_negative_int(value["elapsed_ms"]),
+        )
+
+    @staticmethod
+    def _validate_process_receipts(
+        action_id: str,
+        attempt_id: str,
+        outcome: RepositoryPreparation,
+        receipts: tuple[ProcessReceipt, ...],
+    ) -> None:
+        kinds = tuple(item.command_kind for item in receipts)
+        if kinds != _PROCESS_SEQUENCE[: len(kinds)]:
+            raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
+        if outcome.status == "READY" and (
+            kinds != _PROCESS_SEQUENCE
+            or any(
+                item.outcome != "SUCCEEDED" or item.return_code != 0
+                for item in receipts
+            )
+        ):
+            raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
+        for item in receipts:
+            hashes = (
+                item.command_fingerprint,
+                item.stdout_sha256,
+                item.stderr_sha256,
+            )
+            valid_result = (
+                (item.outcome == "SUCCEEDED" and item.return_code == 0)
+                or (
+                    item.outcome == "FAILED"
+                    and isinstance(item.return_code, int)
+                    and item.return_code != 0
+                )
+                or item.outcome in {"TIMED_OUT", "CANCELLED"}
+            )
+            if (
+                item.action_id != action_id
+                or item.attempt_id != attempt_id
+                or item.invocation_id != f"{attempt_id}-{item.command_kind}"
+                or any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in hashes)
+                or not item.stdout_name
+                or Path(item.stdout_name).name != item.stdout_name
+                or not item.stderr_name
+                or Path(item.stderr_name).name != item.stderr_name
+                or not valid_result
+            ):
+                raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
 
     def _decode_observation(
         self, payload: dict[str, object], receipt: StaticActionReceipt

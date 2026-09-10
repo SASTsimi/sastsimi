@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
+import stat
 import uuid
 from pathlib import Path
 
@@ -164,18 +166,28 @@ class FixtureQuotaWorkspaceStorage:
         if not registered.root.is_dir() or registered.root.is_symlink():
             raise ValueError("WORKSPACE_LEASE_INVALID")
         git_bytes = checkout_bytes = file_count = 0
-        for path in registered.root.rglob("*"):
-            if path.is_symlink():
-                continue
-            if not path.is_file():
-                continue
-            relative = path.relative_to(registered.root)
-            size = path.stat().st_size
-            if relative.parts and relative.parts[0] == ".git":
-                git_bytes += size
-            else:
-                checkout_bytes += size
-                file_count += 1
+        pending = [registered.root]
+        while pending:
+            directory = pending.pop()
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    path = Path(entry.path)
+                    relative = path.relative_to(registered.root)
+                    in_git = bool(relative.parts and relative.parts[0] == ".git")
+                    details = entry.stat(follow_symlinks=False)
+                    attributes = getattr(details, "st_file_attributes", 0)
+                    link_like = entry.is_symlink() or bool(attributes & 0x400)
+                    if not in_git:
+                        file_count += 1
+                    if link_like:
+                        continue
+                    if stat.S_ISDIR(details.st_mode):
+                        pending.append(path)
+                    elif stat.S_ISREG(details.st_mode):
+                        if in_git:
+                            git_bytes += details.st_size
+                        else:
+                            checkout_bytes += details.st_size
         used = git_bytes + checkout_bytes
         return WorkspaceStorageUsage(
             git_bytes=git_bytes,
@@ -184,11 +196,23 @@ class FixtureQuotaWorkspaceStorage:
             free_bytes=max(0, self._capacity_bytes - used),
         )
 
+    def resolve(self, lease_id: str) -> WorkspaceStorageLease:
+        registered = self._leases.get(lease_id)
+        if registered is None:
+            raise ValueError("WORKSPACE_LEASE_INVALID")
+        return self._registered(registered[0])[0]
+
     def enforce(self, lease: WorkspaceStorageLease) -> WorkspaceStorageUsage:
         registered, policy = self._registered(lease)
         if registered.lease_id in self._sealed:
             raise ValueError("WORKSPACE_LEASE_SEALED")
-        usage = self.measure(registered)
+        try:
+            usage = self.measure(registered)
+        except OSError as error:
+            self.seal(registered, "STAT_ERROR")
+            raise WorkspaceQuotaExceeded(
+                "WORKSPACE_QUOTA_EXCEEDED:STAT_ERROR"
+            ) from error
         reason = None
         if usage.git_bytes > policy.max_git_bytes:
             reason = "GIT_BYTES"

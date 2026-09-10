@@ -141,6 +141,7 @@ class MonotonicActionDeadline:
 @dataclass(frozen=True)
 class ProcessSpec:
     invocation_id: str
+    command_kind: str
     attempt_id: str
     argv: tuple[str, ...]
     cwd: Path
@@ -154,7 +155,9 @@ class ProcessSpec:
 
 @dataclass(frozen=True)
 class ProcessReceipt:
+    action_id: str
     invocation_id: str
+    command_kind: str
     attempt_id: str
     command_fingerprint: str
     outcome: Literal["SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"]

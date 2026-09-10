@@ -85,6 +85,7 @@ class FakeWin32Api:
 def win_spec() -> ProcessSpec:
     return ProcessSpec(
         invocation_id="i1",
+        command_kind="fixture",
         attempt_id="a1",
         argv=("C:/trusted/tool.exe", "a&b"),
         cwd=Path("C:/workspace"),
@@ -217,9 +218,9 @@ class FakeNativeKernel:
         write_handle = self.next_handle + 1
         self.next_handle += 2
         ctypes.cast(read, ctypes.POINTER(ctypes.c_void_p)).contents.value = read_handle
-        ctypes.cast(write, ctypes.POINTER(ctypes.c_void_p)).contents.value = (
-            write_handle
-        )
+        ctypes.cast(
+            write, ctypes.POINTER(ctypes.c_void_p)
+        ).contents.value = write_handle
         return True
 
     def _initialize_attributes(
