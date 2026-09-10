@@ -15,6 +15,7 @@ from sastsimi.contracts.hypothesis import HypothesisProposal
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.static import (
+    CodeContextRequest,
     CodeContextResponse,
     CodeLocation,
     CodeWorkspace,
@@ -146,10 +147,21 @@ def _code_record(name: str, meta: RecordMeta) -> HypothesisProposal | StaticFact
     )
 
 
-@pytest.mark.parametrize("tamper_process_receipt", (False, True))
+@pytest.mark.parametrize(
+    ("crash_stage", "tamper_process_receipt"),
+    (
+        ("AUTHORIZED", False),
+        ("CLAIMED", False),
+        ("REQUEST_BOUND", False),
+        ("DISPATCHED", False),
+        ("RECEIPT_DURABLE", False),
+        ("RECEIPT_DURABLE", True),
+    ),
+)
 @pytest.mark.asyncio
 async def test_complete_receipt_recovers_once_without_source_reread(
     tmp_path: Path,
+    crash_stage: str,
     tamper_process_receipt: bool,
 ) -> None:
     h, runtime, runner, policy_work, parser, _ = prepared_policy_parser(
@@ -178,8 +190,7 @@ async def test_complete_receipt_recovers_once_without_source_reread(
     artifacts.workspace_id = workspace.workspace_id
     artifacts.commit_id = workspace.commit_id
     meta = RecordMeta.model_validate(
-        parser.meta.model_dump()
-        | {"hypothesis_id": "h1", "attempt_id": None}
+        parser.meta.model_dump() | {"hypothesis_id": "h1", "attempt_id": None}
     )
     proposal = _code_record("HypothesisProposal", meta)
     bundle = _code_record("StaticFactBundle", meta)
@@ -232,7 +243,7 @@ async def test_complete_receipt_recovers_once_without_source_reread(
     tracked = _TrackedResolver(git_path, source)
 
     def checkpoint(stage: str) -> None:
-        if stage == "RECEIPT_DURABLE":
+        if stage == crash_stage:
             raise _CrashAfterReceipt
 
     location = CodeLocation(
@@ -283,7 +294,9 @@ async def test_complete_receipt_recovers_once_without_source_reread(
             service_identity=service_identity,
             work_timeout_ms=100,
         )
-    assert locator.read_checks == 2 and tracked.calls == 1
+    expected_reads_before_recovery = 2 if crash_stage == "RECEIPT_DURABLE" else 0
+    assert locator.read_checks == expected_reads_before_recovery
+    assert tracked.calls == (1 if crash_stage == "RECEIPT_DURABLE" else 0)
 
     records = runtime.queries.published_records("a1")
     action = next(
@@ -304,11 +317,7 @@ async def test_complete_receipt_recovers_once_without_source_reread(
         key=lambda item: item.meta.revision_number,
     )
     issued_ref = reference(decisions[0])
-    claimed_ref = reference(decisions[1])
     assert isinstance(issued_ref, StoredDataRef)
-    assert isinstance(claimed_ref, StoredDataRef)
-    request_ref = decisions[-1].outcome_refs[0]
-    assert isinstance(request_ref, StoredDataRef)
     reservation = next(
         item
         for item in records
@@ -321,6 +330,92 @@ async def test_complete_receipt_recovers_once_without_source_reread(
     plan_ref = plan_refs[0]
     assert isinstance(plan_ref, StoredDataRef)
 
+    if crash_stage != "RECEIPT_DURABLE":
+        supplied_decision_ref = reference(decisions[-1])
+        assert isinstance(supplied_decision_ref, StoredDataRef)
+        requests_before = tuple(
+            item for item in records if isinstance(item, CodeContextRequest)
+        )
+        assert len(requests_before) == (
+            1 if crash_stage in {"REQUEST_BOUND", "DISPATCHED"} else 0
+        )
+        service.checkpoint = lambda _stage: None
+        if crash_stage == "DISPATCHED":
+            with pytest.raises(ValueError, match="CONTEXT_RECOVERY_INVALID"):
+                await service.recover_pending(
+                    work=work,
+                    intent=intent,
+                    workspace=workspace,
+                    bundle=bundle,
+                    action_ref=action_ref,
+                    decision_ref=supplied_decision_ref,
+                    reservation_ref=reservation_ref,
+                    plan_ref=plan_ref,
+                    service_identity=service_identity,
+                    work_timeout_ms=100,
+                )
+            assert runtime.work.get(str(work.work_id)).status == "RUNNING"
+            assert locator.read_checks == 0 and tracked.calls == 0
+            return
+        recovered, output_ref = await service.recover_pending(
+            work=work,
+            intent=intent,
+            workspace=workspace,
+            bundle=bundle,
+            action_ref=action_ref,
+            decision_ref=supplied_decision_ref,
+            reservation_ref=reservation_ref,
+            plan_ref=plan_ref,
+            service_identity=service_identity,
+            work_timeout_ms=100,
+        )
+        assert recovered == h.records.get_exact(output_ref)
+        assert runtime.work.get(str(work.work_id)).status == "SUCCEEDED"
+        current_records = runtime.queries.published_records("a1")
+        assert (
+            len(
+                tuple(
+                    item for item in current_records if isinstance(item, ActionRequest)
+                )
+            )
+            == len(tuple(item for item in records if isinstance(item, ActionRequest)))
+            + 1
+        )
+        assert (
+            len(
+                tuple(
+                    item
+                    for item in current_records
+                    if isinstance(item, ActionRequest)
+                    and item.action_type == "READ_CODE"
+                    and item.work_ref == reference(work)
+                )
+            )
+            == 1
+        )
+        assert (
+            len(
+                {
+                    str(item.reservation_id)
+                    for item in current_records
+                    if isinstance(item, BudgetReservation)
+                    and item.action_ref == action_ref
+                }
+            )
+            == 1
+        )
+        context_requests = tuple(
+            item for item in current_records if isinstance(item, CodeContextRequest)
+        )
+        assert len(context_requests) == 1
+        assert locator.read_checks == 2 and tracked.calls == 1
+        return
+
+    claimed_ref = reference(decisions[1])
+    assert isinstance(claimed_ref, StoredDataRef)
+    request_ref = decisions[-1].outcome_refs[0]
+    assert isinstance(request_ref, StoredDataRef)
+
     def recover() -> tuple[CodeContextResponse, StoredDataRef]:
         return service.recover_after_receipt(
             work=work,
@@ -332,6 +427,7 @@ async def test_complete_receipt_recovers_once_without_source_reread(
             plan_ref=plan_ref,
             service_identity=service_identity,
         )
+
     if tamper_process_receipt:
         process_path = next((tmp_path / "receipts").glob("*.process.json"))
         process_path.write_bytes(b"{}")

@@ -15,8 +15,14 @@ from typing import Protocol
 
 from pydantic import TypeAdapter
 
-from sastsimi.contracts.actions import ActionDecision, ActionRequest, RequesterRole
-from sastsimi.contracts.budget import BudgetReservation
+from sastsimi.contracts.actions import (
+    ActionDecision,
+    ActionRequest,
+    Decision,
+    RequesterRole,
+    UseStatus,
+)
+from sastsimi.contracts.budget import BudgetReservation, ReservationStatus
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.hypothesis import HypothesisProposal
 from sastsimi.contracts.ids import ErrorId, GapId, TransitionCommitId, TransitionId
@@ -39,6 +45,7 @@ from sastsimi.contracts.work import (
 )
 from sastsimi.ports.context import (
     ChainingContextRecords,
+    ContextCeilingProfile,
     ContextLineageReaderPort,
     ContextReadPlan,
     ContextRetrievalIntent,
@@ -57,6 +64,7 @@ from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.static_analysis.context_retrieval import (
     ContextReadObservation,
     context_intent_hash,
+    decode_context_read_plan,
     encode_context_read_plan,
     plan_context_retrieval,
     read_context_files,
@@ -249,9 +257,11 @@ class ContextRetrievalService:
             ),
         )
         decision_ref = self.runner.authorize(work, action, reservation)
+        self.checkpoint("AUTHORIZED")
         used_ref = self.runtime.validator.claim_external(
             str(work.work_id), decision_ref, reference(reservation)
         )
+        self.checkpoint("CLAIMED")
         request = self.runtime.context.bind(
             str(work.work_id),
             used_ref,
@@ -260,12 +270,67 @@ class ContextRetrievalService:
             relation_query=intent.relation_query,
             limits=intent.requested_limits,
         )
+        self.checkpoint("REQUEST_BOUND")
+        action_ref = reference(action)
+        reservation_ref = reference(reservation)
+        request_ref = reference(request)
+        if (
+            not isinstance(action_ref, StoredDataRef)
+            or not isinstance(reservation_ref, StoredDataRef)
+            or not isinstance(decision_ref, StoredDataRef)
+            or not isinstance(used_ref, StoredDataRef)
+            or not isinstance(request_ref, StoredDataRef)
+        ):
+            raise ValueError("CONTEXT_SCOPE_MISMATCH")
+        return await self._execute_bound(
+            work=work,
+            intent=intent,
+            workspace=workspace,
+            bundle=bundle,
+            ceilings=ceilings,
+            lineage=lineage,
+            plan=plan,
+            plan_raw=plan_raw,
+            plan_ref=plan_ref,
+            action=action,
+            action_ref=action_ref,
+            issued_decision_ref=decision_ref,
+            claimed_decision_ref=used_ref,
+            reservation=reservation,
+            request=request,
+            request_ref=request_ref,
+            service_identity=service_identity,
+        )
+
+    async def _execute_bound(
+        self,
+        *,
+        work: WorkExecutionState,
+        intent: ContextRetrievalIntent,
+        workspace: CodeWorkspace,
+        bundle: StaticFactBundle,
+        ceilings: ContextCeilingProfile,
+        lineage: ChainingContextRecords | None,
+        plan: ContextReadPlan,
+        plan_raw: bytes,
+        plan_ref: StoredDataRef,
+        action: ActionRequest,
+        action_ref: StoredDataRef,
+        issued_decision_ref: StoredDataRef,
+        claimed_decision_ref: StoredDataRef,
+        reservation: BudgetReservation,
+        request: CodeContextRequest,
+        request_ref: StoredDataRef,
+        service_identity: BudgetScopeRef,
+    ) -> tuple[CodeContextResponse, StoredDataRef]:
+        """Execute only an exact claimed and request-bound READ_CODE closure."""
         self._require_unchanged(
             intent, bundle, workspace, work, ceilings, lineage, plan_raw
         )
         self.runtime.validator.mark_dispatched(
-            decision_ref, idempotency_key=str(action.action_id)
+            issued_decision_ref, idempotency_key=str(action.action_id)
         )
+        self.checkpoint("DISPATCHED")
         started_ns = self.monotonic_ns()
         deadline = MonotonicActionDeadline(
             action_id=str(action.action_id),
@@ -341,20 +406,12 @@ class ContextRetrievalService:
         candidate = canonical_bytes(response)
         if len(candidate) > ceilings.limits.max_bytes:
             raise ValueError("CONTEXT_RESPONSE_TOO_LARGE")
-        request_ref = reference(request)
-        action_ref = reference(action)
-        if (
-            not isinstance(request_ref, StoredDataRef)
-            or not isinstance(action_ref, StoredDataRef)
-            or not isinstance(used_ref, StoredDataRef)
-        ):
-            raise ValueError("CONTEXT_SCOPE_MISMATCH")
         receipt, receipt_raw = self._write_receipt(
             action_id=str(action.action_id),
             action_ref=action_ref,
             work=work,
             attempt_id=str(work.active_attempt_id),
-            decision_ref=used_ref,
+            decision_ref=claimed_decision_ref,
             request_ref=request_ref,
             plan_ref=plan_ref,
             plan=plan,
@@ -365,14 +422,14 @@ class ContextRetrievalService:
         )
         recovered, recovered_response, recovered_raw, recovered_process = (
             self._read_receipt(
-            action_ref=action_ref,
-            work=work,
-            attempt_id=str(work.active_attempt_id),
-            decision_ref=used_ref,
-            request_ref=request_ref,
-            plan_ref=plan_ref,
-            plan=plan,
-            max_bytes=ceilings.limits.max_bytes,
+                action_ref=action_ref,
+                work=work,
+                attempt_id=str(work.active_attempt_id),
+                decision_ref=claimed_decision_ref,
+                request_ref=request_ref,
+                plan_ref=plan_ref,
+                plan=plan,
+                max_bytes=ceilings.limits.max_bytes,
             )
         )
         self.workspace_locator.validate_integrity_receipts(
@@ -397,7 +454,7 @@ class ContextRetrievalService:
         if receipt_ref.content_hash != hashlib.sha256(receipt_raw).hexdigest():
             raise ValueError("CONTEXT_RECEIPT_INVALID")
         self.checkpoint("RECEIPT_DURABLE")
-        self.runtime.validator.mark_returned(decision_ref)
+        self.runtime.validator.mark_returned(issued_decision_ref)
         self.checkpoint("RETURNED")
         self._account_once(reservation, elapsed_ms)
         self.checkpoint("ACCOUNTED")
@@ -407,7 +464,7 @@ class ContextRetrievalService:
             work=work,
             service_identity=service_identity,
             response=response,
-            read_decision_ref=used_ref,
+            read_decision_ref=claimed_decision_ref,
             request_ref=request_ref,
             plan_ref=plan_ref,
             profile_ref=plan.ceiling_profile_ref,
@@ -534,9 +591,7 @@ class ContextRetrievalService:
             raise ValueError("CONTEXT_RECOVERY_INVALID")
         matches = tuple(
             item
-            for item in runtime.queries.published_records(
-                str(claimed.meta.analysis_id)
-            )
+            for item in runtime.queries.published_records(str(claimed.meta.analysis_id))
             if isinstance(item, ActionDecision)
             and item.decision_id == claimed.decision_id
             and item.action_ref == claimed.action_ref
@@ -550,6 +605,232 @@ class ContextRetrievalService:
         if not isinstance(current_ref, StoredDataRef):
             raise ValueError("CONTEXT_RECOVERY_INVALID")
         return current_ref
+
+    async def recover_pending(
+        self,
+        *,
+        work: WorkExecutionState,
+        intent: ContextRetrievalIntent,
+        workspace: CodeWorkspace,
+        bundle: StaticFactBundle,
+        action_ref: StoredDataRef,
+        decision_ref: StoredDataRef,
+        reservation_ref: StoredDataRef,
+        plan_ref: StoredDataRef,
+        service_identity: BudgetScopeRef,
+        work_timeout_ms: int,
+    ) -> tuple[CodeContextResponse, StoredDataRef]:
+        """Resume an exact authorized or claimed READ_CODE before dispatch."""
+        current = self.runtime.work.get(str(work.work_id))
+        if (
+            current != work
+            or work.active_attempt_id is None
+            or not isinstance(work.meta, RecordMeta)
+        ):
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+        records = self.runtime.unit_of_work.records
+        action = records.get_exact(action_ref)
+        supplied_decision = records.get_exact(decision_ref)
+        reservation = records.get_exact(reservation_ref)
+        if (
+            not isinstance(action, ActionRequest)
+            or not isinstance(supplied_decision, ActionDecision)
+            or not isinstance(reservation, BudgetReservation)
+            or not isinstance(action.meta, RecordMeta)
+            or action.action_type != "READ_CODE"
+            or action.work_ref != reference(work)
+            or action.expected_state_version != work.state_version
+            or action.meta.attempt_id != work.active_attempt_id
+            or action.input_refs != (*work.input_refs, plan_ref)
+            or action.reason != intent.reason
+            or reservation.status != ReservationStatus.RESERVED
+            or reservation.action_ref != action_ref
+            or reservation.work_ref != reference(work)
+            or supplied_decision.action_ref != action_ref
+            or supplied_decision.decision != Decision.ALLOW
+        ):
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+        ceilings = resolve_context_ceiling(self.runtime.unit_of_work.artifacts, work)
+        try:
+            with self.runtime.unit_of_work.artifacts.open_verified(plan_ref) as stream:
+                plan_raw = stream.read(ceilings.limits.max_bytes + 1)
+            if len(plan_raw) > ceilings.limits.max_bytes:
+                raise ValueError
+            plan = decode_context_read_plan(plan_raw)
+        except (OSError, ValueError) as error:
+            raise ValueError("CONTEXT_RECOVERY_INVALID") from error
+        lineage = self._lineage(intent)
+        if (
+            hashlib.sha256(plan_raw).hexdigest() != plan_ref.content_hash
+            or str(plan_ref.stored_data_id) != plan_ref.content_hash
+            or plan_ref.record_id is not None
+            or action.file_paths != plan.file_paths
+            or plan.ceiling_profile_ref != ceilings.ref
+        ):
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+        self._require_recovery_inputs(intent, workspace, bundle, work)
+        recomputed = plan_context_retrieval(
+            intent=intent,
+            bundle=bundle,
+            workspace=workspace,
+            work=work,
+            ceilings=ceilings,
+            work_timeout_ms=work_timeout_ms,
+            lineage=lineage,
+        )
+        if encode_context_read_plan(recomputed) != plan_raw:
+            raise ValueError("CONTEXT_PLAN_CHANGED")
+
+        decisions = tuple(
+            sorted(
+                (
+                    item
+                    for item in self.runtime.queries.published_records(
+                        str(work.meta.analysis_id)
+                    )
+                    if isinstance(item, ActionDecision)
+                    and item.decision_id == supplied_decision.decision_id
+                    and item.action_ref == action_ref
+                ),
+                key=lambda item: item.meta.revision_number,
+            )
+        )
+        decision_refs = tuple(reference(item) for item in decisions)
+        issued = tuple(
+            item for item in decisions if item.use_status == UseStatus.UNUSED
+        )
+        used = tuple(item for item in decisions if item.use_status == UseStatus.USED)
+        if (
+            decision_ref not in decision_refs
+            or len(issued) != 1
+            or issued[0].decision != Decision.ALLOW
+            or issued[0].valid_until is None
+            or not issued[0].decided_at
+            <= self.runner.clock.now()
+            <= issued[0].valid_until
+            or any(
+                item.decision != Decision.ALLOW
+                or item.valid_until != issued[0].valid_until
+                or item.checked_state_version != work.state_version
+                for item in decisions
+            )
+        ):
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+        issued_ref = reference(issued[0])
+        if not isinstance(issued_ref, StoredDataRef):
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+
+        if not used:
+            if decision_ref != issued_ref:
+                raise ValueError("CONTEXT_RECOVERY_INVALID")
+            self._require_request_capacity(
+                work, ceilings.limits.max_requests_per_hypothesis
+            )
+            claimed_ref = self.runtime.validator.claim_external(
+                str(work.work_id), issued_ref, reservation_ref
+            )
+            if not isinstance(claimed_ref, StoredDataRef):
+                raise ValueError("CONTEXT_RECOVERY_INVALID")
+        else:
+            if len(used) not in {1, 2}:
+                raise ValueError("CONTEXT_RECOVERY_INVALID")
+            claimed = tuple(item for item in used if not item.outcome_refs)
+            completed = tuple(item for item in used if item.outcome_refs)
+            if (
+                len(claimed) != 1
+                or len(completed) > 1
+                or any(
+                    len(item.outcome_refs) != 1
+                    or item.outcome_refs[0].data_kind != "code_context_request"
+                    for item in completed
+                )
+            ):
+                raise ValueError("CONTEXT_RECOVERY_INVALID")
+            claimed_ref = reference(claimed[0])
+            if not isinstance(claimed_ref, StoredDataRef):
+                raise ValueError("CONTEXT_RECOVERY_INVALID")
+
+        if (
+            context_dispatch_state(
+                records,
+                action_id=str(action.action_id),
+                work_id=str(work.work_id),
+                attempt_id=str(work.active_attempt_id),
+            )
+            != "PREPARED"
+        ):
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+        request = self.runtime.context.bind(
+            str(work.work_id),
+            claimed_ref,
+            requested_entities=plan.entities,
+            requested_locations=plan.locations,
+            relation_query=intent.relation_query,
+            limits=intent.requested_limits,
+        )
+        request_ref = reference(request)
+        if not isinstance(request_ref, StoredDataRef):
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+        self._require_unchanged(
+            intent, bundle, workspace, work, ceilings, lineage, plan_raw
+        )
+        return await self._execute_bound(
+            work=work,
+            intent=intent,
+            workspace=workspace,
+            bundle=bundle,
+            ceilings=ceilings,
+            lineage=lineage,
+            plan=plan,
+            plan_raw=plan_raw,
+            plan_ref=plan_ref,
+            action=action,
+            action_ref=action_ref,
+            issued_decision_ref=issued_ref,
+            claimed_decision_ref=claimed_ref,
+            reservation=reservation,
+            request=request,
+            request_ref=request_ref,
+            service_identity=service_identity,
+        )
+
+    def _require_recovery_inputs(
+        self,
+        intent: ContextRetrievalIntent,
+        workspace: CodeWorkspace,
+        bundle: StaticFactBundle,
+        work: WorkExecutionState,
+    ) -> None:
+        """Fail closed unless all caller-supplied inputs are still exact/current."""
+        if not isinstance(work.meta, RecordMeta):
+            raise ValueError("CONTEXT_INPUT_MISMATCH")
+        exact_proposal = self.runtime.unit_of_work.records.get_exact(
+            intent.proposal_ref
+        )
+        exact_bundle = self.runtime.unit_of_work.records.get_exact(intent.bundle_ref)
+        run_state = self.runtime.budget_registry.current_state(
+            str(work.meta.analysis_id)
+        )
+        if (
+            not isinstance(exact_proposal, HypothesisProposal)
+            or exact_bundle != bundle
+            or reference(bundle) != intent.bundle_ref
+            or bundle
+            not in self.runtime.queries.current_records(
+                str(work.meta.analysis_id), "static_fact_bundle"
+            )
+            or exact_proposal
+            not in self.runtime.queries.current_records(
+                str(work.meta.analysis_id), "hypothesis_proposal"
+            )
+            or run_state.workspace_ref != reference(workspace)
+            or self.runtime.unit_of_work.records.get_exact(run_state.workspace_ref)
+            != workspace
+            or exact_proposal.meta.hypothesis_id != work.meta.hypothesis_id
+            or work.input_refs.count(intent.proposal_ref) != 1
+            or work.input_refs.count(intent.bundle_ref) != 1
+        ):
+            raise ValueError("CONTEXT_INPUT_MISMATCH")
 
     def recover_after_receipt(
         self,
@@ -704,7 +985,7 @@ class ContextRetrievalService:
         bundle: StaticFactBundle,
         workspace: CodeWorkspace,
         work: WorkExecutionState,
-        ceilings: object,
+        ceilings: ContextCeilingProfile,
         lineage: ChainingContextRecords | None,
         expected: bytes,
     ) -> None:
@@ -1045,9 +1326,9 @@ class ContextRetrievalService:
         kinds = tuple(item.command_kind for item in process_receipts)
         if kinds != _INTEGRITY_SEQUENCE + _INTEGRITY_SEQUENCE:
             raise ValueError("CONTEXT_RECEIPT_INVALID")
-        check_ids = ("pre-read",) * len(_INTEGRITY_SEQUENCE) + (
-            "post-read",
-        ) * len(_INTEGRITY_SEQUENCE)
+        check_ids = ("pre-read",) * len(_INTEGRITY_SEQUENCE) + ("post-read",) * len(
+            _INTEGRITY_SEQUENCE
+        )
         for item, check_id in zip(process_receipts, check_ids, strict=True):
             if (
                 item.action_id != action_id

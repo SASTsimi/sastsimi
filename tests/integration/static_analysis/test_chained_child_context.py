@@ -186,6 +186,4 @@ def test_lineage_only_request_recovers_both_parent_entity_locations() -> None:
     )
 
     assert {item.symbol_id for item in plan.entities} == {"seed", "callee"}
-    assert plan.lineage_refs == tuple(
-        sorted(plan.lineage_refs, key=canonical_bytes)
-    )
+    assert plan.lineage_refs == tuple(sorted(plan.lineage_refs, key=canonical_bytes))

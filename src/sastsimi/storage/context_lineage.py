@@ -67,9 +67,8 @@ class ContextLineageReader:
                     == str(result.meta.logical_record_id)
                 )
             ).scalar()
-            if (
-                current_id != str(result_ref.record_id)
-                or not self._is_committed(connection, result_ref)
+            if current_id != str(result_ref.record_id) or not self._is_committed(
+                connection, result_ref
             ):
                 raise ValueError("CONTEXT_LINEAGE_NOT_COMMITTED")
             match = next(

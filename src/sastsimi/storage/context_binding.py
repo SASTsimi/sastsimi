@@ -96,9 +96,14 @@ class ContextBindingService:
                 .mappings()
                 .one_or_none()
             )
+            if receipt is None:
+                raise ValueError("CONTEXT_CLAIM_REQUIRED: exact durable receipt")
+            durable_used = ActionDecision.model_validate_json(receipt)
             if (
-                receipt != used.model_dump_json()
-                and receipt != canonical_bytes(used).decode()
+                durable_used.decision_id != used.decision_id
+                or durable_used.action_ref != used.action_ref
+                or durable_used.decision != "ALLOW"
+                or durable_used.use_status != "USED"
             ):
                 raise ValueError("CONTEXT_CLAIM_REQUIRED: exact durable receipt")
             if (
@@ -167,15 +172,23 @@ class ContextBindingService:
                 raise ValueError("CONTEXT_PLAN_CHANGED")
             bound_refs = tuple(
                 ref
-                for ref in used.outcome_refs
+                for ref in durable_used.outcome_refs
                 if ref.data_kind == "code_context_request"
             )
             if bound_refs:
                 if len(bound_refs) != 1:
                     raise ValueError("CONTEXT_REQUEST_ALREADY_BOUND")
                 existing = records.resolve(connection, bound_refs[0])
+                origin = (
+                    records.resolve(connection, existing.action_decision_ref)
+                    if isinstance(existing, CodeContextRequest)
+                    else None
+                )
                 if not isinstance(existing, CodeContextRequest) or (
-                    existing.action_decision_ref != used_decision_ref
+                    not isinstance(origin, ActionDecision)
+                    or origin.decision_id != used.decision_id
+                    or origin.action_ref != used.action_ref
+                    or origin.use_status != "USED"
                     or existing.requested_entities != requested_entities
                     or existing.requested_locations != requested_locations
                     or existing.relation_query != tuple(relation_query)
@@ -184,6 +197,8 @@ class ContextBindingService:
                 ):
                     raise ValueError("CONTEXT_REQUEST_ALREADY_BOUND")
                 return existing
+            if durable_used != used:
+                raise ValueError("CONTEXT_CLAIM_REQUIRED: exact durable receipt")
             ledger = derived_context_requests(
                 records,
                 connection,

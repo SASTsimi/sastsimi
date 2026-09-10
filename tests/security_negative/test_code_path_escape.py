@@ -93,8 +93,7 @@ def test_context_rejects_git_symlink_mode_before_open(
             plan=plan,
             workspace_root=Path(__file__).parents[2],
             tracked_files=tuple(
-                TrackedFile(path, "120000", "0" * 40, 1)
-                for path in plan.file_paths
+                TrackedFile(path, "120000", "0" * 40, 1) for path in plan.file_paths
             ),
             deadline=MonotonicActionDeadline("read", 0, 1_000_000_000),
             monotonic_ns=lambda: 1,
