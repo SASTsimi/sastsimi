@@ -109,6 +109,14 @@ def _material() -> tuple[StaticNormalizationInput, StaticToolObservation]:
     )
     result_ref = reference(result)
     assert isinstance(result_ref, StoredDataRef)
+    analysis_config_ref = StoredDataRef(
+        stored_data_id=StoredDataId("c" * 64),
+        data_kind="artifact",
+        record_id=None,
+        content_hash="c" * 64,
+        workspace_id=WorkspaceId("ws1"),
+        commit_id=CommitId("c1"),
+    )
     location = CandidateLocation("src/app.py", 1, None, 3, None)
     observation = StaticToolObservation(
         tool_name="AST",
@@ -138,6 +146,8 @@ def _material() -> tuple[StaticNormalizationInput, StaticToolObservation]:
             result=result,
             profile_ref=profile_ref,
             profile=profile,
+            analysis_config_ref=analysis_config_ref,
+            rule_catalog_ref=None,
             raw_bytes=raw,
         ),
         observation,

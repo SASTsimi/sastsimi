@@ -140,6 +140,7 @@ def test_candidate_bundle_is_fully_validated_before_complete() -> None:
             commit_id=CommitId("c1"),
         ),
         profile_ref=material.profile_ref,
+        analysis_config_ref=config_ref,
     )
 
     with pytest.raises(ValueError, match="STATIC_NORMALIZATION_PUBLICATION_INVALID"):

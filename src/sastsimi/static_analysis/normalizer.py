@@ -39,6 +39,8 @@ class StaticNormalizationInput:
     result: ToolRunResult
     profile_ref: StoredDataRef
     profile: StaticToolProfile
+    analysis_config_ref: StoredDataRef
+    rule_catalog_ref: StoredDataRef | None
     raw_bytes: bytes | None
     rule_execution: RuleExecutionRecord | None = None
     catalog_rule_ids: tuple[str, ...] = ()
