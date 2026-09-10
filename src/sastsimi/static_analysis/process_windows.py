@@ -6,6 +6,7 @@ import asyncio
 import ctypes
 import os
 import subprocess  # list2cmdline is quoting only; process creation stays Win32-direct.
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -23,6 +24,24 @@ CREATE_FLAGS = (
     | EXTENDED_STARTUPINFO_PRESENT
 )
 ERROR_BROKEN_PIPE = 109
+
+
+def _win_dll(name: str, *, use_last_error: bool) -> Any:
+    """Resolve the Win32-only ctypes loader only after the platform guard."""
+    loader = cast(Callable[..., Any], vars(ctypes)["WinDLL"])
+    return loader(name, use_last_error=use_last_error)
+
+
+def _get_last_error() -> int:
+    """Read the thread-local Win32 error without Linux typeshed attributes."""
+    getter = cast(Callable[[], int], vars(ctypes)["get_last_error"])
+    return getter()
+
+
+def _win_error(code: int, operation: str) -> OSError:
+    """Build the native Windows error while remaining importable on Linux."""
+    factory = cast(Callable[[int, str], OSError], vars(ctypes)["WinError"])
+    return factory(code, operation)
 
 
 @dataclass(frozen=True)
@@ -182,7 +201,7 @@ class CtypesWin32Api:
     def __init__(self, *, kernel32: Any | None = None) -> None:
         if os.name != "nt":
             raise OSError("WIN32_BACKEND_UNAVAILABLE")
-        self.kernel32: Any = kernel32 or ctypes.WinDLL("kernel32", use_last_error=True)
+        self.kernel32: Any = kernel32 or _win_dll("kernel32", use_last_error=True)
         from ctypes import wintypes
 
         self.kernel32.CreatePipe.restype = wintypes.BOOL
@@ -201,7 +220,7 @@ class CtypesWin32Api:
 
     def _checked(self, ok: object, operation: str) -> None:
         if not ok:
-            raise ctypes.WinError(ctypes.get_last_error(), operation)
+            raise _win_error(_get_last_error(), operation)
 
     def create_pipes(self) -> tuple[object, ...]:
         from ctypes import wintypes
@@ -245,9 +264,7 @@ class CtypesWin32Api:
         size = ctypes.c_size_t()
         self.kernel32.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))
         if size.value == 0:
-            raise ctypes.WinError(
-                ctypes.get_last_error(), "InitializeProcThreadAttributeList"
-            )
+            raise _win_error(_get_last_error(), "InitializeProcThreadAttributeList")
         buffer = ctypes.create_string_buffer(size.value)
         pointer = ctypes.cast(buffer, ctypes.c_void_p)
         initialized = False
@@ -424,7 +441,7 @@ class CtypesWin32Api:
 
     def resume_thread(self, thread: object) -> None:
         if self.kernel32.ResumeThread(thread) == 0xFFFFFFFF:
-            raise ctypes.WinError(ctypes.get_last_error(), "ResumeThread")
+            raise _win_error(_get_last_error(), "ResumeThread")
 
     def close(self, handle: object) -> None:
         if handle:
@@ -447,7 +464,7 @@ class CtypesWin32Api:
         if result == 0x00000102:
             return None
         if result != 0:
-            raise ctypes.WinError(ctypes.get_last_error(), "WaitForSingleObject")
+            raise _win_error(_get_last_error(), "WaitForSingleObject")
         exit_code = wintypes.DWORD()
         self._checked(
             self.kernel32.GetExitCodeProcess(process, ctypes.byref(exit_code)),
@@ -463,10 +480,10 @@ class CtypesWin32Api:
                 pipe, buffer, len(buffer), ctypes.byref(read), None
             )
             if not ok:
-                error = ctypes.get_last_error()
+                error = _get_last_error()
                 if error == ERROR_BROKEN_PIPE:
                     return
-                raise ctypes.WinError(error, "ReadFile")
+                raise _win_error(error, "ReadFile")
             if read.value:
                 sink.write(buffer.raw[: read.value])
             else:

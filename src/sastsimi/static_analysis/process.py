@@ -195,13 +195,15 @@ class PosixProcessBackend:
         if process.returncode is not None:
             return
         try:
-            killpg = cast(Callable[[int, int], None], os.killpg)  # type: ignore[attr-defined]
+            # Resolve POSIX-only members dynamically so this module remains
+            # type-checkable on Windows while the POSIX backend stays typed.
+            killpg = cast(Callable[[int, int], None], vars(os)["killpg"])
             killpg(process.pid, signal.SIGTERM)
             await asyncio.wait_for(process.wait(), 0.5)
         except (ProcessLookupError, TimeoutError):
             if process.returncode is None:
                 try:
-                    sigkill = cast(int, signal.SIGKILL)  # type: ignore[attr-defined]
+                    sigkill = cast(int, vars(signal)["SIGKILL"])
                     killpg(process.pid, sigkill)
                 except ProcessLookupError:
                     pass

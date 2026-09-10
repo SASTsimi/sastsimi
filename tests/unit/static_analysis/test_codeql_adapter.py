@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import pytest
 
@@ -36,6 +36,21 @@ from tests.contract.domain.fixtures import meta
 from tests.contract.domain.fixtures import ref as fixture_ref
 
 
+class _WindowsFunction(Protocol):
+    argtypes: list[object]
+    restype: object
+
+    def __call__(self, *args: object) -> int | None: ...
+
+
+class _Kernel32(Protocol):
+    ReplaceFileW: _WindowsFunction
+
+
+def _platform_attribute(owner: object, name: str) -> object:
+    return getattr(owner, name)
+
+
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -46,7 +61,8 @@ def _replace_distinct_file(source: Path, destination: Path) -> bool:
     if os.name != "nt":
         os.replace(source, destination)
         return True
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    load_library = cast(Callable[..., object], _platform_attribute(ctypes, "WinDLL"))
+    kernel32 = cast(_Kernel32, load_library("kernel32", use_last_error=True))
     replace_file = kernel32.ReplaceFileW
     replace_file.argtypes = [
         ctypes.c_wchar_p,

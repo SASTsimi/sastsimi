@@ -41,6 +41,22 @@ from sastsimi.ports.dto import (
 from sastsimi.static_analysis.normalizer import StaticRawReplayInput
 
 
+class _WindowsFunction(Protocol):
+    argtypes: list[object]
+    restype: object
+
+    def __call__(self, *args: object) -> int | None: ...
+
+
+class _Kernel32(Protocol):
+    CreateFileW: _WindowsFunction
+    CloseHandle: _WindowsFunction
+
+
+def _platform_attribute(owner: object, name: str) -> object:
+    return getattr(owner, name)
+
+
 class CodeQLProcessRunner(Protocol):
     async def run(self, spec: ProcessSpec) -> ProcessResult: ...
 
@@ -236,7 +252,8 @@ def _open_bounded_read_descriptor(path: Path) -> int:
     open_existing = 3
     file_attribute_normal = 0x00000080
     file_flag_open_reparse_point = 0x00200000
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    load_library = cast(Callable[..., object], _platform_attribute(ctypes, "WinDLL"))
+    kernel32 = cast(_Kernel32, load_library("kernel32", use_last_error=True))
     create_file = kernel32.CreateFileW
     create_file.argtypes = [
         ctypes.c_wchar_p,
@@ -261,11 +278,18 @@ def _open_bounded_read_descriptor(path: Path) -> int:
         None,
     )
     invalid_handle = ctypes.c_void_p(-1).value
-    if handle in {None, invalid_handle}:
-        error = ctypes.get_last_error()
+    if handle is None or handle == invalid_handle:
+        get_last_error = cast(
+            Callable[[], int], _platform_attribute(ctypes, "get_last_error")
+        )
+        error = get_last_error()
         raise OSError(error, "CODEQL_OUTPUT_OPEN_FAILED", str(path))
     try:
-        return msvcrt.open_osfhandle(int(handle), flags)
+        open_osfhandle = cast(
+            Callable[[int, int], int],
+            _platform_attribute(msvcrt, "open_osfhandle"),
+        )
+        return open_osfhandle(int(handle), flags)
     except BaseException:
         close_handle(handle)
         raise

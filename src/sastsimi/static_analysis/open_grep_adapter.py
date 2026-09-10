@@ -44,6 +44,22 @@ _POINTER_BYTES = 8
 _REGULAR_GIT_MODES = frozenset({"100644", "100755"})
 
 
+class _WindowsFunction(Protocol):
+    argtypes: list[object]
+    restype: object
+
+    def __call__(self, *args: object) -> int | None: ...
+
+
+class _Kernel32(Protocol):
+    CreateFileW: _WindowsFunction
+    CloseHandle: _WindowsFunction
+
+
+def _platform_attribute(owner: object, name: str) -> object:
+    return getattr(owner, name)
+
+
 class OpenGrepProcessRunner(Protocol):
     async def run(self, spec: ProcessSpec) -> ProcessResult: ...
 
@@ -161,7 +177,8 @@ def _open_read_descriptor(path: Path) -> int:
     import ctypes
     import msvcrt
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    load_library = cast(Callable[..., object], _platform_attribute(ctypes, "WinDLL"))
+    kernel32 = cast(_Kernel32, load_library("kernel32", use_last_error=True))
     create_file = kernel32.CreateFileW
     create_file.argtypes = [
         ctypes.c_wchar_p,
@@ -186,11 +203,18 @@ def _open_read_descriptor(path: Path) -> int:
         None,
     )
     invalid_handle = ctypes.c_void_p(-1).value
-    if handle in {None, invalid_handle}:
-        error = ctypes.get_last_error()
+    if handle is None or handle == invalid_handle:
+        get_last_error = cast(
+            Callable[[], int], _platform_attribute(ctypes, "get_last_error")
+        )
+        error = get_last_error()
         raise OSError(error, "OPENGREP_INPUT_OPEN_FAILED", str(path))
     try:
-        return msvcrt.open_osfhandle(int(handle), flags)
+        open_osfhandle = cast(
+            Callable[[int, int], int],
+            _platform_attribute(msvcrt, "open_osfhandle"),
+        )
+        return open_osfhandle(int(handle), flags)
     except BaseException:
         close_handle(handle)
         raise
@@ -314,7 +338,8 @@ def _production_command_limit(platform: str) -> int:
     if platform == "win32":
         return _WINDOWS_COMMAND_LIMIT_BYTES
     try:
-        arg_max = int(os.sysconf("SC_ARG_MAX"))  # type: ignore[attr-defined]
+        sysconf = cast(Callable[[str], int], _platform_attribute(os, "sysconf"))
+        arg_max = int(sysconf("SC_ARG_MAX"))
     except (AttributeError, OSError, TypeError, ValueError):
         arg_max = 131_072
     return max(1, arg_max - _POSIX_SAFETY_MARGIN_BYTES)

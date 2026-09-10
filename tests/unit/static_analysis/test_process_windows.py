@@ -2,12 +2,25 @@ import asyncio
 import ctypes
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 from sastsimi.ports.dto import MonotonicActionDeadline, ProcessSpec
+
+
+def _set_last_error(value: int) -> None:
+    """Call the Win32-only ctypes hook without exposing it to Linux typing."""
+    setter = cast(Callable[[int], int], vars(ctypes)["set_last_error"])
+    setter(value)
+
+
+def _win_dll(name: str, *, use_last_error: bool) -> Any:
+    """Load a Win32 DLL only inside tests already guarded by the platform skip."""
+    loader = cast(Callable[..., Any], vars(ctypes)["WinDLL"])
+    return loader(name, use_last_error=use_last_error)
 
 
 class FakeWin32Api:
@@ -208,7 +221,7 @@ class FakeNativeKernel:
         self.calls[operation] = count
         failed = self.fail_operation == operation and count == self.fail_call
         if failed:
-            ctypes.set_last_error(5)
+            _set_last_error(5)
         return not failed
 
     def _create_pipe(self, read: Any, write: Any, *_: object) -> bool:
@@ -240,7 +253,7 @@ class FakeNativeKernel:
         return True
 
     def _read_file(self, *_: object) -> bool:
-        ctypes.set_last_error(self.pipe_error)
+        _set_last_error(self.pipe_error)
         return False
 
 
@@ -314,7 +327,7 @@ async def test_real_windows_process_restricts_handles_and_cancels_descendant(
 
     from sastsimi.static_analysis.process import AttemptOutputBudget, SafeProcessRunner
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = _win_dll("kernel32", use_last_error=True)
     kernel32.CreateEventW.restype = wintypes.HANDLE
     sentinel = kernel32.CreateEventW(None, True, False, None)
     assert sentinel
