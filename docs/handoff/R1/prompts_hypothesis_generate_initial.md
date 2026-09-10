@@ -3,7 +3,7 @@
 - 역할: `HYPOTHESIS`
 - task: `GENERATE_INITIAL`
 - prompt id: `PMT-HYP-01`
-- 등록 경로: `src/sastsimi/prompts/templates/hypothesis/generate-initial/<semver>.md`
+- 등록 경로: `src/sastsimi/prompts/templates/hypothesis/generate-initial/1.0.0.md`
 - 출력 result kind: `hypothesis_proposal`
 - 기준 문서: `03-agent-roles-and-orchestration.md` §Hypothesis Agent, `02-static-fact-layer.md`, `08-lightweight-data-contracts.md` §1·§2
 

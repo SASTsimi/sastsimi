@@ -52,9 +52,7 @@ docs/handoff/R1/
     failure.input.json            failure.expected.json
 ```
 
-두 프롬프트는 운영에서 각각 `src/sastsimi/prompts/templates/hypothesis/generate-initial/<semver>.md`와 `src/sastsimi/prompts/templates/chaining/match-primitives/<semver>.md`로 등록됩니다(`implementation/06-implementation-baseline.md:731`).
-
-`05-prompt-runtime.md` §2의 `config/prompts/templates/...`는 그 문서가 `경로는 #92에서 저장소 기본 구조로 최종 승인한다`고 스스로 미뤄 둔 임시 경로이므로 확정본인 `06-implementation-baseline.md:731`을 따랐습니다. `config/prompts/registry.yaml`은 그대로입니다.
+두 프롬프트는 운영에서 각각 `hypothesis/generate-initial`과 `chaining/match-primitives` 경로의 template revision으로 등록됩니다. 저장소 안 위치는 `implementation/06-implementation-baseline.md:731`이 `src/sastsimi/prompts/templates/<role>/<task>/<semver>.md`로 정합니다.
 
 프롬프트는 분석 대상과 무관한 공통 템플릿입니다. 저장소 코드와 정적분석 결과는 실행 시 입력 slot으로 주입합니다. 입력 조립과 LLM 전달은 R3 구현 범위입니다.
 
@@ -203,19 +201,30 @@ downstream의 매칭된 input    → 빠짐
 
 ## 계약 문서 결함 — 후속 이슈
 
-이 자료를 계약대로 쓰려면 문서가 먼저 닫혀야 하는 항목이 일곱 있습니다. 질문이 아니라 계약끼리 어긋나거나 표에 줄이 빠진 것들이라 별도 후속 이슈로 올렸습니다. 상세와 근거, 그리고 세 건의 수정본은 그 이슈를 보세요.
+이 자료를 계약대로 쓰려면 문서가 먼저 닫혀야 하는 항목이 여덟 있습니다. 질문이 아니라 계약끼리 어긋나거나 표에 줄이 빠진 것들이라 별도 후속 이슈로 올렸고, 여덟 건 모두 수정안을 함께 제시했습니다. 상세와 근거는 그 이슈를 보세요.
 
-| | 무엇 | 성격 | 담당 | 지금 자료의 처리 |
-|---|---|---|---|---|
-| 1 | `05:245`에 계기 Primitive를 담을 slot이 없는데 `06:96`의 담당 규칙이 그 값을 전제한다 | 요구와 수단 불일치 | R3 | `trigger` slot을 받는 것으로 썼다 |
-| 2 | `08:983`이 요구하는 `bundle_ref`의 재료가 `facts` slot에 없다 | 요구와 수단 불일치 | R3 | Agent는 `fact_id`만 내는 것으로 썼다 |
-| 3 | 매칭 조건 3의 권한 축을 어느 쪽 `privilege_level`이 정하는지 안 적혀 있다 | 서술 모호 | R4 | downstream input 기준으로 읽었다 |
-| 4 | `08`의 식별자 표에 `restriction_id` 줄이 없는데 `06-baseline:553`이 그 표를 전수 정본이라 한다 | 표 누락 | R4·R6 | Agent가 지역 값을 내고 runtime이 바꾸는 것을 전제로 썼다 |
-| 5 | `02:88`의 `data_flow_candidates` 서술과 R2의 실제 정규화 출력이 반대 방향이다 | 문서·구현 불일치 | R2·R4 | 프롬프트가 방향을 단정하지 않는다 |
-| 6 | `gaps`·`errors`를 bundle 최상위와 `tool_runs[]` 중 어디에 두는지 정본이 없다 | 규정 누락 | R2·R4 | 프롬프트가 양쪽을 확인한다 |
-| 7 | `code_context_response`의 `data_kind` 문자열이 `08`의 registry·reference 표에 없다 | 표 누락 | R2·R4 | snake_case 관례로 썼다 |
+| | 무엇 | 성격 | 담당 |
+|---|---|---|---|
+| 1 | `05:245`에 계기 Primitive를 담을 slot이 없는데 `06:96`의 담당 규칙이 그 값을 전제한다 | 요구와 수단 불일치 | R3 |
+| 2 | `08:983`이 요구하는 `bundle_ref`의 재료가 `facts` slot에 없다 | 요구와 수단 불일치 | R3 |
+| 3 | 매칭 조건 3의 권한 축을 어느 쪽 `privilege_level`이 정하는지 안 적혀 있다 | 서술 모호 | R4 |
+| 4 | `08`의 식별자 표에 `restriction_id` 줄이 없는데 `06-baseline:553`이 그 표를 전수 정본이라 한다 | 표 누락 | R4·R6 |
+| 5 | `02:88`의 `data_flow_candidates` 서술과 R2의 실제 정규화 출력이 담는 구간이 다르다 | 문서·구현 불일치 | R2·R4 |
+| 6 | `gaps`·`errors`를 bundle 최상위와 `tool_runs[]` 중 어디에 두는지 정본이 없다 | 규정 누락 | R2·R4 |
+| 7 | `code_context_response`의 `data_kind` 문자열이 `08`의 registry·reference 표에 없다 | 표 누락 | R2·R4 |
+| 8 | 담당 동점 처리에 필요한 상대 work의 pool 정보가 Agent 입력에 없고, Runtime이 candidate 단위로 거르는 절차도 `08`에 없다 | 실행 주체 부재 | R3·R4 |
 
-1·2가 닫히기 전에는 프롬프트를 계약대로 쓸 수 없습니다. 3·5·6이 정해지는 방향에 따라 샘플의 `must`가 바뀝니다.
+이 자료는 그 수정안이 반영된다는 전제로 작성했습니다. 반영되는 내용은 다음과 같습니다.
+
+- `MATCH_PRIMITIVES`에 `trigger` slot이 생기고, `REGISTER_WORK`가 `considered`를 이 work가 담당인 상대만으로 좁힌다(1·8)
+- `restrictions[].fact_refs`에서 Agent는 `fact_id`만 내고 출력 검증 runtime이 `bundle_ref`를 채운다(2)
+- 매칭 조건 3의 권한 축은 downstream input의 `privilege_level`이 정한다(3)
+- `restriction_id`도 `question_id`·`validation_id`와 같은 자리에서 검증 runtime이 발급한다(4)
+- `data_flow_candidates`는 도달 근거 전용이 아니라 관측된 데이터 흐름 관계 전체를 담는다(5)
+- 도구에 귀속되는 `gaps`·`errors`는 `ToolRunResult` 안에 두고 bundle 최상위는 정규화 계층 자체의 것만 담는다. 소비자는 두 곳을 다 읽는다(6)
+- `code_context_response`가 `STATIC_ANALYSIS` 생산으로 registry에 등록된다(7)
+
+다르게 정해지면 해당 부분의 프롬프트와 샘플 `must`를 고칩니다.
 
 fixture 형태가 역할마다 다른 것도 함께 봐 주셨으면 합니다. R2는 입력이 원본 도구 출력이고 기대 결과가 저장 record 형태, R5는 assertion projection, 이 자료는 projection 후 프롬프트 payload와 `must`/`must_not`입니다. 하나의 harness로 묶을지 R3 판단이 필요합니다.
 

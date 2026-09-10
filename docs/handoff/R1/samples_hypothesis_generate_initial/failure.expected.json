@@ -2,7 +2,8 @@
   "_note": {
     "how_to_read": "must를 전부 만족하고 must_not에 하나도 걸리지 않으면 통과입니다.",
     "the_point": "이 사례의 정답은 빈 배열입니다. 다만 '빈 배열이면 통과'가 아니라 '빈 배열이면서 안전하다고 말하지 않아야' 통과입니다. must_not 쪽이 실질적인 판정 기준입니다.",
-    "grading": "각 항목의 grading은 판정 방법입니다. auto는 출력 JSON만 보고 코드로 판정할 수 있는 구조·값·개수이고, judgement는 자연어의 의미를 봐야 해서 LLM-judge나 사람 검토가 필요한 항목입니다. 자동 시험에 연결할 때 auto만 하네스가 강제하고 judgement는 별도 경로로 채점해야 합니다."
+    "grading": "각 항목의 grading은 판정 방법입니다. auto는 출력 JSON만 보고 코드로 판정할 수 있는 구조·값·개수이고, judgement는 자연어의 의미를 봐야 해서 LLM-judge나 사람 검토가 필요한 항목입니다. 자동 시험에 연결할 때 auto만 하네스가 강제하고 judgement는 별도 경로로 채점해야 합니다.",
+    "gaps_placement": "이 입력의 gaps·errors는 전부 도구 실행에 귀속되므로 각 ToolRunResult 안에만 있고 bundle 최상위는 빈 배열입니다. 최상위만 읽는 판독은 '실패 없음'으로 오독합니다."
   },
   "must": [
     {
@@ -39,7 +40,7 @@
     },
     {
       "id": "N-04",
-      "check": "gaps나 errors의 내용을 observed_facts로 옮기지 않는다.",
+      "check": "tool_runs[].gaps나 tool_runs[].errors의 내용을 observed_facts로 옮기지 않는다.",
       "grading": "auto",
       "why": "08이 'StaticFactBundle.gaps의 DataGap은 도구·조회가 실패해 데이터를 얻지 못한 범위이며 가설의 미확인 조건과 다른 것이다'로 구분한다. DataGap은 CodeFact가 아니다."
     },
@@ -53,7 +54,7 @@
       "id": "N-06",
       "check": "실패 상황을 설명하는 자유 형식 보고문을 proposals 배열 밖에 출력하지 않는다.",
       "grading": "auto",
-      "why": "출력 계약은 빈 결과에서도 같다. 실패 사실은 이미 tool_runs·gaps·errors에 기록되어 있고 runtime이 그것을 읽는다."
+      "why": "출력 계약은 빈 결과에서도 같다. 실패 사실은 이미 각 tool_runs의 status·gaps·errors에 기록되어 있고 runtime이 그것을 읽는다."
     }
   ],
   "downstream_expectation": {

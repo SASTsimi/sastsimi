@@ -4,9 +4,9 @@
     "basis": "08-lightweight-data-contracts.md §1 StaticFactBundle 스키마를 그대로 따랐습니다. 가정한 코드는 Flask + sqlite3의 주문 조회 핸들러입니다.",
     "replace_when": "실제 codeql·opengrep 정규화 출력이 확보되면 교체합니다. 특히 producer.raw_result_ref와 symbol_id 형식은 R2의 정규화 결과에 맞춰야 합니다.",
     "case": "정상. 도구가 모두 성공했고 요청 진입점에서 source 후보까지 도달 경로가 관측된 입력.",
-    "data_flow_note": "cr-df-001은 요청 진입점(41:14)에서 source 후보(45:5)까지를 담습니다. 다만 R2가 실제 CodeQL로 만든 bundle은 source에서 sink 방향입니다. 어느 구간을 담는지가 확정되지 않아 handoff.md 계약 요청 5번으로 올렸고, 프롬프트는 방향을 단정하지 않고 '기록된 관계만 관측된 사실'로 씁니다.",
     "projection": "프롬프트가 실제로 받는 projection 후 payload입니다. 05-prompt-runtime.md:231의 facts slot field_paths에 /meta가 없으므로 bundle의 meta는 들어오지 않습니다.",
-    "contract_note": "08:856에 따라 저장 record를 가리키는 StoredDataRef는 record_id가 필수입니다. rule_execution_record는 08:646 registry에 등록된 저장 record이므로 record_id를 채웠고, raw_tool_result는 독립 artifact라 null입니다."
+    "contract_note": "08:856에 따라 저장 record를 가리키는 StoredDataRef는 record_id가 필수입니다. rule_execution_record는 08:646 registry에 등록된 저장 record이므로 record_id를 채웠고, raw_tool_result는 독립 artifact라 null입니다.",
+    "data_flow": "cr-df-001은 요청 진입점(41:14)에서 source 후보(45:5)까지의 관측된 관계입니다. data_flow_candidates는 도달 근거 전용이 아니라 관측된 데이터 흐름 관계 전체를 담으므로, 이 입력에 source에서 sink까지의 관계가 없다는 것은 그 구간이 관측되지 않았다는 뜻이지 이어지지 않는다는 뜻이 아닙니다."
   },
   "facts": {
     "entities": [

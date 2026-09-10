@@ -3,7 +3,7 @@
 - 역할: `CHAINING`
 - task: `MATCH_PRIMITIVES`
 - prompt id: `PMT-CHN-01`
-- 등록 경로: `src/sastsimi/prompts/templates/chaining/match-primitives/<semver>.md`
+- 등록 경로: `src/sastsimi/prompts/templates/chaining/match-primitives/1.0.0.md`
 - 출력 result kind: `chaining_result`
 - 기준 문서: `06-chaining.md`, `08-lightweight-data-contracts.md` §5·§6
 
@@ -87,7 +87,7 @@ result 있는 Primitive  +  result 있는 다른 Primitive   (TRUE + TRUE)
 
 `trigger`가 낀 조합을 전부 검토한다. 그 밖의 조합은 다른 work의 몫이므로 보지 않는다.
 
-**담당을 추측해서 조합을 건너뛰지 마라.** 담당은 상대 Primitive의 work가 등록될 때 `trigger`를 후보로 가졌는지에 달려 있는데, 그 정보는 네 입력에 없다. `record_id` 크기 비교만으로는 한쪽만 담당인 경우와 양쪽이 겹치는 경우를 구분할 수 없다. 건너뛴 조합은 아무 기록도 남지 않아 놓쳤다는 사실조차 드러나지 않는다.
+**담당은 이미 정해져서 들어온다.** runtime이 work를 등록할 때 `considered`를 이 work가 담당인 상대만으로 좁혀 준다. 그러니 `considered`에 있는 Primitive는 전부 네 몫이다. 담당을 다시 따지거나 추측해서 조합을 건너뛰지 마라. 건너뛴 조합은 아무 기록도 남지 않아 놓쳤다는 사실조차 드러나지 않는다.
 
 ## 조상 재사용 제외
 

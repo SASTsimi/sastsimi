@@ -105,7 +105,7 @@
       "id": "M-17",
       "check": "suspected_path가 비어 있거나, 값이 있다면 입력의 call_edges / data_flow_candidates / route_bindings에 실제로 있는 관계만 담는다. 입력에 없는 연결을 만들어 넣지 않는다.",
       "grading": "auto",
-      "why": "02-static-fact-layer.md가 '도구가 관계를 제공하지 않았으면 임의로 연결하지 않는다'로 정한다. 관측된 관계의 방향과 범위는 정규화 계층이 정하는 것이므로 Agent가 재해석하지 않는다. data_flow_candidates가 어느 구간을 담는지는 아직 확정되지 않았다(handoff.md 계약 요청 5번)."
+      "why": "02-static-fact-layer.md가 '도구가 관계를 제공하지 않았으면 임의로 연결하지 않는다'로 정한다. data_flow_candidates는 관측된 데이터 흐름 관계 전체를 담으므로 어느 구간이 들어 있는지는 입력마다 다르다. 이 입력에는 cf-src-001에서 cf-sink-001까지의 관계가 없으므로 그 구간은 관측된 사실이 아니다."
     }
   ],
   "must_not": [

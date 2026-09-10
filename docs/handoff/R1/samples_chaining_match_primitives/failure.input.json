@@ -6,7 +6,7 @@
     "why_this_is_the_failure_case": "가장 흔한 오작동이 전역 권한 서열표를 쓰는 것입니다. 'authenticated_user보다 admin이 높으니 못 채운다'도, 반대로 다른 사례에서 'admin이 user를 포함하니 채운다'도 모두 금지된 근거입니다. 이 입력은 결론이 아니라 근거를 봅니다.",
     "projection": "이 파일은 프롬프트가 실제로 받는 projection 후 payload입니다. indexes와 considered는 05-prompt-runtime.md:245가 $(전체 record)로 노출하고, lineage_hypotheses는 /meta·/origin·/parent_hypothesis_ids·/source_primitive_match_id 네 pointer만 노출하므로 그 범위만 담았습니다.",
     "revision_note": "hyp-0001의 index는 revision 2입니다. 가설이 최초 등록될 때 revision 1이 만들어지고 prim-000A가 등록되면서 revision 2가 되었다고 가정했습니다. 08:911에 따라 previous_record_id는 같은 logical_record_id의 직전 revision record_id를 가리켜야 하므로 rec-idx-0001r1을 넣었습니다.",
-    "trigger_note": "이 work의 계기 Primitive는 prim-000A입니다. prim-000B와 그 index는 04:58 이전에 확정됐고 prim-000A는 05:12에 등록됐으므로, prim-000B를 계기로 가진 work는 등록 시점에 prim-000A를 후보로 갖지 못했습니다. 따라서 이 조합의 담당은 이 work이고 06-chaining.md:96의 record_id 사전순 동점 처리는 발동하지 않습니다. trigger는 considered 안에 같은 record로 한 번 더 들어 있습니다(08:405)."
+    "trigger_note": "이 work의 계기 Primitive는 prim-000A입니다. runtime이 REGISTER_WORK에서 담당 필터를 적용하므로 considered에는 계기와 이 work가 담당인 상대만 들어 있습니다. Agent는 담당을 다시 판단하지 않고 trigger와 나머지를 짝지어 검토합니다. trigger는 considered 안에 같은 record로 한 번 더 들어 있습니다(08:405)."
   },
   "trigger": {
     "meta": {
