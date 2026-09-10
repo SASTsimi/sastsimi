@@ -106,7 +106,7 @@ fixture와 mock, 환경 조정, 관찰 방법과 재시도를 기술적으로 �
 
 ## 6. 검증 fixture와 출처
 
-[`validation/fixture`](./validation/fixture)는 Python 3.12와 Flask 3.1.2를 사용하는
+[`validation/fixture/README.md`](./validation/fixture/README.md)는 Python 3.12와 Flask 3.1.2를 사용하는
 합성 local-only 프로젝트다. `app.py`는 요청받은 report 이름이 `reports/` 아래에
 남는지 검사하지 않는 의도적인 경로 탐색 결함을 포함한다.
 

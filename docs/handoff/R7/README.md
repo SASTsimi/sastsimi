@@ -24,7 +24,7 @@ limits, retry policy, and redaction policy.
 
 ## Validation drafts
 
-[`validation/`](./validation/) contains one reusable local-only code fixture and
+[`validation/README.md`](./validation/README.md) describes one reusable local-only code fixture and
 paired input/expected JSON cases for environment readiness, environment setup
 failure, execution cancellation, and post-run cleanup state. The expected files
 fix stable schema and ownership conditions while expressing variable natural
