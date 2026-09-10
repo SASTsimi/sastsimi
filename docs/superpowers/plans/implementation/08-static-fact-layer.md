@@ -55,6 +55,12 @@ accepting the Wave 2C lane:
 - Existing AST and CodeQL callers may ignore the return value. Context Retrieval
   must bind the exact receipt hashes into its same-attempt `CONTEXT_READ`
   receipt; it may not invent or reconstruct them after the read.
+- `WorkspaceLocatorPort.validate_integrity_receipts` is a no-process recovery
+  check. It recomputes the trusted expected Git `ProcessSpec` sequence for the
+  exact action, attempt, and ordered check IDs and rejects any count, order,
+  identity, outcome, or command-fingerprint mismatch. Recovery uses this check
+  with separately no-follow/hash-verified receipt files; it never reruns Git
+  after a complete `CONTEXT_READ` receipt exists.
 - Only `src/sastsimi/ports/workspace.py`,
   `src/sastsimi/static_analysis/repository_loader.py`, their existing focused
   unit tests, and this plan may change for this serial seam. No persisted
@@ -653,6 +659,15 @@ class WorkspaceLocatorPort(Protocol):
         attempt_id: str,
         check_id: str,
     ) -> tuple[ProcessReceipt, ...]: ...
+    def validate_integrity_receipts(
+        self,
+        workspace: CodeWorkspace,
+        deadline: MonotonicActionDeadline,
+        *,
+        attempt_id: str,
+        check_ids: tuple[str, ...],
+        receipts: tuple[ProcessReceipt, ...],
+    ) -> None: ...
 
 class WorkspacePreparationPublisherPort(Protocol):
     def begin(

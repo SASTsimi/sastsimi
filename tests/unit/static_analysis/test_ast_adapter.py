@@ -55,6 +55,17 @@ class FixedWorkspaceLocator:
         self.checks += 1
         return ()
 
+    def validate_integrity_receipts(
+        self,
+        workspace: CodeWorkspace,
+        deadline: MonotonicActionDeadline,
+        *,
+        attempt_id: str,
+        check_ids: tuple[str, ...],
+        receipts: tuple[ProcessReceipt, ...],
+    ) -> None:
+        del workspace, deadline, attempt_id, check_ids, receipts
+
 
 class FixedOutputRunner:
     def __init__(

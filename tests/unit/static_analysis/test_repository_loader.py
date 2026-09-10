@@ -874,6 +874,25 @@ async def test_workspace_guard_binds_actual_attempt_and_unique_check_phase(
     assert not {receipt.invocation_id for receipt in before} & {
         receipt.invocation_id for receipt in after
     }
+    guard.validate_integrity_receipts(
+        workspace,
+        deadline,
+        attempt_id="attempt-7",
+        check_ids=("pre-read", "post-read"),
+        receipts=(*before, *after),
+    )
+    with pytest.raises(ValueError, match="WORKSPACE_PROCESS_RECEIPTS_INVALID"):
+        guard.validate_integrity_receipts(
+            workspace,
+            deadline,
+            attempt_id="attempt-7",
+            check_ids=("pre-read", "post-read"),
+            receipts=(
+                replace(before[0], command_fingerprint="f" * 64),
+                *before[1:],
+                *after,
+            ),
+        )
     with pytest.raises(ValueError, match="WORKSPACE_CHECK_IDENTITY_INVALID"):
         await guard.assert_unchanged(
             workspace,

@@ -465,6 +465,92 @@ class WorkspaceGuard:
             check_id=check_id,
         )
 
+    def validate_integrity_receipts(
+        self,
+        workspace: CodeWorkspace,
+        deadline: MonotonicActionDeadline,
+        *,
+        attempt_id: str,
+        check_ids: tuple[str, ...],
+        receipts: tuple[ProcessReceipt, ...],
+    ) -> None:
+        root = self.root_for(workspace)
+        if not check_ids or len(set(check_ids)) != len(check_ids):
+            raise ValueError("WORKSPACE_PROCESS_RECEIPTS_INVALID")
+        expected = tuple(
+            spec
+            for check_id in check_ids
+            for spec, _expect_failure in self._integrity_specs(
+                root,
+                deadline,
+                attempt_id=attempt_id,
+                check_id=check_id,
+                require_detached=False,
+            )
+        )
+        if len(receipts) != len(expected):
+            raise ValueError("WORKSPACE_PROCESS_RECEIPTS_INVALID")
+        for receipt, spec in zip(receipts, expected, strict=True):
+            if (
+                receipt.action_id != deadline.action_id
+                or receipt.attempt_id != attempt_id
+                or receipt.invocation_id != spec.invocation_id
+                or receipt.command_kind != spec.command_kind
+                or receipt.command_fingerprint != process_command_fingerprint(spec)
+                or receipt.outcome != "SUCCEEDED"
+                or receipt.return_code != 0
+            ):
+                raise ValueError("WORKSPACE_PROCESS_RECEIPTS_INVALID")
+
+    def _integrity_specs(
+        self,
+        root: Path,
+        deadline: MonotonicActionDeadline,
+        *,
+        attempt_id: str,
+        check_id: str,
+        require_detached: bool,
+    ) -> tuple[tuple[ProcessSpec, bool], ...]:
+        if not attempt_id or re.fullmatch(r"[a-z][a-z0-9-]{0,63}", check_id) is None:
+            raise ValueError("WORKSPACE_CHECK_IDENTITY_INVALID")
+        commands: list[tuple[str, tuple[str, ...], bool]] = [
+            ("head", ("rev-parse", "HEAD"), False),
+        ]
+        if require_detached:
+            commands.append(("detached", ("symbolic-ref", "-q", "HEAD"), True))
+        commands.extend(
+            (
+                ("worktree", ("diff", "--quiet", "HEAD", "--"), False),
+                ("index", ("diff", "--cached", "--quiet", "HEAD", "--"), False),
+                ("manifest", ("ls-files", "--stage", "-z"), False),
+            )
+        )
+        return tuple(
+            (
+                ProcessSpec(
+                    invocation_id=(
+                        f"{deadline.action_id}:workspace-guard:{check_id}:{name}"
+                    ),
+                    command_kind=f"guard-{name}",
+                    attempt_id=attempt_id,
+                    argv=(str(self._git), "-C", str(root), *argv),
+                    cwd=root,
+                    env=(
+                        ("GIT_CONFIG_GLOBAL", os.devnull),
+                        ("GIT_CONFIG_NOSYSTEM", "1"),
+                        ("GIT_TERMINAL_PROMPT", "0"),
+                    ),
+                    attempt_output_dir=self._output,
+                    stdout_limit_bytes=2 * 1024 * 1024,
+                    stderr_limit_bytes=64 * 1024,
+                    attempt_output_limit_bytes=4 * 1024 * 1024,
+                    deadline=deadline,
+                ),
+                expect_failure,
+            )
+            for name, argv, expect_failure in commands
+        )
+
     def preparation_process_specs(
         self,
         outcome: RepositoryPreparation,
@@ -512,51 +598,31 @@ class WorkspaceGuard:
         attempt_id: str,
         check_id: str,
     ) -> tuple[ProcessReceipt, ...]:
-        if not attempt_id or re.fullmatch(r"[a-z][a-z0-9-]{0,63}", check_id) is None:
-            raise ValueError("WORKSPACE_CHECK_IDENTITY_INVALID")
         runner = self._factory(root, deadline, attempt_id)
         receipts: list[ProcessReceipt] = []
-
-        async def run(
-            name: str, argv: tuple[str, ...], *, expect_failure: bool = False
-        ) -> ProcessResult:
-            spec = ProcessSpec(
-                invocation_id=(
-                    f"{deadline.action_id}:workspace-guard:{check_id}:{name}"
-                ),
-                command_kind=f"guard-{name}",
-                attempt_id=attempt_id,
-                argv=(str(self._git), "-C", str(root), *argv),
-                cwd=root,
-                env=(
-                    ("GIT_CONFIG_GLOBAL", os.devnull),
-                    ("GIT_CONFIG_NOSYSTEM", "1"),
-                    ("GIT_TERMINAL_PROMPT", "0"),
-                ),
-                attempt_output_dir=self._output,
-                stdout_limit_bytes=2 * 1024 * 1024,
-                stderr_limit_bytes=64 * 1024,
-                attempt_output_limit_bytes=4 * 1024 * 1024,
-                deadline=deadline,
-            )
+        for spec, expect_failure in self._integrity_specs(
+            root,
+            deadline,
+            attempt_id=attempt_id,
+            check_id=check_id,
+            require_detached=require_detached,
+        ):
             result = await runner.run(spec)
             succeeded = result.outcome == "SUCCEEDED" and result.return_code == 0
             if succeeded == expect_failure:
                 raise ValueError("WORKSPACE_MUTATED")
             receipts.append(result.receipt)
-            return result
-
-        head = await run("head", ("rev-parse", "HEAD"))
-        if head.stdout.decode("ascii").strip().lower() != commit_id:
-            raise ValueError("WORKSPACE_MUTATED")
-        if require_detached:
-            await run("detached", ("symbolic-ref", "-q", "HEAD"), expect_failure=True)
-        await run("worktree", ("diff", "--quiet", "HEAD", "--"))
-        await run("index", ("diff", "--cached", "--quiet", "HEAD", "--"))
-        listing = await run("manifest", ("ls-files", "--stage", "-z"))
-        manifest, _ = _build_manifest(root, listing.stdout, self._sensitive_names)
-        if manifest != expected_manifest:
-            raise ValueError("WORKSPACE_MUTATED")
+            if (
+                spec.command_kind == "guard-head"
+                and result.stdout.decode("ascii").strip().lower() != commit_id
+            ):
+                raise ValueError("WORKSPACE_MUTATED")
+            if spec.command_kind == "guard-manifest":
+                manifest, _ = _build_manifest(
+                    root, result.stdout, self._sensitive_names
+                )
+                if manifest != expected_manifest:
+                    raise ValueError("WORKSPACE_MUTATED")
         return tuple(receipts)
 
 

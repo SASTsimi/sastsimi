@@ -48,6 +48,16 @@ class WorkspaceLocatorPort(Protocol):
         check_id: str,
     ) -> tuple[ProcessReceipt, ...]: ...
 
+    def validate_integrity_receipts(
+        self,
+        workspace: CodeWorkspace,
+        deadline: MonotonicActionDeadline,
+        *,
+        attempt_id: str,
+        check_ids: tuple[str, ...],
+        receipts: tuple[ProcessReceipt, ...],
+    ) -> None: ...
+
 
 class WorkspacePreparationPublisherPort(Protocol):
     def begin(
