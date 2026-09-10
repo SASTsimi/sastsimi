@@ -53,6 +53,35 @@ RULES: dict[str, frozenset[str]] = {
     ),
 }
 
+# T08 application handlers deliberately call the pure static-analysis layer or
+# concrete persistence adapters. Keep these exceptions module-exact so the
+# package-wide dependency policy is not weakened for unrelated code.
+EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
+    "sastsimi.orchestration.static_external_runner": frozenset(
+        {"sastsimi.static_analysis.coordinator"}
+    ),
+    "sastsimi.orchestration.static_publication": frozenset(
+        {
+            "sastsimi.static_analysis.coordinator",
+            "sastsimi.static_analysis.normalizer",
+        }
+    ),
+    "sastsimi.storage.context_binding": frozenset(
+        {"sastsimi.static_analysis.context_retrieval"}
+    ),
+    "sastsimi.verification.context_service": frozenset(
+        {
+            "sastsimi.static_analysis.context_retrieval",
+            "sastsimi.storage",
+            "sastsimi.storage.codec",
+            "sastsimi.storage.context_policy",
+            "sastsimi.storage.models",
+            "sastsimi.storage.recovery_service",
+            "sastsimi.storage.repositories",
+        }
+    ),
+}
+
 # Reject actual import/code-execution members, including references captured as
 # aliases. Ordinary reflection and registry dispatch are not dependency edges.
 # This is an architecture rule, not a sandbox or general Python syntax policy.
@@ -335,6 +364,7 @@ def violations(source: str, module: str) -> list[str]:
         return [f"Unparseable imports: {module}"]
     errors: list[str] = []
     allowed = RULES[owner] | {owner}
+    exact_allowed = EXACT_IMPORT_EXCEPTIONS.get(module, frozenset())
     if module.startswith("sastsimi.policy.adapters."):
         allowed = frozenset({"contracts", "ports", "config"})
     for target in targets:
@@ -342,7 +372,16 @@ def violations(source: str, module: str) -> list[str]:
             errors.append(f"Ambiguous package import: {module}")
         elif target.startswith("sastsimi."):
             dependency = target.split(".")[1]
-            if dependency not in RULES or dependency not in allowed:
+            if dependency not in RULES or (
+                dependency not in allowed
+                and not any(
+                    target == exception
+                    or (
+                        exception.count(".") >= 2 and target.startswith(exception + ".")
+                    )
+                    for exception in exact_allowed
+                )
+            ):
                 errors.append(f"Forbidden dependency: {module} -> {target}")
             elif owner != dependency and any(
                 part.startswith("_") for part in target.split(".")[2:]
@@ -404,6 +443,23 @@ def test_repository_imports() -> None:
         sources[module.removesuffix(".__init__")] = source
     errors.extend(cycle_errors(sources))
     assert not errors, "\n".join(errors)
+
+
+def test_real_static_slice_is_private_and_not_selected_by_cli() -> None:
+    root = Path(__file__).resolve().parents[2] / "src" / "sastsimi"
+    bootstrap = (root / "bootstrap.py").read_text(encoding="utf-8")
+    interfaces = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((root / "interfaces").rglob("*.py"))
+    )
+
+    assert "def _build_real_static_slice(" in bootstrap
+    assert "_build_real_static_slice" not in interfaces
+    assert "StaticToolCoordinator" not in interfaces
+    assert "PythonAstProcessAdapter" not in interfaces
+    assert "OpenGrepProcessAdapter" not in interfaces
+    assert "CodeQLProcessAdapter" not in interfaces
+    assert "build_fake_pipeline" in interfaces
 
 
 def test_static_analysis_process_creation_is_shell_free_and_suspended() -> None:

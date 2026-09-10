@@ -11,11 +11,15 @@ from types import MappingProxyType
 
 from pydantic import TypeAdapter
 
-from sastsimi.contracts._domain import SafeDiagnostic
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef, validate_exact_ref
-from sastsimi.contracts.static import StaticToolProfile, git_path
+from sastsimi.contracts.refs import (
+    RunStoredDataRef,
+    StoredDataRef,
+    reference,
+    validate_exact_ref,
+)
+from sastsimi.contracts.static import SafeDiagnostic, StaticToolProfile, git_path
 from sastsimi.ports.dto import (
     CancellationResult,
     CandidateGap,
@@ -102,10 +106,23 @@ class StaticToolCoordinator:
             executable = self._executables[profile.executable_key]
         except KeyError as error:
             raise ValueError("STATIC_TOOL_PROFILE_INVALID") from error
-        self._verify_executable(executable, profile.executable_sha256)
+        registered_executable = self._verify_executable(
+            executable, profile.executable_sha256
+        )
+        adapter_executable = self._verify_executable(
+            adapter.executable, profile.executable_sha256
+        )
+        if registered_executable != adapter_executable:
+            raise ValueError("STATIC_EXECUTABLE_INVALID")
         return profile, adapter
 
-    def _verify_executable(self, executable: Path, expected_digest: str) -> None:
+    def _verify_executable(
+        self,
+        executable: Path,
+        expected_digest: str,
+        *,
+        additional_prohibited_roots: Sequence[Path] = (),
+    ) -> Path:
         try:
             before = executable.lstat()
             resolved = executable.resolve(strict=True)
@@ -118,10 +135,14 @@ class StaticToolCoordinator:
             or executable.is_symlink()
             or attributes & 0x400
             or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
-            or any(_is_within(resolved, root) for root in self._prohibited_roots)
+            or any(
+                _is_within(resolved, root)
+                for root in (*self._prohibited_roots, *additional_prohibited_roots)
+            )
             or _digest(resolved) != expected_digest
         ):
             raise ValueError("STATIC_EXECUTABLE_INVALID")
+        return resolved
 
     async def probe(self, profile_ref: StoredDataRef) -> ToolCapabilityResult:
         profile, adapter = self._resolve(profile_ref)
@@ -172,6 +193,18 @@ class StaticToolCoordinator:
             root = self._workspace.root_for(request.workspace)
             if not root.is_dir():
                 raise ValueError("WORKSPACE_NOT_READY")
+            registered_executable = self._verify_executable(
+                self._executables[profile.executable_key],
+                profile.executable_sha256,
+                additional_prohibited_roots=(root,),
+            )
+            adapter_executable = self._verify_executable(
+                adapter.executable,
+                profile.executable_sha256,
+                additional_prohibited_roots=(root,),
+            )
+            if registered_executable != adapter_executable:
+                raise ValueError("STATIC_EXECUTABLE_INVALID")
             await self._workspace.assert_unchanged(
                 request.workspace,
                 deadline,
@@ -205,7 +238,11 @@ class StaticToolCoordinator:
 
         action = request.action
         action_meta = action.meta
+        workspace_ref = reference(request.workspace)
+        if not isinstance(workspace_ref, (RunStoredDataRef, StoredDataRef)):
+            raise ValueError("STATIC_TOOL_PROFILE_BINDING_MISMATCH")
         expected_refs = {
+            workspace_ref,
             request.tool_profile_ref,
             request.analysis_config_ref,
         }

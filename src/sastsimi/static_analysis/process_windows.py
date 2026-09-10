@@ -182,9 +182,7 @@ class CtypesWin32Api:
     def __init__(self, *, kernel32: Any | None = None) -> None:
         if os.name != "nt":
             raise OSError("WIN32_BACKEND_UNAVAILABLE")
-        self.kernel32: Any = kernel32 or ctypes.WinDLL(
-            "kernel32", use_last_error=True
-        )
+        self.kernel32: Any = kernel32 or ctypes.WinDLL("kernel32", use_last_error=True)
         from ctypes import wintypes
 
         self.kernel32.CreatePipe.restype = wintypes.BOOL

@@ -6,7 +6,8 @@ from typing import Annotated, Literal, Self
 
 from pydantic import AfterValidator, AwareDatetime, model_validator
 
-from ._domain import DomainRecord, SafeDiagnostic, exact, exact_set, same_scope, unique
+from ._domain import DomainRecord, exact, exact_set, same_scope, unique
+from ._domain import SafeDiagnostic as SafeDiagnostic
 from .base import ContractModel, NonEmptyStr, NonNegativeInt, PositiveInt, Sha256
 from .closure import validate_committed_output
 from .ids import AnalysisId, AttemptId, CommitId, ErrorId, GapId, WorkId, WorkspaceId

@@ -21,7 +21,7 @@ import pytest
 from sastsimi.contracts.actions import ActionRequest
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
 from sastsimi.contracts.static import (
     CodeWorkspace,
     RuleExecutionItem,
@@ -86,29 +86,29 @@ def _profile(
     return StaticToolProfile.model_validate_json(
         canonical_bytes(
             {
-            "meta": values,
-            "profile_key": f"{adapter_key.lower()}-fixture",
-            "purpose": "FIXTURE",
-            "status": "APPROVED",
-            "adapter_key": adapter_key,
-            "tool_name": tool_name,
-            "tool_kind": tool_kind,
-            "executable_key": f"trusted-{adapter_key.lower()}",
-            "executable_sha256": (
-                hashlib.sha256(executable.read_bytes()).hexdigest()
-                if executable is not None
-                else "a" * 64
-            ),
-            "expected_version": version
-            or (platform.python_version() if tool_name == "AST" else "1.0"),
-            "capability_evidence_ref": None,
-            "probe_timeout_ms": 5_000,
-            "run_timeout_ms": 5_000,
-            "stdout_limit_bytes": 10_000,
-            "stderr_limit_bytes": 1_000,
-            "max_attempt_output_bytes": 20_000,
-            "max_output_file_bytes": 10_000,
-            "max_artifact_read_bytes": 10_000,
+                "meta": values,
+                "profile_key": f"{adapter_key.lower()}-fixture",
+                "purpose": "FIXTURE",
+                "status": "APPROVED",
+                "adapter_key": adapter_key,
+                "tool_name": tool_name,
+                "tool_kind": tool_kind,
+                "executable_key": f"trusted-{adapter_key.lower()}",
+                "executable_sha256": (
+                    hashlib.sha256(executable.read_bytes()).hexdigest()
+                    if executable is not None
+                    else "a" * 64
+                ),
+                "expected_version": version
+                or (platform.python_version() if tool_name == "AST" else "1.0"),
+                "capability_evidence_ref": None,
+                "probe_timeout_ms": 5_000,
+                "run_timeout_ms": 5_000,
+                "stdout_limit_bytes": 10_000,
+                "stderr_limit_bytes": 1_000,
+                "max_attempt_output_bytes": 20_000,
+                "max_output_file_bytes": 10_000,
+                "max_artifact_read_bytes": 10_000,
             }
         )
     )
@@ -158,25 +158,25 @@ def _result(
     return ToolRunResult.model_validate_json(
         canonical_bytes(
             {
-            "meta": result_meta,
-            "tool_name": profile.tool_name,
-            "tool_version": profile.expected_version,
-            "tool_kind": profile.tool_kind,
-            "status": "SUCCEEDED",
-            "coverage": ToolCoverage(
-                analyzed_paths=paths,
-                skipped_paths=(),
-                analyzed_languages=("Python",),
-                skipped_languages=(),
-                notes=(),
-            ),
-            "rule_execution_ref": rule_ref,
-            "raw_result_ref": _artifact_ref(raw),
-            "gaps": (),
-            "errors": (),
-            "started_at": "2026-09-08T00:00:00Z",
-            "finished_at": "2026-09-08T00:00:00Z",
-            "elapsed_ms": 0,
+                "meta": result_meta,
+                "tool_name": profile.tool_name,
+                "tool_version": profile.expected_version,
+                "tool_kind": profile.tool_kind,
+                "status": "SUCCEEDED",
+                "coverage": ToolCoverage(
+                    analyzed_paths=paths,
+                    skipped_paths=(),
+                    analyzed_languages=("Python",),
+                    skipped_languages=(),
+                    notes=(),
+                ),
+                "rule_execution_ref": rule_ref,
+                "raw_result_ref": _artifact_ref(raw),
+                "gaps": (),
+                "errors": (),
+                "started_at": "2026-09-08T00:00:00Z",
+                "finished_at": "2026-09-08T00:00:00Z",
+                "elapsed_ms": 0,
             }
         )
     )
@@ -193,23 +193,23 @@ def _rule_execution(
     return RuleExecutionRecord.model_validate_json(
         canonical_bytes(
             {
-            "meta": rule_meta,
-            "tool_name": profile.tool_name,
-            "tool_version": profile.expected_version,
-            "analysis_config_ref": _artifact_ref(b"config"),
-            "rule_catalog_ref": _artifact_ref(b"catalog"),
-            "selected_rule_packs": ("fixture/web",),
-            "rules": tuple(
-                RuleExecutionItem(
-                    rule_id=rule_id,
-                    selection_status="SELECTED",
-                    execution_status="EXECUTED",
-                    hit_count=0,
-                    reason=None,
-                    detail=None,
-                ).model_dump(mode="json")
-                for rule_id in catalog_ids
-            ),
+                "meta": rule_meta,
+                "tool_name": profile.tool_name,
+                "tool_version": profile.expected_version,
+                "analysis_config_ref": _artifact_ref(b"config"),
+                "rule_catalog_ref": _artifact_ref(b"catalog"),
+                "selected_rule_packs": ("fixture/web",),
+                "rules": tuple(
+                    RuleExecutionItem(
+                        rule_id=rule_id,
+                        selection_status="SELECTED",
+                        execution_status="EXECUTED",
+                        hit_count=0,
+                        reason=None,
+                        detail=None,
+                    ).model_dump(mode="json")
+                    for rule_id in catalog_ids
+                ),
             }
         )
     )
@@ -301,9 +301,7 @@ class _Runner:
             stdout = self.opengrep_raw
         else:
             raise AssertionError(f"unexpected process kind: {spec.command_kind}")
-        outcome: Literal["SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"] = (
-            "SUCCEEDED"
-        )
+        outcome: Literal["SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED"] = "SUCCEEDED"
         return_code: int | None = 0
         if spec.command_kind == self.block_kind:
             self.started.set()
@@ -466,7 +464,10 @@ def _request(
     )
     profile_ref = reference(profile)
     assert isinstance(profile_ref, StoredDataRef)
-    input_refs = (
+    workspace_ref = reference(workspace)
+    assert isinstance(workspace_ref, (RunStoredDataRef, StoredDataRef))
+    input_refs: tuple[RunStoredDataRef | StoredDataRef, ...] = (
+        workspace_ref,
         profile_ref,
         config_ref,
     )
@@ -761,9 +762,7 @@ async def test_actual_three_adapter_public_bridge_and_exact_replay(
     )
     query_pack = case_root / "query-pack"
     query_pack.mkdir()
-    query_pack.joinpath("qlpack.yml").write_text(
-        "name: fixture\n", encoding="utf-8"
-    )
+    query_pack.joinpath("qlpack.yml").write_text("name: fixture\n", encoding="utf-8")
     query_pack.joinpath("sastsimi-selection.json").write_bytes(
         canonical_bytes(
             {
@@ -941,7 +940,9 @@ async def test_actual_three_adapter_public_bridge_and_exact_replay(
         cancellation = await coordinator.cancel(f"attempt-{attempt}")
         await asyncio.wait_for(active, timeout=1)
         assert cancellation.cancelled is True
-        assert runner.cancelled == [str(requests[index].action.meta.attempt_id)]
+        action_meta = requests[index].action.meta
+        assert isinstance(action_meta, RecordMeta)
+        assert runner.cancelled == [str(action_meta.attempt_id)]
 
     await assert_active_cancel(0, ast_runner, "ast-parse")
     await assert_active_cancel(1, codeql_runner, "codeql-analyze")
@@ -954,9 +955,12 @@ async def test_actual_three_adapter_public_bridge_and_exact_replay(
         stale = profile_ref.model_copy(update={"content_hash": "0" * 64})
         with pytest.raises(ValueError, match="STATIC_TOOL_PROFILE_INVALID"):
             await coordinator.probe(stale)
-    assert sum(
-        len(runner.calls) for runner in (ast_runner, codeql_runner, opengrep_runner)
-    ) == process_count
+    assert (
+        sum(
+            len(runner.calls) for runner in (ast_runner, codeql_runner, opengrep_runner)
+        )
+        == process_count
+    )
 
     stale = profile_refs[0].model_copy(update={"content_hash": "0" * 64})
     resolver.values[stale] = ast_profile
@@ -966,26 +970,28 @@ async def test_actual_three_adapter_public_bridge_and_exact_replay(
     with pytest.raises(ValueError, match="STATIC_TOOL_PROFILE_INVALID"):
         await coordinator.probe(profile_refs[0])
     resolver.values[profile_refs[0]] = ast_profile
-    assert sum(
-        len(runner.calls) for runner in (ast_runner, codeql_runner, opengrep_runner)
-    ) == process_count
+    assert (
+        sum(
+            len(runner.calls) for runner in (ast_runner, codeql_runner, opengrep_runner)
+        )
+        == process_count
+    )
 
     for request in requests:
         wrong_inputs = request.action.model_copy(update={"input_refs": ()})
-        with pytest.raises(
-            ValueError, match="STATIC_TOOL_PROFILE_BINDING_MISMATCH"
-        ):
+        with pytest.raises(ValueError, match="STATIC_TOOL_PROFILE_BINDING_MISMATCH"):
             await coordinator.run(replace(request, action=wrong_inputs))
         no_work = request.action.model_copy(
             update={"work_ref": None, "expected_state_version": None}
         )
-        with pytest.raises(
-            ValueError, match="STATIC_TOOL_PROFILE_BINDING_MISMATCH"
-        ):
+        with pytest.raises(ValueError, match="STATIC_TOOL_PROFILE_BINDING_MISMATCH"):
             await coordinator.run(replace(request, action=no_work))
-    assert sum(
-        len(runner.calls) for runner in (ast_runner, codeql_runner, opengrep_runner)
-    ) == process_count
+    assert (
+        sum(
+            len(runner.calls) for runner in (ast_runner, codeql_runner, opengrep_runner)
+        )
+        == process_count
+    )
 
     for index, (request, profile, adapter, runner) in enumerate(
         zip(
@@ -1042,9 +1048,7 @@ async def test_actual_three_adapter_public_bridge_and_exact_replay(
         path_mismatch,
         workspace_root,
         codeql_profile,
-        MonotonicActionDeadline(
-            str(path_mismatch.action.action_id), 0, 10**18
-        ),
+        MonotonicActionDeadline(str(path_mismatch.action.action_id), 0, 10**18),
     )
     assert rejected.status == "FAILED"
     assert len(codeql_runner.calls) == before

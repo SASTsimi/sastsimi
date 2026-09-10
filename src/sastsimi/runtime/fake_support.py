@@ -181,9 +181,7 @@ class FakeEvidence(UnprovenEvidence):
     def sandbox_configuration_approved(self, profile: SandboxProfile) -> bool:
         return content_hash(profile) in self.sandbox_approvals
 
-    def static_tool_configuration_approved(
-        self, profile: StaticToolProfile
-    ) -> bool:
+    def static_tool_configuration_approved(self, profile: StaticToolProfile) -> bool:
         return content_hash(profile) in self.static_tool_approvals
 
     def action_evidence(
@@ -195,8 +193,7 @@ class FakeEvidence(UnprovenEvidence):
         refs.extend(
             ref
             for ref in action.input_refs
-            if isinstance(ref, StoredDataRef)
-            and ref.data_kind == "static_tool_profile"
+            if isinstance(ref, StoredDataRef) and ref.data_kind == "static_tool_profile"
         )
         if check in {CheckType.PROVIDER, CheckType.SESSION, CheckType.REDACTION}:
             if action.provider_profile_ref is not None:

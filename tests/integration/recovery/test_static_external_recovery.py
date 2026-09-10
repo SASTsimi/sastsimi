@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import Any, Literal, cast
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import insert, select
 
 from sastsimi.bootstrap import build_runtime
 from sastsimi.contracts.actions import ActionRequest, CheckType, RequesterRole
@@ -147,9 +147,23 @@ def _runtime_request(
     execution_ref = h.pin_execution(runtime.budget_registry, execution)
     binding, raw_workspace_ref = h.binding(execution_ref.model_dump(mode="json"))
     workspace_ref = RunStoredDataRef.model_validate_json(json.dumps(raw_workspace_ref))
+    workspace_record = h.records.get_exact(workspace_ref)
+    assert isinstance(workspace_record, CodeWorkspace)
+    with h.database.write() as connection:
+        connection.execute(
+            insert(models.current_records).values(
+                logical_record_id=str(workspace_record.meta.logical_record_id),
+                record_id=str(workspace_record.meta.record_id),
+                state_version=workspace_record.meta.revision_number,
+            )
+        )
     scope = h.pin_binding(runtime.budget_registry, binding, workspace_ref)
+    current_state = runtime.budget_registry.current_state("a1")
+    assert current_state.workspace_ref is not None
+    workspace_ref = current_state.workspace_ref
     workspace = h.records.get_exact(workspace_ref)
     assert isinstance(workspace, CodeWorkspace)
+    assert workspace in runtime.queries.current_records("a1", "code_workspace")
     runner = WorkflowRunner(runtime, h.clock, h.ids)
     original_units = runner.units
     cast(Any, runner).units = lambda **values: original_units(
@@ -195,7 +209,7 @@ def _runtime_request(
         "ANALYSIS",
         "a1",
         identity,
-        inputs=(profile_ref,),
+        inputs=(workspace_ref, profile_ref),
     )
     h.evidence.identities[identity] = RequesterRole.STATIC_ANALYSIS
     action = runner.action(
@@ -591,6 +605,8 @@ async def test_public_coordinator_run_cancel_closes_runtime_attempt(
 ) -> None:
     executable = tmp_path / "fixture-python"
     executable.write_bytes(b"bounded executable")
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
     digest = hashlib.sha256(executable.read_bytes()).hexdigest()
     _, runner, request, profile = _runtime_request(tmp_path, executable_sha256=digest)
     assert isinstance(request.action.meta, RecordMeta)
@@ -599,6 +615,9 @@ async def test_public_coordinator_run_cancel_closes_runtime_attempt(
     released = asyncio.Event()
 
     class Adapter:
+        def __init__(self, executable_path: Path) -> None:
+            self.executable = executable_path
+
         async def execute(
             self,
             _request: StaticToolRequest,
@@ -639,7 +658,7 @@ async def test_public_coordinator_run_cancel_closes_runtime_attempt(
         integrity_checks: list[tuple[str, str]] = []
 
         def root_for(self, _workspace: CodeWorkspace) -> Path:
-            return tmp_path
+            return workspace_root
 
         async def assert_unchanged(
             self,
@@ -670,7 +689,7 @@ async def test_public_coordinator_run_cancel_closes_runtime_attempt(
         static_process_receipts=lambda _action, _attempt: (cancelled_receipt,),
         static_dispatch_state=_dispatch_reader(runner),
     )
-    adapter = Adapter()
+    adapter = Adapter(executable)
     coordinator = StaticToolCoordinator(
         cast(
             Any,

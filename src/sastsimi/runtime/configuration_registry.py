@@ -33,9 +33,7 @@ class ConfigurationRegistry:
     def __init__(self, registry: ConfigurationRegistryPort) -> None:
         self.registry = registry
 
-    def register_static_tool_profile(
-        self, record: StaticToolProfile
-    ) -> StoredDataRef:
+    def register_static_tool_profile(self, record: StaticToolProfile) -> StoredDataRef:
         return self.registry.register_static_tool_profile(record)
 
     def resolve_static_tool_profile(

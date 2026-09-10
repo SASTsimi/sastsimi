@@ -359,9 +359,7 @@ def replay_python_ast_raw(
     analyzed = cast(tuple[str, ...], decoded["analyzed_paths"])
     raw_skipped = cast(tuple[str, ...], decoded["skipped_paths"])
     result_skipped = tuple(result.coverage.skipped_paths)
-    explained = {
-        path for gap in result.gaps for path in tuple(gap.affected_paths)
-    }
+    explained = {path for gap in result.gaps for path in tuple(gap.affected_paths)}
     raw_ref = result.raw_result_ref
     if (
         replay.rule_execution is not None

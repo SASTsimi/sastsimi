@@ -54,9 +54,7 @@ class TrustedEvidencePort(Protocol):
 
 
 class UnprovenEvidence:
-    def static_tool_configuration_approved(
-        self, profile: StaticToolProfile
-    ) -> bool:
+    def static_tool_configuration_approved(self, profile: StaticToolProfile) -> bool:
         return False
 
     def generation_restart_evidence(

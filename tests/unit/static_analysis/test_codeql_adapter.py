@@ -191,9 +191,7 @@ def workspace_and_request(
     )
     profile_ref = cast(StoredDataRef, reference(tool_profile))
     workspace_ref = cast(StoredDataRef, reference(workspace))
-    analysis_config_ref = StoredDataRef.model_validate(
-        fixture_ref("analysis_config")
-    )
+    analysis_config_ref = StoredDataRef.model_validate(fixture_ref("analysis_config"))
     rule_catalog_ref = StoredDataRef.model_validate(fixture_ref("rule_catalog"))
     action_data = make("ActionRequest", "action_request")
     action = ActionRequest.model_validate_json(

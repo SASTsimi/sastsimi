@@ -7,6 +7,7 @@ from sastsimi.contracts.llm import (
     ProviderValidationEvidence,
 )
 from sastsimi.contracts.refs import reference
+from sastsimi.ports.static_tool import StaticToolAdapter
 from tests.contract.domain.canonical_fixtures import make
 
 
@@ -86,3 +87,9 @@ async def test_fake_static_probe_preserves_exact_profile_reference() -> None:
     assert result.ref == profile_ref
     assert result.tool_name == "UNKNOWN"
     assert result.available is False
+
+
+def test_fake_static_adapter_still_implements_the_public_port() -> None:
+    from sastsimi.static_analysis.fake import FakeStaticToolAdapter
+
+    assert isinstance(FakeStaticToolAdapter({}), StaticToolAdapter)

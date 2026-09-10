@@ -53,9 +53,7 @@ class ConfigurationRegistry:
         self.records = records
         self.artifacts = artifacts
 
-    def register_static_tool_profile(
-        self, record: StaticToolProfile
-    ) -> StoredDataRef:
+    def register_static_tool_profile(self, record: StaticToolProfile) -> StoredDataRef:
         record = StaticToolProfile.model_validate(record)
         if record.status != "APPROVED" or record.purpose not in {
             "FIXTURE",

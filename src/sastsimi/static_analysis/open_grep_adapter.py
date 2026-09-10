@@ -566,8 +566,7 @@ def replay_opengrep_raw(
         value = json.loads(raw.decode("utf-8"))
         if (
             not isinstance(value, dict)
-            or set(value)
-            != {"schema_version", "tool_name", "tool_version", "batches"}
+            or set(value) != {"schema_version", "tool_name", "tool_version", "batches"}
             or value.get("schema_version") != 1
             or value.get("tool_name") != "OPENGREP"
             or value.get("tool_version") != profile.expected_version
@@ -581,8 +580,7 @@ def replay_opengrep_raw(
         for batch_value in value["batches"]:
             if (
                 not isinstance(batch_value, dict)
-                or set(batch_value)
-                != {"paths", "stdout_base64", "stdout_sha256"}
+                or set(batch_value) != {"paths", "stdout_base64", "stdout_sha256"}
                 or not isinstance(batch_value.get("paths"), list)
                 or not all(isinstance(path, str) for path in batch_value["paths"])
                 or not isinstance(batch_value.get("stdout_base64"), str)

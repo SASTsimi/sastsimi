@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -26,6 +27,7 @@ from sastsimi.contracts.llm import (
     ProviderProfile,
     ProviderValidationEvidence,
 )
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.contracts.work import WorkExecutionState
@@ -97,6 +99,7 @@ def test_static_action_binding_requires_same_exact_profile_everywhere() -> None:
 
     profile = make_static_profile()
     profile_ref = reference(profile)
+    assert isinstance(profile_ref, StoredDataRef)
     workspace = CodeWorkspace.model_validate_json(
         canonical_bytes(make("CodeWorkspace") | {"status": "READY", "commit_id": "c1"})
     )
@@ -105,8 +108,7 @@ def test_static_action_binding_requires_same_exact_profile_everywhere() -> None:
         canonical_bytes(
             work_data
             | {
-                "meta": work_data["meta"]
-                | {"attempt_id": None, "hypothesis_id": None},
+                "meta": work_data["meta"] | {"attempt_id": None, "hypothesis_id": None},
                 "work_type": "STATIC_TOOL",
                 "subject_type": "ANALYSIS",
                 "subject_id": "a1",
@@ -203,8 +205,9 @@ def test_static_action_binding_requires_same_exact_profile_everywhere() -> None:
 
 
 def test_static_tool_request_rejects_removed_four_position_alias() -> None:
+    constructor = cast(Any, StaticToolRequest)
     with pytest.raises(TypeError):
-        StaticToolRequest(object(), object(), object(), object())  # type: ignore[arg-type]
+        constructor(object(), object(), object(), object())
 
 
 def test_typed_registries_require_family_evidence_and_exact_closure(

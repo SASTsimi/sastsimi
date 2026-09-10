@@ -514,9 +514,8 @@ class StaticNormalizationPublisher:
         self,
         runner: WorkflowRunner,
         normalizer: StaticNormalizer,
-        rule_mappings: Mapping[
-            StoredDataRef, tuple[StaticRuleMapping, ...]
-        ] | None = None,
+        rule_mappings: Mapping[StoredDataRef, tuple[StaticRuleMapping, ...]]
+        | None = None,
     ) -> None:
         self.runner = runner
         self.normalizer = normalizer
@@ -842,12 +841,8 @@ class StaticNormalizationPublisher:
             if previous is not None and previous != material.catalog_rule_ids:
                 raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
             mapping_ids = tuple(item.rule_id for item in material.rule_mappings)
-            if (
-                (mapping_ids and set(mapping_ids) != set(material.catalog_rule_ids))
-                or (
-                    material.result.status in {"SUCCEEDED", "PARTIAL"}
-                    and not mapping_ids
-                )
+            if (mapping_ids and set(mapping_ids) != set(material.catalog_rule_ids)) or (
+                material.result.status in {"SUCCEEDED", "PARTIAL"} and not mapping_ids
             ):
                 raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
             validate_rule_execution(material.result, record, material.catalog_rule_ids)

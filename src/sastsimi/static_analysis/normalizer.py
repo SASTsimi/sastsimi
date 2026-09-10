@@ -31,9 +31,7 @@ from sastsimi.ports.dto import (
     StaticToolObservation,
 )
 
-type RawDecoder = Callable[
-    [bytes, "StaticRawReplayInput"], StaticToolObservation
-]
+type RawDecoder = Callable[[bytes, "StaticRawReplayInput"], StaticToolObservation]
 type DecoderKey = tuple[str, str, str, str]
 
 

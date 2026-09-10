@@ -60,8 +60,11 @@ class _Profiles:
 
 
 class _Adapter:
-    def __init__(self, observation: StaticCapabilityObservation) -> None:
+    def __init__(
+        self, observation: StaticCapabilityObservation, executable: Path
+    ) -> None:
         self.observation = observation
+        self.executable = executable
         self.probes = 0
 
     async def probe(
@@ -146,7 +149,7 @@ async def test_probe_exactly_resolves_executable_and_lower_adapter(
         expected_version="3.12",
         reason_code=None,
     )
-    adapter = _Adapter(observation)
+    adapter = _Adapter(observation, executable)
     coordinator = StaticToolCoordinator(
         _Profiles(profile),
         {"PYTHON_AST": adapter},
@@ -180,7 +183,8 @@ async def test_probe_rejects_mismatched_lower_observation(tmp_path: Path) -> Non
             observed_version="3.12",
             expected_version="3.12",
             reason_code=None,
-        )
+        ),
+        executable,
     )
     coordinator = StaticToolCoordinator(
         _Profiles(profile),
@@ -194,6 +198,77 @@ async def test_probe_rejects_mismatched_lower_observation(tmp_path: Path) -> Non
     assert isinstance(profile_ref, StoredDataRef)
     with pytest.raises(ValueError, match="STATIC_CAPABILITY_OBSERVATION_MISMATCH"):
         await coordinator.probe(profile_ref)
+
+
+@pytest.mark.asyncio
+async def test_probe_rejects_adapter_bound_to_a_different_executable(
+    tmp_path: Path,
+) -> None:
+    registered = tmp_path / "registered-python"
+    registered.write_bytes(b"same bounded fixture")
+    adapter_executable = tmp_path / "adapter-python"
+    adapter_executable.write_bytes(registered.read_bytes())
+    profile = _profile(registered)
+    observation = StaticCapabilityObservation(
+        available=True,
+        tool_name="AST",
+        tool_kind="STRUCTURE",
+        executable_key="fixture-python",
+        observed_executable_sha256=profile.executable_sha256,
+        observed_version="3.12",
+        expected_version="3.12",
+        reason_code=None,
+    )
+    adapter = _Adapter(observation, adapter_executable)
+    coordinator = StaticToolCoordinator(
+        _Profiles(profile),
+        {"PYTHON_AST": adapter},
+        _External(),
+        _Workspace(),
+        {"fixture-python": registered},
+    )
+
+    profile_ref = reference(profile)
+    assert isinstance(profile_ref, StoredDataRef)
+    with pytest.raises(ValueError, match="STATIC_EXECUTABLE_INVALID"):
+        await coordinator.probe(profile_ref)
+    assert adapter.probes == 0
+
+
+@pytest.mark.asyncio
+async def test_probe_rejects_an_executable_from_a_prohibited_workspace(
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    executable = workspace_root / "python"
+    executable.write_bytes(b"untrusted workspace executable")
+    profile = _profile(executable)
+    observation = StaticCapabilityObservation(
+        available=True,
+        tool_name="AST",
+        tool_kind="STRUCTURE",
+        executable_key="fixture-python",
+        observed_executable_sha256=profile.executable_sha256,
+        observed_version="3.12",
+        expected_version="3.12",
+        reason_code=None,
+    )
+    adapter = _Adapter(observation, executable)
+    coordinator = StaticToolCoordinator(
+        _Profiles(profile),
+        {"PYTHON_AST": adapter},
+        _External(),
+        _Workspace(),
+        {"fixture-python": executable},
+        prohibited_workspace_roots=(workspace_root,),
+    )
+
+    profile_ref = reference(profile)
+    assert isinstance(profile_ref, StoredDataRef)
+    with pytest.raises(ValueError, match="STATIC_EXECUTABLE_INVALID"):
+        await coordinator.probe(profile_ref)
+    assert adapter.probes == 0
 
 
 def test_observation_rejects_unsafe_nested_paths_and_diagnostics(

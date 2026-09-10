@@ -507,9 +507,10 @@ async def test_execute_uses_one_attempt_owned_output_budget_across_all_processes
 
     assert result.status == "SUCCEEDED"
     assert len(factory.calls) == 1
-    assert factory.calls[0]["attempt_id"] == cast(
-        Any, opengrep_fixture["inputs"]
-    ).attempt_id
+    assert (
+        factory.calls[0]["attempt_id"]
+        == cast(Any, opengrep_fixture["inputs"]).attempt_id
+    )
     assert factory.calls[0]["output_limit_bytes"] == profile.max_attempt_output_bytes
     assert len(runner.calls) > 2
     assert {
@@ -667,9 +668,7 @@ async def test_result_without_identifiable_rule_makes_selected_rules_unknown(
 ) -> None:
     malformed = _finding("R1", "src/a.py")
     del malformed["check_id"]
-    runner = FakeRunner(
-        [{"stdout": _output(paths=("src/a.py",), results=[malformed])}]
-    )
+    runner = FakeRunner([{"stdout": _output(paths=("src/a.py",), results=[malformed])}])
     adapter = _adapter(opengrep_fixture, runner)
     request = cast(StaticToolRequest, opengrep_fixture["request"])
     request = replace(
@@ -1034,9 +1033,7 @@ async def test_float_telemetry_preserves_exact_bounded_raw_bytes_for_replay(
 async def test_raw_batch_over_cap_is_rejected_before_json_decode(
     opengrep_fixture: dict[str, object],
 ) -> None:
-    compact = _output(
-        paths=("src/a.py",), results=[_finding("R1", "src/a.py")]
-    )
+    compact = _output(paths=("src/a.py",), results=[_finding("R1", "src/a.py")])
     raw = (b" " * 2_048) + compact
     assert len(compact) < 1_024 < len(raw)
     runner = FakeRunner([{"stdout": raw}])

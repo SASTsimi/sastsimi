@@ -24,8 +24,124 @@ from sastsimi.storage.schema_version import MigrationRequired as MigrationRequir
 if TYPE_CHECKING:
     from sastsimi.contracts.evaluation import AnalysisRunResult
     from sastsimi.contracts.reporting import ReportDraft
+    from sastsimi.contracts.static import StaticToolProfile
     from sastsimi.orchestration.fake_pipeline import FakePipeline
     from sastsimi.orchestration.fake_scenario_runtime import WorkflowBundle
+    from sastsimi.orchestration.static_external_runner import (
+        RepositoryRecoveryValidatorPort,
+        RepositorySourceCanonicalizer,
+        StaticCancellationObservationReader,
+        StaticDispatchStateReader,
+        StaticExternalRunner,
+        StaticProcessReceiptReader,
+        WorkspacePolicyDecoder,
+    )
+    from sastsimi.orchestration.static_publication import (
+        StaticNormalizationPublisher,
+    )
+    from sastsimi.ports.context import ContextLineageReaderPort
+    from sastsimi.ports.dto import StaticRuleMapping
+    from sastsimi.ports.static_tool import StaticProcessAdapter
+    from sastsimi.ports.workspace import WorkspaceLocatorPort
+    from sastsimi.runtime.workflow_runner import WorkflowRunner
+    from sastsimi.static_analysis.coordinator import StaticToolCoordinator
+    from sastsimi.static_analysis.normalizer import DecoderKey, RawDecoder
+    from sastsimi.verification.context_service import (
+        ContextRetrievalService,
+        TrackedFilesResolver,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _RealStaticSlice:
+    """Explicit, private composition of T08 services; never selected implicitly."""
+
+    external: StaticExternalRunner
+    tools: StaticToolCoordinator
+    normalization: StaticNormalizationPublisher
+    context: ContextRetrievalService
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeStaticToolProfileResolver:
+    runtime: RuntimeServices
+
+    def resolve(self, profile_ref: StoredDataRef) -> StaticToolProfile:
+        return self.runtime.configuration.resolve_static_tool_profile(profile_ref)
+
+
+def _build_real_static_slice(
+    *,
+    runner: WorkflowRunner,
+    workspace_locator: WorkspaceLocatorPort,
+    adapters: Mapping[str, StaticProcessAdapter],
+    executables: Mapping[str, Path],
+    receipt_root: Path,
+    context_receipt_root: Path,
+    canonicalize_source: RepositorySourceCanonicalizer,
+    decode_policy: WorkspacePolicyDecoder,
+    static_process_receipts: StaticProcessReceiptReader,
+    static_cancellation_observation: StaticCancellationObservationReader,
+    static_dispatch_state: StaticDispatchStateReader,
+    lease_root_resolver: Callable[[str], Path],
+    recovery_validator: RepositoryRecoveryValidatorPort,
+    decoders: Mapping[DecoderKey, RawDecoder],
+    rule_catalogs: Mapping[StoredDataRef, tuple[str, ...]],
+    rule_selections: Mapping[StoredDataRef, tuple[str, ...]],
+    rule_mappings: Mapping[StoredDataRef, tuple[StaticRuleMapping, ...]],
+    tracked_files_for: TrackedFilesResolver,
+    prohibited_workspace_roots: tuple[Path, ...],
+    lineage_reader: ContextLineageReaderPort | None = None,
+) -> _RealStaticSlice:
+    """Wire exact injected dependencies without profiles, I/O, or CLI activation."""
+    from sastsimi.orchestration.static_external_runner import StaticExternalRunner
+    from sastsimi.orchestration.static_publication import (
+        StaticAttemptPublisher,
+        StaticNormalizationPublisher,
+    )
+    from sastsimi.static_analysis.coordinator import StaticToolCoordinator
+    from sastsimi.static_analysis.normalizer import StaticNormalizer
+    from sastsimi.verification.context_service import ContextRetrievalService
+
+    attempt_publisher = StaticAttemptPublisher(
+        runner,
+        rule_catalogs=rule_catalogs,
+        rule_selections=rule_selections,
+    )
+    external = StaticExternalRunner(
+        runner,
+        receipt_root,
+        canonicalize_source,
+        decode_policy,
+        lease_root_resolver=lease_root_resolver,
+        recovery_validator=recovery_validator,
+        static_publisher=attempt_publisher,
+        static_process_receipts=static_process_receipts,
+        static_cancellation_observation=static_cancellation_observation,
+        static_dispatch_state=static_dispatch_state,
+    )
+    tools = StaticToolCoordinator(
+        _RuntimeStaticToolProfileResolver(runner.runtime),
+        adapters,
+        external,
+        workspace_locator,
+        executables,
+        prohibited_workspace_roots=prohibited_workspace_roots,
+    )
+    normalization = StaticNormalizationPublisher(
+        runner,
+        StaticNormalizer(decoders),
+        rule_mappings=rule_mappings,
+    )
+    context = ContextRetrievalService(
+        runtime=runner.runtime,
+        runner=runner,
+        workspace_locator=workspace_locator,
+        tracked_files_for=tracked_files_for,
+        receipt_root=context_receipt_root,
+        lineage_reader=lineage_reader,
+    )
+    return _RealStaticSlice(external, tools, normalization, context)
 
 
 def build_config(
@@ -122,7 +238,6 @@ def build_fake_pipeline(data_dir: Path) -> FakePipeline:
         FakeIds,
         FakeRecordFactory,
     )
-    from sastsimi.runtime.workflow_runner import WorkflowRunner
     from sastsimi.sandbox.fake import FakeSandboxAdapter
     from sastsimi.static_analysis.fake import FakeStaticToolAdapter
     from sastsimi.verification import FakeVerificationAssembly

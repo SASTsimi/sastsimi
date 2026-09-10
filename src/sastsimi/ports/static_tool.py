@@ -33,6 +33,8 @@ class StaticToolAdapter(Protocol):
 
 
 class StaticProcessAdapter(Protocol):
+    executable: Path
+
     async def probe(
         self, profile: StaticToolProfile, deadline: MonotonicActionDeadline
     ) -> StaticCapabilityObservation: ...

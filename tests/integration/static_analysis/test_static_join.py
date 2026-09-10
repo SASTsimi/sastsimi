@@ -380,9 +380,7 @@ def test_real_runtime_publication_and_terminal_replay_validate_expected_runs(
     )
 
     if ast_status == "PARTIAL" and rule_status == "SUCCEEDED":
-        rule_material = publisher._resolve_source(
-            normalization, workspace, sources[1]
-        )
+        rule_material = publisher._resolve_source(normalization, workspace, sources[1])
         assert rule_material.rule_mappings == (
             StaticRuleMapping("fake-rule", "OTHER", None, False),
         )
@@ -396,9 +394,7 @@ def test_real_runtime_publication_and_terminal_replay_validate_expected_runs(
         escaped_coverage = outputs[0][0].coverage.model_copy(
             update={"analyzed_paths": ("src/not-requested.py",)}
         )
-        escaped_result = outputs[0][0].model_copy(
-            update={"coverage": escaped_coverage}
-        )
+        escaped_result = outputs[0][0].model_copy(update={"coverage": escaped_coverage})
         with pytest.raises(ValueError, match="STATIC_NORMALIZATION_INPUT_MISMATCH"):
             publisher._resolve_tool_action(
                 runtime.work.get(str(works[0].work_id)), escaped_result
