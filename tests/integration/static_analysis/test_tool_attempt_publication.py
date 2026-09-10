@@ -1,3 +1,4 @@
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import cast
 
@@ -118,6 +119,44 @@ def test_only_explicit_no_spawn_skip_may_have_no_process_receipt() -> None:
     )
     with pytest.raises(ValueError, match="STATIC_PROCESS_RECEIPT_INVALID"):
         StaticExternalRunner._validate_tool_process_presence(vague, (), no_spawn=True)
+
+
+def test_spawned_cancellation_requires_final_cancelled_process_receipt() -> None:
+    succeeded = ProcessReceipt(
+        action_id="action",
+        invocation_id="attempt-batch-0",
+        command_kind="ast",
+        attempt_id="attempt",
+        command_fingerprint="a" * 64,
+        outcome="SUCCEEDED",
+        return_code=0,
+        stdout_name="stdout.bin",
+        stdout_size=2,
+        stdout_sha256="b" * 64,
+        stderr_name="stderr.bin",
+        stderr_size=0,
+        stderr_sha256="c" * 64,
+        elapsed_ms=1,
+    )
+    cancelled = replace(succeeded, outcome="CANCELLED", return_code=None)
+
+    StaticExternalRunner._validate_cancellation_process_closure(
+        "DISPATCHED", (succeeded, cancelled), no_spawn=False
+    )
+    with pytest.raises(ValueError, match="STATIC_PROCESS_RECEIPT_INVALID"):
+        StaticExternalRunner._validate_cancellation_process_closure(
+            "DISPATCHED", (succeeded,), no_spawn=False
+        )
+
+
+def test_preclaim_cancellation_requires_explicit_zero_spawn_marker() -> None:
+    StaticExternalRunner._validate_cancellation_process_closure(
+        "PREPARED", (), no_spawn=True
+    )
+    with pytest.raises(ValueError, match="STATIC_PROCESS_RECEIPT_INVALID"):
+        StaticExternalRunner._validate_cancellation_process_closure(
+            "PREPARED", (), no_spawn=False
+        )
 
 
 def test_nonexecuted_rules_preserve_exact_trusted_selection() -> None:

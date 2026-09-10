@@ -312,6 +312,10 @@ class StaticExternalRunner:
             process_receipts, no_spawn = self._current_tool_process_receipts(
                 str(action.action_id), attempt_id
             )
+            if any(gap.code == "STATIC_TOOL_CANCELLED" for gap in observation.gaps):
+                self._validate_cancellation_process_closure(
+                    "DISPATCHED", process_receipts, no_spawn=no_spawn
+                )
             self._validate_tool_process_presence(
                 observation, process_receipts, no_spawn=no_spawn
             )
@@ -336,14 +340,26 @@ class StaticExternalRunner:
             )
         except asyncio.CancelledError:
             elapsed_ms = max(0, (self._now_ns() - started_ns) // 1_000_000)
-            observation = self._close_tool_cancellation(
-                request,
-                resolved_profile,
-                work,
-                decision_ref,
-                reference(reservation),
-                elapsed_ms,
-            )
+            try:
+                observation = self._close_tool_cancellation(
+                    request,
+                    resolved_profile,
+                    work,
+                    decision_ref,
+                    reference(reservation),
+                    elapsed_ms,
+                )
+            except (OSError, ValueError):
+                dispatch = self._read_dispatch_state(
+                    str(action.action_id),
+                    work,
+                    decision_ref,
+                    reference(reservation),
+                    required=False,
+                )
+                if dispatch is not None and dispatch.state == "DISPATCHED":
+                    self._block_uncertain(work)
+                raise
         except Exception:
             dispatch = self._read_dispatch_state(
                 str(action.action_id),
@@ -444,9 +460,15 @@ class StaticExternalRunner:
                     approved_timeout,
                     operation,
                 )
-            receipt, observation, _ = self._read_tool_receipt(
+            receipt, observation, process_receipts = self._read_tool_receipt(
                 request, decision_ref, profile
             )
+            if any(gap.code == "STATIC_TOOL_CANCELLED" for gap in observation.gaps):
+                self._validate_cancellation_process_closure(
+                    dispatch.state,
+                    process_receipts,
+                    no_spawn=not process_receipts,
+                )
         except (LookupError, OSError, ValueError) as error:
             self._block_uncertain(work)
             self._quarantine_tool_receipt(str(action.action_id))
@@ -490,6 +512,10 @@ class StaticExternalRunner:
             receipts, no_spawn = self._current_tool_process_receipts(
                 str(request.action.action_id), str(attempt_id)
             )
+            if any(gap.code == "STATIC_TOOL_CANCELLED" for gap in observation.gaps):
+                self._validate_cancellation_process_closure(
+                    "DISPATCHED", receipts, no_spawn=no_spawn
+                )
             self._validate_tool_process_presence(
                 observation, receipts, no_spawn=no_spawn
             )
@@ -513,14 +539,26 @@ class StaticExternalRunner:
             )
         except asyncio.CancelledError:
             elapsed_ms = max(0, (self._now_ns() - started_ns) // 1_000_000)
-            observation = self._close_tool_cancellation(
-                request,
-                profile,
-                work,
-                decision_ref,
-                reference(reservation),
-                elapsed_ms,
-            )
+            try:
+                observation = self._close_tool_cancellation(
+                    request,
+                    profile,
+                    work,
+                    decision_ref,
+                    reference(reservation),
+                    elapsed_ms,
+                )
+            except (OSError, ValueError):
+                dispatch = self._read_dispatch_state(
+                    str(request.action.action_id),
+                    work,
+                    decision_ref,
+                    reference(reservation),
+                    required=False,
+                )
+                if dispatch is not None and dispatch.state == "DISPATCHED":
+                    self._block_uncertain(work)
+                raise
         except Exception:
             dispatch = self._read_dispatch_state(
                 str(request.action.action_id),
@@ -967,8 +1005,11 @@ class StaticExternalRunner:
         receipts, no_spawn = self._current_tool_process_receipts(
             str(request.action.action_id), str(request.action.meta.attempt_id)
         )
-        if (dispatch is None or dispatch.state == "PREPARED") and receipts:
-            raise ValueError("STATIC_PROCESS_RECEIPT_INVALID")
+        self._validate_cancellation_process_closure(
+            "PREPARED" if dispatch is None else dispatch.state,
+            receipts,
+            no_spawn=no_spawn,
+        )
         partial = (
             None
             if self.static_cancellation_observation is None
@@ -1326,6 +1367,24 @@ class StaticExternalRunner:
         ) as error:
             raise ValueError("STATIC_ACTION_RECEIPT_INVALID") from error
         return receipt, observation, process_receipts
+
+    @staticmethod
+    def _validate_cancellation_process_closure(
+        dispatch_state: Literal["PREPARED", "DISPATCHED", "RETURNED"],
+        receipts: tuple[ProcessReceipt, ...],
+        *,
+        no_spawn: bool,
+    ) -> None:
+        if no_spawn and receipts:
+            raise ValueError("STATIC_PROCESS_RECEIPT_INVALID")
+        if dispatch_state == "PREPARED":
+            if receipts or not no_spawn:
+                raise ValueError("STATIC_PROCESS_RECEIPT_INVALID")
+            return
+        if no_spawn:
+            return
+        if not receipts or receipts[-1].outcome != "CANCELLED":
+            raise ValueError("STATIC_PROCESS_RECEIPT_INVALID")
 
     @staticmethod
     def _validate_tool_process_presence(

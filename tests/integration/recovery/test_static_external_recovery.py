@@ -6,7 +6,7 @@ import json
 from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 from sqlalchemy import select
@@ -25,12 +25,14 @@ from sastsimi.orchestration.static_external_runner import (
     _guarded_read,
 )
 from sastsimi.ports.dto import (
+    CancellationResult,
     CandidateGap,
     ProcessReceipt,
     StaticToolObservation,
     StaticToolRequest,
 )
 from sastsimi.runtime.workflow_runner import WorkflowRunner
+from sastsimi.static_analysis.coordinator import StaticToolCoordinator
 from sastsimi.storage import models
 from sastsimi.storage.codec import REF_ADAPTER
 from tests.contract.domain.canonical_fixtures import make
@@ -118,6 +120,7 @@ def _runtime_request(
     tmp_path: Path,
     *,
     run_timeout_ms: int = 200,
+    executable_sha256: str = "a" * 64,
 ) -> tuple[Harness, WorkflowRunner, StaticToolRequest, StaticToolProfile]:
     h = Harness(tmp_path)
     execution = h.execution(max_work=10)
@@ -163,7 +166,7 @@ def _runtime_request(
                 "tool_name": "AST",
                 "tool_kind": "STRUCTURE",
                 "executable_key": "python",
-                "executable_sha256": "a" * 64,
+                "executable_sha256": executable_sha256,
                 "expected_version": "3.12",
                 "capability_evidence_ref": None,
                 "probe_timeout_ms": 100,
@@ -385,8 +388,11 @@ class _Crash(BaseException):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "crash_stage", ("STATIC_RECEIPT_DURABLE", "STATIC_RETURNED", "STATIC_ACCOUNTED")
+)
 async def test_complete_static_receipt_recovers_without_rerunning_tool(
-    tmp_path: Path,
+    tmp_path: Path, crash_stage: str
 ) -> None:
     _, runner, request, profile = _runtime_request(tmp_path)
     assert isinstance(request.action.meta, RecordMeta)
@@ -399,7 +405,7 @@ async def test_complete_static_receipt_recovers_without_rerunning_tool(
         return _observation()
 
     def checkpoint(stage: str) -> None:
-        if stage == "STATIC_RECEIPT_DURABLE":
+        if stage == crash_stage:
             raise _Crash
 
     process = _process(
@@ -522,6 +528,167 @@ async def test_cancellation_after_claim_before_dispatch_closes_without_return_ma
     assert terminal.stop_reason == "CALLER_CANCELLED"
     dispatch = _dispatch_reader(runner)(str(request.action.action_id))
     assert dispatch is not None and dispatch.state == "PREPARED"
+
+
+@pytest.mark.parametrize(
+    ("process_outcome", "accepted"),
+    (("CANCELLED", True), ("SUCCEEDED", False), ("FAILED", False)),
+)
+@pytest.mark.asyncio
+async def test_dispatched_cancellation_requires_cancelled_lower_receipt(
+    tmp_path: Path,
+    process_outcome: Literal["SUCCEEDED", "FAILED", "CANCELLED"],
+    accepted: bool,
+) -> None:
+    _, runner, request, profile = _runtime_request(tmp_path)
+    assert isinstance(request.action.meta, RecordMeta)
+    assert request.action.meta.attempt_id is not None
+    attempt_id = str(request.action.meta.attempt_id)
+    process = replace(
+        _process(
+            str(request.action.action_id),
+            attempt_id,
+            0,
+        ),
+        outcome=process_outcome,
+        return_code=(
+            None
+            if process_outcome == "CANCELLED"
+            else 0
+            if process_outcome == "SUCCEEDED"
+            else 7
+        ),
+    )
+
+    async def cancelled_operation(_deadline: object) -> StaticToolObservation:
+        raise asyncio.CancelledError
+
+    service = StaticExternalRunner(
+        runner,
+        tmp_path / "static-receipts",
+        cast(Any, None),
+        cast(Any, None),
+        static_process_receipts=lambda _action, _attempt: (process,),
+        static_dispatch_state=_dispatch_reader(runner),
+    )
+    if accepted:
+        result = await service.invoke(request, profile, cancelled_operation)
+        assert result.status == "SKIPPED"
+        assert request.action.work_ref is not None
+        original = runner.runtime.unit_of_work.records.get_exact(
+            request.action.work_ref
+        )
+        assert isinstance(original, WorkExecutionState)
+        assert runner.runtime.work.get(str(original.work_id)).status == "CANCELLED"
+    else:
+        with pytest.raises(ValueError, match="STATIC_PROCESS_RECEIPT_INVALID"):
+            await service.invoke(request, profile, cancelled_operation)
+
+
+@pytest.mark.asyncio
+async def test_public_coordinator_run_cancel_closes_runtime_attempt(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "fixture-python"
+    executable.write_bytes(b"bounded executable")
+    digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    _, runner, request, profile = _runtime_request(tmp_path, executable_sha256=digest)
+    assert isinstance(request.action.meta, RecordMeta)
+    assert request.action.meta.attempt_id is not None
+    started = asyncio.Event()
+    released = asyncio.Event()
+
+    class Adapter:
+        async def execute(
+            self,
+            _request: StaticToolRequest,
+            _workspace_root: Path,
+            _profile: StaticToolProfile,
+            _deadline: object,
+        ) -> StaticToolObservation:
+            started.set()
+            await released.wait()
+            return replace(
+                _observation(),
+                status="SKIPPED",
+                raw_output=None,
+                raw_media_type=None,
+                analyzed_paths=(),
+                skipped_paths=("src/app.py",),
+                analyzed_languages=(),
+                gaps=(
+                    CandidateGap(
+                        "STATIC_ANALYSIS",
+                        "STATIC_AST_CANCELLED",
+                        "FAILED",
+                        "The AST worker was cancelled.",
+                        ("src/app.py",),
+                        ("Python",),
+                        (),
+                        False,
+                    ),
+                ),
+            )
+
+        async def cancel(self, attempt_id: str) -> CancellationResult:
+            assert attempt_id == expected_attempt_id
+            released.set()
+            return CancellationResult(True, "STATIC_TOOL_CANCELLED")
+
+    class Workspace:
+        def root_for(self, _workspace: CodeWorkspace) -> Path:
+            return tmp_path
+
+        async def assert_unchanged(
+            self, _workspace: CodeWorkspace, _deadline: object
+        ) -> None:
+            return None
+
+    expected_attempt_id = str(request.action.meta.attempt_id)
+    cancelled_receipt = replace(
+        _process(
+            str(request.action.action_id),
+            expected_attempt_id,
+            0,
+        ),
+        outcome="CANCELLED",
+        return_code=None,
+    )
+    external = StaticExternalRunner(
+        runner,
+        tmp_path / "static-receipts",
+        cast(Any, None),
+        cast(Any, None),
+        static_process_receipts=lambda _action, _attempt: (cancelled_receipt,),
+        static_dispatch_state=_dispatch_reader(runner),
+    )
+    adapter = Adapter()
+    coordinator = StaticToolCoordinator(
+        cast(
+            Any,
+            SimpleNamespace(
+                resolve=runner.runtime.configuration.resolve_static_tool_profile
+            ),
+        ),
+        {"PYTHON_AST": cast(Any, adapter)},
+        external,
+        cast(Any, Workspace()),
+        {"python": executable},
+    )
+
+    task = asyncio.create_task(coordinator.run(request))
+    await started.wait()
+    cancellation = await coordinator.cancel(expected_attempt_id)
+    result = await task
+
+    assert cancellation.cancelled is True
+    assert result.status == "SKIPPED"
+    assert request.action.work_ref is not None
+    original = runner.runtime.unit_of_work.records.get_exact(request.action.work_ref)
+    assert isinstance(original, WorkExecutionState)
+    terminal = runner.runtime.work.get(str(original.work_id))
+    assert terminal.status == "CANCELLED"
+    assert terminal.stop_reason == "CALLER_CANCELLED"
 
 
 @pytest.mark.asyncio
