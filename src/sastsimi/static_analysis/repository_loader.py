@@ -35,6 +35,8 @@ from sastsimi.ports.dto import (
 )
 from sastsimi.ports.workspace import WorkspaceStoragePort
 
+from .process import process_command_fingerprint
+
 _HEX = frozenset(string.hexdigits)
 
 
@@ -152,6 +154,137 @@ type RepositoryProcessRunnerFactory = Callable[
 type GuardProcessRunnerFactory = Callable[
     [Path, MonotonicActionDeadline], RepositoryProcessRunner
 ]
+
+
+def _repository_environment() -> tuple[tuple[str, str], ...]:
+    values = {
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_LFS_SKIP_SMUDGE": "1",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+    }
+    for name in ("SystemRoot", "WINDIR", "COMSPEC"):
+        if name in os.environ:
+            values[name] = os.environ[name]
+    return tuple(sorted(values.items()))
+
+
+def _repository_command_argv(
+    command_kind: str,
+    *,
+    git_executable: Path,
+    root: Path,
+    repository_url: str,
+    requested_ref: str,
+    commit_id: str,
+) -> tuple[str, ...]:
+    hooks_dir = root / ".git" / "sastsimi-empty-hooks"
+    commands = {
+        "clone": (
+            "-c",
+            "credential.helper=",
+            "-c",
+            "core.askPass=",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.https.allow=always",
+            "-c",
+            "protocol.ext.allow=never",
+            "-c",
+            "protocol.file.allow="
+            + ("always" if repository_url.startswith("file:") else "never"),
+            "-c",
+            "http.followRedirects=false",
+            "-c",
+            f"core.hooksPath={hooks_dir}",
+            "clone",
+            "--no-checkout",
+            "--no-recurse-submodules",
+            "--",
+            repository_url,
+            ".",
+        ),
+        "resolve": (
+            "-C",
+            str(root),
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            requested_ref + "^{commit}",
+        ),
+        "checkout": (
+            "-c",
+            f"core.hooksPath={hooks_dir}",
+            "-C",
+            str(root),
+            "checkout",
+            "--detach",
+            commit_id,
+        ),
+        "head": ("-C", str(root), "rev-parse", "HEAD"),
+        "manifest": ("-C", str(root), "ls-files", "--stage", "-z"),
+    }
+    try:
+        return (str(git_executable), *commands[command_kind])
+    except KeyError as error:
+        raise ValueError("GIT_COMMAND_INVALID") from error
+
+
+def _repository_process_spec(
+    *,
+    command_kind: str,
+    attempt_id: str,
+    root: Path,
+    output_dir: Path,
+    deadline: MonotonicActionDeadline,
+    argv: tuple[str, ...],
+) -> ProcessSpec:
+    return ProcessSpec(
+        invocation_id=f"{attempt_id}-{command_kind}",
+        command_kind=command_kind,
+        attempt_id=attempt_id,
+        argv=argv,
+        cwd=root,
+        env=_repository_environment(),
+        attempt_output_dir=output_dir,
+        stdout_limit_bytes=2 * 1024 * 1024,
+        stderr_limit_bytes=64 * 1024,
+        attempt_output_limit_bytes=4 * 1024 * 1024,
+        deadline=deadline,
+    )
+
+
+def repository_process_specs(
+    *,
+    git_executable: Path,
+    root: Path,
+    output_dir: Path,
+    deadline: MonotonicActionDeadline,
+    attempt_id: str,
+    repository_url: str,
+    requested_ref: str,
+    commit_id: str,
+) -> tuple[ProcessSpec, ...]:
+    """Rebuild the exact closed repository command sequence for verification."""
+    return tuple(
+        _repository_process_spec(
+            command_kind=command_kind,
+            attempt_id=attempt_id,
+            root=root,
+            output_dir=output_dir,
+            deadline=deadline,
+            argv=_repository_command_argv(
+                command_kind,
+                git_executable=git_executable,
+                root=root,
+                repository_url=repository_url,
+                requested_ref=requested_ref,
+                commit_id=commit_id,
+            ),
+        )
+        for command_kind in ("clone", "resolve", "checkout", "head", "manifest")
+    )
 
 
 def _gap(code: str, reason: str, path: str | None = None) -> CandidateGap:
@@ -320,6 +453,42 @@ class WorkspaceGuard:
             require_detached=True,
         )
 
+    def preparation_process_specs(
+        self,
+        outcome: RepositoryPreparation,
+        *,
+        action_id: str,
+        attempt_id: str,
+        deadline: MonotonicActionDeadline,
+    ) -> tuple[ProcessSpec, ...]:
+        if (
+            outcome.status != "READY"
+            or outcome.root is None
+            or outcome.resolved_commit_id is None
+            or deadline.action_id != action_id
+        ):
+            raise ValueError("WORKSPACE_MUTATED")
+        try:
+            root = outcome.root.resolve(strict=True)
+            source = canonicalize_repository_source(
+                outcome.repository_url,
+                allow_local_file=outcome.repository_url.startswith("file:"),
+            )
+        except (OSError, ValueError) as error:
+            raise ValueError("WORKSPACE_MUTATED") from error
+        if source.url != outcome.repository_url:
+            raise ValueError("WORKSPACE_MUTATED")
+        return repository_process_specs(
+            git_executable=self._git,
+            root=root,
+            output_dir=self._output,
+            deadline=deadline,
+            attempt_id=attempt_id,
+            repository_url=source.url,
+            requested_ref=outcome.requested_ref,
+            commit_id=outcome.resolved_commit_id,
+        )
+
     async def _assert_repository_state(
         self,
         root: Path,
@@ -395,7 +564,6 @@ class RepositoryRecoveryGuard:
         attempt_id: str,
         process_receipts: tuple[ProcessReceipt, ...],
     ) -> None:
-        del process_receipts
         if outcome.lease_id is None or outcome.root is None:
             raise ValueError("WORKSPACE_MUTATED")
         lease = self._storage.resolve(outcome.lease_id)
@@ -409,6 +577,23 @@ class RepositoryRecoveryGuard:
         deadline = self._deadline_factory(action_id, attempt_id)
         if deadline.action_id != action_id:
             raise ValueError("WORKSPACE_MUTATED")
+        expected_specs = self._workspace_guard.preparation_process_specs(
+            outcome,
+            action_id=action_id,
+            attempt_id=attempt_id,
+            deadline=deadline,
+        )
+        if len(process_receipts) != len(expected_specs):
+            raise ValueError("WORKSPACE_PROCESS_RECEIPTS_INVALID")
+        for receipt, spec in zip(process_receipts, expected_specs, strict=True):
+            if (
+                receipt.action_id != action_id
+                or receipt.attempt_id != attempt_id
+                or receipt.invocation_id != spec.invocation_id
+                or receipt.command_kind != spec.command_kind
+                or receipt.command_fingerprint != process_command_fingerprint(spec)
+            ):
+                raise ValueError("WORKSPACE_PROCESS_RECEIPTS_INVALID")
         await self._workspace_guard.assert_preparation_unchanged(outcome, deadline)
         self._storage.enforce(lease)
 
@@ -443,18 +628,6 @@ class RepositoryLoader:
         self.sensitive_names = sensitive_names
         self.process_receipts: tuple[ProcessReceipt, ...] = ()
 
-    def _environment(self) -> tuple[tuple[str, str], ...]:
-        values = {
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_LFS_SKIP_SMUDGE": "1",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-        }
-        for name in ("SystemRoot", "WINDIR", "COMSPEC"):
-            if name in os.environ:
-                values[name] = os.environ[name]
-        return tuple(sorted(values.items()))
-
     def _spec(
         self,
         *,
@@ -465,18 +638,14 @@ class RepositoryLoader:
         deadline: MonotonicActionDeadline,
         argv: tuple[str, ...],
     ) -> ProcessSpec:
-        return ProcessSpec(
-            invocation_id=invocation,
-            command_kind=invocation.rsplit("-", 1)[-1],
+        command_kind = invocation.rsplit("-", 1)[-1]
+        return _repository_process_spec(
+            command_kind=command_kind,
             attempt_id=attempt_id,
-            argv=(str(self.git_executable), *argv),
-            cwd=root,
-            env=self._environment(),
-            attempt_output_dir=output_dir,
-            stdout_limit_bytes=2 * 1024 * 1024,
-            stderr_limit_bytes=64 * 1024,
-            attempt_output_limit_bytes=4 * 1024 * 1024,
+            root=root,
+            output_dir=output_dir,
             deadline=deadline,
+            argv=(str(self.git_executable), *argv),
         )
 
     def _attempt_output_dir(
@@ -525,11 +694,8 @@ class RepositoryLoader:
                     self._quota(lease, policy)
                 except ValueError:
                     await runner.cancel(spec.attempt_id)
-                    await process
-                    raise
-            result = await process
-            self._quota(lease, policy)
-            return result
+                    return await process
+            return await process
         finally:
             if not process.done():
                 await runner.cancel(spec.attempt_id)
@@ -586,7 +752,6 @@ class RepositoryLoader:
             validate_clone_destination(lease.root, lease.root.parent)
             attempt_output_dir = self._attempt_output_dir(attempt_id, lease)
             runner = self.process_runner_factory(lease, deadline, attempt_output_dir)
-            hooks_dir = lease.root / ".git" / "sastsimi-empty-hooks"
 
             async def invoke(name: str, argv: tuple[str, ...]) -> ProcessResult:
                 if deadline.remaining_ms(time.monotonic_ns()) == 0:
@@ -613,45 +778,28 @@ class RepositoryLoader:
             )
             if canonical_again != source:
                 raise ValueError("REPOSITORY_SOURCE_CHANGED")
-            file_protocol = "always" if source.url.startswith("file:") else "never"
             await invoke(
                 "clone",
-                (
-                    "-c",
-                    "credential.helper=",
-                    "-c",
-                    "core.askPass=",
-                    "-c",
-                    "protocol.allow=never",
-                    "-c",
-                    "protocol.https.allow=always",
-                    "-c",
-                    "protocol.ext.allow=never",
-                    "-c",
-                    f"protocol.file.allow={file_protocol}",
-                    "-c",
-                    "http.followRedirects=false",
-                    "-c",
-                    f"core.hooksPath={hooks_dir}",
+                _repository_command_argv(
                     "clone",
-                    "--no-checkout",
-                    "--no-recurse-submodules",
-                    "--",
-                    source.url,
-                    ".",
-                ),
+                    git_executable=self.git_executable,
+                    root=lease.root,
+                    repository_url=source.url,
+                    requested_ref=requested_ref,
+                    commit_id="",
+                )[1:],
             )
-            hooks_dir = self._empty_hooks_dir(lease)
+            self._empty_hooks_dir(lease)
             resolved = await invoke(
                 "resolve",
-                (
-                    "-C",
-                    str(lease.root),
-                    "rev-parse",
-                    "--verify",
-                    "--end-of-options",
-                    requested_ref + "^{commit}",
-                ),
+                _repository_command_argv(
+                    "resolve",
+                    git_executable=self.git_executable,
+                    root=lease.root,
+                    repository_url=source.url,
+                    requested_ref=requested_ref,
+                    commit_id="",
+                )[1:],
             )
             commit_id = resolved.stdout.decode("ascii").strip()
             if not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", commit_id):
@@ -659,21 +807,38 @@ class RepositoryLoader:
             commit_id = commit_id.lower()
             await invoke(
                 "checkout",
-                (
-                    "-c",
-                    f"core.hooksPath={hooks_dir}",
-                    "-C",
-                    str(lease.root),
+                _repository_command_argv(
                     "checkout",
-                    "--detach",
-                    commit_id,
-                ),
+                    git_executable=self.git_executable,
+                    root=lease.root,
+                    repository_url=source.url,
+                    requested_ref=requested_ref,
+                    commit_id=commit_id,
+                )[1:],
             )
-            head = await invoke("head", ("-C", str(lease.root), "rev-parse", "HEAD"))
+            head = await invoke(
+                "head",
+                _repository_command_argv(
+                    "head",
+                    git_executable=self.git_executable,
+                    root=lease.root,
+                    repository_url=source.url,
+                    requested_ref=requested_ref,
+                    commit_id=commit_id,
+                )[1:],
+            )
             if head.stdout.decode("ascii").strip().lower() != commit_id:
                 raise ValueError("WORKSPACE_HEAD_MISMATCH")
             listing = await invoke(
-                "manifest", ("-C", str(lease.root), "ls-files", "--stage", "-z")
+                "manifest",
+                _repository_command_argv(
+                    "manifest",
+                    git_executable=self.git_executable,
+                    root=lease.root,
+                    repository_url=source.url,
+                    requested_ref=requested_ref,
+                    commit_id=commit_id,
+                )[1:],
             )
             files, gaps = self.build_manifest(lease.root, listing.stdout)
             self._quota(lease, policy)

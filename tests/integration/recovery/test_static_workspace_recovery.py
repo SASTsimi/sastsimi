@@ -18,7 +18,11 @@ from sastsimi.ports.dto import (
     ProcessReceipt,
     RepositoryPreparation,
 )
-from sastsimi.static_analysis.repository_loader import canonicalize_repository_source
+from sastsimi.static_analysis.process import process_command_fingerprint
+from sastsimi.static_analysis.repository_loader import (
+    canonicalize_repository_source,
+    repository_process_specs,
+)
 from sastsimi.static_analysis.workspace_storage import decode_workspace_storage_policy
 from sastsimi.storage.intermediate_publication import IntermediatePublicationService
 from tests.integration.static_analysis.test_repository_prepare import prepared
@@ -42,24 +46,34 @@ class RecoverableLoader:
         self.calls += 1
         deadline = cast(MonotonicActionDeadline, values["deadline"])
         attempt_id = str(values["attempt_id"])
+        specs = repository_process_specs(
+            git_executable=self.root.parent / "git.exe",
+            root=self.root,
+            output_dir=self.root.parent / "output",
+            deadline=deadline,
+            attempt_id=attempt_id,
+            repository_url=str(values["submitted_source"]),
+            requested_ref=str(values["requested_ref"]),
+            commit_id="a" * 40,
+        )
         self.process_receipts = tuple(
             ProcessReceipt(
                 action_id=deadline.action_id,
-                invocation_id=f"{attempt_id}-{kind}",
-                command_kind=kind,
+                invocation_id=spec.invocation_id,
+                command_kind=spec.command_kind,
                 attempt_id=attempt_id,
-                command_fingerprint="f" * 64,
+                command_fingerprint=process_command_fingerprint(spec),
                 outcome="SUCCEEDED",
                 return_code=0,
-                stdout_name=f"{kind}.stdout",
+                stdout_name=f"{spec.command_kind}.stdout",
                 stdout_size=0,
                 stdout_sha256="e" * 64,
-                stderr_name=f"{kind}.stderr",
+                stderr_name=f"{spec.command_kind}.stderr",
                 stderr_size=0,
                 stderr_sha256="e" * 64,
                 elapsed_ms=1,
             )
-            for kind in ("clone", "resolve", "checkout", "head", "manifest")
+            for spec in specs
         )
         return RepositoryPreparation(
             analysis_id=values["analysis_id"],

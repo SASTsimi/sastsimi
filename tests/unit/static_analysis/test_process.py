@@ -84,6 +84,28 @@ def output_budget(limit: int = 64) -> Any:
     return AttemptOutputBudget(attempt_id="attempt-1", limit_bytes=limit)
 
 
+def test_command_fingerprint_binds_argv_cwd_and_environment(tmp_path: Path) -> None:
+    from sastsimi.static_analysis.process import process_command_fingerprint
+
+    executable = tmp_path / "trusted-tool.exe"
+    executable.write_bytes(b"fixture")
+    (tmp_path / "workspace").mkdir()
+    command = spec(tmp_path, executable)
+
+    fingerprint = process_command_fingerprint(command)
+
+    assert len(fingerprint) == 64
+    assert (
+        process_command_fingerprint(replace(command, argv=(*command.argv, "x")))
+        != fingerprint
+    )
+    assert process_command_fingerprint(replace(command, cwd=tmp_path)) != fingerprint
+    assert (
+        process_command_fingerprint(replace(command, env=(("SAFE_KEY", "other"),)))
+        != fingerprint
+    )
+
+
 @pytest.mark.asyncio
 async def test_runner_preserves_arguments_and_uses_only_explicit_environment(
     tmp_path: Path,

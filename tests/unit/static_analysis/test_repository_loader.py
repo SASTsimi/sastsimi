@@ -7,7 +7,7 @@ import hashlib
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -26,11 +26,16 @@ from sastsimi.ports.dto import (
     WorkspaceStoragePolicy,
     WorkspaceStorageUsage,
 )
-from sastsimi.static_analysis.process import AttemptOutputBudget, SafeProcessRunner
+from sastsimi.static_analysis.process import (
+    AttemptOutputBudget,
+    SafeProcessRunner,
+    process_command_fingerprint,
+)
 from sastsimi.static_analysis.repository_loader import (
     RepositoryLoader,
     RepositoryRecoveryGuard,
     WorkspaceGuard,
+    repository_process_specs,
 )
 from sastsimi.static_analysis.workspace_storage import (
     FixtureQuotaWorkspaceStorage,
@@ -68,7 +73,7 @@ def result(
         invocation_id=spec.invocation_id,
         command_kind=spec.command_kind,
         attempt_id=spec.attempt_id,
-        command_fingerprint=hashlib.sha256(canonical_bytes(spec.argv)).hexdigest(),
+        command_fingerprint=process_command_fingerprint(spec),
         outcome=outcome,  # type: ignore[arg-type]
         return_code=0 if outcome == "SUCCEEDED" else 1,
         stdout_name="stdout",
@@ -330,6 +335,14 @@ async def test_checkout_cap_plus_one_cancels_active_git_immediately(
     assert runner.cancelled
     assert not runner.natural_finished
     assert len(runner.specs) == 1
+    assert len(subject.process_receipts) == 1
+    cancelled = subject.process_receipts[0]
+    assert cancelled.action_id == "action"
+    assert cancelled.attempt_id == "attempt"
+    assert cancelled.invocation_id == "attempt-clone"
+    assert cancelled.command_kind == "clone"
+    assert cancelled.command_fingerprint == process_command_fingerprint(runner.specs[0])
+    assert cancelled.outcome == "CANCELLED"
 
 
 @pytest.mark.asyncio
@@ -735,7 +748,17 @@ async def test_workspace_guard_rejects_head_and_tracked_manifest_drift(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "mutation", (None, "HEAD", "DETACHED", "WORKTREE", "INDEX", "MANIFEST", "QUOTA")
+    "mutation",
+    (
+        None,
+        "HEAD",
+        "DETACHED",
+        "WORKTREE",
+        "INDEX",
+        "MANIFEST",
+        "QUOTA",
+        "FINGERPRINT",
+    ),
 )
 async def test_repository_recovery_guard_rechecks_every_workspace_invariant(
     tmp_path: Path, mutation: str | None
@@ -798,6 +821,22 @@ async def test_repository_recovery_guard_rechecks_every_workspace_invariant(
         errors=(),
         lease_id=lease.lease_id,
     )
+    receipt_specs = repository_process_specs(
+        git_executable=executable,
+        root=lease.root,
+        output_dir=output,
+        deadline=MonotonicActionDeadline("action", now, now + 1_000_000_000),
+        attempt_id="attempt",
+        repository_url=outcome.repository_url,
+        requested_ref=outcome.requested_ref,
+        commit_id=commit,
+    )
+    process_receipts = tuple(result(spec).receipt for spec in receipt_specs)
+    if mutation == "FINGERPRINT":
+        process_receipts = (
+            replace(process_receipts[0], command_fingerprint="f" * 64),
+            *process_receipts[1:],
+        )
     if mutation == "QUOTA":
         for index in range(11):
             (lease.root / f"entry-{index}").mkdir()
@@ -807,7 +846,7 @@ async def test_repository_recovery_guard_rechecks_every_workspace_invariant(
             outcome,
             action_id="action",
             attempt_id="attempt",
-            process_receipts=(),
+            process_receipts=process_receipts,
         )
     else:
         with pytest.raises((ValueError, WorkspaceQuotaExceeded)):
@@ -815,5 +854,5 @@ async def test_repository_recovery_guard_rechecks_every_workspace_invariant(
                 outcome,
                 action_id="action",
                 attempt_id="attempt",
-                process_receipts=(),
+                process_receipts=process_receipts,
             )

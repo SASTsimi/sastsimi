@@ -242,6 +242,16 @@ def _receipt_bytes(receipt: ProcessReceipt) -> bytes:
     return canonical_bytes(asdict(receipt))
 
 
+def process_command_fingerprint(spec: ProcessSpec) -> str:
+    """Bind a receipt to the exact shell-free command boundary."""
+    command = {
+        "argv": spec.argv,
+        "cwd": str(spec.cwd),
+        "env": spec.env,
+    }
+    return hashlib.sha256(canonical_bytes(command)).hexdigest()
+
+
 def validate_receipt(path: Path, spec: ProcessSpec) -> ProcessReceipt:
     try:
         if path.suffix != ".json" or not path.is_file() or path.is_symlink():
@@ -257,8 +267,7 @@ def validate_receipt(path: Path, spec: ProcessSpec) -> ProcessReceipt:
             or receipt.command_kind != spec.command_kind
             or receipt.invocation_id != spec.invocation_id
             or receipt.attempt_id != spec.attempt_id
-            or receipt.command_fingerprint
-            != hashlib.sha256(canonical_bytes(spec.argv)).hexdigest()
+            or receipt.command_fingerprint != process_command_fingerprint(spec)
         ):
             raise ValueError
         for name, size, digest in (
@@ -441,7 +450,7 @@ class SafeProcessRunner:
             invocation_id=spec.invocation_id,
             command_kind=spec.command_kind,
             attempt_id=spec.attempt_id,
-            command_fingerprint=hashlib.sha256(canonical_bytes(spec.argv)).hexdigest(),
+            command_fingerprint=process_command_fingerprint(spec),
             outcome=outcome,  # type: ignore[arg-type]
             return_code=return_code,
             stdout_name=stdout.path.name,
