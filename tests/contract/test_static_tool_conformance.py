@@ -11,6 +11,9 @@ from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile
 from sastsimi.ports.dto import (
     CancellationResult,
+    CandidateGap,
+    CandidateLocation,
+    CandidateRelation,
     MonotonicActionDeadline,
     StaticCapabilityObservation,
     StaticToolObservation,
@@ -172,3 +175,48 @@ async def test_probe_rejects_mismatched_lower_observation(tmp_path: Path) -> Non
     assert isinstance(profile_ref, StoredDataRef)
     with pytest.raises(ValueError, match="STATIC_CAPABILITY_OBSERVATION_MISMATCH"):
         await coordinator.probe(profile_ref)
+
+
+def test_observation_rejects_unsafe_nested_paths_and_diagnostics(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "fixture-python"
+    executable.write_bytes(b"bounded fixture")
+    profile = _profile(executable)
+    unsafe = CandidateLocation("../outside.py", 1, None, 1, None)
+    observation = StaticToolObservation(
+        tool_name="AST",
+        tool_version="3.12",
+        tool_kind="STRUCTURE",
+        status="PARTIAL",
+        raw_output=b"{}",
+        raw_media_type="application/json",
+        analyzed_paths=("src/app.py",),
+        skipped_paths=(),
+        analyzed_languages=("python",),
+        skipped_languages=(),
+        notes=("bounded",),
+        selected_rule_packs=(),
+        rules=(),
+        symbols=(),
+        facts=(),
+        relations=(CandidateRelation("r", "CALL", None, unsafe, None, unsafe, None),),
+        gaps=(
+            CandidateGap(
+                "STATIC_ANALYSIS",
+                "STATIC_GAP",
+                "MISSING",
+                "authorization: secret",
+                ("src/app.py",),
+                (),
+                (),
+                False,
+            ),
+        ),
+        errors=(),
+        started_monotonic_ms=1,
+        finished_monotonic_ms=2,
+    )
+
+    with pytest.raises(ValueError, match="STATIC_TOOL_OBSERVATION_INVALID"):
+        StaticToolCoordinator._validate_observation(profile, observation)

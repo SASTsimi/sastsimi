@@ -1,6 +1,7 @@
 """Trusted application-side publication for repository and static outputs."""
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
 from datetime import timedelta
 
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -17,14 +18,17 @@ from sastsimi.contracts.static import (
     CodeLocation,
     CodeWorkspace,
     DataGap,
+    RuleExecutionItem,
     RuleExecutionRecord,
     StaticFactBundle,
     ToolCoverage,
     ToolRunResult,
+    validate_rule_execution,
 )
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import (
     CandidateLocation,
+    CandidateRule,
     PublishedStaticToolMaterial,
     PublishedWorkspaceMaterial,
     RepositoryPreparation,
@@ -32,6 +36,7 @@ from sastsimi.ports.dto import (
     StaticToolRequest,
 )
 from sastsimi.runtime.workflow_runner import WorkflowRunner
+from sastsimi.static_analysis.coordinator import StaticToolCoordinator
 from sastsimi.static_analysis.normalizer import (
     StaticNormalizationInput,
     StaticNormalizer,
@@ -156,8 +161,13 @@ def _location(request: StaticToolRequest, value: CandidateLocation) -> CodeLocat
 class StaticAttemptPublisher:
     """Allocate trusted records and atomically close one static-tool attempt."""
 
-    def __init__(self, runner: WorkflowRunner) -> None:
+    def __init__(
+        self,
+        runner: WorkflowRunner,
+        rule_catalogs: Mapping[StoredDataRef, tuple[str, ...]] | None = None,
+    ) -> None:
         self.runner = runner
+        self.rule_catalogs = dict(rule_catalogs or {})
 
     def publish(
         self, request: StaticToolRequest, observation: StaticToolObservation
@@ -172,6 +182,29 @@ class StaticAttemptPublisher:
             observation.finished_monotonic_ms - observation.started_monotonic_ms,
         )
         started_at = now - timedelta(milliseconds=elapsed_ms)
+        profile = self.runner.runtime.configuration.resolve_static_tool_profile(
+            request.tool_profile_ref
+        )
+        StaticToolCoordinator._validate_observation(profile, observation)
+
+        catalog_rule_ids: tuple[str, ...] = ()
+        if observation.tool_kind == "RULE_BASED":
+            if request.rule_catalog_ref is None:
+                raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
+            try:
+                catalog_rule_ids = self.rule_catalogs[request.rule_catalog_ref]
+            except KeyError as error:
+                raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH") from error
+            self._validate_rule_catalog(
+                observation.rules, catalog_rule_ids, observation.status
+            )
+        elif (
+            request.rule_catalog_ref is not None
+            or observation.rules
+            or observation.selected_rule_packs
+        ):
+            raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
+        self._validate_status_shape(observation)
 
         raw_ref: StoredDataRef | None = None
         if observation.raw_output is not None:
@@ -274,6 +307,8 @@ class StaticAttemptPublisher:
                 }
             )
         )
+        if rule is not None:
+            validate_rule_execution(result, rule, catalog_rule_ids)
         status, cause = self._terminal_mapping(result)
         outputs = (result,) if rule is None else (result, rule)
         completed = self.runner.complete(
@@ -335,6 +370,75 @@ class StaticAttemptPublisher:
                 "NOT_APPLICABLE" if result.status == "SKIPPED" else "PARTIAL",
             )
         return "FAILED", "STATIC_TOOL_FAILED"
+
+    @staticmethod
+    def _validate_rule_catalog(
+        rules: tuple[CandidateRule, ...],
+        catalog_rule_ids: tuple[str, ...],
+        status: str | None = None,
+    ) -> None:
+        actual = tuple(item.rule_id for item in rules)
+        if (
+            not catalog_rule_ids
+            or len(actual) != len(set(actual))
+            or len(catalog_rule_ids) != len(set(catalog_rule_ids))
+            or set(actual) != set(catalog_rule_ids)
+        ):
+            raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
+        try:
+            for item in rules:
+                RuleExecutionItem.model_validate(asdict(item), strict=True)
+        except ValueError as error:
+            raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH") from error
+        selected = tuple(item for item in rules if item.selection_status == "SELECTED")
+        if (
+            status == "SUCCEEDED"
+            and (
+                not selected
+                or any(item.execution_status != "EXECUTED" for item in selected)
+            )
+        ) or (
+            status == "SKIPPED"
+            and any(item.execution_status == "EXECUTED" for item in rules)
+        ):
+            raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
+
+    @staticmethod
+    def _validate_status_shape(observation: StaticToolObservation) -> None:
+        has_raw = observation.raw_output is not None
+        if (
+            (observation.raw_output is None) != (observation.raw_media_type is None)
+            or (
+                observation.status == "SUCCEEDED"
+                and (not has_raw or observation.gaps or observation.errors)
+            )
+            or (
+                observation.status == "PARTIAL"
+                and (not has_raw or not observation.gaps)
+            )
+            or (
+                observation.status == "FAILED"
+                and (
+                    not observation.gaps
+                    or not observation.errors
+                    or observation.symbols
+                    or observation.facts
+                    or observation.relations
+                )
+            )
+            or (
+                observation.status == "SKIPPED"
+                and (
+                    has_raw
+                    or not observation.gaps
+                    or observation.errors
+                    or observation.symbols
+                    or observation.facts
+                    or observation.relations
+                )
+            )
+        ):
+            raise ValueError("STATIC_TOOL_STATUS_INVALID")
 
 
 @dataclass(frozen=True)

@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import stat
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
 
+from pydantic import TypeAdapter
+
+from sastsimi.contracts._domain import SafeDiagnostic
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, validate_exact_ref
@@ -236,8 +238,45 @@ class StaticToolCoordinator:
                 git_path(path)
             except ValueError as error:
                 raise ValueError("STATIC_TOOL_OBSERVATION_INVALID") from error
-        locations = tuple(item.location for item in observation.symbols) + tuple(
-            item.location for item in observation.facts
+        locations = (
+            tuple(item.location for item in observation.symbols)
+            + tuple(item.location for item in observation.facts)
+            + tuple(
+                location
+                for item in observation.relations
+                for location in (item.from_location, item.to_location)
+            )
+            + tuple(
+                location
+                for item in observation.gaps
+                for location in item.affected_locations
+            )
         )
-        if any(os.path.isabs(location.file_path) for location in locations):
-            raise ValueError("STATIC_TOOL_OBSERVATION_INVALID")
+        try:
+            for location in locations:
+                git_path(location.file_path)
+                if (
+                    location.start_line <= 0
+                    or location.end_line < location.start_line
+                    or (location.start_column is None) != (location.end_column is None)
+                    or (
+                        location.start_line == location.end_line
+                        and location.start_column is not None
+                        and location.end_column is not None
+                        and location.end_column <= location.start_column
+                    )
+                ):
+                    raise ValueError
+            for gap in observation.gaps:
+                for path in gap.affected_paths:
+                    git_path(path)
+            diagnostics = (
+                *observation.notes,
+                *(gap.description for gap in observation.gaps),
+                *(error.safe_message for error in observation.errors),
+            )
+            validator = TypeAdapter(SafeDiagnostic)
+            for diagnostic in diagnostics:
+                validator.validate_python(diagnostic, strict=True)
+        except ValueError as error:
+            raise ValueError("STATIC_TOOL_OBSERVATION_INVALID") from error

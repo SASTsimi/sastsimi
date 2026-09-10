@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -9,10 +10,12 @@ import os
 import re
 import stat
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import Literal, Protocol, cast
+
+from pydantic import TypeAdapter
 
 from sastsimi.contracts.actions import ActionDecision, ActionRequest
 from sastsimi.contracts.budget import (
@@ -40,6 +43,7 @@ from sastsimi.ports.dto import (
     CandidateError,
     CandidateGap,
     CandidateLocation,
+    CandidateRule,
     CanonicalRepositorySource,
     MonotonicActionDeadline,
     ProcessReceipt,
@@ -53,6 +57,7 @@ from sastsimi.ports.dto import (
 )
 from sastsimi.ports.static_tool import validate_static_tool_profile_binding
 from sastsimi.runtime.workflow_runner import WorkflowRunner
+from sastsimi.static_analysis.coordinator import StaticToolCoordinator
 
 from .static_publication import StaticAttemptPublisher, WorkspacePreparationPublisher
 
@@ -60,6 +65,7 @@ type RepositorySourceCanonicalizer = Callable[[str], CanonicalRepositorySource]
 type WorkspacePolicyDecoder = Callable[
     [RunStoredDataRef, bytes, str], WorkspaceStoragePolicy
 ]
+type StaticProcessReceiptReader = Callable[[str, str], Sequence[ProcessReceipt]]
 
 _MAX_RECEIPT_BYTES = 64 * 1024
 _MAX_OBSERVATION_BYTES = 4 * 1024 * 1024
@@ -150,6 +156,10 @@ class RepositoryRecoveryValidatorPort(Protocol):
     ) -> None: ...
 
 
+class UncertainDispatchRecoveryPort(Protocol):
+    def block_uncertain(self, work: WorkExecutionState) -> None: ...
+
+
 class StaticExternalRunner:
     """Verify config, reserve, claim, dispatch, account, then publish."""
 
@@ -165,6 +175,7 @@ class StaticExternalRunner:
         lease_root_resolver: Callable[[str], Path] | None = None,
         recovery_validator: RepositoryRecoveryValidatorPort | None = None,
         static_publisher: StaticAttemptPublisher | None = None,
+        static_process_receipts: StaticProcessReceiptReader | None = None,
     ) -> None:
         self.runner = runner
         self.receipt_root = receipt_root
@@ -175,6 +186,7 @@ class StaticExternalRunner:
         self.lease_root_resolver = lease_root_resolver
         self.recovery_validator = recovery_validator
         self.static_publisher = static_publisher or StaticAttemptPublisher(runner)
+        self.static_process_receipts = static_process_receipts
 
     async def invoke(
         self,
@@ -225,6 +237,7 @@ class StaticExternalRunner:
             profile != resolved_profile
             or work != referenced_work
             or not isinstance(action.meta, RecordMeta)
+            or action.meta.attempt_id is None
             or not isinstance(work.meta, RecordMeta)
             or work.status != "RUNNING"
             or work.active_attempt_id != action.meta.attempt_id
@@ -245,6 +258,7 @@ class StaticExternalRunner:
             or approved_timeout <= 0
         ):
             raise ValueError("STATIC_TOOL_REQUEST_INVALID")
+        attempt_id = str(action.meta.attempt_id)
         reservation = self.runner.reserve(
             work,
             binding_ref,
@@ -258,9 +272,10 @@ class StaticExternalRunner:
         validate_static_tool_profile_binding(request, work, decision, resolved_profile)
         started_ns = self._now_ns()
         elapsed_ms: int | None = None
+        process_receipts: tuple[ProcessReceipt, ...] = ()
 
         async def bound(_claimed: RecordRef) -> StaticToolObservation:
-            nonlocal elapsed_ms
+            nonlocal elapsed_ms, process_receipts
             deadline = MonotonicActionDeadline(
                 action_id=str(action.action_id),
                 started_ns=started_ns,
@@ -268,28 +283,110 @@ class StaticExternalRunner:
             )
             observation = await operation(deadline)
             elapsed_ms = max(0, (self._now_ns() - started_ns) // 1_000_000)
+            process_receipts = self._current_tool_process_receipts(
+                str(action.action_id), attempt_id
+            )
             self._write_tool_receipt(
                 request,
                 decision_ref,
                 observation,
                 elapsed_ms,
                 resolved_profile.max_attempt_output_bytes,
+                process_receipts,
             )
             self.checkpoint("STATIC_RECEIPT_DURABLE")
             return observation
 
-        observation, _ = await self.runner.runtime.external.invoke_bound(
-            str(work.work_id),
-            decision_ref,
-            records.stage_record(reservation),
-            bound,
-            idempotency_key=str(action.action_id),
-        )
+        try:
+            observation, _ = await self.runner.runtime.external.invoke_bound(
+                str(work.work_id),
+                decision_ref,
+                records.stage_record(reservation),
+                bound,
+                idempotency_key=str(action.action_id),
+            )
+        except asyncio.CancelledError:
+            elapsed_ms = max(0, (self._now_ns() - started_ns) // 1_000_000)
+            process_receipts = self._current_tool_process_receipts(
+                str(action.action_id), attempt_id
+            )
+            observation = self._cancelled_observation(
+                request, resolved_profile, elapsed_ms
+            )
+            self._write_tool_receipt(
+                request,
+                decision_ref,
+                observation,
+                elapsed_ms,
+                resolved_profile.max_attempt_output_bytes,
+                process_receipts,
+            )
+            self.runner.runtime.validator.mark_returned(decision_ref)
+        except Exception:
+            if not self._tool_receipt_path(str(action.action_id)).is_file():
+                self._block_uncertain(work)
+            raise
         self.checkpoint("STATIC_RETURNED")
         if elapsed_ms is None:
             raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
         self._account_once(reservation, self.runner.units(elapsed_ms=elapsed_ms))
         self.checkpoint("STATIC_ACCOUNTED")
+        return self.static_publisher.publish(request, observation).result
+
+    async def recover_tool(
+        self, request: StaticToolRequest, profile: StaticToolProfile
+    ) -> ToolRunResult:
+        """Recover a complete static receipt without invoking the tool again."""
+        action = request.action
+        if action.work_ref is None or not isinstance(action.meta, RecordMeta):
+            raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
+        referenced = self.runner.runtime.unit_of_work.records.get_exact(action.work_ref)
+        if not isinstance(referenced, WorkExecutionState):
+            raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
+        work = self.runner.runtime.work.get(str(referenced.work_id))
+        if work.status in {"SUCCEEDED", "PARTIAL", "FAILED", "CANCELLED"}:
+            results = tuple(
+                self.runner.runtime.unit_of_work.records.get_exact(output_ref)
+                for output_ref in work.output_refs
+                if output_ref.data_kind == "tool_run_result"
+            )
+            if (
+                len(results) == 1
+                and isinstance(results[0], ToolRunResult)
+                and results[0].meta.attempt_id == action.meta.attempt_id
+            ):
+                return results[0]
+            raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
+        if work.status != "RUNNING" or work.active_attempt_id != action.meta.attempt_id:
+            self._quarantine_tool_receipt(str(action.action_id))
+            raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
+        try:
+            recovered_action, decision, reservation = self._recovery_records(
+                str(work.meta.analysis_id), str(action.action_id)
+            )
+            decision_ref = reference(decision)
+            if recovered_action != action or profile != (
+                self.runner.runtime.configuration.resolve_static_tool_profile(
+                    request.tool_profile_ref
+                )
+            ):
+                raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
+            validate_static_tool_profile_binding(request, work, decision, profile)
+            receipt, observation, _ = self._read_tool_receipt(
+                request, decision_ref, profile
+            )
+        except (LookupError, OSError, ValueError) as error:
+            self._block_uncertain(work)
+            self._quarantine_tool_receipt(str(action.action_id))
+            raise ValueError("STATIC_TOOL_RECOVERY_AMBIGUOUS") from error
+        try:
+            self.runner.runtime.validator.mark_returned(decision_ref)
+        except ValueError as error:
+            if str(error) != "EXTERNAL_DISPATCH_MISMATCH":
+                raise
+        self._account_once(
+            reservation, self.runner.units(elapsed_ms=receipt.elapsed_ms)
+        )
         return self.static_publisher.publish(request, observation).result
 
     def _verified_policy(
@@ -518,6 +615,173 @@ class StaticExternalRunner:
             raise ValueError("MONOTONIC_CLOCK_INVALID")
         return int(self.monotonic_ns())
 
+    def _current_tool_process_receipts(
+        self, action_id: str, attempt_id: str
+    ) -> tuple[ProcessReceipt, ...]:
+        if self.static_process_receipts is None:
+            return ()
+        return self._validate_tool_process_receipts(
+            action_id,
+            attempt_id,
+            tuple(self.static_process_receipts(action_id, attempt_id)),
+        )
+
+    @staticmethod
+    def _validate_tool_process_receipts(
+        action_id: str,
+        attempt_id: str,
+        receipts: tuple[ProcessReceipt, ...],
+    ) -> tuple[ProcessReceipt, ...]:
+        invocation_ids = tuple(item.invocation_id for item in receipts)
+        receipt_hashes = tuple(
+            hashlib.sha256(canonical_bytes(asdict(item))).hexdigest()
+            for item in receipts
+        )
+        if len(invocation_ids) != len(set(invocation_ids)) or len(
+            receipt_hashes
+        ) != len(set(receipt_hashes)):
+            raise ValueError("STATIC_PROCESS_RECEIPT_INVALID")
+        for item in receipts:
+            valid_result = (
+                (item.outcome == "SUCCEEDED" and item.return_code == 0)
+                or (
+                    item.outcome == "FAILED"
+                    and isinstance(item.return_code, int)
+                    and item.return_code != 0
+                )
+                or (
+                    item.outcome in {"TIMED_OUT", "CANCELLED"}
+                    and (item.return_code is None or isinstance(item.return_code, int))
+                )
+            )
+            hashes = (
+                item.command_fingerprint,
+                item.stdout_sha256,
+                item.stderr_sha256,
+            )
+            if (
+                item.action_id != action_id
+                or item.attempt_id != attempt_id
+                or not item.invocation_id
+                or not item.command_kind
+                or any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in hashes)
+                or not item.stdout_name
+                or Path(item.stdout_name).name != item.stdout_name
+                or not item.stderr_name
+                or Path(item.stderr_name).name != item.stderr_name
+                or not valid_result
+            ):
+                raise ValueError("STATIC_PROCESS_RECEIPT_INVALID")
+        return receipts
+
+    @staticmethod
+    def _tool_input_fingerprint(
+        request: StaticToolRequest, decision_ref: RecordRef
+    ) -> str:
+        if not isinstance(request.action.meta, RecordMeta):
+            raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
+        return hashlib.sha256(
+            canonical_bytes(
+                (
+                    "static_tool_v1",
+                    reference(request.action),
+                    request.action.work_ref,
+                    request.action.meta.attempt_id,
+                    decision_ref,
+                    request.tool_profile_ref,
+                    request.analysis_config_ref,
+                    request.rule_catalog_ref,
+                    reference(request.workspace),
+                )
+            )
+        ).hexdigest()
+
+    def _tool_receipt_path(self, action_id: str) -> Path:
+        prefix = hashlib.sha256(action_id.encode()).hexdigest()[:24]
+        return self.receipt_root / (prefix + ".receipt.json")
+
+    def _block_uncertain(self, work: WorkExecutionState) -> None:
+        blocker = cast(
+            UncertainDispatchRecoveryPort,
+            self.runner.runtime.recovery.recovery,
+        )
+        blocker.block_uncertain(work)
+
+    def _quarantine_tool_receipt(self, action_id: str) -> None:
+        target = self._tool_receipt_path(action_id)
+        try:
+            target.lstat()
+        except OSError:
+            return
+        quarantine = self.receipt_root / "quarantine"
+        quarantine.mkdir(mode=0o700, exist_ok=True)
+        if quarantine.is_symlink() or not quarantine.is_dir():
+            raise ValueError("STATIC_RECEIPT_ROOT_INVALID")
+        destination = quarantine / target.name
+        if destination.exists():
+            raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
+        target.replace(destination)
+
+    def _cancelled_observation(
+        self,
+        request: StaticToolRequest,
+        profile: StaticToolProfile,
+        elapsed_ms: int,
+    ) -> StaticToolObservation:
+        catalog_rule_ids: tuple[str, ...] = ()
+        if profile.tool_kind == "RULE_BASED":
+            if request.rule_catalog_ref is None:
+                raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
+            try:
+                catalog_rule_ids = self.static_publisher.rule_catalogs[
+                    request.rule_catalog_ref
+                ]
+            except KeyError as error:
+                raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH") from error
+        return StaticToolObservation(
+            tool_name=profile.tool_name,
+            tool_version=profile.expected_version,
+            tool_kind=profile.tool_kind,
+            status="SKIPPED",
+            raw_output=None,
+            raw_media_type=None,
+            analyzed_paths=(),
+            skipped_paths=request.action.file_paths,
+            analyzed_languages=(),
+            skipped_languages=(),
+            notes=("The static tool attempt was cancelled by the caller.",),
+            selected_rule_packs=(),
+            rules=tuple(
+                CandidateRule(
+                    rule_id,
+                    "SELECTED",
+                    "NOT_EXECUTED",
+                    None,
+                    "CANCELLED",
+                    None,
+                )
+                for rule_id in catalog_rule_ids
+            ),
+            symbols=(),
+            facts=(),
+            relations=(),
+            gaps=(
+                CandidateGap(
+                    "STATIC_ANALYSIS",
+                    "STATIC_TOOL_CANCELLED",
+                    "BLOCKED",
+                    "The static tool attempt was cancelled by the caller.",
+                    request.action.file_paths,
+                    (),
+                    (),
+                    True,
+                ),
+            ),
+            errors=(),
+            started_monotonic_ms=0,
+            finished_monotonic_ms=elapsed_ms,
+        )
+
     def _write_tool_receipt(
         self,
         request: StaticToolRequest,
@@ -525,6 +789,7 @@ class StaticExternalRunner:
         observation: StaticToolObservation,
         elapsed_ms: int,
         output_limit: int,
+        process_receipts: tuple[ProcessReceipt, ...] = (),
     ) -> Path:
         if not isinstance(request.action.meta, RecordMeta):
             raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
@@ -542,31 +807,30 @@ class StaticExternalRunner:
             else base64.b64encode(observation.raw_output).decode("ascii")
         )
         raw = canonical_bytes(payload)
-        if len(raw) > output_limit:
+        process_receipts = self._validate_tool_process_receipts(
+            str(request.action.action_id), str(attempt_id), process_receipts
+        )
+        projected_bytes = len(raw) + sum(
+            item.stdout_size + item.stderr_size for item in process_receipts
+        )
+        if projected_bytes > output_limit:
             raise ValueError("STATIC_TOOL_OUTPUT_LIMIT")
         observation_name = prefix + ".static.json"
         self._atomic_write(self.receipt_root / observation_name, raw)
-        fingerprint = hashlib.sha256(
-            canonical_bytes(
-                (
-                    "static_tool_v1",
-                    reference(request.action),
-                    request.action.work_ref,
-                    attempt_id,
-                    decision_ref,
-                    request.tool_profile_ref,
-                    request.analysis_config_ref,
-                    request.rule_catalog_ref,
-                    reference(request.workspace),
-                )
+        process_hashes: list[str] = []
+        for process_receipt in process_receipts:
+            process_raw = canonical_bytes(asdict(process_receipt))
+            process_digest = hashlib.sha256(process_raw).hexdigest()
+            self._atomic_write(
+                self.receipt_root / f"{process_digest}.process.json", process_raw
             )
-        ).hexdigest()
+            process_hashes.append(process_digest)
         receipt = StaticActionReceipt(
             action_id=str(request.action.action_id),
             attempt_id=str(attempt_id),
             operation_kind="STATIC_TOOL",
-            input_fingerprint=fingerprint,
-            process_receipt_hashes=(),
+            input_fingerprint=self._tool_input_fingerprint(request, decision_ref),
+            process_receipt_hashes=tuple(process_hashes),
             observation_name=observation_name,
             observation_size=len(raw),
             observation_sha256=hashlib.sha256(raw).hexdigest(),
@@ -636,6 +900,117 @@ class StaticExternalRunner:
         target = self.receipt_root / (prefix + ".receipt.json")
         self._atomic_write(target, canonical_bytes(asdict(receipt)))
         return target
+
+    def _read_tool_receipt(
+        self,
+        request: StaticToolRequest,
+        decision_ref: RecordRef,
+        profile: StaticToolProfile,
+    ) -> tuple[
+        StaticActionReceipt,
+        StaticToolObservation,
+        tuple[ProcessReceipt, ...],
+    ]:
+        if not isinstance(request.action.meta, RecordMeta):
+            raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
+        attempt_id = request.action.meta.attempt_id
+        if attempt_id is None:
+            raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
+        try:
+            root = self.receipt_root.resolve(strict=True)
+            if self.receipt_root.is_symlink() or not root.is_dir():
+                raise ValueError
+            target = self._tool_receipt_path(str(request.action.action_id))
+            raw = _guarded_read(target, _MAX_RECEIPT_BYTES)
+            value = json.loads(raw)
+            if not isinstance(value, dict) or set(value) != set(
+                StaticActionReceipt.__dataclass_fields__
+            ):
+                raise ValueError
+            operation_kind = self._string(value["operation_kind"])
+            if operation_kind != "STATIC_TOOL":
+                raise ValueError
+            receipt = StaticActionReceipt(
+                action_id=self._string(value["action_id"]),
+                attempt_id=self._string(value["attempt_id"]),
+                operation_kind="STATIC_TOOL",
+                input_fingerprint=self._string(value["input_fingerprint"]),
+                process_receipt_hashes=self._strings(value["process_receipt_hashes"]),
+                observation_name=self._string(value["observation_name"]),
+                observation_size=self._non_negative_int(value["observation_size"]),
+                observation_sha256=self._string(value["observation_sha256"]),
+                elapsed_ms=self._non_negative_int(value["elapsed_ms"]),
+                lease_id=(
+                    None
+                    if value["lease_id"] is None
+                    else self._string(value["lease_id"])
+                ),
+            )
+            prefix = hashlib.sha256(receipt.action_id.encode()).hexdigest()[:24]
+            if (
+                canonical_bytes(asdict(receipt)) != raw
+                or target.parent.resolve(strict=True) != root
+                or target.name != prefix + ".receipt.json"
+                or receipt.action_id != str(request.action.action_id)
+                or receipt.attempt_id != str(attempt_id)
+                or receipt.input_fingerprint
+                != self._tool_input_fingerprint(request, decision_ref)
+                or receipt.observation_name != prefix + ".static.json"
+                or Path(receipt.observation_name).name != receipt.observation_name
+                or receipt.lease_id is not None
+                or receipt.observation_size
+                > min(_MAX_OBSERVATION_BYTES, profile.max_attempt_output_bytes)
+                or not re.fullmatch(r"[0-9a-f]{64}", receipt.observation_sha256)
+                or any(
+                    not re.fullmatch(r"[0-9a-f]{64}", digest)
+                    for digest in receipt.process_receipt_hashes
+                )
+            ):
+                raise ValueError
+            observation_raw = _guarded_read(
+                root / receipt.observation_name,
+                min(_MAX_OBSERVATION_BYTES, profile.max_attempt_output_bytes),
+            )
+            if (
+                len(observation_raw) != receipt.observation_size
+                or hashlib.sha256(observation_raw).hexdigest()
+                != receipt.observation_sha256
+            ):
+                raise ValueError
+            payload = json.loads(observation_raw)
+            if not isinstance(payload, dict) or set(payload) != set(
+                StaticToolObservation.__dataclass_fields__
+            ):
+                raise ValueError
+            if canonical_bytes(payload) != observation_raw:
+                raise ValueError
+            encoded = payload["raw_output"]
+            if encoded is not None:
+                if not isinstance(encoded, str):
+                    raise ValueError
+                decoded_raw = base64.b64decode(encoded, validate=True)
+                if base64.b64encode(decoded_raw).decode("ascii") != encoded:
+                    raise ValueError
+                payload["raw_output"] = decoded_raw
+            observation = TypeAdapter(StaticToolObservation).validate_python(payload)
+            StaticToolCoordinator._validate_observation(profile, observation)
+            process_receipts = self._read_process_receipts(root, receipt)
+            process_receipts = self._validate_tool_process_receipts(
+                receipt.action_id, receipt.attempt_id, process_receipts
+            )
+            projected = receipt.observation_size + sum(
+                item.stdout_size + item.stderr_size for item in process_receipts
+            )
+            if projected > profile.max_attempt_output_bytes:
+                raise ValueError
+        except (
+            OSError,
+            TypeError,
+            json.JSONDecodeError,
+            ValueError,
+        ) as error:
+            raise ValueError("STATIC_ACTION_RECEIPT_INVALID") from error
+        return receipt, observation, process_receipts
 
     def _read_receipt(
         self,
