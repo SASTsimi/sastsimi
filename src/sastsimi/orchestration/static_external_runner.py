@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -14,17 +15,27 @@ from pathlib import Path
 from typing import Literal, Protocol, cast
 
 from sastsimi.contracts.actions import ActionDecision, ActionRequest
-from sastsimi.contracts.budget import BudgetLedgerEntry, BudgetReservation, BudgetUnits
+from sastsimi.contracts.budget import (
+    BudgetAgentRole,
+    BudgetLedgerEntry,
+    BudgetProfileBinding,
+    BudgetReservation,
+    BudgetUnits,
+    OperationKind,
+    WorkBudgetProfile,
+    select_work_limit,
+)
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import WorkspaceId
+from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
     RecordRef,
     RunStoredDataRef,
     reference,
 )
-from sastsimi.contracts.static import CodeWorkspace
-from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile, ToolRunResult
+from sastsimi.contracts.work import WorkExecutionState, WorkType
 from sastsimi.ports.dto import (
     CandidateError,
     CandidateGap,
@@ -35,12 +46,15 @@ from sastsimi.ports.dto import (
     PublishedWorkspaceMaterial,
     RepositoryPreparation,
     StaticActionReceipt,
+    StaticToolObservation,
+    StaticToolRequest,
     TrackedFile,
     WorkspaceStoragePolicy,
 )
+from sastsimi.ports.static_tool import validate_static_tool_profile_binding
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 
-from .static_publication import WorkspacePreparationPublisher
+from .static_publication import StaticAttemptPublisher, WorkspacePreparationPublisher
 
 type RepositorySourceCanonicalizer = Callable[[str], CanonicalRepositorySource]
 type WorkspacePolicyDecoder = Callable[
@@ -150,6 +164,7 @@ class StaticExternalRunner:
         checkpoint: Callable[[str], None] = lambda _stage: None,
         lease_root_resolver: Callable[[str], Path] | None = None,
         recovery_validator: RepositoryRecoveryValidatorPort | None = None,
+        static_publisher: StaticAttemptPublisher | None = None,
     ) -> None:
         self.runner = runner
         self.receipt_root = receipt_root
@@ -159,6 +174,123 @@ class StaticExternalRunner:
         self.checkpoint = checkpoint
         self.lease_root_resolver = lease_root_resolver
         self.recovery_validator = recovery_validator
+        self.static_publisher = static_publisher or StaticAttemptPublisher(runner)
+
+    async def invoke(
+        self,
+        request: StaticToolRequest,
+        profile: StaticToolProfile,
+        operation: Callable[
+            [MonotonicActionDeadline], Awaitable[StaticToolObservation]
+        ],
+    ) -> ToolRunResult:
+        """Close authorization, dispatch, receipt, accounting and publication once."""
+        action = request.action
+        if action.work_ref is None:
+            raise ValueError("STATIC_TOOL_REQUEST_INVALID")
+        referenced_work = self.runner.runtime.unit_of_work.records.get_exact(
+            action.work_ref
+        )
+        if not isinstance(referenced_work, WorkExecutionState):
+            raise ValueError("STATIC_TOOL_REQUEST_INVALID")
+        work = self.runner.runtime.work.get(str(referenced_work.work_id))
+        resolved_profile = (
+            self.runner.runtime.configuration.resolve_static_tool_profile(
+                request.tool_profile_ref
+            )
+        )
+        state = self.runner.runtime.budget_registry.current_state(
+            str(work.meta.analysis_id)
+        )
+        binding_ref = state.budget_binding_ref
+        if binding_ref is None or state.workspace_ref != reference(request.workspace):
+            raise ValueError("STATIC_TOOL_REQUEST_INVALID")
+        records = self.runner.runtime.unit_of_work.records
+        binding = records.get_exact(binding_ref)
+        if not isinstance(binding, BudgetProfileBinding):
+            raise ValueError("STATIC_TOOL_REQUEST_INVALID")
+        work_profile = records.get_exact(binding.work_budget_profile_ref)
+        if not isinstance(work_profile, WorkBudgetProfile):
+            raise ValueError("STATIC_TOOL_REQUEST_INVALID")
+        limit = select_work_limit(
+            work_profile,
+            WorkType.STATIC_TOOL,
+            OperationKind.STATIC_TOOL,
+            BudgetAgentRole.STATIC_ANALYSIS,
+        )
+        approved_timeout = resolved_profile.run_timeout_ms
+        if limit.timeout_ms is not None:
+            approved_timeout = min(approved_timeout, limit.timeout_ms)
+        if (
+            profile != resolved_profile
+            or work != referenced_work
+            or not isinstance(action.meta, RecordMeta)
+            or not isinstance(work.meta, RecordMeta)
+            or work.status != "RUNNING"
+            or work.active_attempt_id != action.meta.attempt_id
+            or request.workspace.status != "READY"
+            or request.workspace.commit_id != work.meta.commit_id
+            or request.workspace.workspace_id != work.meta.workspace_id
+            or action.input_refs.count(request.tool_profile_ref) != 1
+            or work.input_refs.count(request.tool_profile_ref) != 1
+            or action.input_refs.count(request.analysis_config_ref) != 1
+            or work.input_refs.count(request.analysis_config_ref) != 1
+            or (
+                request.rule_catalog_ref is not None
+                and (
+                    action.input_refs.count(request.rule_catalog_ref) != 1
+                    or work.input_refs.count(request.rule_catalog_ref) != 1
+                )
+            )
+            or approved_timeout <= 0
+        ):
+            raise ValueError("STATIC_TOOL_REQUEST_INVALID")
+        reservation = self.runner.reserve(
+            work,
+            binding_ref,
+            action,
+            self.runner.units(elapsed_ms=approved_timeout),
+        )
+        decision_ref = self.runner.authorize(work, action, reservation)
+        decision = records.get_exact(decision_ref)
+        if not isinstance(decision, ActionDecision):
+            raise ValueError("STATIC_TOOL_DECISION_INVALID")
+        validate_static_tool_profile_binding(request, work, decision, resolved_profile)
+        started_ns = self._now_ns()
+        elapsed_ms: int | None = None
+
+        async def bound(_claimed: RecordRef) -> StaticToolObservation:
+            nonlocal elapsed_ms
+            deadline = MonotonicActionDeadline(
+                action_id=str(action.action_id),
+                started_ns=started_ns,
+                expires_ns=started_ns + approved_timeout * 1_000_000,
+            )
+            observation = await operation(deadline)
+            elapsed_ms = max(0, (self._now_ns() - started_ns) // 1_000_000)
+            self._write_tool_receipt(
+                request,
+                decision_ref,
+                observation,
+                elapsed_ms,
+                resolved_profile.max_attempt_output_bytes,
+            )
+            self.checkpoint("STATIC_RECEIPT_DURABLE")
+            return observation
+
+        observation, _ = await self.runner.runtime.external.invoke_bound(
+            str(work.work_id),
+            decision_ref,
+            records.stage_record(reservation),
+            bound,
+            idempotency_key=str(action.action_id),
+        )
+        self.checkpoint("STATIC_RETURNED")
+        if elapsed_ms is None:
+            raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
+        self._account_once(reservation, self.runner.units(elapsed_ms=elapsed_ms))
+        self.checkpoint("STATIC_ACCOUNTED")
+        return self.static_publisher.publish(request, observation).result
 
     def _verified_policy(
         self, work: WorkExecutionState, policy_ref: RunStoredDataRef
@@ -385,6 +517,64 @@ class StaticExternalRunner:
         if not callable(self.monotonic_ns):
             raise ValueError("MONOTONIC_CLOCK_INVALID")
         return int(self.monotonic_ns())
+
+    def _write_tool_receipt(
+        self,
+        request: StaticToolRequest,
+        decision_ref: RecordRef,
+        observation: StaticToolObservation,
+        elapsed_ms: int,
+        output_limit: int,
+    ) -> Path:
+        if not isinstance(request.action.meta, RecordMeta):
+            raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
+        attempt_id = request.action.meta.attempt_id
+        if attempt_id is None:
+            raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
+        self.receipt_root.mkdir(parents=True, exist_ok=True)
+        if self.receipt_root.is_symlink():
+            raise ValueError("STATIC_RECEIPT_ROOT_INVALID")
+        prefix = hashlib.sha256(str(request.action.action_id).encode()).hexdigest()[:24]
+        payload = asdict(observation)
+        payload["raw_output"] = (
+            None
+            if observation.raw_output is None
+            else base64.b64encode(observation.raw_output).decode("ascii")
+        )
+        raw = canonical_bytes(payload)
+        if len(raw) > output_limit:
+            raise ValueError("STATIC_TOOL_OUTPUT_LIMIT")
+        observation_name = prefix + ".static.json"
+        self._atomic_write(self.receipt_root / observation_name, raw)
+        fingerprint = hashlib.sha256(
+            canonical_bytes(
+                (
+                    "static_tool_v1",
+                    reference(request.action),
+                    request.action.work_ref,
+                    attempt_id,
+                    decision_ref,
+                    request.tool_profile_ref,
+                    request.analysis_config_ref,
+                    request.rule_catalog_ref,
+                    reference(request.workspace),
+                )
+            )
+        ).hexdigest()
+        receipt = StaticActionReceipt(
+            action_id=str(request.action.action_id),
+            attempt_id=str(attempt_id),
+            operation_kind="STATIC_TOOL",
+            input_fingerprint=fingerprint,
+            process_receipt_hashes=(),
+            observation_name=observation_name,
+            observation_size=len(raw),
+            observation_sha256=hashlib.sha256(raw).hexdigest(),
+            elapsed_ms=elapsed_ms,
+        )
+        target = self.receipt_root / (prefix + ".receipt.json")
+        self._atomic_write(target, canonical_bytes(asdict(receipt)))
+        return target
 
     def _write_receipt(
         self,
