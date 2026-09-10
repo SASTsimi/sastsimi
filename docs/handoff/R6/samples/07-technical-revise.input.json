@@ -1,0 +1,46 @@
+{
+  "fixture_version": "r6-handoff-1.0",
+  "fixture_notice": "SYNTHETIC TECHNICAL REVISE FIXTURE - previous and current generations are intentionally distinct.",
+  "fixture_id": "R6-TECHNICAL-REVISE-01",
+  "previous_verification": {
+    "verification_result_ref": "verification_ref_007_g1",
+    "verification_generation": 1,
+    "verdict": "TRUE",
+    "dynamic_result_ref": "dynamic_result_ref_007_g1_a1",
+    "poc_ref": "poc_ref_007_g1_a1"
+  },
+  "technical_review": {
+    "review_ref": "technical_review_ref_007_g1",
+    "status": "REVISE",
+    "verification_result_ref": "verification_ref_007_g1",
+    "cwe_label_ref": "cwe_label_ref_007_g1",
+    "revision_requests": [
+      {
+        "request_id": "revreq_007_1",
+        "reason": "관리자 전용 route 제한이 VerificationResult.restrictions에 보존되지 않았다."
+      }
+    ]
+  },
+  "current_generation": {
+    "verification_generation": 2,
+    "assignment_ref": "assignment_ref_007_g2",
+    "process_ref": "process_ref_007_g2",
+    "pro_result_ref": "pro_result_ref_007_g2",
+    "con_result_ref": "con_result_ref_007_g2",
+    "assessment_ref": "assessment_ref_007_g2",
+    "dynamic_request_ref": "dynamic_request_ref_007_g2",
+    "dynamic_result_ref": "dynamic_result_ref_007_g2_a2",
+    "dynamic_status": "SUCCEEDED",
+    "dynamic_outcome": "SUPPORTED",
+    "attempt_id": "attempt_dynamic_007_2",
+    "poc_ref": "poc_ref_007_g2_a2",
+    "poc_attempt_id": "attempt_dynamic_007_2",
+    "verified_restrictions": [
+      {
+        "restriction_id": "restriction_admin_route_007",
+        "statement": "현재 재현은 관리자 전용 route와 해당 권한 profile에 한정된다.",
+        "evidence_refs": ["ev_admin_route_007_g2", "dynamic_result_ref_007_g2_a2"]
+      }
+    ]
+  }
+}

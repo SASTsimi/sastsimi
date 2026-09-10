@@ -1,0 +1,69 @@
+{
+  "fixture_version": "r6-handoff-1.0",
+  "fixture_notice": "SYNTHETIC PROMPT VALIDATION FIXTURE - not a persisted runtime record.",
+  "fixture_id": "R6-EXECUTION-FAILURE-01",
+  "analysis_purpose": "PRODUCTION",
+  "verification_mode": "ALWAYS_DEBATE",
+  "analysis_id": "ana_fixture_004",
+  "workspace_id": "ws_fixture_004",
+  "commit_id": "4444444444444444444444444444444444444444",
+  "hypothesis_id": "hyp_ssrf_004",
+  "parent_verification_work_id": "work_verify_004",
+  "verification_generation": 1,
+  "debate_input_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "playbook_policy_ref": "policy_ref_common_001",
+  "playbook_ref": "playbook_ref_ssrf_001",
+  "playbook_application_ref": "playbook_application_ref_004",
+  "hypothesis": {
+    "statement": "POST /fetch의 url이 내부망 요청에 사용돼 SSRF가 가능하다.",
+    "vulnerability_type_candidates": [
+      "SSRF"
+    ],
+    "falsification_questions": [
+      {
+        "question_id": "fq_004",
+        "question": "요청 전에 scheme·host·resolved IP allowlist가 모든 redirect 단계에 적용되는가?"
+      }
+    ],
+    "validation_checks": [
+      {
+        "validation_id": "vc_007",
+        "instruction": "url source에서 network sink까지의 data flow를 확인한다."
+      },
+      {
+        "validation_id": "vc_008",
+        "instruction": "redirect와 DNS resolution 이후의 차단 로직을 확인한다."
+      }
+    ]
+  },
+  "context_status": "TIMED_OUT",
+  "context_evidence": [],
+  "context_gaps": [
+    {
+      "gap_id": "gap_ssrf_context_timeout",
+      "stage": "CONTEXT",
+      "reason": "TIMEOUT",
+      "description": "필수 network sink와 redirect 처리 코드를 반환하기 전에 Context 조회가 timeout됐다.",
+      "retryable": true
+    }
+  ],
+  "analysis_errors": [
+    {
+      "error_id": "err_context_timeout_004",
+      "stage": "CONTEXT",
+      "code": "CONTEXT_TIMEOUT",
+      "safe_message": "필수 Context 조회 시간이 제한을 초과했다.",
+      "retryable": true,
+      "work_id": "work_verify_004",
+      "attempt_id": "attempt_verify_004_1"
+    }
+  ],
+  "pro_result": null,
+  "con_result": null,
+  "dynamic_reproduction": {
+    "status": "NOT_REQUESTED",
+    "request_ref": null,
+    "result_ref": null,
+    "poc_ref": null
+  }
+}

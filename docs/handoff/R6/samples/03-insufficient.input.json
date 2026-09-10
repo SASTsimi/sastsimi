@@ -1,0 +1,80 @@
+{
+  "fixture_version": "r6-handoff-1.0",
+  "fixture_notice": "SYNTHETIC PROMPT VALIDATION FIXTURE - not a persisted runtime record.",
+  "fixture_id": "R6-INSUFFICIENT-01",
+  "analysis_purpose": "PRODUCTION",
+  "verification_mode": "ALWAYS_DEBATE",
+  "analysis_id": "ana_fixture_003",
+  "workspace_id": "ws_fixture_003",
+  "commit_id": "3333333333333333333333333333333333333333",
+  "hypothesis_id": "hyp_idor_003",
+  "parent_verification_work_id": "work_verify_003",
+  "verification_generation": 1,
+  "debate_input_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "playbook_policy_ref": "policy_ref_common_001",
+  "playbook_ref": "playbook_ref_idor_001",
+  "playbook_application_ref": "playbook_application_ref_003",
+  "hypothesis": {
+    "statement": "GET /documents/{id}에서 다른 사용자의 문서를 읽을 수 있다.",
+    "vulnerability_type_candidates": [
+      "IDOR_BOLA"
+    ],
+    "falsification_questions": [
+      {
+        "question_id": "fq_003",
+        "question": "문서 반환 전에 현재 사용자와 document.owner_id를 비교하는가?"
+      }
+    ],
+    "validation_checks": [
+      {
+        "validation_id": "vc_005",
+        "instruction": "route에서 문서 조회와 반환까지의 제공된 경로를 확인한다."
+      },
+      {
+        "validation_id": "vc_006",
+        "instruction": "확보된 Context에서 ownership check의 존재 여부와 확인 한계를 기록한다."
+      }
+    ]
+  },
+  "context_status": "SUCCEEDED",
+  "context_evidence": [
+    {
+      "evidence_ref": "ev_document_route",
+      "statement": "route가 path의 id로 document_service.get(id)를 호출한다.",
+      "location": {
+        "workspace_id": "ws_fixture_003",
+        "commit_id": "3333333333333333333333333333333333333333",
+        "file_path": "app/routes/documents.py",
+        "start_line": 40,
+        "end_line": 44
+      }
+    },
+    {
+      "evidence_ref": "ev_service_fragment_missing_body",
+      "statement": "document_service.get의 symbol과 호출 위치는 확인됐지만 callee body가 generated dependency에 있어 반환되지 않았다.",
+      "location": {
+        "workspace_id": "ws_fixture_003",
+        "commit_id": "3333333333333333333333333333333333333333",
+        "file_path": "app/routes/documents.py",
+        "start_line": 42,
+        "end_line": 42
+      }
+    }
+  ],
+  "context_gaps": [
+    {
+      "gap_id": "gap_document_service_body",
+      "stage": "CONTEXT",
+      "reason": "MISSING",
+      "description": "정상 조회는 완료됐지만 generated dependency의 callee body가 현재 workspace에 없다.",
+      "retryable": false
+    }
+  ],
+  "analysis_errors": [],
+  "dynamic_reproduction": {
+    "status": "NOT_REQUESTED",
+    "request_ref": null,
+    "result_ref": null,
+    "poc_ref": null
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "fixture_version": "r6-handoff-1.0",
+  "fixture_notice": "SYNTHETIC EXPECTED PROJECTION - a new result is created; previous immutable data is unchanged.",
+  "fixture_id": "R6-TECHNICAL-REVISE-01",
+  "expected": {
+    "previous_verification_ref": "verification_ref_007_g1",
+    "previous_result_modified": false,
+    "technical_review_ref": "technical_review_ref_007_g1",
+    "new_verification_generation": 2,
+    "new_verdict": "TRUE",
+    "resolved_revision_request_ids": ["revreq_007_1"],
+    "restrictions": [
+      {
+        "restriction_id": "restriction_admin_route_007",
+        "evidence_refs": ["ev_admin_route_007_g2", "dynamic_result_ref_007_g2_a2"]
+      }
+    ],
+    "dynamic_request_ref": "dynamic_request_ref_007_g2",
+    "dynamic_result_ref": "dynamic_result_ref_007_g2_a2",
+    "poc_ref": "poc_ref_007_g2_a2"
+  },
+  "must_not_output": [
+    "verification_ref_007_g1의 in-place 변경",
+    "generation 1의 dynamic result 또는 PoC를 새 final TRUE에 재사용",
+    "Technical Gate의 ACCEPT를 R6가 직접 생성",
+    "CWE 변경 또는 보고서 생성"
+  ]
+}
