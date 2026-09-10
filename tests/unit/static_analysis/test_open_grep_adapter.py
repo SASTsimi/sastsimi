@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import shutil
@@ -58,7 +59,8 @@ def _process_result(
     stdout: bytes = b"",
     outcome: str = "SUCCEEDED",
     return_code: int | None = 0,
-    truncated: bool = False,
+    stdout_truncated: bool = False,
+    stderr_truncated: bool = False,
 ) -> ProcessResult:
     receipt = ProcessReceipt(
         action_id=spec.deadline.action_id,
@@ -81,8 +83,8 @@ def _process_result(
         return_code=return_code,
         stdout=stdout,
         stderr_tail=b"",
-        stdout_truncated=truncated,
-        stderr_truncated=False,
+        stdout_truncated=stdout_truncated,
+        stderr_truncated=stderr_truncated,
         elapsed_ms=1,
         receipt=receipt,
         receipt_path=spec.attempt_output_dir / "receipt.json",
@@ -95,10 +97,14 @@ class FakeRunner:
         outputs: list[dict[str, object]] | None = None,
         *,
         version: str = "1.8.0",
+        version_stdout_truncated: bool = False,
+        version_stderr_truncated: bool = False,
         after_scan: Callable[[int], None] | None = None,
     ) -> None:
         self.outputs = list(outputs or [])
         self.version = version
+        self.version_stdout_truncated = version_stdout_truncated
+        self.version_stderr_truncated = version_stderr_truncated
         self.after_scan = after_scan
         self.calls: list[ProcessSpec] = []
         self.cancelled: list[str] = []
@@ -107,7 +113,12 @@ class FakeRunner:
     async def run(self, spec: ProcessSpec) -> ProcessResult:
         self.calls.append(spec)
         if spec.argv[1:] == ("--version",):
-            return _process_result(spec, stdout=(self.version + "\n").encode())
+            return _process_result(
+                spec,
+                stdout=(self.version + "\n").encode(),
+                stdout_truncated=self.version_stdout_truncated,
+                stderr_truncated=self.version_stderr_truncated,
+            )
         output = self.outputs.pop(0)
         self.scan_count += 1
         if self.after_scan is not None:
@@ -117,7 +128,8 @@ class FakeRunner:
             stdout=cast(bytes, output.get("stdout", b"")),
             outcome=cast(str, output.get("outcome", "SUCCEEDED")),
             return_code=cast(int | None, output.get("return_code", 0)),
-            truncated=cast(bool, output.get("truncated", False)),
+            stdout_truncated=cast(bool, output.get("truncated", False)),
+            stderr_truncated=cast(bool, output.get("stderr_truncated", False)),
         )
 
     async def cancel(self, attempt_id: str) -> CancellationResult:
@@ -364,6 +376,23 @@ async def test_probe_uses_only_exact_executable_version_and_digest(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+async def test_probe_rejects_any_truncated_version_output(
+    opengrep_fixture: dict[str, object], stream: str
+) -> None:
+    runner = FakeRunner(
+        version_stdout_truncated=stream == "stdout",
+        version_stderr_truncated=stream == "stderr",
+    )
+    adapter = _adapter(opengrep_fixture, runner)
+
+    observed = await adapter.probe(opengrep_fixture["profile"], _deadline())
+
+    assert not observed.available
+    assert observed.reason_code == "OPENGREP_VERSION_MISMATCH"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "case",
     ["version", "digest", "key", "profile_ref", "config", "catalog", "workspace"],
@@ -446,6 +475,51 @@ async def test_scan_uses_fixed_options_explicit_targets_and_deterministic_batche
         assert spec.deadline is scans[0].deadline
     assert flattened == sorted(request.action.file_paths)
     assert "-option.py" in flattened
+
+
+@pytest.mark.asyncio
+async def test_execute_uses_one_attempt_owned_output_budget_across_all_processes(
+    opengrep_fixture: dict[str, object],
+) -> None:
+    request = cast(StaticToolRequest, opengrep_fixture["request"])
+    runner = FakeRunner(
+        [
+            {"stdout": _output(paths=(path,))}
+            for path in sorted(request.action.file_paths)
+        ]
+    )
+    factory = RunnerFactory(runner)
+    adapter = _adapter(
+        opengrep_fixture,
+        runner,
+        runner_factory=factory,
+        _test_command_limit_bytes=_one_target_limit(opengrep_fixture),
+        platform="posix",
+    )
+    profile = cast(StaticToolProfile, opengrep_fixture["profile"])
+
+    result = await adapter.execute(
+        request,
+        cast(Path, opengrep_fixture["root"]),
+        profile,
+        _deadline(str(request.action.action_id)),
+    )
+
+    assert result.status == "SUCCEEDED"
+    assert len(factory.calls) == 1
+    assert factory.calls[0]["attempt_id"] == cast(
+        Any, opengrep_fixture["inputs"]
+    ).attempt_id
+    assert factory.calls[0]["output_limit_bytes"] == profile.max_attempt_output_bytes
+    assert len(runner.calls) > 2
+    assert {
+        (spec.attempt_id, spec.attempt_output_limit_bytes) for spec in runner.calls
+    } == {
+        (
+            cast(Any, opengrep_fixture["inputs"]).attempt_id,
+            profile.max_attempt_output_bytes,
+        )
+    }
 
 
 def test_platform_command_cost_is_exact_and_test_limit_can_only_reduce(
@@ -550,6 +624,75 @@ async def test_exact_telemetry_is_the_only_proof_of_selected_zero_hits(
     assert set(selected) == {"R1", "R2"}
     assert all(item.execution_status == "EXECUTED" for item in selected.values())
     assert all(item.hit_count == 0 for item in selected.values())
+
+
+@pytest.mark.asyncio
+async def test_known_raw_hit_is_counted_even_when_location_is_invalid(
+    opengrep_fixture: dict[str, object],
+) -> None:
+    runner = FakeRunner(
+        [
+            {
+                "stdout": _output(
+                    paths=("src/a.py",),
+                    results=[_finding("R1", "outside-authorized-batch.py")],
+                )
+            }
+        ]
+    )
+    adapter = _adapter(opengrep_fixture, runner)
+    request = cast(StaticToolRequest, opengrep_fixture["request"])
+    request = replace(
+        request, action=request.action.model_copy(update={"file_paths": ("src/a.py",)})
+    )
+
+    result = await adapter.execute(
+        request,
+        cast(Path, opengrep_fixture["root"]),
+        cast(StaticToolProfile, opengrep_fixture["profile"]),
+        _deadline(str(request.action.action_id)),
+    )
+
+    rules = {item.rule_id: item for item in result.rules}
+    assert result.status == "PARTIAL"
+    assert rules["R1"].execution_status == "EXECUTED"
+    assert rules["R1"].hit_count == 1
+    assert rules["R2"].hit_count == 0
+    assert result.facts == ()
+
+
+@pytest.mark.asyncio
+async def test_result_without_identifiable_rule_makes_selected_rules_unknown(
+    opengrep_fixture: dict[str, object],
+) -> None:
+    malformed = _finding("R1", "src/a.py")
+    del malformed["check_id"]
+    runner = FakeRunner(
+        [{"stdout": _output(paths=("src/a.py",), results=[malformed])}]
+    )
+    adapter = _adapter(opengrep_fixture, runner)
+    request = cast(StaticToolRequest, opengrep_fixture["request"])
+    request = replace(
+        request, action=request.action.model_copy(update={"file_paths": ("src/a.py",)})
+    )
+
+    result = await adapter.execute(
+        request,
+        cast(Path, opengrep_fixture["root"]),
+        cast(StaticToolProfile, opengrep_fixture["profile"]),
+        _deadline(str(request.action.action_id)),
+    )
+
+    rules = {
+        item.rule_id: item
+        for item in result.rules
+        if item.selection_status == "SELECTED"
+    }
+    assert result.status == "PARTIAL"
+    assert set(rules) == {"R1", "R2"}
+    assert all(item.execution_status == "UNKNOWN" for item in rules.values())
+    assert all(item.hit_count is None for item in rules.values())
+    assert all(item.reason == "TELEMETRY_MISSING" for item in rules.values())
 
 
 @pytest.mark.asyncio
@@ -845,6 +988,49 @@ async def test_aggregate_raw_envelope_over_artifact_cap_is_never_published(
 
 
 @pytest.mark.asyncio
+async def test_float_telemetry_preserves_exact_bounded_raw_bytes_for_replay(
+    opengrep_fixture: dict[str, object],
+) -> None:
+    payload = {
+        "version": "1.8.0",
+        "results": [_finding("R1", "src/a.py")],
+        "errors": [],
+        "paths": {"scanned": ["src/a.py"], "skipped": []},
+        "time": {
+            "rules": [
+                {"id": "R1", "match_time": 0.125},
+                {"id": "R2", "match_time": 0.25},
+            ]
+        },
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    runner = FakeRunner([{"stdout": raw}])
+    adapter = _adapter(opengrep_fixture, runner)
+    request = cast(StaticToolRequest, opengrep_fixture["request"])
+    request = replace(
+        request, action=request.action.model_copy(update={"file_paths": ("src/a.py",)})
+    )
+
+    result = await adapter.execute(
+        request,
+        cast(Path, opengrep_fixture["root"]),
+        cast(StaticToolProfile, opengrep_fixture["profile"]),
+        _deadline(str(request.action.action_id)),
+    )
+
+    assert result.status == "SUCCEEDED"
+    assert result.raw_output is not None
+    envelope = json.loads(result.raw_output)
+    batch = envelope["batches"][0]
+    replay = base64.b64decode(batch["stdout_base64"], validate=True)
+    assert replay == raw
+    assert batch["stdout_sha256"] == _sha256(raw)
+    assert json.loads(replay) == payload
+    assert str(opengrep_fixture["config"]) not in result.raw_output.decode()
+    assert str(opengrep_fixture["root"]) not in result.raw_output.decode()
+
+
+@pytest.mark.asyncio
 async def test_raw_batch_over_cap_is_rejected_before_json_decode(
     opengrep_fixture: dict[str, object],
 ) -> None:
@@ -889,6 +1075,32 @@ async def test_raw_batch_over_cap_is_rejected_before_json_decode(
     assert result.raw_output is None
     assert result.facts == ()
     assert any(gap.code == "STATIC_OUTPUT_LIMIT" for gap in result.gaps)
+
+
+@pytest.mark.asyncio
+async def test_empty_rule_pack_selection_is_valid_but_duplicates_are_rejected(
+    opengrep_fixture: dict[str, object],
+) -> None:
+    inputs = cast(Any, opengrep_fixture["inputs"])
+    opengrep_fixture["inputs"] = replace(inputs, selected_rule_packs=())
+    runner = FakeRunner([{"stdout": _output(paths=("src/a.py",))}])
+    adapter = _adapter(opengrep_fixture, runner)
+    request = cast(StaticToolRequest, opengrep_fixture["request"])
+    request = replace(
+        request, action=request.action.model_copy(update={"file_paths": ("src/a.py",)})
+    )
+
+    result = await adapter.execute(
+        request,
+        cast(Path, opengrep_fixture["root"]),
+        cast(StaticToolProfile, opengrep_fixture["profile"]),
+        _deadline(str(request.action.action_id)),
+    )
+
+    assert result.status == "SUCCEEDED"
+    assert result.selected_rule_packs == ()
+    with pytest.raises(ValueError, match="OPENGREP_INPUT_CLOSURE_INVALID"):
+        replace(inputs, selected_rule_packs=("fixture/web", "fixture/web"))
 
 
 @pytest.mark.asyncio

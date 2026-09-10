@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -10,7 +11,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal, Protocol, cast
@@ -91,7 +92,6 @@ class OpenGrepExecutionInputs:
             or not self.attempt_id
             or not self.rule_catalog
             or not self.selected_rule_ids
-            or not self.selected_rule_packs
             or len(set(catalog_ids)) != len(catalog_ids)
             or len(set(self.selected_rule_ids)) != len(self.selected_rule_ids)
             or not set(self.selected_rule_ids).issubset(catalog_ids)
@@ -198,7 +198,7 @@ def _open_read_descriptor(path: Path) -> int:
 @dataclass(frozen=True)
 class _DecodedBatch:
     paths: tuple[str, ...]
-    payload: Mapping[str, object]
+    raw: bytes
     unknown_rules: frozenset[str]
     hit_counts: Counter[str]
     facts: tuple[CandidateFact, ...]
@@ -446,6 +446,7 @@ def _decode_batch(
     gaps: list[CandidateGap] = []
     for index, item in enumerate(results):
         if not isinstance(item, dict) or not isinstance(item.get("check_id"), str):
+            unknown = selected
             gaps.append(
                 _gap(
                     "STATIC_RESULT_MALFORMED",
@@ -467,6 +468,7 @@ def _decode_batch(
                 )
             )
             continue
+        hits[rule_id] += 1
         try:
             location = _location(item, frozenset(paths))
         except ValueError:
@@ -479,7 +481,6 @@ def _decode_batch(
                 )
             )
             continue
-        hits[rule_id] += 1
         if rule_id not in unknown:
             facts.append(
                 CandidateFact(
@@ -510,7 +511,7 @@ def _decode_batch(
         )
     return _DecodedBatch(
         paths,
-        cast(Mapping[str, object], value),
+        raw,
         unknown,
         hits,
         tuple(facts),
@@ -707,6 +708,8 @@ class OpenGrepProcessAdapter:
         if (
             result.outcome != "SUCCEEDED"
             or result.return_code != 0
+            or result.stdout_truncated
+            or result.stderr_truncated
             or version != profile.expected_version
         ):
             return self._capability(
@@ -1286,7 +1289,11 @@ class OpenGrepProcessAdapter:
                 "tool_name": "OPENGREP",
                 "tool_version": profile.expected_version,
                 "batches": [
-                    {"paths": list(batch.paths), "payload": batch.payload}
+                    {
+                        "paths": list(batch.paths),
+                        "stdout_base64": base64.b64encode(batch.raw).decode("ascii"),
+                        "stdout_sha256": _digest(batch.raw),
+                    }
                     for batch in complete
                 ],
             }
