@@ -243,7 +243,7 @@ def _workspace() -> CodeWorkspace:
     )
 
 
-def _plan(query: str, seed: CodeSymbol, *, depth: int = 1) -> ContextReadPlan:
+def _plan(query: str | None, seed: CodeSymbol, *, depth: int = 1) -> ContextReadPlan:
     bundle, _ = _fixture()
     bundle_ref = reference(bundle)
     assert isinstance(bundle_ref, StoredDataRef)
@@ -260,7 +260,7 @@ def _plan(query: str, seed: CodeSymbol, *, depth: int = 1) -> ContextReadPlan:
             bundle_ref=bundle_ref,
             requested_entities=(seed,),
             requested_locations=(),
-            relation_query=(query,),  # type: ignore[arg-type]
+            relation_query=() if query is None else (query,),  # type: ignore[arg-type]
             reason="Need exact context",
             requested_limits=limits,
         ),
@@ -292,9 +292,9 @@ def test_plan_uses_only_declared_relation_semantics(
     assert plan.file_paths == tuple(sorted(set(plan.file_paths)))
 
 
-def test_depth_zero_does_not_traverse_relations() -> None:
+def test_seed_only_uses_empty_relation_query() -> None:
     _, symbols = _fixture()
-    plan = _plan("CALLEES", symbols["seed"], depth=0)
+    plan = _plan(None, symbols["seed"])
 
     assert plan.relations == ()
     assert plan.entities == (symbols["seed"],)

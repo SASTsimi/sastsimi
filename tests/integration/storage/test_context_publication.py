@@ -15,6 +15,7 @@ from sastsimi.contracts.static import (
 )
 from sastsimi.ports.context import ContextReadPlan, ContextRetrievalIntent
 from sastsimi.static_analysis.context_retrieval import context_intent_hash
+from sastsimi.verification.context_service import ContextRetrievalService
 from tests.integration.storage.test_intermediate_publication import (
     prepared_policy_parser,
 )
@@ -178,6 +179,8 @@ def test_context_service_binds_used_read_then_commits_its_response(
         relation_query=(),
         limits=limits,
     )
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
     assert request.action_decision_ref == used_ref
     assert request.meta.attempt_id == work.active_attempt_id
     runtime.validator.mark_dispatched(decision)
@@ -214,17 +217,40 @@ def test_context_service_binds_used_read_then_commits_its_response(
         response = CodeContextResponse.model_validate_json(canonical_bytes(data))
     if invalid == "owner":
         h.evidence.identities[service_identity] = RequesterRole.PRO
+    receipt_ref = runtime.unit_of_work.artifacts.commit(
+        runtime.unit_of_work.artifacts.stage_bytes(b"{}", "application/json")
+    )
     if invalid is not None:
         with pytest.raises(
             ValueError, match="CONTEXT_|AUTHORITY_DENIED|WORKSPACE_MISMATCH"
         ):
-            runner.complete(
-                work, service_identity, "CONTEXT_RETRIEVAL_SERVICE", (response,)
+            ContextRetrievalService._complete(
+                runtime=runtime,
+                runner=runner,
+                work=work,
+                service_identity=service_identity,
+                response=response,
+                read_decision_ref=used_ref,
+                request_ref=request_ref,
+                plan_ref=plan_ref,
+                profile_ref=ceiling_ref,
+                receipt_ref=receipt_ref,
+                fragment_refs=(),
             )
         assert runtime.work.get(str(work.work_id)).status == "RUNNING"
         return
-    completed = runner.complete(
-        work, service_identity, "CONTEXT_RETRIEVAL_SERVICE", (response,)
+    completed = ContextRetrievalService._complete(
+        runtime=runtime,
+        runner=runner,
+        work=work,
+        service_identity=service_identity,
+        response=response,
+        read_decision_ref=used_ref,
+        request_ref=request_ref,
+        plan_ref=plan_ref,
+        profile_ref=ceiling_ref,
+        receipt_ref=receipt_ref,
+        fragment_refs=(),
     )
     assert completed.status == "SUCCEEDED"
     assert h.records.get_exact(completed.output_refs[0]) == response

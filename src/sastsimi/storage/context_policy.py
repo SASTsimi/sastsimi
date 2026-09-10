@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from sqlalchemy import Connection, select
 
@@ -21,7 +21,7 @@ from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.context import ContextCeilingProfile
 
 from . import models
-from .codec import reference
+from .codec import REF_ADAPTER, reference
 from .repositories import SQLiteRecordStore
 
 _CEILING_FIELDS = frozenset(
@@ -126,6 +126,37 @@ def derived_context_requests(
                 raise ValueError("CONTEXT_REQUEST_LEDGER_CONFLICT")
             found[str(request.code_request_id)] = request
     return tuple(found[key] for key in sorted(found))
+
+
+def context_dispatch_state(
+    records: object,
+    *,
+    action_id: str,
+    work_id: str,
+    attempt_id: str,
+) -> Literal["PREPARED", "DISPATCHED", "RETURNED"]:
+    """Read the exact durable external-dispatch phase for Context recovery."""
+    if not isinstance(records, SQLiteRecordStore):
+        raise ValueError("CONTEXT_RECOVERY_INVALID")
+    with records.database.engine.connect() as connection:
+        row = (
+            connection.execute(
+                select(models.external_dispatches).where(
+                    models.external_dispatches.c.action_id == action_id,
+                    models.external_dispatches.c.work_id == work_id,
+                    models.external_dispatches.c.attempt_id == attempt_id,
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+    if row is None:
+        raise ValueError("CONTEXT_RECOVERY_INVALID")
+    if row["returned_at"] is not None:
+        return "RETURNED"
+    if row["dispatched_at"] is not None:
+        return "DISPATCHED"
+    return "PREPARED"
 
 
 def require_exact_context_inputs(
@@ -234,7 +265,9 @@ def check_context_response(
         )
     ):
         raise ValueError("CONTEXT_RESPONSE_SCOPE_MISMATCH")
-    matching = []
+    matching: list[
+        tuple[CodeContextRequest, StoredDataRef, ActionRequest, ActionDecision]
+    ] = []
     for payload in connection.execute(
         select(models.action_decisions.c.payload)
     ).scalars():
@@ -292,8 +325,52 @@ def check_context_response(
                 )
             ):
                 raise ValueError("CONTEXT_RESPONSE_REQUEST_MISMATCH")
-            matching.append(request)
+            if not isinstance(ref, StoredDataRef):
+                raise ValueError("CONTEXT_RESPONSE_REQUEST_MISMATCH")
+            matching.append((request, ref, action, used))
     if len(matching) != 1:
         raise ValueError(
             "CONTEXT_RESPONSE_REQUEST_MISMATCH: exact returned request required"
         )
+    request, request_ref, read_action, read_decision = matching[0]
+    plan_refs = tuple(
+        ref for ref in read_action.input_refs if ref not in work.input_refs
+    )
+    if len(plan_refs) != 1 or not isinstance(plan_refs[0], StoredDataRef):
+        raise ValueError("CONTEXT_PLAN_CHANGED")
+    plan_ref = plan_refs[0]
+    required = {
+        *work.input_refs,
+        reference(read_decision),
+        request_ref,
+        plan_ref,
+        *response.code_fragment_refs,
+    }
+    save_actions: list[ActionRequest] = []
+    for request_wire in connection.execute(
+        select(models.records.c.ref).where(models.records.c.kind == "action_request")
+    ).scalars():
+        candidate = records.resolve(
+            connection, REF_ADAPTER.validate_json(request_wire), candidate=True
+        )
+        if (
+            isinstance(candidate, ActionRequest)
+            and candidate.action_type == "SAVE_RESULT"
+            and candidate.requested_by == "CONTEXT_RETRIEVAL_SERVICE"
+            and candidate.work_ref == reference(work)
+            and candidate.candidate_result_ref == reference(response)
+        ):
+            save_actions.append(candidate)
+    if len(save_actions) != 1:
+        raise ValueError("CONTEXT_RESPONSE_RECEIPT_MISMATCH")
+    save = save_actions[0]
+    extras = tuple(ref for ref in save.input_refs if ref not in required)
+    if (
+        len(save.input_refs) != len(set(save.input_refs))
+        or not required.issubset(save.input_refs)
+        or len(extras) != 1
+        or not isinstance(extras[0], StoredDataRef)
+        or extras[0].data_kind != "artifact"
+        or extras[0].record_id is not None
+    ):
+        raise ValueError("CONTEXT_RESPONSE_RECEIPT_MISMATCH")

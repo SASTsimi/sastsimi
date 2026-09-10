@@ -551,12 +551,13 @@ def read_context_files(
     tracked_files: tuple[TrackedFile, ...],
     deadline: MonotonicActionDeadline,
     monotonic_ns: Callable[[], int] = time.monotonic_ns,
+    cancelled: Callable[[], bool] = lambda: False,
     sensitive_names: frozenset[str] = frozenset(
         {".env", ".env.local", "id_rsa", "id_ed25519"}
     ),
 ) -> ContextReadObservation:
     """Read only the authorized, tracked paths with no-follow identity checks."""
-    if deadline.remaining_ms(monotonic_ns()) <= 0:
+    if cancelled() or deadline.remaining_ms(monotonic_ns()) <= 0:
         return ContextReadObservation((), True, 0, (), ())
     root = workspace_root.resolve(strict=True)
     if _link_like(workspace_root) or not root.is_dir():
@@ -573,7 +574,7 @@ def read_context_files(
         if len(fragments) >= plan.requested_limits.max_fragments:
             truncated = True
             break
-        if deadline.remaining_ms(monotonic_ns()) <= 0:
+        if cancelled() or deadline.remaining_ms(monotonic_ns()) <= 0:
             truncated = True
             break
         git_path = str(location.file_path)
@@ -615,7 +616,7 @@ def read_context_files(
             chunks: list[bytes] = []
             unread = opened.st_size
             while unread:
-                if deadline.remaining_ms(monotonic_ns()) <= 0:
+                if cancelled() or deadline.remaining_ms(monotonic_ns()) <= 0:
                     truncated = True
                     break
                 chunk = os.read(descriptor, min(unread, 64 * 1024))

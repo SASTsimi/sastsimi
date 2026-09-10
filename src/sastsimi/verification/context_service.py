@@ -3,21 +3,28 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import re
+import stat
 import time
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Protocol
 
-from sastsimi.contracts.actions import RequesterRole
+from pydantic import TypeAdapter
+
+from sastsimi.contracts.actions import ActionDecision, ActionRequest, RequesterRole
 from sastsimi.contracts.budget import BudgetReservation
-from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.ids import ErrorId, GapId
-from sastsimi.contracts.records import RecordMetadata
+from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
+from sastsimi.contracts.hypothesis import HypothesisProposal
+from sastsimi.contracts.ids import ErrorId, GapId, TransitionCommitId, TransitionId
+from sastsimi.contracts.records import RecordMeta, RecordMetadata
 from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
 from sastsimi.contracts.static import (
     AnalysisError,
+    CodeContextRequest,
     CodeContextResponse,
     CodeLocation,
     CodeWorkspace,
@@ -25,14 +32,24 @@ from sastsimi.contracts.static import (
     DataGap,
     StaticFactBundle,
 )
-from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.contracts.work import (
+    StateTransition,
+    TransitionCommit,
+    WorkExecutionState,
+)
 from sastsimi.ports.context import (
     ChainingContextRecords,
     ContextLineageReaderPort,
     ContextReadPlan,
     ContextRetrievalIntent,
 )
-from sastsimi.ports.dto import MonotonicActionDeadline, StaticActionReceipt, TrackedFile
+from sastsimi.ports.dto import (
+    MonotonicActionDeadline,
+    ProcessReceipt,
+    StaticActionReceipt,
+    TrackedFile,
+    TransitionCommitRequest,
+)
 from sastsimi.ports.workspace import WorkspaceLocatorPort
 from sastsimi.runtime.fake_support import FakeEvidence
 from sastsimi.runtime.services import RuntimeServices
@@ -43,7 +60,68 @@ from sastsimi.static_analysis.context_retrieval import (
     plan_context_retrieval,
     read_context_files,
 )
-from sastsimi.storage.context_policy import resolve_context_ceiling
+from sastsimi.storage.context_policy import (
+    context_dispatch_state,
+    resolve_context_ceiling,
+)
+
+_MAX_RECEIPT_BYTES = 64 * 1024
+_INTEGRITY_SEQUENCE = (
+    "guard-head",
+    "guard-worktree",
+    "guard-index",
+    "guard-manifest",
+)
+
+
+def _file_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_nlink,
+        getattr(value, "st_file_attributes", 0),
+    )
+
+
+def _guarded_read(path: Path, limit: int) -> bytes:
+    descriptor = -1
+    try:
+        before = path.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or getattr(before, "st_file_attributes", 0) & 0x400
+            or before.st_size > limit
+        ):
+            raise ValueError
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(descriptor)
+        if _file_identity(opened) != _file_identity(before):
+            raise ValueError
+        chunks: list[bytes] = []
+        remaining = limit + 1
+        while remaining:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        after = path.lstat()
+        if len(raw) > limit or _file_identity(after) != _file_identity(opened):
+            raise ValueError
+        return raw
+    except (OSError, ValueError) as error:
+        raise ValueError("CONTEXT_RECEIPT_INVALID") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 class TrackedFilesResolver(Protocol):
@@ -89,14 +167,44 @@ class ContextRetrievalService:
     ) -> tuple[CodeContextResponse, StoredDataRef]:
         """Execute one request; never expose a response before COMMITTED."""
         current = self.runtime.work.get(str(work.work_id))
-        if current != work or work.active_attempt_id is None:
+        if (
+            current != work
+            or work.active_attempt_id is None
+            or not isinstance(work.meta, RecordMeta)
+        ):
             raise ValueError("ATTEMPT_NOT_ACTIVE")
+        exact_proposal = self.runtime.unit_of_work.records.get_exact(
+            intent.proposal_ref
+        )
+        exact_bundle = self.runtime.unit_of_work.records.get_exact(intent.bundle_ref)
+        run_state = self.runtime.budget_registry.current_state(
+            str(work.meta.analysis_id)
+        )
+        current_bundles = self.runtime.queries.current_records(
+            str(work.meta.analysis_id), "static_fact_bundle"
+        )
+        current_proposals = self.runtime.queries.current_records(
+            str(work.meta.analysis_id), "hypothesis_proposal"
+        )
+        if (
+            not isinstance(exact_proposal, HypothesisProposal)
+            or exact_bundle != bundle
+            or reference(bundle) != intent.bundle_ref
+            or bundle not in current_bundles
+            or exact_proposal not in current_proposals
+            or run_state.workspace_ref != reference(workspace)
+            or exact_proposal.meta.hypothesis_id != work.meta.hypothesis_id
+        ):
+            raise ValueError("CONTEXT_INPUT_MISMATCH")
         if (
             work.input_refs.count(intent.proposal_ref) != 1
             or work.input_refs.count(intent.bundle_ref) != 1
         ):
             raise ValueError("CONTEXT_INPUT_MISMATCH")
         ceilings = resolve_context_ceiling(self.runtime.unit_of_work.artifacts, work)
+        self._require_request_capacity(
+            work, ceilings.limits.max_requests_per_hypothesis
+        )
         lineage = self._lineage(intent)
         plan = plan_context_retrieval(
             intent=intent,
@@ -166,15 +274,20 @@ class ContextRetrievalService:
         self._require_unchanged(
             intent, bundle, workspace, work, ceilings, lineage, plan_raw
         )
-        await self.workspace_locator.assert_unchanged(workspace, deadline)
+        integrity_receipts = list(
+            await self.workspace_locator.assert_unchanged(workspace, deadline)
+        )
         observation = read_context_files(
             plan=plan,
             workspace_root=self.workspace_locator.root_for(workspace),
             tracked_files=self.tracked_files_for(workspace),
             deadline=deadline,
             monotonic_ns=self.monotonic_ns,
+            cancelled=lambda: self.runtime.work.get(str(work.work_id)) != work,
         )
-        await self.workspace_locator.assert_unchanged(workspace, deadline)
+        integrity_receipts.extend(
+            await self.workspace_locator.assert_unchanged(workspace, deadline)
+        )
         elapsed_ms = max(0, (self.monotonic_ns() - started_ns) // 1_000_000)
         fragment_refs = tuple(
             self.runtime.unit_of_work.artifacts.commit(
@@ -218,7 +331,7 @@ class ContextRetrievalService:
             or not isinstance(used_ref, StoredDataRef)
         ):
             raise ValueError("CONTEXT_SCOPE_MISMATCH")
-        self._write_receipt(
+        receipt, receipt_raw = self._write_receipt(
             action_id=str(action.action_id),
             action_ref=action_ref,
             work=work,
@@ -230,14 +343,48 @@ class ContextRetrievalService:
             response=response,
             candidate=candidate,
             elapsed_ms=elapsed_ms,
+            process_receipts=tuple(integrity_receipts),
         )
+        recovered, recovered_response, recovered_raw = self._read_receipt(
+            action_ref=action_ref,
+            work=work,
+            attempt_id=str(work.active_attempt_id),
+            decision_ref=used_ref,
+            request_ref=request_ref,
+            plan_ref=plan_ref,
+            plan=plan,
+            max_bytes=ceilings.limits.max_bytes,
+        )
+        if (
+            recovered != receipt
+            or recovered_response != response
+            or recovered_raw != receipt_raw
+        ):
+            raise ValueError("CONTEXT_RECEIPT_INVALID")
+        receipt_ref = self.runtime.unit_of_work.artifacts.commit(
+            self.runtime.unit_of_work.artifacts.stage_bytes(
+                receipt_raw, "application/json"
+            )
+        )
+        if receipt_ref.content_hash != hashlib.sha256(receipt_raw).hexdigest():
+            raise ValueError("CONTEXT_RECEIPT_INVALID")
         self.checkpoint("RECEIPT_DURABLE")
         self.runtime.validator.mark_returned(decision_ref)
         self.checkpoint("RETURNED")
         self._account_once(reservation, elapsed_ms)
         self.checkpoint("ACCOUNTED")
-        completed = self.runner.complete(
-            work, service_identity, "CONTEXT_RETRIEVAL_SERVICE", (response,)
+        completed = self._complete(
+            runtime=self.runtime,
+            runner=self.runner,
+            work=work,
+            service_identity=service_identity,
+            response=response,
+            read_decision_ref=used_ref,
+            request_ref=request_ref,
+            plan_ref=plan_ref,
+            profile_ref=plan.ceiling_profile_ref,
+            receipt_ref=receipt_ref,
+            fragment_refs=fragment_refs,
         )
         output_ref = completed.output_refs[0]
         if not isinstance(output_ref, StoredDataRef) or output_ref != reference(
@@ -245,6 +392,220 @@ class ContextRetrievalService:
         ):
             raise ValueError("CONTEXT_RESPONSE_COMMIT_MISMATCH")
         return response, output_ref
+
+    @staticmethod
+    def _complete(
+        *,
+        runtime: RuntimeServices,
+        runner: WorkflowRunner,
+        work: WorkExecutionState,
+        service_identity: BudgetScopeRef,
+        response: CodeContextResponse,
+        read_decision_ref: StoredDataRef,
+        request_ref: StoredDataRef,
+        plan_ref: StoredDataRef,
+        profile_ref: StoredDataRef,
+        receipt_ref: StoredDataRef,
+        fragment_refs: tuple[StoredDataRef, ...],
+    ) -> WorkExecutionState:
+        """Commit the exact returned/read/receipt closure in one SAVE_RESULT."""
+        records = runtime.unit_of_work.records
+        response_ref = records.stage_record(response)
+        inputs = tuple(
+            dict.fromkeys(
+                (
+                    *work.input_refs,
+                    read_decision_ref,
+                    request_ref,
+                    plan_ref,
+                    profile_ref,
+                    receipt_ref,
+                    *fragment_refs,
+                )
+            )
+        )
+        save = runner.action(
+            work,
+            service_identity,
+            "CONTEXT_RETRIEVAL_SERVICE",
+            "SAVE_RESULT",
+            input_refs=inputs,
+            result_kind=response_ref.data_kind,
+            candidate_result_ref=response_ref,
+            reason="Publish one verified Context response closure",
+        )
+        decision_ref = runner.authorize(work, save)
+        transition = StateTransition.model_validate_json(
+            canonical_bytes(
+                {
+                    "meta": runner.metadata(
+                        work.meta,
+                        "state_transition",
+                        attempt_id=work.active_attempt_id,
+                    ),
+                    "transition_id": runner.ids.new(TransitionId),
+                    "work_id": work.work_id,
+                    "action_decision_ref": decision_ref,
+                    "from_status": work.status,
+                    "to_status": "SUCCEEDED",
+                    "expected_state_version": work.state_version,
+                    "new_state_version": work.state_version + 1,
+                    "attempt_id": work.active_attempt_id,
+                    "cause": "COMPLETED",
+                    "output_refs": (response_ref,),
+                    "gap_ids": tuple(str(item.gap_id) for item in response.gaps),
+                    "error_ids": tuple(str(item.error_id) for item in response.errors),
+                    "dedupe_key": content_hash(
+                        (work.work_id, work.state_version, response_ref)
+                    ),
+                    "created_at": runner.clock.now(),
+                }
+            )
+        )
+        commit = TransitionCommit.model_validate_json(
+            canonical_bytes(
+                {
+                    "meta": runner.metadata(
+                        work.meta,
+                        "transition_commit",
+                        attempt_id=work.active_attempt_id,
+                    ),
+                    "transition_commit_id": runner.ids.new(TransitionCommitId),
+                    "work_id": work.work_id,
+                    "transition_ref": records.stage_record(transition),
+                    "expected_state_version": work.state_version,
+                    "target_state_version": work.state_version + 1,
+                    "attempt_id": work.active_attempt_id,
+                    "target_status": "SUCCEEDED",
+                    "output_refs": (response_ref,),
+                    "gap_ids": transition.gap_ids,
+                    "error_ids": transition.error_ids,
+                    "state": "PREPARED",
+                    "prepared_at": runner.clock.now(),
+                    "committed_at": None,
+                    "abort_reason": None,
+                }
+            )
+        )
+        runtime.transitions.commit(
+            TransitionCommitRequest(transition, commit, (response,))
+        )
+        return runtime.work.get(str(work.work_id))
+
+    def recover_after_receipt(
+        self,
+        *,
+        work: WorkExecutionState,
+        action_ref: StoredDataRef,
+        issued_decision_ref: StoredDataRef,
+        claimed_decision_ref: StoredDataRef,
+        reservation_ref: StoredDataRef,
+        request_ref: StoredDataRef,
+        plan_ref: StoredDataRef,
+        service_identity: BudgetScopeRef,
+    ) -> tuple[CodeContextResponse, StoredDataRef]:
+        """Resume a complete receipt without another integrity or source read."""
+        if work.active_attempt_id is None or not isinstance(work.meta, RecordMeta):
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+        records = self.runtime.unit_of_work.records
+        action = records.get_exact(action_ref)
+        issued = records.get_exact(issued_decision_ref)
+        claimed = records.get_exact(claimed_decision_ref)
+        reservation = records.get_exact(reservation_ref)
+        if (
+            not isinstance(action, ActionRequest)
+            or not isinstance(issued, ActionDecision)
+            or not isinstance(claimed, ActionDecision)
+            or not isinstance(reservation, BudgetReservation)
+            or action.work_ref != reference(work)
+            or issued.action_ref != action_ref
+            or claimed.action_ref != action_ref
+            or claimed.use_status != "USED"
+            or reservation.action_ref != action_ref
+            or reservation.work_ref != reference(work)
+        ):
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+        ceiling = resolve_context_ceiling(self.runtime.unit_of_work.artifacts, work)
+        with self.runtime.unit_of_work.artifacts.open_verified(plan_ref) as stream:
+            plan_raw = stream.read(ceiling.limits.max_bytes + 1)
+        if len(plan_raw) > ceiling.limits.max_bytes:
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+        from sastsimi.static_analysis.context_retrieval import decode_context_read_plan
+
+        plan = decode_context_read_plan(plan_raw)
+        if (
+            plan_ref.content_hash != hashlib.sha256(plan_raw).hexdigest()
+            or plan.ceiling_profile_ref != ceiling.ref
+        ):
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+        receipt, response, receipt_raw = self._read_receipt(
+            action_ref=action_ref,
+            work=work,
+            attempt_id=str(work.active_attempt_id),
+            decision_ref=claimed_decision_ref,
+            request_ref=request_ref,
+            plan_ref=plan_ref,
+            plan=plan,
+            max_bytes=ceiling.limits.max_bytes,
+        )
+        receipt_ref = self.runtime.unit_of_work.artifacts.commit(
+            self.runtime.unit_of_work.artifacts.stage_bytes(
+                receipt_raw, "application/json"
+            )
+        )
+        current = self.runtime.work.get(str(work.work_id))
+        response_ref = reference(response)
+        if current.status == "SUCCEEDED":
+            if current.output_refs != (response_ref,):
+                raise ValueError("CONTEXT_RECOVERY_INVALID")
+            if not isinstance(response_ref, StoredDataRef):
+                raise ValueError("CONTEXT_RECOVERY_INVALID")
+            return response, response_ref
+        if current != work:
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+        phase = context_dispatch_state(
+            self.runtime.unit_of_work.records,
+            action_id=str(action.action_id),
+            work_id=str(work.work_id),
+            attempt_id=str(work.active_attempt_id),
+        )
+        if phase == "PREPARED":
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+        if phase == "DISPATCHED":
+            self.runtime.validator.mark_returned(issued_decision_ref)
+        self._account_once(reservation, receipt.elapsed_ms)
+        completed = self._complete(
+            runtime=self.runtime,
+            runner=self.runner,
+            work=work,
+            service_identity=service_identity,
+            response=response,
+            read_decision_ref=claimed_decision_ref,
+            request_ref=request_ref,
+            plan_ref=plan_ref,
+            profile_ref=ceiling.ref,
+            receipt_ref=receipt_ref,
+            fragment_refs=response.code_fragment_refs,
+        )
+        output_ref = completed.output_refs[0]
+        if not isinstance(output_ref, StoredDataRef):
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+        return response, output_ref
+
+    def _require_request_capacity(self, work: WorkExecutionState, maximum: int) -> None:
+        if not isinstance(work.meta, RecordMeta):
+            raise ValueError("CONTEXT_SCOPE_MISMATCH")
+        requests = tuple(
+            item
+            for item in self.runtime.queries.published_records(
+                str(work.meta.analysis_id)
+            )
+            if isinstance(item, CodeContextRequest)
+            and item.meta.hypothesis_id == work.meta.hypothesis_id
+        )
+        request_ids = {str(item.code_request_id) for item in requests}
+        if len(request_ids) >= maximum:
+            raise ValueError("CONTEXT_REQUEST_LIMIT_EXCEEDED")
 
     def _lineage(self, intent: ContextRetrievalIntent) -> ChainingContextRecords | None:
         records = self.runtime.unit_of_work.records
@@ -387,15 +748,62 @@ class ContextRetrievalService:
         response: CodeContextResponse,
         candidate: bytes,
         elapsed_ms: int,
-    ) -> Path:
-        root = self.receipt_root.resolve()
-        root.mkdir(parents=True, exist_ok=True)
-        if self.receipt_root.is_symlink() or not root.is_dir():
+        process_receipts: tuple[ProcessReceipt, ...],
+    ) -> tuple[StaticActionReceipt, bytes]:
+        self.receipt_root.mkdir(parents=True, exist_ok=True)
+        if self.receipt_root.is_symlink():
             raise ValueError("CONTEXT_RECEIPT_INVALID")
+        root = self.receipt_root.resolve(strict=True)
+        if not root.is_dir():
+            raise ValueError("CONTEXT_RECEIPT_INVALID")
+        self._validate_process_receipts(action_id, process_receipts)
         prefix = hashlib.sha256(str(action_ref.record_id).encode()).hexdigest()[:24]
         observation_name = prefix + ".context.json"
         self._atomic_write(root / observation_name, candidate)
-        fingerprint = hashlib.sha256(
+        process_hashes: list[str] = []
+        for process_receipt in process_receipts:
+            raw = canonical_bytes(asdict(process_receipt))
+            digest = hashlib.sha256(raw).hexdigest()
+            self._atomic_write(root / f"{digest}.process.json", raw)
+            process_hashes.append(digest)
+        fingerprint = self._input_fingerprint(
+            action_ref=action_ref,
+            work=work,
+            attempt_id=attempt_id,
+            decision_ref=decision_ref,
+            request_ref=request_ref,
+            plan_ref=plan_ref,
+            plan=plan,
+        )
+        receipt = StaticActionReceipt(
+            action_id=action_id,
+            attempt_id=attempt_id,
+            operation_kind="CONTEXT_READ",
+            input_fingerprint=fingerprint,
+            process_receipt_hashes=tuple(process_hashes),
+            observation_name=observation_name,
+            observation_size=len(candidate),
+            observation_sha256=hashlib.sha256(candidate).hexdigest(),
+            elapsed_ms=elapsed_ms,
+        )
+        receipt_raw = canonical_bytes(asdict(receipt))
+        self._atomic_write(root / (prefix + ".receipt.json"), receipt_raw)
+        if response.returned_fragment_count != len(response.code_fragment_refs):
+            raise ValueError("CONTEXT_RECEIPT_INVALID")
+        return receipt, receipt_raw
+
+    @staticmethod
+    def _input_fingerprint(
+        *,
+        action_ref: StoredDataRef,
+        work: WorkExecutionState,
+        attempt_id: str,
+        decision_ref: StoredDataRef,
+        request_ref: StoredDataRef,
+        plan_ref: StoredDataRef,
+        plan: ContextReadPlan,
+    ) -> str:
+        return hashlib.sha256(
             canonical_bytes(
                 (
                     "context_read_v1",
@@ -413,31 +821,161 @@ class ContextRetrievalService:
                 )
             )
         ).hexdigest()
-        receipt = StaticActionReceipt(
-            action_id=action_id,
-            attempt_id=attempt_id,
-            operation_kind="CONTEXT_READ",
-            input_fingerprint=fingerprint,
-            process_receipt_hashes=(),
-            observation_name=observation_name,
-            observation_size=len(candidate),
-            observation_sha256=hashlib.sha256(candidate).hexdigest(),
-            elapsed_ms=elapsed_ms,
-        )
-        self._atomic_write(
-            root / (prefix + ".receipt.json"), canonical_bytes(asdict(receipt))
-        )
-        if response.returned_fragment_count != len(response.code_fragment_refs):
+
+    def _read_receipt(
+        self,
+        *,
+        action_ref: StoredDataRef,
+        work: WorkExecutionState,
+        attempt_id: str,
+        decision_ref: StoredDataRef,
+        request_ref: StoredDataRef,
+        plan_ref: StoredDataRef,
+        plan: ContextReadPlan,
+        max_bytes: int,
+    ) -> tuple[StaticActionReceipt, CodeContextResponse, bytes]:
+        try:
+            root = self.receipt_root.resolve(strict=True)
+            if self.receipt_root.is_symlink() or not root.is_dir():
+                raise ValueError
+            action = self.runtime.unit_of_work.records.get_exact(action_ref)
+            if not isinstance(action, ActionRequest):
+                raise ValueError
+            prefix = hashlib.sha256(str(action_ref.record_id).encode()).hexdigest()[:24]
+            raw = _guarded_read(root / (prefix + ".receipt.json"), _MAX_RECEIPT_BYTES)
+            value = json.loads(raw)
+            if not isinstance(value, dict) or set(value) != set(
+                StaticActionReceipt.__dataclass_fields__
+            ):
+                raise ValueError
+            receipt = TypeAdapter(StaticActionReceipt).validate_python(value)
+            expected_fingerprint = self._input_fingerprint(
+                action_ref=action_ref,
+                work=work,
+                attempt_id=attempt_id,
+                decision_ref=decision_ref,
+                request_ref=request_ref,
+                plan_ref=plan_ref,
+                plan=plan,
+            )
+            if (
+                canonical_bytes(asdict(receipt)) != raw
+                or receipt.action_id != str(action.action_id)
+                or receipt.attempt_id != attempt_id
+                or receipt.operation_kind != "CONTEXT_READ"
+                or receipt.input_fingerprint != expected_fingerprint
+                or receipt.observation_name != prefix + ".context.json"
+                or receipt.observation_size > max_bytes
+                or receipt.lease_id is not None
+            ):
+                raise ValueError
+            candidate = _guarded_read(root / receipt.observation_name, max_bytes)
+            if (
+                len(candidate) != receipt.observation_size
+                or hashlib.sha256(candidate).hexdigest() != receipt.observation_sha256
+            ):
+                raise ValueError
+            response = CodeContextResponse.model_validate_json(candidate)
+            if canonical_bytes(response) != candidate:
+                raise ValueError
+            process_receipts: list[ProcessReceipt] = []
+            for digest in receipt.process_receipt_hashes:
+                if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                    raise ValueError
+                process_raw = _guarded_read(
+                    root / f"{digest}.process.json", _MAX_RECEIPT_BYTES
+                )
+                if hashlib.sha256(process_raw).hexdigest() != digest:
+                    raise ValueError
+                process_value = json.loads(process_raw)
+                if not isinstance(process_value, dict) or set(process_value) != set(
+                    ProcessReceipt.__dataclass_fields__
+                ):
+                    raise ValueError
+                process_receipt = TypeAdapter(ProcessReceipt).validate_python(
+                    process_value
+                )
+                if canonical_bytes(asdict(process_receipt)) != process_raw:
+                    raise ValueError
+                process_receipts.append(process_receipt)
+            self._validate_process_receipts(
+                str(action.action_id), tuple(process_receipts)
+            )
+            request = self.runtime.unit_of_work.records.get_exact(request_ref)
+            if (
+                not isinstance(request, CodeContextRequest)
+                or response.code_request_id != request.code_request_id
+                or response.meta.attempt_id != work.active_attempt_id
+                or request.meta.attempt_id != work.active_attempt_id
+                or any(
+                    getattr(response.meta, name) != getattr(work.meta, name)
+                    or getattr(request.meta, name) != getattr(work.meta, name)
+                    for name in (
+                        "analysis_id",
+                        "workspace_id",
+                        "commit_id",
+                        "hypothesis_id",
+                    )
+                )
+            ):
+                raise ValueError
+            returned_bytes = 0
+            for fragment_ref in response.code_fragment_refs:
+                if (
+                    fragment_ref.record_id is not None
+                    or fragment_ref.workspace_id != response.meta.workspace_id
+                    or fragment_ref.commit_id != response.meta.commit_id
+                ):
+                    raise ValueError
+                with self.runtime.unit_of_work.artifacts.open_verified(
+                    fragment_ref
+                ) as stream:
+                    fragment = stream.read(max_bytes + 1)
+                if len(fragment) > max_bytes:
+                    raise ValueError
+                returned_bytes += len(fragment)
+            if (
+                response.returned_fragment_count != len(response.code_fragment_refs)
+                or response.returned_bytes != returned_bytes
+                or returned_bytes > max_bytes
+            ):
+                raise ValueError
+            return receipt, response, raw
+        except (
+            AttributeError,
+            OSError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as error:
+            raise ValueError("CONTEXT_RECEIPT_INVALID") from error
+
+    @staticmethod
+    def _validate_process_receipts(
+        action_id: str, process_receipts: tuple[ProcessReceipt, ...]
+    ) -> None:
+        kinds = tuple(item.command_kind for item in process_receipts)
+        if kinds != _INTEGRITY_SEQUENCE + _INTEGRITY_SEQUENCE:
             raise ValueError("CONTEXT_RECEIPT_INVALID")
-        return root / (prefix + ".receipt.json")
+        for item in process_receipts:
+            if (
+                item.action_id != action_id
+                or item.attempt_id != action_id
+                or not item.invocation_id.startswith(action_id + "-guard-")
+                or item.outcome != "SUCCEEDED"
+                or item.return_code != 0
+                or not re.fullmatch(r"[0-9a-f]{64}", item.command_fingerprint)
+                or not re.fullmatch(r"[0-9a-f]{64}", item.stdout_sha256)
+                or not re.fullmatch(r"[0-9a-f]{64}", item.stderr_sha256)
+                or Path(item.stdout_name).name != item.stdout_name
+                or Path(item.stderr_name).name != item.stderr_name
+            ):
+                raise ValueError("CONTEXT_RECEIPT_INVALID")
 
     @staticmethod
     def _atomic_write(path: Path, data: bytes) -> None:
         if path.exists() or path.is_symlink():
-            try:
-                existing = path.read_bytes()
-            except OSError as error:
-                raise ValueError("CONTEXT_RECEIPT_INVALID") from error
+            existing = _guarded_read(path, max(len(data), _MAX_RECEIPT_BYTES))
             if existing != data:
                 raise ValueError("CONTEXT_RECEIPT_INVALID")
             return
@@ -445,7 +983,9 @@ class ContextRetrievalService:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
         descriptor = os.open(temporary, flags, 0o600)
         try:
-            os.write(descriptor, data)
+            written = os.write(descriptor, data)
+            if written != len(data):
+                raise ValueError("CONTEXT_RECEIPT_INVALID")
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
@@ -578,8 +1118,35 @@ def retrieve_fake_context(
             )
         )
     )
-    completed = runner.complete(
-        work, service_identity, "CONTEXT_RETRIEVAL_SERVICE", (response,)
+    request_ref = reference(request)
+    if not isinstance(used, StoredDataRef) or not isinstance(
+        request_ref, StoredDataRef
+    ):
+        raise ValueError("FAKE_CONTEXT_OUTPUT_MISMATCH")
+    receipt_ref = runtime.unit_of_work.artifacts.commit(
+        runtime.unit_of_work.artifacts.stage_bytes(
+            canonical_bytes(
+                {
+                    "kind": "fake_context_receipt",
+                    "action_id": str(action.action_id),
+                    "attempt_id": str(work.active_attempt_id),
+                }
+            ),
+            "application/json",
+        )
+    )
+    completed = ContextRetrievalService._complete(
+        runtime=runtime,
+        runner=runner,
+        work=work,
+        service_identity=service_identity,
+        response=response,
+        read_decision_ref=used,
+        request_ref=request_ref,
+        plan_ref=plan_ref,
+        profile_ref=ceiling_ref,
+        receipt_ref=receipt_ref,
+        fragment_refs=(fragment_ref,),
     )
     output_ref = completed.output_refs[0]
     if not isinstance(output_ref, StoredDataRef) or output_ref != reference(response):
