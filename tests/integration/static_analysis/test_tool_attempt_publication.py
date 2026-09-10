@@ -104,6 +104,21 @@ def test_only_explicit_no_spawn_skip_may_have_no_process_receipt() -> None:
     with pytest.raises(ValueError, match="STATIC_PROCESS_RECEIPT_INVALID"):
         StaticExternalRunner._validate_tool_process_presence(skipped, ())
 
+    vague = cast(
+        StaticToolObservation,
+        SimpleNamespace(
+            status="SKIPPED",
+            raw_output=None,
+            symbols=(),
+            facts=(),
+            relations=(),
+            errors=(),
+            gaps=(SimpleNamespace(code="STATIC_COVERAGE_MISSING"),),
+        ),
+    )
+    with pytest.raises(ValueError, match="STATIC_PROCESS_RECEIPT_INVALID"):
+        StaticExternalRunner._validate_tool_process_presence(vague, (), no_spawn=True)
+
 
 def test_nonexecuted_rules_preserve_exact_trusted_selection() -> None:
     catalog_ref = StoredDataRef.model_validate(ref("rule_catalog"))

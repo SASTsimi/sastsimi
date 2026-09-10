@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from sqlalchemy import select
 
 from sastsimi.bootstrap import build_runtime
 from sastsimi.contracts.actions import ActionRequest, CheckType, RequesterRole
@@ -18,6 +19,7 @@ from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
 from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.orchestration.static_external_runner import (
+    StaticDispatchState,
     StaticExternalRunner,
     _guarded_read,
 )
@@ -28,6 +30,8 @@ from sastsimi.ports.dto import (
     StaticToolRequest,
 )
 from sastsimi.runtime.workflow_runner import WorkflowRunner
+from sastsimi.storage import models
+from sastsimi.storage.codec import REF_ADAPTER
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import meta, ref
 from tests.integration.runtime_support import Harness
@@ -210,6 +214,41 @@ def _runtime_request(
     )
 
 
+def _dispatch_reader(runner: WorkflowRunner) -> Any:
+    def read(action_id: str) -> StaticDispatchState | None:
+        records = cast(Any, runner.runtime.unit_of_work.records)
+        with records.database.engine.connect() as connection:
+            row = (
+                connection.execute(
+                    select(models.external_dispatches).where(
+                        models.external_dispatches.c.action_id == action_id
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            return None
+        state = (
+            "RETURNED"
+            if row["returned_at"] is not None
+            else "DISPATCHED"
+            if row["dispatched_at"] is not None
+            else "PREPARED"
+        )
+        return StaticDispatchState(
+            action_id=row["action_id"],
+            work_id=row["work_id"],
+            attempt_id=row["attempt_id"],
+            decision_ref=REF_ADAPTER.validate_json(row["decision_ref"]),
+            reservation_ref=REF_ADAPTER.validate_json(row["reservation_ref"]),
+            state=cast(Any, state),
+            idempotency_key=row["idempotency_key"],
+        )
+
+    return read
+
+
 def _process(action_id: str, attempt_id: str, sequence: int) -> ProcessReceipt:
     return ProcessReceipt(
         action_id=action_id,
@@ -370,6 +409,7 @@ async def test_complete_static_receipt_recovers_without_rerunning_tool(
         cast(Any, None),
         checkpoint=checkpoint,
         static_process_receipts=lambda _action, _attempt: (process,),
+        static_dispatch_state=_dispatch_reader(runner),
     )
     with pytest.raises(_Crash):
         await service.invoke(request, profile, operation)
@@ -382,6 +422,51 @@ async def test_complete_static_receipt_recovers_without_rerunning_tool(
     work = runner.runtime.unit_of_work.records.get_exact(request.action.work_ref)
     assert isinstance(work, WorkExecutionState)
     assert runner.runtime.work.get(str(work.work_id)).status == "SUCCEEDED"
+
+
+@pytest.mark.asyncio
+async def test_prepared_static_dispatch_resumes_exact_attempt_without_prior_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, runner, request, profile = _runtime_request(tmp_path)
+    assert isinstance(request.action.meta, RecordMeta)
+    assert request.action.meta.attempt_id is not None
+    calls = 0
+    process = _process(
+        str(request.action.action_id), str(request.action.meta.attempt_id), 0
+    )
+
+    async def operation(_deadline: object) -> StaticToolObservation:
+        nonlocal calls
+        calls += 1
+        return _observation()
+
+    authorization = runner.runtime.external.authorization
+    original = authorization.mark_dispatched
+
+    def crash_before_dispatch(*_values: object, **_named: object) -> None:
+        raise _Crash
+
+    monkeypatch.setattr(authorization, "mark_dispatched", crash_before_dispatch)
+    service = StaticExternalRunner(
+        runner,
+        tmp_path / "static-receipts",
+        cast(Any, None),
+        cast(Any, None),
+        static_process_receipts=lambda _action, _attempt: (
+            () if calls == 0 else (process,)
+        ),
+        static_dispatch_state=_dispatch_reader(runner),
+    )
+    with pytest.raises(_Crash):
+        await service.invoke(request, profile, operation)
+    assert calls == 0
+
+    monkeypatch.setattr(authorization, "mark_dispatched", original)
+    recovered = await service.recover_tool(request, profile, operation)
+
+    assert recovered.status == "SUCCEEDED"
+    assert calls == 1
 
 
 @pytest.mark.asyncio
@@ -404,6 +489,7 @@ async def test_missing_then_late_static_receipt_blocks_and_is_quarantined(
         cast(Any, None),
         cast(Any, None),
         static_process_receipts=lambda _action, _attempt: (),
+        static_dispatch_state=_dispatch_reader(runner),
     )
     with pytest.raises(_Crash):
         await service.invoke(request, profile, crash_before_receipt)

@@ -249,7 +249,7 @@ class StaticToolCoordinator:
                 git_path(path)
             except ValueError as error:
                 raise ValueError("STATIC_TOOL_OBSERVATION_INVALID") from error
-        locations = (
+        evidence_locations = (
             tuple(item.location for item in observation.symbols)
             + tuple(item.location for item in observation.facts)
             + tuple(
@@ -257,14 +257,30 @@ class StaticToolCoordinator:
                 for item in observation.relations
                 for location in (item.from_location, item.to_location)
             )
-            + tuple(
-                location
-                for item in observation.gaps
-                for location in item.affected_locations
-            )
+        )
+        gap_locations = tuple(
+            location
+            for item in observation.gaps
+            for location in item.affected_locations
         )
         try:
-            for location in locations:
+            for location in evidence_locations:
+                git_path(location.file_path)
+                if location.file_path not in observation.analyzed_paths:
+                    raise ValueError
+                if (
+                    location.start_line <= 0
+                    or location.end_line < location.start_line
+                    or (location.start_column is None) != (location.end_column is None)
+                    or (
+                        location.start_line == location.end_line
+                        and location.start_column is not None
+                        and location.end_column is not None
+                        and location.end_column <= location.start_column
+                    )
+                ):
+                    raise ValueError
+            for location in gap_locations:
                 git_path(location.file_path)
                 if location.file_path not in requested_paths:
                     raise ValueError

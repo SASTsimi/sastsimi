@@ -266,3 +266,37 @@ def test_observation_paths_must_exactly_partition_requested_files(
     )
     with pytest.raises(ValueError, match="STATIC_TOOL_OBSERVATION_INVALID"):
         StaticToolCoordinator._validate_observation(profile, omitted, ("src/app.py",))
+
+
+def test_usable_evidence_cannot_point_into_skipped_partition(tmp_path: Path) -> None:
+    executable = tmp_path / "fixture-python"
+    executable.write_bytes(b"bounded fixture")
+    profile = _profile(executable)
+    skipped = CandidateLocation("src/skipped.py", 1, None, 1, None)
+    observation = StaticToolObservation(
+        tool_name="AST",
+        tool_version="3.12",
+        tool_kind="STRUCTURE",
+        status="PARTIAL",
+        raw_output=b"{}",
+        raw_media_type="application/json",
+        analyzed_paths=("src/app.py",),
+        skipped_paths=("src/skipped.py",),
+        analyzed_languages=("python",),
+        skipped_languages=("python",),
+        notes=(),
+        selected_rule_packs=(),
+        rules=(),
+        symbols=(),
+        facts=(),
+        relations=(CandidateRelation("r", "CALL", None, skipped, None, skipped, None),),
+        gaps=(),
+        errors=(),
+        started_monotonic_ms=1,
+        finished_monotonic_ms=2,
+    )
+
+    with pytest.raises(ValueError, match="STATIC_TOOL_OBSERVATION_INVALID"):
+        StaticToolCoordinator._validate_observation(
+            profile, observation, ("src/app.py", "src/skipped.py")
+        )

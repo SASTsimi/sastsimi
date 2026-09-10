@@ -11,7 +11,7 @@ import re
 import stat
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Literal, Protocol, cast
 
@@ -69,6 +69,22 @@ type StaticProcessReceiptReader = Callable[[str, str], Sequence[ProcessReceipt] 
 type StaticCancellationObservationReader = Callable[
     [StaticToolRequest, StaticToolProfile], StaticToolObservation | None
 ]
+
+
+@dataclass(frozen=True)
+class StaticDispatchState:
+    """Trusted exact projection of the existing durable external dispatch."""
+
+    action_id: str
+    work_id: str
+    attempt_id: str
+    decision_ref: RecordRef
+    reservation_ref: RecordRef
+    state: Literal["PREPARED", "DISPATCHED", "RETURNED"]
+    idempotency_key: str | None
+
+
+type StaticDispatchStateReader = Callable[[str], StaticDispatchState | None]
 
 _MAX_RECEIPT_BYTES = 64 * 1024
 _MAX_OBSERVATION_BYTES = 4 * 1024 * 1024
@@ -181,6 +197,7 @@ class StaticExternalRunner:
         static_process_receipts: StaticProcessReceiptReader | None = None,
         static_cancellation_observation: StaticCancellationObservationReader
         | None = None,
+        static_dispatch_state: StaticDispatchStateReader | None = None,
     ) -> None:
         self.runner = runner
         self.receipt_root = receipt_root
@@ -193,6 +210,7 @@ class StaticExternalRunner:
         self.static_publisher = static_publisher or StaticAttemptPublisher(runner)
         self.static_process_receipts = static_process_receipts
         self.static_cancellation_observation = static_cancellation_observation
+        self.static_dispatch_state = static_dispatch_state
 
     async def invoke(
         self,
@@ -342,7 +360,20 @@ class StaticExternalRunner:
             )
             self.runner.runtime.validator.mark_returned(decision_ref)
         except Exception:
-            if not self._tool_receipt_path(str(action.action_id)).is_file():
+            dispatch = self._read_dispatch_state(
+                str(action.action_id),
+                work,
+                decision_ref,
+                reference(reservation),
+                required=False,
+            )
+            if (
+                dispatch is not None
+                and dispatch.state == "DISPATCHED"
+                or dispatch is None
+                and self.static_dispatch_state is None
+                and not self._tool_receipt_path(str(action.action_id)).is_file()
+            ):
                 self._block_uncertain(work)
             raise
         self.checkpoint("STATIC_RETURNED")
@@ -353,7 +384,11 @@ class StaticExternalRunner:
         return self.static_publisher.publish(request, observation).result
 
     async def recover_tool(
-        self, request: StaticToolRequest, profile: StaticToolProfile
+        self,
+        request: StaticToolRequest,
+        profile: StaticToolProfile,
+        operation: Callable[[MonotonicActionDeadline], Awaitable[StaticToolObservation]]
+        | None = None,
     ) -> ToolRunResult:
         """Recover a complete static receipt without invoking the tool again."""
         action = request.action
@@ -391,6 +426,35 @@ class StaticExternalRunner:
             ):
                 raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
             validate_static_tool_profile_binding(request, work, decision, profile)
+            dispatch = self._read_dispatch_state(
+                str(action.action_id),
+                work,
+                decision_ref,
+                reference(reservation),
+                required=True,
+            )
+            assert dispatch is not None
+            if dispatch.state == "PREPARED":
+                if self._tool_receipt_path(str(action.action_id)).exists():
+                    self._quarantine_tool_receipt(str(action.action_id))
+                    raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
+                if self.static_process_receipts is None:
+                    raise ValueError("STATIC_PROCESS_RECEIPT_READER_REQUIRED")
+                before_spawn = self.static_process_receipts(
+                    str(action.action_id), str(action.meta.attempt_id)
+                )
+                if before_spawn is None or tuple(before_spawn):
+                    raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
+                if operation is None:
+                    raise ValueError("STATIC_TOOL_RECOVERY_RESUME_REQUIRED")
+                return await self._resume_prepared_tool(
+                    request,
+                    profile,
+                    work,
+                    decision_ref,
+                    reservation,
+                    operation,
+                )
             receipt, observation, _ = self._read_tool_receipt(
                 request, decision_ref, profile
             )
@@ -398,14 +462,103 @@ class StaticExternalRunner:
             self._block_uncertain(work)
             self._quarantine_tool_receipt(str(action.action_id))
             raise ValueError("STATIC_TOOL_RECOVERY_AMBIGUOUS") from error
-        try:
+        if dispatch.state == "DISPATCHED":
             self.runner.runtime.validator.mark_returned(decision_ref)
-        except ValueError as error:
-            if str(error) != "EXTERNAL_DISPATCH_MISMATCH":
-                raise
         self._account_once(
             reservation, self.runner.units(elapsed_ms=receipt.elapsed_ms)
         )
+        return self.static_publisher.publish(request, observation).result
+
+    async def _resume_prepared_tool(
+        self,
+        request: StaticToolRequest,
+        profile: StaticToolProfile,
+        work: WorkExecutionState,
+        decision_ref: RecordRef,
+        reservation: BudgetReservation,
+        operation: Callable[
+            [MonotonicActionDeadline], Awaitable[StaticToolObservation]
+        ],
+    ) -> ToolRunResult:
+        if not isinstance(request.action.meta, RecordMeta):
+            raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
+        attempt_id = request.action.meta.attempt_id
+        if attempt_id is None:
+            raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
+        started_ns = self._now_ns()
+        timeout_ms = profile.run_timeout_ms
+        elapsed_ms = 0
+
+        async def bound(_claimed: RecordRef) -> StaticToolObservation:
+            nonlocal elapsed_ms
+            deadline = MonotonicActionDeadline(
+                action_id=str(request.action.action_id),
+                started_ns=started_ns,
+                expires_ns=started_ns + timeout_ms * 1_000_000,
+            )
+            observation = await operation(deadline)
+            elapsed_ms = max(0, (self._now_ns() - started_ns) // 1_000_000)
+            receipts, no_spawn = self._current_tool_process_receipts(
+                str(request.action.action_id), str(attempt_id)
+            )
+            self._validate_tool_process_presence(
+                observation, receipts, no_spawn=no_spawn
+            )
+            self._write_tool_receipt(
+                request,
+                decision_ref,
+                observation,
+                elapsed_ms,
+                profile.max_attempt_output_bytes,
+                receipts,
+            )
+            return observation
+
+        try:
+            observation, _ = await self.runner.runtime.external.invoke_bound(
+                str(work.work_id),
+                decision_ref,
+                reference(reservation),
+                bound,
+                idempotency_key=str(request.action.action_id),
+            )
+        except asyncio.CancelledError:
+            elapsed_ms = max(0, (self._now_ns() - started_ns) // 1_000_000)
+            receipts, no_spawn = self._current_tool_process_receipts(
+                str(request.action.action_id), str(attempt_id)
+            )
+            partial = (
+                None
+                if self.static_cancellation_observation is None
+                else self.static_cancellation_observation(request, profile)
+            )
+            observation = self._cancelled_observation(
+                request, profile, elapsed_ms, partial
+            )
+            self._validate_tool_process_presence(
+                observation, receipts, no_spawn=no_spawn
+            )
+            self._write_tool_receipt(
+                request,
+                decision_ref,
+                observation,
+                elapsed_ms,
+                profile.max_attempt_output_bytes,
+                receipts,
+            )
+            self.runner.runtime.validator.mark_returned(decision_ref)
+        except Exception:
+            dispatch = self._read_dispatch_state(
+                str(request.action.action_id),
+                work,
+                decision_ref,
+                reference(reservation),
+                required=True,
+            )
+            if dispatch is not None and dispatch.state == "DISPATCHED":
+                self._block_uncertain(work)
+            raise
+        self._account_once(reservation, self.runner.units(elapsed_ms=elapsed_ms))
         return self.static_publisher.publish(request, observation).result
 
     def _verified_policy(
@@ -611,6 +764,38 @@ class StaticExternalRunner:
         if len(decisions) != 1 or len(reservations) != 1:
             raise ValueError("REPOSITORY_RECOVERY_INVALID")
         return actions[0], decisions[0], reservations[0]
+
+    def _read_dispatch_state(
+        self,
+        action_id: str,
+        work: WorkExecutionState,
+        decision_ref: RecordRef,
+        reservation_ref: RecordRef,
+        *,
+        required: bool,
+    ) -> StaticDispatchState | None:
+        if self.static_dispatch_state is None:
+            if required:
+                raise ValueError("STATIC_DISPATCH_STATE_READER_REQUIRED")
+            return None
+        dispatch = self.static_dispatch_state(action_id)
+        if dispatch is None:
+            if required:
+                raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
+            return None
+        expected_key = (
+            action_id if dispatch.state in {"DISPATCHED", "RETURNED"} else None
+        )
+        if (
+            dispatch.action_id != action_id
+            or dispatch.work_id != str(work.work_id)
+            or dispatch.attempt_id != str(work.active_attempt_id)
+            or dispatch.decision_ref != decision_ref
+            or dispatch.reservation_ref != reservation_ref
+            or dispatch.idempotency_key != expected_key
+        ):
+            raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
+        return dispatch
 
     def _account_once(
         self, reservation: BudgetReservation, actual: BudgetUnits
@@ -1090,13 +1275,19 @@ class StaticExternalRunner:
         *,
         no_spawn: bool = False,
     ) -> None:
+        gap_codes = tuple(gap.code for gap in getattr(observation, "gaps", ()))
         valid_no_spawn = (
             observation.status == "SKIPPED"
             and observation.raw_output is None
             and not observation.symbols
             and not observation.facts
             and not observation.relations
-            and bool(observation.gaps)
+            and not getattr(observation, "errors", ())
+            and gap_codes
+            in {
+                ("STATIC_NOT_APPLICABLE",),
+                ("STATIC_TOOL_CANCELLED",),
+            }
         )
         if (no_spawn and receipts) or (
             not receipts and (not no_spawn or not valid_no_spawn)
