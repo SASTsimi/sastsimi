@@ -300,3 +300,47 @@ def test_usable_evidence_cannot_point_into_skipped_partition(tmp_path: Path) -> 
         StaticToolCoordinator._validate_observation(
             profile, observation, ("src/app.py", "src/skipped.py")
         )
+
+
+def test_ast_cancellation_is_normalized_to_public_canonical_status() -> None:
+    lower = StaticToolObservation(
+        tool_name="AST",
+        tool_version="3.12",
+        tool_kind="STRUCTURE",
+        status="SKIPPED",
+        raw_output=None,
+        raw_media_type=None,
+        analyzed_paths=(),
+        skipped_paths=("src/app.py",),
+        analyzed_languages=(),
+        skipped_languages=("Python",),
+        notes=(),
+        selected_rule_packs=(),
+        rules=(),
+        symbols=(),
+        facts=(),
+        relations=(),
+        gaps=(
+            CandidateGap(
+                "STATIC_ANALYSIS",
+                "STATIC_AST_CANCELLED",
+                "FAILED",
+                "File was not passed to the Python AST worker.",
+                ("<python-manifest>",),
+                ("Python",),
+                (),
+                False,
+            ),
+        ),
+        errors=(),
+        started_monotonic_ms=1,
+        finished_monotonic_ms=2,
+    )
+
+    canonical = StaticToolCoordinator._canonical_cancellation(lower, ("src/app.py",))
+
+    assert canonical.status == "SKIPPED"
+    assert tuple((gap.code, gap.reason) for gap in canonical.gaps) == (
+        ("STATIC_TOOL_CANCELLED", "BLOCKED"),
+    )
+    assert canonical.gaps[0].affected_paths == ("src/app.py",)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from dataclasses import asdict, replace
@@ -115,6 +116,8 @@ def _service(root: Path) -> StaticExternalRunner:
 
 def _runtime_request(
     tmp_path: Path,
+    *,
+    run_timeout_ms: int = 200,
 ) -> tuple[Harness, WorkflowRunner, StaticToolRequest, StaticToolProfile]:
     h = Harness(tmp_path)
     execution = h.execution(max_work=10)
@@ -164,7 +167,7 @@ def _runtime_request(
                 "expected_version": "3.12",
                 "capability_evidence_ref": None,
                 "probe_timeout_ms": 100,
-                "run_timeout_ms": 200,
+                "run_timeout_ms": run_timeout_ms,
                 "stdout_limit_bytes": 1024,
                 "stderr_limit_bytes": 1024,
                 "max_attempt_output_bytes": 4096,
@@ -428,17 +431,21 @@ async def test_complete_static_receipt_recovers_without_rerunning_tool(
 async def test_prepared_static_dispatch_resumes_exact_attempt_without_prior_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _, runner, request, profile = _runtime_request(tmp_path)
+    _, runner, request, profile = _runtime_request(tmp_path, run_timeout_ms=2_000)
     assert isinstance(request.action.meta, RecordMeta)
     assert request.action.meta.attempt_id is not None
     calls = 0
+    observed_timeout_ms: list[int] = []
     process = _process(
         str(request.action.action_id), str(request.action.meta.attempt_id), 0
     )
 
-    async def operation(_deadline: object) -> StaticToolObservation:
+    async def operation(deadline: Any) -> StaticToolObservation:
         nonlocal calls
         calls += 1
+        observed_timeout_ms.append(
+            (deadline.expires_ns - deadline.started_ns) // 1_000_000
+        )
         return _observation()
 
     authorization = runner.runtime.external.authorization
@@ -467,6 +474,54 @@ async def test_prepared_static_dispatch_resumes_exact_attempt_without_prior_proc
 
     assert recovered.status == "SUCCEEDED"
     assert calls == 1
+    assert observed_timeout_ms == [1_000]
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_claim_before_dispatch_closes_without_return_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, runner, request, profile = _runtime_request(tmp_path)
+    assert request.action.work_ref is not None
+    assert isinstance(request.action.meta, RecordMeta)
+    assert request.action.meta.attempt_id is not None
+    original_work = runner.runtime.unit_of_work.records.get_exact(
+        request.action.work_ref
+    )
+    assert isinstance(original_work, WorkExecutionState)
+
+    async def cancel_prepared(
+        work_id: str,
+        decision_ref: Any,
+        reservation_ref: Any,
+        _operation: Any,
+        **_values: object,
+    ) -> Any:
+        runner.runtime.validator.claim_external(work_id, decision_ref, reservation_ref)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(runner.runtime.external, "invoke_bound", cancel_prepared)
+    service = StaticExternalRunner(
+        runner,
+        tmp_path / "static-receipts",
+        cast(Any, None),
+        cast(Any, None),
+        static_process_receipts=lambda _action, _attempt: None,
+        static_dispatch_state=_dispatch_reader(runner),
+    )
+
+    result = await service.invoke(
+        request,
+        profile,
+        cast(Any, lambda _deadline: pytest.fail("operation must stay cold")),
+    )
+
+    assert result.status == "SKIPPED"
+    terminal = runner.runtime.work.get(str(original_work.work_id))
+    assert terminal.status == "CANCELLED"
+    assert terminal.stop_reason == "CALLER_CANCELLED"
+    dispatch = _dispatch_reader(runner)(str(request.action.action_id))
+    assert dispatch is not None and dispatch.state == "PREPARED"
 
 
 @pytest.mark.asyncio

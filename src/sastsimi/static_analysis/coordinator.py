@@ -18,6 +18,7 @@ from sastsimi.contracts.refs import StoredDataRef, validate_exact_ref
 from sastsimi.contracts.static import StaticToolProfile, git_path
 from sastsimi.ports.dto import (
     CancellationResult,
+    CandidateGap,
     MonotonicActionDeadline,
     StaticCapabilityObservation,
     StaticToolObservation,
@@ -175,6 +176,9 @@ class StaticToolCoordinator:
             await self._workspace.assert_unchanged(request.workspace, deadline)
             observation = await adapter.execute(request, root, profile, deadline)
             await self._workspace.assert_unchanged(request.workspace, deadline)
+            observation = self._canonical_cancellation(
+                observation, request.action.file_paths
+            )
             self._validate_observation(profile, observation, request.action.file_paths)
             return observation
 
@@ -189,6 +193,49 @@ class StaticToolCoordinator:
         if adapter is None:
             return CancellationResult(False, "STATIC_TOOL_ATTEMPT_NOT_ACTIVE")
         return await adapter.cancel(attempt_id)
+
+    @staticmethod
+    def _canonical_cancellation(
+        observation: StaticToolObservation,
+        requested_paths: tuple[str, ...],
+    ) -> StaticToolObservation:
+        if observation.status != "SKIPPED" or not any(
+            gap.code == "STATIC_AST_CANCELLED" for gap in observation.gaps
+        ):
+            return observation
+        return StaticToolObservation(
+            tool_name=observation.tool_name,
+            tool_version=observation.tool_version,
+            tool_kind=observation.tool_kind,
+            status="SKIPPED",
+            raw_output=None,
+            raw_media_type=None,
+            analyzed_paths=(),
+            skipped_paths=requested_paths,
+            analyzed_languages=(),
+            skipped_languages=observation.skipped_languages,
+            notes=("The static tool attempt was cancelled by the caller.",),
+            selected_rule_packs=observation.selected_rule_packs,
+            rules=observation.rules,
+            symbols=(),
+            facts=(),
+            relations=(),
+            gaps=(
+                CandidateGap(
+                    "STATIC_ANALYSIS",
+                    "STATIC_TOOL_CANCELLED",
+                    "BLOCKED",
+                    "The static tool attempt was cancelled by the caller.",
+                    requested_paths,
+                    (),
+                    (),
+                    True,
+                ),
+            ),
+            errors=(),
+            started_monotonic_ms=observation.started_monotonic_ms,
+            finished_monotonic_ms=observation.finished_monotonic_ms,
+        )
 
     @staticmethod
     def _validate_capability(

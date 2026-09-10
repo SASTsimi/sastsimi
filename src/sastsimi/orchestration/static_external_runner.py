@@ -336,29 +336,14 @@ class StaticExternalRunner:
             )
         except asyncio.CancelledError:
             elapsed_ms = max(0, (self._now_ns() - started_ns) // 1_000_000)
-            process_receipts, no_spawn = self._current_tool_process_receipts(
-                str(action.action_id), attempt_id
-            )
-            partial = (
-                None
-                if self.static_cancellation_observation is None
-                else self.static_cancellation_observation(request, resolved_profile)
-            )
-            observation = self._cancelled_observation(
-                request, resolved_profile, elapsed_ms, partial
-            )
-            self._validate_tool_process_presence(
-                observation, process_receipts, no_spawn=no_spawn
-            )
-            self._write_tool_receipt(
+            observation = self._close_tool_cancellation(
                 request,
+                resolved_profile,
+                work,
                 decision_ref,
-                observation,
+                reference(reservation),
                 elapsed_ms,
-                resolved_profile.max_attempt_output_bytes,
-                process_receipts,
             )
-            self.runner.runtime.validator.mark_returned(decision_ref)
         except Exception:
             dispatch = self._read_dispatch_state(
                 str(action.action_id),
@@ -426,6 +411,9 @@ class StaticExternalRunner:
             ):
                 raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
             validate_static_tool_profile_binding(request, work, decision, profile)
+            approved_timeout = self._approved_recovery_timeout(
+                request, work, reservation, profile
+            )
             dispatch = self._read_dispatch_state(
                 str(action.action_id),
                 work,
@@ -453,6 +441,7 @@ class StaticExternalRunner:
                     work,
                     decision_ref,
                     reservation,
+                    approved_timeout,
                     operation,
                 )
             receipt, observation, _ = self._read_tool_receipt(
@@ -476,6 +465,7 @@ class StaticExternalRunner:
         work: WorkExecutionState,
         decision_ref: RecordRef,
         reservation: BudgetReservation,
+        approved_timeout: int,
         operation: Callable[
             [MonotonicActionDeadline], Awaitable[StaticToolObservation]
         ],
@@ -486,7 +476,6 @@ class StaticExternalRunner:
         if attempt_id is None:
             raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
         started_ns = self._now_ns()
-        timeout_ms = profile.run_timeout_ms
         elapsed_ms = 0
 
         async def bound(_claimed: RecordRef) -> StaticToolObservation:
@@ -494,7 +483,7 @@ class StaticExternalRunner:
             deadline = MonotonicActionDeadline(
                 action_id=str(request.action.action_id),
                 started_ns=started_ns,
-                expires_ns=started_ns + timeout_ms * 1_000_000,
+                expires_ns=started_ns + approved_timeout * 1_000_000,
             )
             observation = await operation(deadline)
             elapsed_ms = max(0, (self._now_ns() - started_ns) // 1_000_000)
@@ -524,29 +513,14 @@ class StaticExternalRunner:
             )
         except asyncio.CancelledError:
             elapsed_ms = max(0, (self._now_ns() - started_ns) // 1_000_000)
-            receipts, no_spawn = self._current_tool_process_receipts(
-                str(request.action.action_id), str(attempt_id)
-            )
-            partial = (
-                None
-                if self.static_cancellation_observation is None
-                else self.static_cancellation_observation(request, profile)
-            )
-            observation = self._cancelled_observation(
-                request, profile, elapsed_ms, partial
-            )
-            self._validate_tool_process_presence(
-                observation, receipts, no_spawn=no_spawn
-            )
-            self._write_tool_receipt(
+            observation = self._close_tool_cancellation(
                 request,
+                profile,
+                work,
                 decision_ref,
-                observation,
+                reference(reservation),
                 elapsed_ms,
-                profile.max_attempt_output_bytes,
-                receipts,
             )
-            self.runner.runtime.validator.mark_returned(decision_ref)
         except Exception:
             dispatch = self._read_dispatch_state(
                 str(request.action.action_id),
@@ -797,6 +771,43 @@ class StaticExternalRunner:
             raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
         return dispatch
 
+    def _approved_recovery_timeout(
+        self,
+        request: StaticToolRequest,
+        work: WorkExecutionState,
+        reservation: BudgetReservation,
+        profile: StaticToolProfile,
+    ) -> int:
+        records = self.runner.runtime.unit_of_work.records
+        state = self.runner.runtime.budget_registry.current_state(
+            str(work.meta.analysis_id)
+        )
+        binding = records.get_exact(reservation.budget_binding_ref)
+        if not isinstance(binding, BudgetProfileBinding):
+            raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
+        work_profile = records.get_exact(binding.work_budget_profile_ref)
+        if not isinstance(work_profile, WorkBudgetProfile):
+            raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
+        limit = select_work_limit(
+            work_profile,
+            WorkType.STATIC_TOOL,
+            OperationKind.STATIC_TOOL,
+            BudgetAgentRole.STATIC_ANALYSIS,
+        )
+        approved_timeout = profile.run_timeout_ms
+        if limit.timeout_ms is not None:
+            approved_timeout = min(approved_timeout, limit.timeout_ms)
+        expected_units = self.runner.units(elapsed_ms=approved_timeout)
+        if (
+            state.budget_binding_ref != reservation.budget_binding_ref
+            or state.workspace_ref != reference(request.workspace)
+            or reservation.work_ref != reference(work)
+            or reservation.requested_units != expected_units
+            or approved_timeout <= 0
+        ):
+            raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
+        return approved_timeout
+
     def _account_once(
         self, reservation: BudgetReservation, actual: BudgetUnits
     ) -> None:
@@ -928,6 +939,54 @@ class StaticExternalRunner:
         if destination.exists():
             raise ValueError("STATIC_ACTION_RECEIPT_INVALID")
         target.replace(destination)
+
+    def _close_tool_cancellation(
+        self,
+        request: StaticToolRequest,
+        profile: StaticToolProfile,
+        work: WorkExecutionState,
+        decision_ref: RecordRef,
+        reservation_ref: RecordRef,
+        elapsed_ms: int,
+    ) -> StaticToolObservation:
+        if (
+            self.static_dispatch_state is None
+            or not isinstance(request.action.meta, RecordMeta)
+            or request.action.meta.attempt_id is None
+        ):
+            raise ValueError("STATIC_DISPATCH_STATE_READER_REQUIRED")
+        dispatch = self._read_dispatch_state(
+            str(request.action.action_id),
+            work,
+            decision_ref,
+            reservation_ref,
+            required=False,
+        )
+        if dispatch is not None and dispatch.state == "RETURNED":
+            raise ValueError("STATIC_TOOL_RECOVERY_INVALID")
+        receipts, no_spawn = self._current_tool_process_receipts(
+            str(request.action.action_id), str(request.action.meta.attempt_id)
+        )
+        if (dispatch is None or dispatch.state == "PREPARED") and receipts:
+            raise ValueError("STATIC_PROCESS_RECEIPT_INVALID")
+        partial = (
+            None
+            if self.static_cancellation_observation is None
+            else self.static_cancellation_observation(request, profile)
+        )
+        observation = self._cancelled_observation(request, profile, elapsed_ms, partial)
+        self._validate_tool_process_presence(observation, receipts, no_spawn=no_spawn)
+        self._write_tool_receipt(
+            request,
+            decision_ref,
+            observation,
+            elapsed_ms,
+            profile.max_attempt_output_bytes,
+            receipts,
+        )
+        if dispatch is not None and dispatch.state == "DISPATCHED":
+            self.runner.runtime.validator.mark_returned(decision_ref)
+        return observation
 
     def _cancelled_observation(
         self,
