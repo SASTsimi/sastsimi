@@ -16,6 +16,7 @@ from sastsimi.ports.dto import (
     CandidateLocation,
     CandidateRelation,
     MonotonicActionDeadline,
+    ProcessReceipt,
     StaticCapabilityObservation,
     StaticToolObservation,
     StaticToolRequest,
@@ -105,9 +106,14 @@ class _Workspace:
         raise AssertionError("probe must not touch a workspace")
 
     async def assert_unchanged(
-        self, workspace: CodeWorkspace, deadline: MonotonicActionDeadline
-    ) -> None:
-        del workspace, deadline
+        self,
+        workspace: CodeWorkspace,
+        deadline: MonotonicActionDeadline,
+        *,
+        attempt_id: str,
+        check_id: str,
+    ) -> tuple[ProcessReceipt, ...]:
+        del workspace, deadline, attempt_id, check_id
         raise AssertionError("probe must not touch a workspace")
 
 

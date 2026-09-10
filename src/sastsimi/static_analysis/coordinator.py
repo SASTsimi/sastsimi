@@ -173,9 +173,19 @@ class StaticToolCoordinator:
             root = self._workspace.root_for(request.workspace)
             if not root.is_dir():
                 raise ValueError("WORKSPACE_NOT_READY")
-            await self._workspace.assert_unchanged(request.workspace, deadline)
+            await self._workspace.assert_unchanged(
+                request.workspace,
+                deadline,
+                attempt_id=str(attempt_id),
+                check_id="coordinator-pre-execute",
+            )
             observation = await adapter.execute(request, root, profile, deadline)
-            await self._workspace.assert_unchanged(request.workspace, deadline)
+            await self._workspace.assert_unchanged(
+                request.workspace,
+                deadline,
+                attempt_id=str(attempt_id),
+                check_id="coordinator-post-execute",
+            )
             observation = self._canonical_cancellation(
                 observation, request.action.file_paths
             )

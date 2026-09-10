@@ -636,13 +636,21 @@ async def test_public_coordinator_run_cancel_closes_runtime_attempt(
             return CancellationResult(True, "STATIC_TOOL_CANCELLED")
 
     class Workspace:
+        integrity_checks: list[tuple[str, str]] = []
+
         def root_for(self, _workspace: CodeWorkspace) -> Path:
             return tmp_path
 
         async def assert_unchanged(
-            self, _workspace: CodeWorkspace, _deadline: object
-        ) -> None:
-            return None
+            self,
+            _workspace: CodeWorkspace,
+            _deadline: object,
+            *,
+            attempt_id: str,
+            check_id: str,
+        ) -> tuple[ProcessReceipt, ...]:
+            self.integrity_checks.append((attempt_id, check_id))
+            return ()
 
     expected_attempt_id = str(request.action.meta.attempt_id)
     cancelled_receipt = replace(
@@ -689,6 +697,10 @@ async def test_public_coordinator_run_cancel_closes_runtime_attempt(
     terminal = runner.runtime.work.get(str(original.work_id))
     assert terminal.status == "CANCELLED"
     assert terminal.stop_reason == "CALLER_CANCELLED"
+    assert Workspace.integrity_checks == [
+        (expected_attempt_id, "coordinator-pre-execute"),
+        (expected_attempt_id, "coordinator-post-execute"),
+    ]
 
 
 @pytest.mark.asyncio
