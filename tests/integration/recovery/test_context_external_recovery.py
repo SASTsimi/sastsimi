@@ -148,14 +148,15 @@ def _code_record(name: str, meta: RecordMeta) -> HypothesisProposal | StaticFact
 
 
 @pytest.mark.parametrize(
-    ("crash_stage", "tamper_process_receipt"),
+    ("crash_stage", "tamper_process_receipt", "wrong_service_identity"),
     (
-        ("AUTHORIZED", False),
-        ("CLAIMED", False),
-        ("REQUEST_BOUND", False),
-        ("DISPATCHED", False),
-        ("RECEIPT_DURABLE", False),
-        ("RECEIPT_DURABLE", True),
+        ("AUTHORIZED", False, False),
+        ("CLAIMED", False, False),
+        ("CLAIMED", False, True),
+        ("REQUEST_BOUND", False, False),
+        ("DISPATCHED", False, False),
+        ("RECEIPT_DURABLE", False, False),
+        ("RECEIPT_DURABLE", True, False),
     ),
 )
 @pytest.mark.asyncio
@@ -163,6 +164,7 @@ async def test_complete_receipt_recovers_once_without_source_reread(
     tmp_path: Path,
     crash_stage: str,
     tamper_process_receipt: bool,
+    wrong_service_identity: bool,
 ) -> None:
     h, runtime, runner, policy_work, parser, _ = prepared_policy_parser(
         tmp_path, context=True
@@ -340,6 +342,22 @@ async def test_complete_receipt_recovers_once_without_source_reread(
             1 if crash_stage in {"REQUEST_BOUND", "DISPATCHED"} else 0
         )
         service.checkpoint = lambda _stage: None
+        if wrong_service_identity:
+            with pytest.raises(ValueError, match="CONTEXT_AUTHORITY_MISMATCH"):
+                await service.recover_pending(
+                    work=work,
+                    intent=intent,
+                    workspace=workspace,
+                    bundle=bundle,
+                    action_ref=action_ref,
+                    decision_ref=supplied_decision_ref,
+                    reservation_ref=reservation_ref,
+                    plan_ref=plan_ref,
+                    service_identity=orchestration,
+                    work_timeout_ms=100,
+                )
+            assert locator.read_checks == 0 and tracked.calls == 0
+            return
         if crash_stage == "DISPATCHED":
             with pytest.raises(ValueError, match="CONTEXT_RECOVERY_INVALID"):
                 await service.recover_pending(

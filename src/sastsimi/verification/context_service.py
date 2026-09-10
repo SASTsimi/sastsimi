@@ -73,6 +73,7 @@ from sastsimi.storage.context_policy import (
     context_dispatch_state,
     resolve_context_ceiling,
 )
+from sastsimi.storage.repositories import SQLiteRecordStore
 
 _MAX_RECEIPT_BYTES = 64 * 1024
 _INTEGRITY_SEQUENCE = (
@@ -175,6 +176,7 @@ class ContextRetrievalService:
         work_timeout_ms: int,
     ) -> tuple[CodeContextResponse, StoredDataRef]:
         """Execute one request; never expose a response before COMMITTED."""
+        self._require_service_identity(service_identity)
         current = self.runtime.work.get(str(work.work_id))
         if (
             current != work
@@ -621,6 +623,7 @@ class ContextRetrievalService:
         work_timeout_ms: int,
     ) -> tuple[CodeContextResponse, StoredDataRef]:
         """Resume an exact authorized or claimed READ_CODE before dispatch."""
+        self._require_service_identity(service_identity)
         current = self.runtime.work.get(str(work.work_id))
         if (
             current != work
@@ -831,6 +834,16 @@ class ContextRetrievalService:
             or work.input_refs.count(intent.bundle_ref) != 1
         ):
             raise ValueError("CONTEXT_INPUT_MISMATCH")
+
+    def _require_service_identity(self, service_identity: BudgetScopeRef) -> None:
+        records = self.runtime.unit_of_work.records
+        if (
+            not isinstance(records, SQLiteRecordStore)
+            or records.evidence.identity_role(service_identity)
+            != RequesterRole.CONTEXT_RETRIEVAL_SERVICE
+        ):
+            raise ValueError("CONTEXT_AUTHORITY_MISMATCH")
+        records.get_exact(service_identity)
 
     def recover_after_receipt(
         self,
