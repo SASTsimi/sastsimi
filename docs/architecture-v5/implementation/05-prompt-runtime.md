@@ -332,6 +332,8 @@ Session Manager는 `DynamicReproductionConclusion`을 실제 AgentLog·환경·c
 
 `trigger`는 이 work를 등록시킨 계기 Primitive이며 `WorkExecutionState.trigger_primitive_ref`가 가리키는 exact record다. 08번이 이 값을 `work_type=CHAINING`의 필수 필드로 정하고 `considered_primitive_refs`에 정확히 한 번 포함하도록 요구하므로, Builder는 `considered`에 이미 있는 record 하나를 같은 reference로 다시 노출한다. Runtime Validator는 `trigger`가 `considered` 안에 정확히 한 번 있는지 검사한다. 06번의 담당 규칙이 계기 Primitive를 기준으로 검토 조합을 정하므로 이 slot 없이는 Agent가 검토 범위를 좁힐 수 없다.
 
+`primitive_match_id`도 Agent가 만들지 않는다. 출력에 담는 값은 같은 출력 안에서 `chained_hypothesis_proposals[].source_primitive_match_id`가 어느 candidate를 가리키는지 잇기 위한 지역 값이다. trusted Chaining 출력 검증 runtime이 저장 전에 `(upstream_result_ref, downstream_input_ref, matched_input_id)`에서 유도한 값으로 바꾸고 그 참조도 함께 바꾼다. 08번이 이미 세 값의 조합을 match 하나의 유일한 식별자로 정하므로 유도 값이 분석 전체에서 유일하다.
+
 `indexes`는 같은 analysis·workspace·commit의 current `PrimitiveIndexState` revision 전부이며 `REQUIRED_MANY`다. Runtime은 각 index의 `primitive_refs`를 펼쳐 `considered`와 정확히 맞춘다. `lineage_hypotheses`와 `lineage_results`는 considered Primitive의 `source_hypothesis_id → VulnerabilityHypothesis.source_primitive_match_id → ChainingResult.primitive_match_candidates` 경로를 양방향으로 따라 조상 제외를 계산하는 데 필요한 최소 계보다. `lineage_results`는 `OPTIONAL_MANY`이므로 모든 considered Primitive가 INITIAL-origin이고 `source_primitive_match_id=null`인 최초 체이닝에서는 빈 목록이 정상이다. CHAINING-origin 조상이 하나라도 있으면 Runtime이 계산한 필요한 exact `ChainingResult` closure를 모두 넣어야 한다. Runtime이 계산한 필요한 계보 closure와 두 slot이 set-equal하지 않으면 누락뿐 아니라 관계없는 추가 결과도 차단한다. admission은 Primitive 등록 시점의 1회 판정으로 확정되므로 Chaining prompt 입력에 넣거나 다시 판정하지 않는다.
 
 ### 4.8 CWE Labeling — R5-01
