@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
@@ -10,6 +11,7 @@ from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile, ToolRunR
 from sastsimi.ports.dto import (
     CandidateFact,
     CandidateLocation,
+    CandidateRelation,
     CandidateSymbol,
     StaticToolObservation,
 )
@@ -180,3 +182,151 @@ def test_normalization_is_deterministic_and_partitions_source() -> None:
     assert len(first.source_candidates) == 1
     assert first.source_candidates[0].symbol_id == first.entities[0].symbol_id
     assert first.sink_candidates == ()
+
+
+def test_normalization_reports_conflicting_source_identity() -> None:
+    material, observation = _material()
+    assert observation.symbols
+    conflicting = replace(
+        observation,
+        symbols=(
+            observation.symbols[0],
+            replace(observation.symbols[0], name="different-name"),
+        ),
+    )
+    normalizer = StaticNormalizer(
+        {
+            decoder_key(
+                material.profile_ref,
+                material.result.tool_name,
+                material.result.tool_version,
+            ): lambda raw, result, profile, catalog: conflicting
+        }
+    )
+    workspace = CodeWorkspace.model_validate_json(
+        canonical_bytes(
+            {
+                "meta": meta("code_workspace", run=True),
+                "workspace_id": "ws1",
+                "analysis_id": "a1",
+                "repository_url": "https://example.invalid/repo",
+                "commit_id": "c1",
+                "status": "READY",
+            }
+        )
+    )
+    bundle_meta = RecordMeta.model_validate_json(
+        canonical_bytes(meta("static_fact_bundle", attempt=None))
+    )
+
+    bundle = normalizer.normalize(
+        bundle_meta=bundle_meta, workspace=workspace, materials=(material,)
+    )
+
+    assert "STATIC_NORMALIZATION_CONFLICT" in {gap.code for gap in bundle.gaps}
+
+
+def test_unresolved_data_flow_is_explicit_and_never_synthesizes_jump() -> None:
+    material, observation = _material()
+    source = CandidateLocation("src/app.py", 10, None, 10, None)
+    sink = CandidateLocation("src/app.py", 30, None, 30, None)
+    unresolved = replace(
+        observation,
+        relations=(
+            CandidateRelation("flow-1", "DATA_FLOW", None, source, None, sink, None),
+        ),
+    )
+    normalizer = StaticNormalizer(
+        {
+            decoder_key(
+                material.profile_ref,
+                material.result.tool_name,
+                material.result.tool_version,
+            ): lambda raw, result, profile, catalog: unresolved
+        }
+    )
+    workspace = CodeWorkspace.model_validate_json(
+        canonical_bytes(
+            {
+                "meta": meta("code_workspace", run=True),
+                "workspace_id": "ws1",
+                "analysis_id": "a1",
+                "repository_url": "https://example.invalid/repo",
+                "commit_id": "c1",
+                "status": "READY",
+            }
+        )
+    )
+    bundle_meta = RecordMeta.model_validate_json(
+        canonical_bytes(meta("static_fact_bundle", attempt=None))
+    )
+
+    bundle = normalizer.normalize(
+        bundle_meta=bundle_meta, workspace=workspace, materials=(material,)
+    )
+
+    assert len(bundle.data_flow_candidates) == 1
+    assert bundle.data_flow_candidates[0].from_symbol_id is None
+    assert bundle.data_flow_candidates[0].to_symbol_id is None
+    assert "STATIC_DATA_FLOW_UNRESOLVED" in {gap.code for gap in bundle.gaps}
+
+
+def test_data_flow_reduction_keeps_ordered_intermediate_path() -> None:
+    material, observation = _material()
+    first = CandidateLocation("src/app.py", 1, None, 1, None)
+    middle = CandidateLocation("src/app.py", 2, None, 2, None)
+    last = CandidateLocation("src/app.py", 3, None, 3, None)
+    chained = replace(
+        observation,
+        relations=(
+            CandidateRelation(
+                "flow-1", "DATA_FLOW", "handler", first, "handler", middle, None
+            ),
+            CandidateRelation(
+                "flow-2", "DATA_FLOW", "handler", middle, "handler", last, None
+            ),
+            CandidateRelation(
+                "redundant-jump",
+                "DATA_FLOW",
+                "handler",
+                first,
+                "handler",
+                last,
+                None,
+            ),
+        ),
+    )
+    normalizer = StaticNormalizer(
+        {
+            decoder_key(
+                material.profile_ref,
+                material.result.tool_name,
+                material.result.tool_version,
+            ): lambda raw, result, profile, catalog: chained
+        }
+    )
+    workspace = CodeWorkspace.model_validate_json(
+        canonical_bytes(
+            {
+                "meta": meta("code_workspace", run=True),
+                "workspace_id": "ws1",
+                "analysis_id": "a1",
+                "repository_url": "https://example.invalid/repo",
+                "commit_id": "c1",
+                "status": "READY",
+            }
+        )
+    )
+    bundle_meta = RecordMeta.model_validate_json(
+        canonical_bytes(meta("static_fact_bundle", attempt=None))
+    )
+
+    bundle = normalizer.normalize(
+        bundle_meta=bundle_meta, workspace=workspace, materials=(material,)
+    )
+
+    assert len(bundle.data_flow_candidates) == 2
+    assert {
+        (edge.from_location.start_line, edge.to_location.start_line)
+        for edge in bundle.data_flow_candidates
+    } == {(1, 2), (2, 3)}

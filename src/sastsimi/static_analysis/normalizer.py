@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from types import MappingProxyType
 
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
@@ -189,7 +189,7 @@ class StaticNormalizer:
         symbols, source_symbol_ids, ast_symbols = self._symbols(workspace, decoded)
         facts: list[CodeFact] = []
         relations: list[CodeRelation] = []
-        normalization_gaps: list[DataGap] = []
+        normalization_gaps = list(self._conflict_gaps(bundle_meta, workspace, decoded))
         for material, observation in decoded:
             attempt_id = material.result.meta.attempt_id
             raw_result_ref = material.result.raw_result_ref
@@ -210,6 +210,18 @@ class StaticNormalizer:
                 )
                 producer = source.model_copy(update={"rule_id": candidate_fact.rule_id})
                 self._validate_rule_source(material, candidate_fact.rule_id)
+                if symbol_id is None:
+                    normalization_gaps.append(
+                        self._gap(
+                            bundle_meta,
+                            candidate_fact.source_key,
+                            location,
+                            code="STATIC_SYMBOL_UNRESOLVED",
+                            description=(
+                                "A static fact has no unique containing symbol"
+                            ),
+                        )
+                    )
                 facts.append(
                     CodeFact(
                         fact_id=_stable(
@@ -270,13 +282,29 @@ class StaticNormalizer:
                 if from_symbol is None or to_symbol is None:
                     normalization_gaps.append(
                         self._gap(
-                            bundle_meta, candidate_relation.source_key, from_location
+                            bundle_meta,
+                            candidate_relation.source_key,
+                            from_location,
+                            code=(
+                                "STATIC_DATA_FLOW_UNRESOLVED"
+                                if candidate_relation.relation_kind == "DATA_FLOW"
+                                else "STATIC_SYMBOL_UNRESOLVED"
+                            ),
+                            description=(
+                                "A data-flow edge has an unresolved endpoint"
+                                if candidate_relation.relation_kind == "DATA_FLOW"
+                                else (
+                                    "A static relation endpoint has no unique "
+                                    "containing symbol"
+                                )
+                            ),
                         )
                     )
 
         symbols = tuple(sorted(set(symbols), key=lambda item: item.symbol_id))
         facts = list({item.fact_id: item for item in facts}.values())
         relations = list({item.relation_id: item for item in relations}.values())
+        relations = self._reduce_data_flow(relations)
         all_locations = tuple(
             sorted(
                 {
@@ -456,13 +484,20 @@ class StaticNormalizer:
             raise ValueError("FACT_WITHOUT_RAW_HIT")
 
     @staticmethod
-    def _gap(meta: RecordMeta, source_key: str, location: CodeLocation) -> DataGap:
+    def _gap(
+        meta: RecordMeta,
+        source_key: str,
+        location: CodeLocation,
+        *,
+        code: str,
+        description: str,
+    ) -> DataGap:
         return DataGap(
-            gap_id=GapId(_stable("gap", (source_key, location))),
+            gap_id=GapId(_stable("gap", (code, source_key, location))),
             stage="STATIC_ANALYSIS",
-            code="STATIC_SYMBOL_UNRESOLVED",
+            code=code,
             reason="MISSING",
-            description="A static relation endpoint has no unique containing symbol",
+            description=description,
             affected_paths=(location.file_path,),
             affected_languages=(),
             affected_locations=(location,),
@@ -470,6 +505,106 @@ class StaticNormalizer:
             related_record_ids=(),
             created_at=meta.created_at,
         )
+
+    @classmethod
+    def _conflict_gaps(
+        cls,
+        meta: RecordMeta,
+        workspace: CodeWorkspace,
+        decoded: list[tuple[StaticNormalizationInput, StaticToolObservation]],
+    ) -> tuple[DataGap, ...]:
+        gaps: dict[str, DataGap] = {}
+        for material, observation in decoded:
+            seen: dict[tuple[str, str], bytes] = {}
+            candidates: list[tuple[str, str, CandidateLocation, bytes]] = []
+            candidates.extend(
+                (
+                    "symbol",
+                    item.source_key,
+                    item.location,
+                    canonical_bytes(asdict(item)),
+                )
+                for item in observation.symbols
+            )
+            candidates.extend(
+                (
+                    "fact",
+                    item.source_key,
+                    item.location,
+                    canonical_bytes(asdict(item)),
+                )
+                for item in observation.facts
+            )
+            candidates.extend(
+                (
+                    "relation",
+                    item.source_key,
+                    item.from_location,
+                    canonical_bytes(asdict(item)),
+                )
+                for item in observation.relations
+            )
+            for category, source_key, candidate_location, encoded in candidates:
+                identity = (category, source_key)
+                previous = seen.get(identity)
+                if previous is None:
+                    seen[identity] = encoded
+                    continue
+                if previous == encoded:
+                    continue
+                location = _location(workspace, candidate_location)
+                key = _stable(
+                    "conflict",
+                    (
+                        str(material.result.meta.attempt_id),
+                        category,
+                        source_key,
+                        *sorted((previous.hex(), encoded.hex())),
+                    ),
+                )
+                gaps[key] = cls._gap(
+                    meta,
+                    key,
+                    location,
+                    code="STATIC_NORMALIZATION_CONFLICT",
+                    description=(
+                        "One tool source identity produced conflicting static claims"
+                    ),
+                )
+        return tuple(gaps[key] for key in sorted(gaps))
+
+    @staticmethod
+    def _reduce_data_flow(values: list[CodeRelation]) -> list[CodeRelation]:
+        """Remove only redundant same-producer jumps with an explicit middle path."""
+        kept: list[CodeRelation] = []
+        flows = tuple(item for item in values if item.relation_kind == "DATA_FLOW")
+        for candidate in values:
+            if candidate.relation_kind != "DATA_FLOW":
+                kept.append(candidate)
+                continue
+            peers = tuple(
+                item
+                for item in flows
+                if item.relation_id != candidate.relation_id
+                and item.producer == candidate.producer
+            )
+            frontier = [candidate.from_location]
+            visited = {candidate.from_location}
+            reachable = False
+            while frontier and not reachable:
+                current = frontier.pop()
+                for edge in peers:
+                    if edge.from_location != current:
+                        continue
+                    if edge.to_location == candidate.to_location:
+                        reachable = True
+                        break
+                    if edge.to_location not in visited:
+                        visited.add(edge.to_location)
+                        frontier.append(edge.to_location)
+            if not reachable:
+                kept.append(candidate)
+        return kept
 
     @staticmethod
     def _facts(values: list[CodeFact], kind: str) -> tuple[CodeFact, ...]:

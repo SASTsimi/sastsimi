@@ -4,8 +4,14 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import timedelta
 
-from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.ids import ErrorId, GapId, WorkspaceId
+from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
+from sastsimi.contracts.ids import (
+    ErrorId,
+    GapId,
+    TransitionCommitId,
+    TransitionId,
+    WorkspaceId,
+)
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
@@ -24,8 +30,14 @@ from sastsimi.contracts.static import (
     ToolCoverage,
     ToolRunResult,
     validate_rule_execution,
+    validate_static_current,
 )
-from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.contracts.work import (
+    StateTransition,
+    TransitionCommit,
+    WorkAttempt,
+    WorkExecutionState,
+)
 from sastsimi.ports.dto import (
     CandidateLocation,
     CandidateRule,
@@ -34,6 +46,7 @@ from sastsimi.ports.dto import (
     RepositoryPreparation,
     StaticToolObservation,
     StaticToolRequest,
+    TransitionCommitRequest,
 )
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.static_analysis.coordinator import StaticToolCoordinator
@@ -465,6 +478,8 @@ class StaticNormalizationPublisher:
         sources: tuple[StaticNormalizationSource, ...],
     ) -> tuple[StaticFactBundle, StoredDataRef]:
         current = self.runner.runtime.work.get(str(work.work_id))
+        self._validate_workspace_and_sources(current, workspace, sources)
+        materials = tuple(self._resolve_source(current, source) for source in sources)
         if current.status in {"SUCCEEDED", "PARTIAL"}:
             if len(current.output_refs) != 1:
                 raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
@@ -474,6 +489,9 @@ class StaticNormalizationPublisher:
                 existing, StaticFactBundle
             ):
                 raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+            self._validate_committed_bundle(
+                current, workspace, existing, existing_ref, materials
+            )
             return existing, existing_ref
         if (
             current != work
@@ -481,21 +499,21 @@ class StaticNormalizationPublisher:
             or current.work_type != "STATIC_NORMALIZE"
             or current.active_attempt_id is None
             or not isinstance(current.meta, RecordMeta)
-            or workspace.status != "READY"
-            or workspace.workspace_id != current.meta.workspace_id
-            or workspace.commit_id != current.meta.commit_id
-            or not sources
-            or len({item.tool_work_ref for item in sources}) != len(sources)
         ):
             raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
-        materials = tuple(self._resolve_source(current, source) for source in sources)
-        bundle = self.normalizer.normalize(
-            bundle_meta=RecordMeta.model_validate(
-                self.runner.metadata(current.meta, "static_fact_bundle")
-            ),
-            workspace=workspace,
-            materials=materials,
-        )
+        try:
+            bundle = self.normalizer.normalize(
+                bundle_meta=RecordMeta.model_validate(
+                    self.runner.metadata(current.meta, "static_fact_bundle")
+                ),
+                workspace=workspace,
+                materials=materials,
+            )
+        except ValueError as error:
+            if str(error) != "STATIC_NORMALIZATION_NO_USABLE_INPUT":
+                raise
+            self._fail_no_usable(current, identity, materials)
+            raise
         partial = bool(
             bundle.gaps
             or bundle.errors
@@ -519,7 +537,188 @@ class StaticNormalizationPublisher:
             or bundle_ref != expected_ref
         ):
             raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        self._validate_committed_bundle(
+            completed, workspace, bundle, bundle_ref, materials
+        )
         return bundle, bundle_ref
+
+    def _validate_workspace_and_sources(
+        self,
+        work: WorkExecutionState,
+        workspace: CodeWorkspace,
+        sources: tuple[StaticNormalizationSource, ...],
+    ) -> None:
+        if not isinstance(work.meta, RecordMeta):
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        expected = [
+            input_ref
+            for input_ref in work.input_refs
+            if isinstance(input_ref, StoredDataRef)
+            and input_ref.data_kind == "work_execution_state"
+        ]
+        supplied = tuple(item.tool_work_ref for item in sources)
+        self._validate_source_set(tuple(expected), supplied)
+        if (
+            workspace.status != "READY"
+            or workspace.workspace_id != work.meta.workspace_id
+            or workspace.commit_id != work.meta.commit_id
+            or work.input_refs.count(reference(workspace)) != 1
+        ):
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+
+    @staticmethod
+    def _validate_source_set(
+        expected: tuple[StoredDataRef, ...], supplied: tuple[StoredDataRef, ...]
+    ) -> None:
+        if (
+            not expected
+            or len(expected) != len(set(expected))
+            or len(supplied) != len(set(supplied))
+            or set(supplied) != set(expected)
+        ):
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+
+    def _validate_committed_bundle(
+        self,
+        work: WorkExecutionState,
+        workspace: CodeWorkspace,
+        bundle: StaticFactBundle,
+        bundle_ref: StoredDataRef,
+        materials: tuple[StaticNormalizationInput, ...],
+    ) -> None:
+        if work.last_transition_commit_ref is None:
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        records = self.runner.runtime.unit_of_work.records
+        commit = records.get_exact(work.last_transition_commit_ref)
+        if not isinstance(commit, TransitionCommit) or commit.attempt_id is None:
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        attempts = tuple(
+            item
+            for item in self.runner.runtime.queries.published_records(
+                str(work.meta.analysis_id)
+            )
+            if isinstance(item, WorkAttempt)
+            and item.work_id == work.work_id
+            and item.attempt_id == commit.attempt_id
+        )
+        if len(attempts) != 1:
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        rules = tuple(
+            material.rule_execution
+            for material in materials
+            if material.rule_execution is not None
+        )
+        catalogs: dict[StoredDataRef, tuple[str, ...]] = {}
+        for material in materials:
+            if material.rule_execution is None:
+                continue
+            catalog_ref = material.rule_execution.rule_catalog_ref
+            previous = catalogs.get(catalog_ref)
+            if previous is not None and previous != material.catalog_rule_ids:
+                raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
+            catalogs[catalog_ref] = material.catalog_rule_ids
+        config_refs = tuple(
+            ref
+            for ref in work.input_refs
+            if isinstance(ref, StoredDataRef)
+            and ref.data_kind == "analysis_configuration"
+        )
+        analysis_config_ref = config_refs[0] if len(config_refs) == 1 else None
+        validate_static_current(
+            bundle,
+            bundle_ref,
+            workspace,
+            work,
+            commit,
+            rules,
+            attempt=attempts[0],
+            rule_catalogs=catalogs,
+            analysis_config_ref=analysis_config_ref,
+        )
+
+    def _fail_no_usable(
+        self,
+        work: WorkExecutionState,
+        identity: BudgetScopeRef,
+        materials: tuple[StaticNormalizationInput, ...],
+    ) -> WorkExecutionState:
+        if work.active_attempt_id is None:
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        gap_ids = tuple(
+            gap.gap_id for material in materials for gap in material.result.gaps
+        )
+        error_ids = tuple(
+            error.error_id for material in materials for error in material.result.errors
+        ) or (self.runner.ids.new(ErrorId),)
+        action = self.runner.action(
+            work,
+            identity,
+            "STATIC_ANALYSIS",
+            "CHANGE_WORK_STATE",
+            reason="No usable static tool result can be normalized",
+        )
+        decision = self.runner.authorize(work, action)
+        now = self.runner.clock.now()
+        transition = StateTransition.model_validate_json(
+            canonical_bytes(
+                {
+                    "meta": self.runner.metadata(
+                        work.meta,
+                        "state_transition",
+                        attempt_id=work.active_attempt_id,
+                    ),
+                    "transition_id": self.runner.ids.new(TransitionId),
+                    "work_id": work.work_id,
+                    "action_decision_ref": decision,
+                    "from_status": work.status,
+                    "to_status": "FAILED",
+                    "expected_state_version": work.state_version,
+                    "new_state_version": work.state_version + 1,
+                    "attempt_id": work.active_attempt_id,
+                    "cause": "STATIC_NORMALIZATION_NO_USABLE_INPUT",
+                    "output_refs": (),
+                    "gap_ids": gap_ids,
+                    "error_ids": error_ids,
+                    "dedupe_key": content_hash(
+                        (work.work_id, work.state_version, "NO_USABLE_STATIC_INPUT")
+                    ),
+                    "created_at": now,
+                }
+            )
+        )
+        commit = TransitionCommit.model_validate_json(
+            canonical_bytes(
+                {
+                    "meta": self.runner.metadata(
+                        work.meta,
+                        "transition_commit",
+                        attempt_id=work.active_attempt_id,
+                    ),
+                    "transition_commit_id": self.runner.ids.new(TransitionCommitId),
+                    "work_id": work.work_id,
+                    "transition_ref": (
+                        self.runner.runtime.unit_of_work.records.stage_record(
+                            transition
+                        )
+                    ),
+                    "expected_state_version": work.state_version,
+                    "target_state_version": work.state_version + 1,
+                    "attempt_id": work.active_attempt_id,
+                    "target_status": "FAILED",
+                    "output_refs": (),
+                    "gap_ids": gap_ids,
+                    "error_ids": error_ids,
+                    "state": "PREPARED",
+                    "prepared_at": now,
+                    "committed_at": None,
+                    "abort_reason": None,
+                }
+            )
+        )
+        self.runner.runtime.transitions.commit(
+            TransitionCommitRequest(transition, commit, ())
+        )
+        return self.runner.runtime.work.get(str(work.work_id))
 
     def _resolve_source(
         self, work: WorkExecutionState, source: StaticNormalizationSource
@@ -549,6 +748,7 @@ class StaticNormalizationPublisher:
         )
         if not isinstance(result, ToolRunResult):
             raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
+        self._validate_rule_ref_shape(result)
         rule: RuleExecutionRecord | None = None
         if result.rule_execution_ref is not None:
             candidate = records.get_exact(result.rule_execution_ref)
@@ -572,3 +772,10 @@ class StaticNormalizationPublisher:
             rule_execution=rule,
             catalog_rule_ids=source.catalog_rule_ids,
         )
+
+    @staticmethod
+    def _validate_rule_ref_shape(result: ToolRunResult) -> None:
+        if (result.tool_kind == "RULE_BASED") != (
+            result.rule_execution_ref is not None
+        ):
+            raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
