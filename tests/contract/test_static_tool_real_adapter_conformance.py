@@ -12,6 +12,7 @@ import sys
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Generator
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal, cast
 
@@ -464,8 +465,13 @@ def _request(
         attempt_id=attempt_id,
     )
     profile_ref = reference(profile)
+    workspace_ref = reference(workspace)
     assert isinstance(profile_ref, StoredDataRef)
-    input_refs: tuple[StoredDataRef, ...] = (profile_ref, config_ref)
+    input_refs = (
+        workspace_ref,
+        profile_ref,
+        config_ref,
+    )
     if catalog_ref is not None:
         input_refs = (*input_refs, catalog_ref)
     action = ActionRequest.model_validate_json(
@@ -475,6 +481,8 @@ def _request(
                 "action_id": f"action-{attempt_id}",
                 "requested_by": "STATIC_ANALYSIS",
                 "action_type": "RUN_TOOL",
+                "work_ref": _record_ref("work_execution_state", attempt_id),
+                "expected_state_version": 1,
                 "tool_name": profile.tool_name,
                 "file_paths": ("src/app.py",),
                 "input_refs": tuple(
@@ -795,6 +803,8 @@ async def test_actual_three_adapter_public_bridge_and_exact_replay(
                 ),
                 query_pack_root=query_pack,
                 query_pack_digest=digest_path(query_pack),
+                analysis_config_ref=config_ref,
+                rule_catalog_ref=catalog_ref,
                 rule_catalog=mappings,
                 selected_rule_ids=("R1",),
                 selected_rule_packs=("fixture/web",),
@@ -892,6 +902,7 @@ async def test_actual_three_adapter_public_bridge_and_exact_replay(
                 None if profile.tool_kind == "STRUCTURE" else catalog_ref
             ),
             raw_bytes=external.observations[profile.adapter_key].raw_output,
+            authorized_paths=("src/app.py",),
             rule_execution=external.rules.get(profile.adapter_key),
             catalog_rule_ids=(() if profile.tool_kind == "STRUCTURE" else ("R1",)),
             rule_mappings=(() if profile.tool_kind == "STRUCTURE" else mappings),
@@ -914,24 +925,42 @@ async def test_actual_three_adapter_public_bridge_and_exact_replay(
         "OPENGREP",
     )
 
-    ast_runner.block_kind = "ast-parse"
-    active = asyncio.create_task(coordinator.run(requests[0]))
-    await asyncio.wait_for(ast_runner.started.wait(), timeout=1)
-    cancellation = await coordinator.cancel("attempt-ast")
-    await asyncio.wait_for(active, timeout=1)
-    assert cancellation.cancelled is True
-    assert ast_runner.cancelled == ["attempt-ast"]
+    async def assert_active_cancel(
+        index: int, runner: _Runner, command_kind: str
+    ) -> None:
+        for child in runner.output_root.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        runner.block_kind = command_kind
+        runner.started = asyncio.Event()
+        runner.release = asyncio.Event()
+        runner.cancelled.clear()
+        active = asyncio.create_task(coordinator.run(requests[index]))
+        await asyncio.wait_for(runner.started.wait(), timeout=1)
+        attempt = profiles[index].adapter_key.lower().replace("python_", "")
+        cancellation = await coordinator.cancel(f"attempt-{attempt}")
+        await asyncio.wait_for(active, timeout=1)
+        assert cancellation.cancelled is True
+        assert runner.cancelled == [str(requests[index].action.meta.attempt_id)]
 
-    stale = profile_refs[0].model_copy(update={"content_hash": "0" * 64})
+    await assert_active_cancel(0, ast_runner, "ast-parse")
+    await assert_active_cancel(1, codeql_runner, "codeql-analyze")
+    await assert_active_cancel(2, opengrep_runner, "opengrep-batch-0000")
+
     process_count = sum(
         len(runner.calls) for runner in (ast_runner, codeql_runner, opengrep_runner)
     )
-    with pytest.raises(ValueError, match="STATIC_TOOL_PROFILE_INVALID"):
-        await coordinator.probe(stale)
+    for profile_ref in profile_refs:
+        stale = profile_ref.model_copy(update={"content_hash": "0" * 64})
+        with pytest.raises(ValueError, match="STATIC_TOOL_PROFILE_INVALID"):
+            await coordinator.probe(stale)
     assert sum(
         len(runner.calls) for runner in (ast_runner, codeql_runner, opengrep_runner)
     ) == process_count
 
+    stale = profile_refs[0].model_copy(update={"content_hash": "0" * 64})
     resolver.values[stale] = ast_profile
     with pytest.raises(ValueError, match="STATIC_TOOL_PROFILE_INVALID"):
         await coordinator.probe(stale)
@@ -942,6 +971,69 @@ async def test_actual_three_adapter_public_bridge_and_exact_replay(
     assert sum(
         len(runner.calls) for runner in (ast_runner, codeql_runner, opengrep_runner)
     ) == process_count
+
+    for request in requests:
+        wrong_inputs = request.action.model_copy(update={"input_refs": ()})
+        with pytest.raises(
+            ValueError, match="STATIC_TOOL_PROFILE_BINDING_MISMATCH"
+        ):
+            await coordinator.run(replace(request, action=wrong_inputs))
+        no_work = request.action.model_copy(
+            update={"work_ref": None, "expected_state_version": None}
+        )
+        with pytest.raises(
+            ValueError, match="STATIC_TOOL_PROFILE_BINDING_MISMATCH"
+        ):
+            await coordinator.run(replace(request, action=no_work))
+    assert sum(
+        len(runner.calls) for runner in (ast_runner, codeql_runner, opengrep_runner)
+    ) == process_count
+
+    for index, (request, profile, adapter, runner) in enumerate(
+        zip(
+            requests,
+            profiles,
+            adapters.values(),
+            (ast_runner, codeql_runner, opengrep_runner),
+            strict=True,
+        )
+    ):
+        assert isinstance(request.action.meta, RecordMeta)
+        wrong_meta = request.action.meta.model_copy(
+            update={"attempt_id": f"wrong-attempt-{index}"}
+        )
+        wrong_attempt = replace(
+            request,
+            action=request.action.model_copy(update={"meta": wrong_meta}),
+        )
+        before = len(runner.calls)
+        deadline = MonotonicActionDeadline(
+            str(wrong_attempt.action.action_id), 0, 10**18
+        )
+        try:
+            rejected = await adapter.execute(
+                wrong_attempt, workspace_root, profile, deadline
+            )
+        except ValueError:
+            pass
+        else:
+            assert rejected.status == "FAILED"
+        assert len(runner.calls) == before
+
+    wrong_ref = _record_ref("analysis_config", "wrong")
+    for index in (1, 2):
+        adapter = tuple(adapters.values())[index]
+        runner = (codeql_runner, opengrep_runner)[index - 1]
+        before = len(runner.calls)
+        request = replace(requests[index], analysis_config_ref=wrong_ref)
+        rejected = await adapter.execute(
+            request,
+            workspace_root,
+            profiles[index],
+            MonotonicActionDeadline(str(request.action.action_id), 0, 10**18),
+        )
+        assert rejected.status == "FAILED"
+        assert len(runner.calls) == before
 
     codeql_process_count = len(codeql_runner.calls)
     codeql_executable.write_bytes(b"changed-after-registration")

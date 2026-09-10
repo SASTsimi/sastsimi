@@ -14,7 +14,7 @@ from pydantic import TypeAdapter
 from sastsimi.contracts._domain import SafeDiagnostic
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef, validate_exact_ref
+from sastsimi.contracts.refs import StoredDataRef, reference, validate_exact_ref
 from sastsimi.contracts.static import StaticToolProfile, git_path
 from sastsimi.ports.dto import (
     CancellationResult,
@@ -150,8 +150,7 @@ class StaticToolCoordinator:
 
     async def run(self, request: StaticToolRequest) -> ToolRunResult:
         profile, adapter = self._resolve(request.tool_profile_ref)
-        if request.action.tool_name != profile.tool_name:
-            raise ValueError("STATIC_TOOL_PROFILE_BINDING_MISMATCH")
+        self._validate_request_binding(request, profile)
         if not isinstance(request.action.meta, RecordMeta):
             raise ValueError("STATIC_TOOL_ATTEMPT_INVALID")
         action_meta = request.action.meta
@@ -197,6 +196,40 @@ class StaticToolCoordinator:
             return await self._external.invoke(request, profile, operation)
         finally:
             self._active.pop(str(attempt_id), None)
+
+    @staticmethod
+    def _validate_request_binding(
+        request: StaticToolRequest, profile: StaticToolProfile
+    ) -> None:
+        """Close a public request over exactly the inputs its action authorized."""
+
+        action = request.action
+        workspace_ref = reference(request.workspace)
+        action_meta = action.meta
+        expected_refs = {
+            workspace_ref,
+            request.tool_profile_ref,
+            request.analysis_config_ref,
+        }
+        if request.rule_catalog_ref is not None:
+            expected_refs.add(request.rule_catalog_ref)
+        if (
+            not isinstance(action_meta, RecordMeta)
+            or action_meta.analysis_id != request.workspace.analysis_id
+            or action_meta.workspace_id != request.workspace.workspace_id
+            or action_meta.commit_id != request.workspace.commit_id
+            or action.work_ref is None
+            or action.requested_by != "STATIC_ANALYSIS"
+            or action.action_type != "RUN_TOOL"
+            or action.tool_name != profile.tool_name
+            or not action.file_paths
+            or len(action.file_paths) != len(set(action.file_paths))
+            or len(action.input_refs) != len(expected_refs)
+            or set(action.input_refs) != expected_refs
+            or (profile.tool_kind == "RULE_BASED")
+            != (request.rule_catalog_ref is not None)
+        ):
+            raise ValueError("STATIC_TOOL_PROFILE_BINDING_MISMATCH")
 
     async def cancel(self, attempt_id: str) -> CancellationResult:
         adapter = self._active.get(attempt_id)

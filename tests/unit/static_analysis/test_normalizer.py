@@ -149,6 +149,7 @@ def _material() -> tuple[StaticNormalizationInput, StaticToolObservation]:
             analysis_config_ref=analysis_config_ref,
             rule_catalog_ref=None,
             raw_bytes=raw,
+            authorized_paths=("src/app.py",),
         ),
         observation,
     )

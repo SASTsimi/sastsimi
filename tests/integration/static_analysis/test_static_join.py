@@ -260,6 +260,10 @@ def test_real_runtime_publication_and_terminal_replay_validate_expected_runs(
             tool_name=tool_name,
             file_paths=("src/app.py",),
         )
+        units = runner.units(elapsed_ms=1, cost_minor_units=1)
+        reservation = runner.reserve(work, scope, action, units)
+        runner.authorize(work, action, reservation)
+        runner.account(reservation, units)
         status = ast_status if tool_name == "AST" else rule_status
         partial = status == "PARTIAL"
         failed = status == "FAILED"
@@ -348,7 +352,6 @@ def test_real_runtime_publication_and_terminal_replay_validate_expected_runs(
             config_ref,
             catalog_ref,
             ("fake-rule",),
-            (StaticRuleMapping("fake-rule", "OTHER", None, False),),
         ),
     )
     decoders: dict[Any, Any] = {}
@@ -364,7 +367,42 @@ def test_real_runtime_publication_and_terminal_replay_validate_expected_runs(
         decoders[decoder_key(profile_ref, result.tool_name, result.tool_version)] = (
             lambda raw, replay, observation=observation: observation
         )
-    publisher = StaticNormalizationPublisher(runner, StaticNormalizer(decoders))
+    catalog_mappings = {
+        catalog_ref: (StaticRuleMapping("fake-rule", "OTHER", None, False),)
+    }
+    publisher = StaticNormalizationPublisher(
+        runner,
+        StaticNormalizer(decoders),
+        catalog_mappings,
+    )
+    catalog_mappings[catalog_ref] = (
+        StaticRuleMapping("fake-rule", "SINK", "SOURCE", True),
+    )
+
+    if ast_status == "PARTIAL" and rule_status == "SUCCEEDED":
+        rule_material = publisher._resolve_source(
+            normalization, workspace, sources[1]
+        )
+        assert rule_material.rule_mappings == (
+            StaticRuleMapping("fake-rule", "OTHER", None, False),
+        )
+        without_catalog_mapping = StaticNormalizationPublisher(
+            runner, StaticNormalizer(decoders)
+        )
+        with pytest.raises(ValueError, match="RULE_CATALOG_CLOSURE_MISMATCH"):
+            without_catalog_mapping._resolve_source(
+                normalization, workspace, sources[1]
+            )
+        escaped_coverage = outputs[0][0].coverage.model_copy(
+            update={"analyzed_paths": ("src/not-requested.py",)}
+        )
+        escaped_result = outputs[0][0].model_copy(
+            update={"coverage": escaped_coverage}
+        )
+        with pytest.raises(ValueError, match="STATIC_NORMALIZATION_INPUT_MISMATCH"):
+            publisher._resolve_tool_action(
+                runtime.work.get(str(works[0].work_id)), escaped_result
+            )
 
     if all_unusable:
         with pytest.raises(ValueError, match="STATIC_NORMALIZATION_NO_USABLE_INPUT"):

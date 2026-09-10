@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import timedelta
+from types import MappingProxyType
 
 from sastsimi.contracts.actions import ActionDecision, ActionRequest
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
@@ -504,15 +505,22 @@ class StaticNormalizationSource:
     analysis_config_ref: StoredDataRef
     rule_catalog_ref: StoredDataRef | None = None
     catalog_rule_ids: tuple[str, ...] = ()
-    rule_mappings: tuple[StaticRuleMapping, ...] = ()
 
 
 class StaticNormalizationPublisher:
     """Resolve verified raw inputs and atomically publish one normalized bundle."""
 
-    def __init__(self, runner: WorkflowRunner, normalizer: StaticNormalizer) -> None:
+    def __init__(
+        self,
+        runner: WorkflowRunner,
+        normalizer: StaticNormalizer,
+        rule_mappings: Mapping[
+            StoredDataRef, tuple[StaticRuleMapping, ...]
+        ] | None = None,
+    ) -> None:
         self.runner = runner
         self.normalizer = normalizer
+        self._rule_mappings = MappingProxyType(dict(rule_mappings or {}))
 
     def publish(
         self,
@@ -995,6 +1003,7 @@ class StaticNormalizationPublisher:
         )
         if not isinstance(result, ToolRunResult):
             raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
+        action = self._resolve_tool_action(tool_work, result)
         self._validate_rule_ref_shape(result)
         if (result.tool_kind == "RULE_BASED") != (source.rule_catalog_ref is not None):
             raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
@@ -1017,6 +1026,14 @@ class StaticNormalizationPublisher:
                 raw = stream.read(profile.max_artifact_read_bytes + 1)
             if len(raw) > profile.max_artifact_read_bytes:
                 raise ValueError("STATIC_ARTIFACT_READ_LIMIT")
+        mappings: tuple[StaticRuleMapping, ...] = ()
+        if source.rule_catalog_ref is not None:
+            try:
+                mappings = self._rule_mappings[source.rule_catalog_ref]
+            except KeyError as error:
+                raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH") from error
+            if {item.rule_id for item in mappings} != set(source.catalog_rule_ids):
+                raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
         return StaticNormalizationInput(
             result_ref=result_refs[0],
             result=result,
@@ -1025,10 +1042,79 @@ class StaticNormalizationPublisher:
             analysis_config_ref=source.analysis_config_ref,
             rule_catalog_ref=source.rule_catalog_ref,
             raw_bytes=raw,
+            authorized_paths=action.file_paths,
             rule_execution=rule,
             catalog_rule_ids=source.catalog_rule_ids,
-            rule_mappings=source.rule_mappings,
+            rule_mappings=mappings,
         )
+
+    def _resolve_tool_action(
+        self,
+        tool_work: WorkExecutionState,
+        result: ToolRunResult,
+    ) -> ActionRequest:
+        """Resolve the one published RUN_TOOL action that owns this exact attempt."""
+
+        attempt_id = result.meta.attempt_id
+        if attempt_id is None:
+            raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
+        records = self.runner.runtime.unit_of_work.records
+        matches: list[ActionRequest] = []
+        for candidate in self.runner.runtime.queries.published_records(
+            str(result.meta.analysis_id)
+        ):
+            if (
+                not isinstance(candidate, ActionRequest)
+                or candidate.action_type != "RUN_TOOL"
+                or candidate.requested_by != "STATIC_ANALYSIS"
+                or not isinstance(candidate.meta, RecordMeta)
+                or candidate.meta.attempt_id != attempt_id
+                or candidate.work_ref is None
+            ):
+                continue
+            try:
+                action_work = records.get_exact(candidate.work_ref)
+            except (LookupError, ValueError):
+                continue
+            if (
+                isinstance(action_work, WorkExecutionState)
+                and action_work.work_id == tool_work.work_id
+                and action_work.status == "RUNNING"
+                and action_work.active_attempt_id == attempt_id
+                and candidate.work_ref == reference(action_work)
+                and candidate.expected_state_version == action_work.state_version
+            ):
+                matches.append(candidate)
+        if len(matches) != 1:
+            raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
+        action = matches[0]
+        if not isinstance(action.meta, RecordMeta):
+            raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
+        expected_scope = (
+            result.meta.analysis_id,
+            result.meta.workspace_id,
+            result.meta.commit_id,
+        )
+        analyzed_paths = result.coverage.analyzed_paths
+        skipped_paths = result.coverage.skipped_paths
+        if (
+            (
+                action.meta.analysis_id,
+                action.meta.workspace_id,
+                action.meta.commit_id,
+            )
+            != expected_scope
+            or action.input_refs != tool_work.input_refs
+            or action.tool_name != result.tool_name
+            or not action.file_paths
+            or len(action.file_paths) != len(set(action.file_paths))
+            or len(analyzed_paths) != len(set(analyzed_paths))
+            or len(skipped_paths) != len(set(skipped_paths))
+            or not set(analyzed_paths).isdisjoint(skipped_paths)
+            or set(analyzed_paths) | set(skipped_paths) != set(action.file_paths)
+        ):
+            raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
+        return action
 
     @staticmethod
     def _validate_rule_ref_shape(result: ToolRunResult) -> None:

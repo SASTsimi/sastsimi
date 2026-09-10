@@ -33,6 +33,7 @@ from sastsimi.static_analysis.process import process_command_fingerprint
 from sastsimi.storage.codec import reference
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import meta
+from tests.contract.domain.fixtures import ref as fixture_ref
 
 
 def sha256(data: bytes) -> str:
@@ -188,6 +189,12 @@ def workspace_and_request(
             | {"workspace_id": "ws1", "commit_id": "c1", "status": "READY"}
         )
     )
+    profile_ref = cast(StoredDataRef, reference(tool_profile))
+    workspace_ref = cast(StoredDataRef, reference(workspace))
+    analysis_config_ref = StoredDataRef.model_validate(
+        fixture_ref("analysis_config")
+    )
+    rule_catalog_ref = StoredDataRef.model_validate(fixture_ref("rule_catalog"))
     action_data = make("ActionRequest", "action_request")
     action = ActionRequest.model_validate_json(
         json.dumps(
@@ -197,17 +204,24 @@ def workspace_and_request(
                 "action_type": "RUN_TOOL",
                 "tool_name": "CODEQL",
                 "file_paths": ("src/app.py",),
-                "input_refs": (reference(tool_profile).model_dump(mode="json"),),
+                "input_refs": tuple(
+                    item.model_dump(mode="json")
+                    for item in (
+                        workspace_ref,
+                        profile_ref,
+                        analysis_config_ref,
+                        rule_catalog_ref,
+                    )
+                ),
             }
         )
     )
-    ref = cast(StoredDataRef, reference(tool_profile))
     return workspace, StaticToolRequest(
         action=action,
         workspace=workspace,
-        tool_profile_ref=ref,
-        analysis_config_ref=ref,
-        rule_catalog_ref=ref,
+        tool_profile_ref=profile_ref,
+        analysis_config_ref=analysis_config_ref,
+        rule_catalog_ref=rule_catalog_ref,
     )
 
 
@@ -303,12 +317,16 @@ def codeql_fixture(tmp_path: Path) -> dict[str, Any]:
         StaticRuleMapping("R2", "VALIDATOR", None, False),
         StaticRuleMapping("R3", "OTHER", None, False),
     )
+    analysis_config_ref = StoredDataRef.model_validate(fixture_ref("analysis_config"))
+    rule_catalog_ref = StoredDataRef.model_validate(fixture_ref("rule_catalog"))
     inputs = CodeQLExecutionInputs(
         database=PrebuiltCodeQLDatabase(
             "ws1", "c1", "python", database, digest_path(database)
         ),
         query_pack_root=query_pack,
         query_pack_digest=digest_path(query_pack),
+        analysis_config_ref=analysis_config_ref,
+        rule_catalog_ref=rule_catalog_ref,
         rule_catalog=mappings,
         selected_rule_ids=("R1", "R2"),
         selected_rule_packs=("fixture/security",),

@@ -17,7 +17,8 @@ from typing import Protocol, cast
 from urllib.parse import unquote, urlsplit
 
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.refs import reference
+from sastsimi.contracts.records import RecordMeta
+from sastsimi.contracts.refs import StoredDataRef, reference, require_record_ref
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.ports.dto import (
     CancellationResult,
@@ -66,6 +67,8 @@ class CodeQLExecutionInputs:
     database: PrebuiltCodeQLDatabase
     query_pack_root: Path
     query_pack_digest: str
+    analysis_config_ref: StoredDataRef
+    rule_catalog_ref: StoredDataRef
     rule_catalog: tuple[StaticRuleMapping, ...]
     selected_rule_ids: tuple[str, ...]
     selected_rule_packs: tuple[str, ...]
@@ -76,6 +79,11 @@ class CodeQLExecutionInputs:
     def __post_init__(self) -> None:
         rule_ids = tuple(item.rule_id for item in self.rule_catalog)
         tracked = tuple(item.git_path for item in self.tracked_files)
+        try:
+            require_record_ref(self.analysis_config_ref, "analysis_config")
+            require_record_ref(self.rule_catalog_ref, "rule_catalog")
+        except ValueError as error:
+            raise ValueError("CODEQL_INPUT_CLOSURE_INVALID") from error
         if (
             not self.rule_catalog
             or len(set(rule_ids)) != len(rule_ids)
@@ -984,7 +992,11 @@ class CodeQLProcessAdapter:
                 if status in {"SUCCEEDED", "PARTIAL"}
                 else ()
             ),
-            skipped_paths=(),
+            skipped_paths=(
+                ()
+                if status in {"SUCCEEDED", "PARTIAL"}
+                else tuple(sorted(item.git_path for item in self.inputs.tracked_files))
+            ),
             analyzed_languages=(self.inputs.database.language,)
             if status in {"SUCCEEDED", "PARTIAL"}
             else (),
@@ -1014,9 +1026,20 @@ class CodeQLProcessAdapter:
             return "FAILED", "CODEQL_PROFILE_REFERENCE_MISMATCH"
         workspace = request.workspace
         database = self.inputs.database
+        action = request.action
+        action_meta = action.meta
         if (
-            request.action.action_type != "RUN_TOOL"
-            or request.action.tool_name != "CODEQL"
+            not isinstance(action_meta, RecordMeta)
+            or request.analysis_config_ref != self.inputs.analysis_config_ref
+            or request.rule_catalog_ref != self.inputs.rule_catalog_ref
+            or action.input_refs.count(self.inputs.analysis_config_ref) != 1
+            or action.input_refs.count(self.inputs.rule_catalog_ref) != 1
+            or action.action_type != "RUN_TOOL"
+            or action.tool_name != "CODEQL"
+            or action_meta.analysis_id != workspace.analysis_id
+            or action_meta.workspace_id != workspace.workspace_id
+            or action_meta.commit_id != workspace.commit_id
+            or str(action_meta.attempt_id) != self.inputs.attempt_id
         ):
             return "FAILED", "CODEQL_REQUEST_MISMATCH"
         if workspace.status != "READY" or workspace.commit_id is None:

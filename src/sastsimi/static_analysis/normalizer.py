@@ -57,6 +57,7 @@ class StaticNormalizationInput:
     analysis_config_ref: StoredDataRef
     rule_catalog_ref: StoredDataRef | None
     raw_bytes: bytes | None
+    authorized_paths: tuple[str, ...]
     rule_execution: RuleExecutionRecord | None = None
     catalog_rule_ids: tuple[str, ...] = ()
     rule_mappings: tuple[StaticRuleMapping, ...] = ()
@@ -179,14 +180,7 @@ class StaticNormalizer:
                     profile=material.profile,
                     rule_execution=material.rule_execution,
                     rule_mappings=material.rule_mappings,
-                    authorized_paths=tuple(
-                        sorted(
-                            {
-                                *material.result.coverage.analyzed_paths,
-                                *material.result.coverage.skipped_paths,
-                            }
-                        )
-                    ),
+                    authorized_paths=material.authorized_paths,
                 ),
             )
             if (
@@ -441,8 +435,17 @@ class StaticNormalizer:
                 material.catalog_rule_ids,
             )
         mapping_ids = tuple(mapping.rule_id for mapping in material.rule_mappings)
+        analyzed_paths = material.result.coverage.analyzed_paths
+        skipped_paths = material.result.coverage.skipped_paths
+        authorized_paths = material.authorized_paths
         if (
-            len(mapping_ids) != len(set(mapping_ids))
+            not authorized_paths
+            or len(authorized_paths) != len(set(authorized_paths))
+            or len(analyzed_paths) != len(set(analyzed_paths))
+            or len(skipped_paths) != len(set(skipped_paths))
+            or not set(analyzed_paths).isdisjoint(skipped_paths)
+            or set(analyzed_paths) | set(skipped_paths) != set(authorized_paths)
+            or len(mapping_ids) != len(set(mapping_ids))
             or (mapping_ids and set(mapping_ids) != set(material.catalog_rule_ids))
             or (
                 material.result.tool_kind == "STRUCTURE"
