@@ -732,7 +732,21 @@ async def test_workspace_guard_rejects_head_and_tracked_manifest_drift(
     )
     now = time.monotonic_ns()
     deadline = MonotonicActionDeadline("guard", now, now + 1_000_000_000)
-    await guard.assert_unchanged(workspace, deadline)
+    receipts = await guard.assert_unchanged(workspace, deadline)
+
+    assert receipts is not None
+    assert tuple(receipt.invocation_id for receipt in receipts) == (
+        "guard-guard-head",
+        "guard-guard-worktree",
+        "guard-guard-index",
+        "guard-guard-manifest",
+    )
+    assert tuple(receipt.command_kind for receipt in receipts) == (
+        "guard-head",
+        "guard-worktree",
+        "guard-index",
+        "guard-manifest",
+    )
 
     moved_runner = FakeRunner([("c" * 40 + "\n").encode()], [])
     moved = WorkspaceGuard(

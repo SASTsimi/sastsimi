@@ -411,9 +411,9 @@ class WorkspaceGuard:
 
     async def assert_unchanged(
         self, workspace: CodeWorkspace, deadline: MonotonicActionDeadline
-    ) -> None:
+    ) -> tuple[ProcessReceipt, ...]:
         root = self.root_for(workspace)
-        await self._assert_repository_state(
+        return await self._assert_repository_state(
             root,
             str(workspace.commit_id),
             self._manifests.get(str(workspace.workspace_id)),
@@ -425,7 +425,7 @@ class WorkspaceGuard:
         self,
         outcome: RepositoryPreparation,
         deadline: MonotonicActionDeadline,
-    ) -> None:
+    ) -> tuple[ProcessReceipt, ...]:
         if (
             outcome.status != "READY"
             or outcome.root is None
@@ -445,7 +445,7 @@ class WorkspaceGuard:
             or not root.is_dir()
         ):
             raise ValueError("WORKSPACE_MUTATED")
-        await self._assert_repository_state(
+        return await self._assert_repository_state(
             root,
             outcome.resolved_commit_id,
             outcome.tracked_files,
@@ -497,8 +497,9 @@ class WorkspaceGuard:
         deadline: MonotonicActionDeadline,
         *,
         require_detached: bool,
-    ) -> None:
+    ) -> tuple[ProcessReceipt, ...]:
         runner = self._factory(root, deadline)
+        receipts: list[ProcessReceipt] = []
 
         async def run(
             name: str, argv: tuple[str, ...], *, expect_failure: bool = False
@@ -524,6 +525,7 @@ class WorkspaceGuard:
             succeeded = result.outcome == "SUCCEEDED" and result.return_code == 0
             if succeeded == expect_failure:
                 raise ValueError("WORKSPACE_MUTATED")
+            receipts.append(result.receipt)
             return result
 
         head = await run("head", ("rev-parse", "HEAD"))
@@ -537,6 +539,7 @@ class WorkspaceGuard:
         manifest, _ = _build_manifest(root, listing.stdout, self._sensitive_names)
         if manifest != expected_manifest:
             raise ValueError("WORKSPACE_MUTATED")
+        return tuple(receipts)
 
 
 type RecoveryDeadlineFactory = Callable[[str, str], MonotonicActionDeadline]

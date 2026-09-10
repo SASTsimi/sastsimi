@@ -45,9 +45,10 @@ class FixedWorkspaceLocator:
 
     async def assert_unchanged(
         self, workspace: CodeWorkspace, deadline: MonotonicActionDeadline
-    ) -> None:
+    ) -> tuple[ProcessReceipt, ...]:
         del workspace, deadline
         self.checks += 1
+        return ()
 
 
 class FixedOutputRunner:
@@ -612,10 +613,11 @@ async def test_post_decode_workspace_mutation_discards_observation(
     class MutatingLocator(FixedWorkspaceLocator):
         async def assert_unchanged(
             self, workspace: CodeWorkspace, deadline: MonotonicActionDeadline
-        ) -> None:
-            await super().assert_unchanged(workspace, deadline)
+        ) -> tuple[ProcessReceipt, ...]:
+            receipts = await super().assert_unchanged(workspace, deadline)
             if self.checks == 2:
                 raise ValueError("WORKSPACE_MUTATED")
+            return receipts
 
     root = tmp_path / "workspace"
     root.mkdir()

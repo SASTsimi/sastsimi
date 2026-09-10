@@ -37,6 +37,26 @@ changes required by the independent C1/I1/I2/I3 security findings:
 No persisted contract, enum, schema, public CLI activation, or other Wave 1
 lane ownership changes are authorized by this amendment.
 
+### 2026-09-11 Context integrity receipt seam amendment
+
+Task 9 requires a durable `CONTEXT_READ` receipt to bind the ordered process
+receipts proving that the workspace did not change around the read. The frozen
+`WorkspaceLocatorPort.assert_unchanged` previously discarded those receipts,
+so the integration agent may make this one additive, transport-only seam before
+accepting the Wave 2C lane:
+
+- `WorkspaceLocatorPort.assert_unchanged` returns
+  `tuple[ProcessReceipt, ...]` in execution order.
+- `WorkspaceGuard` returns the already-produced successful integrity-check
+  receipts. It performs no new command and changes no validation decision.
+- Existing AST and CodeQL callers may ignore the return value. Context Retrieval
+  must bind the exact receipt hashes into its same-attempt `CONTEXT_READ`
+  receipt; it may not invent or reconstruct them after the read.
+- Only `src/sastsimi/ports/workspace.py`,
+  `src/sastsimi/static_analysis/repository_loader.py`, their existing focused
+  unit tests, and this plan may change for this serial seam. No persisted
+  contract, schema, authority, current pointer, or tool behavior changes.
+
 - Base implementation commit is `b3b2d9918ea815b9b936c09c98e4c53fd54937dc`.
 - Do not change existing fields, enums, validators, result ownership, or reference meaning in `src/sastsimi/contracts/`. The sole permitted domain-contract extension is the narrow `StaticToolProfile` record plus the transport-level `StaticToolRequest.tool_profile_ref` required to close exact adapter selection; export and inventory its generated schema in Task 1. No other schema may change.
 - Retain T07 `FakeStaticToolAdapter`, fake workspace setup, and deterministic 22-step scenarios as regression fixtures; real adapters are additive and are not selected by the CLI in this task.
@@ -624,7 +644,7 @@ class WorkspaceLocatorPort(Protocol):
     def root_for(self, workspace: CodeWorkspace) -> Path: ...
     async def assert_unchanged(
         self, workspace: CodeWorkspace, deadline: MonotonicActionDeadline
-    ) -> None: ...
+    ) -> tuple[ProcessReceipt, ...]: ...
 
 class WorkspacePreparationPublisherPort(Protocol):
     def begin(
@@ -1202,7 +1222,7 @@ Relation and fact selection is exact and deterministic:
 - `AUTH_GUARDS`: select exact `AUTH_CHECK` and `PERMISSION_CHECK` facts whose symbol equals a seed or whose location is contained by the seed callable range. Also follow an outgoing `CALL` only when its target symbol/range contains one of those guard facts. Include the guard entity/location and that existing CALL relation; never label an arbitrary callee as a guard or synthesize a new relation.
 - `ROUTE_BINDINGS`: select existing `ROUTE_BINDING` relations incident to the seed and traverse either direction so route -> handler and handler -> route lookups work, while returning the stored route -> handler orientation.
 
-Depth 0 returns only explicit/lineage seeds and directly co-located selected facts; each traversed stored relation consumes one depth. Every query returns entities/locations/relations in canonical sorted order. Because `CodeContextResponse` has no fact field, fact selection contributes its exact entity/location and the bundle remains the provenance source; no competing fact schema is created.
+The seed set is conceptual depth 0, but the persisted `ContextRetrievalLimits.max_depth` remains the existing `PositiveInt` and therefore has a minimum of 1. `max_depth=N` permits at most N stored-relation traversals after the seeds. A seed-only request uses an empty `relation_query`; it does not encode `max_depth=0`. Every query returns entities/locations/relations in canonical sorted order. Because `CodeContextResponse` has no fact field, fact selection contributes its exact entity/location and the bundle remains the provenance source; no competing fact schema is created.
 
 `max_requests_per_hypothesis` uses the derived durable view above to count distinct claimed `code_request_id` values across generations for that hypothesis. A repeated normalized fingerprint may return the exact previously committed response only when request scope, limits, action authorization, plan/profile/lineage hashes, fragment hashes, and current workspace/commit all match. Otherwise it consumes a request slot and executes normally; it never silently widens the limits or relies on process memory.
 

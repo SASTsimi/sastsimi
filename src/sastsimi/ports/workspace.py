@@ -10,6 +10,7 @@ from sastsimi.contracts.work import WorkExecutionState
 
 from .dto import (
     MonotonicActionDeadline,
+    ProcessReceipt,
     PublishedWorkspaceMaterial,
     RepositoryPreparation,
     WorkspaceStorageLease,
@@ -40,7 +41,7 @@ class WorkspaceLocatorPort(Protocol):
 
     async def assert_unchanged(
         self, workspace: CodeWorkspace, deadline: MonotonicActionDeadline
-    ) -> None: ...
+    ) -> tuple[ProcessReceipt, ...]: ...
 
 
 class WorkspacePreparationPublisherPort(Protocol):
