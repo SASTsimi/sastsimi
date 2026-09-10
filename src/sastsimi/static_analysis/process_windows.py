@@ -22,6 +22,7 @@ CREATE_FLAGS = (
     | CREATE_UNICODE_ENVIRONMENT
     | EXTENDED_STARTUPINFO_PRESENT
 )
+ERROR_BROKEN_PIPE = 109
 
 
 @dataclass(frozen=True)
@@ -178,10 +179,12 @@ class WindowsProcessBackend:
 class CtypesWin32Api:
     """Small typed wrapper around the Win32 calls needed by the launcher."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, kernel32: Any | None = None) -> None:
         if os.name != "nt":
             raise OSError("WIN32_BACKEND_UNAVAILABLE")
-        self.kernel32: Any = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.kernel32: Any = kernel32 or ctypes.WinDLL(
+            "kernel32", use_last_error=True
+        )
         from ctypes import wintypes
 
         self.kernel32.CreatePipe.restype = wintypes.BOOL
@@ -214,56 +217,76 @@ class CtypesWin32Api:
 
         security = SecurityAttributes(ctypes.sizeof(SecurityAttributes), None, True)
         handles: list[object] = []
-        for _ in range(3):
-            read_handle = wintypes.HANDLE()
-            write_handle = wintypes.HANDLE()
-            self._checked(
-                self.kernel32.CreatePipe(
-                    ctypes.byref(read_handle),
-                    ctypes.byref(write_handle),
-                    ctypes.byref(security),
-                    0,
-                ),
-                "CreatePipe",
-            )
-            handles.extend((read_handle, write_handle))
-        # Parent stdin-write, stdout-read, and stderr-read ends never inherit.
-        for handle in (handles[1], handles[2], handles[4]):
-            self._checked(
-                self.kernel32.SetHandleInformation(handle, 1, 0),
-                "SetHandleInformation",
-            )
-        return tuple(handles)
+        try:
+            for _ in range(3):
+                read_handle = wintypes.HANDLE()
+                write_handle = wintypes.HANDLE()
+                self._checked(
+                    self.kernel32.CreatePipe(
+                        ctypes.byref(read_handle),
+                        ctypes.byref(write_handle),
+                        ctypes.byref(security),
+                        0,
+                    ),
+                    "CreatePipe",
+                )
+                handles.extend((read_handle, write_handle))
+            # Parent stdin-write, stdout-read, and stderr-read ends never inherit.
+            for handle in (handles[1], handles[2], handles[4]):
+                self._checked(
+                    self.kernel32.SetHandleInformation(handle, 1, 0),
+                    "SetHandleInformation",
+                )
+            return tuple(handles)
+        except BaseException:
+            for handle in handles:
+                self.close(handle)
+            raise
 
     def create_attribute_list(self, child_handles: tuple[object, ...]) -> object:
         size = ctypes.c_size_t()
         self.kernel32.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))
+        if size.value == 0:
+            raise ctypes.WinError(
+                ctypes.get_last_error(), "InitializeProcThreadAttributeList"
+            )
         buffer = ctypes.create_string_buffer(size.value)
         pointer = ctypes.cast(buffer, ctypes.c_void_p)
-        self._checked(
-            self.kernel32.InitializeProcThreadAttributeList(
-                pointer, 1, 0, ctypes.byref(size)
-            ),
-            "InitializeProcThreadAttributeList",
-        )
-        array_type = ctypes.c_void_p * len(child_handles)
-        values = array_type(
-            *(ctypes.cast(cast(Any, item), ctypes.c_void_p) for item in child_handles)
-        )
-        self._checked(
-            self.kernel32.UpdateProcThreadAttribute(
-                pointer,
-                0,
-                0x00020002,
-                ctypes.byref(values),
-                ctypes.sizeof(values),
-                None,
-                None,
-            ),
-            "UpdateProcThreadAttribute",
-        )
-        self._attribute_buffers[id(pointer)] = (buffer, values)
-        return pointer
+        initialized = False
+        try:
+            self._checked(
+                self.kernel32.InitializeProcThreadAttributeList(
+                    pointer, 1, 0, ctypes.byref(size)
+                ),
+                "InitializeProcThreadAttributeList",
+            )
+            initialized = True
+            array_type = ctypes.c_void_p * len(child_handles)
+            values = array_type(
+                *(
+                    ctypes.cast(cast(Any, item), ctypes.c_void_p)
+                    for item in child_handles
+                )
+            )
+            self._checked(
+                self.kernel32.UpdateProcThreadAttribute(
+                    pointer,
+                    0,
+                    0x00020002,
+                    ctypes.byref(values),
+                    ctypes.sizeof(values),
+                    None,
+                    None,
+                ),
+                "UpdateProcThreadAttribute",
+            )
+            self._attribute_buffers[id(pointer)] = (buffer, values)
+            return pointer
+        except BaseException:
+            if initialized:
+                self.kernel32.DeleteProcThreadAttributeList(pointer)
+            self._attribute_buffers.pop(id(pointer), None)
+            raise
 
     def create_suspended(
         self,
@@ -437,8 +460,16 @@ class CtypesWin32Api:
     def read_pipe(self, pipe: object, sink: OutputSink) -> None:
         buffer = ctypes.create_string_buffer(64 * 1024)
         read = ctypes.c_uint32()
-        while self.kernel32.ReadFile(
-            pipe, buffer, len(buffer), ctypes.byref(read), None
-        ):
+        while True:
+            ok = self.kernel32.ReadFile(
+                pipe, buffer, len(buffer), ctypes.byref(read), None
+            )
+            if not ok:
+                error = ctypes.get_last_error()
+                if error == ERROR_BROKEN_PIPE:
+                    return
+                raise ctypes.WinError(error, "ReadFile")
             if read.value:
                 sink.write(buffer.raw[: read.value])
+            else:
+                return

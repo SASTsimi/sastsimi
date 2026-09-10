@@ -1,10 +1,19 @@
 """Typed configuration publication is host-approved and exact-reference closed."""
 
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
 from sastsimi.bootstrap import build_fake_pipeline, build_runtime
+from sastsimi.contracts.actions import (
+    REQUIRED_CHECKS,
+    ActionCheck,
+    ActionDecision,
+    ActionRequest,
+    ActionType,
+    CheckResult,
+)
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.dynamic import SandboxProfile
 from sastsimi.contracts.llm import (
@@ -17,9 +26,10 @@ from sastsimi.contracts.llm import (
     ProviderProfile,
     ProviderValidationEvidence,
 )
-from sastsimi.contracts.static import StaticToolProfile
+from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
-from sastsimi.ports.dto import CapabilityProbeResult
+from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.ports.dto import CapabilityProbeResult, StaticToolRequest
 from sastsimi.storage.codec import reference
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import meta
@@ -80,6 +90,121 @@ def test_static_tool_profile_registry_is_exact_and_fail_closed(tmp_path: Path) -
     evidence.static_tool_approvals.add(content_hash(draft))
     with pytest.raises(ValueError, match="STATIC_TOOL_PROFILE_NOT_EXECUTABLE"):
         runtime.configuration.register_static_tool_profile(draft)
+
+
+def test_static_action_binding_requires_same_exact_profile_everywhere() -> None:
+    from sastsimi.ports.static_tool import validate_static_tool_profile_binding
+
+    profile = make_static_profile()
+    profile_ref = reference(profile)
+    workspace = CodeWorkspace.model_validate_json(
+        canonical_bytes(make("CodeWorkspace") | {"status": "READY", "commit_id": "c1"})
+    )
+    work_data = make("WorkExecutionState", "work_execution_state")
+    work = WorkExecutionState.model_validate_json(
+        canonical_bytes(
+            work_data
+            | {
+                "meta": work_data["meta"]
+                | {"attempt_id": None, "hypothesis_id": None},
+                "work_type": "STATIC_TOOL",
+                "subject_type": "ANALYSIS",
+                "subject_id": "a1",
+                "input_refs": (profile_ref,),
+                "input_hash": content_hash((profile_ref,)),
+                "dedupe_key": content_hash(("static-tool", profile_ref)),
+            }
+        )
+    )
+    action_data = make("ActionRequest", "action_request")
+    action = ActionRequest.model_validate_json(
+        canonical_bytes(
+            action_data
+            | {
+                "meta": action_data["meta"]
+                | {"attempt_id": None, "hypothesis_id": None},
+                "requested_by": "STATIC_ANALYSIS",
+                "action_type": "RUN_TOOL",
+                "work_ref": reference(work),
+                "expected_state_version": work.state_version,
+                "input_refs": (profile_ref,),
+                "tool_name": "AST",
+                "file_paths": ("src/app.py",),
+            }
+        )
+    )
+    checks = tuple(REQUIRED_CHECKS[ActionType.RUN_TOOL])
+    decided_at = action.requested_at
+    decision_data = make("ActionDecision", "action_decision")
+    decision = ActionDecision.model_validate_json(
+        canonical_bytes(
+            decision_data
+            | {
+                "meta": decision_data["meta"]
+                | {"attempt_id": None, "hypothesis_id": None},
+                "action_ref": reference(action),
+                "required_checks": checks,
+                "check_results": tuple(
+                    ActionCheck(
+                        check_type=kind,
+                        result=CheckResult.PASS,
+                        reason_code="TEST_PASS",
+                        safe_message="Trusted test evidence passed.",
+                    )
+                    for kind in checks
+                ),
+                "checked_state_version": work.state_version,
+                "checked_config_refs": (profile_ref,),
+                "valid_until": decided_at + timedelta(minutes=1),
+                "decided_at": decided_at,
+            }
+        )
+    )
+    request = StaticToolRequest(
+        action=action,
+        workspace=workspace,
+        tool_profile_ref=profile_ref,
+        analysis_config_ref=profile_ref,
+        rule_catalog_ref=None,
+    )
+    validate_static_tool_profile_binding(request, work, decision, profile)
+    wrong_ref = profile_ref.model_copy(update={"content_hash": "b" * 64})
+    with pytest.raises(ValueError, match="STATIC_TOOL_PROFILE_BINDING_MISMATCH"):
+        validate_static_tool_profile_binding(
+            StaticToolRequest(
+                action=action,
+                workspace=workspace,
+                tool_profile_ref=wrong_ref,
+                analysis_config_ref=profile_ref,
+                rule_catalog_ref=None,
+            ),
+            work,
+            decision,
+            profile,
+        )
+    for changed_work, changed_action, changed_decision in (
+        (work.model_copy(update={"input_refs": ()}), action, decision),
+        (work, action.model_copy(update={"input_refs": ()}), decision),
+        (work, action, decision.model_copy(update={"checked_config_refs": ()})),
+    ):
+        with pytest.raises(ValueError, match="STATIC_TOOL_PROFILE_BINDING_MISMATCH"):
+            validate_static_tool_profile_binding(
+                StaticToolRequest(
+                    action=changed_action,
+                    workspace=workspace,
+                    tool_profile_ref=profile_ref,
+                    analysis_config_ref=profile_ref,
+                    rule_catalog_ref=None,
+                ),
+                changed_work,
+                changed_decision,
+                profile,
+            )
+
+
+def test_static_tool_request_rejects_removed_four_position_alias() -> None:
+    with pytest.raises(TypeError):
+        StaticToolRequest(object(), object(), object(), object())  # type: ignore[arg-type]
 
 
 def test_typed_registries_require_family_evidence_and_exact_closure(

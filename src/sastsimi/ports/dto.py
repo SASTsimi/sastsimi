@@ -63,6 +63,18 @@ class CancellationResult:
     reason: str | None
 
 
+class AttemptOutputBudgetPort(Protocol):
+    """Attempt-owned aggregate allocation across process invocations/streams."""
+
+    attempt_id: str
+    limit_bytes: int
+
+    def grow(self, key: tuple[str, str], desired_bytes: int) -> int: ...
+
+    @property
+    def used_bytes(self) -> int: ...
+
+
 @dataclass(frozen=True)
 class StagedArtifact:
     data: bytes
@@ -383,35 +395,13 @@ class WorkspaceStorageUsage:
     free_bytes: int
 
 
-@dataclass(frozen=True, init=False)
+@dataclass(frozen=True)
 class StaticToolRequest:
     action: ActionRequest
     workspace: CodeWorkspace
     tool_profile_ref: StoredDataRef
     analysis_config_ref: StoredDataRef
     rule_catalog_ref: StoredDataRef | None
-
-    def __init__(
-        self,
-        action: ActionRequest,
-        workspace: CodeWorkspace,
-        tool_profile_ref: StoredDataRef,
-        analysis_config_ref: StoredDataRef | None = None,
-        rule_catalog_ref: StoredDataRef | None = None,
-    ) -> None:
-        # T07's deterministic fake used the pre-T08 four-position transport.
-        # Preserve that fake-only call shape while exposing the exact T08 fields;
-        # real coordinators must supply all five arguments and validate the ref.
-        if rule_catalog_ref is None and analysis_config_ref is not None:
-            rule_catalog_ref = analysis_config_ref
-            analysis_config_ref = tool_profile_ref
-        if analysis_config_ref is None:
-            raise TypeError("analysis_config_ref is required")
-        object.__setattr__(self, "action", action)
-        object.__setattr__(self, "workspace", workspace)
-        object.__setattr__(self, "tool_profile_ref", tool_profile_ref)
-        object.__setattr__(self, "analysis_config_ref", analysis_config_ref)
-        object.__setattr__(self, "rule_catalog_ref", rule_catalog_ref)
 
 
 @dataclass(frozen=True)

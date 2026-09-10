@@ -192,6 +192,12 @@ class FakeEvidence(UnprovenEvidence):
         if action.requester_identity_ref not in self.identities:
             return None
         refs: list[BudgetScopeRef] = [action.requester_identity_ref]
+        refs.extend(
+            ref
+            for ref in action.input_refs
+            if isinstance(ref, StoredDataRef)
+            and ref.data_kind == "static_tool_profile"
+        )
         if check in {CheckType.PROVIDER, CheckType.SESSION, CheckType.REDACTION}:
             if action.provider_profile_ref is not None:
                 refs.append(action.provider_profile_ref)
