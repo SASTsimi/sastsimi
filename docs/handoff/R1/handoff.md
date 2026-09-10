@@ -103,9 +103,9 @@ LLM 출력은 실행마다 문장이 달라집니다. 그래서 문장 전체를
 |---|---|---|
 | hypothesis `normal` | 21 | 4 |
 | hypothesis `failure` | 4 | 4 |
-| chaining `normal` | 24 | 5 |
-| chaining `normal-true-true` | 21 | 5 |
-| chaining `failure` | 14 | 4 |
+| chaining `normal` | 25 | 5 |
+| chaining `normal-true-true` | 22 | 5 |
+| chaining `failure` | 15 | 4 |
 
 `failure` 샘플에 `judgement` 비중이 높은 것은 의도한 것입니다. 결론(빈 배열, candidate 0건)은 쉽게 맞고 실제 판정은 근거 서술에서 갈리기 때문입니다.
 
