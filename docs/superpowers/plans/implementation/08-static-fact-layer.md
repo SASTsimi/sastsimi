@@ -17,6 +17,7 @@
 - Retain T07 `FakeStaticToolAdapter`, fake workspace setup, and deterministic 22-step scenarios as regression fixtures; real adapters are additive and are not selected by the CLI in this task.
 - `CodeWorkspace.status=READY` is required before any code-scoped artifact, `STATIC_TOOL`, `STATIC_NORMALIZE`, or `CONTEXT_RETRIEVAL` work is accepted.
 - The requested Git ref is resolved to one commit object, checked out detached, and verified against `HEAD`; branch names are never retained as the code identity.
+- `CodeWorkspace` begins as an append-only `PREPARING` revision and ends as a new `READY` or `FAILED` revision of the same logical record. Its exact current ref, `WORKSPACE_PREP` work/attempt state, and `AnalysisRunState.workspace_ref` projection must never disagree.
 - Repository source, destination, tool executable, query/rule catalog, timeout, environment, and file list come from trusted configuration or a claimed action, never from LLM output.
 - Every process uses `asyncio.create_subprocess_exec(*argv)` with an argument tuple. No shell string, `shell=True`, command interpolation, repository executable, or executable discovered inside the analyzed workspace is allowed.
 - Process environment is constructed from an allowlist. Git prompts, Git LFS smudge, external protocols, and repository hooks are disabled by default.
@@ -28,7 +29,10 @@
 - `SELECTED + EXECUTED + hit_count=0` means executed with zero raw hits. Missing telemetry, skipped rules, timeout, cancellation, and parse failure never become zero hits.
 - A normalizer consumes only COMMITTED outputs for the expected tool works. It never combines attempts, workspaces, commits, analysis configurations, or rule catalogs.
 - Tool failure does not discard usable output from other tools and does not mean safe code or a vulnerability verdict.
+- At least one implemented evidence path must produce real `CodeRelation(relation_kind="DATA_FLOW")`: T08 decodes ordered CodeQL SARIF `codeFlows`; missing or unsafe flow steps become `DataGap` rather than invented reachability.
 - Context retrieval accepts only a claimed exact `READ_CODE` request and returns code from the same `workspace_id + commit_id`. It enforces depth, fragment, byte, request-count, and timeout limits.
+- Context limits are caller requests bounded by an injected trusted runtime/profile ceiling. A caller can request less, never more. Every explicit entity/location path and every relation- or lineage-expanded path must be authorized before the first file read.
+- For a Chaining-origin proposal with no direct start location, the T08 Context Retrieval Service—not T13—validates the exact proposal/match/parent-Primitive provenance and recovers the allowed starting entities and locations. T13 only produces the records consumed through the port.
 - Verify `HEAD`, tracked-file cleanliness, and safe path identity immediately before and after every static tool execution and context read. If they change, discard newly produced evidence and report `WORKSPACE_CHANGED`.
 - Local absolute paths, credentials, environment secrets, raw authorization material, and unrestricted stderr never enter `safe_message`, domain records, or ordinary logs.
 - Capability observations in T08 are technical, non-persisted evidence only. Real Git/tool profiles remain non-`ACTIVE` until T16 capability and evaluation approval.
@@ -46,6 +50,7 @@ The implementer must begin by checking current code instead of recreating T07 se
 - `src/sastsimi/orchestration/fake_setup.py` already proves `WORKSPACE_PREP`, two fake static works, `STATIC_NORMALIZE`, and downstream use of the resulting bundle.
 - `src/sastsimi/storage/context_binding.py` and `src/sastsimi/storage/context_policy.py` already bind an exact claimed `READ_CODE` action to one request/response pair.
 - `src/sastsimi/storage/transition_service.py` already owns atomic output publication and current-pointer movement.
+- `src/sastsimi/ports/dto.py` currently aliases `ToolCapabilityResult` to a one-ref `BoundaryRecord`; T08 must preserve the public `probe(profile_ref) -> ToolCapabilityResult` signature while replacing that placeholder transport shape with a conformance-tested bridge to the lower probe observation.
 
 For each planned interface below, search the current tree first. If the exact signature and invariant already exist, add or strengthen the named regression test and leave production code unchanged. Do not create a second record writer, transition service, context request binder, fake adapter, schema, current pointer, or workspace identity. The new lower process seam is additive: the outer `StaticToolAdapter` remains compatible with T07, while `StaticToolCoordinator` uses the lower seam to implement real tools without giving them storage authority.
 
@@ -66,6 +71,7 @@ Expected: clean branch at the base commit and all selected tests pass. If a sele
 - Modify `src/sastsimi/ports/dto.py`: add frozen transport DTOs for repository preparation, process results, capability observations, raw static observations, and published tool material. These are not domain schemas.
 - Modify `src/sastsimi/ports/static_tool.py`: retain `StaticToolAdapter`; add `StaticProcessAdapter` and `StaticAttemptPublisherPort` lower seams.
 - Create `src/sastsimi/ports/workspace.py`: exact local workspace lookup, integrity check, and repository publication protocols without exposing paths in persisted contracts.
+- Create `src/sastsimi/ports/context.py`: trusted Context ceilings and read-only exact lineage-record resolver ports.
 - Modify `src/sastsimi/ports/__init__.py`: export only public protocol and DTO names used by composition/tests.
 
 ### Real static layer
@@ -85,6 +91,8 @@ Expected: clean branch at the base commit and all selected tests pass. If a sele
 
 - Create `src/sastsimi/orchestration/static_publication.py`: implement `WorkspacePreparationPublisherPort` and `StaticAttemptPublisherPort` with existing `WorkflowRunner`, `RuntimeServices`, exact `SAVE_RESULT`, artifact store, IDs, and clock. This is the trusted application-side writer; repository/process adapters never import it.
 - Modify `src/sastsimi/bootstrap.py`: add a private factory that composes real static components for tests and future activation, but do not select it from `analyze` or mark profiles `ACTIVE`.
+- Modify `src/sastsimi/storage/intermediate_policy.py`, `intermediate_publication.py`, and `transition_service.py`: support the canonical append-only workspace lifecycle and exact run-state projection without adding a second storage mechanism.
+- Modify `src/sastsimi/storage/context_binding.py` and `context_policy.py`, and create `src/sastsimi/storage/context_lineage.py`: bind all requested paths, enforce the trusted ceiling, and resolve exact records for validation by the Context Retrieval Service.
 
 ### Tests and fixtures
 
@@ -96,11 +104,14 @@ Expected: clean branch at the base commit and all selected tests pass. If a sele
 - Create `tests/unit/static_analysis/test_open_grep_adapter.py`.
 - Create `tests/unit/static_analysis/test_normalizer.py`.
 - Create `tests/unit/static_analysis/test_context_retrieval.py`.
+- Create `tests/contract/test_static_tool_conformance.py`.
 - Create `tests/integration/static_analysis/conftest.py`: local Git repository and fake executable fixtures; no network or host CodeQL/OpenGrep installation required.
 - Create `tests/integration/static_analysis/test_repository_prepare.py`.
 - Create `tests/integration/static_analysis/test_tool_attempt_publication.py`.
 - Create `tests/integration/static_analysis/test_static_join.py`.
 - Create `tests/integration/static_analysis/test_context_retrieval.py`.
+- Create `tests/integration/static_analysis/test_chained_child_context.py`.
+- Create `tests/integration/recovery/test_static_workspace_recovery.py`.
 - Create `tests/security_negative/test_code_path_escape.py`.
 - Modify `tests/contract/test_architecture_imports.py`: explicitly reject concrete runtime/storage imports and unsafe process APIs in `static_analysis`.
 - Modify `tests/unit/test_fake_adapters.py` and selected T07 E2E tests only to assert compatibility; do not rewrite fake behavior around the real adapters.
@@ -114,13 +125,15 @@ Expected: clean branch at the base commit and all selected tests pass. If a sele
 - Modify: `src/sastsimi/ports/static_tool.py`
 - Create: `src/sastsimi/ports/workspace.py`
 - Modify: `src/sastsimi/ports/__init__.py`
+- Modify: `src/sastsimi/static_analysis/fake.py`
 - Modify: `tests/contract/test_core_ports.py`
 - Modify: `tests/contract/test_architecture_imports.py`
+- Modify: `tests/unit/test_fake_adapters.py`
 - Test: `tests/unit/static_analysis/conftest.py`
 
 **Interfaces:**
-- Consumes: existing `StaticToolRequest`, `StaticToolAdapter`, `CodeWorkspace`, `ToolCoverage`, and static closed-enum values.
-- Produces: non-persisted `ProcessResult`, `StaticCapabilityObservation`, `StaticToolObservation`, `PublishedStaticToolMaterial`, `PrebuiltCodeQLDatabase`, `StaticProcessAdapter`, `StaticAttemptPublisherPort`, `WorkspacePreparationPublisherPort`, and `WorkspaceLocatorPort`.
+- Consumes: existing `StaticToolRequest`, public `StaticToolAdapter` method signatures, `CodeWorkspace`, `ToolCoverage`, and static closed-enum values.
+- Produces: non-persisted `ProcessResult`, `StaticToolProfile`, `StaticRuleMapping`, concrete transport `ToolCapabilityResult`, `StaticCapabilityObservation`, `StaticToolObservation`, `PublishedWorkspaceMaterial`, `PublishedStaticToolMaterial`, `PrebuiltCodeQLDatabase`, `StaticProcessAdapter`, `StaticToolProfileResolverPort`, `StaticAttemptPublisherPort`, `WorkspacePreparationPublisherPort`, and `WorkspaceLocatorPort`.
 
 Use these transport shapes. They may echo trusted correlation IDs supplied by the caller, but must not allocate IDs, subclass `DomainRecord`, carry `RecordMeta`, or move current pointers. They carry `StoredDataRef` only where the trusted publisher returns already committed canonical material.
 
@@ -139,6 +152,24 @@ class ProcessResult:
 class StaticCapabilityObservation:
     available: bool
     executable: str
+    observed_version: str | None
+    expected_version: str
+    reason_code: str | None
+
+@dataclass(frozen=True)
+class StaticToolProfile:
+    ref: StoredDataRef
+    adapter_key: str
+    tool_name: str
+    expected_version: str
+
+@dataclass(frozen=True)
+class ToolCapabilityResult:
+    # `ref` preserves the T07 public attribute while the other fields expose
+    # the checked lower observation without pretending it is a domain record.
+    ref: StoredDataRef
+    available: bool
+    tool_name: str
     observed_version: str | None
     expected_version: str
     reason_code: str | None
@@ -175,6 +206,7 @@ class CandidateRelation:
     from_location: CandidateLocation
     to_symbol_source_key: str | None
     to_location: CandidateLocation
+    rule_id: str | None
 
 @dataclass(frozen=True)
 class CandidateGap:
@@ -204,6 +236,13 @@ class CandidateRule:
     detail: str | None
 
 @dataclass(frozen=True)
+class StaticRuleMapping:
+    rule_id: str
+    result_fact_kind: str
+    flow_start_fact_kind: str | None
+    requires_code_flow: bool
+
+@dataclass(frozen=True)
 class TrackedFile:
     git_path: str
     git_mode: str
@@ -216,7 +255,8 @@ class RepositoryPreparation:
     workspace_id: str
     repository_url: str
     requested_ref: str
-    resolved_commit_id: str
+    status: Literal["READY", "FAILED"]
+    resolved_commit_id: str | None
     root: Path
     tracked_files: tuple[TrackedFile, ...]
     gaps: tuple[CandidateGap, ...]
@@ -254,6 +294,13 @@ class PublishedStaticToolMaterial:
     observation: StaticToolObservation
 
 @dataclass(frozen=True)
+class PublishedWorkspaceMaterial:
+    workspace: CodeWorkspace
+    workspace_ref: RunStoredDataRef
+    work: WorkExecutionState
+    analysis_state: AnalysisRunState
+
+@dataclass(frozen=True)
 class PrebuiltCodeQLDatabase:
     workspace_id: str
     commit_id: str
@@ -272,6 +319,9 @@ class StaticProcessAdapter(Protocol):
     ) -> StaticToolObservation: ...
     async def cancel(self, attempt_id: str) -> CancellationResult: ...
 
+class StaticToolProfileResolverPort(Protocol):
+    def resolve(self, profile_ref: StoredDataRef) -> StaticToolProfile: ...
+
 class StaticAttemptPublisherPort(Protocol):
     def publish(
         self, request: StaticToolRequest, observation: StaticToolObservation
@@ -282,10 +332,22 @@ class WorkspaceLocatorPort(Protocol):
     def assert_unchanged(self, workspace: CodeWorkspace) -> None: ...
 
 class WorkspacePreparationPublisherPort(Protocol):
-    def publish(self, preparation: RepositoryPreparation) -> CodeWorkspace: ...
+    def begin(
+        self,
+        work: WorkExecutionState,
+        repository_url: str,
+        workspace_id: WorkspaceId,
+    ) -> PublishedWorkspaceMaterial: ...
+
+    def finish(
+        self,
+        work: WorkExecutionState,
+        preparing: PublishedWorkspaceMaterial,
+        outcome: RepositoryPreparation,
+    ) -> PublishedWorkspaceMaterial: ...
 ```
 
-- [ ] **Step 1: Write failing port and architecture tests.** Assert that `StaticToolAdapter.run` keeps its existing `ToolRunResult` return, the lower adapter has no storage methods, transport DTOs have no `meta` field, `static_analysis` cannot import `sastsimi.runtime` or `sastsimi.storage`, and subprocess calls using `subprocess.run`, `Popen`, `create_subprocess_shell`, `os.system`, or `shell=True` are rejected by the architecture check.
+- [ ] **Step 1: Write failing port and architecture tests.** Assert that public `StaticToolAdapter.probe(profile_ref) -> ToolCapabilityResult`, `run(request) -> ToolRunResult`, and `cancel(attempt_id)` signatures remain unchanged; `ToolCapabilityResult.ref` remains available to T07; the lower adapter has no storage methods; transport DTOs have no `meta`; `static_analysis` cannot import `sastsimi.runtime` or `sastsimi.storage`; and subprocess calls using `subprocess.run`, `Popen`, `create_subprocess_shell`, `os.system`, or `shell=True` are rejected by the architecture check. Assert the old `ToolCapabilityResult = BoundaryRecord` placeholder is gone and no persisted schema/export changes.
 - [ ] **Step 2: Run the focused RED test.**
 
 ```powershell
@@ -294,7 +356,7 @@ uv run pytest tests/contract/test_core_ports.py tests/contract/test_architecture
 
 Expected: fail only because the lower DTOs/protocols and new boundary assertions do not exist.
 
-- [ ] **Step 3: Add the frozen DTOs and protocols.** Keep all DTOs non-persisted and immutable. Do not modify `contracts/static.py`, generated schemas, or the old fake adapter signature.
+- [ ] **Step 3: Add the frozen DTOs and protocols.** Keep all DTOs non-persisted and immutable. Replace only the port-local `ToolCapabilityResult = BoundaryRecord` alias with the concrete transport DTO above, and update `FakeStaticToolAdapter.probe`/contract fixtures to populate it while preserving `.ref` and the public signature. Do not modify `contracts/static.py` or generated schemas.
 - [ ] **Step 4: Run the focused GREEN test and fake compatibility test.**
 
 ```powershell
@@ -306,7 +368,7 @@ Expected: pass; the T07 fake adapter remains runtime-checkable as `StaticToolAda
 - [ ] **Step 5: Commit this independently reviewable seam.**
 
 ```powershell
-git add src/sastsimi/ports/dto.py src/sastsimi/ports/static_tool.py src/sastsimi/ports/workspace.py src/sastsimi/ports/__init__.py tests/contract/test_core_ports.py tests/contract/test_architecture_imports.py tests/unit/static_analysis/conftest.py
+git add src/sastsimi/ports/dto.py src/sastsimi/ports/static_tool.py src/sastsimi/ports/workspace.py src/sastsimi/ports/__init__.py src/sastsimi/static_analysis/fake.py tests/contract/test_core_ports.py tests/contract/test_architecture_imports.py tests/unit/test_fake_adapters.py tests/unit/static_analysis/conftest.py
 git commit -m "feat: add raw static process boundary"
 ```
 
@@ -356,14 +418,44 @@ git commit -m "feat: run static tools through bounded processes"
 **Files:**
 - Create: `src/sastsimi/static_analysis/repository_loader.py`
 - Create: `src/sastsimi/orchestration/static_publication.py`
+- Modify: `src/sastsimi/runtime/workflow_runner.py`
+- Modify: `src/sastsimi/storage/intermediate_policy.py`
+- Modify: `src/sastsimi/storage/intermediate_publication.py`
+- Modify: `src/sastsimi/storage/transition_service.py`
 - Modify: `src/sastsimi/bootstrap.py`
 - Create: `tests/unit/static_analysis/test_repository_loader.py`
 - Create: `tests/integration/static_analysis/test_repository_prepare.py`
+- Modify: `tests/integration/storage/test_intermediate_publication.py`
+- Modify: `tests/integration/storage/test_workflow_runner.py`
+- Create: `tests/integration/recovery/test_static_workspace_recovery.py`
 - Create: `tests/security_negative/test_code_path_escape.py`
 
 **Interfaces:**
-- Consumes: validated repository URL, requested Git ref, allocated `analysis_id`, allocated `workspace_id`, attempt-owned destination, and injected process runner/clock.
-- Produces: `RepositoryPreparation(repository_url, workspace_id, resolved_commit_id, root, tracked_files, gaps, errors)` for the trusted workspace publisher, one COMMITTED existing `CodeWorkspace` from that publisher, and `WorkspaceGuard` implementing `WorkspaceLocatorPort`.
+- Consumes: current `WORKSPACE_PREP` work/attempt, validated repository URL, requested Git ref, allocated `analysis_id`, allocated `workspace_id`, attempt-owned destination, `REPOSITORY_LOADER` identity, execution-budget scope, and injected process runner/clock.
+- Produces: append-only `CodeWorkspace(PREPARING -> READY | FAILED)` revisions, atomically matching `AnalysisRunState.workspace_ref`, terminal work/attempt outputs, `RepositoryPreparation(repository_url, workspace_id, resolved_commit_id, root, tracked_files, gaps, errors)`, and `WorkspaceGuard` implementing `WorkspaceLocatorPort`.
+
+Use the existing transition, intermediate-publication, budget, and external-dispatch services. Do not add a workspace table, current pointer, or alternate journal. `WorkspacePreparationPublisherPort` has two application-side operations:
+
+```python
+class WorkspacePreparationPublisherPort(Protocol):
+    def begin(
+        self,
+        work: WorkExecutionState,
+        repository_url: str,
+        workspace_id: WorkspaceId,
+    ) -> PublishedWorkspaceMaterial: ...
+
+    def finish(
+        self,
+        work: WorkExecutionState,
+        preparing: PublishedWorkspaceMaterial,
+        outcome: RepositoryPreparation,
+    ) -> PublishedWorkspaceMaterial: ...
+```
+
+`begin` is called only after the `WORKSPACE_PREP` attempt is RUNNING. It creates revision 1 with `status=PREPARING`, `commit_id=null`, and a new logical record. A narrow extension to `IntermediatePublicationService` permits only `(WORKSPACE_PREP, code_workspace, REPOSITORY_LOADER)` and binds this RunMeta record to the current work, active attempt, unused exact `SAVE_RESULT` decision, and current `AnalysisRunState`. Publishing the PREPARING revision and updating `AnalysisRunState.workspace_ref + workspace_id` happen in the same database transaction; the attempt ID is proven by the work, action decision, and publication receipt rather than added to the unchanged `CodeWorkspace` schema.
+
+`finish` creates exactly revision 2 with the same `logical_record_id`, `previous_record_id=PREPARING.meta.record_id`, and `revision_number=2`. Success uses `status=READY` and the verified commit; failure uses `status=FAILED`, the exact commit only when it was resolved and verified, and real error IDs. The terminal `TransitionCommit` atomically publishes that revision, completes the `WorkAttempt` and `WorkExecutionState`, and moves `AnalysisRunState.workspace_ref`, `workspace_id`, and `commit_id` to the same exact revision. A READY workspace maps to work/attempt `SUCCEEDED`; a FAILED workspace maps to work/attempt `FAILED` and never starts static work. Neither revision stores the local root.
 
 The production source policy accepts `https` repository URLs only in this task. Tests may explicitly enable `file://` for an isolated temporary fixture; that flag must default to false and must not be available from an Agent or repository file. Reject URLs beginning with `-`, scp-like syntax, `ext::`, `file://` without the test-only flag, credentials in the authority component, fragments, and control characters.
 
@@ -375,33 +467,37 @@ Build the manifest from `git ls-files --stage -z`. Accept only regular blobs (`1
 
 `WorkspaceGuard.assert_unchanged` verifies exact HEAD, `git diff --quiet HEAD --`, `git diff --cached --quiet HEAD --`, and the tracked manifest fingerprint. Untracked tool-output files do not become analysis inputs because tools receive the frozen manifest, but creation of a tracked-path replacement or manifest drift fails the guard.
 
+All clone, rev-parse, checkout, manifest, and integrity Git invocations run under one authorized external-call envelope created with `ActionType.RUN_TOOL`, `requested_by=REPOSITORY_LOADER`, `tool_name="git"`, the exact PREPARING workspace ref in `input_refs`, and a trusted logical `file_paths=("workspace/<workspace_id>",)` value that never exposes the host destination. Reserve approved elapsed/cost units before claim, persist `ExternalDispatch` before spawn, account measured units on return, and release a denied/undispatched reservation. The adapter cannot call the process runner until the decision is ALLOW and durably claimed.
+
 - [ ] **Step 1: Write RED URL and destination tests.** Cover option injection, `ext::`, unauthorized `file://`, credential-bearing URL, existing/non-empty destination, destination traversal, and destination symlink/junction escape.
 - [ ] **Step 2: Write RED exact-checkout tests.** Create two commits and a branch that moves after preparation starts. Assert the returned commit is the initially resolved object, checkout is detached, `READY` cannot be proposed on clone/checkout/HEAD mismatch, and no static process starts before readiness.
 - [ ] **Step 3: Write RED manifest and mutation tests.** Include a regular file, Git symlink, submodule entry fixture, LFS pointer, `../` request, absolute path, Windows drive path, mixed separators, post-checkout edit, index change, and HEAD move. Assert unsafe entries never enter the safe manifest and each omission has a candidate gap.
-- [ ] **Step 4: Write RED publication-authority tests.** Assert the loader returns only a typed preparation candidate, cannot allocate `RecordMeta` or write storage, and the trusted `REPOSITORY_LOADER` publisher is the only component that can commit `CodeWorkspace`. Reject a candidate whose resolved commit, allocated workspace, repository URL, work, attempt, or claimed `SAVE_RESULT` action differs from the current `WORKSPACE_PREP` execution. Assert no local root path is persisted in `CodeWorkspace`.
-- [ ] **Step 5: Run RED.**
+- [ ] **Step 4: Write RED append-only lifecycle tests.** Assert PREPARING is revision 1 and the terminal READY/FAILED record is revision 2 of the same logical record. At each publication boundary, `AnalysisRunState.workspace_ref` resolves to the current exact revision. At terminal commit, attempt output, work output, transition output, commit output, and run-state workspace ref all equal the terminal revision. Reject READY without exact HEAD, a direct READY revision 1, a second PREPARING revision, READY->FAILED overwrite, mismatched repository/workspace/commit, wrong predecessor, and local path persistence.
+- [ ] **Step 5: Write RED action/budget/authority tests.** Assert every Git subprocess is inside one durably claimed `RUN_TOOL(requested_by=REPOSITORY_LOADER, tool_name="git")`; the exact PREPARING ref and current work/attempt are bound; reservation occurs before dispatch; actual usage is committed after return; and denied identity, exhausted budget, stale attempt, or unclaimed decision invokes no Git command. Assert the raw loader returns only a typed candidate and cannot allocate metadata or access storage.
+- [ ] **Step 6: Write RED crash-recovery tests.** Inject failures after PREPARING publication, after external claim but before dispatch, after dispatch before return, after Git return before terminal staging, at `TransitionCommit.PREPARED`, and after COMMITTED marker before projection replay. Undispatched work may resume safely; an ambiguous dispatched clone is marked uncertain and cannot be silently rerun; a partial destination is reused only after exact guard validation or removed only under the validated attempt directory; terminal journal replay converges work, attempt, workspace pointer, and `AnalysisRunState` on one READY or FAILED revision.
+- [ ] **Step 7: Run RED.**
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_repository_loader.py tests/integration/static_analysis/test_repository_prepare.py tests/security_negative/test_code_path_escape.py -q
+uv run pytest tests/unit/static_analysis/test_repository_loader.py tests/integration/static_analysis/test_repository_prepare.py tests/integration/storage/test_intermediate_publication.py tests/integration/storage/test_workflow_runner.py tests/integration/recovery/test_static_workspace_recovery.py tests/security_negative/test_code_path_escape.py -q
 ```
 
-Expected: fail because loader and guard do not exist.
+Expected: fail only on the missing real loader, workspace lifecycle bridge, Git external envelope, or new recovery closure.
 
-- [ ] **Step 6: Implement prepare, manifest, guard, and the thin trusted publisher.** Clean a partially created attempt destination after a failed clone only when its resolved path is inside the configured workspace base and matches the allocated workspace path. Do not recursively delete a caller-supplied or unresolved path. Return safe candidate diagnostics without local absolute paths. The application-side publisher allocates metadata and commits the existing `CodeWorkspace` with `status=READY` only after the final guard succeeds; failures close the work without publishing a READY workspace.
-- [ ] **Step 7: Run GREEN plus focused static analysis.**
+- [ ] **Step 8: Implement the loader and trusted lifecycle bridge.** Keep filesystem/process work in `repository_loader.py` and metadata/storage/action work in `static_publication.py`. Extend the existing intermediate/transition paths only for the exact workspace rules above. Clean a partially created destination only when its resolved path is inside the configured workspace base and exactly matches the allocated attempt path. Do not recursively delete a caller-supplied or unresolved path. Return safe diagnostics without local absolute paths.
+- [ ] **Step 9: Run GREEN plus focused static analysis.**
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_repository_loader.py tests/integration/static_analysis/test_repository_prepare.py tests/security_negative/test_code_path_escape.py -q
-uv run ruff check src/sastsimi/static_analysis/repository_loader.py src/sastsimi/orchestration/static_publication.py src/sastsimi/bootstrap.py tests/unit/static_analysis/test_repository_loader.py tests/integration/static_analysis/test_repository_prepare.py tests/security_negative/test_code_path_escape.py
-uv run mypy --strict src/sastsimi/static_analysis/repository_loader.py src/sastsimi/orchestration/static_publication.py src/sastsimi/bootstrap.py tests/unit/static_analysis/test_repository_loader.py tests/integration/static_analysis/test_repository_prepare.py tests/security_negative/test_code_path_escape.py
+uv run pytest tests/unit/static_analysis/test_repository_loader.py tests/integration/static_analysis/test_repository_prepare.py tests/integration/storage/test_intermediate_publication.py tests/integration/storage/test_workflow_runner.py tests/integration/recovery/test_static_workspace_recovery.py tests/security_negative/test_code_path_escape.py -q
+uv run ruff check src/sastsimi/static_analysis/repository_loader.py src/sastsimi/orchestration/static_publication.py src/sastsimi/runtime/workflow_runner.py src/sastsimi/storage/intermediate_policy.py src/sastsimi/storage/intermediate_publication.py src/sastsimi/storage/transition_service.py src/sastsimi/bootstrap.py tests/unit/static_analysis/test_repository_loader.py tests/integration/static_analysis/test_repository_prepare.py tests/integration/recovery/test_static_workspace_recovery.py tests/security_negative/test_code_path_escape.py
+uv run mypy --strict src/sastsimi/static_analysis/repository_loader.py src/sastsimi/orchestration/static_publication.py src/sastsimi/runtime/workflow_runner.py src/sastsimi/storage/intermediate_policy.py src/sastsimi/storage/intermediate_publication.py src/sastsimi/storage/transition_service.py src/sastsimi/bootstrap.py tests/unit/static_analysis/test_repository_loader.py tests/integration/static_analysis/test_repository_prepare.py tests/integration/recovery/test_static_workspace_recovery.py tests/security_negative/test_code_path_escape.py
 ```
 
-Expected: pass on Windows and POSIX path semantics represented by fixtures.
+Expected: pass on Windows and POSIX path semantics represented by fixtures; no Git process exists outside the authorized/budgeted dispatch path.
 
-- [ ] **Step 8: Commit.**
+- [ ] **Step 10: Commit.**
 
 ```powershell
-git add src/sastsimi/static_analysis/repository_loader.py src/sastsimi/orchestration/static_publication.py src/sastsimi/bootstrap.py tests/unit/static_analysis/test_repository_loader.py tests/integration/static_analysis/test_repository_prepare.py tests/security_negative/test_code_path_escape.py
+git add src/sastsimi/static_analysis/repository_loader.py src/sastsimi/orchestration/static_publication.py src/sastsimi/runtime/workflow_runner.py src/sastsimi/storage/intermediate_policy.py src/sastsimi/storage/intermediate_publication.py src/sastsimi/storage/transition_service.py src/sastsimi/bootstrap.py tests/unit/static_analysis/test_repository_loader.py tests/integration/static_analysis/test_repository_prepare.py tests/integration/storage/test_intermediate_publication.py tests/integration/storage/test_workflow_runner.py tests/integration/recovery/test_static_workspace_recovery.py tests/security_negative/test_code_path_escape.py
 git commit -m "feat: prepare exact guarded git workspaces"
 ```
 
@@ -414,11 +510,11 @@ git commit -m "feat: prepare exact guarded git workspaces"
 
 **Interfaces:**
 - Consumes: safe tracked `.py` files from `RepositoryPreparation`, exact workspace guard, trusted parser version/profile, and current `StaticToolRequest`.
-- Produces: `StaticToolObservation(tool_kind="STRUCTURE")` with JSON raw output, Python file/module/type/callable/data symbols, call/import relations where statically observable, route-binding candidates for literal recognized decorators, and explicit unsupported/parse gaps.
+- Produces: `StaticToolObservation(tool_kind="STRUCTURE")` with JSON raw output, Python file/module/type/callable/data symbols, call/import relations where statically observable, route-binding candidates for literal recognized decorators, and explicit unsupported/parse gaps. `CALL` direction is caller -> callee; `ROUTE_BINDING` direction is route symbol -> handler callable.
 
 The worker parses source text with `ast.parse` and never imports, compiles, evaluates, or runs target modules. The parent starts it with the safe process runner and an explicit file manifest. Worker output uses Git-relative paths and 1-based Unicode-code-point positions. Missing end positions produce line-only ranges with both columns `None`; the adapter never invents precision.
 
-- [ ] **Step 1: Write RED parser tests.** Cover functions, async functions, methods, classes, imports, direct calls, literal route decorators, Unicode columns, syntax error in one file, unsupported extension, and a file whose top level would raise if executed. Assert the sentinel side effect never occurs.
+- [ ] **Step 1: Write RED parser tests.** Cover functions, async functions, methods, classes, imports, direct calls, literal route decorators, Unicode columns, syntax error in one file, unsupported extension, and a file whose top level would raise if executed. Assert `CALL` is caller -> callee, `ROUTE_BINDING` is route -> handler, and the sentinel side effect never occurs.
 - [ ] **Step 2: Write RED boundary tests.** Assert the worker receives only manifest entries, a symlink is not opened, parse error yields `PARTIAL` plus `STATIC_PARSE_FAILED`, all `rule_id` values are null, and empty successful parsing is not a vulnerability verdict.
 - [ ] **Step 3: Run RED.**
 
@@ -454,14 +550,16 @@ git commit -m "feat: extract parse-only python ast facts"
 
 **Interfaces:**
 - Consumes: trusted absolute CodeQL executable, exact expected CLI version, `PrebuiltCodeQLDatabase` bound to the current workspace/commit, exact query-pack path/digest, complete rule catalog, selected rule IDs/packs, safe process runner, and current request.
-- Produces: `StaticCapabilityObservation` and SARIF-backed `StaticToolObservation(tool_kind="RULE_BASED")`.
+- Produces: `StaticCapabilityObservation` and SARIF-backed `StaticToolObservation(tool_kind="RULE_BASED")`, including ordered `CandidateRelation(relation_kind="DATA_FLOW")` edges from trustworthy SARIF `codeFlows`.
 
 Only these process families are allowed: version probe and `codeql database analyze` of the trusted prebuilt database into an attempt-owned SARIF file. Before execution, require the database descriptor's `workspace_id + commit_id` to equal the current READY workspace and verify its digest. Reject any configured argv containing `database create`, `database trace-command`, `--command`, `autobuild`, a build tool, package installer, workspace executable, or output path under the analyzed checkout. A missing, stale, or digest-mismatched database/query pack yields unavailable capability or `SKIPPED/FAILED` candidate evidence; it never triggers a build. SARIF locations must map back to the safe tracked manifest; foreign or unsafe paths become gaps and cannot produce normalized facts.
 
 The SARIF decoder maps result `ruleId` counts to catalog rules. Every catalog rule appears once in `CandidateRule`. Selected rules with trustworthy execution telemetry use `EXECUTED` and the raw hit count, including zero. Unselected rules use `NOT_SELECTED + NOT_EXECUTED`. Missing/ambiguous telemetry uses `UNKNOWN + TELEMETRY_MISSING`; malformed SARIF is not zero hits.
 
+For a catalog entry with `requires_code_flow=true`, decode every `result.codeFlows[].threadFlows[].locations[]` in array order. Normalize each physical location through the safe tracked manifest, then emit one `DATA_FLOW` relation for every consecutive distinct pair, from earlier flow step to later flow step, carrying that exact `rule_id`. The catalog's `flow_start_fact_kind` may label the first valid location (normally `SOURCE`), and `result_fact_kind` labels the result/final valid location (normally `SINK`); never infer endpoint roles from message text or severity. Preserve separate SARIF flows as separate raw candidates until deterministic normalization. If a required flow is absent, has fewer than two valid distinct locations, crosses an unsafe/foreign path, or contains an unresolved step, retain any independently supported endpoint facts but add `DataGap(code=STATIC_DATA_FLOW_UNRESOLVED, reason=MISSING|UNSUPPORTED)` for the missing reachability. Never bridge over a bad step or invent an edge.
+
 - [ ] **Step 1: Write RED capability and command-policy tests.** Assert exact version match, missing executable, wrong version, database/query-pack digest mismatch, and every prohibited build/autobuild command. Use a fake executable; do not require host CodeQL.
-- [ ] **Step 2: Write RED SARIF tests.** Cover one hit, selected zero-hit rule, unselected rule, duplicate result rule IDs, missing rule metadata, malformed JSON, nonzero exit with partial SARIF, timeout, cancellation, and raw output preservation.
+- [ ] **Step 2: Write RED SARIF and data-flow tests.** Cover one hit, selected zero-hit rule, unselected rule, duplicate result rule IDs, missing rule metadata, malformed JSON, nonzero exit with partial SARIF, timeout, cancellation, and raw output preservation. Add a three-location codeFlow and assert exactly two directed `DATA_FLOW` candidates plus catalog-declared SOURCE/SINK endpoints. Add missing, one-location, unsafe-path, and unresolved-middle-step flows and assert `STATIC_DATA_FLOW_UNRESOLVED` with no fabricated jump edge.
 - [ ] **Step 3: Run RED.**
 
 ```powershell
@@ -534,12 +632,15 @@ git commit -m "feat: scan safe files with OpenGrep evidence"
 - Create: `src/sastsimi/static_analysis/coordinator.py`
 - Modify: `src/sastsimi/orchestration/static_publication.py`
 - Create: `tests/integration/static_analysis/test_tool_attempt_publication.py`
+- Create: `tests/contract/test_static_tool_conformance.py`
 - Modify: `src/sastsimi/static_analysis/__init__.py`
 - Modify: `src/sastsimi/bootstrap.py`
 
 **Interfaces:**
-- Consumes: real `StaticProcessAdapter`, `WorkspaceLocatorPort`, current `StaticToolRequest`, trusted `StaticAttemptPublisherPort`, current work/attempt, exact analysis configuration, and optional exact rule catalog.
-- Produces: existing `StaticToolAdapter` behavior and `PublishedStaticToolMaterial` whose result is the only canonical tool result for that attempt.
+- Consumes: exact `StaticToolProfileResolverPort`, a trusted immutable `adapter_key -> StaticProcessAdapter` map, `WorkspaceLocatorPort`, current `StaticToolRequest`, trusted `StaticAttemptPublisherPort`, current work/attempt, exact analysis configuration, and optional exact rule catalog.
+- Produces: public `StaticToolAdapter` behavior, non-persisted `ToolCapabilityResult`, and `PublishedStaticToolMaterial` whose result is the only canonical tool result for that attempt.
+
+The public/lower probe bridge is fixed here. `StaticToolCoordinator.probe(profile_ref)` resolves the exact trusted `StaticToolProfile`, selects exactly one lower adapter by `adapter_key`, calls its `probe()`, and rejects a returned tool name or expected/observed version that does not match the resolved profile. It returns `ToolCapabilityResult(ref=profile_ref, ...)` without persisting or activating anything. A missing profile, unknown/duplicate adapter key, stale ref, or mismatched observation returns an unavailable result with a closed safe reason (or raises before external dispatch for invalid trusted composition); it never falls back to another tool. T16 later consumes the probe result for capability/evaluation approval. T08 must not mark any profile ACTIVE.
 
 `StaticToolCoordinator.run` performs this sequence:
 
@@ -557,29 +658,30 @@ The publisher validates catalog set equality, configuration/catalog refs, tool n
 - [ ] **Step 1: Write RED authority tests.** A malicious lower adapter attempts to supply record IDs, metadata, stored refs, a different attempt, absolute paths, or a `SUCCEEDED` status with missing telemetry. Assert the DTO or trusted publisher rejects it before publication.
 - [ ] **Step 2: Write RED atomicity and lifecycle tests.** Inject crashes after raw artifact staging and between candidate staging/transition commit. Assert no partial `RuleExecutionRecord` becomes current, restart uses the existing transition recovery rules, late old-attempt output is rejected, and exactly one `ToolRunResult` is committed.
 - [ ] **Step 3: Write RED semantic tests.** Assert raw artifact, rule record, and tool result share workspace/commit/attempt/tool/config/catalog; zero hits and not-run stay different; timeout/cancel/failure never becomes zero hits or a verdict.
-- [ ] **Step 4: Run RED.**
+- [ ] **Step 4: Write RED public-port conformance tests.** Put AST, CodeQL, and OpenGrep lower adapters behind `StaticToolCoordinator`. For each, assert the exact public `probe(profile_ref) -> ToolCapabilityResult`, `run(request) -> ToolRunResult`, and `cancel(attempt_id)` behavior. Probe tests cover exact success, missing executable, wrong version, stale/wrong profile ref, unknown adapter key, and lower observation name/version mismatch. Run tests assert the action's `tool_name` selects only the configured adapter, then the trusted publisher—not the lower adapter—returns the canonical result. Retain the T07 fake as a fourth structural implementation.
+- [ ] **Step 5: Run RED.**
 
 ```powershell
-uv run pytest tests/integration/static_analysis/test_tool_attempt_publication.py tests/contract/domain/test_static.py -q
+uv run pytest tests/integration/static_analysis/test_tool_attempt_publication.py tests/contract/test_static_tool_conformance.py tests/contract/domain/test_static.py -q
 ```
 
 Expected: fail because the coordinator and trusted publisher do not exist.
 
-- [ ] **Step 5: Implement coordinator and publisher using injected public runtime services.** `static_analysis/` may import the publisher protocol but not `orchestration/static_publication.py`; only `bootstrap.py` and tests compose the concrete pair. Keep the factory private and unselected by the CLI.
-- [ ] **Step 6: Run GREEN plus fake regression.**
+- [ ] **Step 6: Implement coordinator, probe bridge, and publisher using injected public runtime services.** `static_analysis/` may import the publisher/profile protocols but not `orchestration/static_publication.py` or concrete profile storage; only `bootstrap.py` and tests compose the concrete pair. Keep the factory private and unselected by the CLI.
+- [ ] **Step 7: Run GREEN plus fake regression.**
 
 ```powershell
-uv run pytest tests/integration/static_analysis/test_tool_attempt_publication.py tests/contract/domain/test_static.py tests/unit/test_fake_adapters.py tests/e2e/test_fake_true_pipeline.py -q
-uv run ruff check src/sastsimi/static_analysis/coordinator.py src/sastsimi/orchestration/static_publication.py src/sastsimi/bootstrap.py tests/integration/static_analysis/test_tool_attempt_publication.py
-uv run mypy --strict src/sastsimi/static_analysis/coordinator.py src/sastsimi/orchestration/static_publication.py src/sastsimi/bootstrap.py tests/integration/static_analysis/test_tool_attempt_publication.py
+uv run pytest tests/integration/static_analysis/test_tool_attempt_publication.py tests/contract/test_static_tool_conformance.py tests/contract/domain/test_static.py tests/unit/test_fake_adapters.py tests/e2e/test_fake_true_pipeline.py -q
+uv run ruff check src/sastsimi/static_analysis/coordinator.py src/sastsimi/orchestration/static_publication.py src/sastsimi/bootstrap.py tests/integration/static_analysis/test_tool_attempt_publication.py tests/contract/test_static_tool_conformance.py
+uv run mypy --strict src/sastsimi/static_analysis/coordinator.py src/sastsimi/orchestration/static_publication.py src/sastsimi/bootstrap.py tests/integration/static_analysis/test_tool_attempt_publication.py tests/contract/test_static_tool_conformance.py
 ```
 
 Expected: pass; fake flow remains unchanged and real profiles remain inactive.
 
-- [ ] **Step 7: Commit.**
+- [ ] **Step 8: Commit.**
 
 ```powershell
-git add src/sastsimi/static_analysis/coordinator.py src/sastsimi/static_analysis/__init__.py src/sastsimi/orchestration/static_publication.py src/sastsimi/bootstrap.py tests/integration/static_analysis/test_tool_attempt_publication.py
+git add src/sastsimi/static_analysis/coordinator.py src/sastsimi/static_analysis/__init__.py src/sastsimi/orchestration/static_publication.py src/sastsimi/bootstrap.py tests/integration/static_analysis/test_tool_attempt_publication.py tests/contract/test_static_tool_conformance.py
 git commit -m "feat: publish exact static tool attempts"
 ```
 
@@ -600,15 +702,17 @@ Deterministic normalization rules:
 - Reopen and hash-verify every raw artifact; decode from those bytes rather than trusting an unpersisted object after restart.
 - Map candidate paths through `GitPath` and bind every `CodeLocation` to the bundle workspace/commit.
 - Create stable `symbol_id`, `fact_id`, and `relation_id` from canonical normalized identity plus source provenance. Exact duplicates collapse; raw hit counts remain unchanged.
+- Resolve a candidate fact/relation endpoint to its same-observation symbol first. Otherwise use a cross-tool AST symbol only when there is exactly one narrowest symbol range containing the endpoint in the same file. If none or a tie exists, keep the exact location with `symbol_id=null` and add `STATIC_SYMBOL_UNRESOLVED`; never guess by name alone.
 - If two observations claim the same logical identity with different content, retain separately identifiable candidates where the contract permits and add `STATIC_NORMALIZATION_CONFLICT`; never silently choose one claim.
 - Partition all facts exactly into SOURCE, SINK, SANITIZER, VALIDATOR, AUTH/PERMISSION, and OTHER lists. Preserve defensive candidates as candidates rather than proof of safety.
 - A fact's `ToolSource` points to its exact result attempt, tool version, raw ref, and optional actually executed positive-hit rule. Structure observations always use `rule_id=None`.
 - Relations reference only symbols included in the same bundle. Unresolved endpoints produce a gap rather than a dangling ID.
+- Preserve relation direction exactly: AST `CALL` is caller -> callee, SARIF `DATA_FLOW` is earlier step -> later step, and AST `ROUTE_BINDING` is route -> handler. Do not turn proximity into reachability. A route can reach a source/sink chain only when the route binding reaches the unique containing handler/source location and ordered `DATA_FLOW` edges continue to the sink.
 - Include every expected terminal tool run, including failed/skipped runs, and propagate all tool gaps/errors plus normalization gaps/errors without replacing them.
 - The `STATIC_NORMALIZE` work is `SUCCEEDED` only when every expected tool result succeeded and normalization has no known gap/error. It is `PARTIAL` when at least one usable observation exists and any expected scope is missing. If no usable observation exists, fail normalization without publishing a bundle. `StaticFactBundle` itself has no separate status field.
 
-- [ ] **Step 1: Write RED deterministic and partition tests.** Feed inputs in every ordering and assert identical canonical bundle bytes/hash. Cover all six fact lists, exact duplicate collapse, symbol/relation linkage, conflicting candidates, raw hit count preservation, and sanitizer/validator non-verdict semantics.
-- [ ] **Step 2: Write RED provenance and failure tests.** Cover stale attempts, another commit, another workspace, wrong raw hash, wrong tool version, unknown rule, zero-hit rule producing a fact, partial AST plus successful OpenGrep, failed CodeQL plus usable AST, and all tools failed.
+- [ ] **Step 1: Write RED deterministic and partition tests.** Feed inputs in every ordering and assert identical canonical bundle bytes/hash. Cover all six fact lists, exact duplicate collapse, unique narrowest enclosing-symbol linkage, ambiguous/no-symbol gaps, conflicting candidates, raw hit count preservation, and sanitizer/validator non-verdict semantics.
+- [ ] **Step 2: Write RED provenance, reachability, and failure tests.** Cover stale attempts, another commit, another workspace, wrong raw hash, wrong tool version, unknown rule, zero-hit rule producing a fact, partial AST plus successful OpenGrep, failed CodeQL plus usable AST, and all tools failed. Add one fixture with AST `ROUTE_BINDING(route -> handler)`, a catalog-declared SOURCE inside that handler, and ordered CodeQL `DATA_FLOW(source -> transform -> sink)`; assert the bundle preserves the exact route-to-source-to-sink evidence chain. Remove the middle flow location and assert `STATIC_DATA_FLOW_UNRESOLVED`, no source-to-sink jump edge, and a PARTIAL normalization work rather than a false reachability claim.
 - [ ] **Step 3: Run RED.**
 
 ```powershell
@@ -638,56 +742,117 @@ git commit -m "feat: normalize deterministic static fact bundles"
 ### Task 9: Return Bounded Same-Commit Code Context
 
 **Files:**
+- Create: `src/sastsimi/ports/context.py`
 - Create: `src/sastsimi/static_analysis/context_retrieval.py`
+- Create: `src/sastsimi/storage/context_lineage.py`
+- Modify: `src/sastsimi/storage/context_binding.py`
+- Modify: `src/sastsimi/storage/context_policy.py`
+- Modify: `src/sastsimi/bootstrap.py`
 - Create: `tests/unit/static_analysis/test_context_retrieval.py`
 - Create: `tests/integration/static_analysis/test_context_retrieval.py`
+- Create: `tests/integration/static_analysis/test_chained_child_context.py`
+- Modify: `tests/integration/storage/test_context_publication.py`
 - Extend: `tests/security_negative/test_code_path_escape.py`
 
 **Interfaces:**
-- Consumes: exact claimed `CodeContextRequest`, its current `CONTEXT_RETRIEVAL` work/attempt, READY `CodeWorkspace`, exact current `StaticFactBundle`, `WorkspaceLocatorPort`, `ArtifactStore`, clock/ID ports, and a trusted request-count/fingerprint ledger.
-- Produces: exact `CodeContextResponse`, verified fragment artifact refs, bounded discovered relations, gaps/errors, and a COMMITTED context work output.
+- Consumes: exact claimed `CodeContextRequest`, its current `CONTEXT_RETRIEVAL` work/attempt, the exact proposal ref fixed in that work, READY `CodeWorkspace`, exact current `StaticFactBundle`, `WorkspaceLocatorPort`, `ContextLineageReaderPort`, `ContextLimitPolicyPort`, `ArtifactStore`, clock/ID ports, and a trusted request-count/fingerprint ledger.
+- Produces: pre-read `ContextReadPlan`, exact `CodeContextResponse`, verified fragment artifact refs, bounded discovered relations, gaps/errors, and a COMMITTED context work output.
+
+The new ports return records/configuration but do not make semantic decisions:
+
+```python
+@dataclass(frozen=True)
+class ChainingContextRecords:
+    proposal_ref: StoredDataRef
+    proposal: HypothesisProposal
+    chaining_result_ref: StoredDataRef
+    chaining_result: ChainingResult
+    upstream_ref: StoredDataRef
+    upstream: Primitive
+    downstream_ref: StoredDataRef
+    downstream: Primitive
+
+@dataclass(frozen=True)
+class ContextReadPlan:
+    entities: tuple[CodeSymbol, ...]
+    locations: tuple[CodeLocation, ...]
+    relations: tuple[CodeRelation, ...]
+    file_paths: tuple[str, ...]
+    lineage_refs: tuple[StoredDataRef, ...]
+    plan_hash: str
+
+class ContextLineageReaderPort(Protocol):
+    def read_for(
+        self, proposal_ref: StoredDataRef, source_primitive_match_id: str
+    ) -> ChainingContextRecords: ...
+
+class ContextLimitPolicyPort(Protocol):
+    def ceilings_for(self, work: WorkExecutionState) -> ContextRetrievalLimits: ...
+```
+
+`storage/context_lineage.py` only exact-resolves the requested records and proves that each returned ref hashes to the returned record and is COMMITTED/current where the canonical input rule requires it. It does not choose start locations. `ContextRetrievalService` performs the following Chaining-origin validation before planning a read:
+
+1. The exact `HypothesisProposal` is present once in current `CONTEXT_RETRIEVAL.work.input_refs`, shares analysis/workspace/commit/hypothesis scope, has `origin=CHAINING`, and its non-null `source_primitive_match_id` equals the requested match.
+2. Exactly one exact COMMITTED `ChainingResult` contains that ID and the proposal derived from it; the `PrimitiveMatchCandidate.workspace_id + commit_id` and parent hypothesis set match the proposal.
+3. `upstream_result_ref` and `downstream_input_ref` exact-resolve to the two returned Primitive records in the same workspace/commit. Their source hypothesis IDs and source Verification refs are set-equal to the match parent fields. The upstream has a result, and `matched_input_id` names exactly one downstream input.
+4. Recover start entities from upstream `result.entity_refs`, all upstream `inputs[].entity_refs`, the matched downstream input, and all remaining downstream inputs. Deduplicate by canonical value and take their locations. Any direct proposal entity/location/path must be a subset of this lineage. Broken refs, stale hashes, a different commit, a missing matched input, or zero valid start locations fails the Context work before filesystem access; it is never delegated to T13 or converted to a verdict.
+
+T13 is limited to producing `Primitive`, `PrimitiveMatchCandidate` inside `ChainingResult`, and Chaining-origin proposals. T08 imports no concrete T13 service and performs no new match or Primitive creation.
 
 Retrieval algorithm:
 
-1. Verify request/work/attempt/action decision and bundle share analysis/workspace/commit/hypothesis scope.
-2. Check request count and normalized request fingerprint through the injected ledger before reading.
-3. Resolve requested entity locations and requested locations against the same bundle. Reject a caller-supplied symbol body or location from another workspace/commit.
-4. Traverse only requested relation kinds up to `max_depth`, using a visited set keyed by normalized symbol/location identity.
-5. Sort locations by Git path/start/end position, coalesce overlapping line ranges for the same file, and stop before exceeding `max_fragments` or `max_bytes`.
-6. Before each open, validate the Git path, ensure it remains a tracked regular file, reject Git symlink/submodule/LFS/sensitive paths, and verify the resolved handle is under the workspace root. Open without following links where the OS supports it and recheck file identity after open.
-7. Read UTF-8 with explicit replacement reporting. Line bounds are inclusive; provided columns are 1-based Unicode code points with start inclusive/end exclusive. Do not invent missing columns.
-8. Store each exact returned fragment as a content-addressed code-scoped artifact and retain only its ref in the response.
-9. Enforce monotonic `timeout_ms`; on any limit add `CONTEXT_TRUNCATED`, set `truncated=True`, and report actual count/bytes. On read failure add both `AnalysisError(stage=CONTEXT)` and the affected `DataGap(stage=CONTEXT)`.
-10. Verify workspace integrity after reads. On change, discard fragment refs from this execution and fail with `WORKSPACE_CHANGED`; never publish stale code.
+1. Verify request/work/attempt/action decision, proposal, bundle, and workspace share analysis/workspace/commit/hypothesis scope.
+2. Resolve trusted ceilings from the exact runtime/profile binding. Every requested limit must be less than or equal to its ceiling and `timeout_ms` must also be within the active `WorkBudgetLimit.timeout_ms`; reject an increase instead of clamping or trusting caller values. Check the cumulative distinct request count and normalized fingerprint before reading.
+3. Build seeds from exact requested entities and requested locations; for a Chaining-origin proposal, union the provenance-validated recovered starts. Every entity must exist exactly in the current bundle and its embedded location must match; every location must be in the same workspace/commit.
+4. Traverse only the requested relation mappings below, up to `max_depth`, with a visited set keyed by canonical symbol/location identity. This pure phase creates a `ContextReadPlan` and opens no file.
+5. Compute all actual file paths from explicit entities, explicit locations, lineage starts, fact-selected locations, and relation-expanded endpoints. Before reading, require this complete set to be exactly authorized by the claimed `READ_CODE.action.file_paths`; a missing or extra path is `CONTEXT_PATH_MISMATCH` and causes zero file opens. Repeat the deterministic plan/hash comparison immediately before the first open so a changed bundle/input cannot widen authorization.
+6. Sort locations by Git path/start/end position, coalesce overlapping line ranges for the same file, and stop before exceeding the already validated `max_fragments` or `max_bytes`.
+7. Before each open, validate the Git path, ensure it remains a tracked regular file, reject Git symlink/submodule/LFS/sensitive paths, and verify the resolved handle is under the workspace root. Open without following links where the OS supports it and recheck file identity after open.
+8. Read UTF-8 with explicit replacement reporting. Line bounds are inclusive; provided columns are 1-based Unicode code points with start inclusive/end exclusive. Do not invent missing columns.
+9. Store each exact returned fragment as a content-addressed code-scoped artifact and retain only its ref in the response.
+10. Enforce monotonic `timeout_ms`; on a runtime size/time limit add `CONTEXT_TRUNCATED`, set `truncated=True`, and report actual count/bytes. A request above the trusted ceiling is rejected before dispatch and is not reported as ordinary truncation. On read failure add both `AnalysisError(stage=CONTEXT)` and the affected `DataGap(stage=CONTEXT)`.
+11. Verify workspace integrity after reads. On change, discard fragment refs from this execution and fail with `WORKSPACE_CHANGED`; never publish stale code.
+
+Relation and fact selection is exact and deterministic:
+
+- `CALLERS`: for each seed, select existing `CALL` relations whose `to_symbol_id` equals the seed symbol, or whose `to_location` exactly equals a location-only seed; traverse in reverse to the `from` endpoint. Return the original relation orientation unchanged.
+- `CALLEES`: select existing `CALL` relations whose `from_symbol_id`/`from_location` matches the seed and traverse forward to `to`.
+- `DATA_FLOW_NEIGHBORS`: select existing `DATA_FLOW` relations incident to the seed and traverse both upstream and downstream, preserving each stored earlier-step -> later-step direction. At reached nodes select exact `SOURCE`, `SINK`, `SANITIZER`, `VALIDATOR`, and `OTHER` fact locations/symbols; do not include AUTH/PERMISSION facts through this query and do not infer an edge from proximity.
+- `AUTH_GUARDS`: select exact `AUTH_CHECK` and `PERMISSION_CHECK` facts whose symbol equals a seed or whose location is contained by the seed callable range. Also follow an outgoing `CALL` only when its target symbol/range contains one of those guard facts. Include the guard entity/location and that existing CALL relation; never label an arbitrary callee as a guard or synthesize a new relation.
+- `ROUTE_BINDINGS`: select existing `ROUTE_BINDING` relations incident to the seed and traverse either direction so route -> handler and handler -> route lookups work, while returning the stored route -> handler orientation.
+
+Depth 0 returns only explicit/lineage seeds and directly co-located selected facts; each traversed stored relation consumes one depth. Every query returns entities/locations/relations in canonical sorted order. Because `CodeContextResponse` has no fact field, fact selection contributes its exact entity/location and the bundle remains the provenance source; no competing fact schema is created.
 
 `max_requests_per_hypothesis` counts distinct claimed `code_request_id` values across generations for that hypothesis as required by the current contract. A repeated normalized fingerprint is recorded by the ledger; it may return the exact previously committed response only when request scope, limits, action authorization, artifact hashes, and current workspace/commit all match. Otherwise it consumes a request slot and executes normally; it never silently widens the limits.
 
-- [ ] **Step 1: Write RED scope and authorization tests.** Cover another workspace, commit, analysis, hypothesis, attempt, unclaimed/unused decision, non-current bundle, and action paths that do not cover requested locations.
-- [ ] **Step 2: Write RED bound tests.** Cover depth, fragment, byte, request count, timeout, cyclic graph, overlapping ranges, empty results, invalid line/column ranges, and deterministic ordering.
-- [ ] **Step 3: Write RED filesystem security tests.** Cover `..`, absolute and drive paths, mixed separators, Git symlink to outside, ordinary filesystem symlink/junction, post-validation replacement, LFS pointer, sensitive path, HEAD move, tracked-file edit during read, and fragment hash verification.
-- [ ] **Step 4: Run RED.**
+- [ ] **Step 1: Write RED relation semantics tests.** Build one bundle containing caller/callee calls, ordered data flow, route binding, direct and called auth/permission facts, unrelated facts, cycles, and ambiguous location-only endpoints. Assert each of the five relation queries follows only the mapping/direction above, preserves stored direction, obeys depth, selects only the declared fact kinds, and returns deterministic deduplicated results.
+- [ ] **Step 2: Write RED Chaining-origin provenance tests.** Cover a valid empty-target child and assert the service recovers all specified parent Primitive entity locations. Negatives cover missing/wrong `source_primitive_match_id`, non-COMMITTED or duplicate match, proposal not fixed in work input, parent set mismatch, wrong upstream/downstream refs, wrong workspace/commit/hash, missing upstream result, missing/duplicate matched input, direct target outside lineage, and no start entity. Assert zero code opens and no call into a T13 service.
+- [ ] **Step 3: Write RED complete-path authorization tests.** Cover a location-only request, entity-only request, lineage-only start, caller expansion, data-flow expansion, auth fact/callee, and route binding. Omit each expanded path from `ActionRequest.file_paths` in turn and inject one unrelated extra path; assert `CONTEXT_PATH_MISMATCH` before any open. Also reject another analysis/hypothesis/attempt, unclaimed/unused decision, non-current bundle, and a plan hash changed between authorization and open.
+- [ ] **Step 4: Write RED trusted-ceiling tests.** Use lower/equal limits as valid. Raise each of `max_depth`, `max_fragments`, `max_bytes`, `max_requests_per_hypothesis`, and `timeout_ms` above the injected ceiling one at a time; assert pre-dispatch rejection. Also assert WorkBudget timeout is the tighter ceiling, repeated/new request accounting cannot be reset by retry/generation, and caller-supplied limits never replace the trusted profile.
+- [ ] **Step 5: Write RED bounded/filesystem tests.** Cover depth, fragments, bytes, timeout, cyclic graph, overlapping ranges, empty results, invalid line/column ranges, deterministic ordering, `..`, absolute/drive/mixed paths, Git symlink, filesystem symlink/junction, post-validation replacement, LFS pointer, sensitive path, HEAD move, tracked-file edit, and fragment hash verification.
+- [ ] **Step 6: Run RED.**
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_context_retrieval.py tests/security_negative/test_code_path_escape.py -q
+uv run pytest tests/unit/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_chained_child_context.py tests/integration/storage/test_context_publication.py tests/security_negative/test_code_path_escape.py -q
 ```
 
 Expected: fail because real context retrieval does not exist.
 
-- [ ] **Step 5: Implement pure selection and filesystem reading separately.** The selection function receives only contracts and returns ordered locations/relations. The reader receives the guarded workspace handle and returns bytes plus candidate diagnostics. The service combines them and delegates publication through the existing claimed action/transition path.
-- [ ] **Step 6: Run GREEN plus existing storage context tests.**
+- [ ] **Step 7: Implement planning, lineage validation, authorization, and filesystem reading separately.** The pure planner receives contracts/resolved lineage and returns `ContextReadPlan`; the storage adapter only exact-resolves records; the reader receives the authorized plan plus guarded workspace and returns bytes/diagnostics. Extend `ContextBindingService` to validate entity locations as well as explicit locations, exact planned `file_paths`, and trusted ceilings. Extend response policy to require the same plan/authorization closure. The service delegates publication through the existing claimed action/transition path.
+- [ ] **Step 8: Run GREEN plus existing context/fake regressions.**
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_context_retrieval.py tests/security_negative/test_code_path_escape.py tests/integration/storage/test_context_publication.py tests/e2e/test_fake_true_pipeline.py -q
-uv run ruff check src/sastsimi/static_analysis/context_retrieval.py tests/unit/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_context_retrieval.py tests/security_negative/test_code_path_escape.py
-uv run mypy --strict src/sastsimi/static_analysis/context_retrieval.py tests/unit/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_context_retrieval.py tests/security_negative/test_code_path_escape.py
+uv run pytest tests/unit/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_chained_child_context.py tests/integration/storage/test_context_publication.py tests/security_negative/test_code_path_escape.py tests/e2e/test_fake_true_pipeline.py -q
+uv run ruff check src/sastsimi/ports/context.py src/sastsimi/static_analysis/context_retrieval.py src/sastsimi/storage/context_lineage.py src/sastsimi/storage/context_binding.py src/sastsimi/storage/context_policy.py src/sastsimi/bootstrap.py tests/unit/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_chained_child_context.py tests/integration/storage/test_context_publication.py tests/security_negative/test_code_path_escape.py
+uv run mypy --strict src/sastsimi/ports/context.py src/sastsimi/static_analysis/context_retrieval.py src/sastsimi/storage/context_lineage.py src/sastsimi/storage/context_binding.py src/sastsimi/storage/context_policy.py src/sastsimi/bootstrap.py tests/unit/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_chained_child_context.py tests/integration/storage/test_context_publication.py tests/security_negative/test_code_path_escape.py
 ```
 
 Expected: pass; fake context remains compatible and no new context schema or state is introduced.
 
-- [ ] **Step 7: Commit.**
+- [ ] **Step 9: Commit.**
 
 ```powershell
-git add src/sastsimi/static_analysis/context_retrieval.py tests/unit/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_context_retrieval.py tests/security_negative/test_code_path_escape.py
+git add src/sastsimi/ports/context.py src/sastsimi/static_analysis/context_retrieval.py src/sastsimi/storage/context_lineage.py src/sastsimi/storage/context_binding.py src/sastsimi/storage/context_policy.py src/sastsimi/bootstrap.py tests/unit/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_chained_child_context.py tests/integration/storage/test_context_publication.py tests/security_negative/test_code_path_escape.py
 git commit -m "feat: retrieve bounded exact code context"
 ```
 
@@ -704,14 +869,14 @@ git commit -m "feat: retrieve bounded exact code context"
 
 **Interfaces:**
 - Consumes: local fixture Git repository, fake CodeQL/OpenGrep executables with real process behavior, real AST worker, current runtime services, and the private real-static composition factory.
-- Produces: exact READY workspace, three terminal tool results, rule records for both rule-based tools, one COMMITTED bundle, and one bounded context response, while the public CLI still selects only the fake pipeline.
+- Produces: exact PREPARING -> READY workspace lifecycle, three conforming public tool adapters and terminal tool results, rule records for both rule-based tools, one COMMITTED bundle with real route/data-flow reachability, one bounded ordinary context response, and one provenance-recovered Chaining-child context response, while the public CLI still selects only the fake pipeline.
 
-- [ ] **Step 1: Write the RED vertical integration test.** Prepare a two-commit local repository containing one source/sink path, a sanitizer/validator candidate, an auth check, and a route. Run AST, fake-executable CodeQL SARIF, and fake-executable OpenGrep JSON concurrently through the real process boundary; normalize them; request one bounded context fragment. Assert exact commit, tool attempts, raw refs, rule refs, all fact partitions, gap/error closure, deterministic bundle hash, and context artifact hash.
-- [ ] **Step 2: Add integration-negative cases.** Mutate HEAD during one tool, time out another tool, omit execution telemetry from one rule, and return usable output from the remaining tool. Assert the changed-workspace run is discarded, timeout is not zero hits, the `STATIC_NORMALIZE` work is partial only when exact usable evidence remains, and no vulnerability verdict is created anywhere in this package.
+- [ ] **Step 1: Write the RED vertical integration test.** Prepare a two-commit local repository containing one route handler, source, transform, sink, sanitizer/validator candidate, and auth check. Prove PREPARING -> READY and exact AnalysisRunState binding; probe all three tools through the public port; run AST, fake-executable CodeQL SARIF with an ordered codeFlow, and fake-executable OpenGrep JSON concurrently through the real process boundary; normalize them; request ordinary bounded Context and an empty-target Chaining-child Context. Assert exact commit, tool attempts, raw refs, rule refs, all fact partitions, route -> handler/source -> transform -> sink evidence, recovered parent Primitive starts, relation directions, authorized actual paths, gap/error closure, deterministic bundle hash, and Context artifact hashes.
+- [ ] **Step 2: Add integration-negative cases.** Mutate HEAD during one tool, time out another tool, omit execution telemetry from one rule, break a required SARIF flow step, substitute a stale parent Primitive/match, omit a relation-expanded file from READ_CODE, and request limits above the trusted ceiling while returning usable output from remaining independent paths. Assert changed-workspace evidence is discarded, timeout is not zero hits, unresolved flow is a DataGap with no jump edge, bad lineage and unauthorized paths perform zero reads, excessive limits never dispatch, the `STATIC_NORMALIZE` work is partial only when exact usable evidence remains, and no vulnerability verdict is created anywhere in this package.
 - [ ] **Step 3: Run the focused integration candidate.**
 
 ```powershell
-uv run pytest tests/integration/static_analysis tests/unit/static_analysis tests/security_negative/test_code_path_escape.py tests/contract/domain/test_static.py tests/contract/test_architecture_imports.py tests/unit/test_fake_adapters.py tests/e2e/test_fake_true_pipeline.py -q
+uv run pytest tests/integration/static_analysis tests/integration/recovery/test_static_workspace_recovery.py tests/unit/static_analysis tests/security_negative/test_code_path_escape.py tests/contract/domain/test_static.py tests/contract/test_static_tool_conformance.py tests/contract/test_architecture_imports.py tests/unit/test_fake_adapters.py tests/e2e/test_fake_true_pipeline.py -q
 ```
 
 Expected: pass.
@@ -762,8 +927,11 @@ Expected: clean worktree, only T08 files/intent in the range, and no whitespace 
 ## Acceptance Criteria
 
 - A repository ref is cloned into a newly allocated workspace directory, resolved once to an exact commit, checked out detached, and published READY only after exact HEAD confirmation.
+- The workspace is first published as PREPARING and ends as an append-only READY or FAILED revision; current workspace, work/attempt/transition outputs, and `AnalysisRunState.workspace_ref` converge atomically on the same exact revision, including after crash replay.
+- Every Git operation uses an allowed, budget-reserved, durably claimed `RUN_TOOL` action owned by `REPOSITORY_LOADER`; denied, stale, or ambiguous dispatch cannot execute or silently repeat it.
 - Unsafe repository URLs, destination escapes, Git symlinks, filesystem symlinks/junctions, submodules, LFS pointers, path traversal, drive paths, and tracked-file/HEAD mutation cannot become code evidence.
 - AST, CodeQL, and OpenGrep have real version probes, timeout, cancellation, bounded output, safe argv/environment handling, and no shell execution.
+- The public `StaticToolAdapter` probe/run/cancel contract is implemented by AST, CodeQL, and OpenGrep through the explicit lower-observation bridge; `.probe(profile_ref)` returns the non-persisted checked `ToolCapabilityResult` and leaves activation to T16.
 - Python AST parsing never imports or executes analyzed code.
 - CodeQL never builds/autobuilds or executes repository build commands on the host; only an exact trusted prebuilt database is analyzed.
 - OpenGrep scans only the validated explicit file manifest and trusted exact rule configuration.
@@ -771,8 +939,11 @@ Expected: clean worktree, only T08 files/intent in the range, and no whitespace 
 - Every terminal `STATIC_TOOL` attempt has exactly one canonical `ToolRunResult`; rule-based succeeded/partial/skipped results have the exact same-attempt `RuleExecutionRecord`; the raw artifact ref matches the evidence actually decoded.
 - Executed zero-hit rules, unselected rules, selected-but-not-executed rules, unknown telemetry, timeout, cancellation, and failure are distinguishable and cannot be rewritten as one another.
 - Static fan-in is deterministic, accepts only expected COMMITTED current attempts, preserves usable partial evidence and all gaps/errors, rejects cross-workspace/commit/attempt/config/catalog inputs, and never interprets missing facts as safety.
+- Ordered trustworthy SARIF codeFlows become directed DATA_FLOW relations; a route -> handler/source -> transform -> sink chain is preserved, while missing/unsafe flow steps create DataGap and never a synthetic jump edge.
 - All six fact partitions are present and correct, identifiers are deterministic/unique, producer refs are exact, and relations do not dangle.
-- Context retrieval uses a claimed exact request, stays in the same workspace/commit, respects all five limit dimensions, returns verified content-addressed fragments, records truncation/failure accurately, and discards output after workspace mutation.
+- Context retrieval uses a claimed exact request, stays in the same workspace/commit, rejects caller limits above all five trusted ceilings, authorizes explicit/entity/lineage/relation-expanded paths before any read, returns verified content-addressed fragments, records truncation/failure accurately, and discards output after workspace mutation.
+- CALLERS, CALLEES, DATA_FLOW_NEIGHBORS, AUTH_GUARDS, and ROUTE_BINDINGS have tested exact edge direction, fact selection, depth, and deterministic ordering rules.
+- For Chaining-origin children, the Context Retrieval Service validates the exact proposal -> match -> parent Primitive provenance and recovers the canonical start locations; T13 is not called and only produces the records.
 - T07 fake scenarios and existing contracts continue to pass without schema changes or fake-to-real rewrites.
 - `static_analysis/` has no concrete runtime/storage import, no adapter-to-adapter dependency, and no dynamic import/process escape.
 - No real tool profile is made operationally ACTIVE and no public CLI path selects the real adapters before T16.
@@ -786,7 +957,7 @@ Expected: clean worktree, only T08 files/intent in the range, and no whitespace 
 - No CodeQL database construction, repository build, dependency installation, package-manager invocation, generated-code build, submodule initialization, or Git LFS fetch occurs on the host in T08.
 - No remote network test is required. Integration tests use isolated local Git and fake executables while exercising the real process, parsing, storage, and transition boundaries.
 - No automatic language coverage claim beyond the implemented Python AST worker and exact installed rule-based tools. Unsupported languages and missing tool capability remain explicit gaps.
-- No Chaining-origin lineage recovery is invented here. T08 retrieves direct exact entities/locations and relations; T13 supplies and validates chained-child starting provenance before calling the same bounded retrieval service.
+- No new Primitive, match, Chaining proposal, or T13 runtime behavior is added. T08 only exact-resolves existing Chaining records through a read-only port and owns their required provenance validation/start-location recovery before code reads.
 - No Web UI, external queue, multi-host scheduler, external disclosure, or snapshot module is introduced.
 
 ## Self-Review Checklist
@@ -795,6 +966,12 @@ Expected: clean worktree, only T08 files/intent in the range, and no whitespace 
 - [ ] Confirm no step asks an adapter to create metadata, IDs, stored references, work status, or database state.
 - [ ] Confirm all proposed persisted objects already exist in `contracts/static.py`; transport DTOs are explicitly non-persisted.
 - [ ] Confirm `StaticToolAdapter` and T07 fake signatures remain backward-compatible.
+- [ ] Confirm PREPARING -> READY/FAILED workspace revisions, Git RUN_TOOL authority/budget, and all named crash checkpoints have focused tests.
+- [ ] Confirm a real route/data-flow path exists and unresolved SARIF flow cannot become reachability.
+- [ ] Confirm all five Context relation queries have exact direction/fact/depth semantics and tests.
+- [ ] Confirm Chaining-child Context recovery is owned by T08 and T13 remains producer-only.
+- [ ] Confirm explicit, entity, lineage, and relation-expanded paths are authorized before reads and caller limits cannot exceed trusted ceilings.
+- [ ] Confirm public/lower probe bridging is tested for AST, CodeQL, OpenGrep, and the T07 fake without production activation.
 - [ ] Confirm CodeQL command policy has no host build/autobuild escape.
 - [ ] Confirm path checks cover both lexical traversal and resolved symlink/junction/Git-mode escape.
 - [ ] Confirm every failure path distinguishes missing evidence from executed zero-hit evidence.
