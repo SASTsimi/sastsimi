@@ -286,6 +286,7 @@ class StaticExternalRunner:
             process_receipts = self._current_tool_process_receipts(
                 str(action.action_id), attempt_id
             )
+            self._validate_tool_process_presence(observation, process_receipts)
             self._write_tool_receipt(
                 request,
                 decision_ref,
@@ -998,6 +999,7 @@ class StaticExternalRunner:
             process_receipts = self._validate_tool_process_receipts(
                 receipt.action_id, receipt.attempt_id, process_receipts
             )
+            self._validate_tool_process_presence(observation, process_receipts)
             projected = receipt.observation_size + sum(
                 item.stdout_size + item.stderr_size for item in process_receipts
             )
@@ -1011,6 +1013,14 @@ class StaticExternalRunner:
         ) as error:
             raise ValueError("STATIC_ACTION_RECEIPT_INVALID") from error
         return receipt, observation, process_receipts
+
+    @staticmethod
+    def _validate_tool_process_presence(
+        observation: StaticToolObservation,
+        receipts: tuple[ProcessReceipt, ...],
+    ) -> None:
+        if observation.status in {"SUCCEEDED", "PARTIAL"} and not receipts:
+            raise ValueError("STATIC_PROCESS_RECEIPT_INVALID")
 
     def _read_receipt(
         self,

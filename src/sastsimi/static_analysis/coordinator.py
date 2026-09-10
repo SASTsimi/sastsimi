@@ -274,6 +274,7 @@ class StaticToolCoordinator:
                 *observation.notes,
                 *(gap.description for gap in observation.gaps),
                 *(error.safe_message for error in observation.errors),
+                *(rule.detail for rule in observation.rules if rule.detail is not None),
             )
             validator = TypeAdapter(SafeDiagnostic)
             for diagnostic in diagnostics:

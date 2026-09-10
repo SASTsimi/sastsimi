@@ -6,7 +6,7 @@ import pytest
 from sastsimi.contracts.static import ToolRunResult
 from sastsimi.orchestration.static_external_runner import StaticExternalRunner
 from sastsimi.orchestration.static_publication import StaticAttemptPublisher
-from sastsimi.ports.dto import CandidateRule, ProcessReceipt
+from sastsimi.ports.dto import CandidateRule, ProcessReceipt, StaticToolObservation
 
 
 @pytest.mark.parametrize(
@@ -74,6 +74,15 @@ def test_tool_process_receipts_bind_exact_action_attempt_and_order() -> None:
         StaticExternalRunner._validate_tool_process_receipts(
             "other", "attempt", (receipt,)
         )
+
+
+def test_successful_tool_result_requires_lower_process_receipt() -> None:
+    observation = cast(
+        StaticToolObservation,
+        SimpleNamespace(status="SUCCEEDED"),
+    )
+    with pytest.raises(ValueError, match="STATIC_PROCESS_RECEIPT_INVALID"):
+        StaticExternalRunner._validate_tool_process_presence(observation, ())
 
 
 @pytest.mark.parametrize(
