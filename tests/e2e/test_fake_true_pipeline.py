@@ -552,8 +552,8 @@ def test_finalization_rejects_inventory_omission_then_retries_exactly(
     tmp_path: Path,
 ) -> None:
     scenario = build_fake_pipeline(tmp_path)._scenario
-    verification = scenario._verification("TRUE")
-    scenario._post_true(verification)
+    execution = scenario._verification("TRUE")
+    scenario._post_true(execution)
     candidate = scenario._result_candidate("TRUE")
     assert candidate.resources.pricing_revision_refs
     assert scenario.runtime is not None

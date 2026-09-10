@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass
+from typing import Any
 
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.budget import (
@@ -28,46 +29,78 @@ from sastsimi.contracts.dynamic import (
     SandboxProfile,
 )
 from sastsimi.contracts.refs import StoredDataRef, reference
-from sastsimi.contracts.verification import (
-    ConEvidenceResult,
-    ProEvidenceResult,
-)
-from sastsimi.orchestration.fake_base import ANALYSIS_ID
-from sastsimi.orchestration.fake_configuration import register_fake_llm_call
+from sastsimi.contracts.result_registry import RESULT_REGISTRY
+from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import (
     ApprovedSandboxCommand,
     Record,
     SandboxCleanupRequest,
     SandboxPrepareRequest,
 )
-
-from .fake_base import FakeStageService
-from .fake_provider_runtime import (
+from sastsimi.ports.fake_workflow import (
+    ProviderInvoker,
+    ProviderProber,
+    SandboxCleaner,
+    SandboxExecutor,
+    SandboxPreparer,
+)
+from sastsimi.runtime.fake_llm_configuration import register_fake_llm_call
+from sastsimi.runtime.fake_llm_invocation import (
     invoke_fake_provider,
     persist_fake_invocation,
 )
+from sastsimi.runtime.fake_support import (
+    ANALYSIS_ID,
+    FakeClock,
+    FakeEvidence,
+    FakeRecordFactory,
+)
+from sastsimi.runtime.services import RuntimeServices
+from sastsimi.runtime.workflow_runner import WorkflowRunner
 
-if TYPE_CHECKING:
-    from .fake_base import FakePipelineBase
-    from .fake_setup import FakeSetupStages
+
+@dataclass(frozen=True)
+class ReproductionDependencies:
+    runtime: RuntimeServices
+    runner: WorkflowRunner
+    clock: FakeClock
+    evidence: FakeEvidence
+    records: FakeRecordFactory
+    provider_invoke: ProviderInvoker
+    provider_probe: ProviderProber
+    sandbox_prepare: SandboxPreparer
+    sandbox_execute: SandboxExecutor
+    sandbox_cleanup: SandboxCleaner
 
 
-class FakeDynamicStages(FakeStageService):
-    def __init__(self, host: FakePipelineBase, setup: FakeSetupStages) -> None:
-        super().__init__(host)
-        self._setup = setup
+class DynamicReproductionService:
+    """Own the exact R6 request and R7 reproduction component workflow."""
+
+    def __init__(self, dependencies: ReproductionDependencies) -> None:
+        self.runtime = dependencies.runtime
+        self.runner = dependencies.runner
+        self.clock = dependencies.clock
+        self.evidence = dependencies.evidence
+        self.provider_invoke = dependencies.provider_invoke
+        self.provider_probe = dependencies.provider_probe
+        self.sandbox_prepare = dependencies.sandbox_prepare
+        self.sandbox_execute = dependencies.sandbox_execute
+        self.sandbox_cleanup = dependencies.sandbox_cleanup
+        self._record_meta = dependencies.records.record_meta
+        self._artifact = dependencies.records.artifact
+        self._stored_artifact = dependencies.records.stored_artifact
 
     def _agent_intermediate(
         self,
         *,
         candidate: Record,
-        work: Any,
+        work: WorkExecutionState,
         scope: StoredDataRef,
-        identity: StoredDataRef,
         result_kind: str,
         context_refs: tuple[StoredDataRef, ...],
     ) -> tuple[Record, StoredDataRef]:
         assert self.runtime is not None and self.runner is not None
+        identity = self.evidence.identity(RequesterRole.DYNAMIC_REPRODUCTION)
         call_ref, provider_ref = register_fake_llm_call(
             self.runtime,
             self.evidence,
@@ -77,12 +110,11 @@ class FakeDynamicStages(FakeStageService):
             self.provider_probe,
             runner=self.runner,
             scope=scope,
-            orchestration_identity=identity,
+            orchestration_identity=self.evidence.identity(RequesterRole.ORCHESTRATION),
             role="DYNAMIC_REPRODUCTION",
             result_kind=result_kind,
             context_refs=context_refs,
         )
-        self.evidence.identities[identity] = RequesterRole.DYNAMIC_REPRODUCTION
         record, invocation = invoke_fake_provider(
             runtime=self.runtime,
             runner=self.runner,
@@ -98,52 +130,59 @@ class FakeDynamicStages(FakeStageService):
             provider_invoke=self.provider_invoke,
         )
         persist_fake_invocation(self.runtime, invocation)
-        ref = self._setup._publish_intermediate(
-            work,
-            identity,
-            RequesterRole.DYNAMIC_REPRODUCTION,
-            record,
-        )
+        ref = self._publish_intermediate(work, record)
         return record, ref
 
-    def _evidence_result(
-        self,
-        *,
-        role: str,
-        work: Any,
-        parent_work: Any,
-        debate_inputs: tuple[StoredDataRef, ...],
-    ) -> ProEvidenceResult | ConEvidenceResult:
-        assert self.runner is not None
-        model = ProEvidenceResult if role == "PRO" else ConEvidenceResult
-        return model.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=self.runner.metadata(
-                        parent_work.meta,
-                        f"{role.lower()}_evidence_result",
-                        attempt_id=work.active_attempt_id,
-                    ),
-                    role=role,
-                    parent_work_id=parent_work.work_id,
-                    evidence_work_id=work.work_id,
-                    verification_generation=parent_work.work_generation,
-                    llm_call_id=f"fake-{role.lower()}-call",
-                    debate_input_hash=content_hash(debate_inputs),
-                    evidence=(),
-                    summary=f"{role} reviewed the exact fake path",
-                    limitations=(),
-                )
-            )
+    def _publish_intermediate(
+        self, work: WorkExecutionState, record: Record
+    ) -> StoredDataRef:
+        """Publish only R6/R7 records with their registry-owned identity."""
+        result_kind = record.meta.record_type
+        allowed_kinds = {
+            "dynamic_reproduction_request",
+            "environment_requirements",
+            "reproduction_plan",
+            "environment_recipe",
+            "sandbox_environment",
+            "cleanup_result",
+            "sandbox_policy_decision",
+            "sandbox_command_record",
+            "poc_candidate",
+            "dynamic_reproduction_tool_request",
+            "dynamic_reproduction_conclusion",
+            "agent_log",
+            "poc_bundle",
+            "dynamic_reproduction_result",
+        }
+        if result_kind not in allowed_kinds:
+            raise ValueError("REPRODUCTION_RESULT_KIND_NOT_ALLOWED")
+        binding = RESULT_REGISTRY[result_kind]
+        if not isinstance(record, binding.model):
+            raise TypeError("REPRODUCTION_RESULT_SCHEMA_MISMATCH")
+        role = binding.owner
+        identity = self.evidence.identity(role)
+        candidate = self.runtime.unit_of_work.records.stage_record(record)
+        action = self.runner.action(
+            work,
+            identity,
+            role.value,
+            "SAVE_RESULT",
+            result_kind=result_kind,
+            candidate_result_ref=candidate,
         )
+        (published,) = self.runtime.intermediate.publish(
+            str(work.work_id), self.runner.authorize(work, action), (record,)
+        )
+        assert isinstance(published, StoredDataRef)
+        return published
 
-    def _dynamic_chain(
+    def run(
         self,
         *,
         scope: StoredDataRef,
         owner_ref: StoredDataRef,
         orchestrator_ref: StoredDataRef,
-        verification_work: Any,
+        verification_work: WorkExecutionState,
         assignment_ref: StoredDataRef,
         hypothesis_ref: StoredDataRef,
         evidence_ref: StoredDataRef,
@@ -206,7 +245,7 @@ class FakeDynamicStages(FakeStageService):
             self.provider_probe,
             runner=self.runner,
             scope=scope,
-            orchestration_identity=owner_ref,
+            orchestration_identity=orchestrator_ref,
             role="VERIFICATION",
             result_kind="dynamic_reproduction_request",
             task_kind="CREATE_DYNAMIC_REQUEST",
@@ -223,7 +262,6 @@ class FakeDynamicStages(FakeStageService):
                 sandbox_ref,
             ),
         )
-        self.evidence.identities[owner_ref] = RequesterRole.VERIFICATION
         request_record, request_invocation = invoke_fake_provider(
             runtime=self.runtime,
             runner=self.runner,
@@ -242,12 +280,7 @@ class FakeDynamicStages(FakeStageService):
             raise TypeError("FAKE_DYNAMIC_REQUEST_OUTPUT_MISMATCH")
         persist_fake_invocation(self.runtime, request_invocation)
         request = request_record
-        request_ref = self._setup._publish_intermediate(
-            verification_work,
-            owner_ref,
-            RequesterRole.VERIFICATION,
-            request,
-        )
+        request_ref = self._publish_intermediate(verification_work, request)
         action = self.runner.action(
             verification_work,
             owner_ref,
@@ -269,7 +302,13 @@ class FakeDynamicStages(FakeStageService):
         )
         attempt_id = dynamic_work.active_attempt_id
         assert attempt_id is not None
-        dynamic_identity = orchestrator_ref
+        dynamic_identity = self.evidence.identity(RequesterRole.DYNAMIC_REPRODUCTION)
+        setup_identity = self.evidence.identity(
+            RequesterRole.REPRODUCTION_SETUP_AUTOMATION
+        )
+        session_identity = self.evidence.identity(
+            RequesterRole.REPRODUCTION_SESSION_MANAGER
+        )
         runner = self.runner
 
         def meta(kind: str) -> dict[str, Any]:
@@ -288,7 +327,6 @@ class FakeDynamicStages(FakeStageService):
             candidate=requirements,
             work=dynamic_work,
             scope=scope,
-            identity=dynamic_identity,
             result_kind="environment_requirements",
             context_refs=(request_ref,),
         )
@@ -313,7 +351,6 @@ class FakeDynamicStages(FakeStageService):
             candidate=plan,
             work=dynamic_work,
             scope=scope,
-            identity=dynamic_identity,
             result_kind="reproduction_plan",
             context_refs=(request_ref, requirements_ref),
         )
@@ -335,12 +372,7 @@ class FakeDynamicStages(FakeStageService):
                 )
             )
         )
-        recipe_ref = self._setup._publish_intermediate(
-            dynamic_work,
-            dynamic_identity,
-            RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
-            recipe,
-        )
+        recipe_ref = self._publish_intermediate(dynamic_work, recipe)
         environment = SandboxEnvironment.model_validate_json(
             canonical_bytes(
                 dict(
@@ -373,12 +405,9 @@ class FakeDynamicStages(FakeStageService):
         binding = self.runtime.unit_of_work.records.get_exact(lifecycle_ref)
         assert isinstance(binding, BudgetProfileBinding)
         resource_ref = binding.dynamic_lifecycle_profile_ref
-        self.evidence.identities[dynamic_identity] = (
-            RequesterRole.REPRODUCTION_SETUP_AUTOMATION
-        )
         sandbox_action = self.runner.action(
             dynamic_work,
-            dynamic_identity,
+            setup_identity,
             "REPRODUCTION_SETUP_AUTOMATION",
             "RUN_SANDBOX",
             input_refs=(
@@ -436,15 +465,7 @@ class FakeDynamicStages(FakeStageService):
                 )
             )
         )
-        policy_ref = self._setup._publish_intermediate(
-            dynamic_work,
-            dynamic_identity,
-            RequesterRole.SANDBOX_CONTROLLER,
-            policy,
-        )
-        self.evidence.identities[dynamic_identity] = (
-            RequesterRole.REPRODUCTION_SETUP_AUTOMATION
-        )
+        policy_ref = self._publish_intermediate(dynamic_work, policy)
 
         async def prepare_environment() -> SandboxEnvironment:
             return await self.sandbox_prepare(
@@ -464,12 +485,7 @@ class FakeDynamicStages(FakeStageService):
         self.runner.account(sandbox_reservation, sandbox_units)
         if returned_environment != environment:
             raise ValueError("FAKE_SANDBOX_ENVIRONMENT_MISMATCH")
-        environment_ref = self._setup._publish_intermediate(
-            dynamic_work,
-            dynamic_identity,
-            RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
-            returned_environment,
-        )
+        environment_ref = self._publish_intermediate(dynamic_work, returned_environment)
         candidate_content_ref = self._artifact("poc_content", record=True)
         candidate = PoCCandidate.model_validate_json(
             canonical_bytes(
@@ -488,7 +504,6 @@ class FakeDynamicStages(FakeStageService):
             candidate=candidate,
             work=dynamic_work,
             scope=scope,
-            identity=dynamic_identity,
             result_kind="poc_candidate",
             context_refs=(request_ref, plan_ref, environment_ref),
         )
@@ -522,20 +537,15 @@ class FakeDynamicStages(FakeStageService):
             candidate=tool_candidate,
             work=dynamic_work,
             scope=scope,
-            identity=dynamic_identity,
             result_kind="dynamic_reproduction_tool_request",
             context_refs=(request_ref, plan_ref, environment_ref, candidate_ref),
         )
         assert isinstance(tool_record, DynamicReproductionToolRequest)
         tool_request = tool_record
 
-        command_identity = tool_ref
-        self.evidence.identities[command_identity] = (
-            RequesterRole.REPRODUCTION_SETUP_AUTOMATION
-        )
         command_action = self.runner.action(
             dynamic_work,
-            command_identity,
+            setup_identity,
             "REPRODUCTION_SETUP_AUTOMATION",
             "RUN_SANDBOX",
             input_refs=(
@@ -597,12 +607,7 @@ class FakeDynamicStages(FakeStageService):
                 )
             )
         )
-        policy_ref = self._setup._publish_intermediate(
-            dynamic_work,
-            dynamic_identity,
-            RequesterRole.SANDBOX_CONTROLLER,
-            command_policy,
-        )
+        policy_ref = self._publish_intermediate(dynamic_work, command_policy)
         policy = command_policy
         assert tool_request.command is not None
         command_fields = tool_request.command.model_dump()
@@ -641,12 +646,7 @@ class FakeDynamicStages(FakeStageService):
         self.runner.account(command_reservation, command_units)
         if returned_command != command_candidate:
             raise ValueError("FAKE_SANDBOX_COMMAND_MISMATCH")
-        command_ref = self._setup._publish_intermediate(
-            dynamic_work,
-            dynamic_identity,
-            RequesterRole.REPRODUCTION_SESSION_MANAGER,
-            returned_command,
-        )
+        command_ref = self._publish_intermediate(dynamic_work, returned_command)
         observation = self._artifact("observation")
         cleanup_candidate = CleanupResult.model_validate_json(
             canonical_bytes(
@@ -667,12 +667,9 @@ class FakeDynamicStages(FakeStageService):
                 SandboxCleanupRequest(request, (environment,), ()), cleanup_candidate
             )
 
-        self.evidence.identities[dynamic_identity] = (
-            RequesterRole.REPRODUCTION_SETUP_AUTOMATION
-        )
         cleanup_action = self.runner.action(
             dynamic_work,
-            dynamic_identity,
+            setup_identity,
             "REPRODUCTION_SETUP_AUTOMATION",
             "RUN_SANDBOX",
             input_refs=(*sandbox_action.input_refs, environment_ref),
@@ -704,12 +701,7 @@ class FakeDynamicStages(FakeStageService):
         self.runner.account(cleanup_reservation, cleanup_units)
         if cleanup != cleanup_candidate:
             raise ValueError("FAKE_SANDBOX_CLEANUP_MISMATCH")
-        cleanup_ref = self._setup._publish_intermediate(
-            dynamic_work,
-            dynamic_identity,
-            RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
-            cleanup,
-        )
+        cleanup_ref = self._publish_intermediate(dynamic_work, cleanup)
         events = []
         for sequence, (event_type, action_id) in enumerate(
             (
@@ -767,12 +759,7 @@ class FakeDynamicStages(FakeStageService):
                 dict(meta=meta("agent_log"), request_ref=request_ref, events=events)
             )
         )
-        log_ref = self._setup._publish_intermediate(
-            dynamic_work,
-            dynamic_identity,
-            RequesterRole.REPRODUCTION_SESSION_MANAGER,
-            log,
-        )
+        log_ref = self._publish_intermediate(dynamic_work, log)
         conclusion_candidate = DynamicReproductionConclusion.model_validate_json(
             canonical_bytes(
                 dict(
@@ -799,7 +786,7 @@ class FakeDynamicStages(FakeStageService):
             self.provider_probe,
             runner=self.runner,
             scope=scope,
-            orchestration_identity=dynamic_identity,
+            orchestration_identity=orchestrator_ref,
             role="DYNAMIC_REPRODUCTION",
             result_kind="dynamic_reproduction_conclusion",
             context_refs=(
@@ -810,7 +797,6 @@ class FakeDynamicStages(FakeStageService):
                 log_ref,
             ),
         )
-        self.evidence.identities[dynamic_identity] = RequesterRole.DYNAMIC_REPRODUCTION
         conclusion_record, conclusion_invocation = invoke_fake_provider(
             runtime=self.runtime,
             runner=self.runner,
@@ -828,12 +814,7 @@ class FakeDynamicStages(FakeStageService):
         assert isinstance(conclusion_record, DynamicReproductionConclusion)
         conclusion = conclusion_record
         persist_fake_invocation(self.runtime, conclusion_invocation)
-        conclusion_ref = self._setup._publish_intermediate(
-            dynamic_work,
-            dynamic_identity,
-            RequesterRole.DYNAMIC_REPRODUCTION,
-            conclusion,
-        )
+        conclusion_ref = self._publish_intermediate(dynamic_work, conclusion)
         poc = PoCBundle.model_validate_json(
             canonical_bytes(
                 dict(
@@ -851,12 +832,7 @@ class FakeDynamicStages(FakeStageService):
                 )
             )
         )
-        poc_ref = self._setup._publish_intermediate(
-            dynamic_work,
-            dynamic_identity,
-            RequesterRole.REPRODUCTION_SESSION_MANAGER,
-            poc,
-        )
+        poc_ref = self._publish_intermediate(dynamic_work, poc)
         result = DynamicReproductionResult.model_validate_json(
             canonical_bytes(
                 dict(
@@ -895,20 +871,10 @@ class FakeDynamicStages(FakeStageService):
                 )
             )
         )
-        self.evidence.identities[dynamic_identity] = (
-            RequesterRole.REPRODUCTION_SESSION_MANAGER
+        self.runner.complete(
+            dynamic_work,
+            session_identity,
+            "REPRODUCTION_SESSION_MANAGER",
+            (result, poc),
         )
-        self.evidence.next_outputs = (
-            self.runtime.unit_of_work.records.stage_record(result),
-            poc_ref,
-        )
-        try:
-            self.runner.complete(
-                dynamic_work,
-                dynamic_identity,
-                "REPRODUCTION_SESSION_MANAGER",
-                (result, poc),
-            )
-        finally:
-            self.evidence.next_outputs = None
         return request, result, poc

@@ -41,6 +41,7 @@ def register_verification_children(
                     "hypothesis_proposal",
                     attempt_id=work.active_attempt_id,
                 )
+                | {"hypothesis_id": None}
             }
         )
         completed = runner.complete(

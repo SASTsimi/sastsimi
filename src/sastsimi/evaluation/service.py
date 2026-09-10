@@ -1,14 +1,16 @@
 """Authoritative fake result assembly and finalization coordination."""
 
 from collections import Counter
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
-from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.budget import BudgetLedgerEntry, ExecutionBudgetProfile
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.chaining import (
     ChainingResult,
     Primitive,
+    PrimitiveIndexState,
 )
 from sastsimi.contracts.evaluation import RUN_INVENTORY_KINDS, AnalysisRunResult
 from sastsimi.contracts.gates import (
@@ -22,15 +24,57 @@ from sastsimi.contracts.hypothesis import (
 from sastsimi.contracts.policy import (
     RunPolicyState,
 )
+from sastsimi.contracts.records import RunMeta
 from sastsimi.contracts.refs import RecordRef, reference
 from sastsimi.contracts.reporting import ReportDraft
 from sastsimi.contracts.verification import (
     VerificationResult,
 )
-from sastsimi.orchestration.fake_base import ANALYSIS_ID, PROGRAM_ID, FakeStageService
+from sastsimi.runtime.fake_support import (
+    ANALYSIS_ID,
+    PROGRAM_ID,
+    FakeClock,
+    FakeEvidence,
+)
+from sastsimi.runtime.services import RuntimeServices
 
 
-class FakeFinalizationStages(FakeStageService):
+@dataclass(frozen=True)
+class EvaluationDependencies:
+    runtime: RuntimeServices
+    clock: FakeClock
+    evidence: FakeEvidence
+    run_meta: Callable[[str], RunMeta]
+
+
+def current_verdict_counts(
+    processes: tuple[HypothesisProcessState, ...],
+    load: Callable[[RecordRef], Any],
+) -> Counter[str]:
+    """Count only each hypothesis process's exact current Verification result."""
+    verdicts: Counter[str] = Counter()
+    for process in processes:
+        if process.verification_result_ref is None:
+            continue
+        current_verification = load(process.verification_result_ref)
+        if not isinstance(current_verification, VerificationResult):
+            raise TypeError("CURRENT_VERIFICATION_RESULT_TYPE_MISMATCH")
+        if current_verification.meta.hypothesis_id != process.meta.hypothesis_id:
+            raise ValueError("CURRENT_VERIFICATION_HYPOTHESIS_MISMATCH")
+        verdicts[current_verification.verdict] += 1
+    return verdicts
+
+
+class EvaluationService:
+    """Own authoritative run-result assembly and finalization."""
+
+    def __init__(self, dependencies: EvaluationDependencies) -> None:
+        self.runtime = dependencies.runtime
+        self.clock = dependencies.clock
+        self.evidence = dependencies.evidence
+        self._run_meta = dependencies.run_meta
+        self.reports: tuple[ReportDraft, ...] = ()
+
     def _inventory(self, field: str) -> tuple[RecordRef, ...]:
         assert self.runtime is not None
         if field == "policy_cache_refs":
@@ -51,23 +95,37 @@ class FakeFinalizationStages(FakeStageService):
             )
             if not labels:
                 return ()
-            newest = max(labels, key=lambda item: item.verification_generation)
-            return (reference(newest),)
+            newest_by_hypothesis: dict[str, CWELabel] = {}
+            for label in labels:
+                hypothesis_id = str(label.meta.hypothesis_id)
+                current = newest_by_hypothesis.get(hypothesis_id)
+                if (
+                    current is None
+                    or label.verification_generation > current.verification_generation
+                ):
+                    newest_by_hypothesis[hypothesis_id] = label
+            return tuple(
+                reference(newest_by_hypothesis[key])
+                for key in sorted(newest_by_hypothesis)
+            )
         if field == "primitive_and_chaining_refs":
-            indexes = self.runtime.queries.current_records(
-                str(ANALYSIS_ID), "primitive_index_state"
+            indexes = tuple(
+                item
+                for item in self.runtime.queries.current_records(
+                    str(ANALYSIS_ID), "primitive_index_state"
+                )
+                if isinstance(item, PrimitiveIndexState)
             )
             if not indexes:
                 return ()
-            index = indexes[0]
-            from sastsimi.contracts.chaining import PrimitiveIndexState
-
-            assert isinstance(index, PrimitiveIndexState)
+            primitive_refs = tuple(
+                ref for index in indexes for ref in index.primitive_refs
+            )
             primitive_inventory: list[RecordRef] = [
-                reference(index),
-                *index.primitive_refs,
+                *(reference(index) for index in indexes),
+                *primitive_refs,
             ]
-            for primitive_ref in index.primitive_refs:
+            for primitive_ref in primitive_refs:
                 primitive = self.runtime.unit_of_work.records.get_exact(primitive_ref)
                 assert isinstance(primitive, Primitive)
                 if primitive.admission_decision_ref is not None:
@@ -77,7 +135,7 @@ class FakeFinalizationStages(FakeStageService):
             ):
                 if isinstance(item, ChainingResult) and set(
                     item.considered_primitive_refs
-                ).issubset(index.primitive_refs):
+                ).issubset(primitive_refs):
                     primitive_inventory.append(reference(item))
             return tuple(primitive_inventory)
         kind_sets: dict[str, tuple[str, ...]] = {
@@ -136,7 +194,6 @@ class FakeFinalizationStages(FakeStageService):
             str(ANALYSIS_ID), "work_execution_state"
         )
         attempt_refs = self._inventory("work_attempt_refs")
-        verdicts: Counter[str] = Counter()
         processes = tuple(
             item
             for item in self.runtime.queries.current_records(
@@ -144,16 +201,9 @@ class FakeFinalizationStages(FakeStageService):
             )
             if isinstance(item, HypothesisProcessState)
         )
-        for process in processes:
-            if (
-                isinstance(process, HypothesisProcessState)
-                and process.verification_result_ref is not None
-            ):
-                current_verification = self.runtime.unit_of_work.records.get_exact(
-                    process.verification_result_ref
-                )
-                assert isinstance(current_verification, VerificationResult)
-                verdicts[current_verification.verdict] += 1
+        verdicts = current_verdict_counts(
+            processes, self.runtime.unit_of_work.records.get_exact
+        )
         technical_reviews = tuple(
             item
             for item in self.runtime.queries.published_records(str(ANALYSIS_ID))
@@ -280,19 +330,11 @@ class FakeFinalizationStages(FakeStageService):
     def _finish(self, verdict: str) -> AnalysisRunResult:
         assert self.runtime is not None
         result = self._result_candidate(verdict)
-        # The configured finalizer identity is the verification owner.
-        owner = next(
-            ref
-            for ref, role in self.evidence.identities.items()
-            if ref.data_kind == "work_budget_profile"
-        )
-        self.evidence.identities[owner] = RequesterRole.ORCHESTRATION
         result_ref = self.runtime.finalization.finalize(result)
         persisted = self.runtime.unit_of_work.records.get_exact(result_ref)
         assert isinstance(persisted, AnalysisRunResult)
         result = persisted
-        self._host._result = result
-        self._host._reports = tuple(
+        self.reports = tuple(
             item
             for item in self.runtime.queries.current_records(
                 str(ANALYSIS_ID), "report_draft"

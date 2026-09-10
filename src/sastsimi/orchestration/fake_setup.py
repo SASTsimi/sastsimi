@@ -1,7 +1,8 @@
 """Budget, workspace, static-analysis and frozen-policy setup stages."""
 
-import asyncio
-from datetime import timedelta
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from sastsimi.contracts.actions import RequesterRole
@@ -16,22 +17,20 @@ from sastsimi.contracts.budget import (
 )
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.hypothesis import (
+    HypothesisProcessState,
     HypothesisProposal,
-)
-from sastsimi.contracts.ids import (
-    LogicalRecordId,
-    RecordId,
+    VulnerabilityHypothesis,
 )
 from sastsimi.contracts.policy import (
-    PolicyCacheRecord,
-    PolicyCollectionResult,
-    PolicyParserResult,
-    PolicySourceCheck,
-    ProgramPolicyRecord,
     RunPolicyState,
 )
-from sastsimi.contracts.records import PolicyCacheMeta
-from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
+from sastsimi.contracts.records import RecordMeta, RunMeta
+from sastsimi.contracts.refs import (
+    RecordRef,
+    RunStoredDataRef,
+    StoredDataRef,
+    reference,
+)
 from sastsimi.contracts.static import (
     CodeLocation,
     CodeWorkspace,
@@ -42,24 +41,94 @@ from sastsimi.contracts.verification import (
     PlaybookPolicy,
     VerificationPlaybook,
 )
-from sastsimi.ports.dto import OfficialPolicyFetchRequest, OfficialPolicySource
-from sastsimi.runtime.workflow_runner import WorkflowRunner
-
-from .fake_base import (
+from sastsimi.ports.fake_workflow import (
+    InitialVerificationInputs,
+    PolicyFetcher,
+    PolicyPreparationPort,
+    ProviderInvoker,
+    ProviderProber,
+    StaticInvoker,
+)
+from sastsimi.runtime.fake_llm_configuration import register_fake_llm_call
+from sastsimi.runtime.fake_llm_invocation import (
+    invoke_fake_provider,
+    persist_fake_invocation,
+)
+from sastsimi.runtime.fake_support import (
     ANALYSIS_ID,
     COMMIT_ID,
     PROGRAM_ID,
     WORKSPACE_ID,
-    FakeStageService,
+    FakeClock,
+    FakeEvidence,
+    FakeIds,
+    FakeRecordFactory,
 )
-from .fake_configuration import register_fake_llm_call
-from .fake_provider_runtime import (
-    invoke_fake_provider,
-    persist_fake_invocation,
-)
+from sastsimi.runtime.services import RuntimeServices
+from sastsimi.runtime.workflow_runner import WorkflowRunner
+
+from .fake_static_runtime import execute_fake_static_work, register_fake_static_works
 
 
-class FakeSetupStages(FakeStageService):
+@dataclass(frozen=True)
+class FakeSetupDependencies:
+    data_dir: Path
+    runtime_builder: Callable[..., RuntimeServices]
+    database_upgrader: Callable[[Path], None]
+    provider_invoke: ProviderInvoker
+    provider_probe: ProviderProber
+    policy_fetch: PolicyFetcher
+    clock: FakeClock
+    ids: FakeIds
+    evidence: FakeEvidence
+    records: FakeRecordFactory
+
+
+class FakeSetupStages:
+    """Own run bootstrap and trusted proposal registration setup."""
+
+    def __init__(self, dependencies: FakeSetupDependencies) -> None:
+        self.data_dir = dependencies.data_dir
+        self.runtime_builder = dependencies.runtime_builder
+        self.database_upgrader = dependencies.database_upgrader
+        self.provider_invoke = dependencies.provider_invoke
+        self.provider_probe = dependencies.provider_probe
+        self.policy_fetch = dependencies.policy_fetch
+        self.clock = dependencies.clock
+        self.ids = dependencies.ids
+        self.evidence = dependencies.evidence
+        self.records = dependencies.records
+        self.runtime: RuntimeServices | None = None
+        self.runner: WorkflowRunner | None = None
+        self.context_service_identity_ref: StoredDataRef | None = None
+        self.policy_service: PolicyPreparationPort | None = None
+
+    def bind_policy_service(self, service: PolicyPreparationPort) -> None:
+        self.policy_service = service
+
+    def _run_meta(self, kind: str) -> RunMeta:
+        return self.records.run_meta(kind)
+
+    def _record_meta(
+        self,
+        kind: str,
+        *,
+        hypothesis_id: str | None = None,
+        attempt_id: str | None = None,
+    ) -> RecordMeta:
+        return self.records.record_meta(
+            kind, hypothesis_id=hypothesis_id, attempt_id=attempt_id
+        )
+
+    def _artifact(self, kind: str, *, record: bool = False) -> RecordRef:
+        return self.records.artifact(kind, record=record)
+
+    def _stored_artifact(self, kind: str) -> StoredDataRef:
+        return self.records.stored_artifact(kind)
+
+    def _opaque_run_ref(self, kind: str) -> RunStoredDataRef:
+        return self.records.opaque_run_ref(kind)
+
     def _execution(self) -> ExecutionBudgetProfile:
         approval = self._opaque_run_ref("approval")
         pricing = self._opaque_run_ref("pricing")
@@ -85,7 +154,7 @@ class FakeSetupStages(FakeStageService):
             )
         )
 
-    def _work_profile(self) -> WorkBudgetProfile:
+    def _work_profile(self, *, profile_key: str = "fake-work") -> WorkBudgetProfile:
         limits = [
             dict(
                 limit_key=f"fake-{work.value.lower()}",
@@ -115,7 +184,7 @@ class FakeSetupStages(FakeStageService):
             canonical_bytes(
                 dict(
                     meta=self._record_meta("work_budget_profile"),
-                    profile_key="fake-work",
+                    profile_key=profile_key,
                     purpose="PRODUCTION",
                     limits=limits,
                     unlisted_operation="DENY",
@@ -128,16 +197,59 @@ class FakeSetupStages(FakeStageService):
         self.database_upgrader(self.data_dir)
         execution = self._execution()
         work_profile = self._work_profile()
-        context_profile = self._work_profile()
+        context_profile = self._work_profile(profile_key="fake-context-identity")
+        verification_budget = VerificationBudgetProfile.model_validate_json(
+            canonical_bytes(
+                dict(
+                    meta=self._record_meta("verification_budget_profile"),
+                    profile_key="fake-verification",
+                    max_verification_elapsed_ms=60_000,
+                    max_work_per_verification=100,
+                    max_llm_calls_per_verification=100,
+                    max_retries_per_work=3,
+                    max_parallel_evidence_calls=4,
+                    status="ACTIVE",
+                )
+            )
+        )
+        additional_roles = (
+            RequesterRole.STATIC_ANALYSIS,
+            RequesterRole.POLICY_COLLECTOR,
+            RequesterRole.POLICY_PARSER,
+            RequesterRole.HYPOTHESIS,
+            RequesterRole.PRO,
+            RequesterRole.CON,
+            RequesterRole.DYNAMIC_REPRODUCTION,
+            RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
+            RequesterRole.SANDBOX_CONTROLLER,
+            RequesterRole.REPRODUCTION_SESSION_MANAGER,
+            RequesterRole.CWE_LABELING,
+            RequesterRole.TECHNICAL_GATE,
+            RequesterRole.RULE_SCOPE_GATE,
+            RequesterRole.PRIMITIVE_ADMISSION_RUNTIME,
+            RequesterRole.CHAINING,
+            RequesterRole.REPORTER,
+            RequesterRole.R8_EVALUATION_RUNTIME,
+        )
+        role_profiles = {
+            role: self._work_profile(profile_key=f"fake-{role.value.lower()}-identity")
+            for role in additional_roles
+        }
         execution_ref = reference(execution)
         owner_ref = reference(work_profile)
         context_identity_ref = reference(context_profile)
+        verification_ref = reference(verification_budget)
         assert isinstance(execution_ref, RunStoredDataRef)
         assert isinstance(owner_ref, StoredDataRef)
         assert isinstance(context_identity_ref, StoredDataRef)
+        assert isinstance(verification_ref, StoredDataRef)
         self.evidence.approvals.add(content_hash(execution))
-        self.evidence.identities[execution_ref] = RequesterRole.ORCHESTRATION
-        self.evidence.identities[owner_ref] = RequesterRole.VERIFICATION
+        self.evidence.bind_identity(execution_ref, RequesterRole.REPOSITORY_LOADER)
+        self.evidence.bind_identity(owner_ref, RequesterRole.VERIFICATION)
+        self.evidence.bind_identity(
+            context_identity_ref, RequesterRole.CONTEXT_RETRIEVAL_SERVICE
+        )
+        self.evidence.bind_identity(verification_ref, RequesterRole.ORCHESTRATION)
         self.runtime = self.runtime_builder(
             self.data_dir,
             WORKSPACE_ID,
@@ -147,10 +259,18 @@ class FakeSetupStages(FakeStageService):
             evidence=self.evidence,
             context_service_identity_ref=context_identity_ref,
             finding_service_identity_ref=owner_ref,
-            analysis_finalization_identity_ref=owner_ref,
+            analysis_finalization_identity_ref=verification_ref,
         )
-        self.evidence.budget_approvals.add(content_hash(context_profile))
+        self.records.attach_runtime(self.runtime)
+        for config in (work_profile, context_profile, verification_budget):
+            self.evidence.budget_approvals.add(content_hash(config))
+        work_ref = self.runtime.configuration.register_work_budget(work_profile)
         self.runtime.configuration.register_work_budget(context_profile)
+        self.runtime.configuration.register_verification_budget(verification_budget)
+        for role, profile in role_profiles.items():
+            self.evidence.budget_approvals.add(content_hash(profile))
+            identity_ref = self.runtime.configuration.register_work_budget(profile)
+            self.evidence.bind_identity(identity_ref, role)
         self.context_service_identity_ref = context_identity_ref
         initial = AnalysisRunState.model_validate_json(
             canonical_bytes(
@@ -174,14 +294,19 @@ class FakeSetupStages(FakeStageService):
             )
         )
         scope = self.runtime.budget_registry.pin_execution(execution, initial)
-        self.runner = WorkflowRunner(self.runtime, self.clock, self.ids)
+        self.runner = WorkflowRunner(
+            self.runtime,
+            self.clock,
+            self.ids,
+            output_approval=self.evidence.output_approval,
+        )
         workspace_work = self.runner.start(
             scope,
             execution.meta,
             "WORKSPACE_PREP",
             "ANALYSIS",
             str(ANALYSIS_ID),
-            execution_ref,
+            verification_ref,
         )
         workspace = CodeWorkspace.model_validate_json(
             canonical_bytes(
@@ -195,33 +320,11 @@ class FakeSetupStages(FakeStageService):
                 )
             )
         )
-        self.evidence.identities[execution_ref] = RequesterRole.REPOSITORY_LOADER
         workspace_work = self.runner.complete(
             workspace_work, execution_ref, "REPOSITORY_LOADER", (workspace,)
         )
         workspace_ref = workspace_work.output_refs[0]
         assert isinstance(workspace_ref, RunStoredDataRef)
-
-        verification_budget = VerificationBudgetProfile.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=self._record_meta("verification_budget_profile"),
-                    profile_key="fake-verification",
-                    max_verification_elapsed_ms=60_000,
-                    max_work_per_verification=100,
-                    max_llm_calls_per_verification=100,
-                    max_retries_per_work=3,
-                    max_parallel_evidence_calls=4,
-                    status="ACTIVE",
-                )
-            )
-        )
-        for config in (work_profile, verification_budget):
-            self.evidence.budget_approvals.add(content_hash(config))
-        work_ref = self.runtime.configuration.register_work_budget(work_profile)
-        verification_ref = self.runtime.configuration.register_verification_budget(
-            verification_budget
-        )
         lifecycle = DynamicReproductionLifecycleProfile.model_validate_json(
             canonical_bytes(
                 dict(
@@ -274,6 +377,84 @@ class FakeSetupStages(FakeStageService):
             end_column=None,
         )
 
+    def prepare_initial(
+        self,
+        scope: StoredDataRef,
+        owner_ref: StoredDataRef,
+        orchestrator_ref: StoredDataRef,
+        static_invoke: StaticInvoker,
+    ) -> InitialVerificationInputs:
+        """Sequence independent run-init branches, then trusted registration inputs."""
+        assert self.runtime is not None and self.runner is not None
+        run_state = self.runtime.budget_registry.current_state(str(ANALYSIS_ID))
+        assert run_state.workspace_ref is not None
+        workspace = self.runtime.unit_of_work.records.get_exact(run_state.workspace_ref)
+        assert isinstance(workspace, CodeWorkspace)
+        workspace_ref = reference(workspace)
+        assert isinstance(workspace_ref, RunStoredDataRef)
+        static_works = register_fake_static_works(
+            runner=self.runner,
+            evidence=self.evidence,
+            scope=scope,
+            identity=orchestrator_ref,
+            workspace=workspace,
+            workspace_ref=workspace_ref,
+            metadata=self._record_meta("static_tool_stage"),
+        )
+        policy_work = self._start_policy_work(scope, orchestrator_ref)
+        analysis_config_ref = self._stored_artifact("static-analysis-config")
+        rule_catalog_ref = self._stored_artifact("static-rule-catalog")
+        static_outputs = tuple(
+            execute_fake_static_work(
+                runtime=self.runtime,
+                runner=self.runner,
+                evidence=self.evidence,
+                scope=scope,
+                identity=orchestrator_ref,
+                work=work,
+                workspace=workspace,
+                analysis_config_ref=analysis_config_ref,
+                rule_catalog_ref=rule_catalog_ref,
+                tool_name=tool_name,
+                tool_kind=tool_kind,
+                raw_result_ref=self._stored_artifact(f"raw-{tool_name}"),
+                static_invoke=static_invoke,
+            )
+            for work, tool_name, tool_kind in zip(
+                static_works,
+                ("fake-ast", "fake-sast"),
+                ("STRUCTURE", "RULE_BASED"),
+                strict=True,
+            )
+        )
+        self._prepare_policy(scope, orchestrator_ref, policy_work)
+        proposal, bundle = self._prepare_hypothesis(
+            scope,
+            orchestrator_ref,
+            tuple(item[0] for item in static_outputs),
+            tuple(item[1] for item in static_outputs),
+        )
+        (hypothesis,) = self.runtime.queries.current_records(
+            str(ANALYSIS_ID), "vulnerability_hypothesis"
+        )
+        (process,) = self.runtime.queries.current_records(
+            str(ANALYSIS_ID), "hypothesis_process_state"
+        )
+        assert isinstance(hypothesis, VulnerabilityHypothesis)
+        assert isinstance(process, HypothesisProcessState)
+        book_ref, policy_ref = self._playbooks()
+        return InitialVerificationInputs(
+            scope=scope,
+            owner_ref=owner_ref,
+            orchestrator_ref=orchestrator_ref,
+            proposal=proposal,
+            hypothesis=hypothesis,
+            process=process,
+            bundle=bundle,
+            playbook_ref=book_ref,
+            policy_ref=policy_ref,
+        )
+
     def _prepare_hypothesis(
         self,
         scope: StoredDataRef,
@@ -282,7 +463,7 @@ class FakeSetupStages(FakeStageService):
         tool_run_refs: tuple[StoredDataRef, ...],
     ) -> tuple[HypothesisProposal, StaticFactBundle]:
         assert self.runtime is not None and self.runner is not None
-        self.evidence.identities[orchestrator_ref] = RequesterRole.ORCHESTRATION
+        self.evidence.bind_identity(orchestrator_ref, RequesterRole.ORCHESTRATION)
         static_work = self.runner.start(
             scope,
             self._record_meta("fake_stage"),
@@ -313,11 +494,10 @@ class FakeSetupStages(FakeStageService):
                 )
             )
         )
-        self.evidence.identities[orchestrator_ref] = RequesterRole.STATIC_ANALYSIS
+        static_identity = self.evidence.identity(RequesterRole.STATIC_ANALYSIS)
         static_work = self.runner.complete(
-            static_work, orchestrator_ref, "STATIC_ANALYSIS", (bundle,)
+            static_work, static_identity, "STATIC_ANALYSIS", (bundle,)
         )
-        self.evidence.identities[orchestrator_ref] = RequesterRole.ORCHESTRATION
         proposal_work = self.runner.start(
             scope,
             static_work.meta,
@@ -379,13 +559,13 @@ class FakeSetupStages(FakeStageService):
                 ref for ref in static_work.output_refs if isinstance(ref, StoredDataRef)
             ),
         )
-        self.evidence.identities[orchestrator_ref] = RequesterRole.HYPOTHESIS
+        hypothesis_identity = self.evidence.identity(RequesterRole.HYPOTHESIS)
         proposal_record, invocation = invoke_fake_provider(
             runtime=self.runtime,
             runner=self.runner,
             work=proposal_work,
             scope=scope,
-            identity=orchestrator_ref,
+            identity=hypothesis_identity,
             action_role=RequesterRole.HYPOTHESIS,
             action_type="CALL_LLM",
             call_spec_ref=call_ref,
@@ -396,7 +576,6 @@ class FakeSetupStages(FakeStageService):
         )
         assert isinstance(proposal_record, HypothesisProposal)
         persist_fake_invocation(self.runtime, invocation)
-        self.evidence.identities[orchestrator_ref] = RequesterRole.ORCHESTRATION
         proposal_work = self.runner.complete(
             proposal_work, orchestrator_ref, "ORCHESTRATION", (proposal,)
         )
@@ -442,285 +621,19 @@ class FakeSetupStages(FakeStageService):
         policy_ref = self.runtime.configuration.register_playbook_policy(policy)
         return book_ref, policy_ref
 
-    def _publish_intermediate(
-        self,
-        work: Any,
-        identity: StoredDataRef,
-        role: RequesterRole,
-        record: Any,
-    ) -> StoredDataRef:
-        assert self.runtime is not None and self.runner is not None
-        self.evidence.identities[identity] = role
-        candidate = self.runtime.unit_of_work.records.stage_record(record)
-        action = self.runner.action(
-            work,
-            identity,
-            role.value,
-            "SAVE_RESULT",
-            result_kind=candidate.data_kind,
-            candidate_result_ref=candidate,
-        )
-        (published,) = self.runtime.intermediate.publish(
-            str(work.work_id), self.runner.authorize(work, action), (record,)
-        )
-        assert isinstance(published, StoredDataRef)
-        return published
-
     def _prepare_policy(
         self,
         scope: StoredDataRef,
         orchestrator_ref: StoredDataRef,
         work: Any | None = None,
     ) -> RunPolicyState:
-        assert self.runtime is not None and self.runner is not None
-        self.evidence.identities[orchestrator_ref] = RequesterRole.ORCHESTRATION
-        if work is None:
-            work = self._start_policy_work(scope, orchestrator_ref)
-        official = self._artifact("official_policy")
-        source_config_ref = self._stored_artifact("policy_source_config")
-        freshness = self._artifact("freshness_evidence")
-        self.evidence.identities[orchestrator_ref] = RequesterRole.POLICY_COLLECTOR
-        fetch_action = self.runner.action(
-            work,
-            orchestrator_ref,
-            "POLICY_COLLECTOR",
-            "FETCH_POLICY",
-            input_refs=(official, source_config_ref),
-        )
-        fetch_units = self.runner.units(elapsed_ms=1, cost_minor_units=1)
-        fetch_reservation = self.runner.reserve(work, scope, fetch_action, fetch_units)
-        fetch_decision = self.runner.authorize(work, fetch_action, fetch_reservation)
-
-        if not isinstance(official, StoredDataRef):
-            raise ValueError("FAKE_POLICY_ARTIFACT_SCOPE_MISMATCH")
-        with self.runtime.unit_of_work.artifacts.open_verified(official) as source:
-            source_content = source.read()
-        expected_source = OfficialPolicySource(
-            PolicySourceCheck.model_validate(
-                dict(
-                    source_id="fake-official",
-                    source_ref=official,
-                    source_url="https://example.invalid/policy",
-                    publisher="fixture",
-                    status="VERIFIED",
-                    evidence_refs=(freshness,),
-                    checked_at=self.clock.now(),
-                )
-            ),
-            source_content,
-        )
-        fetch_request = OfficialPolicyFetchRequest(
-            fetch_action, PROGRAM_ID, source_config_ref
-        )
-        fetched_source = asyncio.run(
-            self.runtime.external.invoke(
-                str(work.work_id),
-                fetch_decision,
-                reference(fetch_reservation),
-                lambda: self.policy_fetch(fetch_request, expected_source),
-                idempotency_key=str(fetch_action.action_id),
-            )
-        )
-        self.runner.account(fetch_reservation, fetch_units)
-        if fetched_source != expected_source:
-            raise ValueError("FAKE_POLICY_SOURCE_MISMATCH")
-        criterion = self._artifact("freshness_criterion", record=True)
-        parser_candidate = PolicyParserResult.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=self.runner.metadata(
-                        work.meta,
-                        "policy_parser_result",
-                        attempt_id=work.active_attempt_id,
-                    ),
-                    parser_result_id="fake-parser-result",
-                    parser_name="fake-policy-parser",
-                    parser_version="1",
-                    source_ref=official,
-                    llm_invocation_ref=official,
-                    parsed_output_ref=self._artifact("parsed_policy"),
-                    status="SUCCEEDED",
-                    error_ids=(),
-                    completed_at=self.clock.now(),
-                )
-            )
-        )
-        call_ref, provider_ref = register_fake_llm_call(
-            self.runtime,
-            self.evidence,
-            self._record_meta,
-            self._artifact,
-            self.clock.now(),
-            self.provider_probe,
-            runner=self.runner,
-            scope=scope,
-            orchestration_identity=orchestrator_ref,
-            role="POLICY_PARSER",
-            result_kind="policy_parser_result",
-            context_refs=(official,),
-        )
-        self.evidence.identities[orchestrator_ref] = RequesterRole.POLICY_PARSER
-
-        parser_record, parser_invocation = invoke_fake_provider(
-            runtime=self.runtime,
-            runner=self.runner,
-            work=work,
-            scope=scope,
-            identity=orchestrator_ref,
-            action_role=RequesterRole.POLICY_PARSER,
-            action_type="CALL_LLM",
-            call_spec_ref=call_ref,
-            provider_profile_ref=provider_ref,
-            artifact=self._stored_artifact,
-            build_output=lambda _decision: parser_candidate,
-            provider_invoke=self.provider_invoke,
-            bind_request=lambda record, request_ref: PolicyParserResult.model_validate(
-                record
-            ).model_copy(update={"llm_invocation_ref": request_ref}),
-        )
-        assert isinstance(parser_record, PolicyParserResult)
-        persist_fake_invocation(self.runtime, parser_invocation)
-        parser = parser_record
-        parser_ref = self._publish_intermediate(
-            work, orchestrator_ref, RequesterRole.POLICY_PARSER, parser
-        )
-        checked = self.clock.now()
-        policy = ProgramPolicyRecord.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=self.runner.metadata(
-                        work.meta,
-                        "program_policy_record",
-                        attempt_id=work.active_attempt_id,
-                    ),
-                    policy_record_id="fake-policy",
-                    program_id=PROGRAM_ID,
-                    preparation_source="COLLECTED",
-                    source_cache_ref=None,
-                    program_namespace="fake",
-                    external_program_id="fake-program",
-                    policy_version="1",
-                    fetched_at=checked,
-                    freshness_status="CURRENT",
-                    freshness_checked_at=checked,
-                    in_scope_assets=(),
-                    out_of_scope_assets=(),
-                    accepted_vulnerability_classes=(),
-                    excluded_vulnerability_classes=(),
-                    testing_restrictions=(),
-                    reward_conditions=(),
-                    impact_criteria=(),
-                    disclosure_requirements=(),
-                    parser_version="1",
-                    source_refs=(official,),
-                    source_checks=(fetched_source.source_check,),
-                    parser_result_refs=(parser_ref,),
-                    freshness_criterion_ref=criterion,
-                    freshness_evidence_refs=(freshness,),
-                    freshness_valid_until=checked + timedelta(days=1),
-                    missing_information=(),
-                    freshness_warning=None,
-                )
-            )
-        )
-        policy_ref = reference(policy)
-        assert isinstance(policy_ref, StoredDataRef)
-        collection = PolicyCollectionResult.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=self.runner.metadata(
-                        work.meta,
-                        "policy_collection_result",
-                        attempt_id=work.active_attempt_id,
-                    ),
-                    collection_result_id="fake-collection",
-                    program_id=PROGRAM_ID,
-                    preparation_source="COLLECTED",
-                    source_cache_ref=None,
-                    status="FOUND",
-                    official_source_refs=(official,),
-                    parser_result_refs=(parser_ref,),
-                    policy_record_ref=policy_ref,
-                    gap_ids=(),
-                    error_ids=(),
-                    completed_at=checked,
-                )
-            )
-        )
-        collection_ref = reference(collection)
-        assert isinstance(collection_ref, StoredDataRef)
-        cache_meta = PolicyCacheMeta(
-            record_id=self.ids.new(RecordId),
-            logical_record_id=LogicalRecordId("fake-policy-cache"),
-            record_type="policy_cache_record",
-            schema_version="1.0.0",
-            revision_number=1,
-            previous_record_id=None,
-            created_at=checked,
-            program_id=PROGRAM_ID,
-        )
-        cache = PolicyCacheRecord.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=cache_meta,
-                    source_config_ref=scope,
-                    parser_name="fake-policy-parser",
-                    parser_version="1",
-                    collection_status="FOUND",
-                    collection_result_ref=collection_ref,
-                    parser_result_refs=(parser_ref,),
-                    policy_record_ref=policy_ref,
-                    freshness_criterion_ref=criterion,
-                    freshness_checked_at=checked,
-                    freshness_evidence_refs=(freshness,),
-                    freshness_valid_until=checked + timedelta(days=1),
-                    published_at=checked,
-                )
-            )
-        )
-        cache_ref = reference(cache)
-        state = RunPolicyState.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=self.runner.metadata(work.meta, "run_policy_state"),
-                    program_id=PROGRAM_ID,
-                    status="CURRENT",
-                    preparation_source="COLLECTED",
-                    source_config_ref=scope,
-                    parser_name="fake-policy-parser",
-                    parser_version="1",
-                    policy_work_ref=reference(work),
-                    policy_cache_ref=cache_ref,
-                    collection_result_ref=collection_ref,
-                    policy_record_ref=policy_ref,
-                    freshness_criterion_ref=criterion,
-                    freshness_checked_at=checked,
-                    freshness_evidence_refs=(freshness,),
-                    freshness_valid_until=checked + timedelta(days=1),
-                )
-            )
-        )
-        outputs = (collection, policy, cache, state, parser)
-        self.evidence.identities[orchestrator_ref] = RequesterRole.POLICY_COLLECTOR
-        self.evidence.next_outputs = tuple(
-            self.runtime.unit_of_work.records.stage_record(item) for item in outputs
-        )
-        try:
-            self.runner.complete(work, orchestrator_ref, "POLICY_COLLECTOR", outputs)
-        finally:
-            self.evidence.next_outputs = None
-        return state
+        if self.policy_service is None:
+            raise RuntimeError("FAKE_POLICY_SERVICE_NOT_BOUND")
+        return self.policy_service.prepare(scope, orchestrator_ref, work)
 
     def _start_policy_work(
         self, scope: StoredDataRef, orchestrator_ref: StoredDataRef
     ) -> Any:
-        assert self.runner is not None
-        self.evidence.identities[orchestrator_ref] = RequesterRole.ORCHESTRATION
-        return self.runner.start(
-            scope,
-            self._record_meta("fake_policy_stage"),
-            "POLICY_FETCH",
-            "ANALYSIS",
-            str(ANALYSIS_ID),
-            orchestrator_ref,
-        )
+        if self.policy_service is None:
+            raise RuntimeError("FAKE_POLICY_SERVICE_NOT_BOUND")
+        return self.policy_service.start(scope, orchestrator_ref)

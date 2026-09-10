@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO, cast
 
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
     from sastsimi.contracts.evaluation import AnalysisRunResult
     from sastsimi.contracts.reporting import ReportDraft
     from sastsimi.orchestration.fake_pipeline import FakePipeline
+    from sastsimi.orchestration.fake_scenario_runtime import WorkflowBundle
 
 
 def build_config(
@@ -67,6 +69,7 @@ def database_command(data_dir: Path, command: str, revision: str | None) -> str:
 def build_fake_pipeline(data_dir: Path) -> FakePipeline:
     """Compose the deterministic local fake vertical slice."""
     from sastsimi.chaining import no_match_result
+    from sastsimi.chaining.service import ChainingDependencies, ChainingService
     from sastsimi.contracts.dynamic import (
         CleanupResult,
         SandboxCommandRecord,
@@ -78,9 +81,11 @@ def build_fake_pipeline(data_dir: Path) -> FakePipeline:
         ProviderValidationEvidence,
     )
     from sastsimi.contracts.refs import reference
-    from sastsimi.contracts.static import ToolRunResult
+    from sastsimi.contracts.static import CodeLocation, ToolRunResult
+    from sastsimi.evaluation.service import EvaluationDependencies, EvaluationService
     from sastsimi.orchestration.fake_pipeline import FakePipeline
     from sastsimi.policy import FakePolicySource
+    from sastsimi.policy.service import PolicyDependencies, PolicyPreparationService
     from sastsimi.ports.dto import (
         ApprovedSandboxCommand,
         CapabilityProbeResult,
@@ -90,15 +95,48 @@ def build_fake_pipeline(data_dir: Path) -> FakePipeline:
         SandboxPrepareRequest,
         StaticToolRequest,
     )
+    from sastsimi.ports.fake_workflow import (
+        NoMatchBuilder,
+        PolicyFetcher,
+        ProviderInvoker,
+        ProviderProber,
+        SandboxCleaner,
+        SandboxExecutor,
+        SandboxPreparer,
+    )
+    from sastsimi.ports.verification_assembly import VerificationAssemblyPort
     from sastsimi.providers.fake import FakeProviderAdapter
+    from sastsimi.reporting.service import ReportingDependencies, ReportingService
     from sastsimi.reproduction import (
         require_cleanup_result,
         require_executed_command,
         require_prepared_environment,
     )
+    from sastsimi.reproduction.service import (
+        DynamicReproductionService,
+        ReproductionDependencies,
+    )
+    from sastsimi.runtime.fake_support import (
+        FakeClock,
+        FakeEvidence,
+        FakeIds,
+        FakeRecordFactory,
+    )
+    from sastsimi.runtime.workflow_runner import WorkflowRunner
     from sastsimi.sandbox.fake import FakeSandboxAdapter
     from sastsimi.static_analysis.fake import FakeStaticToolAdapter
     from sastsimi.verification import FakeVerificationAssembly
+    from sastsimi.verification.service import (
+        VerificationDependencies,
+        VerificationService,
+    )
+
+    @dataclass(frozen=True)
+    class Services:
+        policy: PolicyPreparationService
+        verification: VerificationService
+        reporting: ReportingService
+        evaluation: EvaluationService
 
     async def provider_invoke(
         request: LLMInvocationRequest, result: LLMInvocationResult
@@ -155,6 +193,101 @@ def build_fake_pipeline(data_dir: Path) -> FakePipeline:
     ) -> OfficialPolicySource:
         return await FakePolicySource(expected).fetch_official(request)
 
+    def workflow_factory(
+        *,
+        runtime: RuntimeServices,
+        runner: WorkflowRunner,
+        clock: FakeClock,
+        ids: FakeIds,
+        evidence: FakeEvidence,
+        records: FakeRecordFactory,
+        provider_invoke: ProviderInvoker,
+        provider_probe: ProviderProber,
+        sandbox_prepare: SandboxPreparer,
+        sandbox_execute: SandboxExecutor,
+        sandbox_cleanup: SandboxCleaner,
+        policy_fetch: PolicyFetcher,
+        no_match_builder: NoMatchBuilder,
+        verification_assembly: VerificationAssemblyPort,
+        context_service_identity_ref: StoredDataRef,
+        location: Callable[[], CodeLocation],
+    ) -> WorkflowBundle:
+        policy = PolicyPreparationService(
+            PolicyDependencies(
+                runtime=runtime,
+                runner=runner,
+                clock=clock,
+                ids=ids,
+                evidence=evidence,
+                records=records,
+                provider_invoke=provider_invoke,
+                provider_probe=provider_probe,
+                policy_fetch=policy_fetch,
+            )
+        )
+        reproduction = DynamicReproductionService(
+            ReproductionDependencies(
+                runtime=runtime,
+                runner=runner,
+                clock=clock,
+                evidence=evidence,
+                records=records,
+                provider_invoke=provider_invoke,
+                provider_probe=provider_probe,
+                sandbox_prepare=sandbox_prepare,
+                sandbox_execute=sandbox_execute,
+                sandbox_cleanup=sandbox_cleanup,
+            )
+        )
+        verification = VerificationService(
+            VerificationDependencies(
+                runtime=runtime,
+                runner=runner,
+                clock=clock,
+                evidence=evidence,
+                records=records,
+                provider_invoke=provider_invoke,
+                provider_probe=provider_probe,
+                assembly=verification_assembly,
+                context_service_identity_ref=context_service_identity_ref,
+                location=location,
+                dynamic=reproduction,
+            )
+        )
+        chaining = ChainingService(
+            ChainingDependencies(
+                runtime=runtime,
+                runner=runner,
+                clock=clock,
+                evidence=evidence,
+                records=records,
+                provider_invoke=provider_invoke,
+                provider_probe=provider_probe,
+                no_match_builder=no_match_builder,
+            )
+        )
+        reporting = ReportingService(
+            ReportingDependencies(
+                runtime=runtime,
+                runner=runner,
+                clock=clock,
+                evidence=evidence,
+                records=records,
+                provider_invoke=provider_invoke,
+                provider_probe=provider_probe,
+                chaining=chaining,
+            )
+        )
+        evaluation = EvaluationService(
+            EvaluationDependencies(
+                runtime=runtime,
+                clock=clock,
+                evidence=evidence,
+                run_meta=records.run_meta,
+            )
+        )
+        return Services(policy, verification, reporting, evaluation)
+
     result, reports = _load_fake_outputs(data_dir)
     return FakePipeline(
         data_dir,
@@ -169,6 +302,7 @@ def build_fake_pipeline(data_dir: Path) -> FakePipeline:
         policy_fetch,
         no_match_result,
         FakeVerificationAssembly(),
+        workflow_factory,
         persisted_result=result,
         persisted_reports=reports,
     )

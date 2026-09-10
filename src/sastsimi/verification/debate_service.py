@@ -5,17 +5,20 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from sastsimi.contracts.actions import RequesterRole
+from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.contracts.verification import ConEvidenceResult, ProEvidenceResult
 from sastsimi.contracts.work import WorkExecutionState
-from sastsimi.orchestration.fake_configuration import register_fake_llm_call
-from sastsimi.orchestration.fake_support import FakeEvidence
+from sastsimi.ports.fake_workflow import ProviderInvoker, ProviderProber
+from sastsimi.runtime.fake_llm_configuration import register_fake_llm_call
+from sastsimi.runtime.fake_llm_invocation import (
+    invoke_fake_provider,
+    persist_fake_invocation,
+)
+from sastsimi.runtime.fake_support import FakeEvidence
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
-
-from .fake_base import ProviderInvoker, ProviderProber
-from .fake_provider_runtime import invoke_fake_provider, persist_fake_invocation
 
 
 @dataclass(frozen=True)
@@ -34,17 +37,12 @@ def run_fake_debate(
     scope: StoredDataRef,
     owner_ref: StoredDataRef,
     orchestrator_ref: StoredDataRef,
-    proposal_ref: StoredDataRef,
     verification_work: WorkExecutionState,
     debate_inputs: tuple[StoredDataRef, ...],
     record_meta: Callable[..., RecordMeta],
     artifact: Callable[[str], RecordRef],
     stored_artifact: Callable[[str], StoredDataRef],
     now: Callable[[], datetime],
-    build_evidence: Callable[
-        [str, WorkExecutionState, WorkExecutionState, tuple[StoredDataRef, ...]],
-        ProEvidenceResult | ConEvidenceResult,
-    ],
     provider_invoke: ProviderInvoker,
     provider_probe: ProviderProber,
 ) -> FakeDebateResult:
@@ -55,10 +53,8 @@ def run_fake_debate(
     ):
         raise TypeError("FAKE_DEBATE_HYPOTHESIS_SCOPE_REQUIRED")
     children: list[tuple[str, StoredDataRef, WorkExecutionState]] = []
-    evidence.identities[owner_ref] = RequesterRole.VERIFICATION
-    for role, identity in zip(
-        ("PRO", "CON"), (orchestrator_ref, proposal_ref), strict=True
-    ):
+    for role in ("PRO", "CON"):
+        identity = evidence.stored_identity(RequesterRole(role))
         child = runner.start(
             scope,
             verification_work.meta,
@@ -84,21 +80,38 @@ def run_fake_debate(
             provider_probe,
             runner=runner,
             scope=scope,
-            orchestration_identity=identity,
+            orchestration_identity=orchestrator_ref,
             role=role,
             result_kind=f"{role.lower()}_evidence_result",
             context_refs=debate_inputs,
         )
         selected_role = RequesterRole(role)
-        evidence.identities[identity] = selected_role
 
         def build_output(
             _decision: StoredDataRef,
             selected_role: str = role,
             selected_work: WorkExecutionState = child,
         ) -> ProEvidenceResult | ConEvidenceResult:
-            return build_evidence(
-                selected_role, selected_work, verification_work, debate_inputs
+            model = ProEvidenceResult if selected_role == "PRO" else ConEvidenceResult
+            return model.model_validate_json(
+                canonical_bytes(
+                    dict(
+                        meta=runner.metadata(
+                            verification_work.meta,
+                            f"{selected_role.lower()}_evidence_result",
+                            attempt_id=selected_work.active_attempt_id,
+                        ),
+                        role=selected_role,
+                        parent_work_id=verification_work.work_id,
+                        evidence_work_id=selected_work.work_id,
+                        verification_generation=verification_work.work_generation,
+                        llm_call_id=f"fake-{selected_role.lower()}-call",
+                        debate_input_hash=content_hash(debate_inputs),
+                        evidence=(),
+                        summary=f"{selected_role} reviewed the exact fake path",
+                        limitations=(),
+                    )
+                )
             )
 
         result, invocation = invoke_fake_provider(
@@ -131,3 +144,9 @@ def run_fake_debate(
     if not isinstance(pro_ref, StoredDataRef) or not isinstance(con_ref, StoredDataRef):
         raise TypeError("FAKE_DEBATE_OUTPUT_SCOPE_MISMATCH")
     return FakeDebateResult(pro, con, pro_ref, con_ref)
+
+
+class DebateService:
+    """Run the same-input Pro/Con fan-out and exact result join."""
+
+    run = staticmethod(run_fake_debate)

@@ -9,7 +9,7 @@ from sastsimi.contracts.static import (
     CodeLocation,
     ContextRetrievalLimits,
 )
-from sastsimi.orchestration.fake_support import FakeEvidence
+from sastsimi.runtime.fake_support import FakeEvidence
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 
@@ -29,7 +29,7 @@ def retrieve_fake_context(
     location: CodeLocation,
     fragment_ref: StoredDataRef,
 ) -> tuple[CodeContextResponse, StoredDataRef]:
-    evidence.identities[identity] = RequesterRole.VERIFICATION
+    evidence.bind_identity(identity, RequesterRole.VERIFICATION)
     work = runner.start(
         scope,
         metadata,
@@ -41,7 +41,6 @@ def retrieve_fake_context(
         inputs=inputs,
         generation=generation,
     )
-    evidence.identities[identity] = RequesterRole.VERIFICATION
 
     action = runner.action(
         work,
@@ -56,7 +55,7 @@ def retrieve_fake_context(
     used = runtime.validator.claim_external(
         str(work.work_id), decision, reference(reservation)
     )
-    evidence.identities[service_identity] = RequesterRole.CONTEXT_RETRIEVAL_SERVICE
+    evidence.bind_identity(service_identity, RequesterRole.CONTEXT_RETRIEVAL_SERVICE)
     request = runtime.context.bind(
         str(work.work_id),
         used,
@@ -98,7 +97,6 @@ def retrieve_fake_context(
             )
         )
     )
-    evidence.identities[service_identity] = RequesterRole.CONTEXT_RETRIEVAL_SERVICE
     completed = runner.complete(
         work, service_identity, "CONTEXT_RETRIEVAL_SERVICE", (response,)
     )

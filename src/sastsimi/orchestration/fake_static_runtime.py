@@ -12,12 +12,11 @@ from sastsimi.contracts.static import (
     ToolRunResult,
 )
 from sastsimi.contracts.work import WorkExecutionState
-from sastsimi.orchestration.fake_support import FakeEvidence
 from sastsimi.ports.dto import StaticToolRequest
+from sastsimi.ports.fake_workflow import StaticInvoker
+from sastsimi.runtime.fake_support import FakeEvidence
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
-
-from .fake_base import StaticInvoker
 
 
 def register_fake_static_works(
@@ -30,7 +29,7 @@ def register_fake_static_works(
     workspace_ref: RunStoredDataRef,
     metadata: RecordMeta,
 ) -> tuple[WorkExecutionState, WorkExecutionState]:
-    evidence.identities[identity] = RequesterRole.ORCHESTRATION
+    evidence.bind_identity(identity, RequesterRole.ORCHESTRATION)
     return tuple(
         runner.start(
             scope,
@@ -61,10 +60,10 @@ def execute_fake_static_work(
     raw_result_ref: StoredDataRef,
     static_invoke: StaticInvoker,
 ) -> tuple[ToolRunResult, StoredDataRef]:
-    evidence.identities[identity] = RequesterRole.STATIC_ANALYSIS
+    static_identity = evidence.identity(RequesterRole.STATIC_ANALYSIS)
     action = runner.action(
         work,
-        identity,
+        static_identity,
         "STATIC_ANALYSIS",
         "RUN_TOOL",
         tool_name=tool_name,
@@ -146,13 +145,7 @@ def execute_fake_static_work(
         raise ValueError("FAKE_STATIC_RESULT_MISMATCH")
     runner.account(reservation, units)
     outputs = (result,) if rule is None else (result, rule)
-    evidence.next_outputs = tuple(
-        runtime.unit_of_work.records.stage_record(item) for item in outputs
-    )
-    try:
-        completed = runner.complete(work, identity, "STATIC_ANALYSIS", outputs)
-    finally:
-        evidence.next_outputs = None
+    completed = runner.complete(work, static_identity, "STATIC_ANALYSIS", outputs)
     result_ref = completed.output_refs[0]
     if not isinstance(result_ref, StoredDataRef):
         raise ValueError("FAKE_STATIC_OUTPUT_SCOPE_MISMATCH")

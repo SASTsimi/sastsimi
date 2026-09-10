@@ -1,16 +1,11 @@
 """CWE, gates, primitives, chaining, reporting and finalization stages."""
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Literal
 
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.chaining import (
-    ChainingResult,
-    Primitive,
-    PrimitiveAdmissionDecision,
-    PrimitiveIndexState,
-)
 from sastsimi.contracts.dynamic import (
     DynamicReproductionResult,
     PoCBundle,
@@ -22,30 +17,97 @@ from sastsimi.contracts.gates import (
 )
 from sastsimi.contracts.hypothesis import (
     HypothesisProcessState,
+    VulnerabilityHypothesis,
 )
 from sastsimi.contracts.policy import (
     PolicyCollectionResult,
     ProgramPolicyRecord,
     RunPolicyState,
 )
-from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
-from sastsimi.contracts.reporting import Finding, ReportDraft, condition_sources
-from sastsimi.contracts.verification import (
-    VerificationResult,
+from sastsimi.contracts.refs import (
+    StoredDataRef,
+    reference,
 )
+from sastsimi.contracts.reporting import Finding, ReportDraft, condition_sources
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import Record
-
-from .fake_base import ANALYSIS_ID, COMMIT_ID, WORKSPACE_ID, FakeStageService
-from .fake_configuration import register_fake_llm_call
-from .fake_provider_runtime import (
+from sastsimi.ports.fake_workflow import (
+    ChainingWorkflowPort,
+    ProviderInvoker,
+    ProviderProber,
+    VerificationExecution,
+)
+from sastsimi.runtime.fake_llm_configuration import register_fake_llm_call
+from sastsimi.runtime.fake_llm_invocation import (
     FakeInvocation,
     invoke_fake_provider,
     persist_fake_invocation,
 )
+from sastsimi.runtime.fake_support import (
+    ANALYSIS_ID,
+    FakeClock,
+    FakeEvidence,
+    FakeRecordFactory,
+)
+from sastsimi.runtime.services import RuntimeServices
+from sastsimi.runtime.workflow_runner import WorkflowRunner
 
 
-class FakeGateStages(FakeStageService):
+@dataclass(frozen=True)
+class ReportingDependencies:
+    runtime: RuntimeServices
+    runner: WorkflowRunner
+    clock: FakeClock
+    evidence: FakeEvidence
+    records: FakeRecordFactory
+    provider_invoke: ProviderInvoker
+    provider_probe: ProviderProber
+    chaining: ChainingWorkflowPort
+
+
+def validate_reporting_context(
+    execution: VerificationExecution,
+    hypothesis: VulnerabilityHypothesis,
+    process: HypothesisProcessState,
+    verification_work: WorkExecutionState,
+    verification_ref: StoredDataRef,
+    exact_process_ref: StoredDataRef,
+    current_process_ref: StoredDataRef,
+) -> None:
+    """Reject cross-hypothesis or stale-generation reporting inputs."""
+    verification = execution.result
+    if (
+        hypothesis.meta.hypothesis_id != verification.meta.hypothesis_id
+        or process.meta.hypothesis_id != verification.meta.hypothesis_id
+        or process.status != "TERMINAL"
+        or process.verification_generation != execution.generation
+        or process.verification_result_ref != verification_ref
+        or exact_process_ref != execution.process_ref
+        or current_process_ref != execution.process_ref
+        or getattr(verification_work.meta, "hypothesis_id", None)
+        != verification.meta.hypothesis_id
+        or verification_work.work_generation != execution.generation
+        or verification_work.status != "SUCCEEDED"
+        or verification_ref not in verification_work.output_refs
+    ):
+        raise ValueError("REPORTING_VERIFICATION_CONTEXT_MISMATCH")
+
+
+class ReportingService:
+    """Own CWE, gate, finding and report-draft workflows."""
+
+    def __init__(self, dependencies: ReportingDependencies) -> None:
+        self.runtime = dependencies.runtime
+        self.runner = dependencies.runner
+        self.clock = dependencies.clock
+        self.evidence = dependencies.evidence
+        self.provider_invoke = dependencies.provider_invoke
+        self.provider_probe = dependencies.provider_probe
+        self.chaining = dependencies.chaining
+        self._record_meta = dependencies.records.record_meta
+        self._artifact = dependencies.records.artifact
+        self._stored_artifact = dependencies.records.stored_artifact
+
     def _gate_output(
         self,
         work: object,
@@ -58,7 +120,6 @@ class FakeGateStages(FakeStageService):
         assert self.runtime is not None and self.runner is not None
         if not isinstance(work, WorkExecutionState):
             raise TypeError("Gate provider requires a running work")
-        self.evidence.identities[identity] = RequesterRole.VERIFICATION
         result_kind = {
             "CALL_TECHNICAL_GATE": "technical_evidence_review",
             "CALL_RULE_SCOPE_GATE": "rule_scope_impact_review",
@@ -73,14 +134,13 @@ class FakeGateStages(FakeStageService):
             self.provider_probe,
             runner=self.runner,
             scope=scope,
-            orchestration_identity=identity,
+            orchestration_identity=self.evidence.identity(RequesterRole.ORCHESTRATION),
             role=config_role.value,
             result_kind=result_kind,
             context_refs=tuple(
                 ref for ref in work.input_refs if isinstance(ref, StoredDataRef)
             ),
         )
-        self.evidence.identities[identity] = RequesterRole.VERIFICATION
         return invoke_fake_provider(
             runtime=self.runtime,
             runner=self.runner,
@@ -98,7 +158,7 @@ class FakeGateStages(FakeStageService):
 
     def _post_true(
         self,
-        verification: VerificationResult,
+        execution: VerificationExecution,
         *,
         technical_status: Literal["ACCEPT", "REVISE"] = "ACCEPT",
         admission_decision: Literal["ALLOW", "DENY"] = "ALLOW",
@@ -106,27 +166,48 @@ class FakeGateStages(FakeStageService):
         stop_after_chaining: bool = False,
     ) -> TechnicalEvidenceReview:
         assert self.runtime is not None and self.runner is not None
+        verification = execution.result
         state = self.runtime.budget_registry.current_state(str(ANALYSIS_ID))
-        (process,) = self.runtime.queries.current_records(
-            str(ANALYSIS_ID), "hypothesis_process_state"
+        hypothesis = self.runtime.unit_of_work.records.get_exact(
+            execution.hypothesis_ref
         )
-        assert isinstance(process, HypothesisProcessState)
-        generation = process.verification_generation
-        scope = state.budget_binding_ref
-        assert scope is not None
-        owner_ref = next(
-            ref
-            for ref in self.evidence.identities
-            if isinstance(ref, StoredDataRef) and ref.data_kind == "work_budget_profile"
-        )
-        orchestrator_ref = next(
-            ref
-            for ref in self.evidence.identities
-            if isinstance(ref, StoredDataRef)
-            and ref.data_kind == "verification_budget_profile"
+        process = self.runtime.unit_of_work.records.get_exact(execution.process_ref)
+        verification_work = self.runtime.unit_of_work.records.get_exact(
+            execution.work_ref
         )
         verification_ref = reference(verification)
+        assert isinstance(hypothesis, VulnerabilityHypothesis)
+        assert isinstance(process, HypothesisProcessState)
+        assert isinstance(verification_work, WorkExecutionState)
         assert isinstance(verification_ref, StoredDataRef)
+        exact_process_ref = reference(process)
+        current_processes = tuple(
+            item
+            for item in self.runtime.queries.current_records(
+                str(ANALYSIS_ID), "hypothesis_process_state"
+            )
+            if isinstance(item, HypothesisProcessState)
+            and item.meta.hypothesis_id == verification.meta.hypothesis_id
+        )
+        if len(current_processes) != 1:
+            raise ValueError("REPORTING_VERIFICATION_CONTEXT_MISMATCH")
+        current_process_ref = reference(current_processes[0])
+        assert isinstance(exact_process_ref, StoredDataRef)
+        assert isinstance(current_process_ref, StoredDataRef)
+        validate_reporting_context(
+            execution,
+            hypothesis,
+            process,
+            verification_work,
+            verification_ref,
+            exact_process_ref,
+            current_process_ref,
+        )
+        generation = execution.generation
+        scope = state.budget_binding_ref
+        assert scope is not None
+        owner_ref = self.evidence.stored_identity(RequesterRole.VERIFICATION)
+        orchestrator_ref = self.evidence.stored_identity(RequesterRole.ORCHESTRATION)
         assert verification.dynamic_result_ref is not None
         assert verification.poc_ref is not None
         dynamic = self.runtime.unit_of_work.records.get_exact(
@@ -139,7 +220,6 @@ class FakeGateStages(FakeStageService):
         observation = self._artifact("observation")
         assert isinstance(observation, StoredDataRef)
 
-        self.evidence.identities[orchestrator_ref] = RequesterRole.ORCHESTRATION
         cwe_work = self.runner.start(
             scope,
             verification.meta,
@@ -148,24 +228,17 @@ class FakeGateStages(FakeStageService):
             hypothesis_id,
             orchestrator_ref,
             inputs=(verification_ref,),
-            parent=self._verification_work_ref,
+            parent=execution.work_ref,
             generation=generation,
         )
-        workspace_ref = self.runtime.budget_registry.current_state(
-            str(ANALYSIS_ID)
-        ).workspace_ref
-        assert workspace_ref is not None
-        cwe_identity = reference(
-            self.runtime.unit_of_work.records.get_exact(workspace_ref)
-        )
-        assert isinstance(cwe_identity, RunStoredDataRef)
-        self.evidence.identities[cwe_identity] = RequesterRole.CWE_LABELING
+        cwe_identity = self.evidence.stored_identity(RequesterRole.CWE_LABELING)
         prior_labels = tuple(
             item
             for item in self.runtime.queries.current_records(
                 str(ANALYSIS_ID), "cwe_label"
             )
             if isinstance(item, CWELabel)
+            and item.meta.hypothesis_id == verification.meta.hypothesis_id
         )
         label_meta = (
             self.runner.revision_metadata(
@@ -188,12 +261,11 @@ class FakeGateStages(FakeStageService):
             self.provider_probe,
             runner=self.runner,
             scope=scope,
-            orchestration_identity=cwe_identity,
+            orchestration_identity=orchestrator_ref,
             role="CWE_LABELING",
             result_kind="cwe_label",
             context_refs=(verification_ref,),
         )
-        self.evidence.identities[cwe_identity] = RequesterRole.CWE_LABELING
         label_record, cwe_invocation = invoke_fake_provider(
             runtime=self.runtime,
             runner=self.runner,
@@ -248,20 +320,14 @@ class FakeGateStages(FakeStageService):
             ),
             generation=generation,
         )
-        binding_ref = self.runtime.budget_registry.current_state(
-            str(ANALYSIS_ID)
-        ).budget_binding_ref
-        assert binding_ref is not None
-        technical_identity = reference(
-            self.runtime.unit_of_work.records.get_exact(binding_ref)
-        )
-        assert isinstance(technical_identity, StoredDataRef)
+        technical_identity = self.evidence.stored_identity(RequesterRole.TECHNICAL_GATE)
         prior_reviews = tuple(
             item
             for item in self.runtime.queries.current_records(
                 str(ANALYSIS_ID), "technical_evidence_review"
             )
             if isinstance(item, TechnicalEvidenceReview)
+            and item.meta.hypothesis_id == verification.meta.hypothesis_id
         )
         technical_meta = (
             self.runner.revision_metadata(
@@ -313,7 +379,6 @@ class FakeGateStages(FakeStageService):
         assert isinstance(technical_record, TechnicalEvidenceReview)
         technical = technical_record
         persist_fake_invocation(self.runtime, technical_invocation)
-        self.evidence.identities[technical_identity] = RequesterRole.TECHNICAL_GATE
         technical_work = self.runner.complete(
             technical_work,
             technical_identity,
@@ -360,8 +425,7 @@ class FakeGateStages(FakeStageService):
             inputs=rule_inputs,
             generation=generation,
         )
-        rule_identity = reference(policy_record)
-        assert isinstance(rule_identity, StoredDataRef)
+        rule_identity = self.evidence.stored_identity(RequesterRole.RULE_SCOPE_GATE)
         links = tuple(
             dict(
                 link_id=f"fake-{area.lower()}",
@@ -415,173 +479,31 @@ class FakeGateStages(FakeStageService):
         assert isinstance(review_record, RuleScopeImpactReview)
         review = review_record
         persist_fake_invocation(self.runtime, rule_invocation)
-        self.evidence.identities[rule_identity] = RequesterRole.RULE_SCOPE_GATE
         rule_work = self.runner.complete(
             rule_work, rule_identity, "RULE_SCOPE_GATE", (review,)
         )
         review_ref = rule_work.output_refs[0]
         assert isinstance(review_ref, StoredDataRef)
 
-        primitive_work = self.runner.start(
-            scope,
-            verification.meta,
-            "PRIMITIVE_UPDATE",
-            "HYPOTHESIS",
-            hypothesis_id,
-            orchestrator_ref,
-            inputs=(
-                verification_ref,
-                technical_ref,
-                policy_state.collection_result_ref,
-                review_ref,
-            ),
+        chaining = self.chaining.run(
+            verification=verification,
+            scope=scope,
+            orchestrator_ref=orchestrator_ref,
             generation=generation,
+            verification_ref=verification_ref,
+            technical_ref=technical_ref,
+            collection_ref=policy_state.collection_result_ref,
+            review_ref=review_ref,
+            label_ref=label_ref,
+            observation=observation,
+            admission_decision=admission_decision,
+            publish_denied_primitive=publish_denied_primitive,
+            stop_after_chaining=stop_after_chaining,
         )
-        primitive_identity = label_ref
-        self.evidence.identities[primitive_identity] = (
-            RequesterRole.PRIMITIVE_ADMISSION_RUNTIME
-        )
-        admission = PrimitiveAdmissionDecision.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=self.runner.metadata(
-                        primitive_work.meta,
-                        "primitive_admission_decision",
-                        attempt_id=primitive_work.active_attempt_id,
-                    ),
-                    verification_result_ref=verification_ref,
-                    technical_review_ref=technical_ref,
-                    policy_collection_result_ref=policy_state.collection_result_ref,
-                    rule_scope_review_ref=review_ref,
-                    testing_restriction_compliance=(
-                        "PASS" if admission_decision == "ALLOW" else "FAIL"
-                    ),
-                    decision=admission_decision,
-                    reason_code=(
-                        "TESTING_RESTRICTION_PASSED"
-                        if admission_decision == "ALLOW"
-                        else "TESTING_RESTRICTION_VIOLATION"
-                    ),
-                    decided_at=self.clock.now(),
-                )
-            )
-        )
-        admission_ref = reference(admission)
-        assert isinstance(admission_ref, StoredDataRef)
-        primitive = Primitive.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=self.runner.metadata(
-                        primitive_work.meta,
-                        "primitive",
-                        attempt_id=primitive_work.active_attempt_id,
-                    ),
-                    primitive_id="fake-primitive",
-                    workspace_id=WORKSPACE_ID,
-                    commit_id=COMMIT_ID,
-                    inputs=verification.required_primitive_candidates,
-                    result=verification.provided_primitive_candidates[0],
-                    restrictions=verification.restrictions,
-                    source_hypothesis_id=verification.meta.hypothesis_id,
-                    source_verification_ref=verification_ref,
-                    technical_review_ref=technical_ref,
-                    admission_decision_ref=admission_ref,
-                    evidence_refs=(observation,),
-                    description="Deterministic validated primitive",
-                )
-            )
-        )
-        primitive_ref = reference(primitive)
+        if chaining.stopped:
+            return technical
+        primitive_ref = chaining.primitive_ref
         assert isinstance(primitive_ref, StoredDataRef)
-        outputs = (
-            (admission, primitive)
-            if admission_decision == "ALLOW" or publish_denied_primitive
-            else (admission,)
-        )
-        self.evidence.next_outputs = tuple(reference(item) for item in outputs)
-        try:
-            primitive_work = self.runner.complete(
-                primitive_work,
-                primitive_identity,
-                "PRIMITIVE_ADMISSION_RUNTIME",
-                outputs,
-            )
-        finally:
-            self.evidence.next_outputs = None
-        if admission_decision == "DENY":
-            return technical
-
-        (primitive_index,) = self.runtime.queries.current_records(
-            str(ANALYSIS_ID), "primitive_index_state"
-        )
-        assert isinstance(primitive_index, PrimitiveIndexState)
-        primitive_index_ref = reference(primitive_index)
-        assert isinstance(primitive_index_ref, StoredDataRef)
-
-        chaining_work = self.runner.start(
-            scope,
-            verification.meta,
-            "CHAINING",
-            "ANALYSIS",
-            str(ANALYSIS_ID),
-            orchestrator_ref,
-            inputs=(primitive_index_ref, *primitive_index.primitive_refs),
-            trigger_primitive_ref=primitive_ref,
-            generation=generation,
-        )
-        chaining_identity = review_ref
-        self.evidence.identities[chaining_identity] = RequesterRole.CHAINING
-        chaining_candidate = self.no_match_builder(
-            meta=self.runner.metadata(
-                chaining_work.meta,
-                "chaining_result",
-                attempt_id=chaining_work.active_attempt_id,
-            ),
-            primitive_refs=primitive_index.primitive_refs,
-        )
-        chaining_call_ref, chaining_provider_ref = register_fake_llm_call(
-            self.runtime,
-            self.evidence,
-            self._record_meta,
-            self._artifact,
-            self.clock.now(),
-            self.provider_probe,
-            runner=self.runner,
-            scope=scope,
-            orchestration_identity=chaining_identity,
-            role="CHAINING",
-            result_kind="chaining_result",
-            context_refs=tuple(
-                ref
-                for ref in chaining_work.input_refs
-                if isinstance(ref, StoredDataRef)
-            ),
-        )
-        self.evidence.identities[chaining_identity] = RequesterRole.CHAINING
-        chaining_record, chaining_invocation = invoke_fake_provider(
-            runtime=self.runtime,
-            runner=self.runner,
-            work=chaining_work,
-            scope=scope,
-            identity=chaining_identity,
-            action_role=RequesterRole.CHAINING,
-            action_type="CALL_LLM",
-            call_spec_ref=chaining_call_ref,
-            provider_profile_ref=chaining_provider_ref,
-            artifact=self._stored_artifact,
-            build_output=lambda _decision: chaining_candidate,
-            provider_invoke=self.provider_invoke,
-        )
-        assert isinstance(chaining_record, ChainingResult)
-        persist_fake_invocation(self.runtime, chaining_invocation)
-        chaining_work = self.runner.complete(
-            chaining_work, chaining_identity, "CHAINING", (chaining_record,)
-        )
-        chaining_ref = chaining_work.output_refs[0]
-        assert isinstance(chaining_ref, StoredDataRef)
-        if stop_after_chaining:
-            return technical
-
         finding_work = self.runner.start(
             scope,
             verification.meta,
@@ -631,7 +553,6 @@ class FakeGateStages(FakeStageService):
                 )
             )
         )
-        self.evidence.identities[owner_ref] = RequesterRole.VERIFICATION
         finding_work = self.runner.complete(
             finding_work, owner_ref, "VERIFICATION", (finding,)
         )
@@ -648,7 +569,7 @@ class FakeGateStages(FakeStageService):
             inputs=(*rule_inputs, review_ref, finding_ref),
             generation=generation,
         )
-        report_identity = primitive_ref
+        report_identity = self.evidence.stored_identity(RequesterRole.REPORTER)
         report_meta = self.runner.metadata(
             report_work.meta,
             "report_draft",
@@ -687,7 +608,6 @@ class FakeGateStages(FakeStageService):
         assert isinstance(draft_record, ReportDraft)
         draft = draft_record
         persist_fake_invocation(self.runtime, report_invocation)
-        self.evidence.identities[report_identity] = RequesterRole.REPORTER
         report_work = self.runner.complete(
             report_work, report_identity, "REPORTER", (draft,)
         )

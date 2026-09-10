@@ -20,10 +20,9 @@ from sastsimi.contracts.llm import (
 )
 from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
 from sastsimi.ports.dto import Record
+from sastsimi.ports.fake_workflow import ProviderInvoker
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
-
-from .fake_base import ProviderInvoker
 
 
 @dataclass(frozen=True)

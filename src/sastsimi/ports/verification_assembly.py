@@ -25,6 +25,8 @@ class VerificationGenerationInputs:
     debate_input_hash: str
     evidence_ref: StoredDataRef
     location: CodeLocation
+    falsification_question_ids: tuple[str, ...]
+    validation_ids: tuple[str, ...]
 
 
 class VerificationAssemblyPort(Protocol):

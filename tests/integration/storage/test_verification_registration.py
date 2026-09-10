@@ -209,8 +209,12 @@ def test_revise_registration_replays_after_committed_response_is_lost(
     tmp_path: Path,
 ) -> None:
     scenario = build_fake_pipeline(tmp_path)._scenario
-    verification = scenario._verification("TRUE")
-    review = scenario._post_true(verification, technical_status="REVISE")
+    execution = scenario._verification("TRUE")
+    verification = execution.result
+    review = scenario._post_true(
+        execution,
+        technical_status="REVISE",
+    )
     assert scenario.runtime is not None
     runtime = scenario.runtime
     state = runtime.budget_registry.current_state("fake-analysis")

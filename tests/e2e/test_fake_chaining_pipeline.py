@@ -43,13 +43,13 @@ def test_material_verification_child_registers_through_runtime_work(
     tmp_path: Path,
 ) -> None:
     scenario = build_fake_pipeline(tmp_path)._scenario
-    verification = scenario._verification("TRUE", material_child=True)
+    execution = scenario._verification("TRUE", material_child=True)
+    verification = execution.result
     assert scenario.runtime is not None and scenario.runner is not None
-    assert scenario._verification_work_ref is not None
+    assert execution.work_ref is not None
     state = scenario.runtime.budget_registry.current_state("fake-analysis")
     assert isinstance(state.budget_binding_ref, StoredDataRef)
-    identity = state.budget_binding_ref
-    scenario.evidence.identities[identity] = RequesterRole.ORCHESTRATION
+    identity = scenario.evidence.stored_identity(RequesterRole.ORCHESTRATION)
 
     registered = register_verification_children(
         runtime=scenario.runtime,
@@ -76,13 +76,16 @@ def test_denied_admission_commits_without_changing_primitive_index(
     tmp_path: Path,
 ) -> None:
     scenario = build_fake_pipeline(tmp_path)._scenario
-    verification = scenario._verification("TRUE")
+    execution = scenario._verification("TRUE")
     assert scenario.runtime is not None
     (before,) = scenario.runtime.queries.current_records(
         "fake-analysis", "primitive_index_state"
     )
 
-    scenario._post_true(verification, admission_decision="DENY")
+    scenario._post_true(
+        execution,
+        admission_decision="DENY",
+    )
 
     (after,) = scenario.runtime.queries.current_records(
         "fake-analysis", "primitive_index_state"
@@ -103,7 +106,7 @@ def test_denied_admission_with_primitive_rolls_back_every_output(
     tmp_path: Path,
 ) -> None:
     scenario = build_fake_pipeline(tmp_path)._scenario
-    verification = scenario._verification("TRUE")
+    execution = scenario._verification("TRUE")
     assert scenario.runtime is not None
     (before,) = scenario.runtime.queries.current_records(
         "fake-analysis", "primitive_index_state"
@@ -111,7 +114,7 @@ def test_denied_admission_with_primitive_rolls_back_every_output(
 
     with pytest.raises(ValueError, match="PRIMITIVE_DENY_MUST_NOT_PUBLISH"):
         scenario._post_true(
-            verification,
+            execution,
             admission_decision="DENY",
             publish_denied_primitive=True,
         )
@@ -133,8 +136,9 @@ def test_chaining_rejects_stale_index_and_cross_generation_atomically(
     tmp_path: Path,
 ) -> None:
     scenario = build_fake_pipeline(tmp_path)._scenario
-    verification = scenario._verification("TRUE")
-    scenario._post_true(verification)
+    execution = scenario._verification("TRUE")
+    verification = execution.result
+    scenario._post_true(execution)
     assert scenario.runtime is not None and scenario.runner is not None
     state = scenario.runtime.budget_registry.current_state("fake-analysis")
     assert state.budget_binding_ref is not None
@@ -247,8 +251,12 @@ def test_chaining_accepts_the_pinned_index_after_an_unrelated_append(
     tmp_path: Path,
 ) -> None:
     scenario = build_fake_pipeline(tmp_path)._scenario
-    verification = scenario._verification("TRUE")
-    scenario._post_true(verification, stop_after_chaining=True)
+    execution = scenario._verification("TRUE")
+    verification = execution.result
+    scenario._post_true(
+        execution,
+        stop_after_chaining=True,
+    )
     assert scenario.runtime is not None and scenario.runner is not None
     state = scenario.runtime.budget_registry.current_state("fake-analysis")
     assert state.budget_binding_ref is not None
@@ -280,7 +288,10 @@ def test_chaining_accepts_the_pinned_index_after_an_unrelated_append(
 
     # A later admission appends to the current index while this work retains its
     # exact immutable start snapshot.
-    scenario._post_true(verification, stop_after_chaining=True)
+    scenario._post_true(
+        execution,
+        stop_after_chaining=True,
+    )
     (advanced_index,) = scenario.runtime.queries.current_records(
         "fake-analysis", "primitive_index_state"
     )

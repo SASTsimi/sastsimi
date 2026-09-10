@@ -1,6 +1,7 @@
 """Local workflow execution through the public durable runtime services."""
 
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractContextManager, nullcontext
 from datetime import timedelta
 from typing import Any
 
@@ -38,12 +39,22 @@ from sastsimi.ports.id_generator import IdGenerator
 
 from .services import RuntimeServices
 
+type OutputApproval = Callable[
+    [ActionRequest, WorkExecutionState, tuple[RecordRef, ...]],
+    AbstractContextManager[None],
+]
+
 
 class WorkflowRunner:
     def __init__(
-        self, runtime: RuntimeServices, clock: Clock, ids: IdGenerator
+        self,
+        runtime: RuntimeServices,
+        clock: Clock,
+        ids: IdGenerator,
+        output_approval: OutputApproval | None = None,
     ) -> None:
         self.runtime, self.clock, self.ids = runtime, clock, ids
+        self._output_approval = output_approval
 
     def metadata(
         self,
@@ -441,7 +452,13 @@ class WorkflowRunner:
             result_kind=refs[0].data_kind,
             candidate_result_ref=refs[0],
         )
-        decision = self.authorize(work, action)
+        approval = (
+            self._output_approval(action, work, refs)
+            if self._output_approval is not None
+            else nullcontext()
+        )
+        with approval:
+            decision = self.authorize(work, action)
         transition = StateTransition.model_validate_json(
             canonical_bytes(
                 dict(

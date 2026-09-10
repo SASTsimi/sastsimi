@@ -30,12 +30,11 @@ from sastsimi.contracts.prompt_projection import (
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef
-from sastsimi.orchestration.fake_support import FakeEvidence
 from sastsimi.ports.dto import CapabilityProbeResult
+from sastsimi.ports.fake_workflow import ProviderProber
+from sastsimi.runtime.fake_support import FakeEvidence
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
-
-from .fake_base import ProviderProber
 
 
 def _approved(evidence: FakeEvidence, record: object) -> None:
@@ -74,6 +73,9 @@ def register_fake_llm_call(
     context_refs: tuple[StoredDataRef, ...] = (),
 ) -> tuple[StoredDataRef, StoredDataRef]:
     """Publish one exact typed configuration closure and return call/provider refs."""
+    if orchestration_identity != evidence.identity(RequesterRole.ORCHESTRATION):
+        raise ValueError("FAKE_ORCHESTRATION_IDENTITY_MISMATCH")
+    evaluation_identity = evidence.identity(RequesterRole.R8_EVALUATION_RUNTIME)
 
     probe_candidate = ProviderValidationEvidence.model_validate_json(
         canonical_bytes(
@@ -280,7 +282,6 @@ def register_fake_llm_call(
         evaluation_config
     )
 
-    evidence.identities[orchestration_identity] = RequesterRole.ORCHESTRATION
     evaluation_work = runner.start(
         scope,
         metadata("evaluation_stage"),
@@ -319,10 +320,9 @@ def register_fake_llm_call(
             )
         )
     )
-    evidence.identities[orchestration_identity] = RequesterRole.R8_EVALUATION_RUNTIME
     runner.complete(
         evaluation_work,
-        orchestration_identity,
+        evaluation_identity,
         "R8_EVALUATION_RUNTIME",
         (evaluation_result,),
     )
@@ -344,7 +344,6 @@ def register_fake_llm_call(
     )
     _approved(evidence, production_draft)
     runtime.configuration.register_prompt_entry(production_draft)
-    evidence.identities[orchestration_identity] = RequesterRole.ORCHESTRATION
     recommendation_work = runner.start(
         scope,
         metadata("evaluation_stage"),
@@ -370,10 +369,9 @@ def register_fake_llm_call(
             )
         )
     )
-    evidence.identities[orchestration_identity] = RequesterRole.R8_EVALUATION_RUNTIME
     runner.complete(
         recommendation_work,
-        orchestration_identity,
+        evaluation_identity,
         "R8_EVALUATION_RUNTIME",
         (recommendation,),
     )

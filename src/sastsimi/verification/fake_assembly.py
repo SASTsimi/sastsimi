@@ -169,9 +169,9 @@ def build_verification_result(
                 con_evidence_ref=inputs.con_ref,
                 supporting_evidence=supporting,
                 counter_evidence=(),
-                falsification_results=(
+                falsification_results=tuple(
                     dict(
-                        question_id="reachability",
+                        question_id=question_id,
                         outcome=falsification_outcome,
                         evidence_refs=(inputs.evidence_ref,),
                         rationale=(
@@ -179,11 +179,12 @@ def build_verification_result(
                             if revised
                             else "The fake evidence determines this outcome"
                         ),
-                    ),
+                    )
+                    for question_id in inputs.falsification_question_ids
                 ),
-                validation_results=(
+                validation_results=tuple(
                     dict(
-                        validation_id="path",
+                        validation_id=validation_id,
                         completion="COMPLETE",
                         evidence_refs=(inputs.evidence_ref,),
                         summary=(
@@ -191,7 +192,8 @@ def build_verification_result(
                             if revised
                             else "The exact fake path was checked"
                         ),
-                    ),
+                    )
+                    for validation_id in inputs.validation_ids
                 ),
                 initial_verdict=verdict,
                 dynamic_request_ref=dynamic_request_ref,
