@@ -299,6 +299,13 @@ class ContextRetrievalService:
                 check_id="post-read",
             )
         )
+        self.workspace_locator.validate_integrity_receipts(
+            workspace,
+            deadline,
+            attempt_id=str(work.active_attempt_id),
+            check_ids=("pre-read", "post-read"),
+            receipts=tuple(integrity_receipts),
+        )
         elapsed_ms = max(0, (self.monotonic_ns() - started_ns) // 1_000_000)
         fragment_refs = tuple(
             self.runtime.unit_of_work.artifacts.commit(
@@ -356,7 +363,8 @@ class ContextRetrievalService:
             elapsed_ms=elapsed_ms,
             process_receipts=tuple(integrity_receipts),
         )
-        recovered, recovered_response, recovered_raw = self._read_receipt(
+        recovered, recovered_response, recovered_raw, recovered_process = (
+            self._read_receipt(
             action_ref=action_ref,
             work=work,
             attempt_id=str(work.active_attempt_id),
@@ -365,11 +373,20 @@ class ContextRetrievalService:
             plan_ref=plan_ref,
             plan=plan,
             max_bytes=ceilings.limits.max_bytes,
+            )
+        )
+        self.workspace_locator.validate_integrity_receipts(
+            workspace,
+            deadline,
+            attempt_id=str(work.active_attempt_id),
+            check_ids=("pre-read", "post-read"),
+            receipts=recovered_process,
         )
         if (
             recovered != receipt
             or recovered_response != response
             or recovered_raw != receipt_raw
+            or recovered_process != tuple(integrity_receipts)
         ):
             raise ValueError("CONTEXT_RECEIPT_INVALID")
         receipt_ref = self.runtime.unit_of_work.artifacts.commit(
@@ -421,6 +438,9 @@ class ContextRetrievalService:
     ) -> WorkExecutionState:
         """Commit the exact returned/read/receipt closure in one SAVE_RESULT."""
         records = runtime.unit_of_work.records
+        read_decision_ref = ContextRetrievalService._current_read_decision_ref(
+            runtime, read_decision_ref, request_ref
+        )
         response_ref = records.stage_record(response)
         inputs = tuple(
             dict.fromkeys(
@@ -503,6 +523,34 @@ class ContextRetrievalService:
         )
         return runtime.work.get(str(work.work_id))
 
+    @staticmethod
+    def _current_read_decision_ref(
+        runtime: RuntimeServices,
+        claimed_ref: StoredDataRef,
+        request_ref: StoredDataRef,
+    ) -> StoredDataRef:
+        claimed = runtime.unit_of_work.records.get_exact(claimed_ref)
+        if not isinstance(claimed, ActionDecision):
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+        matches = tuple(
+            item
+            for item in runtime.queries.published_records(
+                str(claimed.meta.analysis_id)
+            )
+            if isinstance(item, ActionDecision)
+            and item.decision_id == claimed.decision_id
+            and item.action_ref == claimed.action_ref
+            and item.decision == "ALLOW"
+            and item.use_status == "USED"
+            and request_ref in item.outcome_refs
+        )
+        if len(matches) != 1:
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+        current_ref = reference(matches[0])
+        if not isinstance(current_ref, StoredDataRef):
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+        return current_ref
+
     def recover_after_receipt(
         self,
         *,
@@ -549,7 +597,7 @@ class ContextRetrievalService:
             or plan.ceiling_profile_ref != ceiling.ref
         ):
             raise ValueError("CONTEXT_RECOVERY_INVALID")
-        receipt, response, receipt_raw = self._read_receipt(
+        receipt, response, receipt_raw, process_receipts = self._read_receipt(
             action_ref=action_ref,
             work=work,
             attempt_id=str(work.active_attempt_id),
@@ -558,6 +606,28 @@ class ContextRetrievalService:
             plan_ref=plan_ref,
             plan=plan,
             max_bytes=ceiling.limits.max_bytes,
+        )
+        run_state = self.runtime.budget_registry.current_state(
+            str(work.meta.analysis_id)
+        )
+        if run_state.workspace_ref is None:
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+        workspace = records.get_exact(run_state.workspace_ref)
+        if (
+            not isinstance(workspace, CodeWorkspace)
+            or str(workspace.workspace_id) != plan.workspace_id
+            or str(workspace.commit_id) != plan.commit_id
+        ):
+            raise ValueError("CONTEXT_RECOVERY_INVALID")
+        recovery_deadline = MonotonicActionDeadline(
+            action_id=str(action.action_id), started_ns=0, expires_ns=1
+        )
+        self.workspace_locator.validate_integrity_receipts(
+            workspace,
+            recovery_deadline,
+            attempt_id=str(work.active_attempt_id),
+            check_ids=("pre-read", "post-read"),
+            receipts=process_receipts,
         )
         receipt_ref = self.runtime.unit_of_work.artifacts.commit(
             self.runtime.unit_of_work.artifacts.stage_bytes(
@@ -653,7 +723,7 @@ class ContextRetrievalService:
             work_timeout_ms=intent.requested_limits.timeout_ms,
             lineage=self._lineage(intent) if lineage is not None else None,
         )
-        if canonical_bytes(recomputed) != expected:
+        if encode_context_read_plan(recomputed) != expected:
             raise ValueError("CONTEXT_PLAN_CHANGED")
 
     def _diagnostics(
@@ -844,7 +914,12 @@ class ContextRetrievalService:
         plan_ref: StoredDataRef,
         plan: ContextReadPlan,
         max_bytes: int,
-    ) -> tuple[StaticActionReceipt, CodeContextResponse, bytes]:
+    ) -> tuple[
+        StaticActionReceipt,
+        CodeContextResponse,
+        bytes,
+        tuple[ProcessReceipt, ...],
+    ]:
         try:
             root = self.receipt_root.resolve(strict=True)
             if self.receipt_root.is_symlink() or not root.is_dir():
@@ -951,7 +1026,7 @@ class ContextRetrievalService:
                 or returned_bytes > max_bytes
             ):
                 raise ValueError
-            return receipt, response, raw
+            return receipt, response, raw, tuple(process_receipts)
         except (
             AttributeError,
             OSError,

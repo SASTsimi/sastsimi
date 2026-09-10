@@ -14,7 +14,11 @@ from sastsimi.contracts.static import (
     ContextRetrievalLimits,
 )
 from sastsimi.ports.context import ContextReadPlan, ContextRetrievalIntent
-from sastsimi.static_analysis.context_retrieval import context_intent_hash
+from sastsimi.static_analysis.context_retrieval import (
+    context_intent_hash,
+    encode_context_read_plan,
+)
+from sastsimi.storage.artifact_store import LocalArtifactStore
 from sastsimi.verification.context_service import ContextRetrievalService
 from tests.integration.storage.test_intermediate_publication import (
     prepared_policy_parser,
@@ -64,6 +68,10 @@ def test_context_service_binds_used_read_then_commits_its_response(
             )
         )
     )
+    artifacts = runtime.unit_of_work.artifacts
+    assert isinstance(artifacts, LocalArtifactStore)
+    artifacts.workspace_id = meta.workspace_id
+    artifacts.commit_id = meta.commit_id
     limits = ContextRetrievalLimits(
         max_depth=1,
         max_fragments=1,
@@ -128,7 +136,7 @@ def test_context_service_binds_used_read_then_commits_its_response(
     )
     plan_ref = runtime.unit_of_work.artifacts.commit(
         runtime.unit_of_work.artifacts.stage_bytes(
-            canonical_bytes(plan), "application/json"
+            encode_context_read_plan(plan), "application/json"
         )
     )
     h.evidence.identities[identity] = RequesterRole.PRO
@@ -214,6 +222,10 @@ def test_context_service_binds_used_read_then_commits_its_response(
             data["code_request_id"] = "different-request"
         else:
             data["meta"]["workspace_id"] = "different-workspace"
+        if invalid == "scope":
+            with pytest.raises(ValueError, match="WORKSPACE_MISMATCH"):
+                CodeContextResponse.model_validate_json(canonical_bytes(data))
+            return
         response = CodeContextResponse.model_validate_json(canonical_bytes(data))
     if invalid == "owner":
         h.evidence.identities[service_identity] = RequesterRole.PRO
