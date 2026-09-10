@@ -1,0 +1,1 @@
+"""Local transactional storage adapters."""

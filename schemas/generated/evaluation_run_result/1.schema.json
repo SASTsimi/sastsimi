@@ -1,0 +1,469 @@
+{
+  "$defs": {
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "BudgetScopeRef": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunStoredDataRef"
+        },
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        }
+      ]
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "ErrorId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "ErrorId",
+      "type": "string"
+    },
+    "EvaluationMetric": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/StoredDataRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "metric_key": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Metric Key",
+          "type": "string"
+        },
+        "sample_count": {
+          "minimum": 0,
+          "title": "Sample Count",
+          "type": "integer"
+        },
+        "unit": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Unit",
+          "type": "string"
+        },
+        "value": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "metric_key",
+        "value",
+        "unit",
+        "sample_count",
+        "evidence_refs"
+      ],
+      "title": "EvaluationMetric",
+      "type": "object"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "ResourceUsageSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_count": {
+          "minimum": 0,
+          "title": "Attempt Count",
+          "type": "integer"
+        },
+        "cost_minor_units": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cost Minor Units"
+        },
+        "currency": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Currency"
+        },
+        "dynamic_attempt_count": {
+          "minimum": 0,
+          "title": "Dynamic Attempt Count",
+          "type": "integer"
+        },
+        "elapsed_ms": {
+          "minimum": 0,
+          "title": "Elapsed Ms",
+          "type": "integer"
+        },
+        "llm_call_count": {
+          "minimum": 0,
+          "title": "Llm Call Count",
+          "type": "integer"
+        },
+        "pricing_revision_refs": {
+          "items": {
+            "$ref": "#/$defs/BudgetScopeRef"
+          },
+          "title": "Pricing Revision Refs",
+          "type": "array"
+        },
+        "retry_count": {
+          "minimum": 0,
+          "title": "Retry Count",
+          "type": "integer"
+        },
+        "unavailable_reasons": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Unavailable Reasons",
+          "type": "array"
+        },
+        "usage_complete": {
+          "title": "Usage Complete",
+          "type": "boolean"
+        },
+        "usage_measurement_refs": {
+          "items": {
+            "$ref": "#/$defs/BudgetScopeRef"
+          },
+          "title": "Usage Measurement Refs",
+          "type": "array"
+        },
+        "work_count": {
+          "minimum": 0,
+          "title": "Work Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "elapsed_ms",
+        "work_count",
+        "attempt_count",
+        "retry_count",
+        "llm_call_count",
+        "dynamic_attempt_count",
+        "cost_minor_units",
+        "currency",
+        "pricing_revision_refs",
+        "usage_measurement_refs",
+        "usage_complete",
+        "unavailable_reasons"
+      ],
+      "title": "ResourceUsageSummary",
+      "type": "object"
+    },
+    "RunStoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "analysis_id",
+        "record_id"
+      ],
+      "title": "RunStoredDataRef",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "analysis_result_refs": {
+      "items": {
+        "$ref": "#/$defs/RunStoredDataRef"
+      },
+      "title": "Analysis Result Refs",
+      "type": "array"
+    },
+    "config_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "error_ids": {
+      "items": {
+        "$ref": "#/$defs/ErrorId"
+      },
+      "title": "Error Ids",
+      "type": "array"
+    },
+    "evaluation_run_id": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Evaluation Run Id",
+      "type": "string"
+    },
+    "finished_at": {
+      "format": "date-time",
+      "title": "Finished At",
+      "type": "string"
+    },
+    "grader_result_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Grader Result Refs",
+      "type": "array"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordMeta"
+    },
+    "metrics": {
+      "items": {
+        "$ref": "#/$defs/EvaluationMetric"
+      },
+      "title": "Metrics",
+      "type": "array"
+    },
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "SUCCEEDED",
+        "PARTIAL",
+        "FAILED"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "usage": {
+      "$ref": "#/$defs/ResourceUsageSummary"
+    }
+  },
+  "required": [
+    "meta",
+    "evaluation_run_id",
+    "config_ref",
+    "analysis_result_refs",
+    "grader_result_refs",
+    "metrics",
+    "usage",
+    "status",
+    "error_ids",
+    "started_at",
+    "finished_at"
+  ],
+  "title": "EvaluationRunResult",
+  "type": "object"
+}

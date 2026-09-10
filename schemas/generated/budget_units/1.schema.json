@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "cost_minor_units": {
+      "minimum": 0,
+      "title": "Cost Minor Units",
+      "type": "integer"
+    },
+    "currency": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Currency",
+      "type": "string"
+    },
+    "elapsed_ms": {
+      "minimum": 0,
+      "title": "Elapsed Ms",
+      "type": "integer"
+    },
+    "llm_call_count": {
+      "minimum": 0,
+      "title": "Llm Call Count",
+      "type": "integer"
+    },
+    "retry_count": {
+      "minimum": 0,
+      "title": "Retry Count",
+      "type": "integer"
+    },
+    "work_count": {
+      "minimum": 0,
+      "title": "Work Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "elapsed_ms",
+    "work_count",
+    "llm_call_count",
+    "retry_count",
+    "cost_minor_units",
+    "currency"
+  ],
+  "title": "BudgetUnits",
+  "type": "object"
+}

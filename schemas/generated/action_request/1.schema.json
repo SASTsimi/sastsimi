@@ -1,0 +1,713 @@
+{
+  "$defs": {
+    "ActionId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "ActionId",
+      "type": "string"
+    },
+    "ActionType": {
+      "enum": [
+        "REGISTER_WORK",
+        "CHANGE_WORK_STATE",
+        "START_ATTEMPT",
+        "CANCEL_WORK",
+        "RESTART_VERIFICATION_GENERATION",
+        "READ_CODE",
+        "RUN_TOOL",
+        "CALL_LLM",
+        "FETCH_POLICY",
+        "REQUEST_DYNAMIC_REPRO",
+        "RUN_SANDBOX",
+        "SAVE_RESULT",
+        "CALL_TECHNICAL_GATE",
+        "CALL_RULE_SCOPE_GATE",
+        "CREATE_REPORT_DRAFT"
+      ],
+      "title": "ActionType",
+      "type": "string"
+    },
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "BudgetScopeRef": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunStoredDataRef"
+        },
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        }
+      ]
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "GenerationRestartReason": {
+      "enum": [
+        "DYNAMIC_REQUEST_REPLACEMENT_REQUIRED",
+        "SANDBOX_PROFILE_REVISION_CHANGED"
+      ],
+      "title": "GenerationRestartReason",
+      "type": "string"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "PolicyCacheRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "const": "policy_cache_record",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "program_id": {
+          "$ref": "#/$defs/ProgramId"
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "record_id",
+        "content_hash",
+        "program_id",
+        "schema_version"
+      ],
+      "title": "PolicyCacheRef",
+      "type": "object"
+    },
+    "ProgramId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "ProgramId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "RecordRef": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunStoredDataRef"
+        },
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "$ref": "#/$defs/PolicyCacheRef"
+        }
+      ]
+    },
+    "RequesterRole": {
+      "enum": [
+        "ORCHESTRATION",
+        "HYPOTHESIS",
+        "PRO",
+        "CON",
+        "VERIFICATION",
+        "CWE_LABELING",
+        "CHAINING",
+        "TECHNICAL_GATE",
+        "RULE_SCOPE_GATE",
+        "REPORTER",
+        "REPOSITORY_LOADER",
+        "CONTEXT_RETRIEVAL_SERVICE",
+        "STATIC_ANALYSIS",
+        "POLICY_COLLECTOR",
+        "POLICY_PARSER",
+        "PRIMITIVE_ADMISSION_RUNTIME",
+        "DYNAMIC_REPRODUCTION",
+        "REPRODUCTION_SETUP_AUTOMATION",
+        "SANDBOX_CONTROLLER",
+        "REPRODUCTION_SESSION_MANAGER",
+        "BUDGET_RUNTIME",
+        "R8_EVALUATION_RUNTIME",
+        "RECOVERY"
+      ],
+      "title": "RequesterRole",
+      "type": "string"
+    },
+    "RunMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id"
+      ],
+      "title": "RunMeta",
+      "type": "object"
+    },
+    "RunStoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "analysis_id",
+        "record_id"
+      ],
+      "title": "RunStoredDataRef",
+      "type": "object"
+    },
+    "SessionMode": {
+      "enum": [
+        "NEW",
+        "RESUME",
+        "AUTO"
+      ],
+      "title": "SessionMode",
+      "type": "string"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "action_id": {
+      "$ref": "#/$defs/ActionId"
+    },
+    "action_type": {
+      "$ref": "#/$defs/ActionType"
+    },
+    "candidate_result_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "dynamic_request_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "expected_state_version": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Expected State Version"
+    },
+    "expected_verification_generation": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Expected Verification Generation"
+    },
+    "file_paths": {
+      "items": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "title": "File Paths",
+      "type": "array"
+    },
+    "generation_restart_basis_refs": {
+      "items": {
+        "$ref": "#/$defs/BudgetScopeRef"
+      },
+      "title": "Generation Restart Basis Refs",
+      "type": "array"
+    },
+    "generation_restart_reason": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GenerationRestartReason"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "image_digest": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Image Digest"
+    },
+    "input_refs": {
+      "items": {
+        "$ref": "#/$defs/RecordRef"
+      },
+      "title": "Input Refs",
+      "type": "array"
+    },
+    "llm_call_spec_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "meta": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunMeta"
+        },
+        {
+          "$ref": "#/$defs/RecordMeta"
+        }
+      ],
+      "title": "Meta"
+    },
+    "network_targets": {
+      "items": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "title": "Network Targets",
+      "type": "array"
+    },
+    "provider_profile_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BudgetScopeRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reason": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Reason",
+      "type": "string"
+    },
+    "reproduction_plan_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "requested_at": {
+      "format": "date-time",
+      "title": "Requested At",
+      "type": "string"
+    },
+    "requested_by": {
+      "$ref": "#/$defs/RequesterRole"
+    },
+    "requester_identity_ref": {
+      "$ref": "#/$defs/BudgetScopeRef"
+    },
+    "resource_limits": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Resource Limits"
+    },
+    "resource_profile_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "result_kind": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Result Kind"
+    },
+    "run_policy_state_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sandbox_profile_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BudgetScopeRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "session_mode": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SessionMode"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tool_name": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Tool Name"
+    },
+    "work_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BudgetScopeRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "meta",
+    "action_id",
+    "requested_by",
+    "requester_identity_ref",
+    "action_type",
+    "work_ref",
+    "expected_state_version",
+    "expected_verification_generation",
+    "generation_restart_reason",
+    "generation_restart_basis_refs",
+    "input_refs",
+    "dynamic_request_ref",
+    "reproduction_plan_ref",
+    "result_kind",
+    "candidate_result_ref",
+    "llm_call_spec_ref",
+    "tool_name",
+    "file_paths",
+    "provider_profile_ref",
+    "session_mode",
+    "sandbox_profile_ref",
+    "resource_profile_ref",
+    "run_policy_state_ref",
+    "image_digest",
+    "network_targets",
+    "resource_limits",
+    "reason",
+    "requested_at"
+  ],
+  "title": "ActionRequest",
+  "type": "object"
+}

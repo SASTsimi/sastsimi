@@ -1,0 +1,253 @@
+{
+  "$defs": {
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "backoff_policy_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "max_failovers": {
+      "minimum": 0,
+      "title": "Max Failovers",
+      "type": "integer"
+    },
+    "max_retries": {
+      "minimum": 0,
+      "title": "Max Retries",
+      "type": "integer"
+    },
+    "max_schema_repairs": {
+      "minimum": 0,
+      "title": "Max Schema Repairs",
+      "type": "integer"
+    },
+    "max_semantic_repairs": {
+      "minimum": 0,
+      "title": "Max Semantic Repairs",
+      "type": "integer"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordMeta"
+    },
+    "policy_key": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Policy Key",
+      "type": "string"
+    },
+    "retryable_statuses": {
+      "items": {
+        "enum": [
+          "FAILED",
+          "INVALID_OUTPUT",
+          "TIMED_OUT",
+          "RATE_LIMITED",
+          "AUTH_REQUIRED"
+        ],
+        "type": "string"
+      },
+      "title": "Retryable Statuses",
+      "type": "array"
+    }
+  },
+  "required": [
+    "meta",
+    "policy_key",
+    "max_schema_repairs",
+    "max_semantic_repairs",
+    "max_retries",
+    "max_failovers",
+    "retryable_statuses",
+    "backoff_policy_ref"
+  ],
+  "title": "LLMRetryPolicy",
+  "type": "object"
+}

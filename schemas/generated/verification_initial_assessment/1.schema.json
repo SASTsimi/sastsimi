@@ -1,0 +1,290 @@
+{
+  "$defs": {
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "Verdict": {
+      "enum": [
+        "TRUE",
+        "FALSE",
+        "HOLD"
+      ],
+      "type": "string"
+    },
+    "WorkId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkId",
+      "type": "string"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "con_evidence_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "evidence_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Evidence Refs",
+      "type": "array"
+    },
+    "hypothesis_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "llm_call_id": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Llm Call Id",
+      "type": "string"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordMeta"
+    },
+    "next_step": {
+      "enum": [
+        "POC_CONFIRMATION",
+        "VERDICT_EVIDENCE",
+        "FINALIZE_WITHOUT_DYNAMIC"
+      ],
+      "title": "Next Step",
+      "type": "string"
+    },
+    "playbook_application_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "playbook_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "policy_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "pro_evidence_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "proposed_verdict": {
+      "$ref": "#/$defs/Verdict"
+    },
+    "rationale": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Rationale",
+      "type": "string"
+    },
+    "unresolved_conditions": {
+      "items": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "title": "Unresolved Conditions",
+      "type": "array"
+    },
+    "verification_generation": {
+      "minimum": 1,
+      "title": "Verification Generation",
+      "type": "integer"
+    },
+    "verification_work_id": {
+      "$ref": "#/$defs/WorkId"
+    }
+  },
+  "required": [
+    "meta",
+    "verification_work_id",
+    "verification_generation",
+    "hypothesis_ref",
+    "policy_ref",
+    "playbook_ref",
+    "playbook_application_ref",
+    "pro_evidence_ref",
+    "con_evidence_ref",
+    "next_step",
+    "proposed_verdict",
+    "rationale",
+    "evidence_refs",
+    "unresolved_conditions",
+    "llm_call_id"
+  ],
+  "title": "VerificationInitialAssessment",
+  "type": "object"
+}

@@ -1,0 +1,419 @@
+{
+  "$defs": {
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "AuthMode": {
+      "enum": [
+        "API_KEY",
+        "SUBSCRIPTION_LOGIN"
+      ],
+      "type": "string"
+    },
+    "Capability": {
+      "enum": [
+        "SUPPORTED",
+        "UNSUPPORTED",
+        "UNVERIFIED"
+      ],
+      "type": "string"
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "Environment": {
+      "enum": [
+        "PERSONAL_LOCAL",
+        "TEAM_LOCAL",
+        "PRIVATE_CI",
+        "SHARED_SERVER"
+      ],
+      "type": "string"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "Product": {
+      "enum": [
+        "OPENAI_API",
+        "CODEX",
+        "ANTHROPIC_API",
+        "CLAUDE_CODE"
+      ],
+      "type": "string"
+    },
+    "Provider": {
+      "enum": [
+        "OPENAI",
+        "ANTHROPIC"
+      ],
+      "type": "string"
+    },
+    "ProviderCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "auth_expiry_detection": {
+          "$ref": "#/$defs/Capability"
+        },
+        "cancellation": {
+          "$ref": "#/$defs/Capability"
+        },
+        "new_session": {
+          "$ref": "#/$defs/Capability"
+        },
+        "non_interactive": {
+          "$ref": "#/$defs/Capability"
+        },
+        "parallel_calls": {
+          "$ref": "#/$defs/Capability"
+        },
+        "rate_limit_detection": {
+          "$ref": "#/$defs/Capability"
+        },
+        "request_id": {
+          "$ref": "#/$defs/Capability"
+        },
+        "resume_session": {
+          "$ref": "#/$defs/Capability"
+        },
+        "runtime_tool_loop": {
+          "$ref": "#/$defs/Capability"
+        },
+        "session_metadata": {
+          "$ref": "#/$defs/Capability"
+        },
+        "structured_output": {
+          "$ref": "#/$defs/Capability"
+        },
+        "timeout_detection": {
+          "$ref": "#/$defs/Capability"
+        },
+        "token_usage": {
+          "$ref": "#/$defs/Capability"
+        }
+      },
+      "required": [
+        "non_interactive",
+        "structured_output",
+        "new_session",
+        "resume_session",
+        "parallel_calls",
+        "cancellation",
+        "timeout_detection",
+        "auth_expiry_detection",
+        "rate_limit_detection",
+        "request_id",
+        "token_usage",
+        "session_metadata",
+        "runtime_tool_loop"
+      ],
+      "title": "ProviderCapabilities",
+      "type": "object"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "Transport": {
+      "enum": [
+        "RESPONSES_API",
+        "CODEX_CLIENT",
+        "MESSAGES_API",
+        "CLAUDE_CODE_CLIENT"
+      ],
+      "type": "string"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "auth_mode": {
+      "$ref": "#/$defs/AuthMode"
+    },
+    "capabilities": {
+      "$ref": "#/$defs/ProviderCapabilities"
+    },
+    "checked_at": {
+      "format": "date-time",
+      "title": "Checked At",
+      "type": "string"
+    },
+    "client_execution_profile_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "client_name": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Client Name",
+      "type": "string"
+    },
+    "client_version": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Client Version",
+      "type": "string"
+    },
+    "credential_source": {
+      "enum": [
+        "ENVIRONMENT",
+        "SECRET_STORE",
+        "OFFICIAL_CLIENT_SESSION"
+      ],
+      "title": "Credential Source",
+      "type": "string"
+    },
+    "environment": {
+      "$ref": "#/$defs/Environment"
+    },
+    "evidence_urls": {
+      "items": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "title": "Evidence Urls",
+      "type": "array"
+    },
+    "limitations": {
+      "items": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "title": "Limitations",
+      "type": "array"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordMeta"
+    },
+    "model": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Model",
+      "type": "string"
+    },
+    "product": {
+      "$ref": "#/$defs/Product"
+    },
+    "profile_key": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Profile Key",
+      "type": "string"
+    },
+    "provider": {
+      "$ref": "#/$defs/Provider"
+    },
+    "support_status": {
+      "enum": [
+        "SUPPORTED",
+        "EXPERIMENTAL",
+        "REJECTED"
+      ],
+      "title": "Support Status",
+      "type": "string"
+    },
+    "transport": {
+      "$ref": "#/$defs/Transport"
+    },
+    "validation_evidence_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    }
+  },
+  "required": [
+    "meta",
+    "profile_key",
+    "provider",
+    "product",
+    "transport",
+    "model",
+    "environment",
+    "auth_mode",
+    "client_name",
+    "client_version",
+    "credential_source",
+    "capabilities",
+    "support_status",
+    "validation_evidence_ref",
+    "client_execution_profile_ref",
+    "limitations",
+    "checked_at",
+    "evidence_urls"
+  ],
+  "title": "ProviderProfile",
+  "type": "object"
+}

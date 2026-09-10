@@ -1,0 +1,640 @@
+{
+  "$defs": {
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "PolicyArea": {
+      "enum": [
+        "RULE",
+        "SCOPE",
+        "IMPACT",
+        "SOURCE",
+        "FRESHNESS",
+        "TESTING_RESTRICTION"
+      ],
+      "type": "string"
+    },
+    "PolicyCacheRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "const": "policy_cache_record",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "program_id": {
+          "$ref": "#/$defs/ProgramId"
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "record_id",
+        "content_hash",
+        "program_id",
+        "schema_version"
+      ],
+      "title": "PolicyCacheRef",
+      "type": "object"
+    },
+    "PolicyItem": {
+      "additionalProperties": false,
+      "properties": {
+        "conditions": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Conditions",
+          "type": "array"
+        },
+        "description": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Description",
+          "type": "string"
+        },
+        "policy_item_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Policy Item Id",
+          "type": "string"
+        },
+        "source_locator": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Source Locator",
+          "type": "string"
+        },
+        "source_ref": {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        "value": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "policy_item_id",
+        "value",
+        "description",
+        "conditions",
+        "source_ref",
+        "source_locator"
+      ],
+      "title": "PolicyItem",
+      "type": "object"
+    },
+    "PolicyMissingInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "area": {
+          "$ref": "#/$defs/PolicyArea"
+        },
+        "blocks_allow": {
+          "title": "Blocks Allow",
+          "type": "boolean"
+        },
+        "description": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Description",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/StoredDataRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "missing_info_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Missing Info Id",
+          "type": "string"
+        },
+        "policy_item_ids": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Policy Item Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "missing_info_id",
+        "area",
+        "blocks_allow",
+        "description",
+        "policy_item_ids",
+        "evidence_refs"
+      ],
+      "title": "PolicyMissingInfo",
+      "type": "object"
+    },
+    "PolicySourceCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "checked_at": {
+          "format": "date-time",
+          "title": "Checked At",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/StoredDataRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "publisher": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Publisher",
+          "type": "string"
+        },
+        "source_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_ref": {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        "source_url": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Source Url",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "VERIFIED",
+            "UNVERIFIED"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "source_ref",
+        "source_url",
+        "publisher",
+        "status",
+        "evidence_refs",
+        "checked_at"
+      ],
+      "title": "PolicySourceCheck",
+      "type": "object"
+    },
+    "ProgramId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "ProgramId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "accepted_vulnerability_classes": {
+      "items": {
+        "$ref": "#/$defs/PolicyItem"
+      },
+      "title": "Accepted Vulnerability Classes",
+      "type": "array"
+    },
+    "disclosure_requirements": {
+      "items": {
+        "$ref": "#/$defs/PolicyItem"
+      },
+      "title": "Disclosure Requirements",
+      "type": "array"
+    },
+    "excluded_vulnerability_classes": {
+      "items": {
+        "$ref": "#/$defs/PolicyItem"
+      },
+      "title": "Excluded Vulnerability Classes",
+      "type": "array"
+    },
+    "external_program_id": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "External Program Id",
+      "type": "string"
+    },
+    "fetched_at": {
+      "format": "date-time",
+      "title": "Fetched At",
+      "type": "string"
+    },
+    "freshness_checked_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Freshness Checked At"
+    },
+    "freshness_criterion_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "freshness_evidence_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Freshness Evidence Refs",
+      "type": "array"
+    },
+    "freshness_status": {
+      "enum": [
+        "CURRENT",
+        "STALE",
+        "UNVERIFIED"
+      ],
+      "title": "Freshness Status",
+      "type": "string"
+    },
+    "freshness_valid_until": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Freshness Valid Until"
+    },
+    "freshness_warning": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Freshness Warning"
+    },
+    "impact_criteria": {
+      "items": {
+        "$ref": "#/$defs/PolicyItem"
+      },
+      "title": "Impact Criteria",
+      "type": "array"
+    },
+    "in_scope_assets": {
+      "items": {
+        "$ref": "#/$defs/PolicyItem"
+      },
+      "title": "In Scope Assets",
+      "type": "array"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordMeta"
+    },
+    "missing_information": {
+      "items": {
+        "$ref": "#/$defs/PolicyMissingInfo"
+      },
+      "title": "Missing Information",
+      "type": "array"
+    },
+    "out_of_scope_assets": {
+      "items": {
+        "$ref": "#/$defs/PolicyItem"
+      },
+      "title": "Out Of Scope Assets",
+      "type": "array"
+    },
+    "parser_result_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Parser Result Refs",
+      "type": "array"
+    },
+    "parser_version": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Parser Version",
+      "type": "string"
+    },
+    "policy_record_id": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Policy Record Id",
+      "type": "string"
+    },
+    "policy_version": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Policy Version",
+      "type": "string"
+    },
+    "preparation_source": {
+      "enum": [
+        "COLLECTED",
+        "REUSED_CACHE"
+      ],
+      "title": "Preparation Source",
+      "type": "string"
+    },
+    "program_id": {
+      "$ref": "#/$defs/ProgramId"
+    },
+    "program_namespace": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Program Namespace",
+      "type": "string"
+    },
+    "reward_conditions": {
+      "items": {
+        "$ref": "#/$defs/PolicyItem"
+      },
+      "title": "Reward Conditions",
+      "type": "array"
+    },
+    "source_cache_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PolicyCacheRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source_checks": {
+      "items": {
+        "$ref": "#/$defs/PolicySourceCheck"
+      },
+      "title": "Source Checks",
+      "type": "array"
+    },
+    "source_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Source Refs",
+      "type": "array"
+    },
+    "testing_restrictions": {
+      "items": {
+        "$ref": "#/$defs/PolicyItem"
+      },
+      "title": "Testing Restrictions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "meta",
+    "program_id",
+    "preparation_source",
+    "source_cache_ref",
+    "policy_record_id",
+    "program_namespace",
+    "external_program_id",
+    "policy_version",
+    "fetched_at",
+    "freshness_status",
+    "freshness_checked_at",
+    "in_scope_assets",
+    "out_of_scope_assets",
+    "accepted_vulnerability_classes",
+    "excluded_vulnerability_classes",
+    "testing_restrictions",
+    "reward_conditions",
+    "impact_criteria",
+    "disclosure_requirements",
+    "parser_version",
+    "source_refs",
+    "source_checks",
+    "parser_result_refs",
+    "freshness_criterion_ref",
+    "freshness_evidence_refs",
+    "freshness_valid_until",
+    "missing_information",
+    "freshness_warning"
+  ],
+  "title": "ProgramPolicyRecord",
+  "type": "object"
+}

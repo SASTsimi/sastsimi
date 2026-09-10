@@ -1,0 +1,296 @@
+{
+  "$defs": {
+    "ActionId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "ActionId",
+      "type": "string"
+    },
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "action_id": {
+      "$ref": "#/$defs/ActionId"
+    },
+    "arguments": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Arguments",
+      "type": "array"
+    },
+    "command_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Command Digest",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "environment_binding_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Environment Binding Refs",
+      "type": "array"
+    },
+    "environment_recipe_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "environment_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "executable": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Executable",
+      "type": "string"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordMeta"
+    },
+    "redaction_status": {
+      "enum": [
+        "REDACTED",
+        "NOT_REQUIRED"
+      ],
+      "title": "Redaction Status",
+      "type": "string"
+    },
+    "reproduction_plan_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "request_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "secret_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Secret Refs",
+      "type": "array"
+    },
+    "stdin_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tool_request_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "working_directory": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Working Directory",
+      "type": "string"
+    }
+  },
+  "required": [
+    "executable",
+    "arguments",
+    "working_directory",
+    "environment_binding_refs",
+    "stdin_ref",
+    "secret_refs",
+    "meta",
+    "request_ref",
+    "action_id",
+    "tool_request_ref",
+    "reproduction_plan_ref",
+    "environment_recipe_ref",
+    "environment_ref",
+    "command_digest",
+    "redaction_status",
+    "created_at"
+  ],
+  "title": "SandboxCommandRecord",
+  "type": "object"
+}

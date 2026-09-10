@@ -1,0 +1,77 @@
+{
+  "$defs": {
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "ProgramId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "ProgramId",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "logical_record_id": {
+      "$ref": "#/$defs/LogicalRecordId"
+    },
+    "previous_record_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "program_id": {
+      "$ref": "#/$defs/ProgramId"
+    },
+    "record_id": {
+      "$ref": "#/$defs/RecordId"
+    },
+    "record_type": {
+      "const": "policy_cache_record",
+      "title": "Record Type",
+      "type": "string"
+    },
+    "revision_number": {
+      "minimum": 1,
+      "title": "Revision Number",
+      "type": "integer"
+    },
+    "schema_version": {
+      "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "record_id",
+    "logical_record_id",
+    "record_type",
+    "schema_version",
+    "revision_number",
+    "previous_record_id",
+    "created_at",
+    "program_id"
+  ],
+  "title": "PolicyCacheMeta",
+  "type": "object"
+}

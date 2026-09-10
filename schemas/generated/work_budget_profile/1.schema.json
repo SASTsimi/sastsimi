@@ -1,0 +1,345 @@
+{
+  "$defs": {
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "BudgetAgentRole": {
+      "enum": [
+        "HYPOTHESIS",
+        "PRO",
+        "CON",
+        "VERIFICATION",
+        "CWE_LABELING",
+        "CHAINING",
+        "TECHNICAL_GATE",
+        "RULE_SCOPE_GATE",
+        "REPORTER",
+        "POLICY_PARSER",
+        "DYNAMIC_REPRODUCTION",
+        "REPOSITORY_LOADER",
+        "STATIC_ANALYSIS",
+        "POLICY_COLLECTOR"
+      ],
+      "title": "BudgetAgentRole",
+      "type": "string"
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "OperationKind": {
+      "enum": [
+        "WORKSPACE_PREP",
+        "STATIC_TOOL",
+        "STATIC_NORMALIZE",
+        "POLICY_COLLECT",
+        "POLICY_PARSE",
+        "HYPOTHESIS_GENERATE",
+        "CONTEXT_RETRIEVAL",
+        "PRO_EVIDENCE",
+        "CON_EVIDENCE",
+        "VERIFICATION_SYNTHESIS",
+        "PRIMITIVE_UPDATE",
+        "CHAINING",
+        "DYNAMIC_REPRO",
+        "CWE_LABELING",
+        "TECHNICAL_GATE",
+        "RULE_SCOPE_GATE",
+        "FINDING_NORMALIZE",
+        "REPORTER"
+      ],
+      "title": "OperationKind",
+      "type": "string"
+    },
+    "ProfileStatus": {
+      "enum": [
+        "DRAFT",
+        "ACTIVE",
+        "RETIRED"
+      ],
+      "title": "ProfileStatus",
+      "type": "string"
+    },
+    "Purpose": {
+      "enum": [
+        "PRODUCTION",
+        "EVALUATION"
+      ],
+      "title": "Purpose",
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "WorkBudgetLimit": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BudgetAgentRole"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit_key": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Limit Key",
+          "type": "string"
+        },
+        "max_attempts": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Max Attempts"
+        },
+        "max_calls_per_work": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Max Calls Per Work"
+        },
+        "max_items_per_work": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Max Items Per Work"
+        },
+        "operation_kind": {
+          "$ref": "#/$defs/OperationKind"
+        },
+        "timeout_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Timeout Ms"
+        },
+        "work_type": {
+          "$ref": "#/$defs/WorkType"
+        }
+      },
+      "required": [
+        "limit_key",
+        "work_type",
+        "operation_kind",
+        "agent_role",
+        "timeout_ms",
+        "max_attempts",
+        "max_calls_per_work",
+        "max_items_per_work"
+      ],
+      "title": "WorkBudgetLimit",
+      "type": "object"
+    },
+    "WorkType": {
+      "enum": [
+        "WORKSPACE_PREP",
+        "STATIC_TOOL",
+        "STATIC_NORMALIZE",
+        "HYPOTHESIS_PROPOSAL",
+        "CONTEXT_RETRIEVAL",
+        "PRO_EVIDENCE",
+        "CON_EVIDENCE",
+        "VERIFICATION",
+        "DYNAMIC_REPRO",
+        "PRIMITIVE_UPDATE",
+        "CHAINING",
+        "CWE_LABEL",
+        "POLICY_FETCH",
+        "TECHNICAL_GATE",
+        "RULE_SCOPE_GATE",
+        "FINDING_NORMALIZE",
+        "REPORT_DRAFT"
+      ],
+      "title": "WorkType",
+      "type": "string"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "limits": {
+      "items": {
+        "$ref": "#/$defs/WorkBudgetLimit"
+      },
+      "title": "Limits",
+      "type": "array"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordMeta"
+    },
+    "profile_key": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Profile Key",
+      "type": "string"
+    },
+    "purpose": {
+      "$ref": "#/$defs/Purpose"
+    },
+    "status": {
+      "$ref": "#/$defs/ProfileStatus"
+    },
+    "unlisted_operation": {
+      "const": "DENY",
+      "title": "Unlisted Operation",
+      "type": "string"
+    }
+  },
+  "required": [
+    "meta",
+    "profile_key",
+    "purpose",
+    "limits",
+    "unlisted_operation",
+    "status"
+  ],
+  "title": "WorkBudgetProfile",
+  "type": "object"
+}

@@ -1,0 +1,334 @@
+{
+  "registry_version": 1,
+  "results": [
+    {
+      "owner": "REPRODUCTION_SESSION_MANAGER",
+      "result_kind": "agent_log",
+      "schema": "generated/agent_log/1.schema.json",
+      "schema_name": "AgentLog",
+      "source_model": "sastsimi.contracts.dynamic.AgentLog"
+    },
+    {
+      "owner": "ORCHESTRATION",
+      "result_kind": "analysis_run_result",
+      "schema": "generated/analysis_run_result/1.schema.json",
+      "schema_name": "AnalysisRunResult",
+      "source_model": "sastsimi.contracts.evaluation.AnalysisRunResult"
+    },
+    {
+      "owner": "ORCHESTRATION",
+      "result_kind": "analysis_run_state",
+      "schema": "generated/analysis_run_state/1.schema.json",
+      "schema_name": "AnalysisRunState",
+      "source_model": "sastsimi.contracts.analysis.AnalysisRunState"
+    },
+    {
+      "owner": "BUDGET_RUNTIME",
+      "result_kind": "budget_ledger_entry",
+      "schema": "generated/budget_ledger_entry/1.schema.json",
+      "schema_name": "BudgetLedgerEntry",
+      "source_model": "sastsimi.contracts.budget.BudgetLedgerEntry"
+    },
+    {
+      "owner": "BUDGET_RUNTIME",
+      "result_kind": "budget_reservation",
+      "schema": "generated/budget_reservation/1.schema.json",
+      "schema_name": "BudgetReservation",
+      "source_model": "sastsimi.contracts.budget.BudgetReservation"
+    },
+    {
+      "owner": "CHAINING",
+      "result_kind": "chaining_result",
+      "schema": "generated/chaining_result/1.schema.json",
+      "schema_name": "ChainingResult",
+      "source_model": "sastsimi.contracts.chaining.ChainingResult"
+    },
+    {
+      "owner": "REPRODUCTION_SETUP_AUTOMATION",
+      "result_kind": "cleanup_result",
+      "schema": "generated/cleanup_result/1.schema.json",
+      "schema_name": "CleanupResult",
+      "source_model": "sastsimi.contracts.dynamic.CleanupResult"
+    },
+    {
+      "owner": "CONTEXT_RETRIEVAL_SERVICE",
+      "result_kind": "code_context_response",
+      "schema": "generated/code_context_response/1.schema.json",
+      "schema_name": "CodeContextResponse",
+      "source_model": "sastsimi.contracts.static.CodeContextResponse"
+    },
+    {
+      "owner": "REPOSITORY_LOADER",
+      "result_kind": "code_workspace",
+      "schema": "generated/code_workspace/1.schema.json",
+      "schema_name": "CodeWorkspace",
+      "source_model": "sastsimi.contracts.static.CodeWorkspace"
+    },
+    {
+      "owner": "CON",
+      "result_kind": "con_evidence_result",
+      "schema": "generated/con_evidence_result/1.schema.json",
+      "schema_name": "EvidenceAgentResult",
+      "source_model": "sastsimi.contracts.verification.ConEvidenceResult"
+    },
+    {
+      "owner": "CWE_LABELING",
+      "result_kind": "cwe_label",
+      "schema": "generated/cwe_label/1.schema.json",
+      "schema_name": "CWELabel",
+      "source_model": "sastsimi.contracts.gates.CWELabel"
+    },
+    {
+      "owner": "DYNAMIC_REPRODUCTION",
+      "result_kind": "dynamic_reproduction_conclusion",
+      "schema": "generated/dynamic_reproduction_conclusion/1.schema.json",
+      "schema_name": "DynamicReproductionConclusion",
+      "source_model": "sastsimi.contracts.dynamic.DynamicReproductionConclusion"
+    },
+    {
+      "owner": "VERIFICATION",
+      "result_kind": "dynamic_reproduction_request",
+      "schema": "generated/dynamic_reproduction_request/1.schema.json",
+      "schema_name": "DynamicReproductionRequest",
+      "source_model": "sastsimi.contracts.dynamic.DynamicReproductionRequest"
+    },
+    {
+      "owner": "REPRODUCTION_SESSION_MANAGER",
+      "result_kind": "dynamic_reproduction_result",
+      "schema": "generated/dynamic_reproduction_result/1.schema.json",
+      "schema_name": "DynamicReproductionResult",
+      "source_model": "sastsimi.contracts.dynamic.DynamicReproductionResult"
+    },
+    {
+      "owner": "DYNAMIC_REPRODUCTION",
+      "result_kind": "dynamic_reproduction_tool_request",
+      "schema": "generated/dynamic_reproduction_tool_request/1.schema.json",
+      "schema_name": "DynamicReproductionToolRequest",
+      "source_model": "sastsimi.contracts.dynamic.DynamicReproductionToolRequest"
+    },
+    {
+      "owner": "REPRODUCTION_SETUP_AUTOMATION",
+      "result_kind": "environment_recipe",
+      "schema": "generated/environment_recipe/1.schema.json",
+      "schema_name": "EnvironmentRecipe",
+      "source_model": "sastsimi.contracts.dynamic.EnvironmentRecipe"
+    },
+    {
+      "owner": "DYNAMIC_REPRODUCTION",
+      "result_kind": "environment_requirements",
+      "schema": "generated/environment_requirements/1.schema.json",
+      "schema_name": "EnvironmentRequirements",
+      "source_model": "sastsimi.contracts.dynamic.EnvironmentRequirements"
+    },
+    {
+      "owner": "R8_EVALUATION_RUNTIME",
+      "result_kind": "evaluation_recommendation",
+      "schema": "generated/evaluation_recommendation/1.schema.json",
+      "schema_name": "EvaluationRecommendation",
+      "source_model": "sastsimi.contracts.evaluation.EvaluationRecommendation"
+    },
+    {
+      "owner": "R8_EVALUATION_RUNTIME",
+      "result_kind": "evaluation_run_result",
+      "schema": "generated/evaluation_run_result/1.schema.json",
+      "schema_name": "EvaluationRunResult",
+      "source_model": "sastsimi.contracts.evaluation.EvaluationRunResult"
+    },
+    {
+      "owner": "VERIFICATION",
+      "result_kind": "finding",
+      "schema": "generated/finding/1.schema.json",
+      "schema_name": "Finding",
+      "source_model": "sastsimi.contracts.reporting.Finding"
+    },
+    {
+      "owner": "HYPOTHESIS",
+      "result_kind": "hypothesis_duplicate_review",
+      "schema": "generated/hypothesis_duplicate_review/1.schema.json",
+      "schema_name": "HypothesisDuplicateReview",
+      "source_model": "sastsimi.contracts.hypothesis.HypothesisDuplicateReview"
+    },
+    {
+      "owner": "ORCHESTRATION",
+      "result_kind": "hypothesis_process_state",
+      "schema": "generated/hypothesis_process_state/1.schema.json",
+      "schema_name": "HypothesisProcessState",
+      "source_model": "sastsimi.contracts.hypothesis.HypothesisProcessState"
+    },
+    {
+      "owner": "ORCHESTRATION",
+      "result_kind": "hypothesis_proposal",
+      "schema": "generated/hypothesis_proposal/1.schema.json",
+      "schema_name": "HypothesisProposal",
+      "source_model": "sastsimi.contracts.hypothesis.HypothesisProposal"
+    },
+    {
+      "owner": "REPRODUCTION_SESSION_MANAGER",
+      "result_kind": "poc_bundle",
+      "schema": "generated/poc_bundle/1.schema.json",
+      "schema_name": "PoCBundle",
+      "source_model": "sastsimi.contracts.dynamic.PoCBundle"
+    },
+    {
+      "owner": "DYNAMIC_REPRODUCTION",
+      "result_kind": "poc_candidate",
+      "schema": "generated/poc_candidate/1.schema.json",
+      "schema_name": "PoCCandidate",
+      "source_model": "sastsimi.contracts.dynamic.PoCCandidate"
+    },
+    {
+      "owner": "POLICY_COLLECTOR",
+      "result_kind": "policy_cache_record",
+      "schema": "generated/policy_cache_record/1.schema.json",
+      "schema_name": "PolicyCacheRecord",
+      "source_model": "sastsimi.contracts.policy.PolicyCacheRecord"
+    },
+    {
+      "owner": "POLICY_COLLECTOR",
+      "result_kind": "policy_collection_result",
+      "schema": "generated/policy_collection_result/1.schema.json",
+      "schema_name": "PolicyCollectionResult",
+      "source_model": "sastsimi.contracts.policy.PolicyCollectionResult"
+    },
+    {
+      "owner": "POLICY_PARSER",
+      "result_kind": "policy_parser_result",
+      "schema": "generated/policy_parser_result/1.schema.json",
+      "schema_name": "PolicyParserResult",
+      "source_model": "sastsimi.contracts.policy.PolicyParserResult"
+    },
+    {
+      "owner": "PRIMITIVE_ADMISSION_RUNTIME",
+      "result_kind": "primitive",
+      "schema": "generated/primitive/1.schema.json",
+      "schema_name": "Primitive",
+      "source_model": "sastsimi.contracts.chaining.Primitive"
+    },
+    {
+      "owner": "PRIMITIVE_ADMISSION_RUNTIME",
+      "result_kind": "primitive_admission_decision",
+      "schema": "generated/primitive_admission_decision/1.schema.json",
+      "schema_name": "PrimitiveAdmissionDecision",
+      "source_model": "sastsimi.contracts.chaining.PrimitiveAdmissionDecision"
+    },
+    {
+      "owner": "PRO",
+      "result_kind": "pro_evidence_result",
+      "schema": "generated/pro_evidence_result/1.schema.json",
+      "schema_name": "EvidenceAgentResult",
+      "source_model": "sastsimi.contracts.verification.ProEvidenceResult"
+    },
+    {
+      "owner": "POLICY_COLLECTOR",
+      "result_kind": "program_policy_record",
+      "schema": "generated/program_policy_record/1.schema.json",
+      "schema_name": "ProgramPolicyRecord",
+      "source_model": "sastsimi.contracts.policy.ProgramPolicyRecord"
+    },
+    {
+      "owner": "ORCHESTRATION",
+      "result_kind": "proposal_process_state",
+      "schema": "generated/proposal_process_state/1.schema.json",
+      "schema_name": "ProposalProcessState",
+      "source_model": "sastsimi.contracts.hypothesis.ProposalProcessState"
+    },
+    {
+      "owner": "REPORTER",
+      "result_kind": "report_draft",
+      "schema": "generated/report_draft/1.schema.json",
+      "schema_name": "ReportDraft",
+      "source_model": "sastsimi.contracts.reporting.ReportDraft"
+    },
+    {
+      "owner": "DYNAMIC_REPRODUCTION",
+      "result_kind": "reproduction_plan",
+      "schema": "generated/reproduction_plan/1.schema.json",
+      "schema_name": "ReproductionPlan",
+      "source_model": "sastsimi.contracts.dynamic.ReproductionPlan"
+    },
+    {
+      "owner": "STATIC_ANALYSIS",
+      "result_kind": "rule_execution_record",
+      "schema": "generated/rule_execution_record/1.schema.json",
+      "schema_name": "RuleExecutionRecord",
+      "source_model": "sastsimi.contracts.static.RuleExecutionRecord"
+    },
+    {
+      "owner": "RULE_SCOPE_GATE",
+      "result_kind": "rule_scope_impact_review",
+      "schema": "generated/rule_scope_impact_review/1.schema.json",
+      "schema_name": "RuleScopeImpactReview",
+      "source_model": "sastsimi.contracts.gates.RuleScopeImpactReview"
+    },
+    {
+      "owner": "POLICY_COLLECTOR",
+      "result_kind": "run_policy_state",
+      "schema": "generated/run_policy_state/1.schema.json",
+      "schema_name": "RunPolicyState",
+      "source_model": "sastsimi.contracts.policy.RunPolicyState"
+    },
+    {
+      "owner": "REPRODUCTION_SESSION_MANAGER",
+      "result_kind": "sandbox_command_record",
+      "schema": "generated/sandbox_command_record/1.schema.json",
+      "schema_name": "SandboxCommandRecord",
+      "source_model": "sastsimi.contracts.dynamic.SandboxCommandRecord"
+    },
+    {
+      "owner": "REPRODUCTION_SETUP_AUTOMATION",
+      "result_kind": "sandbox_environment",
+      "schema": "generated/sandbox_environment/1.schema.json",
+      "schema_name": "SandboxEnvironment",
+      "source_model": "sastsimi.contracts.dynamic.SandboxEnvironment"
+    },
+    {
+      "owner": "SANDBOX_CONTROLLER",
+      "result_kind": "sandbox_policy_decision",
+      "schema": "generated/sandbox_policy_decision/1.schema.json",
+      "schema_name": "SandboxPolicyDecision",
+      "source_model": "sastsimi.contracts.dynamic.SandboxPolicyDecision"
+    },
+    {
+      "owner": "STATIC_ANALYSIS",
+      "result_kind": "static_fact_bundle",
+      "schema": "generated/static_fact_bundle/1.schema.json",
+      "schema_name": "StaticFactBundle",
+      "source_model": "sastsimi.contracts.static.StaticFactBundle"
+    },
+    {
+      "owner": "TECHNICAL_GATE",
+      "result_kind": "technical_evidence_review",
+      "schema": "generated/technical_evidence_review/1.schema.json",
+      "schema_name": "TechnicalEvidenceReview",
+      "source_model": "sastsimi.contracts.gates.TechnicalEvidenceReview"
+    },
+    {
+      "owner": "STATIC_ANALYSIS",
+      "result_kind": "tool_run_result",
+      "schema": "generated/tool_run_result/1.schema.json",
+      "schema_name": "ToolRunResult",
+      "source_model": "sastsimi.contracts.static.ToolRunResult"
+    },
+    {
+      "owner": "ORCHESTRATION",
+      "result_kind": "verification_assignment",
+      "schema": "generated/verification_assignment/1.schema.json",
+      "schema_name": "VerificationAssignment",
+      "source_model": "sastsimi.contracts.hypothesis.VerificationAssignment"
+    },
+    {
+      "owner": "VERIFICATION",
+      "result_kind": "verification_initial_assessment",
+      "schema": "generated/verification_initial_assessment/1.schema.json",
+      "schema_name": "VerificationInitialAssessment",
+      "source_model": "sastsimi.contracts.verification.VerificationInitialAssessment"
+    },
+    {
+      "owner": "VERIFICATION",
+      "result_kind": "verification_result",
+      "schema": "generated/verification_result/1.schema.json",
+      "schema_name": "VerificationResult",
+      "source_model": "sastsimi.contracts.verification.VerificationResult"
+    }
+  ]
+}
