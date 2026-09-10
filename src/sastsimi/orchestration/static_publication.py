@@ -1,5 +1,6 @@
 """Trusted application-side publication for repository and static outputs."""
 
+from dataclasses import dataclass
 from datetime import timedelta
 
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -17,6 +18,7 @@ from sastsimi.contracts.static import (
     CodeWorkspace,
     DataGap,
     RuleExecutionRecord,
+    StaticFactBundle,
     ToolCoverage,
     ToolRunResult,
 )
@@ -30,6 +32,10 @@ from sastsimi.ports.dto import (
     StaticToolRequest,
 )
 from sastsimi.runtime.workflow_runner import WorkflowRunner
+from sastsimi.static_analysis.normalizer import (
+    StaticNormalizationInput,
+    StaticNormalizer,
+)
 
 
 class WorkspacePreparationPublisher:
@@ -329,3 +335,136 @@ class StaticAttemptPublisher:
                 "NOT_APPLICABLE" if result.status == "SKIPPED" else "PARTIAL",
             )
         return "FAILED", "STATIC_TOOL_FAILED"
+
+
+@dataclass(frozen=True)
+class StaticNormalizationSource:
+    """Trusted identity needed to resolve one expected terminal tool work."""
+
+    tool_work_ref: StoredDataRef
+    profile_ref: StoredDataRef
+    catalog_rule_ids: tuple[str, ...] = ()
+
+
+class StaticNormalizationPublisher:
+    """Resolve verified raw inputs and atomically publish one normalized bundle."""
+
+    def __init__(self, runner: WorkflowRunner, normalizer: StaticNormalizer) -> None:
+        self.runner = runner
+        self.normalizer = normalizer
+
+    def publish(
+        self,
+        work: WorkExecutionState,
+        identity: BudgetScopeRef,
+        workspace: CodeWorkspace,
+        sources: tuple[StaticNormalizationSource, ...],
+    ) -> tuple[StaticFactBundle, StoredDataRef]:
+        current = self.runner.runtime.work.get(str(work.work_id))
+        if current.status in {"SUCCEEDED", "PARTIAL"}:
+            if len(current.output_refs) != 1:
+                raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+            existing_ref = current.output_refs[0]
+            existing = self.runner.runtime.unit_of_work.records.get_exact(existing_ref)
+            if not isinstance(existing_ref, StoredDataRef) or not isinstance(
+                existing, StaticFactBundle
+            ):
+                raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+            return existing, existing_ref
+        if (
+            current != work
+            or current.status != "RUNNING"
+            or current.work_type != "STATIC_NORMALIZE"
+            or current.active_attempt_id is None
+            or not isinstance(current.meta, RecordMeta)
+            or workspace.status != "READY"
+            or workspace.workspace_id != current.meta.workspace_id
+            or workspace.commit_id != current.meta.commit_id
+            or not sources
+            or len({item.tool_work_ref for item in sources}) != len(sources)
+        ):
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        materials = tuple(self._resolve_source(current, source) for source in sources)
+        bundle = self.normalizer.normalize(
+            bundle_meta=RecordMeta.model_validate(
+                self.runner.metadata(current.meta, "static_fact_bundle")
+            ),
+            workspace=workspace,
+            materials=materials,
+        )
+        partial = bool(
+            bundle.gaps
+            or bundle.errors
+            or any(result.status != "SUCCEEDED" for result in bundle.tool_runs)
+        )
+        completed = self.runner.complete(
+            current,
+            identity,
+            "STATIC_ANALYSIS",
+            (bundle,),
+            status="PARTIAL" if partial else "SUCCEEDED",
+            cause="PARTIAL" if partial else "COMPLETED",
+            gap_ids=tuple(str(item.gap_id) for item in bundle.gaps),
+            error_ids=tuple(str(item.error_id) for item in bundle.errors),
+        )
+        bundle_ref = completed.output_refs[0]
+        expected_ref = reference(bundle)
+        if (
+            not isinstance(bundle_ref, StoredDataRef)
+            or not isinstance(expected_ref, StoredDataRef)
+            or bundle_ref != expected_ref
+        ):
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        return bundle, bundle_ref
+
+    def _resolve_source(
+        self, work: WorkExecutionState, source: StaticNormalizationSource
+    ) -> StaticNormalizationInput:
+        if work.input_refs.count(source.tool_work_ref) != 1:
+            raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
+        records = self.runner.runtime.unit_of_work.records
+        referenced = records.get_exact(source.tool_work_ref)
+        if not isinstance(referenced, WorkExecutionState):
+            raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
+        tool_work = self.runner.runtime.work.get(str(referenced.work_id))
+        if (
+            tool_work != referenced
+            or tool_work.work_type != "STATIC_TOOL"
+            or tool_work.status not in {"SUCCEEDED", "PARTIAL", "FAILED", "CANCELLED"}
+            or tool_work.input_refs.count(source.profile_ref) != 1
+        ):
+            raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
+        result_refs = tuple(
+            ref for ref in tool_work.output_refs if ref.data_kind == "tool_run_result"
+        )
+        if len(result_refs) != 1 or not isinstance(result_refs[0], StoredDataRef):
+            raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
+        result = records.get_exact(result_refs[0])
+        profile = self.runner.runtime.configuration.resolve_static_tool_profile(
+            source.profile_ref
+        )
+        if not isinstance(result, ToolRunResult):
+            raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
+        rule: RuleExecutionRecord | None = None
+        if result.rule_execution_ref is not None:
+            candidate = records.get_exact(result.rule_execution_ref)
+            if not isinstance(candidate, RuleExecutionRecord):
+                raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
+            rule = candidate
+        raw: bytes | None = None
+        if result.raw_result_ref is not None:
+            with self.runner.runtime.unit_of_work.artifacts.open_verified(
+                result.raw_result_ref
+            ) as stream:
+                raw = stream.read(profile.max_artifact_read_bytes + 1)
+            if len(raw) > profile.max_artifact_read_bytes:
+                raise ValueError("STATIC_ARTIFACT_READ_LIMIT")
+        return StaticNormalizationInput(
+            result_ref=result_refs[0],
+            result=result,
+            profile_ref=source.profile_ref,
+            profile=profile,
+            raw_bytes=raw,
+            rule_execution=rule,
+            catalog_rule_ids=source.catalog_rule_ids,
+        )
