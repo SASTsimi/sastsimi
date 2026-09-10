@@ -42,6 +42,7 @@ from sastsimi.contracts.verification import (
     PlaybookPolicy,
     VerificationPlaybook,
 )
+from sastsimi.ports.dto import RepositoryPreparation
 from sastsimi.ports.fake_workflow import (
     InitialVerificationInputs,
     PolicyFetcher,
@@ -69,6 +70,7 @@ from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 
 from .fake_static_runtime import execute_fake_static_work, register_fake_static_works
+from .static_publication import WorkspacePreparationPublisher
 
 
 @dataclass(frozen=True)
@@ -309,22 +311,31 @@ class FakeSetupStages:
             str(ANALYSIS_ID),
             verification_ref,
         )
-        workspace = CodeWorkspace.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=self.runner.metadata(workspace_work.meta, "code_workspace"),
-                    workspace_id=WORKSPACE_ID,
-                    analysis_id=ANALYSIS_ID,
-                    repository_url="https://example.invalid/fake",
-                    commit_id=COMMIT_ID,
-                    status="READY",
-                )
-            )
+        workspace_publisher = WorkspacePreparationPublisher(self.runner, execution_ref)
+        preparing = workspace_publisher.begin(
+            workspace_work,
+            "https://example.invalid/fake",
+            WORKSPACE_ID,
         )
-        workspace_work = self.runner.complete(
-            workspace_work, execution_ref, "REPOSITORY_LOADER", (workspace,)
+        finished = workspace_publisher.finish(
+            workspace_work,
+            preparing,
+            RepositoryPreparation(
+                analysis_id=str(ANALYSIS_ID),
+                workspace_id=str(WORKSPACE_ID),
+                repository_url="https://example.invalid/fake",
+                requested_ref="fake",
+                status="READY",
+                resolved_commit_id=str(COMMIT_ID),
+                root=self.data_dir / "fake-workspace",
+                tracked_files=(),
+                gaps=(),
+                errors=(),
+                lease_id="fake-workspace",
+            ),
         )
-        workspace_ref = workspace_work.output_refs[0]
+        workspace_work = finished.work
+        workspace_ref = finished.workspace_ref
         assert isinstance(workspace_ref, RunStoredDataRef)
         lifecycle = DynamicReproductionLifecycleProfile.model_validate_json(
             canonical_bytes(
