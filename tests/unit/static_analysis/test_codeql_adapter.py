@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import hashlib
 import json
 import os
+import subprocess
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -34,6 +36,26 @@ from tests.contract.domain.fixtures import meta
 
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _replace_distinct_file(source: Path, destination: Path) -> bool:
+    """Replace an open file without relying on Windows symlink privileges."""
+
+    if os.name != "nt":
+        os.replace(source, destination)
+        return True
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    replace_file = kernel32.ReplaceFileW
+    replace_file.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    replace_file.restype = ctypes.c_int
+    return bool(replace_file(str(destination), str(source), None, 0, None, None))
 
 
 def process_result(
@@ -1065,6 +1087,63 @@ async def test_linked_attempt_output_directory_is_rejected_before_spawn(
     assert runner.calls == []
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction/reparse boundary")
+@pytest.mark.asyncio
+async def test_windows_junction_attempt_root_is_rejected_before_spawn_or_parse(
+    codeql_fixture: dict[str, Any], tmp_path: Path
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    inputs = codeql_fixture["inputs"]
+    attempt_root = inputs.attempt_root
+    attempt_root.rmdir()
+    external = tmp_path / "junction-target"
+    external.mkdir()
+    windows_root = os.environ.get("SystemRoot", r"C:\Windows")
+    cmd = Path(windows_root) / "System32" / "cmd.exe"
+    created = subprocess.run(
+        [str(cmd), "/d", "/c", "mklink", "/J", str(attempt_root), str(external)],
+        check=False,
+        capture_output=True,
+        text=True,
+        shell=False,
+    )
+    assert created.returncode == 0, created.stderr or created.stdout
+    assert attempt_root.is_junction()
+    parsed = False
+
+    def parser(data: bytes) -> object:
+        nonlocal parsed
+        parsed = True
+        return json.loads(data)
+
+    executable = codeql_fixture["executable"]
+    tool_profile = profile(executable)
+    _, request = workspace_and_request(tool_profile)
+    runner = FakeRunner(sarif=sarif())
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=inputs,
+        runner_factory=RunnerFactory(runner),
+        sarif_loader=parser,
+    )
+
+    try:
+        observed = await adapter.execute(
+            request,
+            fixture_workspace(codeql_fixture),
+            tool_profile,
+            deadline(str(request.action.action_id)),
+        )
+    finally:
+        attempt_root.rmdir()
+
+    assert observed.status == "FAILED"
+    assert runner.calls == []
+    assert not parsed
+
+
 @pytest.mark.asyncio
 async def test_symlink_sarif_output_is_never_parsed(
     codeql_fixture: dict[str, Any], tmp_path: Path
@@ -1111,25 +1190,31 @@ async def test_symlink_sarif_output_is_never_parsed(
 
 @pytest.mark.asyncio
 async def test_sarif_changed_during_bounded_read_is_rejected(
-    codeql_fixture: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    codeql_fixture: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import sastsimi.static_analysis.codeql_adapter as codeql_adapter
 
     payload = sarif()
+    replacement = tmp_path / "replacement.sarif"
+    replacement.write_bytes(b"x" * len(payload))
     real_read = os.read
-    changed = False
+    replaced = False
+    parsed = False
 
     def changing_read(descriptor: int, size: int) -> bytes:
-        nonlocal changed
+        nonlocal replaced
         data = real_read(descriptor, size)
         path = (
             codeql_fixture["inputs"].attempt_root / "codeql-run" / "codeql-result.sarif"
         )
-        if not changed and path.exists():
-            with path.open("ab") as stream:
-                stream.write(b" ")
-            changed = True
+        if not replaced and path.exists():
+            replaced = _replace_distinct_file(replacement, path)
         return data
+
+    def parser(data: bytes) -> object:
+        nonlocal parsed
+        parsed = True
+        return json.loads(data)
 
     monkeypatch.setattr(os, "read", changing_read)
     executable = codeql_fixture["executable"]
@@ -1141,6 +1226,7 @@ async def test_sarif_changed_during_bounded_read_is_rejected(
         executable_key="trusted-codeql",
         inputs=codeql_fixture["inputs"],
         runner_factory=RunnerFactory(runner),
+        sarif_loader=parser,
     )
 
     observed = await adapter.execute(
@@ -1151,9 +1237,11 @@ async def test_sarif_changed_during_bounded_read_is_rejected(
     )
 
     assert observed.status == "FAILED"
-    assert changed
+    assert replaced
+    assert not parsed
     assert len(runner.calls) == 2
     assert observed.raw_output is None
+    assert observed.facts == () and observed.relations == ()
 
 
 @pytest.mark.asyncio

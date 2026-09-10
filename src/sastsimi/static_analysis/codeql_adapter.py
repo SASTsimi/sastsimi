@@ -181,6 +181,88 @@ class _MalformedSarif(ValueError):
     pass
 
 
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def _safe_regular_file(info: os.stat_result) -> bool:
+    return (
+        stat.S_ISREG(info.st_mode)
+        and info.st_nlink == 1
+        and not (
+            int(getattr(info, "st_file_attributes", 0))
+            & _FILE_ATTRIBUTE_REPARSE_POINT
+        )
+        and int(getattr(info, "st_reparse_tag", 0)) == 0
+    )
+
+
+def _file_identity(info: os.stat_result) -> tuple[int, ...]:
+    """Return identity and mutation-sensitive metadata for one regular file."""
+
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        int(getattr(info, "st_file_attributes", 0)),
+        int(getattr(info, "st_reparse_tag", 0)),
+    )
+
+
+def _open_bounded_read_descriptor(path: Path) -> int:
+    """Open without following a final reparse point and permit identity checks."""
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    if os.name != "nt":
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        return os.open(path, flags)
+
+    import ctypes
+    import msvcrt
+
+    generic_read = 0x80000000
+    share_read_write_delete = 0x00000001 | 0x00000002 | 0x00000004
+    open_existing = 3
+    file_attribute_normal = 0x00000080
+    file_flag_open_reparse_point = 0x00200000
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    create_file.restype = ctypes.c_void_p
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [ctypes.c_void_p]
+    close_handle.restype = ctypes.c_int
+    handle = create_file(
+        str(path),
+        generic_read,
+        share_read_write_delete,
+        None,
+        open_existing,
+        file_attribute_normal | file_flag_open_reparse_point,
+        None,
+    )
+    invalid_handle = ctypes.c_void_p(-1).value
+    if handle in {None, invalid_handle}:
+        error = ctypes.get_last_error()
+        raise OSError(error, "CODEQL_OUTPUT_OPEN_FAILED", str(path))
+    try:
+        return msvcrt.open_osfhandle(int(handle), flags)
+    except BaseException:
+        close_handle(handle)
+        raise
+
+
 def _directory_size(root: Path, cap: int) -> int:
     _assert_path_chain_safe(root)
     if not root.is_dir():
@@ -211,15 +293,15 @@ def _read_bounded_regular(
     resolved_root = root.resolve(strict=True)
     if path.resolve(strict=True).parent != resolved_root or path.name != expected_name:
         raise _OutputBoundaryError("CODEQL_OUTPUT_ESCAPE")
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(path, flags)
+    path_before = os.stat(path, follow_symlinks=False)
+    if not _safe_regular_file(path_before):
+        raise _OutputBoundaryError("CODEQL_OUTPUT_LIMIT")
+    descriptor = _open_bounded_read_descriptor(path)
     try:
         before = os.fstat(descriptor)
         if (
-            not stat.S_ISREG(before.st_mode)
-            or before.st_nlink != 1
+            not _safe_regular_file(before)
+            or _file_identity(path_before) != _file_identity(before)
             or before.st_size > file_cap
             or before.st_size > read_cap
         ):
@@ -227,24 +309,13 @@ def _read_bounded_regular(
         data = os.read(descriptor, read_cap + 1)
         after = os.fstat(descriptor)
         current = os.stat(path, follow_symlinks=False)
-        identity_before = (
-            before.st_dev,
-            before.st_ino,
-            before.st_size,
-            before.st_mtime_ns,
-        )
-        identity_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-        identity_current = (
-            current.st_dev,
-            current.st_ino,
-            current.st_size,
-            current.st_mtime_ns,
-        )
         if (
             len(data) != before.st_size
             or len(data) > read_cap
-            or identity_before != identity_after
-            or identity_before != identity_current
+            or not _safe_regular_file(after)
+            or not _safe_regular_file(current)
+            or _file_identity(before) != _file_identity(after)
+            or _file_identity(before) != _file_identity(current)
         ):
             raise _OutputBoundaryError("CODEQL_OUTPUT_CHANGED")
         return data
