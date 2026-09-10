@@ -7,9 +7,12 @@ from typing import NoReturn
 from uuid import uuid4
 
 from sastsimi import bootstrap
+from sastsimi.interfaces.cli import analyze as analyze_command
 from sastsimi.interfaces.cli import commands
+from sastsimi.interfaces.cli import reports as reports_command
+from sastsimi.interfaces.cli import results as results_command
 from sastsimi.interfaces.cli.exit_codes import ExitCode
-from sastsimi.interfaces.cli.output import emit_result
+from sastsimi.interfaces.cli.output import emit_data, emit_result
 
 
 class _InputError(ValueError):
@@ -50,6 +53,21 @@ def main(argv: list[str] | None = None) -> int:
     downgrade_parser = db_commands.add_parser("downgrade", allow_abbrev=False)
     downgrade_parser.add_argument("revision")
     downgrade_parser.add_argument("--format", choices=["text", "json"])
+    analyze_parser = subparsers.add_parser(
+        "analyze", help="run the deterministic fake analysis", allow_abbrev=False
+    )
+    analyze_parser.add_argument(
+        "--scenario", choices=["TRUE", "FALSE", "HOLD", "REVISE", "CHAINING"]
+    )
+    analyze_parser.add_argument("--format", choices=["text", "json"])
+    results_parser = subparsers.add_parser(
+        "results", help="read fake analysis progress/result", allow_abbrev=False
+    )
+    results_parser.add_argument("--format", choices=["text", "json"])
+    reports_parser = subparsers.add_parser(
+        "reports", help="read fake ReportDraft records", allow_abbrev=False
+    )
+    reports_parser.add_argument("--format", choices=["text", "json"])
     try:
         args = parser.parse_args(argv)
         if args.format is not None:
@@ -78,7 +96,21 @@ def main(argv: list[str] | None = None) -> int:
                 revision=revision,
             )
             return int(ExitCode.OK)
-            code = ExitCode.OK
+        if args.command == "analyze":
+            command_name = "analyze"
+            data = analyze_command.run(config.data_dir, args.scenario or "TRUE")
+            emit_data(output_format, sys.stdout, command=command_name, data=data)
+            return int(ExitCode.OK)
+        if args.command == "results":
+            command_name = "results"
+            data = results_command.run(config.data_dir)
+            emit_data(output_format, sys.stdout, command=command_name, data=data)
+            return int(ExitCode.OK)
+        if args.command == "reports":
+            command_name = "reports"
+            data = reports_command.run(config.data_dir)
+            emit_data(output_format, sys.stdout, command=command_name, data=data)
+            return int(ExitCode.OK)
         else:
             code = ExitCode.OK if commands.doctor() else ExitCode.CAPABILITY_UNSUPPORTED
         emit_result(

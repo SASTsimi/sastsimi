@@ -1,0 +1,363 @@
+{
+  "$defs": {
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "AuthMode": {
+      "enum": [
+        "API_KEY",
+        "SUBSCRIPTION_LOGIN"
+      ],
+      "type": "string"
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "Environment": {
+      "enum": [
+        "PERSONAL_LOCAL",
+        "TEAM_LOCAL",
+        "PRIVATE_CI",
+        "SHARED_SERVER"
+      ],
+      "type": "string"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "Product": {
+      "enum": [
+        "OPENAI_API",
+        "CODEX",
+        "ANTHROPIC_API",
+        "CLAUDE_CODE"
+      ],
+      "type": "string"
+    },
+    "Provider": {
+      "enum": [
+        "OPENAI",
+        "ANTHROPIC"
+      ],
+      "type": "string"
+    },
+    "ProviderValidationTest": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/StoredDataRef"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "result": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NOT_APPLICABLE"
+          ],
+          "title": "Result",
+          "type": "string"
+        },
+        "safe_summary": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Safe Summary",
+          "type": "string"
+        },
+        "test_id": {
+          "enum": [
+            "PVD-01",
+            "PVD-02",
+            "PVD-03",
+            "PVD-04",
+            "PVD-05",
+            "PVD-06",
+            "PVD-07",
+            "PVD-08",
+            "PVD-09",
+            "PVD-10",
+            "PVD-11",
+            "PVD-12",
+            "PVD-13",
+            "PVD-14",
+            "PVD-15",
+            "PVD-16"
+          ],
+          "title": "Test Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "test_id",
+        "result",
+        "evidence_refs",
+        "safe_summary"
+      ],
+      "title": "ProviderValidationTest",
+      "type": "object"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "Transport": {
+      "enum": [
+        "RESPONSES_API",
+        "CODEX_CLIENT",
+        "MESSAGES_API",
+        "CLAUDE_CODE_CLIENT"
+      ],
+      "type": "string"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "auth_mode": {
+      "$ref": "#/$defs/AuthMode"
+    },
+    "checked_at": {
+      "format": "date-time",
+      "title": "Checked At",
+      "type": "string"
+    },
+    "checked_by": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Checked By",
+      "type": "string"
+    },
+    "client_name": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Client Name",
+      "type": "string"
+    },
+    "client_version": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Client Version",
+      "type": "string"
+    },
+    "environment": {
+      "$ref": "#/$defs/Environment"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordMeta"
+    },
+    "model": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Model",
+      "type": "string"
+    },
+    "product": {
+      "$ref": "#/$defs/Product"
+    },
+    "profile_key": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Profile Key",
+      "type": "string"
+    },
+    "provider": {
+      "$ref": "#/$defs/Provider"
+    },
+    "tests": {
+      "items": {
+        "$ref": "#/$defs/ProviderValidationTest"
+      },
+      "title": "Tests",
+      "type": "array"
+    },
+    "transport": {
+      "$ref": "#/$defs/Transport"
+    }
+  },
+  "required": [
+    "meta",
+    "profile_key",
+    "provider",
+    "product",
+    "transport",
+    "model",
+    "environment",
+    "auth_mode",
+    "client_name",
+    "client_version",
+    "tests",
+    "checked_at",
+    "checked_by"
+  ],
+  "title": "ProviderValidationEvidence",
+  "type": "object"
+}

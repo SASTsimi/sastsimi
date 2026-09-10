@@ -1,6 +1,7 @@
 from typing import BinaryIO, Protocol, runtime_checkable
 
-from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.ids import AnalysisId
+from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef
 
 from .dto import StagedArtifact
 
@@ -11,4 +12,7 @@ class ArtifactStore(Protocol):
 
     def stage_bytes(self, data: bytes, media_type: str) -> StagedArtifact: ...
     def commit(self, staged: StagedArtifact) -> StoredDataRef: ...
-    def open_verified(self, ref: StoredDataRef) -> BinaryIO: ...
+    def commit_run(
+        self, staged: StagedArtifact, analysis_id: AnalysisId
+    ) -> RunStoredDataRef: ...
+    def open_verified(self, ref: StoredDataRef | RunStoredDataRef) -> BinaryIO: ...

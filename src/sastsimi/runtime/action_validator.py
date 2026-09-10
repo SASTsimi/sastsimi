@@ -1,7 +1,12 @@
 """Trusted runtime authorization API; checks and claims commit in the port."""
 
 from sastsimi.contracts.actions import ActionDecision, ActionRequest
-from sastsimi.contracts.refs import RecordRef
+from sastsimi.contracts.llm import (
+    LLMInvocationLog,
+    LLMInvocationRequest,
+    LLMInvocationResult,
+)
+from sastsimi.contracts.refs import RecordRef, StoredDataRef
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.runtime_store import ActionAuthorizationPort
 
@@ -33,5 +38,13 @@ class RuntimeValidator:
 
     def claim_external(
         self, work_id: str, decision_ref: RecordRef, reservation_ref: RecordRef | None
-    ) -> None:
-        self.authorization.claim_external(work_id, decision_ref, reservation_ref)
+    ) -> RecordRef:
+        return self.authorization.claim_external(work_id, decision_ref, reservation_ref)
+
+    def record_invocation(
+        self,
+        request: LLMInvocationRequest,
+        result: LLMInvocationResult,
+        log: LLMInvocationLog,
+    ) -> StoredDataRef:
+        return self.authorization.record_invocation(request, result, log)

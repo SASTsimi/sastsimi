@@ -53,8 +53,8 @@ class BudgetProfileRegistry:
             raise ValueError("BUDGET requires exact analysis state and purpose")
         with self.records.database.write() as connection:
             assert profile.approval_ref is not None
-            self.records.resolve(connection, profile.approval_ref)
-            self.records.resolve(connection, profile.pricing_revision_ref)
+            # Governance provenance is opaque and may live outside this store.
+            # The injected evidence port above binds the exact profile and refs.
             ref = self.records.stage(connection, profile)
             assert isinstance(ref, RunStoredDataRef)
             self.records.publish(connection, ref)
@@ -214,7 +214,6 @@ class BudgetProfileRegistry:
             ):
                 raise ValueError("BUDGET requires a READY exact workspace")
             assert binding.approval_ref is not None
-            self.records.resolve(connection, binding.approval_ref)
             ref = self.records.stage(connection, binding)
             assert isinstance(ref, StoredDataRef)
             self.records.publish(connection, ref)

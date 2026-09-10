@@ -1,22 +1,31 @@
 """The composition root for configuration, logging and injected local runtime."""
 
+from __future__ import annotations
+
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
+from typing import TYPE_CHECKING, TextIO, cast
 
 from sastsimi.config.loader import ConfigError as ConfigError
 from sastsimi.config.loader import load_config
 from sastsimi.config.models import AppConfig
 from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.ids import CommitId, WorkspaceId
-from sastsimi.contracts.refs import BudgetScopeRef
+from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef
 from sastsimi.logging import SafeJsonHandler, safe_event
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
 from sastsimi.ports.trusted_evidence import TrustedEvidencePort
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.storage.schema_version import MigrationRequired as MigrationRequired
+
+if TYPE_CHECKING:
+    from sastsimi.contracts.evaluation import AnalysisRunResult
+    from sastsimi.contracts.reporting import ReportDraft
+    from sastsimi.orchestration.fake_pipeline import FakePipeline
+    from sastsimi.orchestration.fake_scenario_runtime import WorkflowBundle
 
 
 def build_config(
@@ -57,6 +66,323 @@ def database_command(data_dir: Path, command: str, revision: str | None) -> str:
     return revision or "head"
 
 
+def build_fake_pipeline(data_dir: Path) -> FakePipeline:
+    """Compose the deterministic local fake vertical slice."""
+    from sastsimi.chaining import no_match_result
+    from sastsimi.chaining.service import ChainingDependencies, ChainingService
+    from sastsimi.contracts.dynamic import (
+        CleanupResult,
+        SandboxCommandRecord,
+        SandboxEnvironment,
+    )
+    from sastsimi.contracts.llm import (
+        LLMInvocationRequest,
+        LLMInvocationResult,
+        ProviderValidationEvidence,
+    )
+    from sastsimi.contracts.refs import reference
+    from sastsimi.contracts.static import CodeLocation, ToolRunResult
+    from sastsimi.evaluation.service import EvaluationDependencies, EvaluationService
+    from sastsimi.orchestration.fake_pipeline import FakePipeline
+    from sastsimi.policy import FakePolicySource
+    from sastsimi.policy.service import PolicyDependencies, PolicyPreparationService
+    from sastsimi.ports.dto import (
+        ApprovedSandboxCommand,
+        CapabilityProbeResult,
+        OfficialPolicyFetchRequest,
+        OfficialPolicySource,
+        SandboxCleanupRequest,
+        SandboxPrepareRequest,
+        StaticToolRequest,
+    )
+    from sastsimi.ports.fake_workflow import (
+        NoMatchBuilder,
+        PolicyFetcher,
+        ProviderInvoker,
+        ProviderProber,
+        SandboxCleaner,
+        SandboxExecutor,
+        SandboxPreparer,
+    )
+    from sastsimi.ports.verification_assembly import VerificationAssemblyPort
+    from sastsimi.providers.fake import FakeProviderAdapter
+    from sastsimi.reporting.service import ReportingDependencies, ReportingService
+    from sastsimi.reproduction import (
+        require_cleanup_result,
+        require_executed_command,
+        require_prepared_environment,
+    )
+    from sastsimi.reproduction.service import (
+        DynamicReproductionService,
+        ReproductionDependencies,
+    )
+    from sastsimi.runtime.fake_support import (
+        FakeClock,
+        FakeEvidence,
+        FakeIds,
+        FakeRecordFactory,
+    )
+    from sastsimi.runtime.workflow_runner import WorkflowRunner
+    from sastsimi.sandbox.fake import FakeSandboxAdapter
+    from sastsimi.static_analysis.fake import FakeStaticToolAdapter
+    from sastsimi.verification import FakeVerificationAssembly
+    from sastsimi.verification.service import (
+        VerificationDependencies,
+        VerificationService,
+    )
+
+    @dataclass(frozen=True)
+    class Services:
+        policy: PolicyPreparationService
+        verification: VerificationService
+        reporting: ReportingService
+        evaluation: EvaluationService
+
+    async def provider_invoke(
+        request: LLMInvocationRequest, result: LLMInvocationResult
+    ) -> LLMInvocationResult:
+        return await FakeProviderAdapter({reference(request): result}).invoke(request)
+
+    async def provider_probe(
+        candidate: ProviderValidationEvidence,
+    ) -> CapabilityProbeResult:
+        return await FakeProviderAdapter({}).probe(candidate)
+
+    async def static_invoke(
+        request: StaticToolRequest, result: ToolRunResult
+    ) -> ToolRunResult:
+        return await FakeStaticToolAdapter({reference(request.action): result}).run(
+            request
+        )
+
+    async def sandbox_prepare(
+        request: SandboxPrepareRequest, environment: SandboxEnvironment
+    ) -> SandboxEnvironment:
+        adapter = FakeSandboxAdapter(
+            environments={reference(request.request): environment},
+            commands={},
+            cleanups={},
+        )
+        returned = await adapter.prepare(request)
+        return require_prepared_environment(request, environment, returned)
+
+    async def sandbox_execute(
+        request: ApprovedSandboxCommand, command: SandboxCommandRecord
+    ) -> SandboxCommandRecord:
+        adapter = FakeSandboxAdapter(
+            environments={},
+            commands={reference(request.tool_request): command},
+            cleanups={},
+        )
+        return require_executed_command(
+            request, command, await adapter.execute(request)
+        )
+
+    async def sandbox_cleanup(
+        request: SandboxCleanupRequest, cleanup: CleanupResult
+    ) -> CleanupResult:
+        adapter = FakeSandboxAdapter(
+            environments={},
+            commands={},
+            cleanups={reference(request.request): cleanup},
+        )
+        return require_cleanup_result(request, cleanup, await adapter.cleanup(request))
+
+    async def policy_fetch(
+        request: OfficialPolicyFetchRequest, expected: OfficialPolicySource
+    ) -> OfficialPolicySource:
+        return await FakePolicySource(expected).fetch_official(request)
+
+    def workflow_factory(
+        *,
+        runtime: RuntimeServices,
+        runner: WorkflowRunner,
+        clock: FakeClock,
+        ids: FakeIds,
+        evidence: FakeEvidence,
+        records: FakeRecordFactory,
+        provider_invoke: ProviderInvoker,
+        provider_probe: ProviderProber,
+        sandbox_prepare: SandboxPreparer,
+        sandbox_execute: SandboxExecutor,
+        sandbox_cleanup: SandboxCleaner,
+        policy_fetch: PolicyFetcher,
+        no_match_builder: NoMatchBuilder,
+        verification_assembly: VerificationAssemblyPort,
+        context_service_identity_ref: StoredDataRef,
+        location: Callable[[], CodeLocation],
+    ) -> WorkflowBundle:
+        policy = PolicyPreparationService(
+            PolicyDependencies(
+                runtime=runtime,
+                runner=runner,
+                clock=clock,
+                ids=ids,
+                evidence=evidence,
+                records=records,
+                provider_invoke=provider_invoke,
+                provider_probe=provider_probe,
+                policy_fetch=policy_fetch,
+            )
+        )
+        reproduction = DynamicReproductionService(
+            ReproductionDependencies(
+                runtime=runtime,
+                runner=runner,
+                clock=clock,
+                evidence=evidence,
+                records=records,
+                provider_invoke=provider_invoke,
+                provider_probe=provider_probe,
+                sandbox_prepare=sandbox_prepare,
+                sandbox_execute=sandbox_execute,
+                sandbox_cleanup=sandbox_cleanup,
+            )
+        )
+        verification = VerificationService(
+            VerificationDependencies(
+                runtime=runtime,
+                runner=runner,
+                clock=clock,
+                evidence=evidence,
+                records=records,
+                provider_invoke=provider_invoke,
+                provider_probe=provider_probe,
+                assembly=verification_assembly,
+                context_service_identity_ref=context_service_identity_ref,
+                location=location,
+                dynamic=reproduction,
+            )
+        )
+        chaining = ChainingService(
+            ChainingDependencies(
+                runtime=runtime,
+                runner=runner,
+                clock=clock,
+                evidence=evidence,
+                records=records,
+                provider_invoke=provider_invoke,
+                provider_probe=provider_probe,
+                no_match_builder=no_match_builder,
+            )
+        )
+        reporting = ReportingService(
+            ReportingDependencies(
+                runtime=runtime,
+                runner=runner,
+                clock=clock,
+                evidence=evidence,
+                records=records,
+                provider_invoke=provider_invoke,
+                provider_probe=provider_probe,
+                chaining=chaining,
+            )
+        )
+        evaluation = EvaluationService(
+            EvaluationDependencies(
+                runtime=runtime,
+                clock=clock,
+                evidence=evidence,
+                run_meta=records.run_meta,
+            )
+        )
+        return Services(policy, verification, reporting, evaluation)
+
+    result, reports = _load_fake_outputs(data_dir)
+    return FakePipeline(
+        data_dir,
+        build_runtime,
+        upgrade_database,
+        provider_invoke,
+        provider_probe,
+        static_invoke,
+        sandbox_prepare,
+        sandbox_execute,
+        sandbox_cleanup,
+        policy_fetch,
+        no_match_result,
+        FakeVerificationAssembly(),
+        workflow_factory,
+        persisted_result=result,
+        persisted_reports=reports,
+    )
+
+
+def _load_fake_outputs(
+    data_dir: Path,
+) -> tuple[AnalysisRunResult | None, tuple[ReportDraft, ...]]:
+    from sastsimi.evaluation import persisted_analysis_result
+    from sastsimi.reporting import persisted_report_drafts
+    from sastsimi.storage.database import Database
+    from sastsimi.storage.queries import RuntimeQueries
+    from sastsimi.storage.repositories import SQLiteRecordStore
+
+    path = RuntimePaths(data_dir).database
+    if not path.exists():
+        return None, ()
+    database = Database(path)
+    database.check_ready()
+    records = SQLiteRecordStore(database)
+    queries = RuntimeQueries(records)
+    reports = persisted_report_drafts(queries, "fake-analysis")
+    return persisted_analysis_result(queries, "fake-analysis"), reports
+
+
+def load_fake_progress(data_dir: Path) -> dict[str, object]:
+    """Read only durable fake-run progress; never synthesize a terminal result."""
+    import json
+    from collections import Counter
+
+    from sastsimi.contracts.analysis import AnalysisRunState
+    from sastsimi.contracts.canonical_json import canonical_bytes
+    from sastsimi.contracts.evaluation import AnalysisRunResult
+    from sastsimi.contracts.work import WorkExecutionState
+    from sastsimi.storage.database import Database
+    from sastsimi.storage.queries import RuntimeQueries
+    from sastsimi.storage.repositories import SQLiteRecordStore
+
+    path = RuntimePaths(data_dir).database
+    not_found: dict[str, object] = {
+        "analysis_id": "fake-analysis",
+        "status": "NOT_FOUND",
+        "work_counts": {},
+    }
+    if not path.exists():
+        return not_found
+    database = Database(path)
+    database.check_ready()
+    records = SQLiteRecordStore(database)
+    queries = RuntimeQueries(records)
+    runs = tuple(
+        item
+        for item in queries.current_records("fake-analysis", "analysis_run_state")
+        if isinstance(item, AnalysisRunState)
+    )
+    if not runs:
+        return not_found
+    state = runs[-1]
+    if state.analysis_result_ref is not None:
+        result = records.get_exact(state.analysis_result_ref)
+        if not isinstance(result, AnalysisRunResult):
+            raise ValueError("ANALYSIS_RESULT_KIND_MISMATCH")
+        payload = json.loads(canonical_bytes(result))
+        if not isinstance(payload, dict):
+            raise TypeError("ANALYSIS_RESULT_OBJECT_REQUIRED")
+        return cast(dict[str, object], payload)
+    works = tuple(
+        item
+        for item in queries.current_records("fake-analysis", "work_execution_state")
+        if isinstance(item, WorkExecutionState)
+    )
+    counts = Counter(str(work.status) for work in works)
+    status = "BLOCKED" if counts.get("BLOCKED", 0) else "RUNNING"
+    return {
+        "analysis_id": str(state.meta.analysis_id),
+        "status": status,
+        "work_counts": dict(sorted(counts.items())),
+    }
+
+
 def build_runtime(
     data_dir: Path,
     workspace_id: WorkspaceId | None,
@@ -65,33 +391,62 @@ def build_runtime(
     ids: IdGenerator,
     recovery_identity_ref: BudgetScopeRef | None = None,
     evidence: TrustedEvidencePort | None = None,
+    context_service_identity_ref: BudgetScopeRef | None = None,
+    finding_service_identity_ref: StoredDataRef | None = None,
+    analysis_finalization_identity_ref: BudgetScopeRef | None = None,
 ) -> RuntimeServices:
     from sastsimi.runtime.action_validator import RuntimeValidator
+    from sastsimi.runtime.analysis_finalization import AnalysisFinalizationService
     from sastsimi.runtime.attempt_service import AttemptService
     from sastsimi.runtime.budget_registry import BudgetProfileRegistry
     from sastsimi.runtime.budget_service import BudgetService
+    from sastsimi.runtime.configuration_registry import ConfigurationRegistry
+    from sastsimi.runtime.context_binding import ContextBindingService
+    from sastsimi.runtime.dynamic_registration import DynamicRegistrationService
     from sastsimi.runtime.external_call_service import ExternalCallService
+    from sastsimi.runtime.intermediate_publication import IntermediatePublicationService
+    from sastsimi.runtime.queries import RuntimeQueries
     from sastsimi.runtime.recovery_service import RecoveryService
     from sastsimi.runtime.transition_service import TransitionService
+    from sastsimi.runtime.verification_registration import (
+        VerificationRegistrationService,
+    )
     from sastsimi.runtime.work_service import WorkService
     from sastsimi.storage.action_validator import RuntimeValidator as SQLiteValidator
+    from sastsimi.storage.analysis_finalization import (
+        AnalysisFinalizationService as SQLiteAnalysisFinalization,
+    )
     from sastsimi.storage.artifact_store import LocalArtifactStore
     from sastsimi.storage.attempt_service import AttemptService as SQLiteAttempts
     from sastsimi.storage.budget_registry import BudgetProfileRegistry as SQLiteRegistry
     from sastsimi.storage.budget_service import BudgetService as SQLiteBudget
+    from sastsimi.storage.configuration_registry import (
+        ConfigurationRegistry as SQLiteConfigurationRegistry,
+    )
+    from sastsimi.storage.context_binding import ContextBindingService as SQLiteContext
     from sastsimi.storage.database import Database
+    from sastsimi.storage.dynamic_registration import (
+        DynamicRegistrationService as SQLiteDynamicRegistration,
+    )
+    from sastsimi.storage.intermediate_publication import (
+        IntermediatePublicationService as SQLiteIntermediates,
+    )
+    from sastsimi.storage.queries import RuntimeQueries as SQLiteQueries
     from sastsimi.storage.recovery_service import RecoveryService as SQLiteRecovery
     from sastsimi.storage.repositories import SQLiteRecordStore
     from sastsimi.storage.transition_service import (
         TransitionService as SQLiteTransitions,
     )
     from sastsimi.storage.unit_of_work import SQLiteUnitOfWork
+    from sastsimi.storage.verification_registration import (
+        VerificationRegistrationService as SQLiteVerificationRegistration,
+    )
     from sastsimi.storage.work_service import WorkService as SQLiteWorks
 
     paths = RuntimePaths(data_dir)
     database = Database(paths.database)
     database.check_ready()
-    records = SQLiteRecordStore(database, evidence)
+    records = SQLiteRecordStore(database, evidence, finding_service_identity_ref)
     artifacts = LocalArtifactStore(paths.artifacts, workspace_id, commit_id)
     registry = SQLiteRegistry(records, clock, ids)
     budget = SQLiteBudget(records, registry, clock, ids)
@@ -112,4 +467,20 @@ def build_runtime(
         ExternalCallService(validator),
         recovery,
         unit,
+        IntermediatePublicationService(SQLiteIntermediates(transitions)),
+        ContextBindingService(SQLiteContext(transitions, context_service_identity_ref)),
+        VerificationRegistrationService(SQLiteVerificationRegistration(transitions)),
+        RuntimeQueries(SQLiteQueries(records)),
+        DynamicRegistrationService(SQLiteDynamicRegistration(transitions)),
+        ConfigurationRegistry(SQLiteConfigurationRegistry(records, artifacts)),
+        AnalysisFinalizationService(
+            SQLiteAnalysisFinalization(
+                records,
+                clock,
+                ids,
+                analysis_finalization_identity_ref,
+                authorization,
+                artifacts,
+            )
+        ),
     )

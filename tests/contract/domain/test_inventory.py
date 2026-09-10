@@ -9,20 +9,29 @@ def canonical_inventory() -> dict[str, tuple[str, str]]:
     source = Path("docs/architecture-v5/08-lightweight-data-contracts.md").read_text(
         encoding="utf-8"
     )
-    paragraph = next(
-        line for line in source.splitlines() if line.startswith("- 핵심 registry")
+    paragraph = "\n".join(
+        line
+        for line in source.splitlines()
+        if line.startswith(("- 핵심 registry", "- R3-05의 중간 제어 출력"))
     )
-    return {
+    inventory = {
         kind: (model, role)
         for kind, model, role in re.findall(
             r"`(\w+) -> (\w+)(?:\(role=\w+\))? -> (\w+)`", paragraph
         )
     }
+    # The Context service producer is specified in prose; coordinator confirmed
+    # this enum/registry omission must be transcribed, not assigned to an Agent.
+    inventory["code_context_response"] = (
+        "CodeContextResponse",
+        "CONTEXT_RETRIEVAL_SERVICE",
+    )
+    return inventory
 
 
 def test_every_approved_result_has_model_owner_and_export() -> None:
     expected = canonical_inventory()
-    assert len(expected) == 43
+    assert len(expected) == 47
     assert importlib.util.find_spec("sastsimi.contracts.result_registry") is not None, (
         f"Missing result registry for {len(expected)} canonical result kinds"
     )

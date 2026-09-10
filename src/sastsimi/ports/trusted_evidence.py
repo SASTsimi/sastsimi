@@ -3,8 +3,17 @@
 from typing import Protocol
 
 from sastsimi.contracts.actions import ActionRequest, CheckType, RequesterRole
-from sastsimi.contracts.budget import BudgetProfileBinding, ExecutionBudgetProfile
+from sastsimi.contracts.budget import (
+    BudgetProfileBinding,
+    DynamicReproductionLifecycleProfile,
+    ExecutionBudgetProfile,
+    VerificationBudgetProfile,
+    WorkBudgetProfile,
+)
+from sastsimi.contracts.dynamic import SandboxProfile
+from sastsimi.contracts.llm import LLMRecord
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef
+from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.contracts.work import WorkExecutionState
 
 
@@ -20,6 +29,17 @@ class TrustedEvidencePort(Protocol):
         self, profile: ExecutionBudgetProfile | BudgetProfileBinding
     ) -> bool: ...
     def pricing(self, profile: ExecutionBudgetProfile) -> bool: ...
+    def budget_configuration_approved(
+        self,
+        profile: WorkBudgetProfile
+        | VerificationBudgetProfile
+        | DynamicReproductionLifecycleProfile,
+    ) -> bool: ...
+    def playbook_configuration_approved(
+        self, record: VerificationPlaybook | PlaybookPolicy
+    ) -> bool: ...
+    def llm_configuration_approved(self, record: LLMRecord) -> bool: ...
+    def sandbox_configuration_approved(self, profile: SandboxProfile) -> bool: ...
     def action_evidence(
         self, action: ActionRequest, check: CheckType
     ) -> tuple[BudgetScopeRef, ...] | None: ...
@@ -44,6 +64,25 @@ class UnprovenEvidence:
         return False
 
     def pricing(self, profile: ExecutionBudgetProfile) -> bool:
+        return False
+
+    def budget_configuration_approved(
+        self,
+        profile: WorkBudgetProfile
+        | VerificationBudgetProfile
+        | DynamicReproductionLifecycleProfile,
+    ) -> bool:
+        return False
+
+    def playbook_configuration_approved(
+        self, record: VerificationPlaybook | PlaybookPolicy
+    ) -> bool:
+        return False
+
+    def llm_configuration_approved(self, record: LLMRecord) -> bool:
+        return False
+
+    def sandbox_configuration_approved(self, profile: SandboxProfile) -> bool:
         return False
 
     def action_evidence(
