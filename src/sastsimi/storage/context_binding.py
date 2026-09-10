@@ -5,18 +5,25 @@ from sqlalchemy import select
 from sastsimi.contracts.actions import ActionDecision, ActionRequest
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import LogicalRecordId, RecordId
-from sastsimi.contracts.refs import BudgetScopeRef, RecordRef
+from sastsimi.contracts.records import RecordMeta
+from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef
 from sastsimi.contracts.static import (
     CodeContextRequest,
     CodeLocation,
     CodeSymbol,
     ContextRetrievalLimits,
 )
+from sastsimi.ports.context import ContextRetrievalIntent
+from sastsimi.static_analysis.context_retrieval import (
+    context_intent_hash,
+    decode_context_read_plan,
+)
 
 from . import models
 from .action_context import check_owner
 from .action_policy import check_role
 from .codec import reference
+from .context_policy import derived_context_requests, resolve_context_ceiling
 from .current_inputs import check_current_input
 from .transition_service import TransitionService
 
@@ -108,10 +115,85 @@ class ContextBindingService:
                 for location in requested_locations
             ):
                 raise ValueError("CONTEXT_PATH_MISMATCH")
-            if any(
-                ref.data_kind == "code_context_request" for ref in used.outcome_refs
+            ceilings = resolve_context_ceiling(self.transitions.artifacts, work)
+            plan_candidates = []
+            for input_ref in action.input_refs:
+                if (
+                    not isinstance(input_ref, StoredDataRef)
+                    or input_ref.record_id is not None
+                    or input_ref == ceilings.ref
+                ):
+                    continue
+                try:
+                    with self.transitions.artifacts.open_verified(input_ref) as stream:
+                        plan_raw = stream.read(limits.max_bytes + 1)
+                    if len(plan_raw) > limits.max_bytes:
+                        continue
+                    plan_candidates.append(
+                        (input_ref, decode_context_read_plan(plan_raw), plan_raw)
+                    )
+                except (OSError, ValueError):
+                    continue
+            if len(plan_candidates) != 1:
+                raise ValueError("CONTEXT_PLAN_CHANGED")
+            plan_ref, plan, _plan_raw = plan_candidates[0]
+            expected_inputs = set(work.input_refs) | {plan_ref}
+            if (
+                len(action.input_refs) != len(set(action.input_refs))
+                or set(action.input_refs) != expected_inputs
             ):
-                raise ValueError("CONTEXT_REQUEST_ALREADY_BOUND")
+                raise ValueError("CONTEXT_PLAN_CHANGED")
+            intent = ContextRetrievalIntent(
+                proposal_ref=plan.proposal_ref,
+                bundle_ref=plan.bundle_ref,
+                requested_entities=requested_entities,
+                requested_locations=requested_locations,
+                relation_query=tuple(relation_query),  # type: ignore[arg-type]
+                reason=action.reason,
+                requested_limits=limits,
+            )
+            if (
+                plan.ceiling_profile_ref != ceilings.ref
+                or plan.requested_limits != limits
+                or plan.entities != requested_entities
+                or plan.locations != requested_locations
+                or set(plan.file_paths) != set(action.file_paths)
+                or len(plan.file_paths) != len(set(plan.file_paths))
+                or plan.intent_hash != context_intent_hash(intent)
+                or plan.proposal_ref not in work.input_refs
+                or plan.bundle_ref not in work.input_refs
+                or any(ref not in work.input_refs for ref in plan.lineage_refs)
+            ):
+                raise ValueError("CONTEXT_PLAN_CHANGED")
+            bound_refs = tuple(
+                ref
+                for ref in used.outcome_refs
+                if ref.data_kind == "code_context_request"
+            )
+            if bound_refs:
+                if len(bound_refs) != 1:
+                    raise ValueError("CONTEXT_REQUEST_ALREADY_BOUND")
+                existing = records.resolve(connection, bound_refs[0])
+                if not isinstance(existing, CodeContextRequest) or (
+                    existing.action_decision_ref != used_decision_ref
+                    or existing.requested_entities != requested_entities
+                    or existing.requested_locations != requested_locations
+                    or existing.relation_query != tuple(relation_query)
+                    or existing.reason != action.reason
+                    or existing.limits != limits
+                ):
+                    raise ValueError("CONTEXT_REQUEST_ALREADY_BOUND")
+                return existing
+            ledger = derived_context_requests(
+                records,
+                connection,
+                analysis_id=str(work.meta.analysis_id),
+                hypothesis_id=str(
+                    work.meta.hypothesis_id if isinstance(work.meta, RecordMeta) else ""
+                ),
+            )
+            if len(ledger) >= ceilings.limits.max_requests_per_hypothesis:
+                raise ValueError("CONTEXT_REQUEST_LIMIT_EXCEEDED")
             record_id = works.ids.new(RecordId)
             request = CodeContextRequest.model_validate_json(
                 canonical_bytes(
