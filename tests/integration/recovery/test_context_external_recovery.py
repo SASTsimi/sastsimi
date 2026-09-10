@@ -6,7 +6,7 @@ import hashlib
 from pathlib import Path
 
 import pytest
-from sqlalchemy import insert
+from sqlalchemy import delete, insert
 
 from sastsimi.contracts.actions import ActionDecision, ActionRequest, RequesterRole
 from sastsimi.contracts.budget import BudgetReservation
@@ -30,6 +30,7 @@ from sastsimi.ports.dto import (
 )
 from sastsimi.storage import models
 from sastsimi.storage.artifact_store import LocalArtifactStore
+from sastsimi.storage.recovery_service import RecoveryService as SQLiteRecoveryService
 from sastsimi.verification.context_service import ContextRetrievalService
 from tests.contract.domain.canonical_fixtures import make
 from tests.integration.storage.test_intermediate_publication import (
@@ -148,15 +149,23 @@ def _code_record(name: str, meta: RecordMeta) -> HypothesisProposal | StaticFact
 
 
 @pytest.mark.parametrize(
-    ("crash_stage", "tamper_process_receipt", "wrong_service_identity"),
     (
-        ("AUTHORIZED", False, False),
-        ("CLAIMED", False, False),
-        ("CLAIMED", False, True),
-        ("REQUEST_BOUND", False, False),
-        ("DISPATCHED", False, False),
-        ("RECEIPT_DURABLE", False, False),
-        ("RECEIPT_DURABLE", True, False),
+        "crash_stage",
+        "tamper_process_receipt",
+        "wrong_service_identity",
+        "post_receipt_case",
+    ),
+    (
+        ("AUTHORIZED", False, False, "VALID"),
+        ("CLAIMED", False, False, "VALID"),
+        ("CLAIMED", False, True, "VALID"),
+        ("REQUEST_BOUND", False, False, "VALID"),
+        ("DISPATCHED", False, False, "VALID"),
+        ("RECEIPT_DURABLE", False, False, "VALID"),
+        ("RECEIPT_DURABLE", True, False, "VALID"),
+        ("RECEIPT_DURABLE", False, True, "VALID"),
+        ("RECEIPT_DURABLE", False, False, "WRONG_ISSUED"),
+        ("RECEIPT_DURABLE", False, False, "STALE_BUNDLE"),
     ),
 )
 @pytest.mark.asyncio
@@ -165,6 +174,7 @@ async def test_complete_receipt_recovers_once_without_source_reread(
     crash_stage: str,
     tamper_process_receipt: bool,
     wrong_service_identity: bool,
+    post_receipt_case: str,
 ) -> None:
     h, runtime, runner, policy_work, parser, _ = prepared_policy_parser(
         tmp_path, context=True
@@ -359,6 +369,29 @@ async def test_complete_receipt_recovers_once_without_source_reread(
             assert locator.read_checks == 0 and tracked.calls == 0
             return
         if crash_stage == "DISPATCHED":
+            recovery = runtime.recovery.recovery
+            assert isinstance(recovery, SQLiteRecoveryService)
+            recovery.recovery_identity_ref = scope
+            h.evidence.identities[scope] = RequesterRole.RECOVERY
+            with pytest.raises(ValueError, match="CONTEXT_RECOVERY_UNCERTAIN"):
+                await service.recover_pending(
+                    work=work,
+                    intent=intent,
+                    workspace=workspace,
+                    bundle=bundle,
+                    action_ref=action_ref,
+                    decision_ref=supplied_decision_ref,
+                    reservation_ref=reservation_ref,
+                    plan_ref=plan_ref,
+                    service_identity=service_identity,
+                    work_timeout_ms=100,
+                )
+            blocked = runtime.work.get(str(work.work_id))
+            assert blocked.status == "BLOCKED"
+            assert blocked.waiting_for == ("INPUT",)
+            assert blocked.stop_reason == "RECOVERY_FAILED"
+            assert blocked.active_attempt_id is None
+            assert blocked.output_refs == ()
             with pytest.raises(ValueError, match="CONTEXT_RECOVERY_INVALID"):
                 await service.recover_pending(
                     work=work,
@@ -372,8 +405,8 @@ async def test_complete_receipt_recovers_once_without_source_reread(
                     service_identity=service_identity,
                     work_timeout_ms=100,
                 )
-            assert runtime.work.get(str(work.work_id)).status == "RUNNING"
             assert locator.read_checks == 0 and tracked.calls == 0
+            assert not runtime.queries.current_records("a1", "code_context_response")
             return
         recovered, output_ref = await service.recover_pending(
             work=work,
@@ -434,17 +467,51 @@ async def test_complete_receipt_recovers_once_without_source_reread(
     request_ref = decisions[-1].outcome_refs[0]
     assert isinstance(request_ref, StoredDataRef)
 
+    selected_issued_ref = (
+        claimed_ref if post_receipt_case == "WRONG_ISSUED" else issued_ref
+    )
+    selected_service_identity = (
+        orchestration if wrong_service_identity else service_identity
+    )
+    if post_receipt_case == "STALE_BUNDLE":
+        with h.database.write() as connection:
+            connection.execute(
+                delete(models.current_records).where(
+                    models.current_records.c.logical_record_id
+                    == str(bundle.meta.logical_record_id)
+                )
+            )
+
     def recover() -> tuple[CodeContextResponse, StoredDataRef]:
         return service.recover_after_receipt(
             work=work,
             action_ref=action_ref,
-            issued_decision_ref=issued_ref,
+            issued_decision_ref=selected_issued_ref,
             claimed_decision_ref=claimed_ref,
             reservation_ref=reservation_ref,
             request_ref=request_ref,
             plan_ref=plan_ref,
-            service_identity=service_identity,
+            service_identity=selected_service_identity,
         )
+
+    validations_before_recovery = locator.validations
+    if wrong_service_identity:
+        with pytest.raises(ValueError, match="CONTEXT_AUTHORITY_MISMATCH"):
+            recover()
+        assert runtime.work.get(str(work.work_id)).status == "RUNNING"
+        assert not runtime.queries.current_records("a1", "code_context_response")
+        assert locator.read_checks == 2 and tracked.calls == 1
+        assert locator.validations == validations_before_recovery
+        return
+
+    if post_receipt_case in {"WRONG_ISSUED", "STALE_BUNDLE"}:
+        with pytest.raises(ValueError, match="CONTEXT_RECOVERY_INVALID"):
+            recover()
+        assert runtime.work.get(str(work.work_id)).status == "RUNNING"
+        assert not runtime.queries.current_records("a1", "code_context_response")
+        assert locator.read_checks == 2 and tracked.calls == 1
+        assert locator.validations == validations_before_recovery
+        return
 
     if tamper_process_receipt:
         process_path = next((tmp_path / "receipts").glob("*.process.json"))
