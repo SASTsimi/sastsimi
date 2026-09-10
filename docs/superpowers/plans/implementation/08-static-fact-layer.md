@@ -12,6 +12,23 @@
 
 ## Global Constraints
 
+### 2026-09-10 repository-lane security review amendment
+
+The Wave 1A repository lane may additionally make only these foundation-seam
+changes required by the independent C1/I1/I2/I3 security findings:
+
+- `src/sastsimi/ports/workspace.py` may require an active `enforce` operation so
+  repository Git execution can monitor the exact lease and cancel the existing
+  POSIX process group or Windows Job Object immediately on quota violation.
+- `src/sastsimi/ports/dto.py` may make failed `RepositoryPreparation.root`
+  optional for allocation failures that never obtained a lease, and may add an
+  optional opaque `lease_id` to repository preparation/action-receipt transport.
+  Receipts still must not persist an absolute root: recovery resolves the exact
+  root from the trusted lease identity/locator and validates it before use.
+
+No persisted contract, enum, schema, public CLI activation, or other Wave 1
+lane ownership changes are authorized by this amendment.
+
 - Base implementation commit is `b3b2d9918ea815b9b936c09c98e4c53fd54937dc`.
 - Do not change existing fields, enums, validators, result ownership, or reference meaning in `src/sastsimi/contracts/`. The sole permitted domain-contract extension is the narrow `StaticToolProfile` record plus the transport-level `StaticToolRequest.tool_profile_ref` required to close exact adapter selection; export and inventory its generated schema in Task 1. No other schema may change.
 - Retain T07 `FakeStaticToolAdapter`, fake workspace setup, and deterministic 22-step scenarios as regression fixtures; real adapters are additive and are not selected by the CLI in this task.

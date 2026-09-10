@@ -187,6 +187,7 @@ class FakeRepositoryLoader:
             tracked_files=(),
             gaps=(),
             errors=(),
+            lease_id=self.root.name,
         )
 
 

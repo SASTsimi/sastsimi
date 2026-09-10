@@ -6,6 +6,8 @@ authorization, metadata and storage publication remain application concerns.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import os
 import re
 import string
@@ -145,7 +147,7 @@ class RepositoryProcessRunner(Protocol):
 
 
 type RepositoryProcessRunnerFactory = Callable[
-    [WorkspaceStorageLease, MonotonicActionDeadline], RepositoryProcessRunner
+    [WorkspaceStorageLease, MonotonicActionDeadline, Path], RepositoryProcessRunner
 ]
 type GuardProcessRunnerFactory = Callable[
     [Path, MonotonicActionDeadline], RepositoryProcessRunner
@@ -361,6 +363,7 @@ class RepositoryLoader:
         attempt_id: str,
         invocation: str,
         root: Path,
+        output_dir: Path,
         deadline: MonotonicActionDeadline,
         argv: tuple[str, ...],
     ) -> ProcessSpec:
@@ -370,27 +373,84 @@ class RepositoryLoader:
             argv=(str(self.git_executable), *argv),
             cwd=root,
             env=self._environment(),
-            attempt_output_dir=self.output_dir,
+            attempt_output_dir=output_dir,
             stdout_limit_bytes=2 * 1024 * 1024,
             stderr_limit_bytes=64 * 1024,
             attempt_output_limit_bytes=4 * 1024 * 1024,
             deadline=deadline,
         )
 
+    def _attempt_output_dir(
+        self, attempt_id: str, lease: WorkspaceStorageLease
+    ) -> Path:
+        if not attempt_id:
+            raise ValueError("PROCESS_OUTPUT_ROOT_INVALID")
+        target = self.output_dir / hashlib.sha256(attempt_id.encode()).hexdigest()[:24]
+        try:
+            target.mkdir(mode=0o700)
+            resolved = target.resolve(strict=True)
+            resolved.relative_to(self.output_dir)
+            if target.is_symlink() or not resolved.is_dir():
+                raise ValueError
+            try:
+                resolved.relative_to(lease.root.resolve(strict=True))
+            except ValueError:
+                pass
+            else:
+                raise ValueError
+            return resolved
+        except (OSError, ValueError) as error:
+            raise ValueError("PROCESS_OUTPUT_ROOT_INVALID") from error
+
     def _quota(
         self, lease: WorkspaceStorageLease, policy: WorkspaceStoragePolicy
     ) -> None:
-        usage = self.storage.measure(lease)
-        reasons = (
-            (usage.git_bytes > policy.max_git_bytes, "GIT_BYTES"),
-            (usage.checkout_bytes > policy.max_checkout_bytes, "CHECKOUT_BYTES"),
-            (usage.file_count > policy.max_file_count, "FILE_COUNT"),
-            (usage.free_bytes < policy.min_free_bytes, "FREE_RESERVE"),
-        )
-        for exceeded, reason in reasons:
-            if exceeded:
-                self.storage.seal(lease, reason)
-                raise ValueError("WORKSPACE_QUOTA_EXCEEDED:" + reason)
+        del policy
+        try:
+            self.storage.enforce(lease)
+        except RuntimeError as error:
+            raise ValueError(str(error)) from error
+
+    async def _run_with_quota(
+        self,
+        runner: RepositoryProcessRunner,
+        spec: ProcessSpec,
+        lease: WorkspaceStorageLease,
+        policy: WorkspaceStoragePolicy,
+    ) -> ProcessResult:
+        process = asyncio.create_task(runner.run(spec))
+        try:
+            while not process.done():
+                await asyncio.sleep(0.005)
+                try:
+                    self._quota(lease, policy)
+                except ValueError:
+                    await runner.cancel(spec.attempt_id)
+                    await process
+                    raise
+            result = await process
+            self._quota(lease, policy)
+            return result
+        finally:
+            if not process.done():
+                await runner.cancel(spec.attempt_id)
+                await process
+
+    @staticmethod
+    def _empty_hooks_dir(lease: WorkspaceStorageLease) -> Path:
+        hooks = lease.root / ".git" / "sastsimi-empty-hooks"
+        try:
+            git_dir = (lease.root / ".git").resolve(strict=True)
+            if git_dir.is_symlink() or not git_dir.is_dir():
+                raise ValueError
+            hooks.mkdir(mode=0o700)
+            resolved = hooks.resolve(strict=True)
+            resolved.relative_to(git_dir)
+            if hooks.is_symlink() or any(resolved.iterdir()):
+                raise ValueError
+            return resolved
+        except (OSError, ValueError) as error:
+            raise ValueError("GIT_HOOKS_DIRECTORY_INVALID") from error
 
     async def prepare(
         self,
@@ -407,43 +467,48 @@ class RepositoryLoader:
         source = canonicalize_repository_source(
             submitted_source, allow_local_file=self.allow_local_file
         )
-        if (
-            not requested_ref
-            or len(requested_ref) > 1_024
-            or any(ord(char) < 32 or char == "\x7f" for char in requested_ref)
-        ):
-            raise ValueError("GIT_REF_INVALID")
-        lease = self.storage.allocate(
-            attempt_id=attempt_id,
-            workspace_id=workspace_id,
-            policy_ref=policy_ref,
-            policy=policy,
-        )
-        validate_clone_destination(lease.root, lease.root.parent)
-        runner = self.process_runner_factory(lease, deadline)
         receipts: list[ProcessReceipt] = []
         commit_id: str | None = None
-
-        async def invoke(name: str, argv: tuple[str, ...]) -> ProcessResult:
-            if deadline.remaining_ms(time.monotonic_ns()) == 0:
-                raise ValueError("GIT_COMMAND_FAILED")
-            spec = self._spec(
-                attempt_id=attempt_id,
-                invocation=f"{attempt_id}-{name}",
-                root=lease.root,
-                deadline=deadline,
-                argv=argv,
-            )
-            result = await runner.run(spec)
-            receipts.append(result.receipt)
-            self._quota(lease, policy)
-            if result.outcome != "SUCCEEDED" or result.return_code != 0:
-                raise ValueError("GIT_COMMAND_FAILED")
-            if result.stdout_truncated:
-                raise ValueError("GIT_OUTPUT_TRUNCATED")
-            return result
+        lease: WorkspaceStorageLease | None = None
 
         try:
+            if (
+                not requested_ref
+                or len(requested_ref) > 1_024
+                or any(ord(char) < 32 or char == "\x7f" for char in requested_ref)
+            ):
+                raise ValueError("GIT_REF_INVALID")
+            lease = self.storage.allocate(
+                attempt_id=attempt_id,
+                workspace_id=workspace_id,
+                policy_ref=policy_ref,
+                policy=policy,
+            )
+            validate_clone_destination(lease.root, lease.root.parent)
+            attempt_output_dir = self._attempt_output_dir(attempt_id, lease)
+            runner = self.process_runner_factory(lease, deadline, attempt_output_dir)
+            hooks_dir = lease.root / ".git" / "sastsimi-empty-hooks"
+
+            async def invoke(name: str, argv: tuple[str, ...]) -> ProcessResult:
+                if deadline.remaining_ms(time.monotonic_ns()) == 0:
+                    raise ValueError("GIT_COMMAND_FAILED")
+                spec = self._spec(
+                    attempt_id=attempt_id,
+                    invocation=f"{attempt_id}-{name}",
+                    root=lease.root,
+                    output_dir=attempt_output_dir,
+                    deadline=deadline,
+                    argv=argv,
+                )
+                result = await self._run_with_quota(runner, spec, lease, policy)
+                receipts.append(result.receipt)
+                self._quota(lease, policy)
+                if result.outcome != "SUCCEEDED" or result.return_code != 0:
+                    raise ValueError("GIT_COMMAND_FAILED")
+                if result.stdout_truncated:
+                    raise ValueError("GIT_OUTPUT_TRUNCATED")
+                return result
+
             canonical_again = canonicalize_repository_source(
                 source.url, allow_local_file=self.allow_local_file
             )
@@ -468,7 +533,7 @@ class RepositoryLoader:
                     "-c",
                     "http.followRedirects=false",
                     "-c",
-                    f"core.hooksPath={self.output_dir}",
+                    f"core.hooksPath={hooks_dir}",
                     "clone",
                     "--no-checkout",
                     "--no-recurse-submodules",
@@ -477,6 +542,7 @@ class RepositoryLoader:
                     ".",
                 ),
             )
+            hooks_dir = self._empty_hooks_dir(lease)
             resolved = await invoke(
                 "resolve",
                 (
@@ -494,7 +560,15 @@ class RepositoryLoader:
             commit_id = commit_id.lower()
             await invoke(
                 "checkout",
-                ("-C", str(lease.root), "checkout", "--detach", commit_id),
+                (
+                    "-c",
+                    f"core.hooksPath={hooks_dir}",
+                    "-C",
+                    str(lease.root),
+                    "checkout",
+                    "--detach",
+                    commit_id,
+                ),
             )
             head = await invoke("head", ("-C", str(lease.root), "rev-parse", "HEAD"))
             if head.stdout.decode("ascii").strip().lower() != commit_id:
@@ -516,11 +590,13 @@ class RepositoryLoader:
                 tracked_files=files,
                 gaps=gaps,
                 errors=(),
+                lease_id=lease.lease_id,
             )
         except (OSError, UnicodeError, ValueError):
             self.process_receipts = tuple(receipts)
-            self.storage.seal(lease, "PREPARATION_FAILED")
-            self.storage.cleanup_or_quarantine(lease)
+            if lease is not None:
+                self.storage.seal(lease, "PREPARATION_FAILED")
+                self.storage.cleanup_or_quarantine(lease)
             return RepositoryPreparation(
                 analysis_id=analysis_id,
                 workspace_id=workspace_id,
@@ -528,10 +604,11 @@ class RepositoryLoader:
                 requested_ref=requested_ref,
                 status="FAILED",
                 resolved_commit_id=commit_id,
-                root=lease.root,
+                root=lease.root if lease is not None else None,
                 tracked_files=(),
                 gaps=(),
                 errors=(_error("GIT_COMMAND_FAILED", retryable=True),),
+                lease_id=None,
             )
 
     def build_manifest(

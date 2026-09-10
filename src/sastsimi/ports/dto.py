@@ -179,6 +179,7 @@ class StaticActionReceipt:
     observation_size: int
     observation_sha256: str
     elapsed_ms: int
+    lease_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -311,10 +312,11 @@ class RepositoryPreparation:
     requested_ref: str
     status: Literal["READY", "FAILED"]
     resolved_commit_id: str | None
-    root: Path
+    root: Path | None
     tracked_files: tuple[TrackedFile, ...]
     gaps: tuple[CandidateGap, ...]
     errors: tuple[CandidateError, ...]
+    lease_id: str | None = None
 
 
 @dataclass(frozen=True)

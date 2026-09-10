@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import shutil
 import subprocess
@@ -88,6 +89,8 @@ class FakeRunner:
 
     async def run(self, spec: ProcessSpec) -> ProcessResult:
         self.specs.append(spec)
+        if "clone" in spec.argv:
+            (spec.cwd / ".git").mkdir(exist_ok=True)
         if "checkout" in spec.argv:
             (spec.cwd / "src").mkdir(exist_ok=True)
             (spec.cwd / "src" / "app.py").write_text("value = 1", encoding="utf-8")
@@ -105,6 +108,53 @@ class FakeRunner:
         return object()
 
 
+class QuotaCrossingRunner:
+    """Write one byte beyond checkout quota and remain active until cancelled."""
+
+    def __init__(self) -> None:
+        self.specs: list[ProcessSpec] = []
+        self.cancelled = False
+        self._cancelled = asyncio.Event()
+
+    async def run(self, spec: ProcessSpec) -> ProcessResult:
+        self.specs.append(spec)
+        (spec.cwd / "cap-plus-one.bin").write_bytes(b"x" * 21)
+        try:
+            await asyncio.wait_for(self._cancelled.wait(), timeout=0.1)
+        except TimeoutError:
+            pass
+        return result(spec, outcome="CANCELLED" if self.cancelled else "SUCCEEDED")
+
+    async def cancel(self, attempt_id: str) -> object:
+        assert attempt_id == "attempt"
+        self.cancelled = True
+        self._cancelled.set()
+        return object()
+
+
+class FailingAllocationStorage(FixtureQuotaWorkspaceStorage):
+    def allocate(self, **values: object) -> WorkspaceStorageLease:
+        del values
+        raise ValueError("WORKSPACE_RESERVE_INSUFFICIENT")
+
+
+class TrackingStorage(FixtureQuotaWorkspaceStorage):
+    def __init__(self, root: Path, *, occupy: bool = False) -> None:
+        super().__init__(root, capacity_bytes=3_000_001)
+        self.occupy = occupy
+        self.cleaned = False
+
+    def allocate(self, **values: object) -> WorkspaceStorageLease:
+        lease = super().allocate(**values)  # type: ignore[arg-type]
+        if self.occupy:
+            (lease.root / "unexpected").write_bytes(b"x")
+        return lease
+
+    def cleanup_or_quarantine(self, lease: WorkspaceStorageLease) -> None:
+        self.cleaned = True
+        super().cleanup_or_quarantine(lease)
+
+
 def loader(
     tmp_path: Path, outputs: list[bytes | str]
 ) -> tuple[RepositoryLoader, FakeRunner]:
@@ -119,7 +169,7 @@ def loader(
     return (
         RepositoryLoader(
             storage=storage,
-            process_runner_factory=lambda _lease, _deadline: runner,
+            process_runner_factory=lambda _lease, _deadline, _output: runner,
             git_executable=executable,
             output_dir=output,
             allow_local_file=True,
@@ -157,6 +207,10 @@ async def test_repository_resolves_once_and_checks_out_detached_commit(
     assert prepared.status == "READY"
     assert prepared.resolved_commit_id == commit
     assert [spec.deadline for spec in runner.specs] == [deadline] * 5
+    attempt_outputs = {spec.attempt_output_dir for spec in runner.specs}
+    assert len(attempt_outputs) == 1
+    assert attempt_outputs != {tmp_path / "output"}
+    assert next(iter(attempt_outputs)).parent == tmp_path / "output"
     assert runner.specs[1].argv[-2:] == ("--end-of-options", "moving^{commit}")
     assert runner.specs[2].argv[-2:] == ("--detach", commit)
     assert prepared.tracked_files[0].git_path == "src/app.py"
@@ -186,6 +240,160 @@ async def test_repository_failure_or_cancel_prevents_later_git_commands(
     assert len(runner.specs) == 2
     assert not prepared.tracked_files
     assert prepared.errors[0].code == "GIT_COMMAND_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_checkout_cap_plus_one_cancels_active_git_immediately(
+    tmp_path: Path,
+) -> None:
+    """Post-command measurement would allow an over-quota Git process to continue."""
+    executable = tmp_path / "git.exe"
+    executable.write_bytes(b"fixture")
+    output = tmp_path / "output"
+    output.mkdir()
+    runner = QuotaCrossingRunner()
+    storage = FixtureQuotaWorkspaceStorage(
+        tmp_path / "leases", capacity_bytes=1_000_000
+    )
+    subject = RepositoryLoader(
+        storage=storage,
+        process_runner_factory=lambda _lease, _deadline, _output: runner,
+        git_executable=executable,
+        output_dir=output,
+        allow_local_file=True,
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+    now = time.monotonic_ns()
+
+    prepared = await subject.prepare(
+        submitted_source=source.as_uri(),
+        requested_ref="HEAD",
+        analysis_id="analysis",
+        workspace_id="workspace",
+        attempt_id="attempt",
+        policy_ref=quota_ref(),
+        policy=WorkspaceStoragePolicy("1.0", 100, 20, 10, 1),
+        deadline=MonotonicActionDeadline("action", now, now + 1_000_000_000),
+    )
+
+    assert prepared.status == "FAILED"
+    assert runner.cancelled
+    assert len(runner.specs) == 1
+
+
+@pytest.mark.asyncio
+async def test_allocation_failure_returns_typed_failed_preparation(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "git.exe"
+    executable.write_bytes(b"fixture")
+    output = tmp_path / "output"
+    output.mkdir()
+    storage = FailingAllocationStorage(tmp_path / "leases", capacity_bytes=1)
+    subject = RepositoryLoader(
+        storage=storage,
+        process_runner_factory=lambda _lease, _deadline, _output: FakeRunner([], []),
+        git_executable=executable,
+        output_dir=output,
+        allow_local_file=True,
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+    now = time.monotonic_ns()
+
+    prepared = await subject.prepare(
+        submitted_source=source.as_uri(),
+        requested_ref="HEAD",
+        analysis_id="analysis",
+        workspace_id="workspace",
+        attempt_id="attempt",
+        policy_ref=quota_ref(),
+        policy=WorkspaceStoragePolicy("1.0", 100, 20, 10, 1),
+        deadline=MonotonicActionDeadline("action", now, now + 1_000_000_000),
+    )
+
+    assert prepared.status == "FAILED"
+    assert prepared.root is None
+    assert prepared.errors[0].code == "GIT_COMMAND_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_invalid_destination_is_cleaned_and_returns_typed_failure(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "git.exe"
+    executable.write_bytes(b"fixture")
+    output = tmp_path / "output"
+    output.mkdir()
+    storage = TrackingStorage(tmp_path / "leases", occupy=True)
+    subject = RepositoryLoader(
+        storage=storage,
+        process_runner_factory=lambda _lease, _deadline, _output: FakeRunner([], []),
+        git_executable=executable,
+        output_dir=output,
+        allow_local_file=True,
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+    now = time.monotonic_ns()
+
+    prepared = await subject.prepare(
+        submitted_source=source.as_uri(),
+        requested_ref="HEAD",
+        analysis_id="analysis",
+        workspace_id="workspace",
+        attempt_id="attempt",
+        policy_ref=quota_ref(),
+        policy=WorkspaceStoragePolicy("1.0", 100, 20, 10, 1),
+        deadline=MonotonicActionDeadline("action", now, now + 1_000_000_000),
+    )
+
+    assert prepared.status == "FAILED"
+    assert storage.cleaned
+
+
+@pytest.mark.asyncio
+async def test_runner_factory_failure_cleans_lease_and_returns_typed_failure(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "git.exe"
+    executable.write_bytes(b"fixture")
+    output = tmp_path / "output"
+    output.mkdir()
+    storage = TrackingStorage(tmp_path / "leases")
+
+    def fail_factory(
+        _lease: WorkspaceStorageLease,
+        _deadline: MonotonicActionDeadline,
+        _output: Path,
+    ) -> FakeRunner:
+        raise ValueError("PROCESS_FACTORY_FAILED")
+
+    subject = RepositoryLoader(
+        storage=storage,
+        process_runner_factory=fail_factory,
+        git_executable=executable,
+        output_dir=output,
+        allow_local_file=True,
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+    now = time.monotonic_ns()
+
+    prepared = await subject.prepare(
+        submitted_source=source.as_uri(),
+        requested_ref="HEAD",
+        analysis_id="analysis",
+        workspace_id="workspace",
+        attempt_id="attempt",
+        policy_ref=quota_ref(),
+        policy=WorkspaceStoragePolicy("1.0", 100, 20, 10, 1),
+        deadline=MonotonicActionDeadline("action", now, now + 1_000_000_000),
+    )
+
+    assert prepared.status == "FAILED"
+    assert storage.cleaned
 
 
 @pytest.mark.asyncio
@@ -222,6 +430,7 @@ async def test_manifest_excludes_git_links_submodules_lfs_and_unsafe_paths(
     )
     # Materialize files after the fake checkout and parse the manifest directly.
     root = prepared.root
+    assert root is not None
     (root / "safe.py").write_text("print('safe')", encoding="utf-8")
     (root / ".env").write_text("SECRET=x", encoding="utf-8")
     reparsed = subject.build_manifest(root, manifest)
@@ -269,17 +478,41 @@ async def test_real_local_git_prepares_the_exact_detached_commit(
     )
     budget = AttemptOutputBudget(attempt_id="attempt", limit_bytes=4 * 1024 * 1024)
 
+    marker = tmp_path / "malicious-hook-ran"
+
+    class HookInjectingRunner:
+        def __init__(self, delegate: SafeProcessRunner) -> None:
+            self.delegate = delegate
+
+        async def run(self, spec: ProcessSpec) -> ProcessResult:
+            completed = await self.delegate.run(spec)
+            if "clone" in spec.argv and completed.outcome == "SUCCEEDED":
+                hook = spec.cwd / ".git" / "hooks" / "post-checkout"
+                hook.write_text(
+                    f"#!/bin/sh\nprintf hook-ran > '{marker.as_posix()}'\n",
+                    encoding="utf-8",
+                )
+                hook.chmod(0o700)
+            return completed
+
+        async def cancel(self, attempt_id: str) -> object:
+            return await self.delegate.cancel(attempt_id)
+
     def process_factory(
-        lease: WorkspaceStorageLease, deadline: MonotonicActionDeadline
-    ) -> SafeProcessRunner:
+        lease: WorkspaceStorageLease,
+        deadline: MonotonicActionDeadline,
+        attempt_output: Path,
+    ) -> HookInjectingRunner:
         root = lease.root
-        return SafeProcessRunner(
-            action_id=deadline.action_id,
-            attempt_id="attempt",
-            workspace_root=root,
-            output_root=output,
-            executable=Path(git),
-            output_budget=budget,
+        return HookInjectingRunner(
+            SafeProcessRunner(
+                action_id=deadline.action_id,
+                attempt_id="attempt",
+                workspace_root=root,
+                output_root=attempt_output,
+                executable=Path(git),
+                output_budget=budget,
+            )
         )
 
     subject = RepositoryLoader(
@@ -303,6 +536,7 @@ async def test_real_local_git_prepares_the_exact_detached_commit(
 
     assert prepared.status == "READY", prepared.errors
     assert prepared.resolved_commit_id == first
+    assert prepared.root is not None
     assert (prepared.root / "app.py").read_text(encoding="utf-8") == "value = 1\n"
     assert (
         subprocess.run(
@@ -314,6 +548,7 @@ async def test_real_local_git_prepares_the_exact_detached_commit(
         == first
     )
     assert tuple(item.git_path for item in prepared.tracked_files) == ("app.py",)
+    assert not marker.exists()
 
 
 @pytest.mark.asyncio
