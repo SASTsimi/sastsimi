@@ -226,6 +226,83 @@ def test_normalization_reports_conflicting_source_identity() -> None:
     assert "STATIC_NORMALIZATION_CONFLICT" in {gap.code for gap in bundle.gaps}
 
 
+def test_cross_observation_symbol_conflict_is_unresolved_and_order_invariant() -> None:
+    first, first_observation = _material()
+    raw = b'{"closed":"ast-second"}'
+    raw_digest = hashlib.sha256(raw).hexdigest()
+    raw_ref = StoredDataRef(
+        stored_data_id=StoredDataId(raw_digest),
+        data_kind="artifact",
+        record_id=None,
+        content_hash=raw_digest,
+        workspace_id=WorkspaceId("ws1"),
+        commit_id=CommitId("c1"),
+    )
+    result_data = first.result.model_dump(mode="json")
+    result_data["meta"].update(
+        record_id="tool-run-result-r2",
+        logical_record_id="tool-run-result-l2",
+        attempt_id="at2",
+    )
+    result_data["raw_result_ref"] = raw_ref.model_dump(mode="json")
+    second_result = ToolRunResult.model_validate_json(canonical_bytes(result_data))
+    second_ref = reference(second_result)
+    assert isinstance(second_ref, StoredDataRef)
+    second = replace(
+        first,
+        result_ref=second_ref,
+        result=second_result,
+        raw_bytes=raw,
+    )
+    assert first_observation.symbols
+    second_observation = replace(
+        first_observation,
+        raw_output=raw,
+        symbols=(replace(first_observation.symbols[0], name="other-handler"),),
+    )
+    normalizer = StaticNormalizer(
+        {
+            decoder_key(
+                first.profile_ref,
+                first.result.tool_name,
+                first.result.tool_version,
+            ): lambda value, result, profile, catalog: (
+                first_observation if value == first.raw_bytes else second_observation
+            )
+        }
+    )
+    workspace = CodeWorkspace.model_validate_json(
+        canonical_bytes(
+            {
+                "meta": meta("code_workspace", run=True),
+                "workspace_id": "ws1",
+                "analysis_id": "a1",
+                "repository_url": "https://example.invalid/repo",
+                "commit_id": "c1",
+                "status": "READY",
+            }
+        )
+    )
+    bundle_meta = RecordMeta.model_validate_json(
+        canonical_bytes(meta("static_fact_bundle", attempt=None))
+    )
+
+    forward = normalizer.normalize(
+        bundle_meta=bundle_meta,
+        workspace=workspace,
+        materials=(first, second),
+    )
+    reverse = normalizer.normalize(
+        bundle_meta=bundle_meta,
+        workspace=workspace,
+        materials=(second, first),
+    )
+
+    assert canonical_bytes(forward) == canonical_bytes(reverse)
+    assert {fact.symbol_id for fact in forward.source_candidates} == {None}
+    assert "STATIC_NORMALIZATION_CONFLICT" in {gap.code for gap in forward.gaps}
+
+
 def test_unresolved_data_flow_is_explicit_and_never_synthesizes_jump() -> None:
     material, observation = _material()
     source = CandidateLocation("src/app.py", 10, None, 10, None)

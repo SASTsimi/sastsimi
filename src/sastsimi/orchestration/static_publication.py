@@ -558,7 +558,18 @@ class StaticNormalizationPublisher:
             or bundle.errors
             or any(result.status != "SUCCEEDED" for result in bundle.tool_runs)
         )
-        completed = self.runner.complete(
+        bundle_ref = reference(bundle)
+        if not isinstance(bundle_ref, StoredDataRef):
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        self._validate_bundle_candidate(
+            current,
+            workspace,
+            bundle,
+            bundle_ref,
+            materials,
+            partial=partial,
+        )
+        self.runner.complete(
             current,
             identity,
             "STATIC_ANALYSIS",
@@ -567,17 +578,6 @@ class StaticNormalizationPublisher:
             cause="PARTIAL" if partial else "COMPLETED",
             gap_ids=tuple(str(item.gap_id) for item in bundle.gaps),
             error_ids=tuple(str(item.error_id) for item in bundle.errors),
-        )
-        bundle_ref = completed.output_refs[0]
-        expected_ref = reference(bundle)
-        if (
-            not isinstance(bundle_ref, StoredDataRef)
-            or not isinstance(expected_ref, StoredDataRef)
-            or bundle_ref != expected_ref
-        ):
-            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
-        self._validate_committed_bundle(
-            completed, workspace, bundle, bundle_ref, materials
         )
         return bundle, bundle_ref
 
@@ -642,27 +642,7 @@ class StaticNormalizationPublisher:
         )
         if len(attempts) != 1:
             raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
-        rules = tuple(
-            material.rule_execution
-            for material in materials
-            if material.rule_execution is not None
-        )
-        catalogs: dict[StoredDataRef, tuple[str, ...]] = {}
-        for material in materials:
-            if material.rule_execution is None:
-                continue
-            catalog_ref = material.rule_execution.rule_catalog_ref
-            previous = catalogs.get(catalog_ref)
-            if previous is not None and previous != material.catalog_rule_ids:
-                raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
-            catalogs[catalog_ref] = material.catalog_rule_ids
-        config_refs = tuple(
-            ref
-            for ref in work.input_refs
-            if isinstance(ref, StoredDataRef)
-            and ref.data_kind == "analysis_configuration"
-        )
-        analysis_config_ref = config_refs[0] if len(config_refs) == 1 else None
+        rules, catalogs, analysis_config_ref = self._rule_context(work, materials)
         validate_static_current(
             bundle,
             bundle_ref,
@@ -674,6 +654,155 @@ class StaticNormalizationPublisher:
             rule_catalogs=catalogs,
             analysis_config_ref=analysis_config_ref,
         )
+
+    def _validate_bundle_candidate(
+        self,
+        work: WorkExecutionState,
+        workspace: CodeWorkspace,
+        bundle: StaticFactBundle,
+        bundle_ref: StoredDataRef,
+        materials: tuple[StaticNormalizationInput, ...],
+        *,
+        partial: bool,
+    ) -> None:
+        if not isinstance(work.meta, RecordMeta):
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        attempt = self._current_running_attempt(work)
+        if attempt.input_hash != work.input_hash:
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        expected_runs = tuple(
+            item.result
+            for item in sorted(
+                materials,
+                key=lambda item: (
+                    item.result.tool_name,
+                    item.result.tool_version,
+                    str(item.result.meta.attempt_id),
+                    str(item.result.meta.record_id),
+                ),
+            )
+        )
+        scope = (work.meta.analysis_id, work.meta.workspace_id, work.meta.commit_id)
+        if (
+            work.status != "RUNNING"
+            or work.active_attempt_id is None
+            or bundle.meta.attempt_id is not None
+            or (
+                bundle.meta.analysis_id,
+                bundle.meta.workspace_id,
+                bundle.meta.commit_id,
+            )
+            != scope
+            or (workspace.analysis_id, workspace.workspace_id, workspace.commit_id)
+            != scope
+            or reference(bundle) != bundle_ref
+            or bundle.tool_runs != expected_runs
+            or partial
+            != bool(
+                bundle.gaps
+                or bundle.errors
+                or any(run.status != "SUCCEEDED" for run in bundle.tool_runs)
+            )
+            or (
+                partial
+                and not (
+                    bundle.gaps
+                    or bundle.errors
+                    or any(run.gaps or run.errors for run in bundle.tool_runs)
+                )
+            )
+        ):
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        rules, catalogs, analysis_config_ref = self._rule_context(work, materials)
+        for run in bundle.tool_runs:
+            if run.rule_execution_ref is None:
+                continue
+            matches = tuple(
+                record
+                for record in rules
+                if record.meta.record_id == run.rule_execution_ref.record_id
+            )
+            if len(matches) != 1:
+                raise ValueError("RULE_EXECUTION_REQUIRED")
+            record = matches[0]
+            if (
+                record.rule_catalog_ref not in catalogs
+                or record.analysis_config_ref != analysis_config_ref
+            ):
+                raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
+            validate_rule_execution(run, record, catalogs[record.rule_catalog_ref])
+        for fact in bundle.facts():
+            if fact.producer.rule_id is None:
+                continue
+            matches = tuple(
+                record
+                for record in rules
+                if record.meta.attempt_id == fact.producer.attempt_id
+            )
+            if len(matches) != 1:
+                raise ValueError("RULE_EXECUTION_REQUIRED")
+            executed = tuple(
+                rule
+                for rule in matches[0].rules
+                if rule.rule_id == fact.producer.rule_id
+            )
+            if (
+                len(executed) != 1
+                or executed[0].execution_status != "EXECUTED"
+                or not executed[0].hit_count
+            ):
+                raise ValueError("FACT_WITHOUT_RAW_HIT")
+
+    def _current_running_attempt(self, work: WorkExecutionState) -> WorkAttempt:
+        if work.active_attempt_id is None:
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        attempts = tuple(
+            item
+            for item in self.runner.runtime.queries.published_records(
+                str(work.meta.analysis_id)
+            )
+            if isinstance(item, WorkAttempt)
+            and item.work_id == work.work_id
+            and item.attempt_id == work.active_attempt_id
+            and item.status == "RUNNING"
+        )
+        if len(attempts) != 1:
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        return attempts[0]
+
+    @staticmethod
+    def _rule_context(
+        work: WorkExecutionState,
+        materials: tuple[StaticNormalizationInput, ...],
+    ) -> tuple[
+        tuple[RuleExecutionRecord, ...],
+        dict[StoredDataRef, tuple[str, ...]],
+        StoredDataRef | None,
+    ]:
+        rules: list[RuleExecutionRecord] = []
+        catalogs: dict[StoredDataRef, tuple[str, ...]] = {}
+        config_refs: set[StoredDataRef] = set()
+        for material in materials:
+            record = material.rule_execution
+            if record is None:
+                if material.catalog_rule_ids:
+                    raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
+                continue
+            if (
+                work.input_refs.count(record.analysis_config_ref) != 1
+                or work.input_refs.count(record.rule_catalog_ref) != 1
+            ):
+                raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
+            previous = catalogs.get(record.rule_catalog_ref)
+            if previous is not None and previous != material.catalog_rule_ids:
+                raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
+            validate_rule_execution(material.result, record, material.catalog_rule_ids)
+            catalogs[record.rule_catalog_ref] = material.catalog_rule_ids
+            config_refs.add(record.analysis_config_ref)
+            rules.append(record)
+        if len(config_refs) > 1:
+            raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
+        return tuple(rules), catalogs, next(iter(config_refs), None)
 
     def _fail_no_usable(
         self,
@@ -794,6 +923,13 @@ class StaticNormalizationPublisher:
             if not isinstance(candidate, RuleExecutionRecord):
                 raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
             rule = candidate
+            if (
+                tool_work.input_refs.count(rule.analysis_config_ref) != 1
+                or work.input_refs.count(rule.analysis_config_ref) != 1
+                or tool_work.input_refs.count(rule.rule_catalog_ref) != 1
+                or work.input_refs.count(rule.rule_catalog_ref) != 1
+            ):
+                raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
         raw: bytes | None = None
         if result.raw_result_ref is not None:
             with self.runner.runtime.unit_of_work.artifacts.open_verified(

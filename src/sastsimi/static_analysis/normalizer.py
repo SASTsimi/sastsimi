@@ -417,14 +417,18 @@ class StaticNormalizer:
         workspace: CodeWorkspace,
         decoded: list[tuple[StaticNormalizationInput, StaticToolObservation]],
     ) -> tuple[
-        tuple[CodeSymbol, ...], dict[str, dict[str, str]], tuple[CodeSymbol, ...]
+        tuple[CodeSymbol, ...],
+        dict[str, dict[str, str | None]],
+        tuple[CodeSymbol, ...],
     ]:
         values: dict[str, CodeSymbol] = {}
         ast_values: dict[str, CodeSymbol] = {}
-        sources: dict[str, dict[str, str]] = {}
+        definitions: dict[tuple[StoredDataRef, str], set[str]] = {}
+        candidates: list[
+            tuple[StaticNormalizationInput, StaticToolObservation, str, str]
+        ] = []
         for material, observation in decoded:
             attempt = str(material.result.meta.attempt_id)
-            local: dict[str, str] = {}
             for candidate in observation.symbols:
                 location = _location(workspace, candidate.location)
                 symbol_id = _stable(
@@ -446,15 +450,29 @@ class StaticNormalizer:
                 values[symbol_id] = symbol
                 if material.result.tool_kind == "STRUCTURE":
                     ast_values[symbol_id] = symbol
-                local[candidate.source_key] = symbol_id
-            sources[attempt] = local
+                definitions.setdefault(
+                    (material.profile_ref, candidate.source_key), set()
+                ).add(symbol_id)
+                candidates.append(
+                    (material, observation, candidate.source_key, symbol_id)
+                )
+        sources: dict[str, dict[str, str | None]] = {
+            str(material.result.meta.attempt_id): {}
+            for material, _observation in decoded
+        }
+        for material, _observation, source_key, symbol_id in candidates:
+            attempt = str(material.result.meta.attempt_id)
+            identity = (material.profile_ref, source_key)
+            sources[attempt][source_key] = (
+                symbol_id if len(definitions[identity]) == 1 else None
+            )
         return tuple(values.values()), sources, tuple(ast_values.values())
 
     @staticmethod
     def _resolve_symbol(
         source_key: str | None,
         location: CodeLocation,
-        local: Mapping[str, str],
+        local: Mapping[str, str | None],
         symbols: tuple[CodeSymbol, ...],
     ) -> str | None:
         if source_key is not None and source_key in local:
@@ -513,9 +531,11 @@ class StaticNormalizer:
         workspace: CodeWorkspace,
         decoded: list[tuple[StaticNormalizationInput, StaticToolObservation]],
     ) -> tuple[DataGap, ...]:
-        gaps: dict[str, DataGap] = {}
+        claims: dict[
+            tuple[StoredDataRef, str, str],
+            dict[bytes, CandidateLocation],
+        ] = {}
         for material, observation in decoded:
-            seen: dict[tuple[str, str], bytes] = {}
             candidates: list[tuple[str, str, CandidateLocation, bytes]] = []
             candidates.extend(
                 (
@@ -545,32 +565,27 @@ class StaticNormalizer:
                 for item in observation.relations
             )
             for category, source_key, candidate_location, encoded in candidates:
-                identity = (category, source_key)
-                previous = seen.get(identity)
-                if previous is None:
-                    seen[identity] = encoded
-                    continue
-                if previous == encoded:
-                    continue
-                location = _location(workspace, candidate_location)
-                key = _stable(
-                    "conflict",
-                    (
-                        str(material.result.meta.attempt_id),
-                        category,
-                        source_key,
-                        *sorted((previous.hex(), encoded.hex())),
-                    ),
-                )
-                gaps[key] = cls._gap(
-                    meta,
-                    key,
-                    location,
-                    code="STATIC_NORMALIZATION_CONFLICT",
-                    description=(
-                        "One tool source identity produced conflicting static claims"
-                    ),
-                )
+                identity = (material.profile_ref, category, source_key)
+                claims.setdefault(identity, {})[encoded] = candidate_location
+        gaps: dict[str, DataGap] = {}
+        for identity, variants in claims.items():
+            if len(variants) <= 1:
+                continue
+            encoded_variants = tuple(sorted(item.hex() for item in variants))
+            key = _stable("conflict", (*identity, *encoded_variants))
+            location = _location(
+                workspace,
+                variants[min(variants, key=lambda item: item.hex())],
+            )
+            gaps[key] = cls._gap(
+                meta,
+                key,
+                location,
+                code="STATIC_NORMALIZATION_CONFLICT",
+                description=(
+                    "One tool source identity produced conflicting static claims"
+                ),
+            )
         return tuple(gaps[key] for key in sorted(gaps))
 
     @staticmethod
