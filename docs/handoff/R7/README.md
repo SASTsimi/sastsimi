@@ -3,6 +3,8 @@
 These files are review drafts for the R7 Dynamic Reproduction Agent. They are
 not yet ACTIVE Prompt Registry templates.
 
+Implementation handoff: [`handoff.md`](./handoff.md)
+
 ## Composition
 
 Each task-specific prompt is composed with
