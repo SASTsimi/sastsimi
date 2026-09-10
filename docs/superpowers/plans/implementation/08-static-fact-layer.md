@@ -1485,3 +1485,21 @@ Expected: clean worktree; only T08 files/intent in the base range; no whitespace
 - [ ] Confirm Wave 1 and Wave 2 start from their recorded full SHAs, only reviewed commits are cherry-picked, and the integration agent alone resolves conflicts or edits final shared composition.
 - [ ] Confirm Task 10 Step 6 commits the candidate, only Step 7 runs the complete pytest suite, and Step 8 changes only the evidence plan and never reruns pytest.
 - [ ] Confirm no placeholder text, unresolved type name, mismatched function signature, or unowned output remains.
+
+## Implementation Evidence
+
+Tested candidate SHA: 9d874135b907f05dd3d4f5cd3d0b0e03e6c3b677
+Full-suite command: uv run pytest tests -q
+Exit code: 0
+Test count: 1460 passed, 9 skipped
+Duration: 2809.36s (0:46:49)
+OS: Windows-11-10.0.26200-SP0
+Python: 3.12.10
+Base SHA: b3b2d9918ea815b9b936c09c98e4c53fd54937dc
+Evidence commit full-suite tested: no
+
+Task 10 verifies the real static slice through one private composition seam and
+separate public-boundary integration proofs for repository preparation, all three
+tool adapters, exact publication, normalization, Context Retrieval, and recovery.
+This layered proof avoids duplicating those same production paths in a second
+monolithic scenario while retaining end-to-end coverage of every composed edge.
