@@ -106,6 +106,18 @@
       "check": "suspected_path가 비어 있거나, 값이 있다면 입력의 call_edges / data_flow_candidates / route_bindings에 실제로 있는 관계만 담는다. 입력에 없는 연결을 만들어 넣지 않는다.",
       "grading": "auto",
       "why": "02-static-fact-layer.md가 '도구가 관계를 제공하지 않았으면 임의로 연결하지 않는다'로 정한다. data_flow_candidates는 관측된 데이터 흐름 관계 전체를 담으므로 어느 구간이 들어 있는지는 입력마다 다르다. 이 입력에는 cf-src-001에서 cf-sink-001까지의 관계가 없으므로 그 구간은 관측된 사실이 아니다."
+    },
+    {
+      "id": "M-18",
+      "check": "restrictions[].fact_refs의 각 fact_id가 입력 facts의 여섯 CodeFact 목록 중 하나에 실재한다.",
+      "grading": "auto",
+      "why": "08번이 INITIAL proposal의 각 restriction에 final StaticFactBundle을 가리키는 fact_refs를 하나 이상 요구한다. runtime이 이 fact_id를 exact bundle과 대조해 bundle_ref를 채우므로 없는 값이면 그 단계에서 거절된다."
+    },
+    {
+      "id": "M-19",
+      "check": "서로 다른 restriction 둘이 같은 fact_id 집합을 갖지 않는다.",
+      "grading": "auto",
+      "why": "runtime이 완성된 fact_refs에서 restriction_id를 유도하므로 근거 집합이 같으면 ID가 겹쳐 출력 전체가 거절된다. 같은 근거로 조건 둘을 말해야 하면 한 제한으로 합치거나 각 조건이 실제로 기대는 사실만 따로 인용한다."
     }
   ],
   "must_not": [
@@ -156,6 +168,12 @@
       "check": "proposals 배열 밖에 자유 형식 분석문을 출력하지 않는다.",
       "grading": "auto",
       "why": "03이 '출력은 자유 형식 분석문이 아니라 HypothesisProposal[]'로 정한다."
+    },
+    {
+      "id": "N-09",
+      "check": "입력 facts에 없는 fact_id를 restrictions[].fact_refs에 넣지 않는다.",
+      "grading": "auto",
+      "why": "관측되지 않은 사실을 제한 근거로 만들면 RESTRICTION_FACT_CLOSURE로 거절된다. 근거가 없으면 restriction이 아니라 assumptions나 falsification_questions로 남긴다."
     }
   ],
   "downstream_expectation": {

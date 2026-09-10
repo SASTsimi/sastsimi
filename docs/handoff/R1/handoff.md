@@ -102,8 +102,8 @@ LLM 출력은 실행마다 문장이 달라집니다. 그래서 문장 전체를
 
 | 샘플 | auto | judgement |
 |---|---|---|
-| hypothesis `normal` | 21 | 4 |
-| hypothesis `failure` | 4 | 4 |
+| hypothesis `normal` | 24 | 4 |
+| hypothesis `failure` | 5 | 4 |
 | chaining `normal` | 25 | 5 |
 | chaining `normal-true-true` | 22 | 5 |
 | chaining `normal-three` | 12 | 1 |

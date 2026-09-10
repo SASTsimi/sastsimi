@@ -55,6 +55,12 @@
       "check": "실패 상황을 설명하는 자유 형식 보고문을 proposals 배열 밖에 출력하지 않는다.",
       "grading": "auto",
       "why": "출력 계약은 빈 결과에서도 같다. 실패 사실은 이미 각 tool_runs의 status·gaps·errors에 기록되어 있고 runtime이 그것을 읽는다."
+    },
+    {
+      "id": "N-07",
+      "check": "tool_runs[].gaps의 description에 나온 파일명이나 함수명을 restrictions[].fact_refs의 fact_id로 만들지 않는다.",
+      "grading": "auto",
+      "why": "gap은 확인하지 못한 범위이지 관측된 사실이 아니다. 그 이름으로 fact_id를 지어내면 exact bundle 대조에서 거절된다."
     }
   ],
   "downstream_expectation": {
