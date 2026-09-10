@@ -73,7 +73,12 @@ codeql database analyze orders-db-corrupted \
 |---|---|
 | `sample-app/src/orders.py` | 취약 코드 샘플 |
 | `normal.input.json` | 정상 사례 원본 (실제 SARIF) |
-| `normal.expected.json` | 정상 사례 정규화 결과 (`StaticFactBundle`) |
+| `normal.expected.json` | 정상 사례 정규화 결과 — `StaticFactBundle` 단독 |
+| `normal.rule_execution_record.expected.json` | 정상 사례의 `RuleExecutionRecord` 단독 |
+| `normal.code_context_response.expected.json` | 코드 문맥 전달 예시 — `CodeContextResponse` 단독 |
 | `failure.input.json` | 실패 사례 원본 (실제 CLI 에러) |
-| `failure.expected.json` | 실패 사례 정규화 결과 |
+| `failure.expected.json` | 실패 사례 정규화 결과 — `StaticFactBundle` 단독 |
+| `failure.rule_execution_record.expected.json` | 실패 사례의 `RuleExecutionRecord` 단독 |
 | `handoff.md` | 출처·통과 조건·미결정사항 설명서 |
+
+파일 하나 = record 하나입니다(2026-09-10, PR #138 R3 리뷰 반영). `*.expected.json`은 각각 대응하는 Pydantic model(`StaticFactBundle`/`RuleExecutionRecord`/`CodeContextResponse`, `src/sastsimi/contracts/static.py`)로 `model_validate_json` 검증을 통과하며, `tests/contract/domain/test_r2_handoff_fixtures.py`가 이를 자동으로 확인합니다.
