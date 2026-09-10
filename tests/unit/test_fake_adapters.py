@@ -65,3 +65,24 @@ async def test_fake_provider_probe_fails_when_its_own_invoke_fails(
 
     assert observed.evidence.tests[0].result == "FAIL"
     assert not any(test.result == "PASS" for test in observed.evidence.tests)
+
+
+@pytest.mark.asyncio
+async def test_fake_static_probe_preserves_exact_profile_reference() -> None:
+    from sastsimi.contracts.refs import StoredDataRef
+    from sastsimi.static_analysis.fake import FakeStaticToolAdapter
+
+    profile_ref = StoredDataRef.model_validate(
+        {
+            "stored_data_id": "static-profile-r1",
+            "data_kind": "static_tool_profile",
+            "content_hash": "a" * 64,
+            "workspace_id": "ws1",
+            "commit_id": "c1",
+            "record_id": "static-profile-r1",
+        }
+    )
+    result = await FakeStaticToolAdapter({}).probe(profile_ref)
+    assert result.ref == profile_ref
+    assert result.tool_name == "UNKNOWN"
+    assert result.available is False

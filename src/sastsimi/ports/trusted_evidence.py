@@ -13,11 +13,16 @@ from sastsimi.contracts.budget import (
 from sastsimi.contracts.dynamic import SandboxProfile
 from sastsimi.contracts.llm import LLMRecord
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef
+from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.contracts.work import WorkExecutionState
 
 
 class TrustedEvidencePort(Protocol):
+    def static_tool_configuration_approved(
+        self, profile: StaticToolProfile
+    ) -> bool: ...
+
     def generation_restart_evidence(
         self, action: ActionRequest
     ) -> tuple[BudgetScopeRef, ...] | None: ...
@@ -49,6 +54,11 @@ class TrustedEvidencePort(Protocol):
 
 
 class UnprovenEvidence:
+    def static_tool_configuration_approved(
+        self, profile: StaticToolProfile
+    ) -> bool:
+        return False
+
     def generation_restart_evidence(
         self, action: ActionRequest
     ) -> tuple[BudgetScopeRef, ...] | None:

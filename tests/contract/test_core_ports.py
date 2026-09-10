@@ -31,7 +31,6 @@ from sastsimi.contracts.work import TransitionCommit
 from sastsimi.ports import (
     ApprovedSandboxCommand,
     ArtifactStore,
-    BoundaryRecord,
     BudgetCommitRequest,
     BudgetLedgerPort,
     BudgetReleaseRequest,
@@ -55,6 +54,7 @@ from sastsimi.ports import (
     StagedArtifact,
     StaticToolAdapter,
     StaticToolRequest,
+    ToolCapabilityResult,
     ToolRunResult,
     TransitionCommitRequest,
     UnitOfWork,
@@ -177,14 +177,63 @@ class FakePolicy:
 
 
 class FakeStatic:
-    async def probe(self, profile_ref: StoredDataRef) -> BoundaryRecord:
-        return BoundaryRecord(ref=profile_ref)
+    async def probe(self, profile_ref: StoredDataRef) -> ToolCapabilityResult:
+        return ToolCapabilityResult(
+            ref=profile_ref,
+            available=False,
+            tool_name="AST",
+            tool_kind="STRUCTURE",
+            executable_key="fake",
+            observed_executable_sha256=None,
+            observed_version=None,
+            expected_version="fake",
+            reason_code="FAKE",
+        )
 
     async def run(self, request: StaticToolRequest) -> ToolRunResult:
         raise NotImplementedError
 
     async def cancel(self, attempt_id: str) -> CancellationResult:
         return CancellationResult(cancelled=True, reason=None)
+
+
+def test_static_transport_and_lower_process_seams_are_frozen() -> None:
+    from dataclasses import fields
+
+    from sastsimi.ports.dto import (
+        CanonicalRepositorySource,
+        ProcessResult,
+        ProcessSpec,
+        StaticCapabilityObservation,
+        StaticToolObservation,
+        StaticToolRequest,
+        ToolCapabilityResult,
+        WorkspaceStorageLease,
+        WorkspaceStoragePolicy,
+    )
+    from sastsimi.ports.static_tool import StaticProcessAdapter
+    from sastsimi.ports.workspace import WorkspaceStoragePort
+
+    assert [field.name for field in fields(StaticToolRequest)] == [
+        "action",
+        "workspace",
+        "tool_profile_ref",
+        "analysis_config_ref",
+        "rule_catalog_ref",
+    ]
+    for transport in (
+        CanonicalRepositorySource,
+        ProcessSpec,
+        ProcessResult,
+        StaticCapabilityObservation,
+        ToolCapabilityResult,
+        StaticToolObservation,
+        WorkspaceStoragePolicy,
+        WorkspaceStorageLease,
+    ):
+        assert "meta" not in {field.name for field in fields(transport)}
+    assert StaticProcessAdapter is not None
+    assert WorkspaceStoragePort is not None
 
 
 class FakeSandbox:

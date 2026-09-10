@@ -5,7 +5,6 @@ from types import MappingProxyType
 
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.ports.dto import (
-    BoundaryRecord,
     CancellationResult,
     StaticToolRequest,
     ToolCapabilityResult,
@@ -18,7 +17,17 @@ class FakeStaticToolAdapter:
         self.results = MappingProxyType(dict(results))
 
     async def probe(self, profile_ref: StoredDataRef) -> ToolCapabilityResult:
-        return BoundaryRecord(profile_ref)
+        return ToolCapabilityResult(
+            ref=profile_ref,
+            available=False,
+            tool_name="UNKNOWN",
+            tool_kind="STRUCTURE",
+            executable_key="unconfigured",
+            observed_executable_sha256=None,
+            observed_version=None,
+            expected_version="unconfigured",
+            reason_code="FAKE_CAPABILITY_NOT_CONFIGURED",
+        )
 
     async def run(self, request: StaticToolRequest) -> ToolRunResult:
         try:

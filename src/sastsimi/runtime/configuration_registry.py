@@ -23,6 +23,7 @@ from sastsimi.contracts.llm import (
     SemanticValidatorSpec,
 )
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.ports.configuration_registry import ConfigurationRegistryPort
 from sastsimi.ports.dto import CapabilityProbeResult
@@ -31,6 +32,16 @@ from sastsimi.ports.dto import CapabilityProbeResult
 class ConfigurationRegistry:
     def __init__(self, registry: ConfigurationRegistryPort) -> None:
         self.registry = registry
+
+    def register_static_tool_profile(
+        self, record: StaticToolProfile
+    ) -> StoredDataRef:
+        return self.registry.register_static_tool_profile(record)
+
+    def resolve_static_tool_profile(
+        self, profile_ref: StoredDataRef
+    ) -> StaticToolProfile:
+        return self.registry.resolve_static_tool_profile(profile_ref)
 
     def register_work_budget(self, record: WorkBudgetProfile) -> StoredDataRef:
         return self.registry.register_work_budget(record)

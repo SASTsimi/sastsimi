@@ -17,11 +17,69 @@ from sastsimi.contracts.llm import (
     ProviderProfile,
     ProviderValidationEvidence,
 )
+from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.ports.dto import CapabilityProbeResult
 from sastsimi.storage.codec import reference
 from tests.contract.domain.canonical_fixtures import make
+from tests.contract.domain.fixtures import meta
 from tests.integration.runtime_support import Harness
+from tests.integration.trusted_fixture import FixtureEvidence
+
+
+def make_static_profile(**changes: object) -> StaticToolProfile:
+    payload: dict[str, object] = {
+        "meta": meta("static_tool_profile", attempt=None),
+        "profile_key": "ast-fixture",
+        "purpose": "FIXTURE",
+        "status": "APPROVED",
+        "adapter_key": "PYTHON_AST",
+        "tool_name": "AST",
+        "tool_kind": "STRUCTURE",
+        "executable_key": "fixture-python",
+        "executable_sha256": "a" * 64,
+        "expected_version": "3.12",
+        "capability_evidence_ref": None,
+        "probe_timeout_ms": 1_000,
+        "run_timeout_ms": 30_000,
+        "stdout_limit_bytes": 1_024,
+        "stderr_limit_bytes": 1_024,
+        "max_attempt_output_bytes": 4_096,
+        "max_output_file_bytes": 2_048,
+        "max_artifact_read_bytes": 2_048,
+    }
+    return StaticToolProfile.model_validate_json(canonical_bytes(payload | changes))
+
+
+def test_static_tool_profile_registry_is_exact_and_fail_closed(tmp_path: Path) -> None:
+    class StaticEvidence(FixtureEvidence):
+        def __init__(self) -> None:
+            super().__init__()
+            self.static_tool_approvals: set[str] = set()
+
+        def static_tool_configuration_approved(
+            self, profile: StaticToolProfile
+        ) -> bool:
+            return content_hash(profile) in self.static_tool_approvals
+
+    h = Harness(tmp_path)
+    evidence = StaticEvidence()
+    runtime = build_runtime(tmp_path, None, None, h.clock, h.ids, evidence=evidence)
+    profile = make_static_profile()
+    with pytest.raises(ValueError, match="CONFIGURATION_APPROVAL_REQUIRED"):
+        runtime.configuration.register_static_tool_profile(profile)
+    evidence.static_tool_approvals.add(content_hash(profile))
+    profile_ref = runtime.configuration.register_static_tool_profile(profile)
+    assert runtime.configuration.resolve_static_tool_profile(profile_ref) == profile
+
+    wrong_hash = profile_ref.model_copy(update={"content_hash": "b" * 64})
+    with pytest.raises(ValueError, match="RECORD_REVISION_MISMATCH"):
+        runtime.configuration.resolve_static_tool_profile(wrong_hash)
+
+    draft = make_static_profile(status="DRAFT")
+    evidence.static_tool_approvals.add(content_hash(draft))
+    with pytest.raises(ValueError, match="STATIC_TOOL_PROFILE_NOT_EXECUTABLE"):
+        runtime.configuration.register_static_tool_profile(draft)
 
 
 def test_typed_registries_require_family_evidence_and_exact_closure(

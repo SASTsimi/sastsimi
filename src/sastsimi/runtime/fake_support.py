@@ -36,6 +36,7 @@ from sastsimi.contracts.refs import (
     RunStoredDataRef,
     StoredDataRef,
 )
+from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.trusted_evidence import UnprovenEvidence
@@ -86,6 +87,7 @@ class FakeEvidence(UnprovenEvidence):
         self.playbook_approvals: set[str] = set()
         self.llm_approvals: set[str] = set()
         self.sandbox_approvals: set[str] = set()
+        self.static_tool_approvals: set[str] = set()
         self.identities: dict[BudgetScopeRef, RequesterRole] = {}
         self._role_identities: dict[RequesterRole, BudgetScopeRef] = {}
         self._output_approvals: dict[ActionId, _OutputApproval] = {}
@@ -178,6 +180,11 @@ class FakeEvidence(UnprovenEvidence):
 
     def sandbox_configuration_approved(self, profile: SandboxProfile) -> bool:
         return content_hash(profile) in self.sandbox_approvals
+
+    def static_tool_configuration_approved(
+        self, profile: StaticToolProfile
+    ) -> bool:
+        return content_hash(profile) in self.static_tool_approvals
 
     def action_evidence(
         self, action: ActionRequest, check: CheckType
