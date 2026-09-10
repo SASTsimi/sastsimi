@@ -116,6 +116,18 @@ class _Workspace:
         del workspace, deadline, attempt_id, check_id
         raise AssertionError("probe must not touch a workspace")
 
+    def validate_integrity_receipts(
+        self,
+        workspace: CodeWorkspace,
+        deadline: MonotonicActionDeadline,
+        *,
+        attempt_id: str,
+        check_ids: tuple[str, ...],
+        receipts: tuple[ProcessReceipt, ...],
+    ) -> None:
+        del workspace, deadline, attempt_id, check_ids, receipts
+        raise AssertionError("probe must not validate workspace receipts")
+
 
 @pytest.mark.asyncio
 async def test_probe_exactly_resolves_executable_and_lower_adapter(
