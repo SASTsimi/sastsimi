@@ -1644,7 +1644,9 @@ def retrieve_fake_context(
         max_depth=1,
         max_fragments=1,
         max_bytes=4096,
-        max_requests_per_hypothesis=1,
+        # The fake REVISE scenario performs one bounded retrieval per generation:
+        # initial verification plus the single revised verification generation.
+        max_requests_per_hypothesis=2,
         timeout_ms=1000,
     )
     ceiling_ref = runtime.unit_of_work.artifacts.commit(
