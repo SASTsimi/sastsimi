@@ -1028,6 +1028,8 @@ class CodeQLProcessAdapter:
         database = self.inputs.database
         action = request.action
         action_meta = action.meta
+        requested_paths = action.file_paths
+        tracked_paths = tuple(item.git_path for item in self.inputs.tracked_files)
         if (
             not isinstance(action_meta, RecordMeta)
             or request.analysis_config_ref != self.inputs.analysis_config_ref
@@ -1040,6 +1042,8 @@ class CodeQLProcessAdapter:
             or action_meta.workspace_id != workspace.workspace_id
             or action_meta.commit_id != workspace.commit_id
             or str(action_meta.attempt_id) != self.inputs.attempt_id
+            or len(requested_paths) != len(set(requested_paths))
+            or set(requested_paths) != set(tracked_paths)
         ):
             return "FAILED", "CODEQL_REQUEST_MISMATCH"
         if workspace.status != "READY" or workspace.commit_id is None:

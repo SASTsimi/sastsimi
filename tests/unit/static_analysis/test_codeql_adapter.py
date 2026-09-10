@@ -203,7 +203,7 @@ def workspace_and_request(
                 "requested_by": "STATIC_ANALYSIS",
                 "action_type": "RUN_TOOL",
                 "tool_name": "CODEQL",
-                "file_paths": ("src/app.py",),
+                "file_paths": ("src/app.py", "src/mid.py", "src/sink.py"),
                 "input_refs": tuple(
                     item.model_dump(mode="json")
                     for item in (

@@ -465,10 +465,8 @@ def _request(
         attempt_id=attempt_id,
     )
     profile_ref = reference(profile)
-    workspace_ref = reference(workspace)
     assert isinstance(profile_ref, StoredDataRef)
     input_refs = (
-        workspace_ref,
         profile_ref,
         config_ref,
     )
@@ -1034,6 +1032,22 @@ async def test_actual_three_adapter_public_bridge_and_exact_replay(
         )
         assert rejected.status == "FAILED"
         assert len(runner.calls) == before
+
+    before = len(codeql_runner.calls)
+    wrong_paths = requests[1].action.model_copy(
+        update={"file_paths": ("src/not-requested.py",)}
+    )
+    path_mismatch = replace(requests[1], action=wrong_paths)
+    rejected = await adapters["CODEQL"].execute(
+        path_mismatch,
+        workspace_root,
+        codeql_profile,
+        MonotonicActionDeadline(
+            str(path_mismatch.action.action_id), 0, 10**18
+        ),
+    )
+    assert rejected.status == "FAILED"
+    assert len(codeql_runner.calls) == before
 
     codeql_process_count = len(codeql_runner.calls)
     codeql_executable.write_bytes(b"changed-after-registration")

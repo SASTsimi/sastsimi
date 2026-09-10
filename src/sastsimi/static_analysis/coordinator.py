@@ -14,7 +14,7 @@ from pydantic import TypeAdapter
 from sastsimi.contracts._domain import SafeDiagnostic
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef, reference, validate_exact_ref
+from sastsimi.contracts.refs import StoredDataRef, validate_exact_ref
 from sastsimi.contracts.static import StaticToolProfile, git_path
 from sastsimi.ports.dto import (
     CancellationResult,
@@ -204,10 +204,8 @@ class StaticToolCoordinator:
         """Close a public request over exactly the inputs its action authorized."""
 
         action = request.action
-        workspace_ref = reference(request.workspace)
         action_meta = action.meta
         expected_refs = {
-            workspace_ref,
             request.tool_profile_ref,
             request.analysis_config_ref,
         }
