@@ -551,7 +551,7 @@ sha256: 957b116406dddaf7928bd028a12602346873237f935f866530949547422122da
 ### 8.3 ID 생성
 
 - `analysis_id`, `workspace_id`, `hypothesis_id`, `work_id`, `attempt_id`, `record_id`, `action_id`, `event_id`, `llm_call_id`는 `IdGenerator`가 발급하는 대표 예시다. 이것은 완전 목록이 아니며, 각 ID의 정확한 생성 주체·유일 범위·재사용 규칙은 [08 공통 계약의 식별자 표](../08-lightweight-data-contracts.md#식별자-생성저장참조-기준)가 유일한 정본이다. 구현은 별도 목록을 만들어 그 표와 경쟁시키지 않는다.
-- LLM은 `proposal_id`, `question_id`, `validation_id`를 발급하지 않는다. 08번 표가 지정한 trusted 출력 검증 runtime 또는 application 생성 runtime이 source candidate를 source 결과에 넣기 전에 ID를 한 번 부여한다. ORCHESTRATION 등록 runtime은 source 결과가 COMMITTED된 뒤 같은 ID와 내용을 정본 record에 그대로 사용하며 다시 발급하지 않는다.
+- LLM은 `proposal_id`, `question_id`, `validation_id`, `restriction_id`를 발급하지 않는다. 08번 표가 지정한 trusted 출력 검증 runtime 또는 application 생성 runtime이 source candidate를 source 결과에 넣기 전에 ID를 한 번 부여한다. ORCHESTRATION 등록 runtime은 source 결과가 COMMITTED된 뒤 같은 ID와 내용을 정본 record에 그대로 사용하며 다시 발급하지 않는다.
 - `logical_record_id`는 최초 record 생성 시 발급하고 후속 revision이 보존한다.
 - `program_id`는 승인된 Program Catalog가 발급하며, `commit_id`는 Git이 확정한 commit hash이므로 UUID로 다시 만들지 않는다.
 - `dedupe_key`, `content_hash`, `input_hash`는 정해진 canonical bytes의 SHA-256이며 임의 ID가 아니다.

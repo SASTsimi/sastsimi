@@ -124,6 +124,7 @@ ID 값은 내부 의미를 넣지 않는 불투명 문자열이다. `ana_`, `ws_
 | `error_id` | 오류를 기록하는 runtime | 전체 시스템 | `AnalysisError`, 실행 결과와 debug trace | 오류 사건마다 새 값 |
 | `proposal_id` | proposal 출력 검증 runtime | 전체 시스템 | `HypothesisProposal` | INITIAL·VERIFICATION·CHAINING source candidate마다 새 값. `hypothesis_id`와 같지 않으며 전역 등록 때 다시 발급하지 않음 |
 | `question_id` | proposal 출력 검증 runtime 또는 `PlaybookApplication` 생성 runtime | 전체 시스템 | `FalsificationQuestion`, `AppliedPlaybookQuestion`과 `FalsificationResult` | proposal 질문은 등록 가설까지 유지한다. 플레이북 질문은 적용마다 새 값을 만들며 템플릿 이름이나 다른 가설의 값을 재사용하지 않는다.|
+| `restriction_id` | proposal 출력 검증 runtime | 전체 시스템 | `Restriction`과 이를 승계한 Verification·Primitive·Chaining·ReportDraft | Agent가 낸 출력 지역 값을 그대로 채택하지 않고 검증 runtime이 부여한다. 승계할 때는 유지하고 statement 또는 근거 집합이 바뀌면 새 값 |
 | `code_request_id` | 코드 문맥을 요청하는 Agent Runtime | 전체 시스템 | `CodeContextRequest`와 해당 `CodeContextResponse` | 요청·응답 한 쌍에서 같은 값 유지 |
 | `primitive_id` | `PRIMITIVE_ADMISSION_RUNTIME` | 전체 시스템 | `Primitive`와 체이닝 후보 | Primitive마다 새 값 |
 | `parser_result_id` | 정책 parser 결과를 저장하는 runtime | 전체 시스템 | `PolicyParserResult` | parser 실행 결과마다 새 값 |

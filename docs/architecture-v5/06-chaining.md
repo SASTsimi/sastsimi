@@ -85,7 +85,7 @@ Chaining Agent는 result가 있는 Primitive를 upstream으로 사용한다. dow
 
 - 같은 `workspace_id`와 `commit_id`
 - upstream result와 downstream input의 `entity_refs`가 같거나 코드 흐름으로 연결됨
-- 권한 조건이 있으면 저장소의 역할명·권한 상수·검사 위치로 충족 관계가 확인됨
+- downstream input에 권한 조건이 있으면(그 `privilege_level`이 `null`이 아니면) 저장소의 역할명·권한 상수·검사 위치로 충족 관계가 확인됨
 - upstream 능력이 downstream보다 먼저 성립함
 - 양쪽 restrictions를 합쳐도 공격 경로가 성립함
 - 비교 결론을 뒷받침하는 실제 코드·검증 근거가 있음
