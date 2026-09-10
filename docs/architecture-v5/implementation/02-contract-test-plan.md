@@ -38,6 +38,7 @@ R3는 입력·검사·예상 결과를 구체화한다. 새로운 schema·enum·
 | [#102](https://github.com/SASTsimi/sastsimi/pull/102) | 자식 결과를 부모 verdict/impact에 흡수하지 않음 |
 | [#103](https://github.com/SASTsimi/sastsimi/pull/103) | 자식 등록 전 시작점 검사와 Context 조회 시 exact 부모 reference 검사 구분 |
 | [#105](https://github.com/SASTsimi/sastsimi/pull/105) | match triple 중복 key, trigger/pool 처리 책임, 구조화 no_match_reasons |
+| [#149](https://github.com/SASTsimi/sastsimi/pull/149) | `restriction_id`를 완성된 `fact_refs`에서 유도하고 합집합 중복을 ID 기준으로 셈 |
 | [#109](https://github.com/SASTsimi/sastsimi/pull/109) | Primitive admission을 등록 시점 1회 판정으로 확정하고 등록 뒤 재판정·회수 절차 제거 |
 | [#60](https://github.com/SASTsimi/sastsimi/pull/60) | token 계획값을 사용량 중단 상한으로 쓰지 않음; R7 입장 정책과 R8 lifecycle 분리 |
 | [#113](https://github.com/SASTsimi/sastsimi/pull/113) | Dynamic Reproduction Agent 명칭, program policy의 감사 전용 연결, SandboxProfile 외부 경계와 새 generation 규칙 |
@@ -579,6 +580,22 @@ Q-01~Q-07의 구현 결정은 R3-06 기준선과 최신 공통 계약에서 해�
 - **11. FALSE 변환 금지**: 입력 위반·조회/호출/실행 오류·정책 차단·예산/저장 실패를 새 FALSE 근거로 사용하지 않음. 이미 존재하는 부모/가설 verdict는 해당 case의 명시적 검증 경로 외에는 변경하지 않음.
 - **12. 실행 계층**: contract / integration
 - **13. 구현 담당·필수 리뷰**: R3 통합 구현 윤희섭 @YHS-Sec; R1·R4·R6. 계정과 검토 범위는 §9. 역할 owner가 fixture 의미를 승인해야 함.
+
+#### R3-CT-HYP-006 — restriction_id 유도와 fact_refs closure
+
+- **1. ID·유형·설명**: R3-CT-HYP-006 / 정상·부정 / proposal 출력 검증이 채우는 `CodeFactRef.bundle_ref`와 `fact_refs`에서 유도한 `restriction_id`의 결정성 검사
+- **2. 단계·계약 경계**: 5–6; Hypothesis Agent 출력 → proposal 출력 검증 → 전역 등록
+- **3. producer → consumer**: Hypothesis Agent → proposal 출력 검증 runtime → Proposal Validator·Hypothesis Registry
+- **4. 선행 상태·exact refs**: F-HYP(§2.3)의 정상 상태에서 COMMITTED `StaticFactBundle` 하나와 그것을 `input_refs`로 고정한 `HYPOTHESIS_PROPOSAL` work. 5번이 지정한 변경만 적용하고 나머지 식별자·참조·설정은 그대로 고정한다.
+- **5. 정상/잘못된 fixture**: 정상 A는 Agent가 그 bundle에 실재하는 `fact_id`만 `restrictions[].fact_refs`에 담고 `bundle_ref`와 `restriction_id`를 만들지 않은 출력이며, runtime이 exact bundle reference로 `bundle_ref`를 채운 뒤 완성된 `fact_refs`에서 `restriction_id`를 유도한다. 정상 B는 A와 같은 사실 목록을 순서만 바꿔 제출한 출력이며 A와 같은 `restriction_id`가 나와야 한다. 정상 C는 사실 목록이 실제로 다른 출력이며 A와 다른 `restriction_id`가 나와야 한다. 부정 변형은 bundle에 없는 `fact_id`, 다른 bundle의 사실, 같은 `fact_id` 집합을 가진 restriction 둘, Agent가 직접 채운 `bundle_ref`나 전역 형식 `restriction_id`다.
+- **6. 검사 주체**: trusted proposal 출력 검증 runtime. Agent가 낸 지역 값은 같은 출력 안의 중복 검사에만 쓰고 그대로 채택하지 않는다.
+- **7. 허용·차단·격리 기대**: 실재하는 사실만 가리키고 근거 집합이 겹치지 않는 proposal만 등록한다. 정상 B는 A와 같은 record로 취급하지 않고 각자 등록하되 유도한 `restriction_id`만 같다.
+- **8. work·attempt·가설 기대**: 부정 변형은 새 hypothesis·work를 만들지 않는다. 제한 횟수 repair 뒤에도 유효하지 않으면 해당 호출을 `INVALID_OUTPUT`으로 저장한다.
+- **9. 오류·DataGap 기대**: bundle에 없는 `fact_id`, 다른 bundle의 사실, 같은 근거 집합을 가진 restriction 중복은 모두 `INVALID_OUTPUT`이다. 도구 실패나 `DataGap`을 만들지 않는다.
+- **10. 저장·갱신 금지 pointer**: 부정 proposal을 current proposal·Verification 입력으로 승격하지 않는다. Agent가 낸 지역 ID를 정본 record에 그대로 쓰지 않는다.
+- **11. FALSE 변환 금지**: 출력 검증 실패는 가설의 반증이 아니므로 `FALSE`를 만들거나 기존 verdict를 바꾸지 않는다.
+- **12. 실행 계층**: contract / security-negative
+- **13. 구현 담당·필수 리뷰**: §9의 R3 통합 구현 담당; R1·R4·R6·R8. 정상 B는 `fact_refs`를 순서 무의미 배열로 선언해야 통과하므로 canonical JSON 정렬 정책 등록이 선행 조건이다.
 
 ### LLM. Prompt·Provider·session·권한
 
