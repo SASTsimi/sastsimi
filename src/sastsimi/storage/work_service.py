@@ -1,5 +1,7 @@
 """Work deduplication and transitions in short SQLite transactions."""
 
+from contextlib import nullcontext
+
 from sqlalchemy import Connection, insert, select, update
 
 from sastsimi.contracts.actions import ActionType
@@ -19,7 +21,10 @@ from sastsimi.storage.codec import encode
 from sastsimi.storage.repositories import SQLiteRecordStore
 
 from .action_validator import RuntimeValidator
+from .current_inputs import check_current_input
+from .dynamic_state import advance_dynamic_work
 from .records import next_meta
+from .verification_state import advance_verification_work
 
 
 class WorkService:
@@ -55,6 +60,8 @@ class WorkService:
         work: WorkExecutionState,
         decision_ref: RecordRef,
         reservation_ref: RecordRef | None,
+        *,
+        _connection: Connection | None = None,
     ) -> WorkExecutionState:
         work = WorkExecutionState.model_validate(work)
         key = content_hash(
@@ -66,7 +73,11 @@ class WorkService:
                 work.dedupe_key,
             ]
         )
-        with self.records.database.write() as connection:
+        with (
+            self.records.database.write()
+            if _connection is None
+            else nullcontext(_connection) as connection
+        ):
             old = connection.execute(
                 select(models.work_states.c.payload).where(
                     models.work_states.c.registration_key == key
@@ -81,6 +92,18 @@ class WorkService:
                 if not isinstance(parent, WorkExecutionState):
                     raise ValueError("Invalid parent work")
                 validate_parent_work(work, parent)
+            # Chaining owns an immutable Primitive-index snapshot.  The snapshot
+            # must be current when the work is registered, but an append after
+            # registration must not invalidate an in-flight result.
+            if work.work_type == "CHAINING":
+                for input_ref in work.input_refs:
+                    if input_ref.data_kind == "primitive_index_state":
+                        check_current_input(
+                            self.records,
+                            connection,
+                            input_ref,
+                            force=True,
+                        )
             self.validator.claim(
                 connection,
                 decision_ref,
@@ -159,6 +182,12 @@ class WorkService:
         if result.rowcount != 1:
             raise ValueError("STATE_VERSION_CONFLICT")
         self.point(connection, work)
+        advance_verification_work(
+            self.records, connection, previous, work, self.clock, self.ids
+        )
+        advance_dynamic_work(
+            self.records, connection, previous, work, self.clock, self.ids
+        )
 
     def make_ready(self, transition: StateTransition) -> WorkExecutionState:
         with self.records.database.write() as connection:

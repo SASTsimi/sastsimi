@@ -21,11 +21,15 @@ CURRENT_STATE_KINDS = frozenset(
 
 
 def check_current_input(
-    records: SQLiteRecordStore, connection: Connection, ref: RecordRef
+    records: SQLiteRecordStore,
+    connection: Connection,
+    ref: RecordRef,
+    *,
+    force: bool = False,
 ) -> None:
-    record = records.resolve(connection, ref)
-    if ref.data_kind not in CURRENT_STATE_KINDS:
+    if not force and ref.data_kind not in CURRENT_STATE_KINDS:
         return
+    record = records.resolve(connection, ref)
     pointer = connection.execute(
         select(models.current_records.c.record_id).where(
             models.current_records.c.logical_record_id

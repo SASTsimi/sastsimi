@@ -4,12 +4,21 @@ from typing import Literal, Self
 
 from pydantic import AwareDatetime, model_validator
 
-from .base import NonNegativeInt
+from .base import ContractModel, NonEmptyStr, NonNegativeInt
 from .budget import Purpose
 from .ids import CommitId, ProgramId, WorkspaceId
 from .records import RecordMeta, RunMeta
 from .refs import BudgetScopeRef, RunStoredDataRef, StoredDataRef, require_record_ref
 from .work import ScopedRecord
+
+
+class AnalysisStartRequest(ContractModel):
+    """An input command; program resolution precedes analysis ID allocation."""
+
+    repository_ref: NonEmptyStr
+    requested_git_ref: NonEmptyStr
+    program_id: ProgramId
+    purpose: Purpose
 
 
 class AnalysisRunState(ScopedRecord):

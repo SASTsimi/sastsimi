@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import BinaryIO
 
 from sastsimi.config.runtime_paths import RuntimePaths
-from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
-from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.ids import AnalysisId, CommitId, StoredDataId, WorkspaceId
+from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef
 from sastsimi.ports.dto import StagedArtifact
 
 
@@ -83,8 +83,23 @@ class LocalArtifactStore:
             record_id=None,
         )
 
-    def open_verified(self, ref: StoredDataRef) -> BinaryIO:
-        if (ref.workspace_id, ref.commit_id) != (self.workspace_id, self.commit_id):
+    def commit_run(
+        self, staged: StagedArtifact, analysis_id: AnalysisId
+    ) -> RunStoredDataRef:
+        digest = self.promote(staged)
+        return RunStoredDataRef(
+            stored_data_id=StoredDataId(digest),
+            data_kind="artifact",
+            content_hash=digest,
+            analysis_id=analysis_id,
+            record_id=None,
+        )
+
+    def open_verified(self, ref: StoredDataRef | RunStoredDataRef) -> BinaryIO:
+        if isinstance(ref, StoredDataRef) and (ref.workspace_id, ref.commit_id) != (
+            self.workspace_id,
+            self.commit_id,
+        ):
             raise ValueError("WORKSPACE_MISMATCH")
         if (
             ref.record_id is not None

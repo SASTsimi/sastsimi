@@ -51,6 +51,13 @@
       "source_model": "sastsimi.contracts.dynamic.CleanupResult"
     },
     {
+      "owner": "CONTEXT_RETRIEVAL_SERVICE",
+      "result_kind": "code_context_response",
+      "schema": "generated/code_context_response/1.schema.json",
+      "schema_name": "CodeContextResponse",
+      "source_model": "sastsimi.contracts.static.CodeContextResponse"
+    },
+    {
       "owner": "REPOSITORY_LOADER",
       "result_kind": "code_workspace",
       "schema": "generated/code_workspace/1.schema.json",
@@ -91,6 +98,13 @@
       "schema": "generated/dynamic_reproduction_result/1.schema.json",
       "schema_name": "DynamicReproductionResult",
       "source_model": "sastsimi.contracts.dynamic.DynamicReproductionResult"
+    },
+    {
+      "owner": "DYNAMIC_REPRODUCTION",
+      "result_kind": "dynamic_reproduction_tool_request",
+      "schema": "generated/dynamic_reproduction_tool_request/1.schema.json",
+      "schema_name": "DynamicReproductionToolRequest",
+      "source_model": "sastsimi.contracts.dynamic.DynamicReproductionToolRequest"
     },
     {
       "owner": "REPRODUCTION_SETUP_AUTOMATION",
@@ -212,6 +226,13 @@
       "source_model": "sastsimi.contracts.policy.ProgramPolicyRecord"
     },
     {
+      "owner": "ORCHESTRATION",
+      "result_kind": "proposal_process_state",
+      "schema": "generated/proposal_process_state/1.schema.json",
+      "schema_name": "ProposalProcessState",
+      "source_model": "sastsimi.contracts.hypothesis.ProposalProcessState"
+    },
+    {
       "owner": "REPORTER",
       "result_kind": "report_draft",
       "schema": "generated/report_draft/1.schema.json",
@@ -294,6 +315,13 @@
       "schema": "generated/verification_assignment/1.schema.json",
       "schema_name": "VerificationAssignment",
       "source_model": "sastsimi.contracts.hypothesis.VerificationAssignment"
+    },
+    {
+      "owner": "VERIFICATION",
+      "result_kind": "verification_initial_assessment",
+      "schema": "generated/verification_initial_assessment/1.schema.json",
+      "schema_name": "VerificationInitialAssessment",
+      "source_model": "sastsimi.contracts.verification.VerificationInitialAssessment"
     },
     {
       "owner": "VERIFICATION",

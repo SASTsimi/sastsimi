@@ -239,6 +239,7 @@
         "RULE_SCOPE_GATE",
         "REPORTER",
         "REPOSITORY_LOADER",
+        "CONTEXT_RETRIEVAL_SERVICE",
         "STATIC_ANALYSIS",
         "POLICY_COLLECTOR",
         "POLICY_PARSER",

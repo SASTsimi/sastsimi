@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import timedelta
 from typing import Protocol
 
@@ -19,6 +20,7 @@ from sastsimi.contracts.actions import (
 from sastsimi.contracts.budget import BudgetProfileBinding, BudgetReservation
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.ids import DecisionId, ErrorId, LogicalRecordId, RecordId
+from sastsimi.contracts.records import RunMeta
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.clock import Clock
@@ -31,6 +33,7 @@ from .codec import REF_ADAPTER, reference
 from .current_inputs import check_current_input
 from .output_closures import derive_outputs
 from .repositories import SQLiteRecordStore
+from .run_states import get_run
 from .stage_policy import check_stage
 
 
@@ -53,10 +56,22 @@ def authorize(
     action: ActionRequest,
     work: WorkExecutionState | None,
     reservation_ref: RecordRef | None,
+    *,
+    _connection: Connection | None = None,
 ) -> ActionDecision:
     records = validator.records
     action = ActionRequest.model_validate(action)
-    with records.database.write() as connection:
+    run_finalization = (
+        action.action_type == ActionType.SAVE_RESULT
+        and action.result_kind == "analysis_run_result"
+        and action.work_ref is None
+        and isinstance(action.meta, RunMeta)
+    )
+    with (
+        records.database.write()
+        if _connection is None
+        else nullcontext(_connection) as connection
+    ):
         prior = (
             connection.execute(
                 select(models.action_requests).where(
@@ -94,37 +109,50 @@ def authorize(
                     role = records.evidence.identity_role(action.requester_identity_ref)
                     check_role(action, role)
                 elif kind in {CheckType.IDENTITY, CheckType.STATE, CheckType.REVISION}:
-                    if work is None or action.meta.analysis_id != work.meta.analysis_id:
-                        raise ValueError("IDENTITY_MISMATCH")
-                    check_owner(records, connection, action, work)
-                    check_stage(records, connection, action, work)
-                    if action.action_type == ActionType.RUN_SANDBOX:
-                        assert action.sandbox_profile_ref is not None
-                        assert action.resource_profile_ref is not None
-                        config_refs.extend(
-                            (action.sandbox_profile_ref, action.resource_profile_ref)
-                        )
-                    if action.work_ref is not None:
-                        current_payload = connection.execute(
-                            select(models.work_states.c.payload).where(
-                                models.work_states.c.work_id == str(work.work_id)
-                            )
-                        ).scalar()
+                    if run_finalization:
+                        state = get_run(connection, str(action.meta.analysis_id))
+                        if state.status != "RUNNING":
+                            raise ValueError("ANALYSIS_ALREADY_TERMINAL")
+                    else:
                         if (
-                            current_payload is None
-                            or WorkExecutionState.model_validate_json(current_payload)
-                            != work
-                            or action.work_ref != reference(work)
-                            or action.expected_state_version != work.state_version
+                            work is None
+                            or action.meta.analysis_id != work.meta.analysis_id
+                        ):
+                            raise ValueError("IDENTITY_MISMATCH")
+                        check_owner(records, connection, action, work)
+                        check_stage(records, connection, action, work)
+                        if action.action_type == ActionType.RUN_SANDBOX:
+                            assert action.sandbox_profile_ref is not None
+                            assert action.resource_profile_ref is not None
+                            config_refs.extend(
+                                (
+                                    action.sandbox_profile_ref,
+                                    action.resource_profile_ref,
+                                )
+                            )
+                        if action.work_ref is not None:
+                            current_payload = connection.execute(
+                                select(models.work_states.c.payload).where(
+                                    models.work_states.c.work_id == str(work.work_id)
+                                )
+                            ).scalar()
+                            if (
+                                current_payload is None
+                                or WorkExecutionState.model_validate_json(
+                                    current_payload
+                                )
+                                != work
+                                or action.work_ref != reference(work)
+                                or action.expected_state_version != work.state_version
+                            ):
+                                raise ValueError("STATE_VERSION_CONFLICT")
+                        elif (
+                            action.action_type != ActionType.REGISTER_WORK
+                            or work.status.value != "PENDING"
                         ):
                             raise ValueError("STATE_VERSION_CONFLICT")
-                    elif (
-                        action.action_type != ActionType.REGISTER_WORK
-                        or work.status.value != "PENDING"
-                    ):
-                        raise ValueError("STATE_VERSION_CONFLICT")
-                    for ref in action.input_refs:
-                        check_current_input(records, connection, ref)
+                        for ref in action.input_refs:
+                            check_current_input(records, connection, ref)
                 elif kind == CheckType.BUDGET:
                     if work is None:
                         raise ValueError("BUDGET_UNAVAILABLE")

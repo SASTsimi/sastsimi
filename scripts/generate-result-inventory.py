@@ -18,8 +18,10 @@ def main() -> int:
     architecture = (
         args.root / "docs/architecture-v5/08-lightweight-data-contracts.md"
     ).read_text(encoding="utf-8")
-    paragraph = next(
-        line for line in architecture.splitlines() if line.startswith("- 핵심 registry")
+    paragraph = "\n".join(
+        line
+        for line in architecture.splitlines()
+        if line.startswith(("- 핵심 registry", "- R3-05의 중간 제어 출력"))
     )
     expected = {
         kind: (model, owner)
@@ -27,6 +29,10 @@ def main() -> int:
             r"`(\w+) -> (\w+)(?:\(role=\w+\))? -> (\w+)`", paragraph
         )
     }
+    expected["code_context_response"] = (
+        "CodeContextResponse",
+        "CONTEXT_RETRIEVAL_SERVICE",
+    )
     actual = {
         kind: (binding.schema_name, binding.owner.value)
         for kind, binding in RESULT_REGISTRY.items()

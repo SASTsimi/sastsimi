@@ -9,9 +9,10 @@ from sastsimi.contracts.actions import ActionRequest, ActionType, RequesterRole
 from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
-from sastsimi.contracts.refs import RecordRef
+from sastsimi.contracts.hypothesis import VerificationAssignment
+from sastsimi.contracts.refs import RecordRef, StoredDataRef
 from sastsimi.contracts.result_registry import validate_result_owner
-from sastsimi.contracts.static import CodeWorkspace
+from sastsimi.contracts.static import CodeContextResponse, CodeWorkspace
 from sastsimi.contracts.work import (
     AttemptStatus,
     CommitState,
@@ -29,11 +30,24 @@ from sastsimi.storage import models
 from sastsimi.storage.artifact_store import LocalArtifactStore
 from sastsimi.storage.codec import REF_ADAPTER, encode, reference
 
+from .chaining_projection import validate_chaining_output
+from .context_policy import check_context_response
 from .current_inputs import check_current_input
+from .dynamic_projection import dynamic_projection
+from .finding_projection import finding_index_projection, validate_finding_output
+from .hypothesis_projections import hypothesis_projection
+from .intermediate_policy import prepublished_output
 from .lease_recovery import retire_undispatched, uncertain
 from .output_closures import read_outputs
+from .primitive_projection import (
+    primitive_index_projection,
+    validate_primitive_outputs,
+)
 from .records import next_meta
+from .report_projection import validate_report_output
+from .run_projections import run_policy_projection
 from .run_states import get_run, save_run
+from .verification_projection import verification_projection
 from .work_service import WorkService
 
 
@@ -148,7 +162,42 @@ class TransitionService:
         for record in request.records:
             if not isinstance(record, ContractModel):
                 raise ValueError("OUTPUT_SCHEMA_MISMATCH")
-            validate_result_owner(record.meta.record_type, record, action.requested_by)
+            if isinstance(record, CodeContextResponse):
+                check_context_response(self.works.records, connection, work, record)
+            if not prepublished_output(
+                self.works.records, connection, reference(record), work
+            ):
+                if record.meta.record_type == "finding":
+                    from .action_context import current_process
+
+                    process = current_process(self.works.records, connection, work)
+                    if not isinstance(
+                        process.verification_assignment_ref, StoredDataRef
+                    ):
+                        raise ValueError("FINDING_NORMALIZER_AUTHORITY_REQUIRED")
+                    assignment = self.works.records.resolve(
+                        connection, process.verification_assignment_ref
+                    )
+                    if not isinstance(
+                        action.requester_identity_ref, StoredDataRef
+                    ) or not isinstance(assignment, VerificationAssignment):
+                        raise ValueError("FINDING_NORMALIZER_AUTHORITY_REQUIRED")
+                    validate_result_owner(
+                        record.meta.record_type,
+                        record,
+                        action.requested_by,
+                        requester_identity_ref=action.requester_identity_ref,
+                        finding_service_identity_ref=(
+                            self.works.records.finding_service_identity_ref
+                        ),
+                        active_assignment_owner_ref=assignment.owner_identity_ref,
+                        finding_assignment=assignment,
+                        expected_assignment_ref=process.verification_assignment_ref,
+                    )
+                else:
+                    validate_result_owner(
+                        record.meta.record_type, record, action.requested_by
+                    )
             meta = record.meta
             if (
                 getattr(meta, "analysis_id", work.meta.analysis_id)
@@ -158,6 +207,27 @@ class TransitionService:
             attempt = getattr(meta, "attempt_id", None)
             if attempt is not None and attempt != work.active_attempt_id:
                 raise ValueError("ATTEMPT_NOT_ACTIVE")
+        run_policy_projection(
+            self.works, connection, work, request.records, publish=False
+        )
+        hypothesis_projection(
+            self.works, connection, work, request.records, publish=False
+        )
+        verification_projection(
+            self.works, connection, work, request.records, publish=False
+        )
+        dynamic_projection(
+            self.works,
+            connection,
+            work,
+            request.records,
+            request.commit.target_status.value,
+            publish=False,
+        )
+        validate_finding_output(self.works, connection, work, request.records)
+        validate_primitive_outputs(self.works, connection, work, request.records)
+        validate_chaining_output(self.works, connection, work, request.records)
+        validate_report_output(self.works, connection, work, request.records)
         return work
 
     def finish(self, request: TransitionCommitRequest) -> TransitionCommit:
@@ -195,6 +265,10 @@ class TransitionService:
             commit_ref = records.stage(connection, committed)
             records.publish(connection, commit_ref)
             for record in request.records:
+                if prepublished_output(
+                    records, connection, reference(record), previous
+                ):
+                    continue
                 records.publish(connection, reference(record))
                 self.publish_pointer(connection, reference(record))
                 if isinstance(record, CodeWorkspace):
@@ -214,6 +288,32 @@ class TransitionService:
             self.works.validator.record_outcome(
                 connection, claimed, committed.output_refs
             )
+            run_policy_projection(
+                self.works, connection, previous, request.records, publish=True
+            )
+            for projection in hypothesis_projection(
+                self.works, connection, previous, request.records, publish=True
+            ):
+                projection_ref = records.stage(connection, projection)
+                records.publish(connection, projection_ref)
+                self.publish_pointer(connection, projection_ref)
+            for projection in verification_projection(
+                self.works, connection, previous, request.records, publish=True
+            ):
+                projection_ref = records.stage(connection, projection)
+                records.publish(connection, projection_ref)
+                self.publish_pointer(connection, projection_ref)
+            for projection in dynamic_projection(
+                self.works,
+                connection,
+                previous,
+                request.records,
+                request.commit.target_status.value,
+                publish=True,
+            ):
+                projection_ref = records.stage(connection, projection)
+                records.publish(connection, projection_ref)
+                self.publish_pointer(connection, projection_ref)
             for digest in artifact_refs:
                 if not connection.execute(
                     select(models.artifacts.c.content_hash).where(
@@ -255,6 +355,28 @@ class TransitionService:
                     waiting_for=() if terminal else (waiting,),
                 )
             )
+            finding = validate_finding_output(
+                self.works, connection, previous, request.records
+            )
+            if finding is not None:
+                index = finding_index_projection(
+                    self.works, connection, work, finding, committed
+                )
+                index_ref = records.stage(connection, index)
+                records.publish(connection, index_ref)
+                self.publish_pointer(connection, index_ref)
+            primitive_index = primitive_index_projection(
+                self.works,
+                connection,
+                previous,
+                validate_primitive_outputs(
+                    self.works, connection, previous, request.records
+                ),
+            )
+            if primitive_index is not None:
+                primitive_index_ref = records.stage(connection, primitive_index)
+                records.publish(connection, primitive_index_ref)
+                self.publish_pointer(connection, primitive_index_ref)
             if previous.active_attempt_id is not None:
                 payload = connection.execute(
                     select(models.work_attempts.c.payload).where(

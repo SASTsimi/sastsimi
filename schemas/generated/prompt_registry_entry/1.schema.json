@@ -1,0 +1,414 @@
+{
+  "$defs": {
+    "AnalysisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AnalysisId",
+      "type": "string"
+    },
+    "AttemptId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "AttemptId",
+      "type": "string"
+    },
+    "CommitId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "CommitId",
+      "type": "string"
+    },
+    "HypothesisId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "HypothesisId",
+      "type": "string"
+    },
+    "LLMRole": {
+      "enum": [
+        "HYPOTHESIS",
+        "VERIFICATION",
+        "PRO",
+        "CON",
+        "CWE_LABELING",
+        "CHAINING",
+        "TECHNICAL_GATE",
+        "RULE_SCOPE_GATE",
+        "REPORTER",
+        "POLICY_PARSER",
+        "DYNAMIC_REPRODUCTION"
+      ],
+      "type": "string"
+    },
+    "LogicalRecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "LogicalRecordId",
+      "type": "string"
+    },
+    "PromptInputSlot": {
+      "additionalProperties": false,
+      "properties": {
+        "cardinality": {
+          "enum": [
+            "REQUIRED_ONE",
+            "OPTIONAL_ONE",
+            "REQUIRED_MANY",
+            "OPTIONAL_MANY"
+          ],
+          "title": "Cardinality",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "field_paths": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Field Paths",
+          "type": "array"
+        },
+        "slot": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Slot",
+          "type": "string"
+        },
+        "trust_class": {
+          "$ref": "#/$defs/TrustClass"
+        }
+      },
+      "required": [
+        "slot",
+        "data_kind",
+        "field_paths",
+        "cardinality",
+        "trust_class"
+      ],
+      "title": "PromptInputSlot",
+      "type": "object"
+    },
+    "Purpose": {
+      "enum": [
+        "EVALUATION",
+        "PRODUCTION"
+      ],
+      "type": "string"
+    },
+    "RecordId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "RecordId",
+      "type": "string"
+    },
+    "RecordMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "analysis_id": {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttemptId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "hypothesis_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HypothesisId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "logical_record_id": {
+          "$ref": "#/$defs/LogicalRecordId"
+        },
+        "previous_record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_id": {
+          "$ref": "#/$defs/RecordId"
+        },
+        "record_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Record Type",
+          "type": "string"
+        },
+        "revision_number": {
+          "minimum": 1,
+          "title": "Revision Number",
+          "type": "integer"
+        },
+        "schema_version": {
+          "pattern": "^[1-9][0-9]*\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "record_id",
+        "logical_record_id",
+        "record_type",
+        "schema_version",
+        "revision_number",
+        "previous_record_id",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id"
+      ],
+      "title": "RecordMeta",
+      "type": "object"
+    },
+    "SessionPolicy": {
+      "enum": [
+        "NEW",
+        "RESUME",
+        "AUTO"
+      ],
+      "type": "string"
+    },
+    "StoredDataId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "StoredDataId",
+      "type": "string"
+    },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
+    "TrustClass": {
+      "enum": [
+        "TRUSTED_INSTRUCTION",
+        "UNTRUSTED_DATA"
+      ],
+      "type": "string"
+    },
+    "WorkspaceId": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "WorkspaceId",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "agent_role": {
+      "$ref": "#/$defs/LLMRole"
+    },
+    "execution_limits_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "forbidden_context_kinds": {
+      "items": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "title": "Forbidden Context Kinds",
+      "type": "array"
+    },
+    "input_slots": {
+      "items": {
+        "$ref": "#/$defs/PromptInputSlot"
+      },
+      "title": "Input Slots",
+      "type": "array"
+    },
+    "meta": {
+      "$ref": "#/$defs/RecordMeta"
+    },
+    "output_schema_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "owner_role": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Owner Role",
+      "type": "string"
+    },
+    "prompt_key": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Prompt Key",
+      "type": "string"
+    },
+    "provider_profile_refs": {
+      "items": {
+        "$ref": "#/$defs/StoredDataRef"
+      },
+      "title": "Provider Profile Refs",
+      "type": "array"
+    },
+    "purpose": {
+      "$ref": "#/$defs/Purpose"
+    },
+    "quality_evaluation_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "redaction_policy_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "result_kind": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Result Kind",
+      "type": "string"
+    },
+    "retry_policy_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "reviewer_roles": {
+      "items": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "title": "Reviewer Roles",
+      "type": "array"
+    },
+    "semantic_validator_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "session_policy": {
+      "$ref": "#/$defs/SessionPolicy"
+    },
+    "status": {
+      "enum": [
+        "DRAFT",
+        "ACTIVE",
+        "RETIRED"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "task_kind": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Task Kind",
+      "type": "string"
+    },
+    "template_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
+    "template_version": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Template Version",
+      "type": "string"
+    },
+    "tool_policy_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    }
+  },
+  "required": [
+    "meta",
+    "prompt_key",
+    "agent_role",
+    "task_kind",
+    "purpose",
+    "template_ref",
+    "template_version",
+    "input_slots",
+    "forbidden_context_kinds",
+    "output_schema_ref",
+    "session_policy",
+    "provider_profile_refs",
+    "execution_limits_ref",
+    "retry_policy_ref",
+    "semantic_validator_ref",
+    "tool_policy_ref",
+    "redaction_policy_ref",
+    "result_kind",
+    "status",
+    "quality_evaluation_ref",
+    "owner_role",
+    "reviewer_roles"
+  ],
+  "title": "PromptRegistryEntry",
+  "type": "object"
+}

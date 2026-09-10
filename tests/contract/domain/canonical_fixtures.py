@@ -138,6 +138,10 @@ def make(name: str, kind: str | None = None) -> dict[str, Any]:
         value["program_id"] = "program1"
     if name == "CodeWorkspace":
         value.update(analysis_id="a1", commit_id=None)
+    if name == "CodeContextResponse":
+        value.update(returned_fragment_count=0, returned_bytes=0)
+    if name == "DynamicReproductionToolRequest":
+        value["action"] = "FINISH"
     if name == "RuleExecutionRecord":
         value["rules"] = [
             dict(
