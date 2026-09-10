@@ -86,6 +86,8 @@ rule을 실제로 실행했는지는 위 `RuleExecutionRecord`로 추적한다. 
 CodeQL·OpenGrep이 rule 매치로 만든 source 후보는 "이 위치에 이런 패턴이 있다"는 사실만 담을 뿐, 실제로 공격자가 조작 가능한 유저 입력에서 그 위치까지 도달 가능한 경로가 있는지는 담지 않는다. 이 경로는 AST가 만든 call·data-flow 그래프로 판단한다.
 
 - 요청 진입점(`StaticFactBundle.route_bindings`의 `CodeRelation(relation_kind=ROUTE_BINDING)`으로 식별된 handler 파라미터 등)에서 source 후보까지 이어지는 `CodeRelation(relation_kind=DATA_FLOW)` 경로가 있으면 그 관계를 `StaticFactBundle.data_flow_candidates`에 근거로 남긴다.
+- source 후보 자체가 그 진입점일 때는 이어질 경로가 없다. 어떤 `route_bindings` 항목의 `to_location`이 source 후보의 `location`을 포함하면(또는 `to_symbol_id`가 그 후보의 `symbol_id`와 같으면) 그 `ROUTE_BINDING` 관계 자체가 도달 근거이며 별도 `DATA_FLOW` 관계를 요구하지 않는다. handler 파라미터를 그대로 source 후보로 만드는 도구에서 이 형태가 나온다.
+- `data_flow_candidates`에는 도달 근거가 아닌 `DATA_FLOW` 관계도 들어온다. 08번이 이 목록을 후보 사이의 관찰된 관계 전체로 정의하므로 source 후보에서 sink 후보로 이어지는 관계도 같은 목록에 남으며, 목록이 비어 있지 않다는 사실만으로 도달 근거가 있다고 보지 않는다.
 - `data_flow_candidates`에 해당 근거가 없다는 사실은 서로 다른 두 상태를 가리킬 수 있으므로 섞어 기록하지 않는다. AST의 call/data-flow 분석도 결국 하나의 도구 실행이므로 위 `ToolRunResult.status` 규칙을 그대로 따른다.
   - `status=SUCCEEDED`이고 필요한 범위가 `coverage`에 포함돼 있으면: 탐색은 했지만 경로를 확인하지 못한 것이다.
   - `status=PARTIAL`(예: 재귀 깊이 제한으로 일부 경로만 추적 — 범위는 `coverage`에 남긴다), `FAILED`(분석 자체 실패 — `AnalysisError(code=STATIC_TOOL_ERROR)`, [결과와 관측 가능성](./07-results-and-observability.md) 참고), `SKIPPED`(미실행) 중 하나면: 분석이 부족하거나 실패해서 확인하지 못한 것이다. 원인은 `gaps`·`errors`에 남긴다.
@@ -116,7 +118,7 @@ source_candidate: # CodeFact, codeql이 생성
     rule_id: py/sql-injection
     raw_result_ref: { stored_data_id: data-raw-001, data_kind: raw_tool_result, content_hash: "sha256:...", workspace_id: ws-001, commit_id: 7f3a2c1, record_id: null }
 
-reachability_edge: # CodeRelation, ast 파서의 data-flow 분석이 생성
+reachability_edge: # CodeRelation, data-flow 분석을 수행한 도구가 생성
   relation_id: cr-df-001
   relation_kind: DATA_FLOW
   from_symbol_id: sym-get-order # app.route('/orders/<id>') 핸들러의 id 파라미터
