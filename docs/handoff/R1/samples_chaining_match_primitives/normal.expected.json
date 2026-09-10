@@ -1,0 +1,421 @@
+{
+  "_note": {
+    "how_to_read": "must를 전부 만족하고 must_not에 하나도 걸리지 않으면 통과입니다. example_valid_output은 통과하는 출력 하나일 뿐 정답이 아닙니다.",
+    "the_point": "match가 성립하는 것 자체보다, assumptions 계산과 조합 분류가 규칙대로인지가 이 사례의 판정 기준입니다.",
+    "grading": "각 항목의 grading은 판정 방법입니다. auto는 출력 JSON만 보고 코드로 판정할 수 있는 구조·값·개수이고, judgement는 자연어의 의미를 봐야 해서 LLM-judge나 사람 검토가 필요한 항목입니다. 자동 시험에 연결할 때 auto만 하네스가 강제하고 judgement는 별도 경로로 채점해야 합니다.",
+    "trigger_scope": "이 샘플의 검토 대상은 trigger가 낀 조합뿐입니다. 05-prompt-runtime.md:245가 trigger를 REQUIRED_ONE slot으로 노출하고 06-chaining.md:96이 계기 Primitive를 기준으로 검토 범위와 담당을 정합니다.",
+    "privilege_axis": "권한 축은 downstream input의 privilege_level이 null이 아닐 때만 적용됩니다. 08:1356과 06:88이 그렇게 정합니다."
+  },
+  "must": [
+    {
+      "id": "M-01",
+      "check": "primitive_match_candidates의 길이가 정확히 1이다.",
+      "grading": "auto",
+      "why": "검토 대상 조합은 (prim-000A.result → prim-000B.d-b-1)과 (prim-000A.result → prim-000B.d-b-2) 둘이다. prim-000B는 result가 null이라 upstream이 될 수 없고, prim-000A를 자기 자신과 짝짓지 않는다. 이 중 d-b-1만 조건을 만족한다."
+    },
+    {
+      "id": "M-02",
+      "check": "그 candidate의 upstream_result_ref가 rec-prim-000A를, downstream_input_ref가 rec-prim-000B를 가리키고 matched_input_id가 \"d-b-1\"이다.",
+      "grading": "auto",
+      "why": "d-a-r과 d-b-1의 entity_refs가 같은 sym-fetch-url이고, 둘 다 privilege 축에서 downstream이 null이라 조건 3이 해당 없으며, upstream 능력이 downstream의 전제이므로 순서도 성립한다. 08은 matched_input_id가 downstream inputs[].draft_id 하나와 같아야 한다고 정한다."
+    },
+    {
+      "id": "M-03",
+      "check": "candidate의 parent_hypothesis_ids가 정확히 {hyp-0001, hyp-0002}이고 중복이 없다.",
+      "grading": "auto",
+      "why": "08이 '각 candidate의 parent_hypothesis_ids는 해당 upstream/downstream Primitive가 직접 가리키는 source hypothesis의 중복 없는 합집합'으로 정한다."
+    },
+    {
+      "id": "M-04",
+      "check": "candidate의 parent_verification_refs가 rec-ver-0001과 rec-ver-0002를 중복 없이 담는다.",
+      "grading": "auto",
+      "why": "같은 규칙의 Verification 쪽이다."
+    },
+    {
+      "id": "M-05",
+      "check": "candidate_state가 \"UNVALIDATED\"이고 workspace_id·commit_id가 입력과 같다.",
+      "grading": "auto",
+      "why": "08의 PrimitiveMatchCandidate 스키마가 candidate_state를 UNVALIDATED로 고정한다."
+    },
+    {
+      "id": "M-06",
+      "check": "evidence_refs가 하나 이상 있고 입력 Primitive의 evidence_refs 안에서 나온 값이다.",
+      "grading": "judgement",
+      "why": "08이 'evidence_refs는 entity·privilege·순서·restriction 결론의 실제 근거를 하나 이상 포함한다'로 정한다."
+    },
+    {
+      "id": "M-07",
+      "check": "input_primitive_refs가 rec-prim-000A와 rec-prim-000B를 중복 없이 담는다.",
+      "grading": "auto",
+      "why": "08이 'input_primitive_refs는 실제 match candidate에 사용된 Primitive 합집합'으로 정한다. considered 전체를 그대로 복사한 것이 아니어야 한다."
+    },
+    {
+      "id": "M-08",
+      "check": "source_result_refs가 rec-ver-0001, rec-ver-0002, rec-tgr-0001을 중복 없이 담는다. prim-000B의 technical_review_ref는 null이므로 들어가지 않는다.",
+      "grading": "auto",
+      "why": "08이 'source_result_refs는 match에 사용된 Primitive들의 source_verification_ref와 non-null technical_review_ref를 중복 없이 합친 정확한 집합'으로 정한다."
+    },
+    {
+      "id": "M-09",
+      "check": "no_match_reasons의 길이가 정확히 1이고, checked_input_id가 \"d-b-2\"이며 reason_code가 \"ENTITY_UNRELATED\"다.",
+      "grading": "auto",
+      "why": "d-b-2의 entity_refs는 sym-render-preview이고 upstream result의 entity_refs는 sym-fetch-url이다. 두 요소가 이어진다는 코드 근거가 입력에 없다. 08은 검토했으나 candidate를 만들지 않은 조합마다 하나씩 남기라고 정한다."
+    },
+    {
+      "id": "M-10",
+      "check": "no_match_reasons의 두 reference가 considered에 있는 Primitive이고, 성립한 candidate의 조합과 (upstream, downstream, input) 세 값이 모두 같지는 않다.",
+      "grading": "auto",
+      "why": "08이 no_match_reasons와 primitive_match_candidates가 같은 조합에서 겹칠 수 없다고 정한다. 여기서는 checked_input_id가 달라 겹치지 않는다."
+    },
+    {
+      "id": "M-11",
+      "check": "chained_hypothesis_proposals의 길이가 정확히 1이고 origin이 \"CHAINING\"이다.",
+      "grading": "auto",
+      "why": "06이 성립한 match마다 origin=CHAINING proposal 하나를 만들도록 정한다."
+    },
+    {
+      "id": "M-12",
+      "check": "그 proposal의 source_primitive_match_id가 위 candidate의 primitive_match_id와 같고 parent_hypothesis_ids가 candidate의 것과 같은 집합이다.",
+      "grading": "auto",
+      "why": "06과 08이 계보 보존을 요구한다. 08은 CHAINING proposal의 source_primitive_match_id가 필수이며 COMMITTED candidate에 정확히 한 번 존재해야 한다고 정한다."
+    },
+    {
+      "id": "M-13",
+      "check": "proposal의 observed_facts가 빈 배열이다.",
+      "grading": "auto",
+      "why": "08이 'origin=CHAINING proposal은 Chaining 입력 경계에 CodeFact가 없으므로 observed_facts=[]만 허용한다'로 정한다."
+    },
+    {
+      "id": "M-14",
+      "check": "proposal의 assumptions가 정확히 2개이고, 다음 두 문자열을 그대로 담는다. 순서는 무관하다.\n  \"요청을 보내려면 require_login을 통과한 인증 세션이 있어야 한다.\"\n  \"요청 응답 본문이 호출자에게 그대로 반환되어야 한다.\"",
+      "grading": "auto",
+      "why": "06이 계산 방법을 고정한다 — upstream의 inputs 전부(d-a-1)와 downstream의 나머지 inputs(d-b-2)가 남고, 이번에 매칭된 downstream input(d-b-1)은 빠진다. 남은 PrimitiveDraft마다 description을 문자열 그대로 하나씩 담는다. 요약·합침·재작성은 허용되지 않으며 runtime이 개수와 내용을 대조한다."
+    },
+    {
+      "id": "M-15",
+      "check": "proposal의 restrictions가 정확히 2개이고 restriction_id가 res-A1과 res-B1이며, 각 statement와 fact_refs가 입력 Primitive의 값과 완전히 같다.",
+      "grading": "auto",
+      "why": "06과 08이 'proposal의 restrictions는 입력 Primitive 양쪽에 있는 Restriction 객체의 중복 없는 합집합'으로 정하고, 같은 restriction_id의 canonical content가 다르면 저장하지 않는다."
+    },
+    {
+      "id": "M-16",
+      "check": "proposal의 falsification_questions가 하나 이상이고, 그중 최소 하나가 fetch_url의 응답이 render_preview를 통해 노출되는 지점, 즉 두 능력이 이어지는 지점을 겨냥한다.",
+      "grading": "judgement",
+      "why": "06이 '자식 가설은 두 능력이 이어지는 지점을 겨냥한 반증 질문을 최소 하나 포함한다'로 정한다. 결합 지점은 어느 부모의 조건도 아니라 assumptions에 드러나지 않기 때문이다."
+    },
+    {
+      "id": "M-17",
+      "check": "proposal의 vulnerability_type_candidates의 모든 원소가 SQL_INJECTION / XSS / OS_COMMAND_INJECTION / PATH_TRAVERSAL / SSRF / IDOR_BOLA 중 하나다.",
+      "grading": "auto",
+      "why": "verification-playbooks.md의 mapping 표가 정한 어휘이며, 08은 PlaybookPolicy.type_playbooks와 문자열이 정확히 일치할 때만 TYPE_SPECIFIC 플레이북을 선택한다고 정한다."
+    },
+    {
+      "id": "M-18",
+      "check": "proposal의 proposal_state가 HYPOTHESIS_ONLY, assertion_mode가 NON_FINAL이다.",
+      "grading": "auto",
+      "why": "03이 모든 proposal에 이 두 값을 요구한다."
+    },
+    {
+      "id": "M-19",
+      "check": "excluded_lineage_refs가 빈 배열이다.",
+      "grading": "auto",
+      "why": "lineage_results가 비어 있고 두 가설 모두 source_primitive_match_id=null이라 조상이 없다. 제외할 대상이 존재하지 않는다."
+    },
+    {
+      "id": "M-20",
+      "check": "검토 대상 조합이 trigger(prim-000A)가 낀 둘뿐이다. (A.result → B.d-b-1)과 (A.result → B.d-b-2) 외의 조합을 primitive_match_candidates·no_match_reasons·excluded_lineage_refs 어디에도 넣지 않는다.",
+      "grading": "auto",
+      "why": "06-chaining.md:96이 '새로 저장된 Primitive 하나를 계기로 그 Primitive와 자기 자신을 제외한 기존 Primitive 전체를 비교한다'로 검토 범위를 정한다. prim-000B는 result가 null이라 upstream이 될 수 없으므로 반대 방향 조합은 존재하지 않는다."
+    }
+  ],
+  "must_not": [
+    {
+      "id": "N-01",
+      "check": "proposal의 assumptions에 d-b-1의 description(\"서버가 공격자가 지정한 URL로 HTTP 요청을 보낼 수 있어야 한다.\")을 넣지 않는다.",
+      "grading": "auto",
+      "why": "이번 match가 채운 input이므로 자식의 전제에서 빠진다. 남겨 두면 이미 확보한 능력을 다시 조건으로 요구하는 것이 된다."
+    },
+    {
+      "id": "N-02",
+      "check": "assumptions의 문자열을 요약하거나 두 조건을 한 문장으로 합치지 않는다.",
+      "grading": "auto",
+      "why": "06이 'description을 문자열 그대로 사용해 assumptions에 하나씩 담는다'로 정하고 runtime이 개수와 내용을 대조한다."
+    },
+    {
+      "id": "N-03",
+      "check": "같은 조합을 primitive_match_candidates와 no_match_reasons 양쪽에 넣지 않는다. excluded_lineage_refs와도 겹치지 않는다.",
+      "grading": "auto",
+      "why": "한 조합은 세 목록 중 정확히 하나에만 들어간다. 08의 저장 검사가 겹침을 거절한다."
+    },
+    {
+      "id": "N-04",
+      "check": "proposal의 observed_facts, target_entities, target_locations, suspected_path에 입력 Primitive의 entity 계보 밖 값을 넣지 않는다.",
+      "grading": "auto",
+      "why": "08이 '값을 넣으면 부모 Primitive의 result.entity_refs와 inputs[].entity_refs에서 exact하게 얻을 수 있는 범위를 벗어날 수 없다'로 정한다. 비워 두는 것이 기본이다."
+    },
+    {
+      "id": "N-05",
+      "check": "considered에 없는 Primitive를 어느 목록에서도 참조하지 않는다.",
+      "grading": "auto",
+      "why": "고정 입력 밖의 Primitive를 쓰면 STALE_RESULT로 저장이 거절된다."
+    },
+    {
+      "id": "N-06",
+      "check": "Primitive의 admission 자격을 다시 판단하거나 admission_decision_ref가 null인 prim-000B를 자격 미달로 취급하지 않는다.",
+      "grading": "judgement",
+      "why": "06이 'admission은 등록 시점의 1회 판정이라 등록된 Primitive는 run 안에서 자격을 잃지 않는다. 그래서 체이닝은 admission decision을 다시 확인하지 않는다'로 정한다. HOLD Primitive는 원래 admission decision 없이 등록된다."
+    },
+    {
+      "id": "N-07",
+      "check": "부모 가설의 verdict, CWE, Gate 결과, severity를 언급하거나 바꾸는 출력을 만들지 않는다.",
+      "grading": "judgement",
+      "why": "06의 금지 권한에 해당하며 AUTHORITY_DENIED로 거절된다."
+    },
+    {
+      "id": "N-08",
+      "check": "match를 근거 없이 추가로 만들지 않는다. 특히 d-b-2에 대해 '응답이 어차피 돌아올 것이다' 같은 추정으로 candidate를 만들지 않는다.",
+      "grading": "judgement",
+      "why": "08이 '축이 맞지 않거나 근거가 없으면 후보를 만들지 않고 no_match_reasons에 이유를 남긴다'로 정한다."
+    },
+    {
+      "id": "N-09",
+      "check": "PASS, UNCERTAIN 같은 중간 판정 필드나 unresolved 조건 목록을 추가하지 않는다.",
+      "grading": "auto",
+      "why": "08이 '후보가 존재한다는 것 자체가 비교를 통과했다는 뜻이므로 PASS/UNCERTAIN check와 unresolved 조건을 중복 저장하지 않는다'로 정한다."
+    },
+    {
+      "id": "N-10",
+      "check": "meta나 considered_primitive_refs를 출력에 넣지 않는다.",
+      "grading": "auto",
+      "why": "runtime이 채우는 값이다. considered_primitive_refs는 REGISTER_WORK가 고정한다."
+    }
+  ],
+  "downstream_expectation": {
+    "what": "이 결과를 받는 runtime이 해야 하는 처리입니다. R3 구현 확인용입니다.",
+    "steps": [
+      "ChainingResult를 저장하기 전에 세 Primitive 목록과 source·parent 목록의 소속·중복을 검사한다.",
+      "(upstream_result_ref, downstream_input_ref, matched_input_id) unique key를 확인한다. 충돌은 정상 중복이 아니라 담당 규칙 위반이므로 결과를 저장하지 않고 AnalysisError로 남긴다. FALSE나 HOLD로 바꾸지 않는다.",
+      "ChainingResult가 COMMITTED된 뒤에 ORCHESTRATION 등록 runtime이 chained_hypothesis_proposals 원소를 별도 immutable record로 저장한다. proposal ID·문장·목록·순서를 그대로 쓰고 ID를 다시 발급하거나 문장을 고치지 않는다.",
+      "등록 전에 계보를 검사한다. 부모 reference가 무효하거나 Verification 시작점을 하나도 복원할 수 없으면 등록과 배정을 거절한다.",
+      "등록된 자식 가설에는 CONTEXT_RETRIEVAL work가 붙는다. Context Retrieval Service가 source_primitive_match_id 계보를 따라 부모 Primitive의 entity_refs에서 검증 시작점을 복구하고, 자식 Verification이 그 CodeContextResponse를 소비한다.",
+      "자식은 전체 Verification 파이프라인을 처음부터 거친다. 부모의 판정은 바뀌지 않는다."
+    ]
+  },
+  "example_valid_output": {
+    "primitive_match_candidates": [
+      {
+        "primitive_match_id": "pm-1",
+        "upstream_result_ref": {
+          "stored_data_id": "data-prim-000A",
+          "data_kind": "primitive",
+          "content_hash": "sha256:b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000A"
+        },
+        "downstream_input_ref": {
+          "stored_data_id": "data-prim-000B",
+          "data_kind": "primitive",
+          "content_hash": "sha256:d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000B"
+        },
+        "matched_input_id": "d-b-1",
+        "parent_hypothesis_ids": [
+          "hyp-0001",
+          "hyp-0002"
+        ],
+        "parent_verification_refs": [
+          {
+            "stored_data_id": "data-ver-0001",
+            "data_kind": "verification_result",
+            "content_hash": "sha256:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "workspace_id": "ws-003",
+            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+            "record_id": "rec-ver-0001"
+          },
+          {
+            "stored_data_id": "data-ver-0002",
+            "data_kind": "verification_result",
+            "content_hash": "sha256:c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
+            "workspace_id": "ws-003",
+            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+            "record_id": "rec-ver-0002"
+          }
+        ],
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "evidence_refs": [
+          {
+            "stored_data_id": "data-poc-0001",
+            "data_kind": "poc_bundle",
+            "content_hash": "sha256:f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+            "workspace_id": "ws-003",
+            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+            "record_id": "rec-poc-0001"
+          },
+          {
+            "stored_data_id": "data-ctx-0002",
+            "data_kind": "code_context_response",
+            "content_hash": "sha256:293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+            "workspace_id": "ws-003",
+            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+            "record_id": "rec-ctx-0002"
+          }
+        ],
+        "candidate_state": "UNVALIDATED"
+      }
+    ],
+    "input_primitive_refs": [
+      {
+        "stored_data_id": "data-prim-000A",
+        "data_kind": "primitive",
+        "content_hash": "sha256:b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-prim-000A"
+      },
+      {
+        "stored_data_id": "data-prim-000B",
+        "data_kind": "primitive",
+        "content_hash": "sha256:d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-prim-000B"
+      }
+    ],
+    "source_result_refs": [
+      {
+        "stored_data_id": "data-ver-0001",
+        "data_kind": "verification_result",
+        "content_hash": "sha256:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-ver-0001"
+      },
+      {
+        "stored_data_id": "data-ver-0002",
+        "data_kind": "verification_result",
+        "content_hash": "sha256:c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-ver-0002"
+      },
+      {
+        "stored_data_id": "data-tgr-0001",
+        "data_kind": "technical_evidence_review",
+        "content_hash": "sha256:18293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-tgr-0001"
+      }
+    ],
+    "chained_hypothesis_proposals": [
+      {
+        "proposal_state": "HYPOTHESIS_ONLY",
+        "assertion_mode": "NON_FINAL",
+        "origin": "CHAINING",
+        "vulnerability_type_candidates": [
+          "SSRF"
+        ],
+        "target_entities": [],
+        "target_locations": [],
+        "suspected_path": [],
+        "observed_facts": [],
+        "assumptions": [
+          "요청을 보내려면 require_login을 통과한 인증 세션이 있어야 한다.",
+          "요청 응답 본문이 호출자에게 그대로 반환되어야 한다."
+        ],
+        "restrictions": [
+          {
+            "restriction_id": "res-A1",
+            "statement": "요청 스킴이 http와 https로 제한되어 file과 gopher는 거절된다.",
+            "fact_refs": [
+              {
+                "bundle_ref": {
+                  "stored_data_id": "data-sfb-0003",
+                  "data_kind": "static_fact_bundle",
+                  "content_hash": "sha256:0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                  "workspace_id": "ws-003",
+                  "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+                  "record_id": "rec-sfb-0003"
+                },
+                "fact_id": "cf-val-021"
+              }
+            ],
+            "evidence_refs": []
+          },
+          {
+            "restriction_id": "res-B1",
+            "statement": "응답 본문이 8KB로 잘려 반환된다.",
+            "fact_refs": [
+              {
+                "bundle_ref": {
+                  "stored_data_id": "data-sfb-0003",
+                  "data_kind": "static_fact_bundle",
+                  "content_hash": "sha256:0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                  "workspace_id": "ws-003",
+                  "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+                  "record_id": "rec-sfb-0003"
+                },
+                "fact_id": "cf-oth-044"
+              }
+            ],
+            "evidence_refs": []
+          }
+        ],
+        "falsification_questions": [
+          {
+            "question_id": "q-1",
+            "question": "app/preview.py의 fetch_url이 받아 온 응답 본문이 render_preview를 통해 호출자에게 그대로 반환되는가, 아니면 형식 검사나 재작성을 거치는가."
+          },
+          {
+            "question_id": "q-2",
+            "question": "res-B1의 8KB 절단이 적용된 뒤에도 메타데이터 응답에서 자격증명 부분이 남는가."
+          }
+        ],
+        "validation_checks": [
+          {
+            "validation_id": "v-1",
+            "instruction": "fetch_url의 반환값이 render_preview까지 전달되는 실제 코드 경로를 확인한다."
+          },
+          {
+            "validation_id": "v-2",
+            "instruction": "res-A1의 스킴 제한이 리다이렉트를 따라간 뒤에도 유지되는지 확인한다."
+          }
+        ],
+        "parent_hypothesis_ids": [
+          "hyp-0001",
+          "hyp-0002"
+        ],
+        "source_primitive_match_id": "pm-1"
+      }
+    ],
+    "excluded_lineage_refs": [],
+    "no_match_reasons": [
+      {
+        "upstream_result_ref": {
+          "stored_data_id": "data-prim-000A",
+          "data_kind": "primitive",
+          "content_hash": "sha256:b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000A"
+        },
+        "downstream_input_ref": {
+          "stored_data_id": "data-prim-000B",
+          "data_kind": "primitive",
+          "content_hash": "sha256:d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000B"
+        },
+        "checked_input_id": "d-b-2",
+        "reason_code": "ENTITY_UNRELATED",
+        "detail": "upstream result는 sym-fetch-url, d-b-2는 sym-render-preview를 가리킨다. 두 코드 요소가 호출이나 데이터 흐름으로 이어진다는 근거가 입력 Primitive의 evidence 안에 없다. d-b-2는 이번 match가 채우는 조건이 아니라 자식 가설의 assumption으로 남는다."
+      }
+    ],
+    "errors": []
+  }
+}

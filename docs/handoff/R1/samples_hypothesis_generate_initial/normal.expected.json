@@ -1,0 +1,324 @@
+{
+  "_note": {
+    "how_to_read": "LLM 출력은 실행마다 문장이 달라집니다. 그래서 문장 전체를 정답으로 두지 않고 must / must_not / example_valid_output 셋으로 나눴습니다. must를 전부 만족하고 must_not에 하나도 걸리지 않으면 통과입니다.",
+    "example_is_not_the_answer": "example_valid_output은 통과하는 출력 하나일 뿐 정답이 아닙니다. 문장이 달라도 must를 만족하면 통과이고, 문장이 비슷해도 must_not에 걸리면 실패입니다.",
+    "grading": "각 항목의 grading은 판정 방법입니다. auto는 출력 JSON만 보고 코드로 판정할 수 있는 구조·값·개수이고, judgement는 자연어의 의미를 봐야 해서 LLM-judge나 사람 검토가 필요한 항목입니다. 자동 시험에 연결할 때 auto만 하네스가 강제하고 judgement는 별도 경로로 채점해야 합니다."
+  },
+  "must": [
+    {
+      "id": "M-01",
+      "check": "proposals의 길이가 1 이상이다.",
+      "grading": "auto",
+      "why": "route_bindings(cr-route-001)와 data_flow_candidates(cr-df-001)에 관계가 기록돼 있고 같은 핸들러 안에 sink 후보가 있으며 sanitizer·validator 후보는 비어 있다. 03-agent-roles-and-orchestration.md는 이 단계에서 가설을 만들 것을 요구하며 방어 후보 부재를 이유로 생략하지 않는다."
+    },
+    {
+      "id": "M-02",
+      "check": "어떤 proposal의 vulnerability_type_candidates가 정확히 문자열 \"SQL_INJECTION\"을 포함한다.",
+      "grading": "auto",
+      "why": "verification-playbooks.md의 mapping 표가 vulnerability_type 어휘를 SQL_INJECTION / XSS / OS_COMMAND_INJECTION / PATH_TRAVERSAL / SSRF / IDOR_BOLA로 고정한다. 08-lightweight-data-contracts.md는 이 문자열이 PlaybookPolicy.type_playbooks와 정확히 일치할 때만 TYPE_SPECIFIC 플레이북을 선택한다고 정한다."
+    },
+    {
+      "id": "M-03",
+      "check": "vulnerability_type_candidates의 모든 원소가 위 여섯 값 중 하나이고 중복이 없다.",
+      "grading": "auto",
+      "why": "08은 비어 있지 않은 값과 중복 없는 문자열만 허용한다. 자유 서술은 TYPE_NOT_ALLOWED로 떨어져 COMMON 플레이북만 붙는다."
+    },
+    {
+      "id": "M-04",
+      "check": "observed_facts의 모든 fact_id가 입력 bundle에 있는 값이다. 입력에 없는 fact_id가 하나도 없다.",
+      "grading": "auto",
+      "why": "03의 출력 검증 2단계가 관측 사실의 근거 reference를 검사한다. 없는 사실을 만든 출력은 INVALID_OUTPUT이다."
+    },
+    {
+      "id": "M-05",
+      "check": "observed_facts가 cf-src-001과 cf-sink-001을 모두 포함한다.",
+      "grading": "auto",
+      "why": "가설이 이 두 사실에 의존한다. 입력에 있고 fact_id를 그대로 인용할 수 있으므로 assumptions가 아니라 observed_facts에 들어가야 한다."
+    },
+    {
+      "id": "M-06",
+      "check": "restrictions가 하나 이상 있고, 그중 하나의 fact_refs[].fact_id가 cf-auth-001을 가리킨다.",
+      "grading": "auto",
+      "why": "cf-auth-001은 AUTH_CHECK 사실이라 공격 가능 범위를 제한하는 조건이고 근거를 댈 수 있다. 08의 세 갈래 구분에서 restrictions에 해당한다."
+    },
+    {
+      "id": "M-07",
+      "check": "observed_facts[].fact_id 집합과 restrictions[].fact_refs[].fact_id 집합의 교집합이 비어 있다.",
+      "grading": "auto",
+      "why": "08이 '하나의 관측 사실은 공격을 뒷받침하는 사실이거나 제한 근거 중 한쪽으로만 분류한다'로 정한다. 이 검사가 세 갈래 구분이 실제로 지켜졌는지를 가른다."
+    },
+    {
+      "id": "M-08",
+      "check": "assumptions가 하나 이상 있고, 각 항목이 입력에서 근거를 댈 수 없는 조건이다.",
+      "grading": "judgement",
+      "why": "sanitizer_candidates와 validator_candidates가 비어 있다는 것은 방어가 없다는 관측이 아니라 후보가 잡히지 않았다는 관측이다. 또한 입력의 data_flow_candidates에 기록되지 않은 구간(이 입력에서는 cf-src-001에서 cf-sink-001까지)은 관측된 사실이 아니다. 두 가지 모두 아직 확인되지 않은 조건이므로 assumptions에 있어야 한다."
+    },
+    {
+      "id": "M-09",
+      "check": "falsification_questions가 하나 이상 있고, 각 question이 확인하면 참·거짓이 갈리는 구체적 질문이다. 가설 전체를 되묻는 형태가 아니다.",
+      "grading": "judgement",
+      "why": "08이 '질문은 가설의 필수 조건 하나를 실제 근거로 반증할 수 있게 구체적으로 작성한다'로 정한다."
+    },
+    {
+      "id": "M-10",
+      "check": "validation_checks가 하나 이상 있고 각 instruction이 무엇을 확인하면 완료인지를 적는다.",
+      "grading": "judgement",
+      "why": "03이 validation_checks를 proposal 필수 항목으로 요구한다."
+    },
+    {
+      "id": "M-11",
+      "check": "question_id, validation_id, restriction_id가 각각 이 출력 안에서 유일하다.",
+      "grading": "auto",
+      "why": "03의 출력 검증 2단계가 중복 ID를 INVALID_OUTPUT으로 처리한다."
+    },
+    {
+      "id": "M-12",
+      "check": "출력에 나오는 모든 CodeLocation의 workspace_id가 \"ws-001\"이고 commit_id가 \"7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b\"이다.",
+      "grading": "auto",
+      "why": "03의 출력 검증 2단계가 workspace_id·commit_id·CodeLocation을 검사한다. 다르면 저장이 거절된다."
+    },
+    {
+      "id": "M-13",
+      "check": "모든 proposal에서 proposal_state=HYPOTHESIS_ONLY, assertion_mode=NON_FINAL, origin=INITIAL, parent_hypothesis_ids=[], source_primitive_match_id=null이다.",
+      "grading": "auto",
+      "why": "03이 앞의 두 값을 필수로 고정하고, 08이 초기 proposal의 parent_hypothesis_ids와 source_primitive_match_id를 각각 빈 배열과 null로 고정한다."
+    },
+    {
+      "id": "M-14",
+      "check": "target_entities가 비어 있지 않고, 각 symbol_id가 입력 entities에 있는 값이다.",
+      "grading": "auto",
+      "why": "03이 '관련 entity와 실제 location'을 proposal 필수 항목으로 요구한다."
+    },
+    {
+      "id": "M-15",
+      "check": "suspected_path에 값이 있다면 모든 원소가 입력의 call_edges / data_flow_candidates / route_bindings에 있는 CodeRelation이거나 입력의 CodeLocation이다.",
+      "grading": "auto",
+      "why": "02가 '도구가 관계를 제공하지 않았으면 임의로 연결하지 않는다'로 정한다. 빈 배열도 허용된다."
+    },
+    {
+      "id": "M-16",
+      "check": "restrictions[].fact_refs의 각 항목이 fact_id만 담고 bundle_ref를 담지 않는다.",
+      "grading": "auto",
+      "why": "bundle_ref는 StoredDataRef이고 그 stored_data_id·data_kind·content_hash는 facts slot이 노출하는 어떤 field에도 없다. RecordMeta에도 그 세 값이 없으므로 /meta를 노출해도 만들 수 없다. 06-implementation-baseline.md:558이 저장 식별자 발명을 금지하므로 Agent는 fact_id만 내고 runtime이 채운다. handoff.md의 계약 수정 2번이 이 처리다."
+    },
+    {
+      "id": "M-17",
+      "check": "suspected_path가 비어 있거나, 값이 있다면 입력의 call_edges / data_flow_candidates / route_bindings에 실제로 있는 관계만 담는다. 입력에 없는 연결을 만들어 넣지 않는다.",
+      "grading": "auto",
+      "why": "02-static-fact-layer.md가 '도구가 관계를 제공하지 않았으면 임의로 연결하지 않는다'로 정한다. 관측된 관계의 방향과 범위는 정규화 계층이 정하는 것이므로 Agent가 재해석하지 않는다. data_flow_candidates가 어느 구간을 담는지는 아직 확정되지 않았다(handoff.md 계약 요청 5번)."
+    }
+  ],
+  "must_not": [
+    {
+      "id": "N-01",
+      "check": "confirmed, verified, exploitable, finding 중 어떤 단어로도 확정을 주장하지 않는다.",
+      "grading": "auto",
+      "why": "03이 Hypothesis Agent에게 확정 주장 권한이 없다고 명시한다."
+    },
+    {
+      "id": "N-02",
+      "check": "TRUE, FALSE, HOLD 중 어떤 verdict도 출력하지 않는다.",
+      "grading": "auto",
+      "why": "판정은 Verification의 몫이다."
+    },
+    {
+      "id": "N-03",
+      "check": "severity, CVSS, risk score, priority 같은 점수나 순위를 출력하지 않는다.",
+      "grading": "auto",
+      "why": "03이 '등록된 가설은 전수 검증한다. 점수로 미리 선별하거나 검증 순서를 매기지 않는다'로 정한다."
+    },
+    {
+      "id": "N-04",
+      "check": "입력 bundle에 없는 file_path, 함수명, fact_id, symbol_id, relation_id를 출력하지 않는다. 입력에 없는 record_id·content_hash를 계산하거나 지어내지 않는다.",
+      "grading": "auto",
+      "why": "없는 사실을 만든 것이다."
+    },
+    {
+      "id": "N-05",
+      "check": "cf-auth-001을 observed_facts에 넣으면서 동시에 restrictions의 fact_refs로도 쓰지 않는다.",
+      "grading": "auto",
+      "why": "M-07과 같은 규칙의 반대 방향 검사다."
+    },
+    {
+      "id": "N-06",
+      "check": "vulnerability_type_candidates에 \"SQL Injection\", \"SQLi\" 같은 목록 밖 문자열을 넣지 않는다.",
+      "grading": "auto",
+      "why": "문자열이 정확히 일치하지 않으면 TYPE_NOT_ALLOWED가 되어 유형별 플레이북이 붙지 않는다. 결론이 맞아도 값이 틀리면 실패다."
+    },
+    {
+      "id": "N-07",
+      "check": "추가 코드 조회나 정적 검증을 요청하는 출력을 만들지 않는다.",
+      "grading": "judgement",
+      "why": "이 단계의 입력이 전부다. 조회는 CONTEXT_RETRIEVAL work의 일이다."
+    },
+    {
+      "id": "N-08",
+      "check": "proposals 배열 밖에 자유 형식 분석문을 출력하지 않는다.",
+      "grading": "auto",
+      "why": "03이 '출력은 자유 형식 분석문이 아니라 HypothesisProposal[]'로 정한다."
+    }
+  ],
+  "downstream_expectation": {
+    "what": "이 결과를 받는 runtime이 해야 하는 처리입니다. R3 구현 확인용이며 LLM 출력 판정 기준이 아닙니다.",
+    "steps": [
+      "구조 parser가 JSON syntax와 schema를 검증한다.",
+      "enum, 필수 field, workspace_id·commit_id·CodeLocation, restriction 근거 reference, 관측 사실과 restriction 근거의 비중복, 반증 질문, 검증 항목, 금지 assertion을 검사한다.",
+      "통과한 proposal의 각 반증 질문에 전역 question_id를, 각 검증 항목에 전역 validation_id를 발급한다.",
+      "실패하면 의미를 바꾸지 않는 범위에서 제한 횟수의 repair prompt를 새 invocation으로 실행하고, 그래도 유효하지 않으면 INVALID_OUTPUT으로 저장한다.",
+      "invalid proposal은 Verification에 전달하지 않는다.",
+      "유효한 proposal마다 symbol_id·CodeLocation 겹침·relation_id로 중복 후보를 좁힌다. 후보가 없으면 LLM 호출 없이 NO_CANDIDATES로 등록한다."
+    ]
+  },
+  "example_valid_output": {
+    "proposals": [
+      {
+        "proposal_state": "HYPOTHESIS_ONLY",
+        "assertion_mode": "NON_FINAL",
+        "origin": "INITIAL",
+        "vulnerability_type_candidates": [
+          "SQL_INJECTION"
+        ],
+        "target_entities": [
+          {
+            "symbol_id": "sym-get-order",
+            "symbol_kind": "CALLABLE",
+            "native_kind": "function",
+            "name": "get_order",
+            "location": {
+              "workspace_id": "ws-001",
+              "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+              "file_path": "src/orders.py",
+              "start_line": 41,
+              "start_column": 1,
+              "end_line": 52,
+              "end_column": 1
+            }
+          },
+          {
+            "symbol_id": "sym-db-execute",
+            "symbol_kind": "CALLABLE",
+            "native_kind": "method",
+            "name": "Cursor.execute",
+            "location": {
+              "workspace_id": "ws-001",
+              "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+              "file_path": "src/orders.py",
+              "start_line": 48,
+              "start_column": 5,
+              "end_line": 48,
+              "end_column": 27
+            }
+          }
+        ],
+        "target_locations": [
+          {
+            "workspace_id": "ws-001",
+            "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+            "file_path": "src/orders.py",
+            "start_line": 48,
+            "start_column": 5,
+            "end_line": 48,
+            "end_column": 27
+          }
+        ],
+        "suspected_path": [],
+        "observed_facts": [
+          {
+            "fact_id": "cf-src-001",
+            "fact_kind": "SOURCE",
+            "symbol_id": null,
+            "location": {
+              "workspace_id": "ws-001",
+              "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+              "file_path": "src/orders.py",
+              "start_line": 45,
+              "start_column": 5,
+              "end_line": 45,
+              "end_column": 42
+            },
+            "producer": {
+              "attempt_id": "attempt-codeql-001",
+              "tool_name": "codeql",
+              "tool_version": "2.15.0",
+              "rule_id": "py/sql-injection",
+              "raw_result_ref": {
+                "stored_data_id": "data-raw-codeql-001",
+                "data_kind": "raw_tool_result",
+                "content_hash": "sha256:1a2b3c4d5e6f7081920a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60",
+                "workspace_id": "ws-001",
+                "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+                "record_id": null
+              }
+            }
+          },
+          {
+            "fact_id": "cf-sink-001",
+            "fact_kind": "SINK",
+            "symbol_id": "sym-db-execute",
+            "location": {
+              "workspace_id": "ws-001",
+              "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+              "file_path": "src/orders.py",
+              "start_line": 48,
+              "start_column": 5,
+              "end_line": 48,
+              "end_column": 27
+            },
+            "producer": {
+              "attempt_id": "attempt-codeql-001",
+              "tool_name": "codeql",
+              "tool_version": "2.15.0",
+              "rule_id": "py/sql-injection",
+              "raw_result_ref": {
+                "stored_data_id": "data-raw-codeql-001",
+                "data_kind": "raw_tool_result",
+                "content_hash": "sha256:1a2b3c4d5e6f7081920a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60",
+                "workspace_id": "ws-001",
+                "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
+                "record_id": null
+              }
+            }
+          }
+        ],
+        "assumptions": [
+          "cf-src-001에서 cf-sink-001까지 값이 전달되며, 실행 시점에 escape되거나 parameterized query의 bind 인자로 분리되지 않는다.",
+          "cf-auth-001의 인증 검사를 통과한 계정으로 임의의 id 값을 보낼 수 있다."
+        ],
+        "restrictions": [
+          {
+            "restriction_id": "r-1",
+            "statement": "이 경로에 도달하려면 인증된 세션이 필요하다.",
+            "fact_refs": [
+              {
+                "fact_id": "cf-auth-001"
+              }
+            ],
+            "evidence_refs": []
+          }
+        ],
+        "falsification_questions": [
+          {
+            "question_id": "q-1",
+            "question": "src/orders.py:45에서 관측된 요청 값이 48행 Cursor.execute까지 문자열 조합으로 전달되는가, 아니면 bind 파라미터로 분리되는가."
+          },
+          {
+            "question_id": "q-2",
+            "question": "cf-auth-001의 인증 검사가 id 값의 형식이나 소유권도 함께 제한하는가."
+          }
+        ],
+        "validation_checks": [
+          {
+            "validation_id": "v-1",
+            "instruction": "48행에서 실행되는 SQL 문자열이 어떻게 조립되는지 실제 코드로 확인한다."
+          },
+          {
+            "validation_id": "v-2",
+            "instruction": "45행과 48행 사이에 값을 변환하거나 검증하는 코드가 있는지 확인한다."
+          }
+        ],
+        "parent_hypothesis_ids": [],
+        "source_primitive_match_id": null
+      }
+    ]
+  }
+}

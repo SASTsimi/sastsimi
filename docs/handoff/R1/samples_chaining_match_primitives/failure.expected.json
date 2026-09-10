@@ -1,0 +1,188 @@
+{
+  "_note": {
+    "how_to_read": "must를 전부 만족하고 must_not에 하나도 걸리지 않으면 통과입니다.",
+    "the_point": "결론이 맞아도 근거가 전역 권한 서열표면 실패입니다. 이 사례는 결론(candidate 0건)이 쉽게 맞는 대신 reason_code와 detail의 근거를 봅니다.",
+    "grading": "각 항목의 grading은 판정 방법입니다. auto는 출력 JSON만 보고 코드로 판정할 수 있는 구조·값·개수이고, judgement는 자연어의 의미를 봐야 해서 LLM-judge나 사람 검토가 필요한 항목입니다. 자동 시험에 연결할 때 auto만 하네스가 강제하고 judgement는 별도 경로로 채점해야 합니다.",
+    "trigger_scope": "이 샘플의 검토 대상은 trigger가 낀 조합뿐입니다. 05-prompt-runtime.md:245가 trigger를 REQUIRED_ONE slot으로 노출하고 06-chaining.md:96이 계기 Primitive를 기준으로 검토 범위와 담당을 정합니다.",
+    "privilege_axis": "권한 축은 downstream input의 privilege_level이 null이 아닐 때만 적용됩니다. 08:1356과 06:88이 그렇게 정합니다."
+  },
+  "must": [
+    {
+      "id": "M-01",
+      "check": "primitive_match_candidates가 빈 배열이다.",
+      "grading": "auto",
+      "why": "d-b-1은 privilege_level=admin을 요구하는데 upstream result의 privilege_level은 authenticated_user다. 08은 충족 관계를 '저장소의 역할명·권한 상수·검사 위치로 입증한' 경우에만 인정하는데, 입력 Primitive의 evidence 안에 authenticated_user 세션이 admin 검사를 통과하게 만드는 코드 경로가 없다. d-b-2는 entity 축이 어긋난다."
+    },
+    {
+      "id": "M-02",
+      "check": "chained_hypothesis_proposals가 빈 배열이다.",
+      "grading": "auto",
+      "why": "06이 성립한 match마다 proposal 하나를 만들도록 정한다. match가 없으면 proposal도 없다."
+    },
+    {
+      "id": "M-03",
+      "check": "no_match_reasons의 길이가 정확히 2이고, checked_input_id가 각각 \"d-b-1\"과 \"d-b-2\"인 항목이 하나씩 있다.",
+      "grading": "auto",
+      "why": "검토한 조합은 둘이고, 08은 검토했으나 candidate를 만들지 않은 조합마다 하나씩 남기라고 정한다. 결과가 비었을 때 '검토한 것'과 '확인하지 못한 것'을 구분하기 위한 기록이다."
+    },
+    {
+      "id": "M-04",
+      "check": "d-b-1 항목의 reason_code가 정확히 \"PRIVILEGE_UNSATISFIED\"다.",
+      "grading": "auto",
+      "why": "이 조합에서 어긋난 축은 권한 하나다. entity_refs는 양쪽 다 sym-fetch-url로 같으므로 ENTITY_UNRELATED가 아니고, 순서·restriction도 문제가 없으므로 ORDER_INVALID나 RESTRICTION_CONFLICT도 아니다. 근거 자체는 있으므로 NO_CODE_EVIDENCE도 아니다."
+    },
+    {
+      "id": "M-05",
+      "check": "d-b-2 항목의 reason_code가 정확히 \"ENTITY_UNRELATED\"다.",
+      "grading": "auto",
+      "why": "upstream result는 sym-fetch-url, d-b-2는 sym-render-preview를 가리키고 둘이 이어진다는 근거가 입력에 없다. privilege_level은 양쪽 다 null이라 권한 축은 해당 없다."
+    },
+    {
+      "id": "M-06",
+      "check": "d-b-1 항목의 detail이 '입력 Primitive의 evidence 안에서 admin 충족을 입증할 근거를 찾지 못했다'는 취지로, 무엇을 확인했고 무엇이 없었는지를 적는다.",
+      "grading": "judgement",
+      "why": "08이 detail을 판단 근거 기록으로 요구하며, Runtime Validator는 구조와 소속만 검사하고 판단 내용은 다시 판정하지 않는다. 그래서 근거 서술의 품질이 사람 검토와 이 샘플에서만 걸러진다."
+    },
+    {
+      "id": "M-07",
+      "check": "no_match_reasons의 두 reference가 모두 considered에 있는 Primitive를 가리키고, 두 항목의 (upstream, downstream, checked_input_id) 조합이 서로 다르다.",
+      "grading": "auto",
+      "why": "08이 같은 조합의 중복을 금지하고 두 reference가 considered_primitive_refs 안에 있을 것을 요구한다."
+    },
+    {
+      "id": "M-08",
+      "check": "input_primitive_refs가 빈 배열이다.",
+      "grading": "auto",
+      "why": "08이 'input_primitive_refs는 실제 match candidate에 사용된 Primitive 합집합'으로 정한다. candidate가 없으므로 비어야 한다. considered를 그대로 복사하면 안 된다."
+    },
+    {
+      "id": "M-09",
+      "check": "source_result_refs가 빈 배열이다.",
+      "grading": "auto",
+      "why": "같은 이유다. match에 사용된 Primitive가 없으므로 그 Primitive들의 Verification·Technical review도 없다."
+    },
+    {
+      "id": "M-10",
+      "check": "excluded_lineage_refs가 빈 배열이다.",
+      "grading": "auto",
+      "why": "조상이 없고, 애초에 성립한 match가 없으면 제외를 계산하지 않는다."
+    },
+    {
+      "id": "M-11",
+      "check": "errors가 빈 배열이다.",
+      "grading": "auto",
+      "why": "정상적인 불성립이지 실행 오류가 아니다. 08은 예산·오류로 확인하지 못한 후보만 errors와 work 상태에 남기라고 정한다."
+    },
+    {
+      "id": "M-12",
+      "check": "검토 대상 조합이 trigger(prim-000A)가 낀 둘뿐이다. (A.result → B.d-b-1)과 (A.result → B.d-b-2) 외의 조합을 어느 목록에도 넣지 않는다.",
+      "grading": "auto",
+      "why": "06-chaining.md:96의 검토 범위 규칙이다. prim-000B는 result가 null이라 upstream이 될 수 없다."
+    }
+  ],
+  "must_not": [
+    {
+      "id": "N-01",
+      "check": "권한 판단의 근거로 역할 이름의 상하 관계를 쓰지 않는다. detail에 'admin이 authenticated_user보다 상위 권한이므로', 'authenticated_user는 admin을 포함하지 않으므로' 같은 서열 서술이 있으면 결론이 맞아도 실패다.",
+      "grading": "judgement",
+      "why": "06과 08이 '전역 권한 서열표, 문자열 이름의 단순 일치나 근거 없는 추측은 사용하지 않는다'로 명시한다. 이 사례에서 판정 기준이 되는 항목이다."
+    },
+    {
+      "id": "N-02",
+      "check": "d-b-1을 ENTITY_UNRELATED로 기록하지 않는다.",
+      "grading": "auto",
+      "why": "entity 축은 실제로 성립한다. 어긋난 축을 잘못 지목하면 지표와 이후 사람 검토가 잘못된 방향을 가리킨다."
+    },
+    {
+      "id": "N-03",
+      "check": "d-b-2를 PRIVILEGE_UNSATISFIED로 기록하지 않는다.",
+      "grading": "auto",
+      "why": "양쪽 privilege_level이 null이라 권한 축이 없다. 없는 축을 만들어 판정하지 않는다."
+    },
+    {
+      "id": "N-04",
+      "check": "no_match_reasons를 비워 두거나 두 조합 중 하나만 남기지 않는다.",
+      "grading": "auto",
+      "why": "검토했는데 기록하지 않으면 '검토했으나 불성립'과 '확인하지 못함'을 구분할 수 없다."
+    },
+    {
+      "id": "N-05",
+      "check": "권한이 맞지 않는다는 이유로 부모 가설의 판정이나 Primitive의 admission 자격을 바꾸는 서술을 하지 않는다.",
+      "grading": "judgement",
+      "why": "06의 금지 권한이다. 매칭 불성립은 두 Primitive를 잇지 않는다는 뜻일 뿐 어느 쪽도 무효화하지 않는다."
+    },
+    {
+      "id": "N-06",
+      "check": "권한 승격 경로를 찾기 위해 추가 코드 조회나 정적 검증을 요청하지 않는다.",
+      "grading": "judgement",
+      "why": "06이 Chaining Agent의 추가 조회·독립 탐색을 금지한다. 필요하면 그건 Verification이 별도 가설로 다룬다."
+    },
+    {
+      "id": "N-07",
+      "check": "실패를 설명하는 자유 형식 보고문을 ChainingResult 밖에 출력하지 않는다.",
+      "grading": "auto",
+      "why": "출력 계약은 빈 결과에서도 같다."
+    }
+  ],
+  "downstream_expectation": {
+    "what": "이 결과를 받는 runtime이 해야 하는 처리입니다. R3 구현 확인용입니다.",
+    "steps": [
+      "candidate와 proposal이 없는 ChainingResult도 정상 결과로 저장한다. INVALID_OUTPUT이나 work 실패로 처리하지 않는다.",
+      "Runtime Validator는 no_match_reasons의 구조와 소속만 검사한다. reason_code와 detail의 판단 내용은 다시 판정하지 않는다.",
+      "두 부모 가설의 판정은 그대로 유지된다. prim-000B는 여전히 index에 남아 다음 Primitive가 등록되면 다시 후보가 된다.",
+      "no_match_reasons는 07-results-and-observability.md의 관측 항목(entity·privilege 근거 부족과 no-match reason)으로 집계된다. 분석 중단 사유나 FALSE로 바뀌지 않는다."
+    ]
+  },
+  "example_valid_output": {
+    "primitive_match_candidates": [],
+    "input_primitive_refs": [],
+    "source_result_refs": [],
+    "chained_hypothesis_proposals": [],
+    "excluded_lineage_refs": [],
+    "no_match_reasons": [
+      {
+        "upstream_result_ref": {
+          "stored_data_id": "data-prim-000A",
+          "data_kind": "primitive",
+          "content_hash": "sha256:b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000A"
+        },
+        "downstream_input_ref": {
+          "stored_data_id": "data-prim-000B",
+          "data_kind": "primitive",
+          "content_hash": "sha256:d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000B"
+        },
+        "checked_input_id": "d-b-1",
+        "reason_code": "PRIVILEGE_UNSATISFIED",
+        "detail": "entity 축은 성립한다 — 양쪽 모두 app/preview.py:31의 fetch_url(sym-fetch-url)을 가리킨다. 권한 축이 어긋난다. d-b-1은 admin을 요구하고 upstream result는 authenticated_user에서 성립한 능력이다. 입력 Primitive의 evidence_refs가 가리키는 근거(rec-ctx-0001, rec-ctx-0002, rec-poc-0001)에는 authenticated_user 세션이 admin 검사를 통과하게 만드는 코드 경로도, 두 값이 같은 역할 상수를 쓰는 검사 지점도 없다. 두 문자열의 상하 관계만으로는 충족을 인정하지 않는다."
+      },
+      {
+        "upstream_result_ref": {
+          "stored_data_id": "data-prim-000A",
+          "data_kind": "primitive",
+          "content_hash": "sha256:b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000A"
+        },
+        "downstream_input_ref": {
+          "stored_data_id": "data-prim-000B",
+          "data_kind": "primitive",
+          "content_hash": "sha256:d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000B"
+        },
+        "checked_input_id": "d-b-2",
+        "reason_code": "ENTITY_UNRELATED",
+        "detail": "upstream result는 sym-fetch-url, d-b-2는 sym-render-preview를 가리킨다. 두 코드 요소가 호출이나 데이터 흐름으로 이어진다는 근거가 입력 Primitive의 evidence 안에 없다. 권한 축은 양쪽 privilege_level이 null이라 해당 없다."
+      }
+    ],
+    "errors": []
+  }
+}
