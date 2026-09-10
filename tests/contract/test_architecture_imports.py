@@ -406,6 +406,54 @@ def test_repository_imports() -> None:
     assert not errors, "\n".join(errors)
 
 
+def test_static_analysis_process_creation_is_shell_free_and_suspended() -> None:
+    root = Path(__file__).resolve().parents[2] / "src" / "sastsimi" / "static_analysis"
+    forbidden_calls = {
+        "Popen",
+        "run",
+        "create_subprocess_shell",
+        "system",
+    }
+    violations_found: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = (
+                node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else node.func.id
+                if isinstance(node.func, ast.Name)
+                else ""
+            )
+            if name in forbidden_calls or any(
+                keyword.arg == "shell"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is True
+                for keyword in node.keywords
+            ):
+                # Protocol and facade methods named `run` are not process APIs.
+                owner = (
+                    node.func.value if isinstance(node.func, ast.Attribute) else None
+                )
+                if name != "run" or (
+                    isinstance(owner, ast.Name) and owner.id == "subprocess"
+                ):
+                    violations_found.append(f"{path.name}:{node.lineno}:{name}")
+        if "CreateProcessW" in path.read_text(encoding="utf-8") and (
+            path.name != "process_windows.py"
+        ):
+            violations_found.append(f"{path.name}:CreateProcessW")
+    windows_source = (root / "process_windows.py").read_text(encoding="utf-8")
+    assert "CREATE_SUSPENDED" in windows_source
+    assert "AssignProcessToJobObject" in windows_source
+    assert windows_source.index("AssignProcessToJobObject") < windows_source.index(
+        "ResumeThread"
+    )
+    assert not violations_found, "\n".join(violations_found)
+
+
 def cycle_errors(sources: dict[str, str]) -> list[str]:
     graph: dict[str, set[str]] = {}
     for module, source in sources.items():
