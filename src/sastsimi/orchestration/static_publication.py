@@ -1,7 +1,7 @@
 """Trusted application-side publication for repository and static outputs."""
 
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import timedelta
 
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
@@ -178,9 +178,11 @@ class StaticAttemptPublisher:
         self,
         runner: WorkflowRunner,
         rule_catalogs: Mapping[StoredDataRef, tuple[str, ...]] | None = None,
+        rule_selections: Mapping[StoredDataRef, tuple[str, ...]] | None = None,
     ) -> None:
         self.runner = runner
         self.rule_catalogs = dict(rule_catalogs or {})
+        self.rule_selections = dict(rule_selections or {})
 
     def publish(
         self, request: StaticToolRequest, observation: StaticToolObservation
@@ -198,8 +200,6 @@ class StaticAttemptPublisher:
         profile = self.runner.runtime.configuration.resolve_static_tool_profile(
             request.tool_profile_ref
         )
-        StaticToolCoordinator._validate_observation(profile, observation)
-
         catalog_rule_ids: tuple[str, ...] = ()
         if observation.tool_kind == "RULE_BASED":
             if request.rule_catalog_ref is None:
@@ -208,6 +208,15 @@ class StaticAttemptPublisher:
                 catalog_rule_ids = self.rule_catalogs[request.rule_catalog_ref]
             except KeyError as error:
                 raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH") from error
+            if observation.status == "FAILED" and not observation.rules:
+                observation = replace(
+                    observation,
+                    rules=self._nonexecuted_rules(
+                        request.rule_catalog_ref,
+                        catalog_rule_ids,
+                        "TOOL_FAILURE",
+                    ),
+                )
             self._validate_rule_catalog(
                 observation.rules, catalog_rule_ids, observation.status
             )
@@ -217,6 +226,9 @@ class StaticAttemptPublisher:
             or observation.selected_rule_packs
         ):
             raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
+        StaticToolCoordinator._validate_observation(
+            profile, observation, request.action.file_paths
+        )
         self._validate_status_shape(observation)
 
         raw_ref: StoredDataRef | None = None
@@ -452,6 +464,33 @@ class StaticAttemptPublisher:
             )
         ):
             raise ValueError("STATIC_TOOL_STATUS_INVALID")
+
+    def _nonexecuted_rules(
+        self,
+        catalog_ref: StoredDataRef,
+        catalog_rule_ids: tuple[str, ...],
+        reason: str,
+    ) -> tuple[CandidateRule, ...]:
+        try:
+            selected_rule_ids = self.rule_selections[catalog_ref]
+        except KeyError as error:
+            raise ValueError("RULE_CATALOG_SELECTION_REQUIRED") from error
+        if len(selected_rule_ids) != len(set(selected_rule_ids)) or not set(
+            selected_rule_ids
+        ).issubset(catalog_rule_ids):
+            raise ValueError("RULE_CATALOG_SELECTION_INVALID")
+        selected = set(selected_rule_ids)
+        return tuple(
+            CandidateRule(
+                rule_id,
+                "SELECTED" if rule_id in selected else "NOT_SELECTED",
+                "NOT_EXECUTED",
+                None,
+                reason if rule_id in selected else "NOT_SELECTED",
+                None,
+            )
+            for rule_id in catalog_rule_ids
+        )
 
 
 @dataclass(frozen=True)

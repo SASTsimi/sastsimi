@@ -2,23 +2,27 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
-from sastsimi.contracts.actions import ActionRequest
-from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.bootstrap import build_runtime
+from sastsimi.contracts.actions import ActionRequest, CheckType, RequesterRole
+from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
+from sastsimi.contracts.ids import CommitId, WorkspaceId
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
 from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile
+from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.orchestration.static_external_runner import (
     StaticExternalRunner,
     _guarded_read,
 )
 from sastsimi.ports.dto import (
+    CandidateGap,
     ProcessReceipt,
     StaticToolObservation,
     StaticToolRequest,
@@ -26,6 +30,7 @@ from sastsimi.ports.dto import (
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import meta, ref
+from tests.integration.runtime_support import Harness
 
 
 def _request() -> tuple[StaticToolRequest, StaticToolProfile]:
@@ -101,6 +106,107 @@ def _service(root: Path) -> StaticExternalRunner:
         cast(Any, None),
         cast(Any, None),
         static_publisher=cast(Any, SimpleNamespace(rule_catalogs={})),
+    )
+
+
+def _runtime_request(
+    tmp_path: Path,
+) -> tuple[Harness, WorkflowRunner, StaticToolRequest, StaticToolProfile]:
+    h = Harness(tmp_path)
+    execution = h.execution(max_work=10)
+    assert execution.approval_ref is not None
+    identity = execution.approval_ref
+    recovery_identity = h.records.stage_record(execution)
+    assert isinstance(recovery_identity, (RunStoredDataRef, StoredDataRef))
+    h.evidence.identities[identity] = RequesterRole.ORCHESTRATION
+    h.evidence.identities[recovery_identity] = RequesterRole.RECOVERY
+    approved_profiles: set[str] = set()
+    trusted = cast(Any, h.evidence)
+    trusted.static_tool_configuration_approved = lambda candidate: (
+        content_hash(candidate) in approved_profiles
+    )
+    runtime = build_runtime(
+        tmp_path,
+        WorkspaceId("w1"),
+        CommitId("c1"),
+        h.clock,
+        h.ids,
+        recovery_identity,
+        h.evidence,
+    )
+    execution_ref = h.pin_execution(runtime.budget_registry, execution)
+    binding, raw_workspace_ref = h.binding(execution_ref.model_dump(mode="json"))
+    workspace_ref = RunStoredDataRef.model_validate_json(json.dumps(raw_workspace_ref))
+    scope = h.pin_binding(runtime.budget_registry, binding, workspace_ref)
+    workspace = h.records.get_exact(workspace_ref)
+    assert isinstance(workspace, CodeWorkspace)
+    runner = WorkflowRunner(runtime, h.clock, h.ids)
+    original_units = runner.units
+    cast(Any, runner).units = lambda **values: original_units(
+        **(values | {"cost_minor_units": 1})
+    )
+    profile = StaticToolProfile.model_validate_json(
+        canonical_bytes(
+            {
+                "meta": runner.metadata(binding.meta, "static_tool_profile"),
+                "profile_key": "ast-fixture",
+                "purpose": "FIXTURE",
+                "status": "APPROVED",
+                "adapter_key": "PYTHON_AST",
+                "tool_name": "AST",
+                "tool_kind": "STRUCTURE",
+                "executable_key": "python",
+                "executable_sha256": "a" * 64,
+                "expected_version": "3.12",
+                "capability_evidence_ref": None,
+                "probe_timeout_ms": 100,
+                "run_timeout_ms": 200,
+                "stdout_limit_bytes": 1024,
+                "stderr_limit_bytes": 1024,
+                "max_attempt_output_bytes": 4096,
+                "max_output_file_bytes": 2048,
+                "max_artifact_read_bytes": 2048,
+            }
+        )
+    )
+    approved_profiles.add(content_hash(profile))
+    profile_ref = runtime.configuration.register_static_tool_profile(profile)
+    original_action_evidence = h.evidence.action_evidence
+    trusted.action_evidence = lambda candidate, check: (
+        (profile_ref,)
+        if check == CheckType.TOOL
+        else original_action_evidence(candidate, check)
+    )
+    analysis_config_ref = profile_ref
+    work = runner.start(
+        scope,
+        binding.meta,
+        "STATIC_TOOL",
+        "ANALYSIS",
+        "a1",
+        identity,
+        inputs=(profile_ref,),
+    )
+    h.evidence.identities[identity] = RequesterRole.STATIC_ANALYSIS
+    action = runner.action(
+        work,
+        identity,
+        "STATIC_ANALYSIS",
+        "RUN_TOOL",
+        tool_name="AST",
+        file_paths=("src/app.py",),
+    )
+    return (
+        h,
+        runner,
+        StaticToolRequest(
+            action,
+            workspace,
+            profile_ref,
+            analysis_config_ref,
+            None,
+        ),
+        profile,
     )
 
 
@@ -230,3 +336,131 @@ def test_static_recovery_rejects_forged_process_receipt_hash(
 
     with pytest.raises(ValueError, match="STATIC_ACTION_RECEIPT_INVALID"):
         service._read_tool_receipt(request, decision_ref, profile)
+
+
+class _Crash(BaseException):
+    pass
+
+
+@pytest.mark.asyncio
+async def test_complete_static_receipt_recovers_without_rerunning_tool(
+    tmp_path: Path,
+) -> None:
+    _, runner, request, profile = _runtime_request(tmp_path)
+    assert isinstance(request.action.meta, RecordMeta)
+    assert request.action.meta.attempt_id is not None
+    calls = 0
+
+    async def operation(_deadline: object) -> StaticToolObservation:
+        nonlocal calls
+        calls += 1
+        return _observation()
+
+    def checkpoint(stage: str) -> None:
+        if stage == "STATIC_RECEIPT_DURABLE":
+            raise _Crash
+
+    process = _process(
+        str(request.action.action_id), str(request.action.meta.attempt_id), 0
+    )
+    service = StaticExternalRunner(
+        runner,
+        tmp_path / "static-receipts",
+        cast(Any, None),
+        cast(Any, None),
+        checkpoint=checkpoint,
+        static_process_receipts=lambda _action, _attempt: (process,),
+    )
+    with pytest.raises(_Crash):
+        await service.invoke(request, profile, operation)
+
+    recovered = await service.recover_tool(request, profile)
+
+    assert calls == 1
+    assert recovered.status == "SUCCEEDED"
+    assert request.action.work_ref is not None
+    work = runner.runtime.unit_of_work.records.get_exact(request.action.work_ref)
+    assert isinstance(work, WorkExecutionState)
+    assert runner.runtime.work.get(str(work.work_id)).status == "SUCCEEDED"
+
+
+@pytest.mark.asyncio
+async def test_missing_then_late_static_receipt_blocks_and_is_quarantined(
+    tmp_path: Path,
+) -> None:
+    _, runner, request, profile = _runtime_request(tmp_path)
+    assert isinstance(request.action.meta, RecordMeta)
+    assert request.action.meta.attempt_id is not None
+    calls = 0
+
+    async def crash_before_receipt(_deadline: object) -> StaticToolObservation:
+        nonlocal calls
+        calls += 1
+        raise _Crash
+
+    service = StaticExternalRunner(
+        runner,
+        tmp_path / "static-receipts",
+        cast(Any, None),
+        cast(Any, None),
+        static_process_receipts=lambda _action, _attempt: (),
+    )
+    with pytest.raises(_Crash):
+        await service.invoke(request, profile, crash_before_receipt)
+    with pytest.raises(ValueError, match="STATIC_TOOL_RECOVERY_AMBIGUOUS"):
+        await service.recover_tool(request, profile)
+
+    assert request.action.work_ref is not None
+    work = runner.runtime.unit_of_work.records.get_exact(request.action.work_ref)
+    assert isinstance(work, WorkExecutionState)
+    assert runner.runtime.work.get(str(work.work_id)).status == "BLOCKED"
+    service._write_tool_receipt(
+        request,
+        StoredDataRef.model_validate(ref("action_decision")),
+        _observation(),
+        1,
+        profile.max_attempt_output_bytes,
+        (
+            _process(
+                str(request.action.action_id),
+                str(request.action.meta.attempt_id),
+                0,
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="STATIC_TOOL_RECOVERY_INVALID"):
+        await service.recover_tool(request, profile)
+    assert not service._tool_receipt_path(str(request.action.action_id)).exists()
+    assert (service.receipt_root / "quarantine").is_dir()
+    assert calls == 1
+
+
+def test_partial_cancellation_preserves_complete_bounded_observation(
+    tmp_path: Path,
+) -> None:
+    request, profile = _request()
+    partial = replace(
+        _observation(),
+        status="PARTIAL",
+        gaps=(
+            CandidateGap(
+                "STATIC_ANALYSIS",
+                "STATIC_COVERAGE_MISSING",
+                "MISSING",
+                "A bounded tool partition remains incomplete.",
+                (),
+                (),
+                (),
+                True,
+            ),
+        ),
+    )
+
+    cancelled = _service(tmp_path)._cancelled_observation(request, profile, 5, partial)
+
+    assert cancelled.status == "PARTIAL"
+    assert cancelled.raw_output == partial.raw_output
+    assert tuple(gap.code for gap in cancelled.gaps) == (
+        "STATIC_COVERAGE_MISSING",
+        "STATIC_TOOL_CANCELLED",
+    )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -219,4 +220,49 @@ def test_observation_rejects_unsafe_nested_paths_and_diagnostics(
     )
 
     with pytest.raises(ValueError, match="STATIC_TOOL_OBSERVATION_INVALID"):
-        StaticToolCoordinator._validate_observation(profile, observation)
+        StaticToolCoordinator._validate_observation(
+            profile, observation, ("src/app.py",)
+        )
+
+
+def test_observation_paths_must_exactly_partition_requested_files(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "fixture-python"
+    executable.write_bytes(b"bounded fixture")
+    profile = _profile(executable)
+    observation = StaticToolObservation(
+        tool_name="AST",
+        tool_version="3.12",
+        tool_kind="STRUCTURE",
+        status="SUCCEEDED",
+        raw_output=b"{}",
+        raw_media_type="application/json",
+        analyzed_paths=("src/other.py",),
+        skipped_paths=(),
+        analyzed_languages=("python",),
+        skipped_languages=(),
+        notes=(),
+        selected_rule_packs=(),
+        rules=(),
+        symbols=(),
+        facts=(),
+        relations=(),
+        gaps=(),
+        errors=(),
+        started_monotonic_ms=1,
+        finished_monotonic_ms=2,
+    )
+
+    with pytest.raises(ValueError, match="STATIC_TOOL_OBSERVATION_INVALID"):
+        StaticToolCoordinator._validate_observation(
+            profile, observation, ("src/app.py",)
+        )
+
+    omitted = replace(
+        observation,
+        analyzed_paths=(),
+        skipped_paths=(),
+    )
+    with pytest.raises(ValueError, match="STATIC_TOOL_OBSERVATION_INVALID"):
+        StaticToolCoordinator._validate_observation(profile, omitted, ("src/app.py",))

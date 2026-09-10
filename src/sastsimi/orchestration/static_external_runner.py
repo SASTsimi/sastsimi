@@ -11,7 +11,7 @@ import re
 import stat
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Literal, Protocol, cast
 
@@ -65,7 +65,10 @@ type RepositorySourceCanonicalizer = Callable[[str], CanonicalRepositorySource]
 type WorkspacePolicyDecoder = Callable[
     [RunStoredDataRef, bytes, str], WorkspaceStoragePolicy
 ]
-type StaticProcessReceiptReader = Callable[[str, str], Sequence[ProcessReceipt]]
+type StaticProcessReceiptReader = Callable[[str, str], Sequence[ProcessReceipt] | None]
+type StaticCancellationObservationReader = Callable[
+    [StaticToolRequest, StaticToolProfile], StaticToolObservation | None
+]
 
 _MAX_RECEIPT_BYTES = 64 * 1024
 _MAX_OBSERVATION_BYTES = 4 * 1024 * 1024
@@ -176,6 +179,8 @@ class StaticExternalRunner:
         recovery_validator: RepositoryRecoveryValidatorPort | None = None,
         static_publisher: StaticAttemptPublisher | None = None,
         static_process_receipts: StaticProcessReceiptReader | None = None,
+        static_cancellation_observation: StaticCancellationObservationReader
+        | None = None,
     ) -> None:
         self.runner = runner
         self.receipt_root = receipt_root
@@ -187,6 +192,7 @@ class StaticExternalRunner:
         self.recovery_validator = recovery_validator
         self.static_publisher = static_publisher or StaticAttemptPublisher(runner)
         self.static_process_receipts = static_process_receipts
+        self.static_cancellation_observation = static_cancellation_observation
 
     async def invoke(
         self,
@@ -197,6 +203,8 @@ class StaticExternalRunner:
         ],
     ) -> ToolRunResult:
         """Close authorization, dispatch, receipt, accounting and publication once."""
+        if self.static_process_receipts is None:
+            raise ValueError("STATIC_PROCESS_RECEIPT_READER_REQUIRED")
         action = request.action
         if action.work_ref is None:
             raise ValueError("STATIC_TOOL_REQUEST_INVALID")
@@ -283,10 +291,12 @@ class StaticExternalRunner:
             )
             observation = await operation(deadline)
             elapsed_ms = max(0, (self._now_ns() - started_ns) // 1_000_000)
-            process_receipts = self._current_tool_process_receipts(
+            process_receipts, no_spawn = self._current_tool_process_receipts(
                 str(action.action_id), attempt_id
             )
-            self._validate_tool_process_presence(observation, process_receipts)
+            self._validate_tool_process_presence(
+                observation, process_receipts, no_spawn=no_spawn
+            )
             self._write_tool_receipt(
                 request,
                 decision_ref,
@@ -308,11 +318,19 @@ class StaticExternalRunner:
             )
         except asyncio.CancelledError:
             elapsed_ms = max(0, (self._now_ns() - started_ns) // 1_000_000)
-            process_receipts = self._current_tool_process_receipts(
+            process_receipts, no_spawn = self._current_tool_process_receipts(
                 str(action.action_id), attempt_id
             )
+            partial = (
+                None
+                if self.static_cancellation_observation is None
+                else self.static_cancellation_observation(request, resolved_profile)
+            )
             observation = self._cancelled_observation(
-                request, resolved_profile, elapsed_ms
+                request, resolved_profile, elapsed_ms, partial
+            )
+            self._validate_tool_process_presence(
+                observation, process_receipts, no_spawn=no_spawn
             )
             self._write_tool_receipt(
                 request,
@@ -618,14 +636,17 @@ class StaticExternalRunner:
 
     def _current_tool_process_receipts(
         self, action_id: str, attempt_id: str
-    ) -> tuple[ProcessReceipt, ...]:
+    ) -> tuple[tuple[ProcessReceipt, ...], bool]:
         if self.static_process_receipts is None:
-            return ()
+            raise ValueError("STATIC_PROCESS_RECEIPT_READER_REQUIRED")
+        supplied = self.static_process_receipts(action_id, attempt_id)
+        if supplied is None:
+            return (), True
         return self._validate_tool_process_receipts(
             action_id,
             attempt_id,
-            tuple(self.static_process_receipts(action_id, attempt_id)),
-        )
+            tuple(supplied),
+        ), False
 
     @staticmethod
     def _validate_tool_process_receipts(
@@ -728,6 +749,7 @@ class StaticExternalRunner:
         request: StaticToolRequest,
         profile: StaticToolProfile,
         elapsed_ms: int,
+        partial: StaticToolObservation | None = None,
     ) -> StaticToolObservation:
         catalog_rule_ids: tuple[str, ...] = ()
         if profile.tool_kind == "RULE_BASED":
@@ -739,6 +761,57 @@ class StaticExternalRunner:
                 ]
             except KeyError as error:
                 raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH") from error
+        if partial is not None:
+            StaticToolCoordinator._validate_observation(
+                profile, partial, request.action.file_paths
+            )
+            usable = partial.raw_output is not None and partial.status in {
+                "SUCCEEDED",
+                "PARTIAL",
+            }
+            if usable:
+                partial_rules = tuple(
+                    replace(
+                        rule,
+                        execution_status="NOT_EXECUTED",
+                        hit_count=None,
+                        reason="CANCELLED",
+                    )
+                    if rule.selection_status == "SELECTED"
+                    and rule.execution_status != "EXECUTED"
+                    else rule
+                    for rule in partial.rules
+                )
+                cancellation_gap = CandidateGap(
+                    "STATIC_ANALYSIS",
+                    "STATIC_TOOL_CANCELLED",
+                    "BLOCKED",
+                    "The static tool attempt was cancelled by the caller.",
+                    tuple(
+                        path
+                        for path in request.action.file_paths
+                        if path not in partial.analyzed_paths
+                    ),
+                    (),
+                    (),
+                    True,
+                )
+                return replace(
+                    partial,
+                    status="PARTIAL",
+                    rules=partial_rules,
+                    gaps=(*partial.gaps, cancellation_gap),
+                    finished_monotonic_ms=max(
+                        partial.finished_monotonic_ms,
+                        partial.started_monotonic_ms + elapsed_ms,
+                    ),
+                )
+        rules: tuple[CandidateRule, ...] = ()
+        if profile.tool_kind == "RULE_BASED":
+            assert request.rule_catalog_ref is not None
+            rules = self.static_publisher._nonexecuted_rules(
+                request.rule_catalog_ref, catalog_rule_ids, "CANCELLED"
+            )
         return StaticToolObservation(
             tool_name=profile.tool_name,
             tool_version=profile.expected_version,
@@ -752,17 +825,7 @@ class StaticExternalRunner:
             skipped_languages=(),
             notes=("The static tool attempt was cancelled by the caller.",),
             selected_rule_packs=(),
-            rules=tuple(
-                CandidateRule(
-                    rule_id,
-                    "SELECTED",
-                    "NOT_EXECUTED",
-                    None,
-                    "CANCELLED",
-                    None,
-                )
-                for rule_id in catalog_rule_ids
-            ),
+            rules=rules,
             symbols=(),
             facts=(),
             relations=(),
@@ -994,12 +1057,18 @@ class StaticExternalRunner:
                     raise ValueError
                 payload["raw_output"] = decoded_raw
             observation = TypeAdapter(StaticToolObservation).validate_python(payload)
-            StaticToolCoordinator._validate_observation(profile, observation)
+            StaticToolCoordinator._validate_observation(
+                profile, observation, request.action.file_paths
+            )
             process_receipts = self._read_process_receipts(root, receipt)
             process_receipts = self._validate_tool_process_receipts(
                 receipt.action_id, receipt.attempt_id, process_receipts
             )
-            self._validate_tool_process_presence(observation, process_receipts)
+            self._validate_tool_process_presence(
+                observation,
+                process_receipts,
+                no_spawn=not process_receipts,
+            )
             projected = receipt.observation_size + sum(
                 item.stdout_size + item.stderr_size for item in process_receipts
             )
@@ -1018,8 +1087,20 @@ class StaticExternalRunner:
     def _validate_tool_process_presence(
         observation: StaticToolObservation,
         receipts: tuple[ProcessReceipt, ...],
+        *,
+        no_spawn: bool = False,
     ) -> None:
-        if observation.status in {"SUCCEEDED", "PARTIAL"} and not receipts:
+        valid_no_spawn = (
+            observation.status == "SKIPPED"
+            and observation.raw_output is None
+            and not observation.symbols
+            and not observation.facts
+            and not observation.relations
+            and bool(observation.gaps)
+        )
+        if (no_spawn and receipts) or (
+            not receipts and (not no_spawn or not valid_no_spawn)
+        ):
             raise ValueError("STATIC_PROCESS_RECEIPT_INVALID")
 
     def _read_receipt(

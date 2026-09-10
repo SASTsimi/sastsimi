@@ -175,7 +175,7 @@ class StaticToolCoordinator:
             await self._workspace.assert_unchanged(request.workspace, deadline)
             observation = await adapter.execute(request, root, profile, deadline)
             await self._workspace.assert_unchanged(request.workspace, deadline)
-            self._validate_observation(profile, observation)
+            self._validate_observation(profile, observation, request.action.file_paths)
             return observation
 
         self._active[str(attempt_id)] = adapter
@@ -220,7 +220,9 @@ class StaticToolCoordinator:
 
     @staticmethod
     def _validate_observation(
-        profile: StaticToolProfile, observation: StaticToolObservation
+        profile: StaticToolProfile,
+        observation: StaticToolObservation,
+        requested_paths: tuple[str, ...],
     ) -> None:
         if (
             (observation.tool_name, observation.tool_version, observation.tool_kind)
@@ -231,6 +233,15 @@ class StaticToolCoordinator:
                 and len(observation.raw_output) > profile.max_attempt_output_bytes
             )
             or (observation.raw_output is None) != (observation.raw_media_type is None)
+        ):
+            raise ValueError("STATIC_TOOL_OBSERVATION_INVALID")
+        if (
+            len(requested_paths) != len(set(requested_paths))
+            or len(observation.analyzed_paths) != len(set(observation.analyzed_paths))
+            or len(observation.skipped_paths) != len(set(observation.skipped_paths))
+            or set(observation.analyzed_paths).intersection(observation.skipped_paths)
+            or set(observation.analyzed_paths).union(observation.skipped_paths)
+            != set(requested_paths)
         ):
             raise ValueError("STATIC_TOOL_OBSERVATION_INVALID")
         for path in (*observation.analyzed_paths, *observation.skipped_paths):
@@ -255,6 +266,8 @@ class StaticToolCoordinator:
         try:
             for location in locations:
                 git_path(location.file_path)
+                if location.file_path not in requested_paths:
+                    raise ValueError
                 if (
                     location.start_line <= 0
                     or location.end_line < location.start_line
@@ -270,6 +283,8 @@ class StaticToolCoordinator:
             for gap in observation.gaps:
                 for path in gap.affected_paths:
                     git_path(path)
+                    if path not in requested_paths:
+                        raise ValueError
             diagnostics = (
                 *observation.notes,
                 *(gap.description for gap in observation.gaps),

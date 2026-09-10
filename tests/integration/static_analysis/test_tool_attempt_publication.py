@@ -3,10 +3,13 @@ from typing import cast
 
 import pytest
 
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.static import ToolRunResult
 from sastsimi.orchestration.static_external_runner import StaticExternalRunner
 from sastsimi.orchestration.static_publication import StaticAttemptPublisher
 from sastsimi.ports.dto import CandidateRule, ProcessReceipt, StaticToolObservation
+from sastsimi.runtime.workflow_runner import WorkflowRunner
+from tests.contract.domain.fixtures import ref
 
 
 @pytest.mark.parametrize(
@@ -83,6 +86,37 @@ def test_successful_tool_result_requires_lower_process_receipt() -> None:
     )
     with pytest.raises(ValueError, match="STATIC_PROCESS_RECEIPT_INVALID"):
         StaticExternalRunner._validate_tool_process_presence(observation, ())
+
+
+def test_only_explicit_no_spawn_skip_may_have_no_process_receipt() -> None:
+    skipped = cast(
+        StaticToolObservation,
+        SimpleNamespace(
+            status="SKIPPED",
+            raw_output=None,
+            symbols=(),
+            facts=(),
+            relations=(),
+            gaps=(SimpleNamespace(code="STATIC_NOT_APPLICABLE"),),
+        ),
+    )
+    StaticExternalRunner._validate_tool_process_presence(skipped, (), no_spawn=True)
+    with pytest.raises(ValueError, match="STATIC_PROCESS_RECEIPT_INVALID"):
+        StaticExternalRunner._validate_tool_process_presence(skipped, ())
+
+
+def test_nonexecuted_rules_preserve_exact_trusted_selection() -> None:
+    catalog_ref = StoredDataRef.model_validate(ref("rule_catalog"))
+    publisher = StaticAttemptPublisher(
+        cast(WorkflowRunner, SimpleNamespace()),
+        {catalog_ref: ("R1", "R2")},
+        {catalog_ref: ("R2",)},
+    )
+
+    assert publisher._nonexecuted_rules(catalog_ref, ("R1", "R2"), "CANCELLED") == (
+        CandidateRule("R1", "NOT_SELECTED", "NOT_EXECUTED", None, "NOT_SELECTED", None),
+        CandidateRule("R2", "SELECTED", "NOT_EXECUTED", None, "CANCELLED", None),
+    )
 
 
 @pytest.mark.parametrize(
