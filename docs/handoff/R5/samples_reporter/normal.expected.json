@@ -1,0 +1,24 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — expected_canonical_projection is not a persisted ReportDraft record; partial reference assertions are not StoredDataRef values.",
+  "expected_canonical_projection": {
+    "finding_ref": { "record_id": "rec-finding-2" },
+    "verification_result_ref": { "record_id": "rec-ver-2" },
+    "technical_review_ref": { "record_id": "rec-tech-2" },
+    "rule_scope_impact_review_ref": { "record_id": "rec-rule-2" },
+    "cwe_label_ref": { "record_id": "rec-cwe-2" },
+    "run_policy_state_ref": { "record_id": "rec-policy-state-1" },
+    "policy_record_ref": { "record_id": "rec-policy-1" },
+    "dynamic_result_ref": { "record_id": "rec-dyn-2" },
+    "poc_ref": { "record_id": "rec-poc-2" },
+    "restrictions": [{ "restriction_id": "r-local-user", "description": "Local authenticated access required." }],
+    "limitations": [],
+    "unresolved_conditions": [],
+    "redaction_status": "PASSED",
+    "draft_status": "DRAFTED"
+  },
+  "fixture_assertions": {
+    "content_ref_required": true,
+    "content_assertions": ["Only verified CWE-22 path is described.", "src/reader.js:41-45 is within upstream code_locations.", "PoC contains no secret or unnecessary PII."]
+  },
+  "why": "All REPORT_READY conditions and exact current Finding closure are present; the draft preserves restrictions and uses validated dynamic/PoC evidence."
+}

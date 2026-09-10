@@ -1,0 +1,9 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — canonical_input_projection is not a persisted record; partial reference assertions are not StoredDataRef values.",
+  "canonical_input_projection": {
+    "verification_result": { "verdict": "TRUE", "verification_result_ref": { "stored_data_id": "data-ver-4", "data_kind": "verification_result", "record_id": "rec-ver-4", "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "workspace_id": "ws-1", "commit_id": "c0ffee" }, "dynamic_result_ref_record_id_assertion": "rec-dyn-4", "poc_ref_record_id_assertion": "rec-poc-4" },
+    "cwe_label": { "verification_result_ref_record_id_assertion": "rec-ver-4", "primary": "CWE-22" },
+    "dynamic_result": { "status": "SUCCEEDED", "hypothesis_outcome": "SUPPORTED", "poc_ref": { "record_id": "rec-poc-4" }, "agent_log_ref": { "record_id": "rec-log-other-attempt" }, "environment_ref": { "record_id": "rec-env-4" } },
+    "gap": "The provided AgentLog belongs to a different dynamic attempt, so actual PoC execution cannot be linked to this result."
+  }
+}

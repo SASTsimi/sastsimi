@@ -1,0 +1,9 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — canonical_input_projection is not a persisted record; partial reference assertions are not StoredDataRef values.",
+  "canonical_input_projection": {
+    "verification_result": { "verdict": "TRUE", "verification_result_ref": { "stored_data_id": "data-ver-3", "data_kind": "verification_result", "record_id": "rec-ver-3", "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "workspace_id": "ws-1", "commit_id": "c0ffee" }, "supporting_evidence": [{ "claim_id": "ev-effect", "summary": "An unexpected error was observed." }], "restrictions": [], "unresolved_conditions": ["Root cause has not been isolated."] },
+    "verification_generation_owner": { "record_kind": "hypothesis_process_state_or_verification_work", "verification_generation": 3 },
+    "taxonomy_version": "CWE 4.15",
+    "current_cwe_work": { "work_id": "work-cwe-3", "attempt_id": "att-cwe-3", "llm_call_id": "call-cwe-3", "status": "SUCCEEDED" }
+  }
+}
