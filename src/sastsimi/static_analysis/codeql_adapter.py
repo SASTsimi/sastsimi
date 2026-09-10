@@ -17,6 +17,7 @@ from typing import Protocol, cast
 from urllib.parse import unquote, urlsplit
 
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.refs import reference
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.ports.dto import (
     CancellationResult,
@@ -78,6 +79,7 @@ class CodeQLExecutionInputs:
             not self.rule_catalog
             or len(set(rule_ids)) != len(rule_ids)
             or len(set(self.selected_rule_ids)) != len(self.selected_rule_ids)
+            or len(set(self.selected_rule_packs)) != len(self.selected_rule_packs)
             or not set(self.selected_rule_ids).issubset(rule_ids)
             or len(set(tracked)) != len(tracked)
             or not self.selected_rule_packs
@@ -198,14 +200,16 @@ def _directory_size(root: Path, cap: int) -> int:
 
 
 def _read_bounded_regular(
-    path: Path, root: Path, *, file_cap: int, read_cap: int
+    path: Path,
+    root: Path,
+    *,
+    file_cap: int,
+    read_cap: int,
+    expected_name: str = "codeql-result.sarif",
 ) -> bytes:
     _assert_path_chain_safe(path)
     resolved_root = root.resolve(strict=True)
-    if (
-        path.resolve(strict=True).parent != resolved_root
-        or path.name != "codeql-result.sarif"
-    ):
+    if path.resolve(strict=True).parent != resolved_root or path.name != expected_name:
         raise _OutputBoundaryError("CODEQL_OUTPUT_ESCAPE")
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
     if hasattr(os, "O_NOFOLLOW"):
@@ -246,6 +250,37 @@ def _read_bounded_regular(
         return data
     finally:
         os.close(descriptor)
+
+
+def _selection_manifest_matches(inputs: CodeQLExecutionInputs) -> bool:
+    manifest_name = "sastsimi-selection.json"
+    raw = _read_bounded_regular(
+        inputs.query_pack_root / manifest_name,
+        inputs.query_pack_root,
+        file_cap=64 * 1024,
+        read_cap=64 * 1024,
+        expected_name=manifest_name,
+    )
+    value = json.loads(raw)
+    if not isinstance(value, dict) or set(value) != {
+        "schema_version",
+        "rule_ids",
+        "rule_packs",
+    }:
+        return False
+    rule_ids = value.get("rule_ids")
+    rule_packs = value.get("rule_packs")
+    schema_version = value.get("schema_version")
+    return (
+        type(schema_version) is int
+        and schema_version == 1
+        and isinstance(rule_ids, list)
+        and all(isinstance(item, str) for item in rule_ids)
+        and tuple(rule_ids) == inputs.selected_rule_ids
+        and isinstance(rule_packs, list)
+        and all(isinstance(item, str) for item in rule_packs)
+        and tuple(rule_packs) == inputs.selected_rule_packs
+    )
 
 
 def _mapping_by_id(inputs: CodeQLExecutionInputs) -> Mapping[str, StaticRuleMapping]:
@@ -409,6 +444,9 @@ def _decode_sarif(
         raise _MalformedSarif("STATIC_OUTPUT_MALFORMED") from error
 
     catalog = _mapping_by_id(inputs)
+    selected = frozenset(inputs.selected_rule_ids)
+    if any(rule_id not in selected for rule_id in metadata_ids):
+        raise _MalformedSarif("STATIC_OUTPUT_MALFORMED")
     tracked = frozenset(item.git_path for item in inputs.tracked_files)
     hit_counts: Counter[str] = Counter()
     facts: list[CandidateFact] = []
@@ -425,33 +463,45 @@ def _decode_sarif(
             )
             continue
         rule_id = cast(str, result["ruleId"])
+        if rule_id not in selected:
+            raise _MalformedSarif("STATIC_OUTPUT_MALFORMED")
         mapping = catalog.get(rule_id)
         if mapping is None:
-            gaps.append(
-                _gap(
-                    "STATIC_RULE_TELEMETRY_MISSING",
-                    "UNSUPPORTED",
-                    "A SARIF result referenced a rule outside the exact catalog.",
-                )
-            )
-            continue
+            raise _MalformedSarif("STATIC_OUTPUT_MALFORMED")
         hit_counts[rule_id] += 1
-        result_location: CandidateLocation | None = None
+        result_locations: list[CandidateLocation] = []
+        location_issue = False
         locations = result.get("locations")
         if isinstance(locations, list) and locations:
-            try:
-                result_location = _location(locations[0], tracked)
-            except ValueError:
-                gaps.append(
-                    _gap(
-                        "STATIC_LOCATION_UNRESOLVED",
-                        "UNSUPPORTED",
-                        "A CodeQL result location was unsafe or outside the manifest.",
-                    )
+            for raw_location in locations:
+                try:
+                    result_locations.append(_location(raw_location, tracked))
+                except ValueError:
+                    location_issue = True
+        else:
+            location_issue = True
+        if location_issue or not result_locations:
+            gaps.append(
+                _gap(
+                    "STATIC_LOCATION_UNRESOLVED",
+                    "MISSING" if not locations else "UNSUPPORTED",
+                    "A CodeQL hit lacked a safe location in the tracked manifest.",
                 )
-        flow_first: CandidateLocation | None = None
-        flow_last: CandidateLocation | None = None
-        valid_required_flow = False
+            )
+        for location_index, location in enumerate(result_locations):
+            facts.append(
+                CandidateFact(
+                    (
+                        f"codeql:{rule_id}:result:{result_index}:"
+                        f"location:{location_index}:endpoint"
+                    ),
+                    mapping.result_fact_kind,
+                    None,
+                    location,
+                    rule_id,
+                )
+            )
+        valid_flows: list[tuple[int, int, tuple[CandidateLocation, ...]]] = []
         flow_issue = False
         code_flows = result.get("codeFlows")
         if mapping.requires_code_flow:
@@ -488,9 +538,7 @@ def _decode_sarif(
                         if len(distinct) < 2:
                             flow_issue = True
                             continue
-                        valid_required_flow = True
-                        flow_first = flow_first or distinct[0]
-                        flow_last = distinct[-1]
+                        valid_flows.append((flow_index, thread_index, tuple(distinct)))
                         for edge_index, (earlier, later) in enumerate(
                             zip(distinct, distinct[1:], strict=False)
                         ):
@@ -508,7 +556,7 @@ def _decode_sarif(
                                     rule_id=rule_id,
                                 )
                             )
-            if not valid_required_flow or flow_issue:
+            if not valid_flows or flow_issue:
                 gaps.append(
                     _gap(
                         "STATIC_DATA_FLOW_UNRESOLVED",
@@ -517,27 +565,32 @@ def _decode_sarif(
                         "an unsafe step.",
                     )
                 )
-        endpoint = result_location or flow_last
-        if endpoint is not None:
+        for flow_index, thread_index, flow_locations in valid_flows:
             facts.append(
                 CandidateFact(
-                    f"codeql:{rule_id}:result:{result_index}:endpoint",
+                    (
+                        f"codeql:{rule_id}:result:{result_index}:"
+                        f"flow:{flow_index}:{thread_index}:endpoint"
+                    ),
                     mapping.result_fact_kind,
                     None,
-                    endpoint,
+                    flow_locations[-1],
                     rule_id,
                 )
             )
-        if mapping.flow_start_fact_kind is not None and flow_first is not None:
-            facts.append(
-                CandidateFact(
-                    f"codeql:{rule_id}:result:{result_index}:flow-start",
-                    mapping.flow_start_fact_kind,
-                    None,
-                    flow_first,
-                    rule_id,
+            if mapping.flow_start_fact_kind is not None:
+                facts.append(
+                    CandidateFact(
+                        (
+                            f"codeql:{rule_id}:result:{result_index}:"
+                            f"flow:{flow_index}:{thread_index}:start"
+                        ),
+                        mapping.flow_start_fact_kind,
+                        None,
+                        flow_locations[0],
+                        rule_id,
+                    )
                 )
-            )
     return (
         _rules(inputs, metadata_ids, hit_counts),
         tuple(facts),
@@ -797,6 +850,8 @@ class CodeQLProcessAdapter:
         profile_error = self._profile_error(profile)
         if profile_error is not None:
             return "FAILED", profile_error
+        if request.tool_profile_ref != reference(profile):
+            return "FAILED", "CODEQL_PROFILE_REFERENCE_MISMATCH"
         workspace = request.workspace
         database = self.inputs.database
         if (
@@ -829,6 +884,13 @@ class CodeQLProcessAdapter:
                 return "FAILED", "CODEQL_OUTPUT_ROOT_INVALID"
             if digest_path(database.database_root) != database.database_digest:
                 return "FAILED", "CODEQL_DATABASE_DIGEST_MISMATCH"
+            if (
+                digest_path(self.inputs.query_pack_root)
+                != self.inputs.query_pack_digest
+            ):
+                return "FAILED", "CODEQL_QUERY_PACK_DIGEST_MISMATCH"
+            if not _selection_manifest_matches(self.inputs):
+                return "FAILED", "CODEQL_SELECTION_MANIFEST_MISMATCH"
             if (
                 digest_path(self.inputs.query_pack_root)
                 != self.inputs.query_pack_digest
