@@ -34,6 +34,8 @@ from sastsimi.ports.context import (
 )
 from sastsimi.ports.dto import MonotonicActionDeadline, TrackedFile
 
+_CONTEXT_PLAN_ADAPTER = TypeAdapter(ContextReadPlan)
+
 
 def _key(value: object) -> bytes:
     return canonical_bytes(value)
@@ -450,12 +452,17 @@ def context_intent_hash(intent: ContextRetrievalIntent) -> str:
 def decode_context_read_plan(raw: bytes) -> ContextReadPlan:
     """Decode only the frozen closed dataclass shape used for authorization."""
     try:
-        plan = TypeAdapter(ContextReadPlan).validate_json(raw)
+        plan = _CONTEXT_PLAN_ADAPTER.validate_json(raw)
     except ValueError as error:
         raise ValueError("CONTEXT_PLAN_CHANGED") from error
-    if canonical_bytes(plan) != raw:
+    if encode_context_read_plan(plan) != raw:
         raise ValueError("CONTEXT_PLAN_CHANGED")
     return plan
+
+
+def encode_context_read_plan(plan: ContextReadPlan) -> bytes:
+    """Encode the frozen plan through its exact adapter before canonicalization."""
+    return canonical_bytes(_CONTEXT_PLAN_ADAPTER.dump_python(plan, mode="python"))
 
 
 @dataclass(frozen=True)
@@ -563,6 +570,8 @@ def read_context_files(
     if _link_like(workspace_root) or not root.is_dir():
         raise ValueError("CONTEXT_PATH_UNSAFE")
     manifest = {item.git_path: item for item in tracked_files}
+    for authorized_path in plan.file_paths:
+        _safe_git_path(authorized_path)
     if set(plan.file_paths) - set(manifest):
         raise ValueError("CONTEXT_PATH_UNTRACKED")
     fragments: list[ContextFragment] = []

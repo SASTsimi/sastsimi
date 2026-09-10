@@ -57,6 +57,7 @@ from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.static_analysis.context_retrieval import (
     ContextReadObservation,
     context_intent_hash,
+    encode_context_read_plan,
     plan_context_retrieval,
     read_context_files,
 )
@@ -215,7 +216,7 @@ class ContextRetrievalService:
             work_timeout_ms=work_timeout_ms,
             lineage=lineage,
         )
-        plan_raw = canonical_bytes(plan)
+        plan_raw = encode_context_read_plan(plan)
         if len(plan_raw) > intent.requested_limits.max_bytes:
             raise ValueError("CONTEXT_PLAN_TOO_LARGE")
         plan_ref = self.runtime.unit_of_work.artifacts.commit(
@@ -275,7 +276,12 @@ class ContextRetrievalService:
             intent, bundle, workspace, work, ceilings, lineage, plan_raw
         )
         integrity_receipts = list(
-            await self.workspace_locator.assert_unchanged(workspace, deadline)
+            await self.workspace_locator.assert_unchanged(
+                workspace,
+                deadline,
+                attempt_id=str(work.active_attempt_id),
+                check_id="pre-read",
+            )
         )
         observation = read_context_files(
             plan=plan,
@@ -286,7 +292,12 @@ class ContextRetrievalService:
             cancelled=lambda: self.runtime.work.get(str(work.work_id)) != work,
         )
         integrity_receipts.extend(
-            await self.workspace_locator.assert_unchanged(workspace, deadline)
+            await self.workspace_locator.assert_unchanged(
+                workspace,
+                deadline,
+                attempt_id=str(work.active_attempt_id),
+                check_id="post-read",
+            )
         )
         elapsed_ms = max(0, (self.monotonic_ns() - started_ns) // 1_000_000)
         fragment_refs = tuple(
@@ -756,7 +767,7 @@ class ContextRetrievalService:
         root = self.receipt_root.resolve(strict=True)
         if not root.is_dir():
             raise ValueError("CONTEXT_RECEIPT_INVALID")
-        self._validate_process_receipts(action_id, process_receipts)
+        self._validate_process_receipts(action_id, attempt_id, process_receipts)
         prefix = hashlib.sha256(str(action_ref.record_id).encode()).hexdigest()[:24]
         observation_name = prefix + ".context.json"
         self._atomic_write(root / observation_name, candidate)
@@ -899,7 +910,7 @@ class ContextRetrievalService:
                     raise ValueError
                 process_receipts.append(process_receipt)
             self._validate_process_receipts(
-                str(action.action_id), tuple(process_receipts)
+                str(action.action_id), attempt_id, tuple(process_receipts)
             )
             request = self.runtime.unit_of_work.records.get_exact(request_ref)
             if (
@@ -952,16 +963,25 @@ class ContextRetrievalService:
 
     @staticmethod
     def _validate_process_receipts(
-        action_id: str, process_receipts: tuple[ProcessReceipt, ...]
+        action_id: str,
+        attempt_id: str,
+        process_receipts: tuple[ProcessReceipt, ...],
     ) -> None:
         kinds = tuple(item.command_kind for item in process_receipts)
         if kinds != _INTEGRITY_SEQUENCE + _INTEGRITY_SEQUENCE:
             raise ValueError("CONTEXT_RECEIPT_INVALID")
-        for item in process_receipts:
+        check_ids = ("pre-read",) * len(_INTEGRITY_SEQUENCE) + (
+            "post-read",
+        ) * len(_INTEGRITY_SEQUENCE)
+        for item, check_id in zip(process_receipts, check_ids, strict=True):
             if (
                 item.action_id != action_id
-                or item.attempt_id != action_id
-                or not item.invocation_id.startswith(action_id + "-guard-")
+                or item.attempt_id != attempt_id
+                or item.invocation_id
+                != (
+                    f"{action_id}:workspace-guard:{check_id}:"
+                    f"{item.command_kind.removeprefix('guard-')}"
+                )
                 or item.outcome != "SUCCEEDED"
                 or item.return_code != 0
                 or not re.fullmatch(r"[0-9a-f]{64}", item.command_fingerprint)
@@ -1052,7 +1072,7 @@ def retrieve_fake_context(
     )
     plan_ref = runtime.unit_of_work.artifacts.commit(
         runtime.unit_of_work.artifacts.stage_bytes(
-            canonical_bytes(plan), "application/json"
+            encode_context_read_plan(plan), "application/json"
         )
     )
     work = runner.start(
