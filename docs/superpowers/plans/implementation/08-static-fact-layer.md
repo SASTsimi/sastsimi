@@ -62,9 +62,11 @@ accepting the Wave 2C lane:
   with separately no-follow/hash-verified receipt files; it never reruns Git
   after a complete `CONTEXT_READ` receipt exists.
 - Only `src/sastsimi/ports/workspace.py`,
-  `src/sastsimi/static_analysis/repository_loader.py`, their existing focused
-  unit tests, and this plan may change for this serial seam. No persisted
-  contract, schema, authority, current pointer, or tool behavior changes.
+  `src/sastsimi/static_analysis/{repository_loader.py,ast_adapter.py}`, their
+  existing focused unit tests, and this plan may change for this serial seam.
+  The AST edit only supplies the real attempt and distinct pre/post check IDs
+  required by the extended port. No persisted contract, schema, authority,
+  current pointer, or tool behavior changes.
 
 - Base implementation commit is `b3b2d9918ea815b9b936c09c98e4c53fd54937dc`.
 - Do not change existing fields, enums, validators, result ownership, or reference meaning in `src/sastsimi/contracts/`. The sole permitted domain-contract extension is the narrow `StaticToolProfile` record plus the transport-level `StaticToolRequest.tool_profile_ref` required to close exact adapter selection; export and inventory its generated schema in Task 1. No other schema may change.
