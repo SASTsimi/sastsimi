@@ -31,6 +31,7 @@ from sastsimi.ports.dto import (
     TrackedFile,
 )
 from sastsimi.ports.workspace import WorkspaceLocatorPort
+from sastsimi.static_analysis.normalizer import StaticRawReplayInput
 
 
 class ProcessRunner(Protocol):
@@ -261,6 +262,151 @@ def _errors(value: object) -> tuple[CandidateError, ...]:
             )
         )
     return tuple(result)
+
+
+def _validate_decoded_paths(
+    decoded: Mapping[str, object], expected_paths: Sequence[str]
+) -> None:
+    expected = tuple(expected_paths)
+    allowed = frozenset(expected)
+    files = cast(tuple[str, ...], decoded["files"])
+    analyzed = cast(tuple[str, ...], decoded["analyzed_paths"])
+    skipped = cast(tuple[str, ...], decoded["skipped_paths"])
+    if (
+        files != expected
+        or len(analyzed) != len(set(analyzed))
+        or len(skipped) != len(set(skipped))
+        or set(analyzed).intersection(skipped)
+        or set(analyzed).union(skipped) != allowed
+        or any(path not in allowed for path in analyzed)
+        or any(path not in allowed for path in skipped)
+    ):
+        raise ValueError("STATIC_AST_OUTPUT_INVALID")
+
+    def require_location(location: CandidateLocation) -> None:
+        if location.file_path not in allowed:
+            raise ValueError("STATIC_AST_OUTPUT_INVALID")
+
+    for symbol in cast(tuple[CandidateSymbol, ...], decoded["symbols"]):
+        require_location(symbol.location)
+    for fact in cast(tuple[CandidateFact, ...], decoded["facts"]):
+        require_location(fact.location)
+    for relation in cast(tuple[CandidateRelation, ...], decoded["relations"]):
+        require_location(relation.from_location)
+        require_location(relation.to_location)
+    for gap in cast(tuple[CandidateGap, ...], decoded["gaps"]):
+        if any(path not in allowed for path in gap.affected_paths):
+            raise ValueError("STATIC_AST_OUTPUT_INVALID")
+        for location in gap.affected_locations:
+            require_location(location)
+
+
+def _decode_ast_document(
+    raw: bytes, expected_paths: Sequence[str]
+) -> Mapping[str, object]:
+    value = json.loads(raw.decode("utf-8"))
+    fields = frozenset(
+        {
+            "schema_version",
+            "parser_version",
+            "files",
+            "analyzed_paths",
+            "skipped_paths",
+            "symbols",
+            "facts",
+            "relations",
+            "gaps",
+            "errors",
+        }
+    )
+    item = _closed(value, fields)
+    if item["schema_version"] != 1:
+        raise ValueError("STATIC_AST_OUTPUT_INVALID")
+    decoded: dict[str, object] = {
+        "parser_version": _text(item["parser_version"]),
+        "files": _strings(item["files"]),
+        "analyzed_paths": _strings(item["analyzed_paths"]),
+        "skipped_paths": _strings(item["skipped_paths"]),
+        "symbols": _symbols(item["symbols"]),
+        "facts": _facts(item["facts"]),
+        "relations": _relations(item["relations"]),
+        "gaps": _gaps(item["gaps"]),
+        "errors": _errors(item["errors"]),
+    }
+    _validate_decoded_paths(decoded, expected_paths)
+    return decoded
+
+
+def replay_python_ast_raw(
+    raw: bytes, replay: StaticRawReplayInput
+) -> StaticToolObservation:
+    """Purely decode verified AST bytes against their committed run scope."""
+
+    result, profile = replay.result, replay.profile
+    try:
+        value = json.loads(raw.decode("utf-8"))
+        files = _strings(_closed(value, frozenset(value))["files"])
+        decoded = _decode_ast_document(raw, files)
+    except (
+        UnicodeError,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as error:
+        raise ValueError("STATIC_RAW_REPLAY_OUTPUT_INVALID") from error
+    authorized = tuple(replay.authorized_paths)
+    analyzed = cast(tuple[str, ...], decoded["analyzed_paths"])
+    raw_skipped = cast(tuple[str, ...], decoded["skipped_paths"])
+    result_skipped = tuple(result.coverage.skipped_paths)
+    explained = {
+        path for gap in result.gaps for path in tuple(gap.affected_paths)
+    }
+    raw_ref = result.raw_result_ref
+    if (
+        replay.rule_execution is not None
+        or replay.rule_mappings
+        or profile.status != "APPROVED"
+        or profile.purpose not in {"FIXTURE", "EVALUATION"}
+        or (profile.adapter_key, profile.tool_name, profile.tool_kind)
+        != ("PYTHON_AST", "AST", "STRUCTURE")
+        or (result.tool_name, result.tool_version, result.tool_kind)
+        != ("AST", profile.expected_version, "STRUCTURE")
+        or result.status not in {"SUCCEEDED", "PARTIAL"}
+        or raw_ref is None
+        or hashlib.sha256(raw).hexdigest() != raw_ref.content_hash
+        or decoded["parser_version"] != profile.expected_version
+        or len(authorized) != len(set(authorized))
+        or set(result.coverage.analyzed_paths).intersection(result_skipped)
+        or set(result.coverage.analyzed_paths).union(result_skipped) != set(authorized)
+        or set(files).difference(authorized)
+        or analyzed != tuple(result.coverage.analyzed_paths)
+        or not set(raw_skipped).issubset(result_skipped)
+        or not set(result_skipped).difference(raw_skipped).issubset(explained)
+    ):
+        raise ValueError("STATIC_RAW_REPLAY_SCOPE_MISMATCH")
+    return StaticToolObservation(
+        tool_name="AST",
+        tool_version=profile.expected_version,
+        tool_kind="STRUCTURE",
+        status=result.status,
+        raw_output=raw,
+        raw_media_type="application/json",
+        analyzed_paths=tuple(result.coverage.analyzed_paths),
+        skipped_paths=result_skipped,
+        analyzed_languages=tuple(result.coverage.analyzed_languages),
+        skipped_languages=tuple(result.coverage.skipped_languages),
+        notes=tuple(result.coverage.notes),
+        selected_rule_packs=(),
+        rules=(),
+        symbols=cast(tuple[CandidateSymbol, ...], decoded["symbols"]),
+        facts=cast(tuple[CandidateFact, ...], decoded["facts"]),
+        relations=cast(tuple[CandidateRelation, ...], decoded["relations"]),
+        gaps=cast(tuple[CandidateGap, ...], decoded["gaps"]),
+        errors=cast(tuple[CandidateError, ...], decoded["errors"]),
+        started_monotonic_ms=0,
+        finished_monotonic_ms=0,
+    )
 
 
 class PythonAstProcessAdapter:
@@ -625,74 +771,13 @@ class PythonAstProcessAdapter:
     def _decode(
         self, raw: bytes, manifest: Sequence[_BoundTrackedFile]
     ) -> Mapping[str, object]:
-        value = json.loads(raw.decode("utf-8"))
-        fields = frozenset(
-            {
-                "schema_version",
-                "parser_version",
-                "files",
-                "analyzed_paths",
-                "skipped_paths",
-                "symbols",
-                "facts",
-                "relations",
-                "gaps",
-                "errors",
-            }
-        )
-        item = _closed(value, fields)
-        if item["schema_version"] != 1:
-            raise ValueError("STATIC_AST_OUTPUT_INVALID")
-        decoded: dict[str, object] = {
-            "parser_version": _text(item["parser_version"]),
-            "files": _strings(item["files"]),
-            "analyzed_paths": _strings(item["analyzed_paths"]),
-            "skipped_paths": _strings(item["skipped_paths"]),
-            "symbols": _symbols(item["symbols"]),
-            "facts": _facts(item["facts"]),
-            "relations": _relations(item["relations"]),
-            "gaps": _gaps(item["gaps"]),
-            "errors": _errors(item["errors"]),
-        }
-        self._validate_decoded_manifest(decoded, manifest)
-        return decoded
+        return _decode_ast_document(raw, tuple(item.git_path for item in manifest))
 
     @staticmethod
     def _validate_decoded_manifest(
         decoded: Mapping[str, object], manifest: Sequence[_BoundTrackedFile]
     ) -> None:
-        expected = tuple(item.git_path for item in manifest)
-        allowed = frozenset(expected)
-        files = cast(tuple[str, ...], decoded["files"])
-        analyzed = cast(tuple[str, ...], decoded["analyzed_paths"])
-        skipped = cast(tuple[str, ...], decoded["skipped_paths"])
-        if (
-            files != expected
-            or len(analyzed) != len(set(analyzed))
-            or len(skipped) != len(set(skipped))
-            or set(analyzed).intersection(skipped)
-            or set(analyzed).union(skipped) != allowed
-            or any(path not in allowed for path in analyzed)
-            or any(path not in allowed for path in skipped)
-        ):
-            raise ValueError("STATIC_AST_OUTPUT_INVALID")
-
-        def require_location(location: CandidateLocation) -> None:
-            if location.file_path not in allowed:
-                raise ValueError("STATIC_AST_OUTPUT_INVALID")
-
-        for symbol in cast(tuple[CandidateSymbol, ...], decoded["symbols"]):
-            require_location(symbol.location)
-        for fact in cast(tuple[CandidateFact, ...], decoded["facts"]):
-            require_location(fact.location)
-        for relation in cast(tuple[CandidateRelation, ...], decoded["relations"]):
-            require_location(relation.from_location)
-            require_location(relation.to_location)
-        for gap in cast(tuple[CandidateGap, ...], decoded["gaps"]):
-            if any(path not in allowed for path in gap.affected_paths):
-                raise ValueError("STATIC_AST_OUTPUT_INVALID")
-            for location in gap.affected_locations:
-                require_location(location)
+        _validate_decoded_paths(decoded, tuple(item.git_path for item in manifest))
 
     def _process_failure(
         self,

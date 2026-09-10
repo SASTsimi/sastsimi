@@ -37,6 +37,7 @@ from sastsimi.ports.dto import (
     StaticToolRequest,
     TrackedFile,
 )
+from sastsimi.static_analysis.normalizer import StaticRawReplayInput
 
 
 class CodeQLProcessRunner(Protocol):
@@ -353,8 +354,10 @@ def _selection_manifest_matches(inputs: CodeQLExecutionInputs) -> bool:
     )
 
 
-def _mapping_by_id(inputs: CodeQLExecutionInputs) -> Mapping[str, StaticRuleMapping]:
-    return {item.rule_id: item for item in inputs.rule_catalog}
+def _mapping_by_id(
+    rule_catalog: tuple[StaticRuleMapping, ...],
+) -> Mapping[str, StaticRuleMapping]:
+    return {item.rule_id: item for item in rule_catalog}
 
 
 def _location(value: object, tracked: frozenset[str]) -> CandidateLocation:
@@ -425,14 +428,15 @@ def _error(code: str, message: str, *, retryable: bool = False) -> CandidateErro
 
 
 def _rules(
-    inputs: CodeQLExecutionInputs,
+    rule_catalog: tuple[StaticRuleMapping, ...],
+    selected_rule_ids: tuple[str, ...],
     metadata_ids: list[str],
     hit_counts: Counter[str],
 ) -> tuple[CandidateRule, ...]:
     metadata = Counter(metadata_ids)
-    selected = set(inputs.selected_rule_ids)
+    selected = set(selected_rule_ids)
     result: list[CandidateRule] = []
-    for mapping in sorted(inputs.rule_catalog, key=lambda item: item.rule_id):
+    for mapping in sorted(rule_catalog, key=lambda item: item.rule_id):
         if mapping.rule_id not in selected:
             result.append(
                 CandidateRule(
@@ -471,7 +475,9 @@ def _rules(
 
 def _decode_sarif(
     raw: bytes,
-    inputs: CodeQLExecutionInputs,
+    rule_catalog: tuple[StaticRuleMapping, ...],
+    selected_rule_ids: tuple[str, ...],
+    tracked_paths: tuple[str, ...],
     expected_version: str,
     loader: Callable[[bytes], object],
 ) -> tuple[
@@ -513,11 +519,11 @@ def _decode_sarif(
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise _MalformedSarif("STATIC_OUTPUT_MALFORMED") from error
 
-    catalog = _mapping_by_id(inputs)
-    selected = frozenset(inputs.selected_rule_ids)
+    catalog = _mapping_by_id(rule_catalog)
+    selected = frozenset(selected_rule_ids)
     if any(rule_id not in selected for rule_id in metadata_ids):
         raise _MalformedSarif("STATIC_OUTPUT_MALFORMED")
-    tracked = frozenset(item.git_path for item in inputs.tracked_files)
+    tracked = frozenset(tracked_paths)
     hit_counts: Counter[str] = Counter()
     facts: list[CandidateFact] = []
     relations: list[CandidateRelation] = []
@@ -662,10 +668,93 @@ def _decode_sarif(
                     )
                 )
     return (
-        _rules(inputs, metadata_ids, hit_counts),
+        _rules(rule_catalog, selected_rule_ids, metadata_ids, hit_counts),
         tuple(facts),
         tuple(relations),
         tuple(gaps),
+    )
+
+
+def replay_codeql_raw(
+    raw: bytes, replay: StaticRawReplayInput
+) -> StaticToolObservation:
+    """Purely decode verified SARIF against its exact persisted rule context."""
+
+    result, profile, execution = (
+        replay.result,
+        replay.profile,
+        replay.rule_execution,
+    )
+    raw_ref = result.raw_result_ref
+    mapping_ids = tuple(item.rule_id for item in replay.rule_mappings)
+    rule_ids = tuple(item.rule_id for item in execution.rules) if execution else ()
+    authorized = tuple(replay.authorized_paths)
+    if (
+        execution is None
+        or profile.status != "APPROVED"
+        or profile.purpose not in {"FIXTURE", "EVALUATION"}
+        or (profile.adapter_key, profile.tool_name, profile.tool_kind)
+        != ("CODEQL", "CODEQL", "RULE_BASED")
+        or (result.tool_name, result.tool_version, result.tool_kind)
+        != ("CODEQL", profile.expected_version, "RULE_BASED")
+        or result.status not in {"SUCCEEDED", "PARTIAL"}
+        or raw_ref is None
+        or hashlib.sha256(raw).hexdigest() != raw_ref.content_hash
+        or result.rule_execution_ref != reference(execution)
+        or (execution.tool_name, execution.tool_version)
+        != (result.tool_name, result.tool_version)
+        or len(mapping_ids) != len(set(mapping_ids))
+        or set(mapping_ids) != set(rule_ids)
+        or len(authorized) != len(set(authorized))
+        or set(result.coverage.analyzed_paths).intersection(
+            result.coverage.skipped_paths
+        )
+        or set(result.coverage.analyzed_paths).union(result.coverage.skipped_paths)
+        != set(authorized)
+    ):
+        raise ValueError("STATIC_RAW_REPLAY_CATALOG_MISMATCH")
+    selected = tuple(
+        item.rule_id for item in execution.rules if item.selection_status == "SELECTED"
+    )
+    try:
+        rules, facts, relations, gaps = _decode_sarif(
+            raw,
+            replay.rule_mappings,
+            selected,
+            tuple(result.coverage.analyzed_paths),
+            profile.expected_version,
+            json.loads,
+        )
+    except _MalformedSarif as error:
+        raise ValueError("STATIC_RAW_REPLAY_OUTPUT_INVALID") from error
+    if (
+        tuple(item.__dict__ for item in rules)
+        != tuple(item.model_dump(mode="python") for item in execution.rules)
+        or (result.status == "SUCCEEDED" and gaps)
+        or (result.status == "PARTIAL" and not result.gaps)
+    ):
+        raise ValueError("STATIC_RAW_REPLAY_RESULT_MISMATCH")
+    return StaticToolObservation(
+        tool_name="CODEQL",
+        tool_version=profile.expected_version,
+        tool_kind="RULE_BASED",
+        status=result.status,
+        raw_output=raw,
+        raw_media_type="application/sarif+json",
+        analyzed_paths=tuple(result.coverage.analyzed_paths),
+        skipped_paths=tuple(result.coverage.skipped_paths),
+        analyzed_languages=tuple(result.coverage.analyzed_languages),
+        skipped_languages=tuple(result.coverage.skipped_languages),
+        notes=tuple(result.coverage.notes),
+        selected_rule_packs=tuple(execution.selected_rule_packs),
+        rules=rules,
+        symbols=(),
+        facts=facts,
+        relations=relations,
+        gaps=gaps,
+        errors=(),
+        started_monotonic_ms=0,
+        finished_monotonic_ms=0,
     )
 
 
@@ -1203,7 +1292,12 @@ class CodeQLProcessAdapter:
             )
         try:
             rules, facts, relations, gaps = _decode_sarif(
-                raw, self.inputs, profile.expected_version, self.sarif_loader
+                raw,
+                self.inputs.rule_catalog,
+                self.inputs.selected_rule_ids,
+                tuple(item.git_path for item in self.inputs.tracked_files),
+                profile.expected_version,
+                self.sarif_loader,
             )
         except _MalformedSarif:
             return self._observation(

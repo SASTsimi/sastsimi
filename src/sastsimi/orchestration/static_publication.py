@@ -45,6 +45,7 @@ from sastsimi.ports.dto import (
     PublishedStaticToolMaterial,
     PublishedWorkspaceMaterial,
     RepositoryPreparation,
+    StaticRuleMapping,
     StaticToolObservation,
     StaticToolRequest,
     TransitionCommitRequest,
@@ -503,6 +504,7 @@ class StaticNormalizationSource:
     analysis_config_ref: StoredDataRef
     rule_catalog_ref: StoredDataRef | None = None
     catalog_rule_ids: tuple[str, ...] = ()
+    rule_mappings: tuple[StaticRuleMapping, ...] = ()
 
 
 class StaticNormalizationPublisher:
@@ -816,7 +818,11 @@ class StaticNormalizationPublisher:
         for material in materials:
             record = material.rule_execution
             if record is None:
-                if material.catalog_rule_ids or material.rule_catalog_ref is not None:
+                if (
+                    material.catalog_rule_ids
+                    or material.rule_mappings
+                    or material.rule_catalog_ref is not None
+                ):
                     raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
                 continue
             if (
@@ -826,6 +832,15 @@ class StaticNormalizationPublisher:
                 raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
             previous = catalogs.get(record.rule_catalog_ref)
             if previous is not None and previous != material.catalog_rule_ids:
+                raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
+            mapping_ids = tuple(item.rule_id for item in material.rule_mappings)
+            if (
+                (mapping_ids and set(mapping_ids) != set(material.catalog_rule_ids))
+                or (
+                    material.result.status in {"SUCCEEDED", "PARTIAL"}
+                    and not mapping_ids
+                )
+            ):
                 raise ValueError("RULE_CATALOG_CLOSURE_MISMATCH")
             validate_rule_execution(material.result, record, material.catalog_rule_ids)
             catalogs[record.rule_catalog_ref] = material.catalog_rule_ids
@@ -1012,6 +1027,7 @@ class StaticNormalizationPublisher:
             raw_bytes=raw,
             rule_execution=rule,
             catalog_rule_ids=source.catalog_rule_ids,
+            rule_mappings=source.rule_mappings,
         )
 
     @staticmethod

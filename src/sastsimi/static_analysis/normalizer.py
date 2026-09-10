@@ -25,12 +25,27 @@ from sastsimi.contracts.static import (
     ToolSource,
     validate_rule_execution,
 )
-from sastsimi.ports.dto import CandidateLocation, StaticToolObservation
+from sastsimi.ports.dto import (
+    CandidateLocation,
+    StaticRuleMapping,
+    StaticToolObservation,
+)
 
 type RawDecoder = Callable[
-    [bytes, ToolRunResult, StaticToolProfile, tuple[str, ...]], StaticToolObservation
+    [bytes, "StaticRawReplayInput"], StaticToolObservation
 ]
 type DecoderKey = tuple[str, str, str, str]
+
+
+@dataclass(frozen=True)
+class StaticRawReplayInput:
+    """Exact immutable inputs allowed during process-free raw replay."""
+
+    result: ToolRunResult
+    profile: StaticToolProfile
+    rule_execution: RuleExecutionRecord | None
+    rule_mappings: tuple[StaticRuleMapping, ...]
+    authorized_paths: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -44,6 +59,7 @@ class StaticNormalizationInput:
     raw_bytes: bytes | None
     rule_execution: RuleExecutionRecord | None = None
     catalog_rule_ids: tuple[str, ...] = ()
+    rule_mappings: tuple[StaticRuleMapping, ...] = ()
 
 
 def decoder_key(
@@ -158,9 +174,20 @@ class StaticNormalizer:
                 raise ValueError("STATIC_DECODER_NOT_FOUND") from error
             observation = decoder(
                 raw,
-                material.result,
-                material.profile,
-                material.catalog_rule_ids,
+                StaticRawReplayInput(
+                    result=material.result,
+                    profile=material.profile,
+                    rule_execution=material.rule_execution,
+                    rule_mappings=material.rule_mappings,
+                    authorized_paths=tuple(
+                        sorted(
+                            {
+                                *material.result.coverage.analyzed_paths,
+                                *material.result.coverage.skipped_paths,
+                            }
+                        )
+                    ),
+                ),
             )
             if (
                 observation.raw_output != raw
@@ -413,6 +440,25 @@ class StaticNormalizer:
                 material.rule_execution,
                 material.catalog_rule_ids,
             )
+        mapping_ids = tuple(mapping.rule_id for mapping in material.rule_mappings)
+        if (
+            len(mapping_ids) != len(set(mapping_ids))
+            or (mapping_ids and set(mapping_ids) != set(material.catalog_rule_ids))
+            or (
+                material.result.tool_kind == "STRUCTURE"
+                and (
+                    material.rule_execution is not None
+                    or material.catalog_rule_ids
+                    or material.rule_mappings
+                )
+            )
+            or (
+                material.result.tool_kind == "RULE_BASED"
+                and material.result.status in {"SUCCEEDED", "PARTIAL"}
+                and not material.rule_mappings
+            )
+        ):
+            raise ValueError("STATIC_RAW_REPLAY_CATALOG_MISMATCH")
 
     @staticmethod
     def _symbols(

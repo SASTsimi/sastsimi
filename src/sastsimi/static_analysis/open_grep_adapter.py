@@ -36,6 +36,7 @@ from sastsimi.ports.dto import (
     StaticToolRequest,
     TrackedFile,
 )
+from sastsimi.static_analysis.normalizer import StaticRawReplayInput
 
 _WINDOWS_COMMAND_LIMIT_BYTES = 32_767 * 2
 _POSIX_SAFETY_MARGIN_BYTES = 8_192
@@ -405,7 +406,8 @@ def _telemetry_unknown(
 def _decode_batch(
     raw: bytes,
     paths: tuple[str, ...],
-    inputs: OpenGrepExecutionInputs,
+    rule_catalog: tuple[StaticRuleMapping, ...],
+    selected_rule_ids: tuple[str, ...],
     expected_version: str,
 ) -> _DecodedBatch:
     try:
@@ -437,10 +439,10 @@ def _decode_batch(
         or skipped
     ):
         raise ValueError("OPENGREP_OUTPUT_SCOPE_MISMATCH")
-    selected = frozenset(inputs.selected_rule_ids)
-    catalog = frozenset(item.rule_id for item in inputs.rule_catalog)
+    selected = frozenset(selected_rule_ids)
+    catalog = frozenset(item.rule_id for item in rule_catalog)
     unknown = _telemetry_unknown(timing.get("rules"), selected, catalog)
-    mapping = {item.rule_id: item for item in inputs.rule_catalog}
+    mapping = {item.rule_id: item for item in rule_catalog}
     hits: Counter[str] = Counter()
     facts: list[CandidateFact] = []
     gaps: list[CandidateGap] = []
@@ -516,6 +518,162 @@ def _decode_batch(
         hits,
         tuple(facts),
         tuple(gaps),
+    )
+
+
+def replay_opengrep_raw(
+    raw: bytes, replay: StaticRawReplayInput
+) -> StaticToolObservation:
+    """Purely decode a verified OpenGrep envelope and its exact rule context."""
+
+    result, profile, execution = (
+        replay.result,
+        replay.profile,
+        replay.rule_execution,
+    )
+    raw_ref = result.raw_result_ref
+    mapping_ids = tuple(item.rule_id for item in replay.rule_mappings)
+    rule_ids = tuple(item.rule_id for item in execution.rules) if execution else ()
+    authorized = tuple(replay.authorized_paths)
+    if (
+        execution is None
+        or profile.status != "APPROVED"
+        or profile.purpose not in {"FIXTURE", "EVALUATION"}
+        or (profile.adapter_key, profile.tool_name, profile.tool_kind)
+        != ("OPENGREP", "OPENGREP", "RULE_BASED")
+        or (result.tool_name, result.tool_version, result.tool_kind)
+        != ("OPENGREP", profile.expected_version, "RULE_BASED")
+        or result.status not in {"SUCCEEDED", "PARTIAL"}
+        or raw_ref is None
+        or hashlib.sha256(raw).hexdigest() != raw_ref.content_hash
+        or result.rule_execution_ref != reference(execution)
+        or (execution.tool_name, execution.tool_version)
+        != (result.tool_name, result.tool_version)
+        or len(mapping_ids) != len(set(mapping_ids))
+        or set(mapping_ids) != set(rule_ids)
+        or len(authorized) != len(set(authorized))
+        or set(result.coverage.analyzed_paths).intersection(
+            result.coverage.skipped_paths
+        )
+        or set(result.coverage.analyzed_paths).union(result.coverage.skipped_paths)
+        != set(authorized)
+    ):
+        raise ValueError("STATIC_RAW_REPLAY_CATALOG_MISMATCH")
+    selected = tuple(
+        item.rule_id for item in execution.rules if item.selection_status == "SELECTED"
+    )
+    try:
+        value = json.loads(raw.decode("utf-8"))
+        if (
+            not isinstance(value, dict)
+            or set(value)
+            != {"schema_version", "tool_name", "tool_version", "batches"}
+            or value.get("schema_version") != 1
+            or value.get("tool_name") != "OPENGREP"
+            or value.get("tool_version") != profile.expected_version
+            or canonical_bytes(value) != raw
+            or not isinstance(value.get("batches"), list)
+            or not value["batches"]
+        ):
+            raise ValueError
+        complete: list[_DecodedBatch] = []
+        seen: set[str] = set()
+        for batch_value in value["batches"]:
+            if (
+                not isinstance(batch_value, dict)
+                or set(batch_value)
+                != {"paths", "stdout_base64", "stdout_sha256"}
+                or not isinstance(batch_value.get("paths"), list)
+                or not all(isinstance(path, str) for path in batch_value["paths"])
+                or not isinstance(batch_value.get("stdout_base64"), str)
+                or not isinstance(batch_value.get("stdout_sha256"), str)
+            ):
+                raise ValueError
+            paths = tuple(_safe_git_path(path) for path in batch_value["paths"])
+            if not paths or len(paths) != len(set(paths)) or seen.intersection(paths):
+                raise ValueError
+            seen.update(paths)
+            batch_raw = base64.b64decode(batch_value["stdout_base64"], validate=True)
+            if _digest(batch_raw) != batch_value["stdout_sha256"]:
+                raise ValueError
+            complete.append(
+                _decode_batch(
+                    batch_raw,
+                    paths,
+                    replay.rule_mappings,
+                    selected,
+                    profile.expected_version,
+                )
+            )
+    except (UnicodeError, json.JSONDecodeError, ValueError, TypeError) as error:
+        raise ValueError("STATIC_RAW_REPLAY_ENVELOPE_INVALID") from error
+    analyzed = tuple(path for batch in complete for path in batch.paths)
+    if analyzed != tuple(result.coverage.analyzed_paths) or not set(analyzed).issubset(
+        authorized
+    ):
+        raise ValueError("STATIC_RAW_REPLAY_SCOPE_MISMATCH")
+    unknown = frozenset().union(*(batch.unknown_rules for batch in complete))
+    hits: Counter[str] = Counter()
+    facts: list[CandidateFact] = []
+    gaps: list[CandidateGap] = []
+    for batch in complete:
+        hits.update(batch.hit_counts)
+        facts.extend(batch.facts)
+        gaps.extend(batch.gaps)
+    if unknown:
+        facts = [fact for fact in facts if fact.rule_id not in unknown]
+    selected_set = set(selected)
+    rules = tuple(
+        CandidateRule(
+            item.rule_id,
+            "SELECTED" if item.rule_id in selected_set else "NOT_SELECTED",
+            "UNKNOWN"
+            if item.rule_id in unknown
+            else "EXECUTED"
+            if item.rule_id in selected_set
+            else "NOT_EXECUTED",
+            None
+            if item.rule_id in unknown or item.rule_id not in selected_set
+            else hits[item.rule_id],
+            "TELEMETRY_MISSING"
+            if item.rule_id in unknown
+            else "NOT_SELECTED"
+            if item.rule_id not in selected_set
+            else None,
+            "OpenGrep timing telemetry was absent or ambiguous."
+            if item.rule_id in unknown
+            else None,
+        )
+        for item in sorted(replay.rule_mappings, key=lambda value: value.rule_id)
+    )
+    if (
+        tuple(item.__dict__ for item in rules)
+        != tuple(item.model_dump(mode="python") for item in execution.rules)
+        or (result.status == "SUCCEEDED" and gaps)
+        or (result.status == "PARTIAL" and not result.gaps)
+    ):
+        raise ValueError("STATIC_RAW_REPLAY_RESULT_MISMATCH")
+    return StaticToolObservation(
+        tool_name="OPENGREP",
+        tool_version=profile.expected_version,
+        tool_kind="RULE_BASED",
+        status=result.status,
+        raw_output=raw,
+        raw_media_type="application/json",
+        analyzed_paths=tuple(result.coverage.analyzed_paths),
+        skipped_paths=tuple(result.coverage.skipped_paths),
+        analyzed_languages=tuple(result.coverage.analyzed_languages),
+        skipped_languages=tuple(result.coverage.skipped_languages),
+        notes=tuple(result.coverage.notes),
+        selected_rule_packs=tuple(execution.selected_rule_packs),
+        rules=rules,
+        symbols=(),
+        facts=tuple(facts),
+        relations=(),
+        gaps=tuple(gaps),
+        errors=(),
+        started_monotonic_ms=0,
+        finished_monotonic_ms=0,
     )
 
 
@@ -1149,7 +1307,8 @@ class OpenGrepProcessAdapter:
                         decoded = _decode_batch(
                             result.stdout,
                             batch,
-                            self.inputs,
+                            self.inputs.rule_catalog,
+                            self.inputs.selected_rule_ids,
                             profile.expected_version,
                         )
                     except ValueError:

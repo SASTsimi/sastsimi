@@ -161,7 +161,7 @@ def test_normalization_is_deterministic_and_partitions_source() -> None:
             material.profile_ref,
             material.result.tool_name,
             material.result.tool_version,
-        ): lambda raw, result, profile, catalog: observation
+        ): lambda raw, replay: observation
     }
     normalizer = StaticNormalizer(registry)
     workspace = CodeWorkspace.model_validate_json(
@@ -210,7 +210,7 @@ def test_normalization_reports_conflicting_source_identity() -> None:
                 material.profile_ref,
                 material.result.tool_name,
                 material.result.tool_version,
-            ): lambda raw, result, profile, catalog: conflicting
+            ): lambda raw, replay: conflicting
         }
     )
     workspace = CodeWorkspace.model_validate_json(
@@ -276,7 +276,7 @@ def test_cross_observation_symbol_conflict_is_unresolved_and_order_invariant() -
                 first.profile_ref,
                 first.result.tool_name,
                 first.result.tool_version,
-            ): lambda value, result, profile, catalog: (
+            ): lambda value, replay: (
                 first_observation if value == first.raw_bytes else second_observation
             )
         }
@@ -329,7 +329,7 @@ def test_unresolved_data_flow_is_explicit_and_never_synthesizes_jump() -> None:
                 material.profile_ref,
                 material.result.tool_name,
                 material.result.tool_version,
-            ): lambda raw, result, profile, catalog: unresolved
+            ): lambda raw, replay: unresolved
         }
     )
     workspace = CodeWorkspace.model_validate_json(
@@ -389,7 +389,7 @@ def test_data_flow_reduction_keeps_ordered_intermediate_path() -> None:
                 material.profile_ref,
                 material.result.tool_name,
                 material.result.tool_version,
-            ): lambda raw, result, profile, catalog: chained
+            ): lambda raw, replay: chained
         }
     )
     workspace = CodeWorkspace.model_validate_json(

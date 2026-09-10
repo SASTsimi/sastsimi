@@ -22,6 +22,7 @@ from sastsimi.ports.dto import (
     CandidateError,
     CandidateGap,
     CandidateRule,
+    StaticRuleMapping,
     StaticToolObservation,
     StaticToolRequest,
 )
@@ -91,7 +92,7 @@ def test_candidate_bundle_is_fully_validated_before_complete() -> None:
                 material.profile_ref,
                 material.result.tool_name,
                 material.result.tool_version,
-            ): lambda raw, result, profile, catalog: observation
+            ): lambda raw, replay: observation
         }
     )
     valid = normalizer.normalize(
@@ -347,6 +348,7 @@ def test_real_runtime_publication_and_terminal_replay_validate_expected_runs(
             config_ref,
             catalog_ref,
             ("fake-rule",),
+            (StaticRuleMapping("fake-rule", "OTHER", None, False),),
         ),
     )
     decoders: dict[Any, Any] = {}
@@ -360,7 +362,7 @@ def test_real_runtime_publication_and_terminal_replay_validate_expected_runs(
         observation = observations_by_tool[result.tool_name]
         assert observation.raw_output == raw
         decoders[decoder_key(profile_ref, result.tool_name, result.tool_version)] = (
-            lambda raw, result, profile, catalog, observation=observation: observation
+            lambda raw, replay, observation=observation: observation
         )
     publisher = StaticNormalizationPublisher(runner, StaticNormalizer(decoders))
 
