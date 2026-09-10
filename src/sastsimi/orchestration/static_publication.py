@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import timedelta
 
+from sastsimi.contracts.actions import ActionDecision, ActionRequest
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.ids import (
     ErrorId,
@@ -520,7 +521,9 @@ class StaticNormalizationPublisher:
     ) -> tuple[StaticFactBundle, StoredDataRef]:
         current = self.runner.runtime.work.get(str(work.work_id))
         self._validate_workspace_and_sources(current, workspace, sources)
-        materials = tuple(self._resolve_source(current, source) for source in sources)
+        materials = tuple(
+            self._resolve_source(current, workspace, source) for source in sources
+        )
         if current.status in {"SUCCEEDED", "PARTIAL"}:
             if len(current.output_refs) != 1:
                 raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
@@ -553,7 +556,7 @@ class StaticNormalizationPublisher:
         except ValueError as error:
             if str(error) != "STATIC_NORMALIZATION_NO_USABLE_INPUT":
                 raise
-            self._fail_no_usable(current, identity, materials)
+            self._fail_no_usable(current, materials)
             raise
         partial = bool(
             bundle.gaps
@@ -651,6 +654,8 @@ class StaticNormalizationPublisher:
             if isinstance(item, WorkAttempt)
             and item.work_id == work.work_id
             and item.attempt_id == commit.attempt_id
+            and item.status.value == work.status.value
+            and item.output_refs == work.output_refs
         )
         if len(attempts) != 1:
             raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
@@ -832,7 +837,6 @@ class StaticNormalizationPublisher:
     def _fail_no_usable(
         self,
         work: WorkExecutionState,
-        identity: BudgetScopeRef,
         materials: tuple[StaticNormalizationInput, ...],
     ) -> WorkExecutionState:
         if work.active_attempt_id is None:
@@ -845,8 +849,8 @@ class StaticNormalizationPublisher:
         ) or (self.runner.ids.new(ErrorId),)
         action = self.runner.action(
             work,
-            identity,
-            "STATIC_ANALYSIS",
+            self._attempt_controller_identity(work),
+            "ORCHESTRATION",
             "CHANGE_WORK_STATE",
             reason="No usable static tool result can be normalized",
         )
@@ -913,8 +917,35 @@ class StaticNormalizationPublisher:
         )
         return self.runner.runtime.work.get(str(work.work_id))
 
+    def _attempt_controller_identity(self, work: WorkExecutionState) -> BudgetScopeRef:
+        if work.active_attempt_id is None or work.last_transition_ref is None:
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        records = self.runner.runtime.unit_of_work.records
+        transition = records.get_exact(work.last_transition_ref)
+        if (
+            not isinstance(transition, StateTransition)
+            or transition.work_id != work.work_id
+            or transition.attempt_id != work.active_attempt_id
+            or transition.to_status != "RUNNING"
+        ):
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        decision = records.get_exact(transition.action_decision_ref)
+        if not isinstance(decision, ActionDecision):
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        action = records.get_exact(decision.action_ref)
+        if (
+            not isinstance(action, ActionRequest)
+            or action.action_type != "START_ATTEMPT"
+            or action.requested_by != "ORCHESTRATION"
+        ):
+            raise ValueError("STATIC_NORMALIZATION_PUBLICATION_INVALID")
+        return action.requester_identity_ref
+
     def _resolve_source(
-        self, work: WorkExecutionState, source: StaticNormalizationSource
+        self,
+        work: WorkExecutionState,
+        workspace: CodeWorkspace,
+        source: StaticNormalizationSource,
     ) -> StaticNormalizationInput:
         if work.input_refs.count(source.tool_work_ref) != 1:
             raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
@@ -923,7 +954,11 @@ class StaticNormalizationPublisher:
         if not isinstance(referenced, WorkExecutionState):
             raise ValueError("STATIC_NORMALIZATION_INPUT_MISMATCH")
         tool_work = self.runner.runtime.work.get(str(referenced.work_id))
-        expected_inputs = {source.profile_ref, source.analysis_config_ref}
+        expected_inputs = {
+            reference(workspace),
+            source.profile_ref,
+            source.analysis_config_ref,
+        }
         if source.rule_catalog_ref is not None:
             expected_inputs.add(source.rule_catalog_ref)
         if (
