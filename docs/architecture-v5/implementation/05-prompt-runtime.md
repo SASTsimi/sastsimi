@@ -284,7 +284,7 @@ Pro와 Con의 공통 slot은 이름만 같은 것이 아니라 `source_ref + pro
 - 필수 금지: R7의 plan·command 대신 작성, CWE·Gate 결과·보고서 생성
 - session: Pro·Con session을 재개하지 않는다. 보완도 새 invocation이며 `NEW`가 기본이다.
 
-`VerificationResult.restrictions`도 같다. Agent는 `restriction_id`와 `bundle_ref`를 만들지 않고 `fact_refs`에 `fact_id`만 반환한다. trusted Verification 출력 검증 runtime이 이 순서로 채운다. 먼저 proposal에서 변경 없이 승계한 제한은 `restriction_id`와 전체 `Restriction` 객체를 그대로 두고, Verification이 새로 만들었거나 `statement`·`fact_refs`·`evidence_refs`가 바뀐 제한에는 새 전역 `restriction_id`를 발급한다. 그다음 work가 고정한 exact `StaticFactBundle` reference로 각 `CodeFactRef.bundle_ref`를 채운다. 그 뒤에 canonical `VerificationResult` schema 검증과 `content_hash` 계산을 수행한다. `bundle_ref`를 Agent가 만들 수 없는 이유는 4.1과 같다.
+`VerificationResult.restrictions`도 같다. Agent는 `restriction_id`와 `bundle_ref`를 만들지 않고 `fact_refs`에 `fact_id`만 반환한다. trusted Verification 출력 검증 runtime이 이 순서로 채운다. 먼저 proposal에서 변경 없이 승계한 제한은 `restriction_id`와 전체 `Restriction` 객체를 그대로 두고, Verification이 새로 만들었거나 `fact_refs`가 바뀐 제한은 08번의 유도 규칙대로 `restriction_id`를 다시 계산한다. 그다음 work가 고정한 exact `StaticFactBundle` reference로 각 `CodeFactRef.bundle_ref`를 채운다. 그 뒤에 canonical `VerificationResult` schema 검증과 `content_hash` 계산을 수행한다. `bundle_ref`를 Agent가 만들 수 없는 이유는 4.1과 같다.
 
 Runtime은 initial assessment의 의미를 대신 해석하지 않는다. `POC_CONFIRMATION | VERDICT_EVIDENCE`면 `CREATE_DYNAMIC_REQUEST`, `FINALIZE_WITHOUT_DYNAMIC`이면 동적 work 없이 `FINAL_VERDICT`를 호출한다. assessment는 final Verification이나 Gate 입력이 아니며, 같은 work·generation의 exact policy·playbook·application·Pro·Con과 맞지 않으면 사용하지 않는다.
 
