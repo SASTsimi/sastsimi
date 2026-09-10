@@ -39,7 +39,7 @@
 - Verify `HEAD`, tracked-file cleanliness, and safe path identity immediately before and after every static tool execution and context read. If they change, discard newly produced evidence and report `WORKSPACE_CHANGED`.
 - Local absolute paths, credentials, environment secrets, raw authorization material, and unrestricted stderr never enter `safe_message`, domain records, or ordinary logs.
 - Capability observations in T08 are technical, non-persisted evidence only. Real Git/tool profiles remain non-`ACTIVE` until T16 capability and evaluation approval.
-- Use focused tests after each RED/GREEN step. Run the complete pytest suite exactly once, after the final T08 candidate is assembled.
+- Use focused tests after each RED/GREEN step. Commit the immutable T08 implementation candidate first, then run the complete pytest suite exactly once on that recorded candidate SHA. Record results afterward in a separate evidence-only documentation commit.
 
 ---
 
@@ -153,7 +153,9 @@ OpenGrep batching           Generic coordinator +      Context Retrieval
                                       |
                        Serial Task 10 bootstrap/workflow
                                       |
-                    focused checks -> one full suite -> review
+                 candidate commit -> one full suite on its SHA
+                                      |
+                    evidence-only docs commit -> review
 ```
 
 ### Serial foundation allowlist
@@ -197,7 +199,7 @@ Expected at `I2`: all Wave 2 focused, actual three-adapter conformance, Context 
 
 ### Final serial integration rule
 
-Only Task 10 may edit `src/sastsimi/bootstrap.py`, `src/sastsimi/static_analysis/__init__.py`, the shared integration conftest after `F`, shared architecture tests after the lane freeze is lifted, or this plan's implementation-evidence appendix. The integration agent composes all real components privately, resolves conflicts, and runs focused lint/type/schema/architecture/document/link/diff checks until they are green. It then runs `uv run pytest tests -q` exactly once on the unchanged final candidate. A failure blocks T08 and is reported with its evidence; it is not followed by an automatic second full-suite run in this task.
+Only Task 10 may edit `src/sastsimi/bootstrap.py`, `src/sastsimi/static_analysis/__init__.py`, the shared integration conftest after `F`, shared architecture tests after the lane freeze is lifted, or this plan's implementation-evidence appendix. The integration agent composes all real components privately, resolves conflicts, and runs focused lint/type/schema/architecture/document/link/diff checks until they are green. It then commits the implementation/test candidate and runs `uv run pytest tests -q` exactly once on that immutable recorded SHA. Only after the run may it append the observed result to this plan and create a separate evidence-only documentation commit. That second commit receives only document/link/report-format/diff checks, never another full-suite run. If the supposed evidence commit changes production code, tests, dependency or lock files, generated schemas, runtime configuration, or anything other than the declared evidence document, it is not evidence-only: discard that classification, form and record a new candidate SHA, and run the full suite once on the new candidate before writing a replacement evidence commit.
 
 ---
 
@@ -1099,7 +1101,7 @@ git commit -m "feat: retrieve bounded exact code context"
 - Create: `tests/integration/static_analysis/test_real_static_slice.py`
 - Modify: `tests/contract/test_architecture_imports.py`
 - Modify: `tests/unit/test_fake_adapters.py`
-- Modify: `docs/superpowers/plans/implementation/08-static-fact-layer.md` only to append observed evidence after implementation.
+- Modify after the tested candidate only: `docs/superpowers/plans/implementation/08-static-fact-layer.md`, appending the observed evidence in a separate documentation-only commit.
 
 **Interfaces:**
 - Consumes: local fixture Git repository, fake CodeQL/OpenGrep executables with real process behavior, real AST worker, current runtime services, and the private real-static composition factory.
@@ -1128,33 +1130,71 @@ powershell -NoProfile -File scripts/audit-doc-inventory.ps1 -RepositoryRoot . -C
 git diff --check
 ```
 
-Expected: all commands pass; generated schema and canonical architecture documents are unchanged except for this implementation plan/evidence record.
+Expected: all commands pass; generated schemas and canonical architecture documents are unchanged. Do not append observed full-suite evidence yet because no immutable tested candidate SHA exists until the next step.
 
-- [ ] **Step 6: Run the one and only final complete test suite.** Do not run this command in earlier tasks or repeat it after an unchanged final candidate.
+- [ ] **Step 6: Commit and freeze the implementation candidate before the full suite.** Stage every production/test integration file and no evidence edit. Commit, require a clean worktree, and record the full 40-character output of `git rev-parse HEAD` as `TESTED_CANDIDATE_SHA`. That SHA—not the later evidence commit—is the test subject.
 
 ```powershell
+git add src/sastsimi/bootstrap.py src/sastsimi/static_analysis/__init__.py tests/integration/static_analysis/conftest.py tests/integration/static_analysis/test_real_static_slice.py tests/contract/test_architecture_imports.py tests/unit/test_fake_adapters.py
+git commit -m "feat: complete real static fact layer"
+git status --short
+git rev-parse HEAD
+```
+
+Expected: the commit succeeds, `git status --short` is empty, and the recorded SHA identifies the exact immutable implementation candidate.
+
+- [ ] **Step 7: Run the one and only final complete test suite on the frozen SHA.** Immediately before running, require `git rev-parse HEAD` to equal `TESTED_CANDIDATE_SHA` and the worktree to be clean. Run this command exactly once. Do not edit, amend, rebase, merge, or commit between the SHA check and test completion.
+
+```powershell
+$t08TestedCandidateSha = git rev-parse HEAD
+Write-Output $t08TestedCandidateSha
+git status --short
 uv run pytest tests -q
 ```
 
-Expected: every test passes. Record the exact test count, duration, OS, Python version, base SHA, and candidate SHA in an `## Implementation Evidence` appendix in this file.
+Expected: the first output equals `TESTED_CANDIDATE_SHA`, status is empty, and every test passes. Capture the exact command, exit code, test count, duration, OS, Python version, base SHA, and tested candidate SHA outside Git until the evidence step. A failure blocks this candidate. Any implementation/test/configuration fix creates a new candidate commit and SHA; only that new SHA receives the next single full-suite run.
 
-- [ ] **Step 7: Commit the final integration candidate.**
+- [ ] **Step 8: Append and commit evidence without changing the tested candidate.** Add an `## Implementation Evidence` appendix to this file with exact lines for `Tested candidate SHA`, `Full-suite command`, `Exit code`, `Test count`, `Duration`, `OS`, `Python`, `Base SHA`, and `Evidence commit full-suite tested: no`. Use the captured 40-character SHA value, not the variable name or a placeholder; the last line explicitly states that the evidence commit itself was not the full-suite test subject. Do not edit any production file, test, dependency or lock file, generated schema, runtime configuration, CI workflow, or other document. Before commit, require the working diff name set to equal this one plan path and run only the report-format, architecture-document, link, and diff checks below—do not rerun pytest.
 
 ```powershell
-git add src/sastsimi/bootstrap.py src/sastsimi/static_analysis/__init__.py tests/integration/static_analysis/conftest.py tests/integration/static_analysis/test_real_static_slice.py tests/contract/test_architecture_imports.py tests/unit/test_fake_adapters.py docs/superpowers/plans/implementation/08-static-fact-layer.md
-git commit -m "feat: complete real static fact layer"
+$t08TestedCandidateSha = git rev-parse HEAD
+git diff --name-only
+$t08Evidence = Get-Content -LiteralPath docs/superpowers/plans/implementation/08-static-fact-layer.md -Raw
+if ($t08Evidence -notmatch [regex]::Escape("Tested candidate SHA: $t08TestedCandidateSha")) { exit 1 }
+$t08RequiredEvidence = @('(?m)^## Implementation Evidence$', '(?m)^Full-suite command: uv run pytest tests -q$', '(?m)^Exit code: 0$', '(?m)^Test count: .+$', '(?m)^Duration: .+$', '(?m)^OS: .+$', '(?m)^Python: .+$', '(?m)^Base SHA: [0-9a-f]{40}$', '(?m)^Evidence commit full-suite tested: no$')
+foreach ($t08Pattern in $t08RequiredEvidence) { if ($t08Evidence -notmatch $t08Pattern) { exit 1 } }
+powershell -NoProfile -File scripts/validate-architecture-docs.ps1
+powershell -NoProfile -File scripts/audit-doc-inventory.ps1 -RepositoryRoot . -CheckLinks
+git diff --check
+git add docs/superpowers/plans/implementation/08-static-fact-layer.md
+git commit -m "docs: record T08 implementation evidence"
 ```
 
-- [ ] **Step 8: Inspect the exact candidate before review.**
+Expected: before staging, `git diff --name-only` contains exactly `docs/superpowers/plans/implementation/08-static-fact-layer.md`; the report check finds every required evidence field; document/link/diff checks pass; and the commit contains only that file. After the evidence commit, rerun the same report-format, document, link, and commit-range diff checks—still no pytest. If the recorded tested-candidate-to-HEAD name set contains any path other than this plan, the evidence-only invariant failed: do not claim the old full-suite result for HEAD. Commit/fix a new implementation candidate as needed, run the full suite once on its new SHA, and replace the evidence with a new evidence-only commit.
+
+```powershell
+$t08TestedCandidateSha = git rev-parse HEAD^
+$t08Evidence = Get-Content -LiteralPath docs/superpowers/plans/implementation/08-static-fact-layer.md -Raw
+if ($t08Evidence -notmatch [regex]::Escape("Tested candidate SHA: $t08TestedCandidateSha")) { exit 1 }
+$t08RequiredEvidence = @('(?m)^## Implementation Evidence$', '(?m)^Full-suite command: uv run pytest tests -q$', '(?m)^Exit code: 0$', '(?m)^Test count: .+$', '(?m)^Duration: .+$', '(?m)^OS: .+$', '(?m)^Python: .+$', '(?m)^Base SHA: [0-9a-f]{40}$', '(?m)^Evidence commit full-suite tested: no$')
+foreach ($t08Pattern in $t08RequiredEvidence) { if ($t08Evidence -notmatch $t08Pattern) { exit 1 } }
+powershell -NoProfile -File scripts/validate-architecture-docs.ps1
+powershell -NoProfile -File scripts/audit-doc-inventory.ps1 -RepositoryRoot . -CheckLinks
+git diff --check HEAD^..HEAD
+git diff --name-only HEAD^..HEAD
+```
+
+- [ ] **Step 9: Inspect the candidate/evidence pair before review.**
 
 ```powershell
 git status --short
 git log --oneline b3b2d9918ea815b9b936c09c98e4c53fd54937dc..HEAD
 git diff --stat b3b2d9918ea815b9b936c09c98e4c53fd54937dc..HEAD
 git diff --check b3b2d9918ea815b9b936c09c98e4c53fd54937dc..HEAD
+git diff --name-only HEAD^..HEAD
 ```
 
-Expected: clean worktree, only T08 files/intent in the range, and no whitespace errors.
+Expected: clean worktree; only T08 files/intent in the base range; no whitespace errors; the final command shows exactly the evidence plan; and review can distinguish the tested implementation SHA from the later evidence-only commit SHA.
 
 ---
 
@@ -1188,7 +1228,7 @@ Expected: clean worktree, only T08 files/intent in the range, and no whitespace 
 - T07 fake scenarios and existing contracts continue to pass without schema changes or fake-to-real rewrites.
 - `static_analysis/` has no concrete runtime/storage import, no adapter-to-adapter dependency, and no dynamic import/process escape.
 - No real tool profile is made operationally ACTIVE and no public CLI path selects the real adapters before T16.
-- Focused tests, Ruff format/lint, strict mypy, schema/static contract checks, architecture/doc checks, `git diff --check`, and exactly one final full pytest run are green at the exact review SHA.
+- Focused tests, Ruff format/lint, strict mypy, schema/static contract checks, architecture/doc checks, and `git diff --check` are green before candidate freeze; exactly one final full pytest run is green at the recorded immutable implementation candidate SHA; and the later evidence-only SHA passes only its report-format, document, link, and diff checks.
 
 ## Explicit Scope Exclusions
 
@@ -1227,5 +1267,5 @@ Expected: clean worktree, only T08 files/intent in the range, and no whitespace 
 - [ ] Confirm every failure path distinguishes missing evidence from executed zero-hit evidence.
 - [ ] Confirm the foundation freezes all shared contracts/ports/process authority before Wave 1 and every parallel lane diff stays inside its explicit source/test allowlist.
 - [ ] Confirm Wave 1 and Wave 2 start from their recorded full SHAs, only reviewed commits are cherry-picked, and the integration agent alone resolves conflicts or edits final shared composition.
-- [ ] Confirm only Task 10 Step 6 runs the complete pytest suite.
+- [ ] Confirm Task 10 Step 6 commits the candidate, only Step 7 runs the complete pytest suite, and Step 8 changes only the evidence plan and never reruns pytest.
 - [ ] Confirm no placeholder text, unresolved type name, mismatched function signature, or unowned output remains.
