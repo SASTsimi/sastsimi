@@ -138,7 +138,9 @@ result 있는 Primitive  +  result 있는 다른 Primitive   (TRUE + TRUE)
 
 두 부모 Primitive의 `Restriction` 객체를 **중복 없이 합친 것**이다. 요약하거나 문장을 고쳐 쓰지 마라.
 
-같은 `restriction_id`는 내용이 완전히 같을 때만 한 번 남긴다. ID가 같은데 `statement`나 `fact_refs`가 다르면 그 자체가 계약 위반 상태이므로 임의로 하나를 고르거나 합치지 마라. 두 객체를 그대로 두고 `errors`에 남긴다.
+`restriction_id`는 `fact_refs`에서 유도되므로 ID가 같다는 것은 두 제한이 같은 코드 근거를 가리킨다는 뜻이다. **같은 `restriction_id`는 하나만 남긴다.** 부모마다 `statement` 문장이 다를 수 있는데 둘 다 같은 제한을 설명한 것이므로 계약 위반이 아니다. 어느 쪽을 남길지는 두 객체의 canonical bytes를 비교해 사전순으로 앞서는 것으로 정한다. 문장을 요약하거나 두 문장을 섞어 새로 쓰지 마라.
+
+ID가 같은데 `fact_refs`가 다른 경우는 유도 규칙상 나올 수 없다. 그런 입력을 만나면 상류에서 ID를 잘못 만든 것이므로 임의로 고치지 말고 두 객체를 그대로 두고 `errors`에 남긴다.
 
 ### `assumptions`
 
