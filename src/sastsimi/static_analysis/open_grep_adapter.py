@@ -1136,6 +1136,12 @@ class OpenGrepProcessAdapter:
                     if result.stdout_truncated or result.stderr_truncated:
                         termination = "OUTPUT_TRUNCATED"
                         break
+                    if len(result.stdout) > min(
+                        profile.max_output_file_bytes,
+                        profile.max_artifact_read_bytes,
+                    ):
+                        termination = "OUTPUT_TRUNCATED"
+                        break
                     try:
                         decoded = _decode_batch(
                             result.stdout,
@@ -1249,6 +1255,7 @@ class OpenGrepProcessAdapter:
                 "CANCELLED": "STATIC_TOOL_CANCELLED",
                 "TIMED_OUT": "STATIC_TOOL_TIMEOUT",
                 "PROCESS_FAILED": "STATIC_TOOL_FAILED",
+                "OUTPUT_TRUNCATED": "STATIC_OUTPUT_LIMIT",
             }.get(termination, "STATIC_TOOL_FAILED")
             reason = (
                 "BLOCKED"

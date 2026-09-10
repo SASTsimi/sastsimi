@@ -845,6 +845,53 @@ async def test_aggregate_raw_envelope_over_artifact_cap_is_never_published(
 
 
 @pytest.mark.asyncio
+async def test_raw_batch_over_cap_is_rejected_before_json_decode(
+    opengrep_fixture: dict[str, object],
+) -> None:
+    compact = _output(
+        paths=("src/a.py",), results=[_finding("R1", "src/a.py")]
+    )
+    raw = (b" " * 2_048) + compact
+    assert len(compact) < 1_024 < len(raw)
+    runner = FakeRunner([{"stdout": raw}])
+    adapter = _adapter(opengrep_fixture, runner)
+    request = cast(StaticToolRequest, opengrep_fixture["request"])
+    request = replace(
+        request,
+        action=request.action.model_copy(update={"file_paths": ("src/a.py",)}),
+    )
+    profile = cast(StaticToolProfile, opengrep_fixture["profile"]).model_copy(
+        update={"max_output_file_bytes": 1_024}
+    )
+    profile_ref = cast(StoredDataRef, reference(profile))
+    request = replace(
+        request,
+        tool_profile_ref=profile_ref,
+        action=request.action.model_copy(
+            update={
+                "input_refs": (
+                    profile_ref,
+                    request.analysis_config_ref,
+                    request.rule_catalog_ref,
+                )
+            }
+        ),
+    )
+
+    result = await adapter.execute(
+        request,
+        cast(Path, opengrep_fixture["root"]),
+        profile,
+        _deadline(str(request.action.action_id)),
+    )
+
+    assert result.status == "FAILED"
+    assert result.raw_output is None
+    assert result.facts == ()
+    assert any(gap.code == "STATIC_OUTPUT_LIMIT" for gap in result.gaps)
+
+
+@pytest.mark.asyncio
 async def test_file_replaced_during_scan_discards_all_evidence(
     opengrep_fixture: dict[str, object],
 ) -> None:
