@@ -9,6 +9,7 @@ import subprocess
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -122,6 +123,39 @@ class FakeRunner:
     async def cancel(self, attempt_id: str) -> object:
         self.cancelled = True
         return object()
+
+
+class GitGuardBackend:
+    """Emit one exact Git observation through the real safe process runner."""
+
+    def __init__(self, commit: str, manifest: bytes) -> None:
+        self.commit = commit
+        self.manifest = manifest
+
+    async def run(
+        self,
+        spec: ProcessSpec,
+        timeout_ms: int,
+        stdout: Any,
+        stderr: Any,
+        cancel_event: asyncio.Event,
+    ) -> Any:
+        from sastsimi.static_analysis.process import BackendExecution
+
+        del timeout_ms, stderr
+        if spec.command_kind == "guard-head":
+            stdout.write((self.commit + "\n").encode())
+        elif spec.command_kind == "guard-manifest":
+            stdout.write(self.manifest)
+        return BackendExecution(
+            return_code=0,
+            timed_out=False,
+            cancelled=cancel_event.is_set(),
+        )
+
+    async def cancel(self, attempt_id: str) -> bool:
+        del attempt_id
+        return True
 
 
 class QuotaCrossingRunner:
@@ -726,20 +760,22 @@ async def test_workspace_guard_rejects_head_and_tracked_manifest_drift(
     guard = WorkspaceGuard(
         roots={"workspace": root},
         manifests={"workspace": tracked},
-        process_runner_factory=lambda _root, _deadline: active_runner,
+        process_runner_factory=lambda _root, _deadline, _attempt_id: active_runner,
         git_executable=executable,
         output_dir=output,
     )
     now = time.monotonic_ns()
     deadline = MonotonicActionDeadline("guard", now, now + 1_000_000_000)
-    receipts = await guard.assert_unchanged(workspace, deadline)
+    receipts = await guard.assert_unchanged(
+        workspace, deadline, attempt_id="attempt", check_id="pre-execute"
+    )
 
     assert receipts is not None
     assert tuple(receipt.invocation_id for receipt in receipts) == (
-        "guard-guard-head",
-        "guard-guard-worktree",
-        "guard-guard-index",
-        "guard-guard-manifest",
+        "guard:workspace-guard:pre-execute:head",
+        "guard:workspace-guard:pre-execute:worktree",
+        "guard:workspace-guard:pre-execute:index",
+        "guard:workspace-guard:pre-execute:manifest",
     )
     assert tuple(receipt.command_kind for receipt in receipts) == (
         "guard-head",
@@ -752,12 +788,99 @@ async def test_workspace_guard_rejects_head_and_tracked_manifest_drift(
     moved = WorkspaceGuard(
         roots={"workspace": root},
         manifests={"workspace": tracked},
-        process_runner_factory=lambda _root, _deadline: moved_runner,
+        process_runner_factory=lambda _root, _deadline, _attempt_id: moved_runner,
         git_executable=executable,
         output_dir=output,
     )
     with pytest.raises(ValueError, match="WORKSPACE_MUTATED"):
-        await moved.assert_unchanged(workspace, deadline)
+        await moved.assert_unchanged(
+            workspace, deadline, attempt_id="attempt", check_id="pre-execute"
+        )
+
+
+@pytest.mark.asyncio
+async def test_workspace_guard_binds_actual_attempt_and_unique_check_phase(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "app.py").write_text("value = 1\n", encoding="utf-8")
+    output = tmp_path / "output"
+    output.mkdir()
+    executable = tmp_path / "git.exe"
+    executable.write_bytes(b"fixture")
+    commit = "a" * 40
+    blob = "b" * 40
+    manifest = f"100644 {blob} 0\tapp.py\0".encode()
+    fixture_root = tmp_path / "manifest-fixture"
+    fixture_root.mkdir()
+    subject, _ = loader(fixture_root, [])
+    tracked, _ = subject.build_manifest(root, manifest)
+    workspace = CodeWorkspace.model_validate_json(
+        canonical_bytes(
+            {
+                "meta": metadata("code_workspace", "workspace-record"),
+                "workspace_id": "workspace",
+                "analysis_id": "a1",
+                "repository_url": "https://example.invalid/team/repo.git",
+                "commit_id": commit,
+                "status": "READY",
+            }
+        )
+    )
+    from sastsimi.static_analysis.process import AttemptOutputBudget, SafeProcessRunner
+
+    runner = SafeProcessRunner(
+        action_id="guard-action",
+        attempt_id="attempt-7",
+        workspace_root=root,
+        output_root=output,
+        executable=executable,
+        output_budget=AttemptOutputBudget(
+            attempt_id="attempt-7", limit_bytes=4 * 1024 * 1024
+        ),
+        monotonic_ns=lambda: 1,
+        backend=GitGuardBackend(commit, manifest),
+    )
+    guard = WorkspaceGuard(
+        roots={"workspace": root},
+        manifests={"workspace": tracked},
+        process_runner_factory=lambda _root, _deadline, _attempt_id: runner,
+        git_executable=executable,
+        output_dir=output,
+    )
+    deadline = MonotonicActionDeadline("guard-action", 0, 1_000_000_000)
+
+    before = await guard.assert_unchanged(
+        workspace,
+        deadline,
+        attempt_id="attempt-7",
+        check_id="pre-read",
+    )
+    after = await guard.assert_unchanged(
+        workspace,
+        deadline,
+        attempt_id="attempt-7",
+        check_id="post-read",
+    )
+
+    assert {receipt.attempt_id for receipt in (*before, *after)} == {"attempt-7"}
+    assert tuple(receipt.invocation_id for receipt in before) == (
+        "guard-action:workspace-guard:pre-read:head",
+        "guard-action:workspace-guard:pre-read:worktree",
+        "guard-action:workspace-guard:pre-read:index",
+        "guard-action:workspace-guard:pre-read:manifest",
+    )
+    assert not {receipt.invocation_id for receipt in before} & {
+        receipt.invocation_id for receipt in after
+    }
+    with pytest.raises(ValueError, match="WORKSPACE_CHECK_IDENTITY_INVALID"):
+        await guard.assert_unchanged(
+            workspace,
+            deadline,
+            attempt_id="attempt-7",
+            check_id="",
+        )
 
 
 @pytest.mark.asyncio
@@ -810,7 +933,7 @@ async def test_repository_recovery_guard_rechecks_every_workspace_invariant(
     workspace_guard = WorkspaceGuard(
         roots={"workspace": lease.root},
         manifests={"workspace": tracked},
-        process_runner_factory=lambda _root, _deadline: active_runner,
+        process_runner_factory=lambda _root, _deadline, _attempt_id: active_runner,
         git_executable=executable,
         output_dir=output,
     )

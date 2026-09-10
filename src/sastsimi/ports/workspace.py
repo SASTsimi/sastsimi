@@ -40,7 +40,12 @@ class WorkspaceLocatorPort(Protocol):
     def root_for(self, workspace: CodeWorkspace) -> Path: ...
 
     async def assert_unchanged(
-        self, workspace: CodeWorkspace, deadline: MonotonicActionDeadline
+        self,
+        workspace: CodeWorkspace,
+        deadline: MonotonicActionDeadline,
+        *,
+        attempt_id: str,
+        check_id: str,
     ) -> tuple[ProcessReceipt, ...]: ...
 
 

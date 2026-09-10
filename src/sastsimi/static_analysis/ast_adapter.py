@@ -337,13 +337,23 @@ class PythonAstProcessAdapter:
     ) -> StaticToolObservation:
         started = self.monotonic_ns() // 1_000_000
         self._validate_execution(request, workspace_root, profile, deadline)
-        await self.workspace_locator.assert_unchanged(request.workspace, deadline)
+        await self.workspace_locator.assert_unchanged(
+            request.workspace,
+            deadline,
+            attempt_id=self.process_runner.attempt_id,
+            check_id="pre-execute",
+        )
         worker_manifest, preflight_gaps = self._worker_manifest(
             request.action.file_paths, workspace_root
         )
         worker_paths = tuple(item.git_path for item in worker_manifest)
         if not worker_paths:
-            await self.workspace_locator.assert_unchanged(request.workspace, deadline)
+            await self.workspace_locator.assert_unchanged(
+                request.workspace,
+                deadline,
+                attempt_id=self.process_runner.attempt_id,
+                check_id="post-execute",
+            )
             return self._observation(
                 profile=profile,
                 status="SKIPPED",
@@ -382,18 +392,38 @@ class PythonAstProcessAdapter:
         )
         result = await self.process_runner.run(spec)
         if result.outcome != "SUCCEEDED" or result.stdout_truncated:
-            await self.workspace_locator.assert_unchanged(request.workspace, deadline)
+            await self.workspace_locator.assert_unchanged(
+                request.workspace,
+                deadline,
+                attempt_id=self.process_runner.attempt_id,
+                check_id="post-execute",
+            )
             return self._process_failure(profile, result, preflight_gaps, started)
         try:
             self._assert_bound_manifest(worker_manifest, workspace_root)
             decoded = self._decode(result.stdout, worker_manifest)
         except (UnicodeError, json.JSONDecodeError, KeyError, ValueError, TypeError):
-            await self.workspace_locator.assert_unchanged(request.workspace, deadline)
+            await self.workspace_locator.assert_unchanged(
+                request.workspace,
+                deadline,
+                attempt_id=self.process_runner.attempt_id,
+                check_id="post-execute",
+            )
             return self._decode_failure(profile, result.stdout, preflight_gaps, started)
         if decoded["parser_version"] != profile.expected_version:
-            await self.workspace_locator.assert_unchanged(request.workspace, deadline)
+            await self.workspace_locator.assert_unchanged(
+                request.workspace,
+                deadline,
+                attempt_id=self.process_runner.attempt_id,
+                check_id="post-execute",
+            )
             return self._decode_failure(profile, result.stdout, preflight_gaps, started)
-        await self.workspace_locator.assert_unchanged(request.workspace, deadline)
+        await self.workspace_locator.assert_unchanged(
+            request.workspace,
+            deadline,
+            attempt_id=self.process_runner.attempt_id,
+            check_id="post-execute",
+        )
         try:
             self._assert_bound_manifest(worker_manifest, workspace_root)
         except ValueError:

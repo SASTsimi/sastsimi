@@ -152,7 +152,7 @@ type RepositoryProcessRunnerFactory = Callable[
     [WorkspaceStorageLease, MonotonicActionDeadline, Path], RepositoryProcessRunner
 ]
 type GuardProcessRunnerFactory = Callable[
-    [Path, MonotonicActionDeadline], RepositoryProcessRunner
+    [Path, MonotonicActionDeadline, str], RepositoryProcessRunner
 ]
 
 
@@ -410,7 +410,12 @@ class WorkspaceGuard:
         return root
 
     async def assert_unchanged(
-        self, workspace: CodeWorkspace, deadline: MonotonicActionDeadline
+        self,
+        workspace: CodeWorkspace,
+        deadline: MonotonicActionDeadline,
+        *,
+        attempt_id: str,
+        check_id: str,
     ) -> tuple[ProcessReceipt, ...]:
         root = self.root_for(workspace)
         return await self._assert_repository_state(
@@ -419,12 +424,17 @@ class WorkspaceGuard:
             self._manifests.get(str(workspace.workspace_id)),
             deadline,
             require_detached=False,
+            attempt_id=attempt_id,
+            check_id=check_id,
         )
 
     async def assert_preparation_unchanged(
         self,
         outcome: RepositoryPreparation,
         deadline: MonotonicActionDeadline,
+        *,
+        attempt_id: str,
+        check_id: str,
     ) -> tuple[ProcessReceipt, ...]:
         if (
             outcome.status != "READY"
@@ -451,6 +461,8 @@ class WorkspaceGuard:
             outcome.tracked_files,
             deadline,
             require_detached=True,
+            attempt_id=attempt_id,
+            check_id=check_id,
         )
 
     def preparation_process_specs(
@@ -497,17 +509,23 @@ class WorkspaceGuard:
         deadline: MonotonicActionDeadline,
         *,
         require_detached: bool,
+        attempt_id: str,
+        check_id: str,
     ) -> tuple[ProcessReceipt, ...]:
-        runner = self._factory(root, deadline)
+        if not attempt_id or re.fullmatch(r"[a-z][a-z0-9-]{0,63}", check_id) is None:
+            raise ValueError("WORKSPACE_CHECK_IDENTITY_INVALID")
+        runner = self._factory(root, deadline, attempt_id)
         receipts: list[ProcessReceipt] = []
 
         async def run(
             name: str, argv: tuple[str, ...], *, expect_failure: bool = False
         ) -> ProcessResult:
             spec = ProcessSpec(
-                invocation_id=f"{deadline.action_id}-guard-{name}",
+                invocation_id=(
+                    f"{deadline.action_id}:workspace-guard:{check_id}:{name}"
+                ),
                 command_kind=f"guard-{name}",
-                attempt_id=deadline.action_id,
+                attempt_id=attempt_id,
                 argv=(str(self._git), "-C", str(root), *argv),
                 cwd=root,
                 env=(
@@ -597,7 +615,12 @@ class RepositoryRecoveryGuard:
                 or receipt.command_fingerprint != process_command_fingerprint(spec)
             ):
                 raise ValueError("WORKSPACE_PROCESS_RECEIPTS_INVALID")
-        await self._workspace_guard.assert_preparation_unchanged(outcome, deadline)
+        await self._workspace_guard.assert_preparation_unchanged(
+            outcome,
+            deadline,
+            attempt_id=attempt_id,
+            check_id="recovery-verify",
+        )
         self._storage.enforce(lease)
 
 

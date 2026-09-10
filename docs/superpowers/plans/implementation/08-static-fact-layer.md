@@ -45,10 +45,13 @@ receipts proving that the workspace did not change around the read. The frozen
 so the integration agent may make this one additive, transport-only seam before
 accepting the Wave 2C lane:
 
-- `WorkspaceLocatorPort.assert_unchanged` returns
+- `WorkspaceLocatorPort.assert_unchanged` requires the real work `attempt_id`
+  and a caller-owned unique `check_id`, then returns
   `tuple[ProcessReceipt, ...]` in execution order.
-- `WorkspaceGuard` returns the already-produced successful integrity-check
-  receipts. It performs no new command and changes no validation decision.
+- `WorkspaceGuard` binds both identities into each `ProcessSpec` and returns the
+  already-produced accepted integrity-check receipts. It performs no additional
+  command and changes no validation decision. Pre-read and post-read checks use
+  different `check_id` values, so their receipts cannot overwrite or alias.
 - Existing AST and CodeQL callers may ignore the return value. Context Retrieval
   must bind the exact receipt hashes into its same-attempt `CONTEXT_READ`
   receipt; it may not invent or reconstruct them after the read.
@@ -643,7 +646,12 @@ class StaticAttemptPublisherPort(Protocol):
 class WorkspaceLocatorPort(Protocol):
     def root_for(self, workspace: CodeWorkspace) -> Path: ...
     async def assert_unchanged(
-        self, workspace: CodeWorkspace, deadline: MonotonicActionDeadline
+        self,
+        workspace: CodeWorkspace,
+        deadline: MonotonicActionDeadline,
+        *,
+        attempt_id: str,
+        check_id: str,
     ) -> tuple[ProcessReceipt, ...]: ...
 
 class WorkspacePreparationPublisherPort(Protocol):
