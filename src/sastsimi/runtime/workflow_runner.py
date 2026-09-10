@@ -83,13 +83,44 @@ class WorkflowRunner:
         attempt_id: AttemptId | None = None,
     ) -> dict[str, Any]:
         """Build the next immutable revision for a runtime-owned logical record."""
-        return source.model_dump() | dict(
+        data = source.model_dump() | dict(
             record_id=self.ids.new(RecordId),
             previous_record_id=source.record_id,
             revision_number=source.revision_number + 1,
-            attempt_id=attempt_id,
             created_at=self.clock.now(),
         )
+        if isinstance(source, RecordMeta):
+            data["attempt_id"] = attempt_id
+        return data
+
+    def publish_intermediate(
+        self,
+        work: WorkExecutionState,
+        identity: BudgetScopeRef,
+        role: str,
+        outputs: tuple[Record, ...],
+    ) -> tuple[RecordRef, ...]:
+        """Authorize and atomically publish same-attempt continuing outputs."""
+        if not outputs:
+            raise ValueError("OUTPUT_BINDING_MISMATCH")
+        records = self.runtime.unit_of_work.records
+        refs = tuple(records.stage_record(output) for output in outputs)
+        action = self.action(
+            work,
+            identity,
+            role,
+            "SAVE_RESULT",
+            result_kind=refs[0].data_kind,
+            candidate_result_ref=refs[0],
+        )
+        approval = (
+            self._output_approval(action, work, refs)
+            if self._output_approval is not None
+            else nullcontext()
+        )
+        with approval:
+            decision = self.authorize(work, action)
+        return self.runtime.intermediate.publish(str(work.work_id), decision, outputs)
 
     def units(self, **values: int) -> BudgetUnits:
         return BudgetUnits(

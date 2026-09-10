@@ -10,6 +10,7 @@ from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.hypothesis import VerificationAssignment
+from sastsimi.contracts.records import validate_revision
 from sastsimi.contracts.refs import RecordRef, StoredDataRef
 from sastsimi.contracts.result_registry import validate_result_owner
 from sastsimi.contracts.static import CodeContextResponse, CodeWorkspace
@@ -28,7 +29,7 @@ from sastsimi.contracts.work import (
 from sastsimi.ports.dto import TransitionCommitRequest
 from sastsimi.storage import models
 from sastsimi.storage.artifact_store import LocalArtifactStore
-from sastsimi.storage.codec import REF_ADAPTER, encode, reference
+from sastsimi.storage.codec import REF_ADAPTER, decode, encode, reference
 
 from .chaining_projection import validate_chaining_output
 from .context_policy import check_context_response
@@ -49,6 +50,56 @@ from .run_projections import run_policy_projection
 from .run_states import get_run, save_run
 from .verification_projection import verification_projection
 from .work_service import WorkService
+
+
+def _validate_terminal_workspace(
+    connection: Connection,
+    work: WorkExecutionState,
+    candidate: CodeWorkspace,
+    output_count: int,
+) -> None:
+    if (
+        work.work_type.value != "WORKSPACE_PREP"
+        or output_count != 1
+        or candidate.status not in {"READY", "FAILED"}
+        or candidate.meta.revision_number != 2
+        or candidate.meta.previous_record_id is None
+        or candidate.analysis_id != work.meta.analysis_id
+        or (candidate.status == "READY" and candidate.commit_id is None)
+    ):
+        raise ValueError("WORKSPACE_LIFECYCLE_INVALID")
+    row = (
+        connection.execute(
+            select(models.records.c.kind, models.records.c.payload).where(
+                models.records.c.record_id == str(candidate.meta.previous_record_id)
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None:
+        raise ValueError("WORKSPACE_LIFECYCLE_INVALID")
+    previous = decode(row["kind"], row["payload"])
+    if not isinstance(previous, CodeWorkspace) or previous.status != "PREPARING":
+        raise ValueError("WORKSPACE_LIFECYCLE_INVALID")
+    validate_revision(previous.meta, candidate.meta)
+    if (
+        previous.workspace_id != candidate.workspace_id
+        or previous.analysis_id != candidate.analysis_id
+        or previous.repository_url != candidate.repository_url
+    ):
+        raise ValueError("WORKSPACE_LIFECYCLE_INVALID")
+    current_id = connection.execute(
+        select(models.current_records.c.record_id).where(
+            models.current_records.c.logical_record_id
+            == str(candidate.meta.logical_record_id)
+        )
+    ).scalar_one_or_none()
+    state = get_run(connection, str(candidate.analysis_id))
+    if current_id != str(previous.meta.record_id) or state.workspace_ref != reference(
+        previous
+    ):
+        raise ValueError("WORKSPACE_LIFECYCLE_INVALID")
 
 
 class TransitionService:
@@ -162,6 +213,10 @@ class TransitionService:
         for record in request.records:
             if not isinstance(record, ContractModel):
                 raise ValueError("OUTPUT_SCHEMA_MISMATCH")
+            if isinstance(record, CodeWorkspace):
+                _validate_terminal_workspace(
+                    connection, work, record, len(request.records)
+                )
             if isinstance(record, CodeContextResponse):
                 check_context_response(self.works.records, connection, work, record)
             if not prepublished_output(
