@@ -4,10 +4,15 @@ import inspect
 
 import pytest
 
+from sastsimi.contracts._domain import DomainRecord
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.dynamic import DynamicReproductionRequest
 from sastsimi.contracts.hypothesis import HypothesisProcessState
-from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
+from sastsimi.contracts.refs import (
+    RecordRef,
+    StoredDataRef,
+    reference,
+)
 from sastsimi.contracts.verification import VerificationResult
 from sastsimi.verification.verdict_router import VerdictRouter
 from tests.contract.domain.canonical_fixtures import make
@@ -15,23 +20,24 @@ from tests.contract.domain.success_fixture import bound, dynamic_success
 
 
 class _Records:
-    def __init__(self, *values: object) -> None:
-        self.values: dict[RecordRef, object] = {}
+    def __init__(self, *values: DomainRecord) -> None:
+        self.values: dict[RecordRef, DomainRecord] = {}
         for index, value in enumerate(values):
             ref = (
-                reference(value)  # type: ignore[arg-type]
+                reference(value)
                 if index == 0
-                else StoredDataRef.model_validate(bound(value))  # type: ignore[arg-type]
+                else StoredDataRef.model_validate(bound(value))
             )
             assert isinstance(ref, StoredDataRef)
             self.values[ref] = value
         result = values[0]
         assert isinstance(result, VerificationResult)
         self.result = result
-        self.ref = reference(result)
-        assert isinstance(self.ref, StoredDataRef)
+        result_ref = reference(result)
+        assert isinstance(result_ref, StoredDataRef)
+        self.ref = result_ref
 
-    def get_exact(self, ref: RecordRef) -> object:
+    def get_exact(self, ref: RecordRef) -> DomainRecord:
         return self.values[ref]
 
 
@@ -93,7 +99,9 @@ def test_hold_without_required_primitive_has_no_downstream_work() -> None:
 
 def test_committed_true_only_proposes_cwe_label_registration() -> None:
     records, result_ref = _result("TRUE")
-    request = records.get_exact(records.result.dynamic_request_ref)
+    dynamic_request_ref = records.result.dynamic_request_ref
+    assert dynamic_request_ref is not None
+    request = records.get_exact(dynamic_request_ref)
     assert isinstance(request, DynamicReproductionRequest)
     process = HypothesisProcessState.model_construct(
         meta=records.result.meta.model_copy(

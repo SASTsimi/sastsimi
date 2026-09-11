@@ -17,17 +17,20 @@ from sastsimi.contracts.llm import (
 )
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus
+from sastsimi.ports.dto import Record
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
+from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.verification.completion import VerificationCompletionCoordinator
 from tests.integration.verification.test_verification_service import (
     ATTEMPT_ID,
+    HYPOTHESIS_ID,
     _Fixture,
     _meta,
 )
 
 
 @dataclass
-class _RecordingRunner:
+class _RecordingRunner(WorkflowRunner):
     calls: list[dict[str, Any]] = field(default_factory=list)
 
     def complete(
@@ -35,10 +38,19 @@ class _RecordingRunner:
         work: WorkExecutionState,
         identity: BudgetScopeRef,
         role: str,
-        outputs: tuple[object, ...],
+        outputs: tuple[Record, ...],
         *,
-        action_input_refs: tuple[RecordRef, ...],
+        status: str = "SUCCEEDED",
+        cause: str = "COMPLETED",
+        error_ids: tuple[str, ...] = (),
+        gap_ids: tuple[str, ...] = (),
+        action_input_refs: tuple[RecordRef, ...] | None = None,
     ) -> WorkExecutionState:
+        assert status == "SUCCEEDED"
+        assert cause == "COMPLETED"
+        assert error_ids == ()
+        assert gap_ids == ()
+        assert action_input_refs is not None
         self.calls.append(
             {
                 "work": work,
@@ -48,7 +60,7 @@ class _RecordingRunner:
                 "action_input_refs": action_input_refs,
             }
         )
-        output_ref = reference(outputs[0])  # type: ignore[arg-type]
+        output_ref = reference(outputs[0])
         assert isinstance(output_ref, StoredDataRef)
         return work.model_copy(
             update={
@@ -190,7 +202,7 @@ async def _ready_fixture() -> tuple[
         update={
             "parent_work_ref": None,
             "subject_type": "HYPOTHESIS",
-            "subject_id": fixture.work.meta.hypothesis_id,
+            "subject_id": HYPOTHESIS_ID,
             "state_version": 1,
             "last_transition_ref": None,
             "last_transition_commit_ref": None,

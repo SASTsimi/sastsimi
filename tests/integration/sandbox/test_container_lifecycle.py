@@ -19,6 +19,7 @@ from sastsimi.contracts.dynamic import (
     ReproductionPlan,
     SandboxPolicyDecision,
 )
+from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.sandbox.cleanup import (
@@ -71,12 +72,12 @@ def _meta(
 
 def _ref(kind: str, name: str) -> StoredDataRef:
     return StoredDataRef(
-        stored_data_id=name,
+        stored_data_id=StoredDataId(name),
         data_kind=kind,
         content_hash="a" * 64,
-        workspace_id="workspace-1",
-        commit_id="commit-1",
-        record_id=name,
+        workspace_id=WorkspaceId("workspace-1"),
+        commit_id=CommitId("commit-1"),
+        record_id=RecordId(name),
     )
 
 
@@ -136,9 +137,11 @@ def _approval(
     workspace: Path,
     request: DynamicReproductionRequest,
 ) -> SandboxBoundaryOutcome:
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
     policy = SandboxPolicyDecision(
         meta=_meta("sandbox_policy_decision", "policy-decision"),
-        request_ref=reference(request),
+        request_ref=request_ref,
         action_decision_ref=_ref("action_decision", "action-decision"),
         sandbox_profile_ref=request.sandbox_profile_ref,
         resource_profile_ref=_ref(

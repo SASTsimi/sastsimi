@@ -16,7 +16,9 @@ from sastsimi.agents.dynamic_reproduction import (
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.dynamic import (
     AgentLog,
+    DynamicReproductionConclusion,
     DynamicReproductionRequest,
+    DynamicReproductionToolRequest,
     EnvironmentRequirements,
     PoCCandidate,
     ReproductionPlan,
@@ -283,6 +285,7 @@ def invocation(
         request=request,
         result=result,
         log_ref=stored_ref("llm_invocation_log", f"log-{sequence}"),
+        dispatch_state="RETURNED",
     )
 
 
@@ -679,13 +682,19 @@ class BlockedFlowAgent:
         )
         return DynamicAgentOutcome(self.invocation, record)
 
-    async def create_poc_candidate(self, **_: object) -> object:
+    async def create_poc_candidate(
+        self, **_: object
+    ) -> DynamicAgentOutcome[PoCCandidate]:
         raise AssertionError("policy denial must happen before candidate creation")
 
-    async def next_tool_request(self, **_: object) -> object:
+    async def next_tool_request(
+        self, **_: object
+    ) -> DynamicAgentOutcome[DynamicReproductionToolRequest]:
         raise AssertionError("policy denial must happen before tool execution")
 
-    async def interpret_attempt(self, **_: object) -> object:
+    async def interpret_attempt(
+        self, **_: object
+    ) -> DynamicAgentOutcome[DynamicReproductionConclusion]:
         raise AssertionError("policy denial must happen before interpretation")
 
 
@@ -693,27 +702,39 @@ class BlockedFlowAgent:
 class FailingFlowAgent:
     category: Literal["AGENT", "TIMEOUT", "EXECUTION"]
 
-    async def derive_environment(self, **_: object) -> object:
+    async def derive_environment(
+        self, **_: object
+    ) -> DynamicAgentOutcome[EnvironmentRequirements]:
         raise DynamicOperationalError(
             "FAILED", self.category, "safe operational failure"
         )
 
-    async def plan_reproduction(self, **_: object) -> object:
+    async def plan_reproduction(
+        self, **_: object
+    ) -> DynamicAgentOutcome[ReproductionPlan]:
         raise AssertionError("failure must stop the workflow")
 
-    async def create_poc_candidate(self, **_: object) -> object:
+    async def create_poc_candidate(
+        self, **_: object
+    ) -> DynamicAgentOutcome[PoCCandidate]:
         raise AssertionError("failure must stop the workflow")
 
-    async def next_tool_request(self, **_: object) -> object:
+    async def next_tool_request(
+        self, **_: object
+    ) -> DynamicAgentOutcome[DynamicReproductionToolRequest]:
         raise AssertionError("failure must stop the workflow")
 
-    async def interpret_attempt(self, **_: object) -> object:
+    async def interpret_attempt(
+        self, **_: object
+    ) -> DynamicAgentOutcome[DynamicReproductionConclusion]:
         raise AssertionError("failure must stop the workflow")
 
 
 @dataclass
 class UnexpectedAfterOpenAgent(BlockedFlowAgent):
-    async def create_poc_candidate(self, **_: object) -> object:
+    async def create_poc_candidate(
+        self, **_: object
+    ) -> DynamicAgentOutcome[PoCCandidate]:
         raise RuntimeError("TEST_ONLY_SECRET unexpected provider failure")
 
 

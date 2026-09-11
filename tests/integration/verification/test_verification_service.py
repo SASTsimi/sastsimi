@@ -39,8 +39,14 @@ from sastsimi.contracts.verification import (
     PlaybookApplication,
     ProEvidenceResult,
 )
-from sastsimi.contracts.work import WorkExecutionState, WorkStatus, WorkType
-from sastsimi.ports.dto import StagedArtifact
+from sastsimi.contracts.work import (
+    TransitionCommit,
+    WorkExecutionState,
+    WorkStatus,
+    WorkType,
+)
+from sastsimi.ports.dto import Record, StagedArtifact, TransitionCommitRequest
+from sastsimi.ports.record_store import RecordStore
 from sastsimi.ports.verification_assembly import VerificationGenerationInputs
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
 from sastsimi.verification.service import VerificationService
@@ -116,21 +122,25 @@ def content_hash_from_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-class _MemoryRecords:
+class _MemoryRecords(RecordStore):
     def __init__(self) -> None:
-        self.values: dict[RecordRef, object] = {}
+        self.values: dict[RecordRef, Record] = {}
 
-    def add(self, value: object) -> StoredDataRef:
-        ref = reference(value)  # type: ignore[arg-type]
+    def add(self, value: Record) -> StoredDataRef:
+        ref = reference(value)
         assert isinstance(ref, StoredDataRef)
         self.values[ref] = value
         return ref
 
-    def get_exact(self, ref: RecordRef) -> object:
+    def get_exact(self, ref: RecordRef) -> Record:
         return self.values[ref]
 
-    def stage_record(self, record: object) -> StoredDataRef:
+    def stage_record(self, record: Record) -> StoredDataRef:
         return self.add(record)
+
+    def commit_transition(self, request: TransitionCommitRequest) -> TransitionCommit:
+        del request
+        raise AssertionError("verification fixtures do not commit transitions")
 
 
 class _QueuedLLM:

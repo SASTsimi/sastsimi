@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
 from sastsimi.contracts.dynamic import AgentLogEvent
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.sandbox.session_manager import ReproductionSessionManager
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import wire
@@ -12,6 +14,10 @@ from tests.contract.domain.success_fixture import bound, dynamic_success
 from tests.integration.runtime_support import TestClock, TestIds
 
 NOW = datetime(2026, 9, 8, tzinfo=UTC)
+
+
+def _request_ref(chain: dict[str, Any]) -> StoredDataRef:
+    return StoredDataRef.model_validate(bound(chain["request"]))
 
 
 def _manager() -> ReproductionSessionManager:
@@ -41,7 +47,7 @@ def _agent_event(
 def test_log_append_is_ordered_and_idempotent_only_for_identical_event() -> None:
     chain = dynamic_success()
     manager = _manager()
-    started = manager.start(request_ref=bound(chain["request"]), meta=chain["log"].meta)
+    started = manager.start(request_ref=_request_ref(chain), meta=chain["log"].meta)
     event = _agent_event(
         event_id="agent-started",
         sequence=2,
@@ -71,7 +77,7 @@ def test_log_append_is_ordered_and_idempotent_only_for_identical_event() -> None
 def test_log_rejects_stale_revision_skipped_sequence_and_finish_without_start() -> None:
     chain = dynamic_success()
     manager = _manager()
-    started = manager.start(request_ref=bound(chain["request"]), meta=chain["log"].meta)
+    started = manager.start(request_ref=_request_ref(chain), meta=chain["log"].meta)
     current = manager.append(
         previous=started,
         event=_agent_event(
@@ -121,7 +127,7 @@ def test_log_rejects_stale_revision_skipped_sequence_and_finish_without_start() 
 def test_log_rejects_event_time_regression() -> None:
     chain = dynamic_success()
     manager = _manager()
-    started = manager.start(request_ref=bound(chain["request"]), meta=chain["log"].meta)
+    started = manager.start(request_ref=_request_ref(chain), meta=chain["log"].meta)
 
     with pytest.raises(ValueError, match="RECOVERY_FAILED"):
         manager.append(
@@ -139,7 +145,7 @@ def test_log_rejects_event_time_regression() -> None:
 def test_log_rejects_a_second_session_start() -> None:
     chain = dynamic_success()
     manager = _manager()
-    started = manager.start(request_ref=bound(chain["request"]), meta=chain["log"].meta)
+    started = manager.start(request_ref=_request_ref(chain), meta=chain["log"].meta)
 
     with pytest.raises(ValueError, match="RECOVERY_FAILED"):
         manager.append(
@@ -157,7 +163,7 @@ def test_log_rejects_a_second_session_start() -> None:
 def test_log_rejects_events_after_session_finish() -> None:
     chain = dynamic_success()
     manager = _manager()
-    started = manager.start(request_ref=bound(chain["request"]), meta=chain["log"].meta)
+    started = manager.start(request_ref=_request_ref(chain), meta=chain["log"].meta)
     finished = manager.append(
         previous=started,
         event=_agent_event(

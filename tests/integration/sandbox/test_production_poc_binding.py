@@ -4,7 +4,7 @@ import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import cast
+from typing import TypedDict, cast
 
 import pytest
 
@@ -21,7 +21,10 @@ from sastsimi.contracts.dynamic import (
     SandboxEnvironment,
     SandboxPolicyDecision,
 )
+from sastsimi.contracts.ids import StoredDataId
+from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import Record, WorkHandlerResult
 from sastsimi.reproduction.production import (
     DynamicRecordSink,
@@ -45,6 +48,17 @@ from tests.integration.sandbox.test_dynamic_reproduction_workflow import (
     MemoryArtifacts,
     dynamic_work,
 )
+
+
+class _Chain(TypedDict):
+    request: DynamicReproductionRequest
+    requirements: EnvironmentRequirements
+    plan: ReproductionPlan
+    recipe: EnvironmentRecipe
+    environment: SandboxEnvironment
+    policy: SandboxPolicyDecision
+    candidate: PoCCandidate
+    cleanup: CleanupResult
 
 
 @dataclass
@@ -97,7 +111,9 @@ class _Sink:
                 self.failure_observer()
             raise RuntimeError("publication unavailable")
         self.published.append(record)
-        return cast(StoredDataRef, reference(record))
+        record_ref = reference(record)
+        assert isinstance(record_ref, StoredDataRef)
+        return record_ref
 
     def finish(
         self,
@@ -109,7 +125,9 @@ class _Sink:
     ) -> WorkHandlerResult:
         del work, status, input_refs
         self.finished.append(result)
-        return WorkHandlerResult((cast(StoredDataRef, reference(result)),))
+        result_ref = reference(result)
+        assert isinstance(result_ref, StoredDataRef)
+        return WorkHandlerResult((result_ref,))
 
 
 @dataclass
@@ -117,8 +135,8 @@ class _CleanupSetup:
     result: CleanupResult
     calls: list[
         tuple[
-            object,
-            tuple[object, ...],
+            DynamicReproductionRequest,
+            tuple[SandboxEnvironment, ...],
             tuple[StoredDataRef, ...],
         ]
     ] = field(default_factory=list)
@@ -126,26 +144,30 @@ class _CleanupSetup:
     async def cleanup(
         self,
         *,
-        request: object,
-        environments: tuple[object, ...],
+        request: DynamicReproductionRequest,
+        environments: tuple[SandboxEnvironment, ...],
         resource_refs: tuple[StoredDataRef, ...],
-        meta: object,
+        meta: RecordMeta,
     ) -> CleanupResult:
         del meta
         self.calls.append((request, environments, resource_refs))
+        request_ref = reference(request)
+        assert isinstance(request_ref, StoredDataRef)
+        environment_refs: list[StoredDataRef] = []
+        for environment in environments:
+            environment_ref = reference(environment)
+            assert isinstance(environment_ref, StoredDataRef)
+            environment_refs.append(environment_ref)
         return self.result.model_copy(
             update={
-                "request_ref": reference(request),  # type: ignore[arg-type]
-                "environment_refs": tuple(
-                    reference(environment)  # type: ignore[arg-type]
-                    for environment in environments
-                ),
+                "request_ref": request_ref,
+                "environment_refs": tuple(environment_refs),
                 "resource_refs": resource_refs,
             }
         )
 
 
-def _selection_tool(chain: dict[str, object]) -> DynamicReproductionToolRequest:
+def _selection_tool(chain: _Chain) -> DynamicReproductionToolRequest:
     return wire(
         DynamicReproductionToolRequest,
         make("DynamicReproductionToolRequest")
@@ -161,7 +183,7 @@ def _selection_tool(chain: dict[str, object]) -> DynamicReproductionToolRequest:
 
 
 def _command_tool(
-    chain: dict[str, object],
+    chain: _Chain,
     arguments: tuple[str, ...],
     *,
     executable: str = "/bin/sh",
@@ -185,34 +207,44 @@ def _command_tool(
     )
 
 
+def _unused_authorization(
+    work: WorkExecutionState,
+    request: DynamicReproductionRequest,
+    requirements: EnvironmentRequirements,
+    plan: ReproductionPlan,
+) -> DynamicSandboxAuthorization:
+    del work, request, requirements, plan
+    raise AssertionError("prepared workflow must not resolve authorization")
+
+
 def _prepared_workflow() -> tuple[
     ProductionDynamicWorkflow,
     _Docker,
-    dict[str, object],
+    _Chain,
     StoredDataRef,
 ]:
-    chain = dynamic_success()
-    request = cast(DynamicReproductionRequest, chain["request"])
+    raw_chain = dynamic_success()
+    request = cast(DynamicReproductionRequest, raw_chain["request"])
     request_ref = cast(StoredDataRef, reference(request))
-    requirements = cast(EnvironmentRequirements, chain["requirements"]).model_copy(
+    requirements = cast(EnvironmentRequirements, raw_chain["requirements"]).model_copy(
         update={"request_ref": request_ref}
     )
     requirements_ref = cast(StoredDataRef, reference(requirements))
-    plan = cast(ReproductionPlan, chain["plan"]).model_copy(
+    plan = cast(ReproductionPlan, raw_chain["plan"]).model_copy(
         update={
             "request_ref": request_ref,
             "environment_requirements_ref": requirements_ref,
         }
     )
     plan_ref = cast(StoredDataRef, reference(plan))
-    recipe = cast(EnvironmentRecipe, chain["recipe"]).model_copy(
+    recipe = cast(EnvironmentRecipe, raw_chain["recipe"]).model_copy(
         update={
             "request_ref": request_ref,
             "environment_requirements_ref": requirements_ref,
         }
     )
     recipe_ref = cast(StoredDataRef, reference(recipe))
-    environment = cast(SandboxEnvironment, chain["environment"]).model_copy(
+    environment = cast(SandboxEnvironment, raw_chain["environment"]).model_copy(
         update={
             "request_ref": request_ref,
             "reproduction_plan_ref": plan_ref,
@@ -220,22 +252,13 @@ def _prepared_workflow() -> tuple[
             "requirements_ref": requirements_ref,
         }
     )
-    policy = cast(SandboxPolicyDecision, chain["policy"]).model_copy(
+    policy = cast(SandboxPolicyDecision, raw_chain["policy"]).model_copy(
         update={"request_ref": request_ref}
-    )
-    chain.update(
-        {
-            "requirements": requirements,
-            "plan": plan,
-            "recipe": recipe,
-            "environment": environment,
-            "policy": policy,
-        }
     )
     artifacts = MemoryArtifacts()
     content = b"print('candidate')\n"
     content_ref = artifacts.commit(artifacts.stage_bytes(content, "text/plain"))
-    candidate = cast(PoCCandidate, chain["candidate"]).model_copy(
+    candidate = cast(PoCCandidate, raw_chain["candidate"]).model_copy(
         update={
             "request_ref": request_ref,
             "reproduction_plan_ref": plan_ref,
@@ -243,7 +266,16 @@ def _prepared_workflow() -> tuple[
             "content_digest": content_ref.content_hash,
         }
     )
-    chain["candidate"] = candidate
+    chain = _Chain(
+        request=request,
+        requirements=requirements,
+        plan=plan,
+        recipe=recipe,
+        environment=environment,
+        policy=policy,
+        candidate=candidate,
+        cleanup=cast(CleanupResult, raw_chain["cleanup"]),
+    )
     work = dynamic_work(request_ref).model_copy(update={"active_attempt_id": "at1"})
     docker = _Docker()
     sink = _Sink()
@@ -259,7 +291,7 @@ def _prepared_workflow() -> tuple[
         clock=TestClock(),
         ids=ids,
         sink=cast(DynamicRecordSink, sink),
-        authorization=cast(object, lambda *_: None),
+        authorization=_unused_authorization,
     )
     workflow._records["request"] = cast(Record, chain["request"])
     workflow._records["environment_requirements"] = cast(Record, chain["requirements"])
@@ -268,7 +300,7 @@ def _prepared_workflow() -> tuple[
     workflow._prepared = PreparedSandbox(
         chain["recipe"],
         chain["environment"],
-        (),  # type: ignore[arg-type]
+        (),
     )
     workflow._start_log(
         request_ref,
@@ -282,15 +314,15 @@ async def test_selecting_candidate_materializes_exact_verified_bytes() -> None:
     workflow, docker, chain, request_ref = _prepared_workflow()
     tool = _selection_tool(chain)
     tool_ref = cast(StoredDataRef, reference(tool))
-    candidate = cast(PoCCandidate, chain["candidate"])
+    candidate = chain["candidate"]
 
     await workflow.apply_tool(
         work=workflow._work,
-        request=chain["request"],  # type: ignore[arg-type]
+        request=chain["request"],
         request_ref=request_ref,
-        requirements=chain["requirements"],  # type: ignore[arg-type]
+        requirements=chain["requirements"],
         requirements_ref=cast(StoredDataRef, reference(chain["requirements"])),
-        plan=chain["plan"],  # type: ignore[arg-type]
+        plan=chain["plan"],
         plan_ref=cast(StoredDataRef, reference(chain["plan"])),
         candidate=candidate,
         candidate_ref=cast(StoredDataRef, reference(candidate)),
@@ -302,7 +334,7 @@ async def test_selecting_candidate_materializes_exact_verified_bytes() -> None:
     expected = b"print('candidate')\n"
     assert docker.materialized == [
         (
-            chain["environment"].container_instance_id,  # type: ignore[attr-defined]
+            chain["environment"].container_instance_id,
             expected,
             hashlib.sha256(expected).hexdigest(),
         )
@@ -313,7 +345,7 @@ async def test_selecting_candidate_materializes_exact_verified_bytes() -> None:
 async def test_selected_candidate_rejects_unrelated_command() -> None:
     workflow, docker, chain, request_ref = _prepared_workflow()
     selection = _selection_tool(chain)
-    candidate = cast(PoCCandidate, chain["candidate"])
+    candidate = chain["candidate"]
     common = {
         "work": workflow._work,
         "request": chain["request"],
@@ -348,7 +380,7 @@ async def test_selected_candidate_rejects_unrelated_command() -> None:
 async def test_exact_candidate_command_records_materialized_content_binding() -> None:
     workflow, docker, chain, request_ref = _prepared_workflow()
     selection = _selection_tool(chain)
-    candidate = cast(PoCCandidate, chain["candidate"])
+    candidate = chain["candidate"]
     common = {
         "work": workflow._work,
         "request": chain["request"],
@@ -419,7 +451,7 @@ async def test_timed_out_poc_command_records_output_then_fails_execution() -> No
     docker.time_out = True
     selection = _selection_tool(chain)
     command = _command_tool(chain, (POC_RUNTIME_PATH,))
-    candidate = cast(PoCCandidate, chain["candidate"])
+    candidate = chain["candidate"]
     common = {
         "work": workflow._work,
         "request": chain["request"],
@@ -466,19 +498,19 @@ async def test_timed_out_poc_command_records_output_then_fails_execution() -> No
 async def test_publication_failure_cleans_registered_owned_resource() -> None:
     workflow, _, chain, _ = _prepared_workflow()
     resource_ref = StoredDataRef(
-        stored_data_id="owned-container-resource",
+        stored_data_id=StoredDataId("owned-container-resource"),
         data_kind="sandbox_resource",
         content_hash="e" * 64,
-        workspace_id=workflow._work.meta.workspace_id,
-        commit_id=workflow._work.meta.commit_id,
+        workspace_id=chain["request"].meta.workspace_id,
+        commit_id=chain["request"].meta.commit_id,
         record_id=None,
     )
     prepared = PreparedSandbox(
-        chain["recipe"],  # type: ignore[arg-type]
-        chain["environment"],  # type: ignore[arg-type]
+        chain["recipe"],
+        chain["environment"],
         (resource_ref,),
     )
-    cleanup = cast(CleanupResult, chain["cleanup"])
+    cleanup = chain["cleanup"]
     setup = _CleanupSetup(cleanup)
     workflow._setup = cast(ReproductionSetupAutomation, setup)
     sink = cast(_Sink, workflow._sink)
@@ -504,7 +536,7 @@ async def test_publication_failure_cleans_registered_owned_resource() -> None:
     assert workflow._cleanup.status == "SUCCEEDED"
     completed = workflow.finalize_failure(
         work=workflow._work,
-        request=chain["request"],  # type: ignore[arg-type]
+        request=chain["request"],
         request_ref=cast(StoredDataRef, reference(chain["request"])),
         session=None,
         failure=raised.value.failure,
@@ -518,19 +550,19 @@ async def test_publication_failure_cleans_registered_owned_resource() -> None:
 async def test_publication_cleanup_failure_is_reported() -> None:
     workflow, _, chain, _ = _prepared_workflow()
     resource_ref = StoredDataRef(
-        stored_data_id="owned-container-resource",
+        stored_data_id=StoredDataId("owned-container-resource"),
         data_kind="sandbox_resource",
         content_hash="e" * 64,
-        workspace_id=workflow._work.meta.workspace_id,
-        commit_id=workflow._work.meta.commit_id,
+        workspace_id=chain["request"].meta.workspace_id,
+        commit_id=chain["request"].meta.commit_id,
         record_id=None,
     )
     prepared = PreparedSandbox(
-        chain["recipe"],  # type: ignore[arg-type]
-        chain["environment"],  # type: ignore[arg-type]
+        chain["recipe"],
+        chain["environment"],
         (resource_ref,),
     )
-    cleanup = cast(CleanupResult, chain["cleanup"]).model_copy(
+    cleanup = chain["cleanup"].model_copy(
         update={
             "status": "FAILED",
             "failure_reason": "OWNED_RESOURCE_CLEANUP_FAILED",
