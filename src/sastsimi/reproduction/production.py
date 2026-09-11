@@ -50,6 +50,7 @@ from sastsimi.sandbox.setup_automation import (
     DockerLifecyclePort,
     PreparedSandbox,
     ReproductionSetupAutomation,
+    SandboxSetupCleanupError,
 )
 
 from .service import (
@@ -397,6 +398,11 @@ class ProductionDynamicWorkflow:
                 plan=plan,
                 meta=self._meta("sandbox_environment"),
             )
+        except SandboxSetupCleanupError as error:
+            reason = await self._record_failed_setup(error)
+            raise DynamicOperationalError(
+                "FAILED", "ENVIRONMENT_SETUP", reason
+            ) from error
         except Exception as error:
             raise DynamicOperationalError(
                 "FAILED", "ENVIRONMENT_SETUP", _safe_error(error)
@@ -490,6 +496,11 @@ class ProductionDynamicWorkflow:
                     reason=tool.recreate_reason,
                     meta=self._meta("sandbox_environment"),
                 )
+            except SandboxSetupCleanupError as error:
+                failure_reason = await self._record_failed_setup(error)
+                raise DynamicOperationalError(
+                    "FAILED", "ENVIRONMENT_SETUP", failure_reason
+                ) from error
             except Exception as error:
                 raise DynamicOperationalError(
                     "FAILED", "ENVIRONMENT_SETUP", _safe_error(error)
@@ -1024,6 +1035,15 @@ class ProductionDynamicWorkflow:
             raise DynamicOperationalError(
                 "FAILED", "ENVIRONMENT_SETUP", "Sandbox record publication failed"
             ) from publication_error
+
+    async def _record_failed_setup(self, error: SandboxSetupCleanupError) -> str:
+        """Persist the exact owned resource and make one audited cleanup attempt."""
+
+        await self._remember_prepared(error.prepared)
+        await self.cleanup(self._session(self._policy_ref()))
+        if self._cleanup is None:
+            raise ValueError("SANDBOX_CLEANUP_RESULT_REQUIRED")
+        return self._cleanup.failure_reason or "Sandbox setup failed; cleanup succeeded"
 
     async def _cleanup_after_publication_failure(self) -> None:
         try:

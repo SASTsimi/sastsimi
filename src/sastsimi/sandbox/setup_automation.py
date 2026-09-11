@@ -71,6 +71,14 @@ class PreparedSandbox:
     resource_refs: tuple[StoredDataRef, ...]
 
 
+class SandboxSetupCleanupError(RuntimeError):
+    """Setup failed and its exact owned container still requires cleanup."""
+
+    def __init__(self, prepared: PreparedSandbox) -> None:
+        super().__init__("OWNED_RESOURCE_CLEANUP_FAILED")
+        self.prepared = prepared
+
+
 @dataclass(frozen=True, slots=True)
 class _PreparationContext:
     approval: SandboxBoundaryOutcome
@@ -292,8 +300,23 @@ class ReproductionSetupAutomation:
         except BaseException:
             try:
                 await self._docker.remove((container_id,))
-            except BaseException:
-                pass
+            except BaseException as cleanup_error:
+                failed = PreparedSandbox(
+                    recipe,
+                    self._failed_environment(
+                        request=request,
+                        requirements=requirements,
+                        plan=plan,
+                        recipe=recipe,
+                        container_id=container_id,
+                        reason=reason,
+                        previous_environment_ref=previous_environment_ref,
+                        resource_ref=resource_ref,
+                        meta=meta,
+                    ),
+                    (resource_ref,),
+                )
+                raise SandboxSetupCleanupError(failed) from cleanup_error
             raise
         checks = self._health.requirement_checks(
             requirements=requirements,
@@ -313,6 +336,52 @@ class ReproductionSetupAutomation:
             meta=meta,
         )
         return PreparedSandbox(recipe, environment, (resource_ref,))
+
+    @staticmethod
+    def _failed_environment(
+        *,
+        request: DynamicReproductionRequest,
+        requirements: EnvironmentRequirements,
+        plan: ReproductionPlan,
+        recipe: EnvironmentRecipe,
+        container_id: str,
+        reason: Literal[
+            "INITIAL_CLEAN", "STATE_CHANGED", "CONFIG_CHANGED", "STATE_UNCERTAIN"
+        ],
+        previous_environment_ref: StoredDataRef | None,
+        resource_ref: StoredDataRef,
+        meta: RecordMeta,
+    ) -> SandboxEnvironment:
+        checks = tuple(
+            EnvironmentCheck(
+                requirement_id=item.requirement_id,
+                status="ERROR",
+                actual=None,
+                actual_ref=None,
+                difference="Sandbox setup failed before environment checks completed",
+                evidence_refs=(resource_ref,),
+                check_result_ref=None,
+            )
+            for item in requirements.items
+        )
+        status: Literal["READY", "ERROR"] = (
+            "ERROR" if any(item.required for item in requirements.items) else "READY"
+        )
+        return SandboxEnvironment(
+            meta=fresh_record_meta(meta, "sandbox_environment"),
+            request_ref=ReproductionSetupAutomation._exact_ref(request),
+            reproduction_plan_ref=ReproductionSetupAutomation._exact_ref(plan),
+            environment_recipe_ref=ReproductionSetupAutomation._exact_ref(recipe),
+            requirements_ref=ReproductionSetupAutomation._exact_ref(requirements),
+            container_instance_id=container_id,
+            container_action="CREATED",
+            container_reason=reason,
+            previous_environment_ref=previous_environment_ref,
+            status=status,
+            checks=checks,
+            limitations=("Sandbox setup did not complete",),
+            created_at=meta.created_at,
+        )
 
     @staticmethod
     def _validate_build(
