@@ -1488,11 +1488,11 @@ Expected: clean worktree; only T08 files/intent in the base range; no whitespace
 
 ## Implementation Evidence
 
-Tested candidate SHA: 9d874135b907f05dd3d4f5cd3d0b0e03e6c3b677
+Tested candidate SHA: 3fc3c44d1871062e0aa648b68b173a5b7e505d2b
 Full-suite command: uv run pytest tests -q
 Exit code: 0
 Test count: 1460 passed, 9 skipped
-Duration: 2809.36s (0:46:49)
+Duration: 2862.08s (0:47:42)
 OS: Windows-11-10.0.26200-SP0
 Python: 3.12.10
 Base SHA: b3b2d9918ea815b9b936c09c98e4c53fd54937dc
