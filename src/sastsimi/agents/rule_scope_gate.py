@@ -24,6 +24,10 @@ from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus, WorkType
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
+from sastsimi.runtime.llm_invocation_provenance import (
+    LLMInvocationExpectation,
+    validate_llm_invocation_provenance,
+)
 
 PolicyArea = Literal["RULE", "SCOPE", "IMPACT", "TESTING_RESTRICTION"]
 
@@ -175,6 +179,27 @@ class RuleScopeGateAgent:
         owner_ref: StoredDataRef,
         required_context: tuple[StoredDataRef, ...],
     ) -> None:
+        try:
+            validate_llm_invocation_provenance(
+                records=self._records,
+                work=work,
+                issued_decision_ref=call.decision_ref,
+                reservation_ref=call.reservation_ref,
+                call_spec_ref=call.call_spec_ref,
+                invocation=invocation,
+                expectation=LLMInvocationExpectation(
+                    work_type=WorkType.RULE_SCOPE_GATE,
+                    action_type=ActionType.CALL_RULE_SCOPE_GATE,
+                    requested_by=RequesterRole.VERIFICATION,
+                    requester_identity_ref=owner_ref,
+                    agent_role="RULE_SCOPE_GATE",
+                    task_kind="REVIEW",
+                    required_context=required_context,
+                    forbid_tools=True,
+                ),
+            )
+        except ValueError as error:
+            raise ValueError("RULE_SCOPE_INVOCATION_CLOSURE_MISMATCH") from error
         request, result = invocation.request, invocation.result
         request_ref = reference(request)
         result_ref = reference(result)
@@ -217,24 +242,31 @@ class RuleScopeGateAgent:
             work.active_attempt_id,
         )
         if (
-            request.meta.analysis_id,
-            request.meta.workspace_id,
-            request.meta.commit_id,
-            request.meta.hypothesis_id,
-            request.meta.attempt_id,
-        ) != expected_scope or (
-            result.meta.analysis_id,
-            result.meta.workspace_id,
-            result.meta.commit_id,
-            result.meta.hypothesis_id,
-            result.meta.attempt_id,
-        ) != expected_scope or (
-            log_value.meta.analysis_id,
-            log_value.meta.workspace_id,
-            log_value.meta.commit_id,
-            log_value.meta.hypothesis_id,
-            log_value.meta.attempt_id,
-        ) != expected_scope:
+            (
+                request.meta.analysis_id,
+                request.meta.workspace_id,
+                request.meta.commit_id,
+                request.meta.hypothesis_id,
+                request.meta.attempt_id,
+            )
+            != expected_scope
+            or (
+                result.meta.analysis_id,
+                result.meta.workspace_id,
+                result.meta.commit_id,
+                result.meta.hypothesis_id,
+                result.meta.attempt_id,
+            )
+            != expected_scope
+            or (
+                log_value.meta.analysis_id,
+                log_value.meta.workspace_id,
+                log_value.meta.commit_id,
+                log_value.meta.hypothesis_id,
+                log_value.meta.attempt_id,
+            )
+            != expected_scope
+        ):
             raise ValueError("RULE_SCOPE_INVOCATION_CLOSURE_MISMATCH")
         issued = self._records.get_exact(call.decision_ref)
         decision = self._records.get_exact(request.action_decision_ref)
@@ -250,13 +282,17 @@ class RuleScopeGateAgent:
         ):
             raise ValueError("RULE_SCOPE_ACTION_AUTHORITY_MISMATCH")
         for item in (issued, decision):
-            if not isinstance(item.meta, RecordMeta) or (
-                item.meta.analysis_id,
-                item.meta.workspace_id,
-                item.meta.commit_id,
-                item.meta.hypothesis_id,
-                item.meta.attempt_id,
-            ) != expected_scope:
+            if (
+                not isinstance(item.meta, RecordMeta)
+                or (
+                    item.meta.analysis_id,
+                    item.meta.workspace_id,
+                    item.meta.commit_id,
+                    item.meta.hypothesis_id,
+                    item.meta.attempt_id,
+                )
+                != expected_scope
+            ):
                 raise ValueError("RULE_SCOPE_ACTION_AUTHORITY_MISMATCH")
         try:
             validate_decision_revision(issued, decision)

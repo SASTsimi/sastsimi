@@ -8,15 +8,20 @@ from typing import BinaryIO, Protocol
 
 from pydantic import ValidationError, model_validator
 
+from sastsimi.contracts.actions import ActionType, RequesterRole
 from sastsimi.contracts.base import ContractModel, NonEmptyStr, NonNegativeInt
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.gates import CWELabel
 from sastsimi.contracts.ids import AttemptId
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
-from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
+from sastsimi.contracts.work import WorkExecutionState, WorkType
 from sastsimi.ports.dto import Record
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
+from sastsimi.runtime.llm_invocation_provenance import (
+    LLMInvocationExpectation,
+    validate_llm_invocation_provenance,
+)
 
 
 @dataclass(frozen=True)
@@ -51,6 +56,8 @@ class LLMCallInvoker(Protocol):
 
 class RecordStore(Protocol):
     def stage_record(self, record: Record) -> RecordRef: ...
+
+    def get_exact(self, ref: RecordRef) -> object: ...
 
 
 class ArtifactReader(Protocol):
@@ -96,6 +103,7 @@ class CWELabelingAgent:
         taxonomy_version: str,
         allowed_evidence: tuple[StoredDataRef, ...],
         required_context: tuple[StoredDataRef, ...],
+        requester_identity_ref: BudgetScopeRef,
         call: CWECallRefs,
     ) -> CWEAgentOutcome:
         invocation = await self._llm_calls.invoke(
@@ -109,6 +117,7 @@ class CWELabelingAgent:
             work=work,
             call=call,
             required_context=required_context,
+            requester_identity_ref=requester_identity_ref,
         )
         try:
             content = _CWEContent.model_validate_json(canonical_bytes(payload))
@@ -147,8 +156,26 @@ class CWELabelingAgent:
         work: WorkExecutionState,
         call: CWECallRefs,
         required_context: tuple[StoredDataRef, ...],
+        requester_identity_ref: BudgetScopeRef,
     ) -> object:
         request, result = invocation.request, invocation.result
+        validate_llm_invocation_provenance(
+            records=self._records,
+            work=work,
+            issued_decision_ref=call.decision_ref,
+            reservation_ref=call.reservation_ref,
+            call_spec_ref=call.call_spec_ref,
+            invocation=invocation,
+            expectation=LLMInvocationExpectation(
+                work_type=WorkType.CWE_LABEL,
+                action_type=ActionType.CALL_LLM,
+                requested_by=RequesterRole.CWE_LABELING,
+                requester_identity_ref=requester_identity_ref,
+                agent_role="CWE_LABELING",
+                task_kind="CLASSIFY_CWE",
+                required_context=required_context,
+            ),
+        )
         if (
             result.status != "SUCCEEDED"
             or result.parsed_output_ref is None

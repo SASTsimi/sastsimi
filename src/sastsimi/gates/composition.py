@@ -203,6 +203,7 @@ def compose_t12_services(
         records=records,
         artifacts=artifacts,
         metadata_factory=metadata,
+        identity_ref=identity(RequesterRole.REPORTER),
     )
     reporter_inputs = StoredReporterInputResolver(
         records=records, resolve_call=reporter_call_resolver

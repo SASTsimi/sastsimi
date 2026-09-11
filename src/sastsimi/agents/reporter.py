@@ -6,19 +6,12 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from sastsimi.contracts._domain import DomainRecord
-from sastsimi.contracts.actions import (
-    ActionDecision,
-    ActionType,
-    Decision,
-    UseStatus,
-    validate_decision_for_action,
-    validate_decision_revision,
-)
+from sastsimi.contracts.actions import ActionType, RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.gates import RuleScopeImpactReview, TechnicalEvidenceReview
 from sastsimi.contracts.policy import RunPolicyState
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
+from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
 from sastsimi.contracts.reporting import (
     Finding,
     FindingIndexState,
@@ -35,6 +28,10 @@ from sastsimi.reporting.readiness import ReportingReadinessService
 from sastsimi.runtime.llm_call_service import (
     InvocationMetadataFactory,
     PersistedLLMInvocation,
+)
+from sastsimi.runtime.llm_invocation_provenance import (
+    LLMInvocationExpectation,
+    validate_llm_invocation_provenance,
 )
 
 
@@ -72,6 +69,7 @@ class ReporterOutcome:
     draft: ReportDraft
     draft_ref: StoredDataRef
     invocation: PersistedLLMInvocation
+    save_input_refs: tuple[RecordRef, ...]
 
 
 class ReporterAgent:
@@ -84,12 +82,14 @@ class ReporterAgent:
         records: RecordStore,
         artifacts: ArtifactStore,
         metadata_factory: InvocationMetadataFactory,
+        identity_ref: BudgetScopeRef,
         readiness: ReportingReadinessService | None = None,
     ) -> None:
         self._llm_calls = llm_calls
         self._records = records
         self._artifacts = artifacts
         self._metadata = metadata_factory
+        self._identity_ref = identity_ref
         self._readiness = readiness or ReportingReadinessService()
 
     async def create_draft(
@@ -103,9 +103,7 @@ class ReporterAgent:
         finding = self._exact(inputs.finding_ref, Finding)
         index = self._exact(inputs.finding_index_ref, FindingIndexState)
         verification = self._exact(inputs.verification_ref, VerificationResult)
-        technical = self._exact(
-            inputs.technical_review_ref, TechnicalEvidenceReview
-        )
+        technical = self._exact(inputs.technical_review_ref, TechnicalEvidenceReview)
         scope = self._exact(inputs.rule_scope_review_ref, RuleScopeImpactReview)
         state = self._exact(inputs.run_policy_state_ref, RunPolicyState)
         condition_refs = tuple(ref for ref, _ in inputs.condition_records)
@@ -126,9 +124,10 @@ class ReporterAgent:
         }
         if finding.policy_record_ref is not None:
             expected_inputs.add(finding.policy_record_ref)
-        if len(set(work.input_refs)) != len(work.input_refs) or set(
-            work.input_refs
-        ) != expected_inputs:
+        if (
+            len(set(work.input_refs)) != len(work.input_refs)
+            or set(work.input_refs) != expected_inputs
+        ):
             raise ValueError("REPORT_WORK_INPUT_CLOSURE_MISMATCH")
         readiness = self._readiness.evaluate(
             finding=finding,
@@ -147,7 +146,7 @@ class ReporterAgent:
             reservation_ref=call.reservation_ref,
             call_spec_ref=call.call_spec_ref,
         )
-        content, claimed_decision_ref = self._content(
+        content, claimed_decision_ref, save_input_refs = self._content(
             invocation, work=work, call=call
         )
         allowed_locations = tuple(
@@ -203,7 +202,7 @@ class ReporterAgent:
         staged = self._records.stage_record(draft)
         if not isinstance(staged, StoredDataRef) or staged != reference(draft):
             raise ValueError("REPORT_DRAFT_STAGE_MISMATCH")
-        return ReporterOutcome(draft, staged, invocation)
+        return ReporterOutcome(draft, staged, invocation, save_input_refs)
 
     def _content(
         self,
@@ -211,41 +210,26 @@ class ReporterAgent:
         *,
         work: WorkExecutionState,
         call: ReporterCallRefs,
-    ) -> tuple[ReportContent, StoredDataRef]:
-        request, result = invocation.request, invocation.result
-        meta = self._record_meta(work)
-        claimed_decision_ref = request.action_decision_ref
-        issued = self._exact_decision(call.decision_ref)
-        claimed = self._exact_decision(claimed_decision_ref)
-        validate_decision_for_action(issued, ActionType.CALL_LLM)
-        validate_decision_for_action(claimed, ActionType.CALL_LLM)
-        validate_decision_revision(issued, claimed)
-        if (
-            issued.decision != Decision.ALLOW
-            or issued.use_status != UseStatus.UNUSED
-            or claimed.decision != Decision.ALLOW
-            or claimed.use_status != UseStatus.USED
-            or result.status != "SUCCEEDED"
-            or result.parsed_output_ref is None
-            or result.response_ref != result.parsed_output_ref
-            or request.agent_role != "REPORTER"
-            or request.task_kind != "CREATE_DRAFT"
-            or request.session_policy != "NEW"
-            or request.parent_session_ref is not None
-            or request.call_spec_ref != call.call_spec_ref
-            or request.context_refs != work.input_refs
-            or request.llm_call_id != result.llm_call_id
-            or request.meta.attempt_id != work.active_attempt_id
-            or result.meta.attempt_id != work.active_attempt_id
-            or request.meta.analysis_id != meta.analysis_id
-            or result.meta.analysis_id != meta.analysis_id
-            or request.meta.workspace_id != meta.workspace_id
-            or result.meta.workspace_id != meta.workspace_id
-            or request.meta.commit_id != meta.commit_id
-            or result.meta.commit_id != meta.commit_id
-            or request.meta.hypothesis_id != meta.hypothesis_id
-            or result.meta.hypothesis_id != meta.hypothesis_id
-        ):
+    ) -> tuple[ReportContent, StoredDataRef, tuple[RecordRef, ...]]:
+        result = invocation.result
+        validated = validate_llm_invocation_provenance(
+            records=self._records,
+            work=work,
+            issued_decision_ref=call.decision_ref,
+            reservation_ref=call.reservation_ref,
+            call_spec_ref=call.call_spec_ref,
+            invocation=invocation,
+            expectation=LLMInvocationExpectation(
+                work_type=WorkType.REPORT_DRAFT,
+                action_type=ActionType.CREATE_REPORT_DRAFT,
+                requested_by=RequesterRole.REPORTER,
+                requester_identity_ref=self._identity_ref,
+                agent_role="REPORTER",
+                task_kind="CREATE_DRAFT",
+                required_context=work.input_refs,
+            ),
+        )
+        if not isinstance(result.parsed_output_ref, StoredDataRef):
             raise ValueError("REPORTER_INVOCATION_CLOSURE_MISMATCH")
         try:
             with self._artifacts.open_verified(result.parsed_output_ref) as stream:
@@ -257,13 +241,10 @@ class ReporterAgent:
             raise ValueError("REPORTER_OUTPUT_ARTIFACT_INVALID") from error
         if canonical_bytes(content) != raw:
             raise ValueError("REPORTER_OUTPUT_ARTIFACT_INVALID")
-        return content, claimed_decision_ref
-
-    def _exact_decision(self, ref: StoredDataRef) -> ActionDecision:
-        value = self._records.get_exact(ref)
-        if not isinstance(value, ActionDecision) or reference(value) != ref:
+        claimed_ref = reference(validated.claimed_decision)
+        if not isinstance(claimed_ref, StoredDataRef):
             raise ValueError("REPORTER_INVOCATION_CLOSURE_MISMATCH")
-        return value
+        return content, claimed_ref, validated.save_input_refs
 
     def _exact[T: DomainRecord](self, ref: StoredDataRef, model: type[T]) -> T:
         value = self._records.get_exact(ref)

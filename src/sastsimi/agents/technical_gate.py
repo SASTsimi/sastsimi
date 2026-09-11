@@ -8,15 +8,20 @@ from typing import BinaryIO, Literal, Protocol
 
 from pydantic import ValidationError
 
+from sastsimi.contracts.actions import ActionType, RequesterRole
 from sastsimi.contracts.base import ContractModel, NonEmptyStr
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.gates import TechnicalEvidenceReview
 from sastsimi.contracts.ids import AttemptId
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
-from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
+from sastsimi.contracts.work import WorkExecutionState, WorkType
 from sastsimi.ports.dto import Record
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
+from sastsimi.runtime.llm_invocation_provenance import (
+    LLMInvocationExpectation,
+    validate_llm_invocation_provenance,
+)
 
 
 @dataclass(frozen=True)
@@ -51,6 +56,8 @@ class LLMCallInvoker(Protocol):
 
 class RecordStore(Protocol):
     def stage_record(self, record: Record) -> RecordRef: ...
+
+    def get_exact(self, ref: RecordRef) -> object: ...
 
 
 class ArtifactReader(Protocol):
@@ -92,6 +99,7 @@ class TechnicalGateAgent:
         verification_ref: StoredDataRef,
         cwe_label_ref: StoredDataRef,
         required_context: tuple[StoredDataRef, ...],
+        requester_identity_ref: BudgetScopeRef,
         call: TechnicalCallRefs,
     ) -> TechnicalAgentOutcome:
         invocation = await self._llm_calls.invoke(
@@ -105,6 +113,7 @@ class TechnicalGateAgent:
             work=work,
             call=call,
             required_context=required_context,
+            requester_identity_ref=requester_identity_ref,
         )
         try:
             content = _TechnicalContent.model_validate_json(canonical_bytes(payload))
@@ -140,8 +149,26 @@ class TechnicalGateAgent:
         work: WorkExecutionState,
         call: TechnicalCallRefs,
         required_context: tuple[StoredDataRef, ...],
+        requester_identity_ref: BudgetScopeRef,
     ) -> object:
         request, result = invocation.request, invocation.result
+        validate_llm_invocation_provenance(
+            records=self._records,
+            work=work,
+            issued_decision_ref=call.decision_ref,
+            reservation_ref=call.reservation_ref,
+            call_spec_ref=call.call_spec_ref,
+            invocation=invocation,
+            expectation=LLMInvocationExpectation(
+                work_type=WorkType.TECHNICAL_GATE,
+                action_type=ActionType.CALL_TECHNICAL_GATE,
+                requested_by=RequesterRole.VERIFICATION,
+                requester_identity_ref=requester_identity_ref,
+                agent_role="TECHNICAL_GATE",
+                task_kind="REVIEW_TECHNICAL",
+                required_context=required_context,
+            ),
+        )
         if (
             result.status != "SUCCEEDED"
             or result.parsed_output_ref is None

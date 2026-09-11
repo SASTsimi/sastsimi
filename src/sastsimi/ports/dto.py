@@ -120,6 +120,7 @@ class WorkContext:
 @dataclass(frozen=True)
 class WorkHandlerResult:
     output_refs: tuple[RecordRef, ...]
+    action_input_refs: tuple[RecordRef, ...] | None = None
 
 
 @dataclass(frozen=True)

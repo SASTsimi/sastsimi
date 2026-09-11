@@ -10,7 +10,15 @@ import pytest
 from sastsimi.agents.cwe_labeling import CWELabelingAgent
 from sastsimi.agents.technical_gate import TechnicalGateAgent
 from sastsimi.contracts._domain import DomainRecord
-from sastsimi.contracts.actions import ActionDecision, ActionRequest, SessionMode
+from sastsimi.contracts.actions import (
+    REQUIRED_CHECKS,
+    ActionCheck,
+    ActionDecision,
+    ActionRequest,
+    CheckResult,
+    SessionMode,
+)
+from sastsimi.contracts.budget import BudgetReservation
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.dynamic import DynamicReproductionResult, PoCBundle
 from sastsimi.contracts.gates import CWELabel
@@ -29,7 +37,12 @@ from sastsimi.contracts.ids import (
     WorkId,
     WorkspaceId,
 )
-from sastsimi.contracts.llm import LLMInvocationRequest, LLMInvocationResult
+from sastsimi.contracts.llm import (
+    LLMCallSpec,
+    LLMInvocationLog,
+    LLMInvocationRequest,
+    LLMInvocationResult,
+)
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.contracts.verification import PlaybookApplication, VerificationResult
@@ -392,8 +405,43 @@ def _gate_call(
     context: tuple[StoredDataRef, ...],
     payload: object,
 ) -> GateCallRefs:
-    call_spec_ref = _opaque(fixture.records, "llm_call_spec", task)
     provider_ref = _opaque(fixture.records, "provider_profile", task)
+    prompt_registry_entry_ref = _opaque(fixture.records, "prompt_registry_entry", task)
+    prompt_template_ref = _opaque(fixture.records, "prompt_template", task)
+    prompt_payload_ref = _opaque(fixture.records, "prompt_payload", task)
+    execution_limits_ref = _opaque(fixture.records, "execution_limits", task)
+    retry_policy_ref = _opaque(fixture.records, "retry_policy", task)
+    tool_policy_ref = _opaque(fixture.records, "tool_policy", task)
+    redaction_policy_ref = _opaque(fixture.records, "redaction_policy", task)
+    semantic_validator_ref = _opaque(fixture.records, "semantic_validator", task)
+    output_schema_ref = _opaque(fixture.records, "output_schema", task)
+    spec = LLMCallSpec.model_construct(
+        meta=_meta("llm_call_spec", task, str(work.active_attempt_id)),
+        llm_call_id=f"{task}-call",
+        agent_role=role,
+        task_kind=task,
+        purpose="PRODUCTION",
+        provider_profile_ref=provider_ref,
+        model="test-model",
+        session_policy="NEW",
+        parent_session_ref=None,
+        context_refs=context,
+        prompt_registry_entry_ref=prompt_registry_entry_ref,
+        prompt_key=f"{role.lower()}.test",
+        prompt_template_ref=prompt_template_ref,
+        prompt_template_version="1.0.0",
+        prompt_payload_ref=prompt_payload_ref,
+        execution_limits_ref=execution_limits_ref,
+        retry_policy_ref=retry_policy_ref,
+        tool_policy_ref=tool_policy_ref,
+        redaction_policy_ref=redaction_policy_ref,
+        semantic_validator_ref=semantic_validator_ref,
+        output_schema_ref=output_schema_ref,
+        output_schema="test.schema.v1",
+        token_budget=100,
+        timeout_ms=1_000,
+    )
+    call_spec_ref = fixture.records.add(spec)
     action = ActionRequest.model_construct(
         meta=_meta("action_request", f"{task}-action", str(work.active_attempt_id)),
         action_id=f"{task}-action",
@@ -414,7 +462,7 @@ def _gate_call(
         tool_name=None,
         file_paths=(),
         provider_profile_ref=provider_ref,
-        session_mode=SessionMode.AUTO,
+        session_mode=SessionMode.NEW,
         sandbox_profile_ref=None,
         resource_profile_ref=None,
         run_policy_state_ref=None,
@@ -425,13 +473,23 @@ def _gate_call(
         requested_at=NOW,
     )
     action_ref = fixture.records.add(action)
+    required_checks = tuple(REQUIRED_CHECKS[action.action_type])
+    check_results = tuple(
+        ActionCheck(
+            check_type=check,
+            result=CheckResult.PASS,
+            reason_code="APPROVED",
+            safe_message="Approved",
+        )
+        for check in required_checks
+    )
     decision = ActionDecision.model_construct(
         meta=_meta("action_decision", f"{task}-decision", str(work.active_attempt_id)),
         decision_id=f"{task}-decision",
         action_ref=action_ref,
         decision="ALLOW",
-        required_checks=(),
-        check_results=(),
+        required_checks=required_checks,
+        check_results=check_results,
         checked_state_version=work.state_version,
         checked_config_refs=(),
         valid_until=NOW,
@@ -444,13 +502,20 @@ def _gate_call(
         decided_at=NOW,
     )
     decision_ref = fixture.records.add(decision)
+    claimed_meta = decision.meta.model_copy(
+        update={
+            "record_id": f"{task}-claimed",
+            "revision_number": 2,
+            "previous_record_id": decision.meta.record_id,
+        }
+    )
     claimed = ActionDecision.model_construct(
-        meta=_meta("action_decision", f"{task}-claimed", str(work.active_attempt_id)),
+        meta=claimed_meta,
         decision_id=f"{task}-decision",
         action_ref=action_ref,
         decision="ALLOW",
-        required_checks=(),
-        check_results=(),
+        required_checks=required_checks,
+        check_results=check_results,
         checked_state_version=work.state_version,
         checked_config_refs=(),
         valid_until=NOW,
@@ -466,33 +531,31 @@ def _gate_call(
     output_ref = fixture.artifacts.add(payload)
     request = LLMInvocationRequest.model_construct(
         meta=_meta("llm_invocation_request", task, str(work.active_attempt_id)),
-        llm_call_id=f"{task}-call",
+        llm_call_id=spec.llm_call_id,
         action_decision_ref=claimed_ref,
         call_spec_ref=call_spec_ref,
         agent_role=role,
         task_kind=task,
         purpose="PRODUCTION",
-        provider_profile_ref=provider_ref,
-        model="test-model",
-        session_policy="NEW",
-        parent_session_ref=None,
-        context_refs=context,
-        prompt_registry_entry_ref=_opaque(
-            fixture.records, "prompt_registry_entry", task
-        ),
-        prompt_key=f"{role.lower()}.test",
-        prompt_template_ref=_opaque(fixture.records, "prompt_template", task),
-        prompt_template_version="1.0.0",
-        prompt_payload_ref=_opaque(fixture.records, "prompt_payload", task),
-        execution_limits_ref=_opaque(fixture.records, "execution_limits", task),
-        retry_policy_ref=_opaque(fixture.records, "retry_policy", task),
-        tool_policy_ref=_opaque(fixture.records, "tool_policy", task),
-        redaction_policy_ref=_opaque(fixture.records, "redaction_policy", task),
-        semantic_validator_ref=_opaque(fixture.records, "semantic_validator", task),
-        output_schema_ref=_opaque(fixture.records, "output_schema", task),
-        output_schema="test.schema.v1",
-        token_budget=100,
-        timeout_ms=1_000,
+        provider_profile_ref=spec.provider_profile_ref,
+        model=spec.model,
+        session_policy=spec.session_policy,
+        parent_session_ref=spec.parent_session_ref,
+        context_refs=spec.context_refs,
+        prompt_registry_entry_ref=spec.prompt_registry_entry_ref,
+        prompt_key=spec.prompt_key,
+        prompt_template_ref=spec.prompt_template_ref,
+        prompt_template_version=spec.prompt_template_version,
+        prompt_payload_ref=spec.prompt_payload_ref,
+        execution_limits_ref=spec.execution_limits_ref,
+        retry_policy_ref=spec.retry_policy_ref,
+        tool_policy_ref=spec.tool_policy_ref,
+        redaction_policy_ref=spec.redaction_policy_ref,
+        semantic_validator_ref=spec.semantic_validator_ref,
+        output_schema_ref=spec.output_schema_ref,
+        output_schema=spec.output_schema,
+        token_budget=spec.token_budget,
+        timeout_ms=spec.timeout_ms,
     )
     result = LLMInvocationResult.model_construct(
         meta=_meta("llm_invocation_result", task, str(work.active_attempt_id)),
@@ -513,14 +576,72 @@ def _gate_call(
     )
     request_ref = fixture.records.add(request)
     result_ref = fixture.records.add(result)
-    log_ref = _opaque(fixture.records, "llm_invocation_log", task)
+    exposed_request_ref = fixture.artifacts.add({"request": task})
+    log = LLMInvocationLog.model_construct(
+        meta=_meta("llm_invocation_log", task, str(work.active_attempt_id)),
+        llm_call_id=spec.llm_call_id,
+        action_decision_ref=claimed_ref,
+        call_spec_ref=call_spec_ref,
+        agent_role=spec.agent_role,
+        task_kind=spec.task_kind,
+        purpose=spec.purpose,
+        provider_profile_ref=spec.provider_profile_ref,
+        provider=result.provider,
+        model=spec.model,
+        session_policy=spec.session_policy,
+        session_ref=result.session_ref,
+        parent_session_ref=spec.parent_session_ref,
+        prompt_registry_entry_ref=spec.prompt_registry_entry_ref,
+        prompt_key=spec.prompt_key,
+        prompt_template_ref=spec.prompt_template_ref,
+        prompt_template_version=spec.prompt_template_version,
+        prompt_payload_ref=spec.prompt_payload_ref,
+        execution_limits_ref=spec.execution_limits_ref,
+        retry_policy_ref=spec.retry_policy_ref,
+        tool_policy_ref=spec.tool_policy_ref,
+        redaction_policy_ref=spec.redaction_policy_ref,
+        semantic_validator_ref=spec.semantic_validator_ref,
+        output_schema_ref=spec.output_schema_ref,
+        context_refs=spec.context_refs,
+        retrieved_code_locations=(),
+        exposed_request_ref=exposed_request_ref,
+        exposed_response_ref=result.response_ref,
+        parsed_output_ref=result.parsed_output_ref,
+        tool_calls=(),
+        status=result.status,
+        usage=result.usage,
+        safe_error=result.safe_error,
+        started_at=result.started_at,
+        finished_at=result.finished_at,
+        elapsed_ms=result.elapsed_ms,
+        retry_count=0,
+        validation_errors=(),
+        repair_attempts=0,
+        retry_of_llm_call_id=None,
+        failover_from_llm_call_id=None,
+        redaction_result="NOT_REQUIRED",
+    )
+    log_ref = fixture.records.add(log)
+    reservation = BudgetReservation.model_construct(
+        meta=_meta("budget_reservation", task, str(work.active_attempt_id)),
+        reservation_id=f"{task}-reservation",
+        budget_binding_ref=fixture.budget_ref,
+        action_ref=action_ref,
+        work_ref=reference(work),
+        requested_units=None,
+        status="RESERVED",
+        ledger_entry_ref=None,
+        reserved_at=NOW,
+        finalized_at=None,
+    )
+    reservation_ref = fixture.records.add(reservation)
     fixture.llm.outcomes.append(
         PersistedLLMInvocation(request, result, log_ref, dispatch_state="RETURNED")
     )
     del request_ref, result_ref, log_ref, output_ref
     return GateCallRefs(
         decision_ref=decision_ref,
-        reservation_ref=_opaque(fixture.records, "budget_reservation", task),
+        reservation_ref=reservation_ref,
         call_spec_ref=call_spec_ref,
     )
 

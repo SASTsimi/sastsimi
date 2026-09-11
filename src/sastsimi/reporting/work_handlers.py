@@ -101,7 +101,9 @@ class ReporterWorkHandler:
         outcome = await self._agent.create_draft(
             work=context.work, inputs=inputs, call=call
         )
-        return WorkHandlerResult((outcome.draft_ref,))
+        return WorkHandlerResult(
+            (outcome.draft_ref,), action_input_refs=outcome.save_input_refs
+        )
 
 
 def _require_claimed(context: WorkContext, expected: WorkType) -> None:

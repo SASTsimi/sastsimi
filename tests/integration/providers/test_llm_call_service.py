@@ -759,6 +759,8 @@ def build_service(
     entered: asyncio.Event | None = None,
     release: asyncio.Event | None = None,
     cancellation: CancellationResult | None = None,
+    request_semantic_validators: dict[tuple[str, str], Callable[..., None]]
+    | None = None,
 ) -> tuple[LLMCallService, FakeAdapter, RecordingAuthorization]:
     prompt_resolver = StoredPromptInputResolver(data.records, data.artifacts)
     validators: dict[StoredDataRef, Callable[[object], None]] = {
@@ -768,6 +770,7 @@ def build_service(
         data.records,
         validators,
         validate_output,
+        request_semantic_validators=request_semantic_validators,  # type: ignore[arg-type]
     )
     result_builder = StoredInvocationResultBuilder(
         data.records, data.artifacts, data.metadata_factory

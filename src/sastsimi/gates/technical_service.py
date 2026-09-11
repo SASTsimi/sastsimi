@@ -33,6 +33,7 @@ from sastsimi.ports.dto import Record
 from sastsimi.ports.ready_work import ReadyWorkPort
 from sastsimi.ports.verification_registration import VerificationRegistration
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
+from sastsimi.runtime.llm_invocation_provenance import llm_invocation_save_refs
 
 from .cwe_service import GateCallRefs
 
@@ -165,6 +166,7 @@ class TechnicalGateService:
             verification_ref=verification_ref,
             cwe_label_ref=cwe_label_ref,
             required_context=required_context,
+            requester_identity_ref=assignment.owner_identity_ref,
             call=TechnicalCallRefs(
                 call.decision_ref, call.reservation_ref, call.call_spec_ref
             ),
@@ -313,25 +315,20 @@ class TechnicalGateService:
         ):
             raise ValueError("STALE_RESULT: current final Verification required")
 
-    @staticmethod
     def _save_inputs(
+        self,
         work: WorkExecutionState,
         call: GateCallRefs,
         invocation: PersistedLLMInvocation,
     ) -> tuple[RecordRef, ...]:
-        refs: tuple[RecordRef, ...] = (
-            *work.input_refs,
-            call.decision_ref,
-            call.reservation_ref,
-            call.call_spec_ref,
-            invocation.request.action_decision_ref,
-            reference(invocation.request),
-            reference(invocation.result),
-            invocation.log_ref,
+        return llm_invocation_save_refs(
+            records=self._records,
+            work=work,
+            issued_decision_ref=call.decision_ref,
+            reservation_ref=call.reservation_ref,
+            call_spec_ref=call.call_spec_ref,
+            invocation=invocation,
         )
-        if invocation.result.parsed_output_ref is not None:
-            refs = (*refs, invocation.result.parsed_output_ref)
-        return tuple(dict.fromkeys(refs))
 
     def _exact[T](self, ref: StoredDataRef, model: type[T]) -> T:
         value = self._records.get_exact(ref)
