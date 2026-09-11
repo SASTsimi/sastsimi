@@ -113,7 +113,10 @@ class OwnedResourceRegistry:
                 states = [await docker.inspect(item.resource_id) for item in owned]
                 if any(
                     state.container_id != item.resource_id
-                    or dict(state.labels) != dict(item.labels)
+                    or any(
+                        state.labels.get(key) != value
+                        for key, value in item.labels.items()
+                    )
                     for item, state in zip(owned, states, strict=True)
                 ):
                     failure = "CLEANUP_OWNERSHIP_MISMATCH"

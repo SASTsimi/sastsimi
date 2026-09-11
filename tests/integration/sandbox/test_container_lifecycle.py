@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -25,6 +26,7 @@ from sastsimi.sandbox.docker_adapter import (
     DockerAdapter,
     DockerCommandOutcome,
     DockerContainerState,
+    DockerOperationError,
 )
 from sastsimi.sandbox.health_check import SandboxHealthChecker
 from sastsimi.sandbox.recipe_store import EnvironmentRecipeStore
@@ -178,6 +180,7 @@ class FakeDockerAdapter:
         self.created: dict[str, tuple[SandboxRunSpec, Mapping[str, str]]] = {}
         self.removed: list[str] = []
         self.unhealthy: set[str] = set()
+        self.inspect_label_overrides: dict[str, Mapping[str, str]] = {}
         self._index = 0
 
     async def build(self, recipe_source: Path, labels: Mapping[str, str]) -> str:
@@ -204,6 +207,8 @@ class FakeDockerAdapter:
 
     async def inspect(self, container_id: str) -> DockerContainerState:
         spec, labels = self.created[container_id]
+        inspected_labels = dict(labels)
+        inspected_labels.update(self.inspect_label_overrides.get(container_id, {}))
         return DockerContainerState(
             container_id=container_id,
             image_digest=spec.image_digest,
@@ -216,7 +221,7 @@ class FakeDockerAdapter:
             health_status=(
                 "healthy" if container_id not in self.unhealthy else "unhealthy"
             ),
-            labels=labels,
+            labels=inspected_labels,
         )
 
     async def remove(self, resource_ids: tuple[str, ...]) -> None:
@@ -310,6 +315,38 @@ async def test_unhealthy_container_is_recreated_and_only_owned_resources_removed
 
 
 @pytest.mark.asyncio
+async def test_same_attempt_recreate_gets_a_distinct_runtime_container_identity(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    request, requirements, plan = _dynamic_records()
+    docker = FakeDockerAdapter()
+    setup = _setup(docker)
+    first = await setup.prepare(
+        approval=_approval(tmp_path, request),
+        request=request,
+        requirements=requirements,
+        plan=plan,
+        meta=_meta("sandbox_environment", "environment-seed"),
+    )
+
+    second = await setup.recreate(
+        previous=first,
+        reason="STATE_CHANGED",
+        meta=_meta("sandbox_environment", "environment-recreated-seed"),
+    )
+
+    first_labels = docker.created[first.environment.container_instance_id][1]
+    second_labels = docker.created[second.environment.container_instance_id][1]
+    assert first_labels["sastsimi.resource-id"] != second_labels[
+        "sastsimi.resource-id"
+    ]
+    assert DockerAdapter.runtime_container_name(
+        first_labels
+    ) != DockerAdapter.runtime_container_name(second_labels)
+
+
+@pytest.mark.asyncio
 async def test_different_hypothesis_cannot_reuse_writable_container(
     tmp_path: Path,
 ) -> None:
@@ -367,17 +404,95 @@ async def test_cleanup_rejects_unknown_resource_without_docker_delete(
     assert docker.removed == []
 
 
+@pytest.mark.asyncio
+async def test_cleanup_allows_extra_labels_but_rejects_required_mismatch(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    request, requirements, plan = _dynamic_records()
+
+    extra_docker = FakeDockerAdapter()
+    extra_setup = _setup(extra_docker)
+    extra = await extra_setup.prepare(
+        approval=_approval(tmp_path, request),
+        request=request,
+        requirements=requirements,
+        plan=plan,
+        meta=_meta("sandbox_environment", "extra-label-environment"),
+    )
+    extra_id = extra.environment.container_instance_id
+    extra_docker.inspect_label_overrides[extra_id] = {"image.vendor": "fixture"}
+
+    extra_cleanup = await extra_setup.cleanup(
+        request=request,
+        environments=(extra.environment,),
+        resource_refs=extra.resource_refs,
+        meta=_meta("cleanup_result", "extra-label-cleanup"),
+    )
+
+    assert extra_cleanup.status == "SUCCEEDED"
+    assert extra_docker.removed == [extra_id]
+
+    mismatch_docker = FakeDockerAdapter()
+    mismatch_setup = _setup(mismatch_docker)
+    mismatch = await mismatch_setup.prepare(
+        approval=_approval(tmp_path, request),
+        request=request,
+        requirements=requirements,
+        plan=plan,
+        meta=_meta("sandbox_environment", "mismatch-environment"),
+    )
+    mismatch_id = mismatch.environment.container_instance_id
+    mismatch_docker.inspect_label_overrides[mismatch_id] = {
+        "sastsimi.attempt-id": "different-attempt"
+    }
+
+    mismatch_cleanup = await mismatch_setup.cleanup(
+        request=request,
+        environments=(mismatch.environment,),
+        resource_refs=mismatch.resource_refs,
+        meta=_meta("cleanup_result", "mismatch-cleanup"),
+    )
+
+    assert mismatch_cleanup.status == "FAILED"
+    assert mismatch_cleanup.failure_reason == "CLEANUP_OWNERSHIP_MISMATCH"
+    assert mismatch_docker.removed == []
+
+
 class _Process:
-    def __init__(self, stdout: bytes, stderr: bytes = b"", returncode: int = 0) -> None:
+    def __init__(
+        self,
+        stdout: bytes,
+        stderr: bytes = b"",
+        returncode: int = 0,
+        *,
+        forbid_communicate: bool = False,
+    ) -> None:
         self._stdout = stdout
         self._stderr = stderr
         self.returncode = returncode
+        self.forbid_communicate = forbid_communicate
+        self.communicate_called = False
+        self.killed = False
+        self.stdout = asyncio.StreamReader()
+        self.stdout.feed_data(stdout)
+        self.stdout.feed_eof()
+        self.stderr = asyncio.StreamReader()
+        self.stderr.feed_data(stderr)
+        self.stderr.feed_eof()
 
     async def communicate(self) -> tuple[bytes, bytes]:
+        self.communicate_called = True
+        if self.forbid_communicate:
+            raise AssertionError("communicate must not buffer unbounded Docker output")
         return self._stdout, self._stderr
 
     def kill(self) -> None:
+        self.killed = True
         self.returncode = -9
+
+    async def wait(self) -> int:
+        return self.returncode
 
 
 @pytest.mark.asyncio
@@ -408,6 +523,8 @@ async def test_docker_create_uses_argv_and_hard_isolation_options(
             "sastsimi.commit-id": "commit-1",
             "sastsimi.hypothesis-id": "hypothesis-1",
             "sastsimi.attempt-id": "dynamic-attempt-1",
+            "sastsimi.resource-kind": "container",
+            "sastsimi.resource-id": "container-runtime-1",
         },
     )
 
@@ -433,6 +550,8 @@ def test_runtime_owned_name_does_not_include_repository_path(tmp_path: Path) -> 
         "sastsimi.commit-id": "commit-1",
         "sastsimi.hypothesis-id": "hypothesis-1",
         "sastsimi.attempt-id": "dynamic-attempt-1",
+        "sastsimi.resource-kind": "container",
+        "sastsimi.resource-id": "container-runtime-1",
     }
     name = DockerAdapter.runtime_container_name(labels)
 
@@ -440,6 +559,26 @@ def test_runtime_owned_name_does_not_include_repository_path(tmp_path: Path) -> 
     assert str(tmp_path) not in name
     assert "hypothesis-1" not in name
     assert len(name) <= 63
+
+
+@pytest.mark.asyncio
+async def test_docker_output_limit_stops_process_without_communicate_buffering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _Process(b"x" * (1024 * 1024 + 1), forbid_communicate=True)
+
+    async def spawn(*argv: object, **kwargs: object) -> _Process:
+        return process
+
+    monkeypatch.setattr(
+        "sastsimi.sandbox.docker_adapter.asyncio.create_subprocess_exec", spawn
+    )
+
+    with pytest.raises(DockerOperationError, match="DOCKER_OUTPUT_LIMIT_EXCEEDED"):
+        await DockerAdapter().inspect_image("fixture:latest")
+
+    assert process.communicate_called is False
+    assert process.killed is True
 
 
 def test_profile_file_has_bounded_default_deny_values() -> None:

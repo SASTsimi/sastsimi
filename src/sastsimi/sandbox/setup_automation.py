@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
+from uuid import uuid4
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.dynamic import (
@@ -103,7 +104,7 @@ class ReproductionSetupAutomation:
             request=request,
             requirements=requirements,
             plan=plan,
-            labels=labels,
+            labels=self._container_labels(meta),
             reason="INITIAL_CLEAN",
             previous_environment_ref=None,
             meta=meta,
@@ -178,7 +179,7 @@ class ReproductionSetupAutomation:
             requirements=context.requirements,
             meta=meta,
         )
-        labels = self._labels(meta)
+        labels = self._container_labels(meta)
         prepared = await self._create_environment(
             spec=context.approval.approved_spec,
             recipe=recipe,
@@ -403,3 +404,14 @@ class ReproductionSetupAutomation:
             "sastsimi.hypothesis-id": str(meta.hypothesis_id),
             "sastsimi.attempt-id": str(meta.attempt_id),
         }
+
+    @staticmethod
+    def _container_labels(meta: RecordMeta) -> Mapping[str, str]:
+        labels = dict(ReproductionSetupAutomation._labels(meta))
+        labels.update(
+            {
+                "sastsimi.resource-kind": "container",
+                "sastsimi.resource-id": uuid4().hex,
+            }
+        )
+        return labels

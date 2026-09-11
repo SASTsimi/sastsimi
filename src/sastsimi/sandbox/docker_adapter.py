@@ -26,8 +26,16 @@ _REQUIRED_LABELS = frozenset(
         "sastsimi.attempt-id",
     }
 )
-_ALLOWED_LABELS = _REQUIRED_LABELS | {"sastsimi.resource-kind"}
+_CONTAINER_LABELS = _REQUIRED_LABELS | {
+    "sastsimi.resource-kind",
+    "sastsimi.resource-id",
+}
 _OUTPUT_LIMIT_BYTES = 1024 * 1024
+_OUTPUT_READ_BYTES = 64 * 1024
+
+
+class _DockerOutputLimitExceeded(Exception):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,12 +251,14 @@ class DockerAdapter:
     @staticmethod
     def runtime_container_name(labels: Mapping[str, str]) -> str:
         normalized = DockerAdapter._validated_labels(labels)
+        if set(normalized) != _CONTAINER_LABELS:
+            raise ValueError("DOCKER_CONTAINER_OWNERSHIP_LABELS_REQUIRED")
         identity = "\0".join(f"{key}={normalized[key]}" for key in sorted(normalized))
         return "sastsimi-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
 
     @staticmethod
     def _validated_labels(labels: Mapping[str, str]) -> dict[str, str]:
-        if set(labels) != _REQUIRED_LABELS and set(labels) != _ALLOWED_LABELS:
+        if set(labels) != _REQUIRED_LABELS and set(labels) != _CONTAINER_LABELS:
             raise ValueError("DOCKER_OWNERSHIP_LABELS_INVALID")
         normalized = dict(labels)
         if normalized.get("sastsimi.owner") != "reproduction-setup-automation":
@@ -257,7 +267,10 @@ class DockerAdapter:
             not _LABEL_VALUE.fullmatch(value) for value in normalized.values()
         ):
             raise ValueError("DOCKER_OWNERSHIP_LABELS_INVALID")
-        if normalized.get("sastsimi.resource-kind", "container") != "container":
+        if (
+            "sastsimi.resource-kind" in normalized
+            and normalized["sastsimi.resource-kind"] != "container"
+        ):
             raise ValueError("DOCKER_RESOURCE_KIND_INVALID")
         return normalized
 
@@ -283,28 +296,88 @@ class DockerAdapter:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        if process.stdout is None or process.stderr is None:
+            await self._stop_process(process)
+            raise DockerOperationError("DOCKER_OUTPUT_PIPE_MISSING")
+        stdout_buffer = bytearray()
+        stderr_buffer = bytearray()
         timed_out = False
         try:
-            if timeout_ms is None:
-                stdout, stderr = await process.communicate()
-            else:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout_ms / 1000
+            try:
+                collection = self._collect_output(
+                    process,
+                    stdout_buffer,
+                    stderr_buffer,
                 )
-        except TimeoutError:
-            timed_out = True
-            process.kill()
-            stdout, stderr = await process.communicate()
-        stdout = self._safe_output(stdout)
-        stderr = self._safe_output(stderr)
-        if len(stdout) > _OUTPUT_LIMIT_BYTES or len(stderr) > _OUTPUT_LIMIT_BYTES:
-            raise DockerOperationError("DOCKER_OUTPUT_LIMIT_EXCEEDED")
+                if timeout_ms is None:
+                    await collection
+                else:
+                    await asyncio.wait_for(collection, timeout_ms / 1000)
+            except TimeoutError:
+                timed_out = True
+                await self._stop_process(process)
+                await self._collect_output(
+                    process,
+                    stdout_buffer,
+                    stderr_buffer,
+                )
+        except _DockerOutputLimitExceeded:
+            await self._stop_process(process)
+            raise DockerOperationError("DOCKER_OUTPUT_LIMIT_EXCEEDED") from None
+        stdout = self._safe_output(bytes(stdout_buffer))
+        stderr = self._safe_output(bytes(stderr_buffer))
         return DockerCommandOutcome(
             exit_code=process.returncode if process.returncode is not None else -1,
             stdout=stdout,
             stderr=stderr,
             timed_out=timed_out,
         )
+
+    @staticmethod
+    async def _read_output(
+        stream: asyncio.StreamReader,
+        destination: bytearray,
+    ) -> None:
+        while True:
+            remaining = _OUTPUT_LIMIT_BYTES + 1 - len(destination)
+            if remaining <= 0:
+                raise _DockerOutputLimitExceeded
+            chunk = await stream.read(min(_OUTPUT_READ_BYTES, remaining))
+            if not chunk:
+                return
+            destination.extend(chunk)
+            if len(destination) > _OUTPUT_LIMIT_BYTES:
+                raise _DockerOutputLimitExceeded
+
+    @classmethod
+    async def _collect_output(
+        cls,
+        process: asyncio.subprocess.Process,
+        stdout: bytearray,
+        stderr: bytearray,
+    ) -> None:
+        if process.stdout is None or process.stderr is None:
+            raise DockerOperationError("DOCKER_OUTPUT_PIPE_MISSING")
+        tasks = (
+            asyncio.create_task(cls._read_output(process.stdout, stdout)),
+            asyncio.create_task(cls._read_output(process.stderr, stderr)),
+            asyncio.create_task(process.wait()),
+        )
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    @staticmethod
+    async def _stop_process(process: asyncio.subprocess.Process) -> None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        await process.wait()
 
     @staticmethod
     def _safe_output(value: bytes) -> bytes:
