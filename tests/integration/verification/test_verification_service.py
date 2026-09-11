@@ -9,6 +9,7 @@ import pytest
 from sastsimi.agents.verification import VerificationAgent, VerificationCallRefs
 from sastsimi.contracts._domain import DomainRecord
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.dynamic import DynamicReproductionResult
 from sastsimi.contracts.hypothesis import (
     FalsificationQuestion,
     HypothesisProposal,
@@ -43,6 +44,7 @@ from sastsimi.ports.dto import StagedArtifact
 from sastsimi.ports.verification_assembly import VerificationGenerationInputs
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
 from sastsimi.verification.service import VerificationService
+from tests.contract.domain.success_fixture import dynamic_success
 
 NOW = datetime(2026, 9, 11, tzinfo=UTC)
 ANALYSIS_ID = AnalysisId("analysis-1")
@@ -444,6 +446,192 @@ class _Fixture:
             "unresolved_conditions": list(unresolved),
         }
 
+    def install_dynamic_success(self) -> dict[str, StoredDataRef]:
+        """Re-scope the canonical executed-PoC chain to this Verification fixture."""
+        base = dynamic_success()
+        dynamic_attempt = AttemptId("dynamic-attempt-1")
+
+        def dynamic_meta(kind: str) -> RecordMeta:
+            return _meta(kind, suffix="dynamic", attempt=dynamic_attempt)
+
+        assignment_ref = self._opaque_record("verification_assignment", "dynamic")
+        sandbox_ref = self._opaque_record("sandbox_profile", "dynamic")
+        request = base["request"].model_copy(
+            update={
+                "meta": _meta(
+                    "dynamic_reproduction_request",
+                    suffix="dynamic",
+                    attempt=ATTEMPT_ID,
+                ),
+                "verification_assignment_ref": assignment_ref,
+                "verification_generation": self.generation.generation,
+                "hypothesis_ref": self.hypothesis_ref,
+                "sandbox_profile_ref": sandbox_ref,
+                "code_refs": (self.evidence_ref,),
+                "static_evidence_refs": (self.evidence_ref,),
+                "pro_evidence_ref": self.pro_ref,
+                "con_evidence_ref": self.con_ref,
+            }
+        )
+        request_ref = self.records.add(request)
+        requirements = base["requirements"].model_copy(
+            update={
+                "meta": dynamic_meta("environment_requirements"),
+                "request_ref": request_ref,
+            }
+        )
+        requirements_ref = self.records.add(requirements)
+        plan = base["plan"].model_copy(
+            update={
+                "meta": dynamic_meta("reproduction_plan"),
+                "request_ref": request_ref,
+                "hypothesis_ref": self.hypothesis_ref,
+                "environment_requirements_ref": requirements_ref,
+                "sandbox_profile_ref": sandbox_ref,
+            }
+        )
+        plan_ref = self.records.add(plan)
+        recipe = base["recipe"].model_copy(
+            update={
+                "meta": dynamic_meta("environment_recipe"),
+                "request_ref": request_ref,
+                "environment_requirements_ref": requirements_ref,
+                "recipe_source_ref": self.evidence_ref,
+                "source_refs": (self.evidence_ref,),
+            }
+        )
+        recipe_ref = self.records.add(recipe)
+        environment = base["environment"].model_copy(
+            update={
+                "meta": dynamic_meta("sandbox_environment"),
+                "request_ref": request_ref,
+                "reproduction_plan_ref": plan_ref,
+                "environment_recipe_ref": recipe_ref,
+                "requirements_ref": requirements_ref,
+            }
+        )
+        environment_ref = self.records.add(environment)
+        policy = base["policy"].model_copy(
+            update={
+                "meta": dynamic_meta("sandbox_policy_decision"),
+                "request_ref": request_ref,
+                "sandbox_profile_ref": sandbox_ref,
+            }
+        )
+        policy_ref = self.records.add(policy)
+        candidate = base["candidate"].model_copy(
+            update={
+                "meta": dynamic_meta("poc_candidate"),
+                "request_ref": request_ref,
+                "reproduction_plan_ref": plan_ref,
+                "content_ref": self.evidence_ref,
+                "content_digest": self.evidence_ref.content_hash,
+            }
+        )
+        candidate_ref = self.records.add(candidate)
+        events = tuple(
+            event.model_copy(
+                update={
+                    "environment_ref": (
+                        environment_ref if event.environment_ref is not None else None
+                    ),
+                    "environment_recipe_ref": (
+                        recipe_ref
+                        if event.environment_recipe_ref is not None
+                        else None
+                    ),
+                    "poc_candidate_ref": (
+                        candidate_ref if event.poc_candidate_ref is not None else None
+                    ),
+                    "input_refs": (
+                        (policy_ref,)
+                        if event.event_type == "SESSION_STARTED"
+                        else event.input_refs
+                    ),
+                    "output_refs": (
+                        (self.evidence_ref,)
+                        if event.event_type == "POC_EXECUTION_FINISHED"
+                        else event.output_refs
+                    ),
+                }
+            )
+            for event in base["log"].events
+        )
+        log = base["log"].model_copy(
+            update={
+                "meta": dynamic_meta("agent_log"),
+                "request_ref": request_ref,
+                "events": events,
+            }
+        )
+        log_ref = self.records.add(log)
+        conclusion = base["conclusion"].model_copy(
+            update={
+                "meta": dynamic_meta("dynamic_reproduction_conclusion"),
+                "request_ref": request_ref,
+                "reproduction_plan_ref": plan_ref,
+                "environment_ref": environment_ref,
+                "poc_candidate_ref": candidate_ref,
+                "observation_refs": (self.evidence_ref,),
+                "hypothesis_evidence_refs": (self.evidence_ref,),
+            }
+        )
+        conclusion_ref = self.records.add(conclusion)
+        poc = base["poc"].model_copy(
+            update={
+                "meta": dynamic_meta("poc_bundle"),
+                "request_ref": request_ref,
+                "reproduction_plan_ref": plan_ref,
+                "environment_recipe_ref": recipe_ref,
+                "environment_ref": environment_ref,
+                "agent_log_ref": log_ref,
+                "candidate_ref": candidate_ref,
+                "candidate_digest": candidate.content_digest,
+                "evidence_refs": (self.evidence_ref,),
+            }
+        )
+        poc_ref = self.records.add(poc)
+        cleanup = base["cleanup"].model_copy(
+            update={
+                "meta": dynamic_meta("cleanup_result"),
+                "request_ref": request_ref,
+                "environment_refs": (environment_ref,),
+            }
+        )
+        cleanup_ref = self.records.add(cleanup)
+        result = base["result"].model_copy(
+            update={
+                "meta": dynamic_meta("dynamic_reproduction_result"),
+                "request_ref": request_ref,
+                "reproduction_plan_ref": plan_ref,
+                "policy_decision_ref": policy_ref,
+                "agent_log_ref": log_ref,
+                "agent_conclusion_ref": conclusion_ref,
+                "environment_recipe_ref": recipe_ref,
+                "environment_ref": environment_ref,
+                "poc_candidate_ref": candidate_ref,
+                "poc_ref": poc_ref,
+                "observation_refs": (self.evidence_ref,),
+                "hypothesis_evidence_refs": (self.evidence_ref,),
+                "cleanup_ref": cleanup_ref,
+            }
+        )
+        result_ref = self.records.add(result)
+        return {"request": request_ref, "result": result_ref, "poc": poc_ref}
+
+    def dynamic_context(
+        self,
+        assessment_ref: StoredDataRef,
+        refs: dict[str, StoredDataRef],
+    ) -> tuple[StoredDataRef, ...]:
+        return (
+            *self.assessment_context(),
+            assessment_ref,
+            refs["request"],
+            refs["result"],
+            refs["poc"],
+        )
+
 
 @pytest.mark.asyncio
 async def test_false_requires_named_disproof_and_complete_checks() -> None:
@@ -649,4 +837,130 @@ async def test_initial_true_waits_for_t11_instead_of_creating_final_true() -> No
             con_ref=fixture.con_ref,
             call=fixture.call,
         )
+    assert fixture.llm.outcomes == []
+
+
+@pytest.mark.asyncio
+async def test_dynamic_supported_produces_true_with_exact_validated_poc() -> None:
+    fixture = _Fixture()
+    fixture.queue(
+        fixture.assessment_payload("TRUE", next_step="POC_CONFIRMATION"),
+        task_kind="ASSESS_INITIAL",
+        context_refs=fixture.assessment_context(),
+    )
+    assessment = await fixture.service.assess_initial(
+        generation=fixture.generation,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+    assessment_ref = reference(assessment)
+    assert isinstance(assessment_ref, StoredDataRef)
+    dynamic = fixture.install_dynamic_success()
+    fixture.queue(
+        fixture.final_payload("TRUE", outcome="NOT_DISPROVED"),
+        task_kind="FINAL_VERDICT",
+        context_refs=fixture.dynamic_context(assessment_ref, dynamic),
+    )
+
+    outcome = await fixture.service.finalize_with_dynamic_with_invocation(
+        generation=fixture.generation,
+        assessment_ref=assessment_ref,
+        dynamic_request_ref=dynamic["request"],
+        dynamic_result_ref=dynamic["result"],
+        poc_ref=dynamic["poc"],
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+
+    assert outcome.record.verdict == "TRUE"
+    assert outcome.record.poc_ref == dynamic["poc"]
+    assert outcome.invocation.request.llm_call_id == "llm-FINAL_VERDICT"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_operational_failure_creates_no_final_verdict() -> None:
+    fixture = _Fixture()
+    fixture.queue(
+        fixture.assessment_payload("TRUE", next_step="POC_CONFIRMATION"),
+        task_kind="ASSESS_INITIAL",
+        context_refs=fixture.assessment_context(),
+    )
+    assessment = await fixture.service.assess_initial(
+        generation=fixture.generation,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+    assessment_ref = reference(assessment)
+    assert isinstance(assessment_ref, StoredDataRef)
+    dynamic = fixture.install_dynamic_success()
+    successful = fixture.records.get_exact(dynamic["result"])
+    assert isinstance(successful, DynamicReproductionResult)
+    failed = successful.model_copy(
+        update={
+            "meta": _meta(
+                "dynamic_reproduction_result",
+                suffix="failed",
+                attempt=successful.meta.attempt_id,
+            ),
+            "status": "FAILED",
+            "failure_category": "EXECUTION",
+            "failure_reason": "Sandbox command failed",
+            "hypothesis_outcome": "INCONCLUSIVE",
+            "poc_ref": None,
+        }
+    )
+    failed_ref = fixture.records.add(failed)
+
+    with pytest.raises(ValueError, match="EXECUTION_FAILURE_IS_NOT_VERDICT"):
+        await fixture.service.finalize_with_dynamic(
+            generation=fixture.generation,
+            assessment_ref=assessment_ref,
+            dynamic_request_ref=dynamic["request"],
+            dynamic_result_ref=failed_ref,
+            poc_ref=None,
+            pro_ref=fixture.pro_ref,
+            con_ref=fixture.con_ref,
+            call=fixture.call,
+        )
+
+    assert fixture.llm.outcomes == []
+    assert not any(
+        ref.data_kind == "verification_result" for ref in fixture.records.values
+    )
+
+
+@pytest.mark.asyncio
+async def test_changed_dynamic_result_reference_is_rejected_before_llm() -> None:
+    fixture = _Fixture()
+    fixture.queue(
+        fixture.assessment_payload("TRUE", next_step="POC_CONFIRMATION"),
+        task_kind="ASSESS_INITIAL",
+        context_refs=fixture.assessment_context(),
+    )
+    assessment = await fixture.service.assess_initial(
+        generation=fixture.generation,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+    assessment_ref = reference(assessment)
+    assert isinstance(assessment_ref, StoredDataRef)
+    dynamic = fixture.install_dynamic_success()
+    changed_ref = dynamic["result"].model_copy(update={"content_hash": "f" * 64})
+
+    with pytest.raises((KeyError, ValueError)):
+        await fixture.service.finalize_with_dynamic(
+            generation=fixture.generation,
+            assessment_ref=assessment_ref,
+            dynamic_request_ref=dynamic["request"],
+            dynamic_result_ref=changed_ref,
+            poc_ref=dynamic["poc"],
+            pro_ref=fixture.pro_ref,
+            con_ref=fixture.con_ref,
+            call=fixture.call,
+        )
+
     assert fixture.llm.outcomes == []
