@@ -127,6 +127,10 @@ Lane A/B run only their direct tests. The integration lane runs the T09 contract
 - Requests are persisted before I/O. Success, authentication failure, timeout,
   invalid output, cancellation, and stale selection produce safe durable provenance
   without creating a domain result from a failed call.
+- Provider output is schema-checked as canonical JSON and stored only as an exact
+  artifact. It cannot publish runtime-owned metadata or identifiers; T10 owns the
+  trusted conversion from validated JSON into domain records. Top-level arrays are
+  supported for contracts such as `HypothesisProposal[]`.
 - Prompt templates and projected repository data remain separate. Credential,
   private-key, credential-URI, host-path, and prompt-boundary injection cases are
   rejected or redacted before persistence and Provider use.
@@ -138,3 +142,7 @@ Lane A/B run only their direct tests. The integration lane runs the T09 contract
 - Independent final Blocker/High audit: no remaining finding after the T08 merge;
   exact-reference, approval, secret, failure-provenance, and runtime-composition
   boundaries were preserved.
+- Final authority regression after the output-boundary hardening: four focused
+  success/authority/array tests passed; tracked Python files passed Ruff and strict
+  mypy. The PR CI remains the one full-suite execution required by the speed-first
+  policy.
