@@ -212,8 +212,21 @@ def _unused_authorization(
     request: DynamicReproductionRequest,
     requirements: EnvironmentRequirements,
     plan: ReproductionPlan,
+    phase: object,
+    phase_ref: StoredDataRef,
+    image_digest: str | None,
+    context_refs: tuple[StoredDataRef, ...],
 ) -> DynamicSandboxAuthorization:
-    del work, request, requirements, plan
+    del (
+        work,
+        request,
+        requirements,
+        plan,
+        phase,
+        phase_ref,
+        image_digest,
+        context_refs,
+    )
     raise AssertionError("prepared workflow must not resolve authorization")
 
 

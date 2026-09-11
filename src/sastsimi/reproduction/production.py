@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from sastsimi.agents.dynamic_reproduction import DynamicReproductionAgent
 from sastsimi.contracts.actions import ActionRequest, RequesterRole
@@ -80,6 +80,10 @@ type DynamicSandboxAuthorizationResolver = Callable[
         DynamicReproductionRequest,
         EnvironmentRequirements,
         ReproductionPlan,
+        Literal["BUILD", "RUN"],
+        StoredDataRef,
+        str | None,
+        tuple[StoredDataRef, ...],
     ],
     DynamicSandboxAuthorization,
 ]
@@ -251,17 +255,101 @@ class ProductionDynamicWorkflow:
         plan_ref: StoredDataRef,
     ) -> DynamicSandboxSession:
         self._require_work(work, request, request_ref)
-        binding = self._authorization(work, request, requirements, plan)
-        self._binding = binding
-        outcome = self._controller.evaluate(
-            spec=binding.run_spec,
-            action=binding.action,
-            action_decision_ref=binding.action_decision_ref,
+        source = await self._setup.preflight(
+            workspace_root=self._controller.workspace_root,
+            request=request,
+            requirements=requirements,
+            meta=self._meta("environment_recipe"),
+        )
+        build_binding = self._authorization(
+            work,
+            request,
+            requirements,
+            plan,
+            "BUILD",
+            source.recipe_source_ref,
+            None,
+            (),
+        )
+        build_outcome = self._controller.evaluate_build(
+            spec=build_binding.run_spec,
+            source=source,
+            action=build_binding.action,
+            action_decision_ref=build_binding.action_decision_ref,
             request=request,
             plan=plan,
-            sandbox_profile=binding.sandbox_profile,
-            lifecycle_profile=binding.lifecycle_profile,
-            run_policy_state_ref=binding.run_policy_state_ref,
+            sandbox_profile=build_binding.sandbox_profile,
+            lifecycle_profile=build_binding.lifecycle_profile,
+            run_policy_state_ref=build_binding.run_policy_state_ref,
+            meta=self._meta("sandbox_policy_decision"),
+        )
+        self._policy = build_outcome.decision
+        build_policy_ref = self._publish(
+            build_outcome.decision,
+            RequesterRole.SANDBOX_CONTROLLER,
+            (
+                request_ref,
+                requirements_ref,
+                plan_ref,
+                source.recipe_source_ref,
+                build_binding.action_decision_ref,
+                build_binding.run_policy_state_ref,
+            ),
+        )
+        if build_outcome.decision.decision != "ALLOW":
+            self._start_log(
+                request_ref,
+                policy_ref=build_policy_ref,
+                agent_started=False,
+            )
+            self._append_event(
+                "POLICY_BLOCKED",
+                "SANDBOX_CONTROLLER",
+                input_refs=(build_policy_ref,),
+                safe_message="Sandbox boundary denied the request",
+            )
+            return DynamicSandboxSession.blocked(
+                policy_ref=build_policy_ref,
+                log_ref=self._log_ref(),
+            )
+        try:
+            recipe = await self._setup.build(
+                approval=build_outcome,
+                source=source,
+                request=request,
+                requirements=requirements,
+                meta=self._meta("environment_recipe"),
+            )
+        except Exception as error:
+            raise DynamicOperationalError(
+                "FAILED", "ENVIRONMENT_SETUP", _safe_error(error)
+            ) from error
+        recipe_ref = self._publish(
+            recipe,
+            RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
+            (*self._work_inputs(), source.recipe_source_ref),
+        )
+        run_binding = self._authorization(
+            work,
+            request,
+            requirements,
+            plan,
+            "RUN",
+            recipe_ref,
+            recipe.built_image_digest,
+            (),
+        )
+        self._binding = run_binding
+        outcome = self._controller.evaluate(
+            spec=run_binding.run_spec,
+            recipe=recipe,
+            action=run_binding.action,
+            action_decision_ref=run_binding.action_decision_ref,
+            request=request,
+            plan=plan,
+            sandbox_profile=run_binding.sandbox_profile,
+            lifecycle_profile=run_binding.lifecycle_profile,
+            run_policy_state_ref=run_binding.run_policy_state_ref,
             meta=self._meta("sandbox_policy_decision"),
         )
         self._policy = outcome.decision
@@ -272,8 +360,9 @@ class ProductionDynamicWorkflow:
                 request_ref,
                 requirements_ref,
                 plan_ref,
-                binding.action_decision_ref,
-                binding.run_policy_state_ref,
+                recipe_ref,
+                run_binding.action_decision_ref,
+                run_binding.run_policy_state_ref,
             ),
         )
         self._start_log(
@@ -286,15 +375,16 @@ class ProductionDynamicWorkflow:
                 "POLICY_BLOCKED",
                 "SANDBOX_CONTROLLER",
                 input_refs=(policy_ref,),
-                safe_message="Sandbox boundary denied the request",
+                safe_message="Sandbox boundary denied the built image",
             )
             return DynamicSandboxSession.blocked(
                 policy_ref=policy_ref,
                 log_ref=self._log_ref(),
             )
         try:
-            prepared = await self._setup.prepare(
+            prepared = await self._setup.create(
                 approval=outcome,
+                recipe=recipe,
                 request=request,
                 requirements=requirements,
                 plan=plan,
@@ -323,22 +413,67 @@ class ProductionDynamicWorkflow:
         tool_ref: StoredDataRef,
         session: DynamicSandboxSession,
     ) -> DynamicSandboxSession:
-        del requirements, requirements_ref, plan, plan_ref, session
+        del session
         self._require_work(work, request, request_ref)
         self._ensure_candidate_event(candidate_ref)
         prepared = self._require_prepared()
         if tool.action == "REQUEST_SANDBOX_RECREATE":
             assert tool.recreate_reason is not None
+            recipe_ref = _exact_ref(prepared.recipe)
+            recreate_binding = self._authorization(
+                work,
+                request,
+                requirements,
+                plan,
+                "RUN",
+                recipe_ref,
+                prepared.recipe.built_image_digest,
+                (tool_ref, _exact_ref(prepared.environment)),
+            )
+            recreate_outcome = self._controller.evaluate(
+                spec=recreate_binding.run_spec,
+                recipe=prepared.recipe,
+                action=recreate_binding.action,
+                action_decision_ref=recreate_binding.action_decision_ref,
+                request=request,
+                plan=plan,
+                sandbox_profile=recreate_binding.sandbox_profile,
+                lifecycle_profile=recreate_binding.lifecycle_profile,
+                run_policy_state_ref=recreate_binding.run_policy_state_ref,
+                meta=self._meta("sandbox_policy_decision"),
+            )
+            recreate_policy_ref = self._publish(
+                recreate_outcome.decision,
+                RequesterRole.SANDBOX_CONTROLLER,
+                (
+                    request_ref,
+                    requirements_ref,
+                    plan_ref,
+                    recipe_ref,
+                    tool_ref,
+                    _exact_ref(prepared.environment),
+                    recreate_binding.action_decision_ref,
+                    recreate_binding.run_policy_state_ref,
+                ),
+            )
+            if recreate_outcome.decision.decision != "ALLOW":
+                raise DynamicOperationalError(
+                    "BLOCKED",
+                    "POLICY_BLOCKED",
+                    "Sandbox recreation boundary denied the request",
+                )
+            self._binding = recreate_binding
             self._append_event(
                 "SANDBOX_RECREATE_REQUESTED",
                 "DYNAMIC_REPRODUCTION",
                 environment_ref=_exact_ref(prepared.environment),
                 environment_recipe_ref=_exact_ref(prepared.recipe),
-                input_refs=(tool_ref,),
+                input_refs=(tool_ref, recreate_policy_ref),
                 safe_message=tool.recreate_reason,
             )
             try:
                 prepared = await self._setup.recreate(
+                    approval=recreate_outcome,
                     previous=prepared,
                     reason=tool.recreate_reason,
                     meta=self._meta("sandbox_environment"),
@@ -539,7 +674,11 @@ class ProductionDynamicWorkflow:
         del session
         self._require_work(work, request, request_ref)
         if self._log is None:
-            self._start_log(request_ref, agent_started=False)
+            self._start_log(
+                request_ref,
+                policy_ref=self._policy_ref() if self._policy is not None else None,
+                agent_started=False,
+            )
         self._append_event(
             "ERROR",
             "REPRODUCTION_SESSION_MANAGER",
@@ -853,11 +992,16 @@ class ProductionDynamicWorkflow:
         self._environments.append(prepared.environment)
         self._resource_groups.append(prepared.resource_refs)
         try:
-            recipe_ref = self._publish(
-                prepared.recipe,
-                RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
-                self._work_inputs(),
-            )
+            recipe_ref = _exact_ref(prepared.recipe)
+            published_recipe = self._record("environment_recipe")
+            if published_recipe is None:
+                recipe_ref = self._publish(
+                    prepared.recipe,
+                    RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
+                    self._work_inputs(),
+                )
+            elif _exact_ref(published_recipe) != recipe_ref:
+                raise ValueError("ENVIRONMENT_RECIPE_REFERENCE_MISMATCH")
             self._publish(
                 prepared.environment,
                 RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
