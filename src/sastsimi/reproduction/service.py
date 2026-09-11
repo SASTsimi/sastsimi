@@ -17,6 +17,8 @@ from sastsimi.contracts.budget import (
 )
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.dynamic import (
+    POC_EXECUTABLE,
+    POC_RUNTIME_PATH,
     AgentLog,
     CleanupResult,
     DynamicReproductionConclusion,
@@ -64,6 +66,9 @@ from sastsimi.runtime.fake_support import (
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
+from sastsimi.sandbox.cleanup import owned_container_resource_ref
+
+from .fake_closure import require_poc_execution_events
 
 
 @dataclass(frozen=True)
@@ -528,8 +533,8 @@ class DynamicReproductionService:
                     turn_number=1,
                     action="RUN_COMMAND",
                     command=dict(
-                        executable="python",
-                        arguments=("poc.py",),
+                        executable=POC_EXECUTABLE,
+                        arguments=(POC_RUNTIME_PATH,),
                         working_directory="/workspace",
                         environment_binding_refs=(),
                         stdin_ref=candidate.content_ref,
@@ -657,13 +662,19 @@ class DynamicReproductionService:
             raise ValueError("FAKE_SANDBOX_COMMAND_MISMATCH")
         command_ref = self._publish_intermediate(dynamic_work, returned_command)
         observation = self._artifact("observation")
+        cleanup_resource_refs = (
+            owned_container_resource_ref(
+                container_id=environment.container_instance_id,
+                meta=environment.meta,
+            ),
+        )
         cleanup_candidate = CleanupResult.model_validate_json(
             canonical_bytes(
                 dict(
                     meta=meta("cleanup_result"),
                     request_ref=request_ref,
                     environment_refs=(environment_ref,),
-                    resource_refs=(),
+                    resource_refs=cleanup_resource_refs,
                     status="SUCCEEDED",
                     failure_reason=None,
                     finished_at=self.clock.now(),
@@ -673,7 +684,12 @@ class DynamicReproductionService:
 
         async def cleanup_environment() -> CleanupResult:
             return await self.sandbox_cleanup(
-                SandboxCleanupRequest(request, (environment,), ()), cleanup_candidate
+                SandboxCleanupRequest(
+                    request,
+                    (environment,),
+                    cleanup_resource_refs,
+                ),
+                cleanup_candidate,
             )
 
         cleanup_action = self.runner.action(
@@ -738,21 +754,25 @@ class DynamicReproductionService:
                     environment_ref=environment_ref,
                     environment_recipe_ref=recipe_ref,
                     poc_candidate_ref=candidate_ref
-                    if event_type.startswith("POC_")
+                    if event_type.startswith(("POC_", "COMMAND_"))
                     else None,
                     tool_request_ref=tool_ref
-                    if event_type.startswith("COMMAND_")
+                    if event_type.startswith(("POC_EXECUTION_", "COMMAND_"))
                     else None,
                     command_ref=command_ref
-                    if event_type.startswith("COMMAND_")
+                    if event_type.startswith(("POC_EXECUTION_", "COMMAND_"))
                     else None,
                     command_digest=returned_command.command_digest
-                    if event_type.startswith("COMMAND_")
+                    if event_type.startswith(("POC_EXECUTION_", "COMMAND_"))
                     else None,
                     redaction_status=returned_command.redaction_status
-                    if event_type.startswith("COMMAND_")
+                    if event_type.startswith(("POC_EXECUTION_", "COMMAND_"))
                     else None,
-                    input_refs=(policy_ref,) if event_type == "SESSION_STARTED" else (),
+                    input_refs=(policy_ref,)
+                    if event_type == "SESSION_STARTED"
+                    else (candidate.content_ref,)
+                    if event_type.startswith("POC_EXECUTION_")
+                    else (),
                     output_refs=(observation,)
                     if event_type == "POC_EXECUTION_FINISHED"
                     else (cleanup_ref,)
@@ -770,6 +790,15 @@ class DynamicReproductionService:
             canonical_bytes(
                 dict(meta=meta("agent_log"), request_ref=request_ref, events=events)
             )
+        )
+        require_poc_execution_events(
+            candidate,
+            returned_command,
+            tuple(
+                event
+                for event in log.events
+                if event.event_type.startswith("POC_EXECUTION_")
+            ),
         )
         log_ref = self._publish_intermediate(dynamic_work, log)
         conclusion_candidate = DynamicReproductionConclusion.model_validate_json(
