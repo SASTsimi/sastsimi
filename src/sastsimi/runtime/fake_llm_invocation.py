@@ -16,8 +16,10 @@ from sastsimi.contracts.llm import (
     LLMInvocationLog,
     LLMInvocationRequest,
     LLMInvocationResult,
+    PromptPayload,
     ProviderProfile,
 )
+from sastsimi.contracts.llm_closure import llm_action_input_refs
 from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
 from sastsimi.ports.dto import Record
 from sastsimi.ports.fake_workflow import ProviderInvoker
@@ -58,6 +60,10 @@ def invoke_fake_provider(
     profile = runtime.unit_of_work.records.get_exact(provider_profile_ref)
     if not isinstance(spec, LLMCallSpec) or not isinstance(profile, ProviderProfile):
         raise ValueError("FAKE_PROVIDER_CONFIGURATION_MISMATCH")
+    prompt_payload = runtime.unit_of_work.records.get_exact(spec.prompt_payload_ref)
+    if not isinstance(prompt_payload, PromptPayload):
+        raise ValueError("FAKE_PROVIDER_CONFIGURATION_MISMATCH")
+    action_inputs = llm_action_input_refs(call_spec_ref, spec, prompt_payload)
     action = runner.action(
         work,
         identity,
@@ -66,7 +72,7 @@ def invoke_fake_provider(
         llm_call_spec_ref=call_spec_ref,
         provider_profile_ref=provider_profile_ref,
         session_mode="NEW",
-        input_refs=spec.context_refs,
+        input_refs=action_inputs,
     )
     units = runner.units(elapsed_ms=1, llm_call_count=1, cost_minor_units=1)
     reservation = runner.reserve(work, scope, action, units)

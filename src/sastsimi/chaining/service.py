@@ -202,6 +202,7 @@ class ChainingService:
             self.clock.now(),
             self.provider_probe,
             runner=self.runner,
+            work=chaining_work,
             scope=scope,
             orchestration_identity=orchestrator_ref,
             role="CHAINING",

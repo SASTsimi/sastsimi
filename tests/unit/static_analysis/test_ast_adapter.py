@@ -519,12 +519,11 @@ async def test_symlink_is_rejected_without_opening_its_target(tmp_path: Path) ->
 
     observation, _ = await _run(tmp_path, ("link.py",))
 
-    assert observation.status == "PARTIAL"
+    assert observation.status == "SKIPPED"
     assert observation.analyzed_paths == ()
     assert observation.skipped_paths == ("link.py",)
     assert any(item.code == "STATIC_PATH_UNSAFE" for item in observation.gaps)
-    assert observation.raw_output is not None
-    assert str(outside) not in observation.raw_output.decode("utf-8")
+    assert observation.raw_output is None
 
 
 @pytest.mark.asyncio

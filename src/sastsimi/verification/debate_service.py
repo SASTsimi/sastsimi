@@ -79,6 +79,7 @@ def run_fake_debate(
             now(),
             provider_probe,
             runner=runner,
+            work=child,
             scope=scope,
             orchestration_identity=orchestrator_ref,
             role=role,

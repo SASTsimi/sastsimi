@@ -607,6 +607,7 @@ class FakeSetupStages:
             self.clock.now(),
             self.provider_probe,
             runner=self.runner,
+            work=proposal_work,
             scope=scope,
             orchestration_identity=orchestrator_ref,
             role="HYPOTHESIS",

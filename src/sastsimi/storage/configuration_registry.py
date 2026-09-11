@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from typing import cast
 
-from sqlalchemy import Connection, insert, select, update
+from sqlalchemy import Connection, delete, insert, select, update
 
 from sastsimi.contracts.budget import (
     DynamicReproductionLifecycleProfile,
@@ -11,6 +11,7 @@ from sastsimi.contracts.budget import (
     VerificationBudgetProfile,
     WorkBudgetProfile,
 )
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.dynamic import SandboxProfile
 from sastsimi.contracts.evaluation import (
     EvaluationRecommendation,
@@ -22,6 +23,7 @@ from sastsimi.contracts.llm import (
     ClientExecutionProfile,
     ExecutionLimits,
     LLMCallSpec,
+    LLMInvocationRequest,
     LLMRetryPolicy,
     LLMToolPolicy,
     OutputSchemaSpec,
@@ -33,9 +35,10 @@ from sastsimi.contracts.llm import (
     ProviderValidationEvidence,
     SemanticValidatorSpec,
 )
-from sastsimi.contracts.prompt_projection import (
-    project_prompt_value,
-    render_prompt_bytes,
+from sastsimi.contracts.prompt_projection import project_prompt_value
+from sastsimi.contracts.prompt_redaction import (
+    redact_projected_json,
+    render_provider_prompt,
 )
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.static import StaticToolProfile
@@ -95,7 +98,10 @@ class ConfigurationRegistry:
         return record
 
     def _publish[T: Record](
-        self, record: T, approved: Callable[[T], bool]
+        self,
+        record: T,
+        approved: Callable[[T], bool],
+        bind: Callable[[Connection, T], None] | None = None,
     ) -> StoredDataRef:
         if not approved(record):
             raise ValueError("CONFIGURATION_APPROVAL_REQUIRED")
@@ -112,6 +118,13 @@ class ConfigurationRegistry:
             assert staged == ref
             self.records.publish(connection, ref)
             self._point(connection, record)
+            if bind is not None:
+                bind(connection, record)
+            # Prompt configuration has no persisted human-approval reference in
+            # the frozen contract. Re-check the injected authority immediately
+            # before commit so an observed revocation rolls back every write.
+            if not approved(record):
+                raise ValueError("CONFIGURATION_APPROVAL_REQUIRED")
         return ref
 
     def _point(self, connection: Connection, record: Record) -> None:
@@ -155,6 +168,88 @@ class ConfigurationRegistry:
         )
         if changed.rowcount != 1:
             raise ValueError("STALE_CONFIGURATION_REVISION")
+
+    @staticmethod
+    def require_current_selection(
+        connection: Connection,
+        entry: PromptRegistryEntry,
+        provider: ProviderProfile,
+    ) -> None:
+        """Fail closed unless both exact LLM selections remain current."""
+        active_entry = (
+            connection.execute(
+                select(models.prompt_active_entries).where(
+                    models.prompt_active_entries.c.agent_role == entry.agent_role,
+                    models.prompt_active_entries.c.task_kind == entry.task_kind,
+                    models.prompt_active_entries.c.purpose == entry.purpose,
+                )
+            )
+            .mappings()
+            .first()
+        )
+        current_provider_record_id = connection.execute(
+            select(models.current_records.c.record_id).where(
+                models.current_records.c.logical_record_id
+                == str(provider.meta.logical_record_id)
+            )
+        ).scalar_one_or_none()
+        current_entry_record_id = connection.execute(
+            select(models.current_records.c.record_id).where(
+                models.current_records.c.logical_record_id
+                == str(entry.meta.logical_record_id)
+            )
+        ).scalar_one_or_none()
+        if (
+            entry.status != "ACTIVE"
+            or provider.support_status != "SUPPORTED"
+            or active_entry is None
+            or active_entry["logical_record_id"] != str(entry.meta.logical_record_id)
+            or active_entry["record_id"] != str(entry.meta.record_id)
+            or current_entry_record_id != str(entry.meta.record_id)
+            or current_provider_record_id != str(provider.meta.record_id)
+        ):
+            raise ValueError("LLM_CONTEXT_CONFIGURATION_NOT_CURRENT")
+
+    def require_current(self, request: LLMInvocationRequest) -> None:
+        """Recheck the exact prompt/profile selection immediately before I/O."""
+        with self.records.database.engine.connect() as connection:
+            spec = self.records.resolve(connection, request.call_spec_ref)
+            if (
+                not isinstance(spec, LLMCallSpec)
+                or request.prompt_registry_entry_ref != spec.prompt_registry_entry_ref
+                or request.provider_profile_ref != spec.provider_profile_ref
+            ):
+                raise ValueError("LLM_CONTEXT_CONFIGURATION_NOT_CURRENT")
+            entry = self.records.resolve(connection, spec.prompt_registry_entry_ref)
+            provider = self.records.resolve(connection, spec.provider_profile_ref)
+            if not isinstance(entry, PromptRegistryEntry) or not isinstance(
+                provider, ProviderProfile
+            ):
+                raise ValueError("LLM_CONTEXT_CONFIGURATION_NOT_CURRENT")
+            self.require_current_selection(connection, entry, provider)
+
+    def _publish_invocation_record[T: Record](
+        self,
+        record: T,
+        bind: Callable[[Connection, T], None],
+    ) -> StoredDataRef:
+        """Publish an immutable attempt-owned record without a current pointer."""
+        if (
+            getattr(record.meta, "attempt_id", None) is None
+            or record.meta.revision_number != 1
+            or record.meta.previous_record_id is not None
+        ):
+            raise ValueError("LLM_INVOCATION_CONFIGURATION_SCOPE_MISMATCH")
+        ref = reference(record)
+        if not isinstance(ref, StoredDataRef):
+            raise ValueError("LLM_INVOCATION_CONFIGURATION_SCOPE_MISMATCH")
+        with self.records.database.write() as connection:
+            staged = self.records.stage(connection, record)
+            if staged != ref:
+                raise ValueError("LLM_INVOCATION_CONFIGURATION_SCOPE_MISMATCH")
+            self.records.publish(connection, ref)
+            bind(connection, record)
+        return ref
 
     def register_work_budget(self, record: WorkBudgetProfile) -> StoredDataRef:
         record = WorkBudgetProfile.model_validate(record)
@@ -224,7 +319,42 @@ class ConfigurationRegistry:
         ):
             raise ValueError("PROVIDER_VALIDATION_INCOMPLETE")
         approved = self.records.evidence.llm_configuration_approved
-        return self._publish(record, approved)
+        return self._publish(record, approved, self._bind_provider_validation)
+
+    def _bind_provider_validation(
+        self, connection: Connection, record: ProviderValidationEvidence
+    ) -> None:
+        for test in record.tests:
+            for evidence_ref in test.evidence_refs:
+                self._require_exact_evidence(connection, record, evidence_ref)
+
+    def _require_exact_evidence(
+        self,
+        connection: Connection,
+        owner: Record,
+        evidence_ref: StoredDataRef,
+    ) -> Record | None:
+        if evidence_ref.workspace_id != getattr(
+            owner.meta, "workspace_id", None
+        ) or evidence_ref.commit_id != getattr(owner.meta, "commit_id", None):
+            raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH")
+        if evidence_ref.record_id is None:
+            try:
+                with self.artifacts.open_verified(evidence_ref) as evidence:
+                    evidence.read()
+            except (LookupError, OSError, ValueError) as error:
+                raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH") from error
+            return None
+        try:
+            evidence_record = self.records.resolve(connection, evidence_ref)
+        except (LookupError, ValueError) as error:
+            raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH") from error
+        if any(
+            getattr(evidence_record.meta, name, None) != getattr(owner.meta, name, None)
+            for name in ("analysis_id", "workspace_id", "commit_id")
+        ):
+            raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH")
+        return evidence_record
 
     def derive_provider_capabilities(
         self, record: ProviderValidationEvidence
@@ -310,6 +440,30 @@ class ConfigurationRegistry:
                 for capability, test_id in capability_tests.items()
             ):
                 raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH")
+            if record.client_execution_profile_ref is not None:
+                try:
+                    client = self.records.resolve(
+                        connection, record.client_execution_profile_ref
+                    )
+                except (LookupError, ValueError) as error:
+                    raise ValueError(
+                        "PROVIDER_CONFIGURATION_CLOSURE_MISMATCH"
+                    ) from error
+                if not isinstance(client, ClientExecutionProfile):
+                    raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH")
+                client_validation = self._require_exact_evidence(
+                    connection, client, client.verification_evidence_ref
+                )
+                if (
+                    not isinstance(client_validation, ProviderValidationEvidence)
+                    or client.verification_evidence_ref
+                    != record.validation_evidence_ref
+                    or not any(
+                        test.test_id == "PVD-13" and test.result == "PASS"
+                        for test in client_validation.tests
+                    )
+                ):
+                    raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH")
         if record.support_status != "SUPPORTED":
             raise ValueError("PROVIDER_CONFIGURATION_NOT_SUPPORTED")
         approved = self.records.evidence.llm_configuration_approved
@@ -332,7 +486,22 @@ class ConfigurationRegistry:
     def register_client_execution(
         self, record: ClientExecutionProfile
     ) -> StoredDataRef:
-        return self._llm_leaf(ClientExecutionProfile.model_validate(record))
+        record = ClientExecutionProfile.model_validate(record)
+        approved = self.records.evidence.llm_configuration_approved
+        return self._publish(record, approved, self._bind_client_execution)
+
+    def _bind_client_execution(
+        self, connection: Connection, record: ClientExecutionProfile
+    ) -> None:
+        self._require_exact_evidence(connection, record, record.network_policy_ref)
+        validation = self._require_exact_evidence(
+            connection, record, record.verification_evidence_ref
+        )
+        if not isinstance(validation, ProviderValidationEvidence) or not any(
+            test.test_id == "PVD-13" and test.result == "PASS"
+            for test in validation.tests
+        ):
+            raise ValueError("PROVIDER_CONFIGURATION_CLOSURE_MISMATCH")
 
     def register_execution_limits(self, record: ExecutionLimits) -> StoredDataRef:
         return self._llm_leaf(ExecutionLimits.model_validate(record))
@@ -365,8 +534,6 @@ class ConfigurationRegistry:
 
     def register_prompt_entry(self, record: PromptRegistryEntry) -> StoredDataRef:
         record = PromptRegistryEntry.model_validate(record)
-        if record.status == "RETIRED":
-            raise ValueError("PROMPT_CONFIGURATION_RETIRED")
         refs = (
             *record.provider_profile_refs,
             record.output_schema_ref,
@@ -403,7 +570,166 @@ class ConfigurationRegistry:
             if record.purpose == "PRODUCTION" and record.status == "ACTIVE":
                 self._validate_production_activation(connection, record)
         approved = self.records.evidence.llm_configuration_approved
-        return self._publish(record, approved)
+        return self._publish(record, approved, self._bind_active_prompt)
+
+    def _bind_active_prompt(
+        self, connection: Connection, record: PromptRegistryEntry
+    ) -> None:
+        """Atomically select the one ACTIVE entry for a role/task/purpose."""
+        self._require_prompt_selection_identity(connection, record)
+        if record.status == "DRAFT":
+            return
+        if record.purpose == "PRODUCTION" and record.status == "ACTIVE":
+            # Re-check R8 evidence and its exact evaluation target while this
+            # publication holds the SQLite write lock. The earlier read is only
+            # a fast rejection and must not be the authority boundary.
+            self._validate_production_activation(connection, record)
+        table = models.prompt_active_entries
+        key = (
+            table.c.agent_role == record.agent_role,
+            table.c.task_kind == record.task_kind,
+            table.c.purpose == record.purpose,
+        )
+        current = connection.execute(select(table).where(*key)).mappings().first()
+        logical_id = str(record.meta.logical_record_id)
+        record_id = str(record.meta.record_id)
+        logical_active = (
+            connection.execute(
+                select(table).where(table.c.logical_record_id == logical_id)
+            )
+            .mappings()
+            .first()
+        )
+        if logical_active is not None and any(
+            logical_active[name] != value
+            for name, value in (
+                ("agent_role", record.agent_role),
+                ("task_kind", record.task_kind),
+                ("purpose", record.purpose),
+            )
+        ):
+            raise ValueError("PROMPT_REGISTRY_SELECTION_MISMATCH")
+        if record.status == "RETIRED":
+            previous_record_id = record.meta.previous_record_id
+            if previous_record_id is None:
+                raise ValueError("PROMPT_REGISTRY_RETIREMENT_MISMATCH")
+            previous_ref_raw = connection.execute(
+                select(models.records.c.ref).where(
+                    models.records.c.record_id == str(previous_record_id)
+                )
+            ).scalar_one_or_none()
+            if previous_ref_raw is None:
+                raise ValueError("PROMPT_REGISTRY_RETIREMENT_MISMATCH")
+            from .codec import REF_ADAPTER
+
+            previous = self.records.resolve(
+                connection, REF_ADAPTER.validate_json(previous_ref_raw)
+            )
+            if (
+                not isinstance(previous, PromptRegistryEntry)
+                or previous.status != "ACTIVE"
+                or previous.meta.logical_record_id != record.meta.logical_record_id
+                or self._prompt_semantics(previous) != self._prompt_semantics(record)
+            ):
+                raise ValueError("PROMPT_REGISTRY_RETIREMENT_MISMATCH")
+            if current is None:
+                return
+            if current["logical_record_id"] != logical_id or current[
+                "record_id"
+            ] != str(previous_record_id):
+                raise ValueError("PROMPT_REGISTRY_RETIREMENT_MISMATCH")
+            removed = connection.execute(
+                delete(table).where(
+                    *key,
+                    table.c.logical_record_id == logical_id,
+                    table.c.record_id == current["record_id"],
+                    table.c.state_version == current["state_version"],
+                )
+            )
+            if removed.rowcount != 1:
+                raise ValueError("PROMPT_REGISTRY_RETIREMENT_MISMATCH")
+            return
+        if current is None:
+            connection.execute(
+                insert(table).values(
+                    agent_role=record.agent_role,
+                    task_kind=record.task_kind,
+                    purpose=record.purpose,
+                    logical_record_id=logical_id,
+                    record_id=record_id,
+                    state_version=1,
+                )
+            )
+            return
+        if current["record_id"] == record_id:
+            if current["logical_record_id"] != logical_id:
+                raise ValueError("PROMPT_REGISTRY_ACTIVE_CONFLICT")
+            return
+        if current["logical_record_id"] != logical_id:
+            raise ValueError("PROMPT_REGISTRY_ACTIVE_CONFLICT")
+        changed = connection.execute(
+            update(table)
+            .where(
+                *key,
+                table.c.logical_record_id == logical_id,
+                table.c.record_id == current["record_id"],
+                table.c.state_version == current["state_version"],
+            )
+            .values(
+                record_id=record_id,
+                state_version=current["state_version"] + 1,
+            )
+        )
+        if changed.rowcount != 1:
+            raise ValueError("PROMPT_REGISTRY_ACTIVE_CONFLICT")
+
+    def _require_prompt_selection_identity(
+        self, connection: Connection, record: PromptRegistryEntry
+    ) -> None:
+        previous_record_id = record.meta.previous_record_id
+        if previous_record_id is None:
+            return
+        previous_ref_raw = connection.execute(
+            select(models.records.c.ref).where(
+                models.records.c.record_id == str(previous_record_id)
+            )
+        ).scalar_one_or_none()
+        if previous_ref_raw is None:
+            raise ValueError("PROMPT_REGISTRY_SELECTION_MISMATCH")
+        from .codec import REF_ADAPTER
+
+        previous = self.records.resolve(
+            connection, REF_ADAPTER.validate_json(previous_ref_raw)
+        )
+        if not isinstance(previous, PromptRegistryEntry) or any(
+            getattr(previous, name) != getattr(record, name)
+            for name in ("agent_role", "task_kind", "purpose")
+        ):
+            raise ValueError("PROMPT_REGISTRY_SELECTION_MISMATCH")
+
+    @staticmethod
+    def _require_active_prompt_binding(
+        connection: Connection, record: PromptRegistryEntry
+    ) -> None:
+        table = models.prompt_active_entries
+        active = (
+            connection.execute(
+                select(table).where(
+                    table.c.agent_role == record.agent_role,
+                    table.c.task_kind == record.task_kind,
+                    table.c.purpose == record.purpose,
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if (
+            record.status != "ACTIVE"
+            or active is None
+            or active["logical_record_id"] != str(record.meta.logical_record_id)
+            or active["record_id"] != str(record.meta.record_id)
+        ):
+            raise ValueError("PROMPT_REGISTRY_NOT_CURRENT")
 
     @staticmethod
     def _prompt_semantics(record: PromptRegistryEntry) -> tuple[object, ...]:
@@ -496,6 +822,7 @@ class ConfigurationRegistry:
             or config.session_policy != record.session_policy
         ):
             raise ValueError("QUALITY_EVIDENCE_MISMATCH")
+        self._require_active_prompt_binding(connection, target)
 
     def register_prompt_payload(self, record: PromptPayload) -> StoredDataRef:
         record = PromptPayload.model_validate(record)
@@ -518,9 +845,11 @@ class ConfigurationRegistry:
                 )
             ):
                 raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
+            self._require_active_prompt_binding(connection, entry)
             slots = {slot.slot: slot for slot in entry.input_slots}
             seen: dict[str, int] = {}
             projections: list[tuple[str, bytes]] = []
+            source_refs: set[bytes] = set()
             for binding in record.context_bindings:
                 slot = slots.get(str(binding.slot))
                 if slot is None or any(
@@ -530,14 +859,18 @@ class ConfigurationRegistry:
                     raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
                 seen[str(binding.slot)] = seen.get(str(binding.slot), 0) + 1
                 source_ref = binding.source_ref
+                source_key = canonical_bytes(source_ref)
+                if source_key in source_refs:
+                    raise ValueError("PROMPT_CONTEXT_DUPLICATE")
+                source_refs.add(source_key)
                 if source_ref.record_id is None:
                     with self.artifacts.open_verified(source_ref) as source:
                         source_value: object = source.read().decode("utf-8")
                 else:
                     source_value = self.records.resolve(connection, source_ref)
-                expected_projection = project_prompt_value(
-                    source_value, binding.field_paths
-                )
+                expected_projection = redact_projected_json(
+                    project_prompt_value(source_value, binding.field_paths)
+                ).data
                 with self.artifacts.open_verified(
                     binding.projected_data_ref
                 ) as projected:
@@ -555,14 +888,21 @@ class ConfigurationRegistry:
                 if count < bounds[0] or (bounds[1] is not None and count > bounds[1]):
                     raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
             with self.artifacts.open_verified(record.template_ref) as template:
-                expected_render = render_prompt_bytes(
+                expected_render = render_provider_prompt(
                     template.read(), tuple(projections)
                 )
             with self.artifacts.open_verified(record.rendered_prompt_ref) as rendered:
                 if rendered.read() != expected_render:
                     raise ValueError("PROMPT_RENDER_MISMATCH")
-        approved = self.records.evidence.llm_configuration_approved
-        return self._publish(record, approved)
+        return self._publish_invocation_record(record, self._bind_prompt_payload)
+
+    def _bind_prompt_payload(
+        self, connection: Connection, record: PromptPayload
+    ) -> None:
+        entry = self.records.resolve(connection, record.registry_entry_ref)
+        if not isinstance(entry, PromptRegistryEntry):
+            raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
+        self._require_active_prompt_binding(connection, entry)
 
     def register_call_spec(self, record: LLMCallSpec) -> StoredDataRef:
         record = LLMCallSpec.model_validate(record)
@@ -605,6 +945,7 @@ class ConfigurationRegistry:
                 or not isinstance(limits, ExecutionLimits)
             ):
                 raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
+            self._require_active_prompt_binding(connection, entry)
             exact_pairs = (
                 (record.agent_role, entry.agent_role),
                 (record.task_kind, entry.task_kind),
@@ -633,12 +974,29 @@ class ConfigurationRegistry:
             payload_context = tuple(
                 binding.source_ref for binding in payload.context_bindings
             )
-            if any(left != right for left, right in exact_pairs) or (
-                record.context_refs != payload_context
+            if (
+                any(left != right for left, right in exact_pairs)
+                or (record.context_refs != payload_context)
+                or any(
+                    getattr(record.meta, name, None)
+                    != getattr(payload.meta, name, None)
+                    for name in (
+                        "analysis_id",
+                        "workspace_id",
+                        "commit_id",
+                        "hypothesis_id",
+                        "attempt_id",
+                    )
+                )
             ):
                 raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
-        approved = self.records.evidence.llm_configuration_approved
-        return self._publish(record, approved)
+        return self._publish_invocation_record(record, self._bind_call_spec)
+
+    def _bind_call_spec(self, connection: Connection, record: LLMCallSpec) -> None:
+        entry = self.records.resolve(connection, record.prompt_registry_entry_ref)
+        if not isinstance(entry, PromptRegistryEntry):
+            raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
+        self._require_active_prompt_binding(connection, entry)
 
     def register_evaluation_config(self, record: EvaluationRunConfig) -> StoredDataRef:
         record = EvaluationRunConfig.model_validate(record)

@@ -182,6 +182,7 @@ class PolicyPreparationService:
             self.clock.now(),
             self.provider_probe,
             runner=self.runner,
+            work=work,
             scope=scope,
             orchestration_identity=orchestrator_ref,
             role="POLICY_PARSER",

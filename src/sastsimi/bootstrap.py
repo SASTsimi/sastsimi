@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO, cast
 
@@ -12,13 +13,24 @@ from sastsimi.config.loader import ConfigError as ConfigError
 from sastsimi.config.loader import load_config
 from sastsimi.config.models import AppConfig
 from sastsimi.config.runtime_paths import RuntimePaths
-from sastsimi.contracts.ids import CommitId, WorkspaceId
+from sastsimi.contracts.ids import (
+    AttemptId,
+    CommitId,
+    LogicalRecordId,
+    RecordId,
+    WorkspaceId,
+)
+from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef
 from sastsimi.logging import SafeJsonHandler, safe_event
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
+from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.ports.trusted_evidence import TrustedEvidencePort
 from sastsimi.runtime.services import RuntimeServices
+from sastsimi.storage.action_validator import (
+    RuntimeValidator as SQLiteRuntimeValidator,
+)
 from sastsimi.storage.schema_version import MigrationRequired as MigrationRequired
 
 if TYPE_CHECKING:
@@ -240,6 +252,7 @@ def build_fake_pipeline(data_dir: Path) -> FakePipeline:
     )
     from sastsimi.sandbox.fake import FakeSandboxAdapter
     from sastsimi.static_analysis.fake import FakeStaticToolAdapter
+    from sastsimi.storage.fake_action_validator import FakeRecordOutputRuntimeValidator
     from sastsimi.verification import FakeVerificationAssembly
     from sastsimi.verification.service import (
         VerificationDependencies,
@@ -406,7 +419,10 @@ def build_fake_pipeline(data_dir: Path) -> FakePipeline:
     result, reports = _load_fake_outputs(data_dir)
     return FakePipeline(
         data_dir,
-        build_runtime,
+        partial(
+            _build_runtime,
+            validator_factory=FakeRecordOutputRuntimeValidator,
+        ),
         upgrade_database,
         provider_invoke,
         provider_probe,
@@ -498,7 +514,7 @@ def load_fake_progress(data_dir: Path) -> dict[str, object]:
     }
 
 
-def build_runtime(
+def _build_runtime(
     data_dir: Path,
     workspace_id: WorkspaceId | None,
     commit_id: CommitId | None,
@@ -509,6 +525,9 @@ def build_runtime(
     context_service_identity_ref: BudgetScopeRef | None = None,
     finding_service_identity_ref: StoredDataRef | None = None,
     analysis_finalization_identity_ref: BudgetScopeRef | None = None,
+    llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
+    *,
+    validator_factory: Callable[..., SQLiteRuntimeValidator],
 ) -> RuntimeServices:
     from sastsimi.runtime.action_validator import RuntimeValidator
     from sastsimi.runtime.analysis_finalization import AnalysisFinalizationService
@@ -520,6 +539,7 @@ def build_runtime(
     from sastsimi.runtime.dynamic_registration import DynamicRegistrationService
     from sastsimi.runtime.external_call_service import ExternalCallService
     from sastsimi.runtime.intermediate_publication import IntermediatePublicationService
+    from sastsimi.runtime.llm_call_service import ExactAdapterResolver, LLMCallService
     from sastsimi.runtime.queries import RuntimeQueries
     from sastsimi.runtime.recovery_service import RecoveryService
     from sastsimi.runtime.transition_service import TransitionService
@@ -527,7 +547,6 @@ def build_runtime(
         VerificationRegistrationService,
     )
     from sastsimi.runtime.work_service import WorkService
-    from sastsimi.storage.action_validator import RuntimeValidator as SQLiteValidator
     from sastsimi.storage.analysis_finalization import (
         AnalysisFinalizationService as SQLiteAnalysisFinalization,
     )
@@ -546,6 +565,7 @@ def build_runtime(
     from sastsimi.storage.intermediate_publication import (
         IntermediatePublicationService as SQLiteIntermediates,
     )
+    from sastsimi.storage.llm_session_guard import LLMParentSessionGuard
     from sastsimi.storage.queries import RuntimeQueries as SQLiteQueries
     from sastsimi.storage.recovery_service import RecoveryService as SQLiteRecovery
     from sastsimi.storage.repositories import SQLiteRecordStore
@@ -565,13 +585,54 @@ def build_runtime(
     artifacts = LocalArtifactStore(paths.artifacts, workspace_id, commit_id)
     registry = SQLiteRegistry(records, clock, ids)
     budget = SQLiteBudget(records, registry, clock, ids)
-    authorization = SQLiteValidator(records, budget, clock, ids)
+    authorization = validator_factory(
+        records,
+        budget,
+        clock,
+        ids,
+        artifacts,
+    )
     works = SQLiteWorks(records, authorization, clock, ids)
     transitions = SQLiteTransitions(works, artifacts)
     unit = SQLiteUnitOfWork(records, artifacts, transitions)
     recovery = RecoveryService(SQLiteRecovery(transitions, recovery_identity_ref))
     recovery.recover()
     validator = RuntimeValidator(authorization)
+    external = ExternalCallService(validator)
+    configuration_store = SQLiteConfigurationRegistry(records, artifacts)
+
+    def llm_metadata(
+        source: RecordMeta,
+        record_type: str,
+        attempt_id: AttemptId | None,
+    ) -> RecordMeta:
+        return RecordMeta(
+            record_id=ids.new(RecordId),
+            logical_record_id=ids.new(LogicalRecordId),
+            record_type=record_type,
+            schema_version=source.schema_version,
+            revision_number=1,
+            previous_record_id=None,
+            created_at=clock.now(),
+            analysis_id=source.analysis_id,
+            workspace_id=source.workspace_id,
+            commit_id=source.commit_id,
+            hypothesis_id=source.hypothesis_id,
+            attempt_id=attempt_id,
+        )
+
+    llm_calls = LLMCallService(
+        records=records,
+        artifacts=artifacts,
+        external=external,
+        validator=validator,
+        adapters=ExactAdapterResolver(llm_adapters or {}),
+        metadata_factory=llm_metadata,
+        run_states=registry,
+        current_selection=configuration_store,
+        parent_sessions=LLMParentSessionGuard(records),
+        clock=clock,
+    )
     return RuntimeServices(
         WorkService(works),
         AttemptService(SQLiteAttempts(works)),
@@ -579,7 +640,7 @@ def build_runtime(
         BudgetProfileRegistry(registry),
         BudgetService(budget),
         TransitionService(records),
-        ExternalCallService(validator),
+        external,
         recovery,
         unit,
         IntermediatePublicationService(SQLiteIntermediates(transitions)),
@@ -587,7 +648,7 @@ def build_runtime(
         VerificationRegistrationService(SQLiteVerificationRegistration(transitions)),
         RuntimeQueries(SQLiteQueries(records)),
         DynamicRegistrationService(SQLiteDynamicRegistration(transitions)),
-        ConfigurationRegistry(SQLiteConfigurationRegistry(records, artifacts)),
+        ConfigurationRegistry(configuration_store),
         AnalysisFinalizationService(
             SQLiteAnalysisFinalization(
                 records,
@@ -598,4 +659,35 @@ def build_runtime(
                 artifacts,
             )
         ),
+        llm_calls,
+    )
+
+
+def build_runtime(
+    data_dir: Path,
+    workspace_id: WorkspaceId | None,
+    commit_id: CommitId | None,
+    clock: Clock,
+    ids: IdGenerator,
+    recovery_identity_ref: BudgetScopeRef | None = None,
+    evidence: TrustedEvidencePort | None = None,
+    context_service_identity_ref: BudgetScopeRef | None = None,
+    finding_service_identity_ref: StoredDataRef | None = None,
+    analysis_finalization_identity_ref: BudgetScopeRef | None = None,
+    llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
+) -> RuntimeServices:
+    """Compose the production runtime without fake output capabilities."""
+    return _build_runtime(
+        data_dir,
+        workspace_id,
+        commit_id,
+        clock,
+        ids,
+        recovery_identity_ref,
+        evidence,
+        context_service_identity_ref,
+        finding_service_identity_ref,
+        analysis_finalization_identity_ref,
+        llm_adapters,
+        validator_factory=SQLiteRuntimeValidator,
     )
