@@ -531,6 +531,24 @@ async def test_hold_without_unresolved_condition_is_rejected() -> None:
 
 
 @pytest.mark.asyncio
+async def test_initial_hold_without_unresolved_condition_is_rejected() -> None:
+    fixture = _Fixture()
+    fixture.queue(
+        fixture.assessment_payload("HOLD"),
+        task_kind="ASSESS_INITIAL",
+        context_refs=fixture.assessment_context(),
+    )
+
+    with pytest.raises(ValueError, match="HOLD_CONDITIONS_REQUIRED"):
+        await fixture.service.assess_initial(
+            generation=fixture.generation,
+            pro_ref=fixture.pro_ref,
+            con_ref=fixture.con_ref,
+            call=fixture.call,
+        )
+
+
+@pytest.mark.asyncio
 async def test_provider_failure_creates_no_assessment_or_verdict() -> None:
     fixture = _Fixture()
     fixture.queue(

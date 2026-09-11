@@ -143,6 +143,8 @@ class VerificationAgent:
             required_context=self._initial_context(generation, pro_ref, con_ref),
         )
         content = _InitialContent.model_validate_json(canonical_bytes(payload))
+        if content.proposed_verdict == "HOLD" and not content.unresolved_conditions:
+            raise ValueError("HOLD_CONDITIONS_REQUIRED")
         self._require_allowed_evidence(content.evidence_refs, generation, pro, con)
         meta = self._trusted_meta(work, "verification_initial_assessment")
         assessment = VerificationInitialAssessment.model_validate(
