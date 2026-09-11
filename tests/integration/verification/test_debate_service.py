@@ -198,7 +198,12 @@ class RecordingPublisher:
         self.records = records
         self.published: list[Record] = []
 
-    def __call__(self, work: WorkExecutionState, value: Record) -> StoredDataRef:
+    def __call__(
+        self,
+        work: WorkExecutionState,
+        value: Record,
+        _invocation: PersistedLLMInvocation,
+    ) -> StoredDataRef:
         assert value.meta.attempt_id == work.active_attempt_id
         self.published.append(value)
         return self.records.publish(value)

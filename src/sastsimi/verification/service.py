@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from sastsimi.agents.verification import VerificationAgent, VerificationCallRefs
+from sastsimi.agents.verification import (
+    VerificationAgent,
+    VerificationAgentOutcome,
+    VerificationCallRefs,
+)
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.gates import TechnicalEvidenceReview
 from sastsimi.contracts.hypothesis import (
@@ -125,6 +129,24 @@ class VerificationService:
             call=call,
         )
 
+    async def assess_initial_with_invocation(
+        self,
+        *,
+        generation: VerificationGenerationInputs,
+        pro_ref: StoredDataRef,
+        con_ref: StoredDataRef,
+        call: VerificationCallRefs,
+    ) -> VerificationAgentOutcome[VerificationInitialAssessment]:
+        """Expose exact invocation provenance for trusted intermediate publication."""
+        if self._trusted_agent is None:
+            raise RuntimeError("TRUSTED_VERIFICATION_AGENT_NOT_CONFIGURED")
+        return await self._trusted_agent.assess_initial_with_invocation(
+            generation=generation,
+            pro_ref=pro_ref,
+            con_ref=con_ref,
+            call=call,
+        )
+
     async def finalize_without_dynamic(
         self,
         *,
@@ -138,6 +160,26 @@ class VerificationService:
         if self._trusted_agent is None:
             raise RuntimeError("TRUSTED_VERIFICATION_AGENT_NOT_CONFIGURED")
         return await self._trusted_agent.finalize_without_dynamic(
+            generation=generation,
+            assessment_ref=assessment_ref,
+            pro_ref=pro_ref,
+            con_ref=con_ref,
+            call=call,
+        )
+
+    async def finalize_without_dynamic_with_invocation(
+        self,
+        *,
+        generation: VerificationGenerationInputs,
+        assessment_ref: StoredDataRef,
+        pro_ref: StoredDataRef,
+        con_ref: StoredDataRef,
+        call: VerificationCallRefs,
+    ) -> VerificationAgentOutcome[VerificationResult]:
+        """Expose exact invocation provenance for trusted terminal publication."""
+        if self._trusted_agent is None:
+            raise RuntimeError("TRUSTED_VERIFICATION_AGENT_NOT_CONFIGURED")
+        return await self._trusted_agent.finalize_without_dynamic_with_invocation(
             generation=generation,
             assessment_ref=assessment_ref,
             pro_ref=pro_ref,

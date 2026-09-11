@@ -322,7 +322,9 @@ class _Fixture:
             artifacts=self.artifacts,
             metadata_factory=_MetaFactory(),
             work_resolver=lambda work_id: self.work if work_id == WORK_ID else None,
-            evidence_session_resolver=lambda call_id: ((f"session-{call_id}", "NEW")),
+            evidence_session_resolver=lambda call_id, _analysis_id: (
+                (f"session-{call_id}", "NEW")
+            ),
         )
         self.service = VerificationService(self.agent)
 

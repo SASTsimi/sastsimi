@@ -66,7 +66,7 @@ src/sastsimi/
   agents/
     hypothesis.py
     pro.py
-    con.py
+    con_agent.py
     verification.py
     reproduction.py
     chaining.py

@@ -56,7 +56,7 @@ class HypothesisAgent:
 이 lane만 다음 파일을 수정한다.
 
 - Create: `src/sastsimi/agents/pro.py`
-- Create: `src/sastsimi/agents/con.py`
+- Create: `src/sastsimi/agents/con_agent.py` (Windows 예약 이름 `CON`을 피한 파일명)
 - Modify: `src/sastsimi/verification/debate_service.py`
 - Create: `tests/integration/verification/test_debate_service.py`
 - Create: `tests/security_negative/test_cross_role_isolation.py`
@@ -271,7 +271,7 @@ Expected: PASS. 한쪽 timeout/auth/invalid output도 parent verdict를 만들�
 - [ ] **Step 6: Lane B 파일만 commit한다**
 
 ```text
-git add src/sastsimi/agents/pro.py src/sastsimi/agents/con.py src/sastsimi/verification/debate_service.py tests/integration/verification/test_debate_service.py tests/security_negative/test_cross_role_isolation.py
+git add src/sastsimi/agents/pro.py src/sastsimi/agents/con_agent.py src/sastsimi/verification/debate_service.py tests/integration/verification/test_debate_service.py tests/security_negative/test_cross_role_isolation.py
 git commit -m "feat: run isolated pro and con evidence agents"
 ```
 
@@ -430,7 +430,10 @@ CI에서 전체 pytest, Ruff, mypy, 문서 검사를 실행한다. Task 중 로�
 
 ## 4. 실행 기록
 
-- 상태: `IMPLEMENTATION_READY`
+- 상태: `IMPLEMENTED_PENDING_PR_CI`
 - 기준 Issue: `#153`
 - 선행 조건: T08 merged, T09 exact branch content available; 실제 T10 PR은 T09가 main에 병합된 commit을 base로 삼는다.
 - 계획 검토 결과: 세 lane 파일 소유권이 겹치지 않고, 공유 composition은 integration owner 한 명에게만 배정했다.
+- 핵심 검증: Hypothesis, 독립 Pro/Con, Verification, routing, REVISE, batch projection, exact provenance의 관련 test `27 passed`.
+- 정적 검증: 변경 production Python 파일 Ruff 및 strict mypy 통과, `git diff --check` 통과.
+- PR CI 원칙: T09 병합 후 최신 `main`으로 재배치하고 전체 suite는 T10 PR CI에서 한 번만 실행한다.

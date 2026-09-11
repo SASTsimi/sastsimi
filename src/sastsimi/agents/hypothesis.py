@@ -151,7 +151,6 @@ class HypothesisAgent:
         self._require_invocation_binding(
             invocation,
             work=work,
-            decision_ref=decision_ref,
             call_spec_ref=call_spec_ref,
             static_bundle_ref=static_bundle_ref,
         )
@@ -215,7 +214,6 @@ class HypothesisAgent:
         invocation: PersistedLLMInvocation,
         *,
         work: WorkExecutionState,
-        decision_ref: StoredDataRef,
         call_spec_ref: StoredDataRef,
         static_bundle_ref: StoredDataRef,
     ) -> None:
@@ -235,7 +233,9 @@ class HypothesisAgent:
             or request.session_policy != "NEW"
             or request.parent_session_ref is not None
             or request.call_spec_ref != call_spec_ref
-            or request.action_decision_ref != decision_ref
+            or request.action_decision_ref.data_kind != "action_decision"
+            or request.action_decision_ref.workspace_id != work.meta.workspace_id
+            or request.action_decision_ref.commit_id != work.meta.commit_id
             or request.context_refs != (static_bundle_ref,)
             or request.meta.attempt_id != work.active_attempt_id
             or request.meta.hypothesis_id is not None
@@ -279,10 +279,7 @@ class HypothesisAgent:
             with self._artifacts.open_verified(output_ref) as stream:
                 raw = stream.read()
             value = json.loads(raw)
-            if (
-                canonical_bytes(value) != raw
-                or not isinstance(value, list)
-            ):
+            if canonical_bytes(value) != raw or not isinstance(value, list):
                 raise ValueError("HYPOTHESIS_OUTPUT_INVALID")
             _reject_runtime_authority(cast(JsonValue, value))
             contents = tuple(

@@ -85,7 +85,12 @@ class LLMInvoker(Protocol):
 
 type ClaimIdFactory = Callable[[str], str]
 type ResultPublisher = Callable[
-    [WorkExecutionState, ProEvidenceResult | ConEvidenceResult], StoredDataRef
+    [
+        WorkExecutionState,
+        ProEvidenceResult | ConEvidenceResult,
+        PersistedLLMInvocation,
+    ],
+    StoredDataRef,
 ]
 
 
@@ -357,9 +362,14 @@ class DebateService:
 
         completed_refs: list[StoredDataRef] = []
         if failures:
-            for call, output in zip((pro_call, con_call), outputs, strict=True):
+            for call, output, invocation in zip(
+                (pro_call, con_call), outputs, invocations, strict=True
+            ):
                 if output is not None:
-                    completed_refs.append(self._publish_exact(call.work, output))
+                    assert isinstance(invocation, PersistedLLMInvocation)
+                    completed_refs.append(
+                        self._publish_exact(call.work, output, invocation)
+                    )
             raise DebateIncompleteError(len(failures), tuple(completed_refs))
 
         pro = outputs[0]
@@ -381,8 +391,8 @@ class DebateService:
             pro_mode=SessionMode(pro_invocation.request.session_policy),
             con_mode=SessionMode(con_invocation.request.session_policy),
         )
-        pro_ref = self._publish_exact(pro_call.work, pro)
-        con_ref = self._publish_exact(con_call.work, con)
+        pro_ref = self._publish_exact(pro_call.work, pro, pro_invocation)
+        con_ref = self._publish_exact(con_call.work, con, con_invocation)
         return DebateResult(
             pro,
             con,
@@ -463,8 +473,9 @@ class DebateService:
         self,
         work: WorkExecutionState,
         output: ProEvidenceResult | ConEvidenceResult,
+        invocation: PersistedLLMInvocation,
     ) -> StoredDataRef:
-        output_ref = self.publish_result(work, output)
+        output_ref = self.publish_result(work, output, invocation)
         if output_ref != reference(output):
             raise ValueError("EVIDENCE_OUTPUT_COMMIT_MISMATCH")
         stored = self.records.get_exact(output_ref)

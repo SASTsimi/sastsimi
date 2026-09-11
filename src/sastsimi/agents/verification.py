@@ -41,12 +41,22 @@ class VerificationCallRefs:
     call_spec_ref: StoredDataRef
 
 
+@dataclass(frozen=True)
+class VerificationAgentOutcome[T]:
+    """Trusted domain proposal plus the exact LLM invocation that produced it."""
+
+    record: T
+    invocation: PersistedLLMInvocation
+
+
 class WorkResolver(Protocol):
     def __call__(self, work_id: WorkId) -> WorkExecutionState | None: ...
 
 
 class EvidenceSessionResolver(Protocol):
-    def __call__(self, llm_call_id: str) -> tuple[str, Literal["NEW", "RESUME"]]: ...
+    def __call__(
+        self, llm_call_id: str, analysis_id: str
+    ) -> tuple[str, Literal["NEW", "RESUME"]]: ...
 
 
 class MetadataFactory(Protocol):
@@ -126,6 +136,22 @@ class VerificationAgent:
         con_ref: StoredDataRef,
         call: VerificationCallRefs,
     ) -> VerificationInitialAssessment:
+        outcome = await self.assess_initial_with_invocation(
+            generation=generation,
+            pro_ref=pro_ref,
+            con_ref=con_ref,
+            call=call,
+        )
+        return outcome.record
+
+    async def assess_initial_with_invocation(
+        self,
+        *,
+        generation: VerificationGenerationInputs,
+        pro_ref: StoredDataRef,
+        con_ref: StoredDataRef,
+        call: VerificationCallRefs,
+    ) -> VerificationAgentOutcome[VerificationInitialAssessment]:
         work, hypothesis, _proposal, application, pro, con = self._generation_records(
             generation, pro_ref, con_ref
         )
@@ -170,7 +196,7 @@ class VerificationAgent:
             assessment, generation, hypothesis, application, pro, con
         )
         self._stage_exact(assessment)
-        return assessment
+        return VerificationAgentOutcome(assessment, invocation)
 
     async def finalize_without_dynamic(
         self,
@@ -181,6 +207,24 @@ class VerificationAgent:
         con_ref: StoredDataRef,
         call: VerificationCallRefs,
     ) -> VerificationResult:
+        outcome = await self.finalize_without_dynamic_with_invocation(
+            generation=generation,
+            assessment_ref=assessment_ref,
+            pro_ref=pro_ref,
+            con_ref=con_ref,
+            call=call,
+        )
+        return outcome.record
+
+    async def finalize_without_dynamic_with_invocation(
+        self,
+        *,
+        generation: VerificationGenerationInputs,
+        assessment_ref: StoredDataRef,
+        pro_ref: StoredDataRef,
+        con_ref: StoredDataRef,
+        call: VerificationCallRefs,
+    ) -> VerificationAgentOutcome[VerificationResult]:
         work, hypothesis, proposal, application, pro, con = self._generation_records(
             generation, pro_ref, con_ref
         )
@@ -287,7 +331,7 @@ class VerificationAgent:
             purpose=invocation.request.purpose,
         )
         self._stage_exact(result)
-        return result
+        return VerificationAgentOutcome(result, invocation)
 
     def _generation_records(
         self,
@@ -349,8 +393,9 @@ class VerificationAgent:
             generation=generation.generation,
             debate_input_hash=generation.debate_input_hash,
         )
-        pro_session, pro_mode = self._evidence_session(pro.llm_call_id)
-        con_session, con_mode = self._evidence_session(con.llm_call_id)
+        analysis_id = str(work.meta.analysis_id)
+        pro_session, pro_mode = self._evidence_session(pro.llm_call_id, analysis_id)
+        con_session, con_mode = self._evidence_session(con.llm_call_id, analysis_id)
         validate_evidence_sessions(
             pro,
             con,
@@ -387,7 +432,9 @@ class VerificationAgent:
             request.agent_role != "VERIFICATION"
             or request.task_kind != task_kind
             or request.call_spec_ref != call.call_spec_ref
-            or request.action_decision_ref != call.decision_ref
+            or request.action_decision_ref.data_kind != "action_decision"
+            or request.action_decision_ref.workspace_id != work.meta.workspace_id
+            or request.action_decision_ref.commit_id != work.meta.commit_id
             or request.llm_call_id != result.llm_call_id
             or request.meta.attempt_id != work.active_attempt_id
             or result.meta.attempt_id != work.active_attempt_id
@@ -516,4 +563,4 @@ class VerificationAgent:
         return value
 
 
-__all__ = ["VerificationAgent", "VerificationCallRefs"]
+__all__ = ["VerificationAgent", "VerificationAgentOutcome", "VerificationCallRefs"]

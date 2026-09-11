@@ -13,6 +13,7 @@ from sastsimi.config.loader import ConfigError as ConfigError
 from sastsimi.config.loader import load_config
 from sastsimi.config.models import AppConfig
 from sastsimi.config.runtime_paths import RuntimePaths
+from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.ids import (
     AttemptId,
     CommitId,
@@ -58,6 +59,7 @@ if TYPE_CHECKING:
     from sastsimi.runtime.workflow_runner import WorkflowRunner
     from sastsimi.static_analysis.coordinator import StaticToolCoordinator
     from sastsimi.static_analysis.normalizer import DecoderKey, RawDecoder
+    from sastsimi.verification.composition import T10Services
     from sastsimi.verification.context_service import (
         ContextRetrievalService,
         TrackedFilesResolver,
@@ -690,4 +692,24 @@ def build_runtime(
         analysis_finalization_identity_ref,
         llm_adapters,
         validator_factory=SQLiteRuntimeValidator,
+    )
+
+
+def build_t10_services(
+    *,
+    runtime: RuntimeServices,
+    runner: WorkflowRunner,
+    clock: Clock,
+    ids: IdGenerator,
+    role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
+) -> T10Services:
+    """Build the real T10 role slice after runtime identities are registered."""
+    from sastsimi.verification.composition import compose_t10_services
+
+    return compose_t10_services(
+        runtime=runtime,
+        runner=runner,
+        clock=clock,
+        ids=ids,
+        role_identity_refs=role_identity_refs,
     )
