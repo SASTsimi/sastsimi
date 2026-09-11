@@ -38,6 +38,9 @@ if TYPE_CHECKING:
     from sastsimi.contracts.evaluation import AnalysisRunResult
     from sastsimi.contracts.reporting import ReportDraft
     from sastsimi.contracts.static import StaticToolProfile
+    from sastsimi.gates.composition import T12Services
+    from sastsimi.gates.cwe_handler import GateCallResolver
+    from sastsimi.gates.rule_scope_handler import RuleScopeCallResolver
     from sastsimi.orchestration.fake_pipeline import FakePipeline
     from sastsimi.orchestration.fake_scenario_runtime import WorkflowBundle
     from sastsimi.orchestration.static_external_runner import (
@@ -56,6 +59,7 @@ if TYPE_CHECKING:
     from sastsimi.ports.dto import StaticRuleMapping
     from sastsimi.ports.static_tool import StaticProcessAdapter
     from sastsimi.ports.workspace import WorkspaceLocatorPort
+    from sastsimi.reporting.work_handlers import ReporterCallResolver
     from sastsimi.reproduction.composition import T11Services
     from sastsimi.reproduction.production import DynamicSandboxAuthorizationResolver
     from sastsimi.runtime.workflow_runner import WorkflowRunner
@@ -781,4 +785,37 @@ def build_t11_services(
         role_identity_refs=role_identity_refs,
         sandbox_authorization=sandbox_authorization,
         verification=verification,
+    )
+
+
+def build_t12_services(
+    *,
+    runtime: RuntimeServices,
+    runner: WorkflowRunner,
+    clock: Clock,
+    ids: IdGenerator,
+    t10_services: T10Services,
+    taxonomy_version: str,
+    role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
+    cwe_call_resolver: GateCallResolver,
+    technical_call_resolver: GateCallResolver,
+    rule_scope_call_resolver: RuleScopeCallResolver,
+    reporter_call_resolver: ReporterCallResolver,
+) -> T12Services:
+    """Build T12 from trusted call resolvers without choosing Provider/model."""
+
+    from sastsimi.gates.composition import compose_t12_services
+
+    return compose_t12_services(
+        runtime=runtime,
+        runner=runner,
+        clock=clock,
+        ids=ids,
+        t10_services=t10_services,
+        taxonomy_version=taxonomy_version,
+        role_identity_refs=role_identity_refs,
+        cwe_call_resolver=cwe_call_resolver,
+        technical_call_resolver=technical_call_resolver,
+        rule_scope_call_resolver=rule_scope_call_resolver,
+        reporter_call_resolver=reporter_call_resolver,
     )

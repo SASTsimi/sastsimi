@@ -9,8 +9,10 @@ from sastsimi.agents.reporter import (
     ReporterCallRefs,
     ReporterInputs,
 )
+from sastsimi.contracts._domain import DomainRecord
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.reporting import Finding
 from sastsimi.contracts.work import AttemptStatus, WorkStatus, WorkType
 from sastsimi.ports.dto import WorkContext, WorkHandlerResult
 from sastsimi.ports.record_store import RecordStore
@@ -21,6 +23,47 @@ class ReporterInputResolver(Protocol):
     def __call__(
         self, context: WorkContext
     ) -> tuple[ReporterInputs, ReporterCallRefs]: ...
+
+
+class ReporterCallResolver(Protocol):
+    def __call__(self, context: WorkContext) -> ReporterCallRefs: ...
+
+
+class StoredReporterInputResolver:
+    """Resolve exact report inputs while keeping post-claim call refs separate."""
+
+    def __init__(
+        self, *, records: RecordStore, resolve_call: ReporterCallResolver
+    ) -> None:
+        self._records = records
+        self.resolve_call = resolve_call
+
+    def __call__(self, context: WorkContext) -> tuple[ReporterInputs, ReporterCallRefs]:
+        _require_claimed(context, WorkType.REPORT_DRAFT)
+        finding_ref = _one(context, "finding")
+        finding = self._exact(finding_ref, Finding)
+        condition_refs = tuple(
+            dict.fromkeys(source.source_ref for source in finding.condition_sources)
+        )
+        conditions = tuple(
+            (ref, self._exact(ref, DomainRecord)) for ref in condition_refs
+        )
+        inputs = ReporterInputs(
+            finding_ref=finding_ref,
+            finding_index_ref=_one(context, "finding_index_state"),
+            verification_ref=_one(context, "verification_result"),
+            technical_review_ref=_one(context, "technical_evidence_review"),
+            rule_scope_review_ref=_one(context, "rule_scope_impact_review"),
+            run_policy_state_ref=_one(context, "run_policy_state"),
+            condition_records=conditions,
+        )
+        return inputs, self.resolve_call(context)
+
+    def _exact[T: DomainRecord](self, ref: StoredDataRef, model: type[T]) -> T:
+        value = self._records.get_exact(ref)
+        if not isinstance(value, model) or reference(value) != ref:
+            raise ValueError("REPORT_UPSTREAM_CLOSURE_MISMATCH")
+        return value
 
 
 class FindingNormalizeHandler:
@@ -50,11 +93,11 @@ class ReporterWorkHandler:
         self, *, agent: ReporterAgent, resolve_inputs: ReporterInputResolver
     ) -> None:
         self._agent = agent
-        self._resolve_inputs = resolve_inputs
+        self.resolve_inputs = resolve_inputs
 
     async def execute(self, context: WorkContext) -> WorkHandlerResult:
         _require_claimed(context, WorkType.REPORT_DRAFT)
-        inputs, call = self._resolve_inputs(context)
+        inputs, call = self.resolve_inputs(context)
         outcome = await self._agent.create_draft(
             work=context.work, inputs=inputs, call=call
         )
@@ -90,6 +133,8 @@ def _one(context: WorkContext, kind: str) -> StoredDataRef:
 
 __all__ = [
     "FindingNormalizeHandler",
+    "ReporterCallResolver",
     "ReporterInputResolver",
     "ReporterWorkHandler",
+    "StoredReporterInputResolver",
 ]

@@ -23,6 +23,7 @@ from sastsimi.contracts.gates import (
     TechnicalEvidenceReview,
     validate_rule_scope_gate,
 )
+from sastsimi.contracts.ids import AttemptId
 from sastsimi.contracts.llm import LLMCallSpec, LLMToolPolicy, PromptPayload
 from sastsimi.contracts.policy import (
     PolicyCollectionResult,
@@ -94,6 +95,66 @@ class RuleScopeGateOutcome:
     stop_reason: Literal["POLICY_COLLECTION_FAILED"] | None
 
 
+def _expected_rule_scope_evidence(
+    *,
+    verification: VerificationResult,
+    label: CWELabel,
+    state: RunPolicyState,
+    policy: ProgramPolicyRecord | None,
+    source_refs: tuple[StoredDataRef, ...],
+) -> tuple[StoredDataRef, ...]:
+    """Build the one canonical evidence closure used by resolution and preflight."""
+    if verification.dynamic_result_ref is None or verification.poc_ref is None:
+        raise ValueError("VALIDATED_POC_REQUIRED")
+    values = (
+        *source_refs,
+        *(
+            evidence_ref
+            for claim in (
+                *verification.supporting_evidence,
+                *verification.counter_evidence,
+            )
+            for evidence_ref in claim.evidence_refs
+        ),
+        *(
+            evidence_ref
+            for result in verification.falsification_results
+            for evidence_ref in result.evidence_refs
+        ),
+        *(
+            evidence_ref
+            for result in verification.validation_results
+            for evidence_ref in result.evidence_refs
+        ),
+        *(
+            evidence_ref
+            for restriction in verification.restrictions
+            for evidence_ref in restriction.evidence_refs
+        ),
+        *(
+            fact.bundle_ref
+            for restriction in verification.restrictions
+            for fact in restriction.fact_refs
+        ),
+        *label.evidence_refs,
+        verification.dynamic_result_ref,
+        verification.poc_ref,
+        *state.freshness_evidence_refs,
+        *(
+            evidence_ref
+            for check in (policy.source_checks if policy is not None else ())
+            for evidence_ref in check.evidence_refs
+        ),
+        *(policy.freshness_evidence_refs if policy is not None else ()),
+        *(
+            evidence_ref
+            for gap in (policy.missing_information if policy is not None else ())
+            for evidence_ref in gap.evidence_refs
+        ),
+    )
+    return tuple(dict.fromkeys(values))
+
+
 class AgentPort(Protocol):
     async def review(self, **kwargs: object) -> RuleScopeAgentOutcome: ...
 
@@ -113,7 +174,7 @@ class ReviewPublisher(Protocol):
 
 class MetadataFactory(Protocol):
     def __call__(
-        self, source: RecordMeta, kind: str, attempt_id: object
+        self, source: RecordMeta, record_type: str, attempt_id: AttemptId | None
     ) -> RecordMeta: ...
 
 
@@ -217,7 +278,7 @@ class RuleScopeGateService:
         self,
         *,
         agent: AgentPort | RuleScopeGateAgent,
-        execution_factory: ExecutionFactory,
+        execution_factory: ExecutionFactory | None,
         publisher: ReviewPublisher,
         metadata_factory: MetadataFactory,
         id_factory: IdFactory,
@@ -234,14 +295,22 @@ class RuleScopeGateService:
         self._current_policy_state = current_policy_state
         self._prompt_guard = prompt_guard
 
-    async def review(self, inputs: RuleScopeGateInputs) -> RuleScopeGateOutcome:
+    async def review(
+        self,
+        inputs: RuleScopeGateInputs,
+        *,
+        execution: RuleScopeExecution | None = None,
+    ) -> RuleScopeGateOutcome:
         # Validate the current failure pointer, but never create work or call an LLM.
         if inputs.collection.status == "COLLECTION_FAILED":
             self._preflight_collection_failure(inputs)
             return RuleScopeGateOutcome(None, None, "POLICY_COLLECTION_FAILED")
 
         required_context = self._preflight(inputs)
-        execution = self._execution_factory(inputs)
+        if execution is None:
+            if self._execution_factory is None:
+                raise ValueError("RULE_SCOPE_EXECUTION_REQUIRED")
+            execution = self._execution_factory(inputs)
         self._require_execution(execution, inputs, required_context)
         self._prompt_guard(execution, inputs, required_context)
         outcome = await self._agent.review(
@@ -377,57 +446,13 @@ class RuleScopeGateService:
         inputs: RuleScopeGateInputs,
         source_refs: tuple[StoredDataRef, ...],
     ) -> tuple[StoredDataRef, ...]:
-        verification = inputs.verification
-        if verification.dynamic_result_ref is None or verification.poc_ref is None:
-            raise ValueError("VALIDATED_POC_REQUIRED")
-        policy = inputs.policy
-        values = (
-            *source_refs,
-            *(
-                evidence_ref
-                for claim in (
-                    *verification.supporting_evidence,
-                    *verification.counter_evidence,
-                )
-                for evidence_ref in claim.evidence_refs
-            ),
-            *(
-                evidence_ref
-                for result in verification.falsification_results
-                for evidence_ref in result.evidence_refs
-            ),
-            *(
-                evidence_ref
-                for result in verification.validation_results
-                for evidence_ref in result.evidence_refs
-            ),
-            *(
-                evidence_ref
-                for restriction in verification.restrictions
-                for evidence_ref in restriction.evidence_refs
-            ),
-            *(
-                fact.bundle_ref
-                for restriction in verification.restrictions
-                for fact in restriction.fact_refs
-            ),
-            *inputs.cwe_label.evidence_refs,
-            verification.dynamic_result_ref,
-            verification.poc_ref,
-            *inputs.run_policy_state.freshness_evidence_refs,
-            *(
-                evidence_ref
-                for check in (policy.source_checks if policy is not None else ())
-                for evidence_ref in check.evidence_refs
-            ),
-            *(policy.freshness_evidence_refs if policy is not None else ()),
-            *(
-                evidence_ref
-                for gap in (policy.missing_information if policy is not None else ())
-                for evidence_ref in gap.evidence_refs
-            ),
+        return _expected_rule_scope_evidence(
+            verification=inputs.verification,
+            label=inputs.cwe_label,
+            state=inputs.run_policy_state,
+            policy=inputs.policy,
+            source_refs=source_refs,
         )
-        return tuple(dict.fromkeys(values))
 
     @staticmethod
     def _require_exact_ref(ref: StoredDataRef, record: DomainRecord) -> None:

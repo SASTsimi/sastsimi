@@ -81,7 +81,8 @@ class RevisionStarter(Protocol):
 
 
 class T10RevisionServices(Protocol):
-    revision: RevisionStarter
+    @property
+    def revision(self) -> RevisionStarter: ...
 
 
 class TechnicalGateService:
