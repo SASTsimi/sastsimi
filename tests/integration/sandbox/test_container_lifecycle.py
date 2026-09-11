@@ -8,6 +8,7 @@ import tarfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from typing import cast
 
 import pytest
 
@@ -185,6 +186,7 @@ def _approval(
 class FakeDockerAdapter:
     def __init__(self) -> None:
         self.built: list[tuple[bytes, int]] = []
+        self.inspected_images: list[tuple[str, int]] = []
         self.created: dict[str, tuple[SandboxRunSpec, Mapping[str, str]]] = {}
         self.removed: list[str] = []
         self.unhealthy: set[str] = set()
@@ -200,6 +202,10 @@ class FakeDockerAdapter:
     ) -> str:
         self.built.append((dockerfile, timeout_ms))
         assert labels["sastsimi.owner"] == "reproduction-setup-automation"
+        return IMAGE_DIGEST
+
+    async def inspect_image(self, image: str, *, timeout_ms: int) -> str:
+        self.inspected_images.append((image, timeout_ms))
         return IMAGE_DIGEST
 
     async def create(self, spec: SandboxRunSpec, labels: Mapping[str, str]) -> str:
@@ -301,6 +307,60 @@ async def test_prepare_creates_clean_non_root_default_deny_container(
         ),
     )
     assert docker.built == [(b"FROM scratch\n", 10_000)]
+
+
+@pytest.mark.asyncio
+async def test_prepare_bounds_local_base_image_inspection(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "Dockerfile").write_bytes(b"FROM fixture:local\n")
+    request, requirements, plan = _dynamic_records()
+    docker = FakeDockerAdapter()
+
+    await _setup(docker).prepare(
+        approval=_approval(tmp_path, request),
+        request=request,
+        requirements=requirements,
+        plan=plan,
+        meta=_meta("sandbox_environment", "environment-seed"),
+    )
+
+    assert docker.inspected_images == [("fixture:local", 10_000)]
+
+
+@pytest.mark.asyncio
+async def test_recipe_lock_wait_is_bounded_by_approved_timeout(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "Dockerfile").write_bytes(b"FROM scratch\n")
+    request, requirements, _ = _dynamic_records()
+    request_ref = cast(StoredDataRef, reference(request))
+    store = EnvironmentRecipeStore()
+    await store._lock.acquire()
+
+    try:
+        with pytest.raises(ValueError, match="RECIPE_LOCK_TIMEOUT"):
+            await asyncio.wait_for(
+                store.prepare(
+                    docker=FakeDockerAdapter(),
+                    context=tmp_path,
+                    labels={
+                        "sastsimi.owner": "reproduction-setup-automation",
+                        "sastsimi.analysis-id": "analysis-1",
+                        "sastsimi.workspace-id": "workspace-1",
+                        "sastsimi.commit-id": "commit-1",
+                        "sastsimi.hypothesis-id": "hypothesis-1",
+                        "sastsimi.attempt-id": "dynamic-attempt-1",
+                    },
+                    request_ref=request_ref,
+                    requirements=requirements,
+                    meta=_meta("sandbox_environment", "environment-seed"),
+                    build_timeout_ms=10,
+                ),
+                timeout=0.25,
+            )
+    finally:
+        store._lock.release()
 
 
 @pytest.mark.asyncio
@@ -655,6 +715,33 @@ async def test_docker_build_uses_stdin_empty_context_and_approved_timeout(
 
 
 @pytest.mark.asyncio
+async def test_docker_image_inspection_uses_approved_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[str, ...], int | None]] = []
+
+    async def run(
+        argv: tuple[str, ...],
+        *,
+        timeout_ms: int | None = None,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        assert input_bytes is None
+        calls.append((argv, timeout_ms))
+        return DockerCommandOutcome(0, (IMAGE_DIGEST + "\n").encode(), b"", False)
+
+    adapter = DockerAdapter()
+    monkeypatch.setattr(adapter, "_run", run)
+
+    digest = await adapter.inspect_image("fixture:local", timeout_ms=10_000)
+
+    assert digest == IMAGE_DIGEST
+    assert calls == [
+        (("image", "inspect", "--format", "{{.Id}}", "fixture:local"), 10_000)
+    ]
+
+
+@pytest.mark.asyncio
 async def test_docker_exec_uses_exact_argv_and_working_directory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -782,7 +869,7 @@ async def test_docker_output_limit_stops_process_without_communicate_buffering(
     )
 
     with pytest.raises(DockerOperationError, match="DOCKER_OUTPUT_LIMIT_EXCEEDED"):
-        await DockerAdapter().inspect_image("fixture:latest")
+        await DockerAdapter().inspect_image("fixture:latest", timeout_ms=10_000)
 
     assert process.communicate_called is False
     assert process.killed is True

@@ -115,10 +115,17 @@ class DockerAdapter:
             raise DockerOperationError("DOCKER_IMAGE_DIGEST_INVALID", outcome)
         return digest
 
-    async def inspect_image(self, image: str) -> str:
-        if not image or any(character in image for character in "\r\n\0"):
+    async def inspect_image(self, image: str, *, timeout_ms: int) -> str:
+        if (
+            not image
+            or timeout_ms <= 0
+            or any(character in image for character in "\r\n\0")
+        ):
             raise ValueError("DOCKER_IMAGE_REFERENCE_INVALID")
-        outcome = await self._run(("image", "inspect", "--format", "{{.Id}}", image))
+        outcome = await self._run(
+            ("image", "inspect", "--format", "{{.Id}}", image),
+            timeout_ms=timeout_ms,
+        )
         self._require_success("DOCKER_IMAGE_INSPECT_FAILED", outcome)
         digest = outcome.stdout.decode("ascii", errors="strict").strip()
         if not _IMAGE_DIGEST.fullmatch(digest):

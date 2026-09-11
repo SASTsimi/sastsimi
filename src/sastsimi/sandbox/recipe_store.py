@@ -45,7 +45,7 @@ class RecipeDockerPort(Protocol):
         *,
         timeout_ms: int,
     ) -> str: ...
-    async def inspect_image(self, image: str) -> str: ...
+    async def inspect_image(self, image: str, *, timeout_ms: int) -> str: ...
 
 
 def fresh_record_meta(source: RecordMeta, kind: str) -> RecordMeta:
@@ -90,7 +90,14 @@ class EnvironmentRecipeStore:
         requirements_ref = reference(requirements)
         if not isinstance(requirements_ref, StoredDataRef):
             raise ValueError("CODE_SCOPED_REFERENCE_REQUIRED")
-        async with self._lock:
+        try:
+            await asyncio.wait_for(
+                self._lock.acquire(),
+                timeout=build_timeout_ms / 1000,
+            )
+        except TimeoutError as error:
+            raise ValueError("RECIPE_LOCK_TIMEOUT") from error
+        try:
             baseline = self._baselines.get(key)
             if baseline is not None:
                 recipe = EnvironmentRecipe(
@@ -111,7 +118,10 @@ class EnvironmentRecipeStore:
             base_digest = (
                 "scratch"
                 if base_image == "scratch"
-                else await docker.inspect_image(base_image)
+                else await docker.inspect_image(
+                    base_image,
+                    timeout_ms=build_timeout_ms,
+                )
             )
             built_digest = await docker.build(
                 dockerfile,
@@ -132,6 +142,8 @@ class EnvironmentRecipeStore:
             )
             self._baselines[key] = recipe
             return recipe
+        finally:
+            self._lock.release()
 
     def bind_existing(
         self,
