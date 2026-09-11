@@ -1,10 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
 import pytest
 
+from sastsimi.contracts.actions import (
+    REQUIRED_CHECKS,
+    ActionCheck,
+    ActionDecision,
+    ActionRequest,
+    ActionType,
+    CheckResult,
+    Decision,
+    RequesterRole,
+    SessionMode,
+    UseStatus,
+)
 from sastsimi.contracts.dynamic import (
     DynamicReproductionRequest,
     DynamicReproductionResult,
@@ -15,6 +28,7 @@ from sastsimi.contracts.llm import (
     LLMInvocationRequest,
     LLMInvocationResult,
 )
+from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus
 from sastsimi.ports.dto import Record
@@ -91,36 +105,183 @@ def _process(
     )
 
 
-def _persist_final_invocation(fixture: _Fixture) -> PersistedLLMInvocation:
+def _persist_final_invocation(
+    fixture: _Fixture,
+    *,
+    claimed_variant: str = "valid",
+) -> PersistedLLMInvocation:
     invocation = fixture.llm.outcomes[0]
+    provider_ref = fixture._opaque_record("provider_profile", "final-provider")
+    action = ActionRequest.model_validate(
+        {
+            "meta": _meta("action_request", suffix="final-action", attempt=ATTEMPT_ID),
+            "action_id": "final-action",
+            "requested_by": RequesterRole.VERIFICATION,
+            "requester_identity_ref": fixture._opaque_record(
+                "agent_identity", "verification"
+            ),
+            "action_type": ActionType.CALL_LLM,
+            "work_ref": reference(fixture.work),
+            "expected_state_version": fixture.work.state_version,
+            "expected_verification_generation": None,
+            "generation_restart_reason": None,
+            "generation_restart_basis_refs": (),
+            "input_refs": (),
+            "dynamic_request_ref": None,
+            "reproduction_plan_ref": None,
+            "result_kind": None,
+            "candidate_result_ref": None,
+            "llm_call_spec_ref": invocation.request.call_spec_ref,
+            "tool_name": None,
+            "file_paths": (),
+            "provider_profile_ref": provider_ref,
+            "session_mode": SessionMode.NEW,
+            "sandbox_profile_ref": None,
+            "resource_profile_ref": None,
+            "run_policy_state_ref": None,
+            "image_digest": None,
+            "network_targets": (),
+            "resource_limits": None,
+            "reason": "Authorize the exact final verdict call",
+            "requested_at": fixture.work.meta.created_at,
+        }
+    )
+    action_ref = fixture.records.add(action)
+    required_checks = tuple(REQUIRED_CHECKS[ActionType.CALL_LLM])
+    issued = ActionDecision.model_validate(
+        {
+            "meta": _meta(
+                "action_decision", suffix="final-issued", attempt=ATTEMPT_ID
+            ),
+            "decision_id": "final-decision",
+            "action_ref": action_ref,
+            "decision": Decision.ALLOW,
+            "required_checks": required_checks,
+            "check_results": tuple(
+                ActionCheck(
+                    check_type=check,
+                    result=CheckResult.PASS,
+                    reason_code="APPROVED",
+                    safe_message="Approved",
+                )
+                for check in required_checks
+            ),
+            "checked_state_version": fixture.work.state_version,
+            "checked_config_refs": (),
+            "valid_until": fixture.work.meta.created_at + timedelta(hours=1),
+            "error_ids": (),
+            "use_status": UseStatus.UNUSED,
+            "used_at": None,
+            "expired_at": None,
+            "expire_reason": None,
+            "outcome_refs": (),
+            "decided_at": fixture.work.meta.created_at,
+        }
+    )
+    issued_ref = fixture.records.add(issued)
+    claimed_meta = RecordMeta.model_validate(
+        _meta(
+            "action_decision", suffix="final-claimed", attempt=ATTEMPT_ID
+        ).model_dump()
+        | {
+            "logical_record_id": issued.meta.logical_record_id,
+            "revision_number": 2,
+            "previous_record_id": issued.meta.record_id,
+        }
+    )
+    claimed = ActionDecision.model_validate(
+        issued.model_dump()
+        | {
+            "meta": claimed_meta,
+            "use_status": UseStatus.USED,
+            "used_at": fixture.work.meta.created_at,
+        }
+    )
+    claimed_ref = fixture.records.add(claimed)
+    if claimed_variant == "reused":
+        reused_meta = RecordMeta.model_validate(
+            _meta(
+                "action_decision", suffix="final-reused", attempt=ATTEMPT_ID
+            ).model_dump()
+            | {
+                "logical_record_id": issued.meta.logical_record_id,
+                "revision_number": 3,
+                "previous_record_id": claimed.meta.record_id,
+            }
+        )
+        reused = ActionDecision.model_validate(
+            claimed.model_dump()
+            | {
+                "meta": reused_meta,
+                "outcome_refs": (fixture._opaque_record("artifact", "prior-output"),),
+            }
+        )
+        claimed_ref = fixture.records.add(reused)
+    elif claimed_variant == "unrelated":
+        unrelated_issued_meta = _meta(
+            "action_decision", suffix="other-issued", attempt=ATTEMPT_ID
+        )
+        unrelated_claimed_meta = RecordMeta.model_validate(
+            _meta(
+                "action_decision", suffix="other-claimed", attempt=ATTEMPT_ID
+            ).model_dump()
+            | {
+                "logical_record_id": unrelated_issued_meta.logical_record_id,
+                "revision_number": 2,
+                "previous_record_id": unrelated_issued_meta.record_id,
+            }
+        )
+        unrelated = ActionDecision.model_validate(
+            claimed.model_dump()
+            | {
+                "meta": unrelated_claimed_meta,
+                "decision_id": "other-decision",
+            }
+        )
+        claimed_ref = fixture.records.add(unrelated)
     request = LLMInvocationRequest.model_construct(
-        **invocation.request.__dict__,
-        provider_profile_ref=fixture._opaque_record(
-            "provider_profile", "final-provider"
-        ),
-        model="fake-model",
-        session_policy="NEW",
-        parent_session_ref=None,
-        prompt_registry_entry_ref=fixture._opaque_record(
-            "prompt_registry_entry", "final-registry"
-        ),
-        prompt_key="verification.final",
-        prompt_template_ref=fixture._opaque_record("prompt_template", "final-template"),
-        prompt_template_version="1",
-        prompt_payload_ref=fixture._opaque_record("prompt_payload", "final-payload"),
-        execution_limits_ref=fixture._opaque_record("execution_limits", "final-limits"),
-        retry_policy_ref=fixture._opaque_record("retry_policy", "final-retry"),
-        tool_policy_ref=fixture._opaque_record("tool_policy", "final-tool"),
-        redaction_policy_ref=fixture._opaque_record(
-            "redaction_policy", "final-redaction"
-        ),
-        semantic_validator_ref=fixture._opaque_record(
-            "semantic_validator_spec", "final-validator"
-        ),
-        output_schema_ref=fixture._opaque_record("output_schema", "final-schema"),
-        output_schema="verification-result",
-        token_budget=100,
-        timeout_ms=1_000,
+        **(
+            invocation.request.__dict__
+            | {
+                "action_decision_ref": claimed_ref,
+                "provider_profile_ref": provider_ref,
+                "model": "fake-model",
+                "session_policy": "NEW",
+                "parent_session_ref": None,
+                "prompt_registry_entry_ref": fixture._opaque_record(
+                    "prompt_registry_entry", "final-registry"
+                ),
+                "prompt_key": "verification.final",
+                "prompt_template_ref": fixture._opaque_record(
+                    "prompt_template", "final-template"
+                ),
+                "prompt_template_version": "1",
+                "prompt_payload_ref": fixture._opaque_record(
+                    "prompt_payload", "final-payload"
+                ),
+                "execution_limits_ref": fixture._opaque_record(
+                    "execution_limits", "final-limits"
+                ),
+                "retry_policy_ref": fixture._opaque_record(
+                    "retry_policy", "final-retry"
+                ),
+                "tool_policy_ref": fixture._opaque_record(
+                    "tool_policy", "final-tool"
+                ),
+                "redaction_policy_ref": fixture._opaque_record(
+                    "redaction_policy", "final-redaction"
+                ),
+                "semantic_validator_ref": fixture._opaque_record(
+                    "semantic_validator_spec", "final-validator"
+                ),
+                "output_schema_ref": fixture._opaque_record(
+                    "output_schema", "final-schema"
+                ),
+                "output_schema": "verification-result",
+                "token_budget": 100,
+                "timeout_ms": 1_000,
+            }
+        )
     )
     result = LLMInvocationResult.model_construct(
         **invocation.result.__dict__,
@@ -186,6 +347,11 @@ def _persist_final_invocation(fixture: _Fixture) -> PersistedLLMInvocation:
         dispatch_state="RETURNED",
     )
     fixture.llm.outcomes[0] = persisted
+    fixture.call = fixture.call.__class__(
+        decision_ref=issued_ref,
+        reservation_ref=fixture.call.reservation_ref,
+        call_spec_ref=fixture.call.call_spec_ref,
+    )
     assert fixture.records.get_exact(request_ref) == request
     assert fixture.records.get_exact(result_ref) == result
     return persisted
@@ -295,6 +461,7 @@ async def test_completion_publishes_exact_dynamic_verdict_with_invocation_chain(
         fixture.pro_ref,
         fixture.con_ref,
         fixture.call.decision_ref,
+        invocation.request.action_decision_ref,
         fixture.call.reservation_ref,
         fixture.call.call_spec_ref,
         request_ref,
@@ -303,6 +470,47 @@ async def test_completion_publishes_exact_dynamic_verdict_with_invocation_chain(
         invocation.result.parsed_output_ref,
     }
     assert completed.completed_work.output_refs == (result_ref,)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claimed_variant", ["reused", "unrelated"])
+async def test_completion_rejects_non_fresh_or_unrelated_claimed_decision(
+    claimed_variant: str,
+) -> None:
+    fixture, assessment_ref, dynamic, request = await _ready_fixture()
+    fixture.queue(
+        fixture.final_payload("TRUE", outcome="NOT_DISPROVED"),
+        task_kind="FINAL_VERDICT",
+        context_refs=fixture.dynamic_context(assessment_ref, dynamic),
+    )
+    _persist_final_invocation(fixture, claimed_variant=claimed_variant)
+    runner = _RecordingRunner()
+    coordinator = VerificationCompletionCoordinator(
+        verification=fixture.service,
+        runner=runner,
+        records=fixture.records,
+        work_resolver=lambda _: fixture.work,
+        current_process=lambda _: _process(fixture, request),
+        verification_identity_ref=fixture._opaque_record(
+            "verification_assignment", "owner"
+        ),
+    )
+
+    with pytest.raises(
+        ValueError, match="VERIFICATION_INVOCATION_PROVENANCE_MISMATCH"
+    ):
+        await coordinator.complete_dynamic(
+            generation=fixture.generation,
+            assessment_ref=assessment_ref,
+            dynamic_request_ref=dynamic["request"],
+            dynamic_result_ref=dynamic["result"],
+            poc_ref=dynamic["poc"],
+            pro_ref=fixture.pro_ref,
+            con_ref=fixture.con_ref,
+            call=fixture.call,
+        )
+
+    assert runner.calls == []
 
 
 @pytest.mark.asyncio

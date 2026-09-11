@@ -9,6 +9,15 @@ from sastsimi.agents.verification import (
     VerificationAgentOutcome,
     VerificationCallRefs,
 )
+from sastsimi.contracts.actions import (
+    ActionDecision,
+    ActionRequest,
+    ActionType,
+    Decision,
+    UseStatus,
+    validate_decision_for_action,
+    validate_decision_revision,
+)
 from sastsimi.contracts.dynamic import (
     DynamicReproductionRequest,
     DynamicReproductionResult,
@@ -215,12 +224,39 @@ class VerificationCompletionCoordinator:
         persisted_result = self._records.get_exact(result_ref)
         persisted_log = self._records.get_exact(invocation.log_ref)
         parsed_output_ref = invocation.result.parsed_output_ref
+        claimed_ref = invocation.request.action_decision_ref
+        issued = self._records.get_exact(call.decision_ref)
+        claimed = self._records.get_exact(claimed_ref)
+        action = (
+            self._records.get_exact(issued.action_ref)
+            if isinstance(issued, ActionDecision)
+            else None
+        )
         if (
             persisted_request != invocation.request
             or persisted_result != invocation.result
             or not isinstance(persisted_log, LLMInvocationLog)
             or reference(persisted_log) != invocation.log_ref
-            or invocation.request.action_decision_ref != call.decision_ref
+            or not isinstance(issued, ActionDecision)
+            or reference(issued) != call.decision_ref
+            or issued.decision != Decision.ALLOW
+            or issued.use_status != UseStatus.UNUSED
+            or issued.outcome_refs
+            or not isinstance(claimed, ActionDecision)
+            or reference(claimed) != claimed_ref
+            or claimed.decision != Decision.ALLOW
+            or claimed.use_status != UseStatus.USED
+            or claimed.outcome_refs
+            or not isinstance(action, ActionRequest)
+            or reference(action) != issued.action_ref
+            or not isinstance(action.meta, RecordMeta)
+            or not isinstance(issued.meta, RecordMeta)
+            or not isinstance(claimed.meta, RecordMeta)
+            or action.action_type != ActionType.CALL_LLM
+            or action.llm_call_spec_ref != call.call_spec_ref
+            or action.meta.attempt_id != invocation.request.meta.attempt_id
+            or issued.meta.attempt_id != invocation.request.meta.attempt_id
+            or claimed.meta.attempt_id != invocation.request.meta.attempt_id
             or invocation.request.call_spec_ref != call.call_spec_ref
             or invocation.request.agent_role != "VERIFICATION"
             or invocation.request.task_kind != "FINAL_VERDICT"
@@ -230,7 +266,7 @@ class VerificationCompletionCoordinator:
             or invocation.result.status != "SUCCEEDED"
             or parsed_output_ref is None
             or persisted_log.llm_call_id != invocation.request.llm_call_id
-            or persisted_log.action_decision_ref != call.decision_ref
+            or persisted_log.action_decision_ref != claimed_ref
             or persisted_log.call_spec_ref != call.call_spec_ref
             or persisted_log.agent_role != "VERIFICATION"
             or persisted_log.task_kind != "FINAL_VERDICT"
@@ -240,7 +276,21 @@ class VerificationCompletionCoordinator:
             or persisted_log.status != "SUCCEEDED"
         ):
             raise ValueError("VERIFICATION_INVOCATION_PROVENANCE_MISMATCH")
-        return (request_ref, result_ref, invocation.log_ref, parsed_output_ref)
+        try:
+            validate_decision_for_action(issued, ActionType.CALL_LLM)
+            validate_decision_for_action(claimed, ActionType.CALL_LLM)
+            validate_decision_revision(issued, claimed)
+        except ValueError as error:
+            raise ValueError(
+                "VERIFICATION_INVOCATION_PROVENANCE_MISMATCH"
+            ) from error
+        return (
+            claimed_ref,
+            request_ref,
+            result_ref,
+            invocation.log_ref,
+            parsed_output_ref,
+        )
 
     def _exact[T](self, ref: StoredDataRef, model: type[T]) -> T:
         value = self._records.get_exact(ref)
