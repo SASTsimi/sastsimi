@@ -337,7 +337,7 @@ class ProductionDynamicWorkflow:
             "RUN",
             recipe_ref,
             recipe.built_image_digest,
-            (),
+            (build_policy_ref, build_binding.action_decision_ref),
         )
         self._binding = run_binding
         outcome = self._controller.evaluate(
@@ -361,6 +361,8 @@ class ProductionDynamicWorkflow:
                 requirements_ref,
                 plan_ref,
                 recipe_ref,
+                build_policy_ref,
+                build_binding.action_decision_ref,
                 run_binding.action_decision_ref,
                 run_binding.run_policy_state_ref,
             ),
@@ -463,6 +465,7 @@ class ProductionDynamicWorkflow:
                     "Sandbox recreation boundary denied the request",
                 )
             self._binding = recreate_binding
+            self._policy = recreate_outcome.decision
             self._append_event(
                 "SANDBOX_RECREATE_REQUESTED",
                 "DYNAMIC_REPRODUCTION",
