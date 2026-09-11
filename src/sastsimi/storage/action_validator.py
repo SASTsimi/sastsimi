@@ -1,5 +1,7 @@
 """SQLite state/config checks and atomic single-use action authorization."""
 
+import json
+
 from sqlalchemy import Connection, insert, select, update
 
 from sastsimi.contracts.actions import (
@@ -23,6 +25,7 @@ from sastsimi.contracts.llm import (
 from sastsimi.contracts.llm_closure import llm_action_input_refs
 from sastsimi.contracts.refs import RecordRef, RunStoredDataRef, StoredDataRef
 from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
 from sastsimi.storage import models
@@ -217,8 +220,41 @@ class RuntimeValidator:
         budget: BudgetService,
         clock: Clock,
         ids: IdGenerator,
+        artifacts: ArtifactStore | None = None,
     ) -> None:
         self.records, self.budget, self.clock, self.ids = records, budget, clock, ids
+        self.artifacts = artifacts
+
+    def _verify_invocation_artifact(
+        self,
+        ref: StoredDataRef,
+        *,
+        workspace_id: object,
+        commit_id: object,
+    ) -> None:
+        """Require an exact, canonical JSON artifact in the current code scope."""
+        if (
+            self.artifacts is None
+            or ref.record_id is not None
+            or ref.data_kind != "artifact"
+            or str(ref.stored_data_id) != ref.content_hash
+            or ref.workspace_id != workspace_id
+            or ref.commit_id != commit_id
+        ):
+            raise ValueError("INVOCATION_OUTPUT_MISMATCH")
+        try:
+            with self.artifacts.open_verified(ref) as stream:
+                payload = stream.read()
+            parsed = json.loads(payload)
+            if (
+                not isinstance(parsed, (dict, list))
+                or canonical_bytes(parsed) != payload
+            ):
+                raise ValueError("INVOCATION_OUTPUT_MISMATCH")
+        except ValueError:
+            raise
+        except Exception as error:
+            raise ValueError("INVOCATION_OUTPUT_MISMATCH") from error
 
     def check(
         self,
@@ -569,24 +605,35 @@ class RuntimeValidator:
             ):
                 raise ValueError("INVOCATION_RESULT_MISMATCH")
             candidate = None
+            output_artifact_ref: StoredDataRef | None = None
             if result.status == "SUCCEEDED":
                 if (
                     result.parsed_output_ref is None
+                    or result.response_ref != result.parsed_output_ref
                     or result.safe_error is not None
                     or log.validation_errors
                 ):
                     raise ValueError("INVOCATION_RESULT_MISMATCH")
-                candidate = self.records.resolve(
-                    connection, result.parsed_output_ref, candidate=True
-                )
                 from sastsimi.contracts.llm import OutputSchemaSpec
 
                 schema = self.records.resolve(connection, spec.output_schema_ref)
-                if (
-                    not isinstance(schema, OutputSchemaSpec)
-                    or candidate.meta.record_type != schema.result_kind
-                ):
+                if not isinstance(schema, OutputSchemaSpec):
                     raise ValueError("INVOCATION_OUTPUT_MISMATCH")
+                if result.parsed_output_ref.record_id is None:
+                    self._verify_invocation_artifact(
+                        result.parsed_output_ref,
+                        workspace_id=request.meta.workspace_id,
+                        commit_id=request.meta.commit_id,
+                    )
+                    output_artifact_ref = result.parsed_output_ref
+                else:
+                    # Kept only for the deterministic pre-T10 fake pipeline. The
+                    # production LLMCallService rejects record-shaped provider output.
+                    candidate = self.records.resolve(
+                        connection, result.parsed_output_ref, candidate=True
+                    )
+                    if candidate.meta.record_type != schema.result_kind:
+                        raise ValueError("INVOCATION_OUTPUT_MISMATCH")
             elif (
                 result.parsed_output_ref is not None
                 or log.parsed_output_ref is not None
@@ -687,5 +734,8 @@ class RuntimeValidator:
                         state_version=1,
                     )
                 )
-            self.record_outcome(connection, claimed, tuple(invocation_refs))
+            outcomes: tuple[RecordRef, ...] = tuple(invocation_refs)
+            if output_artifact_ref is not None:
+                outcomes += (output_artifact_ref,)
+            self.record_outcome(connection, claimed, outcomes)
             return log_ref

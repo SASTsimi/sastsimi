@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -315,8 +316,8 @@ class LLMCallService:
             raise ValueError("INVOCATION_REQUEST_SCOPE_MISMATCH")
         return request
 
-    @staticmethod
     def _checked_result(
+        self,
         request: LLMInvocationRequest,
         profile: ProviderProfile,
         result: LLMInvocationResult,
@@ -350,7 +351,15 @@ class LLMCallService:
                 and (
                     validated.parsed_output_ref is None
                     or validated.response_ref is None
+                    or validated.response_ref != validated.parsed_output_ref
                     or validated.safe_error is not None
+                    or validated.parsed_output_ref.record_id is not None
+                    or validated.parsed_output_ref.data_kind != "artifact"
+                    or str(validated.parsed_output_ref.stored_data_id)
+                    != validated.parsed_output_ref.content_hash
+                    or validated.parsed_output_ref.workspace_id
+                    != request.meta.workspace_id
+                    or validated.parsed_output_ref.commit_id != request.meta.commit_id
                 )
             )
             or (
@@ -363,6 +372,23 @@ class LLMCallService:
             )
         ):
             raise ValueError("PROVIDER_RESULT_MISMATCH")
+        if validated.status == "SUCCEEDED":
+            assert validated.parsed_output_ref is not None
+            try:
+                with self._artifacts.open_verified(
+                    validated.parsed_output_ref
+                ) as stream:
+                    payload = stream.read()
+                parsed = json.loads(payload)
+                if (
+                    not isinstance(parsed, (dict, list))
+                    or canonical_bytes(parsed) != payload
+                ):
+                    raise ValueError("PROVIDER_RESULT_MISMATCH")
+            except ValueError:
+                raise
+            except Exception as error:
+                raise ValueError("PROVIDER_RESULT_MISMATCH") from error
         return validated
 
     def _failure_result(

@@ -575,7 +575,7 @@ def build_runtime(
     artifacts = LocalArtifactStore(paths.artifacts, workspace_id, commit_id)
     registry = SQLiteRegistry(records, clock, ids)
     budget = SQLiteBudget(records, registry, clock, ids)
-    authorization = SQLiteValidator(records, budget, clock, ids)
+    authorization = SQLiteValidator(records, budget, clock, ids, artifacts)
     works = SQLiteWorks(records, authorization, clock, ids)
     transitions = SQLiteTransitions(works, artifacts)
     unit = SQLiteUnitOfWork(records, artifacts, transitions)
