@@ -181,6 +181,7 @@ class EnvironmentRecipeStore:
             raise ValueError("DOCKERFILE_UTF8_REQUIRED") from error
         if "\0" in content or content.startswith("\ufeff"):
             raise ValueError("DOCKERFILE_UTF8_REQUIRED")
+        from_count = 0
         for line in content.splitlines():
             stripped = line.lstrip(" \t")
             if not stripped:
@@ -192,6 +193,10 @@ class EnvironmentRecipeStore:
                 continue
             parts = re.split(r"[ \t]+", stripped, maxsplit=1)
             instruction = parts[0].upper()
+            if instruction == "FROM":
+                from_count += 1
+            if "--mount" in stripped.casefold():
+                raise ValueError("DOCKERFILE_RUN_MOUNT_DENIED")
             nested = (
                 re.split(r"[ \t]+", parts[1].lstrip(" \t"), maxsplit=1)[0].upper()
                 if instruction == "ONBUILD" and len(parts) == 2
@@ -200,6 +205,8 @@ class EnvironmentRecipeStore:
             denied = instruction if instruction in {"ADD", "COPY"} else nested
             if denied in {"ADD", "COPY"}:
                 raise ValueError(f"DOCKERFILE_{denied}_DENIED")
+        if from_count != 1:
+            raise ValueError("DOCKERFILE_SINGLE_BASE_IMAGE_REQUIRED")
         return content
 
     @staticmethod

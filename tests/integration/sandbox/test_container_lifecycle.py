@@ -310,6 +310,11 @@ async def test_prepare_creates_clean_non_root_default_deny_container(
         (b"# syntax=docker/dockerfile:1\nFROM scratch\n", "REMOTE_FRONTEND"),
         (b"FROM scratch\nADD https://example.invalid/payload /tmp/\n", "ADD"),
         (b"FROM scratch\nCOPY payload /tmp/\n", "COPY"),
+        (b"FROM scratch AS build\nFROM scratch\n", "SINGLE_BASE_IMAGE"),
+        (
+            b"FROM scratch\nRUN --mount=from=external/image,target=/mnt true\n",
+            "RUN_MOUNT",
+        ),
     ],
 )
 async def test_prepare_rejects_dockerfile_daemon_egress_and_context_inputs(
