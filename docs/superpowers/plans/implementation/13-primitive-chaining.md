@@ -31,6 +31,15 @@ Do not repeatedly run the complete suite. Run the complete suite once in the
 final PR CI after the integrated candidate SHA is frozen. Record Medium/Low
 cleanup without expanding T13.
 
+**Production handler boundary:** T13 adopts the post-T12 worker contract. Every
+production handler consumes only an already-claimed exact current
+`WorkContext`, never claims or starts an attempt itself, and derives all domain
+inputs from `context.work.input_refs` plus exact current-store checks. A handler
+may commit only its current work and may register downstream work only through
+the trusted ready-only enqueue port. It must not call `WorkflowRunner.start`,
+`activate`, `AttemptService.start`, a worker loop, or another handler/service
+inline.
+
 **Authoritative specification:**
 
 - `docs/architecture-v5/03-agent-roles-and-orchestration.md`
@@ -139,6 +148,11 @@ cleanup without expanding T13.
 - A reviewed but incompatible owned triple produces exactly one structured
   `NoMatchReason`. A non-owner, lineage-excluded item, budget stop, timeout, or
   provider error does not become a no-match.
+- Every reviewed owned directional triple appears exactly once in either
+  `PrimitiveMatchCandidate` or `NoMatchReason`. Every successful candidate maps
+  one-to-one to exactly one nested `HypothesisProposal`; a missing proposal or
+  two proposals sharing one `source_primitive_match_id` rejects the whole
+  result before publication.
 - The child keeps the exact match ID and both parent hypothesis IDs. It carries
   no new `observed_facts`.
 - Optional target entity/location/path values must be derivable from the two
@@ -220,14 +234,20 @@ parallel current-pointer or result writer.
 - `VerdictRouter.route(...)` exposes the current final result by exact reference
   and requests `PRIMITIVE_UPDATE` only for non-empty HOLD candidates. TRUE does
   not directly call Chaining; it continues through CWE and the two Gates.
-- The trusted proposal/hypothesis registry exposes one child-registration entry
-  that accepts a COMMITTED `ChainingResult` reference plus one nested proposal
+- T10 provides the trusted `hypothesis_projection` and
+  `VerificationRegistrationPort`, but its only public nested-child wrapper is
+  `verification/fake_child_registration.py`; that wrapper calls
+  `WorkflowRunner.start` and completes work inline, so production T13 must not
+  use it.
+- T13's production seam therefore exposes one child-handoff entry. It
+  accepts a COMMITTED `ChainingResult` reference plus one nested proposal
   identity, verifies `origin=CHAINING` and exact match lineage, preserves the
   proposal/question/validation IDs issued once by trusted output validation,
-  and returns the registered proposal/hypothesis/process refs. T13 calls this
-  public entry and does not write hypothesis tables itself.
-- Child registration/assignment returns without inheriting a parent verdict and
-  sends the child to the normal `VerificationRegistrationPort` path.
+  and idempotently enqueues the normal `HYPOTHESIS_PROPOSAL` registration path
+  as `READY`. The later claimed proposal handler uses the existing global
+  projection/duplicate authority and sends the registered child through the
+  normal `VerificationRegistrationPort` path, again reaching only `READY` and
+  never inheriting a parent verdict.
 
 ### T11 — validated dynamic proof boundary
 
@@ -254,6 +274,20 @@ parallel current-pointer or result writer.
   `COLLECTION_FAILED`, the service passes no Rule Scope review and preserves the
   exact collection failure reference. With no collection result it emits no
   admission trigger.
+- The post-Gate router is data-only and must enqueue `PRIMITIVE_UPDATE` as
+  `READY` after the exact upstream commit. `FOUND | ABSENT_CONFIRMED` routes only
+  after a COMMITTED current Rule Scope review. `COLLECTION_FAILED` routes after
+  Technical `ACCEPT` and the terminal frozen failed collection without creating
+  a Rule Scope work/review. Both forms pin the current Verification, dynamic
+  request/result/validated PoC, CWE, Technical review, `RunPolicyState`, exact
+  collection, optional policy record, optional Rule Scope review, current
+  `HypothesisProcessState`, and expected `PrimitiveIndexState` revisions in work
+  input; no collection ref, stale closure, or non-ACCEPT Technical result emits
+  a route.
+- T12's ready-only port must also be able to advance an exact already-registered
+  `PENDING` work returned by a trusted aggregate registration such as
+  `VerificationRegistrationPort.register` to `READY`, without registering a
+  duplicate or creating/claiming an attempt.
 - T12 passes structured values and refs only. It must not precompute or store a
   `PrimitiveAdmissionDecision`; the T13 trusted runtime owns that mechanical
   mapping.
@@ -274,6 +308,16 @@ Before editing, inspect rather than recreate the T04-T07 foundations:
 - `chaining/service.py` is a fake vertical-slice service that currently owns
   admission, only publishes the first TRUE capability, and accepts a caller's
   allow/deny flag. Production T13 must separate that authority.
+- T09 production prompt validation rejects every record reference, `*_ref(s)`,
+  runtime metadata, and runtime-owned ID in provider output. A provider therefore
+  cannot return a record-shaped `ChainingResult`, `PrimitiveMatchCandidate`, or
+  nested proposal. T13 must define a content-only Agent DTO and let trusted code
+  map prompt-local choices to pinned refs and allocate match, proposal, question,
+  and validation IDs before constructing the canonical domain result.
+- There is no production child-registration public entry. The current
+  `register_verification_children` helper is explicitly fake and starts and
+  completes child work inline. T13 must add the ready-only handoff seam described
+  above; merely wrapping that helper is forbidden.
 - `storage/chaining_projection.py` currently compares one analysis-scoped
   Chaining work generation to every source hypothesis generation. That rejects
   valid parents from different generations and must be removed.
@@ -322,9 +366,14 @@ Define non-persisted frozen DTOs/protocols for:
 - primitive update outcome containing committed decision/Primitive/index refs;
 - pinned Chaining universe containing trigger, exact index refs, and exact
   considered Primitive refs;
+- content-only Chaining Agent input/output using prompt-local comparison keys;
+  the output contains no domain record, exact ref, runtime metadata, match ID,
+  proposal ID, question ID, or validation ID;
 - read-only lineage resolution by exact ref;
 - global match-triple reservation inside the result transaction;
-- child proposal handoff to the existing trusted hypothesis registry.
+- ready-only child proposal handoff keyed by exact COMMITTED ChainingResult ref
+  plus nested proposal ID to the existing trusted hypothesis projection and
+  Verification registration path.
 
 These ports carry exact domain records/refs and do not introduce new Pydantic
 domain schemas or persistence authority. Test Protocol signatures and import
@@ -372,6 +421,8 @@ Responsibilities:
 
 - register one deduplicated work from a committed trigger and all current exact
   per-hypothesis indexes in the same analysis/workspace/commit;
+- use the post-T12 ready-only enqueue port so registration ends at `READY` with
+  no attempt, claim, provider call, or inline handler execution;
 - bind exact index refs and complete Primitive refs into work input/hash/key;
 - verify trigger membership exactly once;
 - preserve the start-time universe after unrelated later index appends;
@@ -405,7 +456,10 @@ Responsibilities:
 - traverse committed source match lineage with active-path cycle detection;
 - order non-trigger candidates deepest first;
 - prepare the minimum exact Prompt payload through T09 APIs;
-- parse only the approved `ChainingResult` output shape;
+- parse only the S0 content-only output schema; reject provider-supplied refs,
+  metadata, domain IDs, or record-shaped `ChainingResult` data, then let trusted
+  finalization map each prompt-local choice to pinned refs and allocate all
+  persisted IDs;
 - ensure normal mismatch produces structured `NoMatchReason`, while unreviewed,
   non-owner, excluded, timeout, and budget-stopped pairs do not;
 - build TRUE+HOLD and TRUE+TRUE proposal candidates with exact remaining
@@ -422,22 +476,36 @@ does not write DB state, allocate global hypothesis IDs, or change verdicts.
 Owned files only:
 
 - `src/sastsimi/chaining/service.py`
+- `src/sastsimi/chaining/work_handlers.py`
+- `src/sastsimi/runtime/chaining_child_registration.py`
 - `src/sastsimi/chaining/__init__.py`
 - `tests/integration/chaining/test_true_hold_true_true.py`
 - `tests/integration/chaining/test_chaining_errors.py`
+- `tests/contract/test_t13_work_handler_boundary.py`
 - `tests/e2e/test_chaining_child_full_revalidation.py`
 
 Responsibilities:
 
-- consume committed trigger refs from lane A through the S0 port;
-- ask lane B to pin/register the full input universe;
+- expose a `PRIMITIVE_UPDATE` handler that consumes only a claimed current
+  `WorkContext`, asks lane A to commit admission, and only after that commit asks
+  lane B to enqueue deduplicated `READY` CHAINING work for returned Primitive
+  refs;
+- expose a `CHAINING` handler that consumes only a claimed current
+  `WorkContext`; lane B has already pinned the full input universe before this
+  handler is called;
 - reserve R8 budget and perform one authorized CHAINING `CALL_LLM` using T09;
 - call lane C for ownership, lineage order, output parsing, and derivation;
 - submit one exact `SAVE_RESULT` and wait for COMMITTED publication;
-- hand each nested proposal to T10's global child registry only after the source
-  ChainingResult commit;
-- ensure child registration is idempotent and runs the normal assignment /
-  Verification path without inheriting parent TRUE/HOLD;
+- hand each nested proposal to the T13 production child-handoff entry only after
+  the source ChainingResult commit; the handoff may enqueue only a deduplicated
+  `READY` `HYPOTHESIS_PROPOSAL` work and cannot run its handler inline;
+- make the later claimed proposal registration and Verification handoff
+  idempotent on `(source_chaining_result_ref, proposal_id)`, reuse the existing
+  global duplicate/projection authority, and enqueue the normal Verification
+  path as `READY` without inheriting parent TRUE/HOLD;
+- expose the claimed `HYPOTHESIS_PROPOSAL` handler in `work_handlers.py`; it
+  commits only its exact source proposal, obtains the projected child refs, and
+  performs only the ready-only normal Verification registration handoff;
 - distinguish valid no-match success from Provider, budget, provenance, or
   storage failure; all failures leave parent verdicts untouched.
 
@@ -470,8 +538,9 @@ template/registry entry, I0 references it and does not create a duplicate.
 ### Task 1 — land S0 ports before parallel work
 
 - [ ] Write `tests/contract/test_chaining_ports.py` first. It must prove exact
-  refs are required, DTOs are immutable/non-persisted, and no port returns a
-  raw SQL connection or grants Agent storage authority.
+  refs are required, DTOs are immutable/non-persisted, content-only Agent output
+  contains no refs/runtime IDs, child handoff is ready-only, and no port returns
+  a raw SQL connection or grants Agent storage authority.
 - [ ] Run the test and confirm RED because the ports are absent.
 - [ ] Add only the minimum protocols/DTOs in `ports/chaining.py`; re-export them.
 - [ ] Run the focused test, architecture import test, Ruff, and mypy for those
@@ -493,6 +562,9 @@ template/registry entry, I0 references it and does not create a duplicate.
   ref; FOUND/ABSENT require the exact current review.
 - [ ] RED atomic/replay test: crash at decision/Primitive/index checkpoints
   exposes all-or-none, and replay does not double append.
+- [ ] RED authority test: a caller-supplied admission closure or decision is
+  ignored/rejected; source records are resolved only from the exact current
+  `PRIMITIVE_UPDATE` work input.
 - [ ] Implement the minimum runtime/projection changes and make tests GREEN.
 - [ ] Run focused Ruff/mypy and commit only lane A files:
   `feat: admit exact hold and true primitives`.
@@ -532,6 +604,12 @@ template/registry entry, I0 references it and does not create a duplicate.
 - [ ] RED derivation test: matched input removed, all remaining input
   descriptions retained, restriction union exact, conflicting restriction ID
   rejected, no new observed fact, and required falsification/validation present.
+- [ ] RED cardinality test: each reviewed owned directional triple appears once
+  as match or no-match and each match has exactly one proposal; missing or
+  duplicate `source_primitive_match_id` proposals reject the result.
+- [ ] RED authority test: record-shaped output or any provider-supplied exact
+  ref, match/proposal/question/validation ID, or metadata is rejected; trusted
+  finalization injects them from the pinned work context.
 - [ ] RED error test: Provider timeout/budget stop cannot be emitted as an empty
   successful ChainingResult or `NoMatchReason`.
 - [ ] Implement pure traversal/matching and thin Agent wrapper; make tests GREEN.
@@ -550,6 +628,9 @@ template/registry entry, I0 references it and does not create a duplicate.
 - [ ] RED critical error: result commit failure prevents child registration;
   child registration failure preserves the committed source result and is
   safely retryable without another Agent call or match row.
+- [ ] RED handler boundary: PRIMITIVE_UPDATE, CHAINING, and child proposal
+  registration consume claimed current contexts; every downstream work stops at
+  `READY` with no inline attempt, worker, handler, or service execution.
 - [ ] RED no-match: an actually reviewed incompatible owned triple commits a
   structured reason and no child; timeout remains a failed/blocked work.
 - [ ] Implement orchestration against S0 ports; make tests GREEN.
@@ -574,9 +655,9 @@ template/registry entry, I0 references it and does not create a duplicate.
 Run this set once on the integrated candidate before opening the PR:
 
 ```powershell
-uv run python -m pytest tests/contract/domain/test_chaining.py tests/contract/domain/test_review_round1_chaining.py tests/contract/test_chaining_ports.py tests/integration/chaining tests/security_negative/test_primitive_admission.py tests/security_negative/test_chaining_provenance.py tests/security_negative/test_chaining_agent_output.py tests/e2e/test_chaining_child_full_revalidation.py tests/e2e/test_real_chaining_slice.py -q
-uv run ruff check src/sastsimi/agents/chaining.py src/sastsimi/chaining src/sastsimi/reporting/primitive_admission.py src/sastsimi/runtime/chaining_registration.py src/sastsimi/storage/chaining_registration.py src/sastsimi/storage/chaining_projection.py tests/integration/chaining tests/security_negative/test_primitive_admission.py tests/security_negative/test_chaining_provenance.py tests/security_negative/test_chaining_agent_output.py
-uv run mypy --strict src/sastsimi/agents/chaining.py src/sastsimi/chaining src/sastsimi/reporting/primitive_admission.py src/sastsimi/runtime/chaining_registration.py src/sastsimi/storage/chaining_registration.py src/sastsimi/storage/chaining_projection.py
+uv run python -m pytest tests/contract/domain/test_chaining.py tests/contract/domain/test_review_round1_chaining.py tests/contract/test_chaining_ports.py tests/contract/test_t13_work_handler_boundary.py tests/integration/chaining tests/security_negative/test_primitive_admission.py tests/security_negative/test_chaining_provenance.py tests/security_negative/test_chaining_agent_output.py tests/e2e/test_chaining_child_full_revalidation.py tests/e2e/test_real_chaining_slice.py -q
+uv run ruff check src/sastsimi/agents/chaining.py src/sastsimi/chaining src/sastsimi/reporting/primitive_admission.py src/sastsimi/runtime/chaining_registration.py src/sastsimi/runtime/chaining_child_registration.py src/sastsimi/storage/chaining_registration.py src/sastsimi/storage/chaining_projection.py tests/contract/test_t13_work_handler_boundary.py tests/integration/chaining tests/security_negative/test_primitive_admission.py tests/security_negative/test_chaining_provenance.py tests/security_negative/test_chaining_agent_output.py
+uv run mypy --strict src/sastsimi/agents/chaining.py src/sastsimi/chaining src/sastsimi/reporting/primitive_admission.py src/sastsimi/runtime/chaining_registration.py src/sastsimi/runtime/chaining_child_registration.py src/sastsimi/storage/chaining_registration.py src/sastsimi/storage/chaining_projection.py
 powershell -NoProfile -File scripts/validate-architecture-docs.ps1
 git diff --check
 ```
@@ -585,6 +666,8 @@ Required focused outcomes:
 
 - at least one TRUE+HOLD and one TRUE+TRUE child reaches normal Verification
   registration but has no verdict before its independent Verification;
+- production Chaining accepts only content-shaped provider output and all exact
+  refs/runtime IDs in the committed result are trusted-runtime values;
 - forbidden-test DENY produces no result Primitive;
 - HOLD remains inputs-only and keeps restrictions;
 - different parent generations do not cause a false stale rejection;
@@ -622,8 +705,14 @@ Required focused outcomes:
 - Corrupt lineage cannot loop, cross scope, or silently become a match/no-match.
 - Match triples are globally unique per analysis and atomically bound to their
   ChainingResult.
+- Reviewed owned triples are directionally complete and unique, and successful
+  matches are one-to-one with nested child proposals.
 - Existing proposal duplicate logic is reused; no parallel duplicate authority
   or second hypothesis writer exists.
+- Primitive, Chaining, proposal, and Verification stages consume claimed exact
+  contexts independently and cross each stage only through COMMITTED results
+  plus deduplicated ready-only enqueue; no production inline start, claim,
+  handler, or service path exists.
 - R8 global work/time/cost/attempt budgets cover Chaining, token usage remains
   observational, and all budget stops preserve parent verdicts.
 - T13 imports through approved ports, keeps concrete storage/provider wiring in
