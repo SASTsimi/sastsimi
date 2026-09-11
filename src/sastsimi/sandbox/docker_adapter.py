@@ -12,6 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from sastsimi.contracts.dynamic import POC_RUNTIME_PATH
+from sastsimi.contracts.prompt_redaction import redact_untrusted_text
 
 from .controller import SandboxRunSpec
 
@@ -518,18 +519,7 @@ class DockerAdapter:
 
     @staticmethod
     def _safe_output(value: bytes) -> bytes:
-        text = value.decode("utf-8", errors="replace")
-        text = re.sub(
-            r"(?i)\b(bearer|basic)\s+\S+",
-            r"\1 [REDACTED]",
-            text,
-        )
-        text = re.sub(
-            r"(?i)\b(password|token|cookie|authorization|api[_-]?key)\s*[:=]\s*\S+",
-            r"\1=[REDACTED]",
-            text,
-        )
-        return text.encode("utf-8")
+        return redact_untrusted_text(value).data
 
     @staticmethod
     def _require_success(code: str, outcome: DockerCommandOutcome) -> None:

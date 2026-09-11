@@ -20,7 +20,7 @@ _OPAQUE_TOKEN = re.compile(
     r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}|"
     r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{8,}|"
     r"\bglpat-[A-Za-z0-9_-]{8,}|\bxox[A-Za-z0-9]*-[A-Za-z0-9-]{8,}|"
-    r"\bAKIA[A-Z0-9]{12,})"
+    r"\b(?:AKIA|ASIA)[A-Z0-9]{12,})"
 )
 _COOKIE_ASSIGNMENT = re.compile(
     r"(?i)\b(?:cookies?|session[_-]?ids?|sessionid)\b\s*[:=]\s*"
@@ -44,6 +44,10 @@ _PRIVATE_KEY = re.compile(
     r"-----END(?: [A-Z0-9]+)? PRIVATE KEY-----",
     re.IGNORECASE,
 )
+_PRIVATE_KEY_HEADER = re.compile(
+    r"-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----",
+    re.IGNORECASE,
+)
 _WINDOWS_PATH = re.compile(r"(?i)(?<![\w])(?:[A-Z]:[\\/]|\\\\)[^\r\n,;\"'<>]+")
 _POSIX_HOST_PATH = re.compile(
     r"(?<![\w/])/(?:root|home|Users|tmp|etc|var|opt|srv|usr|private)"
@@ -58,7 +62,7 @@ class RedactionResult:
 
 
 def _replace_string(value: str) -> tuple[str, set[str]]:
-    if _PRIVATE_KEY.search(value):
+    if _PRIVATE_KEY.search(value) or _PRIVATE_KEY_HEADER.search(value):
         return "[REDACTED:CREDENTIAL]", {"CREDENTIAL"}
 
     result = value
@@ -148,6 +152,15 @@ def redact_projected_json(data: bytes) -> RedactionResult:
     if _has_sensitive_string(redacted):
         raise ValueError("PROMPT_REDACTION_FAILED")
     return RedactionResult(encoded, tuple(sorted(categories)))
+
+
+def redact_untrusted_text(data: bytes) -> RedactionResult:
+    """Return deterministic UTF-8 bytes with credentials and host paths removed."""
+    value = data.decode("utf-8", errors="replace")
+    redacted, categories = _replace_string(value)
+    if _has_sensitive_string(redacted):
+        raise ValueError("PROMPT_REDACTION_FAILED")
+    return RedactionResult(redacted.encode("utf-8"), tuple(sorted(categories)))
 
 
 def assert_safe_provider_text(data: bytes) -> None:
