@@ -1150,9 +1150,11 @@ async def test_cancelled_provider_call_is_persisted_without_a_domain_result() ->
 
     assert adapter.calls == 1
     assert outcome.result.status == "CANCELLED"
+    assert outcome.dispatch_state == "UNRESOLVED"
     assert outcome.result.parsed_output_ref is None
     assert outcome.result.safe_error == "CANCELLED: provider request was cancelled"
-    assert authorization.dispatched == authorization.returned == 1
+    assert authorization.dispatched == 1
+    assert authorization.returned == 0
     assert len(authorization.invocations) == 1
 
 
