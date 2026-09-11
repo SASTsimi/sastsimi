@@ -37,6 +37,7 @@ from sastsimi.ports.fake_workflow import (
     ProviderProber,
     VerificationExecution,
 )
+from sastsimi.reporting.content_validation import ReportContent
 from sastsimi.runtime.fake_llm_configuration import register_fake_llm_call
 from sastsimi.runtime.fake_llm_invocation import (
     FakeInvocation,
@@ -107,6 +108,19 @@ class ReportingService:
         self._record_meta = dependencies.records.record_meta
         self._artifact = dependencies.records.artifact
         self._stored_artifact = dependencies.records.stored_artifact
+
+    def _report_content_ref(self) -> StoredDataRef:
+        content = ReportContent(
+            title="Validated vulnerability finding",
+            summary="The exact verified evidence supports this finding.",
+            details="Static, debate, and dynamic evidence were reviewed together.",
+            recommendation="Review the affected flow and apply the documented fix.",
+            citations=(),
+        )
+        staged = self.runtime.unit_of_work.artifacts.stage_bytes(
+            canonical_bytes(content.model_dump(mode="json")), "application/json"
+        )
+        return self.runtime.unit_of_work.artifacts.commit(staged)
 
     def _gate_output(
         self,
@@ -597,7 +611,7 @@ class ReportingService:
                         policy_record_ref=policy_state.policy_record_ref,
                         dynamic_result_ref=verification.dynamic_result_ref,
                         poc_ref=verification.poc_ref,
-                        content_ref=self._artifact("report_content", record=True),
+                        content_ref=self._report_content_ref(),
                         restrictions=verification.restrictions,
                         limitations=(),
                         unresolved_conditions=(),
