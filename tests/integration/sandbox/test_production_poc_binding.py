@@ -32,7 +32,11 @@ from sastsimi.reproduction.production import (
     ProductionDynamicWorkflow,
 )
 from sastsimi.reproduction.service import DynamicOperationalError
-from sastsimi.sandbox.controller import SandboxBoundaryOutcome, SandboxController
+from sastsimi.sandbox.controller import (
+    SandboxBoundaryOutcome,
+    SandboxController,
+    SandboxRunSpec,
+)
 from sastsimi.sandbox.docker_adapter import DockerCommandOutcome
 from sastsimi.sandbox.session_manager import ReproductionSessionManager
 from sastsimi.sandbox.setup_automation import (
@@ -488,7 +492,7 @@ async def test_recreate_updates_session_workflow_and_log_to_exact_new_policy() -
     controller = _RecreateController(
         SandboxBoundaryOutcome(
             decision=recreate_policy,
-            approved_spec=cast(object, SimpleNamespace()),
+            approved_spec=cast(SandboxRunSpec, SimpleNamespace()),
             approved_recipe_ref=recipe_ref,
         )
     )

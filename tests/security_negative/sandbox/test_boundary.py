@@ -3,7 +3,7 @@ import json
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -595,6 +595,7 @@ def test_exact_plan_environment_requirements_must_be_in_action_inputs(
     plan = context.arguments["plan"]
     assert isinstance(action, ActionRequest)
     assert isinstance(plan, ReproductionPlan)
+    input_refs = tuple(cast(StoredDataRef, ref) for ref in action.input_refs)
     wrong_requirements_ref = plan.environment_requirements_ref.model_copy(
         update={
             "stored_data_id": "wrong-requirements-stored",
@@ -606,7 +607,7 @@ def test_exact_plan_environment_requirements_must_be_in_action_inputs(
         context,
         input_refs=tuple(
             wrong_requirements_ref if ref == plan.environment_requirements_ref else ref
-            for ref in action.input_refs
+            for ref in input_refs
         ),
     )
 
@@ -624,12 +625,13 @@ def test_required_phase_context_must_appear_exactly_once(
     context = _context(tmp_path)
     action = context.arguments["action"]
     assert isinstance(action, ActionRequest)
+    input_refs = tuple(cast(StoredDataRef, ref) for ref in action.input_refs)
     context_ref = StoredDataRef.model_validate(
         _ref("sandbox_policy_decision", "build-policy")
     )
     arguments = _replace_action(
         context,
-        input_refs=(*action.input_refs, *((context_ref,) * context_ref_count)),
+        input_refs=(*input_refs, *((context_ref,) * context_ref_count)),
     ) | {"required_context_refs": (context_ref,)}
 
     outcome = context.controller.evaluate(**arguments)  # type: ignore[arg-type]
@@ -644,13 +646,14 @@ def test_required_phase_context_is_recorded_as_checked_boundary(
     context = _context(tmp_path)
     action = context.arguments["action"]
     assert isinstance(action, ActionRequest)
+    input_refs = tuple(cast(StoredDataRef, ref) for ref in action.input_refs)
     context_refs = (
         StoredDataRef.model_validate(_ref("sandbox_policy_decision", "build-policy")),
         StoredDataRef.model_validate(_ref("action_decision", "build-decision")),
     )
     arguments = _replace_action(
         context,
-        input_refs=(*action.input_refs, *context_refs),
+        input_refs=(*input_refs, *context_refs),
     ) | {"required_context_refs": context_refs}
 
     outcome = context.controller.evaluate(**arguments)  # type: ignore[arg-type]
