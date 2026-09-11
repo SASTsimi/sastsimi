@@ -1,0 +1,327 @@
+"""Shell-free Docker CLI boundary for the local reproduction Sandbox."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+from decimal import Decimal
+from pathlib import Path
+
+from .controller import SandboxRunSpec
+
+_IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_RESOURCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_LABEL_VALUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_REQUIRED_LABELS = frozenset(
+    {
+        "sastsimi.owner",
+        "sastsimi.analysis-id",
+        "sastsimi.workspace-id",
+        "sastsimi.commit-id",
+        "sastsimi.hypothesis-id",
+        "sastsimi.attempt-id",
+    }
+)
+_ALLOWED_LABELS = _REQUIRED_LABELS | {"sastsimi.resource-kind"}
+_OUTPUT_LIMIT_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class DockerCommandOutcome:
+    exit_code: int
+    stdout: bytes
+    stderr: bytes
+    timed_out: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DockerContainerState:
+    container_id: str
+    image_digest: str
+    user: str
+    network_mode: str
+    privileged: bool
+    read_only_rootfs: bool
+    running: bool
+    exit_code: int
+    health_status: str | None
+    labels: Mapping[str, str]
+
+
+class DockerOperationError(RuntimeError):
+    """Safe Docker failure; raw process output is available only after redaction."""
+
+    def __init__(self, code: str, outcome: DockerCommandOutcome | None = None) -> None:
+        super().__init__(code)
+        self.code = code
+        self.outcome = outcome
+
+
+class DockerAdapter:
+    """Invoke a fixed Docker executable using argv, never a command shell."""
+
+    def __init__(self, executable: str = "docker") -> None:
+        executable_name = Path(executable).name.lower()
+        if executable_name not in {"docker", "docker.exe"} or (
+            executable != executable_name and not Path(executable).is_absolute()
+        ):
+            raise ValueError("DOCKER_EXECUTABLE_NOT_FIXED")
+        self._executable = executable
+
+    async def build(self, recipe_source: Path, labels: Mapping[str, str]) -> str:
+        context = recipe_source.resolve(strict=True)
+        if not context.is_dir():
+            raise ValueError("RECIPE_CONTEXT_REQUIRED")
+        label_args = self._label_args(labels)
+        outcome = await self._run(
+            (
+                "build",
+                "--quiet",
+                "--network",
+                "none",
+                *label_args,
+                str(context),
+            )
+        )
+        self._require_success("DOCKER_BUILD_FAILED", outcome)
+        digest = (
+            outcome.stdout.decode("ascii", errors="strict").strip().splitlines()[-1]
+        )
+        if not _IMAGE_DIGEST.fullmatch(digest):
+            raise DockerOperationError("DOCKER_IMAGE_DIGEST_INVALID", outcome)
+        return digest
+
+    async def inspect_image(self, image: str) -> str:
+        if not image or any(character in image for character in "\r\n\0"):
+            raise ValueError("DOCKER_IMAGE_REFERENCE_INVALID")
+        outcome = await self._run(("image", "inspect", "--format", "{{.Id}}", image))
+        self._require_success("DOCKER_IMAGE_INSPECT_FAILED", outcome)
+        digest = outcome.stdout.decode("ascii", errors="strict").strip()
+        if not _IMAGE_DIGEST.fullmatch(digest):
+            raise DockerOperationError("DOCKER_IMAGE_DIGEST_INVALID", outcome)
+        return digest
+
+    async def create(self, spec: SandboxRunSpec, labels: Mapping[str, str]) -> str:
+        if not _IMAGE_DIGEST.fullmatch(spec.image_digest):
+            raise ValueError("IMAGE_DIGEST_REQUIRED")
+        if spec.network_mode != "DEFAULT_DENY" or spec.network_targets:
+            raise ValueError("DOCKER_NETWORK_BOUNDARY_INVALID")
+        if spec.privileged or spec.pid_mode is not None or spec.ipc_mode is not None:
+            raise ValueError("DOCKER_NAMESPACE_BOUNDARY_INVALID")
+        if spec.capabilities or spec.secret_refs:
+            raise ValueError("DOCKER_CAPABILITY_BOUNDARY_INVALID")
+        if spec.user in {"0", "root"} or not spec.user:
+            raise ValueError("NON_ROOT_USER_REQUIRED")
+
+        mount_args: list[str] = []
+        for mount in spec.mounts:
+            if mount.source is None or not mount.read_only:
+                raise ValueError("READ_ONLY_MOUNT_REQUIRED")
+            source = mount.source.resolve(strict=True)
+            values = (str(source), str(mount.target))
+            if any(any(char in value for char in ",\r\n\0") for value in values):
+                raise ValueError("DOCKER_MOUNT_VALUE_INVALID")
+            mount_args.extend(
+                (
+                    "--mount",
+                    f"type=bind,src={source},dst={mount.target},readonly",
+                )
+            )
+
+        name = self.runtime_container_name(labels)
+        cpu = str(Decimal(spec.cpu_limit_millicores) / Decimal(1000))
+        outcome = await self._run(
+            (
+                "create",
+                "--name",
+                name,
+                "--network",
+                "none",
+                "--read-only",
+                "--user",
+                spec.user,
+                "--security-opt",
+                "no-new-privileges",
+                "--cap-drop",
+                "ALL",
+                "--pids-limit",
+                str(spec.pid_limit),
+                "--cpus",
+                cpu,
+                "--memory",
+                str(spec.memory_limit_bytes),
+                "--tmpfs",
+                (
+                    "/tmp:rw,noexec,nosuid,nodev,size="
+                    f"{spec.disk_limit_bytes},mode=1777"
+                ),
+                *self._label_args(labels),
+                *mount_args,
+                spec.image_digest,
+                "sleep",
+                "infinity",
+            )
+        )
+        self._require_success("DOCKER_CREATE_FAILED", outcome)
+        container_id = outcome.stdout.decode("ascii", errors="strict").strip()
+        if not _RESOURCE_ID.fullmatch(container_id):
+            raise DockerOperationError("DOCKER_CONTAINER_ID_INVALID", outcome)
+        return container_id
+
+    async def start(self, container_id: str) -> None:
+        self._require_resource_id(container_id)
+        outcome = await self._run(("start", container_id))
+        self._require_success("DOCKER_START_FAILED", outcome)
+
+    async def exec(
+        self, container_id: str, argv: tuple[str, ...], timeout_ms: int
+    ) -> DockerCommandOutcome:
+        self._require_resource_id(container_id)
+        if not argv or timeout_ms <= 0:
+            raise ValueError("DOCKER_EXEC_INPUT_INVALID")
+        if any(not item or any(char in item for char in "\r\n\0") for item in argv):
+            raise ValueError("DOCKER_EXEC_ARGV_INVALID")
+        return await self._run(("exec", container_id, *argv), timeout_ms=timeout_ms)
+
+    async def inspect(self, container_id: str) -> DockerContainerState:
+        self._require_resource_id(container_id)
+        outcome = await self._run(("inspect", container_id))
+        self._require_success("DOCKER_INSPECT_FAILED", outcome)
+        try:
+            decoded = json.loads(outcome.stdout)
+            item = decoded[0]
+            if not isinstance(item, dict):
+                raise TypeError
+            config = item["Config"]
+            host = item["HostConfig"]
+            state = item["State"]
+            if not all(isinstance(value, dict) for value in (config, host, state)):
+                raise TypeError
+            health = state.get("Health")
+            labels = config.get("Labels") or {}
+            if not isinstance(labels, dict) or not all(
+                isinstance(key, str) and isinstance(value, str)
+                for key, value in labels.items()
+            ):
+                raise TypeError
+            health_status = (
+                health.get("Status") if isinstance(health, dict) else None
+            )
+            return DockerContainerState(
+                container_id=str(item["Id"]),
+                image_digest=str(item["Image"]),
+                user=str(config["User"]),
+                network_mode=str(host["NetworkMode"]),
+                privileged=bool(host["Privileged"]),
+                read_only_rootfs=bool(host["ReadonlyRootfs"]),
+                running=bool(state["Running"]),
+                exit_code=int(state["ExitCode"]),
+                health_status=(
+                    str(health_status) if health_status is not None else None
+                ),
+                labels=dict(labels),
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            raise DockerOperationError(
+                "DOCKER_INSPECT_OUTPUT_INVALID", outcome
+            ) from error
+
+    async def remove(self, resource_ids: tuple[str, ...]) -> None:
+        if not resource_ids:
+            return
+        if len(set(resource_ids)) != len(resource_ids):
+            raise ValueError("DUPLICATE_DOCKER_RESOURCE")
+        for resource_id in resource_ids:
+            self._require_resource_id(resource_id)
+        outcome = await self._run(("rm", "--force", *resource_ids))
+        self._require_success("DOCKER_REMOVE_FAILED", outcome)
+
+    @staticmethod
+    def runtime_container_name(labels: Mapping[str, str]) -> str:
+        normalized = DockerAdapter._validated_labels(labels)
+        identity = "\0".join(f"{key}={normalized[key]}" for key in sorted(normalized))
+        return "sastsimi-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32]
+
+    @staticmethod
+    def _validated_labels(labels: Mapping[str, str]) -> dict[str, str]:
+        if set(labels) != _REQUIRED_LABELS and set(labels) != _ALLOWED_LABELS:
+            raise ValueError("DOCKER_OWNERSHIP_LABELS_INVALID")
+        normalized = dict(labels)
+        if normalized.get("sastsimi.owner") != "reproduction-setup-automation":
+            raise ValueError("DOCKER_OWNERSHIP_LABELS_INVALID")
+        if any(
+            not _LABEL_VALUE.fullmatch(value) for value in normalized.values()
+        ):
+            raise ValueError("DOCKER_OWNERSHIP_LABELS_INVALID")
+        if normalized.get("sastsimi.resource-kind", "container") != "container":
+            raise ValueError("DOCKER_RESOURCE_KIND_INVALID")
+        return normalized
+
+    @classmethod
+    def _label_args(cls, labels: Mapping[str, str]) -> tuple[str, ...]:
+        normalized = cls._validated_labels(labels)
+        values: list[str] = []
+        for key in sorted(normalized):
+            values.extend(("--label", f"{key}={normalized[key]}"))
+        return tuple(values)
+
+    @staticmethod
+    def _require_resource_id(resource_id: str) -> None:
+        if not _RESOURCE_ID.fullmatch(resource_id):
+            raise ValueError("DOCKER_RESOURCE_ID_INVALID")
+
+    async def _run(
+        self, argv: tuple[str, ...], *, timeout_ms: int | None = None
+    ) -> DockerCommandOutcome:
+        process = await asyncio.create_subprocess_exec(
+            self._executable,
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        timed_out = False
+        try:
+            if timeout_ms is None:
+                stdout, stderr = await process.communicate()
+            else:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout_ms / 1000
+                )
+        except TimeoutError:
+            timed_out = True
+            process.kill()
+            stdout, stderr = await process.communicate()
+        stdout = self._safe_output(stdout)
+        stderr = self._safe_output(stderr)
+        if len(stdout) > _OUTPUT_LIMIT_BYTES or len(stderr) > _OUTPUT_LIMIT_BYTES:
+            raise DockerOperationError("DOCKER_OUTPUT_LIMIT_EXCEEDED")
+        return DockerCommandOutcome(
+            exit_code=process.returncode if process.returncode is not None else -1,
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=timed_out,
+        )
+
+    @staticmethod
+    def _safe_output(value: bytes) -> bytes:
+        text = value.decode("utf-8", errors="replace")
+        text = re.sub(
+            r"(?i)\b(bearer|basic)\s+\S+",
+            r"\1 [REDACTED]",
+            text,
+        )
+        text = re.sub(
+            r"(?i)\b(password|token|cookie|authorization|api[_-]?key)\s*[:=]\s*\S+",
+            r"\1=[REDACTED]",
+            text,
+        )
+        return text.encode("utf-8")
+
+    @staticmethod
+    def _require_success(code: str, outcome: DockerCommandOutcome) -> None:
+        if outcome.timed_out or outcome.exit_code != 0:
+            raise DockerOperationError(code, outcome)
