@@ -123,17 +123,39 @@ class DockerAdapter:
         ):
             raise ValueError("DOCKER_IMAGE_REFERENCE_INVALID")
         outcome = await self._run(
-            ("image", "inspect", "--format", "{{.Id}}", image),
+            ("image", "inspect", "--format", "{{json .RepoDigests}}", image),
             timeout_ms=timeout_ms,
         )
         self._require_success("DOCKER_IMAGE_INSPECT_FAILED", outcome)
-        digest = outcome.stdout.decode("ascii", errors="strict").strip()
-        if not _IMAGE_DIGEST.fullmatch(digest):
+        try:
+            repo_digests = json.loads(outcome.stdout.decode("ascii", errors="strict"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise DockerOperationError(
+                "DOCKER_IMAGE_DIGEST_INVALID", outcome
+            ) from error
+        repository = self._image_repository(image)
+        matching_digests = (
+            {
+                digest
+                for item in repo_digests
+                if isinstance(item, str)
+                for candidate, separator, digest in (item.rpartition("@"),)
+                if separator
+                and self._same_repository(repository, candidate)
+                and _IMAGE_DIGEST.fullmatch(digest)
+            }
+            if isinstance(repo_digests, list)
+            else set()
+        )
+        if len(matching_digests) != 1:
             raise DockerOperationError("DOCKER_IMAGE_DIGEST_INVALID", outcome)
-        return digest
+        return matching_digests.pop()
 
     async def create(self, spec: SandboxRunSpec, labels: Mapping[str, str]) -> str:
-        if not _IMAGE_DIGEST.fullmatch(spec.image_digest):
+        image_digest = spec.image_digest
+        if not isinstance(image_digest, str) or not _IMAGE_DIGEST.fullmatch(
+            image_digest
+        ):
             raise ValueError("IMAGE_DIGEST_REQUIRED")
         if spec.network_mode != "DEFAULT_DENY" or spec.network_targets:
             raise ValueError("DOCKER_NETWORK_BOUNDARY_INVALID")
@@ -185,7 +207,7 @@ class DockerAdapter:
                 (f"/tmp:rw,noexec,nosuid,nodev,size={spec.disk_limit_bytes},mode=1777"),
                 *self._label_args(labels),
                 *mount_args,
-                spec.image_digest,
+                image_digest,
                 "sleep",
                 "infinity",
             )
@@ -195,6 +217,24 @@ class DockerAdapter:
         if not _RESOURCE_ID.fullmatch(container_id):
             raise DockerOperationError("DOCKER_CONTAINER_ID_INVALID", outcome)
         return container_id
+
+    @staticmethod
+    def _image_repository(image: str) -> str:
+        repository = image.split("@", maxsplit=1)[0]
+        last_slash = repository.rfind("/")
+        last_colon = repository.rfind(":")
+        return repository[:last_colon] if last_colon > last_slash else repository
+
+    @staticmethod
+    def _same_repository(left: str, right: str) -> bool:
+        def normalized(value: str) -> str:
+            if value.startswith("index.docker.io/"):
+                value = value.removeprefix("index.docker.io/")
+            elif value.startswith("docker.io/"):
+                value = value.removeprefix("docker.io/")
+            return value if "/" in value else f"library/{value}"
+
+        return normalized(left) == normalized(right)
 
     async def start(self, container_id: str) -> None:
         self._require_resource_id(container_id)

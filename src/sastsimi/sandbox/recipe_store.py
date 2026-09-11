@@ -272,9 +272,23 @@ class EnvironmentRecipeStore:
         match = _FROM.search(content)
         if match is None or match.group(1) != base_image:
             raise ValueError("DOCKERFILE_BASE_IMAGE_INVALID")
+        repository = EnvironmentRecipeStore._image_repository(base_image)
         return (
-            content[: match.start(1)] + base_digest + content[match.end(1) :]
+            content[: match.start(1)]
+            + f"{repository}@{base_digest}"
+            + content[match.end(1) :]
         ).encode("utf-8")
+
+    @staticmethod
+    def _image_repository(image: str) -> str:
+        repository = image.split("@", maxsplit=1)[0]
+        last_slash = repository.rfind("/")
+        last_colon = repository.rfind(":")
+        if last_colon > last_slash:
+            repository = repository[:last_colon]
+        if not repository:
+            raise ValueError("DOCKERFILE_BASE_IMAGE_INVALID")
+        return repository
 
     @staticmethod
     def _validated_dockerfile(dockerfile: bytes) -> str:

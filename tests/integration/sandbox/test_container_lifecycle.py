@@ -455,7 +455,8 @@ async def test_prepare_creates_clean_non_root_default_deny_container(
 async def test_prepare_bounds_local_base_image_inspection(
     tmp_path: Path,
 ) -> None:
-    (tmp_path / "Dockerfile").write_bytes(b"FROM fixture:local\n")
+    base_image = "registry.example:5000/team/fixture:local"
+    (tmp_path / "Dockerfile").write_text(f"FROM {base_image}\n", encoding="utf-8")
     request, requirements, plan = _dynamic_records()
     docker = FakeDockerAdapter()
 
@@ -468,8 +469,25 @@ async def test_prepare_bounds_local_base_image_inspection(
         meta=_meta("sandbox_environment", "environment-seed"),
     )
 
-    assert docker.inspected_images == [("fixture:local", 10_000)]
-    assert docker.built == [(f"FROM {IMAGE_DIGEST}\n".encode(), 10_000)]
+    assert docker.inspected_images == [(base_image, 10_000)]
+    assert docker.built == [
+        (
+            f"FROM registry.example:5000/team/fixture@{IMAGE_DIGEST}\n".encode(),
+            10_000,
+        )
+    ]
+
+
+def test_recipe_pins_named_base_to_repository_manifest_digest() -> None:
+    dockerfile = EnvironmentRecipeStore._pin_base_image(
+        "FROM registry.example:5000/team/fixture:local\n",
+        base_image="registry.example:5000/team/fixture:local",
+        base_digest=IMAGE_DIGEST,
+    )
+
+    assert dockerfile == (
+        f"FROM registry.example:5000/team/fixture@{IMAGE_DIGEST}\n".encode()
+    )
 
 
 @pytest.mark.asyncio
@@ -897,7 +915,12 @@ async def test_docker_image_inspection_uses_approved_timeout(
     ) -> DockerCommandOutcome:
         assert input_bytes is None
         calls.append((argv, timeout_ms))
-        return DockerCommandOutcome(0, (IMAGE_DIGEST + "\n").encode(), b"", False)
+        return DockerCommandOutcome(
+            0,
+            json.dumps([f"fixture@{IMAGE_DIGEST}"]).encode(),
+            b"",
+            False,
+        )
 
     adapter = DockerAdapter()
     monkeypatch.setattr(adapter, "_run", run)
@@ -906,8 +929,38 @@ async def test_docker_image_inspection_uses_approved_timeout(
 
     assert digest == IMAGE_DIGEST
     assert calls == [
-        (("image", "inspect", "--format", "{{.Id}}", "fixture:local"), 10_000)
+        (
+            (
+                "image",
+                "inspect",
+                "--format",
+                "{{json .RepoDigests}}",
+                "fixture:local",
+            ),
+            10_000,
+        )
     ]
+
+
+@pytest.mark.asyncio
+async def test_docker_create_rejects_missing_image_digest_before_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, _, _ = _dynamic_records()
+    run = _approval(Path.cwd(), request)
+    assert run.approved_spec is not None
+
+    async def unexpected(*_: object, **__: object) -> DockerCommandOutcome:
+        raise AssertionError("Docker must not receive a missing image digest")
+
+    adapter = DockerAdapter()
+    monkeypatch.setattr(adapter, "_run", unexpected)
+
+    with pytest.raises(ValueError, match="IMAGE_DIGEST_REQUIRED"):
+        await adapter.create(
+            replace(run.approved_spec, image_digest=None),
+            {},
+        )
 
 
 @pytest.mark.asyncio
