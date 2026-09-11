@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal, Protocol
 from uuid import uuid4
 
@@ -31,7 +30,13 @@ RecreateReason = Literal["STATE_CHANGED", "CONFIG_CHANGED", "STATE_UNCERTAIN"]
 
 
 class DockerLifecyclePort(Protocol):
-    async def build(self, recipe_source: Path, labels: Mapping[str, str]) -> str: ...
+    async def build(
+        self,
+        dockerfile: bytes,
+        labels: Mapping[str, str],
+        *,
+        timeout_ms: int,
+    ) -> str: ...
     async def inspect_image(self, image: str) -> str: ...
     async def create(self, spec: SandboxRunSpec, labels: Mapping[str, str]) -> str: ...
     async def start(self, container_id: str) -> None: ...
@@ -101,6 +106,7 @@ class ReproductionSetupAutomation:
             request_ref=self._exact_ref(request),
             requirements=requirements,
             meta=meta,
+            build_timeout_ms=spec.requested_execution_ms,
         )
         if recipe.built_image_digest != spec.image_digest:
             raise ValueError("APPROVED_IMAGE_DIGEST_MISMATCH")

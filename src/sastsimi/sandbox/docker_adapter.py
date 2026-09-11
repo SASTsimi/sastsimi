@@ -84,20 +84,28 @@ class DockerAdapter:
             raise ValueError("DOCKER_EXECUTABLE_NOT_FIXED")
         self._executable = executable
 
-    async def build(self, recipe_source: Path, labels: Mapping[str, str]) -> str:
-        context = recipe_source.resolve(strict=True)
-        if not context.is_dir():
-            raise ValueError("RECIPE_CONTEXT_REQUIRED")
+    async def build(
+        self,
+        dockerfile: bytes,
+        labels: Mapping[str, str],
+        *,
+        timeout_ms: int,
+    ) -> str:
+        if not dockerfile or timeout_ms <= 0:
+            raise ValueError("DOCKER_BUILD_INPUT_INVALID")
         label_args = self._label_args(labels)
         outcome = await self._run(
             (
                 "build",
                 "--quiet",
+                "--pull=false",
                 "--network",
                 "none",
                 *label_args,
-                str(context),
-            )
+                "-",
+            ),
+            timeout_ms=timeout_ms,
+            input_bytes=dockerfile,
         )
         self._require_success("DOCKER_BUILD_FAILED", outcome)
         digest = (

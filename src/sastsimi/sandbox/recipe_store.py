@@ -38,7 +38,13 @@ _FROM = re.compile(r"^\s*FROM\s+([^\s]+)", re.IGNORECASE | re.MULTILINE)
 
 
 class RecipeDockerPort(Protocol):
-    async def build(self, recipe_source: Path, labels: Mapping[str, str]) -> str: ...
+    async def build(
+        self,
+        dockerfile: bytes,
+        labels: Mapping[str, str],
+        *,
+        timeout_ms: int,
+    ) -> str: ...
     async def inspect_image(self, image: str) -> str: ...
 
 
@@ -74,10 +80,12 @@ class EnvironmentRecipeStore:
         request_ref: StoredDataRef,
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
+        build_timeout_ms: int,
     ) -> EnvironmentRecipe:
-        root, dockerfile, source_ref, source_refs, source_digest = self._source(
+        dockerfile, source_ref, source_refs, source_digest = self._source(
             context, meta
         )
+        content = self._validated_dockerfile(dockerfile)
         key = (str(meta.workspace_id), str(meta.commit_id), source_digest)
         requirements_ref = reference(requirements)
         if not isinstance(requirements_ref, StoredDataRef):
@@ -99,13 +107,17 @@ class EnvironmentRecipeStore:
                 )
                 return recipe
 
-            base_image = self._base_image(dockerfile)
+            base_image = self._base_image(content)
             base_digest = (
                 "scratch"
                 if base_image == "scratch"
                 else await docker.inspect_image(base_image)
             )
-            built_digest = await docker.build(root, labels)
+            built_digest = await docker.build(
+                dockerfile,
+                labels,
+                timeout_ms=build_timeout_ms,
+            )
             recipe = EnvironmentRecipe(
                 meta=fresh_record_meta(meta, "environment_recipe"),
                 request_ref=request_ref,
@@ -152,8 +164,7 @@ class EnvironmentRecipeStore:
         return result
 
     @staticmethod
-    def _base_image(dockerfile: Path) -> str:
-        content = dockerfile.read_text(encoding="utf-8")
+    def _base_image(content: str) -> str:
         match = _FROM.search(content)
         if match is None:
             raise ValueError("DOCKERFILE_BASE_IMAGE_REQUIRED")
@@ -163,10 +174,39 @@ class EnvironmentRecipeStore:
         return image
 
     @staticmethod
+    def _validated_dockerfile(dockerfile: bytes) -> str:
+        try:
+            content = dockerfile.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("DOCKERFILE_UTF8_REQUIRED") from error
+        if "\0" in content or content.startswith("\ufeff"):
+            raise ValueError("DOCKERFILE_UTF8_REQUIRED")
+        for line in content.splitlines():
+            stripped = line.lstrip(" \t")
+            if not stripped:
+                continue
+            if stripped.startswith("#"):
+                directive = stripped[1:].lstrip(" \t")
+                if re.match(r"syntax[ \t]*=", directive, re.IGNORECASE):
+                    raise ValueError("DOCKERFILE_REMOTE_FRONTEND_DENIED")
+                continue
+            parts = re.split(r"[ \t]+", stripped, maxsplit=1)
+            instruction = parts[0].upper()
+            nested = (
+                re.split(r"[ \t]+", parts[1].lstrip(" \t"), maxsplit=1)[0].upper()
+                if instruction == "ONBUILD" and len(parts) == 2
+                else None
+            )
+            denied = instruction if instruction in {"ADD", "COPY"} else nested
+            if denied in {"ADD", "COPY"}:
+                raise ValueError(f"DOCKERFILE_{denied}_DENIED")
+        return content
+
+    @staticmethod
     def _source(
         context: Path,
         meta: RecordMeta,
-    ) -> tuple[Path, Path, StoredDataRef, tuple[StoredDataRef, ...], str]:
+    ) -> tuple[bytes, StoredDataRef, tuple[StoredDataRef, ...], str]:
         root = context.resolve(strict=True)
         if not root.is_dir():
             raise ValueError("RECIPE_CONTEXT_REQUIRED")
@@ -191,8 +231,11 @@ class EnvironmentRecipeStore:
         total = 0
         parts: list[tuple[str, str]] = []
         refs: list[StoredDataRef] = []
+        dockerfile_bytes: bytes | None = None
         for path in files:
             data = path.read_bytes()
+            if path == dockerfile:
+                dockerfile_bytes = data
             total += len(data)
             if total > _MAX_RECIPE_INPUT_BYTES:
                 raise ValueError("RECIPE_INPUT_LIMIT_EXCEEDED")
@@ -209,9 +252,10 @@ class EnvironmentRecipeStore:
                 )
             )
         source_digest = hashlib.sha256(canonical_bytes(parts)).hexdigest()
+        if dockerfile_bytes is None:
+            raise ValueError("DOCKERFILE_REQUIRED")
         return (
-            root,
-            dockerfile,
+            dockerfile_bytes,
             StoredDataRef(
                 stored_data_id=StoredDataId(f"recipe-source-{source_digest}"),
                 data_kind="recipe_source",

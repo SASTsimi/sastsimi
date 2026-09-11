@@ -184,14 +184,21 @@ def _approval(
 
 class FakeDockerAdapter:
     def __init__(self) -> None:
+        self.built: list[tuple[bytes, int]] = []
         self.created: dict[str, tuple[SandboxRunSpec, Mapping[str, str]]] = {}
         self.removed: list[str] = []
         self.unhealthy: set[str] = set()
         self.inspect_label_overrides: dict[str, Mapping[str, str]] = {}
         self._index = 0
 
-    async def build(self, recipe_source: Path, labels: Mapping[str, str]) -> str:
-        assert recipe_source.is_dir()
+    async def build(
+        self,
+        dockerfile: bytes,
+        labels: Mapping[str, str],
+        *,
+        timeout_ms: int,
+    ) -> str:
+        self.built.append((dockerfile, timeout_ms))
         assert labels["sastsimi.owner"] == "reproduction-setup-automation"
         return IMAGE_DIGEST
 
@@ -267,7 +274,7 @@ def _setup(adapter: FakeDockerAdapter) -> ReproductionSetupAutomation:
 async def test_prepare_creates_clean_non_root_default_deny_container(
     tmp_path: Path,
 ) -> None:
-    (tmp_path / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    (tmp_path / "Dockerfile").write_bytes(b"FROM scratch\n")
     request, requirements, plan = _dynamic_records()
     docker = FakeDockerAdapter()
 
@@ -293,6 +300,38 @@ async def test_prepare_creates_clean_non_root_default_deny_container(
             meta=prepared.environment.meta,
         ),
     )
+    assert docker.built == [(b"FROM scratch\n", 10_000)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("dockerfile", "error"),
+    [
+        (b"# syntax=docker/dockerfile:1\nFROM scratch\n", "REMOTE_FRONTEND"),
+        (b"FROM scratch\nADD https://example.invalid/payload /tmp/\n", "ADD"),
+        (b"FROM scratch\nCOPY payload /tmp/\n", "COPY"),
+    ],
+)
+async def test_prepare_rejects_dockerfile_daemon_egress_and_context_inputs(
+    tmp_path: Path,
+    dockerfile: bytes,
+    error: str,
+) -> None:
+    (tmp_path / "Dockerfile").write_bytes(dockerfile)
+    request, requirements, plan = _dynamic_records()
+    docker = FakeDockerAdapter()
+
+    with pytest.raises(ValueError, match=error):
+        await _setup(docker).prepare(
+            approval=_approval(tmp_path, request),
+            request=request,
+            requirements=requirements,
+            plan=plan,
+            meta=_meta("sandbox_environment", "environment-seed"),
+        )
+
+    assert docker.built == []
+    assert docker.created == {}
 
 
 @pytest.mark.asyncio
@@ -563,6 +602,51 @@ async def test_docker_create_uses_argv_and_hard_isolation_options(
     assert all(
         not (isinstance(item, str) and "docker create " in item) for item in argv
     )
+
+
+@pytest.mark.asyncio
+async def test_docker_build_uses_stdin_empty_context_and_approved_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[str, ...], int | None, bytes | None]] = []
+
+    async def run(
+        argv: tuple[str, ...],
+        *,
+        timeout_ms: int | None = None,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        calls.append((argv, timeout_ms, input_bytes))
+        return DockerCommandOutcome(0, (IMAGE_DIGEST + "\n").encode(), b"", False)
+
+    labels = {
+        "sastsimi.owner": "reproduction-setup-automation",
+        "sastsimi.analysis-id": "analysis-1",
+        "sastsimi.workspace-id": "workspace-1",
+        "sastsimi.commit-id": "commit-1",
+        "sastsimi.hypothesis-id": "hypothesis-1",
+        "sastsimi.attempt-id": "dynamic-attempt-1",
+    }
+    adapter = DockerAdapter()
+    monkeypatch.setattr(adapter, "_run", run)
+    dockerfile = b"FROM scratch\nRUN true\n"
+
+    digest = await adapter.build(dockerfile, labels, timeout_ms=10_000)
+
+    assert digest == IMAGE_DIGEST
+    assert len(calls) == 1
+    argv, timeout_ms, input_bytes = calls[0]
+    assert argv[:6] == (
+        "build",
+        "--quiet",
+        "--pull=false",
+        "--network",
+        "none",
+        "--label",
+    )
+    assert argv[-1] == "-"
+    assert timeout_ms == 10_000
+    assert input_bytes == dockerfile
 
 
 @pytest.mark.asyncio
