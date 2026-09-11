@@ -221,12 +221,9 @@ class RuntimeValidator:
         clock: Clock,
         ids: IdGenerator,
         artifacts: ArtifactStore | None = None,
-        *,
-        allow_fake_record_llm_output: bool = False,
     ) -> None:
         self.records, self.budget, self.clock, self.ids = records, budget, clock, ids
         self.artifacts = artifacts
-        self.allow_fake_record_llm_output = allow_fake_record_llm_output
 
     def _verify_invocation_artifact(
         self,
@@ -264,7 +261,6 @@ class RuntimeValidator:
             result.status == "SUCCEEDED"
             and result.parsed_output_ref is not None
             and result.parsed_output_ref.record_id is not None
-            and not self.allow_fake_record_llm_output
         ):
             raise ValueError("INVOCATION_OUTPUT_MISMATCH")
 

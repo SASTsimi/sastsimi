@@ -48,6 +48,7 @@ from sastsimi.storage.codec import reference
 from sastsimi.storage.configuration_registry import (
     ConfigurationRegistry as StorageConfigurationRegistry,
 )
+from sastsimi.storage.fake_action_validator import FakeRecordOutputRuntimeValidator
 from sastsimi.storage.llm_context import check_llm_context
 from sastsimi.storage.repositories import SQLiteRecordStore
 from tests.contract.domain.canonical_fixtures import make
@@ -953,7 +954,7 @@ def test_failed_invocation_persists_only_safe_provenance(
         is not None
     )
     fake_authorization = cast(StorageRuntimeValidator, runtime.validator.authorization)
-    assert fake_authorization.allow_fake_record_llm_output is True
+    assert isinstance(fake_authorization, FakeRecordOutputRuntimeValidator)
     production_validator = PublicRuntimeValidator(
         StorageRuntimeValidator(
             records,

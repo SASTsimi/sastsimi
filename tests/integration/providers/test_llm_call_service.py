@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import inspect
 import io
 import json
 from collections.abc import Callable
@@ -82,6 +83,7 @@ from sastsimi.runtime.llm_call_service import (
 )
 from sastsimi.storage import models
 from sastsimi.storage.action_validator import RuntimeValidator as SQLiteValidator
+from sastsimi.storage.fake_action_validator import FakeRecordOutputRuntimeValidator
 from sastsimi.storage.llm_session_guard import LLMParentSessionGuard
 from sastsimi.storage.repositories import SQLiteRecordStore
 from tests.contract.domain.canonical_fixtures import make
@@ -1056,12 +1058,11 @@ async def test_record_shaped_provider_output_is_fake_only() -> None:
     forged = result.model_copy(update={"parsed_output_ref": record_output_ref})
     validator = object.__new__(SQLiteValidator)
 
-    validator.allow_fake_record_llm_output = False
     with pytest.raises(ValueError, match="INVOCATION_OUTPUT_MISMATCH"):
         validator._require_provider_output_authority(forged)
 
-    validator.allow_fake_record_llm_output = True
-    validator._require_provider_output_authority(forged)
+    fake_validator = object.__new__(FakeRecordOutputRuntimeValidator)
+    fake_validator._require_provider_output_authority(forged)
 
 
 def _published_session_guard(
@@ -1182,4 +1183,11 @@ def test_build_runtime_composes_the_llm_call_service(tmp_path: Path) -> None:
 
     assert isinstance(runtime.llm_calls, LLMCallService)
     authorization = cast(SQLiteValidator, runtime.validator.authorization)
-    assert authorization.allow_fake_record_llm_output is False
+    assert type(authorization) is SQLiteValidator
+
+
+def test_public_build_runtime_has_no_fake_output_escape() -> None:
+    assert (
+        "allow_fake_record_llm_output"
+        not in inspect.signature(build_runtime).parameters
+    )

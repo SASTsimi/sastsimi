@@ -28,6 +28,9 @@ from sastsimi.ports.id_generator import IdGenerator
 from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.ports.trusted_evidence import TrustedEvidencePort
 from sastsimi.runtime.services import RuntimeServices
+from sastsimi.storage.action_validator import (
+    RuntimeValidator as SQLiteRuntimeValidator,
+)
 from sastsimi.storage.schema_version import MigrationRequired as MigrationRequired
 
 if TYPE_CHECKING:
@@ -249,6 +252,7 @@ def build_fake_pipeline(data_dir: Path) -> FakePipeline:
     )
     from sastsimi.sandbox.fake import FakeSandboxAdapter
     from sastsimi.static_analysis.fake import FakeStaticToolAdapter
+    from sastsimi.storage.fake_action_validator import FakeRecordOutputRuntimeValidator
     from sastsimi.verification import FakeVerificationAssembly
     from sastsimi.verification.service import (
         VerificationDependencies,
@@ -415,7 +419,10 @@ def build_fake_pipeline(data_dir: Path) -> FakePipeline:
     result, reports = _load_fake_outputs(data_dir)
     return FakePipeline(
         data_dir,
-        partial(build_runtime, allow_fake_record_llm_output=True),
+        partial(
+            _build_runtime,
+            validator_factory=FakeRecordOutputRuntimeValidator,
+        ),
         upgrade_database,
         provider_invoke,
         provider_probe,
@@ -507,7 +514,7 @@ def load_fake_progress(data_dir: Path) -> dict[str, object]:
     }
 
 
-def build_runtime(
+def _build_runtime(
     data_dir: Path,
     workspace_id: WorkspaceId | None,
     commit_id: CommitId | None,
@@ -519,7 +526,8 @@ def build_runtime(
     finding_service_identity_ref: StoredDataRef | None = None,
     analysis_finalization_identity_ref: BudgetScopeRef | None = None,
     llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
-    allow_fake_record_llm_output: bool = False,
+    *,
+    validator_factory: Callable[..., SQLiteRuntimeValidator],
 ) -> RuntimeServices:
     from sastsimi.runtime.action_validator import RuntimeValidator
     from sastsimi.runtime.analysis_finalization import AnalysisFinalizationService
@@ -539,7 +547,6 @@ def build_runtime(
         VerificationRegistrationService,
     )
     from sastsimi.runtime.work_service import WorkService
-    from sastsimi.storage.action_validator import RuntimeValidator as SQLiteValidator
     from sastsimi.storage.analysis_finalization import (
         AnalysisFinalizationService as SQLiteAnalysisFinalization,
     )
@@ -578,13 +585,12 @@ def build_runtime(
     artifacts = LocalArtifactStore(paths.artifacts, workspace_id, commit_id)
     registry = SQLiteRegistry(records, clock, ids)
     budget = SQLiteBudget(records, registry, clock, ids)
-    authorization = SQLiteValidator(
+    authorization = validator_factory(
         records,
         budget,
         clock,
         ids,
         artifacts,
-        allow_fake_record_llm_output=allow_fake_record_llm_output,
     )
     works = SQLiteWorks(records, authorization, clock, ids)
     transitions = SQLiteTransitions(works, artifacts)
@@ -654,4 +660,34 @@ def build_runtime(
             )
         ),
         llm_calls,
+    )
+
+
+def build_runtime(
+    data_dir: Path,
+    workspace_id: WorkspaceId | None,
+    commit_id: CommitId | None,
+    clock: Clock,
+    ids: IdGenerator,
+    recovery_identity_ref: BudgetScopeRef | None = None,
+    evidence: TrustedEvidencePort | None = None,
+    context_service_identity_ref: BudgetScopeRef | None = None,
+    finding_service_identity_ref: StoredDataRef | None = None,
+    analysis_finalization_identity_ref: BudgetScopeRef | None = None,
+    llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
+) -> RuntimeServices:
+    """Compose the production runtime without fake output capabilities."""
+    return _build_runtime(
+        data_dir,
+        workspace_id,
+        commit_id,
+        clock,
+        ids,
+        recovery_identity_ref,
+        evidence,
+        context_service_identity_ref,
+        finding_service_identity_ref,
+        analysis_finalization_identity_ref,
+        llm_adapters,
+        validator_factory=SQLiteRuntimeValidator,
     )
