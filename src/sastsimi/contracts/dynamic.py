@@ -703,8 +703,16 @@ class DynamicReproductionResult(DynamicRecord):
         if not self.agent_invoked and self.agent_conclusion_ref is not None:
             raise ValueError("UNINVOKED_CONCLUSION_FORBIDDEN")
         if self.action_decision_ref is None:
+            pre_boundary_categories = {
+                "PLAN",
+                "AGENT",
+                "TIMEOUT",
+                "RESOURCE_LIMIT",
+                "RETRY_LIMIT",
+                "INTERNAL",
+            }
             if (
-                self.failure_category != "PLAN"
+                self.failure_category not in pre_boundary_categories
                 or self.agent_invoked
                 or any(
                     ref is not None
