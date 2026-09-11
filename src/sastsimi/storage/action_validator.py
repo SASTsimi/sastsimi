@@ -509,12 +509,29 @@ class RuntimeValidator:
             exact_invocation_refs = tuple(
                 reference(item) for item in (request, result, log)
             )
-            if all(ref in claimed.outcome_refs for ref in exact_invocation_refs):
+            expected_replay_refs: tuple[RecordRef, ...] = exact_invocation_refs
+            if result.status == "SUCCEEDED" and result.parsed_output_ref is not None:
+                expected_replay_refs += (result.parsed_output_ref,)
+            if claimed.outcome_refs:
+                if claimed.outcome_refs != expected_replay_refs:
+                    raise ValueError("INVOCATION_REPLAY_MISMATCH")
                 for item, item_ref in zip(
                     (request, result, log), exact_invocation_refs, strict=True
                 ):
                     if self.records.resolve(connection, item_ref) != item:
                         raise ValueError("INVOCATION_ACTION_MISMATCH")
+                if result.status == "SUCCEEDED":
+                    assert result.parsed_output_ref is not None
+                    if result.parsed_output_ref.record_id is None:
+                        self._verify_invocation_artifact(
+                            result.parsed_output_ref,
+                            workspace_id=request.meta.workspace_id,
+                            commit_id=request.meta.commit_id,
+                        )
+                    else:
+                        self.records.resolve(
+                            connection, result.parsed_output_ref, candidate=True
+                        )
                 replay_ref = reference(log)
                 assert isinstance(replay_ref, StoredDataRef)
                 return replay_ref
@@ -605,11 +622,10 @@ class RuntimeValidator:
             ):
                 raise ValueError("INVOCATION_RESULT_MISMATCH")
             candidate = None
-            output_artifact_ref: StoredDataRef | None = None
+            output_ref: StoredDataRef | None = None
             if result.status == "SUCCEEDED":
                 if (
                     result.parsed_output_ref is None
-                    or result.response_ref != result.parsed_output_ref
                     or result.safe_error is not None
                     or log.validation_errors
                 ):
@@ -620,12 +636,14 @@ class RuntimeValidator:
                 if not isinstance(schema, OutputSchemaSpec):
                     raise ValueError("INVOCATION_OUTPUT_MISMATCH")
                 if result.parsed_output_ref.record_id is None:
+                    if result.response_ref != result.parsed_output_ref:
+                        raise ValueError("INVOCATION_RESULT_MISMATCH")
                     self._verify_invocation_artifact(
                         result.parsed_output_ref,
                         workspace_id=request.meta.workspace_id,
                         commit_id=request.meta.commit_id,
                     )
-                    output_artifact_ref = result.parsed_output_ref
+                    output_ref = result.parsed_output_ref
                 else:
                     # Kept only for the deterministic pre-T10 fake pipeline. The
                     # production LLMCallService rejects record-shaped provider output.
@@ -634,6 +652,7 @@ class RuntimeValidator:
                     )
                     if candidate.meta.record_type != schema.result_kind:
                         raise ValueError("INVOCATION_OUTPUT_MISMATCH")
+                    output_ref = result.parsed_output_ref
             elif (
                 result.parsed_output_ref is not None
                 or log.parsed_output_ref is not None
@@ -735,7 +754,7 @@ class RuntimeValidator:
                     )
                 )
             outcomes: tuple[RecordRef, ...] = tuple(invocation_refs)
-            if output_artifact_ref is not None:
-                outcomes += (output_artifact_ref,)
+            if output_ref is not None:
+                outcomes += (output_ref,)
             self.record_outcome(connection, claimed, outcomes)
             return log_ref

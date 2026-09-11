@@ -572,6 +572,20 @@ def test_llm_call_spec_rejects_every_cross_record_mismatch(
     assert pipeline.runtime.validator.record_invocation(
         request, result, log
     ) == reference(log)
+    conflicting_result = result.model_copy(
+        update={
+            "meta": result.meta.model_copy(
+                update={
+                    "record_id": RecordId("conflicting-invocation-result"),
+                    "logical_record_id": LogicalRecordId(
+                        "conflicting-invocation-result"
+                    ),
+                }
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="INVOCATION_REPLAY_MISMATCH"):
+        pipeline.runtime.validator.record_invocation(request, conflicting_result, log)
 
     storage_registry = cast(
         StorageConfigurationRegistry, pipeline.runtime.configuration.registry
