@@ -87,6 +87,7 @@ async def test_cross_role_private_result_stops_parent_without_verdict() -> None:
         metadata_factory=MetadataFactory(),
         claim_id_factory=ClaimIds(),
         publish_result=publisher,
+        parallel_limit=lambda _work: 2,
     )
 
     with pytest.raises(ValueError, match="CROSS_ROLE_INPUT_DENIED"):

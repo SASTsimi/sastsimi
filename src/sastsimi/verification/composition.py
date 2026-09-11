@@ -23,7 +23,7 @@ from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 
-from .debate_service import DebateService
+from .debate_service import CurrentEvidenceParallelLimit, DebateService
 from .revision_workflow import RevisionWorkflow
 from .service import VerificationService
 from .verdict_router import VerdictRouter
@@ -153,6 +153,10 @@ def compose_t10_services(
         metadata_factory=metadata,
         claim_id_factory=lambda role: str(ids.new(RecordId)),
         publish_result=publish_evidence,
+        parallel_limit=CurrentEvidenceParallelLimit(
+            records=records,
+            run_states=runtime.budget_registry,
+        ),
     )
     verification_agent = VerificationAgent(
         llm_calls=runtime.llm_calls,

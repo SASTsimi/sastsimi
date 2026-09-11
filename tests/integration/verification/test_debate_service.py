@@ -11,6 +11,13 @@ from typing import Any
 
 import pytest
 
+from sastsimi.contracts.analysis import AnalysisRunState
+from sastsimi.contracts.budget import (
+    BudgetProfileBinding,
+    ProfileStatus,
+    Purpose,
+    VerificationBudgetProfile,
+)
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.ids import AttemptId
 from sastsimi.contracts.llm import (
@@ -20,8 +27,14 @@ from sastsimi.contracts.llm import (
     PromptContextBinding,
     PromptPayload,
 )
-from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
+from sastsimi.contracts.records import RecordMeta, RunMeta
+from sastsimi.contracts.refs import (
+    RecordRef,
+    RunStoredDataRef,
+    StoredDataRef,
+    reference,
+)
+from sastsimi.contracts.verification import ProEvidenceResult
 from sastsimi.contracts.work import (
     SubjectType,
     WorkExecutionState,
@@ -30,7 +43,11 @@ from sastsimi.contracts.work import (
 )
 from sastsimi.ports.dto import Record, StagedArtifact
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
-from sastsimi.verification.debate_service import DebateService
+from sastsimi.verification.debate_service import (
+    CurrentEvidenceParallelLimit,
+    DebateIncompleteError,
+    DebateService,
+)
 
 NOW = datetime(2026, 9, 11, tzinfo=UTC)
 
@@ -45,6 +62,19 @@ def _ref(kind: str, name: str, *, record: bool = True) -> StoredDataRef:
             "workspace_id": "ws1",
             "commit_id": "c1",
             "record_id": f"{name}-record" if record else None,
+        }
+    )
+
+
+def _run_ref(kind: str, name: str) -> RunStoredDataRef:
+    digest = hashlib.sha256(f"{kind}:{name}".encode()).hexdigest()
+    return RunStoredDataRef.model_validate(
+        {
+            "stored_data_id": name,
+            "data_kind": kind,
+            "content_hash": digest,
+            "record_id": f"{name}-record",
+            "analysis_id": "analysis-1",
         }
     )
 
@@ -220,10 +250,13 @@ class ConcurrentLLMCalls:
         records: MemoryRecords,
         artifacts: MemoryArtifacts,
         outputs: dict[str, object],
+        *,
+        fail_roles: frozenset[str] = frozenset(),
     ) -> None:
         self.records = records
         self.artifacts = artifacts
         self.outputs = outputs
+        self.fail_roles = fail_roles
         self.active = 0
         self.max_active = 0
         self.calls: list[str] = []
@@ -242,8 +275,12 @@ class ConcurrentLLMCalls:
         self.calls.append(str(spec.agent_role))
         self.active += 1
         self.max_active = max(self.max_active, self.active)
-        await asyncio.sleep(0)
-        self.active -= 1
+        try:
+            await asyncio.sleep(0)
+            if str(spec.agent_role) in self.fail_roles:
+                raise RuntimeError("provider failed")
+        finally:
+            self.active -= 1
         request = LLMInvocationRequest.model_validate(
             spec.model_dump()
             | {
@@ -406,8 +443,8 @@ def _output(role: str, evidence_ref: StoredDataRef) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_pro_and_con_use_same_inputs_in_independent_new_sessions() -> None:
-    """Catches serial/shared-session debate or provider-owned domain identifiers."""
+async def test_budget_limit_rejects_zero_and_allows_parallel_new_sessions() -> None:
+    """Catches a zero-capacity hang, serial bypass, or shared Pro/Con session."""
     public_inputs = tuple(
         sorted(
             (
@@ -432,6 +469,27 @@ async def test_pro_and_con_use_same_inputs_in_independent_new_sessions() -> None
         },
     )
     publisher = RecordingPublisher(records)
+    blocked_service = DebateService(
+        records=records,
+        artifacts=artifacts,
+        llm_calls=calls,
+        metadata_factory=MetadataFactory(),
+        claim_id_factory=ClaimIds(),
+        publish_result=publisher,
+        parallel_limit=lambda _work: 0,
+    )
+    with pytest.raises(ValueError, match="BUDGET_EXCEEDED"):
+        await asyncio.wait_for(
+            blocked_service.run(
+                verification_work=parent,
+                public_input_refs=public_inputs,
+                pro_call=pro_call,
+                con_call=con_call,
+            ),
+            timeout=0.05,
+        )
+    assert calls.calls == []
+
     service = DebateService(
         records=records,
         artifacts=artifacts,
@@ -439,6 +497,7 @@ async def test_pro_and_con_use_same_inputs_in_independent_new_sessions() -> None
         metadata_factory=MetadataFactory(),
         claim_id_factory=ClaimIds(),
         publish_result=publisher,
+        parallel_limit=lambda _work: 2,
     )
 
     result = await service.run(
@@ -460,3 +519,169 @@ async def test_pro_and_con_use_same_inputs_in_independent_new_sessions() -> None
     assert result.con.evidence[0].source_role == "CON"
     assert records.get_exact(result.pro_ref) == result.pro
     assert records.get_exact(result.con_ref) == result.con
+
+
+@pytest.mark.asyncio
+async def test_limit_one_serializes_calls_and_failure_cannot_complete_debate() -> None:
+    """Catches bypassing the trusted evidence cap or joining one-sided evidence."""
+    public_inputs = tuple(
+        sorted(
+            (
+                _ref("static_fact_bundle", "facts"),
+                _ref("playbook_application", "application"),
+            ),
+            key=canonical_bytes,
+        )
+    )
+    parent = _work("VERIFICATION", public_inputs)
+    pro_work = _work("PRO", public_inputs, parent=parent)
+    con_work = _work("CON", public_inputs, parent=parent)
+    records, artifacts = MemoryRecords(), MemoryArtifacts()
+    pro_call = _authorized_call(records, "PRO", pro_work, public_inputs)
+    con_call = _authorized_call(records, "CON", con_work, public_inputs)
+    calls = ConcurrentLLMCalls(
+        records,
+        artifacts,
+        {
+            "PRO": _output("PRO", public_inputs[0]),
+            "CON": _output("CON", public_inputs[0]),
+        },
+        fail_roles=frozenset({"CON"}),
+    )
+    publisher = RecordingPublisher(records)
+    service = DebateService(
+        records=records,
+        artifacts=artifacts,
+        llm_calls=calls,
+        metadata_factory=MetadataFactory(),
+        claim_id_factory=ClaimIds(),
+        publish_result=publisher,
+        parallel_limit=lambda _work: 1,
+    )
+
+    with pytest.raises(DebateIncompleteError) as captured:
+        await service.run(
+            verification_work=parent,
+            public_input_refs=public_inputs,
+            pro_call=pro_call,
+            con_call=con_call,
+        )
+
+    assert calls.max_active == 1
+    assert set(calls.calls) == {"PRO", "CON"}
+    assert captured.value.failure_count == 1
+    assert captured.value.completed_refs == tuple(
+        reference(value) for value in publisher.published
+    )
+    assert len(publisher.published) == 1
+    assert isinstance(publisher.published[0], ProEvidenceResult)
+
+
+def test_parallel_limit_uses_only_current_exact_active_budget_binding() -> None:
+    """Catches caller limits, inactive bindings, or non-exact profile resolution."""
+    public_inputs = (_ref("static_fact_bundle", "facts"),)
+    parent = _work("VERIFICATION", public_inputs)
+    records = MemoryRecords()
+    execution_ref = _run_ref("execution_budget_profile", "execution-budget")
+    profile = VerificationBudgetProfile.model_validate(
+        {
+            "meta": _meta(
+                "verification_budget_profile", "verification-budget", attempt=None
+            ).model_copy(update={"hypothesis_id": None}),
+            "profile_key": "verification",
+            "max_verification_elapsed_ms": 1_000,
+            "max_work_per_verification": 5,
+            "max_llm_calls_per_verification": 5,
+            "max_retries_per_work": 1,
+            "max_parallel_evidence_calls": 1,
+            "status": ProfileStatus.ACTIVE,
+        }
+    )
+    profile_ref = records.publish(profile)
+    binding = BudgetProfileBinding.model_validate(
+        {
+            "meta": _meta(
+                "budget_profile_binding", "budget-binding", attempt=None
+            ).model_copy(update={"hypothesis_id": None}),
+            "binding_key": "binding",
+            "purpose": Purpose.PRODUCTION,
+            "execution_budget_profile_ref": execution_ref,
+            "work_budget_profile_ref": _ref("work_budget_profile", "work-budget"),
+            "verification_budget_profile_ref": profile_ref,
+            "dynamic_lifecycle_profile_ref": _ref(
+                "dynamic_reproduction_lifecycle_profile", "dynamic-budget"
+            ),
+            "approval_ref": execution_ref,
+            "approved_by": "R8",
+            "approved_at": NOW,
+            "status": ProfileStatus.ACTIVE,
+        }
+    )
+    binding_ref = records.publish(binding)
+    run = AnalysisRunState.model_validate(
+        {
+            "meta": RunMeta.model_validate(
+                {
+                    "record_id": "run-record",
+                    "logical_record_id": "run-logical",
+                    "record_type": "analysis_run_state",
+                    "schema_version": "1.0.0",
+                    "revision_number": 1,
+                    "previous_record_id": None,
+                    "created_at": NOW,
+                    "analysis_id": "analysis-1",
+                }
+            ),
+            "purpose": Purpose.PRODUCTION,
+            "eval_config_refs": (),
+            "program_id": "program-1",
+            "execution_budget_profile_ref": execution_ref,
+            "budget_binding_ref": binding_ref,
+            "workspace_id": "ws1",
+            "commit_id": "c1",
+            "workspace_ref": _run_ref("code_workspace", "workspace"),
+            "run_policy_state_ref": None,
+            "status": "RUNNING",
+            "analysis_result_ref": None,
+            "started_at": NOW,
+            "finished_at": None,
+            "elapsed_ms": 0,
+        }
+    )
+    current = SimpleNamespace(current_state=lambda _analysis_id: run)
+    resolver = CurrentEvidenceParallelLimit(records=records, run_states=current)
+
+    assert resolver(parent) == 1
+
+    draft_binding = binding.model_copy(
+        update={
+            "meta": _meta(
+                "budget_profile_binding", "draft-binding", attempt=None
+            ).model_copy(update={"hypothesis_id": None}),
+            "approval_ref": None,
+            "approved_at": None,
+            "status": ProfileStatus.DRAFT,
+        }
+    )
+    draft_ref = records.publish(draft_binding)
+    current.current_state = lambda _analysis_id: run.model_copy(
+        update={"budget_binding_ref": draft_ref}
+    )
+    with pytest.raises(ValueError, match="EVIDENCE_BUDGET_PROFILE_NOT_CURRENT"):
+        resolver(parent)
+
+    current.current_state = lambda _analysis_id: run
+    stale_profile = profile.model_copy(
+        update={
+            "meta": profile.meta.model_copy(
+                update={
+                    "record_id": "verification-budget-record-v2",
+                    "revision_number": 2,
+                    "previous_record_id": profile.meta.record_id,
+                }
+            )
+        }
+    )
+    records.values[records._key(profile_ref)] = stale_profile
+    with pytest.raises(ValueError, match="EVIDENCE_BUDGET_PROFILE_NOT_CURRENT"):
+        resolver(parent)

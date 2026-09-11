@@ -11,6 +11,11 @@ from typing import Protocol, cast
 from sastsimi.agents.con_agent import ConAgent
 from sastsimi.agents.pro import ArtifactReader, ProAgent
 from sastsimi.contracts.actions import RequesterRole, SessionMode
+from sastsimi.contracts.analysis import AnalysisRunState
+from sastsimi.contracts.budget import (
+    BudgetProfileBinding,
+    VerificationBudgetProfile,
+)
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.llm import LLMCallSpec, PromptPayload
 from sastsimi.contracts.records import RecordMeta
@@ -34,6 +39,7 @@ from sastsimi.runtime.fake_llm_invocation import (
 )
 from sastsimi.runtime.fake_support import FakeEvidence
 from sastsimi.runtime.llm_call_service import (
+    AnalysisRunStateResolver,
     InvocationMetadataFactory,
     LLMCallService,
     PersistedLLMInvocation,
@@ -86,6 +92,7 @@ class ExactRecordReader(Protocol):
 
 
 type ClaimIdFactory = Callable[[str], str]
+type EvidenceParallelLimit = Callable[[WorkExecutionState], int]
 type ResultPublisher = Callable[
     [
         WorkExecutionState,
@@ -254,6 +261,69 @@ def _normalized_inputs(
     return tuple(unique[key] for key in sorted(unique))
 
 
+class CurrentEvidenceParallelLimit:
+    """Resolve the trusted limit from the current exact ACTIVE budget binding."""
+
+    def __init__(
+        self, *, records: ExactRecordReader, run_states: AnalysisRunStateResolver
+    ) -> None:
+        self._records = records
+        self._run_states = run_states
+
+    def __call__(self, work: WorkExecutionState) -> int:
+        if not isinstance(work.meta, RecordMeta):
+            raise ValueError("EVIDENCE_BUDGET_PROFILE_NOT_CURRENT")
+        run = self._run_states.current_state(str(work.meta.analysis_id))
+        binding_ref = run.budget_binding_ref
+        if (
+            not isinstance(run, AnalysisRunState)
+            or run.status != "RUNNING"
+            or binding_ref is None
+            or run.meta.analysis_id != work.meta.analysis_id
+            or run.workspace_id != work.meta.workspace_id
+            or run.commit_id != work.meta.commit_id
+        ):
+            raise ValueError("EVIDENCE_BUDGET_PROFILE_NOT_CURRENT")
+        binding = self._records.get_exact(binding_ref)
+        if (
+            not isinstance(binding, BudgetProfileBinding)
+            or reference(binding) != binding_ref
+            or binding.status != "ACTIVE"
+            or binding.purpose != run.purpose
+            or binding.execution_budget_profile_ref != run.execution_budget_profile_ref
+            or (
+                binding.meta.analysis_id,
+                binding.meta.workspace_id,
+                binding.meta.commit_id,
+            )
+            != (
+                work.meta.analysis_id,
+                work.meta.workspace_id,
+                work.meta.commit_id,
+            )
+        ):
+            raise ValueError("EVIDENCE_BUDGET_PROFILE_NOT_CURRENT")
+        profile_ref = binding.verification_budget_profile_ref
+        profile = self._records.get_exact(profile_ref)
+        if (
+            not isinstance(profile, VerificationBudgetProfile)
+            or reference(profile) != profile_ref
+            or profile.status != "ACTIVE"
+            or (
+                profile.meta.analysis_id,
+                profile.meta.workspace_id,
+                profile.meta.commit_id,
+            )
+            != (
+                work.meta.analysis_id,
+                work.meta.workspace_id,
+                work.meta.commit_id,
+            )
+        ):
+            raise ValueError("EVIDENCE_BUDGET_PROFILE_NOT_CURRENT")
+        return profile.max_parallel_evidence_calls
+
+
 class DebateService:
     """Run exact-input Pro/Con calls concurrently and join committed results."""
 
@@ -268,10 +338,12 @@ class DebateService:
         metadata_factory: InvocationMetadataFactory,
         claim_id_factory: ClaimIdFactory,
         publish_result: ResultPublisher,
+        parallel_limit: EvidenceParallelLimit,
     ) -> None:
         self.records = records
         self.llm_calls = llm_calls
         self.publish_result = publish_result
+        self.parallel_limit = parallel_limit
         self.pro = ProAgent(
             artifacts=artifacts,
             metadata_factory=metadata_factory,
@@ -323,8 +395,14 @@ class DebateService:
         ):
             raise ValueError("EVIDENCE_INDEPENDENCE_REQUIRED")
 
+        parallel_limit = self.parallel_limit(verification_work)
+        if isinstance(parallel_limit, bool) or parallel_limit < 1:
+            raise ValueError("BUDGET_EXCEEDED: parallel evidence calls")
+        capacity = asyncio.Semaphore(parallel_limit)
         invocations = await asyncio.gather(
-            self._invoke(pro_call), self._invoke(con_call), return_exceptions=True
+            self._invoke_with_capacity(pro_call, capacity),
+            self._invoke_with_capacity(con_call, capacity),
+            return_exceptions=True,
         )
         debate_hash = content_hash(public_inputs)
         outputs: list[ProEvidenceResult | ConEvidenceResult | None] = [None, None]
@@ -412,6 +490,12 @@ class DebateService:
             call_spec_ref=call.call_spec_ref,
         )
 
+    async def _invoke_with_capacity(
+        self, call: AuthorizedLLMCall, capacity: asyncio.Semaphore
+    ) -> PersistedLLMInvocation:
+        async with capacity:
+            return await self._invoke(call)
+
     def _validate_call(
         self,
         call: AuthorizedLLMCall,
@@ -488,9 +572,11 @@ class DebateService:
 
 __all__ = [
     "AuthorizedLLMCall",
+    "CurrentEvidenceParallelLimit",
     "DebateIncompleteError",
     "DebateResult",
     "DebateService",
+    "EvidenceParallelLimit",
     "FakeDebateResult",
     "run_fake_debate",
 ]
