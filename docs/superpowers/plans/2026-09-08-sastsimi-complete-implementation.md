@@ -400,7 +400,7 @@ Implementation record: [T04 core contracts](implementation/04-core-contracts.md)
 
 **Files:**
 - Create: `docs/superpowers/plans/implementation/10-llm-verification.md`
-- Create: `src/sastsimi/agents/hypothesis.py`, `pro.py`, `con.py`, `verification.py`
+- Create: `src/sastsimi/agents/hypothesis.py`, `pro.py`, `con_agent.py`, `verification.py`
 - Create: `src/sastsimi/verification/debate_service.py`, `service.py`, `verdict_router.py`, `revision_workflow.py`
 - Create: `tests/integration/verification/`, `tests/security_negative/test_cross_role_isolation.py`
 

@@ -63,6 +63,7 @@ class HypothesisProposal(HypothesisShape):
     proposal_id: ProposalId
     proposal_state: Literal["HYPOTHESIS_ONLY"]
     assertion_mode: Literal["NON_FINAL"]
+    statement: NonEmptyStr
     vulnerability_type_candidates: tuple[NonEmptyStr, ...]
     observed_facts: tuple[CodeFact, ...]
     assumptions: tuple[NonEmptyStr, ...]
@@ -279,6 +280,7 @@ def validate_hypothesis_registration(
     exact(hypothesis.proposal_ref, proposal, hypothesis.meta)
     same_scope(hypothesis.meta, proposal.meta, hypothesis=False)
     for name in (
+        "statement",
         "origin",
         "parent_hypothesis_ids",
         "source_primitive_match_id",
