@@ -1,6 +1,6 @@
 # T09 Provider and Prompt Runtime Implementation Plan
 
-- Status: `IN_PROGRESS`
+- Status: `IMPLEMENTATION_COMPLETE`
 - Base: latest `main` after T08 merge
 - Parent plan: [Complete Implementation Plan](../2026-09-08-sastsimi-complete-implementation.md#task-9-provider-and-prompt-runtime)
 - Canonical design: [R3-04 Provider decision](../../../architecture-v5/implementation/04-provider-decision.md), [R3-05 Prompt Runtime](../../../architecture-v5/implementation/05-prompt-runtime.md)
@@ -115,3 +115,26 @@ Lane A/B run only their direct tests. The integration lane runs the T09 contract
 - T10: role-specific Agent wrappers and domain orchestration.
 - T16: live credentials, real PVD-01 through PVD-16, production capability activation, and quality/cost comparison.
 - Additional adapters, prompt tuning, performance refactoring, and Medium/Low cleanup are follow-up work unless needed to correct a Blocker/High failure.
+
+## 9. Completion evidence
+
+- The exact `provider_profile_ref + model`, ACTIVE prompt revision, run purpose,
+  work attempt, session mode, authorization decision, and full immutable input
+  closure are checked before Provider I/O.
+- The real runtime exposes one composed `LLMCallService`; no adapter is selected by
+  name or fallback. An empty adapter map fails closed until T16 injects a validated
+  live adapter.
+- Requests are persisted before I/O. Success, authentication failure, timeout,
+  invalid output, cancellation, and stale selection produce safe durable provenance
+  without creating a domain result from a failed call.
+- Prompt templates and projected repository data remain separate. Credential,
+  private-key, credential-URI, host-path, and prompt-boundary injection cases are
+  rejected or redacted before persistence and Provider use.
+- Focused post-merge verification: Provider/prompt security tests `16 passed, 1
+  skipped`; architecture dependency tests `76 passed`; Ruff and strict mypy passed.
+  The one local composition test could not obtain pytest's Windows temporary
+  directory, so the identical `build_runtime().llm_calls` construction was checked
+  directly. The final PR CI owns the complete cross-platform suite.
+- Independent final Blocker/High audit: no remaining finding after the T08 merge;
+  exact-reference, approval, secret, failure-provenance, and runtime-composition
+  boundaries were preserved.
