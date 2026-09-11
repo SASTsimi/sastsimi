@@ -17,8 +17,10 @@ from sastsimi.contracts.llm import (
     LLMInvocationLog,
     LLMInvocationRequest,
     LLMInvocationResult,
+    PromptPayload,
     ProviderProfile,
 )
+from sastsimi.contracts.llm_closure import llm_action_input_refs
 from sastsimi.contracts.refs import RecordRef, StoredDataRef
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.clock import Clock
@@ -470,6 +472,17 @@ class RuntimeValidator:
                 if isinstance(spec, LLMCallSpec)
                 else None
             )
+            prompt_payload = (
+                self.records.resolve(connection, spec.prompt_payload_ref)
+                if isinstance(spec, LLMCallSpec)
+                else None
+            )
+            expected_action_inputs = (
+                llm_action_input_refs(request.call_spec_ref, spec, prompt_payload)
+                if isinstance(spec, LLMCallSpec)
+                and isinstance(prompt_payload, PromptPayload)
+                else ()
+            )
             if (
                 not isinstance(action, ActionRequest)
                 or action.action_type
@@ -487,7 +500,7 @@ class RuntimeValidator:
                 or log.action_decision_ref != claimed_ref
                 or log.call_spec_ref != request.call_spec_ref
                 or log.parsed_output_ref != result.parsed_output_ref
-                or tuple(action.input_refs) != tuple(spec.context_refs)
+                or tuple(action.input_refs) != expected_action_inputs
             ):
                 raise ValueError("INVOCATION_ACTION_MISMATCH")
             request_fields = (
@@ -596,8 +609,24 @@ class RuntimeValidator:
                     )
                 )
                 or any(
-                    item.meta.attempt_id != work.active_attempt_id
-                    for item in (request, result, log)
+                    getattr(item.meta, "attempt_id", None) != work.active_attempt_id
+                    for item in (
+                        (request, result, log, candidate)
+                        if candidate is not None
+                        else (request, result, log)
+                    )
+                )
+                or not isinstance(prompt_payload, PromptPayload)
+                or any(
+                    getattr(item.meta, name, None) != expected
+                    for item in (spec, prompt_payload)
+                    for name, expected in (
+                        ("analysis_id", work.meta.analysis_id),
+                        ("workspace_id", getattr(work.meta, "workspace_id", None)),
+                        ("commit_id", getattr(work.meta, "commit_id", None)),
+                        ("hypothesis_id", getattr(work.meta, "hypothesis_id", None)),
+                        ("attempt_id", work.active_attempt_id),
+                    )
                 )
             ):
                 raise ValueError("INVOCATION_SCOPE_MISMATCH")

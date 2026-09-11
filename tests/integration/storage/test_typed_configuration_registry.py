@@ -4,15 +4,16 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from sqlalchemy import Connection, delete, select, update
+from sqlalchemy import Connection, delete, insert, select, update
 
 from sastsimi.bootstrap import build_fake_pipeline, build_runtime
-from sastsimi.contracts.actions import ActionDecision
+from sastsimi.contracts.actions import ActionDecision, ActionRequest
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.dynamic import SandboxProfile
 from sastsimi.contracts.evaluation import EvaluationRecommendation
-from sastsimi.contracts.ids import LogicalRecordId, RecordId
+from sastsimi.contracts.ids import AttemptId, LogicalRecordId, RecordId
 from sastsimi.contracts.llm import (
+    ClientExecutionProfile,
     LLMCallSpec,
     LLMInvocationLog,
     LLMInvocationRequest,
@@ -80,6 +81,22 @@ def test_typed_registries_require_family_evidence_and_exact_closure(
             )
         }
     )
+    missing_evidence_ref = reference(book).model_copy(
+        update={"record_id": RecordId("missing-pvd-evidence")}
+    )
+    incomplete_closure = validation.model_copy(
+        update={
+            "tests": (
+                validation.tests[0].model_copy(
+                    update={"evidence_refs": (missing_evidence_ref,)}
+                ),
+                *validation.tests[1:],
+            )
+        }
+    )
+    h.evidence.llm_configuration_approvals.add(content_hash(incomplete_closure))
+    with pytest.raises(ValueError, match="PROVIDER_CONFIGURATION_CLOSURE_MISMATCH"):
+        configs.register_provider_validation(incomplete_closure)
     profile = ProviderProfile.model_validate_json(
         canonical_bytes(
             make("ProviderProfile")
@@ -97,6 +114,81 @@ def test_typed_registries_require_family_evidence_and_exact_closure(
         configs.register_provider_profile(profile, probe)
     assert configs.register_provider_validation(validation) == reference(validation)
     assert configs.register_provider_profile(profile, probe) == reference(profile)
+
+    wrong_client = ClientExecutionProfile.model_validate_json(
+        canonical_bytes(
+            make("ClientExecutionProfile")
+            | {
+                "network_policy_ref": reference(book),
+                "verification_evidence_ref": reference(validation),
+            }
+        )
+    )
+    h.evidence.llm_configuration_approvals.add(content_hash(wrong_client))
+    assert configs.register_client_execution(wrong_client) == reference(wrong_client)
+    subscription_validation = ProviderValidationEvidence.model_validate(
+        validation.model_dump()
+        | {
+            "meta": validation.meta.model_copy(
+                update={
+                    "record_id": RecordId("subscription-validation"),
+                    "logical_record_id": LogicalRecordId("subscription-validation"),
+                }
+            ),
+            "product": "CODEX",
+            "transport": "CODEX_CLIENT",
+            "auth_mode": "SUBSCRIPTION_LOGIN",
+        }
+    )
+    h.evidence.llm_configuration_approvals.add(content_hash(subscription_validation))
+    assert configs.register_provider_validation(subscription_validation) == reference(
+        subscription_validation
+    )
+    subscription_client = ClientExecutionProfile.model_validate(
+        wrong_client.model_dump()
+        | {
+            "meta": wrong_client.meta.model_copy(
+                update={
+                    "record_id": RecordId("subscription-client"),
+                    "logical_record_id": LogicalRecordId("subscription-client"),
+                }
+            ),
+            "verification_evidence_ref": reference(subscription_validation),
+        }
+    )
+    h.evidence.llm_configuration_approvals.add(content_hash(subscription_client))
+    assert configs.register_client_execution(subscription_client) == reference(
+        subscription_client
+    )
+    subscription_profile = ProviderProfile.model_validate(
+        profile.model_dump()
+        | {
+            "meta": profile.meta.model_copy(
+                update={
+                    "record_id": RecordId("subscription-profile"),
+                    "logical_record_id": LogicalRecordId("subscription-profile"),
+                }
+            ),
+            "product": "CODEX",
+            "transport": "CODEX_CLIENT",
+            "auth_mode": "SUBSCRIPTION_LOGIN",
+            "credential_source": "OFFICIAL_CLIENT_SESSION",
+            "validation_evidence_ref": reference(subscription_validation),
+            "client_execution_profile_ref": reference(wrong_client),
+        }
+    )
+    subscription_probe = CapabilityProbeResult(subscription_validation)
+    h.evidence.llm_configuration_approvals.add(content_hash(subscription_profile))
+    with pytest.raises(ValueError, match="PROVIDER_CONFIGURATION_CLOSURE_MISMATCH"):
+        configs.register_provider_profile(subscription_profile, subscription_probe)
+    subscription_profile = ProviderProfile.model_validate(
+        subscription_profile.model_dump()
+        | {"client_execution_profile_ref": reference(subscription_client)}
+    )
+    h.evidence.llm_configuration_approvals.add(content_hash(subscription_profile))
+    assert configs.register_provider_profile(
+        subscription_profile, subscription_probe
+    ) == reference(subscription_profile)
 
     all_na = validation.model_copy(
         update={
@@ -136,9 +228,7 @@ def test_llm_call_spec_rejects_every_cross_record_mismatch(
     assert pipeline.runtime is not None
     calls = tuple(
         item
-        for item in pipeline.runtime.queries.current_records(
-            "fake-analysis", "llm_call_spec"
-        )
+        for item in pipeline.runtime.queries.published_records("fake-analysis")
         if isinstance(item, LLMCallSpec)
     )
     assert len(calls) >= 2
@@ -309,7 +399,7 @@ def test_llm_call_spec_rejects_every_cross_record_mismatch(
 
     monkeypatch.setattr(evidence, "llm_configuration_approved", revoke_approval)
     with pytest.raises(ValueError, match="CONFIGURATION_APPROVAL_REQUIRED"):
-        pipeline.runtime.configuration.register_prompt_payload(payload)
+        pipeline.runtime.configuration.register_prompt_entry(first_entry)
     assert approval_checks == 2
     monkeypatch.undo()
 
@@ -556,6 +646,158 @@ def test_failed_invocation_persists_only_safe_provenance(
     assert isinstance(succeeded_log, LLMInvocationLog)
     candidate_ref = succeeded.parsed_output_ref
     assert candidate_ref is not None
+    decision = runtime.unit_of_work.records.get_exact(request.action_decision_ref)
+    assert isinstance(decision, ActionDecision)
+    action = runtime.unit_of_work.records.get_exact(decision.action_ref)
+    assert isinstance(action, ActionRequest)
+    spec = runtime.unit_of_work.records.get_exact(request.call_spec_ref)
+    payload = runtime.unit_of_work.records.get_exact(request.prompt_payload_ref)
+    assert isinstance(spec, LLMCallSpec) and isinstance(payload, PromptPayload)
+    expected_action_inputs = (
+        request.call_spec_ref,
+        spec.prompt_registry_entry_ref,
+        spec.prompt_template_ref,
+        spec.prompt_payload_ref,
+        spec.provider_profile_ref,
+        spec.execution_limits_ref,
+        spec.retry_policy_ref,
+        spec.tool_policy_ref,
+        spec.redaction_policy_ref,
+        spec.output_schema_ref,
+        spec.semantic_validator_ref,
+        payload.rendered_prompt_ref,
+        *(binding.source_ref for binding in payload.context_bindings),
+        *(binding.projected_data_ref for binding in payload.context_bindings),
+    )
+    assert action.input_refs == expected_action_inputs
+    assert action.work_ref is not None
+    work = runtime.unit_of_work.records.get_exact(action.work_ref)
+    from sastsimi.contracts.work import WorkExecutionState
+    from sastsimi.storage.llm_context import check_llm_context
+
+    assert isinstance(work, WorkExecutionState)
+    assert (
+        payload.meta.attempt_id
+        == spec.meta.attempt_id
+        == work.active_attempt_id
+        is not None
+    )
+    with runtime.unit_of_work.records.database.engine.connect() as connection:
+        attempt_owned_pointers = connection.execute(
+            select(models.current_records.c.logical_record_id).where(
+                models.current_records.c.logical_record_id.in_(
+                    (
+                        str(payload.meta.logical_record_id),
+                        str(spec.meta.logical_record_id),
+                    )
+                )
+            )
+        ).all()
+    assert attempt_owned_pointers == []
+    with pytest.raises(ValueError, match="LLM_INVOCATION_CONFIGURATION_SCOPE_MISMATCH"):
+        runtime.configuration.register_prompt_payload(
+            payload.model_copy(
+                update={"meta": payload.meta.model_copy(update={"attempt_id": None})}
+            )
+        )
+    with pytest.raises(ValueError, match="LLM_CONFIGURATION_CLOSURE_MISMATCH"):
+        runtime.configuration.register_call_spec(
+            spec.model_copy(
+                update={
+                    "meta": spec.meta.model_copy(
+                        update={"attempt_id": AttemptId("other-attempt")}
+                    )
+                }
+            )
+        )
+    with runtime.unit_of_work.records.database.engine.connect() as connection:
+        with pytest.raises(ValueError, match="LLM_CONTEXT_WORK_MISMATCH"):
+            check_llm_context(
+                runtime.unit_of_work.records,
+                connection,
+                action.model_copy(update={"session_mode": "AUTO"}),
+                work,
+            )
+
+    entry = runtime.unit_of_work.records.get_exact(spec.prompt_registry_entry_ref)
+    assert isinstance(entry, PromptRegistryEntry)
+    runtime.configuration.registry.require_current(request)
+    with runtime.unit_of_work.records.database.write() as connection:
+        active_row = (
+            connection.execute(
+                select(models.prompt_active_entries).where(
+                    models.prompt_active_entries.c.logical_record_id
+                    == str(entry.meta.logical_record_id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+        connection.execute(
+            delete(models.prompt_active_entries).where(
+                models.prompt_active_entries.c.logical_record_id
+                == str(entry.meta.logical_record_id)
+            )
+        )
+    with runtime.unit_of_work.records.database.engine.connect() as connection:
+        with pytest.raises(ValueError, match="LLM_CONTEXT_CONFIGURATION_NOT_CURRENT"):
+            check_llm_context(runtime.unit_of_work.records, connection, action, work)
+    with pytest.raises(ValueError, match="LLM_CONTEXT_CONFIGURATION_NOT_CURRENT"):
+        runtime.configuration.registry.require_current(request)
+    with runtime.unit_of_work.records.database.write() as connection:
+        connection.execute(insert(models.prompt_active_entries).values(**active_row))
+
+    provider = runtime.unit_of_work.records.get_exact(spec.provider_profile_ref)
+    assert isinstance(provider, ProviderProfile)
+    with runtime.unit_of_work.records.database.write() as connection:
+        provider_row = (
+            connection.execute(
+                select(models.current_records).where(
+                    models.current_records.c.logical_record_id
+                    == str(provider.meta.logical_record_id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+        connection.execute(
+            delete(models.current_records).where(
+                models.current_records.c.logical_record_id
+                == str(provider.meta.logical_record_id)
+            )
+        )
+    with runtime.unit_of_work.records.database.engine.connect() as connection:
+        with pytest.raises(ValueError, match="LLM_CONTEXT_CONFIGURATION_NOT_CURRENT"):
+            check_llm_context(runtime.unit_of_work.records, connection, action, work)
+    with pytest.raises(ValueError, match="LLM_CONTEXT_CONFIGURATION_NOT_CURRENT"):
+        runtime.configuration.registry.require_current(request)
+    with runtime.unit_of_work.records.database.write() as connection:
+        connection.execute(insert(models.current_records).values(**provider_row))
+
+    with runtime.unit_of_work.records.database.engine.connect() as connection:
+        candidate = runtime.unit_of_work.records.resolve(
+            connection, candidate_ref, candidate=True
+        )
+    wrong_attempt_candidate = candidate.model_copy(
+        update={
+            "meta": candidate.meta.model_copy(
+                update={
+                    "record_id": RecordId("wrong-attempt-candidate"),
+                    "logical_record_id": LogicalRecordId("wrong-attempt-candidate"),
+                    "attempt_id": AttemptId("wrong-attempt"),
+                }
+            )
+        }
+    )
+    wrong_attempt_ref = runtime.unit_of_work.records.stage_record(
+        wrong_attempt_candidate
+    )
+    with pytest.raises(ValueError, match="INVOCATION_SCOPE_MISMATCH"):
+        runtime.validator.record_invocation(
+            request,
+            succeeded.model_copy(update={"parsed_output_ref": wrong_attempt_ref}),
+            succeeded_log.model_copy(update={"parsed_output_ref": wrong_attempt_ref}),
+        )
     safe_error = "AUTH_REQUIRED: provider credentials are unavailable"
     failed = succeeded.model_copy(
         update={
