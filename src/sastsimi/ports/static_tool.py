@@ -18,6 +18,7 @@ from .dto import (
     MonotonicActionDeadline,
     PublishedStaticToolMaterial,
     StaticCapabilityObservation,
+    StaticOutputQuotaBinding,
     StaticToolObservation,
     StaticToolRequest,
     ToolCapabilityResult,
@@ -48,6 +49,30 @@ class StaticProcessAdapter(Protocol):
     ) -> StaticToolObservation: ...
 
     async def cancel(self, attempt_id: str) -> CancellationResult: ...
+
+
+class StaticOutputQuotaPort(Protocol):
+    """Trusted status proof for an attempt root's write-denying hard quota.
+
+    Implementations belong to trusted host/container composition.  A process
+    adapter may use directory measurement as defence in depth, but it must not
+    start an external writer unless this port confirms that the filesystem or
+    container boundary itself rejects writes beyond the exact attempt limit.
+    Verification is also the authoritative post-run query: a denied over-cap
+    write sets the binding's sticky ``limit_breached`` status and supplies the
+    corresponding trusted ``breach_evidence``.
+    """
+
+    def verify(
+        self,
+        *,
+        lease_id: str,
+        action_id: str,
+        attempt_id: str,
+        profile_ref: StoredDataRef,
+        root: Path,
+        limit_bytes: int,
+    ) -> StaticOutputQuotaBinding: ...
 
 
 class StaticExternalExecutionPort(Protocol):

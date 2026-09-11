@@ -6,7 +6,9 @@ import asyncio
 import hashlib
 import json
 import os
+import shutil
 import stat
+import tempfile
 import time
 from collections import Counter
 from collections.abc import Callable, Mapping
@@ -33,12 +35,27 @@ from sastsimi.ports.dto import (
     ProcessResult,
     ProcessSpec,
     StaticCapabilityObservation,
+    StaticOutputQuotaBinding,
     StaticRuleMapping,
     StaticToolObservation,
     StaticToolRequest,
     TrackedFile,
 )
+from sastsimi.ports.static_tool import StaticOutputQuotaPort
 from sastsimi.static_analysis.normalizer import StaticRawReplayInput
+
+
+async def _await_task_during_cancellation[ResultT](
+    task: asyncio.Task[ResultT],
+) -> ResultT:
+    """Settle one child even if this task receives repeated cancellation."""
+
+    while True:
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.done():
+                return task.result()
 
 
 class _WindowsFunction(Protocol):
@@ -116,6 +133,10 @@ class CodeQLExecutionInputs:
     tracked_files: tuple[TrackedFile, ...]
     attempt_root: Path
     attempt_id: str
+    output_quota_lease_id: str
+    probe_root: Path
+    probe_output_quota_lease_id: str
+    output_quota: StaticOutputQuotaPort
 
     def __post_init__(self) -> None:
         rule_ids = tuple(item.rule_id for item in self.rule_catalog)
@@ -135,10 +156,80 @@ class CodeQLExecutionInputs:
             or not self.selected_rule_packs
             or not self.query_pack_digest
             or not self.attempt_id
+            or not self.output_quota_lease_id
+            or not self.probe_output_quota_lease_id
+            or self.output_quota_lease_id == self.probe_output_quota_lease_id
         ):
             raise ValueError("CODEQL_INPUT_CLOSURE_INVALID")
+        try:
+            _assert_path_chain_safe(self.attempt_root)
+            _assert_path_chain_safe(self.probe_root)
+            attempt_root = self.attempt_root.resolve(strict=True)
+            probe_root = self.probe_root.resolve(strict=True)
+            if (
+                not self.attempt_root.is_absolute()
+                or not self.probe_root.is_absolute()
+                or not attempt_root.is_dir()
+                or not probe_root.is_dir()
+                or attempt_root == probe_root
+                or _inside(attempt_root, probe_root)
+                or _inside(probe_root, attempt_root)
+            ):
+                raise ValueError
+        except (OSError, ValueError) as error:
+            raise ValueError("CODEQL_INPUT_CLOSURE_INVALID") from error
         for git_path in tracked:
             _safe_git_path(git_path)
+
+    def output_quota_binding(
+        self,
+        *,
+        action_id: str,
+        attempt_id: str,
+        profile_ref: StoredDataRef,
+        root: Path,
+        lease_id: str,
+        limit_bytes: int,
+    ) -> StaticOutputQuotaBinding:
+        """Fail closed unless the trusted lease enforces this exact cap."""
+
+        try:
+            if not attempt_id or not lease_id:
+                raise ValueError
+            if not root.is_absolute():
+                raise ValueError
+            _assert_path_chain_safe(root)
+            exact_root = root.resolve(strict=True)
+            if not exact_root.is_dir() or _link_like(root):
+                raise ValueError
+            binding = self.output_quota.verify(
+                lease_id=lease_id,
+                action_id=action_id,
+                attempt_id=attempt_id,
+                profile_ref=profile_ref,
+                root=exact_root,
+                limit_bytes=limit_bytes,
+            )
+            _assert_path_chain_safe(binding.root)
+            if (
+                not binding.hard_enforced
+                or binding.lease_id != lease_id
+                or binding.action_id != action_id
+                or binding.attempt_id != attempt_id
+                or binding.profile_ref != profile_ref
+                or binding.root.resolve(strict=True) != exact_root
+                or binding.effective_limit_bytes != limit_bytes
+                or not binding.binding_id
+                or not binding.backend_key
+                or not binding.enforcement_evidence
+                or type(binding.limit_breached) is not bool
+                or (binding.limit_breached and not binding.breach_evidence)
+                or (not binding.limit_breached and binding.breach_evidence is not None)
+            ):
+                raise ValueError
+            return binding
+        except (OSError, ValueError) as error:
+            raise ValueError("CODEQL_OUTPUT_QUOTA_UNENFORCEABLE") from error
 
 
 def _link_like(path: Path) -> bool:
@@ -153,10 +244,41 @@ def _inside(path: Path, root: Path) -> bool:
     return True
 
 
+def _probe_directory_identity(path: Path) -> tuple[int, ...]:
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or _link_like(path) or _reparse_like_stat(info):
+        raise ValueError("CODEQL_PROBE_ROOT_INVALID")
+    return (
+        info.st_dev,
+        info.st_ino,
+        stat.S_IFMT(info.st_mode),
+        int(getattr(info, "st_file_attributes", 0)),
+        int(getattr(info, "st_reparse_tag", 0)),
+    )
+
+
+def _remove_owned_probe_directory(
+    path: Path, parent: Path, identity: tuple[int, ...]
+) -> None:
+    try:
+        if (
+            path.resolve(strict=True).parent != parent.resolve(strict=True)
+            or _probe_directory_identity(path) != identity
+        ):
+            raise ValueError("CODEQL_PROBE_ROOT_CHANGED")
+        shutil.rmtree(path)
+    except (OSError, ValueError) as error:
+        raise ValueError("CODEQL_PROBE_CLEANUP_FAILED") from error
+
+
 def _assert_path_chain_safe(path: Path) -> None:
     candidate = path.absolute()
     for part in (candidate, *candidate.parents):
-        if part.exists() and _link_like(part):
+        try:
+            info = part.lstat()
+        except FileNotFoundError:
+            continue
+        if _link_like(part) or _reparse_like_stat(info):
             raise ValueError("CODEQL_PATH_LINK_FORBIDDEN")
 
 
@@ -206,6 +328,9 @@ def validate_codeql_command(
     database_root: Path,
     query_pack_root: Path,
     output_path: Path,
+    common_cache_root: Path | None = None,
+    log_root: Path | None = None,
+    max_disk_cache_mb: int | None = None,
 ) -> None:
     """Allow only the two closed process families owned by this adapter."""
 
@@ -218,8 +343,16 @@ def validate_codeql_command(
         str(query_pack_root),
         "--format=sarifv2.1.0",
         f"--output={output_path}",
+        f"--common-caches={common_cache_root}",
+        f"--logdir={log_root}",
+        f"--max-disk-cache={max_disk_cache_mb}",
     )
-    if argv not in {version, analyze}:
+    if argv != version and (
+        common_cache_root is None
+        or log_root is None
+        or max_disk_cache_mb is None
+        or argv != analyze
+    ):
         raise ValueError("CODEQL_COMMAND_FORBIDDEN")
 
 
@@ -234,14 +367,20 @@ class _MalformedSarif(ValueError):
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
 
+def _reparse_like_stat(info: os.stat_result) -> bool:
+    return (
+        bool(
+            int(getattr(info, "st_file_attributes", 0)) & _FILE_ATTRIBUTE_REPARSE_POINT
+        )
+        or int(getattr(info, "st_reparse_tag", 0)) != 0
+    )
+
+
 def _safe_regular_file(info: os.stat_result) -> bool:
     return (
         stat.S_ISREG(info.st_mode)
         and info.st_nlink == 1
-        and not (
-            int(getattr(info, "st_file_attributes", 0)) & _FILE_ATTRIBUTE_REPARSE_POINT
-        )
-        and int(getattr(info, "st_reparse_tag", 0)) == 0
+        and not _reparse_like_stat(info)
     )
 
 
@@ -322,20 +461,62 @@ def _open_bounded_read_descriptor(path: Path) -> int:
 
 def _directory_size(root: Path, cap: int) -> int:
     _assert_path_chain_safe(root)
-    if not root.is_dir():
+    root_info = os.stat(root, follow_symlinks=False)
+    if not stat.S_ISDIR(root_info.st_mode) or _reparse_like_stat(root_info):
         raise _OutputBoundaryError("CODEQL_OUTPUT_DIRECTORY_INVALID")
     total = 0
-    with os.scandir(root) as entries:
-        for entry in entries:
-            if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
-                raise _OutputBoundaryError("CODEQL_OUTPUT_NOT_REGULAR")
-            info = entry.stat(follow_symlinks=False)
-            if not stat.S_ISREG(info.st_mode):
-                raise _OutputBoundaryError("CODEQL_OUTPUT_NOT_REGULAR")
-            total += info.st_size
-            if total > cap:
-                raise _OutputBoundaryError("CODEQL_ATTEMPT_OUTPUT_LIMIT")
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        directory_info = os.stat(directory, follow_symlinks=False)
+        if not stat.S_ISDIR(directory_info.st_mode) or _reparse_like_stat(
+            directory_info
+        ):
+            raise _OutputBoundaryError("CODEQL_OUTPUT_NOT_REGULAR")
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.is_symlink():
+                    raise _OutputBoundaryError("CODEQL_OUTPUT_NOT_REGULAR")
+                # On Windows ``DirEntry.stat`` can report ``st_nlink=0`` for
+                # ordinary files.  A direct non-following stat supplies the
+                # link count used by the hard-link boundary check.
+                info = os.stat(Path(entry.path), follow_symlinks=False)
+                if _reparse_like_stat(info):
+                    raise _OutputBoundaryError("CODEQL_OUTPUT_NOT_REGULAR")
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append(Path(entry.path))
+                    continue
+                if not _safe_regular_file(info):
+                    raise _OutputBoundaryError("CODEQL_OUTPUT_NOT_REGULAR")
+                total += info.st_size
+                if total > cap:
+                    raise _OutputBoundaryError("CODEQL_ATTEMPT_OUTPUT_LIMIT")
     return total
+
+
+def _same_quota_identity(
+    initial: StaticOutputQuotaBinding, current: StaticOutputQuotaBinding
+) -> bool:
+    """Compare immutable lease identity while treating breach as live status."""
+
+    return (
+        current.binding_id == initial.binding_id
+        and current.lease_id == initial.lease_id
+        and current.backend_key == initial.backend_key
+        and current.enforcement_evidence == initial.enforcement_evidence
+        and current.root == initial.root
+        and current.action_id == initial.action_id
+        and current.attempt_id == initial.attempt_id
+        and current.profile_ref == initial.profile_ref
+        and current.effective_limit_bytes == initial.effective_limit_bytes
+        and current.hard_enforced == initial.hard_enforced
+    )
+
+
+def _quota_allows_result(
+    initial: StaticOutputQuotaBinding, current: StaticOutputQuotaBinding
+) -> bool:
+    return _same_quota_identity(initial, current) and not current.limit_breached
 
 
 def _read_bounded_regular(
@@ -891,6 +1072,8 @@ class CodeQLProcessAdapter:
         output: Path,
         profile: StaticToolProfile,
     ) -> CodeQLProcessRunner:
+        if attempt_id in self._active:
+            raise ValueError("CODEQL_ATTEMPT_ALREADY_ACTIVE")
         runner = self.runner_factory(
             action_id=action_id,
             attempt_id=attempt_id,
@@ -901,6 +1084,10 @@ class CodeQLProcessAdapter:
         )
         self._active[attempt_id] = runner
         return runner
+
+    def _release_runner(self, attempt_id: str, runner: CodeQLProcessRunner) -> None:
+        if self._active.get(attempt_id) is runner:
+            self._active.pop(attempt_id, None)
 
     def _spec(
         self,
@@ -913,6 +1100,7 @@ class CodeQLProcessAdapter:
         profile: StaticToolProfile,
         deadline: MonotonicActionDeadline,
         suffix: str,
+        env: tuple[tuple[str, str], ...] = (),
     ) -> ProcessSpec:
         if deadline.action_id != action_id:
             raise ValueError("CODEQL_ACTION_DEADLINE_MISMATCH")
@@ -922,7 +1110,7 @@ class CodeQLProcessAdapter:
             attempt_id=attempt_id,
             argv=argv,
             cwd=cwd,
-            env=(),
+            env=env,
             attempt_output_dir=output,
             stdout_limit_bytes=profile.stdout_limit_bytes,
             stderr_limit_bytes=profile.stderr_limit_bytes,
@@ -938,50 +1126,138 @@ class CodeQLProcessAdapter:
             return self._capability(
                 profile, available=False, version=None, reason=error
             )
-        output = self.inputs.attempt_root / "codeql-probe"
-        cwd = self.inputs.attempt_root / "codeql-probe-cwd"
+        attempt_id = deadline.action_id
+        profile_ref = cast(StoredDataRef, reference(profile))
         try:
-            _assert_path_chain_safe(self.inputs.attempt_root)
+            quota_binding = self.inputs.output_quota_binding(
+                action_id=attempt_id,
+                attempt_id=attempt_id,
+                profile_ref=profile_ref,
+                root=self.inputs.probe_root,
+                lease_id=self.inputs.probe_output_quota_lease_id,
+                limit_bytes=profile.max_attempt_output_bytes,
+            )
+        except ValueError:
+            return self._capability(
+                profile,
+                available=False,
+                version=None,
+                reason="CODEQL_OUTPUT_QUOTA_UNENFORCEABLE",
+            )
+        if quota_binding.limit_breached:
+            return self._capability(
+                profile,
+                available=False,
+                version=None,
+                reason="CODEQL_OUTPUT_QUOTA_UNENFORCEABLE",
+            )
+        if attempt_id in self._active:
+            return self._capability(
+                profile,
+                available=False,
+                version=None,
+                reason="CODEQL_PROBE_ALREADY_ACTIVE",
+            )
+        probe_root: Path | None = None
+        probe_identity: tuple[int, ...] | None = None
+        try:
+            _assert_path_chain_safe(self.inputs.probe_root)
+            action_key = hashlib.sha256(attempt_id.encode("utf-8")).hexdigest()[:16]
+            probe_root = Path(
+                tempfile.mkdtemp(
+                    prefix=f"codeql-probe-{action_key}-",
+                    dir=self.inputs.probe_root,
+                )
+            )
+            _assert_path_chain_safe(probe_root)
+            probe_identity = _probe_directory_identity(probe_root)
+            output = probe_root / "output"
+            cwd = probe_root / "cwd"
+            temporary = probe_root / "tmp"
             output.mkdir(mode=0o700)
             cwd.mkdir(mode=0o700)
+            temporary.mkdir(mode=0o700)
         except (OSError, ValueError):
+            if probe_root is not None and probe_identity is not None:
+                _remove_owned_probe_directory(
+                    probe_root, self.inputs.probe_root, probe_identity
+                )
             return self._capability(
                 profile,
                 available=False,
                 version=None,
                 reason="CODEQL_PROBE_ROOT_INVALID",
             )
-        attempt_id = deadline.action_id
-        runner = self._make_runner(
-            action_id=deadline.action_id,
-            attempt_id=attempt_id,
-            cwd=cwd,
-            output=output,
-            profile=profile,
-        )
-        argv = (str(self.executable), "version", "--format=json")
-        validate_codeql_command(
-            argv,
-            self.executable,
-            self.inputs.database.database_root,
-            self.inputs.query_pack_root,
-            output / "codeql-result.sarif",
-        )
         try:
-            result = await runner.run(
-                self._spec(
+            try:
+                runner = self._make_runner(
                     action_id=deadline.action_id,
                     attempt_id=attempt_id,
-                    argv=argv,
                     cwd=cwd,
                     output=output,
                     profile=profile,
-                    deadline=deadline,
-                    suffix="version",
                 )
-            )
+            except ValueError as error:
+                if str(error) != "CODEQL_ATTEMPT_ALREADY_ACTIVE":
+                    raise
+                return self._capability(
+                    profile,
+                    available=False,
+                    version=None,
+                    reason="CODEQL_PROBE_ALREADY_ACTIVE",
+                )
+            try:
+                argv = (str(self.executable), "version", "--format=json")
+                validate_codeql_command(
+                    argv,
+                    self.executable,
+                    self.inputs.database.database_root,
+                    self.inputs.query_pack_root,
+                    output / "codeql-result.sarif",
+                )
+                result = await runner.run(
+                    self._spec(
+                        action_id=deadline.action_id,
+                        attempt_id=attempt_id,
+                        argv=argv,
+                        cwd=cwd,
+                        output=output,
+                        profile=profile,
+                        deadline=deadline,
+                        suffix="version",
+                        env=(
+                            ("TEMP", str(temporary)),
+                            ("TMP", str(temporary)),
+                            ("TMPDIR", str(temporary)),
+                        ),
+                    )
+                )
+            finally:
+                self._release_runner(attempt_id, runner)
         finally:
-            self._active.pop(attempt_id, None)
+            _remove_owned_probe_directory(
+                probe_root, self.inputs.probe_root, probe_identity
+            )
+        try:
+            if not _quota_allows_result(
+                quota_binding,
+                self.inputs.output_quota_binding(
+                    action_id=attempt_id,
+                    attempt_id=attempt_id,
+                    profile_ref=profile_ref,
+                    root=self.inputs.probe_root,
+                    lease_id=self.inputs.probe_output_quota_lease_id,
+                    limit_bytes=profile.max_attempt_output_bytes,
+                ),
+            ):
+                raise ValueError
+        except ValueError:
+            return self._capability(
+                profile,
+                available=False,
+                version=None,
+                reason="CODEQL_OUTPUT_QUOTA_UNENFORCEABLE",
+            )
         version, version_failure = _codeql_version_result(
             result, profile.expected_version
         )
@@ -1131,11 +1407,6 @@ class CodeQLProcessAdapter:
                 return "FAILED", "CODEQL_QUERY_PACK_DIGEST_MISMATCH"
             if not _selection_manifest_matches(self.inputs):
                 return "FAILED", "CODEQL_SELECTION_MANIFEST_MISMATCH"
-            if (
-                digest_path(self.inputs.query_pack_root)
-                != self.inputs.query_pack_digest
-            ):
-                return "FAILED", "CODEQL_QUERY_PACK_DIGEST_MISMATCH"
         except (OSError, ValueError):
             return "FAILED", "CODEQL_INPUT_INTEGRITY_FAILED"
         return None
@@ -1159,6 +1430,38 @@ class CodeQLProcessAdapter:
         deadline: MonotonicActionDeadline,
     ) -> StaticToolObservation:
         started = self.monotonic_ms()
+        action_id = str(request.action.action_id)
+        try:
+            quota_binding = self.inputs.output_quota_binding(
+                action_id=action_id,
+                attempt_id=self.inputs.attempt_id,
+                profile_ref=request.tool_profile_ref,
+                root=self.inputs.attempt_root,
+                lease_id=self.inputs.output_quota_lease_id,
+                limit_bytes=profile.max_attempt_output_bytes,
+            )
+        except ValueError:
+            return self._observation(
+                profile,
+                status="FAILED",
+                started=started,
+                rules=self._empty_rules("TOOL_FAILURE"),
+                gaps=(
+                    _gap(
+                        "CODEQL_OUTPUT_QUOTA_UNENFORCEABLE",
+                        "FAILED",
+                        "CodeQL hard output quota was unavailable.",
+                    ),
+                ),
+                errors=(
+                    _error(
+                        "CODEQL_OUTPUT_QUOTA_UNENFORCEABLE",
+                        "CodeQL hard output quota was unavailable.",
+                    ),
+                ),
+            )
+        if quota_binding.limit_breached:
+            return self._output_failure(profile, started)
         preflight = self._preflight(request, workspace_root, profile)
         if preflight is not None:
             status, code = preflight
@@ -1175,30 +1478,59 @@ class CodeQLProcessAdapter:
                 if status == "SKIPPED"
                 else (_error(code, "CodeQL input integrity failed."),),
             )
-        action_id = str(request.action.action_id)
         attempt_id = self.inputs.attempt_id
         if deadline.action_id != action_id:
             raise ValueError("CODEQL_ACTION_DEADLINE_MISMATCH")
-        output = self.inputs.attempt_root / "codeql-run"
+        execution_root = self.inputs.attempt_root / "codeql-run"
+        cwd = execution_root / "cwd"
+        output = execution_root / "output"
+        working_database = execution_root / "database"
+        working_query_pack = execution_root / "query-pack"
+        common_cache = execution_root / "common-cache"
+        logs = execution_root / "logs"
+        temporary = execution_root / "tmp"
         try:
+            execution_root.mkdir(mode=0o700)
             output.mkdir(mode=0o700)
-            _assert_path_chain_safe(output)
-        except (OSError, ValueError):
-            return self._observation(
-                profile,
-                status="FAILED",
-                started=started,
-                gaps=(
-                    _gap(
-                        "STATIC_OUTPUT_LIMIT",
-                        "TRUNCATED",
-                        "CodeQL output root was unsafe.",
+            cwd.mkdir(mode=0o700)
+            common_cache.mkdir(mode=0o700)
+            logs.mkdir(mode=0o700)
+            temporary.mkdir(mode=0o700)
+            shutil.copytree(self.inputs.database.database_root, working_database)
+            shutil.copytree(self.inputs.query_pack_root, working_query_pack)
+            for root in (
+                execution_root,
+                cwd,
+                output,
+                working_database,
+                working_query_pack,
+                common_cache,
+                logs,
+                temporary,
+            ):
+                _assert_path_chain_safe(root)
+                root.resolve(strict=True).relative_to(
+                    self.inputs.attempt_root.resolve(strict=True)
+                )
+            if (
+                digest_path(working_database) != self.inputs.database.database_digest
+                or digest_path(working_query_pack) != self.inputs.query_pack_digest
+                or not _quota_allows_result(
+                    quota_binding,
+                    self.inputs.output_quota_binding(
+                        action_id=action_id,
+                        attempt_id=self.inputs.attempt_id,
+                        profile_ref=request.tool_profile_ref,
+                        root=self.inputs.attempt_root,
+                        lease_id=self.inputs.output_quota_lease_id,
+                        limit_bytes=profile.max_attempt_output_bytes,
                     ),
-                ),
-                errors=(
-                    _error("STATIC_OUTPUT_LIMIT", "CodeQL output root was unsafe."),
-                ),
-            )
+                )
+            ):
+                raise ValueError
+            _directory_size(self.inputs.attempt_root, profile.max_attempt_output_bytes)
+        except (OSError, ValueError):
+            return self._output_failure(profile, started)
         sarif_path = output / "codeql-result.sarif"
         if sarif_path.exists() or _link_like(sarif_path):
             return self._observation(
@@ -1219,7 +1551,7 @@ class CodeQLProcessAdapter:
         runner = self._make_runner(
             action_id=action_id,
             attempt_id=attempt_id,
-            cwd=workspace_root,
+            cwd=cwd,
             output=output,
             profile=profile,
         )
@@ -1231,29 +1563,53 @@ class CodeQLProcessAdapter:
             self.inputs.query_pack_root,
             sarif_path,
         )
-        version_result = await runner.run(
-            self._spec(
-                action_id=action_id,
-                attempt_id=attempt_id,
-                argv=version_argv,
-                cwd=workspace_root,
-                output=output,
-                profile=profile,
-                deadline=deadline,
-                suffix="version",
+        try:
+            version_result = await runner.run(
+                self._spec(
+                    action_id=action_id,
+                    attempt_id=attempt_id,
+                    argv=version_argv,
+                    cwd=cwd,
+                    output=output,
+                    profile=profile,
+                    deadline=deadline,
+                    suffix="version",
+                    env=(
+                        ("TEMP", str(temporary)),
+                        ("TMP", str(temporary)),
+                        ("TMPDIR", str(temporary)),
+                    ),
+                )
             )
-        )
+        finally:
+            self._release_runner(attempt_id, runner)
         _, version_failure = _codeql_version_result(
             version_result, profile.expected_version
         )
+        try:
+            if not _quota_allows_result(
+                quota_binding,
+                self.inputs.output_quota_binding(
+                    action_id=action_id,
+                    attempt_id=self.inputs.attempt_id,
+                    profile_ref=request.tool_profile_ref,
+                    root=self.inputs.attempt_root,
+                    lease_id=self.inputs.output_quota_lease_id,
+                    limit_bytes=profile.max_attempt_output_bytes,
+                ),
+            ):
+                raise ValueError
+        except ValueError:
+            return self._output_failure(profile, started)
         if version_failure is not None:
-            self._active.pop(attempt_id, None)
             code = {
                 "CANCELLED": "STATIC_TOOL_CANCELLED",
                 "TIMED_OUT": "STATIC_TOOL_TIMEOUT",
                 "OUTPUT_TRUNCATED": "STATIC_OUTPUT_LIMIT",
                 "PROCESS_FAILED": "STATIC_TOOL_FAILED",
-            }.get(version_failure, "STATIC_TOOL_VERSION")
+                "VERSION_INVALID": "STATIC_TOOL_VERSION_INVALID",
+                "VERSION_MISMATCH": "STATIC_TOOL_VERSION_MISMATCH",
+            }[version_failure]
             reason = (
                 "BLOCKED"
                 if version_failure == "CANCELLED"
@@ -1273,6 +1629,9 @@ class CodeQLProcessAdapter:
                 profile,
                 status="SKIPPED" if version_failure == "CANCELLED" else "FAILED",
                 started=started,
+                rules=self._empty_rules(
+                    "CANCELLED" if version_failure == "CANCELLED" else "TOOL_FAILURE"
+                ),
                 gaps=(_gap(code, reason, message),),
                 errors=()
                 if version_failure == "CANCELLED"
@@ -1288,33 +1647,49 @@ class CodeQLProcessAdapter:
             str(self.executable),
             "database",
             "analyze",
-            str(self.inputs.database.database_root),
-            str(self.inputs.query_pack_root),
+            str(working_database),
+            str(working_query_pack),
             "--format=sarifv2.1.0",
             f"--output={sarif_path}",
+            f"--common-caches={common_cache}",
+            f"--logdir={logs}",
+            f"--max-disk-cache={profile.max_attempt_output_bytes // (1024 * 1024)}",
         )
         validate_codeql_command(
             argv,
             self.executable,
-            self.inputs.database.database_root,
-            self.inputs.query_pack_root,
+            working_database,
+            working_query_pack,
             sarif_path,
+            common_cache,
+            logs,
+            profile.max_attempt_output_bytes // (1024 * 1024),
         )
         spec = self._spec(
             action_id=action_id,
             attempt_id=attempt_id,
             argv=argv,
-            cwd=workspace_root,
+            cwd=cwd,
             output=output,
             profile=profile,
             deadline=deadline,
             suffix="analyze",
+            env=(
+                ("TEMP", str(temporary)),
+                ("TMP", str(temporary)),
+                ("TMPDIR", str(temporary)),
+            ),
         )
         done = asyncio.Event()
         process_task = asyncio.create_task(runner.run(spec))
         watcher = asyncio.create_task(
-            self._watch_quota(output, profile.max_attempt_output_bytes, done)
+            self._watch_quota(
+                self.inputs.attempt_root,
+                profile.max_attempt_output_bytes,
+                done,
+            )
         )
+        self._active[attempt_id] = runner
         quota_exceeded = False
         try:
             completed, _ = await asyncio.wait(
@@ -1324,13 +1699,56 @@ class CodeQLProcessAdapter:
                 quota_exceeded = True
                 await runner.cancel(attempt_id)
             result = await process_task
+        except asyncio.CancelledError as cancellation:
+            if process_task.done() and not process_task.cancelled():
+                # The process and its durable receipt won the race. Complete
+                # normal decoding/publication rather than inventing a trailing
+                # cancellation receipt for work that already finished.
+                result = process_task.result()
+            else:
+                cleanup_error: BaseException | None = None
+                cancel_task = asyncio.create_task(runner.cancel(attempt_id))
+                try:
+                    cancellation_result = await _await_task_during_cancellation(
+                        cancel_task
+                    )
+                    if not cancellation_result.cancelled:
+                        process_task.cancel()
+                except BaseException as error:
+                    cleanup_error = error
+                    process_task.cancel()
+                try:
+                    await _await_task_during_cancellation(process_task)
+                except asyncio.CancelledError:
+                    pass
+                except BaseException as error:
+                    if cleanup_error is None:
+                        cleanup_error = error
+                if cleanup_error is not None:
+                    raise cleanup_error from cancellation
+                raise
         finally:
             done.set()
             watcher.cancel()
             with suppress(asyncio.CancelledError):
-                await watcher
-            self._active.pop(attempt_id, None)
+                await _await_task_during_cancellation(watcher)
+            self._release_runner(attempt_id, runner)
         if quota_exceeded:
+            return self._output_failure(profile, started)
+        try:
+            if not _quota_allows_result(
+                quota_binding,
+                self.inputs.output_quota_binding(
+                    action_id=action_id,
+                    attempt_id=self.inputs.attempt_id,
+                    profile_ref=request.tool_profile_ref,
+                    root=self.inputs.attempt_root,
+                    lease_id=self.inputs.output_quota_lease_id,
+                    limit_bytes=profile.max_attempt_output_bytes,
+                ),
+            ):
+                raise ValueError
+        except ValueError:
             return self._output_failure(profile, started)
         if result.outcome == "CANCELLED":
             return self._observation(
@@ -1352,8 +1770,48 @@ class CodeQLProcessAdapter:
                     _error("STATIC_TOOL_TIMEOUT", "CodeQL timed out.", retryable=True),
                 ),
             )
+        postflight = self._preflight(request, workspace_root, profile)
+        if postflight is not None:
+            _, code = postflight
+            return self._observation(
+                profile,
+                status="FAILED",
+                started=started,
+                rules=self._empty_rules("TOOL_FAILURE"),
+                gaps=(
+                    _gap(
+                        code,
+                        "FAILED",
+                        "CodeQL inputs changed during analysis.",
+                    ),
+                ),
+                errors=(_error(code, "CodeQL inputs changed during analysis."),),
+            )
         try:
-            _directory_size(output, profile.max_attempt_output_bytes)
+            if digest_path(working_query_pack) != self.inputs.query_pack_digest:
+                raise ValueError
+        except (OSError, ValueError):
+            return self._observation(
+                profile,
+                status="FAILED",
+                started=started,
+                rules=self._empty_rules("TOOL_FAILURE"),
+                gaps=(
+                    _gap(
+                        "CODEQL_QUERY_PACK_DIGEST_MISMATCH",
+                        "FAILED",
+                        "The attempt-owned CodeQL query pack changed during analysis.",
+                    ),
+                ),
+                errors=(
+                    _error(
+                        "CODEQL_QUERY_PACK_DIGEST_MISMATCH",
+                        "The attempt-owned CodeQL query pack changed during analysis.",
+                    ),
+                ),
+            )
+        try:
+            _directory_size(self.inputs.attempt_root, profile.max_attempt_output_bytes)
             raw = _read_bounded_regular(
                 sarif_path,
                 output,

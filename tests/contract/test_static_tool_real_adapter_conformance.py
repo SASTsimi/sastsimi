@@ -10,8 +10,7 @@ import platform
 import shutil
 import sys
 import time
-import uuid
-from collections.abc import Awaitable, Callable, Generator
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Literal, cast
@@ -37,6 +36,7 @@ from sastsimi.ports.dto import (
     ProcessReceipt,
     ProcessResult,
     ProcessSpec,
+    StaticOutputQuotaBinding,
     StaticRuleMapping,
     StaticToolObservation,
     StaticToolRequest,
@@ -140,6 +140,45 @@ def _artifact_ref(raw: bytes) -> StoredDataRef:
             "commit_id": "c1",
         }
     )
+
+
+class _HardQuotaGuard:
+    def verify(
+        self,
+        *,
+        lease_id: str,
+        action_id: str,
+        attempt_id: str,
+        profile_ref: StoredDataRef,
+        root: Path,
+        limit_bytes: int,
+    ) -> StaticOutputQuotaBinding:
+        # A capability probe is its own action/attempt; the analysis run keeps
+        # the fixture's separately allocated attempt identity.
+        exact_execution = (
+            lease_id == "quota-attempt-codeql" and attempt_id == "attempt-codeql"
+        )
+        exact_probe = lease_id == "quota-probe-codeql" and attempt_id == action_id
+        if (
+            not (exact_execution or exact_probe)
+            or not root.is_dir()
+            or limit_bytes != 20_000
+        ):
+            raise ValueError("ATTEMPT_OUTPUT_QUOTA_UNENFORCEABLE")
+        return StaticOutputQuotaBinding(
+            binding_id=f"binding-{lease_id}",
+            lease_id=lease_id,
+            backend_key="fixture-write-denying-quota",
+            enforcement_evidence="fixture-enforcement-proof",
+            root=root,
+            action_id=action_id,
+            attempt_id=attempt_id,
+            profile_ref=profile_ref,
+            effective_limit_bytes=limit_bytes,
+            hard_enforced=True,
+            limit_breached=False,
+            breach_evidence=None,
+        )
 
 
 def _result(
@@ -438,14 +477,12 @@ class _External:
 
 
 @pytest.fixture
-def case_root() -> Generator[Path, None, None]:
-    root = Path.cwd() / ".t08-real-adapter-tests" / uuid.uuid4().hex
-    shutil.rmtree(root, ignore_errors=True)
+def case_root(tmp_path: Path) -> Path:
+    """Keep adapter artifacts in pytest's owned per-test directory."""
+
+    root = tmp_path / "real-adapter-case"
     root.mkdir(parents=True)
-    try:
-        yield root
-    finally:
-        shutil.rmtree(root, ignore_errors=True)
+    return root
 
 
 def _request(
@@ -719,6 +756,8 @@ async def test_actual_three_adapter_public_bridge_and_exact_replay(
         opengrep_raw=opengrep_raw,
     )
     codeql_runner.output_root.mkdir()
+    codeql_probe_root = case_root / "probe-codeql"
+    codeql_probe_root.mkdir()
     opengrep_runner = _Runner(
         attempt_id="attempt-opengrep",
         workspace_root=workspace_root,
@@ -784,6 +823,8 @@ async def test_actual_three_adapter_public_bridge_and_exact_replay(
             / "static_analysis"
             / "python_ast_worker.py",
             process_runner=ast_runner,
+            probe_runner_factory=_RunnerFactory(ast_runner),
+            probe_root=ast_runner.output_root,
             workspace_locator=locator,
             tracked_files=tracked,
         ),
@@ -808,6 +849,10 @@ async def test_actual_three_adapter_public_bridge_and_exact_replay(
                 tracked_files=tracked,
                 attempt_root=codeql_runner.output_root,
                 attempt_id="attempt-codeql",
+                output_quota_lease_id="quota-attempt-codeql",
+                probe_root=codeql_probe_root,
+                probe_output_quota_lease_id="quota-probe-codeql",
+                output_quota=_HardQuotaGuard(),
             ),
             runner_factory=_RunnerFactory(codeql_runner),
         ),

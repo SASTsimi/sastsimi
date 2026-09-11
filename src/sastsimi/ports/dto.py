@@ -63,6 +63,29 @@ class CancellationResult:
     reason: str | None
 
 
+@dataclass(frozen=True)
+class StaticOutputQuotaBinding:
+    """Point-in-time proof for one write-denying static-output lease.
+
+    ``limit_breached`` is a sticky backend status: once the backend denies or
+    records an over-limit write for this lease it remains true for every later
+    verification.  ``breach_evidence`` identifies that trusted backend event.
+    """
+
+    binding_id: str
+    lease_id: str
+    backend_key: str
+    enforcement_evidence: str
+    root: Path
+    action_id: str
+    attempt_id: str
+    profile_ref: StoredDataRef
+    effective_limit_bytes: int
+    hard_enforced: bool
+    limit_breached: bool
+    breach_evidence: str | None
+
+
 class AttemptOutputBudgetPort(Protocol):
     """Attempt-owned aggregate allocation across process invocations/streams."""
 

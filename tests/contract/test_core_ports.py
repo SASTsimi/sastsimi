@@ -205,13 +205,14 @@ def test_static_transport_and_lower_process_seams_are_frozen() -> None:
         ProcessResult,
         ProcessSpec,
         StaticCapabilityObservation,
+        StaticOutputQuotaBinding,
         StaticToolObservation,
         StaticToolRequest,
         ToolCapabilityResult,
         WorkspaceStorageLease,
         WorkspaceStoragePolicy,
     )
-    from sastsimi.ports.static_tool import StaticProcessAdapter
+    from sastsimi.ports.static_tool import StaticOutputQuotaPort, StaticProcessAdapter
     from sastsimi.ports.workspace import WorkspaceStoragePort
 
     assert [field.name for field in fields(StaticToolRequest)] == [
@@ -226,13 +227,17 @@ def test_static_transport_and_lower_process_seams_are_frozen() -> None:
         ProcessSpec,
         ProcessResult,
         StaticCapabilityObservation,
+        StaticOutputQuotaBinding,
         ToolCapabilityResult,
         StaticToolObservation,
         WorkspaceStoragePolicy,
         WorkspaceStorageLease,
     ):
         assert "meta" not in {field.name for field in fields(transport)}
+    quota_fields = {field.name for field in fields(StaticOutputQuotaBinding)}
+    assert {"limit_breached", "breach_evidence"} <= quota_fields
     assert StaticProcessAdapter is not None
+    assert StaticOutputQuotaPort is not None
     assert WorkspaceStoragePort is not None
 
 

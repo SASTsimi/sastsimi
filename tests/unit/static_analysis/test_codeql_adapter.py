@@ -25,6 +25,7 @@ from sastsimi.ports.dto import (
     ProcessReceipt,
     ProcessResult,
     ProcessSpec,
+    StaticOutputQuotaBinding,
     StaticRuleMapping,
     StaticToolRequest,
     TrackedFile,
@@ -140,6 +141,9 @@ class FakeRunner:
         version_stdout_truncated: bool = False,
         version_stderr_truncated: bool = False,
         block_version: bool = False,
+        version_error: Exception | None = None,
+        analyze_return_callback: Callable[[], None] | None = None,
+        analyze_callback: Callable[[ProcessSpec], None] | None = None,
     ) -> None:
         self.version = version
         self.sarif = sarif
@@ -153,39 +157,64 @@ class FakeRunner:
         self.version_stdout_truncated = version_stdout_truncated
         self.version_stderr_truncated = version_stderr_truncated
         self.block_version = block_version
+        self.version_error = version_error
+        self.analyze_return_callback = analyze_return_callback
+        self.analyze_callback = analyze_callback
         self.calls: list[ProcessSpec] = []
         self.cancelled: list[str] = []
         self.started = asyncio.Event()
+        self.version_started = asyncio.Event()
+        self.analyze_started = asyncio.Event()
         self.release = asyncio.Event()
+        self.version_finished = asyncio.Event()
+        self.analyze_finished = asyncio.Event()
 
     async def run(self, spec: ProcessSpec) -> ProcessResult:
-        self.calls.append(spec)
-        if spec.argv[1:3] == ("version", "--format=json"):
+        try:
+            self.calls.append(spec)
+            if spec.argv[1:3] == ("version", "--format=json"):
+                self.started.set()
+                self.version_started.set()
+                if self.block_version:
+                    await self.release.wait()
+                if self.version_error is not None:
+                    raise self.version_error
+                return process_result(
+                    spec,
+                    outcome=self.version_outcome,
+                    return_code=self.version_return_code,
+                    stdout=(
+                        canonical_bytes({"version": self.version})
+                        if self.version_stdout is None
+                        else self.version_stdout
+                    ),
+                    stdout_truncated=self.version_stdout_truncated,
+                    stderr_truncated=self.version_stderr_truncated,
+                )
+            output_arg = next(
+                value for value in spec.argv if value.startswith("--output=")
+            )
+            output = Path(output_arg.split("=", 1)[1])
+            if self.analyze_callback is not None:
+                self.analyze_callback(spec)
+            if self.writer is not None:
+                self.writer(output)
+            elif self.sarif is not None:
+                output.write_bytes(self.sarif)
             self.started.set()
-            if self.block_version:
+            self.analyze_started.set()
+            if self.block_after_write:
                 await self.release.wait()
             return process_result(
-                spec,
-                outcome=self.version_outcome,
-                return_code=self.version_return_code,
-                stdout=(
-                    canonical_bytes({"version": self.version})
-                    if self.version_stdout is None
-                    else self.version_stdout
-                ),
-                stdout_truncated=self.version_stdout_truncated,
-                stderr_truncated=self.version_stderr_truncated,
+                spec, outcome=self.outcome, return_code=self.return_code
             )
-        output_arg = next(value for value in spec.argv if value.startswith("--output="))
-        output = Path(output_arg.split("=", 1)[1])
-        if self.writer is not None:
-            self.writer(output)
-        elif self.sarif is not None:
-            output.write_bytes(self.sarif)
-        self.started.set()
-        if self.block_after_write:
-            await self.release.wait()
-        return process_result(spec, outcome=self.outcome, return_code=self.return_code)
+        finally:
+            if spec.argv[1:3] == ("version", "--format=json"):
+                self.version_finished.set()
+            else:
+                if self.analyze_return_callback is not None:
+                    self.analyze_return_callback()
+                self.analyze_finished.set()
 
     async def cancel(self, attempt_id: str) -> CancellationResult:
         self.cancelled.append(attempt_id)
@@ -201,6 +230,84 @@ class RunnerFactory:
     def __call__(self, **kwargs: object) -> FakeRunner:
         self.calls.append(kwargs)
         return self.runner
+
+
+class DelayedCancelRunner(FakeRunner):
+    """Keep cancellation open so a second outer cancellation is deterministic."""
+
+    def __init__(self, *, sarif: bytes, block_after_write: bool) -> None:
+        super().__init__(sarif=sarif, block_after_write=block_after_write)
+        self.cancel_started = asyncio.Event()
+        self.finish_cancel = asyncio.Event()
+
+    async def cancel(self, attempt_id: str) -> CancellationResult:
+        self.cancelled.append(attempt_id)
+        self.cancel_started.set()
+        await self.finish_cancel.wait()
+        self.release.set()
+        return CancellationResult(True, None)
+
+
+class HardQuotaGuard:
+    """Trusted fixture proof for a write-denying attempt-output lease."""
+
+    def __init__(self, *, active: bool = True) -> None:
+        self.active = active
+        self.limit_breached = False
+        self.breach_evidence: str | None = None
+        self.calls: list[tuple[str, str, str, StoredDataRef, Path, int]] = []
+
+    def verify(
+        self,
+        *,
+        lease_id: str,
+        action_id: str,
+        attempt_id: str,
+        profile_ref: StoredDataRef,
+        root: Path,
+        limit_bytes: int,
+    ) -> StaticOutputQuotaBinding:
+        self.calls.append(
+            (lease_id, action_id, attempt_id, profile_ref, root, limit_bytes)
+        )
+        if not self.active:
+            raise ValueError("ATTEMPT_OUTPUT_QUOTA_UNENFORCEABLE")
+        return StaticOutputQuotaBinding(
+            binding_id="binding-at1",
+            lease_id=lease_id,
+            backend_key="fixture-write-denying-quota",
+            enforcement_evidence="fixture-enforcement-proof",
+            root=root,
+            action_id=action_id,
+            attempt_id=attempt_id,
+            profile_ref=profile_ref,
+            effective_limit_bytes=limit_bytes,
+            hard_enforced=True,
+            limit_breached=self.limit_breached,
+            breach_evidence=self.breach_evidence,
+        )
+
+
+def test_static_output_quota_binding_exposes_sticky_breach_state() -> None:
+    assert "limit_breached" in StaticOutputQuotaBinding.__dataclass_fields__
+    assert "breach_evidence" in StaticOutputQuotaBinding.__dataclass_fields__
+
+
+@pytest.mark.parametrize("shared_part", ["root", "lease"])
+def test_codeql_inputs_require_probe_quota_isolation(
+    codeql_fixture: dict[str, Any], shared_part: str
+) -> None:
+    inputs = codeql_fixture["inputs"]
+
+    with pytest.raises(ValueError, match="CODEQL_INPUT_CLOSURE_INVALID"):
+        replace(
+            inputs,
+            **(
+                {"probe_root": inputs.attempt_root}
+                if shared_part == "root"
+                else {"probe_output_quota_lease_id": inputs.output_quota_lease_id}
+            ),
+        )
 
 
 def profile(executable: Path, **changes: object) -> StaticToolProfile:
@@ -285,6 +392,15 @@ def fixture_workspace(value: dict[str, Any]) -> Path:
     return root
 
 
+def copied_codeql_input_bytes(inputs: Any) -> int:
+    return sum(
+        path.stat().st_size
+        for root in (inputs.database.database_root, inputs.query_pack_root)
+        for path in root.rglob("*")
+        if path.is_file()
+    )
+
+
 def sarif(
     *,
     results: list[dict[str, Any]] | None = None,
@@ -360,6 +476,9 @@ def codeql_fixture(tmp_path: Path) -> dict[str, Any]:
     )
     attempt_root = tmp_path / "attempt"
     attempt_root.mkdir()
+    probe_root = tmp_path / "probe"
+    probe_root.mkdir()
+    output_quota = HardQuotaGuard()
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     mappings = (
@@ -386,12 +505,393 @@ def codeql_fixture(tmp_path: Path) -> dict[str, Any]:
         ),
         attempt_root=attempt_root,
         attempt_id="at1",
+        output_quota_lease_id="quota-at1",
+        probe_root=probe_root,
+        probe_output_quota_lease_id="quota-probe-at1",
+        output_quota=output_quota,
     )
     return {
         "executable": executable,
         "inputs": inputs,
         "workspace_root": workspace_root,
+        "output_quota": output_quota,
     }
+
+
+@pytest.mark.asyncio
+async def test_execute_fails_before_spawn_without_enforced_output_quota(
+    codeql_fixture: dict[str, Any],
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    inputs = codeql_fixture["inputs"]
+    workspace_root = codeql_fixture["workspace_root"]
+    assert isinstance(executable, Path)
+    assert isinstance(workspace_root, Path)
+    inputs.output_quota.active = False
+    runner = FakeRunner(sarif=sarif())
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=inputs,
+        runner_factory=RunnerFactory(runner),
+    )
+    tool_profile = profile(executable)
+    _, request = workspace_and_request(tool_profile)
+
+    observed = await adapter.execute(
+        request, workspace_root, tool_profile, deadline(str(request.action.action_id))
+    )
+
+    assert observed.status == "FAILED"
+    assert observed.errors[0].code == "CODEQL_OUTPUT_QUOTA_UNENFORCEABLE"
+    assert not runner.calls
+
+
+@pytest.mark.asyncio
+async def test_execute_fails_before_spawn_for_already_breached_output_quota(
+    codeql_fixture: dict[str, Any],
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    inputs = codeql_fixture["inputs"]
+    workspace_root = codeql_fixture["workspace_root"]
+    output_quota = codeql_fixture["output_quota"]
+    assert isinstance(executable, Path)
+    assert isinstance(workspace_root, Path)
+    assert isinstance(output_quota, HardQuotaGuard)
+    output_quota.limit_breached = True
+    output_quota.breach_evidence = "fixture-denied-write"
+    runner = FakeRunner(sarif=sarif())
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=inputs,
+        runner_factory=RunnerFactory(runner),
+    )
+    tool_profile = profile(executable)
+    _, request = workspace_and_request(tool_profile)
+
+    observed = await adapter.execute(
+        request, workspace_root, tool_profile, deadline(str(request.action.action_id))
+    )
+
+    assert observed.status == "FAILED"
+    assert observed.raw_output is None
+    assert {item.code for item in observed.errors} == {"STATIC_OUTPUT_LIMIT"}
+    assert not runner.calls
+
+
+@pytest.mark.asyncio
+async def test_execute_rejects_inconsistent_output_quota_status_before_spawn(
+    codeql_fixture: dict[str, Any],
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    inputs = codeql_fixture["inputs"]
+    workspace_root = codeql_fixture["workspace_root"]
+    output_quota = codeql_fixture["output_quota"]
+    assert isinstance(executable, Path)
+    assert isinstance(workspace_root, Path)
+    assert isinstance(output_quota, HardQuotaGuard)
+    output_quota.breach_evidence = "evidence-without-a-breach"
+    runner = FakeRunner(sarif=sarif())
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=inputs,
+        runner_factory=RunnerFactory(runner),
+    )
+    tool_profile = profile(executable)
+    _, request = workspace_and_request(tool_profile)
+
+    observed = await adapter.execute(
+        request, workspace_root, tool_profile, deadline(str(request.action.action_id))
+    )
+
+    assert observed.status == "FAILED"
+    assert {item.code for item in observed.errors} == {
+        "CODEQL_OUTPUT_QUOTA_UNENFORCEABLE"
+    }
+    assert not runner.calls
+
+
+@pytest.mark.asyncio
+async def test_probe_fails_before_spawn_without_enforced_output_quota(
+    codeql_fixture: dict[str, Any],
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    inputs = codeql_fixture["inputs"]
+    assert isinstance(executable, Path)
+    inputs.output_quota.active = False
+    runner = FakeRunner()
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=inputs,
+        runner_factory=RunnerFactory(runner),
+    )
+
+    observed = await adapter.probe(profile(executable), deadline("quota-probe"))
+
+    assert not observed.available
+    assert observed.reason_code == "CODEQL_OUTPUT_QUOTA_UNENFORCEABLE"
+    assert not runner.calls
+
+
+@pytest.mark.asyncio
+async def test_probe_discards_capability_if_output_quota_is_revoked_after_process(
+    codeql_fixture: dict[str, Any],
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    inputs = codeql_fixture["inputs"]
+    output_quota = codeql_fixture["output_quota"]
+    assert isinstance(executable, Path)
+    assert isinstance(output_quota, HardQuotaGuard)
+
+    class RevokingProbeRunner(FakeRunner):
+        async def run(self, spec: ProcessSpec) -> ProcessResult:
+            result = await super().run(spec)
+            output_quota.active = False
+            return result
+
+    runner = RevokingProbeRunner()
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=inputs,
+        runner_factory=RunnerFactory(runner),
+    )
+
+    observed = await adapter.probe(profile(executable), deadline("revoked-probe"))
+
+    assert not observed.available
+    assert observed.reason_code == "CODEQL_OUTPUT_QUOTA_UNENFORCEABLE"
+    assert len(runner.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_execute_rechecks_exact_hard_quota_after_process(
+    codeql_fixture: dict[str, Any],
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    inputs = codeql_fixture["inputs"]
+    workspace_root = codeql_fixture["workspace_root"]
+    output_quota = codeql_fixture["output_quota"]
+    assert isinstance(executable, Path)
+    assert isinstance(workspace_root, Path)
+    assert isinstance(output_quota, HardQuotaGuard)
+    runner = FakeRunner(sarif=sarif())
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=inputs,
+        runner_factory=RunnerFactory(runner),
+    )
+    tool_profile = profile(executable)
+    _, request = workspace_and_request(tool_profile)
+
+    observed = await adapter.execute(
+        request, workspace_root, tool_profile, deadline(str(request.action.action_id))
+    )
+
+    assert observed.status == "SUCCEEDED", observed
+    expected_call = (
+        "quota-at1",
+        str(request.action.action_id),
+        "at1",
+        request.tool_profile_ref,
+        inputs.attempt_root.resolve(),
+        100_000,
+    )
+    assert output_quota.calls == [expected_call] * 4
+
+
+@pytest.mark.asyncio
+async def test_execute_uses_attempt_owned_database_pack_cache_and_cwd(
+    codeql_fixture: dict[str, Any],
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    inputs = codeql_fixture["inputs"]
+    workspace_root = codeql_fixture["workspace_root"]
+    assert isinstance(executable, Path)
+    assert isinstance(workspace_root, Path)
+    seen: dict[str, Path] = {}
+
+    def inspect_and_mutate_working_copy(spec: ProcessSpec) -> None:
+        seen["database"] = Path(spec.argv[3])
+        seen["query_pack"] = Path(spec.argv[4])
+        cache_arg = next(
+            item for item in spec.argv if item.startswith("--common-caches=")
+        )
+        seen["cache"] = Path(cache_arg.split("=", 1)[1])
+        seen["logs"] = Path(
+            next(item for item in spec.argv if item.startswith("--logdir=")).split(
+                "=", 1
+            )[1]
+        )
+        seen["temporary"] = Path(dict(spec.env)["TEMP"])
+        assert dict(spec.env) == {
+            "TEMP": str(seen["temporary"]),
+            "TMP": str(seen["temporary"]),
+            "TMPDIR": str(seen["temporary"]),
+        }
+        seen["cwd"] = spec.cwd
+        assert any(item.startswith("--max-disk-cache=") for item in spec.argv)
+        seen["database"].joinpath("results-written-by-codeql").write_text("ok")
+
+    runner = FakeRunner(sarif=sarif(), analyze_callback=inspect_and_mutate_working_copy)
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=inputs,
+        runner_factory=RunnerFactory(runner),
+    )
+    tool_profile = profile(executable)
+    _, request = workspace_and_request(tool_profile)
+
+    observed = await adapter.execute(
+        request, workspace_root, tool_profile, deadline(str(request.action.action_id))
+    )
+
+    assert observed.status == "SUCCEEDED", observed
+    assert seen["database"] != inputs.database.database_root
+    assert seen["query_pack"] != inputs.query_pack_root
+    assert seen["cwd"] != workspace_root
+    for path in seen.values():
+        path.resolve().relative_to(inputs.attempt_root.resolve())
+    assert not inputs.database.database_root.joinpath(
+        "results-written-by-codeql"
+    ).exists()
+
+
+@pytest.mark.asyncio
+async def test_execute_discards_results_if_working_query_pack_changes(
+    codeql_fixture: dict[str, Any],
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    workspace_root = codeql_fixture["workspace_root"]
+    assert isinstance(executable, Path)
+    assert isinstance(workspace_root, Path)
+
+    def mutate_working_query_pack(spec: ProcessSpec) -> None:
+        Path(spec.argv[4]).joinpath("changed-during-analysis.txt").write_text(
+            "changed", encoding="utf-8"
+        )
+
+    runner = FakeRunner(sarif=sarif(), analyze_callback=mutate_working_query_pack)
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=codeql_fixture["inputs"],
+        runner_factory=RunnerFactory(runner),
+    )
+    tool_profile = profile(executable)
+    _, request = workspace_and_request(tool_profile)
+
+    observed = await adapter.execute(
+        request, workspace_root, tool_profile, deadline(str(request.action.action_id))
+    )
+
+    assert observed.status == "FAILED"
+    assert observed.raw_output is None
+    assert observed.facts == () and observed.relations == ()
+    assert {item.code for item in observed.errors} == {
+        "CODEQL_QUERY_PACK_DIGEST_MISMATCH"
+    }
+
+
+@pytest.mark.asyncio
+async def test_revoked_output_quota_discards_completed_sarif(
+    codeql_fixture: dict[str, Any],
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    workspace_root = codeql_fixture["workspace_root"]
+    output_quota = codeql_fixture["output_quota"]
+    assert isinstance(executable, Path)
+    assert isinstance(workspace_root, Path)
+    assert isinstance(output_quota, HardQuotaGuard)
+
+    def revoke_quota(_spec: ProcessSpec) -> None:
+        output_quota.active = False
+
+    runner = FakeRunner(sarif=sarif(), analyze_callback=revoke_quota)
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=codeql_fixture["inputs"],
+        runner_factory=RunnerFactory(runner),
+    )
+    tool_profile = profile(executable)
+    _, request = workspace_and_request(tool_profile)
+
+    observed = await adapter.execute(
+        request, workspace_root, tool_profile, deadline(str(request.action.action_id))
+    )
+
+    assert observed.status == "FAILED"
+    assert observed.raw_output is None
+    assert {item.code for item in observed.errors} == {"STATIC_OUTPUT_LIMIT"}
+
+
+@pytest.mark.asyncio
+async def test_breached_output_quota_discards_completed_sarif(
+    codeql_fixture: dict[str, Any],
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    workspace_root = codeql_fixture["workspace_root"]
+    output_quota = codeql_fixture["output_quota"]
+    assert isinstance(executable, Path)
+    assert isinstance(workspace_root, Path)
+    assert isinstance(output_quota, HardQuotaGuard)
+
+    def record_denied_write(_spec: ProcessSpec) -> None:
+        output_quota.limit_breached = True
+        output_quota.breach_evidence = "fixture-denied-write"
+
+    parsed = False
+
+    def parser(data: bytes) -> object:
+        nonlocal parsed
+        parsed = True
+        return json.loads(data)
+
+    runner = FakeRunner(sarif=sarif(), analyze_callback=record_denied_write)
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=codeql_fixture["inputs"],
+        runner_factory=RunnerFactory(runner),
+        sarif_loader=parser,
+    )
+    tool_profile = profile(executable)
+    _, request = workspace_and_request(tool_profile)
+
+    observed = await adapter.execute(
+        request, workspace_root, tool_profile, deadline(str(request.action.action_id))
+    )
+
+    assert observed.status == "FAILED"
+    assert observed.raw_output is None
+    assert {item.code for item in observed.errors} == {"STATIC_OUTPUT_LIMIT"}
+    assert not parsed
 
 
 @pytest.mark.asyncio
@@ -410,10 +910,147 @@ async def test_probe_uses_only_exact_version_command_and_profile_digest(
         inputs=inputs,
         runner_factory=RunnerFactory(runner),
     )
-    observed = await adapter.probe(profile(executable), deadline())
+    tool_profile = profile(executable)
+    probe_deadline = deadline()
+    observed = await adapter.probe(tool_profile, probe_deadline)
     assert observed.available
     assert runner.calls[0].argv[1:] == ("version", "--format=json")
-    assert dict(runner.calls[0].env) == {}
+    expected_quota_check = (
+        "quota-probe-at1",
+        probe_deadline.action_id,
+        probe_deadline.action_id,
+        reference(tool_profile),
+        inputs.probe_root.resolve(),
+        tool_profile.max_attempt_output_bytes,
+    )
+    assert inputs.output_quota.calls == [expected_quota_check] * 2
+    probe_temp = Path(dict(runner.calls[0].env)["TEMP"])
+    assert dict(runner.calls[0].env) == {
+        "TEMP": str(probe_temp),
+        "TMP": str(probe_temp),
+        "TMPDIR": str(probe_temp),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["duplicate", "factory", "command"])
+async def test_probe_setup_failure_removes_only_exact_owned_directory(
+    codeql_fixture: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    import sastsimi.static_analysis.codeql_adapter as codeql_module
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    inputs = codeql_fixture["inputs"]
+    assert isinstance(executable, Path)
+    sibling = inputs.probe_root / "keep-sibling"
+    sibling.mkdir()
+    runner = FakeRunner()
+
+    if failure == "factory":
+
+        def broken_factory(**_kwargs: object) -> FakeRunner:
+            raise RuntimeError("factory failed")
+
+        runner_factory: Any = broken_factory
+    else:
+        runner_factory = RunnerFactory(runner)
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=inputs,
+        runner_factory=runner_factory,
+    )
+    probe_deadline = deadline(f"probe-setup-{failure}")
+
+    if failure == "duplicate":
+
+        def duplicate_runner(**_kwargs: object) -> FakeRunner:
+            raise ValueError("CODEQL_ATTEMPT_ALREADY_ACTIVE")
+
+        monkeypatch.setattr(adapter, "_make_runner", duplicate_runner)
+    elif failure == "command":
+
+        def invalid_command(*_args: object, **_kwargs: object) -> None:
+            raise ValueError("CODEQL_COMMAND_FORBIDDEN")
+
+        monkeypatch.setattr(codeql_module, "validate_codeql_command", invalid_command)
+
+    if failure == "duplicate":
+        observed = await adapter.probe(profile(executable), probe_deadline)
+        assert observed.reason_code == "CODEQL_PROBE_ALREADY_ACTIVE"
+    else:
+        with pytest.raises((RuntimeError, ValueError)):
+            await adapter.probe(profile(executable), probe_deadline)
+
+    assert list(inputs.probe_root.iterdir()) == [sibling]
+    assert not (await adapter.cancel(probe_deadline.action_id)).cancelled
+
+
+@pytest.mark.asyncio
+async def test_repeated_probe_uses_fresh_owned_directories(
+    codeql_fixture: dict[str, Any],
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    inputs = codeql_fixture["inputs"]
+    assert isinstance(executable, Path)
+    runner = FakeRunner()
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=inputs,
+        runner_factory=RunnerFactory(runner),
+    )
+    probe_deadline = deadline("repeat-codeql-probe")
+
+    first = await adapter.probe(profile(executable), probe_deadline)
+    second = await adapter.probe(profile(executable), probe_deadline)
+
+    assert first == second
+    assert first.available
+    assert len(runner.calls) == 2
+    assert runner.calls[0].cwd != runner.calls[1].cwd
+    assert runner.calls[0].attempt_output_dir != runner.calls[1].attempt_output_dir
+
+
+@pytest.mark.asyncio
+async def test_concurrent_probe_with_same_action_fails_closed_without_overwrite(
+    codeql_fixture: dict[str, Any],
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    assert isinstance(executable, Path)
+    runner = FakeRunner(
+        block_version=True,
+        version_outcome="CANCELLED",
+        version_return_code=None,
+    )
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=codeql_fixture["inputs"],
+        runner_factory=RunnerFactory(runner),
+    )
+    probe_deadline = deadline("same-codeql-probe")
+    first_probe = asyncio.create_task(
+        adapter.probe(profile(executable), probe_deadline)
+    )
+    await runner.version_started.wait()
+
+    second = await adapter.probe(profile(executable), probe_deadline)
+    cancelled = await adapter.cancel(probe_deadline.action_id)
+    first = await first_probe
+
+    assert not second.available
+    assert second.reason_code == "CODEQL_PROBE_ALREADY_ACTIVE"
+    assert cancelled.cancelled
+    assert runner.cancelled == [probe_deadline.action_id]
+    assert first.reason_code == "CODEQL_PROBE_CANCELLED"
 
 
 @pytest.mark.asyncio
@@ -530,6 +1167,9 @@ def test_command_policy_accepts_only_version_and_analyze_families(
     database = tmp_path / "db"
     pack = tmp_path / "pack"
     output = tmp_path / "out" / "codeql-result.sarif"
+    common_cache = tmp_path / "out" / "common-cache"
+    logs = tmp_path / "out" / "logs"
+    max_disk_cache_mb = 1
     valid = (
         str(executable),
         "database",
@@ -538,8 +1178,20 @@ def test_command_policy_accepts_only_version_and_analyze_families(
         str(pack),
         "--format=sarifv2.1.0",
         f"--output={output}",
+        f"--common-caches={common_cache}",
+        f"--logdir={logs}",
+        f"--max-disk-cache={max_disk_cache_mb}",
     )
-    validate_codeql_command(valid, executable, database, pack, output)
+    validate_codeql_command(
+        valid,
+        executable,
+        database,
+        pack,
+        output,
+        common_cache,
+        logs,
+        max_disk_cache_mb,
+    )
     forbidden = (
         (str(executable), "database", "create", str(database)),
         (str(executable), "database", "trace-command", str(database)),
@@ -550,7 +1202,16 @@ def test_command_policy_accepts_only_version_and_analyze_families(
     )
     for argv in forbidden:
         with pytest.raises(ValueError, match="CODEQL_COMMAND_FORBIDDEN"):
-            validate_codeql_command(argv, executable, database, pack, output)
+            validate_codeql_command(
+                argv,
+                executable,
+                database,
+                pack,
+                output,
+                common_cache,
+                logs,
+                max_disk_cache_mb,
+            )
 
 
 @pytest.mark.asyncio
@@ -592,6 +1253,58 @@ async def test_execute_rejects_stale_or_wrong_digest_inputs_before_spawn(
     )
     assert observed.status in {"SKIPPED", "FAILED"}
     assert runner.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("changed_input", "expected_code"),
+    [
+        ("database", "CODEQL_DATABASE_DIGEST_MISMATCH"),
+        ("query_pack", "CODEQL_QUERY_PACK_DIGEST_MISMATCH"),
+    ],
+)
+async def test_execute_discards_results_when_bound_inputs_change_during_analysis(
+    codeql_fixture: dict[str, Any], changed_input: str, expected_code: str
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    inputs = codeql_fixture["inputs"]
+    assert isinstance(executable, Path)
+    tool_profile = profile(executable)
+    _, request = workspace_and_request(tool_profile)
+
+    def write_then_mutate(output: Path) -> None:
+        output.write_bytes(sarif())
+        if changed_input == "database":
+            target = next(
+                item
+                for item in inputs.database.database_root.rglob("*")
+                if item.is_file()
+            )
+        else:
+            target = inputs.query_pack_root / "changed-after-start.txt"
+        target.write_text("changed", encoding="utf-8")
+
+    runner = FakeRunner(writer=write_then_mutate)
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=inputs,
+        runner_factory=RunnerFactory(runner),
+    )
+
+    observed = await adapter.execute(
+        request,
+        fixture_workspace(codeql_fixture),
+        tool_profile,
+        deadline(str(request.action.action_id)),
+    )
+
+    assert observed.status == "FAILED"
+    assert observed.raw_output is None
+    assert observed.facts == () and observed.relations == ()
+    assert {gap.code for gap in observed.gaps} == {expected_code}
 
 
 @pytest.mark.asyncio
@@ -733,8 +1446,9 @@ async def test_decodes_rule_telemetry_and_ordered_code_flow(
     }
     analyze_argv = runner.calls[1].argv
     assert analyze_argv[1:3] == ("database", "analyze")
-    assert analyze_argv[3] == str(codeql_fixture["inputs"].database.database_root)
-    assert analyze_argv[4] == str(codeql_fixture["inputs"].query_pack_root)
+    attempt_root = codeql_fixture["inputs"].attempt_root
+    assert analyze_argv[3] == str(attempt_root / "codeql-run" / "database")
+    assert analyze_argv[4] == str(attempt_root / "codeql-run" / "query-pack")
 
 
 @pytest.mark.asyncio
@@ -1039,8 +1753,12 @@ async def test_process_and_decode_failures_never_become_partial_evidence(
         ({"version_stdout_truncated": True}, "FAILED", "STATIC_OUTPUT_LIMIT"),
         ({"version_stderr_truncated": True}, "FAILED", "STATIC_OUTPUT_LIMIT"),
         ({"version_return_code": 1}, "FAILED", "STATIC_TOOL_FAILED"),
-        ({"version_stdout": b"not-json"}, "FAILED", "STATIC_TOOL_VERSION"),
-        ({"version": "0.0.0"}, "FAILED", "STATIC_TOOL_VERSION"),
+        (
+            {"version_stdout": b"not-json"},
+            "FAILED",
+            "STATIC_TOOL_VERSION_INVALID",
+        ),
+        ({"version": "0.0.0"}, "FAILED", "STATIC_TOOL_VERSION_MISMATCH"),
     ],
 )
 async def test_version_stage_preserves_process_failure_semantics(
@@ -1077,8 +1795,168 @@ async def test_version_stage_preserves_process_failure_semantics(
     assert observed.facts == () and observed.relations == ()
     if expected_code == "STATIC_TOOL_CANCELLED":
         assert observed.errors == ()
+        assert {
+            item.reason
+            for item in observed.rules
+            if item.selection_status == "SELECTED"
+        } == {"CANCELLED"}
     if expected_code == "STATIC_TOOL_TIMEOUT":
         assert observed.errors and observed.errors[0].retryable
+
+
+@pytest.mark.asyncio
+async def test_version_stage_cancellation_propagates_and_removes_active_attempt(
+    codeql_fixture: dict[str, Any],
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    assert isinstance(executable, Path)
+    tool_profile = profile(executable)
+    _, request = workspace_and_request(tool_profile)
+    runner = FakeRunner(block_version=True)
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=codeql_fixture["inputs"],
+        runner_factory=RunnerFactory(runner),
+    )
+    execution = asyncio.create_task(
+        adapter.execute(
+            request,
+            fixture_workspace(codeql_fixture),
+            tool_profile,
+            deadline(str(request.action.action_id)),
+        )
+    )
+    await runner.version_started.wait()
+
+    execution.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+
+    assert runner.version_finished.is_set()
+    assert not (await adapter.cancel("at1")).cancelled
+
+
+@pytest.mark.asyncio
+async def test_version_stage_exception_removes_active_attempt(
+    codeql_fixture: dict[str, Any],
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    assert isinstance(executable, Path)
+    tool_profile = profile(executable)
+    _, request = workspace_and_request(tool_profile)
+    runner = FakeRunner(version_error=RuntimeError("version failed"))
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=codeql_fixture["inputs"],
+        runner_factory=RunnerFactory(runner),
+    )
+
+    with pytest.raises(RuntimeError, match="version failed"):
+        await adapter.execute(
+            request,
+            fixture_workspace(codeql_fixture),
+            tool_profile,
+            deadline(str(request.action.action_id)),
+        )
+
+    assert runner.version_finished.is_set()
+    assert not (await adapter.cancel("at1")).cancelled
+
+
+@pytest.mark.asyncio
+async def test_analyze_cancellation_stops_and_awaits_child_under_second_cancel(
+    codeql_fixture: dict[str, Any],
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    assert isinstance(executable, Path)
+    tool_profile = profile(executable)
+    _, request = workspace_and_request(tool_profile)
+    runner = DelayedCancelRunner(sarif=sarif(), block_after_write=True)
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=codeql_fixture["inputs"],
+        runner_factory=RunnerFactory(runner),
+    )
+    execution = asyncio.create_task(
+        adapter.execute(
+            request,
+            fixture_workspace(codeql_fixture),
+            tool_profile,
+            deadline(str(request.action.action_id)),
+        )
+    )
+    await runner.analyze_started.wait()
+
+    execution.cancel()
+    cancel_started = asyncio.create_task(runner.cancel_started.wait())
+    completed, _ = await asyncio.wait(
+        (execution, cancel_started), return_when=asyncio.FIRST_COMPLETED
+    )
+    try:
+        assert cancel_started in completed
+        execution.cancel()
+        runner.finish_cancel.set()
+        with pytest.raises(asyncio.CancelledError):
+            await execution
+    finally:
+        cancel_started.cancel()
+        runner.finish_cancel.set()
+        runner.release.set()
+        await asyncio.gather(cancel_started, execution, return_exceptions=True)
+
+    assert runner.cancelled == ["at1"]
+    assert runner.analyze_finished.is_set()
+    assert not (await adapter.cancel("at1")).cancelled
+
+
+@pytest.mark.asyncio
+async def test_completed_analyze_wins_race_with_late_caller_cancellation(
+    codeql_fixture: dict[str, Any],
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    assert isinstance(executable, Path)
+    tool_profile = profile(executable)
+    _, request = workspace_and_request(tool_profile)
+    execution: asyncio.Task[Any] | None = None
+
+    def cancel_owner_after_result() -> None:
+        assert execution is not None
+        asyncio.get_running_loop().call_soon(execution.cancel)
+
+    runner = FakeRunner(
+        sarif=sarif(), analyze_return_callback=cancel_owner_after_result
+    )
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=codeql_fixture["inputs"],
+        runner_factory=RunnerFactory(runner),
+    )
+    execution = asyncio.create_task(
+        adapter.execute(
+            request,
+            fixture_workspace(codeql_fixture),
+            tool_profile,
+            deadline(str(request.action.action_id)),
+        )
+    )
+
+    observed = await execution
+
+    assert observed.status == "SUCCEEDED"
+    assert runner.cancelled == []
+    assert runner.calls[-1].command_kind == "codeql-analyze"
 
 
 @pytest.mark.asyncio
@@ -1093,7 +1971,10 @@ async def test_complete_sarif_cap_plus_one_is_never_parsed(
     payload = sarif()
     executable = codeql_fixture["executable"]
     assert isinstance(executable, Path)
-    tool_profile = profile(executable, **{cap_name: len(payload) - 1})
+    cap = len(payload) - 1
+    if cap_name == "max_attempt_output_bytes":
+        cap += copied_codeql_input_bytes(codeql_fixture["inputs"])
+    tool_profile = profile(executable, **{cap_name: cap})
     workspace, request = workspace_and_request(tool_profile)
     parsed = False
 
@@ -1139,7 +2020,10 @@ async def test_complete_sarif_at_each_exact_cap_is_accepted(
 
     payload = sarif()
     executable = codeql_fixture["executable"]
-    tool_profile = profile(executable, **{cap_name: len(payload)})
+    cap = len(payload)
+    if cap_name == "max_attempt_output_bytes":
+        cap += copied_codeql_input_bytes(codeql_fixture["inputs"])
+    tool_profile = profile(executable, **{cap_name: cap})
     _, request = workspace_and_request(tool_profile)
     adapter = CodeQLProcessAdapter(
         executable=executable,
@@ -1168,7 +2052,12 @@ async def test_directory_quota_watcher_cancels_running_process(
     payload = sarif()
     executable = codeql_fixture["executable"]
     assert isinstance(executable, Path)
-    tool_profile = profile(executable, max_attempt_output_bytes=len(payload))
+    tool_profile = profile(
+        executable,
+        max_attempt_output_bytes=(
+            copied_codeql_input_bytes(codeql_fixture["inputs"]) + len(payload)
+        ),
+    )
     workspace, request = workspace_and_request(tool_profile)
 
     def write_over_quota(output: Path) -> None:
@@ -1350,6 +2239,87 @@ async def test_windows_junction_attempt_root_is_rejected_before_spawn_or_parse(
     assert not parsed
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction/reparse boundary")
+def test_quota_binding_rejects_junction_parent_before_backend_lookup(
+    codeql_fixture: dict[str, Any], tmp_path: Path
+) -> None:
+    inputs = codeql_fixture["inputs"]
+    output_quota = codeql_fixture["output_quota"]
+    external = tmp_path / "quota-parent-target"
+    external_attempt = external / "attempt"
+    external_attempt.mkdir(parents=True)
+    junction = tmp_path / "quota-parent-link"
+    windows_root = os.environ.get("SystemRoot", r"C:\Windows")
+    cmd = Path(windows_root) / "System32" / "cmd.exe"
+    created = subprocess.run(
+        [str(cmd), "/d", "/c", "mklink", "/J", str(junction), str(external)],
+        check=False,
+        capture_output=True,
+        text=True,
+        shell=False,
+    )
+    assert created.returncode == 0, created.stderr or created.stdout
+    linked_attempt = junction / "attempt"
+    tool_profile = profile(codeql_fixture["executable"])
+
+    try:
+        with pytest.raises(ValueError, match="CODEQL_OUTPUT_QUOTA_UNENFORCEABLE"):
+            inputs.output_quota_binding(
+                action_id="action-through-junction",
+                attempt_id=inputs.attempt_id,
+                profile_ref=reference(tool_profile),
+                root=linked_attempt,
+                lease_id=inputs.output_quota_lease_id,
+                limit_bytes=tool_profile.max_attempt_output_bytes,
+            )
+    finally:
+        junction.rmdir()
+
+    assert output_quota.calls == []
+
+
+def test_quota_binding_rejects_generic_reparse_parent_before_backend_lookup(
+    codeql_fixture: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-junction Windows reparse ancestor must fail before quota lookup."""
+
+    inputs = codeql_fixture["inputs"]
+    output_quota = codeql_fixture["output_quota"]
+    marked_parent = inputs.attempt_root.parent
+    real_lstat = Path.lstat
+
+    class ReparseStat:
+        st_file_attributes = 0x400
+        st_reparse_tag = 1
+
+        def __init__(self, value: os.stat_result) -> None:
+            self._value = value
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._value, name)
+
+    def simulated_lstat(path: Path) -> os.stat_result:
+        value = real_lstat(path)
+        if path == marked_parent:
+            return cast(os.stat_result, ReparseStat(value))
+        return value
+
+    tool_profile = profile(codeql_fixture["executable"])
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "lstat", simulated_lstat)
+        with pytest.raises(ValueError, match="CODEQL_OUTPUT_QUOTA_UNENFORCEABLE"):
+            inputs.output_quota_binding(
+                action_id="action-through-reparse",
+                attempt_id=inputs.attempt_id,
+                profile_ref=reference(tool_profile),
+                root=inputs.attempt_root,
+                lease_id=inputs.output_quota_lease_id,
+                limit_bytes=tool_profile.max_attempt_output_bytes,
+            )
+
+    assert output_quota.calls == []
+
+
 @pytest.mark.asyncio
 async def test_symlink_sarif_output_is_never_parsed(
     codeql_fixture: dict[str, Any], tmp_path: Path
@@ -1411,9 +2381,19 @@ async def test_sarif_changed_during_bounded_read_is_rejected(
         nonlocal replaced
         data = real_read(descriptor, size)
         path = (
-            codeql_fixture["inputs"].attempt_root / "codeql-run" / "codeql-result.sarif"
+            codeql_fixture["inputs"].attempt_root
+            / "codeql-run"
+            / "output"
+            / "codeql-result.sarif"
         )
-        if not replaced and path.exists():
+        descriptor_stat = os.fstat(descriptor)
+        path_stat = path.stat() if path.exists() else None
+        if (
+            not replaced
+            and path_stat is not None
+            and (descriptor_stat.st_dev, descriptor_stat.st_ino)
+            == (path_stat.st_dev, path_stat.st_ino)
+        ):
             replaced = _replace_distinct_file(replacement, path)
         return data
 
@@ -1486,3 +2466,51 @@ async def test_hard_link_sarif_is_not_accepted_when_supported(
     assert "STATIC_OUTPUT_LIMIT" in {item.code for item in observed.gaps} | {
         item.code for item in observed.errors
     }
+
+
+def test_attempt_tree_rejects_descendant_hard_link_when_supported(
+    tmp_path: Path,
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import _directory_size
+
+    root = tmp_path / "attempt"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    external = tmp_path / "external.bin"
+    external.write_bytes(b"outside")
+    try:
+        os.link(external, nested / "linked.bin")
+    except OSError:
+        pytest.skip("hard links unavailable")
+
+    with pytest.raises(ValueError, match="CODEQL_OUTPUT_NOT_REGULAR"):
+        _directory_size(root, 10_000)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction/reparse boundary")
+def test_attempt_tree_rejects_descendant_junction(tmp_path: Path) -> None:
+    from sastsimi.static_analysis.codeql_adapter import _directory_size
+
+    root = tmp_path / "attempt"
+    root.mkdir()
+    external = tmp_path / "junction-target"
+    external.mkdir()
+    (external / "outside.bin").write_bytes(b"outside")
+    junction = root / "linked-directory"
+    windows_root = os.environ.get("SystemRoot", r"C:\Windows")
+    cmd = Path(windows_root) / "System32" / "cmd.exe"
+    created = subprocess.run(
+        [str(cmd), "/d", "/c", "mklink", "/J", str(junction), str(external)],
+        check=False,
+        capture_output=True,
+        text=True,
+        shell=False,
+    )
+    assert created.returncode == 0, created.stderr or created.stdout
+    assert junction.is_junction()
+
+    try:
+        with pytest.raises(ValueError, match="CODEQL_OUTPUT_NOT_REGULAR"):
+            _directory_size(root, 10_000)
+    finally:
+        junction.rmdir()
