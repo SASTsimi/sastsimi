@@ -110,9 +110,6 @@ class OpenAIResponsesApiAdapter:
         return CapabilityProbeResult(evidence=evidence)
 
     async def invoke(self, request: LLMInvocationRequest) -> LLMInvocationResult:
-        current = asyncio.current_task()
-        if current is None:
-            raise RuntimeError("FAILED: OpenAI invocation requires an asyncio task")
         cancel_event = asyncio.Event()
         async with self._active_lock:
             if request.llm_call_id in self._active:
@@ -122,10 +119,14 @@ class OpenAIResponsesApiAdapter:
                         "FAILED", "FAILED: duplicate OpenAI invocation is active"
                     ),
                 )
+            # Track an adapter-owned task rather than the caller task. A runtime
+            # may wrap this invocation and return a different result type; cancel
+            # must still await this exact provider result safely.
+            current = asyncio.create_task(self._invoke_active(request, cancel_event))
             self._active[request.llm_call_id] = current
             self._cancel_events[request.llm_call_id] = cancel_event
         try:
-            return await self._invoke_active(request, cancel_event)
+            return await current
         finally:
             async with self._active_lock:
                 if self._active.get(request.llm_call_id) is current:
