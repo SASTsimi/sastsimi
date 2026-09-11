@@ -1004,6 +1004,7 @@ async def test_docker_materializes_verified_poc_only_inside_container(
     calls: list[tuple[tuple[str, ...], bytes | None]] = []
     content = b"print('candidate')\n"
     content_digest = hashlib.sha256(content).hexdigest()
+    staging_path = f"{POC_RUNTIME_PATH}.next"
 
     async def run(
         argv: tuple[str, ...],
@@ -1014,8 +1015,8 @@ async def test_docker_materializes_verified_poc_only_inside_container(
         del timeout_ms
         calls.append((argv, input_bytes))
         stdout = (
-            f"{content_digest}  {POC_RUNTIME_PATH}\n".encode()
-            if argv[-2:] == ("sha256sum", POC_RUNTIME_PATH)
+            f"{content_digest}  {staging_path}\n".encode()
+            if argv[-2:] == ("sha256sum", staging_path)
             else b""
         )
         return DockerCommandOutcome(0, stdout, b"", False)
@@ -1031,19 +1032,90 @@ async def test_docker_materializes_verified_poc_only_inside_container(
 
     assert path == POC_RUNTIME_PATH
     assert calls == [
+        (("exec", "owned-container-id", "rm", "-f", staging_path), None),
         (
             (
                 "exec",
                 "-i",
                 "owned-container-id",
                 "dd",
-                f"of={POC_RUNTIME_PATH}",
+                f"of={staging_path}",
                 "status=none",
             ),
             content,
         ),
-        (("exec", "owned-container-id", "sha256sum", POC_RUNTIME_PATH), None),
-        (("exec", "owned-container-id", "chmod", "0444", POC_RUNTIME_PATH), None),
+        (("exec", "owned-container-id", "sha256sum", staging_path), None),
+        (("exec", "owned-container-id", "chmod", "0444", staging_path), None),
+        (
+            (
+                "exec",
+                "owned-container-id",
+                "mv",
+                "-f",
+                staging_path,
+                POC_RUNTIME_PATH,
+            ),
+            None,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_docker_atomically_replaces_poc_with_exact_second_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staging_path = f"{POC_RUNTIME_PATH}.next"
+    staged: bytes | None = None
+    materialized: bytes | None = None
+    verified_digests: list[str] = []
+
+    async def run(
+        argv: tuple[str, ...],
+        *,
+        timeout_ms: int | None = None,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        nonlocal staged, materialized
+        del timeout_ms
+        command = argv[3:] if argv[1:2] == ("-i",) else argv[2:]
+        if command == ("rm", "-f", staging_path):
+            staged = None
+        elif command == ("dd", f"of={staging_path}", "status=none"):
+            assert input_bytes is not None
+            staged = input_bytes
+        elif command == ("sha256sum", staging_path):
+            assert staged is not None
+            digest = hashlib.sha256(staged).hexdigest()
+            verified_digests.append(digest)
+            return DockerCommandOutcome(
+                0, f"{digest}  {staging_path}\n".encode(), b"", False
+            )
+        elif command == ("chmod", "0444", staging_path):
+            assert staged is not None
+        elif command == ("mv", "-f", staging_path, POC_RUNTIME_PATH):
+            assert staged is not None
+            materialized = staged
+            staged = None
+        else:
+            raise AssertionError(f"unexpected Docker argv: {argv!r}")
+        return DockerCommandOutcome(0, b"", b"", False)
+
+    adapter = DockerAdapter()
+    monkeypatch.setattr(adapter, "_run", run)
+    first = b"print('first')\n"
+    second = b"print('second')\n"
+
+    for content in (first, second):
+        await adapter.materialize_poc(
+            "owned-container-id",
+            content,
+            hashlib.sha256(content).hexdigest(),
+        )
+
+    assert materialized == second
+    assert verified_digests == [
+        hashlib.sha256(first).hexdigest(),
+        hashlib.sha256(second).hexdigest(),
     ]
 
 
@@ -1052,6 +1124,7 @@ async def test_docker_rejects_container_poc_digest_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, ...]] = []
+    staging_path = f"{POC_RUNTIME_PATH}.next"
 
     async def run(
         argv: tuple[str, ...],
@@ -1062,8 +1135,8 @@ async def test_docker_rejects_container_poc_digest_mismatch(
         del timeout_ms, input_bytes
         calls.append(argv)
         stdout = (
-            f"{'0' * 64}  {POC_RUNTIME_PATH}\n".encode()
-            if argv[-2:] == ("sha256sum", POC_RUNTIME_PATH)
+            f"{'0' * 64}  {staging_path}\n".encode()
+            if argv[-2:] == ("sha256sum", staging_path)
             else b""
         )
         return DockerCommandOutcome(0, stdout, b"", False)

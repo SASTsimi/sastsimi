@@ -34,6 +34,7 @@ _CONTAINER_LABELS = _REQUIRED_LABELS | {
 }
 _OUTPUT_LIMIT_BYTES = 1024 * 1024
 _OUTPUT_READ_BYTES = 64 * 1024
+_POC_STAGING_PATH = f"{POC_RUNTIME_PATH}.next"
 
 
 class _DockerOutputLimitExceeded(Exception):
@@ -246,20 +247,22 @@ class DockerAdapter:
         self._require_resource_id(container_id)
         if hashlib.sha256(content).hexdigest() != content_digest:
             raise ValueError("POC_CONTENT_DIGEST_MISMATCH")
+        cleared = await self._run(("exec", container_id, "rm", "-f", _POC_STAGING_PATH))
+        self._require_success("DOCKER_POC_STAGING_CLEANUP_FAILED", cleared)
         written = await self._run(
             (
                 "exec",
                 "-i",
                 container_id,
                 "dd",
-                f"of={POC_RUNTIME_PATH}",
+                f"of={_POC_STAGING_PATH}",
                 "status=none",
             ),
             input_bytes=content,
         )
         self._require_success("DOCKER_POC_MATERIALIZATION_FAILED", written)
         verified = await self._run(
-            ("exec", container_id, "sha256sum", POC_RUNTIME_PATH)
+            ("exec", container_id, "sha256sum", _POC_STAGING_PATH)
         )
         self._require_success("DOCKER_POC_DIGEST_VERIFICATION_FAILED", verified)
         try:
@@ -268,12 +271,23 @@ class DockerAdapter:
             raise DockerOperationError(
                 "DOCKER_POC_DIGEST_MISMATCH", verified
             ) from error
-        if digest_output != [content_digest, POC_RUNTIME_PATH]:
+        if digest_output != [content_digest, _POC_STAGING_PATH]:
             raise DockerOperationError("DOCKER_POC_DIGEST_MISMATCH", verified)
         protected = await self._run(
-            ("exec", container_id, "chmod", "0444", POC_RUNTIME_PATH)
+            ("exec", container_id, "chmod", "0444", _POC_STAGING_PATH)
         )
         self._require_success("DOCKER_POC_PERMISSION_FAILED", protected)
+        replaced = await self._run(
+            (
+                "exec",
+                container_id,
+                "mv",
+                "-f",
+                _POC_STAGING_PATH,
+                POC_RUNTIME_PATH,
+            )
+        )
+        self._require_success("DOCKER_POC_REPLACE_FAILED", replaced)
         return POC_RUNTIME_PATH
 
     async def exec(
