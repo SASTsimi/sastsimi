@@ -93,7 +93,7 @@ Chaining Agent는 result가 있는 Primitive를 upstream으로 사용한다. dow
 
 전역 권한 서열표나 문자열 이름의 단순 일치는 사용하지 않는다. 축이 맞지 않거나 근거가 없으면 candidate를 만들지 않고 `no_match_reasons`에 `NoMatchReason` 하나를 남긴다. 별도 PASS/UNCERTAIN 필드는 두지 않는다.
 
-새로 저장된 Primitive 하나를 계기로 그 Primitive와 자기 자신을 제외한 기존 Primitive 전체를 비교한다. 한 조합의 담당은 두 Primitive 중 자기 후보 pool에 상대가 들어 있는 work다. pool은 `REGISTER_WORK`가 COMMITTED된 index에서 고정하므로 실제 저장 순서를 그대로 따른다. Chaining work 등록은 다음 `PRIMITIVE_UPDATE`가 COMMITTED되기 전에 끝나므로 두 work의 pool이 서로를 담는 일은 없고, 한 조합의 담당은 항상 하나로 정해진다. work는 담당인 조합만 검토·저장하고, 담당이 아닌 조합은 검토 대상이 아니므로 `no_match_reasons`에 넣지 않는다.
+새로 저장된 Primitive 하나를 계기로 그 Primitive와 자기 자신을 제외한 기존 Primitive 전체를 비교한다. 한 조합의 담당은 두 Primitive 중 자기 후보 pool에 상대가 들어 있는 work다. pool은 `REGISTER_WORK`가 COMMITTED된 index에서 고정하므로 실제 저장 순서를 그대로 따른다. 양쪽 pool에 서로가 모두 있으면 `record_id`가 사전순으로 큰 Primitive를 계기로 가진 work가 담당이다. work는 담당인 조합만 검토·저장하고, 담당이 아닌 조합은 검토 대상이 아니므로 `no_match_reasons`에 넣지 않는다.
 
 이 규칙 때문에 서로 다른 두 work가 같은 조합을 검토하지 않으므로 이미 저장된 조합을 다시 만나는 일이 없다. 저장 계층의 unique key는 이 규칙이 지켜졌는지 확인하는 검사이며, 걸리면 구현 오류이므로 결과를 저장하지 않고 오류로 기록한다. 자세한 저장 검사는 [경량 데이터 계약](08-lightweight-data-contracts.md)을 따른다.
 
@@ -156,7 +156,7 @@ NoMatchReason:
 
 새 가설은 `HypothesisProposal(origin=CHAINING)`으로 만든다. proposal의 `source_primitive_match_id`는 자신을 만든 candidate ID와 같고, `parent_hypothesis_ids`는 그 candidate의 부모 set과 같아야 한다. Chaining Agent는 새 코드 사실을 만들지 않으므로 `observed_facts=[]`만 허용한다. `target_entities`·`target_locations`·`suspected_path`는 비어 있을 수 있지만, 값을 넣으면 부모 Primitive의 exact entity·location 계보에서 얻을 수 있어야 한다. Verification이 시작할 entity나 location을 부모 계보에서 하나도 복원할 수 없으면 proposal 등록과 배정을 거절한다.
 
-proposal의 `restrictions`는 입력 Primitive 양쪽에 있는 Restriction 객체의 중복 없는 합집합이다. `restriction_id`가 `fact_refs`에서 유도되므로 같은 ID는 같은 코드 근거를 가리킨다. 같은 ID는 한 번만 유지하며 부모마다 `statement`가 달라도 계약 충돌이 아니고, canonical bytes가 사전순으로 앞서는 객체를 남긴다. ID는 같은데 `fact_refs`가 다르면 상류 발급 오류로 거절한다. trusted validation이 schema·semantic·workspace·commit·exact Primitive·중복·조상 재사용·예산을 검사한 뒤 Orchestration Runtime이 새 `hypothesis_id`로 등록하고 새 Verification Agent를 배정한다. child는 전체 Verification 파이프라인을 처음부터 거친다.
+proposal의 `restrictions`는 입력 Primitive 양쪽에 있는 Restriction 객체의 중복 없는 합집합이다. 같은 `restriction_id`는 canonical content가 완전히 같을 때 한 번만 유지하고, ID는 같은데 statement나 근거 reference가 다르면 계약 충돌로 거절한다. trusted validation이 schema·semantic·workspace·commit·exact Primitive·중복·조상 재사용·예산을 검사한 뒤 Orchestration Runtime이 새 `hypothesis_id`로 등록하고 새 Verification Agent를 배정한다. child는 전체 Verification 파이프라인을 처음부터 거친다.
 
 ### 자식 가설의 내용
 

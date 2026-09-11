@@ -66,7 +66,7 @@ Orchestration Runtime은 정해진 전이표와 검증 결과에 따라 work를 
 ## 출력 검증과 실패 처리
 
 1. 구조 parser가 JSON/YAML syntax와 schema를 검증한다.
-2. enum, 필수 field, `workspace_id`·`commit_id`·`CodeLocation`, restriction 근거 reference, 관측 사실과 restriction 근거의 비중복, 반증 질문, 검증 항목과 금지 assertion을 검사한다. 유효한 proposal의 각 반증 질문에는 전역 `question_id`, 각 검증 항목에는 전역 `validation_id`를 붙이고, 각 restriction은 Agent가 낸 `fact_id`를 exact `StaticFactBundle`과 대조해 완전한 `CodeFactRef`를 만든 뒤에 그 `fact_refs`에서 `restriction_id`를 유도한다. `fact_id`는 같은 `workspace_id + commit_id` 안에서만 유일하므로 `bundle_ref`를 채우기 전에 유도하지 않는다. Agent가 낸 지역 값은 같은 출력 안의 중복 검사에만 쓰고 그대로 채택하지 않는다. 한 출력 안에서 같은 `fact_refs` 집합을 가진 restriction이 둘 이상이면 유도한 ID가 겹치므로 이 단계에서 거절한다. 플레이북 질문 ID는 이 단계에서 만들지 않고 Verification work 등록 시 exact `PlaybookApplication`에 별도로 발급한다.
+2. enum, 필수 field, `workspace_id`·`commit_id`·`CodeLocation`, restriction 근거 reference, 관측 사실과 restriction 근거의 비중복, 반증 질문, 검증 항목과 금지 assertion을 검사한다. 유효한 proposal의 각 반증 질문에는 전역 `question_id`, 각 검증 항목에는 전역 `validation_id`를 붙이고, 각 restriction은 Agent가 낸 `fact_id`를 exact `StaticFactBundle`과 대조해 `CodeFactRef.bundle_ref`를 채운 뒤 전역 `restriction_id`를 붙인다. Agent가 낸 지역 값은 같은 출력 안의 중복 검사에만 쓰고 그대로 채택하지 않는다. 플레이북 질문 ID는 이 단계에서 만들지 않고 Verification work 등록 시 exact `PlaybookApplication`에 별도로 발급한다.
 3. 실패하면 원래 의미를 바꾸지 않는 범위에서 제한 횟수의 repair prompt를 새 invocation으로 실행한다.
 4. 재시도 후에도 유효하지 않으면 해당 호출을 `INVALID_OUTPUT`으로 저장한다.
 5. invalid proposal은 Verification Agent에 전달하지 않는다.

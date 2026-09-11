@@ -284,15 +284,15 @@ Pro와 Con의 공통 slot은 이름만 같은 것이 아니라 `source_ref + pro
 - 필수 금지: R7의 plan·command 대신 작성, CWE·Gate 결과·보고서 생성
 - session: Pro·Con session을 재개하지 않는다. 보완도 새 invocation이며 `NEW`가 기본이다.
 
-`VerificationResult.restrictions`도 같다. Agent는 `restriction_id`와 `bundle_ref`를 만들지 않고 `fact_refs`에 `fact_id`만 반환한다. proposal에서 변경 없이 승계한 제한은 `restriction_id`와 전체 `Restriction` 객체를 그대로 둔다. Verification이 새로 만들었거나 `fact_refs`가 바뀐 제한은 trusted Verification 출력 검증 runtime이 이 순서로 처리한다.
+`VerificationResult.restrictions`도 같다. Agent는 `restriction_id`와 `bundle_ref`를 지어내지 않고 `fact_refs`에 `fact_id`만 반환한다. proposal에서 변경 없이 승계한 제한은 입력 proposal의 `restriction_id`와 전체 `Restriction` 객체를 그대로 옮긴다. Verification이 새로 만든 제한은 trusted Verification 출력 검증 runtime이 이 순서로 처리한다.
 
 1. Agent가 반환한 `fact_id`를 이 work가 고정한 exact `StaticFactBundle`과 대조한다. 그 bundle 안에 정확히 한 번 존재하지 않으면 거절한다.
 2. 그 bundle의 exact reference와 `fact_id`로 완전한 `CodeFactRef`를 만든다.
-3. 완성된 `fact_refs`를 정렬해 08번의 유도 규칙대로 `restriction_id`를 계산한다.
+3. 새로 만든 제한에 전역 `restriction_id`를 부여한다. 승계한 제한은 입력에 실려 온 값을 그대로 두고, 그 값이 입력 proposal에 실재하며 전체 객체가 같은지 확인한다.
 4. canonical `VerificationResult` schema를 검증한다.
 5. `content_hash`를 계산한다.
 
-`fact_id`는 같은 `workspace_id + commit_id` 안에서만 유일하므로 `bundle_ref`를 채우기 전에 유도하면 서로 다른 bundle 사이에서 전역 `restriction_id`가 충돌한다. 그래서 2번이 3번보다 앞선다. `bundle_ref`를 Agent가 만들 수 없는 이유는 4.1과 같다.
+`bundle_ref`를 Agent가 만들 수 없는 이유는 4.1과 같다.
 
 Runtime은 initial assessment의 의미를 대신 해석하지 않는다. `POC_CONFIRMATION | VERDICT_EVIDENCE`면 `CREATE_DYNAMIC_REQUEST`, `FINALIZE_WITHOUT_DYNAMIC`이면 동적 work 없이 `FINAL_VERDICT`를 호출한다. assessment는 final Verification이나 Gate 입력이 아니며, 같은 work·generation의 exact policy·playbook·application·Pro·Con과 맞지 않으면 사용하지 않는다.
 
