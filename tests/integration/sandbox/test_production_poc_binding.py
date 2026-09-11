@@ -66,6 +66,7 @@ class _Docker:
     materialized: list[tuple[str, bytes, str]] = field(default_factory=list)
     executed: list[tuple[str, tuple[str, ...], int, str]] = field(default_factory=list)
     time_out: bool = False
+    exit_code: int = 0
 
     async def materialize_poc(
         self, container_id: str, content: bytes, content_digest: str
@@ -83,7 +84,7 @@ class _Docker:
     ) -> DockerCommandOutcome:
         self.executed.append((container_id, argv, timeout_ms, working_directory))
         return DockerCommandOutcome(
-            -9 if self.time_out else 0,
+            -9 if self.time_out else self.exit_code,
             b"observed",
             b"timed out" if self.time_out else b"",
             self.time_out,
@@ -492,6 +493,54 @@ async def test_timed_out_poc_command_records_output_then_fails_execution() -> No
     ]
     assert [event.exit_code for event in finished] == [-9, -9]
     assert [event.timed_out for event in finished] == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_nonzero_poc_command_is_operational_failure_not_verdict() -> None:
+    workflow, docker, chain, request_ref = _prepared_workflow()
+    docker.exit_code = 1
+    selection = _selection_tool(chain)
+    command = _command_tool(chain, (POC_RUNTIME_PATH,))
+    candidate = chain["candidate"]
+    common = {
+        "work": workflow._work,
+        "request": chain["request"],
+        "request_ref": request_ref,
+        "requirements": chain["requirements"],
+        "requirements_ref": cast(StoredDataRef, reference(chain["requirements"])),
+        "plan": chain["plan"],
+        "plan_ref": cast(StoredDataRef, reference(chain["plan"])),
+        "candidate": candidate,
+        "candidate_ref": cast(StoredDataRef, reference(candidate)),
+    }
+    await workflow.apply_tool(
+        **common,  # type: ignore[arg-type]
+        tool=selection,
+        tool_ref=cast(StoredDataRef, reference(selection)),
+        session=workflow._session(workflow._policy_ref()),
+    )
+    workflow._binding = cast(
+        DynamicSandboxAuthorization,
+        SimpleNamespace(run_spec=SimpleNamespace(requested_execution_ms=1_000)),
+    )
+
+    with pytest.raises(DynamicOperationalError) as raised:
+        await workflow.apply_tool(
+            **common,  # type: ignore[arg-type]
+            tool=command,
+            tool_ref=cast(StoredDataRef, reference(command)),
+            session=workflow._session(workflow._policy_ref()),
+        )
+
+    assert raised.value.failure.status == "FAILED"
+    assert raised.value.failure.failure_category == "EXECUTION"
+    finished = [
+        event
+        for event in workflow._require_log().events
+        if event.event_type in {"COMMAND_FINISHED", "POC_EXECUTION_FINISHED"}
+    ]
+    assert [event.exit_code for event in finished] == [1, 1]
+    assert [event.timed_out for event in finished] == [False, False]
 
 
 @pytest.mark.asyncio
