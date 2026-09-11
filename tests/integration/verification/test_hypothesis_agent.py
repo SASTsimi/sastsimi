@@ -492,6 +492,35 @@ async def test_provider_owned_ids_are_rejected_before_runtime_ids_are_issued() -
 
 
 @pytest.mark.asyncio
+async def test_empty_candidate_list_is_a_successful_no_proposal_result() -> None:
+    artifacts = MemoryArtifacts()
+    bundle = _bundle()
+    bundle_ref = reference(bundle)
+    assert isinstance(bundle_ref, StoredDataRef)
+    work = _work(bundle_ref)
+    invocation = _invocation(artifacts, work, bundle_ref, [])
+    agent = HypothesisAgent(
+        prompt_builder=PromptBuilder(artifacts),
+        llm_calls=_Calls(invocation),
+        artifacts=artifacts,
+        ids=FakeIds(),
+        clock=FakeClock(),
+    )
+
+    outcome = await agent.propose(
+        work=work,
+        decision_ref=invocation.request.action_decision_ref,
+        reservation_ref=stored_ref("budget_reservation", "reservation"),
+        call_spec_ref=invocation.request.call_spec_ref,
+        static_bundle=bundle,
+        static_bundle_ref=bundle_ref,
+    )
+
+    assert outcome.invocation.result.status == "SUCCEEDED"
+    assert outcome.proposals == ()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["AUTH_REQUIRED", "TIMED_OUT", "INVALID_OUTPUT"])
 async def test_provider_failure_returns_no_proposal(status: InvocationStatus) -> None:
     artifacts = MemoryArtifacts()

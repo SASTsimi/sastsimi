@@ -282,7 +282,6 @@ class HypothesisAgent:
             if (
                 canonical_bytes(value) != raw
                 or not isinstance(value, list)
-                or not value
             ):
                 raise ValueError("HYPOTHESIS_OUTPUT_INVALID")
             _reject_runtime_authority(cast(JsonValue, value))
