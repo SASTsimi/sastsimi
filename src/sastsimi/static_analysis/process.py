@@ -423,14 +423,13 @@ class SafeProcessRunner:
     ) -> None:
         self.action_id = action_id
         self.attempt_id = attempt_id
-        if (
-            _link_like(workspace_root)
-            or _link_like(output_root)
-            or _link_like(executable)
-        ):
+        if _link_like(workspace_root) or _link_like(output_root):
             raise ValueError("PROCESS_PATH_LINK_FORBIDDEN")
         self.workspace_root = workspace_root.resolve(strict=True)
         self.output_root = output_root.resolve(strict=True)
+        # Virtual environments normally expose their interpreter through a
+        # symlink. Bind that trusted entry point to its immutable resolved path;
+        # workspace and output paths remain strictly link-free.
         self.executable = executable.resolve(strict=True)
         if output_budget.attempt_id != attempt_id:
             raise ValueError("PROCESS_OUTPUT_BUDGET_ATTEMPT_MISMATCH")
@@ -460,11 +459,7 @@ class SafeProcessRunner:
             raise ValueError("PROCESS_ARGV_INVALID")
         if any("\x00" in key or "\x00" in value for key, value in spec.env):
             raise ValueError("PROCESS_ENV_INVALID")
-        if (
-            _link_like(Path(spec.argv[0]))
-            or _link_like(spec.cwd)
-            or _link_like(spec.attempt_output_dir)
-        ):
+        if _link_like(spec.cwd) or _link_like(spec.attempt_output_dir):
             raise ValueError("PROCESS_PATH_LINK_FORBIDDEN")
         if Path(spec.argv[0]).resolve(strict=True) != self.executable:
             raise ValueError("PROCESS_EXECUTABLE_MISMATCH")

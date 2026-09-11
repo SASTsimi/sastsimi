@@ -488,13 +488,18 @@ class PythonAstProcessAdapter:
         monotonic_ns: Callable[[], int] = time.monotonic_ns,
     ) -> None:
         try:
-            _assert_path_chain_safe(executable, "STATIC_AST_TRUSTED_PATH_INVALID")
-            _assert_path_chain_safe(worker_path, "STATIC_AST_TRUSTED_PATH_INVALID")
+            # A virtualenv Python entry point is commonly a symlink. Resolve it
+            # first and validate the real trusted executable chain. The worker
+            # script itself must remain link-free.
             resolved_executable = executable.resolve(strict=True)
+            _assert_path_chain_safe(
+                resolved_executable, "STATIC_AST_TRUSTED_PATH_INVALID"
+            )
+            _assert_path_chain_safe(worker_path, "STATIC_AST_TRUSTED_PATH_INVALID")
             resolved_worker = worker_path.resolve(strict=True)
         except (OSError, ValueError) as error:
             raise ValueError("STATIC_AST_TRUSTED_PATH_INVALID") from error
-        if _link_like(executable) or _link_like(worker_path):
+        if _link_like(worker_path):
             raise ValueError("STATIC_AST_TRUSTED_PATH_INVALID")
         self.executable = resolved_executable
         self.worker_path = resolved_worker
