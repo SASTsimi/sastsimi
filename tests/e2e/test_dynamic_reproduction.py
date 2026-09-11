@@ -781,6 +781,7 @@ PYTHONDONTWRITEBYTECODE=1 python /workspace/app.py "nobody' OR '1'='1" | grep ad
         )
         actions: tuple[Literal["USE_POC_CANDIDATE", "RUN_COMMAND"], ...] = (
             "USE_POC_CANDIDATE",
+            "USE_POC_CANDIDATE",
             "RUN_COMMAND",
         )
         for turn, action in enumerate(actions, start=2):
