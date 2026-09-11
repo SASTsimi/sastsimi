@@ -26,6 +26,7 @@ from sastsimi.contracts.hypothesis import (
     HypothesisProcessState,
     VerificationAssignment,
 )
+from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
 from sastsimi.contracts.verification import PlaybookApplication, VerificationResult
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus, WorkType
@@ -46,6 +47,10 @@ class TechnicalGateOutcome:
 
 class ExactRecordStore(Protocol):
     def get_exact(self, ref: RecordRef) -> object: ...
+
+
+class CurrentRecordQuery(Protocol):
+    def current_records(self, analysis_id: str, kind: str) -> tuple[Record, ...]: ...
 
 
 class ResultPublisher(Protocol):
@@ -186,16 +191,45 @@ class TechnicalGateService:
         )
         if completed.status != WorkStatus.SUCCEEDED:
             raise ValueError("TECHNICAL_REVIEW_COMMIT_REQUIRED")
-        revision_work = None
-        if agent_outcome.review.status == "REVISE":
-            revision_work = self._start_revision(
-                review=agent_outcome.review,
-                verification=verification,
-                process_ref=process_ref,
-                assignment=assignment,
-                budget_binding_ref=budget_binding_ref,
-            )
+        revision_work = self.reconcile_revision(completed)
         return TechnicalGateOutcome(agent_outcome.review, completed, revision_work)
+
+    def reconcile_revision(
+        self, completed_work: WorkExecutionState
+    ) -> WorkExecutionState | None:
+        """Replay a committed REVISE handoff without recalling the provider.
+
+        The committed TechnicalEvidenceReview and its exact work inputs are the
+        durable handoff intent.  Registration and READY enqueue are idempotent,
+        so recovery may safely call this method after a process crash.
+        """
+        if (
+            completed_work.work_type != WorkType.TECHNICAL_GATE
+            or completed_work.status != WorkStatus.SUCCEEDED
+            or completed_work.active_attempt_id is not None
+        ):
+            raise ValueError("TECHNICAL_REVIEW_COMMIT_REQUIRED")
+        review_ref = self._one(completed_work.output_refs, "technical_evidence_review")
+        review = self._exact(review_ref, TechnicalEvidenceReview)
+        if review.status != "REVISE":
+            return None
+        verification_ref = self._one(completed_work.input_refs, "verification_result")
+        if review.verification_result_ref != verification_ref:
+            raise ValueError("TECHNICAL_REVISE_CLOSURE_MISMATCH")
+        verification = self._exact(verification_ref, VerificationResult)
+        process_ref = self._one(completed_work.input_refs, "hypothesis_process_state")
+        assignment_ref = self._one(completed_work.input_refs, "verification_assignment")
+        assignment = self._exact(assignment_ref, VerificationAssignment)
+        budget_binding_ref = self._one(
+            completed_work.input_refs, "budget_profile_binding"
+        )
+        return self._start_revision(
+            review=review,
+            verification=verification,
+            process_ref=process_ref,
+            assignment=assignment,
+            budget_binding_ref=budget_binding_ref,
+        )
 
     def _start_revision(
         self,
@@ -223,21 +257,41 @@ class TechnicalGateService:
             requester_identity_ref=self._orchestration_identity_ref,
             budget_binding_ref=budget_binding_ref,
         )
-        if (
-            registration.work.status != WorkStatus.PENDING
-            or registration.work.active_attempt_id is not None
-            or registration.assignment_ref != reference(assignment)
-        ):
+        if registration.assignment_ref != reference(assignment):
             raise ValueError("TECHNICAL_REVISE_CLOSURE_MISMATCH")
-        ready = self._ready.enqueue_registered(
-            registration.work,
-            budget_binding_ref,
-            self._orchestration_identity_ref,
-            role="ORCHESTRATION",
-        )
-        if ready.status != WorkStatus.READY or ready.active_attempt_id is not None:
+        if registration.work.status == WorkStatus.PENDING:
+            if registration.work.active_attempt_id is not None:
+                raise ValueError("TECHNICAL_REVISE_CLOSURE_MISMATCH")
+            ready = self._ready.enqueue_registered(
+                registration.work,
+                budget_binding_ref,
+                self._orchestration_identity_ref,
+                role="ORCHESTRATION",
+            )
+        else:
+            ready = registration.work
+        if ready.status not in {
+            WorkStatus.READY,
+            WorkStatus.RUNNING,
+            WorkStatus.BLOCKED,
+            WorkStatus.SUCCEEDED,
+            WorkStatus.PARTIAL,
+            WorkStatus.FAILED,
+            WorkStatus.CANCELLED,
+        }:
             raise ValueError("TECHNICAL_REVISE_READY_ONLY_REQUIRED")
         return ready
+
+    @staticmethod
+    def _one(refs: tuple[RecordRef, ...], kind: str) -> StoredDataRef:
+        matches = tuple(
+            ref
+            for ref in refs
+            if ref.data_kind == kind and isinstance(ref, StoredDataRef)
+        )
+        if len(matches) != 1:
+            raise ValueError(f"TECHNICAL_REVISE_CLOSURE_MISMATCH: one {kind} required")
+        return matches[0]
 
     def _require_call_authority(
         self,
@@ -339,5 +393,87 @@ class TechnicalGateService:
             raise ValueError("RECORD_REVISION_MISMATCH")
         return value
 
+    def _require_revision_successor(
+        self,
+        review_ref: StoredDataRef,
+        review: TechnicalEvidenceReview,
+        work: WorkExecutionState,
+    ) -> None:
+        verification = self._exact(review.verification_result_ref, VerificationResult)
+        application = self._exact(
+            verification.playbook_application_ref, PlaybookApplication
+        )
+        if (
+            work.work_type != WorkType.VERIFICATION
+            or work.subject_type.value != "HYPOTHESIS"
+            or work.subject_id != review.meta.hypothesis_id
+            or not isinstance(work.meta, RecordMeta)
+            or work.meta.hypothesis_id != review.meta.hypothesis_id
+            or work.work_generation != application.verification_generation + 1
+            or work.input_refs.count(review_ref) != 1
+        ):
+            raise ValueError("TECHNICAL_REVISE_CLOSURE_MISMATCH")
 
-__all__ = ["TechnicalGateOutcome", "TechnicalGateService"]
+
+class TechnicalRevisionReconciler:
+    """Discover committed REVISE reviews and replay only missing handoffs."""
+
+    def __init__(
+        self, *, service: TechnicalGateService, current: CurrentRecordQuery
+    ) -> None:
+        self._service = service
+        self._current = current
+
+    def reconcile_pending(self, analysis_id: str) -> tuple[WorkExecutionState, ...]:
+        works = tuple(
+            record
+            for record in self._current.current_records(
+                analysis_id, "work_execution_state"
+            )
+            if isinstance(record, WorkExecutionState)
+        )
+        reconciled: list[WorkExecutionState] = []
+        for completed in works:
+            if (
+                completed.work_type != WorkType.TECHNICAL_GATE
+                or completed.status != WorkStatus.SUCCEEDED
+            ):
+                continue
+            review_refs = tuple(
+                ref
+                for ref in completed.output_refs
+                if ref.data_kind == "technical_evidence_review"
+                and isinstance(ref, StoredDataRef)
+            )
+            if len(review_refs) != 1:
+                continue
+            review_ref = review_refs[0]
+            review = self._service._exact(review_ref, TechnicalEvidenceReview)
+            if review.status != "REVISE":
+                continue
+            successors = tuple(
+                work
+                for work in works
+                if work.work_type == WorkType.VERIFICATION
+                and review_ref in work.input_refs
+            )
+            if len(successors) > 1:
+                raise ValueError("TECHNICAL_REVISE_DUPLICATE_SUCCESSOR")
+            if successors:
+                self._service._require_revision_successor(
+                    review_ref, review, successors[0]
+                )
+                if successors[0].status != WorkStatus.PENDING:
+                    reconciled.append(successors[0])
+                    continue
+            successor = self._service.reconcile_revision(completed)
+            if successor is not None:
+                reconciled.append(successor)
+        return tuple(reconciled)
+
+
+__all__ = [
+    "TechnicalGateOutcome",
+    "TechnicalGateService",
+    "TechnicalRevisionReconciler",
+]

@@ -31,7 +31,10 @@ from sastsimi.gates.rule_scope_service import (
     RuleScopeGateService,
 )
 from sastsimi.gates.technical_handler import TechnicalGateHandler
-from sastsimi.gates.technical_service import TechnicalGateService
+from sastsimi.gates.technical_service import (
+    TechnicalGateService,
+    TechnicalRevisionReconciler,
+)
 from sastsimi.orchestration.primitive_handoff import PrimitiveUpdateHandoff
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
@@ -55,6 +58,7 @@ class T12Services:
     finding: FindingNormalizeHandler
     reporter: ReporterWorkHandler
     primitive_handoff: PrimitiveUpdateHandoff
+    technical_revisions: TechnicalRevisionReconciler
 
 
 def compose_t12_services(
@@ -219,6 +223,10 @@ def compose_t12_services(
         ),
         primitive_handoff=PrimitiveUpdateHandoff(
             records=records, current=runtime.queries, ready_work=runner
+        ),
+        technical_revisions=TechnicalRevisionReconciler(
+            service=technical_service,
+            current=runtime.queries,
         ),
     )
 

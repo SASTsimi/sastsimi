@@ -40,7 +40,10 @@ from sastsimi.contracts.work import (
     WorkType,
 )
 from sastsimi.gates.cwe_service import CWELabelingService, GateCallRefs
-from sastsimi.gates.technical_service import TechnicalGateService
+from sastsimi.gates.technical_service import (
+    TechnicalGateService,
+    TechnicalRevisionReconciler,
+)
 from sastsimi.ports.verification_registration import VerificationRegistration
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
 from tests.contract.domain.success_fixture import dynamic_success
@@ -120,6 +123,7 @@ class _LLM:
 class _Publisher:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.completed_work: WorkExecutionState | None = None
 
     def complete(
         self,
@@ -145,7 +149,7 @@ class _Publisher:
             )
         )
         refs = tuple(reference(value) for value in outputs)  # type: ignore[arg-type]
-        return work.model_copy(
+        completed = work.model_copy(
             update={
                 "status": status,
                 "active_attempt_id": None,
@@ -153,6 +157,8 @@ class _Publisher:
                 "finished_at": NOW if status in {"SUCCEEDED", "FAILED"} else None,
             }
         )
+        self.completed_work = completed
+        return completed
 
 
 class _Ready:
@@ -172,35 +178,65 @@ class _Ready:
         return registered.model_copy(update={"status": WorkStatus.READY})
 
 
+class _Current:
+    def __init__(self, records: tuple[object, ...]) -> None:
+        self.records = records
+
+    def current_records(self, analysis_id: str, kind: str) -> tuple[object, ...]:
+        assert analysis_id == str(ANALYSIS)
+        assert kind == "work_execution_state"
+        return self.records
+
+
 class _Revision:
-    def __init__(self, assignment_ref: StoredDataRef) -> None:
+    def __init__(
+        self, assignment_ref: StoredDataRef, *, fail_before_start_once: bool = False
+    ) -> None:
         self.assignment_ref = assignment_ref
         self.calls: list[dict[str, object]] = []
+        self.fail_before_start_once = fail_before_start_once
+        self.registration: VerificationRegistration | None = None
 
     def start_new_generation(self, **kwargs: object) -> VerificationRegistration:
         self.calls.append(dict(kwargs))
+        if self.fail_before_start_once:
+            self.fail_before_start_once = False
+            raise RuntimeError("simulated crash before revision registration")
+        if self.registration is not None:
+            return VerificationRegistration(
+                work=self.registration.work.model_copy(
+                    update={"status": WorkStatus.READY}
+                ),
+                application=self.registration.application,
+                assignment_ref=self.registration.assignment_ref,
+                process_ref=self.registration.process_ref,
+            )
         old_work = kwargs["old_work"] if "old_work" in kwargs else None
         del old_work
         work = WorkExecutionState.model_construct(
             meta=_meta("work_execution_state", "revision-work"),
             work_id=WorkId("verification-work-2"),
+            parent_work_ref=None,
             work_type=WorkType.VERIFICATION,
+            subject_type=SubjectType.HYPOTHESIS,
+            subject_id=HYPOTHESIS,
             work_generation=2,
             status=WorkStatus.PENDING,
             active_attempt_id=None,
-            input_refs=(),
+            input_refs=(kwargs["technical_review_ref"],),
         )
         application = PlaybookApplication.model_construct(
             meta=_meta("playbook_application", "revision-app"),
             verification_work_id=work.work_id,
             verification_generation=2,
         )
-        return VerificationRegistration(
+        self.registration = VerificationRegistration(
             work=work,
             application=application,
             assignment_ref=self.assignment_ref,
             process_ref=kwargs["expected_process_ref"],  # type: ignore[arg-type]
         )
+        return self.registration
 
 
 @dataclass(frozen=True)
@@ -755,3 +791,107 @@ async def test_revise_commits_review_then_readies_same_owner_new_generation() ->
             "role": "ORCHESTRATION",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_committed_revise_is_reconciled_after_revision_start_crash() -> None:
+    fixture = _fixture()
+    label = CWELabel.model_construct(
+        meta=_meta("cwe_label", "current"),
+        verification_result_ref=fixture.verification_ref,
+        verification_generation=1,
+        cwe_labeling_work_id=WorkId("cwe-work"),
+        llm_call_id="cwe-call",
+        primary="CWE-89",
+        alternatives=(),
+        taxonomy_version="CWE-4.17",
+        rationale="The SQL sink is the root cause",
+        evidence_refs=(fixture.evidence_ref,),
+        uncertainty=None,
+    )
+    label_ref = fixture.records.add(label)
+    work = fixture.work(WorkType.TECHNICAL_GATE, "revise-recovery")
+    work = work.model_copy(update={"input_refs": (*work.input_refs, label_ref)})
+    context = (
+        fixture.verification_ref,
+        fixture.dynamic_ref,
+        fixture.poc_ref,
+        label_ref,
+        fixture.process_ref,
+        fixture.assignment_ref,
+        fixture.evidence_ref,
+    )
+    call = _gate_call(
+        fixture,
+        work,
+        role="TECHNICAL_GATE",
+        task="REVIEW_TECHNICAL",
+        requested_by="VERIFICATION",
+        requester=fixture.assignment.owner_identity_ref,
+        action_type="CALL_TECHNICAL_GATE",
+        context=context,
+        payload={
+            "status": "REVISE",
+            "evidence_verdict_alignment": "One linkage needs verification",
+            "code_flow_linkage": "The sink is linked but one guard is unresolved",
+            "dynamic_linkage": "The PoC supports the current path",
+            "cwe_assessment": "The label remains plausible",
+            "restriction_assessment": "A guard condition needs a new generation",
+            "revision_requests": ["Recheck the guard condition"],
+            "verification_requests": ["Collect guard-path evidence"],
+            "rationale": "The same owner must re-verify the evidence need",
+        },
+    )
+    revision = _Revision(
+        fixture.assignment_ref,
+        fail_before_start_once=True,
+    )
+    service = TechnicalGateService(
+        agent=TechnicalGateAgent(
+            llm_calls=fixture.llm,
+            records=fixture.records,
+            artifacts=fixture.artifacts,
+            metadata_factory=_metadata,
+        ),
+        publisher=fixture.publisher,
+        records=fixture.records,
+        identity_ref=fixture.technical_identity,
+        orchestration_identity_ref=fixture.orchestration_identity,
+        t10_services=_T10(revision),
+        ready_work=fixture.ready,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        await service.review(
+            work=work,
+            process_ref=fixture.process_ref,
+            assignment_ref=fixture.assignment_ref,
+            verification_ref=fixture.verification_ref,
+            dynamic_result_ref=fixture.dynamic_ref,
+            poc_ref=fixture.poc_ref,
+            cwe_label_ref=label_ref,
+            budget_binding_ref=fixture.budget_ref,
+            call=call,
+        )
+
+    assert fixture.publisher.completed_work is not None
+    current = _Current((fixture.publisher.completed_work,))
+    reconciler = TechnicalRevisionReconciler(
+        service=service,
+        current=current,
+    )
+    (recovered,) = reconciler.reconcile_pending(str(ANALYSIS))
+    current.records = (fixture.publisher.completed_work, recovered)
+    (replayed,) = reconciler.reconcile_pending(str(ANALYSIS))
+
+    assert recovered is not None
+    assert recovered.status == WorkStatus.READY
+    assert replayed == recovered
+    assert len(fixture.publisher.calls) == 1
+    assert fixture.llm.calls == 1
+    assert len(revision.calls) == 2
+    assert len(fixture.ready.calls) == 1
+    assert (
+        revision.calls[-1]["owner_identity_ref"]
+        == fixture.assignment.owner_identity_ref
+    )
