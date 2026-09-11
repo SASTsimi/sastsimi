@@ -513,6 +513,8 @@ class RuntimeValidator:
             if result.status == "SUCCEEDED" and result.parsed_output_ref is not None:
                 expected_replay_refs += (result.parsed_output_ref,)
             if claimed.outcome_refs:
+                if claimed.outcome_refs[0] != exact_invocation_refs[0]:
+                    raise ValueError("INVOCATION_ACTION_MISMATCH")
                 if claimed.outcome_refs != expected_replay_refs:
                     raise ValueError("INVOCATION_REPLAY_MISMATCH")
                 for item, item_ref in zip(
