@@ -103,7 +103,7 @@ def _successful_outcome() -> tuple[
     log = LLMInvocationLog.model_validate_json(canonical_bytes(data))
     log_ref = reference(log)
     assert isinstance(log_ref, StoredDataRef)
-    invocation = type(invocation)(request, result, log_ref)
+    invocation = type(invocation)(request, result, log_ref, "RETURNED")
     return HypothesisAgentOutcome(invocation, ()), bundle_ref, log
 
 
