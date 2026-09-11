@@ -93,6 +93,10 @@ class EvidenceSessionResolver(Protocol):
     ) -> tuple[str, Literal["NEW", "RESUME"]]: ...
 
 
+class _EvidenceRefsCarrier(Protocol):
+    evidence_refs: tuple[StoredDataRef, ...]
+
+
 class MetadataFactory(Protocol):
     def __call__(
         self, source: RecordMeta, record_type: str, attempt_id: AttemptId | None
@@ -709,7 +713,7 @@ class VerificationAgent:
                     and "evidence_refs" in type(value).model_fields
                 ):
                     pending.extend(
-                        cast(tuple[StoredDataRef, ...], value.__dict__["evidence_refs"])
+                        cast(_EvidenceRefsCarrier, value).evidence_refs
                     )
         return resolved
 

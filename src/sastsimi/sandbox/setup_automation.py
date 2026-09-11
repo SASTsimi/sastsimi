@@ -55,7 +55,7 @@ class DockerLifecyclePort(Protocol):
     async def materialize_poc(
         self, container_id: str, content: bytes, content_digest: str
     ) -> str: ...
-    async def exec(
+    async def execute(
         self,
         container_id: str,
         argv: tuple[str, ...],

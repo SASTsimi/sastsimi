@@ -808,7 +808,7 @@ class ProductionDynamicWorkflow:
             redaction_status="NOT_REQUIRED",
         )
         try:
-            outcome = await self._docker.exec(
+            outcome = await self._docker.execute(
                 prepared.environment.container_instance_id,
                 (command.executable, *command.arguments),
                 self._execution_timeout(),

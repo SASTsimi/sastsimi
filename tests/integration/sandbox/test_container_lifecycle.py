@@ -366,7 +366,7 @@ class FakeDockerAdapter:
         if container_id in self.hidden_mounts:
             raise ValueError("DOCKER_MOUNT_BOUNDARY_INVALID")
 
-    async def exec(
+    async def execute(
         self,
         container_id: str,
         argv: tuple[str, ...],
@@ -1083,7 +1083,7 @@ async def test_docker_exec_uses_exact_argv_and_working_directory(
     )
     adapter = DockerAdapter()
 
-    outcome = await adapter.exec(
+    outcome = await adapter.execute(
         "owned-container-id",
         ("python", "poc.py"),
         10_000,

@@ -130,7 +130,7 @@ class RecordingDockerAdapter(DockerAdapter):
         self.calls.append(("materialize_poc", container_id))
         return await super().materialize_poc(container_id, content, content_digest)
 
-    async def exec(
+    async def execute(
         self,
         container_id: str,
         argv: tuple[str, ...],
@@ -139,7 +139,7 @@ class RecordingDockerAdapter(DockerAdapter):
         working_directory: str,
     ) -> DockerCommandOutcome:
         self.calls.append(("exec", container_id))
-        return await super().exec(
+        return await super().execute(
             container_id,
             argv,
             timeout_ms,
