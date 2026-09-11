@@ -1015,7 +1015,7 @@ async def test_docker_materializes_verified_poc_only_inside_container(
         del timeout_ms
         calls.append((argv, input_bytes))
         stdout = (
-            f"{content_digest}  {staging_path}\n".encode()
+            DockerAdapter._safe_output(f"{content_digest}  {staging_path}\n".encode())
             if argv[-2:] == ("sha256sum", staging_path)
             else b""
         )
@@ -1088,7 +1088,10 @@ async def test_docker_atomically_replaces_poc_with_exact_second_candidate(
             digest = hashlib.sha256(staged).hexdigest()
             verified_digests.append(digest)
             return DockerCommandOutcome(
-                0, f"{digest}  {staging_path}\n".encode(), b"", False
+                0,
+                DockerAdapter._safe_output(f"{digest}  {staging_path}\n".encode()),
+                b"",
+                False,
             )
         elif command == ("chmod", "0444", staging_path):
             assert staged is not None

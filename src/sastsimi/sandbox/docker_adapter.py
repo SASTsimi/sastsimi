@@ -272,7 +272,10 @@ class DockerAdapter:
             raise DockerOperationError(
                 "DOCKER_POC_DIGEST_MISMATCH", verified
             ) from error
-        if digest_output != [content_digest, _POC_STAGING_PATH]:
+        if digest_output not in (
+            [content_digest, _POC_STAGING_PATH],
+            [content_digest, "[REDACTED:HOST_ABSOLUTE_PATH]"],
+        ):
             raise DockerOperationError("DOCKER_POC_DIGEST_MISMATCH", verified)
         protected = await self._run(
             ("exec", container_id, "chmod", "0444", _POC_STAGING_PATH)
