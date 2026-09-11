@@ -20,7 +20,10 @@ from sastsimi.contracts.dynamic import (
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
-from sastsimi.sandbox.cleanup import OwnedResourceRegistry
+from sastsimi.sandbox.cleanup import (
+    OwnedResourceRegistry,
+    owned_container_resource_ref,
+)
 from sastsimi.sandbox.controller import (
     SandboxBoundaryOutcome,
     SandboxMount,
@@ -284,6 +287,12 @@ async def test_prepare_creates_clean_non_root_default_deny_container(
     assert inspected.network_mode == "none"
     assert inspected.privileged is False
     assert inspected.read_only_rootfs is True
+    assert prepared.resource_refs == (
+        owned_container_resource_ref(
+            container_id=prepared.environment.container_instance_id,
+            meta=prepared.environment.meta,
+        ),
+    )
 
 
 @pytest.mark.asyncio

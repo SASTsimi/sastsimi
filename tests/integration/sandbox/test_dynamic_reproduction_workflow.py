@@ -581,6 +581,7 @@ class FakeWorkflowPort:
     failure: object | None = None
     verdict_calls: int = 0
     gate_calls: int = 0
+    cleanup_calls: int = 0
 
     def __post_init__(self) -> None:
         self.published = []
@@ -604,6 +605,7 @@ class FakeWorkflowPort:
         return self.session
 
     async def cleanup(self, session: DynamicSandboxSession) -> DynamicSandboxSession:
+        self.cleanup_calls += 1
         return session
 
     def finalize(self, **_: object) -> WorkHandlerResult:
@@ -709,6 +711,12 @@ class FailingFlowAgent:
         raise AssertionError("failure must stop the workflow")
 
 
+@dataclass
+class UnexpectedAfterOpenAgent(BlockedFlowAgent):
+    async def create_poc_candidate(self, **_: object) -> object:
+        raise RuntimeError("TEST_ONLY_SECRET unexpected provider failure")
+
+
 @pytest.mark.asyncio
 async def test_operational_failure_has_no_r6_verdict_or_gate() -> None:
     artifacts = MemoryArtifacts()
@@ -775,6 +783,65 @@ async def test_operational_failure_has_no_r6_verdict_or_gate() -> None:
     assert port.failure.poc_ref is None  # type: ignore[attr-defined]
     assert port.verdict_calls == 0
     assert port.gate_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_unexpected_failure_after_open_still_cleans_and_records_safe_failure(
+) -> None:
+    artifacts = MemoryArtifacts()
+    request = reproduction_request()
+    request_ref = cast(StoredDataRef, reference(request))
+    work = dynamic_work(request_ref)
+    persisted_invocation = invocation(
+        artifacts,
+        work,
+        task="DERIVE_ENVIRONMENT",
+        contexts=(request_ref,),
+        content={"items": []},
+        sequence=1,
+    )
+    env = environment(
+        request_ref,
+        stored_ref("reproduction_plan", "allowed-plan"),
+        stored_ref("environment_requirements", "allowed-requirements"),
+    )
+    log = agent_log(request_ref)
+    port = FakeWorkflowPort(
+        DynamicSandboxSession(
+            allowed=True,
+            policy_ref=stored_ref("sandbox_policy_decision", "allowed-policy"),
+            log_ref=cast(StoredDataRef, reference(log)),
+            environment=env,
+            environment_ref=cast(StoredDataRef, reference(env)),
+            log=log,
+        )
+    )
+    service = DynamicReproductionWorkflowService(
+        agent=UnexpectedAfterOpenAgent(persisted_invocation),
+        workflow=port,
+    )
+    authorization = auth(persisted_invocation)
+
+    completed = await service.execute(
+        work=work,
+        request=request,
+        request_ref=request_ref,
+        authorizations=DynamicStageAuthorizations(
+            derive=authorization,
+            plan=authorization,
+            candidate=authorization,
+            execute=(),
+            interpret=None,
+        ),
+    )
+
+    assert completed.output_refs
+    assert port.cleanup_calls == 1
+    assert port.failure is not None
+    assert port.failure.failure_category == "INTERNAL"  # type: ignore[attr-defined]
+    assert port.failure.failure_reason == (  # type: ignore[attr-defined]
+        "Unexpected dynamic workflow failure"
+    )
 
 
 @pytest.mark.asyncio

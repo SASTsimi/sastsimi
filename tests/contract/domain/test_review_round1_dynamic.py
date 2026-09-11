@@ -85,9 +85,14 @@ def test_r6_resolved_command_pair_matches_tool_request_content() -> None:
     command = make("SandboxCommandInput") | dict(
         executable="python", arguments=["check.py"], working_directory="/workspace"
     )
+    tool_data = make("DynamicReproductionToolRequest")
+    tool_data["meta"] |= {
+        "record_id": "extra-tool-r1",
+        "logical_record_id": "extra-tool-l1",
+    }
     tool = wire(
         DynamicReproductionToolRequest,
-        make("DynamicReproductionToolRequest")
+        tool_data
         | dict(
             request_ref=bound(chain["request"]),
             reproduction_plan_ref=bound(chain["plan"]),
@@ -96,9 +101,14 @@ def test_r6_resolved_command_pair_matches_tool_request_content() -> None:
             command=command,
         ),
     )
+    record_data = make("SandboxCommandRecord")
+    record_data["meta"] |= {
+        "record_id": "extra-command-r1",
+        "logical_record_id": "extra-command-l1",
+    }
     record = wire(
         SandboxCommandRecord,
-        make("SandboxCommandRecord")
+        record_data
         | command
         | dict(
             request_ref=bound(chain["request"]),
@@ -145,10 +155,10 @@ def test_r6_resolved_command_pair_matches_tool_request_content() -> None:
     for sequence, event in enumerate(events, 1):
         event["sequence"] = sequence
     rebind_log(chain, events)
-    chain["command_records"] = (record,)
-    chain["tool_requests"] = (tool,)
+    chain["command_records"] = (*chain["command_records"], record)
+    chain["tool_requests"] = (*chain["tool_requests"], tool)
     check_dynamic(chain)
-    chain["command_records"] = ()
+    chain["command_records"] = chain["command_records"][:1]
     with pytest.raises(ValueError, match="COMMAND_CLOSURE_MISSING"):
         check_dynamic(chain)
     chain["command_records"] = (record,)

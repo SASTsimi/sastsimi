@@ -32,6 +32,32 @@ class CleanupDockerPort(Protocol):
     async def remove(self, resource_ids: tuple[str, ...]) -> None: ...
 
 
+def owned_container_resource_ref(
+    *, container_id: str, meta: RecordMeta
+) -> StoredDataRef:
+    """Derive the opaque ownership ref from runtime identity and attempt scope."""
+    if meta.hypothesis_id is None or meta.attempt_id is None:
+        raise ValueError("SANDBOX_RESOURCE_SCOPE_REQUIRED")
+    payload = {
+        "resource_type": "container",
+        "resource_id": container_id,
+        "analysis_id": meta.analysis_id,
+        "workspace_id": meta.workspace_id,
+        "commit_id": meta.commit_id,
+        "hypothesis_id": meta.hypothesis_id,
+        "attempt_id": meta.attempt_id,
+    }
+    digest = content_hash(payload)
+    return StoredDataRef(
+        stored_data_id=StoredDataId(f"sandbox-resource-{digest}"),
+        data_kind="sandbox_resource",
+        content_hash=digest,
+        workspace_id=meta.workspace_id,
+        commit_id=meta.commit_id,
+        record_id=None,
+    )
+
+
 class OwnedResourceRegistry:
     """Tracks only resources created through this exact setup instance."""
 
@@ -45,19 +71,9 @@ class OwnedResourceRegistry:
         labels: Mapping[str, str],
         meta: RecordMeta,
     ) -> StoredDataRef:
-        payload = {
-            "resource_type": "container",
-            "resource_id": container_id,
-            "labels": dict(sorted(labels.items())),
-        }
-        digest = content_hash(payload)
-        ref = StoredDataRef(
-            stored_data_id=StoredDataId(f"sandbox-resource-{digest}"),
-            data_kind="sandbox_resource",
-            content_hash=digest,
-            workspace_id=meta.workspace_id,
-            commit_id=meta.commit_id,
-            record_id=None,
+        ref = owned_container_resource_ref(
+            container_id=container_id,
+            meta=meta,
         )
         key = canonical_bytes(ref)
         if key in self._resources:

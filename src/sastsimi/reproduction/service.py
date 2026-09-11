@@ -1269,6 +1269,20 @@ class DynamicReproductionWorkflowService:
                 session=session,
                 failure=error.failure,
             )
+        except Exception:
+            if session is not None and session.allowed:
+                session = await self._workflow.cleanup(session)
+            return self._workflow.finalize_failure(
+                work=work,
+                request=request,
+                request_ref=request_ref,
+                session=session,
+                failure=DynamicWorkflowFailure(
+                    status="FAILED",
+                    failure_category="INTERNAL",
+                    failure_reason="Unexpected dynamic workflow failure",
+                ),
+            )
 
 
 def _require_stage_record[T](

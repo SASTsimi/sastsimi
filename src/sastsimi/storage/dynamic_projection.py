@@ -2,6 +2,7 @@
 
 from sqlalchemy import Connection, select
 
+from sastsimi.contracts._domain import exact, same_scope, unique
 from sastsimi.contracts.domain import DomainRecord, walk
 from sastsimi.contracts.dynamic import (
     AgentLog,
@@ -24,6 +25,7 @@ from sastsimi.contracts.dynamic import (
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import Record
+from sastsimi.sandbox.cleanup import owned_container_resource_ref
 
 from . import models
 from .codec import REF_ADAPTER, reference
@@ -32,6 +34,66 @@ from .intermediate_policy import prepublished_output
 from .records import next_meta
 from .stage_policy import resolved
 from .work_service import WorkService
+
+
+def resolve_attempt_resource_refs(
+    result: DynamicReproductionResult,
+    log: AgentLog,
+    cleanup: CleanupResult | None,
+    environments: tuple[SandboxEnvironment, ...],
+) -> tuple[StoredDataRef, ...]:
+    """Rebuild exact owned resources without accepting caller-provided extras."""
+    if cleanup is None:
+        return ()
+    environment_by_id: dict[object, SandboxEnvironment] = {}
+    for environment in environments:
+        same_scope(result.meta, environment.meta, attempt=True)
+        if environment.meta.record_id in environment_by_id:
+            raise ValueError("CLEANUP_ENVIRONMENT_UNRESOLVED")
+        environment_by_id[environment.meta.record_id] = environment
+
+    logged_environment_refs = {
+        event.environment_ref
+        for event in log.events
+        if event.environment_ref is not None
+    }
+    if result.environment_ref is not None:
+        logged_environment_refs.add(result.environment_ref)
+    environment_refs = (*logged_environment_refs, *cleanup.environment_refs)
+    if (
+        {ref.record_id for ref in logged_environment_refs}
+        - environment_by_id.keys()
+        or {ref.record_id for ref in cleanup.environment_refs}
+        != environment_by_id.keys()
+    ):
+        raise ValueError("CLEANUP_ENVIRONMENT_UNRESOLVED")
+    for environment_ref in environment_refs:
+        target_environment = environment_by_id.get(environment_ref.record_id)
+        if target_environment is None:
+            raise ValueError("CLEANUP_ENVIRONMENT_UNRESOLVED")
+        exact(environment_ref, target_environment, result.meta)
+
+    resources: list[StoredDataRef] = []
+    for environment in environments:
+        resource_ref = owned_container_resource_ref(
+            container_id=environment.container_instance_id,
+            meta=environment.meta,
+        )
+        checked_resources = {
+            ref
+            for check in environment.checks
+            for ref in check.evidence_refs
+            if ref.data_kind == "sandbox_resource"
+        }
+        if checked_resources and checked_resources != {resource_ref}:
+            raise ValueError("CLEANUP_RESOURCE_PROVENANCE_MISMATCH")
+        if resource_ref not in resources:
+            resources.append(resource_ref)
+
+    unique(cleanup.resource_refs)
+    if set(cleanup.resource_refs) != set(resources):
+        raise ValueError("CLEANUP_RESOURCE_PROVENANCE_MISMATCH")
+    return tuple(resources)
 
 
 def dynamic_projection(
@@ -146,6 +208,25 @@ def dynamic_projection(
             and value.meta.analysis_id == work.meta.analysis_id
         ):
             all_attempt.append(value)
+    environment = load(result.environment_ref, SandboxEnvironment)
+    cleanup = load(result.cleanup_ref, CleanupResult)
+    attempt_environments = tuple(
+        item
+        for item in all_attempt
+        if isinstance(item, SandboxEnvironment)
+        and reference(item) != result.environment_ref
+    )
+    environments = (
+        (*attempt_environments, environment)
+        if environment is not None
+        else attempt_environments
+    )
+    attempt_resource_refs = resolve_attempt_resource_refs(
+        result,
+        log,
+        cleanup,
+        environments,
+    )
     validate_dynamic_closure(
         result,
         request,
@@ -153,12 +234,12 @@ def dynamic_projection(
         generation=work.work_generation,
         plan=plan,
         recipe=load(result.environment_recipe_ref, EnvironmentRecipe),
-        environment=load(result.environment_ref, SandboxEnvironment),
+        environment=environment,
         candidate=load(result.poc_candidate_ref, PoCCandidate),
         poc=poc,
         conclusion=load(result.agent_conclusion_ref, DynamicReproductionConclusion),
         policy=load(result.policy_decision_ref, SandboxPolicyDecision),
-        cleanup=load(result.cleanup_ref, CleanupResult),
+        cleanup=cleanup,
         requirements=requirement,
         resolved_evidence=evidence,
         command_records=tuple(
@@ -169,18 +250,14 @@ def dynamic_projection(
             for item in all_attempt
             if isinstance(item, DynamicReproductionToolRequest)
         ),
-        attempt_environments=tuple(
-            item
-            for item in all_attempt
-            if isinstance(item, SandboxEnvironment)
-            and reference(item) != result.environment_ref
-        ),
+        attempt_environments=attempt_environments,
         attempt_recipes=tuple(
             item
             for item in all_attempt
             if isinstance(item, EnvironmentRecipe)
             and reference(item) != result.environment_recipe_ref
         ),
+        attempt_resource_refs=attempt_resource_refs,
     )
     if not publish:
         return ()
