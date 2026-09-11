@@ -218,8 +218,6 @@ IDOR_BOLA
 
 `restrictions[].fact_refs`에는 `fact_id`만 적는다. 어느 bundle을 가리키는지(`bundle_ref`)는 runtime이 채운다. 그 값은 입력에 들어오지 않는다.
 
-**같은 근거 집합에는 제한을 하나만 만들어라.** runtime은 `fact_refs`에서 `restriction_id`를 유도하므로, 같은 `fact_id` 묶음을 가진 제한이 둘이면 ID가 겹쳐 출력 전체가 거절된다. 같은 근거로 서로 다른 조건을 말해야 하면 한 제한으로 합치거나, 각 조건이 실제로 기대는 사실만 따로 인용해 근거를 나눠라.
-
 **저장 식별자를 계산하거나 지어내지 마라.** 입력에 없는 `stored_data_id`·`content_hash`를 만들면 그 자체로 실패다.
 
 `suspected_path`는 `call_edges`·`data_flow_candidates`·`route_bindings`에서 그대로 가져온 `CodeRelation`이나 입력에 있는 `CodeLocation`만 담는다. 관측되지 않은 경로를 만들어 넣느니 빈 배열로 두어라.

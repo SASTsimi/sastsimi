@@ -87,7 +87,9 @@ result 있는 Primitive  +  result 있는 다른 Primitive   (TRUE + TRUE)
 
 `trigger`가 낀 조합을 전부 검토한다. 그 밖의 조합은 다른 work의 몫이므로 보지 않는다.
 
-**담당은 이미 정해져서 들어온다.** runtime이 work를 등록할 때 `considered`를 이 work가 담당인 상대만으로 좁혀 준다. 그러니 `considered`에 있는 Primitive는 전부 네 몫이다. 담당을 다시 따지거나 추측해서 조합을 건너뛰지 마라. 건너뛴 조합은 아무 기록도 남지 않아 놓쳤다는 사실조차 드러나지 않는다.
+**`trigger`가 끼지 않은 조합은 다른 work가 검토한다.** `considered`에는 계기와 무관한 Primitive도 들어 있다. 그 둘끼리의 조합은 나중에 저장된 쪽을 계기로 가진 work의 몫이므로 여기서 만들지 마라.
+
+**`trigger`가 낀 조합은 하나도 건너뛰지 마라.** 성립하지 않으면 `no_match_reasons`에 남기고, 아예 빠뜨리지는 마라. 건너뛴 조합은 아무 기록도 남지 않아 놓쳤다는 사실조차 드러나지 않는다.
 
 ## 조상 재사용 제외
 
@@ -138,9 +140,9 @@ result 있는 Primitive  +  result 있는 다른 Primitive   (TRUE + TRUE)
 
 두 부모 Primitive의 `Restriction` 객체를 **중복 없이 합친 것**이다. 요약하거나 문장을 고쳐 쓰지 마라.
 
-`restriction_id`는 `fact_refs`에서 유도되므로 ID가 같다는 것은 두 제한이 같은 코드 근거를 가리킨다는 뜻이다. **같은 `restriction_id`는 하나만 남긴다.** 부모마다 `statement` 문장이 다를 수 있는데 둘 다 같은 제한을 설명한 것이므로 계약 위반이 아니다. 어느 쪽을 남길지는 두 객체의 canonical bytes를 비교해 사전순으로 앞서는 것으로 정한다. 문장을 요약하거나 두 문장을 섞어 새로 쓰지 마라.
+같은 `restriction_id`는 내용이 완전히 같을 때만 한 번 남긴다. ID가 같은데 `statement`나 `fact_refs`가 다르면 그 자체가 계약 위반 상태이므로 임의로 하나를 고르거나 합치지 마라. 두 객체를 그대로 두고 `errors`에 남긴다.
 
-ID가 같은데 `fact_refs`가 다른 경우는 유도 규칙상 나올 수 없다. 그런 입력을 만나면 상류에서 ID를 잘못 만든 것이므로 임의로 고치지 말고 두 객체를 그대로 두고 `errors`에 남긴다.
+ID가 서로 다르면 내용이 비슷해 보여도 별개 객체다. 문장이 닮았다는 이유로 합치지 마라.
 
 ### `assumptions`
 

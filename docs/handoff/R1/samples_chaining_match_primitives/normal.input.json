@@ -7,7 +7,7 @@
     "pair": "normal-true-true.input.json이 양쪽 다 result를 가진 TRUE + TRUE 경우입니다. 08은 downstream result 유무로 두 경우를 유도하고 match_kind를 따로 저장하지 않습니다.",
     "projection": "이 파일은 프롬프트가 실제로 받는 projection 후 payload입니다. indexes와 considered는 05-prompt-runtime.md:245가 $(전체 record)로 노출하고, lineage_hypotheses는 /meta·/origin·/parent_hypothesis_ids·/source_primitive_match_id 네 pointer만 노출하므로 그 범위만 담았습니다.",
     "revision_note": "hyp-0001의 index는 revision 2입니다. 가설이 최초 등록될 때 revision 1이 만들어지고 prim-000A가 등록되면서 revision 2가 되었다고 가정했습니다. 08:911에 따라 previous_record_id는 같은 logical_record_id의 직전 revision record_id를 가리켜야 하므로 rec-idx-0001r1을 넣었습니다.",
-    "trigger_note": "이 work의 계기 Primitive는 prim-000A입니다. runtime이 REGISTER_WORK에서 담당 필터를 적용하므로 considered에는 계기와 이 work가 담당인 상대만 들어 있습니다. Agent는 담당을 다시 판단하지 않고 trigger와 나머지를 짝지어 검토합니다. trigger는 considered 안에 같은 record로 한 번 더 들어 있습니다(08:405)."
+    "trigger_note": "이 work의 계기 Primitive는 prim-000A입니다. trigger는 considered에 이미 있는 record를 같은 reference로 다시 노출한 것이며(08의 trigger_primitive_ref 규정), considered에는 계기와 무관한 Primitive도 들어 있습니다. 계기가 낀 조합만 이 work의 검토 대상이고, 나머지 조합은 나중에 저장된 쪽을 계기로 가진 work의 몫입니다."
   },
   "trigger": {
     "meta": {

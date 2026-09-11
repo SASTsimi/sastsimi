@@ -102,7 +102,7 @@ LLM 출력은 실행마다 문장이 달라집니다. 그래서 문장 전체를
 
 | 샘플 | auto | judgement |
 |---|---|---|
-| hypothesis `normal` | 24 | 4 |
+| hypothesis `normal` | 23 | 4 |
 | hypothesis `failure` | 5 | 4 |
 | chaining `normal` | 25 | 5 |
 | chaining `normal-true-true` | 22 | 5 |
@@ -203,30 +203,26 @@ downstream의 매칭된 input    → 빠짐
 
 ## 계약 문서 결함 — 후속 이슈
 
-이 자료를 계약대로 쓰려면 문서가 먼저 닫혀야 하는 항목이 여덟 있습니다. 질문이 아니라 계약끼리 어긋나거나 표에 줄이 빠진 것들이라 별도 후속 이슈로 올렸고, 여덟 건 모두 수정안을 함께 제시했습니다. 상세와 근거는 그 이슈를 보세요.
+이 자료를 계약대로 쓰려면 문서가 먼저 닫혀야 하는 항목이 여섯 있습니다. 질문이 아니라 계약끼리 어긋나거나 표에 줄이 빠진 것들이라 별도 후속 이슈와 PR로 다룹니다.
 
-| | 무엇 | 성격 | 담당 |
-|---|---|---|---|
-| 1 | `05:245`에 계기 Primitive를 담을 slot이 없는데 `06:96`의 담당 규칙이 그 값을 전제한다 | 요구와 수단 불일치 | R3 |
-| 2 | `08:983`이 요구하는 `bundle_ref`의 재료가 `facts` slot에 없다 | 요구와 수단 불일치 | R3 |
-| 3 | 매칭 조건 3의 권한 축을 어느 쪽 `privilege_level`이 정하는지 안 적혀 있다 | 서술 모호 | R4 |
-| 4 | `08`의 식별자 표에 `restriction_id` 줄이 없는데 `06-baseline:553`이 그 표를 전수 정본이라 한다 | 표 누락 | R4·R6 |
-| 5 | `02:88`의 `data_flow_candidates` 서술과 R2의 실제 정규화 출력이 담는 구간이 다르다 | 문서·구현 불일치 | R2·R4 |
-| 6 | `gaps`·`errors`를 bundle 최상위와 `tool_runs[]` 중 어디에 두는지 정본이 없다 | 규정 누락 | R2·R4 |
-| 7 | `code_context_response`의 `data_kind` 문자열이 `08`의 registry·reference 표에 없다 | 표 누락 | R2·R4 |
-| 8 | 담당 동점 처리에 필요한 상대 work의 pool 정보가 Agent 입력에 없고, Runtime이 candidate 단위로 거르는 절차도 `08`에 없다 | 실행 주체 부재 | R3·R4 |
+| | 무엇 | 담당 |
+|---|---|---|
+| 1 | `05:245`에 계기 Primitive를 담을 slot이 없는데 `06:96`이 그 값을 전제한다 | R3·R4 |
+| 2 | `08:984`가 요구하는 `bundle_ref`의 재료가 `facts` slot에 없다 | R3·R4 |
+| 3 | `08`의 식별자 표에 `restriction_id` 줄이 없는데 `06-baseline:553`이 그 표를 전수 정본이라 한다 | R4·R6 |
+| 4 | `02`가 규정한 도달 근거 관계(진입점→source, `ast_dataflow` 생성)가 R2의 실제 산출물에 없다 | R2 |
+| 5 | `CONTEXT_RETRIEVAL`의 생산 역할 `CONTEXT_RETRIEVAL_SERVICE`가 `08`의 enum·목록·registry 어디에도 없다 | R4 |
+| 6 | 담당 동점 tie-break를 실행할 주체와 절차가 없다 | R3·R4 |
 
-이 자료는 그 수정안이 반영된다는 전제로 작성했습니다. 반영되는 내용은 다음과 같습니다.
+계약 수정 PR이 닫은 것은 아래 다섯입니다. 이 자료는 그 상태를 전제로 작성했습니다.
 
-- `MATCH_PRIMITIVES`에 `trigger` slot이 생기고, `REGISTER_WORK`가 `considered`를 이 work가 담당인 상대만으로 좁힌다(1·8)
+- `MATCH_PRIMITIVES`에 `trigger` slot이 생긴다(1)
 - `restrictions[].fact_refs`에서 Agent는 `fact_id`만 내고 출력 검증 runtime이 `bundle_ref`를 채운다(2)
-- 매칭 조건 3의 권한 축은 downstream input의 `privilege_level`이 정한다(3)
-- `restriction_id`도 `question_id`·`validation_id`와 같은 자리에서 검증 runtime이 발급한다(4)
-- `data_flow_candidates`는 도달 근거 전용이 아니라 관측된 데이터 흐름 관계 전체를 담는다(5)
-- 도구에 귀속되는 `gaps`·`errors`는 `ToolRunResult` 안에 두고 bundle 최상위는 정규화 계층 자체의 것만 담는다. 소비자는 두 곳을 다 읽는다(6)
-- `code_context_response`가 `STATIC_ANALYSIS` 생산으로 registry에 등록된다(7)
+- `restriction_id`는 proposal 출력 검증 runtime 또는 Verification 출력 검증 runtime이 발급한다. Agent가 낸 값은 지역 값이다(3)
+- source 후보 자체가 진입점이면 `ROUTE_BINDING` 관계가 도달 근거이며 별도 `DATA_FLOW`를 요구하지 않는다(4)
+- `CONTEXT_RETRIEVAL_SERVICE`가 `requested_by` enum·`SAVE_RESULT` 허용 주체·result registry에 등록된다(5)
 
-다르게 정해지면 해당 부분의 프롬프트와 샘플 `must`를 고칩니다.
+6번은 닫히지 않았습니다. `06:96`의 `record_id` 사전순 tie-break가 그대로이고, 그것을 실행할 주체는 여전히 정해져 있지 않습니다. 정상 저장 순서에서는 pool 고정 시점이 담당을 정하므로 이 자료의 샘플은 영향을 받지 않습니다.
 
 fixture 형태가 역할마다 다른 것도 함께 봐 주셨으면 합니다. R2는 입력이 원본 도구 출력이고 기대 결과가 저장 record 형태, R5는 assertion projection, 이 자료는 projection 후 프롬프트 payload와 `must`/`must_not`입니다. 하나의 harness로 묶을지 R3 판단이 필요합니다.
 
@@ -239,10 +235,10 @@ fixture 형태가 역할마다 다른 것도 함께 봐 주셨으면 합니다. 
 
 | 역할 | 무엇을 봐 주셨으면 하는지 |
 |---|---|
-| R3 구현·통합 | 계약 수정 1·2번, template 경로와 등록 형식, 자동 테스트 연결 가능 여부, 최종 인계 자료 정리 |
-| R4 PM·아키텍처 | 계약 수정 3번, 계약 수정 4번(발급 주체 결정), 확인 요청 2번, 공통 계약 정합성 |
-| R2 정적분석·컨텍스트 | `StaticFactBundle` 샘플이 실제 정규화 출력과 맞는지, ID 형식, 확인 요청 2·3번 |
-| R6 검증·반박·플레이북 | 확인 요청 1번, 자식 proposal로 Verification을 시작할 수 있는지, 반증 질문 기준이 플레이북과 충돌하지 않는지 |
+| R3 구현·통합 | `trigger` slot과 `bundle_ref` 충전을 실제로 구현할 수 있는지, template 경로와 등록 형식, 자동 테스트 연결 가능 여부 |
+| R4 PM·아키텍처 | `08` 식별자 표와 registry 변경, 담당 동점 tie-break의 실행 주체, 공통 계약 정합성 |
+| R2 정적분석·컨텍스트 | `StaticFactBundle` 샘플이 실제 정규화 출력과 맞는지, ID 형식, 도달 근거 관계의 형태 |
+| R6 검증·반박·플레이북 | 아래 미결정 사항, 자식 proposal로 Verification을 시작할 수 있는지, 반증 질문 기준이 플레이북과 충돌하지 않는지 |
 | R8 데이터·평가·예산 | `must`/`must_not`의 `grading` 구분이 품질 지표로 쓸 만한지, repair 재시도 한도와 맞물리는지 |
 
 체이닝 자식 가설은 `observed_facts=[]`로 등록되어 Context Retrieval Service가 계보에서 시작점을 복구한 뒤 Verification이 시작하므로, 그 복구 절차와 이 자료의 기대가 맞는지 R6 확인을 함께 요청합니다.
