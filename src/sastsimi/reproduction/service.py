@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, Protocol
 
+from sastsimi.agents.dynamic_reproduction import (
+    DynamicAgentInvocation,
+    DynamicAgentOutcome,
+    DynamicReproductionAgent,
+)
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.budget import (
     BudgetProfileBinding,
@@ -36,6 +41,7 @@ from sastsimi.ports.dto import (
     Record,
     SandboxCleanupRequest,
     SandboxPrepareRequest,
+    WorkHandlerResult,
 )
 from sastsimi.ports.fake_workflow import (
     ProviderInvoker,
@@ -55,6 +61,7 @@ from sastsimi.runtime.fake_support import (
     FakeEvidence,
     FakeRecordFactory,
 )
+from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 
@@ -881,3 +888,394 @@ class DynamicReproductionService:
             (result, poc),
         )
         return request, result, poc
+
+
+@dataclass(frozen=True)
+class DynamicStageAuthorizations:
+    """Exact T09 call authorizations allocated by the trusted runtime."""
+
+    derive: DynamicAgentInvocation
+    plan: DynamicAgentInvocation
+    candidate: DynamicAgentInvocation | None
+    execute: tuple[DynamicAgentInvocation, ...]
+    interpret: DynamicAgentInvocation | None
+
+
+@dataclass(frozen=True)
+class DynamicSandboxSession:
+    """The exact state returned by the Sandbox/Session-Manager adapter."""
+
+    allowed: bool
+    policy_ref: StoredDataRef
+    log_ref: StoredDataRef
+    environment: SandboxEnvironment | None
+    environment_ref: StoredDataRef | None
+    log: AgentLog | None
+    observation_refs: tuple[StoredDataRef, ...] = ()
+    prior_tools: tuple[DynamicReproductionToolRequest, ...] = ()
+    prior_tool_refs: tuple[StoredDataRef, ...] = ()
+
+    def __post_init__(self) -> None:
+        present = self.environment is not None and self.log is not None
+        if self.allowed != present or (self.environment is None) != (
+            self.environment_ref is None
+        ):
+            raise ValueError("DYNAMIC_SESSION_SHAPE_MISMATCH")
+        if self.log is not None and reference(self.log) != self.log_ref:
+            raise ValueError("DYNAMIC_SESSION_LOG_MISMATCH")
+        if (
+            self.environment is not None
+            and reference(self.environment) != self.environment_ref
+        ):
+            raise ValueError("DYNAMIC_SESSION_ENVIRONMENT_MISMATCH")
+        if len(self.prior_tools) != len(self.prior_tool_refs) or any(
+            reference(record) != ref
+            for record, ref in zip(self.prior_tools, self.prior_tool_refs, strict=True)
+        ):
+            raise ValueError("DYNAMIC_SESSION_TOOL_HISTORY_MISMATCH")
+
+    @classmethod
+    def blocked(
+        cls, *, policy_ref: StoredDataRef, log_ref: StoredDataRef
+    ) -> DynamicSandboxSession:
+        return cls(
+            allowed=False,
+            policy_ref=policy_ref,
+            log_ref=log_ref,
+            environment=None,
+            environment_ref=None,
+            log=None,
+        )
+
+
+@dataclass(frozen=True)
+class DynamicWorkflowFailure:
+    """Operational terminal data; deliberately has no R6 verdict or Gate field."""
+
+    status: Literal["BLOCKED", "FAILED", "CANCELLED"]
+    failure_category: Literal[
+        "POLICY_BLOCKED",
+        "EXTERNAL_CONFIGURATION",
+        "PLAN",
+        "ENVIRONMENT_SETUP",
+        "DEPENDENCY",
+        "AGENT",
+        "EXECUTION",
+        "OBSERVATION",
+        "TIMEOUT",
+        "RESOURCE_LIMIT",
+        "RETRY_LIMIT",
+        "INTERNAL",
+    ]
+    failure_reason: str
+    hypothesis_outcome: Literal["INCONCLUSIVE"] = "INCONCLUSIVE"
+    poc_ref: None = None
+
+
+class DynamicOperationalError(Exception):
+    """An actual operating failure, distinct from evidence that disproves a bug."""
+
+    def __init__(
+        self,
+        status: Literal["BLOCKED", "FAILED", "CANCELLED"],
+        failure_category: Literal[
+            "POLICY_BLOCKED",
+            "EXTERNAL_CONFIGURATION",
+            "PLAN",
+            "ENVIRONMENT_SETUP",
+            "DEPENDENCY",
+            "AGENT",
+            "EXECUTION",
+            "OBSERVATION",
+            "TIMEOUT",
+            "RESOURCE_LIMIT",
+            "RETRY_LIMIT",
+            "INTERNAL",
+        ],
+        safe_reason: str,
+    ) -> None:
+        super().__init__(safe_reason)
+        self.failure = DynamicWorkflowFailure(
+            status=status,
+            failure_category=failure_category,
+            failure_reason=safe_reason,
+        )
+
+
+class DynamicWorkflowPort(Protocol):
+    """Adapter joining Controller, setup, Session Manager, and trusted storage."""
+
+    def publish(
+        self, record: Record, invocation: PersistedLLMInvocation
+    ) -> StoredDataRef: ...
+
+    async def open_session(
+        self,
+        *,
+        work: WorkExecutionState,
+        request: DynamicReproductionRequest,
+        request_ref: StoredDataRef,
+        requirements: EnvironmentRequirements,
+        requirements_ref: StoredDataRef,
+        plan: ReproductionPlan,
+        plan_ref: StoredDataRef,
+    ) -> DynamicSandboxSession: ...
+
+    async def apply_tool(
+        self,
+        *,
+        work: WorkExecutionState,
+        request: DynamicReproductionRequest,
+        request_ref: StoredDataRef,
+        requirements: EnvironmentRequirements,
+        requirements_ref: StoredDataRef,
+        plan: ReproductionPlan,
+        plan_ref: StoredDataRef,
+        candidate: PoCCandidate,
+        candidate_ref: StoredDataRef,
+        tool: DynamicReproductionToolRequest,
+        tool_ref: StoredDataRef,
+        session: DynamicSandboxSession,
+    ) -> DynamicSandboxSession: ...
+
+    async def cleanup(
+        self, session: DynamicSandboxSession
+    ) -> DynamicSandboxSession: ...
+
+    def finalize(
+        self,
+        *,
+        work: WorkExecutionState,
+        request: DynamicReproductionRequest,
+        request_ref: StoredDataRef,
+        requirements: EnvironmentRequirements,
+        requirements_ref: StoredDataRef,
+        plan: ReproductionPlan,
+        plan_ref: StoredDataRef,
+        candidate: PoCCandidate,
+        candidate_ref: StoredDataRef,
+        conclusion: DynamicReproductionConclusion,
+        conclusion_ref: StoredDataRef,
+        session: DynamicSandboxSession,
+    ) -> WorkHandlerResult: ...
+
+    def finalize_failure(
+        self,
+        *,
+        work: WorkExecutionState,
+        request: DynamicReproductionRequest,
+        request_ref: StoredDataRef,
+        session: DynamicSandboxSession | None,
+        failure: DynamicWorkflowFailure,
+    ) -> WorkHandlerResult: ...
+
+
+class DynamicAgentPort(Protocol):
+    async def derive_environment(
+        self, **kwargs: object
+    ) -> DynamicAgentOutcome[EnvironmentRequirements]: ...
+    async def plan_reproduction(
+        self, **kwargs: object
+    ) -> DynamicAgentOutcome[ReproductionPlan]: ...
+    async def create_poc_candidate(
+        self, **kwargs: object
+    ) -> DynamicAgentOutcome[PoCCandidate]: ...
+    async def next_tool_request(
+        self, **kwargs: object
+    ) -> DynamicAgentOutcome[DynamicReproductionToolRequest]: ...
+    async def interpret_attempt(
+        self, **kwargs: object
+    ) -> DynamicAgentOutcome[DynamicReproductionConclusion]: ...
+
+
+class DynamicReproductionWorkflowService:
+    """Production stage ordering without taking verdict, Gate, or PoC authority."""
+
+    def __init__(
+        self,
+        *,
+        agent: DynamicReproductionAgent | DynamicAgentPort,
+        workflow: DynamicWorkflowPort,
+    ) -> None:
+        self._agent = agent
+        self._workflow = workflow
+
+    async def execute(
+        self,
+        *,
+        work: WorkExecutionState,
+        request: DynamicReproductionRequest,
+        request_ref: StoredDataRef,
+        authorizations: DynamicStageAuthorizations,
+    ) -> WorkHandlerResult:
+        session: DynamicSandboxSession | None = None
+        try:
+            requirements_outcome = await self._agent.derive_environment(
+                work=work,
+                authorization=authorizations.derive,
+                request=request,
+                request_ref=request_ref,
+            )
+            requirements = _require_stage_record(requirements_outcome, "AGENT")
+            requirements_ref = self._workflow.publish(
+                requirements, requirements_outcome.invocation
+            )
+
+            plan_outcome = await self._agent.plan_reproduction(
+                work=work,
+                authorization=authorizations.plan,
+                request=request,
+                request_ref=request_ref,
+                requirements=requirements,
+                requirements_ref=requirements_ref,
+            )
+            plan = _require_stage_record(plan_outcome, "PLAN")
+            plan_ref = self._workflow.publish(plan, plan_outcome.invocation)
+
+            session = await self._workflow.open_session(
+                work=work,
+                request=request,
+                request_ref=request_ref,
+                requirements=requirements,
+                requirements_ref=requirements_ref,
+                plan=plan,
+                plan_ref=plan_ref,
+            )
+            if not session.allowed:
+                raise DynamicOperationalError(
+                    "BLOCKED", "POLICY_BLOCKED", "Sandbox boundary denied the request"
+                )
+            if authorizations.candidate is None:
+                raise DynamicOperationalError(
+                    "FAILED", "INTERNAL", "PoC candidate authorization is missing"
+                )
+            assert session.environment is not None
+            assert session.environment_ref is not None
+            assert session.log is not None
+            candidate_outcome = await self._agent.create_poc_candidate(
+                work=work,
+                authorization=authorizations.candidate,
+                request=request,
+                request_ref=request_ref,
+                plan=plan,
+                plan_ref=plan_ref,
+                environment=session.environment,
+                environment_ref=session.environment_ref,
+            )
+            candidate = _require_stage_record(candidate_outcome, "AGENT")
+            candidate_ref = self._workflow.publish(
+                candidate, candidate_outcome.invocation
+            )
+
+            finished = False
+            for turn_number, authorization in enumerate(
+                authorizations.execute, start=1
+            ):
+                assert session.environment is not None
+                assert session.environment_ref is not None
+                assert session.log is not None
+                tool_outcome = await self._agent.next_tool_request(
+                    work=work,
+                    authorization=authorization,
+                    request=request,
+                    request_ref=request_ref,
+                    requirements=requirements,
+                    requirements_ref=requirements_ref,
+                    plan=plan,
+                    plan_ref=plan_ref,
+                    environment=session.environment,
+                    environment_ref=session.environment_ref,
+                    candidate=candidate,
+                    candidate_ref=candidate_ref,
+                    log=session.log,
+                    log_ref=session.log_ref,
+                    prior_tool_refs=session.prior_tool_refs,
+                    observation_refs=session.observation_refs,
+                    turn_number=turn_number,
+                )
+                tool = _require_stage_record(tool_outcome, "AGENT")
+                tool_ref = self._workflow.publish(tool, tool_outcome.invocation)
+                if tool.action == "FINISH":
+                    finished = True
+                    break
+                session = await self._workflow.apply_tool(
+                    work=work,
+                    request=request,
+                    request_ref=request_ref,
+                    requirements=requirements,
+                    requirements_ref=requirements_ref,
+                    plan=plan,
+                    plan_ref=plan_ref,
+                    candidate=candidate,
+                    candidate_ref=candidate_ref,
+                    tool=tool,
+                    tool_ref=tool_ref,
+                    session=session,
+                )
+            if not finished:
+                raise DynamicOperationalError(
+                    "FAILED", "RETRY_LIMIT", "Dynamic reproduction turn limit exhausted"
+                )
+            if authorizations.interpret is None:
+                raise DynamicOperationalError(
+                    "FAILED",
+                    "INTERNAL",
+                    "Attempt interpretation authorization is missing",
+                )
+            assert session.environment is not None
+            assert session.environment_ref is not None
+            assert session.log is not None
+            conclusion_outcome = await self._agent.interpret_attempt(
+                work=work,
+                authorization=authorizations.interpret,
+                request=request,
+                request_ref=request_ref,
+                plan=plan,
+                plan_ref=plan_ref,
+                environment=session.environment,
+                environment_ref=session.environment_ref,
+                candidate=candidate,
+                candidate_ref=candidate_ref,
+                log=session.log,
+                log_ref=session.log_ref,
+                observation_refs=session.observation_refs,
+            )
+            conclusion = _require_stage_record(conclusion_outcome, "AGENT")
+            conclusion_ref = self._workflow.publish(
+                conclusion, conclusion_outcome.invocation
+            )
+            session = await self._workflow.cleanup(session)
+            return self._workflow.finalize(
+                work=work,
+                request=request,
+                request_ref=request_ref,
+                requirements=requirements,
+                requirements_ref=requirements_ref,
+                plan=plan,
+                plan_ref=plan_ref,
+                candidate=candidate,
+                candidate_ref=candidate_ref,
+                conclusion=conclusion,
+                conclusion_ref=conclusion_ref,
+                session=session,
+            )
+        except DynamicOperationalError as error:
+            if session is not None and session.allowed:
+                session = await self._workflow.cleanup(session)
+            return self._workflow.finalize_failure(
+                work=work,
+                request=request,
+                request_ref=request_ref,
+                session=session,
+                failure=error.failure,
+            )
+
+
+def _require_stage_record[T](
+    outcome: DynamicAgentOutcome[T], category: Literal["AGENT", "PLAN"]
+) -> T:
+    if outcome.record is None:
+        raise DynamicOperationalError(
+            "FAILED", category, "LLM stage did not produce a usable result"
+        )
+    return outcome.record
