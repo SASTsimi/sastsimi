@@ -54,6 +54,48 @@ inline.
 
 ---
 
+## 0. Issue #157 implementation-baseline correction
+
+This section corrects the implementation assumptions in the original Issue
+#157 without removing its approved behavior. It is part of the T13 plan, not a
+new feature request.
+
+- Do not branch T13 from the T12 plan commit. Record the full SHA of the actual
+  merged T12 implementation, inspect its public APIs and its single Alembic
+  head, and adapt this plan's placeholder names to those final public names.
+- Do not assume T10 already provides a production Chaining-child wrapper. The
+  current helper is a fake inline-execution fixture. T13 owns a content-only
+  Agent boundary and a trusted ready-only child handoff; neither may start,
+  claim, or execute downstream work inline.
+- A HOLD admission request must pin the exact final HOLD
+  `VerificationResult`, the current terminal `HypothesisProcessState` pointing
+  to that result, and the expected current `PrimitiveIndexState` pointing to
+  that result. Lane A must not reconstruct this closure by reading an
+  unversioned "latest" pointer.
+- Pair ownership must use the immutable pool history pinned when each trigger
+  work was registered. S0 defines the read port, lane B persists and resolves
+  it, and lane C consumes it without querying current storage.
+- When one Primitive update emits multiple trigger Primitives, lane B registers
+  the whole sibling cohort as `PENDING` in one transaction. Only after every
+  sibling work and pinned pool is visible may the trusted ready-only boundary
+  promote the complete cohort to `READY`.
+- `TransitionService.check(...)` and every preflight validator remain read-only.
+  Lane B reserves match identities exactly once inside the final
+  `TransitionService.finish(...)` transaction together with the
+  `ChainingResult`, transition commit, and work terminal state.
+- Committed source records are the recovery source of truth. A reconciler must
+  idempotently repair a missing CHAINING cohort after a committed
+  `PRIMITIVE_UPDATE`, and a missing child handoff after a committed
+  `ChainingResult`, without rerunning the Agent or duplicating a match.
+- Storage enforces both the analysis-scoped directional-triple uniqueness and
+  `(analysis_id, primitive_match_id)` uniqueness. A reused match ID rejects the
+  complete result even when the directional triples differ.
+
+The corrections above are Blocker/High closure only. Medium/Low cleanup remains
+in section 7.
+
+---
+
 ## 1. Frozen behavior and non-negotiable invariants
 
 ### 1.1 Admission is not a second policy Gate
@@ -65,6 +107,12 @@ inline.
   inputs-only Primitive. It has `result=null`, no Technical review reference,
   no admission decision reference, and preserves the complete ordered required
   candidate list and all `Restriction` objects from the exact Verification.
+- Its `PRIMITIVE_UPDATE` input pins exactly the final HOLD
+  `VerificationResult`, the current terminal `HypothesisProcessState` whose
+  current result is that exact revision, and the expected current
+  `PrimitiveIndexState` whose current Verification is that same revision.
+  Missing, stale, cross-scope, or mismatched refs reject the handoff before
+  admission; no component repairs them by querying an unpinned latest record.
 - Final `TRUE` reaches T13 only after the T10/T11/T12 exact chain establishes a
   current final TRUE, successful supported dynamic result, validated PoC,
   current CWE label, and Technical `ACCEPT`.
@@ -94,10 +142,19 @@ inline.
   `PRIMITIVE_UPDATE` `TransitionCommit`; a consumer must see all or none.
 - DENY commits the decision without a result Primitive or index append.
 - Index append is monotonic. It never removes or replaces an admitted Primitive.
-- The new `CHAINING` work is registered only after the Primitive/index commit is
-  visible. A PREPARED or partially projected update is not consumable.
+- New `CHAINING` work is registered only after the Primitive/index commit is
+  visible. A PREPARED or partially projected update is not consumable. If one
+  update publishes several Primitives, all sibling works and their pinned pools
+  are registered as one `PENDING` cohort before any sibling becomes `READY`.
+- The ready-only boundary promotes the complete cohort only after every sibling
+  registration is visible. A worker must never observe a partially registered
+  cohort and decide pair ownership against it.
 - Replaying the same committed update returns the same outcome and does not
   append duplicate Primitive references or create duplicate Chaining work.
+- If the process stops after the Primitive/index commit but before downstream
+  registration or readiness, reconciliation uses that committed update and its
+  deterministic registration keys to complete the missing cohort without
+  publishing another Primitive/index revision.
 
 ### 1.3 The work input is the complete, exact comparison universe
 
@@ -132,6 +189,9 @@ inline.
   If both pools contain each other, the work whose trigger Primitive has the
   lexicographically larger `record_id` owns it. A non-owner emits neither match
   nor no-match output for that pair.
+- Ownership reads only the exact pool history recorded for both trigger works.
+  It must not infer the other trigger's historical pool from a current index or
+  from whichever work happens to become `READY` first.
 - A result-bearing upstream plus inputs-only downstream produces TRUE+HOLD.
   A result-bearing upstream plus result-bearing downstream produces TRUE+TRUE.
   Match kind is derived from downstream `result` and is not stored separately.
@@ -208,7 +268,14 @@ considered set.
   result as an implementation error; it is not a normal no-match and not
   retryable with identical input.
 - `primitive_match_id` is globally unique inside an analysis and is allocated
-  by trusted output validation, not accepted blindly from model text.
+  by trusted output validation, not accepted blindly from model text. Storage
+  separately enforces unique `(analysis_id, primitive_match_id)`, so two
+  different triples cannot reuse the same ID.
+- Preflight validation and `TransitionService.check(...)` never reserve rows or
+  commit state. `TransitionService.finish(...)` performs the one match-reserve
+  operation in the same transaction as the exact source `ChainingResult`,
+  `TransitionCommit`, and terminal work state. Any validation, uniqueness, or
+  commit failure rolls back the complete set.
 - Proposal/global hypothesis duplicate handling remains the existing registry's
   responsibility. T13 must not create a second duplicate algorithm.
 - Do not add chaining-only depth, hypothesis-count, call-count, combination, or
@@ -234,6 +301,13 @@ parallel current-pointer or result writer.
 - `VerdictRouter.route(...)` exposes the current final result by exact reference
   and requests `PRIMITIVE_UPDATE` only for non-empty HOLD candidates. TRUE does
   not directly call Chaining; it continues through CWE and the two Gates.
+- The HOLD post-verdict seam is data-only. Before it registers
+  `PRIMITIVE_UPDATE`, it resolves and pins the exact final HOLD
+  `VerificationResult`, the current terminal `HypothesisProcessState` whose
+  result ref matches it, and the expected current `PrimitiveIndexState` whose
+  Verification ref matches it. If the final T12 base still exposes only the
+  final Verification ref, S0 extends/adapts the final public handoff API; lane A
+  must not query current pointers to reconstruct the closure later.
 - T10 provides the trusted `hypothesis_projection` and
   `VerificationRegistrationPort`, but its only public nested-child wrapper is
   `verification/fake_child_registration.py`; that wrapper calls
@@ -248,6 +322,10 @@ parallel current-pointer or result writer.
   projection/duplicate authority and sends the registered child through the
   normal `VerificationRegistrationPort` path, again reaching only `READY` and
   never inheriting a parent verdict.
+- The Chaining Agent produces content only. Trusted finalization injects exact
+  refs, metadata, and runtime-owned IDs. The handoff accepts only an exact
+  COMMITTED source result and may create only deduplicated `READY` downstream
+  work; the later claimed handler performs registration.
 
 ### T11 — validated dynamic proof boundary
 
@@ -326,6 +404,30 @@ Before editing, inspect rather than recreate the T04-T07 foundations:
   itself. Replace it with an independently derived expected set.
 - Current storage has no global physical unique key for nested match triples.
   Add one migration-backed index table; do not rely on an in-memory scan.
+- The T11 base already uses migration identity `0004_prompt_runtime`; T12 may
+  add another migration before T13 starts. Therefore the old hard-coded
+  `0004_chaining_matches` name is invalid. Lane B chooses its revision only
+  after the actual T12 merge: verify one current Alembic head, set the new
+  migration's `down_revision` to that exact head, update
+  `storage/schema_version.py` to the new T13 revision, and prove upgrade leaves
+  one head. Never guess the final numeric prefix from a plan commit.
+- `storage/transition_service.py` currently invokes Chaining validation during
+  both read-only `check(...)` and finalization. Reservation added to that
+  validator would either commit too early or collide with itself. Lane B owns
+  the transition-service change that keeps check pure and reserves once inside
+  the final transaction.
+- No public read API currently supplies the other trigger work's immutable
+  pinned pool history. S0 must define a `ChainingPoolHistoryPort` (or equivalent
+  final name); lane B implements it and lane C consumes only the returned
+  history for ownership.
+- Registering and readying sibling trigger works one at a time creates an
+  ownership race. Lane B must persist the complete sibling cohort as `PENDING`
+  atomically, and the trusted ready-only boundary must advance the complete
+  visible cohort to `READY` before any worker can claim one.
+- Primitive/index and ChainingResult commits happen before their downstream
+  handoffs. T13 therefore needs idempotent post-commit reconciliation for both
+  gaps; otherwise a crash can leave a terminal source record with permanently
+  missing Chaining or child-proposal work.
 - Existing fake no-match behavior remains a regression fixture, but production
   code must not use fake IDs, caller-supplied admission decisions, or synthetic
   self-comparisons.
@@ -357,20 +459,32 @@ Owned files only:
 
 - `src/sastsimi/ports/chaining.py`
 - `src/sastsimi/ports/__init__.py`
+- the final T12 post-verdict handoff file (expected
+  `src/sastsimi/orchestration/primitive_handoff.py`; adapt to its actual public
+  name after merge)
 - `tests/contract/test_chaining_ports.py`
 - `tests/support/chaining_fixtures.py`
+- the final T12 post-verdict handoff test (expected
+  `tests/integration/reporting/test_primitive_handoff.py`)
 
 Define non-persisted frozen DTOs/protocols for:
 
 - exact admission source closure returned by T10/T12 readers;
+- exact HOLD admission closure containing the final Verification, matching
+  terminal hypothesis process state, and expected matching Primitive index;
 - primitive update outcome containing committed decision/Primitive/index refs;
 - pinned Chaining universe containing trigger, exact index refs, and exact
   considered Primitive refs;
+- read-only immutable pool history for any trigger work used by pair ownership;
+- atomic sibling-cohort registration as `PENDING` followed by complete-cohort
+  ready-only promotion;
 - content-only Chaining Agent input/output using prompt-local comparison keys;
   the output contains no domain record, exact ref, runtime metadata, match ID,
   proposal ID, question ID, or validation ID;
 - read-only lineage resolution by exact ref;
 - global match-triple reservation inside the result transaction;
+- post-commit reconciliation requests keyed by an exact committed
+  Primitive-update or Chaining-result source ref;
 - ready-only child proposal handoff keyed by exact COMMITTED ChainingResult ref
   plus nested proposal ID to the existing trusted hypothesis projection and
   Verification registration path.
@@ -408,10 +522,12 @@ Owned files only:
 - `src/sastsimi/runtime/chaining_registration.py`
 - `src/sastsimi/storage/chaining_registration.py`
 - `src/sastsimi/storage/chaining_projection.py`
+- `src/sastsimi/storage/transition_service.py`
 - `src/sastsimi/storage/models.py`
 - `src/sastsimi/storage/schema_version.py`
-- `src/sastsimi/storage/alembic/versions/0004_chaining_matches.py`
+- `src/sastsimi/storage/alembic/versions/<next-after-final-T12>_chaining_matches.py`
 - `tests/integration/chaining/test_input_universe.py`
+- `tests/integration/chaining/test_batch_registration.py`
 - `tests/integration/chaining/test_match_uniqueness.py`
 - `tests/integration/recovery/test_chaining_commit.py`
 - `tests/integration/storage/test_migration_cli.py`
@@ -419,10 +535,13 @@ Owned files only:
 
 Responsibilities:
 
-- register one deduplicated work from a committed trigger and all current exact
-  per-hypothesis indexes in the same analysis/workspace/commit;
-- use the post-T12 ready-only enqueue port so registration ends at `READY` with
-  no attempt, claim, provider call, or inline handler execution;
+- implement the S0 immutable pool-history read port and storage-backed lookup;
+- atomically register all deduplicated sibling works from one committed update
+  as `PENDING`, using all current exact per-hypothesis indexes in the same
+  analysis/workspace/commit;
+- after the full sibling cohort and every pool are visible, use the post-T12
+  ready-only boundary to promote the complete cohort to `READY`, with no
+  attempt, claim, provider call, or inline handler execution;
 - bind exact index refs and complete Primitive refs into work input/hash/key;
 - verify trigger membership exactly once;
 - preserve the start-time universe after unrelated later index appends;
@@ -430,13 +549,24 @@ Responsibilities:
 - resolve every submitted ref from the pinned set and validate exact scope;
 - independently calculate expected lineage exclusions through the read port;
 - add an analysis-scoped match reservation table with canonical serialized
-  upstream/downstream refs and matched input ID under a unique constraint;
-- reserve all triples and commit the ChainingResult atomically;
+  upstream/downstream refs, matched input ID, `primitive_match_id`, and the
+  exact source ChainingResult ref; enforce both the directional-triple unique
+  key and `(analysis_id, primitive_match_id)` unique key;
+- keep transition preflight/check read-only, then reserve all triples exactly
+  once and commit the ChainingResult/transition/work state atomically in
+  `TransitionService.finish(...)`;
 - on collision or provenance failure publish neither result nor child pointer;
 - recover COMMITTED work without reserving or publishing a duplicate match.
+- expose idempotent storage registration/reconciliation operations that list and
+  repair missing downstream work from a committed Primitive update or
+  ChainingResult without invoking an Agent.
 
-The migration must be additive and upgrade-tested. Downgrade remains subject to
-the repository's existing non-empty database safety rule.
+The migration must be additive and upgrade-tested. Its revision is selected
+only after the actual T12 implementation is merged: inspect the one live head,
+use it as `down_revision`, choose the next unused revision identity, update
+`schema_version.HEAD`, and verify Alembic still reports exactly one head.
+Downgrade remains subject to the repository's existing non-empty database safety
+rule.
 
 ### Parallel lane C — lineage traversal and Chaining Agent boundary
 
@@ -451,7 +581,8 @@ Owned files only:
 
 Responsibilities:
 
-- derive pair ownership from trigger and pinned pool history;
+- derive pair ownership from trigger and the immutable pool histories supplied
+  through S0; never query or reconstruct another trigger's current pool;
 - derive both eligible directions and each downstream input without self-pairs;
 - traverse committed source match lineage with active-path cycle detection;
 - order non-trigger candidates deepest first;
@@ -478,18 +609,21 @@ Owned files only:
 - `src/sastsimi/chaining/service.py`
 - `src/sastsimi/chaining/work_handlers.py`
 - `src/sastsimi/runtime/chaining_child_registration.py`
+- `src/sastsimi/runtime/chaining_reconciliation.py`
 - `src/sastsimi/chaining/__init__.py`
 - `tests/integration/chaining/test_true_hold_true_true.py`
 - `tests/integration/chaining/test_chaining_errors.py`
 - `tests/contract/test_t13_work_handler_boundary.py`
+- `tests/integration/recovery/test_chaining_handoff_reconciliation.py`
 - `tests/e2e/test_chaining_child_full_revalidation.py`
 
 Responsibilities:
 
 - expose a `PRIMITIVE_UPDATE` handler that consumes only a claimed current
   `WorkContext`, asks lane A to commit admission, and only after that commit asks
-  lane B to enqueue deduplicated `READY` CHAINING work for returned Primitive
-  refs;
+  lane B to batch-register the complete sibling CHAINING cohort as `PENDING`;
+  after every sibling and pool is visible, promote the entire cohort through
+  the ready-only boundary before any worker may claim it;
 - expose a `CHAINING` handler that consumes only a claimed current
   `WorkContext`; lane B has already pinned the full input universe before this
   handler is called;
@@ -508,6 +642,10 @@ Responsibilities:
   performs only the ready-only normal Verification registration handoff;
 - distinguish valid no-match success from Provider, budget, provenance, or
   storage failure; all failures leave parent verdicts untouched.
+- run an idempotent reconciler over committed Primitive updates and committed
+  ChainingResults to repair either missing downstream handoff. Reconciliation
+  uses deterministic dedupe keys, never reruns the Agent, never creates a new
+  match ID, and may only register/promote ready-only work.
 
 This lane uses ports only and must not import concrete `storage`, Provider
 adapter, reporting admission implementation, or T08 Context implementation.
@@ -527,8 +665,9 @@ Owned by the integration lead after A-D are reviewed:
 - this plan's `Implementation Evidence` section only
 
 The integrator wires already-implemented ports/services, registers the CHAINING
-prompt entry and worker, updates imports, and resolves conflicts. No lane may
-edit these shared composition files. If T09 already owns the exact canonical
+prompt entry and worker, wires startup/recovery invocation of the lane D
+reconciler, updates imports, and resolves conflicts. No lane may edit these
+shared composition files. If T09 already owns the exact canonical
 template/registry entry, I0 references it and does not create a duplicate.
 
 ---
@@ -541,6 +680,12 @@ template/registry entry, I0 references it and does not create a duplicate.
   refs are required, DTOs are immutable/non-persisted, content-only Agent output
   contains no refs/runtime IDs, child handoff is ready-only, and no port returns
   a raw SQL connection or grants Agent storage authority.
+- [ ] Add contract cases for the three-ref HOLD closure, immutable pool-history
+  lookup, sibling batch registration/promotion, and post-commit reconciliation
+  request. Confirm none of these ports returns an unpinned "current" value.
+- [ ] Extend the final T12 post-verdict handoff test so a non-empty HOLD pins the
+  exact final Verification, matching terminal hypothesis state, and expected
+  matching Primitive index; stale/missing/mismatched refs produce no route.
 - [ ] Run the test and confirm RED because the ports are absent.
 - [ ] Add only the minimum protocols/DTOs in `ports/chaining.py`; re-export them.
 - [ ] Run the focused test, architecture import test, Ruff, and mypy for those
@@ -573,6 +718,13 @@ template/registry entry, I0 references it and does not create a duplicate.
 
 - [ ] RED normal test: one trigger pins all current indexes and their complete
   deduplicated Primitive set; `considered_primitive_refs` is exactly that set.
+- [ ] RED batch/concurrency test: every Primitive emitted by one update is
+  registered as a sibling `PENDING` work in one transaction; none is claimable
+  until the complete cohort and pool history are visible and all are promoted
+  to `READY`. Opposite processing order must produce the same pair owner.
+- [ ] RED pool-history test: ownership can read each trigger work's exact pinned
+  pool after current indexes have advanced; missing/cross-scope history fails
+  closed rather than falling back to current state.
 - [ ] RED normal test: a later index append does not invalidate the work and is
   absent from its result; a later work sees the appended Primitive.
 - [ ] RED critical test: uncommitted trigger, foreign scope, missing index,
@@ -584,8 +736,18 @@ template/registry entry, I0 references it and does not create a duplicate.
   runtime independently recomputes the expected set.
 - [ ] RED critical concurrency test: two transactions attempt the same global
   match triple; exactly one commits and no partial nested match rows remain.
+- [ ] RED ID uniqueness test: two different directional triples cannot commit
+  the same `(analysis_id, primitive_match_id)`; the second whole result is
+  rejected and leaves no partial reservation.
+- [ ] RED transaction test: `TransitionService.check(...)` performs no match
+  write, `finish(...)` reserves once, and any result/transition/work commit
+  failure rolls back all match reservations.
 - [ ] RED recovery test: crash before/after match reservation and result commit
   converges to one result/triple without re-running the Agent.
+- [ ] After the actual T12 merge, run `alembic heads` (or the repository's
+  equivalent), choose the next unused T13 revision with the sole live head as
+  `down_revision`, update `schema_version.HEAD`, and prove upgrade leaves one
+  head. Do not use the old `0004_chaining_matches` filename.
 - [ ] Add migration and storage/runtime code; make focused tests GREEN.
 - [ ] Run migration upgrade test once, focused Ruff/mypy, and commit only lane B
   files: `feat: enforce exact chaining snapshots and unique matches`.
@@ -593,7 +755,9 @@ template/registry entry, I0 references it and does not create a duplicate.
 ### Task 2C — implement ownership, lineage, and output derivation
 
 - [ ] RED table test for trigger/new-vs-existing ownership and the larger
-  `record_id` tie-break when both pools contain each other.
+  `record_id` tie-break when both immutable pinned pools contain each other;
+  advancing the current index or reversing sibling readiness must not change
+  the owner.
 - [ ] RED directional test: result->input only; TRUE+HOLD and TRUE+TRUE; a
   result-bearing Primitive may also be downstream; self-pairs forbidden.
 - [ ] RED lineage test using B, BC, BCD, BCDE and new A: if A matches BCDE,
@@ -628,6 +792,11 @@ template/registry entry, I0 references it and does not create a duplicate.
 - [ ] RED critical error: result commit failure prevents child registration;
   child registration failure preserves the committed source result and is
   safely retryable without another Agent call or match row.
+- [ ] RED post-commit recovery: crash after a committed Primitive update but
+  before cohort registration/readiness is repaired from that exact update; crash
+  after a committed ChainingResult but before child handoff is repaired from
+  that exact result. Repeated reconciliation creates no duplicate work, result,
+  match, or child and never invokes the Agent.
 - [ ] RED handler boundary: PRIMITIVE_UPDATE, CHAINING, and child proposal
   registration consume claimed current contexts; every downstream work stops at
   `READY` with no inline attempt, worker, handler, or service execution.
@@ -640,6 +809,9 @@ template/registry entry, I0 references it and does not create a duplicate.
 ### Task 3 — integrate reviewed lane commits
 
 - [ ] Create the integration branch from the recorded post-T12 SHA.
+- [ ] Record that full SHA, its one Alembic head, and the final public T10-T12
+  handoff names before cherry-picking S0. Resolve the migration placeholder only
+  from that evidence.
 - [ ] Cherry-pick S0, then A/B/C/D reviewed commits. Do not merge worktrees or
   copy uncommitted files.
 - [ ] Resolve only genuine shared-boundary conflicts. Preserve the final T10,
@@ -656,8 +828,9 @@ Run this set once on the integrated candidate before opening the PR:
 
 ```powershell
 uv run python -m pytest tests/contract/domain/test_chaining.py tests/contract/domain/test_review_round1_chaining.py tests/contract/test_chaining_ports.py tests/contract/test_t13_work_handler_boundary.py tests/integration/chaining tests/security_negative/test_primitive_admission.py tests/security_negative/test_chaining_provenance.py tests/security_negative/test_chaining_agent_output.py tests/e2e/test_chaining_child_full_revalidation.py tests/e2e/test_real_chaining_slice.py -q
-uv run ruff check src/sastsimi/agents/chaining.py src/sastsimi/chaining src/sastsimi/reporting/primitive_admission.py src/sastsimi/runtime/chaining_registration.py src/sastsimi/runtime/chaining_child_registration.py src/sastsimi/storage/chaining_registration.py src/sastsimi/storage/chaining_projection.py tests/contract/test_t13_work_handler_boundary.py tests/integration/chaining tests/security_negative/test_primitive_admission.py tests/security_negative/test_chaining_provenance.py tests/security_negative/test_chaining_agent_output.py
-uv run mypy --strict src/sastsimi/agents/chaining.py src/sastsimi/chaining src/sastsimi/reporting/primitive_admission.py src/sastsimi/runtime/chaining_registration.py src/sastsimi/runtime/chaining_child_registration.py src/sastsimi/storage/chaining_registration.py src/sastsimi/storage/chaining_projection.py
+uv run python -m pytest tests/integration/recovery/test_chaining_commit.py tests/integration/recovery/test_chaining_handoff_reconciliation.py tests/integration/storage/test_migration_cli.py -q
+uv run ruff check src/sastsimi/agents/chaining.py src/sastsimi/chaining src/sastsimi/reporting/primitive_admission.py src/sastsimi/runtime/chaining_registration.py src/sastsimi/runtime/chaining_child_registration.py src/sastsimi/runtime/chaining_reconciliation.py src/sastsimi/storage/chaining_registration.py src/sastsimi/storage/chaining_projection.py src/sastsimi/storage/transition_service.py tests/contract/test_t13_work_handler_boundary.py tests/integration/chaining tests/integration/recovery/test_chaining_handoff_reconciliation.py tests/security_negative/test_primitive_admission.py tests/security_negative/test_chaining_provenance.py tests/security_negative/test_chaining_agent_output.py
+uv run mypy --strict src/sastsimi/agents/chaining.py src/sastsimi/chaining src/sastsimi/reporting/primitive_admission.py src/sastsimi/runtime/chaining_registration.py src/sastsimi/runtime/chaining_child_registration.py src/sastsimi/runtime/chaining_reconciliation.py src/sastsimi/storage/chaining_registration.py src/sastsimi/storage/chaining_projection.py src/sastsimi/storage/transition_service.py
 powershell -NoProfile -File scripts/validate-architecture-docs.ps1
 git diff --check
 ```
@@ -668,11 +841,18 @@ Required focused outcomes:
   registration but has no verdict before its independent Verification;
 - production Chaining accepts only content-shaped provider output and all exact
   refs/runtime IDs in the committed result are trusted-runtime values;
+- a non-empty HOLD route pins the exact final Verification, matching terminal
+  hypothesis state, and expected matching Primitive index;
 - forbidden-test DENY produces no result Primitive;
 - HOLD remains inputs-only and keeps restrictions;
 - different parent generations do not cause a false stale rejection;
 - unpinned refs, wrong exclusions, cyclic/corrupt lineage, and duplicate global
   match triples fail before child registration;
+- sibling registration is atomic-before-ready, historical pool ownership is
+  stable, duplicate analysis-scoped match IDs fail atomically, and both
+  post-commit handoff gaps reconcile without another Agent invocation;
+- the T13 migration extends the actual final T12 head and leaves exactly one
+  Alembic head;
 - budget/provider/storage failures never become FALSE, HOLD, or normal no-match.
 
 ### Task 5 — one final CI run and merge
@@ -694,8 +874,14 @@ Required focused outcomes:
   result entering an index.
 - Admission and index publication are atomic, append-only, replay-safe, and
   occur before Chaining registration.
+- HOLD admission is authorized only by the exact final Verification, matching
+  terminal hypothesis state, and expected matching Primitive index pinned by
+  the post-verdict handoff.
 - Chaining input contains every and only Primitive in the exact current index
   revisions pinned at work start; later appends do not mutate that universe.
+- Every sibling trigger work is registered `PENDING` as one visible cohort and
+  becomes `READY` only after all sibling pools are durable. Pair ownership is
+  derived from immutable pool history, not current indexes or worker timing.
 - Directional TRUE+HOLD and TRUE+TRUE matching works, and children always start
   an independent full Verification lifecycle.
 - Parent restrictions, remaining inputs, exact source refs, and evidence are
@@ -703,8 +889,9 @@ Required focused outcomes:
 - The deepest-successful-match ancestor exclusion is independently recomputed;
   no-match at depth preserves shallower candidates.
 - Corrupt lineage cannot loop, cross scope, or silently become a match/no-match.
-- Match triples are globally unique per analysis and atomically bound to their
-  ChainingResult.
+- Match triples and match IDs are each globally unique per analysis and are
+  atomically bound to their exact ChainingResult in the final transition
+  transaction; preflight remains read-only.
 - Reviewed owned triples are directionally complete and unique, and successful
   matches are one-to-one with nested child proposals.
 - Existing proposal duplicate logic is reused; no parallel duplicate authority
@@ -713,6 +900,11 @@ Required focused outcomes:
   contexts independently and cross each stage only through COMMITTED results
   plus deduplicated ready-only enqueue; no production inline start, claim,
   handler, or service path exists.
+- Reconciliation repairs either post-commit downstream-registration gap from
+  the exact committed source without rerunning an Agent or creating duplicate
+  work, matches, proposals, or children.
+- The additive T13 migration is based on the actual final T12 single Alembic
+  head and leaves the repository with one head and a matching schema version.
 - R8 global work/time/cost/attempt budgets cover Chaining, token usage remains
   observational, and all budget stops preserve parent verdicts.
 - T13 imports through approved ports, keeps concrete storage/provider wiring in
@@ -728,6 +920,9 @@ Required focused outcomes:
   scheduling.
 - Refactoring fake fixtures unrelated to removing production authority leaks.
 - Additional metrics dashboards beyond recording existing work/budget usage.
+- Additional causal `parent_work_id` metadata for ready-only
+  `HYPOTHESIS_PROPOSAL` work; the exact committed source-result ref and
+  deterministic registration key remain the required T13 provenance.
 
 Do not implement a deferred item in T13 unless it becomes a demonstrated
 Blocker/High correctness or security defect.
