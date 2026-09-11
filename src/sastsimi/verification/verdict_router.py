@@ -31,6 +31,8 @@ class VerdictRouter:
             return ()
         if value.verdict == "TRUE":
             raise ValueError("T11_OUTPUT_REQUIRED")
+        if not value.required_primitive_candidates:
+            return ()
         return (VerdictRoute("PRIMITIVE_UPDATE", (result_ref,)),)
 
 

@@ -321,6 +321,7 @@ class ConcurrentLLMCalls:
             request,
             result,
             _ref("llm_invocation_log", f"{spec.agent_role.lower()}-log"),
+            "RETURNED",
         )
 
 

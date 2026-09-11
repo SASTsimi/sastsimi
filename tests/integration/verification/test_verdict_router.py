@@ -23,7 +23,9 @@ class _Records:
         return self.result
 
 
-def _result(verdict: str) -> tuple[_Records, StoredDataRef]:
+def _result(
+    verdict: str, *, with_required_primitive: bool = True
+) -> tuple[_Records, StoredDataRef]:
     payload = make("VerificationResult")
     payload["verdict"] = verdict
     payload["initial_verdict"] = verdict
@@ -33,6 +35,14 @@ def _result(verdict: str) -> tuple[_Records, StoredDataRef]:
     elif verdict == "HOLD":
         payload["falsification_results"][0]["outcome"] = "INCONCLUSIVE"
         payload["unresolved_conditions"] = ["Reachability remains unresolved"]
+        payload["required_primitive_candidates"] = (
+            [
+                make("PrimitiveDraft")
+                | {"evidence_refs": payload["validation_results"][0]["evidence_refs"]}
+            ]
+            if with_required_primitive
+            else []
+        )
     else:
         # This bypasses the T11 dynamic requirement only to test router fail-closed.
         payload["verdict"] = "HOLD"
@@ -61,6 +71,12 @@ def test_hold_only_proposes_primitive_update_registration() -> None:
 
     assert route.work_type == "PRIMITIVE_UPDATE"
     assert route.input_refs == (result_ref,)
+
+
+def test_hold_without_required_primitive_has_no_downstream_work() -> None:
+    records, result_ref = _result("HOLD", with_required_primitive=False)
+
+    assert VerdictRouter(records).route(result_ref) == ()
 
 
 def test_t10_router_rejects_true_and_has_no_concrete_downstream_imports() -> None:

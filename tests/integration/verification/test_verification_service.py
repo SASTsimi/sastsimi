@@ -375,7 +375,12 @@ class _Fixture:
             elapsed_ms=3,
         )
         self.llm.outcomes.append(
-            PersistedLLMInvocation(request=request, result=result, log_ref=decision_ref)
+            PersistedLLMInvocation(
+                request=request,
+                result=result,
+                log_ref=decision_ref,
+                dispatch_state="RETURNED",
+            )
         )
         self.call = VerificationCallRefs(
             decision_ref=decision_ref,

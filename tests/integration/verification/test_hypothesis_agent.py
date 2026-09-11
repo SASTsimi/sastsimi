@@ -343,6 +343,7 @@ def _invocation(
         request=request,
         result=result,
         log_ref=stored_ref("llm_invocation_log", "hypothesis-log"),
+        dispatch_state="RETURNED",
     )
 
 
