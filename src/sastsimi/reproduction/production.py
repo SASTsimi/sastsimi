@@ -693,10 +693,6 @@ class ProductionDynamicWorkflow:
             raise DynamicOperationalError(
                 "FAILED", "EXECUTION", "Sandbox command timed out"
             )
-        if poc is not None and outcome.exit_code != 0:
-            raise DynamicOperationalError(
-                "FAILED", "EXECUTION", "PoC command exited unsuccessfully"
-            )
 
     async def _materialize_poc(
         self, *, candidate: PoCCandidate, candidate_ref: StoredDataRef

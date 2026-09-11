@@ -216,6 +216,15 @@ class ReproductionSessionManager:
             failure_category = "OBSERVATION"
             failure_reason = "Disproof is not connected to a completed observation"
             conclusion = None
+        elif (
+            conclusion is not None
+            and conclusion.proposed_outcome == "INCONCLUSIVE"
+            and self._has_only_failed_poc_executions(data, log, meta, candidate)
+        ):
+            result_status = "FAILED"
+            failure_category = "EXECUTION"
+            failure_reason = "PoC execution did not complete successfully"
+            conclusion = None
         elif not self._conclusion_is_current(data, meta, candidate):
             result_status = "FAILED"
             failure_category = "AGENT"
@@ -519,6 +528,42 @@ class ReproductionSessionManager:
             and evidence.intersection(event.output_refs)
             for event in log.events
         )
+
+    def _has_only_failed_poc_executions(
+        self,
+        data: DynamicFinalizationInput,
+        log: AgentLog,
+        meta: RecordMeta,
+        candidate: PoCCandidate | None,
+    ) -> bool:
+        if candidate is None or data.environment is None or data.recipe is None:
+            return False
+        candidate_ref = _logged_ref(log, candidate, "poc_candidate_ref", meta)
+        environment_ref = _logged_ref(log, data.environment, "environment_ref", meta)
+        recipe_ref = _logged_ref(log, data.recipe, "environment_recipe_ref", meta)
+        if candidate_ref is None or environment_ref is None or recipe_ref is None:
+            return False
+        executions = [
+            event
+            for event in log.events
+            if event.event_type == "POC_EXECUTION_FINISHED"
+            and event.actor == "TOOL_RUNTIME"
+            and event.poc_candidate_ref == candidate_ref
+            and event.environment_ref == environment_ref
+            and event.environment_recipe_ref == recipe_ref
+        ]
+        failed = [
+            event
+            for event in executions
+            if event.timed_out is True
+            or (event.exit_code is not None and event.exit_code != 0)
+        ]
+        succeeded = [
+            event
+            for event in executions
+            if event.timed_out is False and event.exit_code == 0
+        ]
+        return bool(failed) and not succeeded
 
     def _make_poc(
         self,

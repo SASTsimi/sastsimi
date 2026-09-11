@@ -286,6 +286,35 @@ def test_candidate_is_not_promoted_without_same_attempt_support(mutation: str) -
     assert finalized.result.hypothesis_outcome == "INCONCLUSIVE"
 
 
+def test_nonzero_poc_with_inconclusive_agent_output_is_operational_failure() -> None:
+    chain = _complete_supported_attempt()
+    raw_events = chain["log"].model_dump(mode="json")["events"]
+    for item in raw_events:
+        if item["event_type"] in {"POC_EXECUTION_FINISHED", "COMMAND_FINISHED"}:
+            item["exit_code"] = 1
+    chain["log"] = wire(
+        AgentLog,
+        chain["log"].model_dump(mode="json") | {"events": raw_events},
+    )
+    chain["conclusion"] = wire(
+        DynamicReproductionConclusion,
+        chain["conclusion"].model_dump(mode="json")
+        | {
+            "proposed_outcome": "INCONCLUSIVE",
+            "limitations": ["PoC process exited before producing valid evidence"],
+        },
+    )
+
+    finalized = _manager().finalize(
+        data=_input(chain), log=chain["log"], meta=chain["result"].meta
+    )
+
+    assert finalized.poc is None
+    assert finalized.result.status == "FAILED"
+    assert finalized.result.failure_category == "EXECUTION"
+    assert finalized.result.hypothesis_outcome == "INCONCLUSIVE"
+
+
 def test_disproved_requires_actual_successful_observation() -> None:
     chain = _complete_supported_attempt()
     raw_events = [
