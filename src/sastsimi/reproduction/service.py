@@ -378,8 +378,8 @@ class DynamicReproductionService:
                     environment_requirements_ref=requirements_ref,
                     recipe_source_ref=self._artifact("recipe_source", record=True),
                     source_refs=(),
-                    base_image_digest="1" * 64,
-                    built_image_digest="2" * 64,
+                    base_image_digest="sha256:" + "1" * 64,
+                    built_image_digest="sha256:" + "2" * 64,
                     baseline_recipe_ref=None,
                     build_disposition="BUILT",
                     created_at=self.clock.now(),
@@ -437,7 +437,7 @@ class DynamicReproductionService:
             sandbox_profile_ref=sandbox_ref,
             resource_profile_ref=resource_ref,
             run_policy_state_ref=run_policy_state_ref,
-            image_digest=f"sha256:{recipe.built_image_digest}",
+            image_digest=recipe.built_image_digest,
             network_targets=(),
             resource_limits={
                 "cpu_limit_millicores": sandbox.cpu_limit_millicores,
@@ -579,7 +579,7 @@ class DynamicReproductionService:
             sandbox_profile_ref=sandbox_ref,
             resource_profile_ref=resource_ref,
             run_policy_state_ref=run_policy_state_ref,
-            image_digest=f"sha256:{recipe.built_image_digest}",
+            image_digest=recipe.built_image_digest,
             network_targets=(),
             resource_limits={
                 "cpu_limit_millicores": sandbox.cpu_limit_millicores,
@@ -704,7 +704,7 @@ class DynamicReproductionService:
             sandbox_profile_ref=sandbox_ref,
             resource_profile_ref=resource_ref,
             run_policy_state_ref=run_policy_state_ref,
-            image_digest=f"sha256:{recipe.built_image_digest}",
+            image_digest=recipe.built_image_digest,
             network_targets=(),
             resource_limits=sandbox_action.resource_limits,
         )
