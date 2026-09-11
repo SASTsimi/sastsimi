@@ -6,7 +6,9 @@ import asyncio
 import ctypes
 import os
 import subprocess  # list2cmdline is quoting only; process creation stays Win32-direct.
-from collections.abc import Callable
+import threading
+import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -24,6 +26,19 @@ CREATE_FLAGS = (
     | EXTENDED_STARTUPINFO_PRESENT
 )
 ERROR_BROKEN_PIPE = 109
+ERROR_OPERATION_ABORTED = 995
+ERROR_NOT_FOUND = 1168
+
+
+async def _complete_cleanup[ResultT](awaitable: Awaitable[ResultT]) -> ResultT:
+    """Finish cleanup before handles close, despite repeated cancellation."""
+    cleanup = asyncio.ensure_future(awaitable)
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            continue
+    return cleanup.result()
 
 
 def _win_dll(name: str, *, use_last_error: bool) -> Any:
@@ -78,6 +93,8 @@ class Win32Api(Protocol):
     def terminate_job(self, job: object) -> None: ...
     def wait_process(self, process: object, timeout_ms: int) -> int | None: ...
     def read_pipe(self, pipe: object, sink: OutputSink) -> None: ...
+    def cancel_pipe_io(self, pipe: object) -> None: ...
+    def release_pipe_io(self, pipe: object) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -86,6 +103,20 @@ class LaunchedProcess:
     job: object
     stdout_read: object
     stderr_read: object
+
+
+@dataclass
+class _ActiveProcess:
+    launched: LaunchedProcess
+    cancel_event: asyncio.Event
+    wait_task: asyncio.Task[int | None]
+    drain_task: asyncio.Task[None]
+    cleanup_task: asyncio.Task[int | None] | None = None
+    closed: bool = False
+    process_closed: bool = False
+    process_close_deferred: bool = False
+    job_closed: bool = False
+    pipes_closed: bool = False
 
 
 class SuspendedJobLauncher:
@@ -142,10 +173,196 @@ class SuspendedJobLauncher:
 
 
 class WindowsProcessBackend:
-    def __init__(self, api: Win32Api | None = None) -> None:
+    def __init__(
+        self,
+        api: Win32Api | None = None,
+        *,
+        drain_timeout_seconds: float = 1.0,
+        termination_timeout_seconds: float = 1.0,
+    ) -> None:
+        if drain_timeout_seconds <= 0:
+            raise ValueError("PROCESS_DRAIN_TIMEOUT_INVALID")
+        if termination_timeout_seconds <= 0:
+            raise ValueError("PROCESS_TERMINATION_TIMEOUT_INVALID")
         self.api = api or CtypesWin32Api()
         self.launcher = SuspendedJobLauncher(self.api)
-        self._active: dict[str, LaunchedProcess] = {}
+        self._active: dict[str, _ActiveProcess] = {}
+        self._drain_timeout_seconds = drain_timeout_seconds
+        self._termination_timeout_seconds = termination_timeout_seconds
+
+    async def _drain(
+        self, stdout_task: asyncio.Task[None], stderr_task: asyncio.Task[None]
+    ) -> None:
+        results = await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+
+    def _close_active(self, attempt_id: str, active: _ActiveProcess) -> None:
+        if active.closed:
+            return
+        if self._active.get(attempt_id) is active:
+            self._active.pop(attempt_id, None)
+        launched = active.launched
+        if not active.pipes_closed:
+            self.api.release_pipe_io(launched.stdout_read)
+            self.api.release_pipe_io(launched.stderr_read)
+            self.api.close(launched.stdout_read)
+            self.api.close(launched.stderr_read)
+            active.pipes_closed = True
+        self._close_process_resources(active)
+        active.closed = True
+
+    def _close_process_resources(self, active: _ActiveProcess) -> None:
+        if not active.job_closed:
+            self.api.close(active.launched.job)
+            active.job_closed = True
+        if active.process_closed or active.process_close_deferred:
+            return
+        if active.wait_task.done():
+            try:
+                active.wait_task.result()
+            except BaseException:
+                pass
+            self.api.close(active.launched.process)
+            active.process_closed = True
+            return
+
+        active.process_close_deferred = True
+
+        def close_after_wait(task: asyncio.Task[int | None]) -> None:
+            try:
+                task.result()
+            except BaseException:
+                pass
+            try:
+                self.api.close(active.launched.process)
+            except BaseException:
+                return
+            active.process_closed = True
+
+        active.wait_task.add_done_callback(close_after_wait)
+
+    def _defer_pipe_close(self, attempt_id: str, active: _ActiveProcess) -> None:
+        """Keep pipe handles unique until their native readers really finish."""
+        if self._active.get(attempt_id) is active:
+            self._active.pop(attempt_id, None)
+        self._close_process_resources(active)
+
+        def close_after_drain(task: asyncio.Task[None]) -> None:
+            try:
+                task.result()
+            except BaseException:
+                pass
+            try:
+                self._close_active(attempt_id, active)
+            except BaseException:
+                # The attempt already failed closed.  Never make the pipe
+                # handle reusable before the native reader owns no I/O.
+                return
+
+        active.drain_task.add_done_callback(close_after_drain)
+
+    def _close_job_for_kill(self, active: _ActiveProcess) -> None:
+        if active.job_closed:
+            return
+        self.api.close(active.launched.job)
+        active.job_closed = True
+
+    def _request_pipe_abort(self, active: _ActiveProcess) -> BaseException | None:
+        first_error: BaseException | None = None
+        for pipe in (active.launched.stdout_read, active.launched.stderr_read):
+            try:
+                self.api.cancel_pipe_io(pipe)
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+        return first_error
+
+    async def _await_process_shutdown(self, active: _ActiveProcess) -> int | None:
+        timeout_ms = max(1, int(self._termination_timeout_seconds * 1_000))
+        for wait_round in range(2):
+            try:
+                return_code = await asyncio.wait_for(
+                    asyncio.shield(active.wait_task),
+                    self._termination_timeout_seconds,
+                )
+            except TimeoutError:
+                if wait_round == 0:
+                    self._close_job_for_kill(active)
+                    continue
+                raise TimeoutError("WINDOWS_PROCESS_TERMINATION_TIMEOUT") from None
+            if return_code is not None:
+                return return_code
+            self._close_job_for_kill(active)
+            if wait_round == 0:
+                active.wait_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        self.api.wait_process,
+                        active.launched.process,
+                        timeout_ms,
+                    )
+                )
+                continue
+            raise TimeoutError("WINDOWS_PROCESS_TERMINATION_TIMEOUT")
+        raise AssertionError("WINDOWS_PROCESS_WAIT_ROUND_INVALID")
+
+    async def _cleanup_active(
+        self, attempt_id: str, active: _ActiveProcess
+    ) -> int | None:
+        first_error: BaseException | None = None
+        return_code: int | None = None
+        try:
+            self.api.terminate_job(active.launched.job)
+        except BaseException as error:
+            first_error = error
+            # The Job is configured KILL_ON_JOB_CLOSE. If explicit
+            # termination fails, closing only this handle is the safe tree-kill
+            # fallback. Pipe/process handles remain open until readers settle.
+            self._close_job_for_kill(active)
+        try:
+            return_code = await self._await_process_shutdown(active)
+        except BaseException as error:
+            if first_error is None:
+                first_error = error
+        drain_finished = False
+        try:
+            for cancellation_round in range(3):
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(active.drain_task),
+                        self._drain_timeout_seconds,
+                    )
+                    drain_finished = True
+                    break
+                except TimeoutError:
+                    if cancellation_round == 2:
+                        if first_error is None:
+                            first_error = TimeoutError("WINDOWS_OUTPUT_DRAIN_TIMEOUT")
+                        break
+                    pipe_error = self._request_pipe_abort(active)
+                    if first_error is None and pipe_error is not None:
+                        first_error = pipe_error
+        except BaseException as error:
+            if first_error is None:
+                first_error = error
+        finally:
+            if drain_finished or active.drain_task.done():
+                self._close_active(attempt_id, active)
+            else:
+                self._defer_pipe_close(attempt_id, active)
+        if first_error is not None:
+            raise first_error
+        return return_code
+
+    def _ensure_cleanup(
+        self, attempt_id: str, active: _ActiveProcess
+    ) -> asyncio.Task[int | None]:
+        if active.cleanup_task is None:
+            active.cleanup_task = asyncio.create_task(
+                self._cleanup_active(attempt_id, active)
+            )
+        return active.cleanup_task
 
     async def run(
         self,
@@ -156,52 +373,71 @@ class WindowsProcessBackend:
         cancel_event: asyncio.Event,
     ) -> BackendExecution:
         launched = self.launcher.launch(spec)
-        self._active[spec.attempt_id] = launched
         stdout_task = asyncio.create_task(
             asyncio.to_thread(self.api.read_pipe, launched.stdout_read, stdout)
         )
         stderr_task = asyncio.create_task(
             asyncio.to_thread(self.api.read_pipe, launched.stderr_read, stderr)
         )
+        wait_task = asyncio.create_task(
+            asyncio.to_thread(self.api.wait_process, launched.process, timeout_ms)
+        )
+        drain_task = asyncio.create_task(self._drain(stdout_task, stderr_task))
+        active = _ActiveProcess(
+            launched=launched,
+            cancel_event=cancel_event,
+            wait_task=wait_task,
+            drain_task=drain_task,
+        )
+        self._active[spec.attempt_id] = active
         timed_out = False
         try:
-            return_code = await asyncio.to_thread(
-                self.api.wait_process, launched.process, timeout_ms
-            )
+            return_code = await asyncio.shield(wait_task)
+            if active.cleanup_task is not None or cancel_event.is_set():
+                cleanup = self._ensure_cleanup(spec.attempt_id, active)
+                return_code = await asyncio.shield(cleanup)
+                return BackendExecution(return_code, False, True)
             if return_code is None:
                 timed_out = True
-                self.api.terminate_job(launched.job)
-                return_code = await asyncio.to_thread(
-                    self.api.wait_process, launched.process, 1_000
-                )
-            await asyncio.gather(stdout_task, stderr_task)
+                cleanup = self._ensure_cleanup(spec.attempt_id, active)
+                return_code = await asyncio.shield(cleanup)
+            else:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(drain_task), self._drain_timeout_seconds
+                    )
+                except TimeoutError:
+                    timed_out = True
+                    cleanup = self._ensure_cleanup(spec.attempt_id, active)
+                    return_code = await asyncio.shield(cleanup)
             return BackendExecution(return_code, timed_out, cancel_event.is_set())
         except asyncio.CancelledError:
             cancel_event.set()
-            self.api.terminate_job(launched.job)
-            await asyncio.shield(
-                asyncio.to_thread(self.api.wait_process, launched.process, 1_000)
-            )
-            await asyncio.shield(
-                asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
-            )
+            cleanup = self._ensure_cleanup(spec.attempt_id, active)
+            await _complete_cleanup(cleanup)
+            raise
+        except BaseException:
+            cleanup = self._ensure_cleanup(spec.attempt_id, active)
+            try:
+                await _complete_cleanup(cleanup)
+            except BaseException:
+                pass
             raise
         finally:
-            self._active.pop(spec.attempt_id, None)
-            for handle in (
-                launched.stdout_read,
-                launched.stderr_read,
-                launched.process,
-                launched.job,
-            ):
-                self.api.close(handle)
+            if active.cleanup_task is None:
+                self._close_active(spec.attempt_id, active)
 
     async def cancel(self, attempt_id: str) -> bool:
-        launched = self._active.get(attempt_id)
-        if launched is None:
+        active = self._active.get(attempt_id)
+        if active is None:
             return False
-        self.api.terminate_job(launched.job)
-        await asyncio.to_thread(self.api.wait_process, launched.process, 1_000)
+        active.cancel_event.set()
+        cleanup = self._ensure_cleanup(attempt_id, active)
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            await _complete_cleanup(cleanup)
+            raise
         return True
 
 
@@ -226,7 +462,15 @@ class CtypesWin32Api:
         self.kernel32.WaitForSingleObject.restype = wintypes.DWORD
         self.kernel32.GetExitCodeProcess.restype = wintypes.BOOL
         self.kernel32.ReadFile.restype = wintypes.BOOL
+        self.kernel32.OpenThread.restype = wintypes.HANDLE
+        self.kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+        self.kernel32.CancelSynchronousIo.restype = wintypes.BOOL
         self._attribute_buffers: dict[int, object] = {}
+        self._reader_threads: dict[int, object] = {}
+        self._reader_stop_requested: set[int] = set()
+        self._reader_in_read: set[int] = set()
+        self._reader_threads_lock = threading.Lock()
+        self._reader_threads_condition = threading.Condition(self._reader_threads_lock)
 
     def _checked(self, ok: object, operation: str) -> None:
         if not ok:
@@ -462,10 +706,10 @@ class CtypesWin32Api:
         self._attribute_buffers.pop(id(attributes), None)
 
     def terminate_process(self, process: object) -> None:
-        self.kernel32.TerminateProcess(process, 1)
+        self._checked(self.kernel32.TerminateProcess(process, 1), "TerminateProcess")
 
     def terminate_job(self, job: object) -> None:
-        self.kernel32.TerminateJobObject(job, 1)
+        self._checked(self.kernel32.TerminateJobObject(job, 1), "TerminateJobObject")
 
     def wait_process(self, process: object, timeout_ms: int) -> int | None:
         from ctypes import wintypes
@@ -483,18 +727,77 @@ class CtypesWin32Api:
         return int(exit_code.value)
 
     def read_pipe(self, pipe: object, sink: OutputSink) -> None:
+        thread = self.kernel32.OpenThread(
+            0x0001, False, self.kernel32.GetCurrentThreadId()
+        )
+        self._checked(thread, "OpenThread")
+        key = id(pipe)
+        with self._reader_threads_condition:
+            stopped_before_registration = key in self._reader_stop_requested
+            if not stopped_before_registration:
+                self._reader_threads[key] = thread
+        if stopped_before_registration:
+            with self._reader_threads_condition:
+                self._reader_stop_requested.discard(key)
+                self._reader_threads_condition.notify_all()
+            self.close(thread)
+            return
         buffer = ctypes.create_string_buffer(64 * 1024)
         read = ctypes.c_uint32()
-        while True:
-            ok = self.kernel32.ReadFile(
-                pipe, buffer, len(buffer), ctypes.byref(read), None
-            )
-            if not ok:
-                error = _get_last_error()
-                if error == ERROR_BROKEN_PIPE:
+        try:
+            while True:
+                with self._reader_threads_condition:
+                    if key in self._reader_stop_requested:
+                        return
+                    self._reader_in_read.add(key)
+                try:
+                    ok = self.kernel32.ReadFile(
+                        pipe, buffer, len(buffer), ctypes.byref(read), None
+                    )
+                finally:
+                    with self._reader_threads_condition:
+                        self._reader_in_read.discard(key)
+                        self._reader_threads_condition.notify_all()
+                if not ok:
+                    error = _get_last_error()
+                    if error in {ERROR_BROKEN_PIPE, ERROR_OPERATION_ABORTED}:
+                        return
+                    raise _win_error(error, "ReadFile")
+                if read.value:
+                    sink.write(buffer.raw[: read.value])
+                else:
                     return
-                raise _win_error(error, "ReadFile")
-            if read.value:
-                sink.write(buffer.raw[: read.value])
-            else:
-                return
+        finally:
+            with self._reader_threads_condition:
+                if self._reader_threads.get(key) is thread:
+                    self._reader_threads.pop(key, None)
+                self._reader_in_read.discard(key)
+                self._reader_stop_requested.discard(key)
+                self._reader_threads_condition.notify_all()
+            self.close(thread)
+
+    def cancel_pipe_io(self, pipe: object) -> None:
+        key = id(pipe)
+        deadline = time.monotonic() + 0.1
+        with self._reader_threads_condition:
+            self._reader_stop_requested.add(key)
+            while True:
+                thread = self._reader_threads.get(key)
+                if thread is None or key not in self._reader_in_read:
+                    return
+                if self.kernel32.CancelSynchronousIo(thread):
+                    return
+                error = _get_last_error()
+                if error != ERROR_NOT_FOUND:
+                    raise _win_error(error, "CancelSynchronousIo")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("WINDOWS_PIPE_CANCEL_HANDSHAKE_TIMEOUT")
+                self._reader_threads_condition.wait(min(0.001, remaining))
+
+    def release_pipe_io(self, pipe: object) -> None:
+        key = id(pipe)
+        with self._reader_threads_condition:
+            if key in self._reader_threads or key in self._reader_in_read:
+                raise OSError("WINDOWS_PIPE_READER_STILL_ACTIVE")
+            self._reader_stop_requested.discard(key)

@@ -9,7 +9,7 @@ import os
 import signal
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict
 from pathlib import Path
 from threading import Lock
@@ -40,6 +40,17 @@ class ProcessBackend(Protocol):
     ) -> BackendExecution: ...
 
     async def cancel(self, attempt_id: str) -> bool: ...
+
+
+async def _complete_cleanup[ResultT](awaitable: Awaitable[ResultT]) -> ResultT:
+    """Finish cleanup even when the caller receives repeated cancellation."""
+    cleanup = asyncio.ensure_future(awaitable)
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            continue
+    return cleanup.result()
 
 
 class AttemptOutputBudget:
@@ -126,11 +137,23 @@ class _BoundedSpool:
 
 
 class PosixProcessBackend:
-    def __init__(self, *, spawn: Callable[..., object] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        spawn: Callable[..., object] | None = None,
+        drain_timeout_seconds: float = 1.0,
+        termination_timeout_seconds: float = 1.0,
+    ) -> None:
+        if drain_timeout_seconds <= 0:
+            raise ValueError("PROCESS_DRAIN_TIMEOUT_INVALID")
+        if termination_timeout_seconds <= 0:
+            raise ValueError("PROCESS_TERMINATION_TIMEOUT_INVALID")
         self._processes: dict[str, asyncio.subprocess.Process] = {}
         self._cancelled: set[str] = set()
         self._spawn = spawn or asyncio.create_subprocess_exec
         self._registry_lock = asyncio.Lock()
+        self._drain_timeout_seconds = drain_timeout_seconds
+        self._termination_timeout_seconds = termination_timeout_seconds
 
     async def run(
         self,
@@ -140,22 +163,44 @@ class PosixProcessBackend:
         stderr: OutputSink,
         cancel_event: asyncio.Event,
     ) -> BackendExecution:
-        async with self._registry_lock:
-            if cancel_event.is_set() or spec.attempt_id in self._cancelled:
-                return BackendExecution(None, False, True)
-            spawned = self._spawn(
-                *spec.argv,
-                cwd=spec.cwd,
-                env=dict(spec.env),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
-            )
-            process = cast(asyncio.subprocess.Process, await spawned)  # type: ignore[misc]
-            self._processes[spec.attempt_id] = process
-            cancelled_after_spawn = (
-                cancel_event.is_set() or spec.attempt_id in self._cancelled
-            )
+        async def spawn_and_register() -> tuple[
+            asyncio.subprocess.Process | None, bool
+        ]:
+            async with self._registry_lock:
+                if cancel_event.is_set() or spec.attempt_id in self._cancelled:
+                    return None, True
+                spawned = self._spawn(
+                    *spec.argv,
+                    cwd=spec.cwd,
+                    env=dict(spec.env),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,
+                )
+                process = cast(
+                    asyncio.subprocess.Process,
+                    await spawned,  # type: ignore[misc]
+                )
+                self._processes[spec.attempt_id] = process
+                return process, (
+                    cancel_event.is_set() or spec.attempt_id in self._cancelled
+                )
+
+        spawn_task = asyncio.create_task(spawn_and_register())
+        spawn_cancellation: asyncio.CancelledError | None = None
+        try:
+            process, cancelled_after_spawn = await asyncio.shield(spawn_task)
+        except asyncio.CancelledError as error:
+            spawn_cancellation = error
+            cancel_event.set()
+            try:
+                process, cancelled_after_spawn = await _complete_cleanup(spawn_task)
+            except BaseException as spawn_error:
+                raise spawn_error from error
+        if process is None:
+            if spawn_cancellation is not None:
+                raise spawn_cancellation
+            return BackendExecution(None, False, True)
 
         async def pump(stream: asyncio.StreamReader | None, sink: OutputSink) -> None:
             if stream is None:
@@ -167,24 +212,82 @@ class PosixProcessBackend:
             asyncio.create_task(pump(process.stdout, stdout)),
             asyncio.create_task(pump(process.stderr, stderr)),
         )
-        timed_out = False
-        try:
-            if cancelled_after_spawn:
-                await self._terminate(process)
-            else:
-                await asyncio.wait_for(process.wait(), timeout_ms / 1_000)
-        except asyncio.CancelledError:
-            cancel_event.set()
-            await asyncio.shield(self._terminate(process))
-            raise
-        except TimeoutError:
-            timed_out = True
-            await self._terminate(process)
-        finally:
+
+        async def drain_output() -> None:
             await asyncio.gather(*readers)
-            async with self._registry_lock:
-                if self._processes.get(spec.attempt_id) is process:
-                    self._processes.pop(spec.attempt_id, None)
+
+        drain_task = asyncio.create_task(drain_output())
+        timed_out = False
+        wait_error: BaseException | None = spawn_cancellation
+        terminate_required = cancelled_after_spawn or spawn_cancellation is not None
+        if not terminate_required:
+            try:
+                await asyncio.wait_for(process.wait(), timeout_ms / 1_000)
+            except asyncio.CancelledError as error:
+                wait_error = error
+                terminate_required = True
+                cancel_event.set()
+            except TimeoutError:
+                timed_out = True
+                terminate_required = True
+            except BaseException as error:
+                wait_error = error
+                terminate_required = True
+
+        async def finalize() -> None:
+            nonlocal timed_out
+            try:
+                if terminate_required:
+                    await self._terminate(process)
+                else:
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(drain_task),
+                            self._drain_timeout_seconds,
+                        )
+                    except TimeoutError:
+                        timed_out = True
+                        await self._terminate(process)
+                if not drain_task.done():
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(drain_task),
+                            self._drain_timeout_seconds,
+                        )
+                    except TimeoutError as error:
+                        for reader in readers:
+                            reader.cancel()
+                        await asyncio.gather(*readers, return_exceptions=True)
+                        raise TimeoutError("PROCESS_OUTPUT_DRAIN_TIMEOUT") from error
+                else:
+                    drain_task.result()
+            finally:
+                async with self._registry_lock:
+                    if self._processes.get(spec.attempt_id) is process:
+                        self._processes.pop(spec.attempt_id, None)
+
+        finalize_task = asyncio.create_task(finalize())
+        try:
+            await asyncio.shield(finalize_task)
+        except asyncio.CancelledError as error:
+            cancel_event.set()
+            if wait_error is None:
+                wait_error = error
+            cleanup_error: BaseException | None = None
+            if not terminate_required:
+                try:
+                    await _complete_cleanup(self._terminate(process))
+                except BaseException as failure:
+                    cleanup_error = failure
+            try:
+                await _complete_cleanup(finalize_task)
+            except BaseException as failure:
+                if cleanup_error is None:
+                    cleanup_error = failure
+            if cleanup_error is not None:
+                raise cleanup_error from error
+        if wait_error is not None:
+            raise wait_error
         return BackendExecution(
             return_code=process.returncode,
             timed_out=timed_out,
@@ -196,22 +299,30 @@ class PosixProcessBackend:
         )
 
     async def _terminate(self, process: asyncio.subprocess.Process) -> None:
-        if process.returncode is not None:
-            return
+        # A direct child can exit on SIGTERM while a descendant in the same
+        # process group ignores it. Always check the group again after the
+        # grace period instead of treating the parent's exit as tree cleanup.
+        killpg = cast(Callable[[int, int], None], vars(os)["killpg"])
         try:
-            # Resolve POSIX-only members dynamically so this module remains
-            # type-checkable on Windows while the POSIX backend stays typed.
-            killpg = cast(Callable[[int, int], None], vars(os)["killpg"])
             killpg(process.pid, signal.SIGTERM)
-            await asyncio.wait_for(process.wait(), 0.5)
-        except (ProcessLookupError, TimeoutError):
-            if process.returncode is None:
-                try:
-                    sigkill = cast(int, vars(signal)["SIGKILL"])
-                    killpg(process.pid, sigkill)
-                except ProcessLookupError:
-                    pass
-                await process.wait()
+        except ProcessLookupError:
+            pass
+        await asyncio.sleep(0.5)
+        try:
+            sigkill = cast(int, vars(signal)["SIGKILL"])
+            killpg(process.pid, sigkill)
+        except ProcessLookupError:
+            pass
+        if process.returncode is None:
+            reap_task = asyncio.create_task(process.wait())
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(reap_task), self._termination_timeout_seconds
+                )
+            except TimeoutError as error:
+                reap_task.cancel()
+                await asyncio.gather(reap_task, return_exceptions=True)
+                raise TimeoutError("PROCESS_TREE_TERMINATION_TIMEOUT") from error
 
     async def cancel(self, attempt_id: str) -> bool:
         async with self._registry_lock:
@@ -220,7 +331,12 @@ class PosixProcessBackend:
             process = self._processes.get(attempt_id)
         if process is None:
             return first
-        await self._terminate(process)
+        cleanup = asyncio.create_task(self._terminate(process))
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            await _complete_cleanup(cleanup)
+            raise
         return first
 
 
@@ -398,6 +514,7 @@ class SafeProcessRunner:
         )
         event = asyncio.Event()
         self._cancel_events = {**self._cancel_events, spec.attempt_id: event}
+        spools_closed = False
         try:
             outcome = await self.backend.run(
                 spec, remaining_ms, stdout_spool, stderr_spool, event
@@ -405,11 +522,23 @@ class SafeProcessRunner:
         except asyncio.CancelledError:
             event.set()
             self._cancelled.add(spec.attempt_id)
-            await asyncio.shield(self.backend.cancel(spec.attempt_id))
-            raise
-        finally:
+            await _complete_cleanup(self.backend.cancel(spec.attempt_id))
             stdout_spool.close()
             stderr_spool.close()
+            spools_closed = True
+            self._finish(
+                spec,
+                "CANCELLED",
+                None,
+                now_ns,
+                stdout_spool,
+                stderr_spool,
+            )
+            raise
+        finally:
+            if not spools_closed:
+                stdout_spool.close()
+                stderr_spool.close()
             self._cancel_events = {
                 key: value
                 for key, value in self._cancel_events.items()
@@ -499,5 +628,10 @@ class SafeProcessRunner:
         event = self._cancel_events.get(attempt_id)
         if event is not None:
             event.set()
-        await self.backend.cancel(attempt_id)
+        cleanup = asyncio.create_task(self.backend.cancel(attempt_id))
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            await _complete_cleanup(cleanup)
+            raise
         return CancellationResult(True, None)

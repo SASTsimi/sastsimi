@@ -6,9 +6,11 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -245,8 +247,49 @@ def _inside(path: Path, root: Path) -> bool:
 def _assert_path_chain_safe(path: Path) -> None:
     candidate = path.absolute()
     for part in (candidate, *candidate.parents):
-        if _link_like(part):
+        try:
+            info = part.lstat()
+        except FileNotFoundError:
+            continue
+        if (
+            _link_like(part)
+            or int(getattr(info, "st_file_attributes", 0))
+            & _FILE_ATTRIBUTE_REPARSE_POINT
+            or int(getattr(info, "st_reparse_tag", 0)) != 0
+        ):
             raise ValueError("OPENGREP_PATH_LINK_FORBIDDEN")
+
+
+def _probe_directory_identity(path: Path) -> tuple[int, ...]:
+    info = path.lstat()
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or _link_like(path)
+        or (int(getattr(info, "st_file_attributes", 0)) & _FILE_ATTRIBUTE_REPARSE_POINT)
+        or int(getattr(info, "st_reparse_tag", 0)) != 0
+    ):
+        raise ValueError("OPENGREP_PROBE_ROOT_INVALID")
+    return (
+        info.st_dev,
+        info.st_ino,
+        stat.S_IFMT(info.st_mode),
+        int(getattr(info, "st_file_attributes", 0)),
+        int(getattr(info, "st_reparse_tag", 0)),
+    )
+
+
+def _remove_owned_probe_directory(
+    path: Path, parent: Path, identity: tuple[int, ...]
+) -> None:
+    try:
+        if (
+            path.resolve(strict=True).parent != parent.resolve(strict=True)
+            or _probe_directory_identity(path) != identity
+        ):
+            raise ValueError("OPENGREP_PROBE_ROOT_CHANGED")
+        shutil.rmtree(path)
+    except (OSError, ValueError) as error:
+        raise ValueError("OPENGREP_PROBE_CLEANUP_FAILED") from error
 
 
 def _safe_git_path(value: str) -> str:
@@ -802,6 +845,8 @@ class OpenGrepProcessAdapter:
         output: Path,
         profile: StaticToolProfile,
     ) -> OpenGrepProcessRunner:
+        if attempt_id in self._active:
+            raise ValueError("OPENGREP_ATTEMPT_ALREADY_ACTIVE")
         runner = self.runner_factory(
             action_id=action_id,
             attempt_id=attempt_id,
@@ -812,6 +857,10 @@ class OpenGrepProcessAdapter:
         )
         self._active[attempt_id] = runner
         return runner
+
+    def _release_runner(self, attempt_id: str, runner: OpenGrepProcessRunner) -> None:
+        if self._active.get(attempt_id) is runner:
+            self._active.pop(attempt_id)
 
     def _spec(
         self,
@@ -849,27 +898,70 @@ class OpenGrepProcessAdapter:
             return self._capability(
                 profile, available=False, version=None, reason=error
             )
-        root = self.inputs.attempt_root / "opengrep-probe-cwd"
-        output = self.inputs.attempt_root / "opengrep-probe"
+        attempt_id = deadline.action_id
+        if attempt_id in self._active:
+            return self._capability(
+                profile,
+                available=False,
+                version=None,
+                reason="OPENGREP_PROBE_ALREADY_ACTIVE",
+            )
+        probe_root: Path | None = None
+        probe_identity: tuple[int, ...] | None = None
         try:
             _assert_path_chain_safe(self.inputs.attempt_root)
-            root.mkdir()
-            output.mkdir()
+            action_key = hashlib.sha256(attempt_id.encode("utf-8")).hexdigest()[:16]
+            probe_root = Path(
+                tempfile.mkdtemp(
+                    prefix=f"opengrep-probe-{action_key}-",
+                    dir=self.inputs.attempt_root,
+                )
+            )
+            _assert_path_chain_safe(probe_root)
+            probe_identity = _probe_directory_identity(probe_root)
+            root = probe_root / "cwd"
+            output = probe_root / "output"
+            root.mkdir(mode=0o700)
+            output.mkdir(mode=0o700)
         except (OSError, ValueError):
+            if probe_root is not None and probe_identity is not None:
+                _remove_owned_probe_directory(
+                    probe_root, self.inputs.attempt_root, probe_identity
+                )
             return self._capability(
                 profile,
                 available=False,
                 version=None,
                 reason="OPENGREP_PROBE_ROOT_INVALID",
             )
-        attempt_id = deadline.action_id
-        runner = self._make_runner(
-            action_id=deadline.action_id,
-            attempt_id=attempt_id,
-            root=root,
-            output=output,
-            profile=profile,
-        )
+        try:
+            runner = self._make_runner(
+                action_id=deadline.action_id,
+                attempt_id=attempt_id,
+                root=root,
+                output=output,
+                profile=profile,
+            )
+        except ValueError as error:
+            if str(error) != "OPENGREP_ATTEMPT_ALREADY_ACTIVE":
+                _remove_owned_probe_directory(
+                    probe_root, self.inputs.attempt_root, probe_identity
+                )
+                raise
+            _remove_owned_probe_directory(
+                probe_root, self.inputs.attempt_root, probe_identity
+            )
+            return self._capability(
+                profile,
+                available=False,
+                version=None,
+                reason="OPENGREP_PROBE_ALREADY_ACTIVE",
+            )
+        except BaseException:
+            _remove_owned_probe_directory(
+                probe_root, self.inputs.attempt_root, probe_identity
+            )
+            raise
         try:
             result = await runner.run(
                 self._spec(
@@ -884,7 +976,10 @@ class OpenGrepProcessAdapter:
                 )
             )
         finally:
-            self._active.pop(attempt_id, None)
+            self._release_runner(attempt_id, runner)
+            _remove_owned_probe_directory(
+                probe_root, self.inputs.attempt_root, probe_identity
+            )
         if result.outcome == "CANCELLED":
             return self._capability(
                 profile,
@@ -973,6 +1068,8 @@ class OpenGrepProcessAdapter:
         ):
             return "FAILED", "OPENGREP_REQUEST_MISMATCH"
         try:
+            _assert_path_chain_safe(workspace_root)
+            _assert_path_chain_safe(self.inputs.attempt_root)
             if (
                 not workspace_root.is_absolute()
                 or not self.inputs.attempt_root.is_absolute()
@@ -1393,7 +1490,7 @@ class OpenGrepProcessAdapter:
             termination = "MANIFEST_CHANGED"
             complete.clear()
         finally:
-            self._active.pop(self.inputs.attempt_id, None)
+            self._release_runner(self.inputs.attempt_id, runner)
 
         if not complete:
             code = {
@@ -1402,14 +1499,16 @@ class OpenGrepProcessAdapter:
                 "OUTPUT_TRUNCATED": "STATIC_OUTPUT_LIMIT",
                 "OUTPUT_MALFORMED": "STATIC_OUTPUT_MALFORMED",
                 "MANIFEST_CHANGED": "STATIC_MANIFEST_CHANGED",
-                "VERSION_INVALID": "STATIC_TOOL_VERSION",
-                "VERSION_MISMATCH": "STATIC_TOOL_VERSION",
+                "VERSION_INVALID": "STATIC_TOOL_VERSION_INVALID",
+                "VERSION_MISMATCH": "STATIC_TOOL_VERSION_MISMATCH",
             }.get(termination or "", "STATIC_TOOL_FAILED")
             reason = (
                 "BLOCKED"
                 if termination == "CANCELLED"
                 else "TIMEOUT"
                 if termination == "TIMED_OUT"
+                else "TRUNCATED"
+                if termination == "OUTPUT_TRUNCATED"
                 else "FAILED"
             )
             return self._observation(

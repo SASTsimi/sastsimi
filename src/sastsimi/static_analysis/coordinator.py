@@ -39,6 +39,16 @@ from sastsimi.ports.static_tool import (
 from sastsimi.ports.workspace import WorkspaceLocatorPort
 
 
+async def _complete_cleanup[ResultT](task: asyncio.Task[ResultT]) -> ResultT:
+    """Wait for one cleanup task through repeated caller cancellation."""
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+    return task.result()
+
+
 def _digest(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -156,10 +166,16 @@ class StaticToolCoordinator:
         try:
             observation = await adapter.probe(profile, deadline)
         except asyncio.CancelledError:
-            await asyncio.shield(adapter.cancel(deadline.action_id))
+            cleanup = asyncio.create_task(adapter.cancel(deadline.action_id))
+            await _complete_cleanup(cleanup)
             raise
         except TimeoutError:
-            await adapter.cancel(deadline.action_id)
+            cleanup = asyncio.create_task(adapter.cancel(deadline.action_id))
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                await _complete_cleanup(cleanup)
+                raise
             observation = StaticCapabilityObservation(
                 available=False,
                 tool_name=profile.tool_name,

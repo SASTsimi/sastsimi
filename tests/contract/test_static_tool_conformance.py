@@ -116,6 +116,22 @@ class _BlockingAdapter(_Adapter):
         return CancellationResult(True, None)
 
 
+class _DelayedCancelAdapter(_BlockingAdapter):
+    def __init__(
+        self, observation: StaticCapabilityObservation, executable: Path
+    ) -> None:
+        super().__init__(observation, executable)
+        self.cancel_started = asyncio.Event()
+        self.cancel_release = asyncio.Event()
+
+    async def cancel(self, attempt_id: str) -> CancellationResult:
+        self.cancelled.append(attempt_id)
+        self.cancel_started.set()
+        await self.cancel_release.wait()
+        self.release.set()
+        return CancellationResult(True, None)
+
+
 class _External:
     async def invoke(
         self,
@@ -228,6 +244,49 @@ async def test_probe_task_cancellation_is_forwarded_with_exact_action_id(
     with pytest.raises(asyncio.CancelledError):
         await running
 
+    assert adapter.cancelled == [f"probe-{profile.meta.record_id}"]
+
+
+@pytest.mark.asyncio
+async def test_probe_repeated_cancellation_waits_for_adapter_cleanup(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "fixture-python"
+    executable.write_bytes(b"bounded fixture")
+    profile = _profile(executable)
+    observation = StaticCapabilityObservation(
+        available=True,
+        tool_name="AST",
+        tool_kind="STRUCTURE",
+        executable_key="fixture-python",
+        observed_executable_sha256=profile.executable_sha256,
+        observed_version="3.12",
+        expected_version="3.12",
+        reason_code=None,
+    )
+    adapter = _DelayedCancelAdapter(observation, executable)
+    coordinator = StaticToolCoordinator(
+        _Profiles(profile),
+        {"PYTHON_AST": adapter},
+        _External(),
+        _Workspace(),
+        {"fixture-python": executable},
+        monotonic_ns=lambda: 10,
+    )
+    profile_ref = reference(profile)
+    assert isinstance(profile_ref, StoredDataRef)
+    running = asyncio.create_task(coordinator.probe(profile_ref))
+    await adapter.started.wait()
+
+    running.cancel()
+    await adapter.cancel_started.wait()
+    running.cancel()
+    await asyncio.sleep(0)
+    assert not running.done()
+    adapter.cancel_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await running
     assert adapter.cancelled == [f"probe-{profile.meta.record_id}"]
 
 

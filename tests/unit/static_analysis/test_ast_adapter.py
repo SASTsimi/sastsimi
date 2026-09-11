@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import platform
@@ -118,6 +119,43 @@ class FixedOutputRunner:
     async def cancel(self, attempt_id: str) -> CancellationResult:
         del attempt_id
         return CancellationResult(cancelled=False, reason="NOT_RUNNING")
+
+
+class FixedRunnerFactory:
+    def __init__(self, runner: Any) -> None:
+        self.runner = runner
+
+    def __call__(self, **values: object) -> Any:
+        del values
+        return self.runner
+
+
+class SafeRunnerFactory:
+    def __call__(
+        self,
+        *,
+        action_id: str,
+        attempt_id: str,
+        workspace_root: Path,
+        output_root: Path,
+        executable: Path,
+        output_limit_bytes: int,
+    ) -> Any:
+        from sastsimi.static_analysis.process import (
+            AttemptOutputBudget,
+            SafeProcessRunner,
+        )
+
+        return SafeProcessRunner(
+            action_id=action_id,
+            attempt_id=attempt_id,
+            workspace_root=workspace_root,
+            output_root=output_root,
+            executable=executable,
+            output_budget=AttemptOutputBudget(
+                attempt_id=attempt_id, limit_bytes=output_limit_bytes
+            ),
+        )
 
 
 def _empty_worker_payload(paths: tuple[str, ...]) -> dict[str, Any]:
@@ -247,6 +285,8 @@ async def _run(
         / "static_analysis"
         / "python_ast_worker.py",
         process_runner=runner,
+        probe_runner_factory=FixedRunnerFactory(runner),
+        probe_root=output,
         workspace_locator=locator,
         tracked_files=_manifest(root, manifest_paths or paths),
         monotonic_ns=time.monotonic_ns,
@@ -281,6 +321,8 @@ def _fixed_adapter(
         / "static_analysis"
         / "python_ast_worker.py",
         process_runner=runner,
+        probe_runner_factory=FixedRunnerFactory(runner),
+        probe_root=runner.output_root,
         workspace_locator=locator,
         tracked_files=tracked_files or _manifest(root, ("app.py",)),
         monotonic_ns=time.monotonic_ns,
@@ -294,6 +336,58 @@ def _deadline() -> MonotonicActionDeadline:
         started_ns=time.monotonic_ns(),
         expires_ns=time.monotonic_ns() + 10_000_000_000,
     )
+
+
+def test_ast_constructor_rejects_generic_reparse_probe_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lexical probe path is checked before it is resolved or used."""
+
+    from sastsimi.static_analysis.ast_adapter import PythonAstProcessAdapter
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    output_parent = tmp_path / "output-parent"
+    output_parent.mkdir()
+    output = output_parent / "attempt"
+    output.mkdir()
+    runner = FixedOutputRunner(root, _empty_worker_payload(()))
+    executable = Path(sys.executable)
+    worker_path = (
+        Path(__file__).parents[3]
+        / "src"
+        / "sastsimi"
+        / "static_analysis"
+        / "python_ast_worker.py"
+    )
+    real_lstat = Path.lstat
+
+    class ReparseStat:
+        st_file_attributes = 0x400
+        st_reparse_tag = 1
+
+        def __init__(self, value: object) -> None:
+            self._value = value
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._value, name)
+
+    def simulated_lstat(path: Path) -> object:
+        value = real_lstat(path)
+        return ReparseStat(value) if path == output_parent else value
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "lstat", simulated_lstat)
+        with pytest.raises(ValueError, match="STATIC_AST_PROBE_ROOT_INVALID"):
+            PythonAstProcessAdapter(
+                executable=executable,
+                worker_path=worker_path,
+                process_runner=runner,
+                probe_runner_factory=FixedRunnerFactory(runner),
+                probe_root=output,
+                workspace_locator=FixedWorkspaceLocator(root),
+                tracked_files=(),
+            )
 
 
 @pytest.mark.asyncio
@@ -578,6 +672,8 @@ async def test_probe_reports_exact_python_parser_capability(tmp_path: Path) -> N
     root.mkdir()
     output = tmp_path / "attempt"
     output.mkdir()
+    unrelated = output / "unrelated.txt"
+    unrelated.write_text("keep", encoding="utf-8")
     executable = Path(sys.executable)
     locator = FixedWorkspaceLocator(root)
     runner = SafeProcessRunner(
@@ -596,6 +692,8 @@ async def test_probe_reports_exact_python_parser_capability(tmp_path: Path) -> N
         / "static_analysis"
         / "python_ast_worker.py",
         process_runner=runner,
+        probe_runner_factory=SafeRunnerFactory(),
+        probe_root=output,
         workspace_locator=locator,
         tracked_files=(),
         monotonic_ns=time.monotonic_ns,
@@ -606,9 +704,13 @@ async def test_probe_reports_exact_python_parser_capability(tmp_path: Path) -> N
         expires_ns=time.monotonic_ns() + 10_000_000_000,
     )
 
-    capability = await adapter.probe(_profile(executable), deadline)
+    capabilities = (
+        await adapter.probe(_profile(executable), deadline),
+        await adapter.probe(_profile(executable), deadline),
+    )
 
-    assert capability.available
+    assert all(capability.available for capability in capabilities)
+    capability = capabilities[0]
     assert capability.tool_name == "AST"
     assert capability.tool_kind == "STRUCTURE"
     assert (
@@ -617,6 +719,156 @@ async def test_probe_reports_exact_python_parser_capability(tmp_path: Path) -> N
     )
     assert capability.observed_version == platform.python_version()
     assert capability.reason_code is None
+    assert not list(output.glob("ast-probe-*"))
+    assert unrelated.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.asyncio
+async def test_ast_concurrent_probe_rejects_duplicate_and_cancels_exact_action(
+    tmp_path: Path,
+) -> None:
+    from sastsimi.static_analysis.ast_adapter import PythonAstProcessAdapter
+
+    class BlockingProbeRunner:
+        def __init__(self, **values: object) -> None:
+            self.attempt_id = str(values["attempt_id"])
+            self.output_root = Path(str(values["output_root"]))
+            self.workspace_root = Path(str(values["workspace_root"]))
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.was_cancelled = False
+
+        async def run(self, request: ProcessSpec) -> ProcessResult:
+            self.started.set()
+            await self.release.wait()
+            raw = platform.python_version().encode()
+            receipt = ProcessReceipt(
+                action_id=request.deadline.action_id,
+                invocation_id=request.invocation_id,
+                command_kind=request.command_kind,
+                attempt_id=request.attempt_id,
+                command_fingerprint=process_command_fingerprint(request),
+                outcome="CANCELLED" if self.was_cancelled else "SUCCEEDED",
+                return_code=None if self.was_cancelled else 0,
+                stdout_name="stdout.bin",
+                stdout_size=len(raw),
+                stdout_sha256=hashlib.sha256(raw).hexdigest(),
+                stderr_name="stderr.bin",
+                stderr_size=0,
+                stderr_sha256=hashlib.sha256(b"").hexdigest(),
+                elapsed_ms=1,
+            )
+            return ProcessResult(
+                outcome=receipt.outcome,
+                return_code=receipt.return_code,
+                stdout=raw,
+                stderr_tail=b"",
+                stdout_truncated=False,
+                stderr_truncated=False,
+                elapsed_ms=1,
+                receipt=receipt,
+                receipt_path=self.output_root / "receipt.json",
+            )
+
+        async def cancel(self, attempt_id: str) -> CancellationResult:
+            assert attempt_id == self.attempt_id
+            self.was_cancelled = True
+            self.release.set()
+            return CancellationResult(True, None)
+
+    class BlockingProbeFactory:
+        def __init__(self) -> None:
+            self.runner: BlockingProbeRunner | None = None
+
+        def __call__(self, **values: object) -> BlockingProbeRunner:
+            self.runner = BlockingProbeRunner(**values)
+            return self.runner
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    output = tmp_path / "attempt"
+    output.mkdir()
+    executable = Path(sys.executable)
+    execution_runner = FixedOutputRunner(root, _empty_worker_payload(()))
+    factory = BlockingProbeFactory()
+    adapter = PythonAstProcessAdapter(
+        executable=executable,
+        worker_path=Path(__file__).parents[3]
+        / "src"
+        / "sastsimi"
+        / "static_analysis"
+        / "python_ast_worker.py",
+        process_runner=execution_runner,
+        probe_runner_factory=factory,
+        probe_root=output,
+        workspace_locator=FixedWorkspaceLocator(root),
+        tracked_files=(),
+    )
+    probe_deadline = MonotonicActionDeadline(
+        action_id="exact-probe-action",
+        started_ns=time.monotonic_ns(),
+        expires_ns=time.monotonic_ns() + 10_000_000_000,
+    )
+    first_probe = asyncio.create_task(
+        adapter.probe(_profile(executable), probe_deadline)
+    )
+    while factory.runner is None:
+        await asyncio.sleep(0)
+    await factory.runner.started.wait()
+
+    second = await adapter.probe(_profile(executable), probe_deadline)
+    cancelled = await adapter.cancel(probe_deadline.action_id)
+    first = await first_probe
+
+    assert second.reason_code == "STATIC_AST_PROBE_ALREADY_ACTIVE"
+    assert cancelled.cancelled
+    assert first.reason_code == "STATIC_AST_CAPABILITY_UNAVAILABLE"
+    assert factory.runner.attempt_id == probe_deadline.action_id
+    assert not list(output.glob("ast-probe-*"))
+
+
+@pytest.mark.asyncio
+async def test_ast_probe_cleans_owned_directory_when_runner_factory_fails(
+    tmp_path: Path,
+) -> None:
+    from sastsimi.static_analysis.ast_adapter import PythonAstProcessAdapter
+
+    class FailingProbeFactory:
+        def __call__(self, **values: object) -> Any:
+            del values
+            raise RuntimeError("runner construction failed")
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    output = tmp_path / "attempt"
+    output.mkdir()
+    unrelated = output / "unrelated.txt"
+    unrelated.write_text("keep", encoding="utf-8")
+    executable = Path(sys.executable)
+    adapter = PythonAstProcessAdapter(
+        executable=executable,
+        worker_path=Path(__file__).parents[3]
+        / "src"
+        / "sastsimi"
+        / "static_analysis"
+        / "python_ast_worker.py",
+        process_runner=FixedOutputRunner(root, _empty_worker_payload(())),
+        probe_runner_factory=FailingProbeFactory(),
+        probe_root=output,
+        workspace_locator=FixedWorkspaceLocator(root),
+        tracked_files=(),
+    )
+    deadline = MonotonicActionDeadline(
+        action_id="factory-failure",
+        started_ns=time.monotonic_ns(),
+        expires_ns=time.monotonic_ns() + 10_000_000_000,
+    )
+
+    with pytest.raises(RuntimeError, match="runner construction failed"):
+        await adapter.probe(_profile(executable), deadline)
+
+    assert not list(output.glob("ast-probe-*"))
+    assert unrelated.read_text(encoding="utf-8") == "keep"
 
 
 @pytest.mark.asyncio
@@ -668,6 +920,8 @@ async def test_post_decode_workspace_mutation_discards_observation(
         / "static_analysis"
         / "python_ast_worker.py",
         process_runner=runner,
+        probe_runner_factory=FixedRunnerFactory(runner),
+        probe_root=output,
         workspace_locator=locator,
         tracked_files=_manifest(root, ("app.py",)),
         monotonic_ns=time.monotonic_ns,
@@ -811,6 +1065,8 @@ async def test_bound_file_size_change_during_worker_run_discards_output(
         / "static_analysis"
         / "python_ast_worker.py",
         process_runner=runner,
+        probe_runner_factory=FixedRunnerFactory(runner),
+        probe_root=runner.output_root,
         workspace_locator=locator,
         tracked_files=_manifest(root, ("app.py",)),
         monotonic_ns=time.monotonic_ns,

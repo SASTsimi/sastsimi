@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import stat
+import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -43,6 +45,19 @@ class ProcessRunner(Protocol):
     async def cancel(self, attempt_id: str) -> CancellationResult: ...
 
 
+class ProbeRunnerFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        action_id: str,
+        attempt_id: str,
+        workspace_root: Path,
+        output_root: Path,
+        executable: Path,
+        output_limit_bytes: int,
+    ) -> ProcessRunner: ...
+
+
 @dataclass(frozen=True)
 class _BoundTrackedFile:
     git_path: str
@@ -62,6 +77,56 @@ def _digest(path: Path) -> str:
 
 def _link_like(path: Path) -> bool:
     return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+
+
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def _reparse_like_stat(info: object) -> bool:
+    return (
+        bool(
+            int(getattr(info, "st_file_attributes", 0)) & _FILE_ATTRIBUTE_REPARSE_POINT
+        )
+        or int(getattr(info, "st_reparse_tag", 0)) != 0
+    )
+
+
+def _assert_path_chain_safe(path: Path, error_code: str) -> None:
+    candidate = path.absolute()
+    for part in (candidate, *candidate.parents):
+        try:
+            info = part.lstat()
+        except FileNotFoundError:
+            continue
+        if _link_like(part) or _reparse_like_stat(info):
+            raise ValueError(error_code)
+
+
+def _probe_directory_identity(path: Path) -> tuple[int, ...]:
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or _link_like(path) or _reparse_like_stat(info):
+        raise ValueError("STATIC_AST_PROBE_ROOT_INVALID")
+    return (
+        info.st_dev,
+        info.st_ino,
+        stat.S_IFMT(info.st_mode),
+        int(getattr(info, "st_file_attributes", 0)),
+        int(getattr(info, "st_reparse_tag", 0)),
+    )
+
+
+def _remove_owned_probe_directory(
+    path: Path, parent: Path, identity: tuple[int, ...]
+) -> None:
+    try:
+        if (
+            path.resolve(strict=True).parent != parent.resolve(strict=True)
+            or _probe_directory_identity(path) != identity
+        ):
+            raise ValueError("STATIC_AST_PROBE_ROOT_CHANGED")
+        shutil.rmtree(path)
+    except (OSError, ValueError) as error:
+        raise ValueError("STATIC_AST_PROBE_CLEANUP_FAILED") from error
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -416,23 +481,44 @@ class PythonAstProcessAdapter:
         executable: Path,
         worker_path: Path,
         process_runner: ProcessRunner,
+        probe_runner_factory: ProbeRunnerFactory,
+        probe_root: Path,
         workspace_locator: WorkspaceLocatorPort,
         tracked_files: Sequence[TrackedFile],
         monotonic_ns: Callable[[], int] = time.monotonic_ns,
     ) -> None:
+        try:
+            _assert_path_chain_safe(executable, "STATIC_AST_TRUSTED_PATH_INVALID")
+            _assert_path_chain_safe(worker_path, "STATIC_AST_TRUSTED_PATH_INVALID")
+            resolved_executable = executable.resolve(strict=True)
+            resolved_worker = worker_path.resolve(strict=True)
+        except (OSError, ValueError) as error:
+            raise ValueError("STATIC_AST_TRUSTED_PATH_INVALID") from error
         if _link_like(executable) or _link_like(worker_path):
             raise ValueError("STATIC_AST_TRUSTED_PATH_INVALID")
-        self.executable = executable.resolve(strict=True)
-        self.worker_path = worker_path.resolve(strict=True)
+        self.executable = resolved_executable
+        self.worker_path = resolved_worker
         if not self.executable.is_file() or not self.worker_path.is_file():
             raise ValueError("STATIC_AST_TRUSTED_PATH_INVALID")
         paths = [item.git_path for item in tracked_files]
         if len(paths) != len(set(paths)):
             raise ValueError("STATIC_AST_MANIFEST_DUPLICATE")
         self.process_runner = process_runner
+        try:
+            _assert_path_chain_safe(probe_root, "STATIC_AST_PROBE_ROOT_INVALID")
+            resolved_probe_root = probe_root.resolve(strict=True)
+        except (OSError, ValueError) as error:
+            raise ValueError("STATIC_AST_PROBE_ROOT_INVALID") from error
+        if _link_like(probe_root):
+            raise ValueError("STATIC_AST_PROBE_ROOT_INVALID")
+        self.probe_root = resolved_probe_root
+        if not self.probe_root.is_dir():
+            raise ValueError("STATIC_AST_PROBE_ROOT_INVALID")
+        self.probe_runner_factory = probe_runner_factory
         self.workspace_locator = workspace_locator
         self.tracked_files = {item.git_path: item for item in tracked_files}
         self.monotonic_ns = monotonic_ns
+        self._active_probes: dict[str, ProcessRunner] = {}
 
     async def probe(
         self, profile: StaticToolProfile, deadline: MonotonicActionDeadline
@@ -442,10 +528,53 @@ class PythonAstProcessAdapter:
             return self._capability(
                 profile, digest, None, "STATIC_AST_PROFILE_MISMATCH"
             )
+        attempt_id = deadline.action_id
+        if attempt_id in self._active_probes:
+            return self._capability(
+                profile, digest, None, "STATIC_AST_PROBE_ALREADY_ACTIVE"
+            )
+        probe_root: Path | None = None
+        probe_identity: tuple[int, ...] | None = None
+        try:
+            _assert_path_chain_safe(self.probe_root, "STATIC_AST_PROBE_ROOT_INVALID")
+            probe_root = Path(
+                tempfile.mkdtemp(prefix="ast-probe-", dir=self.probe_root)
+            )
+            probe_identity = _probe_directory_identity(probe_root)
+            cwd = probe_root / "cwd"
+            output = probe_root / "output"
+            cwd.mkdir(mode=0o700)
+            output.mkdir(mode=0o700)
+        except (OSError, ValueError):
+            if probe_root is not None and probe_identity is not None:
+                _remove_owned_probe_directory(
+                    probe_root, self.probe_root, probe_identity
+                )
+            return self._capability(
+                profile, digest, None, "STATIC_AST_PROBE_ROOT_INVALID"
+            )
+        try:
+            runner = self.probe_runner_factory(
+                action_id=attempt_id,
+                attempt_id=attempt_id,
+                workspace_root=cwd,
+                output_root=output,
+                executable=self.executable,
+                output_limit_bytes=profile.max_attempt_output_bytes,
+            )
+        except BaseException:
+            _remove_owned_probe_directory(probe_root, self.probe_root, probe_identity)
+            raise
+        if attempt_id in self._active_probes:
+            _remove_owned_probe_directory(probe_root, self.probe_root, probe_identity)
+            return self._capability(
+                profile, digest, None, "STATIC_AST_PROBE_ALREADY_ACTIVE"
+            )
+        self._active_probes[attempt_id] = runner
         spec = ProcessSpec(
             invocation_id=f"{deadline.action_id}:ast-probe",
             command_kind="ast-probe",
-            attempt_id=self.process_runner.attempt_id,
+            attempt_id=attempt_id,
             argv=(
                 str(self.executable),
                 "-I",
@@ -453,15 +582,20 @@ class PythonAstProcessAdapter:
                 "-c",
                 "import platform;print(platform.python_version())",
             ),
-            cwd=self.process_runner.workspace_root,
+            cwd=cwd,
             env=(),
-            attempt_output_dir=self.process_runner.output_root,
+            attempt_output_dir=output,
             stdout_limit_bytes=profile.stdout_limit_bytes,
             stderr_limit_bytes=profile.stderr_limit_bytes,
             attempt_output_limit_bytes=profile.max_attempt_output_bytes,
             deadline=deadline,
         )
-        result = await self.process_runner.run(spec)
+        try:
+            result = await runner.run(spec)
+        finally:
+            if self._active_probes.get(attempt_id) is runner:
+                self._active_probes.pop(attempt_id, None)
+            _remove_owned_probe_directory(probe_root, self.probe_root, probe_identity)
         version = result.stdout.decode("utf-8", errors="replace").strip() or None
         reason = None
         if (
@@ -598,6 +732,9 @@ class PythonAstProcessAdapter:
         )
 
     async def cancel(self, attempt_id: str) -> CancellationResult:
+        probe = self._active_probes.get(attempt_id)
+        if probe is not None:
+            return await probe.cancel(attempt_id)
         return await self.process_runner.cancel(attempt_id)
 
     def _validate_execution(
@@ -621,10 +758,20 @@ class PythonAstProcessAdapter:
         ):
             raise ValueError("STATIC_AST_EXECUTION_MISMATCH")
         attempt_id = request.action.meta.attempt_id
-        located = self.workspace_locator.root_for(request.workspace).resolve(
-            strict=True
-        )
-        supplied = workspace_root.resolve(strict=True)
+        located_input = self.workspace_locator.root_for(request.workspace)
+        try:
+            for path in (
+                self.executable,
+                self.worker_path,
+                located_input,
+                workspace_root,
+                self.process_runner.output_root,
+            ):
+                _assert_path_chain_safe(path, "STATIC_AST_EXECUTION_MISMATCH")
+            located = located_input.resolve(strict=True)
+            supplied = workspace_root.resolve(strict=True)
+        except (OSError, ValueError) as error:
+            raise ValueError("STATIC_AST_EXECUTION_MISMATCH") from error
         if (
             not self._profile_tuple(profile)
             or _digest(self.executable) != profile.executable_sha256
@@ -698,9 +845,14 @@ class PythonAstProcessAdapter:
     def _path_chain_has_link(root: Path, candidate: Path) -> bool:
         relative = candidate.relative_to(root)
         current = root
-        for part in relative.parts:
-            current /= part
-            if _link_like(current):
+        for part in (None, *relative.parts):
+            if part is not None:
+                current /= part
+            try:
+                info = current.lstat()
+            except FileNotFoundError:
+                continue
+            if _link_like(current) or _reparse_like_stat(info):
                 return True
         return False
 

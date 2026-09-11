@@ -421,6 +421,122 @@ async def test_probe_uses_only_exact_executable_version_and_digest(
 
 
 @pytest.mark.asyncio
+async def test_probe_rejects_generic_reparse_parent_before_runner_creation(
+    opengrep_fixture: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-junction Windows reparse ancestor must fail before any spawn."""
+
+    inputs = cast(Any, opengrep_fixture["inputs"])
+    marked_parent = inputs.attempt_root
+    real_lstat = Path.lstat
+
+    class ReparseStat:
+        st_file_attributes = 0x400
+        st_reparse_tag = 1
+
+        def __init__(self, value: object) -> None:
+            self._value = value
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._value, name)
+
+    def simulated_lstat(path: Path) -> object:
+        value = real_lstat(path)
+        return ReparseStat(value) if path == marked_parent else value
+
+    runner = FakeRunner()
+    factory = RunnerFactory(runner)
+    adapter = _adapter(opengrep_fixture, runner, runner_factory=factory)
+    profile = cast(StaticToolProfile, opengrep_fixture["profile"])
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "lstat", simulated_lstat)
+        result = await adapter.probe(profile, _deadline("reparse-probe"))
+
+    assert not result.available
+    assert result.reason_code == "OPENGREP_PROBE_ROOT_INVALID"
+    assert factory.calls == []
+    assert runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_repeated_probe_uses_fresh_owned_directories_without_removing_siblings(
+    opengrep_fixture: dict[str, object],
+) -> None:
+    attempt_root = cast(Any, opengrep_fixture["inputs"]).attempt_root
+    unrelated = attempt_root / "unrelated.txt"
+    unrelated.write_text("keep", encoding="utf-8")
+    runner = FakeRunner()
+    adapter = _adapter(opengrep_fixture, runner)
+    deadline = _deadline("repeat-probe")
+
+    first = await adapter.probe(opengrep_fixture["profile"], deadline)
+    second = await adapter.probe(opengrep_fixture["profile"], deadline)
+
+    assert first == second
+    assert first.available
+    assert len(runner.calls) == 2
+    assert runner.calls[0].cwd != runner.calls[1].cwd
+    assert runner.calls[0].attempt_output_dir != runner.calls[1].attempt_output_dir
+    for spec in runner.calls:
+        assert spec.cwd.parent.parent == attempt_root
+        assert spec.attempt_output_dir.parent.parent == attempt_root
+    assert not list(attempt_root.glob("opengrep-probe-*"))
+    assert unrelated.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_probe_with_same_action_fails_closed_without_overwrite(
+    opengrep_fixture: dict[str, object],
+) -> None:
+    runner = BlockingProbeRunner()
+    adapter = _adapter(opengrep_fixture, runner)
+    deadline = _deadline("same-runtime-action")
+
+    first_probe = asyncio.create_task(
+        adapter.probe(opengrep_fixture["profile"], deadline)
+    )
+    await runner.started.wait()
+    second = await adapter.probe(opengrep_fixture["profile"], deadline)
+    cancelled = await adapter.cancel(deadline.action_id)
+    first = await first_probe
+
+    assert not second.available
+    assert second.reason_code == "OPENGREP_PROBE_ALREADY_ACTIVE"
+    assert cancelled.cancelled
+    assert runner.cancelled == [deadline.action_id]
+    assert len(runner.calls) == 1
+    assert first.reason_code == "OPENGREP_PROBE_CANCELLED"
+    assert not list(
+        cast(Any, opengrep_fixture["inputs"]).attempt_root.glob("opengrep-probe-*")
+    )
+
+
+@pytest.mark.asyncio
+async def test_probe_cleans_owned_directory_when_runner_factory_fails(
+    opengrep_fixture: dict[str, object],
+) -> None:
+    class FailingRunnerFactory:
+        def __call__(self, **values: object) -> FakeRunner:
+            del values
+            raise RuntimeError("runner construction failed")
+
+    attempt_root = cast(Any, opengrep_fixture["inputs"]).attempt_root
+    unrelated = attempt_root / "unrelated.txt"
+    unrelated.write_text("keep", encoding="utf-8")
+    adapter = _adapter(
+        opengrep_fixture,
+        FakeRunner(),
+        runner_factory=FailingRunnerFactory(),
+    )
+
+    with pytest.raises(RuntimeError, match="runner construction failed"):
+        await adapter.probe(opengrep_fixture["profile"], _deadline("factory-failure"))
+
+    assert not list(attempt_root.glob("opengrep-probe-*"))
+    assert unrelated.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("stream", ["stdout", "stderr"])
 async def test_probe_rejects_any_truncated_version_output(
     opengrep_fixture: dict[str, object], stream: str
@@ -467,6 +583,9 @@ async def test_probe_preserves_version_process_failure_semantics(
 
     assert not observed.available
     assert observed.reason_code == reason_code
+    assert not list(
+        cast(Any, opengrep_fixture["inputs"]).attempt_root.glob("opengrep-probe-*")
+    )
 
 
 @pytest.mark.asyncio
@@ -509,13 +628,13 @@ async def test_probe_cancellation_uses_runtime_action_id(
             {"version_stdout_truncated": True},
             "FAILED",
             "STATIC_OUTPUT_LIMIT",
-            "FAILED",
+            "TRUNCATED",
         ),
         (
             {"version_stderr_truncated": True},
             "FAILED",
             "STATIC_OUTPUT_LIMIT",
-            "FAILED",
+            "TRUNCATED",
         ),
         (
             {"version_return_code": 1},
@@ -526,13 +645,13 @@ async def test_probe_cancellation_uses_runtime_action_id(
         (
             {"version_stdout": b""},
             "FAILED",
-            "STATIC_TOOL_VERSION",
+            "STATIC_TOOL_VERSION_INVALID",
             "FAILED",
         ),
         (
             {"version": "not-the-approved-version"},
             "FAILED",
-            "STATIC_TOOL_VERSION",
+            "STATIC_TOOL_VERSION_MISMATCH",
             "FAILED",
         ),
     ],
