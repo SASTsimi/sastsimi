@@ -11,6 +11,7 @@ from sastsimi.contracts.budget import (
     VerificationBudgetProfile,
     WorkBudgetProfile,
 )
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.dynamic import SandboxProfile
 from sastsimi.contracts.evaluation import (
     EvaluationRecommendation,
@@ -33,14 +34,12 @@ from sastsimi.contracts.llm import (
     ProviderValidationEvidence,
     SemanticValidatorSpec,
 )
-from sastsimi.contracts.prompt_projection import (
-    project_prompt_value,
-    render_prompt_bytes,
-)
+from sastsimi.contracts.prompt_projection import project_prompt_value
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.dto import CapabilityProbeResult, Record
+from sastsimi.prompts.redaction import redact_projected_json, render_provider_prompt
 
 from . import models
 from .codec import reference
@@ -602,6 +601,7 @@ class ConfigurationRegistry:
             slots = {slot.slot: slot for slot in entry.input_slots}
             seen: dict[str, int] = {}
             projections: list[tuple[str, bytes]] = []
+            source_refs: set[bytes] = set()
             for binding in record.context_bindings:
                 slot = slots.get(str(binding.slot))
                 if slot is None or any(
@@ -611,14 +611,18 @@ class ConfigurationRegistry:
                     raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
                 seen[str(binding.slot)] = seen.get(str(binding.slot), 0) + 1
                 source_ref = binding.source_ref
+                source_key = canonical_bytes(source_ref)
+                if source_key in source_refs:
+                    raise ValueError("PROMPT_CONTEXT_DUPLICATE")
+                source_refs.add(source_key)
                 if source_ref.record_id is None:
                     with self.artifacts.open_verified(source_ref) as source:
                         source_value: object = source.read().decode("utf-8")
                 else:
                     source_value = self.records.resolve(connection, source_ref)
-                expected_projection = project_prompt_value(
-                    source_value, binding.field_paths
-                )
+                expected_projection = redact_projected_json(
+                    project_prompt_value(source_value, binding.field_paths)
+                ).data
                 with self.artifacts.open_verified(
                     binding.projected_data_ref
                 ) as projected:
@@ -636,7 +640,7 @@ class ConfigurationRegistry:
                 if count < bounds[0] or (bounds[1] is not None and count > bounds[1]):
                     raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
             with self.artifacts.open_verified(record.template_ref) as template:
-                expected_render = render_prompt_bytes(
+                expected_render = render_provider_prompt(
                     template.read(), tuple(projections)
                 )
             with self.artifacts.open_verified(record.rendered_prompt_ref) as rendered:

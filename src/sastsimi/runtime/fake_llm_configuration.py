@@ -24,14 +24,12 @@ from sastsimi.contracts.llm import (
     ProviderValidationEvidence,
     SemanticValidatorSpec,
 )
-from sastsimi.contracts.prompt_projection import (
-    project_prompt_value,
-    render_prompt_bytes,
-)
+from sastsimi.contracts.prompt_projection import project_prompt_value
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef
 from sastsimi.ports.dto import CapabilityProbeResult
 from sastsimi.ports.fake_workflow import ProviderProber
+from sastsimi.prompts.redaction import redact_projected_json, render_provider_prompt
 from sastsimi.runtime.fake_support import FakeEvidence
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
@@ -391,11 +389,14 @@ def register_fake_llm_call(
     )
     _approved(evidence, prompt)
     prompt_ref = runtime.configuration.register_prompt_entry(prompt)
-    projected_bytes = tuple(_source_projection(runtime, ref) for ref in context_refs)
+    projected_bytes = tuple(
+        redact_projected_json(_source_projection(runtime, ref)).data
+        for ref in context_refs
+    )
     projected_refs = tuple(_artifact_bytes(runtime, data) for data in projected_bytes)
     with runtime.unit_of_work.artifacts.open_verified(template_ref) as template:
         template_bytes = template.read()
-    rendered_bytes = render_prompt_bytes(
+    rendered_bytes = render_provider_prompt(
         template_bytes,
         tuple(
             (f"context-{index}", data) for index, data in enumerate(projected_bytes, 1)
