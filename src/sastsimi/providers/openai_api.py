@@ -394,7 +394,7 @@ class OpenAIResponsesApiAdapter:
             raise ProviderInvalidOutputError
         raw_output = output_text.encode("utf-8")
         parsed = _strict_json(raw_output, ProviderInvalidOutputError)
-        if not isinstance(parsed, dict):
+        if not isinstance(parsed, (dict, list)):
             raise ProviderInvalidOutputError
         parsed_output = parsed
         try:
@@ -404,23 +404,9 @@ class OpenAIResponsesApiAdapter:
                 output_schema=output_schema,
                 request=request,
             )
-            validated_ref = reference(validated_output)
-            validated_meta = validated_output.meta
-            if (
-                not isinstance(validated_ref, StoredDataRef)
-                or validated_meta.record_type != output_schema.result_kind
-                or canonical_bytes(validated_output) != canonical_bytes(parsed_output)
-                or any(
-                    getattr(validated_meta, field) != getattr(request.meta, field)
-                    for field in (
-                        "analysis_id",
-                        "workspace_id",
-                        "commit_id",
-                        "hypothesis_id",
-                        "attempt_id",
-                    )
-                )
-            ):
+            if not isinstance(validated_output, (dict, list)) or canonical_bytes(
+                validated_output
+            ) != canonical_bytes(parsed_output):
                 raise ProviderInvalidOutputError
         except ProviderInvalidOutputError:
             raise
@@ -501,15 +487,10 @@ class OpenAIResponsesApiAdapter:
         self, request: LLMInvocationRequest, outcome: NormalizedProviderResult
     ) -> LLMInvocationResult:
         expected_success = outcome.status == "SUCCEEDED"
-        expected_output_ref = (
-            reference(outcome.validated_output)
-            if outcome.validated_output is not None
-            else None
-        )
         if expected_success != (
             outcome.response_text is not None
             and outcome.parsed_output is not None
-            and isinstance(expected_output_ref, StoredDataRef)
+            and outcome.validated_output is not None
             and outcome.session_ref is not None
         ) or (not expected_success and outcome.validated_output is not None):
             raise ValueError("PROVIDER_RESULT_BUILDER_MISMATCH")
@@ -541,7 +522,15 @@ class OpenAIResponsesApiAdapter:
             or result.elapsed_ms != outcome.elapsed_ms
             or result.safe_error != outcome.safe_error
             or (result.response_ref is not None) != expected_success
-            or result.parsed_output_ref != expected_output_ref
+            or (result.parsed_output_ref is not None) != expected_success
+            or (
+                expected_success
+                and not _is_exact_output_artifact(
+                    result.parsed_output_ref,
+                    canonical_bytes(outcome.validated_output),
+                    request,
+                )
+            )
         ):
             raise ValueError("PROVIDER_RESULT_BUILDER_MISMATCH")
         return result
@@ -599,6 +588,26 @@ def _consume_task_result(task: asyncio.Task[object]) -> None:
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _is_exact_output_artifact(
+    ref: StoredDataRef | None,
+    data: bytes,
+    request: LLMInvocationRequest,
+) -> bool:
+    """Require the result builder to reference the exact validated JSON bytes."""
+
+    if ref is None:
+        return False
+    digest = _sha256(data)
+    return (
+        ref.record_id is None
+        and ref.data_kind == "artifact"
+        and str(ref.stored_data_id) == digest
+        and ref.content_hash == digest
+        and ref.workspace_id == request.meta.workspace_id
+        and ref.commit_id == request.meta.commit_id
+    )
 
 
 def _strict_json(data: bytes, error_type: type[RuntimeError]) -> JsonValue:

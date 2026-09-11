@@ -6,13 +6,12 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any, ClassVar, Literal
+from typing import Any, Literal, cast
 
 import pytest
 from pydantic import JsonValue
 
 from sastsimi.config.secrets import SecretReference
-from sastsimi.contracts._domain import DomainRecord
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import AttemptId
 from sastsimi.contracts.llm import (
@@ -28,6 +27,7 @@ from sastsimi.providers.base import (
     ProviderInvalidOutputError,
     ResolvedPromptInput,
     ResponsesResource,
+    StructuredOutputValue,
 )
 from sastsimi.providers.openai_api import OpenAIResponsesApiAdapter
 from tests.contract.domain.canonical_fixtures import make
@@ -44,11 +44,6 @@ class FixedClock:
     def monotonic_ms(self) -> int:
         self.elapsed += 5
         return self.elapsed
-
-
-class ProviderTestOutput(DomainRecord):
-    KIND: ClassVar[str] = "provider_test_output"
-    decision: str
 
 
 class PromptResolver:
@@ -94,7 +89,7 @@ class ResultBuilder:
         parsed_output_ref = None
         if succeeded:
             assert outcome.validated_output is not None
-            parsed_output_ref = reference(outcome.validated_output)
+            parsed_output_ref = validated_output_ref(request, outcome.validated_output)
         return LLMInvocationResult.model_validate(
             {
                 "meta": result_meta,
@@ -124,17 +119,20 @@ class OutputSchemaValidator:
         schema: dict[str, JsonValue],
         output_schema: OutputSchemaSpec,
         request: LLMInvocationRequest,
-    ) -> "ProviderTestOutput":
+    ) -> StructuredOutputValue:
         assert schema == {"type": "object"}
-        assert output_schema.result_kind == ProviderTestOutput.KIND
+        assert output_schema.result_kind == _RESULT_KIND
         assert request.semantic_validator_ref.data_kind == "semantic_validator"
         try:
-            result = ProviderTestOutput.model_validate_json(raw)
-        except ValueError as error:
+            result = json.loads(raw)
+        except (UnicodeError, ValueError) as error:
             raise ProviderInvalidOutputError from error
-        if result.decision not in {"accept", "reject"}:
+        if not isinstance(result, dict) or result.get("decision") not in {
+            "accept",
+            "reject",
+        }:
             raise ProviderInvalidOutputError
-        return result
+        return cast(StructuredOutputValue, result)
 
 
 class Responses:
@@ -181,6 +179,7 @@ _UNTRUSTED_BYTES = (
     b"<UNTRUSTED_DATA>\n" + _EMPTY_DATA_SECTION + b"\n</UNTRUSTED_DATA>\n"
 )
 _RENDERED_BYTES = _TEMPLATE_BYTES + b"\n" + _UNTRUSTED_BYTES
+_RESULT_KIND = "provider_test_output"
 
 
 def artifact_ref(data: bytes, data_kind: str) -> StoredDataRef:
@@ -197,6 +196,22 @@ def artifact_ref(data: bytes, data_kind: str) -> StoredDataRef:
     )
 
 
+def validated_output_ref(
+    invocation: LLMInvocationRequest, value: StructuredOutputValue
+) -> StoredDataRef:
+    digest = hashlib.sha256(canonical_bytes(value)).hexdigest()
+    return StoredDataRef.model_validate(
+        {
+            "stored_data_id": digest,
+            "data_kind": "artifact",
+            "content_hash": digest,
+            "workspace_id": invocation.meta.workspace_id,
+            "commit_id": invocation.meta.commit_id,
+            "record_id": None,
+        }
+    )
+
+
 def output_schema_record(invocation: LLMInvocationRequest) -> OutputSchemaSpec:
     return OutputSchemaSpec.model_validate(
         {
@@ -208,7 +223,7 @@ def output_schema_record(invocation: LLMInvocationRequest) -> OutputSchemaSpec:
             },
             "schema_key": "provider-test-v1",
             "schema_artifact_ref": artifact_ref(_SCHEMA_BYTES, "json_schema"),
-            "result_kind": ProviderTestOutput.KIND,
+            "result_kind": _RESULT_KIND,
         }
     )
 
@@ -250,24 +265,8 @@ def resolved_prompt(invocation: LLMInvocationRequest) -> ResolvedPromptInput:
     )
 
 
-def output_record(
-    invocation: LLMInvocationRequest, decision: str
-) -> ProviderTestOutput:
-    return ProviderTestOutput.model_validate(
-        {
-            "meta": invocation.meta.model_dump()
-            | {
-                "record_id": "provider-test-output-r1",
-                "logical_record_id": "provider-test-output-l1",
-                "record_type": ProviderTestOutput.KIND,
-            },
-            "decision": decision,
-        }
-    )
-
-
-def output_text(invocation: LLMInvocationRequest, decision: str = "accept") -> str:
-    return canonical_bytes(output_record(invocation, decision)).decode("utf-8")
+def output_text(_invocation: LLMInvocationRequest, decision: str = "accept") -> str:
+    return canonical_bytes({"decision": decision}).decode("utf-8")
 
 
 def request() -> LLMInvocationRequest:
@@ -716,29 +715,36 @@ async def test_non_finite_json_number_never_becomes_domain_output() -> None:
 
 
 @pytest.mark.asyncio
-async def test_output_from_an_older_attempt_is_rejected() -> None:
+async def test_result_builder_cannot_attach_output_to_an_older_attempt() -> None:
     invocation = request()
-    older = invocation.model_copy(
-        update={
-            "meta": invocation.meta.model_copy(
-                update={"attempt_id": AttemptId("older")}
-            )
-        }
-    )
     raw = SimpleNamespace(
         id="resp-old-attempt",
         model="gpt-test",
         status="completed",
-        output_text=output_text(older),
+        output_text=output_text(invocation),
         usage=None,
     )
     provider, _responses, _factory, _secrets = adapter(invocation, raw)
 
-    result = await provider.invoke(invocation)
+    class OlderAttemptResultBuilder(ResultBuilder):
+        def build(
+            self,
+            request: LLMInvocationRequest,
+            outcome: NormalizedProviderResult,
+        ) -> LLMInvocationResult:
+            result = super().build(request, outcome)
+            return result.model_copy(
+                update={
+                    "meta": result.meta.model_copy(
+                        update={"attempt_id": AttemptId("older")}
+                    )
+                }
+            )
 
-    assert result.status == "INVALID_OUTPUT"
-    assert result.response_ref is None
-    assert result.parsed_output_ref is None
+    provider.result_builder = OlderAttemptResultBuilder()
+
+    with pytest.raises(ValueError, match="PROVIDER_RESULT_BUILDER_MISMATCH"):
+        await provider.invoke(invocation)
 
 
 @pytest.mark.asyncio

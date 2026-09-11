@@ -28,7 +28,6 @@ from sastsimi.contracts.llm import (
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import ReferencedRecord, StoredDataRef, reference
-from sastsimi.contracts.result_registry import RESULT_REGISTRY
 from sastsimi.contracts.static import StaticFactBundle
 from sastsimi.prompts.builder import PromptBuilder, PromptSource
 from sastsimi.prompts.loader import PromptLoader, strict_load_yaml
@@ -388,34 +387,24 @@ def test_builder_creates_redacted_exact_payload_and_call_spec(work_path: Path) -
         )
 
 
-def test_output_validation_runs_schema_then_pydantic_then_semantic() -> None:
-    proposal_data = make("HypothesisProposal")
+def test_output_validation_runs_schema_then_semantic_without_hydration() -> None:
+    proposal_data = {"statement": "Candidate statement"}
     events: list[str] = []
 
     result = validate_output(
         canonical_bytes(proposal_data),
         json_schema={
             "type": "object",
-            "required": ["proposal_id"],
-            "properties": {"proposal_id": {"type": "string"}},
+            "required": ["statement"],
+            "properties": {"statement": {"type": "string"}},
             "additionalProperties": True,
         },
         result_kind="hypothesis_proposal",
         agent_role="HYPOTHESIS",
         semantic_validator=lambda value: events.append(type(value).__name__),
     )
-    assert type(result).__name__ == "HypothesisProposal"
-    assert events == ["HypothesisProposal"]
-
-    events.clear()
-    validate_output(
-        canonical_bytes(proposal_data),
-        json_schema=RESULT_REGISTRY["hypothesis_proposal"].model.model_json_schema(),
-        result_kind="hypothesis_proposal",
-        agent_role="HYPOTHESIS",
-        semantic_validator=lambda value: events.append(type(value).__name__),
-    )
-    assert events == ["HypothesisProposal"]
+    assert result == proposal_data
+    assert events == ["dict"]
 
     events.clear()
     with pytest.raises(ValueError, match="PROMPT_OUTPUT_SCHEMA_INVALID"):
@@ -423,8 +412,8 @@ def test_output_validation_runs_schema_then_pydantic_then_semantic() -> None:
             b"{}",
             json_schema={
                 "type": "object",
-                "required": ["proposal_id"],
-                "properties": {"proposal_id": {"type": "string"}},
+                "required": ["statement"],
+                "properties": {"statement": {"type": "string"}},
                 "additionalProperties": True,
             },
             result_kind="hypothesis_proposal",
@@ -445,6 +434,56 @@ def test_output_validation_runs_schema_then_pydantic_then_semantic() -> None:
             semantic_validator=lambda value: events.append(type(value).__name__),
         )
     assert events == []
+
+
+def test_top_level_array_is_validated_without_domain_record_hydration() -> None:
+    payload = [
+        {
+            "statement": "Untrusted input may reach a SQL execution sink",
+            "falsification_questions": ["Is the value parameterized?"],
+            "validation_checks": ["Trace the exact source-to-sink path"],
+        },
+        {
+            "statement": "A second independent path may reach the same sink",
+            "falsification_questions": ["Is this path unreachable?"],
+            "validation_checks": ["Check the route binding"],
+        },
+    ]
+    observed: list[object] = []
+
+    result = validate_output(
+        canonical_bytes(payload),
+        json_schema={
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "required": [
+                    "statement",
+                    "falsification_questions",
+                    "validation_checks",
+                ],
+                "properties": {
+                    "statement": {"type": "string"},
+                    "falsification_questions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "validation_checks": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
+        result_kind="hypothesis_proposal",
+        agent_role="HYPOTHESIS",
+        semantic_validator=observed.append,
+    )
+
+    assert result == payload
+    assert observed == [payload]
 
 
 @pytest.mark.parametrize("keyword", ("const", "enum"))

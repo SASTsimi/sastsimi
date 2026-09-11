@@ -25,7 +25,9 @@ from sastsimi.contracts.llm import (
 )
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.ports.clock import Clock
-from sastsimi.ports.dto import CapabilityProbeResult, Record
+from sastsimi.ports.dto import CapabilityProbeResult
+
+type StructuredOutputValue = dict[str, JsonValue] | list[JsonValue]
 
 
 class CredentialUnavailableError(RuntimeError):
@@ -75,8 +77,8 @@ class NormalizedProviderResult:
     actual_session_mode: Literal["NEW", "RESUMED"]
     session_ref: str | None
     response_text: str | None
-    parsed_output: dict[str, JsonValue] | None
-    validated_output: Record | None
+    parsed_output: StructuredOutputValue | None
+    validated_output: StructuredOutputValue | None
     usage: UsageMeasurement | None
     started_at: datetime
     finished_at: datetime
@@ -99,7 +101,7 @@ class ProviderSessionStore(Protocol):
 
 
 class InvocationResultBuilder(Protocol):
-    """Stores redacted artifacts and creates one exact domain result revision."""
+    """Stores redacted provider JSON without creating an Agent domain record."""
 
     def build(
         self,
@@ -125,7 +127,7 @@ class OpenAIResponsesClientFactory(Protocol):
 
 
 class OutputSchemaValidator(Protocol):
-    """Validates schema, domain model, and the exact semantic-validator revision."""
+    """Validates untrusted structured JSON and its exact validator revision."""
 
     def validate(
         self,
@@ -134,7 +136,7 @@ class OutputSchemaValidator(Protocol):
         schema: dict[str, JsonValue],
         output_schema: OutputSchemaSpec,
         request: LLMInvocationRequest,
-    ) -> Record: ...
+    ) -> StructuredOutputValue: ...
 
 
 class ProviderProbeRunner(Protocol):
@@ -159,4 +161,5 @@ __all__ = [
     "ResolvedPromptContext",
     "ResolvedPromptInput",
     "SecretResolver",
+    "StructuredOutputValue",
 ]

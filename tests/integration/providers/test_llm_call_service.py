@@ -552,10 +552,11 @@ def fixture() -> Fixture:
             "elapsed_ms": 0,
         }
     )
-    raw_output_data = make("HypothesisProposal", "hypothesis_proposal")
-    raw_output_data["meta"] = metadata("hypothesis_proposal", "output").model_dump(
-        mode="json"
-    )
+    raw_output_data = {
+        "statement": "Untrusted input may reach a SQL execution sink",
+        "falsification_questions": [{"question": "Is the value parameterized?"}],
+        "validation_checks": [{"instruction": "Trace the source-to-sink path"}],
+    }
     raw_output = json.dumps(raw_output_data, indent=2).encode("utf-8")
     work_ref = records.publish(work)
     expected_inputs = llm_action_input_refs(spec_ref, spec, prompt_payload)
@@ -741,12 +742,11 @@ async def test_llm_call_stages_exact_request_and_persists_safe_success() -> None
     assert request.action_decision_ref == data.claimed_ref
     assert result.status == "SUCCEEDED"
     assert result.parsed_output_ref is not None
-    assert ref_key(result.parsed_output_ref) in data.records.staged
+    assert ref_key(result.parsed_output_ref) in data.artifacts.data
     assert result.response_ref is not None
+    assert result.response_ref == result.parsed_output_ref
     safe_response = data.artifacts.data[ref_key(result.response_ref)]
-    assert safe_response == canonical_bytes(
-        data.records.staged[ref_key(result.parsed_output_ref)]
-    )
+    assert safe_response == canonical_bytes(json.loads(data.raw_output))
     assert safe_response != data.raw_output
 
 
@@ -810,8 +810,8 @@ async def test_prompt_resolver_rejects_a_same_name_wrong_exact_revision() -> Non
 
 
 @pytest.mark.asyncio
-async def test_old_attempt_output_is_invalid_and_never_staged() -> None:
-    """Catches an older attempt's output being attached to the current request."""
+async def test_runtime_owned_output_metadata_is_invalid_and_never_staged() -> None:
+    """Catches untrusted provider output trying to allocate a domain record."""
     data = fixture()
     output = make("HypothesisProposal", "hypothesis_proposal")
     output["meta"] = metadata(

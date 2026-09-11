@@ -1,14 +1,17 @@
-"""Ordered output validation: JSON Schema, contract model, role semantics."""
+"""Ordered validation for untrusted structured Agent output."""
 
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
+from typing import cast
 
-from sastsimi.contracts.base import ContractModel
-from sastsimi.contracts.canonical_json import canonical_bytes
+from pydantic import JsonValue
+
 from sastsimi.contracts.llm import LLMRole
 from sastsimi.contracts.result_registry import RESULT_REGISTRY
+
+type StructuredOutputValue = dict[str, JsonValue] | list[JsonValue]
 
 _ROLE_RESULT_KINDS: Mapping[str, frozenset[str]] = {
     "HYPOTHESIS": frozenset({"hypothesis_proposal", "hypothesis_duplicate_review"}),
@@ -397,14 +400,63 @@ def _invalid_constant(name: str) -> object:
     raise ValueError(f"invalid constant {name}")
 
 
+def _reject_runtime_owned_output(
+    value: StructuredOutputValue,
+    *,
+    result_kind: str,
+) -> None:
+    """Keep record metadata and newly allocated proposal IDs out of LLM output."""
+
+    def reject_metadata(item: JsonValue) -> None:
+        if isinstance(item, dict):
+            if "meta" in item:
+                raise ValueError("PROMPT_OUTPUT_AUTHORITY_DENIED")
+            is_reference = {
+                "stored_data_id",
+                "data_kind",
+                "content_hash",
+                "record_id",
+            }.issubset(item)
+            if "logical_record_id" in item or (
+                "record_id" in item and not is_reference
+            ):
+                raise ValueError("PROMPT_OUTPUT_AUTHORITY_DENIED")
+            for nested in item.values():
+                reject_metadata(nested)
+        elif isinstance(item, list):
+            for nested in item:
+                reject_metadata(nested)
+
+    reject_metadata(value)
+    if result_kind != "hypothesis_proposal":
+        return
+    proposals = value if isinstance(value, list) else [value]
+    for proposal in proposals:
+        if not isinstance(proposal, dict):
+            raise ValueError("PROMPT_OUTPUT_AUTHORITY_DENIED")
+        if "proposal_id" in proposal:
+            raise ValueError("PROMPT_OUTPUT_AUTHORITY_DENIED")
+        questions = proposal.get("falsification_questions", [])
+        checks = proposal.get("validation_checks", [])
+        if isinstance(questions, list) and any(
+            isinstance(question, dict) and "question_id" in question
+            for question in questions
+        ):
+            raise ValueError("PROMPT_OUTPUT_AUTHORITY_DENIED")
+        if isinstance(checks, list) and any(
+            isinstance(check, dict) and "validation_id" in check for check in checks
+        ):
+            raise ValueError("PROMPT_OUTPUT_AUTHORITY_DENIED")
+
+
 def validate_output(
     raw: bytes,
     *,
     json_schema: Mapping[str, object],
     result_kind: str,
     agent_role: LLMRole,
-    semantic_validator: Callable[[ContractModel], None],
-) -> ContractModel:
+    semantic_validator: Callable[[StructuredOutputValue], None],
+) -> StructuredOutputValue:
     try:
         value = json.loads(
             raw.decode("utf-8"),
@@ -418,12 +470,12 @@ def validate_output(
     binding = RESULT_REGISTRY.get(result_kind)
     if binding is None or result_kind not in _ROLE_RESULT_KINDS.get(agent_role, ()):
         raise ValueError("PROMPT_OUTPUT_ROLE_MISMATCH")
+    if not isinstance(value, (dict, list)):
+        raise ValueError("PROMPT_OUTPUT_SCHEMA_INVALID")
+    structured = cast(StructuredOutputValue, value)
+    _reject_runtime_owned_output(structured, result_kind=result_kind)
     try:
-        result = binding.model.model_validate_json(canonical_bytes(value))
-    except ValueError as error:
-        raise ValueError("PROMPT_OUTPUT_MODEL_INVALID") from error
-    try:
-        semantic_validator(result)
+        semantic_validator(structured)
     except ValueError as error:
         raise ValueError("PROMPT_OUTPUT_SEMANTIC_INVALID") from error
-    return result
+    return structured

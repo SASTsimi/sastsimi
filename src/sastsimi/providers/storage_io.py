@@ -9,7 +9,6 @@ from typing import Protocol, cast
 
 from pydantic import JsonValue
 
-from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import AttemptId
 from sastsimi.contracts.llm import (
@@ -40,9 +39,10 @@ from .base import (
     ProviderInvalidOutputError,
     ResolvedPromptContext,
     ResolvedPromptInput,
+    StructuredOutputValue,
 )
 
-type SemanticValidator = Callable[[ContractModel], None]
+type SemanticValidator = Callable[[StructuredOutputValue], None]
 
 
 class StructuredOutputValidator(Protocol):
@@ -56,7 +56,7 @@ class StructuredOutputValidator(Protocol):
         result_kind: str,
         agent_role: LLMRole,
         semantic_validator: SemanticValidator,
-    ) -> ContractModel: ...
+    ) -> StructuredOutputValue: ...
 
 
 class InvocationMetadataFactory(Protocol):
@@ -180,7 +180,7 @@ class StoredPromptInputResolver(PromptInputResolver):
 
 
 class StoredOutputValidator(OutputSchemaValidator):
-    """Validate schema, typed record, and one exact semantic-validator revision."""
+    """Validate JSON without granting the Provider domain-record authority."""
 
     def __init__(
         self,
@@ -199,7 +199,7 @@ class StoredOutputValidator(OutputSchemaValidator):
         schema: dict[str, JsonValue],
         output_schema: OutputSchemaSpec,
         request: LLMInvocationRequest,
-    ) -> Record:
+    ) -> StructuredOutputValue:
         try:
             stored_schema = self._records.get_exact(request.output_schema_ref)
             validator_spec = self._records.get_exact(request.semantic_validator_ref)
@@ -226,16 +226,7 @@ class StoredOutputValidator(OutputSchemaValidator):
                 agent_role=request.agent_role,
                 semantic_validator=semantic_validator,
             )
-            if (
-                not hasattr(validated, "meta")
-                or validated.meta.analysis_id != request.meta.analysis_id
-                or validated.meta.workspace_id != request.meta.workspace_id
-                or validated.meta.commit_id != request.meta.commit_id
-                or validated.meta.hypothesis_id != request.meta.hypothesis_id
-                or validated.meta.attempt_id != request.meta.attempt_id
-            ):
-                raise ProviderInvalidOutputError
-            return cast(Record, validated)
+            return validated
         except ProviderInvalidOutputError:
             raise
         except Exception as error:
@@ -243,7 +234,7 @@ class StoredOutputValidator(OutputSchemaValidator):
 
 
 class StoredInvocationResultBuilder(InvocationResultBuilder):
-    """Stage one validated candidate and store only its safe canonical response."""
+    """Persist validated provider JSON as an artifact, never as a domain record."""
 
     def __init__(
         self,
@@ -251,7 +242,6 @@ class StoredInvocationResultBuilder(InvocationResultBuilder):
         artifacts: ArtifactStore,
         metadata_factory: InvocationMetadataFactory,
     ) -> None:
-        self._records = records
         self._artifacts = artifacts
         self._metadata_factory = metadata_factory
 
@@ -286,29 +276,18 @@ class StoredInvocationResultBuilder(InvocationResultBuilder):
                 parsed_response = json.loads(outcome.response_text)
             except json.JSONDecodeError as error:
                 raise ProviderInvalidOutputError from error
-            if (
-                not isinstance(output.meta, RecordMeta)
-                or output.meta.analysis_id != request.meta.analysis_id
-                or output.meta.workspace_id != request.meta.workspace_id
-                or output.meta.commit_id != request.meta.commit_id
-                or output.meta.hypothesis_id != request.meta.hypothesis_id
-                or output.meta.attempt_id != request.meta.attempt_id
-                or canonical_bytes(parsed_response)
-                != canonical_bytes(outcome.parsed_output)
-            ):
+            if canonical_bytes(parsed_response) != canonical_bytes(
+                outcome.parsed_output
+            ) or canonical_bytes(output) != canonical_bytes(outcome.parsed_output):
                 raise ProviderInvalidOutputError
             safe_response = redact_projected_json(canonical_bytes(output))
             if safe_response.categories:
                 raise ProviderInvalidOutputError
-            staged_ref = self._records.stage_record(output)
-            if not isinstance(staged_ref, StoredDataRef) or staged_ref != reference(
-                output
-            ):
-                raise ProviderInvalidOutputError
-            parsed_output_ref = staged_ref
-            response_ref = self._artifacts.commit(
+            output_artifact = self._artifacts.commit(
                 self._artifacts.stage_bytes(safe_response.data, "application/json")
             )
+            parsed_output_ref = output_artifact
+            response_ref = output_artifact
         elif (
             outcome.validated_output is not None
             or outcome.parsed_output is not None
