@@ -25,7 +25,9 @@ The following checks are never skipped: exact-reference mismatch, evaluation/pro
 - Registry facades accept exact `StoredDataRef` values. They never resolve by `profile_key`, `prompt_key`, model name, or “latest/current” fallback.
 - An explicitly requested stale revision is rejected rather than replaced with a newer revision.
 - Provider adapters may translate transport shape only. They cannot change role instructions, context, schema, model, or fallback policy.
-- T10+ role wrappers and T16 real-environment capability activation are outside T09.
+- T09 ends after schema·semantic-validated Provider output is stored as one immutable canonical JSON artifact with `data_kind=artifact` and `record_id=null`. `LLMInvocationResult.parsed_output_ref` and `LLMInvocationLog.parsed_output_ref` point to that exact artifact, never directly to a role `DomainRecord`.
+- T10 introduces the trusted role finalizer that reads the exact source artifact, issues runtime-owned `RecordMeta` and identifiers, stages the role `DomainRecord`, and submits it through `SAVE_RESULT` with the source artifact and invocation provenance. This is a non-LLM runtime boundary inside the existing role flow, not a new Agent or pipeline stage.
+- T10+ role wrappers and domain finalization, and T16 real-environment capability activation, are outside T09.
 
 ## 4. Parallel lanes and ownership
 
@@ -112,7 +114,7 @@ Lane A/B run only their direct tests. The integration lane runs the T09 contract
 
 ## 8. Deferred items
 
-- T10: role-specific Agent wrappers and domain orchestration.
+- T10: role-specific Agent wrappers, trusted canonical-JSON-to-domain finalizers, runtime-owned ID issuance, and domain orchestration.
 - T16: live credentials, real PVD-01 through PVD-16, production capability activation, and quality/cost comparison.
 - Additional adapters, prompt tuning, performance refactoring, and Medium/Low cleanup are follow-up work unless needed to correct a Blocker/High failure.
 
@@ -127,10 +129,13 @@ Lane A/B run only their direct tests. The integration lane runs the T09 contract
 - Requests are persisted before I/O. Success, authentication failure, timeout,
   invalid output, cancellation, and stale selection produce safe durable provenance
   without creating a domain result from a failed call.
-- Provider output is schema-checked as canonical JSON and stored only as an exact
-  artifact. It cannot publish runtime-owned metadata or identifiers; T10 owns the
-  trusted conversion from validated JSON into domain records. Top-level arrays are
-  supported for contracts such as `HypothesisProposal[]`.
+- Provider output is schema·semantic-checked as canonical JSON and stored only as
+  one exact artifact with `data_kind=artifact` and `record_id=null`. The result and
+  log point to this same source artifact, never to a role `DomainRecord`.
+- The artifact cannot publish runtime-owned metadata or identifiers. T10 owns the
+  trusted conversion into domain candidates, ID and `RecordMeta` issuance, and
+  `SAVE_RESULT` submission with exact source-artifact and invocation provenance.
+  Top-level arrays are supported for contracts such as `HypothesisProposal[]`.
 - Prompt templates and projected repository data remain separate. Credential,
   private-key, credential-URI, host-path, and prompt-boundary injection cases are
   rejected or redacted before persistence and Provider use.
