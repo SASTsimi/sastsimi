@@ -23,9 +23,7 @@ def _cleanup_with_resources(
     chain["cleanup"] = wire(
         CleanupResult,
         chain["cleanup"].model_dump(mode="json")
-        | {
-            "resource_refs": [item.model_dump(mode="json") for item in resources]
-        },
+        | {"resource_refs": [item.model_dump(mode="json") for item in resources]},
     )
     chain["result"] = wire(
         DynamicReproductionResult,

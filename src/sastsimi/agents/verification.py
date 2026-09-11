@@ -681,8 +681,7 @@ class VerificationAgent:
                 for ref in event_tool_refs
             ),
             attempt_environments=tuple(
-                self._exact(ref, SandboxEnvironment)
-                for ref in event_environment_refs
+                self._exact(ref, SandboxEnvironment) for ref in event_environment_refs
             ),
             attempt_recipes=tuple(
                 self._exact(ref, EnvironmentRecipe) for ref in event_recipe_refs

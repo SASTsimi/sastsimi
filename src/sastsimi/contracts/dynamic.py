@@ -502,11 +502,15 @@ class AgentLogEvent(ContractModel):
             self.command_digest,
             self.redaction_status,
         )
-        if (command and any(value is None for value in command_values)) or (
-            not command
-            and not poc_execution
-            and any(value is not None for value in command_values)
-        ) or (poc_execution and len({value is None for value in command_values}) != 1):
+        if (
+            (command and any(value is None for value in command_values))
+            or (
+                not command
+                and not poc_execution
+                and any(value is not None for value in command_values)
+            )
+            or (poc_execution and len({value is None for value in command_values}) != 1)
+        ):
             raise ValueError("COMMAND_EVENT_PROVENANCE")
         if (command or poc_execution) and (
             self.environment_ref is None or self.environment_recipe_ref is None

@@ -209,11 +209,17 @@ class EnvironmentRecipeStore:
                 )
             )
         source_digest = hashlib.sha256(canonical_bytes(parts)).hexdigest()
-        return root, dockerfile, StoredDataRef(
-            stored_data_id=StoredDataId(f"recipe-source-{source_digest}"),
-            data_kind="recipe_source",
-            content_hash=source_digest,
-            workspace_id=meta.workspace_id,
-            commit_id=meta.commit_id,
-            record_id=None,
-        ), tuple(refs), source_digest
+        return (
+            root,
+            dockerfile,
+            StoredDataRef(
+                stored_data_id=StoredDataId(f"recipe-source-{source_digest}"),
+                data_kind="recipe_source",
+                content_hash=source_digest,
+                workspace_id=meta.workspace_id,
+                commit_id=meta.commit_id,
+                record_id=None,
+            ),
+            tuple(refs),
+            source_digest,
+        )

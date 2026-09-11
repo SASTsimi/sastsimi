@@ -60,12 +60,11 @@ def resolve_attempt_resource_refs(
     if result.environment_ref is not None:
         logged_environment_refs.add(result.environment_ref)
     environment_refs = (*logged_environment_refs, *cleanup.environment_refs)
-    if (
-        {ref.record_id for ref in logged_environment_refs}
-        - environment_by_id.keys()
-        or {ref.record_id for ref in cleanup.environment_refs}
-        != environment_by_id.keys()
-    ):
+    if {
+        ref.record_id for ref in logged_environment_refs
+    } - environment_by_id.keys() or {
+        ref.record_id for ref in cleanup.environment_refs
+    } != environment_by_id.keys():
         raise ValueError("CLEANUP_ENVIRONMENT_UNRESOLVED")
     for environment_ref in environment_refs:
         target_environment = environment_by_id.get(environment_ref.record_id)

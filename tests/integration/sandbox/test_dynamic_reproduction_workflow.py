@@ -786,8 +786,7 @@ async def test_operational_failure_has_no_r6_verdict_or_gate() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unexpected_failure_after_open_still_cleans_and_records_safe_failure(
-) -> None:
+async def test_unexpected_failure_is_cleaned_and_recorded_safely() -> None:
     artifacts = MemoryArtifacts()
     request = reproduction_request()
     request_ref = cast(StoredDataRef, reference(request))

@@ -45,8 +45,10 @@ class SandboxHealthChecker:
         for item in requirements.items:
             expected = {value for value in (item.expected, *item.alternatives) if value}
             if item.kind == "HEALTH_CHECK":
-                actual = "healthy" if state.health_status in {None, "healthy"} else str(
-                    state.health_status
+                actual = (
+                    "healthy"
+                    if state.health_status in {None, "healthy"}
+                    else str(state.health_status)
                 )
                 status: Literal["MATCH", "MISMATCH"] = (
                     "MATCH" if not expected or actual in expected else "MISMATCH"

@@ -42,9 +42,7 @@ from tests.integration.sandbox.test_dynamic_reproduction_workflow import (
 @dataclass
 class _Docker:
     materialized: list[tuple[str, bytes, str]] = field(default_factory=list)
-    executed: list[tuple[str, tuple[str, ...], int, str]] = field(
-        default_factory=list
-    )
+    executed: list[tuple[str, tuple[str, ...], int, str]] = field(default_factory=list)
 
     async def materialize_poc(
         self, container_id: str, content: bytes, content_digest: str
@@ -87,17 +85,11 @@ def _selection_tool(chain: dict[str, object]) -> DynamicReproductionToolRequest:
         make("DynamicReproductionToolRequest")
         | {
             "request_ref": reference(chain["request"]).model_dump(mode="json"),
-            "reproduction_plan_ref": reference(chain["plan"]).model_dump(
-                mode="json"
-            ),
-            "environment_ref": reference(chain["environment"]).model_dump(
-                mode="json"
-            ),
+            "reproduction_plan_ref": reference(chain["plan"]).model_dump(mode="json"),
+            "environment_ref": reference(chain["environment"]).model_dump(mode="json"),
             "action": "USE_POC_CANDIDATE",
             "command": None,
-            "poc_candidate_ref": reference(chain["candidate"]).model_dump(
-                mode="json"
-            ),
+            "poc_candidate_ref": reference(chain["candidate"]).model_dump(mode="json"),
         },
     )
 
@@ -118,12 +110,8 @@ def _command_tool(
         make("DynamicReproductionToolRequest")
         | {
             "request_ref": reference(chain["request"]).model_dump(mode="json"),
-            "reproduction_plan_ref": reference(chain["plan"]).model_dump(
-                mode="json"
-            ),
-            "environment_ref": reference(chain["environment"]).model_dump(
-                mode="json"
-            ),
+            "reproduction_plan_ref": reference(chain["plan"]).model_dump(mode="json"),
+            "environment_ref": reference(chain["environment"]).model_dump(mode="json"),
             "action": "RUN_COMMAND",
             "command": command,
             "poc_candidate_ref": None,
@@ -167,7 +155,9 @@ def _prepared_workflow() -> tuple[
     workflow._records["request"] = cast(Record, chain["request"])
     workflow._policy = chain["policy"]
     workflow._prepared = PreparedSandbox(
-        chain["recipe"], chain["environment"], ()  # type: ignore[arg-type]
+        chain["recipe"],
+        chain["environment"],
+        (),  # type: ignore[arg-type]
     )
     workflow._start_log(
         request_ref,

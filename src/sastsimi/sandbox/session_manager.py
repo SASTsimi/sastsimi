@@ -439,9 +439,8 @@ class ReproductionSessionManager:
             and record.environment_ref == environment_ref
             and record.environment_recipe_ref == recipe_ref
         ]
-        if (
-            len(command_records) != 1
-            or not is_poc_execution_command(command_records[0])
+        if len(command_records) != 1 or not is_poc_execution_command(
+            command_records[0]
         ):
             return False, None
         command_starts = [

@@ -298,8 +298,7 @@ def test_disproved_requires_actual_successful_observation() -> None:
     )
     chain["conclusion"] = wire(
         DynamicReproductionConclusion,
-        chain["conclusion"].model_dump(mode="json")
-        | {"proposed_outcome": "DISPROVED"},
+        chain["conclusion"].model_dump(mode="json") | {"proposed_outcome": "DISPROVED"},
     )
 
     finalized = _manager().finalize(
@@ -324,9 +323,7 @@ def test_conclusion_cannot_replace_the_runtime_observation_set() -> None:
     )
 
     with pytest.raises(ValueError, match="RECORD_REVISION_MISMATCH"):
-        _manager().finalize(
-            data=changed, log=chain["log"], meta=chain["result"].meta
-        )
+        _manager().finalize(data=changed, log=chain["log"], meta=chain["result"].meta)
 
 
 @pytest.mark.parametrize(
@@ -415,9 +412,7 @@ def test_policy_block_before_agent_has_no_poc_or_r6_verdict() -> None:
         }
     )
 
-    finalized = _manager().finalize(
-        data=blocked, log=log, meta=chain["result"].meta
-    )
+    finalized = _manager().finalize(data=blocked, log=log, meta=chain["result"].meta)
 
     assert finalized.result.status == "BLOCKED"
     assert finalized.result.agent_invoked is False

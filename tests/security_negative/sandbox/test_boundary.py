@@ -394,9 +394,7 @@ def _forbidden_spec(context: BoundaryContext, case: str) -> SandboxRunSpec:
     if case == "WRITE_MOUNT":
         return replace(spec, mounts=(replace(mount, read_only=False),))
     if case == "OTHER_WORKSPACE":
-        return replace(
-            spec, mounts=(replace(mount, source=context.other_workspace),)
-        )
+        return replace(spec, mounts=(replace(mount, source=context.other_workspace),))
     if case == "HOST_PID_NAMESPACE":
         return replace(spec, pid_mode="host")
     if case == "HOST_IPC_NAMESPACE":

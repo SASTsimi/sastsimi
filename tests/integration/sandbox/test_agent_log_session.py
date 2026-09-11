@@ -41,9 +41,7 @@ def _agent_event(
 def test_log_append_is_ordered_and_idempotent_only_for_identical_event() -> None:
     chain = dynamic_success()
     manager = _manager()
-    started = manager.start(
-        request_ref=bound(chain["request"]), meta=chain["log"].meta
-    )
+    started = manager.start(request_ref=bound(chain["request"]), meta=chain["log"].meta)
     event = _agent_event(
         event_id="agent-started",
         sequence=2,
@@ -73,9 +71,7 @@ def test_log_append_is_ordered_and_idempotent_only_for_identical_event() -> None
 def test_log_rejects_stale_revision_skipped_sequence_and_finish_without_start() -> None:
     chain = dynamic_success()
     manager = _manager()
-    started = manager.start(
-        request_ref=bound(chain["request"]), meta=chain["log"].meta
-    )
+    started = manager.start(request_ref=bound(chain["request"]), meta=chain["log"].meta)
     current = manager.append(
         previous=started,
         event=_agent_event(
@@ -125,9 +121,7 @@ def test_log_rejects_stale_revision_skipped_sequence_and_finish_without_start() 
 def test_log_rejects_event_time_regression() -> None:
     chain = dynamic_success()
     manager = _manager()
-    started = manager.start(
-        request_ref=bound(chain["request"]), meta=chain["log"].meta
-    )
+    started = manager.start(request_ref=bound(chain["request"]), meta=chain["log"].meta)
 
     with pytest.raises(ValueError, match="RECOVERY_FAILED"):
         manager.append(
@@ -145,9 +139,7 @@ def test_log_rejects_event_time_regression() -> None:
 def test_log_rejects_a_second_session_start() -> None:
     chain = dynamic_success()
     manager = _manager()
-    started = manager.start(
-        request_ref=bound(chain["request"]), meta=chain["log"].meta
-    )
+    started = manager.start(request_ref=bound(chain["request"]), meta=chain["log"].meta)
 
     with pytest.raises(ValueError, match="RECOVERY_FAILED"):
         manager.append(
@@ -165,9 +157,7 @@ def test_log_rejects_a_second_session_start() -> None:
 def test_log_rejects_events_after_session_finish() -> None:
     chain = dynamic_success()
     manager = _manager()
-    started = manager.start(
-        request_ref=bound(chain["request"]), meta=chain["log"].meta
-    )
+    started = manager.start(request_ref=bound(chain["request"]), meta=chain["log"].meta)
     finished = manager.append(
         previous=started,
         event=_agent_event(

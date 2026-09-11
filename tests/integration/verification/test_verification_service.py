@@ -529,6 +529,26 @@ class _Fixture:
             }
         )
         candidate_ref = self.records.add(candidate)
+        tool = base["tool_requests"][0].model_copy(
+            update={
+                "meta": dynamic_meta("dynamic_reproduction_tool_request"),
+                "request_ref": request_ref,
+                "reproduction_plan_ref": plan_ref,
+                "environment_ref": environment_ref,
+            }
+        )
+        tool_ref = self.records.add(tool)
+        command = base["command_records"][0].model_copy(
+            update={
+                "meta": dynamic_meta("sandbox_command_record"),
+                "request_ref": request_ref,
+                "reproduction_plan_ref": plan_ref,
+                "environment_recipe_ref": recipe_ref,
+                "environment_ref": environment_ref,
+                "tool_request_ref": tool_ref,
+            }
+        )
+        command_ref = self.records.add(command)
         events = tuple(
             event.model_copy(
                 update={
@@ -536,17 +556,30 @@ class _Fixture:
                         environment_ref if event.environment_ref is not None else None
                     ),
                     "environment_recipe_ref": (
-                        recipe_ref
-                        if event.environment_recipe_ref is not None
-                        else None
+                        recipe_ref if event.environment_recipe_ref is not None else None
                     ),
                     "poc_candidate_ref": (
                         candidate_ref if event.poc_candidate_ref is not None else None
                     ),
+                    "tool_request_ref": (
+                        tool_ref if event.tool_request_ref is not None else None
+                    ),
+                    "command_ref": (
+                        command_ref if event.command_ref is not None else None
+                    ),
+                    "command_digest": (
+                        command.command_digest
+                        if event.command_digest is not None
+                        else None
+                    ),
                     "input_refs": (
                         (policy_ref,)
                         if event.event_type == "SESSION_STARTED"
-                        else event.input_refs
+                        else (
+                            (candidate.content_ref,)
+                            if event.event_type.startswith("POC_EXECUTION_")
+                            else event.input_refs
+                        )
                     ),
                     "output_refs": (
                         (self.evidence_ref,)

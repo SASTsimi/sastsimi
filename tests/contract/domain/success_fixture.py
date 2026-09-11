@@ -135,9 +135,7 @@ def dynamic_success() -> dict[str, Any]:
             item["input_refs"] = [bound(policy)]
         if event_type.startswith("POC_"):
             item["poc_candidate_ref"] = bound(candidate)
-        if event_type.startswith("POC_EXECUTION_") or event_type.startswith(
-            "COMMAND_"
-        ):
+        if event_type.startswith("POC_EXECUTION_") or event_type.startswith("COMMAND_"):
             item.update(
                 actor="TOOL_RUNTIME",
                 poc_candidate_ref=bound(candidate),
