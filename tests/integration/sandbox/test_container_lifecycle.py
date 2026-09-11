@@ -326,6 +326,7 @@ async def test_prepare_bounds_local_base_image_inspection(
     )
 
     assert docker.inspected_images == [("fixture:local", 10_000)]
+    assert docker.built == [(f"FROM {IMAGE_DIGEST}\n".encode(), 10_000)]
 
 
 @pytest.mark.asyncio

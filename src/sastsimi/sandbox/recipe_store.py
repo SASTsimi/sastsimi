@@ -35,6 +35,7 @@ _KNOWN_RECIPE_NAMES = frozenset(
     }
 )
 _FROM = re.compile(r"^\s*FROM\s+([^\s]+)", re.IGNORECASE | re.MULTILINE)
+_IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class RecipeDockerPort(Protocol):
@@ -123,8 +124,13 @@ class EnvironmentRecipeStore:
                     timeout_ms=build_timeout_ms,
                 )
             )
+            trusted_dockerfile = self._pin_base_image(
+                content,
+                base_image=base_image,
+                base_digest=base_digest,
+            )
             built_digest = await docker.build(
-                dockerfile,
+                trusted_dockerfile,
                 labels,
                 timeout_ms=build_timeout_ms,
             )
@@ -184,6 +190,28 @@ class EnvironmentRecipeStore:
         if any(character in image for character in "\r\n\0"):
             raise ValueError("DOCKERFILE_BASE_IMAGE_INVALID")
         return image
+
+    @staticmethod
+    def _pin_base_image(
+        content: str,
+        *,
+        base_image: str,
+        base_digest: str,
+    ) -> bytes:
+        if base_image == "scratch":
+            if base_digest != "scratch":
+                raise ValueError("DOCKER_IMAGE_DIGEST_INVALID")
+            return content.encode("utf-8")
+        if not _IMAGE_DIGEST.fullmatch(base_digest):
+            raise ValueError("DOCKER_IMAGE_DIGEST_INVALID")
+        match = _FROM.search(content)
+        if match is None or match.group(1) != base_image:
+            raise ValueError("DOCKERFILE_BASE_IMAGE_INVALID")
+        return (
+            content[: match.start(1)]
+            + base_digest
+            + content[match.end(1) :]
+        ).encode("utf-8")
 
     @staticmethod
     def _validated_dockerfile(dockerfile: bytes) -> str:
