@@ -565,11 +565,21 @@ class WorkflowRunner:
         metadata = registered.meta
         work_id = registered.work_id
         if registered.status == "PENDING":
-            ready = self.enqueue_registered(
-                registered,
-                scope,
-                identity,
-                role=role,
+            # Existing trusted aggregate registrars may atomically create a
+            # PENDING work without using WorkflowRunner's REGISTER_WORK
+            # reservation.  `activate` immediately claims an attempt under
+            # the supplied scope, whereas the downstream-only
+            # `enqueue_registered` boundary deliberately requires the exact
+            # registration scope before exposing READY work to another worker.
+            ready_action = self.action(
+                registered, identity, role, "CHANGE_WORK_STATE"
+            )
+            ready = self.runtime.work.make_ready(
+                self.transition(
+                    registered,
+                    self.authorize(registered, ready_action),
+                    "READY",
+                )
             )
         elif registered.status == "READY":
             ready = self.runtime.work.get(str(registered.work_id))

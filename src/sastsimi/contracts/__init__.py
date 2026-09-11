@@ -143,6 +143,7 @@ from .refs import validate_ref_scope as validate_ref_scope
 from .reporting import Finding as Finding
 from .reporting import FindingConditionSource as FindingConditionSource
 from .reporting import FindingIndexState as FindingIndexState
+from .reporting import ReportProcessState as ReportProcessState
 from .reporting import ReportDraft as ReportDraft
 from .result_registry import RESULT_REGISTRY as RESULT_REGISTRY
 from .result_registry import ResultBinding as ResultBinding

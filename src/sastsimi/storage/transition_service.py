@@ -47,6 +47,7 @@ from .primitive_projection import (
 )
 from .records import next_meta
 from .report_projection import validate_report_output
+from .report_state import report_process_projection
 from .run_projections import run_policy_projection
 from .run_states import get_run, save_run
 from .verification_projection import verification_projection
@@ -422,6 +423,13 @@ class TransitionService:
                 index_ref = records.stage(connection, index)
                 records.publish(connection, index_ref)
                 self.publish_pointer(connection, index_ref)
+            report_state = report_process_projection(
+                self.works, connection, previous, request.records, committed
+            )
+            if report_state is not None:
+                report_state_ref = records.stage(connection, report_state)
+                records.publish(connection, report_state_ref)
+                self.publish_pointer(connection, report_state_ref)
             primitive_index = primitive_index_projection(
                 self.works,
                 connection,

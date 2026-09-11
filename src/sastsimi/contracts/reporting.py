@@ -3,10 +3,10 @@
 from collections.abc import Mapping
 from typing import Literal, Self
 
-from pydantic import model_validator
+from pydantic import AwareDatetime, model_validator
 
 from ._domain import DomainRecord, exact, exact_set, unique, walk
-from .base import ContractModel, NonEmptyStr, PositiveInt
+from .base import ContractModel, NonEmptyStr, NonNegativeInt, PositiveInt
 from .canonical_json import canonical_bytes
 from .dynamic import DynamicReproductionResult, PoCBundle
 from .gates import (
@@ -98,6 +98,43 @@ class FindingIndexState(DomainRecord):
         if (self.status == "STALE") != bool(self.invalidated_by_refs):
             raise ValueError("FINDING_INVALIDATION_REQUIRED")
         unique(self.invalidated_by_refs)
+        return self
+
+
+class ReportProcessState(DomainRecord):
+    """Current report-draft state; it is not a disclosure decision."""
+
+    KIND = "report_process_state"
+    HYPOTHESIS = True
+    ATTEMPT = False
+    status: Literal["NOT_REQUESTED", "DRAFTED", "FAILED"]
+    report_draft_ref: StoredDataRef | None
+    started_at: AwareDatetime | None
+    finished_at: AwareDatetime | None
+    elapsed_ms: NonNegativeInt
+
+    @model_validator(mode="after")
+    def lifecycle_shape(self) -> Self:
+        if self.status == "NOT_REQUESTED":
+            if (
+                self.report_draft_ref is not None
+                or self.started_at is not None
+                or self.finished_at is not None
+                or self.elapsed_ms != 0
+            ):
+                raise ValueError("REPORT_NOT_REQUESTED_STATE_MISMATCH")
+            return self
+
+        if self.started_at is None or self.finished_at is None:
+            raise ValueError("REPORT_TERMINAL_TIMES_REQUIRED")
+        if self.finished_at < self.started_at:
+            raise ValueError("REPORT_FINISHED_BEFORE_STARTED")
+        if self.status == "DRAFTED":
+            if self.report_draft_ref is None:
+                raise ValueError("REPORT_DRAFT_REF_REQUIRED")
+            require_record_ref(self.report_draft_ref, "report_draft")
+        elif self.report_draft_ref is not None:
+            raise ValueError("FAILED_REPORT_MUST_NOT_REFERENCE_DRAFT")
         return self
 
 

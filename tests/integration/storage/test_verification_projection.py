@@ -38,6 +38,9 @@ def test_false_terminal_commit_projects_process_and_empty_primitive_index(
     h, runtime, runner, orchestration, proposal, bundle = prepared_hypothesis(
         tmp_path, parallel=4
     )
+    (initial_report_state,) = runtime.queries.current_records(
+        "a1", "report_process_state"
+    )
     (hypothesis,) = runtime.queries.current_records("a1", "vulnerability_hypothesis")
     (process,) = runtime.queries.current_records("a1", "hypothesis_process_state")
     scope = runtime.budget_registry.current_state("a1").budget_binding_ref
@@ -238,6 +241,10 @@ def test_false_terminal_commit_projects_process_and_empty_primitive_index(
         (current,) = runtime.queries.current_records("a1", "hypothesis_process_state")
         assert current.status == "VERIFYING" and current.verification_result_ref is None
         assert runtime.queries.current_records("a1", "primitive_index_state") == ()
+        (report_state,) = runtime.queries.current_records(
+            "a1", "report_process_state"
+        )
+        assert report_state == initial_report_state
         return
     completed = runner.complete(work, owner, "VERIFICATION", (final,))
     assert completed.status == "SUCCEEDED"
@@ -252,3 +259,11 @@ def test_false_terminal_commit_projects_process_and_empty_primitive_index(
         index.current_verification_ref == reference(final)
         and index.primitive_refs == ()
     )
+    (report_state,) = runtime.queries.current_records("a1", "report_process_state")
+    assert report_state.status == "NOT_REQUESTED"
+    assert report_state.report_draft_ref is None
+    assert (
+        report_state.meta.logical_record_id
+        == initial_report_state.meta.logical_record_id
+    )
+    assert report_state.meta.revision_number == 2

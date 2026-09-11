@@ -44,7 +44,7 @@ from .llm import (
 )
 from .records import PolicyCacheMeta, RecordMeta, RunMeta
 from .refs import PolicyCacheRef, RunStoredDataRef, StoredDataRef
-from .reporting import FindingIndexState
+from .reporting import FindingIndexState, ReportProcessState
 from .result_registry import RESULT_REGISTRY
 from .static import CodeContextRequest, StaticToolProfile
 from .verification import PlaybookApplication, PlaybookPolicy, VerificationPlaybook
@@ -73,6 +73,7 @@ CORE_SCHEMAS: Mapping[str, type[BaseModel]] = MappingProxyType(
         "dynamic_reproduction_state": DynamicReproductionState,
         "primitive_index_state": PrimitiveIndexState,
         "finding_index_state": FindingIndexState,
+        "report_process_state": ReportProcessState,
         "provider_validation_evidence": ProviderValidationEvidence,
         "client_execution_profile": ClientExecutionProfile,
         "provider_profile": ProviderProfile,

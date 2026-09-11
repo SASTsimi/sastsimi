@@ -15,7 +15,7 @@ from sastsimi.contracts.hypothesis import (
     HypothesisProposal,
     VulnerabilityHypothesis,
 )
-from sastsimi.contracts.reporting import FindingIndexState
+from sastsimi.contracts.reporting import FindingIndexState, ReportProcessState
 from sastsimi.contracts.verification import (
     ConEvidenceResult,
     PlaybookApplication,
@@ -238,7 +238,23 @@ def verification_projection(
             updated_at=works.clock.now(),
         )
     )
-    projections: list[Record] = [terminal, primitive_index]
+    report_states = current_scoped(
+        works, connection, work, "report_process_state", ReportProcessState
+    )
+    if len(report_states) != 1:
+        raise ValueError("REPORT_PROCESS_STATE_REQUIRED")
+    report_state = report_states[0]
+    reset_report_state = ReportProcessState.model_validate(
+        dict(
+            meta=next_meta(report_state.meta, works.clock, works.ids),
+            status="NOT_REQUESTED",
+            report_draft_ref=None,
+            started_at=None,
+            finished_at=None,
+            elapsed_ms=0,
+        )
+    )
+    projections: list[Record] = [terminal, primitive_index, reset_report_state]
     finding_indices = current_scoped(
         works, connection, work, "finding_index_state", FindingIndexState
     )

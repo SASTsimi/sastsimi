@@ -14,7 +14,7 @@ from sastsimi.contracts.hypothesis import (
 )
 from sastsimi.contracts.ids import HypothesisId
 from sastsimi.contracts.refs import StoredDataRef
-from sastsimi.contracts.reporting import FindingIndexState
+from sastsimi.contracts.reporting import FindingIndexState, ReportProcessState
 from sastsimi.contracts.static import (
     CodeWorkspace,
     RuleExecutionRecord,
@@ -264,6 +264,20 @@ def hypothesis_projection(
             )
         )
     )
+    report_state = ReportProcessState.model_validate_json(
+        canonical_bytes(
+            dict(
+                meta=fresh_meta(
+                    meta, "report_process_state", works.clock, works.ids
+                ),
+                status="NOT_REQUESTED",
+                report_draft_ref=None,
+                started_at=None,
+                finished_at=None,
+                elapsed_ms=0,
+            )
+        )
+    )
     proposal_state = ProposalProcessState.model_validate_json(
         canonical_bytes(
             dict(
@@ -286,4 +300,4 @@ def hypothesis_projection(
             )
         )
     )
-    return (proposal_state, hypothesis, process, index)
+    return (proposal_state, hypothesis, process, index, report_state)
