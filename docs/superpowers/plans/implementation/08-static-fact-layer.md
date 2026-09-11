@@ -1498,6 +1498,17 @@ Python: 3.12.10
 Base SHA: b3b2d9918ea815b9b936c09c98e4c53fd54937dc
 Evidence commit full-suite tested: no
 
+### Post-evidence Blocker/High hardening
+
+The merge candidate implementation is `1c574a0784fb31d79a4ee8a463cd72383171c66e`.
+It adds fail-closed process cancellation, owned probe cleanup, a hard-bound CodeQL
+output quota, and lexical symlink/junction/reparse rejection. The earlier full-suite
+result above remains historical evidence for its recorded SHA and is not reused as
+evidence for this candidate. Direct regression checks, Ruff, strict mypy, the
+architecture validator, and `git diff --check` passed; the complete
+`uv run pytest tests -q` run is delegated to the final PR #150 CI exactly once under
+the T08–T17 speed-first rule.
+
 Task 10 verifies the real static slice through one private composition seam and
 separate public-boundary integration proofs for repository preparation, all three
 tool adapters, exact publication, normalization, Context Retrieval, and recovery.
