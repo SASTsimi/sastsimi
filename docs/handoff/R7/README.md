@@ -1,26 +1,26 @@
-# R7 Dynamic Reproduction Agent Prompt Drafts
+# R7 Dynamic Reproduction Agent Prompt Draft
 
-These files are review drafts for the R7 Dynamic Reproduction Agent. They are
-not yet ACTIVE Prompt Registry templates.
+This is a review draft for the R7 Dynamic Reproduction Agent. It is not yet an
+ACTIVE Prompt Registry template.
 
 Implementation handoff: [`handoff.md`](./handoff.md)
 
-## Composition
+## Prompt
 
-Each task-specific prompt is composed with
-[`common-agent-prompt.md`](./common-agent-prompt.md). The runtime supplies the
-exact `task_kind`, authorized input slots, output schema, tool policy, execution
-limits, retry policy, and redaction policy.
+[`r7-dynamic-reproduction-agent-prompt.md`](./r7-dynamic-reproduction-agent-prompt.md) contains the common role and boundaries together with
+all five task-specific instructions. The runtime uses this single prompt for
+every R7 invocation, supplies the exact `task_kind` and authorized input slots,
+and the Agent applies only the section matching the current task kind.
 
 ## Invocation order
 
-1. [`DERIVE_ENVIRONMENT`](./derive-environment.md)
-2. [`PLAN_REPRODUCTION`](./plan-reproduction.md)
+1. `DERIVE_ENVIRONMENT`
+2. `PLAN_REPRODUCTION`
 3. Sandbox admission and environment preparation by trusted non-LLM components
-4. [`CREATE_POC_CANDIDATE`](./create-poc-candidate.md)
-5. [`EXECUTE_REPRODUCTION`](./execute-reproduction.md), repeated one tool
+4. `CREATE_POC_CANDIDATE`
+5. `EXECUTE_REPRODUCTION`, repeated one tool
    request per turn in the same logical session and attempt
-6. [`INTERPRET_ATTEMPT`](./interpret-attempt.md), only after `FINISH`
+6. `INTERPRET_ATTEMPT`, only after `FINISH`
 
 ## Validation drafts
 

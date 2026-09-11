@@ -6,17 +6,17 @@ inputs; they are not embedded in the reusable Agent prompts.
 
 ## Fixture ground truth
 
-`fixture/app.py` deliberately resolves an untrusted report name without
-checking that the result remains under `reports/`.
+`fixture/app.py` deliberately resolves an untrusted file path without
+checking that the result remains under `allowed-files/`.
 
 Verified locally on 2026-09-09 with Python 3.12.13 and Flask 3.1.2:
 
 ```text
-uv run --project . python reproduce.py public.txt
-=> {"status_code": 200, "content": "PUBLIC_REPORT"}
+uv run --project . python reproduce.py allowed.txt
+=> {"status_code": 200, "content": "ALLOWED_FILE_CONTENT"}
 
-uv run --project . python reproduce.py ../fixtures/probe.txt
-=> {"status_code": 200, "content": "R7_LOCAL_PROBE"}
+uv run --project . python reproduce.py ../outside-allowed-directory/path-traversal-target.txt
+=> {"status_code": 200, "content": "PATH_TRAVERSAL_TARGET_CONTENT"}
 ```
 
 The marker remains inside the synthetic project. No external account, secret,

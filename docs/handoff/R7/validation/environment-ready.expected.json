@@ -45,8 +45,8 @@
         "items": [
           {"requirement_id": "req-python", "kind": "VERSION", "required": true, "expected": ">=3.12,<3.13", "source_refs": ["FR-PYPROJECT"]},
           {"requirement_id": "req-flask", "kind": "VERSION", "required": true, "expected": "Flask==3.1.2", "source_refs": ["FR-PYPROJECT", "FR-UVLOCK-FLASK"]},
-          {"requirement_id": "req-probe", "kind": "FIXTURE", "required": true, "expected": "fixtures/probe.txt", "source_refs": ["FR-FIXTURE-README", "FR-PROBE"]},
-          {"requirement_id": "req-health", "kind": "HEALTH_CHECK", "required": true, "expected": "A normal report read returns status 200 with PUBLIC_REPORT.", "source_refs": ["FR-FIXTURE-README"]}
+          {"requirement_id": "req-traversal-target", "kind": "FIXTURE", "required": true, "expected": "outside-allowed-directory/path-traversal-target.txt", "source_refs": ["FR-FIXTURE-README", "FR-TRAVERSAL-TARGET"]},
+          {"requirement_id": "req-health", "kind": "HEALTH_CHECK", "required": true, "expected": "A normal allowed-file read returns status 200 with ALLOWED_FILE_CONTENT.", "source_refs": ["FR-FIXTURE-README"]}
         ]
       }
     },
@@ -90,8 +90,8 @@
         "checks": [
           {"requirement_id": "req-python", "status": "MATCH", "actual": "3.12.13"},
           {"requirement_id": "req-flask", "status": "MATCH", "actual": "3.1.2"},
-          {"requirement_id": "req-probe", "status": "MATCH", "actual": "fixtures/probe.txt"},
-          {"requirement_id": "req-health", "status": "MATCH", "actual": "exit=0; content=PUBLIC_REPORT"}
+          {"requirement_id": "req-traversal-target", "status": "MATCH", "actual": "outside-allowed-directory/path-traversal-target.txt"},
+          {"requirement_id": "req-health", "status": "MATCH", "actual": "exit=0; content=ALLOWED_FILE_CONTENT"}
         ]
       }
     }
@@ -107,7 +107,7 @@
     {"target": "ENV1.checks[*].status", "operator": "ALL_EQUAL", "value": "MATCH"},
     {"target": "ENV1.container_instance_id", "operator": "EQUALS", "value": "container-r7-001"},
     {"target": "PL1.reproduction_goal", "operator": "EQUALS", "value": "DQ1.goal"},
-    {"target": "PL1.requested_evidence", "operator": "CONTAINS", "value": ["normal report observation", "R7_LOCAL_PROBE observation"]},
+    {"target": "PL1.requested_evidence", "operator": "CONTAINS", "value": ["normal allowed-file observation", "PATH_TRAVERSAL_TARGET_CONTENT observation"]},
     {"target": "next_task_kind", "operator": "EQUALS", "value": "CREATE_POC_CANDIDATE"},
     {"target": ["DynamicReproductionConclusion", "DynamicReproductionResult", "PoCBundle"], "operator": "ABSENT"}
   ],

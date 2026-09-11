@@ -6,11 +6,11 @@ from app import app
 
 def main() -> int:
     if len(sys.argv) != 2:
-        print("usage: python reproduce.py <report-name>", file=sys.stderr)
+        print("usage: python reproduce.py <file-path>", file=sys.stderr)
         return 2
 
     with app.test_client() as client:
-        response = client.get("/report", query_string={"name": sys.argv[1]})
+        response = client.get("/file", query_string={"path": sys.argv[1]})
 
     print(
         json.dumps(

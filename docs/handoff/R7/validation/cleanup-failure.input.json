@@ -5,7 +5,7 @@
   "source": {
     "type": "SYNTHETIC_FIXTURE_WITH_VERIFIED_EXECUTION",
     "fixture_path": "docs/handoff/R7/validation/fixture",
-    "verified_observation": {"status_code": 200, "content": "R7_LOCAL_PROBE"}
+    "verified_observation": {"status_code": 200, "content": "PATH_TRAVERSAL_TARGET_CONTENT"}
   },
   "scope": {
     "analysis_id": "AN-R7-1",
@@ -48,7 +48,7 @@
       "command": null,
       "poc_candidate_ref": "PC1",
       "recreate_reason": null,
-      "rationale": "Execute the exact candidate and observe whether the local probe file is returned.",
+      "rationale": "Execute the exact candidate and observe whether the path traversal target file is returned.",
       "llm_call_id": "LLM-TR1"
     },
     "finish_request": {
@@ -67,7 +67,7 @@
     "observation": {
       "record_id": "OBS-PROBE-1",
       "action_id": "POC-EXEC-1",
-      "content": {"status_code": 200, "body": "R7_LOCAL_PROBE"}
+      "content": {"status_code": 200, "body": "PATH_TRAVERSAL_TARGET_CONTENT"}
     },
     "conclusion": {
       "record_id": "CONCLUSION1",
@@ -78,7 +78,7 @@
       "observation_refs": ["OBS-PROBE-1"],
       "proposed_outcome": "SUPPORTED",
       "hypothesis_evidence_refs": ["OBS-PROBE-1"],
-      "hypothesis_linkage": "The request escaped the reports directory and returned the isolated probe marker.",
+      "hypothesis_linkage": "The request escaped the allowed-files directory and returned the isolated path traversal target marker.",
       "limitations": ["The observation demonstrates read access only inside the isolated synthetic fixture."],
       "llm_call_id": "LLM-CONCLUSION1"
     }

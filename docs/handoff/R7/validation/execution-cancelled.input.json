@@ -47,7 +47,7 @@
       "command": null,
       "poc_candidate_ref": "PC1",
       "recreate_reason": null,
-      "rationale": "Execute the exact current candidate and observe whether the local probe file is returned.",
+      "rationale": "Execute the exact current candidate and observe whether the path traversal target file is returned.",
       "llm_call_id": "LLM-TR1"
     }
   },
@@ -80,7 +80,7 @@
       "source_attempt_id": "ADYN1",
       "source_action_id": "POC-EXEC-1",
       "arrived_after_result_commit": true,
-      "content": "R7_LOCAL_PROBE"
+      "content": "PATH_TRAVERSAL_TARGET_CONTENT"
     }
   }
 }

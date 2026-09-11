@@ -21,7 +21,7 @@
       "record_id": "DQ1",
       "purpose": "POC_CONFIRMATION",
       "initial_verdict": "TRUE",
-      "goal": "Determine whether an untrusted report name can read a file outside the reports directory in the isolated fixture.",
+      "goal": "Determine whether an untrusted file path can read a file outside the allowed-files directory in the isolated fixture.",
       "environment_needs": [
         {
           "need_id": "need-runtime",
@@ -35,17 +35,17 @@
         {
           "need_id": "need-probe",
           "kind": "FIXTURE",
-          "description": "Provide the local probe file used to distinguish traversal from a normal report read.",
+          "description": "Provide the path traversal target file used to distinguish traversal from a normal allowed-file read.",
           "required": true,
           "source_refs": [
             "FR-FIXTURE-README",
-            "FR-PROBE"
+            "FR-TRAVERSAL-TARGET"
           ]
         },
         {
           "need_id": "need-health",
           "kind": "HEALTH_CHECK",
-          "description": "Confirm that a normal report can be read before testing traversal.",
+          "description": "Confirm that a normal allowed file can be read before testing traversal.",
           "required": true,
           "source_refs": [
             "FR-FIXTURE-README"
@@ -87,25 +87,25 @@
       {
         "ref": "FR-FIXTURE-README",
         "path": "fixture/README.md",
-        "content_hash": "sha256:c3cd76a96ddb471a068b1b7c0db26e5768bb48d1360ecc6461efc85a91945fd8",
-        "content": "# R7 path traversal validation fixture\n\nThis project is a synthetic local-only Flask application. It contains a\ndeliberate path traversal flaw for evaluating R7 dynamic reproduction behavior.\n\nHealth Check:\n\n```text\nuv run --project . python reproduce.py public.txt\n```\n\nReproduction probe:\n\n```text\nuv run --project . python reproduce.py ../fixtures/probe.txt\n```\n"
+        "content_hash": "sha256:1c2e976823c99608db66a44d59c346d8a4568544bae69283d4a21a1ca0dd7d90",
+        "content": "# R7 path traversal validation fixture\n\nThis project is a synthetic local-only Flask application. It contains a\ndeliberate path traversal flaw for evaluating R7 dynamic reproduction behavior.\n\n- `allowed-files/allowed.txt` is the file that the application is intended to\n  read during the normal baseline check.\n- `outside-allowed-directory/path-traversal-target.txt` is outside that intended\n  directory. Reading it through `../` demonstrates path traversal.\n\nHealth Check:\n\n```text\nuv run --project . python reproduce.py allowed.txt\n```\n\nPath traversal request:\n\n```text\nuv run --project . python reproduce.py ../outside-allowed-directory/path-traversal-target.txt\n```\n"
       }
     ],
     "project_artifacts": [
       {
         "ref": "FR-APP",
         "path": "fixture/app.py",
-        "content_hash": "sha256:40b564d40b6ed3e6b745dea2a1bcf732cedca4f580b0c20db1c1b6343ddf7647"
+        "content_hash": "sha256:ec4fa028498bc3de45a8a8cd8938c830eb9eababfee5bd026f4fe5bc80925fd2"
       },
       {
         "ref": "FR-REPRODUCE",
         "path": "fixture/reproduce.py",
-        "content_hash": "sha256:13d762221a7ab81d6e3f8c887c7fde239e3f7c6a298f108709effacc5317e267"
+        "content_hash": "sha256:72fa84daba33ff3db0b41dbe83fc49710d88ac68c360600dfc45767f8f7fc1d0"
       },
       {
-        "ref": "FR-PROBE",
-        "path": "fixture/fixtures/probe.txt",
-        "content_hash": "sha256:c9aaa1acc01e7ee00fce2ce977470d2bb5d04af086b3d44bb9b5340e9bf9e4be"
+        "ref": "FR-TRAVERSAL-TARGET",
+        "path": "fixture/outside-allowed-directory/path-traversal-target.txt",
+        "content_hash": "sha256:2cf918e53941077b71a276b7283b35c74be470fac7bc7057b0f9c786cac65e2b"
       }
     ],
     "sandbox_profile": {
@@ -209,9 +209,9 @@
       "observations": {
         "python_version": "3.12.13",
         "flask_version": "3.1.2",
-        "probe_file": "fixtures/probe.txt",
+        "path_traversal_target_file": "outside-allowed-directory/path-traversal-target.txt",
         "health_check_exit_code": 0,
-        "health_check_stdout_contains": "PUBLIC_REPORT",
+        "health_check_stdout_contains": "ALLOWED_FILE_CONTENT",
         "resources_created": [
           "container-r7-001"
         ]

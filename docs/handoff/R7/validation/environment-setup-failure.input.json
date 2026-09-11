@@ -23,8 +23,8 @@
       "items": [
         {"requirement_id": "req-python", "kind": "VERSION", "required": true, "expected": ">=3.12,<3.13"},
         {"requirement_id": "req-flask", "kind": "VERSION", "required": true, "expected": "Flask==3.1.2"},
-        {"requirement_id": "req-probe", "kind": "FIXTURE", "required": true, "expected": "fixtures/probe.txt"},
-        {"requirement_id": "req-health", "kind": "HEALTH_CHECK", "required": true, "expected": "A normal report read returns status 200 with PUBLIC_REPORT."}
+        {"requirement_id": "req-traversal-target", "kind": "FIXTURE", "required": true, "expected": "outside-allowed-directory/path-traversal-target.txt"},
+        {"requirement_id": "req-health", "kind": "HEALTH_CHECK", "required": true, "expected": "A normal allowed-file read returns status 200 with ALLOWED_FILE_CONTENT."}
       ]
     },
     "plan": {"record_id": "PL1", "request_ref": "DQ1", "environment_requirements_ref": "ER1", "sandbox_profile_ref": "SP1"},
@@ -44,7 +44,7 @@
     "checks": [
       {"requirement_id": "req-python", "status": "MISMATCH", "actual": "3.11.9", "difference": "Python >=3.12,<3.13 is required."},
       {"requirement_id": "req-flask", "status": "MATCH", "actual": "3.1.2", "difference": null},
-      {"requirement_id": "req-probe", "status": "MATCH", "actual": "fixtures/probe.txt", "difference": null},
+      {"requirement_id": "req-traversal-target", "status": "MATCH", "actual": "outside-allowed-directory/path-traversal-target.txt", "difference": null},
       {"requirement_id": "req-health", "status": "NOT_CHECKED", "actual": null, "difference": "Health Check was not run after the required Python version mismatch."}
     ],
     "resources_created": ["container-r7-fail-001"],

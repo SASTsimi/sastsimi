@@ -14,7 +14,7 @@
         "checks": [
           {"requirement_id": "req-python", "status": "MISMATCH", "actual": "3.11.9"},
           {"requirement_id": "req-flask", "status": "MATCH", "actual": "3.1.2"},
-          {"requirement_id": "req-probe", "status": "MATCH", "actual": "fixtures/probe.txt"},
+          {"requirement_id": "req-traversal-target", "status": "MATCH", "actual": "outside-allowed-directory/path-traversal-target.txt"},
           {"requirement_id": "req-health", "status": "NOT_CHECKED", "actual": null}
         ]
       }
@@ -71,7 +71,7 @@
   },
   "assertions": [
     {"target": ["ENV-FAIL-1", "CL1", "LOG1", "DX1"], "operator": "SAME_SCOPE", "value": "case.scope"},
-    {"target": "ENV-FAIL-1.checks[*].requirement_id", "operator": "CONTAINS", "value": ["req-python", "req-flask", "req-probe", "req-health"]},
+    {"target": "ENV-FAIL-1.checks[*].requirement_id", "operator": "CONTAINS", "value": ["req-python", "req-flask", "req-traversal-target", "req-health"]},
     {"target": "LOG1.events[*].event_type", "operator": "EXCLUDES", "value": ["AGENT_STARTED"]},
     {"target": "DX1.failure_reason", "operator": "CONTAINS", "value": ["Python 3.11.9", ">=3.12,<3.13", "retry budget"]},
     {"target": "DX1.limitations", "operator": "CONTAINS", "value": ["Sandbox Agent did not start", "Health Check was not run"]},
