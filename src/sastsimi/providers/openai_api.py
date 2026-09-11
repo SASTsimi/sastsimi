@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from datetime import datetime
 from typing import Literal, cast
@@ -10,13 +11,15 @@ from typing import Literal, cast
 from pydantic import JsonValue
 
 from sastsimi.config.secrets import SecretReference
+from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.evaluation import UsageMeasurement
 from sastsimi.contracts.llm import (
     LLMInvocationRequest,
     LLMInvocationResult,
+    OutputSchemaSpec,
     ProviderValidationEvidence,
 )
-from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.ports.dto import CancellationResult, CapabilityProbeResult
 
 from .base import (
@@ -40,6 +43,9 @@ from .normalization import (
     normalize_exception,
     normalize_response_failure,
 )
+
+_WORK_CLEANUP_TIMEOUT_SECONDS = 0.1
+_CANCEL_CONFIRM_TIMEOUT_SECONDS = 0.5
 
 
 class OpenAIResponsesApiAdapter:
@@ -78,6 +84,7 @@ class OpenAIResponsesApiAdapter:
         self.clock = clock
         self.probe_runner = probe_runner
         self._active: dict[str, asyncio.Task[LLMInvocationResult]] = {}
+        self._cancel_events: dict[str, asyncio.Event] = {}
         self._active_lock = asyncio.Lock()
 
     async def probe(
@@ -106,6 +113,7 @@ class OpenAIResponsesApiAdapter:
         current = asyncio.current_task()
         if current is None:
             raise RuntimeError("FAILED: OpenAI invocation requires an asyncio task")
+        cancel_event = asyncio.Event()
         async with self._active_lock:
             if request.llm_call_id in self._active:
                 return self._failed_before_call(
@@ -115,54 +123,86 @@ class OpenAIResponsesApiAdapter:
                     ),
                 )
             self._active[request.llm_call_id] = current
+            self._cancel_events[request.llm_call_id] = cancel_event
         try:
-            return await self._invoke_active(request)
+            return await self._invoke_active(request, cancel_event)
         finally:
             async with self._active_lock:
                 if self._active.get(request.llm_call_id) is current:
                     del self._active[request.llm_call_id]
+                    self._cancel_events.pop(request.llm_call_id, None)
 
     async def _invoke_active(
-        self, request: LLMInvocationRequest
+        self, request: LLMInvocationRequest, cancel_event: asyncio.Event
     ) -> LLMInvocationResult:
         started_at = self.clock.now()
         started_ms = self.clock.monotonic_ms()
-        session_mode: Literal["NEW", "RESUMED"] = (
-            "RESUMED" if request.session_policy == "RESUME" else "NEW"
-        )
-        try:
-            resolved, schema, previous_response_id = await self._prepare(request)
-            kwargs = self._request_arguments(
-                request, resolved, schema, previous_response_id
-            )
-            credential = await self.secret_resolver.resolve(self.credential_ref)
-            if not credential.strip():
-                raise CredentialUnavailableError
-            client_context = self.client_factory.open(credential, max_retries=0)
-            del credential
-            async with client_context as client:
-                async with asyncio.timeout(request.timeout_ms / 1_000):
+        session_mode: Literal["NEW", "RESUMED"] = "NEW"
+
+        async def within_deadline() -> LLMInvocationResult:
+            try:
+                resolved, schema, instructions, untrusted_input = await self._prepare(
+                    request
+                )
+                self._raise_if_cancel_requested(cancel_event)
+                kwargs = self._request_arguments(
+                    request, instructions, untrusted_input, schema
+                )
+                credential = await self.secret_resolver.resolve(self.credential_ref)
+                self._raise_if_cancel_requested(cancel_event)
+                if not credential.strip():
+                    raise CredentialUnavailableError
+                client_context = self.client_factory.open(credential, max_retries=0)
+                del credential
+                async with client_context as client:
+                    self._raise_if_cancel_requested(cancel_event)
                     response = await client.responses.create(**kwargs)
-            outcome = await self._success_outcome(
+                    self._raise_if_cancel_requested(cancel_event)
+                outcome = await self._success_outcome(
+                    request,
+                    response,
+                    started_at=started_at,
+                    started_ms=started_ms,
+                    session_mode=session_mode,
+                    schema=schema,
+                    output_schema=resolved.output_schema,
+                    cancel_event=cancel_event,
+                )
+            except Exception as error:
+                outcome = self._failure_outcome(
+                    request,
+                    normalize_exception(error),
+                    started_at=started_at,
+                    started_ms=started_ms,
+                    session_mode=session_mode,
+                )
+            self._raise_if_cancel_requested(cancel_event)
+            return self._build_checked(request, outcome)
+
+        work_task = asyncio.create_task(within_deadline())
+        try:
+            done, _pending = await asyncio.wait(
+                (work_task,), timeout=request.timeout_ms / 1_000
+            )
+            if done:
+                return await work_task
+            cancel_event.set()
+            work_task.cancel()
+            await _bounded_cleanup(work_task)
+            outcome = self._failure_outcome(
                 request,
-                response,
+                failure("TIMED_OUT"),
                 started_at=started_at,
                 started_ms=started_ms,
                 session_mode=session_mode,
-                schema=schema,
             )
         except asyncio.CancelledError:
+            cancel_event.set()
+            work_task.cancel()
+            await _bounded_cleanup(work_task)
             outcome = self._failure_outcome(
                 request,
                 failure("CANCELLED"),
-                started_at=started_at,
-                started_ms=started_ms,
-                session_mode=session_mode,
-            )
-        except Exception as error:
-            outcome = self._failure_outcome(
-                request,
-                normalize_exception(error),
                 started_at=started_at,
                 started_ms=started_ms,
                 session_mode=session_mode,
@@ -171,60 +211,132 @@ class OpenAIResponsesApiAdapter:
 
     async def _prepare(
         self, request: LLMInvocationRequest
-    ) -> tuple[ResolvedPromptInput, dict[str, JsonValue], str | None]:
+    ) -> tuple[ResolvedPromptInput, dict[str, JsonValue], str, str]:
         if (
             request.provider_profile_ref != self.provider_profile_ref
             or request.model != self.model
         ):
             raise ProviderInputMismatchError
-        if request.session_policy == "AUTO":
-            raise ProviderInputMismatchError
-        if (request.session_policy == "NEW") != (request.parent_session_ref is None):
+        if request.session_policy != "NEW" or request.parent_session_ref is not None:
             raise ProviderInputMismatchError
         resolved = await self.prompt_resolver.resolve(request)
-        if (
-            resolved.prompt_payload_ref != request.prompt_payload_ref
-            or resolved.prompt_registry_entry_ref != request.prompt_registry_entry_ref
-            or resolved.prompt_template_ref != request.prompt_template_ref
-            or resolved.output_schema_ref != request.output_schema_ref
-            or not resolved.instructions.strip()
-            or not resolved.untrusted_input.strip()
-        ):
-            raise ProviderInputMismatchError
         try:
-            parsed_schema = json.loads(request.output_schema)
+            payload_ref = reference(resolved.payload)
+            output_schema_ref = reference(resolved.output_schema)
         except (TypeError, ValueError) as error:
             raise ProviderInputMismatchError from error
-        if not isinstance(parsed_schema, dict):
-            raise ProviderInputMismatchError
-        schema = cast(dict[str, JsonValue], parsed_schema)
-        previous_response_id = None
-        if request.session_policy == "RESUME":
-            assert request.parent_session_ref is not None
-            previous_response_id = (
-                await self.session_store.resolve_previous_response_id(
-                    request.parent_session_ref
+        payload = resolved.payload
+        if (
+            not isinstance(payload_ref, StoredDataRef)
+            or payload_ref != request.prompt_payload_ref
+            or not isinstance(output_schema_ref, StoredDataRef)
+            or output_schema_ref != request.output_schema_ref
+            or payload.registry_entry_ref != request.prompt_registry_entry_ref
+            or payload.prompt_key != request.prompt_key
+            or payload.agent_role != request.agent_role
+            or payload.task_kind != request.task_kind
+            or payload.purpose != request.purpose
+            or payload.template_ref != request.prompt_template_ref
+            or payload.template_version != request.prompt_template_version
+            or payload.output_schema_ref != request.output_schema_ref
+            or tuple(binding.source_ref for binding in payload.context_bindings)
+            != request.context_refs
+            or request.output_schema_ref.data_kind != "output_schema_spec"
+            or any(
+                getattr(payload.meta, field) != getattr(request.meta, field)
+                for field in (
+                    "analysis_id",
+                    "workspace_id",
+                    "commit_id",
+                    "hypothesis_id",
+                    "attempt_id",
                 )
             )
-            if not previous_response_id.strip():
+        ):
+            raise ProviderInputMismatchError
+
+        if (
+            _sha256(resolved.template_bytes) != payload.template_ref.content_hash
+            or _sha256(resolved.output_schema_bytes)
+            != resolved.output_schema.schema_artifact_ref.content_hash
+            or _sha256(resolved.rendered_prompt_bytes)
+            != payload.rendered_prompt_ref.content_hash
+        ):
+            raise ProviderInputMismatchError
+
+        if len(resolved.projected_contexts) != len(payload.context_bindings):
+            raise ProviderInputMismatchError
+        rendered_bindings: list[dict[str, JsonValue]] = []
+        for binding, context in zip(
+            payload.context_bindings, resolved.projected_contexts, strict=True
+        ):
+            if (
+                binding.trust_class != "UNTRUSTED_DATA"
+                or context.slot != binding.slot
+                or context.projected_data_ref != binding.projected_data_ref
+                or _sha256(context.data) != binding.projected_data_ref.content_hash
+            ):
                 raise ProviderInputMismatchError
-        return resolved, schema, previous_response_id
+            value = _strict_json(context.data, ProviderInputMismatchError)
+            if canonical_bytes(value) != context.data:
+                raise ProviderInputMismatchError
+            rendered_bindings.append(
+                cast(
+                    dict[str, JsonValue],
+                    {
+                        "slot": binding.slot,
+                        "trust_class": "UNTRUSTED_DATA",
+                        "sha256": _sha256(context.data),
+                        "data": value,
+                    },
+                )
+            )
+
+        data_section = canonical_bytes({"bindings": rendered_bindings})
+        data_section = data_section.replace(b"<", b"\\u003c").replace(
+            b">", b"\\u003e"
+        )
+        untrusted_bytes = (
+            b"<UNTRUSTED_DATA>\n" + data_section + b"\n</UNTRUSTED_DATA>\n"
+        )
+        expected_rendered = resolved.template_bytes + b"\n" + untrusted_bytes
+        if expected_rendered != resolved.rendered_prompt_bytes:
+            raise ProviderInputMismatchError
+
+        schema_value = _strict_json(
+            resolved.output_schema_bytes, ProviderInputMismatchError
+        )
+        if not isinstance(schema_value, dict):
+            raise ProviderInputMismatchError
+        try:
+            request_schema_bytes = request.output_schema.encode("utf-8")
+            instructions = resolved.template_bytes.decode("utf-8")
+            untrusted_input = untrusted_bytes.decode("utf-8")
+        except UnicodeError as error:
+            raise ProviderInputMismatchError from error
+        if (
+            canonical_bytes(schema_value) != resolved.output_schema_bytes
+            or request_schema_bytes != resolved.output_schema_bytes
+            or not instructions.strip()
+        ):
+            raise ProviderInputMismatchError
+        return resolved, schema_value, instructions, untrusted_input
 
     @staticmethod
     def _request_arguments(
         request: LLMInvocationRequest,
-        resolved: ResolvedPromptInput,
+        instructions: str,
+        untrusted_input: str,
         schema: dict[str, JsonValue],
-        previous_response_id: str | None,
     ) -> dict[str, object]:
-        arguments: dict[str, object] = {
+        return {
             "model": request.model,
-            "instructions": resolved.instructions,
+            "instructions": instructions,
             "input": [
                 {
                     "role": "user",
                     "content": [
-                        {"type": "input_text", "text": resolved.untrusted_input}
+                        {"type": "input_text", "text": untrusted_input}
                     ],
                 }
             ],
@@ -245,11 +357,6 @@ class OpenAIResponsesApiAdapter:
             "truncation": "disabled",
             "timeout": request.timeout_ms / 1_000,
         }
-        if request.token_budget is not None:
-            arguments["max_output_tokens"] = request.token_budget
-        if previous_response_id is not None:
-            arguments["previous_response_id"] = previous_response_id
-        return arguments
 
     async def _success_outcome(
         self,
@@ -260,6 +367,8 @@ class OpenAIResponsesApiAdapter:
         started_ms: int,
         session_mode: Literal["NEW", "RESUMED"],
         schema: dict[str, JsonValue],
+        output_schema: OutputSchemaSpec,
+        cancel_event: asyncio.Event,
     ) -> NormalizedProviderResult:
         status = getattr(response, "status", None)
         if status != "completed":
@@ -286,25 +395,44 @@ class OpenAIResponsesApiAdapter:
             or not isinstance(output_text, str)
         ):
             raise ProviderInvalidOutputError
-        try:
-            parsed = json.loads(output_text)
-        except ValueError as error:
-            raise ProviderInvalidOutputError from error
+        raw_output = output_text.encode("utf-8")
+        parsed = _strict_json(raw_output, ProviderInvalidOutputError)
         if not isinstance(parsed, dict):
             raise ProviderInvalidOutputError
-        parsed_output = cast(dict[str, JsonValue], parsed)
+        parsed_output = parsed
         try:
-            self.output_schema_validator.validate(
-                parsed_output,
-                schema,
+            validated_output = self.output_schema_validator.validate(
+                raw_output,
+                schema=schema,
+                output_schema=output_schema,
+                request=request,
             )
+            validated_ref = reference(validated_output)
+            validated_meta = validated_output.meta
+            if (
+                not isinstance(validated_ref, StoredDataRef)
+                or validated_meta.record_type != output_schema.result_kind
+                or canonical_bytes(validated_output) != canonical_bytes(parsed_output)
+                or any(
+                    getattr(validated_meta, field) != getattr(request.meta, field)
+                    for field in (
+                        "analysis_id",
+                        "workspace_id",
+                        "commit_id",
+                        "hypothesis_id",
+                    )
+                )
+            ):
+                raise ProviderInvalidOutputError
         except ProviderInvalidOutputError:
             raise
         except Exception as error:
             raise ProviderInvalidOutputError from error
+        self._raise_if_cancel_requested(cancel_event)
         session_ref = await self.session_store.register_response(
             response_id, request.llm_call_id
         )
+        self._raise_if_cancel_requested(cancel_event)
         if not session_ref.strip():
             raise ProviderInvalidOutputError
         finished_at = self.clock.now()
@@ -317,6 +445,7 @@ class OpenAIResponsesApiAdapter:
             session_ref=session_ref,
             response_text=output_text,
             parsed_output=parsed_output,
+            validated_output=validated_output,
             usage=_usage(response),
             started_at=started_at,
             finished_at=finished_at,
@@ -341,6 +470,7 @@ class OpenAIResponsesApiAdapter:
             session_ref=None,
             response_text=None,
             parsed_output=None,
+            validated_output=None,
             usage=None,
             started_at=started_at,
             finished_at=self.clock.now(),
@@ -356,12 +486,11 @@ class OpenAIResponsesApiAdapter:
             status=normalized.status,
             provider="OPENAI",
             model=request.model,
-            actual_session_mode=(
-                "RESUMED" if request.session_policy == "RESUME" else "NEW"
-            ),
+            actual_session_mode="NEW",
             session_ref=None,
             response_text=None,
             parsed_output=None,
+            validated_output=None,
             usage=None,
             started_at=now,
             finished_at=now,
@@ -373,10 +502,26 @@ class OpenAIResponsesApiAdapter:
     def _build_checked(
         self, request: LLMInvocationRequest, outcome: NormalizedProviderResult
     ) -> LLMInvocationResult:
+        expected_success = outcome.status == "SUCCEEDED"
+        expected_output_ref = (
+            reference(outcome.validated_output)
+            if outcome.validated_output is not None
+            else None
+        )
+        if (
+            expected_success
+            != (
+                outcome.response_text is not None
+                and outcome.parsed_output is not None
+                and isinstance(expected_output_ref, StoredDataRef)
+                and outcome.session_ref is not None
+            )
+            or (not expected_success and outcome.validated_output is not None)
+        ):
+            raise ValueError("PROVIDER_RESULT_BUILDER_MISMATCH")
         result = LLMInvocationResult.model_validate(
             self.result_builder.build(request, outcome)
         )
-        expected_success = outcome.status == "SUCCEEDED"
         if (
             result.meta.record_type != "llm_invocation_result"
             or any(
@@ -401,10 +546,8 @@ class OpenAIResponsesApiAdapter:
             or result.finished_at != outcome.finished_at
             or result.elapsed_ms != outcome.elapsed_ms
             or result.safe_error != outcome.safe_error
-            or expected_success
-            != (
-                result.response_ref is not None and result.parsed_output_ref is not None
-            )
+            or (result.response_ref is not None) != expected_success
+            or result.parsed_output_ref != expected_output_ref
         ):
             raise ValueError("PROVIDER_RESULT_BUILDER_MISMATCH")
         return result
@@ -412,16 +555,84 @@ class OpenAIResponsesApiAdapter:
     async def cancel(self, invocation_id: str) -> CancellationResult:
         async with self._active_lock:
             task = self._active.get(invocation_id)
+            cancel_event = self._cancel_events.get(invocation_id)
         if task is None:
             return CancellationResult(False, "No matching active invocation")
         if task is asyncio.current_task():
             return CancellationResult(False, "Invocation cannot cancel itself")
+        if cancel_event is not None:
+            cancel_event.set()
         task.cancel()
         try:
-            result = await task
+            result = await asyncio.wait_for(
+                asyncio.shield(task), timeout=_CANCEL_CONFIRM_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            return CancellationResult(
+                False, "Invocation cancellation was not confirmed before deadline"
+            )
         except asyncio.CancelledError:
             return CancellationResult(True, None)
-        return CancellationResult(result.status == "CANCELLED", None)
+        cancelled = result.status == "CANCELLED"
+        return CancellationResult(
+            cancelled,
+            None if cancelled else "Invocation cancellation was not confirmed",
+        )
+
+    @staticmethod
+    def _raise_if_cancel_requested(cancel_event: asyncio.Event) -> None:
+        if cancel_event.is_set():
+            raise asyncio.CancelledError
+
+
+async def _bounded_cleanup(task: asyncio.Task[object]) -> None:
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(task), timeout=_WORK_CLEANUP_TIMEOUT_SECONDS
+        )
+    except (TimeoutError, asyncio.CancelledError):
+        pass
+    if not task.done():
+        task.add_done_callback(_consume_task_result)
+
+
+def _consume_task_result(task: asyncio.Task[object]) -> None:
+    try:
+        task.result()
+    except BaseException:
+        pass
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _strict_json(
+    data: bytes, error_type: type[RuntimeError]
+) -> JsonValue:
+    def reject_duplicates(pairs: list[tuple[str, JsonValue]]) -> dict[str, JsonValue]:
+        output: dict[str, JsonValue] = {}
+        for key, value in pairs:
+            if key in output:
+                raise ValueError("duplicate JSON member")
+            output[key] = value
+        return output
+
+    def reject_constant(_value: str) -> None:
+        raise ValueError("non-finite JSON number")
+
+    try:
+        decoded = data.decode("utf-8")
+        return cast(
+            JsonValue,
+            json.loads(
+                decoded,
+                object_pairs_hook=reject_duplicates,
+                parse_constant=reject_constant,
+            ),
+        )
+    except (UnicodeError, TypeError, ValueError) as error:
+        raise error_type from error
 
 
 def _usage(response: object) -> UsageMeasurement:

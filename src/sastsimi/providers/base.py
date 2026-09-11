@@ -19,11 +19,13 @@ from sastsimi.contracts.llm import (
     InvocationStatus,
     LLMInvocationRequest,
     LLMInvocationResult,
+    OutputSchemaSpec,
+    PromptPayload,
     ProviderValidationEvidence,
 )
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.ports.clock import Clock
-from sastsimi.ports.dto import CapabilityProbeResult
+from sastsimi.ports.dto import CapabilityProbeResult, Record
 
 
 class CredentialUnavailableError(RuntimeError):
@@ -39,15 +41,28 @@ class ProviderInvalidOutputError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class ResolvedPromptInput:
-    """Transient transport input with trusted and untrusted text kept separate."""
+class ResolvedPromptContext:
+    """One exact redacted context artifact, in PromptPayload binding order."""
 
-    prompt_payload_ref: StoredDataRef
-    prompt_registry_entry_ref: StoredDataRef
-    prompt_template_ref: StoredDataRef
-    output_schema_ref: StoredDataRef
-    instructions: str
-    untrusted_input: str
+    slot: str
+    projected_data_ref: StoredDataRef
+    data: bytes
+
+
+@dataclass(frozen=True)
+class ResolvedPromptInput:
+    """Exact stored prompt records and bytes resolved only for this invocation.
+
+    The adapter independently verifies every reference, content hash and deterministic
+    rendering relationship before any credential or provider client is touched.
+    """
+
+    payload: PromptPayload
+    template_bytes: bytes
+    rendered_prompt_bytes: bytes
+    projected_contexts: tuple[ResolvedPromptContext, ...]
+    output_schema: OutputSchemaSpec
+    output_schema_bytes: bytes
 
 
 @dataclass(frozen=True)
@@ -61,6 +76,7 @@ class NormalizedProviderResult:
     session_ref: str | None
     response_text: str | None
     parsed_output: dict[str, JsonValue] | None
+    validated_output: Record | None
     usage: UsageMeasurement | None
     started_at: datetime
     finished_at: datetime
@@ -77,9 +93,8 @@ class SecretResolver(Protocol):
 
 
 class ProviderSessionStore(Protocol):
-    """Maps opaque local session refs without exposing provider response IDs."""
+    """Persists an opaque local response reference without exposing provider IDs."""
 
-    async def resolve_previous_response_id(self, session_ref: str) -> str: ...
     async def register_response(self, response_id: str, llm_call_id: str) -> str: ...
 
 
@@ -110,11 +125,16 @@ class OpenAIResponsesClientFactory(Protocol):
 
 
 class OutputSchemaValidator(Protocol):
-    """Checks parsed output against the exact requested JSON Schema revision."""
+    """Validates schema, domain model, and the exact semantic-validator revision."""
 
     def validate(
-        self, value: dict[str, JsonValue], schema: dict[str, JsonValue]
-    ) -> None: ...
+        self,
+        raw: bytes,
+        *,
+        schema: dict[str, JsonValue],
+        output_schema: OutputSchemaSpec,
+        request: LLMInvocationRequest,
+    ) -> Record: ...
 
 
 class ProviderProbeRunner(Protocol):
@@ -136,6 +156,7 @@ __all__ = [
     "ProviderInvalidOutputError",
     "ProviderProbeRunner",
     "ProviderSessionStore",
+    "ResolvedPromptContext",
     "ResolvedPromptInput",
     "SecretResolver",
 ]
