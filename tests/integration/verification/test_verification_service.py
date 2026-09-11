@@ -290,6 +290,13 @@ class _Fixture:
             work_generation=1,
             status=WorkStatus.RUNNING,
             active_attempt_id=ATTEMPT_ID,
+            input_refs=(
+                self.hypothesis_ref,
+                self.proposal_ref,
+                self.policy_ref,
+                self.playbook_ref,
+                self.application_ref,
+            ),
         )
         self.generation = VerificationGenerationInputs(
             work_id=WORK_ID,
@@ -540,6 +547,44 @@ async def test_initial_hold_without_unresolved_condition_is_rejected() -> None:
     )
 
     with pytest.raises(ValueError, match="HOLD_CONDITIONS_REQUIRED"):
+        await fixture.service.assess_initial(
+            generation=fixture.generation,
+            pro_ref=fixture.pro_ref,
+            con_ref=fixture.con_ref,
+            call=fixture.call,
+        )
+
+
+@pytest.mark.asyncio
+async def test_authorized_work_input_can_be_in_synthesis_context() -> None:
+    fixture = _Fixture()
+    fixture.queue(
+        fixture.assessment_payload(),
+        task_kind="ASSESS_INITIAL",
+        context_refs=(*fixture.assessment_context(), fixture.proposal_ref),
+    )
+
+    assessment = await fixture.service.assess_initial(
+        generation=fixture.generation,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+
+    assert assessment.proposed_verdict == "FALSE"
+
+
+@pytest.mark.asyncio
+async def test_unregistered_extra_context_is_rejected() -> None:
+    fixture = _Fixture()
+    foreign = fixture._opaque_record("verification_result", "foreign-generation")
+    fixture.queue(
+        fixture.assessment_payload(),
+        task_kind="ASSESS_INITIAL",
+        context_refs=(*fixture.assessment_context(), foreign),
+    )
+
+    with pytest.raises(ValueError, match="VERIFICATION_INVOCATION_CLOSURE_MISMATCH"):
         await fixture.service.assess_initial(
             generation=fixture.generation,
             pro_ref=fixture.pro_ref,

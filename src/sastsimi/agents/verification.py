@@ -399,7 +399,9 @@ class VerificationAgent:
             or result.meta.workspace_id != work.meta.workspace_id
             or result.meta.commit_id != work.meta.commit_id
             or result.meta.hypothesis_id != work.meta.hypothesis_id
-            or tuple(request.context_refs) != required_context
+            or not self._context_is_exactly_authorized(
+                request.context_refs, required_context, work
+            )
         ):
             raise ValueError("VERIFICATION_INVOCATION_CLOSURE_MISMATCH")
         try:
@@ -413,6 +415,21 @@ class VerificationAgent:
         if not isinstance(payload, dict) or canonical_bytes(payload) != raw:
             raise ValueError("VERIFICATION_OUTPUT_ARTIFACT_INVALID")
         return payload
+
+    @staticmethod
+    def _context_is_exactly_authorized(
+        actual: tuple[StoredDataRef, ...],
+        required: tuple[StoredDataRef, ...],
+        work: WorkExecutionState,
+    ) -> bool:
+        if len(actual) != len(set(actual)) or len(required) != len(set(required)):
+            return False
+        required_set = set(required)
+        allowed = required_set | {
+            ref for ref in work.input_refs if isinstance(ref, StoredDataRef)
+        }
+        actual_set = set(actual)
+        return required_set.issubset(actual_set) and actual_set.issubset(allowed)
 
     def _require_assessment_closure(
         self,
