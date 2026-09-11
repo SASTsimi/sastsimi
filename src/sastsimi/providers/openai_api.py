@@ -420,6 +420,7 @@ class OpenAIResponsesApiAdapter:
                         "workspace_id",
                         "commit_id",
                         "hypothesis_id",
+                        "attempt_id",
                     )
                 )
             ):

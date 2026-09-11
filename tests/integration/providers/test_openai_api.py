@@ -14,6 +14,7 @@ from pydantic import JsonValue
 from sastsimi.config.secrets import SecretReference
 from sastsimi.contracts._domain import DomainRecord
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.ids import AttemptId
 from sastsimi.contracts.llm import (
     LLMInvocationRequest,
     LLMInvocationResult,
@@ -705,6 +706,32 @@ async def test_non_finite_json_number_never_becomes_domain_output() -> None:
         model="gpt-test",
         status="completed",
         output_text=output_text(invocation).replace('"accept"', "NaN", 1),
+        usage=None,
+    )
+    provider, _responses, _factory, _secrets = adapter(invocation, raw)
+
+    result = await provider.invoke(invocation)
+
+    assert result.status == "INVALID_OUTPUT"
+    assert result.response_ref is None
+    assert result.parsed_output_ref is None
+
+
+@pytest.mark.asyncio
+async def test_output_from_an_older_attempt_is_rejected() -> None:
+    invocation = request()
+    older = invocation.model_copy(
+        update={
+            "meta": invocation.meta.model_copy(
+                update={"attempt_id": AttemptId("older")}
+            )
+        }
+    )
+    raw = SimpleNamespace(
+        id="resp-old-attempt",
+        model="gpt-test",
+        status="completed",
+        output_text=output_text(older),
         usage=None,
     )
     provider, _responses, _factory, _secrets = adapter(invocation, raw)
