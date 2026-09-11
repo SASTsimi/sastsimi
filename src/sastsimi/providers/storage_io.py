@@ -265,10 +265,7 @@ class StoredInvocationResultBuilder(InvocationResultBuilder):
         expected_session_mode = (
             "NEW"
             if request.session_policy == "NEW"
-            or (
-                request.session_policy == "AUTO"
-                and request.parent_session_ref is None
-            )
+            or (request.session_policy == "AUTO" and request.parent_session_ref is None)
             else "RESUMED"
         )
         if (

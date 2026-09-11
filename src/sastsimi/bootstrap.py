@@ -12,11 +12,19 @@ from sastsimi.config.loader import ConfigError as ConfigError
 from sastsimi.config.loader import load_config
 from sastsimi.config.models import AppConfig
 from sastsimi.config.runtime_paths import RuntimePaths
-from sastsimi.contracts.ids import CommitId, WorkspaceId
+from sastsimi.contracts.ids import (
+    AttemptId,
+    CommitId,
+    LogicalRecordId,
+    RecordId,
+    WorkspaceId,
+)
+from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef
 from sastsimi.logging import SafeJsonHandler, safe_event
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
+from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.ports.trusted_evidence import TrustedEvidencePort
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.storage.schema_version import MigrationRequired as MigrationRequired
@@ -394,6 +402,7 @@ def build_runtime(
     context_service_identity_ref: BudgetScopeRef | None = None,
     finding_service_identity_ref: StoredDataRef | None = None,
     analysis_finalization_identity_ref: BudgetScopeRef | None = None,
+    llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
 ) -> RuntimeServices:
     from sastsimi.runtime.action_validator import RuntimeValidator
     from sastsimi.runtime.analysis_finalization import AnalysisFinalizationService
@@ -405,6 +414,7 @@ def build_runtime(
     from sastsimi.runtime.dynamic_registration import DynamicRegistrationService
     from sastsimi.runtime.external_call_service import ExternalCallService
     from sastsimi.runtime.intermediate_publication import IntermediatePublicationService
+    from sastsimi.runtime.llm_call_service import ExactAdapterResolver, LLMCallService
     from sastsimi.runtime.queries import RuntimeQueries
     from sastsimi.runtime.recovery_service import RecoveryService
     from sastsimi.runtime.transition_service import TransitionService
@@ -457,6 +467,40 @@ def build_runtime(
     recovery = RecoveryService(SQLiteRecovery(transitions, recovery_identity_ref))
     recovery.recover()
     validator = RuntimeValidator(authorization)
+    external = ExternalCallService(validator)
+    configuration_store = SQLiteConfigurationRegistry(records, artifacts)
+
+    def llm_metadata(
+        source: RecordMeta,
+        record_type: str,
+        attempt_id: AttemptId | None,
+    ) -> RecordMeta:
+        return RecordMeta(
+            record_id=ids.new(RecordId),
+            logical_record_id=ids.new(LogicalRecordId),
+            record_type=record_type,
+            schema_version=source.schema_version,
+            revision_number=1,
+            previous_record_id=None,
+            created_at=clock.now(),
+            analysis_id=source.analysis_id,
+            workspace_id=source.workspace_id,
+            commit_id=source.commit_id,
+            hypothesis_id=source.hypothesis_id,
+            attempt_id=attempt_id,
+        )
+
+    llm_calls = LLMCallService(
+        records=records,
+        artifacts=artifacts,
+        external=external,
+        validator=validator,
+        adapters=ExactAdapterResolver(llm_adapters or {}),
+        metadata_factory=llm_metadata,
+        run_states=registry,
+        current_selection=configuration_store,
+        clock=clock,
+    )
     return RuntimeServices(
         WorkService(works),
         AttemptService(SQLiteAttempts(works)),
@@ -464,7 +508,7 @@ def build_runtime(
         BudgetProfileRegistry(registry),
         BudgetService(budget),
         TransitionService(records),
-        ExternalCallService(validator),
+        external,
         recovery,
         unit,
         IntermediatePublicationService(SQLiteIntermediates(transitions)),
@@ -472,7 +516,7 @@ def build_runtime(
         VerificationRegistrationService(SQLiteVerificationRegistration(transitions)),
         RuntimeQueries(SQLiteQueries(records)),
         DynamicRegistrationService(SQLiteDynamicRegistration(transitions)),
-        ConfigurationRegistry(SQLiteConfigurationRegistry(records, artifacts)),
+        ConfigurationRegistry(configuration_store),
         AnalysisFinalizationService(
             SQLiteAnalysisFinalization(
                 records,
@@ -483,4 +527,5 @@ def build_runtime(
                 artifacts,
             )
         ),
+        llm_calls,
     )

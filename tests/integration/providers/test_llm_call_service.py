@@ -5,10 +5,12 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Literal
 
 import pytest
 
+from sastsimi.bootstrap import build_runtime, upgrade_database
 from sastsimi.contracts.actions import (
     REQUIRED_CHECKS,
     ActionCheck,
@@ -24,7 +26,7 @@ from sastsimi.contracts.actions import (
 from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.budget import Purpose
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.ids import AttemptId
+from sastsimi.contracts.ids import AttemptId, CommitId, WorkspaceId
 from sastsimi.contracts.llm import (
     InvocationStatus,
     LLMCallSpec,
@@ -68,6 +70,7 @@ from sastsimi.runtime.llm_call_service import (
     llm_action_input_refs,
 )
 from tests.contract.domain.canonical_fixtures import make
+from tests.integration.runtime_support import TestIds
 
 NOW = datetime(2026, 9, 11, tzinfo=UTC)
 TEMPLATE = b"Return only the approved structured result."
@@ -883,6 +886,24 @@ async def test_new_session_request_rejects_a_resumed_provider_result() -> None:
     )
 
     assert adapter.calls == 1
-    assert outcome.result.status == "FAILED"
+    assert outcome.result.status == "INVALID_OUTPUT"
     assert outcome.result.parsed_output_ref is None
+    assert all(
+        getattr(record, "meta", None).record_type != "hypothesis_proposal"
+        for record in data.records.staged.values()
+    )
     assert len(authorization.invocations) == 1
+
+
+def test_build_runtime_composes_the_llm_call_service(tmp_path: Path) -> None:
+    """Catches a tested LLM service never being exposed by the real runtime."""
+    upgrade_database(tmp_path)
+    runtime = build_runtime(
+        tmp_path,
+        workspace_id=WorkspaceId("ws1"),
+        commit_id=CommitId("c1"),
+        clock=FixedClock(),
+        ids=TestIds(),
+    )
+
+    assert isinstance(runtime.llm_calls, LLMCallService)
