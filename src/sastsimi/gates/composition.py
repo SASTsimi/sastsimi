@@ -18,6 +18,7 @@ from sastsimi.contracts.ids import AttemptId, LogicalRecordId, RecordId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
 from sastsimi.contracts.verification import VerificationResult
+from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.gates.cwe_handler import CWELabelingHandler, GateCallResolver
 from sastsimi.gates.cwe_service import CWELabelingService
 from sastsimi.gates.rule_scope_handler import (
@@ -31,7 +32,10 @@ from sastsimi.gates.rule_scope_service import (
     RuleScopeGateService,
 )
 from sastsimi.gates.technical_handler import TechnicalGateHandler
-from sastsimi.gates.technical_service import TechnicalGateService
+from sastsimi.gates.technical_service import (
+    TechnicalGateService,
+    TechnicalRevisionReconciler,
+)
 from sastsimi.orchestration.primitive_handoff import PrimitiveUpdateHandoff
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
@@ -55,6 +59,7 @@ class T12Services:
     finding: FindingNormalizeHandler
     reporter: ReporterWorkHandler
     primitive_handoff: PrimitiveUpdateHandoff
+    technical_revisions: TechnicalRevisionReconciler
 
 
 def compose_t12_services(
@@ -133,6 +138,19 @@ def compose_t12_services(
             raise ValueError("STALE_VERIFICATION_OWNER")
         return assignment.owner_identity_ref
 
+    def reporter_owner(work: WorkExecutionState) -> StoredDataRef:
+        refs = tuple(
+            ref
+            for ref in work.input_refs
+            if isinstance(ref, StoredDataRef) and ref.data_kind == "verification_result"
+        )
+        if len(refs) != 1:
+            raise ValueError("STALE_VERIFICATION_OWNER")
+        verification = records.get_exact(refs[0])
+        if not isinstance(verification, VerificationResult):
+            raise ValueError("STALE_VERIFICATION_OWNER")
+        return current_owner(verification)
+
     def current_policy_state(analysis_id: str) -> StoredDataRef:
         state_ref = runtime.budget_registry.current_state(
             analysis_id
@@ -203,7 +221,7 @@ def compose_t12_services(
         records=records,
         artifacts=artifacts,
         metadata_factory=metadata,
-        identity_ref=identity(RequesterRole.REPORTER),
+        owner_resolver=reporter_owner,
     )
     reporter_inputs = StoredReporterInputResolver(
         records=records, resolve_call=reporter_call_resolver
@@ -220,6 +238,10 @@ def compose_t12_services(
         ),
         primitive_handoff=PrimitiveUpdateHandoff(
             records=records, current=runtime.queries, ready_work=runner
+        ),
+        technical_revisions=TechnicalRevisionReconciler(
+            service=technical_service,
+            current=runtime.queries,
         ),
     )
 

@@ -9,6 +9,9 @@ from .cwe_service import GateCallRefs as GateCallRefs
 from .technical_handler import TechnicalGateHandler as TechnicalGateHandler
 from .technical_service import TechnicalGateOutcome as TechnicalGateOutcome
 from .technical_service import TechnicalGateService as TechnicalGateService
+from .technical_service import (
+    TechnicalRevisionReconciler as TechnicalRevisionReconciler,
+)
 
 __all__ = [
     "CWELabelingHandler",
@@ -19,5 +22,6 @@ __all__ = [
     "TechnicalGateHandler",
     "TechnicalGateOutcome",
     "TechnicalGateService",
+    "TechnicalRevisionReconciler",
     "compose_t12_services",
 ]

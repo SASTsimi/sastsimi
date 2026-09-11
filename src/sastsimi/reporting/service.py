@@ -4,6 +4,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from pydantic import BaseModel
+
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.dynamic import (
@@ -30,7 +32,6 @@ from sastsimi.contracts.refs import (
 )
 from sastsimi.contracts.reporting import Finding, ReportDraft, condition_sources
 from sastsimi.contracts.work import WorkExecutionState
-from sastsimi.ports.dto import Record
 from sastsimi.ports.fake_workflow import (
     ChainingWorkflowPort,
     ProviderInvoker,
@@ -109,19 +110,6 @@ class ReportingService:
         self._artifact = dependencies.records.artifact
         self._stored_artifact = dependencies.records.stored_artifact
 
-    def _report_content_ref(self) -> StoredDataRef:
-        content = ReportContent(
-            title="Validated vulnerability finding",
-            summary="The exact verified evidence supports this finding.",
-            details="Static, debate, and dynamic evidence were reviewed together.",
-            recommendation="Review the affected flow and apply the documented fix.",
-            citations=(),
-        )
-        staged = self.runtime.unit_of_work.artifacts.stage_bytes(
-            canonical_bytes(content.model_dump(mode="json")), "application/json"
-        )
-        return self.runtime.unit_of_work.artifacts.commit(staged)
-
     def _gate_output(
         self,
         work: object,
@@ -129,8 +117,10 @@ class ReportingService:
         identity: StoredDataRef,
         config_role: RequesterRole,
         action_type: str,
-        build_output: Callable[[StoredDataRef], Record],
-    ) -> tuple[Record, FakeInvocation]:
+        build_output: Callable[[StoredDataRef], BaseModel],
+        *,
+        artifact_output: bool = False,
+    ) -> tuple[BaseModel, FakeInvocation]:
         assert self.runtime is not None and self.runner is not None
         if not isinstance(work, WorkExecutionState):
             raise TypeError("Gate provider requires a running work")
@@ -169,6 +159,7 @@ class ReportingService:
             artifact=self._stored_artifact,
             build_output=build_output,
             provider_invoke=self.provider_invoke,
+            artifact_output=artifact_output,
         )
 
     def _post_true(
@@ -591,38 +582,48 @@ class ReportingService:
             "report_draft",
             attempt_id=report_work.active_attempt_id,
         )
-        draft_record, report_invocation = self._gate_output(
+        content_record, report_invocation = self._gate_output(
             report_work,
             scope,
             owner_ref,
             RequesterRole.REPORTER,
             "CREATE_REPORT_DRAFT",
-            lambda report_decision: ReportDraft.model_validate_json(
-                canonical_bytes(
-                    dict(
-                        meta=report_meta,
-                        action_decision_ref=report_decision,
-                        finding_ref=finding_ref,
-                        verification_result_ref=verification_ref,
-                        technical_review_ref=technical_ref,
-                        rule_scope_impact_review_ref=review_ref,
-                        cwe_label_ref=label_ref,
-                        run_policy_state_ref=state.run_policy_state_ref,
-                        policy_record_ref=policy_state.policy_record_ref,
-                        dynamic_result_ref=verification.dynamic_result_ref,
-                        poc_ref=verification.poc_ref,
-                        content_ref=self._report_content_ref(),
-                        restrictions=verification.restrictions,
-                        limitations=(),
-                        unresolved_conditions=(),
-                        redaction_status="PASSED",
-                        draft_status="DRAFTED",
-                    )
-                )
+            lambda _report_decision: ReportContent(
+                title="Validated vulnerability finding",
+                summary="The exact verified evidence supports this finding.",
+                details="Static, debate, and dynamic evidence were reviewed together.",
+                recommendation=(
+                    "Review the affected flow and apply the documented fix."
+                ),
+                citations=(),
             ),
+            artifact_output=True,
         )
-        assert isinstance(draft_record, ReportDraft)
-        draft = draft_record
+        assert isinstance(content_record, ReportContent)
+        assert report_invocation.result.parsed_output_ref is not None
+        draft = ReportDraft.model_validate_json(
+            canonical_bytes(
+                dict(
+                    meta=report_meta,
+                    action_decision_ref=(report_invocation.request.action_decision_ref),
+                    finding_ref=finding_ref,
+                    verification_result_ref=verification_ref,
+                    technical_review_ref=technical_ref,
+                    rule_scope_impact_review_ref=review_ref,
+                    cwe_label_ref=label_ref,
+                    run_policy_state_ref=state.run_policy_state_ref,
+                    policy_record_ref=policy_state.policy_record_ref,
+                    dynamic_result_ref=verification.dynamic_result_ref,
+                    poc_ref=verification.poc_ref,
+                    content_ref=report_invocation.result.parsed_output_ref,
+                    restrictions=verification.restrictions,
+                    limitations=(),
+                    unresolved_conditions=(),
+                    redaction_status="PASSED",
+                    draft_status="DRAFTED",
+                )
+            )
+        )
         persist_fake_invocation(self.runtime, report_invocation)
         report_work = self.runner.complete(
             report_work, report_identity, "REPORTER", (draft,)

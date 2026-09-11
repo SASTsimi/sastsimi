@@ -9,6 +9,7 @@ from sastsimi.contracts.hypothesis import (
 )
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
 from sastsimi.contracts.verification import PlaybookApplication, VerificationResult
+from sastsimi.contracts.work import WorkExecutionState, WorkStatus, WorkType
 from sastsimi.ports.verification_registration import (
     VerificationRegistration,
 )
@@ -112,6 +113,24 @@ class RevisionWorkflow:
         assert isinstance(application_ref, StoredDataRef)
         current_process = self._exact(registration.process_ref, HypothesisProcessState)
         expected_generation = prior_process.verification_generation + 1
+        if current_process.verification_work_ref is None:
+            raise ValueError("TECHNICAL_REVISE_CLOSURE_MISMATCH")
+        registered_work = self._exact(
+            current_process.verification_work_ref, WorkExecutionState
+        )
+        same_registered_work = (
+            registered_work.work_id == work.work_id
+            and registered_work.meta.logical_record_id == work.meta.logical_record_id
+            and registered_work.work_type == work.work_type == WorkType.VERIFICATION
+            and registered_work.work_generation == work.work_generation
+            and registered_work.subject_type == work.subject_type
+            and registered_work.subject_id == work.subject_id
+            and registered_work.input_refs == work.input_refs
+            and registered_work.input_hash == work.input_hash
+            and registered_work.dedupe_key == work.dedupe_key
+            and registered_work.status == WorkStatus.PENDING
+            and work.state_version >= registered_work.state_version
+        )
         if (
             registration.assignment_ref != expected_assignment_ref
             or work.work_generation != expected_generation
@@ -122,7 +141,7 @@ class RevisionWorkflow:
             or current_process.status != "VERIFYING"
             or current_process.verification_generation != expected_generation
             or current_process.verification_assignment_ref != expected_assignment_ref
-            or current_process.verification_work_ref != reference(work)
+            or not same_registered_work
             or current_process.verification_result_ref is not None
         ):
             raise ValueError("TECHNICAL_REVISE_CLOSURE_MISMATCH")

@@ -46,6 +46,10 @@ class LLMCallInvoker(Protocol):
     ) -> PersistedLLMInvocation: ...
 
 
+class ReporterOwnerResolver(Protocol):
+    def __call__(self, work: WorkExecutionState) -> BudgetScopeRef: ...
+
+
 @dataclass(frozen=True)
 class ReporterCallRefs:
     decision_ref: StoredDataRef
@@ -82,14 +86,14 @@ class ReporterAgent:
         records: RecordStore,
         artifacts: ArtifactStore,
         metadata_factory: InvocationMetadataFactory,
-        identity_ref: BudgetScopeRef,
+        owner_resolver: ReporterOwnerResolver,
         readiness: ReportingReadinessService | None = None,
     ) -> None:
         self._llm_calls = llm_calls
         self._records = records
         self._artifacts = artifacts
         self._metadata = metadata_factory
-        self._identity_ref = identity_ref
+        self._owner_resolver = owner_resolver
         self._readiness = readiness or ReportingReadinessService()
 
     async def create_draft(
@@ -222,8 +226,8 @@ class ReporterAgent:
             expectation=LLMInvocationExpectation(
                 work_type=WorkType.REPORT_DRAFT,
                 action_type=ActionType.CREATE_REPORT_DRAFT,
-                requested_by=RequesterRole.REPORTER,
-                requester_identity_ref=self._identity_ref,
+                requested_by=RequesterRole.VERIFICATION,
+                requester_identity_ref=self._owner_resolver(work),
                 agent_role="REPORTER",
                 task_kind="CREATE_DRAFT",
                 required_context=work.input_refs,
@@ -280,5 +284,6 @@ __all__ = [
     "ReporterAgent",
     "ReporterCallRefs",
     "ReporterInputs",
+    "ReporterOwnerResolver",
     "ReporterOutcome",
 ]
