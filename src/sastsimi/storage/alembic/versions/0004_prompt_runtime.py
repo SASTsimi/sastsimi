@@ -29,6 +29,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("state_version", sa.Integer(), nullable=False),
+        sa.UniqueConstraint("logical_record_id"),
     )
     connection = op.get_bind()
     records = sa.table(

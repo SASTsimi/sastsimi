@@ -74,6 +74,11 @@ class ConfigurationRegistry:
             self._point(connection, record)
             if bind is not None:
                 bind(connection, record)
+            # Prompt configuration has no persisted human-approval reference in
+            # the frozen contract. Re-check the injected authority immediately
+            # before commit so an observed revocation rolls back every write.
+            if not approved(record):
+                raise ValueError("CONFIGURATION_APPROVAL_REQUIRED")
         return ref
 
     def _point(self, connection: Connection, record: Record) -> None:
@@ -369,6 +374,7 @@ class ConfigurationRegistry:
         self, connection: Connection, record: PromptRegistryEntry
     ) -> None:
         """Atomically select the one ACTIVE entry for a role/task/purpose."""
+        self._require_prompt_selection_identity(connection, record)
         if record.status == "DRAFT":
             return
         if record.purpose == "PRODUCTION" and record.status == "ACTIVE":
@@ -385,6 +391,22 @@ class ConfigurationRegistry:
         current = connection.execute(select(table).where(*key)).mappings().first()
         logical_id = str(record.meta.logical_record_id)
         record_id = str(record.meta.record_id)
+        logical_active = (
+            connection.execute(
+                select(table).where(table.c.logical_record_id == logical_id)
+            )
+            .mappings()
+            .first()
+        )
+        if logical_active is not None and any(
+            logical_active[name] != value
+            for name, value in (
+                ("agent_role", record.agent_role),
+                ("task_kind", record.task_kind),
+                ("purpose", record.purpose),
+            )
+        ):
+            raise ValueError("PROMPT_REGISTRY_SELECTION_MISMATCH")
         if record.status == "RETIRED":
             previous_record_id = record.meta.previous_record_id
             if previous_record_id is None:
@@ -458,6 +480,30 @@ class ConfigurationRegistry:
         )
         if changed.rowcount != 1:
             raise ValueError("PROMPT_REGISTRY_ACTIVE_CONFLICT")
+
+    def _require_prompt_selection_identity(
+        self, connection: Connection, record: PromptRegistryEntry
+    ) -> None:
+        previous_record_id = record.meta.previous_record_id
+        if previous_record_id is None:
+            return
+        previous_ref_raw = connection.execute(
+            select(models.records.c.ref).where(
+                models.records.c.record_id == str(previous_record_id)
+            )
+        ).scalar_one_or_none()
+        if previous_ref_raw is None:
+            raise ValueError("PROMPT_REGISTRY_SELECTION_MISMATCH")
+        from .codec import REF_ADAPTER
+
+        previous = self.records.resolve(
+            connection, REF_ADAPTER.validate_json(previous_ref_raw)
+        )
+        if not isinstance(previous, PromptRegistryEntry) or any(
+            getattr(previous, name) != getattr(record, name)
+            for name in ("agent_role", "task_kind", "purpose")
+        ):
+            raise ValueError("PROMPT_REGISTRY_SELECTION_MISMATCH")
 
     @staticmethod
     def _require_active_prompt_binding(
@@ -647,7 +693,15 @@ class ConfigurationRegistry:
                 if rendered.read() != expected_render:
                     raise ValueError("PROMPT_RENDER_MISMATCH")
         approved = self.records.evidence.llm_configuration_approved
-        return self._publish(record, approved)
+        return self._publish(record, approved, self._bind_prompt_payload)
+
+    def _bind_prompt_payload(
+        self, connection: Connection, record: PromptPayload
+    ) -> None:
+        entry = self.records.resolve(connection, record.registry_entry_ref)
+        if not isinstance(entry, PromptRegistryEntry):
+            raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
+        self._require_active_prompt_binding(connection, entry)
 
     def register_call_spec(self, record: LLMCallSpec) -> StoredDataRef:
         record = LLMCallSpec.model_validate(record)
@@ -724,7 +778,13 @@ class ConfigurationRegistry:
             ):
                 raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
         approved = self.records.evidence.llm_configuration_approved
-        return self._publish(record, approved)
+        return self._publish(record, approved, self._bind_call_spec)
+
+    def _bind_call_spec(self, connection: Connection, record: LLMCallSpec) -> None:
+        entry = self.records.resolve(connection, record.prompt_registry_entry_ref)
+        if not isinstance(entry, PromptRegistryEntry):
+            raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
+        self._require_active_prompt_binding(connection, entry)
 
     def register_evaluation_config(self, record: EvaluationRunConfig) -> StoredDataRef:
         record = EvaluationRunConfig.model_validate(record)

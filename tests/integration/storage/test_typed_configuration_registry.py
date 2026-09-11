@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from sqlalchemy import Connection, delete, select, update
 
 from sastsimi.bootstrap import build_fake_pipeline, build_runtime
 from sastsimi.contracts.actions import ActionDecision
@@ -23,6 +24,7 @@ from sastsimi.contracts.llm import (
 )
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.ports.dto import CapabilityProbeResult
+from sastsimi.storage import models
 from sastsimi.storage.codec import reference
 from tests.contract.domain.canonical_fixtures import make
 from tests.integration.runtime_support import Harness
@@ -126,7 +128,9 @@ def test_typed_registries_require_family_evidence_and_exact_closure(
     assert configs.register_sandbox_profile(sandbox) == reference(sandbox)
 
 
-def test_llm_call_spec_rejects_every_cross_record_mismatch(tmp_path: Path) -> None:
+def test_llm_call_spec_rejects_every_cross_record_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     pipeline = build_fake_pipeline(tmp_path)
     pipeline.analyze(scenario="FALSE")
     assert pipeline.runtime is not None
@@ -294,6 +298,53 @@ def test_llm_call_spec_rejects_every_cross_record_mismatch(tmp_path: Path) -> No
         request, result, log
     ) == reference(log)
 
+    storage_registry = pipeline.runtime.configuration.registry
+    evidence = records.evidence
+    approval_checks = 0
+
+    def revoke_approval(_record: object) -> bool:
+        nonlocal approval_checks
+        approval_checks += 1
+        return approval_checks == 1
+
+    monkeypatch.setattr(evidence, "llm_configuration_approved", revoke_approval)
+    with pytest.raises(ValueError, match="CONFIGURATION_APPROVAL_REQUIRED"):
+        pipeline.runtime.configuration.register_prompt_payload(payload)
+    assert approval_checks == 2
+    monkeypatch.undo()
+
+    active_checks = 0
+    require_active = storage_registry._require_active_prompt_binding
+
+    def retire_between_check_and_publish(
+        connection: Connection, entry: PromptRegistryEntry
+    ) -> None:
+        nonlocal active_checks
+        active_checks += 1
+        require_active(connection, entry)
+        if active_checks == 1:
+            with records.database.write() as writer:
+                writer.execute(
+                    delete(models.prompt_active_entries).where(
+                        models.prompt_active_entries.c.agent_role == entry.agent_role,
+                        models.prompt_active_entries.c.task_kind == entry.task_kind,
+                        models.prompt_active_entries.c.purpose == entry.purpose,
+                    )
+                )
+
+    monkeypatch.setattr(
+        storage_registry,
+        "_require_active_prompt_binding",
+        retire_between_check_and_publish,
+    )
+    with pytest.raises(ValueError, match="PROMPT_REGISTRY_NOT_CURRENT"):
+        pipeline.runtime.configuration.register_prompt_payload(payload)
+    assert active_checks == 2
+    monkeypatch.undo()
+    pipeline.runtime.configuration.register_prompt_entry(
+        records.get_exact(payload.registry_entry_ref)
+    )
+
     # Production activation and replay re-check the exact ACTIVE evaluation
     # target inside the same write transaction as publication.
     assert first_entry.quality_evaluation_ref is not None
@@ -303,10 +354,6 @@ def test_llm_call_spec_rejects_every_cross_record_mismatch(tmp_path: Path) -> No
         recommendation.target_prompt_registry_entry_ref
     )
     assert isinstance(evaluation_entry, PromptRegistryEntry)
-    from sqlalchemy import delete
-
-    from sastsimi.storage import models
-
     with records.database.write() as connection:
         connection.execute(
             delete(models.prompt_active_entries).where(
@@ -328,8 +375,6 @@ def test_llm_call_spec_rejects_every_cross_record_mismatch(tmp_path: Path) -> No
         for item in active_entries
         if item.meta.record_id != target_entry.meta.record_id
     )
-    from sqlalchemy import update
-
     with records.database.write() as connection:
         connection.execute(
             update(models.prompt_active_entries)
@@ -339,7 +384,6 @@ def test_llm_call_spec_rejects_every_cross_record_mismatch(tmp_path: Path) -> No
                 models.prompt_active_entries.c.purpose == target_entry.purpose,
             )
             .values(
-                logical_record_id=str(replacement_entry.meta.logical_record_id),
                 record_id=str(replacement_entry.meta.record_id),
             )
         )
@@ -422,6 +466,37 @@ def test_prompt_active_entry_is_selected_atomically_and_replay_is_idempotent(
     assert runtime.configuration.register_prompt_entry(next_revision) == reference(
         next_revision
     )
+    changed_key = next_revision.model_copy(
+        update={
+            "meta": next_revision.meta.model_copy(
+                update={
+                    "record_id": RecordId("atomic-changed-key"),
+                    "revision_number": 3,
+                    "previous_record_id": next_revision.meta.record_id,
+                }
+            ),
+            "task_kind": "CHANGED_ACTIVE_KEY",
+        }
+    )
+    approvals.add(content_hash(changed_key))
+    with pytest.raises(ValueError, match="PROMPT_REGISTRY_SELECTION_MISMATCH"):
+        runtime.configuration.register_prompt_entry(changed_key)
+    changed_retirement_key = next_revision.model_copy(
+        update={
+            "meta": next_revision.meta.model_copy(
+                update={
+                    "record_id": RecordId("atomic-changed-retirement-key"),
+                    "revision_number": 3,
+                    "previous_record_id": next_revision.meta.record_id,
+                }
+            ),
+            "purpose": "PRODUCTION",
+            "status": "RETIRED",
+        }
+    )
+    approvals.add(content_hash(changed_retirement_key))
+    with pytest.raises(ValueError, match="PROMPT_REGISTRY_SELECTION_MISMATCH"):
+        runtime.configuration.register_prompt_entry(changed_retirement_key)
     retired = next_revision.model_copy(
         update={
             "meta": next_revision.meta.model_copy(
@@ -439,10 +514,6 @@ def test_prompt_active_entry_is_selected_atomically_and_replay_is_idempotent(
     assert runtime.configuration.register_prompt_entry(replacement) == reference(
         replacement
     )
-
-    from sqlalchemy import select
-
-    from sastsimi.storage import models
 
     with runtime.unit_of_work.records.database.engine.connect() as connection:
         rows = connection.execute(

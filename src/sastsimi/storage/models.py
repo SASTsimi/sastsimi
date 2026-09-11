@@ -93,6 +93,7 @@ prompt_active_entries = Table(
     Column("logical_record_id", Text, nullable=False),
     Column("record_id", Text, ForeignKey("record_revisions.record_id"), nullable=False),
     Column("state_version", Integer, nullable=False),
+    UniqueConstraint("logical_record_id"),
 )
 budget_profiles = Table(
     "budget_profiles",
