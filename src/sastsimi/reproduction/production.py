@@ -613,6 +613,7 @@ class ProductionDynamicWorkflow:
                 prepared.environment.container_instance_id,
                 (command.executable, *command.arguments),
                 self._execution_timeout(),
+                working_directory=command.working_directory,
             )
         except Exception as error:
             raise DynamicOperationalError(

@@ -163,10 +163,7 @@ class DockerAdapter:
                 "--memory",
                 str(spec.memory_limit_bytes),
                 "--tmpfs",
-                (
-                    "/tmp:rw,noexec,nosuid,nodev,size="
-                    f"{spec.disk_limit_bytes},mode=1777"
-                ),
+                (f"/tmp:rw,noexec,nosuid,nodev,size={spec.disk_limit_bytes},mode=1777"),
                 *self._label_args(labels),
                 *mount_args,
                 spec.image_digest,
@@ -186,14 +183,22 @@ class DockerAdapter:
         self._require_success("DOCKER_START_FAILED", outcome)
 
     async def exec(
-        self, container_id: str, argv: tuple[str, ...], timeout_ms: int
+        self,
+        container_id: str,
+        argv: tuple[str, ...],
+        timeout_ms: int,
+        *,
+        working_directory: str,
     ) -> DockerCommandOutcome:
         self._require_resource_id(container_id)
-        if not argv or timeout_ms <= 0:
+        if not argv or timeout_ms <= 0 or working_directory != "/workspace":
             raise ValueError("DOCKER_EXEC_INPUT_INVALID")
         if any(not item or any(char in item for char in "\r\n\0") for item in argv):
             raise ValueError("DOCKER_EXEC_ARGV_INVALID")
-        return await self._run(("exec", container_id, *argv), timeout_ms=timeout_ms)
+        return await self._run(
+            ("exec", "--workdir", working_directory, container_id, *argv),
+            timeout_ms=timeout_ms,
+        )
 
     async def inspect(self, container_id: str) -> DockerContainerState:
         self._require_resource_id(container_id)
@@ -216,9 +221,7 @@ class DockerAdapter:
                 for key, value in labels.items()
             ):
                 raise TypeError
-            health_status = (
-                health.get("Status") if isinstance(health, dict) else None
-            )
+            health_status = health.get("Status") if isinstance(health, dict) else None
             return DockerContainerState(
                 container_id=str(item["Id"]),
                 image_digest=str(item["Image"]),
@@ -263,9 +266,7 @@ class DockerAdapter:
         normalized = dict(labels)
         if normalized.get("sastsimi.owner") != "reproduction-setup-automation":
             raise ValueError("DOCKER_OWNERSHIP_LABELS_INVALID")
-        if any(
-            not _LABEL_VALUE.fullmatch(value) for value in normalized.values()
-        ):
+        if any(not _LABEL_VALUE.fullmatch(value) for value in normalized.values()):
             raise ValueError("DOCKER_OWNERSHIP_LABELS_INVALID")
         if (
             "sastsimi.resource-kind" in normalized

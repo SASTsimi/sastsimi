@@ -33,12 +33,15 @@ RecreateReason = Literal["STATE_CHANGED", "CONFIG_CHANGED", "STATE_UNCERTAIN"]
 class DockerLifecyclePort(Protocol):
     async def build(self, recipe_source: Path, labels: Mapping[str, str]) -> str: ...
     async def inspect_image(self, image: str) -> str: ...
-    async def create(
-        self, spec: SandboxRunSpec, labels: Mapping[str, str]
-    ) -> str: ...
+    async def create(self, spec: SandboxRunSpec, labels: Mapping[str, str]) -> str: ...
     async def start(self, container_id: str) -> None: ...
     async def exec(
-        self, container_id: str, argv: tuple[str, ...], timeout_ms: int
+        self,
+        container_id: str,
+        argv: tuple[str, ...],
+        timeout_ms: int,
+        *,
+        working_directory: str,
     ) -> DockerCommandOutcome: ...
     async def inspect(self, container_id: str) -> DockerContainerState: ...
     async def remove(self, resource_ids: tuple[str, ...]) -> None: ...
@@ -356,11 +359,7 @@ class ReproductionSetupAutomation:
         checks: tuple[EnvironmentCheck, ...],
         meta: RecordMeta,
     ) -> SandboxEnvironment:
-        required = {
-            item.requirement_id
-            for item in requirements.items
-            if item.required
-        }
+        required = {item.requirement_id for item in requirements.items if item.required}
         status_by_id = {check.requirement_id: check.status for check in checks}
         status: Literal["READY", "MISMATCH", "ERROR"] = (
             "ERROR"

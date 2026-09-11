@@ -188,9 +188,7 @@ class FakeDockerAdapter:
         assert labels["sastsimi.owner"] == "reproduction-setup-automation"
         return IMAGE_DIGEST
 
-    async def create(
-        self, spec: SandboxRunSpec, labels: Mapping[str, str]
-    ) -> str:
+    async def create(self, spec: SandboxRunSpec, labels: Mapping[str, str]) -> str:
         self._index += 1
         container_id = f"owned-container-{self._index}"
         self.created[container_id] = (spec, dict(labels))
@@ -200,9 +198,15 @@ class FakeDockerAdapter:
         assert container_id in self.created
 
     async def exec(
-        self, container_id: str, argv: tuple[str, ...], timeout_ms: int
+        self,
+        container_id: str,
+        argv: tuple[str, ...],
+        timeout_ms: int,
+        *,
+        working_directory: str,
     ) -> DockerCommandOutcome:
         assert container_id in self.created
+        assert working_directory == "/workspace"
         return DockerCommandOutcome(0, b"", b"", False)
 
     async def inspect(self, container_id: str) -> DockerContainerState:
@@ -298,9 +302,7 @@ async def test_unhealthy_container_is_recreated_and_only_owned_resources_removed
         request=request,
         environments=(first.environment, second.environment),
         resource_refs=(*first.resource_refs, *second.resource_refs),
-        meta=_meta(
-            "cleanup_result", "cleanup-seed", attempt_id="dynamic-attempt-2"
-        ),
+        meta=_meta("cleanup_result", "cleanup-seed", attempt_id="dynamic-attempt-2"),
     )
 
     assert second.environment.container_action == "CREATED"
@@ -338,9 +340,7 @@ async def test_same_attempt_recreate_gets_a_distinct_runtime_container_identity(
 
     first_labels = docker.created[first.environment.container_instance_id][1]
     second_labels = docker.created[second.environment.container_instance_id][1]
-    assert first_labels["sastsimi.resource-id"] != second_labels[
-        "sastsimi.resource-id"
-    ]
+    assert first_labels["sastsimi.resource-id"] != second_labels["sastsimi.resource-id"]
     assert DockerAdapter.runtime_container_name(
         first_labels
     ) != DockerAdapter.runtime_container_name(second_labels)
@@ -540,6 +540,42 @@ async def test_docker_create_uses_argv_and_hard_isolation_options(
     assert all(
         not (isinstance(item, str) and "docker create " in item) for item in argv
     )
+
+
+@pytest.mark.asyncio
+async def test_docker_exec_uses_exact_argv_and_working_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    async def spawn(*argv: object, **kwargs: object) -> _Process:
+        calls.append(argv)
+        return _Process(b"command output")
+
+    monkeypatch.setattr(
+        "sastsimi.sandbox.docker_adapter.asyncio.create_subprocess_exec", spawn
+    )
+    adapter = DockerAdapter()
+
+    outcome = await adapter.exec(
+        "owned-container-id",
+        ("python", "poc.py"),
+        10_000,
+        working_directory="/workspace",
+    )
+
+    assert outcome.exit_code == 0
+    assert calls == [
+        (
+            "docker",
+            "exec",
+            "--workdir",
+            "/workspace",
+            "owned-container-id",
+            "python",
+            "poc.py",
+        )
+    ]
 
 
 def test_runtime_owned_name_does_not_include_repository_path(tmp_path: Path) -> None:
