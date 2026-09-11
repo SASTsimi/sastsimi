@@ -759,6 +759,10 @@ class DynamicReproductionService:
                     if event_type == "CLEANUP_FINISHED"
                     else (),
                     exit_code=0 if event_type == "POC_EXECUTION_FINISHED" else None,
+                    timed_out=False
+                    if event_type
+                    in {"COMMAND_FINISHED", "POC_EXECUTION_FINISHED"}
+                    else None,
                     safe_message="Deterministic fake event",
                     occurred_at=self.clock.now(),
                 )
