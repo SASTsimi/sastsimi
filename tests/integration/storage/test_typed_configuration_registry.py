@@ -1,12 +1,16 @@
 """Typed configuration publication is host-approved and exact-reference closed."""
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
 from sastsimi.bootstrap import build_fake_pipeline, build_runtime
+from sastsimi.contracts.actions import ActionDecision
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.dynamic import SandboxProfile
+from sastsimi.contracts.evaluation import EvaluationRecommendation
+from sastsimi.contracts.ids import LogicalRecordId, RecordId
 from sastsimi.contracts.llm import (
     LLMCallSpec,
     LLMInvocationLog,
@@ -289,3 +293,244 @@ def test_llm_call_spec_rejects_every_cross_record_mismatch(tmp_path: Path) -> No
     assert pipeline.runtime.validator.record_invocation(
         request, result, log
     ) == reference(log)
+
+    # Production activation and replay re-check the exact ACTIVE evaluation
+    # target inside the same write transaction as publication.
+    assert first_entry.quality_evaluation_ref is not None
+    recommendation = records.get_exact(first_entry.quality_evaluation_ref)
+    assert isinstance(recommendation, EvaluationRecommendation)
+    evaluation_entry = records.get_exact(
+        recommendation.target_prompt_registry_entry_ref
+    )
+    assert isinstance(evaluation_entry, PromptRegistryEntry)
+    from sqlalchemy import delete
+
+    from sastsimi.storage import models
+
+    with records.database.write() as connection:
+        connection.execute(
+            delete(models.prompt_active_entries).where(
+                models.prompt_active_entries.c.agent_role
+                == evaluation_entry.agent_role,
+                models.prompt_active_entries.c.task_kind == evaluation_entry.task_kind,
+                models.prompt_active_entries.c.purpose == evaluation_entry.purpose,
+            )
+        )
+    with pytest.raises(ValueError, match="PROMPT_REGISTRY_NOT_CURRENT"):
+        pipeline.runtime.configuration.register_prompt_entry(first_entry)
+
+    # Storage publication must not accept an ACTIVE-looking but stale prompt
+    # revision when callers bypass the higher-level PromptRegistry facade.
+    target_entry = records.get_exact(target.prompt_registry_entry_ref)
+    assert isinstance(target_entry, PromptRegistryEntry)
+    replacement_entry = next(
+        item
+        for item in active_entries
+        if item.meta.record_id != target_entry.meta.record_id
+    )
+    from sqlalchemy import update
+
+    with records.database.write() as connection:
+        connection.execute(
+            update(models.prompt_active_entries)
+            .where(
+                models.prompt_active_entries.c.agent_role == target_entry.agent_role,
+                models.prompt_active_entries.c.task_kind == target_entry.task_kind,
+                models.prompt_active_entries.c.purpose == target_entry.purpose,
+            )
+            .values(
+                logical_record_id=str(replacement_entry.meta.logical_record_id),
+                record_id=str(replacement_entry.meta.record_id),
+            )
+        )
+    with pytest.raises(ValueError, match="PROMPT_REGISTRY_NOT_CURRENT"):
+        pipeline.runtime.configuration.register_prompt_payload(payload)
+    with pytest.raises(ValueError, match="PROMPT_REGISTRY_NOT_CURRENT"):
+        pipeline.runtime.configuration.register_call_spec(target)
+
+
+def test_prompt_active_entry_is_selected_atomically_and_replay_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    pipeline = build_fake_pipeline(tmp_path)
+    pipeline.analyze(scenario="FALSE")
+    assert pipeline.runtime is not None
+    runtime = pipeline.runtime
+    source = next(
+        item
+        for item in runtime.queries.current_records(
+            "fake-analysis", "prompt_registry_entry"
+        )
+        if isinstance(item, PromptRegistryEntry) and item.purpose == "EVALUATION"
+    )
+
+    def candidate(name: str, *, status: str = "ACTIVE") -> PromptRegistryEntry:
+        return PromptRegistryEntry.model_validate(
+            source.model_dump()
+            | {
+                "meta": source.meta.model_dump()
+                | {
+                    "record_id": RecordId(f"atomic-{name}"),
+                    "logical_record_id": LogicalRecordId(f"atomic-{name}"),
+                    "revision_number": 1,
+                    "previous_record_id": None,
+                },
+                "task_kind": "ATOMIC_ACTIVE_TEST",
+                "status": status,
+                "quality_evaluation_ref": None,
+            }
+        )
+
+    first = candidate("first")
+    second = candidate("second")
+    draft = candidate("draft", status="DRAFT")
+    approvals = runtime.unit_of_work.records.evidence.llm_approvals  # type: ignore[attr-defined]
+    approvals.update(content_hash(item) for item in (first, second, draft))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = tuple(
+            executor.submit(runtime.configuration.register_prompt_entry, item)
+            for item in (first, second)
+        )
+        outcomes: list[object] = []
+        for future in futures:
+            try:
+                outcomes.append(future.result())
+            except ValueError as error:
+                outcomes.append(str(error))
+
+    refs = [item for item in outcomes if not isinstance(item, str)]
+    errors = [item for item in outcomes if isinstance(item, str)]
+    assert len(refs) == 1
+    assert errors == ["PROMPT_REGISTRY_ACTIVE_CONFLICT"]
+    winner = first if reference(first) == refs[0] else second
+    replacement = second if winner is first else first
+    assert runtime.configuration.register_prompt_entry(winner) == refs[0]
+    assert runtime.configuration.register_prompt_entry(draft) == reference(draft)
+    next_revision = winner.model_copy(
+        update={
+            "meta": winner.meta.model_copy(
+                update={
+                    "record_id": RecordId("atomic-winner-v2"),
+                    "revision_number": 2,
+                    "previous_record_id": winner.meta.record_id,
+                }
+            )
+        }
+    )
+    approvals.add(content_hash(next_revision))
+    assert runtime.configuration.register_prompt_entry(next_revision) == reference(
+        next_revision
+    )
+    retired = next_revision.model_copy(
+        update={
+            "meta": next_revision.meta.model_copy(
+                update={
+                    "record_id": RecordId("atomic-winner-retired"),
+                    "revision_number": 3,
+                    "previous_record_id": next_revision.meta.record_id,
+                }
+            ),
+            "status": "RETIRED",
+        }
+    )
+    approvals.add(content_hash(retired))
+    assert runtime.configuration.register_prompt_entry(retired) == reference(retired)
+    assert runtime.configuration.register_prompt_entry(replacement) == reference(
+        replacement
+    )
+
+    from sqlalchemy import select
+
+    from sastsimi.storage import models
+
+    with runtime.unit_of_work.records.database.engine.connect() as connection:
+        rows = connection.execute(
+            select(models.prompt_active_entries).where(
+                models.prompt_active_entries.c.task_kind == "ATOMIC_ACTIVE_TEST"
+            )
+        ).mappings()
+        assert [row["record_id"] for row in rows] == [str(replacement.meta.record_id)]
+
+
+def test_failed_invocation_persists_only_safe_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scenario = build_fake_pipeline(tmp_path)._scenario
+    invoke = scenario.provider_invoke
+    captured: list[object] = []
+
+    def stop_after_capture(*items: object) -> object:
+        captured.extend(items)
+        raise RuntimeError("capture unpersisted invocation")
+
+    async def capture_invocation(
+        request: LLMInvocationRequest, expected: LLMInvocationResult
+    ) -> LLMInvocationResult:
+        assert scenario.runtime is not None
+        monkeypatch.setattr(
+            scenario.runtime.validator, "record_invocation", stop_after_capture
+        )
+        return await invoke(request, expected)
+
+    scenario.provider_invoke = capture_invocation
+    with pytest.raises(RuntimeError, match="capture unpersisted invocation"):
+        scenario.analyze(scenario="FALSE")
+    monkeypatch.undo()
+    assert scenario.runtime is not None
+    runtime = scenario.runtime
+    request, succeeded, succeeded_log = captured
+    assert isinstance(request, LLMInvocationRequest)
+    assert isinstance(succeeded, LLMInvocationResult)
+    assert isinstance(succeeded_log, LLMInvocationLog)
+    candidate_ref = succeeded.parsed_output_ref
+    assert candidate_ref is not None
+    safe_error = "AUTH_REQUIRED: provider credentials are unavailable"
+    failed = succeeded.model_copy(
+        update={
+            "status": "AUTH_REQUIRED",
+            "response_ref": None,
+            "parsed_output_ref": None,
+            "usage": None,
+            "safe_error": safe_error,
+        }
+    )
+    failed_log = succeeded_log.model_copy(
+        update={
+            "status": "AUTH_REQUIRED",
+            "session_ref": failed.session_ref,
+            "exposed_response_ref": None,
+            "parsed_output_ref": None,
+            "usage": None,
+            "safe_error": safe_error,
+        }
+    )
+
+    with pytest.raises(ValueError, match="INVOCATION_RESULT_MISMATCH"):
+        runtime.validator.record_invocation(
+            request,
+            failed.model_copy(update={"response_ref": succeeded.response_ref}),
+            failed_log,
+        )
+
+    log_ref = runtime.validator.record_invocation(request, failed, failed_log)
+    assert log_ref == reference(failed_log)
+    for item in (request, failed, failed_log):
+        assert runtime.unit_of_work.records.get_exact(reference(item)) == item
+    with pytest.raises(LookupError):
+        runtime.unit_of_work.records.get_exact(candidate_ref)
+
+    published = runtime.queries.published_records("fake-analysis")
+    decisions = tuple(
+        item
+        for item in published
+        if isinstance(item, ActionDecision)
+        and item.decision_id
+        == runtime.unit_of_work.records.get_exact(
+            request.action_decision_ref
+        ).decision_id
+    )
+    latest = max(decisions, key=lambda item: item.meta.revision_number)
+    expected_outcomes = tuple(reference(item) for item in (request, failed, failed_log))
+    assert latest.outcome_refs == expected_outcomes
+    assert candidate_ref not in latest.outcome_refs

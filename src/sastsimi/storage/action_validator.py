@@ -486,7 +486,6 @@ class RuntimeValidator:
                 or request.action_decision_ref != claimed_ref
                 or log.action_decision_ref != claimed_ref
                 or log.call_spec_ref != request.call_spec_ref
-                or result.parsed_output_ref is None
                 or log.parsed_output_ref != result.parsed_output_ref
                 or tuple(action.input_refs) != tuple(spec.context_refs)
             ):
@@ -534,25 +533,36 @@ class RuntimeValidator:
                 or log.session_ref != result.session_ref
                 or log.status != result.status
                 or log.usage != result.usage
-                or result.status != "SUCCEEDED"
-                or result.safe_error is not None
-                or log.safe_error is not None
-                or log.validation_errors
+                or log.safe_error != result.safe_error
                 or log.exposed_response_ref != result.response_ref
             ):
                 raise ValueError("INVOCATION_RESULT_MISMATCH")
-            assert result.parsed_output_ref is not None
-            candidate = self.records.resolve(
-                connection, result.parsed_output_ref, candidate=True
-            )
-            from sastsimi.contracts.llm import OutputSchemaSpec
+            candidate = None
+            if result.status == "SUCCEEDED":
+                if (
+                    result.parsed_output_ref is None
+                    or result.safe_error is not None
+                    or log.validation_errors
+                ):
+                    raise ValueError("INVOCATION_RESULT_MISMATCH")
+                candidate = self.records.resolve(
+                    connection, result.parsed_output_ref, candidate=True
+                )
+                from sastsimi.contracts.llm import OutputSchemaSpec
 
-            schema = self.records.resolve(connection, spec.output_schema_ref)
-            if (
-                not isinstance(schema, OutputSchemaSpec)
-                or candidate.meta.record_type != schema.result_kind
+                schema = self.records.resolve(connection, spec.output_schema_ref)
+                if (
+                    not isinstance(schema, OutputSchemaSpec)
+                    or candidate.meta.record_type != schema.result_kind
+                ):
+                    raise ValueError("INVOCATION_OUTPUT_MISMATCH")
+            elif (
+                result.parsed_output_ref is not None
+                or log.parsed_output_ref is not None
+                or result.safe_error is None
+                or log.safe_error is None
             ):
-                raise ValueError("INVOCATION_OUTPUT_MISMATCH")
+                raise ValueError("INVOCATION_RESULT_MISMATCH")
             if action.work_ref is None:
                 raise ValueError("INVOCATION_ACTION_MISMATCH")
             work = self.records.resolve(connection, action.work_ref)
@@ -573,7 +583,11 @@ class RuntimeValidator:
                 not isinstance(work, WorkExecutionState)
                 or any(
                     getattr(item.meta, name, None) != getattr(work.meta, name, None)
-                    for item in (request, result, log, candidate)
+                    for item in (
+                        (request, result, log, candidate)
+                        if candidate is not None
+                        else (request, result, log)
+                    )
                     for name in (
                         "analysis_id",
                         "workspace_id",
@@ -590,10 +604,14 @@ class RuntimeValidator:
             check_stage(self.records, connection, action, work)
             from sastsimi.contracts.policy import PolicyParserResult
 
-            if isinstance(candidate, PolicyParserResult) and (
-                spec.agent_role != "POLICY_PARSER"
-                or spec.context_refs != (candidate.source_ref,)
-                or candidate.llm_invocation_ref != reference(request)
+            if (
+                candidate is not None
+                and isinstance(candidate, PolicyParserResult)
+                and (
+                    spec.agent_role != "POLICY_PARSER"
+                    or spec.context_refs != (candidate.source_ref,)
+                    or candidate.llm_invocation_ref != reference(request)
+                )
             ):
                 raise ValueError("INVOCATION_POLICY_SOURCE_MISMATCH")
             invocation_refs: list[StoredDataRef] = []

@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from typing import cast
 
-from sqlalchemy import Connection, insert, select, update
+from sqlalchemy import Connection, delete, insert, select, update
 
 from sastsimi.contracts.budget import (
     DynamicReproductionLifecycleProfile,
@@ -53,7 +53,10 @@ class ConfigurationRegistry:
         self.artifacts = artifacts
 
     def _publish[T: Record](
-        self, record: T, approved: Callable[[T], bool]
+        self,
+        record: T,
+        approved: Callable[[T], bool],
+        bind: Callable[[Connection, T], None] | None = None,
     ) -> StoredDataRef:
         if not approved(record):
             raise ValueError("CONFIGURATION_APPROVAL_REQUIRED")
@@ -70,6 +73,8 @@ class ConfigurationRegistry:
             assert staged == ref
             self.records.publish(connection, ref)
             self._point(connection, record)
+            if bind is not None:
+                bind(connection, record)
         return ref
 
     def _point(self, connection: Connection, record: Record) -> None:
@@ -323,8 +328,6 @@ class ConfigurationRegistry:
 
     def register_prompt_entry(self, record: PromptRegistryEntry) -> StoredDataRef:
         record = PromptRegistryEntry.model_validate(record)
-        if record.status == "RETIRED":
-            raise ValueError("PROMPT_CONFIGURATION_RETIRED")
         refs = (
             *record.provider_profile_refs,
             record.output_schema_ref,
@@ -361,7 +364,125 @@ class ConfigurationRegistry:
             if record.purpose == "PRODUCTION" and record.status == "ACTIVE":
                 self._validate_production_activation(connection, record)
         approved = self.records.evidence.llm_configuration_approved
-        return self._publish(record, approved)
+        return self._publish(record, approved, self._bind_active_prompt)
+
+    def _bind_active_prompt(
+        self, connection: Connection, record: PromptRegistryEntry
+    ) -> None:
+        """Atomically select the one ACTIVE entry for a role/task/purpose."""
+        if record.status == "DRAFT":
+            return
+        if record.purpose == "PRODUCTION" and record.status == "ACTIVE":
+            # Re-check R8 evidence and its exact evaluation target while this
+            # publication holds the SQLite write lock. The earlier read is only
+            # a fast rejection and must not be the authority boundary.
+            self._validate_production_activation(connection, record)
+        table = models.prompt_active_entries
+        key = (
+            table.c.agent_role == record.agent_role,
+            table.c.task_kind == record.task_kind,
+            table.c.purpose == record.purpose,
+        )
+        current = connection.execute(select(table).where(*key)).mappings().first()
+        logical_id = str(record.meta.logical_record_id)
+        record_id = str(record.meta.record_id)
+        if record.status == "RETIRED":
+            previous_record_id = record.meta.previous_record_id
+            if previous_record_id is None:
+                raise ValueError("PROMPT_REGISTRY_RETIREMENT_MISMATCH")
+            previous_ref_raw = connection.execute(
+                select(models.records.c.ref).where(
+                    models.records.c.record_id == str(previous_record_id)
+                )
+            ).scalar_one_or_none()
+            if previous_ref_raw is None:
+                raise ValueError("PROMPT_REGISTRY_RETIREMENT_MISMATCH")
+            from .codec import REF_ADAPTER
+
+            previous = self.records.resolve(
+                connection, REF_ADAPTER.validate_json(previous_ref_raw)
+            )
+            if (
+                not isinstance(previous, PromptRegistryEntry)
+                or previous.status != "ACTIVE"
+                or previous.meta.logical_record_id != record.meta.logical_record_id
+                or self._prompt_semantics(previous) != self._prompt_semantics(record)
+            ):
+                raise ValueError("PROMPT_REGISTRY_RETIREMENT_MISMATCH")
+            if current is None:
+                return
+            if current["logical_record_id"] != logical_id or current[
+                "record_id"
+            ] != str(previous_record_id):
+                raise ValueError("PROMPT_REGISTRY_RETIREMENT_MISMATCH")
+            removed = connection.execute(
+                delete(table).where(
+                    *key,
+                    table.c.logical_record_id == logical_id,
+                    table.c.record_id == current["record_id"],
+                    table.c.state_version == current["state_version"],
+                )
+            )
+            if removed.rowcount != 1:
+                raise ValueError("PROMPT_REGISTRY_RETIREMENT_MISMATCH")
+            return
+        if current is None:
+            connection.execute(
+                insert(table).values(
+                    agent_role=record.agent_role,
+                    task_kind=record.task_kind,
+                    purpose=record.purpose,
+                    logical_record_id=logical_id,
+                    record_id=record_id,
+                    state_version=1,
+                )
+            )
+            return
+        if current["record_id"] == record_id:
+            if current["logical_record_id"] != logical_id:
+                raise ValueError("PROMPT_REGISTRY_ACTIVE_CONFLICT")
+            return
+        if current["logical_record_id"] != logical_id:
+            raise ValueError("PROMPT_REGISTRY_ACTIVE_CONFLICT")
+        changed = connection.execute(
+            update(table)
+            .where(
+                *key,
+                table.c.logical_record_id == logical_id,
+                table.c.record_id == current["record_id"],
+                table.c.state_version == current["state_version"],
+            )
+            .values(
+                record_id=record_id,
+                state_version=current["state_version"] + 1,
+            )
+        )
+        if changed.rowcount != 1:
+            raise ValueError("PROMPT_REGISTRY_ACTIVE_CONFLICT")
+
+    @staticmethod
+    def _require_active_prompt_binding(
+        connection: Connection, record: PromptRegistryEntry
+    ) -> None:
+        table = models.prompt_active_entries
+        active = (
+            connection.execute(
+                select(table).where(
+                    table.c.agent_role == record.agent_role,
+                    table.c.task_kind == record.task_kind,
+                    table.c.purpose == record.purpose,
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if (
+            record.status != "ACTIVE"
+            or active is None
+            or active["logical_record_id"] != str(record.meta.logical_record_id)
+            or active["record_id"] != str(record.meta.record_id)
+        ):
+            raise ValueError("PROMPT_REGISTRY_NOT_CURRENT")
 
     @staticmethod
     def _prompt_semantics(record: PromptRegistryEntry) -> tuple[object, ...]:
@@ -454,6 +575,7 @@ class ConfigurationRegistry:
             or config.session_policy != record.session_policy
         ):
             raise ValueError("QUALITY_EVIDENCE_MISMATCH")
+        self._require_active_prompt_binding(connection, target)
 
     def register_prompt_payload(self, record: PromptPayload) -> StoredDataRef:
         record = PromptPayload.model_validate(record)
@@ -476,6 +598,7 @@ class ConfigurationRegistry:
                 )
             ):
                 raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
+            self._require_active_prompt_binding(connection, entry)
             slots = {slot.slot: slot for slot in entry.input_slots}
             seen: dict[str, int] = {}
             projections: list[tuple[str, bytes]] = []
@@ -563,6 +686,7 @@ class ConfigurationRegistry:
                 or not isinstance(limits, ExecutionLimits)
             ):
                 raise ValueError("LLM_CONFIGURATION_CLOSURE_MISMATCH")
+            self._require_active_prompt_binding(connection, entry)
             exact_pairs = (
                 (record.agent_role, entry.agent_role),
                 (record.task_kind, entry.task_kind),
