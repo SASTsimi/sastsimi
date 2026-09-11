@@ -56,6 +56,8 @@ if TYPE_CHECKING:
     from sastsimi.ports.dto import StaticRuleMapping
     from sastsimi.ports.static_tool import StaticProcessAdapter
     from sastsimi.ports.workspace import WorkspaceLocatorPort
+    from sastsimi.reproduction.composition import T11Services
+    from sastsimi.reproduction.production import DynamicSandboxAuthorizationResolver
     from sastsimi.runtime.workflow_runner import WorkflowRunner
     from sastsimi.static_analysis.coordinator import StaticToolCoordinator
     from sastsimi.static_analysis.normalizer import DecoderKey, RawDecoder
@@ -712,4 +714,65 @@ def build_t10_services(
         clock=clock,
         ids=ids,
         role_identity_refs=role_identity_refs,
+    )
+
+
+def build_t11_services(
+    *,
+    runtime: RuntimeServices,
+    runner: WorkflowRunner,
+    clock: Clock,
+    ids: IdGenerator,
+    workspace_root: Path,
+    workspace_id: WorkspaceId,
+    commit_id: CommitId,
+    role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
+    sandbox_authorization: DynamicSandboxAuthorizationResolver,
+    docker_executable: str = "docker",
+) -> T11Services:
+    """Build the real local-Docker T11 slice after trusted config resolution."""
+
+    from sastsimi.agents.dynamic_reproduction import DynamicReproductionAgent
+    from sastsimi.reproduction.composition import compose_t11_services
+    from sastsimi.sandbox.cleanup import OwnedResourceRegistry
+    from sastsimi.sandbox.controller import SandboxController
+    from sastsimi.sandbox.docker_adapter import DockerAdapter
+    from sastsimi.sandbox.health_check import SandboxHealthChecker
+    from sastsimi.sandbox.recipe_store import EnvironmentRecipeStore
+    from sastsimi.sandbox.session_manager import ReproductionSessionManager
+    from sastsimi.sandbox.setup_automation import ReproductionSetupAutomation
+
+    artifacts = runtime.unit_of_work.artifacts
+    docker = DockerAdapter(docker_executable)
+    setup = ReproductionSetupAutomation(
+        docker=docker,
+        recipes=EnvironmentRecipeStore(),
+        health=SandboxHealthChecker(),
+        resources=OwnedResourceRegistry(),
+    )
+    controller = SandboxController(
+        workspace_root=workspace_root,
+        workspace_id=str(workspace_id),
+        commit_id=str(commit_id),
+        record_resolver=runtime.unit_of_work.records.get_exact,
+    )
+    agent = DynamicReproductionAgent(
+        llm_calls=runtime.llm_calls,
+        artifacts=artifacts,
+        ids=ids,
+        clock=clock,
+    )
+    return compose_t11_services(
+        runtime=runtime,
+        runner=runner,
+        agent=agent,
+        controller=controller,
+        setup=setup,
+        docker=docker,
+        sessions=ReproductionSessionManager(clock=clock, ids=ids),
+        artifacts=artifacts,
+        clock=clock,
+        ids=ids,
+        role_identity_refs=role_identity_refs,
+        sandbox_authorization=sandbox_authorization,
     )

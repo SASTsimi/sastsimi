@@ -38,9 +38,7 @@ from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
 from sastsimi.storage.records import next_meta
 
-type DynamicStatus = Literal[
-    "SUCCEEDED", "PARTIAL", "FAILED", "BLOCKED", "CANCELLED"
-]
+type DynamicStatus = Literal["SUCCEEDED", "PARTIAL", "FAILED", "BLOCKED", "CANCELLED"]
 type FailureCategory = Literal[
     "NONE",
     "POLICY_BLOCKED",
@@ -102,7 +100,13 @@ class ReproductionSessionManager:
         self._latest_logs: dict[str, AgentLog] = {}
         self._event_bytes: dict[str, tuple[str, bytes]] = {}
 
-    def start(self, *, request_ref: StoredDataRef, meta: RecordMeta) -> AgentLog:
+    def start(
+        self,
+        *,
+        request_ref: StoredDataRef,
+        meta: RecordMeta,
+        policy_decision_ref: StoredDataRef | None = None,
+    ) -> AgentLog:
         if meta.record_type != AgentLog.KIND or meta.attempt_id is None:
             raise ValueError("SESSION_LOG_METADATA_MISMATCH")
         key = str(meta.logical_record_id)
@@ -121,7 +125,11 @@ class ReproductionSessionManager:
             command_ref=None,
             command_digest=None,
             redaction_status=None,
-            input_refs=(request_ref,),
+            input_refs=(
+                (request_ref,)
+                if policy_decision_ref is None
+                else (request_ref, policy_decision_ref)
+            ),
             output_refs=(),
             exit_code=None,
             safe_message="Dynamic reproduction session started",
@@ -377,9 +385,7 @@ class ReproductionSessionManager:
             return False, None
         candidate_ref = _logged_ref(log, candidate, "poc_candidate_ref", meta)
         environment_ref = _logged_ref(log, data.environment, "environment_ref", meta)
-        recipe_ref = _logged_ref(
-            log, data.recipe, "environment_recipe_ref", meta
-        )
+        recipe_ref = _logged_ref(log, data.recipe, "environment_recipe_ref", meta)
         if candidate_ref is None or environment_ref is None or recipe_ref is None:
             return False, None
         executions = [
@@ -605,9 +611,7 @@ class ReproductionSessionManager:
             ),
             plan_execution_status=plan_status,
             plan_issue_evidence_refs=tuple(
-                reference
-                for issue in plan_issues
-                for reference in issue.related_refs
+                reference for issue in plan_issues for reference in issue.related_refs
             ),
             limitations=limitations,
             cleanup_required=environment_ref is not None,
