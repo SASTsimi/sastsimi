@@ -29,7 +29,8 @@ from sastsimi.contracts.llm import (
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import ReferencedRecord, StoredDataRef, reference
 from sastsimi.contracts.static import StaticFactBundle
-from sastsimi.prompts.builder import PromptBuilder, PromptSource
+from sastsimi.gates.rule_scope_service import OfficialSourceBinding
+from sastsimi.prompts.builder import ArtifactPromptSource, PromptBuilder, PromptSource
 from sastsimi.prompts.loader import PromptLoader, strict_load_yaml
 from sastsimi.prompts.registry import LoadedPromptDefinition
 from sastsimi.prompts.validation import validate_output
@@ -384,6 +385,88 @@ def test_builder_creates_redacted_exact_payload_and_call_spec(work_path: Path) -
             registry_entry_ref=_exact_ref(entry),
             metadata=_meta("prompt_payload", "forged-payload"),
             sources=(PromptSource("facts", _exact_ref(bundle), bundle),),
+        )
+
+
+def test_builder_binds_exact_redacted_artifact_source(work_path: Path) -> None:
+    builder, definition, entry, _, _, _, _ = _fixture(work_path)
+    body = "Official policy allows testing on the listed assets."
+    source_ref = builder.artifacts.commit(
+        builder.artifacts.stage_bytes(body.encode("utf-8"), "text/plain")
+    )
+    source = OfficialSourceBinding(
+        source_ref=source_ref,
+        source_locator="https://program.example/policy",
+        content_hash=source_ref.content_hash,
+        redacted_body=body,
+    )
+    source_entry = entry.model_copy(
+        update={
+            "input_slots": (
+                PromptInputSlot(
+                    slot="official_source",
+                    data_kind="artifact",
+                    field_paths=("/redacted_body",),
+                    cardinality="REQUIRED_ONE",
+                    trust_class="UNTRUSTED_DATA",
+                ),
+            )
+        }
+    )
+    source_definition = LoadedPromptDefinition.from_bytes(
+        entry=source_entry,
+        template_path=definition.template_path,
+        template=definition.template,
+    )
+
+    payload = builder.build_payload(
+        definition=source_definition,
+        registry_entry_ref=_exact_ref(source_entry),
+        metadata=_meta("prompt_payload", "artifact-payload"),
+        sources=(ArtifactPromptSource("official_source", source_ref, source),),
+    )
+
+    assert payload.context_bindings[0].source_ref == source_ref
+    assert body.encode("utf-8") in builder.read_artifact(payload.rendered_prompt_ref)
+
+
+def test_builder_rejects_artifact_wrapper_that_does_not_match_exact_bytes(
+    work_path: Path,
+) -> None:
+    builder, definition, entry, _, _, _, _ = _fixture(work_path)
+    source_ref = builder.artifacts.commit(
+        builder.artifacts.stage_bytes(b"Exact official body", "text/plain")
+    )
+    forged = OfficialSourceBinding(
+        source_ref=source_ref,
+        source_locator="https://program.example/policy",
+        content_hash=source_ref.content_hash,
+        redacted_body="Different but safe body",
+    )
+    source_entry = entry.model_copy(
+        update={
+            "input_slots": (
+                PromptInputSlot(
+                    slot="official_source",
+                    data_kind="artifact",
+                    field_paths=("/redacted_body",),
+                    cardinality="REQUIRED_ONE",
+                    trust_class="UNTRUSTED_DATA",
+                ),
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="PROMPT_ARTIFACT_PROJECTION_MISMATCH"):
+        builder.build_payload(
+            definition=LoadedPromptDefinition.from_bytes(
+                entry=source_entry,
+                template_path=definition.template_path,
+                template=definition.template,
+            ),
+            registry_entry_ref=_exact_ref(source_entry),
+            metadata=_meta("prompt_payload", "forged-artifact-payload"),
+            sources=(ArtifactPromptSource("official_source", source_ref, forged),),
         )
 
 
