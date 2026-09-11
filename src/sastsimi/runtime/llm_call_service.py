@@ -69,6 +69,14 @@ class LLMCurrentSelectionGuard(Protocol):
     def require_current(self, request: LLMInvocationRequest) -> None: ...
 
 
+class LLMParentSessionGuard(Protocol):
+    """Fail closed unless a requested continuation belongs to this attempt."""
+
+    def require_compatible_parent(
+        self, request: LLMInvocationRequest, work: WorkExecutionState
+    ) -> None: ...
+
+
 class ExactAdapterResolver:
     """Resolve an adapter by the exact profile revision and exact model only."""
 
@@ -99,6 +107,7 @@ class LLMCallService:
         metadata_factory: InvocationMetadataFactory,
         run_states: AnalysisRunStateResolver,
         current_selection: LLMCurrentSelectionGuard,
+        parent_sessions: LLMParentSessionGuard,
         clock: Clock,
     ) -> None:
         self._records = records
@@ -109,6 +118,7 @@ class LLMCallService:
         self._metadata_factory = metadata_factory
         self._run_states = run_states
         self._current_selection = current_selection
+        self._parent_sessions = parent_sessions
         self._clock = clock
 
     async def invoke(
@@ -138,6 +148,8 @@ class LLMCallService:
             started_ms = self._clock.monotonic_ms()
             try:
                 self._current_selection.require_current(request)
+                if request.parent_session_ref is not None:
+                    self._parent_sessions.require_compatible_parent(request, work)
                 result = await adapter.invoke(request)
                 result = self._checked_result(request, profile, result)
             except asyncio.CancelledError:
@@ -413,7 +425,7 @@ class LLMCallService:
                 "provider": profile.provider,
                 "model": request.model,
                 "actual_session_mode": (
-                    "RESUMED" if request.session_policy == "RESUME" else "NEW"
+                    "RESUMED" if request.parent_session_ref is not None else "NEW"
                 ),
                 "session_ref": None,
                 "response_ref": None,
@@ -533,6 +545,7 @@ __all__ = [
     "ExactAdapterResolver",
     "InvocationMetadataFactory",
     "LLMCurrentSelectionGuard",
+    "LLMParentSessionGuard",
     "LLMCallService",
     "PersistedLLMInvocation",
     "llm_action_input_refs",

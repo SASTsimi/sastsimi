@@ -6,10 +6,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import BinaryIO, Literal
+from types import SimpleNamespace
+from typing import Any, BinaryIO, Literal, cast
 
 import pytest
 from pydantic import JsonValue
+from sqlalchemy import create_engine
 
 from sastsimi.bootstrap import build_runtime, upgrade_database
 from sastsimi.contracts.actions import (
@@ -78,6 +80,9 @@ from sastsimi.runtime.llm_call_service import (
     LLMCallService,
     llm_action_input_refs,
 )
+from sastsimi.storage import models
+from sastsimi.storage.llm_session_guard import LLMParentSessionGuard
+from sastsimi.storage.repositories import SQLiteRecordStore
 from tests.contract.domain.canonical_fixtures import make
 from tests.integration.runtime_support import TestIds
 
@@ -345,6 +350,21 @@ class FixedCurrentSelection:
         self.checks += 1
         if not self.current:
             raise ValueError("LLM_CONFIGURATION_NOT_CURRENT")
+
+
+class FixedParentSession:
+    def __init__(self, *, compatible: bool = True) -> None:
+        self.compatible = compatible
+        self.checks = 0
+
+    def require_compatible_parent(
+        self, request: LLMInvocationRequest, work: WorkExecutionState
+    ) -> None:
+        self.checks += 1
+        assert request.parent_session_ref is not None
+        assert work.active_attempt_id == request.meta.attempt_id
+        if not self.compatible:
+            raise ValueError("LLM_PARENT_SESSION_NOT_COMPATIBLE")
 
 
 class FakeAdapter:
@@ -679,6 +699,7 @@ def build_service(
     status: InvocationStatus,
     *,
     current_selection: FixedCurrentSelection | None = None,
+    parent_sessions: FixedParentSession | None = None,
     cancel: bool = False,
     actual_session_mode: Literal["NEW", "RESUMED"] = "NEW",
 ) -> tuple[LLMCallService, FakeAdapter, RecordingAuthorization]:
@@ -714,10 +735,46 @@ def build_service(
         metadata_factory=data.metadata_factory,
         run_states=FixedRunStates(data.run_state),
         current_selection=current_selection or FixedCurrentSelection(),
+        parent_sessions=parent_sessions or FixedParentSession(),
         clock=FixedClock(),
     )
     assert prompt_resolver is not None  # exact resolver is tested independently below
     return service, adapter, authorization
+
+
+def resume_fixture(data: Fixture) -> None:
+    spec = data.records.get_exact(data.spec_ref)
+    assert isinstance(spec, LLMCallSpec)
+    resumed_spec = spec.model_copy(
+        update={"session_policy": "RESUME", "parent_session_ref": "session-parent"}
+    )
+    resumed_spec_ref = data.records.publish(resumed_spec)
+    decision = data.records.get_exact(data.decision_ref)
+    claimed = data.records.get_exact(data.claimed_ref)
+    assert isinstance(decision, ActionDecision)
+    assert isinstance(claimed, ActionDecision)
+    action = data.records.get_exact(decision.action_ref)
+    payload = data.records.get_exact(data.payload_ref)
+    assert isinstance(action, ActionRequest)
+    assert isinstance(payload, PromptPayload)
+    resumed_action = action.model_copy(
+        update={
+            "llm_call_spec_ref": resumed_spec_ref,
+            "provider_profile_ref": resumed_spec.provider_profile_ref,
+            "session_mode": "RESUME",
+            "input_refs": llm_action_input_refs(
+                resumed_spec_ref, resumed_spec, payload
+            ),
+        }
+    )
+    resumed_action_ref = data.records.publish(resumed_action)
+    resumed_decision = decision.model_copy(update={"action_ref": resumed_action_ref})
+    resumed_decision_ref = data.records.publish(resumed_decision)
+    resumed_claimed = claimed.model_copy(update={"action_ref": resumed_action_ref})
+    resumed_claimed_ref = data.records.publish(resumed_claimed)
+    data.spec_ref = resumed_spec_ref
+    data.decision_ref = resumed_decision_ref
+    data.claimed_ref = resumed_claimed_ref
 
 
 @pytest.mark.asyncio
@@ -930,6 +987,162 @@ async def test_new_session_request_rejects_a_resumed_provider_result() -> None:
         for record in data.records.staged.values()
     )
     assert len(authorization.invocations) == 1
+
+
+@pytest.mark.asyncio
+async def test_resume_uses_a_compatible_parent_before_provider_io() -> None:
+    data = fixture()
+    resume_fixture(data)
+    parent_sessions = FixedParentSession()
+    service, adapter, _authorization = build_service(
+        data,
+        "SUCCEEDED",
+        parent_sessions=parent_sessions,
+        actual_session_mode="RESUMED",
+    )
+
+    outcome = await service.invoke(
+        work=data.work,
+        decision_ref=data.decision_ref,
+        reservation_ref=data.reservation_ref,
+        call_spec_ref=data.spec_ref,
+    )
+
+    assert parent_sessions.checks == 1
+    assert adapter.calls == 1
+    assert outcome.result.status == "SUCCEEDED"
+    assert outcome.result.actual_session_mode == "RESUMED"
+
+
+@pytest.mark.asyncio
+async def test_incompatible_parent_session_is_rejected_before_provider_io() -> None:
+    data = fixture()
+    resume_fixture(data)
+    parent_sessions = FixedParentSession(compatible=False)
+    service, adapter, authorization = build_service(
+        data,
+        "SUCCEEDED",
+        parent_sessions=parent_sessions,
+        actual_session_mode="RESUMED",
+    )
+
+    outcome = await service.invoke(
+        work=data.work,
+        decision_ref=data.decision_ref,
+        reservation_ref=data.reservation_ref,
+        call_spec_ref=data.spec_ref,
+    )
+
+    assert parent_sessions.checks == 1
+    assert adapter.calls == 0
+    assert outcome.result.status == "FAILED"
+    assert outcome.result.actual_session_mode == "RESUMED"
+    assert len(authorization.invocations) == 1
+
+
+def _published_session_guard(
+    data: Fixture,
+    request: LLMInvocationRequest,
+    result: LLMInvocationResult,
+    log: LLMInvocationLog,
+) -> LLMParentSessionGuard:
+    engine = create_engine("sqlite://")
+    models.metadata.create_all(engine)
+    database = cast(Any, SimpleNamespace(engine=engine, recovery_failed=False))
+    records = SQLiteRecordStore(database)
+    claimed = data.records.get_exact(data.claimed_ref)
+    initial = data.records.get_exact(data.decision_ref)
+    assert isinstance(claimed, ActionDecision)
+    assert isinstance(initial, ActionDecision)
+    action = data.records.get_exact(initial.action_ref)
+    assert isinstance(action, ActionRequest)
+    with engine.begin() as connection:
+        for record in (data.work, action, initial, claimed, request, result, log):
+            exact = records.stage(connection, record)
+            records.publish(connection, exact)
+    return LLMParentSessionGuard(records)
+
+
+@pytest.mark.asyncio
+async def test_persisted_successful_session_is_compatible_with_same_work_attempt() -> (
+    None
+):
+    data = fixture()
+    service, _adapter, authorization = build_service(data, "SUCCEEDED")
+    await service.invoke(
+        work=data.work,
+        decision_ref=data.decision_ref,
+        reservation_ref=data.reservation_ref,
+        call_spec_ref=data.spec_ref,
+    )
+    request, result, log = authorization.invocations[0]
+    guard = _published_session_guard(data, request, result, log)
+    resumed = request.model_copy(
+        update={"session_policy": "RESUME", "parent_session_ref": result.session_ref}
+    )
+
+    guard.require_compatible_parent(resumed, data.work)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ("cross_work", "cross_attempt", "stale", "failed"))
+async def test_parent_session_rejects_incompatible_or_failed_invocation(
+    invalid: str,
+) -> None:
+    data = fixture()
+    service, _adapter, authorization = build_service(data, "SUCCEEDED")
+    await service.invoke(
+        work=data.work,
+        decision_ref=data.decision_ref,
+        reservation_ref=data.reservation_ref,
+        call_spec_ref=data.spec_ref,
+    )
+    request, result, log = authorization.invocations[0]
+    if invalid == "failed":
+        safe_error = "FAILED: provider request failed"
+        result = result.model_copy(
+            update={
+                "status": "FAILED",
+                "response_ref": None,
+                "parsed_output_ref": None,
+                "safe_error": safe_error,
+            }
+        )
+        log = log.model_copy(
+            update={
+                "status": "FAILED",
+                "exposed_response_ref": None,
+                "parsed_output_ref": None,
+                "safe_error": safe_error,
+            }
+        )
+    guard = _published_session_guard(data, request, result, log)
+    resumed = request.model_copy(
+        update={"session_policy": "RESUME", "parent_session_ref": result.session_ref}
+    )
+    current_work = data.work
+    if invalid == "cross_work":
+        current_work = data.work.model_copy(update={"work_id": "other-work"})
+    elif invalid == "cross_attempt":
+        current_work = data.work.model_copy(
+            update={"active_attempt_id": "other-attempt"}
+        )
+        resumed = resumed.model_copy(
+            update={
+                "meta": resumed.meta.model_copy(update={"attempt_id": "other-attempt"})
+            }
+        )
+    elif invalid == "stale":
+        resumed = resumed.model_copy(
+            update={
+                "prompt_registry_entry_ref": stored_ref(
+                    "prompt_registry_entry", "newer-entry"
+                )
+            }
+        )
+
+    with pytest.raises(ValueError, match="LLM_PARENT_SESSION_NOT_COMPATIBLE"):
+        guard.require_compatible_parent(resumed, current_work)
 
 
 def test_build_runtime_composes_the_llm_call_service(tmp_path: Path) -> None:

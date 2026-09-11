@@ -556,6 +556,7 @@ def build_runtime(
     from sastsimi.storage.intermediate_publication import (
         IntermediatePublicationService as SQLiteIntermediates,
     )
+    from sastsimi.storage.llm_session_guard import LLMParentSessionGuard
     from sastsimi.storage.queries import RuntimeQueries as SQLiteQueries
     from sastsimi.storage.recovery_service import RecoveryService as SQLiteRecovery
     from sastsimi.storage.repositories import SQLiteRecordStore
@@ -614,6 +615,7 @@ def build_runtime(
         metadata_factory=llm_metadata,
         run_states=registry,
         current_selection=configuration_store,
+        parent_sessions=LLMParentSessionGuard(records),
         clock=clock,
     )
     return RuntimeServices(
