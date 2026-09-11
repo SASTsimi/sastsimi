@@ -395,6 +395,7 @@ def _context(tmp_path: Path) -> BoundaryContext:
             "recipe": recipe,
             "action": action,
             "action_decision_ref": decision_ref,
+            "required_context_refs": (),
             "request": request,
             "plan": plan,
             "sandbox_profile": profile,
@@ -405,6 +406,28 @@ def _context(tmp_path: Path) -> BoundaryContext:
         other_workspace=other_workspace,
         records=records,
     )
+
+
+def _replace_action(
+    context: BoundaryContext,
+    *,
+    input_refs: tuple[StoredDataRef, ...],
+) -> dict[str, object]:
+    current_action = context.arguments["action"]
+    current_decision_ref = context.arguments["action_decision_ref"]
+    assert isinstance(current_action, ActionRequest)
+    assert isinstance(current_decision_ref, StoredDataRef)
+    current_decision = context.records[str(current_decision_ref.record_id)]
+    assert isinstance(current_decision, ActionDecision)
+    action = current_action.model_copy(update={"input_refs": input_refs})
+    decision = current_decision.model_copy(update={"action_ref": reference(action)})
+    decision_ref = reference(decision)
+    assert isinstance(decision_ref, StoredDataRef)
+    context.records[str(decision_ref.record_id)] = decision
+    return context.arguments | {
+        "action": action,
+        "action_decision_ref": decision_ref,
+    }
 
 
 def test_build_phase_binds_exact_source_before_docker_access(tmp_path: Path) -> None:
@@ -562,3 +585,75 @@ def test_local_non_root_default_deny_spec_is_approved(tmp_path: Path) -> None:
     assert outcome.approved_spec.network_mode == "DEFAULT_DENY"
     assert outcome.approved_spec.user not in {"0", "root"}
     assert outcome.approved_spec.privileged is False
+
+
+def test_exact_plan_environment_requirements_must_be_in_action_inputs(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    action = context.arguments["action"]
+    plan = context.arguments["plan"]
+    assert isinstance(action, ActionRequest)
+    assert isinstance(plan, ReproductionPlan)
+    wrong_requirements_ref = plan.environment_requirements_ref.model_copy(
+        update={
+            "stored_data_id": "wrong-requirements-stored",
+            "content_hash": "b" * 64,
+            "record_id": "wrong-requirements-record",
+        }
+    )
+    arguments = _replace_action(
+        context,
+        input_refs=tuple(
+            wrong_requirements_ref if ref == plan.environment_requirements_ref else ref
+            for ref in action.input_refs
+        ),
+    )
+
+    outcome = context.controller.evaluate(**arguments)  # type: ignore[arg-type]
+
+    assert outcome.decision.decision == "DENY"
+    assert "STALE_RESULT" in outcome.decision.reason_codes
+
+
+@pytest.mark.parametrize("context_ref_count", [0, 2])
+def test_required_phase_context_must_appear_exactly_once(
+    tmp_path: Path,
+    context_ref_count: int,
+) -> None:
+    context = _context(tmp_path)
+    action = context.arguments["action"]
+    assert isinstance(action, ActionRequest)
+    context_ref = StoredDataRef.model_validate(
+        _ref("sandbox_policy_decision", "build-policy")
+    )
+    arguments = _replace_action(
+        context,
+        input_refs=(*action.input_refs, *((context_ref,) * context_ref_count)),
+    ) | {"required_context_refs": (context_ref,)}
+
+    outcome = context.controller.evaluate(**arguments)  # type: ignore[arg-type]
+
+    assert outcome.decision.decision == "DENY"
+    assert "STALE_RESULT" in outcome.decision.reason_codes
+
+
+def test_required_phase_context_is_recorded_as_checked_boundary(
+    tmp_path: Path,
+) -> None:
+    context = _context(tmp_path)
+    action = context.arguments["action"]
+    assert isinstance(action, ActionRequest)
+    context_refs = (
+        StoredDataRef.model_validate(_ref("sandbox_policy_decision", "build-policy")),
+        StoredDataRef.model_validate(_ref("action_decision", "build-decision")),
+    )
+    arguments = _replace_action(
+        context,
+        input_refs=(*action.input_refs, *context_refs),
+    ) | {"required_context_refs": context_refs}
+
+    outcome = context.controller.evaluate(**arguments)  # type: ignore[arg-type]
+
+    assert outcome.decision.decision == "ALLOW", outcome.decision.reason_codes
+    assert all(ref in outcome.decision.checked_boundary_refs for ref in context_refs)

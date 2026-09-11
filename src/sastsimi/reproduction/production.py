@@ -281,6 +281,7 @@ class ProductionDynamicWorkflow:
             sandbox_profile=build_binding.sandbox_profile,
             lifecycle_profile=build_binding.lifecycle_profile,
             run_policy_state_ref=build_binding.run_policy_state_ref,
+            required_context_refs=(),
             meta=self._meta("sandbox_policy_decision"),
         )
         self._policy = build_outcome.decision
@@ -350,6 +351,10 @@ class ProductionDynamicWorkflow:
             sandbox_profile=run_binding.sandbox_profile,
             lifecycle_profile=run_binding.lifecycle_profile,
             run_policy_state_ref=run_binding.run_policy_state_ref,
+            required_context_refs=(
+                build_policy_ref,
+                build_binding.action_decision_ref,
+            ),
             meta=self._meta("sandbox_policy_decision"),
         )
         self._policy = outcome.decision
@@ -442,6 +447,10 @@ class ProductionDynamicWorkflow:
                 sandbox_profile=recreate_binding.sandbox_profile,
                 lifecycle_profile=recreate_binding.lifecycle_profile,
                 run_policy_state_ref=recreate_binding.run_policy_state_ref,
+                required_context_refs=(
+                    tool_ref,
+                    _exact_ref(prepared.environment),
+                ),
                 meta=self._meta("sandbox_policy_decision"),
             )
             recreate_policy_ref = self._publish(

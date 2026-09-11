@@ -125,6 +125,7 @@ class SandboxController:
         sandbox_profile: SandboxProfile,
         lifecycle_profile: DynamicReproductionLifecycleProfile,
         run_policy_state_ref: StoredDataRef,
+        required_context_refs: tuple[StoredDataRef, ...],
         meta: RecordMeta,
     ) -> SandboxBuildBoundaryOutcome:
         """Approve exact source and host boundary before any Docker daemon access."""
@@ -153,6 +154,7 @@ class SandboxController:
             phase_ref=source.recipe_source_ref,
             image_digest=None,
             run_policy_state_ref=run_policy_state_ref,
+            required_context_refs=required_context_refs,
         )
         self._check_recipe_source(reasons, spec, request, plan, source)
         self._check_boundary(reasons, spec, action, sandbox_profile)
@@ -170,6 +172,7 @@ class SandboxController:
             run_policy_state_ref=run_policy_state_ref,
             policy_state=policy_state,
             phase_ref=source.recipe_source_ref,
+            required_context_refs=required_context_refs,
             meta=meta,
         )
         return SandboxBuildBoundaryOutcome(
@@ -190,6 +193,7 @@ class SandboxController:
         sandbox_profile: SandboxProfile,
         lifecycle_profile: DynamicReproductionLifecycleProfile,
         run_policy_state_ref: StoredDataRef,
+        required_context_refs: tuple[StoredDataRef, ...],
         meta: RecordMeta,
     ) -> SandboxBoundaryOutcome:
         """Return ALLOW only for an exact, local, resource-bounded specification."""
@@ -219,6 +223,7 @@ class SandboxController:
             phase_ref=recipe_ref,
             image_digest=recipe.built_image_digest,
             run_policy_state_ref=run_policy_state_ref,
+            required_context_refs=required_context_refs,
         )
         self._check_recipe(reasons, recipe, request, plan, meta)
         self._check_boundary(reasons, spec, action, sandbox_profile)
@@ -238,6 +243,7 @@ class SandboxController:
             run_policy_state_ref=run_policy_state_ref,
             policy_state=policy_state,
             phase_ref=recipe_ref,
+            required_context_refs=required_context_refs,
             meta=meta,
         )
         return SandboxBoundaryOutcome(
@@ -294,6 +300,7 @@ class SandboxController:
         run_policy_state_ref: StoredDataRef,
         policy_state: RunPolicyState | None,
         phase_ref: StoredDataRef,
+        required_context_refs: tuple[StoredDataRef, ...],
         meta: RecordMeta,
     ) -> SandboxPolicyDecision:
         if policy_state is None:
@@ -314,6 +321,7 @@ class SandboxController:
             lifecycle_profile,
             phase_ref,
             run_policy_state_ref,
+            required_context_refs,
         )
         observed_status = policy_state.status if policy_state is not None else "FAILED"
         collection_ref = (
@@ -411,11 +419,21 @@ class SandboxController:
         phase_ref: StoredDataRef,
         image_digest: str | None,
         run_policy_state_ref: StoredDataRef,
+        required_context_refs: tuple[StoredDataRef, ...],
     ) -> None:
         request_ref = self._stored_reference(request)
         plan_ref = self._stored_reference(plan)
         profile_ref = self._stored_reference(sandbox_profile)
         lifecycle_ref = self._stored_reference(lifecycle_profile)
+        required_input_refs = (
+            request_ref,
+            plan.environment_requirements_ref,
+            plan_ref,
+            profile_ref,
+            lifecycle_ref,
+            phase_ref,
+            *required_context_refs,
+        )
         if (
             action.action_type != ActionType.RUN_SANDBOX
             or action.requested_by != RequesterRole.REPRODUCTION_SETUP_AUTOMATION
@@ -427,16 +445,9 @@ class SandboxController:
             or action.sandbox_profile_ref != profile_ref
             or action.resource_profile_ref != lifecycle_ref
             or action.run_policy_state_ref != run_policy_state_ref
-            or any(
-                action.input_refs.count(ref) != 1
-                for ref in (
-                    request_ref,
-                    plan_ref,
-                    profile_ref,
-                    lifecycle_ref,
-                    phase_ref,
-                )
-            )
+            or len(tuple(dict.fromkeys(required_input_refs)))
+            != len(required_input_refs)
+            or any(action.input_refs.count(ref) != 1 for ref in required_input_refs)
         ):
             reasons.append("STALE_RESULT")
         if (
@@ -691,6 +702,7 @@ class SandboxController:
         lifecycle_profile: DynamicReproductionLifecycleProfile,
         phase_ref: StoredDataRef,
         run_policy_state_ref: StoredDataRef,
+        required_context_refs: tuple[StoredDataRef, ...],
     ) -> tuple[StoredDataRef, ...]:
         refs = (
             self._stored_reference(action),
@@ -699,7 +711,9 @@ class SandboxController:
             self._stored_reference(plan),
             self._stored_reference(sandbox_profile),
             self._stored_reference(lifecycle_profile),
+            plan.environment_requirements_ref,
             phase_ref,
             run_policy_state_ref,
+            *required_context_refs,
         )
         return tuple(dict.fromkeys(refs))

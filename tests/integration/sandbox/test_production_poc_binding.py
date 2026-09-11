@@ -170,8 +170,10 @@ class _CleanupSetup:
 @dataclass
 class _RecreateController:
     outcome: SandboxBoundaryOutcome
+    calls: list[dict[str, object]] = field(default_factory=list)
 
-    def evaluate(self, **_: object) -> SandboxBoundaryOutcome:
+    def evaluate(self, **arguments: object) -> SandboxBoundaryOutcome:
+        self.calls.append(arguments)
         return self.outcome
 
 
@@ -483,16 +485,14 @@ async def test_recreate_updates_session_workflow_and_log_to_exact_new_policy() -
         update={"reason_codes": ("RECREATE_APPROVED",)}
     )
     recreate_policy_ref = cast(StoredDataRef, reference(recreate_policy))
-    workflow._controller = cast(
-        SandboxController,
-        _RecreateController(
-            SandboxBoundaryOutcome(
-                decision=recreate_policy,
-                approved_spec=cast(object, SimpleNamespace()),
-                approved_recipe_ref=recipe_ref,
-            )
-        ),
+    controller = _RecreateController(
+        SandboxBoundaryOutcome(
+            decision=recreate_policy,
+            approved_spec=cast(object, SimpleNamespace()),
+            approved_recipe_ref=recipe_ref,
+        )
     )
+    workflow._controller = cast(SandboxController, controller)
     workflow._setup = cast(
         ReproductionSetupAutomation,
         _RecreateSetup(cast(PreparedSandbox, workflow._prepared)),
@@ -517,9 +517,7 @@ async def test_recreate_updates_session_workflow_and_log_to_exact_new_policy() -
             DynamicSandboxAuthorization,
             SimpleNamespace(
                 action=object(),
-                action_decision_ref=cast(
-                    StoredDataRef, reference(chain["policy"])
-                ),
+                action_decision_ref=cast(StoredDataRef, reference(chain["policy"])),
                 sandbox_profile=object(),
                 lifecycle_profile=object(),
                 run_policy_state_ref=request_ref,
@@ -560,6 +558,10 @@ async def test_recreate_updates_session_workflow_and_log_to_exact_new_policy() -
 
     assert session.policy_ref == recreate_policy_ref
     assert workflow._policy_ref() == recreate_policy_ref
+    assert controller.calls[0]["required_context_refs"] == (
+        tool_ref,
+        prior_environment_ref,
+    )
     requested = next(
         event
         for event in workflow._require_log().events
