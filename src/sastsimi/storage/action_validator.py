@@ -42,6 +42,43 @@ from .stage_policy import check_stage
 
 
 class RuntimeValidator:
+    def require_unresolved_dispatch(
+        self,
+        work_id: str,
+        attempt_id: str,
+        decision_ref: RecordRef,
+        action_id: str,
+    ) -> None:
+        """Require one exact current-attempt dispatch whose outcome is unknown."""
+        with self.records.database.write() as connection:
+            row = (
+                connection.execute(
+                    select(models.external_dispatches).where(
+                        models.external_dispatches.c.decision_ref
+                        == canonical_bytes(decision_ref).decode()
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            active_attempt = connection.execute(
+                select(models.work_states.c.active_attempt_id).where(
+                    models.work_states.c.work_id == work_id,
+                    models.work_states.c.status == "RUNNING",
+                )
+            ).scalar()
+            if (
+                row is None
+                or row["work_id"] != work_id
+                or row["attempt_id"] != attempt_id
+                or row["action_id"] != action_id
+                or row["dispatched_at"] is None
+                or row["returned_at"] is not None
+                or row["reconciled_at"] is not None
+                or active_attempt != attempt_id
+            ):
+                raise ValueError("EXTERNAL_DISPATCH_MISMATCH")
+
     def mark_dispatched(
         self,
         decision_ref: RecordRef,

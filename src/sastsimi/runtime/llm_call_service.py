@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -19,6 +19,7 @@ from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import AttemptId
 from sastsimi.contracts.llm import (
+    ExecutionLimits,
     InvocationStatus,
     LLMCallSpec,
     LLMInvocationLog,
@@ -33,10 +34,15 @@ from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.clock import Clock
+from sastsimi.ports.dto import CancellationResult
 from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.ports.record_store import RecordStore
 from sastsimi.runtime.action_validator import RuntimeValidator
-from sastsimi.runtime.external_call_service import ExternalCallService
+from sastsimi.runtime.external_call_service import (
+    ExternalCallService,
+    ExternalDispatchState,
+    ExternalOperationResult,
+)
 
 
 @dataclass(frozen=True)
@@ -44,6 +50,35 @@ class PersistedLLMInvocation:
     request: LLMInvocationRequest
     result: LLMInvocationResult
     log_ref: StoredDataRef
+    dispatch_state: ExternalDispatchState
+
+
+class LLMDispatchLimiter:
+    """One shared concurrency boundary for every production LLM role/provider."""
+
+    def __init__(self) -> None:
+        self._condition = asyncio.Condition()
+        self._active_limits: list[int] = []
+
+    async def run[T](
+        self, max_parallel_calls: int, operation: Callable[[], Awaitable[T]]
+    ) -> T:
+        if max_parallel_calls <= 0:
+            raise ValueError("LLM_PARALLEL_CALLS_DISABLED")
+        async with self._condition:
+            await self._condition.wait_for(
+                lambda: (
+                    len(self._active_limits)
+                    < min((max_parallel_calls, *self._active_limits))
+                )
+            )
+            self._active_limits.append(max_parallel_calls)
+        try:
+            return await operation()
+        finally:
+            async with self._condition:
+                self._active_limits.remove(max_parallel_calls)
+                self._condition.notify_all()
 
 
 class InvocationMetadataFactory(Protocol):
@@ -109,6 +144,7 @@ class LLMCallService:
         current_selection: LLMCurrentSelectionGuard,
         parent_sessions: LLMParentSessionGuard,
         clock: Clock,
+        limiter: LLMDispatchLimiter | None = None,
     ) -> None:
         self._records = records
         self._artifacts = artifacts
@@ -120,6 +156,7 @@ class LLMCallService:
         self._current_selection = current_selection
         self._parent_sessions = parent_sessions
         self._clock = clock
+        self._limiter = limiter or LLMDispatchLimiter()
 
     async def invoke(
         self,
@@ -129,12 +166,14 @@ class LLMCallService:
         reservation_ref: RecordRef,
         call_spec_ref: StoredDataRef,
     ) -> PersistedLLMInvocation:
-        spec, profile, action = self._resolve_authorized_inputs(
+        spec, profile, limits, action = self._resolve_authorized_inputs(
             work, decision_ref, call_spec_ref
         )
         adapter = self._adapters.resolve(spec.provider_profile_ref, spec.model)
 
-        async def operation(claimed_ref: RecordRef) -> PersistedLLMInvocation:
+        async def operation(
+            claimed_ref: RecordRef,
+        ) -> ExternalOperationResult[PersistedLLMInvocation]:
             if not isinstance(claimed_ref, StoredDataRef):
                 raise ValueError("INVOCATION_ACTION_SCOPE_MISMATCH")
             self._require_claimed_decision(decision_ref, claimed_ref, action)
@@ -146,11 +185,15 @@ class LLMCallService:
 
             started_at = self._clock.now()
             started_ms = self._clock.monotonic_ms()
+            provider_started = False
+            provider_status: InvocationStatus | None = None
             try:
                 self._current_selection.require_current(request)
                 if request.parent_session_ref is not None:
                     self._parent_sessions.require_compatible_parent(request, work)
+                provider_started = True
                 result = await adapter.invoke(request)
+                provider_status = result.status
                 result = self._checked_result(request, profile, result)
             except asyncio.CancelledError:
                 result = self._failure_result(
@@ -175,23 +218,61 @@ class LLMCallService:
             log_ref = self._validator.record_invocation(request, result, log)
             if log_ref != reference(log):
                 raise ValueError("INVOCATION_LOG_STAGE_MISMATCH")
-            return PersistedLLMInvocation(request, result, log_ref)
+            dispatch_state: ExternalDispatchState = (
+                "UNRESOLVED"
+                if provider_started
+                and (
+                    provider_status in {"FAILED", "TIMED_OUT"}
+                    or (
+                        provider_status is None
+                        and result.status in {"FAILED", "TIMED_OUT"}
+                    )
+                )
+                else "RETURNED"
+            )
+            persisted = PersistedLLMInvocation(request, result, log_ref, dispatch_state)
+            return ExternalOperationResult(persisted, dispatch_state)
 
-        outcome, _claimed = await self._external.invoke_bound(
-            str(work.work_id),
-            decision_ref,
-            reservation_ref,
-            operation,
-            idempotency_key=str(action.action_id),
+        async def dispatch() -> PersistedLLMInvocation:
+            outcome, _claimed = await self._external.invoke_bound_tracked(
+                str(work.work_id),
+                decision_ref,
+                reservation_ref,
+                operation,
+                idempotency_key=str(action.action_id),
+            )
+            return outcome.value
+
+        return await self._limiter.run(limits.max_parallel_calls, dispatch)
+
+    async def cancel(
+        self,
+        *,
+        work: WorkExecutionState,
+        decision_ref: StoredDataRef,
+        call_spec_ref: StoredDataRef,
+    ) -> CancellationResult:
+        """Cancel only the exact active dispatch authorized for this work/attempt."""
+        spec, _profile, _limits, action = self._resolve_authorized_inputs(
+            work, decision_ref, call_spec_ref
         )
-        return outcome
+        if work.active_attempt_id is None:
+            raise ValueError("ATTEMPT_NOT_ACTIVE")
+        self._validator.require_unresolved_dispatch(
+            str(work.work_id),
+            str(work.active_attempt_id),
+            decision_ref,
+            str(action.action_id),
+        )
+        adapter = self._adapters.resolve(spec.provider_profile_ref, spec.model)
+        return await adapter.cancel(str(spec.llm_call_id))
 
     def _resolve_authorized_inputs(
         self,
         work: WorkExecutionState,
         decision_ref: StoredDataRef,
         call_spec_ref: StoredDataRef,
-    ) -> tuple[LLMCallSpec, ProviderProfile, ActionRequest]:
+    ) -> tuple[LLMCallSpec, ProviderProfile, ExecutionLimits, ActionRequest]:
         if (
             not isinstance(work.meta, RecordMeta)
             or work.status != WorkStatus.RUNNING
@@ -217,6 +298,18 @@ class LLMCallService:
         ):
             raise ValueError("PROVIDER_PROFILE_EXACT_MATCH_REQUIRED")
         profile = profile_value
+        limits_value = self._records.get_exact(spec.execution_limits_ref)
+        if (
+            not isinstance(limits_value, ExecutionLimits)
+            or reference(limits_value) != spec.execution_limits_ref
+            or limits_value.meta.analysis_id != work.meta.analysis_id
+            or limits_value.meta.workspace_id != work.meta.workspace_id
+            or limits_value.meta.commit_id != work.meta.commit_id
+            or limits_value.timeout_ms != spec.timeout_ms
+            or limits_value.token_budget != spec.token_budget
+        ):
+            raise ValueError("EXECUTION_LIMITS_EXACT_MATCH_REQUIRED")
+        limits = limits_value
         payload_value = self._records.get_exact(spec.prompt_payload_ref)
         if (
             not isinstance(payload_value, PromptPayload)
@@ -277,7 +370,7 @@ class LLMCallService:
             or tuple(action.input_refs) != expected_inputs
         ):
             raise ValueError("LLM_ACTION_INPUT_CLOSURE_MISMATCH")
-        return spec, profile, action
+        return spec, profile, limits, action
 
     def _require_claimed_decision(
         self,
@@ -545,6 +638,7 @@ __all__ = [
     "ExactAdapterResolver",
     "InvocationMetadataFactory",
     "LLMCurrentSelectionGuard",
+    "LLMDispatchLimiter",
     "LLMParentSessionGuard",
     "LLMCallService",
     "PersistedLLMInvocation",

@@ -32,6 +32,7 @@ from sastsimi.contracts.budget import Purpose
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.ids import AnalysisId, AttemptId, CommitId, WorkspaceId
 from sastsimi.contracts.llm import (
+    ExecutionLimits,
     InvocationStatus,
     LLMCallSpec,
     LLMInvocationLog,
@@ -79,6 +80,7 @@ from sastsimi.runtime.external_call_service import ExternalCallService
 from sastsimi.runtime.llm_call_service import (
     ExactAdapterResolver,
     LLMCallService,
+    LLMDispatchLimiter,
     llm_action_input_refs,
 )
 from sastsimi.storage import models
@@ -290,6 +292,7 @@ class RecordingAuthorization:
         self.invocations: list[
             tuple[LLMInvocationRequest, LLMInvocationResult, LLMInvocationLog]
         ] = []
+        self.unresolved = False
 
     def claim_external(
         self,
@@ -297,6 +300,10 @@ class RecordingAuthorization:
         decision_ref: RecordRef,
         reservation_ref: RecordRef | None,
     ) -> RecordRef:
+        if self.unresolved:
+            raise ValueError(
+                "BLOCKED waiting_for=INPUT: external request outcome is unknown"
+            )
         assert work_id == "work-1"
         assert decision_ref.data_kind == "action_decision"
         assert reservation_ref is not None
@@ -309,9 +316,27 @@ class RecordingAuthorization:
         idempotency_key: str | None = None,
     ) -> None:
         self.dispatched += 1
+        self.unresolved = True
 
     def mark_returned(self, decision_ref: RecordRef) -> None:
         self.returned += 1
+        self.unresolved = False
+
+    def require_unresolved_dispatch(
+        self,
+        work_id: str,
+        attempt_id: str,
+        decision_ref: RecordRef,
+        action_id: str,
+    ) -> None:
+        if (
+            not self.unresolved
+            or work_id != "work-1"
+            or attempt_id != "at1"
+            or decision_ref.data_kind != "action_decision"
+            or action_id != "action-1"
+        ):
+            raise ValueError("EXTERNAL_DISPATCH_MISMATCH")
 
     def record_invocation(
         self,
@@ -381,6 +406,9 @@ class FakeAdapter:
         *,
         cancel_requested: bool = False,
         actual_session_mode: Literal["NEW", "RESUMED"] = "NEW",
+        entered: asyncio.Event | None = None,
+        release: asyncio.Event | None = None,
+        cancellation: CancellationResult | None = None,
     ) -> None:
         self.records = records
         self.result_builder = result_builder
@@ -390,10 +418,18 @@ class FakeAdapter:
         self.cancel_requested = cancel_requested
         self.actual_session_mode = actual_session_mode
         self.calls = 0
+        self.entered = entered
+        self.release = release
+        self.cancellation = cancellation or CancellationResult(False, "not active")
+        self.cancelled_ids: list[str] = []
 
     async def invoke(self, request: LLMInvocationRequest) -> LLMInvocationResult:
         assert ref_key(reference(request)) in self.records.staged
         self.calls += 1
+        if self.entered is not None:
+            self.entered.set()
+        if self.release is not None:
+            await self.release.wait()
         if self.cancel_requested:
             raise asyncio.CancelledError
         validated = None
@@ -439,7 +475,8 @@ class FakeAdapter:
         raise AssertionError("not used")
 
     async def cancel(self, invocation_id: str) -> CancellationResult:
-        return CancellationResult(False, "not active")
+        self.cancelled_ids.append(invocation_id)
+        return self.cancellation
 
 
 @dataclass
@@ -518,6 +555,19 @@ def fixture() -> Fixture:
     profile_data["evidence_urls"] = ()
     provider = ProviderProfile.model_validate(profile_data)
     provider_ref = records.publish(provider)
+    limits = ExecutionLimits.model_validate(
+        {
+            "meta": metadata(
+                "execution_limits", "limits", hypothesis_id=None, attempt_id=None
+            ),
+            "limits_key": "limits.default.v1",
+            "token_budget": 100,
+            "timeout_ms": 1_000,
+            "max_parallel_calls": 1,
+            "max_calls_per_work": 5,
+        }
+    )
+    limits_ref = records.publish(limits)
     spec = LLMCallSpec.model_validate(
         {
             "meta": metadata("llm_call_spec", "spec"),
@@ -535,7 +585,7 @@ def fixture() -> Fixture:
             "prompt_template_ref": template_ref,
             "prompt_template_version": prompt_payload.template_version,
             "prompt_payload_ref": payload_ref,
-            "execution_limits_ref": stored_ref("execution_limits", "limits"),
+            "execution_limits_ref": limits_ref,
             "retry_policy_ref": stored_ref("llm_retry_policy", "retry"),
             "tool_policy_ref": stored_ref("llm_tool_policy", "tool"),
             "redaction_policy_ref": stored_ref("prompt_redaction_policy", "redaction"),
@@ -705,6 +755,10 @@ def build_service(
     parent_sessions: FixedParentSession | None = None,
     cancel: bool = False,
     actual_session_mode: Literal["NEW", "RESUMED"] = "NEW",
+    limiter: LLMDispatchLimiter | None = None,
+    entered: asyncio.Event | None = None,
+    release: asyncio.Event | None = None,
+    cancellation: CancellationResult | None = None,
 ) -> tuple[LLMCallService, FakeAdapter, RecordingAuthorization]:
     prompt_resolver = StoredPromptInputResolver(data.records, data.artifacts)
     validators: dict[StoredDataRef, Callable[[object], None]] = {
@@ -726,6 +780,9 @@ def build_service(
         status,
         cancel_requested=cancel,
         actual_session_mode=actual_session_mode,
+        entered=entered,
+        release=release,
+        cancellation=cancellation,
     )
     adapters = ExactAdapterResolver({(data.provider_ref, "gpt-test"): adapter})
     authorization = RecordingAuthorization(data.records, data.claimed_ref)
@@ -740,6 +797,7 @@ def build_service(
         current_selection=current_selection or FixedCurrentSelection(),
         parent_sessions=parent_sessions or FixedParentSession(),
         clock=FixedClock(),
+        limiter=limiter,
     )
     assert prompt_resolver is not None  # exact resolver is tested independently below
     return service, adapter, authorization
@@ -799,6 +857,7 @@ async def test_llm_call_stages_exact_request_and_persists_safe_success() -> None
     request, result, log = authorization.invocations[0]
     assert outcome.result == result
     assert outcome.log_ref == reference(log)
+    assert outcome.dispatch_state == "RETURNED"
     assert request.action_decision_ref == data.claimed_ref
     assert result.status == "SUCCEEDED"
     assert result.parsed_output_ref is not None
@@ -808,6 +867,136 @@ async def test_llm_call_stages_exact_request_and_persists_safe_success() -> None
     safe_response = data.artifacts.data[ref_key(result.response_ref)]
     assert safe_response == canonical_bytes(json.loads(data.raw_output))
     assert safe_response != data.raw_output
+
+
+@pytest.mark.asyncio
+async def test_llm_call_enforces_parallel_limit_across_dispatches() -> None:
+    """Catches each role/provider getting a private, ineffective concurrency cap."""
+    limiter = LLMDispatchLimiter()
+    first_entered = asyncio.Event()
+    first_release = asyncio.Event()
+    first = fixture()
+    second = fixture()
+    first_service, first_adapter, _ = build_service(
+        first,
+        "SUCCEEDED",
+        limiter=limiter,
+        entered=first_entered,
+        release=first_release,
+    )
+    second_service, second_adapter, _ = build_service(
+        second, "SUCCEEDED", limiter=limiter
+    )
+
+    first_task = asyncio.create_task(
+        first_service.invoke(
+            work=first.work,
+            decision_ref=first.decision_ref,
+            reservation_ref=first.reservation_ref,
+            call_spec_ref=first.spec_ref,
+        )
+    )
+    await asyncio.wait_for(first_entered.wait(), timeout=1)
+    second_task = asyncio.create_task(
+        second_service.invoke(
+            work=second.work,
+            decision_ref=second.decision_ref,
+            reservation_ref=second.reservation_ref,
+            call_spec_ref=second.spec_ref,
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert first_adapter.calls == 1
+    assert second_adapter.calls == 0
+    first_release.set()
+    await asyncio.gather(first_task, second_task)
+    assert second_adapter.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_zero_parallel_limit_rejects_before_dispatch() -> None:
+    limiter = LLMDispatchLimiter()
+    called = False
+
+    async def operation() -> None:
+        nonlocal called
+        called = True
+
+    with pytest.raises(ValueError, match="LLM_PARALLEL_CALLS_DISABLED"):
+        await limiter.run(0, operation)
+
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_cancel_is_bound_to_exact_work_action_and_call_spec() -> None:
+    data = fixture()
+    service, adapter, authorization = build_service(
+        data,
+        "SUCCEEDED",
+        cancellation=CancellationResult(True, "cancelled"),
+    )
+    authorization.unresolved = True
+
+    result = await service.cancel(
+        work=data.work,
+        decision_ref=data.decision_ref,
+        call_spec_ref=data.spec_ref,
+    )
+
+    assert result.cancelled is True
+    assert adapter.cancelled_ids == ["call-1"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_rejects_a_call_spec_not_bound_to_the_action() -> None:
+    data = fixture()
+    service, adapter, authorization = build_service(data, "SUCCEEDED")
+    authorization.unresolved = True
+    spec = data.records.get_exact(data.spec_ref)
+    assert isinstance(spec, LLMCallSpec)
+    other_spec = spec.model_copy(
+        update={
+            "meta": metadata("llm_call_spec", "other-spec"),
+            "llm_call_id": "other-call",
+        }
+    )
+    other_ref = data.records.publish(other_spec)
+
+    with pytest.raises(ValueError, match="LLM_ACTION_INPUT_CLOSURE_MISMATCH"):
+        await service.cancel(
+            work=data.work,
+            decision_ref=data.decision_ref,
+            call_spec_ref=other_ref,
+        )
+
+    assert adapter.cancelled_ids == []
+
+
+@pytest.mark.asyncio
+async def test_timeout_stays_unresolved_and_blocks_duplicate_resume() -> None:
+    data = fixture()
+    service, adapter, authorization = build_service(data, "TIMED_OUT")
+
+    first = await service.invoke(
+        work=data.work,
+        decision_ref=data.decision_ref,
+        reservation_ref=data.reservation_ref,
+        call_spec_ref=data.spec_ref,
+    )
+
+    assert first.dispatch_state == "UNRESOLVED"
+    assert authorization.dispatched == 1
+    assert authorization.returned == 0
+    with pytest.raises(ValueError, match="external request outcome is unknown"):
+        await service.invoke(
+            work=data.work,
+            decision_ref=data.decision_ref,
+            reservation_ref=data.reservation_ref,
+            call_spec_ref=data.spec_ref,
+        )
+    assert adapter.calls == 1
 
 
 @pytest.mark.asyncio
