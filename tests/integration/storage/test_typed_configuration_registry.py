@@ -32,13 +32,20 @@ from sastsimi.contracts.llm import (
     ProviderProfile,
     ProviderValidationEvidence,
 )
+from sastsimi.contracts.policy import PolicyParserResult
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import CapabilityProbeResult, StaticToolRequest
+from sastsimi.runtime.fake_support import FakeEvidence
 from sastsimi.storage import models
 from sastsimi.storage.codec import reference
+from sastsimi.storage.configuration_registry import (
+    ConfigurationRegistry as StorageConfigurationRegistry,
+)
+from sastsimi.storage.llm_context import check_llm_context
+from sastsimi.storage.repositories import SQLiteRecordStore
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import meta
 from tests.integration.runtime_support import Harness
@@ -503,13 +510,6 @@ def test_llm_call_spec_rejects_every_cross_record_mismatch(
             log,
         )
     # Exact action/spec/request equality cannot authorize another work's context.
-    from typing import cast
-
-    from sastsimi.contracts.actions import ActionDecision, ActionRequest
-    from sastsimi.contracts.work import WorkExecutionState
-    from sastsimi.storage.llm_context import check_llm_context
-    from sastsimi.storage.repositories import SQLiteRecordStore
-
     records = cast(SQLiteRecordStore, pipeline.runtime.unit_of_work.records)
     decision = records.get_exact(request.action_decision_ref)
     policy_request = next(
@@ -573,7 +573,9 @@ def test_llm_call_spec_rejects_every_cross_record_mismatch(
         request, result, log
     ) == reference(log)
 
-    storage_registry = pipeline.runtime.configuration.registry
+    storage_registry = cast(
+        StorageConfigurationRegistry, pipeline.runtime.configuration.registry
+    )
     evidence = records.evidence
     approval_checks = 0
 
@@ -616,9 +618,9 @@ def test_llm_call_spec_rejects_every_cross_record_mismatch(
         pipeline.runtime.configuration.register_prompt_payload(payload)
     assert active_checks == 2
     monkeypatch.undo()
-    pipeline.runtime.configuration.register_prompt_entry(
-        records.get_exact(payload.registry_entry_ref)
-    )
+    restored_entry = records.get_exact(payload.registry_entry_ref)
+    assert isinstance(restored_entry, PromptRegistryEntry)
+    pipeline.runtime.configuration.register_prompt_entry(restored_entry)
 
     # Production activation and replay re-check the exact ACTIVE evaluation
     # target inside the same write transaction as publication.
@@ -675,6 +677,7 @@ def test_prompt_active_entry_is_selected_atomically_and_replay_is_idempotent(
     pipeline.analyze(scenario="FALSE")
     assert pipeline.runtime is not None
     runtime = pipeline.runtime
+    records = cast(SQLiteRecordStore, runtime.unit_of_work.records)
     source = next(
         item
         for item in runtime.queries.current_records(
@@ -703,7 +706,8 @@ def test_prompt_active_entry_is_selected_atomically_and_replay_is_idempotent(
     first = candidate("first")
     second = candidate("second")
     draft = candidate("draft", status="DRAFT")
-    approvals = runtime.unit_of_work.records.evidence.llm_approvals  # type: ignore[attr-defined]
+    evidence = cast(FakeEvidence, records.evidence)
+    approvals = evidence.llm_approvals
     approvals.update(content_hash(item) for item in (first, second, draft))
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -790,7 +794,7 @@ def test_prompt_active_entry_is_selected_atomically_and_replay_is_idempotent(
         replacement
     )
 
-    with runtime.unit_of_work.records.database.engine.connect() as connection:
+    with records.database.engine.connect() as connection:
         rows = connection.execute(
             select(models.prompt_active_entries).where(
                 models.prompt_active_entries.c.task_kind == "ATOMIC_ACTIVE_TEST"
@@ -825,18 +829,22 @@ def test_failed_invocation_persists_only_safe_provenance(
     monkeypatch.undo()
     assert scenario.runtime is not None
     runtime = scenario.runtime
+    records = cast(SQLiteRecordStore, runtime.unit_of_work.records)
+    storage_registry = cast(
+        StorageConfigurationRegistry, runtime.configuration.registry
+    )
     request, succeeded, succeeded_log = captured
     assert isinstance(request, LLMInvocationRequest)
     assert isinstance(succeeded, LLMInvocationResult)
     assert isinstance(succeeded_log, LLMInvocationLog)
     candidate_ref = succeeded.parsed_output_ref
     assert candidate_ref is not None
-    decision = runtime.unit_of_work.records.get_exact(request.action_decision_ref)
+    decision = records.get_exact(request.action_decision_ref)
     assert isinstance(decision, ActionDecision)
-    action = runtime.unit_of_work.records.get_exact(decision.action_ref)
+    action = records.get_exact(decision.action_ref)
     assert isinstance(action, ActionRequest)
-    spec = runtime.unit_of_work.records.get_exact(request.call_spec_ref)
-    payload = runtime.unit_of_work.records.get_exact(request.prompt_payload_ref)
+    spec = records.get_exact(request.call_spec_ref)
+    payload = records.get_exact(request.prompt_payload_ref)
     assert isinstance(spec, LLMCallSpec) and isinstance(payload, PromptPayload)
     expected_action_inputs = (
         request.call_spec_ref,
@@ -856,9 +864,7 @@ def test_failed_invocation_persists_only_safe_provenance(
     )
     assert action.input_refs == expected_action_inputs
     assert action.work_ref is not None
-    work = runtime.unit_of_work.records.get_exact(action.work_ref)
-    from sastsimi.contracts.work import WorkExecutionState
-    from sastsimi.storage.llm_context import check_llm_context
+    work = records.get_exact(action.work_ref)
 
     assert isinstance(work, WorkExecutionState)
     assert (
@@ -867,7 +873,7 @@ def test_failed_invocation_persists_only_safe_provenance(
         == work.active_attempt_id
         is not None
     )
-    with runtime.unit_of_work.records.database.engine.connect() as connection:
+    with records.database.engine.connect() as connection:
         attempt_owned_pointers = connection.execute(
             select(models.current_records.c.logical_record_id).where(
                 models.current_records.c.logical_record_id.in_(
@@ -895,19 +901,19 @@ def test_failed_invocation_persists_only_safe_provenance(
                 }
             )
         )
-    with runtime.unit_of_work.records.database.engine.connect() as connection:
+    with records.database.engine.connect() as connection:
         with pytest.raises(ValueError, match="LLM_CONTEXT_WORK_MISMATCH"):
             check_llm_context(
-                runtime.unit_of_work.records,
+                records,
                 connection,
                 action.model_copy(update={"session_mode": "AUTO"}),
                 work,
             )
 
-    entry = runtime.unit_of_work.records.get_exact(spec.prompt_registry_entry_ref)
+    entry = records.get_exact(spec.prompt_registry_entry_ref)
     assert isinstance(entry, PromptRegistryEntry)
-    runtime.configuration.registry.require_current(request)
-    with runtime.unit_of_work.records.database.write() as connection:
+    storage_registry.require_current(request)
+    with records.database.write() as connection:
         active_row = (
             connection.execute(
                 select(models.prompt_active_entries).where(
@@ -924,17 +930,17 @@ def test_failed_invocation_persists_only_safe_provenance(
                 == str(entry.meta.logical_record_id)
             )
         )
-    with runtime.unit_of_work.records.database.engine.connect() as connection:
+    with records.database.engine.connect() as connection:
         with pytest.raises(ValueError, match="LLM_CONTEXT_CONFIGURATION_NOT_CURRENT"):
-            check_llm_context(runtime.unit_of_work.records, connection, action, work)
+            check_llm_context(records, connection, action, work)
     with pytest.raises(ValueError, match="LLM_CONTEXT_CONFIGURATION_NOT_CURRENT"):
-        runtime.configuration.registry.require_current(request)
-    with runtime.unit_of_work.records.database.write() as connection:
+        storage_registry.require_current(request)
+    with records.database.write() as connection:
         connection.execute(insert(models.prompt_active_entries).values(**active_row))
 
-    provider = runtime.unit_of_work.records.get_exact(spec.provider_profile_ref)
+    provider = records.get_exact(spec.provider_profile_ref)
     assert isinstance(provider, ProviderProfile)
-    with runtime.unit_of_work.records.database.write() as connection:
+    with records.database.write() as connection:
         provider_row = (
             connection.execute(
                 select(models.current_records).where(
@@ -951,18 +957,17 @@ def test_failed_invocation_persists_only_safe_provenance(
                 == str(provider.meta.logical_record_id)
             )
         )
-    with runtime.unit_of_work.records.database.engine.connect() as connection:
+    with records.database.engine.connect() as connection:
         with pytest.raises(ValueError, match="LLM_CONTEXT_CONFIGURATION_NOT_CURRENT"):
-            check_llm_context(runtime.unit_of_work.records, connection, action, work)
+            check_llm_context(records, connection, action, work)
     with pytest.raises(ValueError, match="LLM_CONTEXT_CONFIGURATION_NOT_CURRENT"):
-        runtime.configuration.registry.require_current(request)
-    with runtime.unit_of_work.records.database.write() as connection:
+        storage_registry.require_current(request)
+    with records.database.write() as connection:
         connection.execute(insert(models.current_records).values(**provider_row))
 
-    with runtime.unit_of_work.records.database.engine.connect() as connection:
-        candidate = runtime.unit_of_work.records.resolve(
-            connection, candidate_ref, candidate=True
-        )
+    with records.database.engine.connect() as connection:
+        candidate = records.resolve(connection, candidate_ref, candidate=True)
+    assert isinstance(candidate, PolicyParserResult)
     wrong_attempt_candidate = candidate.model_copy(
         update={
             "meta": candidate.meta.model_copy(
@@ -974,9 +979,7 @@ def test_failed_invocation_persists_only_safe_provenance(
             )
         }
     )
-    wrong_attempt_ref = runtime.unit_of_work.records.stage_record(
-        wrong_attempt_candidate
-    )
+    wrong_attempt_ref = records.stage_record(wrong_attempt_candidate)
     with pytest.raises(ValueError, match="INVOCATION_SCOPE_MISMATCH"):
         runtime.validator.record_invocation(
             request,
@@ -1014,19 +1017,18 @@ def test_failed_invocation_persists_only_safe_provenance(
     log_ref = runtime.validator.record_invocation(request, failed, failed_log)
     assert log_ref == reference(failed_log)
     for item in (request, failed, failed_log):
-        assert runtime.unit_of_work.records.get_exact(reference(item)) == item
+        assert records.get_exact(reference(item)) == item
     with pytest.raises(LookupError):
-        runtime.unit_of_work.records.get_exact(candidate_ref)
+        records.get_exact(candidate_ref)
 
     published = runtime.queries.published_records("fake-analysis")
+    stored_decision = records.get_exact(request.action_decision_ref)
+    assert isinstance(stored_decision, ActionDecision)
     decisions = tuple(
         item
         for item in published
         if isinstance(item, ActionDecision)
-        and item.decision_id
-        == runtime.unit_of_work.records.get_exact(
-            request.action_decision_ref
-        ).decision_id
+        and item.decision_id == stored_decision.decision_id
     )
     latest = max(decisions, key=lambda item: item.meta.revision_number)
     expected_outcomes = tuple(reference(item) for item in (request, failed, failed_log))
