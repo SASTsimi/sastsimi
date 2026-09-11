@@ -7,6 +7,7 @@ from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.records import PolicyCacheMeta, RecordMeta, RunMeta
 from sastsimi.contracts.refs import RecordRef
 from sastsimi.contracts.result_registry import validate_result_owner
+from sastsimi.contracts.static import CodeWorkspace
 from sastsimi.contracts.verification import VerificationInitialAssessment
 from sastsimi.contracts.work import WorkExecutionState
 
@@ -16,6 +17,7 @@ from .repositories import SQLiteRecordStore
 
 INTERMEDIATE_KINDS = frozenset(
     {
+        ("WORKSPACE_PREP", "code_workspace", "REPOSITORY_LOADER"),
         ("POLICY_FETCH", "policy_parser_result", "POLICY_PARSER"),
         ("VERIFICATION", "verification_initial_assessment", "VERIFICATION"),
         ("VERIFICATION", "dynamic_reproduction_request", "VERIFICATION"),
@@ -50,6 +52,14 @@ def validate_intermediate_owner(
         action.requested_by.value,
     ) not in INTERMEDIATE_KINDS:
         raise ValueError("INTERMEDIATE_PUBLICATION_DENIED")
+    if isinstance(candidate, CodeWorkspace) and (
+        work.work_type.value != "WORKSPACE_PREP"
+        or candidate.status != "PREPARING"
+        or candidate.commit_id is not None
+        or candidate.meta.revision_number != 1
+        or candidate.analysis_id != work.meta.analysis_id
+    ):
+        raise ValueError("WORKSPACE_LIFECYCLE_INVALID")
     if kind == "verification_initial_assessment":
         assessment = VerificationInitialAssessment.model_validate_json(
             candidate.model_dump_json()
@@ -76,10 +86,16 @@ def prepublished_output(
         return False
     if not isinstance(candidate, ContractModel):
         raise ValueError("INTERMEDIATE_RECEIPT_REQUIRED")
+    workspace_preparing = isinstance(candidate, CodeWorkspace) and (
+        work.work_type.value == "WORKSPACE_PREP" and candidate.status == "PREPARING"
+    )
     if (
         work.status != "RUNNING"
         or work.active_attempt_id is None
-        or getattr(candidate.meta, "attempt_id", None) != work.active_attempt_id
+        or (
+            not workspace_preparing
+            and getattr(candidate.meta, "attempt_id", None) != work.active_attempt_id
+        )
         or any(
             getattr(candidate.meta, name, None) != getattr(work.meta, name, None)
             for name in ("analysis_id", "workspace_id", "commit_id", "hypothesis_id")

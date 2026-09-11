@@ -2,7 +2,7 @@
 
 import asyncio
 
-from sastsimi.contracts.actions import RequesterRole
+from sastsimi.contracts.actions import ActionDecision, RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
@@ -14,6 +14,7 @@ from sastsimi.contracts.static import (
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import StaticToolRequest
 from sastsimi.ports.fake_workflow import StaticInvoker
+from sastsimi.ports.static_tool import validate_static_tool_profile_binding
 from sastsimi.runtime.fake_support import FakeEvidence
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
@@ -27,6 +28,7 @@ def register_fake_static_works(
     identity: StoredDataRef,
     workspace: CodeWorkspace,
     workspace_ref: RunStoredDataRef,
+    tool_profile_refs: tuple[StoredDataRef, StoredDataRef],
     metadata: RecordMeta,
 ) -> tuple[WorkExecutionState, WorkExecutionState]:
     evidence.bind_identity(identity, RequesterRole.ORCHESTRATION)
@@ -38,9 +40,9 @@ def register_fake_static_works(
             "ANALYSIS",
             str(workspace.analysis_id),
             identity,
-            inputs=(workspace_ref,),
+            inputs=(workspace_ref, profile_ref),
         )
-        for _ in range(2)
+        for profile_ref in tool_profile_refs
     )  # type: ignore[return-value]
 
 
@@ -53,6 +55,7 @@ def execute_fake_static_work(
     identity: StoredDataRef,
     work: WorkExecutionState,
     workspace: CodeWorkspace,
+    tool_profile_ref: StoredDataRef,
     analysis_config_ref: StoredDataRef,
     rule_catalog_ref: StoredDataRef,
     tool_name: str,
@@ -130,7 +133,20 @@ def execute_fake_static_work(
     reservation = runner.reserve(work, scope, action, units)
     decision = runner.authorize(work, action, reservation)
     request = StaticToolRequest(
-        action, workspace, analysis_config_ref, rule_catalog_ref
+        action=action,
+        workspace=workspace,
+        tool_profile_ref=tool_profile_ref,
+        analysis_config_ref=analysis_config_ref,
+        rule_catalog_ref=rule_catalog_ref if tool_kind == "RULE_BASED" else None,
+    )
+    resolved_profile = runtime.configuration.resolve_static_tool_profile(
+        tool_profile_ref
+    )
+    decision_record = runtime.unit_of_work.records.get_exact(decision)
+    if not isinstance(decision_record, ActionDecision):
+        raise ValueError("FAKE_STATIC_DECISION_MISMATCH")
+    validate_static_tool_profile_binding(
+        request, work, decision_record, resolved_profile
     )
     returned = asyncio.run(
         runtime.external.invoke(

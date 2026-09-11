@@ -185,6 +185,10 @@ T01 repository cleanup
 
 T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파일을 쓰지 않는 읽기·fixture 작업은 병렬로 수행할 수 있다. 실제 branch 병합은 의존 순서를 지킨다.
 
+### T08–T17 속도 우선 실행 규칙
+
+T08부터 T17까지는 각 Task의 기존 검증 문구보다 아래 규칙을 우선한다. Task 진행 중에는 변경 기능의 정상 흐름 1개와 안전성에 직접 관련된 중요 실패 흐름 1개 수준의 집중 테스트만 실행하고, 전체 테스트는 최종 PR CI에서 한 번 실행한다. 데이터 혼합, 권한 우회, 잘못된 판정, exact reference 불일치, 비밀정보 노출, Sandbox 경계 위반에 해당하는 Blocker/High는 즉시 수정한다. 그 밖의 Medium/Low, 추가 리팩터링, 테스트 확대, 문서 미세 보정은 후속 목록으로 남긴다. 핵심 완료 조건을 충족한 Task는 작은 논리 커밋으로 보존하고 CI가 통과하면 즉시 병합한다. 독립적인 조사·fixture·비공유 파일 작업은 병렬로 수행하되, 실제 병합은 위 의존 순서를 지킨다.
+
 ### Task 1: Repository cleanup and navigation
 
 **Files:**
@@ -542,6 +546,7 @@ Implementation record: [T04 core contracts](implementation/04-core-contracts.md)
 - [ ] exact environment·client·model 조합의 PVD-01~15를 기록한다.
 - [ ] dynamic tool loop 대상에는 PVD-16을 추가로 실행한다.
 - [ ] Git·AST·CodeQL·OpenGrep·Docker exact version probe를 기록한다.
+- [ ] 실제 OS/container `StaticOutputQuotaPort` backend에서 exact action·attempt·profile revision·cap binding을 검증하고, 빠른 cap+1 쓰기가 물리적으로 거절되며 그 사실이 sticky `limit_breached + breach_evidence`로 재조회되는지 시험한다. 실행 후 breach가 확인되면 CodeQL 결과는 `STATIC_OUTPUT_LIMIT`으로 폐기해야 한다. 이 증거가 없거나 plain-directory/polling-only 방식이면 CodeQL production profile을 활성화하지 않는다.
 - [ ] 같은 `comparison_group_id` 안에서 `corpus_refs`, `ground_truth_refs`, `grader_refs`, output schema와 budget profile을 exact set-equal로 고정하고, 비교 축 외 Provider·model·session·prompt 입력도 같은 경우만 비교한다.
 - [ ] CLI에서 Provider/tool capability 실행, evaluation 실행·결과 조회·비교를 명시적으로 시작할 수 있게 한다.
 - [ ] PVD를 통과한 ProviderProfile로 `EVALUATION` Prompt entry를 사용하고, exact `ACCEPT_FOR_PRODUCTION` R8 recommendation과 사람 승인이 모두 있어야 trusted Prompt Registry Runtime이 실행 의미가 같은 새 `PRODUCTION ACTIVE` entry revision을 만들도록 검사한다.

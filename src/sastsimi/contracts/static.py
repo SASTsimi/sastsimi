@@ -6,8 +6,9 @@ from typing import Annotated, Literal, Self
 
 from pydantic import AfterValidator, AwareDatetime, model_validator
 
-from ._domain import DomainRecord, SafeDiagnostic, exact, exact_set, same_scope, unique
-from .base import ContractModel, NonEmptyStr, NonNegativeInt, PositiveInt
+from ._domain import DomainRecord, exact, exact_set, same_scope, unique
+from ._domain import SafeDiagnostic as SafeDiagnostic
+from .base import ContractModel, NonEmptyStr, NonNegativeInt, PositiveInt, Sha256
 from .closure import validate_committed_output
 from .ids import AnalysisId, AttemptId, CommitId, ErrorId, GapId, WorkId, WorkspaceId
 from .records import RunMeta
@@ -32,6 +33,48 @@ def git_path(value: str) -> str:
 
 
 GitPath = Annotated[NonEmptyStr, AfterValidator(git_path)]
+
+
+class StaticToolProfile(DomainRecord):
+    """Exact immutable configuration for one static-tool adapter revision."""
+
+    KIND = "static_tool_profile"
+    HYPOTHESIS = False
+    ATTEMPT = False
+    profile_key: NonEmptyStr
+    purpose: Literal["FIXTURE", "EVALUATION", "PRODUCTION"]
+    status: Literal["DRAFT", "APPROVED", "ACTIVE", "RETIRED"]
+    adapter_key: Literal["PYTHON_AST", "CODEQL", "OPENGREP"]
+    tool_name: Literal["AST", "CODEQL", "OPENGREP"]
+    tool_kind: Literal["STRUCTURE", "RULE_BASED"]
+    executable_key: NonEmptyStr
+    executable_sha256: Sha256
+    expected_version: NonEmptyStr
+    capability_evidence_ref: StoredDataRef | None
+    probe_timeout_ms: PositiveInt
+    run_timeout_ms: PositiveInt
+    stdout_limit_bytes: PositiveInt
+    stderr_limit_bytes: PositiveInt
+    max_attempt_output_bytes: PositiveInt
+    max_output_file_bytes: PositiveInt
+    max_artifact_read_bytes: PositiveInt
+
+    @model_validator(mode="after")
+    def closed_profile(self) -> Self:
+        valid = {
+            ("PYTHON_AST", "AST", "STRUCTURE"),
+            ("CODEQL", "CODEQL", "RULE_BASED"),
+            ("OPENGREP", "OPENGREP", "RULE_BASED"),
+        }
+        if (self.adapter_key, self.tool_name, self.tool_kind) not in valid:
+            raise ValueError("STATIC_TOOL_PROFILE_TUPLE_MISMATCH")
+        if self.status == "ACTIVE":
+            if self.purpose != "PRODUCTION" or self.capability_evidence_ref is None:
+                raise ValueError("STATIC_TOOL_PROFILE_ACTIVATION_INVALID")
+        elif self.status == "APPROVED":
+            if self.purpose not in {"FIXTURE", "EVALUATION"}:
+                raise ValueError("STATIC_TOOL_PROFILE_APPROVAL_INVALID")
+        return self
 
 
 class CodeWorkspace(ContractModel):

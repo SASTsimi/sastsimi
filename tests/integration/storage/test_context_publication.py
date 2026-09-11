@@ -7,7 +7,19 @@ import pytest
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.static import CodeContextResponse, ContextRetrievalLimits
+from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.static import (
+    CodeContextResponse,
+    CodeLocation,
+    ContextRetrievalLimits,
+)
+from sastsimi.ports.context import ContextReadPlan, ContextRetrievalIntent
+from sastsimi.static_analysis.context_retrieval import (
+    context_intent_hash,
+    encode_context_read_plan,
+)
+from sastsimi.storage.artifact_store import LocalArtifactStore
+from sastsimi.verification.context_service import ContextRetrievalService
 from tests.integration.storage.test_intermediate_publication import (
     prepared_policy_parser,
 )
@@ -56,10 +68,86 @@ def test_context_service_binds_used_read_then_commits_its_response(
             )
         )
     )
-    work = runner.start(scope, meta, "CONTEXT_RETRIEVAL", "HYPOTHESIS", "h1", identity)
+    artifacts = runtime.unit_of_work.artifacts
+    assert isinstance(artifacts, LocalArtifactStore)
+    artifacts.workspace_id = meta.workspace_id
+    artifacts.commit_id = meta.commit_id
+    limits = ContextRetrievalLimits(
+        max_depth=1,
+        max_fragments=1,
+        max_bytes=4096,
+        max_requests_per_hypothesis=2,
+        timeout_ms=100,
+    )
+    location = CodeLocation(
+        workspace_id=meta.workspace_id,
+        commit_id=meta.commit_id,
+        file_path="src/app.py",
+        start_line=1,
+        start_column=None,
+        end_line=1,
+        end_column=None,
+    )
+    ceiling_ref = runtime.unit_of_work.artifacts.commit(
+        runtime.unit_of_work.artifacts.stage_bytes(
+            canonical_bytes(
+                {
+                    "kind": "context_ceiling_profile",
+                    "schema_version": "1.0",
+                    **limits.model_dump(),
+                }
+            ),
+            "application/json",
+        )
+    )
+    parser_ref = reference(parser)
+    assert isinstance(parser_ref, StoredDataRef)
+    work = runner.start(
+        scope,
+        meta,
+        "CONTEXT_RETRIEVAL",
+        "HYPOTHESIS",
+        "h1",
+        identity,
+        inputs=(parser_ref, ceiling_ref),
+    )
+    intent = ContextRetrievalIntent(
+        proposal_ref=parser_ref,
+        bundle_ref=parser_ref,
+        requested_entities=(),
+        requested_locations=(location,),
+        relation_query=(),
+        reason="Read exact context",
+        requested_limits=limits,
+    )
+    plan = ContextReadPlan(
+        intent_hash=context_intent_hash(intent),
+        workspace_id=str(meta.workspace_id),
+        commit_id=str(meta.commit_id),
+        proposal_ref=parser_ref,
+        bundle_ref=parser_ref,
+        ceiling_profile_ref=ceiling_ref,
+        requested_limits=limits,
+        entities=(),
+        locations=(location,),
+        relations=(),
+        file_paths=("src/app.py",),
+        lineage_refs=(),
+    )
+    plan_ref = runtime.unit_of_work.artifacts.commit(
+        runtime.unit_of_work.artifacts.stage_bytes(
+            encode_context_read_plan(plan), "application/json"
+        )
+    )
     h.evidence.identities[identity] = RequesterRole.PRO
     action = runner.action(
-        work, identity, "PRO", "READ_CODE", file_paths=("src/app.py",)
+        work,
+        identity,
+        "PRO",
+        "READ_CODE",
+        input_refs=(*work.input_refs, plan_ref),
+        file_paths=("src/app.py",),
+        reason=intent.reason,
     )
     reservation = runner.reserve(
         work, scope, action, runner.units(elapsed_ms=1, cost_minor_units=1)
@@ -70,13 +158,6 @@ def test_context_service_binds_used_read_then_commits_its_response(
         str(work.work_id), decision, reservation_ref
     )
     assert used_ref is not None
-    limits = ContextRetrievalLimits(
-        max_depth=1,
-        max_fragments=1,
-        max_bytes=100,
-        max_requests_per_hypothesis=2,
-        timeout_ms=100,
-    )
     if invalid == "unbound-dispatch":
         with pytest.raises(ValueError, match="CONTEXT_REQUEST_REQUIRED"):
             runtime.validator.mark_dispatched(decision)
@@ -93,7 +174,7 @@ def test_context_service_binds_used_read_then_commits_its_response(
                 else str(work.work_id),
                 decision if invalid == "unused" else used_ref,
                 requested_entities=(),
-                requested_locations=(),
+                requested_locations=(location,),
                 relation_query=(),
                 limits=limits,
             )
@@ -102,10 +183,12 @@ def test_context_service_binds_used_read_then_commits_its_response(
         str(work.work_id),
         used_ref,
         requested_entities=(),
-        requested_locations=(),
+        requested_locations=(location,),
         relation_query=(),
         limits=limits,
     )
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
     assert request.action_decision_ref == used_ref
     assert request.meta.attempt_id == work.active_attempt_id
     runtime.validator.mark_dispatched(decision)
@@ -121,7 +204,7 @@ def test_context_service_binds_used_read_then_commits_its_response(
                 ),
                 code_request_id=request.code_request_id,
                 entities=(),
-                locations=(),
+                locations=(location,),
                 code_fragment_refs=(),
                 discovered_relations=(),
                 gaps=(),
@@ -139,20 +222,47 @@ def test_context_service_binds_used_read_then_commits_its_response(
             data["code_request_id"] = "different-request"
         else:
             data["meta"]["workspace_id"] = "different-workspace"
+        if invalid == "scope":
+            with pytest.raises(ValueError, match="WORKSPACE_MISMATCH"):
+                CodeContextResponse.model_validate_json(canonical_bytes(data))
+            return
         response = CodeContextResponse.model_validate_json(canonical_bytes(data))
     if invalid == "owner":
         h.evidence.identities[service_identity] = RequesterRole.PRO
+    receipt_ref = runtime.unit_of_work.artifacts.commit(
+        runtime.unit_of_work.artifacts.stage_bytes(b"{}", "application/json")
+    )
     if invalid is not None:
         with pytest.raises(
             ValueError, match="CONTEXT_|AUTHORITY_DENIED|WORKSPACE_MISMATCH"
         ):
-            runner.complete(
-                work, service_identity, "CONTEXT_RETRIEVAL_SERVICE", (response,)
+            ContextRetrievalService._complete(
+                runtime=runtime,
+                runner=runner,
+                work=work,
+                service_identity=service_identity,
+                response=response,
+                read_decision_ref=used_ref,
+                request_ref=request_ref,
+                plan_ref=plan_ref,
+                profile_ref=ceiling_ref,
+                receipt_ref=receipt_ref,
+                fragment_refs=(),
             )
         assert runtime.work.get(str(work.work_id)).status == "RUNNING"
         return
-    completed = runner.complete(
-        work, service_identity, "CONTEXT_RETRIEVAL_SERVICE", (response,)
+    completed = ContextRetrievalService._complete(
+        runtime=runtime,
+        runner=runner,
+        work=work,
+        service_identity=service_identity,
+        response=response,
+        read_decision_ref=used_ref,
+        request_ref=request_ref,
+        plan_ref=plan_ref,
+        profile_ref=ceiling_ref,
+        receipt_ref=receipt_ref,
+        fragment_refs=(),
     )
     assert completed.status == "SUCCEEDED"
     assert h.records.get_exact(completed.output_refs[0]) == response

@@ -19,7 +19,7 @@ from sastsimi.contracts.llm import (
     LLMInvocationResult,
     ProviderProfile,
 )
-from sastsimi.contracts.refs import RecordRef, StoredDataRef
+from sastsimi.contracts.refs import RecordRef, RunStoredDataRef, StoredDataRef
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
@@ -30,7 +30,7 @@ from sastsimi.storage.repositories import SQLiteRecordStore
 from .action_context import check_owner
 from .action_policy import check_role
 from .budget_service import BudgetService
-from .current_inputs import check_current_input
+from .current_inputs import allowed_workspace_statuses, check_current_input
 from .dispatches import mark_dispatched, mark_returned, reject_uncertain
 from .records import next_meta
 from .stage_policy import check_stage
@@ -85,7 +85,12 @@ class RuntimeValidator:
             check_owner(self.records, connection, action, work)
             check_stage(self.records, connection, action, work)
             for ref in (*work.input_refs, *action.input_refs):
-                check_current_input(self.records, connection, ref)
+                check_current_input(
+                    self.records,
+                    connection,
+                    ref,
+                    workspace_statuses=allowed_workspace_statuses(action, work),
+                )
             self.check_reservation(
                 connection,
                 REF_ADAPTER.validate_json(row["reservation_ref"]),
@@ -271,10 +276,23 @@ class RuntimeValidator:
         ):
             raise ValueError("STATE_VERSION_CONFLICT")
         for ref in (*work.input_refs, *action.input_refs):
-            check_current_input(self.records, connection, ref)
+            check_current_input(
+                self.records,
+                connection,
+                ref,
+                workspace_statuses=allowed_workspace_statuses(action, work),
+            )
             try:
                 resolved = self.records.resolve(connection, ref)
             except LookupError:
+                if isinstance(ref, RunStoredDataRef) and ref.record_id is None:
+                    if (
+                        ref.data_kind != "artifact"
+                        or ref.analysis_id != work.meta.analysis_id
+                        or str(ref.stored_data_id) != ref.content_hash
+                    ):
+                        raise ValueError("ACTION_RUN_ARTIFACT_INVALID") from None
+                    continue
                 if isinstance(ref, StoredDataRef) and ref.record_id is None:
                     continue
                 raise

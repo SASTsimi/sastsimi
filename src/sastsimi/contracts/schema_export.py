@@ -46,7 +46,7 @@ from .records import PolicyCacheMeta, RecordMeta, RunMeta
 from .refs import PolicyCacheRef, RunStoredDataRef, StoredDataRef
 from .reporting import FindingIndexState
 from .result_registry import RESULT_REGISTRY
-from .static import CodeContextRequest
+from .static import CodeContextRequest, StaticToolProfile
 from .verification import PlaybookApplication, PlaybookPolicy, VerificationPlaybook
 from .work import StateTransition, TransitionCommit, WorkAttempt, WorkExecutionState
 
@@ -67,6 +67,7 @@ CORE_SCHEMAS: Mapping[str, type[BaseModel]] = MappingProxyType(
         "action_decision": ActionDecision,
         "sandbox_profile": SandboxProfile,
         "code_context_request": CodeContextRequest,
+        "static_tool_profile": StaticToolProfile,
         "vulnerability_hypothesis": VulnerabilityHypothesis,
         "playbook_application": PlaybookApplication,
         "dynamic_reproduction_state": DynamicReproductionState,

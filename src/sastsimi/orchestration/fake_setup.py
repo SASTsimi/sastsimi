@@ -35,12 +35,14 @@ from sastsimi.contracts.static import (
     CodeLocation,
     CodeWorkspace,
     StaticFactBundle,
+    StaticToolProfile,
     ToolRunResult,
 )
 from sastsimi.contracts.verification import (
     PlaybookPolicy,
     VerificationPlaybook,
 )
+from sastsimi.ports.dto import RepositoryPreparation
 from sastsimi.ports.fake_workflow import (
     InitialVerificationInputs,
     PolicyFetcher,
@@ -68,6 +70,7 @@ from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 
 from .fake_static_runtime import execute_fake_static_work, register_fake_static_works
+from .static_publication import WorkspacePreparationPublisher
 
 
 @dataclass(frozen=True)
@@ -308,22 +311,31 @@ class FakeSetupStages:
             str(ANALYSIS_ID),
             verification_ref,
         )
-        workspace = CodeWorkspace.model_validate_json(
-            canonical_bytes(
-                dict(
-                    meta=self.runner.metadata(workspace_work.meta, "code_workspace"),
-                    workspace_id=WORKSPACE_ID,
-                    analysis_id=ANALYSIS_ID,
-                    repository_url="https://example.invalid/fake",
-                    commit_id=COMMIT_ID,
-                    status="READY",
-                )
-            )
+        workspace_publisher = WorkspacePreparationPublisher(self.runner, execution_ref)
+        preparing = workspace_publisher.begin(
+            workspace_work,
+            "https://example.invalid/fake",
+            WORKSPACE_ID,
         )
-        workspace_work = self.runner.complete(
-            workspace_work, execution_ref, "REPOSITORY_LOADER", (workspace,)
+        finished = workspace_publisher.finish(
+            workspace_work,
+            preparing,
+            RepositoryPreparation(
+                analysis_id=str(ANALYSIS_ID),
+                workspace_id=str(WORKSPACE_ID),
+                repository_url="https://example.invalid/fake",
+                requested_ref="fake",
+                status="READY",
+                resolved_commit_id=str(COMMIT_ID),
+                root=self.data_dir / "fake-workspace",
+                tracked_files=(),
+                gaps=(),
+                errors=(),
+                lease_id="fake-workspace",
+            ),
         )
-        workspace_ref = workspace_work.output_refs[0]
+        workspace_work = finished.work
+        workspace_ref = finished.workspace_ref
         assert isinstance(workspace_ref, RunStoredDataRef)
         lifecycle = DynamicReproductionLifecycleProfile.model_validate_json(
             canonical_bytes(
@@ -377,6 +389,37 @@ class FakeSetupStages:
             end_column=None,
         )
 
+    def _static_tool_profile(
+        self, *, adapter_key: str, tool_name: str, tool_kind: str
+    ) -> StoredDataRef:
+        assert self.runtime is not None
+        profile = StaticToolProfile.model_validate_json(
+            canonical_bytes(
+                dict(
+                    meta=self._record_meta("static_tool_profile"),
+                    profile_key=f"fake-{tool_name.lower()}",
+                    purpose="FIXTURE",
+                    status="APPROVED",
+                    adapter_key=adapter_key,
+                    tool_name=tool_name,
+                    tool_kind=tool_kind,
+                    executable_key=f"fake-{tool_name.lower()}-executable",
+                    executable_sha256="a" * 64,
+                    expected_version="1",
+                    capability_evidence_ref=None,
+                    probe_timeout_ms=1_000,
+                    run_timeout_ms=30_000,
+                    stdout_limit_bytes=1_024,
+                    stderr_limit_bytes=1_024,
+                    max_attempt_output_bytes=4_096,
+                    max_output_file_bytes=2_048,
+                    max_artifact_read_bytes=2_048,
+                )
+            )
+        )
+        self.evidence.static_tool_approvals.add(content_hash(profile))
+        return self.runtime.configuration.register_static_tool_profile(profile)
+
     def prepare_initial(
         self,
         scope: StoredDataRef,
@@ -392,6 +435,16 @@ class FakeSetupStages:
         assert isinstance(workspace, CodeWorkspace)
         workspace_ref = reference(workspace)
         assert isinstance(workspace_ref, RunStoredDataRef)
+        tool_profiles = (
+            self._static_tool_profile(
+                adapter_key="PYTHON_AST", tool_name="AST", tool_kind="STRUCTURE"
+            ),
+            self._static_tool_profile(
+                adapter_key="OPENGREP",
+                tool_name="OPENGREP",
+                tool_kind="RULE_BASED",
+            ),
+        )
         static_works = register_fake_static_works(
             runner=self.runner,
             evidence=self.evidence,
@@ -399,6 +452,7 @@ class FakeSetupStages:
             identity=orchestrator_ref,
             workspace=workspace,
             workspace_ref=workspace_ref,
+            tool_profile_refs=tool_profiles,
             metadata=self._record_meta("static_tool_stage"),
         )
         policy_work = self._start_policy_work(scope, orchestrator_ref)
@@ -413,6 +467,7 @@ class FakeSetupStages:
                 identity=orchestrator_ref,
                 work=work,
                 workspace=workspace,
+                tool_profile_ref=tool_profile_ref,
                 analysis_config_ref=analysis_config_ref,
                 rule_catalog_ref=rule_catalog_ref,
                 tool_name=tool_name,
@@ -420,9 +475,10 @@ class FakeSetupStages:
                 raw_result_ref=self._stored_artifact(f"raw-{tool_name}"),
                 static_invoke=static_invoke,
             )
-            for work, tool_name, tool_kind in zip(
+            for work, tool_profile_ref, tool_name, tool_kind in zip(
                 static_works,
-                ("fake-ast", "fake-sast"),
+                tool_profiles,
+                ("AST", "OPENGREP"),
                 ("STRUCTURE", "RULE_BASED"),
                 strict=True,
             )
