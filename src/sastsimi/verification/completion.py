@@ -281,9 +281,7 @@ class VerificationCompletionCoordinator:
             validate_decision_for_action(claimed, ActionType.CALL_LLM)
             validate_decision_revision(issued, claimed)
         except ValueError as error:
-            raise ValueError(
-                "VERIFICATION_INVOCATION_PROVENANCE_MISMATCH"
-            ) from error
+            raise ValueError("VERIFICATION_INVOCATION_PROVENANCE_MISMATCH") from error
         return (
             claimed_ref,
             request_ref,
