@@ -193,10 +193,19 @@ class ConfigurationRegistry:
                 == str(provider.meta.logical_record_id)
             )
         ).scalar_one_or_none()
+        current_entry_record_id = connection.execute(
+            select(models.current_records.c.record_id).where(
+                models.current_records.c.logical_record_id
+                == str(entry.meta.logical_record_id)
+            )
+        ).scalar_one_or_none()
         if (
-            active_entry is None
+            entry.status != "ACTIVE"
+            or provider.support_status != "SUPPORTED"
+            or active_entry is None
             or active_entry["logical_record_id"] != str(entry.meta.logical_record_id)
             or active_entry["record_id"] != str(entry.meta.record_id)
+            or current_entry_record_id != str(entry.meta.record_id)
             or current_provider_record_id != str(provider.meta.record_id)
         ):
             raise ValueError("LLM_CONTEXT_CONFIGURATION_NOT_CURRENT")

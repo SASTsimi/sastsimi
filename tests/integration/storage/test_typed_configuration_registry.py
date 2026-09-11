@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from sqlalchemy import Connection, delete, insert, select, update
+from sqlalchemy import Connection, create_engine, delete, insert, select, update
 
 from sastsimi.bootstrap import build_fake_pipeline, build_runtime
 from sastsimi.contracts.actions import (
@@ -47,7 +47,7 @@ from sastsimi.storage.configuration_registry import (
 from sastsimi.storage.llm_context import check_llm_context
 from sastsimi.storage.repositories import SQLiteRecordStore
 from tests.contract.domain.canonical_fixtures import make
-from tests.contract.domain.fixtures import meta
+from tests.contract.domain.fixtures import meta, ref
 from tests.integration.runtime_support import Harness
 from tests.integration.trusted_fixture import FixtureEvidence
 
@@ -682,6 +682,69 @@ def test_llm_call_spec_rejects_every_cross_record_mismatch(
         pipeline.runtime.configuration.register_prompt_payload(payload)
     with pytest.raises(ValueError, match="PROMPT_REGISTRY_NOT_CURRENT"):
         pipeline.runtime.configuration.register_call_spec(target)
+
+
+def test_llm_selection_requires_the_exact_current_active_prompt_revision() -> None:
+    entry = PromptRegistryEntry.model_validate_json(
+        canonical_bytes(
+            make("PromptRegistryEntry")
+            | {
+                "provider_profile_refs": [ref("provider_profile")],
+                "status": "ACTIVE",
+            }
+        )
+    )
+    provider = ProviderProfile.model_validate_json(
+        canonical_bytes(
+            make("ProviderProfile")
+            | {"validation_evidence_ref": ref("provider_validation_evidence")}
+        )
+    )
+    engine = create_engine("sqlite://")
+    models.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            insert(models.prompt_active_entries).values(
+                agent_role=entry.agent_role,
+                task_kind=entry.task_kind,
+                purpose=entry.purpose,
+                logical_record_id=str(entry.meta.logical_record_id),
+                record_id=str(entry.meta.record_id),
+                state_version=1,
+            )
+        )
+        connection.execute(
+            insert(models.current_records),
+            (
+                {
+                    "logical_record_id": str(entry.meta.logical_record_id),
+                    "record_id": str(entry.meta.record_id),
+                    "state_version": 1,
+                },
+                {
+                    "logical_record_id": str(provider.meta.logical_record_id),
+                    "record_id": str(provider.meta.record_id),
+                    "state_version": 1,
+                },
+            ),
+        )
+        StorageConfigurationRegistry.require_current_selection(
+            connection, entry, provider
+        )
+        connection.execute(
+            update(models.current_records)
+            .where(
+                models.current_records.c.logical_record_id
+                == str(entry.meta.logical_record_id)
+            )
+            .values(record_id="newer-draft-record", state_version=2)
+        )
+        with pytest.raises(
+            ValueError, match="LLM_CONTEXT_CONFIGURATION_NOT_CURRENT"
+        ):
+            StorageConfigurationRegistry.require_current_selection(
+                connection, entry, provider
+            )
 
 
 def test_prompt_active_entry_is_selected_atomically_and_replay_is_idempotent(
