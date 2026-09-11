@@ -6,9 +6,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import BinaryIO, Literal
 
 import pytest
+from pydantic import JsonValue
 
 from sastsimi.bootstrap import build_runtime, upgrade_database
 from sastsimi.contracts.actions import (
@@ -26,7 +27,7 @@ from sastsimi.contracts.actions import (
 from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.budget import Purpose
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.ids import AttemptId, CommitId, WorkspaceId
+from sastsimi.contracts.ids import AnalysisId, AttemptId, CommitId, WorkspaceId
 from sastsimi.contracts.llm import (
     InvocationStatus,
     LLMCallSpec,
@@ -36,6 +37,7 @@ from sastsimi.contracts.llm import (
     OutputSchemaSpec,
     PromptPayload,
     ProviderProfile,
+    ProviderValidationEvidence,
     SemanticValidatorSpec,
 )
 from sastsimi.contracts.records import RecordMeta, RunMeta
@@ -47,11 +49,18 @@ from sastsimi.contracts.refs import (
 )
 from sastsimi.contracts.work import (
     SubjectType,
+    TransitionCommit,
     WorkExecutionState,
     WorkStatus,
     WorkType,
 )
-from sastsimi.ports.dto import CancellationResult, CapabilityProbeResult, StagedArtifact
+from sastsimi.ports.dto import (
+    CancellationResult,
+    CapabilityProbeResult,
+    Record,
+    StagedArtifact,
+    TransitionCommitRequest,
+)
 from sastsimi.prompts.validation import validate_output
 from sastsimi.providers.base import (
     NormalizedProviderResult,
@@ -82,7 +91,7 @@ def metadata(
     record_id: str,
     *,
     hypothesis_id: str | None = "h1",
-    attempt_id: str | None = "at1",
+    attempt_id: str | AttemptId | None = "at1",
 ) -> RecordMeta:
     return RecordMeta.model_validate(
         {
@@ -180,25 +189,28 @@ def ref_key(ref: RecordRef) -> bytes:
 
 class MemoryRecords:
     def __init__(self) -> None:
-        self.published: dict[bytes, object] = {}
-        self.staged: dict[bytes, object] = {}
+        self.published: dict[bytes, Record] = {}
+        self.staged: dict[bytes, Record] = {}
 
-    def publish(self, record: object) -> StoredDataRef:
-        exact = reference(record)  # type: ignore[arg-type]
+    def publish(self, record: Record) -> StoredDataRef:
+        exact = reference(record)
         assert isinstance(exact, StoredDataRef)
         self.published[ref_key(exact)] = record
         return exact
 
-    def get_exact(self, ref: RecordRef) -> object:
+    def get_exact(self, ref: RecordRef) -> Record:
         try:
             return self.published[ref_key(ref)]
         except KeyError as error:
             raise LookupError("exact record not published") from error
 
-    def stage_record(self, record: object) -> RecordRef:
-        exact = reference(record)  # type: ignore[arg-type]
+    def stage_record(self, record: Record) -> RecordRef:
+        exact = reference(record)
         self.staged[ref_key(exact)] = record
         return exact
+
+    def commit_transition(self, request: TransitionCommitRequest) -> TransitionCommit:
+        raise AssertionError("transition commits are not used by these tests")
 
 
 class MemoryArtifacts:
@@ -223,7 +235,23 @@ class MemoryArtifacts:
         self.data[ref_key(ref)] = staged.data
         return ref
 
-    def open_verified(self, ref: StoredDataRef) -> io.BytesIO:
+    def commit_run(
+        self, staged: StagedArtifact, analysis_id: AnalysisId
+    ) -> RunStoredDataRef:
+        digest = hashlib.sha256(staged.data).hexdigest()
+        ref = RunStoredDataRef.model_validate(
+            {
+                "stored_data_id": digest,
+                "data_kind": "artifact",
+                "content_hash": digest,
+                "analysis_id": analysis_id,
+                "record_id": None,
+            }
+        )
+        self.data[ref_key(ref)] = staged.data
+        return ref
+
+    def open_verified(self, ref: StoredDataRef | RunStoredDataRef) -> BinaryIO:
         try:
             data = self.data[ref_key(ref)]
         except KeyError as error:
@@ -290,7 +318,12 @@ class RecordingAuthorization:
         assert isinstance(log_ref, StoredDataRef)
         return log_ref
 
-    def authorize(self, *args: object, **kwargs: object) -> object:
+    def authorize(
+        self,
+        action: ActionRequest,
+        work: WorkExecutionState | None = None,
+        reservation_ref: RecordRef | None = None,
+    ) -> ActionDecision:
         raise AssertionError("the service accepts an already-authorized decision")
 
 
@@ -323,7 +356,7 @@ class FakeAdapter:
         raw_output: bytes,
         status: InvocationStatus,
         *,
-        cancel: bool = False,
+        cancel_requested: bool = False,
         actual_session_mode: Literal["NEW", "RESUMED"] = "NEW",
     ) -> None:
         self.records = records
@@ -331,14 +364,14 @@ class FakeAdapter:
         self.output_validator = output_validator
         self.raw_output = raw_output
         self.status = status
-        self.cancel = cancel
+        self.cancel_requested = cancel_requested
         self.actual_session_mode = actual_session_mode
         self.calls = 0
 
     async def invoke(self, request: LLMInvocationRequest) -> LLMInvocationResult:
         assert ref_key(reference(request)) in self.records.staged
         self.calls += 1
-        if self.cancel:
+        if self.cancel_requested:
             raise asyncio.CancelledError
         validated = None
         parsed_output = None
@@ -346,7 +379,7 @@ class FakeAdapter:
         safe_error = None
         session_ref = None
         if self.status == "SUCCEEDED":
-            schema = {"type": "object"}
+            schema: dict[str, JsonValue] = {"type": "object"}
             output_schema = self.records.get_exact(request.output_schema_ref)
             assert isinstance(output_schema, OutputSchemaSpec)
             validated = self.output_validator.validate(
@@ -377,7 +410,9 @@ class FakeAdapter:
         )
         return self.result_builder.build(request, outcome)
 
-    async def probe(self, candidate: object) -> CapabilityProbeResult:
+    async def probe(
+        self, candidate: ProviderValidationEvidence
+    ) -> CapabilityProbeResult:
         raise AssertionError("not used")
 
     async def cancel(self, invocation_id: str) -> CancellationResult:
@@ -664,7 +699,7 @@ def build_service(
         output_validator,
         data.raw_output,
         status,
-        cancel=cancel,
+        cancel_requested=cancel,
         actual_session_mode=actual_session_mode,
     )
     adapters = ExactAdapterResolver({(data.provider_ref, "gpt-test"): adapter})
@@ -717,7 +752,9 @@ async def test_llm_call_stages_exact_request_and_persists_safe_success() -> None
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["AUTH_REQUIRED", "TIMED_OUT", "INVALID_OUTPUT"])
-async def test_provider_failure_is_persisted_without_domain_output(status: str) -> None:
+async def test_provider_failure_is_persisted_without_domain_output(
+    status: InvocationStatus,
+) -> None:
     """Catches provider failures disappearing or becoming vulnerability verdicts."""
     data = fixture()
     service, _adapter, authorization = build_service(data, status)
@@ -794,7 +831,7 @@ async def test_old_attempt_output_is_invalid_and_never_staged() -> None:
     assert outcome.result.status == "INVALID_OUTPUT"
     assert outcome.result.parsed_output_ref is None
     assert all(
-        getattr(record, "meta", None).record_type != "hypothesis_proposal"
+        record.meta.record_type != "hypothesis_proposal"
         for record in data.records.staged.values()
     )
     assert len(authorization.invocations) == 1
@@ -843,7 +880,7 @@ async def test_stale_prompt_or_provider_selection_blocks_provider_io() -> None:
     assert outcome.result.status == "FAILED"
     assert outcome.result.parsed_output_ref is None
     assert all(
-        getattr(record, "meta", None).record_type != "hypothesis_proposal"
+        record.meta.record_type != "hypothesis_proposal"
         for record in data.records.staged.values()
     )
     assert len(authorization.invocations) == 1
@@ -889,7 +926,7 @@ async def test_new_session_request_rejects_a_resumed_provider_result() -> None:
     assert outcome.result.status == "INVALID_OUTPUT"
     assert outcome.result.parsed_output_ref is None
     assert all(
-        getattr(record, "meta", None).record_type != "hypothesis_proposal"
+        record.meta.record_type != "hypothesis_proposal"
         for record in data.records.staged.values()
     )
     assert len(authorization.invocations) == 1
