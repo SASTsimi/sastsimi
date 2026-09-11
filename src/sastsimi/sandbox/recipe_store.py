@@ -320,6 +320,8 @@ class EnvironmentRecipeStore:
                 if instruction == "ONBUILD" and len(parts) == 2
                 else None
             )
+            if instruction == "VOLUME" or nested == "VOLUME":
+                raise ValueError("DOCKERFILE_VOLUME_DENIED")
             if (
                 instruction == "RUN" or nested == "RUN"
             ) and "--network" in stripped.casefold():

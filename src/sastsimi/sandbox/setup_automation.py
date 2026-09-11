@@ -48,6 +48,9 @@ class DockerLifecyclePort(Protocol):
     ) -> str: ...
     async def inspect_image(self, image: str, *, timeout_ms: int) -> str: ...
     async def create(self, spec: SandboxRunSpec, labels: Mapping[str, str]) -> str: ...
+    async def verify_created_mounts(
+        self, container_id: str, spec: SandboxRunSpec
+    ) -> None: ...
     async def start(self, container_id: str) -> None: ...
     async def materialize_poc(
         self, container_id: str, content: bytes, content_digest: str
@@ -295,6 +298,7 @@ class ReproductionSetupAutomation:
             meta=meta,
         )
         try:
+            await self._docker.verify_created_mounts(container_id, spec)
             await self._docker.start(container_id)
             state = await self._health.inspect_ready(self._docker.inspect, container_id)
         except BaseException:

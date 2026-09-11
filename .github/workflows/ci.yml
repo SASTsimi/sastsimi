@@ -43,7 +43,7 @@ jobs:
         run: |
           docker version
           docker pull python:3.12-slim
-          uv run python -m pytest tests/e2e/test_dynamic_reproduction.py::test_supported_fixture_produces_validated_poc -q
+          uv run python -m pytest tests/e2e/test_dynamic_reproduction.py -q
       - name: All existing suites
         run: uv run pytest tests -q
       - name: Architecture validator (Windows PowerShell)

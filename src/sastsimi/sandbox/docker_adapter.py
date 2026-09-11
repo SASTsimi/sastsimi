@@ -241,6 +241,44 @@ class DockerAdapter:
         outcome = await self._run(("start", container_id))
         self._require_success("DOCKER_START_FAILED", outcome)
 
+    async def verify_created_mounts(
+        self, container_id: str, spec: SandboxRunSpec
+    ) -> None:
+        """Reject image-declared or otherwise unapproved mounts before start."""
+
+        self._require_resource_id(container_id)
+        outcome = await self._run(
+            ("inspect", "--format", "{{json .Mounts}}", container_id)
+        )
+        self._require_success("DOCKER_MOUNT_INSPECT_FAILED", outcome)
+        try:
+            mounts = json.loads(outcome.stdout)
+            if not isinstance(mounts, list):
+                raise TypeError
+            actual = []
+            for item in mounts:
+                if not isinstance(item, dict):
+                    raise TypeError
+                mount_type = item["Type"]
+                destination = item["Destination"]
+                writable = item["RW"]
+                if (
+                    not isinstance(mount_type, str)
+                    or not isinstance(destination, str)
+                    or not isinstance(writable, bool)
+                ):
+                    raise TypeError
+                actual.append((mount_type, destination, writable))
+        except (KeyError, TypeError, json.JSONDecodeError) as error:
+            raise DockerOperationError(
+                "DOCKER_MOUNT_INSPECT_INVALID", outcome
+            ) from error
+        expected = [
+            ("bind", str(mount.target), not mount.read_only) for mount in spec.mounts
+        ]
+        if sorted(actual) != sorted(expected):
+            raise ValueError("DOCKER_MOUNT_BOUNDARY_INVALID")
+
     async def materialize_poc(
         self, container_id: str, content: bytes, content_digest: str
     ) -> str:
@@ -360,7 +398,7 @@ class DockerAdapter:
             raise ValueError("DUPLICATE_DOCKER_RESOURCE")
         for resource_id in resource_ids:
             self._require_resource_id(resource_id)
-        outcome = await self._run(("rm", "--force", *resource_ids))
+        outcome = await self._run(("rm", "--force", "--volumes", *resource_ids))
         self._require_success("DOCKER_REMOVE_FAILED", outcome)
 
     @staticmethod

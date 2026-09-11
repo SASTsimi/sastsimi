@@ -227,14 +227,17 @@ class MemorySink:
         return WorkHandlerResult((result_ref,))
 
 
-async def _docker(*arguments: str) -> tuple[int, bytes, bytes]:
+async def _docker(
+    *arguments: str, input_bytes: bytes | None = None
+) -> tuple[int, bytes, bytes]:
     process = await asyncio.create_subprocess_exec(
         "docker",
         *arguments,
+        stdin=(asyncio.subprocess.PIPE if input_bytes is not None else None),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await process.communicate()
+    stdout, stderr = await process.communicate(input_bytes)
     assert process.returncode is not None
     return process.returncode, stdout, stderr
 
@@ -968,3 +971,66 @@ async def test_forbidden_request_is_blocked_before_docker(tmp_path: Path) -> Non
     assert result.cleanup_status == "NOT_REQUIRED"
     assert not any(isinstance(item, EnvironmentRecipe) for item in sink.published)
     assert not any(isinstance(item, SandboxEnvironment) for item in sink.published)
+
+
+@pytest.mark.asyncio
+async def test_image_declared_volume_is_rejected_and_reclaimed(tmp_path: Path) -> None:
+    """An inherited anonymous volume must never survive the rejected container."""
+
+    await _require_docker()
+    image_id: str | None = None
+    container_id: str | None = None
+    volume_name: str | None = None
+    adapter = DockerAdapter()
+    try:
+        code, output, error = await _docker(
+            "build",
+            "--quiet",
+            "--network",
+            "none",
+            "-",
+            input_bytes=(
+                b"FROM python:3.12-slim\nVOLUME /unapproved-volume\nUSER 65532:65532\n"
+            ),
+        )
+        assert code == 0, error.decode(errors="replace")
+        image_id = output.decode("ascii").strip().splitlines()[-1]
+        spec = replace(_run_spec(tmp_path), image_digest=image_id)
+        labels = {
+            "sastsimi.owner": "reproduction-setup-automation",
+            "sastsimi.analysis-id": "analysis-1",
+            "sastsimi.workspace-id": "workspace-1",
+            "sastsimi.commit-id": "commit-1",
+            "sastsimi.hypothesis-id": "hypothesis-volume",
+            "sastsimi.attempt-id": "dynamic-attempt-volume",
+            "sastsimi.resource-kind": "container",
+            "sastsimi.resource-id": "volume-boundary-e2e",
+        }
+        container_id = await adapter.create(spec, labels)
+        inspect_code, inspect_output, inspect_error = await _docker(
+            "inspect", container_id
+        )
+        assert inspect_code == 0, inspect_error.decode(errors="replace")
+        mounts = json.loads(inspect_output)[0]["Mounts"]
+        (volume,) = [
+            mount for mount in mounts if mount["Destination"] == "/unapproved-volume"
+        ]
+        volume_name = volume["Name"]
+
+        with pytest.raises(ValueError, match="DOCKER_MOUNT_BOUNDARY_INVALID"):
+            await adapter.verify_created_mounts(container_id, spec)
+        await adapter.remove((container_id,))
+
+        removed_code, _, _ = await _docker("inspect", container_id)
+        volume_code, _, _ = await _docker("volume", "inspect", volume_name)
+        assert removed_code != 0
+        assert volume_code != 0
+        container_id = None
+        volume_name = None
+    finally:
+        if container_id is not None:
+            await _docker("rm", "--force", "--volumes", container_id)
+        if volume_name is not None:
+            await _docker("volume", "rm", volume_name)
+        if image_id is not None:
+            await _docker("image", "rm", image_id)

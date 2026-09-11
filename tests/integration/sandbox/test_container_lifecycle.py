@@ -329,6 +329,8 @@ class FakeDockerAdapter:
         self.removed: list[str] = []
         self.unhealthy: set[str] = set()
         self.inspect_label_overrides: dict[str, Mapping[str, str]] = {}
+        self.started: list[str] = []
+        self.hidden_mounts: set[str] = set()
         self._index = 0
 
     async def build(
@@ -354,6 +356,15 @@ class FakeDockerAdapter:
 
     async def start(self, container_id: str) -> None:
         assert container_id in self.created
+        self.started.append(container_id)
+
+    async def verify_created_mounts(
+        self, container_id: str, spec: SandboxRunSpec
+    ) -> None:
+        assert container_id in self.created
+        assert self.created[container_id][0] == spec
+        if container_id in self.hidden_mounts:
+            raise ValueError("DOCKER_MOUNT_BOUNDARY_INVALID")
 
     async def exec(
         self,
@@ -549,6 +560,9 @@ async def test_recipe_lock_wait_is_bounded_by_approved_timeout(
             b"# escape=`\nFROM scratch\nRUN --net`\nwork=host true\n",
             "RUN_NETWORK",
         ),
+        (b"FROM scratch\nVOLUME /data\n", "VOLUME"),
+        (b'FROM scratch\nVOLUME ["/data"]\n', "VOLUME"),
+        (b"FROM scratch\nVOL\\\nUME /data\n", "VOLUME"),
     ],
 )
 async def test_prepare_rejects_dockerfile_daemon_egress_and_context_inputs(
@@ -570,6 +584,29 @@ async def test_prepare_rejects_dockerfile_daemon_egress_and_context_inputs(
 
     assert docker.built == []
     assert docker.created == {}
+
+
+@pytest.mark.asyncio
+async def test_hidden_image_volume_is_rejected_before_start_and_removed(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "Dockerfile").write_bytes(b"FROM scratch\n")
+    request, requirements, plan = _dynamic_records()
+    docker = FakeDockerAdapter()
+    docker.hidden_mounts.add("owned-container-1")
+
+    with pytest.raises(ValueError, match="DOCKER_MOUNT_BOUNDARY_INVALID"):
+        await _prepare(
+            _setup(docker),
+            tmp_path,
+            request=request,
+            requirements=requirements,
+            plan=plan,
+            meta=_meta("sandbox_environment", "environment-seed"),
+        )
+
+    assert docker.started == []
+    assert docker.removed == ["owned-container-1"]
 
 
 def test_dockerfile_rejects_unfinished_line_continuation() -> None:
@@ -852,6 +889,76 @@ async def test_docker_create_uses_argv_and_hard_isolation_options(
     assert all(
         not (isinstance(item, str) and "docker create " in item) for item in argv
     )
+
+
+@pytest.mark.asyncio
+async def test_docker_rejects_image_declared_volume_before_start(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def run(
+        argv: tuple[str, ...],
+        *,
+        timeout_ms: int | None = None,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        del timeout_ms, input_bytes
+        calls.append(argv)
+        return DockerCommandOutcome(
+            0,
+            json.dumps(
+                [
+                    {
+                        "Type": "volume",
+                        "Name": "unexpected-volume",
+                        "Source": "/var/lib/docker/volumes/unexpected-volume/_data",
+                        "Destination": "/data",
+                        "RW": True,
+                    }
+                ]
+            ).encode(),
+            b"",
+            False,
+        )
+
+    request, _, _ = _dynamic_records()
+    spec = _approval(tmp_path, request).approved_spec
+    assert spec is not None
+    adapter = DockerAdapter()
+    monkeypatch.setattr(adapter, "_run", run)
+
+    with pytest.raises(ValueError, match="DOCKER_MOUNT_BOUNDARY_INVALID"):
+        await adapter.verify_created_mounts("owned-container-id", spec)
+
+    assert calls == [("inspect", "--format", "{{json .Mounts}}", "owned-container-id")]
+
+
+@pytest.mark.asyncio
+async def test_docker_cleanup_removes_owned_anonymous_volumes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def run(
+        argv: tuple[str, ...],
+        *,
+        timeout_ms: int | None = None,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        del timeout_ms, input_bytes
+        calls.append(argv)
+        return DockerCommandOutcome(0, b"", b"", False)
+
+    adapter = DockerAdapter()
+    monkeypatch.setattr(adapter, "_run", run)
+
+    await adapter.remove(("owned-container-id",))
+
+    assert calls == [
+        ("rm", "--force", "--volumes", "owned-container-id"),
+    ]
 
 
 @pytest.mark.asyncio
