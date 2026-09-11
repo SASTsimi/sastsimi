@@ -45,9 +45,7 @@ _RESULT_RUNTIME_OWNED_FIELDS: Mapping[str, frozenset[str]] = {
     # These identifiers are allocated only after the untrusted proposal is
     # validated. Existing semantic identifiers such as CWE/rule/question IDs
     # remain available to the other role-specific result schemas.
-    "hypothesis_proposal": frozenset(
-        {"proposal_id", "question_id", "validation_id"}
-    ),
+    "hypothesis_proposal": frozenset({"proposal_id", "question_id", "validation_id"}),
 }
 
 _ROLE_RESULT_KINDS: Mapping[str, frozenset[str]] = {
