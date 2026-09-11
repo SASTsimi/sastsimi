@@ -476,6 +476,7 @@ class AgentLogEvent(ContractModel):
     input_refs: tuple[StoredDataRef, ...]
     output_refs: tuple[StoredDataRef, ...]
     exit_code: int | None
+    timed_out: bool | None
     safe_message: SafeDiagnostic | None
     occurred_at: AwareDatetime
 
@@ -494,6 +495,10 @@ class AgentLogEvent(ContractModel):
         command = self.event_type in {"COMMAND_STARTED", "COMMAND_FINISHED"}
         poc_execution = self.event_type in {
             "POC_EXECUTION_STARTED",
+            "POC_EXECUTION_FINISHED",
+        }
+        execution_finished = self.event_type in {
+            "COMMAND_FINISHED",
             "POC_EXECUTION_FINISHED",
         }
         command_values = (
@@ -516,6 +521,8 @@ class AgentLogEvent(ContractModel):
             self.environment_ref is None or self.environment_recipe_ref is None
         ):
             raise ValueError("COMMAND_ENVIRONMENT_REQUIRED")
+        if execution_finished != (self.timed_out is not None):
+            raise ValueError("COMMAND_TIMEOUT_STATUS_REQUIRED")
         return self
 
 
@@ -1272,7 +1279,9 @@ def validate_execution_support(
         and record.meta.record_id == execution.command_ref.record_id
     ]
     if (
-        len(commands) != 1
+        execution.timed_out is not False
+        or any(command.timed_out is not False for command in commands)
+        or len(commands) != 1
         or len(records) != 1
         or not is_poc_execution_command(records[0])
     ):

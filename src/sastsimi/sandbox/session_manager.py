@@ -133,6 +133,7 @@ class ReproductionSessionManager:
             ),
             output_refs=(),
             exit_code=None,
+            timed_out=None,
             safe_message="Dynamic reproduction session started",
             occurred_at=self._clock.now(),
         )
@@ -398,6 +399,7 @@ class ReproductionSessionManager:
             and event.environment_ref == environment_ref
             and event.environment_recipe_ref == recipe_ref
             and event.exit_code == 0
+            and event.timed_out is False
             and event.output_refs
             and event.input_refs == (candidate.content_ref,)
         ]
@@ -425,6 +427,7 @@ class ReproductionSessionManager:
             and event.environment_ref == environment_ref
             and event.environment_recipe_ref == recipe_ref
             and event.exit_code == 0
+            and event.timed_out is False
         ]
         if len(started) != 1 or len(commands) != 1:
             return False, None
@@ -512,6 +515,7 @@ class ReproductionSessionManager:
             event.event_type == "COMMAND_FINISHED"
             and event.actor == "TOOL_RUNTIME"
             and event.exit_code == 0
+            and event.timed_out is False
             and evidence.intersection(event.output_refs)
             for event in log.events
         )

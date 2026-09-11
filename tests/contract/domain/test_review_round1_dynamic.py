@@ -132,7 +132,9 @@ def test_r6_resolved_command_pair_matches_tool_request_content() -> None:
     )
     start = wire(AgentLogEvent, event_data)
     finish = wire(
-        AgentLogEvent, event_data | dict(event_type="COMMAND_FINISHED", sequence=2)
+        AgentLogEvent,
+        event_data
+        | dict(event_type="COMMAND_FINISHED", sequence=2, timed_out=False),
     )
     validate_command_closure(
         start,
@@ -177,7 +179,8 @@ def test_r6_resolved_command_pair_matches_tool_request_content() -> None:
     )
     finish = wire(
         AgentLogEvent,
-        start.model_dump(mode="json") | dict(event_type="COMMAND_FINISHED", sequence=2),
+        start.model_dump(mode="json")
+        | dict(event_type="COMMAND_FINISHED", sequence=2, timed_out=False),
     )
     with pytest.raises(ValueError, match="COMMAND_CONTENT_MISMATCH"):
         validate_command_closure(

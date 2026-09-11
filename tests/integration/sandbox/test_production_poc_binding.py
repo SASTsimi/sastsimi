@@ -395,6 +395,7 @@ async def test_exact_candidate_command_records_materialized_content_binding() ->
         if event.event_type == "COMMAND_FINISHED"
     )
     assert len(poc_events) == 2
+    assert [event.timed_out for event in poc_events] == [None, False]
     for event in poc_events:
         assert event.input_refs == (candidate.content_ref,)
         assert (
@@ -460,6 +461,7 @@ async def test_timed_out_poc_command_records_output_then_fails_execution() -> No
         if event.event_type in {"COMMAND_FINISHED", "POC_EXECUTION_FINISHED"}
     ]
     assert [event.exit_code for event in finished] == [-9, -9]
+    assert [event.timed_out for event in finished] == [True, True]
 
 
 @pytest.mark.asyncio

@@ -670,6 +670,7 @@ class ProductionDynamicWorkflow:
             redaction_status="NOT_REQUIRED",
             output_refs=output_refs,
             exit_code=outcome.exit_code,
+            timed_out=outcome.timed_out,
         )
         if poc is not None:
             self._append_event(
@@ -686,6 +687,7 @@ class ProductionDynamicWorkflow:
                 input_refs=(poc.content_ref,),
                 output_refs=output_refs,
                 exit_code=outcome.exit_code,
+                timed_out=outcome.timed_out,
             )
         if outcome.timed_out:
             raise DynamicOperationalError(
@@ -808,6 +810,7 @@ class ProductionDynamicWorkflow:
         input_refs: tuple[StoredDataRef, ...] = (),
         output_refs: tuple[StoredDataRef, ...] = (),
         exit_code: int | None = None,
+        timed_out: bool | None = None,
         safe_message: str | None = None,
     ) -> None:
         previous = self._require_log()
@@ -828,6 +831,7 @@ class ProductionDynamicWorkflow:
                 "input_refs": input_refs,
                 "output_refs": output_refs,
                 "exit_code": exit_code,
+                "timed_out": timed_out,
                 "safe_message": safe_message,
                 "occurred_at": self._clock.now(),
             }

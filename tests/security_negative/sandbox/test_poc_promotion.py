@@ -200,6 +200,7 @@ def test_changed_materialized_candidate_digest_cannot_promote() -> None:
         "INCONCLUSIVE",
         "OLD_ATTEMPT",
         "WRONG_DIGEST",
+        "TIMED_OUT",
         "UNFINISHED_SESSION",
         "FORGED_ACTOR",
     ],
@@ -210,6 +211,7 @@ def test_candidate_is_not_promoted_without_same_attempt_support(mutation: str) -
         "NOT_EXECUTED",
         "EXIT_NONZERO",
         "WRONG_DIGEST",
+        "TIMED_OUT",
         "UNFINISHED_SESSION",
         "FORGED_ACTOR",
     }:
@@ -233,6 +235,13 @@ def test_candidate_is_not_promoted_without_same_attempt_support(mutation: str) -
                     "COMMAND_FINISHED",
                 }:
                     item["exit_code"] = 1
+        elif mutation == "TIMED_OUT":
+            for item in raw_events:
+                if item["event_type"] in {
+                    "POC_EXECUTION_FINISHED",
+                    "COMMAND_FINISHED",
+                }:
+                    item["timed_out"] = True
         elif mutation == "UNFINISHED_SESSION":
             raw_events = [
                 item for item in raw_events if item["event_type"] != "SESSION_FINISHED"

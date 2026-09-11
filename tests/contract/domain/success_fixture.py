@@ -148,6 +148,7 @@ def dynamic_success() -> dict[str, Any]:
             item["input_refs"] = [candidate.content_ref.model_dump(mode="json")]
         if event_type in {"POC_EXECUTION_FINISHED", "COMMAND_FINISHED"}:
             item["exit_code"] = 0
+            item["timed_out"] = False
             item["output_refs"] = [ref("observation", record=False)]
         events.append(item)
     log = wire(

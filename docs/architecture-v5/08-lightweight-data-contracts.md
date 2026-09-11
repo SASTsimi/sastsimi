@@ -1701,6 +1701,7 @@ AgentLogEvent:
   input_refs: [StoredDataRef]
   output_refs: [StoredDataRef]
   exit_code: integer | null
+  timed_out: boolean | null
   safe_message: string | null
   occurred_at: timestamp
 
