@@ -3,13 +3,12 @@
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.verification import ConEvidenceResult
 from sastsimi.contracts.work import WorkExecutionState
-from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.runtime.llm_call_service import (
     InvocationMetadataFactory,
     PersistedLLMInvocation,
 )
 
-from .pro import ClaimIdFactory, _EvidenceAgentFinalizer
+from .pro import ArtifactReader, ClaimIdFactory, _EvidenceAgentFinalizer
 
 
 class ConAgent:
@@ -18,7 +17,7 @@ class ConAgent:
     def __init__(
         self,
         *,
-        artifacts: ArtifactStore,
+        artifacts: ArtifactReader,
         metadata_factory: InvocationMetadataFactory,
         claim_id_factory: ClaimIdFactory,
     ) -> None:

@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Protocol, cast
 
 from sastsimi.agents.con_agent import ConAgent
-from sastsimi.agents.pro import ProAgent
+from sastsimi.agents.pro import ArtifactReader, ProAgent
 from sastsimi.contracts.actions import RequesterRole, SessionMode
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.llm import LLMCallSpec, PromptPayload
@@ -26,9 +26,7 @@ from sastsimi.contracts.work import (
     WorkType,
     validate_parent_work,
 )
-from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.fake_workflow import ProviderInvoker, ProviderProber
-from sastsimi.ports.record_store import RecordStore
 from sastsimi.runtime.fake_llm_configuration import register_fake_llm_call
 from sastsimi.runtime.fake_llm_invocation import (
     invoke_fake_provider,
@@ -81,6 +79,10 @@ class LLMInvoker(Protocol):
         reservation_ref: RecordRef,
         call_spec_ref: StoredDataRef,
     ) -> PersistedLLMInvocation: ...
+
+
+class ExactRecordReader(Protocol):
+    def get_exact(self, ref: RecordRef) -> object: ...
 
 
 type ClaimIdFactory = Callable[[str], str]
@@ -260,8 +262,8 @@ class DebateService:
     def __init__(
         self,
         *,
-        records: RecordStore,
-        artifacts: ArtifactStore,
+        records: ExactRecordReader,
+        artifacts: ArtifactReader,
         llm_calls: LLMCallService | LLMInvoker,
         metadata_factory: InvocationMetadataFactory,
         claim_id_factory: ClaimIdFactory,

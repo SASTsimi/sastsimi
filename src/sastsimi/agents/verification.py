@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import BinaryIO, Literal, Protocol
 
 from sastsimi.contracts.actions import SessionMode
 from sastsimi.contracts.base import ContractModel, NonEmptyStr
@@ -28,8 +28,7 @@ from sastsimi.contracts.verification import (
     validate_verification_closure,
 )
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus, WorkType
-from sastsimi.ports.artifact_store import ArtifactStore
-from sastsimi.ports.record_store import RecordStore
+from sastsimi.ports.dto import Record
 from sastsimi.ports.verification_assembly import VerificationGenerationInputs
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
 
@@ -76,6 +75,16 @@ class LLMCallInvoker(Protocol):
     ) -> PersistedLLMInvocation: ...
 
 
+class VerificationRecordStore(Protocol):
+    def get_exact(self, ref: RecordRef) -> object: ...
+
+    def stage_record(self, record: Record) -> RecordRef: ...
+
+
+class VerificationArtifactReader(Protocol):
+    def open_verified(self, ref: StoredDataRef) -> BinaryIO: ...
+
+
 class _InitialContent(ContractModel):
     next_step: Literal[
         "POC_CONFIRMATION", "VERDICT_EVIDENCE", "FINALIZE_WITHOUT_DYNAMIC"
@@ -115,8 +124,8 @@ class VerificationAgent:
         self,
         *,
         llm_calls: LLMCallInvoker,
-        records: RecordStore,
-        artifacts: ArtifactStore,
+        records: VerificationRecordStore,
+        artifacts: VerificationArtifactReader,
         metadata_factory: MetadataFactory,
         work_resolver: WorkResolver,
         evidence_session_resolver: EvidenceSessionResolver,
@@ -550,9 +559,9 @@ class VerificationAgent:
             raise ValueError("RUNTIME_METADATA_SCOPE_MISMATCH")
         return meta
 
-    def _stage_exact(self, record: object) -> None:
-        expected = reference(record)  # type: ignore[arg-type]
-        actual = self._records.stage_record(record)  # type: ignore[arg-type]
+    def _stage_exact(self, record: Record) -> None:
+        expected = reference(record)
+        actual = self._records.stage_record(record)
         if actual != expected:
             raise ValueError("DOMAIN_RECORD_STAGE_MISMATCH")
 

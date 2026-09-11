@@ -76,11 +76,15 @@ def _work(
 ) -> WorkExecutionState:
     is_parent = role == "VERIFICATION"
     attempt = None if is_parent else f"{role.lower()}-attempt"
+    parent_ref = None
+    if not is_parent:
+        assert parent is not None
+        parent_ref = reference(parent)
     return WorkExecutionState.model_validate(
         {
             "meta": _meta("work_execution_state", f"{role.lower()}-work", attempt=None),
             "work_id": f"{role.lower()}-work",
-            "parent_work_ref": None if is_parent else reference(parent),
+            "parent_work_ref": parent_ref,
             "work_type": WorkType.VERIFICATION
             if is_parent
             else WorkType(f"{role}_EVIDENCE"),
@@ -204,6 +208,7 @@ class RecordingPublisher:
         value: Record,
         _invocation: PersistedLLMInvocation,
     ) -> StoredDataRef:
+        assert isinstance(value.meta, RecordMeta)
         assert value.meta.attempt_id == work.active_attempt_id
         self.published.append(value)
         return self.records.publish(value)

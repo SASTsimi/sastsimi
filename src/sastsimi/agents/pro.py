@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Literal
+from typing import BinaryIO, Literal, Protocol
 
 from pydantic import model_validator
 
@@ -14,13 +14,19 @@ from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.static import CodeLocation
 from sastsimi.contracts.verification import EvidenceClaim, ProEvidenceResult
 from sastsimi.contracts.work import WorkExecutionState
-from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.runtime.llm_call_service import (
     InvocationMetadataFactory,
     PersistedLLMInvocation,
 )
 
 type ClaimIdFactory = Callable[[str], str]
+
+
+class ArtifactReader(Protocol):
+    """The evidence finalizer only needs verified reads, not store mutation."""
+
+    def open_verified(self, ref: StoredDataRef) -> BinaryIO: ...
+
 
 _EVIDENCE_TASK_BY_ROLE = {
     "PRO": "COLLECT_SUPPORT",
@@ -54,7 +60,7 @@ class _EvidenceAgentFinalizer:
         self,
         *,
         role: Literal["PRO", "CON"],
-        artifacts: ArtifactStore,
+        artifacts: ArtifactReader,
         metadata_factory: InvocationMetadataFactory,
         claim_id_factory: ClaimIdFactory,
     ) -> None:
@@ -187,7 +193,7 @@ class ProAgent:
     def __init__(
         self,
         *,
-        artifacts: ArtifactStore,
+        artifacts: ArtifactReader,
         metadata_factory: InvocationMetadataFactory,
         claim_id_factory: ClaimIdFactory,
     ) -> None:
@@ -218,4 +224,4 @@ class ProAgent:
         )
 
 
-__all__ = ["ProAgent"]
+__all__ = ["ArtifactReader", "ProAgent"]

@@ -49,4 +49,4 @@ async def test_exact_debate_inputs_reach_named_falsification_false() -> None:
         assessment_outcome.invocation.request.llm_call_id
         != final_outcome.invocation.request.llm_call_id
     )
-    assert VerdictRouter(fixture.records).route(result_ref) == ()  # type: ignore[arg-type]
+    assert VerdictRouter(fixture.records).route(result_ref) == ()

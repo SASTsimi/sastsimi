@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from io import BytesIO
+from typing import Literal
 
 import pytest
 
@@ -150,7 +151,7 @@ class _MetaFactory:
 
 
 def _evidence(
-    role: str, evidence_ref: StoredDataRef
+    role: Literal["PRO", "CON"], evidence_ref: StoredDataRef
 ) -> ProEvidenceResult | ConEvidenceResult:
     model = ProEvidenceResult if role == "PRO" else ConEvidenceResult
     return model.model_validate(

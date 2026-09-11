@@ -13,7 +13,7 @@ from sastsimi.verification.debate_service import DebateService
 
 sys.path.append(str(Path(__file__).parents[1] / "integration" / "verification"))
 
-from test_debate_service import (  # noqa: E402
+from test_debate_service import (  # type: ignore[import-not-found]  # noqa: E402
     ClaimIds,
     ConcurrentLLMCalls,
     MemoryArtifacts,

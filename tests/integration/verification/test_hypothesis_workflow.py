@@ -47,7 +47,9 @@ class _Runner:
         return self.completed
 
 
-def _successful_outcome() -> tuple[HypothesisAgentOutcome, StoredDataRef, object]:
+def _successful_outcome() -> tuple[
+    HypothesisAgentOutcome, StoredDataRef, LLMInvocationLog
+]:
     artifacts = MemoryArtifacts()
     bundle = _bundle()
     bundle_ref = reference(bundle)

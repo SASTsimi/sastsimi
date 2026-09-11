@@ -1,24 +1,44 @@
 """Fail-closed wrapper for Technical Gate REVISE generation registration."""
 
+from typing import Protocol
+
 from sastsimi.contracts.gates import TechnicalEvidenceReview
 from sastsimi.contracts.hypothesis import (
     HypothesisProcessState,
     VerificationAssignment,
 )
-from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
+from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
 from sastsimi.contracts.verification import PlaybookApplication, VerificationResult
-from sastsimi.ports.record_store import RecordStore
 from sastsimi.ports.verification_registration import (
     VerificationRegistration,
-    VerificationRegistrationPort,
 )
+
+
+class RevisionRegistrar(Protocol):
+    def revise(
+        self,
+        *,
+        technical_review_ref: StoredDataRef,
+        hypothesis_ref: StoredDataRef,
+        proposal_ref: StoredDataRef,
+        policy_ref: StoredDataRef,
+        playbook_ref: StoredDataRef,
+        expected_process_ref: StoredDataRef,
+        owner_identity_ref: StoredDataRef,
+        requester_identity_ref: BudgetScopeRef,
+        budget_binding_ref: StoredDataRef,
+    ) -> VerificationRegistration: ...
+
+
+class ExactRecordReader(Protocol):
+    def get_exact(self, ref: RecordRef) -> object: ...
 
 
 class RevisionWorkflow:
     """Start a new generation with the existing ACTIVE Verification owner."""
 
     def __init__(
-        self, *, registrar: VerificationRegistrationPort, records: RecordStore
+        self, *, registrar: RevisionRegistrar, records: ExactRecordReader
     ) -> None:
         self._registrar = registrar
         self._records = records

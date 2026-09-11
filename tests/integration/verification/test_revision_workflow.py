@@ -12,6 +12,7 @@ from sastsimi.contracts.hypothesis import (
 )
 from sastsimi.contracts.ids import (
     AnalysisId,
+    AttemptId,
     CommitId,
     HypothesisId,
     LogicalRecordId,
@@ -39,7 +40,7 @@ from tests.contract.domain.canonical_fixtures import make
 NOW = datetime(2026, 9, 11, tzinfo=UTC)
 
 
-def _meta(kind: str, suffix: str, *, attempt: str | None = None) -> RecordMeta:
+def _meta(kind: str, suffix: str, *, attempt: AttemptId | None = None) -> RecordMeta:
     record_id = RecordId(f"{kind}-{suffix}")
     return RecordMeta(
         record_id=record_id,
@@ -142,7 +143,9 @@ def _fixture(
     old_process_ref = records.add(old_process)
     review = TechnicalEvidenceReview.model_validate(
         {
-            "meta": _meta("technical_evidence_review", "review", attempt="gate"),
+            "meta": _meta(
+                "technical_evidence_review", "review", attempt=AttemptId("gate")
+            ),
             "action_decision_ref": _record_ref("action_decision", "gate"),
             "verification_result_ref": old_result_ref,
             "cwe_label_ref": _record_ref("cwe_label", "label"),

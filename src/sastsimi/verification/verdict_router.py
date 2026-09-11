@@ -1,11 +1,14 @@
 """Return data-only work registration requests for T10 verdicts."""
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Protocol
 
-from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.contracts.verification import VerificationResult
-from sastsimi.ports.record_store import RecordStore
+
+
+class ExactRecordReader(Protocol):
+    def get_exact(self, ref: RecordRef) -> object: ...
 
 
 @dataclass(frozen=True)
@@ -17,7 +20,7 @@ class VerdictRoute:
 class VerdictRouter:
     """Propose the only T10 route; runtime authorization remains external."""
 
-    def __init__(self, records: RecordStore) -> None:
+    def __init__(self, records: ExactRecordReader) -> None:
         self._records = records
 
     def route(self, result_ref: StoredDataRef) -> tuple[VerdictRoute, ...]:
