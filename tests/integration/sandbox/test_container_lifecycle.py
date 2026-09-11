@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import io
 import json
-import tarfile
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -1003,7 +1001,9 @@ async def test_docker_exec_uses_exact_argv_and_working_directory(
 async def test_docker_materializes_verified_poc_only_inside_container(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[tuple[str, ...], bytes]] = []
+    calls: list[tuple[tuple[str, ...], bytes | None]] = []
+    content = b"print('candidate')\n"
+    content_digest = hashlib.sha256(content).hexdigest()
 
     async def run(
         argv: tuple[str, ...],
@@ -1012,30 +1012,74 @@ async def test_docker_materializes_verified_poc_only_inside_container(
         input_bytes: bytes | None = None,
     ) -> DockerCommandOutcome:
         del timeout_ms
-        assert input_bytes is not None
         calls.append((argv, input_bytes))
-        return DockerCommandOutcome(0, b"", b"", False)
+        stdout = (
+            f"{content_digest}  {POC_RUNTIME_PATH}\n".encode()
+            if argv[-2:] == ("sha256sum", POC_RUNTIME_PATH)
+            else b""
+        )
+        return DockerCommandOutcome(0, stdout, b"", False)
+
+    adapter = DockerAdapter()
+    monkeypatch.setattr(adapter, "_run", run)
+
+    path = await adapter.materialize_poc(
+        "owned-container-id",
+        content,
+        content_digest,
+    )
+
+    assert path == POC_RUNTIME_PATH
+    assert calls == [
+        (
+            (
+                "exec",
+                "-i",
+                "owned-container-id",
+                "dd",
+                f"of={POC_RUNTIME_PATH}",
+                "status=none",
+            ),
+            content,
+        ),
+        (("exec", "owned-container-id", "sha256sum", POC_RUNTIME_PATH), None),
+        (("exec", "owned-container-id", "chmod", "0444", POC_RUNTIME_PATH), None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_docker_rejects_container_poc_digest_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def run(
+        argv: tuple[str, ...],
+        *,
+        timeout_ms: int | None = None,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        del timeout_ms, input_bytes
+        calls.append(argv)
+        stdout = (
+            f"{'0' * 64}  {POC_RUNTIME_PATH}\n".encode()
+            if argv[-2:] == ("sha256sum", POC_RUNTIME_PATH)
+            else b""
+        )
+        return DockerCommandOutcome(0, stdout, b"", False)
 
     adapter = DockerAdapter()
     monkeypatch.setattr(adapter, "_run", run)
     content = b"print('candidate')\n"
 
-    path = await adapter.materialize_poc(
-        "owned-container-id",
-        content,
-        hashlib.sha256(content).hexdigest(),
-    )
+    with pytest.raises(DockerOperationError, match="DOCKER_POC_DIGEST_MISMATCH"):
+        await adapter.materialize_poc(
+            "owned-container-id",
+            content,
+            hashlib.sha256(content).hexdigest(),
+        )
 
-    assert path == POC_RUNTIME_PATH
-    assert len(calls) == 1
-    argv, archive = calls[0]
-    assert argv == ("cp", "-", "owned-container-id:/tmp")
-    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as payload:
-        member = payload.getmember("sastsimi-poc-candidate")
-        extracted = payload.extractfile(member)
-        assert extracted is not None
-        assert extracted.read() == content
-        assert member.mode == 0o444
+    assert all("chmod" not in argv for argv in calls)
 
 
 @pytest.mark.asyncio

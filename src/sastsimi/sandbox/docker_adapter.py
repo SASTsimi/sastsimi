@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import io
 import json
 import re
-import tarfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -248,22 +246,34 @@ class DockerAdapter:
         self._require_resource_id(container_id)
         if hashlib.sha256(content).hexdigest() != content_digest:
             raise ValueError("POC_CONTENT_DIGEST_MISMATCH")
-        archive = io.BytesIO()
-        member = tarfile.TarInfo(Path(POC_RUNTIME_PATH).name)
-        member.size = len(content)
-        member.mode = 0o444
-        member.mtime = 0
-        member.uid = 0
-        member.gid = 0
-        member.uname = ""
-        member.gname = ""
-        with tarfile.open(fileobj=archive, mode="w") as payload:
-            payload.addfile(member, io.BytesIO(content))
-        outcome = await self._run(
-            ("cp", "-", f"{container_id}:/tmp"),
-            input_bytes=archive.getvalue(),
+        written = await self._run(
+            (
+                "exec",
+                "-i",
+                container_id,
+                "dd",
+                f"of={POC_RUNTIME_PATH}",
+                "status=none",
+            ),
+            input_bytes=content,
         )
-        self._require_success("DOCKER_POC_MATERIALIZATION_FAILED", outcome)
+        self._require_success("DOCKER_POC_MATERIALIZATION_FAILED", written)
+        verified = await self._run(
+            ("exec", container_id, "sha256sum", POC_RUNTIME_PATH)
+        )
+        self._require_success("DOCKER_POC_DIGEST_VERIFICATION_FAILED", verified)
+        try:
+            digest_output = verified.stdout.decode("ascii", errors="strict").split()
+        except UnicodeDecodeError as error:
+            raise DockerOperationError(
+                "DOCKER_POC_DIGEST_MISMATCH", verified
+            ) from error
+        if digest_output != [content_digest, POC_RUNTIME_PATH]:
+            raise DockerOperationError("DOCKER_POC_DIGEST_MISMATCH", verified)
+        protected = await self._run(
+            ("exec", container_id, "chmod", "0444", POC_RUNTIME_PATH)
+        )
+        self._require_success("DOCKER_POC_PERMISSION_FAILED", protected)
         return POC_RUNTIME_PATH
 
     async def exec(
