@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO, cast
 
@@ -414,7 +415,7 @@ def build_fake_pipeline(data_dir: Path) -> FakePipeline:
     result, reports = _load_fake_outputs(data_dir)
     return FakePipeline(
         data_dir,
-        build_runtime,
+        partial(build_runtime, allow_fake_record_llm_output=True),
         upgrade_database,
         provider_invoke,
         provider_probe,
@@ -518,6 +519,7 @@ def build_runtime(
     finding_service_identity_ref: StoredDataRef | None = None,
     analysis_finalization_identity_ref: BudgetScopeRef | None = None,
     llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
+    allow_fake_record_llm_output: bool = False,
 ) -> RuntimeServices:
     from sastsimi.runtime.action_validator import RuntimeValidator
     from sastsimi.runtime.analysis_finalization import AnalysisFinalizationService
@@ -576,7 +578,14 @@ def build_runtime(
     artifacts = LocalArtifactStore(paths.artifacts, workspace_id, commit_id)
     registry = SQLiteRegistry(records, clock, ids)
     budget = SQLiteBudget(records, registry, clock, ids)
-    authorization = SQLiteValidator(records, budget, clock, ids, artifacts)
+    authorization = SQLiteValidator(
+        records,
+        budget,
+        clock,
+        ids,
+        artifacts,
+        allow_fake_record_llm_output=allow_fake_record_llm_output,
+    )
     works = SQLiteWorks(records, authorization, clock, ids)
     transitions = SQLiteTransitions(works, artifacts)
     unit = SQLiteUnitOfWork(records, artifacts, transitions)

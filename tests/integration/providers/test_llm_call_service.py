@@ -81,6 +81,7 @@ from sastsimi.runtime.llm_call_service import (
     llm_action_input_refs,
 )
 from sastsimi.storage import models
+from sastsimi.storage.action_validator import RuntimeValidator as SQLiteValidator
 from sastsimi.storage.llm_session_guard import LLMParentSessionGuard
 from sastsimi.storage.repositories import SQLiteRecordStore
 from tests.contract.domain.canonical_fixtures import make
@@ -1040,6 +1041,29 @@ async def test_incompatible_parent_session_is_rejected_before_provider_io() -> N
     assert len(authorization.invocations) == 1
 
 
+@pytest.mark.asyncio
+async def test_record_shaped_provider_output_is_fake_only() -> None:
+    data = fixture()
+    service, _adapter, authorization = build_service(data, "SUCCEEDED")
+    await service.invoke(
+        work=data.work,
+        decision_ref=data.decision_ref,
+        reservation_ref=data.reservation_ref,
+        call_spec_ref=data.spec_ref,
+    )
+    _request, result, _log = authorization.invocations[0]
+    record_output_ref = stored_ref("hypothesis_proposal", "provider-output")
+    forged = result.model_copy(update={"parsed_output_ref": record_output_ref})
+    validator = object.__new__(SQLiteValidator)
+
+    validator.allow_fake_record_llm_output = False
+    with pytest.raises(ValueError, match="INVOCATION_OUTPUT_MISMATCH"):
+        validator._require_provider_output_authority(forged)
+
+    validator.allow_fake_record_llm_output = True
+    validator._require_provider_output_authority(forged)
+
+
 def _published_session_guard(
     data: Fixture,
     request: LLMInvocationRequest,
@@ -1157,3 +1181,5 @@ def test_build_runtime_composes_the_llm_call_service(tmp_path: Path) -> None:
     )
 
     assert isinstance(runtime.llm_calls, LLMCallService)
+    authorization = cast(SQLiteValidator, runtime.validator.authorization)
+    assert authorization.allow_fake_record_llm_output is False

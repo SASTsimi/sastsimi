@@ -38,8 +38,12 @@ from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import CapabilityProbeResult, StaticToolRequest
+from sastsimi.runtime.action_validator import RuntimeValidator as PublicRuntimeValidator
 from sastsimi.runtime.fake_support import FakeEvidence
 from sastsimi.storage import models
+from sastsimi.storage.action_validator import (
+    RuntimeValidator as StorageRuntimeValidator,
+)
 from sastsimi.storage.codec import reference
 from sastsimi.storage.configuration_registry import (
     ConfigurationRegistry as StorageConfigurationRegistry,
@@ -739,9 +743,7 @@ def test_llm_selection_requires_the_exact_current_active_prompt_revision() -> No
             )
             .values(record_id="newer-draft-record", state_version=2)
         )
-        with pytest.raises(
-            ValueError, match="LLM_CONTEXT_CONFIGURATION_NOT_CURRENT"
-        ):
+        with pytest.raises(ValueError, match="LLM_CONTEXT_CONFIGURATION_NOT_CURRENT"):
             StorageConfigurationRegistry.require_current_selection(
                 connection, entry, provider
             )
@@ -950,6 +952,33 @@ def test_failed_invocation_persists_only_safe_provenance(
         == work.active_attempt_id
         is not None
     )
+    fake_authorization = cast(StorageRuntimeValidator, runtime.validator.authorization)
+    assert fake_authorization.allow_fake_record_llm_output is True
+    production_validator = PublicRuntimeValidator(
+        StorageRuntimeValidator(
+            records,
+            fake_authorization.budget,
+            fake_authorization.clock,
+            fake_authorization.ids,
+            fake_authorization.artifacts,
+        )
+    )
+    with pytest.raises(ValueError, match="INVOCATION_OUTPUT_MISMATCH"):
+        production_validator.record_invocation(request, succeeded, succeeded_log)
+    for unpublished in (request, succeeded, succeeded_log):
+        with pytest.raises(LookupError):
+            records.get_exact(reference(unpublished))
+    with pytest.raises(LookupError):
+        records.get_exact(candidate_ref)
+    with records.database.engine.connect() as connection:
+        current_decision = ActionDecision.model_validate_json(
+            connection.execute(
+                select(models.action_decisions.c.payload).where(
+                    models.action_decisions.c.decision_id == str(decision.decision_id)
+                )
+            ).scalar_one()
+        )
+    assert current_decision.outcome_refs == ()
     with records.database.engine.connect() as connection:
         attempt_owned_pointers = connection.execute(
             select(models.current_records.c.logical_record_id).where(
