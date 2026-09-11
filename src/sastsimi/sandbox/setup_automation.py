@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, Protocol
 from uuid import uuid4
 
@@ -21,10 +22,18 @@ from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 
 from .cleanup import OwnedResourceRegistry
-from .controller import SandboxBoundaryOutcome, SandboxRunSpec
+from .controller import (
+    SandboxBoundaryOutcome,
+    SandboxBuildBoundaryOutcome,
+    SandboxRunSpec,
+)
 from .docker_adapter import DockerCommandOutcome, DockerContainerState
 from .health_check import SandboxHealthChecker
-from .recipe_store import EnvironmentRecipeStore, fresh_record_meta
+from .recipe_store import (
+    EnvironmentRecipeStore,
+    PreparedRecipeSource,
+    fresh_record_meta,
+)
 
 RecreateReason = Literal["STATE_CHANGED", "CONFIG_CHANGED", "STATE_UNCERTAIN"]
 
@@ -88,28 +97,59 @@ class ReproductionSetupAutomation:
         self._resources = resources
         self._contexts: dict[bytes, _PreparationContext] = {}
 
-    async def prepare(
+    async def preflight(
+        self,
+        *,
+        workspace_root: Path,
+        request: DynamicReproductionRequest,
+        requirements: EnvironmentRequirements,
+        meta: RecordMeta,
+    ) -> PreparedRecipeSource:
+        """Read and validate recipe files without touching Docker."""
+
+        return self._recipes.preflight(
+            context=workspace_root,
+            request_ref=self._exact_ref(request),
+            requirements=requirements,
+            meta=meta,
+        )
+
+    async def build(
+        self,
+        *,
+        approval: SandboxBuildBoundaryOutcome,
+        source: PreparedRecipeSource,
+        request: DynamicReproductionRequest,
+        requirements: EnvironmentRequirements,
+        meta: RecordMeta,
+    ) -> EnvironmentRecipe:
+        """Inspect and build only after the exact source boundary is approved."""
+
+        spec = self._validate_build(approval, source, request, requirements, meta)
+        labels = self._labels(meta)
+        return await self._recipes.build(
+            docker=self._docker,
+            source=source,
+            labels=labels,
+            build_timeout_ms=spec.requested_execution_ms,
+        )
+
+    async def create(
         self,
         *,
         approval: SandboxBoundaryOutcome,
+        recipe: EnvironmentRecipe,
         request: DynamicReproductionRequest,
         requirements: EnvironmentRequirements,
         plan: ReproductionPlan,
         meta: RecordMeta,
     ) -> PreparedSandbox:
-        spec = self._validate_prepare(approval, request, requirements, plan, meta)
-        labels = self._labels(meta)
-        recipe = await self._recipes.prepare(
-            docker=self._docker,
-            context=spec.workspace_root,
-            labels=labels,
-            request_ref=self._exact_ref(request),
-            requirements=requirements,
-            meta=meta,
-            build_timeout_ms=spec.requested_execution_ms,
+        """Create only with a second approval bound to the built image digest."""
+
+        spec = self._validate_create(
+            approval, recipe, request, requirements, plan, meta
         )
-        if recipe.built_image_digest != spec.image_digest:
-            raise ValueError("APPROVED_IMAGE_DIGEST_MISMATCH")
+        labels = self._labels(meta)
         prepared = await self._create_environment(
             spec=spec,
             recipe=recipe,
@@ -135,24 +175,11 @@ class ReproductionSetupAutomation:
     ) -> PreparedSandbox:
         context = self._context(previous)
         self._validate_reuse_scope(previous, context, meta)
-        try:
-            state = await self._health.inspect_ready(
-                self._docker.inspect,
-                previous.environment.container_instance_id,
-            )
-        except ValueError as error:
-            if str(error) != "SANDBOX_STATE_UNCERTAIN":
-                raise
-            return await self.recreate(
-                previous=previous,
-                reason="STATE_UNCERTAIN",
-                meta=meta,
-            )
-        recipe = self._recipes.bind_existing(
-            baseline=previous.recipe,
-            requirements=context.requirements,
-            meta=meta,
+        state = await self._health.inspect_ready(
+            self._docker.inspect,
+            previous.environment.container_instance_id,
         )
+        recipe = previous.recipe
         evidence_ref = previous.resource_refs[0]
         checks = self._health.requirement_checks(
             requirements=context.requirements,
@@ -178,6 +205,7 @@ class ReproductionSetupAutomation:
     async def recreate(
         self,
         *,
+        approval: SandboxBoundaryOutcome,
         previous: PreparedSandbox,
         reason: RecreateReason,
         meta: RecordMeta,
@@ -186,14 +214,18 @@ class ReproductionSetupAutomation:
         self._validate_reuse_scope(previous, context, meta)
         if reason not in {"STATE_CHANGED", "CONFIG_CHANGED", "STATE_UNCERTAIN"}:
             raise ValueError("SANDBOX_RECREATE_REASON_INVALID")
-        recipe = self._recipes.bind_existing(
-            baseline=previous.recipe,
-            requirements=context.requirements,
-            meta=meta,
+        recipe = previous.recipe
+        spec = self._validate_create(
+            approval,
+            recipe,
+            context.request,
+            context.requirements,
+            context.plan,
+            meta,
         )
         labels = self._container_labels(meta)
         prepared = await self._create_environment(
-            spec=context.approval.approved_spec,
+            spec=spec,
             recipe=recipe,
             request=context.request,
             requirements=context.requirements,
@@ -206,7 +238,7 @@ class ReproductionSetupAutomation:
         self._remember(
             prepared,
             _PreparationContext(
-                context.approval,
+                approval,
                 context.request,
                 context.requirements,
                 context.plan,
@@ -283,8 +315,40 @@ class ReproductionSetupAutomation:
         return PreparedSandbox(recipe, environment, (resource_ref,))
 
     @staticmethod
-    def _validate_prepare(
+    def _validate_build(
+        approval: SandboxBuildBoundaryOutcome,
+        source: PreparedRecipeSource,
+        request: DynamicReproductionRequest,
+        requirements: EnvironmentRequirements,
+        meta: RecordMeta,
+    ) -> SandboxRunSpec:
+        if (
+            approval.decision.decision != "ALLOW"
+            or approval.approved_spec is None
+            or approval.approved_source != source
+            or approval.approved_spec.image_digest is not None
+        ):
+            raise ValueError("SANDBOX_BUILD_APPROVAL_REQUIRED")
+        request_ref = ReproductionSetupAutomation._exact_ref(request)
+        requirements_ref = ReproductionSetupAutomation._exact_ref(requirements)
+        if (
+            approval.decision.request_ref != request_ref
+            or requirements.request_ref != request_ref
+            or source.request_ref != request_ref
+            or source.requirements_ref != requirements_ref
+            or source.workspace_root.resolve(strict=False)
+            != approval.approved_spec.workspace_root.resolve(strict=False)
+        ):
+            raise ValueError("DYNAMIC_SETUP_CLOSURE_MISMATCH")
+        ReproductionSetupAutomation._validate_scope(
+            (requirements,), meta, request=request, source=source
+        )
+        return approval.approved_spec
+
+    @staticmethod
+    def _validate_create(
         approval: SandboxBoundaryOutcome,
+        recipe: EnvironmentRecipe,
         request: DynamicReproductionRequest,
         requirements: EnvironmentRequirements,
         plan: ReproductionPlan,
@@ -294,28 +358,57 @@ class ReproductionSetupAutomation:
             raise ValueError("SANDBOX_APPROVAL_REQUIRED")
         request_ref = ReproductionSetupAutomation._exact_ref(request)
         requirements_ref = ReproductionSetupAutomation._exact_ref(requirements)
+        recipe_ref = ReproductionSetupAutomation._exact_ref(recipe)
         if (
             approval.decision.request_ref != request_ref
+            or approval.approved_recipe_ref != recipe_ref
             or requirements.request_ref != request_ref
             or plan.request_ref != request_ref
             or plan.environment_requirements_ref != requirements_ref
             or plan.purpose != request.purpose
             or plan.hypothesis_ref != request.hypothesis_ref
             or plan.sandbox_profile_ref != request.sandbox_profile_ref
+            or recipe.request_ref != request_ref
+            or recipe.environment_requirements_ref != requirements_ref
+            or recipe.built_image_digest != approval.approved_spec.image_digest
         ):
-            raise ValueError("DYNAMIC_SETUP_CLOSURE_MISMATCH")
-        for record in (requirements, plan):
+            raise ValueError("APPROVED_IMAGE_DIGEST_MISMATCH")
+        ReproductionSetupAutomation._validate_scope(
+            (requirements, plan, recipe), meta, request=request
+        )
+        return approval.approved_spec
+
+    @staticmethod
+    def _validate_scope(
+        records: tuple[
+            EnvironmentRequirements | ReproductionPlan | EnvironmentRecipe, ...
+        ],
+        meta: RecordMeta,
+        *,
+        request: DynamicReproductionRequest,
+        source: PreparedRecipeSource | None = None,
+    ) -> None:
+        for record in records:
+            record_meta = record.meta
             if (
-                record.meta.analysis_id != meta.analysis_id
-                or record.meta.workspace_id != meta.workspace_id
-                or record.meta.commit_id != meta.commit_id
-                or record.meta.hypothesis_id != meta.hypothesis_id
-                or record.meta.attempt_id != meta.attempt_id
+                record_meta.analysis_id != meta.analysis_id
+                or record_meta.workspace_id != meta.workspace_id
+                or record_meta.commit_id != meta.commit_id
+                or record_meta.hypothesis_id != meta.hypothesis_id
+                or record_meta.attempt_id != meta.attempt_id
             ):
                 raise ValueError("DYNAMIC_SETUP_SCOPE_MISMATCH")
-        if request.meta.hypothesis_id != meta.hypothesis_id:
+        if request.meta.hypothesis_id != meta.hypothesis_id or (
+            source is not None
+            and (
+                source.meta.analysis_id != meta.analysis_id
+                or source.meta.workspace_id != meta.workspace_id
+                or source.meta.commit_id != meta.commit_id
+                or source.meta.hypothesis_id != meta.hypothesis_id
+                or source.meta.attempt_id != meta.attempt_id
+            )
+        ):
             raise ValueError("DYNAMIC_SETUP_SCOPE_MISMATCH")
-        return approval.approved_spec
 
     @staticmethod
     def _validate_reuse_scope(

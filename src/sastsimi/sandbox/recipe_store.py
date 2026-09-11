@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
@@ -36,6 +37,7 @@ _KNOWN_RECIPE_NAMES = frozenset(
 )
 _FROM = re.compile(r"^\s*FROM\s+([^\s]+)", re.IGNORECASE | re.MULTILINE)
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 class RecipeDockerPort(Protocol):
@@ -47,6 +49,44 @@ class RecipeDockerPort(Protocol):
         timeout_ms: int,
     ) -> str: ...
     async def inspect_image(self, image: str, *, timeout_ms: int) -> str: ...
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedRecipeSource:
+    """Pure, immutable source inspection result; no Docker call has occurred."""
+
+    workspace_root: Path
+    request_ref: StoredDataRef
+    requirements_ref: StoredDataRef
+    meta: RecordMeta
+    recipe_source_ref: StoredDataRef
+    source_refs: tuple[StoredDataRef, ...]
+    source_digest: str
+    dockerfile: bytes
+    dockerfile_digest: str
+    base_image: str
+
+    def __post_init__(self) -> None:
+        content = EnvironmentRecipeStore._validated_dockerfile(self.dockerfile)
+        if (
+            not _SHA256.fullmatch(self.source_digest)
+            or self.recipe_source_ref.data_kind != "recipe_source"
+            or self.recipe_source_ref.content_hash != self.source_digest
+            or hashlib.sha256(self.dockerfile).hexdigest() != self.dockerfile_digest
+            or not _SHA256.fullmatch(self.dockerfile_digest)
+            or EnvironmentRecipeStore._base_image(content) != self.base_image
+        ):
+            raise ValueError("RECIPE_SOURCE_BINDING_INVALID")
+        if (
+            self.recipe_source_ref.workspace_id != self.meta.workspace_id
+            or self.recipe_source_ref.commit_id != self.meta.commit_id
+            or any(
+                ref.workspace_id != self.meta.workspace_id
+                or ref.commit_id != self.meta.commit_id
+                for ref in self.source_refs
+            )
+        ):
+            raise ValueError("RECIPE_SOURCE_SCOPE_MISMATCH")
 
 
 def fresh_record_meta(source: RecordMeta, kind: str) -> RecordMeta:
@@ -72,23 +112,49 @@ class EnvironmentRecipeStore:
         self._baselines: dict[tuple[str, str, str], EnvironmentRecipe] = {}
         self._lock = asyncio.Lock()
 
-    async def prepare(
+    def preflight(
         self,
         *,
-        docker: RecipeDockerPort,
         context: Path,
-        labels: Mapping[str, str],
         request_ref: StoredDataRef,
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
-        build_timeout_ms: int,
-    ) -> EnvironmentRecipe:
+    ) -> PreparedRecipeSource:
+        """Parse and hash local files without contacting the Docker daemon."""
+
         dockerfile, source_ref, source_refs, source_digest = self._source(context, meta)
         content = self._validated_dockerfile(dockerfile)
-        key = (str(meta.workspace_id), str(meta.commit_id), source_digest)
         requirements_ref = reference(requirements)
         if not isinstance(requirements_ref, StoredDataRef):
             raise ValueError("CODE_SCOPED_REFERENCE_REQUIRED")
+        return PreparedRecipeSource(
+            workspace_root=context.resolve(strict=True),
+            request_ref=request_ref,
+            requirements_ref=requirements_ref,
+            meta=meta,
+            recipe_source_ref=source_ref,
+            source_refs=source_refs,
+            source_digest=source_digest,
+            dockerfile=content.encode("utf-8"),
+            dockerfile_digest=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            base_image=self._base_image(content),
+        )
+
+    async def build(
+        self,
+        *,
+        docker: RecipeDockerPort,
+        source: PreparedRecipeSource,
+        labels: Mapping[str, str],
+        build_timeout_ms: int,
+    ) -> EnvironmentRecipe:
+        """Resolve, pin and build only a boundary-approved source."""
+
+        key = (
+            str(source.meta.workspace_id),
+            str(source.meta.commit_id),
+            source.source_digest,
+        )
         try:
             await asyncio.wait_for(
                 self._lock.acquire(),
@@ -100,31 +166,30 @@ class EnvironmentRecipeStore:
             baseline = self._baselines.get(key)
             if baseline is not None:
                 recipe = EnvironmentRecipe(
-                    meta=fresh_record_meta(meta, "environment_recipe"),
-                    request_ref=request_ref,
-                    environment_requirements_ref=requirements_ref,
-                    recipe_source_ref=source_ref,
-                    source_refs=source_refs,
+                    meta=fresh_record_meta(source.meta, "environment_recipe"),
+                    request_ref=source.request_ref,
+                    environment_requirements_ref=source.requirements_ref,
+                    recipe_source_ref=source.recipe_source_ref,
+                    source_refs=source.source_refs,
                     base_image_digest=baseline.base_image_digest,
                     built_image_digest=baseline.built_image_digest,
                     baseline_recipe_ref=self._exact_ref(baseline),
                     build_disposition="REUSED",
-                    created_at=meta.created_at,
+                    created_at=source.meta.created_at,
                 )
                 return recipe
 
-            base_image = self._base_image(content)
             base_digest = (
                 "scratch"
-                if base_image == "scratch"
+                if source.base_image == "scratch"
                 else await docker.inspect_image(
-                    base_image,
+                    source.base_image,
                     timeout_ms=build_timeout_ms,
                 )
             )
             trusted_dockerfile = self._pin_base_image(
-                content,
-                base_image=base_image,
+                source.dockerfile.decode("utf-8"),
+                base_image=source.base_image,
                 base_digest=base_digest,
             )
             built_digest = await docker.build(
@@ -132,17 +197,19 @@ class EnvironmentRecipeStore:
                 labels,
                 timeout_ms=build_timeout_ms,
             )
+            if not _IMAGE_DIGEST.fullmatch(built_digest):
+                raise ValueError("BUILT_IMAGE_DIGEST_INVALID")
             recipe = EnvironmentRecipe(
-                meta=fresh_record_meta(meta, "environment_recipe"),
-                request_ref=request_ref,
-                environment_requirements_ref=requirements_ref,
-                recipe_source_ref=source_ref,
-                source_refs=source_refs,
+                meta=fresh_record_meta(source.meta, "environment_recipe"),
+                request_ref=source.request_ref,
+                environment_requirements_ref=source.requirements_ref,
+                recipe_source_ref=source.recipe_source_ref,
+                source_refs=source.source_refs,
                 base_image_digest=base_digest,
                 built_image_digest=built_digest,
                 baseline_recipe_ref=None,
                 build_disposition="BUILT",
-                created_at=meta.created_at,
+                created_at=source.meta.created_at,
             )
             self._baselines[key] = recipe
             return recipe

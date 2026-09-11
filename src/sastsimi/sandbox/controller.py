@@ -23,6 +23,7 @@ from sastsimi.contracts.actions import (
 from sastsimi.contracts.budget import DynamicReproductionLifecycleProfile
 from sastsimi.contracts.dynamic import (
     DynamicReproductionRequest,
+    EnvironmentRecipe,
     ReproductionPlan,
     SandboxPolicyDecision,
     SandboxProfile,
@@ -30,6 +31,8 @@ from sastsimi.contracts.dynamic import (
 from sastsimi.contracts.policy import RunPolicyState
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference, require_record_ref
+
+from .recipe_store import PreparedRecipeSource
 
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _NUMERIC_USER = re.compile(r"^[1-9][0-9]*(?::[1-9][0-9]*)?$")
@@ -52,7 +55,7 @@ class SandboxMount:
 @dataclass(frozen=True)
 class SandboxRunSpec:
     workspace_root: Path
-    image_digest: str
+    image_digest: str | None
     user: str
     mounts: tuple[SandboxMount, ...]
     network_mode: str
@@ -73,6 +76,14 @@ class SandboxRunSpec:
 class SandboxBoundaryOutcome:
     decision: SandboxPolicyDecision
     approved_spec: SandboxRunSpec | None
+    approved_recipe_ref: StoredDataRef | None = None
+
+
+@dataclass(frozen=True)
+class SandboxBuildBoundaryOutcome:
+    decision: SandboxPolicyDecision
+    approved_spec: SandboxRunSpec | None
+    approved_source: PreparedRecipeSource | None
 
 
 RecordResolver = Callable[[StoredDataRef], object]
@@ -96,10 +107,82 @@ class SandboxController:
         self._resolve = record_resolver
         self._isolated_network_targets = frozenset(isolated_network_targets)
 
+    @property
+    def workspace_root(self) -> Path:
+        """Return the canonical local workspace boundary used for approval."""
+
+        return self._workspace_root
+
+    def evaluate_build(
+        self,
+        *,
+        spec: SandboxRunSpec,
+        source: PreparedRecipeSource,
+        action: ActionRequest,
+        action_decision_ref: StoredDataRef,
+        request: DynamicReproductionRequest,
+        plan: ReproductionPlan,
+        sandbox_profile: SandboxProfile,
+        lifecycle_profile: DynamicReproductionLifecycleProfile,
+        run_policy_state_ref: StoredDataRef,
+        meta: RecordMeta,
+    ) -> SandboxBuildBoundaryOutcome:
+        """Approve exact source and host boundary before any Docker daemon access."""
+
+        reasons, action_decision, policy_state = self._initial_checks(
+            spec=spec,
+            action=action,
+            action_decision_ref=action_decision_ref,
+            request=request,
+            plan=plan,
+            sandbox_profile=sandbox_profile,
+            lifecycle_profile=lifecycle_profile,
+            run_policy_state_ref=run_policy_state_ref,
+            meta=meta,
+        )
+        self._check_action_closure(
+            reasons,
+            spec=spec,
+            action=action,
+            action_decision=action_decision,
+            action_decision_ref=action_decision_ref,
+            request=request,
+            plan=plan,
+            sandbox_profile=sandbox_profile,
+            lifecycle_profile=lifecycle_profile,
+            phase_ref=source.recipe_source_ref,
+            image_digest=None,
+            run_policy_state_ref=run_policy_state_ref,
+        )
+        self._check_recipe_source(reasons, spec, request, plan, source)
+        self._check_boundary(reasons, spec, action, sandbox_profile)
+        if spec.image_digest is not None:
+            reasons.append("BUILD_IMAGE_DIGEST_FORBIDDEN")
+        allowed = not reasons
+        decision = self._decision(
+            reasons=reasons,
+            action=action,
+            action_decision_ref=action_decision_ref,
+            request=request,
+            plan=plan,
+            sandbox_profile=sandbox_profile,
+            lifecycle_profile=lifecycle_profile,
+            run_policy_state_ref=run_policy_state_ref,
+            policy_state=policy_state,
+            phase_ref=source.recipe_source_ref,
+            meta=meta,
+        )
+        return SandboxBuildBoundaryOutcome(
+            decision=decision,
+            approved_spec=spec if allowed else None,
+            approved_source=source if allowed else None,
+        )
+
     def evaluate(
         self,
         *,
         spec: SandboxRunSpec,
+        recipe: EnvironmentRecipe,
         action: ActionRequest,
         action_decision_ref: StoredDataRef,
         request: DynamicReproductionRequest,
@@ -111,6 +194,71 @@ class SandboxController:
     ) -> SandboxBoundaryOutcome:
         """Return ALLOW only for an exact, local, resource-bounded specification."""
 
+        reasons, action_decision, policy_state = self._initial_checks(
+            spec=spec,
+            action=action,
+            action_decision_ref=action_decision_ref,
+            request=request,
+            plan=plan,
+            sandbox_profile=sandbox_profile,
+            lifecycle_profile=lifecycle_profile,
+            run_policy_state_ref=run_policy_state_ref,
+            meta=meta,
+        )
+        recipe_ref = self._stored_reference(recipe)
+        self._check_action_closure(
+            reasons,
+            spec=spec,
+            action=action,
+            action_decision=action_decision,
+            action_decision_ref=action_decision_ref,
+            request=request,
+            plan=plan,
+            sandbox_profile=sandbox_profile,
+            lifecycle_profile=lifecycle_profile,
+            phase_ref=recipe_ref,
+            image_digest=recipe.built_image_digest,
+            run_policy_state_ref=run_policy_state_ref,
+        )
+        self._check_recipe(reasons, recipe, request, plan, meta)
+        self._check_boundary(reasons, spec, action, sandbox_profile)
+        if not isinstance(spec.image_digest, str) or not _IMAGE_DIGEST.fullmatch(
+            spec.image_digest
+        ):
+            reasons.append("IMAGE_DIGEST_REQUIRED")
+        allowed = not reasons
+        decision = self._decision(
+            reasons=reasons,
+            action=action,
+            action_decision_ref=action_decision_ref,
+            request=request,
+            plan=plan,
+            sandbox_profile=sandbox_profile,
+            lifecycle_profile=lifecycle_profile,
+            run_policy_state_ref=run_policy_state_ref,
+            policy_state=policy_state,
+            phase_ref=recipe_ref,
+            meta=meta,
+        )
+        return SandboxBoundaryOutcome(
+            decision=decision,
+            approved_spec=spec if allowed else None,
+            approved_recipe_ref=recipe_ref if allowed else None,
+        )
+
+    def _initial_checks(
+        self,
+        *,
+        spec: SandboxRunSpec,
+        action: ActionRequest,
+        action_decision_ref: StoredDataRef,
+        request: DynamicReproductionRequest,
+        plan: ReproductionPlan,
+        sandbox_profile: SandboxProfile,
+        lifecycle_profile: DynamicReproductionLifecycleProfile,
+        run_policy_state_ref: StoredDataRef,
+        meta: RecordMeta,
+    ) -> tuple[list[str], ActionDecision | None, RunPolicyState | None]:
         reasons: list[str] = []
         self._check_scope(
             reasons,
@@ -126,26 +274,35 @@ class SandboxController:
             action_decision_ref, ActionDecision, "ACTION_DECISION_UNRESOLVED", reasons
         )
         policy_state = self._resolve_record(
-            run_policy_state_ref, RunPolicyState, "POLICY_AUDIT_UNRESOLVED", reasons
-        )
-        self._check_action_closure(
+            run_policy_state_ref,
+            RunPolicyState,
+            "POLICY_AUDIT_UNRESOLVED",
             reasons,
-            spec=spec,
-            action=action,
-            action_decision=action_decision,
-            action_decision_ref=action_decision_ref,
-            request=request,
-            plan=plan,
-            sandbox_profile=sandbox_profile,
-            lifecycle_profile=lifecycle_profile,
-            run_policy_state_ref=run_policy_state_ref,
         )
-        self._check_mounts(reasons, spec)
-        self._check_isolation(reasons, spec)
-        self._check_network(reasons, spec, sandbox_profile)
-        self._check_secrets(reasons, spec)
-        self._check_resources(reasons, spec, action, sandbox_profile)
+        return reasons, action_decision, policy_state
 
+    def _decision(
+        self,
+        *,
+        reasons: list[str],
+        action: ActionRequest,
+        action_decision_ref: StoredDataRef,
+        request: DynamicReproductionRequest,
+        plan: ReproductionPlan,
+        sandbox_profile: SandboxProfile,
+        lifecycle_profile: DynamicReproductionLifecycleProfile,
+        run_policy_state_ref: StoredDataRef,
+        policy_state: RunPolicyState | None,
+        phase_ref: StoredDataRef,
+        meta: RecordMeta,
+    ) -> SandboxPolicyDecision:
+        if policy_state is None:
+            policy_state = self._resolve_record(
+                run_policy_state_ref,
+                RunPolicyState,
+                "POLICY_AUDIT_UNRESOLVED",
+                reasons,
+            )
         reason_codes = tuple(dict.fromkeys(reasons)) or ("LOCAL_BOUNDARY_OK",)
         allowed = not reasons
         checked_refs = self._checked_refs(
@@ -155,6 +312,7 @@ class SandboxController:
             plan,
             sandbox_profile,
             lifecycle_profile,
+            phase_ref,
             run_policy_state_ref,
         )
         observed_status = policy_state.status if policy_state is not None else "FAILED"
@@ -164,7 +322,7 @@ class SandboxController:
         policy_ref = (
             policy_state.policy_record_ref if policy_state is not None else None
         )
-        decision = SandboxPolicyDecision(
+        return SandboxPolicyDecision(
             meta=meta,
             request_ref=self._stored_reference(request),
             action_decision_ref=action_decision_ref,
@@ -179,10 +337,6 @@ class SandboxController:
             reason_codes=reason_codes,
             checked_boundary_refs=checked_refs,
             decided_at=meta.created_at,
-        )
-        return SandboxBoundaryOutcome(
-            decision=decision,
-            approved_spec=spec if allowed else None,
         )
 
     def _resolve_record[T](
@@ -254,6 +408,8 @@ class SandboxController:
         plan: ReproductionPlan,
         sandbox_profile: SandboxProfile,
         lifecycle_profile: DynamicReproductionLifecycleProfile,
+        phase_ref: StoredDataRef,
+        image_digest: str | None,
         run_policy_state_ref: StoredDataRef,
     ) -> None:
         request_ref = self._stored_reference(request)
@@ -273,7 +429,13 @@ class SandboxController:
             or action.run_policy_state_ref != run_policy_state_ref
             or any(
                 action.input_refs.count(ref) != 1
-                for ref in (request_ref, plan_ref, profile_ref, lifecycle_ref)
+                for ref in (
+                    request_ref,
+                    plan_ref,
+                    profile_ref,
+                    lifecycle_ref,
+                    phase_ref,
+                )
             )
         ):
             reasons.append("STALE_RESULT")
@@ -302,10 +464,69 @@ class SandboxController:
             or lifecycle_ref not in action_decision.checked_config_refs
         ):
             reasons.append("ACTION_CONFIG_NOT_APPROVED")
-        if action.image_digest != spec.image_digest or tuple(
-            action.network_targets
-        ) != tuple(spec.network_targets):
+        if (
+            action.image_digest != image_digest
+            or spec.image_digest != image_digest
+            or tuple(action.network_targets) != tuple(spec.network_targets)
+        ):
             reasons.append("ACTION_SPEC_MISMATCH")
+
+    def _check_recipe_source(
+        self,
+        reasons: list[str],
+        spec: SandboxRunSpec,
+        request: DynamicReproductionRequest,
+        plan: ReproductionPlan,
+        source: PreparedRecipeSource,
+    ) -> None:
+        if source.workspace_root.resolve(strict=False) != spec.workspace_root.resolve(
+            strict=False
+        ):
+            reasons.append("RECIPE_WORKSPACE_MISMATCH")
+        if (
+            source.request_ref != self._stored_reference(request)
+            or source.requirements_ref != plan.environment_requirements_ref
+            or source.recipe_source_ref.content_hash != source.source_digest
+            or source.recipe_source_ref.workspace_id != request.meta.workspace_id
+            or source.recipe_source_ref.commit_id != request.meta.commit_id
+            or source.meta.analysis_id != plan.meta.analysis_id
+            or source.meta.hypothesis_id != plan.meta.hypothesis_id
+            or source.meta.attempt_id != plan.meta.attempt_id
+        ):
+            reasons.append("RECIPE_SOURCE_BINDING_INVALID")
+
+    def _check_recipe(
+        self,
+        reasons: list[str],
+        recipe: EnvironmentRecipe,
+        request: DynamicReproductionRequest,
+        plan: ReproductionPlan,
+        meta: RecordMeta,
+    ) -> None:
+        if (
+            recipe.request_ref != self._stored_reference(request)
+            or recipe.environment_requirements_ref != plan.environment_requirements_ref
+            or recipe.built_image_digest == ""
+            or recipe.meta.analysis_id != meta.analysis_id
+            or recipe.meta.workspace_id != meta.workspace_id
+            or recipe.meta.commit_id != meta.commit_id
+            or recipe.meta.hypothesis_id != meta.hypothesis_id
+            or recipe.meta.attempt_id != meta.attempt_id
+        ):
+            reasons.append("BUILT_RECIPE_BINDING_INVALID")
+
+    def _check_boundary(
+        self,
+        reasons: list[str],
+        spec: SandboxRunSpec,
+        action: ActionRequest,
+        profile: SandboxProfile,
+    ) -> None:
+        self._check_mounts(reasons, spec)
+        self._check_isolation(reasons, spec)
+        self._check_network(reasons, spec, profile)
+        self._check_secrets(reasons, spec)
+        self._check_resources(reasons, spec, action, profile)
 
     def _check_mounts(self, reasons: list[str], spec: SandboxRunSpec) -> None:
         if not spec.mounts:
@@ -414,8 +635,6 @@ class SandboxController:
             reasons.append("RESOURCE_LIMIT_UNSPECIFIED")
         elif dict(action.resource_limits) != requested:
             reasons.append("ACTION_SPEC_MISMATCH")
-        if not _IMAGE_DIGEST.fullmatch(spec.image_digest):
-            reasons.append("IMAGE_DIGEST_REQUIRED")
 
     @staticmethod
     def _stored_reference(record: object) -> StoredDataRef:
@@ -470,6 +689,7 @@ class SandboxController:
         plan: ReproductionPlan,
         sandbox_profile: SandboxProfile,
         lifecycle_profile: DynamicReproductionLifecycleProfile,
+        phase_ref: StoredDataRef,
         run_policy_state_ref: StoredDataRef,
     ) -> tuple[StoredDataRef, ...]:
         refs = (
@@ -479,6 +699,7 @@ class SandboxController:
             self._stored_reference(plan),
             self._stored_reference(sandbox_profile),
             self._stored_reference(lifecycle_profile),
+            phase_ref,
             run_policy_state_ref,
         )
         return tuple(dict.fromkeys(refs))

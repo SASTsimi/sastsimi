@@ -1,3 +1,4 @@
+import hashlib
 import json
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -19,6 +20,7 @@ from sastsimi.contracts.actions import (
 from sastsimi.contracts.budget import DynamicReproductionLifecycleProfile
 from sastsimi.contracts.dynamic import (
     DynamicReproductionRequest,
+    EnvironmentRecipe,
     ReproductionPlan,
     SandboxProfile,
 )
@@ -31,6 +33,7 @@ from sastsimi.sandbox.controller import (
     SandboxMount,
     SandboxRunSpec,
 )
+from sastsimi.sandbox.recipe_store import PreparedRecipeSource
 
 NOW = datetime(2026, 9, 11, tzinfo=UTC)
 
@@ -81,6 +84,7 @@ class BoundaryContext:
     spec: SandboxRunSpec
     arguments: dict[str, object]
     other_workspace: Path
+    records: dict[str, Any]
 
 
 def _context(tmp_path: Path) -> BoundaryContext:
@@ -164,6 +168,9 @@ def _context(tmp_path: Path) -> BoundaryContext:
     requirements_ref = StoredDataRef.model_validate(
         _ref("environment_requirements", "requirements")
     )
+    recipe_source_ref = StoredDataRef.model_validate(
+        _ref("recipe_source", "recipe-source") | {"record_id": None}
+    )
 
     plan = _wire(
         ReproductionPlan,
@@ -216,6 +223,28 @@ def _context(tmp_path: Path) -> BoundaryContext:
     assert isinstance(policy_state_ref, StoredDataRef)
 
     image_digest = "sha256:" + "1" * 64
+    recipe = _wire(
+        EnvironmentRecipe,
+        {
+            "meta": _meta(
+                "environment_recipe",
+                "environment-recipe",
+                hypothesis_id="hypothesis-1",
+                attempt_id="dynamic-attempt",
+            ),
+            "request_ref": request_ref.model_dump(mode="json"),
+            "environment_requirements_ref": requirements_ref.model_dump(mode="json"),
+            "recipe_source_ref": recipe_source_ref.model_dump(mode="json"),
+            "source_refs": [recipe_source_ref.model_dump(mode="json")],
+            "base_image_digest": "scratch",
+            "built_image_digest": image_digest,
+            "baseline_recipe_ref": None,
+            "build_disposition": "BUILT",
+            "created_at": NOW.isoformat(),
+        },
+    )
+    recipe_ref = reference(recipe)
+    assert isinstance(recipe_ref, StoredDataRef)
     limits = {
         "cpu_limit_millicores": 500,
         "memory_limit_bytes": 256 * 1024 * 1024,
@@ -247,6 +276,7 @@ def _context(tmp_path: Path) -> BoundaryContext:
                 plan_ref.model_dump(mode="json"),
                 profile_ref.model_dump(mode="json"),
                 lifecycle_ref.model_dump(mode="json"),
+                recipe_ref.model_dump(mode="json"),
             ],
             "dynamic_request_ref": request_ref.model_dump(mode="json"),
             "reproduction_plan_ref": plan_ref.model_dump(mode="json"),
@@ -362,6 +392,7 @@ def _context(tmp_path: Path) -> BoundaryContext:
         spec=spec,
         arguments={
             "spec": spec,
+            "recipe": recipe,
             "action": action,
             "action_decision_ref": decision_ref,
             "request": request,
@@ -372,7 +403,67 @@ def _context(tmp_path: Path) -> BoundaryContext:
             "meta": output_meta,
         },
         other_workspace=other_workspace,
+        records=records,
     )
+
+
+def test_build_phase_binds_exact_source_before_docker_access(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    run_action = context.arguments["action"]
+    run_recipe = context.arguments["recipe"]
+    assert isinstance(run_action, ActionRequest)
+    assert isinstance(run_recipe, EnvironmentRecipe)
+    source_ref = run_recipe.recipe_source_ref
+    dockerfile = b"FROM scratch\n"
+    source = PreparedRecipeSource(
+        workspace_root=context.spec.workspace_root,
+        request_ref=run_recipe.request_ref,
+        requirements_ref=run_recipe.environment_requirements_ref,
+        meta=run_recipe.meta,
+        recipe_source_ref=source_ref,
+        source_refs=(source_ref,),
+        source_digest=source_ref.content_hash,
+        dockerfile=dockerfile,
+        dockerfile_digest=hashlib.sha256(dockerfile).hexdigest(),
+        base_image="scratch",
+    )
+    action_data = dict(run_action.__dict__)
+    action_data.update(
+        action_id="sandbox-build-action-1",
+        input_refs=tuple(
+            source_ref if ref.data_kind == "environment_recipe" else ref
+            for ref in run_action.input_refs
+        ),
+        image_digest=None,
+    )
+    build_action = ActionRequest.model_validate(action_data)
+    prior_decision_ref = context.arguments["action_decision_ref"]
+    assert isinstance(prior_decision_ref, StoredDataRef)
+    prior_decision = context.records[str(prior_decision_ref.record_id)]
+    assert isinstance(prior_decision, ActionDecision)
+    build_decision = prior_decision.model_copy(
+        update={
+            "action_ref": reference(build_action),
+            "decision_id": DecisionId(root="sandbox-build-decision-1"),
+        }
+    )
+    build_decision_ref = reference(build_decision)
+    assert isinstance(build_decision_ref, StoredDataRef)
+    context.records[str(build_decision_ref.record_id)] = build_decision
+    arguments = context.arguments | {
+        "spec": replace(context.spec, image_digest=None),
+        "source": source,
+        "action": build_action,
+        "action_decision_ref": build_decision_ref,
+    }
+    arguments.pop("recipe")
+
+    outcome = context.controller.evaluate_build(**arguments)  # type: ignore[arg-type]
+
+    assert outcome.decision.decision == "ALLOW", outcome.decision.reason_codes
+    assert outcome.approved_source == source
+    assert outcome.approved_spec is not None
+    assert outcome.approved_spec.image_digest is None
 
 
 def _forbidden_spec(context: BoundaryContext, case: str) -> SandboxRunSpec:

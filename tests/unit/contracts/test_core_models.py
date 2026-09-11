@@ -131,6 +131,7 @@ def test_valid_action_shapes(kind: str) -> None:
                     "sandbox_profile",
                     "dynamic_reproduction_lifecycle_profile",
                     "environment_requirements",
+                    "recipe_source",
                 ]
             ],
             resource_limits={"memory_limit_bytes": 1024},

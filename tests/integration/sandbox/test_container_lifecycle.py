@@ -6,6 +6,7 @@ import io
 import json
 import tarfile
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import cast
@@ -15,6 +16,7 @@ import pytest
 from sastsimi.contracts.dynamic import (
     POC_RUNTIME_PATH,
     DynamicReproductionRequest,
+    EnvironmentRecipe,
     EnvironmentRequirements,
     ReproductionPlan,
     SandboxPolicyDecision,
@@ -28,6 +30,7 @@ from sastsimi.sandbox.cleanup import (
 )
 from sastsimi.sandbox.controller import (
     SandboxBoundaryOutcome,
+    SandboxBuildBoundaryOutcome,
     SandboxMount,
     SandboxRunSpec,
 )
@@ -38,8 +41,11 @@ from sastsimi.sandbox.docker_adapter import (
     DockerOperationError,
 )
 from sastsimi.sandbox.health_check import SandboxHealthChecker
-from sastsimi.sandbox.recipe_store import EnvironmentRecipeStore
-from sastsimi.sandbox.setup_automation import ReproductionSetupAutomation
+from sastsimi.sandbox.recipe_store import EnvironmentRecipeStore, PreparedRecipeSource
+from sastsimi.sandbox.setup_automation import (
+    PreparedSandbox,
+    ReproductionSetupAutomation,
+)
 
 NOW = datetime(2026, 9, 11, tzinfo=UTC)
 IMAGE_DIGEST = "sha256:" + "1" * 64
@@ -136,6 +142,7 @@ def _dynamic_records() -> tuple[
 def _approval(
     workspace: Path,
     request: DynamicReproductionRequest,
+    recipe: EnvironmentRecipe | None = None,
 ) -> SandboxBoundaryOutcome:
     request_ref = reference(request)
     assert isinstance(request_ref, StoredDataRef)
@@ -183,7 +190,137 @@ def _approval(
             pid_limit=64,
             requested_execution_ms=10_000,
         ),
+        approved_recipe_ref=(
+            cast(StoredDataRef, reference(recipe)) if recipe is not None else None
+        ),
     )
+
+
+def _build_approval(
+    workspace: Path,
+    request: DynamicReproductionRequest,
+    source: PreparedRecipeSource,
+) -> SandboxBuildBoundaryOutcome:
+    run = _approval(workspace, request)
+    assert run.approved_spec is not None
+    return SandboxBuildBoundaryOutcome(
+        decision=run.decision,
+        approved_spec=replace(run.approved_spec, image_digest=None),
+        approved_source=source,
+    )
+
+
+async def _prepare(
+    setup: ReproductionSetupAutomation,
+    workspace: Path,
+    request: DynamicReproductionRequest,
+    requirements: EnvironmentRequirements,
+    plan: ReproductionPlan,
+    meta: RecordMeta,
+) -> PreparedSandbox:
+    source = await setup.preflight(
+        workspace_root=workspace,
+        request=request,
+        requirements=requirements,
+        meta=meta,
+    )
+    recipe = await setup.build(
+        approval=_build_approval(workspace, request, source),
+        source=source,
+        request=request,
+        requirements=requirements,
+        meta=meta,
+    )
+    return await setup.create(
+        approval=_approval(workspace, request, recipe),
+        recipe=recipe,
+        request=request,
+        requirements=requirements,
+        plan=plan,
+        meta=meta,
+    )
+
+
+@pytest.mark.asyncio
+async def test_cold_build_has_no_docker_access_before_build_approval(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "Dockerfile").write_bytes(b"FROM fixture:local\n")
+    request, requirements, _ = _dynamic_records()
+    docker = FakeDockerAdapter()
+    setup = _setup(docker)
+
+    source = await setup.preflight(
+        workspace_root=tmp_path,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "recipe-source"),
+    )
+
+    assert source.base_image == "fixture:local"
+    assert docker.inspected_images == []
+    assert docker.built == []
+    assert docker.created == {}
+
+    allowed = _build_approval(tmp_path, request, source)
+    denied = SandboxBuildBoundaryOutcome(
+        decision=allowed.decision.model_copy(update={"decision": "DENY"}),
+        approved_spec=None,
+        approved_source=None,
+    )
+    with pytest.raises(ValueError, match="SANDBOX_BUILD_APPROVAL_REQUIRED"):
+        await setup.build(
+            approval=denied,
+            source=source,
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "recipe-seed"),
+        )
+
+    assert docker.inspected_images == []
+    assert docker.built == []
+
+
+@pytest.mark.asyncio
+async def test_forged_run_digest_never_creates_a_container(tmp_path: Path) -> None:
+    (tmp_path / "Dockerfile").write_bytes(b"FROM scratch\n")
+    request, requirements, plan = _dynamic_records()
+    docker = FakeDockerAdapter()
+    setup = _setup(docker)
+    source = await setup.preflight(
+        workspace_root=tmp_path,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "recipe-source"),
+    )
+    recipe = await setup.build(
+        approval=_build_approval(tmp_path, request, source),
+        source=source,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "recipe-seed"),
+    )
+    forged = _approval(tmp_path, request, recipe)
+    assert forged.approved_spec is not None
+    forged = SandboxBoundaryOutcome(
+        decision=forged.decision,
+        approved_spec=SandboxRunSpec(
+            **(forged.approved_spec.__dict__ | {"image_digest": "sha256:" + "2" * 64})
+        ),
+        approved_recipe_ref=cast(StoredDataRef, reference(recipe)),
+    )
+
+    with pytest.raises(ValueError, match="APPROVED_IMAGE_DIGEST_MISMATCH"):
+        await setup.create(
+            approval=forged,
+            recipe=recipe,
+            request=request,
+            requirements=requirements,
+            plan=plan,
+            meta=_meta("sandbox_environment", "environment-seed"),
+        )
+
+    assert docker.created == {}
 
 
 class FakeDockerAdapter:
@@ -244,6 +381,7 @@ class FakeDockerAdapter:
 
     async def inspect(self, container_id: str) -> DockerContainerState:
         spec, labels = self.created[container_id]
+        assert spec.image_digest is not None
         inspected_labels = dict(labels)
         inspected_labels.update(self.inspect_label_overrides.get(container_id, {}))
         return DockerContainerState(
@@ -287,8 +425,9 @@ async def test_prepare_creates_clean_non_root_default_deny_container(
     request, requirements, plan = _dynamic_records()
     docker = FakeDockerAdapter()
 
-    prepared = await _setup(docker).prepare(
-        approval=_approval(tmp_path, request),
+    prepared = await _prepare(
+        _setup(docker),
+        tmp_path,
         request=request,
         requirements=requirements,
         plan=plan,
@@ -320,8 +459,9 @@ async def test_prepare_bounds_local_base_image_inspection(
     request, requirements, plan = _dynamic_records()
     docker = FakeDockerAdapter()
 
-    await _setup(docker).prepare(
-        approval=_approval(tmp_path, request),
+    await _prepare(
+        _setup(docker),
+        tmp_path,
         request=request,
         requirements=requirements,
         plan=plan,
@@ -338,16 +478,21 @@ async def test_recipe_lock_wait_is_bounded_by_approved_timeout(
 ) -> None:
     (tmp_path / "Dockerfile").write_bytes(b"FROM scratch\n")
     request, requirements, _ = _dynamic_records()
-    request_ref = cast(StoredDataRef, reference(request))
     store = EnvironmentRecipeStore()
+    source = store.preflight(
+        context=tmp_path,
+        request_ref=cast(StoredDataRef, reference(request)),
+        requirements=requirements,
+        meta=_meta("environment_recipe", "recipe-source"),
+    )
     await store._lock.acquire()
 
     try:
         with pytest.raises(ValueError, match="RECIPE_LOCK_TIMEOUT"):
             await asyncio.wait_for(
-                store.prepare(
+                store.build(
                     docker=FakeDockerAdapter(),
-                    context=tmp_path,
+                    source=source,
                     labels={
                         "sastsimi.owner": "reproduction-setup-automation",
                         "sastsimi.analysis-id": "analysis-1",
@@ -356,9 +501,6 @@ async def test_recipe_lock_wait_is_bounded_by_approved_timeout(
                         "sastsimi.hypothesis-id": "hypothesis-1",
                         "sastsimi.attempt-id": "dynamic-attempt-1",
                     },
-                    request_ref=request_ref,
-                    requirements=requirements,
-                    meta=_meta("sandbox_environment", "environment-seed"),
                     build_timeout_ms=10,
                 ),
                 timeout=0.25,
@@ -399,16 +541,15 @@ async def test_prepare_rejects_dockerfile_daemon_egress_and_context_inputs(
     error: str,
 ) -> None:
     (tmp_path / "Dockerfile").write_bytes(dockerfile)
-    request, requirements, plan = _dynamic_records()
+    request, requirements, _ = _dynamic_records()
     docker = FakeDockerAdapter()
 
     with pytest.raises(ValueError, match=error):
-        await _setup(docker).prepare(
-            approval=_approval(tmp_path, request),
+        await _setup(docker).preflight(
+            workspace_root=tmp_path,
             request=request,
             requirements=requirements,
-            plan=plan,
-            meta=_meta("sandbox_environment", "environment-seed"),
+            meta=_meta("environment_recipe", "recipe-source"),
         )
 
     assert docker.built == []
@@ -428,8 +569,9 @@ async def test_unhealthy_container_is_recreated_and_only_owned_resources_removed
     request, requirements, plan = _dynamic_records()
     docker = FakeDockerAdapter()
     setup = _setup(docker)
-    first = await setup.prepare(
-        approval=_approval(tmp_path, request),
+    first = await _prepare(
+        setup,
+        tmp_path,
         request=request,
         requirements=requirements,
         plan=plan,
@@ -438,19 +580,19 @@ async def test_unhealthy_container_is_recreated_and_only_owned_resources_removed
     docker.mark_unhealthy(first.environment.container_instance_id)
 
     second = await setup.recreate(
+        approval=_approval(tmp_path, request, first.recipe),
         previous=first,
         reason="STATE_UNCERTAIN",
         meta=_meta(
             "sandbox_environment",
             "environment-retry-seed",
-            attempt_id="dynamic-attempt-2",
         ),
     )
     cleanup = await setup.cleanup(
         request=request,
         environments=(first.environment, second.environment),
         resource_refs=(*first.resource_refs, *second.resource_refs),
-        meta=_meta("cleanup_result", "cleanup-seed", attempt_id="dynamic-attempt-2"),
+        meta=_meta("cleanup_result", "cleanup-seed"),
     )
 
     assert second.environment.container_action == "CREATED"
@@ -472,8 +614,9 @@ async def test_same_attempt_recreate_gets_a_distinct_runtime_container_identity(
     request, requirements, plan = _dynamic_records()
     docker = FakeDockerAdapter()
     setup = _setup(docker)
-    first = await setup.prepare(
-        approval=_approval(tmp_path, request),
+    first = await _prepare(
+        setup,
+        tmp_path,
         request=request,
         requirements=requirements,
         plan=plan,
@@ -481,6 +624,7 @@ async def test_same_attempt_recreate_gets_a_distinct_runtime_container_identity(
     )
 
     second = await setup.recreate(
+        approval=_approval(tmp_path, request, first.recipe),
         previous=first,
         reason="STATE_CHANGED",
         meta=_meta("sandbox_environment", "environment-recreated-seed"),
@@ -502,8 +646,9 @@ async def test_different_hypothesis_cannot_reuse_writable_container(
     request, requirements, plan = _dynamic_records()
     docker = FakeDockerAdapter()
     setup = _setup(docker)
-    first = await setup.prepare(
-        approval=_approval(tmp_path, request),
+    first = await _prepare(
+        setup,
+        tmp_path,
         request=request,
         requirements=requirements,
         plan=plan,
@@ -532,8 +677,9 @@ async def test_cleanup_rejects_unknown_resource_without_docker_delete(
     request, requirements, plan = _dynamic_records()
     docker = FakeDockerAdapter()
     setup = _setup(docker)
-    prepared = await setup.prepare(
-        approval=_approval(tmp_path, request),
+    prepared = await _prepare(
+        setup,
+        tmp_path,
         request=request,
         requirements=requirements,
         plan=plan,
@@ -561,8 +707,9 @@ async def test_cleanup_allows_extra_labels_but_rejects_required_mismatch(
 
     extra_docker = FakeDockerAdapter()
     extra_setup = _setup(extra_docker)
-    extra = await extra_setup.prepare(
-        approval=_approval(tmp_path, request),
+    extra = await _prepare(
+        extra_setup,
+        tmp_path,
         request=request,
         requirements=requirements,
         plan=plan,
@@ -583,8 +730,9 @@ async def test_cleanup_allows_extra_labels_but_rejects_required_mismatch(
 
     mismatch_docker = FakeDockerAdapter()
     mismatch_setup = _setup(mismatch_docker)
-    mismatch = await mismatch_setup.prepare(
-        approval=_approval(tmp_path, request),
+    mismatch = await _prepare(
+        mismatch_setup,
+        tmp_path,
         request=request,
         requirements=requirements,
         plan=plan,
