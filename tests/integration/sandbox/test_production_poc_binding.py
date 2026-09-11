@@ -262,9 +262,7 @@ def _prepared_workflow() -> tuple[
         authorization=cast(object, lambda *_: None),
     )
     workflow._records["request"] = cast(Record, chain["request"])
-    workflow._records["environment_requirements"] = cast(
-        Record, chain["requirements"]
-    )
+    workflow._records["environment_requirements"] = cast(Record, chain["requirements"])
     workflow._records["reproduction_plan"] = cast(Record, chain["plan"])
     workflow._policy = policy
     workflow._prepared = PreparedSandbox(

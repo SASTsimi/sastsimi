@@ -167,7 +167,12 @@ def _persist_final_invocation(fixture: _Fixture) -> PersistedLLMInvocation:
         redaction_result="NOT_REQUIRED",
     )
     log_ref = fixture.records.add(log)
-    persisted = PersistedLLMInvocation(request, result, log_ref)
+    persisted = PersistedLLMInvocation(
+        request,
+        result,
+        log_ref,
+        dispatch_state="RETURNED",
+    )
     fixture.llm.outcomes[0] = persisted
     assert fixture.records.get_exact(request_ref) == request
     assert fixture.records.get_exact(result_ref) == result

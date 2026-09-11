@@ -83,9 +83,7 @@ class EnvironmentRecipeStore:
         meta: RecordMeta,
         build_timeout_ms: int,
     ) -> EnvironmentRecipe:
-        dockerfile, source_ref, source_refs, source_digest = self._source(
-            context, meta
-        )
+        dockerfile, source_ref, source_refs, source_digest = self._source(context, meta)
         content = self._validated_dockerfile(dockerfile)
         key = (str(meta.workspace_id), str(meta.commit_id), source_digest)
         requirements_ref = reference(requirements)
@@ -208,9 +206,7 @@ class EnvironmentRecipeStore:
         if match is None or match.group(1) != base_image:
             raise ValueError("DOCKERFILE_BASE_IMAGE_INVALID")
         return (
-            content[: match.start(1)]
-            + base_digest
-            + content[match.end(1) :]
+            content[: match.start(1)] + base_digest + content[match.end(1) :]
         ).encode("utf-8")
 
     @staticmethod
