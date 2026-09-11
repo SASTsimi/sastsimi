@@ -10,6 +10,7 @@ from tests.contract.domain.canonical_fixtures import make
 def test_exact_intermediate_inventory() -> None:
     assert INTERMEDIATE_KINDS == frozenset(
         {
+            ("WORKSPACE_PREP", "code_workspace", "REPOSITORY_LOADER"),
             ("POLICY_FETCH", "policy_parser_result", "POLICY_PARSER"),
             ("VERIFICATION", "verification_initial_assessment", "VERIFICATION"),
             ("VERIFICATION", "dynamic_reproduction_request", "VERIFICATION"),

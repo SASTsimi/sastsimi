@@ -38,6 +38,7 @@ from sastsimi.contracts.prompt_projection import (
     render_prompt_bytes,
 )
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.dto import CapabilityProbeResult, Record
@@ -51,6 +52,47 @@ class ConfigurationRegistry:
     def __init__(self, records: SQLiteRecordStore, artifacts: ArtifactStore) -> None:
         self.records = records
         self.artifacts = artifacts
+
+    def register_static_tool_profile(self, record: StaticToolProfile) -> StoredDataRef:
+        record = StaticToolProfile.model_validate(record)
+        if record.status != "APPROVED" or record.purpose not in {
+            "FIXTURE",
+            "EVALUATION",
+        }:
+            raise ValueError("STATIC_TOOL_PROFILE_NOT_EXECUTABLE")
+        return self._publish(
+            record, self.records.evidence.static_tool_configuration_approved
+        )
+
+    def resolve_static_tool_profile(
+        self, profile_ref: StoredDataRef
+    ) -> StaticToolProfile:
+        if profile_ref.data_kind != StaticToolProfile.KIND:
+            raise ValueError("STATIC_TOOL_PROFILE_REFERENCE_MISMATCH")
+        with self.records.database.engine.connect() as connection:
+            record = self.records.resolve(connection, profile_ref)
+            if not isinstance(record, StaticToolProfile):
+                raise ValueError("STATIC_TOOL_PROFILE_REFERENCE_MISMATCH")
+            current = (
+                connection.execute(
+                    select(models.current_records).where(
+                        models.current_records.c.logical_record_id
+                        == str(record.meta.logical_record_id)
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        if current is None or current["record_id"] != str(record.meta.record_id):
+            raise ValueError("STALE_CONFIGURATION_REVISION")
+        if record.status != "APPROVED" or record.purpose not in {
+            "FIXTURE",
+            "EVALUATION",
+        }:
+            raise ValueError("STATIC_TOOL_PROFILE_NOT_EXECUTABLE")
+        if not self.records.evidence.static_tool_configuration_approved(record):
+            raise ValueError("CONFIGURATION_APPROVAL_REQUIRED")
+        return record
 
     def _publish[T: Record](
         self, record: T, approved: Callable[[T], bool]

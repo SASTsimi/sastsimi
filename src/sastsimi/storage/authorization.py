@@ -30,7 +30,7 @@ from . import models
 from .action_context import check_owner
 from .action_policy import check_role
 from .codec import REF_ADAPTER, reference
-from .current_inputs import check_current_input
+from .current_inputs import allowed_workspace_statuses, check_current_input
 from .output_closures import derive_outputs
 from .repositories import SQLiteRecordStore
 from .run_states import get_run
@@ -152,7 +152,14 @@ def authorize(
                         ):
                             raise ValueError("STATE_VERSION_CONFLICT")
                         for ref in action.input_refs:
-                            check_current_input(records, connection, ref)
+                            check_current_input(
+                                records,
+                                connection,
+                                ref,
+                                workspace_statuses=allowed_workspace_statuses(
+                                    action, work
+                                ),
+                            )
                 elif kind == CheckType.BUDGET:
                     if work is None:
                         raise ValueError("BUDGET_UNAVAILABLE")
