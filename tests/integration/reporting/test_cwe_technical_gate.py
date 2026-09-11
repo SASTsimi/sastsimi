@@ -21,7 +21,7 @@ from sastsimi.contracts.actions import (
 from sastsimi.contracts.budget import BudgetReservation
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.dynamic import DynamicReproductionResult, PoCBundle
-from sastsimi.contracts.gates import CWELabel
+from sastsimi.contracts.gates import CWELabel, TechnicalEvidenceReview
 from sastsimi.contracts.hypothesis import (
     HypothesisProcessState,
     VerificationAssignment,
@@ -43,7 +43,7 @@ from sastsimi.contracts.llm import (
     LLMInvocationRequest,
     LLMInvocationResult,
 )
-from sastsimi.contracts.records import RecordMeta
+from sastsimi.contracts.records import RecordMeta, validate_revision
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.contracts.verification import PlaybookApplication, VerificationResult
 from sastsimi.contracts.work import (
@@ -97,6 +97,28 @@ class _Records:
 
     def get_exact(self, ref: RecordRef) -> object:
         return self.values[ref]
+
+    def is_revision_descendant(
+        self, earlier_ref: RecordRef, later_ref: RecordRef
+    ) -> bool:
+        earlier = self.get_exact(earlier_ref)
+        current = self.get_exact(later_ref)
+        assert hasattr(earlier, "meta") and hasattr(current, "meta")
+        while current.meta.record_id != earlier.meta.record_id:
+            previous = next(
+                (
+                    value
+                    for value in self.values.values()
+                    if hasattr(value, "meta")
+                    and value.meta.record_id == current.meta.previous_record_id
+                ),
+                None,
+            )
+            if previous is None:
+                return False
+            validate_revision(previous.meta, current.meta)
+            current = previous
+        return reference(current) == earlier_ref
 
     def stage_record(self, record: object) -> StoredDataRef:
         return self.add(record)
@@ -175,7 +197,8 @@ class _Publisher:
 
 
 class _Ready:
-    def __init__(self) -> None:
+    def __init__(self, records: _Records) -> None:
+        self.records = records
         self.calls: list[dict[str, object]] = []
 
     def enqueue_registered(
@@ -188,17 +211,44 @@ class _Ready:
     ) -> WorkExecutionState:
         assert registered.status == WorkStatus.PENDING
         self.calls.append(dict(scope=scope, identity=identity, role=role))
-        return registered.model_copy(update={"status": WorkStatus.READY})
+        self.records.add(registered)
+        ready_meta = registered.meta.model_copy(
+            update={
+                "record_id": RecordId(f"{registered.meta.record_id}-ready"),
+                "revision_number": registered.meta.revision_number + 1,
+                "previous_record_id": registered.meta.record_id,
+            }
+        )
+        ready = registered.model_copy(
+            update={
+                "meta": ready_meta,
+                "status": WorkStatus.READY,
+                "state_version": registered.state_version + 1,
+            }
+        )
+        self.records.add(ready)
+        return ready
 
 
 class _Current:
-    def __init__(self, records: tuple[object, ...]) -> None:
-        self.records = records
+    def __init__(
+        self,
+        *,
+        works: tuple[object, ...],
+        processes: tuple[object, ...] = (),
+        assignments: tuple[object, ...] = (),
+    ) -> None:
+        self.works = works
+        self.processes = processes
+        self.assignments = assignments
 
     def current_records(self, analysis_id: str, kind: str) -> tuple[object, ...]:
         assert analysis_id == str(ANALYSIS)
-        assert kind == "work_execution_state"
-        return self.records
+        return {
+            "work_execution_state": self.works,
+            "hypothesis_process_state": self.processes,
+            "verification_assignment": self.assignments,
+        }[kind]
 
 
 class _Revision:
@@ -235,8 +285,22 @@ class _Revision:
             subject_id=HYPOTHESIS,
             work_generation=2,
             status=WorkStatus.PENDING,
+            state_version=1,
+            last_transition_ref=None,
+            last_transition_commit_ref=None,
             active_attempt_id=None,
+            input_hash=content_hash((kwargs["technical_review_ref"],)),
+            dedupe_key=content_hash(("revision-work", 2)),
+            trigger_primitive_ref=None,
             input_refs=(kwargs["technical_review_ref"],),
+            output_refs=(),
+            gap_ids=(),
+            error_ids=(),
+            waiting_for=(),
+            stop_reason=None,
+            started_at=None,
+            finished_at=None,
+            elapsed_ms=0,
         )
         application = PlaybookApplication.model_construct(
             meta=_meta("playbook_application", "revision-app"),
@@ -409,7 +473,7 @@ def _fixture() -> _Fixture:
         artifacts=artifacts,
         llm=_LLM(),
         publisher=_Publisher(),
-        ready=_Ready(),
+        ready=_Ready(records),
         verification=verification,
         verification_ref=verification_ref,
         dynamic=dynamic,
@@ -996,13 +1060,39 @@ async def test_committed_revise_is_reconciled_after_revision_start_crash() -> No
         )
 
     assert fixture.publisher.completed_work is not None
-    current = _Current((fixture.publisher.completed_work,))
+    current = _Current(
+        works=(fixture.publisher.completed_work,),
+        processes=(fixture.process,),
+        assignments=(fixture.assignment,),
+    )
     reconciler = TechnicalRevisionReconciler(
         service=service,
         current=current,
     )
     (recovered,) = reconciler.reconcile_pending(str(ANALYSIS))
-    current.records = (fixture.publisher.completed_work, recovered)
+    assert revision.registration is not None
+    registered_work_ref = reference(revision.registration.work)
+    assert isinstance(registered_work_ref, StoredDataRef)
+    current_process_meta = fixture.process.meta.model_copy(
+        update={
+            "record_id": RecordId("hypothesis-process-current-revision"),
+            "revision_number": fixture.process.meta.revision_number + 1,
+            "previous_record_id": fixture.process.meta.record_id,
+        }
+    )
+    current_process = fixture.process.model_copy(
+        update={
+            "meta": current_process_meta,
+            "status": "VERIFYING",
+            "verification_generation": 2,
+            "verification_work_ref": registered_work_ref,
+            "verification_result_ref": None,
+            "finished_at": None,
+        }
+    )
+    fixture.records.add(current_process)
+    current.works = (fixture.publisher.completed_work, recovered)
+    current.processes = (current_process,)
     (replayed,) = reconciler.reconcile_pending(str(ANALYSIS))
 
     assert recovered is not None
@@ -1016,3 +1106,99 @@ async def test_committed_revise_is_reconciled_after_revision_start_crash() -> No
         revision.calls[-1]["owner_identity_ref"]
         == fixture.assignment.owner_identity_ref
     )
+
+
+def test_reconciler_rejects_successor_not_selected_by_current_process() -> None:
+    fixture = _fixture()
+    review = TechnicalEvidenceReview.model_construct(
+        meta=_meta("technical_evidence_review", "wrong-successor", "gate-attempt"),
+        action_decision_ref=_opaque(fixture.records, "action_decision", "review"),
+        verification_result_ref=fixture.verification_ref,
+        cwe_label_ref=_opaque(fixture.records, "cwe_label", "review"),
+        status="REVISE",
+        evidence_verdict_alignment="Needs revision",
+        code_flow_linkage="Needs revision",
+        dynamic_linkage="Needs revision",
+        cwe_assessment="Needs revision",
+        restriction_assessment="Needs revision",
+        handoff_readiness="NOT_READY",
+        revision_requests=("Revise the evidence",),
+        verification_requests=("Verify the revised evidence",),
+        rationale="A new verification generation is required",
+    )
+    review_ref = fixture.records.add(review)
+    selected = fixture.work(WorkType.VERIFICATION, "selected-successor")
+    selected = selected.model_copy(
+        update={
+            "work_generation": 2,
+            "status": WorkStatus.PENDING,
+            "state_version": 1,
+            "active_attempt_id": None,
+            "input_hash": content_hash((review_ref, "selected")),
+            "dedupe_key": content_hash(("selected", 2)),
+            "input_refs": (review_ref,),
+            "started_at": None,
+        }
+    )
+    selected_ref = fixture.records.add(selected)
+    current_process_meta = fixture.process.meta.model_copy(
+        update={
+            "record_id": RecordId("hypothesis-process-wrong-successor"),
+            "revision_number": fixture.process.meta.revision_number + 1,
+            "previous_record_id": fixture.process.meta.record_id,
+        }
+    )
+    current_process = fixture.process.model_copy(
+        update={
+            "meta": current_process_meta,
+            "status": "VERIFYING",
+            "verification_generation": 2,
+            "verification_work_ref": selected_ref,
+            "verification_result_ref": None,
+            "finished_at": None,
+        }
+    )
+    fixture.records.add(current_process)
+    completed = fixture.work(WorkType.TECHNICAL_GATE, "wrong-successor")
+    completed = completed.model_copy(
+        update={
+            "status": WorkStatus.SUCCEEDED,
+            "active_attempt_id": None,
+            "output_refs": (review_ref,),
+            "finished_at": NOW,
+            "stop_reason": "COMPLETED",
+        }
+    )
+    wrong = selected.model_copy(
+        update={
+            "meta": _meta("work_execution_state", "unselected-successor"),
+            "work_id": WorkId("unselected-successor"),
+            "input_hash": content_hash((review_ref, "wrong")),
+            "dedupe_key": content_hash(("wrong", 2)),
+        }
+    )
+    service = TechnicalGateService(
+        agent=TechnicalGateAgent(
+            llm_calls=fixture.llm,
+            records=fixture.records,
+            artifacts=fixture.artifacts,
+            metadata_factory=_metadata,
+        ),
+        publisher=fixture.publisher,
+        records=fixture.records,
+        identity_ref=fixture.technical_identity,
+        orchestration_identity_ref=fixture.orchestration_identity,
+        t10_services=_T10(_Revision(fixture.assignment_ref)),
+        ready_work=fixture.ready,
+    )
+    reconciler = TechnicalRevisionReconciler(
+        service=service,
+        current=_Current(
+            works=(completed, wrong),
+            processes=(current_process,),
+            assignments=(fixture.assignment,),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="TECHNICAL_REVISE_CLOSURE_MISMATCH"):
+        reconciler.reconcile_pending(str(ANALYSIS))

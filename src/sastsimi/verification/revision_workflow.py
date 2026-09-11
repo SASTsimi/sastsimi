@@ -34,6 +34,10 @@ class RevisionRegistrar(Protocol):
 class ExactRecordReader(Protocol):
     def get_exact(self, ref: RecordRef) -> object: ...
 
+    def is_revision_descendant(
+        self, earlier_ref: RecordRef, later_ref: RecordRef
+    ) -> bool: ...
+
 
 class RevisionWorkflow:
     """Start a new generation with the existing ACTIVE Verification owner."""
@@ -118,6 +122,8 @@ class RevisionWorkflow:
         registered_work = self._exact(
             current_process.verification_work_ref, WorkExecutionState
         )
+        returned_work_ref = reference(work)
+        assert isinstance(returned_work_ref, StoredDataRef)
         same_registered_work = (
             registered_work.work_id == work.work_id
             and registered_work.meta.logical_record_id == work.meta.logical_record_id
@@ -130,6 +136,9 @@ class RevisionWorkflow:
             and registered_work.dedupe_key == work.dedupe_key
             and registered_work.status == WorkStatus.PENDING
             and work.state_version >= registered_work.state_version
+            and self._records.is_revision_descendant(
+                current_process.verification_work_ref, returned_work_ref
+            )
         )
         if (
             registration.assignment_ref != expected_assignment_ref

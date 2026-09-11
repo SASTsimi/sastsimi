@@ -49,6 +49,10 @@ class TechnicalGateOutcome:
 class ExactRecordStore(Protocol):
     def get_exact(self, ref: RecordRef) -> object: ...
 
+    def is_revision_descendant(
+        self, earlier_ref: RecordRef, later_ref: RecordRef
+    ) -> bool: ...
+
 
 class CurrentRecordQuery(Protocol):
     def current_records(self, analysis_id: str, kind: str) -> tuple[Record, ...]: ...
@@ -394,22 +398,90 @@ class TechnicalGateService:
         self,
         review_ref: StoredDataRef,
         review: TechnicalEvidenceReview,
+        completed_work: WorkExecutionState,
+        current_process: HypothesisProcessState,
         work: WorkExecutionState,
     ) -> None:
-        verification = self._exact(review.verification_result_ref, VerificationResult)
-        application = self._exact(
-            verification.playbook_application_ref, PlaybookApplication
+        expected_generation = self._require_revision_process(
+            review, completed_work, current_process
         )
+        selected_work_ref = current_process.verification_work_ref
+        if selected_work_ref is None:
+            raise ValueError("TECHNICAL_REVISE_CLOSURE_MISMATCH")
+        selected_work = self._exact(selected_work_ref, WorkExecutionState)
+        work_ref = reference(work)
+        if not isinstance(work_ref, StoredDataRef):
+            raise ValueError("TECHNICAL_REVISE_CLOSURE_MISMATCH")
         if (
             work.work_type != WorkType.VERIFICATION
             or work.subject_type.value != "HYPOTHESIS"
             or work.subject_id != review.meta.hypothesis_id
             or not isinstance(work.meta, RecordMeta)
             or work.meta.hypothesis_id != review.meta.hypothesis_id
-            or work.work_generation != application.verification_generation + 1
+            or work.work_generation != expected_generation
             or work.input_refs.count(review_ref) != 1
+            or current_process.status not in {"VERIFYING", "FAILED"}
+            or current_process.verification_generation != expected_generation
+            or selected_work.work_id != work.work_id
+            or selected_work.meta.logical_record_id != work.meta.logical_record_id
+            or selected_work.work_type != work.work_type
+            or selected_work.work_generation != work.work_generation
+            or selected_work.subject_type != work.subject_type
+            or selected_work.subject_id != work.subject_id
+            or selected_work.input_refs != work.input_refs
+            or selected_work.input_hash != work.input_hash
+            or selected_work.dedupe_key != work.dedupe_key
+            or work.state_version < selected_work.state_version
+            or not self._records.is_revision_descendant(selected_work_ref, work_ref)
         ):
             raise ValueError("TECHNICAL_REVISE_CLOSURE_MISMATCH")
+
+    def _require_revision_process(
+        self,
+        review: TechnicalEvidenceReview,
+        completed_work: WorkExecutionState,
+        current_process: HypothesisProcessState,
+    ) -> int:
+        verification = self._exact(review.verification_result_ref, VerificationResult)
+        application = self._exact(
+            verification.playbook_application_ref, PlaybookApplication
+        )
+        prior_process_ref = self._one(
+            completed_work.input_refs, "hypothesis_process_state"
+        )
+        prior_process = self._exact(prior_process_ref, HypothesisProcessState)
+        assignment_ref = self._one(completed_work.input_refs, "verification_assignment")
+        assignment = self._exact(assignment_ref, VerificationAssignment)
+        current_assignment_ref = current_process.verification_assignment_ref
+        if current_assignment_ref is None:
+            raise ValueError("TECHNICAL_REVISE_CLOSURE_MISMATCH")
+        current_assignment = self._exact(current_assignment_ref, VerificationAssignment)
+        expected_generation = application.verification_generation + 1
+        if (
+            prior_process.status != "TERMINAL"
+            or prior_process.verification_result_ref != review.verification_result_ref
+            or prior_process.verification_assignment_ref != assignment_ref
+            or prior_process.verification_generation
+            != application.verification_generation
+            or current_process.meta.logical_record_id
+            != prior_process.meta.logical_record_id
+            or any(
+                getattr(current_process.meta, name) != getattr(prior_process.meta, name)
+                for name in (
+                    "analysis_id",
+                    "workspace_id",
+                    "commit_id",
+                    "hypothesis_id",
+                )
+            )
+            or current_assignment_ref != assignment_ref
+            or reference(current_assignment) != assignment_ref
+            or assignment.status != "ACTIVE"
+            or current_assignment.status != "ACTIVE"
+            or current_assignment.owner_identity_ref != assignment.owner_identity_ref
+        ):
+            raise ValueError("TECHNICAL_REVISE_CLOSURE_MISMATCH")
+        return expected_generation
 
 
 class TechnicalRevisionReconciler:
@@ -448,6 +520,35 @@ class TechnicalRevisionReconciler:
             review = self._service._exact(review_ref, TechnicalEvidenceReview)
             if review.status != "REVISE":
                 continue
+            processes = tuple(
+                process
+                for process in self._current.current_records(
+                    analysis_id, "hypothesis_process_state"
+                )
+                if isinstance(process, HypothesisProcessState)
+                and all(
+                    getattr(process.meta, name) == getattr(review.meta, name)
+                    for name in (
+                        "analysis_id",
+                        "workspace_id",
+                        "commit_id",
+                        "hypothesis_id",
+                    )
+                )
+            )
+            if len(processes) != 1:
+                raise ValueError("TECHNICAL_REVISE_CLOSURE_MISMATCH")
+            current_process = processes[0]
+            expected_generation = self._service._require_revision_process(
+                review, completed, current_process
+            )
+            if current_process.verification_generation > expected_generation:
+                continue
+            if (
+                current_process.verification_generation == expected_generation
+                and current_process.status in {"TERMINAL", "CANCELLED"}
+            ):
+                continue
             successors = tuple(
                 work
                 for work in works
@@ -458,7 +559,11 @@ class TechnicalRevisionReconciler:
                 raise ValueError("TECHNICAL_REVISE_DUPLICATE_SUCCESSOR")
             if successors:
                 self._service._require_revision_successor(
-                    review_ref, review, successors[0]
+                    review_ref,
+                    review,
+                    completed,
+                    current_process,
+                    successors[0],
                 )
                 if successors[0].status != WorkStatus.PENDING:
                     reconciled.append(successors[0])

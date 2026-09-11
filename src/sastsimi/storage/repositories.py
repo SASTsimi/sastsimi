@@ -92,6 +92,54 @@ class SQLiteRecordStore:
         with self.database.engine.connect() as connection:
             return self.resolve(connection, ref)
 
+    def is_revision_descendant(
+        self,
+        earlier_ref: RecordRef,
+        later_ref: RecordRef,
+        *,
+        connection: Connection | None = None,
+    ) -> bool:
+        """Return whether the later ref descends from the earlier published ref."""
+
+        if connection is None:
+            with self.database.engine.connect() as own_connection:
+                return self.is_revision_descendant(
+                    earlier_ref, later_ref, connection=own_connection
+                )
+        earlier = self.resolve(connection, earlier_ref)
+        current = self.resolve(connection, later_ref)
+        if (
+            type(earlier.meta) is not type(current.meta)
+            or earlier.meta.logical_record_id != current.meta.logical_record_id
+            or earlier.meta.record_type != current.meta.record_type
+            or current.meta.revision_number < earlier.meta.revision_number
+        ):
+            return False
+        visited: set[str] = set()
+        while current.meta.record_id != earlier.meta.record_id:
+            current_id = str(current.meta.record_id)
+            if current_id in visited or current.meta.previous_record_id is None:
+                return False
+            visited.add(current_id)
+            row = (
+                connection.execute(
+                    select(models.records)
+                    .join(models.record_revisions)
+                    .where(
+                        models.records.c.record_id
+                        == str(current.meta.previous_record_id)
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if row is None:
+                return False
+            previous = decode(row["kind"], row["payload"])
+            validate_revision(previous.meta, current.meta)
+            current = previous
+        return reference(current) == earlier_ref
+
     def publish(self, connection: Connection, ref: RecordRef) -> None:
         record = self.resolve(connection, ref, candidate=True)
         meta = record.meta

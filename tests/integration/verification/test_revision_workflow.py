@@ -20,7 +20,7 @@ from sastsimi.contracts.ids import (
     StoredDataId,
     WorkspaceId,
 )
-from sastsimi.contracts.records import RecordMeta
+from sastsimi.contracts.records import RecordMeta, validate_revision
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.contracts.verification import (
     AppliedPlaybookQuestion,
@@ -70,6 +70,28 @@ class _Records:
 
     def get_exact(self, ref: RecordRef) -> object:
         return self.values[ref]
+
+    def is_revision_descendant(
+        self, earlier_ref: RecordRef, later_ref: RecordRef
+    ) -> bool:
+        earlier = self.get_exact(earlier_ref)
+        current = self.get_exact(later_ref)
+        assert hasattr(earlier, "meta") and hasattr(current, "meta")
+        while current.meta.record_id != earlier.meta.record_id:
+            previous = next(
+                (
+                    value
+                    for value in self.values.values()
+                    if hasattr(value, "meta")
+                    and value.meta.record_id == current.meta.previous_record_id
+                ),
+                None,
+            )
+            if previous is None:
+                return False
+            validate_revision(previous.meta, current.meta)
+            current = previous
+        return reference(current) == earlier_ref
 
 
 class _Registrar:
