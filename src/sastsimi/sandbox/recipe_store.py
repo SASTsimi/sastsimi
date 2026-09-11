@@ -217,6 +217,7 @@ class EnvironmentRecipeStore:
             raise ValueError("DOCKERFILE_UTF8_REQUIRED") from error
         if "\0" in content or content.startswith("\ufeff"):
             raise ValueError("DOCKERFILE_UTF8_REQUIRED")
+        content = EnvironmentRecipeStore._join_continued_lines(content)
         from_count = 0
         for line in content.splitlines():
             stripped = line.lstrip(" \t")
@@ -248,6 +249,33 @@ class EnvironmentRecipeStore:
         if from_count != 1:
             raise ValueError("DOCKERFILE_SINGLE_BASE_IMAGE_REQUIRED")
         return content
+
+    @staticmethod
+    def _join_continued_lines(content: str) -> str:
+        escape = "\\"
+        for line in content.splitlines():
+            stripped = line.lstrip(" \t")
+            if not stripped:
+                continue
+            if not stripped.startswith("#"):
+                break
+            directive = stripped[1:].lstrip(" \t")
+            match = re.fullmatch(r"escape[ \t]*=[ \t]*([\\`])", directive, re.I)
+            if match is not None:
+                escape = match.group(1)
+
+        logical: list[str] = []
+        pending = ""
+        for line in content.splitlines():
+            without_trailing_space = line.rstrip(" \t")
+            if without_trailing_space.endswith(escape):
+                pending += without_trailing_space[:-1]
+                continue
+            logical.append(pending + line)
+            pending = ""
+        if pending:
+            raise ValueError("DOCKERFILE_CONTINUATION_INVALID")
+        return "\n".join(logical) + ("\n" if content.endswith(("\n", "\r")) else "")
 
     @staticmethod
     def _source(

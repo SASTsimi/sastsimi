@@ -383,6 +383,14 @@ async def test_recipe_lock_wait_is_bounded_by_approved_timeout(
             b"FROM scratch\nRUN --network=host true\n",
             "RUN_NETWORK",
         ),
+        (
+            b"FROM scratch\nRUN --net\\\nwork=default true\n",
+            "RUN_NETWORK",
+        ),
+        (
+            b"# escape=`\nFROM scratch\nRUN --net`\nwork=host true\n",
+            "RUN_NETWORK",
+        ),
     ],
 )
 async def test_prepare_rejects_dockerfile_daemon_egress_and_context_inputs(
@@ -405,6 +413,11 @@ async def test_prepare_rejects_dockerfile_daemon_egress_and_context_inputs(
 
     assert docker.built == []
     assert docker.created == {}
+
+
+def test_dockerfile_rejects_unfinished_line_continuation() -> None:
+    with pytest.raises(ValueError, match="DOCKERFILE_CONTINUATION_INVALID"):
+        EnvironmentRecipeStore._validated_dockerfile(b"FROM scratch\nRUN true\\")
 
 
 @pytest.mark.asyncio
