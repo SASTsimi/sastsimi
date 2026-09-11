@@ -150,9 +150,7 @@ def _persist_final_invocation(
     required_checks = tuple(REQUIRED_CHECKS[ActionType.CALL_LLM])
     issued = ActionDecision.model_validate(
         {
-            "meta": _meta(
-                "action_decision", suffix="final-issued", attempt=ATTEMPT_ID
-            ),
+            "meta": _meta("action_decision", suffix="final-issued", attempt=ATTEMPT_ID),
             "decision_id": "final-decision",
             "action_ref": action_ref,
             "decision": Decision.ALLOW,
@@ -265,9 +263,7 @@ def _persist_final_invocation(
                 "retry_policy_ref": fixture._opaque_record(
                     "retry_policy", "final-retry"
                 ),
-                "tool_policy_ref": fixture._opaque_record(
-                    "tool_policy", "final-tool"
-                ),
+                "tool_policy_ref": fixture._opaque_record("tool_policy", "final-tool"),
                 "redaction_policy_ref": fixture._opaque_record(
                     "redaction_policy", "final-redaction"
                 ),
@@ -496,9 +492,7 @@ async def test_completion_rejects_non_fresh_or_unrelated_claimed_decision(
         ),
     )
 
-    with pytest.raises(
-        ValueError, match="VERIFICATION_INVOCATION_PROVENANCE_MISMATCH"
-    ):
+    with pytest.raises(ValueError, match="VERIFICATION_INVOCATION_PROVENANCE_MISMATCH"):
         await coordinator.complete_dynamic(
             generation=fixture.generation,
             assessment_ref=assessment_ref,
