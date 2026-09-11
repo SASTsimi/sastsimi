@@ -11,10 +11,12 @@ import pytest
 from sastsimi.bootstrap import build_t11_services
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.dynamic import (
+    AgentLogEvent,
     DynamicReproductionRequest,
     validate_boundary_binding,
 )
 from sastsimi.contracts.hypothesis import HypothesisProcessState
+from sastsimi.contracts.ids import ActionId, RecordId
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import WorkHandlerResult
@@ -228,6 +230,53 @@ def test_session_start_binds_the_exact_allow_policy_reference() -> None:
 
     assert log.events[0].input_refs == (request_ref, policy_ref)
     validate_boundary_binding(chain["result"], chain["request"], log, chain["policy"])
+
+
+def test_recreate_event_binds_the_current_allow_policy_reference() -> None:
+    chain = dynamic_success()
+    request_ref = StoredDataRef.model_validate(bound(chain["request"]))
+    initial_policy_ref = StoredDataRef.model_validate(bound(chain["policy"]))
+    current_policy = chain["policy"].model_copy(
+        update={"reason_codes": ("RECREATE_APPROVED",)}
+    )
+    current_policy_ref = cast(StoredDataRef, reference(current_policy))
+    current_result = chain["result"].model_copy(
+        update={"policy_decision_ref": current_policy_ref}
+    )
+    ids = TestIds()
+    clock = TestClock()
+    clock.wall_time = chain["log"].meta.created_at
+    manager = ReproductionSessionManager(clock=clock, ids=ids)
+    log = manager.start(
+        request_ref=request_ref,
+        meta=chain["log"].meta,
+        policy_decision_ref=initial_policy_ref,
+    )
+    log = manager.append(
+        previous=log,
+        event=AgentLogEvent(
+            event_id=str(ids.new(RecordId)),
+            sequence=2,
+            action_id=ids.new(ActionId),
+            event_type="SANDBOX_RECREATE_REQUESTED",
+            actor="DYNAMIC_REPRODUCTION",
+            environment_ref=None,
+            environment_recipe_ref=None,
+            poc_candidate_ref=None,
+            tool_request_ref=None,
+            command_ref=None,
+            command_digest=None,
+            redaction_status=None,
+            input_refs=(current_policy_ref,),
+            output_refs=(),
+            exit_code=None,
+            timed_out=None,
+            safe_message="STATE_UNCERTAIN",
+            occurred_at=clock.now(),
+        ),
+    )
+
+    validate_boundary_binding(current_result, chain["request"], log, current_policy)
 
 
 @pytest.mark.parametrize("policy_mode", ["missing", "stale"])

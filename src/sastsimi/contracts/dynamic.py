@@ -1036,7 +1036,8 @@ def validate_boundary_binding(
     ):
         raise ValueError("SANDBOX_POLICY_DECISION_MISMATCH")
     if not any(
-        event.event_type in {"SESSION_STARTED", "POLICY_BLOCKED"}
+        event.event_type
+        in {"SESSION_STARTED", "SANDBOX_RECREATE_REQUESTED", "POLICY_BLOCKED"}
         and result.policy_decision_ref in event.input_refs
         for event in log.events
     ):
