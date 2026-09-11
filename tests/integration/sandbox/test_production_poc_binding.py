@@ -32,7 +32,7 @@ from sastsimi.reproduction.production import (
     ProductionDynamicWorkflow,
 )
 from sastsimi.reproduction.service import DynamicOperationalError
-from sastsimi.sandbox.controller import SandboxController
+from sastsimi.sandbox.controller import SandboxBoundaryOutcome, SandboxController
 from sastsimi.sandbox.docker_adapter import DockerCommandOutcome
 from sastsimi.sandbox.session_manager import ReproductionSessionManager
 from sastsimi.sandbox.setup_automation import (
@@ -165,6 +165,22 @@ class _CleanupSetup:
                 "resource_refs": resource_refs,
             }
         )
+
+
+@dataclass
+class _RecreateController:
+    outcome: SandboxBoundaryOutcome
+
+    def evaluate(self, **_: object) -> SandboxBoundaryOutcome:
+        return self.outcome
+
+
+@dataclass
+class _RecreateSetup:
+    prepared: PreparedSandbox
+
+    async def recreate(self, **_: object) -> PreparedSandbox:
+        return self.prepared
 
 
 def _selection_tool(chain: _Chain) -> DynamicReproductionToolRequest:
@@ -456,6 +472,100 @@ async def test_exact_candidate_command_records_materialized_content_binding() ->
             command_finished.environment_ref,
             command_finished.environment_recipe_ref,
         )
+
+
+@pytest.mark.asyncio
+async def test_recreate_updates_session_workflow_and_log_to_exact_new_policy() -> None:
+    workflow, _, chain, request_ref = _prepared_workflow()
+    recipe_ref = cast(StoredDataRef, reference(chain["recipe"]))
+    prior_environment_ref = cast(StoredDataRef, reference(chain["environment"]))
+    recreate_policy = chain["policy"].model_copy(
+        update={"reason_codes": ("RECREATE_APPROVED",)}
+    )
+    recreate_policy_ref = cast(StoredDataRef, reference(recreate_policy))
+    workflow._controller = cast(
+        SandboxController,
+        _RecreateController(
+            SandboxBoundaryOutcome(
+                decision=recreate_policy,
+                approved_spec=cast(object, SimpleNamespace()),
+                approved_recipe_ref=recipe_ref,
+            )
+        ),
+    )
+    workflow._setup = cast(
+        ReproductionSetupAutomation,
+        _RecreateSetup(cast(PreparedSandbox, workflow._prepared)),
+    )
+
+    def authorize_recreate(
+        work: WorkExecutionState,
+        request: DynamicReproductionRequest,
+        requirements: EnvironmentRequirements,
+        plan: ReproductionPlan,
+        phase: object,
+        phase_ref: StoredDataRef,
+        image_digest: str | None,
+        context_refs: tuple[StoredDataRef, ...],
+    ) -> DynamicSandboxAuthorization:
+        del work, request, requirements, plan
+        assert phase == "RUN"
+        assert phase_ref == recipe_ref
+        assert image_digest == chain["recipe"].built_image_digest
+        assert context_refs[1] == prior_environment_ref
+        return cast(
+            DynamicSandboxAuthorization,
+            SimpleNamespace(
+                action=object(),
+                action_decision_ref=cast(
+                    StoredDataRef, reference(chain["policy"])
+                ),
+                sandbox_profile=object(),
+                lifecycle_profile=object(),
+                run_policy_state_ref=request_ref,
+                run_spec=SimpleNamespace(requested_execution_ms=1_000),
+            ),
+        )
+
+    workflow._authorization = authorize_recreate
+    tool = wire(
+        DynamicReproductionToolRequest,
+        make("DynamicReproductionToolRequest")
+        | {
+            "request_ref": request_ref.model_dump(mode="json"),
+            "reproduction_plan_ref": reference(chain["plan"]).model_dump(mode="json"),
+            "environment_ref": prior_environment_ref.model_dump(mode="json"),
+            "action": "REQUEST_SANDBOX_RECREATE",
+            "command": None,
+            "poc_candidate_ref": None,
+            "recreate_reason": "STATE_UNCERTAIN",
+        },
+    )
+    tool_ref = cast(StoredDataRef, reference(tool))
+
+    session = await workflow.apply_tool(
+        work=workflow._work,
+        request=chain["request"],
+        request_ref=request_ref,
+        requirements=chain["requirements"],
+        requirements_ref=cast(StoredDataRef, reference(chain["requirements"])),
+        plan=chain["plan"],
+        plan_ref=cast(StoredDataRef, reference(chain["plan"])),
+        candidate=chain["candidate"],
+        candidate_ref=cast(StoredDataRef, reference(chain["candidate"])),
+        tool=tool,
+        tool_ref=tool_ref,
+        session=workflow._session(workflow._policy_ref()),
+    )
+
+    assert session.policy_ref == recreate_policy_ref
+    assert workflow._policy_ref() == recreate_policy_ref
+    requested = next(
+        event
+        for event in workflow._require_log().events
+        if event.event_type == "SANDBOX_RECREATE_REQUESTED"
+    )
+    assert requested.input_refs == (tool_ref, recreate_policy_ref)
 
 
 @pytest.mark.asyncio
