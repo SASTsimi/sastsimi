@@ -13,6 +13,43 @@ from sastsimi.contracts.result_registry import RESULT_REGISTRY
 
 type StructuredOutputValue = dict[str, JsonValue] | list[JsonValue]
 
+_RUNTIME_OWNED_FIELDS = frozenset(
+    {
+        "meta",
+        "record_id",
+        "logical_record_id",
+        "previous_record_id",
+        "schema_version",
+        "revision_number",
+        "created_at",
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "attempt_id",
+        "work_id",
+        "work_generation",
+        "state_version",
+        "active_attempt_id",
+        "action_id",
+        "decision_id",
+        "llm_call_id",
+        "session_ref",
+        "parent_session_ref",
+        "verification_generation",
+        "chaining_generation",
+        "generation",
+    }
+)
+_RESULT_RUNTIME_OWNED_FIELDS: Mapping[str, frozenset[str]] = {
+    # These identifiers are allocated only after the untrusted proposal is
+    # validated. Existing semantic identifiers such as CWE/rule/question IDs
+    # remain available to the other role-specific result schemas.
+    "hypothesis_proposal": frozenset(
+        {"proposal_id", "question_id", "validation_id"}
+    ),
+}
+
 _ROLE_RESULT_KINDS: Mapping[str, frozenset[str]] = {
     "HYPOTHESIS": frozenset({"hypothesis_proposal", "hypothesis_duplicate_review"}),
     "PRO": frozenset({"pro_evidence_result"}),
@@ -405,20 +442,25 @@ def _reject_runtime_owned_output(
     *,
     result_kind: str,
 ) -> None:
-    """Keep record metadata and newly allocated proposal IDs out of LLM output."""
+    """Keep runtime identity, exact references and allocation out of LLM output."""
+
+    result_owned = _RESULT_RUNTIME_OWNED_FIELDS.get(result_kind, frozenset())
 
     def reject_metadata(item: JsonValue) -> None:
         if isinstance(item, dict):
-            if "meta" in item:
-                raise ValueError("PROMPT_OUTPUT_AUTHORITY_DENIED")
             is_reference = {
                 "stored_data_id",
                 "data_kind",
                 "content_hash",
                 "record_id",
             }.issubset(item)
-            if "logical_record_id" in item or (
-                "record_id" in item and not is_reference
+            if is_reference or any(
+                key in _RUNTIME_OWNED_FIELDS
+                or key in result_owned
+                or key == "ref"
+                or key.endswith("_ref")
+                or key.endswith("_refs")
+                for key in item
             ):
                 raise ValueError("PROMPT_OUTPUT_AUTHORITY_DENIED")
             for nested in item.values():
@@ -428,25 +470,6 @@ def _reject_runtime_owned_output(
                 reject_metadata(nested)
 
     reject_metadata(value)
-    if result_kind != "hypothesis_proposal":
-        return
-    proposals = value if isinstance(value, list) else [value]
-    for proposal in proposals:
-        if not isinstance(proposal, dict):
-            raise ValueError("PROMPT_OUTPUT_AUTHORITY_DENIED")
-        if "proposal_id" in proposal:
-            raise ValueError("PROMPT_OUTPUT_AUTHORITY_DENIED")
-        questions = proposal.get("falsification_questions", [])
-        checks = proposal.get("validation_checks", [])
-        if isinstance(questions, list) and any(
-            isinstance(question, dict) and "question_id" in question
-            for question in questions
-        ):
-            raise ValueError("PROMPT_OUTPUT_AUTHORITY_DENIED")
-        if isinstance(checks, list) and any(
-            isinstance(check, dict) and "validation_id" in check for check in checks
-        ):
-            raise ValueError("PROMPT_OUTPUT_AUTHORITY_DENIED")
 
 
 def validate_output(
