@@ -10,6 +10,7 @@ from sastsimi.agents.dynamic_reproduction import DynamicReproductionAgent
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.dynamic import DynamicReproductionRequest
 from sastsimi.contracts.hypothesis import HypothesisProcessState
+from sastsimi.contracts.ids import WorkId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
 from sastsimi.contracts.work import WorkExecutionState
@@ -25,6 +26,8 @@ from sastsimi.sandbox.setup_automation import (
     DockerLifecyclePort,
     ReproductionSetupAutomation,
 )
+from sastsimi.verification.completion import VerificationCompletionCoordinator
+from sastsimi.verification.service import VerificationService
 
 from .production import (
     DynamicSandboxAuthorizationResolver,
@@ -57,6 +60,7 @@ class T11Services:
 
     execute_dynamic: DynamicExecutor
     current_process: CurrentProcessResolver
+    completion: VerificationCompletionCoordinator
 
     async def execute(
         self,
@@ -171,10 +175,22 @@ def compose_t11_services(
     ids: IdGenerator,
     role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
     sandbox_authorization: DynamicSandboxAuthorizationResolver,
+    verification: VerificationService,
 ) -> T11Services:
     """Compose the real R7 slice without selecting a Provider or R6 verdict."""
 
     sink = RuntimeDynamicRecordSink(runner, role_identity_refs)
+    process_resolver = current_process_from(runtime.queries.current_records)
+
+    def resolve_work(work_id: WorkId) -> WorkExecutionState | None:
+        try:
+            return runtime.work.get(str(work_id))
+        except LookupError:
+            return None
+
+    verification_identity = role_identity_refs.get(RequesterRole.VERIFICATION)
+    if verification_identity is None:
+        raise ValueError("VERIFICATION_IDENTITY_REQUIRED")
 
     def workflow_factory(work: WorkExecutionState) -> ProductionDynamicWorkflow:
         return ProductionDynamicWorkflow(
@@ -193,7 +209,15 @@ def compose_t11_services(
     production = ProductionDynamicExecutor(agent, workflow_factory)
     return T11Services(
         execute_dynamic=production,
-        current_process=current_process_from(runtime.queries.current_records),
+        current_process=process_resolver,
+        completion=VerificationCompletionCoordinator(
+            verification=verification,
+            runner=runner,
+            records=runtime.unit_of_work.records,
+            work_resolver=resolve_work,
+            current_process=process_resolver,
+            verification_identity_ref=verification_identity,
+        ),
     )
 
 

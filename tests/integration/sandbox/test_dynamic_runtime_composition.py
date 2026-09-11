@@ -20,9 +20,10 @@ from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import WorkHandlerResult
 from sastsimi.prompts.dynamic_reproduction import DYNAMIC_REPRODUCTION_PROMPTS
 from sastsimi.prompts.registry import REQUIRED_TEMPLATE_SECTIONS
-from sastsimi.reproduction.composition import T11Services
+from sastsimi.reproduction.composition import T11Services, compose_t11_services
 from sastsimi.reproduction.service import DynamicStageAuthorizations
 from sastsimi.sandbox.session_manager import ReproductionSessionManager
+from sastsimi.verification.completion import VerificationCompletionCoordinator
 from tests.contract.domain.success_fixture import bound, dynamic_success
 from tests.integration.runtime_support import TestClock, TestIds
 
@@ -162,6 +163,7 @@ async def test_t11_composition_runs_only_exact_current_dynamic_request() -> None
     services = T11Services(
         execute_dynamic=executor,
         current_process=lambda _: _process(request),
+        completion=cast(VerificationCompletionCoordinator, object()),
     )
 
     result = await services.execute(
@@ -205,6 +207,11 @@ def test_production_bootstrap_uses_real_sandbox_components() -> None:
     ):
         assert component in source
     assert "FakeSandboxAdapter" not in source
+    assert "verification=verification" in source
+
+    composition = inspect.getsource(compose_t11_services)
+    assert "completion=VerificationCompletionCoordinator(" in composition
+    assert "verification=verification" in composition
 
 
 def test_session_start_binds_the_exact_allow_policy_reference() -> None:
@@ -254,6 +261,7 @@ async def test_t11_composition_rejects_stale_generation_and_r6_verdict_output() 
     services = T11Services(
         execute_dynamic=executor,
         current_process=lambda _: _process(request),
+        completion=cast(VerificationCompletionCoordinator, object()),
     )
 
     with pytest.raises(ValueError, match="DYNAMIC_REQUEST_NOT_CURRENT"):

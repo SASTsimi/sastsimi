@@ -66,6 +66,7 @@ if TYPE_CHECKING:
         ContextRetrievalService,
         TrackedFilesResolver,
     )
+    from sastsimi.verification.service import VerificationService
 
 
 @dataclass(frozen=True, slots=True)
@@ -728,6 +729,7 @@ def build_t11_services(
     commit_id: CommitId,
     role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
     sandbox_authorization: DynamicSandboxAuthorizationResolver,
+    verification: VerificationService,
     docker_executable: str = "docker",
 ) -> T11Services:
     """Build the real local-Docker T11 slice after trusted config resolution."""
@@ -775,4 +777,5 @@ def build_t11_services(
         ids=ids,
         role_identity_refs=role_identity_refs,
         sandbox_authorization=sandbox_authorization,
+        verification=verification,
     )
