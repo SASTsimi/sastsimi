@@ -963,6 +963,7 @@ HypothesisProposal:
   meta: RecordMeta
   proposal_state: HYPOTHESIS_ONLY
   assertion_mode: NON_FINAL
+  statement: string
   origin: INITIAL | VERIFICATION | CHAINING
   vulnerability_type_candidates: [string]
   target_entities: [CodeSymbol]
@@ -977,7 +978,7 @@ HypothesisProposal:
   source_primitive_match_id: string | null
 ```
 
-초기 proposal은 `parent_hypothesis_ids: []`, `source_primitive_match_id: null`이다. Verification-origin proposal도 `source_primitive_match_id=null`이다. Chaining-origin proposal은 직접 부모를 `parent_hypothesis_ids`에 넣고 자신을 만든 COMMITTED match candidate의 ID를 `source_primitive_match_id`에 넣는다. schema validation과 semantic validation을 통과한 proposal만 stable `hypothesis_id`가 있는 `VulnerabilityHypothesis`로 등록한다.
+초기 proposal은 `parent_hypothesis_ids: []`, `source_primitive_match_id: null`이다. Verification-origin proposal도 `source_primitive_match_id=null`이다. Chaining-origin proposal은 직접 부모를 `parent_hypothesis_ids`에 넣고 자신을 만든 COMMITTED match candidate의 ID를 `source_primitive_match_id`에 넣는다. `statement`는 Agent가 제안한 취약점 주장을 짧게 설명하며, 등록 runtime은 이 값을 바꾸거나 새 문장으로 합성하지 않고 `VulnerabilityHypothesis.statement`에 그대로 보존한다. schema validation과 semantic validation을 통과한 proposal만 stable `hypothesis_id`가 있는 `VulnerabilityHypothesis`로 등록한다.
 
 `observed_facts`, `restrictions`, `assumptions`는 다음 기준으로 나눈다.
 

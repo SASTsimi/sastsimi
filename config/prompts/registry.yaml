@@ -2,7 +2,7 @@ manifest_version: "1.0.0"
 kind: SASTSIMI_PROMPT_FIXTURE
 entries:
   - template_path: src/sastsimi/prompts/templates/hypothesis/generate-initial/1.0.0.md
-    template_sha256: 212ae43d19e2f574e45e0eee0c5a76328762523d0c497e8af6f368e2e41c5bed
+    template_sha256: abd3af852a2aa99a32dffa63c42c19a4c5476e653f847ea3dc5a466b1bd3deca
     entry:
       meta:
         record_id: prompt-hypothesis-fixture-record
@@ -22,9 +22,9 @@ entries:
       task_kind: GENERATE_INITIAL
       purpose: EVALUATION
       template_ref:
-        stored_data_id: 212ae43d19e2f574e45e0eee0c5a76328762523d0c497e8af6f368e2e41c5bed
+        stored_data_id: abd3af852a2aa99a32dffa63c42c19a4c5476e653f847ea3dc5a466b1bd3deca
         data_kind: artifact
-        content_hash: 212ae43d19e2f574e45e0eee0c5a76328762523d0c497e8af6f368e2e41c5bed
+        content_hash: abd3af852a2aa99a32dffa63c42c19a4c5476e653f847ea3dc5a466b1bd3deca
         workspace_id: prompt-evaluation-workspace
         commit_id: prompt-evaluation-commit
         record_id: null

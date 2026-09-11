@@ -116,6 +116,7 @@ def _chained_lineage() -> ChainingContextRecords:
         source_primitive_match_id="match-1",
         proposal_state="HYPOTHESIS_ONLY",
         assertion_mode="NON_FINAL",
+        statement="A chained capability may reach the protected operation",
         vulnerability_type_candidates=(),
         observed_facts=(),
         assumptions=(),

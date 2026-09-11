@@ -180,6 +180,7 @@ def hypothesis_projection(
     copied = {
         name: getattr(proposal, name)
         for name in (
+            "statement",
             "origin",
             "target_entities",
             "target_locations",
@@ -196,7 +197,6 @@ def hypothesis_projection(
             | dict(
                 meta=meta,
                 proposal_ref=reference(proposal),
-                statement="Verification of proposal " + str(proposal.proposal_id),
             )
         )
     )

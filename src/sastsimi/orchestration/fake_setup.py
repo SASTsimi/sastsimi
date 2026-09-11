@@ -574,6 +574,7 @@ class FakeSetupStages:
                     proposal_id="fake-proposal",
                     proposal_state="HYPOTHESIS_ONLY",
                     assertion_mode="NON_FINAL",
+                    statement="Untrusted input can reach the fake command sink",
                     origin="INITIAL",
                     vulnerability_type_candidates=(),
                     target_entities=(),
