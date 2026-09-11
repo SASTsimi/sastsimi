@@ -58,7 +58,7 @@
     },
     {
       "id": "N-07",
-      "check": "tool_runs[].gaps의 description에 나온 파일명이나 함수명을 restrictions[].fact_refs의 fact_id로 만들지 않는다.",
+      "check": "tool_runs[].gaps의 description에 나온 파일명이나 함수명을 observed_facts의 fact_id로 만들지 않는다.",
       "grading": "auto",
       "why": "gap은 확인하지 못한 범위이지 관측된 사실이 아니다. 그 이름으로 fact_id를 지어내면 exact bundle 대조에서 거절된다."
     }

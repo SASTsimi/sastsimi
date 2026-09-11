@@ -152,7 +152,7 @@
         "raw_result_ref": {
           "stored_data_id": "data-raw-ast-011",
           "data_kind": "raw_tool_result",
-          "content_hash": "sha256:7081920a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071829304a5b6",
+          "content_hash": "7081920a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071829304a5b6",
           "workspace_id": "ws-002",
           "commit_id": "3e9d1c7a5b2f4e8d6c0a9b1d3f5e7c9a2b4d6f80",
           "record_id": null
@@ -221,7 +221,7 @@
         "rule_execution_ref": {
           "stored_data_id": "data-rer-011",
           "data_kind": "rule_execution_record",
-          "content_hash": "sha256:9304a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+          "content_hash": "9304a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
           "workspace_id": "ws-002",
           "commit_id": "3e9d1c7a5b2f4e8d6c0a9b1d3f5e7c9a2b4d6f80",
           "record_id": "rec-rer-011"

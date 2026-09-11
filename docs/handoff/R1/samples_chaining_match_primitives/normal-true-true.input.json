@@ -7,171 +7,7 @@
     "privilege_axis": "이 샘플은 권한 축이 실제로 성립하는 경우입니다. failure.input.json이 서열표로 판단하면 안 된다는 것을 보여준다면, 이 샘플은 무엇이 있어야 성립하는지를 보여줍니다 — 같은 session role 필드를 한쪽이 쓰고 다른 쪽이 읽는 코드 근거입니다.",
     "same_run": "normal.input.json과 같은 analysis·workspace의 뒤쪽 시점을 가정했습니다. 가설 ID는 hyp-0003·hyp-0004로 겹치지 않습니다.",
     "projection": "이 파일은 프롬프트가 실제로 받는 projection 후 payload입니다. indexes와 considered는 05-prompt-runtime.md:245가 $(전체 record)로 노출하고, lineage_hypotheses는 /meta·/origin·/parent_hypothesis_ids·/source_primitive_match_id 네 pointer만 노출하므로 그 범위만 담았습니다.",
-    "trigger_note": "이 work의 계기 Primitive는 prim-000C입니다. trigger는 considered에 이미 있는 record를 같은 reference로 다시 노출한 것이며(08의 trigger_primitive_ref 규정), considered에는 계기와 무관한 Primitive도 들어 있습니다. 계기가 낀 조합만 이 work의 검토 대상이고, 나머지 조합은 나중에 저장된 쪽을 계기로 가진 work의 몫입니다."
-  },
-  "trigger": {
-    "meta": {
-      "record_id": "rec-prim-000C",
-      "logical_record_id": "lrec-prim-000C",
-      "record_type": "primitive",
-      "schema_version": "1.0.0",
-      "analysis_id": "an-0003",
-      "workspace_id": "ws-003",
-      "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-      "hypothesis_id": "hyp-0003",
-      "attempt_id": null,
-      "revision_number": 1,
-      "previous_record_id": null,
-      "created_at": "2026-09-09T07:20:05Z"
-    },
-    "primitive_id": "prim-000C",
-    "workspace_id": "ws-003",
-    "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-    "inputs": [
-      {
-        "draft_id": "d-c-1",
-        "entity_refs": [
-          {
-            "symbol_id": "sym-require-login",
-            "symbol_kind": "CALLABLE",
-            "native_kind": "decorator",
-            "name": "require_login",
-            "location": {
-              "workspace_id": "ws-003",
-              "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-              "file_path": "app/auth.py",
-              "start_line": 18,
-              "start_column": 1,
-              "end_line": 27,
-              "end_column": 1
-            }
-          }
-        ],
-        "privilege_level": "authenticated_user",
-        "evidence_refs": [
-          {
-            "stored_data_id": "data-ctx-0011",
-            "data_kind": "code_context_response",
-            "content_hash": "sha256:ee55ff6677889900aabbccddeeff00112233445566778899001122334455667788",
-            "workspace_id": "ws-003",
-            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-            "record_id": "rec-ctx-0011"
-          }
-        ],
-        "description": "프로필 갱신 요청을 보내려면 require_login을 통과한 로그인 세션이 있어야 한다."
-      }
-    ],
-    "result": {
-      "draft_id": "d-c-r",
-      "entity_refs": [
-        {
-          "symbol_id": "sym-set-role",
-          "symbol_kind": "CALLABLE",
-          "native_kind": "function",
-          "name": "_set_role",
-          "location": {
-            "workspace_id": "ws-003",
-            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-            "file_path": "app/auth.py",
-            "start_line": 61,
-            "start_column": 1,
-            "end_line": 68,
-            "end_column": 1
-          }
-        },
-        {
-          "symbol_id": "sym-session-role",
-          "symbol_kind": "DATA",
-          "native_kind": "dict_key",
-          "name": "session['role']",
-          "location": {
-            "workspace_id": "ws-003",
-            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-            "file_path": "app/auth.py",
-            "start_line": 64,
-            "start_column": 5,
-            "end_line": 64,
-            "end_column": 32
-          }
-        }
-      ],
-      "privilege_level": "authenticated_user",
-      "evidence_refs": [
-        {
-          "stored_data_id": "data-poc-0011",
-          "data_kind": "poc_bundle",
-          "content_hash": "sha256:ff6677889900aabbccddeeff0011223344556677889900112233445566778899",
-          "workspace_id": "ws-003",
-          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-          "record_id": "rec-poc-0011"
-        }
-      ],
-      "description": "프로필 갱신 요청의 role 필드가 검증 없이 app/auth.py:64의 session['role']에 그대로 기록되어, 자신의 세션 role 값을 임의 문자열로 지정할 수 있다."
-    },
-    "restrictions": [
-      {
-        "restriction_id": "res-C1",
-        "statement": "session['role']에 기록되는 값은 32자로 잘린다.",
-        "fact_refs": [
-          {
-            "bundle_ref": {
-              "stored_data_id": "data-sfb-0003",
-              "data_kind": "static_fact_bundle",
-              "content_hash": "sha256:0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
-              "workspace_id": "ws-003",
-              "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-              "record_id": "rec-sfb-0003"
-            },
-            "fact_id": "cf-val-077"
-          }
-        ],
-        "evidence_refs": []
-      }
-    ],
-    "source_hypothesis_id": "hyp-0003",
-    "source_verification_ref": {
-      "stored_data_id": "data-ver-0003",
-      "data_kind": "verification_result",
-      "content_hash": "sha256:aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899",
-      "workspace_id": "ws-003",
-      "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-      "record_id": "rec-ver-0003"
-    },
-    "technical_review_ref": {
-      "stored_data_id": "data-tgr-0003",
-      "data_kind": "technical_evidence_review",
-      "content_hash": "sha256:11223344556677889900aabbccddeeff00112233445566778899aabbccddeeff",
-      "workspace_id": "ws-003",
-      "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-      "record_id": "rec-tgr-0003"
-    },
-    "admission_decision_ref": {
-      "stored_data_id": "data-adm-0003",
-      "data_kind": "primitive_admission_decision",
-      "content_hash": "sha256:2233445566778899aabbccddeeff00112233445566778899aabbccddeeff0011",
-      "workspace_id": "ws-003",
-      "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-      "record_id": "rec-adm-0003"
-    },
-    "evidence_refs": [
-      {
-        "stored_data_id": "data-poc-0011",
-        "data_kind": "poc_bundle",
-        "content_hash": "sha256:ff6677889900aabbccddeeff0011223344556677889900112233445566778899",
-        "workspace_id": "ws-003",
-        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-        "record_id": "rec-poc-0011"
-      },
-      {
-        "stored_data_id": "data-ctx-0011",
-        "data_kind": "code_context_response",
-        "content_hash": "sha256:ee55ff6677889900aabbccddeeff00112233445566778899001122334455667788",
-        "workspace_id": "ws-003",
-        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-        "record_id": "rec-ctx-0011"
-      }
-    ],
-    "description": "로그인한 사용자가 자신의 세션 role 값을 임의로 지정하는 능력."
+    "trigger_note": "계기 Primitive는 프롬프트 입력에 들어오지 않습니다. Agent는 considered의 모든 조합을 검토하고, 어느 조합을 저장할지는 trusted runtime이 정합니다."
   },
   "indexes": [
     {
@@ -192,7 +28,7 @@
       "current_verification_ref": {
         "stored_data_id": "data-ver-0003",
         "data_kind": "verification_result",
-        "content_hash": "sha256:aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899",
+        "content_hash": "aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0003"
@@ -201,7 +37,7 @@
         {
           "stored_data_id": "data-prim-000C",
           "data_kind": "primitive",
-          "content_hash": "sha256:bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
+          "content_hash": "bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000C"
@@ -227,7 +63,7 @@
       "current_verification_ref": {
         "stored_data_id": "data-ver-0004",
         "data_kind": "verification_result",
-        "content_hash": "sha256:cc33dd44ee55ff6677889900aabbccddeeff0011223344556677889900112233",
+        "content_hash": "cc33dd44ee55ff6677889900aabbccddeeff0011223344556677889900112233",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0004"
@@ -236,7 +72,7 @@
         {
           "stored_data_id": "data-prim-000D",
           "data_kind": "primitive",
-          "content_hash": "sha256:dd44ee55ff6677889900aabbccddeeff00112233445566778899001122334455",
+          "content_hash": "dd44ee55ff6677889900aabbccddeeff00112233445566778899001122334455",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000D"
@@ -289,7 +125,7 @@
             {
               "stored_data_id": "data-ctx-0011",
               "data_kind": "code_context_response",
-              "content_hash": "sha256:ee55ff6677889900aabbccddeeff00112233445566778899001122334455667788",
+              "content_hash": "ee55ff6677889900aabbccddeeff001122334455667788990011223344556677",
               "workspace_id": "ws-003",
               "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
               "record_id": "rec-ctx-0011"
@@ -337,7 +173,7 @@
           {
             "stored_data_id": "data-poc-0011",
             "data_kind": "poc_bundle",
-            "content_hash": "sha256:ff6677889900aabbccddeeff0011223344556677889900112233445566778899",
+            "content_hash": "ff6677889900aabbccddeeff0011223344556677889900112233445566778899",
             "workspace_id": "ws-003",
             "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
             "record_id": "rec-poc-0011"
@@ -354,7 +190,7 @@
               "bundle_ref": {
                 "stored_data_id": "data-sfb-0003",
                 "data_kind": "static_fact_bundle",
-                "content_hash": "sha256:0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
                 "workspace_id": "ws-003",
                 "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
                 "record_id": "rec-sfb-0003"
@@ -369,7 +205,7 @@
       "source_verification_ref": {
         "stored_data_id": "data-ver-0003",
         "data_kind": "verification_result",
-        "content_hash": "sha256:aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899",
+        "content_hash": "aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0003"
@@ -377,7 +213,7 @@
       "technical_review_ref": {
         "stored_data_id": "data-tgr-0003",
         "data_kind": "technical_evidence_review",
-        "content_hash": "sha256:11223344556677889900aabbccddeeff00112233445566778899aabbccddeeff",
+        "content_hash": "11223344556677889900aabbccddeeff00112233445566778899aabbccddeeff",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-tgr-0003"
@@ -385,7 +221,7 @@
       "admission_decision_ref": {
         "stored_data_id": "data-adm-0003",
         "data_kind": "primitive_admission_decision",
-        "content_hash": "sha256:2233445566778899aabbccddeeff00112233445566778899aabbccddeeff0011",
+        "content_hash": "2233445566778899aabbccddeeff00112233445566778899aabbccddeeff0011",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-adm-0003"
@@ -394,7 +230,7 @@
         {
           "stored_data_id": "data-poc-0011",
           "data_kind": "poc_bundle",
-          "content_hash": "sha256:ff6677889900aabbccddeeff0011223344556677889900112233445566778899",
+          "content_hash": "ff6677889900aabbccddeeff0011223344556677889900112233445566778899",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-poc-0011"
@@ -402,7 +238,7 @@
         {
           "stored_data_id": "data-ctx-0011",
           "data_kind": "code_context_response",
-          "content_hash": "sha256:ee55ff6677889900aabbccddeeff00112233445566778899001122334455667788",
+          "content_hash": "ee55ff6677889900aabbccddeeff001122334455667788990011223344556677",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-ctx-0011"
@@ -468,7 +304,7 @@
             {
               "stored_data_id": "data-ctx-0012",
               "data_kind": "code_context_response",
-              "content_hash": "sha256:3344556677889900aabbccddeeff00112233445566778899aabbccddeeff0011",
+              "content_hash": "3344556677889900aabbccddeeff00112233445566778899aabbccddeeff0011",
               "workspace_id": "ws-003",
               "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
               "record_id": "rec-ctx-0012"
@@ -500,7 +336,7 @@
             {
               "stored_data_id": "data-ctx-0013",
               "data_kind": "code_context_response",
-              "content_hash": "sha256:44556677889900aabbccddeeff00112233445566778899aabbccddeeff001122",
+              "content_hash": "44556677889900aabbccddeeff00112233445566778899aabbccddeeff001122",
               "workspace_id": "ws-003",
               "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
               "record_id": "rec-ctx-0013"
@@ -533,7 +369,7 @@
           {
             "stored_data_id": "data-poc-0012",
             "data_kind": "poc_bundle",
-            "content_hash": "sha256:556677889900aabbccddeeff00112233445566778899aabbccddeeff00112233",
+            "content_hash": "556677889900aabbccddeeff00112233445566778899aabbccddeeff00112233",
             "workspace_id": "ws-003",
             "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
             "record_id": "rec-poc-0012"
@@ -550,7 +386,7 @@
               "bundle_ref": {
                 "stored_data_id": "data-sfb-0003",
                 "data_kind": "static_fact_bundle",
-                "content_hash": "sha256:0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
                 "workspace_id": "ws-003",
                 "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
                 "record_id": "rec-sfb-0003"
@@ -565,7 +401,7 @@
       "source_verification_ref": {
         "stored_data_id": "data-ver-0004",
         "data_kind": "verification_result",
-        "content_hash": "sha256:cc33dd44ee55ff6677889900aabbccddeeff0011223344556677889900112233",
+        "content_hash": "cc33dd44ee55ff6677889900aabbccddeeff0011223344556677889900112233",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0004"
@@ -573,7 +409,7 @@
       "technical_review_ref": {
         "stored_data_id": "data-tgr-0004",
         "data_kind": "technical_evidence_review",
-        "content_hash": "sha256:6677889900aabbccddeeff00112233445566778899aabbccddeeff0011223344",
+        "content_hash": "6677889900aabbccddeeff00112233445566778899aabbccddeeff0011223344",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-tgr-0004"
@@ -581,7 +417,7 @@
       "admission_decision_ref": {
         "stored_data_id": "data-adm-0004",
         "data_kind": "primitive_admission_decision",
-        "content_hash": "sha256:77889900aabbccddeeff00112233445566778899aabbccddeeff001122334455",
+        "content_hash": "77889900aabbccddeeff00112233445566778899aabbccddeeff001122334455",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-adm-0004"
@@ -590,7 +426,7 @@
         {
           "stored_data_id": "data-poc-0012",
           "data_kind": "poc_bundle",
-          "content_hash": "sha256:556677889900aabbccddeeff00112233445566778899aabbccddeeff00112233",
+          "content_hash": "556677889900aabbccddeeff00112233445566778899aabbccddeeff00112233",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-poc-0012"
@@ -598,7 +434,7 @@
         {
           "stored_data_id": "data-ctx-0012",
           "data_kind": "code_context_response",
-          "content_hash": "sha256:3344556677889900aabbccddeeff00112233445566778899aabbccddeeff0011",
+          "content_hash": "3344556677889900aabbccddeeff00112233445566778899aabbccddeeff0011",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-ctx-0012"

@@ -3,7 +3,7 @@
     "how_to_read": "must를 전부 만족하고 must_not에 하나도 걸리지 않으면 통과입니다.",
     "the_point": "결론이 맞아도 근거가 전역 권한 서열표면 실패입니다. 이 사례는 결론(candidate 0건)이 쉽게 맞는 대신 reason_code와 detail의 근거를 봅니다.",
     "grading": "각 항목의 grading은 판정 방법입니다. auto는 출력 JSON만 보고 코드로 판정할 수 있는 구조·값·개수이고, judgement는 자연어의 의미를 봐야 해서 LLM-judge나 사람 검토가 필요한 항목입니다. 자동 시험에 연결할 때 auto만 하네스가 강제하고 judgement는 별도 경로로 채점해야 합니다.",
-    "trigger_scope": "이 샘플의 검토 대상은 trigger가 낀 조합뿐입니다. 05-prompt-runtime.md:245가 trigger를 REQUIRED_ONE slot으로 노출하고 06-chaining.md:96이 계기 Primitive를 기준으로 검토 범위와 담당을 정합니다.",
+    "trigger_scope": "이 샘플의 검토 대상은 considered의 모든 조합입니다. MATCH_PRIMITIVES slot에 계기 Primitive가 없으므로 Agent는 담당을 계산하지 않습니다.",
     "privilege_axis": "권한 축은 downstream input의 privilege_level이 null이 아닐 때만 적용됩니다. 08:1356과 06:88이 그렇게 정합니다."
   },
   "must": [
@@ -75,7 +75,7 @@
     },
     {
       "id": "M-12",
-      "check": "검토 대상 조합이 trigger(prim-000A)가 낀 둘뿐이다. (A.result → B.d-b-1)과 (A.result → B.d-b-2) 외의 조합을 어느 목록에도 넣지 않는다.",
+      "check": "검토 대상이 considered의 모든 조합이고 그중 둘이다. (A.result → B.d-b-1)과 (A.result → B.d-b-2) 외의 조합을 어느 목록에도 넣지 않는다.",
       "grading": "auto",
       "why": "06-chaining.md:96의 검토 범위 규칙이다. prim-000B는 result가 null이라 upstream이 될 수 없다."
     }
@@ -144,7 +144,7 @@
         "upstream_result_ref": {
           "stored_data_id": "data-prim-000A",
           "data_kind": "primitive",
-          "content_hash": "sha256:b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
+          "content_hash": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000A"
@@ -152,7 +152,7 @@
         "downstream_input_ref": {
           "stored_data_id": "data-prim-000B",
           "data_kind": "primitive",
-          "content_hash": "sha256:d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+          "content_hash": "d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000B"
@@ -165,7 +165,7 @@
         "upstream_result_ref": {
           "stored_data_id": "data-prim-000A",
           "data_kind": "primitive",
-          "content_hash": "sha256:b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
+          "content_hash": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000A"
@@ -173,7 +173,7 @@
         "downstream_input_ref": {
           "stored_data_id": "data-prim-000B",
           "data_kind": "primitive",
-          "content_hash": "sha256:d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+          "content_hash": "d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000B"

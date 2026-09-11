@@ -4,7 +4,7 @@
     "the_point": "TRUE + TRUE에서 검토 대상이 세 조합이라는 것과, 권한 축을 코드 근거로 성립시키는 것이 이 사례의 판정 기준입니다.",
     "pair": "normal.input.json(TRUE + HOLD)과 같은 규칙으로 채점합니다. 두 경우에 다른 규칙을 적용하지 않는지도 함께 봅니다.",
     "grading": "각 항목의 grading은 판정 방법입니다. auto는 출력 JSON만 보고 코드로 판정할 수 있는 구조·값·개수이고, judgement는 자연어의 의미를 봐야 해서 LLM-judge나 사람 검토가 필요한 항목입니다. 자동 시험에 연결할 때 auto만 하네스가 강제하고 judgement는 별도 경로로 채점해야 합니다.",
-    "trigger_scope": "이 샘플의 검토 대상은 trigger가 낀 조합뿐입니다. 05-prompt-runtime.md:245가 trigger를 REQUIRED_ONE slot으로 노출하고 06-chaining.md:96이 계기 Primitive를 기준으로 검토 범위와 담당을 정합니다.",
+    "trigger_scope": "이 샘플의 검토 대상은 considered의 모든 조합입니다. MATCH_PRIMITIVES slot에 계기 Primitive가 없으므로 Agent는 담당을 계산하지 않습니다.",
     "privilege_axis": "권한 축은 downstream input의 privilege_level이 null이 아닐 때만 적용됩니다. 08:1356과 06:88이 그렇게 정합니다."
   },
   "must": [
@@ -36,7 +36,7 @@
       "id": "M-05",
       "check": "출력 어디에도 match_kind, TRUE_TRUE, TRUE_HOLD 같은 종류 필드를 저장하지 않는다.",
       "grading": "auto",
-      "why": "08이 'downstream result 유무로 TRUE_HOLD와 TRUE_TRUE를 유도하며 별도 trigger나 match kind를 저장하지 않는다'로 정한다."
+      "why": "08이 'downstream result 유무로 TRUE_HOLD와 TRUE_TRUE를 유도하며 별도 계기나 match kind를 저장하지 않는다'로 정한다."
     },
     {
       "id": "M-06",
@@ -118,7 +118,7 @@
     },
     {
       "id": "M-19",
-      "check": "검토 대상 세 조합이 전부 trigger(prim-000C)를 포함한다. trigger가 끼지 않은 조합을 만들지 않는다.",
+      "check": "considered의 모든 조합을 검토하고 세 조합을 만든다.",
       "grading": "auto",
       "why": "06-chaining.md:96이 계기 Primitive와 나머지의 조합만 검토하도록 정한다. prim-000C와 prim-000D가 둘 다 result와 inputs를 가지므로 한 상대에 대해 두 방향이 모두 검토 대상이 된다."
     }
@@ -190,7 +190,7 @@
         "upstream_result_ref": {
           "stored_data_id": "data-prim-000C",
           "data_kind": "primitive",
-          "content_hash": "sha256:bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
+          "content_hash": "bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000C"
@@ -198,7 +198,7 @@
         "downstream_input_ref": {
           "stored_data_id": "data-prim-000D",
           "data_kind": "primitive",
-          "content_hash": "sha256:dd44ee55ff6677889900aabbccddeeff00112233445566778899001122334455",
+          "content_hash": "dd44ee55ff6677889900aabbccddeeff00112233445566778899001122334455",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000D"
@@ -212,7 +212,7 @@
           {
             "stored_data_id": "data-ver-0003",
             "data_kind": "verification_result",
-            "content_hash": "sha256:aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899",
+            "content_hash": "aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899",
             "workspace_id": "ws-003",
             "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
             "record_id": "rec-ver-0003"
@@ -220,7 +220,7 @@
           {
             "stored_data_id": "data-ver-0004",
             "data_kind": "verification_result",
-            "content_hash": "sha256:cc33dd44ee55ff6677889900aabbccddeeff0011223344556677889900112233",
+            "content_hash": "cc33dd44ee55ff6677889900aabbccddeeff0011223344556677889900112233",
             "workspace_id": "ws-003",
             "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
             "record_id": "rec-ver-0004"
@@ -232,7 +232,7 @@
           {
             "stored_data_id": "data-poc-0011",
             "data_kind": "poc_bundle",
-            "content_hash": "sha256:ff6677889900aabbccddeeff0011223344556677889900112233445566778899",
+            "content_hash": "ff6677889900aabbccddeeff0011223344556677889900112233445566778899",
             "workspace_id": "ws-003",
             "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
             "record_id": "rec-poc-0011"
@@ -240,7 +240,7 @@
           {
             "stored_data_id": "data-ctx-0012",
             "data_kind": "code_context_response",
-            "content_hash": "sha256:3344556677889900aabbccddeeff00112233445566778899aabbccddeeff0011",
+            "content_hash": "3344556677889900aabbccddeeff00112233445566778899aabbccddeeff0011",
             "workspace_id": "ws-003",
             "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
             "record_id": "rec-ctx-0012"
@@ -253,7 +253,7 @@
       {
         "stored_data_id": "data-prim-000C",
         "data_kind": "primitive",
-        "content_hash": "sha256:bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
+        "content_hash": "bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-prim-000C"
@@ -261,7 +261,7 @@
       {
         "stored_data_id": "data-prim-000D",
         "data_kind": "primitive",
-        "content_hash": "sha256:dd44ee55ff6677889900aabbccddeeff00112233445566778899001122334455",
+        "content_hash": "dd44ee55ff6677889900aabbccddeeff00112233445566778899001122334455",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-prim-000D"
@@ -271,7 +271,7 @@
       {
         "stored_data_id": "data-ver-0003",
         "data_kind": "verification_result",
-        "content_hash": "sha256:aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899",
+        "content_hash": "aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0003"
@@ -279,7 +279,7 @@
       {
         "stored_data_id": "data-ver-0004",
         "data_kind": "verification_result",
-        "content_hash": "sha256:cc33dd44ee55ff6677889900aabbccddeeff0011223344556677889900112233",
+        "content_hash": "cc33dd44ee55ff6677889900aabbccddeeff0011223344556677889900112233",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0004"
@@ -287,7 +287,7 @@
       {
         "stored_data_id": "data-tgr-0003",
         "data_kind": "technical_evidence_review",
-        "content_hash": "sha256:11223344556677889900aabbccddeeff00112233445566778899aabbccddeeff",
+        "content_hash": "11223344556677889900aabbccddeeff00112233445566778899aabbccddeeff",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-tgr-0003"
@@ -295,7 +295,7 @@
       {
         "stored_data_id": "data-tgr-0004",
         "data_kind": "technical_evidence_review",
-        "content_hash": "sha256:6677889900aabbccddeeff00112233445566778899aabbccddeeff0011223344",
+        "content_hash": "6677889900aabbccddeeff00112233445566778899aabbccddeeff0011223344",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-tgr-0004"
@@ -324,7 +324,7 @@
                 "bundle_ref": {
                   "stored_data_id": "data-sfb-0003",
                   "data_kind": "static_fact_bundle",
-                  "content_hash": "sha256:0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                  "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
                   "workspace_id": "ws-003",
                   "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
                   "record_id": "rec-sfb-0003"
@@ -342,7 +342,7 @@
                 "bundle_ref": {
                   "stored_data_id": "data-sfb-0003",
                   "data_kind": "static_fact_bundle",
-                  "content_hash": "sha256:0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                  "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
                   "workspace_id": "ws-003",
                   "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
                   "record_id": "rec-sfb-0003"
@@ -386,7 +386,7 @@
         "upstream_result_ref": {
           "stored_data_id": "data-prim-000C",
           "data_kind": "primitive",
-          "content_hash": "sha256:bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
+          "content_hash": "bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000C"
@@ -394,7 +394,7 @@
         "downstream_input_ref": {
           "stored_data_id": "data-prim-000D",
           "data_kind": "primitive",
-          "content_hash": "sha256:dd44ee55ff6677889900aabbccddeeff00112233445566778899001122334455",
+          "content_hash": "dd44ee55ff6677889900aabbccddeeff00112233445566778899001122334455",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000D"
@@ -407,7 +407,7 @@
         "upstream_result_ref": {
           "stored_data_id": "data-prim-000D",
           "data_kind": "primitive",
-          "content_hash": "sha256:dd44ee55ff6677889900aabbccddeeff00112233445566778899001122334455",
+          "content_hash": "dd44ee55ff6677889900aabbccddeeff00112233445566778899001122334455",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000D"
@@ -415,7 +415,7 @@
         "downstream_input_ref": {
           "stored_data_id": "data-prim-000C",
           "data_kind": "primitive",
-          "content_hash": "sha256:bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
+          "content_hash": "bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000C"

@@ -3,7 +3,7 @@
     "how_to_read": "must를 전부 만족하고 must_not에 하나도 걸리지 않으면 통과입니다. example_valid_output은 통과하는 출력 하나일 뿐 정답이 아닙니다.",
     "the_point": "match가 성립하는 것 자체보다, assumptions 계산과 조합 분류가 규칙대로인지가 이 사례의 판정 기준입니다.",
     "grading": "각 항목의 grading은 판정 방법입니다. auto는 출력 JSON만 보고 코드로 판정할 수 있는 구조·값·개수이고, judgement는 자연어의 의미를 봐야 해서 LLM-judge나 사람 검토가 필요한 항목입니다. 자동 시험에 연결할 때 auto만 하네스가 강제하고 judgement는 별도 경로로 채점해야 합니다.",
-    "trigger_scope": "이 샘플의 검토 대상은 trigger가 낀 조합뿐입니다. 05-prompt-runtime.md:245가 trigger를 REQUIRED_ONE slot으로 노출하고 06-chaining.md:96이 계기 Primitive를 기준으로 검토 범위와 담당을 정합니다.",
+    "trigger_scope": "이 샘플의 검토 대상은 considered의 모든 조합입니다. MATCH_PRIMITIVES slot에 계기 Primitive가 없으므로 Agent는 담당을 계산하지 않습니다.",
     "privilege_axis": "권한 축은 downstream input의 privilege_level이 null이 아닐 때만 적용됩니다. 08:1356과 06:88이 그렇게 정합니다."
   },
   "must": [
@@ -123,7 +123,7 @@
     },
     {
       "id": "M-20",
-      "check": "검토 대상 조합이 trigger(prim-000A)가 낀 둘뿐이다. (A.result → B.d-b-1)과 (A.result → B.d-b-2) 외의 조합을 primitive_match_candidates·no_match_reasons·excluded_lineage_refs 어디에도 넣지 않는다.",
+      "check": "검토 대상이 considered의 모든 조합이고 그중 둘이다. (A.result → B.d-b-1)과 (A.result → B.d-b-2) 외의 조합을 primitive_match_candidates·no_match_reasons·excluded_lineage_refs 어디에도 넣지 않는다.",
       "grading": "auto",
       "why": "06-chaining.md:96이 '새로 저장된 Primitive 하나를 계기로 그 Primitive와 자기 자신을 제외한 기존 Primitive 전체를 비교한다'로 검토 범위를 정한다. prim-000B는 result가 null이라 upstream이 될 수 없으므로 반대 방향 조합은 존재하지 않는다."
     }
@@ -208,7 +208,7 @@
         "upstream_result_ref": {
           "stored_data_id": "data-prim-000A",
           "data_kind": "primitive",
-          "content_hash": "sha256:b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
+          "content_hash": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000A"
@@ -216,7 +216,7 @@
         "downstream_input_ref": {
           "stored_data_id": "data-prim-000B",
           "data_kind": "primitive",
-          "content_hash": "sha256:d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+          "content_hash": "d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000B"
@@ -230,7 +230,7 @@
           {
             "stored_data_id": "data-ver-0001",
             "data_kind": "verification_result",
-            "content_hash": "sha256:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "workspace_id": "ws-003",
             "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
             "record_id": "rec-ver-0001"
@@ -238,7 +238,7 @@
           {
             "stored_data_id": "data-ver-0002",
             "data_kind": "verification_result",
-            "content_hash": "sha256:c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
+            "content_hash": "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
             "workspace_id": "ws-003",
             "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
             "record_id": "rec-ver-0002"
@@ -250,7 +250,7 @@
           {
             "stored_data_id": "data-poc-0001",
             "data_kind": "poc_bundle",
-            "content_hash": "sha256:f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+            "content_hash": "f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
             "workspace_id": "ws-003",
             "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
             "record_id": "rec-poc-0001"
@@ -258,7 +258,7 @@
           {
             "stored_data_id": "data-ctx-0002",
             "data_kind": "code_context_response",
-            "content_hash": "sha256:293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+            "content_hash": "293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
             "workspace_id": "ws-003",
             "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
             "record_id": "rec-ctx-0002"
@@ -271,7 +271,7 @@
       {
         "stored_data_id": "data-prim-000A",
         "data_kind": "primitive",
-        "content_hash": "sha256:b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
+        "content_hash": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-prim-000A"
@@ -279,7 +279,7 @@
       {
         "stored_data_id": "data-prim-000B",
         "data_kind": "primitive",
-        "content_hash": "sha256:d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+        "content_hash": "d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-prim-000B"
@@ -289,7 +289,7 @@
       {
         "stored_data_id": "data-ver-0001",
         "data_kind": "verification_result",
-        "content_hash": "sha256:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0001"
@@ -297,7 +297,7 @@
       {
         "stored_data_id": "data-ver-0002",
         "data_kind": "verification_result",
-        "content_hash": "sha256:c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
+        "content_hash": "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0002"
@@ -305,7 +305,7 @@
       {
         "stored_data_id": "data-tgr-0001",
         "data_kind": "technical_evidence_review",
-        "content_hash": "sha256:18293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607",
+        "content_hash": "18293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-tgr-0001"
@@ -336,7 +336,7 @@
                 "bundle_ref": {
                   "stored_data_id": "data-sfb-0003",
                   "data_kind": "static_fact_bundle",
-                  "content_hash": "sha256:0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                  "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
                   "workspace_id": "ws-003",
                   "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
                   "record_id": "rec-sfb-0003"
@@ -354,7 +354,7 @@
                 "bundle_ref": {
                   "stored_data_id": "data-sfb-0003",
                   "data_kind": "static_fact_bundle",
-                  "content_hash": "sha256:0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                  "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
                   "workspace_id": "ws-003",
                   "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
                   "record_id": "rec-sfb-0003"
@@ -398,7 +398,7 @@
         "upstream_result_ref": {
           "stored_data_id": "data-prim-000A",
           "data_kind": "primitive",
-          "content_hash": "sha256:b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
+          "content_hash": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000A"
@@ -406,7 +406,7 @@
         "downstream_input_ref": {
           "stored_data_id": "data-prim-000B",
           "data_kind": "primitive",
-          "content_hash": "sha256:d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+          "content_hash": "d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000B"

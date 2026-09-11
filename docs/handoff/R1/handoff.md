@@ -1,8 +1,13 @@
 # R1 인계 자료 — Hypothesis·Chaining 프롬프트와 검증 샘플
 
 - 담당: R1 (LLM 탐색·체이닝)
-- 기준 main: `114a085`
-- 작성일: 2026-09-09 (검토 반영 2판)
+- 기준 main: `342fcfa`
+- 작성일: 2026-09-09 (main 기준 재작성 3판)
+
+> **임시본입니다.** 이 자료는 현재 main 계약만으로 작성했으며 계약 수정을 전제하지 않습니다.
+> 그 대가로 두 곳에서 우회했습니다 — Hypothesis는 `restrictions`를 비우고, Chaining은 담당 계산을
+> Agent가 하지 않습니다. 근거와 비용은 아래 「이 경계에서 치른 대가」에 적었습니다.
+> 해당 항목이 정리되면 프롬프트와 샘플을 다시 맞춰야 합니다.
 
 ## 담당 기능
 
@@ -11,7 +16,7 @@
 | HYPOTHESIS / `GENERATE_INITIAL` | `PMT-HYP-01` | `hypothesis_proposal` | `schema.hypothesis-proposal-list.next-major` / `validator.hypothesis-proposal-list.v1` |
 | CHAINING / `MATCH_PRIMITIVES` | `PMT-CHN-01` | `chaining_result` | `schema.chaining-result.next-major` / `validator.chaining-result.v1` |
 
-이번 자료는 두 기능에 정상 1건, 실패 1건씩입니다. Chaining은 06이 정한 두 조합이 구조적으로 다르게 다뤄지지 않는지 확인해야 해서 정상 사례를 TRUE + HOLD와 TRUE + TRUE 둘로 나눴습니다.
+이번 자료는 두 기능에 정상 1건, 실패 1건씩입니다. Chaining은 06이 정한 두 조합이 구조적으로 다르게 다뤄지지 않는지 확인해야 해서 정상 사례를 TRUE + HOLD와 TRUE + TRUE로 나눴고, 조합 열거가 Primitive 둘로는 드러나지 않아 셋짜리 사례를 하나 더 두었습니다.
 
 | 기능 | 샘플 | 무엇을 확인하나 |
 |---|---|---|
@@ -19,6 +24,7 @@
 | | `failure` | 도구 실패를 탐지 0건으로 바꾸지 않기, 없는 사실 만들지 않기 |
 | `MATCH_PRIMITIVES` | `normal` (TRUE + HOLD) | 매칭 성립, `assumptions` 계산, 조합 분류 |
 | | `normal-true-true` (TRUE + TRUE) | 양방향 조합 열거, 권한 축을 코드 근거로 성립시키기 |
+| | `normal-three` (Primitive 셋) | 모든 조합을 빠짐없이 검토하기, 담당을 임의로 판단하지 않기 |
 | | `failure` | 권한 서열표 금지, 어긋난 축 정확히 지목하기 |
 
 같은 R1 소관인 HYPOTHESIS / `DUPLICATE_REVIEW`(`PMT-HYP-02`)는 위 두 기능을 확정한 뒤 같은 형식으로 준비합니다.
@@ -64,8 +70,7 @@ docs/handoff/R1/
 | task | slot | 개수 |
 |---|---|---|
 | `GENERATE_INITIAL` | `facts: StaticFactBundle` | `REQUIRED_ONE` |
-| `MATCH_PRIMITIVES` | `trigger: Primitive` | `REQUIRED_ONE` |
-| | `indexes: PrimitiveIndexState` | `REQUIRED_MANY` |
+| `MATCH_PRIMITIVES` | `indexes: PrimitiveIndexState` | `REQUIRED_MANY` |
 | | `considered: Primitive` | `REQUIRED_MANY` |
 | | `lineage_hypotheses: VulnerabilityHypothesis` | `REQUIRED_MANY` |
 | | `lineage_results: ChainingResult` | `OPTIONAL_MANY` |
@@ -74,9 +79,9 @@ docs/handoff/R1/
 
 `lineage_results`가 `OPTIONAL_MANY`인 것은 최초 체이닝에서 빈 목록이 정상이기 때문입니다. 정상 샘플 둘 다 이 경우입니다.
 
-**입력 샘플은 projection 후 payload입니다.** 즉 Prompt Builder가 `field_paths`로 잘라 실제로 프롬프트에 넣는 값만 담았습니다. `facts`는 `05:231`의 열네 pointer(`/meta` 없음), `lineage_hypotheses`는 네 pointer, `trigger`·`indexes`·`considered`는 `$`로 전체 record입니다.
+**입력 샘플은 projection 후 payload입니다.** 즉 Prompt Builder가 `field_paths`로 잘라 실제로 프롬프트에 넣는 값만 담았습니다. `facts`는 `05:231`의 열네 pointer(`/meta` 없음), `lineage_hypotheses`는 네 pointer, `indexes`와 `considered`는 `$`로 전체 record입니다.
 
-**`trigger` 행은 아래 「함께 제안하는 계약 수정」 1번을 반영한 것입니다.** 현재 main의 `05:245`에는 없습니다.
+**계기 Primitive는 이 목록에 없습니다.** 그래서 Agent가 담당을 계산하지 않습니다. 아래 「이 경계에서 치른 대가」 2번을 보세요.
 
 ## 입력 샘플 출처
 
@@ -123,7 +128,7 @@ LLM 출력은 실행마다 문장이 달라집니다. 그래서 문장 전체를
 
 **입력은 전부 `UNTRUSTED_DATA`입니다.** `05-prompt-runtime.md` §3이 분석 대상 코드·README·도구 출력을 모두 신뢰할 수 없는 데이터로 규정합니다. 두 프롬프트에 입력 안의 지시문을 따르지 말라는 절을 넣었습니다.
 
-**내부 ID를 지어내지 않습니다.** `06-implementation-baseline.md:558`이 `LLM output과 tool output을 내부 ID로 채택하지 않는다`고 정합니다. `record_id`·`content_hash` 같은 저장 식별자는 출력에 넣지 않고, `restriction_id`·`question_id`·`validation_id`는 출력 안에서만 유일한 지역 값으로 두어 runtime이 전역 ID로 바꾸게 합니다.
+**내부 ID를 지어내지 않습니다.** `06-implementation-baseline.md:558`이 `LLM output과 tool output을 내부 ID로 채택하지 않는다`고 정합니다. `record_id`·`content_hash` 같은 저장 식별자는 출력에 넣지 않고, `question_id`·`validation_id`는 출력 안에서만 유일한 지역 값으로 두어 runtime이 전역 ID로 바꾸게 합니다.
 
 **`vulnerability_type_candidates`는 확정 어휘만 씁니다.** `SQL_INJECTION` / `XSS` / `OS_COMMAND_INJECTION` / `PATH_TRAVERSAL` / `SSRF` / `IDOR_BOLA`. `verification-playbooks.md`의 mapping 표와 문자열이 정확히 일치해야 `TYPE_SPECIFIC` 플레이북이 선택됩니다(`08:1231`). 자유 서술을 넣으면 `TYPE_NOT_ALLOWED`로 떨어져 항상 COMMON이 붙습니다.
 
@@ -136,10 +141,12 @@ LLM 출력은 실행마다 문장이 달라집니다. 그래서 문장 전체를
 | | 판단 기준 | 어기면 |
 |---|---|---|
 | `observed_facts` | 입력 bundle의 `fact_id`를 그대로 인용할 수 있는가 | 없는 사실을 만든 것 |
-| `restrictions` | 제한을 뒷받침하는 `fact_refs`를 댈 수 있는가 | 근거 없는 제한. `assumptions`로 가야 함 |
+| `restrictions` | **INITIAL proposal에서는 항상 빈 배열** | 아래 설명 참조 |
 | `assumptions` | 근거가 없고 가설이 그것에 의존하는가 | — |
 
-`observed_facts[].fact_id` 집합과 `restrictions[].fact_refs[].fact_id` 집합은 **겹칠 수 없습니다.** 한 관측 사실은 공격을 뒷받침하는 사실이거나 제한 근거 중 한쪽입니다(`08:983`).
+**`restrictions`를 비웁니다.** `Restriction.fact_refs`의 각 항목은 `CodeFactRef`이고 `bundle_ref`가 필수인데, `05:231`의 `facts` projection에 bundle의 `meta`가 없어 `StoredDataRef`를 만들 재료가 없습니다. `evidence_refs`도 `StoredDataRef`라 같습니다. `08:983`이 INITIAL proposal의 각 restriction에 `fact_refs`를 하나 이상 요구하므로, 이 단계에서 낼 수 있는 값은 빈 배열뿐입니다.
+
+제한에 해당하는 관측 사실은 `observed_facts`에 `CodeFact` 그대로 보존합니다. `CodeFact`는 `bundle_ref`를 요구하지 않습니다. 제한으로 표시하는 일은 `StaticFactBundle($)` 전체를 받는 Verification(`05:235`, `05:237`)이 맡으며 `08:1260`이 이미 이를 허용합니다.
 
 **빈 후보 목록을 안전함으로 읽지 않습니다.** `tool_runs.status`가 `FAILED`·`SKIPPED`·`PARTIAL`이면 도구가 못 본 것이지 없는 것이 아닙니다. `failure` 샘플이 이 규칙을 확인합니다.
 
@@ -201,28 +208,41 @@ downstream의 매칭된 input    → 빠짐
 
 이 선택이 체이닝의 실질 범위를 정합니다. 익스플로잇 지점만 가리키면 상태 결합이 성립하지 않고, 권한 상승 체인 대부분이 그 형태입니다. `PrimitiveDraft`를 작성하는 것은 R6이므로 R6가 정해 주셔야 합니다. 아니라면 `evidence_refs` 쪽으로 옮깁니다.
 
-## 계약 문서 결함 — 후속 이슈
+## 이 경계에서 치른 대가
 
-이 자료를 계약대로 쓰려면 문서가 먼저 닫혀야 하는 항목이 여섯 있습니다. 질문이 아니라 계약끼리 어긋나거나 표에 줄이 빠진 것들이라 별도 후속 이슈와 PR로 다룹니다.
+두 프롬프트 모두 현재 main 계약만으로 작성했습니다. 계약 수정을 전제하지 않습니다. 대신 두 곳에서 대가를 치렀습니다.
 
-| | 무엇 | 담당 |
-|---|---|---|
-| 1 | `05:245`에 계기 Primitive를 담을 slot이 없는데 `06:96`이 그 값을 전제한다 | R3·R4 |
-| 2 | `08:984`가 요구하는 `bundle_ref`의 재료가 `facts` slot에 없다 | R3·R4 |
-| 3 | `08`의 식별자 표에 `restriction_id` 줄이 없는데 `06-baseline:553`이 그 표를 전수 정본이라 한다 | R4·R6 |
-| 4 | `02`가 규정한 도달 근거 관계(진입점→source, `ast_dataflow` 생성)가 R2의 실제 산출물에 없다 | R2 |
-| 5 | `CONTEXT_RETRIEVAL`의 생산 역할 `CONTEXT_RETRIEVAL_SERVICE`가 `08`의 enum·목록·registry 어디에도 없다 | R4 |
-| 6 | 담당 동점 tie-break를 실행할 주체와 절차가 없다 | R3·R4 |
+### 1. Hypothesis의 `restrictions`를 비웁니다
 
-계약 수정 PR이 닫은 것은 아래 다섯입니다. 이 자료는 그 상태를 전제로 작성했습니다.
+`Restriction.fact_refs`의 각 항목은 `CodeFactRef`이고 `bundle_ref`가 필수인데, `05:231`의 `facts` projection에 bundle의 `meta`가 없어 `StoredDataRef`를 만들 재료가 없습니다. `evidence_refs`도 `StoredDataRef`라 같습니다. `08:983`이 INITIAL proposal의 각 restriction에 `fact_refs`를 하나 이상 요구하므로 이 단계에서 낼 수 있는 값은 빈 배열뿐입니다.
 
-- `MATCH_PRIMITIVES`에 `trigger` slot이 생긴다(1)
-- `restrictions[].fact_refs`에서 Agent는 `fact_id`만 내고 출력 검증 runtime이 `bundle_ref`를 채운다(2)
-- `restriction_id`는 proposal 출력 검증 runtime 또는 Verification 출력 검증 runtime이 발급한다. Agent가 낸 값은 지역 값이다(3)
-- source 후보 자체가 진입점이면 `ROUTE_BINDING` 관계가 도달 근거이며 별도 `DATA_FLOW`를 요구하지 않는다(4)
-- `CONTEXT_RETRIEVAL_SERVICE`가 `requested_by` enum·`SAVE_RESULT` 허용 주체·result registry에 등록된다(5)
+제한에 해당하는 관측 사실은 `observed_facts`에 `CodeFact` 그대로 보존합니다. `CodeFact`는 `bundle_ref`를 요구하지 않습니다. 제한으로 표시하는 일은 `StaticFactBundle($)` 전체를 받는 Verification(`05:235`, `05:237`)이 맡으며 `08:1260`이 이미 이를 허용합니다. 잃는 사실은 없고 제한 식별 책임이 Verification으로 옮겨갑니다.
 
-6번은 닫히지 않았습니다. `06:96`의 `record_id` 사전순 tie-break가 그대로이고, 그것을 실행할 주체는 여전히 정해져 있지 않습니다. 정상 저장 순서에서는 pool 고정 시점이 담당을 정하므로 이 자료의 샘플은 영향을 받지 않습니다.
+### 2. Chaining Agent가 담당을 계산하지 않습니다
+
+`08:407`이 한 조합을 어느 work가 검토할지를 이렇게 정합니다.
+
+```text
+한 조합의 담당은 두 Primitive 중 자기 후보 pool에 상대가 들어 있는 work다. pool은 `REGISTER_WORK`가
+COMMITTED된 index에서 고정하므로 실제 저장 순서를 그대로 따른다. 양쪽 pool에 서로가 모두 있으면
+`record_id`가 사전순으로 큰 Primitive를 계기로 가진 work가 담당이다.
+```
+
+담당을 계산하려면 이 work의 계기를 알아야 하는데, `05:245`의 slot 목록에 계기가 없습니다. `08:295`가 `WorkExecutionState.trigger_primitive_ref`로 그 값을 이미 정의하고 `08:405`가 CHAINING 필수로 정하지만 Agent에게 전달되지 않습니다.
+
+`considered`의 `meta.created_at` 최대값으로 유도하는 방법을 검토했으나 성립하지 않습니다. `08:403`이 Primitive COMMIT 뒤에 work를 등록하게 하고 `08:401`이 등록 시점의 current index를 읽으므로, 그 사이에 다른 가설의 Primitive가 저장되면 계기가 아닌 것이 가장 최근 값이 됩니다. `record_id` 최대값도 같은 이유로 틀립니다.
+
+그래서 **Agent는 `considered`의 모든 조합을 검토하고 담당은 따지지 않습니다.** 어느 조합을 저장할지는 trusted runtime이 계기를 기준으로 정합니다.
+
+이 방식의 비용은 셋입니다. R3·R4 확인을 요청합니다.
+
+| | 무엇 |
+|---|---|
+| 1 | `08:407`이 "담당이 아닌 조합은 `no_match_reasons`에도 넣지 않는다"고 정하는데 Agent 출력에는 들어갑니다. runtime이 지워야 하므로 검증이 아니라 편집이 됩니다 |
+| 2 | Primitive가 n개면 매 work가 조합 수만큼 봅니다. work는 Primitive마다 생기므로 누적 비용이 빠르게 늘어납니다 |
+| 3 | Agent가 조합을 빠뜨려도 runtime이 어차피 잘라내므로 누락이 드러나지 않습니다 |
+
+`05:245`에 `trigger_primitive_ref`를 노출하면 셋 다 사라집니다. 계약 변경이 아니라 이미 필수인 값을 프롬프트 입력에 더하는 일입니다.
 
 fixture 형태가 역할마다 다른 것도 함께 봐 주셨으면 합니다. R2는 입력이 원본 도구 출력이고 기대 결과가 저장 record 형태, R5는 assertion projection, 이 자료는 projection 후 프롬프트 payload와 `must`/`must_not`입니다. 하나의 harness로 묶을지 R3 판단이 필요합니다.
 
@@ -235,10 +255,10 @@ fixture 형태가 역할마다 다른 것도 함께 봐 주셨으면 합니다. 
 
 | 역할 | 무엇을 봐 주셨으면 하는지 |
 |---|---|
-| R3 구현·통합 | `trigger` slot과 `bundle_ref` 충전을 실제로 구현할 수 있는지, template 경로와 등록 형식, 자동 테스트 연결 가능 여부 |
+| R3 구현·통합 | runtime이 담당 아닌 조합을 잘라내는 방식이 수용 가능한지, `trigger_primitive_ref`를 slot으로 노출할 수 있는지, template 경로와 자동 테스트 연결 |
 | R4 PM·아키텍처 | `08` 식별자 표와 registry 변경, 담당 동점 tie-break의 실행 주체, 공통 계약 정합성 |
 | R2 정적분석·컨텍스트 | `StaticFactBundle` 샘플이 실제 정규화 출력과 맞는지, ID 형식, 도달 근거 관계의 형태 |
-| R6 검증·반박·플레이북 | 아래 미결정 사항, 자식 proposal로 Verification을 시작할 수 있는지, 반증 질문 기준이 플레이북과 충돌하지 않는지 |
+| R6 검증·반박·플레이북 | INITIAL proposal의 `restrictions`가 항상 비어 restriction 식별 전량이 Verification으로 옮겨오는데 기존 설계가 이를 전제하는지, 아래 미결정 사항, 자식 proposal로 Verification을 시작할 수 있는지, 반증 질문 기준이 플레이북과 충돌하지 않는지 |
 | R8 데이터·평가·예산 | `must`/`must_not`의 `grading` 구분이 품질 지표로 쓸 만한지, repair 재시도 한도와 맞물리는지 |
 
 체이닝 자식 가설은 `observed_facts=[]`로 등록되어 Context Retrieval Service가 계보에서 시작점을 복구한 뒤 Verification이 시작하므로, 그 복구 절차와 이 자료의 기대가 맞는지 R6 확인을 함께 요청합니다.

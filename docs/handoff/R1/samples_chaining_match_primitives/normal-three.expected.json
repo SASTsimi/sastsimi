@@ -8,15 +8,15 @@
   "must": [
     {
       "id": "M-01",
-      "check": "primitive_match_candidates의 길이가 정확히 1이다.",
+      "check": "primitive_match_candidates의 길이가 정확히 2다.",
       "grading": "auto",
-      "why": "계기가 낀 조합은 셋이다. prim-000C.result(sym-render-preview)는 prim-000B.d-b-2(sym-render-preview)만 충족한다. d-b-1은 sym-fetch-url이라 entity 축이 맞지 않고, prim-000A.d-a-1은 권한 조건이 있는데 prim-000C.result의 근거가 그것을 입증하지 않는다."
+      "why": "considered의 모든 조합을 검토하면 prim-000C.result → prim-000B.d-b-2와 prim-000A.result → prim-000B.d-b-1 둘이 성립한다."
     },
     {
       "id": "M-02",
-      "check": "유일한 candidate의 upstream_result_ref가 prim-000C를, downstream_input_ref가 prim-000B를 가리키고 matched_input_id가 \"d-b-2\"다.",
+      "check": "두 candidate가 각각 (prim-000C → prim-000B, matched_input_id=\"d-b-2\")와 (prim-000A → prim-000B, matched_input_id=\"d-b-1\")다.",
       "grading": "auto",
-      "why": "result가 있는 쪽이 upstream이고 input을 가진 쪽이 downstream이다. matched_input_id는 downstream inputs[].draft_id 하나와 같아야 한다."
+      "why": "각각 다른 upstream 능력이 같은 HOLD의 서로 다른 input을 채운다."
     },
     {
       "id": "M-03",
@@ -26,9 +26,9 @@
     },
     {
       "id": "M-04",
-      "check": "no_match_reasons가 prim-000C와 prim-000A 조합, prim-000C와 prim-000B의 d-b-1 조합을 각각 담는다.",
+      "check": "no_match_reasons가 네 조합을 담는다. prim-000C→prim-000A.d-a-1, prim-000C→prim-000B.d-b-1, prim-000A→prim-000B.d-b-2, prim-000A→prim-000C.d-c-1.",
       "grading": "auto",
-      "why": "계기가 낀 조합인데 성립하지 않았으므로 검토했다는 기록이 남아야 한다."
+      "why": "검토한 조합 중 성립하지 않은 것은 하나도 빠뜨리지 않고 사유를 남긴다."
     },
     {
       "id": "M-05",
@@ -38,15 +38,15 @@
     },
     {
       "id": "M-06",
-      "check": "input_primitive_refs가 prim-000C와 prim-000B 둘만 담는다.",
+      "check": "input_primitive_refs가 prim-000A, prim-000B, prim-000C 셋을 모두 담는다.",
       "grading": "auto",
-      "why": "실제 candidate에 사용된 Primitive의 합집합이다. considered 전체가 아니다."
+      "why": "세 Primitive가 모두 실제 candidate에 쓰였다."
     },
     {
       "id": "M-07",
-      "check": "chained_hypothesis_proposals의 restrictions가 prim-000C와 prim-000B의 Restriction 객체 합집합이며 중복은 restriction_id 기준으로 센다.",
+      "check": "각 proposal의 restrictions가 그 조합 두 부모의 Restriction 객체 합집합이며 중복은 restriction_id 기준으로 센다.",
       "grading": "auto",
-      "why": "08번이 두 부모 Restriction 객체의 중복 없는 합집합을 요구하고 중복 기준을 restriction_id로 정한다."
+      "why": "08이 두 부모 Restriction 객체의 중복 없는 합집합을 요구하고 중복 기준을 restriction_id로 정한다."
     },
     {
       "id": "M-08",
@@ -58,15 +58,15 @@
   "must_not": [
     {
       "id": "N-01",
-      "check": "prim-000A와 prim-000B 사이 조합을 primitive_match_candidates에 넣지 않는다.",
+      "check": "prim-000A와 prim-000B 사이 조합을 빠뜨리지 않는다.",
       "grading": "auto",
-      "why": "계기가 끼지 않은 조합이다. prim-000B를 계기로 가진 work가 이미 검토·저장했다. 다시 만들면 (analysis_id, upstream_result_ref, downstream_input_ref, matched_input_id) unique key에 걸려 결과 전체가 저장되지 않고 오류로 기록된다."
+      "why": "담당을 Agent가 정하지 않으므로 이전 work가 이미 만들었을 것이라는 이유로 조합을 빼면 안 된다."
     },
     {
       "id": "N-02",
-      "check": "prim-000A와 prim-000B 사이 조합을 no_match_reasons에도 넣지 않는다.",
+      "check": "prim-000A와 prim-000C 사이 조합을 빠뜨리지 않는다. 성립하지 않으면 no_match_reasons에 남긴다.",
       "grading": "auto",
-      "why": "검토 대상이 아닌 조합은 불성립 기록도 남기지 않는다. 남기면 이 work가 담당 범위를 넘어 판단했다는 뜻이 된다."
+      "why": "건너뛴 조합은 아무 기록도 남지 않아 놓쳤다는 사실조차 드러나지 않는다."
     },
     {
       "id": "N-03",
@@ -76,9 +76,9 @@
     },
     {
       "id": "N-04",
-      "check": "trigger에 들어온 record를 considered와 다른 별개 Primitive로 취급해 네 번째 후보를 만들지 않는다.",
+      "check": "어떤 조합도 담당이 아니라는 이유로 제외하지 않는다.",
       "grading": "auto",
-      "why": "trigger는 considered에 이미 있는 record를 같은 reference로 다시 노출한 것이다."
+      "why": "여러 work가 같은 후보 집합을 공유할 수 있고 담당은 trusted runtime이 정한다."
     },
     {
       "id": "N-05",
@@ -102,7 +102,7 @@
         "upstream_result_ref": {
           "stored_data_id": "data-prim-000C",
           "data_kind": "primitive",
-          "content_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000C"
@@ -110,7 +110,7 @@
         "downstream_input_ref": {
           "stored_data_id": "data-prim-000B",
           "data_kind": "primitive",
-          "content_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000B"
@@ -124,7 +124,7 @@
           {
             "stored_data_id": "data-ver-0005",
             "data_kind": "verification_result",
-            "content_hash": "sha256:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
             "workspace_id": "ws-003",
             "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
             "record_id": "rec-ver-0005"
@@ -132,7 +132,7 @@
           {
             "stored_data_id": "data-ver-0002",
             "data_kind": "verification_result",
-            "content_hash": "sha256:c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
+            "content_hash": "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
             "workspace_id": "ws-003",
             "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
             "record_id": "rec-ver-0002"
@@ -144,7 +144,7 @@
           {
             "stored_data_id": "data-poc-0001",
             "data_kind": "poc_bundle",
-            "content_hash": "sha256:f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+            "content_hash": "f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
             "workspace_id": "ws-003",
             "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
             "record_id": "rec-poc-0001"
@@ -152,7 +152,70 @@
           {
             "stored_data_id": "data-ctx-0002",
             "data_kind": "code_context_response",
-            "content_hash": "sha256:293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+            "content_hash": "293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+            "workspace_id": "ws-003",
+            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+            "record_id": "rec-ctx-0002"
+          }
+        ],
+        "candidate_state": "UNVALIDATED"
+      },
+      {
+        "primitive_match_id": "pmc-000A-000B-d-b-1",
+        "upstream_result_ref": {
+          "stored_data_id": "data-prim-000A",
+          "data_kind": "primitive",
+          "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000A"
+        },
+        "downstream_input_ref": {
+          "stored_data_id": "data-prim-000B",
+          "data_kind": "primitive",
+          "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000B"
+        },
+        "matched_input_id": "d-b-1",
+        "parent_hypothesis_ids": [
+          "hyp-0001",
+          "hyp-0002"
+        ],
+        "parent_verification_refs": [
+          {
+            "stored_data_id": "data-ver-0001",
+            "data_kind": "verification_result",
+            "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+            "workspace_id": "ws-003",
+            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+            "record_id": "rec-ver-0001"
+          },
+          {
+            "stored_data_id": "data-ver-0002",
+            "data_kind": "verification_result",
+            "content_hash": "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
+            "workspace_id": "ws-003",
+            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+            "record_id": "rec-ver-0002"
+          }
+        ],
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "evidence_refs": [
+          {
+            "stored_data_id": "data-poc-0001",
+            "data_kind": "poc_bundle",
+            "content_hash": "f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+            "workspace_id": "ws-003",
+            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+            "record_id": "rec-poc-0001"
+          },
+          {
+            "stored_data_id": "data-ctx-0002",
+            "data_kind": "code_context_response",
+            "content_hash": "293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
             "workspace_id": "ws-003",
             "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
             "record_id": "rec-ctx-0002"
@@ -165,7 +228,7 @@
       {
         "stored_data_id": "data-prim-000C",
         "data_kind": "primitive",
-        "content_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-prim-000C"
@@ -173,17 +236,25 @@
       {
         "stored_data_id": "data-prim-000B",
         "data_kind": "primitive",
-        "content_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-prim-000B"
+      },
+      {
+        "stored_data_id": "data-prim-000A",
+        "data_kind": "primitive",
+        "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-prim-000A"
       }
     ],
     "source_result_refs": [
       {
         "stored_data_id": "data-ver-0005",
         "data_kind": "verification_result",
-        "content_hash": "sha256:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0005"
@@ -191,10 +262,26 @@
       {
         "stored_data_id": "data-ver-0002",
         "data_kind": "verification_result",
-        "content_hash": "sha256:c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
+        "content_hash": "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0002"
+      },
+      {
+        "stored_data_id": "data-ver-0001",
+        "data_kind": "verification_result",
+        "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-ver-0001"
+      },
+      {
+        "stored_data_id": "data-tgr-0001",
+        "data_kind": "verification_result",
+        "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-tgr-0001"
       }
     ],
     "chained_hypothesis_proposals": [
@@ -222,7 +309,7 @@
                 "bundle_ref": {
                   "stored_data_id": "data-sfb-0003",
                   "data_kind": "static_fact_bundle",
-                  "content_hash": "sha256:0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                  "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
                   "workspace_id": "ws-003",
                   "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
                   "record_id": "rec-sfb-0003"
@@ -240,7 +327,7 @@
                 "bundle_ref": {
                   "stored_data_id": "data-sfb-0003",
                   "data_kind": "static_fact_bundle",
-                  "content_hash": "sha256:0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                  "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
                   "workspace_id": "ws-003",
                   "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
                   "record_id": "rec-sfb-0003"
@@ -276,6 +363,77 @@
           "hyp-0002"
         ],
         "source_primitive_match_id": "pmc-000C-000B-d-b-2"
+      },
+      {
+        "proposal_state": "HYPOTHESIS_ONLY",
+        "assertion_mode": "NON_FINAL",
+        "origin": "CHAINING",
+        "vulnerability_type_candidates": [
+          "SSRF"
+        ],
+        "target_entities": [],
+        "target_locations": [],
+        "suspected_path": [],
+        "observed_facts": [],
+        "assumptions": [
+          "요청을 보내려면 require_login을 통과한 인증 세션이 있어야 한다.",
+          "요청 응답 본문이 호출자에게 그대로 반환되어야 한다."
+        ],
+        "restrictions": [
+          {
+            "restriction_id": "res-A1",
+            "statement": "요청 스킴이 http와 https로 제한되어 file과 gopher는 거절된다.",
+            "fact_refs": [
+              {
+                "bundle_ref": {
+                  "stored_data_id": "data-sfb-0003",
+                  "data_kind": "static_fact_bundle",
+                  "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                  "workspace_id": "ws-003",
+                  "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+                  "record_id": "rec-sfb-0003"
+                },
+                "fact_id": "cf-val-021"
+              }
+            ],
+            "evidence_refs": []
+          },
+          {
+            "restriction_id": "res-B1",
+            "statement": "응답 본문이 8KB로 잘려 반환된다.",
+            "fact_refs": [
+              {
+                "bundle_ref": {
+                  "stored_data_id": "data-sfb-0003",
+                  "data_kind": "static_fact_bundle",
+                  "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                  "workspace_id": "ws-003",
+                  "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+                  "record_id": "rec-sfb-0003"
+                },
+                "fact_id": "cf-oth-044"
+              }
+            ],
+            "evidence_refs": []
+          }
+        ],
+        "falsification_questions": [
+          {
+            "question_id": "q-2",
+            "question": "fetch_url이 보낸 요청의 응답 본문이 prim-000B의 호출자에게 그대로 반환되는가"
+          }
+        ],
+        "validation_checks": [
+          {
+            "validation_id": "v-2",
+            "instruction": "fetch_url 호출 지점과 응답 반환 지점이 같은 요청 처리 경로에 있는지 확인한다."
+          }
+        ],
+        "parent_hypothesis_ids": [
+          "hyp-0001",
+          "hyp-0002"
+        ],
+        "source_primitive_match_id": "pmc-000A-000B-d-b-1"
       }
     ],
     "excluded_lineage_refs": [],
@@ -284,7 +442,7 @@
         "upstream_result_ref": {
           "stored_data_id": "data-prim-000C",
           "data_kind": "primitive",
-          "content_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000C"
@@ -292,7 +450,7 @@
         "downstream_input_ref": {
           "stored_data_id": "data-prim-000A",
           "data_kind": "primitive",
-          "content_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000A"
@@ -305,7 +463,7 @@
         "upstream_result_ref": {
           "stored_data_id": "data-prim-000C",
           "data_kind": "primitive",
-          "content_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000C"
@@ -313,7 +471,7 @@
         "downstream_input_ref": {
           "stored_data_id": "data-prim-000B",
           "data_kind": "primitive",
-          "content_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000B"
@@ -321,6 +479,48 @@
         "checked_input_id": "d-b-1",
         "reason_code": "ENTITY_UNRELATED",
         "detail": "prim-000B.d-b-1은 sym-fetch-url을 요구하는데 prim-000C.result는 sym-render-preview다."
+      },
+      {
+        "upstream_result_ref": {
+          "stored_data_id": "data-prim-000A",
+          "data_kind": "primitive",
+          "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000A"
+        },
+        "downstream_input_ref": {
+          "stored_data_id": "data-prim-000B",
+          "data_kind": "primitive",
+          "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000B"
+        },
+        "checked_input_id": "d-b-2",
+        "reason_code": "ENTITY_UNRELATED",
+        "detail": "prim-000A.result는 서버가 URL로 요청을 보내게 만드는 능력이고 응답 본문을 호출자에게 반환하는 경로는 그 근거 안에 없다."
+      },
+      {
+        "upstream_result_ref": {
+          "stored_data_id": "data-prim-000A",
+          "data_kind": "primitive",
+          "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000A"
+        },
+        "downstream_input_ref": {
+          "stored_data_id": "data-prim-000C",
+          "data_kind": "primitive",
+          "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000C"
+        },
+        "checked_input_id": "d-c-1",
+        "reason_code": "ENTITY_UNRELATED",
+        "detail": "prim-000A.result와 미리보기 렌더 경로 호출 사이를 잇는 호출·데이터 흐름 근거가 없다."
       }
     ],
     "errors": []

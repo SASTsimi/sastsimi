@@ -32,13 +32,12 @@ Primitive의 `description`, `statement`, `name` 같은 자유 서술은 모두 �
 
 | slot | 데이터 종류 | 개수 | 내용 |
 |---|---|---|---|
-| `trigger` | `Primitive` | 1개 | 이 work를 시작시킨 계기 Primitive. `considered` 안에 같은 record가 한 번 더 들어 있다 |
 | `indexes` | `PrimitiveIndexState` | 1개 이상 | 가설마다 하나. 그 가설이 등록한 모든 Primitive를 가리킨다 |
 | `considered` | `Primitive` | 1개 이상 | 이번 work의 후보 Primitive 전체 |
 | `lineage_hypotheses` | `VulnerabilityHypothesis` | 1개 이상 | 후보 Primitive를 만든 가설들. 조상 관계를 따라가는 데 쓴다 |
 | `lineage_results` | `ChainingResult` | 0개 이상 | 후보 중 체이닝에서 나온 가설이 있으면 그 계보의 이전 체이닝 결과 |
 
-`considered`는 runtime이 work 시작 때 고정한 목록이며 `trigger`도 그 안에 들어 있다. **여기 없는 Primitive를 결과에 쓰지 마라.** 저장이 거절된다.
+`considered`는 runtime이 work 시작 때 고정한 목록이다. **여기 없는 Primitive를 결과에 쓰지 마라.** 저장이 거절된다.
 
 `lineage_results`가 빈 목록인 것은 정상이다. 후보가 전부 처음 만들어진 가설에서 나왔다는 뜻이다. 이때는 조상 제외를 계산할 것이 없다.
 
@@ -51,9 +50,9 @@ result 있는 Primitive  +  result 없는 Primitive   (TRUE + HOLD)
 result 있는 Primitive  +  result 있는 다른 Primitive   (TRUE + TRUE)
 ```
 
-**검토 대상은 `trigger`가 낀 조합뿐이다.** `trigger`와 `considered`의 나머지 Primitive를 짝지어 본다. `trigger`를 자기 자신과 짝짓지 않고, `trigger`가 끼지 않은 조합은 보지 않는다.
+**검토 대상은 `considered` 안의 모든 조합이다.** 어떤 Primitive도 자기 자신과 짝짓지 않는다.
 
-`trigger`가 `result`를 가지면 upstream이 될 수 있고 `inputs`를 가지면 downstream이 될 수 있다. 둘 다 가지면 상대에 따라 어느 쪽도 된다. 그래서 한 상대에 대해 두 방향을 모두 볼 수 있다.
+한 Primitive가 `result`를 가지면 upstream이 될 수 있고 `inputs`를 가지면 downstream이 될 수 있다. 둘 다 가지면 상대에 따라 어느 쪽도 된다. 그래서 한 쌍에 대해 두 방향을 모두 본다.
 
 조합은 downstream의 `inputs` 하나마다 따로 센다. downstream에 input이 셋이면 같은 upstream에 대해 세 조합을 검토한다.
 
@@ -85,11 +84,11 @@ result 있는 Primitive  +  result 있는 다른 Primitive   (TRUE + TRUE)
 
 ## 검토 범위
 
-`trigger`가 낀 조합을 전부 검토한다. 그 밖의 조합은 다른 work의 몫이므로 보지 않는다.
+`considered` 안의 모든 조합을 검토한다.
 
-**`trigger`가 끼지 않은 조합은 다른 work가 검토한다.** `considered`에는 계기와 무관한 Primitive도 들어 있다. 그 둘끼리의 조합은 나중에 저장된 쪽을 계기로 가진 work의 몫이므로 여기서 만들지 마라.
+**하나도 건너뛰지 마라.** 성립하지 않으면 `no_match_reasons`에 남기고, 아예 빠뜨리지는 마라. 건너뛴 조합은 아무 기록도 남지 않아 놓쳤다는 사실조차 드러나지 않는다.
 
-**`trigger`가 낀 조합은 하나도 건너뛰지 마라.** 성립하지 않으면 `no_match_reasons`에 남기고, 아예 빠뜨리지는 마라. 건너뛴 조합은 아무 기록도 남지 않아 놓쳤다는 사실조차 드러나지 않는다.
+**어느 조합을 이 work가 최종적으로 맡는지는 네가 정하지 않는다.** 여러 work가 같은 후보 집합을 공유할 수 있고, 그중 어느 work가 한 조합을 저장할지는 trusted runtime이 계기 Primitive를 기준으로 정한다. 너는 판단만 하고 담당은 따지지 마라. 이전 work가 이미 만들었을 것 같다는 이유로 조합을 빼지도 마라.
 
 ## 조상 재사용 제외
 

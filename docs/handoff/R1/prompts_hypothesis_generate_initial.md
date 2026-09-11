@@ -69,14 +69,14 @@
 | | 무엇 | 판단 기준 |
 |---|---|---|
 | `observed_facts` | 입력에 실제로 있는 `CodeFact` | 입력의 `fact_id`를 그대로 인용할 수 있는가 |
-| `restrictions` | 공격 가능 범위를 제한하는 조건 중 근거가 있는 것 | 제한을 뒷받침하는 `fact_refs`를 댈 수 있는가 |
+| `restrictions` | **이 단계에서는 항상 빈 배열이다.** 아래 설명을 읽어라 | — |
 | `assumptions` | 가설이 참이려면 성립해야 하지만 아직 확인되지 않은 조건 | 입력에 근거가 없고, 가설이 이것에 의존하는가 |
 
 세 가지 규칙이 따라온다.
 
 1. `observed_facts`에는 입력에 없는 사실을 만들지 마라. 각 항목은 입력 bundle의 `CodeFact`를 그대로 가리켜야 한다.
-2. `restrictions`에 근거를 댈 수 없으면 restriction이 아니다. `assumptions`로 보내라.
-3. `observed_facts[].fact_id` 집합과 `restrictions[].fact_refs[].fact_id` 집합은 **겹칠 수 없다.** 한 관측 사실은 공격을 뒷받침하는 사실이거나 제한 근거이거나 둘 중 하나다.
+2. `restrictions`는 **항상 `[]`로 둔다.** 제한에 해당하는 관측 사실도 `observed_facts`에 `CodeFact`로 넣어라.
+3. 확인되지 않은 조건만 `assumptions`에 넣는다. 관측된 제한을 `assumptions`로 보내지 마라 — 그건 확인된 사실이다.
 
 가설이 의존하지 않는 공백은 어디에도 넣지 마라. 그건 `gaps`가 담는 정보이지 가설의 조건이 아니다.
 
@@ -177,14 +177,7 @@ IDOR_BOLA
         }
       ],
       "assumptions": ["<확인되지 않은 조건 문장>"],
-      "restrictions": [
-        {
-          "restriction_id": "<이 출력 안에서만 유일한 지역 값>",
-          "statement": "<제한 문장>",
-          "fact_refs": [{ "fact_id": "<입력의 fact_id>" }],
-          "evidence_refs": []
-        }
-      ],
+      "restrictions": [],
       "falsification_questions": [
         { "question_id": "<이 출력 안에서 유일>", "question": "<확인 가능한 질문>" }
       ],
@@ -210,13 +203,19 @@ IDOR_BOLA
 
 `proposal_id`와 `meta`는 저장 runtime이 발급한다. 출력에 넣지 마라.
 
-`restriction_id`·`question_id`·`validation_id`는 이 출력 안에서만 유일하면 된다. 전역 ID는 runtime이 다시 발급하므로 다른 결과에서 본 값을 재사용하거나 전역으로 유일한 값을 만들려고 하지 마라.
+`question_id`·`validation_id`는 이 출력 안에서만 유일하면 된다. 전역 ID는 runtime이 다시 발급하므로 다른 결과에서 본 값을 재사용하거나 전역으로 유일한 값을 만들려고 하지 마라.
 
 ### 입력에서 그대로 옮기는 값과 채우지 않는 값
 
 `observed_facts`의 `producer.raw_result_ref`는 입력 `CodeFact` 안에 완성된 형태로 들어 있다. 그대로 옮긴다.
 
-`restrictions[].fact_refs`에는 `fact_id`만 적는다. 어느 bundle을 가리키는지(`bundle_ref`)는 runtime이 채운다. 그 값은 입력에 들어오지 않는다.
+### `restrictions`를 비우는 이유
+
+`Restriction.fact_refs`의 각 항목은 `CodeFactRef`이고 `bundle_ref`가 필수다. `bundle_ref`는 `StoredDataRef`이므로 bundle의 `stored_data_id`·`content_hash`·`record_id`가 필요한데, 너의 입력에는 bundle의 `meta`가 들어오지 않는다. `evidence_refs`도 `StoredDataRef`라 같다.
+
+INITIAL proposal의 각 restriction은 `fact_refs`가 하나 이상 필요하므로, 근거를 붙일 수 없는 이 단계에서 낼 수 있는 값은 빈 배열뿐이다. 저장 식별자를 지어내면 그 자체로 실패다.
+
+제한에 해당하는 관측 사실은 `observed_facts`에 `CodeFact` 그대로 넣어라. `CodeFact`는 `bundle_ref`를 요구하지 않는다.
 
 **저장 식별자를 계산하거나 지어내지 마라.** 입력에 없는 `stored_data_id`·`content_hash`를 만들면 그 자체로 실패다.
 

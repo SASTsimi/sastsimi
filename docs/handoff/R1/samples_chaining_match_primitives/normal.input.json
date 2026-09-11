@@ -7,148 +7,7 @@
     "pair": "normal-true-true.input.json이 양쪽 다 result를 가진 TRUE + TRUE 경우입니다. 08은 downstream result 유무로 두 경우를 유도하고 match_kind를 따로 저장하지 않습니다.",
     "projection": "이 파일은 프롬프트가 실제로 받는 projection 후 payload입니다. indexes와 considered는 05-prompt-runtime.md:245가 $(전체 record)로 노출하고, lineage_hypotheses는 /meta·/origin·/parent_hypothesis_ids·/source_primitive_match_id 네 pointer만 노출하므로 그 범위만 담았습니다.",
     "revision_note": "hyp-0001의 index는 revision 2입니다. 가설이 최초 등록될 때 revision 1이 만들어지고 prim-000A가 등록되면서 revision 2가 되었다고 가정했습니다. 08:911에 따라 previous_record_id는 같은 logical_record_id의 직전 revision record_id를 가리켜야 하므로 rec-idx-0001r1을 넣었습니다.",
-    "trigger_note": "이 work의 계기 Primitive는 prim-000A입니다. trigger는 considered에 이미 있는 record를 같은 reference로 다시 노출한 것이며(08의 trigger_primitive_ref 규정), considered에는 계기와 무관한 Primitive도 들어 있습니다. 계기가 낀 조합만 이 work의 검토 대상이고, 나머지 조합은 나중에 저장된 쪽을 계기로 가진 work의 몫입니다."
-  },
-  "trigger": {
-    "meta": {
-      "record_id": "rec-prim-000A",
-      "logical_record_id": "lrec-prim-000A",
-      "record_type": "primitive",
-      "schema_version": "1.0.0",
-      "analysis_id": "an-0003",
-      "workspace_id": "ws-003",
-      "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-      "hypothesis_id": "hyp-0001",
-      "attempt_id": null,
-      "revision_number": 1,
-      "previous_record_id": null,
-      "created_at": "2026-09-09T05:12:30Z"
-    },
-    "primitive_id": "prim-000A",
-    "workspace_id": "ws-003",
-    "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-    "inputs": [
-      {
-        "draft_id": "d-a-1",
-        "entity_refs": [
-          {
-            "symbol_id": "sym-require-login",
-            "symbol_kind": "CALLABLE",
-            "native_kind": "decorator",
-            "name": "require_login",
-            "location": {
-              "workspace_id": "ws-003",
-              "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-              "file_path": "app/auth.py",
-              "start_line": 18,
-              "start_column": 1,
-              "end_line": 27,
-              "end_column": 1
-            }
-          }
-        ],
-        "privilege_level": "authenticated_user",
-        "evidence_refs": [
-          {
-            "stored_data_id": "data-ctx-0001",
-            "data_kind": "code_context_response",
-            "content_hash": "sha256:e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
-            "workspace_id": "ws-003",
-            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-            "record_id": "rec-ctx-0001"
-          }
-        ],
-        "description": "요청을 보내려면 require_login을 통과한 인증 세션이 있어야 한다."
-      }
-    ],
-    "result": {
-      "draft_id": "d-a-r",
-      "entity_refs": [
-        {
-          "symbol_id": "sym-fetch-url",
-          "symbol_kind": "CALLABLE",
-          "native_kind": "function",
-          "name": "fetch_url",
-          "location": {
-            "workspace_id": "ws-003",
-            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-            "file_path": "app/preview.py",
-            "start_line": 31,
-            "start_column": 1,
-            "end_line": 44,
-            "end_column": 1
-          }
-        }
-      ],
-      "privilege_level": "authenticated_user",
-      "evidence_refs": [
-        {
-          "stored_data_id": "data-poc-0001",
-          "data_kind": "poc_bundle",
-          "content_hash": "sha256:f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
-          "workspace_id": "ws-003",
-          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-          "record_id": "rec-poc-0001"
-        }
-      ],
-      "description": "app/preview.py의 fetch_url이 사용자가 지정한 URL로 서버 측 HTTP GET 요청을 보내게 만들 수 있다."
-    },
-    "restrictions": [
-      {
-        "restriction_id": "res-A1",
-        "statement": "요청 스킴이 http와 https로 제한되어 file과 gopher는 거절된다.",
-        "fact_refs": [
-          {
-            "bundle_ref": {
-              "stored_data_id": "data-sfb-0003",
-              "data_kind": "static_fact_bundle",
-              "content_hash": "sha256:0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
-              "workspace_id": "ws-003",
-              "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-              "record_id": "rec-sfb-0003"
-            },
-            "fact_id": "cf-val-021"
-          }
-        ],
-        "evidence_refs": []
-      }
-    ],
-    "source_hypothesis_id": "hyp-0001",
-    "source_verification_ref": {
-      "stored_data_id": "data-ver-0001",
-      "data_kind": "verification_result",
-      "content_hash": "sha256:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
-      "workspace_id": "ws-003",
-      "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-      "record_id": "rec-ver-0001"
-    },
-    "technical_review_ref": {
-      "stored_data_id": "data-tgr-0001",
-      "data_kind": "technical_evidence_review",
-      "content_hash": "sha256:18293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607",
-      "workspace_id": "ws-003",
-      "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-      "record_id": "rec-tgr-0001"
-    },
-    "admission_decision_ref": {
-      "stored_data_id": "data-adm-0001",
-      "data_kind": "primitive_admission_decision",
-      "content_hash": "sha256:8293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071",
-      "workspace_id": "ws-003",
-      "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-      "record_id": "rec-adm-0001"
-    },
-    "evidence_refs": [
-      {
-        "stored_data_id": "data-poc-0001",
-        "data_kind": "poc_bundle",
-        "content_hash": "sha256:f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
-        "workspace_id": "ws-003",
-        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-        "record_id": "rec-poc-0001"
-      }
-    ],
-    "description": "인증된 사용자 세션에서 서버가 임의의 http/https URL로 요청을 보내게 만드는 능력."
+    "trigger_note": "계기 Primitive는 프롬프트 입력에 들어오지 않습니다. Agent는 considered의 모든 조합을 검토하고, 어느 조합을 저장할지는 trusted runtime이 정합니다."
   },
   "indexes": [
     {
@@ -169,7 +28,7 @@
       "current_verification_ref": {
         "stored_data_id": "data-ver-0001",
         "data_kind": "verification_result",
-        "content_hash": "sha256:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0001"
@@ -178,7 +37,7 @@
         {
           "stored_data_id": "data-prim-000A",
           "data_kind": "primitive",
-          "content_hash": "sha256:b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
+          "content_hash": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000A"
@@ -204,7 +63,7 @@
       "current_verification_ref": {
         "stored_data_id": "data-ver-0002",
         "data_kind": "verification_result",
-        "content_hash": "sha256:c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
+        "content_hash": "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0002"
@@ -213,7 +72,7 @@
         {
           "stored_data_id": "data-prim-000B",
           "data_kind": "primitive",
-          "content_hash": "sha256:d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+          "content_hash": "d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000B"
@@ -266,7 +125,7 @@
             {
               "stored_data_id": "data-ctx-0001",
               "data_kind": "code_context_response",
-              "content_hash": "sha256:e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+              "content_hash": "e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
               "workspace_id": "ws-003",
               "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
               "record_id": "rec-ctx-0001"
@@ -299,7 +158,7 @@
           {
             "stored_data_id": "data-poc-0001",
             "data_kind": "poc_bundle",
-            "content_hash": "sha256:f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+            "content_hash": "f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
             "workspace_id": "ws-003",
             "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
             "record_id": "rec-poc-0001"
@@ -316,7 +175,7 @@
               "bundle_ref": {
                 "stored_data_id": "data-sfb-0003",
                 "data_kind": "static_fact_bundle",
-                "content_hash": "sha256:0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
                 "workspace_id": "ws-003",
                 "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
                 "record_id": "rec-sfb-0003"
@@ -331,7 +190,7 @@
       "source_verification_ref": {
         "stored_data_id": "data-ver-0001",
         "data_kind": "verification_result",
-        "content_hash": "sha256:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0001"
@@ -339,7 +198,7 @@
       "technical_review_ref": {
         "stored_data_id": "data-tgr-0001",
         "data_kind": "technical_evidence_review",
-        "content_hash": "sha256:18293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607",
+        "content_hash": "18293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-tgr-0001"
@@ -347,7 +206,7 @@
       "admission_decision_ref": {
         "stored_data_id": "data-adm-0001",
         "data_kind": "primitive_admission_decision",
-        "content_hash": "sha256:8293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071",
+        "content_hash": "8293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-adm-0001"
@@ -356,7 +215,7 @@
         {
           "stored_data_id": "data-poc-0001",
           "data_kind": "poc_bundle",
-          "content_hash": "sha256:f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+          "content_hash": "f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-poc-0001"
@@ -407,7 +266,7 @@
             {
               "stored_data_id": "data-ctx-0002",
               "data_kind": "code_context_response",
-              "content_hash": "sha256:293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+              "content_hash": "293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
               "workspace_id": "ws-003",
               "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
               "record_id": "rec-ctx-0002"
@@ -439,7 +298,7 @@
             {
               "stored_data_id": "data-ctx-0003",
               "data_kind": "code_context_response",
-              "content_hash": "sha256:3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071829",
+              "content_hash": "3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071829",
               "workspace_id": "ws-003",
               "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
               "record_id": "rec-ctx-0003"
@@ -458,7 +317,7 @@
               "bundle_ref": {
                 "stored_data_id": "data-sfb-0003",
                 "data_kind": "static_fact_bundle",
-                "content_hash": "sha256:0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
                 "workspace_id": "ws-003",
                 "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
                 "record_id": "rec-sfb-0003"
@@ -473,7 +332,7 @@
       "source_verification_ref": {
         "stored_data_id": "data-ver-0002",
         "data_kind": "verification_result",
-        "content_hash": "sha256:c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
+        "content_hash": "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0002"
@@ -484,7 +343,7 @@
         {
           "stored_data_id": "data-ctx-0002",
           "data_kind": "code_context_response",
-          "content_hash": "sha256:293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+          "content_hash": "293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-ctx-0002"

@@ -89,7 +89,7 @@
           "raw_result_ref": {
             "stored_data_id": "data-raw-codeql-001",
             "data_kind": "raw_tool_result",
-            "content_hash": "sha256:1a2b3c4d5e6f7081920a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60",
+            "content_hash": "1a2b3c4d5e6f7081920a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60",
             "workspace_id": "ws-001",
             "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
             "record_id": null
@@ -119,7 +119,7 @@
           "raw_result_ref": {
             "stored_data_id": "data-raw-codeql-001",
             "data_kind": "raw_tool_result",
-            "content_hash": "sha256:1a2b3c4d5e6f7081920a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60",
+            "content_hash": "1a2b3c4d5e6f7081920a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60",
             "workspace_id": "ws-001",
             "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
             "record_id": null
@@ -151,7 +151,7 @@
           "raw_result_ref": {
             "stored_data_id": "data-raw-opengrep-001",
             "data_kind": "raw_tool_result",
-            "content_hash": "sha256:2b3c4d5e6f708192a0b1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f6071",
+            "content_hash": "2b3c4d5e6f708192a0b1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f6071",
             "workspace_id": "ws-001",
             "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
             "record_id": null
@@ -192,7 +192,7 @@
           "raw_result_ref": {
             "stored_data_id": "data-raw-ast-001",
             "data_kind": "raw_tool_result",
-            "content_hash": "sha256:3c4d5e6f708192a0b1c2d3e4f50617283940a5b6c7d8e9f0a1b2c3d4e5f60718",
+            "content_hash": "3c4d5e6f708192a0b1c2d3e4f50617283940a5b6c7d8e9f0a1b2c3d4e5f60718",
             "workspace_id": "ws-001",
             "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
             "record_id": null
@@ -232,7 +232,7 @@
           "raw_result_ref": {
             "stored_data_id": "data-raw-ast-001",
             "data_kind": "raw_tool_result",
-            "content_hash": "sha256:3c4d5e6f708192a0b1c2d3e4f50617283940a5b6c7d8e9f0a1b2c3d4e5f60718",
+            "content_hash": "3c4d5e6f708192a0b1c2d3e4f50617283940a5b6c7d8e9f0a1b2c3d4e5f60718",
             "workspace_id": "ws-001",
             "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
             "record_id": null
@@ -272,7 +272,7 @@
           "raw_result_ref": {
             "stored_data_id": "data-raw-ast-001",
             "data_kind": "raw_tool_result",
-            "content_hash": "sha256:3c4d5e6f708192a0b1c2d3e4f50617283940a5b6c7d8e9f0a1b2c3d4e5f60718",
+            "content_hash": "3c4d5e6f708192a0b1c2d3e4f50617283940a5b6c7d8e9f0a1b2c3d4e5f60718",
             "workspace_id": "ws-001",
             "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
             "record_id": null
@@ -314,7 +314,7 @@
         "rule_execution_ref": {
           "stored_data_id": "data-rer-001",
           "data_kind": "rule_execution_record",
-          "content_hash": "sha256:4d5e6f708192a0b1c2d3e4f5061728394a0b5c6d7e8f90a1b2c3d4e5f60718293",
+          "content_hash": "4d5e6f708192a0b1c2d3e4f5061728394a0b5c6d7e8f90a1b2c3d4e5f6071829",
           "workspace_id": "ws-001",
           "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
           "record_id": "rec-rer-001"
@@ -322,7 +322,7 @@
         "raw_result_ref": {
           "stored_data_id": "data-raw-codeql-001",
           "data_kind": "raw_tool_result",
-          "content_hash": "sha256:1a2b3c4d5e6f7081920a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60",
+          "content_hash": "1a2b3c4d5e6f7081920a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60",
           "workspace_id": "ws-001",
           "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
           "record_id": null
@@ -367,7 +367,7 @@
         "raw_result_ref": {
           "stored_data_id": "data-raw-ast-001",
           "data_kind": "raw_tool_result",
-          "content_hash": "sha256:3c4d5e6f708192a0b1c2d3e4f50617283940a5b6c7d8e9f0a1b2c3d4e5f60718",
+          "content_hash": "3c4d5e6f708192a0b1c2d3e4f50617283940a5b6c7d8e9f0a1b2c3d4e5f60718",
           "workspace_id": "ws-001",
           "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
           "record_id": null
@@ -411,7 +411,7 @@
         "rule_execution_ref": {
           "stored_data_id": "data-rer-002",
           "data_kind": "rule_execution_record",
-          "content_hash": "sha256:5e6f708192a0b1c2d3e4f50617283940a1b2c5d6e7f8091a2b3c4d5e6f7081920",
+          "content_hash": "5e6f708192a0b1c2d3e4f50617283940a1b2c5d6e7f8091a2b3c4d5e6f708192",
           "workspace_id": "ws-001",
           "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
           "record_id": "rec-rer-002"
@@ -419,7 +419,7 @@
         "raw_result_ref": {
           "stored_data_id": "data-raw-opengrep-001",
           "data_kind": "raw_tool_result",
-          "content_hash": "sha256:2b3c4d5e6f708192a0b1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f6071",
+          "content_hash": "2b3c4d5e6f708192a0b1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f6071",
           "workspace_id": "ws-001",
           "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
           "record_id": null

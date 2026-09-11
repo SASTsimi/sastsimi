@@ -37,15 +37,15 @@
     },
     {
       "id": "M-06",
-      "check": "restrictions가 하나 이상 있고, 그중 하나의 fact_refs[].fact_id가 cf-auth-001을 가리킨다.",
+      "check": "restrictions가 빈 배열이다.",
       "grading": "auto",
-      "why": "cf-auth-001은 AUTH_CHECK 사실이라 공격 가능 범위를 제한하는 조건이고 근거를 댈 수 있다. 08의 세 갈래 구분에서 restrictions에 해당한다."
+      "why": "Restriction.fact_refs의 각 항목은 CodeFactRef이고 bundle_ref가 필수인데, 05-prompt-runtime.md의 facts slot projection에 bundle의 meta가 없어 StoredDataRef를 만들 재료가 없다. evidence_refs도 StoredDataRef라 같다. 08은 INITIAL proposal의 각 restriction에 fact_refs를 하나 이상 요구하므로 이 단계에서 낼 수 있는 값은 빈 배열뿐이다."
     },
     {
       "id": "M-07",
-      "check": "observed_facts[].fact_id 집합과 restrictions[].fact_refs[].fact_id 집합의 교집합이 비어 있다.",
+      "check": "observed_facts가 cf-auth-001을 포함한다.",
       "grading": "auto",
-      "why": "08이 '하나의 관측 사실은 공격을 뒷받침하는 사실이거나 제한 근거 중 한쪽으로만 분류한다'로 정한다. 이 검사가 세 갈래 구분이 실제로 지켜졌는지를 가른다."
+      "why": "restrictions를 비우더라도 인증 검사라는 관측 사실 자체는 잃으면 안 된다. CodeFact는 bundle_ref를 요구하지 않으므로 observed_facts에 값 그대로 넣을 수 있다. 이 사실을 제한으로 표시하는 일은 StaticFactBundle 전체를 받는 Verification 단계가 맡는다."
     },
     {
       "id": "M-08",
@@ -67,7 +67,7 @@
     },
     {
       "id": "M-11",
-      "check": "question_id, validation_id, restriction_id가 각각 이 출력 안에서 유일하다.",
+      "check": "question_id와 validation_id가 각각 이 출력 안에서 유일하다.",
       "grading": "auto",
       "why": "03의 출력 검증 2단계가 중복 ID를 INVALID_OUTPUT으로 처리한다."
     },
@@ -97,9 +97,9 @@
     },
     {
       "id": "M-16",
-      "check": "restrictions[].fact_refs의 각 항목이 fact_id만 담고 bundle_ref를 담지 않는다.",
+      "check": "출력 어디에도 bundle_ref, stored_data_id, content_hash 같은 저장 식별자가 없다.",
       "grading": "auto",
-      "why": "bundle_ref는 StoredDataRef이고 그 stored_data_id·data_kind·content_hash는 facts slot이 노출하는 어떤 field에도 없다. RecordMeta에도 그 세 값이 없으므로 /meta를 노출해도 만들 수 없다. 06-implementation-baseline.md:558이 저장 식별자 발명을 금지하므로 Agent는 fact_id만 내고 runtime이 채운다. handoff.md의 계약 수정 2번이 이 처리다."
+      "why": "이 단계의 입력에는 어떤 저장 식별자도 들어오지 않는다. 지어낸 값은 그 자체로 실패다."
     },
     {
       "id": "M-17",
@@ -109,9 +109,9 @@
     },
     {
       "id": "M-18",
-      "check": "restrictions[].fact_refs의 각 fact_id가 입력 facts의 여섯 CodeFact 목록 중 하나에 실재한다.",
+      "check": "observed_facts의 각 항목이 입력 CodeFact와 값이 완전히 같다. producer.raw_result_ref도 그대로 옮긴다.",
       "grading": "auto",
-      "why": "08번이 INITIAL proposal의 각 restriction에 final StaticFactBundle을 가리키는 fact_refs를 하나 이상 요구한다. runtime이 이 fact_id를 exact bundle과 대조해 bundle_ref를 채우므로 없는 값이면 그 단계에서 거절된다."
+      "why": "contracts/hypothesis.py의 validate_proposal_facts가 입력 bundle의 CodeFact와 값이 다르면 OBSERVED_FACT_DRIFT로 거절한다."
     }
   ],
   "must_not": [
@@ -141,9 +141,9 @@
     },
     {
       "id": "N-05",
-      "check": "cf-auth-001을 observed_facts에 넣으면서 동시에 restrictions의 fact_refs로도 쓰지 않는다.",
+      "check": "restrictions에 항목을 하나라도 넣지 않는다.",
       "grading": "auto",
-      "why": "M-07과 같은 규칙의 반대 방향 검사다."
+      "why": "근거를 붙일 수 없는 restriction은 저장 단계에서 거절된다."
     },
     {
       "id": "N-06",
@@ -165,9 +165,9 @@
     },
     {
       "id": "N-09",
-      "check": "입력 facts에 없는 fact_id를 restrictions[].fact_refs에 넣지 않는다.",
+      "check": "cf-auth-001을 출력에서 빠뜨리지 않는다. 제한에 해당한다는 이유로 버리지 않는다.",
       "grading": "auto",
-      "why": "관측되지 않은 사실을 제한 근거로 만들면 RESTRICTION_FACT_CLOSURE로 거절된다. 근거가 없으면 restriction이 아니라 assumptions나 falsification_questions로 남긴다."
+      "why": "제한으로 표시할 수 없다는 것과 사실을 버려도 된다는 것은 다르다. 사실이 사라지면 Verification이 제한을 복원할 근거를 잃는다."
     }
   ],
   "downstream_expectation": {
@@ -256,7 +256,7 @@
               "raw_result_ref": {
                 "stored_data_id": "data-raw-codeql-001",
                 "data_kind": "raw_tool_result",
-                "content_hash": "sha256:1a2b3c4d5e6f7081920a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60",
+                "content_hash": "1a2b3c4d5e6f7081920a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60",
                 "workspace_id": "ws-001",
                 "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
                 "record_id": null
@@ -284,7 +284,7 @@
               "raw_result_ref": {
                 "stored_data_id": "data-raw-codeql-001",
                 "data_kind": "raw_tool_result",
-                "content_hash": "sha256:1a2b3c4d5e6f7081920a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60",
+                "content_hash": "1a2b3c4d5e6f7081920a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60",
                 "workspace_id": "ws-001",
                 "commit_id": "7f3a2c1e9b4d5a6c8f2b1d3e4a5c6b7d8e9f0a1b",
                 "record_id": null
@@ -296,18 +296,7 @@
           "cf-src-001에서 cf-sink-001까지 값이 전달되며, 실행 시점에 escape되거나 parameterized query의 bind 인자로 분리되지 않는다.",
           "cf-auth-001의 인증 검사를 통과한 계정으로 임의의 id 값을 보낼 수 있다."
         ],
-        "restrictions": [
-          {
-            "restriction_id": "r-1",
-            "statement": "이 경로에 도달하려면 인증된 세션이 필요하다.",
-            "fact_refs": [
-              {
-                "fact_id": "cf-auth-001"
-              }
-            ],
-            "evidence_refs": []
-          }
-        ],
+        "restrictions": [],
         "falsification_questions": [
           {
             "question_id": "q-1",

@@ -2,152 +2,11 @@
   "_note": {
     "source": "직접 만든 테스트 데이터입니다. 실제 실행 결과가 아닙니다.",
     "basis": "08-lightweight-data-contracts.md §5의 Primitive·PrimitiveIndexState 스키마와 implementation/05-prompt-runtime.md의 MATCH_PRIMITIVES 입력 slot 목록을 따랐습니다.",
-    "case": "정상 (Primitive 셋). 저장 순서는 prim-000A -> prim-000B -> prim-000C이고 계기는 prim-000C입니다. trigger가 낀 조합만 검토해야 한다는 규칙을 시험합니다.",
+    "case": "정상 (Primitive 셋). 저장 순서는 prim-000A -> prim-000B -> prim-000C입니다. Primitive가 둘일 때는 드러나지 않는 조합 열거를 시험합니다 — considered의 모든 조합을 빠짐없이 검토하고 담당을 임의로 판단해 빼지 않는지를 봅니다.",
     "why_three": "Primitive가 둘뿐이면 계기 기준 비교와 전체 쌍 비교의 결과가 같아 구분되지 않습니다. 셋이어야 prim-000A-prim-000B 조합을 만들지 않는지가 드러납니다.",
     "ownership_basis": "06-chaining.md의 '새로 저장된 Primitive 하나를 계기로 그 Primitive와 자기 자신을 제외한 기존 Primitive 전체를 비교한다'를 따릅니다. prim-000A-prim-000B는 prim-000B를 계기로 가진 work가 이미 검토했습니다. pool이 REGISTER_WORK 시점의 COMMITTED index에서 고정되므로 prim-000B의 pool에는 prim-000C가 없고 prim-000C의 pool에만 앞의 둘이 들어옵니다.",
     "id_note": "prim-000C는 이 파일 안에서만 쓰는 식별자입니다. normal-true-true.input.json의 prim-000C와는 별개 fixture입니다.",
     "lineage_note": "세 가설 모두 INITIAL이고 source_primitive_match_id가 null이라 lineage_results는 빈 목록입니다."
-  },
-  "trigger": {
-    "meta": {
-      "record_id": "rec-prim-000C",
-      "logical_record_id": "lrec-prim-000C",
-      "record_type": "primitive",
-      "schema_version": "1.0.0",
-      "analysis_id": "an-0003",
-      "workspace_id": "ws-003",
-      "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-      "hypothesis_id": "hyp-0005",
-      "attempt_id": null,
-      "revision_number": 1,
-      "previous_record_id": null,
-      "created_at": "2026-09-09T05:12:30Z"
-    },
-    "primitive_id": "prim-000C",
-    "workspace_id": "ws-003",
-    "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-    "inputs": [
-      {
-        "draft_id": "d-c-1",
-        "entity_refs": [
-          {
-            "symbol_id": "sym-preview-route",
-            "symbol_kind": "CALLABLE",
-            "native_kind": "decorator",
-            "name": "preview_route",
-            "location": {
-              "workspace_id": "ws-003",
-              "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-              "file_path": "app/preview.py",
-              "start_line": 12,
-              "start_column": 1,
-              "end_line": 19,
-              "end_column": 1
-            }
-          }
-        ],
-        "privilege_level": null,
-        "evidence_refs": [
-          {
-            "stored_data_id": "data-ctx-0005",
-            "data_kind": "code_context_response",
-            "content_hash": "sha256:e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
-            "workspace_id": "ws-003",
-            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-            "record_id": "rec-ctx-0005"
-          }
-        ],
-        "description": "미리보기 렌더 경로가 요청 처리 중에 호출되어야 한다."
-      }
-    ],
-    "result": {
-      "draft_id": "d-c-r",
-      "entity_refs": [
-        {
-          "symbol_id": "sym-render-preview",
-          "symbol_kind": "CALLABLE",
-          "native_kind": "function",
-          "name": "render_preview",
-          "location": {
-            "workspace_id": "ws-003",
-            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-            "file_path": "app/preview.py",
-            "start_line": 58,
-            "start_column": 1,
-            "end_line": 71,
-            "end_column": 1
-          }
-        }
-      ],
-      "privilege_level": null,
-      "evidence_refs": [
-        {
-          "stored_data_id": "data-poc-0005",
-          "data_kind": "poc_bundle",
-          "content_hash": "sha256:f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
-          "workspace_id": "ws-003",
-          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-          "record_id": "rec-poc-0005"
-        }
-      ],
-      "description": "app/preview.py의 render_preview가 상류 HTTP 응답 본문을 응답에 그대로 실어 보낸다."
-    },
-    "restrictions": [
-      {
-        "restriction_id": "res-C1",
-        "statement": "미리보기 응답은 Content-Type을 text/plain으로 고정해 반환한다.",
-        "fact_refs": [
-          {
-            "bundle_ref": {
-              "stored_data_id": "data-sfb-0003",
-              "data_kind": "static_fact_bundle",
-              "content_hash": "sha256:0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
-              "workspace_id": "ws-003",
-              "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-              "record_id": "rec-sfb-0003"
-            },
-            "fact_id": "cf-val-021"
-          }
-        ],
-        "evidence_refs": []
-      }
-    ],
-    "source_hypothesis_id": "hyp-0005",
-    "source_verification_ref": {
-      "stored_data_id": "data-ver-0005",
-      "data_kind": "verification_result",
-      "content_hash": "sha256:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
-      "workspace_id": "ws-003",
-      "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-      "record_id": "rec-ver-0005"
-    },
-    "technical_review_ref": {
-      "stored_data_id": "data-tgr-0005",
-      "data_kind": "technical_evidence_review",
-      "content_hash": "sha256:18293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607",
-      "workspace_id": "ws-003",
-      "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-      "record_id": "rec-tgr-0005"
-    },
-    "admission_decision_ref": {
-      "stored_data_id": "data-adm-0005",
-      "data_kind": "primitive_admission_decision",
-      "content_hash": "sha256:8293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071",
-      "workspace_id": "ws-003",
-      "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-      "record_id": "rec-adm-0005"
-    },
-    "evidence_refs": [
-      {
-        "stored_data_id": "data-poc-0005",
-        "data_kind": "poc_bundle",
-        "content_hash": "sha256:f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
-        "workspace_id": "ws-003",
-        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
-        "record_id": "rec-poc-0005"
-      }
-    ],
-    "description": "app/preview.py의 render_preview가 상류 응답 본문을 호출자에게 그대로 돌려주게 만들 수 있다."
   },
   "indexes": [
     {
@@ -168,7 +27,7 @@
       "current_verification_ref": {
         "stored_data_id": "data-ver-0001",
         "data_kind": "verification_result",
-        "content_hash": "sha256:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0001"
@@ -177,7 +36,7 @@
         {
           "stored_data_id": "data-prim-000A",
           "data_kind": "primitive",
-          "content_hash": "sha256:b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
+          "content_hash": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000A"
@@ -203,7 +62,7 @@
       "current_verification_ref": {
         "stored_data_id": "data-ver-0002",
         "data_kind": "verification_result",
-        "content_hash": "sha256:c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
+        "content_hash": "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0002"
@@ -212,7 +71,7 @@
         {
           "stored_data_id": "data-prim-000B",
           "data_kind": "primitive",
-          "content_hash": "sha256:d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+          "content_hash": "d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000B"
@@ -238,7 +97,7 @@
       "current_verification_ref": {
         "stored_data_id": "data-ver-0005",
         "data_kind": "verification_result",
-        "content_hash": "sha256:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0005"
@@ -247,7 +106,7 @@
         {
           "stored_data_id": "data-prim-000C",
           "data_kind": "primitive",
-          "content_hash": "sha256:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+          "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-prim-000C"
@@ -300,7 +159,7 @@
             {
               "stored_data_id": "data-ctx-0001",
               "data_kind": "code_context_response",
-              "content_hash": "sha256:e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+              "content_hash": "e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
               "workspace_id": "ws-003",
               "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
               "record_id": "rec-ctx-0001"
@@ -333,7 +192,7 @@
           {
             "stored_data_id": "data-poc-0001",
             "data_kind": "poc_bundle",
-            "content_hash": "sha256:f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+            "content_hash": "f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
             "workspace_id": "ws-003",
             "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
             "record_id": "rec-poc-0001"
@@ -350,7 +209,7 @@
               "bundle_ref": {
                 "stored_data_id": "data-sfb-0003",
                 "data_kind": "static_fact_bundle",
-                "content_hash": "sha256:0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
                 "workspace_id": "ws-003",
                 "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
                 "record_id": "rec-sfb-0003"
@@ -365,7 +224,7 @@
       "source_verification_ref": {
         "stored_data_id": "data-ver-0001",
         "data_kind": "verification_result",
-        "content_hash": "sha256:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0001"
@@ -373,7 +232,7 @@
       "technical_review_ref": {
         "stored_data_id": "data-tgr-0001",
         "data_kind": "technical_evidence_review",
-        "content_hash": "sha256:18293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607",
+        "content_hash": "18293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-tgr-0001"
@@ -381,7 +240,7 @@
       "admission_decision_ref": {
         "stored_data_id": "data-adm-0001",
         "data_kind": "primitive_admission_decision",
-        "content_hash": "sha256:8293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071",
+        "content_hash": "8293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-adm-0001"
@@ -390,7 +249,7 @@
         {
           "stored_data_id": "data-poc-0001",
           "data_kind": "poc_bundle",
-          "content_hash": "sha256:f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+          "content_hash": "f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-poc-0001"
@@ -441,7 +300,7 @@
             {
               "stored_data_id": "data-ctx-0002",
               "data_kind": "code_context_response",
-              "content_hash": "sha256:293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+              "content_hash": "293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
               "workspace_id": "ws-003",
               "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
               "record_id": "rec-ctx-0002"
@@ -473,7 +332,7 @@
             {
               "stored_data_id": "data-ctx-0003",
               "data_kind": "code_context_response",
-              "content_hash": "sha256:3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071829",
+              "content_hash": "3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071829",
               "workspace_id": "ws-003",
               "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
               "record_id": "rec-ctx-0003"
@@ -492,7 +351,7 @@
               "bundle_ref": {
                 "stored_data_id": "data-sfb-0003",
                 "data_kind": "static_fact_bundle",
-                "content_hash": "sha256:0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
                 "workspace_id": "ws-003",
                 "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
                 "record_id": "rec-sfb-0003"
@@ -507,7 +366,7 @@
       "source_verification_ref": {
         "stored_data_id": "data-ver-0002",
         "data_kind": "verification_result",
-        "content_hash": "sha256:c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
+        "content_hash": "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0002"
@@ -518,7 +377,7 @@
         {
           "stored_data_id": "data-ctx-0002",
           "data_kind": "code_context_response",
-          "content_hash": "sha256:293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+          "content_hash": "293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-ctx-0002"
@@ -569,7 +428,7 @@
             {
               "stored_data_id": "data-ctx-0005",
               "data_kind": "code_context_response",
-              "content_hash": "sha256:e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+              "content_hash": "e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
               "workspace_id": "ws-003",
               "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
               "record_id": "rec-ctx-0005"
@@ -602,7 +461,7 @@
           {
             "stored_data_id": "data-poc-0005",
             "data_kind": "poc_bundle",
-            "content_hash": "sha256:f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+            "content_hash": "f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
             "workspace_id": "ws-003",
             "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
             "record_id": "rec-poc-0005"
@@ -619,7 +478,7 @@
               "bundle_ref": {
                 "stored_data_id": "data-sfb-0003",
                 "data_kind": "static_fact_bundle",
-                "content_hash": "sha256:0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
                 "workspace_id": "ws-003",
                 "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
                 "record_id": "rec-sfb-0003"
@@ -634,7 +493,7 @@
       "source_verification_ref": {
         "stored_data_id": "data-ver-0005",
         "data_kind": "verification_result",
-        "content_hash": "sha256:a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-ver-0005"
@@ -642,7 +501,7 @@
       "technical_review_ref": {
         "stored_data_id": "data-tgr-0005",
         "data_kind": "technical_evidence_review",
-        "content_hash": "sha256:18293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607",
+        "content_hash": "18293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-tgr-0005"
@@ -650,7 +509,7 @@
       "admission_decision_ref": {
         "stored_data_id": "data-adm-0005",
         "data_kind": "primitive_admission_decision",
-        "content_hash": "sha256:8293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071",
+        "content_hash": "8293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071",
         "workspace_id": "ws-003",
         "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
         "record_id": "rec-adm-0005"
@@ -659,7 +518,7 @@
         {
           "stored_data_id": "data-poc-0005",
           "data_kind": "poc_bundle",
-          "content_hash": "sha256:f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+          "content_hash": "f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
           "workspace_id": "ws-003",
           "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
           "record_id": "rec-poc-0005"
