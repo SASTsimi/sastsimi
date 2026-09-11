@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import re
+import tarfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+
+from sastsimi.contracts.dynamic import POC_RUNTIME_PATH
 
 from .controller import SandboxRunSpec
 
@@ -182,6 +186,31 @@ class DockerAdapter:
         outcome = await self._run(("start", container_id))
         self._require_success("DOCKER_START_FAILED", outcome)
 
+    async def materialize_poc(
+        self, container_id: str, content: bytes, content_digest: str
+    ) -> str:
+        """Stream verified candidate bytes into the container, never a host file."""
+        self._require_resource_id(container_id)
+        if hashlib.sha256(content).hexdigest() != content_digest:
+            raise ValueError("POC_CONTENT_DIGEST_MISMATCH")
+        archive = io.BytesIO()
+        member = tarfile.TarInfo(Path(POC_RUNTIME_PATH).name)
+        member.size = len(content)
+        member.mode = 0o444
+        member.mtime = 0
+        member.uid = 0
+        member.gid = 0
+        member.uname = ""
+        member.gname = ""
+        with tarfile.open(fileobj=archive, mode="w") as payload:
+            payload.addfile(member, io.BytesIO(content))
+        outcome = await self._run(
+            ("cp", "-", f"{container_id}:/tmp"),
+            input_bytes=archive.getvalue(),
+        )
+        self._require_success("DOCKER_POC_MATERIALIZATION_FAILED", outcome)
+        return POC_RUNTIME_PATH
+
     async def exec(
         self,
         container_id: str,
@@ -289,11 +318,20 @@ class DockerAdapter:
             raise ValueError("DOCKER_RESOURCE_ID_INVALID")
 
     async def _run(
-        self, argv: tuple[str, ...], *, timeout_ms: int | None = None
+        self,
+        argv: tuple[str, ...],
+        *,
+        timeout_ms: int | None = None,
+        input_bytes: bytes | None = None,
     ) -> DockerCommandOutcome:
         process = await asyncio.create_subprocess_exec(
             self._executable,
             *argv,
+            stdin=(
+                asyncio.subprocess.PIPE
+                if input_bytes is not None
+                else asyncio.subprocess.DEVNULL
+            ),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -309,6 +347,7 @@ class DockerAdapter:
                     process,
                     stdout_buffer,
                     stderr_buffer,
+                    input_bytes=input_bytes,
                 )
                 if timeout_ms is None:
                     await collection
@@ -356,12 +395,19 @@ class DockerAdapter:
         process: asyncio.subprocess.Process,
         stdout: bytearray,
         stderr: bytearray,
+        *,
+        input_bytes: bytes | None = None,
     ) -> None:
         if process.stdout is None or process.stderr is None:
             raise DockerOperationError("DOCKER_OUTPUT_PIPE_MISSING")
         tasks = (
             asyncio.create_task(cls._read_output(process.stdout, stdout)),
             asyncio.create_task(cls._read_output(process.stderr, stderr)),
+            *(
+                (asyncio.create_task(cls._write_input(process, input_bytes)),)
+                if input_bytes is not None
+                else ()
+            ),
             asyncio.create_task(process.wait()),
         )
         try:
@@ -371,6 +417,17 @@ class DockerAdapter:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    @staticmethod
+    async def _write_input(
+        process: asyncio.subprocess.Process, input_bytes: bytes
+    ) -> None:
+        if process.stdin is None:
+            raise DockerOperationError("DOCKER_INPUT_PIPE_MISSING")
+        process.stdin.write(input_bytes)
+        await process.stdin.drain()
+        process.stdin.close()
+        await process.stdin.wait_closed()
 
     @staticmethod
     async def _stop_process(process: asyncio.subprocess.Process) -> None:

@@ -28,6 +28,7 @@ from sastsimi.contracts.dynamic import (
     SandboxCommandRecord,
     SandboxEnvironment,
     SandboxPolicyDecision,
+    is_poc_execution_command,
     validate_dynamic_closure,
     validate_log_revision,
 )
@@ -398,6 +399,7 @@ class ReproductionSessionManager:
             and event.environment_recipe_ref == recipe_ref
             and event.exit_code == 0
             and event.output_refs
+            and event.input_refs == (candidate.content_ref,)
         ]
         if len(executions) != 1:
             return False, None
@@ -411,6 +413,7 @@ class ReproductionSessionManager:
             and event.poc_candidate_ref == candidate_ref
             and event.environment_ref == environment_ref
             and event.environment_recipe_ref == recipe_ref
+            and event.input_refs == (candidate.content_ref,)
         ]
         commands = [
             event
@@ -426,6 +429,21 @@ class ReproductionSessionManager:
         if len(started) != 1 or len(commands) != 1:
             return False, None
         command = commands[0]
+        command_records = [
+            record
+            for record in data.command_records
+            if command.command_ref is not None
+            and command.command_ref.record_id == record.meta.record_id
+            and command.command_ref.content_hash == content_hash(record)
+            and record.action_id == execution.action_id
+            and record.environment_ref == environment_ref
+            and record.environment_recipe_ref == recipe_ref
+        ]
+        if (
+            len(command_records) != 1
+            or not is_poc_execution_command(command_records[0])
+        ):
+            return False, None
         command_starts = [
             event
             for event in log.events
@@ -435,10 +453,29 @@ class ReproductionSessionManager:
             and event.command_ref == command.command_ref
             and event.tool_request_ref == command.tool_request_ref
             and event.command_digest == command.command_digest
+            and event.redaction_status == command.redaction_status
             and event.poc_candidate_ref == candidate_ref
+            and event.environment_ref == environment_ref
+            and event.environment_recipe_ref == recipe_ref
         ]
         evidence = set(data.conclusion.hypothesis_evidence_refs)
-        if len(command_starts) != 1 or not evidence.intersection(execution.output_refs):
+        poc_provenance = (
+            execution.command_ref,
+            execution.tool_request_ref,
+            execution.command_digest,
+            execution.redaction_status,
+        )
+        command_provenance = (
+            command.command_ref,
+            command.tool_request_ref,
+            command.command_digest,
+            command.redaction_status,
+        )
+        if (
+            len(command_starts) != 1
+            or poc_provenance != command_provenance
+            or not evidence.intersection(execution.output_refs)
+        ):
             return False, None
         return True, execution
 

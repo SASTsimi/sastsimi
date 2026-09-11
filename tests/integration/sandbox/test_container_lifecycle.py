@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import io
 import json
+import tarfile
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -9,6 +12,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from sastsimi.contracts.dynamic import (
+    POC_RUNTIME_PATH,
     DynamicReproductionRequest,
     EnvironmentRequirements,
     ReproductionPlan,
@@ -208,6 +212,16 @@ class FakeDockerAdapter:
         assert container_id in self.created
         assert working_directory == "/workspace"
         return DockerCommandOutcome(0, b"", b"", False)
+
+    async def materialize_poc(
+        self,
+        container_id: str,
+        content: bytes,
+        content_digest: str,
+    ) -> str:
+        assert container_id in self.created
+        assert hashlib.sha256(content).hexdigest() == content_digest
+        return POC_RUNTIME_PATH
 
     async def inspect(self, container_id: str) -> DockerContainerState:
         spec, labels = self.created[container_id]
@@ -576,6 +590,65 @@ async def test_docker_exec_uses_exact_argv_and_working_directory(
             "poc.py",
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_docker_materializes_verified_poc_only_inside_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[tuple[str, ...], bytes]] = []
+
+    async def run(
+        argv: tuple[str, ...],
+        *,
+        timeout_ms: int | None = None,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        del timeout_ms
+        assert input_bytes is not None
+        calls.append((argv, input_bytes))
+        return DockerCommandOutcome(0, b"", b"", False)
+
+    adapter = DockerAdapter()
+    monkeypatch.setattr(adapter, "_run", run)
+    content = b"print('candidate')\n"
+
+    path = await adapter.materialize_poc(
+        "owned-container-id",
+        content,
+        hashlib.sha256(content).hexdigest(),
+    )
+
+    assert path == POC_RUNTIME_PATH
+    assert len(calls) == 1
+    argv, archive = calls[0]
+    assert argv == ("cp", "-", "owned-container-id:/tmp")
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as payload:
+        member = payload.getmember("sastsimi-poc-candidate")
+        extracted = payload.extractfile(member)
+        assert extracted is not None
+        assert extracted.read() == content
+        assert member.mode == 0o444
+
+
+@pytest.mark.asyncio
+async def test_docker_rejects_unverified_poc_before_materialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def unexpected(*_: object, **__: object) -> DockerCommandOutcome:
+        raise AssertionError(
+            "Docker must not receive digest-mismatched candidate bytes"
+        )
+
+    adapter = DockerAdapter()
+    monkeypatch.setattr(adapter, "_run", unexpected)
+
+    with pytest.raises(ValueError, match="POC_CONTENT_DIGEST_MISMATCH"):
+        await adapter.materialize_poc(
+            "owned-container-id",
+            b"changed",
+            "a" * 64,
+        )
 
 
 def test_runtime_owned_name_does_not_include_repository_path(tmp_path: Path) -> None:

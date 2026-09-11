@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol, cast
@@ -11,6 +12,7 @@ from sastsimi.contracts.actions import ActionRequest, RequesterRole
 from sastsimi.contracts.budget import DynamicReproductionLifecycleProfile
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.dynamic import (
+    POC_RUNTIME_PATH,
     AgentLog,
     AgentLogEvent,
     CleanupResult,
@@ -26,8 +28,9 @@ from sastsimi.contracts.dynamic import (
     SandboxEnvironment,
     SandboxPolicyDecision,
     SandboxProfile,
+    is_poc_execution_command,
 )
-from sastsimi.contracts.ids import ActionId, RecordId
+from sastsimi.contracts.ids import ActionId, LogicalRecordId, RecordId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
 from sastsimi.contracts.work import WorkExecutionState
@@ -161,6 +164,16 @@ class RuntimeDynamicRecordSink:
         return value
 
 
+@dataclass(frozen=True)
+class _MaterializedPoC:
+    candidate_ref: StoredDataRef
+    content_ref: StoredDataRef
+    content_digest: str
+    environment_ref: StoredDataRef
+    recipe_ref: StoredDataRef
+    runtime_path: str
+
+
 class ProductionDynamicWorkflow:
     """Attempt-local adapter over Controller, setup, Docker, and durable logs."""
 
@@ -201,7 +214,7 @@ class ProductionDynamicWorkflow:
         self._tools: list[DynamicReproductionToolRequest] = []
         self._observations: list[StoredDataRef] = []
         self._resource_groups: list[tuple[StoredDataRef, ...]] = []
-        self._selected_candidate_ref: StoredDataRef | None = None
+        self._selected_poc: _MaterializedPoC | None = None
         self._started_at = clock.now()
 
     def publish(
@@ -335,6 +348,7 @@ class ProductionDynamicWorkflow:
                     "FAILED", "ENVIRONMENT_SETUP", _safe_error(error)
                 ) from error
             self._remember_prepared(prepared)
+            self._selected_poc = None
             self._append_event(
                 "SANDBOX_RECREATED",
                 "REPRODUCTION_SETUP_AUTOMATION",
@@ -349,22 +363,40 @@ class ProductionDynamicWorkflow:
                 raise DynamicOperationalError(
                     "FAILED", "AGENT", "PoC candidate selection is not exact"
                 )
-            self._selected_candidate_ref = candidate_ref
+            self._selected_poc = await self._materialize_poc(
+                candidate=candidate,
+                candidate_ref=candidate_ref,
+            )
             return self._session(self._policy_ref())
         if tool.action != "RUN_COMMAND" or tool.command is None:
             raise DynamicOperationalError(
                 "FAILED", "INTERNAL", "Unsupported dynamic tool action"
             )
-        selected_for_poc = self._selected_candidate_ref == candidate_ref
+        selected_for_poc = self._selected_poc
+        if selected_for_poc is not None and (
+            selected_for_poc.candidate_ref != candidate_ref
+            or selected_for_poc.environment_ref != _exact_ref(prepared.environment)
+            or selected_for_poc.recipe_ref != _exact_ref(prepared.recipe)
+        ):
+            raise DynamicOperationalError(
+                "FAILED", "EXECUTION", "Materialized PoC binding is not current"
+            )
+        command = self._command_for(tool)
+        if selected_for_poc is not None and not is_poc_execution_command(command):
+            raise DynamicOperationalError(
+                "FAILED",
+                "AGENT",
+                "PoC command does not use the runtime-owned candidate path",
+            )
         await self._execute_command(
             request=request,
             candidate_ref=candidate_ref,
             tool_ref=tool_ref,
-            command=self._command_for(tool),
+            command=command,
             poc=selected_for_poc,
         )
-        if selected_for_poc:
-            self._selected_candidate_ref = None
+        if selected_for_poc is not None:
+            self._selected_poc = None
         return self._session(self._policy_ref())
 
     async def cleanup(self, session: DynamicSandboxSession) -> DynamicSandboxSession:
@@ -564,7 +596,7 @@ class ProductionDynamicWorkflow:
         candidate_ref: StoredDataRef,
         tool_ref: StoredDataRef,
         command: SandboxCommandInput,
-        poc: bool,
+        poc: _MaterializedPoC | None,
     ) -> None:
         prepared = self._require_prepared()
         action_id = self._ids.new(ActionId)
@@ -587,7 +619,7 @@ class ProductionDynamicWorkflow:
             (tool_ref, candidate_ref),
         )
         self._commands.append(record)
-        if poc:
+        if poc is not None:
             self._append_event(
                 "POC_EXECUTION_STARTED",
                 "TOOL_RUNTIME",
@@ -595,6 +627,11 @@ class ProductionDynamicWorkflow:
                 environment_ref=_exact_ref(prepared.environment),
                 environment_recipe_ref=_exact_ref(prepared.recipe),
                 poc_candidate_ref=candidate_ref,
+                tool_request_ref=tool_ref,
+                command_ref=command_ref,
+                command_digest=record.command_digest,
+                redaction_status=record.redaction_status,
+                input_refs=(poc.content_ref,),
             )
         self._append_event(
             "COMMAND_STARTED",
@@ -602,7 +639,7 @@ class ProductionDynamicWorkflow:
             action_id=action_id,
             environment_ref=_exact_ref(prepared.environment),
             environment_recipe_ref=_exact_ref(prepared.recipe),
-            poc_candidate_ref=candidate_ref if poc else None,
+            poc_candidate_ref=candidate_ref if poc is not None else None,
             tool_request_ref=tool_ref,
             command_ref=command_ref,
             command_digest=record.command_digest,
@@ -626,7 +663,7 @@ class ProductionDynamicWorkflow:
             action_id=action_id,
             environment_ref=_exact_ref(prepared.environment),
             environment_recipe_ref=_exact_ref(prepared.recipe),
-            poc_candidate_ref=candidate_ref if poc else None,
+            poc_candidate_ref=candidate_ref if poc is not None else None,
             tool_request_ref=tool_ref,
             command_ref=command_ref,
             command_digest=record.command_digest,
@@ -634,7 +671,7 @@ class ProductionDynamicWorkflow:
             output_refs=output_refs,
             exit_code=outcome.exit_code,
         )
-        if poc:
+        if poc is not None:
             self._append_event(
                 "POC_EXECUTION_FINISHED",
                 "TOOL_RUNTIME",
@@ -642,9 +679,47 @@ class ProductionDynamicWorkflow:
                 environment_ref=_exact_ref(prepared.environment),
                 environment_recipe_ref=_exact_ref(prepared.recipe),
                 poc_candidate_ref=candidate_ref,
+                tool_request_ref=tool_ref,
+                command_ref=command_ref,
+                command_digest=record.command_digest,
+                redaction_status=record.redaction_status,
+                input_refs=(poc.content_ref,),
                 output_refs=output_refs,
                 exit_code=outcome.exit_code,
             )
+
+    async def _materialize_poc(
+        self, *, candidate: PoCCandidate, candidate_ref: StoredDataRef
+    ) -> _MaterializedPoC:
+        prepared = self._require_prepared()
+        if reference(candidate) != candidate_ref:
+            raise DynamicOperationalError(
+                "FAILED", "AGENT", "PoC candidate reference is not exact"
+            )
+        try:
+            with self._artifacts.open_verified(candidate.content_ref) as stream:
+                content = stream.read()
+            if hashlib.sha256(content).hexdigest() != candidate.content_digest:
+                raise ValueError("POC_CONTENT_DIGEST_MISMATCH")
+            runtime_path = await self._docker.materialize_poc(
+                prepared.environment.container_instance_id,
+                content,
+                candidate.content_digest,
+            )
+            if runtime_path != POC_RUNTIME_PATH:
+                raise ValueError("POC_RUNTIME_PATH_MISMATCH")
+        except Exception as error:
+            raise DynamicOperationalError(
+                "FAILED", "EXECUTION", _safe_error(error)
+            ) from error
+        return _MaterializedPoC(
+            candidate_ref=candidate_ref,
+            content_ref=candidate.content_ref,
+            content_digest=candidate.content_digest,
+            environment_ref=_exact_ref(prepared.environment),
+            recipe_ref=_exact_ref(prepared.recipe),
+            runtime_path=runtime_path,
+        )
 
     @staticmethod
     def _command_for(tool: DynamicReproductionToolRequest) -> SandboxCommandInput:
@@ -875,7 +950,7 @@ class ProductionDynamicWorkflow:
             self._work.meta.model_dump()
             | {
                 "record_id": self._ids.new(RecordId),
-                "logical_record_id": self._ids.new(RecordId),
+                "logical_record_id": self._ids.new(LogicalRecordId),
                 "record_type": kind,
                 "revision_number": 1,
                 "previous_record_id": None,

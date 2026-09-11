@@ -29,10 +29,15 @@ def _manager() -> ReproductionSessionManager:
     return ReproductionSessionManager(clock=TestClock(), ids=TestIds())
 
 
-def _add_command_pair(chain: dict[str, Any]) -> None:
+def _add_command_pair(
+    chain: dict[str, Any],
+    *,
+    executable: str = "/bin/sh",
+    arguments: tuple[str, ...] = ("/tmp/sastsimi-poc-candidate",),
+) -> None:
     command_input = make("SandboxCommandInput") | {
-        "executable": "python",
-        "arguments": ["poc.py"],
+        "executable": executable,
+        "arguments": list(arguments),
         "working_directory": "/workspace",
     }
     tool = wire(
@@ -64,30 +69,16 @@ def _add_command_pair(chain: dict[str, Any]) -> None:
     for item in raw_events:
         if item["event_type"] == "POC_CANDIDATE_CREATED":
             item["actor"] = "DYNAMIC_REPRODUCTION"
-        elif item["event_type"].startswith("POC_EXECUTION_"):
+        elif item["event_type"].startswith(("POC_EXECUTION_", "COMMAND_")):
             item["actor"] = "TOOL_RUNTIME"
-    command_event = event() | {
-        "action_id": "execute",
-        "tool_request_ref": bound(tool),
-        "command_ref": bound(command),
-        "command_digest": command.command_digest,
-        "redaction_status": command.redaction_status,
-        "environment_ref": bound(chain["environment"]),
-        "environment_recipe_ref": bound(chain["recipe"]),
-        "poc_candidate_ref": bound(chain["candidate"]),
-        "actor": "TOOL_RUNTIME",
-        "safe_message": "PoC command execution",
-    }
-    raw_events[4:4] = [
-        command_event | {"event_id": "command-start", "event_type": "COMMAND_STARTED"},
-        command_event
-        | {
-            "event_id": "command-finish",
-            "event_type": "COMMAND_FINISHED",
-            "exit_code": 0,
-            "output_refs": [ref("observation", record=False)],
-        },
-    ]
+            item["tool_request_ref"] = bound(tool)
+            item["command_ref"] = bound(command)
+            item["command_digest"] = command.command_digest
+            item["redaction_status"] = command.redaction_status
+            if item["event_type"].startswith("POC_EXECUTION_"):
+                item["input_refs"] = [
+                    chain["candidate"].content_ref.model_dump(mode="json")
+                ]
     for sequence, item in enumerate(raw_events, 1):
         item["sequence"] = sequence
     chain["log"] = wire(
@@ -139,6 +130,66 @@ def test_supported_execution_promotes_exact_candidate_once() -> None:
     assert finalized.result.poc_ref == reference(finalized.poc)
     assert finalized.poc.candidate_digest == chain["candidate"].content_digest
     assert finalized.poc.execution_action_id.root == "execute"
+
+
+def test_unrelated_successful_command_cannot_promote_candidate() -> None:
+    chain = dynamic_success()
+    _add_command_pair(chain, arguments=("unrelated.py",))
+
+    finalized = _manager().finalize(
+        data=_input(chain), log=chain["log"], meta=chain["result"].meta
+    )
+
+    assert finalized.poc is None
+    assert finalized.result.poc_ref is None
+    assert finalized.result.hypothesis_outcome == "INCONCLUSIVE"
+
+
+def test_path_as_unused_argument_cannot_promote_candidate() -> None:
+    chain = dynamic_success()
+    _add_command_pair(
+        chain,
+        executable="/bin/sh",
+        arguments=("-c", "true", "/tmp/sastsimi-poc-candidate"),
+    )
+
+    finalized = _manager().finalize(
+        data=_input(chain), log=chain["log"], meta=chain["result"].meta
+    )
+
+    assert finalized.poc is None
+    assert finalized.result.poc_ref is None
+
+
+def test_changed_materialized_candidate_digest_cannot_promote() -> None:
+    chain = _complete_supported_attempt()
+    command = chain["command_records"][0]
+    tool = chain["tool_requests"][0]
+    wrong_content_ref = chain["candidate"].content_ref.model_copy(
+        update={"content_hash": "f" * 64}
+    )
+    events = tuple(
+        item.model_copy(
+            update={
+                "command_ref": bound(command),
+                "tool_request_ref": bound(tool),
+                "command_digest": command.command_digest,
+                "redaction_status": command.redaction_status,
+                "input_refs": (wrong_content_ref,),
+            }
+        )
+        if item.event_type.startswith("POC_EXECUTION_")
+        else item
+        for item in chain["log"].events
+    )
+    chain["log"] = chain["log"].model_copy(update={"events": events})
+
+    finalized = _manager().finalize(
+        data=_input(chain), log=chain["log"], meta=chain["result"].meta
+    )
+
+    assert finalized.poc is None
+    assert finalized.result.poc_ref is None
 
 
 @pytest.mark.parametrize(

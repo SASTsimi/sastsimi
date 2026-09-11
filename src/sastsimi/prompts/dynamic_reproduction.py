@@ -43,9 +43,9 @@ DYNAMIC_REPRODUCTION_PROMPTS = (
         "poc_candidate",
         Path(
             "src/sastsimi/prompts/templates/dynamic-reproduction/"
-            "create-poc-candidate/1.0.0.md"
+            "create-poc-candidate/1.0.1.md"
         ),
-        "16fa34ba35bc15c28e58163589677ae50fe5680f3a2ce1e05185ad9b93324625",
+        "28a97b219360d759afa8b9e874c279627732be70669fef826d910c436965c4b2",
         "NEW",
         False,
     ),
@@ -54,9 +54,9 @@ DYNAMIC_REPRODUCTION_PROMPTS = (
         "dynamic_reproduction_tool_request",
         Path(
             "src/sastsimi/prompts/templates/dynamic-reproduction/"
-            "execute-reproduction/1.0.0.md"
+            "execute-reproduction/1.0.1.md"
         ),
-        "2064b4a105dab672dfaba0668dae8eab19ffa271ac2e63a51223652ba60825e3",
+        "1222ff49b5fb024298323b9938ca1eb2d01cc6c447cb0ed9f845c1216bf0f105",
         "AUTO",
         True,
     ),

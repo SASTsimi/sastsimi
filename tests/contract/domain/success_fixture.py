@@ -5,16 +5,19 @@ from typing import Any
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.dynamic import (
+    POC_RUNTIME_PATH,
     AgentLog,
     CleanupResult,
     DynamicReproductionConclusion,
     DynamicReproductionRequest,
     DynamicReproductionResult,
+    DynamicReproductionToolRequest,
     EnvironmentRecipe,
     EnvironmentRequirements,
     PoCBundle,
     PoCCandidate,
     ReproductionPlan,
+    SandboxCommandRecord,
     SandboxEnvironment,
     SandboxPolicyDecision,
 )
@@ -75,6 +78,36 @@ def dynamic_success() -> dict[str, Any]:
         make("PoCCandidate", "poc_candidate")
         | dict(request_ref=request_ref, reproduction_plan_ref=bound(plan)),
     )
+    command_input = make("SandboxCommandInput") | {
+        "executable": "/bin/sh",
+        "arguments": [POC_RUNTIME_PATH],
+        "working_directory": "/workspace",
+    }
+    tool = wire(
+        DynamicReproductionToolRequest,
+        make("DynamicReproductionToolRequest")
+        | dict(
+            request_ref=request_ref,
+            reproduction_plan_ref=bound(plan),
+            environment_ref=bound(environment),
+            action="RUN_COMMAND",
+            command=command_input,
+        ),
+    )
+    command = wire(
+        SandboxCommandRecord,
+        make("SandboxCommandRecord")
+        | command_input
+        | dict(
+            request_ref=request_ref,
+            reproduction_plan_ref=bound(plan),
+            environment_recipe_ref=bound(recipe),
+            environment_ref=bound(environment),
+            tool_request_ref=bound(tool),
+            command_digest=content_hash(command_input),
+            action_id="execute",
+        ),
+    )
     events = []
     for number, (event_type, action) in enumerate(
         [
@@ -82,6 +115,8 @@ def dynamic_success() -> dict[str, Any]:
             ("AGENT_STARTED", "agent"),
             ("POC_CANDIDATE_CREATED", "candidate"),
             ("POC_EXECUTION_STARTED", "execute"),
+            ("COMMAND_STARTED", "execute"),
+            ("COMMAND_FINISHED", "execute"),
             ("POC_EXECUTION_FINISHED", "execute"),
             ("AGENT_FINISHED", "agent"),
             ("SESSION_FINISHED", "session"),
@@ -100,7 +135,20 @@ def dynamic_success() -> dict[str, Any]:
             item["input_refs"] = [bound(policy)]
         if event_type.startswith("POC_"):
             item["poc_candidate_ref"] = bound(candidate)
-        if event_type == "POC_EXECUTION_FINISHED":
+        if event_type.startswith("POC_EXECUTION_") or event_type.startswith(
+            "COMMAND_"
+        ):
+            item.update(
+                actor="TOOL_RUNTIME",
+                poc_candidate_ref=bound(candidate),
+                tool_request_ref=bound(tool),
+                command_ref=bound(command),
+                command_digest=command.command_digest,
+                redaction_status=command.redaction_status,
+            )
+        if event_type.startswith("POC_EXECUTION_"):
+            item["input_refs"] = [candidate.content_ref.model_dump(mode="json")]
+        if event_type in {"POC_EXECUTION_FINISHED", "COMMAND_FINISHED"}:
             item["exit_code"] = 0
             item["output_refs"] = [ref("observation", record=False)]
         events.append(item)
@@ -181,4 +229,6 @@ def dynamic_success() -> dict[str, Any]:
         poc=poc,
         cleanup=cleanup,
         result=result,
+        command_records=(command,),
+        tool_requests=(tool,),
     )
