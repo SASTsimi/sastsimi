@@ -144,10 +144,30 @@ class DockerAdapter:
     async def remove(self, resource_ids: tuple[str, ...]) -> None: ...
 
 class ReproductionSetupAutomation:
-    async def prepare(
+    async def preflight(
+        self,
+        *,
+        workspace_root: Path,
+        request: DynamicReproductionRequest,
+        requirements: EnvironmentRequirements,
+        meta: RecordMeta,
+    ) -> PreparedRecipeSource: ...
+
+    async def build(
+        self,
+        *,
+        approval: SandboxBuildBoundaryOutcome,
+        source: PreparedRecipeSource,
+        request: DynamicReproductionRequest,
+        requirements: EnvironmentRequirements,
+        meta: RecordMeta,
+    ) -> EnvironmentRecipe: ...
+
+    async def create(
         self,
         *,
         approval: SandboxBoundaryOutcome,
+        recipe: EnvironmentRecipe,
         request: DynamicReproductionRequest,
         requirements: EnvironmentRequirements,
         plan: ReproductionPlan,
@@ -157,6 +177,7 @@ class ReproductionSetupAutomation:
     async def recreate(
         self,
         *,
+        approval: SandboxBoundaryOutcome,
         previous: PreparedSandbox,
         reason: Literal["STATE_CHANGED", "CONFIG_CHANGED", "STATE_UNCERTAIN"],
         meta: RecordMeta,
@@ -542,13 +563,14 @@ Expected: FAIL. 현재 `reproduction/service.py`는 fake factory와 미리 만�
 
 1. exact `DynamicReproductionRequest`와 current DYNAMIC_REPRO work/attempt를 확인한다.
 2. `derive_environment`와 `plan_reproduction`을 Sandbox 밖 read-only/no-tools 호출로 실행한다.
-3. Reproduction Setup Automation이 `RUN_SANDBOX`를 요청하고 Runtime Validator가 exact request/requirements/plan/profile/lifecycle budget을 검사한다.
-4. Sandbox Controller가 외부 경계를 검사한다. DENY면 Agent를 호출하지 않고 Session Manager가 `POLICY_BLOCKED + INCONCLUSIVE`, `agent_invoked=false`, `poc_ref=null`과 log를 확정한다.
-5. ALLOW면 setup이 clean environment를 준비하고 Agent를 시작한다.
-6. candidate를 만들고 `next_tool_request` 한 개씩 받는다. Runtime이 승인된 container 통로에서 실행하고 Session Manager가 실제 event를 기록한다.
-7. `REQUEST_SANDBOX_RECREATE` 또는 강제 `STATE_UNCERTAIN`이면 B의 recreate를 호출하고 old/new environment link를 log에 남긴다.
-8. `FINISH` 뒤에만 `interpret_attempt`을 호출한다.
-9. cleanup을 실행한 뒤 C의 finalize와 trusted storage terminal commit을 호출한다.
+3. setup preflight가 Docker를 호출하지 않고 exact recipe source를 만든다.
+4. build용 `RUN_SANDBOX` action/decision을 만들고 claim한 뒤 Controller가 source와 외부 경계를 검사한다. DENY면 Docker를 호출하지 않고 Session Manager가 차단 결과와 log를 확정한다.
+5. ALLOW면 image를 inspect/build하고 actual digest의 `EnvironmentRecipe`를 저장한다.
+6. run용 새 `RUN_SANDBOX` action/decision이 exact recipe·actual digest·build 승인 provenance를 고정한다. 이를 claim하고 Controller가 다시 허용한 뒤에만 clean container를 만들고 Agent를 시작한다.
+7. candidate를 만들고 `next_tool_request` 한 개씩 받는다. Runtime이 승인된 container 통로에서 실행하고 Session Manager가 실제 event를 기록한다.
+8. `REQUEST_SANDBOX_RECREATE` 또는 강제 `STATE_UNCERTAIN`이면 current recipe·환경·사유를 고정한 새 run action/decision을 거친 뒤 recreate를 호출하고 old/new environment link를 log에 남긴다.
+9. `FINISH` 뒤에만 `interpret_attempt`을 호출한다.
+10. cleanup을 실행한 뒤 C의 finalize와 trusted storage terminal commit을 호출한다.
 
 `max_new_attempts`, wall-time과 work budget을 소진하면 `FAILED + INCONCLUSIVE`; retry 가능한 일시 실패는 같은 work의 새 attempt다. exact request 또는 profile ref 변경은 같은 attempt retry가 아니라 R6의 새 Verification generation이므로 이 service가 자동 교체하지 않는다.
 
