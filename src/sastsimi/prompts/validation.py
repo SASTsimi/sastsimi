@@ -224,6 +224,35 @@ def _json_type(value: object, expected: str) -> bool:
     }.get(expected, False)
 
 
+def _json_equal(left: object, right: object) -> bool:
+    """Compare JSON values without Python's bool/int equality collapse."""
+    if isinstance(left, bool) or isinstance(right, bool):
+        return isinstance(left, bool) and isinstance(right, bool) and left is right
+    if isinstance(left, (int, float)) or isinstance(right, (int, float)):
+        return (
+            isinstance(left, (int, float))
+            and not isinstance(left, bool)
+            and isinstance(right, (int, float))
+            and not isinstance(right, bool)
+            and left == right
+        )
+    if isinstance(left, Mapping) or isinstance(right, Mapping):
+        return (
+            isinstance(left, Mapping)
+            and isinstance(right, Mapping)
+            and set(left) == set(right)
+            and all(_json_equal(left[key], right[key]) for key in left)
+        )
+    if isinstance(left, list) or isinstance(right, list):
+        return (
+            isinstance(left, list)
+            and isinstance(right, list)
+            and len(left) == len(right)
+            and all(_json_equal(a, b) for a, b in zip(left, right, strict=True))
+        )
+    return type(left) is type(right) and left == right
+
+
 def _pointer(root: Mapping[str, object], pointer: str) -> object:
     if not pointer.startswith("#/"):
         raise _SchemaDefinitionError("unsupported JSON Schema reference")
@@ -278,13 +307,13 @@ def _validate_schema(
             raise _SchemaDefinitionError("invalid JSON Schema type")
         if not any(_json_type(value, item) for item in types):
             raise _SchemaMismatch(path)
-    if "const" in schema and value != schema["const"]:
+    if "const" in schema and not _json_equal(value, schema["const"]):
         raise _SchemaMismatch(path)
     if "enum" in schema:
         choices = schema["enum"]
         if not isinstance(choices, Sequence) or isinstance(choices, (str, bytes)):
             raise _SchemaDefinitionError("invalid JSON Schema enum")
-        if value not in choices:
+        if not any(_json_equal(value, choice) for choice in choices):
             raise _SchemaMismatch(path)
     if isinstance(value, dict):
         required = schema.get("required", ())

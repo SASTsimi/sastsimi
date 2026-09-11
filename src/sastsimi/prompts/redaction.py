@@ -13,12 +13,30 @@ _SECRET_KEY = re.compile(
     re.IGNORECASE,
 )
 _HIDDEN_KEY = re.compile(r"(?:chain[_-]?of[_-]?thought|hidden[_-]?reasoning)", re.I)
-_TOKEN = re.compile(
+_OPAQUE_TOKEN = re.compile(
     r"(?i)(?:\b(?:bearer|basic)\s+[^\s,;]+|\bsk-[A-Za-z0-9_-]{8,}|"
-    r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,})"
+    r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}|"
+    r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{8,}|"
+    r"\bglpat-[A-Za-z0-9_-]{8,}|\bxox[A-Za-z0-9]*-[A-Za-z0-9-]{8,}|"
+    r"\bAKIA[A-Z0-9]{12,})"
 )
-_WINDOWS_PATH = re.compile(r"""(?i)\b[A-Z]:\\(?:[^\s\\]+\\)*[^\s,;"']+""")
-_POSIX_HOST_PATH = re.compile(r"""(?<![\w/])/(?:home|Users|tmp|etc|var)/[^\s,;"']+""")
+_COOKIE_ASSIGNMENT = re.compile(
+    r"(?i)\b(?:cookies?|session[_-]?ids?|sessionid)\b\s*[:=]\s*"
+    r'(?:"[^"\r\n]*"|\'[^\'\r\n]*\'|[^\s,;]+)'
+)
+_TOKEN_ASSIGNMENT = re.compile(
+    r"(?i)\b(?:access[_-]?tokens?|refresh[_-]?tokens?|tokens?)\b\s*[:=]\s*"
+    r'(?:"[^"\r\n]*"|\'[^\'\r\n]*\'|[^\s,;]+)'
+)
+_CREDENTIAL_ASSIGNMENT = re.compile(
+    r"(?i)\b(?:api[_-]?keys?|client[_-]?secrets?|passwords?|passwd|pwd|"
+    r"secrets?|authorization|auth)\b\s*[:=]\s*"
+    r'(?:"[^"\r\n]*"|\'[^\'\r\n]*\'|(?:bearer|basic)\s+[^\s,;]+|[^\s,;]+)'
+)
+_WINDOWS_PATH = re.compile(r"""(?i)(?<![\w])(?:[A-Z]:[\\/]|\\\\)[^\s,;"']+""")
+_POSIX_HOST_PATH = re.compile(
+    r"""(?<![\w/])/(?:root|home|Users|tmp|etc|var|opt|srv|usr|private)/[^\s,;"']+"""
+)
 
 
 @dataclass(frozen=True)
@@ -30,7 +48,15 @@ class RedactionResult:
 def _replace_string(value: str) -> tuple[str, set[str]]:
     result = value
     categories: set[str] = set()
-    result, token_count = _TOKEN.subn("[REDACTED:TOKEN]", result)
+    for pattern, category in (
+        (_COOKIE_ASSIGNMENT, "COOKIE"),
+        (_TOKEN_ASSIGNMENT, "TOKEN"),
+        (_CREDENTIAL_ASSIGNMENT, "CREDENTIAL"),
+    ):
+        result, count = pattern.subn(f"[REDACTED:{category}]", result)
+        if count:
+            categories.add(category)
+    result, token_count = _OPAQUE_TOKEN.subn("[REDACTED:TOKEN]", result)
     if token_count:
         categories.add("TOKEN")
     result, windows_count = _WINDOWS_PATH.subn("[REDACTED:HOST_ABSOLUTE_PATH]", result)
@@ -79,7 +105,10 @@ def _has_sensitive_string(value: object) -> bool:
         return any(_has_sensitive_string(item) for item in value)
     if isinstance(value, str):
         return bool(
-            _TOKEN.search(value)
+            _OPAQUE_TOKEN.search(value)
+            or _COOKIE_ASSIGNMENT.search(value)
+            or _TOKEN_ASSIGNMENT.search(value)
+            or _CREDENTIAL_ASSIGNMENT.search(value)
             or _WINDOWS_PATH.search(value)
             or _POSIX_HOST_PATH.search(value)
         )

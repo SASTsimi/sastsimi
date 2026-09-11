@@ -154,6 +154,10 @@ class PromptBuilder:
             raise ValueError("PROMPT_PAYLOAD_HASH_MISMATCH")
         if _stored_ref(provider) != provider_profile_ref:
             raise ValueError("PROVIDER_PROFILE_HASH_MISMATCH")
+        if (entry.session_policy == "NEW" and parent_session_ref is not None) or (
+            entry.session_policy == "RESUME" and parent_session_ref is None
+        ):
+            raise ValueError("PROMPT_SESSION_MISMATCH")
         if provider_profile_ref not in entry.provider_profile_refs:
             raise ValueError("PROVIDER_PROFILE_DENIED")
         if provider.support_status != "SUPPORTED" or provider.model != model:
@@ -190,8 +194,6 @@ class PromptBuilder:
         )
         if not expected_payload:
             raise ValueError("PROMPT_PAYLOAD_MISMATCH")
-        if entry.session_policy == "NEW" and parent_session_ref is not None:
-            raise ValueError("PROMPT_SESSION_MISMATCH")
         schema_bytes = self.read_artifact(output_schema.schema_artifact_ref)
         try:
             schema_value = json.loads(schema_bytes.decode("utf-8"))
