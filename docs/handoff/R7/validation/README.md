@@ -4,6 +4,10 @@ These drafts verify four R7 environment and lifecycle cases with one reusable,
 synthetic, local-only Flask project. Project code and analysis results are case
 inputs; they are not embedded in the reusable Agent prompts.
 
+They also verify five required Prompt Runtime cases for each of the five R7
+task templates listed in [`prompt-tasks/README.md`](./prompt-tasks/README.md): normal output, schema error, semantic
+error, prompt injection, and stale or cross-attempt references.
+
 ## Fixture ground truth
 
 `fixture/app.py` deliberately resolves an untrusted file path without
@@ -70,6 +74,33 @@ name the facts and distinctions that the text must preserve.
 | `environment-setup-failure.input.json` | `environment-setup-failure.expected.json` | A required Python version check fails after admission but before the Sandbox Agent starts. |
 | `execution-cancelled.input.json` | `execution-cancelled.expected.json` | Runtime cancellation interrupts an accepted PoC execution and excludes late output. |
 | `cleanup-failure.input.json` | `cleanup-failure.expected.json` | Supporting evidence and a validated PoC remain valid while post-run cleanup fails. |
+
+## Task prompt suites
+
+Each task directory contains `cases.input.json` and `cases.expected.json`.
+The input file provides one canonical valid candidate plus explicit mutations
+for the error cases. The expected file fixes the output schema, semantic
+validator, result kind, required checks, and whether Runtime accepts the output
+or blocks it before storage or model invocation.
+
+| Task directory | Required cases |
+|---|---|
+| `prompt-tasks/derive-environment/` | normal, schema, semantic, injection, stale reference |
+| `prompt-tasks/plan-reproduction/` | normal, schema, semantic, injection, stale reference |
+| `prompt-tasks/create-poc-candidate/` | normal, schema, semantic, injection, stale reference |
+| `prompt-tasks/execute-reproduction/` | normal, schema, semantic, injection, stale reference |
+| `prompt-tasks/interpret-attempt/` | normal, schema, semantic, injection, stale reference |
+
+Run all handoff checks with:
+
+```text
+uv run python scripts/validate-r7-handoff.py
+```
+
+`tests/contract/test_r7_handoff_validation.py` runs the same command in the
+normal CI test suite. It validates both envelope schemas, pair identities,
+source hashes, task input slots and cardinality, all eight assertion operators,
+output schema behavior, semantic rejection, and mixed-scope blocking.
 
 ## Ownership boundary
 

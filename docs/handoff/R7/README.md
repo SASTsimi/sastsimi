@@ -5,12 +5,19 @@ ACTIVE Prompt Registry template.
 
 Implementation handoff: [`handoff.md`](./handoff.md)
 
-## Prompt
+## Prompts
 
-[`r7-dynamic-reproduction-agent-prompt.md`](./r7-dynamic-reproduction-agent-prompt.md) contains the common role and boundaries together with
-all five task-specific instructions. The runtime uses this single prompt for
-every R7 invocation, supplies the exact `task_kind` and authorized input slots,
-and the Agent applies only the section matching the current task kind.
+Each R7 task has an independent, complete, versioned template. The Prompt
+Runtime selects exactly one Registry entry and supplies only that task's input
+slots and output schema.
+
+- [`DERIVE_ENVIRONMENT`](./prompts/derive-environment/1.0.0.md)
+- [`PLAN_REPRODUCTION`](./prompts/plan-reproduction/1.0.0.md)
+- [`CREATE_POC_CANDIDATE`](./prompts/create-poc-candidate/1.0.0.md)
+- [`EXECUTE_REPRODUCTION`](./prompts/execute-reproduction/1.0.0.md)
+- [`INTERPRET_ATTEMPT`](./prompts/interpret-attempt/1.0.0.md)
+
+No template contains another task's instructions or output schema.
 
 ## Invocation order
 
@@ -30,10 +37,15 @@ failure, execution cancellation, and post-run cleanup state. The expected files
 fix stable schema and ownership conditions while expressing variable natural
 language through required evidence and prohibited-claim assertions.
 
+[`validation/prompt-tasks/README.md`](./validation/prompt-tasks/README.md) adds five cases for each
+task: normal output, schema error, semantic error, prompt injection, and stale
+or cross-attempt input. `scripts/validate-r7-handoff.py` executes these checks in
+CI through `tests/contract/test_r7_handoff_validation.py`.
+
 ## Review points
 
-- Confirm the common role and Sandbox boundary without reducing execution-stage
-  autonomy.
+- Confirm the repeated role and Sandbox boundaries in each standalone template
+  without reducing execution-stage autonomy.
 - Confirm each task receives only the input slots listed in the current prompt
   runtime design.
 - Confirm each invocation returns exactly one artifact of its registered result
@@ -49,7 +61,10 @@ language through required evidence and prohibited-claim assertions.
 - Confirm how `CREATE_POC_CANDIDATE` receives the actual code context needed to
   author a code-specific candidate. The current prompt-runtime slot contract
   supplies request references, plan, and environment, but no dereferenced code
-  fragments or previous candidate content.
+  fragments or previous candidate content. This is tracked in
+  [#162](https://github.com/SASTsimi/sastsimi/issues/162), together with Runtime
+  ownership of candidate persistence metadata. Do not activate the R7 Registry
+  entries until that contract is resolved.
 - Confirm the runtime-owned failure channel for contradictory request and
   requirement inputs because `ReproductionPlan` has no error or limitation
   fields and the Agent must not invent them.

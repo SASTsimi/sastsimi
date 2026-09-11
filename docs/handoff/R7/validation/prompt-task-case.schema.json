@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sastsimi.local/schemas/r7-prompt-task-case.v1.json",
+  "title": "R7 prompt task validation suite",
+  "type": "object",
+  "required": [
+    "case_schema_version",
+    "suite_id",
+    "task_kind",
+    "source",
+    "scope",
+    "base_input_slots",
+    "base_candidate_output",
+    "scenarios"
+  ],
+  "properties": {
+    "case_schema_version": {"const": "r7-prompt-task-case.v1"},
+    "suite_id": {"type": "string", "minLength": 1},
+    "task_kind": {
+      "enum": [
+        "DERIVE_ENVIRONMENT",
+        "PLAN_REPRODUCTION",
+        "CREATE_POC_CANDIDATE",
+        "EXECUTE_REPRODUCTION",
+        "INTERPRET_ATTEMPT"
+      ]
+    },
+    "source": {
+      "type": "object",
+      "required": ["type", "fixture_path"],
+      "properties": {
+        "type": {"const": "SYNTHETIC_PROMPT_RUNTIME_CASES"},
+        "fixture_path": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "scope": {
+      "type": "object",
+      "required": [
+        "analysis_id",
+        "workspace_id",
+        "commit_id",
+        "hypothesis_id",
+        "verification_generation",
+        "work_id",
+        "attempt_id"
+      ],
+      "properties": {
+        "analysis_id": {"type": "string", "minLength": 1},
+        "workspace_id": {"type": "string", "minLength": 1},
+        "commit_id": {"type": "string", "minLength": 1},
+        "hypothesis_id": {"type": "string", "minLength": 1},
+        "verification_generation": {"type": "integer"},
+        "work_id": {"type": "string", "minLength": 1},
+        "attempt_id": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "base_input_slots": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["ref", "scope", "payload"],
+          "properties": {
+            "ref": {"type": "string", "minLength": 1},
+            "scope": {"type": "object"},
+            "payload": {}
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    "base_candidate_output": {"type": "object"},
+    "scenarios": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["scenario_id", "category"],
+        "properties": {
+          "scenario_id": {"type": "string", "minLength": 1},
+          "category": {
+            "enum": [
+              "NORMAL_OUTPUT",
+              "SCHEMA_ERROR",
+              "SEMANTIC_ERROR",
+              "PROMPT_INJECTION",
+              "STALE_REFERENCE"
+            ]
+          },
+          "output_mutations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["op", "path"],
+              "properties": {
+                "op": {"enum": ["remove", "replace", "add"]},
+                "path": {"type": "string", "minLength": 1},
+                "value": {}
+              },
+              "additionalProperties": false
+            }
+          },
+          "input_scope_overrides": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["slot", "index", "field", "value"],
+              "properties": {
+                "slot": {"type": "string", "minLength": 1},
+                "index": {"type": "integer"},
+                "field": {"type": "string", "minLength": 1},
+                "value": {}
+              },
+              "additionalProperties": false
+            }
+          },
+          "untrusted_injections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["slot", "text"],
+              "properties": {
+                "slot": {"type": "string", "minLength": 1},
+                "text": {"type": "string", "minLength": 1}
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -17,10 +17,12 @@
 
 | 구분 | 파일 | 용도 |
 |---|---|---|
-| 통합 프롬프트 | [`r7-dynamic-reproduction-agent-prompt.md`](./r7-dynamic-reproduction-agent-prompt.md) | 공통 역할·경계와 다섯 task별 입력·판단 기준·출력 schema를 한 파일에서 정의 |
+| task별 프롬프트 | [`prompts/README.md`](./prompts/README.md) | 다섯 task 각각의 공통 역할·경계, 입력·판단 기준과 출력 schema를 독립된 `1.0.0.md`로 정의 |
 | 검증 자료 안내 | [`validation/README.md`](./validation/README.md) | fixture, 사례 형식, assertion 연산자와 소유권 설명 |
 | 입력 형식 | [`validation/validation-case.schema.json`](./validation/validation-case.schema.json) | 검증용 입력 envelope schema |
 | 기대 결과 형식 | [`validation/validation-expectation.schema.json`](./validation/validation-expectation.schema.json) | 검증용 기대 결과 envelope schema |
+| task 검증 형식 | [`validation/prompt-task-case.schema.json`](./validation/prompt-task-case.schema.json), [`validation/prompt-task-expectation.schema.json`](./validation/prompt-task-expectation.schema.json) | 다섯 task의 정상·schema·semantic·injection·stale 사례 형식 |
+| 자동 검증 | [`scripts/validate-r7-handoff.py`](../../../scripts/validate-r7-handoff.py) | template 구조, JSON schema, pair, source hash, slot, 출력 및 차단 결과를 검사 |
 
 ## 3. 실행 순서
 
@@ -41,10 +43,10 @@ Session Manager가 append-only `AgentLog`에 기록한 뒤 다음 turn에 다시
 
 ## 4. 프롬프트 조립과 입출력
 
-Prompt Runtime은 매 호출에서 하나의 통합 프롬프트를 사용하고 정확한
-`task_kind`, 허용된 입력 slot, tool policy, 실행 제한, retry 정책과 redaction
-정책을 함께 제공한다. Agent는 통합 프롬프트에서 현재 `task_kind`와 일치하는
-단계 지침과 출력 schema만 적용하며, 한 LLM 호출은 등록된 result kind 하나만
+Prompt Runtime은 매 호출에서 현재 `task_kind`의 독립된 Registry entry와
+versioned template 하나를 선택하고, 허용된 입력 slot, tool policy, 실행 제한,
+retry 정책과 redaction 정책을 함께 제공한다. 다른 task의 지시문이나 출력
+schema는 호출에 포함하지 않으며 한 LLM 호출은 등록된 result kind 하나만
 반환한다.
 
 | Task | 입력 slot | 출력 | Tool/session |
@@ -58,7 +60,11 @@ Prompt Runtime은 매 호출에서 하나의 통합 프롬프트를 사용하고
 Prompt Registry 구현 대상 경로는 다음과 같다.
 
 ```text
-config/prompts/templates/dynamic_reproduction/1.0.0.md
+config/prompts/templates/dynamic_reproduction/derive-environment/1.0.0.md
+config/prompts/templates/dynamic_reproduction/plan-reproduction/1.0.0.md
+config/prompts/templates/dynamic_reproduction/create-poc-candidate/1.0.0.md
+config/prompts/templates/dynamic_reproduction/execute-reproduction/1.0.0.md
+config/prompts/templates/dynamic_reproduction/interpret-attempt/1.0.0.md
 ```
 
 초안 파일을 그대로 복사해 ACTIVE로 지정하지 않는다. Prompt Registry 등록 전에
@@ -124,6 +130,13 @@ network egress를 사용하지 않는다.
 
 ## 7. 검증 사례와 기대 결과
 
+각 task는 [`validation/prompt-tasks/README.md`](./validation/prompt-tasks/README.md) 아래에 정상 출력,
+schema 오류, semantic 오류, prompt injection, stale 또는 다른 attempt reference
+혼합 사례를 하나씩 둔다. 총 25개 사례는 task별 허용 input slot과 cardinality,
+등록 output schema와 semantic validator, 모델 호출 전 stale 차단을 검사한다.
+
+기존 네 사례는 환경과 실행 lifecycle의 trusted component 동작을 검사한다.
+
 | 사례 | 입력과 기대 결과 | 반드시 확인할 조건 |
 |---|---|---|
 | 환경 준비 성공 | [`environment-ready.input.json`](./validation/environment-ready.input.json), [`environment-ready.expected.json`](./validation/environment-ready.expected.json) | requirements·plan 생성 후 `RUN_SANDBOX`가 허가되고 모든 필수 환경 check가 `MATCH`, 환경은 `READY`. 이 상태만으로 취약점이나 validated PoC를 주장하지 않음 |
@@ -149,30 +162,34 @@ record 전체가 아니다. `*.expected.json`은 안정적인 record projection,
 - validated `PoCBundle`은 exact candidate revision과 digest가 실제 실행되고 이를
   지지하는 관찰이 기록된 경우에만 Session Manager가 생성한다.
 - setup·provider·runtime·timeout·취소·cleanup 실패를 가설 반증으로 변환하지 않는다.
-- 네 검증 사례의 schema, source hash, ownership, reference, 상태와 금지 주장
-  assertion이 모두 통과한다.
+- task별 25개 사례의 허용 input slot, output schema, semantic 결과, prompt
+  injection 처리와 stale reference 차단이 모두 기대 결과와 일치한다.
+- 네 lifecycle 사례의 schema, source hash, ownership, reference, 상태와 금지
+  주장 assertion이 모두 통과한다.
+- `tests/contract/test_r7_handoff_validation.py`를 통해 위 검사가 CI에서 자동
+  실행된다.
 
 ## 9. 구현 전에 확인할 연결 사항
 
 아래 항목은 프롬프트 문장으로 임의 확정하지 않고 담당 계약과 함께 정한다.
 
-1. `CREATE_POC_CANDIDATE`의 현재 Prompt Runtime slot에는 dereference된 실제 코드
-   fragment나 이전 candidate 본문이 없다. 코드별 PoC를 만들기 위해 어떤 기존
-   record projection을 추가할지 R3 Prompt Runtime, R4 공통 계약, R6 요청 담당이
-   함께 확인한다.
-2. `PoCCandidate.content_ref`, `content_digest`, `llm_call_id`와 기타 저장 metadata를
-   Agent가 생성하지 않고 Runtime persistence가 채우는 방식을 R3·R4가 확정한다.
-3. request와 requirements가 모순되어 `ReproductionPlan`을 만들 수 없을 때 사용할
+1. [`#162`](https://github.com/SASTsimi/sastsimi/issues/162)에서
+   `CREATE_POC_CANDIDATE`에 제공할 dereference된 실제 코드 fragment와
+   `PoCCandidate.content_ref`, `content_digest`, `llm_call_id` 등 Runtime 소유
+   metadata의 persistence·주입 계약을 확정한다. 해결 전에는 R7 Registry entry를
+   `ACTIVE`로 전환하지 않는다.
+2. request와 requirements가 모순되어 `ReproductionPlan`을 만들 수 없을 때 사용할
    Runtime 소유 실패 channel을 R3·R4·R6가 확인한다. Agent가 한쪽 입력을 임의로
    약화하거나 지원되지 않는 값을 채우지 않는다.
-4. R8은 네 사례를 평가 자료에 연결할 때 자유형 문장 대신 assertion에 명시된
+3. R8은 네 lifecycle 사례와 task별 25개 사례를 평가 자료에 연결할 때 자유형
+   문장 대신 assertion에 명시된
    근거, ownership, 상태, 비용과 실행 시간을 채점 기준으로 사용한다.
 
 ## 10. 교차 리뷰 요청
 
 | 담당 파트 | 확인 요청 사항 |
 |---|---|
-| R3 Prompt Runtime·통합 | 단일 프롬프트의 task 선택, task별 input projection, 한 호출당 한 artifact, `EXECUTE_REPRODUCTION`의 Sandbox 내부 tool loop와 session 유지, Runtime 소유 metadata 주입 방식을 검토 |
+| R3 Prompt Runtime·통합 | task별 Registry entry와 template 선택, task별 input projection, 한 호출당 한 artifact, `EXECUTE_REPRODUCTION`의 Sandbox 내부 tool loop와 session 유지, Runtime 소유 metadata 주입 방식을 검토 |
 | R6 Verification | `DynamicReproductionRequest`의 목적·필수 조건이 requirements·plan에서 약화되지 않는지, R7의 `SUPPORTED | DISPROVED | INCONCLUSIVE`를 최종 `TRUE | FALSE | HOLD`와 분리해 소비할 수 있는지 검토 |
 
 각 검토자는 확인한 commit SHA와 담당 항목, 수정 요구 또는 승인 의견을 PR에
