@@ -25,11 +25,14 @@ from sastsimi.contracts.llm import (
     SemanticValidatorSpec,
 )
 from sastsimi.contracts.prompt_projection import project_prompt_value
+from sastsimi.contracts.prompt_redaction import (
+    redact_projected_json,
+    render_provider_prompt,
+)
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef
 from sastsimi.ports.dto import CapabilityProbeResult
 from sastsimi.ports.fake_workflow import ProviderProber
-from sastsimi.prompts.redaction import redact_projected_json, render_provider_prompt
 from sastsimi.runtime.fake_support import FakeEvidence
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner

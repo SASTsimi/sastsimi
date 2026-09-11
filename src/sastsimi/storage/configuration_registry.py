@@ -35,11 +35,14 @@ from sastsimi.contracts.llm import (
     SemanticValidatorSpec,
 )
 from sastsimi.contracts.prompt_projection import project_prompt_value
+from sastsimi.contracts.prompt_redaction import (
+    redact_projected_json,
+    render_provider_prompt,
+)
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.dto import CapabilityProbeResult, Record
-from sastsimi.prompts.redaction import redact_projected_json, render_provider_prompt
 
 from . import models
 from .codec import reference

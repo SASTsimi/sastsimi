@@ -80,3 +80,23 @@ def test_storage_replay_helpers_never_persist_or_render_injected_secrets() -> No
         assert sensitive not in projected + rendered
     assert rendered.count(b"</UNTRUSTED_DATA>") == 1
     assert b"\\u003c/UNTRUSTED_DATA\\u003e" in rendered
+
+
+def test_database_credentials_private_keys_and_spaced_paths_never_survive() -> None:
+    raw = canonical_bytes(
+        {
+            "database_url": "postgresql://alice:s3cr3t@db.internal/app",
+            "material": (
+                "-----BEGIN PRIVATE KEY-----\nabc123\n"
+                "-----END PRIVATE KEY-----"
+            ),
+            "location": r"C:\Users\Jane Doe\private\repo.py",
+        }
+    )
+
+    result = redact_projected_json(raw)
+
+    assert b"s3cr3t" not in result.data
+    assert b"PRIVATE KEY" not in result.data
+    assert b"Jane Doe" not in result.data
+    assert set(result.categories) == {"CREDENTIAL", "HOST_ABSOLUTE_PATH"}
