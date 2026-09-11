@@ -165,7 +165,7 @@ T10의 `finalize_without_dynamic`은 `FALSE | HOLD`만 저장한다. initial TRU
 - Modify: `src/sastsimi/bootstrap.py`
 - Modify: `src/sastsimi/prompts/templates/hypothesis/generate-initial/1.0.0.md`
 - Create: `src/sastsimi/prompts/templates/pro/collect-support/1.0.0.md`
-- Create: `src/sastsimi/prompts/templates/con/collect-counterevidence/1.0.0.md`
+- Create: `src/sastsimi/prompts/templates/con-agent/collect-counterevidence/1.0.0.md`
 - Create: `src/sastsimi/prompts/templates/verification/assess-initial/1.0.0.md`
 - Create: `src/sastsimi/prompts/templates/verification/final-verdict/1.0.0.md`
 - Modify: prompt registry seed/configuration files
@@ -401,7 +401,7 @@ Expected: 모두 exit code 0. Windows에서 권한이 잠긴 임시 폴더를 �
 - [ ] **Step 8: 통합 commit을 만든다**
 
 ```text
-git add src/sastsimi/agents/__init__.py src/sastsimi/orchestration/hypothesis_workflow.py src/sastsimi/storage/hypothesis_projections.py src/sastsimi/verification/__init__.py src/sastsimi/runtime/services.py src/sastsimi/bootstrap.py src/sastsimi/prompts/templates/hypothesis/generate-initial/1.0.0.md src/sastsimi/prompts/templates/pro/review-evidence/1.0.0.md src/sastsimi/prompts/templates/con/review-evidence/1.0.0.md src/sastsimi/prompts/templates/verification/assess-initial/1.0.0.md src/sastsimi/prompts/templates/verification/final-verdict/1.0.0.md tests/integration/verification/conftest.py tests/integration/verification/test_false_flow.py docs/superpowers/plans/implementation/10-llm-verification.md
+git add src/sastsimi/agents/__init__.py src/sastsimi/orchestration/hypothesis_workflow.py src/sastsimi/storage/hypothesis_projections.py src/sastsimi/verification/__init__.py src/sastsimi/runtime/services.py src/sastsimi/bootstrap.py src/sastsimi/prompts/templates/hypothesis/generate-initial/1.0.0.md src/sastsimi/prompts/templates/pro/collect-support/1.0.0.md src/sastsimi/prompts/templates/con-agent/collect-counterevidence/1.0.0.md src/sastsimi/prompts/templates/verification/assess-initial/1.0.0.md src/sastsimi/prompts/templates/verification/final-verdict/1.0.0.md tests/integration/verification/conftest.py tests/integration/verification/test_false_flow.py docs/superpowers/plans/implementation/10-llm-verification.md
 git commit -m "feat: compose T10 LLM verification flow"
 ```
 
