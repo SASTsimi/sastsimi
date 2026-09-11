@@ -1,9 +1,9 @@
 {
   "_note": {
     "how_to_read": "must를 전부 만족하고 must_not에 하나도 걸리지 않으면 통과입니다. example_valid_output은 통과하는 출력 하나일 뿐 정답이 아닙니다.",
-    "the_point": "match가 성립하는 것보다, 계기가 끼지 않은 조합을 만들지 않는지가 이 사례의 판정 기준입니다.",
+    "the_point": "Primitive가 둘일 때는 드러나지 않는 조합 열거를 봅니다. 담당을 추측해 조합을 빼지 않는지가 판정 기준입니다.",
     "grading": "각 항목의 grading은 판정 방법입니다. auto는 출력 JSON만 보고 코드로 판정할 수 있는 구조·값·개수이고, judgement는 자연어의 의미를 봐야 해서 LLM-judge나 사람 검토가 필요한 항목입니다. 자동 시험에 연결할 때 auto만 하네스가 강제하고 judgement는 별도 경로로 채점해야 합니다.",
-    "scenario": "저장 순서 prim-000A -> prim-000B -> prim-000C, 계기는 prim-000C. 검토 대상은 (prim-000C.result -> prim-000A.d-a-1)과 (prim-000C.result -> prim-000B.d-b-1, d-b-2) 셋뿐입니다."
+    "scenario": "저장 순서 prim-000A -> prim-000B -> prim-000C. 검토 대상은 considered의 모든 조합 여섯이고 그중 둘이 성립합니다 — (prim-000C.result -> prim-000B.d-b-2)와 (prim-000A.result -> prim-000B.d-b-1). 나머지 넷은 no_match_reasons에 남습니다."
   },
   "must": [
     {

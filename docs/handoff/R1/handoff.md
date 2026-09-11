@@ -130,7 +130,7 @@ LLM 출력은 실행마다 문장이 달라집니다. 그래서 문장 전체를
 
 **내부 ID를 지어내지 않습니다.** `06-implementation-baseline.md:558`이 `LLM output과 tool output을 내부 ID로 채택하지 않는다`고 정합니다. `record_id`·`content_hash` 같은 저장 식별자는 출력에 넣지 않고, `question_id`·`validation_id`는 출력 안에서만 유일한 지역 값으로 두어 runtime이 전역 ID로 바꾸게 합니다.
 
-**`vulnerability_type_candidates`는 확정 어휘만 씁니다.** `SQL_INJECTION` / `XSS` / `OS_COMMAND_INJECTION` / `PATH_TRAVERSAL` / `SSRF` / `IDOR_BOLA`. `verification-playbooks.md`의 mapping 표와 문자열이 정확히 일치해야 `TYPE_SPECIFIC` 플레이북이 선택됩니다(`08:1231`). 자유 서술을 넣으면 `TYPE_NOT_ALLOWED`로 떨어져 항상 COMMON이 붙습니다.
+**`vulnerability_type_candidates`는 확정 어휘만 씁니다.** `SQL_INJECTION` / `XSS` / `OS_COMMAND_INJECTION` / `PATH_TRAVERSAL` / `SSRF` / `IDOR_BOLA`. `verification-playbooks.md`의 mapping 표와 문자열이 정확히 일치해야 `TYPE_SPECIFIC` 플레이북이 선택됩니다(`08:1232`). 자유 서술을 넣으면 `TYPE_NOT_ALLOWED`로 떨어져 항상 COMMON이 붙습니다.
 
 **세션은 둘 다 `NEW`입니다.** proposal batch마다, match batch마다 새로 시작합니다.
 
@@ -144,7 +144,7 @@ LLM 출력은 실행마다 문장이 달라집니다. 그래서 문장 전체를
 | `restrictions` | **INITIAL proposal에서는 항상 빈 배열** | 아래 설명 참조 |
 | `assumptions` | 근거가 없고 가설이 그것에 의존하는가 | — |
 
-**`restrictions`를 비웁니다.** `Restriction.fact_refs`의 각 항목은 `CodeFactRef`이고 `bundle_ref`가 필수인데, `05:231`의 `facts` projection에 bundle의 `meta`가 없어 `StoredDataRef`를 만들 재료가 없습니다. `evidence_refs`도 `StoredDataRef`라 같습니다. `08:983`이 INITIAL proposal의 각 restriction에 `fact_refs`를 하나 이상 요구하므로, 이 단계에서 낼 수 있는 값은 빈 배열뿐입니다.
+**`restrictions`를 비웁니다.** `Restriction.fact_refs`의 각 항목은 `CodeFactRef`이고 `bundle_ref`가 필수인데, `05:231`의 `facts` projection에 bundle의 `meta`가 없어 `StoredDataRef`를 만들 재료가 없습니다. `evidence_refs`도 `StoredDataRef`라 같습니다. `08:984`이 INITIAL proposal의 각 restriction에 `fact_refs`를 하나 이상 요구하므로, 이 단계에서 낼 수 있는 값은 빈 배열뿐입니다.
 
 제한에 해당하는 관측 사실은 `observed_facts`에 `CodeFact` 그대로 보존합니다. `CodeFact`는 `bundle_ref`를 요구하지 않습니다. 제한으로 표시하는 일은 `StaticFactBundle($)` 전체를 받는 Verification(`05:235`, `05:237`)이 맡으며 `08:1260`이 이미 이를 허용합니다.
 
@@ -156,9 +156,9 @@ LLM 출력은 실행마다 문장이 달라집니다. 그래서 문장 전체를
 
 ### Chaining
 
-**권한 축이 있는지는 downstream input이 정합니다.** `08:1355`가 `조건에 권한 축이 있으면`으로 쓰는데 여기서 조건은 downstream input입니다. downstream input의 `privilege_level`이 `null`이면 조건 3은 해당 없음이고 upstream의 값은 기준이 아닙니다. `normal` 샘플이 이 경우(upstream `authenticated_user`, downstream `null`)입니다.
+**권한 축이 있는지는 downstream input이 정합니다.** `08:1356`가 `조건에 권한 축이 있으면`으로 쓰는데 여기서 조건은 downstream input입니다. downstream input의 `privilege_level`이 `null`이면 조건 3은 해당 없음이고 upstream의 값은 기준이 아닙니다. `normal` 샘플이 이 경우(upstream `authenticated_user`, downstream `null`)입니다.
 
-**권한 조건은 코드 근거로만 판단합니다.** 전역 권한 서열표나 문자열 이름의 단순 일치를 쓰지 않습니다(`06:96`, `08:1357`). `failure` 샘플이 이 규칙을 확인하고 `normal-true-true` 샘플이 무엇이 있어야 성립하는지를 보여줍니다.
+**권한 조건은 코드 근거로만 판단합니다.** 전역 권한 서열표나 문자열 이름의 단순 일치를 쓰지 않습니다(`06:96`, `08:1358`). `failure` 샘플이 이 규칙을 확인하고 `normal-true-true` 샘플이 무엇이 있어야 성립하는지를 보여줍니다.
 
 **`entity_refs`는 같은 코드 요소이거나 호출·데이터·권한 경계 관계로 이어진다는 코드 근거로 판단합니다.** `symbol_id` 문자열 일치는 근거의 하나일 뿐 그 자체가 조건이 아닙니다.
 
@@ -174,7 +174,7 @@ downstream의 매칭된 input    → 빠짐
 
 **조상 깊이는 양방향 재귀로 셉니다.** `06:210`이 `match의 upstream_result_ref와 downstream_input_ref 양쪽을 재귀적으로 거슬러 올라가 얻은 조상 수`로 정합니다. 자식 Primitive는 부모가 둘이라 계보가 갈라지는 DAG이므로 한쪽만 따라가면 조상을 절반 놓칩니다. 이번 샘플 셋은 `lineage_results`가 모두 비어 있어 이 경로를 시험하지 못합니다.
 
-**계보 복구는 Context Retrieval Service가 합니다.** `08:986`이 `Context Retrieval Service가 CONTEXT_RETRIEVAL work에 고정된 exact proposal의 source_primitive_match_id를 읽어 계보를 검사하고 검증 시작점을 복구한다. 자식 Verification은 검증된 CodeContextResponse를 소비한다`로 정합니다. 자식 Verification이 직접 계보를 조회하지 않습니다.
+**계보 복구는 Context Retrieval Service가 합니다.** `08:987`이 `Context Retrieval Service가 CONTEXT_RETRIEVAL work에 고정된 exact proposal의 source_primitive_match_id를 읽어 계보를 검사하고 검증 시작점을 복구한다. 자식 Verification은 검증된 CodeContextResponse를 소비한다`로 정합니다. 자식 Verification이 직접 계보를 조회하지 않습니다.
 
 **한 조합은 세 목록 중 정확히 하나에만 들어갑니다.** `primitive_match_candidates` / `excluded_lineage_refs` / `no_match_reasons`. 쓰면서 동시에 제외할 수 없습니다.
 
@@ -195,8 +195,8 @@ downstream의 매칭된 input    → 빠짐
 | 중복 판정 호출 실패·형식 오류·후보 밖 지목 | 기록만 남기고 **fail-open 등록**(`CHECK_FAILED` / `INVALID_DUPLICATE_TARGET`). 탐지 누락보다 중복을 택함 |
 | Chaining 결과에 `considered`에 없는 Primitive | `STALE_RESULT`로 저장 거절 |
 | 같은 match 조합이 중복 저장됨 | 정상 중복이 아니라 담당 규칙 위반이므로 결과 전체를 저장하지 않고 `AnalysisError`로 기록. `FALSE`·`HOLD`로 바꾸지 않음 |
-| Chaining이 담당 아닌 조합을 검토 | 결과에 넣지 않음. `no_match_reasons`에도 안 들어감 |
-| 두 부모의 `restriction_id`가 같은데 내용이 다름 | 임의로 하나를 고르거나 합치지 않고 `errors`에 남김. `08:679`가 그 상태의 저장을 거절함. `no_match_reasons`의 `reason_code`에는 이 경우가 배정돼 있지 않음(확인 요청 3번) |
+| Chaining이 담당 아닌 조합을 검토 | **미해결.** `08:407`은 결과에 넣지 말라고 정하지만 이 프롬프트는 모든 조합을 검토하므로 Agent 출력에는 들어감. 아래 「이 경계에서 치른 대가」 2번 |
+| 두 부모의 `restriction_id`가 같은데 내용이 다름 | 임의로 하나를 고르거나 합치지 않고 `errors`에 남김. `08:680`이 그 상태의 저장을 거절함. `no_match_reasons`의 `reason_code`에는 이 경우가 배정돼 있지 않음 |
 
 ## 미결정 사항
 
@@ -204,7 +204,7 @@ downstream의 매칭된 input    → 빠짐
 
 **`PrimitiveDraft.entity_refs`에 공유 저장 위치를 넣어도 되는가 — R6**
 
-`normal-true-true` 샘플이 `session['role']`(`symbol_kind=DATA`)을 upstream result와 downstream input 양쪽 `entity_refs`에 넣어, 한쪽이 쓰고 한쪽이 읽는다는 사실을 매칭 조건 2와 3의 코드 근거로 씁니다. `08:1357`이 금지하는 것은 전역 권한 서열표와 문자열 이름의 단순 일치이므로 위반은 아니지만, `entity_refs`에 무엇을 넣어야 하는지는 정해져 있지 않습니다.
+`normal-true-true` 샘플이 `session['role']`(`symbol_kind=DATA`)을 upstream result와 downstream input 양쪽 `entity_refs`에 넣어, 한쪽이 쓰고 한쪽이 읽는다는 사실을 매칭 조건 2와 3의 코드 근거로 씁니다. `08:1358`이 금지하는 것은 전역 권한 서열표와 문자열 이름의 단순 일치이므로 위반은 아니지만, `entity_refs`에 무엇을 넣어야 하는지는 정해져 있지 않습니다.
 
 이 선택이 체이닝의 실질 범위를 정합니다. 익스플로잇 지점만 가리키면 상태 결합이 성립하지 않고, 권한 상승 체인 대부분이 그 형태입니다. `PrimitiveDraft`를 작성하는 것은 R6이므로 R6가 정해 주셔야 합니다. 아니라면 `evidence_refs` 쪽으로 옮깁니다.
 
@@ -214,7 +214,7 @@ downstream의 매칭된 input    → 빠짐
 
 ### 1. Hypothesis의 `restrictions`를 비웁니다
 
-`Restriction.fact_refs`의 각 항목은 `CodeFactRef`이고 `bundle_ref`가 필수인데, `05:231`의 `facts` projection에 bundle의 `meta`가 없어 `StoredDataRef`를 만들 재료가 없습니다. `evidence_refs`도 `StoredDataRef`라 같습니다. `08:983`이 INITIAL proposal의 각 restriction에 `fact_refs`를 하나 이상 요구하므로 이 단계에서 낼 수 있는 값은 빈 배열뿐입니다.
+`Restriction.fact_refs`의 각 항목은 `CodeFactRef`이고 `bundle_ref`가 필수인데, `05:231`의 `facts` projection에 bundle의 `meta`가 없어 `StoredDataRef`를 만들 재료가 없습니다. `evidence_refs`도 `StoredDataRef`라 같습니다. `08:984`이 INITIAL proposal의 각 restriction에 `fact_refs`를 하나 이상 요구하므로 이 단계에서 낼 수 있는 값은 빈 배열뿐입니다.
 
 제한에 해당하는 관측 사실은 `observed_facts`에 `CodeFact` 그대로 보존합니다. `CodeFact`는 `bundle_ref`를 요구하지 않습니다. 제한으로 표시하는 일은 `StaticFactBundle($)` 전체를 받는 Verification(`05:235`, `05:237`)이 맡으며 `08:1260`이 이미 이를 허용합니다. 잃는 사실은 없고 제한 식별 책임이 Verification으로 옮겨갑니다.
 
@@ -232,7 +232,9 @@ COMMITTED된 index에서 고정하므로 실제 저장 순서를 그대로 따�
 
 `considered`의 `meta.created_at` 최대값으로 유도하는 방법을 검토했으나 성립하지 않습니다. `08:403`이 Primitive COMMIT 뒤에 work를 등록하게 하고 `08:401`이 등록 시점의 current index를 읽으므로, 그 사이에 다른 가설의 Primitive가 저장되면 계기가 아닌 것이 가장 최근 값이 됩니다. `record_id` 최대값도 같은 이유로 틀립니다.
 
-그래서 **Agent는 `considered`의 모든 조합을 검토하고 담당은 따지지 않습니다.** 어느 조합을 저장할지는 trusted runtime이 계기를 기준으로 정합니다.
+그래서 **Agent는 `considered`의 모든 조합을 검토하고 담당은 따지지 않습니다.**
+
+다만 이 방식이 성립하려면 **runtime이 담당 아닌 조합을 잘라내는 단계가 필요한데, 그런 단계는 현재 main에 없습니다.** `08:409`는 담당 위반을 선택 과정이 아니라 구현 오류로 보고 결과 전체를 거절합니다. 즉 이 우회는 계약 안에서 닫히지 않고 새 runtime 동작을 전제합니다. R3·R4가 그 동작을 받아들일지 정해 주셔야 합니다.
 
 이 방식의 비용은 셋입니다. R3·R4 확인을 요청합니다.
 
@@ -241,6 +243,7 @@ COMMITTED된 index에서 고정하므로 실제 저장 순서를 그대로 따�
 | 1 | `08:407`이 "담당이 아닌 조합은 `no_match_reasons`에도 넣지 않는다"고 정하는데 Agent 출력에는 들어갑니다. runtime이 지워야 하므로 검증이 아니라 편집이 됩니다 |
 | 2 | Primitive가 n개면 매 work가 조합 수만큼 봅니다. work는 Primitive마다 생기므로 누적 비용이 빠르게 늘어납니다 |
 | 3 | Agent가 조합을 빠뜨려도 runtime이 어차피 잘라내므로 누락이 드러나지 않습니다 |
+| 4 | 조상 제외가 담당 아닌 match를 근거로 삼으면 저장이 거절됩니다. `08:678`이 `excluded_by_ref`를 `input_primitive_refs`에 포함되도록 요구하는데, runtime이 그 match를 잘라내면 근거가 목록에서 사라집니다 |
 
 `05:245`에 `trigger_primitive_ref`를 노출하면 셋 다 사라집니다. 계약 변경이 아니라 이미 필수인 값을 프롬프트 입력에 더하는 일입니다.
 
