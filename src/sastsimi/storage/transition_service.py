@@ -10,6 +10,7 @@ from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.hypothesis import VerificationAssignment
+from sastsimi.contracts.policy import PolicyCacheRecord, RunPolicyState
 from sastsimi.contracts.records import validate_revision
 from sastsimi.contracts.refs import RecordRef, StoredDataRef
 from sastsimi.contracts.result_registry import validate_result_owner
@@ -325,7 +326,8 @@ class TransitionService:
                 ):
                     continue
                 records.publish(connection, reference(record))
-                self.publish_pointer(connection, reference(record))
+                if not isinstance(record, (PolicyCacheRecord, RunPolicyState)):
+                    self.publish_pointer(connection, reference(record))
                 if isinstance(record, CodeWorkspace):
                     state = get_run(connection, str(record.analysis_id))
                     updated_state = AnalysisRunState.model_validate(

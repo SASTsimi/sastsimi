@@ -545,6 +545,7 @@ def _build_runtime(
     from sastsimi.runtime.external_call_service import ExternalCallService
     from sastsimi.runtime.intermediate_publication import IntermediatePublicationService
     from sastsimi.runtime.llm_call_service import ExactAdapterResolver, LLMCallService
+    from sastsimi.runtime.policy_runtime import PolicyRuntimeService
     from sastsimi.runtime.queries import RuntimeQueries
     from sastsimi.runtime.recovery_service import RecoveryService
     from sastsimi.runtime.transition_service import TransitionService
@@ -571,6 +572,7 @@ def _build_runtime(
         IntermediatePublicationService as SQLiteIntermediates,
     )
     from sastsimi.storage.llm_session_guard import LLMParentSessionGuard
+    from sastsimi.storage.policy_runtime import PolicyRuntime as SQLitePolicyRuntime
     from sastsimi.storage.queries import RuntimeQueries as SQLiteQueries
     from sastsimi.storage.recovery_service import RecoveryService as SQLiteRecovery
     from sastsimi.storage.repositories import SQLiteRecordStore
@@ -665,6 +667,7 @@ def _build_runtime(
             )
         ),
         llm_calls,
+        PolicyRuntimeService(SQLitePolicyRuntime(works), clock, ids),
     )
 
 

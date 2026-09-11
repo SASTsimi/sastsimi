@@ -4,9 +4,10 @@ from contextlib import nullcontext
 
 from sqlalchemy import Connection, insert, select, update
 
-from sastsimi.contracts.actions import ActionType
+from sastsimi.contracts.actions import ActionRequest, ActionType
+from sastsimi.contracts.budget import BudgetReservation
 from sastsimi.contracts.canonical_json import content_hash
-from sastsimi.contracts.refs import RecordRef
+from sastsimi.contracts.refs import BudgetScopeRef, RecordRef
 from sastsimi.contracts.work import (
     StateTransition,
     WorkExecutionState,
@@ -54,6 +55,30 @@ class WorkService:
             )
         ).scalar_one()
         return WorkExecutionState.model_validate_json(payload)
+
+    def registration_scope(self, work_id: str) -> BudgetScopeRef:
+        with self.records.database.engine.connect() as connection:
+            work = self.get(work_id, connection)
+            matches: list[BudgetScopeRef] = []
+            for payload in connection.execute(
+                select(models.budget_reservations.c.payload).where(
+                    models.budget_reservations.c.analysis_id
+                    == str(work.meta.analysis_id)
+                )
+            ).scalars():
+                reservation = BudgetReservation.model_validate_json(payload)
+                candidate = self.records.resolve(connection, reservation.work_ref)
+                action = self.records.resolve(connection, reservation.action_ref)
+                if (
+                    isinstance(candidate, WorkExecutionState)
+                    and candidate.work_id == work.work_id
+                    and isinstance(action, ActionRequest)
+                    and action.action_type == ActionType.REGISTER_WORK
+                ):
+                    matches.append(reservation.budget_binding_ref)
+            if len(matches) != 1:
+                raise ValueError("WORK_REGISTRATION_SCOPE_MISSING")
+            return matches[0]
 
     def register(
         self,
