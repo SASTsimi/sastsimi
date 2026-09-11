@@ -862,7 +862,7 @@ class OpenGrepProcessAdapter:
                 version=None,
                 reason="OPENGREP_PROBE_ROOT_INVALID",
             )
-        attempt_id = "opengrep-probe"
+        attempt_id = deadline.action_id
         runner = self._make_runner(
             action_id=deadline.action_id,
             attempt_id=attempt_id,
@@ -885,18 +885,50 @@ class OpenGrepProcessAdapter:
             )
         finally:
             self._active.pop(attempt_id, None)
-        version = result.stdout.decode(errors="replace").strip()
-        if (
-            result.outcome != "SUCCEEDED"
-            or result.return_code != 0
-            or result.stdout_truncated
-            or result.stderr_truncated
-            or version != profile.expected_version
-        ):
+        if result.outcome == "CANCELLED":
             return self._capability(
                 profile,
                 available=False,
-                version=version or None,
+                version=None,
+                reason="OPENGREP_PROBE_CANCELLED",
+            )
+        if result.outcome == "TIMED_OUT":
+            return self._capability(
+                profile,
+                available=False,
+                version=None,
+                reason="OPENGREP_PROBE_TIMEOUT",
+            )
+        if result.stdout_truncated or result.stderr_truncated:
+            return self._capability(
+                profile,
+                available=False,
+                version=None,
+                reason="OPENGREP_PROBE_OUTPUT_TRUNCATED",
+            )
+        if result.outcome != "SUCCEEDED" or result.return_code != 0:
+            return self._capability(
+                profile,
+                available=False,
+                version=None,
+                reason="OPENGREP_PROBE_FAILED",
+            )
+        try:
+            version = result.stdout.decode(errors="strict").strip()
+        except UnicodeDecodeError:
+            version = ""
+        if not version:
+            return self._capability(
+                profile,
+                available=False,
+                version=None,
+                reason="OPENGREP_VERSION_INVALID",
+            )
+        if version != profile.expected_version:
+            return self._capability(
+                profile,
+                available=False,
+                version=None,
                 reason="OPENGREP_VERSION_MISMATCH",
             )
         return self._capability(profile, available=True, version=version, reason=None)
@@ -1280,17 +1312,26 @@ class OpenGrepProcessAdapter:
                         suffix="version",
                     )
                 )
-                observed_version = version_result.stdout.decode(
-                    errors="replace"
-                ).strip()
-                if (
+                if version_result.outcome in {"CANCELLED", "TIMED_OUT"}:
+                    termination = version_result.outcome
+                elif version_result.stdout_truncated or version_result.stderr_truncated:
+                    termination = "OUTPUT_TRUNCATED"
+                elif (
                     version_result.outcome != "SUCCEEDED"
                     or version_result.return_code != 0
-                    or version_result.stdout_truncated
-                    or version_result.stderr_truncated
-                    or observed_version != profile.expected_version
                 ):
-                    termination = "VERSION_FAILED"
+                    termination = "PROCESS_FAILED"
+                else:
+                    try:
+                        observed_version = version_result.stdout.decode(
+                            errors="strict"
+                        ).strip()
+                    except UnicodeDecodeError:
+                        observed_version = ""
+                    if not observed_version:
+                        termination = "VERSION_INVALID"
+                    elif observed_version != profile.expected_version:
+                        termination = "VERSION_MISMATCH"
             if termination is None:
                 for index, batch in enumerate(batches):
                     if deadline.remaining_ms(self.monotonic_ns()) == 0:
@@ -1361,7 +1402,8 @@ class OpenGrepProcessAdapter:
                 "OUTPUT_TRUNCATED": "STATIC_OUTPUT_LIMIT",
                 "OUTPUT_MALFORMED": "STATIC_OUTPUT_MALFORMED",
                 "MANIFEST_CHANGED": "STATIC_MANIFEST_CHANGED",
-                "VERSION_FAILED": "STATIC_TOOL_VERSION",
+                "VERSION_INVALID": "STATIC_TOOL_VERSION",
+                "VERSION_MISMATCH": "STATIC_TOOL_VERSION",
             }.get(termination or "", "STATIC_TOOL_FAILED")
             reason = (
                 "BLOCKED"

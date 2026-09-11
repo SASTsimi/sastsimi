@@ -176,6 +176,16 @@ class WindowsProcessBackend:
                 )
             await asyncio.gather(stdout_task, stderr_task)
             return BackendExecution(return_code, timed_out, cancel_event.is_set())
+        except asyncio.CancelledError:
+            cancel_event.set()
+            self.api.terminate_job(launched.job)
+            await asyncio.shield(
+                asyncio.to_thread(self.api.wait_process, launched.process, 1_000)
+            )
+            await asyncio.shield(
+                asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            )
+            raise
         finally:
             self._active.pop(spec.attempt_id, None)
             for handle in (

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -9,7 +10,7 @@ from collections.abc import Callable, Generator, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 import pytest
 
@@ -31,6 +32,15 @@ from sastsimi.static_analysis.process import process_command_fingerprint
 from sastsimi.storage.codec import reference
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import meta
+
+
+class VersionRunnerChanges(TypedDict, total=False):
+    version: str
+    version_stdout: bytes | None
+    version_outcome: str
+    version_return_code: int | None
+    version_stdout_truncated: bool
+    version_stderr_truncated: bool
 
 
 @pytest.fixture
@@ -97,12 +107,18 @@ class FakeRunner:
         outputs: list[dict[str, object]] | None = None,
         *,
         version: str = "1.8.0",
+        version_stdout: bytes | None = None,
+        version_outcome: str = "SUCCEEDED",
+        version_return_code: int | None = 0,
         version_stdout_truncated: bool = False,
         version_stderr_truncated: bool = False,
         after_scan: Callable[[int], None] | None = None,
     ) -> None:
         self.outputs = list(outputs or [])
         self.version = version
+        self.version_stdout = version_stdout
+        self.version_outcome = version_outcome
+        self.version_return_code = version_return_code
         self.version_stdout_truncated = version_stdout_truncated
         self.version_stderr_truncated = version_stderr_truncated
         self.after_scan = after_scan
@@ -115,7 +131,13 @@ class FakeRunner:
         if spec.argv[1:] == ("--version",):
             return _process_result(
                 spec,
-                stdout=(self.version + "\n").encode(),
+                stdout=(
+                    (self.version + "\n").encode()
+                    if self.version_stdout is None
+                    else self.version_stdout
+                ),
+                outcome=self.version_outcome,
+                return_code=self.version_return_code,
                 stdout_truncated=self.version_stdout_truncated,
                 stderr_truncated=self.version_stderr_truncated,
             )
@@ -145,6 +167,29 @@ class RunnerFactory:
     def __call__(self, **kwargs: object) -> FakeRunner:
         self.calls.append(kwargs)
         return self.runner
+
+
+class BlockingProbeRunner(FakeRunner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.released = asyncio.Event()
+
+    async def run(self, spec: ProcessSpec) -> ProcessResult:
+        self.calls.append(spec)
+        self.started.set()
+        await self.released.wait()
+        return _process_result(
+            spec,
+            stdout=b"1.8.0\n",
+            outcome="CANCELLED" if self.cancelled else "SUCCEEDED",
+            return_code=None if self.cancelled else 0,
+        )
+
+    async def cancel(self, attempt_id: str) -> CancellationResult:
+        self.cancelled.append(attempt_id)
+        self.released.set()
+        return CancellationResult(True, None)
 
 
 def _profile(executable: Path, **changes: object) -> StaticToolProfile:
@@ -389,7 +434,136 @@ async def test_probe_rejects_any_truncated_version_output(
     observed = await adapter.probe(opengrep_fixture["profile"], _deadline())
 
     assert not observed.available
-    assert observed.reason_code == "OPENGREP_VERSION_MISMATCH"
+    assert observed.reason_code == "OPENGREP_PROBE_OUTPUT_TRUNCATED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("runner_changes", "reason_code"),
+    [
+        (
+            {"version_outcome": "CANCELLED", "version_return_code": None},
+            "OPENGREP_PROBE_CANCELLED",
+        ),
+        (
+            {"version_outcome": "TIMED_OUT", "version_return_code": None},
+            "OPENGREP_PROBE_TIMEOUT",
+        ),
+        ({"version_return_code": 1}, "OPENGREP_PROBE_FAILED"),
+        ({"version_stdout": b""}, "OPENGREP_VERSION_INVALID"),
+        ({"version_stdout": b"\xff"}, "OPENGREP_VERSION_INVALID"),
+        ({"version": "0.0.0"}, "OPENGREP_VERSION_MISMATCH"),
+    ],
+)
+async def test_probe_preserves_version_process_failure_semantics(
+    opengrep_fixture: dict[str, object],
+    runner_changes: VersionRunnerChanges,
+    reason_code: str,
+) -> None:
+    runner = FakeRunner(**runner_changes)
+    adapter = _adapter(opengrep_fixture, runner)
+
+    observed = await adapter.probe(opengrep_fixture["profile"], _deadline())
+
+    assert not observed.available
+    assert observed.reason_code == reason_code
+
+
+@pytest.mark.asyncio
+async def test_probe_cancellation_uses_runtime_action_id(
+    opengrep_fixture: dict[str, object],
+) -> None:
+    runner = BlockingProbeRunner()
+    adapter = _adapter(opengrep_fixture, runner)
+    deadline = _deadline("runtime-probe-id")
+
+    probe = asyncio.create_task(adapter.probe(opengrep_fixture["profile"], deadline))
+    await runner.started.wait()
+    cancelled = await adapter.cancel(deadline.action_id)
+    runner.released.set()
+    observed = await probe
+
+    assert cancelled.cancelled
+    assert runner.cancelled == [deadline.action_id]
+    assert runner.calls[0].attempt_id == deadline.action_id
+    assert observed.reason_code == "OPENGREP_PROBE_CANCELLED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("runner_changes", "expected_status", "expected_code", "expected_reason"),
+    [
+        (
+            {"version_outcome": "CANCELLED", "version_return_code": None},
+            "SKIPPED",
+            "STATIC_TOOL_CANCELLED",
+            "BLOCKED",
+        ),
+        (
+            {"version_outcome": "TIMED_OUT", "version_return_code": None},
+            "FAILED",
+            "STATIC_TOOL_TIMEOUT",
+            "TIMEOUT",
+        ),
+        (
+            {"version_stdout_truncated": True},
+            "FAILED",
+            "STATIC_OUTPUT_LIMIT",
+            "FAILED",
+        ),
+        (
+            {"version_stderr_truncated": True},
+            "FAILED",
+            "STATIC_OUTPUT_LIMIT",
+            "FAILED",
+        ),
+        (
+            {"version_return_code": 1},
+            "FAILED",
+            "STATIC_TOOL_FAILED",
+            "FAILED",
+        ),
+        (
+            {"version_stdout": b""},
+            "FAILED",
+            "STATIC_TOOL_VERSION",
+            "FAILED",
+        ),
+        (
+            {"version": "not-the-approved-version"},
+            "FAILED",
+            "STATIC_TOOL_VERSION",
+            "FAILED",
+        ),
+    ],
+)
+async def test_execute_preserves_version_stage_failure_semantics(
+    opengrep_fixture: dict[str, object],
+    runner_changes: VersionRunnerChanges,
+    expected_status: str,
+    expected_code: str,
+    expected_reason: str,
+) -> None:
+    runner = FakeRunner(**runner_changes)
+    adapter = _adapter(opengrep_fixture, runner)
+    request = cast(StaticToolRequest, opengrep_fixture["request"])
+
+    observed = await adapter.execute(
+        request,
+        cast(Path, opengrep_fixture["root"]),
+        cast(StaticToolProfile, opengrep_fixture["profile"]),
+        _deadline(str(request.action.action_id)),
+    )
+
+    assert observed.status == expected_status
+    assert len(runner.calls) == 1
+    assert {gap.code for gap in observed.gaps} == {expected_code}
+    assert {gap.reason for gap in observed.gaps} == {expected_reason}
+    if expected_status == "SKIPPED":
+        assert observed.errors == ()
+    else:
+        assert {error.code for error in observed.errors} == {expected_code}
+        assert observed.errors[0].retryable == (expected_code == "STATIC_TOOL_TIMEOUT")
 
 
 @pytest.mark.asyncio

@@ -173,6 +173,10 @@ class PosixProcessBackend:
                 await self._terminate(process)
             else:
                 await asyncio.wait_for(process.wait(), timeout_ms / 1_000)
+        except asyncio.CancelledError:
+            cancel_event.set()
+            await asyncio.shield(self._terminate(process))
+            raise
         except TimeoutError:
             timed_out = True
             await self._terminate(process)
@@ -398,6 +402,11 @@ class SafeProcessRunner:
             outcome = await self.backend.run(
                 spec, remaining_ms, stdout_spool, stderr_spool, event
             )
+        except asyncio.CancelledError:
+            event.set()
+            self._cancelled.add(spec.attempt_id)
+            await asyncio.shield(self.backend.cancel(spec.attempt_id))
+            raise
         finally:
             stdout_spool.close()
             stderr_spool.close()

@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, TypedDict, cast
 
 import pytest
 
@@ -45,6 +45,15 @@ class _WindowsFunction(Protocol):
 
 class _Kernel32(Protocol):
     ReplaceFileW: _WindowsFunction
+
+
+class VersionRunnerChanges(TypedDict, total=False):
+    version: str
+    version_outcome: str
+    version_return_code: int | None
+    version_stdout: bytes | None
+    version_stdout_truncated: bool
+    version_stderr_truncated: bool
 
 
 def _platform_attribute(owner: object, name: str) -> object:
@@ -82,6 +91,9 @@ def process_result(
     outcome: str = "SUCCEEDED",
     return_code: int | None = 0,
     stdout: bytes = b"",
+    stderr: bytes = b"",
+    stdout_truncated: bool = False,
+    stderr_truncated: bool = False,
 ) -> ProcessResult:
     receipt = ProcessReceipt(
         action_id=spec.deadline.action_id,
@@ -95,17 +107,17 @@ def process_result(
         stdout_size=len(stdout),
         stdout_sha256=sha256(stdout),
         stderr_name="stderr",
-        stderr_size=0,
-        stderr_sha256=sha256(b""),
+        stderr_size=len(stderr),
+        stderr_sha256=sha256(stderr),
         elapsed_ms=1,
     )
     return ProcessResult(
         outcome=outcome,  # type: ignore[arg-type]
         return_code=return_code,
         stdout=stdout,
-        stderr_tail=b"",
-        stdout_truncated=False,
-        stderr_truncated=False,
+        stderr_tail=stderr,
+        stdout_truncated=stdout_truncated,
+        stderr_truncated=stderr_truncated,
         elapsed_ms=1,
         receipt=receipt,
         receipt_path=spec.attempt_output_dir / "receipt.json",
@@ -122,6 +134,12 @@ class FakeRunner:
         return_code: int | None = 0,
         writer: Callable[[Path], None] | None = None,
         block_after_write: bool = False,
+        version_outcome: str = "SUCCEEDED",
+        version_return_code: int | None = 0,
+        version_stdout: bytes | None = None,
+        version_stdout_truncated: bool = False,
+        version_stderr_truncated: bool = False,
+        block_version: bool = False,
     ) -> None:
         self.version = version
         self.sarif = sarif
@@ -129,6 +147,12 @@ class FakeRunner:
         self.return_code = return_code
         self.writer = writer
         self.block_after_write = block_after_write
+        self.version_outcome = version_outcome
+        self.version_return_code = version_return_code
+        self.version_stdout = version_stdout
+        self.version_stdout_truncated = version_stdout_truncated
+        self.version_stderr_truncated = version_stderr_truncated
+        self.block_version = block_version
         self.calls: list[ProcessSpec] = []
         self.cancelled: list[str] = []
         self.started = asyncio.Event()
@@ -137,8 +161,20 @@ class FakeRunner:
     async def run(self, spec: ProcessSpec) -> ProcessResult:
         self.calls.append(spec)
         if spec.argv[1:3] == ("version", "--format=json"):
+            self.started.set()
+            if self.block_version:
+                await self.release.wait()
             return process_result(
-                spec, stdout=canonical_bytes({"version": self.version})
+                spec,
+                outcome=self.version_outcome,
+                return_code=self.version_return_code,
+                stdout=(
+                    canonical_bytes({"version": self.version})
+                    if self.version_stdout is None
+                    else self.version_stdout
+                ),
+                stdout_truncated=self.version_stdout_truncated,
+                stderr_truncated=self.version_stderr_truncated,
             )
         output_arg = next(value for value in spec.argv if value.startswith("--output="))
         output = Path(output_arg.split("=", 1)[1])
@@ -407,6 +443,82 @@ async def test_probe_fails_closed_without_analysis(
     assert not observed.available
     if case in {"missing", "digest", "key"}:
         assert runner.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "runner_changes,expected_reason",
+    [
+        (
+            {"version_outcome": "CANCELLED", "version_return_code": None},
+            "CODEQL_PROBE_CANCELLED",
+        ),
+        (
+            {"version_outcome": "TIMED_OUT", "version_return_code": None},
+            "CODEQL_PROBE_TIMEOUT",
+        ),
+        ({"version_stdout_truncated": True}, "CODEQL_PROBE_OUTPUT_TRUNCATED"),
+        ({"version_stderr_truncated": True}, "CODEQL_PROBE_OUTPUT_TRUNCATED"),
+        ({"version_stdout": b"not-json"}, "CODEQL_VERSION_INVALID"),
+        ({"version": "0.0.0"}, "CODEQL_VERSION_MISMATCH"),
+    ],
+)
+async def test_probe_preserves_version_failure_semantics(
+    codeql_fixture: dict[str, Any],
+    runner_changes: VersionRunnerChanges,
+    expected_reason: str,
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    assert isinstance(executable, Path)
+    runner = FakeRunner(**runner_changes)
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=codeql_fixture["inputs"],
+        runner_factory=RunnerFactory(runner),
+    )
+
+    observed = await adapter.probe(profile(executable), deadline("probe-action"))
+
+    assert not observed.available
+    assert observed.reason_code == expected_reason
+
+
+@pytest.mark.asyncio
+async def test_probe_uses_deadline_action_id_as_cancellation_identifier(
+    codeql_fixture: dict[str, Any],
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    assert isinstance(executable, Path)
+    runner = FakeRunner(
+        version_outcome="CANCELLED",
+        version_return_code=None,
+        block_version=True,
+    )
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=codeql_fixture["inputs"],
+        runner_factory=RunnerFactory(runner),
+    )
+    probe = asyncio.create_task(
+        adapter.probe(profile(executable), deadline("probe-action"))
+    )
+    await runner.started.wait()
+
+    cancelled = await adapter.cancel("probe-action")
+    # Always release the fake runner so a failed cancellation assertion cannot hang.
+    runner.release.set()
+    observed = await probe
+
+    assert cancelled.cancelled
+    assert runner.cancelled == ["probe-action"]
+    assert runner.calls[0].attempt_id == "probe-action"
+    assert observed.reason_code == "CODEQL_PROBE_CANCELLED"
 
 
 def test_command_policy_accepts_only_version_and_analyze_families(
@@ -908,6 +1020,65 @@ async def test_process_and_decode_failures_never_become_partial_evidence(
         item.code for item in observed.errors
     }
     assert observed.facts == () and observed.relations == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "runner_changes,expected_status,expected_code",
+    [
+        (
+            {"version_outcome": "CANCELLED", "version_return_code": None},
+            "SKIPPED",
+            "STATIC_TOOL_CANCELLED",
+        ),
+        (
+            {"version_outcome": "TIMED_OUT", "version_return_code": None},
+            "FAILED",
+            "STATIC_TOOL_TIMEOUT",
+        ),
+        ({"version_stdout_truncated": True}, "FAILED", "STATIC_OUTPUT_LIMIT"),
+        ({"version_stderr_truncated": True}, "FAILED", "STATIC_OUTPUT_LIMIT"),
+        ({"version_return_code": 1}, "FAILED", "STATIC_TOOL_FAILED"),
+        ({"version_stdout": b"not-json"}, "FAILED", "STATIC_TOOL_VERSION"),
+        ({"version": "0.0.0"}, "FAILED", "STATIC_TOOL_VERSION"),
+    ],
+)
+async def test_version_stage_preserves_process_failure_semantics(
+    codeql_fixture: dict[str, Any],
+    runner_changes: VersionRunnerChanges,
+    expected_status: str,
+    expected_code: str,
+) -> None:
+    from sastsimi.static_analysis.codeql_adapter import CodeQLProcessAdapter
+
+    executable = codeql_fixture["executable"]
+    assert isinstance(executable, Path)
+    tool_profile = profile(executable)
+    _, request = workspace_and_request(tool_profile)
+    runner = FakeRunner(sarif=sarif(), **runner_changes)
+    adapter = CodeQLProcessAdapter(
+        executable=executable,
+        executable_key="trusted-codeql",
+        inputs=codeql_fixture["inputs"],
+        runner_factory=RunnerFactory(runner),
+    )
+
+    observed = await adapter.execute(
+        request,
+        fixture_workspace(codeql_fixture),
+        tool_profile,
+        deadline(str(request.action.action_id)),
+    )
+
+    assert observed.status == expected_status
+    assert expected_code in {item.code for item in observed.gaps} | {
+        item.code for item in observed.errors
+    }
+    assert observed.facts == () and observed.relations == ()
+    if expected_code == "STATIC_TOOL_CANCELLED":
+        assert observed.errors == ()
+    if expected_code == "STATIC_TOOL_TIMEOUT":
+        assert observed.errors and observed.errors[0].retryable
 
 
 @pytest.mark.asyncio

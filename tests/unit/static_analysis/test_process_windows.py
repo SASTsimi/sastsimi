@@ -1,6 +1,7 @@
 import asyncio
 import ctypes
 import sys
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -172,6 +173,51 @@ def test_windows_launcher_rejects_nul_before_api_call(use_argv: bool) -> None:
     with pytest.raises(ValueError, match="NUL"):
         SuspendedJobLauncher(api).launch(changed)
     assert api.events == []
+
+
+class BlockingFakeWin32Api(FakeWin32Api):
+    def __init__(self) -> None:
+        super().__init__()
+        self.wait_started = threading.Event()
+        self.wait_released = threading.Event()
+
+    def wait_process(self, process: object, timeout_ms: int) -> int | None:
+        del process, timeout_ms
+        self.wait_started.set()
+        if not self.wait_released.wait(timeout=5):
+            raise TimeoutError("test wait was not released")
+        return 1
+
+    def terminate_job(self, job: object) -> None:
+        super().terminate_job(job)
+        self.wait_released.set()
+
+
+@pytest.mark.asyncio
+async def test_windows_backend_task_cancellation_terminates_job_before_cleanup() -> (
+    None
+):
+    from sastsimi.static_analysis.process_windows import WindowsProcessBackend
+
+    api = BlockingFakeWin32Api()
+    backend = WindowsProcessBackend(api)
+    running = asyncio.create_task(
+        backend.run(
+            win_spec(),
+            30_000,
+            cast(Any, object()),
+            cast(Any, object()),
+            asyncio.Event(),
+        )
+    )
+    assert await asyncio.to_thread(api.wait_started.wait, 1)
+
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+    assert "terminate_job" in api.events
+    assert {"stdout-r", "stderr-r", "process", "job"}.issubset(api.closed)
 
 
 class NativeCall:

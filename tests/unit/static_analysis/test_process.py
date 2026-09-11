@@ -298,6 +298,44 @@ async def test_cancel_stops_active_backend_and_latches_attempt(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_cancelling_runner_task_stops_backend_and_latches_attempt(
+    tmp_path: Path,
+) -> None:
+    from sastsimi.static_analysis.process import SafeProcessRunner
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (tmp_path / "attempt").mkdir()
+    executable = tmp_path / "trusted-tool.exe"
+    executable.write_bytes(b"fixture")
+    backend = FakeBackend()
+    backend.block = True
+    runner = SafeProcessRunner(
+        action_id="action-1",
+        attempt_id="attempt-1",
+        workspace_root=workspace,
+        output_root=tmp_path / "attempt",
+        executable=executable,
+        monotonic_ns=lambda: 1_000_000,
+        backend=backend,
+        output_budget=output_budget(),
+    )
+
+    running = asyncio.create_task(runner.run(spec(tmp_path, executable)))
+    await backend.started.wait()
+    running.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    assert backend.cancelled == {"attempt-1"}
+    assert backend.release.is_set()
+
+    another = await runner.run(spec(tmp_path, executable, invocation="invoke-2"))
+    assert another.outcome == "CANCELLED"
+    assert len(backend.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_attempt_output_budget_is_shared_across_streams_and_cap_plus_one(
     tmp_path: Path,
 ) -> None:
@@ -528,6 +566,56 @@ async def test_posix_cancel_during_spawn_waits_for_registration_then_kills(
     assert await cancelling
     result = await running
     assert result.cancelled
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process boundary")
+@pytest.mark.asyncio
+async def test_posix_task_cancellation_kills_process_group(tmp_path: Path) -> None:
+    from sastsimi.static_analysis.process import PosixProcessBackend
+
+    child_file = tmp_path / "attempt" / "cancelled-child.pid"
+    executable = Path(sys.executable)
+    request = replace(
+        spec(tmp_path, executable),
+        invocation_id="cancelled-posix-tree",
+        argv=(
+            str(executable),
+            "-c",
+            (
+                "import pathlib,subprocess,sys,time;"
+                "p=subprocess.Popen([sys.executable,'-c',"
+                "'import time;time.sleep(30)']);"
+                f"pathlib.Path({str(child_file)!r}).write_text(str(p.pid));"
+                "time.sleep(30)"
+            ),
+        ),
+        cwd=tmp_path,
+        attempt_output_dir=tmp_path / "attempt",
+    )
+    backend = PosixProcessBackend()
+    event = asyncio.Event()
+    running = asyncio.create_task(
+        backend.run(request, 30_000, DiscardSink(), DiscardSink(), event)
+    )
+    for _ in range(100):
+        if child_file.exists():
+            break
+        await asyncio.sleep(0.02)
+    assert child_file.exists()
+    child_pid = int(child_file.read_text())
+
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+    for _ in range(100):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.02)
+    else:
+        pytest.fail("POSIX descendant remained alive after task cancellation")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process boundary")

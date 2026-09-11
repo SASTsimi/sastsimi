@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
@@ -91,6 +92,30 @@ class _Adapter:
         return CancellationResult(True, attempt_id)
 
 
+class _BlockingAdapter(_Adapter):
+    def __init__(
+        self, observation: StaticCapabilityObservation, executable: Path
+    ) -> None:
+        super().__init__(observation, executable)
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cancelled: list[str] = []
+
+    async def probe(
+        self, profile: StaticToolProfile, deadline: MonotonicActionDeadline
+    ) -> StaticCapabilityObservation:
+        del profile, deadline
+        self.probes += 1
+        self.started.set()
+        await self.release.wait()
+        return self.observation
+
+    async def cancel(self, attempt_id: str) -> CancellationResult:
+        self.cancelled.append(attempt_id)
+        self.release.set()
+        return CancellationResult(True, None)
+
+
 class _External:
     async def invoke(
         self,
@@ -166,6 +191,44 @@ async def test_probe_exactly_resolves_executable_and_lower_adapter(
     assert result.ref == profile_ref
     assert result.available is True
     assert adapter.probes == 1
+
+
+@pytest.mark.asyncio
+async def test_probe_task_cancellation_is_forwarded_with_exact_action_id(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "fixture-python"
+    executable.write_bytes(b"bounded fixture")
+    profile = _profile(executable)
+    observation = StaticCapabilityObservation(
+        available=True,
+        tool_name="AST",
+        tool_kind="STRUCTURE",
+        executable_key="fixture-python",
+        observed_executable_sha256=profile.executable_sha256,
+        observed_version="3.12",
+        expected_version="3.12",
+        reason_code=None,
+    )
+    adapter = _BlockingAdapter(observation, executable)
+    coordinator = StaticToolCoordinator(
+        _Profiles(profile),
+        {"PYTHON_AST": adapter},
+        _External(),
+        _Workspace(),
+        {"fixture-python": executable},
+        monotonic_ns=lambda: 10,
+    )
+    profile_ref = reference(profile)
+    assert isinstance(profile_ref, StoredDataRef)
+
+    running = asyncio.create_task(coordinator.probe(profile_ref))
+    await adapter.started.wait()
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+    assert adapter.cancelled == [f"probe-{profile.meta.record_id}"]
 
 
 @pytest.mark.asyncio

@@ -57,6 +57,31 @@ def _platform_attribute(owner: object, name: str) -> object:
     return getattr(owner, name)
 
 
+def _codeql_version_result(
+    result: ProcessResult, expected_version: str
+) -> tuple[str | None, str | None]:
+    """Return the observed version and one exact version-stage failure kind."""
+
+    if result.outcome == "CANCELLED":
+        return None, "CANCELLED"
+    if result.outcome == "TIMED_OUT":
+        return None, "TIMED_OUT"
+    if result.stdout_truncated or result.stderr_truncated:
+        return None, "OUTPUT_TRUNCATED"
+    if result.outcome != "SUCCEEDED" or result.return_code != 0:
+        return None, "PROCESS_FAILED"
+    try:
+        value = json.loads(result.stdout)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, "VERSION_INVALID"
+    version = value.get("version") if isinstance(value, dict) else None
+    if not isinstance(version, str) or not version:
+        return None, "VERSION_INVALID"
+    if version != expected_version:
+        return version, "VERSION_MISMATCH"
+    return version, None
+
+
 class CodeQLProcessRunner(Protocol):
     async def run(self, spec: ProcessSpec) -> ProcessResult: ...
 
@@ -926,7 +951,7 @@ class CodeQLProcessAdapter:
                 version=None,
                 reason="CODEQL_PROBE_ROOT_INVALID",
             )
-        attempt_id = "codeql-probe"
+        attempt_id = deadline.action_id
         runner = self._make_runner(
             action_id=deadline.action_id,
             attempt_id=attempt_id,
@@ -957,22 +982,26 @@ class CodeQLProcessAdapter:
             )
         finally:
             self._active.pop(attempt_id, None)
-        if result.outcome != "SUCCEEDED" or result.return_code != 0:
-            return self._capability(
-                profile, available=False, version=None, reason="CODEQL_PROBE_FAILED"
-            )
-        try:
-            value = json.loads(result.stdout)
-            version = value.get("version") if isinstance(value, dict) else None
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            version = None
-        if version != profile.expected_version:
+        version, version_failure = _codeql_version_result(
+            result, profile.expected_version
+        )
+        if version_failure is not None:
+            reason = {
+                "CANCELLED": "CODEQL_PROBE_CANCELLED",
+                "TIMED_OUT": "CODEQL_PROBE_TIMEOUT",
+                "OUTPUT_TRUNCATED": "CODEQL_PROBE_OUTPUT_TRUNCATED",
+                "VERSION_INVALID": "CODEQL_VERSION_INVALID",
+                "VERSION_MISMATCH": "CODEQL_VERSION_MISMATCH",
+            }.get(version_failure, "CODEQL_PROBE_FAILED")
             return self._capability(
                 profile,
                 available=False,
-                version=version if isinstance(version, str) else None,
-                reason="CODEQL_VERSION_MISMATCH",
+                # The coordinator accepts the expected version or no version on
+                # failure; the reason code preserves invalid versus mismatched.
+                version=None,
+                reason=reason,
             )
+        assert version is not None
         return self._capability(profile, available=True, version=version, reason=None)
 
     def _empty_rules(self, reason: str) -> tuple[CandidateRule, ...]:
@@ -1214,35 +1243,44 @@ class CodeQLProcessAdapter:
                 suffix="version",
             )
         )
-        try:
-            version_value = json.loads(version_result.stdout)
-            observed_version = (
-                version_value.get("version")
-                if isinstance(version_value, dict)
-                else None
-            )
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            observed_version = None
-        if (
-            version_result.outcome != "SUCCEEDED"
-            or version_result.return_code != 0
-            or observed_version != profile.expected_version
-        ):
+        _, version_failure = _codeql_version_result(
+            version_result, profile.expected_version
+        )
+        if version_failure is not None:
             self._active.pop(attempt_id, None)
+            code = {
+                "CANCELLED": "STATIC_TOOL_CANCELLED",
+                "TIMED_OUT": "STATIC_TOOL_TIMEOUT",
+                "OUTPUT_TRUNCATED": "STATIC_OUTPUT_LIMIT",
+                "PROCESS_FAILED": "STATIC_TOOL_FAILED",
+            }.get(version_failure, "STATIC_TOOL_VERSION")
+            reason = (
+                "BLOCKED"
+                if version_failure == "CANCELLED"
+                else "TIMEOUT"
+                if version_failure == "TIMED_OUT"
+                else "TRUNCATED"
+                if version_failure == "OUTPUT_TRUNCATED"
+                else "FAILED"
+            )
+            message = {
+                "CANCELLED": "CodeQL version check was cancelled.",
+                "TIMED_OUT": "CodeQL version check timed out.",
+                "OUTPUT_TRUNCATED": "CodeQL version output was truncated.",
+                "PROCESS_FAILED": "CodeQL version command failed.",
+            }.get(version_failure, "CodeQL version verification failed.")
             return self._observation(
                 profile,
-                status="FAILED",
+                status="SKIPPED" if version_failure == "CANCELLED" else "FAILED",
                 started=started,
-                gaps=(
-                    _gap(
-                        "STATIC_TOOL_VERSION",
-                        "FAILED",
-                        "CodeQL version verification failed.",
-                    ),
-                ),
-                errors=(
+                gaps=(_gap(code, reason, message),),
+                errors=()
+                if version_failure == "CANCELLED"
+                else (
                     _error(
-                        "STATIC_TOOL_VERSION", "CodeQL version verification failed."
+                        code,
+                        message,
+                        retryable=version_failure == "TIMED_OUT",
                     ),
                 ),
             )

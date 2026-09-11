@@ -140,7 +140,7 @@ Run the baseline-only checks before the first production edit:
 ```powershell
 git status --short
 git rev-parse HEAD
-uv run pytest tests/contract/domain/test_static.py tests/contract/test_core_ports.py tests/contract/test_architecture_imports.py tests/unit/test_fake_adapters.py -q
+uv run python -m pytest tests/contract/domain/test_static.py tests/contract/test_core_ports.py tests/contract/test_architecture_imports.py tests/unit/test_fake_adapters.py -q
 ```
 
 Expected: clean branch at the base commit and all selected tests pass. If a selected test fails before T08 edits, record the failure as a prerequisite rather than weakening that test.
@@ -259,7 +259,7 @@ OpenGrep batching           Generic coordinator +      Context Retrieval
 Each Wave 1 lane branches from `F`, runs only its task's focused RED/GREEN tests plus directly named regressions, and submits one or more small commits for review. After all three reviews, the integration agent cherry-picks 1A, 1B, then 1C into the integration worktree, resolves any unexpected conflict there without asking a lane to broaden ownership, runs the union of their focused tests, and records checkpoint SHA `I1`. Failure at this checkpoint is fixed serially before Wave 2 begins.
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_process.py tests/unit/static_analysis/test_process_windows.py tests/unit/static_analysis/test_repository_loader.py tests/unit/static_analysis/test_workspace_storage.py tests/unit/static_analysis/test_ast_adapter.py tests/unit/static_analysis/test_codeql_adapter.py tests/integration/static_analysis/test_repository_prepare.py tests/integration/storage/test_intermediate_publication.py tests/integration/storage/test_workflow_runner.py tests/integration/recovery/test_static_workspace_recovery.py tests/security_negative/test_code_path_escape.py tests/contract/test_architecture_imports.py -q
+uv run python -m pytest tests/unit/static_analysis/test_process.py tests/unit/static_analysis/test_process_windows.py tests/unit/static_analysis/test_repository_loader.py tests/unit/static_analysis/test_workspace_storage.py tests/unit/static_analysis/test_ast_adapter.py tests/unit/static_analysis/test_codeql_adapter.py tests/integration/static_analysis/test_repository_prepare.py tests/integration/storage/test_intermediate_publication.py tests/integration/storage/test_workflow_runner.py tests/integration/recovery/test_static_workspace_recovery.py tests/security_negative/test_code_path_escape.py tests/contract/test_architecture_imports.py -q
 git diff --check F..HEAD
 ```
 
@@ -274,10 +274,10 @@ Expected at `I1`: all Wave 1 focused tests pass, no lane changed a frozen/shared
 Each Wave 2 lane branches from `I1`; 2B executes Tasks 7 then 8 serially inside its own worktree because publication precedes fan-in. Review every lane commit before the integration agent cherry-picks 2A, 2B, then 2C. Only after 2A's real OpenGrep implementation and 2B's generic coordinator bridge coexist does the integration agent create `tests/contract/test_static_tool_real_adapter_conformance.py`; that serial checkpoint test instantiates the actual AST, CodeQL, and OpenGrep adapters behind the coordinator using only exact `APPROVED` fixture/evaluation `StaticToolProfile` revisions and trusted fake executables. It covers their public probe/run/cancel bridge, exact request/work/action/profile binding, digest/version checks, absent/stale/mismatched profile fail-closed behavior, and exact-profile selection of the public pure raw-replay decoder defined in Task 8. A concrete adapter module may receive only a narrow named public pure replay-decoder wrapper in this serial integration commit when its Wave 1 implementation exposes the same logic only through a private method; `normalizer.py` and `static_publication.py` may receive only the non-persisted exact replay-input projection needed to pass the exact `ToolRunResult`, `StaticToolProfile`, `RuleExecutionRecord`, full `StaticRuleMapping` catalog, and committed authorized paths to that wrapper. The wrapper must not start a process, read mutable configuration, allocate IDs, or publish state. It never creates or accepts a production `ACTIVE` profile. The test is not delegated back to any parallel lane. Run it alone first. If it fails, the integration agent makes the smallest serial fix in the already merged adapter/coordinator/normalizer/publication owner files and reruns only this focused test. After it passes, commit the test and any serial fix, obtain review of that integration commit, run the combined focused tests below without further edits, and record the resulting full SHA as `I2`. No Wave 2 lane edits frozen foundation or shared composition files.
 
 ```powershell
-uv run pytest tests/contract/test_static_tool_real_adapter_conformance.py -q
+uv run python -m pytest tests/contract/test_static_tool_real_adapter_conformance.py -q
 git add tests/contract/test_static_tool_real_adapter_conformance.py src/sastsimi/static_analysis/ast_adapter.py src/sastsimi/static_analysis/codeql_adapter.py src/sastsimi/static_analysis/open_grep_adapter.py src/sastsimi/static_analysis/coordinator.py src/sastsimi/static_analysis/normalizer.py src/sastsimi/orchestration/static_publication.py
 git commit -m "test: verify real static adapter conformance"
-uv run pytest tests/unit/static_analysis/test_open_grep_adapter.py tests/unit/static_analysis/test_normalizer.py tests/unit/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_tool_attempt_publication.py tests/integration/static_analysis/test_static_join.py tests/integration/static_analysis/test_context_retrieval_flow.py tests/integration/static_analysis/test_chained_child_context.py tests/integration/storage/test_context_publication.py tests/integration/recovery/test_static_external_recovery.py tests/integration/recovery/test_context_external_recovery.py tests/contract/test_static_tool_conformance.py tests/contract/test_static_tool_real_adapter_conformance.py tests/contract/domain/test_static.py tests/security_negative/test_code_path_escape.py tests/unit/test_fake_adapters.py tests/e2e/test_fake_true_pipeline.py -q
+uv run python -m pytest tests/unit/static_analysis/test_open_grep_adapter.py tests/unit/static_analysis/test_normalizer.py tests/unit/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_tool_attempt_publication.py tests/integration/static_analysis/test_static_join.py tests/integration/static_analysis/test_context_retrieval_flow.py tests/integration/static_analysis/test_chained_child_context.py tests/integration/storage/test_context_publication.py tests/integration/recovery/test_static_external_recovery.py tests/integration/recovery/test_context_external_recovery.py tests/contract/test_static_tool_conformance.py tests/contract/test_static_tool_real_adapter_conformance.py tests/contract/domain/test_static.py tests/security_negative/test_code_path_escape.py tests/unit/test_fake_adapters.py tests/e2e/test_fake_true_pipeline.py -q
 git diff --check I1..HEAD
 ```
 
@@ -712,7 +712,7 @@ class WorkspacePreparationPublisherPort(Protocol):
 - [ ] **Step 2: Run the focused RED test.**
 
 ```powershell
-uv run pytest tests/contract/domain/test_static.py tests/unit/contracts/test_schema_export.py tests/integration/storage/test_typed_configuration_registry.py tests/contract/test_core_ports.py tests/contract/test_architecture_imports.py -q
+uv run python -m pytest tests/contract/domain/test_static.py tests/unit/contracts/test_schema_export.py tests/integration/storage/test_typed_configuration_registry.py tests/contract/test_core_ports.py tests/contract/test_architecture_imports.py -q
 ```
 
 Expected: fail only because the one profile contract/schema/registry path, exact request binding, lower DTOs/protocols, and new boundary assertions do not exist.
@@ -721,7 +721,7 @@ Expected: fail only because the one profile contract/schema/registry path, exact
 - [ ] **Step 4: Run the focused GREEN test and fake compatibility test.**
 
 ```powershell
-uv run pytest tests/contract/domain/test_static.py tests/unit/contracts/test_schema_export.py tests/integration/storage/test_typed_configuration_registry.py tests/contract/test_core_ports.py tests/contract/test_architecture_imports.py tests/unit/test_fake_adapters.py -q
+uv run python -m pytest tests/contract/domain/test_static.py tests/unit/contracts/test_schema_export.py tests/integration/storage/test_typed_configuration_registry.py tests/contract/test_core_ports.py tests/contract/test_architecture_imports.py tests/unit/test_fake_adapters.py -q
 ```
 
 Expected: pass; the sole schema addition is deterministic, exact fixture/evaluation profile closure is fail closed, and the T07 fake adapter remains runtime-checkable as `StaticToolAdapter`.
@@ -758,7 +758,7 @@ Both backends stream stdout/stderr to exclusive files inside the attempt-owned o
 - [ ] **Step 4: Run RED.**
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_process.py tests/unit/static_analysis/test_process_windows.py -q
+uv run python -m pytest tests/unit/static_analysis/test_process.py tests/unit/static_analysis/test_process_windows.py -q
 ```
 
 Expected: fail because `SafeProcessRunner` does not exist.
@@ -767,7 +767,7 @@ Expected: fail because `SafeProcessRunner` does not exist.
 - [ ] **Step 6: Run GREEN and architecture checks.**
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_process.py tests/unit/static_analysis/test_process_windows.py tests/contract/test_architecture_imports.py -q
+uv run python -m pytest tests/unit/static_analysis/test_process.py tests/unit/static_analysis/test_process_windows.py tests/contract/test_architecture_imports.py -q
 uv run ruff check src/sastsimi/static_analysis/process.py src/sastsimi/static_analysis/process_windows.py tests/unit/static_analysis/test_process.py tests/unit/static_analysis/test_process_windows.py
 uv run mypy --strict src/sastsimi/static_analysis/process.py src/sastsimi/static_analysis/process_windows.py tests/unit/static_analysis/test_process.py tests/unit/static_analysis/test_process_windows.py
 ```
@@ -859,7 +859,7 @@ Before the Git operation callback returns, `StaticExternalRunner` writes the bou
 - [ ] **Step 8: Run RED.**
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_repository_loader.py tests/unit/static_analysis/test_workspace_storage.py tests/integration/static_analysis/test_repository_prepare.py tests/integration/storage/test_intermediate_publication.py tests/integration/storage/test_workflow_runner.py tests/integration/recovery/test_static_workspace_recovery.py tests/security_negative/test_code_path_escape.py -q
+uv run python -m pytest tests/unit/static_analysis/test_repository_loader.py tests/unit/static_analysis/test_workspace_storage.py tests/integration/static_analysis/test_repository_prepare.py tests/integration/storage/test_intermediate_publication.py tests/integration/storage/test_workflow_runner.py tests/integration/recovery/test_static_workspace_recovery.py tests/security_negative/test_code_path_escape.py -q
 ```
 
 Expected: fail only on the missing hard-quota lease backend, real loader, workspace lifecycle bridge, Git external envelope, or new recovery closure.
@@ -868,7 +868,7 @@ Expected: fail only on the missing hard-quota lease backend, real loader, worksp
 - [ ] **Step 10: Run GREEN plus focused static analysis.**
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_repository_loader.py tests/unit/static_analysis/test_workspace_storage.py tests/integration/static_analysis/test_repository_prepare.py tests/integration/storage/test_intermediate_publication.py tests/integration/storage/test_workflow_runner.py tests/integration/recovery/test_static_workspace_recovery.py tests/security_negative/test_code_path_escape.py -q
+uv run python -m pytest tests/unit/static_analysis/test_repository_loader.py tests/unit/static_analysis/test_workspace_storage.py tests/integration/static_analysis/test_repository_prepare.py tests/integration/storage/test_intermediate_publication.py tests/integration/storage/test_workflow_runner.py tests/integration/recovery/test_static_workspace_recovery.py tests/security_negative/test_code_path_escape.py -q
 uv run ruff check src/sastsimi/static_analysis/repository_loader.py src/sastsimi/static_analysis/workspace_storage.py src/sastsimi/orchestration/static_external_runner.py src/sastsimi/orchestration/static_publication.py src/sastsimi/runtime/workflow_runner.py src/sastsimi/storage/intermediate_policy.py src/sastsimi/storage/intermediate_publication.py src/sastsimi/storage/transition_service.py tests/unit/static_analysis/test_repository_loader.py tests/unit/static_analysis/test_workspace_storage.py tests/integration/static_analysis/test_repository_prepare.py tests/integration/recovery/test_static_workspace_recovery.py tests/security_negative/test_code_path_escape.py
 uv run mypy --strict src/sastsimi/static_analysis/repository_loader.py src/sastsimi/static_analysis/workspace_storage.py src/sastsimi/orchestration/static_external_runner.py src/sastsimi/orchestration/static_publication.py src/sastsimi/runtime/workflow_runner.py src/sastsimi/storage/intermediate_policy.py src/sastsimi/storage/intermediate_publication.py src/sastsimi/storage/transition_service.py tests/unit/static_analysis/test_repository_loader.py tests/unit/static_analysis/test_workspace_storage.py tests/integration/static_analysis/test_repository_prepare.py tests/integration/recovery/test_static_workspace_recovery.py tests/security_negative/test_code_path_escape.py
 ```
@@ -902,7 +902,7 @@ The conservative Python flow is a syntactic may-flow, not a vulnerability verdic
 - [ ] **Step 3: Run RED.**
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_ast_adapter.py -q
+uv run python -m pytest tests/unit/static_analysis/test_ast_adapter.py -q
 ```
 
 Expected: fail because the AST adapter and worker do not exist.
@@ -911,7 +911,7 @@ Expected: fail because the AST adapter and worker do not exist.
 - [ ] **Step 5: Run GREEN and focused checks.**
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_ast_adapter.py tests/security_negative/test_code_path_escape.py -q
+uv run python -m pytest tests/unit/static_analysis/test_ast_adapter.py tests/security_negative/test_code_path_escape.py -q
 uv run ruff check src/sastsimi/static_analysis/ast_adapter.py src/sastsimi/static_analysis/python_ast_worker.py tests/unit/static_analysis/test_ast_adapter.py
 uv run mypy --strict src/sastsimi/static_analysis/ast_adapter.py src/sastsimi/static_analysis/python_ast_worker.py tests/unit/static_analysis/test_ast_adapter.py
 ```
@@ -948,7 +948,7 @@ For a catalog entry with `requires_code_flow=true`, decode every `result.codeFlo
 - [ ] **Step 3: Run RED.**
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_codeql_adapter.py -q
+uv run python -m pytest tests/unit/static_analysis/test_codeql_adapter.py -q
 ```
 
 Expected: fail because `CodeQLProcessAdapter` does not exist.
@@ -957,7 +957,7 @@ Expected: fail because `CodeQLProcessAdapter` does not exist.
 - [ ] **Step 5: Run GREEN and focused checks.**
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_codeql_adapter.py tests/unit/static_analysis/test_process.py -q
+uv run python -m pytest tests/unit/static_analysis/test_codeql_adapter.py tests/unit/static_analysis/test_process.py -q
 uv run ruff check src/sastsimi/static_analysis/codeql_adapter.py tests/unit/static_analysis/test_codeql_adapter.py
 uv run mypy --strict src/sastsimi/static_analysis/codeql_adapter.py tests/unit/static_analysis/test_codeql_adapter.py
 ```
@@ -990,7 +990,7 @@ Every invocation fixes the CLI's JSON and timing options, and only the closed `t
 - [ ] **Step 3: Run RED.**
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_open_grep_adapter.py -q
+uv run python -m pytest tests/unit/static_analysis/test_open_grep_adapter.py -q
 ```
 
 Expected: fail because `OpenGrepProcessAdapter` does not exist.
@@ -999,7 +999,7 @@ Expected: fail because `OpenGrepProcessAdapter` does not exist.
 - [ ] **Step 5: Run GREEN and focused checks.**
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_open_grep_adapter.py tests/unit/static_analysis/test_process.py tests/security_negative/test_code_path_escape.py -q
+uv run python -m pytest tests/unit/static_analysis/test_open_grep_adapter.py tests/unit/static_analysis/test_process.py tests/security_negative/test_code_path_escape.py -q
 uv run ruff check src/sastsimi/static_analysis/open_grep_adapter.py tests/unit/static_analysis/test_open_grep_adapter.py
 uv run mypy --strict src/sastsimi/static_analysis/open_grep_adapter.py tests/unit/static_analysis/test_open_grep_adapter.py
 ```
@@ -1067,7 +1067,7 @@ No caller or adapter selects a work status independently. The publisher derives 
 - [ ] **Step 5: Run RED.**
 
 ```powershell
-uv run pytest tests/integration/static_analysis/test_tool_attempt_publication.py tests/integration/recovery/test_static_external_recovery.py tests/contract/test_static_tool_conformance.py tests/contract/domain/test_static.py -q
+uv run python -m pytest tests/integration/static_analysis/test_tool_attempt_publication.py tests/integration/recovery/test_static_external_recovery.py tests/contract/test_static_tool_conformance.py tests/contract/domain/test_static.py -q
 ```
 
 Expected: fail because the coordinator and trusted publisher do not exist.
@@ -1076,7 +1076,7 @@ Expected: fail because the coordinator and trusted publisher do not exist.
 - [ ] **Step 7: Run GREEN plus fake regression.**
 
 ```powershell
-uv run pytest tests/integration/static_analysis/test_tool_attempt_publication.py tests/integration/recovery/test_static_external_recovery.py tests/contract/test_static_tool_conformance.py tests/contract/domain/test_static.py tests/unit/test_fake_adapters.py tests/e2e/test_fake_true_pipeline.py -q
+uv run python -m pytest tests/integration/static_analysis/test_tool_attempt_publication.py tests/integration/recovery/test_static_external_recovery.py tests/contract/test_static_tool_conformance.py tests/contract/domain/test_static.py tests/unit/test_fake_adapters.py tests/e2e/test_fake_true_pipeline.py -q
 uv run ruff check src/sastsimi/static_analysis/coordinator.py src/sastsimi/orchestration/static_external_runner.py src/sastsimi/orchestration/static_publication.py tests/integration/static_analysis/test_tool_attempt_publication.py tests/integration/recovery/test_static_external_recovery.py tests/contract/test_static_tool_conformance.py
 uv run mypy --strict src/sastsimi/static_analysis/coordinator.py src/sastsimi/orchestration/static_external_runner.py src/sastsimi/orchestration/static_publication.py tests/integration/static_analysis/test_tool_attempt_publication.py tests/integration/recovery/test_static_external_recovery.py tests/contract/test_static_tool_conformance.py
 ```
@@ -1125,7 +1125,7 @@ Deterministic normalization rules:
 - [ ] **Step 3: Run RED.**
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_normalizer.py tests/integration/static_analysis/test_static_join.py -q
+uv run python -m pytest tests/unit/static_analysis/test_normalizer.py tests/integration/static_analysis/test_static_join.py -q
 ```
 
 Expected: fail because normalizer and fan-in service do not exist.
@@ -1134,7 +1134,7 @@ Expected: fail because normalizer and fan-in service do not exist.
 - [ ] **Step 5: Run GREEN and focused schema regression.**
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_normalizer.py tests/integration/static_analysis/test_static_join.py tests/contract/domain/test_static.py tests/unit/contracts/test_schema_export.py -q
+uv run python -m pytest tests/unit/static_analysis/test_normalizer.py tests/integration/static_analysis/test_static_join.py tests/contract/domain/test_static.py tests/unit/contracts/test_schema_export.py -q
 uv run ruff check src/sastsimi/static_analysis/normalizer.py src/sastsimi/orchestration/static_publication.py tests/unit/static_analysis/test_normalizer.py tests/integration/static_analysis/test_static_join.py
 uv run mypy --strict src/sastsimi/static_analysis/normalizer.py src/sastsimi/orchestration/static_publication.py tests/unit/static_analysis/test_normalizer.py tests/integration/static_analysis/test_static_join.py
 ```
@@ -1281,7 +1281,7 @@ The seed set is conceptual depth 0, but the persisted `ContextRetrievalLimits.ma
 - [ ] **Step 7: Run RED.**
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_context_retrieval_flow.py tests/integration/static_analysis/test_chained_child_context.py tests/integration/storage/test_context_publication.py tests/integration/recovery/test_context_external_recovery.py tests/security_negative/test_code_path_escape.py -q
+uv run python -m pytest tests/unit/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_context_retrieval_flow.py tests/integration/static_analysis/test_chained_child_context.py tests/integration/storage/test_context_publication.py tests/integration/recovery/test_context_external_recovery.py tests/security_negative/test_code_path_escape.py -q
 ```
 
 Expected: fail because real context retrieval does not exist.
@@ -1290,7 +1290,7 @@ Expected: fail because real context retrieval does not exist.
 - [ ] **Step 9: Run GREEN plus existing context/fake regressions.**
 
 ```powershell
-uv run pytest tests/unit/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_context_retrieval_flow.py tests/integration/static_analysis/test_chained_child_context.py tests/integration/storage/test_context_publication.py tests/integration/recovery/test_context_external_recovery.py tests/security_negative/test_code_path_escape.py tests/e2e/test_fake_true_pipeline.py -q
+uv run python -m pytest tests/unit/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_context_retrieval_flow.py tests/integration/static_analysis/test_chained_child_context.py tests/integration/storage/test_context_publication.py tests/integration/recovery/test_context_external_recovery.py tests/security_negative/test_code_path_escape.py tests/e2e/test_fake_true_pipeline.py -q
 uv run ruff check src/sastsimi/static_analysis/context_retrieval.py src/sastsimi/verification/context_service.py src/sastsimi/storage/context_lineage.py src/sastsimi/storage/context_binding.py src/sastsimi/storage/context_policy.py src/sastsimi/storage/action_validator.py tests/unit/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_context_retrieval_flow.py tests/integration/static_analysis/test_chained_child_context.py tests/integration/storage/test_context_publication.py tests/integration/recovery/test_context_external_recovery.py tests/security_negative/test_code_path_escape.py
 uv run mypy --strict src/sastsimi/static_analysis/context_retrieval.py src/sastsimi/verification/context_service.py src/sastsimi/storage/context_lineage.py src/sastsimi/storage/context_binding.py src/sastsimi/storage/context_policy.py src/sastsimi/storage/action_validator.py tests/unit/static_analysis/test_context_retrieval.py tests/integration/static_analysis/test_context_retrieval_flow.py tests/integration/static_analysis/test_chained_child_context.py tests/integration/storage/test_context_publication.py tests/integration/recovery/test_context_external_recovery.py tests/security_negative/test_code_path_escape.py
 ```
@@ -1324,7 +1324,7 @@ git commit -m "feat: retrieve bounded exact code context"
 - [ ] **Step 3: Run the focused integration candidate.**
 
 ```powershell
-uv run pytest tests/integration/static_analysis tests/integration/recovery/test_static_workspace_recovery.py tests/integration/recovery/test_static_external_recovery.py tests/integration/recovery/test_context_external_recovery.py tests/unit/static_analysis tests/security_negative/test_code_path_escape.py tests/contract/domain/test_static.py tests/contract/test_static_tool_conformance.py tests/contract/test_static_tool_real_adapter_conformance.py tests/contract/test_architecture_imports.py tests/unit/test_fake_adapters.py tests/e2e/test_fake_true_pipeline.py -q
+uv run python -m pytest tests/integration/static_analysis tests/integration/recovery/test_static_workspace_recovery.py tests/integration/recovery/test_static_external_recovery.py tests/integration/recovery/test_context_external_recovery.py tests/unit/static_analysis tests/security_negative/test_code_path_escape.py tests/contract/domain/test_static.py tests/contract/test_static_tool_conformance.py tests/contract/test_static_tool_real_adapter_conformance.py tests/contract/test_architecture_imports.py tests/unit/test_fake_adapters.py tests/e2e/test_fake_true_pipeline.py -q
 ```
 
 Expected: pass.
@@ -1336,7 +1336,7 @@ Expected: pass.
 uv run ruff format --check .
 uv run ruff check .
 uv run mypy --strict src tests
-uv run pytest tests/unit/contracts/test_schema_export.py tests/contract/domain/test_static.py tests/contract/test_architecture_imports.py -q
+uv run python -m pytest tests/unit/contracts/test_schema_export.py tests/contract/domain/test_static.py tests/contract/test_architecture_imports.py -q
 powershell -NoProfile -File scripts/validate-architecture-docs.ps1
 powershell -NoProfile -File scripts/audit-doc-inventory.ps1 -RepositoryRoot . -CheckLinks
 git diff --check

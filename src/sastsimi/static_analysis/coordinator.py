@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import stat
 import time
@@ -154,6 +155,9 @@ class StaticToolCoordinator:
         )
         try:
             observation = await adapter.probe(profile, deadline)
+        except asyncio.CancelledError:
+            await asyncio.shield(adapter.cancel(deadline.action_id))
+            raise
         except TimeoutError:
             await adapter.cancel(deadline.action_id)
             observation = StaticCapabilityObservation(
