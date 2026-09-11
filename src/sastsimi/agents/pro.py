@@ -22,6 +22,11 @@ from sastsimi.runtime.llm_call_service import (
 
 type ClaimIdFactory = Callable[[str], str]
 
+_EVIDENCE_TASK_BY_ROLE = {
+    "PRO": "COLLECT_SUPPORT",
+    "CON": "COLLECT_COUNTEREVIDENCE",
+}
+
 
 class _EvidenceClaimContent(ContractModel):
     statement: NonEmptyStr
@@ -102,7 +107,7 @@ class _EvidenceAgentFinalizer:
             raise ValueError("EVIDENCE_SCOPE_MISMATCH")
         if (
             request.agent_role != self.role
-            or request.task_kind != "REVIEW_EVIDENCE"
+            or request.task_kind != _EVIDENCE_TASK_BY_ROLE[self.role]
             or request.session_policy != "NEW"
             or request.parent_session_ref is not None
             or result.actual_session_mode != "NEW"

@@ -157,6 +157,7 @@ def run_fake_debate(
             orchestration_identity=orchestrator_ref,
             role=role,
             result_kind=f"{role.lower()}_evidence_result",
+            task_kind=_EVIDENCE_TASK_BY_ROLE[role],
             context_refs=debate_inputs,
         )
         selected_role = RequesterRole(role)
@@ -232,6 +233,11 @@ _PRIVATE_DEBATE_INPUT_KINDS = frozenset(
         "prompt_payload",
     }
 )
+
+_EVIDENCE_TASK_BY_ROLE = {
+    "PRO": "COLLECT_SUPPORT",
+    "CON": "COLLECT_COUNTEREVIDENCE",
+}
 
 
 def _normalized_inputs(
@@ -402,6 +408,7 @@ class DebateService:
         public_inputs: tuple[StoredDataRef, ...],
     ) -> LLMCallSpec:
         work_type = WorkType.PRO_EVIDENCE if role == "PRO" else WorkType.CON_EVIDENCE
+        task_kind = _EVIDENCE_TASK_BY_ROLE[role]
         child = call.work
         if (
             child.work_type != work_type
@@ -423,7 +430,7 @@ class DebateService:
             raise ValueError("CROSS_ROLE_INPUT_DENIED")
         if not isinstance(child.meta, RecordMeta) or (
             spec.agent_role != role
-            or spec.task_kind != "REVIEW_EVIDENCE"
+            or spec.task_kind != task_kind
             or spec.session_policy != "NEW"
             or spec.parent_session_ref is not None
             or spec.context_refs != public_inputs
@@ -444,7 +451,7 @@ class DebateService:
             not isinstance(payload_value, PromptPayload)
             or reference(payload_value) != spec.prompt_payload_ref
             or payload_value.agent_role != role
-            or payload_value.task_kind != "REVIEW_EVIDENCE"
+            or payload_value.task_kind != task_kind
             or payload_value.purpose != spec.purpose
             or tuple(binding.source_ref for binding in payload_value.context_bindings)
             != public_inputs

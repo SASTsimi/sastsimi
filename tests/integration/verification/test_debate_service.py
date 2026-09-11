@@ -283,6 +283,10 @@ def _authorized_call(
     child: WorkExecutionState,
     public_inputs: tuple[StoredDataRef, ...],
 ) -> Any:
+    task_kind = {
+        "PRO": "COLLECT_SUPPORT",
+        "CON": "COLLECT_COUNTEREVIDENCE",
+    }[role]
     bindings = tuple(
         PromptContextBinding(
             slot=f"input-{index}",
@@ -308,7 +312,7 @@ def _authorized_call(
             ),
             "prompt_key": f"{role.lower()}-review-evidence",
             "agent_role": role,
-            "task_kind": "REVIEW_EVIDENCE",
+            "task_kind": task_kind,
             "purpose": "PRODUCTION",
             "template_ref": _ref("artifact", f"{role.lower()}-template", record=False),
             "template_version": "1.0.0",
@@ -329,7 +333,7 @@ def _authorized_call(
             ),
             "llm_call_id": f"{role.lower()}-call",
             "agent_role": role,
-            "task_kind": "REVIEW_EVIDENCE",
+            "task_kind": task_kind,
             "purpose": "PRODUCTION",
             "provider_profile_ref": _ref(
                 "provider_profile", f"{role.lower()}-provider"
