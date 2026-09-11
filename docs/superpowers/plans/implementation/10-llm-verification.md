@@ -164,8 +164,8 @@ T10의 `finalize_without_dynamic`은 `FALSE | HOLD`만 저장한다. initial TRU
 - Modify: `src/sastsimi/runtime/services.py`
 - Modify: `src/sastsimi/bootstrap.py`
 - Modify: `src/sastsimi/prompts/templates/hypothesis/generate-initial/1.0.0.md`
-- Create: `src/sastsimi/prompts/templates/pro/review-evidence/1.0.0.md`
-- Create: `src/sastsimi/prompts/templates/con/review-evidence/1.0.0.md`
+- Create: `src/sastsimi/prompts/templates/pro/collect-support/1.0.0.md`
+- Create: `src/sastsimi/prompts/templates/con/collect-counterevidence/1.0.0.md`
 - Create: `src/sastsimi/prompts/templates/verification/assess-initial/1.0.0.md`
 - Create: `src/sastsimi/prompts/templates/verification/final-verdict/1.0.0.md`
 - Modify: prompt registry seed/configuration files
