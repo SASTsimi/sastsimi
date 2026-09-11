@@ -26,9 +26,8 @@ def _cleanup_with_resources(
             "request_ref": request_ref.model_dump(mode="json"),
             "environment_refs": [environment_ref.model_dump(mode="json")],
             "resource_refs": [
-                resource_ref.model_dump(mode="json")
-                for resource_ref in resource_refs
-            ]
+                resource_ref.model_dump(mode="json") for resource_ref in resource_refs
+            ],
         },
     )
 
