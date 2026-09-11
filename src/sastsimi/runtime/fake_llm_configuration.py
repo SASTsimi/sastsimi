@@ -31,6 +31,7 @@ from sastsimi.contracts.prompt_redaction import (
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef
+from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import CapabilityProbeResult
 from sastsimi.ports.fake_workflow import ProviderProber
 from sastsimi.runtime.fake_support import FakeEvidence
@@ -66,6 +67,7 @@ def register_fake_llm_call(
     provider_probe: ProviderProber,
     *,
     runner: WorkflowRunner,
+    work: WorkExecutionState,
     scope: StoredDataRef,
     orchestration_identity: BudgetScopeRef,
     role: str,
@@ -76,6 +78,8 @@ def register_fake_llm_call(
     """Publish one exact typed configuration closure and return call/provider refs."""
     if orchestration_identity != evidence.identity(RequesterRole.ORCHESTRATION):
         raise ValueError("FAKE_ORCHESTRATION_IDENTITY_MISMATCH")
+    if work.status != "RUNNING" or work.active_attempt_id is None:
+        raise ValueError("FAKE_LLM_ACTIVE_ATTEMPT_REQUIRED")
     evaluation_identity = evidence.identity(RequesterRole.R8_EVALUATION_RUNTIME)
 
     probe_candidate = ProviderValidationEvidence.model_validate_json(
@@ -413,7 +417,11 @@ def register_fake_llm_call(
     payload = PromptPayload.model_validate_json(
         canonical_bytes(
             dict(
-                meta=metadata("prompt_payload"),
+                meta=runner.metadata(
+                    work.meta,
+                    "prompt_payload",
+                    attempt_id=work.active_attempt_id,
+                ),
                 registry_entry_ref=prompt_ref,
                 prompt_key=prompt.prompt_key,
                 agent_role=role,
@@ -439,7 +447,13 @@ def register_fake_llm_call(
     )
     _approved(evidence, payload)
     payload_ref = runtime.configuration.register_prompt_payload(payload)
-    call_meta = metadata("llm_call_spec")
+    call_meta = RecordMeta.model_validate(
+        runner.metadata(
+            work.meta,
+            "llm_call_spec",
+            attempt_id=work.active_attempt_id,
+        )
+    )
     call = LLMCallSpec.model_validate_json(
         canonical_bytes(
             dict(
