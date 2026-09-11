@@ -233,9 +233,7 @@ def prompt_payload_record(invocation: LLMInvocationRequest) -> PromptPayload:
             "template_ref": artifact_ref(_TEMPLATE_BYTES, "prompt_template"),
             "template_version": invocation.prompt_template_version,
             "context_bindings": (),
-            "rendered_prompt_ref": artifact_ref(
-                _RENDERED_BYTES, "rendered_prompt"
-            ),
+            "rendered_prompt_ref": artifact_ref(_RENDERED_BYTES, "rendered_prompt"),
             "output_schema_ref": output_schema_ref,
         }
     )

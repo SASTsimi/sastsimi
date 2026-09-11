@@ -44,9 +44,7 @@ _PRIVATE_KEY = re.compile(
     r"-----END(?: [A-Z0-9]+)? PRIVATE KEY-----",
     re.IGNORECASE,
 )
-_WINDOWS_PATH = re.compile(
-    r"(?i)(?<![\w])(?:[A-Z]:[\\/]|\\\\)[^\r\n,;\"'<>]+"
-)
+_WINDOWS_PATH = re.compile(r"(?i)(?<![\w])(?:[A-Z]:[\\/]|\\\\)[^\r\n,;\"'<>]+")
 _POSIX_HOST_PATH = re.compile(
     r"(?<![\w/])/(?:root|home|Users|tmp|etc|var|opt|srv|usr|private)"
     r"(?:/|\b)[^\r\n,;\"'<>]*"
@@ -77,12 +75,8 @@ def _replace_string(value: str) -> tuple[str, set[str]]:
     result, token_count = _OPAQUE_TOKEN.subn("[REDACTED:TOKEN]", result)
     if token_count:
         categories.add("TOKEN")
-    result, windows_count = _WINDOWS_PATH.subn(
-        "[REDACTED:HOST_ABSOLUTE_PATH]", result
-    )
-    result, posix_count = _POSIX_HOST_PATH.subn(
-        "[REDACTED:HOST_ABSOLUTE_PATH]", result
-    )
+    result, windows_count = _WINDOWS_PATH.subn("[REDACTED:HOST_ABSOLUTE_PATH]", result)
+    result, posix_count = _POSIX_HOST_PATH.subn("[REDACTED:HOST_ABSOLUTE_PATH]", result)
     if windows_count or posix_count:
         categories.add("HOST_ABSOLUTE_PATH")
     return result, categories

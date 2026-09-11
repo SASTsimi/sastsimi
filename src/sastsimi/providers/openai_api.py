@@ -294,9 +294,7 @@ class OpenAIResponsesApiAdapter:
             )
 
         data_section = canonical_bytes({"bindings": rendered_bindings})
-        data_section = data_section.replace(b"<", b"\\u003c").replace(
-            b">", b"\\u003e"
-        )
+        data_section = data_section.replace(b"<", b"\\u003c").replace(b">", b"\\u003e")
         untrusted_bytes = (
             b"<UNTRUSTED_DATA>\n" + data_section + b"\n</UNTRUSTED_DATA>\n"
         )
@@ -336,9 +334,7 @@ class OpenAIResponsesApiAdapter:
             "input": [
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": untrusted_input}
-                    ],
+                    "content": [{"type": "input_text", "text": untrusted_input}],
                 }
             ],
             "text": {
@@ -510,16 +506,12 @@ class OpenAIResponsesApiAdapter:
             if outcome.validated_output is not None
             else None
         )
-        if (
-            expected_success
-            != (
-                outcome.response_text is not None
-                and outcome.parsed_output is not None
-                and isinstance(expected_output_ref, StoredDataRef)
-                and outcome.session_ref is not None
-            )
-            or (not expected_success and outcome.validated_output is not None)
-        ):
+        if expected_success != (
+            outcome.response_text is not None
+            and outcome.parsed_output is not None
+            and isinstance(expected_output_ref, StoredDataRef)
+            and outcome.session_ref is not None
+        ) or (not expected_success and outcome.validated_output is not None):
             raise ValueError("PROVIDER_RESULT_BUILDER_MISMATCH")
         result = LLMInvocationResult.model_validate(
             self.result_builder.build(request, outcome)
@@ -609,9 +601,7 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _strict_json(
-    data: bytes, error_type: type[RuntimeError]
-) -> JsonValue:
+def _strict_json(data: bytes, error_type: type[RuntimeError]) -> JsonValue:
     def reject_duplicates(pairs: list[tuple[str, JsonValue]]) -> dict[str, JsonValue]:
         output: dict[str, JsonValue] = {}
         for key, value in pairs:

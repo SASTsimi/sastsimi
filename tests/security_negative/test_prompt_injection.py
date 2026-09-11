@@ -87,8 +87,7 @@ def test_database_credentials_private_keys_and_spaced_paths_never_survive() -> N
         {
             "database_url": "postgresql://alice:s3cr3t@db.internal/app",
             "material": (
-                "-----BEGIN PRIVATE KEY-----\nabc123\n"
-                "-----END PRIVATE KEY-----"
+                "-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----"
             ),
             "location": r"C:\Users\Jane Doe\private\repo.py",
         }
