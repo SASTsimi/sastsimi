@@ -6,6 +6,14 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from sastsimi.contracts._domain import DomainRecord
+from sastsimi.contracts.actions import (
+    ActionDecision,
+    ActionType,
+    Decision,
+    UseStatus,
+    validate_decision_for_action,
+    validate_decision_revision,
+)
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.gates import RuleScopeImpactReview, TechnicalEvidenceReview
 from sastsimi.contracts.policy import RunPolicyState
@@ -139,7 +147,9 @@ class ReporterAgent:
             reservation_ref=call.reservation_ref,
             call_spec_ref=call.call_spec_ref,
         )
-        content = self._content(invocation, work=work, call=call)
+        content, claimed_decision_ref = self._content(
+            invocation, work=work, call=call
+        )
         allowed_locations = tuple(
             location
             for claim in (
@@ -162,7 +172,7 @@ class ReporterAgent:
         )
         draft = ReportDraft(
             meta=meta,
-            action_decision_ref=call.decision_ref,
+            action_decision_ref=claimed_decision_ref,
             finding_ref=inputs.finding_ref,
             verification_result_ref=inputs.verification_ref,
             technical_review_ref=inputs.technical_review_ref,
@@ -201,11 +211,21 @@ class ReporterAgent:
         *,
         work: WorkExecutionState,
         call: ReporterCallRefs,
-    ) -> ReportContent:
+    ) -> tuple[ReportContent, StoredDataRef]:
         request, result = invocation.request, invocation.result
         meta = self._record_meta(work)
+        claimed_decision_ref = request.action_decision_ref
+        issued = self._exact_decision(call.decision_ref)
+        claimed = self._exact_decision(claimed_decision_ref)
+        validate_decision_for_action(issued, ActionType.CALL_LLM)
+        validate_decision_for_action(claimed, ActionType.CALL_LLM)
+        validate_decision_revision(issued, claimed)
         if (
-            result.status != "SUCCEEDED"
+            issued.decision != Decision.ALLOW
+            or issued.use_status != UseStatus.UNUSED
+            or claimed.decision != Decision.ALLOW
+            or claimed.use_status != UseStatus.USED
+            or result.status != "SUCCEEDED"
             or result.parsed_output_ref is None
             or result.response_ref != result.parsed_output_ref
             or request.agent_role != "REPORTER"
@@ -213,7 +233,6 @@ class ReporterAgent:
             or request.session_policy != "NEW"
             or request.parent_session_ref is not None
             or request.call_spec_ref != call.call_spec_ref
-            or request.action_decision_ref != call.decision_ref
             or request.context_refs != work.input_refs
             or request.llm_call_id != result.llm_call_id
             or request.meta.attempt_id != work.active_attempt_id
@@ -238,7 +257,13 @@ class ReporterAgent:
             raise ValueError("REPORTER_OUTPUT_ARTIFACT_INVALID") from error
         if canonical_bytes(content) != raw:
             raise ValueError("REPORTER_OUTPUT_ARTIFACT_INVALID")
-        return content
+        return content, claimed_decision_ref
+
+    def _exact_decision(self, ref: StoredDataRef) -> ActionDecision:
+        value = self._records.get_exact(ref)
+        if not isinstance(value, ActionDecision) or reference(value) != ref:
+            raise ValueError("REPORTER_INVOCATION_CLOSURE_MISMATCH")
+        return value
 
     def _exact[T: DomainRecord](self, ref: StoredDataRef, model: type[T]) -> T:
         value = self._records.get_exact(ref)
