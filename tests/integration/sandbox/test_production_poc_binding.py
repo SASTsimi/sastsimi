@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import cast
@@ -10,11 +11,18 @@ import pytest
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.dynamic import (
     POC_RUNTIME_PATH,
+    CleanupResult,
+    DynamicReproductionRequest,
     DynamicReproductionToolRequest,
+    EnvironmentRecipe,
+    EnvironmentRequirements,
     PoCCandidate,
+    ReproductionPlan,
+    SandboxEnvironment,
+    SandboxPolicyDecision,
 )
 from sastsimi.contracts.refs import StoredDataRef, reference
-from sastsimi.ports.dto import Record
+from sastsimi.ports.dto import Record, WorkHandlerResult
 from sastsimi.reproduction.production import (
     DynamicRecordSink,
     DynamicSandboxAuthorization,
@@ -71,6 +79,9 @@ class _Docker:
 @dataclass
 class _Sink:
     published: list[Record] = field(default_factory=list)
+    finished: list[Record] = field(default_factory=list)
+    fail_on: str | None = None
+    failure_observer: Callable[[], None] | None = None
 
     def publish(
         self,
@@ -81,8 +92,57 @@ class _Sink:
         input_refs: tuple[StoredDataRef, ...],
     ) -> StoredDataRef:
         del work, role, input_refs
+        if record.meta.record_type == self.fail_on:
+            if self.failure_observer is not None:
+                self.failure_observer()
+            raise RuntimeError("publication unavailable")
         self.published.append(record)
         return cast(StoredDataRef, reference(record))
+
+    def finish(
+        self,
+        *,
+        work: object,
+        result: Record,
+        status: str,
+        input_refs: tuple[StoredDataRef, ...],
+    ) -> WorkHandlerResult:
+        del work, status, input_refs
+        self.finished.append(result)
+        return WorkHandlerResult((cast(StoredDataRef, reference(result)),))
+
+
+@dataclass
+class _CleanupSetup:
+    result: CleanupResult
+    calls: list[
+        tuple[
+            object,
+            tuple[object, ...],
+            tuple[StoredDataRef, ...],
+        ]
+    ] = field(default_factory=list)
+
+    async def cleanup(
+        self,
+        *,
+        request: object,
+        environments: tuple[object, ...],
+        resource_refs: tuple[StoredDataRef, ...],
+        meta: object,
+    ) -> CleanupResult:
+        del meta
+        self.calls.append((request, environments, resource_refs))
+        return self.result.model_copy(
+            update={
+                "request_ref": reference(request),  # type: ignore[arg-type]
+                "environment_refs": tuple(
+                    reference(environment)  # type: ignore[arg-type]
+                    for environment in environments
+                ),
+                "resource_refs": resource_refs,
+            }
+        )
 
 
 def _selection_tool(chain: dict[str, object]) -> DynamicReproductionToolRequest:
@@ -132,15 +192,58 @@ def _prepared_workflow() -> tuple[
     StoredDataRef,
 ]:
     chain = dynamic_success()
+    request = cast(DynamicReproductionRequest, chain["request"])
+    request_ref = cast(StoredDataRef, reference(request))
+    requirements = cast(EnvironmentRequirements, chain["requirements"]).model_copy(
+        update={"request_ref": request_ref}
+    )
+    requirements_ref = cast(StoredDataRef, reference(requirements))
+    plan = cast(ReproductionPlan, chain["plan"]).model_copy(
+        update={
+            "request_ref": request_ref,
+            "environment_requirements_ref": requirements_ref,
+        }
+    )
+    plan_ref = cast(StoredDataRef, reference(plan))
+    recipe = cast(EnvironmentRecipe, chain["recipe"]).model_copy(
+        update={
+            "request_ref": request_ref,
+            "environment_requirements_ref": requirements_ref,
+        }
+    )
+    recipe_ref = cast(StoredDataRef, reference(recipe))
+    environment = cast(SandboxEnvironment, chain["environment"]).model_copy(
+        update={
+            "request_ref": request_ref,
+            "reproduction_plan_ref": plan_ref,
+            "environment_recipe_ref": recipe_ref,
+            "requirements_ref": requirements_ref,
+        }
+    )
+    policy = cast(SandboxPolicyDecision, chain["policy"]).model_copy(
+        update={"request_ref": request_ref}
+    )
+    chain.update(
+        {
+            "requirements": requirements,
+            "plan": plan,
+            "recipe": recipe,
+            "environment": environment,
+            "policy": policy,
+        }
+    )
     artifacts = MemoryArtifacts()
     content = b"print('candidate')\n"
     content_ref = artifacts.commit(artifacts.stage_bytes(content, "text/plain"))
-    candidate = PoCCandidate.model_validate(
-        chain["candidate"].model_dump()
-        | {"content_ref": content_ref, "content_digest": content_ref.content_hash}
+    candidate = cast(PoCCandidate, chain["candidate"]).model_copy(
+        update={
+            "request_ref": request_ref,
+            "reproduction_plan_ref": plan_ref,
+            "content_ref": content_ref,
+            "content_digest": content_ref.content_hash,
+        }
     )
     chain["candidate"] = candidate
-    request_ref = cast(StoredDataRef, reference(chain["request"]))
     work = dynamic_work(request_ref).model_copy(update={"active_attempt_id": "at1"})
     docker = _Docker()
     sink = _Sink()
@@ -159,7 +262,11 @@ def _prepared_workflow() -> tuple[
         authorization=cast(object, lambda *_: None),
     )
     workflow._records["request"] = cast(Record, chain["request"])
-    workflow._policy = chain["policy"]
+    workflow._records["environment_requirements"] = cast(
+        Record, chain["requirements"]
+    )
+    workflow._records["reproduction_plan"] = cast(Record, chain["plan"])
+    workflow._policy = policy
     workflow._prepared = PreparedSandbox(
         chain["recipe"],
         chain["environment"],
@@ -353,3 +460,91 @@ async def test_timed_out_poc_command_records_output_then_fails_execution() -> No
         if event.event_type in {"COMMAND_FINISHED", "POC_EXECUTION_FINISHED"}
     ]
     assert [event.exit_code for event in finished] == [-9, -9]
+
+
+@pytest.mark.asyncio
+async def test_publication_failure_cleans_registered_owned_resource() -> None:
+    workflow, _, chain, _ = _prepared_workflow()
+    resource_ref = StoredDataRef(
+        stored_data_id="owned-container-resource",
+        data_kind="sandbox_resource",
+        content_hash="e" * 64,
+        workspace_id=workflow._work.meta.workspace_id,
+        commit_id=workflow._work.meta.commit_id,
+        record_id=None,
+    )
+    prepared = PreparedSandbox(
+        chain["recipe"],  # type: ignore[arg-type]
+        chain["environment"],  # type: ignore[arg-type]
+        (resource_ref,),
+    )
+    cleanup = cast(CleanupResult, chain["cleanup"])
+    setup = _CleanupSetup(cleanup)
+    workflow._setup = cast(ReproductionSetupAutomation, setup)
+    sink = cast(_Sink, workflow._sink)
+    sink.fail_on = "sandbox_environment"
+    resources_at_publish: list[tuple[tuple[StoredDataRef, ...], ...]] = []
+    sink.failure_observer = lambda: resources_at_publish.append(
+        workflow._prepared_resources()
+    )
+    workflow._prepared = None
+
+    with pytest.raises(DynamicOperationalError, match="publication failed") as raised:
+        await workflow._remember_prepared(prepared)
+
+    assert resources_at_publish == [((resource_ref,),)]
+    assert setup.calls == [
+        (
+            chain["request"],
+            (chain["environment"],),
+            (resource_ref,),
+        )
+    ]
+    assert workflow._cleanup is not None
+    assert workflow._cleanup.status == "SUCCEEDED"
+    completed = workflow.finalize_failure(
+        work=workflow._work,
+        request=chain["request"],  # type: ignore[arg-type]
+        request_ref=cast(StoredDataRef, reference(chain["request"])),
+        session=None,
+        failure=raised.value.failure,
+    )
+    assert completed.output_refs
+    assert sink.finished[-1].status == "FAILED"  # type: ignore[attr-defined]
+    assert sink.finished[-1].hypothesis_outcome == "INCONCLUSIVE"  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_publication_cleanup_failure_is_reported() -> None:
+    workflow, _, chain, _ = _prepared_workflow()
+    resource_ref = StoredDataRef(
+        stored_data_id="owned-container-resource",
+        data_kind="sandbox_resource",
+        content_hash="e" * 64,
+        workspace_id=workflow._work.meta.workspace_id,
+        commit_id=workflow._work.meta.commit_id,
+        record_id=None,
+    )
+    prepared = PreparedSandbox(
+        chain["recipe"],  # type: ignore[arg-type]
+        chain["environment"],  # type: ignore[arg-type]
+        (resource_ref,),
+    )
+    cleanup = cast(CleanupResult, chain["cleanup"]).model_copy(
+        update={
+            "status": "FAILED",
+            "failure_reason": "OWNED_RESOURCE_CLEANUP_FAILED",
+        }
+    )
+    setup = _CleanupSetup(cleanup)
+    workflow._setup = cast(ReproductionSetupAutomation, setup)
+    sink = cast(_Sink, workflow._sink)
+    sink.fail_on = "sandbox_environment"
+    workflow._prepared = None
+
+    with pytest.raises(DynamicOperationalError) as raised:
+        await workflow._remember_prepared(prepared)
+
+    assert raised.value.failure.status == "FAILED"
+    assert raised.value.failure.failure_category == "ENVIRONMENT_SETUP"
+    assert raised.value.failure.failure_reason == "OWNED_RESOURCE_CLEANUP_FAILED"

@@ -304,7 +304,7 @@ class ProductionDynamicWorkflow:
             raise DynamicOperationalError(
                 "FAILED", "ENVIRONMENT_SETUP", _safe_error(error)
             ) from error
-        self._remember_prepared(prepared)
+        await self._remember_prepared(prepared)
         return self._session(policy_ref)
 
     async def apply_tool(
@@ -347,7 +347,7 @@ class ProductionDynamicWorkflow:
                 raise DynamicOperationalError(
                     "FAILED", "ENVIRONMENT_SETUP", _safe_error(error)
                 ) from error
-            self._remember_prepared(prepared)
+            await self._remember_prepared(prepared)
             self._selected_poc = None
             self._append_event(
                 "SANDBOX_RECREATED",
@@ -843,21 +843,74 @@ class ProductionDynamicWorkflow:
             input_refs,
         )
 
-    def _remember_prepared(self, prepared: PreparedSandbox) -> None:
+    async def _remember_prepared(self, prepared: PreparedSandbox) -> None:
         self._prepared = prepared
         self._recipes.append(prepared.recipe)
         self._environments.append(prepared.environment)
-        recipe_ref = self._publish(
-            prepared.recipe,
-            RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
-            self._work_inputs(),
-        )
-        self._publish(
-            prepared.environment,
-            RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
-            (*self._work_inputs(), recipe_ref),
-        )
         self._resource_groups.append(prepared.resource_refs)
+        try:
+            recipe_ref = self._publish(
+                prepared.recipe,
+                RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
+                self._work_inputs(),
+            )
+            self._publish(
+                prepared.environment,
+                RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
+                (*self._work_inputs(), recipe_ref),
+            )
+        except Exception as publication_error:
+            await self._cleanup_after_publication_failure()
+            raise DynamicOperationalError(
+                "FAILED", "ENVIRONMENT_SETUP", "Sandbox record publication failed"
+            ) from publication_error
+
+    async def _cleanup_after_publication_failure(self) -> None:
+        try:
+            cleanup = await self._setup.cleanup(
+                request=cast(DynamicReproductionRequest, self._records["request"]),
+                environments=tuple(self._environments),
+                resource_refs=tuple(
+                    item for refs in self._prepared_resources() for item in refs
+                ),
+                meta=self._meta("cleanup_result"),
+            )
+        except Exception as cleanup_error:
+            raise DynamicOperationalError(
+                "FAILED", "ENVIRONMENT_SETUP", "OWNED_RESOURCE_CLEANUP_FAILED"
+            ) from cleanup_error
+        self._cleanup = cleanup
+        prepared = self._require_prepared()
+        try:
+            cleanup_ref = self._publish(
+                cleanup,
+                RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
+                (self._log_ref(),),
+            )
+            self._append_event(
+                "ERROR",
+                "REPRODUCTION_SETUP_AUTOMATION",
+                environment_ref=_exact_ref(prepared.environment),
+                environment_recipe_ref=_exact_ref(prepared.recipe),
+                input_refs=prepared.resource_refs,
+                output_refs=(cleanup_ref,),
+                safe_message=(
+                    cleanup.failure_reason
+                    or "Sandbox record publication failed after resource cleanup"
+                ),
+            )
+        except Exception as audit_error:
+            raise DynamicOperationalError(
+                "FAILED",
+                "ENVIRONMENT_SETUP",
+                cleanup.failure_reason or "SANDBOX_CLEANUP_AUDIT_FAILED",
+            ) from audit_error
+        if cleanup.status != "SUCCEEDED":
+            raise DynamicOperationalError(
+                "FAILED",
+                "ENVIRONMENT_SETUP",
+                cleanup.failure_reason or "OWNED_RESOURCE_CLEANUP_FAILED",
+            )
 
     def _publish(
         self,
