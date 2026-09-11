@@ -1,22 +1,45 @@
-"""Shared deterministic Pro/Con orchestration for every generation."""
+"""Shared fake and production Pro/Con orchestration for every generation."""
 
+from __future__ import annotations
+
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Protocol, cast
 
-from sastsimi.contracts.actions import RequesterRole
+from sastsimi.agents.con_agent import ConAgent
+from sastsimi.agents.pro import ProAgent
+from sastsimi.contracts.actions import RequesterRole, SessionMode
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
+from sastsimi.contracts.llm import LLMCallSpec, PromptPayload
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
-from sastsimi.contracts.verification import ConEvidenceResult, ProEvidenceResult
-from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.contracts.verification import (
+    ConEvidenceResult,
+    ProEvidenceResult,
+    validate_evidence_sessions,
+)
+from sastsimi.contracts.work import (
+    WorkExecutionState,
+    WorkStatus,
+    WorkType,
+    validate_parent_work,
+)
+from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.fake_workflow import ProviderInvoker, ProviderProber
+from sastsimi.ports.record_store import RecordStore
 from sastsimi.runtime.fake_llm_configuration import register_fake_llm_call
 from sastsimi.runtime.fake_llm_invocation import (
     invoke_fake_provider,
     persist_fake_invocation,
 )
 from sastsimi.runtime.fake_support import FakeEvidence
+from sastsimi.runtime.llm_call_service import (
+    InvocationMetadataFactory,
+    LLMCallService,
+    PersistedLLMInvocation,
+)
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 
@@ -27,6 +50,56 @@ class FakeDebateResult:
     con: ConEvidenceResult
     pro_ref: StoredDataRef
     con_ref: StoredDataRef
+
+
+@dataclass(frozen=True)
+class AuthorizedLLMCall:
+    """One already-authorized call bound to a running evidence child work."""
+
+    work: WorkExecutionState
+    decision_ref: StoredDataRef
+    reservation_ref: RecordRef
+    call_spec_ref: StoredDataRef
+
+
+@dataclass(frozen=True)
+class DebateResult:
+    pro: ProEvidenceResult
+    con: ConEvidenceResult
+    pro_ref: StoredDataRef
+    con_ref: StoredDataRef
+    pro_session_ref: str
+    con_session_ref: str
+
+
+class LLMInvoker(Protocol):
+    async def invoke(
+        self,
+        *,
+        work: WorkExecutionState,
+        decision_ref: StoredDataRef,
+        reservation_ref: RecordRef,
+        call_spec_ref: StoredDataRef,
+    ) -> PersistedLLMInvocation: ...
+
+
+type ClaimIdFactory = Callable[[str], str]
+type ResultPublisher = Callable[
+    [WorkExecutionState, ProEvidenceResult | ConEvidenceResult], StoredDataRef
+]
+
+
+class DebateIncompleteError(ValueError):
+    """A branch failed; any independently valid opposite result stays published."""
+
+    def __init__(
+        self,
+        failure_count: int,
+        completed_refs: tuple[StoredDataRef, ...],
+    ) -> None:
+        super().__init__("EVIDENCE_DEBATE_INCOMPLETE")
+        self.failure_count = failure_count
+        self.completed_refs = completed_refs
 
 
 def run_fake_debate(
@@ -147,7 +220,257 @@ def run_fake_debate(
     return FakeDebateResult(pro, con, pro_ref, con_ref)
 
 
-class DebateService:
-    """Run the same-input Pro/Con fan-out and exact result join."""
+_PRIVATE_DEBATE_INPUT_KINDS = frozenset(
+    {
+        "artifact",
+        "pro_evidence_result",
+        "con_evidence_result",
+        "llm_call_spec",
+        "llm_invocation_request",
+        "llm_invocation_result",
+        "llm_invocation_log",
+        "prompt_payload",
+    }
+)
 
-    run = staticmethod(run_fake_debate)
+
+def _normalized_inputs(
+    refs: tuple[StoredDataRef, ...],
+) -> tuple[StoredDataRef, ...]:
+    unique = {canonical_bytes(ref): ref for ref in refs}
+    return tuple(unique[key] for key in sorted(unique))
+
+
+class DebateService:
+    """Run exact-input Pro/Con calls concurrently and join committed results."""
+
+    run_fake = staticmethod(run_fake_debate)
+
+    def __init__(
+        self,
+        *,
+        records: RecordStore,
+        artifacts: ArtifactStore,
+        llm_calls: LLMCallService | LLMInvoker,
+        metadata_factory: InvocationMetadataFactory,
+        claim_id_factory: ClaimIdFactory,
+        publish_result: ResultPublisher,
+    ) -> None:
+        self.records = records
+        self.llm_calls = llm_calls
+        self.publish_result = publish_result
+        self.pro = ProAgent(
+            artifacts=artifacts,
+            metadata_factory=metadata_factory,
+            claim_id_factory=claim_id_factory,
+        )
+        self.con = ConAgent(
+            artifacts=artifacts,
+            metadata_factory=metadata_factory,
+            claim_id_factory=claim_id_factory,
+        )
+
+    async def run(
+        self,
+        *,
+        verification_work: WorkExecutionState,
+        public_input_refs: tuple[StoredDataRef, ...],
+        pro_call: AuthorizedLLMCall,
+        con_call: AuthorizedLLMCall,
+    ) -> DebateResult:
+        public_inputs = _normalized_inputs(public_input_refs)
+        if (
+            not isinstance(verification_work.meta, RecordMeta)
+            or verification_work.meta.hypothesis_id is None
+            or verification_work.work_type != WorkType.VERIFICATION
+            or verification_work.status != WorkStatus.RUNNING
+            or verification_work.active_attempt_id is None
+            or verification_work.input_hash != content_hash(public_inputs)
+        ):
+            raise ValueError("EVIDENCE_PARENT_WORK_SCOPE_MISMATCH")
+        if not public_inputs or any(
+            ref.data_kind in _PRIVATE_DEBATE_INPUT_KINDS for ref in public_inputs
+        ):
+            raise ValueError("CROSS_ROLE_INPUT_DENIED")
+        if tuple(verification_work.input_refs) != public_inputs:
+            raise ValueError("EVIDENCE_INPUT_CLOSURE_MISMATCH")
+        pro_spec = self._validate_call(
+            pro_call, "PRO", verification_work, public_inputs
+        )
+        con_spec = self._validate_call(
+            con_call, "CON", verification_work, public_inputs
+        )
+        if (
+            pro_call.work.work_id == con_call.work.work_id
+            or pro_call.work.active_attempt_id == con_call.work.active_attempt_id
+            or pro_spec.llm_call_id == con_spec.llm_call_id
+            or pro_call.decision_ref == con_call.decision_ref
+            or pro_call.reservation_ref == con_call.reservation_ref
+            or pro_call.call_spec_ref == con_call.call_spec_ref
+        ):
+            raise ValueError("EVIDENCE_INDEPENDENCE_REQUIRED")
+
+        invocations = await asyncio.gather(
+            self._invoke(pro_call), self._invoke(con_call), return_exceptions=True
+        )
+        debate_hash = content_hash(public_inputs)
+        outputs: list[ProEvidenceResult | ConEvidenceResult | None] = [None, None]
+        failures: list[Exception] = []
+        for index, (call, invocation) in enumerate(
+            ((pro_call, invocations[0]), (con_call, invocations[1]))
+        ):
+            if isinstance(invocation, BaseException):
+                if not isinstance(invocation, Exception):
+                    raise invocation
+                failures.append(invocation)
+                continue
+            try:
+                if (
+                    invocation.request.call_spec_ref != call.call_spec_ref
+                    or tuple(invocation.request.context_refs) != public_inputs
+                ):
+                    raise ValueError("EVIDENCE_INVOCATION_CLOSURE_MISMATCH")
+                if index == 0:
+                    outputs[index] = self.pro.finalize(
+                        invocation,
+                        parent_work=verification_work,
+                        evidence_work=call.work,
+                        debate_input_hash=debate_hash,
+                        allowed_evidence_refs=public_inputs,
+                    )
+                else:
+                    outputs[index] = self.con.finalize(
+                        invocation,
+                        parent_work=verification_work,
+                        evidence_work=call.work,
+                        debate_input_hash=debate_hash,
+                        allowed_evidence_refs=public_inputs,
+                    )
+            except Exception as error:
+                failures.append(error)
+
+        completed_refs: list[StoredDataRef] = []
+        if failures:
+            for call, output in zip((pro_call, con_call), outputs, strict=True):
+                if output is not None:
+                    completed_refs.append(self._publish_exact(call.work, output))
+            raise DebateIncompleteError(len(failures), tuple(completed_refs))
+
+        pro = outputs[0]
+        con = outputs[1]
+        if not isinstance(pro, ProEvidenceResult) or not isinstance(
+            con, ConEvidenceResult
+        ):
+            raise ValueError("FAKE_DEBATE_ROLE_MISMATCH")
+        pro_invocation = cast(PersistedLLMInvocation, invocations[0])
+        con_invocation = cast(PersistedLLMInvocation, invocations[1])
+        pro_session = pro_invocation.result.session_ref
+        con_session = con_invocation.result.session_ref
+        assert pro_session is not None and con_session is not None
+        validate_evidence_sessions(
+            pro,
+            con,
+            pro_session_id=pro_session,
+            con_session_id=con_session,
+            pro_mode=SessionMode(pro_invocation.request.session_policy),
+            con_mode=SessionMode(con_invocation.request.session_policy),
+        )
+        pro_ref = self._publish_exact(pro_call.work, pro)
+        con_ref = self._publish_exact(con_call.work, con)
+        return DebateResult(
+            pro,
+            con,
+            pro_ref,
+            con_ref,
+            pro_session,
+            con_session,
+        )
+
+    async def _invoke(self, call: AuthorizedLLMCall) -> PersistedLLMInvocation:
+        return await self.llm_calls.invoke(
+            work=call.work,
+            decision_ref=call.decision_ref,
+            reservation_ref=call.reservation_ref,
+            call_spec_ref=call.call_spec_ref,
+        )
+
+    def _validate_call(
+        self,
+        call: AuthorizedLLMCall,
+        role: str,
+        parent: WorkExecutionState,
+        public_inputs: tuple[StoredDataRef, ...],
+    ) -> LLMCallSpec:
+        work_type = WorkType.PRO_EVIDENCE if role == "PRO" else WorkType.CON_EVIDENCE
+        child = call.work
+        if (
+            child.work_type != work_type
+            or child.status != WorkStatus.RUNNING
+            or child.work_generation != parent.work_generation
+            or child.active_attempt_id is None
+            or tuple(child.input_refs) != public_inputs
+            or child.input_hash != content_hash(public_inputs)
+        ):
+            raise ValueError("EVIDENCE_WORK_SCOPE_MISMATCH")
+        validate_parent_work(child, parent)
+        value = self.records.get_exact(call.call_spec_ref)
+        if not isinstance(value, LLMCallSpec) or reference(value) != call.call_spec_ref:
+            raise ValueError("LLM_CALL_SPEC_EXACT_REF_REQUIRED")
+        spec = value
+        if any(
+            ref.data_kind in _PRIVATE_DEBATE_INPUT_KINDS for ref in spec.context_refs
+        ):
+            raise ValueError("CROSS_ROLE_INPUT_DENIED")
+        if not isinstance(child.meta, RecordMeta) or (
+            spec.agent_role != role
+            or spec.task_kind != "REVIEW_EVIDENCE"
+            or spec.session_policy != "NEW"
+            or spec.parent_session_ref is not None
+            or spec.context_refs != public_inputs
+            or spec.meta.analysis_id != child.meta.analysis_id
+            or spec.meta.workspace_id != child.meta.workspace_id
+            or spec.meta.commit_id != child.meta.commit_id
+            or spec.meta.hypothesis_id != child.meta.hypothesis_id
+            or spec.meta.attempt_id != child.active_attempt_id
+        ):
+            raise ValueError("EVIDENCE_CALL_SCOPE_MISMATCH")
+        payload_value = self.records.get_exact(spec.prompt_payload_ref)
+        if isinstance(payload_value, PromptPayload) and any(
+            binding.source_ref.data_kind in _PRIVATE_DEBATE_INPUT_KINDS
+            for binding in payload_value.context_bindings
+        ):
+            raise ValueError("CROSS_ROLE_INPUT_DENIED")
+        if (
+            not isinstance(payload_value, PromptPayload)
+            or reference(payload_value) != spec.prompt_payload_ref
+            or payload_value.agent_role != role
+            or payload_value.task_kind != "REVIEW_EVIDENCE"
+            or payload_value.purpose != spec.purpose
+            or tuple(binding.source_ref for binding in payload_value.context_bindings)
+            != public_inputs
+        ):
+            raise ValueError("EVIDENCE_PROMPT_INPUT_CLOSURE_MISMATCH")
+        return spec
+
+    def _publish_exact(
+        self,
+        work: WorkExecutionState,
+        output: ProEvidenceResult | ConEvidenceResult,
+    ) -> StoredDataRef:
+        output_ref = self.publish_result(work, output)
+        if output_ref != reference(output):
+            raise ValueError("EVIDENCE_OUTPUT_COMMIT_MISMATCH")
+        stored = self.records.get_exact(output_ref)
+        if stored != output or reference(stored) != output_ref:
+            raise ValueError("EVIDENCE_OUTPUT_COMMIT_MISMATCH")
+        return output_ref
+
+
+__all__ = [
+    "AuthorizedLLMCall",
+    "DebateIncompleteError",
+    "DebateResult",
+    "DebateService",
+    "FakeDebateResult",
+    "run_fake_debate",
+]
