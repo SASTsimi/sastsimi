@@ -147,10 +147,22 @@ def redact_projected_json(data: bytes) -> RedactionResult:
     return RedactionResult(encoded, tuple(sorted(categories)))
 
 
+def assert_safe_provider_text(data: bytes) -> None:
+    """Reject non-JSON provider text containing credentials or host paths."""
+    try:
+        value = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("PROMPT_REDACTION_FAILED") from error
+    redacted, categories = _replace_string(value)
+    if categories or redacted != value or _has_sensitive_string(value):
+        raise ValueError("PROMPT_REDACTION_FAILED")
+
+
 def render_provider_prompt(
     template: bytes, bindings: tuple[tuple[str, bytes], ...]
 ) -> bytes:
     """Render provider input deterministically from redacted binding artifacts."""
+    assert_safe_provider_text(template)
     rendered_bindings: list[dict[str, object]] = []
     for slot, projected in bindings:
         redacted = redact_projected_json(projected).data
@@ -164,4 +176,8 @@ def render_provider_prompt(
         )
     data_section = canonical_bytes({"bindings": rendered_bindings})
     data_section = data_section.replace(b"<", b"\\u003c").replace(b">", b"\\u003e")
-    return template + b"\n<UNTRUSTED_DATA>\n" + data_section + b"\n</UNTRUSTED_DATA>\n"
+    rendered = (
+        template + b"\n<UNTRUSTED_DATA>\n" + data_section + b"\n</UNTRUSTED_DATA>\n"
+    )
+    assert_safe_provider_text(rendered)
+    return rendered

@@ -100,3 +100,17 @@ def test_database_credentials_private_keys_and_spaced_paths_never_survive() -> N
     assert b"PRIVATE KEY" not in result.data
     assert b"Jane Doe" not in result.data
     assert set(result.categories) == {"CREDENTIAL", "HOST_ABSOLUTE_PATH"}
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        b"Use api_key=plain-secret-value",
+        b"Connect to postgresql://alice:secret@db.internal/app",
+        b"-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----",
+        b"Load C:\\Users\\Jane Doe\\private\\prompt.md",
+    ],
+)
+def test_sensitive_trusted_template_is_rejected(template: bytes) -> None:
+    with pytest.raises(ValueError, match="PROMPT_REDACTION_FAILED"):
+        render_provider_prompt(template, ())
