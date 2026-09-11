@@ -55,7 +55,7 @@ class _Queries:
         return tuple(
             record
             for record in self.records
-            if str(record.meta.analysis_id) == analysis_id
+            if str(getattr(record.meta, "analysis_id", "")) == analysis_id
             and record.meta.record_type == kind
         )
 
@@ -63,7 +63,7 @@ class _Queries:
         return tuple(
             record
             for record in self.records
-            if str(record.meta.analysis_id) == analysis_id
+            if str(getattr(record.meta, "analysis_id", "")) == analysis_id
         )
 
 
