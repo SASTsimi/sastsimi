@@ -1,14 +1,186 @@
-"""Resolve exact READ_CODE request provenance before Context response publication."""
+"""Resolve exact READ_CODE provenance and immutable Context policy artifacts."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterable
+from typing import Any, Literal, cast
 
 from sqlalchemy import Connection, select
 
 from sastsimi.contracts.actions import ActionDecision, ActionRequest
-from sastsimi.contracts.static import CodeContextRequest, CodeContextResponse
+from sastsimi.contracts.records import RecordMeta
+from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.static import (
+    CodeContextRequest,
+    CodeContextResponse,
+    ContextRetrievalLimits,
+)
 from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.ports.artifact_store import ArtifactStore
+from sastsimi.ports.context import ContextCeilingProfile
 
 from . import models
-from .codec import reference
+from .codec import REF_ADAPTER, reference
 from .repositories import SQLiteRecordStore
+
+_CEILING_FIELDS = frozenset(
+    {
+        "kind",
+        "schema_version",
+        "max_depth",
+        "max_fragments",
+        "max_bytes",
+        "max_requests_per_hypothesis",
+        "timeout_ms",
+    }
+)
+
+
+def decode_context_ceiling(
+    artifacts: ArtifactStore, ref: StoredDataRef
+) -> ContextCeilingProfile:
+    """Decode the one closed, content-addressed context ceiling projection."""
+    if (
+        ref.data_kind != "artifact"
+        or ref.record_id is not None
+        or str(ref.stored_data_id) != ref.content_hash
+    ):
+        raise ValueError("CONTEXT_PROFILE_CHANGED")
+    try:
+        with artifacts.open_verified(ref) as stream:
+            raw = stream.read()
+        value = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("CONTEXT_PROFILE_CHANGED") from error
+    if not isinstance(value, dict) or set(value) != _CEILING_FIELDS:
+        raise ValueError("CONTEXT_PROFILE_CHANGED")
+    item = cast(dict[str, Any], value)
+    if item["kind"] != "context_ceiling_profile" or item["schema_version"] != "1.0":
+        raise ValueError("CONTEXT_PROFILE_CHANGED")
+    limits = ContextRetrievalLimits.model_validate(
+        {name: item[name] for name in _CEILING_FIELDS - {"kind", "schema_version"}}
+    )
+    return ContextCeilingProfile(ref=ref, limits=limits)
+
+
+def resolve_context_ceiling(
+    artifacts: ArtifactStore, work: WorkExecutionState
+) -> ContextCeilingProfile:
+    """Find exactly one valid ceiling already pinned in the Context work."""
+    candidates: list[ContextCeilingProfile] = []
+    for ref in work.input_refs:
+        if not isinstance(ref, StoredDataRef) or ref.record_id is not None:
+            continue
+        try:
+            candidates.append(decode_context_ceiling(artifacts, ref))
+        except ValueError:
+            continue
+    if len(candidates) != 1:
+        raise ValueError("CONTEXT_PROFILE_CHANGED")
+    return candidates[0]
+
+
+def derived_context_requests(
+    records: SQLiteRecordStore,
+    connection: Connection,
+    *,
+    analysis_id: str,
+    hypothesis_id: str,
+) -> tuple[CodeContextRequest, ...]:
+    """Derive the cross-generation request ledger from durable claim closures."""
+    found: dict[str, CodeContextRequest] = {}
+    for payload in connection.execute(
+        select(models.action_decisions.c.payload)
+    ).scalars():
+        used = ActionDecision.model_validate_json(payload)
+        if used.decision != "ALLOW" or used.use_status != "USED":
+            continue
+        action = records.resolve(connection, used.action_ref)
+        if not isinstance(action, ActionRequest) or action.action_type != "READ_CODE":
+            continue
+        if not isinstance(action.meta, RecordMeta) or (
+            str(action.meta.analysis_id) != analysis_id
+            or str(action.meta.hypothesis_id) != hypothesis_id
+        ):
+            continue
+        dispatch = (
+            connection.execute(
+                select(models.external_dispatches).where(
+                    models.external_dispatches.c.action_id == str(action.action_id)
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if dispatch is None:
+            continue
+        for ref in used.outcome_refs:
+            if ref.data_kind != "code_context_request":
+                continue
+            request = records.resolve(connection, ref)
+            if not isinstance(request, CodeContextRequest):
+                raise ValueError("CONTEXT_REQUEST_REQUIRED")
+            previous = found.get(str(request.code_request_id))
+            if previous is not None and previous != request:
+                raise ValueError("CONTEXT_REQUEST_LEDGER_CONFLICT")
+            found[str(request.code_request_id)] = request
+    return tuple(found[key] for key in sorted(found))
+
+
+def context_dispatch_state(
+    records: object,
+    *,
+    action_id: str,
+    work_id: str,
+    attempt_id: str,
+) -> Literal["PREPARED", "DISPATCHED", "RETURNED"]:
+    """Read the exact durable external-dispatch phase for Context recovery."""
+    if not isinstance(records, SQLiteRecordStore):
+        raise ValueError("CONTEXT_RECOVERY_INVALID")
+    with records.database.engine.connect() as connection:
+        row = (
+            connection.execute(
+                select(models.external_dispatches).where(
+                    models.external_dispatches.c.action_id == action_id,
+                    models.external_dispatches.c.work_id == work_id,
+                    models.external_dispatches.c.attempt_id == attempt_id,
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+    if row is None:
+        raise ValueError("CONTEXT_RECOVERY_INVALID")
+    if row["returned_at"] is not None:
+        return "RETURNED"
+    if row["dispatched_at"] is not None:
+        return "DISPATCHED"
+    return "PREPARED"
+
+
+def require_exact_context_inputs(
+    action: ActionRequest,
+    work: WorkExecutionState,
+    *,
+    profile_ref: StoredDataRef,
+    plan_ref: StoredDataRef,
+    required_refs: Iterable[StoredDataRef],
+    file_paths: Iterable[str],
+) -> None:
+    """Check the pre-authorized immutable READ_CODE input/path closure."""
+    required = tuple(required_refs)
+    action_refs = tuple(action.input_refs)
+    if (
+        action.action_type != "READ_CODE"
+        or profile_ref not in work.input_refs
+        or action_refs.count(profile_ref) != 1
+        or action_refs.count(plan_ref) != 1
+        or any(action_refs.count(ref) != 1 for ref in required)
+        or set(action.file_paths) != set(file_paths)
+        or len(action.file_paths) != len(set(action.file_paths))
+    ):
+        raise ValueError("CONTEXT_PLAN_CHANGED")
 
 
 def require_context_request(
@@ -34,6 +206,29 @@ def require_context_request(
         or request.meta.attempt_id != work.active_attempt_id
     ):
         raise ValueError("CONTEXT_REQUEST_REQUIRED")
+    requested_paths = {
+        str(item.location.file_path) for item in request.requested_entities
+    } | {str(item.file_path) for item in request.requested_locations}
+    plan_refs = tuple(ref for ref in action.input_refs if ref not in work.input_refs)
+    profile_refs = tuple(
+        ref
+        for ref in work.input_refs
+        if isinstance(ref, StoredDataRef)
+        and ref.data_kind == "artifact"
+        and ref.record_id is None
+    )
+    if (
+        action.reason != request.reason
+        or set(action.file_paths) != requested_paths
+        or len(action.file_paths) != len(set(action.file_paths))
+        or len(plan_refs) != 1
+        or not isinstance(plan_refs[0], StoredDataRef)
+        or plan_refs[0].data_kind != "artifact"
+        or plan_refs[0].record_id is not None
+        or len(profile_refs) != 1
+        or action.input_refs.count(profile_refs[0]) != 1
+    ):
+        raise ValueError("CONTEXT_PLAN_CHANGED")
     origin = records.resolve(connection, request.action_decision_ref)
     if (
         not isinstance(origin, ActionDecision)
@@ -70,7 +265,9 @@ def check_context_response(
         )
     ):
         raise ValueError("CONTEXT_RESPONSE_SCOPE_MISMATCH")
-    matching = []
+    matching: list[
+        tuple[CodeContextRequest, StoredDataRef, ActionRequest, ActionDecision]
+    ] = []
     for payload in connection.execute(
         select(models.action_decisions.c.payload)
     ).scalars():
@@ -128,8 +325,52 @@ def check_context_response(
                 )
             ):
                 raise ValueError("CONTEXT_RESPONSE_REQUEST_MISMATCH")
-            matching.append(request)
+            if not isinstance(ref, StoredDataRef):
+                raise ValueError("CONTEXT_RESPONSE_REQUEST_MISMATCH")
+            matching.append((request, ref, action, used))
     if len(matching) != 1:
         raise ValueError(
             "CONTEXT_RESPONSE_REQUEST_MISMATCH: exact returned request required"
         )
+    request, request_ref, read_action, read_decision = matching[0]
+    plan_refs = tuple(
+        ref for ref in read_action.input_refs if ref not in work.input_refs
+    )
+    if len(plan_refs) != 1 or not isinstance(plan_refs[0], StoredDataRef):
+        raise ValueError("CONTEXT_PLAN_CHANGED")
+    plan_ref = plan_refs[0]
+    required = {
+        *work.input_refs,
+        reference(read_decision),
+        request_ref,
+        plan_ref,
+        *response.code_fragment_refs,
+    }
+    save_actions: list[ActionRequest] = []
+    for request_wire in connection.execute(
+        select(models.records.c.ref).where(models.records.c.kind == "action_request")
+    ).scalars():
+        candidate = records.resolve(
+            connection, REF_ADAPTER.validate_json(request_wire), candidate=True
+        )
+        if (
+            isinstance(candidate, ActionRequest)
+            and candidate.action_type == "SAVE_RESULT"
+            and candidate.requested_by == "CONTEXT_RETRIEVAL_SERVICE"
+            and candidate.work_ref == reference(work)
+            and candidate.candidate_result_ref == reference(response)
+        ):
+            save_actions.append(candidate)
+    if len(save_actions) != 1:
+        raise ValueError("CONTEXT_RESPONSE_RECEIPT_MISMATCH")
+    save = save_actions[0]
+    extras = tuple(ref for ref in save.input_refs if ref not in required)
+    if (
+        len(save.input_refs) != len(set(save.input_refs))
+        or not required.issubset(save.input_refs)
+        or len(extras) != 1
+        or not isinstance(extras[0], StoredDataRef)
+        or extras[0].data_kind != "artifact"
+        or extras[0].record_id is not None
+    ):
+        raise ValueError("CONTEXT_RESPONSE_RECEIPT_MISMATCH")

@@ -53,6 +53,7 @@ EXPECTED_KINDS = {
     "budget_ledger_entry",
     "budget_remaining",
     "evaluation_run_config",
+    "static_tool_profile",
 }
 
 
