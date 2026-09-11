@@ -238,6 +238,10 @@ class EnvironmentRecipeStore:
                 if instruction == "ONBUILD" and len(parts) == 2
                 else None
             )
+            if (
+                instruction == "RUN" or nested == "RUN"
+            ) and "--network" in stripped.casefold():
+                raise ValueError("DOCKERFILE_RUN_NETWORK_DENIED")
             denied = instruction if instruction in {"ADD", "COPY"} else nested
             if denied in {"ADD", "COPY"}:
                 raise ValueError(f"DOCKERFILE_{denied}_DENIED")

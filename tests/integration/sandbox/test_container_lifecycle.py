@@ -379,6 +379,10 @@ async def test_recipe_lock_wait_is_bounded_by_approved_timeout(
             b"FROM scratch\nRUN --mount=from=external/image,target=/mnt true\n",
             "RUN_MOUNT",
         ),
+        (
+            b"FROM scratch\nRUN --network=host true\n",
+            "RUN_NETWORK",
+        ),
     ],
 )
 async def test_prepare_rejects_dockerfile_daemon_egress_and_context_inputs(
