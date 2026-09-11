@@ -8,8 +8,10 @@ from typing import Protocol
 from sastsimi.contracts._domain import DomainRecord
 from sastsimi.contracts.actions import (
     ActionDecision,
+    ActionRequest,
     ActionType,
     Decision,
+    RequesterRole,
     UseStatus,
     validate_decision_for_action,
     validate_decision_revision,
@@ -217,14 +219,22 @@ class ReporterAgent:
         claimed_decision_ref = request.action_decision_ref
         issued = self._exact_decision(call.decision_ref)
         claimed = self._exact_decision(claimed_decision_ref)
-        validate_decision_for_action(issued, ActionType.CALL_LLM)
-        validate_decision_for_action(claimed, ActionType.CALL_LLM)
+        validate_decision_for_action(issued, ActionType.CREATE_REPORT_DRAFT)
+        validate_decision_for_action(claimed, ActionType.CREATE_REPORT_DRAFT)
         validate_decision_revision(issued, claimed)
+        action = self._exact_action(issued.action_ref)
+        if not isinstance(action.meta, RecordMeta):
+            raise ValueError("REPORTER_INVOCATION_CLOSURE_MISMATCH")
         if (
             issued.decision != Decision.ALLOW
             or issued.use_status != UseStatus.UNUSED
             or claimed.decision != Decision.ALLOW
             or claimed.use_status != UseStatus.USED
+            or action.action_type != ActionType.CREATE_REPORT_DRAFT
+            or action.requested_by != RequesterRole.VERIFICATION
+            or action.work_ref != reference(work)
+            or action.expected_state_version != work.state_version
+            or action.meta.attempt_id != work.active_attempt_id
             or result.status != "SUCCEEDED"
             or result.parsed_output_ref is None
             or result.response_ref != result.parsed_output_ref
@@ -258,6 +268,12 @@ class ReporterAgent:
         if canonical_bytes(content) != raw:
             raise ValueError("REPORTER_OUTPUT_ARTIFACT_INVALID")
         return content, claimed_decision_ref
+
+    def _exact_action(self, ref: RecordRef) -> ActionRequest:
+        value = self._records.get_exact(ref)
+        if not isinstance(value, ActionRequest) or reference(value) != ref:
+            raise ValueError("REPORTER_INVOCATION_CLOSURE_MISMATCH")
+        return value
 
     def _exact_decision(self, ref: StoredDataRef) -> ActionDecision:
         value = self._records.get_exact(ref)

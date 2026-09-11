@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import cast
 
 import pytest
 
 from sastsimi.agents.reporter import ReporterAgent, ReporterCallRefs
-from sastsimi.contracts.actions import ActionDecision, ActionRequest, RequesterRole
+from sastsimi.contracts.actions import (
+    REQUIRED_CHECKS,
+    ActionCheck,
+    ActionDecision,
+    ActionRequest,
+    ActionType,
+    CheckResult,
+    RequesterRole,
+)
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.llm import LLMCallSpec, OutputSchemaSpec, PromptPayload
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.work import WorkExecutionState, WorkType
+from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
 from tests.integration.providers.test_llm_call_service import (
     build_service,
     fixture,
@@ -17,8 +27,22 @@ from tests.integration.providers.test_llm_call_service import (
 )
 
 
-@pytest.mark.asyncio
-async def test_reporter_accepts_and_returns_the_claimed_used_decision() -> None:
+@dataclass(frozen=True)
+class _ReporterCase:
+    reporter: ReporterAgent
+    invocation: PersistedLLMInvocation
+    work: WorkExecutionState
+    call: ReporterCallRefs
+    decision_ref: StoredDataRef
+    claimed_ref: StoredDataRef
+    claimed: ActionDecision
+
+
+async def _reporter_case(
+    *,
+    action_type: ActionType = ActionType.CREATE_REPORT_DRAFT,
+    requested_by: RequesterRole = RequesterRole.VERIFICATION,
+) -> _ReporterCase:
     data = fixture()
     data.raw_output = canonical_bytes(
         {
@@ -72,17 +96,30 @@ async def test_reporter_accepts_and_returns_the_claimed_used_decision() -> None:
     action = ActionRequest.model_validate(
         old_action.model_dump()
         | {
-            "requested_by": RequesterRole.REPORTER,
+            "requested_by": requested_by,
+            "action_type": action_type,
             "work_ref": work_ref,
             "llm_call_spec_ref": spec_ref,
             "input_refs": expected_inputs,
         }
     )
     action_ref = data.records.publish(action)
+    required_checks = tuple(REQUIRED_CHECKS[action_type])
+    check_results = tuple(
+        ActionCheck(
+            check_type=check,
+            result=CheckResult.PASS,
+            reason_code="APPROVED",
+            safe_message="Approved",
+        )
+        for check in required_checks
+    )
     decision = ActionDecision.model_validate(
         old_decision.model_dump()
         | {
             "action_ref": action_ref,
+            "required_checks": required_checks,
+            "check_results": check_results,
             "checked_config_refs": tuple(
                 item for item in expected_inputs if item.record_id is not None
             ),
@@ -93,6 +130,8 @@ async def test_reporter_accepts_and_returns_the_claimed_used_decision() -> None:
         old_claimed.model_dump()
         | {
             "action_ref": action_ref,
+            "required_checks": required_checks,
+            "check_results": check_results,
             "checked_config_refs": decision.checked_config_refs,
         }
     )
@@ -116,6 +155,23 @@ async def test_reporter_accepts_and_returns_the_claimed_used_decision() -> None:
         artifacts=data.artifacts,
         metadata_factory=data.metadata_factory,
     )
+    return _ReporterCase(
+        reporter=reporter,
+        invocation=invocation,
+        work=work,
+        call=ReporterCallRefs(decision_ref, data.reservation_ref, spec_ref),
+        decision_ref=decision_ref,
+        claimed_ref=claimed_ref,
+        claimed=claimed,
+    )
+
+
+@pytest.mark.asyncio
+async def test_reporter_accepts_claimed_create_draft_stage_decision() -> None:
+    case = await _reporter_case()
+    reporter = case.reporter
+    invocation = case.invocation
+    work = case.work
     request, result = invocation.request, invocation.result
     checks = {
         "result_status": result.status == "SUCCEEDED",
@@ -125,7 +181,7 @@ async def test_reporter_accepts_and_returns_the_claimed_used_decision() -> None:
         and request.task_kind == "CREATE_DRAFT",
         "session": request.session_policy == "NEW"
         and request.parent_session_ref is None,
-        "call": request.call_spec_ref == spec_ref,
+        "call": request.call_spec_ref == case.call.call_spec_ref,
         "context": request.context_refs == work.input_refs,
         "call_id": request.llm_call_id == result.llm_call_id,
         "attempt": request.meta.attempt_id == work.active_attempt_id
@@ -159,18 +215,37 @@ async def test_reporter_accepts_and_returns_the_claimed_used_decision() -> None:
     content, used_ref = reporter._content(
         invocation,
         work=work,
-        call=ReporterCallRefs(decision_ref, data.reservation_ref, spec_ref),
+        call=case.call,
     )
 
     assert content.title == "Validated finding"
-    assert used_ref == claimed_ref
+    assert used_ref == case.claimed_ref
     assert used_ref == invocation.request.action_decision_ref
-    assert used_ref != decision_ref
-    assert reference(claimed) == used_ref
+    assert used_ref != case.decision_ref
+    assert reference(case.claimed) == used_ref
 
     with pytest.raises(ValueError):
         reporter._content(
             invocation,
             work=work,
-            call=ReporterCallRefs(claimed_ref, data.reservation_ref, spec_ref),
+            call=ReporterCallRefs(
+                case.claimed_ref,
+                case.call.reservation_ref,
+                case.call.call_spec_ref,
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_reporter_rejects_generic_call_llm_decision() -> None:
+    case = await _reporter_case(
+        action_type=ActionType.CALL_LLM,
+        requested_by=RequesterRole.REPORTER,
+    )
+
+    with pytest.raises(ValueError, match="Required-check set differs from action type"):
+        case.reporter._content(
+            case.invocation,
+            work=case.work,
+            call=case.call,
         )
