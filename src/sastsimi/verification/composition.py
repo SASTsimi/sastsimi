@@ -26,7 +26,7 @@ from sastsimi.runtime.workflow_runner import WorkflowRunner
 from .debate_service import CurrentEvidenceParallelLimit, DebateService
 from .revision_workflow import RevisionWorkflow
 from .service import VerificationService
-from .verdict_router import VerdictRouter
+from .verdict_router import VerdictRouter, current_process_from
 
 
 @dataclass(frozen=True)
@@ -170,7 +170,10 @@ def compose_t10_services(
         hypothesis=hypothesis,
         debate=debate,
         verification=VerificationService(verification_agent),
-        verdict_router=VerdictRouter(records),
+        verdict_router=VerdictRouter(
+            records,
+            current_process=current_process_from(runtime.queries.current_records),
+        ),
         revision=RevisionWorkflow(
             registrar=runtime.verification_registration,
             records=records,
