@@ -49,8 +49,8 @@ from sastsimi.contracts.verification import (
 )
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus, WorkType
 from sastsimi.ports.dto import Record
+from sastsimi.ports.llm_invocation import PersistedLLMInvocation
 from sastsimi.ports.verification_assembly import VerificationGenerationInputs
-from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
 
 
 @dataclass(frozen=True)
