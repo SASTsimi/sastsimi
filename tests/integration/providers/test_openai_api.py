@@ -51,6 +51,14 @@ class PromptResolver:
         return resolved_prompt(request)
 
 
+class SchemaPromptResolver:
+    def __init__(self, schema_bytes: bytes) -> None:
+        self.schema_bytes = schema_bytes
+
+    async def resolve(self, request: LLMInvocationRequest) -> ResolvedPromptInput:
+        return resolved_prompt_for_schema(request, self.schema_bytes)
+
+
 class SecretResolver:
     def __init__(self, value: str) -> None:
         self.value = value
@@ -135,6 +143,36 @@ class OutputSchemaValidator:
         return cast(StructuredOutputValue, result)
 
 
+class ArrayOutputSchemaValidator:
+    def __init__(self) -> None:
+        self.values: list[StructuredOutputValue] = []
+
+    def validate(
+        self,
+        raw: bytes,
+        *,
+        schema: dict[str, JsonValue],
+        output_schema: OutputSchemaSpec,
+        request: LLMInvocationRequest,
+    ) -> StructuredOutputValue:
+        assert schema == json.loads(_ARRAY_SCHEMA_BYTES)
+        assert output_schema.result_kind == _RESULT_KIND
+        assert request.semantic_validator_ref.data_kind == "semantic_validator"
+        try:
+            result = json.loads(raw)
+        except (UnicodeError, ValueError) as error:
+            raise ProviderInvalidOutputError from error
+        if not isinstance(result, list) or any(
+            not isinstance(item, dict)
+            or item.get("decision") not in {"accept", "reject"}
+            for item in result
+        ):
+            raise ProviderInvalidOutputError
+        validated = cast(StructuredOutputValue, result)
+        self.values.append(validated)
+        return validated
+
+
 class Responses:
     def __init__(self, response: object | BaseException) -> None:
         self.response = response
@@ -174,6 +212,17 @@ class ClientFactory:
 
 _TEMPLATE_BYTES = b"Return only the approved structured result."
 _SCHEMA_BYTES = canonical_bytes({"type": "object"})
+_ARRAY_SCHEMA_BYTES = canonical_bytes(
+    {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {"decision": {"type": "string"}},
+            "required": ["decision"],
+            "additionalProperties": False,
+        },
+    }
+)
 _EMPTY_DATA_SECTION = canonical_bytes({"bindings": []})
 _UNTRUSTED_BYTES = (
     b"<UNTRUSTED_DATA>\n" + _EMPTY_DATA_SECTION + b"\n</UNTRUSTED_DATA>\n"
@@ -299,6 +348,54 @@ def request() -> LLMInvocationRequest:
     )
 
 
+def output_schema_record_for_schema(
+    invocation: LLMInvocationRequest, schema_bytes: bytes
+) -> OutputSchemaSpec:
+    return output_schema_record(invocation).model_copy(
+        update={"schema_artifact_ref": artifact_ref(schema_bytes, "json_schema")}
+    )
+
+
+def prompt_payload_record_for_schema(
+    invocation: LLMInvocationRequest, schema_bytes: bytes
+) -> PromptPayload:
+    output_schema = output_schema_record_for_schema(invocation, schema_bytes)
+    output_schema_ref = reference(output_schema)
+    assert isinstance(output_schema_ref, StoredDataRef)
+    return prompt_payload_record(invocation).model_copy(
+        update={"output_schema_ref": output_schema_ref}
+    )
+
+
+def resolved_prompt_for_schema(
+    invocation: LLMInvocationRequest, schema_bytes: bytes
+) -> ResolvedPromptInput:
+    return ResolvedPromptInput(
+        payload=prompt_payload_record_for_schema(invocation, schema_bytes),
+        template_bytes=_TEMPLATE_BYTES,
+        rendered_prompt_bytes=_RENDERED_BYTES,
+        projected_contexts=(),
+        output_schema=output_schema_record_for_schema(invocation, schema_bytes),
+        output_schema_bytes=schema_bytes,
+    )
+
+
+def request_for_schema(schema_bytes: bytes) -> LLMInvocationRequest:
+    seed = request().model_copy(update={"output_schema": schema_bytes.decode("utf-8")})
+    schema = output_schema_record_for_schema(seed, schema_bytes)
+    schema_ref = reference(schema)
+    payload = prompt_payload_record_for_schema(seed, schema_bytes)
+    payload_ref = reference(payload)
+    assert isinstance(schema_ref, StoredDataRef)
+    assert isinstance(payload_ref, StoredDataRef)
+    return seed.model_copy(
+        update={
+            "prompt_payload_ref": payload_ref,
+            "output_schema_ref": schema_ref,
+        }
+    )
+
+
 def adapter(
     invocation: LLMInvocationRequest,
     response: object | BaseException,
@@ -381,6 +478,70 @@ async def test_openai_response_uses_exact_model_schema_and_no_tools_or_fallback(
     assert "test-secret-never-persist" not in result.model_dump_json()
     assert "test-secret-never-persist" not in repr(provider)
     assert "test-secret-never-persist" not in json.dumps(responses.kwargs)
+
+
+@pytest.mark.asyncio
+async def test_openai_wraps_array_schema_and_stores_unwrapped_array() -> None:
+    """Catches sending a forbidden array root or persisting the provider envelope."""
+    invocation = request_for_schema(_ARRAY_SCHEMA_BYTES)
+    raw = SimpleNamespace(
+        id="resp-array",
+        model="gpt-test",
+        status="completed",
+        output_text=canonical_bytes(
+            {"items": [{"decision": "accept"}, {"decision": "reject"}]}
+        ).decode("utf-8"),
+        usage=None,
+    )
+    validator = ArrayOutputSchemaValidator()
+    provider, responses, _factory, _secrets = adapter(invocation, raw)
+    provider.prompt_resolver = SchemaPromptResolver(_ARRAY_SCHEMA_BYTES)
+    provider.output_schema_validator = validator
+
+    result = await provider.invoke(invocation)
+
+    assert result.status == "SUCCEEDED"
+    assert responses.kwargs is not None
+    response_format = cast(dict[str, Any], responses.kwargs["text"])["format"]
+    outgoing_schema = cast(dict[str, Any], response_format)["schema"]
+    assert outgoing_schema == {
+        "type": "object",
+        "properties": {"items": json.loads(_ARRAY_SCHEMA_BYTES)},
+        "required": ["items"],
+        "additionalProperties": False,
+    }
+    expected = cast(
+        StructuredOutputValue,
+        [{"decision": "accept"}, {"decision": "reject"}],
+    )
+    assert validator.values == [expected]
+    assert result.parsed_output_ref == validated_output_ref(invocation, expected)
+
+
+@pytest.mark.asyncio
+async def test_openai_rejects_malformed_array_envelope_before_validation() -> None:
+    """Catches missing or extra envelope fields becoming provider-neutral output."""
+    invocation = request_for_schema(_ARRAY_SCHEMA_BYTES)
+    raw = SimpleNamespace(
+        id="resp-array-malformed",
+        model="gpt-test",
+        status="completed",
+        output_text=canonical_bytes(
+            {"items": [{"decision": "accept"}], "unexpected": True}
+        ).decode("utf-8"),
+        usage=None,
+    )
+    validator = ArrayOutputSchemaValidator()
+    provider, _responses, _factory, _secrets = adapter(invocation, raw)
+    provider.prompt_resolver = SchemaPromptResolver(_ARRAY_SCHEMA_BYTES)
+    provider.output_schema_validator = validator
+
+    result = await provider.invoke(invocation)
+
+    assert result.status == "INVALID_OUTPUT"
+    assert result.response_ref is None
+    assert result.parsed_output_ref is None
+    assert validator.values == []
 
 
 @pytest.mark.asyncio

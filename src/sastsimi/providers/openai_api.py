@@ -46,6 +46,7 @@ from .normalization import (
 
 _WORK_CLEANUP_TIMEOUT_SECONDS = 0.1
 _CANCEL_CONFIRM_TIMEOUT_SECONDS = 0.5
+_ARRAY_ENVELOPE_KEY = "items"
 
 
 class OpenAIResponsesApiAdapter:
@@ -342,7 +343,7 @@ class OpenAIResponsesApiAdapter:
                     "type": "json_schema",
                     "name": "sastsimi_output",
                     "strict": True,
-                    "schema": schema,
+                    "schema": _openai_output_schema(schema),
                 }
             },
             "tools": [],
@@ -392,11 +393,14 @@ class OpenAIResponsesApiAdapter:
             or not isinstance(output_text, str)
         ):
             raise ProviderInvalidOutputError
-        raw_output = output_text.encode("utf-8")
-        parsed = _strict_json(raw_output, ProviderInvalidOutputError)
+        provider_output = _strict_json(
+            output_text.encode("utf-8"), ProviderInvalidOutputError
+        )
+        parsed = _unwrap_provider_output(provider_output, schema)
         if not isinstance(parsed, (dict, list)):
             raise ProviderInvalidOutputError
         parsed_output = parsed
+        raw_output = canonical_bytes(parsed_output)
         try:
             validated_output = self.output_schema_validator.validate(
                 raw_output,
@@ -427,7 +431,7 @@ class OpenAIResponsesApiAdapter:
             model=request.model,
             actual_session_mode=session_mode,
             session_ref=session_ref,
-            response_text=output_text,
+            response_text=raw_output.decode("utf-8"),
             parsed_output=parsed_output,
             validated_output=validated_output,
             usage=_usage(response),
@@ -608,6 +612,41 @@ def _is_exact_output_artifact(
         and ref.workspace_id == request.meta.workspace_id
         and ref.commit_id == request.meta.commit_id
     )
+
+
+def _openai_output_schema(
+    provider_neutral_schema: dict[str, JsonValue],
+) -> dict[str, JsonValue]:
+    """Adapt only array-root schemas to the object root required by Responses."""
+
+    if provider_neutral_schema.get("type") != "array":
+        return provider_neutral_schema
+    return cast(
+        dict[str, JsonValue],
+        {
+            "type": "object",
+            "properties": {_ARRAY_ENVELOPE_KEY: provider_neutral_schema},
+            "required": [_ARRAY_ENVELOPE_KEY],
+            "additionalProperties": False,
+        },
+    )
+
+
+def _unwrap_provider_output(
+    provider_output: JsonValue,
+    provider_neutral_schema: dict[str, JsonValue],
+) -> JsonValue:
+    """Remove the transport-only envelope before contract validation and storage."""
+
+    if provider_neutral_schema.get("type") != "array":
+        return provider_output
+    if (
+        not isinstance(provider_output, dict)
+        or set(provider_output) != {_ARRAY_ENVELOPE_KEY}
+        or not isinstance(provider_output[_ARRAY_ENVELOPE_KEY], list)
+    ):
+        raise ProviderInvalidOutputError
+    return provider_output[_ARRAY_ENVELOPE_KEY]
 
 
 def _strict_json(data: bytes, error_type: type[RuntimeError]) -> JsonValue:
