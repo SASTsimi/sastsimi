@@ -36,6 +36,7 @@ from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.verification import VerificationResult
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus, WorkType
+from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
 
 
 class OfficialSourceBinding(ContractModel):
@@ -103,7 +104,10 @@ class ExecutionFactory(Protocol):
 
 class ReviewPublisher(Protocol):
     def __call__(
-        self, execution: RuleScopeExecution, review: RuleScopeImpactReview
+        self,
+        execution: RuleScopeExecution,
+        review: RuleScopeImpactReview,
+        invocation: PersistedLLMInvocation,
     ) -> StoredDataRef: ...
 
 
@@ -247,7 +251,7 @@ class RuleScopeGateService:
             required_context=required_context,
         )
         review = self._finalize(inputs, execution, outcome)
-        review_ref = self._publisher(execution, review)
+        review_ref = self._publisher(execution, review, outcome.invocation)
         if review_ref != reference(review):
             raise ValueError("RULE_SCOPE_REVIEW_COMMIT_MISMATCH")
         return RuleScopeGateOutcome(review, review_ref, None)

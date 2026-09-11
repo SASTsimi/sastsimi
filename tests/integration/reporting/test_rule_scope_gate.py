@@ -17,6 +17,9 @@ from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.gates import CWELabel, TechnicalEvidenceReview
 from sastsimi.contracts.llm import (
     LLMCallSpec,
+    LLMInvocationLog,
+    LLMInvocationRequest,
+    LLMInvocationResult,
     LLMToolPolicy,
     PromptContextBinding,
     PromptPayload,
@@ -38,6 +41,7 @@ from sastsimi.gates.rule_scope_service import (
     RuleScopeGateInputs,
     RuleScopeGateService,
 )
+from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import meta, ref, wire
@@ -49,12 +53,13 @@ class _Agent:
     def __init__(self, proposal: RuleScopeProposal) -> None:
         self.proposal = proposal
         self.calls = 0
+        self.invocation = _stub_invocation()
 
     async def review(self, **_kwargs: object) -> RuleScopeAgentOutcome:
         self.calls += 1
         return RuleScopeAgentOutcome(
             proposal=self.proposal,
-            action_decision_ref=wire_ref("action_decision"),
+            invocation=self.invocation,
         )
 
 
@@ -86,6 +91,68 @@ def _record_meta(kind: str, *, attempt: str | None = "at-gate") -> RecordMeta:
             "logical_record_id": f"{kind}-{attempt or 'none'}-l1",
         },
     )
+
+
+def _stub_invocation() -> PersistedLLMInvocation:
+    output_ref = wire_ref("artifact", artifact=True)
+    decision_ref = wire_ref("action_decision")
+    spec_ref = wire_ref("llm_call_spec")
+    request = wire(
+        LLMInvocationRequest,
+        make("LLMInvocationRequest", "llm_invocation_request")
+        | {
+            "meta": meta(
+                "llm_invocation_request", hypothesis="h1", attempt="at-gate"
+            ),
+            "llm_call_id": "rule-scope-call",
+            "action_decision_ref": decision_ref.model_dump(mode="json"),
+            "call_spec_ref": spec_ref.model_dump(mode="json"),
+            "agent_role": "RULE_SCOPE_GATE",
+            "task_kind": "REVIEW",
+            "purpose": "PRODUCTION",
+            "session_policy": "NEW",
+            "parent_session_ref": None,
+        },
+    )
+    result = wire(
+        LLMInvocationResult,
+        make("LLMInvocationResult", "llm_invocation_result")
+        | {
+            "meta": meta(
+                "llm_invocation_result", hypothesis="h1", attempt="at-gate"
+            ),
+            "llm_call_id": request.llm_call_id,
+            "purpose": request.purpose,
+            "status": "SUCCEEDED",
+            "model": request.model,
+            "actual_session_mode": "NEW",
+            "response_ref": output_ref.model_dump(mode="json"),
+            "parsed_output_ref": output_ref.model_dump(mode="json"),
+            "safe_error": None,
+        },
+    )
+    log = wire(
+        LLMInvocationLog,
+        make("LLMInvocationLog", "llm_invocation_log")
+        | {
+            "meta": meta("llm_invocation_log", hypothesis="h1", attempt="at-gate"),
+            "llm_call_id": request.llm_call_id,
+            "action_decision_ref": decision_ref.model_dump(mode="json"),
+            "call_spec_ref": spec_ref.model_dump(mode="json"),
+            "agent_role": request.agent_role,
+            "task_kind": request.task_kind,
+            "purpose": request.purpose,
+            "model": request.model,
+            "session_policy": "NEW",
+            "parent_session_ref": None,
+            "exposed_response_ref": output_ref.model_dump(mode="json"),
+            "parsed_output_ref": output_ref.model_dump(mode="json"),
+            "status": "SUCCEEDED",
+            "safe_error": None,
+        },
+    )
+    log_ref = cast(StoredDataRef, reference(log))
+    return PersistedLLMInvocation(request, result, log_ref, "RETURNED")
 
 
 def _fixture() -> _Fixture:
@@ -337,7 +404,11 @@ def _fixture() -> _Fixture:
         executions.append(execution)
         return execution
 
-    def publish(_execution: RuleScopeExecution, review: object) -> StoredDataRef:
+    def publish(
+        _execution: RuleScopeExecution,
+        review: object,
+        _invocation: PersistedLLMInvocation,
+    ) -> StoredDataRef:
         published.append(review)
         return cast(StoredDataRef, reference(cast(object, review)))
 
@@ -415,7 +486,14 @@ async def test_workflow_publisher_uses_rule_scope_gate_identity() -> None:
     outcome = await fixture.service.review(fixture.inputs)
     assert outcome.review is not None
     review = outcome.review
-    execution = fixture.executions[0]
+    execution = replace(
+        fixture.executions[0],
+        call=RuleScopeCallRefs(
+            decision_ref=wire_ref("action_decision"),
+            reservation_ref=wire_ref("budget_reservation"),
+            call_spec_ref=fixture.agent.invocation.request.call_spec_ref,
+        ),
+    )
 
     class _Completed:
         output_refs = (reference(review),)
@@ -431,7 +509,7 @@ async def test_workflow_publisher_uses_rule_scope_gate_identity() -> None:
     runner = _Runner()
     publisher = WorkflowRuleScopePublisher(cast(WorkflowRunner, runner))
 
-    assert publisher(execution, review) == reference(review)
+    assert publisher(execution, review, fixture.agent.invocation) == reference(review)
     assert runner.args is not None
     assert runner.args[1] == execution.gate_identity_ref
     assert runner.args[2] == "RULE_SCOPE_GATE"
