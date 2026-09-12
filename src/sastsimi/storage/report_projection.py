@@ -27,13 +27,13 @@ from sastsimi.contracts.reporting import (
     Finding,
     FindingIndexState,
     ReportDraft,
+    parse_validated_report_content,
     validate_report_closure,
 )
 from sastsimi.contracts.verification import VerificationResult
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.dto import Record
-from sastsimi.reporting.content_validation import read_validated_report_content
 
 from . import models
 from .codec import reference
@@ -101,9 +101,22 @@ def validate_report_output(
         or draft.content_ref.commit_id != work.meta.commit_id
     ):
         raise ValueError("REPORT_CONTENT_ARTIFACT_INVALID")
-    content = read_validated_report_content(
-        artifacts, draft.content_ref, allowed_locations=allowed_locations
-    )
+    if (
+        draft.content_ref.record_id is not None
+        or draft.content_ref.data_kind != "artifact"
+        or str(draft.content_ref.stored_data_id) != draft.content_ref.content_hash
+    ):
+        raise ValueError("REPORT_CONTENT_ARTIFACT_INVALID")
+    try:
+        with artifacts.open_verified(draft.content_ref) as stream:
+            raw = stream.read()
+        content = parse_validated_report_content(
+            raw, allowed_locations=allowed_locations
+        )
+    except ValueError:
+        raise
+    except Exception as error:
+        raise ValueError("REPORT_CONTENT_ARTIFACT_INVALID") from error
     validate_report_closure(
         draft,
         finding,

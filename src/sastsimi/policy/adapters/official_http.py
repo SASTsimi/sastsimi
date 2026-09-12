@@ -20,8 +20,10 @@ from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.dto import OfficialPolicyFetchRequest, OfficialPolicySource
-
-from ..program_catalog import ProgramCatalog, ProgramCatalogEntry
+from sastsimi.ports.policy_catalog import (
+    OfficialPolicyCatalogPort,
+    ProgramCatalogEntry,
+)
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _SENSITIVE_HEADER_NAMES = frozenset(
@@ -116,7 +118,7 @@ class OfficialHttpPolicySource:
     def __init__(
         self,
         *,
-        catalog: ProgramCatalog,
+        catalog: OfficialPolicyCatalogPort,
         artifacts: ArtifactStore,
         transport: PolicyHttpTransport,
         resolver: HostResolver,
@@ -187,8 +189,7 @@ class OfficialHttpPolicySource:
         safe_headers = {
             name: value
             for name, value in headers.items()
-            if name in {"etag", "last-modified"}
-            and name not in _SENSITIVE_HEADER_NAMES
+            if name in {"etag", "last-modified"} and name not in _SENSITIVE_HEADER_NAMES
         }
         provenance_ref = self._commit(
             canonical_bytes(

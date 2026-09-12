@@ -17,10 +17,10 @@ from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
 from sastsimi.contracts.work import WorkExecutionState, WorkType
 from sastsimi.ports.dto import Record
-from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
-from sastsimi.runtime.llm_invocation_provenance import (
+from sastsimi.ports.llm_invocation import (
     LLMInvocationExpectation,
-    validate_llm_invocation_provenance,
+    LLMInvocationProvenanceValidator,
+    PersistedLLMInvocation,
 )
 
 
@@ -88,11 +88,13 @@ class CWELabelingAgent:
         records: RecordStore,
         artifacts: ArtifactReader,
         metadata_factory: MetadataFactory,
+        provenance_validator: LLMInvocationProvenanceValidator,
     ) -> None:
         self._llm_calls = llm_calls
         self._records = records
         self._artifacts = artifacts
         self._metadata = metadata_factory
+        self._validate_provenance = provenance_validator
 
     async def classify(
         self,
@@ -159,7 +161,7 @@ class CWELabelingAgent:
         requester_identity_ref: BudgetScopeRef,
     ) -> object:
         request, result = invocation.request, invocation.result
-        validate_llm_invocation_provenance(
+        self._validate_provenance(
             records=self._records,
             work=work,
             issued_decision_ref=call.decision_ref,

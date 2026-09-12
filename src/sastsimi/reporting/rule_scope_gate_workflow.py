@@ -13,9 +13,9 @@ from sastsimi.agents.rule_scope_gate import (
     RuleScopeGateAgent,
     RuleScopeProposal,
 )
-from sastsimi.contracts._domain import DomainRecord, exact_set, same_scope
 from sastsimi.contracts.base import ContractModel, NonEmptyStr, Sha256
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.domain import DomainRecord, exact_set, same_scope
 from sastsimi.contracts.gates import (
     CWELabel,
     RuleScopeEvidenceLink,

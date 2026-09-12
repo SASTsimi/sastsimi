@@ -133,10 +133,9 @@ def test_policy_terminal_successor_replaces_preparing_and_then_freezes(
 
     assert completed.status == terminal_status
     assert runtime.policy.current_state("a1") == terminal
-    assert (
-        runtime.budget_registry.current_state("a1").run_policy_state_ref
-        == reference(terminal)
-    )
+    assert runtime.budget_registry.current_state(
+        "a1"
+    ).run_policy_state_ref == reference(terminal)
     before = runtime.queries.current_records("a1", "work_execution_state")
     h.evidence.identities[identity] = RequesterRole.ORCHESTRATION
     with pytest.raises(ValueError, match="POLICY_ALREADY_FROZEN"):

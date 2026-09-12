@@ -10,7 +10,7 @@ from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.contracts.work import AttemptStatus, WorkStatus, WorkType
 from sastsimi.ports.dto import WorkContext, WorkHandlerResult
 
-from .cwe_service import CWELabelingService, GateCallRefs
+from .cwe_workflow import CWELabelingService, GateCallRefs
 
 
 class GateCallResolver(Protocol):

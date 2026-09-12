@@ -19,9 +19,7 @@ from .records import next_meta
 from .run_states import get_run, save_run
 from .work_service import WorkService
 
-_POLICY_TERMINAL = frozenset(
-    {"CURRENT", "ABSENT", "UNVERIFIED", "BLOCKED", "FAILED"}
-)
+_POLICY_TERMINAL = frozenset({"CURRENT", "ABSENT", "UNVERIFIED", "BLOCKED", "FAILED"})
 
 
 class PolicyRuntime:

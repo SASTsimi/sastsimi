@@ -267,9 +267,7 @@ def hypothesis_projection(
     report_state = ReportProcessState.model_validate_json(
         canonical_bytes(
             dict(
-                meta=fresh_meta(
-                    meta, "report_process_state", works.clock, works.ids
-                ),
+                meta=fresh_meta(meta, "report_process_state", works.clock, works.ids),
                 status="NOT_REQUESTED",
                 report_draft_ref=None,
                 started_at=None,

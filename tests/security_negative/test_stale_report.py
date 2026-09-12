@@ -11,7 +11,7 @@ from sastsimi.contracts.ids import (
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.reporting import ReportDraft, ReportProcessState
-from sastsimi.reporting.queries import persisted_report_drafts
+from sastsimi.ports.report_query import current_report_drafts
 
 
 def meta(kind: str, suffix: str) -> RecordMeta:
@@ -89,6 +89,4 @@ def test_only_report_process_state_pointer_enters_current_results() -> None:
         report_draft_ref=current_ref,
     )
 
-    assert persisted_report_drafts(Query((old, current), state), "analysis") == (
-        current,
-    )
+    assert current_report_drafts(Query((old, current), state), "analysis") == (current,)

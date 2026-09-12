@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, cast
 
-from sastsimi.contracts._domain import DomainRecord, exact, same_scope
 from sastsimi.contracts.chaining import PrimitiveIndexState
+from sastsimi.contracts.domain import DomainRecord, exact, same_scope
 from sastsimi.contracts.dynamic import (
     DynamicReproductionRequest,
     DynamicReproductionResult,

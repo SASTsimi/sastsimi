@@ -2,15 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Protocol
-
 from sastsimi.contracts.actions import (
     ActionDecision,
     ActionRequest,
-    ActionType,
     Decision,
-    RequesterRole,
     UseStatus,
     validate_decision_for_action,
     validate_decision_revision,
@@ -19,43 +14,17 @@ from sastsimi.contracts.budget import BudgetReservation
 from sastsimi.contracts.llm import (
     LLMCallSpec,
     LLMInvocationLog,
-    LLMRole,
     LLMToolPolicy,
 )
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
-from sastsimi.contracts.work import WorkExecutionState, WorkStatus, WorkType
-
-from .llm_call_service import PersistedLLMInvocation
-
-
-class ExactRecordReader(Protocol):
-    def get_exact(self, ref: RecordRef) -> object: ...
-
-
-@dataclass(frozen=True)
-class LLMInvocationExpectation:
-    work_type: WorkType
-    action_type: ActionType
-    requested_by: RequesterRole
-    requester_identity_ref: BudgetScopeRef
-    agent_role: LLMRole
-    task_kind: str
-    required_context: tuple[RecordRef, ...]
-    require_new_session: bool = True
-    forbid_tools: bool = False
-
-
-@dataclass(frozen=True)
-class ValidatedLLMInvocation:
-    issued_decision: ActionDecision
-    claimed_decision: ActionDecision
-    action: ActionRequest
-    reservation: BudgetReservation
-    call_spec: LLMCallSpec
-    log: LLMInvocationLog
-    save_input_refs: tuple[RecordRef, ...]
-
+from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
+from sastsimi.contracts.work import WorkExecutionState, WorkStatus
+from sastsimi.ports.llm_invocation import (
+    ExactRecordReader,
+    LLMInvocationExpectation,
+    PersistedLLMInvocation,
+    ValidatedLLMInvocation,
+)
 
 _REQUEST_FIELDS = (
     "llm_call_id",

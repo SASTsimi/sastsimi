@@ -142,10 +142,8 @@ def _runner_with_output_approval(h: Any, runtime: Any) -> WorkflowRunner:
     @contextmanager
     def approve(action: Any, _work: Any, refs: tuple[Any, ...]):
         old = h.evidence.authorized_outputs
-        h.evidence.authorized_outputs = (
-            lambda request: refs
-            if request.action_id == action.action_id
-            else old(request)
+        h.evidence.authorized_outputs = lambda request: (
+            refs if request.action_id == action.action_id else old(request)
         )
         try:
             yield

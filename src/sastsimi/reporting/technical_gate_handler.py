@@ -8,8 +8,8 @@ from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.contracts.work import WorkType
 from sastsimi.ports.dto import WorkContext, WorkHandlerResult
 
-from .cwe_handler import GateCallResolver, _require_claimed
-from .technical_service import TechnicalGateService
+from .cwe_work_handler import GateCallResolver, _require_claimed
+from .technical_gate_workflow import TechnicalGateService
 
 
 @dataclass(frozen=True)

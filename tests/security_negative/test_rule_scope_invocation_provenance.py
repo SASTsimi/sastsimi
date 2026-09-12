@@ -31,9 +31,12 @@ from sastsimi.contracts.llm import (
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.contracts.work import WorkExecutionState
-from sastsimi.gates.rule_scope_handler import WorkflowRuleScopePublisher
-from sastsimi.gates.rule_scope_service import RuleScopeExecution
+from sastsimi.reporting.rule_scope_gate_handler import WorkflowRuleScopePublisher
+from sastsimi.reporting.rule_scope_gate_workflow import RuleScopeExecution
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
+from sastsimi.runtime.llm_invocation_provenance import (
+    validate_llm_invocation_provenance,
+)
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import meta, ref, wire
@@ -189,162 +192,174 @@ def _closure() -> tuple[
         retry_policy_ref=StoredDataRef.model_validate(ref("retry_policy")),
         tool_policy_ref=tool_ref,
         redaction_policy_ref=StoredDataRef.model_validate(ref("redaction_policy")),
-        semantic_validator_ref=StoredDataRef.model_validate(
-            ref("semantic_validator")
-        ),
+        semantic_validator_ref=StoredDataRef.model_validate(ref("semantic_validator")),
         output_schema_ref=StoredDataRef.model_validate(ref("output_schema_spec")),
         output_schema="rule-scope-output.v1",
         token_budget=100,
         timeout_ms=1_000,
     )
     spec_ref = records.add(spec)
-    action = ActionRequest.model_validate_json(canonical_bytes(
-        make("ActionRequest")
-        | {
-            "meta": _meta("action_request", "rule-scope-action-r1"),
-            "action_id": "rule-scope-action-1",
-            "requested_by": "VERIFICATION",
-            "requester_identity_ref": owner_ref,
-            "action_type": "CALL_RULE_SCOPE_GATE",
-            "work_ref": work_ref,
-            "expected_state_version": work.state_version,
-            "input_refs": context,
-            "llm_call_spec_ref": spec_ref,
-            "provider_profile_ref": spec.provider_profile_ref,
-            "session_mode": "NEW",
-            "reason": "Review current program policy.",
-            "requested_at": NOW,
-        }
-    ))
+    action = ActionRequest.model_validate_json(
+        canonical_bytes(
+            make("ActionRequest")
+            | {
+                "meta": _meta("action_request", "rule-scope-action-r1"),
+                "action_id": "rule-scope-action-1",
+                "requested_by": "VERIFICATION",
+                "requester_identity_ref": owner_ref,
+                "action_type": "CALL_RULE_SCOPE_GATE",
+                "work_ref": work_ref,
+                "expected_state_version": work.state_version,
+                "input_refs": context,
+                "llm_call_spec_ref": spec_ref,
+                "provider_profile_ref": spec.provider_profile_ref,
+                "session_mode": "NEW",
+                "reason": "Review current program policy.",
+                "requested_at": NOW,
+            }
+        )
+    )
     action_ref = records.add(action)
     required_checks = tuple(REQUIRED_CHECKS[action.action_type])
-    issued = ActionDecision.model_validate_json(canonical_bytes(
-        make("ActionDecision")
-        | {
-            "meta": _meta(
-                "action_decision",
-                "rule-scope-decision-r1",
-                logical_id="rule-scope-decision-logical",
-            ),
-            "decision_id": "rule-scope-decision-1",
-            "action_ref": action_ref,
-            "decision": "ALLOW",
-            "required_checks": required_checks,
-            "check_results": tuple(
-                {
-                    "check_type": check,
-                    "result": "PASS",
-                    "reason_code": "OK",
-                    "safe_message": "Trusted runtime check passed.",
-                }
-                for check in required_checks
-            ),
-            "checked_state_version": work.state_version,
-            "valid_until": "2026-09-12T00:01:00Z",
-            "use_status": "UNUSED",
-            "used_at": None,
-            "outcome_refs": (),
-            "decided_at": NOW,
-        }
-    ))
+    issued = ActionDecision.model_validate_json(
+        canonical_bytes(
+            make("ActionDecision")
+            | {
+                "meta": _meta(
+                    "action_decision",
+                    "rule-scope-decision-r1",
+                    logical_id="rule-scope-decision-logical",
+                ),
+                "decision_id": "rule-scope-decision-1",
+                "action_ref": action_ref,
+                "decision": "ALLOW",
+                "required_checks": required_checks,
+                "check_results": tuple(
+                    {
+                        "check_type": check,
+                        "result": "PASS",
+                        "reason_code": "OK",
+                        "safe_message": "Trusted runtime check passed.",
+                    }
+                    for check in required_checks
+                ),
+                "checked_state_version": work.state_version,
+                "valid_until": "2026-09-12T00:01:00Z",
+                "use_status": "UNUSED",
+                "used_at": None,
+                "outcome_refs": (),
+                "decided_at": NOW,
+            }
+        )
+    )
     issued_ref = records.add(issued)
-    claimed = ActionDecision.model_validate_json(canonical_bytes(
-        issued.model_dump()
-        | {
-            "meta": _meta(
-                "action_decision",
-                "rule-scope-decision-r2",
-                logical_id="rule-scope-decision-logical",
-                revision=2,
-                previous="rule-scope-decision-r1",
-            ),
-            "use_status": "USED",
-            "used_at": NOW,
-        }
-    ))
+    claimed = ActionDecision.model_validate_json(
+        canonical_bytes(
+            issued.model_dump()
+            | {
+                "meta": _meta(
+                    "action_decision",
+                    "rule-scope-decision-r2",
+                    logical_id="rule-scope-decision-logical",
+                    revision=2,
+                    previous="rule-scope-decision-r1",
+                ),
+                "use_status": "USED",
+                "used_at": NOW,
+            }
+        )
+    )
     claimed_ref = records.add(claimed)
-    reservation = BudgetReservation.model_validate_json(canonical_bytes(
-        make("BudgetReservation")
-        | {
-            "meta": _meta("budget_reservation", "rule-scope-reservation-r1"),
-            "reservation_id": "rule-scope-reservation-1",
-            "budget_binding_ref": StoredDataRef.model_validate(
-                ref("budget_profile_binding")
-            ),
-            "action_ref": action_ref,
-            "work_ref": work_ref,
-            "status": "RESERVED",
-            "reserved_at": NOW,
-        }
-    ))
+    reservation = BudgetReservation.model_validate_json(
+        canonical_bytes(
+            make("BudgetReservation")
+            | {
+                "meta": _meta("budget_reservation", "rule-scope-reservation-r1"),
+                "reservation_id": "rule-scope-reservation-1",
+                "budget_binding_ref": StoredDataRef.model_validate(
+                    ref("budget_profile_binding")
+                ),
+                "action_ref": action_ref,
+                "work_ref": work_ref,
+                "status": "RESERVED",
+                "reserved_at": NOW,
+            }
+        )
+    )
     reservation_ref = records.add(reservation)
-    request = LLMInvocationRequest.model_validate_json(canonical_bytes(
-        spec.model_dump()
-        | {
-            "meta": _meta("llm_invocation_request", "rule-scope-request-r1"),
-            "action_decision_ref": claimed_ref,
-            "call_spec_ref": spec_ref,
-        }
-    ))
+    request = LLMInvocationRequest.model_validate_json(
+        canonical_bytes(
+            spec.model_dump()
+            | {
+                "meta": _meta("llm_invocation_request", "rule-scope-request-r1"),
+                "action_decision_ref": claimed_ref,
+                "call_spec_ref": spec_ref,
+            }
+        )
+    )
     request_ref = records.add(request)
-    result = LLMInvocationResult.model_validate_json(canonical_bytes(
-        make("LLMInvocationResult", "llm_invocation_result")
-        | {
-            "meta": _meta("llm_invocation_result", "rule-scope-result-r1"),
-            "llm_call_id": spec.llm_call_id,
-            "purpose": "PRODUCTION",
-            "status": "SUCCEEDED",
-            "provider": "test-provider",
-            "model": spec.model,
-            "actual_session_mode": "NEW",
-            "session_ref": "rule-scope-session-1",
-            "response_ref": output_ref,
-            "parsed_output_ref": output_ref,
-            "usage": None,
-            "started_at": NOW,
-            "finished_at": NOW,
-            "elapsed_ms": 1,
-            "safe_error": None,
-        }
-    ))
+    result = LLMInvocationResult.model_validate_json(
+        canonical_bytes(
+            make("LLMInvocationResult", "llm_invocation_result")
+            | {
+                "meta": _meta("llm_invocation_result", "rule-scope-result-r1"),
+                "llm_call_id": spec.llm_call_id,
+                "purpose": "PRODUCTION",
+                "status": "SUCCEEDED",
+                "provider": "test-provider",
+                "model": spec.model,
+                "actual_session_mode": "NEW",
+                "session_ref": "rule-scope-session-1",
+                "response_ref": output_ref,
+                "parsed_output_ref": output_ref,
+                "usage": None,
+                "started_at": NOW,
+                "finished_at": NOW,
+                "elapsed_ms": 1,
+                "safe_error": None,
+            }
+        )
+    )
     result_ref = records.add(result)
-    log = LLMInvocationLog.model_validate_json(canonical_bytes(
-        make("LLMInvocationLog", "llm_invocation_log")
-        | {
-            "meta": _meta("llm_invocation_log", "rule-scope-log-r1"),
-            "llm_call_id": spec.llm_call_id,
-            "action_decision_ref": claimed_ref,
-            "call_spec_ref": spec_ref,
-            "agent_role": spec.agent_role,
-            "task_kind": spec.task_kind,
-            "purpose": spec.purpose,
-            "provider_profile_ref": spec.provider_profile_ref,
-            "provider": result.provider,
-            "model": spec.model,
-            "session_policy": "NEW",
-            "session_ref": result.session_ref,
-            "parent_session_ref": None,
-            "prompt_registry_entry_ref": spec.prompt_registry_entry_ref,
-            "prompt_key": spec.prompt_key,
-            "prompt_template_ref": spec.prompt_template_ref,
-            "prompt_template_version": spec.prompt_template_version,
-            "prompt_payload_ref": spec.prompt_payload_ref,
-            "execution_limits_ref": spec.execution_limits_ref,
-            "retry_policy_ref": spec.retry_policy_ref,
-            "tool_policy_ref": spec.tool_policy_ref,
-            "redaction_policy_ref": spec.redaction_policy_ref,
-            "semantic_validator_ref": spec.semantic_validator_ref,
-            "output_schema_ref": spec.output_schema_ref,
-            "context_refs": context,
-            "exposed_response_ref": output_ref,
-            "parsed_output_ref": output_ref,
-            "status": "SUCCEEDED",
-            "usage": None,
-            "safe_error": None,
-            "started_at": NOW,
-            "finished_at": NOW,
-        }
-    ))
+    log = LLMInvocationLog.model_validate_json(
+        canonical_bytes(
+            make("LLMInvocationLog", "llm_invocation_log")
+            | {
+                "meta": _meta("llm_invocation_log", "rule-scope-log-r1"),
+                "llm_call_id": spec.llm_call_id,
+                "action_decision_ref": claimed_ref,
+                "call_spec_ref": spec_ref,
+                "agent_role": spec.agent_role,
+                "task_kind": spec.task_kind,
+                "purpose": spec.purpose,
+                "provider_profile_ref": spec.provider_profile_ref,
+                "provider": result.provider,
+                "model": spec.model,
+                "session_policy": "NEW",
+                "session_ref": result.session_ref,
+                "parent_session_ref": None,
+                "prompt_registry_entry_ref": spec.prompt_registry_entry_ref,
+                "prompt_key": spec.prompt_key,
+                "prompt_template_ref": spec.prompt_template_ref,
+                "prompt_template_version": spec.prompt_template_version,
+                "prompt_payload_ref": spec.prompt_payload_ref,
+                "execution_limits_ref": spec.execution_limits_ref,
+                "retry_policy_ref": spec.retry_policy_ref,
+                "tool_policy_ref": spec.tool_policy_ref,
+                "redaction_policy_ref": spec.redaction_policy_ref,
+                "semantic_validator_ref": spec.semantic_validator_ref,
+                "output_schema_ref": spec.output_schema_ref,
+                "context_refs": context,
+                "exposed_response_ref": output_ref,
+                "parsed_output_ref": output_ref,
+                "status": "SUCCEEDED",
+                "usage": None,
+                "safe_error": None,
+                "started_at": NOW,
+                "finished_at": NOW,
+            }
+        )
+    )
     log_ref = records.add(log)
     invocation = PersistedLLMInvocation(request, result, log_ref, "RETURNED")
     call = RuleScopeCallRefs(issued_ref, reservation_ref, spec_ref)
@@ -357,7 +372,10 @@ def _closure() -> tuple[
 async def test_rule_scope_publisher_keeps_complete_invocation_chain() -> None:
     work, call, owner, context, proposal, invocation, records, artifacts = _closure()
     agent = RuleScopeGateAgent(
-        llm_calls=_LLM(invocation), records=records, artifacts=artifacts
+        llm_calls=_LLM(invocation),
+        records=records,
+        artifacts=artifacts,
+        provenance_validator=validate_llm_invocation_provenance,
     )
     agent_outcome = await agent.review(
         work=work,
@@ -433,6 +451,7 @@ async def test_rule_scope_agent_rejects_log_from_another_attempt() -> None:
         llm_calls=_LLM(replace(invocation, log_ref=wrong_log_ref)),
         records=records,
         artifacts=artifacts,
+        provenance_validator=validate_llm_invocation_provenance,
     )
 
     with pytest.raises(ValueError, match="RULE_SCOPE_INVOCATION_CLOSURE_MISMATCH"):

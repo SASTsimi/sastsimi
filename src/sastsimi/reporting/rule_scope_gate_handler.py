@@ -6,7 +6,7 @@ from hashlib import sha256
 from typing import Protocol
 
 from sastsimi.agents.rule_scope_gate import RuleScopeCallRefs
-from sastsimi.contracts._domain import DomainRecord
+from sastsimi.contracts.domain import DomainRecord
 from sastsimi.contracts.gates import (
     CWELabel,
     RuleScopeImpactReview,
@@ -26,8 +26,8 @@ from sastsimi.ports.record_store import RecordStore
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 
-from .cwe_handler import _require_claimed
-from .rule_scope_service import (
+from .cwe_work_handler import _require_claimed
+from .rule_scope_gate_workflow import (
     CurrentOwner,
     OfficialSourceBinding,
     RuleScopeExecution,

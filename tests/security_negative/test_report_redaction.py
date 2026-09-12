@@ -1,7 +1,7 @@
 import pytest
 
+from sastsimi.contracts.reporting import validate_report_content
 from sastsimi.contracts.static import CodeLocation
-from sastsimi.reporting.content_validation import validate_report_content
 
 
 def location() -> CodeLocation:

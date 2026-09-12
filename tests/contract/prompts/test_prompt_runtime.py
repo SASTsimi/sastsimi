@@ -29,11 +29,11 @@ from sastsimi.contracts.llm import (
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import ReferencedRecord, StoredDataRef, reference
 from sastsimi.contracts.static import StaticFactBundle
-from sastsimi.gates.rule_scope_service import OfficialSourceBinding
 from sastsimi.prompts.builder import ArtifactPromptSource, PromptBuilder, PromptSource
 from sastsimi.prompts.loader import PromptLoader, strict_load_yaml
 from sastsimi.prompts.registry import LoadedPromptDefinition
 from sastsimi.prompts.validation import validate_output
+from sastsimi.reporting.rule_scope_gate_workflow import OfficialSourceBinding
 from sastsimi.storage.artifact_store import LocalArtifactStore
 from tests.contract.domain.canonical_fixtures import make
 

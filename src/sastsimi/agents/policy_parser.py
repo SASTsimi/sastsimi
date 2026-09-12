@@ -18,7 +18,7 @@ from sastsimi.contracts.work import WorkExecutionState, WorkStatus, WorkType
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
-from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
+from sastsimi.ports.llm_invocation import PersistedLLMInvocation
 
 
 class PolicyParserInvocationPort(Protocol):

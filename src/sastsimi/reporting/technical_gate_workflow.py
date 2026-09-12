@@ -36,7 +36,7 @@ from sastsimi.ports.verification_registration import VerificationRegistration
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
 from sastsimi.runtime.llm_invocation_provenance import llm_invocation_save_refs
 
-from .cwe_service import GateCallRefs
+from .cwe_workflow import GateCallRefs
 
 
 @dataclass(frozen=True)

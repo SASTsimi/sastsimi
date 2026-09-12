@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from sastsimi.contracts._domain import exact
+from sastsimi.contracts.domain import exact
 from sastsimi.contracts.gates import RuleScopeImpactReview, TechnicalEvidenceReview
 from sastsimi.contracts.policy import RunPolicyState
 from sastsimi.contracts.refs import StoredDataRef, reference

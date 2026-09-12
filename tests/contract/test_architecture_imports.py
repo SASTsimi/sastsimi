@@ -365,15 +365,20 @@ def violations(source: str, module: str) -> list[str]:
     errors: list[str] = []
     allowed = RULES[owner] | {owner}
     exact_allowed = EXACT_IMPORT_EXCEPTIONS.get(module, frozenset())
-    if module.startswith("sastsimi.policy.adapters."):
+    policy_adapter = module.startswith("sastsimi.policy.adapters.")
+    if policy_adapter:
         allowed = frozenset({"contracts", "ports", "config"})
     for target in targets:
+        same_policy_adapter_package = policy_adapter and target.startswith(
+            "sastsimi.policy.adapters."
+        )
         if target == "sastsimi":
             errors.append(f"Ambiguous package import: {module}")
         elif target.startswith("sastsimi."):
             dependency = target.split(".")[1]
             if dependency not in RULES or (
                 dependency not in allowed
+                and not same_policy_adapter_package
                 and not any(
                     target == exception
                     or (
@@ -405,6 +410,12 @@ def test_allowed_import_fixture() -> None:
         )
         == []
     )
+
+
+def test_policy_adapter_may_import_only_its_adapter_siblings() -> None:
+    module = "sastsimi.policy.adapters.__init__"
+    assert violations("from .official_http import PolicyHttpTransport", module) == []
+    assert violations("from ..program_catalog import ProgramCatalog", module)
 
 
 @pytest.mark.parametrize(

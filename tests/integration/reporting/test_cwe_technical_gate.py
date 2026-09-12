@@ -52,13 +52,16 @@ from sastsimi.contracts.work import (
     WorkStatus,
     WorkType,
 )
-from sastsimi.gates.cwe_service import CWELabelingService, GateCallRefs
-from sastsimi.gates.technical_service import (
+from sastsimi.ports.verification_registration import VerificationRegistration
+from sastsimi.reporting.cwe_workflow import CWELabelingService, GateCallRefs
+from sastsimi.reporting.technical_gate_workflow import (
     TechnicalGateService,
     TechnicalRevisionReconciler,
 )
-from sastsimi.ports.verification_registration import VerificationRegistration
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
+from sastsimi.runtime.llm_invocation_provenance import (
+    validate_llm_invocation_provenance,
+)
 from tests.contract.domain.success_fixture import dynamic_success
 
 NOW = datetime(2026, 9, 12, tzinfo=UTC)
@@ -788,6 +791,7 @@ async def test_exact_final_true_is_labeled_then_technical_gate_accepts() -> None
             records=fixture.records,
             artifacts=fixture.artifacts,
             metadata_factory=_metadata,
+            provenance_validator=validate_llm_invocation_provenance,
         ),
         publisher=fixture.publisher,
         records=fixture.records,
@@ -853,6 +857,7 @@ async def test_exact_final_true_is_labeled_then_technical_gate_accepts() -> None
             records=fixture.records,
             artifacts=fixture.artifacts,
             metadata_factory=_metadata,
+            provenance_validator=validate_llm_invocation_provenance,
         ),
         publisher=fixture.publisher,
         records=fixture.records,
@@ -939,6 +944,7 @@ async def test_revise_commits_review_then_readies_same_owner_new_generation() ->
             records=fixture.records,
             artifacts=fixture.artifacts,
             metadata_factory=_metadata,
+            provenance_validator=validate_llm_invocation_provenance,
         ),
         publisher=fixture.publisher,
         records=fixture.records,
@@ -1037,6 +1043,7 @@ async def test_committed_revise_is_reconciled_after_revision_start_crash() -> No
             records=fixture.records,
             artifacts=fixture.artifacts,
             metadata_factory=_metadata,
+            provenance_validator=validate_llm_invocation_provenance,
         ),
         publisher=fixture.publisher,
         records=fixture.records,
@@ -1183,6 +1190,7 @@ def test_reconciler_rejects_successor_not_selected_by_current_process() -> None:
             records=fixture.records,
             artifacts=fixture.artifacts,
             metadata_factory=_metadata,
+            provenance_validator=validate_llm_invocation_provenance,
         ),
         publisher=fixture.publisher,
         records=fixture.records,

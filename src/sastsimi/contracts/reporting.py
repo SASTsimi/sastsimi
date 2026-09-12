@@ -1,5 +1,6 @@
 """Immutable Finding normalization and the final automated ReportDraft."""
 
+import re
 from collections.abc import Mapping
 from typing import Literal, Self
 
@@ -17,9 +18,79 @@ from .gates import (
     validate_technical_gate,
 )
 from .policy import PolicyCollectionResult, ProgramPolicyRecord, RunPolicyState
+from .prompt_redaction import assert_safe_provider_text
 from .refs import StoredDataRef, require_record_ref
 from .static import CodeLocation, Restriction
 from .verification import VerificationResult
+
+_LOCATION = re.compile(
+    r"(?<![\w./-])(?P<path>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)"
+    r":(?P<line>[1-9][0-9]*)(?![0-9])"
+)
+_HIDDEN_REASONING = re.compile(
+    r"(?i)(?:chain[ _-]?of[ _-]?thought|hidden[ _-]?reasoning|internal reasoning)"
+)
+
+
+class ReportContent(ContractModel):
+    """Content-only Reporter proposal; it is not an approved ReportDraft."""
+
+    title: NonEmptyStr
+    summary: NonEmptyStr
+    details: NonEmptyStr
+    recommendation: NonEmptyStr
+    citations: tuple[CodeLocation, ...]
+
+
+def validate_report_content(
+    content: object, *, allowed_locations: tuple[CodeLocation, ...]
+) -> bytes:
+    """Return canonical safe bytes and reject unsupported code-location claims."""
+
+    encoded = canonical_bytes(content)
+    assert_safe_provider_text(encoded)
+    text = encoded.decode("utf-8")
+    if _HIDDEN_REASONING.search(text):
+        raise ValueError("REPORT_HIDDEN_REASONING_DENIED")
+    if isinstance(content, Mapping) and "citations" in content:
+        for citation in ReportContent.model_validate_json(encoded).citations:
+            if not any(
+                location.file_path == citation.file_path
+                and location.start_line <= citation.start_line
+                and citation.end_line <= location.end_line
+                for location in allowed_locations
+            ):
+                raise ValueError("REPORT_CODE_LOCATION_UNSUPPORTED")
+    for match in _LOCATION.finditer(text):
+        path, line = match.group("path"), int(match.group("line"))
+        if not any(
+            location.file_path == path
+            and location.start_line <= line <= location.end_line
+            for location in allowed_locations
+        ):
+            raise ValueError("REPORT_CODE_LOCATION_UNSUPPORTED")
+    return encoded
+
+
+def parse_validated_report_content(
+    raw: bytes, *, allowed_locations: tuple[CodeLocation, ...]
+) -> ReportContent:
+    """Parse canonical report bytes and reapply redaction/evidence validation."""
+
+    try:
+        content = ReportContent.model_validate_json(raw)
+    except ValueError:
+        raise
+    except Exception as error:
+        raise ValueError("REPORT_CONTENT_ARTIFACT_INVALID") from error
+    if (
+        validate_report_content(
+            content.model_dump(mode="json"), allowed_locations=allowed_locations
+        )
+        != raw
+    ):
+        raise ValueError("REPORT_CONTENT_ARTIFACT_INVALID")
+    return content
 
 
 class FindingConditionSource(ContractModel):

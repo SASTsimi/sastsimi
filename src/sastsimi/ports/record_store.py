@@ -15,6 +15,9 @@ class RecordStore(Protocol):
     """
 
     def get_exact(self, ref: RecordRef) -> Record: ...
+    def is_revision_descendant(
+        self, earlier_ref: RecordRef, later_ref: RecordRef
+    ) -> bool: ...
     def stage_record(self, record: Record) -> RecordRef: ...
     def commit_transition(
         self, request: TransitionCommitRequest

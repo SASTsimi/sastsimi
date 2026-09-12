@@ -241,9 +241,7 @@ def test_false_terminal_commit_projects_process_and_empty_primitive_index(
         (current,) = runtime.queries.current_records("a1", "hypothesis_process_state")
         assert current.status == "VERIFYING" and current.verification_result_ref is None
         assert runtime.queries.current_records("a1", "primitive_index_state") == ()
-        (report_state,) = runtime.queries.current_records(
-            "a1", "report_process_state"
-        )
+        (report_state,) = runtime.queries.current_records("a1", "report_process_state")
         assert report_state == initial_report_state
         return
     completed = runner.complete(work, owner, "VERIFICATION", (final,))

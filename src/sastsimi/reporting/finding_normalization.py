@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from sastsimi.contracts._domain import DomainRecord, exact_set
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.domain import DomainRecord, exact_set
 from sastsimi.contracts.dynamic import DynamicReproductionResult, PoCBundle
 from sastsimi.contracts.gates import (
     CWELabel,
@@ -215,9 +215,7 @@ class FindingNormalizationService:
         ):
             raise ValueError("FINDING_WORK_NOT_ACTIVE")
 
-    def _exact[T: DomainRecord](
-        self, ref: StoredDataRef, model: type[T]
-    ) -> T:
+    def _exact[T: DomainRecord](self, ref: StoredDataRef, model: type[T]) -> T:
         value = self._records.get_exact(ref)
         if not isinstance(value, model):
             raise ValueError("FINDING_UPSTREAM_CLOSURE_MISMATCH")

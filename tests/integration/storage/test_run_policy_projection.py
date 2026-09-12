@@ -87,10 +87,9 @@ def test_policy_completion_atomically_pins_analysis_state(
             runner.complete(
                 work, identity, "POLICY_COLLECTOR", (policy, collection, parser)
             )
-        assert (
-            runtime.budget_registry.current_state("a1").run_policy_state_ref
-            == reference(preparing)
-        )
+        assert runtime.budget_registry.current_state(
+            "a1"
+        ).run_policy_state_ref == reference(preparing)
         return
     if invalid is not None:
 

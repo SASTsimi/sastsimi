@@ -81,12 +81,8 @@ def _subject(
     artifacts = LocalArtifactStore(
         root / "artifacts", WorkspaceId("w1"), CommitId("c1")
     )
-    source_config = StoredDataRef.model_validate(
-        ref("policy_source_config", True)
-    )
-    freshness = StoredDataRef.model_validate(
-        ref("policy_freshness_criterion", True)
-    )
+    source_config = StoredDataRef.model_validate(ref("policy_source_config", True))
+    freshness = StoredDataRef.model_validate(ref("policy_freshness_criterion", True))
     entry = ProgramCatalogEntry(
         program_id=ProgramId("program"),
         program_namespace="example",

@@ -15,7 +15,7 @@ from sastsimi.contracts.policy import (
     RunPolicyState,
 )
 from sastsimi.contracts.refs import StoredDataRef, reference
-from sastsimi.gates.rule_scope_service import OfficialSourceBinding
+from sastsimi.reporting.rule_scope_gate_workflow import OfficialSourceBinding
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import wire
 from tests.integration.reporting.test_rule_scope_gate import _fixture

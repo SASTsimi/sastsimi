@@ -144,8 +144,11 @@ from .refs import validate_ref_scope as validate_ref_scope
 from .reporting import Finding as Finding
 from .reporting import FindingConditionSource as FindingConditionSource
 from .reporting import FindingIndexState as FindingIndexState
-from .reporting import ReportProcessState as ReportProcessState
+from .reporting import ReportContent as ReportContent
 from .reporting import ReportDraft as ReportDraft
+from .reporting import ReportProcessState as ReportProcessState
+from .reporting import parse_validated_report_content as parse_validated_report_content
+from .reporting import validate_report_content as validate_report_content
 from .result_registry import RESULT_REGISTRY as RESULT_REGISTRY
 from .result_registry import ResultBinding as ResultBinding
 from .result_registry import validate_result_owner as validate_result_owner

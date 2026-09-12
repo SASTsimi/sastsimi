@@ -6,7 +6,7 @@ from typing import Any, cast
 
 import pytest
 
-from sastsimi.bootstrap import build_t12_services
+from sastsimi.bootstrap import T12Services, build_t12_services
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.ids import (
     AnalysisId,
@@ -30,10 +30,9 @@ from sastsimi.contracts.work import (
     WorkStatus,
     WorkType,
 )
-from sastsimi.gates.composition import T12Services
-from sastsimi.gates.rule_scope_handler import RuleScopeGateHandler
-from sastsimi.gates.rule_scope_service import RuleScopeExecution
 from sastsimi.ports.dto import WorkContext
+from sastsimi.reporting.rule_scope_gate_handler import RuleScopeGateHandler
+from sastsimi.reporting.rule_scope_gate_workflow import RuleScopeExecution
 
 NOW = datetime(2026, 9, 12, tzinfo=UTC)
 

@@ -4,7 +4,10 @@ import pytest
 
 from sastsimi.agents.cwe_labeling import CWELabelingAgent
 from sastsimi.contracts.work import WorkType
-from sastsimi.gates.cwe_service import CWELabelingService
+from sastsimi.reporting.cwe_workflow import CWELabelingService
+from sastsimi.runtime.llm_invocation_provenance import (
+    validate_llm_invocation_provenance,
+)
 from tests.integration.reporting.test_cwe_technical_gate import (
     _fixture,
     _gate_call,
@@ -58,6 +61,7 @@ async def test_cwe_rejects_non_current_validated_true_before_provider(
             records=fixture.records,
             artifacts=fixture.artifacts,
             metadata_factory=_metadata,
+            provenance_validator=validate_llm_invocation_provenance,
         ),
         publisher=fixture.publisher,
         records=fixture.records,
@@ -115,6 +119,7 @@ async def test_cwe_provider_cannot_supply_runtime_metadata_or_references() -> No
             records=fixture.records,
             artifacts=fixture.artifacts,
             metadata_factory=_metadata,
+            provenance_validator=validate_llm_invocation_provenance,
         ),
         publisher=fixture.publisher,
         records=fixture.records,

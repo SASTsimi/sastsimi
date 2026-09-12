@@ -20,9 +20,12 @@ from sastsimi.contracts.budget import BudgetReservation
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.llm import LLMCallSpec, OutputSchemaSpec, PromptPayload
 from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.reporting import validate_report_content
 from sastsimi.contracts.work import WorkExecutionState, WorkType
-from sastsimi.reporting.content_validation import validate_report_content
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
+from sastsimi.runtime.llm_invocation_provenance import (
+    validate_llm_invocation_provenance,
+)
 from tests.integration.providers.test_llm_call_service import (
     Fixture,
     build_service,
@@ -186,7 +189,7 @@ async def _reporter_case(
         llm_calls=service,
         records=data.records,
         artifacts=data.artifacts,
-        metadata_factory=data.metadata_factory,
+        provenance_validator=validate_llm_invocation_provenance,
         owner_resolver=lambda _work: action.requester_identity_ref,
     )
     return _ReporterCase(
@@ -205,13 +208,14 @@ async def _reporter_case(
 async def test_reporter_accepts_verification_owned_create_draft_decision() -> None:
     case = await _reporter_case()
 
-    content, used_ref, save_refs = case.reporter._content(
+    content, content_ref, used_ref, save_refs = case.reporter._content(
         case.invocation,
         work=case.work,
         call=case.call,
     )
 
     assert content.title == "Validated finding"
+    assert content_ref == case.invocation.result.parsed_output_ref
     assert used_ref == case.claimed_ref
     assert used_ref == case.invocation.request.action_decision_ref
     assert used_ref != case.decision_ref

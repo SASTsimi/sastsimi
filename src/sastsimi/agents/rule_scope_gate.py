@@ -23,10 +23,10 @@ from sastsimi.contracts.llm import LLMCallSpec, LLMInvocationLog, LLMToolPolicy
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus, WorkType
-from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
-from sastsimi.runtime.llm_invocation_provenance import (
+from sastsimi.ports.llm_invocation import (
     LLMInvocationExpectation,
-    validate_llm_invocation_provenance,
+    LLMInvocationProvenanceValidator,
+    PersistedLLMInvocation,
 )
 
 PolicyArea = Literal["RULE", "SCOPE", "IMPACT", "TESTING_RESTRICTION"]
@@ -127,10 +127,12 @@ class RuleScopeGateAgent:
         llm_calls: LLMCallInvoker,
         records: RecordReader,
         artifacts: ArtifactReader,
+        provenance_validator: LLMInvocationProvenanceValidator,
     ) -> None:
         self._llm_calls = llm_calls
         self._records = records
         self._artifacts = artifacts
+        self._validate_provenance = provenance_validator
 
     async def review(
         self,
@@ -180,7 +182,7 @@ class RuleScopeGateAgent:
         required_context: tuple[StoredDataRef, ...],
     ) -> None:
         try:
-            validate_llm_invocation_provenance(
+            self._validate_provenance(
                 records=self._records,
                 work=work,
                 issued_decision_ref=call.decision_ref,

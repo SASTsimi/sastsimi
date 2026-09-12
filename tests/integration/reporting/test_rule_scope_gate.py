@@ -33,8 +33,8 @@ from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.verification import VerificationResult
 from sastsimi.contracts.work import WorkExecutionState
-from sastsimi.gates.rule_scope_handler import WorkflowRuleScopePublisher
-from sastsimi.gates.rule_scope_service import (
+from sastsimi.reporting.rule_scope_gate_handler import WorkflowRuleScopePublisher
+from sastsimi.reporting.rule_scope_gate_workflow import (
     ExactRuleScopePromptGuard,
     OfficialSourceBinding,
     RuleScopeExecution,
@@ -101,9 +101,7 @@ def _stub_invocation() -> PersistedLLMInvocation:
         LLMInvocationRequest,
         make("LLMInvocationRequest", "llm_invocation_request")
         | {
-            "meta": meta(
-                "llm_invocation_request", hypothesis="h1", attempt="at-gate"
-            ),
+            "meta": meta("llm_invocation_request", hypothesis="h1", attempt="at-gate"),
             "llm_call_id": "rule-scope-call",
             "action_decision_ref": decision_ref.model_dump(mode="json"),
             "call_spec_ref": spec_ref.model_dump(mode="json"),
@@ -118,9 +116,7 @@ def _stub_invocation() -> PersistedLLMInvocation:
         LLMInvocationResult,
         make("LLMInvocationResult", "llm_invocation_result")
         | {
-            "meta": meta(
-                "llm_invocation_result", hypothesis="h1", attempt="at-gate"
-            ),
+            "meta": meta("llm_invocation_result", hypothesis="h1", attempt="at-gate"),
             "llm_call_id": request.llm_call_id,
             "purpose": request.purpose,
             "status": "SUCCEEDED",

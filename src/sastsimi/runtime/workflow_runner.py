@@ -571,9 +571,7 @@ class WorkflowRunner:
             # the supplied scope, whereas the downstream-only
             # `enqueue_registered` boundary deliberately requires the exact
             # registration scope before exposing READY work to another worker.
-            ready_action = self.action(
-                registered, identity, role, "CHANGE_WORK_STATE"
-            )
+            ready_action = self.action(registered, identity, role, "CHANGE_WORK_STATE")
             ready = self.runtime.work.make_ready(
                 self.transition(
                     registered,
