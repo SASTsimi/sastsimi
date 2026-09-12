@@ -24,7 +24,12 @@ from sastsimi.contracts.ids import (
     WorkspaceId,
 )
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
+from sastsimi.contracts.refs import (
+    BudgetScopeRef,
+    HostConfigurationRef,
+    StoredDataRef,
+    reference,
+)
 from sastsimi.logging import SafeJsonHandler, safe_event
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
@@ -337,8 +342,10 @@ class _RealStaticSlice:
 class _RuntimeStaticToolProfileResolver:
     runtime: RuntimeServices
 
-    def resolve(self, profile_ref: StoredDataRef) -> StaticToolProfile:
-        return self.runtime.configuration.resolve_static_tool_profile(profile_ref)
+    def resolve(
+        self, profile_ref: StoredDataRef | HostConfigurationRef
+    ) -> StaticToolProfile:
+        return self.runtime.configuration.resolve_static_tool_profile_ref(profile_ref)
 
 
 def _build_real_static_slice(
@@ -390,6 +397,7 @@ def _build_real_static_slice(
         static_process_receipts=static_process_receipts,
         static_cancellation_observation=static_cancellation_observation,
         static_dispatch_state=static_dispatch_state,
+        capability_resolver=runner.runtime.configuration,
     )
     tools = StaticToolCoordinator(
         _RuntimeStaticToolProfileResolver(runner.runtime),

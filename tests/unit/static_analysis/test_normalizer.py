@@ -4,9 +4,15 @@ import hashlib
 from dataclasses import replace
 
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.ids import CommitId, StoredDataId, WorkspaceId
+from sastsimi.contracts.ids import (
+    AnalysisId,
+    CommitId,
+    RecordId,
+    StoredDataId,
+    WorkspaceId,
+)
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef, reference
 from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile, ToolRunResult
 from sastsimi.ports.dto import (
     CandidateFact,
@@ -193,6 +199,69 @@ def test_normalization_is_deterministic_and_partitions_source() -> None:
     assert len(first.source_candidates) == 1
     assert first.source_candidates[0].symbol_id == first.entities[0].symbol_id
     assert first.sink_candidates == ()
+
+
+def test_normalization_accepts_exact_cross_analysis_production_profile() -> None:
+    material, observation = _material()
+    capability_ref = HostConfigurationRef(
+        stored_data_id=StoredDataId("capability-approval"),
+        data_kind="tool_capability_evidence",
+        content_hash="b" * 64,
+        host_id="host-a",
+        publication_analysis_id=AnalysisId("capability-run"),
+        publication_workspace_id=WorkspaceId("capability-workspace"),
+        publication_commit_id=CommitId("capability-commit"),
+        record_id=RecordId("capability-approval"),
+    )
+    production_meta = material.profile.meta.model_copy(
+        update={
+            "analysis_id": AnalysisId("capability-run"),
+            "workspace_id": WorkspaceId("capability-workspace"),
+            "commit_id": CommitId("capability-commit"),
+        }
+    )
+    profile = material.profile.model_copy(
+        update={
+            "meta": production_meta,
+            "host_id": "host-a",
+            "purpose": "PRODUCTION",
+            "status": "ACTIVE",
+            "capability_evidence_ref": capability_ref,
+        }
+    )
+    profile_ref = reference(profile)
+    assert isinstance(profile_ref, HostConfigurationRef)
+    production_material = replace(
+        material,
+        profile=profile,
+        profile_ref=profile_ref,
+    )
+    normalizer = StaticNormalizer(
+        {
+            decoder_key(profile_ref, "AST", "1"): lambda raw, replay: observation,
+        }
+    )
+    workspace = CodeWorkspace.model_validate_json(
+        canonical_bytes(
+            {
+                "meta": meta("code_workspace", run=True),
+                "workspace_id": "ws1",
+                "analysis_id": "a1",
+                "repository_url": "https://example.invalid/repo",
+                "commit_id": "c1",
+                "status": "READY",
+            }
+        )
+    )
+    bundle = normalizer.normalize(
+        bundle_meta=RecordMeta.model_validate_json(
+            canonical_bytes(meta("static_fact_bundle", attempt=None))
+        ),
+        workspace=workspace,
+        materials=(production_material,),
+    )
+
+    assert len(bundle.source_candidates) == 1
 
 
 def test_normalization_reports_conflicting_source_identity() -> None:

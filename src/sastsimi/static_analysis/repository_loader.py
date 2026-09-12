@@ -40,6 +40,42 @@ from .process import process_command_fingerprint
 _HEX = frozenset(string.hexdigits)
 
 
+def _git_executable_identity(path: Path) -> tuple[Path, str, str]:
+    """Pin one non-linked Git executable to its key and content digest."""
+
+    try:
+        if path.is_symlink():
+            raise ValueError
+        resolved = path.resolve(strict=True)
+        if not resolved.is_file():
+            raise ValueError
+        digest = hashlib.sha256()
+        with resolved.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+    except (OSError, ValueError) as error:
+        raise ValueError("GIT_EXECUTABLE_INVALID") from error
+    subject_key = resolved.stem.lower()
+    if not subject_key:
+        raise ValueError("GIT_EXECUTABLE_INVALID")
+    return resolved, subject_key, digest.hexdigest()
+
+
+def _canonical_local_path(path: Path) -> CanonicalRepositorySource:
+    try:
+        details = path.lstat()
+        resolved = path.resolve(strict=True)
+        if (
+            path.is_symlink()
+            or not resolved.is_dir()
+            or getattr(details, "st_file_attributes", 0) & 0x400
+        ):
+            raise ValueError
+    except (OSError, ValueError) as error:
+        raise ValueError("REPOSITORY_SOURCE_INVALID") from error
+    return CanonicalRepositorySource(resolved.as_uri(), "localhost", str(resolved))
+
+
 def _strict_percent_decode(value: str) -> bytes:
     for index, char in enumerate(value):
         if char == "%" and (
@@ -72,6 +108,16 @@ def canonicalize_repository_source(
 ) -> CanonicalRepositorySource:
     """Return one secret-free repository identity or reject before any sink."""
     if (
+        allow_local_file
+        and submitted
+        and submitted == submitted.strip()
+        and not submitted.startswith("-")
+        and not submitted.lower().startswith("ext::")
+        and "://" not in submitted
+        and not re.match(r"^[^/]+@[^/]+:[^/]+$", submitted)
+    ):
+        return _canonical_local_path(Path(submitted))
+    if (
         not submitted
         or submitted != submitted.strip()
         or submitted.startswith("-")
@@ -99,8 +145,7 @@ def canonicalize_repository_source(
             raise ValueError("REPOSITORY_SOURCE_INVALID") from error
         if any(part in {"", ".", ".."} for part in Path(path).parts[1:]):
             raise ValueError("REPOSITORY_SOURCE_INVALID")
-        canonical = Path(url2pathname(path)).resolve(strict=True).as_uri()
-        return CanonicalRepositorySource(canonical, "localhost", path)
+        return _canonical_local_path(Path(url2pathname(path)))
     if split.scheme.lower() != "https" or not split.hostname or not split.path:
         raise ValueError("REPOSITORY_SOURCE_INVALID")
     try:
@@ -196,8 +241,6 @@ def _repository_command_argv(
             + ("always" if repository_url.startswith("file:") else "never"),
             "-c",
             "http.followRedirects=false",
-            "-c",
-            f"core.hooksPath={hooks_dir}",
             "clone",
             "--no-checkout",
             "--no-recurse-submodules",
@@ -393,9 +436,28 @@ class WorkspaceGuard:
         self._roots = dict(roots)
         self._manifests = dict(manifests)
         self._factory = process_runner_factory
-        self._git = git_executable.resolve(strict=True)
+        self._git, self._git_subject_key, self._git_sha256 = _git_executable_identity(
+            git_executable
+        )
         self._output = output_dir.resolve(strict=True)
         self._sensitive_names = sensitive_names
+
+    def _verified_git_executable(self) -> Path:
+        current, subject_key, digest = _git_executable_identity(self._git)
+        if (
+            current != self._git
+            or subject_key != self._git_subject_key
+            or digest != self._git_sha256
+        ):
+            raise ValueError("GIT_EXECUTABLE_CHANGED")
+        return current
+
+    def verify_git_capability(self, subject_key: str, expected_sha256: str) -> None:
+        """Bind guard commands to the executable approved by the exact profile."""
+
+        if subject_key != self._git_subject_key or expected_sha256 != self._git_sha256:
+            raise ValueError("GIT_EXECUTABLE_CAPABILITY_MISMATCH")
+        self._verified_git_executable()
 
     def root_for(self, workspace: CodeWorkspace) -> Path:
         if workspace.status != "READY" or workspace.commit_id is None:
@@ -513,6 +575,7 @@ class WorkspaceGuard:
     ) -> tuple[tuple[ProcessSpec, bool], ...]:
         if not attempt_id or re.fullmatch(r"[a-z][a-z0-9-]{0,63}", check_id) is None:
             raise ValueError("WORKSPACE_CHECK_IDENTITY_INVALID")
+        git_executable = self._verified_git_executable()
         commands: list[tuple[str, tuple[str, ...], bool]] = [
             ("head", ("rev-parse", "HEAD"), False),
         ]
@@ -533,7 +596,7 @@ class WorkspaceGuard:
                     ),
                     command_kind=f"guard-{name}",
                     attempt_id=attempt_id,
-                    argv=(str(self._git), "-C", str(root), *argv),
+                    argv=(str(git_executable), "-C", str(root), *argv),
                     cwd=root,
                     env=(
                         ("GIT_CONFIG_GLOBAL", os.devnull),
@@ -689,6 +752,11 @@ class RepositoryRecoveryGuard:
         )
         self._storage.enforce(lease)
 
+    def verify_git_capability(self, subject_key: str, expected_sha256: str) -> None:
+        """Bind recovery checks to the same approved Git executable."""
+
+        self._workspace_guard.verify_git_capability(subject_key, expected_sha256)
+
 
 class RepositoryLoader:
     """Run a closed Git command sequence and return a non-persisted candidate."""
@@ -705,20 +773,36 @@ class RepositoryLoader:
             {".env", ".env.local", "id_rsa", "id_ed25519"}
         ),
     ) -> None:
-        if (
-            git_executable.is_symlink()
-            or not git_executable.resolve(strict=True).is_file()
-        ):
-            raise ValueError("GIT_EXECUTABLE_INVALID")
         if output_dir.is_symlink() or not output_dir.resolve(strict=True).is_dir():
             raise ValueError("PROCESS_OUTPUT_ROOT_INVALID")
         self.storage = storage
         self.process_runner_factory = process_runner_factory
-        self.git_executable = git_executable.resolve(strict=True)
+        (
+            self.git_executable,
+            self._git_subject_key,
+            self._git_sha256,
+        ) = _git_executable_identity(git_executable)
         self.output_dir = output_dir.resolve(strict=True)
         self.allow_local_file = allow_local_file
         self.sensitive_names = sensitive_names
         self.process_receipts: tuple[ProcessReceipt, ...] = ()
+
+    def _verified_git_executable(self) -> Path:
+        current, subject_key, digest = _git_executable_identity(self.git_executable)
+        if (
+            current != self.git_executable
+            or subject_key != self._git_subject_key
+            or digest != self._git_sha256
+        ):
+            raise ValueError("GIT_EXECUTABLE_CHANGED")
+        return current
+
+    def verify_git_capability(self, subject_key: str, expected_sha256: str) -> None:
+        """Bind repository commands to the executable approved by the profile."""
+
+        if subject_key != self._git_subject_key or expected_sha256 != self._git_sha256:
+            raise ValueError("GIT_EXECUTABLE_CAPABILITY_MISMATCH")
+        self._verified_git_executable()
 
     def _spec(
         self,
@@ -737,7 +821,7 @@ class RepositoryLoader:
             root=root,
             output_dir=output_dir,
             deadline=deadline,
-            argv=(str(self.git_executable), *argv),
+            argv=(str(self._verified_git_executable()), *argv),
         )
 
     def _attempt_output_dir(
