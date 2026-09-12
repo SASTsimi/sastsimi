@@ -965,6 +965,19 @@ def validate_dynamic_closure(
         for event in log.events
     ):
         raise ValueError("CANDIDATE_LOG_REQUIRED")
+    environments = (*attempt_environments, *((environment,) if environment else ()))
+    recipes = (*attempt_recipes, *((recipe,) if recipe else ()))
+    validate_command_log(
+        log,
+        request,
+        plan,
+        command_records,
+        tool_requests,
+        environments,
+        recipes,
+        require_completion=result.status in {"SUCCEEDED", "PARTIAL"}
+        or bool(result.hypothesis_evidence_refs),
+    )
     if poc is not None:
         if candidate is None:
             raise ValueError("POC_CANDIDATE_REQUIRED")
@@ -1004,20 +1017,7 @@ def validate_dynamic_closure(
         )
     if cleanup is not None and cleanup.status != result.cleanup_status:
         raise ValueError("CLEANUP_STATUS_MISMATCH")
-    environments = (*attempt_environments, *((environment,) if environment else ()))
-    recipes = (*attempt_recipes, *((recipe,) if recipe else ()))
     validate_cleanup_coverage(result, log, cleanup, environments, attempt_resource_refs)
-    validate_command_log(
-        log,
-        request,
-        plan,
-        command_records,
-        tool_requests,
-        environments,
-        recipes,
-        require_completion=result.status in {"SUCCEEDED", "PARTIAL"}
-        or bool(result.hypothesis_evidence_refs),
-    )
 
 
 def validate_boundary_binding(
