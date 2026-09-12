@@ -1,0 +1,261 @@
+{
+  "_note": {
+    "source": "직접 만든 테스트 데이터입니다. 실제 도구 출력이 아닙니다.",
+    "basis": "08-lightweight-data-contracts.md §1 StaticFactBundle 스키마와 02-static-fact-layer.md의 도구 상태 해석 규칙을 따랐습니다.",
+    "case": "실패. 도구가 실패·부분 실행으로 끝나 후보 목록이 전부 비어 있는 입력. '빈 목록을 안전함으로 읽지 않는다'와 '없는 사실을 만들지 않는다'를 동시에 확인합니다.",
+    "why_this_is_the_failure_case": "가장 흔한 오작동이 둘입니다. 하나는 후보가 없으니 '취약점 없음'으로 결론 내는 것, 다른 하나는 빈 입력에서 그럴듯한 가설을 지어내는 것입니다. 이 입력은 둘 다 걸러냅니다.",
+    "contract_note": "08-lightweight-data-contracts.md:850에 따라 RULE_BASED 도구의 rule_execution_ref는 SUCCEEDED/PARTIAL/SKIPPED에서 필수입니다. opengrep은 SKIPPED이므로 참조가 있고, codeql은 catalog 확정 전 FAILED라 null입니다. ast_dataflow는 STRUCTURE라 항상 null입니다.",
+    "projection": "프롬프트가 실제로 받는 projection 후 payload입니다. 05-prompt-runtime.md:231의 facts slot field_paths에 /meta가 없으므로 bundle의 meta는 들어오지 않습니다.",
+    "gaps_placement": "도구 실행에 귀속되는 gaps·errors는 각 ToolRunResult 안에만 두고 bundle 최상위에는 복제하지 않습니다. 최상위는 특정 도구 실행에 귀속되지 않는 정규화 계층 자체의 공백·오류만 담으며, 이 입력에는 그런 항목이 없어 빈 배열입니다. 소비자는 두 곳을 모두 읽어야 하고 최상위가 비었다는 것만으로 도구가 성공했다고 판단하면 안 됩니다."
+  },
+  "facts": {
+    "entities": [
+      {
+        "symbol_id": "sym-app-module",
+        "symbol_kind": "MODULE",
+        "native_kind": "python_module",
+        "name": "app",
+        "location": {
+          "workspace_id": "ws-002",
+          "commit_id": "3e9d1c7a5b2f4e8d6c0a9b1d3f5e7c9a2b4d6f80",
+          "file_path": "app/__init__.py",
+          "start_line": 1,
+          "start_column": null,
+          "end_line": 3,
+          "end_column": null
+        }
+      }
+    ],
+    "locations": [],
+    "source_candidates": [],
+    "sink_candidates": [],
+    "sanitizer_candidates": [],
+    "validator_candidates": [],
+    "auth_and_permission_checks": [],
+    "other_facts": [],
+    "call_edges": [],
+    "data_flow_candidates": [],
+    "route_bindings": [],
+    "tool_runs": [
+      {
+        "meta": {
+          "record_id": "rec-trr-0011",
+          "logical_record_id": "lrec-trr-0011",
+          "record_type": "tool_run_result",
+          "schema_version": "1.0.0",
+          "analysis_id": "an-0002",
+          "workspace_id": "ws-002",
+          "commit_id": "3e9d1c7a5b2f4e8d6c0a9b1d3f5e7c9a2b4d6f80",
+          "hypothesis_id": null,
+          "attempt_id": "attempt-codeql-011",
+          "revision_number": 1,
+          "previous_record_id": null,
+          "created_at": "2026-09-09T03:35:02Z"
+        },
+        "tool_name": "codeql",
+        "tool_version": "2.15.0",
+        "tool_kind": "RULE_BASED",
+        "status": "FAILED",
+        "coverage": {
+          "analyzed_paths": [],
+          "skipped_paths": [
+            "app/",
+            "lib/"
+          ],
+          "analyzed_languages": [],
+          "skipped_languages": [
+            "python"
+          ],
+          "notes": [
+            "database creation aborted"
+          ]
+        },
+        "rule_execution_ref": null,
+        "raw_result_ref": null,
+        "gaps": [
+          {
+            "gap_id": "gap-001",
+            "stage": "STATIC_ANALYSIS",
+            "code": "CODEQL_DB_CREATE_FAILED",
+            "reason": "FAILED",
+            "description": "CodeQL database 생성이 실패해 rule을 하나도 실행하지 못했습니다.",
+            "affected_paths": [
+              "app/",
+              "lib/"
+            ],
+            "affected_languages": [
+              "python"
+            ],
+            "affected_locations": [],
+            "retryable": true,
+            "related_record_ids": [
+              "rec-trr-0011"
+            ],
+            "created_at": "2026-09-09T03:38:10Z"
+          }
+        ],
+        "errors": [
+          {
+            "error_id": "err-001",
+            "stage": "STATIC_ANALYSIS",
+            "code": "TOOL_EXIT_NONZERO",
+            "safe_message": "codeql database create가 비정상 종료했습니다.",
+            "retryable": true,
+            "work_id": "work-static-0011",
+            "attempt_id": "attempt-codeql-011",
+            "related_record_ids": [
+              "rec-trr-0011"
+            ],
+            "created_at": "2026-09-09T03:38:10Z"
+          }
+        ],
+        "started_at": "2026-09-09T03:35:02Z",
+        "finished_at": "2026-09-09T03:38:10Z",
+        "elapsed_ms": 188000
+      },
+      {
+        "meta": {
+          "record_id": "rec-trr-0012",
+          "logical_record_id": "lrec-trr-0012",
+          "record_type": "tool_run_result",
+          "schema_version": "1.0.0",
+          "analysis_id": "an-0002",
+          "workspace_id": "ws-002",
+          "commit_id": "3e9d1c7a5b2f4e8d6c0a9b1d3f5e7c9a2b4d6f80",
+          "hypothesis_id": null,
+          "attempt_id": "attempt-ast-011",
+          "revision_number": 1,
+          "previous_record_id": null,
+          "created_at": "2026-09-09T03:35:02Z"
+        },
+        "tool_name": "ast_dataflow",
+        "tool_version": "1.4.2",
+        "tool_kind": "STRUCTURE",
+        "status": "PARTIAL",
+        "coverage": {
+          "analyzed_paths": [
+            "app/__init__.py"
+          ],
+          "skipped_paths": [
+            "app/views/",
+            "lib/"
+          ],
+          "analyzed_languages": [
+            "python"
+          ],
+          "skipped_languages": [],
+          "notes": [
+            "syntax error in app/views/orders.py stopped module traversal"
+          ]
+        },
+        "rule_execution_ref": null,
+        "raw_result_ref": {
+          "stored_data_id": "data-raw-ast-011",
+          "data_kind": "raw_tool_result",
+          "content_hash": "7081920a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071829304a5b6",
+          "workspace_id": "ws-002",
+          "commit_id": "3e9d1c7a5b2f4e8d6c0a9b1d3f5e7c9a2b4d6f80",
+          "record_id": null
+        },
+        "gaps": [
+          {
+            "gap_id": "gap-002",
+            "stage": "STATIC_ANALYSIS",
+            "code": "AST_PARSE_ERROR",
+            "reason": "FAILED",
+            "description": "app/views/orders.py의 구문 오류로 app/views/ 이하를 순회하지 못했습니다.",
+            "affected_paths": [
+              "app/views/",
+              "lib/"
+            ],
+            "affected_languages": [
+              "python"
+            ],
+            "affected_locations": [],
+            "retryable": false,
+            "related_record_ids": [
+              "rec-trr-0012"
+            ],
+            "created_at": "2026-09-09T03:36:44Z"
+          }
+        ],
+        "errors": [],
+        "started_at": "2026-09-09T03:35:02Z",
+        "finished_at": "2026-09-09T03:36:44Z",
+        "elapsed_ms": 102000
+      },
+      {
+        "meta": {
+          "record_id": "rec-trr-0013",
+          "logical_record_id": "lrec-trr-0013",
+          "record_type": "tool_run_result",
+          "schema_version": "1.0.0",
+          "analysis_id": "an-0002",
+          "workspace_id": "ws-002",
+          "commit_id": "3e9d1c7a5b2f4e8d6c0a9b1d3f5e7c9a2b4d6f80",
+          "hypothesis_id": null,
+          "attempt_id": "attempt-opengrep-011",
+          "revision_number": 1,
+          "previous_record_id": null,
+          "created_at": "2026-09-09T03:38:11Z"
+        },
+        "tool_name": "opengrep",
+        "tool_version": "1.9.0",
+        "tool_kind": "RULE_BASED",
+        "status": "SKIPPED",
+        "coverage": {
+          "analyzed_paths": [],
+          "skipped_paths": [
+            "app/",
+            "lib/"
+          ],
+          "analyzed_languages": [],
+          "skipped_languages": [
+            "python"
+          ],
+          "notes": [
+            "skipped after codeql failure per analysis plan",
+            "선택된 rule은 RuleExecutionRecord에 SELECTED + NOT_EXECUTED(reason=CANCELLED)로 남습니다."
+          ]
+        },
+        "rule_execution_ref": {
+          "stored_data_id": "data-rer-011",
+          "data_kind": "rule_execution_record",
+          "content_hash": "9304a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+          "workspace_id": "ws-002",
+          "commit_id": "3e9d1c7a5b2f4e8d6c0a9b1d3f5e7c9a2b4d6f80",
+          "record_id": "rec-rer-011"
+        },
+        "raw_result_ref": null,
+        "gaps": [
+          {
+            "gap_id": "gap-003",
+            "stage": "STATIC_ANALYSIS",
+            "code": "TOOL_SKIPPED",
+            "reason": "MISSING",
+            "description": "선행 도구 실패로 실행하지 않았습니다.",
+            "affected_paths": [
+              "app/",
+              "lib/"
+            ],
+            "affected_languages": [
+              "python"
+            ],
+            "affected_locations": [],
+            "retryable": true,
+            "related_record_ids": [
+              "rec-trr-0013"
+            ],
+            "created_at": "2026-09-09T03:38:12Z"
+          }
+        ],
+        "errors": [],
+        "started_at": "2026-09-09T03:38:11Z",
+        "finished_at": "2026-09-09T03:38:12Z",
+        "elapsed_ms": 1000
+      }
+    ],
+    "gaps": [],
+    "errors": []
+  }
+}

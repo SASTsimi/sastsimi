@@ -1,0 +1,590 @@
+{
+  "_note": {
+    "source": "직접 만든 테스트 데이터입니다. 실제 실행 결과가 아닙니다.",
+    "basis": "08-lightweight-data-contracts.md §5의 Primitive·PrimitiveIndexState 스키마와 implementation/05-prompt-runtime.md의 MATCH_PRIMITIVES 입력 slot 목록을 따랐습니다.",
+    "case": "정상 (Primitive 셋). 저장 순서는 prim-000A -> prim-000B -> prim-000C입니다. Primitive가 둘일 때는 드러나지 않는 조합 열거를 시험합니다 — considered의 모든 조합을 빠짐없이 검토하고 담당을 임의로 판단해 빼지 않는지를 봅니다.",
+    "why_three": "Primitive가 둘뿐이면 계기 기준 비교와 전체 쌍 비교의 결과가 같아 구분되지 않습니다. 셋이어야 prim-000A-prim-000B 조합을 만들지 않는지가 드러납니다.",
+    "ownership_basis": "06-chaining.md의 '새로 저장된 Primitive 하나를 계기로 그 Primitive와 자기 자신을 제외한 기존 Primitive 전체를 비교한다'를 따릅니다. prim-000A-prim-000B는 prim-000B를 계기로 가진 work가 이미 검토했습니다. pool이 REGISTER_WORK 시점의 COMMITTED index에서 고정되므로 prim-000B의 pool에는 prim-000C가 없고 prim-000C의 pool에만 앞의 둘이 들어옵니다.",
+    "id_note": "prim-000C는 이 파일 안에서만 쓰는 식별자입니다. normal-true-true.input.json의 prim-000C와는 별개 fixture입니다.",
+    "lineage_note": "세 가설 모두 INITIAL이고 source_primitive_match_id가 null이라 lineage_results는 빈 목록입니다."
+  },
+  "indexes": [
+    {
+      "meta": {
+        "record_id": "rec-idx-0001",
+        "logical_record_id": "lrec-idx-0001",
+        "record_type": "primitive_index_state",
+        "schema_version": "1.0.0",
+        "analysis_id": "an-0003",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "hypothesis_id": "hyp-0001",
+        "attempt_id": null,
+        "revision_number": 2,
+        "previous_record_id": "rec-idx-0001r1",
+        "created_at": "2026-09-09T05:12:30Z"
+      },
+      "current_verification_ref": {
+        "stored_data_id": "data-ver-0001",
+        "data_kind": "verification_result",
+        "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-ver-0001"
+      },
+      "primitive_refs": [
+        {
+          "stored_data_id": "data-prim-000A",
+          "data_kind": "primitive",
+          "content_hash": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000A"
+        }
+      ],
+      "updated_at": "2026-09-09T05:12:30Z"
+    },
+    {
+      "meta": {
+        "record_id": "rec-idx-0002",
+        "logical_record_id": "lrec-idx-0002",
+        "record_type": "primitive_index_state",
+        "schema_version": "1.0.0",
+        "analysis_id": "an-0003",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "hypothesis_id": "hyp-0002",
+        "attempt_id": null,
+        "revision_number": 1,
+        "previous_record_id": null,
+        "created_at": "2026-09-09T04:58:11Z"
+      },
+      "current_verification_ref": {
+        "stored_data_id": "data-ver-0002",
+        "data_kind": "verification_result",
+        "content_hash": "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-ver-0002"
+      },
+      "primitive_refs": [
+        {
+          "stored_data_id": "data-prim-000B",
+          "data_kind": "primitive",
+          "content_hash": "d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000B"
+        }
+      ],
+      "updated_at": "2026-09-09T04:58:11Z"
+    },
+    {
+      "meta": {
+        "record_id": "rec-idx-0005",
+        "logical_record_id": "lrec-idx-0005",
+        "record_type": "primitive_index_state",
+        "schema_version": "1.0.0",
+        "analysis_id": "an-0003",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "hypothesis_id": "hyp-0005",
+        "attempt_id": null,
+        "revision_number": 2,
+        "previous_record_id": "rec-idx-0005r1",
+        "created_at": "2026-09-09T05:12:30Z"
+      },
+      "current_verification_ref": {
+        "stored_data_id": "data-ver-0005",
+        "data_kind": "verification_result",
+        "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-ver-0005"
+      },
+      "primitive_refs": [
+        {
+          "stored_data_id": "data-prim-000C",
+          "data_kind": "primitive",
+          "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000C"
+        }
+      ],
+      "updated_at": "2026-09-09T05:12:30Z"
+    }
+  ],
+  "considered": [
+    {
+      "meta": {
+        "record_id": "rec-prim-000A",
+        "logical_record_id": "lrec-prim-000A",
+        "record_type": "primitive",
+        "schema_version": "1.0.0",
+        "analysis_id": "an-0003",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "hypothesis_id": "hyp-0001",
+        "attempt_id": null,
+        "revision_number": 1,
+        "previous_record_id": null,
+        "created_at": "2026-09-09T05:12:30Z"
+      },
+      "primitive_id": "prim-000A",
+      "workspace_id": "ws-003",
+      "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+      "inputs": [
+        {
+          "draft_id": "d-a-1",
+          "entity_refs": [
+            {
+              "symbol_id": "sym-require-login",
+              "symbol_kind": "CALLABLE",
+              "native_kind": "decorator",
+              "name": "require_login",
+              "location": {
+                "workspace_id": "ws-003",
+                "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+                "file_path": "app/auth.py",
+                "start_line": 18,
+                "start_column": 1,
+                "end_line": 27,
+                "end_column": 1
+              }
+            }
+          ],
+          "privilege_level": "authenticated_user",
+          "evidence_refs": [
+            {
+              "stored_data_id": "data-ctx-0001",
+              "data_kind": "code_context_response",
+              "content_hash": "e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+              "workspace_id": "ws-003",
+              "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+              "record_id": "rec-ctx-0001"
+            }
+          ],
+          "description": "요청을 보내려면 require_login을 통과한 인증 세션이 있어야 한다."
+        }
+      ],
+      "result": {
+        "draft_id": "d-a-r",
+        "entity_refs": [
+          {
+            "symbol_id": "sym-fetch-url",
+            "symbol_kind": "CALLABLE",
+            "native_kind": "function",
+            "name": "fetch_url",
+            "location": {
+              "workspace_id": "ws-003",
+              "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+              "file_path": "app/preview.py",
+              "start_line": 31,
+              "start_column": 1,
+              "end_line": 44,
+              "end_column": 1
+            }
+          }
+        ],
+        "privilege_level": "authenticated_user",
+        "evidence_refs": [
+          {
+            "stored_data_id": "data-poc-0001",
+            "data_kind": "poc_bundle",
+            "content_hash": "f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+            "workspace_id": "ws-003",
+            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+            "record_id": "rec-poc-0001"
+          }
+        ],
+        "description": "app/preview.py의 fetch_url이 사용자가 지정한 URL로 서버 측 HTTP GET 요청을 보내게 만들 수 있다."
+      },
+      "restrictions": [
+        {
+          "restriction_id": "res-A1",
+          "statement": "요청 스킴이 http와 https로 제한되어 file과 gopher는 거절된다.",
+          "fact_refs": [
+            {
+              "bundle_ref": {
+                "stored_data_id": "data-sfb-0003",
+                "data_kind": "static_fact_bundle",
+                "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                "workspace_id": "ws-003",
+                "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+                "record_id": "rec-sfb-0003"
+              },
+              "fact_id": "cf-val-021"
+            }
+          ],
+          "evidence_refs": []
+        }
+      ],
+      "source_hypothesis_id": "hyp-0001",
+      "source_verification_ref": {
+        "stored_data_id": "data-ver-0001",
+        "data_kind": "verification_result",
+        "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-ver-0001"
+      },
+      "technical_review_ref": {
+        "stored_data_id": "data-tgr-0001",
+        "data_kind": "technical_evidence_review",
+        "content_hash": "18293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-tgr-0001"
+      },
+      "admission_decision_ref": {
+        "stored_data_id": "data-adm-0001",
+        "data_kind": "primitive_admission_decision",
+        "content_hash": "8293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-adm-0001"
+      },
+      "evidence_refs": [
+        {
+          "stored_data_id": "data-poc-0001",
+          "data_kind": "poc_bundle",
+          "content_hash": "f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-poc-0001"
+        }
+      ],
+      "description": "인증된 사용자 세션에서 서버가 임의의 http/https URL로 요청을 보내게 만드는 능력."
+    },
+    {
+      "meta": {
+        "record_id": "rec-prim-000B",
+        "logical_record_id": "lrec-prim-000B",
+        "record_type": "primitive",
+        "schema_version": "1.0.0",
+        "analysis_id": "an-0003",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "hypothesis_id": "hyp-0002",
+        "attempt_id": null,
+        "revision_number": 1,
+        "previous_record_id": null,
+        "created_at": "2026-09-09T04:57:40Z"
+      },
+      "primitive_id": "prim-000B",
+      "workspace_id": "ws-003",
+      "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+      "inputs": [
+        {
+          "draft_id": "d-b-1",
+          "entity_refs": [
+            {
+              "symbol_id": "sym-fetch-url",
+              "symbol_kind": "CALLABLE",
+              "native_kind": "function",
+              "name": "fetch_url",
+              "location": {
+                "workspace_id": "ws-003",
+                "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+                "file_path": "app/preview.py",
+                "start_line": 31,
+                "start_column": 1,
+                "end_line": 44,
+                "end_column": 1
+              }
+            }
+          ],
+          "privilege_level": null,
+          "evidence_refs": [
+            {
+              "stored_data_id": "data-ctx-0002",
+              "data_kind": "code_context_response",
+              "content_hash": "293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+              "workspace_id": "ws-003",
+              "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+              "record_id": "rec-ctx-0002"
+            }
+          ],
+          "description": "서버가 공격자가 지정한 URL로 HTTP 요청을 보낼 수 있어야 한다."
+        },
+        {
+          "draft_id": "d-b-2",
+          "entity_refs": [
+            {
+              "symbol_id": "sym-render-preview",
+              "symbol_kind": "CALLABLE",
+              "native_kind": "function",
+              "name": "render_preview",
+              "location": {
+                "workspace_id": "ws-003",
+                "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+                "file_path": "app/preview.py",
+                "start_line": 58,
+                "start_column": 1,
+                "end_line": 71,
+                "end_column": 1
+              }
+            }
+          ],
+          "privilege_level": null,
+          "evidence_refs": [
+            {
+              "stored_data_id": "data-ctx-0003",
+              "data_kind": "code_context_response",
+              "content_hash": "3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071829",
+              "workspace_id": "ws-003",
+              "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+              "record_id": "rec-ctx-0003"
+            }
+          ],
+          "description": "요청 응답 본문이 호출자에게 그대로 반환되어야 한다."
+        }
+      ],
+      "result": null,
+      "restrictions": [
+        {
+          "restriction_id": "res-B1",
+          "statement": "응답 본문이 8KB로 잘려 반환된다.",
+          "fact_refs": [
+            {
+              "bundle_ref": {
+                "stored_data_id": "data-sfb-0003",
+                "data_kind": "static_fact_bundle",
+                "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                "workspace_id": "ws-003",
+                "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+                "record_id": "rec-sfb-0003"
+              },
+              "fact_id": "cf-oth-044"
+            }
+          ],
+          "evidence_refs": []
+        }
+      ],
+      "source_hypothesis_id": "hyp-0002",
+      "source_verification_ref": {
+        "stored_data_id": "data-ver-0002",
+        "data_kind": "verification_result",
+        "content_hash": "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-ver-0002"
+      },
+      "technical_review_ref": null,
+      "admission_decision_ref": null,
+      "evidence_refs": [
+        {
+          "stored_data_id": "data-ctx-0002",
+          "data_kind": "code_context_response",
+          "content_hash": "293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-ctx-0002"
+        }
+      ],
+      "description": "클라우드 메타데이터 endpoint의 응답을 읽어내려면 채워져야 하는 조건 묶음. 검증이 HOLD로 끝났다."
+    },
+    {
+      "meta": {
+        "record_id": "rec-prim-000C",
+        "logical_record_id": "lrec-prim-000C",
+        "record_type": "primitive",
+        "schema_version": "1.0.0",
+        "analysis_id": "an-0003",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "hypothesis_id": "hyp-0005",
+        "attempt_id": null,
+        "revision_number": 1,
+        "previous_record_id": null,
+        "created_at": "2026-09-09T05:12:30Z"
+      },
+      "primitive_id": "prim-000C",
+      "workspace_id": "ws-003",
+      "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+      "inputs": [
+        {
+          "draft_id": "d-c-1",
+          "entity_refs": [
+            {
+              "symbol_id": "sym-preview-route",
+              "symbol_kind": "CALLABLE",
+              "native_kind": "decorator",
+              "name": "preview_route",
+              "location": {
+                "workspace_id": "ws-003",
+                "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+                "file_path": "app/preview.py",
+                "start_line": 12,
+                "start_column": 1,
+                "end_line": 19,
+                "end_column": 1
+              }
+            }
+          ],
+          "privilege_level": null,
+          "evidence_refs": [
+            {
+              "stored_data_id": "data-ctx-0005",
+              "data_kind": "code_context_response",
+              "content_hash": "e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4",
+              "workspace_id": "ws-003",
+              "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+              "record_id": "rec-ctx-0005"
+            }
+          ],
+          "description": "미리보기 렌더 경로가 요청 처리 중에 호출되어야 한다."
+        }
+      ],
+      "result": {
+        "draft_id": "d-c-r",
+        "entity_refs": [
+          {
+            "symbol_id": "sym-render-preview",
+            "symbol_kind": "CALLABLE",
+            "native_kind": "function",
+            "name": "render_preview",
+            "location": {
+              "workspace_id": "ws-003",
+              "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+              "file_path": "app/preview.py",
+              "start_line": 58,
+              "start_column": 1,
+              "end_line": 71,
+              "end_column": 1
+            }
+          }
+        ],
+        "privilege_level": null,
+        "evidence_refs": [
+          {
+            "stored_data_id": "data-poc-0005",
+            "data_kind": "poc_bundle",
+            "content_hash": "f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+            "workspace_id": "ws-003",
+            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+            "record_id": "rec-poc-0005"
+          }
+        ],
+        "description": "app/preview.py의 render_preview가 상류 HTTP 응답 본문을 응답에 그대로 실어 보낸다."
+      },
+      "restrictions": [
+        {
+          "restriction_id": "res-C1",
+          "statement": "미리보기 응답은 Content-Type을 text/plain으로 고정해 반환한다.",
+          "fact_refs": [
+            {
+              "bundle_ref": {
+                "stored_data_id": "data-sfb-0003",
+                "data_kind": "static_fact_bundle",
+                "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                "workspace_id": "ws-003",
+                "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+                "record_id": "rec-sfb-0003"
+              },
+              "fact_id": "cf-val-021"
+            }
+          ],
+          "evidence_refs": []
+        }
+      ],
+      "source_hypothesis_id": "hyp-0005",
+      "source_verification_ref": {
+        "stored_data_id": "data-ver-0005",
+        "data_kind": "verification_result",
+        "content_hash": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-ver-0005"
+      },
+      "technical_review_ref": {
+        "stored_data_id": "data-tgr-0005",
+        "data_kind": "technical_evidence_review",
+        "content_hash": "18293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-tgr-0005"
+      },
+      "admission_decision_ref": {
+        "stored_data_id": "data-adm-0005",
+        "data_kind": "primitive_admission_decision",
+        "content_hash": "8293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-adm-0005"
+      },
+      "evidence_refs": [
+        {
+          "stored_data_id": "data-poc-0005",
+          "data_kind": "poc_bundle",
+          "content_hash": "f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-poc-0005"
+        }
+      ],
+      "description": "app/preview.py의 render_preview가 상류 응답 본문을 호출자에게 그대로 돌려주게 만들 수 있다."
+    }
+  ],
+  "lineage_hypotheses": [
+    {
+      "meta": {
+        "record_id": "rec-hyp-0001",
+        "logical_record_id": "lrec-hyp-0001",
+        "record_type": "vulnerability_hypothesis",
+        "schema_version": "1.0.0",
+        "analysis_id": "an-0003",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "hypothesis_id": "hyp-0001",
+        "attempt_id": null,
+        "revision_number": 1,
+        "previous_record_id": null,
+        "created_at": "2026-09-09T05:12:30Z"
+      },
+      "origin": "INITIAL",
+      "parent_hypothesis_ids": [],
+      "source_primitive_match_id": null
+    },
+    {
+      "meta": {
+        "record_id": "rec-hyp-0002",
+        "logical_record_id": "lrec-hyp-0002",
+        "record_type": "vulnerability_hypothesis",
+        "schema_version": "1.0.0",
+        "analysis_id": "an-0003",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "hypothesis_id": "hyp-0002",
+        "attempt_id": null,
+        "revision_number": 1,
+        "previous_record_id": null,
+        "created_at": "2026-09-09T04:40:00Z"
+      },
+      "origin": "INITIAL",
+      "parent_hypothesis_ids": [],
+      "source_primitive_match_id": null
+    },
+    {
+      "meta": {
+        "record_id": "rec-hyp-0005",
+        "logical_record_id": "lrec-hyp-0005",
+        "record_type": "vulnerability_hypothesis",
+        "schema_version": "1.0.0",
+        "analysis_id": "an-0003",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "hypothesis_id": "hyp-0005",
+        "attempt_id": null,
+        "revision_number": 1,
+        "previous_record_id": null,
+        "created_at": "2026-09-09T05:12:30Z"
+      },
+      "origin": "INITIAL",
+      "parent_hypothesis_ids": [],
+      "source_primitive_match_id": null
+    }
+  ],
+  "lineage_results": []
+}

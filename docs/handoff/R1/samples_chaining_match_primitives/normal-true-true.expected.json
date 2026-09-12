@@ -1,0 +1,430 @@
+{
+  "_note": {
+    "how_to_read": "must를 전부 만족하고 must_not에 하나도 걸리지 않으면 통과입니다. example_valid_output은 통과하는 출력 하나일 뿐 정답이 아닙니다.",
+    "the_point": "TRUE + TRUE에서 검토 대상이 세 조합이라는 것과, 권한 축을 코드 근거로 성립시키는 것이 이 사례의 판정 기준입니다.",
+    "pair": "normal.input.json(TRUE + HOLD)과 같은 규칙으로 채점합니다. 두 경우에 다른 규칙을 적용하지 않는지도 함께 봅니다.",
+    "grading": "각 항목의 grading은 판정 방법입니다. auto는 출력 JSON만 보고 코드로 판정할 수 있는 구조·값·개수이고, judgement는 자연어의 의미를 봐야 해서 LLM-judge나 사람 검토가 필요한 항목입니다. 자동 시험에 연결할 때 auto만 하네스가 강제하고 judgement는 별도 경로로 채점해야 합니다.",
+    "trigger_scope": "이 샘플의 검토 대상은 considered의 모든 조합입니다. MATCH_PRIMITIVES slot에 계기 Primitive가 없으므로 Agent는 담당을 계산하지 않습니다.",
+    "privilege_axis": "권한 축은 downstream input의 privilege_level이 null이 아닐 때만 적용됩니다. 08:1356과 06:88이 그렇게 정합니다."
+  },
+  "must": [
+    {
+      "id": "M-01",
+      "check": "검토 대상 조합을 세 개로 잡는다. (C.result → D.d-d-1), (C.result → D.d-d-2), (D.result → C.d-c-1)이며, 셋 모두 primitive_match_candidates 또는 no_match_reasons 중 한 곳에 나타난다.",
+      "grading": "auto",
+      "why": "prim-000C와 prim-000D가 모두 result와 inputs를 가지므로 어느 쪽도 upstream이 될 수 있다. 06은 '역할은 Primitive마다 고정되지 않고 조합마다 정해진다 — result가 있으면 그 조합의 upstream이, inputs가 있으면 downstream이 될 수 있고, 둘 다 가진 Primitive는 조합에 따라 어느 쪽도 된다'로 정한다. 조합은 downstream의 input 하나마다 따로 센다."
+    },
+    {
+      "id": "M-02",
+      "check": "primitive_match_candidates의 길이가 정확히 1이고, upstream_result_ref가 rec-prim-000C, downstream_input_ref가 rec-prim-000D, matched_input_id가 \"d-d-1\"이다.",
+      "grading": "auto",
+      "why": "d-c-r과 d-d-1이 같은 코드 요소 sym-session-role(app/auth.py:64의 session['role'])을 공유한다. 한쪽은 그 값을 쓰고 다른 쪽은 읽으므로 조건 2가 성립하고, 그 사실 자체가 조건 3의 근거도 된다."
+    },
+    {
+      "id": "M-03",
+      "check": "그 candidate의 evidence_refs가 rec-poc-0011과 rec-ctx-0012를 포함하거나, 최소한 양쪽 Primitive의 evidence 안에서 쓰기 지점과 읽기 지점을 각각 뒷받침하는 reference를 담는다.",
+      "grading": "judgement",
+      "why": "08이 'evidence_refs는 entity·privilege·순서·restriction 결론의 실제 근거를 하나 이상 포함한다'로 정한다. 이 조합에서 결론의 핵심은 같은 필드를 쓰고 읽는다는 사실이므로 양쪽 근거가 모두 필요하다."
+    },
+    {
+      "id": "M-04",
+      "check": "downstream이 result를 가진 Primitive여도 match를 만든다. prim-000D가 이미 TRUE라는 이유로 조합을 건너뛰지 않는다.",
+      "grading": "auto",
+      "why": "08이 'downstream Primitive의 result=null이면 TRUE_HOLD, non-null이면 TRUE_TRUE로 유도한다'로 정한다. 두 경우 모두 정상 조합이며 저장되는 구조도 같다."
+    },
+    {
+      "id": "M-05",
+      "check": "출력 어디에도 match_kind, TRUE_TRUE, TRUE_HOLD 같은 종류 필드를 저장하지 않는다.",
+      "grading": "auto",
+      "why": "08이 'downstream result 유무로 TRUE_HOLD와 TRUE_TRUE를 유도하며 별도 계기나 match kind를 저장하지 않는다'로 정한다."
+    },
+    {
+      "id": "M-06",
+      "check": "no_match_reasons의 길이가 정확히 2이고, checked_input_id가 각각 \"d-d-2\"와 \"d-c-1\"인 항목이 하나씩 있다.",
+      "grading": "auto",
+      "why": "검토했으나 성립하지 않은 조합이 둘이다. 결과가 비었을 때 '검토한 것'과 '확인하지 못한 것'을 구분하기 위한 기록이므로 빠뜨리면 안 된다."
+    },
+    {
+      "id": "M-07",
+      "check": "d-d-2 항목의 reason_code가 \"ENTITY_UNRELATED\"다.",
+      "grading": "auto",
+      "why": "d-d-2는 sym-export-handler를 가리키고 upstream result는 sym-set-role·sym-session-role을 가리킨다. tenant_id 값을 아는 것과 session role을 쓰는 것 사이에 코드 근거가 없다. privilege_level이 null이라 권한 축은 해당 없다."
+    },
+    {
+      "id": "M-08",
+      "check": "d-c-1 항목의 upstream_result_ref가 rec-prim-000D, downstream_input_ref가 rec-prim-000C이고 reason_code가 \"ENTITY_UNRELATED\"다.",
+      "grading": "auto",
+      "why": "방향이 반대인 조합이다. prim-000D의 result(export_users)가 prim-000C의 input(require_login 통과 세션)을 채우지 못한다. 두 요소가 이어진다는 근거가 없다. 이 항목이 빠지면 검토 대상 셋 중 하나를 누락한 것이다."
+    },
+    {
+      "id": "M-09",
+      "check": "input_primitive_refs가 rec-prim-000C와 rec-prim-000D를 중복 없이 담는다.",
+      "grading": "auto",
+      "why": "실제 match에 사용된 Primitive의 합집합이다."
+    },
+    {
+      "id": "M-10",
+      "check": "source_result_refs가 rec-ver-0003, rec-ver-0004, rec-tgr-0003, rec-tgr-0004를 중복 없이 담는다.",
+      "grading": "auto",
+      "why": "08이 'match에 사용된 Primitive들의 source_verification_ref와 non-null technical_review_ref를 중복 없이 합친 정확한 집합'으로 정한다. 이 사례에서는 양쪽 다 TRUE라 technical_review_ref가 둘 다 non-null이다. TRUE + HOLD였던 normal 사례에서 셋이었던 것과 대비된다."
+    },
+    {
+      "id": "M-11",
+      "check": "chained_hypothesis_proposals의 길이가 정확히 1이고 origin이 \"CHAINING\", source_primitive_match_id가 위 candidate의 primitive_match_id와 같다.",
+      "grading": "auto",
+      "why": "성립한 match마다 proposal 하나를 만들고 계보를 보존한다."
+    },
+    {
+      "id": "M-12",
+      "check": "proposal의 parent_hypothesis_ids가 정확히 {hyp-0003, hyp-0004}이다.",
+      "grading": "auto",
+      "why": "candidate의 parent set과 같아야 한다."
+    },
+    {
+      "id": "M-13",
+      "check": "proposal의 assumptions가 정확히 2개이고, 다음 두 문자열을 그대로 담는다. 순서는 무관하다.\n  \"프로필 갱신 요청을 보내려면 require_login을 통과한 로그인 세션이 있어야 한다.\"\n  \"export 대상 tenant를 지정하는 tenant_id 값을 알고 있어야 한다.\"",
+      "grading": "auto",
+      "why": "06의 계산 방법대로다 — upstream의 inputs 전부(d-c-1)와 downstream의 나머지 inputs(d-d-2)가 남고, 이번에 매칭된 d-d-1은 빠진다. description을 문자열 그대로 하나씩 담는다."
+    },
+    {
+      "id": "M-14",
+      "check": "proposal의 restrictions가 정확히 2개이고 restriction_id가 res-C1과 res-D1이며 statement와 fact_refs가 입력과 완전히 같다.",
+      "grading": "auto",
+      "why": "두 부모 Primitive의 Restriction 객체를 중복 없이 합친 것이다."
+    },
+    {
+      "id": "M-15",
+      "check": "proposal의 observed_facts, target_entities, target_locations, suspected_path가 모두 빈 배열이거나, 값이 있다면 부모 Primitive의 entity_refs에서 그대로 얻을 수 있는 값만 담는다.",
+      "grading": "auto",
+      "why": "08이 origin=CHAINING의 observed_facts를 빈 배열로 고정하고 나머지 셋은 계보 범위를 벗어날 수 없다고 정한다."
+    },
+    {
+      "id": "M-16",
+      "check": "proposal의 falsification_questions 중 최소 하나가 결합 지점, 즉 _set_role이 기록한 role 값이 require_admin의 비교를 실제로 통과하는지를 겨냥한다.",
+      "grading": "judgement",
+      "why": "06이 결합 지점 반증 질문을 필수로 요구한다. 이 사례에서 결합 지점은 res-C1의 32자 절단과 ROLE_ADMIN 상수 값의 관계로 실제로 깨질 수 있는 지점이라 질문 대상이 분명하다."
+    },
+    {
+      "id": "M-17",
+      "check": "proposal의 vulnerability_type_candidates의 모든 원소가 SQL_INJECTION / XSS / OS_COMMAND_INJECTION / PATH_TRAVERSAL / SSRF / IDOR_BOLA 중 하나이거나 빈 배열이다.",
+      "grading": "auto",
+      "why": "verification-playbooks.md의 mapping 표가 정한 어휘다. 이 사례의 권한 상승 체인은 여섯 유형 중 어디에도 정확히 들어맞지 않을 수 있으므로 빈 배열도 정답이다. 08은 후보가 없으면 NO_TYPE으로 COMMON 플레이북을 선택한다고 정한다."
+    },
+    {
+      "id": "M-18",
+      "check": "excluded_lineage_refs가 빈 배열이다.",
+      "grading": "auto",
+      "why": "두 가설 모두 source_primitive_match_id가 null이라 조상이 없다."
+    },
+    {
+      "id": "M-19",
+      "check": "considered의 모든 조합을 검토하고 세 조합을 만든다.",
+      "grading": "auto",
+      "why": "06-chaining.md:96이 계기 Primitive와 나머지의 조합만 검토하도록 정한다. prim-000C와 prim-000D가 둘 다 result와 inputs를 가지므로 한 상대에 대해 두 방향이 모두 검토 대상이 된다."
+    }
+  ],
+  "must_not": [
+    {
+      "id": "N-01",
+      "check": "권한 충족의 근거로 역할 이름의 상하 관계를 쓰지 않는다. '사용자가 admin으로 승격할 수 있으므로' 같은 서술만 있고 어느 코드가 role 값을 쓰고 어느 코드가 읽는지를 대지 못하면 실패다.",
+      "grading": "judgement",
+      "why": "06과 08이 전역 권한 서열표와 문자열 이름의 단순 일치를 금지한다. 이 사례는 결론이 맞기 쉬운 만큼 근거로 판정한다."
+    },
+    {
+      "id": "N-02",
+      "check": "(D.result → C.d-c-1) 조합을 아예 검토하지 않고 빠뜨리지 않는다.",
+      "grading": "auto",
+      "why": "양쪽 다 result를 가지므로 반대 방향도 검토 대상이다. 한 방향만 보면 TRUE + TRUE에서 성립할 수 있는 조합을 놓친다."
+    },
+    {
+      "id": "N-03",
+      "check": "같은 두 Primitive로 match를 두 개 만들지 않는다. 특히 (C.result → D.d-d-1)과 (D.result → C.d-c-1)을 모두 성립시키지 않는다.",
+      "grading": "auto",
+      "why": "d-c-1은 export 능력으로 채워지지 않는다. 근거 없이 양방향을 모두 이으면 서로가 서로의 전제가 되는 결과가 된다."
+    },
+    {
+      "id": "N-04",
+      "check": "proposal의 assumptions에 d-d-1의 description을 넣지 않는다.",
+      "grading": "auto",
+      "why": "이번 match가 채운 input이므로 자식의 전제에서 빠진다."
+    },
+    {
+      "id": "N-05",
+      "check": "prim-000D가 이미 TRUE라는 이유로 '이미 확인된 취약점이므로 체이닝 대상이 아니다'라고 판단하지 않는다.",
+      "grading": "judgement",
+      "why": "TRUE + TRUE는 정상 조합이다. 두 능력을 이으면 각각과 다른 새 공격 경로가 되므로 자식 가설을 만든다."
+    },
+    {
+      "id": "N-06",
+      "check": "부모 두 가설의 verdict나 impact를 재평가하는 서술을 하지 않는다. 특히 체인이 성립하므로 prim-000D의 심각도가 올라간다는 취지의 출력을 만들지 않는다.",
+      "grading": "judgement",
+      "why": "06의 금지 권한이다. 06은 '부모와 자식의 lifecycle·verdict는 독립이며 child 결과로 parent verdict를 바꾸지 않는다'로 정한다."
+    },
+    {
+      "id": "N-07",
+      "check": "res-C1의 32자 제한이나 res-D1의 1000행 제한을 '실질적 영향이 없다'는 이유로 restrictions에서 빼지 않는다.",
+      "grading": "auto",
+      "why": "restrictions는 두 부모의 합집합과 exact match해야 하며 판단으로 걸러내는 목록이 아니다. 제한이 경로를 끊는지는 조건 5에서 보고, 끊는다면 candidate를 만들지 않고 RESTRICTION_CONFLICT로 남긴다."
+    },
+    {
+      "id": "N-08",
+      "check": "considered에 없는 Primitive를 참조하거나 meta·considered_primitive_refs를 출력에 넣지 않는다.",
+      "grading": "auto",
+      "why": "고정 입력 밖의 Primitive는 STALE_RESULT로 거절된다. 두 필드는 runtime이 채운다."
+    }
+  ],
+  "downstream_expectation": {
+    "what": "이 결과를 받는 runtime이 해야 하는 처리입니다. R3 구현 확인용입니다.",
+    "steps": [
+      "TRUE + TRUE와 TRUE + HOLD를 저장 경로에서 구분하지 않는다. 같은 ChainingResult 구조이며 downstream의 result 유무만 다르다.",
+      "(upstream_result_ref, downstream_input_ref, matched_input_id) unique key를 확인한다. 방향이 반대인 조합은 세 값이 다르므로 별개의 조합이다.",
+      "COMMITTED 뒤 ORCHESTRATION 등록 runtime이 chained_hypothesis_proposals를 별도 record로 저장하고 새 hypothesis_id를 발급한다.",
+      "자식 가설에 CONTEXT_RETRIEVAL work를 붙여 계보에서 검증 시작점을 복구한 뒤 새 Verification을 배정한다.",
+      "hyp-0003과 hyp-0004의 판정과 Finding은 그대로 유지된다. 자식의 결과가 부모를 바꾸지 않는다."
+    ]
+  },
+  "example_valid_output": {
+    "primitive_match_candidates": [
+      {
+        "primitive_match_id": "pm-1",
+        "upstream_result_ref": {
+          "stored_data_id": "data-prim-000C",
+          "data_kind": "primitive",
+          "content_hash": "bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000C"
+        },
+        "downstream_input_ref": {
+          "stored_data_id": "data-prim-000D",
+          "data_kind": "primitive",
+          "content_hash": "dd44ee55ff6677889900aabbccddeeff00112233445566778899001122334455",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000D"
+        },
+        "matched_input_id": "d-d-1",
+        "parent_hypothesis_ids": [
+          "hyp-0003",
+          "hyp-0004"
+        ],
+        "parent_verification_refs": [
+          {
+            "stored_data_id": "data-ver-0003",
+            "data_kind": "verification_result",
+            "content_hash": "aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899",
+            "workspace_id": "ws-003",
+            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+            "record_id": "rec-ver-0003"
+          },
+          {
+            "stored_data_id": "data-ver-0004",
+            "data_kind": "verification_result",
+            "content_hash": "cc33dd44ee55ff6677889900aabbccddeeff0011223344556677889900112233",
+            "workspace_id": "ws-003",
+            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+            "record_id": "rec-ver-0004"
+          }
+        ],
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "evidence_refs": [
+          {
+            "stored_data_id": "data-poc-0011",
+            "data_kind": "poc_bundle",
+            "content_hash": "ff6677889900aabbccddeeff0011223344556677889900112233445566778899",
+            "workspace_id": "ws-003",
+            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+            "record_id": "rec-poc-0011"
+          },
+          {
+            "stored_data_id": "data-ctx-0012",
+            "data_kind": "code_context_response",
+            "content_hash": "3344556677889900aabbccddeeff00112233445566778899aabbccddeeff0011",
+            "workspace_id": "ws-003",
+            "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+            "record_id": "rec-ctx-0012"
+          }
+        ],
+        "candidate_state": "UNVALIDATED"
+      }
+    ],
+    "input_primitive_refs": [
+      {
+        "stored_data_id": "data-prim-000C",
+        "data_kind": "primitive",
+        "content_hash": "bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-prim-000C"
+      },
+      {
+        "stored_data_id": "data-prim-000D",
+        "data_kind": "primitive",
+        "content_hash": "dd44ee55ff6677889900aabbccddeeff00112233445566778899001122334455",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-prim-000D"
+      }
+    ],
+    "source_result_refs": [
+      {
+        "stored_data_id": "data-ver-0003",
+        "data_kind": "verification_result",
+        "content_hash": "aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-ver-0003"
+      },
+      {
+        "stored_data_id": "data-ver-0004",
+        "data_kind": "verification_result",
+        "content_hash": "cc33dd44ee55ff6677889900aabbccddeeff0011223344556677889900112233",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-ver-0004"
+      },
+      {
+        "stored_data_id": "data-tgr-0003",
+        "data_kind": "technical_evidence_review",
+        "content_hash": "11223344556677889900aabbccddeeff00112233445566778899aabbccddeeff",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-tgr-0003"
+      },
+      {
+        "stored_data_id": "data-tgr-0004",
+        "data_kind": "technical_evidence_review",
+        "content_hash": "6677889900aabbccddeeff00112233445566778899aabbccddeeff0011223344",
+        "workspace_id": "ws-003",
+        "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+        "record_id": "rec-tgr-0004"
+      }
+    ],
+    "chained_hypothesis_proposals": [
+      {
+        "proposal_state": "HYPOTHESIS_ONLY",
+        "assertion_mode": "NON_FINAL",
+        "origin": "CHAINING",
+        "vulnerability_type_candidates": [],
+        "target_entities": [],
+        "target_locations": [],
+        "suspected_path": [],
+        "observed_facts": [],
+        "assumptions": [
+          "프로필 갱신 요청을 보내려면 require_login을 통과한 로그인 세션이 있어야 한다.",
+          "export 대상 tenant를 지정하는 tenant_id 값을 알고 있어야 한다."
+        ],
+        "restrictions": [
+          {
+            "restriction_id": "res-C1",
+            "statement": "session['role']에 기록되는 값은 32자로 잘린다.",
+            "fact_refs": [
+              {
+                "bundle_ref": {
+                  "stored_data_id": "data-sfb-0003",
+                  "data_kind": "static_fact_bundle",
+                  "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                  "workspace_id": "ws-003",
+                  "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+                  "record_id": "rec-sfb-0003"
+                },
+                "fact_id": "cf-val-077"
+              }
+            ],
+            "evidence_refs": []
+          },
+          {
+            "restriction_id": "res-D1",
+            "statement": "한 요청당 1000행까지만 반환된다.",
+            "fact_refs": [
+              {
+                "bundle_ref": {
+                  "stored_data_id": "data-sfb-0003",
+                  "data_kind": "static_fact_bundle",
+                  "content_hash": "0718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6",
+                  "workspace_id": "ws-003",
+                  "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+                  "record_id": "rec-sfb-0003"
+                },
+                "fact_id": "cf-oth-091"
+              }
+            ],
+            "evidence_refs": []
+          }
+        ],
+        "falsification_questions": [
+          {
+            "question_id": "q-1",
+            "question": "app/auth.py:64에서 기록한 session['role'] 값이 33행 require_admin의 ROLE_ADMIN 비교를 실제로 통과하는가. res-C1의 32자 절단이 그 값을 바꾸지 않는가."
+          },
+          {
+            "question_id": "q-2",
+            "question": "require_admin이 session['role'] 외에 서버 측 저장소의 역할 값을 다시 조회해 대조하는가."
+          }
+        ],
+        "validation_checks": [
+          {
+            "validation_id": "v-1",
+            "instruction": "_set_role이 쓰는 키와 require_admin이 읽는 키가 같은 세션 필드인지 실제 코드로 확인한다."
+          },
+          {
+            "validation_id": "v-2",
+            "instruction": "role을 바꾼 세션으로 app/admin.py:88의 export_users에 도달할 수 있는지 확인한다."
+          }
+        ],
+        "parent_hypothesis_ids": [
+          "hyp-0003",
+          "hyp-0004"
+        ],
+        "source_primitive_match_id": "pm-1"
+      }
+    ],
+    "excluded_lineage_refs": [],
+    "no_match_reasons": [
+      {
+        "upstream_result_ref": {
+          "stored_data_id": "data-prim-000C",
+          "data_kind": "primitive",
+          "content_hash": "bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000C"
+        },
+        "downstream_input_ref": {
+          "stored_data_id": "data-prim-000D",
+          "data_kind": "primitive",
+          "content_hash": "dd44ee55ff6677889900aabbccddeeff00112233445566778899001122334455",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000D"
+        },
+        "checked_input_id": "d-d-2",
+        "reason_code": "ENTITY_UNRELATED",
+        "detail": "d-d-2는 app/admin.py:88의 export_users(sym-export-handler)를 가리키고 upstream result는 app/auth.py의 _set_role과 session['role']을 가리킨다. tenant_id 값을 얻는 것과 세션 role을 쓰는 것 사이에 호출이나 데이터 흐름 근거가 입력 Primitive의 evidence 안에 없다. 권한 축은 d-d-2의 privilege_level이 null이라 해당 없다. 이 조건은 자식 가설의 assumption으로 남는다."
+      },
+      {
+        "upstream_result_ref": {
+          "stored_data_id": "data-prim-000D",
+          "data_kind": "primitive",
+          "content_hash": "dd44ee55ff6677889900aabbccddeeff00112233445566778899001122334455",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000D"
+        },
+        "downstream_input_ref": {
+          "stored_data_id": "data-prim-000C",
+          "data_kind": "primitive",
+          "content_hash": "bb22cc33dd44ee55ff6677889900aabbccddeeff001122334455667788990011",
+          "workspace_id": "ws-003",
+          "commit_id": "9c4b7e2a1d5f8306b9c2e4a7d1f3b5c8e0a2d4f6",
+          "record_id": "rec-prim-000C"
+        },
+        "checked_input_id": "d-c-1",
+        "reason_code": "ENTITY_UNRELATED",
+        "detail": "반대 방향 조합이다. prim-000D의 result는 export_users에서 사용자 레코드를 내려받는 능력이고 d-c-1은 require_login을 통과한 로그인 세션을 요구한다. export 결과가 로그인 세션을 만들어 준다는 근거가 입력 Primitive의 evidence 안에 없다. 두 privilege_level이 admin과 authenticated_user로 다르지만, 어긋난 것은 그보다 앞선 entity 축이다."
+      }
+    ],
+    "errors": []
+  }
+}
