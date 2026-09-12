@@ -35,7 +35,7 @@ from sastsimi.contracts.llm import (
     ProviderValidationEvidence,
     SemanticValidatorSpec,
 )
-from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.ports.dto import CapabilityProbeResult
@@ -44,14 +44,14 @@ from sastsimi.ports.dto import CapabilityProbeResult
 class ConfigurationRegistryPort(Protocol):
     def register_capability_approval(
         self, record: CapabilityApprovalEvidence
-    ) -> StoredDataRef: ...
+    ) -> HostConfigurationRef: ...
 
     def register_runtime_capability(
         self, record: RuntimeCapabilityProfile
-    ) -> StoredDataRef: ...
+    ) -> HostConfigurationRef: ...
 
     def get_runtime_capability(
-        self, profile_ref: StoredDataRef
+        self, profile_ref: HostConfigurationRef
     ) -> RuntimeCapabilityProfile: ...
 
     def resolve_active_capability(
@@ -66,14 +66,14 @@ class ConfigurationRegistryPort(Protocol):
 
     def register_production_static_tool_profile(
         self, record: StaticToolProfile
-    ) -> StoredDataRef: ...
+    ) -> HostConfigurationRef: ...
 
     def get_production_static_tool_profile(
-        self, profile_ref: StoredDataRef
+        self, profile_ref: HostConfigurationRef
     ) -> StaticToolProfile: ...
 
     def resolve_production_static_tool_profile(
-        self, profile_ref: StoredDataRef
+        self, profile_ref: HostConfigurationRef
     ) -> StaticToolProfile: ...
 
     def resolve_active_static_tool(

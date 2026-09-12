@@ -33,7 +33,7 @@ from sastsimi.contracts.llm import (
     ProviderValidationEvidence,
     SemanticValidatorSpec,
 )
-from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.ports.configuration_registry import ConfigurationRegistryPort
@@ -46,16 +46,16 @@ class ConfigurationRegistry:
 
     def register_capability_approval(
         self, record: CapabilityApprovalEvidence
-    ) -> StoredDataRef:
+    ) -> HostConfigurationRef:
         return self.registry.register_capability_approval(record)
 
     def register_runtime_capability(
         self, record: RuntimeCapabilityProfile
-    ) -> StoredDataRef:
+    ) -> HostConfigurationRef:
         return self.registry.register_runtime_capability(record)
 
     def get_runtime_capability(
-        self, profile_ref: StoredDataRef
+        self, profile_ref: HostConfigurationRef
     ) -> RuntimeCapabilityProfile:
         return self.registry.get_runtime_capability(profile_ref)
 
@@ -78,16 +78,16 @@ class ConfigurationRegistry:
 
     def register_production_static_tool_profile(
         self, record: StaticToolProfile
-    ) -> StoredDataRef:
+    ) -> HostConfigurationRef:
         return self.registry.register_production_static_tool_profile(record)
 
     def get_production_static_tool_profile(
-        self, profile_ref: StoredDataRef
+        self, profile_ref: HostConfigurationRef
     ) -> StaticToolProfile:
         return self.registry.get_production_static_tool_profile(profile_ref)
 
     def resolve_production_static_tool_profile(
-        self, profile_ref: StoredDataRef
+        self, profile_ref: HostConfigurationRef
     ) -> StaticToolProfile:
         return self.registry.resolve_production_static_tool_profile(profile_ref)
 

@@ -317,6 +317,12 @@
       "title": "Decision",
       "type": "string"
     },
+    "host_id": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Host Id",
+      "type": "string"
+    },
     "languages": {
       "items": {
         "$ref": "#/$defs/CapabilityLanguage"
@@ -393,6 +399,7 @@
   },
   "required": [
     "meta",
+    "host_id",
     "profile_key",
     "capability_kind",
     "subject_key",

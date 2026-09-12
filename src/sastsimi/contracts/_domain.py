@@ -10,6 +10,7 @@ from .base import ContractModel, NonEmptyStr
 from .canonical_json import canonical_bytes, content_hash
 from .records import RecordMeta, RunMeta
 from .refs import (
+    HostConfigurationRef,
     PolicyCacheRef,
     RecordRef,
     RunStoredDataRef,
@@ -124,7 +125,7 @@ class DomainRecord(ContractModel):
                 raise ValueError("WORKSPACE_MISMATCH")
         for name, kind in REFERENCE_KINDS.items():
             ref = getattr(self, name, None)
-            if isinstance(ref, StoredDataRef) and (
+            if isinstance(ref, (StoredDataRef, HostConfigurationRef)) and (
                 ref.record_id is None or ref.data_kind != kind
             ):
                 raise ValueError("REFERENCE_KIND_MISMATCH")
@@ -143,7 +144,15 @@ class DomainRecord(ContractModel):
             )
         )
         for item in walk(values):
-            if isinstance(item, (StoredDataRef, RunStoredDataRef, PolicyCacheRef)):
+            if isinstance(
+                item,
+                (
+                    StoredDataRef,
+                    RunStoredDataRef,
+                    HostConfigurationRef,
+                    PolicyCacheRef,
+                ),
+            ):
                 validate_ref_scope(item, self.meta)
             elif isinstance(item, RecordMeta):
                 if (item.analysis_id, item.workspace_id, item.commit_id) != (

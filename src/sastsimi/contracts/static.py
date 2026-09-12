@@ -12,7 +12,7 @@ from .base import ContractModel, NonEmptyStr, NonNegativeInt, PositiveInt, Sha25
 from .closure import validate_committed_output
 from .ids import AnalysisId, AttemptId, CommitId, ErrorId, GapId, WorkId, WorkspaceId
 from .records import RunMeta
-from .refs import StoredDataRef, require_record_ref
+from .refs import HostConfigurationRef, StoredDataRef, require_record_ref
 from .work import (
     TransitionCommit,
     WorkAttempt,
@@ -41,6 +41,7 @@ class StaticToolProfile(DomainRecord):
     KIND = "static_tool_profile"
     HYPOTHESIS = False
     ATTEMPT = False
+    host_id: NonEmptyStr | None = None
     profile_key: NonEmptyStr
     purpose: Literal["FIXTURE", "EVALUATION", "PRODUCTION"]
     status: Literal["DRAFT", "APPROVED", "ACTIVE", "RETIRED"]
@@ -50,7 +51,7 @@ class StaticToolProfile(DomainRecord):
     executable_key: NonEmptyStr
     executable_sha256: Sha256
     expected_version: NonEmptyStr
-    capability_evidence_ref: StoredDataRef | None
+    capability_evidence_ref: HostConfigurationRef | None
     probe_timeout_ms: PositiveInt
     run_timeout_ms: PositiveInt
     stdout_limit_bytes: PositiveInt
@@ -69,11 +70,31 @@ class StaticToolProfile(DomainRecord):
         if (self.adapter_key, self.tool_name, self.tool_kind) not in valid:
             raise ValueError("STATIC_TOOL_PROFILE_TUPLE_MISMATCH")
         if self.status == "ACTIVE":
-            if self.purpose != "PRODUCTION" or self.capability_evidence_ref is None:
+            if (
+                self.purpose != "PRODUCTION"
+                or self.host_id is None
+                or self.capability_evidence_ref is None
+                or self.capability_evidence_ref.host_id != self.host_id
+            ):
                 raise ValueError("STATIC_TOOL_PROFILE_ACTIVATION_INVALID")
         elif self.status == "APPROVED":
-            if self.purpose not in {"FIXTURE", "EVALUATION"}:
+            if (
+                self.purpose not in {"FIXTURE", "EVALUATION"}
+                or self.host_id is not None
+                or self.capability_evidence_ref is not None
+            ):
                 raise ValueError("STATIC_TOOL_PROFILE_APPROVAL_INVALID")
+        elif self.status == "RETIRED" and (
+            self.purpose != "PRODUCTION"
+            or self.host_id is None
+            or self.capability_evidence_ref is None
+            or self.capability_evidence_ref.host_id != self.host_id
+        ):
+            raise ValueError("STATIC_TOOL_PROFILE_RETIREMENT_INVALID")
+        elif self.status == "DRAFT" and (
+            self.host_id is not None or self.capability_evidence_ref is not None
+        ):
+            raise ValueError("STATIC_TOOL_PROFILE_DRAFT_INVALID")
         return self
 
 

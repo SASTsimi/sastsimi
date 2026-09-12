@@ -12,6 +12,7 @@ from sastsimi.contracts.capabilities import (
     CapabilityApprovalEvidence,
     CapabilityControlEvidence,
     RuntimeCapabilityProfile,
+    RuntimeCapabilitySelection,
     capability_target_hash,
 )
 from sastsimi.contracts.ids import (
@@ -23,8 +24,14 @@ from sastsimi.contracts.ids import (
     WorkspaceId,
 )
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 from sastsimi.contracts.static import StaticToolProfile
+from sastsimi.contracts.work import (
+    SubjectType,
+    WorkExecutionState,
+    WorkStatus,
+    WorkType,
+)
 from sastsimi.ports.capability_registry import ProductionCapabilityResolverPort
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.storage.database import Database
@@ -35,13 +42,15 @@ from tests.integration.trusted_fixture import FixtureEvidence
 NOW = datetime(2026, 9, 12, tzinfo=UTC)
 
 
-def _placeholder_ref() -> StoredDataRef:
-    return StoredDataRef(
+def _placeholder_ref(host_id: str = "host-a") -> HostConfigurationRef:
+    return HostConfigurationRef(
         stored_data_id=StoredDataId("approval-placeholder"),
         data_kind="tool_capability_evidence",
         content_hash="a" * 64,
-        workspace_id=WorkspaceId("ws1"),
-        commit_id=CommitId("c1"),
+        host_id=host_id,
+        publication_analysis_id=AnalysisId("capability-run"),
+        publication_workspace_id=WorkspaceId("ws1"),
+        publication_commit_id=CommitId("c1"),
         record_id=RecordId("approval-placeholder"),
     )
 
@@ -92,9 +101,10 @@ def _runtime_profile(
     logical_id: str = "python-package",
     revision: int = 1,
     previous: str | None = None,
-    evidence_ref: StoredDataRef | None = None,
+    evidence_ref: HostConfigurationRef | None = None,
     subject_key: str = "python",
     expected_version: str = "3.12.6",
+    host_id: str = "host-a",
 ) -> RuntimeCapabilityProfile:
     return RuntimeCapabilityProfile.model_validate(
         {
@@ -106,6 +116,7 @@ def _runtime_profile(
                 previous=previous,
             ),
             "profile_key": key,
+            "host_id": host_id,
             "purpose": "PRODUCTION",
             "status": status,
             "capability_kind": kind,
@@ -116,7 +127,7 @@ def _runtime_profile(
             "architecture": "x86_64",
             "languages": languages,
             "operations": operations,
-            "capability_evidence_ref": evidence_ref or _placeholder_ref(),
+            "capability_evidence_ref": evidence_ref or _placeholder_ref(host_id),
         }
     )
 
@@ -149,11 +160,13 @@ def _approval(
     languages: tuple[str, ...] = ("PYTHON",),
     operations: tuple[str, ...] = ("PACKAGE_INSTALL",),
     security_control_evidence: tuple[CapabilityControlEvidence, ...] = (),
+    host_id: str = "host-a",
 ) -> CapabilityApprovalEvidence:
     return CapabilityApprovalEvidence.model_validate(
         {
             "meta": _meta("tool_capability_evidence", record_id),
             "profile_key": profile.profile_key,
+            "host_id": host_id,
             "capability_kind": capability_kind,
             "subject_key": (
                 profile.executable_key
@@ -192,8 +205,11 @@ def _approval(
 
 def _runtime(
     tmp_path: Path,
+    *,
+    host_id: str = "host-a",
+    evidence: CapabilityEvidence | None = None,
 ) -> tuple[RuntimeServices, CapabilityEvidence, StoredDataRef]:
-    evidence = CapabilityEvidence()
+    evidence = evidence or CapabilityEvidence()
     upgrade(Database(tmp_path / "db" / "sastsimi.sqlite3"))
     runtime = build_runtime(
         tmp_path,
@@ -202,6 +218,7 @@ def _runtime(
         TestClock(),
         TestIds(),
         evidence=evidence,
+        capability_host_id=host_id,
     )
     artifacts = runtime.unit_of_work.artifacts
     raw_ref = artifacts.commit(
@@ -314,6 +331,7 @@ def test_minimum_static_routes_are_representable(
         {
             "meta": _meta("static_tool_profile", f"{adapter_key}-v1"),
             "profile_key": f"{adapter_key}-production",
+            "host_id": "host-a",
             "purpose": "PRODUCTION",
             "status": "ACTIVE",
             "adapter_key": adapter_key,
@@ -358,6 +376,7 @@ def test_minimum_static_capability_can_be_activated_and_resolved(
         {
             "meta": _meta("static_tool_profile", f"{adapter_key}-active-v1"),
             "profile_key": f"{adapter_key}-active",
+            "host_id": "host-a",
             "purpose": "PRODUCTION",
             "status": "ACTIVE",
             "adapter_key": adapter_key,
@@ -395,9 +414,24 @@ def test_minimum_static_capability_can_be_activated_and_resolved(
         operating_system="windows",
         architecture="x86_64",
     )
+    work_a = _ready_static_work(
+        analysis_id=f"{adapter_key}-analysis-a",
+        workspace_id=f"{adapter_key}-workspace-a",
+        commit_id=f"{adapter_key}-commit-a",
+        profile_ref=selection.profile_ref,
+    )
+    work_b = _ready_static_work(
+        analysis_id=f"{adapter_key}-analysis-b",
+        workspace_id=f"{adapter_key}-workspace-b",
+        commit_id=f"{adapter_key}-commit-b",
+        profile_ref=selection.profile_ref,
+    )
 
     assert selection.profile_ref == profile_ref
     assert selection.evidence == approval
+    assert isinstance(profile_ref, HostConfigurationRef)
+    assert work_a.input_refs == work_b.input_refs == (profile_ref,)
+    assert runtime.unit_of_work.records.get_exact(profile_ref) == profile
 
 
 def test_forged_or_ambiguous_active_capability_fails_closed(tmp_path: Path) -> None:
@@ -455,6 +489,7 @@ def test_production_static_profile_requires_current_matching_evidence(
         {
             "meta": _meta("static_tool_profile", "ast-production-v1"),
             "profile_key": "ast-production",
+            "host_id": "host-a",
             "purpose": "PRODUCTION",
             "status": "ACTIVE",
             "adapter_key": "PYTHON_AST",
@@ -508,6 +543,7 @@ def test_static_retirement_is_exact_and_preserves_historical_revision(
         {
             "meta": _meta("static_tool_profile", "ast-production-v1"),
             "profile_key": "ast-production",
+            "host_id": "host-a",
             "purpose": "PRODUCTION",
             "status": "ACTIVE",
             "adapter_key": "PYTHON_AST",
@@ -684,8 +720,13 @@ def test_high_risk_capability_requires_exact_security_control_evidence() -> None
         languages=("ANY",),
         operations=("CLONE",),
     )
-    raw_ref = _placeholder_ref().model_copy(
-        update={"data_kind": "capability_probe_output", "record_id": None}
+    raw_ref = StoredDataRef(
+        stored_data_id=StoredDataId("probe-output"),
+        data_kind="capability_probe_output",
+        content_hash="e" * 64,
+        workspace_id=WorkspaceId("ws1"),
+        commit_id=CommitId("c1"),
+        record_id=None,
     )
     with pytest.raises(
         ValidationError, match="CAPABILITY_SECURITY_CONTROL_EVIDENCE_REQUIRED"
@@ -711,3 +752,233 @@ def test_high_risk_capability_requires_exact_security_control_evidence() -> None
         ),
     )
     assert approval.security_control_evidence[0].control == "SAFE_REPOSITORY_LOADER"
+
+
+def _ready_static_work(
+    *,
+    analysis_id: str,
+    workspace_id: str,
+    commit_id: str,
+    profile_ref: HostConfigurationRef,
+) -> WorkExecutionState:
+    transition_ref = StoredDataRef(
+        stored_data_id=StoredDataId(f"transition-{analysis_id}"),
+        data_kind="state_transition",
+        content_hash="3" * 64,
+        workspace_id=WorkspaceId(workspace_id),
+        commit_id=CommitId(commit_id),
+        record_id=RecordId(f"transition-{analysis_id}"),
+    )
+    return WorkExecutionState.model_validate(
+        {
+            "meta": {
+                "record_id": f"work-{analysis_id}",
+                "logical_record_id": f"work-{analysis_id}",
+                "record_type": "work_execution_state",
+                "schema_version": "1.0.0",
+                "revision_number": 1,
+                "previous_record_id": None,
+                "created_at": NOW,
+                "analysis_id": analysis_id,
+                "workspace_id": workspace_id,
+                "commit_id": commit_id,
+                "hypothesis_id": None,
+                "attempt_id": None,
+            },
+            "work_id": f"work-{analysis_id}",
+            "parent_work_ref": None,
+            "work_type": WorkType.STATIC_TOOL,
+            "subject_type": SubjectType.ANALYSIS,
+            "subject_id": analysis_id,
+            "work_generation": 1,
+            "status": WorkStatus.READY,
+            "state_version": 2,
+            "last_transition_ref": transition_ref,
+            "last_transition_commit_ref": None,
+            "active_attempt_id": None,
+            "input_hash": "1" * 64,
+            "dedupe_key": "2" * 64,
+            "trigger_primitive_ref": None,
+            "input_refs": (profile_ref,),
+            "output_refs": (),
+            "gap_ids": (),
+            "error_ids": (),
+            "waiting_for": (),
+            "stop_reason": None,
+            "started_at": None,
+            "finished_at": None,
+            "elapsed_ms": 0,
+        }
+    )
+
+
+def test_two_repository_works_pin_same_current_host_capability(tmp_path: Path) -> None:
+    runtime, evidence, raw_ref = _runtime(tmp_path)
+    draft = _runtime_profile()
+    approval = _approval(draft, raw_ref)
+    evidence.capability_approvals.add(content_hash(approval))
+    approval_ref = runtime.configuration.register_capability_approval(approval)
+    profile = draft.model_copy(update={"capability_evidence_ref": approval_ref})
+    expected_ref = runtime.configuration.register_runtime_capability(profile)
+
+    first = runtime.configuration.resolve_active_capability(
+        capability_kind="PACKAGE_MANAGER",
+        language="PYTHON",
+        operation="PACKAGE_INSTALL",
+        operating_system="windows",
+        architecture="x86_64",
+    )
+    second = runtime.configuration.resolve_active_capability(
+        capability_kind="PACKAGE_MANAGER",
+        language="PYTHON",
+        operation="PACKAGE_INSTALL",
+        operating_system="windows",
+        architecture="x86_64",
+    )
+    work_a = _ready_static_work(
+        analysis_id="analysis-a",
+        workspace_id="workspace-a",
+        commit_id="commit-a",
+        profile_ref=first.profile_ref,
+    )
+    work_b = _ready_static_work(
+        analysis_id="analysis-b",
+        workspace_id="workspace-b",
+        commit_id="commit-b",
+        profile_ref=second.profile_ref,
+    )
+
+    assert isinstance(expected_ref, HostConfigurationRef)
+    assert first.profile_ref == second.profile_ref == expected_ref
+    assert work_a.input_refs == work_b.input_refs == (expected_ref,)
+    assert WorkExecutionState.model_validate_json(
+        work_a.model_dump_json()
+    ).input_refs == (expected_ref,)
+    assert runtime.configuration.get_runtime_capability(expected_ref) == profile
+    assert runtime.unit_of_work.records.get_exact(expected_ref) == profile
+
+
+def test_cross_profile_forged_host_reference_is_rejected(tmp_path: Path) -> None:
+    runtime, evidence, raw_ref = _runtime(tmp_path)
+    package_draft = _runtime_profile()
+    package_approval = _approval(package_draft, raw_ref)
+    evidence.capability_approvals.add(content_hash(package_approval))
+    approval_ref = runtime.configuration.register_capability_approval(package_approval)
+    package_profile = package_draft.model_copy(
+        update={"capability_evidence_ref": approval_ref}
+    )
+    package_ref = runtime.configuration.register_runtime_capability(package_profile)
+
+    build_draft = _runtime_profile(
+        key="python-build",
+        kind="BUILD",
+        operations=("BUILD",),
+        record_id="python-build-v1",
+        logical_id="python-build",
+        subject_key="python-build",
+    )
+    build_approval = _approval(
+        build_draft,
+        raw_ref,
+        record_id="python-build-approval-v1",
+        capability_kind="BUILD",
+        operations=("BUILD",),
+    )
+    evidence.capability_approvals.add(content_hash(build_approval))
+    build_approval_ref = runtime.configuration.register_capability_approval(
+        build_approval
+    )
+    build_ref = runtime.configuration.register_runtime_capability(
+        build_draft.model_copy(update={"capability_evidence_ref": build_approval_ref})
+    )
+    forged = package_ref.model_copy(
+        update={
+            "record_id": build_ref.record_id,
+            "stored_data_id": build_ref.stored_data_id,
+        }
+    )
+
+    with pytest.raises(ValueError, match="RECORD_REVISION_MISMATCH"):
+        runtime.configuration.get_runtime_capability(forged)
+    with pytest.raises(ValidationError, match="CAPABILITY_SELECTION_REF_MISMATCH"):
+        RuntimeCapabilitySelection(profile_ref=build_ref, profile=package_profile)
+
+
+def test_host_b_resolver_cannot_select_host_a_profile(tmp_path: Path) -> None:
+    runtime_a, evidence, raw_ref = _runtime(tmp_path)
+    draft = _runtime_profile()
+    approval = _approval(draft, raw_ref)
+    evidence.capability_approvals.add(content_hash(approval))
+    approval_ref = runtime_a.configuration.register_capability_approval(approval)
+    profile_ref = runtime_a.configuration.register_runtime_capability(
+        draft.model_copy(update={"capability_evidence_ref": approval_ref})
+    )
+    runtime_b = build_runtime(
+        tmp_path,
+        WorkspaceId("ws1"),
+        CommitId("c1"),
+        TestClock(),
+        TestIds(),
+        evidence=evidence,
+        capability_host_id="host-b",
+    )
+
+    with pytest.raises(LookupError, match="CAPABILITY_ROUTE_NOT_ACTIVE"):
+        runtime_b.configuration.resolve_active_capability(
+            capability_kind="PACKAGE_MANAGER",
+            language="PYTHON",
+            operation="PACKAGE_INSTALL",
+            operating_system="windows",
+            architecture="x86_64",
+        )
+    with pytest.raises(ValueError, match="CAPABILITY_HOST_MISMATCH"):
+        runtime_b.configuration.get_runtime_capability(profile_ref)
+
+
+def test_same_route_isolated_by_trusted_host_binding(tmp_path: Path) -> None:
+    runtime_a, evidence, raw_ref = _runtime(tmp_path)
+    draft_a = _runtime_profile()
+    approval_a = _approval(draft_a, raw_ref)
+    evidence.capability_approvals.add(content_hash(approval_a))
+    approval_ref_a = runtime_a.configuration.register_capability_approval(approval_a)
+    profile_ref_a = runtime_a.configuration.register_runtime_capability(
+        draft_a.model_copy(update={"capability_evidence_ref": approval_ref_a})
+    )
+
+    runtime_b, _, raw_ref_b = _runtime(tmp_path, host_id="host-b", evidence=evidence)
+    draft_b = _runtime_profile(
+        host_id="host-b",
+        record_id="python-package-host-b-v1",
+        logical_id="python-package-host-b",
+    )
+    approval_b = _approval(
+        draft_b,
+        raw_ref_b,
+        record_id="approval-host-b-v1",
+        host_id="host-b",
+    )
+    evidence.capability_approvals.add(content_hash(approval_b))
+    approval_ref_b = runtime_b.configuration.register_capability_approval(approval_b)
+    profile_ref_b = runtime_b.configuration.register_runtime_capability(
+        draft_b.model_copy(update={"capability_evidence_ref": approval_ref_b})
+    )
+
+    selection_a = runtime_a.configuration.resolve_active_capability(
+        capability_kind="PACKAGE_MANAGER",
+        language="PYTHON",
+        operation="PACKAGE_INSTALL",
+        operating_system="windows",
+        architecture="x86_64",
+    )
+    selection_b = runtime_b.configuration.resolve_active_capability(
+        capability_kind="PACKAGE_MANAGER",
+        language="PYTHON",
+        operation="PACKAGE_INSTALL",
+        operating_system="windows",
+        architecture="x86_64",
+    )
+
+    assert selection_a.profile_ref == profile_ref_a
+    assert selection_b.profile_ref == profile_ref_b
+    assert selection_a.profile_ref.host_id == "host-a"
+    assert selection_b.profile_ref.host_id == "host-b"

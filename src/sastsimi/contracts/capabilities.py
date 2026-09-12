@@ -7,7 +7,7 @@ from pydantic import AwareDatetime, model_validator
 from ._domain import DomainRecord, SafeDiagnostic, unique
 from .base import ContractModel, NonEmptyStr, Sha256
 from .canonical_json import content_hash
-from .refs import StoredDataRef, require_record_ref
+from .refs import HostConfigurationRef, StoredDataRef, reference, require_record_ref
 from .static import StaticToolProfile
 
 type CapabilityKind = Literal[
@@ -50,6 +50,7 @@ class CapabilityControlEvidence(ContractModel):
 
     control: CapabilitySecurityControl
     evidence_ref: StoredDataRef
+
 
 RUNTIME_CAPABILITY_ROUTES: dict[
     CapabilityKind, tuple[frozenset[CapabilityLanguage], frozenset[CapabilityOperation]]
@@ -96,6 +97,7 @@ class CapabilityApprovalEvidence(DomainRecord):
     KIND = "tool_capability_evidence"
     HYPOTHESIS = False
     ATTEMPT = False
+    host_id: NonEmptyStr
     profile_key: NonEmptyStr
     capability_kind: CapabilityKind
     subject_key: NonEmptyStr
@@ -137,9 +139,11 @@ class CapabilityApprovalEvidence(DomainRecord):
         if self.decision == "ACTIVATE" and self.probe_status != "PASSED":
             raise ValueError("CAPABILITY_ACTIVATION_PROBE_NOT_PASSED")
         controls = {item.control for item in self.security_control_evidence}
-        if self.decision == "ACTIVATE" and not REQUIRED_SECURITY_CONTROLS.get(
-            self.capability_kind, frozenset()
-        ) <= controls:
+        if (
+            self.decision == "ACTIVATE"
+            and not REQUIRED_SECURITY_CONTROLS.get(self.capability_kind, frozenset())
+            <= controls
+        ):
             raise ValueError("CAPABILITY_SECURITY_CONTROL_EVIDENCE_REQUIRED")
         if self.approved_at < self.checked_at:
             raise ValueError("CAPABILITY_APPROVAL_PRECEDES_PROBE")
@@ -152,6 +156,7 @@ class RuntimeCapabilityProfile(DomainRecord):
     KIND = "runtime_capability_profile"
     HYPOTHESIS = False
     ATTEMPT = False
+    host_id: NonEmptyStr
     profile_key: NonEmptyStr
     purpose: Literal["PRODUCTION"]
     status: Literal["ACTIVE", "RETIRED"]
@@ -163,11 +168,13 @@ class RuntimeCapabilityProfile(DomainRecord):
     architecture: CapabilityArchitecture
     languages: tuple[CapabilityLanguage, ...]
     operations: tuple[CapabilityOperation, ...]
-    capability_evidence_ref: StoredDataRef
+    capability_evidence_ref: HostConfigurationRef
 
     @model_validator(mode="after")
     def closed_profile(self) -> Self:
         require_record_ref(self.capability_evidence_ref, "tool_capability_evidence")
+        if self.capability_evidence_ref.host_id != self.host_id:
+            raise ValueError("CAPABILITY_HOST_MISMATCH")
         if not self.languages or not self.operations:
             raise ValueError("CAPABILITY_ROUTE_INCOMPLETE")
         unique(self.languages)
@@ -185,16 +192,32 @@ class RuntimeCapabilityProfile(DomainRecord):
 class RuntimeCapabilitySelection(ContractModel):
     """Trusted route result that pins the exact executable revision."""
 
-    profile_ref: StoredDataRef
+    profile_ref: HostConfigurationRef
     profile: RuntimeCapabilityProfile
+
+    @model_validator(mode="after")
+    def exact_profile(self) -> Self:
+        if reference(self.profile) != self.profile_ref:
+            raise ValueError("CAPABILITY_SELECTION_REF_MISMATCH")
+        return self
 
 
 class StaticToolCapabilitySelection(ContractModel):
     """Trusted static-tool route result with its exact profile revision."""
 
-    profile_ref: StoredDataRef
+    profile_ref: HostConfigurationRef
     profile: StaticToolProfile
     evidence: CapabilityApprovalEvidence
+
+    @model_validator(mode="after")
+    def exact_profile_and_evidence(self) -> Self:
+        if reference(
+            self.profile
+        ) != self.profile_ref or self.profile.capability_evidence_ref != reference(
+            self.evidence
+        ):
+            raise ValueError("CAPABILITY_SELECTION_REF_MISMATCH")
+        return self
 
 
 def capability_target_hash(

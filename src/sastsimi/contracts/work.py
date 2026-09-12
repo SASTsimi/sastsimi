@@ -20,6 +20,7 @@ from .ids import (
 from .records import RecordMeta, RunMeta
 from .refs import (
     BudgetScopeRef,
+    HostConfigurationRef,
     PolicyCacheRef,
     RecordRef,
     RunStoredDataRef,
@@ -141,7 +142,15 @@ class ScopedRecord(ContractModel):
             value = getattr(self, name)
             values = value if isinstance(value, tuple) else (value,)
             for ref in values:
-                if isinstance(ref, (RunStoredDataRef, StoredDataRef, PolicyCacheRef)):
+                if isinstance(
+                    ref,
+                    (
+                        RunStoredDataRef,
+                        StoredDataRef,
+                        HostConfigurationRef,
+                        PolicyCacheRef,
+                    ),
+                ):
                     validate_ref_scope(ref, self.meta)
         return self
 

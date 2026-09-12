@@ -703,6 +703,7 @@ def _build_runtime(
     finding_service_identity_ref: StoredDataRef | None = None,
     analysis_finalization_identity_ref: BudgetScopeRef | None = None,
     llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
+    capability_host_id: str | None = None,
     *,
     validator_factory: Callable[..., SQLiteRuntimeValidator],
 ) -> RuntimeServices:
@@ -778,7 +779,9 @@ def _build_runtime(
     recovery.recover()
     validator = RuntimeValidator(authorization)
     external = ExternalCallService(validator)
-    configuration_store = SQLiteConfigurationRegistry(records, artifacts)
+    configuration_store = SQLiteConfigurationRegistry(
+        records, artifacts, capability_host_id
+    )
 
     def llm_metadata(
         source: RecordMeta,
@@ -855,6 +858,7 @@ def build_runtime(
     finding_service_identity_ref: StoredDataRef | None = None,
     analysis_finalization_identity_ref: BudgetScopeRef | None = None,
     llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
+    capability_host_id: str | None = None,
 ) -> RuntimeServices:
     """Compose the production runtime without fake output capabilities."""
     return _build_runtime(
@@ -869,6 +873,7 @@ def build_runtime(
         finding_service_identity_ref,
         analysis_finalization_identity_ref,
         llm_adapters,
+        capability_host_id,
         validator_factory=SQLiteRuntimeValidator,
     )
 

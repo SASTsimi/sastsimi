@@ -53,7 +53,7 @@ from sastsimi.contracts.prompt_redaction import (
     render_provider_prompt,
 )
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.ports.artifact_store import ArtifactStore
@@ -65,16 +65,30 @@ from .repositories import SQLiteRecordStore
 
 
 class ConfigurationRegistry:
-    def __init__(self, records: SQLiteRecordStore, artifacts: ArtifactStore) -> None:
+    def __init__(
+        self,
+        records: SQLiteRecordStore,
+        artifacts: ArtifactStore,
+        capability_host_id: str | None = None,
+    ) -> None:
         self.records = records
         self.artifacts = artifacts
+        self.capability_host_id = capability_host_id
+
+    def _require_capability_host(self, record_host_id: str | None = None) -> str:
+        if self.capability_host_id is None:
+            raise ValueError("CAPABILITY_HOST_NOT_BOUND")
+        if record_host_id is not None and record_host_id != self.capability_host_id:
+            raise ValueError("CAPABILITY_HOST_MISMATCH")
+        return self.capability_host_id
 
     def register_capability_approval(
         self, record: CapabilityApprovalEvidence
-    ) -> StoredDataRef:
+    ) -> HostConfigurationRef:
         """Publish immutable R8 probe evidence plus the human decision."""
 
         record = CapabilityApprovalEvidence.model_validate(record)
+        self._require_capability_host(record.host_id)
         if not self.records.evidence.capability_approval_authorized(record):
             raise ValueError("CAPABILITY_APPROVAL_REQUIRED")
         evidence_refs = record.probe_evidence_refs + tuple(
@@ -98,9 +112,17 @@ class ConfigurationRegistry:
                     or evidence_meta.commit_id != record.meta.commit_id
                 ):
                     raise ValueError("CAPABILITY_PROBE_EVIDENCE_SCOPE_MISMATCH")
-        return self._publish(
-            record, self.records.evidence.capability_approval_authorized
-        )
+        ref = reference(record)
+        if not isinstance(ref, HostConfigurationRef):
+            raise ValueError("CAPABILITY_SCOPE_MISMATCH")
+        with self.records.database.write() as connection:
+            staged = self.records.stage(connection, record)
+            assert staged == ref
+            self.records.publish(connection, ref)
+            self._point(connection, record)
+            if not self.records.evidence.capability_approval_authorized(record):
+                raise ValueError("CAPABILITY_APPROVAL_REQUIRED")
+        return ref
 
     @staticmethod
     def _language_matches(
@@ -160,6 +182,9 @@ class ConfigurationRegistry:
         )
         if current != str(evidence.meta.record_id):
             raise ValueError("CAPABILITY_EVIDENCE_NOT_CURRENT")
+        self._require_capability_host(evidence.host_id)
+        if evidence.host_id != profile.host_id:
+            raise ValueError("CAPABILITY_HOST_MISMATCH")
         if (
             evidence.meta.analysis_id != profile.meta.analysis_id
             or evidence.meta.workspace_id != profile.meta.workspace_id
@@ -218,6 +243,7 @@ class ConfigurationRegistry:
             raise ValueError("CAPABILITY_RETIREMENT_PREDECESSOR_MISSING")
         current = candidates[0]
         immutable = (
+            "host_id",
             "profile_key",
             "capability_kind",
             "subject_key",
@@ -237,12 +263,13 @@ class ConfigurationRegistry:
 
     def register_runtime_capability(
         self, record: RuntimeCapabilityProfile
-    ) -> StoredDataRef:
+    ) -> HostConfigurationRef:
         """Activate or retire one exact non-static production capability."""
 
         record = RuntimeCapabilityProfile.model_validate(record)
+        self._require_capability_host(record.host_id)
         ref = reference(record)
-        if not isinstance(ref, StoredDataRef):
+        if not isinstance(ref, HostConfigurationRef):
             raise ValueError("CAPABILITY_SCOPE_MISMATCH")
         with self.records.database.write() as connection:
             self._require_runtime_retirement_predecessor(connection, record)
@@ -255,7 +282,7 @@ class ConfigurationRegistry:
                 ):
                     current = RuntimeCapabilityProfile.model_validate_json(payload)
                     if logical_id == str(record.meta.logical_record_id) or (
-                        current.status != "ACTIVE"
+                        current.status != "ACTIVE" or current.host_id != record.host_id
                     ):
                         continue
                     if (
@@ -276,10 +303,11 @@ class ConfigurationRegistry:
         return ref
 
     def get_runtime_capability(
-        self, profile_ref: StoredDataRef
+        self, profile_ref: HostConfigurationRef
     ) -> RuntimeCapabilityProfile:
         """Read one exact historical revision; this does not authorize execution."""
 
+        self._require_capability_host(profile_ref.host_id)
         if profile_ref.data_kind != RuntimeCapabilityProfile.KIND:
             raise ValueError("CAPABILITY_PROFILE_REFERENCE_MISMATCH")
         with self.records.database.engine.connect() as connection:
@@ -301,6 +329,7 @@ class ConfigurationRegistry:
 
         if not operating_system.strip() or not architecture.strip():
             raise ValueError("CAPABILITY_ROUTE_INCOMPLETE")
+        host_id = self._require_capability_host()
         matches: list[RuntimeCapabilityProfile] = []
         with self.records.database.engine.connect() as connection:
             for _, payload in self._current_records(
@@ -309,6 +338,7 @@ class ConfigurationRegistry:
                 profile = RuntimeCapabilityProfile.model_validate_json(payload)
                 if (
                     profile.status == "ACTIVE"
+                    and profile.host_id == host_id
                     and profile.capability_kind == capability_kind
                     and profile.operating_system == operating_system
                     and profile.architecture == architecture
@@ -325,7 +355,7 @@ class ConfigurationRegistry:
             raise ValueError("CAPABILITY_ACTIVE_ROUTE_CONFLICT")
         profile = matches[0]
         profile_ref = reference(profile)
-        assert isinstance(profile_ref, StoredDataRef)
+        assert isinstance(profile_ref, HostConfigurationRef)
         return RuntimeCapabilitySelection(profile_ref=profile_ref, profile=profile)
 
     @staticmethod
@@ -349,17 +379,18 @@ class ConfigurationRegistry:
 
     def register_production_static_tool_profile(
         self, record: StaticToolProfile
-    ) -> StoredDataRef:
+    ) -> HostConfigurationRef:
         """Publish an exact production static profile after trusted activation."""
 
         record = StaticToolProfile.model_validate(record)
+        self._require_capability_host(record.host_id)
         if record.purpose != "PRODUCTION" or record.status not in {
             "ACTIVE",
             "RETIRED",
         }:
             raise ValueError("STATIC_TOOL_PRODUCTION_PROFILE_INVALID")
         ref = reference(record)
-        if not isinstance(ref, StoredDataRef):
+        if not isinstance(ref, HostConfigurationRef):
             raise ValueError("CAPABILITY_SCOPE_MISMATCH")
         with self.records.database.write() as connection:
             self._require_static_retirement_predecessor(connection, record)
@@ -372,7 +403,7 @@ class ConfigurationRegistry:
                 ):
                     current = StaticToolProfile.model_validate_json(payload)
                     if logical_id == str(record.meta.logical_record_id) or (
-                        current.status != "ACTIVE"
+                        current.status != "ACTIVE" or current.host_id != record.host_id
                     ):
                         continue
                     current_evidence = self._require_capability_evidence(
@@ -411,6 +442,7 @@ class ConfigurationRegistry:
             raise ValueError("STATIC_TOOL_RETIREMENT_PREDECESSOR_MISSING")
         current = candidates[0]
         immutable = (
+            "host_id",
             "profile_key",
             "purpose",
             "adapter_key",
@@ -435,7 +467,7 @@ class ConfigurationRegistry:
             raise ValueError("STATIC_TOOL_RETIREMENT_IDENTITY_MISMATCH")
 
     def resolve_production_static_tool_profile(
-        self, profile_ref: StoredDataRef
+        self, profile_ref: HostConfigurationRef
     ) -> StaticToolProfile:
         """Resolve one exact current production profile for execution."""
 
@@ -461,10 +493,11 @@ class ConfigurationRegistry:
         return record
 
     def get_production_static_tool_profile(
-        self, profile_ref: StoredDataRef
+        self, profile_ref: HostConfigurationRef
     ) -> StaticToolProfile:
         """Read one exact historical revision; this does not authorize execution."""
 
+        self._require_capability_host(profile_ref.host_id)
         if profile_ref.data_kind != StaticToolProfile.KIND:
             raise ValueError("STATIC_TOOL_PROFILE_REFERENCE_MISMATCH")
         with self.records.database.engine.connect() as connection:
@@ -485,11 +518,16 @@ class ConfigurationRegistry:
 
         if not operating_system.strip() or not architecture.strip():
             raise ValueError("CAPABILITY_ROUTE_INCOMPLETE")
+        host_id = self._require_capability_host()
         matches: list[tuple[StaticToolProfile, CapabilityApprovalEvidence]] = []
         with self.records.database.engine.connect() as connection:
             for _, payload in self._current_records(connection, StaticToolProfile.KIND):
                 profile = StaticToolProfile.model_validate_json(payload)
-                if profile.status != "ACTIVE" or profile.adapter_key != adapter_key:
+                if (
+                    profile.status != "ACTIVE"
+                    or profile.host_id != host_id
+                    or profile.adapter_key != adapter_key
+                ):
                     continue
                 evidence = self._require_capability_evidence(connection, profile)
                 if (
@@ -506,7 +544,7 @@ class ConfigurationRegistry:
             raise ValueError("STATIC_TOOL_ACTIVE_ROUTE_CONFLICT")
         profile, evidence = matches[0]
         profile_ref = reference(profile)
-        assert isinstance(profile_ref, StoredDataRef)
+        assert isinstance(profile_ref, HostConfigurationRef)
         return StaticToolCapabilitySelection(
             profile_ref=profile_ref, profile=profile, evidence=evidence
         )
