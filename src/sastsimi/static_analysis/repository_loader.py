@@ -438,8 +438,8 @@ class WorkspaceGuard:
         self._roots = dict(roots)
         self._manifests = dict(manifests)
         self._factory = process_runner_factory
-        self._git, self._git_subject_key, self._git_sha256 = (
-            _git_executable_identity(git_executable)
+        self._git, self._git_subject_key, self._git_sha256 = _git_executable_identity(
+            git_executable
         )
         self._output = output_dir.resolve(strict=True)
         self._sensitive_names = sensitive_names
@@ -457,10 +457,7 @@ class WorkspaceGuard:
     def verify_git_capability(self, subject_key: str, expected_sha256: str) -> None:
         """Bind guard commands to the executable approved by the exact profile."""
 
-        if (
-            subject_key != self._git_subject_key
-            or expected_sha256 != self._git_sha256
-        ):
+        if subject_key != self._git_subject_key or expected_sha256 != self._git_sha256:
             raise ValueError("GIT_EXECUTABLE_CAPABILITY_MISMATCH")
         self._verified_git_executable()
 
@@ -805,10 +802,7 @@ class RepositoryLoader:
     def verify_git_capability(self, subject_key: str, expected_sha256: str) -> None:
         """Bind repository commands to the executable approved by the profile."""
 
-        if (
-            subject_key != self._git_subject_key
-            or expected_sha256 != self._git_sha256
-        ):
+        if subject_key != self._git_subject_key or expected_sha256 != self._git_sha256:
             raise ValueError("GIT_EXECUTABLE_CAPABILITY_MISMATCH")
         self._verified_git_executable()
 

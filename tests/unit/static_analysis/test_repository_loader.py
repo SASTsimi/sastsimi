@@ -62,9 +62,7 @@ def test_repository_loader_binds_the_executed_git_to_the_pinned_identity(
         allow_local_file=True,
     )
 
-    subject.verify_git_capability(
-        "git", hashlib.sha256(b"trusted-git").hexdigest()
-    )
+    subject.verify_git_capability("git", hashlib.sha256(b"trusted-git").hexdigest())
     with pytest.raises(ValueError, match="GIT_EXECUTABLE_CAPABILITY_MISMATCH"):
         subject.verify_git_capability(
             "other-git", hashlib.sha256(b"trusted-git").hexdigest()
@@ -74,9 +72,7 @@ def test_repository_loader_binds_the_executed_git_to_the_pinned_identity(
 
     executable.write_bytes(b"replaced-git")
     with pytest.raises(ValueError, match="GIT_EXECUTABLE_CHANGED"):
-        subject.verify_git_capability(
-            "git", hashlib.sha256(b"trusted-git").hexdigest()
-        )
+        subject.verify_git_capability("git", hashlib.sha256(b"trusted-git").hexdigest())
 
 
 def test_workspace_guard_binds_integrity_commands_to_the_pinned_git(
