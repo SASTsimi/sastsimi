@@ -241,8 +241,6 @@ def _repository_command_argv(
             + ("always" if repository_url.startswith("file:") else "never"),
             "-c",
             "http.followRedirects=false",
-            "-c",
-            f"core.hooksPath={hooks_dir}",
             "clone",
             "--no-checkout",
             "--no-recurse-submodules",
