@@ -40,6 +40,9 @@ class _Publisher:
 
 
 def test_runtime_publisher_uses_chaining_authority_and_exact_save_inputs() -> None:
+    from sastsimi.chaining import RuntimeChainingResultPublisher as PublicPublisher
+
+    assert PublicPublisher is RuntimeChainingResultPublisher
     meta = wire(
         RecordMeta,
         make("WorkExecutionState")["meta"]
