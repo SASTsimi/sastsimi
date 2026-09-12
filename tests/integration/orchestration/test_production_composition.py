@@ -44,6 +44,7 @@ from sastsimi.orchestration.run_scope_plan import PlannedRunScope
 from sastsimi.ports.dto import WorkContext, WorkHandlerResult
 from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.ports.scheduler import CancellationObservation, CancellationTarget
+from sastsimi.ports.trusted_evidence import UnprovenEvidence
 from sastsimi.prompts.production import (
     REQUIRED_PRODUCTION_PROMPT_ROUTES,
     ApprovedProductionRoute,
@@ -175,6 +176,7 @@ class _Capabilities(ProductionCapabilityResolver):
                 HandlerFailureRecorder, _FailureRecorder()
             ),
             install=self._install,
+            configuration_evidence=UnprovenEvidence(),
         )
 
     def _install(
