@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from sastsimi.contracts.chaining import Primitive
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, reference
-from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.contracts.work import WorkExecutionState, WorkStatus
 from sastsimi.ports.chaining import (
     ChainingChildHandoffPort,
     ChainingCohortPort,
@@ -46,19 +45,20 @@ class ChainingReconciliationService:
             raise ValueError("CHAINING_RECONCILIATION_SOURCE_MISMATCH")
         if not outcome.primitive_refs:
             return None
-        first = self._records.get_exact(outcome.primitive_refs[0])
+        source_work = self._records.get_exact(outcome.source_work_ref)
         if (
-            not isinstance(first, Primitive)
-            or reference(first) != outcome.primitive_refs[0]
-            or not isinstance(first.meta, RecordMeta)
+            not isinstance(source_work, WorkExecutionState)
+            or reference(source_work) != outcome.source_work_ref
+            or source_work.status != WorkStatus.SUCCEEDED
+            or not isinstance(source_work.meta, RecordMeta)
         ):
             raise ValueError("CHAINING_RECONCILIATION_SOURCE_MISMATCH")
         pending = self._cohorts.register_pending(
             outcome=outcome,
             scope=self._scope,
             requester_identity_ref=self._identity,
-            metadata=first.meta,
-            generation=1,
+            metadata=source_work.meta,
+            generation=source_work.work_generation,
         )
         return self._cohorts.promote_ready(
             registration=pending,

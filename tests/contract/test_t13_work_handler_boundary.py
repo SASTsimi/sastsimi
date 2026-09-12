@@ -81,3 +81,10 @@ def test_lane_d_has_no_inline_execution_or_concrete_adapter_imports() -> None:
         encoding="utf-8"
     )
     assert all(value not in service_source for value in forbidden_imports)
+    assert "self._publisher.publish(" in service_source
+    assert "reserve_for_result(" not in service_source
+    child_source = Path(
+        "src/sastsimi/runtime/chaining_child_registration.py"
+    ).read_text(encoding="utf-8")
+    assert "ReadyWorkPort" in child_source
+    assert "from sastsimi.ports.ready_work" not in child_source
