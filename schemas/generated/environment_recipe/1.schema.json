@@ -18,6 +18,56 @@
       "title": "CommitId",
       "type": "string"
     },
+    "EnvironmentRecipeSourceManifest": {
+      "additionalProperties": false,
+      "description": "Durable exact inputs needed to rebuild one repository-backed recipe.",
+      "properties": {
+        "build_context_ref": {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        "context_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Context Digest",
+          "type": "string"
+        },
+        "dockerfile_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Dockerfile Digest",
+          "type": "string"
+        },
+        "dockerfile_origin": {
+          "enum": [
+            "REPOSITORY",
+            "GENERATED"
+          ],
+          "title": "Dockerfile Origin",
+          "type": "string"
+        },
+        "dockerfile_path": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Dockerfile Path",
+          "type": "string"
+        },
+        "dockerfile_ref": {
+          "$ref": "#/$defs/StoredDataRef"
+        },
+        "repository_profile_ref": {
+          "$ref": "#/$defs/StoredDataRef"
+        }
+      },
+      "required": [
+        "repository_profile_ref",
+        "dockerfile_ref",
+        "build_context_ref",
+        "dockerfile_path",
+        "dockerfile_origin",
+        "dockerfile_digest",
+        "context_digest"
+      ],
+      "title": "EnvironmentRecipeSourceManifest",
+      "type": "object"
+    },
     "HypothesisId": {
       "minLength": 1,
       "pattern": "\\S",
@@ -230,6 +280,17 @@
     },
     "request_ref": {
       "$ref": "#/$defs/StoredDataRef"
+    },
+    "source_manifest": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EnvironmentRecipeSourceManifest"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "source_refs": {
       "items": {

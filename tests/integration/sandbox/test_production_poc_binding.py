@@ -31,7 +31,7 @@ from sastsimi.reproduction.production import (
     DynamicSandboxAuthorization,
     ProductionDynamicWorkflow,
 )
-from sastsimi.reproduction.service import DynamicOperationalError
+from sastsimi.reproduction.service import DynamicOperationalError, DynamicSandboxSession
 from sastsimi.sandbox.controller import (
     SandboxBoundaryOutcome,
     SandboxController,
@@ -332,6 +332,8 @@ def _prepared_workflow() -> tuple[
     workflow._records["environment_requirements"] = cast(Record, chain["requirements"])
     workflow._records["reproduction_plan"] = cast(Record, chain["plan"])
     workflow._policy = policy
+    workflow._current_recipe = recipe
+    workflow._recipes.append(recipe)
     workflow._prepared = PreparedSandbox(
         chain["recipe"],
         chain["environment"],
@@ -709,3 +711,33 @@ async def test_publication_cleanup_failure_is_reported() -> None:
     assert raised.value.failure.status == "FAILED"
     assert raised.value.failure.failure_category == "ENVIRONMENT_SETUP"
     assert raised.value.failure.failure_reason == "OWNED_RESOURCE_CLEANUP_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_blocked_run_still_finalizes_exact_built_image_cleanup() -> None:
+    workflow, _, chain, _ = _prepared_workflow()
+    image_ref = StoredDataRef(
+        stored_data_id=StoredDataId("owned-image-resource"),
+        data_kind="sandbox_resource",
+        content_hash="d" * 64,
+        workspace_id=chain["request"].meta.workspace_id,
+        commit_id=chain["request"].meta.commit_id,
+        record_id=None,
+    )
+    setup = _CleanupSetup(chain["cleanup"])
+    workflow._setup = cast(ReproductionSetupAutomation, setup)
+    workflow._prepared = None
+    workflow._environments.clear()
+    workflow._resource_groups = [(image_ref,)]
+    blocked = DynamicSandboxSession.blocked(
+        policy_ref=workflow._policy_ref(),
+        log_ref=workflow._log_ref(),
+    )
+
+    returned = await workflow.cleanup(blocked)
+
+    assert returned is blocked
+    assert setup.calls == [(chain["request"], (), (image_ref,))]
+    assert workflow._cleanup is not None
+    assert workflow._cleanup.status == "SUCCEEDED"
+    assert workflow._cleanup.resource_refs == (image_ref,)

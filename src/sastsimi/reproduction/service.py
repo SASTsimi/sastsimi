@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, TypeGuard
 
@@ -73,18 +72,6 @@ from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 
 from .fake_closure import require_poc_execution_events
-
-
-async def _complete_cancel_cleanup[ResultT](awaitable: Awaitable[ResultT]) -> ResultT:
-    """Finish owned-resource cleanup despite repeated task cancellation."""
-
-    cleanup = asyncio.ensure_future(awaitable)
-    while not cleanup.done():
-        try:
-            await asyncio.shield(cleanup)
-        except asyncio.CancelledError:
-            continue
-    return cleanup.result()
 
 
 def _is_record(value: object) -> TypeGuard[Record]:
@@ -1320,36 +1307,10 @@ class DynamicReproductionWorkflowService:
                 conclusion_ref=conclusion_ref,
                 session=session,
             )
-        except asyncio.CancelledError as cancellation:
-            cleanup_failed = bool(
-                getattr(cancellation, "sastsimi_cleanup_failed", False)
-            )
-            failure_reason = (
-                "Dynamic reproduction cancelled; Sandbox cleanup failed"
-                if cleanup_failed
-                else "Dynamic reproduction cancelled after Sandbox cleanup"
-            )
-            if session is not None and session.allowed:
-                try:
-                    session = await _complete_cancel_cleanup(
-                        self._workflow.cleanup(session)
-                    )
-                except BaseException:
-                    failure_reason = (
-                        "Dynamic reproduction cancelled; Sandbox cleanup failed"
-                    )
-            self._workflow.finalize_failure(
-                work=work,
-                request=request,
-                request_ref=request_ref,
-                session=session,
-                failure=DynamicWorkflowFailure(
-                    status="CANCELLED",
-                    failure_category="INTERNAL",
-                    failure_reason=failure_reason,
-                ),
-            )
-            raise cancellation
+        except asyncio.CancelledError:
+            if session is not None:
+                await self._workflow.cleanup(session)
+            raise
         except DynamicOperationalError as error:
             if session is not None and session.allowed:
                 session = await self._workflow.cleanup(session)

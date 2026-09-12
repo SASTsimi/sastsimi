@@ -42,7 +42,6 @@ from sastsimi.storage.action_validator import (
 from sastsimi.storage.schema_version import MigrationRequired as MigrationRequired
 
 if TYPE_CHECKING:
-    from sastsimi.capabilities.composition import ProductionCapabilityProbeService
     from sastsimi.chaining.service import ChainingCallResolver
     from sastsimi.chaining.work_handlers import (
         ChainingWorkHandler,
@@ -53,7 +52,7 @@ if TYPE_CHECKING:
     from sastsimi.contracts.evaluation import AnalysisRunResult
     from sastsimi.contracts.hypothesis import HypothesisProcessState
     from sastsimi.contracts.reporting import ReportDraft
-    from sastsimi.contracts.static import StaticToolProfile
+    from sastsimi.contracts.static import RepositoryProfile, StaticToolProfile
     from sastsimi.contracts.work import WorkExecutionState, WorkType
     from sastsimi.orchestration.fake_pipeline import FakePipeline
     from sastsimi.orchestration.fake_scenario_runtime import WorkflowBundle
@@ -76,6 +75,7 @@ if TYPE_CHECKING:
     )
     from sastsimi.ports.context import ContextLineageReaderPort
     from sastsimi.ports.dto import StaticRuleMapping, WorkHandlerResult
+    from sastsimi.ports.dynamic_sandbox import TrustedDockerTargetResolverPort
     from sastsimi.ports.static_tool import StaticProcessAdapter
     from sastsimi.ports.work_handler import WorkHandler
     from sastsimi.ports.workspace import WorkspaceLocatorPort
@@ -133,6 +133,7 @@ class DynamicExecutor(Protocol):
 type CurrentProcessResolver = Callable[
     [DynamicReproductionRequest], HypothesisProcessState
 ]
+type OwnedResourceRecovery = Callable[[], Awaitable[tuple[str, ...]]]
 
 
 @dataclass(frozen=True)
@@ -142,6 +143,7 @@ class T11Services:
     execute_dynamic: DynamicExecutor
     current_process: CurrentProcessResolver
     completion: VerificationCompletionCoordinator
+    recover_owned_resources: OwnedResourceRecovery | None = None
 
     async def execute(
         self,
@@ -151,6 +153,8 @@ class T11Services:
         request_ref: StoredDataRef,
         authorizations: DynamicStageAuthorizations,
     ) -> WorkHandlerResult:
+        if await self.recover():
+            raise ValueError("OWNED_RESOURCE_RECONCILIATION_REQUIRED")
         process = self.current_process(request)
         _require_current_dynamic_request(work, request, request_ref, process)
         result = await self.execute_dynamic(
@@ -165,6 +169,13 @@ class T11Services:
         ):
             raise ValueError("R7_OUTPUT_AUTHORITY_DENIED")
         return result
+
+    async def recover(self) -> tuple[str, ...]:
+        """Reconcile exact T11-owned resources before accepting production work."""
+
+        if self.recover_owned_resources is None:
+            return ()
+        return await self.recover_owned_resources()
 
 
 @dataclass(frozen=True)
@@ -1198,13 +1209,14 @@ def build_t11_services(
     role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
     sandbox_authorization: DynamicSandboxAuthorizationResolver,
     verification: VerificationService,
+    repository_profile: RepositoryProfile,
+    resource_journal_path: Path,
     docker_profile_ref: HostConfigurationRef,
-    capability_service: ProductionCapabilityProbeService,
+    docker_target_resolver: TrustedDockerTargetResolverPort,
 ) -> T11Services:
     """Build the real local-Docker T11 slice after trusted config resolution."""
 
     from sastsimi.agents.dynamic_reproduction import DynamicReproductionAgent
-    from sastsimi.capabilities.composition import ProductionCapabilityProbeService
     from sastsimi.contracts.ids import WorkId
     from sastsimi.ports.dynamic_sandbox import (
         DynamicDockerExecutionPort,
@@ -1228,20 +1240,20 @@ def build_t11_services(
     from sastsimi.verification.completion import VerificationCompletionCoordinator
 
     artifacts = runtime.unit_of_work.artifacts
-    if not isinstance(capability_service, ProductionCapabilityProbeService):
-        raise ValueError("TRUSTED_CAPABILITY_SERVICE_REQUIRED")
-    docker = DockerAdapter.from_capability(docker_profile_ref, capability_service)
+    docker = DockerAdapter.from_profile(docker_profile_ref, docker_target_resolver)
+    resources = OwnedResourceRegistry(journal_path=resource_journal_path)
     setup = ReproductionSetupAutomation(
         docker=docker,
-        recipes=EnvironmentRecipeStore(),
+        recipes=EnvironmentRecipeStore(artifacts=artifacts),
         health=SandboxHealthChecker(),
-        resources=OwnedResourceRegistry(),
+        resources=resources,
     )
     controller = SandboxController(
         workspace_root=workspace_root,
         workspace_id=str(workspace_id),
         commit_id=str(commit_id),
         record_resolver=runtime.unit_of_work.records.get_exact,
+        require_baked_source=True,
     )
     agent = DynamicReproductionAgent(
         llm_calls=runtime.llm_calls,
@@ -1275,6 +1287,7 @@ def build_t11_services(
             ids=ids,
             sink=sink,
             authorization=sandbox_authorization,
+            repository_profile=repository_profile,
         )
 
     production = ProductionDynamicExecutor(
@@ -1291,6 +1304,7 @@ def build_t11_services(
             current_process=process_resolver,
             verification_identity_ref=verification_identity,
         ),
+        recover_owned_resources=partial(resources.reconcile_pending, docker=docker),
     )
 
 

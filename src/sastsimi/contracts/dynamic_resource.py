@@ -33,4 +33,29 @@ def owned_container_resource_ref(
     )
 
 
-__all__ = ["owned_container_resource_ref"]
+def owned_image_resource_ref(*, image_digest: str, meta: RecordMeta) -> StoredDataRef:
+    """Derive an attempt-scoped reference for one exact built image digest."""
+
+    if meta.hypothesis_id is None or meta.attempt_id is None:
+        raise ValueError("SANDBOX_RESOURCE_SCOPE_REQUIRED")
+    payload = {
+        "resource_type": "image",
+        "resource_id": image_digest,
+        "analysis_id": meta.analysis_id,
+        "workspace_id": meta.workspace_id,
+        "commit_id": meta.commit_id,
+        "hypothesis_id": meta.hypothesis_id,
+        "attempt_id": meta.attempt_id,
+    }
+    digest = content_hash(payload)
+    return StoredDataRef(
+        stored_data_id=StoredDataId(f"sandbox-resource-{digest}"),
+        data_kind="sandbox_resource",
+        content_hash=digest,
+        workspace_id=meta.workspace_id,
+        commit_id=meta.commit_id,
+        record_id=None,
+    )
+
+
+__all__ = ["owned_container_resource_ref", "owned_image_resource_ref"]

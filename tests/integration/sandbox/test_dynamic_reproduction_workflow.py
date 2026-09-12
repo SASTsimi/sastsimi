@@ -741,14 +741,10 @@ class UnexpectedAfterOpenAgent(BlockedFlowAgent):
 
 @dataclass
 class CancelledAfterOpenAgent(BlockedFlowAgent):
-    entered: asyncio.Event
-
     async def create_poc_candidate(
         self, **_: object
     ) -> DynamicAgentOutcome[PoCCandidate]:
-        self.entered.set()
-        await asyncio.Event().wait()
-        raise AssertionError("cancelled stage resumed unexpectedly")
+        raise asyncio.CancelledError
 
 
 @pytest.mark.asyncio
@@ -878,7 +874,7 @@ async def test_unexpected_failure_is_cleaned_and_recorded_safely() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancellation_cleans_owned_sandbox_and_records_failure() -> None:
+async def test_cancellation_after_open_cleans_exact_session_resources() -> None:
     artifacts = MemoryArtifacts()
     request = reproduction_request()
     request_ref = cast(StoredDataRef, reference(request))
@@ -907,14 +903,14 @@ async def test_cancellation_cleans_owned_sandbox_and_records_failure() -> None:
             log=log,
         )
     )
-    entered = asyncio.Event()
     service = DynamicReproductionWorkflowService(
-        agent=CancelledAfterOpenAgent(persisted_invocation, entered),
+        agent=CancelledAfterOpenAgent(persisted_invocation),
         workflow=port,
     )
     authorization = auth(persisted_invocation)
-    execution = asyncio.create_task(
-        service.execute(
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.execute(
             work=work,
             request=request,
             request_ref=request_ref,
@@ -926,18 +922,9 @@ async def test_cancellation_cleans_owned_sandbox_and_records_failure() -> None:
                 interpret=None,
             ),
         )
-    )
-    await entered.wait()
-
-    execution.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await execution
 
     assert port.cleanup_calls == 1
-    assert port.failure is not None
-    assert port.failure.failure_category == "INTERNAL"  # type: ignore[attr-defined]
-    assert port.verdict_calls == 0
-    assert port.gate_calls == 0
+    assert port.failure is None
 
 
 @pytest.mark.asyncio

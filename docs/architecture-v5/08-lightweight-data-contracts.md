@@ -1642,6 +1642,15 @@ BudgetRemaining:
   available_units: BudgetUnits
   active_reservation_count: integer
 
+EnvironmentRecipeSourceManifest:
+  repository_profile_ref: StoredDataRef
+  dockerfile_ref: StoredDataRef
+  build_context_ref: StoredDataRef
+  dockerfile_path: string
+  dockerfile_origin: REPOSITORY | GENERATED
+  dockerfile_digest: string
+  context_digest: string
+
 EnvironmentRecipe:
   meta: RecordMeta
   request_ref: StoredDataRef
@@ -1652,6 +1661,7 @@ EnvironmentRecipe:
   built_image_digest: string
   baseline_recipe_ref: StoredDataRef | null
   build_disposition: BUILT | REUSED
+  source_manifest: EnvironmentRecipeSourceManifest | null
   created_at: timestamp
 
 EnvironmentCheck:
@@ -1891,11 +1901,15 @@ credential·cookie·token·password와 재사용 가능한 인증 값은 require
 
 plan의 입력 부족이나 모순은 별도 `PlanIssue` record를 만들지 않고 `DynamicReproductionResult.plan_issues`에 `PlanIssueItem`으로 반환한다. Dynamic Reproduction Agent가 attempt 안에서 해결하면 `status=RESOLVED`로 이력을 남기고 계속할 수 있다. `OPEN` 항목이 남아 재현을 신뢰할 수 없으면 `hypothesis_outcome=INCONCLUSIVE`, `poc_ref=null`이며, 외부 수정 가능 여부에 따라 결과 status는 `BLOCKED | FAILED`다.
 
-`EnvironmentRecipe`는 current `DYNAMIC_REPRO` attempt의 binding record이자 저장소와 필요한 실행 환경에서 Docker image를 다시 만들 수 있는 불변 build recipe다. `meta.hypothesis_id`와 `meta.attempt_id`는 반드시 현재 work·attempt 값이어야 하며 base·built image digest를 구분해 기록한다. `source_refs`는 Dockerfile·README·package manifest·lockfile처럼 저장소가 이미 선언한 의존성을 우선 가리킨다. 별도 Dependency Scanner나 R2 사전 package prefetch를 전제로 하지 않는다. `base_image_digest`는 시작 image, `built_image_digest`는 실제 build 또는 재사용한 완성 image를 뜻하며 서로 바꾸어 쓰지 않는다. package 누락을 실제로 확인하면 Dynamic Reproduction Agent가 recipe source를 갱신하고 Setup Automation이 새 image를 build한 뒤 현재 attempt의 새 binding record를 만든다. 과거 성공 환경은 `baseline_recipe_ref`로만 참조할 수 있다. baseline을 재사용해도 현재 attempt에는 `build_disposition=REUSED`, exact `baseline_recipe_ref`와 같은 `built_image_digest`를 가진 새 `EnvironmentRecipe` binding을 생성해 provenance를 고정한다. `PERSISTENT_BASELINE`을 writable container 재사용 모드로 정의하지 않으며 writable container는 가설 work를 넘겨 재사용하지 않는다.
+`EnvironmentRecipe`는 current `DYNAMIC_REPRO` attempt의 binding record이자 저장소와 필요한 실행 환경에서 Docker image를 다시 만들 수 있는 불변 build recipe다. `meta.hypothesis_id`와 `meta.attempt_id`는 반드시 현재 work·attempt 값이어야 하며 base·built image digest를 구분해 기록한다. production recipe의 `source_refs`는 exact `RepositoryProfile`, 검증된 Dockerfile artifact와 build-context tar artifact를 가리키고 `source_manifest`가 각 artifact의 역할·경로·digest를 명시한다. 프로세스가 재시작되어 메모리 cache가 사라져도 이 manifest와 content-addressed artifact만으로 같은 build input을 복원할 수 있어야 한다. 기존 Dockerfile을 우선 사용하고, 없을 때만 확정된 Python 또는 JavaScript package 선언을 설치하는 Dockerfile을 생성한다. `.dockerignore`를 안전하게 해석할 수 없거나 context에 제외되지 않은 credential 파일이 있으면 build하지 않는다. 별도 Dependency Scanner나 R2 사전 package prefetch를 전제로 하지 않는다. `base_image_digest`는 시작 image, `built_image_digest`는 실제 build 또는 재사용한 완성 image를 뜻하며 서로 바꾸어 쓰지 않는다. package 누락을 실제로 확인하면 Dynamic Reproduction Agent가 recipe source를 갱신하고 Setup Automation이 새 image를 build한 뒤 현재 attempt의 새 binding record를 만든다. 과거 성공 환경은 `baseline_recipe_ref`로만 참조할 수 있다. baseline을 재사용해도 현재 attempt에는 `build_disposition=REUSED`, exact `baseline_recipe_ref`와 같은 `built_image_digest`를 가진 새 `EnvironmentRecipe` binding을 생성해 provenance를 고정한다. `PERSISTENT_BASELINE`을 writable container 재사용 모드로 정의하지 않으며 writable container는 가설 work를 넘겨 재사용하지 않는다.
 
 `SandboxEnvironment`는 Reproduction Setup Automation이 해당 attempt에서 실제로 만든 또는 재사용한 환경과 요구사항 비교를 기록하는 불변 record다. R6가 생산한 exact `DynamicReproductionRequest`는 current Verification generation의 입력으로 고정하지만, 그 생산 attempt를 R7 `DYNAMIC_REPRO` 실행 attempt와 같다고 요구하지 않는다. `request_ref`는 그 exact R6 request를 가리키고, `reproduction_plan_ref`, `environment_recipe_ref`와 `requirements_ref`는 모두 현재 R7 work·attempt의 exact record를 가리킨다. `checks`는 요구사항의 모든 `requirement_id`를 정확히 한 번씩 포함한다. `MATCH | MISMATCH`에는 공개 가능한 `actual` 또는 실제 구성 artifact를 가리키는 exact `actual_ref` 중 하나 이상이 필요하다. `NOT_CHECKED | ERROR`에서는 두 필드가 모두 `null`일 수 있지만 비어 있지 않은 `difference`와 비교 시도 근거가 필요하다. 모든 check는 `evidence_refs` 또는 `check_result_ref` 중 하나 이상을 가져야 하며, `check_result_ref`는 Health Check 결과를 가리킨다. 실제 비밀값은 어느 필드에도 저장하지 않는다.
 
 필수 item은 모두 `MATCH`이고 필수 setup 오류가 없어야 `SandboxEnvironment.status=READY`다. VERSION의 실제 값이 `expected` 또는 R7 requirements에 안전하게 명시한 `alternatives` 중 하나면 `MATCH`로 기록할 수 있으며 대체 버전을 썼다면 `difference`에 그 사실을 남긴다. 대체값은 R6 request의 필수 조건을 약화하거나 Sandbox profile을 우회할 수 없다. `MISMATCH | NOT_CHECKED | ERROR`에는 비어 있지 않은 `difference`가 필요하다. 필수 item에 확인된 값 차이 또는 미확인이 있으면 환경 status는 `MISMATCH`, setup·비교 자체의 오류가 있으면 `ERROR`다. 선택 item의 차이·오류만 `limitations`에 남기고 진행할 수 있다.
+
+명시된 Docker `HEALTHCHECK`가 없어 실제 health 상태가 `null`이면 이를
+`healthy`로 추정하지 않는다. 해당 `HEALTH_CHECK`는 `NOT_CHECKED`이고, 필수
+요구사항이면 environment는 `MISMATCH`다.
 
 가설의 첫 `DYNAMIC_REPRO` attempt는 writable 상태를 공유하지 않는 clean container에서 시작하며 `container_action=CREATED`, `container_reason=INITIAL_CLEAN`, `previous_environment_ref=null`이다. 서로 다른 가설은 같은 `container_instance_id`의 writable container를 공유하지 않는다. 같은 가설·work 안에서는 attempt가 달라도 다음 실행에 영향을 줄 상태·설정 변화가 없을 때만 기존 container를 `REUSED + NO_RELEVANT_CHANGE`로 사용할 수 있다. 재사용하더라도 current attempt의 새 `SandboxEnvironment` binding record를 만들고 `previous_environment_ref`로 직전 환경을 연결한다. Dynamic Reproduction Agent가 `STATE_CHANGED | CONFIG_CHANGED | STATE_UNCERTAIN`을 이유로 재생성을 요청할 수 있고, crash·비정상 종료·사후 Health Check 실패면 runtime이 `STATE_UNCERTAIN`으로 강제한다. 각 결정은 새 `SandboxEnvironment` record와 `previous_environment_ref`로 연결하고 `SANDBOX_RECREATE_REQUESTED | SANDBOX_RECREATED` event에 요청 주체·사유·이전/새 환경을 남긴다.
 
