@@ -756,6 +756,23 @@ def build_production_query(data_dir: Path) -> object:
     return SQLiteProductionQuery(Database(RuntimePaths(data_dir).database))
 
 
+def build_production_analyze() -> object:
+    """Build the real production command entrypoint; never select FakePipeline."""
+
+    from sastsimi.config.production_profile import load_production_profile
+    from sastsimi.orchestration.production_composition import (
+        ConcreteProductionApplicationFactory,
+    )
+    from sastsimi.orchestration.production_entrypoint import ProductionAnalyzeService
+    from sastsimi.runtime.system_support import UUIDIds
+
+    return ProductionAnalyzeService(
+        ids=UUIDIds(),
+        load_profile=load_production_profile,
+        factory=ConcreteProductionApplicationFactory(),
+    )
+
+
 def load_fake_progress(data_dir: Path) -> dict[str, object]:
     """Read only durable fake-run progress; never synthesize a terminal result."""
     import json

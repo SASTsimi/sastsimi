@@ -114,15 +114,21 @@ def test_production_analyze_rejects_missing_or_non_exact_commit(
     assert capsys.readouterr().out == ""
 
 
-def test_production_analyze_without_composition_fails_closed_not_fake(
+def test_production_analyze_builds_the_real_composition_not_fake(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    entrypoint = _Entrypoint()
+
     def forbidden_fake(_data_dir: Path) -> object:
         raise AssertionError("production must not use the fake pipeline")
 
+    def build_production() -> _Entrypoint:
+        return entrypoint
+
     monkeypatch.setattr(bootstrap, "build_fake_pipeline", forbidden_fake)
+    monkeypatch.setattr(bootstrap, "build_production_analyze", build_production)
 
     assert (
         main(
@@ -140,12 +146,13 @@ def test_production_analyze_without_composition_fails_closed_not_fake(
                 "json",
             ]
         )
-        == 4
+        == 0
     )
 
     output = capsys.readouterr()
-    assert output.out == ""
-    assert "CAPABILITY_UNSUPPORTED" in output.err
+    assert output.err == ""
+    assert json.loads(output.out)["data"]["analysis_id"] == "analysis-1"
+    assert entrypoint.calls[0].repository == "repository"
 
 
 def test_production_status_is_separate_from_demo_results(
