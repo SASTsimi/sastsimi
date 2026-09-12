@@ -148,9 +148,7 @@ def test_unreturned_dispatch_blocks_without_replay_or_pointer_publication(
 
     transitions = TransitionService(
         works,
-        LocalArtifactStore(
-            tmp_path / "artifacts", WorkspaceId("w1"), CommitId("c1")
-        ),
+        LocalArtifactStore(tmp_path / "artifacts", WorkspaceId("w1"), CommitId("c1")),
     )
     result = RecoveryService(transitions, transition.action_decision_ref).recover()
 
@@ -234,6 +232,6 @@ def _rows_from(harness: Harness, table: Table) -> tuple[tuple[object, ...], ...]
 
 
 def _non_work_pointers(
-    rows: tuple[tuple[object, ...], ...]
+    rows: tuple[tuple[object, ...], ...],
 ) -> tuple[tuple[object, ...], ...]:
     return tuple(row for row in rows if row[0] != "reserve-work")

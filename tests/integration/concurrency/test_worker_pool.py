@@ -335,9 +335,7 @@ async def test_pool_isolates_critical_claim_and_execution_failures(case: str) ->
     control = _RunControl()
     failures = frozenset({"work-a"}) if case == "failure" else frozenset()
     waits = frozenset({"work-a"}) if case == "cancel" else frozenset()
-    unfinalized = (
-        frozenset({"work-a"}) if case == "unfinalized" else frozenset()
-    )
+    unfinalized = frozenset({"work-a"}) if case == "unfinalized" else frozenset()
     handler = _Handler(
         store,
         failures=failures,
@@ -369,9 +367,7 @@ async def test_pool_isolates_critical_claim_and_execution_failures(case: str) ->
     else:
         outcome = await asyncio.wait_for(first.drain("analysis-1"), timeout=1)
         assert outcome.disposition == (
-            "BLOCKED"
-            if case in {"zero", "failure", "unfinalized"}
-            else "TERMINAL"
+            "BLOCKED" if case in {"zero", "failure", "unfinalized"} else "TERMINAL"
         )
 
     if case == "zero":

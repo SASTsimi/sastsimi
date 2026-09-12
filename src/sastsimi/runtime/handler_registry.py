@@ -11,9 +11,7 @@ from sastsimi.ports.work_handler import WorkHandler
 class HandlerRegistry:
     """Resolve one explicitly injected handler for every required work type."""
 
-    def __init__(
-        self, handlers: Mapping[WorkType, WorkHandler] | None = None
-    ) -> None:
+    def __init__(self, handlers: Mapping[WorkType, WorkHandler] | None = None) -> None:
         self._handlers: dict[WorkType, WorkHandler] = {}
         if handlers is not None:
             self.register_many(handlers)
