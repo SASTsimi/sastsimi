@@ -1,0 +1,121 @@
+{
+  "expectation_schema_version": "r7-validation-expectation.v1",
+  "case_id": "r7-environment-ready-v2",
+  "expected_record_projections": {
+    "AR1": {
+      "record_type": "action_request",
+      "producer": "REPRODUCTION_SETUP_AUTOMATION",
+      "fields": {
+        "requested_by": "REPRODUCTION_SETUP_AUTOMATION",
+        "action_type": "RUN_SANDBOX",
+        "input_refs": ["DQ1", "ER1", "PL1", "SP1", "LP1"],
+        "dynamic_request_ref": "DQ1",
+        "reproduction_plan_ref": "PL1",
+        "sandbox_profile_ref": "SP1",
+        "resource_profile_ref": "LP1",
+        "run_policy_state_ref": "RPS1",
+        "network_targets": []
+      }
+    },
+    "AD1": {
+      "record_type": "action_decision",
+      "producer": "TRUSTED_RUNTIME",
+      "fields": {
+        "action_ref": "AR1",
+        "decision": "ALLOW",
+        "required_checks": ["SCHEMA", "AUTHORITY", "IDENTITY", "REVISION", "STATE", "BUDGET"],
+        "check_results": [
+          {"check_type": "SCHEMA", "result": "PASS"},
+          {"check_type": "AUTHORITY", "result": "PASS"},
+          {"check_type": "IDENTITY", "result": "PASS"},
+          {"check_type": "REVISION", "result": "PASS"},
+          {"check_type": "STATE", "result": "PASS"},
+          {"check_type": "BUDGET", "result": "PASS"}
+        ],
+        "checked_config_refs": ["SP1", "LP1"],
+        "use_status": "USED",
+        "error_ids": []
+      }
+    },
+    "ER1": {
+      "record_type": "environment_requirements",
+      "producer": "DYNAMIC_REPRODUCTION",
+      "fields": {
+        "request_ref": "DQ1",
+        "items": [
+          {"requirement_id": "req-python", "kind": "VERSION", "required": true, "expected": ">=3.12,<3.13", "source_refs": ["FR-PYPROJECT"]},
+          {"requirement_id": "req-flask", "kind": "VERSION", "required": true, "expected": "Flask==3.1.2", "source_refs": ["FR-PYPROJECT", "FR-UVLOCK-FLASK"]},
+          {"requirement_id": "req-traversal-target", "kind": "FIXTURE", "required": true, "expected": "outside-allowed-directory/path-traversal-target.txt", "source_refs": ["FR-FIXTURE-README", "FR-TRAVERSAL-TARGET"]},
+          {"requirement_id": "req-health", "kind": "HEALTH_CHECK", "required": true, "expected": "A normal allowed-file read returns status 200 with ALLOWED_FILE_CONTENT.", "source_refs": ["FR-FIXTURE-README"]}
+        ]
+      }
+    },
+    "PL1": {
+      "record_type": "reproduction_plan",
+      "producer": "DYNAMIC_REPRODUCTION",
+      "fields": {"request_ref": "DQ1", "purpose": "POC_CONFIRMATION", "environment_requirements_ref": "ER1", "sandbox_profile_ref": "SP1", "reproduction_goal": "Determine whether an untrusted file path can read a file outside the allowed-files directory in the isolated fixture.", "requested_evidence": ["normal allowed-file observation", "PATH_TRAVERSAL_TARGET_CONTENT observation"]}
+    },
+    "SPD1": {
+      "record_type": "sandbox_policy_decision",
+      "producer": "SANDBOX_CONTROLLER",
+      "fields": {"action_decision_ref": "AD1", "request_ref": "DQ1", "sandbox_profile_ref": "SP1", "resource_profile_ref": "LP1", "run_policy_state_ref": "RPS1", "observed_policy_status": "CURRENT", "execution_scope": "LOCAL_ONLY", "decision": "ALLOW"}
+    },
+    "RC1": {
+      "record_type": "environment_recipe",
+      "producer": "REPRODUCTION_SETUP_AUTOMATION",
+      "fields": {
+        "request_ref": "DQ1",
+        "environment_requirements_ref": "ER1",
+        "recipe_source_ref": "FR-PYPROJECT",
+        "source_refs": ["FR-PYPROJECT", "FR-UVLOCK-FLASK", "FR-FIXTURE-README"],
+        "base_image_digest": "sha256:synthetic-python-3.12-base",
+        "built_image_digest": "sha256:synthetic-r7-flask-fixture-image",
+        "baseline_recipe_ref": null,
+        "build_disposition": "BUILT"
+      }
+    },
+    "ENV1": {
+      "record_type": "sandbox_environment",
+      "producer": "REPRODUCTION_SETUP_AUTOMATION",
+      "fields": {
+        "request_ref": "DQ1",
+        "reproduction_plan_ref": "PL1",
+        "environment_recipe_ref": "RC1",
+        "requirements_ref": "ER1",
+        "container_action": "CREATED",
+        "container_reason": "INITIAL_CLEAN",
+        "container_instance_id": "container-r7-001",
+        "next_task_kind": "CREATE_POC_CANDIDATE",
+        "previous_environment_ref": null,
+        "status": "READY",
+        "checks": [
+          {"requirement_id": "req-python", "status": "MATCH", "actual": "3.12.13"},
+          {"requirement_id": "req-flask", "status": "MATCH", "actual": "3.1.2"},
+          {"requirement_id": "req-traversal-target", "status": "MATCH", "actual": "outside-allowed-directory/path-traversal-target.txt"},
+          {"requirement_id": "req-health", "status": "MATCH", "actual": "exit=0; content=ALLOWED_FILE_CONTENT"}
+        ]
+      }
+    }
+  },
+  "assertions": [
+    {"target": ["AR1", "AD1", "ER1", "PL1", "SPD1", "RC1", "ENV1"], "operator": "SAME_SCOPE", "value": "case.scope"},
+    {"target": "AR1", "operator": "PRODUCED_BY", "value": "REPRODUCTION_SETUP_AUTOMATION"},
+    {"target": "AD1", "operator": "PRODUCED_BY", "value": "TRUSTED_RUNTIME"},
+    {"target": "ER1", "operator": "PRODUCED_BY", "value": "DYNAMIC_REPRODUCTION"},
+    {"target": "PL1", "operator": "PRODUCED_BY", "value": "DYNAMIC_REPRODUCTION"},
+    {"target": "ENV1", "operator": "PRODUCED_BY", "value": "REPRODUCTION_SETUP_AUTOMATION"},
+    {"target": "ER1.items[*].required", "operator": "ALL_EQUAL", "value": true},
+    {"target": "ENV1.checks[*].status", "operator": "ALL_EQUAL", "value": "MATCH"},
+    {"target": "ENV1.container_instance_id", "operator": "EQUALS", "value": "container-r7-001"},
+    {"target": "PL1.reproduction_goal", "operator": "EQUALS", "value": "DQ1.goal"},
+    {"target": "PL1.requested_evidence", "operator": "CONTAINS", "value": ["normal allowed-file observation", "PATH_TRAVERSAL_TARGET_CONTENT observation"]},
+    {"target": "ENV1.next_task_kind", "operator": "EQUALS", "value": "CREATE_POC_CANDIDATE"},
+    {"target": ["DynamicReproductionConclusion", "DynamicReproductionResult", "PoCBundle"], "operator": "ABSENT"}
+  ],
+  "must_not_claim": [
+    "DERIVE_ENVIRONMENT executed a command or prepared the Sandbox",
+    "ReproductionPlan is a command, payload, step, or cleanup allowlist",
+    "a READY environment proves the vulnerability",
+    "a validated PoC already exists"
+  ]
+}

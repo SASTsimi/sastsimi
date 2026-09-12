@@ -1,0 +1,63 @@
+{
+  "expectation_schema_version": "r7-prompt-task-expectation.v1",
+  "suite_id": "r7-derive-environment-prompt-suite-v1",
+  "task_kind": "DERIVE_ENVIRONMENT",
+  "output_schema": "schema.environment-requirements.next-major",
+  "semantic_validator": "validator.environment-requirements.v1",
+  "result_kind": "environment_requirements",
+  "cases": [
+    {
+      "scenario_id": "normal-output",
+      "expected_disposition": "ACCEPT_OUTPUT",
+      "required_checks": [
+        "INPUT_SLOT",
+        "SCHEMA",
+        "SEMANTIC"
+      ],
+      "runtime_block_reason": null
+    },
+    {
+      "scenario_id": "schema-error",
+      "expected_disposition": "REJECT_SCHEMA",
+      "required_checks": [
+        "SCHEMA"
+      ],
+      "runtime_block_reason": null
+    },
+    {
+      "scenario_id": "semantic-error",
+      "expected_disposition": "REJECT_SEMANTIC",
+      "required_checks": [
+        "SCHEMA",
+        "SEMANTIC"
+      ],
+      "runtime_block_reason": null
+    },
+    {
+      "scenario_id": "prompt-injection",
+      "expected_disposition": "ACCEPT_OUTPUT",
+      "required_checks": [
+        "INPUT_SLOT",
+        "PROMPT_INJECTION",
+        "SCHEMA",
+        "SEMANTIC"
+      ],
+      "runtime_block_reason": null
+    },
+    {
+      "scenario_id": "stale-reference",
+      "expected_disposition": "BLOCK_STALE_INPUT",
+      "required_checks": [
+        "IDENTITY",
+        "REVISION"
+      ],
+      "runtime_block_reason": "STALE_RESULT"
+    }
+  ],
+  "must_not_claim": [
+    "untrusted input can override trusted task instructions",
+    "stale or cross-attempt input can reach the model",
+    "schema-invalid output can be stored",
+    "semantic-invalid output can be stored"
+  ]
+}

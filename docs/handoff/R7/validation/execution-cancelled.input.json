@@ -1,0 +1,86 @@
+{
+  "case_schema_version": "r7-validation-case.v1",
+  "case_id": "r7-execution-cancelled-v2",
+  "case_layer": "LLM_AND_RUNTIME_INTEGRATION",
+  "source": {
+    "type": "SYNTHETIC_RUNTIME_CANCELLATION",
+    "fixture_path": "docs/handoff/R7/validation/fixture"
+  },
+  "scope": {
+    "analysis_id": "AN-R7-1",
+    "workspace_id": "WS-R7-1",
+    "commit_id": "synthetic-flask-traversal-v1",
+    "hypothesis_id": "H-R7-1",
+    "verification_generation": 1,
+    "work_id": "KD1",
+    "attempt_id": "ADYN1"
+  },
+  "records": {
+    "request": {"record_id": "DQ1", "purpose": "POC_CONFIRMATION", "sandbox_profile_ref": "SP1"},
+    "requirements": {"record_id": "ER1", "request_ref": "DQ1"},
+    "plan": {"record_id": "PL1", "request_ref": "DQ1", "environment_requirements_ref": "ER1", "sandbox_profile_ref": "SP1"},
+    "sandbox_profile": {"record_id": "SP1", "network_mode": "DEFAULT_DENY"},
+    "lifecycle_profile": {"record_id": "LP1", "new_attempt_budget_remaining": 1},
+    "run_policy_state": {"record_id": "RPS1", "status": "CURRENT"},
+    "fixture_source": {"record_id": "FR-PYPROJECT", "path": "fixture/pyproject.toml", "content_hash": "sha256:cf4612f1621648ce728972e57c637a43c6dc061a3cb2e9333d09646037b04486"},
+    "candidate_source": {"record_id": "FR-REPRODUCE", "path": "fixture/reproduce.py", "content_hash": "sha256:13d762221a7ab81d6e3f8c887c7fde239e3f7c6a298f108709effacc5317e267"},
+    "action_request": {"record_id": "AR1", "requested_by": "REPRODUCTION_SETUP_AUTOMATION", "action_type": "RUN_SANDBOX", "input_refs": ["DQ1", "ER1", "PL1", "SP1", "LP1"], "dynamic_request_ref": "DQ1", "reproduction_plan_ref": "PL1", "sandbox_profile_ref": "SP1", "resource_profile_ref": "LP1", "run_policy_state_ref": "RPS1", "network_targets": []},
+    "action_decision": {"record_id": "AD1", "action_ref": "AR1", "decision": "ALLOW", "required_checks": ["SCHEMA", "AUTHORITY", "IDENTITY", "REVISION", "STATE", "BUDGET"], "check_results": [{"check_type": "SCHEMA", "result": "PASS"}, {"check_type": "AUTHORITY", "result": "PASS"}, {"check_type": "IDENTITY", "result": "PASS"}, {"check_type": "REVISION", "result": "PASS"}, {"check_type": "STATE", "result": "PASS"}, {"check_type": "BUDGET", "result": "PASS"}], "checked_config_refs": ["SP1", "LP1"], "use_status": "USED", "error_ids": [], "outcome_refs": []},
+    "policy_decision": {"record_id": "SPD1", "action_decision_ref": "AD1", "decision": "ALLOW", "request_ref": "DQ1", "sandbox_profile_ref": "SP1", "resource_profile_ref": "LP1", "run_policy_state_ref": "RPS1", "observed_policy_status": "CURRENT", "execution_scope": "LOCAL_ONLY"},
+    "recipe": {"record_id": "RC1", "request_ref": "DQ1", "environment_requirements_ref": "ER1", "recipe_source_ref": "FR-PYPROJECT", "build_disposition": "BUILT"},
+    "environment": {"record_id": "ENV1", "request_ref": "DQ1", "reproduction_plan_ref": "PL1", "environment_recipe_ref": "RC1", "requirements_ref": "ER1", "status": "READY"},
+    "candidate": {
+      "record_id": "PC1",
+      "request_ref": "DQ1",
+      "reproduction_plan_ref": "PL1",
+      "content_ref": "FR-REPRODUCE",
+      "content_digest": "sha256:13d762221a7ab81d6e3f8c887c7fde239e3f7c6a298f108709effacc5317e267",
+      "llm_call_id": "LLM-PC1"
+    },
+    "accepted_tool_request": {
+      "record_id": "TR1",
+      "request_ref": "DQ1",
+      "reproduction_plan_ref": "PL1",
+      "environment_ref": "ENV1",
+      "turn_number": 1,
+      "action": "USE_POC_CANDIDATE",
+      "command": null,
+      "poc_candidate_ref": "PC1",
+      "recreate_reason": null,
+      "rationale": "Execute the exact current candidate and observe whether the path traversal target file is returned.",
+      "llm_call_id": "LLM-TR1"
+    }
+  },
+  "stimulus": {
+    "cancelled_by": "RUNTIME",
+    "cancelled_action_id": "POC-EXEC-1",
+    "finish_received": false,
+    "observations_recorded_before_cancel": [],
+    "resources_created": ["container-r7-001"],
+    "agent_log_before_finalization": {
+      "record_id": "LOG1",
+      "request_ref": "DQ1",
+      "attempt_id": "ADYN1",
+      "events": [
+        {"event_id": "E1", "sequence": 1, "action_id": "SESSION-1", "event_type": "SESSION_STARTED", "actor": "REPRODUCTION_SESSION_MANAGER", "input_refs": ["SPD1"]},
+        {"event_id": "E2", "sequence": 2, "action_id": "AGENT-TURN-1", "event_type": "AGENT_STARTED", "actor": "DYNAMIC_REPRODUCTION", "environment_ref": "ENV1", "input_refs": ["DQ1", "ER1", "PL1", "ENV1", "PC1"]},
+        {"event_id": "E3", "sequence": 3, "action_id": "AGENT-TURN-1", "event_type": "AGENT_FINISHED", "actor": "DYNAMIC_REPRODUCTION", "tool_request_ref": "TR1", "output_refs": ["TR1"]},
+        {"event_id": "E4", "sequence": 4, "action_id": "POC-EXEC-1", "event_type": "POC_EXECUTION_STARTED", "actor": "TOOL_RUNTIME", "environment_ref": "ENV1", "poc_candidate_ref": "PC1", "tool_request_ref": "TR1", "command_digest": "sha256:synthetic-poc-execution-command-v1"},
+        {"event_id": "E5", "sequence": 5, "action_id": "POC-EXEC-1", "event_type": "ERROR", "actor": "REPRODUCTION_SESSION_MANAGER", "safe_message": "Execution was cancelled by the runtime before an observation was recorded."}
+      ]
+    },
+    "cleanup_injection": {
+      "cleanup_ref": "CL1",
+      "status": "SUCCEEDED",
+      "resource_refs": ["container-r7-001"],
+      "failure_reason": null
+    },
+    "late_output": {
+      "observation_ref": "OBS-LATE-1",
+      "source_attempt_id": "ADYN1",
+      "source_action_id": "POC-EXEC-1",
+      "arrived_after_result_commit": true,
+      "content": "PATH_TRAVERSAL_TARGET_CONTENT"
+    }
+  }
+}

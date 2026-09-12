@@ -45,7 +45,8 @@ jobs:
           docker pull python:3.12-slim
           uv run python -m pytest tests/e2e/test_dynamic_reproduction.py -q
       - name: All existing suites
-        run: uv run pytest tests -q
+        timeout-minutes: 90
+        run: uv run pytest tests -v --tb=short
       - name: Architecture validator (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell

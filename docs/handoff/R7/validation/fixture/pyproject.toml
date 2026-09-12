@@ -1,0 +1,5 @@
+[project]
+name = "r7-path-traversal-fixture"
+version = "1.0.0"
+requires-python = ">=3.12,<3.13"
+dependencies = ["Flask==3.1.2"]
