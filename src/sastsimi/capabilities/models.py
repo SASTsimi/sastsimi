@@ -4,8 +4,8 @@ from typing import Literal, Self
 
 from pydantic import AwareDatetime, model_validator
 
-from sastsimi.contracts._domain import SafeDiagnostic
 from sastsimi.contracts.base import ContractModel, NonEmptyStr, Sha256
+from sastsimi.contracts.domain import SafeDiagnostic
 from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 
 type ProbeKind = Literal[
@@ -24,6 +24,7 @@ class CapabilityProbeReceipt(ContractModel):
     subject_key: NonEmptyStr | None
     observed_version: NonEmptyStr | None
     observed_sha256: Sha256 | None
+    execution_target_hash: Sha256 | None = None
     operating_system: Literal["windows", "linux", "macos"]
     architecture: Literal["x86_64", "aarch64"]
     checked_at: AwareDatetime
@@ -50,6 +51,11 @@ class CapabilityProbeReceipt(ContractModel):
             raise ValueError("PROBE_ACTIVATION_TARGET_INCOMPLETE")
         if self.approved_profile_ref is not None and not self.activation_supported:
             raise ValueError("PROBE_APPROVAL_INVALID")
+        if self.kind == "DOCKER" and self.activation_supported:
+            if self.execution_target_hash is None:
+                raise ValueError("PROBE_EXECUTION_TARGET_REQUIRED")
+        elif self.execution_target_hash is not None:
+            raise ValueError("PROBE_EXECUTION_TARGET_FORBIDDEN")
         return self
 
 

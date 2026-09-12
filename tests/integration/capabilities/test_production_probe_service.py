@@ -1,17 +1,25 @@
 from __future__ import annotations
 
+import inspect
+import json
 import sqlite3
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+import sastsimi.capabilities as capability_api
 from sastsimi.bootstrap import build_runtime
+from sastsimi.capabilities import (
+    ProductionCapabilityProbeService,
+    build_production_capability_probe_service,
+)
 from sastsimi.capabilities.probes import CommandObservation
-from sastsimi.capabilities.service import CapabilityProbeService
+from sastsimi.capabilities.service import _CapabilityProbeEngine
 from sastsimi.capabilities.store import (
-    CapabilityProbeEvidenceAuthority,
-    SQLiteCapabilityProbeStore,
+    _CapabilityProbeEvidenceAuthority,
+    _SQLiteCapabilityProbeStore,
 )
 from sastsimi.config.secrets import SecretReference
 from sastsimi.contracts.ids import CommitId, WorkspaceId
@@ -22,24 +30,90 @@ from tests.integration.runtime_support import TestClock, TestIds
 
 
 class FakeCommands:
-    def __init__(self, *, docker_daemon: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        docker_daemon: bool = True,
+        fail_operation: str | None = None,
+        mutate_after_version: Path | None = None,
+        opengrep_check_ids: tuple[str, ...] = (
+            "sastsimi.probe.python",
+            "sastsimi.probe.javascript",
+        ),
+    ) -> None:
         self.docker_daemon = docker_daemon
+        self.fail_operation = fail_operation
+        self.mutate_after_version = mutate_after_version
+        self.opengrep_check_ids = opengrep_check_ids
+        self.calls: list[tuple[str, tuple[str, ...]]] = []
+        self.docker_target = "default|npipe://docker-engine"
 
     def run(
         self, executable: Path, arguments: tuple[str, ...], *, timeout_ms: int
     ) -> CommandObservation:
         del timeout_ms
         command = executable.stem.lower()
+        self.calls.append((command, arguments))
+        operation = next(
+            (
+                item
+                for item in (
+                    "clone",
+                    "checkout",
+                    "scan",
+                    "build",
+                    "run",
+                    "inspect",
+                    "rm",
+                )
+                if item in arguments
+            ),
+            None,
+        )
+        if self.fail_operation is not None and operation == self.fail_operation:
+            return CommandObservation(False, None)
         if command == "git":
-            return CommandObservation(True, "git version 2.51.0")
+            if arguments == ("--version",):
+                result = CommandObservation(True, "git version 2.51.0")
+                if self.mutate_after_version is not None:
+                    self.mutate_after_version.write_bytes(b"changed-during-probe")
+                return result
+            if "rev-parse" in arguments:
+                return CommandObservation(True, "a" * 40)
+            return CommandObservation(True, "ok")
         if command == "opengrep":
-            return CommandObservation(True, "1.10.0")
+            if arguments == ("--version",):
+                return CommandObservation(True, "1.10.0")
+            return CommandObservation(
+                True,
+                json.dumps(
+                    {
+                        "results": [
+                            {"check_id": check_id}
+                            for check_id in self.opengrep_check_ids
+                        ]
+                    }
+                ),
+            )
         if command == "codeql":
             return CommandObservation(True, "2.23.1")
-        if command == "docker" and arguments[0] == "version":
-            if self.docker_daemon:
-                return CommandObservation(True, "28.3.3|28.3.3")
-            return CommandObservation(False, None)
+        if command == "docker":
+            if arguments[0] == "version":
+                if self.docker_daemon:
+                    return CommandObservation(True, "28.3.3|28.3.3")
+                return CommandObservation(False, None)
+            if arguments[:2] == ("context", "show"):
+                return CommandObservation(True, self.docker_target.split("|", 1)[0])
+            if arguments[:2] == ("context", "inspect"):
+                return CommandObservation(True, self.docker_target)
+            if arguments[0] == "build":
+                return CommandObservation(True, "sha256:" + "b" * 64)
+            if arguments[0] == "run":
+                return CommandObservation(True, "probe-container")
+            if arguments[0] == "inspect":
+                return CommandObservation(True, "healthy")
+            if arguments[:2] in {("rm", "--force"), ("image", "rm")}:
+                return CommandObservation(True, "removed")
         raise AssertionError((command, arguments))
 
 
@@ -66,19 +140,20 @@ def _service(
     docker_daemon: bool = True,
     openai_passed: bool = True,
     host_id: str = "host-a",
-) -> tuple[CapabilityProbeService, RuntimeServices, SQLiteCapabilityProbeStore]:
+) -> tuple[_CapabilityProbeEngine, RuntimeServices, _SQLiteCapabilityProbeStore]:
     binaries = tmp_path / "bin"
     binaries.mkdir(parents=True, exist_ok=True)
     located: dict[str, Path] = {}
+    located["python"] = Path(sys.executable)
     for name in available:
         path = binaries / f"{name}.exe"
         path.write_bytes((name + "-binary").encode())
         located[name] = path
 
-    store = SQLiteCapabilityProbeStore(
+    store = _SQLiteCapabilityProbeStore(
         tmp_path / "capability-probes.sqlite3", host_id=host_id
     )
-    authority = CapabilityProbeEvidenceAuthority(store)
+    authority = _CapabilityProbeEvidenceAuthority(store)
     upgrade(Database(tmp_path / "db" / "sastsimi.sqlite3"))
     runtime = build_runtime(
         tmp_path,
@@ -89,7 +164,8 @@ def _service(
         evidence=authority,
         capability_host_id=host_id,
     )
-    service = CapabilityProbeService(
+    commands = FakeCommands(docker_daemon=docker_daemon)
+    service = _CapabilityProbeEngine(
         registry=runtime.configuration,
         artifacts=runtime.unit_of_work.artifacts,
         store=store,
@@ -98,9 +174,11 @@ def _service(
         architecture="x86_64",
         clock=lambda: datetime(2026, 9, 13, tzinfo=UTC),
         executable_locator=lambda name: located.get(name),
-        command_runner=FakeCommands(docker_daemon=docker_daemon),
+        command_runner=commands,
         secret_resolver=FakeSecrets(),
         openai_probe=FakeOpenAI(passed=openai_passed),
+        approval_identity=lambda: "taehyeon-git",
+        scratch_root=tmp_path / "scratch",
     )
     return service, runtime, store
 
@@ -145,13 +223,11 @@ def test_real_probe_receipts_require_exact_human_approval_before_active(
         service.approve(
             git.probe_id,
             expected_target_hash="f" * 64,
-            approved_by="taehyeon-git",
         )
 
     exact_ref = service.approve(
         git.probe_id,
         expected_target_hash=git.approval_target_hash or "",
-        approved_by="taehyeon-git",
     )
     selection = runtime.configuration.resolve_active_capability(
         capability_kind="GIT",
@@ -170,17 +246,14 @@ def test_real_probe_receipts_require_exact_human_approval_before_active(
     python_ref = service.approve(
         python_ast.probe_id,
         expected_target_hash=python_ast.approval_target_hash or "",
-        approved_by="taehyeon-git",
     )
     opengrep_ref = service.approve(
         opengrep.probe_id,
         expected_target_hash=opengrep.approval_target_hash or "",
-        approved_by="taehyeon-git",
     )
     docker_ref = service.approve(
         docker.probe_id,
         expected_target_hash=docker.approval_target_hash or "",
-        approved_by="taehyeon-git",
     )
     assert (
         runtime.configuration.resolve_active_static_tool(
@@ -262,7 +335,6 @@ def test_blocked_or_incomplete_probe_cannot_be_forged_active(
         service.approve(
             receipt.probe_id,
             expected_target_hash=receipt.approval_target_hash or "0" * 64,
-            approved_by="taehyeon-git",
         )
 
     other_host, _runtime, _store = _service(
@@ -272,5 +344,178 @@ def test_blocked_or_incomplete_probe_cannot_be_forged_active(
         other_host.approve(
             receipt.probe_id,
             expected_target_hash=receipt.approval_target_hash or "0" * 64,
-            approved_by="taehyeon-git",
         )
+
+
+def test_public_production_facade_has_no_dependency_injection_or_caller_identity() -> (
+    None
+):
+    build_parameters = inspect.signature(
+        build_production_capability_probe_service
+    ).parameters
+    assert set(build_parameters) == {"data_dir", "host_id"}
+
+    assert "command_runner" not in build_parameters
+    assert "store" not in build_parameters
+    constructor = inspect.signature(ProductionCapabilityProbeService).parameters
+    assert set(constructor) == {"data_dir", "host_id"}
+    assert (
+        "approved_by"
+        not in inspect.signature(ProductionCapabilityProbeService.approve).parameters
+    )
+    assert not hasattr(capability_api, "CapabilityProbeService")
+    assert not hasattr(capability_api, "SQLiteCapabilityProbeStore")
+
+
+def test_activation_requires_actual_operations_not_only_version(
+    tmp_path: Path,
+) -> None:
+    service, _runtime, _store = _service(
+        tmp_path, available={"git", "opengrep", "docker"}
+    )
+    commands = service._commands
+    assert isinstance(commands, FakeCommands)
+
+    for kind in ("GIT", "OPENGREP", "DOCKER"):
+        receipt = service.probe(kind)
+        assert receipt.activation_supported is True
+
+    flattened = [
+        (command, " ".join(arguments)) for command, arguments in commands.calls
+    ]
+    assert any(
+        command == "git" and "clone" in arguments for command, arguments in flattened
+    )
+    assert any(
+        command == "git" and "checkout" in arguments for command, arguments in flattened
+    )
+    assert any(
+        command == "opengrep" and "scan" in arguments
+        for command, arguments in flattened
+    )
+    assert any(
+        command == "docker" and "build" in arguments for command, arguments in flattened
+    )
+    assert any(
+        command == "docker" and "run" in arguments for command, arguments in flattened
+    )
+    assert any(
+        command == "docker" and "inspect" in arguments
+        for command, arguments in flattened
+    )
+    assert any(
+        command == "docker" and "rm" in arguments for command, arguments in flattened
+    )
+
+
+def test_opengrep_cannot_activate_unprobed_javascript_scope(tmp_path: Path) -> None:
+    service, _runtime, _store = _service(tmp_path, available={"opengrep"})
+    service._commands = FakeCommands(opengrep_check_ids=("sastsimi.probe",))
+
+    receipt = service.probe("OPENGREP")
+
+    assert receipt.status == "BLOCKED"
+    assert receipt.activation_supported is False
+
+
+def test_executable_digest_change_during_probe_or_before_approval_fails_closed(
+    tmp_path: Path,
+) -> None:
+    service, _runtime, _store = _service(tmp_path, available={"git"})
+    executable = tmp_path / "bin" / "git.exe"
+    commands = FakeCommands(mutate_after_version=executable)
+    service._commands = commands
+
+    changed_during_probe = service.probe("GIT")
+    assert changed_during_probe.activation_supported is False
+
+    executable.write_bytes(b"git-binary")
+    service._commands = FakeCommands()
+    receipt = service.probe("GIT")
+    executable.write_bytes(b"changed-before-approval")
+    with pytest.raises(ValueError, match="CAPABILITY_EXECUTABLE_CHANGED"):
+        service.approve(
+            receipt.probe_id,
+            expected_target_hash=receipt.approval_target_hash or "",
+        )
+
+
+def test_docker_approval_rechecks_exact_daemon_target(tmp_path: Path) -> None:
+    service, _runtime, _store = _service(tmp_path, available={"docker"})
+    commands = service._commands
+    assert isinstance(commands, FakeCommands)
+    receipt = service.probe("DOCKER")
+    commands.docker_target = "other|npipe://different-engine"
+
+    with pytest.raises(ValueError, match="CAPABILITY_EXECUTION_TARGET_CHANGED"):
+        service.approve(
+            receipt.probe_id,
+            expected_target_hash=receipt.approval_target_hash or "",
+        )
+
+
+def test_docker_execution_rechecks_exact_daemon_target(tmp_path: Path) -> None:
+    service, _runtime, _store = _service(tmp_path, available={"docker"})
+    commands = service._commands
+    assert isinstance(commands, FakeCommands)
+    receipt = service.probe("DOCKER")
+    profile_ref = service.approve(
+        receipt.probe_id,
+        expected_target_hash=receipt.approval_target_hash or "",
+    )
+    commands.docker_target = "other|npipe://different-engine"
+
+    with pytest.raises(ValueError, match="CAPABILITY_EXECUTION_TARGET_CHANGED"):
+        service.resolve_executable(profile_ref)
+
+
+@pytest.mark.parametrize(
+    ("kind", "failure"),
+    (("GIT", "checkout"), ("OPENGREP", "scan"), ("DOCKER", "rm")),
+)
+def test_incomplete_real_operation_set_cannot_activate(
+    tmp_path: Path, kind: str, failure: str
+) -> None:
+    service, _runtime, _store = _service(
+        tmp_path, available={kind.lower() if kind != "OPENGREP" else "opengrep"}
+    )
+    service._commands = FakeCommands(fail_operation=failure)
+
+    receipt = service.probe(kind)  # type: ignore[arg-type]
+
+    assert receipt.status == "BLOCKED"
+    assert receipt.activation_supported is False
+    assert receipt.approval_target_hash is None
+
+
+def test_registry_publish_precedes_idempotent_probe_marker_reconciliation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, runtime, store = _service(tmp_path, available={"git"})
+    receipt = service.probe("GIT")
+    real_publish = store.publish
+    publish_calls = 0
+
+    def crash_before_marker(probe_id: str, profile_ref: object) -> None:
+        nonlocal publish_calls
+        publish_calls += 1
+        if publish_calls == 1:
+            raise RuntimeError("simulated marker crash")
+        real_publish(probe_id, profile_ref)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(store, "publish", crash_before_marker)
+    with pytest.raises(RuntimeError, match="simulated marker crash"):
+        service.approve(
+            receipt.probe_id,
+            expected_target_hash=receipt.approval_target_hash or "",
+        )
+    assert store.approved_profile_ref(receipt.probe_id) is None
+
+    recovered = service.approve(
+        receipt.probe_id,
+        expected_target_hash=receipt.approval_target_hash or "",
+    )
+    assert store.approved_profile_ref(receipt.probe_id) == recovered
+    assert runtime.configuration.resolve_pinned_active_profile(recovered).status == (
+        "ACTIVE"
+    )

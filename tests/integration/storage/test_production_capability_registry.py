@@ -138,6 +138,7 @@ def _runtime_profile(
             "subject_key": subject_key,
             "expected_version": expected_version,
             "subject_sha256": "b" * 64,
+            "execution_target_hash": "d" * 64 if kind == "DOCKER" else None,
             "operating_system": "windows",
             "architecture": "x86_64",
             "languages": languages,
@@ -197,6 +198,11 @@ def _approval(
                 profile.executable_sha256
                 if isinstance(profile, StaticToolProfile)
                 else profile.subject_sha256
+            ),
+            "execution_target_hash": (
+                profile.execution_target_hash
+                if isinstance(profile, RuntimeCapabilityProfile)
+                else None
             ),
             "operating_system": "windows",
             "architecture": "x86_64",

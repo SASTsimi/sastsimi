@@ -103,6 +103,7 @@ class CapabilityApprovalEvidence(DomainRecord):
     subject_key: NonEmptyStr
     observed_version: NonEmptyStr
     observed_sha256: Sha256
+    execution_target_hash: Sha256 | None = None
     operating_system: CapabilityOperatingSystem
     architecture: CapabilityArchitecture
     languages: tuple[CapabilityLanguage, ...]
@@ -147,6 +148,11 @@ class CapabilityApprovalEvidence(DomainRecord):
             raise ValueError("CAPABILITY_SECURITY_CONTROL_EVIDENCE_REQUIRED")
         if self.approved_at < self.checked_at:
             raise ValueError("CAPABILITY_APPROVAL_PRECEDES_PROBE")
+        if self.capability_kind == "DOCKER":
+            if self.execution_target_hash is None:
+                raise ValueError("CAPABILITY_EXECUTION_TARGET_REQUIRED")
+        elif self.execution_target_hash is not None:
+            raise ValueError("CAPABILITY_EXECUTION_TARGET_FORBIDDEN")
         return self
 
 
@@ -164,6 +170,7 @@ class RuntimeCapabilityProfile(DomainRecord):
     subject_key: NonEmptyStr
     expected_version: NonEmptyStr
     subject_sha256: Sha256
+    execution_target_hash: Sha256 | None = None
     operating_system: CapabilityOperatingSystem
     architecture: CapabilityArchitecture
     languages: tuple[CapabilityLanguage, ...]
@@ -186,6 +193,11 @@ class RuntimeCapabilityProfile(DomainRecord):
             raise ValueError("CAPABILITY_LANGUAGE_MISMATCH")
         if self.status == "RETIRED" and self.meta.revision_number == 1:
             raise ValueError("CAPABILITY_RETIREMENT_REVISION_INVALID")
+        if self.capability_kind == "DOCKER":
+            if self.execution_target_hash is None:
+                raise ValueError("CAPABILITY_EXECUTION_TARGET_REQUIRED")
+        elif self.execution_target_hash is not None:
+            raise ValueError("CAPABILITY_EXECUTION_TARGET_FORBIDDEN")
         return self
 
 

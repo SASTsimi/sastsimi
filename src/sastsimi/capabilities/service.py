@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
-import sys
 import tempfile
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -42,17 +43,16 @@ from .models import CapabilityProbeReceipt, ProbeKind
 from .probes import (
     CommandProbeRunner,
     OpenAIProbeTransport,
-    SubprocessCommandProbeRunner,
-    locate_executable,
     python_ast_observation,
     safe_repository_loader_control,
     sha256_file,
     verify_outer_boundary_controls,
 )
-from .store import SQLiteCapabilityProbeStore
+from .store import _SQLiteCapabilityProbeStore
 
 type ExecutableLocator = Callable[[str], Path | None]
 type Clock = Callable[[], datetime]
+type ApprovalIdentity = Callable[[], str]
 type CapabilityProfile = RuntimeCapabilityProfile | StaticToolProfile
 
 _PUBLICATION_ANALYSIS = AnalysisId("capability-publication")
@@ -66,24 +66,25 @@ class SecretLookup(Protocol):
     def resolve(self, reference: SecretReference) -> str: ...
 
 
-class CapabilityProbeService:
-    """Only this service converts actual observations into trusted profiles."""
+class _CapabilityProbeEngine:
+    """Internal injectable engine used by production composition and tests."""
 
     def __init__(
         self,
         *,
         registry: ConfigurationRegistry,
         artifacts: ArtifactStore,
-        store: SQLiteCapabilityProbeStore,
+        store: _SQLiteCapabilityProbeStore,
         host_id: str,
         operating_system: CapabilityOperatingSystem,
         architecture: CapabilityArchitecture,
         clock: Clock,
-        executable_locator: ExecutableLocator = locate_executable,
-        command_runner: CommandProbeRunner | None = None,
+        executable_locator: ExecutableLocator,
+        command_runner: CommandProbeRunner,
+        approval_identity: ApprovalIdentity,
         secret_resolver: SecretLookup | None = None,
         openai_probe: OpenAIProbeTransport | None = None,
-        scratch_root: Path | None = None,
+        scratch_root: Path,
     ) -> None:
         if store.host_id != host_id or _SAFE_IDENTIFIER.fullmatch(host_id) is None:
             raise ValueError("PROBE_HOST_MISMATCH")
@@ -95,10 +96,11 @@ class CapabilityProbeService:
         self._architecture = architecture
         self._clock = clock
         self._locate = executable_locator
-        self._commands = command_runner or SubprocessCommandProbeRunner()
+        self._commands = command_runner
+        self._approval_identity = approval_identity
         self._secret_resolver = secret_resolver
         self._openai = openai_probe
-        self._scratch_root = scratch_root or Path(tempfile.gettempdir())
+        self._scratch_root = scratch_root
 
     def probe(
         self,
@@ -118,10 +120,16 @@ class CapabilityProbeService:
         status: str = "BLOCKED"
         activation_supported = False
         controls: tuple[str, ...] = ()
+        execution_target_hash: str | None = None
         summary = "Capability probe could not be completed"
 
         if kind == "PYTHON_AST":
-            observed = python_ast_observation()
+            python_executable = self._locate("python")
+            observed = (
+                python_ast_observation(python_executable)
+                if python_executable is not None
+                else None
+            )
             if observed is not None:
                 version, digest = observed
                 profile_key, subject_key = "python-ast", "python"
@@ -138,6 +146,10 @@ class CapabilityProbeService:
             if executable is None:
                 summary = f"{kind} executable is unavailable"
             else:
+                try:
+                    before_digest = sha256_file(executable)
+                except (OSError, ValueError):
+                    before_digest = None
                 arguments = {
                     "GIT": ("--version",),
                     "OPENGREP": ("--version",),
@@ -167,6 +179,7 @@ class CapabilityProbeService:
                     and command_observation.succeeded
                     and normalized is not None
                     and observed_digest is not None
+                    and before_digest == observed_digest
                 ):
                     version = normalized.removeprefix("git version ")
                     digest = observed_digest
@@ -178,23 +191,37 @@ class CapabilityProbeService:
                     }[kind]
                     subject_key = profile_key
                     try:
-                        control_passed = (
-                            safe_repository_loader_control(self._scratch_root)
-                            if kind == "GIT"
-                            else kind == "DOCKER"
-                            and verify_outer_boundary_controls(self._scratch_root)
-                        )
-                    except (OSError, ValueError):
+                        if kind == "GIT":
+                            control_passed = safe_repository_loader_control(
+                                self._scratch_root
+                            ) and self._probe_git_operations(executable)
+                        elif kind == "OPENGREP":
+                            control_passed = self._probe_opengrep_analyze(executable)
+                        elif kind == "DOCKER":
+                            self._scratch_root.mkdir(parents=True, exist_ok=True)
+                            execution_target_hash = self._docker_target_hash(executable)
+                            control_passed = (
+                                execution_target_hash is not None
+                                and verify_outer_boundary_controls(self._scratch_root)
+                                and self._probe_docker_operations(executable, probe_id)
+                                and self._docker_target_hash(executable)
+                                == execution_target_hash
+                            )
+                        else:
+                            control_passed = False
+                        digest_unchanged = sha256_file(executable) == observed_digest
+                    except (OSError, ValueError, subprocess.SubprocessError):
                         control_passed = False
-                    if kind == "GIT" and control_passed:
+                        digest_unchanged = False
+                    if kind == "GIT" and control_passed and digest_unchanged:
                         status, activation_supported = "PASSED", True
                         controls = ("SAFE_REPOSITORY_LOADER",)
                         summary = "Git binary and safe loader control probe passed"
-                    elif kind == "DOCKER" and control_passed:
+                    elif kind == "DOCKER" and control_passed and digest_unchanged:
                         status, activation_supported = "PASSED", True
                         controls = ("SANDBOX_OUTER_BOUNDARY",)
                         summary = "Docker CLI, daemon, and outer boundary probe passed"
-                    elif kind == "OPENGREP":
+                    elif kind == "OPENGREP" and control_passed and digest_unchanged:
                         status, activation_supported = "PASSED", True
                         summary = "OpenGrep binary probe passed"
                     elif kind == "CODEQL":
@@ -231,6 +258,9 @@ class CapabilityProbeService:
                 else:
                     summary = "OpenAI authentication or structured output probe failed"
 
+        if not activation_supported:
+            execution_target_hash = None
+
         evidence = {
             "schema_version": "1.0.0",
             "probe_id": probe_id,
@@ -239,6 +269,7 @@ class CapabilityProbeService:
             "status": status,
             "observed_version": version,
             "observed_sha256": digest,
+            "execution_target_hash": execution_target_hash,
             "operating_system": self._operating_system,
             "architecture": self._architecture,
             "checks": tuple(controls),
@@ -257,6 +288,7 @@ class CapabilityProbeService:
                     subject_key=cast(str, subject_key),
                     version=cast(str, version),
                     digest=cast(str, digest),
+                    execution_target_hash=execution_target_hash,
                     evidence_ref=self._placeholder_evidence_ref(),
                 )
             )
@@ -270,6 +302,7 @@ class CapabilityProbeService:
                 "subject_key": subject_key,
                 "observed_version": version,
                 "observed_sha256": digest,
+                "execution_target_hash": execution_target_hash,
                 "operating_system": self._operating_system,
                 "architecture": self._architecture,
                 "checked_at": checked_at,
@@ -295,7 +328,7 @@ class CapabilityProbeService:
             key = profile.executable_key
             expected_digest = profile.executable_sha256
             executable = (
-                Path(sys.executable)
+                self._locate("python")
                 if profile.adapter_key == "PYTHON_AST"
                 else self._locate(key)
             )
@@ -315,6 +348,12 @@ class CapabilityProbeService:
                 raise ValueError
         except (OSError, ValueError) as error:
             raise ValueError("CAPABILITY_EXECUTABLE_CHANGED") from error
+        if (
+            isinstance(profile, RuntimeCapabilityProfile)
+            and profile.capability_kind == "DOCKER"
+            and self._docker_target_hash(resolved) != profile.execution_target_hash
+        ):
+            raise ValueError("CAPABILITY_EXECUTION_TARGET_CHANGED")
         return resolved
 
     def approve(
@@ -322,7 +361,6 @@ class CapabilityProbeService:
         probe_id: str,
         *,
         expected_target_hash: str,
-        approved_by: str,
     ) -> HostConfigurationRef:
         """Publish ACTIVE only after a human confirms the exact probed target."""
 
@@ -337,18 +375,36 @@ class CapabilityProbeService:
             or expected_target_hash != receipt.approval_target_hash
         ):
             raise ValueError("APPROVAL_TARGET_MISMATCH")
+        approved_by = self._approval_identity()
         if _SAFE_IDENTIFIER.fullmatch(approved_by) is None:
             raise ValueError("APPROVER_REQUIRED")
         assert receipt.profile_key is not None
         assert receipt.subject_key is not None
         assert receipt.observed_version is not None
         assert receipt.observed_sha256 is not None
+        executable = self._locate(receipt.subject_key)
+        if executable is None:
+            raise ValueError("CAPABILITY_EXECUTABLE_UNAVAILABLE")
+        try:
+            if executable.is_symlink():
+                raise ValueError
+            resolved = executable.resolve(strict=True)
+            if sha256_file(resolved) != receipt.observed_sha256:
+                raise ValueError
+        except (OSError, ValueError) as error:
+            raise ValueError("CAPABILITY_EXECUTABLE_CHANGED") from error
+        if receipt.kind == "DOCKER" and (
+            receipt.execution_target_hash is None
+            or self._docker_target_hash(resolved) != receipt.execution_target_hash
+        ):
+            raise ValueError("CAPABILITY_EXECUTION_TARGET_CHANGED")
         profile_draft = self._profile(
             receipt.kind,
             profile_key=receipt.profile_key,
             subject_key=receipt.subject_key,
             version=receipt.observed_version,
             digest=receipt.observed_sha256,
+            execution_target_hash=receipt.execution_target_hash,
             evidence_ref=self._placeholder_evidence_ref(),
         )
         languages, operations = self._route(receipt.kind)
@@ -367,6 +423,7 @@ class CapabilityProbeService:
                     "subject_key": receipt.subject_key,
                     "observed_version": receipt.observed_version,
                     "observed_sha256": receipt.observed_sha256,
+                    "execution_target_hash": receipt.execution_target_hash,
                     "operating_system": self._operating_system,
                     "architecture": self._architecture,
                     "languages": languages,
@@ -390,34 +447,26 @@ class CapabilityProbeService:
             self._store.authorize(approval, probe_id)
         elif approval.approved_by != approved_by:
             raise ValueError("APPROVER_MISMATCH")
-        approval_hash = content_hash(approval)
-        approval_published = False
-        try:
-            approval_ref = self._registry.register_capability_approval(approval)
-            approval_published = True
-            profile = self._profile(
-                receipt.kind,
-                profile_key=receipt.profile_key,
-                subject_key=receipt.subject_key,
-                version=receipt.observed_version,
-                digest=receipt.observed_sha256,
-                evidence_ref=approval_ref,
-            )
-            profile_ref = self._profile_ref(profile)
-            self._store.publish(probe_id, profile_ref)
-            if isinstance(profile, StaticToolProfile):
-                actual_ref = self._registry.register_production_static_tool_profile(
-                    profile
-                )
-            else:
-                actual_ref = self._registry.register_runtime_capability(profile)
-            if actual_ref != profile_ref:
-                raise ValueError("CAPABILITY_PUBLICATION_REF_MISMATCH")
-        except Exception:
-            self._store.unpublish(probe_id)
-            if not approval_published:
-                self._store.revoke(approval_hash)
-            raise
+        approval_ref = self._registry.register_capability_approval(approval)
+        profile = self._profile(
+            receipt.kind,
+            profile_key=receipt.profile_key,
+            subject_key=receipt.subject_key,
+            version=receipt.observed_version,
+            digest=receipt.observed_sha256,
+            execution_target_hash=receipt.execution_target_hash,
+            evidence_ref=approval_ref,
+            record_id=RecordId("profile-" + receipt.probe_id),
+            created_at=approval.approved_at,
+        )
+        profile_ref = self._profile_ref(profile)
+        if isinstance(profile, StaticToolProfile):
+            actual_ref = self._registry.register_production_static_tool_profile(profile)
+        else:
+            actual_ref = self._registry.register_runtime_capability(profile)
+        if actual_ref != profile_ref:
+            raise ValueError("CAPABILITY_PUBLICATION_REF_MISMATCH")
+        self._store.publish(probe_id, profile_ref)
         return profile_ref
 
     @staticmethod
@@ -466,15 +515,22 @@ class CapabilityProbeService:
             ),
         )
 
-    def _meta(self, kind: str, *, logical: str) -> RecordMeta:
+    def _meta(
+        self,
+        kind: str,
+        *,
+        logical: str,
+        record_id: RecordId | None = None,
+        created_at: datetime | None = None,
+    ) -> RecordMeta:
         return RecordMeta(
-            record_id=RecordId(str(uuid4())),
+            record_id=record_id or RecordId(str(uuid4())),
             logical_record_id=LogicalRecordId(logical),
             record_type=kind,
             schema_version="1.0.0",
             revision_number=1,
             previous_record_id=None,
-            created_at=self._clock(),
+            created_at=created_at or self._clock(),
             analysis_id=_PUBLICATION_ANALYSIS,
             workspace_id=_PUBLICATION_WORKSPACE,
             commit_id=_PUBLICATION_COMMIT,
@@ -512,6 +568,9 @@ class CapabilityProbeService:
         version: str,
         digest: str,
         evidence_ref: HostConfigurationRef,
+        execution_target_hash: str | None = None,
+        record_id: RecordId | None = None,
+        created_at: datetime | None = None,
     ) -> CapabilityProfile:
         logical = "profile-" + hashlib_key(
             self._host_id + "|" + kind + "|" + profile_key
@@ -524,7 +583,12 @@ class CapabilityProbeService:
             }[kind]
             return StaticToolProfile.model_validate(
                 {
-                    "meta": self._meta("static_tool_profile", logical=logical),
+                    "meta": self._meta(
+                        "static_tool_profile",
+                        logical=logical,
+                        record_id=record_id,
+                        created_at=created_at,
+                    ),
                     "host_id": self._host_id,
                     "profile_key": profile_key,
                     "purpose": "PRODUCTION",
@@ -548,7 +612,12 @@ class CapabilityProbeService:
         languages, operations = self._route(kind)
         return RuntimeCapabilityProfile.model_validate(
             {
-                "meta": self._meta("runtime_capability_profile", logical=logical),
+                "meta": self._meta(
+                    "runtime_capability_profile",
+                    logical=logical,
+                    record_id=record_id,
+                    created_at=created_at,
+                ),
                 "host_id": self._host_id,
                 "profile_key": profile_key,
                 "purpose": "PRODUCTION",
@@ -557,6 +626,7 @@ class CapabilityProbeService:
                 "subject_key": subject_key,
                 "expected_version": version,
                 "subject_sha256": digest,
+                "execution_target_hash": execution_target_hash,
                 "operating_system": self._operating_system,
                 "architecture": self._architecture,
                 "languages": languages,
@@ -565,6 +635,214 @@ class CapabilityProbeService:
             }
         )
 
+    def _probe_git_operations(self, executable: Path) -> bool:
+        self._scratch_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=self._scratch_root) as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            clone = root / "clone"
+            source.mkdir()
+            (source / "checked.txt").write_text("capability-probe\n", encoding="utf-8")
+            commands = (
+                ("-C", str(source), "init"),
+                ("-C", str(source), "add", "checked.txt"),
+                (
+                    "-C",
+                    str(source),
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "user.name=SASTSIMI Probe",
+                    "-c",
+                    "user.email=probe@localhost.invalid",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "probe",
+                ),
+                ("clone", "--no-hardlinks", "--", str(source), str(clone)),
+                ("-C", str(clone), "checkout", "--detach", "HEAD"),
+                ("-C", str(clone), "rev-parse", "HEAD"),
+            )
+            observations = tuple(
+                self._commands.run(executable, command, timeout_ms=15_000)
+                for command in commands
+            )
+            head = observations[-1].safe_stdout
+            return all(item.succeeded for item in observations) and bool(
+                head and re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", head)
+            )
+
+    def _probe_opengrep_analyze(self, executable: Path) -> bool:
+        self._scratch_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=self._scratch_root) as temporary:
+            root = Path(temporary)
+            python_source = root / "probe.py"
+            javascript_source = root / "probe.js"
+            rule = root / "probe.yml"
+            python_source.write_text("print('sastsimi-probe')\n", encoding="utf-8")
+            javascript_source.write_text(
+                "console.log('sastsimi-probe');\n", encoding="utf-8"
+            )
+            rule.write_text(
+                "rules:\n"
+                "  - id: sastsimi.probe.python\n"
+                "    languages: [python]\n"
+                "    severity: INFO\n"
+                "    message: capability probe\n"
+                "    pattern: print(...)\n"
+                "  - id: sastsimi.probe.javascript\n"
+                "    languages: [javascript]\n"
+                "    severity: INFO\n"
+                "    message: capability probe\n"
+                "    pattern: console.log(...)\n",
+                encoding="utf-8",
+            )
+            observed = self._commands.run(
+                executable,
+                (
+                    "scan",
+                    "--config",
+                    str(rule),
+                    "--json",
+                    "--disable-version-check",
+                    str(python_source),
+                    str(javascript_source),
+                ),
+                timeout_ms=30_000,
+            )
+            if not observed.succeeded or observed.safe_stdout is None:
+                return False
+            try:
+                parsed = json.loads(observed.safe_stdout)
+                observed_check_ids = {
+                    item.get("check_id")
+                    for item in parsed.get("results", [])
+                    if isinstance(item, dict)
+                }
+                return {
+                    "sastsimi.probe.python",
+                    "sastsimi.probe.javascript",
+                } <= observed_check_ids
+            except (AttributeError, TypeError, ValueError):
+                return False
+
+    def _docker_target_hash(self, executable: Path) -> str | None:
+        version = self._commands.run(
+            executable,
+            ("version", "--format", "{{.Client.Version}}|{{.Server.Version}}"),
+            timeout_ms=15_000,
+        )
+        context = self._commands.run(executable, ("context", "show"), timeout_ms=15_000)
+        if not version.succeeded or not context.succeeded or not context.safe_stdout:
+            return None
+        inspected = self._commands.run(
+            executable,
+            (
+                "context",
+                "inspect",
+                context.safe_stdout,
+                "--format",
+                "{{.Name}}|{{.Endpoints.docker.Host}}",
+            ),
+            timeout_ms=15_000,
+        )
+        if not inspected.succeeded or not inspected.safe_stdout:
+            return None
+        target = inspected.safe_stdout + "|" + (version.safe_stdout or "")
+        if any(ord(character) < 32 for character in target) or len(target) > 768:
+            return None
+        return content_hash({"docker_execution_target": target})
+
+    def _probe_docker_operations(self, executable: Path, probe_id: str) -> bool:
+        self._scratch_root.mkdir(parents=True, exist_ok=True)
+        tag = "sastsimi-capability-" + probe_id.removeprefix("probe-")
+        container = tag + "-run"
+        built = False
+        started = False
+        operation_passed = False
+        cleanup_passed = True
+        with tempfile.TemporaryDirectory(dir=self._scratch_root) as temporary:
+            root = Path(temporary)
+            (root / "Dockerfile").write_text(
+                "FROM busybox:latest\n"
+                'HEALTHCHECK --interval=1s --timeout=1s --retries=3 CMD ["true"]\n'
+                'CMD ["sleep", "30"]\n',
+                encoding="utf-8",
+            )
+            try:
+                build = self._commands.run(
+                    executable,
+                    (
+                        "build",
+                        "--quiet",
+                        "--pull=false",
+                        "--network",
+                        "none",
+                        "--tag",
+                        tag,
+                        str(root),
+                    ),
+                    timeout_ms=60_000,
+                )
+                built = build.succeeded
+                if built:
+                    run = self._commands.run(
+                        executable,
+                        (
+                            "run",
+                            "--detach",
+                            "--name",
+                            container,
+                            "--network",
+                            "none",
+                            "--read-only",
+                            "--cap-drop",
+                            "ALL",
+                            "--security-opt",
+                            "no-new-privileges",
+                            "--pids-limit",
+                            "64",
+                            tag,
+                        ),
+                        timeout_ms=30_000,
+                    )
+                    started = run.succeeded
+                if started:
+                    for _ in range(6):
+                        health = self._commands.run(
+                            executable,
+                            (
+                                "inspect",
+                                "--format",
+                                "{{.State.Health.Status}}",
+                                container,
+                            ),
+                            timeout_ms=15_000,
+                        )
+                        if health.succeeded and health.safe_stdout == "healthy":
+                            operation_passed = True
+                            break
+                        if not health.succeeded or health.safe_stdout != "starting":
+                            break
+                        time.sleep(0.5)
+            finally:
+                if started:
+                    removed = self._commands.run(
+                        executable,
+                        ("rm", "--force", "--volumes", container),
+                        timeout_ms=15_000,
+                    )
+                    cleanup_passed = cleanup_passed and removed.succeeded
+                if built:
+                    removed_image = self._commands.run(
+                        executable,
+                        ("image", "rm", "--force", tag),
+                        timeout_ms=15_000,
+                    )
+                    cleanup_passed = cleanup_passed and removed_image.succeeded
+        return operation_passed and cleanup_passed
+
 
 def hashlib_key(value: str) -> str:
     import hashlib
@@ -572,4 +850,4 @@ def hashlib_key(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()[:24]
 
 
-__all__ = ["CapabilityProbeService"]
+__all__: list[str] = []

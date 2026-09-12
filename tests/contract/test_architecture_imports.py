@@ -51,6 +51,18 @@ RULES: dict[str, frozenset[str]] = {
             "logging",
         }
     ),
+    "capabilities": frozenset(
+        {
+            "bootstrap",
+            "config",
+            "contracts",
+            "ports",
+            "runtime",
+            "sandbox",
+            "static_analysis",
+            "storage",
+        }
+    ),
 }
 
 # T08 application handlers deliberately call the pure static-analysis layer or

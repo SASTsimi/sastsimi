@@ -16,7 +16,7 @@ from .models import CapabilityProbeReceipt
 _SAFE_HOST_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
-class SQLiteCapabilityProbeStore:
+class _SQLiteCapabilityProbeStore:
     """Persist sanitized probe receipts separately from repository analyses."""
 
     def __init__(self, path: Path, *, host_id: str) -> None:
@@ -159,6 +159,7 @@ class SQLiteCapabilityProbeStore:
             and receipt.subject_key == evidence.subject_key
             and receipt.observed_version == evidence.observed_version
             and receipt.observed_sha256 == evidence.observed_sha256
+            and receipt.execution_target_hash == evidence.execution_target_hash
         )
 
     def publish(self, probe_id: str, profile_ref: HostConfigurationRef) -> None:
@@ -166,10 +167,20 @@ class SQLiteCapabilityProbeStore:
         if receipt.host_id != profile_ref.host_id:
             raise ValueError("PROBE_HOST_MISMATCH")
         with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT profile_ref FROM published_capability_profiles "
+                "WHERE probe_id = ?",
+                (probe_id,),
+            ).fetchone()
+            encoded = canonical_bytes(profile_ref).decode()
+            if existing is not None:
+                if str(existing[0]) != encoded:
+                    raise ValueError("CAPABILITY_PUBLICATION_REF_MISMATCH")
+                return
             connection.execute(
                 "INSERT INTO published_capability_profiles(probe_id, profile_ref) "
                 "VALUES (?, ?)",
-                (probe_id, canonical_bytes(profile_ref).decode()),
+                (probe_id, encoded),
             )
 
     def unpublish(self, probe_id: str) -> None:
@@ -183,10 +194,10 @@ class SQLiteCapabilityProbeStore:
         return self.get(probe_id).approved_profile_ref
 
 
-class CapabilityProbeEvidenceAuthority(UnprovenEvidence):
+class _CapabilityProbeEvidenceAuthority(UnprovenEvidence):
     """Trust only exact approval records minted from this host's durable receipt."""
 
-    def __init__(self, store: SQLiteCapabilityProbeStore) -> None:
+    def __init__(self, store: _SQLiteCapabilityProbeStore) -> None:
         self._store = store
 
     def capability_approval_authorized(
@@ -195,4 +206,4 @@ class CapabilityProbeEvidenceAuthority(UnprovenEvidence):
         return self._store.is_authorized(evidence)
 
 
-__all__ = ["CapabilityProbeEvidenceAuthority", "SQLiteCapabilityProbeStore"]
+__all__: list[str] = []

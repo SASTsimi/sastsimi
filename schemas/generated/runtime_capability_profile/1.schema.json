@@ -259,6 +259,19 @@
     "capability_kind": {
       "$ref": "#/$defs/CapabilityKind"
     },
+    "execution_target_hash": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Execution Target Hash"
+    },
     "expected_version": {
       "minLength": 1,
       "pattern": "\\S",
