@@ -10,7 +10,16 @@
     "LOG1-final": {
       "record_type": "agent_log",
       "producer": "REPRODUCTION_SESSION_MANAGER",
-      "fields": {"request_ref": "DQ1"}
+      "fields": {"request_ref": "DQ1", "events": [
+        {"sequence": 1, "event_type": "SESSION_STARTED"},
+        {"sequence": 2, "event_type": "AGENT_STARTED"},
+        {"sequence": 3, "event_type": "AGENT_FINISHED"},
+        {"sequence": 4, "event_type": "POC_EXECUTION_STARTED"},
+        {"sequence": 5, "event_type": "ERROR"},
+        {"sequence": 6, "event_type": "CLEANUP_STARTED"},
+        {"sequence": 7, "event_type": "CLEANUP_FINISHED"},
+        {"sequence": 8, "event_type": "SESSION_FINISHED"}
+      ]}
     },
     "DX1": {
       "record_type": "dynamic_reproduction_result",
@@ -31,6 +40,9 @@
         "observation_refs": [],
         "status": "CANCELLED",
         "failure_category": "EXECUTION",
+        "failure_reason": "Execution was cancelled by the runtime before an observation was recorded.",
+        "limitations": ["PoC execution did not complete", "no supporting observation was recorded"],
+        "late_output_disposition": "STALE_RESULT",
         "plan_issues": [],
         "hypothesis_outcome": "INCONCLUSIVE",
         "hypothesis_evidence_refs": [],
@@ -52,7 +64,7 @@
     {"target": "DX1.agent_conclusion_ref", "operator": "ABSENT"},
     {"target": "DX1.observation_refs", "operator": "EXCLUDES", "value": ["OBS-LATE-1"]},
     {"target": "DX1.hypothesis_evidence_refs", "operator": "EXCLUDES", "value": ["OBS-LATE-1"]},
-    {"target": "late_output.disposition", "operator": "EQUALS", "value": "STALE_RESULT"},
+    {"target": "DX1.late_output_disposition", "operator": "EQUALS", "value": "STALE_RESULT"},
     {"target": ["DynamicReproductionConclusion", "PoCBundle", "VerificationResult", "TechnicalGate", "RuleScopeGate"], "operator": "ABSENT"}
   ],
   "must_not_claim": [

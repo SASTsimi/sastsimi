@@ -112,7 +112,13 @@ candidate 실행·관찰에 의도적인 cleanup 실패 상태를 결합했다. 
 
 자연어 문장 전체를 고정된 정답으로 비교하지 않는다. `*.expected.json`에 정의된
 필수 근거, exact reference, 상태, ownership, assertion과 `must_not_claim` 조건을
-검사한다.
+검사한다. 자동 검증은 입력 record와 기대 projection의 정합성을 확인하는
+fixture 검사이며 실제 Docker/LLM 실행을 대신하지 않는다. projection에 없는
+target은 실패하고, `value_from`과 record 경로 비교값을 실제로 해석한다.
+projection의 생략된 scope는 case.scope를 상속하며 명시된 scope는 그대로 검사한다.
+`required_checks`와 자연어 `must_not_claim`은 수동 리뷰·후속 LLM 평가용 설명
+메타데이터다. 자동 실행 결과는 schema·semantic·scope·injection 검사에 따른
+`expected_disposition`과 lifecycle `assertions`로 판단한다.
 
 ## 5. 반드시 지켜야 하는 처리 규칙과 통과 조건
 

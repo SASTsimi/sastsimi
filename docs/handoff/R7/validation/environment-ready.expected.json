@@ -53,7 +53,7 @@
     "PL1": {
       "record_type": "reproduction_plan",
       "producer": "DYNAMIC_REPRODUCTION",
-      "fields": {"request_ref": "DQ1", "purpose": "POC_CONFIRMATION", "environment_requirements_ref": "ER1", "sandbox_profile_ref": "SP1"}
+      "fields": {"request_ref": "DQ1", "purpose": "POC_CONFIRMATION", "environment_requirements_ref": "ER1", "sandbox_profile_ref": "SP1", "reproduction_goal": "Determine whether an untrusted file path can read a file outside the allowed-files directory in the isolated fixture.", "requested_evidence": ["normal allowed-file observation", "PATH_TRAVERSAL_TARGET_CONTENT observation"]}
     },
     "SPD1": {
       "record_type": "sandbox_policy_decision",
@@ -85,6 +85,7 @@
         "container_action": "CREATED",
         "container_reason": "INITIAL_CLEAN",
         "container_instance_id": "container-r7-001",
+        "next_task_kind": "CREATE_POC_CANDIDATE",
         "previous_environment_ref": null,
         "status": "READY",
         "checks": [
@@ -108,7 +109,7 @@
     {"target": "ENV1.container_instance_id", "operator": "EQUALS", "value": "container-r7-001"},
     {"target": "PL1.reproduction_goal", "operator": "EQUALS", "value": "DQ1.goal"},
     {"target": "PL1.requested_evidence", "operator": "CONTAINS", "value": ["normal allowed-file observation", "PATH_TRAVERSAL_TARGET_CONTENT observation"]},
-    {"target": "next_task_kind", "operator": "EQUALS", "value": "CREATE_POC_CANDIDATE"},
+    {"target": "ENV1.next_task_kind", "operator": "EQUALS", "value": "CREATE_POC_CANDIDATE"},
     {"target": ["DynamicReproductionConclusion", "DynamicReproductionResult", "PoCBundle"], "operator": "ABSENT"}
   ],
   "must_not_claim": [

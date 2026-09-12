@@ -57,6 +57,8 @@
         "observation_refs": [],
         "status": "FAILED",
         "failure_category": "ENVIRONMENT_SETUP",
+        "failure_reason": "Python 3.11.9 does not satisfy >=3.12,<3.13; retry budget exhausted.",
+        "limitations": ["Sandbox Agent did not start", "Health Check was not run"],
         "plan_issues": [],
         "hypothesis_outcome": "INCONCLUSIVE",
         "hypothesis_evidence_refs": [],

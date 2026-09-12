@@ -414,27 +414,137 @@ def validate_lifecycle_pairs() -> int:
                         raise ValidationFailure(
                             f"{input_path.name}: embedded content mismatch {path}"
                         )
+        validate_lifecycle_assertions(case, expected)
         count += 1
     return count
 
 
+def validate_lifecycle_assertions(
+    case: dict[str, Any], expected: dict[str, Any]
+) -> None:
+    """Evaluate fixture assertions, not live Docker or LLM execution."""
+    records: dict[str, Any] = {}
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            identity = value.get("record_id", value.get("ref"))
+            if isinstance(identity, str):
+                records[identity] = value
+            for child in value.values():
+                collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+
+    collect(case.get("records", {}))
+    projections = expected["expected_record_projections"]
+    for identity, projection in projections.items():
+        records[identity] = {
+            **records.get(identity, {}),
+            **projection["fields"],
+            "producer": projection["producer"],
+            "record_type": projection["record_type"],
+        }
+    absent_types = {
+        "DynamicReproductionConclusion": "dynamic_reproduction_conclusion",
+        "DynamicReproductionResult": "dynamic_reproduction_result",
+        "PoCBundle": "poc_bundle",
+        "VerificationResult": "verification_result",
+        "TechnicalGate": "technical_gate",
+        "RuleScopeGate": "rule_scope_gate",
+    }
+
+    def resolve(path: str) -> Any:
+        if path == "case.scope":
+            return case["scope"]
+        if path in absent_types:
+            return [
+                r
+                for r in records.values()
+                if r.get("record_type") == absent_types[path]
+            ]
+        head, *parts = path.split(".")
+        if head not in records:
+            raise ValidationFailure(f"Unknown assertion target: {path}")
+        values = [records[head]]
+        wildcard = False
+        for part in parts:
+            many = part.endswith("[*]")
+            key = part[:-3] if many else part
+            children = []
+            for value in values:
+                if not isinstance(value, dict) or key not in value:
+                    raise ValidationFailure(f"Missing assertion field: {path}")
+                child = value[key]
+                if many:
+                    if not isinstance(child, list):
+                        raise ValidationFailure(f"Non-array assertion target: {path}")
+                    children.extend(child)
+                else:
+                    children.append(child)
+            values = children
+            wildcard |= many
+        return values if wildcard else values[0]
+
+    for assertion in expected["assertions"]:
+        target = assertion["target"]
+        paths = target if isinstance(target, list) else [target]
+        operator = assertion["operator"]
+        wanted = assertion.get("value")
+        if "value_from" in assertion:
+            wanted = resolve(assertion["value_from"])
+        elif isinstance(wanted, str) and (
+            wanted == "case.scope" or wanted.split(".")[0] in records
+        ):
+            wanted = resolve(wanted)
+        actuals = [resolve(path) for path in paths]
+        if operator == "SAME_SCOPE":
+            actuals = [record.get("scope", case["scope"]) for record in actuals]
+            passed = _assert_operator(operator, actuals, wanted)
+        elif operator == "PRODUCED_BY":
+            passed = all(
+                _assert_operator(operator, record.get("producer"), wanted)
+                for record in actuals
+            )
+        else:
+            passed = all(
+                _assert_operator(operator, actual, wanted) for actual in actuals
+            )
+        if not passed:
+            raise ValidationFailure(
+                f"{case['case_id']}: assertion failed: {target} {operator} {wanted!r}"
+            )
+
+
 def _assert_operator(operator: str, actual: Any, expected: Any = None) -> bool:
     if operator == "EQUALS":
-        return actual == expected
+        return bool(actual == expected)
     if operator == "NON_NULL":
         return actual is not None
     if operator == "ABSENT":
         return actual is None or actual == [] or actual == {}
     if operator == "CONTAINS":
-        return all(item in actual for item in expected)
+        return (
+            isinstance(actual, (list, str))
+            and isinstance(expected, list)
+            and all(item in actual for item in expected)
+        )
     if operator == "ALL_EQUAL":
-        return all(item == expected for item in actual)
+        return (
+            isinstance(actual, list)
+            and bool(actual)
+            and all(item == expected for item in actual)
+        )
     if operator == "EXCLUDES":
-        return all(item not in actual for item in expected)
+        return (
+            isinstance(actual, (list, str))
+            and isinstance(expected, list)
+            and all(item not in actual for item in expected)
+        )
     if operator == "SAME_SCOPE":
         return all(item == expected for item in actual)
     if operator == "PRODUCED_BY":
-        return actual == expected
+        return bool(actual == expected)
     raise ValidationFailure(f"Unsupported assertion operator: {operator}")
 
 

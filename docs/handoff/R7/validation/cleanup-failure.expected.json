@@ -24,13 +24,29 @@
         "request_ref": "DQ1",
         "environment_refs": ["ENV1"],
         "resource_refs": ["container-r7-001", "network-r7-001"],
-        "status": "FAILED"
+        "status": "FAILED",
+        "failure_reason": "network-r7-001 could not be removed after the container was removed."
       }
     },
     "LOG1-final": {
       "record_type": "agent_log",
       "producer": "REPRODUCTION_SESSION_MANAGER",
-      "fields": {"request_ref": "DQ1"}
+      "fields": {"request_ref": "DQ1", "events": [
+        {"sequence": 1, "event_type": "SESSION_STARTED"},
+        {"sequence": 2, "event_type": "POC_CANDIDATE_CREATED"},
+        {"sequence": 3, "event_type": "AGENT_STARTED"},
+        {"sequence": 4, "event_type": "AGENT_FINISHED"},
+        {"sequence": 5, "event_type": "POC_EXECUTION_STARTED"},
+        {"sequence": 6, "event_type": "POC_EXECUTION_FINISHED"},
+        {"sequence": 7, "event_type": "OBSERVATION_RECORDED"},
+        {"sequence": 8, "event_type": "AGENT_STARTED"},
+        {"sequence": 9, "event_type": "AGENT_FINISHED"},
+        {"sequence": 10, "event_type": "AGENT_STARTED"},
+        {"sequence": 11, "event_type": "AGENT_FINISHED"},
+        {"sequence": 12, "event_type": "CLEANUP_STARTED"},
+        {"sequence": 13, "event_type": "CLEANUP_FINISHED"},
+        {"sequence": 14, "event_type": "SESSION_FINISHED"}
+      ]}
     },
     "DX1": {
       "record_type": "dynamic_reproduction_result",
@@ -54,6 +70,8 @@
         "failure_reason": null,
         "plan_issues": [],
         "hypothesis_outcome": "SUPPORTED",
+        "hypothesis_linkage": "The request escaped the allowed-files directory and returned the isolated path traversal target marker.",
+        "limitations": ["The observation demonstrates read access only inside the isolated synthetic fixture."],
         "hypothesis_evidence_refs": ["OBS-PROBE-1"],
         "hypothesis_disproved": false,
         "disproof_evidence_refs": [],
