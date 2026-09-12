@@ -52,9 +52,6 @@ class ChainingStartupReconciler:
         for record in self._published_records(str(analysis_id)):
             if str(getattr(record.meta, "analysis_id", "")) != str(analysis_id):
                 raise ValueError("CHAINING_STARTUP_SCOPE_MISMATCH")
-            source_ref = reference(record)
-            if not isinstance(source_ref, StoredDataRef):
-                raise ValueError("CHAINING_STARTUP_SOURCE_NOT_STORED")
             if isinstance(record, WorkExecutionState):
                 if (
                     record.work_type == WorkType.PRIMITIVE_UPDATE
@@ -65,8 +62,12 @@ class ChainingStartupReconciler:
                         raise ValueError("CHAINING_STARTUP_SOURCE_NOT_COMMITTED")
                     if commit_ref not in updates:
                         updates.append(commit_ref)
-            elif isinstance(record, ChainingResult) and source_ref not in results:
-                results.append(source_ref)
+            elif isinstance(record, ChainingResult):
+                source_ref = reference(record)
+                if not isinstance(source_ref, StoredDataRef):
+                    raise ValueError("CHAINING_STARTUP_SOURCE_NOT_STORED")
+                if source_ref not in results:
+                    results.append(source_ref)
 
         for source_ref in updates:
             self._reconciliation.reconcile_primitive_update(

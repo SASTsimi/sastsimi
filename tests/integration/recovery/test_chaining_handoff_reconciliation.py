@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 
 from sastsimi.chaining.work_handlers import PrimitiveUpdateHandler
+from sastsimi.contracts.analysis import AnalysisRunState
+from sastsimi.contracts.budget import Purpose
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.chaining import ChainingResult
 from sastsimi.contracts.ids import (
@@ -17,7 +20,12 @@ from sastsimi.contracts.ids import (
     WorkspaceId,
 )
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
+from sastsimi.contracts.refs import (
+    BudgetScopeRef,
+    RunStoredDataRef,
+    StoredDataRef,
+    reference,
+)
 from sastsimi.contracts.work import WorkAttempt, WorkExecutionState
 from sastsimi.ports.chaining import (
     ChainingResultReconciliationRequest,
@@ -155,6 +163,36 @@ def _completed_primitive_work(
     return wire(WorkExecutionState, data)
 
 
+def _running_analysis() -> AnalysisRunState:
+    meta = fixture_meta("analysis_run_state", attempt=None, run=True)
+    meta["created_at"] = datetime(2026, 9, 8, tzinfo=UTC)
+    return AnalysisRunState.model_validate(
+        {
+            "meta": meta,
+            "purpose": Purpose.PRODUCTION,
+            "eval_config_refs": (),
+            "program_id": "program-1",
+            "execution_budget_profile_ref": {
+                "stored_data_id": "budget-profile",
+                "data_kind": "execution_budget_profile",
+                "content_hash": "b" * 64,
+                "analysis_id": "a1",
+                "record_id": "budget-profile-record",
+            },
+            "budget_binding_ref": None,
+            "workspace_id": "ws1",
+            "commit_id": "c1",
+            "workspace_ref": None,
+            "run_policy_state_ref": None,
+            "status": "RUNNING",
+            "analysis_result_ref": None,
+            "started_at": datetime(2026, 9, 8, tzinfo=UTC),
+            "finished_at": None,
+            "elapsed_ms": 0,
+        }
+    )
+
+
 def test_reconciliation_replays_committed_handoff_without_agent_execution() -> None:
     result = _result("proposal-1", "proposal-2")
     source = _Sources(result)
@@ -210,6 +248,29 @@ def test_startup_reconciler_enumerates_committed_t13_sources_once() -> None:
     assert tuple(item.source_update_ref for item in primitive_calls) == (
         commit_ref,
     )
+    assert tuple(item.source_result_ref for item in result_calls) == (
+        reference(result),
+    )
+
+
+def test_startup_reconciler_ignores_irrelevant_run_scoped_records() -> None:
+    run = _running_analysis()
+    assert isinstance(reference(run), RunStoredDataRef)
+    result = wire(ChainingResult, make("ChainingResult"))
+    result_calls: list[object] = []
+    delegate = SimpleNamespace(
+        reconcile_primitive_update=lambda request: None,
+        reconcile_chaining_result=lambda request: result_calls.append(request) or (),
+    )
+    startup = ChainingStartupReconciler(
+        reconciliation=delegate,
+        published_records=lambda analysis_id: (run, result),
+    )
+
+    summary = startup(AnalysisId("a1"))
+
+    assert summary.primitive_update_refs == ()
+    assert summary.chaining_result_refs == (reference(result),)
     assert tuple(item.source_result_ref for item in result_calls) == (
         reference(result),
     )
