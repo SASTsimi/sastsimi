@@ -5,7 +5,7 @@ from typing import Literal, Self
 from pydantic import AwareDatetime, model_validator
 
 from ._domain import DomainRecord, SafeDiagnostic, unique
-from .base import ContractModel, NonEmptyStr, Sha256
+from .base import ContractModel, NonEmptyStr, PositiveInt, Sha256
 from .canonical_json import content_hash
 from .refs import HostConfigurationRef, StoredDataRef, reference, require_record_ref
 from .static import StaticToolProfile
@@ -43,6 +43,23 @@ type CapabilitySecurityControl = Literal[
     "STATIC_WRITE_DENYING_QUOTA",
     "SANDBOX_OUTER_BOUNDARY",
 ]
+type DockerBuildBackend = Literal["BUILDX_RESOURCE", "LEGACY_LIMITED"]
+type DockerBuildLimit = Literal["CPU", "MEMORY", "PID", "DISK"]
+
+
+class DockerBuildCapability(ContractModel):
+    """Exact build boundary proven before a Docker profile can become ACTIVE."""
+
+    build_backend: DockerBuildBackend
+    enforced_build_limits: tuple[DockerBuildLimit, ...]
+    external_build_disk_limit_bytes: PositiveInt
+    external_build_storage_identity_hash: Sha256
+
+    @model_validator(mode="after")
+    def complete_boundary(self) -> Self:
+        if self.enforced_build_limits != ("CPU", "MEMORY", "PID", "DISK"):
+            raise ValueError("DOCKER_BUILD_LIMIT_EVIDENCE_INCOMPLETE")
+        return self
 
 
 class CapabilityControlEvidence(ContractModel):
@@ -103,6 +120,8 @@ class CapabilityApprovalEvidence(DomainRecord):
     subject_key: NonEmptyStr
     observed_version: NonEmptyStr
     observed_sha256: Sha256
+    execution_target_hash: Sha256 | None = None
+    docker_build_capability: DockerBuildCapability | None = None
     operating_system: CapabilityOperatingSystem
     architecture: CapabilityArchitecture
     languages: tuple[CapabilityLanguage, ...]
@@ -147,6 +166,17 @@ class CapabilityApprovalEvidence(DomainRecord):
             raise ValueError("CAPABILITY_SECURITY_CONTROL_EVIDENCE_REQUIRED")
         if self.approved_at < self.checked_at:
             raise ValueError("CAPABILITY_APPROVAL_PRECEDES_PROBE")
+        if self.capability_kind == "DOCKER":
+            if (
+                self.execution_target_hash is None
+                or self.docker_build_capability is None
+            ):
+                raise ValueError("CAPABILITY_DOCKER_BOUNDARY_REQUIRED")
+        elif (
+            self.execution_target_hash is not None
+            or self.docker_build_capability is not None
+        ):
+            raise ValueError("CAPABILITY_DOCKER_BOUNDARY_FORBIDDEN")
         return self
 
 
@@ -164,6 +194,8 @@ class RuntimeCapabilityProfile(DomainRecord):
     subject_key: NonEmptyStr
     expected_version: NonEmptyStr
     subject_sha256: Sha256
+    execution_target_hash: Sha256 | None = None
+    docker_build_capability: DockerBuildCapability | None = None
     operating_system: CapabilityOperatingSystem
     architecture: CapabilityArchitecture
     languages: tuple[CapabilityLanguage, ...]
@@ -186,6 +218,17 @@ class RuntimeCapabilityProfile(DomainRecord):
             raise ValueError("CAPABILITY_LANGUAGE_MISMATCH")
         if self.status == "RETIRED" and self.meta.revision_number == 1:
             raise ValueError("CAPABILITY_RETIREMENT_REVISION_INVALID")
+        if self.capability_kind == "DOCKER":
+            if (
+                self.execution_target_hash is None
+                or self.docker_build_capability is None
+            ):
+                raise ValueError("CAPABILITY_DOCKER_BOUNDARY_REQUIRED")
+        elif (
+            self.execution_target_hash is not None
+            or self.docker_build_capability is not None
+        ):
+            raise ValueError("CAPABILITY_DOCKER_BOUNDARY_FORBIDDEN")
         return self
 
 

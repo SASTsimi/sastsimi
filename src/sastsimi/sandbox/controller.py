@@ -9,6 +9,8 @@ import re
 from collections.abc import Callable, Iterable
 from ipaddress import ip_address
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
+from typing import cast
 from urllib.parse import urlsplit
 
 from sastsimi.contracts.actions import (
@@ -58,6 +60,82 @@ _DOCKER_ENDPOINTS = (
 
 
 RecordResolver = Callable[[StoredDataRef], object]
+
+
+def verify_outer_boundary_controls(workspace_root: Path) -> bool:
+    """Exercise the fail-closed host boundary without starting Docker."""
+
+    root = workspace_root.resolve(strict=True)
+    controller = SandboxController(
+        workspace_root=root,
+        workspace_id="capability-probe",
+        commit_id="capability-probe",
+        record_resolver=lambda _ref: None,
+    )
+    raw_secret = StoredDataRef.model_validate(
+        {
+            "stored_data_id": "probe-secret",
+            "data_kind": "artifact",
+            "content_hash": "0" * 64,
+            "workspace_id": "capability-probe",
+            "commit_id": "capability-probe",
+            "record_id": None,
+        }
+    )
+    spec = SandboxRunSpec(
+        workspace_root=root,
+        image_digest=None,
+        user="root",
+        mounts=(
+            SandboxMount(
+                source=Path(root.anchor),
+                target=PurePosixPath("/var/run/docker.sock"),
+                read_only=False,
+            ),
+        ),
+        network_mode="host",
+        network_targets=("https://example.invalid",),
+        secret_refs=(raw_secret,),
+        privileged=True,
+        pid_mode="host",
+        ipc_mode="host",
+        capabilities=("SYS_ADMIN",),
+        cpu_limit_millicores=2,
+        memory_limit_bytes=2,
+        disk_limit_bytes=2,
+        pid_limit=2,
+        requested_execution_ms=2,
+    )
+    profile = cast(
+        SandboxProfile,
+        SimpleNamespace(
+            network_mode="DEFAULT_DENY",
+            cpu_limit_millicores=1,
+            memory_limit_bytes=1,
+            disk_limit_bytes=1,
+            pid_limit=1,
+            max_requested_execution_ms=1,
+        ),
+    )
+    action = cast(ActionRequest, SimpleNamespace(resource_limits=None))
+    reasons: list[str] = []
+    controller._check_boundary(reasons, spec, action, profile)
+    required = {
+        "DOCKER_SOCKET_DENIED",
+        "HOST_ROOT_MOUNT_DENIED",
+        "WORKSPACE_MOUNT_DENIED",
+        "WRITE_MOUNT_DENIED",
+        "NON_ROOT_USER_REQUIRED",
+        "PRIVILEGED_DENIED",
+        "HOST_NAMESPACE_DENIED",
+        "CAPABILITY_ADD_DENIED",
+        "RAW_SECRET_DENIED",
+        "SANDBOX_SECRET_DENIED",
+        "LIVE_ENDPOINT_DENIED",
+        "RESOURCE_LIMIT_EXCEEDED",
+        "RESOURCE_LIMIT_UNSPECIFIED",
+    }
+    return required <= set(reasons)
 
 
 class SandboxController:

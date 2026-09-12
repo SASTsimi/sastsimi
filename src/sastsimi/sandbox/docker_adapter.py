@@ -944,6 +944,9 @@ class DockerAdapter:
             or not DockerAdapter._local_daemon_target(target.daemon_target)
             or target.build_backend not in {"BUILDX_RESOURCE", "LEGACY_LIMITED"}
             or target.external_build_disk_limit_bytes <= 0
+            or not re.fullmatch(
+                r"[0-9a-f]{64}", target.external_build_storage_identity_hash
+            )
         ):
             raise ValueError("DOCKER_TRUSTED_TARGET_INVALID")
 

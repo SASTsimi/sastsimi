@@ -68,14 +68,15 @@ def emit_data(
     *,
     command: str,
     data: dict[str, object],
+    code: ExitCode = ExitCode.OK,
 ) -> None:
     """Emit deterministic domain command data without diagnostic internals."""
     if output_format == "json":
         envelope = {
             "schema_version": 1,
             "command": command,
-            "status": "ok",
-            "code": ExitCode.OK.name,
+            "status": "ok" if code == ExitCode.OK else "error",
+            "code": code.name,
             "data": data,
         }
         stream.write(json.dumps(envelope, sort_keys=True) + "\n")

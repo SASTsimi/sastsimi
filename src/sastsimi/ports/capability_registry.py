@@ -1,5 +1,6 @@
-"""Narrow production capability resolver consumed by T08/T11/T14."""
+"""Narrow production capability resolvers consumed by T08/T11/T14."""
 
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from sastsimi.contracts.capabilities import (
@@ -42,3 +43,12 @@ class ProductionCapabilityResolverPort(Protocol):
     def resolve_pinned_active_profile(
         self, profile_ref: HostConfigurationRef
     ) -> RuntimeCapabilityProfile | StaticToolProfile: ...
+
+
+@runtime_checkable
+class DockerCommandCapabilityResolverPort(Protocol):
+    """Revalidate one exact ACTIVE Docker profile immediately before execution."""
+
+    def resolve_docker_command(
+        self, profile_ref: HostConfigurationRef
+    ) -> tuple[Path, str]: ...
