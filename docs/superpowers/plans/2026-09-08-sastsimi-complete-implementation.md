@@ -177,10 +177,12 @@ T01 repository cleanup
                                   -> T11 dynamic reproduction
                                       -> T12 CWE, gates, finding, reporter
                                           -> T13 primitive and chaining
-                                              -> T14 parallelism and resilience
-                                                  -> T15 security hardening
-                                                      -> T16 capability and evaluation
-                                                          -> T17 release candidate
+                                              -> T16-A minimum production capability
+                                                  -> T08/T11 production follow-ups (#167/#168)
+                                                      -> T14 parallelism, resilience and real E2E
+                                                          -> T15 security hardening
+                                                              -> T16-B remaining capability and evaluation
+                                                                  -> T17 release candidate
 ```
 
 T08의 tool fixture 준비와 T09의 Provider capability 조사처럼 공통 파일을 쓰지 않는 읽기·fixture 작업은 병렬로 수행할 수 있다. 실제 branch 병합은 의존 순서를 지킨다.
@@ -365,8 +367,9 @@ Implementation record: [T04 core contracts](implementation/04-core-contracts.md)
 - Produces: 실제 repository URL 또는 local path와 exact commit에 묶인 `RepositoryProfile`·`CodeWorkspace`, 검증된 tool 선택, StaticFactBundle과 bounded Context response
 
 - [ ] 사용자가 준 실제 repository URL 또는 local path와 commit을 입력 정본으로 저장하고, 허용된 scheme·root와 exact revision을 검증한 뒤 별도 workspace에 safe clone/checkout한다. branch 이름이 아닌 실제 HEAD commit을 영속 코드 정체성으로 남긴다.
-- [ ] safe checkout의 언어, manifest/lockfile, build 명령, Dockerfile 유무와 정적 도구 적용 가능성을 `RepositoryProfile`에 exact provenance로 정규화한다. 원본 repository나 사용자 local tree는 변경하지 않는다.
-- [ ] `RepositoryProfile`과 T16이 검증해 `ACTIVE`로 게시한 capability profile의 교집으로 AST·CodeQL·OpenGrep 등 실행 tool을 선택한다. 탐지만 되었거나 미설치·미검증 tool은 자동 활성화하지 않고 DataGap/실행 오류로 보존한다.
+- [ ] safe checkout의 언어, manifest/lockfile, package/build/start 근거, Dockerfile 유무와 정적 도구 적용 가능성을 `RepositoryProfile`에 exact provenance로 정규화한다. Profile 입력 집합은 exact commit의 `RepositoryPreparation.tracked_files` `(git_path, git_mode, blob_id, size_bytes)`와 set-equal이어야 하며 untracked·generated file, symlink와 gitlink는 입력에서 제외한다. 원본 repository나 사용자 local tree는 변경하지 않는다.
+- [ ] Profile 작성 전후 checkout HEAD와 tracked manifest가 같고 각 사용 파일의 blob ID·content digest가 manifest와 일치하는지 다시 검사한다. 불일치나 drift는 `BLOCKED`/DataGap이며 profile 또는 실행 입력을 게시하지 않는다.
+- [ ] `RepositoryProfile`과 T16-A가 검증해 `ACTIVE`로 게시한 capability profile의 교집으로 AST·CodeQL·OpenGrep 등 실행 tool과 package/build/start 명령을 선택한다. tracked evidence와 exact capability binding 중 하나라도 없으면 `BLOCKED`/DataGap으로 남기며, 파일명·PATH·관례로 명령이나 tool을 추측하거나 자동 fallback하지 않는다.
 - [ ] clone·checkout HEAD 불일치와 symlink/path escape 실패 시험을 작성한다.
 - [ ] 외부 process를 argument list와 `shell=False`로 실행하는 adapter base를 구현한다.
 - [ ] AST·CodeQL·OpenGrep probe와 tool별 timeout·cancel을 구현한다.
@@ -432,7 +435,7 @@ Implementation record: [T04 core contracts](implementation/04-core-contracts.md)
 - Consumes: exact DynamicReproductionRequest, current `RepositoryProfile`·`CodeWorkspace`, SandboxPort, Budget Runtime
 - Produces: repository build 근거에 묶인 EnvironmentRequirements·plan·`EnvironmentRecipe`, 격리 Docker environment, AgentLog, candidate, validated PoC와 DynamicReproductionResult
 
-- [ ] current `RepositoryProfile`의 exact commit·manifest·lockfile·Dockerfile 유무를 읽어 재현 가능한 `EnvironmentRecipe`를 만든다. Dockerfile이 있으면 검증된 내용과 digest를 고정하고, 없으면 언어·package/build 근거와 `ACTIVE` capability profile로 최소 recipe를 만들며 추측한 명령을 실행하지 않는다.
+- [ ] current `RepositoryProfile`의 exact commit·manifest·lockfile·Dockerfile 유무를 읽어 재현 가능한 `EnvironmentRecipe`를 만든다. 사용 입력은 exact `RepositoryPreparation.tracked_files`와 set-equal한 profile entry의 blob/digest로 다시 검증하고 untracked·generated file, symlink와 gitlink를 거부한다. Dockerfile이 있으면 검증된 내용과 digest를 고정하고, 없으면 tracked 언어·package/build/start 근거와 T16-A의 `ACTIVE` capability profile로 최소 recipe를 만들며 근거나 capability가 없으면 실행하지 않고 `BLOCKED`로 남긴다.
 - [ ] `EnvironmentRecipe` → image build → 격리 container run → health check → 구조화된 command/event → cleanup을 같은 work/attempt와 exact digest로 연결한다. Dockerfile 유·무 두 경로를 모두 시험한다.
 - [ ] package 설치, build, application start, auth/credential, health check 실패는 `BLOCKED | FAILED`와 DataGap/AnalysisError로 보존하고 취약점 `FALSE | HOLD`로 바꾸지 않는다. 정상 완주와 same-attempt 근거가 있을 때만 validated PoC와 dynamic result를 Gate에 넘긴다.
 - [ ] live asset, host mount, Docker socket, secret와 비허용 egress 차단 시험을 작성한다.
@@ -504,7 +507,7 @@ Implementation record: [T04 core contracts](implementation/04-core-contracts.md)
 - Create: production composition/CLI focused integration and E2E tests
 
 **Interfaces:**
-- Consumes: T08~T13에서 병합된 모든 claimed-context `WorkHandler`, 실제 repository URL/local path + exact commit, exact budget/resource/capability profile
+- Consumes: T08~T13에서 병합된 모든 claimed-context `WorkHandler`, T16-A minimum production capability publication, #167/#168 production follow-up 결과, 실제 repository URL/local path + exact commit, exact budget/resource/capability profile
 - Produces: `RepositoryProfile` → 검증된 tool 선택 → static/LLM → dynamic Docker → Gates → Markdown ReportDraft를 완주하는 production CLI flow, 분석 전체 한도 내 병렬 실행, durable cancel/resume와 중복 외부 호출이 없는 deterministic restart
 
 - [ ] T07 `FakePipeline`과 fake adapter는 계약·fixture 회귀 시험용으로 격리하고 production bootstrap/CLI registry에서 선택되지 않게 한다.
@@ -515,7 +518,7 @@ Implementation record: [T04 core contracts](implementation/04-core-contracts.md)
 - [ ] 취소 latch를 work 등록·READY enqueue·claim·결과 commit·run finalization의 같은 신뢰 transaction 경계에서 다시 읽는다. 확인된 실제 사용만 ledger에 commit하고, claimed 상태이거나 사용 여부가 불확실한 reservation은 release·commit하지 않고 `RESERVED`로 보존해 recovery가 해소하도록 하며 unavailable usage 사유를 기록한다.
 - [ ] 프로세스 중단 뒤 PREPARED·lease·current pointer와 exact 외부 실행 target을 복구하고, 결과가 불확실한 Provider·Sandbox 작업을 자동으로 다시 보내지 않는다.
 - [ ] 한 가설 실패가 다른 가설을 verdict 없이 취소하지 않는지 검사한다.
-- [ ] production CLI가 fake pipeline이 아닌 완전한 handler registry·worker pool·result aggregator·finalizer를 통해 실제 URL과 local path fixture의 safe checkout, static/LLM, Dockerfile 유·무 dynamic recipe, Gates와 Markdown ReportDraft까지 최소 하나의 정상 분석을 완주하는지 검사한다.
+- [ ] T16-A → #167/#168 순서가 완료된 뒤 production CLI가 fake pipeline이 아닌 완전한 handler registry·worker pool·result aggregator·finalizer를 통해 실제 URL과 local path fixture의 safe checkout, static/LLM, Dockerfile 유·무 dynamic recipe, Gates와 Markdown ReportDraft까지 최소 하나의 정상 분석을 완주하는지 검사한다. 이 real E2E가 끝나기 전에는 T14를 완료로 표시하지 않는다.
 - [ ] R3·R4·R8 검토 뒤 PR을 병합한다.
 
 ### Task 15: Security hardening
@@ -538,6 +541,21 @@ Implementation record: [T04 core contracts](implementation/04-core-contracts.md)
 
 ### Task 16: Provider, tool and evaluation capability
 
+T16은 하나의 Issue 안에서 다음 두 merge tranche로 나눈다. T16-A는 T14의
+선행 조건이고, T16-B는 T14와 T15의 후속 조건이다. T16 전체 Issue가 닫힐 때까지
+기다렸다가 T14를 시작하거나, T14가 끝나기 전에 T16-B를 실행하는 순환 순서는
+허용하지 않는다.
+
+- **T16-A — pre-T14 minimum production capability:** T12·T13 이후 고정 fixture로
+  Git·AST·선택 정적 도구·Docker와 Python/JavaScript package/build/start 및
+  Dockerfile 유·무 generated recipe capability를 실제 검증한다. T14 real E2E에
+  사용할 최소 한 실제 인증 Provider와 exact production Prompt도 필요한 PVD,
+  좁은 R8 추천과 사람 승인을 거쳐 게시한다. 이 tranche는 T14 production
+  composition을 consume하지 않는다.
+- **T16-B — post-T14/T15 remaining capability and evaluation:** T14 real E2E와 T15
+  security hardening 뒤 나머지 Provider/subscription adapter, 전체 비교 평가,
+  CodeQL quota promotion과 추가 Prompt 추천·활성화를 완료한다.
+
 **Files:**
 - Create: `docs/superpowers/plans/implementation/16-capability-evaluation.md`
 - Create: `src/sastsimi/providers/codex_subscription.py`, `anthropic_api.py`, `claude_subscription.py`
@@ -550,7 +568,7 @@ Implementation record: [T04 core contracts](implementation/04-core-contracts.md)
 - Consumes: capability probe 계약, `RepositoryProfile` 후보, 격리된 evaluation path
 - Produces: 비활성 후보 adapter의 conformance 결과, PVD evidence, trusted runtime이 게시한 ProviderProfile·tool/build profile, RepositoryProfile에 적용할 tool 선택 결과, EvaluationRunResult와 사람이 승인할 수 있는 Prompt activation recommendation
 
-- [ ] 최소 production capability matrix는 Python과 JavaScript repository를 각각 포함하고, 언어별 AST/정적 도구, package 설치·build·start, Dockerfile 있음/없음 경로를 나누어 probe한다.
+- [ ] T16-A 최소 production capability matrix는 Python과 JavaScript repository를 각각 포함하고, 언어별 AST/정적 도구, package 설치·build·start, Dockerfile 있음/없음 경로를 나누어 probe한다. T16-A evidence commit을 #167/#168과 T14가 exact predecessor로 기록한다.
 - [ ] capability evidence가 exact 도구 version/digest·OS·언어·repository 특성·실행 경계에서 재현되고 trusted review를 통과한 profile만 `ACTIVE`로 게시한다. 존재 탐지, 단일 성공, 수동 설치만으로 production tool/build profile을 활성화하지 않는다.
 - [ ] package 설치·build·start·auth/credential 실패, Dockerfile 부재, 지원하지 않는 언어/tool 조합은 capability `BLOCKED | REJECTED` 또는 DataGap이며 취약점 `FALSE | HOLD`가 아니다. Dockerfile이 없을 때는 검증된 generated recipe profile이 있을 때만 dynamic 경로를 활성화한다.
 - [ ] 실제 credential 없이 default test가 외부 호출을 하지 않는지 검사한다.
@@ -579,11 +597,11 @@ Implementation record: [T04 core contracts](implementation/04-core-contracts.md)
 - Produces: 설치·인증할 수 있고 실제 repository를 Markdown 보고서까지 분석하는 release candidate와 최종 검증 보고서
 
 - [ ] 사용자 문서를 설치 → data/config 경로 준비 → Provider/tool 인증·capability 확인 → URL 또는 local path와 exact commit 분석 → 진행/실패 이유 조회 → 결과 → Markdown ReportDraft 조회·export → 취소·동일 입력 재개 → 복구 순서로, 복사해 실행할 수 있는 명령과 예상 상태를 포함해 작성한다.
-- [ ] Python·JavaScript, Dockerfile 유·무를 포함한 release scenario에서 실제 입력 → safe checkout → `RepositoryProfile` → `ACTIVE` tool 선택 → static/LLM → `EnvironmentRecipe`/Docker → Gates → Markdown ReportDraft의 exact reference closure를 검증한다. Fake adapter/pipeline은 이 production 출시 증거에 포함하지 않는다.
+- [ ] Python·JavaScript, Dockerfile 유·무를 포함한 release scenario에서 실제 입력 → safe checkout → `RepositoryProfile` → `ACTIVE` tool 선택 → static/LLM → `EnvironmentRecipe`/Docker → Gates → Markdown ReportDraft의 exact reference closure를 검증한다. 최소 한 실제 Provider는 설치와 인증에 성공해 실제 LLM 호출을 반환해야 한다. Fake adapter/pipeline과 credential 부재의 `BLOCKED` 결과는 이 production 출시 성공 증거를 대신하지 않는다.
 - [ ] clean Windows·Ubuntu 환경에서 `uv sync --frozen --all-groups`를 실행한다.
 - [ ] 빈 DB와 이전 revision migration을 검증한다.
 - [ ] TRUE·FALSE·HOLD·BLOCKED·FAILED·REVISE·정책 DENY·Chaining·Provider·Sandbox·crash recovery E2E를 실행한다.
-- [ ] 실제 Provider, 실제 정적 분석과 안전한 Docker fixture 경로를 최소 하나씩 검증한다.
+- [ ] 최소 한 실제 Provider의 인증·호출 성공, 실제 정적 분석과 안전한 Docker fixture 경로를 검증한다. credential 부재를 `BLOCKED`로 허용하는 것은 지정된 필수 경로 외의 선택·추가 Provider뿐이다.
 - [ ] secret scan, architecture validator, Ruff, mypy와 전체 pytest를 실행한다.
 - [ ] README와 installation/usage/provider-setup/troubleshooting 문서에 설치 → 설정 → 인증 → 실제 URL/local path + commit 분석 → 상태·실패 조회 → 결과 → Markdown ReportDraft → 복구 흐름을 기록한다.
 - [ ] 모든 open Critical·Important가 0인지 최종 독립 검토한다.
