@@ -124,6 +124,7 @@ class WorkspacePrepWorkHandler:
     loader: RepositoryLoaderPort
     resolve_call: ExactWorkspacePrepCallResolver
     requester_identity_ref: BudgetScopeRef
+    workspace_id: WorkspaceId
     timeout_ms: int
 
     def __post_init__(self) -> None:
@@ -132,6 +133,11 @@ class WorkspacePrepWorkHandler:
 
     async def execute(self, context: WorkContext) -> WorkHandlerResult:
         call = self.resolve_call(context)
+        if (
+            call.recovery_workspace_id is not None
+            and call.recovery_workspace_id != self.workspace_id
+        ):
+            raise ValueError("WORKSPACE_PREP_SCOPE_MISMATCH")
         if call.recovery_workspace_id is None:
             completed = await self.external.prepare_repository(
                 work=context.work,
@@ -139,7 +145,7 @@ class WorkspacePrepWorkHandler:
                     str(context.work.work_id)
                 ),
                 identity=self.requester_identity_ref,
-                workspace_id=self.external.runner.ids.new(WorkspaceId),
+                workspace_id=self.workspace_id,
                 submitted_source=call.run_input.repository_ref,
                 requested_ref=call.run_input.requested_git_ref,
                 policy_ref=call.policy_ref,
@@ -154,6 +160,16 @@ class WorkspacePrepWorkHandler:
                 identity=self.requester_identity_ref,
                 policy_ref=call.policy_ref,
             )
+        if (
+            completed.workspace.workspace_id != self.workspace_id
+            or completed.workspace.analysis_id != context.work.meta.analysis_id
+            or (
+                completed.workspace.status == "READY"
+                and str(completed.workspace.commit_id)
+                != call.run_input.requested_git_ref
+            )
+        ):
+            raise ValueError("WORKSPACE_PREP_SCOPE_MISMATCH")
         return WorkHandlerResult(
             completed.work.output_refs,
             action_input_refs=context.work.input_refs,
