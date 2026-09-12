@@ -7,7 +7,12 @@ from sqlalchemy import Connection, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from sastsimi.contracts.actions import ActionRequest, ActionType, RequesterRole
-from sastsimi.contracts.budget import BudgetLedgerEntry, BudgetReservation, BudgetUnits
+from sastsimi.contracts.budget import (
+    BudgetLedgerEntry,
+    BudgetReservation,
+    BudgetUnits,
+    ReservationStatus,
+)
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.chaining import (
     ChainingResult,
@@ -31,7 +36,9 @@ from sastsimi.contracts.refs import (
 from sastsimi.contracts.work import (
     CommitState,
     StateTransition,
+    SubjectType,
     TransitionCommit,
+    TransitionTargetStatus,
     WorkExecutionState,
     WorkStatus,
     WorkType,
@@ -62,7 +69,7 @@ def _wire(ref: StoredDataRef) -> str:
 
 
 def _scope(record: object) -> tuple[str | None, str | None, str | None]:
-    meta = getattr(record, "meta", None)
+    meta = record if isinstance(record, RecordMeta) else getattr(record, "meta", None)
     values = (
         getattr(meta, "analysis_id", None),
         getattr(meta, "workspace_id", None),
@@ -646,11 +653,11 @@ class ChainingCohortStore:
                 ),
                 work_id=work_id,
                 parent_work_ref=None,
-                work_type="CHAINING",
-                subject_type="ANALYSIS",
+                work_type=WorkType.CHAINING,
+                subject_type=SubjectType.ANALYSIS,
                 subject_id=metadata.analysis_id,
                 work_generation=generation,
-                status="PENDING",
+                status=WorkStatus.PENDING,
                 state_version=1,
                 last_transition_ref=None,
                 last_transition_commit_ref=None,
@@ -762,7 +769,7 @@ class ChainingCohortStore:
                 action_ref=action_ref,
                 work_ref=work_ref,
                 requested_units=units,
-                status="RESERVED",
+                status=ReservationStatus.RESERVED,
                 ledger_entry_ref=None,
                 reserved_at=self.works.clock.now(),
                 finalized_at=None,
@@ -879,7 +886,7 @@ class ChainingCohortStore:
                 work_id=work.work_id,
                 action_decision_ref=decision_ref,
                 from_status=work.status,
-                to_status="READY",
+                to_status=TransitionTargetStatus.READY,
                 expected_state_version=work.state_version,
                 new_state_version=work.state_version + 1,
                 attempt_id=None,
@@ -897,7 +904,7 @@ class ChainingCohortStore:
             work.model_dump()
             | dict(
                 meta=next_meta(work.meta, self.works.clock, self.works.ids),
-                status="READY",
+                status=WorkStatus.READY,
                 state_version=transition.new_state_version,
                 last_transition_ref=transition_ref,
                 output_refs=(),

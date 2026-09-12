@@ -1,4 +1,4 @@
-"""Pinned Chaining input remains valid independently of work generation."""
+"""Pinned Chaining input keeps exact trigger and historical-generation provenance."""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,7 +26,7 @@ from tests.contract.domain.canonical_fixtures import NOW, make
 from tests.contract.domain.fixtures import meta, ref, wire
 
 
-def test_chaining_work_generation_is_not_compared_to_parent_generation(
+def test_chaining_trigger_generation_must_match_its_source_process(
     tmp_path: Path,
 ) -> None:
     scenario = build_fake_pipeline(tmp_path)._scenario
@@ -86,14 +86,13 @@ def test_chaining_work_generation_is_not_compared_to_parent_generation(
         primitive_ref=primitive_ref,
     )
 
-    completed = scenario.runner.complete(
-        work,
-        chaining_identity,
-        "CHAINING",
-        (result,),
-    )
-
-    assert completed.status == "SUCCEEDED"
+    with pytest.raises(ValueError, match="CHAINING_CURRENT_VERIFICATION_MISMATCH"):
+        scenario.runner.complete(
+            work,
+            chaining_identity,
+            "CHAINING",
+            (result,),
+        )
 
 
 def _scoped_meta(
@@ -448,6 +447,65 @@ def test_second_generation_mixed_pool_remains_valid_after_later_index_revision(
             )
         )
     work, result = _chaining_case((pinned,), (first, second))
+    works = cast(WorkService, SimpleNamespace(records=records))
+    with database.engine.connect() as connection:
+        validate_chaining_output(works, connection, work, (result,))
+
+
+def test_trigger_generation_does_not_reject_another_hypothesis_generation(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "runtime.db")
+    upgrade(database)
+    records = SQLiteRecordStore(database)
+    with database.write() as connection:
+        h1_ref = _publish_committed_verification(
+            records,
+            connection,
+            _verification("h1-g1", "h1"),
+            suffix="h1-g1",
+            generation=1,
+        )
+        h2_first_ref = _publish_committed_verification(
+            records,
+            connection,
+            _verification("h2-g1", "h2"),
+            suffix="h2-g1",
+            generation=1,
+        )
+        h2_ref = _publish_committed_verification(
+            records,
+            connection,
+            _verification("h2-g2", "h2"),
+            suffix="h2-g2",
+            generation=2,
+        )
+        h1_process = _terminal_process("h1", h1_ref, generation=1)
+        h2_first_process = _terminal_process("h2", h2_first_ref, generation=1)
+        h2_process = _terminal_process("h2", h2_ref, generation=2)
+        h1_primitive = _primitive("h1", h1_ref, "h1-g1")
+        h2_primitive = _primitive("h2", h2_ref, "h2-g2")
+        h1_primitive_ref = reference(h1_primitive)
+        h2_primitive_ref = reference(h2_primitive)
+        assert isinstance(h1_primitive_ref, StoredDataRef)
+        assert isinstance(h2_primitive_ref, StoredDataRef)
+        h1_index = _index("h1", h1_ref, (h1_primitive_ref,), suffix="h1")
+        h2_index = _index("h2", h2_ref, (h2_primitive_ref,), suffix="h2")
+        _publish(
+            records,
+            connection,
+            h1_process,
+            h2_first_process,
+            h2_process,
+            h1_primitive,
+            h2_primitive,
+            h1_index,
+            h2_index,
+        )
+    work, result = _chaining_case(
+        (h1_index, h2_index),
+        (h1_primitive, h2_primitive),
+    )
     works = cast(WorkService, SimpleNamespace(records=records))
     with database.engine.connect() as connection:
         validate_chaining_output(works, connection, work, (result,))

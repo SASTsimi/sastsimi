@@ -81,6 +81,7 @@ def _validate_terminal_verification(
     *,
     hypothesis_id: str,
     verification_ref: StoredDataRef,
+    expected_generation: int | None,
 ) -> None:
     matching_processes = tuple(
         process
@@ -91,6 +92,11 @@ def _validate_terminal_verification(
     )
     if len(matching_processes) != 1:
         raise ValueError("CHAINING_PINNED_VERIFICATION_MISMATCH")
+    if (
+        expected_generation is not None
+        and matching_processes[0].verification_generation != expected_generation
+    ):
+        raise ValueError("CHAINING_CURRENT_VERIFICATION_MISMATCH")
     verification = resolved(
         works.records,
         connection,
@@ -188,6 +194,20 @@ def validate_chaining_output(
         for index in indexes
         if index.meta.hypothesis_id is not None
     }
+    trigger = next(
+        (
+            primitive
+            for primitive_ref, primitive in zip(
+                result.considered_primitive_refs,
+                primitives,
+                strict=True,
+            )
+            if primitive_ref == work.trigger_primitive_ref
+        ),
+        None,
+    )
+    if trigger is None or not isinstance(trigger.meta, RecordMeta):
+        raise ValueError("CHAINING_INPUT_SNAPSHOT_MISMATCH")
     for hypothesis_id, index in index_by_hypothesis.items():
         _validate_terminal_verification(
             works,
@@ -196,6 +216,7 @@ def validate_chaining_output(
             work_meta,
             hypothesis_id=hypothesis_id,
             verification_ref=index.current_verification_ref,
+            expected_generation=None,
         )
     for primitive_ref, primitive in zip(
         result.considered_primitive_refs,
@@ -226,6 +247,11 @@ def validate_chaining_output(
             work_meta,
             hypothesis_id=hypothesis_id,
             verification_ref=primitive.source_verification_ref,
+            expected_generation=(
+                work.work_generation
+                if primitive_ref == work.trigger_primitive_ref
+                else None
+            ),
         )
     expected_exclusions: tuple[LineageExclusion, ...] = ()
     if result.primitive_match_candidates or result.excluded_lineage_refs:

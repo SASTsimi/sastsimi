@@ -61,38 +61,11 @@ def _completed_update(
             == "PRIMITIVE_UPDATE"
         ]
     (source_work,) = updates
-    source_work_ref = stored_reference(source_work)
-    assert isinstance(source_work_ref, StoredDataRef)
     assert isinstance(source_work.last_transition_commit_ref, StoredDataRef)
-    primitive_refs = tuple(
-        ref for ref in source_work.output_refs if ref.data_kind == "primitive"
+    outcome = ChainingCommittedSourceStore(works.records).primitive_update(
+        source_work.last_transition_commit_ref
     )
-    admission_refs = tuple(
-        ref
-        for ref in source_work.output_refs
-        if ref.data_kind == "primitive_admission_decision"
-    )
-    assert all(isinstance(ref, StoredDataRef) for ref in primitive_refs)
-    assert all(isinstance(ref, StoredDataRef) for ref in admission_refs)
-    stored_primitives = tuple(
-        ref for ref in primitive_refs if isinstance(ref, StoredDataRef)
-    )
-    stored_admissions = tuple(
-        ref for ref in admission_refs if isinstance(ref, StoredDataRef)
-    )
-    (index,) = scenario.runtime.queries.current_records(
-        "fake-analysis", "primitive_index_state"
-    )
-    assert isinstance(index, PrimitiveIndexState)
-    index_ref = reference(index)
-    assert isinstance(index_ref, StoredDataRef)
-    outcome = PrimitiveUpdateOutcome(
-        source_work_ref=source_work_ref,
-        transition_commit_ref=source_work.last_transition_commit_ref,
-        admission_decision_ref=stored_admissions[0],
-        primitive_refs=stored_primitives,
-        primitive_index_ref=index_ref,
-    )
+    assert outcome.source_work_ref == stored_reference(source_work)
     state = scenario.runtime.budget_registry.current_state("fake-analysis")
     assert isinstance(state.budget_binding_ref, StoredDataRef)
     identity = scenario.evidence.identity(RequesterRole.PRIMITIVE_ADMISSION_RUNTIME)
@@ -353,14 +326,16 @@ def test_claimed_running_work_reads_its_exact_ready_time_pool(
         scope=scope,
         requester_identity_ref=identity,
     )
-    chaining_identity = scenario.evidence.stored_identity(RequesterRole.CHAINING)
+    orchestration_identity = scenario.evidence.stored_identity(
+        RequesterRole.ORCHESTRATION
+    )
     assert scenario.runner is not None
 
     running = scenario.runner.activate(
         ready.members[0].work,
         scope,
-        chaining_identity,
-        role="CHAINING",
+        orchestration_identity,
+        role="ORCHESTRATION",
     )
     running_ref = reference(running)
     assert isinstance(running_ref, StoredDataRef)
@@ -497,14 +472,33 @@ def test_failure_after_multiple_siblings_rolls_back_the_entire_cohort(
         works.records.publish(connection, first_ref)
         works.records.publish(connection, second_ref)
     fake_index = PrimitiveIndexState.model_validate(
-        index.model_dump() | {"primitive_refs": (first_ref, second_ref)}
+        index.model_dump()
+        | {
+            "meta": next_meta(index.meta, scenario.clock, scenario.ids),
+            "primitive_refs": (first_ref, second_ref),
+        }
     )
+    fake_index_ref = works.records.stage_record(fake_index)
+    assert isinstance(fake_index_ref, StoredDataRef)
+    with works.records.database.write() as connection:
+        works.records.publish(connection, fake_index_ref)
+        connection.execute(
+            update(models.current_records)
+            .where(
+                models.current_records.c.logical_record_id
+                == str(index.meta.logical_record_id)
+            )
+            .values(
+                record_id=str(fake_index.meta.record_id),
+                state_version=fake_index.meta.revision_number,
+            )
+        )
     two = PrimitiveUpdateOutcome(
         source_work_ref=outcome.source_work_ref,
         transition_commit_ref=outcome.transition_commit_ref,
         admission_decision_ref=outcome.admission_decision_ref,
         primitive_refs=(first_ref, second_ref),
-        primitive_index_ref=outcome.primitive_index_ref,
+        primitive_index_ref=fake_index_ref,
     )
     baseline = {}
     with works.records.database.engine.connect() as connection:
