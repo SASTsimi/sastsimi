@@ -765,12 +765,16 @@ def _build_runtime(
     artifacts = LocalArtifactStore(paths.artifacts, workspace_id, commit_id)
     registry = SQLiteRegistry(records, clock, ids)
     budget = SQLiteBudget(records, registry, clock, ids)
+    configuration_store = SQLiteConfigurationRegistry(
+        records, artifacts, capability_host_id
+    )
     authorization = validator_factory(
         records,
         budget,
         clock,
         ids,
         artifacts,
+        configuration_store,
     )
     works = SQLiteWorks(records, authorization, clock, ids)
     transitions = SQLiteTransitions(works, artifacts)
@@ -779,9 +783,6 @@ def _build_runtime(
     recovery.recover()
     validator = RuntimeValidator(authorization)
     external = ExternalCallService(validator)
-    configuration_store = SQLiteConfigurationRegistry(
-        records, artifacts, capability_host_id
-    )
 
     def llm_metadata(
         source: RecordMeta,

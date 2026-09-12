@@ -23,9 +23,15 @@ from sastsimi.contracts.llm import (
     ProviderProfile,
 )
 from sastsimi.contracts.llm_closure import llm_action_input_refs
-from sastsimi.contracts.refs import RecordRef, RunStoredDataRef, StoredDataRef
+from sastsimi.contracts.refs import (
+    HostConfigurationRef,
+    RecordRef,
+    RunStoredDataRef,
+    StoredDataRef,
+)
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.artifact_store import ArtifactStore
+from sastsimi.ports.capability_registry import ProductionCapabilityResolverPort
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
 from sastsimi.storage import models
@@ -127,12 +133,17 @@ class RuntimeValidator:
             check_owner(self.records, connection, action, work)
             check_stage(self.records, connection, action, work)
             for ref in (*work.input_refs, *action.input_refs):
-                check_current_input(
-                    self.records,
-                    connection,
-                    ref,
-                    workspace_statuses=allowed_workspace_statuses(action, work),
-                )
+                if isinstance(ref, HostConfigurationRef):
+                    self.require_current_capability_ref(ref)
+                    if ref not in decision.checked_config_refs:
+                        raise ValueError("CAPABILITY_PROFILE_NOT_AUTHORIZED")
+                else:
+                    check_current_input(
+                        self.records,
+                        connection,
+                        ref,
+                        workspace_statuses=allowed_workspace_statuses(action, work),
+                    )
             self.check_reservation(
                 connection,
                 REF_ADAPTER.validate_json(row["reservation_ref"]),
@@ -258,9 +269,20 @@ class RuntimeValidator:
         clock: Clock,
         ids: IdGenerator,
         artifacts: ArtifactStore | None = None,
+        capability_resolver: ProductionCapabilityResolverPort | None = None,
     ) -> None:
         self.records, self.budget, self.clock, self.ids = records, budget, clock, ids
         self.artifacts = artifacts
+        self.capability_resolver = capability_resolver
+
+    def require_current_capability_ref(self, ref: HostConfigurationRef) -> None:
+        """Revalidate the exact scheduled host profile; never select a replacement."""
+
+        if self.capability_resolver is None:
+            raise ValueError("CAPABILITY_RESOLVER_REQUIRED")
+        profile = self.capability_resolver.resolve_pinned_active_profile(ref)
+        if reference(profile) != ref:
+            raise ValueError("CAPABILITY_PROFILE_REFERENCE_MISMATCH")
 
     def _verify_invocation_artifact(
         self,
@@ -359,6 +381,11 @@ class RuntimeValidator:
         ):
             raise ValueError("STATE_VERSION_CONFLICT")
         for ref in (*work.input_refs, *action.input_refs):
+            if isinstance(ref, HostConfigurationRef):
+                self.require_current_capability_ref(ref)
+                if ref not in decision.checked_config_refs:
+                    raise ValueError("CAPABILITY_PROFILE_NOT_AUTHORIZED")
+                continue
             check_current_input(
                 self.records,
                 connection,

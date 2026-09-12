@@ -2,15 +2,26 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import insert
 
 from sastsimi.bootstrap import build_runtime
+from sastsimi.contracts.actions import (
+    ActionDecision,
+    ActionRequest,
+    ActionType,
+    RequesterRole,
+)
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.capabilities import (
     CapabilityApprovalEvidence,
     CapabilityControlEvidence,
+    CapabilityKind,
+    CapabilityLanguage,
+    CapabilityOperation,
     RuntimeCapabilityProfile,
     RuntimeCapabilitySelection,
     capability_target_hash,
@@ -34,8 +45,12 @@ from sastsimi.contracts.work import (
 )
 from sastsimi.ports.capability_registry import ProductionCapabilityResolverPort
 from sastsimi.runtime.services import RuntimeServices
+from sastsimi.storage import models
+from sastsimi.storage.action_validator import RuntimeValidator as SQLiteRuntimeValidator
+from sastsimi.storage.codec import encode, reference
 from sastsimi.storage.database import Database
 from sastsimi.storage.migrations import upgrade
+from sastsimi.storage.repositories import SQLiteRecordStore
 from tests.integration.runtime_support import TestClock, TestIds
 from tests.integration.trusted_fixture import FixtureEvidence
 
@@ -696,9 +711,9 @@ def test_minimum_runtime_capability_can_be_activated_and_resolved(
     profile_ref = runtime.configuration.register_runtime_capability(profile)
 
     selection = runtime.configuration.resolve_active_capability(
-        capability_kind=kind,
-        language=language,
-        operation=operation,
+        capability_kind=cast(CapabilityKind, kind),
+        language=cast(CapabilityLanguage, language),
+        operation=cast(CapabilityOperation, operation),
         operating_system="windows",
         architecture="x86_64",
     )
@@ -812,6 +827,105 @@ def _ready_static_work(
     )
 
 
+def _publish_ready_work(runtime: RuntimeServices, work: WorkExecutionState) -> None:
+    records = cast(SQLiteRecordStore, runtime.unit_of_work.records)
+    with records.database.write() as connection:
+        work_ref = records.stage(connection, work)
+        records.publish(connection, work_ref)
+        connection.execute(
+            insert(models.work_states).values(
+                work_id=str(work.work_id),
+                analysis_id=str(work.meta.analysis_id),
+                registration_key=f"registration-{work.work_id}",
+                status=work.status.value,
+                state_version=work.state_version,
+                active_attempt_id=None,
+                payload=encode(work),
+            )
+        )
+        connection.execute(
+            insert(models.current_records).values(
+                logical_record_id=str(work.meta.logical_record_id),
+                record_id=str(work.meta.record_id),
+                state_version=work.state_version,
+            )
+        )
+
+
+def _authorize_capability_action(
+    runtime: RuntimeServices,
+    evidence: CapabilityEvidence,
+    work: WorkExecutionState,
+    profile_ref: HostConfigurationRef,
+    *,
+    suffix: str,
+) -> ActionDecision:
+    records = cast(SQLiteRecordStore, runtime.unit_of_work.records)
+    assert isinstance(work.meta, RecordMeta)
+    identity = ActionRequest.model_validate(
+        {
+            "meta": work.meta.model_copy(
+                update={
+                    "record_id": RecordId(f"identity-{suffix}"),
+                    "logical_record_id": LogicalRecordId(f"identity-{suffix}"),
+                    "record_type": "action_request",
+                }
+            ),
+            "action_id": f"identity-{suffix}",
+            "requested_by": RequesterRole.ORCHESTRATION,
+            "requester_identity_ref": StoredDataRef(
+                stored_data_id=StoredDataId("identity-root"),
+                data_kind="identity",
+                content_hash="9" * 64,
+                workspace_id=work.meta.workspace_id,
+                commit_id=work.meta.commit_id,
+                record_id=RecordId("identity-root"),
+            ),
+            "action_type": ActionType.CHANGE_WORK_STATE,
+            "work_ref": reference(work),
+            "expected_state_version": work.state_version,
+            "expected_verification_generation": None,
+            "generation_restart_reason": None,
+            "generation_restart_basis_refs": (),
+            "input_refs": (profile_ref,),
+            "dynamic_request_ref": None,
+            "reproduction_plan_ref": None,
+            "result_kind": None,
+            "candidate_result_ref": None,
+            "llm_call_spec_ref": None,
+            "tool_name": None,
+            "file_paths": (),
+            "provider_profile_ref": None,
+            "session_mode": None,
+            "sandbox_profile_ref": None,
+            "resource_profile_ref": None,
+            "run_policy_state_ref": None,
+            "image_digest": None,
+            "network_targets": (),
+            "resource_limits": None,
+            "reason": "Exercise the exact scheduled host capability.",
+            "requested_at": NOW,
+        }
+    )
+    identity_ref = records.stage_record(identity)
+    if not isinstance(identity_ref, StoredDataRef):
+        raise AssertionError("Expected the analysis-scoped identity reference")
+    evidence.identities[identity_ref] = RequesterRole.ORCHESTRATION
+    action = identity.model_copy(
+        update={
+            "meta": identity.meta.model_copy(
+                update={
+                    "record_id": RecordId(f"action-{suffix}"),
+                    "logical_record_id": LogicalRecordId(f"action-{suffix}"),
+                }
+            ),
+            "action_id": f"action-{suffix}",
+            "requester_identity_ref": identity_ref,
+        }
+    )
+    return runtime.validator.authorize(action, work)
+
+
 def test_two_repository_works_pin_same_current_host_capability(tmp_path: Path) -> None:
     runtime, evidence, raw_ref = _runtime(tmp_path)
     draft = _runtime_profile()
@@ -856,6 +970,125 @@ def test_two_repository_works_pin_same_current_host_capability(tmp_path: Path) -
     ).input_refs == (expected_ref,)
     assert runtime.configuration.get_runtime_capability(expected_ref) == profile
     assert runtime.unit_of_work.records.get_exact(expected_ref) == profile
+
+
+def test_other_repository_action_claims_same_exact_active_host_profile(
+    tmp_path: Path,
+) -> None:
+    runtime, evidence, raw_ref = _runtime(tmp_path)
+    draft = _runtime_profile()
+    approval = _approval(draft, raw_ref)
+    evidence.capability_approvals.add(content_hash(approval))
+    approval_ref = runtime.configuration.register_capability_approval(approval)
+    profile_ref = runtime.configuration.register_runtime_capability(
+        draft.model_copy(update={"capability_evidence_ref": approval_ref})
+    )
+    work = _ready_static_work(
+        analysis_id="analysis-other",
+        workspace_id="workspace-other",
+        commit_id="commit-other",
+        profile_ref=profile_ref,
+    )
+    _publish_ready_work(runtime, work)
+
+    decision = _authorize_capability_action(
+        runtime, evidence, work, profile_ref, suffix="cross-repository"
+    )
+    assert decision.decision == "ALLOW"
+    assert profile_ref in decision.checked_config_refs
+
+    records = cast(SQLiteRecordStore, runtime.unit_of_work.records)
+    validator = cast(SQLiteRuntimeValidator, runtime.validator.authorization)
+    with records.database.write() as connection:
+        claimed = validator.claim(
+            connection,
+            reference(decision),
+            ActionType.CHANGE_WORK_STATE,
+            work,
+        )
+    assert claimed.use_status == "USED"
+
+
+def test_pinned_profile_retired_after_authorization_is_denied_at_claim(
+    tmp_path: Path,
+) -> None:
+    runtime, evidence, raw_ref = _runtime(tmp_path)
+    draft = _runtime_profile()
+    activation = _approval(draft, raw_ref)
+    evidence.capability_approvals.add(content_hash(activation))
+    activation_ref = runtime.configuration.register_capability_approval(activation)
+    active = draft.model_copy(update={"capability_evidence_ref": activation_ref})
+    profile_ref = runtime.configuration.register_runtime_capability(active)
+    work = _ready_static_work(
+        analysis_id="analysis-other",
+        workspace_id="workspace-other",
+        commit_id="commit-other",
+        profile_ref=profile_ref,
+    )
+    _publish_ready_work(runtime, work)
+    decision = _authorize_capability_action(
+        runtime, evidence, work, profile_ref, suffix="retire-before-claim"
+    )
+    retirement_target = active.model_copy(
+        update={
+            "meta": _meta(
+                "runtime_capability_profile",
+                "python-package-v2",
+                logical_id="python-package",
+                revision=2,
+                previous="python-package-v1",
+            ),
+            "status": "RETIRED",
+            "capability_evidence_ref": _placeholder_ref(),
+        }
+    )
+    retirement = _approval(
+        retirement_target,
+        raw_ref,
+        record_id="approval-retire-before-claim",
+        decision="RETIRE",
+    )
+    evidence.capability_approvals.add(content_hash(retirement))
+    retirement_ref = runtime.configuration.register_capability_approval(retirement)
+    runtime.configuration.register_runtime_capability(
+        retirement_target.model_copy(update={"capability_evidence_ref": retirement_ref})
+    )
+
+    records = cast(SQLiteRecordStore, runtime.unit_of_work.records)
+    validator = cast(SQLiteRuntimeValidator, runtime.validator.authorization)
+    with records.database.write() as connection:
+        with pytest.raises(ValueError, match="CAPABILITY_PROFILE_NOT_CURRENT"):
+            validator.claim(
+                connection,
+                reference(decision),
+                ActionType.CHANGE_WORK_STATE,
+                work,
+            )
+
+
+def test_pinned_profile_resolution_rejects_another_trusted_host(
+    tmp_path: Path,
+) -> None:
+    runtime_a, evidence, raw_ref = _runtime(tmp_path)
+    draft = _runtime_profile()
+    approval = _approval(draft, raw_ref)
+    evidence.capability_approvals.add(content_hash(approval))
+    approval_ref = runtime_a.configuration.register_capability_approval(approval)
+    profile_ref = runtime_a.configuration.register_runtime_capability(
+        draft.model_copy(update={"capability_evidence_ref": approval_ref})
+    )
+    runtime_b = build_runtime(
+        tmp_path,
+        WorkspaceId("ws1"),
+        CommitId("c1"),
+        TestClock(),
+        TestIds(),
+        evidence=evidence,
+        capability_host_id="host-b",
+    )
+
+    with pytest.raises(ValueError, match="CAPABILITY_HOST_MISMATCH"):
+        runtime_b.configuration.resolve_pinned_active_profile(profile_ref)
 
 
 def test_cross_profile_forged_host_reference_is_rejected(tmp_path: Path) -> None:

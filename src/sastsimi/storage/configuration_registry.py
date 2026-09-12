@@ -316,6 +316,42 @@ class ConfigurationRegistry:
             raise ValueError("CAPABILITY_PROFILE_REFERENCE_MISMATCH")
         return record
 
+    def resolve_pinned_active_profile(
+        self, profile_ref: HostConfigurationRef
+    ) -> RuntimeCapabilityProfile | StaticToolProfile:
+        """Revalidate one exact scheduled host profile without route reselection."""
+
+        self._require_capability_host(profile_ref.host_id)
+        with self.records.database.engine.connect() as connection:
+            try:
+                record = self.records.resolve(connection, profile_ref)
+            except (LookupError, ValueError) as error:
+                raise ValueError("CAPABILITY_PROFILE_REFERENCE_MISMATCH") from error
+            if not isinstance(record, (RuntimeCapabilityProfile, StaticToolProfile)):
+                raise ValueError("CAPABILITY_PROFILE_REFERENCE_MISMATCH")
+            if record.host_id != profile_ref.host_id:
+                raise ValueError("CAPABILITY_HOST_MISMATCH")
+            current = connection.execute(
+                select(models.current_records.c.record_id).where(
+                    models.current_records.c.logical_record_id
+                    == str(record.meta.logical_record_id)
+                )
+            ).scalar_one_or_none()
+            if current != str(record.meta.record_id):
+                raise ValueError("CAPABILITY_PROFILE_NOT_CURRENT")
+            evidence = self._require_capability_evidence(connection, record)
+            if isinstance(record, RuntimeCapabilityProfile):
+                if record.status != "ACTIVE":
+                    raise ValueError("CAPABILITY_PROFILE_NOT_ACTIVE")
+                if not self._runtime_identity_matches(record, evidence):
+                    raise ValueError("CAPABILITY_EVIDENCE_IDENTITY_MISMATCH")
+            else:
+                if record.purpose != "PRODUCTION" or record.status != "ACTIVE":
+                    raise ValueError("CAPABILITY_PROFILE_NOT_ACTIVE")
+                if not self._static_identity_matches(record, evidence):
+                    raise ValueError("CAPABILITY_EVIDENCE_IDENTITY_MISMATCH")
+        return record
+
     def resolve_active_capability(
         self,
         *,

@@ -54,6 +54,10 @@ class ConfigurationRegistryPort(Protocol):
         self, profile_ref: HostConfigurationRef
     ) -> RuntimeCapabilityProfile: ...
 
+    def resolve_pinned_active_profile(
+        self, profile_ref: HostConfigurationRef
+    ) -> RuntimeCapabilityProfile | StaticToolProfile: ...
+
     def resolve_active_capability(
         self,
         *,

@@ -50,6 +50,7 @@ type RecordRef = (
     RunStoredDataRef | StoredDataRef | HostConfigurationRef | PolicyCacheRef
 )
 type BudgetScopeRef = RunStoredDataRef | StoredDataRef
+type CheckedConfigurationRef = BudgetScopeRef | HostConfigurationRef
 
 
 class ReferencedRecord(Protocol):

@@ -147,6 +147,7 @@ from .records import RevisionMeta as RevisionMeta
 from .records import RunMeta as RunMeta
 from .records import validate_revision as validate_revision
 from .refs import BudgetScopeRef as BudgetScopeRef
+from .refs import CheckedConfigurationRef as CheckedConfigurationRef
 from .refs import HostConfigurationRef as HostConfigurationRef
 from .refs import PolicyCacheRef as PolicyCacheRef
 from .refs import RecordRef as RecordRef

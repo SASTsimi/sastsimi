@@ -80,6 +80,16 @@
       "title": "CheckType",
       "type": "string"
     },
+    "CheckedConfigurationRef": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BudgetScopeRef"
+        },
+        {
+          "$ref": "#/$defs/HostConfigurationRef"
+        }
+      ]
+    },
     "CommitId": {
       "minLength": 1,
       "pattern": "\\S",
@@ -509,7 +519,7 @@
     },
     "checked_config_refs": {
       "items": {
-        "$ref": "#/$defs/BudgetScopeRef"
+        "$ref": "#/$defs/CheckedConfigurationRef"
       },
       "title": "Checked Config Refs",
       "type": "array"

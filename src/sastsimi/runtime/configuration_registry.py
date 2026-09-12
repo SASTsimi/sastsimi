@@ -59,6 +59,13 @@ class ConfigurationRegistry:
     ) -> RuntimeCapabilityProfile:
         return self.registry.get_runtime_capability(profile_ref)
 
+    def resolve_pinned_active_profile(
+        self, profile_ref: HostConfigurationRef
+    ) -> RuntimeCapabilityProfile | StaticToolProfile:
+        """Revalidate one scheduled exact revision without route reselection."""
+
+        return self.registry.resolve_pinned_active_profile(profile_ref)
+
     def resolve_active_capability(
         self,
         *,

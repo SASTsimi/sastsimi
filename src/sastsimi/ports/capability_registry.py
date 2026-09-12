@@ -8,9 +8,12 @@ from sastsimi.contracts.capabilities import (
     CapabilityLanguage,
     CapabilityOperatingSystem,
     CapabilityOperation,
+    RuntimeCapabilityProfile,
     RuntimeCapabilitySelection,
     StaticToolCapabilitySelection,
 )
+from sastsimi.contracts.refs import HostConfigurationRef
+from sastsimi.contracts.static import StaticToolProfile
 
 
 @runtime_checkable
@@ -35,3 +38,7 @@ class ProductionCapabilityResolverPort(Protocol):
         operating_system: CapabilityOperatingSystem,
         architecture: CapabilityArchitecture,
     ) -> StaticToolCapabilitySelection: ...
+
+    def resolve_pinned_active_profile(
+        self, profile_ref: HostConfigurationRef
+    ) -> RuntimeCapabilityProfile | StaticToolProfile: ...
