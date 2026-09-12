@@ -1,0 +1,66 @@
+{
+  "fixture_version": "r6-handoff-1.0",
+  "fixture_notice": "SYNTHETIC PROMPT VALIDATION FIXTURE - exact reference relationships are the assertion target.",
+  "fixture_id": "R6-DYNAMIC-SUPPORTED-01",
+  "analysis_id": "ana_fixture_006",
+  "workspace_id": "ws_fixture_006",
+  "commit_id": "6666666666666666666666666666666666666666",
+  "hypothesis_id": "hyp_sqli_006",
+  "parent_verification_work_id": "work_verify_006",
+  "verification_generation": 2,
+  "debate_input_hash": "6666666666666666666666666666666666666666666666666666666666666666",
+  "playbook_ref": "playbook_ref_sqli_001",
+  "playbook_application_ref": "playbook_application_ref_006_g2",
+  "assessment": {
+    "assessment_ref": "assessment_ref_006_g2",
+    "initial_verdict": "TRUE",
+    "next_step": "POC_CONFIRMATION"
+  },
+  "pro_result": {
+    "result_ref": "pro_result_ref_006_g2",
+    "status": "COMMITTED",
+    "session_id": "session_pro_006_g2",
+    "debate_input_hash": "6666666666666666666666666666666666666666666666666666666666666666"
+  },
+  "con_result": {
+    "result_ref": "con_result_ref_006_g2",
+    "status": "COMMITTED",
+    "session_id": "session_con_006_g2",
+    "debate_input_hash": "6666666666666666666666666666666666666666666666666666666666666666"
+  },
+  "dynamic_request": {
+    "request_ref": "dynamic_request_ref_006_g2",
+    "verification_generation": 2,
+    "purpose": "POC_CONFIRMATION",
+    "initial_verdict": "TRUE"
+  },
+  "dynamic_result": {
+    "result_ref": "dynamic_result_ref_006_g2_a3",
+    "request_ref": "dynamic_request_ref_006_g2",
+    "verification_generation": 2,
+    "attempt_id": "attempt_dynamic_006_3",
+    "status": "SUCCEEDED",
+    "hypothesis_outcome": "SUPPORTED",
+    "poc_ref": "poc_ref_006_g2_a3"
+  },
+  "poc": {
+    "poc_ref": "poc_ref_006_g2_a3",
+    "request_ref": "dynamic_request_ref_006_g2",
+    "attempt_id": "attempt_dynamic_006_3",
+    "validated": true
+  },
+  "validation_results": [
+    {
+      "validation_id": "vc_006_1",
+      "completion": "COMPLETE",
+      "evidence_refs": ["ev_source_006", "ev_sink_006", "dynamic_result_ref_006_g2_a3"]
+    }
+  ],
+  "falsification_results": [
+    {
+      "question_id": "fq_006_1",
+      "outcome": "NOT_DISPROVED",
+      "evidence_refs": ["ev_no_binding_006", "dynamic_result_ref_006_g2_a3"]
+    }
+  ]
+}

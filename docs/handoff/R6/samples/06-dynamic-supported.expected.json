@@ -1,0 +1,30 @@
+{
+  "fixture_version": "r6-handoff-1.0",
+  "fixture_notice": "SYNTHETIC EXPECTED PROJECTION - runtime-owned fields are intentionally omitted.",
+  "fixture_id": "R6-DYNAMIC-SUPPORTED-01",
+  "expected_verification_result": {
+    "verification_generation": 2,
+    "playbook_ref": "playbook_ref_sqli_001",
+    "playbook_application_ref": "playbook_application_ref_006_g2",
+    "debate_input_hash": "6666666666666666666666666666666666666666666666666666666666666666",
+    "pro_evidence_ref": "pro_result_ref_006_g2",
+    "con_evidence_ref": "con_result_ref_006_g2",
+    "initial_verdict": "TRUE",
+    "verdict": "TRUE",
+    "dynamic_request_ref": "dynamic_request_ref_006_g2",
+    "dynamic_result_ref": "dynamic_result_ref_006_g2_a3",
+    "poc_ref": "poc_ref_006_g2_a3",
+    "all_validation_checks_complete": true,
+    "disproved_falsification_count": 0
+  },
+  "must_hold": [
+    "dynamic result와 PoC의 attempt_id가 attempt_dynamic_006_3으로 동일",
+    "dynamic result가 current request와 generation을 직접 참조",
+    "Pro와 Con의 hash는 같고 session은 서로 다름"
+  ],
+  "must_not_output": [
+    "다른 attempt의 PoC",
+    "Gate ACCEPT 또는 보고 가능 판정",
+    "R7 plan, command 또는 payload"
+  ]
+}

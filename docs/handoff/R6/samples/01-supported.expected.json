@@ -1,0 +1,68 @@
+{
+  "fixture_version": "r6-handoff-1.0",
+  "fixture_notice": "SYNTHETIC EXPECTED PROJECTION - runtime-owned fields are intentionally omitted.",
+  "fixture_id": "R6-SUPPORTED-01",
+  "expected_pro_result": {
+    "role": "PRO",
+    "parent_work_id": "work_verify_001",
+    "verification_generation": 1,
+    "debate_input_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "evidence": [
+      {
+        "claim_id": "pro_claim_001",
+        "statement": "공격자 제어 q가 문자열 보간을 거쳐 cursor.execute의 SQL 인자로 전달된다.",
+        "source_role": "PRO",
+        "evidence_refs": ["ev_request_q_source", "ev_sql_string_concat", "ev_cursor_execute"],
+        "code_locations": [
+          {
+            "workspace_id": "ws_fixture_001",
+            "commit_id": "1111111111111111111111111111111111111111",
+            "file_path": "app/search.py",
+            "start_line": 12,
+            "end_line": 16
+          }
+        ],
+        "limitations": ["실제 DB에서 공격 payload가 실행되는지는 아직 관찰하지 않았다."]
+      }
+    ],
+    "summary": "q에서 SQL 실행까지의 직접 data flow와 파라미터 바인딩 부재가 확인된다.",
+    "limitations": ["동적 재현과 validated PoC가 아직 없다."]
+  },
+  "expected_con_result": {
+    "role": "CON",
+    "parent_work_id": "work_verify_001",
+    "verification_generation": 1,
+    "debate_input_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "evidence": [],
+    "summary": "current Context에서는 파라미터 바인딩, allowlist 또는 동등한 방어가 확인되지 않았다.",
+    "limitations": ["반대 근거가 없다는 사실만으로 가설이 증명되는 것은 아니다."]
+  },
+  "expected_initial_assessment": {
+    "result_kind": "verification_initial_assessment",
+    "verification_generation": 1,
+    "playbook_ref": "playbook_ref_sqli_001",
+    "playbook_application_ref": "playbook_application_ref_001",
+    "pro_evidence_ref": "pro_result_ref_001",
+    "con_evidence_ref": "con_result_ref_001",
+    "initial_verdict": "TRUE",
+    "next_step": "POC_CONFIRMATION",
+    "rationale": "정적·Pro·Con 근거는 핵심 경로를 지지하지만 final TRUE에 필요한 동적 결과와 validated PoC가 없다."
+  },
+  "expected_dynamic_request": {
+    "result_kind": "dynamic_reproduction_request",
+    "verification_generation": 1,
+    "purpose": "POC_CONFIRMATION",
+    "initial_verdict": "TRUE",
+    "sandbox_profile_ref": "sandbox_profile_ref_local_only_001",
+    "goal": "격리된 환경에서 q가 SQL 문법을 변경하고 현재 가설의 영향이 관찰되는지 확인한다.",
+    "code_refs": ["ev_request_q_source", "ev_sql_string_concat", "ev_cursor_execute"],
+    "pro_evidence_ref": "pro_result_ref_001",
+    "con_evidence_ref": "con_result_ref_001"
+  },
+  "expected_final_result": null,
+  "must_not_output": [
+    "validated PoC 없이 final TRUE",
+    "R6가 직접 만든 command 또는 payload",
+    "근거 없는 counter evidence"
+  ]
+}
