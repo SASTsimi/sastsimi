@@ -273,7 +273,13 @@ class WorkflowRunner:
         )
         self.runtime.budget.release(BudgetReleaseRequest(released))
 
-    def account(self, reservation: BudgetReservation, actual: BudgetUnits) -> None:
+    def account(
+        self,
+        reservation: BudgetReservation,
+        actual: BudgetUnits,
+        *,
+        usage_refs: tuple[BudgetScopeRef, ...] = (),
+    ) -> None:
         records = self.runtime.unit_of_work.records
         remaining = self.runtime.budget.remaining(
             reservation.budget_binding_ref, str(reservation.meta.analysis_id)
@@ -288,7 +294,7 @@ class WorkflowRunner:
                     action_ref=reservation.action_ref,
                     work_ref=reservation.work_ref,
                     actual_units=actual,
-                    usage_refs=(),
+                    usage_refs=usage_refs,
                     sequence=remaining.as_of_sequence + 1,
                     committed_at=self.clock.now(),
                 )
@@ -428,15 +434,11 @@ class WorkflowRunner:
             trigger_primitive_ref=trigger_primitive_ref,
             stable_key=stable_key,
         )
-        registered = self._register_pending(
-            scope, candidate, identity, role=role
-        )
+        registered = self._register_pending(scope, candidate, identity, role=role)
         if registered.status != "PENDING":
             return registered
         try:
-            return self.enqueue_registered(
-                registered, scope, identity, role=role
-            )
+            return self.enqueue_registered(registered, scope, identity, role=role)
         except ValueError as error:
             current = self.runtime.work.get(str(registered.work_id))
             if current.status == "PENDING":
