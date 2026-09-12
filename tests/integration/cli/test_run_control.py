@@ -508,6 +508,22 @@ def test_foreground_interrupt_persists_latch_before_bounded_drain(
     assert service.controls.cancel_requested("a1")
 
 
+def test_scheduler_cannot_return_an_outcome_for_another_run() -> None:
+    service, _ = _service(
+        scheduler_outcome=RunOutcome("a2", "BLOCKED", None),
+    )
+    with pytest.raises(ValueError, match="RUN_OUTCOME_SCOPE_MISMATCH"):
+        asyncio.run(
+            service.run(
+                run_command.request(
+                    repository="https://example.invalid/repository",
+                    commit="abc123",
+                    program_id="program",
+                )
+            )
+        )
+
+
 @dataclass(frozen=True)
 class _Application:
     status_view: AnalysisStatusView
