@@ -20,10 +20,33 @@ from sastsimi.contracts.dynamic import (
     SandboxProfile,
 )
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 from sastsimi.contracts.static import RepositoryProfile
 
 type RecreateReason = Literal["STATE_CHANGED", "CONFIG_CHANGED", "STATE_UNCERTAIN"]
+type DockerBuildLimit = Literal["CPU", "MEMORY", "PID", "DISK"]
+
+
+@dataclass(frozen=True, slots=True)
+class TrustedDockerTarget:
+    """Resolver-owned, exact local Docker execution target."""
+
+    profile_ref: HostConfigurationRef
+    executable: Path
+    subject_key: str
+    subject_sha256: str
+    daemon_target: str
+    enforced_build_limits: frozenset[DockerBuildLimit]
+
+
+class TrustedDockerTargetResolverPort(Protocol):
+    """T16B seam for resolving and revalidating the current ACTIVE profile."""
+
+    def resolve_current(
+        self, profile_ref: HostConfigurationRef
+    ) -> TrustedDockerTarget: ...
+
+    def require_current(self, target: TrustedDockerTarget) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -209,6 +232,10 @@ class ReproductionSetupPort(Protocol):
         meta: RecordMeta,
     ) -> EnvironmentRecipe: ...
 
+    def recipe_resource_refs(
+        self, recipe: EnvironmentRecipe
+    ) -> tuple[StoredDataRef, ...]: ...
+
     async def create(
         self,
         *,
@@ -271,4 +298,6 @@ __all__ = [
     "SandboxMount",
     "SandboxRunSpec",
     "SandboxSetupCleanupError",
+    "TrustedDockerTarget",
+    "TrustedDockerTargetResolverPort",
 ]

@@ -28,7 +28,7 @@ from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.static import RepositoryProfile, RepositoryTrackedFile
 from sastsimi.ports.artifact_store import ArtifactStore
-from sastsimi.ports.dynamic_sandbox import PreparedRecipeSourceView
+from sastsimi.ports.dynamic_sandbox import PreparedRecipeSourceView, SandboxRunSpec
 
 _MAX_RECIPE_INPUT_BYTES = 4 * 1024 * 1024
 _MAX_BUILD_CONTEXT_BYTES = 64 * 1024 * 1024
@@ -75,6 +75,7 @@ class RecipeDockerPort(Protocol):
         dockerfile: bytes,
         labels: Mapping[str, str],
         *,
+        spec: SandboxRunSpec,
         timeout_ms: int,
     ) -> str: ...
     async def inspect_image(self, image: str, *, timeout_ms: int) -> str: ...
@@ -88,6 +89,7 @@ class RecipeContextDockerPort(Protocol):
         dockerfile_path: str,
         labels: Mapping[str, str],
         *,
+        spec: SandboxRunSpec,
         timeout_ms: int,
     ) -> str: ...
 
@@ -249,6 +251,7 @@ class EnvironmentRecipeStore:
         docker: RecipeDockerPort,
         source: PreparedRecipeSourceView,
         labels: Mapping[str, str],
+        build_spec: SandboxRunSpec,
         build_timeout_ms: int,
     ) -> EnvironmentRecipe:
         """Resolve, pin and build only a boundary-approved source."""
@@ -300,6 +303,7 @@ class EnvironmentRecipeStore:
                 built_digest = await docker.build(
                     trusted_dockerfile,
                     labels,
+                    spec=build_spec,
                     timeout_ms=build_timeout_ms,
                 )
             else:
@@ -314,6 +318,7 @@ class EnvironmentRecipeStore:
                     archive,
                     source.dockerfile_path,
                     labels,
+                    spec=build_spec,
                     timeout_ms=build_timeout_ms,
                 )
             if not _IMAGE_DIGEST.fullmatch(built_digest):

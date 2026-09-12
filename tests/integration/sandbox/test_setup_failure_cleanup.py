@@ -34,6 +34,7 @@ from sastsimi.sandbox.setup_automation import (
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import wire
 from tests.integration.sandbox.test_container_lifecycle import (
+    IMAGE_DIGEST,
     FakeDockerAdapter,
     _approval,
     _dynamic_records,
@@ -134,7 +135,7 @@ async def test_ambiguous_create_is_reconciled_by_deterministic_owned_name(
     assert len(docker.removed) == 1
     assert docker.removed[0].startswith("sastsimi-")
     restarted = OwnedResourceRegistry(journal_path=tmp_path / "owned.json")
-    assert restarted.pending_resource_ids() == ()
+    assert restarted.pending_resource_ids() == (IMAGE_DIGEST,)
 
 
 @pytest.mark.asyncio
@@ -220,7 +221,7 @@ async def test_unresolved_ambiguous_create_exposes_required_cleanup(
     docker.inspection_fails = False
     restarted = OwnedResourceRegistry(journal_path=journal)
     assert await restarted.reconcile_pending(docker=docker) == ()
-    assert restarted.pending_resource_ids() == ()
+    assert restarted.pending_resource_ids() == (IMAGE_DIGEST,)
     assert len(docker.removed) == 1
     cleanup = await setup.cleanup(
         request=request,
@@ -229,7 +230,9 @@ async def test_unresolved_ambiguous_create_exposes_required_cleanup(
         meta=_meta("cleanup_result", "unresolved-create-cleanup"),
     )
     assert cleanup.status == "SUCCEEDED"
-    assert OwnedResourceRegistry(journal_path=journal).pending_resource_ids() == ()
+    assert OwnedResourceRegistry(journal_path=journal).pending_resource_ids() == (
+        IMAGE_DIGEST,
+    )
 
 
 @pytest.mark.asyncio

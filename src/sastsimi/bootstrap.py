@@ -75,6 +75,7 @@ if TYPE_CHECKING:
     )
     from sastsimi.ports.context import ContextLineageReaderPort
     from sastsimi.ports.dto import StaticRuleMapping, WorkHandlerResult
+    from sastsimi.ports.dynamic_sandbox import TrustedDockerTargetResolverPort
     from sastsimi.ports.static_tool import StaticProcessAdapter
     from sastsimi.ports.work_handler import WorkHandler
     from sastsimi.ports.workspace import WorkspaceLocatorPort
@@ -1210,7 +1211,8 @@ def build_t11_services(
     verification: VerificationService,
     repository_profile: RepositoryProfile,
     resource_journal_path: Path,
-    docker_executable: str = "docker",
+    docker_profile_ref: HostConfigurationRef,
+    docker_target_resolver: TrustedDockerTargetResolverPort,
 ) -> T11Services:
     """Build the real local-Docker T11 slice after trusted config resolution."""
 
@@ -1238,7 +1240,7 @@ def build_t11_services(
     from sastsimi.verification.completion import VerificationCompletionCoordinator
 
     artifacts = runtime.unit_of_work.artifacts
-    docker = DockerAdapter(docker_executable)
+    docker = DockerAdapter.from_profile(docker_profile_ref, docker_target_resolver)
     resources = OwnedResourceRegistry(journal_path=resource_journal_path)
     setup = ReproductionSetupAutomation(
         docker=docker,

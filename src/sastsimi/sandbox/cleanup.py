@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol, cast
 from uuid import uuid4
 
 from sastsimi.contracts.canonical_json import canonical_bytes
@@ -16,11 +17,14 @@ from sastsimi.contracts.dynamic import (
     DynamicReproductionRequest,
     SandboxEnvironment,
 )
-from sastsimi.contracts.dynamic_resource import owned_container_resource_ref
+from sastsimi.contracts.dynamic_resource import (
+    owned_container_resource_ref,
+    owned_image_resource_ref,
+)
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 
-from .docker_adapter import DockerContainerState
+from .docker_adapter import DockerContainerState, DockerImageState
 from .recipe_store import fresh_record_meta
 
 
@@ -29,6 +33,8 @@ class OwnedResource:
     ref: StoredDataRef
     resource_id: str
     labels: Mapping[str, str]
+    resource_kind: Literal["CONTAINER", "IMAGE"] = "CONTAINER"
+    preservation_reason: Literal["REUSABLE_BASELINE"] | None = None
     reconcile_required: bool = False
 
 
@@ -41,6 +47,8 @@ class ContainerOwnershipIntent:
 class CleanupDockerPort(Protocol):
     async def inspect(self, container_id: str) -> DockerContainerState: ...
     async def remove(self, resource_ids: tuple[str, ...]) -> None: ...
+    async def inspect_owned_image(self, image_digest: str) -> DockerImageState: ...
+    async def remove_images(self, image_digests: tuple[str, ...]) -> None: ...
 
 
 class OwnedResourceRegistry:
@@ -111,13 +119,36 @@ class OwnedResourceRegistry:
         if key in self._resources:
             raise ValueError("DUPLICATE_SANDBOX_RESOURCE")
         self._resources[key] = OwnedResource(
-            ref,
-            container_id,
-            dict(labels),
-            reconcile_required,
+            ref=ref,
+            resource_id=container_id,
+            labels=dict(labels),
+            resource_kind="CONTAINER",
+            reconcile_required=reconcile_required,
         )
         if persist:
             self._persist()
+        return ref
+
+    def register_image(
+        self,
+        *,
+        image_digest: str,
+        labels: Mapping[str, str],
+        meta: RecordMeta,
+        preservation_reason: Literal["REUSABLE_BASELINE"] | None,
+    ) -> StoredDataRef:
+        ref = owned_image_resource_ref(image_digest=image_digest, meta=meta)
+        key = canonical_bytes(ref)
+        if key in self._resources:
+            raise ValueError("DUPLICATE_SANDBOX_RESOURCE")
+        self._resources[key] = OwnedResource(
+            ref=ref,
+            resource_id=image_digest,
+            labels=dict(labels),
+            resource_kind="IMAGE",
+            preservation_reason=preservation_reason,
+        )
+        self._persist()
         return ref
 
     def forget(self, ref: StoredDataRef) -> None:
@@ -136,6 +167,18 @@ class OwnedResourceRegistry:
 
     def exact(self, ref: StoredDataRef) -> OwnedResource | None:
         return self._resources.get(canonical_bytes(ref))
+
+    def preserved_image_ref(self, image_digest: str) -> StoredDataRef | None:
+        matches = tuple(
+            item.ref
+            for item in self._resources.values()
+            if item.resource_kind == "IMAGE"
+            and item.resource_id == image_digest
+            and item.preservation_reason == "REUSABLE_BASELINE"
+        )
+        if len(matches) > 1:
+            raise ValueError("AMBIGUOUS_BASELINE_IMAGE_OWNERSHIP")
+        return matches[0] if matches else None
 
     async def reconcile_intent(
         self,
@@ -167,16 +210,27 @@ class OwnedResourceRegistry:
             except (OSError, RuntimeError, ValueError):
                 failures.append(name)
         for key, resource in tuple(self._resources.items()):
+            if resource.preservation_reason is not None:
+                continue
             if not resource.reconcile_required:
                 continue
             try:
-                state = await docker.inspect(resource.resource_id)
-                if any(
-                    state.labels.get(name) != value
-                    for name, value in resource.labels.items()
-                ):
-                    raise ValueError("CLEANUP_OWNERSHIP_MISMATCH")
-                await docker.remove((state.container_id,))
+                if resource.resource_kind == "CONTAINER":
+                    state = await docker.inspect(resource.resource_id)
+                    if any(
+                        state.labels.get(name) != value
+                        for name, value in resource.labels.items()
+                    ):
+                        raise ValueError("CLEANUP_OWNERSHIP_MISMATCH")
+                    await docker.remove((state.container_id,))
+                else:
+                    image_state = await docker.inspect_owned_image(resource.resource_id)
+                    if any(
+                        image_state.labels.get(name) != value
+                        for name, value in resource.labels.items()
+                    ):
+                        raise ValueError("CLEANUP_OWNERSHIP_MISMATCH")
+                    await docker.remove_images((resource.resource_id,))
             except (OSError, RuntimeError, ValueError):
                 failures.append(resource.resource_id)
             else:
@@ -220,36 +274,60 @@ class OwnedResourceRegistry:
                 failure = "CLEANUP_OWNERSHIP_MISMATCH"
             else:
                 owned.append(resource)
+        containers = [item for item in owned if item.resource_kind == "CONTAINER"]
+        images = [item for item in owned if item.resource_kind == "IMAGE"]
         environment_ids = {item.container_instance_id for item in environments}
-        if {item.resource_id for item in owned} != environment_ids:
+        if {item.resource_id for item in containers} != environment_ids:
             failure = "CLEANUP_RESOURCE_COVERAGE_MISMATCH"
 
         if failure is None:
             try:
-                states = [await docker.inspect(item.resource_id) for item in owned]
+                states = [await docker.inspect(item.resource_id) for item in containers]
                 if any(
                     any(
                         state.labels.get(key) != value
                         for key, value in item.labels.items()
                     )
-                    for item, state in zip(owned, states, strict=True)
+                    for item, state in zip(containers, states, strict=True)
                 ):
                     failure = "CLEANUP_OWNERSHIP_MISMATCH"
                 else:
                     await docker.remove(tuple(state.container_id for state in states))
-                    for item in owned:
+                    image_states = [
+                        (item, await docker.inspect_owned_image(item.resource_id))
+                        for item in images
+                    ]
+                    if any(
+                        any(
+                            state.labels.get(key) != value
+                            for key, value in item.labels.items()
+                        )
+                        for item, state in image_states
+                    ):
+                        raise ValueError("CLEANUP_OWNERSHIP_MISMATCH")
+                    removable_images = tuple(
+                        item.resource_id
+                        for item in images
+                        if item.preservation_reason is None
+                    )
+                    await docker.remove_images(removable_images)
+                    for item in (*containers, *images):
+                        if item.preservation_reason is not None:
+                            continue
                         self._resources.pop(canonical_bytes(item.ref), None)
                     self._persist()
-            except (OSError, RuntimeError, ValueError):
+            except (asyncio.CancelledError, OSError, RuntimeError, ValueError):
                 failure = "OWNED_RESOURCE_CLEANUP_FAILED"
 
         if failure is not None and owned:
             for item in owned:
                 self._resources[canonical_bytes(item.ref)] = OwnedResource(
-                    item.ref,
-                    item.resource_id,
-                    item.labels,
-                    True,
+                    ref=item.ref,
+                    resource_id=item.resource_id,
+                    labels=item.labels,
+                    resource_kind=item.resource_kind,
+                    preservation_reason=item.preservation_reason,
+                    reconcile_required=True,
                 )
             self._persist()
 
@@ -296,6 +374,9 @@ class OwnedResourceRegistry:
                 ref = StoredDataRef.model_validate(item["ref"])
                 resource_id = item["resource_id"]
                 labels = item["labels"]
+                resource_kind = item.get("resource_kind", "CONTAINER")
+                preservation_reason = item.get("preservation_reason")
+                reconcile_required = item.get("reconcile_required", False)
                 if (
                     not isinstance(resource_id, str)
                     or not isinstance(labels, dict)
@@ -303,13 +384,24 @@ class OwnedResourceRegistry:
                         not isinstance(key, str) or not isinstance(label, str)
                         for key, label in labels.items()
                     )
+                    or resource_kind not in {"CONTAINER", "IMAGE"}
+                    or preservation_reason not in {None, "REUSABLE_BASELINE"}
+                    or not isinstance(reconcile_required, bool)
+                    or (
+                        resource_kind == "CONTAINER" and preservation_reason is not None
+                    )
                 ):
                     raise TypeError
                 self._resources[canonical_bytes(ref)] = OwnedResource(
-                    ref,
-                    resource_id,
-                    labels,
-                    True,
+                    ref=ref,
+                    resource_id=resource_id,
+                    labels=labels,
+                    resource_kind=resource_kind,
+                    preservation_reason=cast(
+                        Literal["REUSABLE_BASELINE"] | None,
+                        preservation_reason,
+                    ),
+                    reconcile_required=preservation_reason is None,
                 )
         except (
             KeyError,
@@ -340,6 +432,8 @@ class OwnedResourceRegistry:
                     "ref": item.ref.model_dump(mode="json"),
                     "resource_id": item.resource_id,
                     "labels": dict(item.labels),
+                    "resource_kind": item.resource_kind,
+                    "preservation_reason": item.preservation_reason,
                     "reconcile_required": item.reconcile_required,
                 }
                 for item in sorted(
