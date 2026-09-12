@@ -220,6 +220,9 @@ def test_production_bootstrap_uses_real_sandbox_components() -> None:
     assert "source.repository_profile_ref" in inspect.getsource(
         ProductionDynamicWorkflow.open_session
     )
+    assert "source_context_refs = source.source_refs" in inspect.getsource(
+        ProductionDynamicWorkflow.open_session
+    )
 
 
 def test_session_start_binds_the_exact_allow_policy_reference() -> None:
