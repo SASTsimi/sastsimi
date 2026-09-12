@@ -44,9 +44,12 @@ outside T12.
 - `ReportDraft` requires current TRUE verification, validated PoC, accepted Technical
   review, current Rule Scope result, policy closure, finding index, redaction, and exact
   evidence locations. No submit action is produced.
-- Markdown export resolves those same exact records, the validated PoC candidate, and
-  the used `CREATE_REPORT_DRAFT` decision with `REDACTION=PASS`. Missing/stale refs,
-  unsafe text, or unsafe path identifiers fail closed before terminal output or write.
+- Markdown export resolves those same exact records, the validated PoC candidate, its
+  exact successful `AgentLog` event and `SandboxCommandRecord`, and the used
+  `CREATE_REPORT_DRAFT` decision with `REDACTION=PASS`. Candidate content and the
+  actual execution command are shown separately. Missing/stale refs, unsafe text,
+  broken execution provenance, or a path/symlink escape fails closed before terminal
+  output or write.
 - Fake and production paths share the public runtime, storage, action, work, and
   invocation boundaries. Fake-only output construction does not bypass publication
   authority.

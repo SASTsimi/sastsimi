@@ -251,12 +251,16 @@ access/session token, password, private key, credential, cookie·authorization s
 - 출력 근거는 current `ReportDraft`, `Finding`, `VerificationResult`, `CWELabel`, validated
   `PoCBundle`, `DynamicReproductionResult`, `TechnicalEvidenceReview`,
   `RuleScopeImpactReview`와 이들이 정확히 가리키는 redacted artifact로 한정한다.
+- PoC candidate 내용과 실제 실행 방법은 구분해 표시한다. 실행 방법은 validated
+  `PoCBundle`과 같은 attempt·환경·digest로 연결된 exact `AgentLog`의 성공 event와
+  `SandboxCommandRecord`에서만 가져오며, 이 연결이 깨지면 보고서를 출력하지 않는다.
 - current Finding pointer, exact reference closure, Reporter의 사용 완료된
   `CREATE_REPORT_DRAFT` 결정과 `REDACTION=PASS` 중 하나라도 확인되지 않으면 목록·표시·출력을
   fail-closed 한다. 기존 Markdown 파일을 current 결과로 읽어 주지 않는다.
 - `analysis_id`와 `finding_id`는 안전한 단일 경로 이름인지 검사하며 다른 분석·Finding 파일을
-  덮어쓰는 경로를 허용하지 않는다. 쓰기는 같은 디렉터리의 임시 파일을 fsync한 뒤 원자적으로
-  교체한다.
+  덮어쓰는 경로를 허용하지 않는다. `reports` root와 분석 디렉터리가 data-dir 밖을 가리키는
+  symlink·junction이면 출력하지 않는다. 쓰기는 같은 디렉터리의 임시 파일을 fsync한 뒤
+  원자적으로 교체한다.
 - Markdown은 첫 실행 가능 버전의 필수 형식이다. HTML·PDF는 이 계약 밖의 후속 선택 기능이다.
 
 ---
