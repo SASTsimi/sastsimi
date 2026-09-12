@@ -19,8 +19,11 @@ from pydantic import JsonValue
 
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.llm import (
+    ClientExecutionProfile,
+    Environment,
     LLMInvocationRequest,
     LLMInvocationResult,
+    ProviderProfile,
     ProviderValidationEvidence,
 )
 from sastsimi.contracts.refs import StoredDataRef, reference
@@ -52,7 +55,7 @@ _MAX_STDERR_BYTES = 65_536
 _MAX_FINAL_MESSAGE_BYTES = 1_048_576
 _TREE_KILLER_TIMEOUT_SECONDS = 2.0
 _ARRAY_ENVELOPE_KEY = "items"
-_CHATGPT_LOGIN_MARKER = b"logged in using chatgpt"
+_CHATGPT_LOGIN_STATUS = "Logged in using ChatGPT"
 _RATE_LIMIT_MARKERS = (
     b"rate limit",
     b"rate_limit",
@@ -68,6 +71,14 @@ _AUTH_FAILURE_MARKERS = (
     b"invalid authentication",
     b"login required",
     b"401",
+)
+_CHILD_ENVIRONMENT_ALLOWLIST = (
+    "CODEX_HOME",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "TEMP",
+    "TMP",
 )
 _DISABLED_FEATURES = (
     "apps",
@@ -157,6 +168,20 @@ class ApprovedCodexExecutable:
 
 
 @dataclass(frozen=True)
+class ApprovedCodexExecutionBinding:
+    """Exact approved profile, client boundary, executable and runtime scope."""
+
+    provider_profile: ProviderProfile
+    client_execution_profile: ClientExecutionProfile
+    executable: ApprovedCodexExecutable
+    codex_home: Path
+    runtime_environment: Environment
+
+    def __post_init__(self) -> None:
+        _validate_execution_binding(self)
+
+
+@dataclass(frozen=True)
 class _ChildResult:
     returncode: int
     stdout: bytes
@@ -169,23 +194,42 @@ class CodexCliProcessRunner:
     def __init__(
         self,
         *,
-        executable: ApprovedCodexExecutable,
-        codex_home: Path,
+        binding: ApprovedCodexExecutionBinding,
     ) -> None:
-        if not codex_home.is_absolute() or not codex_home.is_dir():
-            raise ValueError("INVALID_CODEX_HOME_BINDING")
-        self.executable = executable
-        self.codex_home = codex_home
+        self.binding = binding
+        self.executable = binding.executable
+        self.codex_home = binding.codex_home
+        _validate_execution_binding(self.binding)
         self.verify_executable()
 
     def verify_executable(self) -> None:
         """Recheck the immutable approval immediately before every spawn."""
         try:
+            if (
+                not self.executable.path.is_file()
+                or self.executable.path.is_symlink()
+                or self.executable.path.resolve(strict=True) != self.executable.path
+                or not self.codex_home.is_dir()
+                or self.codex_home.is_symlink()
+                or self.codex_home.resolve(strict=True) != self.codex_home
+            ):
+                raise OSError
             digest = _sha256_file(self.executable.path)
         except OSError:
             raise ProviderExecutableBindingError from None
         if digest != self.executable.sha256:
             raise ProviderExecutableBindingError
+
+    def verify_binding(self, request: CodexProcessRequest) -> None:
+        """Revalidate exact approved records and request identity before a call."""
+        _validate_process_request(request)
+        _validate_execution_binding(self.binding)
+        if (
+            request.provider_profile_ref != reference(self.binding.provider_profile)
+            or request.model != self.binding.provider_profile.model
+        ):
+            raise ProviderInputMismatchError
+        self.verify_executable()
 
     def child_environment(self, source: Mapping[str, str]) -> dict[str, str]:
         """Build a small allowlisted environment with no ambient credentials."""
@@ -248,8 +292,7 @@ class CodexCliProcessRunner:
 
     async def execute(self, request: CodexProcessRequest) -> CodexProcessResult:
         try:
-            _validate_process_request(request)
-            self.verify_executable()
+            self.verify_binding(request)
             environment = self.child_environment(os.environ)
             with tempfile.TemporaryDirectory(prefix="sastsimi-codex-") as temporary:
                 temporary_root = Path(temporary).resolve()
@@ -265,6 +308,15 @@ class CodexCliProcessRunner:
                     raise ProviderInputMismatchError
                 schema_path.write_bytes(canonical_bytes(_codex_output_schema(schema)))
                 async with asyncio.timeout(request.timeout_ms / 1_000):
+                    version = await self._run_child(
+                        (str(self.executable.path), "--version"),
+                        stdin=None,
+                        cwd=auth_check_directory,
+                        environment=environment,
+                    )
+                    _require_codex_cli_version(
+                        version, self.binding.provider_profile.client_version
+                    )
                     login = await self._run_child(
                         (
                             str(self.executable.path),
@@ -279,10 +331,7 @@ class CodexCliProcessRunner:
                         return CodexProcessResult(
                             _classify_child_failure(login), None, None
                         )
-                    if (
-                        _CHATGPT_LOGIN_MARKER
-                        not in (login.stdout + login.stderr).lower()
-                    ):
+                    if not _is_exact_chatgpt_login_status(login):
                         return CodexProcessResult("AUTH_REQUIRED", None, None)
                     self.verify_executable()
                     work_directory.mkdir()
@@ -423,7 +472,10 @@ class CodexSubscriptionAdapter:
         self, candidate: ProviderValidationEvidence
     ) -> CapabilityProbeResult:
         if self.probe_runner is not None:
-            return await self.probe_runner.run(candidate, self)
+            observed = await self.probe_runner.run(candidate, self)
+            return CapabilityProbeResult(
+                evidence=_fail_unobservable_model_test(observed.evidence)
+            )
         evidence = candidate.model_copy(
             update={
                 "tests": tuple(
@@ -514,6 +566,7 @@ class CodexSubscriptionAdapter:
             process_result = await self.process_runner.execute(
                 CodexProcessRequest(
                     invocation_id=request.llm_call_id,
+                    provider_profile_ref=request.provider_profile_ref,
                     model=request.model,
                     prompt=resolved.rendered_prompt_bytes,
                     output_schema=resolved.output_schema_bytes,
@@ -837,6 +890,28 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _fail_unobservable_model_test(
+    evidence: ProviderValidationEvidence,
+) -> ProviderValidationEvidence:
+    return evidence.model_copy(
+        update={
+            "tests": tuple(
+                test.model_copy(
+                    update={
+                        "result": "FAIL",
+                        "safe_summary": (
+                            "Codex exec did not expose provider-reported model identity"
+                        ),
+                    }
+                )
+                if test.test_id == "PVD-02"
+                else test
+                for test in evidence.tests
+            )
+        }
+    )
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -845,9 +920,59 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _validate_execution_binding(binding: ApprovedCodexExecutionBinding) -> None:
+    try:
+        profile = ProviderProfile.model_validate(binding.provider_profile)
+        client = ClientExecutionProfile.model_validate(binding.client_execution_profile)
+        profile_ref = reference(profile)
+        client_ref = reference(client)
+        canonical_home = binding.codex_home.resolve(strict=True)
+    except (OSError, TypeError, ValueError) as error:
+        raise ValueError("CODEX_EXECUTION_BINDING_MISMATCH") from error
+    if (
+        not isinstance(profile_ref, StoredDataRef)
+        or not isinstance(client_ref, StoredDataRef)
+        or profile.provider != "OPENAI"
+        or profile.product != "CODEX"
+        or profile.transport != "CODEX_CLIENT"
+        or profile.auth_mode != "SUBSCRIPTION_LOGIN"
+        or profile.credential_source != "OFFICIAL_CLIENT_SESSION"
+        or profile.support_status != "EXPERIMENTAL"
+        or profile.client_execution_profile_ref != client_ref
+        or profile.validation_evidence_ref != client.verification_evidence_ref
+        or profile.meta.analysis_id != client.meta.analysis_id
+        or profile.meta.workspace_id != client.meta.workspace_id
+        or profile.meta.commit_id != client.meta.commit_id
+        or tuple(client.environment_variable_allowlist) != _CHILD_ENVIRONMENT_ALLOWLIST
+        or binding.runtime_environment != profile.environment
+        or not binding.codex_home.is_absolute()
+        or binding.codex_home.is_symlink()
+        or canonical_home != binding.codex_home
+    ):
+        raise ValueError("CODEX_EXECUTION_BINDING_MISMATCH")
+
+
+def _require_codex_cli_version(result: _ChildResult, expected: str) -> None:
+    try:
+        lines = result.stdout.decode("utf-8").splitlines()
+    except UnicodeError:
+        raise ProviderExecutableBindingError from None
+    if result.returncode != 0 or lines != [f"codex-cli {expected}"]:
+        raise ProviderExecutableBindingError
+
+
+def _is_exact_chatgpt_login_status(result: _ChildResult) -> bool:
+    try:
+        lines = (result.stdout + result.stderr).decode("utf-8").splitlines()
+    except UnicodeError:
+        return False
+    return result.returncode == 0 and lines == [_CHATGPT_LOGIN_STATUS]
+
+
 def _validate_process_request(request: CodexProcessRequest) -> None:
     if (
         not request.invocation_id.strip()
+        or not isinstance(request.provider_profile_ref, StoredDataRef)
         or not request.model.strip()
         or request.model.startswith("-")
         or any(
@@ -988,7 +1113,7 @@ def _classify_child_failure(
 
 def _validated_session_id(event_stream: bytes) -> str:
     session_id: str | None = None
-    turn_completed = False
+    state: Literal["THREAD", "TURN", "ITEMS", "DONE"] = "THREAD"
     if not event_stream or len(event_stream) >= _MAX_EVENT_STREAM_BYTES:
         raise ProviderInvalidOutputError
     for line in event_stream.splitlines():
@@ -998,7 +1123,7 @@ def _validated_session_id(event_stream: bytes) -> str:
         if not isinstance(event, dict) or not isinstance(event.get("type"), str):
             raise ProviderInvalidOutputError
         event_type = event["type"]
-        if event_type == "thread.started":
+        if state == "THREAD" and event_type == "thread.started":
             observed = event.get("thread_id")
             if (
                 session_id is not None
@@ -1007,9 +1132,21 @@ def _validated_session_id(event_stream: bytes) -> str:
             ):
                 raise ProviderInvalidOutputError
             session_id = observed
-        elif event_type == "turn.completed":
-            turn_completed = True
-    if session_id is None or not turn_completed:
+            state = "TURN"
+        elif state == "TURN" and event_type == "turn.started":
+            state = "ITEMS"
+        elif state == "ITEMS" and event_type == "item.completed":
+            item = event.get("item")
+            if not isinstance(item, dict) or item.get("type") not in {
+                "agent_message",
+                "reasoning",
+            }:
+                raise ProviderInvalidOutputError
+        elif state == "ITEMS" and event_type == "turn.completed":
+            state = "DONE"
+        else:
+            raise ProviderInvalidOutputError
+    if session_id is None or state != "DONE":
         raise ProviderInvalidOutputError
     return session_id
 
@@ -1109,6 +1246,7 @@ def _is_exact_output_artifact(
 
 __all__ = [
     "ApprovedCodexExecutable",
+    "ApprovedCodexExecutionBinding",
     "CodexCliProcessRunner",
     "CodexSubscriptionAdapter",
     "ProviderExecutableBindingError",

@@ -47,6 +47,7 @@ class CodexProcessRequest:
     """Secret-free input for one official ``codex exec`` child process."""
 
     invocation_id: str
+    provider_profile_ref: StoredDataRef
     model: str
     prompt: bytes
     output_schema: bytes

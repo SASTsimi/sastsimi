@@ -3,13 +3,20 @@ from dataclasses import dataclass
 
 import pytest
 
-from sastsimi.contracts.llm import LLMInvocationRequest
+from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.llm import (
+    LLMInvocationRequest,
+    ProviderValidationEvidence,
+    ProviderValidationTest,
+)
+from sastsimi.ports.dto import CapabilityProbeResult
 from sastsimi.providers.base import (
     CodexProcessRequest,
     CodexProcessResult,
     CodexProcessRunner,
 )
 from sastsimi.providers.codex_subscription import CodexSubscriptionAdapter
+from tests.contract.domain.canonical_fixtures import make
 from tests.integration.providers.test_openai_api import (
     _ARRAY_SCHEMA_BYTES,
     ArrayOutputSchemaValidator,
@@ -35,6 +42,13 @@ class FakeCodexProcessRunner:
     async def execute(self, value: CodexProcessRequest) -> CodexProcessResult:
         self.requests.append(value)
         return self.result
+
+
+class PassingProbeRunner:
+    async def run(
+        self, candidate: ProviderValidationEvidence, _adapter: object
+    ) -> CapabilityProbeResult:
+        return CapabilityProbeResult(candidate)
 
 
 def adapter(
@@ -82,12 +96,45 @@ async def test_codex_uses_exact_rendered_prompt_schema_model_and_new_session() -
     assert runner.requests == [
         CodexProcessRequest(
             invocation_id=invocation.llm_call_id,
+            provider_profile_ref=invocation.provider_profile_ref,
             model=invocation.model,
             prompt=resolved.rendered_prompt_bytes,
             output_schema=resolved.output_schema_bytes,
             timeout_ms=invocation.timeout_ms,
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_probe_cannot_claim_pvd_02_without_observed_server_model() -> None:
+    invocation = request()
+    runner = FakeCodexProcessRunner(CodexProcessResult("FAILED", None, None))
+    provider, _sessions = adapter(invocation, runner)
+    provider.probe_runner = PassingProbeRunner()
+    candidate = ProviderValidationEvidence.model_validate_json(
+        canonical_bytes(make("ProviderValidationEvidence"))
+    ).model_copy(
+        update={
+            "product": "CODEX",
+            "transport": "CODEX_CLIENT",
+            "auth_mode": "SUBSCRIPTION_LOGIN",
+            "tests": (
+                ProviderValidationTest(
+                    test_id="PVD-02",
+                    result="PASS",
+                    evidence_refs=(invocation.provider_profile_ref,),
+                    safe_summary="requested model was accepted",
+                ),
+            ),
+        }
+    )
+
+    result = await provider.probe(candidate)
+
+    assert result.evidence.tests[0].result == "FAIL"
+    assert result.evidence.tests[0].safe_summary == (
+        "Codex exec did not expose provider-reported model identity"
+    )
 
 
 @pytest.mark.asyncio

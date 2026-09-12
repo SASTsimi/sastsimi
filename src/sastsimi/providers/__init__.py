@@ -3,6 +3,9 @@
 from .codex_subscription import (
     ApprovedCodexExecutable as ApprovedCodexExecutable,
 )
+from .codex_subscription import (
+    ApprovedCodexExecutionBinding as ApprovedCodexExecutionBinding,
+)
 from .codex_subscription import CodexCliProcessRunner as CodexCliProcessRunner
 from .codex_subscription import (
     CodexSubscriptionAdapter as CodexSubscriptionAdapter,
