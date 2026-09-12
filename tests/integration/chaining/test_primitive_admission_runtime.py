@@ -83,15 +83,7 @@ class _Current:
 
 @dataclass
 class _Publisher:
-    calls: list[
-        tuple[
-            WorkExecutionState,
-            tuple[Record, ...],
-            tuple[RecordRef, ...],
-            str,
-            str,
-        ]
-    ]
+    calls: list[tuple[WorkExecutionState, tuple[Record, ...], tuple[RecordRef, ...]]]
 
     def complete(
         self,
@@ -107,11 +99,12 @@ class _Publisher:
         action_input_refs: tuple[RecordRef, ...] | None = None,
     ) -> WorkExecutionState:
         del identity, role, error_ids, gap_ids
-        self.calls.append((work_value, outputs, action_input_refs or (), status, cause))
+        self.calls.append((work_value, outputs, action_input_refs or ()))
         return work_value.model_copy(
             update={
                 "status": WorkStatus(status),
                 "active_attempt_id": None,
+                "last_transition_commit_ref": ref("transition_commit"),
                 "finished_at": work_value.meta.created_at,
                 "stop_reason": cause,
             }
@@ -402,21 +395,34 @@ def test_storage_boundary_rejects_a_hold_with_an_unpinned_index() -> None:
     ("verdict", "with_required_input"),
     [("FALSE", False), ("HOLD", False)],
 )
-def test_unexpected_work_for_false_or_empty_hold_is_terminal_without_outputs(
+def test_unexpected_work_for_false_or_empty_hold_fails_closed_for_worker_owner(
     verdict: str, with_required_input: bool
 ) -> None:
     runtime, work_value, publisher, _ = _hold_fixture(
         verdict=verdict, with_required_input=with_required_input
     )
 
-    completed = runtime.admit(work_value)
+    with pytest.raises(ValueError, match="PRIMITIVE_UPDATE_NOT_REQUIRED"):
+        runtime.admit(work_value)
 
-    assert completed.status == "CANCELLED"
-    assert publisher.calls[0][1] == ()
-    assert publisher.calls[0][3:] == (
-        "CANCELLED",
-        "PRIMITIVE_UPDATE_NOT_REQUIRED",
-    )
+    assert publisher.calls == []
+
+
+def test_workflow_runner_cannot_complete_a_primitive_update_with_empty_outputs() -> (
+    None
+):
+    from sastsimi.runtime.workflow_runner import WorkflowRunner
+
+    _, work_value, _, _ = _hold_fixture(verdict="FALSE", with_required_input=False)
+    runner = object.__new__(WorkflowRunner)
+
+    with pytest.raises(ValueError, match="requires its exact output"):
+        runner.complete(
+            work_value,
+            cast(BudgetScopeRef, work_value.input_refs[0]),
+            "PRIMITIVE_ADMISSION_RUNTIME",
+            (),
+        )
 
 
 def test_allowed_true_commits_one_decision_and_one_primitive_per_output() -> None:
@@ -474,14 +480,10 @@ def test_non_accepted_technical_gate_publishes_nothing(
 def test_unexpected_true_work_without_a_collection_result_fails_closed() -> None:
     runtime, work_value, publisher, _, _ = _true_fixture(collection_available=False)
 
-    completed = runtime.admit(work_value)
+    with pytest.raises(ValueError, match="PRIMITIVE_UPDATE_NOT_REQUIRED"):
+        runtime.admit(work_value)
 
-    assert completed.status == "CANCELLED"
-    assert publisher.calls[0][1] == ()
-    assert publisher.calls[0][3:] == (
-        "CANCELLED",
-        "PRIMITIVE_UPDATE_NOT_REQUIRED",
-    )
+    assert publisher.calls == []
 
 
 @pytest.mark.parametrize(

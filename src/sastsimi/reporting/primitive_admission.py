@@ -146,7 +146,7 @@ class PrimitiveAdmissionRuntime:
         ):
             self._require_exact_kinds(refs, self._COMMON_KINDS)
             self._current_closure(refs, verification_ref, verification)
-            return self._cancel_not_required(work)
+            raise ValueError("PRIMITIVE_UPDATE_NOT_REQUIRED")
         if verification.verdict == "HOLD":
             self._require_exact_kinds(refs, self._COMMON_KINDS)
             process, index = self._current_closure(refs, verification_ref, verification)
@@ -181,7 +181,7 @@ class PrimitiveAdmissionRuntime:
                 )
             ):
                 raise ValueError("GATE_POLICY_CLOSURE_MISMATCH")
-            return self._cancel_not_required(work)
+            raise ValueError("PRIMITIVE_UPDATE_NOT_REQUIRED")
         if collection_ref is None:
             raise ValueError("GATE_POLICY_CLOSURE_MISMATCH")
         collection = self._exact(collection_ref, PolicyCollectionResult)
@@ -429,21 +429,10 @@ class PrimitiveAdmissionRuntime:
             outputs,
             action_input_refs=work.input_refs,
         )
-        if completed.status != WorkStatus.SUCCEEDED:
-            raise ValueError("PRIMITIVE_COMMIT_REQUIRED")
-        return completed
-
-    def _cancel_not_required(self, work: WorkExecutionState) -> WorkExecutionState:
-        completed = self._publisher.complete(
-            work,
-            self._identity_ref,
-            "PRIMITIVE_ADMISSION_RUNTIME",
-            (),
-            status="CANCELLED",
-            cause="PRIMITIVE_UPDATE_NOT_REQUIRED",
-            action_input_refs=work.input_refs,
-        )
-        if completed.status != WorkStatus.CANCELLED:
+        if (
+            completed.status != WorkStatus.SUCCEEDED
+            or completed.last_transition_commit_ref is None
+        ):
             raise ValueError("PRIMITIVE_COMMIT_REQUIRED")
         return completed
 
