@@ -1,6 +1,8 @@
 """Both executable entry points use main(argv) -> int."""
 
 import argparse
+import asyncio
+import re
 import sys
 from pathlib import Path
 from typing import NoReturn
@@ -9,9 +11,9 @@ from uuid import uuid4
 from sastsimi import bootstrap
 from sastsimi.interfaces.cli import analyze as analyze_command
 from sastsimi.interfaces.cli import commands
+from sastsimi.interfaces.cli import demo as demo_command
 from sastsimi.interfaces.cli import report as report_command
 from sastsimi.interfaces.cli import reports as reports_command
-from sastsimi.interfaces.cli import results as results_command
 from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.output import emit_data, emit_result
 
@@ -26,7 +28,17 @@ class _Parser(argparse.ArgumentParser):
         raise _InputError
 
 
-def main(argv: list[str] | None = None) -> int:
+def _exact_commit(value: str) -> str:
+    if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value) is None:
+        raise argparse.ArgumentTypeError("exact commit required")
+    return value
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    production_analyze: analyze_command.ProductionAnalyzeEntrypoint | None = None,
+) -> int:
     output_format = "text"
     command_name = "doctor"
     parser = _Parser(prog="sastsimi", allow_abbrev=False)
@@ -55,16 +67,23 @@ def main(argv: list[str] | None = None) -> int:
     downgrade_parser.add_argument("revision")
     downgrade_parser.add_argument("--format", choices=["text", "json"])
     analyze_parser = subparsers.add_parser(
-        "analyze", help="run the deterministic fake analysis", allow_abbrev=False
+        "analyze", help="run a production repository analysis", allow_abbrev=False
     )
-    analyze_parser.add_argument(
+    analyze_parser.add_argument("--repo", required=True)
+    analyze_parser.add_argument("--commit", required=True, type=_exact_commit)
+    analyze_parser.add_argument("--profile", required=True, type=Path)
+    analyze_parser.add_argument("--format", choices=["text", "json"])
+    demo_parser = subparsers.add_parser(
+        "demo", help="run deterministic local scenarios", allow_abbrev=False
+    )
+    demo_commands = demo_parser.add_subparsers(dest="demo_command", required=True)
+    demo_analyze = demo_commands.add_parser("analyze", allow_abbrev=False)
+    demo_analyze.add_argument(
         "--scenario", choices=["TRUE", "FALSE", "HOLD", "REVISE", "CHAINING"]
     )
-    analyze_parser.add_argument("--format", choices=["text", "json"])
-    results_parser = subparsers.add_parser(
-        "results", help="read fake analysis progress/result", allow_abbrev=False
-    )
-    results_parser.add_argument("--format", choices=["text", "json"])
+    demo_analyze.add_argument("--format", choices=["text", "json"])
+    demo_results = demo_commands.add_parser("results", allow_abbrev=False)
+    demo_results.add_argument("--format", choices=["text", "json"])
     reports_parser = subparsers.add_parser(
         "reports", help="list current human-review reports", allow_abbrev=False
     )
@@ -112,12 +131,21 @@ def main(argv: list[str] | None = None) -> int:
             return int(ExitCode.OK)
         if args.command == "analyze":
             command_name = "analyze"
-            data = analyze_command.run(config.data_dir, args.scenario or "TRUE")
+            request = analyze_command.ProductionAnalyzeRequest(
+                data_dir=config.data_dir,
+                repository=args.repo,
+                commit=args.commit,
+                profile=args.profile,
+            )
+            data = asyncio.run(analyze_command.run(production_analyze, request))
             emit_data(output_format, sys.stdout, command=command_name, data=data)
             return int(ExitCode.OK)
-        if args.command == "results":
-            command_name = "results"
-            data = results_command.run(config.data_dir)
+        if args.command == "demo":
+            command_name = "demo " + args.demo_command
+            if args.demo_command == "analyze":
+                data = demo_command.analyze(config.data_dir, args.scenario or "TRUE")
+            else:
+                data = demo_command.results(config.data_dir)
             emit_data(output_format, sys.stdout, command=command_name, data=data)
             return int(ExitCode.OK)
         if args.command == "reports":
@@ -152,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
         code = ExitCode.CONFIG_ERROR
     except bootstrap.MigrationRequired:
         code = ExitCode.CONFIG_ERROR
+    except analyze_command.ProductionAnalyzeUnavailable:
+        code = ExitCode.CAPABILITY_UNSUPPORTED
     except report_command.ReportCommandError:
         code = ExitCode.REPORT_UNAVAILABLE
     except Exception:
