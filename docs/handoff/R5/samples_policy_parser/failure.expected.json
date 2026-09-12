@@ -1,0 +1,9 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — expected pre-invocation behavior, not a persisted PolicyParserResult.",
+  "expected_behavior": {
+    "provider_called": false,
+    "parser_result_saved": false,
+    "runtime_failure": "UNTRUSTED_DATA_INSTRUCTION"
+  },
+  "why": "A data-originated instruction in the exact official source is never promoted into trusted instructions."
+}

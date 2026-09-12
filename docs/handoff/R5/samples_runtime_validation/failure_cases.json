@@ -1,0 +1,61 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURES — stale/reference and prompt-injection cases block before invocation; schema/semantic cases reject provider output. No case creates or commits a domain output.",
+  "cases": [
+    {
+      "name": "schema_error",
+      "failure": "OUTPUT_SCHEMA_MISMATCH",
+      "provider_called": true,
+      "domain_output_created": false
+    },
+    {
+      "name": "semantic_error",
+      "failure": "SEMANTIC_VALIDATION_FAILED",
+      "provider_called": true,
+      "domain_output_created": false
+    },
+    {
+      "name": "prompt_injection",
+      "failure": "UNTRUSTED_DATA_INSTRUCTION",
+      "provider_called": false,
+      "domain_output_created": false
+    },
+    {
+      "name": "stale_reference",
+      "failure": "STALE_REFERENCE",
+      "provider_called": false,
+      "domain_output_created": false
+    },
+    {
+      "name": "policy_parser_schema_error",
+      "role_task": "POLICY_PARSER/PARSE_OFFICIAL_POLICY",
+      "failure": "OUTPUT_SCHEMA_MISMATCH",
+      "provider_called": true,
+      "domain_output_created": false
+    },
+    {
+      "name": "policy_parser_semantic_error",
+      "role_task": "POLICY_PARSER/PARSE_OFFICIAL_POLICY",
+      "failure": "SEMANTIC_VALIDATION_FAILED",
+      "provider_called": true,
+      "domain_output_created": false
+    },
+    {
+      "name": "policy_parser_stale_source",
+      "role_task": "POLICY_PARSER/PARSE_OFFICIAL_POLICY",
+      "failure": "STALE_REFERENCE",
+      "provider_called": false,
+      "domain_output_created": false
+    },
+    {
+      "name": "policy_parser_prompt_injection",
+      "role_task": "POLICY_PARSER/PARSE_OFFICIAL_POLICY",
+      "failure": "UNTRUSTED_DATA_INSTRUCTION",
+      "provider_called": false,
+      "domain_output_created": false
+    }
+  ],
+  "domain_decision_cases": [
+    { "name": "technical_revise", "fixture": "samples_technical_gate/revise.*.json", "provider_called": true, "domain_output": "TechnicalEvidenceReview(status=REVISE)" },
+    { "name": "cwe_uncertain", "fixture": "samples_cwe_labeling/failure.*.json", "provider_called": true, "domain_output": "CWELabel(primary=null)" }
+  ]
+}

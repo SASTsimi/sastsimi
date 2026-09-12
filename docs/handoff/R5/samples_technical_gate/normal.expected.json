@@ -1,0 +1,18 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — expected_canonical_projection is not a persisted record; partial reference assertions are not StoredDataRef values.",
+  "expected_canonical_projection": {
+    "verification_result_ref_record_id_assertion": "rec-ver-2",
+    "cwe_label_ref_record_id_assertion": "rec-cwe-2",
+    "status": "ACCEPT",
+    "evidence_verdict_alignment": "TRUE is supported by the recorded Pro/Con and verification evidence.",
+    "code_flow_linkage": "The same commit's unchecked containment path reaches the file-read sink.",
+    "dynamic_linkage": "The same-generation SUCCEEDED+SUPPORTED agent_invoked result and validated PoC are linked through the same attempt's request, policy, recipe, environment, AgentLog and exact candidate/content/command digest execution proof.",
+    "cwe_assessment": "CWE-22 matches the evidenced root cause.",
+    "restriction_assessment": "Local authenticated-access restriction is preserved.",
+    "handoff_readiness": "READY",
+    "revision_requests": [],
+    "verification_requests": [],
+    "rationale": "Technical evidence is internally consistent; no policy judgment is made."
+  },
+  "why": "All required technical provenance closes on one exact TRUE/CWE/dynamic/validated-PoC chain."
+}

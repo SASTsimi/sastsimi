@@ -1,0 +1,16 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — expected_canonical_projection is not a persisted record; partial reference assertions are not StoredDataRef values.",
+  "expected_canonical_projection": {
+    "verification_result_ref": { "stored_data_id": "data-ver-3", "data_kind": "verification_result", "record_id": "rec-ver-3", "content_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "workspace_id": "ws-1", "commit_id": "c0ffee" },
+    "verification_generation": 3,
+    "cwe_labeling_work_id": "work-cwe-3",
+    "llm_call_id": "call-cwe-3",
+    "primary": null,
+    "alternatives": [],
+    "taxonomy_version": "CWE 4.15",
+    "rationale": "The evidence confirms an effect but does not distinguish a CWE root cause.",
+    "evidence_ref_record_id_assertions": ["rec-ver-3"],
+    "uncertainty": "Do not force a primary CWE until root-cause evidence is available."
+  },
+  "why": "Insufficient classification evidence must remain uncertain; this is not a re-verdict of TRUE."
+}

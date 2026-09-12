@@ -1,0 +1,17 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — canonical_input_projection is not a persisted record; partial reference assertions are not StoredDataRef values.",
+  "canonical_input_projection": {
+    "finding": { "record_id": "rec-finding-2", "verification_result_ref": { "record_id": "rec-ver-2" }, "dynamic_result_ref": { "record_id": "rec-dyn-2" }, "poc_ref": { "record_id": "rec-poc-2" }, "cwe_label_ref": { "record_id": "rec-cwe-2" }, "technical_review_ref": { "record_id": "rec-tech-2" }, "rule_scope_impact_review_ref": { "record_id": "rec-rule-2" } },
+    "finding_index_state": { "status": "CURRENT", "finding_ref": { "record_id": "rec-finding-2" } },
+    "verification": { "verdict": "TRUE", "code_locations": [{ "file_path": "src/reader.js", "start_line": 41, "end_line": 45 }], "restrictions": [{ "restriction_id": "r-local-user", "statement": "Local authenticated access required.", "fact_refs": [{ "bundle_ref": { "record_id": "rec-static-2" }, "fact_id": "fact-auth" }], "evidence_refs": [{ "record_id": "rec-ver-2" }] }], "unresolved_conditions": [] },
+    "technical_review": { "status": "ACCEPT" },
+    "rule_scope_review": { "review_status": "PASS", "rule_compliance": "PASS", "scope_compliance": "PASS", "testing_restriction_compliance": "PASS", "security_impact": "SUFFICIENT", "report_permission": "ALLOW", "run_policy_state_ref": { "record_id": "rec-policy-state-1" }, "policy_record_ref": { "record_id": "rec-policy-1" } },
+    "dynamic_request": { "record_id": "rec-request-2", "verification_generation": 2 },
+    "sandbox_policy": { "record_id": "rec-policy-2", "decision": "ALLOW", "work_id": "work-dyn-2", "attempt_id": "attempt-dyn-2" },
+    "environment_recipe": { "record_id": "rec-recipe-2", "work_id": "work-dyn-2", "attempt_id": "attempt-dyn-2" },
+    "environment": { "record_id": "rec-env-2", "work_id": "work-dyn-2", "attempt_id": "attempt-dyn-2" },
+    "dynamic_result": { "status": "SUCCEEDED", "hypothesis_outcome": "SUPPORTED", "agent_invoked": true, "poc_ref": { "record_id": "rec-poc-2" }, "poc_candidate_ref": { "record_id": "rec-poc-candidate-2", "revision": 1, "content_digest": "digest-candidate-2" }, "agent_log_ref": { "record_id": "rec-log-2" }, "work_id": "work-dyn-2", "attempt_id": "attempt-dyn-2" },
+    "agent_log": { "record_id": "rec-log-2", "work_id": "work-dyn-2", "attempt_id": "attempt-dyn-2", "events": [{ "event_type": "AGENT_STARTED" }, { "event_type": "POC_EXECUTION_FINISHED", "candidate_revision": 1, "content_digest": "digest-candidate-2", "command_digest": "digest-command-2", "observation_ref": { "record_id": "rec-observation-2" } }] },
+    "redaction_precheck": "PASS; PoC text contains [REDACTED] placeholders only."
+  }
+}
