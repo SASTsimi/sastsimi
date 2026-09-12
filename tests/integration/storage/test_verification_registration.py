@@ -62,6 +62,7 @@ def test_registration_returns_same_work_application_and_questions_on_duplicate(
     h.publish(proposal)
     value = data("VulnerabilityHypothesis")
     for name in (
+        "statement",
         "origin",
         "parent_hypothesis_ids",
         "source_primitive_match_id",
