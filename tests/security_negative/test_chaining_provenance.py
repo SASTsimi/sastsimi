@@ -53,18 +53,29 @@ def test_uncommitted_chaining_result_is_not_a_recovery_source(tmp_path: Path) ->
         ChainingCommittedSourceStore(records).chaining_result(result_ref)
 
 
-def test_lineage_exclusions_are_recomputed_for_both_match_sides() -> None:
+def test_lineage_exclusions_are_recomputed_for_non_trigger_candidate_only() -> None:
     identity = (_match("match-a", "upstream-a", "downstream-a", "input-a"),)
     base = _result("result-a", identity)
-    ancestor = StoredDataRef.model_validate(
+    trigger_ancestor = StoredDataRef.model_validate(
         base.considered_primitive_refs[0].model_dump()
-        | {"record_id": "ancestor", "stored_data_id": "ancestor"}
+        | {
+            "record_id": "trigger-ancestor",
+            "stored_data_id": "trigger-ancestor",
+        }
+    )
+    candidate_ancestor = StoredDataRef.model_validate(
+        base.considered_primitive_refs[0].model_dump()
+        | {
+            "record_id": "candidate-ancestor",
+            "stored_data_id": "candidate-ancestor",
+        }
     )
     result = base.model_copy(
         update={
             "considered_primitive_refs": (
                 *base.considered_primitive_refs,
-                ancestor,
+                trigger_ancestor,
+                candidate_ancestor,
             )
         }
     )
@@ -79,9 +90,9 @@ def test_lineage_exclusions_are_recomputed_for_both_match_sides() -> None:
         ) -> tuple[StoredDataRef, ...]:
             assert primitive_ref in universe.considered_primitive_refs
             calls.append(primitive_ref)
-            return (
-                (ancestor,) if primitive_ref == identity[0].upstream_result_ref else ()
-            )
+            if primitive_ref == identity[0].upstream_result_ref:
+                return (trigger_ancestor,)
+            return (candidate_ancestor,)
 
     exclusions = _expected_lineage_exclusions(
         result,
@@ -89,7 +100,7 @@ def test_lineage_exclusions_are_recomputed_for_both_match_sides() -> None:
             trigger_primitive_ref=identity[0].upstream_result_ref,
             index_refs=(
                 StoredDataRef.model_validate(
-                    ancestor.model_dump()
+                    trigger_ancestor.model_dump()
                     | {
                         "data_kind": "primitive_index_state",
                         "record_id": "index",
@@ -103,9 +114,8 @@ def test_lineage_exclusions_are_recomputed_for_both_match_sides() -> None:
     )
 
     assert calls == [
-        identity[0].upstream_result_ref,
         identity[0].downstream_input_ref,
     ]
     assert len(exclusions) == 1
-    assert exclusions[0].excluded_primitive_ref == ancestor
-    assert exclusions[0].excluded_by_ref == identity[0].upstream_result_ref
+    assert exclusions[0].excluded_primitive_ref == candidate_ancestor
+    assert exclusions[0].excluded_by_ref == identity[0].downstream_input_ref

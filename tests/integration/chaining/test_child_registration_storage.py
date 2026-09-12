@@ -517,6 +517,61 @@ def _prepared(
     return harness, runner, service, works, scope, requester, source
 
 
+def test_child_lineage_validation_reads_only_the_non_trigger_candidate() -> None:
+    harness, _runner, service, _works, _scope, _requester, source = _prepared(
+        "candidate-lineage"
+    )
+    source_ref = reference(source)
+    assert isinstance(source_ref, StoredDataRef)
+    candidate_ref = source.primitive_match_candidates[0].downstream_input_ref
+    calls: list[StoredDataRef] = []
+
+    class CandidateLineage:
+        def ancestors(
+            self,
+            *,
+            primitive_ref: StoredDataRef,
+            universe: PinnedChainingUniverse,
+        ) -> tuple[StoredDataRef, ...]:
+            assert primitive_ref != universe.trigger_primitive_ref
+            calls.append(primitive_ref)
+            return ()
+
+    service.lineage = CandidateLineage()
+    with harness.database.engine.connect() as connection:
+        producer = service._committed_producer(connection, source_ref)
+        service._validate_lineage(connection, source, producer)
+
+    assert calls == [candidate_ref]
+
+
+def test_child_lineage_validation_rejects_unpinned_candidate_ancestor() -> None:
+    harness, _runner, service, _works, _scope, _requester, source = _prepared(
+        "candidate-lineage-outside"
+    )
+    source_ref = reference(source)
+    assert isinstance(source_ref, StoredDataRef)
+    outside_ref = _ref("primitive", "outside")
+
+    class CandidateLineage:
+        def ancestors(
+            self,
+            *,
+            primitive_ref: StoredDataRef,
+            universe: PinnedChainingUniverse,
+        ) -> tuple[StoredDataRef, ...]:
+            assert primitive_ref != universe.trigger_primitive_ref
+            return (outside_ref,)
+
+    service.lineage = CandidateLineage()
+    with harness.database.engine.connect() as connection:
+        producer = service._committed_producer(connection, source_ref)
+        with pytest.raises(
+            ValueError, match="CHAINING_LINEAGE_RESOLUTION_INVALID"
+        ):
+            service._validate_lineage(connection, source, producer)
+
+
 def test_child_registration_normal_and_lost_response_replay_are_idempotent() -> None:
     harness, runner, service, works, scope, requester, source = _prepared("normal")
     source_ref = reference(source)

@@ -34,34 +34,42 @@ def _expected_lineage_exclusions(
     used = set(result.input_primitive_refs)
     seen: set[tuple[StoredDataRef, StoredDataRef]] = set()
     for match in result.primitive_match_candidates:
-        for matched_ref in (
-            match.upstream_result_ref,
-            match.downstream_input_ref,
+        if (
+            match.upstream_result_ref == universe.trigger_primitive_ref
+            and match.downstream_input_ref != universe.trigger_primitive_ref
         ):
-            ancestors = lineage.ancestors(
-                primitive_ref=matched_ref,
-                universe=universe,
-            )
-            if len(set(ancestors)) != len(ancestors) or any(
-                ancestor == matched_ref
-                or ancestor not in result.considered_primitive_refs
-                for ancestor in ancestors
-            ):
-                raise ValueError("CHAINING_LINEAGE_RESOLUTION_INVALID")
-            if any(ancestor in used for ancestor in ancestors):
-                raise ValueError("CHAINING_LINEAGE_REUSED_ANCESTOR")
-            for ancestor in ancestors:
-                pair = (ancestor, matched_ref)
-                if pair in seen:
-                    continue
-                seen.add(pair)
-                expected.append(
-                    LineageExclusion(
-                        excluded_primitive_ref=ancestor,
-                        excluded_by_ref=matched_ref,
-                        reason_code="ANCESTOR_REUSE",
-                    )
+            candidate_ref = match.downstream_input_ref
+        elif (
+            match.downstream_input_ref == universe.trigger_primitive_ref
+            and match.upstream_result_ref != universe.trigger_primitive_ref
+        ):
+            candidate_ref = match.upstream_result_ref
+        else:
+            raise ValueError("CHAINING_LINEAGE_RESOLUTION_INVALID")
+        ancestors = lineage.ancestors(
+            primitive_ref=candidate_ref,
+            universe=universe,
+        )
+        if len(set(ancestors)) != len(ancestors) or any(
+            ancestor == candidate_ref
+            or ancestor not in result.considered_primitive_refs
+            for ancestor in ancestors
+        ):
+            raise ValueError("CHAINING_LINEAGE_RESOLUTION_INVALID")
+        if any(ancestor in used for ancestor in ancestors):
+            raise ValueError("CHAINING_LINEAGE_REUSED_ANCESTOR")
+        for ancestor in ancestors:
+            pair = (ancestor, candidate_ref)
+            if pair in seen:
+                continue
+            seen.add(pair)
+            expected.append(
+                LineageExclusion(
+                    excluded_primitive_ref=ancestor,
+                    excluded_by_ref=candidate_ref,
+                    reason_code="ANCESTOR_REUSE",
                 )
+            )
     return tuple(expected)
 
 

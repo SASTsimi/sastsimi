@@ -123,7 +123,7 @@ def test_exclusion_rejects_ancestor_outside_pinned_universe() -> None:
         )
 
 
-def test_successful_match_excludes_ancestors_from_both_sides() -> None:
+def test_successful_match_excludes_only_non_trigger_candidate_ancestors() -> None:
     trigger_parent, trigger, other_parent, other = map(_ref, ("a", "b", "c", "d"))
     resolve = _resolver(
         {
@@ -144,7 +144,7 @@ def test_successful_match_excludes_ancestors_from_both_sides() -> None:
 
     assert {
         (item.excluded_primitive_ref, item.excluded_by_ref) for item in exclusions
-    } == {(trigger_parent, trigger), (other_parent, other)}
+    } == {(other_parent, other)}
 
 
 def test_deepest_success_drops_a_provider_match_for_its_ancestor() -> None:

@@ -137,25 +137,25 @@ def expected_lineage_exclusions(
     excluded: set[bytes] = set()
     output: list[LineageExclusion] = []
     for pair in retained:
-        for matched_ref in (pair.upstream_ref, pair.downstream_ref):
-            for ancestor_ref in lineage(
-                matched_ref, resolve, analysis_id=analysis_id
-            ).ancestors:
-                ancestor_key = canonical_bytes(ancestor_ref)
-                if ancestor_key not in considered:
-                    raise ValueError("CHAINING_LINEAGE_INPUT_MISMATCH")
-                if ancestor_key in retained_keys:
-                    raise ValueError("CHAINING_SUCCESSFUL_CANDIDATE_EXCLUDED")
-                if ancestor_ref == matched_ref or ancestor_key in excluded:
-                    continue
-                excluded.add(ancestor_key)
-                output.append(
-                    LineageExclusion(
-                        excluded_primitive_ref=ancestor_ref,
-                        excluded_by_ref=matched_ref,
-                        reason_code="ANCESTOR_REUSE",
-                    )
+        candidate_ref = _candidate_ref(pair, canonical_bytes(trigger_ref))
+        for ancestor_ref in lineage(
+            candidate_ref, resolve, analysis_id=analysis_id
+        ).ancestors:
+            ancestor_key = canonical_bytes(ancestor_ref)
+            if ancestor_key not in considered:
+                raise ValueError("CHAINING_LINEAGE_INPUT_MISMATCH")
+            if ancestor_key in retained_keys:
+                raise ValueError("CHAINING_SUCCESSFUL_CANDIDATE_EXCLUDED")
+            if ancestor_ref == candidate_ref or ancestor_key in excluded:
+                continue
+            excluded.add(ancestor_key)
+            output.append(
+                LineageExclusion(
+                    excluded_primitive_ref=ancestor_ref,
+                    excluded_by_ref=candidate_ref,
+                    reason_code="ANCESTOR_REUSE",
                 )
+            )
     return tuple(output)
 
 
@@ -187,9 +187,7 @@ def retain_deepest_successful_matches(
         ):
             raise ValueError("CHAINING_LINEAGE_INPUT_MISMATCH")
         seen_pairs.add(pair_key)
-        candidate = (
-            pair.downstream_ref if upstream_key == trigger_key else pair.upstream_ref
-        )
+        candidate = _candidate_ref(pair, trigger_key)
         candidate_lineage = lineage(candidate, resolve, analysis_id=analysis_id)
         ranked.append(
             (
@@ -209,15 +207,21 @@ def retain_deepest_successful_matches(
         if candidate_key in excluded:
             continue
         retained.append(pair)
-        for matched_ref in (pair.upstream_ref, pair.downstream_ref):
-            for ancestor_ref in lineage(
-                matched_ref, resolve, analysis_id=analysis_id
-            ).ancestors:
-                ancestor_key = canonical_bytes(ancestor_ref)
-                if ancestor_key not in considered or ancestor_key == trigger_key:
-                    raise ValueError("CHAINING_LINEAGE_INPUT_MISMATCH")
-                excluded.add(ancestor_key)
+        candidate_ref = _candidate_ref(pair, trigger_key)
+        for ancestor_ref in lineage(
+            candidate_ref, resolve, analysis_id=analysis_id
+        ).ancestors:
+            ancestor_key = canonical_bytes(ancestor_ref)
+            if ancestor_key not in considered or ancestor_key == trigger_key:
+                raise ValueError("CHAINING_LINEAGE_INPUT_MISMATCH")
+            excluded.add(ancestor_key)
     return tuple(retained)
+
+
+def _candidate_ref(pair: SuccessfulMatchPair, trigger_key: bytes) -> StoredDataRef:
+    if canonical_bytes(pair.upstream_ref) == trigger_key:
+        return pair.downstream_ref
+    return pair.upstream_ref
 
 
 def _validate_node(

@@ -35,8 +35,8 @@ Primitive index 갱신을 소유한다. Chaining Agent는 runtime이 고정한 �
   않는다. 대신 고정하지 않은 reference가 결과에 섞이면 거절한다.
 - Chaining Agent는 upstream result가 특정 downstream input을 충족하는지만
   판단한다. 일반 탐색·verdict·CWE·Gate·도구 실행·ID 발급 권한은 없다.
-- 성공한 가장 깊은 후보의 양쪽 조상은 해당 순회에서 제외하되, match가
-  실패한 후보의 조상과 독립 후보는 유지한다.
+- 성공한 가장 깊은 non-trigger 후보의 lineage 조상만 해당 순회에서
+  제외하되, trigger 조상과 match가 실패한 후보의 조상, 독립 후보는 유지한다.
 - match ID와 `(upstream, downstream, matched_input_id)`는 결과와 같은 저장
   transaction에서 예약한다. 중복이면 결과도 함께 rollback한다.
 - `ChainingResult` COMMITTED 후에만 origin=CHAINING proposal을 등록한다.
@@ -48,7 +48,7 @@ Primitive index 갱신을 소유한다. Chaining Agent는 runtime이 고정한 �
 
 - Lane A: Primitive admission과 원자적 index 갱신.
 - Lane B: 전체 후보군 고정, cohort 등록, historical pool, match reservation.
-- Lane C: 방향성 matching, 양쪽 lineage 제외, content-only Agent 경계.
+- Lane C: 방향성 matching, non-trigger 후보 lineage 제외, content-only Agent 경계.
 - Lane D: claimed work handler, result 저장, 자식 handoff와 recovery.
 - Integration: prompt, concrete adapters, bootstrap, exports와 실제 slice.
 
@@ -57,7 +57,7 @@ Primitive index 갱신을 소유한다. Chaining Agent는 runtime이 고정한 �
 
 ## 완료 검사
 
-- [x] 방향성 match와 양쪽 lineage 제외를 구현한다.
+- [x] 방향성 match와 non-trigger 후보 lineage 제외를 구현한다.
 - [x] Agent 출력에서 runtime-owned 식별자·reference를 받지 않는다.
 - [x] TRUE/HOLD admission의 public 경계와 원자적 projection을 구현한다.
 - [x] HOLD·TRUE가 섞인 analysis-wide immutable candidate pool을 저장한다.
