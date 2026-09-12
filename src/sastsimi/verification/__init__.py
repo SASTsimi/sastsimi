@@ -1,6 +1,5 @@
 """Verification composition boundary; contracts and trusted runtime own mutation."""
 
-from .composition import T10Services, compose_t10_services
 from .debate_service import AuthorizedLLMCall, DebateResult, DebateService
 from .fake_assembly import (
     FakeVerificationAssembly,
@@ -20,8 +19,6 @@ __all__ = [
     "AuthorizedLLMCall",
     "DebateResult",
     "DebateService",
-    "T10Services",
-    "compose_t10_services",
     "RevisionWorkflow",
     "VerificationService",
     "VerdictRoute",

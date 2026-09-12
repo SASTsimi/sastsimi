@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sastsimi.agents.hypothesis import HypothesisAgent, HypothesisAgentOutcome
 from sastsimi.contracts.llm import (
     LLMInvocationLog,
     LLMInvocationRequest,
@@ -13,6 +12,10 @@ from sastsimi.contracts.llm import (
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
 from sastsimi.contracts.static import StaticFactBundle
 from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.ports.llm_invocation import (
+    HypothesisAgentOutcome,
+    HypothesisProposalAgent,
+)
 from sastsimi.ports.record_store import RecordStore
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 
@@ -31,7 +34,7 @@ class HypothesisWorkflow:
     def __init__(
         self,
         *,
-        agent: HypothesisAgent,
+        agent: HypothesisProposalAgent,
         runner: WorkflowRunner,
         records: RecordStore,
     ) -> None:
