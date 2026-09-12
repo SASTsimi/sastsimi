@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import re
+import tarfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -36,6 +38,7 @@ _CONTAINER_LABELS = _REQUIRED_LABELS | {
 _OUTPUT_LIMIT_BYTES = 1024 * 1024
 _OUTPUT_READ_BYTES = 64 * 1024
 _POC_STAGING_PATH = f"{POC_RUNTIME_PATH}.next"
+_MAX_BUILD_CONTEXT_BYTES = 64 * 1024 * 1024
 
 
 class _DockerOutputLimitExceeded(Exception):
@@ -115,6 +118,79 @@ class DockerAdapter:
             raise DockerOperationError("DOCKER_IMAGE_DIGEST_INVALID", outcome)
         return digest
 
+    async def build_context(
+        self,
+        context_archive: bytes,
+        dockerfile_path: str,
+        labels: Mapping[str, str],
+        *,
+        timeout_ms: int,
+    ) -> str:
+        """Build a deterministic, prevalidated tar context without host paths."""
+
+        if (
+            not context_archive
+            or timeout_ms <= 0
+            or not dockerfile_path
+            or dockerfile_path.startswith(("/", "\\"))
+            or ".." in dockerfile_path.replace("\\", "/").split("/")
+            or any(character in dockerfile_path for character in "\r\n\0")
+        ):
+            raise ValueError("DOCKER_BUILD_CONTEXT_INVALID")
+        self._validate_build_context(context_archive, dockerfile_path)
+        outcome = await self._run(
+            (
+                "build",
+                "--quiet",
+                "--pull=false",
+                "--network",
+                "none",
+                *self._label_args(labels),
+                "--file",
+                dockerfile_path,
+                "-",
+            ),
+            timeout_ms=timeout_ms,
+            input_bytes=context_archive,
+        )
+        self._require_success("DOCKER_BUILD_FAILED", outcome)
+        digest = (
+            outcome.stdout.decode("ascii", errors="strict").strip().splitlines()[-1]
+        )
+        if not _IMAGE_DIGEST.fullmatch(digest):
+            raise DockerOperationError("DOCKER_IMAGE_DIGEST_INVALID", outcome)
+        return digest
+
+    @staticmethod
+    def _validate_build_context(context_archive: bytes, dockerfile_path: str) -> None:
+        if len(context_archive) > _MAX_BUILD_CONTEXT_BYTES + 1024 * 1024:
+            raise ValueError("DOCKER_BUILD_CONTEXT_INVALID")
+        try:
+            with tarfile.open(
+                fileobj=io.BytesIO(context_archive), mode="r:"
+            ) as archive:
+                members = archive.getmembers()
+                names = [item.name for item in members]
+                if (
+                    len(members) > 100_000
+                    or len(names) != len(set(names))
+                    or dockerfile_path not in names
+                    or sum(item.size for item in members) > _MAX_BUILD_CONTEXT_BYTES
+                ):
+                    raise ValueError
+                for item in members:
+                    normalized = item.name.replace("\\", "/")
+                    parts = normalized.split("/")
+                    if (
+                        not item.isfile()
+                        or normalized.startswith("/")
+                        or re.match(r"^[A-Za-z]:", normalized)
+                        or any(part in {"", ".", ".."} for part in parts)
+                    ):
+                        raise ValueError
+        except (tarfile.TarError, ValueError) as error:
+            raise ValueError("DOCKER_BUILD_CONTEXT_INVALID") from error
+
     async def inspect_image(self, image: str, *, timeout_ms: int) -> str:
         if (
             not image
@@ -165,6 +241,10 @@ class DockerAdapter:
             raise ValueError("DOCKER_CAPABILITY_BOUNDARY_INVALID")
         if spec.user in {"0", "root"} or not spec.user:
             raise ValueError("NON_ROOT_USER_REQUIRED")
+        if (spec.source_baked and spec.mounts) or (
+            not spec.source_baked and not spec.mounts
+        ):
+            raise ValueError("DOCKER_MOUNT_BOUNDARY_INVALID")
 
         mount_args: list[str] = []
         for mount in spec.mounts:

@@ -20,6 +20,7 @@ from sastsimi.contracts.dynamic import (
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.static import RepositoryProfile
 
 type RecreateReason = Literal["STATE_CHANGED", "CONFIG_CHANGED", "STATE_UNCERTAIN"]
 
@@ -53,6 +54,7 @@ class SandboxRunSpec:
     disk_limit_bytes: int
     pid_limit: int
     requested_execution_ms: int
+    source_baked: bool = False
 
 
 class PreparedRecipeSourceView(Protocol):
@@ -85,6 +87,21 @@ class PreparedRecipeSourceView(Protocol):
 
     @property
     def base_image(self) -> str: ...
+
+    @property
+    def repository_profile_ref(self) -> StoredDataRef | None: ...
+
+    @property
+    def dockerfile_origin(self) -> Literal["REPOSITORY", "GENERATED"]: ...
+
+    @property
+    def dockerfile_path(self) -> str: ...
+
+    @property
+    def context_archive(self) -> bytes | None: ...
+
+    @property
+    def context_digest(self) -> str | None: ...
 
 
 @dataclass(frozen=True)
@@ -175,6 +192,7 @@ class ReproductionSetupPort(Protocol):
         request: DynamicReproductionRequest,
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
+        repository_profile: RepositoryProfile | None = None,
     ) -> PreparedRecipeSourceView: ...
 
     async def build(

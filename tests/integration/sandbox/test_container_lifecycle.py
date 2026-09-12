@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
+import tarfile
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -11,6 +13,7 @@ from typing import cast
 
 import pytest
 
+from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.dynamic import (
     POC_RUNTIME_PATH,
     DynamicReproductionRequest,
@@ -22,7 +25,8 @@ from sastsimi.contracts.dynamic import (
 from sastsimi.contracts.dynamic_resource import owned_container_resource_ref
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
+from sastsimi.contracts.static import RepositoryProfile
 from sastsimi.sandbox.cleanup import OwnedResourceRegistry
 from sastsimi.sandbox.controller import (
     SandboxBoundaryOutcome,
@@ -45,6 +49,11 @@ from sastsimi.sandbox.setup_automation import (
 
 NOW = datetime(2026, 9, 11, tzinfo=UTC)
 IMAGE_DIGEST = "sha256:" + "1" * 64
+
+
+def _git_blob(raw: bytes) -> str:
+    framed = b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
+    return hashlib.sha1(framed).hexdigest()
 
 
 def _meta(
@@ -80,6 +89,76 @@ def _ref(kind: str, name: str) -> StoredDataRef:
         workspace_id=WorkspaceId("workspace-1"),
         commit_id=CommitId("commit-1"),
         record_id=RecordId(name),
+    )
+
+
+def _repository_profile(files: Mapping[str, bytes]) -> RepositoryProfile:
+    tracked = tuple(
+        {
+            "git_path": path,
+            "git_mode": "100644",
+            "blob_id": _git_blob(raw),
+            "size_bytes": len(raw),
+        }
+        for path, raw in sorted(files.items())
+    )
+    configs = []
+    for path in sorted(files):
+        name = Path(path).name.lower()
+        kind = {
+            "dockerfile": "DOCKERFILE",
+            "requirements.txt": "REQUIREMENTS",
+            "pyproject.toml": "PYPROJECT",
+            "package.json": "PACKAGE_JSON",
+        }.get(name)
+        if kind is not None:
+            configs.append({"path": path, "kind": kind})
+    languages = []
+    if any(path.endswith(".py") for path in files):
+        languages.append(
+            {
+                "name": "PYTHON",
+                "evidence_paths": tuple(
+                    path for path in sorted(files) if path.endswith(".py")
+                ),
+            }
+        )
+    if any(path.endswith((".js", ".mjs", ".cjs")) for path in files):
+        languages.append(
+            {
+                "name": "JAVASCRIPT",
+                "evidence_paths": tuple(
+                    path
+                    for path in sorted(files)
+                    if path.endswith((".js", ".mjs", ".cjs"))
+                ),
+            }
+        )
+    return RepositoryProfile.model_validate(
+        {
+            "meta": _meta(
+                "repository_profile",
+                "repository-profile",
+                attempt_id="repository-profile-attempt",
+                hypothesis_id=None,
+            ),
+            "workspace_id": "workspace-1",
+            "commit_id": "commit-1",
+            "workspace_ref": RunStoredDataRef(
+                stored_data_id="code-workspace",
+                data_kind="code_workspace",
+                content_hash="b" * 64,
+                analysis_id="analysis-1",
+                record_id="code-workspace",
+            ),
+            "manifest_hash": content_hash(tuple(tracked)),
+            "tracked_files": tracked,
+            "languages": tuple(languages),
+            "frameworks": (),
+            "config_files": tuple(configs),
+            "status": "READY",
+            "confirmation_reasons": (),
+        }
     )
 
 
@@ -199,9 +278,12 @@ def _build_approval(
 ) -> SandboxBuildBoundaryOutcome:
     run = _approval(workspace, request)
     assert run.approved_spec is not None
+    spec = replace(run.approved_spec, image_digest=None)
+    if source.repository_profile_ref is not None:
+        spec = replace(spec, mounts=(), source_baked=True)
     return SandboxBuildBoundaryOutcome(
         decision=run.decision,
-        approved_spec=replace(run.approved_spec, image_digest=None),
+        approved_spec=spec,
         approved_source=source,
     )
 
@@ -322,6 +404,7 @@ async def test_forged_run_digest_never_creates_a_container(tmp_path: Path) -> No
 class FakeDockerAdapter:
     def __init__(self) -> None:
         self.built: list[tuple[bytes, int]] = []
+        self.built_contexts: list[tuple[bytes, str, int]] = []
         self.inspected_images: list[tuple[str, int]] = []
         self.created: dict[str, tuple[SandboxRunSpec, Mapping[str, str]]] = {}
         self.removed: list[str] = []
@@ -339,6 +422,18 @@ class FakeDockerAdapter:
         timeout_ms: int,
     ) -> str:
         self.built.append((dockerfile, timeout_ms))
+        assert labels["sastsimi.owner"] == "reproduction-setup-automation"
+        return IMAGE_DIGEST
+
+    async def build_context(
+        self,
+        context_archive: bytes,
+        dockerfile_path: str,
+        labels: Mapping[str, str],
+        *,
+        timeout_ms: int,
+    ) -> str:
+        self.built_contexts.append((context_archive, dockerfile_path, timeout_ms))
         assert labels["sastsimi.owner"] == "reproduction-setup-automation"
         return IMAGE_DIGEST
 
@@ -422,6 +517,106 @@ def _setup(adapter: FakeDockerAdapter) -> ReproductionSetupAutomation:
         health=SandboxHealthChecker(),
         resources=OwnedResourceRegistry(),
     )
+
+
+@pytest.mark.asyncio
+async def test_repository_profile_generates_python_build_context(
+    tmp_path: Path,
+) -> None:
+    files = {
+        "app.py": b"print('ready')\n",
+        "requirements.txt": b"",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    profile = _repository_profile(files)
+    request, requirements, _ = _dynamic_records()
+    docker = FakeDockerAdapter()
+    setup = _setup(docker)
+
+    source = await setup.preflight(
+        workspace_root=tmp_path,
+        repository_profile=profile,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "profile-recipe-source"),
+    )
+    recipe = await setup.build(
+        approval=_build_approval(tmp_path, request, source),
+        source=source,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "profile-recipe"),
+    )
+
+    assert source.repository_profile_ref == reference(profile)
+    assert source.dockerfile_origin == "GENERATED"
+    assert recipe.source_refs[0] == reference(profile)
+    assert docker.built == []
+    assert len(docker.built_contexts) == 1
+    archive, dockerfile_path, timeout_ms = docker.built_contexts[0]
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as bundle:
+        names = tuple(sorted(bundle.getnames()))
+        dockerfile = bundle.extractfile(dockerfile_path)
+        assert dockerfile is not None
+        dockerfile_bytes = dockerfile.read()
+    assert names == ("Dockerfile", "app.py", "requirements.txt")
+    assert b"FROM python@" in dockerfile_bytes
+    assert b"COPY . /workspace" in dockerfile_bytes
+    assert timeout_ms == 10_000
+
+
+@pytest.mark.asyncio
+async def test_repository_profile_blocks_tracked_secret_before_docker(
+    tmp_path: Path,
+) -> None:
+    files = {
+        ".env": b"API_KEY=do-not-send-to-docker\n",
+        "app.py": b"print('ready')\n",
+        "requirements.txt": b"",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    profile = _repository_profile(files)
+    request, requirements, _ = _dynamic_records()
+    docker = FakeDockerAdapter()
+
+    with pytest.raises(ValueError, match="REPOSITORY_SECRET_FILE_DENIED"):
+        await _setup(docker).preflight(
+            workspace_root=tmp_path,
+            repository_profile=profile,
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "blocked-recipe-source"),
+        )
+
+    assert docker.inspected_images == []
+    assert docker.built == []
+    assert docker.built_contexts == []
+
+
+@pytest.mark.asyncio
+async def test_repository_profile_keeps_equal_file_refs_distinct(
+    tmp_path: Path,
+) -> None:
+    files = {
+        "a.py": b"pass\n",
+        "b.py": b"pass\n",
+        "requirements.txt": b"",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+
+    source = await _setup(FakeDockerAdapter()).preflight(
+        workspace_root=tmp_path,
+        repository_profile=_repository_profile(files),
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "equal-content-source"),
+    )
+
+    assert len(source.source_refs) == len(set(source.source_refs))
 
 
 @pytest.mark.asyncio
@@ -1002,6 +1197,43 @@ async def test_docker_build_uses_stdin_empty_context_and_approved_timeout(
     assert argv[-1] == "-"
     assert timeout_ms == 10_000
     assert input_bytes == dockerfile
+
+
+@pytest.mark.asyncio
+async def test_docker_context_build_rejects_link_member_before_daemon(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w") as archive:
+        dockerfile = tarfile.TarInfo("Dockerfile")
+        dockerfile.size = len(b"FROM scratch\n")
+        archive.addfile(dockerfile, io.BytesIO(b"FROM scratch\n"))
+        link = tarfile.TarInfo("escape")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "../../host"
+        archive.addfile(link)
+
+    async def unexpected(*_: object, **__: object) -> DockerCommandOutcome:
+        raise AssertionError("invalid context must not reach Docker")
+
+    adapter = DockerAdapter()
+    monkeypatch.setattr(adapter, "_run", unexpected)
+    labels = {
+        "sastsimi.owner": "reproduction-setup-automation",
+        "sastsimi.analysis-id": "analysis-1",
+        "sastsimi.workspace-id": "workspace-1",
+        "sastsimi.commit-id": "commit-1",
+        "sastsimi.hypothesis-id": "hypothesis-1",
+        "sastsimi.attempt-id": "dynamic-attempt-1",
+    }
+
+    with pytest.raises(ValueError, match="DOCKER_BUILD_CONTEXT_INVALID"):
+        await adapter.build_context(
+            stream.getvalue(),
+            "Dockerfile",
+            labels,
+            timeout_ms=10_000,
+        )
 
 
 @pytest.mark.asyncio

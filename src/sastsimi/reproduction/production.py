@@ -32,6 +32,7 @@ from sastsimi.contracts.dynamic import (
 from sastsimi.contracts.ids import ActionId, LogicalRecordId, RecordId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
+from sastsimi.contracts.static import RepositoryProfile
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.clock import Clock
@@ -195,6 +196,7 @@ class ProductionDynamicWorkflow:
         ids: IdGenerator,
         sink: DynamicRecordSink,
         authorization: DynamicSandboxAuthorizationResolver,
+        repository_profile: RepositoryProfile | None = None,
     ) -> None:
         self._work = work
         self._controller = controller
@@ -206,6 +208,7 @@ class ProductionDynamicWorkflow:
         self._ids = ids
         self._sink = sink
         self._authorization = authorization
+        self._repository_profile = repository_profile
         self._records: dict[str, Record] = {}
         self._prepared: PreparedSandbox | None = None
         self._policy: SandboxPolicyDecision | None = None
@@ -261,6 +264,12 @@ class ProductionDynamicWorkflow:
             request=request,
             requirements=requirements,
             meta=self._meta("environment_recipe"),
+            repository_profile=self._repository_profile,
+        )
+        repository_context_refs = (
+            (source.repository_profile_ref,)
+            if source.repository_profile_ref is not None
+            else ()
         )
         build_binding = self._authorization(
             work,
@@ -270,7 +279,7 @@ class ProductionDynamicWorkflow:
             "BUILD",
             source.recipe_source_ref,
             None,
-            (),
+            repository_context_refs,
         )
         build_outcome = self._controller.evaluate_build(
             spec=build_binding.run_spec,
@@ -282,7 +291,7 @@ class ProductionDynamicWorkflow:
             sandbox_profile=build_binding.sandbox_profile,
             lifecycle_profile=build_binding.lifecycle_profile,
             run_policy_state_ref=build_binding.run_policy_state_ref,
-            required_context_refs=(),
+            required_context_refs=repository_context_refs,
             meta=self._meta("sandbox_policy_decision"),
         )
         self._policy = build_outcome.decision
@@ -296,6 +305,7 @@ class ProductionDynamicWorkflow:
                 source.recipe_source_ref,
                 build_binding.action_decision_ref,
                 build_binding.run_policy_state_ref,
+                *repository_context_refs,
             ),
         )
         if build_outcome.decision.decision != "ALLOW":
@@ -329,7 +339,7 @@ class ProductionDynamicWorkflow:
         recipe_ref = self._publish(
             recipe,
             RequesterRole.REPRODUCTION_SETUP_AUTOMATION,
-            (*self._work_inputs(), source.recipe_source_ref),
+            (*self._work_inputs(), source.recipe_source_ref, *source.source_refs),
         )
         run_binding = self._authorization(
             work,
@@ -339,7 +349,11 @@ class ProductionDynamicWorkflow:
             "RUN",
             recipe_ref,
             recipe.built_image_digest,
-            (build_policy_ref, build_binding.action_decision_ref),
+            (
+                build_policy_ref,
+                build_binding.action_decision_ref,
+                *repository_context_refs,
+            ),
         )
         self._binding = run_binding
         outcome = self._controller.evaluate(
@@ -355,6 +369,7 @@ class ProductionDynamicWorkflow:
             required_context_refs=(
                 build_policy_ref,
                 build_binding.action_decision_ref,
+                *repository_context_refs,
             ),
             meta=self._meta("sandbox_policy_decision"),
         )
@@ -371,6 +386,7 @@ class ProductionDynamicWorkflow:
                 build_binding.action_decision_ref,
                 run_binding.action_decision_ref,
                 run_binding.run_policy_state_ref,
+                *repository_context_refs,
             ),
         )
         self._start_log(

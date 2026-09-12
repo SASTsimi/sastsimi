@@ -197,6 +197,9 @@ class SandboxController:
             required_context_refs=required_context_refs,
         )
         self._check_recipe(reasons, recipe, request, plan, meta)
+        if any(ref.data_kind == "repository_profile" for ref in recipe.source_refs):
+            if not spec.source_baked or spec.mounts:
+                reasons.append("HOST_MOUNT_DENIED")
         self._check_boundary(reasons, spec, action, sandbox_profile)
         if not isinstance(spec.image_digest, str) or not _IMAGE_DIGEST.fullmatch(
             spec.image_digest
@@ -465,6 +468,10 @@ class SandboxController:
             strict=False
         ):
             reasons.append("RECIPE_WORKSPACE_MISMATCH")
+        if source.repository_profile_ref is not None and (
+            not spec.source_baked or spec.mounts
+        ):
+            reasons.append("HOST_MOUNT_DENIED")
         if (
             source.request_ref != self._stored_reference(request)
             or source.requirements_ref != plan.environment_requirements_ref
@@ -511,6 +518,10 @@ class SandboxController:
         self._check_resources(reasons, spec, action, profile)
 
     def _check_mounts(self, reasons: list[str], spec: SandboxRunSpec) -> None:
+        if spec.source_baked:
+            if spec.mounts:
+                reasons.append("HOST_MOUNT_DENIED")
+            return
         if not spec.mounts:
             reasons.append("WORKSPACE_MOUNT_REQUIRED")
             return

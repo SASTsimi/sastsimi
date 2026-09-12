@@ -4,21 +4,27 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
+import os
 import re
+import stat
+import tarfile
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Protocol
+from pathlib import Path, PurePosixPath
+from typing import Literal, Protocol, runtime_checkable
 from uuid import uuid4
 
-from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.dynamic import EnvironmentRecipe, EnvironmentRequirements
 from sastsimi.contracts.ids import LogicalRecordId, RecordId, StoredDataId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.static import RepositoryProfile, RepositoryTrackedFile
 from sastsimi.ports.dynamic_sandbox import PreparedRecipeSourceView
 
 _MAX_RECIPE_INPUT_BYTES = 4 * 1024 * 1024
+_MAX_BUILD_CONTEXT_BYTES = 64 * 1024 * 1024
 _KNOWN_RECIPE_NAMES = frozenset(
     {
         "dockerfile",
@@ -39,6 +45,16 @@ _KNOWN_RECIPE_NAMES = frozenset(
 _FROM = re.compile(r"^\s*FROM\s+([^\s]+)", re.IGNORECASE | re.MULTILINE)
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_SAFE_RUNTIME_VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+){0,2}$")
+_SECRET_FILE_NAMES = frozenset(
+    {
+        "credentials.json",
+        "id_dsa",
+        "id_ed25519",
+        "id_rsa",
+        "service-account.json",
+    }
+)
 
 
 class RecipeDockerPort(Protocol):
@@ -50,6 +66,18 @@ class RecipeDockerPort(Protocol):
         timeout_ms: int,
     ) -> str: ...
     async def inspect_image(self, image: str, *, timeout_ms: int) -> str: ...
+
+
+@runtime_checkable
+class RecipeContextDockerPort(Protocol):
+    async def build_context(
+        self,
+        context_archive: bytes,
+        dockerfile_path: str,
+        labels: Mapping[str, str],
+        *,
+        timeout_ms: int,
+    ) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,9 +94,17 @@ class PreparedRecipeSource:
     dockerfile: bytes
     dockerfile_digest: str
     base_image: str
+    repository_profile_ref: StoredDataRef | None = None
+    dockerfile_origin: Literal["REPOSITORY", "GENERATED"] = "REPOSITORY"
+    dockerfile_path: str = "Dockerfile"
+    context_archive: bytes | None = None
+    context_digest: str | None = None
 
     def __post_init__(self) -> None:
-        content = EnvironmentRecipeStore._validated_dockerfile(self.dockerfile)
+        content = EnvironmentRecipeStore._validated_dockerfile(
+            self.dockerfile,
+            allow_context_copy=self.context_archive is not None,
+        )
         if (
             not _SHA256.fullmatch(self.source_digest)
             or self.recipe_source_ref.data_kind != "recipe_source"
@@ -78,6 +114,25 @@ class PreparedRecipeSource:
             or EnvironmentRecipeStore._base_image(content) != self.base_image
         ):
             raise ValueError("RECIPE_SOURCE_BINDING_INVALID")
+        if self.context_archive is None:
+            if (
+                self.context_digest is not None
+                or self.repository_profile_ref is not None
+                or self.dockerfile_origin != "REPOSITORY"
+                or self.dockerfile_path != "Dockerfile"
+            ):
+                raise ValueError("RECIPE_CONTEXT_BINDING_INVALID")
+        elif (
+            self.repository_profile_ref is None
+            or self.repository_profile_ref.data_kind != "repository_profile"
+            or self.repository_profile_ref.record_id is None
+            or self.context_digest is None
+            or hashlib.sha256(self.context_archive).hexdigest() != self.context_digest
+            or self.repository_profile_ref not in self.source_refs
+            or self.dockerfile_path.startswith("/")
+            or ".." in PurePosixPath(self.dockerfile_path).parts
+        ):
+            raise ValueError("RECIPE_CONTEXT_BINDING_INVALID")
         if (
             self.recipe_source_ref.workspace_id != self.meta.workspace_id
             or self.recipe_source_ref.commit_id != self.meta.commit_id
@@ -120,8 +175,18 @@ class EnvironmentRecipeStore:
         request_ref: StoredDataRef,
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
+        repository_profile: RepositoryProfile | None = None,
     ) -> PreparedRecipeSource:
         """Parse and hash local files without contacting the Docker daemon."""
+
+        if repository_profile is not None:
+            return self._repository_source(
+                context=context,
+                request_ref=request_ref,
+                requirements=requirements,
+                repository_profile=repository_profile,
+                meta=meta,
+            )
 
         dockerfile, source_ref, source_refs, source_digest = self._source(context, meta)
         content = self._validated_dockerfile(dockerfile)
@@ -193,11 +258,26 @@ class EnvironmentRecipeStore:
                 base_image=source.base_image,
                 base_digest=base_digest,
             )
-            built_digest = await docker.build(
-                trusted_dockerfile,
-                labels,
-                timeout_ms=build_timeout_ms,
-            )
+            if source.context_archive is None:
+                built_digest = await docker.build(
+                    trusted_dockerfile,
+                    labels,
+                    timeout_ms=build_timeout_ms,
+                )
+            else:
+                if not isinstance(docker, RecipeContextDockerPort):
+                    raise ValueError("DOCKER_CONTEXT_BUILD_UNSUPPORTED")
+                archive = self._replace_archive_file(
+                    source.context_archive,
+                    source.dockerfile_path,
+                    trusted_dockerfile,
+                )
+                built_digest = await docker.build_context(
+                    archive,
+                    source.dockerfile_path,
+                    labels,
+                    timeout_ms=build_timeout_ms,
+                )
             if not _IMAGE_DIGEST.fullmatch(built_digest):
                 raise ValueError("BUILT_IMAGE_DIGEST_INVALID")
             recipe = EnvironmentRecipe(
@@ -292,7 +372,11 @@ class EnvironmentRecipeStore:
         return repository
 
     @staticmethod
-    def _validated_dockerfile(dockerfile: bytes) -> str:
+    def _validated_dockerfile(
+        dockerfile: bytes,
+        *,
+        allow_context_copy: bool = False,
+    ) -> str:
         try:
             content = dockerfile.decode("utf-8")
         except UnicodeDecodeError as error:
@@ -328,8 +412,10 @@ class EnvironmentRecipeStore:
             ) and "--network" in stripped.casefold():
                 raise ValueError("DOCKERFILE_RUN_NETWORK_DENIED")
             denied = instruction if instruction in {"ADD", "COPY"} else nested
-            if denied in {"ADD", "COPY"}:
+            if denied == "ADD" or (denied == "COPY" and not allow_context_copy):
                 raise ValueError(f"DOCKERFILE_{denied}_DENIED")
+            if denied == "COPY" and "--from" in stripped.casefold():
+                raise ValueError("DOCKERFILE_EXTERNAL_COPY_DENIED")
         if from_count != 1:
             raise ValueError("DOCKERFILE_SINGLE_BASE_IMAGE_REQUIRED")
         return content
@@ -367,6 +453,16 @@ class EnvironmentRecipeStore:
         meta: RecordMeta,
     ) -> tuple[bytes, StoredDataRef, tuple[StoredDataRef, ...], str]:
         root = context.resolve(strict=True)
+        try:
+            context_details = context.lstat()
+            if (
+                context.is_symlink()
+                or not root.is_dir()
+                or getattr(context_details, "st_file_attributes", 0) & 0x400
+            ):
+                raise ValueError
+        except (OSError, ValueError) as error:
+            raise ValueError("REPOSITORY_MANIFEST_MISMATCH") from error
         if not root.is_dir():
             raise ValueError("RECIPE_CONTEXT_REQUIRED")
         dockerfile = root / "Dockerfile"
@@ -426,3 +522,317 @@ class EnvironmentRecipeStore:
             tuple(refs),
             source_digest,
         )
+
+    @classmethod
+    def _repository_source(
+        cls,
+        *,
+        context: Path,
+        request_ref: StoredDataRef,
+        requirements: EnvironmentRequirements,
+        repository_profile: RepositoryProfile,
+        meta: RecordMeta,
+    ) -> PreparedRecipeSource:
+        root = context.resolve(strict=True)
+        profile_ref = reference(repository_profile)
+        if not isinstance(profile_ref, StoredDataRef):
+            raise ValueError("REPOSITORY_PROFILE_REFERENCE_INVALID")
+        expected_manifest = content_hash(
+            tuple(
+                item.model_dump(mode="python")
+                for item in repository_profile.tracked_files
+            )
+        )
+        if (
+            repository_profile.status != "READY"
+            or repository_profile.manifest_hash != expected_manifest
+            or repository_profile.workspace_id != meta.workspace_id
+            or repository_profile.commit_id != meta.commit_id
+            or repository_profile.meta.analysis_id != meta.analysis_id
+            or repository_profile.meta.workspace_id != meta.workspace_id
+            or repository_profile.meta.commit_id != meta.commit_id
+            or meta.hypothesis_id is None
+            or meta.attempt_id is None
+        ):
+            raise ValueError("REPOSITORY_PROFILE_SCOPE_MISMATCH")
+
+        entries: dict[str, tuple[bytes, int]] = {}
+        source_refs: list[StoredDataRef] = [profile_ref]
+        total = 0
+        for item in repository_profile.tracked_files:
+            if cls._looks_secret(item.git_path):
+                raise ValueError("REPOSITORY_SECRET_FILE_DENIED")
+            raw = cls._read_profile_file(root, item)
+            total += len(raw)
+            if total > _MAX_BUILD_CONTEXT_BYTES:
+                raise ValueError("RECIPE_BUILD_CONTEXT_LIMIT_EXCEEDED")
+            entries[item.git_path] = (
+                raw,
+                0o755 if item.git_mode == "100755" else 0o644,
+            )
+            raw_digest = hashlib.sha256(raw).hexdigest()
+            input_id = hashlib.sha256(
+                item.git_path.encode("utf-8") + b"\0" + raw
+            ).hexdigest()
+            source_refs.append(
+                StoredDataRef(
+                    stored_data_id=StoredDataId(f"recipe-input-{input_id}"),
+                    data_kind="recipe_input",
+                    content_hash=raw_digest,
+                    workspace_id=meta.workspace_id,
+                    commit_id=meta.commit_id,
+                    record_id=None,
+                )
+            )
+
+        dockerfile_path, dockerfile, origin = cls._select_dockerfile(
+            entries,
+            repository_profile,
+            requirements,
+        )
+        dockerfile = cls._validated_dockerfile(
+            dockerfile,
+            allow_context_copy=True,
+        ).encode("utf-8")
+        entries[dockerfile_path] = (dockerfile, 0o644)
+        if origin == "GENERATED":
+            dockerfile_digest = hashlib.sha256(dockerfile).hexdigest()
+            source_refs.append(
+                StoredDataRef(
+                    stored_data_id=StoredDataId(
+                        f"generated-dockerfile-{dockerfile_digest}"
+                    ),
+                    data_kind="generated_dockerfile",
+                    content_hash=dockerfile_digest,
+                    workspace_id=meta.workspace_id,
+                    commit_id=meta.commit_id,
+                    record_id=None,
+                )
+            )
+        archive = cls._archive(entries)
+        parts = tuple(
+            (path, hashlib.sha256(raw).hexdigest())
+            for path, (raw, _) in sorted(entries.items())
+        )
+        source_digest = hashlib.sha256(
+            canonical_bytes((profile_ref, parts))
+        ).hexdigest()
+        requirements_ref = reference(requirements)
+        if not isinstance(requirements_ref, StoredDataRef):
+            raise ValueError("CODE_SCOPED_REFERENCE_REQUIRED")
+        recipe_source_ref = StoredDataRef(
+            stored_data_id=StoredDataId(f"recipe-source-{source_digest}"),
+            data_kind="recipe_source",
+            content_hash=source_digest,
+            workspace_id=meta.workspace_id,
+            commit_id=meta.commit_id,
+            record_id=None,
+        )
+        return PreparedRecipeSource(
+            workspace_root=root,
+            request_ref=request_ref,
+            requirements_ref=requirements_ref,
+            meta=meta,
+            recipe_source_ref=recipe_source_ref,
+            source_refs=tuple(source_refs),
+            source_digest=source_digest,
+            dockerfile=dockerfile,
+            dockerfile_digest=hashlib.sha256(dockerfile).hexdigest(),
+            base_image=cls._base_image(dockerfile.decode("utf-8")),
+            repository_profile_ref=profile_ref,
+            dockerfile_origin=origin,
+            dockerfile_path=dockerfile_path,
+            context_archive=archive,
+            context_digest=hashlib.sha256(archive).hexdigest(),
+        )
+
+    @staticmethod
+    def _looks_secret(path: str) -> bool:
+        name = PurePosixPath(path).name.casefold()
+        return (
+            name == ".env"
+            or name.startswith(".env.")
+            or name in _SECRET_FILE_NAMES
+            or PurePosixPath(name).suffix in {".key", ".p12", ".pem", ".pfx"}
+        )
+
+    @staticmethod
+    def _read_profile_file(root: Path, item: RepositoryTrackedFile) -> bytes:
+        target = root.joinpath(*item.git_path.split("/"))
+        descriptor = -1
+        try:
+            target.resolve(strict=True).relative_to(root)
+            before = target.lstat()
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_nlink != 1
+                or before.st_size != item.size_bytes
+                or getattr(before, "st_file_attributes", 0) & 0x400
+            ):
+                raise ValueError
+            flags = (
+                os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            )
+            descriptor = os.open(target, flags)
+            opened = os.fstat(descriptor)
+            if (
+                opened.st_dev,
+                opened.st_ino,
+                opened.st_mode,
+                opened.st_size,
+                opened.st_mtime_ns,
+                opened.st_nlink,
+            ) != (
+                before.st_dev,
+                before.st_ino,
+                before.st_mode,
+                before.st_size,
+                before.st_mtime_ns,
+                before.st_nlink,
+            ):
+                raise ValueError
+            chunks: list[bytes] = []
+            remaining = item.size_bytes
+            while remaining:
+                chunk = os.read(descriptor, min(64 * 1024, remaining))
+                if not chunk:
+                    raise ValueError
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            if os.read(descriptor, 1):
+                raise ValueError
+            after = target.lstat()
+            if (
+                after.st_dev,
+                after.st_ino,
+                after.st_mode,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_nlink,
+            ) != (
+                opened.st_dev,
+                opened.st_ino,
+                opened.st_mode,
+                opened.st_size,
+                opened.st_mtime_ns,
+                opened.st_nlink,
+            ):
+                raise ValueError
+            raw = b"".join(chunks)
+            framed = b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
+            digest = hashlib.sha1 if len(item.blob_id) == 40 else hashlib.sha256
+            if digest(framed).hexdigest() != item.blob_id:
+                raise ValueError
+        except (OSError, ValueError) as error:
+            raise ValueError("REPOSITORY_MANIFEST_MISMATCH") from error
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        return raw
+
+    @classmethod
+    def _select_dockerfile(
+        cls,
+        entries: Mapping[str, tuple[bytes, int]],
+        profile: RepositoryProfile,
+        requirements: EnvironmentRequirements,
+    ) -> tuple[str, bytes, Literal["REPOSITORY", "GENERATED"]]:
+        candidates = tuple(
+            item.path for item in profile.config_files if item.kind == "DOCKERFILE"
+        )
+        if candidates:
+            selected = "Dockerfile" if "Dockerfile" in candidates else candidates[0]
+            if len(candidates) > 1 and "Dockerfile" not in candidates:
+                raise ValueError("DOCKERFILE_SELECTION_CONFIRMATION_REQUIRED")
+            try:
+                return selected, entries[selected][0], "REPOSITORY"
+            except KeyError as error:
+                raise ValueError("REPOSITORY_MANIFEST_MISMATCH") from error
+
+        language_names = {item.name for item in profile.languages}
+        family: Literal["PYTHON", "NODE"] | None = (
+            "PYTHON"
+            if language_names == {"PYTHON"}
+            else "NODE"
+            if language_names and language_names <= {"JAVASCRIPT", "TYPESCRIPT"}
+            else None
+        )
+        if family is None:
+            raise ValueError("ENVIRONMENT_BUILD_CONFIRMATION_REQUIRED")
+        version = cls._runtime_version(requirements, family)
+        image = (
+            f"python:{version or '3.12'}-slim"
+            if family == "PYTHON"
+            else f"node:{version or '22'}-slim"
+        )
+        dockerfile = (
+            f"FROM {image}\n"
+            "WORKDIR /workspace\n"
+            "COPY . /workspace\n"
+            'CMD ["sleep", "infinity"]\n'
+        ).encode()
+        return "Dockerfile", dockerfile, "GENERATED"
+
+    @staticmethod
+    def _runtime_version(
+        requirements: EnvironmentRequirements,
+        family: Literal["PYTHON", "NODE"],
+    ) -> str | None:
+        names = {"python", "python3"} if family == "PYTHON" else {"node", "nodejs"}
+        versions = {
+            item.expected
+            for item in requirements.items
+            if item.kind == "VERSION"
+            and item.name.casefold() in names
+            and item.required
+            and item.expected is not None
+        }
+        if not versions:
+            return None
+        if len(versions) != 1:
+            raise ValueError("ENVIRONMENT_VERSION_CONFLICT")
+        version = versions.pop()
+        if not _SAFE_RUNTIME_VERSION.fullmatch(version):
+            raise ValueError("ENVIRONMENT_VERSION_CONFIRMATION_REQUIRED")
+        return ".".join(version.split(".")[:2])
+
+    @staticmethod
+    def _archive(entries: Mapping[str, tuple[bytes, int]]) -> bytes:
+        stream = io.BytesIO()
+        with tarfile.open(
+            fileobj=stream,
+            mode="w",
+            format=tarfile.PAX_FORMAT,
+        ) as archive:
+            for path, (raw, mode) in sorted(entries.items()):
+                info = tarfile.TarInfo(path)
+                info.size = len(raw)
+                info.mode = mode
+                info.mtime = 0
+                info.uid = 0
+                info.gid = 0
+                info.uname = ""
+                info.gname = ""
+                archive.addfile(info, io.BytesIO(raw))
+        return stream.getvalue()
+
+    @classmethod
+    def _replace_archive_file(
+        cls,
+        archive_bytes: bytes,
+        path: str,
+        content: bytes,
+    ) -> bytes:
+        entries: dict[str, tuple[bytes, int]] = {}
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:") as archive:
+            for item in archive.getmembers():
+                if not item.isfile():
+                    raise ValueError("RECIPE_BUILD_CONTEXT_INVALID")
+                extracted = archive.extractfile(item)
+                if extracted is None:
+                    raise ValueError("RECIPE_BUILD_CONTEXT_INVALID")
+                entries[item.name] = (extracted.read(), item.mode)
+        if path not in entries:
+            raise ValueError("RECIPE_DOCKERFILE_MISSING")
+        entries[path] = (content, entries[path][1])
+        return cls._archive(entries)
