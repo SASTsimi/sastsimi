@@ -710,6 +710,9 @@ def test_llm_selection_requires_the_exact_current_active_prompt_revision() -> No
     with engine.begin() as connection:
         connection.execute(
             insert(models.prompt_active_entries).values(
+                analysis_id=str(entry.meta.analysis_id),
+                workspace_id=str(entry.meta.workspace_id),
+                commit_id=str(entry.meta.commit_id),
                 agent_role=entry.agent_role,
                 task_kind=entry.task_kind,
                 purpose=entry.purpose,
