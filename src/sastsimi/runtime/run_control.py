@@ -169,7 +169,13 @@ class ProductionRunControl:
 
     async def _drain_interrupt_safe(self, analysis_id: str) -> RunOutcome:
         try:
-            return await self._scheduler.drain(analysis_id)
+            outcome = await self._scheduler.drain(analysis_id)
+            if outcome.analysis_id != analysis_id or (
+                outcome.result_ref is not None
+                and str(outcome.result_ref.analysis_id) != analysis_id
+            ):
+                raise ValueError("RUN_OUTCOME_SCOPE_MISMATCH")
+            return outcome
         except (KeyboardInterrupt, asyncio.CancelledError):
             # Persist synchronously before any cancellation/drain await.  If the
             # bounded drain is interrupted again, restart still sees the latch.
