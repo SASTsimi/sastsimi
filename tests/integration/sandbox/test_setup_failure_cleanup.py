@@ -9,13 +9,13 @@ import pytest
 from sastsimi.contracts.dynamic import (
     DynamicReproductionToolRequest,
 )
+from sastsimi.contracts.dynamic_resource import owned_container_resource_ref
 from sastsimi.contracts.ids import StoredDataId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.reproduction.production import DynamicSandboxAuthorization
 from sastsimi.reproduction.service import DynamicOperationalError
-from sastsimi.sandbox.cleanup import owned_container_resource_ref
 from sastsimi.sandbox.controller import (
     SandboxBoundaryOutcome,
     SandboxController,

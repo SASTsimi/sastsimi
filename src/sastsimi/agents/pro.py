@@ -14,7 +14,7 @@ from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.static import CodeLocation
 from sastsimi.contracts.verification import EvidenceClaim, ProEvidenceResult
 from sastsimi.contracts.work import WorkExecutionState
-from sastsimi.runtime.llm_call_service import (
+from sastsimi.ports.llm_invocation import (
     InvocationMetadataFactory,
     PersistedLLMInvocation,
 )

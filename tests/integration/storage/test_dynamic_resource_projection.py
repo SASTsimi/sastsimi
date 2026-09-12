@@ -5,12 +5,10 @@ from typing import Any
 import pytest
 
 from sastsimi.contracts.dynamic import CleanupResult, DynamicReproductionResult
+from sastsimi.contracts.dynamic_resource import owned_container_resource_ref
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef
-from sastsimi.sandbox.cleanup import (
-    OwnedResourceRegistry,
-    owned_container_resource_ref,
-)
+from sastsimi.sandbox.cleanup import OwnedResourceRegistry
 from sastsimi.storage.dynamic_projection import resolve_attempt_resource_refs
 from tests.contract.domain.fixtures import wire
 from tests.contract.domain.success_fixture import bound, dynamic_success

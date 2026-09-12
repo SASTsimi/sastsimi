@@ -12,13 +12,13 @@ from typing import Literal, Protocol, cast
 
 from pydantic import JsonValue, ValidationError
 
-from sastsimi.contracts._domain import SafeDiagnostic, same_scope
 from sastsimi.contracts.base import (
     ContractModel,
     NonEmptyStr,
     NonNegativeInt,
 )
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.domain import SafeDiagnostic, same_scope
 from sastsimi.contracts.dynamic import (
     AgentLog,
     DynamicReproductionConclusion,
@@ -41,7 +41,7 @@ from sastsimi.contracts.work import WorkExecutionState, WorkStatus, WorkType
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
-from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
+from sastsimi.ports.llm_invocation import PersistedLLMInvocation
 
 
 class DynamicLLMCall(Protocol):

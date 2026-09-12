@@ -7,10 +7,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import BinaryIO, Literal, Protocol, cast
 
-from sastsimi.contracts._domain import DomainRecord, walk
 from sastsimi.contracts.actions import SessionMode
 from sastsimi.contracts.base import ContractModel, NonEmptyStr
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.domain import DomainRecord, walk
 from sastsimi.contracts.dynamic import (
     AgentLog,
     CleanupResult,
@@ -49,8 +49,8 @@ from sastsimi.contracts.verification import (
 )
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus, WorkType
 from sastsimi.ports.dto import Record
+from sastsimi.ports.llm_invocation import PersistedLLMInvocation
 from sastsimi.ports.verification_assembly import VerificationGenerationInputs
-from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
 
 
 @dataclass(frozen=True)
@@ -91,6 +91,10 @@ class EvidenceSessionResolver(Protocol):
     def __call__(
         self, llm_call_id: str, analysis_id: str
     ) -> tuple[str, Literal["NEW", "RESUME"]]: ...
+
+
+class _EvidenceRefsCarrier(Protocol):
+    evidence_refs: tuple[StoredDataRef, ...]
 
 
 class MetadataFactory(Protocol):
@@ -708,9 +712,7 @@ class VerificationAgent:
                     isinstance(value, ContractModel)
                     and "evidence_refs" in type(value).model_fields
                 ):
-                    pending.extend(
-                        cast(tuple[StoredDataRef, ...], value.__dict__["evidence_refs"])
-                    )
+                    pending.extend(cast(_EvidenceRefsCarrier, value).evidence_refs)
         return resolved
 
     @staticmethod

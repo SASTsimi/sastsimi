@@ -332,7 +332,7 @@ class DockerAdapter:
         self._require_success("DOCKER_POC_REPLACE_FAILED", replaced)
         return POC_RUNTIME_PATH
 
-    async def exec(
+    async def execute(
         self,
         container_id: str,
         argv: tuple[str, ...],

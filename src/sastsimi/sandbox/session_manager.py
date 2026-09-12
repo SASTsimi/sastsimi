@@ -9,8 +9,8 @@ from typing import Literal, cast
 
 from pydantic import ValidationError
 
-from sastsimi.contracts._domain import DomainRecord, exact, same_scope
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
+from sastsimi.contracts.domain import DomainRecord, exact, same_scope
 from sastsimi.contracts.dynamic import (
     AgentLog,
     AgentLogEvent,
@@ -37,7 +37,6 @@ from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
-from sastsimi.storage.records import next_meta
 
 type DynamicStatus = Literal["SUCCEEDED", "PARTIAL", "FAILED", "BLOCKED", "CANCELLED"]
 type FailureCategory = Literal[
@@ -176,7 +175,7 @@ class ReproductionSessionManager:
             raise ValueError("RECOVERY_FAILED: event_id was already used")
         try:
             current = AgentLog(
-                meta=cast(RecordMeta, next_meta(latest.meta, self._clock, self._ids)),
+                meta=self._next_meta(latest.meta),
                 request_ref=latest.request_ref,
                 events=(*latest.events, event),
             )
@@ -724,6 +723,19 @@ class ReproductionSessionManager:
             commit_id=source.commit_id,
             hypothesis_id=source.hypothesis_id,
             attempt_id=source.attempt_id,
+        )
+
+    def _next_meta(self, previous: RecordMeta) -> RecordMeta:
+        """Advance an AgentLog revision without depending on storage internals."""
+
+        return RecordMeta.model_validate(
+            previous.model_dump()
+            | {
+                "record_id": self._ids.new(RecordId),
+                "previous_record_id": previous.record_id,
+                "revision_number": previous.revision_number + 1,
+                "created_at": self._clock.now(),
+            }
         )
 
 

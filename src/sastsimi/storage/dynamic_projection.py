@@ -2,8 +2,7 @@
 
 from sqlalchemy import Connection, select
 
-from sastsimi.contracts._domain import exact, same_scope, unique
-from sastsimi.contracts.domain import DomainRecord, walk
+from sastsimi.contracts.domain import DomainRecord, exact, same_scope, unique, walk
 from sastsimi.contracts.dynamic import (
     AgentLog,
     CleanupResult,
@@ -22,10 +21,10 @@ from sastsimi.contracts.dynamic import (
     SandboxPolicyDecision,
     validate_dynamic_closure,
 )
+from sastsimi.contracts.dynamic_resource import owned_container_resource_ref
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import Record
-from sastsimi.sandbox.cleanup import owned_container_resource_ref
 
 from . import models
 from .codec import REF_ADAPTER, reference

@@ -19,13 +19,11 @@ from sastsimi.contracts.dynamic import (
     ReproductionPlan,
     SandboxPolicyDecision,
 )
+from sastsimi.contracts.dynamic_resource import owned_container_resource_ref
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
-from sastsimi.sandbox.cleanup import (
-    OwnedResourceRegistry,
-    owned_container_resource_ref,
-)
+from sastsimi.sandbox.cleanup import OwnedResourceRegistry
 from sastsimi.sandbox.controller import (
     SandboxBoundaryOutcome,
     SandboxBuildBoundaryOutcome,
@@ -366,7 +364,7 @@ class FakeDockerAdapter:
         if container_id in self.hidden_mounts:
             raise ValueError("DOCKER_MOUNT_BOUNDARY_INVALID")
 
-    async def exec(
+    async def execute(
         self,
         container_id: str,
         argv: tuple[str, ...],
@@ -1083,7 +1081,7 @@ async def test_docker_exec_uses_exact_argv_and_working_directory(
     )
     adapter = DockerAdapter()
 
-    outcome = await adapter.exec(
+    outcome = await adapter.execute(
         "owned-container-id",
         ("python", "poc.py"),
         10_000,

@@ -3,13 +3,17 @@
 import pytest
 
 from sastsimi.contracts.dynamic import CleanupResult
+from sastsimi.contracts.dynamic_resource import owned_container_resource_ref
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.ports.dto import SandboxCleanupRequest
 from sastsimi.reproduction.fake_closure import require_cleanup_result
-from sastsimi.sandbox.cleanup import owned_container_resource_ref
 from tests.contract.domain.fixtures import wire
 from tests.contract.domain.success_fixture import dynamic_success
+
+
+def test_sandbox_resource_identity_is_a_public_contract_helper() -> None:
+    assert callable(owned_container_resource_ref)
 
 
 def _cleanup_with_resources(

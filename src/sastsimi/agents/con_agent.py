@@ -3,7 +3,7 @@
 from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.verification import ConEvidenceResult
 from sastsimi.contracts.work import WorkExecutionState
-from sastsimi.runtime.llm_call_service import (
+from sastsimi.ports.llm_invocation import (
     InvocationMetadataFactory,
     PersistedLLMInvocation,
 )

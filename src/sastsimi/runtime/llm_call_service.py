@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
@@ -17,7 +16,6 @@ from sastsimi.contracts.actions import (
 )
 from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.ids import AttemptId
 from sastsimi.contracts.llm import (
     ExecutionLimits,
     InvocationStatus,
@@ -35,22 +33,18 @@ from sastsimi.contracts.work import WorkExecutionState, WorkStatus
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.dto import CancellationResult
+from sastsimi.ports.llm_invocation import (
+    ExternalDispatchState,
+    InvocationMetadataFactory,
+    PersistedLLMInvocation,
+)
 from sastsimi.ports.llm_provider import LLMProviderAdapter
 from sastsimi.ports.record_store import RecordStore
 from sastsimi.runtime.action_validator import RuntimeValidator
 from sastsimi.runtime.external_call_service import (
     ExternalCallService,
-    ExternalDispatchState,
     ExternalOperationResult,
 )
-
-
-@dataclass(frozen=True)
-class PersistedLLMInvocation:
-    request: LLMInvocationRequest
-    result: LLMInvocationResult
-    log_ref: StoredDataRef
-    dispatch_state: ExternalDispatchState
 
 
 class LLMDispatchLimiter:
@@ -79,17 +73,6 @@ class LLMDispatchLimiter:
             async with self._condition:
                 self._active_limits.remove(max_parallel_calls)
                 self._condition.notify_all()
-
-
-class InvocationMetadataFactory(Protocol):
-    """Issue immutable metadata at the composition boundary."""
-
-    def __call__(
-        self,
-        source: RecordMeta,
-        record_type: str,
-        attempt_id: AttemptId | None,
-    ) -> RecordMeta: ...
 
 
 class AnalysisRunStateResolver(Protocol):

@@ -35,6 +35,7 @@ from sastsimi.contracts.dynamic import (
     SandboxPolicyDecision,
     SandboxProfile,
 )
+from sastsimi.contracts.dynamic_resource import owned_container_resource_ref
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.result_registry import RESULT_REGISTRY
 from sastsimi.contracts.work import WorkExecutionState
@@ -66,7 +67,6 @@ from sastsimi.runtime.fake_support import (
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
-from sastsimi.sandbox.cleanup import owned_container_resource_ref
 
 from .fake_closure import require_poc_execution_events
 

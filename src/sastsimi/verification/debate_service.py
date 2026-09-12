@@ -32,6 +32,10 @@ from sastsimi.contracts.work import (
     validate_parent_work,
 )
 from sastsimi.ports.fake_workflow import ProviderInvoker, ProviderProber
+from sastsimi.ports.llm_invocation import (
+    InvocationMetadataFactory,
+    PersistedLLMInvocation,
+)
 from sastsimi.runtime.fake_llm_configuration import register_fake_llm_call
 from sastsimi.runtime.fake_llm_invocation import (
     invoke_fake_provider,
@@ -40,9 +44,7 @@ from sastsimi.runtime.fake_llm_invocation import (
 from sastsimi.runtime.fake_support import FakeEvidence
 from sastsimi.runtime.llm_call_service import (
     AnalysisRunStateResolver,
-    InvocationMetadataFactory,
     LLMCallService,
-    PersistedLLMInvocation,
 )
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner

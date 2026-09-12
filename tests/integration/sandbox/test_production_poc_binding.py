@@ -77,7 +77,7 @@ class _Docker:
         self.materialized.append((container_id, content, content_digest))
         return "/tmp/sastsimi-poc-candidate"
 
-    async def exec(
+    async def execute(
         self,
         container_id: str,
         argv: tuple[str, ...],
