@@ -21,6 +21,7 @@ from sastsimi.contracts.ids import LogicalRecordId, RecordId, StoredDataId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.static import RepositoryProfile, RepositoryTrackedFile
+from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.dynamic_sandbox import PreparedRecipeSourceView
 
 _MAX_RECIPE_INPUT_BYTES = 4 * 1024 * 1024
@@ -164,9 +165,10 @@ def fresh_record_meta(source: RecordMeta, kind: str) -> RecordMeta:
 class EnvironmentRecipeStore:
     """Build once per exact code-scoped recipe source and bind reuse explicitly."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, artifacts: ArtifactStore | None = None) -> None:
         self._baselines: dict[tuple[str, str, str], EnvironmentRecipe] = {}
         self._lock = asyncio.Lock()
+        self._artifacts = artifacts
 
     def preflight(
         self,
@@ -523,9 +525,8 @@ class EnvironmentRecipeStore:
             source_digest,
         )
 
-    @classmethod
     def _repository_source(
-        cls,
+        self,
         *,
         context: Path,
         request_ref: StoredDataRef,
@@ -560,9 +561,9 @@ class EnvironmentRecipeStore:
         source_refs: list[StoredDataRef] = [profile_ref]
         total = 0
         for item in repository_profile.tracked_files:
-            if cls._looks_secret(item.git_path):
+            if self._looks_secret(item.git_path):
                 raise ValueError("REPOSITORY_SECRET_FILE_DENIED")
-            raw = cls._read_profile_file(root, item)
+            raw = self._read_profile_file(root, item)
             total += len(raw)
             if total > _MAX_BUILD_CONTEXT_BYTES:
                 raise ValueError("RECIPE_BUILD_CONTEXT_LIMIT_EXCEEDED")
@@ -570,46 +571,32 @@ class EnvironmentRecipeStore:
                 raw,
                 0o755 if item.git_mode == "100755" else 0o644,
             )
-            raw_digest = hashlib.sha256(raw).hexdigest()
-            input_id = hashlib.sha256(
-                item.git_path.encode("utf-8") + b"\0" + raw
-            ).hexdigest()
-            source_refs.append(
-                StoredDataRef(
-                    stored_data_id=StoredDataId(f"recipe-input-{input_id}"),
-                    data_kind="recipe_input",
-                    content_hash=raw_digest,
-                    workspace_id=meta.workspace_id,
-                    commit_id=meta.commit_id,
-                    record_id=None,
-                )
-            )
 
-        dockerfile_path, dockerfile, origin = cls._select_dockerfile(
+        dockerfile_path, dockerfile, origin = self._select_dockerfile(
             entries,
             repository_profile,
             requirements,
         )
-        dockerfile = cls._validated_dockerfile(
+        dockerfile = self._validated_dockerfile(
             dockerfile,
             allow_context_copy=True,
         ).encode("utf-8")
         entries[dockerfile_path] = (dockerfile, 0o644)
-        if origin == "GENERATED":
-            dockerfile_digest = hashlib.sha256(dockerfile).hexdigest()
-            source_refs.append(
-                StoredDataRef(
-                    stored_data_id=StoredDataId(
-                        f"generated-dockerfile-{dockerfile_digest}"
-                    ),
-                    data_kind="generated_dockerfile",
-                    content_hash=dockerfile_digest,
-                    workspace_id=meta.workspace_id,
-                    commit_id=meta.commit_id,
-                    record_id=None,
-                )
-            )
-        archive = cls._archive(entries)
+        archive = self._archive(entries)
+        if self._artifacts is None:
+            raise ValueError("RECIPE_ARTIFACT_STORE_REQUIRED")
+        dockerfile_ref = self._artifacts.commit(
+            self._artifacts.stage_bytes(dockerfile, "text/x-dockerfile")
+        )
+        context_ref = self._artifacts.commit(
+            self._artifacts.stage_bytes(archive, "application/x-tar")
+        )
+        if any(
+            (ref.workspace_id, ref.commit_id) != (meta.workspace_id, meta.commit_id)
+            for ref in (dockerfile_ref, context_ref)
+        ):
+            raise ValueError("RECIPE_ARTIFACT_SCOPE_MISMATCH")
+        source_refs.extend((dockerfile_ref, context_ref))
         parts = tuple(
             (path, hashlib.sha256(raw).hexdigest())
             for path, (raw, _) in sorted(entries.items())
@@ -638,7 +625,7 @@ class EnvironmentRecipeStore:
             source_digest=source_digest,
             dockerfile=dockerfile,
             dockerfile_digest=hashlib.sha256(dockerfile).hexdigest(),
-            base_image=cls._base_image(dockerfile.decode("utf-8")),
+            base_image=self._base_image(dockerfile.decode("utf-8")),
             repository_profile_ref=profile_ref,
             dockerfile_origin=origin,
             dockerfile_path=dockerfile_path,
