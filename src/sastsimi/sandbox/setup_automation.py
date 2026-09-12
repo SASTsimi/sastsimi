@@ -36,7 +36,7 @@ from sastsimi.ports.dynamic_sandbox import (
 )
 
 from .cleanup import OwnedResourceRegistry
-from .docker_adapter import DockerCommandOutcome, DockerContainerState
+from .docker_adapter import DockerAdapter, DockerCommandOutcome, DockerContainerState
 from .health_check import SandboxHealthChecker
 from .recipe_store import (
     EnvironmentRecipeStore,
@@ -293,10 +293,46 @@ class ReproductionSetupAutomation:
     ) -> PreparedSandbox:
         if spec is None:
             raise ValueError("SANDBOX_APPROVAL_REQUIRED")
-        container_id = await self._docker.create(spec, labels)
-        resource_ref = self._resources.register_container(
-            container_id=container_id,
+        container_name = DockerAdapter.runtime_container_name(labels)
+        self._resources.reserve_container(
+            container_name=container_name,
             labels=labels,
+        )
+        try:
+            container_id = await self._docker.create(spec, labels)
+        except BaseException:
+            try:
+                await self._resources.reconcile_intent(
+                    docker=self._docker,
+                    container_name=container_name,
+                )
+            except BaseException as cleanup_error:
+                resource_ref = self._resources.register_reserved_container(
+                    container_name=container_name,
+                    container_id=container_name,
+                    meta=meta,
+                    reconcile_required=True,
+                )
+                failed = PreparedSandbox(
+                    recipe,
+                    self._failed_environment(
+                        request=request,
+                        requirements=requirements,
+                        plan=plan,
+                        recipe=recipe,
+                        container_id=container_name,
+                        reason=reason,
+                        previous_environment_ref=previous_environment_ref,
+                        resource_ref=resource_ref,
+                        meta=meta,
+                    ),
+                    (resource_ref,),
+                )
+                raise SandboxSetupCleanupError(failed) from cleanup_error
+            raise
+        resource_ref = self._resources.register_reserved_container(
+            container_name=container_name,
+            container_id=container_id,
             meta=meta,
         )
         try:
@@ -323,6 +359,7 @@ class ReproductionSetupAutomation:
                     (resource_ref,),
                 )
                 raise SandboxSetupCleanupError(failed) from cleanup_error
+            self._resources.forget(resource_ref)
             raise
         checks = self._health.requirement_checks(
             requirements=requirements,

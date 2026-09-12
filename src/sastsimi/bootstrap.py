@@ -132,6 +132,7 @@ class DynamicExecutor(Protocol):
 type CurrentProcessResolver = Callable[
     [DynamicReproductionRequest], HypothesisProcessState
 ]
+type OwnedResourceRecovery = Callable[[], Awaitable[tuple[str, ...]]]
 
 
 @dataclass(frozen=True)
@@ -141,6 +142,7 @@ class T11Services:
     execute_dynamic: DynamicExecutor
     current_process: CurrentProcessResolver
     completion: VerificationCompletionCoordinator
+    recover_owned_resources: OwnedResourceRecovery | None = None
 
     async def execute(
         self,
@@ -150,6 +152,8 @@ class T11Services:
         request_ref: StoredDataRef,
         authorizations: DynamicStageAuthorizations,
     ) -> WorkHandlerResult:
+        if await self.recover():
+            raise ValueError("OWNED_RESOURCE_RECONCILIATION_REQUIRED")
         process = self.current_process(request)
         _require_current_dynamic_request(work, request, request_ref, process)
         result = await self.execute_dynamic(
@@ -164,6 +168,13 @@ class T11Services:
         ):
             raise ValueError("R7_OUTPUT_AUTHORITY_DENIED")
         return result
+
+    async def recover(self) -> tuple[str, ...]:
+        """Reconcile exact T11-owned resources before accepting production work."""
+
+        if self.recover_owned_resources is None:
+            return ()
+        return await self.recover_owned_resources()
 
 
 @dataclass(frozen=True)
@@ -1197,7 +1208,8 @@ def build_t11_services(
     role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
     sandbox_authorization: DynamicSandboxAuthorizationResolver,
     verification: VerificationService,
-    repository_profile: RepositoryProfile | None = None,
+    repository_profile: RepositoryProfile,
+    resource_journal_path: Path,
     docker_executable: str = "docker",
 ) -> T11Services:
     """Build the real local-Docker T11 slice after trusted config resolution."""
@@ -1227,17 +1239,19 @@ def build_t11_services(
 
     artifacts = runtime.unit_of_work.artifacts
     docker = DockerAdapter(docker_executable)
+    resources = OwnedResourceRegistry(journal_path=resource_journal_path)
     setup = ReproductionSetupAutomation(
         docker=docker,
         recipes=EnvironmentRecipeStore(artifacts=artifacts),
         health=SandboxHealthChecker(),
-        resources=OwnedResourceRegistry(),
+        resources=resources,
     )
     controller = SandboxController(
         workspace_root=workspace_root,
         workspace_id=str(workspace_id),
         commit_id=str(commit_id),
         record_resolver=runtime.unit_of_work.records.get_exact,
+        require_baked_source=True,
     )
     agent = DynamicReproductionAgent(
         llm_calls=runtime.llm_calls,
@@ -1288,6 +1302,7 @@ def build_t11_services(
             current_process=process_resolver,
             verification_identity_ref=verification_identity,
         ),
+        recover_owned_resources=partial(resources.reconcile_pending, docker=docker),
     )
 
 

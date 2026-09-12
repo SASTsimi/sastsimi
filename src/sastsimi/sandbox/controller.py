@@ -71,12 +71,14 @@ class SandboxController:
         commit_id: str,
         record_resolver: RecordResolver,
         isolated_network_targets: Iterable[str] = (),
+        require_baked_source: bool = False,
     ) -> None:
         self._workspace_root = workspace_root.resolve(strict=False)
         self._workspace_id = workspace_id
         self._commit_id = commit_id
         self._resolve = record_resolver
         self._isolated_network_targets = frozenset(isolated_network_targets)
+        self._require_baked_source = require_baked_source
 
     @property
     def workspace_root(self) -> Path:
@@ -128,6 +130,8 @@ class SandboxController:
             required_context_refs=required_context_refs,
         )
         self._check_recipe_source(reasons, spec, request, plan, source)
+        if self._require_baked_source and (not spec.source_baked or spec.mounts):
+            reasons.append("HOST_MOUNT_DENIED")
         self._check_boundary(reasons, spec, action, sandbox_profile)
         if spec.image_digest is not None:
             reasons.append("BUILD_IMAGE_DIGEST_FORBIDDEN")
@@ -197,7 +201,9 @@ class SandboxController:
             required_context_refs=required_context_refs,
         )
         self._check_recipe(reasons, recipe, request, plan, meta)
-        if any(ref.data_kind == "repository_profile" for ref in recipe.source_refs):
+        if self._require_baked_source or any(
+            ref.data_kind == "repository_profile" for ref in recipe.source_refs
+        ):
             if not spec.source_baked or spec.mounts:
                 reasons.append("HOST_MOUNT_DENIED")
         self._check_boundary(reasons, spec, action, sandbox_profile)

@@ -18,6 +18,7 @@ from sastsimi.contracts.dynamic import (
     POC_RUNTIME_PATH,
     DynamicReproductionRequest,
     EnvironmentRecipe,
+    EnvironmentRequirement,
     EnvironmentRequirements,
     ReproductionPlan,
     SandboxPolicyDecision,
@@ -70,6 +71,9 @@ class _MemoryArtifacts:
             commit_id="commit-1",
             record_id=None,
         )
+
+    def open_verified(self, ref: StoredDataRef) -> io.BytesIO:
+        return io.BytesIO(self.values[ref.content_hash])
 
 
 def _git_blob(raw: bytes) -> str:
@@ -589,7 +593,78 @@ async def test_repository_profile_generates_python_build_context(
     assert names == ("Dockerfile", "app.py", "requirements.txt")
     assert b"FROM python@" in dockerfile_bytes
     assert b"COPY . /workspace" in dockerfile_bytes
+    assert b'["python", "-m", "pip", "install"' in dockerfile_bytes
+    assert b'"-r", "requirements.txt"' in dockerfile_bytes
     assert timeout_ms == 10_000
+
+
+@pytest.mark.asyncio
+async def test_persisted_recipe_can_rebuild_after_store_restart(tmp_path: Path) -> None:
+    files = {
+        "app.py": b"print('ready')\n",
+        "requirements.txt": b"requests==2.32.5\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    artifacts = _MemoryArtifacts()
+    request, requirements, _ = _dynamic_records()
+    source = await _setup(
+        FakeDockerAdapter(), artifacts=artifacts
+    ).preflight(
+        workspace_root=tmp_path,
+        repository_profile=_repository_profile(files),
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "restart-source"),
+    )
+    first_docker = FakeDockerAdapter()
+    first_store = EnvironmentRecipeStore(artifacts=artifacts)
+    recipe = await first_store.build(
+        docker=first_docker,
+        source=source,
+        labels={"sastsimi.owner": "reproduction-setup-automation"},
+        build_timeout_ms=10_000,
+    )
+
+    restarted_store = EnvironmentRecipeStore(artifacts=artifacts)
+    restored = restarted_store.restore_source(recipe, workspace_root=tmp_path)
+    restarted_docker = FakeDockerAdapter()
+    rebuilt = await restarted_store.build(
+        docker=restarted_docker,
+        source=restored,
+        labels={"sastsimi.owner": "reproduction-setup-automation"},
+        build_timeout_ms=10_000,
+    )
+
+    assert recipe.source_manifest is not None
+    assert rebuilt.recipe_source_ref == recipe.recipe_source_ref
+    assert len(restarted_docker.built_contexts) == 1
+
+
+@pytest.mark.asyncio
+async def test_repository_profile_generates_javascript_dependency_install(
+    tmp_path: Path,
+) -> None:
+    files = {
+        "package.json": b'{"dependencies": {"express": "1.0.0"}}\n',
+        "package-lock.json": b'{"lockfileVersion": 3}\n',
+        "server.js": b"console.log('ready')\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+
+    source = await _setup(
+        FakeDockerAdapter(), artifacts=_MemoryArtifacts()
+    ).preflight(
+        workspace_root=tmp_path,
+        repository_profile=_repository_profile(files),
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "node-recipe-source"),
+    )
+
+    assert b'["npm", "ci", "--ignore-scripts"]' in source.dockerfile
 
 
 @pytest.mark.asyncio
@@ -619,6 +694,131 @@ async def test_repository_profile_blocks_tracked_secret_before_docker(
     assert docker.inspected_images == []
     assert docker.built == []
     assert docker.built_contexts == []
+
+
+@pytest.mark.asyncio
+async def test_repository_profile_blocks_unignored_package_credentials(
+    tmp_path: Path,
+) -> None:
+    files = {
+        ".npmrc": b"//registry.npmjs.org/:_authToken=do-not-send\n",
+        "package.json": b'{"dependencies": {}}\n',
+        "server.js": b"console.log('ready')\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+
+    with pytest.raises(ValueError, match="REPOSITORY_SECRET_FILE_DENIED"):
+        await _setup(
+            FakeDockerAdapter(), artifacts=_MemoryArtifacts()
+        ).preflight(
+            workspace_root=tmp_path,
+            repository_profile=_repository_profile(files),
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "credential-recipe-source"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_repository_profile_honors_simple_dockerignore_before_archiving(
+    tmp_path: Path,
+) -> None:
+    files = {
+        ".dockerignore": b".npmrc\n",
+        ".npmrc": b"//registry.npmjs.org/:_authToken=do-not-send\n",
+        "package.json": b'{"dependencies": {}}\n',
+        "server.js": b"console.log('ready')\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+
+    source = await _setup(
+        FakeDockerAdapter(), artifacts=_MemoryArtifacts()
+    ).preflight(
+        workspace_root=tmp_path,
+        repository_profile=_repository_profile(files),
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "ignored-credential-source"),
+    )
+
+    assert source.context_archive is not None
+    with tarfile.open(fileobj=io.BytesIO(source.context_archive), mode="r:") as bundle:
+        assert ".npmrc" not in bundle.getnames()
+
+
+@pytest.mark.asyncio
+async def test_repository_profile_rejects_unsupported_dockerignore_negation(
+    tmp_path: Path,
+) -> None:
+    files = {
+        ".dockerignore": b"*\n!package.json\n",
+        "package.json": b'{"dependencies": {}}\n',
+        "server.js": b"console.log('ready')\n",
+    }
+    for name, raw in files.items():
+        (tmp_path / name).write_bytes(raw)
+    request, requirements, _ = _dynamic_records()
+
+    with pytest.raises(ValueError, match="DOCKERIGNORE_UNSUPPORTED"):
+        await _setup(
+            FakeDockerAdapter(), artifacts=_MemoryArtifacts()
+        ).preflight(
+            workspace_root=tmp_path,
+            repository_profile=_repository_profile(files),
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "unsupported-ignore-source"),
+        )
+
+
+def test_missing_declared_container_health_is_not_a_match() -> None:
+    request, requirements, _ = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+    requirements = requirements.model_copy(
+        update={
+            "items": (
+                EnvironmentRequirement(
+                    requirement_id="health",
+                    kind="HEALTH_CHECK",
+                    name="Docker health status",
+                    required=True,
+                    expected="healthy",
+                    expected_ref=None,
+                    alternatives=(),
+                    check_ref=None,
+                    secret_ref=None,
+                    source_refs=(request_ref,),
+                ),
+            )
+        }
+    )
+    evidence_ref = _ref("sandbox_resource", "container")
+    state = DockerContainerState(
+        container_id="owned-container",
+        image_digest=IMAGE_DIGEST,
+        user="65532:65532",
+        network_mode="none",
+        privileged=False,
+        read_only_rootfs=True,
+        running=True,
+        exit_code=0,
+        health_status=None,
+        labels={},
+    )
+
+    checks = SandboxHealthChecker().requirement_checks(
+        requirements=requirements,
+        state=state,
+        evidence_ref=evidence_ref,
+    )
+
+    assert checks[0].status == "NOT_CHECKED"
+    assert checks[0].actual is None
 
 
 @pytest.mark.asyncio
