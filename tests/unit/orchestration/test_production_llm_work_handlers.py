@@ -198,11 +198,13 @@ async def test_hypothesis_handler_uses_exact_bundle_and_settles_real_call() -> N
     proposal_ref = _ref("hypothesis_proposal", "proposal")
     context = _context(WorkType.HYPOTHESIS_PROPOSAL, (bundle_ref,))
     calls = _Calls()
+    committed: list[tuple[StoredDataRef, ...]] = []
     handler = HypothesisProposalWorkHandler(
         records=_Records({bundle_ref: bundle}),
         workflow=_HypothesisWorkflow(proposal_ref),
         calls=calls,
         orchestration_identity_ref=_ref("role_identity", "orchestrator"),
+        hypotheses_committed=committed.append,
     )
 
     result = await handler.execute(context)
@@ -212,6 +214,7 @@ async def test_hypothesis_handler_uses_exact_bundle_and_settles_real_call() -> N
         ("HYPOTHESIS", "GENERATE_INITIAL", (bundle_ref,))
     ]
     assert len(calls.settled) == 1
+    assert committed == [(proposal_ref,)]
 
 
 @pytest.mark.asyncio
@@ -229,6 +232,7 @@ async def test_hypothesis_handler_rejects_exact_ref_mismatch_before_llm_call() -
         workflow=_HypothesisWorkflow(_ref("hypothesis_proposal", "proposal")),
         calls=calls,
         orchestration_identity_ref=_ref("role_identity", "orchestrator"),
+        hypotheses_committed=lambda _refs: None,
     )
 
     with pytest.raises(ValueError, match="HYPOTHESIS_STATIC_CLOSURE_MISMATCH"):
