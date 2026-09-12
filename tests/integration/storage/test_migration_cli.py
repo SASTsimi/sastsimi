@@ -25,5 +25,5 @@ def test_operator_db_upgrade_explicitly_creates_current_schema(tmp_path: Path) -
         for column in inspect(database.engine).get_columns("chaining_work_pools")
     }
     assert ScriptDirectory.from_config(config(database)).get_heads() == [
-        "0005_chaining_matches"
+        "0006_prompt_analysis_scope"
     ]
