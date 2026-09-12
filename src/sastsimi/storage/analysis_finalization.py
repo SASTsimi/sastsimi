@@ -52,6 +52,7 @@ from .authorization import authorize
 from .codec import REF_ADAPTER, encode, reference
 from .records import next_meta
 from .repositories import SQLiteRecordStore
+from .run_control import cancel_latched
 from .run_states import get_run, save_run
 
 
@@ -526,6 +527,11 @@ class AnalysisFinalizationService:
                     assert isinstance(state.analysis_result_ref, RunStoredDataRef)
                     return state.analysis_result_ref
                 raise ValueError("ANALYSIS_ALREADY_TERMINAL")
+            if (
+                cancel_latched(connection, str(result.meta.analysis_id))
+                and result.status != "CANCELLED"
+            ):
+                raise ValueError("RUN_CANCELLED")
             if (
                 result.program_id != state.program_id
                 or result.purpose != state.purpose

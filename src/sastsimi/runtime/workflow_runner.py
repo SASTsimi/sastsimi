@@ -2,7 +2,7 @@
 
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractContextManager, nullcontext
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sastsimi.contracts.actions import ActionRequest
@@ -43,9 +43,11 @@ from sastsimi.ports.dto import (
     BudgetReservationRequest,
     Record,
     TransitionCommitRequest,
+    WorkContext,
 )
 from sastsimi.ports.id_generator import IdGenerator
 from sastsimi.ports.policy_runtime import PolicyPreparation
+from sastsimi.ports.scheduler import SchedulerStorePort
 
 from .services import RuntimeServices
 
@@ -62,9 +64,11 @@ class WorkflowRunner:
         clock: Clock,
         ids: IdGenerator,
         output_approval: OutputApproval | None = None,
+        scheduler_store: SchedulerStorePort | None = None,
     ) -> None:
         self.runtime, self.clock, self.ids = runtime, clock, ids
         self._output_approval = output_approval
+        self._scheduler_store = scheduler_store
 
     def metadata(
         self,
@@ -536,11 +540,15 @@ class WorkflowRunner:
         records = self.runtime.unit_of_work.records
         request = self.action(candidate, identity, role, "REGISTER_WORK")
         reservation = self.reserve(candidate, scope, request, self.units(work_count=1))
-        registered = self.runtime.work.register(
-            candidate,
-            self.authorize(candidate, request, reservation),
-            records.stage_record(reservation),
-        )
+        try:
+            registered = self.runtime.work.register(
+                candidate,
+                self.authorize(candidate, request, reservation),
+                records.stage_record(reservation),
+            )
+        except Exception:
+            self._release_reservation(reservation)
+            raise
         self.account(reservation, reservation.requested_units)
         return registered
 
@@ -567,6 +575,25 @@ class WorkflowRunner:
                 self.authorize(registered, ready_action),
                 "READY",
             )
+        )
+
+    def claim_ready(
+        self,
+        analysis_id: str,
+        work_id: str,
+        expected_state_version: int,
+        worker_id: str,
+        lease_expires_at: datetime,
+    ) -> WorkContext | None:
+        """Delegate one production claim to the atomic scheduler store."""
+        if self._scheduler_store is None:
+            raise ValueError("SCHEDULER_STORE_REQUIRED")
+        return self._scheduler_store.try_claim_ready(
+            analysis_id,
+            work_id,
+            expected_state_version,
+            worker_id,
+            lease_expires_at,
         )
 
     def activate(

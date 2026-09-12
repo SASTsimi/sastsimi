@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import Connection, insert, select, update
 
 from sastsimi.ports.clock import Clock
+from sastsimi.ports.scheduler import CancellationTarget
 
 from . import models
 from .database import Database
@@ -42,14 +43,14 @@ class RunControlStore:
         if not analysis_id:
             raise ValueError("RUN_CONTROL_INPUT_INVALID")
         with self._database.engine.connect() as connection:
-            return (
-                connection.execute(
-                    select(models.run_controls.c.analysis_id).where(
-                        models.run_controls.c.analysis_id == analysis_id
-                    )
-                ).scalar_one_or_none()
-                is not None
-            )
+            return cancel_latched(connection, analysis_id)
+
+    def cancellation_targets(self, analysis_id: str) -> tuple[CancellationTarget, ...]:
+        if not analysis_id:
+            raise ValueError("RUN_CONTROL_INPUT_INVALID")
+        from .cancellation_targets import CancellationTargetStore
+
+        return CancellationTargetStore(self._database).cancellation_targets(analysis_id)
 
     def mark_quiescent(self, analysis_id: str) -> None:
         if not analysis_id:
@@ -64,4 +65,21 @@ class RunControlStore:
                 raise LookupError("RUN_CONTROL_NOT_FOUND")
 
 
-__all__ = ["RunControlStore"]
+def cancel_latched(connection: Connection, analysis_id: str) -> bool:
+    """Read the durable latch on the caller's transaction snapshot."""
+    return (
+        connection.execute(
+            select(models.run_controls.c.analysis_id).where(
+                models.run_controls.c.analysis_id == analysis_id
+            )
+        ).scalar_one_or_none()
+        is not None
+    )
+
+
+def reject_cancelled(connection: Connection, analysis_id: str) -> None:
+    if cancel_latched(connection, analysis_id):
+        raise ValueError("RUN_CANCELLED")
+
+
+__all__ = ["RunControlStore", "cancel_latched", "reject_cancelled"]
