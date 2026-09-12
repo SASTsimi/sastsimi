@@ -22,6 +22,7 @@ from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import WorkHandlerResult
 from sastsimi.prompts.dynamic_reproduction import DYNAMIC_REPRODUCTION_PROMPTS
 from sastsimi.prompts.registry import REQUIRED_TEMPLATE_SECTIONS
+from sastsimi.reproduction.production import ProductionDynamicWorkflow
 from sastsimi.reproduction.service import DynamicStageAuthorizations
 from sastsimi.sandbox.session_manager import ReproductionSessionManager
 from sastsimi.verification.completion import VerificationCompletionCoordinator
@@ -212,6 +213,13 @@ def test_production_bootstrap_uses_real_sandbox_components() -> None:
 
     assert "completion=VerificationCompletionCoordinator(" in source
     assert "verification=verification" in source
+    assert "repository_profile=repository_profile" in source
+    assert "repository_profile=self._repository_profile" in inspect.getsource(
+        ProductionDynamicWorkflow.open_session
+    )
+    assert "source.repository_profile_ref" in inspect.getsource(
+        ProductionDynamicWorkflow.open_session
+    )
 
 
 def test_session_start_binds_the_exact_allow_policy_reference() -> None:
