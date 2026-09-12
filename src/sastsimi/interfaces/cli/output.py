@@ -27,6 +27,9 @@ def emit_result(
             "CAPABILITY_UNSUPPORTED: use 64-bit CPython 3.12 on Windows 11, "
             "Windows Server 2022 or Ubuntu 24.04 x86-64."
         ),
+        ExitCode.REPORT_UNAVAILABLE: (
+            "Report is unavailable; it may be missing, stale, or unsafe to display."
+        ),
         ExitCode.INTERNAL_ERROR: (
             "Unexpected internal error; retain the diagnostic trace ID."
         ),
