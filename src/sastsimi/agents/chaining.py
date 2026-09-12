@@ -16,7 +16,12 @@ from sastsimi.contracts.actions import (
 from sastsimi.contracts.base import ContractModel, NonEmptyStr
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
-from sastsimi.contracts.work import AttemptStatus, WorkStatus, WorkType
+from sastsimi.contracts.work import (
+    AttemptStatus,
+    WorkExecutionState,
+    WorkStatus,
+    WorkType,
+)
 from sastsimi.ports.chaining import (
     ChainedHypothesisContent,
     ChainingAgentInput,
@@ -36,7 +41,7 @@ class LLMCallInvoker(Protocol):
     async def invoke(
         self,
         *,
-        work: object,
+        work: WorkExecutionState,
         decision_ref: StoredDataRef,
         reservation_ref: RecordRef,
         call_spec_ref: StoredDataRef,

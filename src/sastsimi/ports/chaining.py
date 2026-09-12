@@ -274,13 +274,18 @@ class ChainingCohortRegistration:
 
 
 class ChainingCohortPort(Protocol):
-    """Persist every sibling as PENDING, then expose the whole cohort as READY."""
+    """Pin one committed Primitive update and register its sibling cohort.
+
+    The caller supplies the exact committed update outcome, never a universe
+    assembled from a mutable/current read.  The implementation resolves the
+    outcome's exact ``primitive_index_ref`` and builds every immutable sibling
+    universe from that index inside the registration transaction.
+    """
 
     def register_pending(
         self,
         *,
-        source_update_ref: StoredDataRef,
-        universes: tuple[PinnedChainingUniverse, ...],
+        outcome: PrimitiveUpdateOutcome,
         scope: BudgetScopeRef,
         requester_identity_ref: BudgetScopeRef,
         metadata: RecordMetadata,
