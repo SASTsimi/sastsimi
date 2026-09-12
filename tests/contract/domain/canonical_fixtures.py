@@ -129,9 +129,7 @@ def make(name: str, kind: str | None = None) -> dict[str, Any]:
         elif spec.startswith("["):
             value[field] = []
         elif spec == "HostConfigurationRef":
-            value[field] = host_ref(
-                REF_KINDS.get(field, field.removesuffix("_ref"))
-            )
+            value[field] = host_ref(REF_KINDS.get(field, field.removesuffix("_ref")))
         elif "StoredDataRef" in spec:
             value[field] = ref(REF_KINDS.get(field, field.removesuffix("_ref")))
             if spec.startswith("RunStoredDataRef"):
