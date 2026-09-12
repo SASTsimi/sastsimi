@@ -222,6 +222,12 @@ class HypothesisWorkflowPort(Protocol):
     async def run(self, **kwargs: object) -> object: ...
 
 
+class HypothesesCommittedPort(Protocol):
+    """Register downstream Verification only after proposal commit succeeds."""
+
+    def __call__(self, proposal_refs: tuple[StoredDataRef, ...]) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class HypothesisProposalWorkHandler:
     """Run the initial, analysis-scoped Hypothesis Agent call."""
@@ -230,6 +236,7 @@ class HypothesisProposalWorkHandler:
     workflow: HypothesisWorkflowPort
     calls: ProductionCallPort
     orchestration_identity_ref: BudgetScopeRef
+    hypotheses_committed: HypothesesCommittedPort
 
     async def execute(self, context: WorkContext) -> WorkHandlerResult:
         require_claimed_context(context, WorkType.HYPOTHESIS_PROPOSAL)
@@ -291,6 +298,15 @@ class HypothesisProposalWorkHandler:
             or completed.active_attempt_id is not None
         ):
             raise ValueError("HYPOTHESIS_PROVIDER_CALL_FAILED")
+        proposal_refs = tuple(
+            ref
+            for ref in completed.output_refs
+            if isinstance(ref, StoredDataRef)
+            and ref.data_kind == "hypothesis_proposal"
+        )
+        if len(proposal_refs) != len(completed.output_refs):
+            raise ValueError("HYPOTHESIS_OUTPUT_CLOSURE_MISMATCH")
+        self.hypotheses_committed(proposal_refs)
         return WorkHandlerResult(completed.output_refs)
 
 
@@ -514,6 +530,7 @@ __all__ = [
     "ConfiguredProductionCallResolver",
     "DynamicVerificationPort",
     "EvidenceBranchWorkHandler",
+    "HypothesesCommittedPort",
     "HypothesisProposalWorkHandler",
     "PreparedCallAuthorizer",
     "ProductionCallPort",
