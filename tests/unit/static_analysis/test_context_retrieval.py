@@ -370,6 +370,48 @@ def test_reader_returns_only_authorized_tracked_range() -> None:
     assert not result.truncated
 
 
+@pytest.mark.parametrize(
+    "git_path",
+    (
+        ".npmrc",
+        "config/service-account.json",
+        "maven/settings.xml",
+    ),
+)
+def test_reader_rejects_sensitive_tracked_path_before_read(
+    tmp_path: Path, git_path: str
+) -> None:
+    candidate = tmp_path.joinpath(*git_path.split("/"))
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_text("credential material", encoding="utf-8")
+    location = _location(git_path, 1)
+    _, symbols = _fixture()
+    original = _plan("CALLERS", symbols["seed"])
+    plan = replace(
+        original,
+        entities=(),
+        locations=(location,),
+        relations=(),
+        file_paths=(git_path,),
+    )
+
+    with pytest.raises(ValueError, match="CONTEXT_PATH_SENSITIVE"):
+        read_context_files(
+            plan=plan,
+            workspace_root=tmp_path,
+            tracked_files=(
+                TrackedFile(
+                    git_path,
+                    "100644",
+                    "0" * 40,
+                    candidate.stat().st_size,
+                ),
+            ),
+            deadline=MonotonicActionDeadline("read", 0, 1_000_000_000),
+            monotonic_ns=lambda: 1,
+        )
+
+
 def test_reader_rejects_untracked_path_before_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
