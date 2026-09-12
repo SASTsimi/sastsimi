@@ -17,7 +17,13 @@ from typing import Literal, Protocol, cast
 
 from pydantic import TypeAdapter
 
-from sastsimi.contracts.actions import ActionDecision, ActionRequest
+from sastsimi.contracts.actions import (
+    ActionDecision,
+    ActionRequest,
+    ActionType,
+    RequesterRole,
+)
+from sastsimi.contracts.analysis import AnalysisRunInput
 from sastsimi.contracts.budget import (
     BudgetAgentRole,
     BudgetLedgerEntry,
@@ -875,6 +881,119 @@ class StaticExternalRunner:
         return WorkspacePreparationPublisher(self.runner, identity).finish(
             current, preparing, outcome
         )
+
+    def resolve_repository_preparation(
+        self,
+        *,
+        workspace_work: WorkExecutionState,
+        run_input: AnalysisRunInput,
+        policy_ref: RunStoredDataRef,
+        git_clone_profile_ref: HostConfigurationRef | None = None,
+        git_checkout_profile_ref: HostConfigurationRef | None = None,
+    ) -> RepositoryPreparation:
+        """Rebuild the exact successful preparation from its durable receipt."""
+
+        try:
+            current = self.runner.runtime.work.get(str(workspace_work.work_id))
+            git_refs, _ = self._verified_git_refs(
+                current, git_clone_profile_ref, git_checkout_profile_ref
+            )
+            run_input_ref = reference(run_input)
+            state = self.runner.runtime.budget_registry.current_state(
+                str(current.meta.analysis_id)
+            )
+            if (
+                current != workspace_work
+                or current.work_type != WorkType.WORKSPACE_PREP
+                or current.status != "SUCCEEDED"
+                or not isinstance(run_input_ref, RunStoredDataRef)
+                or state.analysis_input_ref != run_input_ref
+                or current.input_refs != (run_input_ref, policy_ref, *git_refs)
+                or len(current.output_refs) != 1
+                or state.workspace_ref != current.output_refs[0]
+                or state.workspace_id is None
+                or state.commit_id is None
+                or run_input.requested_git_ref != str(state.commit_id)
+            ):
+                raise ValueError
+            workspace = self.runner.runtime.unit_of_work.records.get_exact(
+                state.workspace_ref
+            )
+            if (
+                not isinstance(workspace, CodeWorkspace)
+                or workspace.status != "READY"
+                or workspace.commit_id != state.commit_id
+                or workspace.workspace_id != state.workspace_id
+                or workspace.meta.previous_record_id is None
+            ):
+                raise ValueError
+            published = self.runner.runtime.queries.published_records(
+                str(current.meta.analysis_id)
+            )
+            preparing = tuple(
+                item
+                for item in published
+                if isinstance(item, CodeWorkspace)
+                and item.status == "PREPARING"
+                and item.meta.record_id == workspace.meta.previous_record_id
+                and item.meta.logical_record_id == workspace.meta.logical_record_id
+            )
+            attempts = tuple(
+                attempt
+                for attempt in self.runner.runtime.work.store.attempts_for_work(
+                    str(current.work_id)
+                )
+                if attempt.status == "SUCCEEDED"
+                and attempt.output_refs == current.output_refs
+            )
+            if len(preparing) != 1 or len(attempts) != 1:
+                raise ValueError
+            preparing_ref = reference(preparing[0])
+            if not isinstance(preparing_ref, RunStoredDataRef):
+                raise ValueError
+            receipt_inputs: tuple[RecordRef, ...] = (
+                preparing_ref,
+                policy_ref,
+                *git_refs,
+            )
+            receipt, outcome, _ = self._read_receipt(
+                str(attempts[0].attempt_id), receipt_inputs
+            )
+            actions = tuple(
+                item
+                for item in published
+                if isinstance(item, ActionRequest)
+                and str(item.action_id) == receipt.action_id
+            )
+            canonical_source = self.canonicalize_source(run_input.repository_ref).url
+            if len(actions) != 1:
+                raise ValueError
+            action = actions[0]
+            action_work_ref = action.work_ref
+            if action_work_ref is None:
+                raise ValueError
+            action_work = self.runner.runtime.unit_of_work.records.get_exact(
+                action_work_ref
+            )
+            if (
+                action.requested_by != RequesterRole.REPOSITORY_LOADER
+                or action.action_type != ActionType.RUN_TOOL
+                or action.tool_name != "git"
+                or action.input_refs != receipt_inputs
+                or not isinstance(action_work, WorkExecutionState)
+                or action_work.work_id != current.work_id
+                or outcome.analysis_id != str(current.meta.analysis_id)
+                or outcome.workspace_id != str(workspace.workspace_id)
+                or outcome.repository_url != canonical_source
+                or outcome.repository_url != str(workspace.repository_url)
+                or outcome.requested_ref != run_input.requested_git_ref
+                or outcome.resolved_commit_id != str(workspace.commit_id)
+                or outcome.status != "READY"
+            ):
+                raise ValueError
+            return outcome
+        except (AttributeError, LookupError, OSError, TypeError, ValueError) as error:
+            raise ValueError("REPOSITORY_PREPARATION_RECEIPT_MISMATCH") from error
 
     def _recovery_records(
         self, analysis_id: str, action_id: str
