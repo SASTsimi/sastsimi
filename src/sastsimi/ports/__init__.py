@@ -1,5 +1,38 @@
 from .artifact_store import ArtifactStore as ArtifactStore
 from .budget_ledger import BudgetLedgerPort as BudgetLedgerPort
+from .chaining import ChainedHypothesisContent as ChainedHypothesisContent
+from .chaining import ChainingAgentInput as ChainingAgentInput
+from .chaining import ChainingAgentOutcome as ChainingAgentOutcome
+from .chaining import ChainingAgentOutput as ChainingAgentOutput
+from .chaining import ChainingAgentPort as ChainingAgentPort
+from .chaining import ChainingChildHandoffPort as ChainingChildHandoffPort
+from .chaining import ChainingCohortMember as ChainingCohortMember
+from .chaining import ChainingCohortPort as ChainingCohortPort
+from .chaining import ChainingCohortRegistration as ChainingCohortRegistration
+from .chaining import ChainingComparison as ChainingComparison
+from .chaining import ChainingDecision as ChainingDecision
+from .chaining import ChainingEvidence as ChainingEvidence
+from .chaining import ChainingLineagePort as ChainingLineagePort
+from .chaining import ChainingMatchIdentity as ChainingMatchIdentity
+from .chaining import ChainingMatchReservationPort as ChainingMatchReservationPort
+from .chaining import ChainingPoolHistory as ChainingPoolHistory
+from .chaining import ChainingPoolHistoryPort as ChainingPoolHistoryPort
+from .chaining import ChainingPrimitive as ChainingPrimitive
+from .chaining import ChainingPrimitiveInput as ChainingPrimitiveInput
+from .chaining import ChainingPrimitiveResult as ChainingPrimitiveResult
+from .chaining import ChainingReconciliationPort as ChainingReconciliationPort
+from .chaining import (
+    ChainingResultReconciliationRequest as ChainingResultReconciliationRequest,
+)
+from .chaining import HoldPrimitiveAdmissionClosure as HoldPrimitiveAdmissionClosure
+from .chaining import PinnedChainingUniverse as PinnedChainingUniverse
+from .chaining import PrimitiveAdmissionClosure as PrimitiveAdmissionClosure
+from .chaining import PrimitiveAdmissionSourcePort as PrimitiveAdmissionSourcePort
+from .chaining import PrimitiveUpdateOutcome as PrimitiveUpdateOutcome
+from .chaining import (
+    PrimitiveUpdateReconciliationRequest as PrimitiveUpdateReconciliationRequest,
+)
+from .chaining import TruePrimitiveAdmissionClosure as TruePrimitiveAdmissionClosure
 from .clock import Clock as Clock
 from .dto import ApprovedSandboxCommand as ApprovedSandboxCommand
 from .dto import AttemptOutputBudgetPort as AttemptOutputBudgetPort
