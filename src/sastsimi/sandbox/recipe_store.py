@@ -79,7 +79,6 @@ class RecipeDockerPort(Protocol):
         timeout_ms: int,
     ) -> str: ...
     async def inspect_image(self, image: str, *, timeout_ms: int) -> str: ...
-    async def remove_image(self, image: str) -> None: ...
 
 
 @runtime_checkable
@@ -339,31 +338,6 @@ class EnvironmentRecipeStore:
             )
             self._baselines[key] = recipe
             return recipe
-        finally:
-            self._lock.release()
-
-    async def reclaim_built_recipe(
-        self,
-        *,
-        docker: RecipeDockerPort,
-        recipe: EnvironmentRecipe,
-    ) -> None:
-        """Remove a newly built attempt image and its cache entry atomically."""
-
-        if recipe.build_disposition != "BUILT":
-            return
-        key = (
-            str(recipe.meta.workspace_id),
-            str(recipe.meta.commit_id),
-            recipe.recipe_source_ref.content_hash,
-        )
-        await self._lock.acquire()
-        try:
-            baseline = self._baselines.get(key)
-            if baseline is None or self._exact_ref(baseline) != self._exact_ref(recipe):
-                raise ValueError("RECIPE_BASELINE_OWNERSHIP_MISMATCH")
-            await docker.remove_image(recipe.built_image_digest)
-            del self._baselines[key]
         finally:
             self._lock.release()
 

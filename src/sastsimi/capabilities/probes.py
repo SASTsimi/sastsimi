@@ -195,13 +195,9 @@ class SubprocessCommandProbeRunner:
             # start_new_session=True makes the original pid the process-group id.
             # The group remains addressable after its leader exits.
             kill_group = cast(
-                Callable[[int, int], None],
-                os.killpg,  # type: ignore[attr-defined]
+                Callable[[int, int], None], os.__dict__["killpg"]
             )
-            kill_signal = cast(
-                int,
-                signal.SIGKILL,  # type: ignore[attr-defined]
-            )
+            kill_signal = cast(int, signal.__dict__["SIGKILL"])
             kill_group(process.pid, kill_signal)
             return
         except (OSError, ProcessLookupError):
@@ -374,7 +370,10 @@ def _windows_path_is_mutable(path: Path) -> bool:
     import ctypes
     from ctypes import wintypes
 
-    create_file = ctypes.windll.kernel32.CreateFileW
+    windll = ctypes.__dict__.get("windll")
+    if windll is None:
+        raise OSError("WINDOWS_NATIVE_API_UNAVAILABLE")
+    create_file = windll.kernel32.CreateFileW
     create_file.argtypes = (
         wintypes.LPCWSTR,
         wintypes.DWORD,
@@ -385,7 +384,7 @@ def _windows_path_is_mutable(path: Path) -> bool:
         wintypes.HANDLE,
     )
     create_file.restype = wintypes.HANDLE
-    close_handle = ctypes.windll.kernel32.CloseHandle
+    close_handle = windll.kernel32.CloseHandle
     close_handle.argtypes = (wintypes.HANDLE,)
     close_handle.restype = wintypes.BOOL
     invalid = ctypes.c_void_p(-1).value

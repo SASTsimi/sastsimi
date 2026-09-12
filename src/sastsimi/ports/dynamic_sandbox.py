@@ -272,8 +272,6 @@ class ReproductionSetupPort(Protocol):
         meta: RecordMeta,
     ) -> CleanupResult: ...
 
-    async def cleanup_built_recipe(self, recipe: EnvironmentRecipe) -> None: ...
-
 
 class DynamicDockerExecutionPort(Protocol):
     async def materialize_poc(

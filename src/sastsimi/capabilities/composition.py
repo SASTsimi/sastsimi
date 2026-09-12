@@ -70,7 +70,10 @@ class _NativeApprovalIdentity:
 
             size = ctypes.c_ulong(257)
             buffer = ctypes.create_unicode_buffer(size.value)
-            if not ctypes.windll.advapi32.GetUserNameW(buffer, ctypes.byref(size)):
+            windll = ctypes.__dict__.get("windll")
+            if windll is None or not windll.advapi32.GetUserNameW(
+                buffer, ctypes.byref(size)
+            ):
                 raise ValueError("APPROVER_UNAVAILABLE")
             identity = buffer.value
         else:
@@ -80,12 +83,10 @@ class _NativeApprovalIdentity:
                 pw_name: str
 
             get_effective_user_id = cast(
-                Callable[[], int],
-                os.geteuid,  # type: ignore[attr-defined]
+                Callable[[], int], os.__dict__["geteuid"]
             )
             get_user = cast(
-                Callable[[int], _PasswdRecord],
-                pwd.getpwuid,  # type: ignore[attr-defined]
+                Callable[[int], _PasswdRecord], pwd.__dict__["getpwuid"]
             )
             identity = get_user(get_effective_user_id()).pw_name
         if not identity:
