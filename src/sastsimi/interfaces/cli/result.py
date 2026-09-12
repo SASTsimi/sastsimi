@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Protocol
 
 from sastsimi.contracts.evaluation import AnalysisRunResult
-from sastsimi.ports.scheduler import AnalysisApplicationPort
+
+
+class ResultApplicationPort(Protocol):
+    def result(self, analysis_id: str) -> AnalysisRunResult: ...
 
 
 def run(
-    application: AnalysisApplicationPort,
+    application: ResultApplicationPort,
     analysis_id: str,
     *,
     output_format: Literal["json", "summary"] = "summary",

@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from sastsimi.contracts.evaluation import AnalysisRunResult
 from sastsimi.interfaces.cli.run import project
-from sastsimi.ports.scheduler import RunOutcome
+from sastsimi.ports.scheduler import AnalysisStatusView, RunOutcome
 
 
 class ProductionAnalyzeUnavailable(RuntimeError):
@@ -30,6 +31,14 @@ class ProductionAnalyzeEntrypoint(Protocol):
     async def __call__(self, request: ProductionAnalyzeRequest) -> RunOutcome: ...
 
 
+class ProductionQueryEntrypoint(Protocol):
+    """Read-only seam usable without restarting or resuming work."""
+
+    def status(self, analysis_id: str) -> AnalysisStatusView: ...
+
+    def result(self, analysis_id: str) -> AnalysisRunResult: ...
+
+
 async def run(
     entrypoint: ProductionAnalyzeEntrypoint | None,
     request: ProductionAnalyzeRequest,
@@ -43,5 +52,6 @@ __all__ = [
     "ProductionAnalyzeEntrypoint",
     "ProductionAnalyzeRequest",
     "ProductionAnalyzeUnavailable",
+    "ProductionQueryEntrypoint",
     "run",
 ]
