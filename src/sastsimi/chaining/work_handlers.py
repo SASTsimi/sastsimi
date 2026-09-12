@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
 
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.ids import ProposalId
@@ -18,7 +17,7 @@ from sastsimi.ports.chaining import (
 )
 from sastsimi.ports.dto import WorkContext, WorkHandlerResult
 
-from .service import ChainingCallRefs, ChainingWorkflowService
+from .service import ChainingCallResolver, ChainingWorkflowService
 
 
 def require_claimed_context(context: WorkContext, expected: WorkType | str) -> None:
@@ -41,10 +40,6 @@ def require_claimed_context(context: WorkContext, expected: WorkType | str) -> N
         or work.meta.commit_id != attempt.meta.commit_id
     ):
         raise ValueError("WORK_CONTEXT_NOT_CURRENT")
-
-
-class ChainingCallResolver(Protocol):
-    def __call__(self, context: WorkContext) -> ChainingCallRefs: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,7 +93,7 @@ class ChainingWorkHandler:
         require_claimed_context(context, WorkType.CHAINING)
         outcome = await self.service.execute(
             context=context,
-            call=self.resolve_call(context),
+            resolve_call=self.resolve_call,
         )
         return WorkHandlerResult(outcome.completed_work.output_refs)
 

@@ -4,12 +4,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from sastsimi.chaining.service import ChainingWorkflowService
+from sastsimi.chaining.service import ChainingWorkflowService, chaining_input_hash
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.chaining import Primitive
+from sastsimi.contracts.gates import TechnicalEvidenceReview
 from sastsimi.contracts.ids import OpaqueId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.verification import VerificationResult
 from sastsimi.contracts.work import WorkAttempt, WorkExecutionState
 from sastsimi.ports.chaining import (
     ChainedHypothesisContent,
@@ -41,12 +43,19 @@ def _symbol(name: str) -> dict[str, object]:
     }
 
 
-def _draft(name: str) -> dict[str, object]:
+def _draft(
+    name: str, evidence_ref: StoredDataRef | None = None
+) -> dict[str, object]:
+    evidence = (
+        evidence_ref.model_dump(mode="json")
+        if evidence_ref is not None
+        else _stored("code", name) | {"record_id": None}
+    )
     return {
         "draft_id": f"draft-{name}",
         "entity_refs": [_symbol(name)],
         "privilege_level": None,
-        "evidence_refs": [_stored("code", name) | {"record_id": None}],
+        "evidence_refs": [evidence],
         "description": f"capability {name}",
     }
 
@@ -57,7 +66,15 @@ def _primitive(
     inputs: tuple[str, ...],
     result: str | None,
 ) -> Primitive:
-    evidence = _stored("code", name) | {"record_id": None}
+    verification = _verification(
+        name,
+        rationale=f"Verified capability and constraints for primitive {name}",
+        final_true=result is not None,
+    )
+    verification_ref = reference(verification)
+    assert isinstance(verification_ref, StoredDataRef)
+    technical = _technical(name, verification_ref) if result is not None else None
+    technical_ref = reference(technical) if technical is not None else None
     data = {
         "meta": meta("primitive", hypothesis=f"hyp-{name}")
         | {
@@ -67,18 +84,18 @@ def _primitive(
         "primitive_id": f"primitive-{name}",
         "workspace_id": "ws1",
         "commit_id": "c1",
-        "inputs": [_draft(value) for value in inputs],
-        "result": _draft(result) if result else None,
+        "inputs": [_draft(value, verification_ref) for value in inputs],
+        "result": _draft(result, verification_ref) if result else None,
         "restrictions": [],
         "source_hypothesis_id": f"hyp-{name}",
-        "source_verification_ref": _stored("verification_result", name),
+        "source_verification_ref": verification_ref.model_dump(mode="json"),
         "technical_review_ref": (
-            _stored("technical_evidence_review", name) if result else None
+            technical_ref.model_dump(mode="json") if technical_ref else None
         ),
         "admission_decision_ref": (
             _stored("primitive_admission_decision", name) if result else None
         ),
-        "evidence_refs": [evidence],
+        "evidence_refs": [verification_ref.model_dump(mode="json")],
         "description": f"primitive {name}",
     }
     return wire(Primitive, data)
@@ -119,8 +136,25 @@ def _as_ref(kind: str, name: str) -> StoredDataRef:
 
 
 class _Records:
-    def __init__(self, primitives: tuple[Primitive, ...]) -> None:
-        self.values = {reference(value): value for value in primitives}
+    def __init__(self, records: tuple[object, ...]) -> None:
+        self.values = {reference(value): value for value in records}  # type: ignore[arg-type]
+        for value in records:
+            if not isinstance(value, Primitive):
+                continue
+            name = str(value.primitive_id).removeprefix("primitive-")
+            verification = _verification(
+                name,
+                rationale=f"Verified capability and constraints for primitive {name}",
+                final_true=value.result is not None,
+            )
+            verification_ref = reference(verification)
+            if verification_ref == value.source_verification_ref:
+                self.values.setdefault(verification_ref, verification)
+            if value.technical_review_ref is not None:
+                technical = _technical(name, value.source_verification_ref)
+                technical_ref = reference(technical)
+                if technical_ref == value.technical_review_ref:
+                    self.values.setdefault(technical_ref, technical)
 
     def get_exact(self, value: object) -> object:
         return self.values[value]
@@ -179,9 +213,11 @@ class _Ids:
 class _Agent:
     def __init__(self, match_comparisons: tuple[str, ...]) -> None:
         self.match_comparisons = match_comparisons
+        self.content = None
 
     async def match(self, **kwargs: object) -> object:
         content = kwargs["content"]
+        self.content = content
         decisions = tuple(
             ChainingDecision(
                 comparison_key=item.comparison_key,
@@ -271,6 +307,76 @@ def _metadata(source: RecordMeta, kind: str, attempt_id: object) -> RecordMeta:
 _metadata.value = 0
 
 
+def _resolve_call(_context: object, content: object) -> object:
+    return (
+        SimpleNamespace(
+            decision_ref=_as_ref("action_decision", "decision"),
+            reservation_ref=_as_ref("budget_reservation", "reservation"),
+            call_spec_ref=_as_ref("llm_call_spec", "spec"),
+        ),
+        chaining_input_hash(content),  # type: ignore[arg-type]
+    )
+
+
+def _verification(
+    name: str, *, rationale: str, final_true: bool = False
+) -> VerificationResult:
+    data = make("VerificationResult")
+    data["meta"] = meta("verification_result", hypothesis=f"hyp-{name}") | {
+        "record_id": f"verification-result-{name}",
+        "logical_record_id": f"verification-result-logical-{name}",
+    }
+    data["verdict_rationale"] = rationale
+    data["supporting_evidence"][0]["statement"] = (
+        "Request data reaches the privileged operation after an authorization check"
+    )
+    if final_true:
+        data.update(
+            initial_verdict="TRUE",
+            verdict="TRUE",
+            dynamic_request_ref=_stored("dynamic_reproduction_request", name),
+            dynamic_result_ref=_stored("dynamic_reproduction_result", name),
+            poc_ref=_stored("poc_bundle", name),
+            unresolved_conditions=[],
+        )
+    return wire(VerificationResult, data)
+
+
+def _technical(
+    name: str, verification_ref: StoredDataRef
+) -> TechnicalEvidenceReview:
+    data = make("TechnicalEvidenceReview")
+    data["meta"] = meta("technical_evidence_review", hypothesis=f"hyp-{name}") | {
+        "record_id": f"technical-review-{name}",
+        "logical_record_id": f"technical-review-logical-{name}",
+    }
+    data["verification_result_ref"] = verification_ref.model_dump(mode="json")
+    data["code_flow_linkage"] = (
+        "The source reaches the sink after the permission check in request order"
+    )
+    data["restriction_assessment"] = "The authenticated-user restriction remains"
+    return wire(TechnicalEvidenceReview, data)
+
+
+def _primitive_with_exact_sources(
+    primitive: Primitive,
+    *,
+    verification: VerificationResult,
+    technical: TechnicalEvidenceReview | None,
+) -> Primitive:
+    verification_ref = reference(verification)
+    assert isinstance(verification_ref, StoredDataRef)
+    data = primitive.model_dump(mode="json")
+    data["source_verification_ref"] = verification_ref.model_dump(mode="json")
+    data["technical_review_ref"] = (
+        reference(technical).model_dump(mode="json") if technical is not None else None
+    )
+    data["evidence_refs"] = [verification_ref.model_dump(mode="json")]
+    for draft in (*data["inputs"], *((data["result"],) if data["result"] else ())):
+        draft["evidence_refs"] = [verification_ref.model_dump(mode="json")]
+    return wire(Primitive, data)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("hold_trigger", [False, True])
 async def test_true_hold_and_true_true_create_child_only_after_commit(
@@ -314,11 +420,7 @@ async def test_true_hold_and_true_true_create_child_only_after_commit(
 
     outcome = await service.execute(
         context=context,
-        call=SimpleNamespace(
-            decision_ref=_as_ref("action_decision", "decision"),
-            reservation_ref=_as_ref("budget_reservation", "reservation"),
-            call_spec_ref=_as_ref("llm_call_spec", "spec"),
-        ),
+        resolve_call=_resolve_call,
     )
 
     assert len(outcome.result.primitive_match_candidates) == 1
@@ -367,11 +469,7 @@ async def test_one_call_keeps_deepest_success_and_ignores_ancestor_decisions(
 
     outcome = await service.execute(
         context=context,
-        call=SimpleNamespace(
-            decision_ref=_as_ref("action_decision", "decision"),
-            reservation_ref=_as_ref("budget_reservation", "reservation"),
-            call_spec_ref=_as_ref("llm_call_spec", "spec"),
-        ),
+        resolve_call=_resolve_call,
     )
 
     assert len(outcome.result.primitive_match_candidates) == 1
@@ -420,11 +518,7 @@ async def test_one_directional_pair_preserves_each_matched_input(
 
     outcome = await service.execute(
         context=context,
-        call=SimpleNamespace(
-            decision_ref=_as_ref("action_decision", "decision"),
-            reservation_ref=_as_ref("budget_reservation", "reservation"),
-            call_spec_ref=_as_ref("llm_call_spec", "spec"),
-        ),
+        resolve_call=_resolve_call,
     )
 
     assert {
@@ -432,3 +526,79 @@ async def test_one_directional_pair_preserves_each_matched_input(
     } == {"draft-first-required-input", "draft-second-required-input"}
     assert len(outcome.result.chained_hypothesis_proposals) == 2
     assert len(children.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_prompt_uses_exact_redacted_semantic_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sastsimi.chaining.service.llm_invocation_save_refs",
+        lambda **_: ("llm-proof",),
+    )
+    trigger_verification = _verification(
+        "A",
+        rationale="password=hunter2 confirms the upstream capability",
+        final_true=True,
+    )
+    trigger_verification_ref = reference(trigger_verification)
+    assert isinstance(trigger_verification_ref, StoredDataRef)
+    trigger_technical = _technical("A", trigger_verification_ref)
+    trigger = _primitive_with_exact_sources(
+        _primitive("A", inputs=(), result="provided"),
+        verification=trigger_verification,
+        technical=trigger_technical,
+    )
+    other_verification = _verification(
+        "B", rationale="Downstream input is reachable", final_true=True
+    )
+    other_verification_ref = reference(other_verification)
+    assert isinstance(other_verification_ref, StoredDataRef)
+    other_technical = _technical("B", other_verification_ref)
+    other = _primitive_with_exact_sources(
+        _primitive("B", inputs=("provided",), result="next"),
+        verification=other_verification,
+        technical=other_technical,
+    )
+    refs = tuple(reference(value) for value in (trigger, other))
+    context = _context(refs, refs[0])  # type: ignore[arg-type]
+    universe = PinnedChainingUniverse(
+        trigger_primitive_ref=refs[0],  # type: ignore[arg-type]
+        index_refs=(_as_ref("primitive_index_state", "index"),),
+        considered_primitive_refs=refs,  # type: ignore[arg-type]
+    )
+    agent = _Agent(())
+    service = ChainingWorkflowService(
+        agent=agent,
+        records=_Records(
+            (
+                trigger,
+                other,
+                trigger_verification,
+                other_verification,
+                trigger_technical,
+                other_technical,
+            )
+        ),
+        pools=_Pools(reference(context.work), universe),  # type: ignore[arg-type]
+        lineage=_Lineage({}),
+        publisher=_Publisher(),
+        children=_Children(),
+        ids=_Ids(),
+        metadata_factory=_metadata,
+        requester_identity_ref=_as_ref("requester_identity", "r"),
+    )
+
+    await service.execute(
+        context=context,
+        resolve_call=_resolve_call,
+    )
+
+    assert agent.content is not None
+    summaries = "\n".join(item.summary for item in agent.content.evidence)
+    assert "source reaches the sink after the permission check" in summaries
+    assert "authenticated-user restriction remains" in summaries
+    assert "hunter2" not in summaries
+    assert "[REDACTED:CREDENTIAL]" in summaries
+    assert "stored_data_id" not in summaries
+    assert "verification-result-A" not in summaries

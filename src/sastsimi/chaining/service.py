@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Literal, Protocol, cast
 
+from pydantic import BaseModel
+
 from sastsimi.contracts.actions import RequesterRole
-from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.chaining import (
     ChainingResult,
     NoMatchReason,
@@ -16,16 +18,19 @@ from sastsimi.contracts.chaining import (
     PrimitiveMatchCandidate,
     validate_chaining_closure,
 )
+from sastsimi.contracts.dynamic import DynamicReproductionResult
+from sastsimi.contracts.gates import TechnicalEvidenceReview
 from sastsimi.contracts.hypothesis import (
     FalsificationQuestion,
     HypothesisProposal,
     ValidationCheck,
 )
 from sastsimi.contracts.ids import AttemptId, ProposalId, RecordId
+from sastsimi.contracts.prompt_redaction import redact_untrusted_text
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
-from sastsimi.contracts.static import CodeSymbol, Restriction
-from sastsimi.contracts.verification import VerificationResult
+from sastsimi.contracts.static import CodeSymbol, Restriction, StaticFactBundle
+from sastsimi.contracts.verification import EvidenceAgentResult, VerificationResult
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus
 from sastsimi.ports.chaining import (
     ChainingAgentInput,
@@ -287,6 +292,14 @@ class ChainingCallRefs(Protocol):
     call_spec_ref: StoredDataRef
 
 
+class ChainingCallResolver(Protocol):
+    """Bind the exact trusted input into the resolved PromptPayload/call spec."""
+
+    def __call__(
+        self, context: WorkContext, content: ChainingAgentInput
+    ) -> tuple[ChainingCallRefs, str]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ChainingWorkflowOutcome:
     result: ChainingResult
@@ -328,7 +341,7 @@ class ChainingWorkflowService:
         self,
         *,
         context: WorkContext,
-        call: ChainingCallRefs,
+        resolve_call: ChainingCallResolver,
     ) -> ChainingWorkflowOutcome:
         work = context.work
         work_ref = reference(work)
@@ -351,6 +364,9 @@ class ChainingWorkflowService:
         )
         comparisons = self._owned_comparisons(universe, entries)
         prompt = self._prompt(entries, comparisons)
+        call, bound_content_hash = resolve_call(context, prompt.content)
+        if bound_content_hash != chaining_input_hash(prompt.content):
+            raise ValueError("CHAINING_PROMPT_CONTENT_MISMATCH")
         outcome = await self._agent.match(
             context=context,
             decision_ref=call.decision_ref,
@@ -470,14 +486,14 @@ class ChainingWorkflowService:
 
         for entry_index, entry in enumerate(entries, start=1):
             local_keys: list[str] = []
-            for evidence_index, ref in enumerate(
-                entry.primitive.evidence_refs, start=1
+            for evidence_index, (ref, kind, summary) in enumerate(
+                self._semantic_evidence(entry), start=1
             ):
                 key = f"evidence-{entry_index}-{evidence_index}"
                 add_evidence(
                     key,
-                    "VERIFICATION",
-                    f"Evidence supporting {entry.primitive.description}",
+                    kind,
+                    summary,
                     (ref,),
                     entry.ref,
                 )
@@ -498,7 +514,7 @@ class ChainingWorkflowService:
                     add_evidence(
                         key,
                         "ENTITY",
-                        _entity_summary(entity),
+                        _safe_text(_entity_summary(entity), limit=240),
                         entry.primitive.evidence_refs,
                         entry.ref,
                     )
@@ -514,7 +530,7 @@ class ChainingWorkflowService:
                 inputs.append(
                     ChainingPrimitiveInput(
                         input_key=input_key,
-                        description=str(draft.description),
+                        description=_safe_text(draft.description),
                         entity_keys=tuple(
                             entity_keys[(entry.ref, canonical_bytes(entity))]
                             for entity in draft.entity_refs
@@ -527,11 +543,11 @@ class ChainingWorkflowService:
             primitives.append(
                 ChainingPrimitive(
                     primitive_key=primitive_keys[entry.ref],
-                    description=str(primitive.description),
+                    description=_safe_text(primitive.description),
                     inputs=tuple(inputs),
                     result=(
                         ChainingPrimitiveResult(
-                            description=str(result.description),
+                            description=_safe_text(result.description),
                             entity_keys=tuple(
                                 entity_keys[(entry.ref, canonical_bytes(entity))]
                                 for entity in result.entity_refs
@@ -543,7 +559,7 @@ class ChainingWorkflowService:
                         else None
                     ),
                     restrictions=tuple(
-                        str(restriction.statement)
+                        _safe_text(restriction.statement)
                         for restriction in primitive.restrictions
                     ),
                 )
@@ -815,6 +831,92 @@ class ChainingWorkflowService:
             raise ValueError("CHAINING_PINNED_UNIVERSE_MISMATCH")
         return value
 
+    def _semantic_evidence(
+        self, entry: PrimitiveEntry
+    ) -> tuple[tuple[StoredDataRef, str, str], ...]:
+        primitive = entry.primitive
+        verification_value = self._exact_evidence_record(
+            primitive.source_verification_ref, primitive
+        )
+        if not isinstance(verification_value, VerificationResult):
+            raise ValueError("CHAINING_SOURCE_VERIFICATION_INVALID")
+        expected_verdict = "HOLD" if primitive.result is None else "TRUE"
+        if verification_value.verdict != expected_verdict:
+            raise ValueError("CHAINING_SOURCE_VERIFICATION_INVALID")
+        technical_value: TechnicalEvidenceReview | None = None
+        if primitive.technical_review_ref is not None:
+            resolved = self._exact_evidence_record(
+                primitive.technical_review_ref, primitive
+            )
+            if (
+                not isinstance(resolved, TechnicalEvidenceReview)
+                or resolved.verification_result_ref
+                != primitive.source_verification_ref
+                or resolved.status != "ACCEPT"
+            ):
+                raise ValueError("CHAINING_SOURCE_TECHNICAL_INVALID")
+            technical_value = resolved
+        elif primitive.result is not None:
+            raise ValueError("CHAINING_SOURCE_TECHNICAL_INVALID")
+
+        linked_refs = _nested_stored_refs(verification_value)
+        allowed_evidence = {
+            primitive.source_verification_ref,
+            *((primitive.technical_review_ref,) if technical_value else ()),
+            *linked_refs,
+        }
+        if any(ref not in allowed_evidence for ref in primitive.evidence_refs):
+            raise ValueError("CHAINING_EVIDENCE_OWNERSHIP_MISMATCH")
+
+        resolved_records: list[tuple[StoredDataRef, BaseModel]] = [
+            (primitive.source_verification_ref, verification_value)
+        ]
+        if technical_value is not None and primitive.technical_review_ref is not None:
+            resolved_records.append((primitive.technical_review_ref, technical_value))
+        for ref in primitive.evidence_refs:
+            if any(existing_ref == ref for existing_ref, _ in resolved_records):
+                continue
+            resolved_records.append((ref, self._exact_evidence_record(ref, primitive)))
+
+        output: list[tuple[StoredDataRef, str, str]] = []
+        for ref, value in resolved_records:
+            projection = _semantic_projection(value)
+            if projection is None:
+                raise ValueError("CHAINING_EVIDENCE_CONTENT_MISSING")
+            output.append((ref, _evidence_kind(value), _safe_summary(projection)))
+        return tuple(output)
+
+    def _exact_evidence_record(
+        self, ref: StoredDataRef, primitive: Primitive
+    ) -> BaseModel:
+        if ref.record_id is None or ref.data_kind in {
+            "analysis_error",
+            "data_gap",
+            "verification_initial_assessment",
+        }:
+            raise ValueError("CHAINING_EVIDENCE_REFERENCE_INVALID")
+        try:
+            value = self._records.get_exact(ref)
+        except (KeyError, LookupError) as error:
+            raise ValueError("CHAINING_EVIDENCE_REFERENCE_INVALID") from error
+        record_meta = getattr(value, "meta", None)
+        primitive_meta = primitive.meta
+        if (
+            not isinstance(value, BaseModel)
+            or not isinstance(record_meta, RecordMeta)
+            or not isinstance(primitive_meta, RecordMeta)
+            or reference(value) != ref
+            or record_meta.analysis_id != primitive_meta.analysis_id
+            or record_meta.workspace_id != primitive_meta.workspace_id
+            or record_meta.commit_id != primitive_meta.commit_id
+            or (
+                record_meta.hypothesis_id is not None
+                and record_meta.hypothesis_id != primitive.source_hypothesis_id
+            )
+        ):
+            raise ValueError("CHAINING_EVIDENCE_REFERENCE_INVALID")
+        return value
+
 
 @dataclass(frozen=True, slots=True)
 class _TrustedPrompt:
@@ -827,6 +929,175 @@ def _entity_summary(entity: CodeSymbol) -> str:
     location = entity.location
     prefix = f"{entity.symbol_kind} {entity.name}"
     return f"{prefix} at {location.file_path}:{location.start_line}"
+
+
+def _safe_text(value: object, *, limit: int = 480) -> str:
+    redacted = redact_untrusted_text(str(value).encode("utf-8")).data.decode("utf-8")
+    return redacted if len(redacted) <= limit else f"{redacted[: limit - 1]}…"
+
+
+def chaining_input_hash(value: ChainingAgentInput) -> str:
+    """Hash the exact content a resolver must embed in its PromptPayload."""
+
+    return content_hash(asdict(value))
+
+
+def _location_summary(value: object) -> str:
+    location = getattr(value, "location", value)
+    path = getattr(location, "file_path", None)
+    line = getattr(location, "start_line", None)
+    return _safe_text(f"{path}:{line}", limit=240)
+
+
+def _claim_projection(value: object) -> dict[str, object]:
+    return {
+        "statement": _safe_text(getattr(value, "statement", "")),
+        "locations": tuple(
+            _location_summary(location)
+            for location in tuple(getattr(value, "code_locations", ()))[:8]
+        ),
+        "limitations": tuple(
+            _safe_text(item)
+            for item in tuple(getattr(value, "limitations", ()))[:8]
+        ),
+    }
+
+
+def _semantic_projection(value: BaseModel) -> dict[str, object] | None:
+    if isinstance(value, VerificationResult):
+        return {
+            "verdict": value.verdict,
+            "verdict_rationale": _safe_text(value.verdict_rationale),
+            "supporting_claims": tuple(
+                _claim_projection(item) for item in value.supporting_evidence[:8]
+            ),
+            "counter_claims": tuple(
+                _claim_projection(item) for item in value.counter_evidence[:8]
+            ),
+            "falsification": tuple(
+                {
+                    "outcome": item.outcome,
+                    "rationale": _safe_text(item.rationale),
+                }
+                for item in value.falsification_results[:8]
+            ),
+            "validation": tuple(
+                {
+                    "completion": item.completion,
+                    "summary": _safe_text(item.summary),
+                }
+                for item in value.validation_results[:8]
+            ),
+            "restrictions": tuple(
+                _safe_text(item.statement) for item in value.restrictions[:8]
+            ),
+            "unresolved_conditions": tuple(
+                _safe_text(item) for item in value.unresolved_conditions[:8]
+            ),
+        }
+    if isinstance(value, TechnicalEvidenceReview):
+        return {
+            "status": value.status,
+            "evidence_verdict_alignment": _safe_text(
+                value.evidence_verdict_alignment
+            ),
+            "code_flow_linkage": _safe_text(value.code_flow_linkage),
+            "dynamic_linkage": _safe_text(value.dynamic_linkage),
+            "restriction_assessment": _safe_text(value.restriction_assessment),
+            "revision_requests": tuple(
+                _safe_text(item) for item in value.revision_requests[:8]
+            ),
+            "verification_requests": tuple(
+                _safe_text(item) for item in value.verification_requests[:8]
+            ),
+            "rationale": _safe_text(value.rationale),
+        }
+    if isinstance(value, EvidenceAgentResult):
+        return {
+            "role": value.role,
+            "summary": _safe_text(value.summary),
+            "claims": tuple(_claim_projection(item) for item in value.evidence[:8]),
+            "limitations": tuple(
+                _safe_text(item) for item in value.limitations[:8]
+            ),
+        }
+    if isinstance(value, DynamicReproductionResult):
+        return {
+            "status": value.status,
+            "hypothesis_outcome": value.hypothesis_outcome,
+            "hypothesis_linkage": _safe_text(value.hypothesis_linkage),
+            "plan_execution_status": value.plan_execution_status,
+            "failure_category": value.failure_category,
+            "failure_reason": (
+                _safe_text(value.failure_reason)
+                if value.failure_reason is not None
+                else None
+            ),
+            "limitations": tuple(
+                _safe_text(item) for item in value.limitations[:8]
+            ),
+        }
+    if isinstance(value, StaticFactBundle):
+        facts = value.facts()[:16]
+        relations = (
+            *value.call_edges,
+            *value.data_flow_candidates,
+            *value.route_bindings,
+        )[:16]
+        if not facts and not relations:
+            return None
+        return {
+            "facts": tuple(
+                {
+                    "kind": item.fact_kind,
+                    "symbol": _safe_text(item.symbol_id or "unknown"),
+                    "location": _location_summary(item.location),
+                }
+                for item in facts
+            ),
+            "relations": tuple(
+                {
+                    "kind": item.relation_kind,
+                    "from": _location_summary(item.from_location),
+                    "to": _location_summary(item.to_location),
+                }
+                for item in relations
+            ),
+        }
+    return None
+
+
+def _evidence_kind(value: BaseModel) -> str:
+    if isinstance(value, StaticFactBundle):
+        return "CODE_FLOW"
+    if isinstance(value, TechnicalEvidenceReview):
+        return "VERIFICATION"
+    if isinstance(value, DynamicReproductionResult):
+        return "ORDER"
+    return "VERIFICATION"
+
+
+def _safe_summary(value: dict[str, object]) -> str:
+    encoded = canonical_bytes(value)
+    if len(encoded) > 16_384:
+        raise ValueError("CHAINING_EVIDENCE_CONTENT_TOO_LARGE")
+    return encoded.decode("utf-8")
+
+
+def _nested_stored_refs(value: object) -> set[StoredDataRef]:
+    refs: set[StoredDataRef] = set()
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, StoredDataRef):
+            refs.add(item)
+        elif isinstance(item, BaseModel):
+            pending.extend(
+                getattr(item, name) for name in type(item).model_fields
+            )
+        elif isinstance(item, (tuple, list)):
+            pending.extend(item)
+    return refs
 
 
 def _unique_refs[T: StoredDataRef](values: tuple[T, ...]) -> tuple[T, ...]:
