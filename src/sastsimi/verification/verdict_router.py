@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from sastsimi.contracts._domain import DomainRecord, exact
+from sastsimi.contracts.domain import DomainRecord, exact
 from sastsimi.contracts.dynamic import (
     DynamicReproductionRequest,
     DynamicReproductionResult,

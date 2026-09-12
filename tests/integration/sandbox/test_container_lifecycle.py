@@ -19,13 +19,11 @@ from sastsimi.contracts.dynamic import (
     ReproductionPlan,
     SandboxPolicyDecision,
 )
+from sastsimi.contracts.dynamic_resource import owned_container_resource_ref
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
-from sastsimi.sandbox.cleanup import (
-    OwnedResourceRegistry,
-    owned_container_resource_ref,
-)
+from sastsimi.sandbox.cleanup import OwnedResourceRegistry
 from sastsimi.sandbox.controller import (
     SandboxBoundaryOutcome,
     SandboxBuildBoundaryOutcome,

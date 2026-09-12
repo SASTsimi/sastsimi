@@ -7,10 +7,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import BinaryIO, Literal, Protocol, cast
 
-from sastsimi.contracts._domain import DomainRecord, walk
 from sastsimi.contracts.actions import SessionMode
 from sastsimi.contracts.base import ContractModel, NonEmptyStr
 from sastsimi.contracts.canonical_json import canonical_bytes
+from sastsimi.contracts.domain import DomainRecord, walk
 from sastsimi.contracts.dynamic import (
     AgentLog,
     CleanupResult,
@@ -712,9 +712,7 @@ class VerificationAgent:
                     isinstance(value, ContractModel)
                     and "evidence_refs" in type(value).model_fields
                 ):
-                    pending.extend(
-                        cast(_EvidenceRefsCarrier, value).evidence_refs
-                    )
+                    pending.extend(cast(_EvidenceRefsCarrier, value).evidence_refs)
         return resolved
 
     @staticmethod

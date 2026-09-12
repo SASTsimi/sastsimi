@@ -1,6 +1,6 @@
 """Exact fake reproduction adapter closure at the public port seam."""
 
-from sastsimi.contracts._domain import exact
+from sastsimi.contracts.domain import exact
 from sastsimi.contracts.dynamic import (
     AgentLogEvent,
     CleanupResult,
@@ -9,13 +9,13 @@ from sastsimi.contracts.dynamic import (
     SandboxEnvironment,
     is_poc_execution_command,
 )
+from sastsimi.contracts.dynamic_resource import owned_container_resource_ref
 from sastsimi.contracts.refs import reference
 from sastsimi.ports.dto import (
     ApprovedSandboxCommand,
     SandboxCleanupRequest,
     SandboxPrepareRequest,
 )
-from sastsimi.sandbox.cleanup import owned_container_resource_ref
 
 
 def require_prepared_environment(
