@@ -833,8 +833,8 @@ $requiredCweLabelContractMarkers = @(
     'Technical Gate는 CWE 정합성을 검토할 뿐 `CWELabel`을 생성·수정·덮어쓰지 않는다.',
     '`CWE_LABEL`의 `SUCCEEDED`, exact `CWELabel` 저장과 그 하나뿐인 `output_refs`는 같은 `COMMITTED` `TransitionCommit`으로 확정한다.',
     'R5-01 `CWE_LABELING`의 `CALL_LLM`은 current `CWE_LABEL` work의 active attempt에서만 허용한다.',
-    'R5-01 `CWE_LABELING`은 exact `CWELabel`',
-    '`CWELabel.llm_call_id`는 바로 이 성공한 CWE 호출의 `llm_call_id`와 같아야 한다.',
+    '`cwe_labeling_work_id`, `meta.attempt_id`와 `llm_call_id`는 label을 만든 current work, 성공 attempt와 성공한 `CWE_LABELING` invocation을 각각 고정한다.',
+    '`CWELabel.llm_call_id` 같은 역할별 호출 ID는 source invocation의 `llm_call_id`와 같아야 하며',
     '`AnalysisRunResult.cwe_label_refs`에는 각 current final TRUE Verification에 대응하는 current `CWELabel`만 가설별로 하나씩 넣는다.'
 )
 foreach ($marker in $requiredCweLabelContractMarkers) {
@@ -850,7 +850,7 @@ $requiredDebateContractMarkers = @(
     '`pro_evidence_result -> EvidenceAgentResult(role=PRO) -> PRO`',
     '`con_evidence_result -> EvidenceAgentResult(role=CON) -> CON`',
     '`result_kind=pro_evidence_result | con_evidence_result`',
-    '`LLMInvocationResult.parsed_output_ref` 및 `LLMInvocationLog.parsed_output_ref`',
+    '`LLMInvocationResult.parsed_output_ref`와 `LLMInvocationLog.parsed_output_ref`',
     '각 record의 새 MAJOR schema로 배포한다',
     '운영 Pro/Con 자식 중 하나가 재시도 가능한 오류로 `BLOCKED`가 되면 부모 `VERIFICATION` work도 `BLOCKED`',
     '먼저 그 자식 work의 `FAILED`를 자기 `COMMITTED` `TransitionCommit`으로 확정',
@@ -1232,7 +1232,7 @@ foreach ($marker in @(
     'hypothesis_proposal -> HypothesisProposal -> ORCHESTRATION',
     '`result_kind=hypothesis_proposal`은 schema-valid proposal을 전역 등록하는 비-LLM ORCHESTRATION runtime만 저장한다.',
     '`PoCCandidate.llm_call_id`는 같은 analysis·hypothesis·work·attempt에서 candidate를 만든 성공한 `DYNAMIC_REPRODUCTION / CREATE_POC_CANDIDATE` 호출 ID와 같아야 한다.',
-    '`DynamicReproductionConclusion`은 Dynamic Reproduction Agent의 해석 제안이지 최종 실행 사실이나 취약점 판정이 아니다. `llm_call_id`는 같은 analysis·hypothesis·work·attempt의 성공한 `DYNAMIC_REPRODUCTION / INTERPRET_ATTEMPT` 호출 ID와 같아야 하고'
+    '`DynamicReproductionConclusion`은 Dynamic Reproduction Agent의 해석 제안이지 최종 실행 사실이나 취약점 판정이 아니다. `llm_call_id`는 같은 analysis·hypothesis·work·attempt의 성공한 `DYNAMIC_REPRODUCTION / INTERPRET_ATTEMPT` 호출 ID와 같아야 한다.'
 )) {
     if (-not $contractText.Contains($marker)) { Add-Failure "missing R3-05 result ownership or invocation marker: $marker" }
 }
@@ -4044,7 +4044,8 @@ if (Test-Path -LiteralPath $r303RecoveryPath) {
 foreach ($requiredProposalRegistrationMarker in @(
     '| `proposal_id` | proposal 출력 검증 runtime |',
     '전역 등록 때 다시 발급하지 않음',
-    'ORCHESTRATION 등록 runtime은 source 결과가 COMMITTED된 뒤 그 안의 proposal ID·문장·목록·순서와 exact parent를 그대로 사용해 별도 immutable record로 저장하며 ID를 다시 발급하거나 Agent 문장을 수정하지 않는다.'
+    'Agent가 ID나 `meta`를 반환하면 호출은 `INVALID_OUTPUT`이며 proposal을 만들지 않는다.',
+    'VERIFICATION·CHAINING source에 이미 runtime이 발급한 proposal ID가 있으면 이를 그대로 사용하고 다시 발급하거나 Agent 문장을 수정하지 않는다.'
 )) {
     if (-not $contractText.Contains($requiredProposalRegistrationMarker)) {
         Add-Failure "proposal ID/registration boundary is missing: $requiredProposalRegistrationMarker"

@@ -24,12 +24,14 @@ from sastsimi.contracts.llm import (
     ProviderValidationEvidence,
     SemanticValidatorSpec,
 )
-from sastsimi.contracts.prompt_projection import (
-    project_prompt_value,
-    render_prompt_bytes,
+from sastsimi.contracts.prompt_projection import project_prompt_value
+from sastsimi.contracts.prompt_redaction import (
+    redact_projected_json,
+    render_provider_prompt,
 )
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef
+from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
+from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import CapabilityProbeResult
 from sastsimi.ports.fake_workflow import ProviderProber
 from sastsimi.runtime.fake_support import FakeEvidence
@@ -65,6 +67,7 @@ def register_fake_llm_call(
     provider_probe: ProviderProber,
     *,
     runner: WorkflowRunner,
+    work: WorkExecutionState,
     scope: StoredDataRef,
     orchestration_identity: BudgetScopeRef,
     role: str,
@@ -75,6 +78,29 @@ def register_fake_llm_call(
     """Publish one exact typed configuration closure and return call/provider refs."""
     if orchestration_identity != evidence.identity(RequesterRole.ORCHESTRATION):
         raise ValueError("FAKE_ORCHESTRATION_IDENTITY_MISMATCH")
+    if work.status != "RUNNING" or work.active_attempt_id is None:
+        raise ValueError("FAKE_LLM_ACTIVE_ATTEMPT_REQUIRED")
+    if not isinstance(work.meta, RecordMeta):
+        raise ValueError("FAKE_LLM_WORK_SCOPE_MISMATCH")
+    exact_task_kind = task_kind or result_kind
+    active_prompt = _active_prompt(
+        runtime,
+        analysis_id=str(work.meta.analysis_id),
+        role=role,
+        task_kind=exact_task_kind,
+    )
+    if active_prompt is not None:
+        prompt, prompt_ref = active_prompt
+        if _prompt_accepts_context(prompt, context_refs):
+            return _register_call_from_prompt(
+                runtime,
+                evidence,
+                runner,
+                work,
+                prompt,
+                prompt_ref,
+                context_refs,
+            )
     evaluation_identity = evidence.identity(RequesterRole.R8_EVALUATION_RUNTIME)
 
     probe_candidate = ProviderValidationEvidence.model_validate_json(
@@ -201,7 +227,6 @@ def register_fake_llm_call(
     schema_ref = runtime.configuration.register_output_schema(schema)
     semantic_ref = runtime.configuration.register_semantic_validator(semantic)
 
-    exact_task_kind = task_kind or result_kind
     input_slots = tuple(
         dict(
             slot=f"context-{index}",
@@ -243,7 +268,14 @@ def register_fake_llm_call(
     evaluation_prompt = PromptRegistryEntry.model_validate_json(
         canonical_bytes(
             dict(
-                meta=metadata("prompt_registry_entry"),
+                meta=_prompt_revision_meta(
+                    runtime,
+                    runner,
+                    metadata("prompt_registry_entry"),
+                    role=role,
+                    task_kind=exact_task_kind,
+                    purpose="EVALUATION",
+                ),
                 prompt_key=f"fake-{role.lower()}-evaluation",
                 purpose="EVALUATION",
                 status="ACTIVE",
@@ -333,7 +365,14 @@ def register_fake_llm_call(
     production_draft = PromptRegistryEntry.model_validate_json(
         canonical_bytes(
             dict(
-                meta=metadata("prompt_registry_entry"),
+                meta=_prompt_revision_meta(
+                    runtime,
+                    runner,
+                    metadata("prompt_registry_entry"),
+                    role=role,
+                    task_kind=exact_task_kind,
+                    purpose="PRODUCTION",
+                ),
                 prompt_key=f"fake-{role.lower()}-production",
                 purpose="PRODUCTION",
                 status="DRAFT",
@@ -391,11 +430,131 @@ def register_fake_llm_call(
     )
     _approved(evidence, prompt)
     prompt_ref = runtime.configuration.register_prompt_entry(prompt)
-    projected_bytes = tuple(_source_projection(runtime, ref) for ref in context_refs)
+    return _register_call_from_prompt(
+        runtime,
+        evidence,
+        runner,
+        work,
+        prompt,
+        prompt_ref,
+        context_refs,
+    )
+
+
+def _active_prompt(
+    runtime: RuntimeServices,
+    *,
+    analysis_id: str,
+    role: str,
+    task_kind: str,
+) -> tuple[PromptRegistryEntry, StoredDataRef] | None:
+    """Return the one current ACTIVE prompt selected for this fake stage."""
+    matches = tuple(
+        record
+        for record in runtime.queries.current_records(
+            analysis_id, PromptRegistryEntry.KIND
+        )
+        if isinstance(record, PromptRegistryEntry)
+        and record.agent_role == role
+        and record.task_kind == task_kind
+        and record.purpose == "PRODUCTION"
+        and record.status == "ACTIVE"
+    )
+    if len(matches) > 1:
+        raise ValueError("PROMPT_REGISTRY_ACTIVE_CONFLICT")
+    if not matches:
+        return None
+    prompt = matches[0]
+    prompt_ref = reference(prompt)
+    if not isinstance(prompt_ref, StoredDataRef):
+        raise ValueError("FAKE_CONFIGURATION_SCOPE_MISMATCH")
+    return prompt, prompt_ref
+
+
+def _prompt_revision_meta(
+    runtime: RuntimeServices,
+    runner: WorkflowRunner,
+    fresh: RecordMeta,
+    *,
+    role: str,
+    task_kind: str,
+    purpose: str,
+) -> RecordMeta | dict[str, object]:
+    """Continue the selected prompt's logical history when its shape changes."""
+    current = tuple(
+        record
+        for record in runtime.queries.current_records(
+            str(fresh.analysis_id), PromptRegistryEntry.KIND
+        )
+        if isinstance(record, PromptRegistryEntry)
+        and record.agent_role == role
+        and record.task_kind == task_kind
+        and record.purpose == purpose
+        and record.status == "ACTIVE"
+    )
+    if len(current) > 1:
+        raise ValueError("PROMPT_REGISTRY_ACTIVE_CONFLICT")
+    if not current:
+        return fresh
+    return runner.revision_metadata(current[0].meta)
+
+
+def _prompt_accepts_context(
+    prompt: PromptRegistryEntry,
+    context_refs: tuple[StoredDataRef, ...],
+) -> bool:
+    expected = tuple(
+        (
+            f"context-{index}",
+            ref.data_kind,
+            ("$",),
+            "REQUIRED_ONE",
+            "UNTRUSTED_DATA",
+        )
+        for index, ref in enumerate(context_refs, 1)
+    )
+    actual = tuple(
+        (
+            str(slot.slot),
+            str(slot.data_kind),
+            tuple(slot.field_paths),
+            slot.cardinality,
+            slot.trust_class,
+        )
+        for slot in prompt.input_slots
+    )
+    return actual == expected
+
+
+def _register_call_from_prompt(
+    runtime: RuntimeServices,
+    evidence: FakeEvidence,
+    runner: WorkflowRunner,
+    work: WorkExecutionState,
+    prompt: PromptRegistryEntry,
+    prompt_ref: StoredDataRef,
+    context_refs: tuple[StoredDataRef, ...],
+) -> tuple[StoredDataRef, StoredDataRef]:
+    """Reuse immutable prompt configuration while binding a fresh attempt call."""
+    if len(prompt.provider_profile_refs) != 1:
+        raise ValueError("FAKE_PROVIDER_SELECTION_MISMATCH")
+    provider_ref = prompt.provider_profile_refs[0]
+    provider = runtime.unit_of_work.records.get_exact(provider_ref)
+    limits = runtime.unit_of_work.records.get_exact(prompt.execution_limits_ref)
+    if not isinstance(provider, ProviderProfile) or not isinstance(
+        limits, ExecutionLimits
+    ):
+        raise ValueError("FAKE_CONFIGURATION_CLOSURE_MISMATCH")
+    if not _prompt_accepts_context(prompt, context_refs):
+        raise ValueError("FAKE_PROMPT_INPUT_SHAPE_MISMATCH")
+    projected_bytes = tuple(
+        redact_projected_json(_source_projection(runtime, ref)).data
+        for ref in context_refs
+    )
     projected_refs = tuple(_artifact_bytes(runtime, data) for data in projected_bytes)
-    with runtime.unit_of_work.artifacts.open_verified(template_ref) as template:
+    with runtime.unit_of_work.artifacts.open_verified(prompt.template_ref) as template:
         template_bytes = template.read()
-    rendered_bytes = render_prompt_bytes(
+    rendered_bytes = render_provider_prompt(
         template_bytes,
         tuple(
             (f"context-{index}", data) for index, data in enumerate(projected_bytes, 1)
@@ -409,11 +568,15 @@ def register_fake_llm_call(
     payload = PromptPayload.model_validate_json(
         canonical_bytes(
             dict(
-                meta=metadata("prompt_payload"),
+                meta=runner.metadata(
+                    work.meta,
+                    "prompt_payload",
+                    attempt_id=work.active_attempt_id,
+                ),
                 registry_entry_ref=prompt_ref,
                 prompt_key=prompt.prompt_key,
-                agent_role=role,
-                task_kind=exact_task_kind,
+                agent_role=prompt.agent_role,
+                task_kind=prompt.task_kind,
                 purpose="PRODUCTION",
                 template_ref=prompt.template_ref,
                 template_version=prompt.template_version,
@@ -429,20 +592,26 @@ def register_fake_llm_call(
                     for index, ref in enumerate(context_refs, 1)
                 ),
                 rendered_prompt_ref=rendered_prompt_ref,
-                output_schema_ref=schema_ref,
+                output_schema_ref=prompt.output_schema_ref,
             )
         )
     )
     _approved(evidence, payload)
     payload_ref = runtime.configuration.register_prompt_payload(payload)
-    call_meta = metadata("llm_call_spec")
+    call_meta = RecordMeta.model_validate(
+        runner.metadata(
+            work.meta,
+            "llm_call_spec",
+            attempt_id=work.active_attempt_id,
+        )
+    )
     call = LLMCallSpec.model_validate_json(
         canonical_bytes(
             dict(
                 meta=call_meta,
-                llm_call_id=f"fake-{role.lower()}-{call_meta.record_id}",
-                agent_role=role,
-                task_kind=exact_task_kind,
+                llm_call_id=f"fake-{prompt.agent_role.lower()}-{call_meta.record_id}",
+                agent_role=prompt.agent_role,
+                task_kind=prompt.task_kind,
                 purpose="PRODUCTION",
                 provider_profile_ref=provider_ref,
                 model=provider.model,
@@ -454,12 +623,12 @@ def register_fake_llm_call(
                 prompt_template_ref=prompt.template_ref,
                 prompt_template_version=prompt.template_version,
                 prompt_payload_ref=payload_ref,
-                execution_limits_ref=limits_ref,
-                retry_policy_ref=retry_ref,
-                tool_policy_ref=tools_ref,
-                redaction_policy_ref=redaction_ref,
-                semantic_validator_ref=semantic_ref,
-                output_schema_ref=schema_ref,
+                execution_limits_ref=prompt.execution_limits_ref,
+                retry_policy_ref=prompt.retry_policy_ref,
+                tool_policy_ref=prompt.tool_policy_ref,
+                redaction_policy_ref=prompt.redaction_policy_ref,
+                semantic_validator_ref=prompt.semantic_validator_ref,
+                output_schema_ref=prompt.output_schema_ref,
                 output_schema="{}",
                 token_budget=limits.token_budget,
                 timeout_ms=limits.timeout_ms,

@@ -18,3 +18,22 @@ def test_field_projection_contains_selected_values_only() -> None:
     )
     with pytest.raises(ValueError, match="PROMPT_FIELD_PATH_INVALID"):
         project_prompt_value(source, ("$.absent",))
+
+
+def test_json_pointer_projection_is_the_canonical_field_path() -> None:
+    source = {
+        "statement": {"value": "untrusted text"},
+        "items": [{"name": "first"}],
+        "secret": "not selected",
+    }
+    assert project_prompt_value(
+        source, ("/statement/value", "/items/0/name")
+    ) == canonical_bytes(
+        {
+            "/statement/value": "untrusted text",
+            "/items/0/name": "first",
+        }
+    )
+    assert project_prompt_value(source, ("$",)) == canonical_bytes(source)
+    with pytest.raises(ValueError, match="PROMPT_FIELD_PATH_INVALID"):
+        project_prompt_value(source, ("$", "/statement"))

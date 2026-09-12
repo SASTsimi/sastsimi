@@ -183,10 +183,30 @@ def test_true_pipeline_closes_exact_report_without_submission(tmp_path: Path) ->
         assert isinstance(decision, ActionDecision)
         action = published_by_ref[decision.action_ref]
         assert isinstance(action, ActionRequest)
-        assert action.input_refs == spec.context_refs == request.context_refs
         assert action.llm_call_spec_ref == log.call_spec_ref
         payload = published_by_ref[log.prompt_payload_ref]
         assert isinstance(payload, PromptPayload)
+        assert action.input_refs == (
+            log.call_spec_ref,
+            spec.prompt_registry_entry_ref,
+            spec.prompt_template_ref,
+            spec.prompt_payload_ref,
+            spec.provider_profile_ref,
+            spec.execution_limits_ref,
+            spec.retry_policy_ref,
+            spec.tool_policy_ref,
+            spec.redaction_policy_ref,
+            spec.output_schema_ref,
+            spec.semantic_validator_ref,
+            payload.rendered_prompt_ref,
+            *(binding.source_ref for binding in payload.context_bindings),
+            *(binding.projected_data_ref for binding in payload.context_bindings),
+        )
+        assert (
+            spec.context_refs
+            == request.context_refs
+            == tuple(binding.source_ref for binding in payload.context_bindings)
+        )
         entry = published_by_ref[spec.prompt_registry_entry_ref]
         assert isinstance(entry, PromptRegistryEntry)
         assert entry.status == "ACTIVE" and entry.purpose == "PRODUCTION"

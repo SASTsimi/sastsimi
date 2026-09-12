@@ -1,5 +1,7 @@
 """SQLite state/config checks and atomic single-use action authorization."""
 
+import json
+
 from sqlalchemy import Connection, insert, select, update
 
 from sastsimi.contracts.actions import (
@@ -17,10 +19,13 @@ from sastsimi.contracts.llm import (
     LLMInvocationLog,
     LLMInvocationRequest,
     LLMInvocationResult,
+    PromptPayload,
     ProviderProfile,
 )
+from sastsimi.contracts.llm_closure import llm_action_input_refs
 from sastsimi.contracts.refs import RecordRef, RunStoredDataRef, StoredDataRef
 from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
 from sastsimi.storage import models
@@ -37,6 +42,43 @@ from .stage_policy import check_stage
 
 
 class RuntimeValidator:
+    def require_unresolved_dispatch(
+        self,
+        work_id: str,
+        attempt_id: str,
+        decision_ref: RecordRef,
+        action_id: str,
+    ) -> None:
+        """Require one exact current-attempt dispatch whose outcome is unknown."""
+        with self.records.database.write() as connection:
+            row = (
+                connection.execute(
+                    select(models.external_dispatches).where(
+                        models.external_dispatches.c.decision_ref
+                        == canonical_bytes(decision_ref).decode()
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            active_attempt = connection.execute(
+                select(models.work_states.c.active_attempt_id).where(
+                    models.work_states.c.work_id == work_id,
+                    models.work_states.c.status == "RUNNING",
+                )
+            ).scalar()
+            if (
+                row is None
+                or row["work_id"] != work_id
+                or row["attempt_id"] != attempt_id
+                or row["action_id"] != action_id
+                or row["dispatched_at"] is None
+                or row["returned_at"] is not None
+                or row["reconciled_at"] is not None
+                or active_attempt != attempt_id
+            ):
+                raise ValueError("EXTERNAL_DISPATCH_MISMATCH")
+
     def mark_dispatched(
         self,
         decision_ref: RecordRef,
@@ -215,8 +257,49 @@ class RuntimeValidator:
         budget: BudgetService,
         clock: Clock,
         ids: IdGenerator,
+        artifacts: ArtifactStore | None = None,
     ) -> None:
         self.records, self.budget, self.clock, self.ids = records, budget, clock, ids
+        self.artifacts = artifacts
+
+    def _verify_invocation_artifact(
+        self,
+        ref: StoredDataRef,
+        *,
+        workspace_id: object,
+        commit_id: object,
+    ) -> None:
+        """Require an exact, canonical JSON artifact in the current code scope."""
+        if (
+            self.artifacts is None
+            or ref.record_id is not None
+            or ref.data_kind != "artifact"
+            or str(ref.stored_data_id) != ref.content_hash
+            or ref.workspace_id != workspace_id
+            or ref.commit_id != commit_id
+        ):
+            raise ValueError("INVOCATION_OUTPUT_MISMATCH")
+        try:
+            with self.artifacts.open_verified(ref) as stream:
+                payload = stream.read()
+            parsed = json.loads(payload)
+            if (
+                not isinstance(parsed, (dict, list))
+                or canonical_bytes(parsed) != payload
+            ):
+                raise ValueError("INVOCATION_OUTPUT_MISMATCH")
+        except ValueError:
+            raise
+        except Exception as error:
+            raise ValueError("INVOCATION_OUTPUT_MISMATCH") from error
+
+    def _require_provider_output_authority(self, result: LLMInvocationResult) -> None:
+        if (
+            result.status == "SUCCEEDED"
+            and result.parsed_output_ref is not None
+            and result.parsed_output_ref.record_id is not None
+        ):
+            raise ValueError("INVOCATION_OUTPUT_MISMATCH")
 
     def check(
         self,
@@ -471,12 +554,32 @@ class RuntimeValidator:
             exact_invocation_refs = tuple(
                 reference(item) for item in (request, result, log)
             )
-            if all(ref in claimed.outcome_refs for ref in exact_invocation_refs):
+            expected_replay_refs: tuple[RecordRef, ...] = exact_invocation_refs
+            self._require_provider_output_authority(result)
+            if result.status == "SUCCEEDED" and result.parsed_output_ref is not None:
+                expected_replay_refs += (result.parsed_output_ref,)
+            if claimed.outcome_refs:
+                if claimed.outcome_refs[0] != exact_invocation_refs[0]:
+                    raise ValueError("INVOCATION_ACTION_MISMATCH")
+                if claimed.outcome_refs != expected_replay_refs:
+                    raise ValueError("INVOCATION_REPLAY_MISMATCH")
                 for item, item_ref in zip(
                     (request, result, log), exact_invocation_refs, strict=True
                 ):
                     if self.records.resolve(connection, item_ref) != item:
                         raise ValueError("INVOCATION_ACTION_MISMATCH")
+                if result.status == "SUCCEEDED":
+                    assert result.parsed_output_ref is not None
+                    if result.parsed_output_ref.record_id is None:
+                        self._verify_invocation_artifact(
+                            result.parsed_output_ref,
+                            workspace_id=request.meta.workspace_id,
+                            commit_id=request.meta.commit_id,
+                        )
+                    else:
+                        self.records.resolve(
+                            connection, result.parsed_output_ref, candidate=True
+                        )
                 replay_ref = reference(log)
                 assert isinstance(replay_ref, StoredDataRef)
                 return replay_ref
@@ -487,6 +590,17 @@ class RuntimeValidator:
                 self.records.resolve(connection, spec.provider_profile_ref)
                 if isinstance(spec, LLMCallSpec)
                 else None
+            )
+            prompt_payload = (
+                self.records.resolve(connection, spec.prompt_payload_ref)
+                if isinstance(spec, LLMCallSpec)
+                else None
+            )
+            expected_action_inputs = (
+                llm_action_input_refs(request.call_spec_ref, spec, prompt_payload)
+                if isinstance(spec, LLMCallSpec)
+                and isinstance(prompt_payload, PromptPayload)
+                else ()
             )
             if (
                 not isinstance(action, ActionRequest)
@@ -504,9 +618,8 @@ class RuntimeValidator:
                 or request.action_decision_ref != claimed_ref
                 or log.action_decision_ref != claimed_ref
                 or log.call_spec_ref != request.call_spec_ref
-                or result.parsed_output_ref is None
                 or log.parsed_output_ref != result.parsed_output_ref
-                or tuple(action.input_refs) != tuple(spec.context_refs)
+                or tuple(action.input_refs) != expected_action_inputs
             ):
                 raise ValueError("INVOCATION_ACTION_MISMATCH")
             request_fields = (
@@ -552,25 +665,49 @@ class RuntimeValidator:
                 or log.session_ref != result.session_ref
                 or log.status != result.status
                 or log.usage != result.usage
-                or result.status != "SUCCEEDED"
-                or result.safe_error is not None
-                or log.safe_error is not None
-                or log.validation_errors
+                or log.safe_error != result.safe_error
                 or log.exposed_response_ref != result.response_ref
             ):
                 raise ValueError("INVOCATION_RESULT_MISMATCH")
-            assert result.parsed_output_ref is not None
-            candidate = self.records.resolve(
-                connection, result.parsed_output_ref, candidate=True
-            )
-            from sastsimi.contracts.llm import OutputSchemaSpec
+            candidate = None
+            output_ref: StoredDataRef | None = None
+            if result.status == "SUCCEEDED":
+                if (
+                    result.parsed_output_ref is None
+                    or result.safe_error is not None
+                    or log.validation_errors
+                ):
+                    raise ValueError("INVOCATION_RESULT_MISMATCH")
+                from sastsimi.contracts.llm import OutputSchemaSpec
 
-            schema = self.records.resolve(connection, spec.output_schema_ref)
-            if (
-                not isinstance(schema, OutputSchemaSpec)
-                or candidate.meta.record_type != schema.result_kind
+                schema = self.records.resolve(connection, spec.output_schema_ref)
+                if not isinstance(schema, OutputSchemaSpec):
+                    raise ValueError("INVOCATION_OUTPUT_MISMATCH")
+                if result.parsed_output_ref.record_id is None:
+                    if result.response_ref != result.parsed_output_ref:
+                        raise ValueError("INVOCATION_RESULT_MISMATCH")
+                    self._verify_invocation_artifact(
+                        result.parsed_output_ref,
+                        workspace_id=request.meta.workspace_id,
+                        commit_id=request.meta.commit_id,
+                    )
+                    output_ref = result.parsed_output_ref
+                else:
+                    # Kept only for the deterministic pre-T10 fake pipeline. The
+                    # production LLMCallService rejects record-shaped provider output.
+                    candidate = self.records.resolve(
+                        connection, result.parsed_output_ref, candidate=True
+                    )
+                    if candidate.meta.record_type != schema.result_kind:
+                        raise ValueError("INVOCATION_OUTPUT_MISMATCH")
+                    output_ref = result.parsed_output_ref
+            elif (
+                result.parsed_output_ref is not None
+                or log.parsed_output_ref is not None
+                or result.safe_error is None
+                or log.safe_error is None
             ):
-                raise ValueError("INVOCATION_OUTPUT_MISMATCH")
+                raise ValueError("INVOCATION_RESULT_MISMATCH")
             if action.work_ref is None:
                 raise ValueError("INVOCATION_ACTION_MISMATCH")
             work = self.records.resolve(connection, action.work_ref)
@@ -591,7 +728,11 @@ class RuntimeValidator:
                 not isinstance(work, WorkExecutionState)
                 or any(
                     getattr(item.meta, name, None) != getattr(work.meta, name, None)
-                    for item in (request, result, log, candidate)
+                    for item in (
+                        (request, result, log, candidate)
+                        if candidate is not None
+                        else (request, result, log)
+                    )
                     for name in (
                         "analysis_id",
                         "workspace_id",
@@ -600,18 +741,38 @@ class RuntimeValidator:
                     )
                 )
                 or any(
-                    item.meta.attempt_id != work.active_attempt_id
-                    for item in (request, result, log)
+                    getattr(item.meta, "attempt_id", None) != work.active_attempt_id
+                    for item in (
+                        (request, result, log, candidate)
+                        if candidate is not None
+                        else (request, result, log)
+                    )
+                )
+                or not isinstance(prompt_payload, PromptPayload)
+                or any(
+                    getattr(item.meta, name, None) != expected
+                    for item in (spec, prompt_payload)
+                    for name, expected in (
+                        ("analysis_id", work.meta.analysis_id),
+                        ("workspace_id", getattr(work.meta, "workspace_id", None)),
+                        ("commit_id", getattr(work.meta, "commit_id", None)),
+                        ("hypothesis_id", getattr(work.meta, "hypothesis_id", None)),
+                        ("attempt_id", work.active_attempt_id),
+                    )
                 )
             ):
                 raise ValueError("INVOCATION_SCOPE_MISMATCH")
             check_stage(self.records, connection, action, work)
             from sastsimi.contracts.policy import PolicyParserResult
 
-            if isinstance(candidate, PolicyParserResult) and (
-                spec.agent_role != "POLICY_PARSER"
-                or spec.context_refs != (candidate.source_ref,)
-                or candidate.llm_invocation_ref != reference(request)
+            if (
+                candidate is not None
+                and isinstance(candidate, PolicyParserResult)
+                and (
+                    spec.agent_role != "POLICY_PARSER"
+                    or spec.context_refs != (candidate.source_ref,)
+                    or candidate.llm_invocation_ref != reference(request)
+                )
             ):
                 raise ValueError("INVOCATION_POLICY_SOURCE_MISMATCH")
             invocation_refs: list[StoredDataRef] = []
@@ -640,5 +801,8 @@ class RuntimeValidator:
                         state_version=1,
                     )
                 )
-            self.record_outcome(connection, claimed, tuple(invocation_refs))
+            outcomes: tuple[RecordRef, ...] = tuple(invocation_refs)
+            if output_ref is not None:
+                outcomes += (output_ref,)
+            self.record_outcome(connection, claimed, outcomes)
             return log_ref

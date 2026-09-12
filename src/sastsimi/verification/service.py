@@ -5,6 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from sastsimi.agents.verification import (
+    VerificationAgent,
+    VerificationAgentOutcome,
+    VerificationCallRefs,
+)
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.gates import TechnicalEvidenceReview
 from sastsimi.contracts.hypothesis import (
@@ -85,7 +90,13 @@ def select_revise_context(
 class VerificationService:
     """Own context, debate, assessment, optional dynamic and final verdict."""
 
-    def __init__(self, dependencies: VerificationDependencies) -> None:
+    def __init__(
+        self, dependencies: VerificationDependencies | VerificationAgent
+    ) -> None:
+        self._trusted_agent: VerificationAgent | None = None
+        if isinstance(dependencies, VerificationAgent):
+            self._trusted_agent = dependencies
+            return
         self.runtime = dependencies.runtime
         self.runner = dependencies.runner
         self.clock = dependencies.clock
@@ -99,6 +110,82 @@ class VerificationService:
         self._record_meta = dependencies.records.record_meta
         self._artifact = dependencies.records.artifact
         self._stored_artifact = dependencies.records.stored_artifact
+
+    async def assess_initial(
+        self,
+        *,
+        generation: VerificationGenerationInputs,
+        pro_ref: StoredDataRef,
+        con_ref: StoredDataRef,
+        call: VerificationCallRefs,
+    ) -> VerificationInitialAssessment:
+        """Finalize one successful T09 assessment artifact using trusted scope."""
+        if self._trusted_agent is None:
+            raise RuntimeError("TRUSTED_VERIFICATION_AGENT_NOT_CONFIGURED")
+        return await self._trusted_agent.assess_initial(
+            generation=generation,
+            pro_ref=pro_ref,
+            con_ref=con_ref,
+            call=call,
+        )
+
+    async def assess_initial_with_invocation(
+        self,
+        *,
+        generation: VerificationGenerationInputs,
+        pro_ref: StoredDataRef,
+        con_ref: StoredDataRef,
+        call: VerificationCallRefs,
+    ) -> VerificationAgentOutcome[VerificationInitialAssessment]:
+        """Expose exact invocation provenance for trusted intermediate publication."""
+        if self._trusted_agent is None:
+            raise RuntimeError("TRUSTED_VERIFICATION_AGENT_NOT_CONFIGURED")
+        return await self._trusted_agent.assess_initial_with_invocation(
+            generation=generation,
+            pro_ref=pro_ref,
+            con_ref=con_ref,
+            call=call,
+        )
+
+    async def finalize_without_dynamic(
+        self,
+        *,
+        generation: VerificationGenerationInputs,
+        assessment_ref: StoredDataRef,
+        pro_ref: StoredDataRef,
+        con_ref: StoredDataRef,
+        call: VerificationCallRefs,
+    ) -> VerificationResult:
+        """Finalize only FALSE/HOLD; T11 owns all final TRUE prerequisites."""
+        if self._trusted_agent is None:
+            raise RuntimeError("TRUSTED_VERIFICATION_AGENT_NOT_CONFIGURED")
+        return await self._trusted_agent.finalize_without_dynamic(
+            generation=generation,
+            assessment_ref=assessment_ref,
+            pro_ref=pro_ref,
+            con_ref=con_ref,
+            call=call,
+        )
+
+    async def finalize_without_dynamic_with_invocation(
+        self,
+        *,
+        generation: VerificationGenerationInputs,
+        assessment_ref: StoredDataRef,
+        pro_ref: StoredDataRef,
+        con_ref: StoredDataRef,
+        call: VerificationCallRefs,
+    ) -> VerificationAgentOutcome[VerificationResult]:
+        """Expose exact invocation provenance for trusted terminal publication."""
+        if self._trusted_agent is None:
+            raise RuntimeError("TRUSTED_VERIFICATION_AGENT_NOT_CONFIGURED")
+        return await self._trusted_agent.finalize_without_dynamic_with_invocation(
+            generation=generation,
+            assessment_ref=assessment_ref,
+            pro_ref=pro_ref,
+            con_ref=con_ref,
+            call=call,
+        )
 
     def run_initial(
         self,
@@ -323,6 +410,7 @@ class VerificationService:
             self.clock.now(),
             self.provider_probe,
             runner=self.runner,
+            work=work,
             scope=scope,
             orchestration_identity=orchestrator_ref,
             role="VERIFICATION",
@@ -451,6 +539,7 @@ class VerificationService:
             self.clock.now(),
             self.provider_probe,
             runner=self.runner,
+            work=work,
             scope=scope,
             orchestration_identity=orchestrator_ref,
             role="VERIFICATION",

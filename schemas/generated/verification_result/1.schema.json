@@ -662,6 +662,12 @@
           ],
           "title": "Source Primitive Match Id"
         },
+        "statement": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Statement",
+          "type": "string"
+        },
         "suspected_path": {
           "items": {
             "anyOf": [
@@ -720,6 +726,7 @@
         "proposal_id",
         "proposal_state",
         "assertion_mode",
+        "statement",
         "vulnerability_type_candidates",
         "observed_facts",
         "assumptions",

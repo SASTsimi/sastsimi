@@ -50,11 +50,42 @@ def hypothesis_projection(
     proposals = [record for record in outputs if isinstance(record, HypothesisProposal)]
     if not proposals or work.work_type != "HYPOTHESIS_PROPOSAL":
         return ()
-    if len(proposals) != 1:
-        raise ValueError("EXACT_PROPOSAL_REQUIRED")
+    if len(proposals) != len(outputs):
+        raise ValueError("HYPOTHESIS_PROPOSAL_BATCH_KIND_MISMATCH")
+    if (
+        len({proposal.proposal_id for proposal in proposals}) != len(proposals)
+        or len(
+            {
+                question.question_id
+                for proposal in proposals
+                for question in proposal.falsification_questions
+            }
+        )
+        != sum(len(proposal.falsification_questions) for proposal in proposals)
+        or len(
+            {
+                check.validation_id
+                for proposal in proposals
+                for check in proposal.validation_checks
+            }
+        )
+        != sum(len(proposal.validation_checks) for proposal in proposals)
+    ):
+        raise ValueError("HYPOTHESIS_PROPOSAL_BATCH_ID_CONFLICT")
+    if len(proposals) > 1:
+        projected: list[Record] = []
+        for proposal in proposals:
+            projected.extend(
+                hypothesis_projection(
+                    works,
+                    connection,
+                    work,
+                    (proposal,),
+                    publish=publish,
+                )
+            )
+        return tuple(projected)
     proposal = proposals[0]
-    if str(proposal.proposal_id) != str(work.subject_id):
-        raise ValueError("PROPOSAL_WORK_MISMATCH")
     records = works.records
     if proposal.origin == "INITIAL":
         refs = [ref for ref in work.input_refs if ref.data_kind == "static_fact_bundle"]
@@ -180,6 +211,7 @@ def hypothesis_projection(
     copied = {
         name: getattr(proposal, name)
         for name in (
+            "statement",
             "origin",
             "target_entities",
             "target_locations",
@@ -196,7 +228,6 @@ def hypothesis_projection(
             | dict(
                 meta=meta,
                 proposal_ref=reference(proposal),
-                statement="Verification of proposal " + str(proposal.proposal_id),
             )
         )
     )

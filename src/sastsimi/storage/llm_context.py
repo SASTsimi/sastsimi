@@ -4,7 +4,13 @@ from sqlalchemy import Connection, select
 
 from sastsimi.contracts.actions import ActionDecision, ActionRequest
 from sastsimi.contracts.dynamic import SandboxProfile
-from sastsimi.contracts.llm import LLMCallSpec
+from sastsimi.contracts.llm import (
+    LLMCallSpec,
+    PromptPayload,
+    PromptRegistryEntry,
+    ProviderProfile,
+)
+from sastsimi.contracts.llm_closure import llm_action_input_refs
 from sastsimi.contracts.refs import RecordRef
 from sastsimi.contracts.work import WorkExecutionState
 
@@ -25,8 +31,37 @@ def check_llm_context(
     spec = records.resolve(connection, action.llm_call_spec_ref)
     if not isinstance(spec, LLMCallSpec):
         raise ValueError("LLM_CONTEXT_WORK_MISMATCH")
-    if tuple(action.input_refs) != spec.context_refs:
+    if (
+        action.provider_profile_ref != spec.provider_profile_ref
+        or action.session_mode != spec.session_policy
+    ):
         raise ValueError("LLM_CONTEXT_WORK_MISMATCH")
+    payload = records.resolve(connection, spec.prompt_payload_ref)
+    if not isinstance(payload, PromptPayload) or tuple(
+        action.input_refs
+    ) != llm_action_input_refs(action.llm_call_spec_ref, spec, payload):
+        raise ValueError("LLM_CONTEXT_WORK_MISMATCH")
+    if any(
+        getattr(item.meta, name, None) != expected
+        for item in (spec, payload)
+        for name, expected in (
+            ("analysis_id", work.meta.analysis_id),
+            ("workspace_id", getattr(work.meta, "workspace_id", None)),
+            ("commit_id", getattr(work.meta, "commit_id", None)),
+            ("hypothesis_id", getattr(work.meta, "hypothesis_id", None)),
+            ("attempt_id", work.active_attempt_id),
+        )
+    ):
+        raise ValueError("LLM_CONTEXT_WORK_MISMATCH")
+    entry = records.resolve(connection, spec.prompt_registry_entry_ref)
+    provider = records.resolve(connection, spec.provider_profile_ref)
+    if not isinstance(entry, PromptRegistryEntry) or not isinstance(
+        provider, ProviderProfile
+    ):
+        raise ValueError("LLM_CONTEXT_CONFIGURATION_NOT_CURRENT")
+    from .configuration_registry import ConfigurationRegistry
+
+    ConfigurationRegistry.require_current_selection(connection, entry, provider)
     expected_roles = {
         "CALL_TECHNICAL_GATE": "TECHNICAL_GATE",
         "CALL_RULE_SCOPE_GATE": "RULE_SCOPE_GATE",

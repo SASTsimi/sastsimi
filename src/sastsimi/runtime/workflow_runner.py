@@ -99,6 +99,8 @@ class WorkflowRunner:
         identity: BudgetScopeRef,
         role: str,
         outputs: tuple[Record, ...],
+        *,
+        action_input_refs: tuple[RecordRef, ...] | None = None,
     ) -> tuple[RecordRef, ...]:
         """Authorize and atomically publish same-attempt continuing outputs."""
         if not outputs:
@@ -112,6 +114,9 @@ class WorkflowRunner:
             "SAVE_RESULT",
             result_kind=refs[0].data_kind,
             candidate_result_ref=refs[0],
+            input_refs=(
+                work.input_refs if action_input_refs is None else action_input_refs
+            ),
         )
         approval = (
             self._output_approval(action, work, refs)
@@ -470,8 +475,10 @@ class WorkflowRunner:
         cause: str = "COMPLETED",
         error_ids: tuple[str, ...] = (),
         gap_ids: tuple[str, ...] = (),
+        action_input_refs: tuple[RecordRef, ...] | None = None,
     ) -> WorkExecutionState:
-        if not outputs:
+        empty_hypothesis_batch = not outputs and work.work_type == "HYPOTHESIS_PROPOSAL"
+        if not outputs and not empty_hypothesis_batch:
             raise ValueError("A successful result work requires its exact output")
         records = self.runtime.unit_of_work.records
         refs = tuple(records.stage_record(output) for output in outputs)
@@ -479,9 +486,12 @@ class WorkflowRunner:
             work,
             identity,
             role,
-            "SAVE_RESULT",
-            result_kind=refs[0].data_kind,
-            candidate_result_ref=refs[0],
+            "CHANGE_WORK_STATE" if empty_hypothesis_batch else "SAVE_RESULT",
+            result_kind=None if empty_hypothesis_batch else refs[0].data_kind,
+            candidate_result_ref=None if empty_hypothesis_batch else refs[0],
+            input_refs=(
+                work.input_refs if action_input_refs is None else action_input_refs
+            ),
         )
         approval = (
             self._output_approval(action, work, refs)

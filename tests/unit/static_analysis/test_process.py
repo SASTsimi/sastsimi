@@ -4,7 +4,6 @@ import asyncio
 import json
 import os
 import sys
-import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -614,14 +613,10 @@ async def test_posix_real_process_preserves_argv_env_and_kills_descendant(
         output_root=output,
         executable=executable,
         output_budget=output_budget(4_096),
+        monotonic_ns=lambda: 1,
     )
     check = replace(
         spec(tmp_path, executable),
-        deadline=MonotonicActionDeadline(
-            action_id="action-1",
-            started_ns=(started := time.monotonic_ns()),
-            expires_ns=started + 10_000_000_000,
-        ),
         argv=(
             str(executable),
             "-c",
@@ -1067,8 +1062,8 @@ async def test_posix_cleanup_failure_prevents_cancelled_receipt(
         output_root=output,
         executable=executable,
         output_budget=output_budget(),
+        monotonic_ns=lambda: 1,
         backend=backend,
-        monotonic_ns=lambda: 0,
     )
     request = replace(
         spec(tmp_path, executable),
@@ -1077,8 +1072,8 @@ async def test_posix_cleanup_failure_prevents_cancelled_receipt(
         attempt_output_dir=output,
     )
     running = asyncio.create_task(runner.run(request))
-    await process.stdout.started.wait()
-    await process.stderr.started.wait()
+    await asyncio.wait_for(process.stdout.started.wait(), timeout=1)
+    await asyncio.wait_for(process.stderr.started.wait(), timeout=1)
 
     running.cancel()
     with pytest.raises(OSError, match="PROCESS_GROUP_KILL_FAILED"):

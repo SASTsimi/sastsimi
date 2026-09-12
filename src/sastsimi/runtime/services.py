@@ -14,6 +14,7 @@ from .context_binding import ContextBindingService
 from .dynamic_registration import DynamicRegistrationService
 from .external_call_service import ExternalCallService
 from .intermediate_publication import IntermediatePublicationService
+from .llm_call_service import LLMCallService
 from .queries import RuntimeQueries
 from .recovery_service import RecoveryService
 from .transition_service import TransitionService
@@ -39,3 +40,4 @@ class RuntimeServices:
     dynamic_registration: DynamicRegistrationService
     configuration: ConfigurationRegistry
     finalization: AnalysisFinalizationService
+    llm_calls: LLMCallService

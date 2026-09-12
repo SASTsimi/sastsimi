@@ -1,6 +1,6 @@
 """Shared migration identity without a database/migration import cycle."""
 
-HEAD = "0003_runtime_guards"
+HEAD = "0004_prompt_runtime"
 
 
 class MigrationRequired(ValueError):

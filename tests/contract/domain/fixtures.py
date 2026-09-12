@@ -112,6 +112,7 @@ def proposal() -> dict[str, Any]:
         meta=meta("hypothesis_proposal", attempt=None),
         proposal_state="HYPOTHESIS_ONLY",
         assertion_mode="NON_FINAL",
+        statement="Untrusted input may reach the sink",
         origin="INITIAL",
         vulnerability_type_candidates=[],
         target_entities=[],

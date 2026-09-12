@@ -768,7 +768,6 @@ async def test_actual_three_adapter_public_bridge_and_exact_replay(
     )
     opengrep_runner.output_root.mkdir()
 
-    ast_executable = Path(sys.executable).resolve(strict=True)
     codeql_executable = case_root / "codeql.exe"
     codeql_executable.write_bytes(b"trusted-codeql")
     opengrep_executable = case_root / "opengrep.exe"
@@ -777,7 +776,7 @@ async def test_actual_three_adapter_public_bridge_and_exact_replay(
         "PYTHON_AST",
         "AST",
         "STRUCTURE",
-        executable=ast_executable,
+        executable=Path(sys.executable).resolve(),
         version=platform.python_version(),
     )
     codeql_profile = _profile(
@@ -817,7 +816,7 @@ async def test_actual_three_adapter_public_bridge_and_exact_replay(
     locator = _Workspace(workspace_root)
     adapters: dict[str, StaticProcessAdapter] = {
         "PYTHON_AST": PythonAstProcessAdapter(
-            executable=ast_executable,
+            executable=Path(sys.executable).resolve(),
             worker_path=Path(__file__).parents[2]
             / "src"
             / "sastsimi"
@@ -885,7 +884,7 @@ async def test_actual_three_adapter_public_bridge_and_exact_replay(
         external,
         locator,
         {
-            ast_profile.executable_key: ast_executable,
+            ast_profile.executable_key: Path(sys.executable).resolve(),
             codeql_profile.executable_key: codeql_executable,
             opengrep_profile.executable_key: opengrep_executable,
         },
