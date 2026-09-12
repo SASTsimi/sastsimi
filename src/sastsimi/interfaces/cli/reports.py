@@ -1,13 +1,16 @@
-"""Read persisted ReportDraft records; submission is intentionally absent."""
+"""List current, safe ReportDraft records; submission is intentionally absent."""
 
 from pathlib import Path
 
-from sastsimi.bootstrap import build_fake_pipeline
+from sastsimi.reporting.markdown_export import ReportMarkdownService
+from sastsimi.storage.report_export import SQLiteCurrentReportSource
 
 
 def run(data_dir: Path) -> dict[str, object]:
-    reports = build_fake_pipeline(data_dir).reports()
+    reports = ReportMarkdownService(
+        data_dir, SQLiteCurrentReportSource(data_dir)
+    ).summaries()
     return {
         "count": len(reports),
-        "reports": [report.model_dump(mode="json") for report in reports],
+        "reports": list(reports),
     }

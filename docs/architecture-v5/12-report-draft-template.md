@@ -6,7 +6,7 @@
 
 `Finding`은 이미 검증된 upstream 결과를 하나의 current 취약점 결과로 정규화한 record이고 `ReportDraft`는 Reporter가 그 Finding 중 보고 조건까지 통과한 결과로 만드는 내부 초안입니다. Finding 생성과 Reporter eligibility는 별개 조건이며, Finding 생성 조건과 lifecycle은 [05. 이중 LLM Gate와 보고](05-llm-gate-and-reporting.md)의 "Finding 생성과 lifecycle"을 따릅니다. 이 초안이 마지막 Agent 산출물이며 자동 외부 제출을 허용하지 않습니다. 자세한 용어는 [쉬운 용어집](../GLOSSARY.md)을 따릅니다.
 
-> 상태: **DESIGN_APPROVED / NOT_IMPLEMENTED**
+> 상태: **DESIGN_APPROVED / IMPLEMENTED**
 
 Reporter Agent는 다음 조건이 모두 참일 때만 이 내부 초안을 작성한다.
 
@@ -236,6 +236,28 @@ access/session token, password, private key, credential, cookie·authorization s
 - ReportDraft record: `{report_draft_ref.record_id}`
 - 함께 검토할 AnalysisRunResult: `{analysis_result_ref.record_id}`
 - 남은 오류·DataGap·HOLD 조건: `{refs or none}`
+
+## 14. 사람이 읽는 Markdown 출력
+
+`ReportDraft`는 내부 JSON record로만 두지 않고, 사람이 검토할 수 있는 Markdown 파일로 내보낸다.
+기본 경로는 `<data-dir>/reports/<analysis_id>/<finding_id>.md`다. 이 파일은 새 보안 사실을
+만드는 record가 아니라 current `ReportDraft`와 그 exact upstream record를 읽기 쉽게 표현한
+출력물이다.
+
+- `reports`: current 보고서 목록과 짧은 요약을 조회한다.
+- `report show <finding_id>`: 저장 파일을 재사용하지 않고 current exact record를 다시 검사해
+  터미널에 표시한다.
+- `report export <finding_id> --format markdown`: 같은 검사를 통과한 내용을 원자적으로 쓴다.
+- 출력 근거는 current `ReportDraft`, `Finding`, `VerificationResult`, `CWELabel`, validated
+  `PoCBundle`, `DynamicReproductionResult`, `TechnicalEvidenceReview`,
+  `RuleScopeImpactReview`와 이들이 정확히 가리키는 redacted artifact로 한정한다.
+- current Finding pointer, exact reference closure, Reporter의 사용 완료된
+  `CREATE_REPORT_DRAFT` 결정과 `REDACTION=PASS` 중 하나라도 확인되지 않으면 목록·표시·출력을
+  fail-closed 한다. 기존 Markdown 파일을 current 결과로 읽어 주지 않는다.
+- `analysis_id`와 `finding_id`는 안전한 단일 경로 이름인지 검사하며 다른 분석·Finding 파일을
+  덮어쓰는 경로를 허용하지 않는다. 쓰기는 같은 디렉터리의 임시 파일을 fsync한 뒤 원자적으로
+  교체한다.
+- Markdown은 첫 실행 가능 버전의 필수 형식이다. HTML·PDF는 이 계약 밖의 후속 선택 기능이다.
 
 ---
 

@@ -461,6 +461,7 @@ Implementation record: [T04 core contracts](implementation/04-core-contracts.md)
 - [ ] testing restriction과 다른 scope·impact 값을 Primitive 결정으로 선저장하지 않고 exact Rule Scope 결과로 Task 13에 넘긴다.
 - [ ] 다른 scope·impact 실패는 Finding을 보존하고 Reporter만 차단한다.
 - [ ] ReportDraft의 모든 `path:line`을 EvidenceClaim 위치와 대조한다.
+- [x] current exact ReportDraft closure와 redaction 증거만 사용해 `<data-dir>/reports/<analysis_id>/<finding_id>.md`로 원자적 Markdown 출력하고, `reports`, `report show`, `report export --format markdown` CLI를 제공한다.
 - [ ] R5·R3·R4·R6·R8 검토 뒤 PR을 병합한다.
 
 ### Task 13: Primitive and Chaining
@@ -570,6 +571,7 @@ Implementation record: [T04 core contracts](implementation/04-core-contracts.md)
 - [ ] 실제 Provider, 실제 정적 분석과 안전한 Docker fixture 경로를 최소 하나씩 검증한다.
 - [ ] secret scan, architecture validator, Ruff, mypy와 전체 pytest를 실행한다.
 - [ ] README에 설치 → 설정 → 인증 → 분석 → 상태 → 결과 → ReportDraft → 복구 흐름을 기록한다.
+- [ ] 설치한 CLI에서 Markdown 보고서의 목록·show·export 정상 흐름과 stale/redaction 차단 실패 흐름을 실행하고 release artifact에 증거를 남긴다. HTML·PDF는 출시 차단 조건이 아니다.
 - [ ] 모든 open Critical·Important가 0인지 최종 독립 검토한다.
 - [ ] 최종 PR head SHA와 검토 SHA가 같을 때만 병합한다.
 

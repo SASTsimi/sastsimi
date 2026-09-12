@@ -9,10 +9,12 @@ from uuid import uuid4
 from sastsimi import bootstrap
 from sastsimi.interfaces.cli import analyze as analyze_command
 from sastsimi.interfaces.cli import commands
+from sastsimi.interfaces.cli import report as report_command
 from sastsimi.interfaces.cli import reports as reports_command
 from sastsimi.interfaces.cli import results as results_command
 from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.output import emit_data, emit_result
+from sastsimi.reporting.markdown_export import ReportUnavailable
 
 
 class _InputError(ValueError):
@@ -65,19 +67,31 @@ def main(argv: list[str] | None = None) -> int:
     )
     results_parser.add_argument("--format", choices=["text", "json"])
     reports_parser = subparsers.add_parser(
-        "reports", help="read fake ReportDraft records", allow_abbrev=False
+        "reports", help="list current human-review reports", allow_abbrev=False
     )
     reports_parser.add_argument("--format", choices=["text", "json"])
+    report_parser = subparsers.add_parser(
+        "report", help="show or export one current report", allow_abbrev=False
+    )
+    report_commands = report_parser.add_subparsers(dest="report_command", required=True)
+    report_show = report_commands.add_parser("show", allow_abbrev=False)
+    report_show.add_argument("finding_id")
+    report_export = report_commands.add_parser("export", allow_abbrev=False)
+    report_export.add_argument("finding_id")
+    report_export.add_argument(
+        "--format", dest="export_format", choices=["markdown"], required=True
+    )
     try:
         args = parser.parse_args(argv)
-        if args.format is not None:
-            output_format = args.format
+        requested_output = getattr(args, "format", None)
+        if requested_output is not None:
+            output_format = requested_output
         overrides = {
             key: value
             for key, value in {
                 "log_level": args.log_level,
                 "data_dir": args.data_dir,
-                "output_format": args.format,
+                "output_format": requested_output,
             }.items()
             if value is not None
         }
@@ -111,6 +125,19 @@ def main(argv: list[str] | None = None) -> int:
             data = reports_command.run(config.data_dir)
             emit_data(output_format, sys.stdout, command=command_name, data=data)
             return int(ExitCode.OK)
+        if args.command == "report":
+            command_name = "report " + args.report_command
+            if args.report_command == "show":
+                sys.stdout.write(report_command.show(config.data_dir, args.finding_id))
+            else:
+                path = report_command.export(config.data_dir, args.finding_id)
+                emit_data(
+                    output_format,
+                    sys.stdout,
+                    command=command_name,
+                    data={"finding_id": args.finding_id, "path": str(path)},
+                )
+            return int(ExitCode.OK)
         else:
             code = ExitCode.OK if commands.doctor() else ExitCode.CAPABILITY_UNSUPPORTED
         emit_result(
@@ -125,6 +152,8 @@ def main(argv: list[str] | None = None) -> int:
         code = ExitCode.CONFIG_ERROR
     except bootstrap.MigrationRequired:
         code = ExitCode.CONFIG_ERROR
+    except ReportUnavailable:
+        code = ExitCode.REPORT_UNAVAILABLE
     except Exception:
         trace_id = "trace-" + str(uuid4())
         logger = bootstrap.build_diagnostic_logger(sys.stderr, "ERROR")

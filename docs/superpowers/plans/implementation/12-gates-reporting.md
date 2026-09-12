@@ -27,6 +27,10 @@ outside T12.
   `ReportProcessState` to `DRAFTED`.
 - Final analysis inventory derives `report_draft_refs` from current `DRAFTED`
   `ReportProcessState` records; callers cannot omit or fabricate the exact set.
+- A post-T12 output extension renders the exact current closure as human-readable
+  Markdown at `<data-dir>/reports/<analysis_id>/<finding_id>.md`. The `reports`,
+  `report show`, and `report export --format markdown` commands never treat an old
+  file as current data; each read rechecks the database pointers and redaction proof.
 
 ## Safety and correctness boundary
 
@@ -40,6 +44,9 @@ outside T12.
 - `ReportDraft` requires current TRUE verification, validated PoC, accepted Technical
   review, current Rule Scope result, policy closure, finding index, redaction, and exact
   evidence locations. No submit action is produced.
+- Markdown export resolves those same exact records, the validated PoC candidate, and
+  the used `CREATE_REPORT_DRAFT` decision with `REDACTION=PASS`. Missing/stale refs,
+  unsafe text, or unsafe path identifiers fail closed before terminal output or write.
 - Fake and production paths share the public runtime, storage, action, work, and
   invocation boundaries. Fake-only output construction does not bypass publication
   authority.
