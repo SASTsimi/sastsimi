@@ -26,6 +26,10 @@ from sastsimi.ports.dynamic_sandbox import TrustedDockerTarget
 from sastsimi.storage.database import Database
 from sastsimi.storage.migrations import upgrade
 
+from .docker_build_boundary import (
+    ProductionDockerBuildBoundaryProbe,
+    inspect_local_docker_data_root,
+)
 from .models import CapabilityProbeReceipt, ProbeKind
 from .probes import (
     OpenAIResponsesProbe,
@@ -203,6 +207,20 @@ def _build_production_engine(
         ),
         in_process_keys=frozenset({"python"}),
     )
+    command_runner = SubprocessCommandProbeRunner()
+    effective_user_id = (
+        cast(Callable[[], int], os.__dict__["geteuid"])()
+        if os.name == "posix"
+        else None
+    )
+    docker_boundary_probe = ProductionDockerBuildBoundaryProbe(
+        operating_system=operating_system,
+        docker_executable=executable_registry.resolve("docker"),
+        docker_host=docker_host,
+        command_runner=command_runner,
+        data_root_inspector=inspect_local_docker_data_root,
+        effective_user_id=effective_user_id,
+    )
     return _CapabilityProbeEngine(
         registry=runtime.configuration,
         artifacts=runtime.unit_of_work.artifacts,
@@ -212,13 +230,13 @@ def _build_production_engine(
         architecture=architecture,
         clock=clock.now,
         executable_locator=executable_registry.resolve,
-        command_runner=SubprocessCommandProbeRunner(),
+        command_runner=command_runner,
         docker_host=docker_host,
         approval_identity=_NativeApprovalIdentity(),
         secret_resolver=EnvironmentSecretLookup(),
         openai_probe=OpenAIResponsesProbe(),
         scratch_root=data_dir / "probe-scratch",
-        docker_build_capability_probe=lambda: None,
+        docker_build_capability_probe=docker_boundary_probe,
     )
 
 

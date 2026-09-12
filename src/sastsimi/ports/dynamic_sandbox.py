@@ -40,6 +40,7 @@ class TrustedDockerTarget:
     build_backend: DockerBuildBackend
     enforced_build_limits: frozenset[DockerBuildLimit]
     external_build_disk_limit_bytes: int
+    external_build_storage_identity_hash: str
 
 
 class TrustedDockerTargetResolverPort(Protocol):
