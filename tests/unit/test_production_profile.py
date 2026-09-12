@@ -25,6 +25,35 @@ llm_ms = 120000
 sandbox_ms = 600000
 shutdown_ms = 5000
 
+[workspace_limits]
+max_git_bytes = 1073741824
+max_checkout_bytes = 2147483648
+max_file_count = 100000
+min_free_bytes = 536870912
+
+[budget]
+profile_key = "operator-default"
+approval_key = "security-team-approved-v1"
+approved_by = "security-team"
+pricing_revision = "pricing-2026-09"
+currency = "USD"
+max_analysis_elapsed_ms = 3600000
+max_total_cost_minor_units = 100000
+max_total_work = 1000
+max_total_llm_calls = 500
+max_total_retries = 100
+max_parallel_work = 8
+work_timeout_ms = 600000
+max_attempts_per_work = 3
+max_calls_per_work = 10
+max_items_per_work = 1000
+max_verification_elapsed_ms = 900000
+max_work_per_verification = 100
+max_llm_calls_per_verification = 50
+max_retries_per_work = 3
+max_parallel_evidence_calls = 2
+max_dynamic_attempts = 3
+
 [tools]
 git = "git"
 python = "python"
@@ -78,6 +107,8 @@ def test_loads_explicit_production_profile_without_resolving_secret(
     assert profile.program_id == "example-program"
     assert profile.workspace_root == workspace_root
     assert profile.worker.max_workers == 4
+    assert profile.workspace_limits.max_file_count == 100_000
+    assert profile.budget.max_parallel_work == 8
     assert profile.tools.codeql == "codeql"
     assert profile.llm_routes[0].model == "configured-model"
     assert profile.providers[0].credential_ref.reference == "env:OPENAI_API_KEY"

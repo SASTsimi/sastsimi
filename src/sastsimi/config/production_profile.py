@@ -11,7 +11,12 @@ from urllib.parse import parse_qsl, urlsplit
 from pydantic import ValidationError, field_validator, model_validator
 
 from sastsimi.config.secrets import SecretReference
-from sastsimi.contracts.base import ContractModel, NonEmptyStr, PositiveInt
+from sastsimi.contracts.base import (
+    ContractModel,
+    NonEmptyStr,
+    NonNegativeInt,
+    PositiveInt,
+)
 from sastsimi.contracts.llm import Environment, LLMRole, Product
 
 _SECRET_QUERY_KEYS = frozenset(
@@ -42,6 +47,52 @@ class TimeoutSettings(ContractModel):
     llm_ms: PositiveInt
     sandbox_ms: PositiveInt
     shutdown_ms: PositiveInt
+
+
+class WorkspaceLimitSettings(ContractModel):
+    """Operator-owned bounds for one checked-out repository workspace."""
+
+    max_git_bytes: PositiveInt
+    max_checkout_bytes: PositiveInt
+    max_file_count: PositiveInt
+    min_free_bytes: PositiveInt
+
+
+class ProductionBudgetSettings(ContractModel):
+    """Explicit limits used to create one run's immutable budget profiles."""
+
+    profile_key: NonEmptyStr
+    approval_key: NonEmptyStr
+    approved_by: NonEmptyStr
+    pricing_revision: NonEmptyStr
+    currency: NonEmptyStr
+    max_analysis_elapsed_ms: PositiveInt
+    max_total_cost_minor_units: PositiveInt
+    max_total_work: PositiveInt
+    max_total_llm_calls: PositiveInt
+    max_total_retries: NonNegativeInt
+    max_parallel_work: PositiveInt
+    work_timeout_ms: PositiveInt
+    max_attempts_per_work: PositiveInt
+    max_calls_per_work: PositiveInt
+    max_items_per_work: PositiveInt
+    max_verification_elapsed_ms: PositiveInt
+    max_work_per_verification: PositiveInt
+    max_llm_calls_per_verification: PositiveInt
+    max_retries_per_work: NonNegativeInt
+    max_parallel_evidence_calls: PositiveInt
+    max_dynamic_attempts: PositiveInt
+
+    @model_validator(mode="after")
+    def limits_fit_parent_profiles(self) -> Self:
+        if (
+            self.max_parallel_work > self.max_total_work
+            or self.max_work_per_verification > self.max_total_work
+            or self.max_llm_calls_per_verification > self.max_total_llm_calls
+            or self.max_parallel_evidence_calls > self.max_parallel_work
+        ):
+            raise ValueError("PRODUCTION_BUDGET_LIMIT_HIERARCHY_INVALID")
+        return self
 
 
 class ToolExecutables(ContractModel):
@@ -99,9 +150,7 @@ class PolicySource(ContractModel):
             )
             or not self.allowed_content_types
             or any(
-                host != host.strip()
-                or ":" in host
-                or "/" in host
+                host != host.strip() or ":" in host or "/" in host
                 for host in self.allowed_redirect_hosts
             )
         ):
@@ -136,6 +185,8 @@ class ProductionProfile(ContractModel):
     taxonomy_version: NonEmptyStr
     worker: WorkerSettings
     timeouts: TimeoutSettings
+    workspace_limits: WorkspaceLimitSettings
+    budget: ProductionBudgetSettings
     tools: ToolExecutables
     policy: PolicySource
     providers: tuple[ProviderConnection, ...]
@@ -188,11 +239,13 @@ def load_production_profile(path: Path) -> ProductionProfile:
 __all__ = [
     "LLMRoute",
     "PolicySource",
+    "ProductionBudgetSettings",
     "ProductionProfile",
     "ProductionProfileError",
     "ProviderConnection",
     "TimeoutSettings",
     "ToolExecutables",
     "WorkerSettings",
+    "WorkspaceLimitSettings",
     "load_production_profile",
 ]
