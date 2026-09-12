@@ -7,15 +7,21 @@ import hashlib
 import json
 import os
 import re
+import tempfile
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from uuid import uuid4
 
 from sastsimi.contracts.dynamic import POC_RUNTIME_PATH
 from sastsimi.contracts.prompt_redaction import redact_untrusted_text
 from sastsimi.contracts.refs import HostConfigurationRef
 from sastsimi.ports.capability_registry import DockerCommandCapabilityResolverPort
+from sastsimi.ports.dto import MonotonicActionDeadline, ProcessSpec
+from sastsimi.static_analysis.process import PosixProcessBackend
+from sastsimi.static_analysis.process_windows import WindowsProcessBackend
 
 from .controller import SandboxRunSpec
 
@@ -42,10 +48,21 @@ _POC_STAGING_PATH = f"{POC_RUNTIME_PATH}.next"
 _WINDOWS_DOCKER_HOST = re.compile(r"^npipe:////\./pipe/[A-Za-z0-9._-]{1,128}$")
 _POSIX_DOCKER_HOST = re.compile(r"^unix:///[A-Za-z0-9_./-]{1,512}$")
 _DOCKER_ENV_KEYS = frozenset({"SYSTEMROOT", "WINDIR", "TMP", "TEMP", "LANG", "LC_ALL"})
+_DEFAULT_COMMAND_TIMEOUT_MS = 30_000
 
 
 class _DockerOutputLimitExceeded(Exception):
     pass
+
+
+class _BoundedDockerOutput:
+    def __init__(self) -> None:
+        self.data = bytearray()
+
+    def write(self, data: bytes) -> None:
+        if len(self.data) + len(data) > _OUTPUT_LIMIT_BYTES:
+            raise _DockerOutputLimitExceeded
+        self.data.extend(data)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +108,7 @@ class DockerAdapter:
         self._executable = executable
         self._profile_ref: HostConfigurationRef | None = None
         self._capability_resolver: DockerCommandCapabilityResolverPort | None = None
+        self._process_backend: PosixProcessBackend | WindowsProcessBackend | None = None
 
     @classmethod
     def from_capability(
@@ -103,6 +121,9 @@ class DockerAdapter:
         adapter = cls()
         adapter._profile_ref = profile_ref
         adapter._capability_resolver = resolver
+        adapter._process_backend = (
+            WindowsProcessBackend() if os.name == "nt" else PosixProcessBackend()
+        )
         return adapter
 
     async def build(
@@ -115,19 +136,40 @@ class DockerAdapter:
         if not dockerfile or timeout_ms <= 0:
             raise ValueError("DOCKER_BUILD_INPUT_INVALID")
         label_args = self._label_args(labels)
-        outcome = await self._run(
-            (
-                "build",
-                "--quiet",
-                "--pull=false",
-                "--network",
-                "none",
-                *label_args,
-                "-",
-            ),
-            timeout_ms=timeout_ms,
-            input_bytes=dockerfile,
-        )
+        if self._process_backend is None:
+            outcome = await self._run(
+                (
+                    "build",
+                    "--quiet",
+                    "--pull=false",
+                    "--network",
+                    "none",
+                    *label_args,
+                    "-",
+                ),
+                timeout_ms=timeout_ms,
+                input_bytes=dockerfile,
+            )
+        else:
+            with tempfile.TemporaryDirectory(prefix="sastsimi-docker-build-") as root:
+                context = Path(root)
+                dockerfile_path = context / "Dockerfile"
+                dockerfile_path.write_bytes(dockerfile)
+                dockerfile_path.chmod(0o600)
+                outcome = await self._run(
+                    (
+                        "build",
+                        "--quiet",
+                        "--pull=false",
+                        "--network",
+                        "none",
+                        *label_args,
+                        "--file",
+                        str(dockerfile_path),
+                        str(context),
+                    ),
+                    timeout_ms=timeout_ms,
+                )
         self._require_success("DOCKER_BUILD_FAILED", outcome)
         digest = (
             outcome.stdout.decode("ascii", errors="strict").strip().splitlines()[-1]
@@ -309,17 +351,26 @@ class DockerAdapter:
             raise ValueError("POC_CONTENT_DIGEST_MISMATCH")
         cleared = await self._run(("exec", container_id, "rm", "-f", _POC_STAGING_PATH))
         self._require_success("DOCKER_POC_STAGING_CLEANUP_FAILED", cleared)
-        written = await self._run(
-            (
-                "exec",
-                "-i",
-                container_id,
-                "dd",
-                f"of={_POC_STAGING_PATH}",
-                "status=none",
-            ),
-            input_bytes=content,
-        )
+        if self._process_backend is None:
+            written = await self._run(
+                (
+                    "exec",
+                    "-i",
+                    container_id,
+                    "dd",
+                    f"of={_POC_STAGING_PATH}",
+                    "status=none",
+                ),
+                input_bytes=content,
+            )
+        else:
+            with tempfile.TemporaryDirectory(prefix="sastsimi-poc-copy-") as root:
+                source = Path(root) / "candidate"
+                source.write_bytes(content)
+                source.chmod(0o600)
+                written = await self._run(
+                    ("cp", str(source), f"{container_id}:{_POC_STAGING_PATH}")
+                )
         self._require_success("DOCKER_POC_MATERIALIZATION_FAILED", written)
         verified = await self._run(
             ("exec", container_id, "sha256sum", _POC_STAGING_PATH)
@@ -466,6 +517,13 @@ class DockerAdapter:
         timeout_ms: int | None = None,
         input_bytes: bytes | None = None,
     ) -> DockerCommandOutcome:
+        if self._process_backend is not None:
+            if input_bytes is not None:
+                raise ValueError("DOCKER_BOUND_PROCESS_INPUT_FORBIDDEN")
+            return await self._run_bound(
+                argv,
+                timeout_ms=(timeout_ms or _DEFAULT_COMMAND_TIMEOUT_MS),
+            )
         executable, command, environment = self._resolve_invocation(argv)
         process = await asyncio.create_subprocess_exec(
             executable,
@@ -515,6 +573,53 @@ class DockerAdapter:
             stdout=stdout,
             stderr=stderr,
             timed_out=timed_out,
+        )
+
+    async def _run_bound(
+        self, argv: tuple[str, ...], *, timeout_ms: int
+    ) -> DockerCommandOutcome:
+        executable, command, environment = self._resolve_invocation(argv)
+        if environment is None or timeout_ms <= 0:
+            raise ValueError("DOCKER_BOUND_PROCESS_CONFIGURATION_INVALID")
+        started_ns = time.monotonic_ns()
+        invocation_id = "docker-" + str(uuid4())
+        stdout = _BoundedDockerOutput()
+        stderr = _BoundedDockerOutput()
+        assert self._process_backend is not None
+        spec = ProcessSpec(
+            invocation_id=invocation_id,
+            command_kind="DOCKER",
+            attempt_id=invocation_id,
+            argv=(executable, *command),
+            cwd=Path(executable).parent,
+            env=tuple(sorted(environment.items())),
+            attempt_output_dir=Path(executable).parent,
+            stdout_limit_bytes=_OUTPUT_LIMIT_BYTES,
+            stderr_limit_bytes=_OUTPUT_LIMIT_BYTES,
+            attempt_output_limit_bytes=_OUTPUT_LIMIT_BYTES * 2,
+            deadline=MonotonicActionDeadline(
+                action_id=invocation_id,
+                started_ns=started_ns,
+                expires_ns=started_ns + timeout_ms * 1_000_000,
+            ),
+        )
+        try:
+            execution = await self._process_backend.run(
+                spec,
+                timeout_ms,
+                stdout,
+                stderr,
+                asyncio.Event(),
+            )
+        except _DockerOutputLimitExceeded:
+            raise DockerOperationError("DOCKER_OUTPUT_LIMIT_EXCEEDED") from None
+        return DockerCommandOutcome(
+            exit_code=(
+                execution.return_code if execution.return_code is not None else -1
+            ),
+            stdout=self._safe_output(bytes(stdout.data)),
+            stderr=self._safe_output(bytes(stderr.data)),
+            timed_out=execution.timed_out or execution.cancelled,
         )
 
     def _resolve_invocation(

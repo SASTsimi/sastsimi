@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -23,6 +23,7 @@ from sastsimi.contracts.dynamic_resource import owned_container_resource_ref
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef, reference
+from sastsimi.ports.dto import ProcessSpec
 from sastsimi.sandbox.cleanup import OwnedResourceRegistry
 from sastsimi.sandbox.controller import (
     SandboxBoundaryOutcome,
@@ -42,6 +43,7 @@ from sastsimi.sandbox.setup_automation import (
     PreparedSandbox,
     ReproductionSetupAutomation,
 )
+from sastsimi.static_analysis.process_windows import BackendExecution
 
 NOW = datetime(2026, 9, 11, tzinfo=UTC)
 IMAGE_DIGEST = "sha256:" + "1" * 64
@@ -891,15 +893,21 @@ async def test_docker_create_uses_argv_and_hard_isolation_options(
 
 @pytest.mark.asyncio
 async def test_production_docker_binding_revalidates_and_pins_every_invocation(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
-    del tmp_path
-    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    calls: list[tuple[tuple[str, ...], dict[str, str]]] = []
 
-    async def spawn(*argv: object, **kwargs: object) -> _Process:
-        calls.append((argv, kwargs))
-        return _Process(b"owned-container-id\n")
+    class Backend:
+        async def run(
+            self,
+            spec: ProcessSpec,
+            timeout_ms: int,
+            stdout: object,
+            stderr: object,
+            cancel_event: asyncio.Event,
+        ) -> BackendExecution:
+            del timeout_ms, stdout, stderr, cancel_event
+            calls.append((spec.argv, dict(spec.env)))
+            return BackendExecution(0, False, False)
 
     class Resolver:
         def __init__(self) -> None:
@@ -915,9 +923,6 @@ async def test_production_docker_binding_revalidates_and_pins_every_invocation(
                 "npipe:////./pipe/docker-engine",
             )
 
-    monkeypatch.setattr(
-        "sastsimi.sandbox.docker_adapter.asyncio.create_subprocess_exec", spawn
-    )
     resolver = Resolver()
     profile_ref = HostConfigurationRef.model_validate(
         {
@@ -932,24 +937,100 @@ async def test_production_docker_binding_revalidates_and_pins_every_invocation(
         }
     )
     adapter = DockerAdapter.from_capability(profile_ref, resolver)
+    adapter._process_backend = cast(Any, Backend())
 
     await adapter.start("owned-container-id")
     await adapter.start("owned-container-id")
 
     assert resolver.calls == 2
     assert len(calls) == 2
-    for argv, kwargs in calls:
+    for argv, environment in calls:
         assert argv[:3] == (
             "C:\\Program Files\\Docker\\docker.exe",
             "--host",
             "npipe:////./pipe/docker-engine",
         )
-        environment = kwargs["env"]
-        assert isinstance(environment, dict)
         assert "HOME" not in environment
         assert "USERPROFILE" not in environment
         assert "DOCKER_CONFIG" not in environment
         assert "DOCKER_HOST" not in environment
+
+
+@pytest.mark.asyncio
+async def test_bound_docker_build_cancellation_waits_for_backend_tree_cleanup() -> None:
+    started = asyncio.Event()
+    build_context: Path | None = None
+
+    class Backend:
+        cleaned = False
+
+        async def run(
+            self,
+            spec: ProcessSpec,
+            timeout_ms: int,
+            stdout: object,
+            stderr: object,
+            cancel_event: asyncio.Event,
+        ) -> BackendExecution:
+            nonlocal build_context
+            del timeout_ms, stdout, stderr, cancel_event
+            dockerfile_index = spec.argv.index("--file") + 1
+            dockerfile = Path(spec.argv[dockerfile_index])
+            assert dockerfile.is_file()
+            build_context = dockerfile.parent
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await asyncio.sleep(0)
+                self.cleaned = True
+                raise
+
+    class Resolver:
+        def resolve_docker_command(
+            self, profile_ref: HostConfigurationRef
+        ) -> tuple[Path, str]:
+            del profile_ref
+            return (
+                Path("C:/Program Files/Docker/docker.exe"),
+                "npipe:////./pipe/docker-engine",
+            )
+
+    profile_ref = HostConfigurationRef.model_validate(
+        {
+            "stored_data_id": "docker-profile-stored",
+            "data_kind": "runtime_capability_profile",
+            "content_hash": "a" * 64,
+            "host_id": "host-a",
+            "publication_analysis_id": "capability-publication",
+            "publication_workspace_id": "host-configuration",
+            "publication_commit_id": "host-configuration-v1",
+            "record_id": "docker-profile-record",
+        }
+    )
+    backend = Backend()
+    adapter = DockerAdapter.from_capability(profile_ref, Resolver())
+    adapter._process_backend = cast(Any, backend)
+    labels = {
+        "sastsimi.owner": "reproduction-setup-automation",
+        "sastsimi.analysis-id": "analysis-1",
+        "sastsimi.workspace-id": "workspace-1",
+        "sastsimi.commit-id": "commit-1",
+        "sastsimi.hypothesis-id": "hypothesis-1",
+        "sastsimi.attempt-id": "dynamic-attempt-1",
+    }
+    build = asyncio.create_task(
+        adapter.build(b"FROM scratch\n", labels, timeout_ms=30_000)
+    )
+    await started.wait()
+
+    build.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await build
+
+    assert backend.cleaned is True
+    assert build_context is not None
+    assert not build_context.exists()
 
 
 @pytest.mark.asyncio
