@@ -232,6 +232,10 @@ class ChainingPoolHistoryPort(Protocol):
         self, trigger_work_ref: StoredDataRef
     ) -> ChainingPoolHistory: ...
 
+    def get_for_primitive(
+        self, trigger_primitive_ref: StoredDataRef
+    ) -> ChainingPoolHistory: ...
+
 
 @dataclass(frozen=True, slots=True)
 class ChainingCohortMember:

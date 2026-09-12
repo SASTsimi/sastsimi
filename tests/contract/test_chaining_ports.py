@@ -147,6 +147,9 @@ def test_pool_history_preserves_the_exact_work_time_universe() -> None:
         "current"
         not in inspect.signature(ChainingPoolHistoryPort.get_for_trigger).parameters
     )
+    assert "trigger_primitive_ref" in inspect.signature(
+        ChainingPoolHistoryPort.get_for_primitive
+    ).parameters
 
 
 def _pending_chaining_work(trigger: StoredDataRef) -> WorkExecutionState:

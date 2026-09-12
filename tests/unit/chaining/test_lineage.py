@@ -8,6 +8,7 @@ from sastsimi.chaining.lineage import (
     expected_lineage_exclusions,
     lineage,
     order_deepest_first,
+    retain_deepest_successful_matches,
 )
 from sastsimi.contracts.refs import StoredDataRef
 from tests.contract.domain.fixtures import ref, wire
@@ -144,3 +145,35 @@ def test_successful_match_excludes_ancestors_from_both_sides() -> None:
     assert {
         (item.excluded_primitive_ref, item.excluded_by_ref) for item in exclusions
     } == {(trigger_parent, trigger), (other_parent, other)}
+
+
+def test_deepest_success_drops_a_provider_match_for_its_ancestor() -> None:
+    trigger, root, child, deepest = map(_ref, ("a", "b", "c", "d"))
+    resolve = _resolver({trigger: (), root: (), child: (root,), deepest: (child,)})
+    deepest_pair = SuccessfulMatchPair(trigger, deepest)
+
+    retained = retain_deepest_successful_matches(
+        considered_refs=(trigger, root, child, deepest),
+        trigger_ref=trigger,
+        successful_match_pairs=(
+            SuccessfulMatchPair(trigger, root),
+            SuccessfulMatchPair(trigger, child),
+            deepest_pair,
+        ),
+        resolve=resolve,
+        analysis_id="a1",
+    )
+
+    assert retained == (deepest_pair,)
+    exclusions = expected_lineage_exclusions(
+        considered_refs=(trigger, root, child, deepest),
+        trigger_ref=trigger,
+        successful_match_pairs=(
+            SuccessfulMatchPair(trigger, root),
+            SuccessfulMatchPair(trigger, child),
+            deepest_pair,
+        ),
+        resolve=resolve,
+        analysis_id="a1",
+    )
+    assert {item.excluded_primitive_ref for item in exclusions} == {root, child}
