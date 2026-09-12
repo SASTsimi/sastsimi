@@ -42,6 +42,10 @@ from sastsimi.orchestration.production_llm_work_handlers import (
     ProductionCallPort,
     VerificationWorkHandler,
 )
+from sastsimi.orchestration.production_stage_handoff import (
+    ProductionStageRouter,
+    RoutedWorkHandler,
+)
 from sastsimi.orchestration.production_verification_dispatch import (
     InitialVerificationDispatcher,
 )
@@ -433,6 +437,7 @@ class ProductionFeatureInstaller:
             verification_policy_ref=self.inputs.verification_policy_ref,
             verification_playbook_ref=self.inputs.verification_playbook_ref,
         )
+        router = ProductionStageRouter(context, t12)
         handlers: dict[WorkType, WorkHandler] = {
             WorkType.WORKSPACE_PREP: self.inputs.t08.workspace_prep,
             WorkType.REPOSITORY_PROFILE: self.inputs.t08.repository_profile,
@@ -444,15 +449,19 @@ class ProductionFeatureInstaller:
             WorkType.CONTEXT_RETRIEVAL: self.inputs.t08.context_retrieval,
             WorkType.PRO_EVIDENCE: pro,
             WorkType.CON_EVIDENCE: con,
-            WorkType.VERIFICATION: verification,
-            WorkType.DYNAMIC_REPRO: self.inputs.dynamic.handler,
+            WorkType.VERIFICATION: RoutedWorkHandler(verification, router),
+            WorkType.DYNAMIC_REPRO: RoutedWorkHandler(
+                self.inputs.dynamic.handler, router
+            ),
             WorkType.PRIMITIVE_UPDATE: t13.primitive_update,
             WorkType.CHAINING: t13.chaining,
-            WorkType.CWE_LABEL: t12.cwe,
-            WorkType.POLICY_FETCH: self.inputs.policy.handler,
-            WorkType.TECHNICAL_GATE: t12.technical,
-            WorkType.RULE_SCOPE_GATE: t12.rule_scope,
-            WorkType.FINDING_NORMALIZE: t12.finding,
+            WorkType.CWE_LABEL: RoutedWorkHandler(t12.cwe, router),
+            WorkType.POLICY_FETCH: RoutedWorkHandler(
+                self.inputs.policy.handler, router
+            ),
+            WorkType.TECHNICAL_GATE: RoutedWorkHandler(t12.technical, router),
+            WorkType.RULE_SCOPE_GATE: RoutedWorkHandler(t12.rule_scope, router),
+            WorkType.FINDING_NORMALIZE: RoutedWorkHandler(t12.finding, router),
             WorkType.REPORT_DRAFT: t12.reporter,
         }
         if set(handlers) != set(WorkType):
