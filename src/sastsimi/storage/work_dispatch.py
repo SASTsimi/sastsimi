@@ -27,7 +27,14 @@ from sastsimi.contracts.ids import (
 )
 from sastsimi.contracts.records import RecordMeta, RecordMetadata
 from sastsimi.contracts.refs import BudgetScopeRef
-from sastsimi.contracts.work import StateTransition, WorkAttempt, WorkExecutionState
+from sastsimi.contracts.work import (
+    AttemptTrigger,
+    StateTransition,
+    TransitionTargetStatus,
+    WorkAttempt,
+    WorkExecutionState,
+    WorkStatus,
+)
 from sastsimi.ports.dto import (
     BudgetCommitRequest,
     BudgetReservationRequest,
@@ -168,6 +175,19 @@ class WorkDispatchStore:
             if prior is not None and prior.status == "RUNNING":
                 return None
             attempt_number = 1 if prior is None else prior.attempt_number + 1
+            trigger = AttemptTrigger.INITIAL if prior is None else AttemptTrigger.RETRY
+            if work.last_transition_ref is not None:
+                last_transition = records.resolve(connection, work.last_transition_ref)
+                if not isinstance(last_transition, StateTransition):
+                    raise ValueError("WORK_LAST_TRANSITION_INVALID")
+                if (
+                    last_transition.work_id != work.work_id
+                    or last_transition.to_status != TransitionTargetStatus.READY
+                    or last_transition.new_state_version != work.state_version
+                ):
+                    raise ValueError("WORK_LAST_TRANSITION_INVALID")
+                if last_transition.from_status == WorkStatus.BLOCKED:
+                    trigger = AttemptTrigger.RESUME
             attempt_id = self.works.ids.new(AttemptId)
             now = self.works.clock.now()
             action = self._start_action(work, registration)
@@ -231,7 +251,7 @@ class WorkDispatchStore:
                                 "work_id": work.work_id,
                                 "attempt_id": attempt_id,
                                 "attempt_number": attempt_number,
-                                "trigger": "INITIAL" if prior is None else "RETRY",
+                                "trigger": trigger,
                                 "input_hash": work.input_hash,
                                 "status": "RUNNING",
                                 "output_refs": (),

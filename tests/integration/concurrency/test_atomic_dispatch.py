@@ -11,9 +11,11 @@ from sqlalchemy import func, select
 from sastsimi.bootstrap import build_runtime
 from sastsimi.contracts.actions import ActionRequest, ActionType, RequesterRole
 from sastsimi.contracts.budget import BudgetReservation
+from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.evaluation import AnalysisRunResult
-from sastsimi.contracts.ids import AnalysisId
+from sastsimi.contracts.ids import AnalysisId, TransitionId
 from sastsimi.contracts.refs import reference
+from sastsimi.contracts.work import StateTransition, TransitionTargetStatus
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.storage import models
 from sastsimi.storage.run_control import RunControlStore
@@ -188,6 +190,72 @@ def test_ready_claim_publishes_one_exact_attempt_lease_and_work_revision(
     assert first[0].work == context.work
     assert first[0].attempt == context.attempt
     assert first[0].action_request_ref == reference(action)
+
+
+def test_blocked_work_claim_records_resume_trigger(tmp_path: Path) -> None:
+    harness, runtime, (ready,) = _ready_work(tmp_path)
+    dispatch = WorkDispatchStore(runtime.work.store)
+    runner = WorkflowRunner(
+        runtime, harness.clock, harness.ids, scheduler_store=dispatch
+    )
+    context = runner.claim_ready(
+        "a1",
+        str(ready.work_id),
+        ready.state_version,
+        "worker-1",
+        NOW + timedelta(seconds=30),
+    )
+    assert context is not None
+    state = runtime.budget_registry.current_state("a1")
+    profile = harness.records.get_exact(state.execution_budget_profile_ref)
+    assert profile.approval_ref is not None
+    blocked = runner.block(context.work, profile.approval_ref, "WAITING_FOR_INPUT")
+    action = runner.action(
+        blocked,
+        profile.approval_ref,
+        "ORCHESTRATION",
+        "CHANGE_WORK_STATE",
+        input_refs=blocked.input_refs,
+        reason="External condition resolved",
+    )
+    decision = runner.authorize(blocked, action)
+    transition = StateTransition.model_validate_json(
+        canonical_bytes(
+            {
+                "meta": runner.metadata(blocked.meta, "state_transition"),
+                "transition_id": harness.ids.new(TransitionId),
+                "work_id": blocked.work_id,
+                "action_decision_ref": decision,
+                "from_status": blocked.status,
+                "to_status": TransitionTargetStatus.READY,
+                "expected_state_version": blocked.state_version,
+                "new_state_version": blocked.state_version + 1,
+                "attempt_id": None,
+                "cause": "EXTERNAL_CONDITION_RESOLVED",
+                "output_refs": (),
+                "gap_ids": (),
+                "error_ids": (),
+                "dedupe_key": content_hash(
+                    [blocked.work_id, blocked.state_version, "READY"]
+                ),
+                "created_at": harness.clock.now(),
+            }
+        )
+    )
+    resumed_ready = runtime.work.make_ready(transition)
+
+    resumed = dispatch.try_claim_ready(
+        "a1",
+        str(resumed_ready.work_id),
+        resumed_ready.state_version,
+        "worker-2",
+        NOW + timedelta(seconds=30),
+    )
+
+    assert resumed is not None
+    assert resumed.attempt.attempt_number == 2
+    assert resumed.attempt.trigger == "RESUME"
+    assert resumed.attempt.input_hash == context.attempt.input_hash
 
 
 @pytest.mark.parametrize(
