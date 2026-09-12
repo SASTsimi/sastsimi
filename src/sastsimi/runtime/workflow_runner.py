@@ -200,7 +200,11 @@ class WorkflowRunner:
         reservation = BudgetReservation.model_validate_json(
             canonical_bytes(
                 dict(
-                    meta=self.metadata(work.meta, "budget_reservation"),
+                    meta=self.metadata(
+                        work.meta,
+                        "budget_reservation",
+                        attempt_id=work.active_attempt_id,
+                    ),
                     reservation_id=self.ids.new(ReservationId),
                     budget_binding_ref=scope,
                     action_ref=records.stage_record(action),

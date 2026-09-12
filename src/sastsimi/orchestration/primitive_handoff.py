@@ -29,6 +29,7 @@ from sastsimi.contracts.records import RecordMetadata
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
 from sastsimi.contracts.verification import VerificationResult
 from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.ports.chaining import HoldPrimitiveAdmissionClosure
 from sastsimi.ports.ready_work import ReadyWorkPort
 from sastsimi.ports.runtime_query import RuntimeQueryPort
 
@@ -139,6 +140,44 @@ class PrimitiveUpdateHandoff:
             role="ORCHESTRATION",
             generation=process.verification_generation,
             inputs=cast(tuple[RecordRef, ...], inputs),
+        )
+
+    def enqueue_hold(
+        self,
+        *,
+        closure: HoldPrimitiveAdmissionClosure,
+        scope: BudgetScopeRef,
+        metadata: RecordMetadata,
+        identity: BudgetScopeRef,
+    ) -> WorkExecutionState:
+        """Pin the exact terminal HOLD closure and enqueue without execution."""
+
+        verification = self._exact(closure.verification_ref, VerificationResult)
+        process = self._exact(closure.hypothesis_process_ref, HypothesisProcessState)
+        index = self._exact(closure.expected_primitive_index_ref, PrimitiveIndexState)
+        same_scope(verification.meta, process.meta)
+        same_scope(verification.meta, index.meta)
+        if (
+            verification.verdict != "HOLD"
+            or not verification.required_primitive_candidates
+            or process.status != "TERMINAL"
+            or process.verification_result_ref != closure.verification_ref
+            or process.verification_work_ref is not None
+            or index.current_verification_ref != closure.verification_ref
+        ):
+            raise ValueError("STALE_RESULT")
+        self._require_current(closure.hypothesis_process_ref, process)
+        self._require_current(closure.expected_primitive_index_ref, index)
+        return self._ready.enqueue(
+            scope,
+            metadata,
+            "PRIMITIVE_UPDATE",
+            "HYPOTHESIS",
+            str(verification.meta.hypothesis_id),
+            identity,
+            role="ORCHESTRATION",
+            generation=process.verification_generation,
+            inputs=cast(tuple[RecordRef, ...], closure.input_refs()),
         )
 
     def _validate_current(
