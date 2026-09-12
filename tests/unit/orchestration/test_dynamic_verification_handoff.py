@@ -61,10 +61,20 @@ class _WorkStore:
         )
         return self.parent
 
+    def work_for_run(self, analysis_id: str) -> tuple[WorkExecutionState, ...]:
+        assert analysis_id == "a1"
+        return (self.parent, self.child)
+
 
 class _Runner:
     def __init__(self, work: _WorkStore) -> None:
-        self.runtime = SimpleNamespace(work=work)
+        self.runtime = SimpleNamespace(
+            work=SimpleNamespace(
+                get=work.get,
+                make_ready=work.make_ready,
+                store=work,
+            )
+        )
         self.actions = 0
 
     def action(self, *_args: object, **_kwargs: object) -> object:
@@ -128,8 +138,7 @@ def _chain(*, current_parent_generation: int = 1) -> tuple[object, ...]:
         json.dumps(
             make("DynamicReproductionState")
             | {
-                "meta": make("DynamicReproductionState")["meta"]
-                | {"attempt_id": None},
+                "meta": make("DynamicReproductionState")["meta"] | {"attempt_id": None},
                 "verification_generation": 1,
                 "status": "SUCCEEDED",
                 "dynamic_work_ref": child_ref.model_dump(mode="json"),
@@ -157,7 +166,7 @@ def test_successful_child_resumes_the_exact_same_generation_once() -> None:
         verification_identity_ref=StoredDataRef.model_validate(make("StoredDataRef")),
     )
 
-    resumed = service.resume(str(child.work_id))
+    (resumed,) = service.reconcile_pending("a1")
     replayed = service.resume(str(child.work_id))
 
     assert resumed.status == WorkStatus.READY

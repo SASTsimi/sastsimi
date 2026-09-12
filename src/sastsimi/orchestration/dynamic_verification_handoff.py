@@ -406,6 +406,20 @@ class DynamicParentResumeService:
     runner: WorkflowRunner
     verification_identity_ref: BudgetScopeRef
 
+    def reconcile_pending(self, analysis_id: str) -> tuple[WorkExecutionState, ...]:
+        """Repair a crash after child commit without polling or rerunning T11."""
+        resumed: list[WorkExecutionState] = []
+        for work in self.runner.runtime.work.store.work_for_run(analysis_id):
+            if work.work_type != WorkType.DYNAMIC_REPRO or work.status not in {
+                WorkStatus.SUCCEEDED,
+                WorkStatus.PARTIAL,
+            }:
+                continue
+            parent = self.resume(str(work.work_id))
+            if parent.status == WorkStatus.READY and parent not in resumed:
+                resumed.append(parent)
+        return tuple(resumed)
+
     def resume(self, child_work_id: str) -> WorkExecutionState:
         child = self.runner.runtime.work.get(child_work_id)
         if not isinstance(child.parent_work_ref, StoredDataRef):
