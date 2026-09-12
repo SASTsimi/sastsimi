@@ -156,6 +156,67 @@ def test_cohort_is_pending_then_becomes_ready_as_one_visible_batch(
     assert replay == ready
 
 
+def test_registered_cohort_replay_uses_its_pinned_historical_universe(
+    tmp_path: Path,
+) -> None:
+    scenario, works, outcome, scope, identity = _completed_update(tmp_path)
+    service = ChainingCohortStore(works)
+    source = works.records.get_exact(outcome.source_work_ref)
+    assert isinstance(source, WorkExecutionState)
+    assert outcome.primitive_index_ref is not None
+
+    pending = service.register_pending(
+        outcome=outcome,
+        scope=scope,
+        requester_identity_ref=identity,
+        metadata=source.meta,
+        generation=source.work_generation,
+    )
+    ready = service.promote_ready(
+        registration=pending,
+        scope=scope,
+        requester_identity_ref=identity,
+    )
+
+    original_index = works.records.get_exact(outcome.primitive_index_ref)
+    assert isinstance(original_index, PrimitiveIndexState)
+    later_index = PrimitiveIndexState.model_validate(
+        original_index.model_dump()
+        | {
+            "meta": next_meta(original_index.meta, scenario.clock, scenario.ids),
+        }
+    )
+    later_index_ref = works.records.stage_record(later_index)
+    assert isinstance(later_index_ref, StoredDataRef)
+    with works.records.database.write() as connection:
+        works.records.publish(connection, later_index_ref)
+        connection.execute(
+            update(models.current_records)
+            .where(
+                models.current_records.c.logical_record_id
+                == str(original_index.meta.logical_record_id)
+            )
+            .values(
+                record_id=str(later_index.meta.record_id),
+                state_version=later_index.meta.revision_number,
+            )
+        )
+
+    replay = service.register_pending(
+        outcome=outcome,
+        scope=scope,
+        requester_identity_ref=identity,
+        metadata=source.meta,
+        generation=source.work_generation,
+    )
+
+    assert replay == ready
+    assert all(
+        member.pool.universe.index_refs == ready.members[0].pool.universe.index_refs
+        for member in replay.members
+    )
+
+
 def test_cohort_generation_must_equal_its_committed_source_work(
     tmp_path: Path,
 ) -> None:

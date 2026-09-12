@@ -385,6 +385,13 @@ class ChainingCohortStore:
             raise ValueError("CHAINING_REGISTRATION_SCOPE_MISMATCH")
         with self.records.database.write() as connection:
             self._validate_outcome(connection, outcome, metadata, generation)
+            existing = self._read_registration(
+                connection, outcome.transition_commit_ref, required=False
+            )
+            if existing is not None:
+                self._validate_replay(existing, outcome, generation)
+                return existing
+
             index_refs, considered_refs = self._current_universe(
                 connection,
                 source_index_ref=outcome.primitive_index_ref,
@@ -392,18 +399,6 @@ class ChainingCohortStore:
             )
             if any(ref not in considered_refs for ref in outcome.primitive_refs):
                 raise ValueError("CHAINING_UPDATE_INDEX_NOT_CURRENT")
-            existing = self._read_registration(
-                connection, outcome.transition_commit_ref, required=False
-            )
-            if existing is not None:
-                self._validate_replay(
-                    existing,
-                    outcome,
-                    index_refs,
-                    considered_refs,
-                    generation,
-                )
-                return existing
 
             source_wire = _wire(outcome.transition_commit_ref)
             from sastsimi.contracts.canonical_json import content_hash
@@ -991,23 +986,29 @@ class ChainingCohortStore:
     def _validate_replay(
         registration: ChainingCohortRegistration,
         outcome: PrimitiveUpdateOutcome,
-        index_refs: tuple[StoredDataRef, ...],
-        considered_refs: tuple[StoredDataRef, ...],
         generation: int,
     ) -> None:
+        first_universe = registration.members[0].pool.universe
         if (
-            tuple(
+            registration.source_update_ref != outcome.transition_commit_ref
+            or tuple(
                 member.pool.universe.trigger_primitive_ref
                 for member in registration.members
             )
             != outcome.primitive_refs
             or any(
-                member.pool.universe.index_refs != index_refs
+                member.pool.universe.index_refs != first_universe.index_refs
                 for member in registration.members
             )
             or any(
-                member.pool.universe.considered_primitive_refs != considered_refs
+                member.pool.universe.considered_primitive_refs
+                != first_universe.considered_primitive_refs
                 for member in registration.members
+            )
+            or outcome.primitive_index_ref not in first_universe.index_refs
+            or any(
+                ref not in first_universe.considered_primitive_refs
+                for ref in outcome.primitive_refs
             )
             or any(
                 member.work.work_generation != generation
