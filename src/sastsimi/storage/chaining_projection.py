@@ -5,14 +5,17 @@ from sqlalchemy import Connection, select
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.chaining import (
     ChainingResult,
+    LineageExclusion,
     Primitive,
     PrimitiveIndexState,
     validate_chaining_closure,
 )
 from sastsimi.contracts.hypothesis import HypothesisProcessState
 from sastsimi.contracts.records import RecordMeta
+from sastsimi.contracts.refs import StoredDataRef
 from sastsimi.contracts.verification import VerificationResult
 from sastsimi.contracts.work import WorkExecutionState
+from sastsimi.ports.chaining import ChainingLineagePort, PinnedChainingUniverse
 from sastsimi.ports.dto import Record
 
 from . import models
@@ -21,11 +24,52 @@ from .stage_policy import resolved
 from .work_service import WorkService
 
 
+def _expected_lineage_exclusions(
+    result: ChainingResult,
+    universe: PinnedChainingUniverse,
+    lineage: ChainingLineagePort,
+) -> tuple[LineageExclusion, ...]:
+    expected: list[LineageExclusion] = []
+    used = set(result.input_primitive_refs)
+    seen: set[tuple[StoredDataRef, StoredDataRef]] = set()
+    for match in result.primitive_match_candidates:
+        for matched_ref in (
+            match.upstream_result_ref,
+            match.downstream_input_ref,
+        ):
+            ancestors = lineage.ancestors(
+                primitive_ref=matched_ref,
+                universe=universe,
+            )
+            if len(set(ancestors)) != len(ancestors) or any(
+                ancestor == matched_ref
+                or ancestor not in result.considered_primitive_refs
+                for ancestor in ancestors
+            ):
+                raise ValueError("CHAINING_LINEAGE_RESOLUTION_INVALID")
+            if any(ancestor in used for ancestor in ancestors):
+                raise ValueError("CHAINING_LINEAGE_REUSED_ANCESTOR")
+            for ancestor in ancestors:
+                pair = (ancestor, matched_ref)
+                if pair in seen:
+                    continue
+                seen.add(pair)
+                expected.append(
+                    LineageExclusion(
+                        excluded_primitive_ref=ancestor,
+                        excluded_by_ref=matched_ref,
+                        reason_code="ANCESTOR_REUSE",
+                    )
+                )
+    return tuple(expected)
+
+
 def validate_chaining_output(
     works: WorkService,
     connection: Connection,
     work: WorkExecutionState,
     outputs: tuple[Record, ...],
+    lineage: ChainingLineagePort | None = None,
 ) -> None:
     results = [item for item in outputs if isinstance(item, ChainingResult)]
     if not results:
@@ -44,6 +88,7 @@ def validate_chaining_output(
     )
     if (
         not index_refs
+        or any(not isinstance(ref, StoredDataRef) for ref in index_refs)
         or len(index_refs) + len(primitive_input_refs) != len(work.input_refs)
         or {canonical_bytes(ref) for ref in primitive_input_refs}
         != {canonical_bytes(ref) for ref in result.considered_primitive_refs}
@@ -112,7 +157,6 @@ def validate_chaining_output(
         if (
             index.current_verification_ref != primitive.source_verification_ref
             or process.verification_result_ref != primitive.source_verification_ref
-            or work.work_generation != process.verification_generation
             or verification.meta.analysis_id != work.meta.analysis_id
             or verification.meta.workspace_id != work_meta.workspace_id
             or verification.meta.commit_id != work_meta.commit_id
@@ -124,9 +168,26 @@ def validate_chaining_output(
             or primitive.commit_id != work_meta.commit_id
         ):
             raise ValueError("CHAINING_CURRENT_VERIFICATION_MISMATCH")
+    expected_exclusions: tuple[LineageExclusion, ...] = ()
+    if result.primitive_match_candidates or result.excluded_lineage_refs:
+        if lineage is None or work.trigger_primitive_ref is None:
+            raise ValueError("CHAINING_LINEAGE_VALIDATOR_REQUIRED")
+        stored_index_refs = tuple(
+            ref for ref in index_refs if isinstance(ref, StoredDataRef)
+        )
+        universe = PinnedChainingUniverse(
+            trigger_primitive_ref=work.trigger_primitive_ref,
+            index_refs=stored_index_refs,
+            considered_primitive_refs=result.considered_primitive_refs,
+        )
+        expected_exclusions = _expected_lineage_exclusions(
+            result,
+            universe,
+            lineage,
+        )
     validate_chaining_closure(
         result,
         primitives,
         result.considered_primitive_refs,
-        result.excluded_lineage_refs,
+        expected_exclusions,
     )
