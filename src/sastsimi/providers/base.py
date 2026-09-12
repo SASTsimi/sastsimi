@@ -1,9 +1,9 @@
 """Provider-neutral dependencies for external LLM adapters.
 
-Production client construction belongs to the application composition boundary.  In
-particular, Task 16 must connect the official SDK and configure its client with
-provider retries disabled; adapters never import an optional provider SDK or retain a
-resolved credential.
+Production client construction and executable approval belong to the application
+composition boundary. API adapters connect the official SDK with provider retries
+disabled; subscription adapters invoke only a path-and-digest-bound official client.
+Adapters never import an optional provider SDK or retain a resolved credential.
 """
 
 from contextlib import AbstractAsyncContextManager
@@ -40,6 +40,27 @@ class ProviderInputMismatchError(RuntimeError):
 
 class ProviderInvalidOutputError(RuntimeError):
     """A provider response cannot be used as structured agent output."""
+
+
+@dataclass(frozen=True)
+class CodexProcessRequest:
+    """Secret-free input for one official ``codex exec`` child process."""
+
+    invocation_id: str
+    provider_profile_ref: StoredDataRef
+    model: str
+    prompt: bytes
+    output_schema: bytes
+    timeout_ms: int
+
+
+@dataclass(frozen=True)
+class CodexProcessResult:
+    """Sanitized Codex child outcome; raw stdout/stderr never cross this seam."""
+
+    status: InvocationStatus
+    final_message: bytes | None
+    provider_session_id: str | None
 
 
 @dataclass(frozen=True)
@@ -145,8 +166,15 @@ class ProviderProbeRunner(Protocol):
     ) -> CapabilityProbeResult: ...
 
 
+class CodexProcessRunner(Protocol):
+    async def execute(self, request: CodexProcessRequest) -> CodexProcessResult: ...
+
+
 __all__ = [
     "Clock",
+    "CodexProcessRequest",
+    "CodexProcessResult",
+    "CodexProcessRunner",
     "CredentialUnavailableError",
     "InvocationResultBuilder",
     "NormalizedProviderResult",
