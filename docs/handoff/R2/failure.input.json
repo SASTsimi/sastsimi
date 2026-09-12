@@ -1,0 +1,25 @@
+{
+  "_comment_ko": "codeql database analyze를 존재하지 않는 database root로 실제로 실행해서 얻은 진짜 실패. exit code와 stderr 모두 실제 실행 결과 그대로입니다(가짜로 만든 에러 문구 아님).",
+  "tool_invocation": {
+    "attempt_id": "attempt-codeql-verify-002",
+    "tool_name": "codeql",
+    "tool_version": "2.26.4",
+    "tool_kind": "RULE_BASED",
+    "query_pack": "codeql/python-queries",
+    "query_pack_version": "1.8.9+1d123a2caa0e4e6256a49d963bfcbd51a01617e8",
+    "query": "Security/CWE-089/SqlInjection.ql",
+    "rule_id": "py/sql-injection",
+    "command": "codeql database analyze orders-db-corrupted codeql/python-queries/1.8.9/Security/CWE-089/SqlInjection.ql --format=sarif-latest --output=sqli-fail.sarif",
+    "database": "orders-db-corrupted",
+    "language": "python",
+    "started_at": "2026-09-05T16:28:50Z",
+    "finished_at": "2026-09-05T16:28:50Z",
+    "exit_code": 2
+  },
+  "raw_stderr": "A fatal error occurred: Database root /home/claude/codeql-work/orders-db-corrupted does not exist.",
+  "raw_stdout": "",
+  "raw_output_file": {
+    "path": "fail-stderr-clean.txt",
+    "content_hash": "sha256:a31a15b1a87a4fd136f0c62b35cba33edfabdc450df91631b17b0cb37087b3f2"
+  }
+}

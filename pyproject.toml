@@ -33,7 +33,7 @@ packages = ["src/sastsimi"]
 [tool.ruff]
 target-version = "py312"
 line-length = 88
-extend-exclude = ["*.md"]
+extend-exclude = ["*.md", "docs/handoff/**/sample-app/**"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
