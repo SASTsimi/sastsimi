@@ -137,6 +137,7 @@ def test_profile_uses_only_exact_tracked_files_and_detects_known_inputs(
     assert tuple(item.git_path for item in result.tracked_files) == tuple(
         sorted(item.git_path for item in tracked)
     )
+    assert all(len(item.content_sha256) == 64 for item in result.tracked_files)
 
 
 def test_profile_fails_closed_when_a_tracked_blob_changed(tmp_path: Path) -> None:

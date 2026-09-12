@@ -132,6 +132,7 @@ class RepositoryTrackedFile(ContractModel):
     git_path: GitPath
     git_mode: Literal["100644", "100755"]
     blob_id: NonEmptyStr
+    content_sha256: Sha256
     size_bytes: NonNegativeInt
 
     @model_validator(mode="after")

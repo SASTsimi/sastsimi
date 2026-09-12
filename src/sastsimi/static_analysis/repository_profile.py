@@ -262,7 +262,11 @@ class RepositoryProfiler:
             if _git_blob_id(raw, item.blob_id) != item.blob_id:
                 raise ValueError("REPOSITORY_MANIFEST_MISMATCH")
             raw_files[item.git_path] = raw
-            manifest.append(RepositoryTrackedFile.model_validate(asdict(item)))
+            manifest.append(
+                RepositoryTrackedFile.model_validate(
+                    asdict(item) | {"content_sha256": hashlib.sha256(raw).hexdigest()}
+                )
+            )
 
         language_paths: dict[str, list[str]] = {}
         configs: list[RepositoryConfigFile] = []
@@ -336,7 +340,7 @@ class RepositoryProfiler:
                 "commit_id": preparation.resolved_commit_id,
                 "workspace_ref": workspace_ref,
                 "manifest_hash": content_hash(
-                    tuple(asdict(item) for item in canonical_tracked)
+                    tuple(item.model_dump(mode="json") for item in manifest)
                 ),
                 "tracked_files": tuple(manifest),
                 "languages": languages,
