@@ -11,7 +11,19 @@ from sastsimi.interfaces.cli.main import main
 def test_results_reports_persisted_not_found_for_missing_run(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert main(["--data-dir", str(tmp_path), "results", "--format", "json"]) == 0
+    assert (
+        main(
+            [
+                "--data-dir",
+                str(tmp_path),
+                "demo",
+                "results",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
     result = json.loads(capsys.readouterr().out)
     assert result["data"] == {
         "analysis_id": "fake-analysis",
@@ -28,6 +40,7 @@ def test_fake_cli_analyze_results_and_reports(
             [
                 "--data-dir",
                 str(tmp_path),
+                "demo",
                 "analyze",
                 "--scenario",
                 "FALSE",
@@ -39,7 +52,19 @@ def test_fake_cli_analyze_results_and_reports(
     )
     first = json.loads(capsys.readouterr().out)
     assert first["data"]["verdict_counts"] == {"FALSE": 1}
-    assert main(["--data-dir", str(tmp_path), "results", "--format", "json"]) == 0
+    assert (
+        main(
+            [
+                "--data-dir",
+                str(tmp_path),
+                "demo",
+                "results",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
     persisted = json.loads(capsys.readouterr().out)
     assert persisted["data"]["status"] == "COMPLETE"
     assert (
