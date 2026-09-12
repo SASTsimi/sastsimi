@@ -45,7 +45,9 @@ jobs:
           docker pull python:3.12-slim
           uv run python -m pytest tests/e2e/test_dynamic_reproduction.py -q
       - name: All existing suites
-        run: uv run pytest tests -q
+        # Each test remains part of the one final CI suite.  Independent test
+        # processes only shorten wall-clock time; they do not skip coverage.
+        run: uv run pytest tests -q -n 4
       - name: Architecture validator (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell
