@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import sastsimi.reporting.markdown_export as markdown_export
 from sastsimi.contracts.actions import (
     ActionCheck,
     ActionDecision,
@@ -432,6 +433,73 @@ def test_markdown_export_does_not_follow_directory_swap_during_replace(
                 parent.unlink()
         if backup.exists() and not parent.exists():
             backup.rename(parent)
+
+
+def test_markdown_export_rejects_data_dir_swap_before_directory_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = current_report()
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    service = ReportMarkdownService(data_dir, Source(report))
+    backup = tmp_path / "data-backup"
+    outside = tmp_path / "outside-data"
+    outside_parent = outside / "reports" / report.analysis_id
+    outside_parent.mkdir(parents=True)
+    victim = outside_parent / f"{report.finding_id}.md"
+    victim.write_text("victim", encoding="utf-8")
+    real_write = markdown_export._atomic_write_report
+
+    def racing_write(*args: object, **kwargs: object) -> None:
+        data_dir.rename(backup)
+        if os.name == "nt":
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(data_dir), str(outside)],
+                check=True,
+                capture_output=True,
+            )
+        else:
+            data_dir.symlink_to(outside, target_is_directory=True)
+        real_write(*args, **kwargs)
+
+    monkeypatch.setattr(markdown_export, "_atomic_write_report", racing_write)
+    try:
+        with pytest.raises(ReportUnavailable, match="UNSAFE_REPORT_PATH"):
+            service.export(report.finding_id)
+        assert victim.read_text(encoding="utf-8") == "victim"
+    finally:
+        monkeypatch.undo()
+        if data_dir.is_symlink() or (
+            hasattr(data_dir, "is_junction") and data_dir.is_junction()
+        ):
+            if os.name == "nt":
+                data_dir.rmdir()
+            else:
+                data_dir.unlink()
+
+
+def test_markdown_export_rejects_replaced_data_dir_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = current_report()
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    service = ReportMarkdownService(data_dir, Source(report))
+    backup = tmp_path / "data-backup"
+    victim = data_dir / "reports" / report.analysis_id / f"{report.finding_id}.md"
+    real_write = markdown_export._atomic_write_report
+
+    def racing_write(*args: object, **kwargs: object) -> None:
+        data_dir.rename(backup)
+        victim.parent.mkdir(parents=True)
+        victim.write_text("victim", encoding="utf-8")
+        real_write(*args, **kwargs)
+
+    monkeypatch.setattr(markdown_export, "_atomic_write_report", racing_write)
+
+    with pytest.raises(ReportUnavailable, match="UNSAFE_REPORT_PATH"):
+        service.export(report.finding_id)
+    assert victim.read_text(encoding="utf-8") == "victim"
 
 
 def test_current_report_requires_exact_execution_log_and_command() -> None:

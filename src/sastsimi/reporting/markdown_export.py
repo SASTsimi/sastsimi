@@ -103,6 +103,7 @@ class ReportMarkdownService:
 
     def __init__(self, data_dir: Path, source: CurrentReportSource) -> None:
         self._data_dir = data_dir.resolve()
+        self._data_dir_identity = _capture_directory_identity(self._data_dir)
         self._source = source
 
     def summaries(self) -> tuple[dict[str, str], ...]:
@@ -131,7 +132,12 @@ class ReportMarkdownService:
         report = self._source.get_current(finding_id)
         markdown = render_markdown(report)
         destination = self._destination(report)
-        _atomic_write_report(destination, report.analysis_id, markdown.encode("utf-8"))
+        _atomic_write_report(
+            destination,
+            report.analysis_id,
+            markdown.encode("utf-8"),
+            self._data_dir_identity,
+        )
         return destination
 
     def _destination(self, report: CurrentReport) -> Path:
@@ -390,79 +396,129 @@ def _directory_identity(info: os.stat_result) -> tuple[int, int, int]:
     return info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)
 
 
-def _atomic_write_report(path: Path, analysis_id: str, data: bytes) -> None:
+def _capture_directory_identity(path: Path) -> tuple[int, int, int] | None:
+    try:
+        return _directory_identity(os.stat(path, follow_symlinks=False))
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise ReportUnavailable("UNSAFE_REPORT_PATH") from error
+
+
+def _atomic_write_report(
+    path: Path,
+    analysis_id: str,
+    data: bytes,
+    data_dir_identity: tuple[int, int, int] | None,
+) -> None:
+    if data_dir_identity is None:
+        raise ReportUnavailable("UNSAFE_REPORT_PATH")
     if os.name == "nt":
-        with _locked_windows_directory(path.parent.parent):
-            with _locked_windows_directory(path.parent):
-                _atomic_write(path, data)
+        with _locked_windows_directory(
+            path.parent.parent.parent, expected_identity=data_dir_identity
+        ):
+            with _locked_windows_directory(path.parent.parent):
+                with _locked_windows_directory(path.parent):
+                    _atomic_write(path, data)
         return
-    _atomic_write_report_posix(path, analysis_id, data)
+    _atomic_write_report_posix(path, analysis_id, data, data_dir_identity)
 
 
-def _atomic_write_report_posix(path: Path, analysis_id: str, data: bytes) -> None:
-    root = path.parent.parent
+def _atomic_write_report_posix(
+    path: Path,
+    analysis_id: str,
+    data: bytes,
+    data_dir_identity: tuple[int, int, int],
+) -> None:
+    data_dir = path.parent.parent.parent
     directory_flag = getattr(os, "O_DIRECTORY", 0)
     nofollow_flag = getattr(os, "O_NOFOLLOW", 0)
     if not directory_flag or not nofollow_flag:
         raise ReportUnavailable("UNSAFE_REPORT_PATH")
     directory_flags = os.O_RDONLY | directory_flag | nofollow_flag
     try:
-        root.mkdir(exist_ok=True)
-        root_fd = os.open(root, directory_flags)
+        data_dir_fd = os.open(data_dir, directory_flags)
     except OSError as error:
         raise ReportUnavailable("UNSAFE_REPORT_PATH") from error
     try:
-        root_identity = _directory_identity(os.fstat(root_fd))
+        if _directory_identity(os.fstat(data_dir_fd)) != data_dir_identity:
+            raise ReportUnavailable("UNSAFE_REPORT_PATH")
         try:
-            os.mkdir(analysis_id, mode=0o700, dir_fd=root_fd)
+            os.mkdir("reports", mode=0o700, dir_fd=data_dir_fd)
         except FileExistsError:
             pass
-        parent_fd = os.open(analysis_id, directory_flags, dir_fd=root_fd)
+        root_fd = os.open("reports", directory_flags, dir_fd=data_dir_fd)
         try:
-            parent_identity = _directory_identity(os.fstat(parent_fd))
-            temporary = f".{path.name}.{uuid4().hex}.tmp"
-            descriptor = os.open(
-                temporary,
-                os.O_RDWR | os.O_CREAT | os.O_EXCL,
-                0o600,
-                dir_fd=parent_fd,
-            )
+            root_identity = _directory_identity(os.fstat(root_fd))
             try:
-                with os.fdopen(descriptor, "w+b", closefd=False) as stream:
-                    stream.write(data)
-                    stream.flush()
-                    os.fsync(descriptor)
-                    os.replace(
-                        temporary,
-                        path.name,
-                        src_dir_fd=parent_fd,
-                        dst_dir_fd=parent_fd,
-                    )
-                    os.fsync(parent_fd)
-                    stream.seek(0)
-                    if stream.read() != data:
-                        raise ReportUnavailable("REPORT_EXPORT_WRITE_FAILED")
-                if (
-                    _directory_identity(os.stat(root, follow_symlinks=False))
-                    != root_identity
-                    or _directory_identity(
-                        os.stat(analysis_id, dir_fd=root_fd, follow_symlinks=False)
-                    )
-                    != parent_identity
-                ):
-                    raise ReportUnavailable("UNSAFE_REPORT_PATH")
-            finally:
-                os.close(descriptor)
                 try:
-                    os.unlink(temporary, dir_fd=parent_fd)
-                except FileNotFoundError:
+                    os.mkdir(analysis_id, mode=0o700, dir_fd=root_fd)
+                except FileExistsError:
                     pass
+                parent_fd = os.open(analysis_id, directory_flags, dir_fd=root_fd)
+                try:
+                    parent_identity = _directory_identity(os.fstat(parent_fd))
+                    temporary = f".{path.name}.{uuid4().hex}.tmp"
+                    descriptor = os.open(
+                        temporary,
+                        os.O_RDWR | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                        dir_fd=parent_fd,
+                    )
+                    try:
+                        with os.fdopen(descriptor, "w+b", closefd=False) as stream:
+                            stream.write(data)
+                            stream.flush()
+                            os.fsync(descriptor)
+                            os.replace(
+                                temporary,
+                                path.name,
+                                src_dir_fd=parent_fd,
+                                dst_dir_fd=parent_fd,
+                            )
+                            os.fsync(parent_fd)
+                            stream.seek(0)
+                            if stream.read() != data:
+                                raise ReportUnavailable("REPORT_EXPORT_WRITE_FAILED")
+                        if (
+                            _directory_identity(
+                                os.stat(data_dir, follow_symlinks=False)
+                            )
+                            != data_dir_identity
+                            or _directory_identity(
+                                os.stat(
+                                    "reports",
+                                    dir_fd=data_dir_fd,
+                                    follow_symlinks=False,
+                                )
+                            )
+                            != root_identity
+                            or _directory_identity(
+                                os.stat(
+                                    analysis_id,
+                                    dir_fd=root_fd,
+                                    follow_symlinks=False,
+                                )
+                            )
+                            != parent_identity
+                        ):
+                            raise ReportUnavailable("UNSAFE_REPORT_PATH")
+                    finally:
+                        os.close(descriptor)
+                        try:
+                            os.unlink(temporary, dir_fd=parent_fd)
+                        except FileNotFoundError:
+                            pass
+                finally:
+                    os.close(parent_fd)
+            except OSError as error:
+                raise ReportUnavailable("UNSAFE_REPORT_PATH") from error
         finally:
-            os.close(parent_fd)
+            os.close(root_fd)
     except OSError as error:
         raise ReportUnavailable("UNSAFE_REPORT_PATH") from error
     finally:
-        os.close(root_fd)
+        os.close(data_dir_fd)
 
 
 class _WindowsFunction(Protocol):
@@ -482,8 +538,11 @@ def _platform_attribute(owner: object, name: str) -> object:
 
 
 @contextmanager
-def _locked_windows_directory(path: Path) -> Iterator[None]:
+def _locked_windows_directory(
+    path: Path, *, expected_identity: tuple[int, int, int] | None = None
+) -> Iterator[None]:
     import ctypes
+    import msvcrt
 
     try:
         path.mkdir(exist_ok=True)
@@ -527,18 +586,27 @@ def _locked_windows_directory(path: Path) -> Iterator[None]:
         raise ReportUnavailable("UNSAFE_REPORT_PATH") from OSError(
             get_last_error(), "REPORT_DIRECTORY_OPEN_FAILED", str(path)
         )
+    descriptor: int | None = None
     try:
-        information = path.lstat()
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+        information = os.fstat(descriptor)
         if (
             not stat.S_ISDIR(information.st_mode)
             or int(getattr(information, "st_file_attributes", 0))
             & _FILE_ATTRIBUTE_REPARSE_POINT
             or int(getattr(information, "st_reparse_tag", 0)) != 0
+            or (
+                expected_identity is not None
+                and _directory_identity(information) != expected_identity
+            )
         ):
             raise ReportUnavailable("UNSAFE_REPORT_PATH")
         yield
     finally:
-        close_handle(handle)
+        if descriptor is None:
+            close_handle(handle)
+        else:
+            os.close(descriptor)
 
 
 __all__ = [
