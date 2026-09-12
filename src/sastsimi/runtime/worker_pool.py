@@ -188,9 +188,7 @@ class WorkerPool:
                 heartbeat_task.cancel()
             if not handler_task.done():
                 handler_task.cancel()
-            await asyncio.gather(
-                handler_task, heartbeat_task, return_exceptions=True
-            )
+            await asyncio.gather(handler_task, heartbeat_task, return_exceptions=True)
 
     def _record_failure(self, context: WorkContext) -> None:
         with suppress(LookupError, ValueError):

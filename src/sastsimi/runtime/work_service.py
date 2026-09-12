@@ -68,9 +68,10 @@ class WorkService:
         )
         if failed.status not in {WorkStatus.BLOCKED, WorkStatus.FAILED}:
             raise ValueError("WORK_HANDLER_FAILURE_NOT_PERSISTED")
-        if self.accept_handler_result(
-            context, WorkHandlerResult(failed.output_refs)
-        ) != failed:
+        if (
+            self.accept_handler_result(context, WorkHandlerResult(failed.output_refs))
+            != failed
+        ):
             raise ValueError("WORK_HANDLER_FAILURE_NOT_PERSISTED")
         return failed
 
