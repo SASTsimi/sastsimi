@@ -289,8 +289,7 @@
         {
           "type": "null"
         }
-      ],
-      "default": null
+      ]
     },
     "source_refs": {
       "items": {
@@ -310,6 +309,7 @@
     "built_image_digest",
     "baseline_recipe_ref",
     "build_disposition",
+    "source_manifest",
     "created_at"
   ],
   "title": "EnvironmentRecipe",
