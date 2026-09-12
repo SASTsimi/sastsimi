@@ -134,8 +134,6 @@ class SQLiteChainingChildRegistration:
                 )
                 if work.status == WorkStatus.SUCCEEDED:
                     self._completed_proposal(connection, work, proposal)
-                elif work.status not in {WorkStatus.READY, WorkStatus.RUNNING}:
-                    raise ValueError("CHAINING_CHILD_REPLAY_STATE_MISMATCH")
                 if (
                     self._registration_scope(connection, work)
                     != self.config.budget_binding_ref
@@ -963,9 +961,22 @@ class SQLiteChainingChildRegistration:
             or work.input_hash != content_hash(work.input_refs)
             or work.dedupe_key != registration_key
             or work.status
-            not in {WorkStatus.READY, WorkStatus.RUNNING, WorkStatus.SUCCEEDED}
+            not in {
+                WorkStatus.READY,
+                WorkStatus.RUNNING,
+                WorkStatus.BLOCKED,
+                WorkStatus.SUCCEEDED,
+                WorkStatus.FAILED,
+                WorkStatus.CANCELLED,
+            }
             or (
-                work.status == WorkStatus.READY
+                work.status
+                in {
+                    WorkStatus.READY,
+                    WorkStatus.BLOCKED,
+                    WorkStatus.FAILED,
+                    WorkStatus.CANCELLED,
+                }
                 and (work.active_attempt_id is not None or work.output_refs)
             )
             or (

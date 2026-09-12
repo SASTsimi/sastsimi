@@ -902,6 +902,52 @@ def test_recovery_reconciliation_enqueues_the_concrete_child_once() -> None:
     assert replay == registered
 
 
+@pytest.mark.parametrize("status", ["BLOCKED", "FAILED", "CANCELLED"])
+def test_recovery_replay_preserves_existing_non_ready_child(status: str) -> None:
+    harness, runner, service, works, scope, requester, source = _prepared(
+        f"recovery-{status.lower()}"
+    )
+    source_ref = reference(source)
+    assert isinstance(source_ref, StoredDataRef)
+    proposal_id = source.chained_hypothesis_proposals[0].proposal_id
+    ready = service.enqueue_ready(
+        source_result_ref=source_ref,
+        proposal_id=proposal_id,
+        requester_identity_ref=requester,
+    )
+    running = runner.activate(ready, scope, requester)
+    current = runner.complete(
+        running,
+        requester,
+        "ORCHESTRATION",
+        (),
+        status=status,
+        cause=f"TEST_{status}",
+        error_ids=("proposal-failed",) if status == "FAILED" else (),
+    )
+    before_ids = harness.ids.index
+    before_work = _count(works, models.work_states)
+    before_ledger = _count(works, models.budget_ledger_entries)
+    harness.evidence.identities[requester] = RequesterRole.RECOVERY
+    reconciliation = ChainingReconciliationService(
+        sources=ChainingCommittedSourceStore(works.records),
+        cohorts=cast(Any, SimpleNamespace()),
+        children=service,
+        records=works.records,
+        budget_scope_ref=scope,
+        requester_identity_ref=requester,
+    )
+
+    replay = reconciliation.reconcile_chaining_result(
+        ChainingResultReconciliationRequest(source_ref)
+    )
+
+    assert replay == (current,)
+    assert harness.ids.index == before_ids
+    assert _count(works, models.work_states) == before_work
+    assert _count(works, models.budget_ledger_entries) == before_ledger
+
+
 def test_child_handoff_rejects_non_orchestration_non_recovery_role() -> None:
     harness, _runner, service, works, _scope, requester, source = _prepared(
         "wrong-role"
