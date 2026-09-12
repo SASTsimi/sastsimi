@@ -8,15 +8,11 @@ import shlex
 import stat
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 from uuid import uuid4
 
-from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.actions import (
-    ActionDecision,
-    ActionRequest,
     ActionType,
     CheckResult,
     CheckType,
@@ -27,23 +23,17 @@ from sastsimi.contracts.actions import (
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.dynamic import (
     POC_RUNTIME_PATH,
-    AgentLog,
-    DynamicReproductionResult,
-    PoCBundle,
-    PoCCandidate,
     SandboxCommandRecord,
-)
-from sastsimi.contracts.gates import (
-    CWELabel,
-    RuleScopeImpactReview,
-    TechnicalEvidenceReview,
 )
 from sastsimi.contracts.prompt_redaction import assert_safe_provider_text
 from sastsimi.contracts.refs import StoredDataRef
-from sastsimi.contracts.reporting import Finding, ReportContent, ReportDraft
 from sastsimi.contracts.static import CodeLocation
 from sastsimi.contracts.verification import EvidenceClaim, VerificationResult
-from sastsimi.storage.artifact_store import sync_directory
+from sastsimi.ports.report_export import (
+    CurrentReport,
+    CurrentReportSource,
+    ReportUnavailable,
+)
 
 _SAFE_PATH_SEGMENT = re.compile(r"[a-z0-9][a-z0-9_-]{0,127}\Z")
 _WINDOWS_RESERVED_STEMS = frozenset(
@@ -52,50 +42,6 @@ _WINDOWS_RESERVED_STEMS = frozenset(
     | {f"lpt{index}" for index in range(1, 10)}
 )
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
-
-
-class ReportUnavailable(ValueError):
-    """The requested draft is missing, stale, unsafe, or has a broken closure."""
-
-
-@dataclass(frozen=True, slots=True)
-class CurrentReport:
-    draft: ReportDraft
-    finding: Finding
-    verification: VerificationResult
-    cwe: CWELabel
-    technical: TechnicalEvidenceReview
-    rule_scope: RuleScopeImpactReview
-    dynamic: DynamicReproductionResult
-    poc: PoCBundle
-    poc_candidate: PoCCandidate
-    agent_log: AgentLog
-    execution_command: SandboxCommandRecord
-    content: ReportContent
-    poc_text: str
-    report_action: ActionRequest
-    report_decision: ActionDecision
-
-    @property
-    def analysis_id(self) -> str:
-        return str(self.draft.meta.analysis_id)
-
-    @property
-    def hypothesis_id(self) -> str:
-        value = self.draft.meta.hypothesis_id
-        if value is None:
-            raise ReportUnavailable("REPORT_SCOPE_INVALID")
-        return str(value)
-
-    @property
-    def finding_id(self) -> str:
-        return str(self.finding.meta.record_id)
-
-
-class CurrentReportSource(Protocol):
-    def list_current(self, analysis_id: str) -> tuple[CurrentReport, ...]: ...
-
-    def get_current(self, finding_id: str) -> CurrentReport: ...
 
 
 class ReportMarkdownService:
@@ -159,7 +105,7 @@ class ReportMarkdownService:
                 or value in _WINDOWS_RESERVED_STEMS
             ):
                 raise ReportUnavailable("UNSAFE_REPORT_PATH_ID")
-        expected_root = RuntimePaths(self._data_dir).reports
+        expected_root = self._data_dir / "reports"
         root = expected_root.resolve()
         if root != expected_root or root.parent != self._data_dir:
             raise ReportUnavailable("UNSAFE_REPORT_PATH_ROOT")
@@ -434,14 +380,14 @@ def _atomic_write(
             os.fsync(stream.fileno())
         assert_still_current()
         os.replace(temporary, path)
-        sync_directory(path.parent)
+        _sync_directory(path.parent)
         if path.read_bytes() != data:
             raise ReportUnavailable("REPORT_EXPORT_WRITE_FAILED")
         try:
             assert_still_current()
         except Exception:
             path.unlink(missing_ok=True)
-            sync_directory(path.parent)
+            _sync_directory(path.parent)
             raise
     finally:
         temporary.unlink(missing_ok=True)
@@ -451,6 +397,17 @@ def _directory_identity(info: os.stat_result) -> tuple[int, int, int]:
     if not stat.S_ISDIR(info.st_mode):
         raise ReportUnavailable("UNSAFE_REPORT_PATH")
     return info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)
+
+
+def _sync_directory(path: Path) -> None:
+    """Durably publish a directory update where the platform supports it."""
+
+    if os.name != "nt":
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
 
 def _capture_directory_identity(path: Path) -> tuple[int, int, int] | None:

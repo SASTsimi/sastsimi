@@ -14,7 +14,6 @@ from sastsimi.interfaces.cli import reports as reports_command
 from sastsimi.interfaces.cli import results as results_command
 from sastsimi.interfaces.cli.exit_codes import ExitCode
 from sastsimi.interfaces.cli.output import emit_data, emit_result
-from sastsimi.reporting.markdown_export import ReportUnavailable
 
 
 class _InputError(ValueError):
@@ -153,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         code = ExitCode.CONFIG_ERROR
     except bootstrap.MigrationRequired:
         code = ExitCode.CONFIG_ERROR
-    except ReportUnavailable:
+    except report_command.ReportCommandError:
         code = ExitCode.REPORT_UNAVAILABLE
     except Exception:
         trace_id = "trace-" + str(uuid4())

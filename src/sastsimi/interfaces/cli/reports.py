@@ -2,14 +2,15 @@
 
 from pathlib import Path
 
-from sastsimi.reporting.markdown_export import ReportMarkdownService
-from sastsimi.storage.report_export import SQLiteCurrentReportSource
+from sastsimi.interfaces.cli import report as report_command
 
 
 def run(data_dir: Path, analysis_id: str) -> dict[str, object]:
-    reports = ReportMarkdownService(
-        data_dir, SQLiteCurrentReportSource(data_dir)
-    ).summaries(analysis_id)
+    service = report_command.service(data_dir)
+    try:
+        reports = service.summaries(analysis_id)
+    except ValueError as error:
+        raise report_command.ReportCommandError from error
     return {
         "count": len(reports),
         "reports": list(reports),

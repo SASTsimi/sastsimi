@@ -40,12 +40,11 @@ from sastsimi.contracts.reporting import (
     validate_report_closure,
 )
 from sastsimi.contracts.verification import VerificationResult
-from sastsimi.reporting.content_validation import read_validated_report_content
-from sastsimi.reporting.markdown_export import (
+from sastsimi.ports.report_export import (
     CurrentReport,
     ReportUnavailable,
-    validate_redaction_authority,
 )
+from sastsimi.reporting.content_validation import read_validated_report_content
 
 from . import models
 from .artifact_store import LocalArtifactStore
@@ -206,7 +205,6 @@ class SQLiteCurrentReportSource:
                 report_action=action,
                 report_decision=decision,
             )
-            validate_redaction_authority(report)
             return report
         except ReportUnavailable:
             raise
