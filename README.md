@@ -15,6 +15,8 @@ SASTSIMI는 정적 분석 도구가 모은 코드 정보를 LLM이 검토하고,
 
 모르는 용어는 [쉬운 용어집](./docs/GLOSSARY.md), 각 파일의 목적은 [전체 문서 지도](./docs/DOCUMENT_GUIDE.md)에서 확인할 수 있습니다.
 
+실행 준비 중인 사용자는 [설치와 실행 환경 준비](./docs/installation.md) → [Provider 인증과 운영 활성화](./docs/provider-setup.md) → [저장소 분석 실행 안내](./docs/usage.md) → [오류와 안전한 대응](./docs/troubleshooting.md) 순서로 읽으세요. 현재 설치본의 `sastsimi analyze --help`에 `--repo`, `--commit`, `--profile`이 모두 없으면 Fake 전용 개발 상태이며 실제 저장소 분석에 사용하면 안 됩니다.
+
 ## 현재 단계
 
 ```text
