@@ -759,20 +759,31 @@ def build_production_query(data_dir: Path) -> object:
     return SQLiteProductionQuery(Database(RuntimePaths(data_dir).database))
 
 
-def build_production_analyze() -> object:
+def build_production_analyze(capability_bundle_loader: object | None = None) -> object:
     """Build the real production command entrypoint; never select FakePipeline."""
 
     from sastsimi.config.production_profile import load_production_profile
+    from sastsimi.orchestration.production_capabilities import (
+        ProductionCapabilityBundleLoader,
+        ProfileBackedProductionCapabilityResolver,
+    )
     from sastsimi.orchestration.production_composition import (
         ConcreteProductionApplicationFactory,
     )
     from sastsimi.orchestration.production_entrypoint import ProductionAnalyzeService
     from sastsimi.runtime.system_support import UUIDIds
 
+    capability_resolver = (
+        ProfileBackedProductionCapabilityResolver(
+            cast(ProductionCapabilityBundleLoader, capability_bundle_loader)
+        )
+        if capability_bundle_loader is not None
+        else None
+    )
     return ProductionAnalyzeService(
         ids=UUIDIds(),
         load_profile=load_production_profile,
-        factory=ConcreteProductionApplicationFactory(),
+        factory=ConcreteProductionApplicationFactory(capability_resolver),
     )
 
 

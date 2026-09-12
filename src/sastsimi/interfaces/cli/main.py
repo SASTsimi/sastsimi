@@ -4,14 +4,17 @@ import argparse
 import asyncio
 import re
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NoReturn, cast
 from uuid import uuid4
 
 from sastsimi import bootstrap
+from sastsimi.config.production_profile import load_production_profile
 from sastsimi.interfaces.cli import analyze as analyze_command
 from sastsimi.interfaces.cli import commands
 from sastsimi.interfaces.cli import demo as demo_command
+from sastsimi.interfaces.cli import onboarding as onboarding_command
 from sastsimi.interfaces.cli import report as report_command
 from sastsimi.interfaces.cli import reports as reports_command
 from sastsimi.interfaces.cli import result as result_command
@@ -113,6 +116,29 @@ def main(
     report_export.add_argument(
         "--format", dest="export_format", choices=["markdown"], required=True
     )
+    onboarding_parser = subparsers.add_parser(
+        "onboarding",
+        help="record and verify production provider/prompt approvals",
+        allow_abbrev=False,
+    )
+    onboarding_commands = onboarding_parser.add_subparsers(
+        dest="onboarding_command", required=True
+    )
+    onboarding_requirements = onboarding_commands.add_parser(
+        "requirements", allow_abbrev=False
+    )
+    onboarding_requirements.add_argument("--profile", type=Path, required=True)
+    onboarding_requirements.add_argument("--format", choices=["text", "json"])
+    onboarding_prepare = onboarding_commands.add_parser("prepare", allow_abbrev=False)
+    onboarding_prepare.add_argument("--profile", type=Path, required=True)
+    onboarding_prepare.add_argument("--manifest", type=Path, required=True)
+    onboarding_prepare.add_argument(
+        "--evidence", type=Path, action="append", default=[]
+    )
+    onboarding_prepare.add_argument("--format", choices=["text", "json"])
+    onboarding_status = onboarding_commands.add_parser("status", allow_abbrev=False)
+    onboarding_status.add_argument("--profile", type=Path, required=True)
+    onboarding_status.add_argument("--format", choices=["text", "json"])
     try:
         args = parser.parse_args(argv)
         requested_output = getattr(args, "format", None)
@@ -208,6 +234,37 @@ def main(
                     data={"finding_id": args.finding_id, "path": str(path)},
                 )
             return int(ExitCode.OK)
+        if args.command == "onboarding":
+            command_name = "onboarding " + args.onboarding_command
+            profile = load_production_profile(args.profile)
+            repository_root = Path(__file__).resolve().parents[4]
+            if args.onboarding_command == "requirements":
+                onboarding_result = onboarding_command.run_requirements(
+                    profile, repository_root=repository_root
+                )
+            elif args.onboarding_command == "prepare":
+                onboarding_result = onboarding_command.run_prepare(
+                    config.data_dir,
+                    profile=profile,
+                    manifest_path=args.manifest,
+                    evidence_paths=tuple(args.evidence),
+                    repository_root=repository_root,
+                    clock=lambda: datetime.now(UTC),
+                )
+            else:
+                onboarding_result = onboarding_command.run_status(
+                    config.data_dir,
+                    profile=profile,
+                    repository_root=repository_root,
+                    clock=lambda: datetime.now(UTC),
+                )
+            emit_data(
+                output_format,
+                sys.stdout,
+                command=command_name,
+                data=onboarding_result.data,
+            )
+            return int(onboarding_result.code)
         else:
             code = ExitCode.OK if commands.doctor() else ExitCode.CAPABILITY_UNSUPPORTED
         emit_result(
