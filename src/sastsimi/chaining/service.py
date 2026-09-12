@@ -32,6 +32,7 @@ from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, re
 from sastsimi.contracts.static import CodeSymbol, Restriction, StaticFactBundle
 from sastsimi.contracts.verification import EvidenceAgentResult, VerificationResult
 from sastsimi.contracts.work import WorkExecutionState, WorkStatus
+from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.chaining import (
     ChainingAgentInput,
     ChainingAgentPort,
@@ -82,6 +83,8 @@ from .matching import (
     directional_comparisons,
     owns_pair,
 )
+
+_MAX_ARTIFACT_PROJECTION_BYTES = 4096
 
 
 @dataclass(frozen=True)
@@ -319,6 +322,7 @@ class ChainingWorkflowService:
         *,
         agent: ChainingAgentPort,
         records: RecordStore,
+        artifacts: ArtifactStore,
         pools: ChainingPoolHistoryPort,
         lineage: ChainingLineagePort,
         publisher: ChainingResultPublisherPort,
@@ -329,6 +333,7 @@ class ChainingWorkflowService:
     ) -> None:
         self._agent = agent
         self._records = records
+        self._artifacts = artifacts
         self._pools = pools
         self._lineage = lineage
         self._publisher = publisher
@@ -873,8 +878,12 @@ class ChainingWorkflowService:
         ]
         if technical_value is not None and primitive.technical_review_ref is not None:
             resolved_records.append((primitive.technical_review_ref, technical_value))
+        artifact_refs: list[StoredDataRef] = []
         for ref in primitive.evidence_refs:
             if any(existing_ref == ref for existing_ref, _ in resolved_records):
+                continue
+            if ref.record_id is None:
+                artifact_refs.append(ref)
                 continue
             resolved_records.append((ref, self._exact_evidence_record(ref, primitive)))
 
@@ -884,7 +893,41 @@ class ChainingWorkflowService:
             if projection is None:
                 raise ValueError("CHAINING_EVIDENCE_CONTENT_MISSING")
             output.append((ref, _evidence_kind(value), _safe_summary(projection)))
+        output.extend(
+            (ref, "CODE_FLOW", self._artifact_summary(ref, primitive))
+            for ref in artifact_refs
+        )
         return tuple(output)
+
+    def _artifact_summary(self, ref: StoredDataRef, primitive: Primitive) -> str:
+        primitive_meta = primitive.meta
+        if (
+            not isinstance(primitive_meta, RecordMeta)
+            or ref.data_kind != "artifact"
+            or ref.record_id is not None
+            or str(ref.stored_data_id) != ref.content_hash
+            or (ref.workspace_id, ref.commit_id)
+            != (primitive_meta.workspace_id, primitive_meta.commit_id)
+            or (primitive.workspace_id, primitive.commit_id)
+            != (primitive_meta.workspace_id, primitive_meta.commit_id)
+        ):
+            raise ValueError("CHAINING_EVIDENCE_REFERENCE_INVALID")
+        try:
+            with self._artifacts.open_verified(ref) as stream:
+                content = stream.read(_MAX_ARTIFACT_PROJECTION_BYTES + 1)
+        except (KeyError, LookupError, OSError, ValueError) as error:
+            raise ValueError("CHAINING_EVIDENCE_REFERENCE_INVALID") from error
+        excerpt = content[:_MAX_ARTIFACT_PROJECTION_BYTES]
+        try:
+            summary = _safe_text(excerpt.decode("utf-8", errors="replace"))
+        except ValueError as error:
+            raise ValueError("CHAINING_EVIDENCE_REFERENCE_INVALID") from error
+        return _safe_summary(
+            {
+                "artifact_excerpt": summary,
+                "truncated": len(content) > _MAX_ARTIFACT_PROJECTION_BYTES,
+            }
+        )
 
     def _exact_evidence_record(
         self, ref: StoredDataRef, primitive: Primitive

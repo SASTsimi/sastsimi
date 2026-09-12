@@ -32,7 +32,7 @@ from sastsimi.contracts.hypothesis import HypothesisProposal, VulnerabilityHypot
 from sastsimi.contracts.ids import AttemptId, WorkId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
-from sastsimi.contracts.static import CodeContextResponse, CodeSymbol
+from sastsimi.contracts.static import CodeContextResponse, CodeSymbol, StaticFactBundle
 from sastsimi.contracts.verification import (
     ConEvidenceResult,
     EvidenceAgentResult,
@@ -856,6 +856,10 @@ class VerificationAgent:
                 ref not in allowed_evidence for ref in draft.evidence_refs
             ):
                 raise ValueError("VERIFICATION_EVIDENCE_CLOSURE_MISMATCH")
+            if not self._privilege_is_grounded(draft, evidence_records):
+                raise ValueError(
+                    "VERIFICATION_PRIMITIVE_PRIVILEGE_CLOSURE_MISMATCH"
+                )
 
         drafts = tuple(
             PrimitiveDraft(
@@ -869,6 +873,37 @@ class VerificationAgent:
         )
         required_count = len(content.required_primitive_candidates)
         return drafts[:required_count], drafts[required_count:]
+
+    @staticmethod
+    def _privilege_is_grounded(
+        draft: _PrimitiveDraftContent,
+        evidence_records: tuple[DomainRecord, ...],
+    ) -> bool:
+        if draft.privilege_level is None:
+            return True
+        for record in evidence_records:
+            if not isinstance(record, StaticFactBundle):
+                continue
+            bundle_ref = reference(record)
+            if (
+                not isinstance(bundle_ref, StoredDataRef)
+                or bundle_ref not in draft.evidence_refs
+            ):
+                continue
+            for entity in draft.entity_refs:
+                if (
+                    entity.name != draft.privilege_level
+                    or entity not in record.entities
+                ):
+                    continue
+                if any(
+                    fact.fact_kind in {"AUTH_CHECK", "PERMISSION_CHECK"}
+                    and fact.symbol_id == entity.symbol_id
+                    and fact.location == entity.location
+                    for fact in record.auth_and_permission_checks
+                ):
+                    return True
+        return False
 
     def _evidence_closure(
         self,

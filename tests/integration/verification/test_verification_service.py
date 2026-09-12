@@ -31,7 +31,13 @@ from sastsimi.contracts.ids import (
 from sastsimi.contracts.llm import LLMInvocationRequest, LLMInvocationResult
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
-from sastsimi.contracts.static import CodeLocation, CodeSymbol
+from sastsimi.contracts.static import (
+    CodeFact,
+    CodeLocation,
+    CodeSymbol,
+    StaticFactBundle,
+    ToolSource,
+)
 from sastsimi.contracts.verification import (
     AppliedPlaybookQuestion,
     ConEvidenceResult,
@@ -527,17 +533,56 @@ class _Fixture:
         *,
         entity: CodeSymbol | None = None,
         evidence_ref: StoredDataRef | None = None,
+        privilege_level: str | None = None,
     ) -> dict[str, object]:
         return {
             "entity_refs": [
                 (entity or self.entity).model_dump(mode="json")
             ],
-            "privilege_level": None,
+            "privilege_level": privilege_level,
             "evidence_refs": [
                 (evidence_ref or self.evidence_ref).model_dump(mode="json")
             ],
             "description": description,
         }
+
+    def install_permission_bundle(self) -> StoredDataRef:
+        bundle = StaticFactBundle.model_construct(
+            meta=_meta("static_fact_bundle", suffix="permission", attempt=None),
+            entities=(self.entity,),
+            locations=(self.entity.location,),
+            source_candidates=(),
+            sink_candidates=(),
+            sanitizer_candidates=(),
+            validator_candidates=(),
+            auth_and_permission_checks=(
+                CodeFact(
+                    fact_id="permission-handle-request",
+                    fact_kind="PERMISSION_CHECK",
+                    symbol_id=self.entity.symbol_id,
+                    location=self.entity.location,
+                    producer=ToolSource(
+                        attempt_id=AttemptId("static-attempt-1"),
+                        tool_name="AST",
+                        tool_version="1.0",
+                        rule_id=None,
+                        raw_result_ref=self.evidence_ref,
+                    ),
+                ),
+            ),
+            other_facts=(),
+            call_edges=(),
+            data_flow_candidates=(),
+            route_bindings=(),
+            tool_runs=(),
+            gaps=(),
+            errors=(),
+        )
+        bundle_ref = self.records.add(bundle)
+        self.work = self.work.model_copy(
+            update={"input_refs": (*self.work.input_refs, bundle_ref)}
+        )
+        return bundle_ref
 
     def install_dynamic_success(self) -> dict[str, StoredDataRef]:
         """Re-scope the canonical executed-PoC chain to this Verification fixture."""
@@ -899,6 +944,70 @@ async def test_hold_preserves_required_primitive_content_with_trusted_id() -> No
     )
     assert result.required_primitive_candidates[0].draft_id == "runtime-draft-1"
     assert result.provided_primitive_candidates == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("privilege_level", "accepted"),
+    [("handle_request", True), ("fabricated-admin", False)],
+)
+async def test_primitive_privilege_requires_exact_permission_fact(
+    privilege_level: str, accepted: bool
+) -> None:
+    fixture = _Fixture()
+    permission_ref = fixture.install_permission_bundle()
+    fixture.queue(
+        fixture.assessment_payload("HOLD", unresolved=("Need capability",)),
+        task_kind="ASSESS_INITIAL",
+        context_refs=(*fixture.assessment_context(), permission_ref),
+    )
+    assessment = await fixture.service.assess_initial(
+        generation=fixture.generation,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+    assessment_ref = reference(assessment)
+    assert isinstance(assessment_ref, StoredDataRef)
+    fixture.queue(
+        fixture.final_payload(
+            "HOLD",
+            outcome="INCONCLUSIVE",
+            unresolved=("Need capability",),
+            required=(
+                fixture.primitive_content(
+                    "Permission-bound capability",
+                    evidence_ref=permission_ref,
+                    privilege_level=privilege_level,
+                ),
+            ),
+        ),
+        task_kind="FINAL_VERDICT",
+        context_refs=(*fixture.assessment_context(), assessment_ref, permission_ref),
+    )
+
+    if not accepted:
+        with pytest.raises(
+            ValueError, match="VERIFICATION_PRIMITIVE_PRIVILEGE_CLOSURE_MISMATCH"
+        ):
+            await fixture.service.finalize_without_dynamic(
+                generation=fixture.generation,
+                assessment_ref=assessment_ref,
+                pro_ref=fixture.pro_ref,
+                con_ref=fixture.con_ref,
+                call=fixture.call,
+            )
+        return
+
+    result = await fixture.service.finalize_without_dynamic(
+        generation=fixture.generation,
+        assessment_ref=assessment_ref,
+        pro_ref=fixture.pro_ref,
+        con_ref=fixture.con_ref,
+        call=fixture.call,
+    )
+
+    assert result.required_primitive_candidates[0].privilege_level == privilege_level
 
 
 @pytest.mark.asyncio

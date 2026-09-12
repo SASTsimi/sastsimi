@@ -10,6 +10,7 @@ from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.ports.chaining import PinnedChainingUniverse
 from tests.integration.chaining.test_true_hold_true_true import (
     _Agent,
+    _Artifacts,
     _as_ref,
     _Children,
     _context,
@@ -71,6 +72,7 @@ def _service(
         ChainingWorkflowService(
             agent=agent,  # type: ignore[arg-type]
             records=records,
+            artifacts=_Artifacts(),  # type: ignore[arg-type]
             pools=_Pools(reference(context.work), universe),  # type: ignore[arg-type]
             lineage=_Lineage({}),
             publisher=publisher,  # type: ignore[arg-type]

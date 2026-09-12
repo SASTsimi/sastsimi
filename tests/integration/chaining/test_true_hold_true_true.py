@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+from io import BytesIO
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -8,11 +11,12 @@ from sastsimi.chaining.service import ChainingWorkflowService, chaining_input_ha
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.chaining import Primitive
 from sastsimi.contracts.gates import TechnicalEvidenceReview
-from sastsimi.contracts.ids import OpaqueId
+from sastsimi.contracts.ids import OpaqueId, StoredDataId, WorkspaceId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.verification import VerificationResult
 from sastsimi.contracts.work import WorkAttempt, WorkExecutionState
+from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.chaining import (
     ChainedHypothesisContent,
     ChainingAgentOutput,
@@ -158,6 +162,29 @@ class _Records:
 
     def get_exact(self, value: object) -> object:
         return self.values[value]
+
+
+class _Artifacts:
+    def __init__(self) -> None:
+        self.values: dict[str, bytes] = {}
+
+    def add(self, data: bytes) -> StoredDataRef:
+        digest = hashlib.sha256(data).hexdigest()
+        self.values[digest] = data
+        return StoredDataRef(
+            stored_data_id=StoredDataId(digest),
+            data_kind="artifact",
+            content_hash=digest,
+            workspace_id="ws1",
+            commit_id="c1",
+            record_id=None,
+        )
+
+    def open_verified(self, ref: StoredDataRef) -> BytesIO:
+        data = self.values[ref.content_hash]
+        if hashlib.sha256(data).hexdigest() != ref.content_hash:
+            raise ValueError("HASH_MISMATCH")
+        return BytesIO(data)
 
 
 class _Pools:
@@ -377,6 +404,71 @@ def _primitive_with_exact_sources(
     return wire(Primitive, data)
 
 
+def _primitive_with_artifact_evidence(
+    primitive: Primitive,
+    *,
+    verification: VerificationResult,
+    artifact_ref: StoredDataRef,
+) -> tuple[Primitive, VerificationResult, TechnicalEvidenceReview | None]:
+    verification_data: dict[str, Any] = verification.model_dump(mode="json")
+    supporting = cast(list[dict[str, Any]], verification_data["supporting_evidence"])
+    supporting[0]["evidence_refs"] = [artifact_ref.model_dump(mode="json")]
+    verification = wire(VerificationResult, verification_data)
+    verification_ref = reference(verification)
+    assert isinstance(verification_ref, StoredDataRef)
+    name = str(primitive.primitive_id).removeprefix("primitive-")
+    technical = (
+        _technical(name, verification_ref) if primitive.result is not None else None
+    )
+    primitive_data: dict[str, Any] = primitive.model_dump(mode="json")
+    primitive_data["source_verification_ref"] = verification_ref.model_dump(mode="json")
+    primitive_data["technical_review_ref"] = (
+        reference(technical).model_dump(mode="json") if technical is not None else None
+    )
+    primitive_data["evidence_refs"] = [artifact_ref.model_dump(mode="json")]
+    drafts = list(cast(list[dict[str, Any]], primitive_data["inputs"]))
+    result = primitive_data["result"]
+    if isinstance(result, dict):
+        drafts.append(result)
+    for draft in drafts:
+        draft["evidence_refs"] = [artifact_ref.model_dump(mode="json")]
+    return wire(Primitive, primitive_data), verification, technical
+
+
+def _tamper_artifact_evidence_unchecked(
+    primitive: Primitive,
+    verification: VerificationResult,
+    artifact_ref: StoredDataRef,
+) -> tuple[Primitive, VerificationResult, TechnicalEvidenceReview]:
+    claim = verification.supporting_evidence[0].model_copy(
+        update={"evidence_refs": (artifact_ref,)}
+    )
+    verification = verification.model_copy(update={"supporting_evidence": (claim,)})
+    verification_ref = reference(verification)
+    assert isinstance(verification_ref, StoredDataRef)
+    name = str(primitive.primitive_id).removeprefix("primitive-")
+    technical = _technical(name, verification_ref)
+    primitive = primitive.model_copy(
+        update={
+            "source_verification_ref": verification_ref,
+            "technical_review_ref": reference(technical),
+            "evidence_refs": (artifact_ref,),
+            "inputs": tuple(
+                draft.model_copy(update={"evidence_refs": (artifact_ref,)})
+                for draft in primitive.inputs
+            ),
+            "result": (
+                primitive.result.model_copy(
+                    update={"evidence_refs": (artifact_ref,)}
+                )
+                if primitive.result is not None
+                else None
+            ),
+        }
+    )
+    return primitive, verification, technical
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("hold_trigger", [False, True])
 async def test_true_hold_and_true_true_create_child_only_after_commit(
@@ -409,6 +501,7 @@ async def test_true_hold_and_true_true_create_child_only_after_commit(
     service = ChainingWorkflowService(
         agent=_Agent(("comparison-1",)),
         records=_Records((trigger, other)),
+        artifacts=cast(ArtifactStore, _Artifacts()),
         pools=_Pools(reference(context.work), universe),  # type: ignore[arg-type]
         lineage=_Lineage({}),
         publisher=publisher,
@@ -456,6 +549,7 @@ async def test_one_call_keeps_deepest_success_and_ignores_ancestor_decisions(
     service = ChainingWorkflowService(
         agent=_Agent(("comparison-1", "comparison-2", "comparison-3")),
         records=_Records(values),
+        artifacts=cast(ArtifactStore, _Artifacts()),
         pools=_Pools(reference(context.work), universe),  # type: ignore[arg-type]
         lineage=_Lineage(  # type: ignore[arg-type]
             {refs[2]: (refs[1],), refs[3]: (refs[2], refs[1])}
@@ -507,6 +601,7 @@ async def test_one_directional_pair_preserves_each_matched_input(
     service = ChainingWorkflowService(
         agent=_Agent(("comparison-1", "comparison-2")),
         records=_Records((trigger, other)),
+        artifacts=cast(ArtifactStore, _Artifacts()),
         pools=_Pools(reference(context.work), universe),  # type: ignore[arg-type]
         lineage=_Lineage({}),
         publisher=publisher,
@@ -580,6 +675,7 @@ async def test_prompt_uses_exact_redacted_semantic_evidence(
                 other_technical,
             )
         ),
+        artifacts=cast(ArtifactStore, _Artifacts()),
         pools=_Pools(reference(context.work), universe),  # type: ignore[arg-type]
         lineage=_Lineage({}),
         publisher=_Publisher(),
@@ -602,3 +698,141 @@ async def test_prompt_uses_exact_redacted_semantic_evidence(
     assert "[REDACTED:CREDENTIAL]" in summaries
     assert "stored_data_id" not in summaries
     assert "verification-result-A" not in summaries
+
+
+@pytest.mark.asyncio
+async def test_prompt_projects_verified_artifact_evidence_bounded_and_redacted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sastsimi.chaining.service.llm_invocation_save_refs",
+        lambda **_: ("llm-proof",),
+    )
+    artifacts = _Artifacts()
+    artifact_ref = artifacts.add(
+        b"password=hunter2\nallow_admin()\n" + b"x" * 5000 + b"TAIL_SECRET"
+    )
+    trigger, trigger_verification, trigger_technical = (
+        _primitive_with_artifact_evidence(
+            _primitive("A", inputs=(), result="provided"),
+            verification=_verification(
+                "A", rationale="Artifact-backed capability", final_true=True
+            ),
+            artifact_ref=artifact_ref,
+        )
+    )
+    other_verification = _verification(
+        "B", rationale="Downstream input is reachable", final_true=True
+    )
+    other_verification_ref = reference(other_verification)
+    assert isinstance(other_verification_ref, StoredDataRef)
+    other_technical = _technical("B", other_verification_ref)
+    other = _primitive_with_exact_sources(
+        _primitive("B", inputs=("provided",), result="next"),
+        verification=other_verification,
+        technical=other_technical,
+    )
+    refs = tuple(reference(value) for value in (trigger, other))
+    context = _context(refs, refs[0])  # type: ignore[arg-type]
+    universe = PinnedChainingUniverse(
+        trigger_primitive_ref=refs[0],  # type: ignore[arg-type]
+        index_refs=(_as_ref("primitive_index_state", "index"),),
+        considered_primitive_refs=refs,  # type: ignore[arg-type]
+    )
+    agent = _Agent(())
+    service = ChainingWorkflowService(
+        agent=agent,
+        records=_Records(
+            (
+                trigger,
+                other,
+                trigger_verification,
+                trigger_technical,
+                other_verification,
+                other_technical,
+            )
+        ),
+        artifacts=cast(ArtifactStore, artifacts),
+        pools=_Pools(reference(context.work), universe),  # type: ignore[arg-type]
+        lineage=_Lineage({}),
+        publisher=_Publisher(),
+        children=_Children(),
+        ids=_Ids(),
+        metadata_factory=_metadata,
+        requester_identity_ref=_as_ref("requester_identity", "r"),
+    )
+
+    await service.execute(context=context, resolve_call=_resolve_call)
+
+    assert agent.content is not None
+    summaries = "\n".join(item.summary for item in agent.content.evidence)
+    assert "allow_admin" in summaries
+    assert "hunter2" not in summaries
+    assert "TAIL_SECRET" not in summaries
+    assert "[REDACTED:CREDENTIAL]" in summaries
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tamper", ["hash", "scope", "ref"])
+async def test_artifact_evidence_tampering_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: str,
+) -> None:
+    monkeypatch.setattr(
+        "sastsimi.chaining.service.llm_invocation_save_refs",
+        lambda **_: ("llm-proof",),
+    )
+    artifacts = _Artifacts()
+    artifact_ref = artifacts.add(b"allow_admin()")
+    trigger, verification, _ = _primitive_with_artifact_evidence(
+        _primitive("A", inputs=(), result="provided"),
+        verification=_verification(
+            "A", rationale="Artifact-backed capability", final_true=True
+        ),
+        artifact_ref=artifact_ref,
+    )
+    if tamper == "hash":
+        artifact_ref = artifact_ref.model_copy(
+            update={
+                "stored_data_id": StoredDataId("0" * 64),
+                "content_hash": "0" * 64,
+            }
+        )
+    elif tamper == "scope":
+        artifact_ref = artifact_ref.model_copy(
+            update={"workspace_id": WorkspaceId("foreign")}
+        )
+    else:
+        artifact_ref = artifact_ref.model_copy(
+            update={"stored_data_id": StoredDataId("0" * 64)}
+        )
+    trigger, verification, technical = _tamper_artifact_evidence_unchecked(
+        trigger,
+        verification,
+        artifact_ref,
+    )
+    other = _primitive("B", inputs=("provided",), result="next")
+    refs = tuple(reference(value) for value in (trigger, other))
+    context = _context(refs, refs[0])  # type: ignore[arg-type]
+    universe = PinnedChainingUniverse(
+        trigger_primitive_ref=refs[0],  # type: ignore[arg-type]
+        index_refs=(_as_ref("primitive_index_state", "index"),),
+        considered_primitive_refs=refs,  # type: ignore[arg-type]
+    )
+    agent = _Agent(())
+    service = ChainingWorkflowService(
+        agent=agent,
+        records=_Records((trigger, other, verification, technical)),
+        artifacts=cast(ArtifactStore, artifacts),
+        pools=_Pools(reference(context.work), universe),  # type: ignore[arg-type]
+        lineage=_Lineage({}),
+        publisher=_Publisher(),
+        children=_Children(),
+        ids=_Ids(),
+        metadata_factory=_metadata,
+        requester_identity_ref=_as_ref("requester_identity", "r"),
+    )
+
+    with pytest.raises(ValueError, match="CHAINING_EVIDENCE_REFERENCE_INVALID"):
+        await service.execute(context=context, resolve_call=_resolve_call)
+    assert agent.content is None

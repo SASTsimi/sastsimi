@@ -198,6 +198,10 @@ def test_compose_t13_services_wires_exact_trusted_dependencies(tmp_path: Path) -
     assert services.primitive_update.requester_identity_ref == primitive_identity
     assert services.primitive_update.budget_scope_ref == composition.scope
     assert isinstance(services.chaining.service._agent, ChainingAgent)
+    assert (
+        services.chaining.service._artifacts
+        is composition.runtime.unit_of_work.artifacts
+    )
     assert isinstance(services.chaining.service._pools, ChainingPoolHistoryStore)
     assert services.chaining.service._lineage is composition.lineage
     assert isinstance(

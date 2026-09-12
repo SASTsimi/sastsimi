@@ -1498,6 +1498,7 @@ def build_t13_services(
     workflow = ChainingWorkflowService(
         agent=agent,
         records=records,
+        artifacts=runtime.unit_of_work.artifacts,
         pools=cohorts.pools,
         lineage=chaining_lineage,
         publisher=publisher,
