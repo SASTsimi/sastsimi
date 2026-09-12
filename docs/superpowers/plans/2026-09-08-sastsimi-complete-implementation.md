@@ -466,7 +466,7 @@ worker pool을 선행 조건으로 요구하지 않는다.
 
 - [ ] current `RepositoryProfile`의 exact commit·manifest·lockfile·Dockerfile 유무를 읽어 재현 가능한 `EnvironmentRecipe`를 만든다. 사용 입력은 exact `RepositoryPreparation.tracked_files`와 set-equal한 profile entry의 blob/digest로 다시 검증하고 untracked·generated file, symlink와 gitlink를 거부한다. Dockerfile이 있으면 검증된 내용과 digest를 고정하고, 없으면 tracked 언어·package/build/start 근거와 T16-A의 `ACTIVE` capability profile로 최소 recipe를 만들며 근거나 capability가 없으면 실행하지 않고 `BLOCKED`로 남긴다.
 - [ ] `EnvironmentRecipe` → image build → 격리 container run → health check → 구조화된 command/event → cleanup을 같은 work/attempt와 exact digest로 연결한다. Dockerfile 유·무 두 경로를 모두 시험한다.
-- [ ] package 설치, build, application start, auth/credential, health check 실패는 `BLOCKED | FAILED`와 DataGap/AnalysisError로 보존하고 취약점 `FALSE | HOLD`로 바꾸지 않는다. 정상 완주와 same-attempt 근거가 있을 때만 validated PoC와 dynamic result를 Gate에 넘긴다.
+- [ ] package 설치, build, application start, auth/credential, health check 실패는 `BLOCKED | FAILED`와 DataGap/AnalysisError로 보존하고 취약점 `FALSE | HOLD`로 바꾸지 않는다. R7은 정상 완주와 same-attempt 근거가 있을 때만 validated PoC와 `DynamicReproductionResult`를 R6 Verification에 반환한다. R6가 이를 정적·Pro·Con 근거와 종합해 final `TRUE`를 확정한 경우에만 R5-01 CWE Labeling을 거쳐 Technical Gate를 요청한다.
 - [ ] T11 claimed-context public handler가 결과를 READY handoff로 게시하고, T14 production composition이나 worker pool을 직접 구현·호출하지 않는지 검사한다.
 
 ### Task 12: CWE, two Gates, Finding and Reporter
