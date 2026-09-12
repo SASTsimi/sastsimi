@@ -68,6 +68,11 @@ Primitive index 갱신을 소유한다. Chaining Agent는 runtime이 고정한 �
 - [x] COMMITTED result에서 자식 가설·READY Verification을 멱등 등록한다.
 - [x] content-only Chaining prompt와 경계 시험을 추가한다.
 - [x] bootstrap에 production handler와 adapter를 연결한다.
+- [x] production installer가 세 T13 handler를 실제 registry에 등록하고,
+  일반 recovery 뒤 active analysis별 startup reconciliation을 실행한다.
+- [x] production `build_runtime`이 SQLite exact-lineage adapter를 기본 연결한다.
+- [x] `CHAINING/MATCH_PRIMITIVES` 평가 prompt를 ACTIVE로 선택하고 T09의
+  exact call resolver 및 외부 `provider_profile_ref + model` binding을 유지한다.
 - [x] TRUE+HOLD, TRUE+TRUE, no-match, duplicate, stale/cross-scope와 recovery의
   focused test를 통과한다.
 - [x] Ruff, strict mypy와 diff check를 통과한다.
@@ -77,12 +82,15 @@ Primitive index 갱신을 소유한다. Chaining Agent는 runtime이 고정한 �
 ## 현재 구현 증거
 
 - T12 최종 기준: PR #164 merge commit `2fff51b`.
-- T13 코드 후보(문서 기록 전): `5a65401`.
-- 자식 등록·production composition·TRUE+HOLD/TRUE+TRUE focused 검사:
-  `26 passed`.
+- production reachability 보완 코드: `a3ffe07`.
+- 실제 registry 등록, ACTIVE prompt 선택, SQLite lineage, exact T09 호출,
+  COMMITTED ChainingResult, READY child/Verification 및 startup replay focused
+  검사: `23 passed in 9.66s`.
+- 이 실제 경로가 드러낸 CHAINING 교차-가설 context scope와
+  BudgetReservation attempt provenance 문제도 같은 코드에서 차단했다.
 - 서로 다른 Verification generation의 Primitive, current index 검증,
   다른 가설 Primitive 바꿔 끼우기 focused 검사: `3 passed`.
-- 통합 후보의 T13 핵심 production 파일 Ruff 및 strict mypy: 통과.
+- 변경 production 파일 Ruff와 strict mypy: 통과.
 - Architecture 문서 검사: `Failures: 0`.
 - Windows 로컬의 pytest 임시 폴더 ACL 오류는 테스트 본문 실패가 아니다.
   같은 3개 generation 검사는 독립 worktree에서 통과했으며 최종 전체 검사는
