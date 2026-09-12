@@ -91,6 +91,46 @@ def _result(
         }
         for identity in identities
     )
+    proposals = tuple(
+        make("HypothesisProposal")
+        | {
+            "meta": make("HypothesisProposal")["meta"]
+            | {
+                "record_id": f"proposal-{identity.primitive_match_id}-r1",
+                "logical_record_id": f"proposal-{identity.primitive_match_id}-l1",
+                "analysis_id": "analysis-a",
+                "workspace_id": "workspace-a",
+                "commit_id": "commit-a",
+            },
+            "proposal_id": f"proposal-{identity.primitive_match_id}",
+            "origin": "CHAINING",
+            "target_locations": (
+                {
+                    "workspace_id": "workspace-a",
+                    "commit_id": "commit-a",
+                    "file_path": "src/app.py",
+                    "start_line": 1,
+                    "end_line": 2,
+                    "start_column": None,
+                    "end_column": None,
+                },
+            ),
+            "suspected_path": (
+                {
+                    "workspace_id": "workspace-a",
+                    "commit_id": "commit-a",
+                    "file_path": "src/app.py",
+                    "start_line": 1,
+                    "end_line": 2,
+                    "start_column": None,
+                    "end_column": None,
+                },
+            ),
+            "parent_hypothesis_ids": ("parent-a", "parent-b"),
+            "source_primitive_match_id": identity.primitive_match_id,
+        }
+        for identity in identities
+    )
     wire = make("ChainingResult")
     wire["meta"] = wire["meta"] | {
         "record_id": record_id,
@@ -103,6 +143,7 @@ def _result(
         "considered_primitive_refs": primitive_refs,
         "input_primitive_refs": primitive_refs,
         "primitive_match_candidates": candidates,
+        "chained_hypothesis_proposals": proposals,
     }
     return ChainingResult.model_validate_json(canonical_bytes(wire))
 
@@ -177,3 +218,22 @@ def test_match_id_collision_with_a_different_triple_rolls_back(
         _reserve(database, _result("result-b", second), second)
 
     assert _count(database) == 1
+
+
+@pytest.mark.parametrize("proposal_count", (0, 2), ids=("missing", "duplicate"))
+def test_storage_rejects_match_proposal_closure_bypass(
+    tmp_path: Path,
+    proposal_count: int,
+) -> None:
+    database = _database(tmp_path)
+    identities = (_match("match-a", "upstream-a", "downstream-a", "input-a"),)
+    valid = _result("result-a", identities)
+    proposal = valid.chained_hypothesis_proposals[0]
+    invalid = valid.model_copy(
+        update={"chained_hypothesis_proposals": (proposal,) * proposal_count}
+    )
+
+    with pytest.raises(ValueError, match="CHAINING_PROPOSAL_CLOSURE"):
+        _reserve(database, invalid, identities)
+
+    assert _count(database) == 0

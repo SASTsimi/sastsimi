@@ -1,7 +1,68 @@
 import pytest
 from pydantic import ValidationError
 
+from .canonical_fixtures import make
 from .fixtures import meta, ref, verification, wire
+
+
+def _chaining_result_with_proposals(
+    proposal_match_ids: list[str],
+) -> dict[str, object]:
+    upstream_ref = ref("primitive") | {
+        "stored_data_id": "upstream-s1",
+        "record_id": "upstream-r1",
+    }
+    downstream_ref = ref("primitive") | {
+        "stored_data_id": "downstream-s1",
+        "record_id": "downstream-r1",
+    }
+    proposal = make("HypothesisProposal") | {
+        "origin": "CHAINING",
+        "parent_hypothesis_ids": ["parent-a", "parent-b"],
+    }
+    proposals = [
+        proposal
+        | {
+            "proposal_id": f"proposal-{index}",
+            "meta": proposal["meta"]
+            | {
+                "record_id": f"proposal-{index}-r1",
+                "logical_record_id": f"proposal-{index}-l1",
+            },
+            "source_primitive_match_id": match_id,
+        }
+        for index, match_id in enumerate(proposal_match_ids, start=1)
+    ]
+    return make("ChainingResult") | {
+        "considered_primitive_refs": [upstream_ref, downstream_ref],
+        "input_primitive_refs": [upstream_ref, downstream_ref],
+        "primitive_match_candidates": [
+            {
+                "primitive_match_id": "match-1",
+                "upstream_result_ref": upstream_ref,
+                "downstream_input_ref": downstream_ref,
+                "matched_input_id": "input-1",
+                "parent_hypothesis_ids": ["parent-a", "parent-b"],
+                "parent_verification_refs": [
+                    ref("verification_result")
+                    | {
+                        "stored_data_id": "verification-a-s1",
+                        "record_id": "verification-a-r1",
+                    },
+                    ref("verification_result")
+                    | {
+                        "stored_data_id": "verification-b-s1",
+                        "record_id": "verification-b-r1",
+                    },
+                ],
+                "workspace_id": "ws1",
+                "commit_id": "c1",
+                "evidence_refs": [ref("code", record=False)],
+                "candidate_state": "UNVALIDATED",
+            }
+        ],
+        "chained_hypothesis_proposals": proposals,
+    }
 
 
 def test_admission_denies_only_confirmed_testing_violation() -> None:
@@ -92,3 +153,28 @@ def test_chaining_used_and_excluded_sets_cannot_overlap() -> None:
     wire(ChainingResult, value)
     with pytest.raises(ValidationError, match="CHAINING_INPUT_CLOSURE"):
         wire(ChainingResult, value | {"input_primitive_refs": [ref("primitive")]})
+
+
+def test_each_chaining_match_has_exactly_one_proposal() -> None:
+    from sastsimi.contracts.chaining import ChainingResult
+
+    result = wire(ChainingResult, _chaining_result_with_proposals(["match-1"]))
+
+    assert result.chained_hypothesis_proposals[0].source_primitive_match_id == "match-1"
+
+
+def test_chaining_result_rejects_a_match_without_a_proposal() -> None:
+    from sastsimi.contracts.chaining import ChainingResult
+
+    with pytest.raises(ValidationError, match="CHAINING_PROPOSAL_CLOSURE"):
+        wire(ChainingResult, _chaining_result_with_proposals([]))
+
+
+def test_chaining_result_rejects_duplicate_proposals_for_one_match() -> None:
+    from sastsimi.contracts.chaining import ChainingResult
+
+    with pytest.raises(ValidationError, match="CHAINING_PROPOSAL_CLOSURE"):
+        wire(
+            ChainingResult,
+            _chaining_result_with_proposals(["match-1", "match-1"]),
+        )
