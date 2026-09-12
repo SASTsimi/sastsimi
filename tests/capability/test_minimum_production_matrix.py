@@ -11,8 +11,15 @@ from sastsimi.capabilities import build_production_capability_probe_service
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.static import RepositoryProfile
 from sastsimi.ports.capability_registry import ProductionCapabilityResolverPort
+from sastsimi.sandbox.recipe_store import EnvironmentRecipeStore
 from sastsimi.static_analysis.repository_profile import RepositoryExecutionSelector
 
+from ..integration.sandbox.test_container_lifecycle import (
+    _dynamic_records,
+    _MemoryArtifacts,
+    _meta,
+    _repository_profile,
+)
 from ..unit.static_analysis.test_repository_profile import (
     _build,
     _Resolver,
@@ -86,6 +93,45 @@ def test_repository_fixtures_select_only_verified_active_tool_intersection(
     assert [item.code for item in selection.gaps] == [
         f"NO_ACTIVE_STATIC_CAPABILITY:CODEQL:{language}"
     ]
+
+
+@pytest.mark.parametrize(
+    ("fixture", "origin", "marker"),
+    (
+        ("python-existing-dockerfile", "REPOSITORY", b"FROM python:3.12-slim"),
+        ("javascript-generated-dockerfile", "GENERATED", b"FROM node:22-slim"),
+    ),
+)
+def test_repository_fixtures_choose_existing_or_generated_recipe(
+    tmp_path: Path,
+    fixture: str,
+    origin: str,
+    marker: bytes,
+) -> None:
+    source = FIXTURES / fixture
+    files = {
+        path.relative_to(source).as_posix(): path.read_bytes()
+        for path in sorted(source.rglob("*"))
+        if path.is_file()
+    }
+    for path, raw in files.items():
+        _write(tmp_path, path, raw)
+    request, requirements, _plan = _dynamic_records()
+    request_ref = reference(request)
+    assert isinstance(request_ref, StoredDataRef)
+
+    prepared = EnvironmentRecipeStore(artifacts=_MemoryArtifacts()).preflight(
+        context=tmp_path,
+        request_ref=request_ref,
+        requirements=requirements,
+        meta=_meta("environment_recipe", f"{fixture}-recipe"),
+        repository_profile=_repository_profile(files),
+    )
+
+    assert prepared.dockerfile_origin == origin
+    assert marker in prepared.dockerfile
+    if fixture == "javascript-generated-dockerfile":
+        assert b'["npm", "install", "--ignore-scripts"]' in prepared.dockerfile
 
 
 def test_public_python_probe_approves_exact_active_profile(tmp_path: Path) -> None:

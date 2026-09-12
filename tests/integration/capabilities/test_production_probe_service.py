@@ -22,6 +22,7 @@ from sastsimi.capabilities.store import (
     _SQLiteCapabilityProbeStore,
 )
 from sastsimi.config.secrets import SecretReference
+from sastsimi.contracts.capabilities import DockerBuildCapability
 from sastsimi.contracts.ids import CommitId, WorkspaceId
 from sastsimi.runtime.services import RuntimeServices
 from sastsimi.storage.database import Database
@@ -169,6 +170,13 @@ class FakeSecrets:
         return "top-secret-value"
 
 
+_VERIFIED_DOCKER_BUILD_CAPABILITY = DockerBuildCapability(
+    build_backend="LEGACY_LIMITED",
+    enforced_build_limits=("CPU", "MEMORY", "PID", "DISK"),
+    external_build_disk_limit_bytes=64 * 1024 * 1024,
+)
+
+
 def _service(
     tmp_path: Path,
     *,
@@ -176,6 +184,9 @@ def _service(
     docker_daemon: bool = True,
     openai_passed: bool = True,
     host_id: str = "host-a",
+    docker_build_capability: DockerBuildCapability | None = (
+        _VERIFIED_DOCKER_BUILD_CAPABILITY
+    ),
 ) -> tuple[_CapabilityProbeEngine, RuntimeServices, _SQLiteCapabilityProbeStore]:
     binaries = tmp_path / "bin"
     binaries.mkdir(parents=True, exist_ok=True)
@@ -216,6 +227,7 @@ def _service(
         openai_probe=FakeOpenAI(passed=openai_passed),
         approval_identity=lambda: "taehyeon-git",
         scratch_root=tmp_path / "scratch",
+        docker_build_capability_probe=lambda: docker_build_capability,
     )
     return service, runtime, store
 
@@ -326,6 +338,14 @@ def test_real_probe_receipts_require_exact_human_approval_before_active(
     docker_path, docker_host = service.resolve_docker_command(docker_ref)
     assert docker_path.name == "docker.exe"
     assert docker_host == "npipe:////./pipe/docker-engine"
+    target = service.resolve_current(docker_ref)
+    assert target.profile_ref == docker_ref
+    assert target.executable == docker_path
+    assert target.daemon_target == docker_host
+    assert target.build_backend == "LEGACY_LIMITED"
+    assert target.enforced_build_limits == frozenset({"CPU", "MEMORY", "PID", "DISK"})
+    assert target.external_build_disk_limit_bytes == 64 * 1024 * 1024
+    service.require_current(target)
     git_executable.write_bytes(b"changed-after-approval")
     with pytest.raises(ValueError, match="CAPABILITY_EXECUTABLE_CHANGED"):
         service.resolve_executable(exact_ref)
@@ -547,6 +567,46 @@ def test_docker_probe_cannot_claim_boundary_from_unsafe_container(
 
     assert receipt.status == "BLOCKED"
     assert receipt.activation_supported is False
+
+
+def test_docker_probe_without_verified_build_boundary_stays_blocked(
+    tmp_path: Path,
+) -> None:
+    """An executable and daemon alone cannot claim a T11-safe ACTIVE profile."""
+
+    service, _runtime, _store = _service(
+        tmp_path,
+        available={"docker"},
+        docker_build_capability=None,
+    )
+
+    receipt = service.probe("DOCKER")
+
+    assert receipt.status == "BLOCKED"
+    assert receipt.activation_supported is False
+    assert receipt.docker_build_capability is None
+    assert receipt.approval_target_hash is None
+    assert receipt.safe_summary == (
+        "Docker build resource boundary probe is unavailable"
+    )
+
+
+def test_docker_target_revalidation_rejects_changed_daemon(
+    tmp_path: Path,
+) -> None:
+    service, _runtime, _store = _service(tmp_path, available={"docker"})
+    commands = service._commands
+    assert isinstance(commands, FakeCommands)
+    receipt = service.probe("DOCKER")
+    profile_ref = service.approve(
+        receipt.probe_id,
+        expected_target_hash=receipt.approval_target_hash or "",
+    )
+    target = service.resolve_current(profile_ref)
+    commands.docker_target = "changed-daemon|linux|x86_64"
+
+    with pytest.raises(ValueError, match="CAPABILITY_EXECUTION_TARGET_CHANGED"):
+        service.require_current(target)
 
 
 def test_docker_probe_rejects_incomplete_tmpfs_boundary(tmp_path: Path) -> None:

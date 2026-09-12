@@ -22,6 +22,7 @@ from sastsimi.contracts.capabilities import (
     CapabilityLanguage,
     CapabilityOperatingSystem,
     CapabilityOperation,
+    DockerBuildCapability,
     RuntimeCapabilityProfile,
     capability_target_hash,
 )
@@ -37,6 +38,7 @@ from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.ports.artifact_store import ArtifactStore
+from sastsimi.ports.dynamic_sandbox import TrustedDockerTarget
 from sastsimi.runtime.configuration_registry import ConfigurationRegistry
 
 from .models import CapabilityProbeReceipt, ProbeKind
@@ -54,6 +56,7 @@ from .store import _SQLiteCapabilityProbeStore
 type ExecutableLocator = Callable[[str], Path | None]
 type Clock = Callable[[], datetime]
 type ApprovalIdentity = Callable[[], str]
+type DockerBuildCapabilityProbe = Callable[[], DockerBuildCapability | None]
 type CapabilityProfile = RuntimeCapabilityProfile | StaticToolProfile
 
 _PUBLICATION_ANALYSIS = AnalysisId("capability-publication")
@@ -89,6 +92,7 @@ class _CapabilityProbeEngine:
         secret_resolver: SecretLookup | None = None,
         openai_probe: OpenAIProbeTransport | None = None,
         scratch_root: Path,
+        docker_build_capability_probe: DockerBuildCapabilityProbe,
     ) -> None:
         if store.host_id != host_id or _SAFE_IDENTIFIER.fullmatch(host_id) is None:
             raise ValueError("PROBE_HOST_MISMATCH")
@@ -106,6 +110,7 @@ class _CapabilityProbeEngine:
         self._secret_resolver = secret_resolver
         self._openai = openai_probe
         self._scratch_root = scratch_root
+        self._docker_build_capability_probe = docker_build_capability_probe
 
     def probe(
         self,
@@ -126,6 +131,7 @@ class _CapabilityProbeEngine:
         activation_supported = False
         controls: tuple[str, ...] = ()
         execution_target_hash: str | None = None
+        docker_build_capability: DockerBuildCapability | None = None
         summary = "Capability probe could not be completed"
 
         if kind == "PYTHON_AST":
@@ -209,8 +215,12 @@ class _CapabilityProbeEngine:
                         elif kind == "DOCKER":
                             self._scratch_root.mkdir(parents=True, exist_ok=True)
                             execution_target_hash = self._docker_target_hash(executable)
+                            docker_build_capability = (
+                                self._docker_build_capability_probe()
+                            )
                             control_passed = (
                                 execution_target_hash is not None
+                                and docker_build_capability is not None
                                 and verify_outer_boundary_controls(self._scratch_root)
                                 and self._probe_docker_operations(executable, probe_id)
                                 and self._docker_target_hash(executable)
@@ -235,6 +245,8 @@ class _CapabilityProbeEngine:
                         summary = "OpenGrep binary probe passed"
                     elif kind == "CODEQL":
                         summary = "CodeQL quota control probe is unavailable"
+                    elif kind == "DOCKER" and docker_build_capability is None:
+                        summary = "Docker build resource boundary probe is unavailable"
                     else:
                         summary = f"{kind} required control probe failed"
                 elif kind == "DOCKER":
@@ -269,6 +281,7 @@ class _CapabilityProbeEngine:
 
         if not activation_supported:
             execution_target_hash = None
+            docker_build_capability = None
 
         evidence = {
             "schema_version": "1.0.0",
@@ -279,6 +292,7 @@ class _CapabilityProbeEngine:
             "observed_version": version,
             "observed_sha256": digest,
             "execution_target_hash": execution_target_hash,
+            "docker_build_capability": docker_build_capability,
             "operating_system": self._operating_system,
             "architecture": self._architecture,
             "checks": tuple(controls),
@@ -298,6 +312,7 @@ class _CapabilityProbeEngine:
                     version=cast(str, version),
                     digest=cast(str, digest),
                     execution_target_hash=execution_target_hash,
+                    docker_build_capability=docker_build_capability,
                     evidence_ref=self._placeholder_evidence_ref(),
                 )
             )
@@ -312,6 +327,7 @@ class _CapabilityProbeEngine:
                 "observed_version": version,
                 "observed_sha256": digest,
                 "execution_target_hash": execution_target_hash,
+                "docker_build_capability": docker_build_capability,
                 "operating_system": self._operating_system,
                 "architecture": self._architecture,
                 "checked_at": checked_at,
@@ -380,6 +396,35 @@ class _CapabilityProbeEngine:
             raise ValueError("DOCKER_HOST_REQUIRED")
         return self.resolve_executable(profile_ref), self._docker_host
 
+    def resolve_current(self, profile_ref: HostConfigurationRef) -> TrustedDockerTarget:
+        """Convert one exact ACTIVE Docker profile into T11's trusted target."""
+
+        profile = self._registry.resolve_pinned_active_profile(profile_ref)
+        if (
+            not isinstance(profile, RuntimeCapabilityProfile)
+            or profile.capability_kind != "DOCKER"
+            or profile.docker_build_capability is None
+        ):
+            raise ValueError("CAPABILITY_DOCKER_PROFILE_REQUIRED")
+        executable, daemon_target = self.resolve_docker_command(profile_ref)
+        boundary = profile.docker_build_capability
+        return TrustedDockerTarget(
+            profile_ref=profile_ref,
+            executable=executable,
+            subject_key=profile.subject_key,
+            subject_sha256=profile.subject_sha256,
+            daemon_target=daemon_target,
+            build_backend=boundary.build_backend,
+            enforced_build_limits=frozenset(boundary.enforced_build_limits),
+            external_build_disk_limit_bytes=boundary.external_build_disk_limit_bytes,
+        )
+
+    def require_current(self, target: TrustedDockerTarget) -> None:
+        """Revalidate every pinned field immediately before a Docker command."""
+
+        if self.resolve_current(target.profile_ref) != target:
+            raise ValueError("CAPABILITY_DOCKER_TARGET_CHANGED")
+
     def approve(
         self,
         probe_id: str,
@@ -429,6 +474,7 @@ class _CapabilityProbeEngine:
             version=receipt.observed_version,
             digest=receipt.observed_sha256,
             execution_target_hash=receipt.execution_target_hash,
+            docker_build_capability=receipt.docker_build_capability,
             evidence_ref=self._placeholder_evidence_ref(),
         )
         languages, operations = self._route(receipt.kind)
@@ -448,6 +494,7 @@ class _CapabilityProbeEngine:
                     "observed_version": receipt.observed_version,
                     "observed_sha256": receipt.observed_sha256,
                     "execution_target_hash": receipt.execution_target_hash,
+                    "docker_build_capability": receipt.docker_build_capability,
                     "operating_system": self._operating_system,
                     "architecture": self._architecture,
                     "languages": languages,
@@ -479,6 +526,7 @@ class _CapabilityProbeEngine:
             version=receipt.observed_version,
             digest=receipt.observed_sha256,
             execution_target_hash=receipt.execution_target_hash,
+            docker_build_capability=receipt.docker_build_capability,
             evidence_ref=approval_ref,
             record_id=RecordId("profile-" + receipt.probe_id),
             created_at=approval.approved_at,
@@ -593,6 +641,7 @@ class _CapabilityProbeEngine:
         digest: str,
         evidence_ref: HostConfigurationRef,
         execution_target_hash: str | None = None,
+        docker_build_capability: DockerBuildCapability | None = None,
         record_id: RecordId | None = None,
         created_at: datetime | None = None,
     ) -> CapabilityProfile:
@@ -651,6 +700,7 @@ class _CapabilityProbeEngine:
                 "expected_version": version,
                 "subject_sha256": digest,
                 "execution_target_hash": execution_target_hash,
+                "docker_build_capability": docker_build_capability,
                 "operating_system": self._operating_system,
                 "architecture": self._architecture,
                 "languages": languages,

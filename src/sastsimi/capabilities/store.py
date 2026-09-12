@@ -160,6 +160,7 @@ class _SQLiteCapabilityProbeStore:
             and receipt.observed_version == evidence.observed_version
             and receipt.observed_sha256 == evidence.observed_sha256
             and receipt.execution_target_hash == evidence.execution_target_hash
+            and receipt.docker_build_capability == evidence.docker_build_capability
         )
 
     def publish(self, probe_id: str, profile_ref: HostConfigurationRef) -> None:

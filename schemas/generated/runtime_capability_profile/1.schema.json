@@ -72,6 +72,50 @@
       "title": "CommitId",
       "type": "string"
     },
+    "DockerBuildBackend": {
+      "enum": [
+        "BUILDX_RESOURCE",
+        "LEGACY_LIMITED"
+      ],
+      "type": "string"
+    },
+    "DockerBuildCapability": {
+      "additionalProperties": false,
+      "description": "Exact build boundary proven before a Docker profile can become ACTIVE.",
+      "properties": {
+        "build_backend": {
+          "$ref": "#/$defs/DockerBuildBackend"
+        },
+        "enforced_build_limits": {
+          "items": {
+            "$ref": "#/$defs/DockerBuildLimit"
+          },
+          "title": "Enforced Build Limits",
+          "type": "array"
+        },
+        "external_build_disk_limit_bytes": {
+          "minimum": 1,
+          "title": "External Build Disk Limit Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "build_backend",
+        "enforced_build_limits",
+        "external_build_disk_limit_bytes"
+      ],
+      "title": "DockerBuildCapability",
+      "type": "object"
+    },
+    "DockerBuildLimit": {
+      "enum": [
+        "CPU",
+        "MEMORY",
+        "PID",
+        "DISK"
+      ],
+      "type": "string"
+    },
     "HostConfigurationRef": {
       "additionalProperties": false,
       "description": "Exact host configuration revision reusable across repository analyses.",
@@ -258,6 +302,17 @@
     },
     "capability_kind": {
       "$ref": "#/$defs/CapabilityKind"
+    },
+    "docker_build_capability": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DockerBuildCapability"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "execution_target_hash": {
       "anyOf": [

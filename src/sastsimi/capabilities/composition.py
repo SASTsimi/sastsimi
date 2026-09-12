@@ -22,6 +22,7 @@ from sastsimi.contracts.capabilities import (
 )
 from sastsimi.contracts.ids import CommitId, OpaqueId, WorkspaceId
 from sastsimi.contracts.refs import HostConfigurationRef
+from sastsimi.ports.dynamic_sandbox import TrustedDockerTarget
 from sastsimi.storage.database import Database
 from sastsimi.storage.migrations import upgrade
 
@@ -137,6 +138,12 @@ class ProductionCapabilityProbeService:
     ) -> tuple[Path, str]:
         return self.__engine.resolve_docker_command(profile_ref)
 
+    def resolve_current(self, profile_ref: HostConfigurationRef) -> TrustedDockerTarget:
+        return self.__engine.resolve_current(profile_ref)
+
+    def require_current(self, target: TrustedDockerTarget) -> None:
+        self.__engine.require_current(target)
+
 
 def _host_platform() -> tuple[CapabilityOperatingSystem, CapabilityArchitecture]:
     operating_system = {
@@ -214,6 +221,7 @@ def _build_production_engine(
         secret_resolver=EnvironmentSecretLookup(),
         openai_probe=OpenAIResponsesProbe(),
         scratch_root=data_dir / "probe-scratch",
+        docker_build_capability_probe=lambda: None,
     )
 
 

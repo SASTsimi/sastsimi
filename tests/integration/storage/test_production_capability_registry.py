@@ -22,6 +22,7 @@ from sastsimi.contracts.capabilities import (
     CapabilityKind,
     CapabilityLanguage,
     CapabilityOperation,
+    DockerBuildCapability,
     RuntimeCapabilityProfile,
     RuntimeCapabilitySelection,
     capability_target_hash,
@@ -139,6 +140,15 @@ def _runtime_profile(
             "expected_version": expected_version,
             "subject_sha256": "b" * 64,
             "execution_target_hash": "d" * 64 if kind == "DOCKER" else None,
+            "docker_build_capability": (
+                DockerBuildCapability(
+                    build_backend="LEGACY_LIMITED",
+                    enforced_build_limits=("CPU", "MEMORY", "PID", "DISK"),
+                    external_build_disk_limit_bytes=64 * 1024 * 1024,
+                )
+                if kind == "DOCKER"
+                else None
+            ),
             "operating_system": "windows",
             "architecture": "x86_64",
             "languages": languages,
@@ -201,6 +211,11 @@ def _approval(
             ),
             "execution_target_hash": (
                 profile.execution_target_hash
+                if isinstance(profile, RuntimeCapabilityProfile)
+                else None
+            ),
+            "docker_build_capability": (
+                profile.docker_build_capability
                 if isinstance(profile, RuntimeCapabilityProfile)
                 else None
             ),
