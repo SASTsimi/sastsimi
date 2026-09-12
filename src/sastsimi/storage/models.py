@@ -100,6 +100,9 @@ current_records = Table(
 prompt_active_entries = Table(
     "prompt_active_entries",
     metadata,
+    Column("analysis_id", Text, primary_key=True),
+    Column("workspace_id", Text, primary_key=True),
+    Column("commit_id", Text, primary_key=True),
     Column("agent_role", Text, primary_key=True),
     Column("task_kind", Text, primary_key=True),
     Column("purpose", Text, primary_key=True),
