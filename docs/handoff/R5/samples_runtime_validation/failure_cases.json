@@ -24,6 +24,34 @@
       "failure": "STALE_REFERENCE",
       "provider_called": false,
       "domain_output_created": false
+    },
+    {
+      "name": "policy_parser_schema_error",
+      "role_task": "POLICY_PARSER/PARSE_OFFICIAL_POLICY",
+      "failure": "OUTPUT_SCHEMA_MISMATCH",
+      "provider_called": true,
+      "domain_output_created": false
+    },
+    {
+      "name": "policy_parser_semantic_error",
+      "role_task": "POLICY_PARSER/PARSE_OFFICIAL_POLICY",
+      "failure": "SEMANTIC_VALIDATION_FAILED",
+      "provider_called": true,
+      "domain_output_created": false
+    },
+    {
+      "name": "policy_parser_stale_source",
+      "role_task": "POLICY_PARSER/PARSE_OFFICIAL_POLICY",
+      "failure": "STALE_REFERENCE",
+      "provider_called": false,
+      "domain_output_created": false
+    },
+    {
+      "name": "policy_parser_prompt_injection",
+      "role_task": "POLICY_PARSER/PARSE_OFFICIAL_POLICY",
+      "failure": "UNTRUSTED_DATA_INSTRUCTION",
+      "provider_called": false,
+      "domain_output_created": false
     }
   ],
   "domain_decision_cases": [

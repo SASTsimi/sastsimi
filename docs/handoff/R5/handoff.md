@@ -23,11 +23,12 @@ Owner: R5
 
 ## 3. 생성 파일
 
-- Prompts: `prompts_cwe_labeling.md`, `prompts_technical_gate.md`, `prompts_rule_scope_gate.md`, `prompts_reporter.md`
+- Prompts: `prompts_cwe_labeling.md`, `prompts_technical_gate.md`, `prompts_rule_scope_gate.md`, `prompts_reporter.md`, `prompts_policy_parser.md`
 - CWE fixtures: `samples_cwe_labeling/{normal,failure}.{input,expected}.json`
 - Technical fixtures: `samples_technical_gate/{normal,failure}.{input,expected}.json`
 - Rule Scope fixtures: `samples_rule_scope_gate/{normal,failure}.{input,expected}.json`
-- Reporter fixtures: `samples_reporter/{normal,failure}.{input,expected}.json`
+- Reporter fixtures: `samples_reporter/{normal,failure,chaining_normal}.{input,expected}.json`
+- Policy Parser fixtures: `samples_policy_parser/{normal,failure}.{input,expected}.json`
 
 모두 이 `docs/handoff/R5/` 디렉터리 아래에 있다.
 
@@ -38,10 +39,12 @@ Owner: R5
 - CWE normal은 exact TRUE root cause로 CWE-22를 선택한다. failure는 root cause 부족이므로 `primary=null`로 둔다.
 - Technical normal은 exact TRUE/CWE, `agent_invoked=true`, same-attempt dynamic/AgentLog/validated PoC closure와 candidate revision/content-or-command digest 실행 증명이 있어 ACCEPT다. cross-attempt AgentLog failure는 호출 전 stale/reference validation failure로 domain output·새 generation 없이 차단한다. 별도 REVISE fixture는 reference가 모두 정상이지만 기술 근거가 의미적으로 부족한 경우다.
 - Rule Scope normal은 CURRENT official policy와 각 area의 evidence link가 있어 PASS 및 ALLOW다. failure는 `ABSENT_CONFIRMED + UNVERIFIED`로서 policy를 추측하지 않고 UNCERTAIN 및 DENY다. `COLLECTION_FAILED`라면 이 failure fixture처럼 review를 만들지 않는다는 점을 분리했다.
-- Reporter normal은 REPORT_READY와 `FindingIndexState(status=CURRENT, finding_ref=exact input Finding)`, validated PoC, same-attempt execution proof 및 redaction PASS를 충족한다. 이 current chain은 authorization, provider invocation, draft save에서 모두 재검증한다. failure는 token이 남아 REDACTION=PASS 전에는 draft 생성/저장이 차단된다.
+- Reporter normal은 REPORT_READY와 `FindingIndexState(status=CURRENT, finding_ref=exact input Finding)`, validated PoC, same-attempt execution proof 및 redaction PASS를 충족한다. chaining normal은 같은 조건에서 `ChainingResult`의 정확한 `source_result_refs`와 match/proposal provenance로 §9를 작성하되, 그 결과에 CWE/Rule Scope/admission ref를 추가하지 않는다. 이 current chain은 authorization, provider invocation, draft save에서 모두 재검증한다. failure는 token이 남아 REDACTION=PASS 전에는 draft 생성/저장이 차단된다.
+- Policy Parser normal은 Collector가 고정한 exact 공식 원문 하나를 구조화하고, failure는 원문의 비신뢰 지시문이 pre-invocation에서 차단되는 경우다. 두 fixture 모두 schema/semantic/stale/prompt-injection 공통 Runtime Validator 규칙을 따른다.
 
 ## 5. 반드시 지켜야 하는 처리 규칙
 
+- 이번 PR에서 Reporter의 `chaining_results(OPTIONAL_MANY)` 정식 slot과 POLICY_PARSER / `PARSE_OFFICIAL_POLICY` Prompt·fixture 계약을 완료했다. Chaining provenance는 `ChainingResult.source_result_refs`의 canonical set-equality만 사용하며 CWE/Rule Scope/admission ref를 결과에 넣지 않는다.
 - CWE Labeling은 Verification을 재판정하지 않으며 final TRUE/current exact revision만 Gate용 label로 만든다.
 - Technical Gate는 정책상 보고 가능성을 판정하지 않는다. `ACCEPT=READY`, `REVISE|REJECT=NOT_READY`다.
 - Rule Scope Gate는 technical fact/impact를 새로 만들지 않는다. policy absence와 collection/parser failure를 혼동하지 않는다. `COLLECTION_FAILED`에는 Gate review가 없다.
@@ -80,16 +83,10 @@ Owner: R5
 - current `Finding` 최소 구조와 normalization authority
 - Reporter readiness 및 stale 차단
 
-### R1
-
-- admitted Primitive를 Chaining으로 넘길 때 필요한 R5 provenance (Verification/CWE/Technical/Rule Scope/admission refs)
-
 ### R3
 
 - prompt/fixture 공통 형식과 fixture envelope의 비-canonical 위치
 - schema version, exact reference 표현, handoff 구조
-- §12 report-template의 Chaining provenance 표현은 현재 Reporter INPUT_SLOTS와 충돌한다. Prompt Runtime에 새 slot을 임의로 추가하지 않았다. Chaining은 `source_result_refs` 계약만 따르며 CWE/RuleScope/admission ref를 ChainingResult 입력으로 넣지 않는 R3 합의 후속 작업이다.
-- `POLICY_PARSER / PARSE_OFFICIAL_POLICY` prompt/runtime 정합성은 이번 R5 Gate/Reporter 최소 수정 범위 밖이므로 R3 후속 작업이다.
 
 ## 7. 미결정 사항
 

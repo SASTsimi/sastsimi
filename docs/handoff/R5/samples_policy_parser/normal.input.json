@@ -1,0 +1,7 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — canonical_input_projection is not a persisted record; partial reference assertions are not StoredDataRef values.",
+  "fixture_metadata": { "parser_name": "policy-parser", "parser_version": "1.0.0", "work_id": "work-policy-1", "attempt_id": "attempt-policy-1", "llm_call_id": "call-policy-1" },
+  "canonical_input_projection": {
+    "official_source": { "record_id": "rec-official-policy-1", "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "publisher_verified": true, "text": "Scope: api.example.test. Testing: no denial-of-service. Eligible: authorization bypass.", "locators": ["scope", "testing", "eligible"] }
+  }
+}
