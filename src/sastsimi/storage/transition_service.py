@@ -64,6 +64,7 @@ from .primitive_projection import (
 from .records import next_meta
 from .report_projection import report_creation_decision, validate_report_output
 from .report_state import report_process_projection
+from .run_control import cancel_latched
 from .run_projections import run_policy_projection
 from .run_states import get_run, save_run
 from .verification_projection import verification_projection
@@ -462,6 +463,18 @@ class TransitionService:
         )
         return work
 
+    @staticmethod
+    def _reject_latched_result(
+        connection: Connection,
+        request: TransitionCommitRequest,
+        work: WorkExecutionState,
+    ) -> None:
+        if (
+            cancel_latched(connection, str(work.meta.analysis_id))
+            and request.commit.target_status.value != "CANCELLED"
+        ):
+            raise ValueError("RUN_CANCELLED")
+
     def finish(self, request: TransitionCommitRequest) -> TransitionCommit:
         records = self.works.records
         with records.database.write() as connection:
@@ -476,6 +489,7 @@ class TransitionService:
         self.checkpoint("rename")
         with records.database.write() as connection:
             previous = self.check(connection, request)
+            self._reject_latched_result(connection, request, previous)
             claimed = self.works.validator.claim(
                 connection,
                 request.transition.action_decision_ref,
