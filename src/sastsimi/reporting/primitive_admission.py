@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, Protocol
 
+from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.chaining import (
     Primitive,
     PrimitiveAdmissionDecision,
@@ -34,9 +35,15 @@ from sastsimi.contracts.policy import (
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef, StoredDataRef, reference
 from sastsimi.contracts.verification import PrimitiveDraft, VerificationResult
-from sastsimi.contracts.work import WorkExecutionState, WorkStatus, WorkType
+from sastsimi.contracts.work import (
+    AttemptStatus,
+    WorkExecutionState,
+    WorkStatus,
+    WorkType,
+    validate_attempt_context,
+)
 from sastsimi.ports.clock import Clock
-from sastsimi.ports.dto import Record
+from sastsimi.ports.dto import Record, WorkContext
 from sastsimi.ports.id_generator import IdGenerator
 
 Admission = Literal["ALLOW", "DENY"]
@@ -134,8 +141,9 @@ class PrimitiveAdmissionRuntime:
         self._clock = clock
         self._ids = ids
 
-    def admit(self, work: WorkExecutionState) -> WorkExecutionState:
-        self._require_running(work)
+    def admit(self, context: WorkContext) -> WorkExecutionState:
+        self._require_claimed(context)
+        work = context.work
         refs = self._indexed_inputs(work)
         verification_ref = self._required_ref(refs, "verification_result")
         verification = self._exact(verification_ref, VerificationResult)
@@ -498,13 +506,23 @@ class PrimitiveAdmissionRuntime:
         return value
 
     @staticmethod
-    def _require_running(work: WorkExecutionState) -> None:
+    def _require_claimed(context: WorkContext) -> None:
+        work, attempt = context.work, context.attempt
+        try:
+            validate_attempt_context(attempt, work)
+        except ValueError as error:
+            raise ValueError("WORK_CONTEXT_NOT_CURRENT") from error
         if (
             work.work_type != WorkType.PRIMITIVE_UPDATE
             or work.status != WorkStatus.RUNNING
+            or attempt.status != AttemptStatus.RUNNING
             or work.active_attempt_id is None
+            or work.active_attempt_id != attempt.attempt_id
+            or work.work_id != attempt.work_id
+            or work.input_hash != attempt.input_hash
+            or work.input_hash != content_hash(work.input_refs)
         ):
-            raise ValueError("ATTEMPT_NOT_ACTIVE")
+            raise ValueError("WORK_CONTEXT_NOT_CURRENT")
 
 
 __all__ = [
