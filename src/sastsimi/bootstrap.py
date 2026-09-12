@@ -1229,7 +1229,7 @@ def build_t11_services(
     docker = DockerAdapter(docker_executable)
     setup = ReproductionSetupAutomation(
         docker=docker,
-        recipes=EnvironmentRecipeStore(),
+        recipes=EnvironmentRecipeStore(artifacts=artifacts),
         health=SandboxHealthChecker(),
         resources=OwnedResourceRegistry(),
     )

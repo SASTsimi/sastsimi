@@ -6,7 +6,7 @@ import io
 import json
 import tarfile
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import cast
@@ -27,6 +27,7 @@ from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
 from sastsimi.contracts.static import RepositoryProfile
+from sastsimi.ports.dto import StagedArtifact
 from sastsimi.sandbox.cleanup import OwnedResourceRegistry
 from sastsimi.sandbox.controller import (
     SandboxBoundaryOutcome,
@@ -49,6 +50,26 @@ from sastsimi.sandbox.setup_automation import (
 
 NOW = datetime(2026, 9, 11, tzinfo=UTC)
 IMAGE_DIGEST = "sha256:" + "1" * 64
+
+
+@dataclass
+class _MemoryArtifacts:
+    values: dict[str, bytes] = field(default_factory=dict)
+
+    def stage_bytes(self, data: bytes, media_type: str) -> StagedArtifact:
+        return StagedArtifact(data, media_type)
+
+    def commit(self, staged: StagedArtifact) -> StoredDataRef:
+        digest = hashlib.sha256(staged.data).hexdigest()
+        self.values[digest] = staged.data
+        return StoredDataRef(
+            stored_data_id=digest,
+            data_kind="artifact",
+            content_hash=digest,
+            workspace_id="workspace-1",
+            commit_id="commit-1",
+            record_id=None,
+        )
 
 
 def _git_blob(raw: bytes) -> str:
@@ -510,10 +531,14 @@ class FakeDockerAdapter:
         self.unhealthy.add(container_id)
 
 
-def _setup(adapter: FakeDockerAdapter) -> ReproductionSetupAutomation:
+def _setup(
+    adapter: FakeDockerAdapter,
+    *,
+    artifacts: _MemoryArtifacts | None = None,
+) -> ReproductionSetupAutomation:
     return ReproductionSetupAutomation(
         docker=adapter,
-        recipes=EnvironmentRecipeStore(),
+        recipes=EnvironmentRecipeStore(artifacts=artifacts),
         health=SandboxHealthChecker(),
         resources=OwnedResourceRegistry(),
     )
@@ -532,7 +557,7 @@ async def test_repository_profile_generates_python_build_context(
     profile = _repository_profile(files)
     request, requirements, _ = _dynamic_records()
     docker = FakeDockerAdapter()
-    setup = _setup(docker)
+    setup = _setup(docker, artifacts=_MemoryArtifacts())
 
     source = await setup.preflight(
         workspace_root=tmp_path,
@@ -552,6 +577,7 @@ async def test_repository_profile_generates_python_build_context(
     assert source.repository_profile_ref == reference(profile)
     assert source.dockerfile_origin == "GENERATED"
     assert recipe.source_refs[0] == reference(profile)
+    assert {item.data_kind for item in recipe.source_refs[1:]} == {"artifact"}
     assert docker.built == []
     assert len(docker.built_contexts) == 1
     archive, dockerfile_path, timeout_ms = docker.built_contexts[0]
@@ -582,7 +608,7 @@ async def test_repository_profile_blocks_tracked_secret_before_docker(
     docker = FakeDockerAdapter()
 
     with pytest.raises(ValueError, match="REPOSITORY_SECRET_FILE_DENIED"):
-        await _setup(docker).preflight(
+        await _setup(docker, artifacts=_MemoryArtifacts()).preflight(
             workspace_root=tmp_path,
             repository_profile=profile,
             request=request,
@@ -608,7 +634,7 @@ async def test_repository_profile_keeps_equal_file_refs_distinct(
         (tmp_path / name).write_bytes(raw)
     request, requirements, _ = _dynamic_records()
 
-    source = await _setup(FakeDockerAdapter()).preflight(
+    source = await _setup(FakeDockerAdapter(), artifacts=_MemoryArtifacts()).preflight(
         workspace_root=tmp_path,
         repository_profile=_repository_profile(files),
         request=request,
@@ -630,7 +656,7 @@ async def test_repository_profile_prefers_existing_dockerfile(tmp_path: Path) ->
         (tmp_path / name).write_bytes(raw)
     request, requirements, _ = _dynamic_records()
     docker = FakeDockerAdapter()
-    setup = _setup(docker)
+    setup = _setup(docker, artifacts=_MemoryArtifacts())
 
     source = await setup.preflight(
         workspace_root=tmp_path,
