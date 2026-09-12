@@ -40,7 +40,8 @@ from sastsimi.contracts.refs import (
 )
 from sastsimi.contracts.static import RepositoryProfile
 from sastsimi.ports.dto import StagedArtifact
-from sastsimi.ports.dynamic_sandbox import TrustedDockerTarget
+from sastsimi.ports.dynamic_sandbox import SandboxSetupCleanupError, TrustedDockerTarget
+from sastsimi.sandbox import cleanup as cleanup_module
 from sastsimi.sandbox.cleanup import OwnedResourceRegistry
 from sastsimi.sandbox.controller import (
     SandboxBoundaryOutcome,
@@ -51,8 +52,10 @@ from sastsimi.sandbox.controller import (
 from sastsimi.sandbox.docker_adapter import (
     DockerAdapter,
     DockerCommandOutcome,
+    DockerContainerPresence,
     DockerContainerState,
     DockerImageState,
+    DockerImageTagPresence,
     DockerOperationError,
 )
 from sastsimi.sandbox.health_check import SandboxHealthChecker
@@ -496,7 +499,11 @@ class FakeDockerAdapter:
         self.created: dict[str, tuple[SandboxRunSpec, Mapping[str, str]]] = {}
         self.removed: list[str] = []
         self.removed_images: list[str] = []
+        self.removed_image_tags: list[str] = []
         self.image_labels: dict[str, Mapping[str, str]] = {}
+        self.image_tags: dict[str, DockerImageState] = {}
+        self.unknown_image_tags: set[str] = set()
+        self.unknown_containers: set[str] = set()
         self.unhealthy: set[str] = set()
         self.inspect_label_overrides: dict[str, Mapping[str, str]] = {}
         self.started: list[str] = []
@@ -540,8 +547,32 @@ class FakeDockerAdapter:
             labels=self.image_labels[image_digest],
         )
 
+    async def inspect_image_tag(self, image_tag: str) -> DockerImageTagPresence:
+        if image_tag in self.unknown_image_tags:
+            return DockerImageTagPresence("UNKNOWN")
+        state = self.image_tags.get(image_tag)
+        return DockerImageTagPresence(
+            "PRESENT" if state is not None else "ABSENT",
+            state,
+        )
+
+    async def inspect_container_presence(
+        self, container_id: str, *, by_name: bool = False
+    ) -> DockerContainerPresence:
+        del by_name
+        if container_id in self.unknown_containers:
+            return DockerContainerPresence("UNKNOWN")
+        if container_id not in self.created:
+            return DockerContainerPresence("ABSENT")
+        return DockerContainerPresence("PRESENT", await self.inspect(container_id))
+
     async def remove_images(self, image_digests: tuple[str, ...]) -> None:
         self.removed_images.extend(image_digests)
+
+    async def remove_image_tags(self, image_tags: tuple[str, ...]) -> None:
+        for image_tag in image_tags:
+            self.removed_image_tags.append(image_tag)
+            self.image_tags.pop(image_tag, None)
 
     async def create(self, spec: SandboxRunSpec, labels: Mapping[str, str]) -> str:
         self._index += 1
@@ -623,6 +654,332 @@ def _setup(
         health=SandboxHealthChecker(),
         resources=OwnedResourceRegistry(),
     )
+
+
+class _FailedBuildDocker(FakeDockerAdapter):
+    def __init__(self, failure: str, *, presence: str = "PRESENT") -> None:
+        super().__init__()
+        self.failure = failure
+        self.presence = presence
+        self.started = asyncio.Event()
+
+    async def build(
+        self,
+        dockerfile: bytes,
+        labels: Mapping[str, str],
+        *,
+        spec: SandboxRunSpec,
+        timeout_ms: int,
+    ) -> str:
+        self.built.append((dockerfile, timeout_ms))
+        image_tag = DockerAdapter.runtime_image_tag(labels)
+        if self.presence == "PRESENT":
+            self.image_tags[image_tag] = DockerImageState(IMAGE_DIGEST, dict(labels))
+        elif self.presence == "UNKNOWN":
+            self.unknown_image_tags.add(image_tag)
+        self.started.set()
+        if self.failure == "cancel":
+            await asyncio.Event().wait()
+        if self.failure == "invalid-digest":
+            return "invalid-digest"
+        raise DockerOperationError(
+            "DOCKER_BUILD_FAILED",
+            DockerCommandOutcome(
+                1,
+                b"",
+                b"",
+                self.failure == "timeout",
+            ),
+        )
+
+
+async def _run_failed_build(docker: FakeDockerAdapter) -> None:
+    workspace = Path(__file__).parents[2] / "fixtures/sandbox/sql_injection"
+    request, requirements, _ = _dynamic_records()
+    setup = _setup(docker)
+    source = await setup.preflight(
+        workspace_root=workspace,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "failed-build-source"),
+    )
+    await setup.build(
+        approval=_build_approval(workspace, request, source),
+        source=source,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "failed-build"),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["timeout", "nonzero", "invalid-digest"])
+async def test_failed_build_reconciles_reserved_owned_image_tag(failure: str) -> None:
+    docker = _FailedBuildDocker(failure)
+
+    with pytest.raises((DockerOperationError, ValueError)):
+        await _run_failed_build(docker)
+
+    assert len(docker.removed_image_tags) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_build_reconciles_reserved_owned_image_tag() -> None:
+    docker = _FailedBuildDocker("cancel")
+    task = asyncio.create_task(_run_failed_build(docker))
+    await docker.started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert len(docker.removed_image_tags) == 1
+
+
+@pytest.mark.asyncio
+async def test_build_failure_keeps_unknown_image_tag_intent_durable(
+    tmp_path: Path,
+) -> None:
+    docker = _FailedBuildDocker("timeout", presence="UNKNOWN")
+    journal = tmp_path / "owned.json"
+    setup = ReproductionSetupAutomation(
+        docker=docker,
+        recipes=EnvironmentRecipeStore(),
+        health=SandboxHealthChecker(),
+        resources=OwnedResourceRegistry(journal_path=journal),
+    )
+    workspace = Path(__file__).parents[2] / "fixtures/sandbox/sql_injection"
+    request, requirements, _ = _dynamic_records()
+    source = await setup.preflight(
+        workspace_root=workspace,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "unknown-build-source"),
+    )
+
+    with pytest.raises(DockerOperationError):
+        await setup.build(
+            approval=_build_approval(workspace, request, source),
+            source=source,
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "unknown-build"),
+        )
+
+    restarted = OwnedResourceRegistry(journal_path=journal)
+    assert any(
+        item.startswith("sastsimi-attempt:")
+        for item in restarted.pending_resource_ids()
+    )
+    assert docker.removed_image_tags == []
+
+
+@pytest.mark.asyncio
+async def test_image_tag_reconciliation_rejects_preexisting_label_mismatch() -> None:
+    registry = OwnedResourceRegistry()
+    docker = FakeDockerAdapter()
+    labels = dict(
+        ReproductionSetupAutomation._image_labels(_meta("environment_recipe", "owned"))
+    )
+    image_tag = DockerAdapter.runtime_image_tag(labels)
+    registry.reserve_image(image_tag=image_tag, labels=labels)
+    docker.image_tags[image_tag] = DockerImageState(
+        IMAGE_DIGEST,
+        labels | {"sastsimi.attempt-id": "foreign-attempt"},
+    )
+
+    status = await registry.reconcile_image_intent(
+        docker=docker,
+        image_tag=image_tag,
+    )
+
+    assert status == "UNKNOWN"
+    assert docker.removed_image_tags == []
+    assert image_tag in registry.pending_resource_ids()
+
+
+@pytest.mark.asyncio
+async def test_build_refuses_to_overwrite_preexisting_foreign_stable_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker = FakeDockerAdapter()
+    setup = _setup(docker)
+    labels = dict(
+        ReproductionSetupAutomation._image_labels(_meta("environment_recipe", "owned"))
+    )
+    monkeypatch.setattr(
+        ReproductionSetupAutomation,
+        "_image_labels",
+        staticmethod(lambda _: labels),
+    )
+    image_tag = DockerAdapter.runtime_image_tag(labels)
+    docker.image_tags[image_tag] = DockerImageState(
+        IMAGE_DIGEST,
+        labels | {"sastsimi.attempt-id": "foreign-attempt"},
+    )
+    workspace = Path(__file__).parents[2] / "fixtures/sandbox/sql_injection"
+    request, requirements, _ = _dynamic_records()
+    source = await setup.preflight(
+        workspace_root=workspace,
+        request=request,
+        requirements=requirements,
+        meta=_meta("environment_recipe", "preexisting-tag-source"),
+    )
+
+    with pytest.raises(
+        DockerOperationError,
+        match="DOCKER_IMAGE_TAG_OWNERSHIP_CONFLICT",
+    ):
+        await setup.build(
+            approval=_build_approval(workspace, request, source),
+            source=source,
+            request=request,
+            requirements=requirements,
+            meta=_meta("environment_recipe", "preexisting-tag-build"),
+        )
+
+    assert docker.built == []
+    assert docker.removed_image_tags == []
+    assert image_tag not in setup._resources.pending_resource_ids()
+
+
+@pytest.mark.asyncio
+async def test_normal_image_cleanup_removes_only_attempt_owned_tag() -> None:
+    registry = OwnedResourceRegistry()
+    docker = FakeDockerAdapter()
+    labels = dict(
+        ReproductionSetupAutomation._image_labels(_meta("environment_recipe", "owned"))
+    )
+    image_tag = DockerAdapter.runtime_image_tag(labels)
+    docker.image_tags[image_tag] = DockerImageState(IMAGE_DIGEST, labels)
+    image_ref = registry.register_image(
+        image_digest=IMAGE_DIGEST,
+        image_tag=image_tag,
+        labels=labels,
+        meta=_meta("environment_recipe", "owned"),
+        preservation_reason=None,
+    )
+    request, _, _ = _dynamic_records()
+
+    result = await registry.cleanup(
+        docker=docker,
+        request=request,
+        environments=(),
+        resource_refs=(image_ref,),
+        meta=_meta("cleanup_result", "owned-image-cleanup"),
+    )
+
+    assert result.status == "SUCCEEDED"
+    assert docker.removed_image_tags == [image_tag]
+    assert docker.removed_images == []
+
+
+@pytest.mark.asyncio
+async def test_normal_cleanup_has_bounded_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class HungImageInspectDocker(FakeDockerAdapter):
+        async def inspect_image_tag(self, image_tag: str) -> DockerImageTagPresence:
+            del image_tag
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    monkeypatch.setattr(cleanup_module, "_CLEANUP_TIMEOUT_SECONDS", 0.01)
+    registry = OwnedResourceRegistry()
+    docker = HungImageInspectDocker()
+    labels = dict(
+        ReproductionSetupAutomation._image_labels(_meta("environment_recipe", "owned"))
+    )
+    image_tag = DockerAdapter.runtime_image_tag(labels)
+    image_ref = registry.register_image(
+        image_digest=IMAGE_DIGEST,
+        image_tag=image_tag,
+        labels=labels,
+        meta=_meta("environment_recipe", "owned"),
+        preservation_reason=None,
+    )
+    request, _, _ = _dynamic_records()
+
+    result = await registry.cleanup(
+        docker=docker,
+        request=request,
+        environments=(),
+        resource_refs=(image_ref,),
+        meta=_meta("cleanup_result", "bounded-cleanup"),
+    )
+
+    assert result.status == "FAILED"
+    assert result.failure_reason == "OWNED_RESOURCE_CLEANUP_FAILED"
+    owned = registry.exact(image_ref)
+    assert owned is not None
+    assert owned.reconcile_required is True
+
+
+class _CancelledCreateDocker(FakeDockerAdapter):
+    def __init__(self, presence: str) -> None:
+        super().__init__()
+        self.presence = presence
+        self.entered = asyncio.Event()
+        self.container_name: str | None = None
+
+    async def create(self, spec: SandboxRunSpec, labels: Mapping[str, str]) -> str:
+        del spec
+        self.container_name = DockerAdapter.runtime_container_name(labels)
+        if self.presence == "UNKNOWN":
+            self.unknown_containers.add(self.container_name)
+        self.entered.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+@pytest.mark.asyncio
+async def test_early_create_cancellation_treats_absent_as_clean() -> None:
+    docker = _CancelledCreateDocker("ABSENT")
+    setup = _setup(docker)
+    workspace = Path(__file__).parents[2] / "fixtures/sandbox/sql_injection"
+    request, requirements, plan = _dynamic_records()
+    task = asyncio.create_task(
+        _prepare(
+            setup,
+            workspace,
+            request=request,
+            requirements=requirements,
+            plan=plan,
+            meta=_meta("sandbox_environment", "early-absent"),
+        )
+    )
+    await docker.entered.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert docker.container_name not in setup._resources.pending_resource_ids()
+
+
+@pytest.mark.asyncio
+async def test_early_create_cancellation_keeps_unknown_intent() -> None:
+    docker = _CancelledCreateDocker("UNKNOWN")
+    setup = _setup(docker)
+    workspace = Path(__file__).parents[2] / "fixtures/sandbox/sql_injection"
+    request, requirements, plan = _dynamic_records()
+    task = asyncio.create_task(
+        _prepare(
+            setup,
+            workspace,
+            request=request,
+            requirements=requirements,
+            plan=plan,
+            meta=_meta("sandbox_environment", "early-unknown"),
+        )
+    )
+    await docker.entered.wait()
+
+    task.cancel()
+    with pytest.raises(SandboxSetupCleanupError):
+        await task
+
+    assert docker.container_name in setup._resources.pending_resource_ids()
 
 
 @pytest.mark.asyncio
@@ -1600,6 +1957,30 @@ async def test_docker_cleanup_removes_owned_anonymous_volumes(
 
 
 @pytest.mark.asyncio
+async def test_docker_image_cleanup_never_force_removes_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def run(
+        argv: tuple[str, ...],
+        *,
+        timeout_ms: int | None = None,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        del timeout_ms, input_bytes
+        calls.append(argv)
+        return DockerCommandOutcome(0, b"", b"", False)
+
+    adapter = DockerAdapter()
+    monkeypatch.setattr(adapter, "_run", run)
+
+    await adapter.remove_images((IMAGE_DIGEST,))
+
+    assert calls == [("image", "rm", IMAGE_DIGEST)]
+
+
+@pytest.mark.asyncio
 async def test_cleanup_removes_exact_attempt_owned_nonbaseline_image(
     tmp_path: Path,
 ) -> None:
@@ -1615,11 +1996,14 @@ async def test_cleanup_removes_exact_attempt_owned_nonbaseline_image(
         "sastsimi.resource-kind": "image",
         "sastsimi.resource-id": "image-runtime-1",
     }
+    image_tag = DockerAdapter.runtime_image_tag(labels)
     docker.image_labels[IMAGE_DIGEST] = labels
+    docker.image_tags[image_tag] = DockerImageState(IMAGE_DIGEST, labels)
     register_image = getattr(registry, "register_image", None)
     assert register_image is not None, "attempt-owned image registration is required"
     image_ref = register_image(
         image_digest=IMAGE_DIGEST,
+        image_tag=image_tag,
         labels=labels,
         meta=_meta("environment_recipe", "recipe-image"),
         preservation_reason=None,
@@ -1635,7 +2019,8 @@ async def test_cleanup_removes_exact_attempt_owned_nonbaseline_image(
     )
 
     assert result.status == "SUCCEEDED"
-    assert docker.removed_images == [IMAGE_DIGEST]
+    assert docker.removed_image_tags == [image_tag]
+    assert docker.removed_images == []
     assert registry.exact(image_ref) is None
 
 
@@ -1909,6 +2294,17 @@ async def test_cancelled_docker_build_reclaims_attempt_owned_image(
         if argv[:2] == ("image", "build"):
             started.set()
             await asyncio.Event().wait()
+        if argv[:2] == ("image", "ls"):
+            return DockerCommandOutcome(0, f"{IMAGE_DIGEST}\n".encode(), b"", False)
+        if argv[:2] == ("image", "inspect"):
+            return DockerCommandOutcome(
+                0,
+                json.dumps(
+                    [{"Id": IMAGE_DIGEST, "Config": {"Labels": labels}}]
+                ).encode(),
+                b"",
+                False,
+            )
         return DockerCommandOutcome(0, b"", b"", False)
 
     labels = {
@@ -1972,7 +2368,7 @@ async def test_cancelled_docker_build_reclaims_attempt_owned_image(
         await task
 
     image_tag = DockerAdapter.runtime_image_tag(labels)
-    assert calls[-1] == ("image", "rm", "--force", image_tag)
+    assert calls[-1] == ("image", "rm", image_tag)
 
 
 @pytest.mark.asyncio
