@@ -9,6 +9,7 @@ from .chaining import ChainingChildHandoffPort as ChainingChildHandoffPort
 from .chaining import ChainingCohortMember as ChainingCohortMember
 from .chaining import ChainingCohortPort as ChainingCohortPort
 from .chaining import ChainingCohortRegistration as ChainingCohortRegistration
+from .chaining import ChainingCommittedSourcePort as ChainingCommittedSourcePort
 from .chaining import ChainingComparison as ChainingComparison
 from .chaining import ChainingDecision as ChainingDecision
 from .chaining import ChainingEvidence as ChainingEvidence
@@ -20,13 +21,19 @@ from .chaining import ChainingPoolHistoryPort as ChainingPoolHistoryPort
 from .chaining import ChainingPrimitive as ChainingPrimitive
 from .chaining import ChainingPrimitiveInput as ChainingPrimitiveInput
 from .chaining import ChainingPrimitiveResult as ChainingPrimitiveResult
+from .chaining import ChainingProposalRegistration as ChainingProposalRegistration
+from .chaining import (
+    ChainingProposalRegistrationPort as ChainingProposalRegistrationPort,
+)
 from .chaining import ChainingReconciliationPort as ChainingReconciliationPort
+from .chaining import ChainingResultPublisherPort as ChainingResultPublisherPort
 from .chaining import (
     ChainingResultReconciliationRequest as ChainingResultReconciliationRequest,
 )
 from .chaining import HoldPrimitiveAdmissionClosure as HoldPrimitiveAdmissionClosure
 from .chaining import PinnedChainingUniverse as PinnedChainingUniverse
 from .chaining import PrimitiveAdmissionClosure as PrimitiveAdmissionClosure
+from .chaining import PrimitiveAdmissionPort as PrimitiveAdmissionPort
 from .chaining import PrimitiveAdmissionSourcePort as PrimitiveAdmissionSourcePort
 from .chaining import PrimitiveUpdateOutcome as PrimitiveUpdateOutcome
 from .chaining import (

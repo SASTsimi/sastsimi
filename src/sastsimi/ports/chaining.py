@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
+from sastsimi.contracts.chaining import ChainingResult
+from sastsimi.contracts.hypothesis import HypothesisProposal
 from sastsimi.contracts.ids import ProposalId
 from sastsimi.contracts.records import RecordMeta, RecordMetadata
 from sastsimi.contracts.refs import (
@@ -132,6 +134,12 @@ class PrimitiveAdmissionSourcePort(Protocol):
     """Resolve only the exact closure pinned by a claimed current work."""
 
     def resolve(self, context: WorkContext) -> PrimitiveAdmissionClosure: ...
+
+
+class PrimitiveAdmissionPort(Protocol):
+    """Finalize one already-claimed Primitive update, without scheduling children."""
+
+    def admit(self, context: WorkContext) -> WorkExecutionState: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -476,6 +484,18 @@ class ChainingAgentPort(Protocol):
     ) -> ChainingAgentOutcome: ...
 
 
+class ChainingResultPublisherPort(Protocol):
+    """Atomically publish one trusted result through its claimed work."""
+
+    def publish(
+        self,
+        *,
+        context: WorkContext,
+        result: ChainingResult,
+        action_input_refs: tuple[RecordRef, ...],
+    ) -> WorkExecutionState: ...
+
+
 class ChainingLineagePort(Protocol):
     """Resolve committed ancestors inside one exact pinned universe."""
 
@@ -552,6 +572,16 @@ class ChainingReconciliationPort(Protocol):
     ) -> tuple[WorkExecutionState, ...]: ...
 
 
+class ChainingCommittedSourcePort(Protocol):
+    """Rebuild post-commit handoffs from exact committed source records only."""
+
+    def primitive_update(
+        self, source_update_ref: StoredDataRef
+    ) -> PrimitiveUpdateOutcome: ...
+
+    def chaining_result(self, source_result_ref: StoredDataRef) -> ChainingResult: ...
+
+
 class ChainingChildHandoffPort(Protocol):
     """Enqueue one nested proposal as READY without claiming or executing it."""
 
@@ -564,6 +594,52 @@ class ChainingChildHandoffPort(Protocol):
     ) -> WorkExecutionState: ...
 
 
+@dataclass(frozen=True, slots=True)
+class ChainingProposalRegistration:
+    """Exact projected child records and its not-yet-claimed Verification work."""
+
+    source_result_ref: StoredDataRef
+    proposal: HypothesisProposal
+    proposal_ref: StoredDataRef
+    hypothesis_ref: StoredDataRef
+    process_ref: StoredDataRef
+    verification_work: WorkExecutionState
+
+    def __post_init__(self) -> None:
+        _require_kind(
+            self.source_result_ref, "chaining_result", "CHAINING_CHILD_REF_KIND"
+        )
+        for value, kind in (
+            (self.proposal_ref, "hypothesis_proposal"),
+            (self.hypothesis_ref, "vulnerability_hypothesis"),
+            (self.process_ref, "hypothesis_process_state"),
+        ):
+            _require_kind(value, kind, "CHAINING_CHILD_REF_KIND")
+        if (
+            reference(self.proposal) != self.proposal_ref
+            or self.proposal.origin != "CHAINING"
+            or self.verification_work.work_type != WorkType.VERIFICATION
+            or self.verification_work.subject_type != SubjectType.HYPOTHESIS
+            or self.verification_work.status != "READY"
+            or self.verification_work.active_attempt_id is not None
+            or self.proposal_ref not in self.verification_work.input_refs
+        ):
+            raise ValueError("CHAINING_CHILD_REGISTRATION_MISMATCH")
+
+
+class ChainingProposalRegistrationPort(Protocol):
+    """Commit one claimed child proposal and enqueue Verification as READY."""
+
+    def register_claimed(
+        self,
+        *,
+        context: WorkContext,
+        source_result_ref: StoredDataRef,
+        proposal_id: ProposalId,
+        requester_identity_ref: BudgetScopeRef,
+    ) -> ChainingProposalRegistration: ...
+
+
 __all__ = [
     "ChainedHypothesisContent",
     "ChainingAgentInput",
@@ -571,6 +647,7 @@ __all__ = [
     "ChainingAgentOutput",
     "ChainingAgentPort",
     "ChainingChildHandoffPort",
+    "ChainingCommittedSourcePort",
     "ChainingCohortMember",
     "ChainingCohortPort",
     "ChainingCohortRegistration",
@@ -582,14 +659,18 @@ __all__ = [
     "ChainingMatchReservationPort",
     "ChainingPoolHistory",
     "ChainingPoolHistoryPort",
+    "ChainingProposalRegistration",
+    "ChainingProposalRegistrationPort",
     "ChainingPrimitive",
     "ChainingPrimitiveInput",
     "ChainingPrimitiveResult",
     "ChainingReconciliationPort",
+    "ChainingResultPublisherPort",
     "ChainingResultReconciliationRequest",
     "HoldPrimitiveAdmissionClosure",
     "PinnedChainingUniverse",
     "PrimitiveAdmissionClosure",
+    "PrimitiveAdmissionPort",
     "PrimitiveAdmissionSourcePort",
     "PrimitiveUpdateOutcome",
     "PrimitiveUpdateReconciliationRequest",

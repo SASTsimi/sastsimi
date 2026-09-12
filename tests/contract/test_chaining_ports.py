@@ -20,6 +20,7 @@ from sastsimi.ports.chaining import (
     ChainingCohortMember,
     ChainingCohortPort,
     ChainingCohortRegistration,
+    ChainingCommittedSourcePort,
     ChainingComparison,
     ChainingDecision,
     ChainingEvidence,
@@ -31,9 +32,12 @@ from sastsimi.ports.chaining import (
     ChainingPrimitive,
     ChainingPrimitiveInput,
     ChainingPrimitiveResult,
+    ChainingProposalRegistrationPort,
     ChainingReconciliationPort,
+    ChainingResultPublisherPort,
     HoldPrimitiveAdmissionClosure,
     PinnedChainingUniverse,
+    PrimitiveAdmissionPort,
     PrimitiveAdmissionSourcePort,
     PrimitiveUpdateReconciliationRequest,
     TruePrimitiveAdmissionClosure,
@@ -71,6 +75,34 @@ def test_exact_admission_closures_are_frozen_and_kind_checked() -> None:
             hypothesis_process_ref=hold.hypothesis_process_ref,
             expected_primitive_index_ref=hold.expected_primitive_index_ref,
         )
+
+
+def test_public_workflow_ports_require_claimed_or_exact_committed_inputs() -> None:
+    assert "context" in inspect.signature(PrimitiveAdmissionPort.admit).parameters
+    assert (
+        "context" in inspect.signature(ChainingResultPublisherPort.publish).parameters
+    )
+    assert (
+        "source_update_ref"
+        in inspect.signature(ChainingCommittedSourcePort.primitive_update).parameters
+    )
+    assert (
+        "source_result_ref"
+        in inspect.signature(ChainingCommittedSourcePort.chaining_result).parameters
+    )
+    assert (
+        "context"
+        in inspect.signature(
+            ChainingProposalRegistrationPort.register_claimed
+        ).parameters
+    )
+    for name in (
+        "PrimitiveAdmissionPort",
+        "ChainingResultPublisherPort",
+        "ChainingCommittedSourcePort",
+        "ChainingProposalRegistrationPort",
+    ):
+        assert hasattr(public_ports, name)
 
 
 def test_pinned_universe_requires_one_exact_trigger_and_no_duplicate_refs() -> None:
