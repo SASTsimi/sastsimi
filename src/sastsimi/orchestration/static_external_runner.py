@@ -159,6 +159,8 @@ def _guarded_read(path: Path, limit: int) -> bytes:
 class RepositoryLoaderPort(Protocol):
     process_receipts: tuple[ProcessReceipt, ...]
 
+    def verify_git_capability(self, subject_key: str, expected_sha256: str) -> None: ...
+
     def prepare(
         self,
         *,
@@ -174,6 +176,8 @@ class RepositoryLoaderPort(Protocol):
 
 
 class RepositoryRecoveryValidatorPort(Protocol):
+    def verify_git_capability(self, subject_key: str, expected_sha256: str) -> None: ...
+
     async def validate(
         self,
         outcome: RepositoryPreparation,
@@ -228,13 +232,13 @@ class StaticExternalRunner:
         work: WorkExecutionState,
         clone_ref: HostConfigurationRef | None,
         checkout_ref: HostConfigurationRef | None,
-    ) -> tuple[HostConfigurationRef, ...]:
+    ) -> tuple[tuple[HostConfigurationRef, ...], tuple[str, str] | None]:
         """Revalidate the exact host Git revisions before any repository sink."""
 
         if self.capability_resolver is None:
             if clone_ref is not None or checkout_ref is not None:
                 raise ValueError("GIT_CAPABILITY_RESOLVER_REQUIRED")
-            return ()
+            return (), None
         if clone_ref is None or checkout_ref is None:
             raise ValueError("GIT_CAPABILITY_REFERENCE_REQUIRED")
         refs = tuple(dict.fromkeys((clone_ref, checkout_ref)))
@@ -245,6 +249,7 @@ class StaticExternalRunner:
             != refs
         ):
             raise ValueError("GIT_CAPABILITY_WORK_INPUT_MISMATCH")
+        identities: list[tuple[str, str]] = []
         for ref, operation in ((clone_ref, "CLONE"), (checkout_ref, "CHECKOUT")):
             profile = self.capability_resolver.resolve_pinned_active_profile(ref)
             if (
@@ -255,7 +260,10 @@ class StaticExternalRunner:
                 or operation not in profile.operations
             ):
                 raise ValueError("GIT_CAPABILITY_ROUTE_MISMATCH")
-        return refs
+            identities.append((str(profile.subject_key), str(profile.subject_sha256)))
+        if identities[0] != identities[1]:
+            raise ValueError("GIT_CAPABILITY_EXECUTABLE_MISMATCH")
+        return refs, identities[0]
 
     def _validate_production_static_selection(
         self,
@@ -701,9 +709,11 @@ class StaticExternalRunner:
         git_clone_profile_ref: HostConfigurationRef | None = None,
         git_checkout_profile_ref: HostConfigurationRef | None = None,
     ) -> PublishedWorkspaceMaterial:
-        git_refs = self._verified_git_refs(
+        git_refs, git_identity = self._verified_git_refs(
             work, git_clone_profile_ref, git_checkout_profile_ref
         )
+        if git_identity is not None:
+            loader.verify_git_capability(*git_identity)
         source = self.canonicalize_source(submitted_source)
         policy = self._verified_policy(work, policy_ref)
         if timeout_ms <= 0:
@@ -798,12 +808,15 @@ class StaticExternalRunner:
             if configured_refs:
                 raise ValueError("REPOSITORY_RECOVERY_INVALID")
             git_refs: tuple[HostConfigurationRef, ...] = ()
+            git_identity: tuple[str, str] | None = None
         else:
             if len(configured_refs) not in {1, 2}:
                 raise ValueError("REPOSITORY_RECOVERY_INVALID")
             clone_ref = configured_refs[0]
             checkout_ref = configured_refs[-1]
-            git_refs = self._verified_git_refs(current, clone_ref, checkout_ref)
+            git_refs, git_identity = self._verified_git_refs(
+                current, clone_ref, checkout_ref
+            )
         if not isinstance(state.workspace_ref, RunStoredDataRef):
             raise ValueError("REPOSITORY_RECOVERY_INVALID")
         workspace = self.runner.runtime.unit_of_work.records.get_exact(
@@ -844,6 +857,8 @@ class StaticExternalRunner:
         if outcome.status == "READY":
             if self.recovery_validator is None:
                 raise ValueError("REPOSITORY_RECOVERY_GUARD_REQUIRED")
+            if git_identity is not None:
+                self.recovery_validator.verify_git_capability(*git_identity)
             await self.recovery_validator.validate(
                 outcome,
                 action_id=receipt.action_id,

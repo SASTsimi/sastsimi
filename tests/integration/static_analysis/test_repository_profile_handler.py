@@ -46,6 +46,10 @@ def _tracked(root: Path, path: str, raw: bytes) -> TrackedFile:
 class _Guard:
     calls = 0
 
+    def verify_git_capability(self, subject_key: str, expected_sha256: str) -> None:
+        assert subject_key == "git"
+        assert expected_sha256 == "d" * 64
+
     async def assert_preparation_unchanged(
         self,
         outcome: RepositoryPreparation,

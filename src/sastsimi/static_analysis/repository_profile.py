@@ -541,9 +541,13 @@ class RepositoryExecutionSelector:
             }
         )
 
-    def _validate_git_ref(
-        self, profile_ref: HostConfigurationRef, operation: str
-    ) -> None:
+    def git_executable_identity(
+        self,
+        profile_ref: HostConfigurationRef,
+        operation: Literal["CLONE", "CHECKOUT"],
+    ) -> tuple[str, str]:
+        """Return the executable identity of one exact current Git profile."""
+
         profile = self._resolver.resolve_pinned_active_profile(profile_ref)
         if not isinstance(profile, RuntimeCapabilityProfile):
             raise ValueError("GIT_CAPABILITY_TYPE_MISMATCH")
@@ -559,6 +563,7 @@ class RepositoryExecutionSelector:
             or profile.architecture != self._architecture
         ):
             raise ValueError("GIT_CAPABILITY_ROUTE_MISMATCH")
+        return str(profile.subject_key), str(profile.subject_sha256)
 
     def _resolve_static(
         self, adapter_key: str, language: CapabilityLanguage
@@ -614,8 +619,8 @@ class RepositoryExecutionSelector:
         ):
             raise ValueError("REPOSITORY_EXECUTION_SELECTION_INPUT_INVALID")
         try:
-            self._validate_git_ref(git_clone_profile_ref, "CLONE")
-            self._validate_git_ref(git_checkout_profile_ref, "CHECKOUT")
+            self.git_executable_identity(git_clone_profile_ref, "CLONE")
+            self.git_executable_identity(git_checkout_profile_ref, "CHECKOUT")
         except (LookupError, ValueError):
             failed = self._error(
                 repository,

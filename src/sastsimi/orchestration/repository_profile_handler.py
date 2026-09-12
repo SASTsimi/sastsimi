@@ -34,14 +34,16 @@ from sastsimi.ports.dto import (
     WorkContext,
     WorkHandlerResult,
 )
-from sastsimi.runtime.workflow_runner import WorkflowRunner
-from sastsimi.static_analysis.repository_profile import (
-    RepositoryExecutionSelector,
-    RepositoryProfiler,
+from sastsimi.ports.repository_profile import (
+    RepositoryExecutionSelectorPort,
+    RepositoryProfilerPort,
 )
+from sastsimi.runtime.workflow_runner import WorkflowRunner
 
 
 class RepositoryProfileGuard(Protocol):
+    def verify_git_capability(self, subject_key: str, expected_sha256: str) -> None: ...
+
     async def assert_preparation_unchanged(
         self,
         outcome: RepositoryPreparation,
@@ -82,8 +84,8 @@ class RepositoryProfileHandler:
     def __init__(
         self,
         runner: WorkflowRunner,
-        profiler: RepositoryProfiler,
-        selector: RepositoryExecutionSelector,
+        profiler: RepositoryProfilerPort,
+        selector: RepositoryExecutionSelectorPort,
         guard: RepositoryProfileGuard,
     ) -> None:
         self.runner = runner
@@ -131,6 +133,15 @@ class RepositoryProfileHandler:
         ):
             raise ValueError("REPOSITORY_PROFILE_WORK_INVALID")
         attempt_id = str(current.active_attempt_id)
+        clone_identity = self.selector.git_executable_identity(
+            git_clone_profile_ref, "CLONE"
+        )
+        checkout_identity = self.selector.git_executable_identity(
+            git_checkout_profile_ref, "CHECKOUT"
+        )
+        if clone_identity != checkout_identity:
+            raise ValueError("GIT_CAPABILITY_EXECUTABLE_MISMATCH")
+        self.guard.verify_git_capability(*clone_identity)
         paths = tuple(item.git_path for item in preparation.tracked_files)
         if not paths:
             self.runner.block(
