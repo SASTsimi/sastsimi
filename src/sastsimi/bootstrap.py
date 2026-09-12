@@ -35,6 +35,12 @@ from sastsimi.storage.action_validator import (
 from sastsimi.storage.schema_version import MigrationRequired as MigrationRequired
 
 if TYPE_CHECKING:
+    from sastsimi.chaining.service import ChainingCallResolver
+    from sastsimi.chaining.work_handlers import (
+        ChainingWorkHandler,
+        HypothesisProposalHandler,
+        PrimitiveUpdateHandler,
+    )
     from sastsimi.contracts.dynamic import DynamicReproductionRequest
     from sastsimi.contracts.evaluation import AnalysisRunResult
     from sastsimi.contracts.hypothesis import HypothesisProcessState
@@ -57,6 +63,11 @@ if TYPE_CHECKING:
     from sastsimi.orchestration.static_publication import (
         StaticNormalizationPublisher,
     )
+    from sastsimi.ports.chaining import (
+        ChainingChildHandoffPort,
+        ChainingLineagePort,
+        ChainingProposalRegistrationPort,
+    )
     from sastsimi.ports.context import ContextLineageReaderPort
     from sastsimi.ports.dto import StaticRuleMapping, WorkHandlerResult
     from sastsimi.ports.static_tool import StaticProcessAdapter
@@ -78,6 +89,9 @@ if TYPE_CHECKING:
     )
     from sastsimi.reproduction.production import DynamicSandboxAuthorizationResolver
     from sastsimi.reproduction.service import DynamicStageAuthorizations
+    from sastsimi.runtime.chaining_reconciliation import (
+        ChainingReconciliationService,
+    )
     from sastsimi.runtime.workflow_runner import WorkflowRunner
     from sastsimi.static_analysis.coordinator import StaticToolCoordinator
     from sastsimi.static_analysis.normalizer import DecoderKey, RawDecoder
@@ -151,6 +165,16 @@ class T12Services:
     reporter: ReporterWorkHandler
     primitive_handoff: PrimitiveUpdateHandoff
     technical_revisions: TechnicalRevisionReconciler
+
+
+@dataclass(frozen=True)
+class T13Services:
+    """Primitive admission and Chaining handlers owned by root composition."""
+
+    primitive_update: PrimitiveUpdateHandler
+    chaining: ChainingWorkHandler
+    hypothesis_proposal: HypothesisProposalHandler
+    reconciliation: ChainingReconciliationService
 
 
 def _require_current_dynamic_request(
@@ -703,6 +727,7 @@ def _build_runtime(
     finding_service_identity_ref: StoredDataRef | None = None,
     analysis_finalization_identity_ref: BudgetScopeRef | None = None,
     llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
+    chaining_lineage: ChainingLineagePort | None = None,
     *,
     validator_factory: Callable[..., SQLiteRuntimeValidator],
 ) -> RuntimeServices:
@@ -772,7 +797,11 @@ def _build_runtime(
         artifacts,
     )
     works = SQLiteWorks(records, authorization, clock, ids)
-    transitions = SQLiteTransitions(works, artifacts)
+    transitions = SQLiteTransitions(
+        works,
+        artifacts,
+        chaining_lineage=chaining_lineage,
+    )
     unit = SQLiteUnitOfWork(records, artifacts, transitions)
     recovery = RecoveryService(SQLiteRecovery(transitions, recovery_identity_ref))
     recovery.recover()
@@ -840,6 +869,7 @@ def _build_runtime(
         ),
         llm_calls,
         PolicyRuntimeService(SQLitePolicyRuntime(works), clock, ids),
+        chaining_lineage,
     )
 
 
@@ -855,6 +885,7 @@ def build_runtime(
     finding_service_identity_ref: StoredDataRef | None = None,
     analysis_finalization_identity_ref: BudgetScopeRef | None = None,
     llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
+    chaining_lineage: ChainingLineagePort | None = None,
 ) -> RuntimeServices:
     """Compose the production runtime without fake output capabilities."""
     return _build_runtime(
@@ -869,6 +900,7 @@ def build_runtime(
         finding_service_identity_ref,
         analysis_finalization_identity_ref,
         llm_adapters,
+        chaining_lineage,
         validator_factory=SQLiteRuntimeValidator,
     )
 
@@ -1360,5 +1392,142 @@ def build_t12_services(
         technical_revisions=TechnicalRevisionReconciler(
             service=technical_service,
             current=runtime.queries,
+        ),
+    )
+
+
+def build_t13_services(
+    *,
+    runtime: RuntimeServices,
+    runner: WorkflowRunner,
+    clock: Clock,
+    ids: IdGenerator,
+    budget_scope_ref: BudgetScopeRef,
+    role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
+    chaining_call_resolver: ChainingCallResolver,
+    chaining_lineage: ChainingLineagePort,
+    child_handoff: ChainingChildHandoffPort,
+    proposal_registration: ChainingProposalRegistrationPort,
+) -> T13Services:
+    """Build T13 from exact injected authorities without selecting an LLM."""
+
+    from sastsimi.agents.chaining import ChainingAgent
+    from sastsimi.chaining.publication import RuntimeChainingResultPublisher
+    from sastsimi.chaining.service import ChainingWorkflowService
+    from sastsimi.chaining.work_handlers import (
+        ChainingWorkHandler,
+        HypothesisProposalHandler,
+        PrimitiveUpdateHandler,
+    )
+    from sastsimi.reporting.primitive_admission import PrimitiveAdmissionRuntime
+    from sastsimi.runtime.chaining_reconciliation import (
+        ChainingReconciliationService,
+    )
+    from sastsimi.runtime.llm_invocation_provenance import (
+        validate_llm_invocation_provenance,
+    )
+    from sastsimi.storage.chaining_registration import (
+        ChainingCohortStore,
+        ChainingCommittedSourceStore,
+    )
+    from sastsimi.storage.repositories import SQLiteRecordStore
+    from sastsimi.storage.work_service import WorkService as SQLiteWorkService
+
+    def identity(role: RequesterRole) -> BudgetScopeRef:
+        value = role_identity_refs.get(role)
+        if value is None:
+            raise ValueError(f"{role.value}_IDENTITY_REQUIRED")
+        return value
+
+    orchestration_identity = identity(RequesterRole.ORCHESTRATION)
+    chaining_identity = identity(RequesterRole.CHAINING)
+    primitive_identity = identity(RequesterRole.PRIMITIVE_ADMISSION_RUNTIME)
+    recovery_identity = identity(RequesterRole.RECOVERY)
+
+    records = runtime.unit_of_work.records
+    works = runtime.work.store
+    if runner.runtime is not runtime:
+        raise ValueError("T13_RUNTIME_MISMATCH")
+    if (
+        not isinstance(records, SQLiteRecordStore)
+        or not isinstance(works, SQLiteWorkService)
+        or works.records is not records
+    ):
+        raise ValueError("T13_STORAGE_RUNTIME_MISMATCH")
+    if runtime.chaining_lineage is not chaining_lineage:
+        raise ValueError("CHAINING_LINEAGE_RUNTIME_MISMATCH")
+
+    def metadata(
+        source: RecordMeta,
+        record_type: str,
+        attempt_id: AttemptId | None,
+    ) -> RecordMeta:
+        record_id = ids.new(RecordId)
+        return RecordMeta(
+            record_id=record_id,
+            logical_record_id=LogicalRecordId(str(record_id)),
+            record_type=record_type,
+            schema_version=source.schema_version,
+            revision_number=1,
+            previous_record_id=None,
+            created_at=clock.now(),
+            analysis_id=source.analysis_id,
+            workspace_id=source.workspace_id,
+            commit_id=source.commit_id,
+            hypothesis_id=source.hypothesis_id,
+            attempt_id=attempt_id,
+        )
+
+    sources = ChainingCommittedSourceStore(records)
+    cohorts = ChainingCohortStore(works)
+    admission = PrimitiveAdmissionRuntime(
+        records=records,
+        current=runtime.queries,
+        publisher=runner,
+        identity_ref=primitive_identity,
+        clock=clock,
+        ids=ids,
+    )
+    agent = ChainingAgent(
+        llm_calls=runtime.llm_calls,
+        records=records,
+        artifacts=runtime.unit_of_work.artifacts,
+        provenance_validator=validate_llm_invocation_provenance,
+    )
+    publisher = RuntimeChainingResultPublisher(runner, chaining_identity)
+    workflow = ChainingWorkflowService(
+        agent=agent,
+        records=records,
+        pools=cohorts.pools,
+        lineage=chaining_lineage,
+        publisher=publisher,
+        children=child_handoff,
+        ids=ids,
+        metadata_factory=metadata,
+        requester_identity_ref=chaining_identity,
+    )
+    return T13Services(
+        primitive_update=PrimitiveUpdateHandler(
+            admission=admission,
+            sources=sources,
+            cohorts=cohorts,
+            budget_scope_ref=budget_scope_ref,
+            requester_identity_ref=primitive_identity,
+        ),
+        chaining=ChainingWorkHandler(
+            service=workflow,
+            resolve_call=chaining_call_resolver,
+        ),
+        hypothesis_proposal=HypothesisProposalHandler(
+            registration=proposal_registration,
+            requester_identity_ref=orchestration_identity,
+        ),
+        reconciliation=ChainingReconciliationService(
+            sources=sources,
+            cohorts=cohorts,
+            children=child_handoff,
+            records=records,
+            budget_scope_ref=budget_scope_ref,
+            requester_identity_ref=recovery_identity,
         ),
     )
