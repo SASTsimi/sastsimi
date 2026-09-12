@@ -949,6 +949,27 @@ class DynamicStageAuthorizations:
     interpret: DynamicAgentInvocation | None
 
 
+class DynamicStageCallResolver(Protocol):
+    """Authorize each dynamic LLM call only after its exact inputs exist."""
+
+    @property
+    def max_execute_turns(self) -> int: ...
+
+    def resolve(
+        self,
+        *,
+        work: WorkExecutionState,
+        task_kind: str,
+        context_refs: tuple[StoredDataRef, ...],
+    ) -> DynamicAgentInvocation: ...
+
+    def settle(
+        self,
+        authorization: DynamicAgentInvocation,
+        invocation: PersistedLLMInvocation,
+    ) -> None: ...
+
+
 @dataclass(frozen=True)
 class DynamicSandboxSession:
     """The exact state returned by the Sandbox/Session-Manager adapter."""
@@ -1144,9 +1165,11 @@ class DynamicReproductionWorkflowService:
         *,
         agent: DynamicReproductionAgent | DynamicAgentPort,
         workflow: DynamicWorkflowPort,
+        call_resolver: DynamicStageCallResolver | None = None,
     ) -> None:
         self._agent = agent
         self._workflow = workflow
+        self._call_resolver = call_resolver
 
     async def execute(
         self,
@@ -1154,29 +1177,45 @@ class DynamicReproductionWorkflowService:
         work: WorkExecutionState,
         request: DynamicReproductionRequest,
         request_ref: StoredDataRef,
-        authorizations: DynamicStageAuthorizations,
+        authorizations: DynamicStageAuthorizations | None,
     ) -> WorkHandlerResult:
         session: DynamicSandboxSession | None = None
         try:
+            derive_authorization = self._resolve_call(
+                work=work,
+                task_kind="DERIVE_ENVIRONMENT",
+                context_refs=(request_ref,),
+                fallback=(
+                    authorizations.derive if authorizations is not None else None
+                ),
+            )
             requirements_outcome = await self._agent.derive_environment(
                 work=work,
-                authorization=authorizations.derive,
+                authorization=derive_authorization,
                 request=request,
                 request_ref=request_ref,
             )
+            self._settle_call(derive_authorization, requirements_outcome.invocation)
             requirements = _require_stage_record(requirements_outcome, "AGENT")
             requirements_ref = self._workflow.publish(
                 requirements, requirements_outcome.invocation
             )
 
+            plan_authorization = self._resolve_call(
+                work=work,
+                task_kind="PLAN_REPRODUCTION",
+                context_refs=(request_ref, requirements_ref),
+                fallback=(authorizations.plan if authorizations is not None else None),
+            )
             plan_outcome = await self._agent.plan_reproduction(
                 work=work,
-                authorization=authorizations.plan,
+                authorization=plan_authorization,
                 request=request,
                 request_ref=request_ref,
                 requirements=requirements,
                 requirements_ref=requirements_ref,
             )
+            self._settle_call(plan_authorization, plan_outcome.invocation)
             plan = _require_stage_record(plan_outcome, "PLAN")
             plan_ref = self._workflow.publish(plan, plan_outcome.invocation)
 
@@ -1193,16 +1232,20 @@ class DynamicReproductionWorkflowService:
                 raise DynamicOperationalError(
                     "BLOCKED", "POLICY_BLOCKED", "Sandbox boundary denied the request"
                 )
-            if authorizations.candidate is None:
-                raise DynamicOperationalError(
-                    "FAILED", "INTERNAL", "PoC candidate authorization is missing"
-                )
             assert session.environment is not None
             assert session.environment_ref is not None
             assert session.log is not None
+            candidate_authorization = self._resolve_call(
+                work=work,
+                task_kind="CREATE_POC_CANDIDATE",
+                context_refs=(request_ref, plan_ref, session.environment_ref),
+                fallback=(
+                    authorizations.candidate if authorizations is not None else None
+                ),
+            )
             candidate_outcome = await self._agent.create_poc_candidate(
                 work=work,
-                authorization=authorizations.candidate,
+                authorization=candidate_authorization,
                 request=request,
                 request_ref=request_ref,
                 plan=plan,
@@ -1210,18 +1253,44 @@ class DynamicReproductionWorkflowService:
                 environment=session.environment,
                 environment_ref=session.environment_ref,
             )
+            self._settle_call(candidate_authorization, candidate_outcome.invocation)
             candidate = _require_stage_record(candidate_outcome, "AGENT")
             candidate_ref = self._workflow.publish(
                 candidate, candidate_outcome.invocation
             )
 
             finished = False
-            for turn_number, authorization in enumerate(
-                authorizations.execute, start=1
-            ):
+            execute_turns = (
+                self._call_resolver.max_execute_turns
+                if self._call_resolver is not None
+                else len(authorizations.execute)
+                if authorizations is not None
+                else 0
+            )
+            for turn_number in range(1, execute_turns + 1):
                 assert session.environment is not None
                 assert session.environment_ref is not None
                 assert session.log is not None
+                execute_context_refs = (
+                    request_ref,
+                    requirements_ref,
+                    plan_ref,
+                    session.environment_ref,
+                    candidate_ref,
+                    session.log_ref,
+                    *session.prior_tool_refs,
+                    *session.observation_refs,
+                )
+                authorization = self._resolve_call(
+                    work=work,
+                    task_kind="EXECUTE_REPRODUCTION",
+                    context_refs=execute_context_refs,
+                    fallback=(
+                        authorizations.execute[turn_number - 1]
+                        if authorizations is not None
+                        else None
+                    ),
+                )
                 tool_outcome = await self._agent.next_tool_request(
                     work=work,
                     authorization=authorization,
@@ -1241,6 +1310,7 @@ class DynamicReproductionWorkflowService:
                     observation_refs=session.observation_refs,
                     turn_number=turn_number,
                 )
+                self._settle_call(authorization, tool_outcome.invocation)
                 tool = _require_stage_record(tool_outcome, "AGENT")
                 tool_ref = self._workflow.publish(tool, tool_outcome.invocation)
                 if tool.action == "FINISH":
@@ -1264,18 +1334,28 @@ class DynamicReproductionWorkflowService:
                 raise DynamicOperationalError(
                     "FAILED", "RETRY_LIMIT", "Dynamic reproduction turn limit exhausted"
                 )
-            if authorizations.interpret is None:
-                raise DynamicOperationalError(
-                    "FAILED",
-                    "INTERNAL",
-                    "Attempt interpretation authorization is missing",
-                )
             assert session.environment is not None
             assert session.environment_ref is not None
             assert session.log is not None
+            interpret_context_refs = (
+                request_ref,
+                plan_ref,
+                session.environment_ref,
+                candidate_ref,
+                session.log_ref,
+                *session.observation_refs,
+            )
+            interpret_authorization = self._resolve_call(
+                work=work,
+                task_kind="INTERPRET_ATTEMPT",
+                context_refs=interpret_context_refs,
+                fallback=(
+                    authorizations.interpret if authorizations is not None else None
+                ),
+            )
             conclusion_outcome = await self._agent.interpret_attempt(
                 work=work,
-                authorization=authorizations.interpret,
+                authorization=interpret_authorization,
                 request=request,
                 request_ref=request_ref,
                 plan=plan,
@@ -1288,6 +1368,7 @@ class DynamicReproductionWorkflowService:
                 log_ref=session.log_ref,
                 observation_refs=session.observation_refs,
             )
+            self._settle_call(interpret_authorization, conclusion_outcome.invocation)
             conclusion = _require_stage_record(conclusion_outcome, "AGENT")
             conclusion_ref = self._workflow.publish(
                 conclusion, conclusion_outcome.invocation
@@ -1331,6 +1412,34 @@ class DynamicReproductionWorkflowService:
                     failure_reason="Unexpected dynamic workflow failure",
                 ),
             )
+
+    def _resolve_call(
+        self,
+        *,
+        work: WorkExecutionState,
+        task_kind: str,
+        context_refs: tuple[StoredDataRef, ...],
+        fallback: DynamicAgentInvocation | None,
+    ) -> DynamicAgentInvocation:
+        if self._call_resolver is not None:
+            return self._call_resolver.resolve(
+                work=work,
+                task_kind=task_kind,
+                context_refs=context_refs,
+            )
+        if fallback is None:
+            raise DynamicOperationalError(
+                "FAILED", "INTERNAL", "Dynamic LLM authorization is missing"
+            )
+        return fallback
+
+    def _settle_call(
+        self,
+        authorization: DynamicAgentInvocation,
+        invocation: PersistedLLMInvocation,
+    ) -> None:
+        if self._call_resolver is not None:
+            self._call_resolver.settle(authorization, invocation)
 
 
 def _require_stage_record[T](

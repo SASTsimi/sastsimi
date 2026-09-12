@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from sastsimi.agents.dynamic_reproduction import DynamicAgentInvocation
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
@@ -24,6 +25,7 @@ from sastsimi.contracts.work import (
 from sastsimi.orchestration.production_llm_work_handlers import (
     EvidenceBranchWorkHandler,
     HypothesisProposalWorkHandler,
+    ProductionDynamicStageCallResolver,
 )
 from sastsimi.ports.dto import WorkContext
 from tests.contract.domain.canonical_fixtures import make
@@ -188,6 +190,62 @@ class _HypothesisWorkflow:
         )
 
 
+def test_dynamic_stage_resolver_uses_exact_stage_inputs_and_settles() -> None:
+    calls = _Calls()
+    context = _context(
+        WorkType.DYNAMIC_REPRO,
+        (_ref("dynamic_reproduction_request", "request"),),
+        hypothesis_id="h1",
+        subject_type=SubjectType.HYPOTHESIS,
+        subject_id="h1",
+        parent_ref=_ref("work_execution_state", "verification-work"),
+    )
+    source_refs = (
+        _ref("dynamic_reproduction_request", "request"),
+        _ref("environment_requirements", "requirements"),
+    )
+    resolver = ProductionDynamicStageCallResolver(calls, max_execute_turns=3)
+
+    authorization = resolver.resolve(
+        work=context.work,
+        task_kind="PLAN_REPRODUCTION",
+        context_refs=source_refs,
+    )
+    invocation = SimpleNamespace(
+        request=SimpleNamespace(
+            call_spec_ref=authorization.call_spec_ref,
+            action_decision_ref=authorization.decision_ref,
+            agent_role="DYNAMIC_REPRODUCTION",
+        )
+    )
+    resolver.settle(authorization, invocation)  # type: ignore[arg-type]
+
+    assert calls.requests == [
+        ("DYNAMIC_REPRODUCTION", "PLAN_REPRODUCTION", source_refs)
+    ]
+    assert len(calls.settled) == 1
+
+
+def test_dynamic_stage_resolver_rejects_unknown_settlement() -> None:
+    calls = _Calls()
+    resolver = ProductionDynamicStageCallResolver(calls, max_execute_turns=1)
+    authorization = DynamicAgentInvocation(
+        decision_ref=_ref("action_decision", "unknown"),
+        reservation_ref=_ref("budget_reservation", "unknown"),
+        call_spec_ref=_ref("llm_call_spec", "unknown"),
+    )
+    invocation = SimpleNamespace(
+        request=SimpleNamespace(
+            call_spec_ref=authorization.call_spec_ref,
+            action_decision_ref=authorization.decision_ref,
+            agent_role="DYNAMIC_REPRODUCTION",
+        )
+    )
+
+    with pytest.raises(ValueError, match="DYNAMIC_LLM_SETTLEMENT_MISMATCH"):
+        resolver.settle(authorization, invocation)  # type: ignore[arg-type]
+
+
 @pytest.mark.asyncio
 async def test_hypothesis_handler_uses_exact_bundle_and_settles_real_call() -> None:
     bundle = StaticFactBundle.model_validate_json(
@@ -210,9 +268,7 @@ async def test_hypothesis_handler_uses_exact_bundle_and_settles_real_call() -> N
     result = await handler.execute(context)
 
     assert result.output_refs == (proposal_ref,)
-    assert calls.requests == [
-        ("HYPOTHESIS", "GENERATE_INITIAL", (bundle_ref,))
-    ]
+    assert calls.requests == [("HYPOTHESIS", "GENERATE_INITIAL", (bundle_ref,))]
     assert len(calls.settled) == 1
     assert committed == [(proposal_ref,)]
 
@@ -250,9 +306,7 @@ async def test_evidence_handler_executes_one_claimed_branch_without_waiting() ->
         hypothesis_id="h1",
         subject_type=SubjectType.HYPOTHESIS,
         subject_id="h1",
-    ).work.model_copy(
-        update={"status": WorkStatus.PENDING, "active_attempt_id": None}
-    )
+    ).work.model_copy(update={"status": WorkStatus.PENDING, "active_attempt_id": None})
     parent_ref = reference(parent)
     assert isinstance(parent_ref, StoredDataRef)
     context = _context(

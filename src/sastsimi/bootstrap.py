@@ -94,7 +94,10 @@ if TYPE_CHECKING:
         ReporterWorkHandler,
     )
     from sastsimi.reproduction.production import DynamicSandboxAuthorizationResolver
-    from sastsimi.reproduction.service import DynamicStageAuthorizations
+    from sastsimi.reproduction.service import (
+        DynamicStageAuthorizations,
+        DynamicStageCallResolver,
+    )
     from sastsimi.runtime.chaining_reconciliation import (
         ChainingReconciliationService,
         ChainingStartupReconciler,
@@ -125,7 +128,7 @@ class DynamicExecutor(Protocol):
         work: WorkExecutionState,
         request: DynamicReproductionRequest,
         request_ref: StoredDataRef,
-        authorizations: DynamicStageAuthorizations,
+        authorizations: DynamicStageAuthorizations | None,
     ) -> WorkHandlerResult: ...
 
 
@@ -150,7 +153,7 @@ class T11Services:
         work: WorkExecutionState,
         request: DynamicReproductionRequest,
         request_ref: StoredDataRef,
-        authorizations: DynamicStageAuthorizations,
+        authorizations: DynamicStageAuthorizations | None,
     ) -> WorkHandlerResult:
         if await self.recover():
             raise ValueError("OWNED_RESOURCE_RECONCILIATION_REQUIRED")
@@ -314,7 +317,7 @@ def _dynamic_executor(
         work: WorkExecutionState,
         request: DynamicReproductionRequest,
         request_ref: StoredDataRef,
-        authorizations: DynamicStageAuthorizations,
+        authorizations: DynamicStageAuthorizations | None,
     ) -> WorkHandlerResult:
         return await execute(
             work=work,
@@ -1238,6 +1241,7 @@ def build_t11_services(
     repository_profile: RepositoryProfile,
     resource_journal_path: Path,
     docker_executable: str = "docker",
+    dynamic_call_resolver: DynamicStageCallResolver | None = None,
 ) -> T11Services:
     """Build the real local-Docker T11 slice after trusted config resolution."""
 
@@ -1316,7 +1320,7 @@ def build_t11_services(
         )
 
     production = ProductionDynamicExecutor(
-        cast(DynamicAgentPort, agent), workflow_factory
+        cast(DynamicAgentPort, agent), workflow_factory, dynamic_call_resolver
     )
     return T11Services(
         execute_dynamic=_dynamic_executor(production),

@@ -55,6 +55,7 @@ from sastsimi.reproduction.service import (
     DynamicReproductionWorkflowService,
     DynamicSandboxSession,
     DynamicStageAuthorizations,
+    DynamicStageCallResolver,
 )
 from sastsimi.runtime.fake_support import FakeClock, FakeIds
 from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
@@ -696,6 +697,84 @@ class BlockedFlowAgent:
         self, **_: object
     ) -> DynamicAgentOutcome[DynamicReproductionConclusion]:
         raise AssertionError("policy denial must happen before interpretation")
+
+
+@dataclass
+class RecordingStageResolver:
+    calls: list[tuple[str, tuple[StoredDataRef, ...]]]
+    settled: list[str]
+
+    def resolve(
+        self,
+        *,
+        work: WorkExecutionState,
+        task_kind: str,
+        context_refs: tuple[StoredDataRef, ...],
+    ) -> DynamicAgentInvocation:
+        del work
+        self.calls.append((task_kind, context_refs))
+        return DynamicAgentInvocation(
+            decision_ref=stored_ref("action_decision", f"decision-{task_kind}"),
+            reservation_ref=stored_ref(
+                "budget_reservation", f"reservation-{task_kind}"
+            ),
+            call_spec_ref=stored_ref("llm_call_spec", f"call-{task_kind}"),
+        )
+
+    def settle(
+        self,
+        authorization: DynamicAgentInvocation,
+        invocation: PersistedLLMInvocation,
+    ) -> None:
+        del authorization
+        self.settled.append(invocation.request.task_kind)
+
+
+@pytest.mark.asyncio
+async def test_production_calls_are_resolved_after_prior_stage_is_published() -> None:
+    artifacts = MemoryArtifacts()
+    request = reproduction_request()
+    request_ref = cast(StoredDataRef, reference(request))
+    work = dynamic_work(request_ref)
+    derive = invocation(
+        artifacts,
+        work,
+        task="DERIVE_ENVIRONMENT",
+        contexts=(request_ref,),
+        content={"items": []},
+        sequence=21,
+    )
+    agent = BlockedFlowAgent(derive)
+    port = FakeWorkflowPort(
+        DynamicSandboxSession.blocked(
+            policy_ref=stored_ref("sandbox_policy_decision", "stage-denied"),
+            log_ref=stored_ref("agent_log", "stage-log"),
+        )
+    )
+    resolver = RecordingStageResolver([], [])
+    service = DynamicReproductionWorkflowService(
+        agent=agent,
+        workflow=port,
+        call_resolver=cast(DynamicStageCallResolver, resolver),
+    )
+
+    await service.execute(
+        work=work,
+        request=request,
+        request_ref=request_ref,
+        authorizations=None,
+    )
+
+    assert [task for task, _refs in resolver.calls] == [
+        "DERIVE_ENVIRONMENT",
+        "PLAN_REPRODUCTION",
+    ]
+    requirements_ref = resolver.calls[1][1][1]
+    assert resolver.calls == [
+        ("DERIVE_ENVIRONMENT", (request_ref,)),
+        ("PLAN_REPRODUCTION", (request_ref, requirements_ref)),
+    ]
+    assert resolver.settled == ["DERIVE_ENVIRONMENT", "DERIVE_ENVIRONMENT"]
 
 
 @dataclass
