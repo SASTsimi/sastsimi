@@ -26,6 +26,7 @@ from sastsimi.contracts.llm import (
     LLMInvocationLog,
     LLMInvocationRequest,
     LLMInvocationResult,
+    LLMRole,
     PromptInputSlot,
 )
 from sastsimi.contracts.records import RecordMeta
@@ -71,9 +72,6 @@ from sastsimi.verification.debate_service import (
 )
 from sastsimi.verification.service import VerificationService
 
-type LLMRole = Literal[
-    "HYPOTHESIS", "PRO", "CON", "VERIFICATION", "DYNAMIC_REPRODUCTION"
-]
 type EvidenceRole = Literal["PRO", "CON"]
 type BudgetScopeResolver = Callable[[str], BudgetScopeRef]
 

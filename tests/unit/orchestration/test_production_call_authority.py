@@ -49,6 +49,15 @@ from sastsimi.orchestration.production_llm_work_handlers import (
     ConfiguredProductionCallResolver,
 )
 from sastsimi.ports.dto import BudgetCommitRequest, BudgetReservationRequest
+from sastsimi.ports.llm_invocation import PersistedLLMInvocation
+from sastsimi.runtime.workflow_runner import WorkflowRunner
+from tests.contract.domain.fixtures import bundle
+from tests.unit.prompts.test_production_configuration import (
+    _approved_hypothesis_route,
+    _service,
+)
+
+NOW = datetime(2026, 9, 13, tzinfo=UTC)
 
 
 @pytest.mark.parametrize(
@@ -67,15 +76,6 @@ def test_production_call_authority_uses_role_specific_workflow_actions(
 
     assert str(actual_action) == action_type
     assert str(actual_role) == requested_by
-from sastsimi.ports.llm_invocation import PersistedLLMInvocation
-from sastsimi.runtime.workflow_runner import WorkflowRunner
-from tests.contract.domain.fixtures import bundle
-from tests.unit.prompts.test_production_configuration import (
-    _approved_hypothesis_route,
-    _service,
-)
-
-NOW = datetime(2026, 9, 13, tzinfo=UTC)
 
 
 def _stored(kind: str, name: str) -> StoredDataRef:
