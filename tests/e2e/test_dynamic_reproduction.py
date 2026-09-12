@@ -138,7 +138,9 @@ def _trusted_docker_target() -> tuple[TrustedDockerTarget, _E2EDockerResolver]:
             if os.name == "nt"
             else "unix:///var/run/docker.sock"
         ),
+        build_backend="LEGACY_LIMITED",
         enforced_build_limits=frozenset({"CPU", "MEMORY", "PID", "DISK"}),
+        external_build_disk_limit_bytes=64 * 1024 * 1024,
     )
     return target, _E2EDockerResolver(target)
 
