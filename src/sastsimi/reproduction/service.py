@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, TypeGuard
+
+from pydantic import BaseModel
 
 from sastsimi.agents.dynamic_reproduction import (
     DynamicAgentInvocation,
@@ -36,6 +38,7 @@ from sastsimi.contracts.dynamic import (
     SandboxProfile,
 )
 from sastsimi.contracts.dynamic_resource import owned_container_resource_ref
+from sastsimi.contracts.records import RevisionMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
 from sastsimi.contracts.result_registry import RESULT_REGISTRY
 from sastsimi.contracts.work import WorkExecutionState
@@ -69,6 +72,14 @@ from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 
 from .fake_closure import require_poc_execution_events
+
+
+def _is_record(value: object) -> TypeGuard[Record]:
+    """Narrow one provider model to the public immutable-record shape."""
+
+    return isinstance(value, BaseModel) and isinstance(
+        getattr(value, "meta", None), RevisionMeta
+    )
 
 
 @dataclass(frozen=True)
@@ -112,6 +123,8 @@ class DynamicReproductionService:
         context_refs: tuple[StoredDataRef, ...],
     ) -> tuple[Record, StoredDataRef]:
         assert self.runtime is not None and self.runner is not None
+        if not isinstance(candidate, BaseModel):
+            raise TypeError("REPRODUCTION_RESULT_SCHEMA_MISMATCH")
         identity = self.evidence.identity(RequesterRole.DYNAMIC_REPRODUCTION)
         call_ref, provider_ref = register_fake_llm_call(
             self.runtime,
@@ -128,7 +141,7 @@ class DynamicReproductionService:
             result_kind=result_kind,
             context_refs=context_refs,
         )
-        record, invocation = invoke_fake_provider(
+        provider_output, invocation = invoke_fake_provider(
             runtime=self.runtime,
             runner=self.runner,
             work=work,
@@ -142,9 +155,11 @@ class DynamicReproductionService:
             build_output=lambda _decision: candidate,
             provider_invoke=self.provider_invoke,
         )
+        if not _is_record(provider_output):
+            raise TypeError("REPRODUCTION_RESULT_SCHEMA_MISMATCH")
         persist_fake_invocation(self.runtime, invocation)
-        ref = self._publish_intermediate(work, record)
-        return record, ref
+        ref = self._publish_intermediate(work, provider_output)
+        return provider_output, ref
 
     def _publish_intermediate(
         self, work: WorkExecutionState, record: Record

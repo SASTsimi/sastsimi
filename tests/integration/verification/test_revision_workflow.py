@@ -20,7 +20,7 @@ from sastsimi.contracts.ids import (
     StoredDataId,
     WorkspaceId,
 )
-from sastsimi.contracts.records import RecordMeta
+from sastsimi.contracts.records import RecordMeta, validate_revision
 from sastsimi.contracts.refs import RecordRef, StoredDataRef, reference
 from sastsimi.contracts.verification import (
     AppliedPlaybookQuestion,
@@ -71,6 +71,28 @@ class _Records:
     def get_exact(self, ref: RecordRef) -> object:
         return self.values[ref]
 
+    def is_revision_descendant(
+        self, earlier_ref: RecordRef, later_ref: RecordRef
+    ) -> bool:
+        earlier = self.get_exact(earlier_ref)
+        current = self.get_exact(later_ref)
+        assert hasattr(earlier, "meta") and hasattr(current, "meta")
+        while current.meta.record_id != earlier.meta.record_id:
+            previous = next(
+                (
+                    value
+                    for value in self.values.values()
+                    if hasattr(value, "meta")
+                    and value.meta.record_id == current.meta.previous_record_id
+                ),
+                None,
+            )
+            if previous is None:
+                return False
+            validate_revision(previous.meta, current.meta)
+            current = previous
+        return reference(current) == earlier_ref
+
 
 class _Registrar:
     def __init__(self, registration: VerificationRegistration) -> None:
@@ -83,7 +105,7 @@ class _Registrar:
 
 
 def _fixture(
-    *, reuse_old_application: bool = False
+    *, reuse_old_application: bool = False, replayed_ready_work: bool = False
 ) -> tuple[RevisionWorkflow, dict[str, StoredDataRef]]:
     records = _Records()
     old_application = PlaybookApplication.model_validate(
@@ -223,9 +245,27 @@ def _fixture(
         }
     )
     new_process_ref = records.add(new_process)
+    returned_work = work
+    if replayed_ready_work:
+        ready_meta = _meta("work_execution_state", "new-ready")
+        ready_meta = ready_meta.model_copy(
+            update={
+                "logical_record_id": work.meta.logical_record_id,
+                "revision_number": 2,
+                "previous_record_id": work.meta.record_id,
+            }
+        )
+        returned_work = work.model_copy(
+            update={
+                "meta": ready_meta,
+                "status": WorkStatus.READY,
+                "state_version": 2,
+            }
+        )
+        records.add(returned_work)
     registrar = _Registrar(
         VerificationRegistration(
-            work=work,
+            work=returned_work,
             application=new_application,
             assignment_ref=assignment_ref,
             process_ref=new_process_ref,
@@ -292,3 +332,14 @@ def test_revise_rejects_reused_application() -> None:
 
     with pytest.raises(ValueError, match="TECHNICAL_REVISE_CLOSURE_MISMATCH"):
         _start(workflow, refs)
+
+
+def test_revise_accepts_same_registered_work_after_ready_response_is_lost() -> None:
+    workflow, refs = _fixture(replayed_ready_work=True)
+
+    registration = _start(workflow, refs)
+
+    assert registration.work.status == WorkStatus.READY
+    assert str(registration.work.work_id) == "work-new"
+    assert registration.work.work_generation == 2
+    assert registration.assignment_ref == refs["assignment"]

@@ -5,9 +5,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import func, insert, select
+from sqlalchemy import func, insert, select, update
 
 from sastsimi.bootstrap import build_fake_pipeline
+from sastsimi.config.runtime_paths import RuntimePaths
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.hypothesis import (
@@ -24,6 +25,7 @@ from sastsimi.contracts.verification import (
 from sastsimi.ports.verification_registration import VerificationRegistration
 from sastsimi.storage import models
 from sastsimi.storage.codec import reference
+from sastsimi.storage.database import Database
 from tests.contract.domain.canonical_fixtures import make
 from tests.integration.storage.test_intermediate_publication import (
     prepared_policy_parser,
@@ -206,7 +208,7 @@ def test_registration_returns_same_work_application_and_questions_on_duplicate(
     assert dynamic.status == "NOT_REQUESTED" and dynamic.verification_generation == 1
 
 
-def test_revise_registration_replays_after_committed_response_is_lost(
+def test_revise_registration_replays_after_ready_response_is_lost(
     tmp_path: Path,
 ) -> None:
     scenario = build_fake_pipeline(tmp_path)._scenario
@@ -216,7 +218,7 @@ def test_revise_registration_replays_after_committed_response_is_lost(
         execution,
         technical_status="REVISE",
     )
-    assert scenario.runtime is not None
+    assert scenario.runtime is not None and scenario.runner is not None
     runtime = scenario.runtime
     state = runtime.budget_registry.current_state("fake-analysis")
     assert state.budget_binding_ref is not None
@@ -268,8 +270,31 @@ def test_revise_registration_replays_after_committed_response_is_lost(
         )
 
     first = revise()
+    ready = scenario.runner.enqueue_registered(
+        first.work,
+        budget_binding_ref,
+        requester_ref,
+        role="ORCHESTRATION",
+    )
+    registered_process = runtime.unit_of_work.records.get_exact(first.process_ref)
+    assert isinstance(registered_process, HypothesisProcessState)
+    database = Database(RuntimePaths(scenario.data_dir).database)
+    with database.write() as connection:
+        connection.execute(
+            update(models.current_records)
+            .where(
+                models.current_records.c.logical_record_id
+                == str(registered_process.meta.logical_record_id)
+            )
+            .values(
+                record_id=str(registered_process.meta.record_id),
+                state_version=registered_process.meta.revision_number,
+            )
+        )
     id_index = scenario.ids.index
     replay = revise()
 
-    assert replay == first
+    assert replay.work == ready
+    assert replay.application == first.application
+    assert replay.assignment_ref == first.assignment_ref
     assert scenario.ids.index == id_index

@@ -25,6 +25,7 @@ EXPECTED_KINDS = {
     "dynamic_reproduction_state",
     "primitive_index_state",
     "finding_index_state",
+    "report_process_state",
     "provider_validation_evidence",
     "client_execution_profile",
     "provider_profile",

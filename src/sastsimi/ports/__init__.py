@@ -34,6 +34,8 @@ from .id_generator import IdGenerator as IdGenerator
 from .llm_provider import LLMProviderAdapter as LLMProviderAdapter
 from .policy_source import PolicySourcePort as PolicySourcePort
 from .record_store import RecordStore as RecordStore
+from .report_query import CurrentReportRecordQuery as CurrentReportRecordQuery
+from .report_query import current_report_drafts as current_report_drafts
 from .sandbox import SandboxPort as SandboxPort
 from .static_tool import StaticAttemptPublisherPort as StaticAttemptPublisherPort
 from .static_tool import StaticExternalExecutionPort as StaticExternalExecutionPort

@@ -15,6 +15,7 @@ from .dynamic_registration import DynamicRegistrationService
 from .external_call_service import ExternalCallService
 from .intermediate_publication import IntermediatePublicationService
 from .llm_call_service import LLMCallService
+from .policy_runtime import PolicyRuntimeService
 from .queries import RuntimeQueries
 from .recovery_service import RecoveryService
 from .transition_service import TransitionService
@@ -41,3 +42,4 @@ class RuntimeServices:
     configuration: ConfigurationRegistry
     finalization: AnalysisFinalizationService
     llm_calls: LLMCallService
+    policy: PolicyRuntimeService

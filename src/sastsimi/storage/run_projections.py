@@ -15,6 +15,11 @@ from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import Record
 
 from .codec import reference
+from .policy_runtime import (
+    publish_current,
+    validate_cache_head,
+    validate_policy_successor,
+)
 from .records import next_meta
 from .run_states import get_run, save_run
 from .work_service import WorkService
@@ -35,12 +40,11 @@ def run_policy_projection(
         raise ValueError("POLICY_STATE_CLOSURE_MISMATCH")
     policy = policies[0]
     state = get_run(connection, str(work.meta.analysis_id))
-    if state.status != "RUNNING" or state.run_policy_state_ref is not None:
+    if state.status != "RUNNING":
         raise ValueError("POLICY_ALREADY_FROZEN")
-    if policy.program_id != state.program_id or policy.policy_work_ref != reference(
-        work
-    ):
+    if policy.program_id != state.program_id:
         raise ValueError("POLICY_STATE_CLOSURE_MISMATCH")
+    previous = validate_policy_successor(works, connection, state, work, policy)
     candidates = {reference(item): item for item in outputs}
 
     def resolve[T: Record](ref: RecordRef | None, model: type[T]) -> T | None:
@@ -56,14 +60,30 @@ def run_policy_projection(
     collection = resolve(policy.collection_result_ref, PolicyCollectionResult)
     if collection is not None and collection.meta.attempt_id != work.active_attempt_id:
         raise ValueError("POLICY_STATE_CLOSURE_MISMATCH: current attempt required")
+    cache = resolve(policy.policy_cache_ref, PolicyCacheRecord)
+    if cache is not None:
+        validate_cache_head(connection, cache, exact_key=True)
     validate_run_policy(
         policy,
         collection,
         resolve(policy.policy_record_ref, ProgramPolicyRecord),
         started_at=state.started_at,
-        cache=resolve(policy.policy_cache_ref, PolicyCacheRecord),
+        cache=cache,
     )
     if publish:
+        publish_current(
+            connection,
+            policy,
+            str(previous.meta.record_id),
+        )
+        if cache is not None:
+            publish_current(
+                connection,
+                cache,
+                None
+                if cache.meta.previous_record_id is None
+                else str(cache.meta.previous_record_id),
+            )
         updated = AnalysisRunState.model_validate(
             state.model_dump()
             | dict(

@@ -68,17 +68,20 @@ def prepared_hypothesis(tmp_path: Path, *, parallel: int = 1) -> tuple[Any, ...]
     return h, runtime, runner, identity, proposal, bundle
 
 
-def test_initial_proposal_derives_hypothesis_process_and_empty_finding_index(
+def test_initial_proposal_derives_hypothesis_process_and_empty_report_state(
     tmp_path: Path,
 ) -> None:
     _, runtime, _, _, proposal, _ = prepared_hypothesis(tmp_path)
     (hypothesis,) = runtime.queries.current_records("a1", "vulnerability_hypothesis")
     (process,) = runtime.queries.current_records("a1", "hypothesis_process_state")
     (index,) = runtime.queries.current_records("a1", "finding_index_state")
+    (report_state,) = runtime.queries.current_records("a1", "report_process_state")
     (proposal_state,) = runtime.queries.current_records("a1", "proposal_process_state")
     validate_hypothesis_registration(hypothesis, proposal)
     assert process.status == "REGISTERED" and process.verification_generation == 0
     assert index.status == "EMPTY"
+    assert report_state.status == "NOT_REQUESTED"
+    assert report_state.report_draft_ref is None
     assert isinstance(proposal_state, ProposalProcessState)
     assert proposal_state.status == "SCHEMA_VALID"
     assert proposal_state.registration_reason == "NO_CANDIDATES"
@@ -87,6 +90,7 @@ def test_initial_proposal_derives_hypothesis_process_and_empty_finding_index(
         hypothesis.meta.hypothesis_id
         == process.meta.hypothesis_id
         == index.meta.hypothesis_id
+        == report_state.meta.hypothesis_id
     )
 
 

@@ -43,6 +43,11 @@ from .base import (
 )
 
 type SemanticValidator = Callable[[StructuredOutputValue], None]
+type RequestSemanticValidator = Callable[
+    [StructuredOutputValue, LLMInvocationRequest], None
+]
+
+_REQUEST_SEMANTIC_REQUIRED = frozenset({("REPORTER", "CREATE_DRAFT")})
 
 
 class StructuredOutputValidator(Protocol):
@@ -187,10 +192,15 @@ class StoredOutputValidator(OutputSchemaValidator):
         records: RecordStore,
         semantic_validators: Mapping[StoredDataRef, SemanticValidator],
         validate_structured_output: StructuredOutputValidator,
+        request_semantic_validators: Mapping[
+            tuple[LLMRole, str], RequestSemanticValidator
+        ]
+        | None = None,
     ) -> None:
         self._records = records
         self._semantic_validators = dict(semantic_validators)
         self._validate_structured_output = validate_structured_output
+        self._request_semantic_validators = dict(request_semantic_validators or {})
 
     def validate(
         self,
@@ -226,6 +236,17 @@ class StoredOutputValidator(OutputSchemaValidator):
                 agent_role=request.agent_role,
                 semantic_validator=semantic_validator,
             )
+            request_validator = self._request_semantic_validators.get(
+                (request.agent_role, request.task_kind)
+            )
+            if request_validator is None:
+                if (
+                    request.agent_role,
+                    request.task_kind,
+                ) in _REQUEST_SEMANTIC_REQUIRED:
+                    raise ProviderInvalidOutputError
+            else:
+                request_validator(validated, request)
             return validated
         except ProviderInvalidOutputError:
             raise
@@ -326,6 +347,7 @@ class StoredInvocationResultBuilder(InvocationResultBuilder):
 
 __all__ = [
     "InvocationMetadataFactory",
+    "RequestSemanticValidator",
     "SemanticValidator",
     "StructuredOutputValidator",
     "StoredInvocationResultBuilder",

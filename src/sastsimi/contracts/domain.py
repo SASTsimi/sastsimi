@@ -3,8 +3,17 @@
 from ._domain import DomainRecord as DomainRecord
 from ._domain import SafeDiagnostic as SafeDiagnostic
 from ._domain import exact as exact
+from ._domain import exact_set as exact_set
 from ._domain import same_scope as same_scope
 from ._domain import unique as unique
 from ._domain import walk as walk
 
-__all__ = ["DomainRecord", "SafeDiagnostic", "exact", "same_scope", "unique", "walk"]
+__all__ = [
+    "DomainRecord",
+    "SafeDiagnostic",
+    "exact",
+    "exact_set",
+    "same_scope",
+    "unique",
+    "walk",
+]

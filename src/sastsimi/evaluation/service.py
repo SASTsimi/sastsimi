@@ -30,6 +30,7 @@ from sastsimi.contracts.reporting import ReportDraft
 from sastsimi.contracts.verification import (
     VerificationResult,
 )
+from sastsimi.ports.report_query import current_report_drafts
 from sastsimi.runtime.fake_support import (
     ANALYSIS_ID,
     PROGRAM_ID,
@@ -334,11 +335,5 @@ class EvaluationService:
         persisted = self.runtime.unit_of_work.records.get_exact(result_ref)
         assert isinstance(persisted, AnalysisRunResult)
         result = persisted
-        self.reports = tuple(
-            item
-            for item in self.runtime.queries.current_records(
-                str(ANALYSIS_ID), "report_draft"
-            )
-            if isinstance(item, ReportDraft)
-        )
+        self.reports = current_report_drafts(self.runtime.queries, str(ANALYSIS_ID))
         return result
