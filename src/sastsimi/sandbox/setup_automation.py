@@ -20,6 +20,7 @@ from sastsimi.contracts.dynamic import (
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.static import RepositoryProfile
 from sastsimi.ports.dynamic_sandbox import (
     PreparedRecipeSourceView,
     RecreateReason,
@@ -53,6 +54,14 @@ class DockerLifecyclePort(Protocol):
         timeout_ms: int,
     ) -> str: ...
     async def inspect_image(self, image: str, *, timeout_ms: int) -> str: ...
+    async def build_context(
+        self,
+        context_archive: bytes,
+        dockerfile_path: str,
+        labels: Mapping[str, str],
+        *,
+        timeout_ms: int,
+    ) -> str: ...
     async def create(self, spec: SandboxRunSpec, labels: Mapping[str, str]) -> str: ...
     async def verify_created_mounts(
         self, container_id: str, spec: SandboxRunSpec
@@ -106,6 +115,7 @@ class ReproductionSetupAutomation:
         request: DynamicReproductionRequest,
         requirements: EnvironmentRequirements,
         meta: RecordMeta,
+        repository_profile: RepositoryProfile | None = None,
     ) -> PreparedRecipeSource:
         """Read and validate recipe files without touching Docker."""
 
@@ -114,6 +124,7 @@ class ReproductionSetupAutomation:
             request_ref=self._exact_ref(request),
             requirements=requirements,
             meta=meta,
+            repository_profile=repository_profile,
         )
 
     async def build(
@@ -407,6 +418,10 @@ class ReproductionSetupAutomation:
         ReproductionSetupAutomation._validate_scope(
             (requirements,), meta, request=request, source=source
         )
+        if source.repository_profile_ref is not None and (
+            not approval.approved_spec.source_baked or approval.approved_spec.mounts
+        ):
+            raise ValueError("SANDBOX_HOST_MOUNT_DENIED")
         return approval.approved_spec
 
     @staticmethod
@@ -440,6 +455,13 @@ class ReproductionSetupAutomation:
         ReproductionSetupAutomation._validate_scope(
             (requirements, plan, recipe), meta, request=request
         )
+        has_repository_profile = any(
+            ref.data_kind == "repository_profile" for ref in recipe.source_refs
+        )
+        if has_repository_profile and (
+            not approval.approved_spec.source_baked or approval.approved_spec.mounts
+        ):
+            raise ValueError("SANDBOX_HOST_MOUNT_DENIED")
         return approval.approved_spec
 
     @staticmethod

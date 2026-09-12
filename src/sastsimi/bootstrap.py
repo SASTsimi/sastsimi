@@ -52,7 +52,7 @@ if TYPE_CHECKING:
     from sastsimi.contracts.evaluation import AnalysisRunResult
     from sastsimi.contracts.hypothesis import HypothesisProcessState
     from sastsimi.contracts.reporting import ReportDraft
-    from sastsimi.contracts.static import StaticToolProfile
+    from sastsimi.contracts.static import RepositoryProfile, StaticToolProfile
     from sastsimi.contracts.work import WorkExecutionState, WorkType
     from sastsimi.orchestration.fake_pipeline import FakePipeline
     from sastsimi.orchestration.fake_scenario_runtime import WorkflowBundle
@@ -1197,6 +1197,7 @@ def build_t11_services(
     role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
     sandbox_authorization: DynamicSandboxAuthorizationResolver,
     verification: VerificationService,
+    repository_profile: RepositoryProfile | None = None,
     docker_executable: str = "docker",
 ) -> T11Services:
     """Build the real local-Docker T11 slice after trusted config resolution."""
@@ -1270,6 +1271,7 @@ def build_t11_services(
             ids=ids,
             sink=sink,
             authorization=sandbox_authorization,
+            repository_profile=repository_profile,
         )
 
     production = ProductionDynamicExecutor(
