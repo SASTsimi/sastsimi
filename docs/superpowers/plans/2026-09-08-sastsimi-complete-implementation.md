@@ -488,23 +488,26 @@ Implementation record: [T04 core contracts](implementation/04-core-contracts.md)
 - [ ] parent 변경 뒤 stale chain 결과와 중복 child를 차단한다.
 - [ ] R1·R4·R5·R6·R8 검토 뒤 PR을 병합한다.
 
-### Task 14: Parallelism, cancellation and resilience
+### Task 14: Production composition, parallelism, cancellation and resilience
 
 **Files:**
 - Create: `docs/superpowers/plans/implementation/14-parallelism-resilience.md`
-- Modify: `src/sastsimi/runtime/worker_pool.py`, `work_service.py`, `recovery_service.py`, `budget_service.py`
-- Modify: orchestration과 CLI status/cancel/resume
+- Create or modify: production `WorkHandler` registry, bounded worker pool, lease heartbeat, atomic claim/run-control storage, exact cancellation-target adapter and recovery service
+- Create or modify: production orchestration composition, result aggregation, bootstrap과 CLI `run/status/cancel/resume/result`
 - Create: `tests/integration/concurrency/`, `tests/integration/recovery/test_full_restart.py`
+- Create: production composition/CLI focused integration and E2E tests
 
 **Interfaces:**
-- Consumes: 모든 WorkHandler와 budget/resource profile
-- Produces: bounded static·Pro/Con·hypothesis parallelism, cancel/resume와 deterministic restart
+- Consumes: T08~T13에서 병합된 모든 claimed-context `WorkHandler`와 exact budget/resource profile
+- Produces: 전체 handler registry를 사용하는 production CLI flow, 분석 전체 한도 내 병렬 실행, durable cancel/resume와 중복 외부 호출이 없는 deterministic restart
 
+- [ ] T13 병합 후 실제 public API를 기준으로 모든 `WorkType`의 production handler가 하나씩 있고, 이미 claim된 `WorkContext`만 소비하며 자식 work를 READY로만 등록하는지 연속으로 확정한다.
 - [ ] barrier를 사용해 duplicate claim과 늦은 결과 race를 재현한다.
-- [ ] 분석 전체·Provider·Sandbox 동시성 한도를 각각 검사한다.
-- [ ] 취소 시 사용하지 않은 reservation release와 실제 사용 ledger 보존을 구현한다.
-- [ ] 프로세스 중단 뒤 PREPARED·lease·current pointer를 복구한다.
+- [ ] `ExecutionBudgetProfile.max_parallel_work`를 `DYNAMIC_REPRO`를 포함한 모든 work type의 **분석 전체 단일 동시 실행 한도**로 원자적 claim transaction에서 검사한다. Provider의 `max_parallel_calls`와 Pro·Con의 `max_parallel_evidence_calls`는 그 안의 추가 한도로 계속 적용하며, 별도 Sandbox 동시성 한도는 만들지 않는다.
+- [ ] 취소 latch를 work 등록·READY enqueue·claim·결과 commit·run finalization의 같은 신뢰 transaction 경계에서 다시 읽고, 사용하지 않은 unclaimed reservation만 release하며 실제 사용·불확실 usage는 ledger에 보존한다.
+- [ ] 프로세스 중단 뒤 PREPARED·lease·current pointer와 exact 외부 실행 target을 복구하고, 결과가 불확실한 Provider·Sandbox 작업을 자동으로 다시 보내지 않는다.
 - [ ] 한 가설 실패가 다른 가설을 verdict 없이 취소하지 않는지 검사한다.
+- [ ] production CLI가 fake pipeline이 아닌 완전한 handler registry·worker pool·result aggregator·finalizer를 통해 하나의 정상 분석을 완주하는지 검사한다.
 - [ ] R3·R4·R8 검토 뒤 PR을 병합한다.
 
 ### Task 15: Security hardening
