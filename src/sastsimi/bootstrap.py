@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Protocol, TextIO, cast
 
 from sastsimi.config.loader import ConfigError as ConfigError
@@ -46,7 +47,7 @@ if TYPE_CHECKING:
     from sastsimi.contracts.hypothesis import HypothesisProcessState
     from sastsimi.contracts.reporting import ReportDraft
     from sastsimi.contracts.static import StaticToolProfile
-    from sastsimi.contracts.work import WorkExecutionState
+    from sastsimi.contracts.work import WorkExecutionState, WorkType
     from sastsimi.orchestration.fake_pipeline import FakePipeline
     from sastsimi.orchestration.fake_scenario_runtime import WorkflowBundle
     from sastsimi.orchestration.hypothesis_workflow import HypothesisWorkflow
@@ -69,6 +70,7 @@ if TYPE_CHECKING:
     from sastsimi.ports.context import ContextLineageReaderPort
     from sastsimi.ports.dto import StaticRuleMapping, WorkHandlerResult
     from sastsimi.ports.static_tool import StaticProcessAdapter
+    from sastsimi.ports.work_handler import WorkHandler
     from sastsimi.ports.workspace import WorkspaceLocatorPort
     from sastsimi.reporting.cwe_work_handler import (
         CWELabelingHandler,
@@ -89,6 +91,7 @@ if TYPE_CHECKING:
     from sastsimi.reproduction.service import DynamicStageAuthorizations
     from sastsimi.runtime.chaining_reconciliation import (
         ChainingReconciliationService,
+        ChainingStartupReconciler,
     )
     from sastsimi.runtime.workflow_runner import WorkflowRunner
     from sastsimi.static_analysis.coordinator import StaticToolCoordinator
@@ -176,6 +179,21 @@ class T13Services:
     chaining: ChainingWorkHandler
     hypothesis_proposal: HypothesisProposalHandler
     reconciliation: ChainingReconciliationService
+    reconcile_startup: ChainingStartupReconciler
+
+    @property
+    def work_handlers(self) -> Mapping[WorkType, WorkHandler]:
+        """Typed T13 registry seam consumed by the T14 production worker."""
+
+        from sastsimi.contracts.work import WorkType
+
+        return MappingProxyType(
+            {
+                WorkType.PRIMITIVE_UPDATE: self.primitive_update,
+                WorkType.CHAINING: self.chaining,
+                WorkType.HYPOTHESIS_PROPOSAL: self.hypothesis_proposal,
+            }
+        )
 
 
 def _require_current_dynamic_request(
@@ -1445,7 +1463,12 @@ def build_t13_services(
     verification_policy_ref: StoredDataRef | None,
     verification_playbook_ref: StoredDataRef | None,
 ) -> T13Services:
-    """Build T13 from exact injected authorities without selecting an LLM."""
+    """Build T13 from injected T09 calls and the runtime's concrete lineage.
+
+    The caller must provide the exact-call resolver selected by T09 and the same
+    concrete lineage adapter already bound to ``runtime``.  There is no fake or
+    empty production fallback, and this builder never selects a Provider/model.
+    """
 
     from sastsimi.agents.chaining import ChainingAgent
     from sastsimi.chaining.publication import RuntimeChainingResultPublisher
@@ -1458,6 +1481,7 @@ def build_t13_services(
     from sastsimi.reporting.primitive_admission import PrimitiveAdmissionRuntime
     from sastsimi.runtime.chaining_reconciliation import (
         ChainingReconciliationService,
+        ChainingStartupReconciler,
     )
     from sastsimi.runtime.llm_invocation_provenance import (
         validate_llm_invocation_provenance,
@@ -1586,6 +1610,14 @@ def build_t13_services(
         metadata_factory=metadata,
         requester_identity_ref=orchestration_identity,
     )
+    reconciliation = ChainingReconciliationService(
+        sources=sources,
+        cohorts=cohorts,
+        children=child_registration,
+        records=records,
+        budget_scope_ref=budget_scope_ref,
+        requester_identity_ref=recovery_identity,
+    )
     return T13Services(
         primitive_update=PrimitiveUpdateHandler(
             admission=admission,
@@ -1602,12 +1634,9 @@ def build_t13_services(
             registration=child_registration,
             requester_identity_ref=orchestration_identity,
         ),
-        reconciliation=ChainingReconciliationService(
-            sources=sources,
-            cohorts=cohorts,
-            children=child_registration,
-            records=records,
-            budget_scope_ref=budget_scope_ref,
-            requester_identity_ref=recovery_identity,
+        reconciliation=reconciliation,
+        reconcile_startup=ChainingStartupReconciler(
+            reconciliation=reconciliation,
+            published_records=runtime.queries.published_records,
         ),
     )

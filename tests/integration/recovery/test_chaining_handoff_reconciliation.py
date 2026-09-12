@@ -9,6 +9,7 @@ from sastsimi.chaining.work_handlers import PrimitiveUpdateHandler
 from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.chaining import ChainingResult
 from sastsimi.contracts.ids import (
+    AnalysisId,
     CommitId,
     ProposalId,
     RecordId,
@@ -24,7 +25,10 @@ from sastsimi.ports.chaining import (
     PrimitiveUpdateReconciliationRequest,
 )
 from sastsimi.ports.dto import WorkContext
-from sastsimi.runtime.chaining_reconciliation import ChainingReconciliationService
+from sastsimi.runtime.chaining_reconciliation import (
+    ChainingReconciliationService,
+    ChainingStartupReconciler,
+)
 from tests.contract.domain.canonical_fixtures import make
 from tests.contract.domain.fixtures import meta as fixture_meta
 from tests.contract.domain.fixtures import wire
@@ -182,6 +186,57 @@ def test_reconciliation_replays_committed_handoff_without_agent_execution() -> N
         work.work_id for work in works
     )
     assert tuple(child.works) == ("proposal-1", "proposal-2")
+
+
+def test_startup_reconciler_enumerates_committed_t13_sources_once() -> None:
+    commit_ref = _ref("transition_commit")
+    update = _completed_primitive_work(_ref("primitive"), commit_ref)
+    result = wire(ChainingResult, make("ChainingResult"))
+    primitive_calls: list[object] = []
+    result_calls: list[object] = []
+    delegate = SimpleNamespace(
+        reconcile_primitive_update=lambda request: primitive_calls.append(request),
+        reconcile_chaining_result=lambda request: result_calls.append(request) or (),
+    )
+    startup = ChainingStartupReconciler(
+        reconciliation=delegate,
+        published_records=lambda analysis_id: (update, result),
+    )
+
+    summary = startup(AnalysisId("a1"))
+
+    assert summary.primitive_update_refs == (commit_ref,)
+    assert summary.chaining_result_refs == (reference(result),)
+    assert tuple(item.source_update_ref for item in primitive_calls) == (
+        commit_ref,
+    )
+    assert tuple(item.source_result_ref for item in result_calls) == (
+        reference(result),
+    )
+
+
+def test_startup_reconciler_rejects_cross_analysis_records_before_replay() -> None:
+    result = wire(ChainingResult, make("ChainingResult")).model_copy(
+        update={
+            "meta": wire(ChainingResult, make("ChainingResult")).meta.model_copy(
+                update={"analysis_id": AnalysisId("a2")}
+            )
+        }
+    )
+    replayed: list[object] = []
+    delegate = SimpleNamespace(
+        reconcile_primitive_update=lambda request: replayed.append(request),
+        reconcile_chaining_result=lambda request: replayed.append(request) or (),
+    )
+    startup = ChainingStartupReconciler(
+        reconciliation=delegate,
+        published_records=lambda analysis_id: (result,),
+    )
+
+    with pytest.raises(ValueError, match="^CHAINING_STARTUP_SCOPE_MISMATCH$"):
+        startup(AnalysisId("a1"))
+
+    assert replayed == []
 
 
 def test_primitive_reconciliation_rebuilds_whole_cohort_from_committed_update() -> None:

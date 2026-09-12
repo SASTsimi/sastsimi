@@ -15,6 +15,7 @@ from sastsimi.chaining.publication import RuntimeChainingResultPublisher
 from sastsimi.chaining.service import ChainingCallRefs
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.ids import (
+    AnalysisId,
     CommitId,
     OpaqueId,
     RecordId,
@@ -22,6 +23,7 @@ from sastsimi.contracts.ids import (
     WorkspaceId,
 )
 from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.work import WorkType
 from sastsimi.ports.chaining import ChainingAgentInput, PinnedChainingUniverse
 from sastsimi.ports.dto import WorkContext
 from sastsimi.reporting.primitive_admission import PrimitiveAdmissionRuntime
@@ -207,6 +209,27 @@ def test_compose_t13_services_builds_one_concrete_child_registration() -> None:
         child_registration.config.verification_playbook_ref == composition.playbook_ref
     )
     assert {"provider", "model"}.isdisjoint(signature(build_t13_services).parameters)
+
+    # T14 owns worker scheduling, but it must be able to consume every T13
+    # handler without reconstructing role names or reaching into services.
+    assert tuple(services.work_handlers) == (
+        WorkType.PRIMITIVE_UPDATE,
+        WorkType.CHAINING,
+        WorkType.HYPOTHESIS_PROPOSAL,
+    )
+    assert (
+        services.work_handlers[WorkType.PRIMITIVE_UPDATE] is services.primitive_update
+    )
+    assert services.work_handlers[WorkType.CHAINING] is services.chaining
+    assert (
+        services.work_handlers[WorkType.HYPOTHESIS_PROPOSAL]
+        is services.hypothesis_proposal
+    )
+
+    startup = services.reconcile_startup(AnalysisId("empty-analysis"))
+    assert startup.analysis_id == AnalysisId("empty-analysis")
+    assert startup.primitive_update_refs == ()
+    assert startup.chaining_result_refs == ()
 
 
 @pytest.mark.parametrize(
