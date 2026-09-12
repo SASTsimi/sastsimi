@@ -341,9 +341,7 @@ class OwnedResourceRegistry:
         failures: list[str] = []
         for name in tuple(self._intents):
             try:
-                status = await self.reconcile_intent(
-                    docker=docker, container_name=name
-                )
+                status = await self.reconcile_intent(docker=docker, container_name=name)
             except (OSError, RuntimeError, ValueError):
                 failures.append(name)
             else:
@@ -592,9 +590,7 @@ class OwnedResourceRegistry:
                     or DockerAdapter.runtime_image_tag(labels) != image_tag
                 ):
                     raise TypeError
-                self._image_intents[image_tag] = ImageOwnershipIntent(
-                    image_tag, labels
-                )
+                self._image_intents[image_tag] = ImageOwnershipIntent(image_tag, labels)
             for item in resources:
                 if not isinstance(item, dict):
                     raise TypeError
@@ -614,9 +610,7 @@ class OwnedResourceRegistry:
                         for key, label in labels.items()
                     )
                     or resource_kind not in {"CONTAINER", "IMAGE"}
-                    or (
-                        resource_tag is not None and not isinstance(resource_tag, str)
-                    )
+                    or (resource_tag is not None and not isinstance(resource_tag, str))
                     or preservation_reason not in {None, "REUSABLE_BASELINE"}
                     or not isinstance(reconcile_required, bool)
                     or not isinstance(lookup_by_name, bool)
@@ -630,11 +624,7 @@ class OwnedResourceRegistry:
                     resource_id=resource_id,
                     labels=labels,
                     resource_kind=resource_kind,
-                    resource_tag=(
-                        resource_tag
-                        if resource_kind == "IMAGE"
-                        else None
-                    ),
+                    resource_tag=(resource_tag if resource_kind == "IMAGE" else None),
                     lookup_by_name=lookup_by_name,
                     preservation_reason=cast(
                         Literal["REUSABLE_BASELINE"] | None,
