@@ -51,6 +51,14 @@ class ReportingAnalysisApplication:
     def result(self, analysis_id: str) -> AnalysisRunResult:
         return self._application.result(analysis_id)
 
+    async def shutdown(self) -> None:
+        """Release the wrapped scope-owned worker tasks."""
+
+        shutdown = getattr(self._application, "shutdown", None)
+        if shutdown is None:
+            raise ValueError("PRODUCTION_SHUTDOWN_UNAVAILABLE")
+        await shutdown()
+
     def _export_if_terminal(self, outcome: RunOutcome) -> None:
         if outcome.disposition != "TERMINAL":
             return
