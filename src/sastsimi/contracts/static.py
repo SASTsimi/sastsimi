@@ -445,11 +445,33 @@ class RepositoryExecutionSelection(DomainRecord):
             for language in item.languages
         }
         if self.status == "READY":
+            missing_routes = expected_routes - actual_routes
+            represented_missing_routes = {
+                (parts[1], parts[2])
+                for gap in self.gaps
+                if len(parts := gap.code.split(":")) == 3
+                and parts[0] == "NO_ACTIVE_STATIC_CAPABILITY"
+            }
+            has_required_structure = all(
+                language != "PYTHON" or ("PYTHON_AST", language) in actual_routes
+                for language in self.languages
+            )
+            has_sast = all(
+                any(
+                    (adapter, language) in actual_routes
+                    for adapter in ("CODEQL", "OPENGREP")
+                )
+                for language in self.languages
+            )
             if (
                 not self.languages
-                or self.gaps
                 or self.errors
-                or actual_routes != expected_routes
+                or not actual_routes
+                or not actual_routes.issubset(expected_routes)
+                or not has_required_structure
+                or not has_sast
+                or represented_missing_routes != missing_routes
+                or any(gap.reason != "MISSING" for gap in self.gaps)
             ):
                 raise ValueError("REPOSITORY_EXECUTION_SELECTION_INCOMPLETE")
         elif self.status == "BLOCKED":

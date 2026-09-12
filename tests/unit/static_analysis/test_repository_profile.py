@@ -301,8 +301,17 @@ def _git_profile() -> RuntimeCapabilityProfile:
 
 
 class _Resolver:
-    def __init__(self, *, missing: tuple[str, str] | None = None) -> None:
-        self.missing = missing
+    def __init__(
+        self,
+        *,
+        missing: tuple[str, str] | tuple[tuple[str, str], ...] | None = None,
+    ) -> None:
+        if missing is None:
+            self.missing = frozenset()
+        elif missing and isinstance(missing[0], tuple):
+            self.missing = frozenset(cast(tuple[tuple[str, str], ...], missing))
+        else:
+            self.missing = frozenset((cast(tuple[str, str], missing),))
         self.selections = {
             (adapter, language): _static_selection(adapter, language)
             for language, adapters in {
@@ -311,9 +320,9 @@ class _Resolver:
             }.items()
             for adapter in adapters
         }
-        self.pinned = {
-            item.profile_ref: item.profile for item in self.selections.values()
-        }
+        self.pinned: dict[
+            HostConfigurationRef, RuntimeCapabilityProfile | StaticToolProfile
+        ] = {item.profile_ref: item.profile for item in self.selections.values()}
         self.git_profile, self.git_evidence = _git_capability()
         git_ref = reference(self.git_profile)
         assert isinstance(git_ref, HostConfigurationRef)
@@ -324,7 +333,7 @@ class _Resolver:
         self, **values: str
     ) -> StaticToolCapabilitySelection:
         route = (values["adapter_key"], values["language"])
-        if route == self.missing:
+        if route in self.missing:
             raise LookupError("CAPABILITY_ROUTE_NOT_ACTIVE")
         return self.selections[route]
 
@@ -539,7 +548,7 @@ def test_python_selection_uses_exact_active_registry_refs(tmp_path: Path) -> Non
         )
 
 
-def test_tool_selection_blocks_when_required_capability_is_missing(
+def test_tool_selection_runs_verified_intersection_when_optional_codeql_is_missing(
     tmp_path: Path,
 ) -> None:
     tracked = (
@@ -563,12 +572,47 @@ def test_tool_selection_blocks_when_required_capability_is_missing(
         git_checkout_profile_ref=fake_resolver.git_ref,
     )
 
-    assert selection.status == "BLOCKED"
-    assert selection.selected_tools == ()
+    assert selection.status == "READY"
+    assert [item.adapter_key for item in selection.selected_tools] == [
+        "OPENGREP",
+        "PYTHON_AST",
+    ]
     assert [gap.code for gap in selection.gaps] == [
         "NO_ACTIVE_STATIC_CAPABILITY:CODEQL:PYTHON"
     ]
     assert selection.errors == ()
+
+
+def test_tool_selection_blocks_when_no_sast_capability_is_active(
+    tmp_path: Path,
+) -> None:
+    tracked = (
+        _write(tmp_path, "app.py", b"print('ok')\n"),
+        _write(tmp_path, "requirements.txt", b""),
+        _write(tmp_path, "Dockerfile", b"FROM python:3.12-slim\n"),
+    )
+    repository = _build(tmp_path, tracked)
+
+    fake_resolver = _Resolver(missing=(("CODEQL", "PYTHON"), ("OPENGREP", "PYTHON")))
+    selection = RepositoryExecutionSelector(
+        cast(ProductionCapabilityResolverPort, fake_resolver),
+        operating_system="windows",
+        architecture="x86_64",
+    ).select(
+        repository,
+        meta=_selection_meta(),
+        repository_profile_ref=cast(StoredDataRef, reference(repository)),
+        git_clone_profile_ref=fake_resolver.git_ref,
+        git_checkout_profile_ref=fake_resolver.git_ref,
+    )
+
+    assert selection.status == "BLOCKED"
+    assert selection.selected_tools == ()
+    assert {gap.code for gap in selection.gaps} == {
+        "NO_ACTIVE_STATIC_CAPABILITY:CODEQL:PYTHON",
+        "NO_ACTIVE_STATIC_CAPABILITY:OPENGREP:PYTHON",
+        "NO_ACTIVE_SAST_CAPABILITY:PYTHON",
+    }
 
 
 def test_registry_mismatch_fails_without_selecting_any_tool(tmp_path: Path) -> None:

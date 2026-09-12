@@ -500,6 +500,9 @@ class RepositoryExecutionSelector:
         code: str,
         description: str,
         languages: tuple[str, ...] = (),
+        reason: Literal[
+            "MISSING", "FAILED", "TRUNCATED", "UNSUPPORTED", "BLOCKED", "TIMEOUT"
+        ] = "BLOCKED",
     ) -> DataGap:
         return DataGap.model_validate(
             {
@@ -508,7 +511,7 @@ class RepositoryExecutionSelector:
                 ),
                 "stage": "STATIC_ANALYSIS",
                 "code": code,
-                "reason": "BLOCKED",
+                "reason": reason,
                 "description": description,
                 "affected_paths": (),
                 "affected_languages": languages,
@@ -715,9 +718,12 @@ class RepositoryExecutionSelector:
                             repository,
                             code=f"NO_ACTIVE_STATIC_CAPABILITY:{adapter_key}:{language}",
                             description=(
-                                "A required production static-tool route is not active."
+                                "A supported production static-tool route is not "
+                                "active; "
+                                "only independently verified active routes may run."
                             ),
                             languages=(language,),
+                            reason="MISSING",
                         )
                     )
                 except (ValueError, KeyError, TypeError, AttributeError):
@@ -747,7 +753,38 @@ class RepositoryExecutionSelector:
                 errors=tuple(errors[:1]),
                 status="FAILED",
             )
-        if selection_gaps:
+        resolved_routes = {(adapter, language) for adapter, language, _ in resolved}
+        blocking_languages = tuple(
+            language
+            for language in supported_languages
+            if (
+                language == "PYTHON" and ("PYTHON_AST", language) not in resolved_routes
+            )
+            or not any(
+                (adapter, language) in resolved_routes
+                for adapter in ("CODEQL", "OPENGREP")
+            )
+        )
+        if blocking_languages:
+            blocking_gaps = tuple(
+                self._gap(
+                    repository,
+                    code=(
+                        f"NO_ACTIVE_STRUCTURE_CAPABILITY:{language}"
+                        if language == "PYTHON"
+                        and ("PYTHON_AST", language) not in resolved_routes
+                        else f"NO_ACTIVE_SAST_CAPABILITY:{language}"
+                    ),
+                    description=(
+                        "No verified active structural analyzer is available."
+                        if language == "PYTHON"
+                        and ("PYTHON_AST", language) not in resolved_routes
+                        else "No verified active SAST analyzer is available."
+                    ),
+                    languages=(language,),
+                )
+                for language in blocking_languages
+            )
             return RepositoryExecutionSelection(
                 meta=meta,
                 repository_profile_ref=repository_profile_ref,
@@ -755,7 +792,7 @@ class RepositoryExecutionSelector:
                 git_checkout_profile_ref=git_checkout_profile_ref,
                 languages=supported_languages,
                 selected_tools=(),
-                gaps=tuple(selection_gaps),
+                gaps=(*selection_gaps, *blocking_gaps),
                 errors=(),
                 status="BLOCKED",
             )
@@ -783,7 +820,7 @@ class RepositoryExecutionSelector:
             git_checkout_profile_ref=git_checkout_profile_ref,
             languages=supported_languages,
             selected_tools=tools,
-            gaps=(),
+            gaps=tuple(selection_gaps),
             errors=(),
             status="READY",
         )

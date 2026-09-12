@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from sastsimi.contracts.canonical_json import canonical_bytes
-from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef, reference
 from sastsimi.contracts.static import CodeWorkspace, StaticToolProfile
 from sastsimi.ports.dto import (
     CancellationResult,
@@ -55,7 +55,9 @@ class _Profiles:
     def __init__(self, profile: StaticToolProfile) -> None:
         self.profile = profile
 
-    def resolve(self, profile_ref: StoredDataRef) -> StaticToolProfile:
+    def resolve(
+        self, profile_ref: StoredDataRef | HostConfigurationRef
+    ) -> StaticToolProfile:
         del profile_ref
         return self.profile
 

@@ -20,7 +20,12 @@ import pytest
 from sastsimi.contracts.actions import ActionRequest
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
+from sastsimi.contracts.refs import (
+    HostConfigurationRef,
+    RunStoredDataRef,
+    StoredDataRef,
+    reference,
+)
 from sastsimi.contracts.static import (
     CodeWorkspace,
     RuleExecutionItem,
@@ -149,7 +154,7 @@ class _HardQuotaGuard:
         lease_id: str,
         action_id: str,
         attempt_id: str,
-        profile_ref: StoredDataRef,
+        profile_ref: StoredDataRef | HostConfigurationRef,
         root: Path,
         limit_bytes: int,
     ) -> StaticOutputQuotaBinding:
@@ -255,10 +260,15 @@ def _rule_execution(
 
 
 class _Profiles:
-    def __init__(self, values: dict[StoredDataRef, StaticToolProfile]) -> None:
+    def __init__(
+        self,
+        values: dict[StoredDataRef | HostConfigurationRef, StaticToolProfile],
+    ) -> None:
         self.values = values
 
-    def resolve(self, profile_ref: StoredDataRef) -> StaticToolProfile:
+    def resolve(
+        self, profile_ref: StoredDataRef | HostConfigurationRef
+    ) -> StaticToolProfile:
         try:
             return self.values[profile_ref]
         except KeyError as error:
