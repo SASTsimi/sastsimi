@@ -144,6 +144,11 @@ def main(
             return int(ExitCode.OK)
         if args.command == "analyze":
             command_name = "analyze"
+            if production_analyze is None:
+                production_analyze = cast(
+                    analyze_command.ProductionAnalyzeEntrypoint,
+                    bootstrap.build_production_analyze(),
+                )
             request = analyze_command.ProductionAnalyzeRequest(
                 data_dir=config.data_dir,
                 repository=args.repo,
