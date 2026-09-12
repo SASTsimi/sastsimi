@@ -197,6 +197,7 @@ def _build_production_engine(
             Path(tempfile.gettempdir()),
             Path.cwd(),
         ),
+        in_process_keys=frozenset({"python"}),
     )
     return _CapabilityProbeEngine(
         registry=runtime.configuration,

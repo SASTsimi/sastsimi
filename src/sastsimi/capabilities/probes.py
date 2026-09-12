@@ -290,25 +290,36 @@ class OpenAIResponsesProbe:
 
 
 class ProductionExecutableRegistry:
-    """Closed allowlist of absolute executables outside mutable task roots."""
+    """Closed allowlist of external tools plus the exact in-process interpreter."""
 
     def __init__(
-        self, entries: dict[str, Path], *, forbidden_roots: tuple[Path, ...]
+        self,
+        entries: dict[str, Path],
+        *,
+        forbidden_roots: tuple[Path, ...],
+        in_process_keys: frozenset[str] = frozenset(),
     ) -> None:
         self._forbidden_roots = tuple(
             root.resolve(strict=False) for root in forbidden_roots
         )
+        self._in_process_keys = in_process_keys
+        if not in_process_keys <= set(entries):
+            raise ValueError("CAPABILITY_IN_PROCESS_KEY_UNKNOWN")
         self._entries = {
-            key: self._validate(path)
+            key: self._validate(path, in_process=key in in_process_keys)
             for key, path in entries.items()
             if path is not None
         }
 
     def resolve(self, key: str) -> Path | None:
         path = self._entries.get(key)
-        return self._validate(path) if path is not None else None
+        return (
+            self._validate(path, in_process=key in self._in_process_keys)
+            if path is not None
+            else None
+        )
 
-    def _validate(self, path: Path) -> Path:
+    def _validate(self, path: Path, *, in_process: bool) -> Path:
         try:
             if not path.is_absolute():
                 raise ValueError
@@ -316,8 +327,7 @@ class ProductionExecutableRegistry:
             while True:
                 metadata = current.lstat()
                 if current.is_symlink() or (
-                    getattr(metadata, "st_file_attributes", 0)
-                    & _WINDOWS_REPARSE_POINT
+                    getattr(metadata, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT
                 ):
                     raise ValueError
                 if current.parent == current:
@@ -326,14 +336,18 @@ class ProductionExecutableRegistry:
             resolved = path.resolve(strict=True)
             if not resolved.is_file():
                 raise ValueError
-            for root in self._forbidden_roots:
-                try:
-                    resolved.relative_to(root)
-                except ValueError:
-                    continue
-                raise ValueError
-            if not _trusted_executable_acl(resolved):
-                raise ValueError
+            if in_process:
+                if resolved != Path(sys.executable).resolve(strict=True):
+                    raise ValueError
+            else:
+                for root in self._forbidden_roots:
+                    try:
+                        resolved.relative_to(root)
+                    except ValueError:
+                        continue
+                    raise ValueError
+                if not _trusted_executable_acl(resolved):
+                    raise ValueError
             return resolved
         except (OSError, ValueError) as error:
             raise ValueError("CAPABILITY_EXECUTABLE_PATH_DENIED") from error
