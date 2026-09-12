@@ -41,6 +41,7 @@ from sastsimi.runtime.configuration_registry import ConfigurationRegistry
 
 from .models import CapabilityProbeReceipt, ProbeKind
 from .probes import (
+    CommandObservation,
     CommandProbeRunner,
     OpenAIProbeTransport,
     python_ast_observation,
@@ -60,6 +61,8 @@ _PUBLICATION_WORKSPACE = WorkspaceId("host-configuration")
 _PUBLICATION_COMMIT = CommitId("host-configuration-v1")
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+| -]{0,127}$")
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_WINDOWS_DOCKER_HOST = re.compile(r"^npipe:////\./pipe/[A-Za-z0-9._-]{1,128}$")
+_POSIX_DOCKER_HOST = re.compile(r"^unix:///[A-Za-z0-9_./-]{1,512}$")
 
 
 class SecretLookup(Protocol):
@@ -81,6 +84,7 @@ class _CapabilityProbeEngine:
         clock: Clock,
         executable_locator: ExecutableLocator,
         command_runner: CommandProbeRunner,
+        docker_host: str | None,
         approval_identity: ApprovalIdentity,
         secret_resolver: SecretLookup | None = None,
         openai_probe: OpenAIProbeTransport | None = None,
@@ -97,6 +101,7 @@ class _CapabilityProbeEngine:
         self._clock = clock
         self._locate = executable_locator
         self._commands = command_runner
+        self._docker_host = self._validated_docker_host(docker_host)
         self._approval_identity = approval_identity
         self._secret_resolver = secret_resolver
         self._openai = openai_probe
@@ -161,8 +166,12 @@ class _CapabilityProbeEngine:
                     "CODEQL": ("version", "--format=terse"),
                 }[kind]
                 try:
-                    command_observation = self._commands.run(
-                        executable, arguments, timeout_ms=15_000
+                    command_observation = (
+                        self._run_docker(executable, arguments, timeout_ms=15_000)
+                        if kind == "DOCKER"
+                        else self._commands.run(
+                            executable, arguments, timeout_ms=15_000
+                        )
                     )
                     normalized = self._safe_version(command_observation.safe_stdout)
                     observed_digest = (
@@ -727,29 +736,53 @@ class _CapabilityProbeEngine:
             except (AttributeError, TypeError, ValueError):
                 return False
 
+    @staticmethod
+    def _validated_docker_host(docker_host: str | None) -> str | None:
+        if docker_host is None:
+            return None
+        if _WINDOWS_DOCKER_HOST.fullmatch(docker_host) is not None:
+            return docker_host
+        if _POSIX_DOCKER_HOST.fullmatch(docker_host) is not None:
+            path = docker_host.removeprefix("unix://")
+            if ".." not in Path(path).parts:
+                return docker_host
+        raise ValueError("DOCKER_HOST_UNTRUSTED")
+
+    def _run_docker(
+        self,
+        executable: Path,
+        arguments: tuple[str, ...],
+        *,
+        timeout_ms: int,
+    ) -> CommandObservation:
+        if self._docker_host is None:
+            raise ValueError("DOCKER_HOST_REQUIRED")
+        return self._commands.run(
+            executable,
+            ("--host", self._docker_host, *arguments),
+            timeout_ms=timeout_ms,
+        )
+
     def _docker_target_hash(self, executable: Path) -> str | None:
-        version = self._commands.run(
+        version = self._run_docker(
             executable,
             ("version", "--format", "{{.Client.Version}}|{{.Server.Version}}"),
             timeout_ms=15_000,
         )
-        context = self._commands.run(executable, ("context", "show"), timeout_ms=15_000)
-        if not version.succeeded or not context.succeeded or not context.safe_stdout:
-            return None
-        inspected = self._commands.run(
+        daemon = self._run_docker(
             executable,
-            (
-                "context",
-                "inspect",
-                context.safe_stdout,
-                "--format",
-                "{{.Name}}|{{.Endpoints.docker.Host}}",
-            ),
+            ("info", "--format", "{{.ID}}|{{.OSType}}|{{.Architecture}}"),
             timeout_ms=15_000,
         )
-        if not inspected.succeeded or not inspected.safe_stdout:
+        if not version.succeeded or not daemon.succeeded or not daemon.safe_stdout:
             return None
-        target = inspected.safe_stdout + "|" + (version.safe_stdout or "")
+        target = (
+            (self._docker_host or "")
+            + "|"
+            + daemon.safe_stdout
+            + "|"
+            + (version.safe_stdout or "")
+        )
         if any(ord(character) < 32 for character in target) or len(target) > 768:
             return None
         return content_hash({"docker_execution_target": target})
@@ -766,12 +799,13 @@ class _CapabilityProbeEngine:
             root = Path(temporary)
             (root / "Dockerfile").write_text(
                 "FROM busybox:latest\n"
+                "USER 65532:65532\n"
                 'HEALTHCHECK --interval=1s --timeout=1s --retries=3 CMD ["true"]\n'
                 'CMD ["sleep", "30"]\n',
                 encoding="utf-8",
             )
             try:
-                build = self._commands.run(
+                build = self._run_docker(
                     executable,
                     (
                         "build",
@@ -787,13 +821,15 @@ class _CapabilityProbeEngine:
                 )
                 built = build.succeeded
                 if built:
-                    run = self._commands.run(
+                    run = self._run_docker(
                         executable,
                         (
                             "run",
                             "--detach",
                             "--name",
                             container,
+                            "--user",
+                            "65532:65532",
                             "--network",
                             "none",
                             "--read-only",
@@ -803,6 +839,12 @@ class _CapabilityProbeEngine:
                             "no-new-privileges",
                             "--pids-limit",
                             "64",
+                            "--cpus",
+                            "0.5",
+                            "--memory",
+                            "67108864",
+                            "--tmpfs",
+                            "/tmp:rw,noexec,nosuid,nodev,size=16m",
                             tag,
                         ),
                         timeout_ms=30_000,
@@ -810,38 +852,106 @@ class _CapabilityProbeEngine:
                     started = run.succeeded
                 if started:
                     for _ in range(6):
-                        health = self._commands.run(
+                        inspected = self._run_docker(
                             executable,
-                            (
-                                "inspect",
-                                "--format",
-                                "{{.State.Health.Status}}",
-                                container,
-                            ),
+                            ("inspect", container),
                             timeout_ms=15_000,
                         )
-                        if health.succeeded and health.safe_stdout == "healthy":
+                        if not inspected.succeeded or inspected.safe_stdout is None:
+                            break
+                        state = self._docker_inspect(inspected.safe_stdout)
+                        if state is not None and self._docker_boundary_passed(state):
                             operation_passed = True
                             break
-                        if not health.succeeded or health.safe_stdout != "starting":
+                        if state is None or not self._docker_health_starting(state):
                             break
                         time.sleep(0.5)
             finally:
                 if started:
-                    removed = self._commands.run(
+                    removed = self._run_docker(
                         executable,
                         ("rm", "--force", "--volumes", container),
                         timeout_ms=15_000,
                     )
                     cleanup_passed = cleanup_passed and removed.succeeded
                 if built:
-                    removed_image = self._commands.run(
+                    removed_image = self._run_docker(
                         executable,
                         ("image", "rm", "--force", tag),
                         timeout_ms=15_000,
                     )
                     cleanup_passed = cleanup_passed and removed_image.succeeded
         return operation_passed and cleanup_passed
+
+    @staticmethod
+    def _docker_inspect(payload: str) -> dict[str, object] | None:
+        try:
+            parsed = json.loads(payload)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(parsed, list) or len(parsed) != 1:
+            return None
+        state = parsed[0]
+        return state if isinstance(state, dict) else None
+
+    @staticmethod
+    def _docker_health_starting(state: dict[str, object]) -> bool:
+        runtime_state = state.get("State")
+        if not isinstance(runtime_state, dict):
+            return False
+        health = runtime_state.get("Health")
+        return isinstance(health, dict) and health.get("Status") == "starting"
+
+    @staticmethod
+    def _docker_boundary_passed(state: dict[str, object]) -> bool:
+        configuration = state.get("Config")
+        host = state.get("HostConfig")
+        runtime_state = state.get("State")
+        mounts = state.get("Mounts")
+        if not all(
+            isinstance(item, dict) for item in (configuration, host, runtime_state)
+        ):
+            return False
+        assert isinstance(configuration, dict)
+        assert isinstance(host, dict)
+        assert isinstance(runtime_state, dict)
+        health = runtime_state.get("Health")
+        cap_drop = host.get("CapDrop")
+        security_options = host.get("SecurityOpt")
+        tmpfs = host.get("Tmpfs")
+        safe_mounts = mounts == [] or (
+            isinstance(mounts, list)
+            and all(
+                isinstance(mount, dict)
+                and mount.get("Type") == "tmpfs"
+                and mount.get("Destination") == "/tmp"
+                for mount in mounts
+            )
+        )
+        return bool(
+            configuration.get("User") == "65532:65532"
+            and host.get("NetworkMode") == "none"
+            and host.get("ReadonlyRootfs") is True
+            and host.get("Privileged") is False
+            and isinstance(cap_drop, list)
+            and "ALL" in cap_drop
+            and isinstance(security_options, list)
+            and any(
+                str(option).startswith("no-new-privileges")
+                for option in security_options
+            )
+            and host.get("PidsLimit") == 64
+            and host.get("Memory") == 67_108_864
+            and host.get("NanoCpus") == 500_000_000
+            and host.get("Binds") in (None, [])
+            and host.get("PidMode") in (None, "")
+            and host.get("IpcMode") in (None, "", "private")
+            and isinstance(tmpfs, dict)
+            and "/tmp" in tmpfs
+            and safe_mounts
+            and isinstance(health, dict)
+            and health.get("Status") == "healthy"
+        )
 
 
 def hashlib_key(value: str) -> str:

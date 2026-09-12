@@ -101,11 +101,13 @@ class ProductionCapabilityProbeService:
         *,
         host_id: str,
         executable_paths: Mapping[str, Path],
+        docker_host: str | None,
     ) -> None:
         self.__engine = _build_production_engine(
             data_dir,
             host_id=host_id,
             executable_paths=executable_paths,
+            docker_host=docker_host,
         )
 
     def probe(
@@ -155,6 +157,7 @@ def _build_production_engine(
     *,
     host_id: str,
     executable_paths: Mapping[str, Path],
+    docker_host: str | None,
 ) -> _CapabilityProbeEngine:
     if not host_id.strip():
         raise ValueError("CAPABILITY_HOST_REQUIRED")
@@ -178,6 +181,8 @@ def _build_production_engine(
     allowed_executables = frozenset({"git", "opengrep", "docker", "codeql"})
     if not set(executable_paths) <= allowed_executables:
         raise ValueError("CAPABILITY_EXECUTABLE_KEY_UNSUPPORTED")
+    if ("docker" in executable_paths) != (docker_host is not None):
+        raise ValueError("DOCKER_HOST_CONFIGURATION_MISMATCH")
     executable_registry = ProductionExecutableRegistry(
         {"python": Path(sys.executable), **dict(executable_paths)},
         forbidden_roots=(
@@ -198,6 +203,7 @@ def _build_production_engine(
         clock=clock.now,
         executable_locator=executable_registry.resolve,
         command_runner=SubprocessCommandProbeRunner(),
+        docker_host=docker_host,
         approval_identity=_NativeApprovalIdentity(),
         secret_resolver=EnvironmentSecretLookup(),
         openai_probe=OpenAIResponsesProbe(),
@@ -210,6 +216,7 @@ def build_production_capability_probe_service(
     *,
     host_id: str,
     executable_paths: Mapping[str, Path],
+    docker_host: str | None,
 ) -> ProductionCapabilityProbeService:
     """Build the non-injectable production probe/list/approve application API."""
 
@@ -217,6 +224,7 @@ def build_production_capability_probe_service(
         data_dir,
         host_id=host_id,
         executable_paths=executable_paths,
+        docker_host=docker_host,
     )
 
 

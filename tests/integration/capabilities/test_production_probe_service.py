@@ -40,13 +40,15 @@ class FakeCommands:
             "sastsimi.probe.python",
             "sastsimi.probe.javascript",
         ),
+        docker_boundary_safe: bool = True,
     ) -> None:
         self.docker_daemon = docker_daemon
         self.fail_operation = fail_operation
         self.mutate_after_version = mutate_after_version
         self.opengrep_check_ids = opengrep_check_ids
+        self.docker_boundary_safe = docker_boundary_safe
         self.calls: list[tuple[str, tuple[str, ...]]] = []
-        self.docker_target = "default|npipe://docker-engine"
+        self.docker_target = "daemon-a|linux|x86_64"
 
     def run(
         self, executable: Path, arguments: tuple[str, ...], *, timeout_ms: int
@@ -54,6 +56,11 @@ class FakeCommands:
         del timeout_ms
         command = executable.stem.lower()
         self.calls.append((command, arguments))
+        effective_arguments = (
+            arguments[2:]
+            if arguments[:2] == ("--host", "npipe:////./pipe/docker-engine")
+            else arguments
+        )
         operation = next(
             (
                 item
@@ -66,23 +73,23 @@ class FakeCommands:
                     "inspect",
                     "rm",
                 )
-                if item in arguments
+                if item in effective_arguments
             ),
             None,
         )
         if self.fail_operation is not None and operation == self.fail_operation:
             return CommandObservation(False, None)
         if command == "git":
-            if arguments == ("--version",):
+            if effective_arguments == ("--version",):
                 result = CommandObservation(True, "git version 2.51.0")
                 if self.mutate_after_version is not None:
                     self.mutate_after_version.write_bytes(b"changed-during-probe")
                 return result
-            if "rev-parse" in arguments:
+            if "rev-parse" in effective_arguments:
                 return CommandObservation(True, "a" * 40)
             return CommandObservation(True, "ok")
         if command == "opengrep":
-            if arguments == ("--version",):
+            if effective_arguments == ("--version",):
                 return CommandObservation(True, "1.10.0")
             return CommandObservation(
                 True,
@@ -98,23 +105,52 @@ class FakeCommands:
         if command == "codeql":
             return CommandObservation(True, "2.23.1")
         if command == "docker":
-            if arguments[0] == "version":
+            if effective_arguments[0] == "version":
                 if self.docker_daemon:
                     return CommandObservation(True, "28.3.3|28.3.3")
                 return CommandObservation(False, None)
-            if arguments[:2] == ("context", "show"):
-                return CommandObservation(True, self.docker_target.split("|", 1)[0])
-            if arguments[:2] == ("context", "inspect"):
+            if effective_arguments[0] == "info":
                 return CommandObservation(True, self.docker_target)
-            if arguments[0] == "build":
+            if effective_arguments[0] == "build":
                 return CommandObservation(True, "sha256:" + "b" * 64)
-            if arguments[0] == "run":
+            if effective_arguments[0] == "run":
                 return CommandObservation(True, "probe-container")
-            if arguments[0] == "inspect":
-                return CommandObservation(True, "healthy")
-            if arguments[:2] in {("rm", "--force"), ("image", "rm")}:
+            if effective_arguments[0] == "inspect":
+                user = "65532:65532" if self.docker_boundary_safe else "root"
+                return CommandObservation(
+                    True,
+                    json.dumps(
+                        [
+                            {
+                                "Config": {"User": user},
+                                "HostConfig": {
+                                    "NetworkMode": "none",
+                                    "ReadonlyRootfs": True,
+                                    "Privileged": False,
+                                    "CapDrop": ["ALL"],
+                                    "SecurityOpt": ["no-new-privileges"],
+                                    "PidsLimit": 64,
+                                    "Memory": 67_108_864,
+                                    "NanoCpus": 500_000_000,
+                                    "Binds": None,
+                                    "PidMode": "",
+                                    "IpcMode": "private",
+                                    "Tmpfs": {
+                                        "/tmp": "rw,noexec,nosuid,nodev,size=16m"
+                                    },
+                                },
+                                "State": {"Health": {"Status": "healthy"}},
+                                "Mounts": [],
+                            }
+                        ]
+                    ),
+                )
+            if effective_arguments[:2] in {
+                ("rm", "--force"),
+                ("image", "rm"),
+            }:
                 return CommandObservation(True, "removed")
-        raise AssertionError((command, arguments))
+        raise AssertionError((command, effective_arguments))
 
 
 class FakeOpenAI:
@@ -175,6 +211,7 @@ def _service(
         clock=lambda: datetime(2026, 9, 13, tzinfo=UTC),
         executable_locator=lambda name: located.get(name),
         command_runner=commands,
+        docker_host="npipe:////./pipe/docker-engine",
         secret_resolver=FakeSecrets(),
         openai_probe=FakeOpenAI(passed=openai_passed),
         approval_identity=lambda: "taehyeon-git",
@@ -353,12 +390,22 @@ def test_public_production_facade_has_no_dependency_injection_or_caller_identity
     build_parameters = inspect.signature(
         build_production_capability_probe_service
     ).parameters
-    assert set(build_parameters) == {"data_dir", "host_id", "executable_paths"}
+    assert set(build_parameters) == {
+        "data_dir",
+        "host_id",
+        "executable_paths",
+        "docker_host",
+    }
 
     assert "command_runner" not in build_parameters
     assert "store" not in build_parameters
     constructor = inspect.signature(ProductionCapabilityProbeService).parameters
-    assert set(constructor) == {"data_dir", "host_id", "executable_paths"}
+    assert set(constructor) == {
+        "data_dir",
+        "host_id",
+        "executable_paths",
+        "docker_host",
+    }
     assert (
         "approved_by"
         not in inspect.signature(ProductionCapabilityProbeService.approve).parameters
@@ -463,10 +510,40 @@ def test_docker_execution_rechecks_exact_daemon_target(tmp_path: Path) -> None:
         receipt.probe_id,
         expected_target_hash=receipt.approval_target_hash or "",
     )
-    commands.docker_target = "other|npipe://different-engine"
+    commands.docker_target = "daemon-b|linux|x86_64"
 
     with pytest.raises(ValueError, match="CAPABILITY_EXECUTION_TARGET_CHANGED"):
         service.resolve_executable(profile_ref)
+
+
+def test_docker_probe_pins_every_command_to_exact_host(tmp_path: Path) -> None:
+    service, _runtime, _store = _service(tmp_path, available={"docker"})
+    commands = service._commands
+    assert isinstance(commands, FakeCommands)
+
+    receipt = service.probe("DOCKER")
+
+    assert receipt.activation_supported is True
+    docker_calls = [
+        arguments for command, arguments in commands.calls if command == "docker"
+    ]
+    assert docker_calls
+    assert all(
+        arguments[:2] == ("--host", "npipe:////./pipe/docker-engine")
+        for arguments in docker_calls
+    )
+
+
+def test_docker_probe_cannot_claim_boundary_from_unsafe_container(
+    tmp_path: Path,
+) -> None:
+    service, _runtime, _store = _service(tmp_path, available={"docker"})
+    service._commands = FakeCommands(docker_boundary_safe=False)
+
+    receipt = service.probe("DOCKER")
+
+    assert receipt.status == "BLOCKED"
+    assert receipt.activation_supported is False
 
 
 @pytest.mark.parametrize(
