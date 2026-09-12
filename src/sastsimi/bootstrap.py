@@ -64,9 +64,7 @@ if TYPE_CHECKING:
         StaticNormalizationPublisher,
     )
     from sastsimi.ports.chaining import (
-        ChainingChildHandoffPort,
         ChainingLineagePort,
-        ChainingProposalRegistrationPort,
     )
     from sastsimi.ports.context import ContextLineageReaderPort
     from sastsimi.ports.dto import StaticRuleMapping, WorkHandlerResult
@@ -1444,8 +1442,8 @@ def build_t13_services(
     role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
     chaining_call_resolver: ChainingCallResolver,
     chaining_lineage: ChainingLineagePort,
-    child_handoff: ChainingChildHandoffPort,
-    proposal_registration: ChainingProposalRegistrationPort,
+    verification_policy_ref: StoredDataRef | None,
+    verification_playbook_ref: StoredDataRef | None,
 ) -> T13Services:
     """Build T13 from exact injected authorities without selecting an LLM."""
 
@@ -1464,11 +1462,18 @@ def build_t13_services(
     from sastsimi.runtime.llm_invocation_provenance import (
         validate_llm_invocation_provenance,
     )
+    from sastsimi.storage.chaining_child_registration import (
+        ChainingChildRegistrationConfig,
+        SQLiteChainingChildRegistration,
+    )
     from sastsimi.storage.chaining_registration import (
         ChainingCohortStore,
         ChainingCommittedSourceStore,
     )
     from sastsimi.storage.repositories import SQLiteRecordStore
+    from sastsimi.storage.verification_registration import (
+        VerificationRegistrationService as SQLiteVerificationRegistration,
+    )
     from sastsimi.storage.work_service import WorkService as SQLiteWorkService
 
     def identity(role: RequesterRole) -> BudgetScopeRef:
@@ -1481,19 +1486,55 @@ def build_t13_services(
     chaining_identity = identity(RequesterRole.CHAINING)
     primitive_identity = identity(RequesterRole.PRIMITIVE_ADMISSION_RUNTIME)
     recovery_identity = identity(RequesterRole.RECOVERY)
+    verification_identity = identity(RequesterRole.VERIFICATION)
 
     records = runtime.unit_of_work.records
     works = runtime.work.store
+    verification = runtime.verification_registration.store
     if runner.runtime is not runtime:
         raise ValueError("T13_RUNTIME_MISMATCH")
     if (
         not isinstance(records, SQLiteRecordStore)
         or not isinstance(works, SQLiteWorkService)
         or works.records is not records
+        or not isinstance(verification, SQLiteVerificationRegistration)
+        or verification.transitions.works is not works
     ):
         raise ValueError("T13_STORAGE_RUNTIME_MISMATCH")
     if runtime.chaining_lineage is not chaining_lineage:
         raise ValueError("CHAINING_LINEAGE_RUNTIME_MISMATCH")
+    if (
+        not isinstance(budget_scope_ref, StoredDataRef)
+        or not isinstance(verification_identity, StoredDataRef)
+        or verification_policy_ref is None
+        or verification_playbook_ref is None
+    ):
+        raise ValueError("T13_CHILD_CONFIG_REQUIRED")
+    child_config = ChainingChildRegistrationConfig(
+        budget_binding_ref=budget_scope_ref,
+        verification_owner_identity_ref=verification_identity,
+        verification_policy_ref=verification_policy_ref,
+        verification_playbook_ref=verification_playbook_ref,
+    )
+    if len(
+        {
+            (ref.workspace_id, ref.commit_id)
+            for ref in (
+                child_config.budget_binding_ref,
+                child_config.verification_owner_identity_ref,
+                child_config.verification_policy_ref,
+                child_config.verification_playbook_ref,
+            )
+        }
+    ) != 1:
+        raise ValueError("T13_CHILD_CONFIG_SCOPE_MISMATCH")
+    child_registration = SQLiteChainingChildRegistration(
+        works=works,
+        transitions=verification.transitions,
+        verification=verification,
+        lineage=chaining_lineage,
+        config=child_config,
+    )
 
     def metadata(
         source: RecordMeta,
@@ -1540,7 +1581,7 @@ def build_t13_services(
         pools=cohorts.pools,
         lineage=chaining_lineage,
         publisher=publisher,
-        children=child_handoff,
+        children=child_registration,
         ids=ids,
         metadata_factory=metadata,
         requester_identity_ref=chaining_identity,
@@ -1558,13 +1599,13 @@ def build_t13_services(
             resolve_call=chaining_call_resolver,
         ),
         hypothesis_proposal=HypothesisProposalHandler(
-            registration=proposal_registration,
+            registration=child_registration,
             requester_identity_ref=orchestration_identity,
         ),
         reconciliation=ChainingReconciliationService(
             sources=sources,
             cohorts=cohorts,
-            children=child_handoff,
+            children=child_registration,
             records=records,
             budget_scope_ref=budget_scope_ref,
             requester_identity_ref=recovery_identity,

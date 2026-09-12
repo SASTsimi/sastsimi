@@ -34,7 +34,11 @@ from sastsimi.contracts.ids import (
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
-from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
+from sastsimi.contracts.verification import (
+    PlaybookPolicy,
+    VerificationPlaybook,
+    VerificationResult,
+)
 from sastsimi.contracts.work import (
     CommitState,
     StateTransition,
@@ -109,11 +113,14 @@ class SQLiteChainingChildRegistration:
     ) -> WorkExecutionState:
         registration_key = content_hash([source_result_ref, proposal_id])
         with self.records.database.write() as connection:
-            source, _proposal = self._source(
+            source, proposal = self._source(
                 connection,
                 source_result_ref,
                 proposal_id,
                 requester_identity_ref,
+                allowed_roles=frozenset(
+                    (RequesterRole.ORCHESTRATION, RequesterRole.RECOVERY)
+                ),
             )
             old = connection.execute(
                 select(models.work_states.c.payload).where(
@@ -125,7 +132,9 @@ class SQLiteChainingChildRegistration:
                 self._validate_handoff(
                     work, source_result_ref, proposal_id, registration_key
                 )
-                if work.status != WorkStatus.READY:
+                if work.status == WorkStatus.SUCCEEDED:
+                    self._completed_proposal(connection, work, proposal)
+                elif work.status not in {WorkStatus.READY, WorkStatus.RUNNING}:
                     raise ValueError("CHAINING_CHILD_REPLAY_STATE_MISMATCH")
                 if (
                     self._registration_scope(connection, work)
@@ -165,6 +174,7 @@ class SQLiteChainingChildRegistration:
                 source_result_ref,
                 proposal_id,
                 requester_identity_ref,
+                allowed_roles=frozenset((RequesterRole.ORCHESTRATION,)),
             )
             current_work = self._validate_claimed(
                 connection, context, source_result_ref, proposal_id
@@ -185,23 +195,40 @@ class SQLiteChainingChildRegistration:
         hypothesis, process, process_ref = self._projected(proposal_ref)
         hypothesis_ref = reference(hypothesis)
         assert isinstance(hypothesis_ref, StoredDataRef)
-        registration = self.verification.register(
-            hypothesis_ref=hypothesis_ref,
-            proposal_ref=proposal_ref,
-            policy_ref=self.config.verification_policy_ref,
-            playbook_ref=self.config.verification_playbook_ref,
-            expected_process_ref=process_ref,
-            owner_identity_ref=self.config.verification_owner_identity_ref,
-            requester_identity_ref=requester_identity_ref,
-            budget_binding_ref=self.config.budget_binding_ref,
-        )
-        verification_work = self._ensure_verification_ready(
-            registration.work, requester_identity_ref
-        )
+        if process.status == "TERMINAL":
+            verification_work = self._terminal_verification(
+                hypothesis_ref, proposal_ref, process
+            )
+        else:
+            try:
+                registration = self.verification.register(
+                    hypothesis_ref=hypothesis_ref,
+                    proposal_ref=proposal_ref,
+                    policy_ref=self.config.verification_policy_ref,
+                    playbook_ref=self.config.verification_playbook_ref,
+                    expected_process_ref=process_ref,
+                    owner_identity_ref=self.config.verification_owner_identity_ref,
+                    requester_identity_ref=requester_identity_ref,
+                    budget_binding_ref=self.config.budget_binding_ref,
+                )
+                verification_work = self._ensure_verification_ready(
+                    registration.work, requester_identity_ref
+                )
+            except ValueError:
+                _hypothesis, raced_process, _raced_ref = self._projected(
+                    proposal_ref
+                )
+                if raced_process.status != "TERMINAL":
+                    raise
+                verification_work = self._terminal_verification(
+                    hypothesis_ref, proposal_ref, raced_process
+                )
         _hypothesis, current_process, current_process_ref = self._projected(
             proposal_ref
         )
-        if current_process.verification_work_ref != reference(verification_work):
+        if not self._process_tracks_verification(
+            current_process, verification_work
+        ):
             raise ValueError("CHAINING_CHILD_VERIFICATION_MISMATCH")
         return ChainingProposalRegistration(
             source_result_ref=source_result_ref,
@@ -218,21 +245,19 @@ class SQLiteChainingChildRegistration:
         source_ref: StoredDataRef,
         proposal_id: ProposalId,
         requester_ref: BudgetScopeRef,
+        *,
+        allowed_roles: frozenset[RequesterRole],
     ) -> tuple[ChainingResult, HypothesisProposal]:
         if source_ref.data_kind != "chaining_result":
             raise ValueError("CHAINING_CHILD_REF_KIND")
-        if (
-            self.records.evidence.identity_role(requester_ref)
-            != RequesterRole.ORCHESTRATION
-        ):
-            raise ValueError("AUTHORITY_DENIED: Orchestration child registrar required")
+        if self.records.evidence.identity_role(requester_ref) not in allowed_roles:
+            raise ValueError("AUTHORITY_DENIED: Chaining child registrar required")
         self.records.resolve(connection, requester_ref)
         source = self.records.resolve(connection, source_ref)
         if not isinstance(source, ChainingResult) or not isinstance(
             source.meta, RecordMeta
         ):
             raise ValueError("CHAINING_CHILD_SOURCE_MISMATCH")
-        current(self.records, connection, source_ref)
         require_committed(self.records, connection, source, WorkType.CHAINING)
         matches = tuple(
             proposal
@@ -676,7 +701,14 @@ class SQLiteChainingChildRegistration:
         self, work: WorkExecutionState, requester_ref: BudgetScopeRef
     ) -> WorkExecutionState:
         current_work = self.works.get(str(work.work_id))
-        if current_work.status == WorkStatus.READY:
+        if current_work.status in {
+            WorkStatus.READY,
+            WorkStatus.RUNNING,
+            WorkStatus.BLOCKED,
+            WorkStatus.SUCCEEDED,
+            WorkStatus.FAILED,
+            WorkStatus.CANCELLED,
+        }:
             return current_work
         if current_work.status != WorkStatus.PENDING or current_work != work:
             raise ValueError("CHAINING_CHILD_VERIFICATION_MISMATCH")
@@ -698,9 +730,92 @@ class SQLiteChainingChildRegistration:
             return self.works.make_ready(transition)
         except ValueError as error:
             replay = self.works.get(str(work.work_id))
-            if replay.status == WorkStatus.READY:
+            if replay.status in {
+                WorkStatus.READY,
+                WorkStatus.RUNNING,
+                WorkStatus.BLOCKED,
+                WorkStatus.SUCCEEDED,
+                WorkStatus.FAILED,
+                WorkStatus.CANCELLED,
+            }:
                 return replay
             raise error
+
+    def _terminal_verification(
+        self,
+        hypothesis_ref: StoredDataRef,
+        proposal_ref: StoredDataRef,
+        process: HypothesisProcessState,
+    ) -> WorkExecutionState:
+        stable_inputs = (
+            hypothesis_ref,
+            proposal_ref,
+            self.config.verification_policy_ref,
+            self.config.verification_playbook_ref,
+        )
+        with self.records.database.engine.connect() as connection:
+            candidates = tuple(
+                work
+                for payload in connection.execute(
+                    select(models.work_states.c.payload).where(
+                        models.work_states.c.analysis_id
+                        == str(process.meta.analysis_id)
+                    )
+                ).scalars()
+                if (
+                    (work := WorkExecutionState.model_validate_json(payload)).work_type
+                    == WorkType.VERIFICATION
+                    and work.subject_id == process.meta.hypothesis_id
+                    and work.work_generation == process.verification_generation
+                    and work.input_refs[:4] == stable_inputs
+                    and work.status == WorkStatus.SUCCEEDED
+                )
+            )
+            if len(candidates) != 1:
+                raise ValueError("CHAINING_CHILD_VERIFICATION_MISMATCH")
+            work = candidates[0]
+            work_ref = reference(work)
+            if not isinstance(work_ref, StoredDataRef):
+                raise ValueError("CHAINING_CHILD_VERIFICATION_MISMATCH")
+            current(self.records, connection, work_ref)
+            if (
+                self._registration_scope(connection, work)
+                != self.config.budget_binding_ref
+                or len(work.output_refs) != 1
+                or process.verification_result_ref != work.output_refs[0]
+            ):
+                raise ValueError("CHAINING_CHILD_VERIFICATION_MISMATCH")
+            result = self.records.resolve(connection, work.output_refs[0])
+            if not isinstance(result, VerificationResult):
+                raise ValueError("CHAINING_CHILD_VERIFICATION_MISMATCH")
+            require_committed(
+                self.records, connection, result, WorkType.VERIFICATION
+            )
+            return work
+
+    @staticmethod
+    def _process_tracks_verification(
+        process: HypothesisProcessState, work: WorkExecutionState
+    ) -> bool:
+        if process.status == "TERMINAL":
+            return (
+                work.status == WorkStatus.SUCCEEDED
+                and process.verification_work_ref is None
+                and process.verification_result_ref is not None
+                and work.output_refs == (process.verification_result_ref,)
+            )
+        if process.status == "VERIFYING":
+            return (
+                work.status
+                in {WorkStatus.READY, WorkStatus.RUNNING, WorkStatus.BLOCKED}
+                and process.verification_work_ref == reference(work)
+            )
+        if process.status in {"FAILED", "CANCELLED"}:
+            return (
+                work.status.value == process.status
+                and process.verification_work_ref == reference(work)
+            )
+        return False
 
     def _committed_producer(
         self, connection: Connection, source_ref: StoredDataRef
@@ -839,8 +954,20 @@ class SQLiteChainingChildRegistration:
             or work.input_refs != (source_ref,)
             or work.input_hash != content_hash(work.input_refs)
             or work.dedupe_key != registration_key
-            or work.active_attempt_id is not None
-            or work.output_refs
+            or work.status
+            not in {WorkStatus.READY, WorkStatus.RUNNING, WorkStatus.SUCCEEDED}
+            or (
+                work.status == WorkStatus.READY
+                and (work.active_attempt_id is not None or work.output_refs)
+            )
+            or (
+                work.status == WorkStatus.RUNNING
+                and (work.active_attempt_id is None or work.output_refs)
+            )
+            or (
+                work.status == WorkStatus.SUCCEEDED
+                and work.active_attempt_id is not None
+            )
         ):
             raise ValueError("CHAINING_CHILD_REPLAY_MISMATCH")
 
@@ -853,6 +980,9 @@ class SQLiteChainingChildRegistration:
         result_kind: str | None = None,
         candidate_result_ref: StoredDataRef | None = None,
     ) -> ActionRequest:
+        requester_role = self.records.evidence.identity_role(requester_ref)
+        if requester_role is None:
+            raise ValueError("AUTHORITY_DENIED: Chaining child registrar required")
         return ActionRequest.model_validate_json(
             canonical_bytes(
                 dict(
@@ -864,7 +994,7 @@ class SQLiteChainingChildRegistration:
                     attempt_id=work.active_attempt_id,
                 ),
                 action_id=self.works.ids.new(ActionId),
-                requested_by=RequesterRole.ORCHESTRATION,
+                requested_by=requester_role,
                 requester_identity_ref=requester_ref,
                 action_type=action_type,
                 work_ref=(

@@ -310,6 +310,37 @@ class ChainingWorkflowOutcome:
     child_works: tuple[WorkExecutionState, ...]
 
 
+def _validate_child_handoff(
+    child: WorkExecutionState,
+    source_ref: StoredDataRef,
+    proposal_id: ProposalId,
+) -> None:
+    ready = (
+        child.status == WorkStatus.READY
+        and child.active_attempt_id is None
+        and not child.output_refs
+    )
+    replayed_running = (
+        child.status == WorkStatus.RUNNING
+        and isinstance(child.active_attempt_id, AttemptId)
+        and not child.output_refs
+    )
+    replayed_succeeded = (
+        child.status == WorkStatus.SUCCEEDED
+        and child.active_attempt_id is None
+        and len(child.output_refs) == 1
+        and child.output_refs[0].data_kind == "hypothesis_proposal"
+    )
+    if (
+        child.work_type != "HYPOTHESIS_PROPOSAL"
+        or child.subject_type != "PROPOSAL"
+        or str(child.subject_id) != str(proposal_id)
+        or getattr(child, "input_refs", ()) != (source_ref,)
+        or not (ready or replayed_running or replayed_succeeded)
+    ):
+        raise ValueError("CHAINING_CHILD_NOT_READY")
+
+
 class ChainingWorkflowService:
     """Run one claimed batch and hand off only atomically published children.
 
@@ -422,13 +453,7 @@ class ChainingWorkflowService:
         for proposal, child in zip(
             result.chained_hypothesis_proposals, children, strict=True
         ):
-            if (
-                child.status != WorkStatus.READY
-                or child.active_attempt_id is not None
-                or child.output_refs
-                or str(child.subject_id) != str(proposal.proposal_id)
-            ):
-                raise ValueError("CHAINING_CHILD_NOT_READY")
+            _validate_child_handoff(child, result_ref, proposal.proposal_id)
         return ChainingWorkflowOutcome(result, completed, children)
 
     def _owned_comparisons(

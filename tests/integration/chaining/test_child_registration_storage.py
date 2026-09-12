@@ -1,11 +1,16 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
+from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, insert, select
+from sqlalchemy import func, insert, select, update
 
+from sastsimi.chaining.service import _validate_child_handoff
+from sastsimi.chaining.work_handlers import HypothesisProposalHandler
 from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.budget import BudgetProfileBinding
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
@@ -17,6 +22,7 @@ from sastsimi.contracts.chaining import (
 from sastsimi.contracts.hypothesis import HypothesisProposal
 from sastsimi.contracts.ids import (
     AttemptId,
+    ErrorId,
     ProposalId,
     TransitionCommitId,
     WorkId,
@@ -25,18 +31,24 @@ from sastsimi.contracts.records import RecordMetadata
 from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.contracts.work import (
+    StateTransition,
     TransitionCommit,
     WorkAttempt,
     WorkExecutionState,
 )
-from sastsimi.ports.chaining import PinnedChainingUniverse
-from sastsimi.ports.dto import Record, WorkContext
+from sastsimi.ports.chaining import (
+    ChainingResultReconciliationRequest,
+    PinnedChainingUniverse,
+)
+from sastsimi.ports.dto import Record, TransitionCommitRequest, WorkContext
+from sastsimi.runtime.chaining_reconciliation import ChainingReconciliationService
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.storage import models
 from sastsimi.storage.chaining_child_registration import (
     ChainingChildRegistrationConfig,
     SQLiteChainingChildRegistration,
 )
+from sastsimi.storage.chaining_registration import ChainingCommittedSourceStore
 from sastsimi.storage.codec import encode
 from sastsimi.storage.transition_service import TransitionService
 from sastsimi.storage.verification_registration import (
@@ -94,6 +106,50 @@ def _current_attempt(works: WorkService, work: WorkExecutionState) -> WorkAttemp
             )
         ).scalar_one()
     return WorkAttempt.model_validate_json(payload)
+
+
+def _fail_verification(
+    runner: WorkflowRunner,
+    work: WorkExecutionState,
+    owner: StoredDataRef,
+) -> WorkExecutionState:
+    assert work.active_attempt_id is not None
+    action = runner.action(work, owner, "VERIFICATION", "CHANGE_WORK_STATE")
+    decision_ref = runner.authorize(work, action)
+    error_ids = (ErrorId("verification-failed"),)
+    transition = runner.transition(
+        work, decision_ref, "FAILED", work.active_attempt_id
+    ).model_copy(update={"cause": "FAILED", "error_ids": error_ids})
+    transition_ref = runner.runtime.unit_of_work.records.stage_record(transition)
+    commit = TransitionCommit.model_validate_json(
+        canonical_bytes(
+            dict(
+                meta=runner.metadata(
+                    work.meta,
+                    "transition_commit",
+                    attempt_id=work.active_attempt_id,
+                ),
+                transition_commit_id=runner.ids.new(TransitionCommitId),
+                work_id=work.work_id,
+                transition_ref=transition_ref,
+                expected_state_version=work.state_version,
+                target_state_version=work.state_version + 1,
+                attempt_id=work.active_attempt_id,
+                target_status="FAILED",
+                output_refs=(),
+                gap_ids=(),
+                error_ids=error_ids,
+                state="PREPARED",
+                prepared_at=runner.clock.now(),
+                committed_at=None,
+                abort_reason=None,
+            )
+        )
+    )
+    runner.runtime.transitions.commit(
+        TransitionCommitRequest(transition, commit, ())
+    )
+    return runner.runtime.work.get(str(work.work_id))
 
 
 def _publish_current(harness: Harness, record: Record) -> StoredDataRef:
@@ -492,6 +548,19 @@ def test_child_registration_normal_and_lost_response_replay_are_idempotent() -> 
     assert _count(works, models.budget_ledger_entries) == initial_ledger + 1
 
     running = runner.activate(ready, scope, requester)
+    _validate_child_handoff(running, source_ref, nested.proposal_id)
+    replay_index = harness.ids.index
+    running_ledger = _count(works, models.budget_ledger_entries)
+    assert (
+        service.enqueue_ready(
+            source_result_ref=source_ref,
+            proposal_id=nested.proposal_id,
+            requester_identity_ref=requester,
+        )
+        == running
+    )
+    assert harness.ids.index == replay_index
+    assert _count(works, models.budget_ledger_entries) == running_ledger
     context = WorkContext(running, _current_attempt(works, running))
     phase_two_ledger = _count(works, models.budget_ledger_entries)
     phase_two_work = _count(works, models.work_states)
@@ -525,6 +594,48 @@ def test_child_registration_normal_and_lost_response_replay_are_idempotent() -> 
     assert _count(works, models.budget_ledger_entries) == replay_ledger
     assert _count(works, models.work_states) == phase_two_work + 1
 
+    completed_child = works.get(str(ready.work_id))
+    _validate_child_handoff(completed_child, source_ref, nested.proposal_id)
+    replay_index = harness.ids.index
+    assert (
+        service.enqueue_ready(
+            source_result_ref=source_ref,
+            proposal_id=nested.proposal_id,
+            requester_identity_ref=requester,
+        )
+        == completed_child
+    )
+    assert harness.ids.index == replay_index
+
+    owner = service.config.verification_owner_identity_ref
+    verification_running = runner.activate(
+        registered.verification_work,
+        scope,
+        owner,
+        role="VERIFICATION",
+    )
+    replay_index = harness.ids.index
+    advanced = service.register_claimed(
+        context=context,
+        source_result_ref=source_ref,
+        proposal_id=nested.proposal_id,
+        requester_identity_ref=requester,
+    )
+    assert advanced.verification_work == verification_running
+    assert harness.ids.index == replay_index
+
+    verification_failed = _fail_verification(runner, verification_running, owner)
+    replay_index = harness.ids.index
+    terminal = service.register_claimed(
+        context=context,
+        source_result_ref=source_ref,
+        proposal_id=nested.proposal_id,
+        requester_identity_ref=requester,
+    )
+    assert terminal.verification_work == verification_failed
+    assert terminal.verification_work.status == "FAILED"
+    assert harness.ids.index == replay_index
+
 
 def test_child_handoff_rejects_tampered_cross_scope_and_unknown_source_child() -> None:
     _harness, _runner, service, works, _scope, requester, source = _prepared(
@@ -552,4 +663,204 @@ def test_child_handoff_rejects_tampered_cross_scope_and_unknown_source_child() -
             requester_identity_ref=requester,
         )
     assert _count(works, models.budget_ledger_entries) == before_ledger
+    assert _count(works, models.work_states) == before_work
+
+
+def test_child_handoff_accepts_exact_committed_noncurrent_source() -> None:
+    harness, runner, service, _works, _scope, requester, source = _prepared(
+        "noncurrent"
+    )
+    source_ref = reference(source)
+    assert isinstance(source_ref, StoredDataRef)
+    superseding = ChainingResult.model_validate_json(
+        canonical_bytes(
+            source.model_dump()
+            | {
+                "meta": runner.revision_metadata(
+                    source.meta, attempt_id=source.meta.attempt_id
+                )
+            }
+        )
+    )
+    harness.publish(superseding)
+    with harness.database.write() as connection:
+        connection.execute(
+            update(models.current_records)
+            .where(
+                models.current_records.c.logical_record_id
+                == str(source.meta.logical_record_id)
+            )
+            .values(
+                record_id=str(superseding.meta.record_id),
+                state_version=superseding.meta.revision_number,
+            )
+        )
+
+    ready = service.enqueue_ready(
+        source_result_ref=source_ref,
+        proposal_id=source.chained_hypothesis_proposals[0].proposal_id,
+        requester_identity_ref=requester,
+    )
+
+    assert ready.status == "READY"
+    assert ready.input_refs == (source_ref,)
+
+
+def test_child_handoff_concurrent_registration_returns_one_ready_work() -> None:
+    _harness, _runner, service, works, _scope, requester, source = _prepared(
+        "concurrent"
+    )
+    source_ref = reference(source)
+    assert isinstance(source_ref, StoredDataRef)
+    proposal_id = source.chained_hypothesis_proposals[0].proposal_id
+    before_ledger = _count(works, models.budget_ledger_entries)
+    before_work = _count(works, models.work_states)
+    gate = Barrier(3)
+
+    def enqueue() -> WorkExecutionState:
+        gate.wait()
+        return service.enqueue_ready(
+            source_result_ref=source_ref,
+            proposal_id=proposal_id,
+            requester_identity_ref=requester,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        calls = (pool.submit(enqueue), pool.submit(enqueue))
+        gate.wait()
+        results = tuple(call.result() for call in calls)
+
+    assert results[0] == results[1]
+    assert results[0].status == "READY"
+    assert _count(works, models.budget_ledger_entries) == before_ledger + 1
+    assert _count(works, models.work_states) == before_work + 1
+
+
+def test_verification_readiness_race_returns_the_progressed_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _harness, runner, service, works, scope, requester, source = _prepared(
+        "verification-ready-race"
+    )
+    source_ref = reference(source)
+    assert isinstance(source_ref, StoredDataRef)
+    proposal_id = source.chained_hypothesis_proposals[0].proposal_id
+    child = service.enqueue_ready(
+        source_result_ref=source_ref,
+        proposal_id=proposal_id,
+        requester_identity_ref=requester,
+    )
+    running_child = runner.activate(child, scope, requester)
+    context = WorkContext(running_child, _current_attempt(works, running_child))
+    original_make_ready = works.make_ready
+    owner = service.config.verification_owner_identity_ref
+
+    def race_to_running(transition: StateTransition) -> WorkExecutionState:
+        ready = original_make_ready(transition)
+        runner.activate(ready, scope, owner, role="VERIFICATION")
+        raise ValueError("simulated lost readiness response")
+
+    monkeypatch.setattr(works, "make_ready", race_to_running)
+
+    registered = service.register_claimed(
+        context=context,
+        source_result_ref=source_ref,
+        proposal_id=proposal_id,
+        requester_identity_ref=requester,
+    )
+
+    assert registered.verification_work.status == "RUNNING"
+    assert works.get(str(registered.verification_work.work_id)) == (
+        registered.verification_work
+    )
+
+
+@pytest.mark.asyncio
+async def test_proposal_handler_replay_accepts_progressed_verification_work() -> None:
+    harness, runner, service, works, scope, requester, source = _prepared(
+        "handler-replay"
+    )
+    source_ref = reference(source)
+    assert isinstance(source_ref, StoredDataRef)
+    proposal_id = source.chained_hypothesis_proposals[0].proposal_id
+    ready = service.enqueue_ready(
+        source_result_ref=source_ref,
+        proposal_id=proposal_id,
+        requester_identity_ref=requester,
+    )
+    running = runner.activate(ready, scope, requester)
+    context = WorkContext(running, _current_attempt(works, running))
+    handler = HypothesisProposalHandler(service, requester)
+    initial = await handler.execute(context)
+    registered = service.register_claimed(
+        context=context,
+        source_result_ref=source_ref,
+        proposal_id=proposal_id,
+        requester_identity_ref=requester,
+    )
+    owner = service.config.verification_owner_identity_ref
+    verification_running = runner.activate(
+        registered.verification_work,
+        scope,
+        owner,
+        role="VERIFICATION",
+    )
+    replay_index = harness.ids.index
+
+    replay = await handler.execute(context)
+
+    assert replay.output_refs[:2] == initial.output_refs[:2]
+    assert service.register_claimed(
+        context=context,
+        source_result_ref=source_ref,
+        proposal_id=proposal_id,
+        requester_identity_ref=requester,
+    ).verification_work == verification_running
+    assert harness.ids.index == replay_index
+
+
+def test_recovery_reconciliation_enqueues_the_concrete_child_once() -> None:
+    harness, _runner, service, works, scope, requester, source = _prepared(
+        "recovery"
+    )
+    source_ref = reference(source)
+    assert isinstance(source_ref, StoredDataRef)
+    harness.evidence.identities[requester] = RequesterRole.RECOVERY
+    reconciliation = ChainingReconciliationService(
+        sources=ChainingCommittedSourceStore(works.records),
+        cohorts=cast(Any, SimpleNamespace()),
+        children=service,
+        records=works.records,
+        budget_scope_ref=scope,
+        requester_identity_ref=requester,
+    )
+
+    registered = reconciliation.reconcile_chaining_result(
+        ChainingResultReconciliationRequest(source_ref)
+    )
+    replay = reconciliation.reconcile_chaining_result(
+        ChainingResultReconciliationRequest(source_ref)
+    )
+
+    assert len(registered) == 1
+    assert registered[0].status == "READY"
+    assert replay == registered
+
+
+def test_child_handoff_rejects_non_orchestration_non_recovery_role() -> None:
+    harness, _runner, service, works, _scope, requester, source = _prepared(
+        "wrong-role"
+    )
+    source_ref = reference(source)
+    assert isinstance(source_ref, StoredDataRef)
+    harness.evidence.identities[requester] = RequesterRole.CHAINING
+    before_work = _count(works, models.work_states)
+
+    with pytest.raises(ValueError, match="AUTHORITY_DENIED"):
+        service.enqueue_ready(
+            source_result_ref=source_ref,
+            proposal_id=source.chained_hypothesis_proposals[0].proposal_id,
+            requester_identity_ref=requester,
+        )
+
     assert _count(works, models.work_states) == before_work

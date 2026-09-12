@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from inspect import signature
 from pathlib import Path
+from typing import cast
+from uuid import uuid4
 
 import pytest
 
@@ -15,22 +17,20 @@ from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.ids import (
     CommitId,
     OpaqueId,
-    ProposalId,
     RecordId,
     StoredDataId,
     WorkspaceId,
 )
-from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef
-from sastsimi.contracts.work import WorkExecutionState
-from sastsimi.ports.chaining import (
-    ChainingAgentInput,
-    ChainingProposalRegistration,
-    PinnedChainingUniverse,
-)
+from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.ports.chaining import ChainingAgentInput, PinnedChainingUniverse
 from sastsimi.ports.dto import WorkContext
 from sastsimi.reporting.primitive_admission import PrimitiveAdmissionRuntime
 from sastsimi.runtime.chaining_reconciliation import ChainingReconciliationService
+from sastsimi.runtime.services import RuntimeServices
 from sastsimi.runtime.workflow_runner import WorkflowRunner
+from sastsimi.storage.chaining_child_registration import (
+    SQLiteChainingChildRegistration,
+)
 from sastsimi.storage.chaining_registration import (
     ChainingCohortStore,
     ChainingCommittedSourceStore,
@@ -79,31 +79,6 @@ class _Lineage:
         return ()
 
 
-class _ChildHandoff:
-    def enqueue_ready(
-        self,
-        *,
-        source_result_ref: StoredDataRef,
-        proposal_id: ProposalId,
-        requester_identity_ref: BudgetScopeRef,
-    ) -> WorkExecutionState:
-        del source_result_ref, proposal_id, requester_identity_ref
-        raise AssertionError("composition must not execute child handoff")
-
-
-class _ProposalRegistration:
-    def register_claimed(
-        self,
-        *,
-        context: WorkContext,
-        source_result_ref: StoredDataRef,
-        proposal_id: ProposalId,
-        requester_identity_ref: BudgetScopeRef,
-    ) -> ChainingProposalRegistration:
-        del context, source_result_ref, proposal_id, requester_identity_ref
-        raise AssertionError("composition must not register a proposal")
-
-
 def _resolve_call(
     context: WorkContext,
     content: ChainingAgentInput,
@@ -114,15 +89,21 @@ def _resolve_call(
 
 @dataclass(frozen=True)
 class _Composition:
-    runtime: object
+    runtime: RuntimeServices
     runner: WorkflowRunner
     clock: _Clock
     ids: _Ids
     lineage: _Lineage
-    children: _ChildHandoff
-    proposals: _ProposalRegistration
     scope: StoredDataRef
+    policy_ref: StoredDataRef
+    playbook_ref: StoredDataRef
     identities: dict[RequesterRole, StoredDataRef]
+
+
+def _run_dir(name: str) -> Path:
+    value = Path("build") / f"t13-composition-{name}-{uuid4()}"
+    value.mkdir(parents=True)
+    return value
 
 
 def _composition(tmp_path: Path, *, bind_lineage: bool = True) -> _Composition:
@@ -145,6 +126,7 @@ def _composition(tmp_path: Path, *, bind_lineage: bool = True) -> _Composition:
             RequesterRole.CHAINING,
             RequesterRole.PRIMITIVE_ADMISSION_RUNTIME,
             RequesterRole.RECOVERY,
+            RequesterRole.VERIFICATION,
         )
     }
     return _Composition(
@@ -153,20 +135,16 @@ def _composition(tmp_path: Path, *, bind_lineage: bool = True) -> _Composition:
         clock=clock,
         ids=ids,
         lineage=lineage,
-        children=_ChildHandoff(),
-        proposals=_ProposalRegistration(),
         scope=_ref("budget_profile_binding", "analysis"),
+        policy_ref=_ref("playbook_policy", "analysis"),
+        playbook_ref=_ref("verification_playbook", "analysis"),
         identities=identities,
     )
 
 
 def _build(composition: _Composition) -> T13Services:
-    from typing import cast
-
-    from sastsimi.runtime.services import RuntimeServices
-
     return build_t13_services(
-        runtime=cast(RuntimeServices, composition.runtime),
+        runtime=composition.runtime,
         runner=composition.runner,
         clock=composition.clock,
         ids=composition.ids,
@@ -174,13 +152,13 @@ def _build(composition: _Composition) -> T13Services:
         role_identity_refs=composition.identities,
         chaining_call_resolver=_resolve_call,
         chaining_lineage=composition.lineage,
-        child_handoff=composition.children,
-        proposal_registration=composition.proposals,
+        verification_policy_ref=composition.policy_ref,
+        verification_playbook_ref=composition.playbook_ref,
     )
 
 
-def test_compose_t13_services_wires_exact_trusted_dependencies(tmp_path: Path) -> None:
-    composition = _composition(tmp_path)
+def test_compose_t13_services_builds_one_concrete_child_registration() -> None:
+    composition = _composition(_run_dir("concrete"))
 
     services = _build(composition)
 
@@ -208,14 +186,24 @@ def test_compose_t13_services_wires_exact_trusted_dependencies(tmp_path: Path) -
         services.chaining.service._publisher, RuntimeChainingResultPublisher
     )
     assert services.chaining.service._publisher._identity == chaining_identity
-    assert services.chaining.service._children is composition.children
+    child_registration = services.chaining.service._children
+    assert isinstance(child_registration, SQLiteChainingChildRegistration)
     assert services.chaining.service._identity == chaining_identity
     assert services.chaining.resolve_call is _resolve_call
-    assert services.hypothesis_proposal.registration is composition.proposals
+    assert services.hypothesis_proposal.registration is child_registration
     assert services.hypothesis_proposal.requester_identity_ref == orchestration_identity
     assert isinstance(services.reconciliation, ChainingReconciliationService)
-    assert services.reconciliation._children is composition.children
+    assert services.reconciliation._children is child_registration
     assert services.reconciliation._identity == recovery_identity
+    assert child_registration.config.budget_binding_ref == composition.scope
+    assert (
+        child_registration.config.verification_owner_identity_ref
+        == composition.identities[RequesterRole.VERIFICATION]
+    )
+    assert child_registration.config.verification_policy_ref == composition.policy_ref
+    assert (
+        child_registration.config.verification_playbook_ref == composition.playbook_ref
+    )
     assert {"provider", "model"}.isdisjoint(signature(build_t13_services).parameters)
 
 
@@ -226,23 +214,43 @@ def test_compose_t13_services_wires_exact_trusted_dependencies(tmp_path: Path) -
         RequesterRole.CHAINING,
         RequesterRole.PRIMITIVE_ADMISSION_RUNTIME,
         RequesterRole.RECOVERY,
+        RequesterRole.VERIFICATION,
     ),
 )
 def test_compose_t13_services_rejects_missing_identity(
-    tmp_path: Path,
     missing: RequesterRole,
 ) -> None:
-    composition = _composition(tmp_path)
+    composition = _composition(_run_dir(f"missing-{missing.value.lower()}"))
     composition.identities.pop(missing)
 
     with pytest.raises(ValueError, match=rf"^{missing.value}_IDENTITY_REQUIRED$"):
         _build(composition)
 
 
-def test_compose_t13_services_rejects_unvalidated_lineage_seam(
-    tmp_path: Path,
-) -> None:
-    composition = _composition(tmp_path, bind_lineage=False)
+def test_compose_t13_services_rejects_missing_child_config() -> None:
+    composition = _composition(_run_dir("missing-config"))
+    object.__setattr__(composition, "policy_ref", cast(StoredDataRef, None))
+
+    with pytest.raises(ValueError, match="^T13_CHILD_CONFIG_REQUIRED$"):
+        _build(composition)
+
+
+def test_compose_t13_services_rejects_cross_scope_child_config() -> None:
+    composition = _composition(_run_dir("wrong-scope"))
+    object.__setattr__(
+        composition,
+        "playbook_ref",
+        composition.playbook_ref.model_copy(
+            update={"workspace_id": WorkspaceId("other-workspace")}
+        ),
+    )
+
+    with pytest.raises(ValueError, match="^T13_CHILD_CONFIG_SCOPE_MISMATCH$"):
+        _build(composition)
+
+
+def test_compose_t13_services_rejects_unvalidated_lineage_seam() -> None:
+    composition = _composition(_run_dir("lineage"), bind_lineage=False)
 
     with pytest.raises(ValueError, match="^CHAINING_LINEAGE_RUNTIME_MISMATCH$"):
         _build(composition)

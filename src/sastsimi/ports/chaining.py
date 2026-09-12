@@ -21,7 +21,12 @@ from sastsimi.contracts.refs import (
     reference,
     require_record_ref,
 )
-from sastsimi.contracts.work import SubjectType, WorkExecutionState, WorkType
+from sastsimi.contracts.work import (
+    SubjectType,
+    WorkExecutionState,
+    WorkStatus,
+    WorkType,
+)
 
 from .dto import WorkContext
 from .llm_invocation import PersistedLLMInvocation
@@ -600,7 +605,7 @@ class ChainingChildHandoffPort(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ChainingProposalRegistration:
-    """Exact projected child records and its not-yet-claimed Verification work."""
+    """Exact child projection and the current registered Verification work."""
 
     source_result_ref: StoredDataRef
     proposal: HypothesisProposal
@@ -624,15 +629,22 @@ class ChainingProposalRegistration:
             or self.proposal.origin != "CHAINING"
             or self.verification_work.work_type != WorkType.VERIFICATION
             or self.verification_work.subject_type != SubjectType.HYPOTHESIS
-            or self.verification_work.status != "READY"
-            or self.verification_work.active_attempt_id is not None
+            or self.verification_work.status
+            not in {
+                WorkStatus.READY,
+                WorkStatus.RUNNING,
+                WorkStatus.BLOCKED,
+                WorkStatus.SUCCEEDED,
+                WorkStatus.FAILED,
+                WorkStatus.CANCELLED,
+            }
             or self.proposal_ref not in self.verification_work.input_refs
         ):
             raise ValueError("CHAINING_CHILD_REGISTRATION_MISMATCH")
 
 
 class ChainingProposalRegistrationPort(Protocol):
-    """Commit one claimed child proposal and enqueue Verification as READY."""
+    """Commit a child and return Verification READY or its replayed successor."""
 
     def register_claimed(
         self,

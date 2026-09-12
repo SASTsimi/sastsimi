@@ -315,6 +315,7 @@ class _Children:
             subject_id=proposal_id,
             status="READY",
             active_attempt_id=None,
+            input_refs=(kwargs["source_result_ref"],),
             output_refs=(),
         )
 

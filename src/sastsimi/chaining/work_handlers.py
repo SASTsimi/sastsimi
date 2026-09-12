@@ -122,12 +122,12 @@ class HypothesisProposalHandler:
             requester_identity_ref=self.requester_identity_ref,
         )
         verification = result.verification_work
+        # ChainingProposalRegistration already validates exact projected refs and
+        # permits only READY or a progressed current Verification successor.
         if (
             result.source_result_ref != source_refs[0]
             or result.proposal.proposal_id != proposal_id
-            or verification.status != WorkStatus.READY
-            or verification.active_attempt_id is not None
-            or verification.output_refs
+            or verification.status == WorkStatus.PENDING
         ):
             raise ValueError("CHAINING_CHILD_REGISTRATION_MISMATCH")
         return WorkHandlerResult(
