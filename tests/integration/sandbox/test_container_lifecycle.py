@@ -123,6 +123,7 @@ def _repository_profile(files: Mapping[str, bytes]) -> RepositoryProfile:
             "git_path": path,
             "git_mode": "100644",
             "blob_id": _git_blob(raw),
+            "content_sha256": hashlib.sha256(raw).hexdigest(),
             "size_bytes": len(raw),
         }
         for path, raw in sorted(files.items())
@@ -176,11 +177,15 @@ def _repository_profile(files: Mapping[str, bytes]) -> RepositoryProfile:
                 analysis_id="analysis-1",
                 record_id="code-workspace",
             ),
+            "action_decision_ref": _ref("action_decision", "profile-decision"),
             "manifest_hash": content_hash(tuple(tracked)),
             "tracked_files": tracked,
             "languages": tuple(languages),
             "frameworks": (),
             "config_files": tuple(configs),
+            "execution_hints": (),
+            "gaps": (),
+            "errors": (),
             "status": "READY",
             "confirmation_reasons": (),
         }
@@ -608,9 +613,7 @@ async def test_persisted_recipe_can_rebuild_after_store_restart(tmp_path: Path) 
         (tmp_path / name).write_bytes(raw)
     artifacts = _MemoryArtifacts()
     request, requirements, _ = _dynamic_records()
-    source = await _setup(
-        FakeDockerAdapter(), artifacts=artifacts
-    ).preflight(
+    source = await _setup(FakeDockerAdapter(), artifacts=artifacts).preflight(
         workspace_root=tmp_path,
         repository_profile=_repository_profile(files),
         request=request,
@@ -654,9 +657,7 @@ async def test_repository_profile_generates_javascript_dependency_install(
         (tmp_path / name).write_bytes(raw)
     request, requirements, _ = _dynamic_records()
 
-    source = await _setup(
-        FakeDockerAdapter(), artifacts=_MemoryArtifacts()
-    ).preflight(
+    source = await _setup(FakeDockerAdapter(), artifacts=_MemoryArtifacts()).preflight(
         workspace_root=tmp_path,
         repository_profile=_repository_profile(files),
         request=request,
@@ -710,9 +711,7 @@ async def test_repository_profile_blocks_unignored_package_credentials(
     request, requirements, _ = _dynamic_records()
 
     with pytest.raises(ValueError, match="REPOSITORY_SECRET_FILE_DENIED"):
-        await _setup(
-            FakeDockerAdapter(), artifacts=_MemoryArtifacts()
-        ).preflight(
+        await _setup(FakeDockerAdapter(), artifacts=_MemoryArtifacts()).preflight(
             workspace_root=tmp_path,
             repository_profile=_repository_profile(files),
             request=request,
@@ -735,9 +734,7 @@ async def test_repository_profile_honors_simple_dockerignore_before_archiving(
         (tmp_path / name).write_bytes(raw)
     request, requirements, _ = _dynamic_records()
 
-    source = await _setup(
-        FakeDockerAdapter(), artifacts=_MemoryArtifacts()
-    ).preflight(
+    source = await _setup(FakeDockerAdapter(), artifacts=_MemoryArtifacts()).preflight(
         workspace_root=tmp_path,
         repository_profile=_repository_profile(files),
         request=request,
@@ -764,9 +761,7 @@ async def test_repository_profile_rejects_unsupported_dockerignore_negation(
     request, requirements, _ = _dynamic_records()
 
     with pytest.raises(ValueError, match="DOCKERIGNORE_UNSUPPORTED"):
-        await _setup(
-            FakeDockerAdapter(), artifacts=_MemoryArtifacts()
-        ).preflight(
+        await _setup(FakeDockerAdapter(), artifacts=_MemoryArtifacts()).preflight(
             workspace_root=tmp_path,
             repository_profile=_repository_profile(files),
             request=request,
