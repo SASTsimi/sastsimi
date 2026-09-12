@@ -270,10 +270,9 @@ class EnvironmentRecipe(DynamicRecord):
                 self.source_manifest.dockerfile_ref,
                 self.source_manifest.build_context_ref,
             )
-            if (
-                repository_refs != (self.source_manifest.repository_profile_ref,)
-                or set(manifest_refs) != set(self.source_refs)
-            ):
+            if repository_refs != (self.source_manifest.repository_profile_ref,) or set(
+                manifest_refs
+            ) != set(self.source_refs):
                 raise ValueError("RECIPE_SOURCE_MANIFEST_MISMATCH")
         return self
 

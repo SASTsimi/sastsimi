@@ -62,8 +62,7 @@ class OwnedResourceRegistry:
             not container_name
             or container_name in self._intents
             or any(
-                item.resource_id == container_name
-                for item in self._resources.values()
+                item.resource_id == container_name for item in self._resources.values()
             )
         ):
             raise ValueError("DUPLICATE_SANDBOX_RESOURCE")
@@ -281,9 +280,13 @@ class OwnedResourceRegistry:
                     raise TypeError
                 name = item["container_name"]
                 labels = item["labels"]
-                if not isinstance(name, str) or not isinstance(labels, dict) or any(
-                    not isinstance(key, str) or not isinstance(label, str)
-                    for key, label in labels.items()
+                if (
+                    not isinstance(name, str)
+                    or not isinstance(labels, dict)
+                    or any(
+                        not isinstance(key, str) or not isinstance(label, str)
+                        for key, label in labels.items()
+                    )
                 ):
                     raise TypeError
                 self._intents[name] = ContainerOwnershipIntent(name, labels)
