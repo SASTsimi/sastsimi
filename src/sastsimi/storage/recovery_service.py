@@ -34,6 +34,7 @@ from sastsimi.storage.codec import reference
 from sastsimi.storage.integrity import verify
 
 from .lease_recovery import uncertain
+from .run_control import cancel_latched
 from .transition_service import TransitionService
 
 
@@ -87,9 +88,29 @@ class RecoveryService:
                     <= service.clock.now()
                 )
             ]
+        blocked = 0
         for work in expired:
-            self.block_uncertain(work)
-        return len(expired)
+            if self._cancel_latched(work):
+                # The cancellation owner must close only exact persisted targets.
+                # A recovery transition to BLOCKED would race that path and is
+                # rejected by the same durable latch in TransitionService.
+                continue
+            try:
+                self.block_uncertain(work)
+            except ValueError as error:
+                # Cancellation may win after the read above.  Its durable latch
+                # still prevents scheduling; do not turn that valid race into a
+                # global recovery failure.
+                if str(error) == "RUN_CANCELLED" and self._cancel_latched(work):
+                    continue
+                raise
+            blocked += 1
+        return blocked
+
+    def _cancel_latched(self, work: WorkExecutionState) -> bool:
+        database = self.transitions.works.records.database
+        with database.engine.connect() as connection:
+            return cancel_latched(connection, str(work.meta.analysis_id))
 
     def block_uncertain(self, work: WorkExecutionState) -> None:
         service = self.transitions.works

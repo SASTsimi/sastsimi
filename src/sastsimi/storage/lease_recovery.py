@@ -14,12 +14,18 @@ from .records import next_meta
 
 
 def uncertain(connection: Connection, work: WorkExecutionState) -> bool:
+    """Return whether any attempt of this work has an unresolved side effect.
+
+    An outcome that arrives after its attempt was replaced is still uncertain;
+    treating it as unrelated would allow the replacement attempt to resend the
+    same operation.  Recovery therefore isolates unresolved dispatches by work,
+    while publication continues to require the exact active attempt elsewhere.
+    """
     table = models.external_dispatches
     return (
         connection.execute(
             select(table.c.action_id).where(
                 table.c.work_id == str(work.work_id),
-                table.c.attempt_id == str(work.active_attempt_id),
                 table.c.dispatched_at.is_not(None),
                 table.c.returned_at.is_(None),
                 table.c.reconciled_at.is_(None),
