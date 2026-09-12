@@ -487,6 +487,71 @@ def test_run_initialization_pins_current_budgets_before_each_enqueue_phase() -> 
     ]
 
 
+def test_run_initialization_requires_policy_and_git_capability_inputs() -> None:
+    events: list[str] = []
+    profiles = _Profiles(events)
+    states = _StateFactory()
+    budgets = _BudgetRegistry(events)
+    work_query = _WorkQuery()
+
+    with pytest.raises(ValueError, match="WORKSPACE_DEPENDENCY_REFS_REQUIRED"):
+        RunInitializationService(
+            profiles=profiles,
+            state_factory=states,
+            budgets=budgets,
+            ready_work=_ReadyWork(events, work_query),
+            work_query=work_query,
+            workspace_identity_ref=_run_ref("identity", "workspace-identity"),
+            workspace_dependency_refs=(),
+            seeder=_Seeder(events),
+        )
+
+    with pytest.raises(ValueError, match="WORKSPACE_DEPENDENCY_REFS_INVALID"):
+        RunInitializationService(
+            profiles=profiles,
+            state_factory=states,
+            budgets=budgets,
+            ready_work=_ReadyWork(events, work_query),
+            work_query=work_query,
+            workspace_identity_ref=_run_ref("identity", "workspace-identity"),
+            workspace_dependency_refs=(_workspace_dependencies()[0],),
+            seeder=_Seeder(events),
+        )
+
+
+def test_restore_rejects_substituted_analysis_input_revision() -> None:
+    events: list[str] = []
+    profiles = _Profiles(events)
+    states = _StateFactory()
+    budgets = _BudgetRegistry(events)
+    work_query = _WorkQuery()
+    initializer = RunInitializationService(
+        profiles=profiles,
+        state_factory=states,
+        budgets=budgets,
+        ready_work=_ReadyWork(events, work_query),
+        work_query=work_query,
+        workspace_identity_ref=_run_ref("identity", "workspace-identity"),
+        workspace_dependency_refs=_workspace_dependencies(),
+        seeder=_Seeder(events),
+    )
+    initialized = initializer.start(
+        AnalysisStartRequest(
+            repository_ref="C:/fixture/repository",
+            requested_git_ref=COMMIT_ID,
+            program_id="program-lane-d",
+            purpose=Purpose.PRODUCTION,
+        )
+    )
+    assert budgets.run_input is not None
+    budgets.run_input = budgets.run_input.model_copy(
+        update={"requested_git_ref": "b" * 40}
+    )
+
+    with pytest.raises(ValueError, match="ANALYSIS_INPUT_REFERENCE_MISMATCH"):
+        initializer.restore(initialized.analysis_id)
+
+
 ALL_WORK_TYPES = tuple(WorkType)
 
 
