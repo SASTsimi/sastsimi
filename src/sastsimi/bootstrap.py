@@ -95,7 +95,10 @@ if TYPE_CHECKING:
     from sastsimi.runtime.workflow_runner import WorkflowRunner
     from sastsimi.static_analysis.coordinator import StaticToolCoordinator
     from sastsimi.static_analysis.normalizer import DecoderKey, RawDecoder
-    from sastsimi.verification.completion import VerificationCompletionCoordinator
+    from sastsimi.verification.completion import (
+        NonDynamicVerificationCompletionCoordinator,
+        VerificationCompletionCoordinator,
+    )
     from sastsimi.verification.context_service import (
         ContextRetrievalService,
         TrackedFilesResolver,
@@ -261,7 +264,9 @@ class T10Services:
     hypothesis: HypothesisWorkflow
     debate: DebateService
     verification: VerificationService
+    non_dynamic_completion: NonDynamicVerificationCompletionCoordinator
     verdict_router: VerdictRouter
+    primitive_handoff: PrimitiveUpdateHandoff
     revision: RevisionWorkflow
 
 
@@ -921,18 +926,35 @@ def build_t10_services(
     from sastsimi.contracts.refs import reference
     from sastsimi.contracts.verification import ConEvidenceResult, ProEvidenceResult
     from sastsimi.orchestration.hypothesis_workflow import HypothesisWorkflow
+    from sastsimi.orchestration.primitive_handoff import PrimitiveUpdateHandoff
     from sastsimi.ports.llm_invocation import PersistedLLMInvocation
     from sastsimi.prompts.builder import PromptBuilder
+    from sastsimi.verification.completion import (
+        NonDynamicVerificationCompletionCoordinator,
+    )
     from sastsimi.verification.debate_service import (
         CurrentEvidenceParallelLimit,
         DebateService,
     )
     from sastsimi.verification.revision_workflow import RevisionWorkflow
     from sastsimi.verification.service import VerificationService
-    from sastsimi.verification.verdict_router import VerdictRouter
+    from sastsimi.verification.verdict_router import VerdictRouter, current_process_from
 
     records = runtime.unit_of_work.records
     artifacts = runtime.unit_of_work.artifacts
+
+    verification_identity = role_identity_refs.get(RequesterRole.VERIFICATION)
+    if verification_identity is None:
+        raise ValueError("VERIFICATION_IDENTITY_REQUIRED")
+    orchestration_identity = role_identity_refs.get(RequesterRole.ORCHESTRATION)
+    if orchestration_identity is None:
+        raise ValueError("ORCHESTRATION_IDENTITY_REQUIRED")
+
+    def budget_scope(analysis_id: str) -> BudgetScopeRef:
+        state = runtime.budget_registry.current_state(analysis_id)
+        if state.status != "RUNNING" or state.budget_binding_ref is None:
+            raise ValueError("CURRENT_BUDGET_SCOPE_REQUIRED")
+        return state.budget_binding_ref
 
     def metadata(
         source: RecordMeta, record_type: str, attempt_id: AttemptId | None
@@ -1050,11 +1072,30 @@ def build_t10_services(
         work_resolver=resolve_work,
         evidence_session_resolver=evidence_session,
     )
+    verification = VerificationService(verification_agent)
+    primitive_handoff = PrimitiveUpdateHandoff(
+        records=records, current=runtime.queries, ready_work=runner
+    )
     return T10Services(
         hypothesis=hypothesis,
         debate=debate,
-        verification=VerificationService(verification_agent),
-        verdict_router=VerdictRouter(records),
+        verification=verification,
+        non_dynamic_completion=NonDynamicVerificationCompletionCoordinator(
+            verification=verification,
+            runner=runner,
+            records=records,
+            work_resolver=resolve_work,
+            current=runtime.queries,
+            budget_scope=budget_scope,
+            hold_handoff=primitive_handoff,
+            verification_identity_ref=verification_identity,
+            orchestration_identity_ref=orchestration_identity,
+        ),
+        verdict_router=VerdictRouter(
+            records,
+            current_process=current_process_from(runtime.queries.current_records),
+        ),
+        primitive_handoff=primitive_handoff,
         revision=RevisionWorkflow(
             registrar=runtime.verification_registration,
             records=records,
@@ -1191,7 +1232,6 @@ def build_t12_services(
         VerificationAssignment,
     )
     from sastsimi.contracts.verification import VerificationResult
-    from sastsimi.orchestration.primitive_handoff import PrimitiveUpdateHandoff
     from sastsimi.reporting.cwe_work_handler import CWELabelingHandler
     from sastsimi.reporting.cwe_workflow import CWELabelingService
     from sastsimi.reporting.finding_normalization import FindingNormalizationService
@@ -1386,9 +1426,7 @@ def build_t12_services(
         reporter=ReporterWorkHandler(
             workflow=reporter_workflow, resolve_inputs=reporter_inputs
         ),
-        primitive_handoff=PrimitiveUpdateHandoff(
-            records=records, current=runtime.queries, ready_work=runner
-        ),
+        primitive_handoff=t10_services.primitive_handoff,
         technical_revisions=TechnicalRevisionReconciler(
             service=technical_service,
             current=runtime.queries,
