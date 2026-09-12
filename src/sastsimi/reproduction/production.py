@@ -271,6 +271,7 @@ class ProductionDynamicWorkflow:
             if source.repository_profile_ref is not None
             else ()
         )
+        source_context_refs = source.source_refs if repository_context_refs else ()
         build_binding = self._authorization(
             work,
             request,
@@ -279,7 +280,7 @@ class ProductionDynamicWorkflow:
             "BUILD",
             source.recipe_source_ref,
             None,
-            repository_context_refs,
+            source_context_refs,
         )
         build_outcome = self._controller.evaluate_build(
             spec=build_binding.run_spec,
@@ -291,7 +292,7 @@ class ProductionDynamicWorkflow:
             sandbox_profile=build_binding.sandbox_profile,
             lifecycle_profile=build_binding.lifecycle_profile,
             run_policy_state_ref=build_binding.run_policy_state_ref,
-            required_context_refs=repository_context_refs,
+            required_context_refs=source_context_refs,
             meta=self._meta("sandbox_policy_decision"),
         )
         self._policy = build_outcome.decision
@@ -305,7 +306,7 @@ class ProductionDynamicWorkflow:
                 source.recipe_source_ref,
                 build_binding.action_decision_ref,
                 build_binding.run_policy_state_ref,
-                *repository_context_refs,
+                *source_context_refs,
             ),
         )
         if build_outcome.decision.decision != "ALLOW":
@@ -352,7 +353,7 @@ class ProductionDynamicWorkflow:
             (
                 build_policy_ref,
                 build_binding.action_decision_ref,
-                *repository_context_refs,
+                *source_context_refs,
             ),
         )
         self._binding = run_binding
@@ -369,7 +370,7 @@ class ProductionDynamicWorkflow:
             required_context_refs=(
                 build_policy_ref,
                 build_binding.action_decision_ref,
-                *repository_context_refs,
+                *source_context_refs,
             ),
             meta=self._meta("sandbox_policy_decision"),
         )
@@ -386,7 +387,7 @@ class ProductionDynamicWorkflow:
                 build_binding.action_decision_ref,
                 run_binding.action_decision_ref,
                 run_binding.run_policy_state_ref,
-                *repository_context_refs,
+                *source_context_refs,
             ),
         )
         self._start_log(
