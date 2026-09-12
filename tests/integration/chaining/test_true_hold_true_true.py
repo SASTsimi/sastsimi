@@ -380,3 +380,55 @@ async def test_one_call_keeps_deepest_success_and_ignores_ancestor_decisions(
         item.excluded_primitive_ref for item in outcome.result.excluded_lineage_refs
     } == {refs[1], refs[2]}
     assert len(children.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_one_directional_pair_preserves_each_matched_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lineage ranks the pair once, while each matched input remains material."""
+
+    monkeypatch.setattr(
+        "sastsimi.chaining.service.llm_invocation_save_refs",
+        lambda **_: ("llm-proof",),
+    )
+    trigger = _primitive("A", inputs=(), result="provided")
+    other = _primitive(
+        "B",
+        inputs=("first-required-input", "second-required-input"),
+        result="next",
+    )
+    refs = tuple(reference(value) for value in (trigger, other))
+    context = _context(refs, refs[0])  # type: ignore[arg-type]
+    universe = PinnedChainingUniverse(
+        trigger_primitive_ref=refs[0],  # type: ignore[arg-type]
+        index_refs=(_as_ref("primitive_index_state", "index"),),
+        considered_primitive_refs=refs,  # type: ignore[arg-type]
+    )
+    publisher, children = _Publisher(), _Children()
+    service = ChainingWorkflowService(
+        agent=_Agent(("comparison-1", "comparison-2")),
+        records=_Records((trigger, other)),
+        pools=_Pools(reference(context.work), universe),  # type: ignore[arg-type]
+        lineage=_Lineage({}),
+        publisher=publisher,
+        children=children,
+        ids=_Ids(),
+        metadata_factory=_metadata,
+        requester_identity_ref=_as_ref("requester_identity", "r"),
+    )
+
+    outcome = await service.execute(
+        context=context,
+        call=SimpleNamespace(
+            decision_ref=_as_ref("action_decision", "decision"),
+            reservation_ref=_as_ref("budget_reservation", "reservation"),
+            call_spec_ref=_as_ref("llm_call_spec", "spec"),
+        ),
+    )
+
+    assert {
+        item.matched_input_id for item in outcome.result.primitive_match_candidates
+    } == {"draft-first-required-input", "draft-second-required-input"}
+    assert len(outcome.result.chained_hypothesis_proposals) == 2
+    assert len(children.calls) == 2

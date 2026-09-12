@@ -589,19 +589,16 @@ class ChainingWorkflowService:
             raise ValueError("CHAINING_DECISION_COVERAGE_MISMATCH")
         by_ref = {entry.ref: entry.primitive for entry in entries}
         successful: list[SuccessfulMatchPair] = []
-        decision_by_pair: dict[
-            tuple[StoredDataRef, StoredDataRef], ChainingDecision
-        ] = {}
+        successful_pair_keys: set[tuple[StoredDataRef, StoredDataRef]] = set()
         for decision in decisions:
             comparison = by_key.get(decision.comparison_key)
             if comparison is None:
                 raise ValueError("CHAINING_DECISION_COVERAGE_MISMATCH")
             pair = (comparison.upstream_ref, comparison.downstream_ref)
             if decision.outcome == "MATCH":
-                if pair in decision_by_pair:
-                    raise ValueError("CHAINING_MULTIPLE_INPUT_MATCH")
-                successful.append(SuccessfulMatchPair(*pair))
-                decision_by_pair[pair] = decision
+                if pair not in successful_pair_keys:
+                    successful.append(SuccessfulMatchPair(*pair))
+                    successful_pair_keys.add(pair)
         resolve = self._lineage_resolver(universe, work.meta)
         retained_pairs = retain_deepest_successful_matches(
             considered_refs=universe.considered_primitive_refs,
