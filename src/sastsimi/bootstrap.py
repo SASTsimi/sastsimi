@@ -718,6 +718,15 @@ def _load_fake_outputs(
     return persisted_analysis_result(queries, "fake-analysis"), reports
 
 
+def build_report_markdown_service(data_dir: Path) -> object:
+    """Compose the report application service with its concrete read adapter."""
+
+    from sastsimi.reporting.markdown_export import ReportMarkdownService
+    from sastsimi.storage.report_export import SQLiteCurrentReportSource
+
+    return ReportMarkdownService(data_dir, SQLiteCurrentReportSource(data_dir))
+
+
 def load_fake_progress(data_dir: Path) -> dict[str, object]:
     """Read only durable fake-run progress; never synthesize a terminal result."""
     import json

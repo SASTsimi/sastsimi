@@ -69,6 +69,10 @@ EXACT_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {
     "sastsimi.storage.context_binding": frozenset(
         {"sastsimi.static_analysis.context_retrieval"}
     ),
+    # This concrete adapter uses the pure Reporter artifact validator only.
+    "sastsimi.storage.report_export": frozenset(
+        {"sastsimi.reporting.content_validation"}
+    ),
     "sastsimi.verification.context_service": frozenset(
         {
             "sastsimi.static_analysis.context_retrieval",
