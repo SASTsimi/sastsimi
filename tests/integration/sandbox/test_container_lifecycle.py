@@ -1710,6 +1710,8 @@ async def test_docker_build_uses_stdin_empty_context_and_approved_timeout(
         "sastsimi.commit-id": "commit-1",
         "sastsimi.hypothesis-id": "hypothesis-1",
         "sastsimi.attempt-id": "dynamic-attempt-1",
+        "sastsimi.resource-kind": "image",
+        "sastsimi.resource-id": "image-runtime-1",
     }
     adapter, _ = _trusted_docker_adapter(tmp_path)
     monkeypatch.setattr(adapter, "_run", run)
@@ -1737,6 +1739,9 @@ async def test_docker_build_uses_stdin_empty_context_and_approved_timeout(
         "none",
     )
     assert "--label" in argv
+    assert ("--tag", DockerAdapter.runtime_image_tag(labels)) == argv[
+        argv.index("--tag") : argv.index("--tag") + 2
+    ]
     assert argv[-1] == "-"
     assert ("--cpu-period", "100000") == argv[
         argv.index("--cpu-period") : argv.index("--cpu-period") + 2
@@ -1786,6 +1791,8 @@ async def test_docker_build_is_blocked_when_backend_cannot_enforce_every_limit(
                 "sastsimi.commit-id": "commit-1",
                 "sastsimi.hypothesis-id": "hypothesis-1",
                 "sastsimi.attempt-id": "dynamic-attempt-1",
+                "sastsimi.resource-kind": "image",
+                "sastsimi.resource-id": "image-runtime-1",
             },
             spec=spec,
             timeout_ms=10_000,
@@ -1825,6 +1832,8 @@ async def test_docker_buildx_uses_supported_resource_flags(
             "sastsimi.commit-id": "commit-1",
             "sastsimi.hypothesis-id": "hypothesis-1",
             "sastsimi.attempt-id": "dynamic-attempt-1",
+            "sastsimi.resource-kind": "image",
+            "sastsimi.resource-id": "image-runtime-1",
         },
         spec=spec,
         timeout_ms=10_000,
@@ -1872,10 +1881,98 @@ async def test_docker_build_rejects_weaker_external_disk_boundary(
                 "sastsimi.commit-id": "commit-1",
                 "sastsimi.hypothesis-id": "hypothesis-1",
                 "sastsimi.attempt-id": "dynamic-attempt-1",
+                "sastsimi.resource-kind": "image",
+                "sastsimi.resource-id": "image-runtime-1",
             },
             spec=spec,
             timeout_ms=10_000,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_context", [False, True])
+async def test_cancelled_docker_build_reclaims_attempt_owned_image(
+    monkeypatch: pytest.MonkeyPatch,
+    with_context: bool,
+) -> None:
+    started = asyncio.Event()
+    calls: list[tuple[str, ...]] = []
+
+    async def run(
+        argv: tuple[str, ...],
+        *,
+        timeout_ms: int | None = None,
+        input_bytes: bytes | None = None,
+    ) -> DockerCommandOutcome:
+        del timeout_ms, input_bytes
+        calls.append(argv)
+        if argv[:2] == ("image", "build"):
+            started.set()
+            await asyncio.Event().wait()
+        return DockerCommandOutcome(0, b"", b"", False)
+
+    labels = {
+        "sastsimi.owner": "reproduction-setup-automation",
+        "sastsimi.analysis-id": "analysis-1",
+        "sastsimi.workspace-id": "workspace-1",
+        "sastsimi.commit-id": "commit-1",
+        "sastsimi.hypothesis-id": "hypothesis-1",
+        "sastsimi.attempt-id": "dynamic-attempt-1",
+        "sastsimi.resource-kind": "image",
+        "sastsimi.resource-id": "image-runtime-1",
+    }
+    profile_ref = HostConfigurationRef(
+        stored_data_id=StoredDataId("docker-profile-data"),
+        data_kind="runtime_capability_profile",
+        content_hash="b" * 64,
+        host_id="host-a",
+        publication_analysis_id=AnalysisId("capability-analysis"),
+        publication_workspace_id=WorkspaceId("capability-workspace"),
+        publication_commit_id=CommitId("capability-commit"),
+        record_id=RecordId("docker-profile-v1"),
+    )
+    target = TrustedDockerTarget(
+        profile_ref=profile_ref,
+        executable=Path("C:/trusted/docker.exe"),
+        subject_key="docker",
+        subject_sha256="c" * 64,
+        daemon_target="npipe:////./pipe/docker_engine",
+        build_backend="LEGACY_LIMITED",
+        enforced_build_limits=frozenset({"CPU", "MEMORY", "PID", "DISK"}),
+        external_build_disk_limit_bytes=64 * 1024 * 1024,
+    )
+    adapter = DockerAdapter(target, _TrustedDockerResolver(target))
+    monkeypatch.setattr(adapter, "_run", run)
+    request, _, _ = _dynamic_records()
+    spec = _approval(Path.cwd(), request).approved_spec
+    assert spec is not None
+    if with_context:
+        archive = EnvironmentRecipeStore._archive(
+            {"Dockerfile": (b"FROM scratch\n", 0o644)}
+        )
+        operation = adapter.build_context(
+            archive,
+            "Dockerfile",
+            labels,
+            spec=spec,
+            timeout_ms=30_000,
+        )
+    else:
+        operation = adapter.build(
+            b"FROM scratch\n",
+            labels,
+            spec=spec,
+            timeout_ms=30_000,
+        )
+    task = asyncio.create_task(operation)
+    await started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    image_tag = DockerAdapter.runtime_image_tag(labels)
+    assert calls[-1] == ("image", "rm", "--force", image_tag)
 
 
 @pytest.mark.asyncio
@@ -1960,6 +2057,8 @@ async def test_docker_context_build_streams_tar_without_host_path(
         "sastsimi.commit-id": "commit-1",
         "sastsimi.hypothesis-id": "hypothesis-1",
         "sastsimi.attempt-id": "dynamic-attempt-1",
+        "sastsimi.resource-kind": "image",
+        "sastsimi.resource-id": "image-runtime-1",
     }
     adapter, _ = _trusted_docker_adapter(tmp_path)
     monkeypatch.setattr(adapter, "_run", run)
