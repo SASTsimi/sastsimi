@@ -5,14 +5,21 @@ from collections.abc import Callable
 
 from sqlalchemy import Connection, insert, select, update
 
-from sastsimi.contracts.actions import ActionRequest, ActionType, RequesterRole
+from sastsimi.contracts.actions import (
+    ActionDecision,
+    ActionRequest,
+    ActionType,
+    Decision,
+    RequesterRole,
+    UseStatus,
+)
 from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.chaining import ChainingResult
 from sastsimi.contracts.hypothesis import VerificationAssignment
 from sastsimi.contracts.policy import PolicyCacheRecord, RunPolicyState
-from sastsimi.contracts.records import validate_revision
+from sastsimi.contracts.records import RecordMeta, validate_revision
 from sastsimi.contracts.refs import RecordRef, StoredDataRef
 from sastsimi.contracts.reporting import ReportDraft
 from sastsimi.contracts.result_registry import validate_result_owner
@@ -118,13 +125,83 @@ def _validate_repository_profile(
     connection: Connection,
     work: WorkExecutionState,
     candidate: RepositoryProfile,
+    target_status: str,
 ) -> None:
     if (
         work.work_type.value != "REPOSITORY_PROFILE"
         or work.input_refs != (candidate.workspace_ref,)
         or candidate.meta.attempt_id != work.active_attempt_id
+        or (candidate.status == "READY") != (target_status == "SUCCEEDED")
+        or (candidate.status == "NEEDS_CONFIRMATION") != (target_status == "BLOCKED")
     ):
         raise ValueError("REPOSITORY_PROFILE_CLOSURE_MISMATCH")
+    decision_row = (
+        connection.execute(
+            select(models.records.c.kind, models.records.c.payload).where(
+                models.records.c.record_id
+                == str(candidate.action_decision_ref.record_id)
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    decision = (
+        decode(decision_row["kind"], decision_row["payload"])
+        if decision_row is not None
+        else None
+    )
+    action_row = (
+        connection.execute(
+            select(models.records.c.kind, models.records.c.payload).where(
+                models.records.c.record_id == str(decision.action_ref.record_id)
+            )
+        )
+        .mappings()
+        .one_or_none()
+        if isinstance(decision, ActionDecision)
+        and decision.action_ref.record_id is not None
+        else None
+    )
+    action = (
+        decode(action_row["kind"], action_row["payload"])
+        if action_row is not None
+        else None
+    )
+    dispatch = (
+        connection.execute(
+            select(models.external_dispatches).where(
+                models.external_dispatches.c.action_id == str(action.action_id)
+            )
+        )
+        .mappings()
+        .one_or_none()
+        if isinstance(action, ActionRequest)
+        else None
+    )
+    if (
+        not isinstance(decision, ActionDecision)
+        or reference(decision) != candidate.action_decision_ref
+        or decision.decision != Decision.ALLOW
+        or decision.use_status != UseStatus.USED
+        or decision.checked_state_version != work.state_version
+        or not isinstance(action, ActionRequest)
+        or action.action_type != ActionType.RUN_TOOL
+        or action.requested_by != RequesterRole.STATIC_ANALYSIS
+        or action.tool_name != "repository-profiler"
+        or not isinstance(action.meta, RecordMeta)
+        or action.meta.attempt_id != work.active_attempt_id
+        or action.work_ref != reference(work)
+        or action.expected_state_version != work.state_version
+        or action.input_refs != work.input_refs
+        or set(action.file_paths) != {item.git_path for item in candidate.tracked_files}
+        or len(action.file_paths) != len(candidate.tracked_files)
+        or dispatch is None
+        or dispatch["work_id"] != str(work.work_id)
+        or dispatch["attempt_id"] != str(work.active_attempt_id)
+        or dispatch["dispatched_at"] is None
+        or dispatch["returned_at"] is None
+    ):
+        raise ValueError("REPOSITORY_PROFILE_ACTION_CLOSURE_MISMATCH")
     row = (
         connection.execute(
             select(models.records.c.kind, models.records.c.payload).where(
@@ -267,7 +344,9 @@ class TransitionService:
                     connection, work, record, len(request.records)
                 )
             if isinstance(record, RepositoryProfile):
-                _validate_repository_profile(connection, work, record)
+                _validate_repository_profile(
+                    connection, work, record, request.commit.target_status.value
+                )
             if isinstance(record, CodeContextResponse):
                 check_context_response(self.works.records, connection, work, record)
             if not prepublished_output(

@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import RunStoredDataRef
-from sastsimi.contracts.static import StaticToolProfile
+from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef
+from sastsimi.contracts.static import RepositoryProfile, StaticToolProfile
 from sastsimi.ports.dto import CandidateGap, RepositoryPreparation, TrackedFile
 from sastsimi.static_analysis.repository_profile import (
     ActiveStaticCapability,
@@ -76,6 +76,28 @@ def _workspace_ref() -> RunStoredDataRef:
     )
 
 
+def _decision_ref() -> StoredDataRef:
+    return StoredDataRef.model_validate(
+        {
+            "stored_data_id": "decision-record",
+            "data_kind": "action_decision",
+            "content_hash": "e" * 64,
+            "workspace_id": "workspace",
+            "commit_id": "a" * 40,
+            "record_id": "decision-record",
+        }
+    )
+
+
+def _build(root: Path, tracked: tuple[TrackedFile, ...]) -> RepositoryProfile:
+    return RepositoryProfiler().build(
+        _preparation(root, tracked),
+        meta=_meta(),
+        workspace_ref=_workspace_ref(),
+        action_decision_ref=_decision_ref(),
+    )
+
+
 def _profile(adapter: str, name: str) -> StaticToolProfile:
     return StaticToolProfile.model_validate_json(
         json.dumps(
@@ -125,11 +147,7 @@ def test_profile_uses_only_exact_tracked_files_and_detects_known_inputs(
     # An untracked package file must never influence detection.
     (tmp_path / "package.json").write_text('{"dependencies":{"express":"*"}}')
 
-    result = RepositoryProfiler().build(
-        _preparation(tmp_path, tracked),
-        meta=_meta(),
-        workspace_ref=_workspace_ref(),
-    )
+    result = _build(tmp_path, tracked)
 
     assert result.status == "READY"
     assert [item.name for item in result.languages] == ["PYTHON"]
@@ -150,17 +168,14 @@ def test_profile_fails_closed_when_a_tracked_blob_changed(tmp_path: Path) -> Non
             _preparation(tmp_path, tracked),
             meta=_meta(),
             workspace_ref=_workspace_ref(),
+            action_decision_ref=_decision_ref(),
         )
 
 
 def test_unknown_or_ambiguous_build_is_not_guessed(tmp_path: Path) -> None:
     tracked = (_write(tmp_path, "README.md", b"custom build instructions"),)
 
-    result = RepositoryProfiler().build(
-        _preparation(tmp_path, tracked),
-        meta=_meta(),
-        workspace_ref=_workspace_ref(),
-    )
+    result = _build(tmp_path, tracked)
 
     assert result.status == "NEEDS_CONFIRMATION"
     assert result.languages == ()
@@ -181,11 +196,7 @@ def test_javascript_framework_uses_source_and_tracked_package_evidence(
         ),
     )
 
-    result = RepositoryProfiler().build(
-        _preparation(tmp_path, tracked),
-        meta=_meta(),
-        workspace_ref=_workspace_ref(),
-    )
+    result = _build(tmp_path, tracked)
 
     assert result.status == "READY"
     assert [item.name for item in result.languages] == ["JAVASCRIPT"]
@@ -195,11 +206,7 @@ def test_javascript_framework_uses_source_and_tracked_package_evidence(
 def test_package_declaration_alone_does_not_guess_a_language(tmp_path: Path) -> None:
     tracked = (_write(tmp_path, "package.json", b'{"dependencies":{}}'),)
 
-    result = RepositoryProfiler().build(
-        _preparation(tmp_path, tracked),
-        meta=_meta(),
-        workspace_ref=_workspace_ref(),
-    )
+    result = _build(tmp_path, tracked)
 
     assert result.status == "NEEDS_CONFIRMATION"
     assert result.languages == ()
@@ -218,11 +225,7 @@ def test_large_unrelated_tracked_file_is_hashed_without_becoming_config(
         _write(tmp_path, "assets/video.bin", b"x" * (2 * 1024 * 1024 + 1)),
     )
 
-    result = RepositoryProfiler().build(
-        _preparation(tmp_path, tracked),
-        meta=_meta(),
-        workspace_ref=_workspace_ref(),
-    )
+    result = _build(tmp_path, tracked)
 
     assert result.status == "READY"
     large = next(
@@ -239,11 +242,7 @@ def test_profile_contract_rejects_manifest_or_evidence_tampering(
         _write(tmp_path, "app.py", b"print('ok')\n"),
         _write(tmp_path, "Dockerfile", b"FROM python:3.12-slim\n"),
     )
-    result = RepositoryProfiler().build(
-        _preparation(tmp_path, tracked),
-        meta=_meta(),
-        workspace_ref=_workspace_ref(),
-    )
+    result = _build(tmp_path, tracked)
 
     with pytest.raises(ValueError, match="REPOSITORY_PROFILE_MANIFEST_MISMATCH"):
         type(result).model_validate(result.model_dump() | {"manifest_hash": "f" * 64})
@@ -280,6 +279,7 @@ def test_repository_preparation_gaps_are_preserved_and_require_confirmation(
         preparation,
         meta=_meta(),
         workspace_ref=_workspace_ref(),
+        action_decision_ref=_decision_ref(),
     )
 
     assert result.status == "NEEDS_CONFIRMATION"
@@ -293,11 +293,7 @@ def test_tool_selection_requires_active_verified_capability(tmp_path: Path) -> N
         _write(tmp_path, "requirements.txt", b""),
         _write(tmp_path, "Dockerfile", b"FROM python:3.12-slim\n"),
     )
-    repository = RepositoryProfiler().build(
-        _preparation(tmp_path, tracked),
-        meta=_meta(),
-        workspace_ref=_workspace_ref(),
-    )
+    repository = _build(tmp_path, tracked)
     ast = _profile("PYTHON_AST", "python-ast")
     codeql = _profile("CODEQL", "codeql-python")
 
@@ -324,11 +320,7 @@ def test_tool_selection_blocks_when_required_capability_is_missing(
         _write(tmp_path, "requirements.txt", b""),
         _write(tmp_path, "Dockerfile", b"FROM python:3.12-slim\n"),
     )
-    repository = RepositoryProfiler().build(
-        _preparation(tmp_path, tracked),
-        meta=_meta(),
-        workspace_ref=_workspace_ref(),
-    )
+    repository = _build(tmp_path, tracked)
 
     selection = select_static_tools(repository, ())
 
@@ -345,11 +337,7 @@ def test_tool_selection_blocks_when_one_detected_language_is_uncovered(
         _write(tmp_path, "requirements.txt", b""),
         _write(tmp_path, "Dockerfile", b"FROM python:3.12-slim\n"),
     )
-    repository = RepositoryProfiler().build(
-        _preparation(tmp_path, tracked),
-        meta=_meta(),
-        workspace_ref=_workspace_ref(),
-    )
+    repository = _build(tmp_path, tracked)
 
     selection = select_static_tools(
         repository,

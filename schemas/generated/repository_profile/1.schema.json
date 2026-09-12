@@ -498,6 +498,51 @@
       "title": "StoredDataId",
       "type": "string"
     },
+    "StoredDataRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_id": {
+          "$ref": "#/$defs/CommitId"
+        },
+        "content_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "data_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Data Kind",
+          "type": "string"
+        },
+        "record_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stored_data_id": {
+          "$ref": "#/$defs/StoredDataId"
+        },
+        "workspace_id": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "stored_data_id",
+        "data_kind",
+        "content_hash",
+        "workspace_id",
+        "commit_id",
+        "record_id"
+      ],
+      "title": "StoredDataRef",
+      "type": "object"
+    },
     "WorkspaceId": {
       "minLength": 1,
       "pattern": "\\S",
@@ -509,6 +554,9 @@
   "additionalProperties": false,
   "description": "Immutable detection result closed over one exact tracked-file manifest.",
   "properties": {
+    "action_decision_ref": {
+      "$ref": "#/$defs/StoredDataRef"
+    },
     "commit_id": {
       "$ref": "#/$defs/CommitId"
     },
@@ -598,6 +646,7 @@
     "workspace_id",
     "commit_id",
     "workspace_ref",
+    "action_decision_ref",
     "manifest_hash",
     "tracked_files",
     "languages",

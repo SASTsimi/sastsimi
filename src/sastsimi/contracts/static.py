@@ -245,6 +245,7 @@ class RepositoryProfile(DomainRecord):
     workspace_id: WorkspaceId
     commit_id: CommitId
     workspace_ref: RunStoredDataRef
+    action_decision_ref: StoredDataRef
     manifest_hash: Sha256
     tracked_files: tuple[RepositoryTrackedFile, ...]
     languages: tuple[RepositoryLanguage, ...]
@@ -261,6 +262,8 @@ class RepositoryProfile(DomainRecord):
         if (
             self.workspace_ref.data_kind != "code_workspace"
             or self.workspace_ref.record_id is None
+            or self.action_decision_ref.data_kind != "action_decision"
+            or self.action_decision_ref.record_id is None
         ):
             raise ValueError("REPOSITORY_PROFILE_WORKSPACE_INVALID")
         unique(item.git_path for item in self.tracked_files)

@@ -252,6 +252,7 @@ class RepositoryProfiler:
         *,
         meta: RecordMeta,
         workspace_ref: RunStoredDataRef,
+        action_decision_ref: StoredDataRef,
     ) -> RepositoryProfile:
         if (
             preparation.status != "READY"
@@ -266,6 +267,8 @@ class RepositoryProfiler:
             or workspace_ref.analysis_id != meta.analysis_id
             or workspace_ref.data_kind != "code_workspace"
             or workspace_ref.record_id is None
+            or action_decision_ref.data_kind != "action_decision"
+            or action_decision_ref.record_id is None
         ):
             raise ValueError("REPOSITORY_PROFILE_INPUT_INVALID")
         configured_root = preparation.root
@@ -425,6 +428,7 @@ class RepositoryProfiler:
                 "workspace_id": preparation.workspace_id,
                 "commit_id": preparation.resolved_commit_id,
                 "workspace_ref": workspace_ref,
+                "action_decision_ref": action_decision_ref,
                 "manifest_hash": content_hash(
                     tuple(item.model_dump(mode="json") for item in manifest)
                 ),

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 from sastsimi.bootstrap import build_fake_pipeline
-from sastsimi.contracts.actions import RequesterRole
+from sastsimi.contracts.actions import ActionDecision, ActionRequest, RequesterRole
 from sastsimi.contracts.refs import RunStoredDataRef, reference
 from sastsimi.contracts.static import CodeWorkspace, RepositoryProfile
 from sastsimi.orchestration.fake_setup import FakeSetupDependencies, FakeSetupStages
@@ -122,11 +123,17 @@ async def test_handler_publishes_profile_closed_over_ready_workspace(
         guard,
     ).execute(
         work=work,
+        budget_scope=scope,
         identity=setup.evidence.identity(RequesterRole.STATIC_ANALYSIS),
+        state_identity=orchestrator,
         workspace=workspace,
         workspace_ref=workspace_ref,
         preparation=preparation,
-        deadline=MonotonicActionDeadline("profile", 0, 10**12),
+        deadline=MonotonicActionDeadline(
+            "profile",
+            time.monotonic_ns(),
+            time.monotonic_ns() + 1_000_000_000,
+        ),
     )
 
     assert published.work.status == "SUCCEEDED"
@@ -136,3 +143,48 @@ async def test_handler_publishes_profile_closed_over_ready_workspace(
     stored = setup.runtime.unit_of_work.records.get_exact(published.profile_ref)
     assert isinstance(stored, RepositoryProfile)
     assert stored == published.profile
+    decision = setup.runtime.unit_of_work.records.get_exact(
+        published.profile.action_decision_ref
+    )
+    assert isinstance(decision, ActionDecision)
+    assert decision.use_status == "USED"
+    action = setup.runtime.unit_of_work.records.get_exact(decision.action_ref)
+    assert isinstance(action, ActionRequest)
+    assert action.action_type == "RUN_TOOL"
+    assert action.tool_name == "repository-profiler"
+    assert set(action.file_paths) == {item.git_path for item in tracked}
+
+    drifted_work = setup.runner.start(
+        scope,
+        setup._record_meta("repository_profile"),
+        "REPOSITORY_PROFILE",
+        "ANALYSIS",
+        str(workspace.analysis_id),
+        orchestrator,
+        generation=2,
+        inputs=(workspace_ref,),
+    )
+    (root / "src" / "app.py").write_text("print('changed')\n")
+    with pytest.raises(ValueError, match="REPOSITORY_PROFILE_BLOCKED"):
+        await RepositoryProfileHandler(
+            setup.runner,
+            RepositoryProfiler(),
+            guard,
+        ).execute(
+            work=drifted_work,
+            budget_scope=scope,
+            identity=setup.evidence.identity(RequesterRole.STATIC_ANALYSIS),
+            state_identity=orchestrator,
+            workspace=workspace,
+            workspace_ref=workspace_ref,
+            preparation=preparation,
+            deadline=MonotonicActionDeadline(
+                "profile-drift",
+                time.monotonic_ns(),
+                time.monotonic_ns() + 1_000_000_000,
+            ),
+        )
+    blocked = setup.runtime.work.get(str(drifted_work.work_id))
+    assert blocked.status == "BLOCKED"
+    assert blocked.active_attempt_id is None
+    assert blocked.output_refs == ()
