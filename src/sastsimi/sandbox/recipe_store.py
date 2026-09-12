@@ -130,6 +130,11 @@ class PreparedRecipeSource:
             or self.context_digest is None
             or hashlib.sha256(self.context_archive).hexdigest() != self.context_digest
             or self.repository_profile_ref not in self.source_refs
+            or self.source_refs[:1] != (self.repository_profile_ref,)
+            or len(self.source_refs) != 3
+            or any(ref.data_kind != "artifact" for ref in self.source_refs[1:])
+            or {self.dockerfile_digest, self.context_digest}
+            != {ref.content_hash for ref in self.source_refs[1:]}
             or self.dockerfile_path.startswith("/")
             or ".." in PurePosixPath(self.dockerfile_path).parts
         ):
