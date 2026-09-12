@@ -435,6 +435,50 @@ def test_markdown_export_does_not_follow_directory_swap_during_replace(
             backup.rename(parent)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory sharing contract")
+def test_windows_directory_lock_rejects_competing_write_handle(
+    tmp_path: Path,
+) -> None:
+    import ctypes
+
+    directory = tmp_path / "locked"
+    directory.mkdir()
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    create_file.restype = ctypes.c_void_p
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [ctypes.c_void_p]
+    close_handle.restype = ctypes.c_int
+    invalid_handle = ctypes.c_void_p(-1).value
+
+    with markdown_export._locked_windows_directory(directory):
+        ctypes.set_last_error(0)
+        competing_handle = create_file(
+            str(directory),
+            0x40000000,  # GENERIC_WRITE
+            0x00000001 | 0x00000002 | 0x00000004,
+            None,
+            3,  # OPEN_EXISTING
+            0x02000000 | 0x00200000,
+            None,
+        )
+        error = ctypes.get_last_error()
+        if competing_handle not in (None, invalid_handle):
+            close_handle(competing_handle)
+
+    assert competing_handle in (None, invalid_handle)
+    assert error == 32  # ERROR_SHARING_VIOLATION
+
+
 def test_markdown_export_rejects_data_dir_swap_before_directory_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

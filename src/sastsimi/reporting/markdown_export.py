@@ -418,7 +418,7 @@ def _atomic_write_report(
             path.parent.parent.parent, expected_identity=data_dir_identity
         ):
             with _locked_windows_directory(path.parent.parent):
-                with _locked_windows_directory(path.parent):
+                with _guarded_windows_replace_directory(path.parent):
                     _atomic_write(path, data)
         return
     _atomic_write_report_posix(path, analysis_id, data, data_dir_identity)
@@ -539,7 +539,10 @@ def _platform_attribute(owner: object, name: str) -> object:
 
 @contextmanager
 def _locked_windows_directory(
-    path: Path, *, expected_identity: tuple[int, int, int] | None = None
+    path: Path,
+    *,
+    expected_identity: tuple[int, int, int] | None = None,
+    allow_write_sharing: bool = False,
 ) -> Iterator[None]:
     import ctypes
     import msvcrt
@@ -565,14 +568,15 @@ def _locked_windows_directory(
     close_handle.argtypes = [ctypes.c_void_p]
     close_handle.restype = ctypes.c_int
     generic_read = 0x80000000
-    share_read_write = 0x00000001 | 0x00000002
+    share_read = 0x00000001
+    share_mode = share_read | (0x00000002 if allow_write_sharing else 0)
     open_existing = 3
     file_flag_backup_semantics = 0x02000000
     file_flag_open_reparse_point = 0x00200000
     handle = create_file(
         str(path),
         generic_read,
-        share_read_write,
+        share_mode,
         None,
         open_existing,
         file_flag_backup_semantics | file_flag_open_reparse_point,
@@ -607,6 +611,31 @@ def _locked_windows_directory(
             close_handle(handle)
         else:
             os.close(descriptor)
+
+
+@contextmanager
+def _guarded_windows_replace_directory(path: Path) -> Iterator[None]:
+    """Keep the directory non-empty while replacement needs write sharing."""
+
+    guard_path = path / f".report-export-{uuid4().hex}.guard"
+    guard = None
+    with _locked_windows_directory(path):
+        try:
+            guard = guard_path.open("xb")
+        except OSError as error:
+            raise ReportUnavailable("UNSAFE_REPORT_PATH") from error
+    try:
+        with _locked_windows_directory(path, allow_write_sharing=True):
+            yield
+    finally:
+        if guard is not None:
+            guard.close()
+        try:
+            guard_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            raise ReportUnavailable("UNSAFE_REPORT_PATH") from error
 
 
 __all__ = [
