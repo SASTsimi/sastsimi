@@ -4,8 +4,7 @@ from pathlib import Path
 def test_chaining_template_keeps_matching_content_only() -> None:
     root = Path(__file__).resolve().parents[3]
     template = (
-        root
-        / "src/sastsimi/prompts/templates/chaining/match-primitives/1.0.0.md"
+        root / "src/sastsimi/prompts/templates/chaining/match-primitives/1.0.0.md"
     ).read_text(encoding="utf-8")
 
     for heading in (

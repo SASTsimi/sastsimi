@@ -245,9 +245,7 @@ def test_startup_reconciler_enumerates_committed_t13_sources_once() -> None:
 
     assert summary.primitive_update_refs == (commit_ref,)
     assert summary.chaining_result_refs == (reference(result),)
-    assert tuple(item.source_update_ref for item in primitive_calls) == (
-        commit_ref,
-    )
+    assert tuple(item.source_update_ref for item in primitive_calls) == (commit_ref,)
     assert tuple(item.source_result_ref for item in result_calls) == (
         reference(result),
     )

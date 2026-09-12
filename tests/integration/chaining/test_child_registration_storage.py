@@ -146,9 +146,7 @@ def _fail_verification(
             )
         )
     )
-    runner.runtime.transitions.commit(
-        TransitionCommitRequest(transition, commit, ())
-    )
+    runner.runtime.transitions.commit(TransitionCommitRequest(transition, commit, ()))
     return runner.runtime.work.get(str(work.work_id))
 
 
@@ -220,9 +218,7 @@ def _scope_primitive(
         source_verification_ref=verification_ref,
         technical_review_ref=technical_ref,
         admission_decision_ref=(
-            _ref("primitive_admission_decision", name)
-            if result is not None
-            else None
+            _ref("primitive_admission_decision", name) if result is not None else None
         ),
         evidence_refs=[evidence_ref],
         description=f"primitive {name}",
@@ -325,9 +321,7 @@ def _commit_source(
     assert all(isinstance(ref, StoredDataRef) for ref in source_refs)
     result = ChainingResult.model_validate(
         dict(
-            meta=runner.metadata(
-                metadata, "chaining_result", attempt_id=attempt_id
-            ),
+            meta=runner.metadata(metadata, "chaining_result", attempt_id=attempt_id),
             source_result_refs=source_refs,
             considered_primitive_refs=(upstream_ref, downstream_ref),
             input_primitive_refs=(upstream_ref, downstream_ref),
@@ -345,23 +339,23 @@ def _commit_source(
     commit = TransitionCommit.model_validate_json(
         canonical_bytes(
             dict(
-            meta=runner.metadata(
-                metadata, "transition_commit", attempt_id=attempt_id
-            ),
-            transition_commit_id=harness.ids.new(TransitionCommitId),
-            work_id=work_id,
-            transition_ref=transition_ref,
-            expected_state_version=2,
-            target_state_version=3,
-            attempt_id=attempt_id,
-            target_status="SUCCEEDED",
-            output_refs=(result_ref,),
-            gap_ids=(),
-            error_ids=(),
-            state="COMMITTED",
-            prepared_at=harness.clock.now(),
-            committed_at=harness.clock.now(),
-            abort_reason=None,
+                meta=runner.metadata(
+                    metadata, "transition_commit", attempt_id=attempt_id
+                ),
+                transition_commit_id=harness.ids.new(TransitionCommitId),
+                work_id=work_id,
+                transition_ref=transition_ref,
+                expected_state_version=2,
+                target_state_version=3,
+                attempt_id=attempt_id,
+                target_status="SUCCEEDED",
+                output_refs=(result_ref,),
+                gap_ids=(),
+                error_ids=(),
+                state="COMMITTED",
+                prepared_at=harness.clock.now(),
+                committed_at=harness.clock.now(),
+                abort_reason=None,
             )
         )
     )
@@ -371,53 +365,49 @@ def _commit_source(
     work = WorkExecutionState.model_validate_json(
         canonical_bytes(
             dict(
-            meta=runner.metadata(
-                metadata, "work_execution_state", attempt_id=None
-            ),
-            work_id=work_id,
-            parent_work_ref=None,
-            work_type="CHAINING",
-            subject_type="ANALYSIS",
-            subject_id="a1",
-            work_generation=1,
-            status="SUCCEEDED",
-            state_version=3,
-            last_transition_ref=transition_ref,
-            last_transition_commit_ref=commit_ref,
-            active_attempt_id=None,
-            input_hash=content_hash(inputs),
-            dedupe_key=content_hash(["source-chaining", inputs]),
-            trigger_primitive_ref=upstream_ref,
-            input_refs=inputs,
-            output_refs=(result_ref,),
-            gap_ids=(),
-            error_ids=(),
-            waiting_for=(),
-            stop_reason="COMPLETED",
-            started_at=harness.clock.now(),
-            finished_at=harness.clock.now(),
-            elapsed_ms=0,
+                meta=runner.metadata(metadata, "work_execution_state", attempt_id=None),
+                work_id=work_id,
+                parent_work_ref=None,
+                work_type="CHAINING",
+                subject_type="ANALYSIS",
+                subject_id="a1",
+                work_generation=1,
+                status="SUCCEEDED",
+                state_version=3,
+                last_transition_ref=transition_ref,
+                last_transition_commit_ref=commit_ref,
+                active_attempt_id=None,
+                input_hash=content_hash(inputs),
+                dedupe_key=content_hash(["source-chaining", inputs]),
+                trigger_primitive_ref=upstream_ref,
+                input_refs=inputs,
+                output_refs=(result_ref,),
+                gap_ids=(),
+                error_ids=(),
+                waiting_for=(),
+                stop_reason="COMPLETED",
+                started_at=harness.clock.now(),
+                finished_at=harness.clock.now(),
+                elapsed_ms=0,
             )
         )
     )
     attempt = WorkAttempt.model_validate_json(
         canonical_bytes(
             dict(
-            meta=runner.metadata(
-                metadata, "work_attempt", attempt_id=attempt_id
-            ),
-            work_id=work_id,
-            attempt_id=attempt_id,
-            attempt_number=1,
-            trigger="INITIAL",
-            input_hash=work.input_hash,
-            status="SUCCEEDED",
-            output_refs=(result_ref,),
-            gap_ids=(),
-            error_ids=(),
-            started_at=harness.clock.now(),
-            finished_at=harness.clock.now(),
-            elapsed_ms=0,
+                meta=runner.metadata(metadata, "work_attempt", attempt_id=attempt_id),
+                work_id=work_id,
+                attempt_id=attempt_id,
+                attempt_number=1,
+                trigger="INITIAL",
+                input_hash=work.input_hash,
+                status="SUCCEEDED",
+                output_refs=(result_ref,),
+                gap_ids=(),
+                error_ids=(),
+                started_at=harness.clock.now(),
+                finished_at=harness.clock.now(),
+                elapsed_ms=0,
             )
         )
     )
@@ -477,8 +467,8 @@ def _prepared(
     BudgetScopeRef,
     ChainingResult,
 ]:
-    harness, runtime, runner, policy_work, parser, _decision = (
-        prepared_policy_parser(_run_dir(name))
+    harness, runtime, runner, policy_work, parser, _decision = prepared_policy_parser(
+        _run_dir(name)
     )
     requester = next(
         ref
@@ -566,9 +556,7 @@ def test_child_lineage_validation_rejects_unpinned_candidate_ancestor() -> None:
     service.lineage = CandidateLineage()
     with harness.database.engine.connect() as connection:
         producer = service._committed_producer(connection, source_ref)
-        with pytest.raises(
-            ValueError, match="CHAINING_LINEAGE_RESOLUTION_INVALID"
-        ):
+        with pytest.raises(ValueError, match="CHAINING_LINEAGE_RESOLUTION_INVALID"):
             service._validate_lineage(connection, source, producer)
 
 
@@ -693,9 +681,7 @@ def test_child_registration_normal_and_lost_response_replay_are_idempotent() -> 
 
 
 def test_child_handoff_rejects_tampered_cross_scope_and_unknown_source_child() -> None:
-    _harness, _runner, service, works, _scope, requester, source = _prepared(
-        "tamper"
-    )
+    _harness, _runner, service, works, _scope, requester, source = _prepared("tamper")
     source_ref = reference(source)
     assert isinstance(source_ref, StoredDataRef)
     before_ledger = _count(works, models.budget_ledger_entries)
@@ -865,19 +851,20 @@ async def test_proposal_handler_replay_accepts_progressed_verification_work() ->
     replay = await handler.execute(context)
 
     assert replay.output_refs[:2] == initial.output_refs[:2]
-    assert service.register_claimed(
-        context=context,
-        source_result_ref=source_ref,
-        proposal_id=proposal_id,
-        requester_identity_ref=requester,
-    ).verification_work == verification_running
+    assert (
+        service.register_claimed(
+            context=context,
+            source_result_ref=source_ref,
+            proposal_id=proposal_id,
+            requester_identity_ref=requester,
+        ).verification_work
+        == verification_running
+    )
     assert harness.ids.index == replay_index
 
 
 def test_recovery_reconciliation_enqueues_the_concrete_child_once() -> None:
-    harness, _runner, service, works, scope, requester, source = _prepared(
-        "recovery"
-    )
+    harness, _runner, service, works, scope, requester, source = _prepared("recovery")
     source_ref = reference(source)
     assert isinstance(source_ref, StoredDataRef)
     harness.evidence.identities[requester] = RequesterRole.RECOVERY

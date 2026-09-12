@@ -213,9 +213,7 @@ class SQLiteChainingChildRegistration:
                     registration.work, requester_identity_ref
                 )
             except ValueError:
-                _hypothesis, raced_process, _raced_ref = self._projected(
-                    proposal_ref
-                )
+                _hypothesis, raced_process, _raced_ref = self._projected(proposal_ref)
                 if raced_process.status != "TERMINAL":
                     raise
                 verification_work = self._terminal_verification(
@@ -224,9 +222,7 @@ class SQLiteChainingChildRegistration:
         _hypothesis, current_process, current_process_ref = self._projected(
             proposal_ref
         )
-        if not self._process_tracks_verification(
-            current_process, verification_work
-        ):
+        if not self._process_tracks_verification(current_process, verification_work):
             raise ValueError("CHAINING_CHILD_VERIFICATION_MISMATCH")
         return ChainingProposalRegistration(
             source_result_ref=source_result_ref,
@@ -265,9 +261,8 @@ class SQLiteChainingChildRegistration:
         if len(matches) != 1:
             raise ValueError("CHAINING_CHILD_SOURCE_MISMATCH")
         proposal = matches[0]
-        if (
-            proposal.origin != "CHAINING"
-            or self._scope(proposal.meta) != self._scope(source.meta)
+        if proposal.origin != "CHAINING" or self._scope(proposal.meta) != self._scope(
+            source.meta
         ):
             raise ValueError("CHAINING_CHILD_SOURCE_MISMATCH")
         self._validate_config(connection, source.meta)
@@ -293,9 +288,7 @@ class SQLiteChainingChildRegistration:
             or not isinstance(playbook, VerificationPlaybook)
             or any(not isinstance(value.meta, RecordMeta) for value in scoped)
             or any(self._scope(value.meta) != self._scope(meta) for value in scoped)
-            or any(
-                self._scope_ref(value) != self._code_scope(meta) for value in refs
-            )
+            or any(self._scope_ref(value) != self._code_scope(meta) for value in refs)
         ):
             raise ValueError("CHAINING_CHILD_SCOPE_MISMATCH")
         current(self.records, connection, self.config.verification_policy_ref)
@@ -319,37 +312,37 @@ class SQLiteChainingChildRegistration:
         return WorkExecutionState.model_validate_json(
             canonical_bytes(
                 dict(
-                meta=fresh_meta(
-                    meta,
-                    "work_execution_state",
-                    self.works.clock,
-                    self.works.ids,
-                    hypothesis_id=None,
-                    attempt_id=None,
-                ),
-                work_id=self.works.ids.new(WorkId),
-                parent_work_ref=None,
-                work_type=WorkType.HYPOTHESIS_PROPOSAL,
-                subject_type="PROPOSAL",
-                subject_id=proposal_id,
-                work_generation=1,
-                status=WorkStatus.PENDING,
-                state_version=1,
-                last_transition_ref=None,
-                last_transition_commit_ref=None,
-                active_attempt_id=None,
-                input_hash=content_hash(inputs),
-                dedupe_key=registration_key,
-                trigger_primitive_ref=None,
-                input_refs=inputs,
-                output_refs=(),
-                gap_ids=(),
-                error_ids=(),
-                waiting_for=(),
-                stop_reason=None,
-                started_at=None,
-                finished_at=None,
-                elapsed_ms=0,
+                    meta=fresh_meta(
+                        meta,
+                        "work_execution_state",
+                        self.works.clock,
+                        self.works.ids,
+                        hypothesis_id=None,
+                        attempt_id=None,
+                    ),
+                    work_id=self.works.ids.new(WorkId),
+                    parent_work_ref=None,
+                    work_type=WorkType.HYPOTHESIS_PROPOSAL,
+                    subject_type="PROPOSAL",
+                    subject_id=proposal_id,
+                    work_generation=1,
+                    status=WorkStatus.PENDING,
+                    state_version=1,
+                    last_transition_ref=None,
+                    last_transition_commit_ref=None,
+                    active_attempt_id=None,
+                    input_hash=content_hash(inputs),
+                    dedupe_key=registration_key,
+                    trigger_primitive_ref=None,
+                    input_refs=inputs,
+                    output_refs=(),
+                    gap_ids=(),
+                    error_ids=(),
+                    waiting_for=(),
+                    stop_reason=None,
+                    started_at=None,
+                    finished_at=None,
+                    elapsed_ms=0,
                 )
             )
         )
@@ -378,22 +371,22 @@ class SQLiteChainingChildRegistration:
         reservation = BudgetReservation.model_validate_json(
             canonical_bytes(
                 dict(
-                meta=fresh_meta(
-                    work.meta,
-                    "budget_reservation",
-                    self.works.clock,
-                    self.works.ids,
-                    attempt_id=None,
-                ),
-                reservation_id=self.works.ids.new(ReservationId),
-                budget_binding_ref=self.config.budget_binding_ref,
-                action_ref=action_ref,
-                work_ref=work_ref,
-                requested_units=units,
-                status="RESERVED",
-                ledger_entry_ref=None,
-                reserved_at=self.works.clock.now(),
-                finalized_at=None,
+                    meta=fresh_meta(
+                        work.meta,
+                        "budget_reservation",
+                        self.works.clock,
+                        self.works.ids,
+                        attempt_id=None,
+                    ),
+                    reservation_id=self.works.ids.new(ReservationId),
+                    budget_binding_ref=self.config.budget_binding_ref,
+                    action_ref=action_ref,
+                    work_ref=work_ref,
+                    requested_units=units,
+                    status="RESERVED",
+                    ledger_entry_ref=None,
+                    reserved_at=self.works.clock.now(),
+                    finalized_at=None,
                 )
             )
         )
@@ -438,21 +431,21 @@ class SQLiteChainingChildRegistration:
         entry = BudgetLedgerEntry.model_validate_json(
             canonical_bytes(
                 dict(
-                meta=fresh_meta(
-                    reservation.meta,
-                    "budget_ledger_entry",
-                    self.works.clock,
-                    self.works.ids,
-                ),
-                ledger_entry_id=self.works.ids.new(LedgerEntryId),
-                reservation_ref=reservation_ref,
-                budget_binding_ref=self.config.budget_binding_ref,
-                action_ref=action_ref,
-                work_ref=work_ref,
-                actual_units=units,
-                usage_refs=(),
-                sequence=remaining.as_of_sequence + 1,
-                committed_at=self.works.clock.now(),
+                    meta=fresh_meta(
+                        reservation.meta,
+                        "budget_ledger_entry",
+                        self.works.clock,
+                        self.works.ids,
+                    ),
+                    ledger_entry_id=self.works.ids.new(LedgerEntryId),
+                    reservation_ref=reservation_ref,
+                    budget_binding_ref=self.config.budget_binding_ref,
+                    action_ref=action_ref,
+                    work_ref=work_ref,
+                    actual_units=units,
+                    usage_refs=(),
+                    sequence=remaining.as_of_sequence + 1,
+                    committed_at=self.works.clock.now(),
                 )
             )
         )
@@ -487,13 +480,13 @@ class SQLiteChainingChildRegistration:
             canonical_bytes(
                 work.model_dump()
                 | dict(
-                meta=next_meta(work.meta, self.works.clock, self.works.ids),
-                status=WorkStatus.READY,
-                state_version=transition.new_state_version,
-                last_transition_ref=transition_ref,
-                output_refs=(),
-                waiting_for=(),
-                stop_reason=None,
+                    meta=next_meta(work.meta, self.works.clock, self.works.ids),
+                    status=WorkStatus.READY,
+                    state_version=transition.new_state_version,
+                    last_transition_ref=transition_ref,
+                    output_refs=(),
+                    waiting_for=(),
+                    stop_reason=None,
                 )
             )
         )
@@ -555,14 +548,14 @@ class SQLiteChainingChildRegistration:
             canonical_bytes(
                 nested.model_dump()
                 | dict(
-                meta=fresh_meta(
-                    work.meta,
-                    "hypothesis_proposal",
-                    self.works.clock,
-                    self.works.ids,
-                    hypothesis_id=None,
-                    attempt_id=work.active_attempt_id,
-                )
+                    meta=fresh_meta(
+                        work.meta,
+                        "hypothesis_proposal",
+                        self.works.clock,
+                        self.works.ids,
+                        hypothesis_id=None,
+                        attempt_id=work.active_attempt_id,
+                    )
                 )
             )
         )
@@ -587,27 +580,27 @@ class SQLiteChainingChildRegistration:
         commit = TransitionCommit.model_validate_json(
             canonical_bytes(
                 dict(
-                meta=fresh_meta(
-                    work.meta,
-                    "transition_commit",
-                    self.works.clock,
-                    self.works.ids,
+                    meta=fresh_meta(
+                        work.meta,
+                        "transition_commit",
+                        self.works.clock,
+                        self.works.ids,
+                        attempt_id=work.active_attempt_id,
+                    ),
+                    transition_commit_id=self.works.ids.new(TransitionCommitId),
+                    work_id=work.work_id,
+                    transition_ref=transition_ref,
+                    expected_state_version=work.state_version,
+                    target_state_version=work.state_version + 1,
                     attempt_id=work.active_attempt_id,
-                ),
-                transition_commit_id=self.works.ids.new(TransitionCommitId),
-                work_id=work.work_id,
-                transition_ref=transition_ref,
-                expected_state_version=work.state_version,
-                target_state_version=work.state_version + 1,
-                attempt_id=work.active_attempt_id,
-                target_status=WorkStatus.SUCCEEDED,
-                output_refs=(proposal_ref,),
-                gap_ids=(),
-                error_ids=(),
-                state=CommitState.PREPARED,
-                prepared_at=self.works.clock.now(),
-                committed_at=None,
-                abort_reason=None,
+                    target_status=WorkStatus.SUCCEEDED,
+                    output_refs=(proposal_ref,),
+                    gap_ids=(),
+                    error_ids=(),
+                    state=CommitState.PREPARED,
+                    prepared_at=self.works.clock.now(),
+                    committed_at=None,
+                    abort_reason=None,
                 )
             )
         )
@@ -710,9 +703,7 @@ class SQLiteChainingChildRegistration:
             return current_work
         if current_work.status != WorkStatus.PENDING or current_work != work:
             raise ValueError("CHAINING_CHILD_VERIFICATION_MISMATCH")
-        action = self._action(
-            current_work, requester_ref, ActionType.CHANGE_WORK_STATE
-        )
+        action = self._action(current_work, requester_ref, ActionType.CHANGE_WORK_STATE)
         decision = authorize(self.works.validator, action, current_work, None)
         if decision.decision != "ALLOW":
             raise ValueError("ACTION_DENIED: Verification readiness")
@@ -786,9 +777,7 @@ class SQLiteChainingChildRegistration:
             result = self.records.resolve(connection, work.output_refs[0])
             if not isinstance(result, VerificationResult):
                 raise ValueError("CHAINING_CHILD_VERIFICATION_MISMATCH")
-            require_committed(
-                self.records, connection, result, WorkType.VERIFICATION
-            )
+            require_committed(self.records, connection, result, WorkType.VERIFICATION)
             return work
 
     @staticmethod
@@ -803,11 +792,11 @@ class SQLiteChainingChildRegistration:
                 and work.output_refs == (process.verification_result_ref,)
             )
         if process.status == "VERIFYING":
-            return (
-                work.status
-                in {WorkStatus.READY, WorkStatus.RUNNING, WorkStatus.BLOCKED}
-                and process.verification_work_ref == reference(work)
-            )
+            return work.status in {
+                WorkStatus.READY,
+                WorkStatus.RUNNING,
+                WorkStatus.BLOCKED,
+            } and process.verification_work_ref == reference(work)
         if process.status in {"FAILED", "CANCELLED"}:
             return (
                 work.status.value == process.status
@@ -863,9 +852,7 @@ class SQLiteChainingChildRegistration:
         primitives = tuple(
             value
             for ref in source.considered_primitive_refs
-            if isinstance(
-                value := self.records.resolve(connection, ref), Primitive
-            )
+            if isinstance(value := self.records.resolve(connection, ref), Primitive)
         )
         if len(primitives) != len(source.considered_primitive_refs):
             raise ValueError("CHAINING_INPUT_CLOSURE")
@@ -1005,48 +992,48 @@ class SQLiteChainingChildRegistration:
         return ActionRequest.model_validate_json(
             canonical_bytes(
                 dict(
-                meta=fresh_meta(
-                    work.meta,
-                    "action_request",
-                    self.works.clock,
-                    self.works.ids,
-                    attempt_id=work.active_attempt_id,
-                ),
-                action_id=self.works.ids.new(ActionId),
-                requested_by=requester_role,
-                requester_identity_ref=requester_ref,
-                action_type=action_type,
-                work_ref=(
-                    None
-                    if action_type == ActionType.REGISTER_WORK
-                    else reference(work)
-                ),
-                expected_state_version=(
-                    None
-                    if action_type == ActionType.REGISTER_WORK
-                    else work.state_version
-                ),
-                expected_verification_generation=None,
-                generation_restart_reason=None,
-                generation_restart_basis_refs=(),
-                input_refs=work.input_refs,
-                dynamic_request_ref=None,
-                reproduction_plan_ref=None,
-                result_kind=result_kind,
-                candidate_result_ref=candidate_result_ref,
-                llm_call_spec_ref=None,
-                tool_name=None,
-                file_paths=(),
-                provider_profile_ref=None,
-                session_mode=None,
-                sandbox_profile_ref=None,
-                resource_profile_ref=None,
-                run_policy_state_ref=None,
-                image_digest=None,
-                network_targets=(),
-                resource_limits=None,
-                reason="Register exact committed Chaining child",
-                requested_at=self.works.clock.now(),
+                    meta=fresh_meta(
+                        work.meta,
+                        "action_request",
+                        self.works.clock,
+                        self.works.ids,
+                        attempt_id=work.active_attempt_id,
+                    ),
+                    action_id=self.works.ids.new(ActionId),
+                    requested_by=requester_role,
+                    requester_identity_ref=requester_ref,
+                    action_type=action_type,
+                    work_ref=(
+                        None
+                        if action_type == ActionType.REGISTER_WORK
+                        else reference(work)
+                    ),
+                    expected_state_version=(
+                        None
+                        if action_type == ActionType.REGISTER_WORK
+                        else work.state_version
+                    ),
+                    expected_verification_generation=None,
+                    generation_restart_reason=None,
+                    generation_restart_basis_refs=(),
+                    input_refs=work.input_refs,
+                    dynamic_request_ref=None,
+                    reproduction_plan_ref=None,
+                    result_kind=result_kind,
+                    candidate_result_ref=candidate_result_ref,
+                    llm_call_spec_ref=None,
+                    tool_name=None,
+                    file_paths=(),
+                    provider_profile_ref=None,
+                    session_mode=None,
+                    sandbox_profile_ref=None,
+                    resource_profile_ref=None,
+                    run_policy_state_ref=None,
+                    image_digest=None,
+                    network_targets=(),
+                    resource_limits=None,
+                    reason="Register exact committed Chaining child",
+                    requested_at=self.works.clock.now(),
                 )
             )
         )
@@ -1062,29 +1049,29 @@ class SQLiteChainingChildRegistration:
         return StateTransition.model_validate_json(
             canonical_bytes(
                 dict(
-                meta=fresh_meta(
-                    work.meta,
-                    "state_transition",
-                    self.works.clock,
-                    self.works.ids,
+                    meta=fresh_meta(
+                        work.meta,
+                        "state_transition",
+                        self.works.clock,
+                        self.works.ids,
+                        attempt_id=work.active_attempt_id,
+                    ),
+                    transition_id=self.works.ids.new(TransitionId),
+                    work_id=work.work_id,
+                    action_decision_ref=decision_ref,
+                    from_status=work.status,
+                    to_status=status,
+                    expected_state_version=work.state_version,
+                    new_state_version=work.state_version + 1,
                     attempt_id=work.active_attempt_id,
-                ),
-                transition_id=self.works.ids.new(TransitionId),
-                work_id=work.work_id,
-                action_decision_ref=decision_ref,
-                from_status=work.status,
-                to_status=status,
-                expected_state_version=work.state_version,
-                new_state_version=work.state_version + 1,
-                attempt_id=work.active_attempt_id,
-                cause=cause,
-                output_refs=outputs,
-                gap_ids=(),
-                error_ids=(),
-                dedupe_key=content_hash(
-                    [work.work_id, work.state_version, status, outputs]
-                ),
-                created_at=self.works.clock.now(),
+                    cause=cause,
+                    output_refs=outputs,
+                    gap_ids=(),
+                    error_ids=(),
+                    dedupe_key=content_hash(
+                        [work.work_id, work.state_version, status, outputs]
+                    ),
+                    created_at=self.works.clock.now(),
                 )
             )
         )

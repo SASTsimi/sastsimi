@@ -96,9 +96,7 @@ def _call(_context: object, content: object) -> object:
     )
 
 
-def _resolver(
-    *, prompt_hash: str
-) -> Callable[[object, object], object]:
+def _resolver(*, prompt_hash: str) -> Callable[[object, object], object]:
     def resolve(_context: object, _content: object) -> object:
         return (
             SimpleNamespace(

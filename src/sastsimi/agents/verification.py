@@ -773,8 +773,7 @@ class VerificationAgent:
         ):
             values = payload.get(field)
             if isinstance(values, list) and any(
-                isinstance(item, dict)
-                and ({"draft_id", "meta"} & item.keys())
+                isinstance(item, dict) and ({"draft_id", "meta"} & item.keys())
                 for item in values
             ):
                 raise ValueError("OUTPUT_RUNTIME_AUTHORITY_DENIED")
@@ -857,9 +856,7 @@ class VerificationAgent:
             ):
                 raise ValueError("VERIFICATION_EVIDENCE_CLOSURE_MISMATCH")
             if not self._privilege_is_grounded(draft, evidence_records):
-                raise ValueError(
-                    "VERIFICATION_PRIMITIVE_PRIVILEGE_CLOSURE_MISMATCH"
-                )
+                raise ValueError("VERIFICATION_PRIMITIVE_PRIVILEGE_CLOSURE_MISMATCH")
 
         drafts = tuple(
             PrimitiveDraft(

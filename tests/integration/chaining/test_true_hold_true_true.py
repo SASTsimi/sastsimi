@@ -47,9 +47,7 @@ def _symbol(name: str) -> dict[str, object]:
     }
 
 
-def _draft(
-    name: str, evidence_ref: StoredDataRef | None = None
-) -> dict[str, object]:
+def _draft(name: str, evidence_ref: StoredDataRef | None = None) -> dict[str, object]:
     evidence = (
         evidence_ref.model_dump(mode="json")
         if evidence_ref is not None
@@ -370,9 +368,7 @@ def _verification(
     return wire(VerificationResult, data)
 
 
-def _technical(
-    name: str, verification_ref: StoredDataRef
-) -> TechnicalEvidenceReview:
+def _technical(name: str, verification_ref: StoredDataRef) -> TechnicalEvidenceReview:
     data = make("TechnicalEvidenceReview")
     data["meta"] = meta("technical_evidence_review", hypothesis=f"hyp-{name}") | {
         "record_id": f"technical-review-{name}",
@@ -459,9 +455,7 @@ def _tamper_artifact_evidence_unchecked(
                 for draft in primitive.inputs
             ),
             "result": (
-                primitive.result.model_copy(
-                    update={"evidence_refs": (artifact_ref,)}
-                )
+                primitive.result.model_copy(update={"evidence_refs": (artifact_ref,)})
                 if primitive.result is not None
                 else None
             ),

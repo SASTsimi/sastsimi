@@ -536,9 +536,7 @@ class _Fixture:
         privilege_level: str | None = None,
     ) -> dict[str, object]:
         return {
-            "entity_refs": [
-                (entity or self.entity).model_dump(mode="json")
-            ],
+            "entity_refs": [(entity or self.entity).model_dump(mode="json")],
             "privilege_level": privilege_level,
             "evidence_refs": [
                 (evidence_ref or self.evidence_ref).model_dump(mode="json")
@@ -1060,9 +1058,7 @@ async def test_primitive_content_forgery_is_rejected(
             evidence_ref = evidence_ref.model_copy(
                 update={"workspace_id": WorkspaceId("foreign-workspace")}
             )
-        primitive["evidence_refs"] = [
-            evidence_ref.model_dump(mode="json")
-        ]
+        primitive["evidence_refs"] = [evidence_ref.model_dump(mode="json")]
     else:
         primitive["draft_id"] = "caller-controlled-id"
     fixture.queue(
