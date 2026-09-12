@@ -7,11 +7,12 @@ Verification parent READY, but it must return immediately.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol, cast
 
 from pydantic import BaseModel
 
+from sastsimi.agents.dynamic_reproduction import DynamicAgentInvocation
 from sastsimi.agents.verification import (
     VerificationAgentOutcome,
     VerificationCallRefs,
@@ -59,7 +60,9 @@ from sastsimi.verification.debate_service import (
 )
 from sastsimi.verification.service import VerificationService
 
-type LLMRole = Literal["HYPOTHESIS", "PRO", "CON", "VERIFICATION"]
+type LLMRole = Literal[
+    "HYPOTHESIS", "PRO", "CON", "VERIFICATION", "DYNAMIC_REPRODUCTION"
+]
 type EvidenceRole = Literal["PRO", "CON"]
 
 
@@ -128,9 +131,7 @@ class ConfiguredProductionCallResolver:
             or len(source_refs) != len(set(source_refs))
         ):
             raise ValueError("PRODUCTION_LLM_CALL_SCOPE_MISMATCH")
-        route, approval = self.route_lookup(
-            str(work.meta.analysis_id), role, task_kind
-        )
+        route, approval = self.route_lookup(str(work.meta.analysis_id), role, task_kind)
         if route.role != role or route.task_kind != task_kind:
             raise ValueError("PRODUCTION_LLM_ROUTE_MISMATCH")
         resolved = self.configuration.resolve_route(route=route, approval=approval)
@@ -218,6 +219,60 @@ class ConfiguredProductionCallResolver:
         return tuple(sources)
 
 
+@dataclass(frozen=True, slots=True)
+class ProductionDynamicStageCallResolver:
+    """Resolve and settle one exact R7 LLM call at the stage boundary."""
+
+    calls: ProductionCallPort
+    max_execute_turns: int
+    _pending: dict[StoredDataRef, AuthorizedLLMCall] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        if isinstance(self.max_execute_turns, bool) or self.max_execute_turns < 1:
+            raise ValueError("DYNAMIC_EXECUTE_TURN_LIMIT_INVALID")
+
+    def resolve(
+        self,
+        *,
+        work: WorkExecutionState,
+        task_kind: str,
+        context_refs: tuple[StoredDataRef, ...],
+    ) -> DynamicAgentInvocation:
+        call = self.calls.resolve(
+            work=work,
+            role="DYNAMIC_REPRODUCTION",
+            task_kind=task_kind,
+            source_refs=context_refs,
+        )
+        if call.call_spec_ref in self._pending:
+            raise ValueError("DYNAMIC_LLM_CALL_ALREADY_PENDING")
+        self._pending[call.call_spec_ref] = call
+        return DynamicAgentInvocation(
+            decision_ref=call.decision_ref,
+            reservation_ref=call.reservation_ref,
+            call_spec_ref=call.call_spec_ref,
+        )
+
+    def settle(
+        self,
+        authorization: DynamicAgentInvocation,
+        invocation: PersistedLLMInvocation,
+    ) -> None:
+        call = self._pending.pop(authorization.call_spec_ref, None)
+        if (
+            call is None
+            or call.decision_ref != authorization.decision_ref
+            or call.reservation_ref != authorization.reservation_ref
+            or invocation.request.call_spec_ref != authorization.call_spec_ref
+            or invocation.request.action_decision_ref != authorization.decision_ref
+            or invocation.request.agent_role != "DYNAMIC_REPRODUCTION"
+        ):
+            raise ValueError("DYNAMIC_LLM_SETTLEMENT_MISMATCH")
+        self.calls.settle(call, invocation)
+
+
 class HypothesisWorkflowPort(Protocol):
     async def run(self, **kwargs: object) -> object: ...
 
@@ -251,8 +306,7 @@ class HypothesisProposalWorkHandler:
         static_refs = tuple(
             ref
             for ref in work.input_refs
-            if isinstance(ref, StoredDataRef)
-            and ref.data_kind == StaticFactBundle.KIND
+            if isinstance(ref, StoredDataRef) and ref.data_kind == StaticFactBundle.KIND
         )
         if len(work.input_refs) != 1 or len(static_refs) != 1:
             raise ValueError("HYPOTHESIS_STATIC_CLOSURE_MISMATCH")
@@ -301,8 +355,7 @@ class HypothesisProposalWorkHandler:
         proposal_refs = tuple(
             ref
             for ref in completed.output_refs
-            if isinstance(ref, StoredDataRef)
-            and ref.data_kind == "hypothesis_proposal"
+            if isinstance(ref, StoredDataRef) and ref.data_kind == "hypothesis_proposal"
         )
         if len(proposal_refs) != len(completed.output_refs):
             raise ValueError("HYPOTHESIS_OUTPUT_CLOSURE_MISMATCH")
@@ -532,6 +585,7 @@ __all__ = [
     "EvidenceBranchWorkHandler",
     "HypothesesCommittedPort",
     "HypothesisProposalWorkHandler",
+    "ProductionDynamicStageCallResolver",
     "PreparedCallAuthorizer",
     "ProductionCallPort",
     "ProductionRouteLookup",

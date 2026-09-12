@@ -60,6 +60,7 @@ from .service import (
     DynamicReproductionWorkflowService,
     DynamicSandboxSession,
     DynamicStageAuthorizations,
+    DynamicStageCallResolver,
     DynamicWorkflowFailure,
 )
 
@@ -1239,6 +1240,7 @@ class ProductionDynamicExecutor:
 
     agent: DynamicAgentPort
     workflow_factory: Callable[[WorkExecutionState], ProductionDynamicWorkflow]
+    call_resolver: DynamicStageCallResolver | None = None
 
     async def __call__(
         self,
@@ -1246,11 +1248,12 @@ class ProductionDynamicExecutor:
         work: WorkExecutionState,
         request: DynamicReproductionRequest,
         request_ref: StoredDataRef,
-        authorizations: DynamicStageAuthorizations,
+        authorizations: DynamicStageAuthorizations | None,
     ) -> WorkHandlerResult:
         service = DynamicReproductionWorkflowService(
             agent=self.agent,
             workflow=self.workflow_factory(work),
+            call_resolver=self.call_resolver,
         )
         return await service.execute(
             work=work,
