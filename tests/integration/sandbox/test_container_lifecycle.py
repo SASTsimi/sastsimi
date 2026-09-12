@@ -2292,6 +2292,7 @@ async def test_docker_build_rejects_weaker_external_disk_boundary(
 async def test_cancelled_docker_build_reclaims_attempt_owned_image(
     monkeypatch: pytest.MonkeyPatch,
     with_context: bool,
+    tmp_path: Path,
 ) -> None:
     started = asyncio.Event()
     calls: list[tuple[str, ...]] = []
@@ -2330,27 +2331,7 @@ async def test_cancelled_docker_build_reclaims_attempt_owned_image(
         "sastsimi.resource-kind": "image",
         "sastsimi.resource-id": "image-runtime-1",
     }
-    profile_ref = HostConfigurationRef(
-        stored_data_id=StoredDataId("docker-profile-data"),
-        data_kind="runtime_capability_profile",
-        content_hash="b" * 64,
-        host_id="host-a",
-        publication_analysis_id=AnalysisId("capability-analysis"),
-        publication_workspace_id=WorkspaceId("capability-workspace"),
-        publication_commit_id=CommitId("capability-commit"),
-        record_id=RecordId("docker-profile-v1"),
-    )
-    target = TrustedDockerTarget(
-        profile_ref=profile_ref,
-        executable=Path("C:/trusted/docker.exe"),
-        subject_key="docker",
-        subject_sha256="c" * 64,
-        daemon_target="npipe:////./pipe/docker_engine",
-        build_backend="LEGACY_LIMITED",
-        enforced_build_limits=frozenset({"CPU", "MEMORY", "PID", "DISK"}),
-        external_build_disk_limit_bytes=64 * 1024 * 1024,
-    )
-    adapter = DockerAdapter(target, _TrustedDockerResolver(target))
+    adapter, _resolver = _trusted_docker_adapter(tmp_path)
     monkeypatch.setattr(adapter, "_run", run)
     request, _, _ = _dynamic_records()
     spec = _approval(Path.cwd(), request).approved_spec

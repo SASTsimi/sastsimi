@@ -252,7 +252,7 @@ class EnvironmentRecipe(DynamicRecord):
     built_image_digest: NonEmptyStr
     baseline_recipe_ref: StoredDataRef | None
     build_disposition: Literal["BUILT", "REUSED"]
-    source_manifest: EnvironmentRecipeSourceManifest | None = None
+    source_manifest: EnvironmentRecipeSourceManifest | None
     created_at: AwareDatetime
 
     @model_validator(mode="after")
