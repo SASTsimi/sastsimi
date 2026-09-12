@@ -1,0 +1,8 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — stale/ref mismatch blocks authorization, provider invocation, and draft save.",
+  "canonical_input_projection": {
+    "finding": { "record_id": "rec-finding-old", "verification_result_ref": { "record_id": "rec-ver-2" } },
+    "finding_index_state": { "status": "CURRENT", "finding_ref": { "record_id": "rec-finding-current" } },
+    "report_ready_upstream": "otherwise valid exact Gate/dynamic/PoC closure"
+  }
+}

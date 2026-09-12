@@ -1,0 +1,7 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — exact collection failure has a non-null collection result reference.",
+  "canonical_input_projection": {
+    "run_policy_state": { "status": "CURRENT", "collection_result_ref": { "record_id": "rec-collect-failed-1" } },
+    "policy_collection_result": { "record_id": "rec-collect-failed-1", "status": "COLLECTION_FAILED" }
+  }
+}

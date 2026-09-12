@@ -6,7 +6,7 @@
     "status": "ACCEPT",
     "evidence_verdict_alignment": "TRUE is supported by the recorded Pro/Con and verification evidence.",
     "code_flow_linkage": "The same commit's unchecked containment path reaches the file-read sink.",
-    "dynamic_linkage": "The same-generation SUCCEEDED+SUPPORTED result and validated PoC are linked through the same attempt's AgentLog and environment.",
+    "dynamic_linkage": "The same-generation SUCCEEDED+SUPPORTED agent_invoked result and validated PoC are linked through the same attempt's request, policy, recipe, environment, AgentLog and exact candidate/content/command digest execution proof.",
     "cwe_assessment": "CWE-22 matches the evidenced root cause.",
     "restriction_assessment": "Local authenticated-access restriction is preserved.",
     "handoff_readiness": "READY",

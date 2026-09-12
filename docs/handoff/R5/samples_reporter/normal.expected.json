@@ -10,7 +10,7 @@
     "policy_record_ref": { "record_id": "rec-policy-1" },
     "dynamic_result_ref": { "record_id": "rec-dyn-2" },
     "poc_ref": { "record_id": "rec-poc-2" },
-    "restrictions": [{ "restriction_id": "r-local-user", "description": "Local authenticated access required." }],
+    "restrictions": [{ "restriction_id": "r-local-user", "statement": "Local authenticated access required.", "fact_refs": [{ "bundle_ref": { "record_id": "rec-static-2" }, "fact_id": "fact-auth" }], "evidence_refs": [{ "record_id": "rec-ver-2" }] }],
     "limitations": [],
     "unresolved_conditions": [],
     "redaction_status": "PASSED",

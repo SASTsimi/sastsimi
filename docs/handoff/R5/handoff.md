@@ -36,9 +36,9 @@ Owner: R5
 모든 JSON은 `fixture_notice`로 **SYNTHETIC FIXTURE**임을 표시했다. Envelope와 `content_assertions`/`expected_behavior`은 테스트 설명용이며 canonical persisted record의 신규 필드가 아니다. `canonical_input_projection`과 `expected_canonical_projection`은 전체 persisted record가 아닌 fixture assertion projection이며, `record_id`만 보이는 reference assertion은 `StoredDataRef`가 아니다.
 
 - CWE normal은 exact TRUE root cause로 CWE-22를 선택한다. failure는 root cause 부족이므로 `primary=null`로 둔다.
-- Technical normal은 exact TRUE/CWE, same-attempt dynamic/AgentLog/validated PoC closure가 있어 ACCEPT다. failure는 다른 attempt AgentLog를 섞어 REVISE이며 새 Verification generation으로 보완해야 한다.
+- Technical normal은 exact TRUE/CWE, `agent_invoked=true`, same-attempt dynamic/AgentLog/validated PoC closure와 candidate revision/content-or-command digest 실행 증명이 있어 ACCEPT다. cross-attempt AgentLog failure는 호출 전 stale/reference validation failure로 domain output·새 generation 없이 차단한다. 별도 REVISE fixture는 reference가 모두 정상이지만 기술 근거가 의미적으로 부족한 경우다.
 - Rule Scope normal은 CURRENT official policy와 각 area의 evidence link가 있어 PASS 및 ALLOW다. failure는 `ABSENT_CONFIRMED + UNVERIFIED`로서 policy를 추측하지 않고 UNCERTAIN 및 DENY다. `COLLECTION_FAILED`라면 이 failure fixture처럼 review를 만들지 않는다는 점을 분리했다.
-- Reporter normal은 REPORT_READY와 current non-stale Finding, validated PoC 및 redaction PASS를 충족한다. failure는 token이 남아 REDACTION=PASS 전에는 draft 생성/저장이 차단된다.
+- Reporter normal은 REPORT_READY와 `FindingIndexState(status=CURRENT, finding_ref=exact input Finding)`, validated PoC, same-attempt execution proof 및 redaction PASS를 충족한다. 이 current chain은 authorization, provider invocation, draft save에서 모두 재검증한다. failure는 token이 남아 REDACTION=PASS 전에는 draft 생성/저장이 차단된다.
 
 ## 5. 반드시 지켜야 하는 처리 규칙
 
@@ -46,6 +46,8 @@ Owner: R5
 - Technical Gate는 정책상 보고 가능성을 판정하지 않는다. `ACCEPT=READY`, `REVISE|REJECT=NOT_READY`다.
 - Rule Scope Gate는 technical fact/impact를 새로 만들지 않는다. policy absence와 collection/parser failure를 혼동하지 않는다. `COLLECTION_FAILED`에는 Gate review가 없다.
 - `report_permission=ALLOW`은 PASS/PASS/PASS/SUFFICIENT, CURRENT fixed policy state, authenticated exact policy provenance 및 critical missing info 없음에서만 가능하며 external authorization이 아니다.
+- Rule Scope는 `verified_execution_facts` 같은 자유문자열을 실행 근거로 사용하지 않는다. current same-attempt Dynamic/AgentLog와 request·policy·recipe·environment·PoC exact closure만 사용한다.
+- exact `PolicyCollectionResult.status=COLLECTION_FAILED`이면 Rule Scope review와 Reporter는 만들지 않고 `PRIMITIVE_ADMISSION_RUNTIME`으로 넘길 수 있다. 그 runtime은 `testing_restriction_compliance=NOT_EVALUATED`, `decision=ALLOW`, `reason=POLICY_COLLECTION_FAILED`인 `PrimitiveAdmissionDecision`을 만들 수 있다. `collection_result_ref=null`인 PREPARING/BLOCKED/FAILED 계열은 Rule Scope, Primitive Admission, Reporter 모두 진행하지 않는다. R5는 admission을 직접 생성하지 않는다.
 - Reporter는 verified upstream보다 강한 claim을 만들지 않고 restriction/limitation/unresolved condition을 보존한다. validated PoC와 candidate PoC, 그리고 dynamic attempts를 섞지 않는다.
 - stale/exact revision mismatch는 무시하지 않는다. Runtime Validator의 call-order, status, reference, readiness, redaction 선차단을 Agent가 대신하거나 우회하지 않는다.
 
@@ -86,6 +88,8 @@ Owner: R5
 
 - prompt/fixture 공통 형식과 fixture envelope의 비-canonical 위치
 - schema version, exact reference 표현, handoff 구조
+- §12 report-template의 Chaining provenance 표현은 현재 Reporter INPUT_SLOTS와 충돌한다. Prompt Runtime에 새 slot을 임의로 추가하지 않았다. Chaining은 `source_result_refs` 계약만 따르며 CWE/RuleScope/admission ref를 ChainingResult 입력으로 넣지 않는 R3 합의 후속 작업이다.
+- `POLICY_PARSER / PARSE_OFFICIAL_POLICY` prompt/runtime 정합성은 이번 R5 Gate/Reporter 최소 수정 범위 밖이므로 R3 후속 작업이다.
 
 ## 7. 미결정 사항
 

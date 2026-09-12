@@ -1,13 +1,10 @@
 {
   "fixture_notice": "SYNTHETIC FIXTURE — expected_canonical_projection is not a persisted record; partial reference assertions are not StoredDataRef values.",
-  "expected_canonical_projection": {
-    "verification_result_ref_record_id_assertion": "rec-ver-4",
-    "cwe_label_ref_record_id_assertion": "rec-cwe-4",
-    "status": "REVISE",
-    "handoff_readiness": "NOT_READY",
-    "revision_requests": ["Do not mix dynamic attempts; provide a new Verification generation with a same-attempt AgentLog/PoC/observation closure."],
-    "verification_requests": ["Re-establish dynamic reproduction provenance before requesting a new Technical Gate work."],
-    "rationale": "The technical record cannot prove that the validated PoC was executed in the current dynamic attempt."
+  "expected_behavior": {
+    "provider_called": false,
+    "domain_output_created": false,
+    "new_verification_generation_created": false,
+    "runtime_failure": "STALE_REFERENCE"
   },
-  "why": "A provenance gap calls for REVISE, not a policy judgment or a change to the existing TRUE verdict."
+  "why": "A cross-attempt AgentLog is stale/reference validation failure before invocation, not a REVISE decision."
 }

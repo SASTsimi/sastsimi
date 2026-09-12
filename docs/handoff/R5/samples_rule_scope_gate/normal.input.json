@@ -1,12 +1,24 @@
 {
   "fixture_notice": "SYNTHETIC FIXTURE — canonical_input_projection is not a persisted record; partial reference assertions are not StoredDataRef values.",
   "canonical_input_projection": {
-    "verification_result_ref": { "stored_data_id": "data-ver-2", "data_kind": "verification_result", "record_id": "rec-ver-2", "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "workspace_id": "ws-1", "commit_id": "c0ffee" },
-    "technical_review": { "status": "ACCEPT", "verification_result_ref": { "record_id": "rec-ver-2" }, "cwe_label_ref": { "record_id": "rec-cwe-2" } },
-    "cwe_label_ref": { "record_id": "rec-cwe-2" },
+    "hypothesis": { "hypothesis_id": "hyp-2", "workspace_id": "ws-1", "commit_id": "c0ffee" },
+    "verification": { "stored_data_id": "data-ver-2", "data_kind": "verification_result", "record_id": "rec-ver-2", "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "workspace_id": "ws-1", "commit_id": "c0ffee", "verification_generation": 2 },
+    "technical": { "status": "ACCEPT", "verification_result_ref": { "record_id": "rec-ver-2" }, "cwe_label_ref": { "record_id": "rec-cwe-2" } },
+    "cwe": { "record_id": "rec-cwe-2", "verification_result_ref": { "record_id": "rec-ver-2" } },
+    "pro": { "record_id": "rec-pro-2" },
+    "con": { "record_id": "rec-con-2" },
+    "facts": { "record_id": "rec-static-2" },
+    "contexts": [],
     "run_policy_state": { "status": "CURRENT", "collection_result_ref": { "record_id": "rec-collect-1" }, "policy_record_ref": { "record_id": "rec-policy-1" }, "freshness_valid_until": "2026-10-01T00:00:00Z" },
-    "policy_collection_result": { "status": "FOUND" },
-    "program_policy_record": { "official_source": "program-operated policy", "policy_items": ["rule-accept-cwe22", "scope-repository", "restriction-local-only", "impact-file-read"] },
-    "verified_execution_facts": "LOCAL_ONLY reproduction; AgentLog proves no external target or prohibited action."
+    "collection": { "record_id": "rec-collect-1", "status": "FOUND", "official_source_refs": [{ "record_id": "rec-official-source-1" }] },
+    "policy": { "record_id": "rec-policy-1", "official_source": "program-operated policy", "source_refs": [{ "record_id": "rec-official-source-1" }], "policy_items": ["rule-accept-cwe22", "scope-repository", "restriction-local-only", "impact-file-read"] },
+    "official_sources": [{ "record_id": "rec-official-source-1", "source_locator": "https://program.example/policy", "content_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" }],
+    "dynamic_request": { "record_id": "rec-request-2", "verification_generation": 2, "work_id": "work-dyn-2", "attempt_id": "attempt-dyn-2" },
+    "sandbox_policy": { "record_id": "rec-sandbox-policy-2", "decision": "ALLOW", "request_ref": { "record_id": "rec-request-2" }, "verification_generation": 2, "work_id": "work-dyn-2", "attempt_id": "attempt-dyn-2" },
+    "environment_recipe": { "record_id": "rec-recipe-2", "request_ref": { "record_id": "rec-request-2" }, "verification_generation": 2, "work_id": "work-dyn-2", "attempt_id": "attempt-dyn-2" },
+    "environment": { "record_id": "rec-env-2", "request_ref": { "record_id": "rec-request-2" }, "environment_recipe_ref": { "record_id": "rec-recipe-2" }, "verification_generation": 2, "work_id": "work-dyn-2", "attempt_id": "attempt-dyn-2" },
+    "agent_log": { "record_id": "rec-log-2", "request_ref": { "record_id": "rec-request-2" }, "environment_recipe_ref": { "record_id": "rec-recipe-2" }, "environment_ref": { "record_id": "rec-env-2" }, "verification_generation": 2, "work_id": "work-dyn-2", "attempt_id": "attempt-dyn-2", "events": [{ "event_type": "AGENT_STARTED" }, { "event_type": "COMMAND_FINISHED", "network_target": null, "external_target": false, "prohibited_action": false, "candidate_revision": 1, "content_digest": "digest-candidate-2", "command_digest": "digest-command-2" }, { "event_type": "POC_EXECUTION_STARTED", "candidate_revision": 1, "content_digest": "digest-candidate-2", "command_digest": "digest-command-2" }, { "event_type": "POC_EXECUTION_FINISHED", "candidate_revision": 1, "content_digest": "digest-candidate-2", "command_digest": "digest-command-2", "observation_ref": { "record_id": "rec-observation-2" } }] },
+    "poc": { "record_id": "rec-poc-2", "status": "COMMITTED", "request_ref": { "record_id": "rec-request-2" }, "sandbox_policy_ref": { "record_id": "rec-sandbox-policy-2" }, "environment_recipe_ref": { "record_id": "rec-recipe-2" }, "environment_ref": { "record_id": "rec-env-2" }, "agent_log_ref": { "record_id": "rec-log-2" }, "candidate_ref": { "record_id": "rec-poc-candidate-2", "revision": 1, "content_digest": "digest-candidate-2" }, "execution_action_ref": { "record_id": "rec-action-2", "command_digest": "digest-command-2" }, "verification_generation": 2, "work_id": "work-dyn-2", "attempt_id": "attempt-dyn-2" },
+    "dynamic": { "record_id": "rec-dyn-2", "status": "SUCCEEDED", "hypothesis_outcome": "SUPPORTED", "agent_invoked": true, "verification_generation": 2, "request_ref": { "record_id": "rec-request-2" }, "sandbox_policy_ref": { "record_id": "rec-sandbox-policy-2" }, "environment_recipe_ref": { "record_id": "rec-recipe-2" }, "environment_ref": { "record_id": "rec-env-2" }, "agent_log_ref": { "record_id": "rec-log-2" }, "poc_ref": { "record_id": "rec-poc-2" }, "poc_candidate_ref": { "record_id": "rec-poc-candidate-2", "revision": 1, "content_digest": "digest-candidate-2" }, "cleanup_ref": { "record_id": "rec-cleanup-2", "verification_generation": 2, "work_id": "work-dyn-2", "attempt_id": "attempt-dyn-2" }, "cleanup_status": "SUCCEEDED", "work_id": "work-dyn-2", "attempt_id": "attempt-dyn-2" }
   }
 }

@@ -1,0 +1,8 @@
+{
+  "fixture_notice": "SYNTHETIC FIXTURE — expected behavior, not a persisted decision.",
+  "expected_behavior": {
+    "rule_scope_review_created": false,
+    "primitive_admission_runtime_started": false,
+    "reporter_started": false
+  }
+}
