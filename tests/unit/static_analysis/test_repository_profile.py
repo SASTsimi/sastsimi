@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,7 @@ import pytest
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RunStoredDataRef
 from sastsimi.contracts.static import StaticToolProfile
-from sastsimi.ports.dto import RepositoryPreparation, TrackedFile
+from sastsimi.ports.dto import CandidateGap, RepositoryPreparation, TrackedFile
 from sastsimi.static_analysis.repository_profile import (
     ActiveStaticCapability,
     RepositoryProfiler,
@@ -164,7 +165,7 @@ def test_unknown_or_ambiguous_build_is_not_guessed(tmp_path: Path) -> None:
     assert result.status == "NEEDS_CONFIRMATION"
     assert result.languages == ()
     assert "LANGUAGE_UNCONFIRMED" in result.confirmation_reasons
-    assert "BUILD_UNCONFIRMED" in result.confirmation_reasons
+    assert "BUILD_OR_START_UNCONFIRMED" in result.confirmation_reasons
 
 
 def test_javascript_framework_uses_source_and_tracked_package_evidence(
@@ -175,7 +176,8 @@ def test_javascript_framework_uses_source_and_tracked_package_evidence(
         _write(
             tmp_path,
             "package.json",
-            b'{"dependencies":{"express":"^5.0.0"}}',
+            b'{"dependencies":{"express":"^5.0.0"},'
+            b'"scripts":{"start":"node src/server.js"}}',
         ),
     )
 
@@ -201,13 +203,95 @@ def test_package_declaration_alone_does_not_guess_a_language(tmp_path: Path) -> 
 
     assert result.status == "NEEDS_CONFIRMATION"
     assert result.languages == ()
-    assert result.confirmation_reasons == ("LANGUAGE_UNCONFIRMED",)
+    assert result.confirmation_reasons == (
+        "BUILD_OR_START_UNCONFIRMED",
+        "LANGUAGE_UNCONFIRMED",
+    )
+
+
+def test_large_unrelated_tracked_file_is_hashed_without_becoming_config(
+    tmp_path: Path,
+) -> None:
+    tracked = (
+        _write(tmp_path, "app.py", b"print('ok')\n"),
+        _write(tmp_path, "Dockerfile", b"FROM python:3.12-slim\n"),
+        _write(tmp_path, "assets/video.bin", b"x" * (2 * 1024 * 1024 + 1)),
+    )
+
+    result = RepositoryProfiler().build(
+        _preparation(tmp_path, tracked),
+        meta=_meta(),
+        workspace_ref=_workspace_ref(),
+    )
+
+    assert result.status == "READY"
+    large = next(
+        item for item in result.tracked_files if item.git_path.endswith(".bin")
+    )
+    assert large.size_bytes > 2 * 1024 * 1024
+    assert len(large.content_sha256) == 64
+
+
+def test_profile_contract_rejects_manifest_or_evidence_tampering(
+    tmp_path: Path,
+) -> None:
+    tracked = (
+        _write(tmp_path, "app.py", b"print('ok')\n"),
+        _write(tmp_path, "Dockerfile", b"FROM python:3.12-slim\n"),
+    )
+    result = RepositoryProfiler().build(
+        _preparation(tmp_path, tracked),
+        meta=_meta(),
+        workspace_ref=_workspace_ref(),
+    )
+
+    with pytest.raises(ValueError, match="REPOSITORY_PROFILE_MANIFEST_MISMATCH"):
+        type(result).model_validate(result.model_dump() | {"manifest_hash": "f" * 64})
+    language = result.languages[0].model_copy(update={"evidence_paths": ("other.py",)})
+    with pytest.raises(ValueError, match="REPOSITORY_PROFILE_MANIFEST_MISMATCH"):
+        type(result).model_validate(result.model_dump() | {"languages": (language,)})
+
+
+def test_repository_preparation_gaps_are_preserved_and_require_confirmation(
+    tmp_path: Path,
+) -> None:
+    tracked = (
+        _write(tmp_path, "app.py", b"print('ok')\n"),
+        _write(tmp_path, "Dockerfile", b"FROM python:3.12-slim\n"),
+    )
+    preparation = _preparation(tmp_path, tracked)
+    preparation = replace(
+        preparation,
+        gaps=(
+            CandidateGap(
+                "REPOSITORY",
+                "SUBMODULE_UNAVAILABLE",
+                "UNSUPPORTED",
+                "A tracked submodule was excluded.",
+                ("vendor/module",),
+                (),
+                (),
+                False,
+            ),
+        ),
+    )
+
+    result = RepositoryProfiler().build(
+        preparation,
+        meta=_meta(),
+        workspace_ref=_workspace_ref(),
+    )
+
+    assert result.status == "NEEDS_CONFIRMATION"
+    assert result.gaps[0].code == "SUBMODULE_UNAVAILABLE"
+    assert "REPOSITORY_GAP:SUBMODULE_UNAVAILABLE" in result.confirmation_reasons
 
 
 def test_tool_selection_requires_active_verified_capability(tmp_path: Path) -> None:
     tracked = (
         _write(tmp_path, "app.py", b"print('ok')\n"),
         _write(tmp_path, "requirements.txt", b""),
+        _write(tmp_path, "Dockerfile", b"FROM python:3.12-slim\n"),
     )
     repository = RepositoryProfiler().build(
         _preparation(tmp_path, tracked),
@@ -238,6 +322,7 @@ def test_tool_selection_blocks_when_required_capability_is_missing(
     tracked = (
         _write(tmp_path, "app.py", b"print('ok')\n"),
         _write(tmp_path, "requirements.txt", b""),
+        _write(tmp_path, "Dockerfile", b"FROM python:3.12-slim\n"),
     )
     repository = RepositoryProfiler().build(
         _preparation(tmp_path, tracked),
@@ -258,6 +343,7 @@ def test_tool_selection_blocks_when_one_detected_language_is_uncovered(
         _write(tmp_path, "app.py", b"print('ok')\n"),
         _write(tmp_path, "web.js", b"export const ok = true;\n"),
         _write(tmp_path, "requirements.txt", b""),
+        _write(tmp_path, "Dockerfile", b"FROM python:3.12-slim\n"),
     )
     repository = RepositoryProfiler().build(
         _preparation(tmp_path, tracked),

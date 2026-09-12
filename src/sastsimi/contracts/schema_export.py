@@ -47,7 +47,7 @@ from .records import PolicyCacheMeta, RecordMeta, RunMeta
 from .refs import HostConfigurationRef, PolicyCacheRef, RunStoredDataRef, StoredDataRef
 from .reporting import FindingIndexState, ReportProcessState
 from .result_registry import RESULT_REGISTRY
-from .static import CodeContextRequest, StaticToolProfile
+from .static import CodeContextRequest, RepositoryProfile, StaticToolProfile
 from .verification import PlaybookApplication, PlaybookPolicy, VerificationPlaybook
 from .work import StateTransition, TransitionCommit, WorkAttempt, WorkExecutionState
 
@@ -72,6 +72,7 @@ CORE_SCHEMAS: Mapping[str, type[BaseModel]] = MappingProxyType(
         "static_tool_profile": StaticToolProfile,
         "tool_capability_evidence": CapabilityApprovalEvidence,
         "runtime_capability_profile": RuntimeCapabilityProfile,
+        "repository_profile": RepositoryProfile,
         "vulnerability_hypothesis": VulnerabilityHypothesis,
         "playbook_application": PlaybookApplication,
         "dynamic_reproduction_state": DynamicReproductionState,

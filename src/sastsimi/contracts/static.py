@@ -9,6 +9,7 @@ from pydantic import AfterValidator, AwareDatetime, model_validator
 from ._domain import DomainRecord, exact, exact_set, same_scope, unique
 from ._domain import SafeDiagnostic as SafeDiagnostic
 from .base import ContractModel, NonEmptyStr, NonNegativeInt, PositiveInt, Sha256
+from .canonical_json import content_hash
 from .closure import validate_committed_output
 from .ids import AnalysisId, AttemptId, CommitId, ErrorId, GapId, WorkId, WorkspaceId
 from .records import RunMeta
@@ -176,7 +177,63 @@ class RepositoryConfigFile(ContractModel):
         "DOCKER_COMPOSE",
         "MAVEN_POM",
         "GRADLE",
+        "PACKAGE_LOCK",
+        "YARN_LOCK",
+        "PNPM_LOCK",
+        "PYTHON_LOCK",
+        "PIPFILE",
     ]
+
+
+class RepositoryExecutionHint(ContractModel):
+    """Tracked declaration that may be selected only by an ACTIVE capability."""
+
+    path: GitPath
+    kind: Literal["DOCKERFILE", "PACKAGE_SCRIPT", "PYTHON_SCRIPT"]
+    name: NonEmptyStr
+
+
+class RepositoryProfileLocation(ContractModel):
+    """Source location retained from a repository-preparation gap."""
+
+    file_path: GitPath
+    start_line: PositiveInt
+    start_column: PositiveInt | None
+    end_line: PositiveInt
+    end_column: PositiveInt | None
+
+    @model_validator(mode="after")
+    def range_shape(self) -> Self:
+        if self.end_line < self.start_line or (self.start_column is None) != (
+            self.end_column is None
+        ):
+            raise ValueError("INVALID_CODE_RANGE")
+        if (
+            self.start_line == self.end_line
+            and self.start_column is not None
+            and self.end_column is not None
+            and self.end_column <= self.start_column
+        ):
+            raise ValueError("INVALID_CODE_RANGE")
+        return self
+
+
+class RepositoryProfileGap(ContractModel):
+    code: NonEmptyStr
+    reason: Literal[
+        "MISSING", "FAILED", "TRUNCATED", "UNSUPPORTED", "BLOCKED", "TIMEOUT"
+    ]
+    description: NonEmptyStr
+    affected_paths: tuple[GitPath, ...]
+    affected_languages: tuple[NonEmptyStr, ...]
+    affected_locations: tuple[RepositoryProfileLocation, ...]
+    retryable: bool
+
+
+class RepositoryProfileError(ContractModel):
+    code: NonEmptyStr
+    safe_message: SafeDiagnostic
+    retryable: bool
 
 
 class RepositoryProfile(DomainRecord):
@@ -193,6 +250,9 @@ class RepositoryProfile(DomainRecord):
     languages: tuple[RepositoryLanguage, ...]
     frameworks: tuple[RepositoryFramework, ...]
     config_files: tuple[RepositoryConfigFile, ...]
+    execution_hints: tuple[RepositoryExecutionHint, ...]
+    gaps: tuple[RepositoryProfileGap, ...]
+    errors: tuple[RepositoryProfileError, ...]
     status: Literal["READY", "NEEDS_CONFIRMATION"]
     confirmation_reasons: tuple[NonEmptyStr, ...]
 
@@ -203,11 +263,32 @@ class RepositoryProfile(DomainRecord):
             or self.workspace_ref.record_id is None
         ):
             raise ValueError("REPOSITORY_PROFILE_WORKSPACE_INVALID")
-        unique(self.tracked_files)
-        unique(self.languages)
-        unique(self.frameworks)
-        unique(self.config_files)
+        unique(item.git_path for item in self.tracked_files)
+        unique(item.name for item in self.languages)
+        unique(item.name for item in self.frameworks)
+        unique(item.path for item in self.config_files)
+        unique((item.path, item.kind, item.name) for item in self.execution_hints)
+        unique((item.code, item.reason, item.description) for item in self.gaps)
+        unique((item.code, item.safe_message) for item in self.errors)
         unique(self.confirmation_reasons)
+        tracked = {item.git_path for item in self.tracked_files}
+        evidence_paths = {
+            path for item in self.languages for path in item.evidence_paths
+        } | {path for item in self.frameworks for path in item.evidence_paths}
+        declared_paths = {item.path for item in self.config_files} | {
+            item.path for item in self.execution_hints
+        }
+        if (
+            tuple(item.git_path for item in self.tracked_files)
+            != tuple(sorted(tracked))
+            or not evidence_paths <= tracked
+            or not declared_paths <= tracked
+            or self.manifest_hash
+            != content_hash(
+                tuple(item.model_dump(mode="json") for item in self.tracked_files)
+            )
+        ):
+            raise ValueError("REPOSITORY_PROFILE_MANIFEST_MISMATCH")
         if self.status == "READY" and self.confirmation_reasons:
             raise ValueError("REPOSITORY_PROFILE_STATUS_MISMATCH")
         if self.status == "NEEDS_CONFIRMATION" and not self.confirmation_reasons:

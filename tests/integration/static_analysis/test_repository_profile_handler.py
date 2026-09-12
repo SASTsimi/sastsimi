@@ -91,6 +91,7 @@ async def test_handler_publishes_profile_closed_over_ready_workspace(
             "pyproject.toml",
             b'[project]\nname="demo"\ndependencies=["fastapi"]\n',
         ),
+        _tracked(root, "Dockerfile", b"FROM python:3.12-slim\n"),
     )
     preparation = RepositoryPreparation(
         analysis_id=str(workspace.analysis_id),

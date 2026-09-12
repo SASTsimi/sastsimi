@@ -16,9 +16,12 @@ from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import RunStoredDataRef, StoredDataRef, reference
 from sastsimi.contracts.static import (
     RepositoryConfigFile,
+    RepositoryExecutionHint,
     RepositoryFramework,
     RepositoryLanguage,
     RepositoryProfile,
+    RepositoryProfileError,
+    RepositoryProfileGap,
     RepositoryTrackedFile,
     StaticToolProfile,
 )
@@ -43,6 +46,14 @@ _CONFIG_NAMES: dict[str, str] = {
     "pom.xml": "MAVEN_POM",
     "build.gradle": "GRADLE",
     "build.gradle.kts": "GRADLE",
+    "package-lock.json": "PACKAGE_LOCK",
+    "npm-shrinkwrap.json": "PACKAGE_LOCK",
+    "yarn.lock": "YARN_LOCK",
+    "pnpm-lock.yaml": "PNPM_LOCK",
+    "poetry.lock": "PYTHON_LOCK",
+    "uv.lock": "PYTHON_LOCK",
+    "pipfile.lock": "PYTHON_LOCK",
+    "pipfile": "PIPFILE",
 }
 _FRAMEWORK_DEPENDENCIES: dict[str, frozenset[str]] = {
     "DJANGO": frozenset({"django"}),
@@ -106,7 +117,12 @@ def _identity(details: os.stat_result) -> tuple[int, int, int, int, int, int, in
     )
 
 
-def _read_exact(root: Path, tracked: TrackedFile) -> bytes:
+def _read_exact(
+    root: Path,
+    tracked: TrackedFile,
+    *,
+    capture: bool,
+) -> tuple[bytes | None, str]:
     target = root.joinpath(*tracked.git_path.split("/"))
     descriptor = -1
     try:
@@ -117,7 +133,6 @@ def _read_exact(root: Path, tracked: TrackedFile) -> bytes:
             or before.st_nlink != 1
             or getattr(before, "st_file_attributes", 0) & 0x400
             or before.st_size != tracked.size_bytes
-            or before.st_size > _MAX_DETECTION_FILE_BYTES
         ):
             raise ValueError
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -125,18 +140,25 @@ def _read_exact(root: Path, tracked: TrackedFile) -> bytes:
         opened = os.fstat(descriptor)
         if _identity(opened) != _identity(before):
             raise ValueError
-        chunks: list[bytes] = []
+        chunks: list[bytes] | None = (
+            [] if capture and tracked.size_bytes <= _MAX_DETECTION_FILE_BYTES else None
+        )
+        git_digest = hashlib.sha1() if len(tracked.blob_id) == 40 else hashlib.sha256()
+        git_digest.update(b"blob " + str(tracked.size_bytes).encode("ascii") + b"\0")
+        sha256 = hashlib.sha256()
         remaining = tracked.size_bytes
         while remaining:
             chunk = os.read(descriptor, min(64 * 1024, remaining))
             if not chunk:
                 raise ValueError
-            chunks.append(chunk)
+            git_digest.update(chunk)
+            sha256.update(chunk)
+            if chunks is not None:
+                chunks.append(chunk)
             remaining -= len(chunk)
         if os.read(descriptor, 1):
             raise ValueError
         after = target.lstat()
-        raw = b"".join(chunks)
         if _identity(after) != _identity(opened):
             raise ValueError
     except (OSError, ValueError) as error:
@@ -144,13 +166,9 @@ def _read_exact(root: Path, tracked: TrackedFile) -> bytes:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-    return raw
-
-
-def _git_blob_id(raw: bytes, expected: str) -> str:
-    framed = b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
-    digest = hashlib.sha1 if len(expected) == 40 else hashlib.sha256
-    return digest(framed).hexdigest()
+    if git_digest.hexdigest() != tracked.blob_id:
+        raise ValueError("REPOSITORY_MANIFEST_MISMATCH")
+    return (None if chunks is None else b"".join(chunks), sha256.hexdigest())
 
 
 def _dependency_name(value: str) -> str:
@@ -164,14 +182,18 @@ def _dependency_name(value: str) -> str:
     return text.strip().replace("_", "-")
 
 
-def _toml_dependencies(raw: bytes) -> frozenset[str]:
+def _toml_details(raw: bytes) -> tuple[frozenset[str], tuple[str, ...]]:
     parsed = tomllib.loads(raw.decode("utf-8"))
     values: list[str] = []
+    scripts: set[str] = set()
     project = parsed.get("project")
     if isinstance(project, dict):
         dependencies = project.get("dependencies", ())
         if isinstance(dependencies, list):
             values.extend(item for item in dependencies if isinstance(item, str))
+        declared_scripts = project.get("scripts")
+        if isinstance(declared_scripts, dict):
+            scripts.update(str(item) for item in declared_scripts)
     tool = parsed.get("tool")
     if isinstance(tool, dict):
         poetry = tool.get("poetry")
@@ -179,7 +201,13 @@ def _toml_dependencies(raw: bytes) -> frozenset[str]:
             dependencies = poetry.get("dependencies")
             if isinstance(dependencies, dict):
                 values.extend(str(item) for item in dependencies)
-    return frozenset(filter(None, (_dependency_name(item) for item in values)))
+            declared_scripts = poetry.get("scripts")
+            if isinstance(declared_scripts, dict):
+                scripts.update(str(item) for item in declared_scripts)
+    return (
+        frozenset(filter(None, (_dependency_name(item) for item in values))),
+        tuple(sorted(scripts)),
+    )
 
 
 def _requirements_dependencies(raw: bytes) -> frozenset[str]:
@@ -191,7 +219,7 @@ def _requirements_dependencies(raw: bytes) -> frozenset[str]:
     return frozenset(filter(None, (_dependency_name(item) for item in values)))
 
 
-def _package_json_dependencies(raw: bytes) -> frozenset[str]:
+def _package_json_details(raw: bytes) -> tuple[frozenset[str], tuple[str, ...]]:
     parsed = json.loads(raw.decode("utf-8"))
     if not isinstance(parsed, dict):
         raise ValueError
@@ -206,7 +234,13 @@ def _package_json_dependencies(raw: bytes) -> frozenset[str]:
         if not isinstance(values, dict):
             raise ValueError
         names.update(str(name).lower() for name in values)
-    return frozenset(names)
+    scripts = parsed.get("scripts", {})
+    if not isinstance(scripts, dict) or any(
+        not isinstance(name, str) or not isinstance(value, str)
+        for name, value in scripts.items()
+    ):
+        raise ValueError
+    return frozenset(names), tuple(sorted(scripts))
 
 
 class RepositoryProfiler:
@@ -250,47 +284,76 @@ class RepositoryProfiler:
         if len(set(paths)) != len(paths):
             raise ValueError("REPOSITORY_MANIFEST_MISMATCH")
 
-        raw_files: dict[str, bytes] = {}
+        raw_configs: dict[str, bytes | None] = {}
         manifest: list[RepositoryTrackedFile] = []
+        language_paths: dict[str, list[str]] = {}
+        configs: list[RepositoryConfigFile] = []
+        confirmations: list[str] = []
         canonical_tracked = tuple(
             sorted(preparation.tracked_files, key=lambda item: item.git_path)
         )
         for item in canonical_tracked:
             if item.git_mode not in {"100644", "100755"}:
                 raise ValueError("REPOSITORY_MANIFEST_MISMATCH")
-            raw = _read_exact(root, item)
-            if _git_blob_id(raw, item.blob_id) != item.blob_id:
-                raise ValueError("REPOSITORY_MANIFEST_MISMATCH")
-            raw_files[item.git_path] = raw
-            manifest.append(
-                RepositoryTrackedFile.model_validate(
-                    asdict(item) | {"content_sha256": hashlib.sha256(raw).hexdigest()}
-                )
-            )
-
-        language_paths: dict[str, list[str]] = {}
-        configs: list[RepositoryConfigFile] = []
-        dependencies: dict[str, frozenset[str]] = {}
-        confirmations: list[str] = []
-        for path, raw in raw_files.items():
+            path = item.git_path
             suffix = PurePosixPath(path).suffix.lower()
             for language, suffixes in _LANGUAGE_SUFFIXES.items():
                 if suffix in suffixes:
                     language_paths.setdefault(language, []).append(path)
-            name = PurePosixPath(path).name.lower()
-            kind = _CONFIG_NAMES.get(name)
-            if kind is None:
-                continue
-            configs.append(
-                RepositoryConfigFile.model_validate({"path": path, "kind": kind})
+            kind = _CONFIG_NAMES.get(PurePosixPath(path).name.lower())
+            raw, sha256 = _read_exact(root, item, capture=kind is not None)
+            manifest.append(
+                RepositoryTrackedFile.model_validate(
+                    asdict(item) | {"content_sha256": sha256}
+                )
             )
+            if kind is not None:
+                configs.append(
+                    RepositoryConfigFile.model_validate({"path": path, "kind": kind})
+                )
+                raw_configs[path] = raw
+                if raw is None:
+                    confirmations.append("CONFIG_TOO_LARGE:" + path)
+
+        dependencies: dict[str, frozenset[str]] = {}
+        execution_hints: list[RepositoryExecutionHint] = []
+        for config in configs:
+            path, kind = config.path, config.kind
+            raw = raw_configs[path]
+            if raw is None:
+                continue
             try:
                 if kind == "PYPROJECT":
-                    dependencies[path] = _toml_dependencies(raw)
+                    dependencies[path], scripts = _toml_details(raw)
+                    execution_hints.extend(
+                        RepositoryExecutionHint(
+                            path=path,
+                            kind="PYTHON_SCRIPT",
+                            name=name,
+                        )
+                        for name in scripts
+                    )
                 elif kind == "REQUIREMENTS":
                     dependencies[path] = _requirements_dependencies(raw)
                 elif kind == "PACKAGE_JSON":
-                    dependencies[path] = _package_json_dependencies(raw)
+                    dependencies[path], scripts = _package_json_details(raw)
+                    execution_hints.extend(
+                        RepositoryExecutionHint(
+                            path=path,
+                            kind="PACKAGE_SCRIPT",
+                            name=name,
+                        )
+                        for name in scripts
+                        if name in {"build", "start"}
+                    )
+                elif kind == "DOCKERFILE":
+                    execution_hints.append(
+                        RepositoryExecutionHint(
+                            path=path,
+                            kind="DOCKERFILE",
+                            name="dockerfile",
+                        )
+                    )
             except (UnicodeError, ValueError):
                 confirmations.append("CONFIG_PARSE_FAILED:" + path)
 
@@ -316,22 +379,45 @@ class RepositoryProfiler:
                 )
             )
         )
-        config_kinds = {item.kind for item in configs}
-        has_build_evidence = bool(
-            config_kinds
-            & {
-                "REQUIREMENTS",
-                "PYPROJECT",
-                "PACKAGE_JSON",
-                "DOCKERFILE",
-                "MAVEN_POM",
-                "GRADLE",
-            }
-        )
         if not languages:
             confirmations.append("LANGUAGE_UNCONFIRMED")
-        if not has_build_evidence:
-            confirmations.append("BUILD_UNCONFIRMED")
+        if not execution_hints:
+            confirmations.append("BUILD_OR_START_UNCONFIRMED")
+        gaps = tuple(
+            RepositoryProfileGap.model_validate(
+                {
+                    "code": item.code,
+                    "reason": item.reason,
+                    "description": item.description,
+                    "affected_paths": item.affected_paths,
+                    "affected_languages": item.affected_languages,
+                    "affected_locations": tuple(
+                        {
+                            "file_path": location.file_path,
+                            "start_line": location.start_line,
+                            "start_column": location.start_column,
+                            "end_line": location.end_line,
+                            "end_column": location.end_column,
+                        }
+                        for location in item.affected_locations
+                    ),
+                    "retryable": item.retryable,
+                }
+            )
+            for item in preparation.gaps
+        )
+        errors = tuple(
+            RepositoryProfileError.model_validate(
+                {
+                    "code": item.code,
+                    "safe_message": item.safe_message,
+                    "retryable": item.retryable,
+                }
+            )
+            for item in preparation.errors
+        )
+        confirmations.extend("REPOSITORY_GAP:" + item.code for item in gaps)
+        confirmations.extend("REPOSITORY_ERROR:" + item.code for item in errors)
         reasons = tuple(sorted(set(confirmations)))
         return RepositoryProfile.model_validate(
             {
@@ -348,6 +434,14 @@ class RepositoryProfiler:
                 "config_files": tuple(
                     sorted(configs, key=lambda item: (item.kind, item.path))
                 ),
+                "execution_hints": tuple(
+                    sorted(
+                        execution_hints,
+                        key=lambda item: (item.path, item.kind, item.name),
+                    )
+                ),
+                "gaps": gaps,
+                "errors": errors,
                 "status": "NEEDS_CONFIRMATION" if reasons else "READY",
                 "confirmation_reasons": reasons,
             }

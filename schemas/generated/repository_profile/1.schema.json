@@ -134,7 +134,12 @@
             "DOCKERFILE",
             "DOCKER_COMPOSE",
             "MAVEN_POM",
-            "GRADLE"
+            "GRADLE",
+            "PACKAGE_LOCK",
+            "YARN_LOCK",
+            "PNPM_LOCK",
+            "PYTHON_LOCK",
+            "PIPFILE"
           ],
           "title": "Kind",
           "type": "string"
@@ -151,6 +156,40 @@
         "kind"
       ],
       "title": "RepositoryConfigFile",
+      "type": "object"
+    },
+    "RepositoryExecutionHint": {
+      "additionalProperties": false,
+      "description": "Tracked declaration that may be selected only by an ACTIVE capability.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "DOCKERFILE",
+            "PACKAGE_SCRIPT",
+            "PYTHON_SCRIPT"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Name",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "kind",
+        "name"
+      ],
+      "title": "RepositoryExecutionHint",
       "type": "object"
     },
     "RepositoryFramework": {
@@ -213,6 +252,158 @@
         "evidence_paths"
       ],
       "title": "RepositoryLanguage",
+      "type": "object"
+    },
+    "RepositoryProfileError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Code",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "safe_message": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Safe Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "safe_message",
+        "retryable"
+      ],
+      "title": "RepositoryProfileError",
+      "type": "object"
+    },
+    "RepositoryProfileGap": {
+      "additionalProperties": false,
+      "properties": {
+        "affected_languages": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Affected Languages",
+          "type": "array"
+        },
+        "affected_locations": {
+          "items": {
+            "$ref": "#/$defs/RepositoryProfileLocation"
+          },
+          "title": "Affected Locations",
+          "type": "array"
+        },
+        "affected_paths": {
+          "items": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "title": "Affected Paths",
+          "type": "array"
+        },
+        "code": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Code",
+          "type": "string"
+        },
+        "description": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Description",
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "MISSING",
+            "FAILED",
+            "TRUNCATED",
+            "UNSUPPORTED",
+            "BLOCKED",
+            "TIMEOUT"
+          ],
+          "title": "Reason",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "reason",
+        "description",
+        "affected_paths",
+        "affected_languages",
+        "affected_locations",
+        "retryable"
+      ],
+      "title": "RepositoryProfileGap",
+      "type": "object"
+    },
+    "RepositoryProfileLocation": {
+      "additionalProperties": false,
+      "description": "Source location retained from a repository-preparation gap.",
+      "properties": {
+        "end_column": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "End Column"
+        },
+        "end_line": {
+          "minimum": 1,
+          "title": "End Line",
+          "type": "integer"
+        },
+        "file_path": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "File Path",
+          "type": "string"
+        },
+        "start_column": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Start Column"
+        },
+        "start_line": {
+          "minimum": 1,
+          "title": "Start Line",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "file_path",
+        "start_line",
+        "start_column",
+        "end_line",
+        "end_column"
+      ],
+      "title": "RepositoryProfileLocation",
       "type": "object"
     },
     "RepositoryTrackedFile": {
@@ -337,11 +528,32 @@
       "title": "Confirmation Reasons",
       "type": "array"
     },
+    "errors": {
+      "items": {
+        "$ref": "#/$defs/RepositoryProfileError"
+      },
+      "title": "Errors",
+      "type": "array"
+    },
+    "execution_hints": {
+      "items": {
+        "$ref": "#/$defs/RepositoryExecutionHint"
+      },
+      "title": "Execution Hints",
+      "type": "array"
+    },
     "frameworks": {
       "items": {
         "$ref": "#/$defs/RepositoryFramework"
       },
       "title": "Frameworks",
+      "type": "array"
+    },
+    "gaps": {
+      "items": {
+        "$ref": "#/$defs/RepositoryProfileGap"
+      },
+      "title": "Gaps",
       "type": "array"
     },
     "languages": {
@@ -391,6 +603,9 @@
     "languages",
     "frameworks",
     "config_files",
+    "execution_hints",
+    "gaps",
+    "errors",
     "status",
     "confirmation_reasons"
   ],

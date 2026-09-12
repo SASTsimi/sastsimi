@@ -5,14 +5,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from sastsimi.contracts.canonical_json import content_hash
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import BudgetScopeRef, RunStoredDataRef, StoredDataRef
 from sastsimi.contracts.static import CodeWorkspace, RepositoryProfile
-from sastsimi.contracts.work import WorkExecutionState, WorkType
+from sastsimi.contracts.work import (
+    AttemptStatus,
+    WorkExecutionState,
+    WorkStatus,
+    WorkType,
+)
 from sastsimi.ports.dto import (
     MonotonicActionDeadline,
     ProcessReceipt,
     RepositoryPreparation,
+    WorkContext,
+    WorkHandlerResult,
 )
 from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.static_analysis.repository_profile import RepositoryProfiler
@@ -35,6 +43,18 @@ class PublishedRepositoryProfile:
     profile_ref: StoredDataRef
     work: WorkExecutionState
     integrity_receipts: tuple[ProcessReceipt, ...]
+
+
+@dataclass(frozen=True)
+class RepositoryProfileCall:
+    workspace: CodeWorkspace
+    workspace_ref: RunStoredDataRef
+    preparation: RepositoryPreparation
+    deadline: MonotonicActionDeadline
+
+
+class RepositoryProfileCallResolver(Protocol):
+    def __call__(self, context: WorkContext) -> RepositoryProfileCall: ...
 
 
 class RepositoryProfileHandler:
@@ -111,6 +131,14 @@ class RepositoryProfileHandler:
             identity,
             "STATIC_ANALYSIS",
             (profile,),
+            status=(
+                "SUCCEEDED" if profile.status == "READY" else "BLOCKED"
+            ),
+            cause=(
+                "COMPLETED"
+                if profile.status == "READY"
+                else "REPOSITORY_CONFIRMATION_REQUIRED"
+            ),
             action_input_refs=(workspace_ref,),
         )
         profile_ref = completed.output_refs[0]
@@ -119,3 +147,56 @@ class RepositoryProfileHandler:
         return PublishedRepositoryProfile(
             profile, profile_ref, completed, before + after
         )
+
+
+@dataclass(frozen=True)
+class RepositoryProfileWorkHandler:
+    """T14-facing adapter for one already-claimed profile work attempt."""
+
+    service: RepositoryProfileHandler
+    resolve_call: RepositoryProfileCallResolver
+    requester_identity_ref: BudgetScopeRef
+
+    async def execute(self, context: WorkContext) -> WorkHandlerResult:
+        work, attempt = context.work, context.attempt
+        if (
+            work.work_type != WorkType.REPOSITORY_PROFILE
+            or work.status != WorkStatus.RUNNING
+            or attempt.status != AttemptStatus.RUNNING
+            or work.active_attempt_id is None
+            or work.active_attempt_id != attempt.attempt_id
+            or work.work_id != attempt.work_id
+            or work.input_hash != attempt.input_hash
+            or work.input_hash != content_hash(work.input_refs)
+            or not isinstance(work.meta, RecordMeta)
+            or not isinstance(attempt.meta, RecordMeta)
+            or work.meta.analysis_id != attempt.meta.analysis_id
+            or work.meta.workspace_id != attempt.meta.workspace_id
+            or work.meta.commit_id != attempt.meta.commit_id
+        ):
+            raise ValueError("WORK_CONTEXT_NOT_CURRENT")
+        call = self.resolve_call(context)
+        if work.input_refs != (call.workspace_ref,):
+            raise ValueError("REPOSITORY_PROFILE_WORK_INVALID")
+        completed = await self.service.execute(
+            work=work,
+            identity=self.requester_identity_ref,
+            workspace=call.workspace,
+            workspace_ref=call.workspace_ref,
+            preparation=call.preparation,
+            deadline=call.deadline,
+        )
+        return WorkHandlerResult(
+            completed.work.output_refs,
+            action_input_refs=(call.workspace_ref,),
+        )
+
+
+__all__ = [
+    "PublishedRepositoryProfile",
+    "RepositoryProfileCall",
+    "RepositoryProfileCallResolver",
+    "RepositoryProfileGuard",
+    "RepositoryProfileHandler",
+    "RepositoryProfileWorkHandler",
+]
