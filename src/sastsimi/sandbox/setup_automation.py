@@ -20,6 +20,7 @@ from sastsimi.contracts.dynamic import (
 )
 from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.ports.dynamic_sandbox import SandboxSetupCleanupError
 
 from .cleanup import OwnedResourceRegistry
 from .controller import (
@@ -72,14 +73,6 @@ class PreparedSandbox:
     recipe: EnvironmentRecipe
     environment: SandboxEnvironment
     resource_refs: tuple[StoredDataRef, ...]
-
-
-class SandboxSetupCleanupError(RuntimeError):
-    """Setup failed and its exact owned container still requires cleanup."""
-
-    def __init__(self, prepared: PreparedSandbox) -> None:
-        super().__init__("OWNED_RESOURCE_CLEANUP_FAILED")
-        self.prepared = prepared
 
 
 @dataclass(frozen=True, slots=True)

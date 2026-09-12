@@ -1,6 +1,5 @@
-"""Dynamic reproduction composition boundary over sandbox/provider ports."""
+"""Dynamic reproduction application services over trusted ports."""
 
-from .composition import T11Services, compose_t11_services
 from .fake_closure import (
     require_cleanup_result,
     require_executed_command,
@@ -33,6 +32,4 @@ __all__ = [
     "ProductionDynamicExecutor",
     "ProductionDynamicWorkflow",
     "RuntimeDynamicRecordSink",
-    "T11Services",
-    "compose_t11_services",
 ]

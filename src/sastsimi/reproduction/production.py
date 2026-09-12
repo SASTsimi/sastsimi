@@ -7,7 +7,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast
 
-from sastsimi.agents.dynamic_reproduction import DynamicReproductionAgent
 from sastsimi.contracts.actions import ActionRequest, RequesterRole
 from sastsimi.contracts.budget import DynamicReproductionLifecycleProfile
 from sastsimi.contracts.canonical_json import content_hash
@@ -37,21 +36,22 @@ from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.artifact_store import ArtifactStore
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.dto import Record, WorkHandlerResult
-from sastsimi.ports.id_generator import IdGenerator
-from sastsimi.runtime.llm_call_service import PersistedLLMInvocation
-from sastsimi.runtime.workflow_runner import WorkflowRunner
-from sastsimi.sandbox.controller import SandboxController, SandboxRunSpec
-from sastsimi.sandbox.docker_adapter import DockerCommandOutcome
-from sastsimi.sandbox.session_manager import (
-    DynamicFinalizationInput,
-    ReproductionSessionManager,
-)
-from sastsimi.sandbox.setup_automation import (
-    DockerLifecyclePort,
-    PreparedSandbox,
-    ReproductionSetupAutomation,
+from sastsimi.ports.dynamic_sandbox import (
+    DockerCommandOutcomeView,
+    DynamicDockerExecutionPort,
+    PreparedSandboxView,
+    ReproductionSetupPort,
+    SandboxControllerPort,
+    SandboxRunSpecView,
     SandboxSetupCleanupError,
 )
+from sastsimi.ports.id_generator import IdGenerator
+from sastsimi.ports.llm_invocation import PersistedLLMInvocation
+from sastsimi.ports.reproduction_session import (
+    DynamicFinalizationInput,
+    ReproductionSessionPort,
+)
+from sastsimi.runtime.workflow_runner import WorkflowRunner
 
 from .service import (
     DynamicAgentPort,
@@ -72,7 +72,7 @@ class DynamicSandboxAuthorization:
     sandbox_profile: SandboxProfile
     lifecycle_profile: DynamicReproductionLifecycleProfile
     run_policy_state_ref: StoredDataRef
-    run_spec: SandboxRunSpec
+    run_spec: SandboxRunSpecView
 
 
 type DynamicSandboxAuthorizationResolver = Callable[
@@ -186,10 +186,10 @@ class ProductionDynamicWorkflow:
         self,
         *,
         work: WorkExecutionState,
-        controller: SandboxController,
-        setup: ReproductionSetupAutomation,
-        docker: DockerLifecyclePort,
-        sessions: ReproductionSessionManager,
+        controller: SandboxControllerPort,
+        setup: ReproductionSetupPort,
+        docker: DynamicDockerExecutionPort,
+        sessions: ReproductionSessionPort,
         artifacts: ArtifactStore,
         clock: Clock,
         ids: IdGenerator,
@@ -207,7 +207,7 @@ class ProductionDynamicWorkflow:
         self._sink = sink
         self._authorization = authorization
         self._records: dict[str, Record] = {}
-        self._prepared: PreparedSandbox | None = None
+        self._prepared: PreparedSandboxView | None = None
         self._policy: SandboxPolicyDecision | None = None
         self._log: AgentLog | None = None
         self._cleanup: CleanupResult | None = None
@@ -1009,7 +1009,7 @@ class ProductionDynamicWorkflow:
             input_refs,
         )
 
-    async def _remember_prepared(self, prepared: PreparedSandbox) -> None:
+    async def _remember_prepared(self, prepared: PreparedSandboxView) -> None:
         self._prepared = prepared
         self._recipes.append(prepared.recipe)
         self._environments.append(prepared.environment)
@@ -1108,7 +1108,7 @@ class ProductionDynamicWorkflow:
         return stored
 
     def _store_observations(
-        self, outcome: DockerCommandOutcome
+        self, outcome: DockerCommandOutcomeView
     ) -> tuple[StoredDataRef, ...]:
         refs = tuple(
             self._artifacts.commit(
@@ -1149,7 +1149,7 @@ class ProductionDynamicWorkflow:
             raise ValueError("SANDBOX_POLICY_REQUIRED")
         return cast(StoredDataRef, reference(self._policy))
 
-    def _require_prepared(self) -> PreparedSandbox:
+    def _require_prepared(self) -> PreparedSandboxView:
         if self._prepared is None:
             raise ValueError("SANDBOX_ENVIRONMENT_REQUIRED")
         return self._prepared
@@ -1220,7 +1220,7 @@ class ProductionDynamicWorkflow:
 class ProductionDynamicExecutor:
     """Create an isolated attempt-local workflow adapter for every invocation."""
 
-    agent: DynamicReproductionAgent | DynamicAgentPort
+    agent: DynamicAgentPort
     workflow_factory: Callable[[WorkExecutionState], ProductionDynamicWorkflow]
 
     async def __call__(

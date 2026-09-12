@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TextIO, cast
+from typing import TYPE_CHECKING, Literal, Protocol, TextIO, cast
 
 from sastsimi.config.loader import ConfigError as ConfigError
 from sastsimi.config.loader import load_config
@@ -22,7 +22,7 @@ from sastsimi.contracts.ids import (
     WorkspaceId,
 )
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef
+from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
 from sastsimi.logging import SafeJsonHandler, safe_event
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
@@ -35,9 +35,12 @@ from sastsimi.storage.action_validator import (
 from sastsimi.storage.schema_version import MigrationRequired as MigrationRequired
 
 if TYPE_CHECKING:
+    from sastsimi.contracts.dynamic import DynamicReproductionRequest
     from sastsimi.contracts.evaluation import AnalysisRunResult
+    from sastsimi.contracts.hypothesis import HypothesisProcessState
     from sastsimi.contracts.reporting import ReportDraft
     from sastsimi.contracts.static import StaticToolProfile
+    from sastsimi.contracts.work import WorkExecutionState
     from sastsimi.orchestration.fake_pipeline import FakePipeline
     from sastsimi.orchestration.fake_scenario_runtime import WorkflowBundle
     from sastsimi.orchestration.hypothesis_workflow import HypothesisWorkflow
@@ -54,14 +57,15 @@ if TYPE_CHECKING:
         StaticNormalizationPublisher,
     )
     from sastsimi.ports.context import ContextLineageReaderPort
-    from sastsimi.ports.dto import StaticRuleMapping
+    from sastsimi.ports.dto import StaticRuleMapping, WorkHandlerResult
     from sastsimi.ports.static_tool import StaticProcessAdapter
     from sastsimi.ports.workspace import WorkspaceLocatorPort
-    from sastsimi.reproduction.composition import T11Services
     from sastsimi.reproduction.production import DynamicSandboxAuthorizationResolver
+    from sastsimi.reproduction.service import DynamicStageAuthorizations
     from sastsimi.runtime.workflow_runner import WorkflowRunner
     from sastsimi.static_analysis.coordinator import StaticToolCoordinator
     from sastsimi.static_analysis.normalizer import DecoderKey, RawDecoder
+    from sastsimi.verification.completion import VerificationCompletionCoordinator
     from sastsimi.verification.context_service import (
         ContextRetrievalService,
         TrackedFilesResolver,
@@ -70,6 +74,131 @@ if TYPE_CHECKING:
     from sastsimi.verification.revision_workflow import RevisionWorkflow
     from sastsimi.verification.service import VerificationService
     from sastsimi.verification.verdict_router import VerdictRouter
+
+
+class DynamicExecutor(Protocol):
+    async def __call__(
+        self,
+        *,
+        work: WorkExecutionState,
+        request: DynamicReproductionRequest,
+        request_ref: StoredDataRef,
+        authorizations: DynamicStageAuthorizations,
+    ) -> WorkHandlerResult: ...
+
+
+type CurrentProcessResolver = Callable[
+    [DynamicReproductionRequest], HypothesisProcessState
+]
+
+
+@dataclass(frozen=True)
+class T11Services:
+    """Production T11 slice assembled only at the application composition root."""
+
+    execute_dynamic: DynamicExecutor
+    current_process: CurrentProcessResolver
+    completion: VerificationCompletionCoordinator
+
+    async def execute(
+        self,
+        *,
+        work: WorkExecutionState,
+        request: DynamicReproductionRequest,
+        request_ref: StoredDataRef,
+        authorizations: DynamicStageAuthorizations,
+    ) -> WorkHandlerResult:
+        process = self.current_process(request)
+        _require_current_dynamic_request(work, request, request_ref, process)
+        result = await self.execute_dynamic(
+            work=work,
+            request=request,
+            request_ref=request_ref,
+            authorizations=authorizations,
+        )
+        if len(result.output_refs) != 1 or any(
+            output.data_kind != "dynamic_reproduction_result"
+            for output in result.output_refs
+        ):
+            raise ValueError("R7_OUTPUT_AUTHORITY_DENIED")
+        return result
+
+
+def _require_current_dynamic_request(
+    work: WorkExecutionState,
+    request: DynamicReproductionRequest,
+    request_ref: StoredDataRef,
+    process: HypothesisProcessState,
+) -> None:
+    if not isinstance(work.meta, RecordMeta) or not isinstance(
+        process.meta, RecordMeta
+    ):
+        raise ValueError("DYNAMIC_REQUEST_NOT_CURRENT")
+    if (
+        reference(request) != request_ref
+        or work.work_type != "DYNAMIC_REPRO"
+        or work.status != "RUNNING"
+        or work.active_attempt_id is None
+        or work.input_refs != (request_ref,)
+        or request.verification_generation != work.work_generation
+        or process.status != "VERIFYING"
+        or process.verification_generation != request.verification_generation
+        or process.verification_assignment_ref != request.verification_assignment_ref
+        or request.meta.analysis_id != work.meta.analysis_id
+        or request.meta.workspace_id != work.meta.workspace_id
+        or request.meta.commit_id != work.meta.commit_id
+        or request.meta.hypothesis_id != work.meta.hypothesis_id
+        or process.meta.analysis_id != work.meta.analysis_id
+        or process.meta.workspace_id != work.meta.workspace_id
+        or process.meta.commit_id != work.meta.commit_id
+        or process.meta.hypothesis_id != work.meta.hypothesis_id
+    ):
+        raise ValueError("DYNAMIC_REQUEST_NOT_CURRENT")
+
+
+def _current_process_from(
+    records: Callable[[str, str], tuple[object, ...]],
+) -> CurrentProcessResolver:
+    """Build an exact current-process resolver over the runtime query port."""
+
+    from sastsimi.contracts.hypothesis import HypothesisProcessState
+
+    def resolve(request: DynamicReproductionRequest) -> HypothesisProcessState:
+        candidates = tuple(
+            item
+            for item in records(
+                str(request.meta.analysis_id), "hypothesis_process_state"
+            )
+            if isinstance(item, HypothesisProcessState)
+            and item.meta.hypothesis_id == request.meta.hypothesis_id
+        )
+        if len(candidates) != 1:
+            raise ValueError("DYNAMIC_REQUEST_NOT_CURRENT")
+        return candidates[0]
+
+    return resolve
+
+
+def _dynamic_executor(
+    execute: Callable[..., Awaitable[WorkHandlerResult]],
+) -> DynamicExecutor:
+    """Narrow an injected workflow method to the T11 executor seam."""
+
+    async def invoke(
+        *,
+        work: WorkExecutionState,
+        request: DynamicReproductionRequest,
+        request_ref: StoredDataRef,
+        authorizations: DynamicStageAuthorizations,
+    ) -> WorkHandlerResult:
+        return await execute(
+            work=work,
+            request=request,
+            request_ref=request_ref,
+            authorizations=authorizations,
+        )
+
+    return invoke
 
 
 @dataclass(frozen=True)
@@ -727,7 +856,6 @@ def build_t10_services(
     from sastsimi.contracts.llm import LLMInvocationLog
     from sastsimi.contracts.refs import reference
     from sastsimi.contracts.verification import ConEvidenceResult, ProEvidenceResult
-    from sastsimi.contracts.work import WorkExecutionState
     from sastsimi.orchestration.hypothesis_workflow import HypothesisWorkflow
     from sastsimi.ports.llm_invocation import PersistedLLMInvocation
     from sastsimi.prompts.builder import PromptBuilder
@@ -886,7 +1014,19 @@ def build_t11_services(
     """Build the real local-Docker T11 slice after trusted config resolution."""
 
     from sastsimi.agents.dynamic_reproduction import DynamicReproductionAgent
-    from sastsimi.reproduction.composition import compose_t11_services
+    from sastsimi.contracts.ids import WorkId
+    from sastsimi.ports.dynamic_sandbox import (
+        DynamicDockerExecutionPort,
+        ReproductionSetupPort,
+        SandboxControllerPort,
+    )
+    from sastsimi.ports.reproduction_session import ReproductionSessionPort
+    from sastsimi.reproduction.production import (
+        ProductionDynamicExecutor,
+        ProductionDynamicWorkflow,
+        RuntimeDynamicRecordSink,
+    )
+    from sastsimi.reproduction.service import DynamicAgentPort
     from sastsimi.sandbox.cleanup import OwnedResourceRegistry
     from sastsimi.sandbox.controller import SandboxController
     from sastsimi.sandbox.docker_adapter import DockerAdapter
@@ -894,6 +1034,7 @@ def build_t11_services(
     from sastsimi.sandbox.recipe_store import EnvironmentRecipeStore
     from sastsimi.sandbox.session_manager import ReproductionSessionManager
     from sastsimi.sandbox.setup_automation import ReproductionSetupAutomation
+    from sastsimi.verification.completion import VerificationCompletionCoordinator
 
     artifacts = runtime.unit_of_work.artifacts
     docker = DockerAdapter(docker_executable)
@@ -915,18 +1056,46 @@ def build_t11_services(
         ids=ids,
         clock=clock,
     )
-    return compose_t11_services(
-        runtime=runtime,
-        runner=runner,
-        agent=agent,
-        controller=controller,
-        setup=setup,
-        docker=docker,
-        sessions=ReproductionSessionManager(clock=clock, ids=ids),
-        artifacts=artifacts,
-        clock=clock,
-        ids=ids,
-        role_identity_refs=role_identity_refs,
-        sandbox_authorization=sandbox_authorization,
-        verification=verification,
+    sessions = ReproductionSessionManager(clock=clock, ids=ids)
+    sink = RuntimeDynamicRecordSink(runner, role_identity_refs)
+    process_resolver = _current_process_from(runtime.queries.current_records)
+
+    def resolve_work(work_id: WorkId) -> WorkExecutionState | None:
+        try:
+            return runtime.work.get(str(work_id))
+        except LookupError:
+            return None
+
+    verification_identity = role_identity_refs.get(RequesterRole.VERIFICATION)
+    if verification_identity is None:
+        raise ValueError("VERIFICATION_IDENTITY_REQUIRED")
+
+    def workflow_factory(work: WorkExecutionState) -> ProductionDynamicWorkflow:
+        return ProductionDynamicWorkflow(
+            work=work,
+            controller=cast(SandboxControllerPort, controller),
+            setup=cast(ReproductionSetupPort, setup),
+            docker=cast(DynamicDockerExecutionPort, docker),
+            sessions=cast(ReproductionSessionPort, sessions),
+            artifacts=artifacts,
+            clock=clock,
+            ids=ids,
+            sink=sink,
+            authorization=sandbox_authorization,
+        )
+
+    production = ProductionDynamicExecutor(
+        cast(DynamicAgentPort, agent), workflow_factory
+    )
+    return T11Services(
+        execute_dynamic=_dynamic_executor(production),
+        current_process=process_resolver,
+        completion=VerificationCompletionCoordinator(
+            verification=verification,
+            runner=runner,
+            records=runtime.unit_of_work.records,
+            work_resolver=resolve_work,
+            current_process=process_resolver,
+            verification_identity_ref=verification_identity,
+        ),
     )

@@ -8,7 +8,7 @@ from typing import cast
 
 import pytest
 
-from sastsimi.bootstrap import build_t11_services
+from sastsimi.bootstrap import T11Services, build_t11_services
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.dynamic import (
     AgentLogEvent,
@@ -22,7 +22,6 @@ from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.dto import WorkHandlerResult
 from sastsimi.prompts.dynamic_reproduction import DYNAMIC_REPRODUCTION_PROMPTS
 from sastsimi.prompts.registry import REQUIRED_TEMPLATE_SECTIONS
-from sastsimi.reproduction.composition import T11Services, compose_t11_services
 from sastsimi.reproduction.service import DynamicStageAuthorizations
 from sastsimi.sandbox.session_manager import ReproductionSessionManager
 from sastsimi.verification.completion import VerificationCompletionCoordinator
@@ -211,9 +210,8 @@ def test_production_bootstrap_uses_real_sandbox_components() -> None:
     assert "FakeSandboxAdapter" not in source
     assert "verification=verification" in source
 
-    composition = inspect.getsource(compose_t11_services)
-    assert "completion=VerificationCompletionCoordinator(" in composition
-    assert "verification=verification" in composition
+    assert "completion=VerificationCompletionCoordinator(" in source
+    assert "verification=verification" in source
 
 
 def test_session_start_binds_the_exact_allow_policy_reference() -> None:
