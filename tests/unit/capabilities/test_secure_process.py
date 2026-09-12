@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -31,22 +32,63 @@ def test_executable_registry_rejects_mutable_or_indirect_paths(tmp_path: Path) -
         ProductionExecutableRegistry({"tool": link}, forbidden_roots=())
 
 
+def test_executable_registry_rejects_user_writable_direct_path(tmp_path: Path) -> None:
+    executable = tmp_path / "user-controlled.exe"
+    executable.write_bytes(b"tool")
+
+    with pytest.raises(ValueError, match="CAPABILITY_EXECUTABLE_PATH_DENIED"):
+        ProductionExecutableRegistry({"tool": executable}, forbidden_roots=())
+
+
 def test_probe_process_receives_only_minimal_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SASTSIMI_FORBIDDEN_SECRET", "must-not-propagate")
+    monkeypatch.setenv("HOME", "must-not-propagate-home")
+    monkeypatch.setenv("USERPROFILE", "must-not-propagate-profile")
+    monkeypatch.setenv("DOCKER_CONFIG", "must-not-propagate-docker-config")
     result = SubprocessCommandProbeRunner().run(
         Path(sys.executable),
         (
             "-c",
-            "import os; print('leaked' if "
-            "'SASTSIMI_FORBIDDEN_SECRET' in os.environ else 'clean')",
+            "import os; denied={'SASTSIMI_FORBIDDEN_SECRET','HOME',"
+            "'USERPROFILE','DOCKER_CONFIG'}; print('leaked' if "
+            "denied & os.environ.keys() else 'clean')",
         ),
         timeout_ms=5_000,
     )
 
     assert result.succeeded is True
     assert result.safe_stdout == "clean"
+
+
+def test_terminate_tree_targets_saved_group_after_parent_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[int, int]] = []
+
+    class ExitedParent:
+        pid = 4242
+
+        @staticmethod
+        def poll() -> int:
+            return 0
+
+        @staticmethod
+        def kill() -> None:
+            raise AssertionError("process-only fallback must not be used")
+
+    monkeypatch.setattr(
+        os,
+        "killpg",
+        lambda process_group, sig: calls.append((process_group, sig)),
+        raising=False,
+    )
+    monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
+
+    SubprocessCommandProbeRunner._terminate_tree(ExitedParent())  # type: ignore[arg-type]
+
+    assert calls == [(4242, 9)]
 
 
 def test_probe_preserves_bounded_structured_output_beyond_version_length() -> None:

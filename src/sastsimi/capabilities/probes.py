@@ -7,8 +7,8 @@ import asyncio
 import hashlib
 import json
 import os
-import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -34,13 +34,10 @@ _MINIMAL_ENV_KEYS = frozenset(
     {
         "SYSTEMROOT",
         "WINDIR",
-        "USERPROFILE",
-        "HOME",
         "TMP",
         "TEMP",
         "LANG",
         "LC_ALL",
-        "DOCKER_CONFIG",
     }
 )
 
@@ -194,9 +191,9 @@ class SubprocessCommandProbeRunner:
 
     @staticmethod
     def _terminate_tree(process: subprocess.Popen[bytes]) -> None:
-        if process.poll() is not None:
-            return
         try:
+            # start_new_session=True makes the original pid the process-group id.
+            # The group remains addressable after its leader exits.
             kill_group = cast(
                 Callable[[int, int], None],
                 os.killpg,  # type: ignore[attr-defined]
@@ -292,11 +289,6 @@ class OpenAIResponsesProbe:
             return False
 
 
-def locate_executable(name: str) -> Path | None:
-    found = shutil.which(name)
-    return Path(found).resolve(strict=True) if found is not None else None
-
-
 class ProductionExecutableRegistry:
     """Closed allowlist of absolute executables outside mutable task roots."""
 
@@ -312,20 +304,6 @@ class ProductionExecutableRegistry:
             if path is not None
         }
 
-    @classmethod
-    def discover(
-        cls,
-        *,
-        names: tuple[str, ...],
-        forbidden_roots: tuple[Path, ...],
-    ) -> ProductionExecutableRegistry:
-        entries: dict[str, Path] = {"python": Path(sys.executable)}
-        for name in names:
-            found = shutil.which(name)
-            if found is not None:
-                entries[name] = Path(found)
-        return cls(entries, forbidden_roots=forbidden_roots)
-
     def resolve(self, key: str) -> Path | None:
         path = self._entries.get(key)
         return self._validate(path) if path is not None else None
@@ -336,9 +314,10 @@ class ProductionExecutableRegistry:
                 raise ValueError
             current = path
             while True:
-                stat = current.lstat()
+                metadata = current.lstat()
                 if current.is_symlink() or (
-                    getattr(stat, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT
+                    getattr(metadata, "st_file_attributes", 0)
+                    & _WINDOWS_REPARSE_POINT
                 ):
                     raise ValueError
                 if current.parent == current:
@@ -353,9 +332,87 @@ class ProductionExecutableRegistry:
                 except ValueError:
                     continue
                 raise ValueError
+            if not _trusted_executable_acl(resolved):
+                raise ValueError
             return resolved
         except (OSError, ValueError) as error:
             raise ValueError("CAPABILITY_EXECUTABLE_PATH_DENIED") from error
+
+
+def _trusted_executable_acl(path: Path) -> bool:
+    """Require a path that the effective account cannot replace or modify."""
+
+    if os.name == "nt":
+        return not _windows_path_is_mutable(path)
+    current = path
+    while True:
+        metadata = current.lstat()
+        if metadata.st_uid != 0 or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return False
+        if current.parent == current:
+            return True
+        current = current.parent
+
+
+def _windows_path_is_mutable(path: Path) -> bool:
+    """Use the effective Windows token to test file and parent write rights."""
+
+    import ctypes
+    from ctypes import wintypes
+
+    create_file = ctypes.windll.kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    close_handle = ctypes.windll.kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    invalid = ctypes.c_void_p(-1).value
+    share_all = 0x00000001 | 0x00000002 | 0x00000004
+    open_existing = 3
+    backup_semantics = 0x02000000
+
+    def can_open(candidate: Path, access: int, *, directory: bool) -> bool:
+        handle = create_file(
+            str(candidate),
+            access,
+            share_all,
+            None,
+            open_existing,
+            backup_semantics if directory else 0,
+            None,
+        )
+        if handle == invalid:
+            return False
+        close_handle(handle)
+        return True
+
+    file_rights = (0x40000000, 0x00010000, 0x00040000, 0x00080000)
+    if any(can_open(path, access, directory=False) for access in file_rights):
+        return True
+    directory_rights = (
+        0x00000002,
+        0x00000040,
+        0x00010000,
+        0x00040000,
+        0x00080000,
+    )
+    current = path.parent
+    while True:
+        if any(
+            can_open(current, access, directory=True) for access in directory_rights
+        ):
+            return True
+        if current.parent == current:
+            return False
+        current = current.parent
 
 
 def sha256_file(path: Path) -> str:
@@ -419,7 +476,6 @@ __all__ = [
     "OpenAIResponsesProbe",
     "ProductionExecutableRegistry",
     "SubprocessCommandProbeRunner",
-    "locate_executable",
     "python_ast_observation",
     "safe_repository_loader_control",
     "sha256_file",

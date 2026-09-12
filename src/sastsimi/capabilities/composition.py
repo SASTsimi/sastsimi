@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import os
 import platform
+import sys
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, cast
@@ -94,8 +95,18 @@ class _NativeApprovalIdentity:
 class ProductionCapabilityProbeService:
     """Narrow public facade; dependency injection exists only in the internal engine."""
 
-    def __init__(self, data_dir: Path, *, host_id: str) -> None:
-        self.__engine = _build_production_engine(data_dir, host_id=host_id)
+    def __init__(
+        self,
+        data_dir: Path,
+        *,
+        host_id: str,
+        executable_paths: Mapping[str, Path],
+    ) -> None:
+        self.__engine = _build_production_engine(
+            data_dir,
+            host_id=host_id,
+            executable_paths=executable_paths,
+        )
 
     def probe(
         self,
@@ -139,7 +150,12 @@ def _host_platform() -> tuple[CapabilityOperatingSystem, CapabilityArchitecture]
     )
 
 
-def _build_production_engine(data_dir: Path, *, host_id: str) -> _CapabilityProbeEngine:
+def _build_production_engine(
+    data_dir: Path,
+    *,
+    host_id: str,
+    executable_paths: Mapping[str, Path],
+) -> _CapabilityProbeEngine:
     if not host_id.strip():
         raise ValueError("CAPABILITY_HOST_REQUIRED")
     paths = RuntimePaths(data_dir)
@@ -159,8 +175,11 @@ def _build_production_engine(data_dir: Path, *, host_id: str) -> _CapabilityProb
         capability_host_id=host_id,
     )
     operating_system, architecture = _host_platform()
-    executable_registry = ProductionExecutableRegistry.discover(
-        names=("git", "opengrep", "docker", "codeql"),
+    allowed_executables = frozenset({"git", "opengrep", "docker", "codeql"})
+    if not set(executable_paths) <= allowed_executables:
+        raise ValueError("CAPABILITY_EXECUTABLE_KEY_UNSUPPORTED")
+    executable_registry = ProductionExecutableRegistry(
+        {"python": Path(sys.executable), **dict(executable_paths)},
         forbidden_roots=(
             data_dir,
             data_dir / "workspaces",
@@ -187,11 +206,18 @@ def _build_production_engine(data_dir: Path, *, host_id: str) -> _CapabilityProb
 
 
 def build_production_capability_probe_service(
-    data_dir: Path, *, host_id: str
+    data_dir: Path,
+    *,
+    host_id: str,
+    executable_paths: Mapping[str, Path],
 ) -> ProductionCapabilityProbeService:
     """Build the non-injectable production probe/list/approve application API."""
 
-    return ProductionCapabilityProbeService(data_dir, host_id=host_id)
+    return ProductionCapabilityProbeService(
+        data_dir,
+        host_id=host_id,
+        executable_paths=executable_paths,
+    )
 
 
 __all__ = [

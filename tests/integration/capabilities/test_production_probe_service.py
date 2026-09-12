@@ -353,12 +353,12 @@ def test_public_production_facade_has_no_dependency_injection_or_caller_identity
     build_parameters = inspect.signature(
         build_production_capability_probe_service
     ).parameters
-    assert set(build_parameters) == {"data_dir", "host_id"}
+    assert set(build_parameters) == {"data_dir", "host_id", "executable_paths"}
 
     assert "command_runner" not in build_parameters
     assert "store" not in build_parameters
     constructor = inspect.signature(ProductionCapabilityProbeService).parameters
-    assert set(constructor) == {"data_dir", "host_id"}
+    assert set(constructor) == {"data_dir", "host_id", "executable_paths"}
     assert (
         "approved_by"
         not in inspect.signature(ProductionCapabilityProbeService.approve).parameters
