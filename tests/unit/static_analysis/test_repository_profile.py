@@ -306,6 +306,7 @@ class _Resolver:
         *,
         missing: tuple[str, str] | tuple[tuple[str, str], ...] | None = None,
     ) -> None:
+        self.missing: frozenset[tuple[str, str]]
         if missing is None:
             self.missing = frozenset()
         elif missing and isinstance(missing[0], tuple):
