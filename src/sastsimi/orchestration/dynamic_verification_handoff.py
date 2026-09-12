@@ -415,6 +415,24 @@ class DynamicParentResumeService:
                 WorkStatus.PARTIAL,
             }:
                 continue
+            if not isinstance(work.parent_work_ref, StoredDataRef):
+                raise ValueError("DYNAMIC_PARENT_REQUIRED")
+            historical_parent = self._exact(
+                work.parent_work_ref, WorkExecutionState
+            )
+            current_parent = self.runner.runtime.work.get(
+                str(historical_parent.work_id)
+            )
+            # Historical children from an older Technical REVISE generation,
+            # and parents already settled by another recovery pass, are not
+            # pending handoffs. An explicit late-result callback still fails
+            # closed in ``resume``.
+            if (
+                current_parent.work_generation != work.work_generation
+                or current_parent.status
+                not in {WorkStatus.BLOCKED, WorkStatus.READY, WorkStatus.RUNNING}
+            ):
+                continue
             parent = self.resume(str(work.work_id))
             if parent.status == WorkStatus.READY and parent not in resumed:
                 resumed.append(parent)
