@@ -7,6 +7,7 @@ Verification parent READY, but it must return immediately.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, cast
 
@@ -20,6 +21,7 @@ from sastsimi.agents.verification import (
 from sastsimi.chaining.work_handlers import require_claimed_context
 from sastsimi.contracts.canonical_json import canonical_bytes
 from sastsimi.contracts.domain import same_scope
+from sastsimi.contracts.hypothesis import VulnerabilityHypothesis
 from sastsimi.contracts.llm import (
     LLMInvocationLog,
     LLMInvocationRequest,
@@ -30,11 +32,18 @@ from sastsimi.contracts.records import RecordMeta
 from sastsimi.contracts.refs import (
     BudgetScopeRef,
     RecordRef,
+    ReferencedRecord,
+    RunStoredDataRef,
     StoredDataRef,
     reference,
 )
 from sastsimi.contracts.static import StaticFactBundle
-from sastsimi.contracts.verification import VerificationInitialAssessment
+from sastsimi.contracts.verification import (
+    PlaybookApplication,
+    PlaybookPolicy,
+    VerificationInitialAssessment,
+    VerificationPlaybook,
+)
 from sastsimi.contracts.work import (
     SubjectType,
     WorkExecutionState,
@@ -56,6 +65,8 @@ from sastsimi.runtime.workflow_runner import WorkflowRunner
 from sastsimi.verification.completion import VerificationCompletion
 from sastsimi.verification.debate_service import (
     AuthorizedLLMCall,
+    DebateIncompleteError,
+    DebateResult,
     DebateService,
 )
 from sastsimi.verification.service import VerificationService
@@ -64,6 +75,7 @@ type LLMRole = Literal[
     "HYPOTHESIS", "PRO", "CON", "VERIFICATION", "DYNAMIC_REPRODUCTION"
 ]
 type EvidenceRole = Literal["PRO", "CON"]
+type BudgetScopeResolver = Callable[[str], BudgetScopeRef]
 
 
 class ProductionRouteLookup(Protocol):
@@ -434,6 +446,19 @@ class VerificationClaimResolver(Protocol):
     def __call__(self, context: WorkContext) -> VerificationClaim: ...
 
 
+@dataclass(frozen=True, slots=True)
+class _VerificationParentInputs:
+    public_refs: tuple[StoredDataRef, ...]
+    hypothesis_ref: StoredDataRef
+    hypothesis: VulnerabilityHypothesis
+    policy_ref: StoredDataRef
+    playbook_ref: StoredDataRef
+    application_ref: StoredDataRef
+    application: PlaybookApplication
+    evidence_ref: StoredDataRef
+    bundle: StaticFactBundle
+
+
 class NonDynamicCompletionPort(Protocol):
     async def complete_without_dynamic(
         self, **kwargs: object
@@ -441,7 +466,14 @@ class NonDynamicCompletionPort(Protocol):
 
 
 class DynamicVerificationPort(Protocol):
-    """Direct T11 continuation; implementations must not poll child work."""
+    """Exact T10-to-T11 handoff boundary.
+
+    A production implementation must publish the same-attempt
+    ``DynamicReproductionRequest``, register a separate ``DYNAMIC_REPRO`` child,
+    and move the parent out of ``RUNNING`` before returning.  It must not execute,
+    wait for, or poll that child; a child-terminal CAS/reconciliation hook owns
+    resuming the parent for final synthesis.
+    """
 
     async def complete_dynamic(
         self,
@@ -454,35 +486,69 @@ class DynamicVerificationPort(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class VerificationWorkHandler:
-    """Synthesize one claimed Verification generation using T10 services."""
+    """Own one claimed Verification debate and synthesize only after both branches."""
 
     records: RecordStore
     runner: WorkflowRunner
     verification: VerificationService
+    debate: DebateService
     non_dynamic: NonDynamicCompletionPort
     dynamic: DynamicVerificationPort
-    resolve_claim: VerificationClaimResolver
     calls: ProductionCallPort
     verification_identity_ref: BudgetScopeRef
+    budget_scope: BudgetScopeResolver
 
     async def execute(self, context: WorkContext) -> WorkHandlerResult:
         require_claimed_context(context, WorkType.VERIFICATION)
-        claim = self.resolve_claim(context)
-        generation = claim.generation
         work = context.work
-        if (
-            generation.work_id != work.work_id
-            or generation.generation != work.work_generation
-            or generation.pro_ref not in claim.initial_source_refs
-            or generation.con_ref not in claim.initial_source_refs
-            or len(claim.initial_source_refs) != len(set(claim.initial_source_refs))
-        ):
-            raise ValueError("VERIFICATION_CLAIM_SCOPE_MISMATCH")
+        parent_inputs = self._parent_inputs(work)
+        scope = self.budget_scope(str(work.meta.analysis_id))
+        if not isinstance(scope, (RunStoredDataRef, StoredDataRef)):
+            raise ValueError("VERIFICATION_BUDGET_SCOPE_REQUIRED")
+        pro_work, con_work = self._start_evidence_children(
+            work, parent_inputs.public_refs, scope
+        )
+        pro_call = self.calls.resolve(
+            work=pro_work,
+            role="PRO",
+            task_kind="COLLECT_SUPPORT",
+            source_refs=parent_inputs.public_refs,
+        )
+        con_call = self.calls.resolve(
+            work=con_work,
+            role="CON",
+            task_kind="COLLECT_COUNTEREVIDENCE",
+            source_refs=parent_inputs.public_refs,
+        )
+        try:
+            debate = await self.debate.run(
+                verification_work=work,
+                public_input_refs=parent_inputs.public_refs,
+                pro_call=pro_call,
+                con_call=con_call,
+            )
+        except DebateIncompleteError as error:
+            self._settle_evidence_calls(
+                pro_call,
+                con_call,
+                error.pro_invocation,
+                error.con_invocation,
+            )
+            raise
+        self._settle_evidence_calls(
+            pro_call,
+            con_call,
+            debate.pro_invocation,
+            debate.con_invocation,
+        )
+        generation, initial_source_refs = self._generation_inputs(
+            work, parent_inputs, debate
+        )
         initial_call = self.calls.resolve(
             work=work,
             role="VERIFICATION",
             task_kind="ASSESS_INITIAL",
-            source_refs=claim.initial_source_refs,
+            source_refs=initial_source_refs,
         )
         initial = await self.verification.assess_initial_with_invocation(
             generation=generation,
@@ -503,7 +569,7 @@ class VerificationWorkHandler:
             work=work,
             role="VERIFICATION",
             task_kind="FINAL_VERDICT",
-            source_refs=(*claim.initial_source_refs, assessment_ref),
+            source_refs=(*initial_source_refs, assessment_ref),
         )
         completion = await self.non_dynamic.complete_without_dynamic(
             generation=generation,
@@ -514,6 +580,199 @@ class VerificationWorkHandler:
         )
         self.calls.settle(final_call, completion.outcome.invocation)
         return WorkHandlerResult(completion.completed_work.output_refs)
+
+    def _parent_inputs(self, work: WorkExecutionState) -> _VerificationParentInputs:
+        if (
+            not isinstance(work.meta, RecordMeta)
+            or any(not isinstance(ref, StoredDataRef) for ref in work.input_refs)
+            or len(work.input_refs) != len(set(work.input_refs))
+        ):
+            raise ValueError("VERIFICATION_PARENT_INPUT_MISMATCH")
+        public_refs = cast(tuple[StoredDataRef, ...], tuple(work.input_refs))
+        hypothesis_ref, hypothesis = self._exact_parent_input(
+            work, VulnerabilityHypothesis.KIND, VulnerabilityHypothesis
+        )
+        policy_ref, _policy = self._exact_parent_input(
+            work, PlaybookPolicy.KIND, PlaybookPolicy
+        )
+        playbook_ref, _playbook = self._exact_parent_input(
+            work, VerificationPlaybook.KIND, VerificationPlaybook
+        )
+        application_ref, application = self._exact_parent_input(
+            work, PlaybookApplication.KIND, PlaybookApplication
+        )
+        evidence_ref, bundle = self._exact_parent_input(
+            work, StaticFactBundle.KIND, StaticFactBundle
+        )
+        if (
+            work.subject_type != SubjectType.HYPOTHESIS
+            or str(work.subject_id) != str(work.meta.hypothesis_id)
+            or hypothesis.meta.hypothesis_id != work.meta.hypothesis_id
+            or application.hypothesis_ref != hypothesis_ref
+            or application.proposal_ref != hypothesis.proposal_ref
+            or application.policy_ref != policy_ref
+            or application.playbook_ref != playbook_ref
+            or application.verification_work_id != work.work_id
+            or application.verification_generation != work.work_generation
+            or not hypothesis.target_locations
+            or public_refs
+            != (
+                hypothesis_ref,
+                hypothesis.proposal_ref,
+                policy_ref,
+                playbook_ref,
+                evidence_ref,
+                application_ref,
+            )
+        ):
+            raise ValueError("VERIFICATION_PARENT_INPUT_MISMATCH")
+        return _VerificationParentInputs(
+            public_refs,
+            hypothesis_ref,
+            hypothesis,
+            policy_ref,
+            playbook_ref,
+            application_ref,
+            application,
+            evidence_ref,
+            bundle,
+        )
+
+    def _exact_parent_input[T: ReferencedRecord](
+        self,
+        work: WorkExecutionState,
+        kind: str,
+        model: type[T],
+    ) -> tuple[StoredDataRef, T]:
+        refs = tuple(
+            ref
+            for ref in work.input_refs
+            if isinstance(ref, StoredDataRef) and ref.data_kind == kind
+        )
+        if len(refs) != 1:
+            raise ValueError("VERIFICATION_PARENT_INPUT_MISMATCH")
+        ref = refs[0]
+        try:
+            value = self.records.get_exact(ref)
+        except (LookupError, ValueError) as error:
+            raise ValueError("VERIFICATION_PARENT_INPUT_MISMATCH") from error
+        meta = getattr(value, "meta", None)
+        if (
+            not isinstance(value, model)
+            or not isinstance(meta, RecordMeta)
+            or reference(value) != ref
+        ):
+            raise ValueError("VERIFICATION_PARENT_INPUT_MISMATCH")
+        try:
+            same_scope(
+                cast(RecordMeta, work.meta),
+                meta,
+                hypothesis=getattr(model, "HYPOTHESIS", None) is True,
+            )
+        except ValueError as error:
+            raise ValueError("VERIFICATION_PARENT_INPUT_MISMATCH") from error
+        return ref, value
+
+    def _start_evidence_children(
+        self,
+        work: WorkExecutionState,
+        public_refs: tuple[StoredDataRef, ...],
+        scope: BudgetScopeRef,
+    ) -> tuple[WorkExecutionState, WorkExecutionState]:
+        parent_ref = reference(work)
+        if not isinstance(parent_ref, StoredDataRef):
+            raise ValueError("EVIDENCE_PARENT_WORK_SCOPE_MISMATCH")
+        ready = tuple(
+            self.runner.enqueue(
+                scope,
+                work.meta,
+                work_type,
+                work.subject_type,
+                str(work.subject_id),
+                self.verification_identity_ref,
+                role="VERIFICATION",
+                generation=work.work_generation,
+                inputs=public_refs,
+                parent=parent_ref,
+            )
+            for work_type in (WorkType.PRO_EVIDENCE, WorkType.CON_EVIDENCE)
+        )
+        running = tuple(
+            self.runner.activate(
+                child,
+                scope,
+                self.verification_identity_ref,
+                role="VERIFICATION",
+            )
+            for child in ready
+        )
+        pro_work, con_work = running
+        if (
+            pro_work.work_type != WorkType.PRO_EVIDENCE
+            or con_work.work_type != WorkType.CON_EVIDENCE
+            or pro_work.status != WorkStatus.RUNNING
+            or con_work.status != WorkStatus.RUNNING
+            or pro_work.parent_work_ref != parent_ref
+            or con_work.parent_work_ref != parent_ref
+            or pro_work.input_refs != public_refs
+            or con_work.input_refs != public_refs
+            or pro_work.work_generation != work.work_generation
+            or con_work.work_generation != work.work_generation
+        ):
+            raise ValueError("EVIDENCE_WORK_SCOPE_MISMATCH")
+        return pro_work, con_work
+
+    def _settle_evidence_calls(
+        self,
+        pro_call: AuthorizedLLMCall,
+        con_call: AuthorizedLLMCall,
+        pro_invocation: PersistedLLMInvocation | None,
+        con_invocation: PersistedLLMInvocation | None,
+    ) -> None:
+        for call, invocation in (
+            (pro_call, pro_invocation),
+            (con_call, con_invocation),
+        ):
+            if invocation is not None:
+                self.calls.settle(call, invocation)
+
+    @staticmethod
+    def _generation_inputs(
+        work: WorkExecutionState,
+        parent: _VerificationParentInputs,
+        debate: DebateResult,
+    ) -> tuple[VerificationGenerationInputs, tuple[StoredDataRef, ...]]:
+        generation = VerificationGenerationInputs(
+            work_id=work.work_id,
+            generation=work.work_generation,
+            hypothesis_ref=parent.hypothesis_ref,
+            policy_ref=parent.policy_ref,
+            playbook_ref=parent.playbook_ref,
+            application_ref=parent.application_ref,
+            pro_ref=debate.pro_ref,
+            con_ref=debate.con_ref,
+            debate_input_hash=debate.pro.debate_input_hash,
+            evidence_ref=parent.evidence_ref,
+            location=parent.hypothesis.target_locations[0],
+            falsification_question_ids=tuple(
+                str(item.question_id)
+                for item in parent.hypothesis.falsification_questions
+            )
+            + tuple(str(item.question_id) for item in parent.application.questions),
+            validation_ids=tuple(
+                str(item.validation_id) for item in parent.hypothesis.validation_checks
+            ),
+        )
+        initial_source_refs = (
+            generation.hypothesis_ref,
+            generation.policy_ref,
+            generation.playbook_ref,
+            generation.application_ref,
+            generation.pro_ref,
+            generation.con_ref,
+            generation.evidence_ref,
+        )
+        return generation, initial_source_refs
 
     def _publish_assessment(
         self,

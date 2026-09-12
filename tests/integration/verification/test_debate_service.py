@@ -514,6 +514,8 @@ async def test_budget_limit_rejects_zero_and_allows_parallel_new_sessions() -> N
     assert result.pro.meta.attempt_id != result.con.meta.attempt_id
     assert result.pro.llm_call_id != result.con.llm_call_id
     assert result.pro_session_ref != result.con_session_ref
+    assert result.pro_invocation.request.agent_role == "PRO"
+    assert result.con_invocation.request.agent_role == "CON"
     assert result.pro.evidence[0].claim_id.startswith("pro-claim-")
     assert result.con.evidence[0].claim_id.startswith("con-claim-")
     assert result.pro.evidence[0].source_role == "PRO"
@@ -615,6 +617,8 @@ async def test_limit_one_serializes_calls_and_failure_cannot_complete_debate() -
     assert calls.max_active == 1
     assert set(calls.calls) == {"PRO", "CON"}
     assert captured.value.failure_count == 1
+    assert captured.value.pro_invocation is not None
+    assert captured.value.con_invocation is None
     assert captured.value.completed_refs == tuple(
         reference(value) for value in publisher.published
     )
