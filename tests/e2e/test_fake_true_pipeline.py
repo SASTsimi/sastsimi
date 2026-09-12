@@ -42,6 +42,8 @@ from sastsimi.contracts.verification import VerificationInitialAssessment
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.interfaces.cli.main import main
 from sastsimi.ports.dto import Record
+from sastsimi.reporting.markdown_export import ReportMarkdownService
+from sastsimi.storage.report_export import SQLiteCurrentReportSource
 
 
 def test_final_true_without_current_validated_poc_is_rejected(
@@ -77,6 +79,15 @@ def test_true_pipeline_closes_exact_report_without_submission(tmp_path: Path) ->
     assert pipeline.runtime is not None
     (report,) = pipeline.reports()
     assert isinstance(report, ReportDraft)
+    source = SQLiteCurrentReportSource(tmp_path)
+    current_report = source.get_current(str(report.finding_ref.record_id))
+    markdown = ReportMarkdownService(tmp_path, source).show(current_report.finding_id)
+    assert current_report.poc.agent_log_ref == reference(current_report.agent_log)
+    assert current_report.execution_command.action_id == (
+        current_report.poc.execution_action_id
+    )
+    assert f"AgentLog ref: `{current_report.poc.agent_log_ref.record_id}`" in markdown
+    assert "### 실제 실행 방법" in markdown
     published = pipeline.runtime.queries.published_records("fake-analysis")
     published_by_ref = {reference(item): item for item in published}
     report_decision = published_by_ref[report.action_decision_ref]

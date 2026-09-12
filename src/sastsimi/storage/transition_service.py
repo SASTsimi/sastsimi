@@ -9,6 +9,7 @@ from sastsimi.contracts.actions import ActionRequest, ActionType, RequesterRole
 from sastsimi.contracts.analysis import AnalysisRunState
 from sastsimi.contracts.base import ContractModel
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
+from sastsimi.contracts.chaining import ChainingResult
 from sastsimi.contracts.hypothesis import VerificationAssignment
 from sastsimi.contracts.policy import PolicyCacheRecord, RunPolicyState
 from sastsimi.contracts.records import validate_revision
@@ -28,12 +29,14 @@ from sastsimi.contracts.work import (
     validate_commit_transition,
     validate_transition_context,
 )
+from sastsimi.ports.chaining import ChainingLineagePort
 from sastsimi.ports.dto import TransitionCommitRequest
 from sastsimi.storage import models
 from sastsimi.storage.artifact_store import LocalArtifactStore
 from sastsimi.storage.codec import REF_ADAPTER, decode, encode, reference
 
 from .chaining_projection import validate_chaining_output
+from .chaining_registration import reserve_chaining_result_matches
 from .context_policy import check_context_response
 from .current_inputs import check_current_input
 from .dynamic_projection import dynamic_projection
@@ -53,6 +56,8 @@ from .run_projections import run_policy_projection
 from .run_states import get_run, save_run
 from .verification_projection import verification_projection
 from .work_service import WorkService
+
+__all__ = ["TransitionService", "reserve_chaining_result_matches"]
 
 
 def _validate_terminal_workspace(
@@ -111,9 +116,11 @@ class TransitionService:
         works: WorkService,
         artifacts: LocalArtifactStore,
         checkpoint: Callable[[str], None] | None = None,
+        chaining_lineage: ChainingLineagePort | None = None,
     ) -> None:
         self.works, self.artifacts = works, artifacts
         self.checkpoint = checkpoint or (lambda name: None)
+        self.chaining_lineage = chaining_lineage
 
     def commit(self, request: TransitionCommitRequest) -> TransitionCommit:
         validate_commit_transition(request.commit, request.transition)
@@ -284,7 +291,13 @@ class TransitionService:
         )
         validate_finding_output(self.works, connection, work, request.records)
         validate_primitive_outputs(self.works, connection, work, request.records)
-        validate_chaining_output(self.works, connection, work, request.records)
+        validate_chaining_output(
+            self.works,
+            connection,
+            work,
+            request.records,
+            self.chaining_lineage,
+        )
         validate_report_output(
             self.works, connection, work, request.records, self.artifacts
         )
@@ -346,6 +359,12 @@ class TransitionService:
                         )
                     )
                     save_run(records, connection, updated_state, state)
+            for chaining_result in (
+                record
+                for record in request.records
+                if isinstance(record, ChainingResult)
+            ):
+                reserve_chaining_result_matches(records, connection, chaining_result)
             self.works.validator.record_outcome(
                 connection, claimed, committed.output_refs
             )

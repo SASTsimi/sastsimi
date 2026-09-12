@@ -42,6 +42,18 @@ def test_fake_cli_analyze_results_and_reports(
     assert main(["--data-dir", str(tmp_path), "results", "--format", "json"]) == 0
     persisted = json.loads(capsys.readouterr().out)
     assert persisted["data"]["status"] == "COMPLETE"
-    assert main(["--data-dir", str(tmp_path), "reports", "--format", "json"]) == 0
+    assert (
+        main(
+            [
+                "--data-dir",
+                str(tmp_path),
+                "reports",
+                "fake-analysis",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
     reports = json.loads(capsys.readouterr().out)
     assert reports["data"] == {"count": 0, "reports": []}
