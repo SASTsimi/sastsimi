@@ -22,6 +22,7 @@ class VerificationRegistrationService:
         owner_identity_ref: StoredDataRef,
         requester_identity_ref: BudgetScopeRef,
         budget_binding_ref: StoredDataRef,
+        evidence_ref: StoredDataRef | None = None,
     ) -> VerificationRegistration:
         return self.store.register(
             hypothesis_ref=hypothesis_ref,
@@ -32,6 +33,7 @@ class VerificationRegistrationService:
             owner_identity_ref=owner_identity_ref,
             requester_identity_ref=requester_identity_ref,
             budget_binding_ref=budget_binding_ref,
+            evidence_ref=evidence_ref,
         )
 
     def revise(
