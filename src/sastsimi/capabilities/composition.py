@@ -132,6 +132,11 @@ class ProductionCapabilityProbeService:
     def resolve_executable(self, profile_ref: HostConfigurationRef) -> Path:
         return self.__engine.resolve_executable(profile_ref)
 
+    def resolve_docker_command(
+        self, profile_ref: HostConfigurationRef
+    ) -> tuple[Path, str]:
+        return self.__engine.resolve_docker_command(profile_ref)
+
 
 def _host_platform() -> tuple[CapabilityOperatingSystem, CapabilityArchitecture]:
     operating_system = {

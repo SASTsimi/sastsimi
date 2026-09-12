@@ -22,7 +22,7 @@ from sastsimi.contracts.dynamic import (
 from sastsimi.contracts.dynamic_resource import owned_container_resource_ref
 from sastsimi.contracts.ids import CommitId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import StoredDataRef, reference
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef, reference
 from sastsimi.sandbox.cleanup import OwnedResourceRegistry
 from sastsimi.sandbox.controller import (
     SandboxBoundaryOutcome,
@@ -887,6 +887,69 @@ async def test_docker_create_uses_argv_and_hard_isolation_options(
     assert all(
         not (isinstance(item, str) and "docker create " in item) for item in argv
     )
+
+
+@pytest.mark.asyncio
+async def test_production_docker_binding_revalidates_and_pins_every_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    del tmp_path
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    async def spawn(*argv: object, **kwargs: object) -> _Process:
+        calls.append((argv, kwargs))
+        return _Process(b"owned-container-id\n")
+
+    class Resolver:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def resolve_docker_command(
+            self, profile_ref: HostConfigurationRef
+        ) -> tuple[Path, str]:
+            assert profile_ref.host_id == "host-a"
+            self.calls += 1
+            return (
+                Path("C:/Program Files/Docker/docker.exe"),
+                "npipe:////./pipe/docker-engine",
+            )
+
+    monkeypatch.setattr(
+        "sastsimi.sandbox.docker_adapter.asyncio.create_subprocess_exec", spawn
+    )
+    resolver = Resolver()
+    profile_ref = HostConfigurationRef.model_validate(
+        {
+            "stored_data_id": "docker-profile-stored",
+            "data_kind": "runtime_capability_profile",
+            "content_hash": "a" * 64,
+            "host_id": "host-a",
+            "publication_analysis_id": "capability-publication",
+            "publication_workspace_id": "host-configuration",
+            "publication_commit_id": "host-configuration-v1",
+            "record_id": "docker-profile-record",
+        }
+    )
+    adapter = DockerAdapter.from_capability(profile_ref, resolver)
+
+    await adapter.start("owned-container-id")
+    await adapter.start("owned-container-id")
+
+    assert resolver.calls == 2
+    assert len(calls) == 2
+    for argv, kwargs in calls:
+        assert argv[:3] == (
+            "C:\\Program Files\\Docker\\docker.exe",
+            "--host",
+            "npipe:////./pipe/docker-engine",
+        )
+        environment = kwargs["env"]
+        assert isinstance(environment, dict)
+        assert "HOME" not in environment
+        assert "USERPROFILE" not in environment
+        assert "DOCKER_CONFIG" not in environment
+        assert "DOCKER_HOST" not in environment
 
 
 @pytest.mark.asyncio

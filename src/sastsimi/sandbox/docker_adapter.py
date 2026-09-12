@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ from pathlib import Path
 
 from sastsimi.contracts.dynamic import POC_RUNTIME_PATH
 from sastsimi.contracts.prompt_redaction import redact_untrusted_text
+from sastsimi.contracts.refs import HostConfigurationRef
+from sastsimi.ports.capability_registry import DockerCommandCapabilityResolverPort
 
 from .controller import SandboxRunSpec
 
@@ -36,6 +39,9 @@ _CONTAINER_LABELS = _REQUIRED_LABELS | {
 _OUTPUT_LIMIT_BYTES = 1024 * 1024
 _OUTPUT_READ_BYTES = 64 * 1024
 _POC_STAGING_PATH = f"{POC_RUNTIME_PATH}.next"
+_WINDOWS_DOCKER_HOST = re.compile(r"^npipe:////\./pipe/[A-Za-z0-9._-]{1,128}$")
+_POSIX_DOCKER_HOST = re.compile(r"^unix:///[A-Za-z0-9_./-]{1,512}$")
+_DOCKER_ENV_KEYS = frozenset({"SYSTEMROOT", "WINDIR", "TMP", "TEMP", "LANG", "LC_ALL"})
 
 
 class _DockerOutputLimitExceeded(Exception):
@@ -83,6 +89,21 @@ class DockerAdapter:
         ):
             raise ValueError("DOCKER_EXECUTABLE_NOT_FIXED")
         self._executable = executable
+        self._profile_ref: HostConfigurationRef | None = None
+        self._capability_resolver: DockerCommandCapabilityResolverPort | None = None
+
+    @classmethod
+    def from_capability(
+        cls,
+        profile_ref: HostConfigurationRef,
+        resolver: DockerCommandCapabilityResolverPort,
+    ) -> DockerAdapter:
+        """Bind production execution to one exact ACTIVE host configuration."""
+
+        adapter = cls()
+        adapter._profile_ref = profile_ref
+        adapter._capability_resolver = resolver
+        return adapter
 
     async def build(
         self,
@@ -445,9 +466,10 @@ class DockerAdapter:
         timeout_ms: int | None = None,
         input_bytes: bytes | None = None,
     ) -> DockerCommandOutcome:
+        executable, command, environment = self._resolve_invocation(argv)
         process = await asyncio.create_subprocess_exec(
-            self._executable,
-            *argv,
+            executable,
+            *command,
             stdin=(
                 asyncio.subprocess.PIPE
                 if input_bytes is not None
@@ -455,6 +477,7 @@ class DockerAdapter:
             ),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=environment,
         )
         if process.stdout is None or process.stderr is None:
             await self._stop_process(process)
@@ -493,6 +516,34 @@ class DockerAdapter:
             stderr=stderr,
             timed_out=timed_out,
         )
+
+    def _resolve_invocation(
+        self, argv: tuple[str, ...]
+    ) -> tuple[str, tuple[str, ...], dict[str, str] | None]:
+        if self._capability_resolver is None or self._profile_ref is None:
+            return self._executable, argv, None
+        executable, docker_host = self._capability_resolver.resolve_docker_command(
+            self._profile_ref
+        )
+        if (
+            not executable.is_absolute()
+            or executable.name.lower() not in {"docker", "docker.exe"}
+        ):
+            raise ValueError("DOCKER_EXECUTABLE_NOT_FIXED")
+        if not self._trusted_local_host(docker_host):
+            raise ValueError("DOCKER_HOST_UNTRUSTED")
+        environment = {
+            key: value for key, value in os.environ.items() if key in _DOCKER_ENV_KEYS
+        }
+        return str(executable), ("--host", docker_host, *argv), environment
+
+    @staticmethod
+    def _trusted_local_host(docker_host: str) -> bool:
+        if _WINDOWS_DOCKER_HOST.fullmatch(docker_host) is not None:
+            return True
+        if _POSIX_DOCKER_HOST.fullmatch(docker_host) is None:
+            return False
+        return ".." not in Path(docker_host.removeprefix("unix://")).parts
 
     @staticmethod
     async def _read_output(

@@ -365,6 +365,21 @@ class _CapabilityProbeEngine:
             raise ValueError("CAPABILITY_EXECUTION_TARGET_CHANGED")
         return resolved
 
+    def resolve_docker_command(
+        self, profile_ref: HostConfigurationRef
+    ) -> tuple[Path, str]:
+        """Return an exact executable and daemon only after current-state checks."""
+
+        profile = self._registry.resolve_pinned_active_profile(profile_ref)
+        if (
+            not isinstance(profile, RuntimeCapabilityProfile)
+            or profile.capability_kind != "DOCKER"
+        ):
+            raise ValueError("CAPABILITY_DOCKER_PROFILE_REQUIRED")
+        if self._docker_host is None:
+            raise ValueError("DOCKER_HOST_REQUIRED")
+        return self.resolve_executable(profile_ref), self._docker_host
+
     def approve(
         self,
         probe_id: str,

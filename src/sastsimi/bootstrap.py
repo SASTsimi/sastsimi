@@ -22,7 +22,12 @@ from sastsimi.contracts.ids import (
     WorkspaceId,
 )
 from sastsimi.contracts.records import RecordMeta
-from sastsimi.contracts.refs import BudgetScopeRef, StoredDataRef, reference
+from sastsimi.contracts.refs import (
+    BudgetScopeRef,
+    HostConfigurationRef,
+    StoredDataRef,
+    reference,
+)
 from sastsimi.logging import SafeJsonHandler, safe_event
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
@@ -35,6 +40,7 @@ from sastsimi.storage.action_validator import (
 from sastsimi.storage.schema_version import MigrationRequired as MigrationRequired
 
 if TYPE_CHECKING:
+    from sastsimi.capabilities.composition import ProductionCapabilityProbeService
     from sastsimi.contracts.dynamic import DynamicReproductionRequest
     from sastsimi.contracts.evaluation import AnalysisRunResult
     from sastsimi.contracts.hypothesis import HypothesisProcessState
@@ -1047,11 +1053,13 @@ def build_t11_services(
     role_identity_refs: Mapping[RequesterRole, BudgetScopeRef],
     sandbox_authorization: DynamicSandboxAuthorizationResolver,
     verification: VerificationService,
-    docker_executable: str = "docker",
+    docker_profile_ref: HostConfigurationRef,
+    capability_service: ProductionCapabilityProbeService,
 ) -> T11Services:
     """Build the real local-Docker T11 slice after trusted config resolution."""
 
     from sastsimi.agents.dynamic_reproduction import DynamicReproductionAgent
+    from sastsimi.capabilities.composition import ProductionCapabilityProbeService
     from sastsimi.contracts.ids import WorkId
     from sastsimi.ports.dynamic_sandbox import (
         DynamicDockerExecutionPort,
@@ -1075,7 +1083,9 @@ def build_t11_services(
     from sastsimi.verification.completion import VerificationCompletionCoordinator
 
     artifacts = runtime.unit_of_work.artifacts
-    docker = DockerAdapter(docker_executable)
+    if not isinstance(capability_service, ProductionCapabilityProbeService):
+        raise ValueError("TRUSTED_CAPABILITY_SERVICE_REQUIRED")
+    docker = DockerAdapter.from_capability(docker_profile_ref, capability_service)
     setup = ReproductionSetupAutomation(
         docker=docker,
         recipes=EnvironmentRecipeStore(),

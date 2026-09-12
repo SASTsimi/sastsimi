@@ -323,6 +323,9 @@ def test_real_probe_receipts_require_exact_human_approval_before_active(
     assert service.resolve_executable(python_ref).is_file()
     assert service.resolve_executable(opengrep_ref).name == "opengrep.exe"
     assert service.resolve_executable(docker_ref).name == "docker.exe"
+    docker_path, docker_host = service.resolve_docker_command(docker_ref)
+    assert docker_path.name == "docker.exe"
+    assert docker_host == "npipe:////./pipe/docker-engine"
     git_executable.write_bytes(b"changed-after-approval")
     with pytest.raises(ValueError, match="CAPABILITY_EXECUTABLE_CHANGED"):
         service.resolve_executable(exact_ref)

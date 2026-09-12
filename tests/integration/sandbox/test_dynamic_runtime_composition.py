@@ -208,6 +208,11 @@ def test_production_bootstrap_uses_real_sandbox_components() -> None:
     ):
         assert component in source
     assert "FakeSandboxAdapter" not in source
+    assert "DockerAdapter.from_capability" in source
+    assert "docker_executable" not in source
+    parameters = inspect.signature(build_t11_services).parameters
+    assert "docker_profile_ref" in parameters
+    assert "capability_service" in parameters
     assert "verification=verification" in source
 
     assert "completion=VerificationCompletionCoordinator(" in source
