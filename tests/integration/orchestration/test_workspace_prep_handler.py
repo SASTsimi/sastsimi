@@ -12,7 +12,7 @@ from sastsimi.contracts.actions import RequesterRole
 from sastsimi.contracts.analysis import AnalysisStartRequest
 from sastsimi.contracts.budget import Purpose
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
-from sastsimi.contracts.ids import StoredDataId
+from sastsimi.contracts.ids import ProgramId, RecordId, StoredDataId, WorkspaceId
 from sastsimi.contracts.refs import RunStoredDataRef, reference
 from sastsimi.orchestration.analysis_state_factory import AnalysisStateFactory
 from sastsimi.orchestration.static_external_runner import StaticExternalRunner
@@ -113,7 +113,7 @@ def _setup(tmp_path: Path) -> tuple[Any, ...]:
     request = AnalysisStartRequest(
         repository_ref=source.as_uri(),
         requested_git_ref=COMMIT,
-        program_id="program",
+        program_id=ProgramId("program"),
         purpose=Purpose.PRODUCTION,
     )
     harness.evidence.approvals.add(content_hash(execution))
@@ -170,6 +170,7 @@ def _setup(tmp_path: Path) -> tuple[Any, ...]:
         loader=loader,
         resolve_call=ExactWorkspacePrepCallResolver(runner),
         requester_identity_ref=execution.approval_ref,
+        workspace_id=WorkspaceId("planned-workspace"),
         timeout_ms=500,
     )
     return (
@@ -215,6 +216,7 @@ async def test_workspace_handler_uses_exact_local_source_and_commit(
     assert preparation.repository_url == run_input.repository_ref
     assert preparation.requested_ref == COMMIT
     assert preparation.resolved_commit_id == COMMIT
+    assert preparation.workspace_id == "planned-workspace"
     assert loader.calls == 1
 
 
@@ -228,7 +230,7 @@ async def test_workspace_handler_rejects_substituted_run_input_before_loader(
         data_kind="analysis_run_input",
         content_hash="f" * 64,
         analysis_id=context.work.meta.analysis_id,
-        record_id="substituted-input",
+        record_id=RecordId("substituted-input"),
     )
     input_refs = (substitute, *context.work.input_refs[1:])
     stale_work = context.work.model_copy(
