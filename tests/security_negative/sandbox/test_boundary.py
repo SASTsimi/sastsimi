@@ -543,7 +543,9 @@ def test_baked_repository_source_uses_no_host_mount(tmp_path: Path) -> None:
     context = _context(tmp_path)
     spec = replace(context.spec, mounts=(), source_baked=True)
 
-    outcome = context.controller.evaluate(**(context.arguments | {"spec": spec}))
+    outcome = cast(Any, context.controller.evaluate)(
+        **(context.arguments | {"spec": spec})
+    )
 
     assert outcome.decision.decision == "ALLOW", outcome.decision.reason_codes
 
@@ -568,7 +570,9 @@ def test_baked_repository_source_rejects_even_workspace_mount(tmp_path: Path) ->
     context = _context(tmp_path)
     spec = replace(context.spec, source_baked=True)
 
-    outcome = context.controller.evaluate(**(context.arguments | {"spec": spec}))
+    outcome = cast(Any, context.controller.evaluate)(
+        **(context.arguments | {"spec": spec})
+    )
 
     assert outcome.decision.decision == "DENY"
     assert "HOST_MOUNT_DENIED" in outcome.decision.reason_codes

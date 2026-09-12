@@ -124,15 +124,28 @@ class _MemoryArtifacts:
         digest = hashlib.sha256(staged.data).hexdigest()
         self.values[digest] = staged.data
         return StoredDataRef(
-            stored_data_id=digest,
+            stored_data_id=StoredDataId(digest),
             data_kind="artifact",
             content_hash=digest,
-            workspace_id="workspace-1",
-            commit_id="commit-1",
+            workspace_id=WorkspaceId("workspace-1"),
+            commit_id=CommitId("commit-1"),
             record_id=None,
         )
 
-    def open_verified(self, ref: StoredDataRef) -> io.BytesIO:
+    def commit_run(
+        self, staged: StagedArtifact, analysis_id: AnalysisId
+    ) -> RunStoredDataRef:
+        digest = hashlib.sha256(staged.data).hexdigest()
+        self.values[digest] = staged.data
+        return RunStoredDataRef(
+            stored_data_id=StoredDataId(digest),
+            data_kind="artifact",
+            content_hash=digest,
+            analysis_id=analysis_id,
+            record_id=None,
+        )
+
+    def open_verified(self, ref: StoredDataRef | RunStoredDataRef) -> io.BytesIO:
         return io.BytesIO(self.values[ref.content_hash])
 
 
@@ -146,7 +159,7 @@ def _meta(
     record_id: str,
     *,
     attempt_id: str = "dynamic-attempt-1",
-    hypothesis_id: str = "hypothesis-1",
+    hypothesis_id: str | None = "hypothesis-1",
 ) -> RecordMeta:
     return RecordMeta.model_validate(
         {
@@ -231,11 +244,11 @@ def _repository_profile(files: Mapping[str, bytes]) -> RepositoryProfile:
             "workspace_id": "workspace-1",
             "commit_id": "commit-1",
             "workspace_ref": RunStoredDataRef(
-                stored_data_id="code-workspace",
+                stored_data_id=StoredDataId("code-workspace"),
                 data_kind="code_workspace",
                 content_hash="b" * 64,
-                analysis_id="analysis-1",
-                record_id="code-workspace",
+                analysis_id=AnalysisId("analysis-1"),
+                record_id=RecordId("code-workspace"),
             ),
             "action_decision_ref": _ref("action_decision", "profile-decision"),
             "manifest_hash": content_hash(tuple(tracked)),
@@ -661,7 +674,7 @@ class _FailedBuildDocker(FakeDockerAdapter):
         super().__init__()
         self.failure = failure
         self.presence = presence
-        self.started = asyncio.Event()
+        self.build_started = asyncio.Event()
 
     async def build(
         self,
@@ -677,7 +690,7 @@ class _FailedBuildDocker(FakeDockerAdapter):
             self.image_tags[image_tag] = DockerImageState(IMAGE_DIGEST, dict(labels))
         elif self.presence == "UNKNOWN":
             self.unknown_image_tags.add(image_tag)
-        self.started.set()
+        self.build_started.set()
         if self.failure == "cancel":
             await asyncio.Event().wait()
         if self.failure == "invalid-digest":
@@ -727,7 +740,7 @@ async def test_failed_build_reconciles_reserved_owned_image_tag(failure: str) ->
 async def test_cancelled_build_reconciles_reserved_owned_image_tag() -> None:
     docker = _FailedBuildDocker("cancel")
     task = asyncio.create_task(_run_failed_build(docker))
-    await docker.started.wait()
+    await docker.build_started.wait()
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
