@@ -21,7 +21,11 @@ from sastsimi.contracts.budget import BudgetProfileBinding, BudgetReservation
 from sastsimi.contracts.canonical_json import canonical_bytes, content_hash
 from sastsimi.contracts.ids import DecisionId, ErrorId, LogicalRecordId, RecordId
 from sastsimi.contracts.records import RunMeta
-from sastsimi.contracts.refs import BudgetScopeRef, RecordRef
+from sastsimi.contracts.refs import (
+    CheckedConfigurationRef,
+    HostConfigurationRef,
+    RecordRef,
+)
 from sastsimi.contracts.work import WorkExecutionState
 from sastsimi.ports.clock import Clock
 from sastsimi.ports.id_generator import IdGenerator
@@ -41,6 +45,8 @@ class AuthorizationContext(Protocol):
     records: SQLiteRecordStore
     clock: Clock
     ids: IdGenerator
+
+    def require_current_capability_ref(self, ref: HostConfigurationRef) -> None: ...
 
     def check_reservation(
         self,
@@ -94,7 +100,7 @@ def authorize(
         if work is None and action.work_ref is not None:
             resolved = records.resolve(connection, action.work_ref)
             work = resolved if isinstance(resolved, WorkExecutionState) else None
-        config_refs: list[BudgetScopeRef] = []
+        config_refs: list[CheckedConfigurationRef] = []
         outputs: tuple[RecordRef, ...] = ()
         checks = []
         for kind in sorted(
@@ -151,15 +157,19 @@ def authorize(
                             or work.status.value != "PENDING"
                         ):
                             raise ValueError("STATE_VERSION_CONFLICT")
-                        for ref in action.input_refs:
-                            check_current_input(
-                                records,
-                                connection,
-                                ref,
-                                workspace_statuses=allowed_workspace_statuses(
-                                    action, work
-                                ),
-                            )
+                        for ref in (*work.input_refs, *action.input_refs):
+                            if isinstance(ref, HostConfigurationRef):
+                                validator.require_current_capability_ref(ref)
+                                config_refs.append(ref)
+                            else:
+                                check_current_input(
+                                    records,
+                                    connection,
+                                    ref,
+                                    workspace_statuses=allowed_workspace_statuses(
+                                        action, work
+                                    ),
+                                )
                 elif kind == CheckType.BUDGET:
                     if work is None:
                         raise ValueError("BUDGET_UNAVAILABLE")

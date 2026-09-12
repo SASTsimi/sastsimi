@@ -155,7 +155,18 @@ def test_static_tool_profile_enforces_scope_status_and_limits() -> None:
     active = static_tool_profile(
         purpose="PRODUCTION",
         status="ACTIVE",
-        capability_evidence_ref=ref("tool_capability_evidence"),
+        host_id="host-a",
+        capability_evidence_ref={
+            "stored_data_id": "tool_capability_evidence-id",
+            "data_kind": "tool_capability_evidence",
+            "content_hash": "a" * 64,
+            "configuration_scope": "HOST",
+            "host_id": "host-a",
+            "publication_analysis_id": "a1",
+            "publication_workspace_id": "ws1",
+            "publication_commit_id": "c1",
+            "record_id": "tool_capability_evidence-record",
+        },
     )
     wire(StaticToolProfile, active)
     invalid = (
@@ -174,3 +185,27 @@ def test_static_tool_profile_enforces_scope_status_and_limits() -> None:
     for patch in invalid:
         with pytest.raises(ValidationError):
             wire(StaticToolProfile, static_tool_profile(**patch))
+
+
+def test_host_capability_evidence_reference_kind_is_exact() -> None:
+    from sastsimi.contracts.static import StaticToolProfile
+
+    active = static_tool_profile(
+        purpose="PRODUCTION",
+        status="ACTIVE",
+        host_id="host-a",
+        capability_evidence_ref={
+            "stored_data_id": "wrong-kind-id",
+            "data_kind": "runtime_capability_profile",
+            "content_hash": "a" * 64,
+            "configuration_scope": "HOST",
+            "host_id": "host-a",
+            "publication_analysis_id": "a1",
+            "publication_workspace_id": "ws1",
+            "publication_commit_id": "c1",
+            "record_id": "wrong-kind-record",
+        },
+    )
+
+    with pytest.raises(ValidationError, match="REFERENCE_KIND_MISMATCH"):
+        wire(StaticToolProfile, active)

@@ -10,6 +10,7 @@ EXPECTED_KINDS = {
     "policy_cache_meta",
     "run_stored_data_ref",
     "stored_data_ref",
+    "host_configuration_ref",
     "policy_cache_ref",
     "work_execution_state",
     "work_attempt",
@@ -55,6 +56,8 @@ EXPECTED_KINDS = {
     "budget_remaining",
     "evaluation_run_config",
     "static_tool_profile",
+    "tool_capability_evidence",
+    "runtime_capability_profile",
 }
 
 

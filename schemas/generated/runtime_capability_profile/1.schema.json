@@ -12,6 +12,60 @@
       "title": "AttemptId",
       "type": "string"
     },
+    "CapabilityArchitecture": {
+      "enum": [
+        "x86_64",
+        "aarch64"
+      ],
+      "type": "string"
+    },
+    "CapabilityKind": {
+      "enum": [
+        "GIT",
+        "AST",
+        "CODEQL",
+        "OPENGREP",
+        "DOCKER",
+        "PYTHON_RUNTIME",
+        "JAVASCRIPT_RUNTIME",
+        "PACKAGE_MANAGER",
+        "BUILD",
+        "START"
+      ],
+      "type": "string"
+    },
+    "CapabilityLanguage": {
+      "enum": [
+        "ANY",
+        "PYTHON",
+        "JAVASCRIPT"
+      ],
+      "type": "string"
+    },
+    "CapabilityOperatingSystem": {
+      "enum": [
+        "windows",
+        "linux",
+        "macos"
+      ],
+      "type": "string"
+    },
+    "CapabilityOperation": {
+      "enum": [
+        "CLONE",
+        "CHECKOUT",
+        "PARSE",
+        "ANALYZE",
+        "IMAGE_BUILD",
+        "CONTAINER_RUN",
+        "HEALTH_CHECK",
+        "CLEANUP",
+        "PACKAGE_INSTALL",
+        "BUILD",
+        "START"
+      ],
+      "type": "string"
+    },
     "CommitId": {
       "minLength": 1,
       "pattern": "\\S",
@@ -194,37 +248,16 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Exact immutable configuration for one static-tool adapter revision.",
+  "description": "One immutable executable host capability revision.",
   "properties": {
-    "adapter_key": {
-      "enum": [
-        "PYTHON_AST",
-        "CODEQL",
-        "OPENGREP"
-      ],
-      "title": "Adapter Key",
-      "type": "string"
+    "architecture": {
+      "$ref": "#/$defs/CapabilityArchitecture"
     },
     "capability_evidence_ref": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/HostConfigurationRef"
-        },
-        {
-          "type": "null"
-        }
-      ]
+      "$ref": "#/$defs/HostConfigurationRef"
     },
-    "executable_key": {
-      "minLength": 1,
-      "pattern": "\\S",
-      "title": "Executable Key",
-      "type": "string"
-    },
-    "executable_sha256": {
-      "pattern": "^[0-9a-f]{64}$",
-      "title": "Executable Sha256",
-      "type": "string"
+    "capability_kind": {
+      "$ref": "#/$defs/CapabilityKind"
     },
     "expected_version": {
       "minLength": 1,
@@ -233,41 +266,30 @@
       "type": "string"
     },
     "host_id": {
-      "anyOf": [
-        {
-          "minLength": 1,
-          "pattern": "\\S",
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Host Id"
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Host Id",
+      "type": "string"
     },
-    "max_artifact_read_bytes": {
-      "minimum": 1,
-      "title": "Max Artifact Read Bytes",
-      "type": "integer"
-    },
-    "max_attempt_output_bytes": {
-      "minimum": 1,
-      "title": "Max Attempt Output Bytes",
-      "type": "integer"
-    },
-    "max_output_file_bytes": {
-      "minimum": 1,
-      "title": "Max Output File Bytes",
-      "type": "integer"
+    "languages": {
+      "items": {
+        "$ref": "#/$defs/CapabilityLanguage"
+      },
+      "title": "Languages",
+      "type": "array"
     },
     "meta": {
       "$ref": "#/$defs/RecordMeta"
     },
-    "probe_timeout_ms": {
-      "minimum": 1,
-      "title": "Probe Timeout Ms",
-      "type": "integer"
+    "operating_system": {
+      "$ref": "#/$defs/CapabilityOperatingSystem"
+    },
+    "operations": {
+      "items": {
+        "$ref": "#/$defs/CapabilityOperation"
+      },
+      "title": "Operations",
+      "type": "array"
     },
     "profile_key": {
       "minLength": 1,
@@ -276,77 +298,46 @@
       "type": "string"
     },
     "purpose": {
-      "enum": [
-        "FIXTURE",
-        "EVALUATION",
-        "PRODUCTION"
-      ],
+      "const": "PRODUCTION",
       "title": "Purpose",
       "type": "string"
     },
-    "run_timeout_ms": {
-      "minimum": 1,
-      "title": "Run Timeout Ms",
-      "type": "integer"
-    },
     "status": {
       "enum": [
-        "DRAFT",
-        "APPROVED",
         "ACTIVE",
         "RETIRED"
       ],
       "title": "Status",
       "type": "string"
     },
-    "stderr_limit_bytes": {
-      "minimum": 1,
-      "title": "Stderr Limit Bytes",
-      "type": "integer"
-    },
-    "stdout_limit_bytes": {
-      "minimum": 1,
-      "title": "Stdout Limit Bytes",
-      "type": "integer"
-    },
-    "tool_kind": {
-      "enum": [
-        "STRUCTURE",
-        "RULE_BASED"
-      ],
-      "title": "Tool Kind",
+    "subject_key": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "title": "Subject Key",
       "type": "string"
     },
-    "tool_name": {
-      "enum": [
-        "AST",
-        "CODEQL",
-        "OPENGREP"
-      ],
-      "title": "Tool Name",
+    "subject_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Subject Sha256",
       "type": "string"
     }
   },
   "required": [
     "meta",
+    "host_id",
     "profile_key",
     "purpose",
     "status",
-    "adapter_key",
-    "tool_name",
-    "tool_kind",
-    "executable_key",
-    "executable_sha256",
+    "capability_kind",
+    "subject_key",
     "expected_version",
-    "capability_evidence_ref",
-    "probe_timeout_ms",
-    "run_timeout_ms",
-    "stdout_limit_bytes",
-    "stderr_limit_bytes",
-    "max_attempt_output_bytes",
-    "max_output_file_bytes",
-    "max_artifact_read_bytes"
+    "subject_sha256",
+    "operating_system",
+    "architecture",
+    "languages",
+    "operations",
+    "capability_evidence_ref"
   ],
-  "title": "StaticToolProfile",
+  "title": "RuntimeCapabilityProfile",
   "type": "object"
 }

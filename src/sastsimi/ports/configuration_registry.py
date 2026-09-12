@@ -7,6 +7,17 @@ from sastsimi.contracts.budget import (
     VerificationBudgetProfile,
     WorkBudgetProfile,
 )
+from sastsimi.contracts.capabilities import (
+    CapabilityApprovalEvidence,
+    CapabilityArchitecture,
+    CapabilityKind,
+    CapabilityLanguage,
+    CapabilityOperatingSystem,
+    CapabilityOperation,
+    RuntimeCapabilityProfile,
+    RuntimeCapabilitySelection,
+    StaticToolCapabilitySelection,
+)
 from sastsimi.contracts.dynamic import SandboxProfile
 from sastsimi.contracts.evaluation import EvaluationRunConfig
 from sastsimi.contracts.llm import (
@@ -24,13 +35,60 @@ from sastsimi.contracts.llm import (
     ProviderValidationEvidence,
     SemanticValidatorSpec,
 )
-from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.ports.dto import CapabilityProbeResult
 
 
 class ConfigurationRegistryPort(Protocol):
+    def register_capability_approval(
+        self, record: CapabilityApprovalEvidence
+    ) -> HostConfigurationRef: ...
+
+    def register_runtime_capability(
+        self, record: RuntimeCapabilityProfile
+    ) -> HostConfigurationRef: ...
+
+    def get_runtime_capability(
+        self, profile_ref: HostConfigurationRef
+    ) -> RuntimeCapabilityProfile: ...
+
+    def resolve_pinned_active_profile(
+        self, profile_ref: HostConfigurationRef
+    ) -> RuntimeCapabilityProfile | StaticToolProfile: ...
+
+    def resolve_active_capability(
+        self,
+        *,
+        capability_kind: CapabilityKind,
+        language: CapabilityLanguage,
+        operation: CapabilityOperation,
+        operating_system: CapabilityOperatingSystem,
+        architecture: CapabilityArchitecture,
+    ) -> RuntimeCapabilitySelection: ...
+
+    def register_production_static_tool_profile(
+        self, record: StaticToolProfile
+    ) -> HostConfigurationRef: ...
+
+    def get_production_static_tool_profile(
+        self, profile_ref: HostConfigurationRef
+    ) -> StaticToolProfile: ...
+
+    def resolve_production_static_tool_profile(
+        self, profile_ref: HostConfigurationRef
+    ) -> StaticToolProfile: ...
+
+    def resolve_active_static_tool(
+        self,
+        *,
+        adapter_key: str,
+        language: CapabilityLanguage,
+        operating_system: CapabilityOperatingSystem,
+        architecture: CapabilityArchitecture,
+    ) -> StaticToolCapabilitySelection: ...
+
     def register_static_tool_profile(
         self, record: StaticToolProfile
     ) -> StoredDataRef: ...

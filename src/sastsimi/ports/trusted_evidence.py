@@ -10,6 +10,7 @@ from sastsimi.contracts.budget import (
     VerificationBudgetProfile,
     WorkBudgetProfile,
 )
+from sastsimi.contracts.capabilities import CapabilityApprovalEvidence
 from sastsimi.contracts.dynamic import SandboxProfile
 from sastsimi.contracts.llm import LLMRecord
 from sastsimi.contracts.refs import BudgetScopeRef, RecordRef
@@ -19,6 +20,10 @@ from sastsimi.contracts.work import WorkExecutionState
 
 
 class TrustedEvidencePort(Protocol):
+    def capability_approval_authorized(
+        self, evidence: CapabilityApprovalEvidence
+    ) -> bool: ...
+
     def static_tool_configuration_approved(
         self, profile: StaticToolProfile
     ) -> bool: ...
@@ -54,6 +59,11 @@ class TrustedEvidencePort(Protocol):
 
 
 class UnprovenEvidence:
+    def capability_approval_authorized(
+        self, evidence: CapabilityApprovalEvidence
+    ) -> bool:
+        return False
+
     def static_tool_configuration_approved(self, profile: StaticToolProfile) -> bool:
         return False
 

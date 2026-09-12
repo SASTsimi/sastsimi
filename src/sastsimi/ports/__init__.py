@@ -1,5 +1,8 @@
 from .artifact_store import ArtifactStore as ArtifactStore
 from .budget_ledger import BudgetLedgerPort as BudgetLedgerPort
+from .capability_registry import (
+    ProductionCapabilityResolverPort as ProductionCapabilityResolverPort,
+)
 from .chaining import ChainedHypothesisContent as ChainedHypothesisContent
 from .chaining import ChainingAgentInput as ChainingAgentInput
 from .chaining import ChainingAgentOutcome as ChainingAgentOutcome

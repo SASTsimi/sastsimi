@@ -5,6 +5,17 @@ from sastsimi.contracts.budget import (
     VerificationBudgetProfile,
     WorkBudgetProfile,
 )
+from sastsimi.contracts.capabilities import (
+    CapabilityApprovalEvidence,
+    CapabilityArchitecture,
+    CapabilityKind,
+    CapabilityLanguage,
+    CapabilityOperatingSystem,
+    CapabilityOperation,
+    RuntimeCapabilityProfile,
+    RuntimeCapabilitySelection,
+    StaticToolCapabilitySelection,
+)
 from sastsimi.contracts.dynamic import SandboxProfile
 from sastsimi.contracts.evaluation import EvaluationRunConfig
 from sastsimi.contracts.llm import (
@@ -22,7 +33,7 @@ from sastsimi.contracts.llm import (
     ProviderValidationEvidence,
     SemanticValidatorSpec,
 )
-from sastsimi.contracts.refs import StoredDataRef
+from sastsimi.contracts.refs import HostConfigurationRef, StoredDataRef
 from sastsimi.contracts.static import StaticToolProfile
 from sastsimi.contracts.verification import PlaybookPolicy, VerificationPlaybook
 from sastsimi.ports.configuration_registry import ConfigurationRegistryPort
@@ -32,6 +43,75 @@ from sastsimi.ports.dto import CapabilityProbeResult
 class ConfigurationRegistry:
     def __init__(self, registry: ConfigurationRegistryPort) -> None:
         self.registry = registry
+
+    def register_capability_approval(
+        self, record: CapabilityApprovalEvidence
+    ) -> HostConfigurationRef:
+        return self.registry.register_capability_approval(record)
+
+    def register_runtime_capability(
+        self, record: RuntimeCapabilityProfile
+    ) -> HostConfigurationRef:
+        return self.registry.register_runtime_capability(record)
+
+    def get_runtime_capability(
+        self, profile_ref: HostConfigurationRef
+    ) -> RuntimeCapabilityProfile:
+        return self.registry.get_runtime_capability(profile_ref)
+
+    def resolve_pinned_active_profile(
+        self, profile_ref: HostConfigurationRef
+    ) -> RuntimeCapabilityProfile | StaticToolProfile:
+        """Revalidate one scheduled exact revision without route reselection."""
+
+        return self.registry.resolve_pinned_active_profile(profile_ref)
+
+    def resolve_active_capability(
+        self,
+        *,
+        capability_kind: CapabilityKind,
+        language: CapabilityLanguage,
+        operation: CapabilityOperation,
+        operating_system: CapabilityOperatingSystem,
+        architecture: CapabilityArchitecture,
+    ) -> RuntimeCapabilitySelection:
+        return self.registry.resolve_active_capability(
+            capability_kind=capability_kind,
+            language=language,
+            operation=operation,
+            operating_system=operating_system,
+            architecture=architecture,
+        )
+
+    def register_production_static_tool_profile(
+        self, record: StaticToolProfile
+    ) -> HostConfigurationRef:
+        return self.registry.register_production_static_tool_profile(record)
+
+    def get_production_static_tool_profile(
+        self, profile_ref: HostConfigurationRef
+    ) -> StaticToolProfile:
+        return self.registry.get_production_static_tool_profile(profile_ref)
+
+    def resolve_production_static_tool_profile(
+        self, profile_ref: HostConfigurationRef
+    ) -> StaticToolProfile:
+        return self.registry.resolve_production_static_tool_profile(profile_ref)
+
+    def resolve_active_static_tool(
+        self,
+        *,
+        adapter_key: str,
+        language: CapabilityLanguage,
+        operating_system: CapabilityOperatingSystem,
+        architecture: CapabilityArchitecture,
+    ) -> StaticToolCapabilitySelection:
+        return self.registry.resolve_active_static_tool(
+            adapter_key=adapter_key,
+            language=language,
+            operating_system=operating_system,
+            architecture=architecture,
+        )
 
     def register_static_tool_profile(self, record: StaticToolProfile) -> StoredDataRef:
         return self.registry.register_static_tool_profile(record)

@@ -794,6 +794,7 @@ def _build_runtime(
     finding_service_identity_ref: StoredDataRef | None = None,
     analysis_finalization_identity_ref: BudgetScopeRef | None = None,
     llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
+    capability_host_id: str | None = None,
     chaining_lineage: ChainingLineagePort | None = None,
     *,
     validator_factory: Callable[..., SQLiteRuntimeValidator],
@@ -861,12 +862,16 @@ def _build_runtime(
     artifacts = LocalArtifactStore(paths.artifacts, workspace_id, commit_id)
     registry = SQLiteRegistry(records, clock, ids)
     budget = SQLiteBudget(records, registry, clock, ids)
+    configuration_store = SQLiteConfigurationRegistry(
+        records, artifacts, capability_host_id
+    )
     authorization = validator_factory(
         records,
         budget,
         clock,
         ids,
         artifacts,
+        configuration_store,
     )
     works = SQLiteWorks(records, authorization, clock, ids)
     transitions = SQLiteTransitions(
@@ -879,7 +884,6 @@ def _build_runtime(
     recovery.recover()
     validator = RuntimeValidator(authorization)
     external = ExternalCallService(validator)
-    configuration_store = SQLiteConfigurationRegistry(records, artifacts)
 
     def llm_metadata(
         source: RecordMeta,
@@ -957,6 +961,7 @@ def build_runtime(
     finding_service_identity_ref: StoredDataRef | None = None,
     analysis_finalization_identity_ref: BudgetScopeRef | None = None,
     llm_adapters: Mapping[tuple[StoredDataRef, str], LLMProviderAdapter] | None = None,
+    capability_host_id: str | None = None,
     chaining_lineage: ChainingLineagePort | None = None,
 ) -> RuntimeServices:
     """Compose the production runtime without fake output capabilities."""
@@ -972,6 +977,7 @@ def build_runtime(
         finding_service_identity_ref,
         analysis_finalization_identity_ref,
         llm_adapters,
+        capability_host_id,
         chaining_lineage,
         validator_factory=SQLiteRuntimeValidator,
         bind_sqlite_chaining_lineage=True,
