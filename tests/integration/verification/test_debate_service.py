@@ -523,6 +523,50 @@ async def test_budget_limit_rejects_zero_and_allows_parallel_new_sessions() -> N
 
 
 @pytest.mark.asyncio
+async def test_one_claimed_branch_commits_without_waiting_for_sibling() -> None:
+    public_inputs = tuple(
+        sorted(
+            (
+                _ref("static_fact_bundle", "facts"),
+                _ref("playbook_application", "application"),
+            ),
+            key=canonical_bytes,
+        )
+    )
+    parent = _work("VERIFICATION", public_inputs)
+    pro_work = _work("PRO", public_inputs, parent=parent)
+    records, artifacts = MemoryRecords(), MemoryArtifacts()
+    call = _authorized_call(records, "PRO", pro_work, public_inputs)
+    calls = ConcurrentLLMCalls(
+        records,
+        artifacts,
+        {"PRO": _output("PRO", public_inputs[0])},
+    )
+    publisher = RecordingPublisher(records)
+    service = DebateService(
+        records=records,
+        artifacts=artifacts,
+        llm_calls=calls,
+        metadata_factory=MetadataFactory(),
+        claim_id_factory=ClaimIds(),
+        publish_result=publisher,
+        parallel_limit=lambda _work: 2,
+    )
+
+    result = await service.run_branch(
+        parent_work=parent,
+        public_input_refs=public_inputs,
+        call=call,
+        role="PRO",
+    )
+
+    assert calls.calls == ["PRO"]
+    assert result.record.role == "PRO"
+    assert records.get_exact(result.output_ref) == result.record
+    assert result.session_ref == "pro-session"
+
+
+@pytest.mark.asyncio
 async def test_limit_one_serializes_calls_and_failure_cannot_complete_debate() -> None:
     """Catches bypassing the trusted evidence cap or joining one-sided evidence."""
     public_inputs = tuple(
